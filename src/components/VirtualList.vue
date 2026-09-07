@@ -28,16 +28,18 @@ const container = ref<HTMLElement | null>(null);
 const scrollTop = ref(0);
 const viewport = ref(600);
 
-// 每个已渲染项的「实测高度」覆盖：估算可能低于真实 DOM 高度（如内容/预览异步加载后变高）。
-// 一旦实测 > 该槽位的估算，就记下来；offsets 用实测值重算，保证相邻行绝不文字重叠。
+// 每个已渲染项的「实测高度」覆盖：图片、附件预览和字体布局都以真实 DOM 为准。
+// offsets 用实测值重算，既避免真实内容变高时重叠，也避免估算过大造成假间距。
 // 以 msg_id/id 为键（而非数组下标），向上加载历史（prepend）导致下标偏移时覆盖仍对应正确消息。
 const heightOverride = new Map<string | number, number>();
+const heightVersion = ref(0);
 
 function keyOf(it: any): string | number {
   return it?.msg_id ?? it?.id ?? "";
 }
 
 function itemHeight(i: number): number {
+  heightVersion.value;
   const it = props.items[i];
   const k = keyOf(it);
   return heightOverride.get(k) ?? props.estimateHeight(it, i);
@@ -53,15 +55,16 @@ const offsets = computed(() => {
 });
 const totalHeight = computed(() => offsets.value[offsets.value.length - 1] ?? 0);
 
-/** 记录某槽位实测高度（若高于预留则覆盖，避免与下一条重叠）。 */
+/** 记录某槽位实测高度，图片加载或预览切换后由 ResizeObserver 及时更新。 */
 function commitHeight(i: number, measured: number) {
   if (i < 0 || i >= props.items.length) return;
   const it = props.items[i];
   const k = keyOf(it);
   const est = props.estimateHeight(it, i);
-  const h = Math.max(measured, est);
+  const h = measured;
   if (Math.abs((heightOverride.get(k) ?? est) - h) > 1) {
     heightOverride.set(k, h);
+    heightVersion.value += 1;
   }
 }
 
@@ -92,16 +95,35 @@ const visible = computed(() => {
 
 // 数据变化 / 窗口变化后，对可见项做一次实测 → 覆盖估算偏差
 let remeasureRaf = 0;
+let rowResizeObserver: ResizeObserver | null = null;
+
+function observeRenderedRows(nodes: NodeListOf<HTMLElement>) {
+  rowResizeObserver?.disconnect();
+  rowResizeObserver = new ResizeObserver((entries) => {
+    for (const entry of entries) {
+      const node = entry.target as HTMLElement;
+      const idx = Number(node.getAttribute("data-vlist-index"));
+      const key = node.getAttribute("data-vlist-key");
+      if (Number.isInteger(idx) && key === String(keyOf(props.items[idx]))) {
+        commitHeight(idx, node.offsetHeight);
+      }
+    }
+  });
+  nodes.forEach((node) => rowResizeObserver?.observe(node));
+}
+
 function scheduleRemeasure() {
   if (remeasureRaf) return;
   remeasureRaf = requestAnimationFrame(() => {
     remeasureRaf = 0;
     const el = container.value;
     if (!el) return;
-    el.querySelectorAll<HTMLElement>("[data-vlist-index]").forEach((node) => {
+    const nodes = el.querySelectorAll<HTMLElement>("[data-vlist-index]");
+    nodes.forEach((node) => {
       const idx = Number(node.getAttribute("data-vlist-index"));
       commitHeight(idx, node.offsetHeight);
     });
+    observeRenderedRows(nodes);
   });
 }
 
@@ -186,6 +208,7 @@ onMounted(() => {
   scheduleRemeasure();
 });
 onBeforeUnmount(() => {
+  rowResizeObserver?.disconnect();
   window.removeEventListener("resize", onResize);
   if (raf) cancelAnimationFrame(raf);
   if (remeasureRaf) cancelAnimationFrame(remeasureRaf);
@@ -205,6 +228,7 @@ defineExpose({ scrollToBottom, scrollToIndex });
         v-for="v in visible"
         :key="(v.item as any).msg_id ?? v.index"
         :data-vlist-index="v.index"
+        :data-vlist-key="String((v.item as any).msg_id ?? (v.item as any).id ?? '')"
         :style="{ position: 'absolute', top: `${v.top}px`, left: 0, right: 0 }"
       >
         <slot :item="v.item" :index="v.index" />

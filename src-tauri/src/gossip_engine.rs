@@ -50,7 +50,9 @@ impl BloomFilter {
     }
 
     pub fn contains(&self, data: &str) -> bool {
-        self.positions(data).iter().all(|&p| (self.bits[p / 64] >> (p % 64)) & 1 == 1)
+        self.positions(data)
+            .iter()
+            .all(|&p| (self.bits[p / 64] >> (p % 64)) & 1 == 1)
     }
 }
 
@@ -168,7 +170,7 @@ impl GossipEngine {
             encrypted: true, // 默认加密；调用方可按 E2EE 开关改写
         };
         env.compute_message_id();
-        env.sender_sig = identity.sign_b64(env.message_id.as_bytes());
+        env.sender_sig = identity.sign_b64(&env.signing_bytes());
         env
     }
 
@@ -178,7 +180,11 @@ impl GossipEngine {
         let expected = check.message_id.clone();
         check.compute_message_id();
         expected == check.message_id
-            && crate::crypto::verify_signature(&env.sender_ed25519, expected.as_bytes(), &env.sender_sig)
+            && crate::crypto::verify_signature(
+                &env.sender_ed25519,
+                &env.signing_bytes(),
+                &env.sender_sig,
+            )
     }
 }
 
@@ -221,6 +227,15 @@ mod tests {
         let mut tampered_id = env.clone();
         tampered_id.message_id = "forged".into();
         assert!(!engine.verify_envelope(&tampered_id));
+
+        // 路由/权限元数据也属于签名范围，不能复用原签名篡改。
+        let mut tampered_kind = env.clone();
+        tampered_kind.kind = GossipKind::Group;
+        assert!(!engine.verify_envelope(&tampered_kind));
+
+        let mut tampered_members = env.clone();
+        tampered_members.group_members.push("forged-member".into());
+        assert!(!engine.verify_envelope(&tampered_members));
     }
 
     #[test]

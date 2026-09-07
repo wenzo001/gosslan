@@ -60,6 +60,14 @@ CREATE TABLE IF NOT EXISTS group_members (
     PRIMARY KEY (group_id, device_id)
 );
 
+-- 群成员已读位置：每个成员只保留读到的最大时间戳
+CREATE TABLE IF NOT EXISTS group_reads (
+    group_id      TEXT NOT NULL,
+    reader_id     TEXT NOT NULL,
+    last_read_ts  INTEGER NOT NULL,
+    PRIMARY KEY (group_id, reader_id)
+);
+
 -- 离线补发队列：发给离线/未连接好友的消息
 CREATE TABLE IF NOT EXISTS outbox (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -176,7 +184,12 @@ pub fn set_lan_enabled(conn: &Connection, enabled: bool) -> Result<()> {
 
 // ---------------- 好友 ----------------
 
-pub fn add_friend(conn: &Connection, device_id: &str, nickname: &str, avatar: Option<&str>) -> Result<()> {
+pub fn add_friend(
+    conn: &Connection,
+    device_id: &str,
+    nickname: &str,
+    avatar: Option<&str>,
+) -> Result<()> {
     conn.execute(
         "INSERT INTO friends(device_id, nickname, avatar, added_at) VALUES(?1, ?2, ?3, ?4)
          ON CONFLICT(device_id) DO UPDATE SET nickname = excluded.nickname, avatar = excluded.avatar",
@@ -186,7 +199,10 @@ pub fn add_friend(conn: &Connection, device_id: &str, nickname: &str, avatar: Op
 }
 
 pub fn remove_friend(conn: &Connection, device_id: &str) -> Result<()> {
-    conn.execute("DELETE FROM friends WHERE device_id = ?1", params![device_id])?;
+    conn.execute(
+        "DELETE FROM friends WHERE device_id = ?1",
+        params![device_id],
+    )?;
     Ok(())
 }
 
@@ -229,7 +245,8 @@ pub fn get_friend_x25519(conn: &Connection, device_id: &str) -> Option<String> {
 }
 
 pub fn list_friends(conn: &Connection) -> Result<Vec<Friend>> {
-    let mut stmt = conn.prepare("SELECT device_id, nickname, avatar FROM friends ORDER BY added_at")?;
+    let mut stmt =
+        conn.prepare("SELECT device_id, nickname, avatar FROM friends ORDER BY added_at")?;
     let rows = stmt.query_map([], |r| {
         Ok(Friend {
             device_id: r.get(0)?,
@@ -243,7 +260,14 @@ pub fn list_friends(conn: &Connection) -> Result<Vec<Friend>> {
 
 // ---------------- 群组 ----------------
 
-pub fn create_group(conn: &Connection, id: &str, name: &str, creator: &str, members: &[String]) -> Result<()> {
+#[allow(dead_code)]
+pub fn create_group(
+    conn: &Connection,
+    id: &str,
+    name: &str,
+    creator: &str,
+    members: &[String],
+) -> Result<()> {
     conn.execute(
         "INSERT INTO groups(id, name, creator, created_at) VALUES(?1, ?2, ?3, ?4)",
         params![id, name, creator, now_ms()],
@@ -261,7 +285,11 @@ pub fn list_groups(conn: &Connection) -> Result<Vec<Group>> {
     let mut groups = Vec::new();
     let mut stmt = conn.prepare("SELECT id, name, creator FROM groups ORDER BY created_at")?;
     let rows = stmt.query_map([], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+        ))
     })?;
     for row in rows {
         let (id, name, creator) = row?;
@@ -270,7 +298,12 @@ pub fn list_groups(conn: &Connection) -> Result<Vec<Group>> {
             .query_map(params![id], |r| r.get(0))?
             .filter_map(|r| r.ok())
             .collect();
-        groups.push(Group { id, name, creator, members });
+        groups.push(Group {
+            id,
+            name,
+            creator,
+            members,
+        });
     }
     Ok(groups)
 }
@@ -307,7 +340,10 @@ pub fn upsert_group(
 
 /// 重命名群：同步群表与对应会话行（会话标题随群名一起变）。
 pub fn rename_group(conn: &Connection, id: &str, name: &str) -> Result<()> {
-    let changed = conn.execute("UPDATE groups SET name = ?1 WHERE id = ?2", params![name, id])?;
+    let changed = conn.execute(
+        "UPDATE groups SET name = ?1 WHERE id = ?2",
+        params![name, id],
+    )?;
     if changed > 0 {
         conn.execute(
             "UPDATE conversations SET name = ?1 WHERE id = ?2",
@@ -358,12 +394,43 @@ pub fn get_group(conn: &Connection, group_id: &str) -> Option<Group> {
             .unwrap_or_default(),
         Err(_) => Vec::new(),
     };
-    Some(Group { id, name, creator, members })
+    Some(Group {
+        id,
+        name,
+        creator,
+        members,
+    })
+}
+
+/// 写入群成员已读位置，时间戳只前进不回退。
+pub fn upsert_group_read(
+    conn: &Connection,
+    group_id: &str,
+    reader_id: &str,
+    ts: i64,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO group_reads(group_id, reader_id, last_read_ts) VALUES(?1, ?2, ?3)
+         ON CONFLICT(group_id, reader_id) DO UPDATE SET last_read_ts = MAX(group_reads.last_read_ts, excluded.last_read_ts)",
+        params![group_id, reader_id, ts],
+    )?;
+    Ok(())
+}
+
+pub fn list_group_reads(conn: &Connection, group_id: &str) -> Result<Vec<(String, i64)>> {
+    let mut stmt = conn.prepare(
+        "SELECT reader_id, last_read_ts FROM group_reads WHERE group_id = ?1 ORDER BY reader_id",
+    )?;
+    let rows = stmt.query_map(params![group_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    rows.collect()
 }
 
 /// 彻底删除一个群：群表 + 成员关系 + 会话。被移除的成员端收到通知后调用。
 pub fn delete_group(conn: &Connection, group_id: &str) -> Result<()> {
-    conn.execute("DELETE FROM group_members WHERE group_id = ?1", params![group_id])?;
+    conn.execute(
+        "DELETE FROM group_members WHERE group_id = ?1",
+        params![group_id],
+    )?;
     conn.execute("DELETE FROM groups WHERE id = ?1", params![group_id])?;
     conn.execute(
         "DELETE FROM conversations WHERE id = ?1",
@@ -398,15 +465,54 @@ pub fn insert_message(conn: &Connection, m: &MessageRecord) -> Result<()> {
     insert_message_if_new(conn, m).map(|_| ())
 }
 
-pub fn message_exists(conn: &Connection, msg_id: &str) -> bool {
-    conn.query_row("SELECT 1 FROM messages WHERE msg_id = ?1", params![msg_id], |_| Ok(()))
-        .optional()
-        .ok()
-        .flatten()
-        .is_some()
+/// 原子地写入本地消息与可靠发送队列。
+/// 发送路径不能出现「消息已落库但 outbox 没写入」或反过来的半状态。
+pub fn insert_message_and_outbox(
+    conn: &Connection,
+    m: &MessageRecord,
+    peer_id: &str,
+    payload: &str,
+) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "INSERT INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts, status)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            m.msg_id,
+            m.conv_id,
+            m.sender_id,
+            m.receiver_id,
+            m.kind,
+            m.content,
+            m.ts,
+            m.status
+        ],
+    )?;
+    tx.execute(
+        "INSERT INTO outbox(msg_id, peer_id, payload, created_at) VALUES(?1, ?2, ?3, ?4)",
+        params![m.msg_id, peer_id, payload, now_ms()],
+    )?;
+    tx.commit()
 }
 
-pub fn get_messages(conn: &Connection, conv_id: &str, limit: i64, offset: i64) -> Result<Vec<MessageRecord>> {
+pub fn message_exists(conn: &Connection, msg_id: &str) -> bool {
+    conn.query_row(
+        "SELECT 1 FROM messages WHERE msg_id = ?1",
+        params![msg_id],
+        |_| Ok(()),
+    )
+    .optional()
+    .ok()
+    .flatten()
+    .is_some()
+}
+
+pub fn get_messages(
+    conn: &Connection,
+    conv_id: &str,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<MessageRecord>> {
     let mut stmt = conn.prepare(
         "SELECT id, msg_id, conv_id, sender_id, receiver_id, kind, content, ts, status
          FROM messages WHERE conv_id = ?1 ORDER BY ts ASC, id ASC LIMIT ?2 OFFSET ?3",
@@ -492,7 +598,9 @@ pub fn search_messages_in_conv(
 
 /// 转义 LIKE 通配符：将 % 和 _ 替换为字面值。
 fn escape_like(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+    s.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }
 
 // ---------------- 会话 ----------------
@@ -521,7 +629,13 @@ pub fn touch_conversation(
     Ok(())
 }
 
-pub fn ensure_conversation(conn: &Connection, id: &str, kind: &str, name: &str, avatar: Option<&str>) -> Result<()> {
+pub fn ensure_conversation(
+    conn: &Connection,
+    id: &str,
+    kind: &str,
+    name: &str,
+    avatar: Option<&str>,
+) -> Result<()> {
     conn.execute(
         "INSERT OR IGNORE INTO conversations(id, kind, name, avatar, unread, updated_at)
          VALUES(?1, ?2, ?3, ?4, 0, ?5)",
@@ -550,14 +664,22 @@ pub fn list_conversations(conn: &Connection) -> Result<Vec<Conversation>> {
 }
 
 pub fn mark_read(conn: &Connection, conv_id: &str) -> Result<()> {
-    conn.execute("UPDATE conversations SET unread = 0 WHERE id = ?1", params![conv_id])?;
+    conn.execute(
+        "UPDATE conversations SET unread = 0 WHERE id = ?1",
+        params![conv_id],
+    )?;
     Ok(())
 }
 
 /// 仅更新已有 single 会话的昵称和头像（由 UserInfo 同步触发）。
 /// 不修改 last_msg / last_ts / unread / kind / id / 任何其他字段。
 /// 如果会话不存在，UPDATE 0 行即可，不会创建新会话。
-pub fn update_conversation_profile(conn: &Connection, id: &str, name: &str, avatar: Option<&str>) -> Result<()> {
+pub fn update_conversation_profile(
+    conn: &Connection,
+    id: &str,
+    name: &str,
+    avatar: Option<&str>,
+) -> Result<()> {
     conn.execute(
         "UPDATE conversations SET name = ?2, avatar = ?3 WHERE id = ?1 AND kind = 'single'",
         params![id, name, avatar],
@@ -596,6 +718,7 @@ pub fn delete_conversation(conn: &Connection, conv_id: &str) -> Result<()> {
 
 // ---------------- 离线补发队列 ----------------
 
+#[allow(dead_code)]
 pub fn insert_outbox(conn: &Connection, msg_id: &str, peer_id: &str, payload: &str) -> Result<()> {
     conn.execute(
         "INSERT OR IGNORE INTO outbox(msg_id, peer_id, payload, created_at) VALUES(?1, ?2, ?3, ?4)",
@@ -610,6 +733,7 @@ pub fn list_outbox(conn: &Connection, peer_id: &str) -> Result<Vec<(i64, String)
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
+#[allow(dead_code)]
 pub fn delete_outbox(conn: &Connection, id: i64) -> Result<()> {
     conn.execute("DELETE FROM outbox WHERE id = ?1", params![id])?;
     Ok(())
@@ -677,7 +801,10 @@ pub fn load_pending_reads(conn: &Connection) -> Result<Vec<(String, i64)>> {
 
 /// 删除指定 peer 的待发已读回执（flush 成功后调用）。
 pub fn delete_pending_read(conn: &Connection, peer_id: &str) -> Result<()> {
-    conn.execute("DELETE FROM pending_reads WHERE peer_id = ?1", params![peer_id])?;
+    conn.execute(
+        "DELETE FROM pending_reads WHERE peer_id = ?1",
+        params![peer_id],
+    )?;
     Ok(())
 }
 
@@ -761,6 +888,18 @@ mod tests {
 
         // get_friend_x25519 是 sender_x25519_pubkey → open_direct_content 的
         // DB 查询路径，证明 gossip 同步后 outbox 重发的直发 ChatMessage 可以解密
+    }
+
+    #[test]
+    fn group_reads_only_move_forward() {
+        let conn = mem();
+        upsert_group_read(&conn, "g1", "reader-a", 200).unwrap();
+        upsert_group_read(&conn, "g1", "reader-a", 100).unwrap();
+        upsert_group_read(&conn, "g1", "reader-b", 300).unwrap();
+        assert_eq!(
+            list_group_reads(&conn, "g1").unwrap(),
+            vec![("reader-a".to_string(), 200), ("reader-b".to_string(), 300)]
+        );
     }
 
     #[test]
@@ -869,7 +1008,8 @@ mod tests {
 
     /// 与两个 handler 同构的一次投递：只有本次真的插入新行才计未读、才算一次投递事件。
     fn deliver(conn: &Connection, msg_id: &str, conv_id: &str, conv_kind: &str, who: &str) -> bool {
-        let inserted = insert_message_if_new(conn, &rec_as(msg_id, conv_id, "text", "hello")).unwrap();
+        let inserted =
+            insert_message_if_new(conn, &rec_as(msg_id, conv_id, "text", "hello")).unwrap();
         if inserted {
             touch_conversation(conn, conv_id, conv_kind, "张三", None, who, 1).unwrap();
         }
@@ -888,7 +1028,11 @@ mod tests {
             }
         }
         let case = format!("{first}→{second} @ {conv_id}");
-        assert_eq!(get_messages(&conn, conv_id, 10, 0).unwrap().len(), 1, "{case}");
+        assert_eq!(
+            get_messages(&conn, conv_id, 10, 0).unwrap().len(),
+            1,
+            "{case}"
+        );
         assert_eq!(events, 1, "{case} 只能产生一次 message-received");
         let conv = list_conversations(&conn)
             .unwrap()
@@ -896,7 +1040,11 @@ mod tests {
             .find(|c| c.id == conv_id)
             .unwrap();
         assert_eq!(conv.unread, 1, "{case} 未读只能 +1");
-        assert_eq!(conv.last_msg.as_deref(), Some(first), "{case} 后到者不得改写 last_msg");
+        assert_eq!(
+            conv.last_msg.as_deref(),
+            Some(first),
+            "{case} 后到者不得改写 last_msg"
+        );
     }
 
     /// Test A + Test B：三态裁决本身 —— 首次 Ok(true)、重复 Ok(false)、库中只留一条。
@@ -928,8 +1076,14 @@ mod tests {
         let conn = mem();
         conn.execute("DROP TABLE messages", []).unwrap();
         let out = insert_message_if_new(&conn, &rec_as("m1", "f1", "text", "hello"));
-        assert!(matches!(out, Err(_)), "真实 DB 故障必须是 Err，不能是 Ok(false)");
-        assert!(insert_message(&conn, &rec_as("m2", "f1", "text", "hi")).is_err(), "包装函数同样冒泡");
+        assert!(
+            matches!(out, Err(_)),
+            "真实 DB 故障必须是 Err，不能是 Ok(false)"
+        );
+        assert!(
+            insert_message(&conn, &rec_as("m2", "f1", "text", "hi")).is_err(),
+            "包装函数同样冒泡"
+        );
     }
 
     /// Test 1 + Test 2（单聊）：Direct→Gossip 与 Gossip→Direct 两种顺序都只生效一次。
@@ -987,7 +1141,11 @@ mod tests {
         for h in handles {
             h.join().unwrap();
         }
-        assert_eq!(*winners.lock().unwrap(), 1, "同一 msg_id 只能有一个首次插入者");
+        assert_eq!(
+            *winners.lock().unwrap(),
+            1,
+            "同一 msg_id 只能有一个首次插入者"
+        );
         let dbc = conn.lock().unwrap();
         assert_eq!(get_messages(&dbc, "f1", 10, 0).unwrap().len(), 1);
         assert_eq!(list_conversations(&dbc).unwrap()[0].unread, 1);
@@ -1045,7 +1203,10 @@ mod tests {
         // 对方时钟快 10 分钟（消息出现在「未来」）→ 钳到本地 now
         assert_eq!(clamp_incoming_ts(now + 600_000, now, 0), now);
         // 对方时钟慢 10 分钟（消息早于会话历史）→ 钳到最后一条消息时间
-        assert_eq!(clamp_incoming_ts(now - 600_000, now, now - 3_000), now - 3_000);
+        assert_eq!(
+            clamp_incoming_ts(now - 600_000, now, now - 3_000),
+            now - 3_000
+        );
         // 钳制后与 prev 同毫秒：保持相等（由自增 id 稳定排序兜底），不越过 now
         assert_eq!(clamp_incoming_ts(now - 600_000, now, now), now);
         // 空会话（prev=0）：仅做「未来」钳制
@@ -1085,13 +1246,34 @@ mod tests {
     fn outbox_identity_is_msg_id_not_payload() {
         let conn = mem();
         insert_outbox(&conn, "m1", "f1", r#"{"msg_id":"m1","content":"enc1:old"}"#).unwrap();
-        insert_outbox(&conn, "m1", "f1", r#"{"msg_id":"m1","content":"enc1:resealed"}"#).unwrap();
+        insert_outbox(
+            &conn,
+            "m1",
+            "f1",
+            r#"{"msg_id":"m1","content":"enc1:resealed"}"#,
+        )
+        .unwrap();
         let pending = list_outbox(&conn, "f1").unwrap();
         assert_eq!(pending.len(), 1);
         assert!(pending[0].1.contains("enc1:old")); // 首行原样保留，由 flush 时重封
-        // Ack 分支的删除路径（transport.rs 同构 SQL）
-        conn.execute("DELETE FROM outbox WHERE msg_id = ?1", params!["m1"]).unwrap();
+                                                    // Ack 分支的删除路径（transport.rs 同构 SQL）
+        conn.execute("DELETE FROM outbox WHERE msg_id = ?1", params!["m1"])
+            .unwrap();
         assert!(list_outbox(&conn, "f1").unwrap().is_empty());
+    }
+
+    #[test]
+    fn message_and_outbox_are_written_atomically() {
+        let conn = mem();
+        let m = rec("atomic-1", "peer-1");
+        insert_message_and_outbox(&conn, &m, "peer-1", "payload").unwrap();
+        assert_eq!(get_messages(&conn, "peer-1", 10, 0).unwrap().len(), 1);
+        assert_eq!(list_outbox(&conn, "peer-1").unwrap().len(), 1);
+
+        // 同一业务 ID 再写入时事务失败，不能额外留下半条 outbox 或半条消息。
+        assert!(insert_message_and_outbox(&conn, &m, "peer-1", "payload-2").is_err());
+        assert_eq!(get_messages(&conn, "peer-1", 10, 0).unwrap().len(), 1);
+        assert_eq!(list_outbox(&conn, "peer-1").unwrap().len(), 1);
     }
 
     #[test]
@@ -1131,7 +1313,11 @@ mod tests {
         let conn = mem();
         insert_message(&conn, &rec("m1", "f1")).unwrap();
         set_message_status(&conn, "m1", "delivered").unwrap();
-        assert_eq!(status_of(&conn, "m1"), "delivered", "正常前进：sent → delivered");
+        assert_eq!(
+            status_of(&conn, "m1"),
+            "delivered",
+            "正常前进：sent → delivered"
+        );
         // 对端已读回执（与 transport.rs ReadReceipt 分支同构的 SQL）
         let updated = conn
             .execute(
@@ -1253,11 +1439,21 @@ mod tests {
     // ================================================================
 
     fn insert_text_msg(conn: &Connection, msg_id: &str, conv_id: &str, content: &str) {
-        insert_message(conn, &MessageRecord {
-            id: 0, msg_id: msg_id.into(), conv_id: conv_id.into(),
-            sender_id: "a".into(), receiver_id: "b".into(),
-            kind: "text".into(), content: content.into(), ts: 1, status: "delivered".into(),
-        }).unwrap();
+        insert_message(
+            conn,
+            &MessageRecord {
+                id: 0,
+                msg_id: msg_id.into(),
+                conv_id: conv_id.into(),
+                sender_id: "a".into(),
+                receiver_id: "b".into(),
+                kind: "text".into(),
+                content: content.into(),
+                ts: 1,
+                status: "delivered".into(),
+            },
+        )
+        .unwrap();
     }
 
     /// 普通文本搜索：中文 + 英文。
@@ -1348,7 +1544,11 @@ mod tests {
         touch_conversation(&conn, "dev-a", "single", "Old", None, "Hello", 1).unwrap();
 
         // 验证初始状态
-        let conv = list_conversations(&conn).unwrap().into_iter().find(|c| c.id == "dev-a").unwrap();
+        let conv = list_conversations(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|c| c.id == "dev-a")
+            .unwrap();
         assert_eq!(conv.name, "Old");
         assert_eq!(conv.last_msg.as_deref(), Some("Hello"));
 
@@ -1356,9 +1556,17 @@ mod tests {
         update_conversation_profile(&conn, "dev-a", "New", Some("new_avatar")).unwrap();
 
         // 验证：name/avatar 已更新，last_msg/last_ts 保持不变
-        let conv = list_conversations(&conn).unwrap().into_iter().find(|c| c.id == "dev-a").unwrap();
+        let conv = list_conversations(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|c| c.id == "dev-a")
+            .unwrap();
         assert_eq!(conv.name, "New", "name 应已更新");
-        assert_eq!(conv.last_msg.as_deref(), Some("Hello"), "last_msg 不应被修改");
+        assert_eq!(
+            conv.last_msg.as_deref(),
+            Some("Hello"),
+            "last_msg 不应被修改"
+        );
     }
 
     /// update_conversation_profile 不影响 group 会话。
@@ -1367,7 +1575,11 @@ mod tests {
         let conn = mem();
         ensure_conversation(&conn, "group:g1", "group", "测试群", None).unwrap();
         update_conversation_profile(&conn, "group:g1", "新名", None).unwrap();
-        let conv = list_conversations(&conn).unwrap().into_iter().find(|c| c.id == "group:g1").unwrap();
+        let conv = list_conversations(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|c| c.id == "group:g1")
+            .unwrap();
         assert_eq!(conv.name, "测试群", "group 会话不应被修改");
     }
 
@@ -1403,7 +1615,8 @@ mod tests {
         tx.execute("DELETE FROM outbox", []).unwrap();
         tx.execute("DELETE FROM file_transfers", []).unwrap();
         tx.execute("DELETE FROM pending_reads", []).unwrap();
-        tx.execute("DELETE FROM settings WHERE key LIKE 'gk:%'", []).unwrap();
+        tx.execute("DELETE FROM settings WHERE key LIKE 'gk:%'", [])
+            .unwrap();
         tx.commit().unwrap();
 
         // 验证：业务数据已删除

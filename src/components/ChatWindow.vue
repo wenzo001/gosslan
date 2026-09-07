@@ -160,17 +160,21 @@ function estimateHeight(m: MessageRecord, index?: number): number {
       bubble = textBubbleHeight(m.content, app.chatStyle.fontSize);
   }
 
-  // --- 紧凑判断（与 MessageItem tight 一致）---
+  // --- 连续消息判断（昵称显示与 MessageItem 一致）---
   const sameSender = prev
     && prev.kind !== "system"
     && prev.sender_id === m.sender_id
     && m.ts - prev.ts < 5 * 60 * 1000
     && app.chatStyle.compact;
-  const sameMinute = prev && prev.kind !== "system" && dayjs(prev.ts).isSame(m.ts, "minute");
-  const tight = sameSender || sameMinute;
   // 分钟组末条：下一条不在同一分钟，或是列表最后一条
   const next = index != null && index < messages.value.length - 1 ? messages.value[index + 1] : null;
-  const isLastInMinute = !next || !dayjs(next.ts).isSame(m.ts, "minute");
+  const nextContinuesSenderRun = next
+    && m.kind !== "system"
+    && next.kind !== "system"
+    && app.chatStyle.compact
+    && next.sender_id === m.sender_id
+    && next.ts - m.ts < 5 * 60 * 1000;
+  const isLastInMinute = !next || (!nextContinuesSenderRun && !dayjs(next.ts).isSame(m.ts, "minute"));
 
   // --- 时间分割线（≥5 分钟）：32px ---
   const showDivider = !prev || m.ts - prev.ts >= 5 * 60 * 1000;
@@ -178,8 +182,8 @@ function estimateHeight(m: MessageRecord, index?: number): number {
   // --- 群聊昵称行（首条非本人消息）：20px ---
   const showNickname = isGroup && m.sender_id !== app.device?.device_id && !sameSender;
 
-  // --- 气泡垂直 padding ---
-  const py = tight ? 4 /* py-0.5 */ : 16; /* pt-2 pb-2 */
+  // --- 消息行垂直 padding：所有消息统一，避免连续三条消息首条间距更大 ---
+  const py = 8; /* MessageItem: py-1 */
   // --- 气泡下方时间行 ---
   const timeH = isLastInMinute ? 18 /* mt-0.5(2) + text-[11px](16) */ : 0;
   // --- 昵称行 ---
@@ -430,6 +434,7 @@ function fileToDataUrl(f: File): Promise<string> {
             :next="index < messages.length - 1 ? messages[index + 1] : null"
             :is-group="isGroup"
             :sender-name="isGroup ? chat.nicknameOf(item.sender_id) : ''"
+            :group-reader-ids="isGroup && activeGroupId ? chat.groupReaderIds(activeGroupId, item.ts) : []"
             :show-unread-divider="index === unreadIndex"
           />
         </template>

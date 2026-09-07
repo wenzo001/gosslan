@@ -23,15 +23,15 @@ const MAX_IMAGE_CONTENT_LEN: usize = 8_000_000;
 
 use crate::crypto;
 use crate::db;
-use crate::network::{self, file};
 use crate::network::transport::{broadcast_gossip, get_group_key, resolve_nickname, try_send};
-use crate::protocol::{GossipKind, Message, ShareEntry};
-use crate::storage::cache_cleaner::{self, CachePolicy, CleanupReport};
-use crate::transport::{ChannelStatus, TransportManager};
+use crate::network::{self, file};
+use crate::protocol::{GossipKind, Message, MsgKind, ShareEntry};
 use crate::state::{
     AppState, Conversation, DeviceInfo, Friend, Group, InterfaceInfo, MessageRecord, Peer,
     PendingRequest, TopologyInfo, TransferInfo,
 };
+use crate::storage::cache_cleaner::{self, CachePolicy, CleanupReport};
+use crate::transport::{ChannelStatus, TransportManager};
 
 #[derive(Serialize)]
 pub struct NetworkStatus {
@@ -46,6 +46,12 @@ pub struct CacheInfo {
     total_bytes: u64,
     retention_days: Option<u32>,
     max_bytes: Option<u64>,
+}
+
+#[derive(Serialize)]
+pub struct GroupReadInfo {
+    pub reader_id: String,
+    pub last_read_ts: i64,
 }
 
 // ---------------- 本机信息与配置 ----------------
@@ -75,9 +81,9 @@ pub async fn update_profile(
     let nickname: String = nickname.chars().take(MAX_NICKNAME_LEN).collect();
     {
         let dbc = s.db.lock().unwrap();
-        db::set_setting(&dbc, "nickname", &nickname).ok();
+        db::set_setting(&dbc, "nickname", &nickname).map_err(|e| e.to_string())?;
         if let Some(a) = &avatar {
-            db::set_setting(&dbc, "avatar", a).ok();
+            db::set_setting(&dbc, "avatar", a).map_err(|e| e.to_string())?;
         }
     }
     *s.nickname.lock().unwrap() = nickname.clone();
@@ -156,7 +162,7 @@ pub async fn start_network(state: State<'_, Arc<AppState>>, bind_ip: String) -> 
     let arc = state.inner().clone();
     network::start(arc, bind_ip).await?;
     let dbc = state.db.lock().unwrap();
-    db::set_lan_enabled(&dbc, true).ok();
+    db::set_lan_enabled(&dbc, true).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -164,7 +170,7 @@ pub async fn start_network(state: State<'_, Arc<AppState>>, bind_ip: String) -> 
 pub async fn stop_network(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     network::stop(state.inner()).await;
     let dbc = state.db.lock().unwrap();
-    db::set_lan_enabled(&dbc, false).ok();
+    db::set_lan_enabled(&dbc, false).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -180,7 +186,14 @@ pub fn get_network_status(state: State<'_, Arc<AppState>>) -> NetworkStatus {
 
 #[tauri::command]
 pub fn get_peers(state: State<'_, Arc<AppState>>) -> Vec<Peer> {
-    let mut peers: Vec<Peer> = state.inner().peers.lock().unwrap().values().cloned().collect();
+    let mut peers: Vec<Peer> = state
+        .inner()
+        .peers
+        .lock()
+        .unwrap()
+        .values()
+        .cloned()
+        .collect();
     peers.sort_by(|a, b| a.device_id.cmp(&b.device_id));
     peers
 }
@@ -259,7 +272,11 @@ pub fn get_discovery_diag(state: State<'_, Arc<AppState>>) -> crate::state::Disc
     let diag = s.diag.lock().unwrap().clone();
     let mut result = diag;
     if let Some(ref h) = *net {
-        result.mode = if h.bound_ip == "0.0.0.0" { "auto".into() } else { "manual".into() };
+        result.mode = if h.bound_ip == "0.0.0.0" {
+            "auto".into()
+        } else {
+            "manual".into()
+        };
         result.bound_ip = h.bound_ip.clone();
         result.tcp_listen = format!("{}:{}", h.bound_ip, h.tcp_port);
         result.udp_port = crate::protocol::UDP_PORT;
@@ -288,9 +305,30 @@ pub fn get_interface_candidates() -> Vec<crate::state::InterfaceCandidate> {
     }
     fn is_virtual_name(name: &str) -> bool {
         let n = name.to_lowercase();
-        ["utun","tun","tap","wg","docker","br-","veth","virbr","vmnet","vboxnet",
-         "hyper-v","hv_","vethernet","cf-","clash","wintun","tailscale","ts-","ham","vpn"]
-            .iter().any(|p| n.contains(p))
+        [
+            "utun",
+            "tun",
+            "tap",
+            "wg",
+            "docker",
+            "br-",
+            "veth",
+            "virbr",
+            "vmnet",
+            "vboxnet",
+            "hyper-v",
+            "hv_",
+            "vethernet",
+            "cf-",
+            "clash",
+            "wintun",
+            "tailscale",
+            "ts-",
+            "ham",
+            "vpn",
+        ]
+        .iter()
+        .any(|p| n.contains(p))
     }
 
     let mut out = Vec::new();
@@ -301,16 +339,26 @@ pub fn get_interface_candidates() -> Vec<crate::state::InterfaceCandidate> {
                     std::net::IpAddr::V4(v) => v,
                     _ => continue,
                 };
-                if ip.is_loopback() { continue; }
+                if ip.is_loopback() {
+                    continue;
+                }
                 let has_bc = v4.broadcast.is_some();
                 let rfc = is_rfc1918(&ip);
                 let virt_ip = is_virtual_ip(&ip);
                 let virt_name = is_virtual_name(&i.name);
                 let mut score = 0i32;
-                if has_bc { score += 10; }
-                if rfc { score += 5; }
-                if virt_ip { score -= 50; }
-                if virt_name { score -= 30; }
+                if has_bc {
+                    score += 10;
+                }
+                if rfc {
+                    score += 5;
+                }
+                if virt_ip {
+                    score -= 50;
+                }
+                if virt_name {
+                    score -= 30;
+                }
                 out.push(crate::state::InterfaceCandidate {
                     name: i.name.clone(),
                     ip: ip.to_string(),
@@ -381,7 +429,10 @@ fn load_policy(s: &AppState) -> CachePolicy {
     let max = db::get_setting(&dbc, MAX_BYTES_KEY)
         .and_then(|v| v.parse::<u64>().ok())
         .filter(|&m| m > 0);
-    CachePolicy { retention_days: retention, max_bytes: max }
+    CachePolicy {
+        retention_days: retention,
+        max_bytes: max,
+    }
 }
 
 /// 缓存目录占用与当前清理策略。
@@ -408,9 +459,9 @@ pub fn set_cache_policy(
     let s = state.inner();
     let dbc = s.db.lock().unwrap();
     let d = retention_days.unwrap_or(0);
-    db::set_setting(&dbc, RETENTION_KEY, &d.to_string()).ok();
+    db::set_setting(&dbc, RETENTION_KEY, &d.to_string()).map_err(|e| e.to_string())?;
     let m = max_bytes.unwrap_or(0);
-    db::set_setting(&dbc, MAX_BYTES_KEY, &m.to_string()).ok();
+    db::set_setting(&dbc, MAX_BYTES_KEY, &m.to_string()).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -469,19 +520,19 @@ pub fn get_settings(state: State<'_, Arc<AppState>>) -> Settings {
 pub fn save_settings(state: State<'_, Arc<AppState>>, settings: Settings) -> Result<(), String> {
     let dbc = state.inner().db.lock().unwrap();
     if let Some(v) = settings.theme_color {
-        db::set_setting(&dbc, "theme_color", &v).ok();
+        db::set_setting(&dbc, "theme_color", &v).map_err(|e| e.to_string())?;
     }
     if let Some(v) = settings.font_family {
-        db::set_setting(&dbc, "font_family", &v).ok();
+        db::set_setting(&dbc, "font_family", &v).map_err(|e| e.to_string())?;
     }
     if let Some(v) = settings.dark_mode {
-        db::set_setting(&dbc, "dark_mode", if v { "1" } else { "0" }).ok();
+        db::set_setting(&dbc, "dark_mode", if v { "1" } else { "0" }).map_err(|e| e.to_string())?;
     }
     if let Some(v) = settings.bind_ip {
-        db::set_setting(&dbc, "bind_ip", &v).ok();
+        db::set_setting(&dbc, "bind_ip", &v).map_err(|e| e.to_string())?;
     }
     if let Some(v) = settings.chat_style {
-        db::set_setting(&dbc, "chat_style", &v).ok();
+        db::set_setting(&dbc, "chat_style", &v).map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -491,18 +542,25 @@ pub fn save_settings(state: State<'_, Arc<AppState>>, settings: Settings) -> Res
 #[tauri::command]
 pub fn reset_settings(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     let dbc = state.inner().db.lock().unwrap();
-    for key in SETTINGS_KEYS
-        .iter()
-        .chain([&RETENTION_KEY, &MAX_BYTES_KEY, &"bt_enabled", &"chat_peer_styles", &"nickname", &"avatar"])
-    {
-        db::delete_setting(&dbc, key).ok();
+    for key in SETTINGS_KEYS.iter().chain([
+        &RETENTION_KEY,
+        &MAX_BYTES_KEY,
+        &"bt_enabled",
+        &"chat_peer_styles",
+        &"nickname",
+        &"avatar",
+    ]) {
+        db::delete_setting(&dbc, key).map_err(|e| e.to_string())?;
     }
     Ok(())
 }
 
 /// 广播本机聊天样式到所有已连接节点（样式变更即调用，对方设备与好友同步收到）。
 #[tauri::command]
-pub async fn broadcast_chat_style(state: State<'_, Arc<AppState>>, style: String) -> Result<(), String> {
+pub async fn broadcast_chat_style(
+    state: State<'_, Arc<AppState>>,
+    style: String,
+) -> Result<(), String> {
     let s = state.inner();
     let msg = Message::ChatStyle {
         from: s.device_id.clone(),
@@ -568,8 +626,17 @@ pub fn get_pending_requests(state: State<'_, Arc<AppState>>) -> Vec<PendingReque
 }
 
 #[tauri::command]
-pub async fn send_friend_request(state: State<'_, Arc<AppState>>, peer_id: String) -> Result<(), String> {
+pub async fn send_friend_request(
+    state: State<'_, Arc<AppState>>,
+    peer_id: String,
+) -> Result<(), String> {
     let s = state.inner();
+    if peer_id.is_empty() || peer_id == s.device_id {
+        return Err("不能向自己发送好友申请".to_string());
+    }
+    if !s.peers.lock().unwrap().contains_key(&peer_id) {
+        return Err("未找到该在线节点，请先重新扫描".to_string());
+    }
     let msg = Message::FriendRequest {
         from: s.device_id.clone(),
         from_nickname: s.nickname.lock().unwrap().clone(),
@@ -587,7 +654,9 @@ pub async fn respond_friend_request(
     accept: bool,
 ) -> Result<(), String> {
     let s = state.inner();
-    s.pending_requests.lock().unwrap().remove(&peer_id);
+    if !s.pending_requests.lock().unwrap().contains_key(&peer_id) {
+        return Err("好友申请不存在或已处理".to_string());
+    }
     if accept {
         let name = resolve_nickname(s, &peer_id);
         {
@@ -600,6 +669,7 @@ pub async fn respond_friend_request(
             to: peer_id.clone(),
         };
         try_send(s, &peer_id, &msg).await?;
+        s.pending_requests.lock().unwrap().remove(&peer_id);
         let _ = s.app.emit("friend-accepted", &peer_id);
     } else {
         let msg = Message::FriendReject {
@@ -607,6 +677,7 @@ pub async fn respond_friend_request(
             to: peer_id.clone(),
         };
         try_send(s, &peer_id, &msg).await?;
+        s.pending_requests.lock().unwrap().remove(&peer_id);
     }
     Ok(())
 }
@@ -621,6 +692,14 @@ pub async fn send_message(
     kind: String,
 ) -> Result<MessageRecord, String> {
     let s = state.inner();
+
+    let msg_kind = match kind.as_str() {
+        "text" => MsgKind::Text,
+        "code" => MsgKind::Code,
+        "image" => MsgKind::Image,
+        "file" => MsgKind::File,
+        _ => return Err("不支持的消息类型".to_string()),
+    };
 
     // 好友关系检查：必须优先于公钥查找
     {
@@ -706,7 +785,15 @@ pub async fn send_message(
     let wire_content = format!("enc1:{}", STANDARD.encode(&sealed_content));
     let env = {
         let gossip = s.gossip.lock().unwrap();
-        gossip.build_envelope(&s.identity, &s.device_id, GossipKind::Chat, None, None, &payload_b64, ts)
+        gossip.build_envelope(
+            &s.identity,
+            &s.device_id,
+            GossipKind::Chat,
+            None,
+            None,
+            &payload_b64,
+            ts,
+        )
     };
     // 信封 encrypted 默认 true（build_envelope 内置），无需改写
     // 统一 msg_id：本地记录 / Gossip 投递 / outbox 补发共用同一确定性 ID，
@@ -725,12 +812,6 @@ pub async fn send_message(
         ts,
         status: "sent".to_string(),
     };
-    {
-        let dbc = s.db.lock().unwrap();
-        db::insert_message(&dbc, &rec).ok();
-        db::touch_conversation(&dbc, &friend_id, "single", &name, None, &preview, 0).ok();
-    }
-
     // 一律写离线队列兜底（INSERT OR IGNORE 按 msg_id 幂等）：直连链路存在但已失效
     // （半开 TCP）时 broadcast 会静默丢包，此前只在「无链路」时入队导致消息永久丢失。
     // Ack 到达后由 transport.rs 删除该行；若链路中断，对方上线建链（Hello）或心跳
@@ -739,13 +820,17 @@ pub async fn send_message(
         msg_id: msg_id.clone(),
         from: s.device_id.clone(),
         to: friend_id.clone(),
-        kind: crate::protocol::MsgKind::from_str(&kind),
+        kind: msg_kind,
         content: wire_content,
         ts,
     };
-    if let Ok(payload) = serde_json::to_string(&queued) {
+    let payload = serde_json::to_string(&queued).map_err(|e| e.to_string())?;
+    {
         let dbc = s.db.lock().unwrap();
-        db::insert_outbox(&dbc, &msg_id, &friend_id, &payload).ok();
+        db::insert_message_and_outbox(&dbc, &rec, &friend_id, &payload)
+            .map_err(|e| format!("消息写入失败：{e}"))?;
+        db::touch_conversation(&dbc, &friend_id, "single", &name, None, &preview, 0)
+            .map_err(|e| format!("会话写入失败：{e}"))?;
     }
 
     // 先入队再投递（INV-003）：此前 broadcast 在插队之前，若心跳的 flush_outbox 正好
@@ -763,7 +848,9 @@ pub fn get_messages(
     offset: Option<i64>,
 ) -> Vec<MessageRecord> {
     let dbc = state.inner().db.lock().unwrap();
-    db::get_messages(&dbc, &conv_id, limit.unwrap_or(100), offset.unwrap_or(0)).unwrap_or_default()
+    let safe_limit = limit.unwrap_or(100).clamp(1, 500);
+    let safe_offset = offset.unwrap_or(0).max(0);
+    db::get_messages(&dbc, &conv_id, safe_limit, safe_offset).unwrap_or_default()
 }
 
 #[tauri::command]
@@ -775,7 +862,10 @@ pub fn get_conversations(state: State<'_, Arc<AppState>>) -> Vec<Conversation> {
 /// 打开与好友的会话时确保会话行存在（新加好友尚未发过消息时，
 /// 会话列表无对应项 → 左侧无法高亮选中态）。
 #[tauri::command]
-pub fn ensure_conversation(state: State<'_, Arc<AppState>>, friend_id: String) -> Result<Conversation, String> {
+pub fn ensure_conversation(
+    state: State<'_, Arc<AppState>>,
+    friend_id: String,
+) -> Result<Conversation, String> {
     let s = state.inner();
     let name = resolve_nickname(s, &friend_id);
     let avatar = {
@@ -784,7 +874,8 @@ pub fn ensure_conversation(state: State<'_, Arc<AppState>>, friend_id: String) -
     };
     {
         let dbc = s.db.lock().unwrap();
-        db::ensure_conversation(&dbc, &friend_id, "single", &name, avatar.as_deref()).map_err(|e| e.to_string())?;
+        db::ensure_conversation(&dbc, &friend_id, "single", &name, avatar.as_deref())
+            .map_err(|e| e.to_string())?;
     }
     Ok(Conversation {
         id: friend_id.clone(),
@@ -834,6 +925,25 @@ pub async fn mark_read(state: State<'_, Arc<AppState>>, conv_id: String) -> Resu
                 db::upsert_pending_read(&dbc, &conv_id, ts).ok();
             }
         }
+    } else if let Some(group_id) = conv_id.strip_prefix("group:") {
+        let group = {
+            let dbc = s.db.lock().unwrap();
+            db::get_group(&dbc, group_id)
+        };
+        if let Some(group) = group {
+            let last_read_ts = db::last_message_ts(&s.db.lock().unwrap(), &conv_id);
+            for member in group.members {
+                if member == s.device_id {
+                    continue;
+                }
+                let msg = Message::GroupReadReceipt {
+                    from: s.device_id.clone(),
+                    group_id: group_id.to_string(),
+                    last_read_ts,
+                };
+                let _ = crate::network::transport::try_send(s, &member, &msg).await;
+            }
+        }
     }
     Ok(())
 }
@@ -858,26 +968,63 @@ pub fn create_group(
 ) -> Result<Group, String> {
     let s = state.inner();
     // 群名称长度保护：按字符截断（UTF-8 安全）
-    let name: String = name.chars().take(MAX_GROUP_NAME_LEN).collect();
+    let name: String = name
+        .chars()
+        .take(MAX_GROUP_NAME_LEN)
+        .collect::<String>()
+        .trim()
+        .to_string();
+    if name.is_empty() {
+        return Err("群名称不能为空".to_string());
+    }
     let id = format!("g-{}", Uuid::new_v4());
     let mut all = members;
+    all.retain(|m| !m.is_empty() && m != &s.device_id);
+    all.sort();
+    all.dedup();
+    {
+        let dbc = s.db.lock().unwrap();
+        for member in &all {
+            if db::get_friend(&dbc, member).is_none() {
+                return Err("只能把好友加入群聊".to_string());
+            }
+        }
+    }
     if !all.contains(&s.device_id) {
         all.push(s.device_id.clone());
     }
 
     // 生成群密钥并持久化
     let key = crypto::random_key();
+    {
+        let dbc = s.db.lock().unwrap();
+        let tx = dbc.unchecked_transaction().map_err(|e| e.to_string())?;
+        tx.execute(
+            "INSERT INTO groups(id, name, creator, created_at) VALUES(?1, ?2, ?3, ?4)",
+            rusqlite::params![id, name, s.device_id, db::now_ms()],
+        )
+        .map_err(|e| e.to_string())?;
+        for member in &all {
+            tx.execute(
+                "INSERT OR IGNORE INTO group_members(group_id, device_id) VALUES(?1, ?2)",
+                rusqlite::params![id, member],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        tx.execute(
+            "INSERT INTO settings(key, value) VALUES(?1, ?2)",
+            rusqlite::params![format!("gk:{id}"), STANDARD.encode(key)],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.execute(
+            "INSERT OR IGNORE INTO conversations(id, kind, name, avatar, unread, updated_at)
+             VALUES(?1, 'group', ?2, NULL, 0, ?3)",
+            rusqlite::params![format!("group:{id}"), name, db::now_ms()],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+    }
     s.group_keys.lock().unwrap().insert(id.clone(), key);
-    {
-        let dbc = s.db.lock().unwrap();
-        db::set_setting(&dbc, &format!("gk:{id}"), &STANDARD.encode(key)).ok();
-    }
-
-    {
-        let dbc = s.db.lock().unwrap();
-        db::create_group(&dbc, &id, &name, &s.device_id, &all).map_err(|e| e.to_string())?;
-        db::ensure_conversation(&dbc, &format!("group:{id}"), "group", &name, None).ok();
-    }
 
     Ok(Group {
         id,
@@ -912,8 +1059,12 @@ pub async fn distribute_group_key(
             db::get_friend_x25519(&dbc, m)
         };
         let Some(pubkey) = pubkey else { continue };
-        let Some(shared) = crypto::shared_secret(&s.identity.x25519_secret, &pubkey) else { continue };
-        let Some(sealed) = crypto::seal(&shared, &key) else { continue };
+        let Some(shared) = crypto::shared_secret(&s.identity.x25519_secret, &pubkey) else {
+            continue;
+        };
+        let Some(sealed) = crypto::seal(&shared, &key) else {
+            continue;
+        };
         let msg = Message::GroupKey {
             group_id: group_id.clone(),
             from: s.device_id.clone(),
@@ -931,6 +1082,19 @@ pub async fn distribute_group_key(
 pub fn get_groups(state: State<'_, Arc<AppState>>) -> Vec<Group> {
     let dbc = state.inner().db.lock().unwrap();
     db::list_groups(&dbc).unwrap_or_default()
+}
+
+#[tauri::command]
+pub fn get_group_reads(state: State<'_, Arc<AppState>>, group_id: String) -> Vec<GroupReadInfo> {
+    let dbc = state.inner().db.lock().unwrap();
+    db::list_group_reads(&dbc, &group_id)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(reader_id, last_read_ts)| GroupReadInfo {
+            reader_id,
+            last_read_ts,
+        })
+        .collect()
 }
 
 /// 重命名群：仅创建者可操作。本地改名 + 同步会话标题后，广播给全部成员。
@@ -976,7 +1140,9 @@ pub async fn rename_group(
 async fn resend_group_key_to(s: &AppState, group_id: &str, members: &[String], key: [u8; 32]) {
     let group_name = {
         let dbc = s.db.lock().unwrap();
-        db::get_group(&dbc, group_id).map(|g| g.name).unwrap_or_default()
+        db::get_group(&dbc, group_id)
+            .map(|g| g.name)
+            .unwrap_or_default()
     };
     for m in members {
         if m == &s.device_id {
@@ -985,9 +1151,15 @@ async fn resend_group_key_to(s: &AppState, group_id: &str, members: &[String], k
         let Some(pubkey) = (|| {
             let dbc = s.db.lock().unwrap();
             db::get_friend_x25519(&dbc, m)
-        })() else { continue };
-        let Some(shared) = crypto::shared_secret(&s.identity.x25519_secret, &pubkey) else { continue };
-        let Some(sealed) = crypto::seal(&shared, &key) else { continue };
+        })() else {
+            continue;
+        };
+        let Some(shared) = crypto::shared_secret(&s.identity.x25519_secret, &pubkey) else {
+            continue;
+        };
+        let Some(sealed) = crypto::seal(&shared, &key) else {
+            continue;
+        };
         let msg = Message::GroupKey {
             group_id: group_id.to_string(),
             from: s.device_id.clone(),
@@ -1145,6 +1317,20 @@ pub async fn send_group_message(
     kind: String,
 ) -> Result<MessageRecord, String> {
     let s = state.inner();
+    let kind_enum = match kind.as_str() {
+        "text" => MsgKind::Text,
+        "code" => MsgKind::Code,
+        "image" => MsgKind::Image,
+        _ => return Err("群聊不支持该消息类型".to_string()),
+    };
+    let content: String = if kind == "image" {
+        if content.chars().count() > MAX_IMAGE_CONTENT_LEN {
+            return Err("图片过大，请改用发送文件".to_string());
+        }
+        content
+    } else {
+        content.chars().take(MAX_MESSAGE_LEN).collect()
+    };
     let ts = db::now_ms();
     // 把群名 + 创建者 + 当前成员一并带上：跨端成员即便从未收到 GroupKey、
     // 只凭这条群消息也能在本地正确建群（含成员表），成员面板因此不为空。
@@ -1154,8 +1340,12 @@ pub async fn send_group_message(
     };
     let (group_name, group_creator, group_members) = match group_meta {
         Some((n, c, m)) => (n, Some(c), m),
-        None => (String::new(), None, Vec::new()),
+        None => return Err("群不存在".to_string()),
     };
+    if !group_members.contains(&s.device_id) {
+        return Err("你已不在该群中".to_string());
+    }
+    let key = get_group_key(s, &group_id).await.ok_or("群密钥缺失")?;
     let conv_id = format!("group:{group_id}");
     let preview = preview(&kind, &content);
 
@@ -1165,20 +1355,21 @@ pub async fn send_group_message(
         conv_id: conv_id.clone(),
         sender_id: s.device_id.clone(),
         receiver_id: group_id.clone(),
-        kind: kind.clone(),
+        kind: kind_enum.as_str().to_string(),
         content: content.clone(),
         ts,
         status: "sent".to_string(),
     };
     {
         let dbc = s.db.lock().unwrap();
-        db::insert_message(&dbc, &rec).ok();
-        db::touch_conversation(&dbc, &conv_id, "group", &group_name, None, &preview, 0).ok();
+        db::insert_message(&dbc, &rec).map_err(|e| format!("消息写入失败：{e}"))?;
+        db::touch_conversation(&dbc, &conv_id, "group", &group_name, None, &preview, 0)
+            .map_err(|e| format!("会话写入失败：{e}"))?;
     }
 
     // 群密钥加密 + Gossip 广播（E2EE 恒开：载荷用群密钥 ChaCha20-Poly1305 加密）
-    let key = get_group_key(s, &group_id).await.ok_or("群密钥缺失")?;
-    let plaintext = serde_json::json!({ "kind": kind, "content": content }).to_string();
+    let plaintext =
+        serde_json::json!({ "kind": kind_enum.as_str(), "content": content }).to_string();
     let sealed = crypto::seal_symmetric(&key, plaintext.as_bytes()).ok_or("加密失败")?;
     let payload_b64 = STANDARD.encode(&sealed);
     let env = {
@@ -1220,6 +1411,9 @@ pub async fn send_file(
     }
     let transfer_id = Uuid::new_v4().to_string();
     let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+    if !meta.is_file() {
+        return Err("只能发送普通文件".to_string());
+    }
     let size = meta.len();
     let name = std::path::Path::new(&path)
         .file_name()
@@ -1242,7 +1436,16 @@ pub async fn send_file(
         let dbc = s.db.lock().unwrap();
         db::insert_message(&dbc, &rec).ok();
         let nm = resolve_nickname(s, &friend_id);
-        db::touch_conversation(&dbc, &friend_id, "single", &nm, None, &format!("[文件] {name}"), 0).ok();
+        db::touch_conversation(
+            &dbc,
+            &friend_id,
+            "single",
+            &nm,
+            None,
+            &format!("[文件] {name}"),
+            0,
+        )
+        .ok();
     }
     let _ = s.app.emit("message-received", &rec);
 
@@ -1306,8 +1509,14 @@ pub async fn send_file_relay(
     .await
     .map_err(|e| e.to_string())?
     .map_err(|e| e.to_string())?;
+    if size > i64::MAX as u64 {
+        return Err("文件过大，无法安全发送".to_string());
+    }
 
     let total_chunks = chunks.len() as u32;
+    if total_chunks == 0 {
+        return Err("空文件不支持中继发送，请使用直连传输".to_string());
+    }
     s.relay.lock().unwrap().register_send(&transfer_id, chunks);
 
     // 元数据直接发给接收方
@@ -1335,7 +1544,12 @@ pub async fn send_file_relay(
     targets.extend(relays);
 
     // 轮询分发切片
-    let plan = { s.relay.lock().unwrap().plan_distribution(&transfer_id, &targets) };
+    let plan = {
+        s.relay
+            .lock()
+            .unwrap()
+            .plan_distribution(&transfer_id, &targets)
+    };
     for p in plan {
         let chunk = Message::RelayChunk {
             transfer_id: transfer_id.clone(),
@@ -1369,7 +1583,16 @@ pub async fn send_file_relay(
         // 否则 Relay sender 气泡永远停在「发送中」spinner。
         db::set_message_status(&dbc, &rec.msg_id, "delivered").ok();
         let nm = resolve_nickname(s, &friend_id);
-        db::touch_conversation(&dbc, &friend_id, "single", &nm, None, &format!("[文件] {name}"), 0).ok();
+        db::touch_conversation(
+            &dbc,
+            &friend_id,
+            "single",
+            &nm,
+            None,
+            &format!("[文件] {name}"),
+            0,
+        )
+        .ok();
     }
     let _ = s.app.emit("message-received", &rec);
     let _ = s.app.emit("message-acked", &rec.msg_id);
@@ -1393,7 +1616,7 @@ pub fn set_share_dir(state: State<'_, Arc<AppState>>, path: String) -> Result<()
     let s = state.inner();
     {
         let dbc = s.db.lock().unwrap();
-        db::set_setting(&dbc, "share_dir", &path).ok();
+        db::set_setting(&dbc, "share_dir", &path).map_err(|e| e.to_string())?;
     }
     *s.share_dir.lock().unwrap() = Some(path);
     Ok(())
@@ -1410,16 +1633,28 @@ pub async fn request_share_tree(
     friend_id: String,
 ) -> Result<Vec<ShareEntry>, String> {
     let s = state.inner();
+    {
+        let dbc = s.db.lock().unwrap();
+        if db::get_friend(&dbc, &friend_id).is_none() {
+            return Err("对方不是好友".to_string());
+        }
+    }
     let request_id = Uuid::new_v4().to_string();
     let (tx, rx) = tokio::sync::oneshot::channel();
-    s.pending_share_tree.lock().unwrap().insert(request_id.clone(), tx);
+    s.pending_share_tree
+        .lock()
+        .unwrap()
+        .insert(request_id.clone(), tx);
 
     let msg = Message::ShareTreeRequest {
         request_id: request_id.clone(),
         from: s.device_id.clone(),
         to: friend_id.clone(),
     };
-    try_send(s, &friend_id, &msg).await?;
+    if let Err(e) = try_send(s, &friend_id, &msg).await {
+        s.pending_share_tree.lock().unwrap().remove(&request_id);
+        return Err(e);
+    }
 
     match tokio::time::timeout(Duration::from_secs(10), rx).await {
         Ok(Ok(entries)) => Ok(entries),
@@ -1437,6 +1672,12 @@ pub async fn download_shared_file(
     remote_path: String,
 ) -> Result<String, String> {
     let s = state.inner();
+    {
+        let dbc = s.db.lock().unwrap();
+        if db::get_friend(&dbc, &friend_id).is_none() {
+            return Err("对方不是好友".to_string());
+        }
+    }
     let transfer_id = Uuid::new_v4().to_string();
     let msg = Message::ShareFileRequest {
         transfer_id: transfer_id.clone(),
@@ -1469,11 +1710,16 @@ pub fn read_file_preview(
     max_bytes: u64,
 ) -> Result<tauri::ipc::Response, String> {
     let s = state.inner();
-    let (sender_id, content) = db::get_message_preview_source(&s.db.lock().unwrap(), &msg_id)
-        .ok_or("消息不存在")?;
+    let max_bytes = max_bytes.min(15 * 1024 * 1024);
+    let (sender_id, content) =
+        db::get_message_preview_source(&s.db.lock().unwrap(), &msg_id).ok_or("消息不存在")?;
     let path = serde_json::from_str::<serde_json::Value>(&content)
         .ok()
-        .and_then(|v| v.get("path").and_then(|p| p.as_str()).map(|p| p.to_string()))
+        .and_then(|v| {
+            v.get("path")
+                .and_then(|p| p.as_str())
+                .map(|p| p.to_string())
+        })
         .ok_or("元数据缺少路径")?;
 
     let file = std::fs::canonicalize(&path).map_err(|_| "文件不存在".to_string())?;
@@ -1505,20 +1751,36 @@ pub fn clear_all_data(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     {
         let dbc = s.db.lock().unwrap();
         let tx = dbc.unchecked_transaction().map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM group_members", []).map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM groups", []).map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM messages", []).map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM conversations", []).map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM outbox", []).map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM file_transfers", []).map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM pending_reads", []).map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM settings WHERE key LIKE 'gk:%'", []).map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM group_members", [])
+            .map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM groups", [])
+            .map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM messages", [])
+            .map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM conversations", [])
+            .map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM outbox", [])
+            .map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM file_transfers", [])
+            .map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM pending_reads", [])
+            .map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM group_reads", [])
+            .map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM settings WHERE key LIKE 'gk:%'", [])
+            .map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
     }
 
     // 2. Runtime state 清理
     s.pending_requests.lock().unwrap().clear();
     s.group_keys.lock().unwrap().clear();
+    s.pending_reads.lock().unwrap().clear();
+    s.pending_file_accept.lock().unwrap().clear();
+    s.pending_share_tree.lock().unwrap().clear();
+    *s.relay.lock().unwrap() = crate::relay_manager::RelayManager::new();
+    // 先关闭未完成接收的文件句柄，再清理 downloads 目录中的 .part 临时文件。
+    s.file_receivers.lock().unwrap().clear();
 
     // 3. 文件系统清理（DB commit 成功后执行）
     //    收集错误而非立即返回，避免文件清理失败伪装成"整个操作失败"
@@ -1526,7 +1788,10 @@ pub fn clear_all_data(state: State<'_, Arc<AppState>>) -> Result<(), String> {
 
     // 清空 cache_dir 内容（保留目录本身）
     if s.cache_dir.exists() {
-        for entry in std::fs::read_dir(&s.cache_dir).map_err(|e| e.to_string())?.filter_map(|e| e.ok()) {
+        for entry in std::fs::read_dir(&s.cache_dir)
+            .map_err(|e| e.to_string())?
+            .filter_map(|e| e.ok())
+        {
             let p = entry.path();
             let result = if p.is_file() {
                 std::fs::remove_file(&p)
@@ -1542,7 +1807,10 @@ pub fn clear_all_data(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     }
     // 清空 downloads_dir 内容（保留目录本身）
     if s.downloads_dir.exists() {
-        for entry in std::fs::read_dir(&s.downloads_dir).map_err(|e| e.to_string())?.filter_map(|e| e.ok()) {
+        for entry in std::fs::read_dir(&s.downloads_dir)
+            .map_err(|e| e.to_string())?
+            .filter_map(|e| e.ok())
+        {
             let p = entry.path();
             let result = if p.is_file() {
                 std::fs::remove_file(&p)
@@ -1585,8 +1853,7 @@ pub fn search_messages(
             .map(|(n, _)| n)
             .unwrap_or_else(|| conv_id.clone());
         // 获取最新匹配消息
-        let msgs = db::search_messages_in_conv(&dbc, &conv_id, &keyword, 1)
-            .unwrap_or_default();
+        let msgs = db::search_messages_in_conv(&dbc, &conv_id, &keyword, 1).unwrap_or_default();
         if let Some(m) = msgs.into_iter().next() {
             results.push(SearchResult {
                 conv_id,

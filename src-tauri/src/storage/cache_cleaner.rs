@@ -37,7 +37,11 @@ pub struct CleanupReport {
 /// 策略：
 /// 1. 先删除超过保留时长的过期文件；
 /// 2. 若仍超过磁盘配额，按「最旧优先」继续删除，直到总大小低于配额。
-pub fn plan_removal(entries: &[(String, CacheEntry)], policy: CachePolicy, now_ms: i64) -> Vec<usize> {
+pub fn plan_removal(
+    entries: &[(String, CacheEntry)],
+    policy: CachePolicy,
+    now_ms: i64,
+) -> Vec<usize> {
     let mut order: Vec<usize> = (0..entries.len()).collect();
     order.sort_by_key(|&i| entries[i].1.mtime_ms); // 最旧优先
 
@@ -95,7 +99,13 @@ pub fn clean(cache_dir: &Path, policy: CachePolicy, db: &rusqlite::Connection) -
                 .map(|d| d.as_millis() as i64)
                 .unwrap_or(0);
             let size = meta.len();
-            entries.push((p.to_string_lossy().to_string(), CacheEntry { mtime_ms: mtime, size }));
+            entries.push((
+                p.to_string_lossy().to_string(),
+                CacheEntry {
+                    mtime_ms: mtime,
+                    size,
+                },
+            ));
         }
     }
 
@@ -145,7 +155,10 @@ mod tests {
             e(now - 10 * 86_400_000, 100), // 10 天前 → 过期（7 天保留）
             e(now - 1 * 86_400_000, 100),  // 1 天前 → 未过期
         ];
-        let policy = CachePolicy { retention_days: Some(7), max_bytes: None };
+        let policy = CachePolicy {
+            retention_days: Some(7),
+            max_bytes: None,
+        };
         let plan = plan_removal(&entries, policy, now);
         assert_eq!(plan, vec![0]);
     }
@@ -154,12 +167,15 @@ mod tests {
     fn quota_removes_oldest_first() {
         let now = 1_000_000_000_000i64;
         let entries = vec![
-            e(now, 60),         // 最新
-            e(now - 1000, 30),  // 中
-            e(now - 2000, 30),  // 最旧
+            e(now, 60),        // 最新
+            e(now - 1000, 30), // 中
+            e(now - 2000, 30), // 最旧
         ];
         // 总 120，配额 80 → 需删 40：先删最旧的 30，再删中间的 30（删 30 后 90>80，继续删）
-        let policy = CachePolicy { retention_days: None, max_bytes: Some(80) };
+        let policy = CachePolicy {
+            retention_days: None,
+            max_bytes: Some(80),
+        };
         let plan = plan_removal(&entries, policy, now);
         assert_eq!(plan, vec![2, 1]);
     }
@@ -168,7 +184,10 @@ mod tests {
     fn no_policy_removes_nothing() {
         let now = 1_000_000_000_000i64;
         let entries = vec![e(now - 1000, 100)];
-        let policy = CachePolicy { retention_days: None, max_bytes: None };
+        let policy = CachePolicy {
+            retention_days: None,
+            max_bytes: None,
+        };
         assert!(plan_removal(&entries, policy, now).is_empty());
     }
 }

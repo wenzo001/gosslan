@@ -27,9 +27,7 @@ pub const MULTICAST_GROUP: Ipv4Addr = Ipv4Addr::new(239, 255, 42, 99);
 /// 检查一个 IPv4 是否属于 RFC1918 私网地址（合法 LAN 常用段）。
 fn is_rfc1918(ip: &Ipv4Addr) -> bool {
     let o = ip.octets();
-    (o[0] == 10)
-        || (o[0] == 172 && o[1] >= 16 && o[1] <= 31)
-        || (o[0] == 192 && o[1] == 168)
+    (o[0] == 10) || (o[0] == 172 && o[1] >= 16 && o[1] <= 31) || (o[0] == 192 && o[1] == 168)
 }
 
 /// 接口名称是否匹配已知虚拟/VPN/容器适配器模式。
@@ -37,13 +35,27 @@ fn is_rfc1918(ip: &Ipv4Addr) -> bool {
 fn is_virtual_interface_name(name: &str) -> bool {
     let n = name.to_lowercase();
     let patterns = [
-        "utun", "tun", "tap", "wg",           // VPN / WireGuard
-        "docker", "br-", "veth", "virbr",      // Docker / libvirt
-        "vmnet", "vboxnet",                     // VMware / VirtualBox
-        "hyper-v", "hv_", "vethernet",         // Hyper-V
-        "cf-", "clash", "wintun",              // Clash / Cloudflare WARP / WinTun
-        "tailscale", "ts-",                    // Tailscale
-        "ham", "vpn", "vgate",                 // 通用 VPN / 企业 VPN
+        "utun",
+        "tun",
+        "tap",
+        "wg", // VPN / WireGuard
+        "docker",
+        "br-",
+        "veth",
+        "virbr", // Docker / libvirt
+        "vmnet",
+        "vboxnet", // VMware / VirtualBox
+        "hyper-v",
+        "hv_",
+        "vethernet", // Hyper-V
+        "cf-",
+        "clash",
+        "wintun", // Clash / Cloudflare WARP / WinTun
+        "tailscale",
+        "ts-", // Tailscale
+        "ham",
+        "vpn",
+        "vgate", // 通用 VPN / 企业 VPN
     ];
     patterns.iter().any(|p| n.contains(p))
 }
@@ -119,14 +131,19 @@ fn now_ms() -> i64 {
 ///
 /// `multicast_if`：自动模式下传入真实 LAN 接口 IP，设置 `IP_MULTICAST_IF`，
 /// 强制组播报文从该接口发出，避免走默认路由进入 VPN 适配器。
-fn bind_udp_reusable(ip: Ipv4Addr, port: u16, multicast_if: Option<Ipv4Addr>) -> Result<(UdpSocket, String), String> {
+fn bind_udp_reusable(
+    ip: Ipv4Addr,
+    port: u16,
+    multicast_if: Option<Ipv4Addr>,
+) -> Result<(UdpSocket, String), String> {
     use socket2::{Domain, Protocol, Socket, Type};
     use std::net::SocketAddr;
 
     let addr: SocketAddr = format!("{ip}:{port}")
         .parse()
         .map_err(|e: std::net::AddrParseError| e.to_string())?;
-    let sock = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).map_err(|e| e.to_string())?;
+    let sock =
+        Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).map_err(|e| e.to_string())?;
     sock.set_reuse_address(true).map_err(|e| e.to_string())?;
     // macOS/BSD：UDP 同端口多开必须 SO_REUSEPORT（SO_REUSEADDR 仅 Windows 允许重复绑定）。
     // 缺了它，同一台机器的第二个实例 network::start 会报 "Address already in use"，
@@ -179,7 +196,9 @@ pub async fn spawn(
 ) -> Result<(), String> {
     // 自动模式下检测真实 LAN 网卡：获取 IP（用于 IP_MULTICAST_IF）和 broadcast 地址（用于精确广播）
     let (multicast_if, lan_broadcast) = if ip.is_unspecified() {
-        find_lan_interface().map_or((None, None), |(lan_ip, lan_bc)| (Some(lan_ip), Some(lan_bc)))
+        find_lan_interface().map_or((None, None), |(lan_ip, lan_bc)| {
+            (Some(lan_ip), Some(lan_bc))
+        })
     } else {
         (None, None) // 手动模式：用指定 IP，不额外设置 multicast 接口
     };
@@ -213,7 +232,7 @@ pub async fn spawn(
         diag.selected_interface = multicast_if
             .and_then(|mip| {
                 if_addrs::get_if_addrs().ok()?.into_iter().find_map(|i| {
-                    if let if_addrs::IfAddr::V4(v4) = &i.addr {
+                    if let if_addrs::IfAddr::V4(_) = &i.addr {
                         if i.ip() == std::net::IpAddr::V4(mip) {
                             return Some(i.name.clone());
                         }
@@ -223,7 +242,10 @@ pub async fn spawn(
             })
             .unwrap_or_default();
     }
-    state.push_diag_event("discovery_started", &format!("bind={ip}, multicast_iface={multicast_iface}"));
+    state.push_diag_event(
+        "discovery_started",
+        &format!("bind={ip}, multicast_iface={multicast_iface}"),
+    );
 
     let my_id = state.device_id.clone();
 
@@ -334,7 +356,12 @@ fn adaptive_interval(node_count: usize) -> u64 {
     base + jitter / 1000
 }
 
-async fn broadcast(socket: &UdpSocket, state: &AppState, tcp_port: u16, _lan_broadcast: Option<Ipv4Addr>) {
+async fn broadcast(
+    socket: &UdpSocket,
+    state: &AppState,
+    tcp_port: u16,
+    _lan_broadcast: Option<Ipv4Addr>,
+) {
     let pkt = announce_packet(state, tcp_port);
     let Ok(data) = serde_json::to_vec(&pkt) else {
         return;
@@ -342,14 +369,26 @@ async fn broadcast(socket: &UdpSocket, state: &AppState, tcp_port: u16, _lan_bro
     // 广播使用 limited broadcast（255.255.255.255）：Windows 默认禁用 directed broadcast
     // （DisableDirectedBroadcasts=1），精确子网地址会被内核静默丢弃。
     // limited broadcast 发送到所有 IFF_BROADCAST 接口，不走默认路由，跨平台可靠。
-    let _ = socket.send_to(&data, format!("255.255.255.255:{UDP_PORT}")).await;
-    let _ = socket.send_to(&data, format!("{MULTICAST_GROUP}:{UDP_PORT}")).await;
-    state.push_diag_event("broadcast_sent", &format!("target=255.255.255.255:{UDP_PORT}, multicast={MULTICAST_GROUP}:{UDP_PORT}"));
+    let _ = socket
+        .send_to(&data, format!("255.255.255.255:{UDP_PORT}"))
+        .await;
+    let _ = socket
+        .send_to(&data, format!("{MULTICAST_GROUP}:{UDP_PORT}"))
+        .await;
+    state.push_diag_event(
+        "broadcast_sent",
+        &format!("target=255.255.255.255:{UDP_PORT}, multicast={MULTICAST_GROUP}:{UDP_PORT}"),
+    );
 }
 
 /// 按需探测：群发 `who_has` 请求周围节点单播回复其 `announce`，并同时广播一次自身 announce。
 /// 用于「添加好友」弹窗打开时快速、主动地发现局域网内在线客户端。
-async fn broadcast_probe(socket: &UdpSocket, state: &AppState, tcp_port: u16, _lan_broadcast: Option<Ipv4Addr>) {
+async fn broadcast_probe(
+    socket: &UdpSocket,
+    state: &AppState,
+    tcp_port: u16,
+    _lan_broadcast: Option<Ipv4Addr>,
+) {
     let who = UdpPacket {
         kind: "who_has".to_string(),
         device_id: state.device_id.clone(),
@@ -361,9 +400,16 @@ async fn broadcast_probe(socket: &UdpSocket, state: &AppState, tcp_port: u16, _l
         ts: now_ms(),
     };
     if let Ok(data) = serde_json::to_vec(&who) {
-        let _ = socket.send_to(&data, format!("255.255.255.255:{UDP_PORT}")).await;
-        let _ = socket.send_to(&data, format!("{MULTICAST_GROUP}:{UDP_PORT}")).await;
-        state.push_diag_event("who_has_sent", &format!("target=255.255.255.255:{UDP_PORT}"));
+        let _ = socket
+            .send_to(&data, format!("255.255.255.255:{UDP_PORT}"))
+            .await;
+        let _ = socket
+            .send_to(&data, format!("{MULTICAST_GROUP}:{UDP_PORT}"))
+            .await;
+        state.push_diag_event(
+            "who_has_sent",
+            &format!("target=255.255.255.255:{UDP_PORT}"),
+        );
     }
     // 同时广播自身，让周围节点也能立刻发现我们
     broadcast(socket, state, tcp_port, _lan_broadcast).await;
@@ -402,10 +448,19 @@ mod tests {
             let mid = adaptive_interval(99);
             let big = adaptive_interval(100);
             let huge = adaptive_interval(500);
-            assert!((5..=7).contains(&small), "0 节点应为 5+0..2 秒，得到 {small}");
+            assert!(
+                (5..=7).contains(&small),
+                "0 节点应为 5+0..2 秒，得到 {small}"
+            );
             assert!((5..=7).contains(&mid), "99 节点仍属小规模，得到 {mid}");
-            assert!((10..=12).contains(&big), "100 节点应降频到 10+0..2 秒，得到 {big}");
-            assert!((20..=22).contains(&huge), "500 节点应降频到 20+0..2 秒，得到 {huge}");
+            assert!(
+                (10..=12).contains(&big),
+                "100 节点应降频到 10+0..2 秒，得到 {big}"
+            );
+            assert!(
+                (20..=22).contains(&huge),
+                "500 节点应降频到 20+0..2 秒，得到 {huge}"
+            );
             // 抖动幅度必须小于档间间隔，否则扩档形同无效（热区里退化不成阶梯）
             assert!(small < big && big < huge);
         }
@@ -447,7 +502,10 @@ mod tests {
         let past = Instant::now() - Duration::from_secs(1);
         let start = Instant::now();
         sleep_until(past).await;
-        assert!(start.elapsed() < Duration::from_millis(100), "过期 deadline 应立即就绪");
+        assert!(
+            start.elapsed() < Duration::from_millis(100),
+            "过期 deadline 应立即就绪"
+        );
     }
 
     // ---- 评分函数与接口识别测试 ----
@@ -537,7 +595,10 @@ mod tests {
         assert_eq!(no_bcast, 5);
 
         // 真实 LAN 永远 > Docker/VMware/Hyper-V（即使后者也有 broadcast）
-        assert!(real_lan > docker, "真实 LAN {real_lan} 应高于 Docker {docker}");
+        assert!(
+            real_lan > docker,
+            "真实 LAN {real_lan} 应高于 Docker {docker}"
+        );
     }
 
     /// score_candidate 不受 RFC1918 地址范围误判影响
@@ -560,11 +621,17 @@ mod tests {
         // Auto 模式：multicast_if = Some(lan_ip) → unwrap_or 不触发 → join on lan_ip
         let auto_multicast_if = Some(auto_lan_ip);
         let auto_join = auto_multicast_if.unwrap_or(Ipv4Addr::UNSPECIFIED);
-        assert_eq!(auto_join, auto_lan_ip, "Auto: multicast join 应使用自动选择的 LAN IP");
+        assert_eq!(
+            auto_join, auto_lan_ip,
+            "Auto: multicast join 应使用自动选择的 LAN IP"
+        );
 
         // Manual 模式：multicast_if = None → unwrap_or(manual_ip) → join on manual_ip
         let manual_multicast_if: Option<Ipv4Addr> = None;
         let manual_join = manual_multicast_if.unwrap_or(manual_ip);
-        assert_eq!(manual_join, manual_ip, "Manual: multicast join 应使用用户指定的 IP");
+        assert_eq!(
+            manual_join, manual_ip,
+            "Manual: multicast join 应使用用户指定的 IP"
+        );
     }
 }

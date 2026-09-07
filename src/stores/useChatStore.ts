@@ -20,9 +20,11 @@ import {
 import type {
   Conversation,
   FileDoneInfo,
+  FileFailedInfo,
   FileProgress,
   Friend,
   Group,
+  GroupReadInfo,
   MessageRecord,
   Peer,
   PendingRequest,
@@ -38,6 +40,8 @@ export const useChatStore = defineStore("chat", () => {
   const groups = ref<Group[]>([]);
   const transfers = ref<TransferInfo[]>([]);
   const messages = ref<Record<string, MessageRecord[]>>({});
+  // group_id -> reader_id -> reader 已读到的最大时间戳
+  const groupReads = ref<Record<string, Record<string, number>>>({});
   const activeConv = ref<string | null>(null);
   const topology = ref<TopologyInfo>({
     node_count: 0,
@@ -211,6 +215,22 @@ export const useChatStore = defineStore("chat", () => {
   }
   async function refreshGroups() {
     groups.value = await api.getGroups();
+    const entries = await Promise.all(
+      groups.value.map(async (group) => [group.id, await api.getGroupReads(group.id).catch(() => [])] as const),
+    );
+    const next: Record<string, Record<string, number>> = {};
+    for (const [groupId, reads] of entries) {
+      next[groupId] = Object.fromEntries(reads.map((read) => [read.reader_id, read.last_read_ts]));
+    }
+    groupReads.value = next;
+  }
+
+  function groupReaderIds(groupId: string, messageTs: number): string[] {
+    const myId = app.device?.device_id;
+    const members = new Set(groups.value.find((group) => group.id === groupId)?.members ?? []);
+    return Object.entries(groupReads.value[groupId] ?? {})
+      .filter(([readerId, lastReadTs]) => members.has(readerId) && readerId !== myId && lastReadTs >= messageTs)
+      .map(([readerId]) => readerId);
   }
   async function refreshTransfers() {
     transfers.value = await api.getTransfers();
@@ -468,16 +488,18 @@ export const useChatStore = defineStore("chat", () => {
       void refreshTransfers();
       // 乐观上屏：拿到 transfer_id 即插入文件气泡（后端同 msg_id 的事件会被去重合并）；
       // 进度条随 file-progress 事件实时更新
+      const fileMsgId = `file-${id}`;
+      const acked = pendingAcks.delete(fileMsgId);
       enqueueMessage({
         id: -1,
-        msg_id: `file-${id}`,
+        msg_id: fileMsgId,
         conv_id: convId,
         sender_id: app.device?.device_id ?? "",
         receiver_id: convId,
         kind: "file",
         content: JSON.stringify({ name }),
         ts: Math.max(Date.now(), messages.value[convId]?.at(-1)?.ts ?? 0),
-        status: "sending",
+        status: acked ? "delivered" : "sending",
       });
       return id;
     } catch (e) {
@@ -514,6 +536,31 @@ export const useChatStore = defineStore("chat", () => {
       t.progress = 1;
     }
   }
+  function onFileFailed(d: FileFailedInfo) {
+    const msgId = `file-${d.transfer_id}`;
+    for (const [convId, list] of Object.entries(messages.value)) {
+      const i = list.findIndex((m) => m.msg_id === msgId);
+      if (i >= 0) {
+        messages.value[convId] = [
+          ...list.slice(0, i),
+          { ...list[i], status: "failed" },
+          ...list.slice(i + 1),
+        ];
+        break;
+      }
+    }
+    app.toast(`文件发送失败：${d.reason}`, "error");
+  }
+
+  function onGroupRead(p: GroupReadInfo) {
+    const readers = groupReads.value[p.group_id] ?? {};
+    const current = readers[p.reader_id] ?? 0;
+    if (p.last_read_ts <= current) return;
+    groupReads.value = {
+      ...groupReads.value,
+      [p.group_id]: { ...readers, [p.reader_id]: p.last_read_ts },
+    };
+  }
 
   async function init() {
     await Promise.all([
@@ -538,7 +585,7 @@ export const useChatStore = defineStore("chat", () => {
         });
       }, 300);
     };
-    bindEvents({
+    await bindEvents({
       onPeers: (p) => {
         peers.value = p;
         const onlineIds = new Set(p.map((x) => x.device_id));
@@ -605,12 +652,17 @@ export const useChatStore = defineStore("chat", () => {
           if (changed) messages.value[convId] = next;
         }
       },
+      onGroupRead,
       onFileProgress: (p) => {
         // 进度由事件载荷直接更新，不再全量刷新传输列表（避免大文件 IPC 风暴卡死界面）
         updateTransferProgress(p);
       },
       onFileDone: (d) => {
         onFileDone(d);
+        void refreshTransfers();
+      },
+      onFileFailed: (d) => {
+        onFileFailed(d);
         void refreshTransfers();
       },
       onPeerStyle: (p) => {
@@ -670,6 +722,8 @@ export const useChatStore = defineStore("chat", () => {
     groups,
     transfers,
     messages,
+    groupReads,
+    groupReaderIds,
     activeConv,
     topology,
     activeConversation,

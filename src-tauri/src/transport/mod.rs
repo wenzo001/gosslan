@@ -34,6 +34,7 @@ pub enum Channel {
 ///
 /// 采用 `async-trait` 使异步方法可装箱、可对象安全，便于统一管理不同物理通道。
 #[async_trait]
+#[allow(dead_code)]
 pub trait Transport: Send + Sync {
     /// 通道显示名。
     fn name(&self) -> &'static str;
@@ -77,7 +78,9 @@ impl TransportManager {
         // 从本地设置恢复蓝牙通道开关状态
         let bt_enabled = {
             let dbc = state.db.lock().unwrap();
-            crate::db::get_setting(&dbc, "bt_enabled").map(|v| v == "1").unwrap_or(false)
+            crate::db::get_setting(&dbc, "bt_enabled")
+                .map(|v| v == "1")
+                .unwrap_or(false)
         };
         Self {
             lan: lan::LanTransport::new(state),

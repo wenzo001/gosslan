@@ -119,7 +119,15 @@ impl MeshRouter {
 
     /// 更新 / 插入到某节点的路由（下一跳、代价、链路）。
     pub fn upsert_route(&mut self, peer: String, via: String, link: LinkKind, cost: u32, now: i64) {
-        self.routes.insert(peer, Route { via, cost, link, last_seen: now });
+        self.routes.insert(
+            peer,
+            Route {
+                via,
+                cost,
+                link,
+                last_seen: now,
+            },
+        );
     }
 
     /// 记录某节点可达的链路集合（用于识别桥接节点）。
@@ -176,7 +184,12 @@ mod tests {
     #[test]
     fn forward_decays_ttl_and_drops_at_zero() {
         let mut router = MeshRouter::new(10, 5);
-        let msg = |ttl| RelayedMsg { msg_id: "m".into(), to: "b".into(), payload: vec![], ttl };
+        let msg = |ttl| RelayedMsg {
+            msg_id: "m".into(),
+            to: "b".into(),
+            payload: vec![],
+            ttl,
+        };
         // TTL=5 → 入队后剩余 4
         assert_eq!(router.forward(msg(5)), Some(4));
         assert_eq!(router.pending(), 1);
@@ -199,7 +212,13 @@ mod tests {
     #[test]
     fn route_upsert_and_lookup() {
         let mut router = MeshRouter::new(10, 5);
-        router.upsert_route("target".into(), "bridge".into(), LinkKind::Bluetooth, 2, 1000);
+        router.upsert_route(
+            "target".into(),
+            "bridge".into(),
+            LinkKind::Bluetooth,
+            2,
+            1000,
+        );
         let r = router.best_route("target").unwrap();
         assert_eq!(r.via, "bridge");
         assert_eq!(r.cost, 2);

@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, ref, watch, type CSSProperties } from "vue";
+import { computed, defineAsyncComponent, ref, watch, type CSSProperties } from "vue";
 import dayjs from "dayjs";
-import VueEasyLightbox from "vue-easy-lightbox/external-css";
+const VueEasyLightbox = defineAsyncComponent(() => import("vue-easy-lightbox/external-css"));
 import "vue-easy-lightbox/external-css/vue-easy-lightbox.css";
 import { loadFilePreview } from "@/utils/filePreview";
 import {
@@ -35,8 +35,17 @@ const props = withDefaults(
     showUnreadDivider?: boolean;
     /** 群聊发送者昵称（由父组件解析） */
     senderName?: string;
+    /** 已读该群消息的成员 ID（由父组件按消息时间计算） */
+    groupReaderIds?: string[];
   }>(),
-  { prev: null, next: null, isGroup: false, showUnreadDivider: false, senderName: "" },
+  {
+    prev: null,
+    next: null,
+    isGroup: false,
+    showUnreadDivider: false,
+    senderName: "",
+    groupReaderIds: () => [],
+  },
 );
 
 const app = useAppStore();
@@ -55,6 +64,11 @@ const preset = computed(() => {
 const colors = computed(() =>
   app.dark ? preset.value.dark : preset.value.light,
 );
+const bubbleStyle = computed<CSSProperties>(() => ({
+  background: mine.value ? colors.value.mineBubble : colors.value.otherBubble,
+  color: mine.value ? colors.value.mineText : colors.value.otherText,
+  border: mine.value ? "1px solid transparent" : "1px solid var(--gosslan-border)",
+}));
 
 /** 连续消息合并：同一发送者 5 分钟内的消息省略头像/昵称（紧凑模式可关）。 */
 const sameSenderRun = computed(() => {
@@ -70,10 +84,17 @@ const sameMinuteRun = computed(() => {
   if (!p || p.kind === "system") return false;
   return dayjs(p.ts).isSame(props.message.ts, "minute");
 });
-/** 分钟组末条：下一条不在同一分钟，或是列表最后一条。 */
+/** 时间行显示在发送者连续消息的末尾，避免时间标签把首条与第二条撑开。 */
+const nextContinuesSenderRun = computed(() => {
+  const n = props.next;
+  if (!n || n.kind === "system" || props.message.kind === "system") return false;
+  if (!app.chatStyle.compact || n.sender_id !== props.message.sender_id) return false;
+  return n.ts - props.message.ts < 5 * 60 * 1000;
+});
 const isLastInMinute = computed(() => {
   const n = props.next;
   if (!n) return true; // 最后一条消息
+  if (nextContinuesSenderRun.value) return false;
   return !dayjs(n.ts).isSame(props.message.ts, "minute");
 });
 /** 紧凑布局：连续 run 或同分钟消息。 */
@@ -85,6 +106,20 @@ const showTimeDivider = computed(() => {
 });
 /** 群聊非本人消息首条：显示昵称。 */
 const showNickname = computed(() => props.isGroup && !mine.value && !sameSenderRun.value);
+const groupReaders = computed(() => props.groupReaderIds ?? []);
+const visibleGroupReaders = computed(() => groupReaders.value.slice(0, 3));
+const extraGroupReaders = computed(() => groupReaders.value.slice(3));
+const groupReadersOpen = ref(false);
+
+function readerName(id: string) {
+  return chat.nicknameOf(id);
+}
+
+function readerAvatar(id: string): string | null {
+  const friend = chat.friends.find((item) => item.device_id === id);
+  if (friend?.avatar) return friend.avatar;
+  return chat.peers.find((item) => item.device_id === id)?.avatar ?? null;
+}
 
 const time = computed(() => dayjs(props.message.ts).format("YYYY年MM月DD日 HH:mm"));
 const fullTime = computed(() => dayjs(props.message.ts).format("YYYY-MM-DD HH:mm:ss"));
@@ -316,7 +351,7 @@ async function retrySend() {
 </script>
 
 <template>
-  <div :class="tight ? 'py-0.5' : 'pt-2 pb-2'">
+  <div class="py-1">
     <!-- 时间分割线（间隔 ≥ 5 分钟） -->
     <div v-if="showTimeDivider" class="my-2 text-center text-[11px] text-[var(--gosslan-text-2)]">
       {{ timeDividerText }}
@@ -363,8 +398,42 @@ async function retrySend() {
           class="group/row flex w-full items-end gap-1.5"
           :class="mine ? 'justify-end' : 'justify-start'"
         >
+        <!-- 群聊显示实际已读成员头像；单聊继续显示单个状态图标。 -->
+        <div v-if="mine && isGroup" class="relative shrink-0 pb-1.5">
+          <button
+            v-if="groupReaders.length > 0"
+            class="flex items-center -space-x-1 rounded-full p-0.5 transition hover:bg-[var(--gosslan-hover)]"
+            :title="`已读 ${groupReaders.length} 人`"
+            @click="groupReadersOpen = !groupReadersOpen"
+          >
+            <span
+              v-for="id in visibleGroupReaders"
+              :key="id"
+              class="flex h-4 w-4 items-center justify-center overflow-hidden rounded-full border border-[var(--gosslan-panel)] bg-primary text-[8px] text-white"
+            >
+              <img v-if="readerAvatar(id)" :src="readerAvatar(id) ?? undefined" class="h-full w-full object-cover" />
+              <span v-else>{{ readerName(id).slice(0, 1) }}</span>
+            </span>
+            <span v-if="extraGroupReaders.length > 0" class="ml-1 rounded-full bg-[var(--gosslan-hover)] px-1 text-[9px] text-[var(--gosslan-text-2)]">
+              +{{ extraGroupReaders.length }}
+            </span>
+          </button>
+          <div
+            v-if="groupReadersOpen && groupReaders.length > 0"
+            class="absolute bottom-7 right-0 z-20 max-h-60 min-w-36 overflow-y-auto rounded-lg border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] p-1.5 text-xs shadow-lg"
+          >
+            <div class="px-2 py-1 text-[var(--gosslan-text-2)]">已读成员（{{ groupReaders.length }}）</div>
+            <div v-for="id in groupReaders" :key="id" class="flex items-center gap-2 rounded px-2 py-1 hover:bg-[var(--gosslan-hover)]">
+              <span class="flex h-5 w-5 items-center justify-center overflow-hidden rounded-full bg-primary text-[9px] text-white">
+                <img v-if="readerAvatar(id)" :src="readerAvatar(id) ?? undefined" class="h-full w-full object-cover" />
+                <span v-else>{{ readerName(id).slice(0, 1) }}</span>
+              </span>
+              <span class="max-w-28 truncate">{{ readerName(id) }}</span>
+            </div>
+          </div>
+        </div>
         <!-- mine 时回执固定在气泡左侧（视觉上贴近对话人头像方向） -->
-        <span v-if="mine" class="shrink-0 pb-1.5" :title="receiptTitle">
+        <span v-else-if="mine" class="shrink-0 pb-1.5" :title="receiptTitle">
           <Loader2 v-if="sendState === 'sending' || sendState === 'sent'" class="h-3.5 w-3.5 animate-spin text-[var(--gosslan-text-2)]" />
           <button v-else-if="sendState === 'failed'" class="flex h-5 w-5 items-center justify-center rounded text-red-500 transition hover:bg-red-500/10" title="重新发送" @click="retrySend">
             <RefreshCw class="h-3.5 w-3.5" />
@@ -377,11 +446,7 @@ async function retrySend() {
         <div
           v-if="message.kind === 'text'"
           class="group relative min-w-0 rounded-2xl px-3 py-2 leading-relaxed shadow-sm"
-          :style="{
-            background: mine ? colors.mineBubble : colors.otherBubble,
-            color: mine ? colors.mineText : colors.otherText,
-            fontSize: 'var(--gosslan-msg-size, 14px)',
-          }"
+          :style="{ ...bubbleStyle, fontSize: 'var(--gosslan-msg-size, 14px)' }"
         >
           <div
             class="whitespace-pre-wrap break-words"
@@ -461,10 +526,7 @@ async function retrySend() {
         <div
           v-else-if="message.kind === 'file' && fileMeta"
           class="flex min-w-0 flex-1 flex-col gap-2 rounded-xl px-3 py-2.5 shadow-sm"
-          :style="{
-            background: mine ? colors.mineBubble : colors.otherBubble,
-            color: mine ? colors.mineText : colors.otherText,
-          }"
+          :style="bubbleStyle"
         >
           <div class="flex items-center gap-3">
             <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg"
@@ -508,7 +570,7 @@ async function retrySend() {
           </template>
         </div>
 
-        <div v-else class="rounded-2xl px-3 py-2 text-sm shadow-sm" :style="{ background: colors.otherBubble, color: colors.otherText }">
+        <div v-else class="rounded-2xl px-3 py-2 text-sm shadow-sm" :style="bubbleStyle">
           {{ message.content }}
         </div>
         </div>
@@ -559,6 +621,7 @@ async function retrySend() {
 
   <!-- 图片查看器：缩放 / 拖拽 / 滚轮 / 双击 / Esc / 点遮罩均由 vue-easy-lightbox 提供 -->
   <VueEasyLightbox
+    v-if="lightboxOpen"
     :visible="lightboxOpen"
     :imgs="lightboxSrc"
     :rotate-disabled="true"

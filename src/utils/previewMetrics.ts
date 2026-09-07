@@ -15,6 +15,8 @@ export const PREVIEW_LINES = 5;
 const TEXT_LINE_RATIO = 1.625;
 /** 文本气泡：py-2 纵向内边距。 */
 const TEXT_BUBBLE_PADDING = 16;
+/** MessageItem 给文本气泡统一保留 1px 描边，透明描边也会计入盒模型高度。 */
+const TEXT_BUBBLE_BORDER = 2;
 /** 文本气泡内长文本操作条：mt-1.5(6) + pt-1.5(6) + border-top(1) + text-xs 行高(16)。 */
 const TEXT_ACTION_BAR = 29;
 
@@ -64,9 +66,9 @@ export function textNeedsClamp(content: string, fontSize: FontSizeKey): boolean 
 export function textBubbleHeight(content: string, fontSize: FontSizeKey): number {
   const lineH = fontPx(fontSize) * TEXT_LINE_RATIO;
   if (textNeedsClamp(content, fontSize)) {
-    return TEXT_BUBBLE_PADDING + PREVIEW_LINES * lineH + TEXT_ACTION_BAR;
+    return TEXT_BUBBLE_BORDER + TEXT_BUBBLE_PADDING + PREVIEW_LINES * lineH + TEXT_ACTION_BAR;
   }
-  return TEXT_BUBBLE_PADDING + visualLineCount(content, textColumns(fontSize)) * lineH;
+  return TEXT_BUBBLE_BORDER + TEXT_BUBBLE_PADDING + visualLineCount(content, textColumns(fontSize)) * lineH;
 }
 
 // ---------------- 代码 ----------------

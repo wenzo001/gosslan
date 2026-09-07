@@ -166,6 +166,10 @@ mod tests {
         let msg = b"message id";
         let sig = id.sign_b64(msg);
         assert!(verify_signature(&id.ed25519_public_b64(), msg, &sig));
-        assert!(!verify_signature(&id.ed25519_public_b64(), b"tampered", &sig));
+        assert!(!verify_signature(
+            &id.ed25519_public_b64(),
+            b"tampered",
+            &sig
+        ));
     }
 }

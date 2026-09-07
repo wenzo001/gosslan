@@ -76,10 +76,10 @@ pub enum GossipKind {
 /// Gossip 广播信封（Epidemic 协议消息体）。
 /// - `message_id`：SHA-256 十六进制（去重键）
 /// - `sender_pubkey` / `sender_ed25519`：发送方 X25519 / Ed25519 公钥
-/// - `sender_sig`：对 `message_id` 的 Ed25519 签名（身份校验）
+/// - `sender_sig`：对信封不可变字段的 Ed25519 签名（身份校验；TTL 不签名，因为转发会递减）
 /// - `ttl`：生存时间，每转发一次减一，归零丢弃
-/// - `payload`：base64（`encrypted=true` 时为 `nonce || ChaCha20-Poly1305 密文`，否则为明文 JSON）
-/// - `encrypted`：载荷是否加密（E2EE 开关；缺省按 true 兼容旧版本）
+/// - `payload`：base64（用户聊天 `encrypted=true` 时为 `nonce || ChaCha20-Poly1305 密文`）
+/// - `encrypted`：载荷是否加密；用户聊天必须为 true，内部拒绝通知可使用明文控制载荷
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct GossipEnvelope {
     pub message_id: String,
@@ -103,13 +103,7 @@ pub struct GossipEnvelope {
     pub group_members: Vec<String>,
     pub payload: String,
     pub ts: i64,
-    #[serde(default = "default_encrypted")]
     pub encrypted: bool,
-}
-
-/// 旧版本信封无 `encrypted` 字段时按「已加密」处理（历史行为）。
-fn default_encrypted() -> bool {
-    true
 }
 
 impl GossipEnvelope {
@@ -121,6 +115,27 @@ impl GossipEnvelope {
         h.update(self.ts.to_le_bytes());
         h.update(self.payload.as_bytes());
         self.message_id = h.finalize().iter().map(|b| format!("{b:02x}")).collect();
+    }
+
+    /// 生成签名材料。TTL 是唯一允许中继节点修改的字段；其余路由、身份、
+    /// 群成员和载荷字段都必须被签名，避免“签名仍有效但把 Chat 改成 Group”之类的
+    /// 元数据篡改。
+    pub fn signing_bytes(&self) -> Vec<u8> {
+        serde_json::to_vec(&(
+            &self.message_id,
+            &self.sender_id,
+            &self.sender_pubkey,
+            &self.sender_ed25519,
+            &self.kind,
+            &self.group_id,
+            &self.group_name,
+            &self.group_creator,
+            &self.group_members,
+            &self.payload,
+            &self.ts,
+            &self.encrypted,
+        ))
+        .unwrap_or_default()
     }
 }
 
@@ -134,6 +149,8 @@ pub enum Message {
         nickname: String,
         avatar: Option<String>,
         tcp_port: u16,
+        x25519_pubkey: String,
+        ed25519_pubkey: String,
     },
     /// 心跳
     Heartbeat {
@@ -187,16 +204,6 @@ pub enum Message {
         content: String,
         ts: i64,
     },
-    /// 群聊消息（携带群名，便于接收方本地展示）
-    GroupMessage {
-        msg_id: String,
-        from: String,
-        group_id: String,
-        group_name: String,
-        kind: MsgKind,
-        content: String,
-        ts: i64,
-    },
     /// 送达确认（用于离线补发去重）
     Ack {
         msg_id: String,
@@ -205,6 +212,12 @@ pub enum Message {
     ReadReceipt {
         from: String,
         to: String,
+        last_read_ts: i64,
+    },
+    /// 群聊成员级已读回执：接收方读到群消息的时间点。
+    GroupReadReceipt {
+        from: String,
+        group_id: String,
         last_read_ts: i64,
     },
     // ---- 文件传输 ----
@@ -335,25 +348,24 @@ mod tests {
     }
 
     #[test]
-    fn envelope_encrypted_flag_roundtrip_and_default() {
+    fn envelope_encrypted_flag_roundtrip() {
         // 显式 false 往返保持 false
         let mut e = env();
         e.encrypted = false;
         e.compute_message_id();
-        let json = serde_json::to_string(&Message::Gossip { envelope: e.clone() }).unwrap();
+        let json = serde_json::to_string(&Message::Gossip {
+            envelope: e.clone(),
+        })
+        .unwrap();
         let back: Message = serde_json::from_str(&json).unwrap();
         match back {
             Message::Gossip { envelope } => assert!(!envelope.encrypted),
             _ => panic!("expect gossip"),
         }
 
-        // 旧版本 JSON 缺失 encrypted 字段 → 默认按「已加密」兼容处理
+        // 未声明加密标志的旧信封直接拒绝，不再兼容旧协议。
         let legacy = r#"{"type":"gossip","envelope":{"message_id":"m","sender_id":"a","sender_pubkey":"x","sender_ed25519":"e","sender_sig":"s","ttl":6,"kind":"chat","group_id":null,"payload":"p","ts":1}}"#;
-        let back: Message = serde_json::from_str(legacy).unwrap();
-        match back {
-            Message::Gossip { envelope } => assert!(envelope.encrypted),
-            _ => panic!("expect gossip"),
-        }
+        assert!(serde_json::from_str::<Message>(legacy).is_err());
     }
 
     #[test]
@@ -376,7 +388,9 @@ mod tests {
     fn message_json_roundtrip() {
         let mut e = env();
         e.compute_message_id();
-        let msg = Message::Gossip { envelope: e.clone() };
+        let msg = Message::Gossip {
+            envelope: e.clone(),
+        };
         let json = serde_json::to_string(&msg).unwrap();
         let back: Message = serde_json::from_str(&json).unwrap();
         match back {

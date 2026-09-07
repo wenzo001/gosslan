@@ -211,6 +211,12 @@ pub struct FileDoneInfo {
     pub path: String,
 }
 
+#[derive(Serialize, Clone, Debug)]
+pub struct FileFailedInfo {
+    pub transfer_id: String,
+    pub reason: String,
+}
+
 /// 文件传输状态
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct TransferInfo {
@@ -230,6 +236,8 @@ pub struct FileReceiver {
     pub name: String,
     pub size: u64,
     pub received: u64,
+    /// 直连 TCP 虽然有序，但仍校验序号，避免错误/恶意帧把文件静默拼坏。
+    pub next_seq: u32,
     pub tmp_path: PathBuf,
     pub final_path: PathBuf,
     pub peer_id: String,
@@ -286,7 +294,8 @@ pub struct AppState {
     /// 正在接收的文件：transfer_id -> FileReceiver
     pub file_receivers: Mutex<HashMap<String, FileReceiver>>,
     /// 等待共享目录树响应：request_id -> 应答通道
-    pub pending_share_tree: Mutex<HashMap<String, tokio::sync::oneshot::Sender<Vec<crate::protocol::ShareEntry>>>>,
+    pub pending_share_tree:
+        Mutex<HashMap<String, tokio::sync::oneshot::Sender<Vec<crate::protocol::ShareEntry>>>>,
 
     /// 节点表是否需要向前端推送（节流合并用，见 `spawn_peer_emitter`）
     pub peers_dirty: AtomicBool,
@@ -371,7 +380,14 @@ impl AppState {
             db::get_setting(&conn, "x25519_secret"),
             db::get_setting(&conn, "ed25519_secret"),
         ) {
-            (Some(xs), Some(es)) => Identity::from_secrets(&xs, &es).unwrap_or_else(Identity::generate),
+            (Some(xs), Some(es)) => Identity::from_secrets(&xs, &es).unwrap_or_else(|| {
+                // 损坏/截断的密钥不能只在内存中临时修复；否则每次重启都会
+                // 生成另一套身份，导致好友公钥与历史 E2EE 消息永久失配。
+                let id = Identity::generate();
+                db::set_setting(&conn, "x25519_secret", &id.x25519_secret_b64()).ok();
+                db::set_setting(&conn, "ed25519_secret", &id.ed25519_secret_b64()).ok();
+                id
+            }),
             _ => {
                 let id = Identity::generate();
                 db::set_setting(&conn, "x25519_secret", &id.x25519_secret_b64()).ok();

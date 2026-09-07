@@ -31,6 +31,7 @@ pub struct RelayPlan {
 pub struct Reassembly {
     pub name: String,
     pub total_chunks: u32,
+    pub expected_size: u64,
     pub chunks: HashMap<u32, Vec<u8>>,
 }
 
@@ -57,6 +58,7 @@ impl Default for RelayManager {
     }
 }
 
+#[allow(dead_code)]
 impl RelayManager {
     pub fn new() -> Self {
         Self {
@@ -78,7 +80,10 @@ impl RelayManager {
     }
 
     /// 独立于实例的切片入口：供阻塞线程池调用（避免长时间持有 relay 锁）。
-    pub fn slice_file_with(path: &Path, chunk_size: usize) -> std::io::Result<(String, u64, Vec<ChunkData>)> {
+    pub fn slice_file_with(
+        path: &Path,
+        chunk_size: usize,
+    ) -> std::io::Result<(String, u64, Vec<ChunkData>)> {
         let meta = std::fs::metadata(path)?;
         let name = path
             .file_name()
@@ -103,13 +108,20 @@ impl RelayManager {
     }
 
     pub fn next_chunk(&mut self, transfer_id: &str) -> Option<ChunkData> {
-        self.senders
-            .get_mut(transfer_id)
-            .and_then(|v| if v.is_empty() { None } else { Some(v.remove(0)) })
+        self.senders.get_mut(transfer_id).and_then(|v| {
+            if v.is_empty() {
+                None
+            } else {
+                Some(v.remove(0))
+            }
+        })
     }
 
     pub fn is_send_done(&self, transfer_id: &str) -> bool {
-        self.senders.get(transfer_id).map(|v| v.is_empty()).unwrap_or(true)
+        self.senders
+            .get(transfer_id)
+            .map(|v| v.is_empty())
+            .unwrap_or(true)
     }
 
     /// 将剩余切片按轮询分配给多个中继节点（并行分发计划）。
@@ -142,24 +154,36 @@ impl RelayManager {
 
     // ---------------- 接收方 ----------------
 
-    pub fn begin_reassemble(&mut self, transfer_id: &str, name: &str, total_chunks: u32) {
+    pub fn begin_reassemble(
+        &mut self,
+        transfer_id: &str,
+        name: &str,
+        total_chunks: u32,
+        expected_size: u64,
+    ) {
         self.reassemblies.insert(
             transfer_id.to_string(),
             Reassembly {
                 name: name.to_string(),
                 total_chunks,
+                expected_size,
                 chunks: HashMap::new(),
             },
         );
     }
 
     /// 写入一个切片；返回 `Some((name, 完整字节))` 表示重组完成（乱序安全）。
-    pub fn add_chunk(&mut self, transfer_id: &str, seq: u32, data: Vec<u8>) -> Option<(String, Vec<u8>)> {
+    pub fn add_chunk(
+        &mut self,
+        transfer_id: &str,
+        seq: u32,
+        data: Vec<u8>,
+    ) -> Option<(String, u64, Vec<u8>)> {
         let done = {
             let Some(r) = self.reassemblies.get_mut(transfer_id) else {
                 return None;
             };
-            if r.chunks.contains_key(&seq) {
+            if seq >= r.total_chunks || r.chunks.contains_key(&seq) {
                 return None;
             }
             r.chunks.insert(seq, data);
@@ -173,7 +197,7 @@ impl RelayManager {
                     out.extend_from_slice(c);
                 }
             }
-            Some((r.name.clone(), out))
+            Some((r.name.clone(), r.expected_size, out))
         } else {
             None
         }
@@ -203,13 +227,22 @@ mod tests {
         let data = b"abcdefghijklmnopqrstuvwxyz";
         // 直接手工切片（split_bytes 会把尺寸钳到 MIN_CHUNK_SIZE，不适合小数据测试）
         let chunks: Vec<Vec<u8>> = data.chunks(7).map(|c| c.to_vec()).collect();
-        m.begin_reassemble("t1", "f.bin", chunks.len() as u32);
+        m.begin_reassemble("t1", "f.bin", chunks.len() as u32, data.len() as u64);
         // 乱序写入
         assert!(m.add_chunk("t1", 2, chunks[2].clone()).is_none());
         assert!(m.add_chunk("t1", 0, chunks[0].clone()).is_none());
         assert!(m.add_chunk("t1", 1, chunks[1].clone()).is_none());
-        let (name, out) = m.add_chunk("t1", 3, chunks[3].clone()).unwrap();
+        let (name, size, out) = m.add_chunk("t1", 3, chunks[3].clone()).unwrap();
         assert_eq!(name, "f.bin");
+        assert_eq!(size, data.len() as u64);
         assert_eq!(out, data);
+    }
+
+    #[test]
+    fn rejects_out_of_range_chunks() {
+        let mut m = RelayManager::new();
+        m.begin_reassemble("t1", "f.bin", 1, 1);
+        assert!(m.add_chunk("t1", 1, vec![1]).is_none());
+        assert!(m.add_chunk("t1", 0, vec![1]).is_some());
     }
 }

@@ -15,7 +15,17 @@ use tokio::time::Duration;
 use crate::db;
 use crate::network::transport::try_send;
 use crate::protocol::{Message, ShareEntry, FILE_CHUNK};
-use crate::state::{AppState, FileDoneInfo, FileReceiver};
+use crate::state::{AppState, FileDoneInfo, FileFailedInfo, FileReceiver};
+
+fn emit_failed(state: &AppState, transfer_id: &str, reason: impl Into<String>) {
+    let _ = state.app.emit(
+        "file-failed",
+        &FileFailedInfo {
+            transfer_id: transfer_id.to_string(),
+            reason: reason.into(),
+        },
+    );
+}
 
 /// 主动向 `peer_id` 发送本地文件。
 pub async fn send_file_from_path(
@@ -24,7 +34,19 @@ pub async fn send_file_from_path(
     transfer_id: &str,
     path: PathBuf,
 ) -> Result<(), String> {
-    let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+    let meta = match std::fs::metadata(&path) {
+        Ok(meta) => meta,
+        Err(e) => {
+            let reason = e.to_string();
+            emit_failed(state, transfer_id, &reason);
+            return Err(reason);
+        }
+    };
+    if !meta.is_file() {
+        let reason = "只能发送普通文件";
+        emit_failed(state, transfer_id, reason);
+        return Err(reason.to_string());
+    }
     let size = meta.len();
     let name = path
         .file_name()
@@ -33,7 +55,18 @@ pub async fn send_file_from_path(
 
     {
         let dbc = state.db.lock().unwrap();
-        db::upsert_transfer(&dbc, transfer_id, peer_id, &name, size, "send", "pending", Some(path.to_string_lossy().as_ref()), 0.0).ok();
+        db::upsert_transfer(
+            &dbc,
+            transfer_id,
+            peer_id,
+            &name,
+            size,
+            "send",
+            "pending",
+            Some(path.to_string_lossy().as_ref()),
+            0.0,
+        )
+        .ok();
     }
 
     let (tx, rx) = tokio::sync::oneshot::channel();
@@ -49,18 +82,56 @@ pub async fn send_file_from_path(
         name: name.clone(),
         size,
     };
-    try_send(state, peer_id, &offer).await?;
+    if let Err(e) = try_send(state, peer_id, &offer).await {
+        state
+            .pending_file_accept
+            .lock()
+            .unwrap()
+            .remove(transfer_id);
+        let dbc = state.db.lock().unwrap();
+        db::upsert_transfer(
+            &dbc,
+            transfer_id,
+            peer_id,
+            &name,
+            size,
+            "send",
+            "failed",
+            None,
+            0.0,
+        )
+        .ok();
+        emit_failed(state, transfer_id, &e);
+        return Err(e);
+    }
 
     // 等待对方接受（超时 15 秒）
     match tokio::time::timeout(Duration::from_secs(15), rx).await {
         Ok(Ok(())) => {}
         _ => {
-            state.pending_file_accept.lock().unwrap().remove(transfer_id);
+            state
+                .pending_file_accept
+                .lock()
+                .unwrap()
+                .remove(transfer_id);
             {
                 let dbc = state.db.lock().unwrap();
-                db::upsert_transfer(&dbc, transfer_id, peer_id, &name, size, "send", "failed", None, 0.0).ok();
+                db::upsert_transfer(
+                    &dbc,
+                    transfer_id,
+                    peer_id,
+                    &name,
+                    size,
+                    "send",
+                    "failed",
+                    None,
+                    0.0,
+                )
+                .ok();
             }
-            return Err("对方未接受文件".to_string());
+            let reason = "对方未接受文件";
+            emit_failed(state, transfer_id, reason);
+            return Err(reason.to_string());
         }
     }
 
@@ -69,7 +140,19 @@ pub async fn send_file_from_path(
         Ok(()) => Ok(()),
         Err(e) => {
             let dbc = state.db.lock().unwrap();
-            db::upsert_transfer(&dbc, transfer_id, peer_id, "", size, "send", "failed", None, 0.0).ok();
+            db::upsert_transfer(
+                &dbc,
+                transfer_id,
+                peer_id,
+                "",
+                size,
+                "send",
+                "failed",
+                None,
+                0.0,
+            )
+            .ok();
+            emit_failed(state, transfer_id, &e);
             Err(e)
         }
     }
@@ -85,7 +168,9 @@ async fn stream_file(
 ) -> Result<(), String> {
     use tokio::io::AsyncReadExt;
 
-    let mut f = tokio::fs::File::open(&path).await.map_err(|e| e.to_string())?;
+    let mut f = tokio::fs::File::open(&path)
+        .await
+        .map_err(|e| e.to_string())?;
     let mut buf = vec![0u8; FILE_CHUNK];
     let mut seq = 0u32;
     let mut sent = 0u64;
@@ -94,7 +179,18 @@ async fn stream_file(
 
     {
         let dbc = state.db.lock().unwrap();
-        db::upsert_transfer(&dbc, transfer_id, peer_id, &name, size, "send", "active", None, 0.0).ok();
+        db::upsert_transfer(
+            &dbc,
+            transfer_id,
+            peer_id,
+            &name,
+            size,
+            "send",
+            "active",
+            None,
+            0.0,
+        )
+        .ok();
     }
 
     loop {
@@ -114,10 +210,25 @@ async fn stream_file(
 
         if last_report.elapsed() >= Duration::from_millis(250) {
             last_report = std::time::Instant::now();
-            let progress = if size == 0 { 1.0 } else { sent as f64 / size as f64 };
+            let progress = if size == 0 {
+                1.0
+            } else {
+                sent as f64 / size as f64
+            };
             {
                 let dbc = state.db.lock().unwrap();
-                db::upsert_transfer(&dbc, transfer_id, peer_id, &name, size, "send", "active", None, progress).ok();
+                db::upsert_transfer(
+                    &dbc,
+                    transfer_id,
+                    peer_id,
+                    &name,
+                    size,
+                    "send",
+                    "active",
+                    None,
+                    progress,
+                )
+                .ok();
             }
             let _ = state.app.emit(
                 "file-progress",
@@ -130,16 +241,36 @@ async fn stream_file(
         }
     }
 
-    try_send(state, peer_id, &Message::FileDone { transfer_id: transfer_id.to_string() }).await.ok();
+    try_send(
+        state,
+        peer_id,
+        &Message::FileDone {
+            transfer_id: transfer_id.to_string(),
+        },
+    )
+    .await?;
     {
         let dbc = state.db.lock().unwrap();
-        db::upsert_transfer(&dbc, transfer_id, peer_id, &name, size, "send", "done", None, 1.0).ok();
+        db::upsert_transfer(
+            &dbc,
+            transfer_id,
+            peer_id,
+            &name,
+            size,
+            "send",
+            "done",
+            None,
+            1.0,
+        )
+        .ok();
         // 发送方消息状态也要推进到 delivered：否则气泡永远停在「发送中」spinner，
         // 因为后端不会给自己的消息回 Ack/FileDone 事件。
         db::set_message_status(&dbc, &format!("file-{transfer_id}"), "delivered").ok();
     }
     // 通知前端发送方文件消息已完成（前端 onMessageAcked 会把 spinner 切为空圆框）
-    let _ = state.app.emit("message-acked", &format!("file-{transfer_id}"));
+    let _ = state
+        .app
+        .emit("message-acked", &format!("file-{transfer_id}"));
     // 发送方也需要 file-done 事件来更新 transfer 状态（进度条消失 + transfer.status → done）
     let _ = state.app.emit(
         "file-done",
@@ -169,8 +300,20 @@ pub fn begin_receive(
     name: &str,
     size: u64,
 ) -> Result<PathBuf, String> {
+    let safe_name = safe_file_name(name).ok_or("文件名非法")?;
+    if size > i64::MAX as u64 {
+        return Err("文件过大，无法安全保存".to_string());
+    }
+    if state
+        .file_receivers
+        .lock()
+        .unwrap()
+        .contains_key(transfer_id)
+    {
+        return Err("重复的文件传输".to_string());
+    }
     std::fs::create_dir_all(&state.downloads_dir).ok();
-    let final_path = unique_path(&state.downloads_dir, name);
+    let final_path = unique_path(&state.downloads_dir, &safe_name);
     let tmp_path = PathBuf::from(format!("{}.part", final_path.display()));
     let f = std::fs::File::create(&tmp_path).map_err(|e| e.to_string())?;
 
@@ -178,9 +321,10 @@ pub fn begin_receive(
         transfer_id.to_string(),
         FileReceiver {
             file: f,
-            name: name.to_string(),
+            name: safe_name,
             size,
             received: 0,
+            next_seq: 0,
             tmp_path: tmp_path.clone(),
             final_path: final_path.clone(),
             peer_id: peer_id.to_string(),
@@ -190,33 +334,180 @@ pub fn begin_receive(
 
     {
         let dbc = state.db.lock().unwrap();
-        db::upsert_transfer(&dbc, transfer_id, peer_id, name, size, "receive", "active", Some(final_path.to_string_lossy().as_ref()), 0.0).ok();
+        db::upsert_transfer(
+            &dbc,
+            transfer_id,
+            peer_id,
+            name,
+            size,
+            "receive",
+            "active",
+            Some(final_path.to_string_lossy().as_ref()),
+            0.0,
+        )
+        .ok();
     }
     Ok(final_path)
 }
 
 /// 接收方：写入一个分片，返回累计字节数。
-pub fn write_chunk(state: &AppState, transfer_id: &str, data: &[u8]) -> Result<u64, String> {
+pub fn write_chunk(
+    state: &AppState,
+    transfer_id: &str,
+    peer_id: &str,
+    seq: u32,
+    data: &[u8],
+) -> Result<u64, String> {
     use std::io::Write;
     let mut recv = state.file_receivers.lock().unwrap();
     let r = recv.get_mut(transfer_id).ok_or("未知传输")?;
+    if r.peer_id != peer_id {
+        return Err("文件传输来源不匹配".to_string());
+    }
+    if seq != r.next_seq {
+        return Err("文件分片顺序错误".to_string());
+    }
+    if data.len() as u64 > r.size.saturating_sub(r.received) {
+        return Err("文件分片超出声明大小".to_string());
+    }
     r.file.write_all(data).map_err(|e| e.to_string())?;
     r.received += data.len() as u64;
+    r.next_seq = r.next_seq.checked_add(1).ok_or("文件分片序号溢出")?;
     Ok(r.received)
 }
 
-/// 接收方：收尾，返回 (name, size, final_path, peer_id)。
-pub fn finish_receive(state: &AppState, transfer_id: &str) -> Option<(String, u64, PathBuf, String)> {
+/// 终止损坏或超时的接收，删除临时文件，避免留下永远占空间的 `.part` 文件。
+pub fn fail_receive(state: &AppState, transfer_id: &str, peer_id: &str, reason: &str) -> bool {
     let mut recv = state.file_receivers.lock().unwrap();
-    let r = recv.remove(transfer_id)?;
-    let _ = r.file.sync_all();
+    let Some(r) = recv.remove(transfer_id) else {
+        return false;
+    };
+    if r.peer_id != peer_id {
+        recv.insert(transfer_id.to_string(), r);
+        return false;
+    }
+    let _ = std::fs::remove_file(&r.tmp_path);
+    let dbc = state.db.lock().unwrap();
+    db::upsert_transfer(
+        &dbc,
+        transfer_id,
+        &r.peer_id,
+        &r.name,
+        r.size,
+        "receive",
+        "failed",
+        None,
+        0.0,
+    )
+    .ok();
+    emit_failed(state, transfer_id, reason);
+    true
+}
+
+/// 对端断链时终止其所有未完成接收，避免下载目录长期堆积临时文件。
+pub fn fail_receives_for_peer(state: &AppState, peer_id: &str) {
+    let ids: Vec<String> = state
+        .file_receivers
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(_, r)| r.peer_id == peer_id)
+        .map(|(id, _)| id.clone())
+        .collect();
+    for id in ids {
+        let _ = fail_receive(state, &id, peer_id, "对端连接已断开");
+    }
+}
+
+/// 接收方：收尾，返回 (name, size, final_path, peer_id)。
+pub fn finish_receive(
+    state: &AppState,
+    transfer_id: &str,
+    peer_id: &str,
+) -> Result<Option<(String, u64, PathBuf, String)>, String> {
+    let mut recv = state.file_receivers.lock().unwrap();
+    let r = match recv.remove(transfer_id) {
+        Some(r) => r,
+        None => return Ok(None),
+    };
+    if r.peer_id != peer_id {
+        recv.insert(transfer_id.to_string(), r);
+        return Err("文件传输来源不匹配".to_string());
+    }
+    if r.received != r.size {
+        let _ = std::fs::remove_file(&r.tmp_path);
+        let dbc = state.db.lock().unwrap();
+        db::upsert_transfer(
+            &dbc,
+            transfer_id,
+            &r.peer_id,
+            &r.name,
+            r.size,
+            "receive",
+            "failed",
+            None,
+            0.0,
+        )
+        .ok();
+        return Err("文件传输未完成".to_string());
+    }
+    if let Err(e) = r.file.sync_all() {
+        let reason = e.to_string();
+        let _ = std::fs::remove_file(&r.tmp_path);
+        let dbc = state.db.lock().unwrap();
+        db::upsert_transfer(
+            &dbc,
+            transfer_id,
+            &r.peer_id,
+            &r.name,
+            r.size,
+            "receive",
+            "failed",
+            None,
+            0.0,
+        )
+        .ok();
+        return Err(reason);
+    }
     drop(r.file);
-    let _ = std::fs::rename(&r.tmp_path, &r.final_path);
+    if let Err(e) = std::fs::rename(&r.tmp_path, &r.final_path) {
+        let reason = e.to_string();
+        let dbc = state.db.lock().unwrap();
+        db::upsert_transfer(
+            &dbc,
+            transfer_id,
+            &r.peer_id,
+            &r.name,
+            r.size,
+            "receive",
+            "failed",
+            None,
+            0.0,
+        )
+        .ok();
+        return Err(reason);
+    }
     {
         let dbc = state.db.lock().unwrap();
-        db::upsert_transfer(&dbc, transfer_id, &r.peer_id, &r.name, r.size, "receive", "done", Some(r.final_path.to_string_lossy().as_ref()), 1.0).ok();
+        db::upsert_transfer(
+            &dbc,
+            transfer_id,
+            &r.peer_id,
+            &r.name,
+            r.size,
+            "receive",
+            "done",
+            Some(r.final_path.to_string_lossy().as_ref()),
+            1.0,
+        )
+        .ok();
     }
-    Some((r.name.clone(), r.size, r.final_path.clone(), r.peer_id.clone()))
+    Ok(Some((
+        r.name.clone(),
+        r.size,
+        r.final_path.clone(),
+        r.peer_id.clone(),
+    )))
 }
 
 /// 递归枚举共享目录树（限制深度 8，跳过隐藏文件）。
@@ -235,14 +526,34 @@ fn walk(dir: &Path, rel: &str, out: &mut Vec<ShareEntry>, depth: usize) {
     };
     for e in entries.flatten() {
         let path = e.path();
+        let Ok(file_type) = e.file_type() else {
+            continue;
+        };
+        // 不跟随符号链接，避免共享目录枚举泄露共享根目录之外的路径。
+        if file_type.is_symlink() {
+            continue;
+        }
         let name = e.file_name().to_string_lossy().to_string();
         if name.starts_with('.') {
             continue;
         }
-        let rel_path = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
-        let is_dir = path.is_dir();
-        let size = if is_dir { 0 } else { std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0) };
-        out.push(ShareEntry { name, path: rel_path.clone(), is_dir, size });
+        let rel_path = if rel.is_empty() {
+            name.clone()
+        } else {
+            format!("{rel}/{name}")
+        };
+        let is_dir = file_type.is_dir();
+        let size = if is_dir {
+            0
+        } else {
+            std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0)
+        };
+        out.push(ShareEntry {
+            name,
+            path: rel_path.clone(),
+            is_dir,
+            size,
+        });
         if is_dir {
             walk(&path, &rel_path, out, depth + 1);
         }
@@ -264,8 +575,8 @@ pub fn classify_file_subtype(name: &str) -> &'static str {
         .unwrap_or_default();
     match ext.as_str() {
         "png" | "jpg" | "jpeg" | "gif" | "webp" => "image",
-        "rs" | "ts" | "tsx" | "js" | "jsx" | "vue" | "py" | "go" | "java" | "c" | "cpp"
-        | "h" | "hpp" | "json" | "yaml" | "yml" | "md" | "html" | "css" | "sql" | "sh" => "code",
+        "rs" | "ts" | "tsx" | "js" | "jsx" | "vue" | "py" | "go" | "java" | "c" | "cpp" | "h"
+        | "hpp" | "json" | "yaml" | "yml" | "md" | "html" | "css" | "sql" | "sh" => "code",
         _ => "file",
     }
 }
@@ -276,8 +587,14 @@ fn unique_path(dir: &Path, name: &str) -> PathBuf {
     if !base.exists() {
         return base;
     }
-    let stem = base.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-    let ext = base.extension().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let stem = base
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let ext = base
+        .extension()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
     for i in 1..1000 {
         let cand = if ext.is_empty() {
             dir.join(format!("{stem} ({i})"))
@@ -291,7 +608,19 @@ fn unique_path(dir: &Path, name: &str) -> PathBuf {
     base
 }
 
+/// 文件名来自远端协议，必须只允许 basename，避免 `../` / Windows `\\` 穿越下载目录。
+pub(crate) fn safe_file_name(name: &str) -> Option<String> {
+    if name.is_empty() || name == "." || name == ".." || name.contains('\0') {
+        return None;
+    }
+    if name.contains('/') || name.contains('\\') {
+        return None;
+    }
+    Some(name.to_string())
+}
+
 /// 人类可读的文件大小。
+#[allow(dead_code)]
 pub fn human_size(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     let mut v = bytes as f64;
@@ -305,7 +634,7 @@ pub fn human_size(bytes: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::classify_file_subtype;
+    use super::{classify_file_subtype, safe_file_name};
 
     #[test]
     fn image_extensions() {
@@ -317,9 +646,9 @@ mod tests {
     #[test]
     fn code_extensions() {
         for n in [
-            "a.rs", "a.ts", "a.tsx", "a.js", "a.jsx", "a.vue", "a.py", "a.go", "a.java",
-            "a.c", "a.cpp", "a.h", "a.hpp", "a.json", "a.yaml", "a.yml", "a.md",
-            "a.html", "a.css", "a.sql", "a.sh",
+            "a.rs", "a.ts", "a.tsx", "a.js", "a.jsx", "a.vue", "a.py", "a.go", "a.java", "a.c",
+            "a.cpp", "a.h", "a.hpp", "a.json", "a.yaml", "a.yml", "a.md", "a.html", "a.css",
+            "a.sql", "a.sh",
         ] {
             assert_eq!(classify_file_subtype(n), "code", "{n}");
         }
@@ -327,7 +656,9 @@ mod tests {
 
     #[test]
     fn other_files() {
-        for n in ["a.exe", "a.zip", "a.pdf", "a.docx", "a.txt", "Makefile", "LICENSE"] {
+        for n in [
+            "a.exe", "a.zip", "a.pdf", "a.docx", "a.txt", "Makefile", "LICENSE",
+        ] {
             assert_eq!(classify_file_subtype(n), "file", "{n}");
         }
     }
@@ -342,5 +673,13 @@ mod tests {
         assert_eq!(classify_file_subtype("代码.rs"), "code");
         assert_eq!(classify_file_subtype(".gitignore"), "file"); // 隐藏文件无有效扩展
         assert_eq!(classify_file_subtype(""), "file");
+    }
+
+    #[test]
+    fn rejects_path_traversal_file_names() {
+        for name in ["../secret.txt", "..\\secret.txt", "/tmp/secret", "..", ""] {
+            assert!(safe_file_name(name).is_none(), "{name} must be rejected");
+        }
+        assert_eq!(safe_file_name("report.txt").as_deref(), Some("report.txt"));
     }
 }

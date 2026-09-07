@@ -10,8 +10,10 @@ import type {
   Conversation,
   DeviceInfo,
   FileDoneInfo,
+  FileFailedInfo,
   FileProgress,
   Friend,
+  GroupReadInfo,
   Group,
   SearchResult,
   InterfaceInfo,
@@ -67,6 +69,7 @@ export const api = {
   groupRemoveMember: (groupId: string, deviceId: string) =>
     invoke<void>("group_remove_member", { groupId, deviceId }),
   getGroups: () => invoke<Group[]>("get_groups"),
+  getGroupReads: (groupId: string) => invoke<GroupReadInfo[]>("get_group_reads", { groupId }),
   sendGroupMessage: (groupId: string, content: string, kind: string) =>
     invoke<MessageRecord>("send_group_message", { groupId, content, kind }),
 
@@ -130,8 +133,10 @@ export type EventHandlers = {
   onMessage: (rec: MessageRecord) => void;
   onMessageAcked: (msgId: string) => void;
   onPeerRead: (p: PeerReadInfo) => void;
+  onGroupRead: (p: GroupReadInfo) => void;
   onFileProgress: (p: FileProgress) => void;
   onFileDone: (d: FileDoneInfo) => void;
+  onFileFailed: (d: FileFailedInfo) => void;
   onPeerStyle: (p: PeerStyleUpdate) => void;
   /** 群信息变更（群密钥建群 / 群改名 / 成员变更） */
   onGroupsUpdated: (groupId: string) => void;
@@ -151,8 +156,10 @@ export async function bindEvents(h: EventHandlers): Promise<UnlistenFn[]> {
     listen<MessageRecord>("message-received", (e) => h.onMessage(e.payload)),
     listen<string>("message-acked", (e) => h.onMessageAcked(e.payload)),
     listen<PeerReadInfo>("peer-read", (e) => h.onPeerRead(e.payload)),
+    listen<GroupReadInfo>("group-read", (e) => h.onGroupRead(e.payload)),
     listen<FileProgress>("file-progress", (e) => h.onFileProgress(e.payload)),
     listen<FileDoneInfo>("file-done", (e) => h.onFileDone(e.payload)),
+    listen<FileFailedInfo>("file-failed", (e) => h.onFileFailed(e.payload)),
     listen<PeerStyleUpdate>("peer-style-updated", (e) => h.onPeerStyle(e.payload)),
     listen<string>("groups-updated", (e) => h.onGroupsUpdated(e.payload)),
     listen<string>("group-member-removed", (e) => h.onGroupMemberRemoved(e.payload)),

@@ -18,7 +18,7 @@
   --gosslan-text: #1f2937;
   --gosslan-text-2: #6b7280;
   --gosslan-bubble-mine: #dbeafe;
-  --gosslan-bubble-other: #ffffff;
+  --gosslan-bubble-other: #e7edf4;
   --gosslan-hover: rgba(0, 0, 0, 0.04);
 }
 
@@ -29,7 +29,7 @@
   --gosslan-text: #e5e7eb;
   --gosslan-text-2: #9ca3af;
   --gosslan-bubble-mine: #1d4ed8;
-  --gosslan-bubble-other: #262626;
+  --gosslan-bubble-other: #252e3b;
   --gosslan-hover: rgba(255, 255, 255, 0.06);
 }
 

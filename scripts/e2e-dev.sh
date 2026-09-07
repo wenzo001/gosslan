@@ -42,10 +42,22 @@ printf 'gosslan-dev-share-v1\n' > "$SHARE/hello.txt"
 rm -f "$DB_DIR/downloads/e2e-peer-file"*.txt 2>/dev/null
 
 echo "==> [3/5] 预置 share_dir 配置（实例 1 数据库）+ WAL 收敛"
-# pkill 后旧进程可能尚在退出中（持有 DB 句柄），重试至可写
+# 先区分「数据库尚未由实例初始化」和「旧进程尚未释放锁」；否则 sqlite3
+# 的所有错误都会被原脚本误报成“DB 一直被占用”。
+SCHEMA_CHECK="$(sqlite3 "$DB" "SELECT 1 FROM sqlite_master WHERE type='table' AND name='settings';" 2>&1)"
+if [ "$SCHEMA_CHECK" != "1" ]; then
+  echo "[错误] 实例 1 数据库尚未初始化：请先启动一次 Gosslan（--instance 1）后再运行本脚本"
+  exit 1
+fi
+# pkill 后旧进程可能尚在退出中（持有 DB 句柄），只对锁错误重试
 for i in $(seq 1 10); do
-  if sqlite3 "$DB" "INSERT OR REPLACE INTO settings(key,value) VALUES('share_dir','$SHARE');" 2>/dev/null; then
+  ERR="$(sqlite3 "$DB" "INSERT OR REPLACE INTO settings(key,value) VALUES('share_dir','$SHARE');" 2>&1)"
+  if [ "$?" = "0" ]; then
     break
+  fi
+  if [[ "$ERR" != *locked* && "$ERR" != *busy* ]]; then
+    echo "[错误] share_dir 预置失败：$ERR"
+    exit 1
   fi
   sleep 1
   [ "$i" = "10" ] && { echo "[错误] share_dir 预置失败（DB 一直被占用）"; exit 1; }

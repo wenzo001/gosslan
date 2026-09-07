@@ -1,6 +1,19 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import hljs from "highlight.js";
+import hljs from "highlight.js/lib/core";
+import bash from "highlight.js/lib/languages/bash";
+import css from "highlight.js/lib/languages/css";
+import go from "highlight.js/lib/languages/go";
+import xml from "highlight.js/lib/languages/xml";
+import java from "highlight.js/lib/languages/java";
+import javascript from "highlight.js/lib/languages/javascript";
+import json from "highlight.js/lib/languages/json";
+import markdown from "highlight.js/lib/languages/markdown";
+import python from "highlight.js/lib/languages/python";
+import rust from "highlight.js/lib/languages/rust";
+import sql from "highlight.js/lib/languages/sql";
+import typescript from "highlight.js/lib/languages/typescript";
+import yaml from "highlight.js/lib/languages/yaml";
 import { useAppStore } from "@/stores/useAppStore";
 import darkCss from "highlight.js/styles/github-dark.css?raw";
 import lightCss from "highlight.js/styles/github.css?raw";
@@ -9,6 +22,25 @@ const app = useAppStore();
 
 const props = defineProps<{ code: string; language?: string }>();
 
+for (const [name, language] of Object.entries({
+  bash,
+  css,
+  go,
+  xml,
+  java,
+  javascript,
+  json,
+  markdown,
+  python,
+  rust,
+  sql,
+  typescript,
+  yaml,
+})) {
+  hljs.registerLanguage(name, language);
+}
+hljs.registerLanguage("html", xml);
+
 const lineCount = computed(() => props.code.split("\n").length);
 
 function escapeHtml(s: string): string {
@@ -16,9 +48,8 @@ function escapeHtml(s: string): string {
 }
 
 const AUTO_LANGS = [
-  "rust", "javascript", "typescript", "python", "java", "go", "c", "cpp", "csharp",
-  "json", "bash", "shell", "sql", "html", "css", "xml", "yaml", "markdown",
-  "kotlin", "swift", "php", "ruby", "toml", "ini", "diff", "dockerfile",
+  "rust", "javascript", "typescript", "python", "java", "go", "json", "bash", "shell",
+  "sql", "html", "css", "xml", "yaml", "markdown",
 ];
 const detectedLang = computed(() => {
   if (props.language && hljs.getLanguage(props.language)) return props.language;

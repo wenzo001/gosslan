@@ -40,8 +40,7 @@ pub fn run() {
             {
                 let st = state.clone();
                 tauri::async_runtime::spawn(async move {
-                    let forced =
-                        std::env::var("GOSSLAN_AUTOSTART").ok().as_deref() == Some("1");
+                    let forced = std::env::var("GOSSLAN_AUTOSTART").ok().as_deref() == Some("1");
                     // 键缺失（首次安装 / 旧版本升级）→ 持久化为 true，之后每次启动
                     // 读到明确的 "1" 而非依赖 unwrap_or(true) 的隐式默认。
                     let enabled = {
@@ -99,6 +98,7 @@ pub fn run() {
             commands::group_add_member,
             commands::group_remove_member,
             commands::get_groups,
+            commands::get_group_reads,
             commands::window_minimize,
             commands::window_toggle_maximize,
             commands::window_is_maximized,
@@ -125,7 +125,8 @@ pub fn run() {
         // macOS：点击 Dock 图标且无可见窗口时恢复主窗口（避免「程序没反应」的错觉）
         #[cfg(all(desktop, target_os = "macos"))]
         if let tauri::RunEvent::Reopen {
-            has_visible_windows, ..
+            has_visible_windows,
+            ..
         } = event
         {
             if !has_visible_windows {

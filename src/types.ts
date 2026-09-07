@@ -104,6 +104,11 @@ export interface FileDoneInfo {
   path: string;
 }
 
+export interface FileFailedInfo {
+  transfer_id: string;
+  reason: string;
+}
+
 export interface NetworkStatus {
   online: boolean;
   bound_ip: string | null;
@@ -112,6 +117,13 @@ export interface NetworkStatus {
 /** 对方已读回执（peer-read 事件载荷） */
 export interface PeerReadInfo {
   peer_id: string;
+  last_read_ts: number;
+}
+
+/** 群成员级已读回执。reader_id 读到 last_read_ts 为止。 */
+export interface GroupReadInfo {
+  group_id: string;
+  reader_id: string;
   last_read_ts: number;
 }
 

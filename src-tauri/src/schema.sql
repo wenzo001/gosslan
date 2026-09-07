@@ -59,6 +59,14 @@ CREATE TABLE IF NOT EXISTS group_members (
     PRIMARY KEY (group_id, device_id)
 );
 
+-- 群成员已读位置：每个成员只保留读到的最大时间戳
+CREATE TABLE IF NOT EXISTS group_reads (
+    group_id      TEXT NOT NULL,
+    reader_id     TEXT NOT NULL,
+    last_read_ts  INTEGER NOT NULL,
+    PRIMARY KEY (group_id, reader_id)
+);
+
 -- 离线补发队列（发给离线/未连接好友的消息）
 CREATE TABLE IF NOT EXISTS outbox (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
