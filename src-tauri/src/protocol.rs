@@ -90,6 +90,17 @@ pub struct GossipEnvelope {
     pub ttl: u8,
     pub kind: GossipKind,
     pub group_id: Option<String>,
+    /// 群名快照：随消息广播，接收方本地无群记录时可直接展示正确群名
+    /// （不参与 `compute_message_id` 哈希，不影响跨路径去重）。
+    #[serde(default)]
+    pub group_name: Option<String>,
+    /// 群创建者 ID + 当前成员列表：随群消息广播，使只收到群消息、
+    /// 从未收到 GroupKey 的成员也能据此在本地建立/刷新群记录（含成员）。
+    /// 与 `group_name` 同理，不参与 message_id 哈希。
+    #[serde(default)]
+    pub group_creator: Option<String>,
+    #[serde(default)]
+    pub group_members: Vec<String>,
     pub payload: String,
     pub ts: i64,
     #[serde(default = "default_encrypted")]
@@ -247,12 +258,31 @@ pub enum Message {
         to: String,
         ttl: u8,
     },
-    /// 群密钥分发（用成员公钥 ECDH 加密的群密钥）
+    /// 群密钥分发（用成员公钥 ECDH 加密的群密钥）。
+    /// 同时携带群名与成员列表：成员端据此在本地建群记录，
+    /// 否则收到首条群消息时只能兜底成「群聊 g-xxxx」。
     GroupKey {
         group_id: String,
         from: String,
         to: String,
         key: String,
+        #[serde(default)]
+        group_name: String,
+        #[serde(default)]
+        members: Vec<String>,
+    },
+    /// 群名变更广播（创建者改名后通知各成员同步本地群名）
+    GroupRename {
+        group_id: String,
+        from: String,
+        name: String,
+    },
+    /// 成员被移出群：仅群创建者发起，发给被移除的成员本人。
+    /// 接收方删除本地群记录与会话，并撤销群密钥。
+    GroupMemberRemoved {
+        group_id: String,
+        from: String,
+        to: String,
     },
     /// 中继文件传输元数据（切片总数等，先于 RelayChunk）
     RelayFileOffer {
@@ -295,6 +325,9 @@ mod tests {
             ttl: 6,
             kind: GossipKind::Chat,
             group_id: None,
+            group_name: None,
+            group_creator: None,
+            group_members: Vec::new(),
             payload: "ciphertext".into(),
             ts: 123456,
             encrypted: true,

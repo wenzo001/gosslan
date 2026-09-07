@@ -60,9 +60,21 @@ export const api = {
 
   createGroup: (name: string, members: string[]) => invoke<Group>("create_group", { name, members }),
   distributeGroupKey: (groupId: string) => invoke<void>("distribute_group_key", { groupId }),
+  renameGroup: (groupId: string, name: string) =>
+    invoke<void>("rename_group", { groupId, name }),
+  groupAddMember: (groupId: string, deviceId: string) =>
+    invoke<void>("group_add_member", { groupId, deviceId }),
+  groupRemoveMember: (groupId: string, deviceId: string) =>
+    invoke<void>("group_remove_member", { groupId, deviceId }),
   getGroups: () => invoke<Group[]>("get_groups"),
   sendGroupMessage: (groupId: string, content: string, kind: string) =>
     invoke<MessageRecord>("send_group_message", { groupId, content, kind }),
+
+  // 自绘标题栏：窗口控制
+  windowMinimize: () => invoke<void>("window_minimize"),
+  windowToggleMaximize: () => invoke<boolean>("window_toggle_maximize"),
+  windowIsMaximized: () => invoke<boolean>("window_is_maximized"),
+  windowClose: () => invoke<void>("window_close"),
 
   sendFile: (friendId: string, path: string) => invoke<string>("send_file", { friendId, path }),
   sendFileAuto: (friendId: string, path: string) =>
@@ -121,6 +133,10 @@ export type EventHandlers = {
   onFileProgress: (p: FileProgress) => void;
   onFileDone: (d: FileDoneInfo) => void;
   onPeerStyle: (p: PeerStyleUpdate) => void;
+  /** 群信息变更（群密钥建群 / 群改名 / 成员变更） */
+  onGroupsUpdated: (groupId: string) => void;
+  /** 自己被移出群（group_id） */
+  onGroupMemberRemoved: (groupId: string) => void;
 };
 
 /** 注册所有后端事件监听，返回取消函数集合。 */
@@ -138,6 +154,8 @@ export async function bindEvents(h: EventHandlers): Promise<UnlistenFn[]> {
     listen<FileProgress>("file-progress", (e) => h.onFileProgress(e.payload)),
     listen<FileDoneInfo>("file-done", (e) => h.onFileDone(e.payload)),
     listen<PeerStyleUpdate>("peer-style-updated", (e) => h.onPeerStyle(e.payload)),
+    listen<string>("groups-updated", (e) => h.onGroupsUpdated(e.payload)),
+    listen<string>("group-member-removed", (e) => h.onGroupMemberRemoved(e.payload)),
   ]);
   return unlisteners;
 }

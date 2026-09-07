@@ -1,11 +1,14 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import dayjs from "dayjs";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import MessageItem from "@/components/MessageItem.vue";
 import VirtualList from "@/components/VirtualList.vue";
+import GroupMemberPanel from "@/components/GroupMemberPanel.vue";
+import EmojiPicker from "@/components/EmojiPicker.vue";
+import BaseModal from "@/components/BaseModal.vue";
 import {
   CLAMPED_CODE_BLOCK_HEIGHT,
   codeBlockHeight,
@@ -18,7 +21,10 @@ import {
   FilePlus,
   FolderOpen,
   Lock,
+  Pencil,
   Send,
+  Smile,
+  Users,
 } from "lucide-vue-next";
 import type { MessageRecord } from "@/types";
 
@@ -62,6 +68,42 @@ const online = computed(() => {
   if (!conv.value || conv.value.kind !== "single") return false;
   return chat.friends.some((f) => f.device_id === conv.value!.id && f.online);
 });
+
+// ---------------- 群：成员面板 + 改名 ----------------
+const membersOpen = ref(false);
+const activeGroupId = computed(() =>
+  isGroup.value && chat.activeConv ? chat.activeConv.slice(6) : null,
+);
+const memberCount = computed(() => {
+  const gid = activeGroupId.value;
+  if (!gid) return 0;
+  return chat.groups.find((g) => g.id === gid)?.members.length ?? 0;
+});
+const canRename = computed(() => {
+  const gid = activeGroupId.value;
+  if (!gid) return false;
+  return chat.groups.find((g) => g.id === gid)?.creator === app.device?.device_id;
+});
+const renameOpen = ref(false);
+const renameInput = ref("");
+function openRename() {
+  const gid = activeGroupId.value;
+  if (!gid) return;
+  renameInput.value = chat.groups.find((g) => g.id === gid)?.name ?? "";
+  renameOpen.value = true;
+}
+async function confirmRename() {
+  const gid = activeGroupId.value;
+  const name = renameInput.value.trim();
+  renameOpen.value = false;
+  if (!gid || !name) return;
+  try {
+    await chat.renameGroup(gid, name);
+    app.toast("群名称已更新", "success");
+  } catch (e) {
+    app.toast(`重命名失败：${e}`, "error");
+  }
+}
 
 /** 当前会话的第一条未读索引（后端 markRead 前已记录，随历史 prepend 偏移）。 */
 const unreadIndex = computed(() => {
@@ -224,6 +266,37 @@ function onKeydown(e: KeyboardEvent) {
   }
 }
 
+// ---------------- 表情面板 ----------------
+const emojiOpen = ref(false);
+
+/** 点击面板外关闭（面板自身已 @click.stop，触发按钮也 stop） */
+function onDocClickForEmoji() {
+  emojiOpen.value = false;
+}
+onMounted(() => document.addEventListener("click", onDocClickForEmoji));
+onUnmounted(() => document.removeEventListener("click", onDocClickForEmoji));
+watch(emojiOpen, () => {
+  if (emojiOpen.value) autoResize();
+});
+
+/** 把表情插到输入框光标处（无光标信息则追加末尾），保持焦点便于连续插入。 */
+function insertEmoji(e: string) {
+  const el = inputRef.value;
+  if (!el) {
+    draft.value += e;
+    return;
+  }
+  const start = el.selectionStart ?? draft.value.length;
+  const end = el.selectionEnd ?? draft.value.length;
+  draft.value = draft.value.slice(0, start) + e + draft.value.slice(end);
+  void nextTick(() => {
+    el.focus();
+    const pos = start + e.length;
+    el.setSelectionRange(pos, pos);
+    autoResize();
+  });
+}
+
 /** 统一发送文件：自动路由（直连优先，弱网/无直连自动中继），无需用户选择。 */
 async function attachFile() {
   const convId = chat.activeConv;
@@ -308,14 +381,33 @@ function fileToDataUrl(f: File): Promise<string> {
           {{ online ? "对方在线" : "对方离线" }}
         </span>
       </div>
-      <button
-        v-if="!isGroup"
-        class="flex items-center justify-center rounded-lg p-2 text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-        title="共享目录"
-        @click="emit('open-share')"
-      >
-        <FolderOpen class="h-5 w-5" />
-      </button>
+      <div class="flex items-center gap-1">
+        <button
+          v-if="isGroup"
+          class="flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+          title="群成员"
+          @click="membersOpen = true"
+        >
+          <Users class="h-4 w-4" />
+          {{ memberCount }}
+        </button>
+        <button
+          v-if="isGroup && canRename"
+          class="flex items-center justify-center rounded-lg p-2 text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+          title="修改群名称"
+          @click="openRename"
+        >
+          <Pencil class="h-4 w-4" />
+        </button>
+        <button
+          v-if="!isGroup"
+          class="flex items-center justify-center rounded-lg p-2 text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+          title="共享目录"
+          @click="emit('open-share')"
+        >
+          <FolderOpen class="h-5 w-5" />
+        </button>
+      </div>
     </div>
 
     <!-- 消息区（虚拟滚动，仅纵向） -->
@@ -372,6 +464,17 @@ function fileToDataUrl(f: File): Promise<string> {
       </div>
       <div class="mt-2 flex items-center justify-between gap-2">
         <div class="flex min-w-0 items-center gap-1">
+          <div class="relative">
+            <button
+              class="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs transition"
+              :class="emojiOpen ? 'bg-primary-light text-primary' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
+              title="表情"
+              @click.stop="emojiOpen = !emojiOpen"
+            >
+              <Smile class="h-4 w-4" />
+            </button>
+            <EmojiPicker :open="emojiOpen" @select="insertEmoji" @close="emojiOpen = false" />
+          </div>
           <button
             class="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs transition"
             :class="codeMode ? 'bg-primary-light text-primary' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
@@ -400,5 +503,33 @@ function fileToDataUrl(f: File): Promise<string> {
         </button>
       </div>
     </div>
+
+    <!-- 群成员面板 -->
+    <GroupMemberPanel :open="membersOpen" :group-id="activeGroupId" @close="membersOpen = false" />
+
+    <!-- 修改群名称（仅群主可见入口） -->
+    <BaseModal :open="renameOpen" title="修改群名称" @close="renameOpen = false">
+      <div class="space-y-3">
+        <input
+          v-model="renameInput"
+          maxlength="30"
+          placeholder="请输入群名称"
+          class="w-full rounded-lg bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none"
+          @keydown.enter="confirmRename"
+        />
+        <p class="text-xs text-[var(--gosslan-text-2)]">修改后会同步给所有群成员。</p>
+        <div class="flex justify-end gap-2 pt-1">
+          <button
+            class="rounded-lg px-4 py-1.5 text-sm transition hover:bg-[var(--gosslan-hover)]"
+            @click="renameOpen = false"
+          >取消</button>
+          <button
+            class="rounded-lg bg-primary px-4 py-1.5 text-sm text-white transition hover:bg-primary-hover disabled:opacity-40"
+            :disabled="!renameInput.trim()"
+            @click="confirmRename"
+          >保存</button>
+        </div>
+      </div>
+    </BaseModal>
   </div>
 </template>

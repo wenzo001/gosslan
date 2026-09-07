@@ -18,7 +18,7 @@ use tokio::sync::{mpsc, watch};
 use tokio::time::Duration;
 use x25519_dalek::StaticSecret;
 
-use crate::commands::is_virtual_ip;
+use crate::commands::{is_virtual_ip, MAX_GROUP_NAME_LEN};
 use crate::crypto;
 use crate::db;
 use crate::network::file;
@@ -694,8 +694,14 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             handle_relay_chunk(state, transfer_id, seq, data, from, to, ttl).await;
         }
         // ---- 群密钥分发 ----
-        Message::GroupKey { group_id, from, to, key } => {
-            handle_group_key(state, group_id, from, to, key).await;
+        Message::GroupKey { group_id, from, to, key, group_name, members } => {
+            handle_group_key(state, group_id, from, to, key, group_name, members).await;
+        }
+        Message::GroupRename { group_id, from, name } => {
+            handle_group_rename(state, group_id, from, name).await;
+        }
+        Message::GroupMemberRemoved { group_id, from, to } => {
+            handle_group_member_removed(state, group_id, from, to).await;
         }
     }
 }
@@ -922,6 +928,7 @@ async fn handle_gossip(state: &Arc<AppState>, _peer_id: &str, env: GossipEnvelop
                                 &state.device_id,
                                 GossipKind::FriendMessageBlocked,
                                 None,
+                                None,
                                 &payload_b64,
                                 db::now_ms(),
                             )
@@ -945,6 +952,27 @@ async fn handle_gossip(state: &Arc<AppState>, _peer_id: &str, env: GossipEnvelop
                     GossipKind::Group => resolve_group_name(state, env.group_id.as_deref().unwrap_or("")),
                     _ => return,
                 };
+                // 群消息顺带建群：成员端可能从未收到 GroupKey（本地无 groups 行），
+                // 但这条群消息携带了完整成员表 → 据此 upsert 建群，成员面板才能显示。
+                // 已有则只刷新（成员随踢人/加人变化时也能及时同步）。
+                if env.kind == GossipKind::Group {
+                    if let (Some(gid), Some(creator), true) = (
+                        env.group_id.clone(),
+                        env.group_creator.clone(),
+                        !env.group_members.is_empty(),
+                    ) {
+                        let display_name = env.group_name.clone().unwrap_or_else(|| name.clone());
+                        let mut all = env.group_members.clone();
+                        if !all.contains(&state.device_id) {
+                            all.push(state.device_id.clone());
+                        }
+                        {
+                            let dbc = state.db.lock().unwrap();
+                            db::upsert_group(&dbc, &gid, &display_name, &creator, &all).ok();
+                        }
+                        let _ = state.app.emit("groups-updated", &gid);
+                    }
+                }
                 let preview = preview_content(&kind, &content);
                 // 持锁块只做落库；await（fanout 转发已在前面）之后无持锁操作
                 // 业务幂等裁决：Direct（含 outbox 补发）可能已经把同一 msg_id 落库，此时
@@ -1100,7 +1128,16 @@ fn save_received_bytes(state: &AppState, name: &str, bytes: &[u8]) -> PathBuf {
 
 // ---------------- 群密钥 ----------------
 
-async fn handle_group_key(state: &Arc<AppState>, group_id: String, from: String, to: String, key: String) {
+#[allow(clippy::too_many_arguments)]
+async fn handle_group_key(
+    state: &Arc<AppState>,
+    group_id: String,
+    from: String,
+    to: String,
+    key: String,
+    group_name: String,
+    members: Vec<String>,
+) {
     if to != state.device_id {
         return;
     }
@@ -1122,7 +1159,77 @@ async fn handle_group_key(state: &Arc<AppState>, group_id: String, from: String,
         let dbc = state.db.lock().unwrap();
         db::set_setting(&dbc, &format!("gk:{group_id}"), &STANDARD.encode(k)).ok();
     }
+    // 建本地群记录：没有它，收到群消息时群名只能兜底成「群聊 g-xxxx」，
+    // 成员面板也会为空。成员列表补上自己，保证与创建者一致。
+    let mut all = members;
+    if !all.contains(&state.device_id) {
+        all.push(state.device_id.clone());
+    }
+    let conv_id = format!("group:{group_id}");
+    let display_name = if group_name.is_empty() {
+        resolve_group_name(state, &group_id)
+    } else {
+        group_name
+    };
+    {
+        let dbc = state.db.lock().unwrap();
+        db::upsert_group(&dbc, &group_id, &display_name, &from, &all).ok();
+        db::ensure_conversation(&dbc, &conv_id, "group", &display_name, None).ok();
+    }
     let _ = state.app.emit("group-key-received", &group_id);
+    let _ = state.app.emit("groups-updated", &group_id);
+}
+
+/// 处理群名变更广播：仅群创建者可发起，成员端校验后同步本地群名与会话标题。
+async fn handle_group_rename(state: &Arc<AppState>, group_id: String, from: String, name: String) {
+    if name.is_empty() || from == state.device_id {
+        return;
+    }
+    let name: String = name.chars().take(MAX_GROUP_NAME_LEN).collect();
+    // 只接受群创建者的改名
+    let is_creator = {
+        let dbc = state.db.lock().unwrap();
+        db::get_group(&dbc, &group_id)
+            .map(|g| g.creator == from)
+            .unwrap_or(false)
+    };
+    if !is_creator {
+        return;
+    }
+    {
+        let dbc = state.db.lock().unwrap();
+        db::rename_group(&dbc, &group_id, &name).ok();
+    }
+    let _ = state.app.emit("groups-updated", &group_id);
+}
+
+/// 处理「成员被移出群」：仅当 `to` 是自己且发起方是群创建者时，清理本地群 + 会话 + 密钥。
+async fn handle_group_member_removed(
+    state: &Arc<AppState>,
+    group_id: String,
+    from: String,
+    to: String,
+) {
+    if to != state.device_id || from == state.device_id {
+        return;
+    }
+    let is_creator = {
+        let dbc = state.db.lock().unwrap();
+        db::get_group(&dbc, &group_id)
+            .map(|g| g.creator == from)
+            .unwrap_or(false)
+    };
+    if !is_creator {
+        return;
+    }
+    {
+        let dbc = state.db.lock().unwrap();
+        db::delete_group(&dbc, &group_id).ok();
+        let _ = dbc.execute("DELETE FROM settings WHERE key = ?1", params![format!("gk:{group_id}")]);
+    }
+    state.group_keys.lock().unwrap().remove(&group_id);
+    let _ = state.app.emit("group-member-removed", &group_id);
+    let _ = state.app.emit("groups-updated", &group_id);
 }
 
 pub async fn get_group_key(state: &AppState, group_id: &str) -> Option<[u8; 32]> {
@@ -1255,6 +1362,8 @@ async fn redistribute_group_keys(state: &AppState, peer_id: &str) {
             from: state.device_id.clone(),
             to: peer_id.to_string(),
             key: STANDARD.encode(&sealed),
+            group_name: g.name.clone(),
+            members: g.members.clone(),
         };
         let _ = try_send(state, peer_id, &msg).await;
     }
@@ -1453,7 +1562,7 @@ mod tests {
 
         // 构造并签名信封
         let engine = GossipEngine::new(100, 10, 4, 6);
-        let env = engine.build_envelope(&a, "dev-a", GossipKind::Chat, None, &payload_b64, 1);
+        let env = engine.build_envelope(&a, "dev-a", GossipKind::Chat, None, None, &payload_b64, 1);
 
         // B 验签 + 解密
         assert!(engine.verify_envelope(&env));

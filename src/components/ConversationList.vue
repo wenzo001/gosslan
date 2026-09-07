@@ -4,15 +4,20 @@ import dayjs from "dayjs";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { api } from "@/api";
-import { Check, Search, UserMinus, UserPlus, UsersRound, X } from "lucide-vue-next";
+import { Bell, Check, Search, UserMinus, UserPlus, UsersRound, X } from "lucide-vue-next";
 import BaseModal from "@/components/BaseModal.vue";
 import type { Conversation, Friend, PendingRequest, SearchResult } from "@/types";
 
-defineProps<{ view: "chats" | "contacts" }>();
+const props = defineProps<{
+  view: "chats" | "contacts";
+  /** 正在查看资料的好友 ID：通讯录里对应好友高亮 */
+  activeFriendId?: string | null;
+}>();
 const emit = defineEmits<{
   (e: "update:view", v: "chats" | "contacts"): void;
   (e: "open-add-friend"): void;
   (e: "open-group"): void;
+  (e: "open-friend", f: Friend): void;
 }>();
 
 const app = useAppStore();
@@ -99,6 +104,19 @@ const filteredFriends = computed(() => {
   return chat.friends.filter((f) => f.nickname.toLowerCase().includes(kw));
 });
 
+/** 通讯录页「好友申请」铃铛展开态：有申请时切到通讯录自动展开，便于处理。 */
+const requestsOpen = ref(false);
+function toggleRequests() {
+  requestsOpen.value = !requestsOpen.value;
+}
+// 一进通讯录，若有未处理申请则默认展开申请区
+watch(
+  () => props.view,
+  (v) => {
+    if (v === "contacts") requestsOpen.value = chat.pendingRequests.length > 0;
+  },
+);
+
 function fmtTime(ts: number | null) {
   if (!ts) return "";
   const d = dayjs(ts);
@@ -121,8 +139,9 @@ function open(conv: Conversation) {
   chat.openConversation(conv.id);
   if (app.isMobile) app.mobileView = "chat";
 }
+/** 通讯录点击好友 → 打开资料页（发消息由资料页按钮触发，不再直接开会话） */
 function openFriend(f: Friend) {
-  chat.openConversation(f.device_id);
+  emit("open-friend", f);
   if (app.isMobile) app.mobileView = "chat";
 }
 async function accept(r: PendingRequest) {
@@ -209,6 +228,22 @@ onUnmounted(() => {
     <div class="flex items-center justify-between px-4" style="height: 56px">
       <span class="text-base font-semibold">{{ view === "chats" ? "消息" : "联系人" }}</span>
       <div class="flex items-center gap-1">
+        <!-- 通讯录：好友申请铃铛（带待处理数红点），点开查看/处理申请 -->
+        <button
+          v-if="view === 'contacts'"
+          class="relative flex items-center justify-center rounded-lg p-2 transition"
+          :class="requestsOpen ? 'bg-primary-light text-primary' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
+          :title="chat.pendingRequests.length ? `好友申请（${chat.pendingRequests.length}）` : '好友申请'"
+          @click="toggleRequests"
+        >
+          <Bell class="h-[18px] w-[18px]" />
+          <span
+            v-if="chat.pendingRequests.length"
+            class="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-medium text-white"
+          >
+            {{ chat.pendingRequests.length > 99 ? "99+" : chat.pendingRequests.length }}
+          </span>
+        </button>
         <button
           class="flex items-center justify-center rounded-lg p-2 text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
           title="添加好友"
@@ -310,16 +345,24 @@ onUnmounted(() => {
       </template>
 
       <template v-else>
-        <!-- 好友申请 -->
-        <div v-if="chat.pendingRequests.length" class="mb-2">
-          <div class="px-2 pb-1 text-[11px] font-medium uppercase tracking-wide text-[var(--gosslan-text-2)]">
-            好友申请
-          </div>
-          <div
-            v-for="r in chat.pendingRequests"
-            :key="r.from"
-            class="flex items-center gap-3 rounded-xl px-2 py-2"
-          >
+        <!-- 好友申请（点通讯录头部铃铛展开） -->
+        <div v-if="requestsOpen" class="mb-1">
+          <div v-if="chat.pendingRequests.length" class="rounded-xl">
+            <div class="flex items-center justify-between px-2 pb-1 pt-0.5 text-[11px] font-medium uppercase tracking-wide text-[var(--gosslan-text-2)]">
+              <span>好友申请</span>
+              <button
+                class="flex items-center justify-center rounded p-0.5 text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+                title="收起"
+                @click="requestsOpen = false"
+              >
+                <X class="h-3.5 w-3.5" />
+              </button>
+            </div>
+            <div
+              v-for="r in chat.pendingRequests"
+              :key="r.from"
+              class="flex items-center gap-3 rounded-xl px-2 py-2"
+            >
             <div class="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-full bg-primary text-white">
               <img v-if="r.from_avatar" :src="r.from_avatar" class="h-full w-full object-cover" />
               <span v-else class="text-sm font-semibold">{{ initials(r.from_nickname) }}</span>
@@ -343,20 +386,31 @@ onUnmounted(() => {
               <X class="h-4 w-4" />
             </button>
           </div>
+          </div>
+          <div v-else class="flex items-center justify-between rounded-xl px-2 py-1.5 text-xs text-[var(--gosslan-text-2)]">
+            <span>暂无好友申请</span>
+            <button
+              class="flex items-center justify-center rounded p-0.5 transition hover:bg-[var(--gosslan-hover)]"
+              title="收起"
+              @click="requestsOpen = false"
+            >
+              <X class="h-3.5 w-3.5" />
+            </button>
+          </div>
         </div>
 
         <div
           v-for="f in filteredFriends"
           :key="f.device_id"
-          v-memo="[f.nickname, f.avatar, f.online, chat.activeConv === f.device_id]"
+          v-memo="[f.nickname, f.avatar, f.online, props.activeFriendId === f.device_id]"
           class="relative flex cursor-pointer items-center gap-3 rounded-xl px-2 py-2 transition hover:bg-[var(--gosslan-hover)]"
-          :class="chat.activeConv === f.device_id ? 'bg-primary-light' : ''"
+          :class="props.activeFriendId === f.device_id ? 'bg-primary-light' : ''"
           @click="openFriend(f)"
           @contextmenu="onFriendContext($event, f)"
         >
-          <!-- 选中态指示条：与右侧聊天窗联动 -->
+          <!-- 选中态指示条：与右侧资料页联动 -->
           <span
-            v-if="chat.activeConv === f.device_id"
+            v-if="props.activeFriendId === f.device_id"
             class="absolute left-0 top-1/2 h-6 w-[3px] -translate-y-1/2 rounded-full bg-primary"
           ></span>
           <div class="relative">
@@ -375,9 +429,9 @@ onUnmounted(() => {
           <div class="min-w-0 flex-1">
             <div
               class="truncate text-sm font-medium"
-              :class="chat.activeConv === f.device_id ? 'text-primary' : ''"
+              :class="props.activeFriendId === f.device_id ? 'text-primary' : ''"
             >{{ f.nickname }}</div>
-            <div class="text-xs text-[var(--gosslan-text-2)]">{{ f.online ? "在线" : "离线" }}</div>
+            <div class="text-xs text-[var(--gosslan-text-2)]">{{ f.online ? "在线 · 查看资料" : "离线 · 查看资料" }}</div>
           </div>
         </div>
         <div v-if="filteredFriends.length === 0" class="mt-16 text-center text-sm text-[var(--gosslan-text-2)]">

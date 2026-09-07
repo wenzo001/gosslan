@@ -146,6 +146,25 @@ export const useChatStore = defineStore("chat", () => {
       list.push(m);
       byConv.set(m.conv_id, list);
     }
+    // 未读增量只统计「本地真正新增」的消息：后端对同一条业务消息可能经多条投递路径
+    // （直连 / outbox 补发 / Gossip 转发）反复 emit `message-received`，若按整批长度累加，
+    // 重复投递会一次次 +1，导致「发几条、数字却几十」——未读数虚高的根因。
+    // 按 msg_id 与内存已有消息比对后，再据此累加 unread。
+    const existingIdsByConv = new Map<string, Set<string>>();
+    for (const [cid, list] of Object.entries(messages.value)) {
+      existingIdsByConv.set(cid, new Set(list.map((m) => m.msg_id)));
+    }
+    const newByConv = new Map<string, MessageRecord[]>();
+    for (const [cid, list] of byConv) {
+      const known = existingIdsByConv.get(cid) ?? new Set<string>();
+      const fresh: MessageRecord[] = [];
+      for (const item of list) {
+        if (known.has(item.msg_id)) continue; // 重复投递：不计入未读
+        known.add(item.msg_id);
+        fresh.push(item);
+      }
+      if (fresh.length) newByConv.set(cid, fresh);
+    }
     // 会话列表中不存在的会话（新好友 / 后端新创建）：本地合并不了，直接从后端拉取
     const knownIds = new Set(conversations.value.map((c) => c.id));
     const missing = [...byConv.keys()].filter((id) => !knownIds.has(id));
@@ -154,12 +173,13 @@ export const useChatStore = defineStore("chat", () => {
       messages.value[convId] = mergeMessages(existing, incoming);
     }
     if (missing.length > 0) {
+      // 新会话：以 DB 为准拉全量（DB 已按新消息 +1），前端不再自行叠加
       await refreshConversations();
     } else {
       conversations.value = applyIncomingToConversations(
         conversations.value,
         activeConv.value,
-        byConv,
+        newByConv,
       );
     }
   }
@@ -398,6 +418,47 @@ export const useChatStore = defineStore("chat", () => {
     return g;
   }
 
+  /** 重命名群（仅群主）。乐观更新会话标题，失败回滚。 */
+  async function renameGroup(groupId: string, name: string) {
+    const convId = `group:${groupId}`;
+    const prevConvs = conversations.value;
+    conversations.value = conversations.value.map((c) => (c.id === convId ? { ...c, name } : c));
+    try {
+      await api.renameGroup(groupId, name);
+      await refreshGroups();
+      await refreshConversations();
+    } catch (e) {
+      conversations.value = prevConvs;
+      throw e;
+    }
+  }
+
+  /** 加人入群（群主）。 */
+  async function addGroupMember(groupId: string, deviceId: string) {
+    await api.groupAddMember(groupId, deviceId);
+    await refreshGroups();
+    await refreshConversations();
+  }
+
+  /** 移除成员（群主）。 */
+  async function removeGroupMember(groupId: string, deviceId: string) {
+    await api.groupRemoveMember(groupId, deviceId);
+    await refreshGroups();
+    await refreshConversations();
+  }
+
+  /** 自己被移出群：关闭该会话并刷新。 */
+  async function handleSelfRemovedFromGroup(groupId: string) {
+    const convId = `group:${groupId}`;
+    if (activeConv.value === convId) {
+      activeConv.value = null;
+      unreadJump.value = null;
+    }
+    delete messages.value[convId];
+    await refreshGroups();
+    await refreshConversations();
+  }
+
   /** 统一文件发送：后端自动路由（有直连走直连，无直连自动中继）。 */
   async function sendFileTo(convId: string, path: string) {
     if (convId.startsWith("group:")) return null;
@@ -555,6 +616,15 @@ export const useChatStore = defineStore("chat", () => {
       onPeerStyle: (p) => {
         app.applyPeerStyle(p.device_id, p.style);
       },
+      onGroupsUpdated: () => {
+        // 群密钥建群 / 群改名 / 成员变更：本地群表与会话标题可能都变了
+        void refreshGroups();
+        void refreshConversations();
+      },
+      onGroupMemberRemoved: (groupId) => {
+        // 被移出群：后端已删本地群，前端关闭会话 + 刷新
+        void handleSelfRemovedFromGroup(groupId);
+      },
     });
     // 注册系统通知点击回调：点击通知 → 唤起窗口 + 定位到发送者会话
     void onAction((n) => {
@@ -624,6 +694,10 @@ export const useChatStore = defineStore("chat", () => {
     removeFriend,
     deleteConversation,
     createGroup,
+    renameGroup,
+    addGroupMember,
+    removeGroupMember,
+    handleSelfRemovedFromGroup,
     sendFileTo,
     sendFileRelayTo,
     enqueueMessage,

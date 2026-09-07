@@ -13,6 +13,11 @@ const emit = defineEmits<{
 const app = useAppStore();
 const chat = useChatStore();
 const initials = computed(() => (app.device?.nickname ?? "?").slice(0, 1).toUpperCase());
+/** 未读徽标显示上限 */
+const unreadLabel = computed(() => (chat.totalUnread > 99 ? "99+" : String(chat.totalUnread)));
+const pendingLabel = computed(() =>
+  chat.pendingRequests.length > 99 ? "99+" : String(chat.pendingRequests.length),
+);
 </script>
 
 <template>
@@ -37,12 +42,19 @@ const initials = computed(() => (app.device?.nickname ?? "?").slice(0, 1).toUppe
 
     <div class="mt-5 flex flex-col items-center gap-3">
       <button
-        class="flex items-center justify-center rounded-lg p-2.5 transition"
+        class="relative flex items-center justify-center rounded-lg p-2.5 transition"
         :class="view === 'chats' ? 'bg-primary-light text-primary' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
         title="消息"
         @click="emit('update:view', 'chats')"
       >
         <MessageCircle class="h-5 w-5" />
+        <!-- 全部会话未读总数 -->
+        <span
+          v-if="chat.totalUnread > 0"
+          class="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-medium text-white"
+        >
+          {{ unreadLabel }}
+        </span>
       </button>
       <button
         class="relative flex items-center justify-center rounded-lg p-2.5 transition"
@@ -51,11 +63,12 @@ const initials = computed(() => (app.device?.nickname ?? "?").slice(0, 1).toUppe
         @click="emit('update:view', 'contacts')"
       >
         <Users class="h-5 w-5" />
+        <!-- 好友申请数 -->
         <span
           v-if="chat.pendingRequests.length"
           class="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-medium text-white"
         >
-          {{ chat.pendingRequests.length }}
+          {{ pendingLabel }}
         </span>
       </button>
     </div>

@@ -147,6 +147,7 @@ impl GossipEngine {
         sender_id: &str,
         kind: GossipKind,
         group_id: Option<String>,
+        group_name: Option<String>,
         payload_b64: &str,
         ts: i64,
     ) -> GossipEnvelope {
@@ -159,6 +160,9 @@ impl GossipEngine {
             ttl: self.ttl,
             kind,
             group_id,
+            group_name,
+            group_creator: None,
+            group_members: Vec::new(),
             payload: payload_b64.to_string(),
             ts,
             encrypted: true, // 默认加密；调用方可按 E2EE 开关改写
@@ -205,7 +209,7 @@ mod tests {
         let id = Identity::generate();
         let engine = GossipEngine::new(100, 10, 4, 6);
 
-        let env = engine.build_envelope(&id, "dev-a", GossipKind::Chat, None, "cipher", 42);
+        let env = engine.build_envelope(&id, "dev-a", GossipKind::Chat, None, None, "cipher", 42);
         assert!(engine.verify_envelope(&env));
 
         // 篡改 payload 后签名校验应失败
@@ -223,7 +227,7 @@ mod tests {
     fn envelope_ttl_is_preserved() {
         let id = crate::crypto::Identity::generate();
         let engine = GossipEngine::new(100, 10, 4, 6);
-        let env = engine.build_envelope(&id, "dev-a", GossipKind::Chat, None, "cipher", 42);
+        let env = engine.build_envelope(&id, "dev-a", GossipKind::Chat, None, None, "cipher", 42);
         assert_eq!(env.ttl, 6);
     }
 }

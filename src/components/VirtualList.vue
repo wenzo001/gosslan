@@ -28,15 +28,42 @@ const container = ref<HTMLElement | null>(null);
 const scrollTop = ref(0);
 const viewport = ref(600);
 
+// 每个已渲染项的「实测高度」覆盖：估算可能低于真实 DOM 高度（如内容/预览异步加载后变高）。
+// 一旦实测 > 该槽位的估算，就记下来；offsets 用实测值重算，保证相邻行绝不文字重叠。
+// 以 msg_id/id 为键（而非数组下标），向上加载历史（prepend）导致下标偏移时覆盖仍对应正确消息。
+const heightOverride = new Map<string | number, number>();
+
+function keyOf(it: any): string | number {
+  return it?.msg_id ?? it?.id ?? "";
+}
+
+function itemHeight(i: number): number {
+  const it = props.items[i];
+  const k = keyOf(it);
+  return heightOverride.get(k) ?? props.estimateHeight(it, i);
+}
+
 const offsets = computed(() => {
   const arr = new Array<number>(props.items.length + 1);
   arr[0] = 0;
   for (let i = 0; i < props.items.length; i++) {
-    arr[i + 1] = arr[i] + props.estimateHeight(props.items[i], i);
+    arr[i + 1] = arr[i] + itemHeight(i);
   }
   return arr;
 });
 const totalHeight = computed(() => offsets.value[offsets.value.length - 1] ?? 0);
+
+/** 记录某槽位实测高度（若高于预留则覆盖，避免与下一条重叠）。 */
+function commitHeight(i: number, measured: number) {
+  if (i < 0 || i >= props.items.length) return;
+  const it = props.items[i];
+  const k = keyOf(it);
+  const est = props.estimateHeight(it, i);
+  const h = Math.max(measured, est);
+  if (Math.abs((heightOverride.get(k) ?? est) - h) > 1) {
+    heightOverride.set(k, h);
+  }
+}
 
 function lowerBound(top: number) {
   const arr = offsets.value;
@@ -62,6 +89,21 @@ const visible = computed(() => {
   }
   return out;
 });
+
+// 数据变化 / 窗口变化后，对可见项做一次实测 → 覆盖估算偏差
+let remeasureRaf = 0;
+function scheduleRemeasure() {
+  if (remeasureRaf) return;
+  remeasureRaf = requestAnimationFrame(() => {
+    remeasureRaf = 0;
+    const el = container.value;
+    if (!el) return;
+    el.querySelectorAll<HTMLElement>("[data-vlist-index]").forEach((node) => {
+      const idx = Number(node.getAttribute("data-vlist-index"));
+      commitHeight(idx, node.offsetHeight);
+    });
+  });
+}
 
 // ---------------- 滚动（rAF 节流） ----------------
 let raf = 0;
@@ -108,7 +150,7 @@ function scrollToIndex(index: number, align: "top" | "bottom" = "top") {
   if (align === "top") {
     el.scrollTop = Math.max(0, top - 8);
   } else {
-    el.scrollTop = Math.max(0, top - el.clientHeight + props.estimateHeight(props.items[i]));
+    el.scrollTop = Math.max(0, top - el.clientHeight + itemHeight(i));
   }
   computeScrollState();
 }
@@ -141,11 +183,17 @@ onMounted(() => {
   prevFirstKey = props.items.length > 0 ? itemKey(props.items[0]) : null;
   onResize();
   window.addEventListener("resize", onResize);
+  scheduleRemeasure();
 });
 onBeforeUnmount(() => {
   window.removeEventListener("resize", onResize);
   if (raf) cancelAnimationFrame(raf);
+  if (remeasureRaf) cancelAnimationFrame(remeasureRaf);
 });
+
+// 数据或可见窗口变化后重测可见行，收敛估算与实测偏差
+watch(visible, () => scheduleRemeasure(), { flush: "post" });
+watch(() => props.items, () => scheduleRemeasure(), { flush: "post" });
 
 defineExpose({ scrollToBottom, scrollToIndex });
 </script>
@@ -156,6 +204,7 @@ defineExpose({ scrollToBottom, scrollToIndex });
       <div
         v-for="v in visible"
         :key="(v.item as any).msg_id ?? v.index"
+        :data-vlist-index="v.index"
         :style="{ position: 'absolute', top: `${v.top}px`, left: 0, right: 0 }"
       >
         <slot :item="v.item" :index="v.index" />

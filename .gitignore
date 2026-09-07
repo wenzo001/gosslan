@@ -22,3 +22,6 @@ src-tauri/gen/schemas
 .idea
 .DS_Store
 *.log
+
+# Agent 工作目录（运行产物 / 记忆，不入库）
+.workbuddy/

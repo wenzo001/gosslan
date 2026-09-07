@@ -275,6 +275,103 @@ pub fn list_groups(conn: &Connection) -> Result<Vec<Group>> {
     Ok(groups)
 }
 
+/// 成员端建立/更新本地群记录（收到 `GroupKey` / 群消息携带成员表时调用）。
+/// 已存在则刷新群名与成员（幂等）。
+pub fn upsert_group(
+    conn: &Connection,
+    id: &str,
+    name: &str,
+    creator: &str,
+    members: &[String],
+) -> Result<()> {
+    if name.is_empty() {
+        conn.execute(
+            "INSERT OR IGNORE INTO groups(id, name, creator, created_at) VALUES(?1, ?2, ?3, ?4)",
+            params![id, name, creator, now_ms()],
+        )?;
+    } else {
+        conn.execute(
+            "INSERT INTO groups(id, name, creator, created_at) VALUES(?1, ?2, ?3, ?4)
+             ON CONFLICT(id) DO UPDATE SET name = excluded.name",
+            params![id, name, creator, now_ms()],
+        )?;
+    }
+    for m in members {
+        conn.execute(
+            "INSERT OR IGNORE INTO group_members(group_id, device_id) VALUES(?1, ?2)",
+            params![id, m],
+        )?;
+    }
+    Ok(())
+}
+
+/// 重命名群：同步群表与对应会话行（会话标题随群名一起变）。
+pub fn rename_group(conn: &Connection, id: &str, name: &str) -> Result<()> {
+    let changed = conn.execute("UPDATE groups SET name = ?1 WHERE id = ?2", params![name, id])?;
+    if changed > 0 {
+        conn.execute(
+            "UPDATE conversations SET name = ?1 WHERE id = ?2",
+            params![name, format!("group:{id}")],
+        )?;
+    }
+    Ok(())
+}
+
+/// 添加一个群成员（群创建者「加人」）。
+pub fn add_group_member(conn: &Connection, group_id: &str, device_id: &str) -> Result<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO group_members(group_id, device_id) VALUES(?1, ?2)",
+        params![group_id, device_id],
+    )?;
+    Ok(())
+}
+
+/// 移除一个群成员（群创建者「踢人」）。
+pub fn remove_group_member(conn: &Connection, group_id: &str, device_id: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM group_members WHERE group_id = ?1 AND device_id = ?2",
+        params![group_id, device_id],
+    )?;
+    Ok(())
+}
+
+/// 取单个群（含成员）。不存在返回 None。
+pub fn get_group(conn: &Connection, group_id: &str) -> Option<Group> {
+    let row = conn
+        .query_row(
+            "SELECT id, name, creator FROM groups WHERE id = ?1",
+            params![group_id],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .ok()?;
+    let (id, name, creator) = row;
+    let members = match conn.prepare("SELECT device_id FROM group_members WHERE group_id = ?1") {
+        Ok(mut stmt) => stmt
+            .query_map(params![group_id], |r| r.get(0))
+            .map(|iter| iter.filter_map(|r| r.ok()).collect())
+            .unwrap_or_default(),
+        Err(_) => Vec::new(),
+    };
+    Some(Group { id, name, creator, members })
+}
+
+/// 彻底删除一个群：群表 + 成员关系 + 会话。被移除的成员端收到通知后调用。
+pub fn delete_group(conn: &Connection, group_id: &str) -> Result<()> {
+    conn.execute("DELETE FROM group_members WHERE group_id = ?1", params![group_id])?;
+    conn.execute("DELETE FROM groups WHERE id = ?1", params![group_id])?;
+    conn.execute(
+        "DELETE FROM conversations WHERE id = ?1",
+        params![format!("group:{group_id}")],
+    )?;
+    Ok(())
+}
+
 // ---------------- 消息 ----------------
 
 /// 插入一条消息，并返回「本次是否真的新建了记录」的三态裁决。

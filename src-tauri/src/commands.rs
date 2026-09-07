@@ -12,7 +12,7 @@ use uuid::Uuid;
 
 /// 业务输入长度限制（按字符数，非字节数）
 const MAX_NICKNAME_LEN: usize = 30;
-const MAX_GROUP_NAME_LEN: usize = 30;
+pub const MAX_GROUP_NAME_LEN: usize = 30;
 const MAX_SEARCH_LEN: usize = 100;
 const MAX_MESSAGE_LEN: usize = 50_000;
 /// 内联图片（`kind:"image"`）的 data URL 是 Base64：从中间截断会直接损坏图片，
@@ -706,7 +706,7 @@ pub async fn send_message(
     let wire_content = format!("enc1:{}", STANDARD.encode(&sealed_content));
     let env = {
         let gossip = s.gossip.lock().unwrap();
-        gossip.build_envelope(&s.identity, &s.device_id, GossipKind::Chat, None, &payload_b64, ts)
+        gossip.build_envelope(&s.identity, &s.device_id, GossipKind::Chat, None, None, &payload_b64, ts)
     };
     // 信封 encrypted 默认 true（build_envelope 内置），无需改写
     // 统一 msg_id：本地记录 / Gossip 投递 / outbox 补发共用同一确定性 ID，
@@ -888,6 +888,7 @@ pub fn create_group(
 }
 
 /// 向群成员分发群密钥（用各成员公钥 ECDH 加密）。
+/// 同时携带群名与成员列表：成员端据此建本地群记录，否则群名会兜底成「群聊 g-xxxx」。
 #[tauri::command]
 pub async fn distribute_group_key(
     state: State<'_, Arc<AppState>>,
@@ -895,22 +896,20 @@ pub async fn distribute_group_key(
 ) -> Result<(), String> {
     let s = state.inner();
     let key = get_group_key(s, &group_id).await.ok_or("群密钥缺失")?;
-    let members = {
+    // 同时取群名与成员：成员端靠它建立/刷新本地群记录（含成员表）
+    let (group_name, members) = {
         let dbc = s.db.lock().unwrap();
-        db::list_groups(&dbc)
-            .unwrap_or_default()
-            .into_iter()
-            .find(|g| g.id == group_id)
-            .map(|g| g.members)
+        db::get_group(&dbc, &group_id)
+            .map(|g| (g.name, g.members))
             .unwrap_or_default()
     };
-    for m in members {
-        if m == s.device_id {
+    for m in &members {
+        if m == &s.device_id {
             continue;
         }
         let pubkey = {
             let dbc = s.db.lock().unwrap();
-            db::get_friend_x25519(&dbc, &m)
+            db::get_friend_x25519(&dbc, m)
         };
         let Some(pubkey) = pubkey else { continue };
         let Some(shared) = crypto::shared_secret(&s.identity.x25519_secret, &pubkey) else { continue };
@@ -920,8 +919,10 @@ pub async fn distribute_group_key(
             from: s.device_id.clone(),
             to: m.clone(),
             key: STANDARD.encode(&sealed),
+            group_name: group_name.clone(),
+            members: members.clone(),
         };
-        let _ = try_send(s, &m, &msg).await;
+        let _ = try_send(s, m, &msg).await;
     }
     Ok(())
 }
@@ -930,6 +931,210 @@ pub async fn distribute_group_key(
 pub fn get_groups(state: State<'_, Arc<AppState>>) -> Vec<Group> {
     let dbc = state.inner().db.lock().unwrap();
     db::list_groups(&dbc).unwrap_or_default()
+}
+
+/// 重命名群：仅创建者可操作。本地改名 + 同步会话标题后，广播给全部成员。
+#[tauri::command]
+pub async fn rename_group(
+    state: State<'_, Arc<AppState>>,
+    group_id: String,
+    name: String,
+) -> Result<(), String> {
+    let s = state.inner();
+    let name: String = name.chars().take(MAX_GROUP_NAME_LEN).collect();
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("群名称不能为空".to_string());
+    }
+    let group = {
+        let dbc = s.db.lock().unwrap();
+        db::get_group(&dbc, &group_id).ok_or_else(|| "群不存在".to_string())?
+    };
+    if group.creator != s.device_id {
+        return Err("只有群创建者可以修改群名称".to_string());
+    }
+    {
+        let dbc = s.db.lock().unwrap();
+        db::rename_group(&dbc, &group_id, &name).map_err(|e| e.to_string())?;
+    }
+    for m in &group.members {
+        if m == &s.device_id {
+            continue;
+        }
+        let msg = Message::GroupRename {
+            group_id: group_id.clone(),
+            from: s.device_id.clone(),
+            name: name.clone(),
+        };
+        let _ = try_send(s, m, &msg).await;
+    }
+    let _ = s.app.emit("groups-updated", &group_id);
+    Ok(())
+}
+
+/// 向成员列表里的每一位重发当前群密钥（携带群名 + 最新成员表）。
+async fn resend_group_key_to(s: &AppState, group_id: &str, members: &[String], key: [u8; 32]) {
+    let group_name = {
+        let dbc = s.db.lock().unwrap();
+        db::get_group(&dbc, group_id).map(|g| g.name).unwrap_or_default()
+    };
+    for m in members {
+        if m == &s.device_id {
+            continue;
+        }
+        let Some(pubkey) = (|| {
+            let dbc = s.db.lock().unwrap();
+            db::get_friend_x25519(&dbc, m)
+        })() else { continue };
+        let Some(shared) = crypto::shared_secret(&s.identity.x25519_secret, &pubkey) else { continue };
+        let Some(sealed) = crypto::seal(&shared, &key) else { continue };
+        let msg = Message::GroupKey {
+            group_id: group_id.to_string(),
+            from: s.device_id.clone(),
+            to: m.clone(),
+            key: STANDARD.encode(&sealed),
+            group_name: group_name.clone(),
+            members: members.to_vec(),
+        };
+        let _ = try_send(s, m, &msg).await;
+    }
+}
+
+/// 加人入群：仅创建者。本地落成员 + 轮换群密钥后重发给全体当前成员（含新成员）。
+#[tauri::command]
+pub async fn group_add_member(
+    state: State<'_, Arc<AppState>>,
+    group_id: String,
+    device_id: String,
+) -> Result<(), String> {
+    let s = state.inner();
+    let group = {
+        let dbc = s.db.lock().unwrap();
+        db::get_group(&dbc, &group_id).ok_or_else(|| "群不存在".to_string())?
+    };
+    if group.creator != s.device_id {
+        return Err("只有群创建者可以添加成员".to_string());
+    }
+    if group.members.contains(&device_id) {
+        return Err("该成员已在群中".to_string());
+    }
+    {
+        let dbc = s.db.lock().unwrap();
+        if db::get_friend(&dbc, &device_id).is_none() {
+            return Err("只能添加好友入群".to_string());
+        }
+    }
+    {
+        let dbc = s.db.lock().unwrap();
+        db::add_group_member(&dbc, &group_id, &device_id).map_err(|e| e.to_string())?;
+    }
+    // 轮换群密钥：加人后新老成员统一换新
+    let key = crypto::random_key();
+    {
+        let dbc = s.db.lock().unwrap();
+        db::set_setting(&dbc, &format!("gk:{group_id}"), &STANDARD.encode(key)).ok();
+    }
+    s.group_keys.lock().unwrap().insert(group_id.clone(), key);
+    let current = {
+        let dbc = s.db.lock().unwrap();
+        db::get_group(&dbc, &group_id)
+            .map(|g| g.members)
+            .unwrap_or_default()
+    };
+    resend_group_key_to(s, &group_id, &current, key).await;
+    let _ = s.app.emit("groups-updated", &group_id);
+    Ok(())
+}
+
+/// 移人出群：仅创建者。轮换群密钥发给剩余成员，并向被移除者发 GroupMemberRemoved。
+#[tauri::command]
+pub async fn group_remove_member(
+    state: State<'_, Arc<AppState>>,
+    group_id: String,
+    device_id: String,
+) -> Result<(), String> {
+    let s = state.inner();
+    let group = {
+        let dbc = s.db.lock().unwrap();
+        db::get_group(&dbc, &group_id).ok_or_else(|| "群不存在".to_string())?
+    };
+    if group.creator != s.device_id {
+        return Err("只有群创建者可以移除成员".to_string());
+    }
+    if device_id == s.device_id {
+        return Err("不能移除自己".to_string());
+    }
+    if !group.members.contains(&device_id) {
+        return Err("该成员不在群中".to_string());
+    }
+    {
+        let dbc = s.db.lock().unwrap();
+        db::remove_group_member(&dbc, &group_id, &device_id).map_err(|e| e.to_string())?;
+    }
+    // 轮换群密钥：被移除者失去解密能力
+    let key = crypto::random_key();
+    {
+        let dbc = s.db.lock().unwrap();
+        db::set_setting(&dbc, &format!("gk:{group_id}"), &STANDARD.encode(key)).ok();
+    }
+    s.group_keys.lock().unwrap().insert(group_id.clone(), key);
+    let remaining = {
+        let dbc = s.db.lock().unwrap();
+        db::get_group(&dbc, &group_id)
+            .map(|g| g.members)
+            .unwrap_or_default()
+    };
+    resend_group_key_to(s, &group_id, &remaining, key).await;
+    // 通知被移除者本人清理本地群
+    let msg = Message::GroupMemberRemoved {
+        group_id: group_id.clone(),
+        from: s.device_id.clone(),
+        to: device_id.clone(),
+    };
+    let _ = try_send(s, &device_id, &msg).await;
+    let _ = s.app.emit("groups-updated", &group_id);
+    Ok(())
+}
+
+// ---------------- 自绘标题栏：窗口控制 ----------------
+
+#[tauri::command]
+pub fn window_minimize(app: tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.minimize();
+    }
+}
+
+#[tauri::command]
+pub fn window_toggle_maximize(app: tauri::AppHandle) -> bool {
+    let Some(w) = app.get_webview_window("main") else {
+        return false;
+    };
+    match w.is_maximized() {
+        Ok(true) => {
+            let _ = w.unmaximize();
+            false
+        }
+        _ => {
+            let _ = w.maximize();
+            true
+        }
+    }
+}
+
+/// 返回窗口当前是否最大化。
+#[tauri::command]
+pub fn window_is_maximized(app: tauri::AppHandle) -> bool {
+    app.get_webview_window("main")
+        .and_then(|w| w.is_maximized().ok())
+        .unwrap_or(false)
+}
+
+#[tauri::command]
+pub fn window_close(app: tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.hide();
+    }
 }
 
 #[tauri::command]
@@ -941,14 +1146,15 @@ pub async fn send_group_message(
 ) -> Result<MessageRecord, String> {
     let s = state.inner();
     let ts = db::now_ms();
-    let group_name = {
+    // 把群名 + 创建者 + 当前成员一并带上：跨端成员即便从未收到 GroupKey、
+    // 只凭这条群消息也能在本地正确建群（含成员表），成员面板因此不为空。
+    let group_meta = {
         let dbc = s.db.lock().unwrap();
-        db::list_groups(&dbc)
-            .unwrap_or_default()
-            .into_iter()
-            .find(|g| g.id == group_id)
-            .map(|g| g.name)
-            .unwrap_or_default()
+        db::get_group(&dbc, &group_id).map(|g| (g.name, g.creator, g.members))
+    };
+    let (group_name, group_creator, group_members) = match group_meta {
+        Some((n, c, m)) => (n, Some(c), m),
+        None => (String::new(), None, Vec::new()),
     };
     let conv_id = format!("group:{group_id}");
     let preview = preview(&kind, &content);
@@ -977,7 +1183,18 @@ pub async fn send_group_message(
     let payload_b64 = STANDARD.encode(&sealed);
     let env = {
         let gossip = s.gossip.lock().unwrap();
-        gossip.build_envelope(&s.identity, &s.device_id, GossipKind::Group, Some(group_id), &payload_b64, ts)
+        let mut env = gossip.build_envelope(
+            &s.identity,
+            &s.device_id,
+            GossipKind::Group,
+            Some(group_id),
+            Some(group_name),
+            &payload_b64,
+            ts,
+        );
+        env.group_creator = group_creator;
+        env.group_members = group_members;
+        env
     };
     // 信封 encrypted 默认 true（build_envelope 内置），无需改写
     broadcast_gossip(s, env).await;
