@@ -8,7 +8,7 @@
 
 版本号统一由 `npm run version:patch|minor|major` 维护，一次改动同步 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 三处，并把本文件 `[Unreleased]` 小节落为带日期的版本小节。
 
-## [Unreleased]
+## [0.13.0] - 2026-09-07
 
 ### Fixed
 - **聊天气泡辨识度与连续消息间距**：对方气泡统一使用更明显的蓝灰底色并增加边界；连续消息的时间标签移动到发送者消息组末尾，避免对方首条与第二条之间被额外撑开；虚拟列表通过真实 DOM 高度和 `ResizeObserver` 校正文本、代码、图片、文件及群聊回执布局，避免消息互相遮挡

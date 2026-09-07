@@ -68,6 +68,10 @@ const online = computed(() => {
   if (!conv.value || conv.value.kind !== "single") return false;
   return chat.friends.some((f) => f.device_id === conv.value!.id && f.online);
 });
+const isPeerFriend = computed(() => {
+  if (!conv.value || conv.value.kind !== "single") return true;
+  return chat.friends.some((f) => f.device_id === conv.value!.id);
+});
 
 // ---------------- 群：成员面板 + 改名 ----------------
 const membersOpen = ref(false);
@@ -247,6 +251,7 @@ watch(
 async function sendMsg(content?: string, kind?: string) {
   const convId = chat.activeConv;
   if (!convId) return;
+  if (!isPeerFriend.value) return;
   const text = content ?? draft.value;
   const k = kind ?? (codeMode.value ? "code" : "text");
   if (k === "text" && !text.trim()) return;
@@ -304,7 +309,7 @@ function insertEmoji(e: string) {
 /** 统一发送文件：自动路由（直连优先，弱网/无直连自动中继），无需用户选择。 */
 async function attachFile() {
   const convId = chat.activeConv;
-  if (!convId) return;
+  if (!convId || !isPeerFriend.value) return;
   const picked = await openDialog({ multiple: false });
   if (typeof picked === "string") {
     await chat.sendFileTo(convId, picked);
@@ -453,7 +458,8 @@ function fileToDataUrl(f: File): Promise<string> {
 
     <!-- 输入区：输入框在上，操作行（代码/文件/提示/发送）移到底部 -->
     <div class="border-t border-[var(--gosslan-border)] px-4 pb-4 pt-2.5">
-      <div class="flex items-end gap-2">
+      <div v-if="isGroup || isPeerFriend" class="space-y-2">
+        <div class="flex items-end gap-2">
         <textarea
           ref="inputRef"
           v-model="draft"
@@ -466,8 +472,8 @@ function fileToDataUrl(f: File): Promise<string> {
           @keydown="onKeydown"
           @paste="onPaste"
         ></textarea>
-      </div>
-      <div class="mt-2 flex items-center justify-between gap-2">
+        </div>
+        <div class="flex items-center justify-between gap-2">
         <div class="flex min-w-0 items-center gap-1">
           <div class="relative">
             <button
@@ -506,6 +512,13 @@ function fileToDataUrl(f: File): Promise<string> {
           <Send class="h-3.5 w-3.5" />
           发送
         </button>
+        </div>
+      </div>
+      <div
+        v-else
+        class="flex min-h-14 items-center justify-center rounded-xl bg-[var(--gosslan-bg)] px-4 text-center text-sm text-[var(--gosslan-text-2)]"
+      >
+        对方还不是你的好友，添加好友后才能继续聊天。当前仅可查看聊天记录。
       </div>
     </div>
 
