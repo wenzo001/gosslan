@@ -8,6 +8,10 @@
 
 版本号统一由 `npm run version:patch|minor|major` 维护，一次改动同步 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 三处，并把本文件 `[Unreleased]` 小节落为带日期的版本小节。
 
+## [0.13.1] - 2026-09-08
+### Fixed
+- **Android APK 构建失败（v0.13.0 起 CI 连续失败）**：自绘标题栏的窗口控制命令 `window_minimize` / `window_toggle_maximize` 调用了 Tauri 仅桌面端提供的 `WebviewWindow::minimize` / `maximize` / `unmaximize`，交叉编译到 `*-linux-android` 时报 E0599（`is_maximized` 与 `hide` 两端都有，因此只有这两个命令受影响）。现沿用仓库既有的 `focus_window` 做法补 `#[cfg(mobile)]` 实现：移动端无独立窗口概念，`window_minimize` 为 no-op、`window_toggle_maximize` 返回 `false`；两个命令在桌面/移动两端仍然都注册，桌面实现逐字未改。前端 `TitleBar.vue` 本身以 `v-if="!app.isMobile"` 只在桌面渲染，移动端行为无任何变化，桌面端功能不受影响
+
 ## [0.13.0] - 2026-09-07
 
 ### Fixed
