@@ -1270,6 +1270,8 @@ pub async fn group_remove_member(
 
 // ---------------- 自绘标题栏：窗口控制 ----------------
 
+/// 最小化主窗口。
+#[cfg(desktop)]
 #[tauri::command]
 pub fn window_minimize(app: tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
@@ -1277,6 +1279,13 @@ pub fn window_minimize(app: tauri::AppHandle) {
     }
 }
 
+/// 移动端没有独立窗口概念，最小化由系统接管。
+#[cfg(mobile)]
+#[tauri::command]
+pub fn window_minimize(_app: tauri::AppHandle) {}
+
+/// 切换窗口最大化，返回切换后的状态。
+#[cfg(desktop)]
 #[tauri::command]
 pub fn window_toggle_maximize(app: tauri::AppHandle) -> bool {
     let Some(w) = app.get_webview_window("main") else {
@@ -1292,6 +1301,13 @@ pub fn window_toggle_maximize(app: tauri::AppHandle) -> bool {
             true
         }
     }
+}
+
+/// 移动端窗口始终铺满屏幕，等价于「不可再最大化」。
+#[cfg(mobile)]
+#[tauri::command]
+pub fn window_toggle_maximize(_app: tauri::AppHandle) -> bool {
+    false
 }
 
 /// 返回窗口当前是否最大化。
