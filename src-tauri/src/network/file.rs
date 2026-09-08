@@ -8,6 +8,7 @@
 //!   逐片解密写入 `.part` 临时文件，`FileDone` 时改名落盘。密文绝不落盘。
 //! - 中继路径：中继节点只透传密文切片，不持有会话密钥、无法解密。
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -29,6 +30,31 @@ fn emit_failed(state: &AppState, transfer_id: &str, reason: impl Into<String>) {
             reason: reason.into(),
         },
     );
+}
+
+/// 流式计算文件 SHA-256（256KB 分块增量更新，不整读内存），返回小写 hex。
+pub fn sha256_file_hex(path: &Path) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    let mut f = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; FILE_CHUNK];
+    loop {
+        let n = f.read(&mut buf).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect())
+}
+
+/// SHA-256 hex 表示校验（64 位 hex，大小写均可；比较时统一小写）。
+pub fn valid_sha256_hex(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// 主动向 `peer_id` 发送本地文件。
@@ -59,6 +85,8 @@ pub async fn send_file_from_path(
 
     // ---- E2EE：本 transfer 独立的随机文件会话密钥（CSPRNG），仅存内存 ----
     let file_key = crypto::random_key();
+    // 文件级完整性：流式计算原文件 SHA-256（256KB 分块，不整读内存）
+    let file_sha256 = sha256_file_hex(&path)?;
     // 接收方公钥：peers 优先、friends 回落（与 GroupKey 分发同一来源策略）
     let receiver_pubkey = resolve_member_x25519(state, peer_id);
     let sealed_key_b64 = (|| {
@@ -101,6 +129,7 @@ pub async fn send_file_from_path(
         name: name.clone(),
         size,
         sealed_file_key: sealed_key_b64,
+        file_sha256,
     };
     if let Err(e) = try_send(state, peer_id, &offer).await {
         state
@@ -325,6 +354,7 @@ pub fn begin_receive(
     name: &str,
     size: u64,
     file_key: [u8; 32],
+    expected_sha256: String,
 ) -> Result<PathBuf, String> {
     let safe_name = safe_file_name(name).ok_or("文件名非法")?;
     if size > i64::MAX as u64 {
@@ -356,6 +386,11 @@ pub fn begin_receive(
             peer_id: peer_id.to_string(),
             last_report_ms: 0,
             file_key,
+            expected_sha256,
+            hasher: {
+                use sha2::Digest as _;
+                sha2::Sha256::new()
+            },
         },
     );
 
@@ -401,6 +436,9 @@ pub fn write_chunk(
     if plaintext.len() as u64 > r.size.saturating_sub(r.received) {
         return Err("文件分片超出声明大小".to_string());
     }
+    // 文件级完整性：明文增量哈希（与写盘同一份数据，无二次磁盘读取）
+    use sha2::Digest;
+    r.hasher.update(&plaintext);
     r.file.write_all(&plaintext).map_err(|e| e.to_string())?;
     r.received += plaintext.len() as u64;
     r.next_seq = r.next_seq.checked_add(1).ok_or("文件分片序号溢出")?;
@@ -481,6 +519,29 @@ pub fn finish_receive(
         )
         .ok();
         return Err("文件传输未完成".to_string());
+    }
+    // 文件级完整性校验：实际 SHA-256 必须与发送方声明一致，否则不落盘
+    {
+        use sha2::Digest;
+        let actual = r.hasher.clone().finalize();
+        let actual_hex: String = actual.iter().map(|b| format!("{b:02x}")).collect();
+        if !actual_hex.eq_ignore_ascii_case(&r.expected_sha256) {
+            let _ = std::fs::remove_file(&r.tmp_path);
+            let dbc = state.db.lock().unwrap();
+            db::upsert_transfer(
+                &dbc,
+                transfer_id,
+                &r.peer_id,
+                &r.name,
+                r.size,
+                "receive",
+                "failed",
+                None,
+                0.0,
+            )
+            .ok();
+            return Err("文件完整性校验失败".to_string());
+        }
     }
     if let Err(e) = r.file.sync_all() {
         let reason = e.to_string();
@@ -717,8 +778,58 @@ mod tests {
     // ---------- 文件传输 E2EE（协议层模拟，不依赖 AppState） ----------
 
     use super::super::super::crypto;
+    use super::{sha256_file_hex, valid_sha256_hex};
     use crate::protocol::FILE_CHUNK;
     use base64::Engine as _;
+
+    /// 在系统临时目录创建唯一的 .part 文件（测试接收端用），返回句柄与路径。
+    fn temp_part(tag: &str) -> (std::fs::File, std::path::PathBuf) {
+        let path = std::env::temp_dir().join(format!(
+            "gosslan-test-{tag}-{}.part",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let f = std::fs::File::create(&path).unwrap();
+        (f, path)
+    }
+
+    /// 模拟接收端 write_chunk 的核心序列：AEAD 解密 → 增量哈希 → 写 .part。
+    /// （write_chunk 本体需要 AppState，此处按相同操作序列驱动 FileReceiver。）
+    fn receive_one_chunk(r: &mut crate::state::FileReceiver, seq: u32, sealed: &[u8]) {
+        assert_eq!(seq, r.next_seq, "write_chunk 语义：seq 必须严格递增");
+        use sha2::Digest;
+        let plaintext = crypto::open_symmetric(&r.file_key, sealed).expect("解密失败");
+        r.hasher.update(&plaintext);
+        std::io::Write::write_all(&mut r.file, &plaintext).unwrap();
+        r.received += plaintext.len() as u64;
+        r.next_seq += 1;
+    }
+
+    /// 模拟 finish_receive 的最终裁决：size 一致 + SHA-256 一致才算完成。
+    fn finish_verdict(r: &mut crate::state::FileReceiver) -> Result<(), String> {
+        use sha2::Digest;
+        if r.received != r.size {
+            return Err("文件传输未完成".to_string());
+        }
+        let actual_hex: String = r
+            .hasher
+            .clone()
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        if !actual_hex.eq_ignore_ascii_case(&r.expected_sha256) {
+            return Err("文件完整性校验失败".to_string());
+        }
+        Ok(())
+    }
+
+    fn hex_of(bytes: &[u8]) -> String {
+        use sha2::Digest;
+        let mut h = sha2::Sha256::new();
+        h.update(bytes);
+        h.finalize().iter().map(|b| format!("{b:02x}")).collect()
+    }
 
     /// 1. FileOffer.sealed_file_key：发送方以接收方公钥封装、接收方解封，
     ///    必须还原出同一个文件会话密钥（ECDH 对称性）。
@@ -868,5 +979,165 @@ mod tests {
         }
         assert_eq!(assembled.len(), original.len(), "重组大小必须一致");
         assert_eq!(assembled, original, "重组内容必须与原文件一致");
+    }
+
+    // ---------- 文件级 SHA-256 完整性校验 ----------
+
+    /// sha256_file_hex：流式分块结果必须与一次性内存计算一致（发送端正确性）。
+    #[test]
+    fn sha256_file_hex_matches_in_memory_hash() {
+        let path = std::env::temp_dir().join(format!("gosslan-test-sha-{}.bin", std::process::id()));
+        std::fs::write(&path, b"gosslan sha-256 streaming test body").unwrap();
+        let got = sha256_file_hex(&path).unwrap();
+        let want = hex_of(b"gosslan sha-256 streaming test body");
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(got, want);
+        assert_eq!(got.len(), 64, "hex 表示必须为 64 字符");
+    }
+
+    /// SHA-256 hex 字段格式校验（FileOffer 元数据），非法即拒绝。
+    #[test]
+    fn invalid_sha256_format_is_rejected() {
+        assert!(valid_sha256_hex(&hex_of(b"ok")));
+        assert!(valid_sha256_hex(&hex_of(b"ok").to_uppercase()), "大写 hex 也合法");
+        assert!(!valid_sha256_hex(""), "空串");
+        assert!(!valid_sha256_hex("abc"), "长度不足");
+        assert!(!valid_sha256_hex(&"a".repeat(63)), "63 位");
+        assert!(!valid_sha256_hex(&"a".repeat(65)), "65 位");
+        assert!(!valid_sha256_hex(&format!("{}g", "a".repeat(63))), "非 hex 字符");
+    }
+
+    /// 空文件边界：SHA-256 已知值 + sha256_file_hex 对 0 字节文件正确。
+    #[test]
+    fn empty_file_sha256_matches_known_value() {
+        let path = std::env::temp_dir().join(format!("gosslan-test-empty-{}.bin", std::process::id()));
+        std::fs::write(&path, b"").unwrap();
+        let got = sha256_file_hex(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(
+            got,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "空文件 SHA-256 必须是标准已知值"
+        );
+    }
+
+    /// 正常文件：多分片经「解密 → 增量哈希 → 写盘」后，最终 SHA-256 一致 → 完成。
+    #[test]
+    fn receiver_hash_lifecycle_success() {
+        let original: Vec<u8> = (0..FILE_CHUNK * 2 + 777u32 as usize)
+            .map(|i| (i % 251) as u8)
+            .collect();
+        let expected = hex_of(&original);
+        let file_key = crypto::random_key();
+
+        let (f, part_path) = temp_part("ok");
+        let mut r = crate::state::FileReceiver {
+            file: f,
+            name: "ok.bin".into(),
+            size: original.len() as u64,
+            received: 0,
+            next_seq: 0,
+            tmp_path: part_path.clone(),
+            final_path: part_path.clone(),
+            peer_id: "a".into(),
+            last_report_ms: 0,
+            file_key,
+            expected_sha256: expected.clone(),
+            hasher: {
+                use sha2::Digest as _;
+                sha2::Sha256::new()
+            },
+        };
+
+        for (seq, chunk) in original.chunks(FILE_CHUNK).enumerate() {
+            let sealed = crypto::seal_symmetric(&file_key, chunk).unwrap();
+            receive_one_chunk(&mut r, seq as u32, &sealed);
+        }
+        assert!(finish_verdict(&mut r).is_ok(), "内容一致时校验必须通过");
+        let _ = std::fs::remove_file(&part_path);
+    }
+
+    /// 篡改某个明文分片：最终 SHA-256 不一致 → failed（不得视为完成）。
+    #[test]
+    fn receiver_hash_mismatch_fails() {
+        let original: Vec<u8> = (0..FILE_CHUNK + 100u32 as usize)
+            .map(|i| (i % 199) as u8)
+            .collect();
+        let expected = hex_of(&original);
+        let file_key = crypto::random_key();
+
+        let (f, part_path) = temp_part("bad");
+        let mut r = crate::state::FileReceiver {
+            file: f,
+            name: "bad.bin".into(),
+            size: original.len() as u64,
+            received: 0,
+            next_seq: 0,
+            tmp_path: part_path.clone(),
+            final_path: part_path.clone(),
+            peer_id: "a".into(),
+            last_report_ms: 0,
+            file_key,
+            expected_sha256: expected,
+            hasher: {
+                use sha2::Digest as _;
+                sha2::Sha256::new()
+            },
+        };
+
+        for (seq, chunk) in original.chunks(FILE_CHUNK).enumerate() {
+            let mut plain = chunk.to_vec();
+            if seq == 0 {
+                plain[0] ^= 0x01; // 篡改首片一个比特
+            }
+            let sealed = crypto::seal_symmetric(&file_key, &plain).unwrap();
+            receive_one_chunk(&mut r, seq as u32, &sealed);
+        }
+        let verdict = finish_verdict(&mut r);
+        assert_eq!(verdict.unwrap_err(), "文件完整性校验失败");
+        let _ = std::fs::remove_file(&part_path);
+    }
+
+    /// relay 场景：最终接收方逐片解密 + 增量哈希（RelayFileReceive 生命周期），
+    /// 重组完成后 SHA-256 校验通过；中继只透传密文，不参与哈希。
+    #[test]
+    fn relay_receiver_hash_lifecycle_success() {
+        use crate::state::RelayFileReceive;
+        let original: Vec<u8> = (0..FILE_CHUNK + 500u32 as usize)
+            .map(|i| (i % 241) as u8)
+            .collect();
+        let expected = hex_of(&original);
+        let file_key = crypto::random_key();
+
+        let mut rs = RelayFileReceive {
+            file_key,
+            expected_sha256: expected,
+            hasher: {
+                use sha2::Digest as _;
+                sha2::Sha256::new()
+            },
+        };
+
+        let mut assembled: Vec<u8> = Vec::new();
+        for (seq, chunk) in original.chunks(FILE_CHUNK).enumerate() {
+            let sealed = crypto::seal_symmetric(&file_key, chunk).unwrap(); // 发送端
+            let _forwarded = sealed.clone(); // 中继：原样透传
+            let plain = crypto::open_symmetric(&rs.file_key, &_forwarded).unwrap(); // 接收端
+            use sha2::Digest;
+            rs.hasher.update(&plain); // handle_relay_chunk 的增量哈希
+            assembled.extend_from_slice(&plain);
+        }
+        assert_eq!(assembled.len() as u64, original.len() as u64);
+        use sha2::Digest;
+        let actual_hex: String = rs
+            .hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert!(
+            actual_hex.eq_ignore_ascii_case(&rs.expected_sha256),
+            "中继场景最终校验必须通过"
+        );
     }
 }

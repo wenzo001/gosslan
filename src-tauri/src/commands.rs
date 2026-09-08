@@ -1548,12 +1548,16 @@ pub async fn send_file_relay(
     // 文件读取 + base64 切片是同步重活：放阻塞线程池，避免卡住 async runtime（界面卡死根因）
     let chunk_size = { s.relay.lock().unwrap().chunk_size };
     let p = std::path::PathBuf::from(&path);
-    let (name, size, chunks) = tokio::task::spawn_blocking(move || {
-        crate::relay_manager::RelayManager::slice_file_with(&p, chunk_size)
+    let (name, size, chunks, file_sha256) = tokio::task::spawn_blocking(move || {
+        // 文件级 SHA-256（256KB 分块流式，不整读内存），与切片同批后台完成
+        let sha = crate::network::file::sha256_file_hex(&p)?;
+        let (name, size, chunks) =
+            crate::relay_manager::RelayManager::slice_file_with(&p, chunk_size)
+                .map_err(|e| e.to_string())?;
+        Ok::<_, String>((name, size, chunks, sha))
     })
     .await
-    .map_err(|e| e.to_string())?
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| e.to_string())??;
     if size > i64::MAX as u64 {
         return Err("文件过大，无法安全发送".to_string());
     }
@@ -1602,6 +1606,7 @@ pub async fn send_file_relay(
         size,
         total_chunks,
         sealed_file_key: sealed_key_b64,
+        file_sha256,
     };
     try_send(s, &friend_id, &offer).await?;
 

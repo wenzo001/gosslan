@@ -697,6 +697,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             name,
             size,
             sealed_file_key,
+            file_sha256,
         } => {
             if from != peer_id || from == state.device_id {
                 return;
@@ -706,6 +707,11 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 db::get_friend(&dbc, &from).is_some()
             };
             if !is_friend {
+                let _ = try_send(state, peer_id, &Message::FileReject { transfer_id }).await;
+                return;
+            }
+            // SHA-256 元数据格式校验：非法即拒绝（文件级完整性无法验证）
+            if !file::valid_sha256_hex(&file_sha256) {
                 let _ = try_send(state, peer_id, &Message::FileReject { transfer_id }).await;
                 return;
             }
@@ -721,7 +727,15 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 let _ = try_send(state, peer_id, &Message::FileReject { transfer_id }).await;
                 return;
             };
-            match file::begin_receive(state, &transfer_id, &from, &name, size, file_key) {
+            match file::begin_receive(
+                state,
+                &transfer_id,
+                &from,
+                &name,
+                size,
+                file_key,
+                file_sha256,
+            ) {
                 Ok(_) => {
                     let _ = try_send(
                         state,
@@ -944,6 +958,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             size,
             total_chunks,
             sealed_file_key,
+            file_sha256,
         } => {
             handle_relay_file_offer(
                 state,
@@ -955,6 +970,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 size,
                 total_chunks,
                 sealed_file_key,
+                file_sha256,
             )
             .await;
         }
@@ -1422,6 +1438,7 @@ async fn handle_relay_file_offer(
     size: u64,
     total_chunks: u32,
     sealed_file_key: String,
+    file_sha256: String,
 ) {
     if to != state.device_id {
         return; // 中继节点无需重组，只转发切片
@@ -1439,6 +1456,10 @@ async fn handle_relay_file_offer(
     if !is_friend {
         return;
     }
+    // SHA-256 元数据格式校验（中继不解密不校验内容，仅最终接收方校验）
+    if !file::valid_sha256_hex(&file_sha256) {
+        return;
+    }
     // E2EE：解封文件会话密钥（发送方用我方公钥封装）。中继节点不持有密钥；
     // 解封失败直接放弃——密文分片绝不落盘。
     let file_key = (|| {
@@ -1450,11 +1471,17 @@ async fn handle_relay_file_offer(
     let Some(file_key) = file_key else {
         return;
     };
-    state
-        .relay_file_keys
-        .lock()
-        .unwrap()
-        .insert(transfer_id.clone(), file_key);
+    state.relay_file_keys.lock().unwrap().insert(
+        transfer_id.clone(),
+        crate::state::RelayFileReceive {
+            file_key,
+            expected_sha256: file_sha256,
+            hasher: {
+                use sha2::Digest as _;
+                sha2::Sha256::new()
+            },
+        },
+    );
     state
         .relay
         .lock()
@@ -1495,24 +1522,27 @@ async fn handle_relay_chunk(
     ttl: u8,
 ) {
     if to == state.device_id {
-        // 最终接收方：先解密（E2EE，密文不落盘），再重组
-        let file_key = state.relay_file_keys.lock().unwrap().get(&transfer_id).copied();
-        let Some(file_key) = file_key else {
+        // 最终接收方：先解密（E2EE，密文不落盘），再增量哈希、重组
+        let mut keys = state.relay_file_keys.lock().unwrap();
+        let Some(rs) = keys.get_mut(&transfer_id) else {
             return;
         };
         let Ok(sealed) = STANDARD.decode(&data) else {
             return;
         };
-        let Some(bytes) = crypto::open_symmetric(&file_key, &sealed) else {
+        let Some(bytes) = crypto::open_symmetric(&rs.file_key, &sealed) else {
             return;
         };
+        use sha2::Digest;
+        rs.hasher.update(&bytes);
+        drop(keys);
         let completed = {
             let mut relay = state.relay.lock().unwrap();
             relay.add_chunk(&transfer_id, seq, bytes)
         };
         if let Some((name, expected_size, full)) = completed {
-            // 重组结束（无论成败）：会话密钥只在本 transfer 期间有效
-            state.relay_file_keys.lock().unwrap().remove(&transfer_id);
+            // 重组结束（无论成败）：移除会话状态，取哈希做完整性校验
+            let rs = state.relay_file_keys.lock().unwrap().remove(&transfer_id);
             if full.len() as u64 != expected_size {
                 let dbc = state.db.lock().unwrap();
                 db::upsert_transfer(
@@ -1535,6 +1565,39 @@ async fn handle_relay_chunk(
                     },
                 );
                 return;
+            }
+            // 文件级完整性：重组内容 SHA-256 必须与发送方声明一致，否则不落盘
+            if let Some(rs) = rs {
+                use sha2::Digest;
+                let actual_hex: String = rs
+                    .hasher
+                    .finalize()
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect();
+                if !actual_hex.eq_ignore_ascii_case(&rs.expected_sha256) {
+                    let dbc = state.db.lock().unwrap();
+                    db::upsert_transfer(
+                        &dbc,
+                        &transfer_id,
+                        &from,
+                        &name,
+                        expected_size,
+                        "receive",
+                        "failed",
+                        None,
+                        0.0,
+                    )
+                    .ok();
+                    let _ = state.app.emit(
+                        "file-failed",
+                        &FileFailedInfo {
+                            transfer_id: transfer_id.clone(),
+                            reason: "文件完整性校验失败".to_string(),
+                        },
+                    );
+                    return;
+                }
             }
             let path = match save_received_bytes(state, &name, &full) {
                 Ok(path) => path,

@@ -246,6 +246,20 @@ pub struct FileReceiver {
     /// 本 transfer 的文件会话密钥：FileOffer 中以我方公钥 E2EE 封装，
     /// 解封后仅存于内存；每个分片以此 AEAD 解密，密文绝不落盘。
     pub file_key: [u8; 32],
+    /// 发送方声明的原文件 SHA-256（hex），FileDone 时与实际哈希比对
+    pub expected_sha256: String,
+    /// 明文增量哈希：write_chunk 解密后 update，finish 时 finalize 比对
+    pub hasher: sha2::Sha256,
+}
+
+/// 中继接收的文件会话状态（仅最终接收方持有；中继节点不解密不校验）。
+pub struct RelayFileReceive {
+    /// 本 transfer 的文件会话密钥（RelayFileOffer 中以我方公钥封装）
+    pub file_key: [u8; 32],
+    /// 发送方声明的原文件 SHA-256（hex）
+    pub expected_sha256: String,
+    /// 明文增量哈希：逐片解密后 update，重组完成时 finalize 比对
+    pub hasher: sha2::Sha256,
 }
 
 /// 网络运行时句柄
@@ -299,10 +313,10 @@ pub struct AppState {
 
     /// 等待对方接受的文件传输：transfer_id -> 接受信号
     pub pending_file_accept: Mutex<HashMap<String, tokio::sync::oneshot::Sender<()>>>,
-    /// 中继接收的文件会话密钥：transfer_id -> file_key。
+    /// 中继接收的文件会话状态：transfer_id -> 密钥 + 预期 SHA-256 + 增量哈希。
     /// RelayFileOffer 中以我方公钥 E2EE 封装，解封后仅存内存；
-    /// 中继节点不持有密钥、不参与解密，只透传密文切片。
-    pub relay_file_keys: Mutex<HashMap<String, [u8; 32]>>,
+    /// 中继节点不持有密钥、不参与解密与校验，只透传密文切片。
+    pub relay_file_keys: Mutex<HashMap<String, RelayFileReceive>>,
     /// 正在接收的文件：transfer_id -> FileReceiver
     pub file_receivers: Mutex<HashMap<String, FileReceiver>>,
     /// 等待共享目录树响应：request_id -> 应答通道
