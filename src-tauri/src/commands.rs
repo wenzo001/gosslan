@@ -1535,6 +1535,49 @@ pub async fn send_group_file(
         }
     }
 
+    // 可达成员：有 TCP link 且 peers 信息完整；其余保持 pending
+    let mut reachable: Vec<String> = Vec::new();
+    for m in &members {
+        if s.links.lock().await.contains_key(m) && resolve_member_x25519(&s, m).is_some() {
+            reachable.push(m.clone());
+        }
+    }
+    if reachable.is_empty() {
+        // 全员不可达：明确报错让前端反馈，而不是静默成功让用户"毫无反应"
+        return Err("群内成员当前均不在线，无法发送群文件".to_string());
+    }
+
+    // 发送者本地气泡：群文件发起在会话中可见（msg_id 与接收端一致，
+    // 便于 CompleteAck 后双方各自推进状态）
+    let content = serde_json::json!({ "name": name, "size": size, "sha256": sha256 }).to_string();
+    let rec = MessageRecord {
+        id: 0,
+        msg_id: format!("gfile-{transfer_id}"),
+        conv_id: format!("group:{group_id}"),
+        sender_id: s.device_id.clone(),
+        receiver_id: group_id.clone(),
+        kind: "file".to_string(),
+        content,
+        ts: db::now_ms(),
+        status: "sending".to_string(),
+    };
+    {
+        let dbc = s.db.lock().unwrap();
+        db::insert_message(&dbc, &rec).ok();
+        let group_name = db::get_group(&dbc, &group_id).map(|g| g.name).unwrap_or_default();
+        db::touch_conversation(
+            &dbc,
+            &format!("group:{group_id}"),
+            "group",
+            &group_name,
+            None,
+            &format!("[群文件] {name}"),
+            0,
+        )
+        .ok();
+    }
+    let _ = s.app.emit("message-received", &rec);
+
     // 逐可达成员发送 Offer
     for m in &reachable {
         let msg = Message::GroupFileOffer {
@@ -2052,14 +2095,13 @@ pub fn clear_all_data(state: State<'_, Arc<AppState>>) -> Result<(), String> {
         db::list_groups(&dbc).unwrap_or_default().into_iter().map(|g| g.id).collect()
     };
 
-    // 1. SQLite 删除（transaction 保护）
+    // 1. SQLite 删除（transaction 保护）。
+    //    语义（真机验收确定）：清除聊天数据 = 删除本机消息/会话/文件记录，
+    //    **不退出群聊**——保留 groups/group_members/群密钥（gk:% 与
+    //    group_keys），否则清除后无法解密新群消息，必须重启靠密钥重发才能恢复。
     {
         let dbc = s.db.lock().unwrap();
         let tx = dbc.unchecked_transaction().map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM group_members", [])
-            .map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM groups", [])
-            .map_err(|e| e.to_string())?;
         tx.execute("DELETE FROM messages", [])
             .map_err(|e| e.to_string())?;
         tx.execute("DELETE FROM conversations", [])
@@ -2071,8 +2113,6 @@ pub fn clear_all_data(state: State<'_, Arc<AppState>>) -> Result<(), String> {
         tx.execute("DELETE FROM pending_reads", [])
             .map_err(|e| e.to_string())?;
         tx.execute("DELETE FROM group_reads", [])
-            .map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM settings WHERE key LIKE 'gk:%'", [])
             .map_err(|e| e.to_string())?;
         // 群文件投递数据同属聊天数据（残留会导致 transfer 记录悬挂）
         tx.execute("DELETE FROM group_files", [])
@@ -2087,9 +2127,10 @@ pub fn clear_all_data(state: State<'_, Arc<AppState>>) -> Result<(), String> {
         tx.commit().map_err(|e| e.to_string())?;
     }
 
-    // 2. Runtime state 清理
+    // 2. Runtime state 清理。
+    //    注意：group_keys（群密钥内存缓存）**保留**——清除聊天数据不退出群聊，
+    //    密钥仍在才能解密清除后到达的新群消息（旧消息由 boundary 拦截）。
     s.pending_requests.lock().unwrap().clear();
-    s.group_keys.lock().unwrap().clear();
     s.pending_reads.lock().unwrap().clear();
     s.pending_file_accept.lock().unwrap().clear();
     s.pending_share_tree.lock().unwrap().clear();

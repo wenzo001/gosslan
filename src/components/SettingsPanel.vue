@@ -3,7 +3,6 @@ import { ref } from "vue";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
-import { api } from "@/api";
 import BaseModal from "@/components/BaseModal.vue";
 import DevDiagPanel from "@/components/DevDiagPanel.vue";
 import ProfileSection from "@/components/settings/ProfileSection.vue";
@@ -47,29 +46,22 @@ async function restoreDefaults() {
 async function clearAllDataConfirm() {
   const ok = window.confirm(
     "确定要清除聊天数据吗？\n\n" +
-      "将删除：\n" +
-      "· 所有聊天消息和会话\n" +
-      "· 文件传输记录\n" +
-      "· 已接收但尚未保存的文件\n" +
-      "· 群组数据和群密钥\n" +
+      "将删除（仅本机）：\n" +
+      "· 所有聊天消息和会话（含群聊）\n" +
+      "· 文件传输与群文件记录\n" +
       "· 应用缓存\n\n" +
-      "不会删除：\n" +
-      "· 好友列表\n" +
-      "· 设备身份和加密密钥\n" +
-      "· 昵称和头像\n" +
-      "· 所有设置\n" +
-      "· 已保存到其他位置的文件",
+      "不会删除 / 不受影响：\n" +
+      "· 好友列表与群成员身份（不会退出群聊）\n" +
+      "· 设备身份、加密密钥与群密钥\n" +
+      "· 昵称、头像和所有设置\n" +
+      "· 其他设备上的聊天记录\n\n" +
+      "清除后收到的新消息将正常接收。",
   );
   if (!ok) return;
   try {
-    await api.clearAllData();
-    await Promise.all([
-      chat.refreshConversations(),
-      chat.refreshFriends(),
-      chat.refreshPending(),
-      chat.refreshGroups(),
-      chat.refreshTransfers(),
-    ]);
+    await chat.clearAllData();
+    await chat.refreshFriends();
+    await chat.refreshPending();
     app.toast("聊天数据已清除", "success");
   } catch (e) {
     app.toast(`清除失败：${e}`, "error");

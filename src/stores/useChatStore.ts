@@ -741,7 +741,13 @@ export const useChatStore = defineStore("chat", () => {
     });
     // 注册系统通知点击回调：点击通知 → 唤起窗口 + 定位到发送者会话
     void onAction((n) => {
-      const raw = n as { id?: unknown; extra?: Record<string, unknown> };
+      // 点击通知的第一动作：无论能否解析出会话，先把窗口弹到前台
+      // （最小化/隐藏/被遮挡时都恢复，unminimize+show+set_focus 幂等）
+      void api.focusWindow();
+      // 兼容不同平台回调形状：对象 { id, extra } 或裸 id（number/string）
+      const raw = (typeof n === "object" && n !== null
+        ? n
+        : { id: n }) as { id?: unknown; extra?: Record<string, unknown> };
       const id = typeof raw.id === "number" ? raw.id : undefined;
       const extraType = raw.extra?.type as string | undefined;
 

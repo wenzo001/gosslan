@@ -1930,6 +1930,34 @@ async fn handle_group_file_offer(
             return;
         }
     }
+    // 接收气泡：与发送端同一 msg_id（gfile-{transfer_id}），前端据 file-progress
+    // 之外的状态事件推进。此处 status=sending，Done 校验通过后转 delivered。
+    let rec = crate::state::MessageRecord {
+        id: 0,
+        msg_id: format!("gfile-{transfer_id}"),
+        conv_id: format!("group:{group_id}"),
+        sender_id: sender_id.clone(),
+        receiver_id: state.device_id.clone(),
+        kind: "file".to_string(),
+        content: serde_json::json!({ "name": name, "size": size, "sha256": sha256 }).to_string(),
+        ts: db::now_ms(),
+        status: "sending".to_string(),
+    };
+    {
+        let dbc = state.db.lock().unwrap();
+        db::insert_message(&dbc, &rec).ok();
+        db::touch_conversation(
+            &dbc,
+            &format!("group:{group_id}"),
+            "group",
+            &name,
+            None,
+            &format!("[群文件] {name}"),
+            1,
+        )
+        .ok();
+    }
+    let _ = state.app.emit("message-received", &rec);
     // 会话密钥仅存内存，供下一阶段解密 GroupFileChunk
     state
         .group_file_keys
@@ -1942,9 +1970,16 @@ async fn handle_group_file_offer(
 /// 只影响本 transfer，不 panic、不影响其他群文件。
 fn fail_group_file_chunk(state: &Arc<AppState>, transfer_id: &str) {
     file::fail_group_receive(state, transfer_id);
+    set_gfile_bubble_status(state, transfer_id, "failed");
     state.group_file_keys.lock().unwrap().remove(transfer_id);
     let dbc = state.db.lock().unwrap();
     let _ = db::update_group_file_recipient(&dbc, transfer_id, &state.device_id, "failed", 0.0);
+}
+
+/// 群文件气泡状态推进：msg_id = gfile-{transfer_id}（收发双方本地记录）。
+fn set_gfile_bubble_status(state: &AppState, transfer_id: &str, status: &str) {
+    let dbc = state.db.lock().unwrap();
+    db::set_message_status(&dbc, &format!("gfile-{transfer_id}"), status).ok();
 }
 
 /// 处理群文件发送完毕：最终校验（size + SHA-256）→ sync_all → rename → completed。
@@ -2011,6 +2046,7 @@ async fn handle_group_file_done(
     // 1. size 校验：received 必须等于声明大小
     if r.received != r.size {
         let _ = std::fs::remove_file(&r.tmp_path);
+        set_gfile_bubble_status(state, &transfer_id, "failed");
         state.group_file_keys.lock().unwrap().remove(&transfer_id);
         {
             let dbc = state.db.lock().unwrap();
@@ -2032,6 +2068,7 @@ async fn handle_group_file_done(
             .collect();
         if !actual_hex.eq_ignore_ascii_case(&r.expected_sha256) {
             let _ = std::fs::remove_file(&r.tmp_path);
+            set_gfile_bubble_status(state, &transfer_id, "failed");
             state.group_file_keys.lock().unwrap().remove(&transfer_id);
             {
                 let dbc = state.db.lock().unwrap();
@@ -2051,6 +2088,7 @@ async fn handle_group_file_done(
     if let Err(e) = r.file.sync_all() {
         let _ = e.to_string();
         let _ = std::fs::remove_file(&r.tmp_path);
+        set_gfile_bubble_status(state, &transfer_id, "failed");
         state.group_file_keys.lock().unwrap().remove(&transfer_id);
         {
             let dbc = state.db.lock().unwrap();
@@ -2064,6 +2102,7 @@ async fn handle_group_file_done(
     drop(r.file);
     if let Err(_) = std::fs::rename(&r.tmp_path, &r.final_path) {
         let _ = std::fs::remove_file(&r.tmp_path);
+        set_gfile_bubble_status(state, &transfer_id, "failed");
         state.group_file_keys.lock().unwrap().remove(&transfer_id);
         {
             let dbc = state.db.lock().unwrap();
@@ -2073,11 +2112,12 @@ async fn handle_group_file_done(
         send_group_file_complete_ack(state, &transfer_id, &group_id, &sender_id, false).await;
         return;
     }
-    // 全部成功：正式文件已落盘 → completed / progress 1.0 → 清理 session key
+    // 全部成功：正式文件已落盘 → completed / progress 1.0 → 气泡转 delivered → 清理
     {
         let dbc = state.db.lock().unwrap();
         let _ = db::update_group_file_recipient(&dbc, &transfer_id, &state.device_id, "completed", 1.0);
     }
+    set_gfile_bubble_status(state, &transfer_id, "delivered");
     state.group_file_keys.lock().unwrap().remove(&transfer_id);
     // 完成确认：无论 ACK 发送成败，file_key 已清理不再保留（ACK 丢失由后续阶段处理）
     send_group_file_complete_ack(state, &transfer_id, &group_id, &sender_id, true).await;
@@ -2152,9 +2192,15 @@ async fn handle_group_file_complete_ack(
     } else {
         ("failed", 0.0)
     };
+    // 发送端气泡随接收端真实结果推进：success → delivered，failure → failed
+    let bubble = if success { "delivered" } else { "failed" };
     {
         let dbc = state.db.lock().unwrap();
         let _ = db::update_group_file_recipient(&dbc, &transfer_id, &peer_id, status, progress);
+        let _ = db::set_message_status(&dbc, &format!("gfile-{transfer_id}"), bubble).ok();
+    }
+    if bubble == "delivered" {
+        let _ = state.app.emit("message-acked", &format!("gfile-{transfer_id}"));
     }
 }
 
