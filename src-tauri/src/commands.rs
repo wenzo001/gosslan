@@ -906,21 +906,24 @@ pub async fn mark_read(state: State<'_, Arc<AppState>>, conv_id: String) -> Resu
         db::mark_read(&dbc, &conv_id).map_err(|e| e.to_string())?;
     }
     if !conv_id.starts_with("group:") {
-        // 通知对方：我已读到该会话最新一条消息为止
-        let last_ts: Option<i64> = {
+        // 通知对方：我已读到「对方最近一条消息」为止。
+        // 这里不能取全会话最大 ts：一是可能取到自己发的消息，二是对方消息在本机
+        // 落库时被时钟钳制过，直接回传 ts 会让对方用自己的原始时间戳匹配不上。
+        // 回传 msg_id，由发送方换算成自己的本地时间戳。
+        let last = {
             let dbc = s.db.lock().unwrap();
-            Some(db::last_message_ts(&dbc, &conv_id)).filter(|t| *t > 0)
+            db::last_message_from_sender(&dbc, &conv_id, &conv_id)
         };
-        if let Some(ts) = last_ts.filter(|t| *t > 0) {
+        if let Some((msg_id, ts)) = last {
             let msg = Message::ReadReceipt {
                 from: s.device_id.clone(),
                 to: conv_id.clone(),
                 last_read_ts: ts,
+                last_read_msg_id: Some(msg_id),
             };
             // try_send 返回 Ok 只代表消息进入 mpsc channel，不代表 TCP writer
             // 真正 write_frame 成功——writer_loop 可能随后发现链路已断而丢弃。
             // 因此无论 Ok/Err 都保留 pending：下一次心跳/建链时 flush 重发。
-            // 接收方按 last_read_ts 单调性去重，重复送达无副作用。
             let _ = crate::network::transport::try_send(s, &conv_id, &msg).await;
             {
                 let mut pending = s.pending_reads.lock().unwrap();
@@ -940,17 +943,29 @@ pub async fn mark_read(state: State<'_, Arc<AppState>>, conv_id: String) -> Resu
             db::get_group(&dbc, group_id)
         };
         if let Some(group) = group {
-            let last_read_ts = db::last_message_ts(&s.db.lock().unwrap(), &conv_id);
             for member in group.members {
                 if member == s.device_id {
                     continue;
                 }
+                // 群回执同样按「该成员最近一条消息」发送，避免跨设备时钟偏差。
+                let last = {
+                    let dbc = s.db.lock().unwrap();
+                    db::last_message_from_sender(&dbc, &conv_id, &member)
+                };
+                let Some((msg_id, last_read_ts)) = last else {
+                    continue;
+                };
                 let msg = Message::GroupReadReceipt {
                     from: s.device_id.clone(),
                     group_id: group_id.to_string(),
                     last_read_ts,
+                    last_read_msg_id: Some(msg_id),
                 };
                 let _ = crate::network::transport::try_send(s, &member, &msg).await;
+                // 无论即时发送是否成功都持久化待发记录，由建链/Hello/心跳补发；
+                // 接收端按 (group_id, reader_id) 单调去重，重复送达无副作用。
+                let dbc = s.db.lock().unwrap();
+                db::upsert_pending_group_read(&dbc, group_id, &member, last_read_ts).ok();
             }
         }
     }
@@ -2214,6 +2229,8 @@ pub fn clear_all_data(state: State<'_, Arc<AppState>>) -> Result<(), String> {
         tx.execute("DELETE FROM file_transfers", [])
             .map_err(|e| e.to_string())?;
         tx.execute("DELETE FROM pending_reads", [])
+            .map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM pending_group_reads", [])
             .map_err(|e| e.to_string())?;
         tx.execute("DELETE FROM group_reads", [])
             .map_err(|e| e.to_string())?;

@@ -287,6 +287,7 @@ async fn connect_to_peer(state: &Arc<AppState>, peer_id: &str, ip: &str, tcp_por
     flush_outbox(state, peer_id).await;
     flush_group_outbox(state, peer_id).await;
     flush_pending_reads(state, peer_id).await;
+    flush_pending_group_reads(state, peer_id).await;
     crate::commands::flush_pending_files(state, peer_id).await;
     // 主动拨号建链完成：补发此前因无 link 而未送达的群密钥
     flush_pending_group_keys(state, peer_id).await;
@@ -332,6 +333,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             flush_outbox(state, &device_id).await;
             flush_group_outbox(state, &device_id).await;
             flush_pending_reads(state, &device_id).await;
+            flush_pending_group_reads(state, &device_id).await;
             crate::commands::flush_pending_files(state, &device_id).await;
             // 链路刚建立：补发此前因无 link 而未送达的群密钥
             flush_pending_group_keys(state, &device_id).await;
@@ -346,6 +348,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             flush_outbox(state, &device_id).await;
             flush_group_outbox(state, &device_id).await;
             flush_pending_reads(state, &device_id).await;
+            flush_pending_group_reads(state, &device_id).await;
             crate::commands::flush_pending_files(state, &device_id).await;
             flush_pending_group_keys(state, &device_id).await;
             crate::commands::flush_pending_group_files(state, &device_id).await;
@@ -665,31 +668,50 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             from,
             to,
             last_read_ts,
+            last_read_msg_id,
         } => {
             if from != peer_id || to != state.device_id || from == state.device_id {
                 return;
             }
-            // 对方已读：把「我发给对方、ts ≤ last_read_ts」的消息标记为 read（幂等）
+            // 优先用 msg_id 换算回「我」的本地时间戳：接收方落库时对时间做过钳制，
+            // 直接拿 last_read_ts 在跨设备时钟偏差下会匹配不到我发出的原始消息。
+            let effective_ts = {
+                let dbc = state.db.lock().unwrap();
+                last_read_msg_id
+                    .as_deref()
+                    .and_then(|msg_id| {
+                        dbc.query_row(
+                            "SELECT ts FROM messages WHERE msg_id = ?1 AND sender_id = ?2 AND conv_id = ?3",
+                            params![msg_id, state.device_id, from],
+                            |r| r.get::<_, i64>(0),
+                        )
+                        .ok()
+                    })
+                    .unwrap_or(last_read_ts)
+            };
+            // 对方已读：把「我发给对方、ts ≤ effective_ts」的消息标记为 read（幂等）
             {
                 let dbc = state.db.lock().unwrap();
                 let _ = dbc.execute(
                     "UPDATE messages SET status = 'read'
                      WHERE conv_id = ?1 AND sender_id = ?2 AND status != 'read' AND ts <= ?3",
-                    params![from, state.device_id, last_read_ts],
+                    params![from, state.device_id, effective_ts],
                 );
             }
             // 无论 updated 是 0 还是 >0 都 emit：DB 可能已经是 read，
             // 但前端内存状态可能落后（事件竞态 / 会话重查覆盖），
             // 重新 emit 让 frontend 用 furthestStatus 再校准一次。
+            // 这里必须发换算后的 effective_ts，前端才能用同一阈值正确标绿。
             let _ = state.app.emit(
                 "peer-read",
-                &serde_json::json!({ "peer_id": from, "last_read_ts": last_read_ts }),
+                &serde_json::json!({ "peer_id": from, "last_read_ts": effective_ts }),
             );
         }
         Message::GroupReadReceipt {
             from,
             group_id,
             last_read_ts,
+            last_read_msg_id,
         } => {
             if from != peer_id || from == state.device_id {
                 return;
@@ -703,16 +725,30 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             if !is_member {
                 return;
             }
+            let effective_ts = {
+                let dbc = state.db.lock().unwrap();
+                last_read_msg_id
+                    .as_deref()
+                    .and_then(|msg_id| {
+                        dbc.query_row(
+                            "SELECT ts FROM messages WHERE msg_id = ?1 AND sender_id = ?2 AND conv_id = ?3",
+                            params![msg_id, state.device_id, format!("group:{group_id}")],
+                            |r| r.get::<_, i64>(0),
+                        )
+                        .ok()
+                    })
+                    .unwrap_or(last_read_ts)
+            };
             {
                 let dbc = state.db.lock().unwrap();
-                db::upsert_group_read(&dbc, &group_id, &from, last_read_ts).ok();
+                db::upsert_group_read(&dbc, &group_id, &from, effective_ts).ok();
             }
             let _ = state.app.emit(
                 "group-read",
                 &serde_json::json!({
                     "group_id": group_id,
                     "reader_id": from,
-                    "last_read_ts": last_read_ts,
+                    "last_read_ts": effective_ts,
                 }),
             );
         }
@@ -3060,13 +3096,26 @@ pub async fn flush_group_outbox(state: &AppState, peer_id: &str) {
 /// 同时清除两者；失败时内存已由 remove 清除但会重新写入，DB 保留不动
 /// （由 `mark_read` 写入，下次 flush 重试）。
 pub async fn flush_pending_reads(state: &AppState, peer_id: &str) {
-    let Some(last_read_ts) = state.pending_reads.lock().unwrap().remove(peer_id) else {
+    let Some(_last_read_ts) = state.pending_reads.lock().unwrap().remove(peer_id) else {
+        return;
+    };
+    // 补发时重新取「对方最近一条消息」的 msg_id + ts，而不是使用之前内存里的 ts。
+    // 因为 ts 可能只是被钳制后的值，msg_id 才能让发送方换算回自己的本地时间戳。
+    let last = {
+        let dbc = state.db.lock().unwrap();
+        db::last_message_from_sender(&dbc, peer_id, peer_id)
+    };
+    let Some((msg_id, last_read_ts)) = last else {
+        // 对方没有可标记已读的消息，直接清掉 pending 即可。
+        let dbc = state.db.lock().unwrap();
+        db::delete_pending_read(&dbc, peer_id).ok();
         return;
     };
     let msg = Message::ReadReceipt {
         from: state.device_id.clone(),
         to: peer_id.to_string(),
         last_read_ts,
+        last_read_msg_id: Some(msg_id),
     };
     if try_send(state, peer_id, &msg).await.is_err() {
         // 发送失败：内存重新放入 pending，DB 保留（已由 mark_read 写入）
@@ -3077,6 +3126,36 @@ pub async fn flush_pending_reads(state: &AppState, peer_id: &str) {
         // 发送成功：清除 DB 中的 pending 记录
         let dbc = state.db.lock().unwrap();
         db::delete_pending_read(&dbc, peer_id).ok();
+    }
+}
+
+/// 冲刷指定 peer 的待发群已读回执（触发点与单聊 pending_reads 一致）。
+pub async fn flush_pending_group_reads(state: &AppState, peer_id: &str) {
+    let rows = {
+        let dbc = state.db.lock().unwrap();
+        db::list_pending_group_reads(&dbc, peer_id).unwrap_or_default()
+    };
+    for (group_id, _last_read_ts) in rows {
+        let conv_id = format!("group:{group_id}");
+        let last = {
+            let dbc = state.db.lock().unwrap();
+            db::last_message_from_sender(&dbc, &conv_id, peer_id)
+        };
+        let Some((msg_id, last_read_ts)) = last else {
+            let dbc = state.db.lock().unwrap();
+            db::delete_pending_group_read(&dbc, &group_id, peer_id).ok();
+            continue;
+        };
+        let msg = Message::GroupReadReceipt {
+            from: state.device_id.clone(),
+            group_id: group_id.clone(),
+            last_read_ts,
+            last_read_msg_id: Some(msg_id),
+        };
+        if try_send(state, peer_id, &msg).await.is_ok() {
+            let dbc = state.db.lock().unwrap();
+            db::delete_pending_group_read(&dbc, &group_id, peer_id).ok();
+        }
     }
 }
 

@@ -155,6 +155,15 @@ CREATE TABLE IF NOT EXISTS pending_reads (
     peer_id       TEXT PRIMARY KEY,
     last_read_ts  INTEGER NOT NULL
 );
+
+-- 待发群已读回执：成员离线/链路不可用时暂存，建链/心跳时补发。
+CREATE TABLE IF NOT EXISTS pending_group_reads (
+    group_id      TEXT NOT NULL,
+    peer_id       TEXT NOT NULL,
+    last_read_ts  INTEGER NOT NULL,
+    PRIMARY KEY (group_id, peer_id)
+);
+CREATE INDEX IF NOT EXISTS idx_pending_group_reads_peer ON pending_group_reads(peer_id);
 "#;
 
 /// 打开（或创建）数据库并执行迁移。
@@ -794,6 +803,26 @@ pub fn last_message_ts(conn: &Connection, conv_id: &str) -> i64 {
     .unwrap_or(0)
 }
 
+/// 取会话内「某发送者」最近一条消息的 (msg_id, ts)。
+/// 已读回执用它替代全会话最大时间戳，避免把「接收方自己发的消息」或
+/// 「被本地时钟钳制后的时间戳」当作回执阈值，跨设备时钟偏差时尤其重要。
+pub fn last_message_from_sender(
+    conn: &Connection,
+    conv_id: &str,
+    sender_id: &str,
+) -> Option<(String, i64)> {
+    conn.query_row(
+        "SELECT msg_id, ts FROM messages
+         WHERE conv_id = ?1 AND sender_id = ?2
+         ORDER BY ts DESC, id DESC LIMIT 1",
+        params![conv_id, sender_id],
+        |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
+    )
+    .optional()
+    .ok()
+    .flatten()
+}
+
 /// 接收消息时间戳钳制（防设备间时钟偏差导致排序错乱）：
 /// - 上限：不晚于本地当前时间（对方时钟快 → 消息不能出现在「未来」）；
 /// - 下限：不早于会话内最后一条消息（对方时钟慢 → 消息不能插到历史之前，
@@ -1265,6 +1294,39 @@ pub fn delete_pending_read(conn: &Connection, peer_id: &str) -> Result<()> {
     conn.execute(
         "DELETE FROM pending_reads WHERE peer_id = ?1",
         params![peer_id],
+    )?;
+    Ok(())
+}
+
+/// 写入/更新待发群已读回执（max 语义，已读单调前进）。
+pub fn upsert_pending_group_read(
+    conn: &Connection,
+    group_id: &str,
+    peer_id: &str,
+    ts: i64,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO pending_group_reads(group_id, peer_id, last_read_ts) VALUES(?1, ?2, ?3)
+         ON CONFLICT(group_id, peer_id) DO UPDATE SET last_read_ts = MAX(pending_group_reads.last_read_ts, excluded.last_read_ts)",
+        params![group_id, peer_id, ts],
+    )?;
+    Ok(())
+}
+
+/// 取某 peer 的全部待发群已读回执。
+pub fn list_pending_group_reads(conn: &Connection, peer_id: &str) -> Result<Vec<(String, i64)>> {
+    let mut stmt = conn.prepare(
+        "SELECT group_id, last_read_ts FROM pending_group_reads WHERE peer_id = ?1",
+    )?;
+    let rows = stmt.query_map(params![peer_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// 删除指定 peer 在指定群中的待发群已读回执（flush 成功后调用）。
+pub fn delete_pending_group_read(conn: &Connection, group_id: &str, peer_id: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM pending_group_reads WHERE group_id = ?1 AND peer_id = ?2",
+        params![group_id, peer_id],
     )?;
     Ok(())
 }
@@ -2655,5 +2717,39 @@ mod tests {
         insert_file_outbox(&conn, "t1", "b", None, "/tmp/a.txt", "a.txt", 10).unwrap();
         mark_file_outbox_failed(&conn, "t1").unwrap();
         assert!(list_pending_file_outbox(&conn, "b").unwrap().is_empty());
+    }
+
+    /// 已读回执按「某发送者最近一条消息」取 msg_id + ts，
+    /// 不取全会话最大时间戳，也不把接收方自己发的消息算进去。
+    #[test]
+    fn last_message_from_sender_ignores_own_and_other_senders() {
+        let conn = mem();
+        insert_message(&conn, &rec_as("a1", "b", "text", "from a")).unwrap();
+        insert_message(&conn, &rec_as("a2", "b", "text", "from a later")).unwrap();
+        // 自己（receiver_id=b 的视角，这里用 sender_id=b 模拟本地发出的消息）
+        let mut own = rec_as("b1", "b", "text", "own");
+        own.sender_id = "b".into();
+        own.ts = 999;
+        insert_message(&conn, &own).unwrap();
+
+        let (msg_id, ts) = last_message_from_sender(&conn, "b", "a").unwrap();
+        assert_eq!(msg_id, "a2");
+        assert_eq!(ts, 1); // 测试 rec_as 统一 ts=1
+    }
+
+    /// 群待发已读回执：按 (group_id, peer_id) 唯一，max 语义，删除只删对应行。
+    #[test]
+    fn pending_group_reads_lifecycle() {
+        let conn = mem();
+        upsert_pending_group_read(&conn, "g1", "b", 10).unwrap();
+        upsert_pending_group_read(&conn, "g1", "b", 9).unwrap(); // 不覆盖较大值
+        upsert_pending_group_read(&conn, "g1", "c", 20).unwrap();
+
+        let rows = list_pending_group_reads(&conn, "b").unwrap();
+        assert_eq!(rows, vec![("g1".to_string(), 10)]);
+
+        delete_pending_group_read(&conn, "g1", "b").unwrap();
+        assert!(list_pending_group_reads(&conn, "b").unwrap().is_empty());
+        assert_eq!(list_pending_group_reads(&conn, "c").unwrap().len(), 1);
     }
 }

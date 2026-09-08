@@ -20,7 +20,7 @@
     "dist:win:portable": "powershell -ExecutionPolicy Bypass -File scripts/build-windows-portable.ps1",
     "android:init": "tauri android init",
     "android:dev": "tauri android dev",
-    "android:build": "tauri android build --apk",
+    "android:build": "node scripts/inject-android-signing.mjs && tauri android build --apk",
     "android:build:debug": "tauri android build --debug --apk",
     "env:check": "powershell -ExecutionPolicy Bypass -File scripts/check-env.ps1",
     "env:install": "powershell -ExecutionPolicy Bypass -File scripts/install-env.ps1",

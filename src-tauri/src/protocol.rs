@@ -208,17 +208,24 @@ pub enum Message {
     Ack {
         msg_id: String,
     },
-    /// 已读回执：接收方打开会话时告知发送方「读到 last_read_ts 为止的消息都看了」
+    /// 已读回执：接收方打开会话时告知发送方「读到 last_read_ts 为止的消息都看了」。
+    /// `last_read_msg_id` 指向接收方最近读到的一条**发送方消息**，发送方用它
+    /// 换算回自己的本地时间戳，避免设备间时钟偏差导致回执失效。
     ReadReceipt {
         from: String,
         to: String,
         last_read_ts: i64,
+        #[serde(default)]
+        last_read_msg_id: Option<String>,
     },
     /// 群聊成员级已读回执：接收方读到群消息的时间点。
+    /// `last_read_msg_id` 与单聊回执同理，指向该成员最近读到的一条群消息。
     GroupReadReceipt {
         from: String,
         group_id: String,
         last_read_ts: i64,
+        #[serde(default)]
+        last_read_msg_id: Option<String>,
     },
     /// 群消息送达确认：接收方成功持久化某条群消息后回给原始发送者，
     /// 发送方据此删除对应 `group_outbox(msg_id, peer_id)` 行。
