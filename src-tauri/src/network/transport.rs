@@ -1888,7 +1888,7 @@ enum GroupKeySendErr {
 // ---------------- 待发群密钥登记表（纯逻辑，便于单测；不涉及网络与 AppState） ----------------
 
 /// 登记一个待发群密钥（幂等）。
-fn mark_pending_group_key(
+pub(crate) fn mark_pending_group_key(
     pending: &mut HashMap<String, HashSet<String>>,
     peer_id: &str,
     group_id: &str,

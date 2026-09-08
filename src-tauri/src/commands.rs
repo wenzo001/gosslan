@@ -23,7 +23,9 @@ const MAX_IMAGE_CONTENT_LEN: usize = 8_000_000;
 
 use crate::crypto;
 use crate::db;
-use crate::network::transport::{broadcast_gossip, get_group_key, resolve_nickname, try_send};
+use crate::network::transport::{
+    broadcast_gossip, get_group_key, mark_pending_group_key, resolve_nickname, try_send,
+};
 use crate::network::{self, file};
 use crate::protocol::{GossipKind, Message, MsgKind, ShareEntry};
 use crate::state::{
@@ -1073,7 +1075,13 @@ pub async fn distribute_group_key(
             group_name: group_name.clone(),
             members: members.clone(),
         };
-        let _ = try_send(s, m, &msg).await;
+        if let Err(_) = try_send(s, m, &msg).await {
+            // 目标成员尚无 TCP link（建群时 ensure_link 可能尚未执行）：
+            // 不再静默丢弃，登记待发，由建链 / Hello / 心跳的
+            // flush_pending_group_keys 补发（与 redistribute_group_keys 同一机制）。
+            let mut pending = s.pending_group_keys.lock().unwrap();
+            mark_pending_group_key(&mut pending, m, &group_id);
+        }
     }
     Ok(())
 }
@@ -1168,7 +1176,12 @@ async fn resend_group_key_to(s: &AppState, group_id: &str, members: &[String], k
             group_name: group_name.clone(),
             members: members.to_vec(),
         };
-        let _ = try_send(s, m, &msg).await;
+        if let Err(_) = try_send(s, m, &msg).await {
+            // 目标成员尚无 TCP link：登记待发，由建链 / Hello / 心跳的
+            // flush_pending_group_keys 补发（与 redistribute_group_keys 同一机制）。
+            let mut pending = s.pending_group_keys.lock().unwrap();
+            mark_pending_group_key(&mut pending, m, group_id);
+        }
     }
 }
 
