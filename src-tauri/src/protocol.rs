@@ -107,6 +107,9 @@ pub struct GossipEnvelope {
     pub group_members: Vec<String>,
     pub payload: String,
     pub ts: i64,
+    /// 会话逻辑序号（Lamport），签名覆盖；接收方按此排序。
+    #[serde(default)]
+    pub seq: i64,
     pub encrypted: bool,
 }
 
@@ -139,6 +142,7 @@ impl GossipEnvelope {
             &self.group_members,
             &self.payload,
             &self.ts,
+            &self.seq,
             &self.encrypted,
         ))
         .unwrap_or_default()
@@ -157,6 +161,10 @@ pub enum Message {
         tcp_port: u16,
         x25519_pubkey: String,
         ed25519_pubkey: String,
+        /// 与对方单聊会话的本地逻辑时钟：用于建链时快速对齐，
+        /// 避免双方时钟长期不同步导致新消息序号偏小。
+        #[serde(default)]
+        conv_clock: i64,
     },
     /// 心跳
     Heartbeat {
@@ -209,6 +217,9 @@ pub enum Message {
         kind: MsgKind,
         content: String,
         ts: i64,
+        /// 会话逻辑序号（Lamport），接收方按此排序，而非发送方墙上时钟。
+        #[serde(default)]
+        seq: i64,
     },
     /// 送达确认（用于离线补发去重）
     Ack {
@@ -318,6 +329,10 @@ pub enum Message {
         group_name: String,
         #[serde(default)]
         members: Vec<String>,
+        /// 该群的当前逻辑时钟：成员上线拿到密钥时同步本地时钟，
+        /// 保证其后续新消息序号大于清空边界等本地水位。
+        #[serde(default)]
+        clock: i64,
     },
     /// 群文件发起（不含文件内容）。`sealed_file_key`：发送方为本 transfer
     /// 生成的随机 32B 文件会话密钥，用**群密钥** AEAD 封装（seal_symmetric）——
@@ -424,6 +439,7 @@ mod tests {
             group_members: Vec::new(),
             payload: "ciphertext".into(),
             ts: 123456,
+            seq: 1,
             encrypted: true,
         }
     }

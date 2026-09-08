@@ -273,6 +273,10 @@ async fn connect_to_peer(state: &Arc<AppState>, peer_id: &str, ip: &str, tcp_por
         .insert(peer_id.to_string(), tx.clone());
     tokio::spawn(writer_loop(state.clone(), peer_id.to_string(), w, rx));
 
+    let conv_clock = {
+        let dbc = state.db.lock().unwrap();
+        db::get_clock(&dbc, peer_id)
+    };
     let hello = Message::Hello {
         device_id: state.device_id.clone(),
         nickname: state.nickname.lock().unwrap().clone(),
@@ -280,6 +284,7 @@ async fn connect_to_peer(state: &Arc<AppState>, peer_id: &str, ip: &str, tcp_por
         tcp_port: state.tcp_port,
         x25519_pubkey: state.identity.x25519_public_b64(),
         ed25519_pubkey: state.identity.ed25519_public_b64(),
+        conv_clock,
     };
     let _ = tx.send(hello).await;
 
@@ -306,6 +311,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             tcp_port,
             x25519_pubkey,
             ed25519_pubkey,
+            conv_clock,
         } => {
             if device_id != peer_id {
                 return;
@@ -329,6 +335,11 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 None,
             )
             .await;
+            // 对齐单聊逻辑时钟：避免离线期间的时钟落差让后续新消息序号偏小。
+            {
+                let dbc = state.db.lock().unwrap();
+                db::observe_clock(&dbc, &device_id, conv_clock).ok();
+            }
             maybe_update_friend(state, &device_id, &nickname, avatar);
             flush_outbox(state, &device_id).await;
             flush_group_outbox(state, &device_id).await;
@@ -530,6 +541,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             kind,
             content,
             ts: _ts,
+            seq,
         } => {
             if from != peer_id {
                 return;
@@ -589,9 +601,9 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             // 与 Gossip 并发时只有一方拿到 Ok(true)，未读 +1 / message-received 因此各只一次。
             let (out_rec, inserted) = {
                 let dbc = state.db.lock().unwrap();
-                // 消息展示/排序只以本地接收时间为准，不使用发送方时间戳，
-                // 因此不猜测、也不纠正对端系统时钟。
+                // 展示时间用本地接收时间；排序用对端给出的逻辑序号 seq。
                 let ts = db::now_ms();
+                let seq = seq.max(1);
                 let rec = MessageRecord {
                     id: 0,
                     msg_id: msg_id.clone(),
@@ -601,11 +613,13 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                     kind: kind_str.clone(),
                     content: content.clone(),
                     ts,
+                    seq,
                     status: "delivered".to_string(),
                 };
                 let inserted = db::insert_message_if_new(&dbc, &rec);
                 if announced_on(&inserted) {
                     db::touch_conversation(&dbc, &from, "single", &name, None, &preview, 1).ok();
+                    db::observe_clock(&dbc, &from, seq).ok();
                 }
                 (rec, inserted)
             };
@@ -975,6 +989,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                             "subtype": file::classify_file_subtype(&name),
                         })
                         .to_string();
+                        let seq = db::next_clock(&dbc, &sender_id).unwrap_or(1);
                         let rec = MessageRecord {
                             id: 0,
                             msg_id: format!("file-{transfer_id}"),
@@ -984,6 +999,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                             kind: "file".to_string(),
                             content,
                             ts: db::now_ms(),
+                            seq,
                             status: "delivered".to_string(),
                         };
                         db::insert_message(&dbc, &rec).ok();
@@ -1146,11 +1162,12 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             key,
             group_name,
             members,
+            clock,
         } => {
             if from != peer_id {
                 return;
             }
-            handle_group_key(state, group_id, from, to, key, group_name, members).await;
+            handle_group_key(state, group_id, from, to, key, group_name, members, clock).await;
         }
         Message::GroupRename {
             group_id,
@@ -1281,6 +1298,7 @@ fn reseal_for_send(state: &AppState, msg: Message) -> Message {
         kind,
         content,
         ts,
+        seq,
     } = msg
     else {
         return msg;
@@ -1293,6 +1311,7 @@ fn reseal_for_send(state: &AppState, msg: Message) -> Message {
             kind,
             content,
             ts,
+            seq,
         };
     }
     let (plaintext, from_db) = {
@@ -1327,6 +1346,7 @@ fn reseal_for_send(state: &AppState, msg: Message) -> Message {
         to,
         kind,
         ts,
+        seq,
     }
 }
 
@@ -1517,6 +1537,7 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                                 None,
                                 &payload_b64,
                                 db::now_ms(),
+                                0,
                             )
                         };
                         // 这是拒绝通知控制载荷，不是用户聊天内容；显式标记为明文，
@@ -1547,12 +1568,12 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                     }
                     _ => return,
                 };
-                // 群聊删除边界：本机清除过该群（ts ≤ boundary）的旧历史不得回灌
-                // ——不落库、不计未读、不通知、不兜底建群。新消息（ts > boundary）正常。
+                // 群聊删除边界：本机清除过该群（seq ≤ boundary）的旧历史不得回灌。
+                // 逻辑序号不依赖墙上时钟，也不猜测发送方时钟。
                 if env.kind == GossipKind::Group {
                     let gid = env.group_id.clone().unwrap_or_default();
                     let dbc = state.db.lock().unwrap();
-                    let blocked = db::group_message_blocked_by_boundary(&dbc, &gid, env.ts);
+                    let blocked = db::group_message_blocked_by_boundary(&dbc, &gid, env.seq);
                     drop(dbc);
                     if blocked {
                         return;
@@ -1587,8 +1608,9 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                 // 单聊与群聊走同一块 ⇒ 两种 GossipKind 都被覆盖。
                 let (out_rec, inserted) = {
                     let dbc = state.db.lock().unwrap();
-                    // 同 ChatMessage 分支：消息展示/排序只用本地接收时间。
+                    // 展示时间用本地接收时间；排序用信封携带的逻辑序号 seq。
                     let ts = db::now_ms();
+                    let seq = env.seq.max(1);
                     let rec = MessageRecord {
                         id: 0,
                         msg_id: env.message_id.clone(),
@@ -1598,12 +1620,14 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                         kind: kind.clone(),
                         content: content.clone(),
                         ts,
+                        seq,
                         status: "delivered".to_string(),
                     };
                     let inserted = db::insert_message_if_new(&dbc, &rec);
                     if announced_on(&inserted) {
                         db::touch_conversation(&dbc, &conv_id, conv_kind, &name, None, &preview, 1)
                             .ok();
+                        db::observe_clock(&dbc, &conv_id, seq).ok();
                     }
                     (rec, inserted)
                 };
@@ -1867,6 +1891,7 @@ async fn handle_relay_chunk(
                     "subtype": file::classify_file_subtype(&name),
                 })
                 .to_string();
+                let seq = db::next_clock(&dbc, &from).unwrap_or(1);
                 let rec = MessageRecord {
                     id: 0,
                     msg_id: format!("file-{transfer_id}"),
@@ -1876,6 +1901,7 @@ async fn handle_relay_chunk(
                     kind: "file".to_string(),
                     content,
                     ts: db::now_ms(),
+                    seq,
                     status: "delivered".to_string(),
                 };
                 db::insert_message(&dbc, &rec).ok();
@@ -1960,6 +1986,7 @@ async fn handle_group_key(
     key: String,
     group_name: String,
     members: Vec<String>,
+    clock: i64,
 ) {
     if to != state.device_id {
         return;
@@ -2014,6 +2041,7 @@ async fn handle_group_key(
         let dbc = state.db.lock().unwrap();
         db::upsert_group(&dbc, &group_id, &display_name, &from, &all).ok();
         db::ensure_conversation(&dbc, &conv_id, "group", &display_name, None).ok();
+        db::observe_clock(&dbc, &conv_id, clock).ok();
     }
     let _ = state.app.emit("group-key-received", &group_id);
     let _ = state.app.emit("groups-updated", &group_id);
@@ -2093,15 +2121,21 @@ async fn handle_group_file_offer(
     }
     // 接收气泡：与发送端同一 msg_id（gfile-{transfer_id}），前端据 file-progress
     // 之外的状态事件推进。此处 status=sending，Done 校验通过后转 delivered。
+    let conv_id = format!("group:{group_id}");
+    let seq = {
+        let dbc = state.db.lock().unwrap();
+        db::next_clock(&dbc, &conv_id).unwrap_or(1)
+    };
     let rec = crate::state::MessageRecord {
         id: 0,
         msg_id: format!("gfile-{transfer_id}"),
-        conv_id: format!("group:{group_id}"),
+        conv_id: conv_id.clone(),
         sender_id: sender_id.clone(),
         receiver_id: state.device_id.clone(),
         kind: "file".to_string(),
         content: serde_json::json!({ "name": name, "size": size, "sha256": sha256 }).to_string(),
         ts: db::now_ms(),
+        seq,
         status: "sending".to_string(),
     };
     {
@@ -2334,9 +2368,19 @@ async fn handle_group_file_done(
     state.group_file_keys.lock().unwrap().remove(&transfer_id);
     // 重发带本地路径的记录（applyIncoming 按 msg_id 合并更新，未读不重复）：
     // 前端气泡 content.path 就绪 → 打开/另存/图片代码预览立即可用
+    let msg_id = format!("gfile-{transfer_id}");
+    let seq = {
+        let dbc = state.db.lock().unwrap();
+        dbc.query_row(
+            "SELECT seq FROM messages WHERE msg_id = ?1",
+            params![msg_id],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap_or(1)
+    };
     let done_rec = crate::state::MessageRecord {
         id: 0,
-        msg_id: format!("gfile-{transfer_id}"),
+        msg_id,
         conv_id: format!("group:{group_id}"),
         sender_id: sender_id.clone(),
         receiver_id: state.device_id.clone(),
@@ -2349,6 +2393,7 @@ async fn handle_group_file_done(
         })
         .to_string(),
         ts: db::now_ms(),
+        seq,
         status: "delivered".to_string(),
     };
     let _ = state.app.emit("message-received", &done_rec);
@@ -2890,6 +2935,10 @@ async fn try_send_group_key(
     let Some(sealed) = crypto::seal(&shared, &key) else {
         return Err(GroupKeySendErr::Fatal);
     };
+    let clock = {
+        let dbc = state.db.lock().unwrap();
+        db::get_clock(&dbc, &format!("group:{group_id}"))
+    };
     let msg = Message::GroupKey {
         group_id: group_id.to_string(),
         from: state.device_id.clone(),
@@ -2897,6 +2946,7 @@ async fn try_send_group_key(
         key: STANDARD.encode(&sealed),
         group_name: g.name.clone(),
         members: g.members.clone(),
+        clock,
     };
     // try_send 返回 Err 只可能是「未建立连接」（links 无该 peer）
     try_send(state, peer_id, &msg)
@@ -3235,7 +3285,7 @@ mod tests {
 
         // 构造并签名信封
         let engine = GossipEngine::new(100, 10, 4, 6);
-        let env = engine.build_envelope(&a, "dev-a", GossipKind::Chat, None, None, &payload_b64, 1);
+        let env = engine.build_envelope(&a, "dev-a", GossipKind::Chat, None, None, &payload_b64, 1, 1);
 
         // B 验签 + 解密
         assert!(engine.verify_envelope(&env));
@@ -3444,6 +3494,7 @@ mod tests {
             kind: "text".into(),
             content: "hello".into(),
             ts: 1,
+            seq: 1,
             status: "delivered".into(),
         };
         // Direct 先到并落库 → 它是唯一产生本地副作用的一方
@@ -3501,6 +3552,7 @@ mod tests {
                 kind: "text".into(),
                 content: "hi".into(),
                 ts: 100,
+                seq: 1,
                 status: "delivered".into(),
             },
         )
@@ -3540,6 +3592,7 @@ mod tests {
                 kind: "text".into(),
                 content: "hi".into(),
                 ts: 100,
+                seq: 1,
                 status: "read".into(),
             },
         )
@@ -3665,6 +3718,7 @@ mod tests {
                 kind: "text".into(),
                 content: "hi".into(),
                 ts: 100,
+                seq: 1,
                 status: "read".into(),
             },
         )
@@ -3699,6 +3753,7 @@ mod tests {
                 kind: "text".into(),
                 content: "hi".into(),
                 ts: 100,
+                seq: 1,
                 status: "sent".into(),
             },
         )
@@ -3747,6 +3802,7 @@ mod tests {
                 kind: "text".into(),
                 content: "hello".into(),
                 ts: 200,
+                seq: 1,
                 status: "delivered".into(),
             },
         )
@@ -3811,6 +3867,7 @@ mod tests {
                 kind: "text".into(),
                 content: "hi".into(),
                 ts: 100,
+                seq: 1,
                 status: "delivered".into(),
             },
         )

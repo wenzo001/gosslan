@@ -781,6 +781,10 @@ pub async fn send_message(
     };
 
     let ts = db::now_ms();
+    let seq = {
+        let dbc = s.db.lock().unwrap();
+        db::next_clock(&dbc, &friend_id).map_err(|e| format!("逻辑时钟推进失败：{e}"))?
+    };
     let name = resolve_nickname(s, &friend_id);
     let preview = preview(&kind, &content);
 
@@ -802,6 +806,7 @@ pub async fn send_message(
             None,
             &payload_b64,
             ts,
+            seq,
         )
     };
     // 信封 encrypted 默认 true（build_envelope 内置），无需改写
@@ -819,6 +824,7 @@ pub async fn send_message(
         kind: kind.clone(),
         content: content.clone(),
         ts,
+        seq,
         status: "sent".to_string(),
     };
     // 一律写离线队列兜底（INSERT OR IGNORE 按 msg_id 幂等）：直连链路存在但已失效
@@ -832,6 +838,7 @@ pub async fn send_message(
         kind: msg_kind,
         content: wire_content,
         ts,
+        seq,
     };
     let payload = serde_json::to_string(&queued).map_err(|e| e.to_string())?;
     {
@@ -978,10 +985,12 @@ pub async fn mark_read(state: State<'_, Arc<AppState>>, conv_id: String) -> Resu
 #[tauri::command]
 pub fn delete_conversation(state: State<'_, Arc<AppState>>, conv_id: String) -> Result<(), String> {
     let s = state.inner();
-    // 群会话删除时写删除边界：其他成员保留的历史重放不得回灌本机
+    // 群会话删除时写删除边界：其他成员保留的历史重放不得回灌本机。
+    // 边界记录当前逻辑序号，而非墙上时钟。
     if let Some(gid) = conv_id.strip_prefix("group:") {
         let dbc = s.db.lock().unwrap();
-        db::set_clear_boundary(&dbc, gid, db::now_ms()).map_err(|e| e.to_string())?;
+        let boundary = db::get_clock(&dbc, &conv_id);
+        db::set_clear_boundary(&dbc, gid, boundary).map_err(|e| e.to_string())?;
     }
     let dbc = s.db.lock().unwrap();
     db::delete_conversation(&dbc, &conv_id).map_err(|e| e.to_string())
@@ -1079,6 +1088,10 @@ pub async fn distribute_group_key(
             .map(|g| (g.name, g.members))
             .unwrap_or_default()
     };
+    let clock = {
+        let dbc = s.db.lock().unwrap();
+        db::get_clock(&dbc, &format!("group:{group_id}"))
+    };
     for m in &members {
         if m == &s.device_id {
             continue;
@@ -1101,6 +1114,7 @@ pub async fn distribute_group_key(
             key: STANDARD.encode(&sealed),
             group_name: group_name.clone(),
             members: members.clone(),
+            clock,
         };
         if let Err(_) = try_send(s, m, &msg).await {
             // 目标成员尚无 TCP link（建群时 ensure_link 可能尚未执行）：
@@ -1179,6 +1193,10 @@ async fn resend_group_key_to(s: &AppState, group_id: &str, members: &[String], k
             .map(|g| g.name)
             .unwrap_or_default()
     };
+    let clock = {
+        let dbc = s.db.lock().unwrap();
+        db::get_clock(&dbc, &format!("group:{group_id}"))
+    };
     for m in members {
         if m == &s.device_id {
             continue;
@@ -1200,6 +1218,7 @@ async fn resend_group_key_to(s: &AppState, group_id: &str, members: &[String], k
             key: STANDARD.encode(&sealed),
             group_name: group_name.clone(),
             members: members.to_vec(),
+            clock,
         };
         if let Err(_) = try_send(s, m, &msg).await {
             // 目标成员尚无 TCP link：登记待发，由建链 / Hello / 心跳的
@@ -1388,6 +1407,11 @@ pub async fn send_group_message(
         content.chars().take(MAX_MESSAGE_LEN).collect()
     };
     let ts = db::now_ms();
+    let conv_id = format!("group:{group_id}");
+    let seq = {
+        let dbc = s.db.lock().unwrap();
+        db::next_clock(&dbc, &conv_id).map_err(|e| format!("逻辑时钟推进失败：{e}"))?
+    };
     // 把群名 + 创建者 + 当前成员一并带上：跨端成员即便从未收到 GroupKey、
     // 只凭这条群消息也能在本地正确建群（含成员表），成员面板因此不为空。
     let group_meta = {
@@ -1402,7 +1426,6 @@ pub async fn send_group_message(
         return Err("你已不在该群中".to_string());
     }
     let key = get_group_key(s, &group_id).await.ok_or("群密钥缺失")?;
-    let conv_id = format!("group:{group_id}");
     let preview = preview(&kind, &content);
 
     // 群密钥加密 + Gossip 信封（E2EE 恒开：载荷用群密钥 ChaCha20-Poly1305 加密）
@@ -1420,6 +1443,7 @@ pub async fn send_group_message(
             Some(group_name.clone()),
             &payload_b64,
             ts,
+            seq,
         );
         env.group_creator = group_creator;
         env.group_members = group_members.clone();
@@ -1446,6 +1470,7 @@ pub async fn send_group_message(
         kind: kind_enum.as_str().to_string(),
         content: content.clone(),
         ts,
+        seq,
         status: "sent".to_string(),
     };
     // 群消息与单聊一样需要可靠投递：本地落库 + 每个成员的 outbox 在同一事务里完成，
@@ -1570,15 +1595,21 @@ pub async fn send_group_file(
     let content =
         serde_json::json!({ "name": name, "path": path, "size": size, "sha256": sha256 })
             .to_string();
+    let conv_id = format!("group:{group_id}");
+    let seq = {
+        let dbc = s.db.lock().unwrap();
+        db::next_clock(&dbc, &conv_id).unwrap_or(1)
+    };
     let rec = MessageRecord {
         id: 0,
         msg_id: format!("gfile-{transfer_id}"),
-        conv_id: format!("group:{group_id}"),
+        conv_id,
         sender_id: s.device_id.clone(),
         receiver_id: group_id.clone(),
         kind: "file".to_string(),
         content,
         ts: db::now_ms(),
+        seq,
         status: "sending".to_string(),
     };
     {
@@ -1877,6 +1908,10 @@ fn build_file_message(
         "subtype": file::classify_file_subtype(name),
     })
     .to_string();
+    let seq = {
+        let dbc = state.db.lock().unwrap();
+        db::next_clock(&dbc, friend_id).unwrap_or(1)
+    };
     MessageRecord {
         id: 0,
         msg_id: format!("file-{transfer_id}"),
@@ -1886,6 +1921,7 @@ fn build_file_message(
         kind: "file".to_string(),
         content,
         ts: db::now_ms(),
+        seq,
         status: "sent".to_string(),
     }
 }
@@ -2240,9 +2276,10 @@ pub fn clear_all_data(state: State<'_, Arc<AppState>>) -> Result<(), String> {
         tx.execute("DELETE FROM group_file_recipients", [])
             .map_err(|e| e.to_string())?;
         // 群聊删除边界同事务写入（clear_boundary 键不受 LIKE 'gk:%' 影响）
-        let now = db::now_ms();
+        // 边界取该群当前逻辑序号，不依赖墙上时钟。
         for gid in &group_ids {
-            db::set_clear_boundary(&tx, gid, now).map_err(|e| e.to_string())?;
+            let boundary = db::get_clock(&tx, &format!("group:{gid}"));
+            db::set_clear_boundary(&tx, gid, boundary).map_err(|e| e.to_string())?;
         }
         tx.commit().map_err(|e| e.to_string())?;
     }

@@ -385,9 +385,7 @@ export const useChatStore = defineStore("chat", () => {
   /** 统一发送（单聊/群聊）。乐观上屏：先显示 sending，invoke 成功后替换为真实记录。 */
   async function send(convId: string, content: string, kind: string): Promise<MessageRecord> {
     const myId = app.device?.device_id ?? "";
-    // 时间戳取「发送时刻」；并用会话内最新消息时间做下限钳制，
-    // 避免设备间时钟偏差导致乐观消息排序到已收到消息之上。
-    const lastTs = messages.value[convId]?.at(-1)?.ts ?? 0;
+    // 乐观消息先占一个很大的逻辑序号，保证它出现在会话底部；后端返回真实记录后会替换为权威 seq。
     const optimistic: MessageRecord = {
       id: -1,
       msg_id: `tmp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -396,7 +394,8 @@ export const useChatStore = defineStore("chat", () => {
       receiver_id: convId,
       kind: kind as MessageRecord["kind"],
       content,
-      ts: Math.max(Date.now(), lastTs),
+      ts: Date.now(),
+      seq: Number.MAX_SAFE_INTEGER,
       status: "sending",
     };
     enqueueMessage(optimistic);
@@ -573,7 +572,8 @@ export const useChatStore = defineStore("chat", () => {
         receiver_id: convId,
         kind: "file",
         content: JSON.stringify({ name }),
-        ts: Math.max(Date.now(), messages.value[convId]?.at(-1)?.ts ?? 0),
+        ts: Date.now(),
+        seq: Number.MAX_SAFE_INTEGER,
         status: "failed",
       });
       app.toast(`文件发送失败：${e}`, "error");

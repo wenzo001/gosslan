@@ -45,9 +45,17 @@ CREATE TABLE IF NOT EXISTS messages (
     kind        TEXT NOT NULL,          -- text | code | image | file | system
     content     TEXT NOT NULL,
     ts          INTEGER NOT NULL,
+    seq         INTEGER NOT NULL DEFAULT 0,
     status      TEXT NOT NULL DEFAULT 'sent'
 );
 CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conv_id, ts);
+
+-- 每会话逻辑时钟（Lamport 风格，单调递增）。消息排序与群聊清空边界都以此为准，
+-- 不使用发送方或接收方的墙上时钟。
+CREATE TABLE IF NOT EXISTS conversation_clocks (
+    conv_id TEXT PRIMARY KEY,
+    seq     INTEGER NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS groups (
     id         TEXT PRIMARY KEY,
@@ -184,6 +192,39 @@ pub fn init(path: &Path) -> Result<Connection> {
             let _ = conn.execute(&format!("ALTER TABLE friends ADD COLUMN {col} TEXT"), []);
         }
     }
+    // 迁移：messages 增加逻辑序号列（旧库幂等补列），并按会话内既有顺序回填。
+    {
+        let has_seq: bool = conn
+            .prepare("SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = 'seq'")
+            .and_then(|mut s| s.query_row([], |r| r.get::<_, i64>(0)))
+            .map(|n| n > 0)
+            .unwrap_or(true);
+        if !has_seq {
+            conn.execute("ALTER TABLE messages ADD COLUMN seq INTEGER NOT NULL DEFAULT 0", [])?;
+            conn.execute(
+                "UPDATE messages SET seq = (
+                     SELECT COUNT(*) FROM messages m2
+                     WHERE m2.conv_id = messages.conv_id
+                       AND (m2.ts < messages.ts
+                            OR (m2.ts = messages.ts AND m2.id <= messages.id))
+                 )",
+                [],
+            )?;
+        }
+    }
+    // 索引必须等 seq 列补齐后再建：旧库执行 SCHEMA 时 messages 表已存在，不会自动加列。
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_messages_conv_seq ON messages(conv_id, seq)",
+        [],
+    )?;
+    // 每次启动都把会话时钟同步到「该会话已有最大逻辑序号」，
+    // 保证旧库迁移后第一条新消息的 seq 不会回到 1 而排到历史前面。
+    conn.execute(
+        "INSERT INTO conversation_clocks(conv_id, seq)
+         SELECT conv_id, MAX(seq) FROM messages GROUP BY conv_id
+         ON CONFLICT(conv_id) DO UPDATE SET seq = MAX(conversation_clocks.seq, excluded.seq)",
+        [],
+    )?;
     // 迁移：outbox.msg_id 唯一索引（INSERT OR IGNORE 去重依赖它；旧库幂等补建）
     // 先清掉历史重复行（按 msg_id 保留最早一条），保证建索引必定成功
     conn.execute(
@@ -224,29 +265,71 @@ pub fn set_setting(conn: &Connection, key: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+// ---------------- 每会话逻辑时钟（Lamport 风格） ----------------
+
+/// 读取会话当前逻辑时钟（无记录返回 0）。
+pub fn get_clock(conn: &Connection, conv_id: &str) -> i64 {
+    conn.query_row(
+        "SELECT seq FROM conversation_clocks WHERE conv_id = ?1",
+        params![conv_id],
+        |r| r.get::<_, i64>(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
+    .unwrap_or(0)
+}
+
+/// 发送前取下一个逻辑序号：`max(local, 0) + 1` 并持久化。
+/// 逻辑序号只增不减；本地发送与接收共享同一会话时钟。
+pub fn next_clock(conn: &Connection, conv_id: &str) -> Result<i64> {
+    let tx = conn.unchecked_transaction()?;
+    let cur: i64 = tx
+        .query_row(
+            "SELECT seq FROM conversation_clocks WHERE conv_id = ?1",
+            params![conv_id],
+            |r| r.get(0),
+        )
+        .optional()?
+        .unwrap_or(0);
+    let next = cur.saturating_add(1);
+    tx.execute(
+        "INSERT INTO conversation_clocks(conv_id, seq) VALUES(?1, ?2)
+         ON CONFLICT(conv_id) DO UPDATE SET seq = excluded.seq",
+        params![conv_id, next],
+    )?;
+    tx.commit()?;
+    Ok(next)
+}
+
+/// 收到消息后推进本地会话时钟：`seq = max(local, observed)`。
+pub fn observe_clock(conn: &Connection, conv_id: &str, observed: i64) -> Result<()> {
+    conn.execute(
+        "INSERT INTO conversation_clocks(conv_id, seq) VALUES(?1, ?2)
+         ON CONFLICT(conv_id) DO UPDATE SET seq = MAX(conversation_clocks.seq, excluded.seq)",
+        params![conv_id, observed],
+    )?;
+    Ok(())
+}
+
 // ---------------- 群聊删除边界（清除聊天数据后旧消息防回灌） ----------------
 
-/// 清除后立刻发送的新消息可能因发送端时钟偏慢而 ts 略小于本机 boundary，
-/// 放行窗口 = 60s（仅容差，不做时钟同步/逻辑时钟）。
-const CLEAR_BOUNDARY_SKEW_MS: i64 = 60_000;
-
-/// 本地删除边界键：记录本机清除该群聊数据的时间戳（毫秒）。
+/// 本地删除边界键：记录本机清除该群聊时的逻辑序号（Lamport seq）。
 pub fn clear_boundary_key(group_id: &str) -> String {
     format!("clear_boundary:group:{group_id}")
 }
 
 /// 写入群聊删除边界（清除/删除群会话时调用）。
-pub fn set_clear_boundary(conn: &Connection, group_id: &str, ts: i64) -> Result<()> {
-    set_setting(conn, &clear_boundary_key(group_id), &ts.to_string())
+pub fn set_clear_boundary(conn: &Connection, group_id: &str, seq: i64) -> Result<()> {
+    set_setting(conn, &clear_boundary_key(group_id), &seq.to_string())
 }
 
-/// 群消息落库前的边界判定：本机清除过该群且消息时间明显早于清除时刻
-/// （ts < boundary - 60s 时钟容差）→ 视为旧历史，不得重新写入本机。
-/// boundary 附近（容差内）与之后的消息视为清除后产生的新消息，正常接收。
-pub fn group_message_blocked_by_boundary(conn: &Connection, group_id: &str, ts: i64) -> bool {
+/// 群消息落库前的边界判定：逻辑序号 <= 清除边界 → 视为旧历史，不得重新写入本机。
+/// 不再使用墙上时钟，也不猜测发送方时钟。
+pub fn group_message_blocked_by_boundary(conn: &Connection, group_id: &str, seq: i64) -> bool {
     get_setting(conn, &clear_boundary_key(group_id))
         .and_then(|v| v.parse::<i64>().ok())
-        .map(|boundary| ts < boundary - CLEAR_BOUNDARY_SKEW_MS)
+        .map(|boundary| seq <= boundary)
         .unwrap_or(false)
 }
 
@@ -560,9 +643,9 @@ pub fn delete_group(conn: &Connection, group_id: &str) -> Result<()> {
 /// 「重复」并照常回 Ack，而 Ack 会让发送方删除 outbox 行，导致消息永久丢失。
 pub fn insert_message_if_new(conn: &Connection, m: &MessageRecord) -> Result<bool> {
     let changed = conn.execute(
-        "INSERT OR IGNORE INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts, status)
-         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        params![m.msg_id, m.conv_id, m.sender_id, m.receiver_id, m.kind, m.content, m.ts, m.status],
+        "INSERT OR IGNORE INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![m.msg_id, m.conv_id, m.sender_id, m.receiver_id, m.kind, m.content, m.ts, m.seq, m.status],
     )?;
     Ok(changed > 0)
 }
@@ -581,8 +664,8 @@ pub fn insert_message_and_outbox(
 ) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
     tx.execute(
-        "INSERT INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts, status)
-         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
             m.msg_id,
             m.conv_id,
@@ -591,6 +674,7 @@ pub fn insert_message_and_outbox(
             m.kind,
             m.content,
             m.ts,
+            m.seq,
             m.status
         ],
     )?;
@@ -620,8 +704,8 @@ pub fn get_messages(
     offset: i64,
 ) -> Result<Vec<MessageRecord>> {
     let mut stmt = conn.prepare(
-        "SELECT id, msg_id, conv_id, sender_id, receiver_id, kind, content, ts, status
-         FROM messages WHERE conv_id = ?1 ORDER BY ts ASC, id ASC LIMIT ?2 OFFSET ?3",
+        "SELECT id, msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status
+         FROM messages WHERE conv_id = ?1 ORDER BY seq ASC, id ASC LIMIT ?2 OFFSET ?3",
     )?;
     let rows = stmt.query_map(params![conv_id, limit, offset], |r| {
         Ok(MessageRecord {
@@ -633,7 +717,8 @@ pub fn get_messages(
             kind: r.get(5)?,
             content: r.get(6)?,
             ts: r.get(7)?,
-            status: r.get(8)?,
+            seq: r.get(8)?,
+            status: r.get(9)?,
         })
     })?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -682,9 +767,9 @@ pub fn search_messages_in_conv(
 ) -> Result<Vec<MessageRecord>> {
     let pattern = format!("%{}%", escape_like(keyword));
     let mut stmt = conn.prepare(
-        "SELECT id, msg_id, conv_id, sender_id, receiver_id, kind, content, ts, status
+        "SELECT id, msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status
          FROM messages WHERE conv_id = ?1 AND content LIKE ?2 ESCAPE '\\'
-         ORDER BY ts DESC LIMIT ?3",
+         ORDER BY seq DESC, id DESC LIMIT ?3",
     )?;
     let rows = stmt.query_map(params![conv_id, pattern, limit], |r| {
         Ok(MessageRecord {
@@ -696,7 +781,8 @@ pub fn search_messages_in_conv(
             kind: r.get(5)?,
             content: r.get(6)?,
             ts: r.get(7)?,
-            status: r.get(8)?,
+            seq: r.get(8)?,
+            status: r.get(9)?,
         })
     })?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -1344,6 +1430,7 @@ mod tests {
             kind: kind.into(),
             content: content.into(),
             ts: 1,
+            seq: 1,
             status: "sent".into(),
         }
     }
@@ -1921,6 +2008,7 @@ mod tests {
                 kind: "text".into(),
                 content: content.into(),
                 ts: 1,
+                seq: 1,
                 status: "delivered".into(),
             },
         )
@@ -2489,37 +2577,23 @@ mod tests {
 
     // ---------- 群聊删除边界（清除聊天数据后旧消息防回灌） ----------
 
-    /// 清除边界按 ts + 60s 时钟容差拦截：明显早于 boundary 的旧历史拦截，
-    /// boundary 附近（慢钟新消息）与之后的新消息放行；无边界不拦截。
+    /// 清除边界按逻辑序号拦截：seq <= boundary 的旧历史拦截，之后放行；无边界不拦截。
     #[test]
     fn clear_boundary_blocks_old_group_messages() {
         let conn = group_file_fixture();
-        let clear_time = 1_700_000_000_000i64;
-        set_clear_boundary(&conn, "g1", clear_time).unwrap();
+        set_clear_boundary(&conn, "g1", 100).unwrap();
 
-        // Test A：清除前的旧历史（早于 boundary - 60s 容差）→ 拦截
-        assert!(group_message_blocked_by_boundary(
-            &conn,
-            "g1",
-            clear_time - CLEAR_BOUNDARY_SKEW_MS - 1
-        ));
-        // Test B：清除后即时发送的新消息（慢钟落入 60s 容差）→ 放行
-        assert!(!group_message_blocked_by_boundary(
-            &conn,
-            "g1",
-            clear_time - CLEAR_BOUNDARY_SKEW_MS
-        ));
-        assert!(!group_message_blocked_by_boundary(&conn, "g1", clear_time));
-        assert!(!group_message_blocked_by_boundary(&conn, "g1", clear_time + 1));
-        // 未设置边界的群不拦截（离线消息补偿不受影响）
-        assert!(!group_message_blocked_by_boundary(&conn, "g2", clear_time - 1));
+        // 清除边界及更早序号 → 拦截
+        assert!(group_message_blocked_by_boundary(&conn, "g1", 99));
+        assert!(group_message_blocked_by_boundary(&conn, "g1", 100));
+        // 清除后的新序号 → 放行
+        assert!(!group_message_blocked_by_boundary(&conn, "g1", 101));
+        // 未设置边界的群不拦截
+        assert!(!group_message_blocked_by_boundary(&conn, "g2", 1));
         // 重复清除：边界覆盖为新值（新 boundary 之前的旧消息再次被拦截）
-        set_clear_boundary(&conn, "g1", clear_time + 100).unwrap();
-        assert!(group_message_blocked_by_boundary(
-            &conn,
-            "g1",
-            clear_time + 100 - CLEAR_BOUNDARY_SKEW_MS - 1
-        ));
+        set_clear_boundary(&conn, "g1", 200).unwrap();
+        assert!(group_message_blocked_by_boundary(&conn, "g1", 200));
+        assert!(!group_message_blocked_by_boundary(&conn, "g1", 201));
     }
 
     /// 删除单个群会话同样写入边界（delete_conversation 群分支语义）。
@@ -2527,8 +2601,9 @@ mod tests {
     fn deleting_group_conversation_sets_boundary() {
         let conn = group_file_fixture();
         set_clear_boundary(&conn, "g1", 123456789).unwrap();
-        // 明显早于边界的旧消息被拦截
-        assert!(group_message_blocked_by_boundary(&conn, "g1", 123456789 - 60_001));
+        // 边界及更早序号被拦截
+        assert!(group_message_blocked_by_boundary(&conn, "g1", 123456789));
+        assert!(!group_message_blocked_by_boundary(&conn, "g1", 123456790));
     }
 
     // ---------- GroupFile 多 recipient 气泡状态聚合 ----------
@@ -2683,6 +2758,66 @@ mod tests {
         let (msg_id, ts) = last_message_from_sender(&conn, "b", "a").unwrap();
         assert_eq!(msg_id, "a2");
         assert_eq!(ts, 1); // 测试 rec_as 统一 ts=1
+    }
+
+    /// 旧库没有 seq 列时，init 必须先补列再建索引，不能在建索引时崩掉。
+    #[test]
+    fn init_migrates_existing_db_without_seq_column() {
+        let path = std::env::temp_dir().join(format!(
+            "gosslan-test-migrate-{}.db",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    msg_id TEXT UNIQUE NOT NULL,
+                    conv_id TEXT NOT NULL,
+                    sender_id TEXT NOT NULL,
+                    receiver_id TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    ts INTEGER NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'sent'
+                );",
+            )
+            .unwrap();
+        }
+        let conn = init(&path).unwrap();
+        let has_seq: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = 'seq'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|n| n > 0)
+            .unwrap();
+        assert!(has_seq, "旧库迁移后 messages 必须有 seq 列");
+        let index_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_messages_conv_seq'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(index_count, 1);
+        drop(conn);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 会话逻辑时钟：next_clock 单调递增，observe_clock 只前进不回退。
+    #[test]
+    fn conversation_clock_is_monotonic() {
+        let conn = mem();
+        assert_eq!(next_clock(&conn, "c1").unwrap(), 1);
+        assert_eq!(next_clock(&conn, "c1").unwrap(), 2);
+        observe_clock(&conn, "c1", 10).unwrap();
+        assert_eq!(get_clock(&conn, "c1"), 10);
+        observe_clock(&conn, "c1", 3).unwrap();
+        assert_eq!(get_clock(&conn, "c1"), 10, "observe 不得把时钟推回");
+        assert_eq!(next_clock(&conn, "c1").unwrap(), 11);
     }
 
     /// 群待发已读回执：按 (group_id, peer_id) 唯一，max 语义，删除只删对应行。

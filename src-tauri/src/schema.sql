@@ -40,9 +40,17 @@ CREATE TABLE IF NOT EXISTS messages (
     kind        TEXT NOT NULL,          -- text | code | image | file | system
     content     TEXT NOT NULL,
     ts          INTEGER NOT NULL,
+    seq         INTEGER NOT NULL DEFAULT 0,  -- 每会话逻辑序号（Lamport）
     status      TEXT NOT NULL DEFAULT 'sent'  -- sent | delivered | queued
 );
 CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conv_id, ts);
+CREATE INDEX IF NOT EXISTS idx_messages_conv_seq ON messages(conv_id, seq);
+
+-- 每会话逻辑时钟（Lamport 风格）
+CREATE TABLE IF NOT EXISTS conversation_clocks (
+    conv_id TEXT PRIMARY KEY,
+    seq     INTEGER NOT NULL
+);
 
 -- 群组
 CREATE TABLE IF NOT EXISTS groups (
@@ -77,6 +85,17 @@ CREATE TABLE IF NOT EXISTS outbox (
 );
 CREATE INDEX IF NOT EXISTS idx_outbox_peer ON outbox(peer_id);
 
+-- 群消息离线补发队列
+CREATE TABLE IF NOT EXISTS group_outbox (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    msg_id     TEXT NOT NULL,
+    group_id   TEXT NOT NULL,
+    peer_id    TEXT NOT NULL,
+    payload    TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    UNIQUE(msg_id, peer_id)
+);
+
 -- 文件传输记录
 CREATE TABLE IF NOT EXISTS file_transfers (
     id         TEXT PRIMARY KEY,
@@ -88,4 +107,33 @@ CREATE TABLE IF NOT EXISTS file_transfers (
     path       TEXT,
     progress   REAL NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL
+);
+
+-- 文件离线投递队列
+CREATE TABLE IF NOT EXISTS file_outbox (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    transfer_id     TEXT NOT NULL UNIQUE,
+    peer_id         TEXT NOT NULL,
+    group_id        TEXT,
+    local_path      TEXT NOT NULL,
+    name            TEXT NOT NULL,
+    size            INTEGER NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'pending',
+    attempts        INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at INTEGER NOT NULL,
+    created_at      INTEGER NOT NULL
+);
+
+-- 待发已读回执
+CREATE TABLE IF NOT EXISTS pending_reads (
+    peer_id       TEXT PRIMARY KEY,
+    last_read_ts  INTEGER NOT NULL
+);
+
+-- 待发群已读回执
+CREATE TABLE IF NOT EXISTS pending_group_reads (
+    group_id      TEXT NOT NULL,
+    peer_id       TEXT NOT NULL,
+    last_read_ts  INTEGER NOT NULL,
+    PRIMARY KEY (group_id, peer_id)
 );

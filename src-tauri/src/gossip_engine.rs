@@ -165,6 +165,7 @@ impl GossipEngine {
         group_name: Option<String>,
         payload_b64: &str,
         ts: i64,
+        seq: i64,
     ) -> GossipEnvelope {
         let mut env = GossipEnvelope {
             message_id: String::new(),
@@ -181,6 +182,7 @@ impl GossipEngine {
             group_members: Vec::new(),
             payload: payload_b64.to_string(),
             ts,
+            seq,
             encrypted: true, // 默认加密；调用方可按 E2EE 开关改写
         };
         env.compute_message_id();
@@ -241,7 +243,7 @@ mod tests {
         let id = Identity::generate();
         let engine = GossipEngine::new(100, 10, 4, 6);
 
-        let env = engine.build_envelope(&id, "dev-a", GossipKind::Chat, None, None, "cipher", 42);
+        let env = engine.build_envelope(&id, "dev-a", GossipKind::Chat, None, None, "cipher", 42, 1);
         assert!(engine.verify_envelope(&env));
 
         // 篡改 payload 后签名校验应失败
@@ -262,13 +264,18 @@ mod tests {
         let mut tampered_members = env.clone();
         tampered_members.group_members.push("forged-member".into());
         assert!(!engine.verify_envelope(&tampered_members));
+
+        // 逻辑序号参与签名：篡改 seq 会破坏验签，防止乱序/边界绕过。
+        let mut tampered_seq = env.clone();
+        tampered_seq.seq = 99;
+        assert!(!engine.verify_envelope(&tampered_seq));
     }
 
     #[test]
     fn envelope_ttl_is_preserved() {
         let id = crate::crypto::Identity::generate();
         let engine = GossipEngine::new(100, 10, 4, 6);
-        let env = engine.build_envelope(&id, "dev-a", GossipKind::Chat, None, None, "cipher", 42);
+        let env = engine.build_envelope(&id, "dev-a", GossipKind::Chat, None, None, "cipher", 42, 1);
         assert_eq!(env.ttl, 6);
     }
 
@@ -289,6 +296,7 @@ mod tests {
             Some("群聊".to_string()),
             "cipher",
             42,
+            1,
         );
         env.group_creator = Some("dev-a".to_string());
         env.group_members = vec!["dev-a".into(), "dev-b".into()];
@@ -312,7 +320,7 @@ mod tests {
         assert!(!engine.verify_envelope(&tampered_creator));
     }
 
-    /// 重签不改变 message_id 语义：message_id 只由 sender_id + ts + payload 决定，
+    /// 重签不改变 message_id 语义：message_id 只由 sender_id + nonce + payload 决定，
     /// 与 group_creator / group_members 无关，因此重算后保持一致。
     /// 这也是「本地 messages.msg_id 可直接取 env.message_id」的前提。
     #[test]
@@ -327,6 +335,7 @@ mod tests {
             Some("群聊".to_string()),
             "cipher",
             42,
+            1,
         );
         let before = env.message_id.clone();
         env.group_creator = Some("dev-a".to_string());

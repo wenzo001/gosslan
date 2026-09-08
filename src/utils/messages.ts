@@ -17,7 +17,8 @@ export function mergeMessages(
       merged.push(m);
     }
   }
-  merged.sort((a, b) => a.ts - b.ts || a.id - b.id);
+  // 排序以每会话逻辑序号为主，id 兜底，完全不依赖墙上时钟。
+  merged.sort((a, b) => a.seq - b.seq || a.id - b.id);
   return merged;
 }
 

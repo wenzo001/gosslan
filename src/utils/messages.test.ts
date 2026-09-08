@@ -20,6 +20,7 @@ function msg(partial: Partial<MessageRecord> & { msg_id: string }): MessageRecor
     kind: "text",
     content: "hello",
     ts: 0,
+    seq: 0,
     status: "sent",
     ...partial,
   };
@@ -32,17 +33,17 @@ test("按 msg_id 去重：重复消息只保留一次", () => {
   assert.deepEqual(out.map((m) => m.msg_id), ["m1", "m2", "m3"]);
 });
 
-test("按时间戳升序排序", () => {
-  const existing = [msg({ msg_id: "m3", ts: 30 })];
-  const incoming = [msg({ msg_id: "m1", ts: 10 }), msg({ msg_id: "m2", ts: 20 })];
+test("按逻辑序号升序排序（不依赖墙上时钟）", () => {
+  const existing = [msg({ msg_id: "m3", seq: 3 })];
+  const incoming = [msg({ msg_id: "m1", seq: 1 }), msg({ msg_id: "m2", seq: 2 })];
   const out = mergeMessages(existing, incoming);
   assert.deepEqual(out.map((m) => m.msg_id), ["m1", "m2", "m3"]);
 });
 
-test("同时间戳按 id 升序（稳定排序）", () => {
-  const a = msg({ msg_id: "a", ts: 5, id: 3 });
-  const b = msg({ msg_id: "b", ts: 5, id: 1 });
-  const c = msg({ msg_id: "c", ts: 5, id: 2 });
+test("同逻辑序号按 id 升序（稳定排序）", () => {
+  const a = msg({ msg_id: "a", seq: 5, id: 3 });
+  const b = msg({ msg_id: "b", seq: 5, id: 1 });
+  const c = msg({ msg_id: "c", seq: 5, id: 2 });
   const out = mergeMessages([], [a, b, c]);
   assert.deepEqual(out.map((m) => m.msg_id), ["b", "c", "a"]);
 });
@@ -53,20 +54,20 @@ test("空 incoming 返回现有消息（不丢失）", () => {
 });
 
 test("空 existing 时对 incoming 排序", () => {
-  const incoming = [msg({ msg_id: "b", ts: 2 }), msg({ msg_id: "a", ts: 1 })];
+  const incoming = [msg({ msg_id: "b", seq: 2 }), msg({ msg_id: "a", seq: 1 })];
   assert.deepEqual(mergeMessages([], incoming).map((m) => m.msg_id), ["a", "b"]);
 });
 
 test("模拟密集 Gossip 广播：1000 条 + 500 条重复 → 去重后仍 1000 条", () => {
   const incoming: MessageRecord[] = [];
   for (let i = 0; i < 1000; i++) {
-    incoming.push(msg({ msg_id: `g${i}`, ts: i }));
-    if (i < 500) incoming.push(msg({ msg_id: `g${i}`, ts: i })); // 多节点转发导致重复
+    incoming.push(msg({ msg_id: `g${i}`, seq: i }));
+    if (i < 500) incoming.push(msg({ msg_id: `g${i}`, seq: i })); // 多节点转发导致重复
   }
   const out = mergeMessages([], incoming);
   assert.equal(out.length, 1000);
-  assert.equal(out[0].ts, 0);
-  assert.equal(out[999].ts, 999);
+  assert.equal(out[0].seq, 0);
+  assert.equal(out[999].seq, 999);
 });
 
 test("不改动输入的 existing 数组（无副作用）", () => {

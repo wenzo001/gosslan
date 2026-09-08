@@ -48,6 +48,8 @@ export interface MessageRecord {
   kind: MsgKind;
   content: string;
   ts: number;
+  /** 每会话逻辑序号（Lamport），前端与后端都以它排序，而非墙上时钟。 */
+  seq: number;
   status: string;
 }
 

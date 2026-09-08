@@ -323,6 +323,7 @@ async fn main() {
             tcp_port: 0,
             x25519_pubkey: identity.x25519_public_b64(),
             ed25519_pubkey: identity.ed25519_public_b64(),
+            conv_clock: 0,
         },
     )
     .await
@@ -359,6 +360,7 @@ async fn main() {
         kind: MsgKind::Text,
         content: seal_direct(&identity, &app_x25519, "e2e-direct-ok"),
         ts: now_ms(),
+        seq: 1,
     };
     let _ = send_frame(&mut w, &direct).await;
     match waiter
@@ -417,6 +419,7 @@ async fn main() {
                         group_members: Vec::new(),
                         payload: STANDARD.encode(&sealed),
                         ts: now_ms(),
+                        seq: 1,
                         encrypted: true,
                     };
                     env.compute_message_id();
@@ -530,6 +533,7 @@ async fn main() {
             kind: MsgKind::Text,
             content: seal_direct(&identity, &app_x25519, OUTBOX_TEXT),
             ts: now_ms(),
+            seq: 1,
         };
         let injected = (|| -> Result<usize, String> {
             let conn = open_db(db)?;
@@ -624,6 +628,7 @@ async fn main() {
                     kind: kind.clone(),
                     content: seal_direct(&identity, &app_x25519, content),
                     ts: now_ms(),
+                    seq: 1,
                 },
             )
             .await;
@@ -656,6 +661,7 @@ async fn main() {
                     kind: MsgKind::Text,
                     content: seal_direct(&identity, &app_x25519, &format!("out-of-order-{msg_id}")),
                     ts,
+                    seq: if msg_id == OOO_A_ID { 2 } else { 1 },
                 },
             )
             .await;
@@ -684,6 +690,7 @@ async fn main() {
                 kind: MsgKind::Text,
                 content: seal_direct(&identity, &app_x25519, "alive"),
                 ts: now_ms(),
+                seq: 1,
             },
         )
         .await;

@@ -64,6 +64,8 @@ pub struct MessageRecord {
     pub kind: String,
     pub content: String,
     pub ts: i64,
+    /// 每会话逻辑序号（Lamport 风格），排序与清空边界都以此为准。
+    pub seq: i64,
     pub status: String,
 }
 
