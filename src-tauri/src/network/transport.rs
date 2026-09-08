@@ -529,7 +529,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             to,
             kind,
             content,
-            ts,
+            ts: _ts,
         } => {
             if from != peer_id {
                 return;
@@ -589,9 +589,9 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             // 与 Gossip 并发时只有一方拿到 Ok(true)，未读 +1 / message-received 因此各只一次。
             let (out_rec, inserted) = {
                 let dbc = state.db.lock().unwrap();
-                // 时钟偏差防护：发送方时钟与我方不一致会导致消息排序错乱
-                // （同一发送者的消息在列表中堆叠）→ 双向钳制到 [会话最后一条, 本地 now]
-                let ts = db::clamp_incoming_ts(ts, db::now_ms(), db::last_message_ts(&dbc, &from));
+                // 消息展示/排序只以本地接收时间为准，不使用发送方时间戳，
+                // 因此不猜测、也不纠正对端系统时钟。
+                let ts = db::now_ms();
                 let rec = MessageRecord {
                     id: 0,
                     msg_id: msg_id.clone(),
@@ -1587,12 +1587,8 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                 // 单聊与群聊走同一块 ⇒ 两种 GossipKind 都被覆盖。
                 let (out_rec, inserted) = {
                     let dbc = state.db.lock().unwrap();
-                    // 时钟偏差防护（同 ChatMessage 分支）
-                    let ts = db::clamp_incoming_ts(
-                        env.ts,
-                        db::now_ms(),
-                        db::last_message_ts(&dbc, &conv_id),
-                    );
+                    // 同 ChatMessage 分支：消息展示/排序只用本地接收时间。
+                    let ts = db::now_ms();
                     let rec = MessageRecord {
                         id: 0,
                         msg_id: env.message_id.clone(),

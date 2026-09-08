@@ -169,6 +169,7 @@ impl GossipEngine {
         let mut env = GossipEnvelope {
             message_id: String::new(),
             sender_id: sender_id.to_string(),
+            nonce: uuid::Uuid::new_v4().to_string(),
             sender_pubkey: identity.x25519_public_b64(),
             sender_ed25519: identity.ed25519_public_b64(),
             sender_sig: String::new(),

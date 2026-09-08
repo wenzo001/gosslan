@@ -182,7 +182,6 @@ fn announce_packet(state: &AppState, tcp_port: u16) -> UdpPacket {
         tcp_port,
         x25519_pubkey: Some(state.identity.x25519_public_b64()),
         ed25519_pubkey: Some(state.identity.ed25519_public_b64()),
-        ts: now_ms(),
     }
 }
 
@@ -274,9 +273,8 @@ pub async fn spawn(
                         match pkt.kind.as_str() {
                             "announce" => {
                                 state.push_diag_event("announce_recv", &format!("from={} via={}", pkt.device_id, src.ip()));
-                                // 粗略 RTT：基于双方 NTP 同步时钟的时间差（局域网内近似）
-                                let delta = now_ms().saturating_sub(pkt.ts);
-                                let rtt = if delta > 0 && delta < 5000 { Some(delta as u64) } else { None };
+                                // 不用对端时间戳推算 RTT：那依赖双方时钟同步，纯本地业务不应
+                                // 假设对端时钟。这里只做在线发现与建链，时延指标留待真正的往返测量。
                                 upsert_peer(
                                     &state,
                                     &pkt.device_id,
@@ -286,7 +284,7 @@ pub async fn spawn(
                                     pkt.tcp_port,
                                     pkt.x25519_pubkey.clone(),
                                     pkt.ed25519_pubkey.clone(),
-                                    rtt,
+                                    None,
                                 ).await;
                                 ensure_link(&state, &pkt.device_id, &src.ip().to_string(), pkt.tcp_port).await;
                             }
@@ -397,7 +395,6 @@ async fn broadcast_probe(
         tcp_port,
         x25519_pubkey: None,
         ed25519_pubkey: None,
-        ts: now_ms(),
     };
     if let Ok(data) = serde_json::to_vec(&who) {
         let _ = socket

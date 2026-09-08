@@ -84,6 +84,10 @@ pub enum GossipKind {
 pub struct GossipEnvelope {
     pub message_id: String,
     pub sender_id: String,
+    /// 每条消息的随机 nonce：message_id = SHA-256(sender_id + nonce + payload)。
+    /// 不再用本地时间戳参与消息身份，避免同毫秒碰撞，也避免业务身份依赖系统时间。
+    #[serde(default)]
+    pub nonce: String,
     pub sender_pubkey: String,
     pub sender_ed25519: String,
     pub sender_sig: String,
@@ -107,12 +111,13 @@ pub struct GossipEnvelope {
 }
 
 impl GossipEnvelope {
-    /// 计算并填充 message_id（SHA-256 of sender_id + ts + payload）。
+    /// 计算并填充 message_id（SHA-256 of sender_id + nonce + payload）。
+    /// 用随机 nonce 而非时间戳：消息身份不依赖本地时钟，也不存在同毫秒碰撞。
     pub fn compute_message_id(&mut self) {
         use sha2::{Digest, Sha256};
         let mut h = Sha256::new();
         h.update(self.sender_id.as_bytes());
-        h.update(self.ts.to_le_bytes());
+        h.update(self.nonce.as_bytes());
         h.update(self.payload.as_bytes());
         self.message_id = h.finalize().iter().map(|b| format!("{b:02x}")).collect();
     }
@@ -124,6 +129,7 @@ impl GossipEnvelope {
         serde_json::to_vec(&(
             &self.message_id,
             &self.sender_id,
+            &self.nonce,
             &self.sender_pubkey,
             &self.sender_ed25519,
             &self.kind,
@@ -396,7 +402,6 @@ pub struct UdpPacket {
     pub x25519_pubkey: Option<String>,
     /// Ed25519 公钥（base64，用于验签）
     pub ed25519_pubkey: Option<String>,
-    pub ts: i64,
 }
 
 #[cfg(test)]
@@ -407,6 +412,7 @@ mod tests {
         GossipEnvelope {
             message_id: String::new(),
             sender_id: "dev-a".into(),
+            nonce: "nonce-1".into(),
             sender_pubkey: "xk".into(),
             sender_ed25519: "ek".into(),
             sender_sig: "sig".into(),
@@ -457,6 +463,18 @@ mod tests {
         e2.payload = "tampered".into();
         e2.compute_message_id();
         assert_ne!(id1, e2.message_id); // 篡改 payload → id 变化
+
+        // 时间戳不参与消息身份：改变 ts 不应改变 message_id。
+        let mut e3 = e1.clone();
+        e3.ts = 999_999;
+        e3.compute_message_id();
+        assert_eq!(id1, e3.message_id);
+
+        // nonce 参与消息身份：改变 nonce 必须改变 message_id。
+        let mut e4 = e1.clone();
+        e4.nonce = "nonce-2".into();
+        e4.compute_message_id();
+        assert_ne!(id1, e4.message_id);
     }
 
     #[test]

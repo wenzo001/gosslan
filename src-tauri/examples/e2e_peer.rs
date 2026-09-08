@@ -151,7 +151,6 @@ async fn probe_instance_via_who_has(
         tcp_port: 0,
         x25519_pubkey: None,
         ed25519_pubkey: None,
-        ts: now_ms(),
     };
     let data = serde_json::to_vec(&who).map_err(|e| e.to_string())?;
     let deadline = tokio::time::Instant::now() + timeout;
@@ -406,6 +405,7 @@ async fn main() {
                     let mut env = GossipEnvelope {
                         message_id: String::new(),
                         sender_id: PEER_ID.into(),
+                        nonce: uuid::Uuid::new_v4().to_string(),
                         sender_pubkey: identity.x25519_public_b64(),
                         sender_ed25519: identity.ed25519_public_b64(),
                         sender_sig: String::new(),
