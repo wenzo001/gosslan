@@ -160,12 +160,19 @@ async function doForward(convId: string) {
   }
 }
 
-/** 统一发送文件：自动路由（直连优先，弱网/无直连自动中继），无需用户选择。 */
+/** 统一发送文件：自动路由（直连优先，弱网/无直连自动中继），无需用户选择。
+ *  群聊会话走群文件链路（send_group_file：Offer → Chunk → Done → CompleteAck）。 */
 async function attachFile() {
   const convId = chat.activeConv;
-  if (!convId || !isPeerFriend.value) return;
+  if (!convId) return;
+  if (!isGroup.value && !isPeerFriend.value) return;
   const picked = await openDialog({ multiple: false });
-  if (typeof picked === "string") {
+  if (typeof picked !== "string") return;
+  if (isGroup.value) {
+    const gid = activeGroupId.value;
+    if (!gid) return;
+    await chat.sendGroupFileTo(gid, picked);
+  } else {
     await chat.sendFileTo(convId, picked);
   }
 }

@@ -524,6 +524,19 @@ export const useChatStore = defineStore("chat", () => {
     return api.sendFileRelay(convId, path);
   }
 
+  /** 群文件发送：走群文件链路（Offer → Chunk → Done → CompleteAck）。
+   *  群文件气泡/进度展示留待后续阶段，本封装只负责触发后端传输。 */
+  async function sendGroupFileTo(groupId: string, path: string) {
+    try {
+      const id = await api.sendGroupFile(groupId, path);
+      void refreshTransfers();
+      return id;
+    } catch (e) {
+      app.toast(`群文件发送失败：${e}`, "error");
+      return null;
+    }
+  }
+
   function updateTransferProgress(p: FileProgress) {
     const t = transfers.value.find((x) => x.id === p.transfer_id);
     if (t) t.progress = p.total > 0 ? p.received / p.total : 0;
@@ -754,6 +767,7 @@ export const useChatStore = defineStore("chat", () => {
     handleSelfRemovedFromGroup,
     sendFileTo,
     sendFileRelayTo,
+    sendGroupFileTo,
     enqueueMessage,
   };
 });

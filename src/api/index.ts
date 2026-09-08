@@ -84,6 +84,8 @@ export const api = {
     invoke<string>("send_file_auto", { friendId, path }),
   sendFileRelay: (friendId: string, path: string) =>
     invoke<string>("send_file_relay", { friendId, path }),
+  sendGroupFile: (groupId: string, path: string) =>
+    invoke<string>("send_group_file", { groupId, path }),
   getTransfers: () => invoke<TransferInfo[]>("get_transfers"),
 
   /** 读取附件预览原始字节（图片→Blob/objectURL，代码→TextDecoder）。超限后端 reject "TOO_LARGE"。 */
