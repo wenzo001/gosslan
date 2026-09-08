@@ -1959,6 +1959,17 @@ pub fn copy_file(source: String, destination: String) -> Result<(), String> {
     Ok(())
 }
 
+/// 将 base64 数据写入目标路径（用于图片消息"另存为"：前端把 dataURL 解出 base64 传回）。
+#[tauri::command]
+pub fn save_data_file(base64_data: String, destination: String) -> Result<(), String> {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(base64_data.as_bytes())
+        .map_err(|e| e.to_string())?;
+    std::fs::write(&destination, bytes).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// 读取附件预览内容（原始字节，不走 base64 IPC）。
 ///
 /// 按 `msg_id` 反查记录里的本地 `path` 再读，前端据此渲染图片（→Blob/objectURL）

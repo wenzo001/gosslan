@@ -80,6 +80,15 @@ export interface ShareEntry {
   size: number;
 }
 
+/** 文件消息 content 的 JSON 载荷（附件名 / 本地路径 / 大小 / 子类型）。 */
+export interface FileMeta {
+  name: string;
+  path: string;
+  size: number;
+  /** 后端按扩展名分类的附件子类型；历史消息缺省按 file 处理。 */
+  subtype: string;
+}
+
 export interface TransferInfo {
   id: string;
   peer_id: string;

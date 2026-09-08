@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
+import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
-import { MessageCircle, UserMinus } from "lucide-vue-next";
+import { ArrowLeft, MessageCircle, UserMinus } from "lucide-vue-next";
 import BaseModal from "@/components/BaseModal.vue";
 import type { Friend } from "@/types";
 
@@ -11,6 +12,7 @@ const emit = defineEmits<{
   (e: "remove", f: Friend): void;
 }>();
 
+const app = useAppStore();
 const chat = useChatStore();
 /** 在线节点信息（IP / 端口 / 公钥），离线好友为 undefined */
 const peer = computed(() => chat.peers.find((p) => p.device_id === props.friend.device_id));
@@ -22,13 +24,27 @@ const confirmRemove = ref(false);
 </script>
 
 <template>
-  <div class="flex h-full flex-col bg-[var(--gosslan-bg)]">
+  <div class="flex h-full flex-col bg-[var(--gosslan-chat)]">
+    <!-- 移动端返回条：资料页占据整个内容区，需显式返回列表 -->
+    <div
+      v-if="app.isMobile"
+      class="flex items-center gap-2 border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-chat)] px-2 py-2"
+    >
+      <button
+        class="flex h-9 w-9 items-center justify-center rounded-lg text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+        title="返回"
+        @click="app.mobileView = 'list'"
+      >
+        <ArrowLeft class="h-5 w-5" />
+      </button>
+      <span class="truncate text-sm font-semibold">{{ friend.nickname }}</span>
+    </div>
     <div class="flex-1 overflow-y-auto px-6 py-8">
       <div class="mx-auto w-full max-w-[520px]">
         <!-- 头部：头像 + 昵称 + 在线状态 -->
         <div class="flex items-center gap-4">
           <div
-            class="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-2xl bg-primary text-2xl font-semibold text-white"
+            class="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] bg-primary text-2xl font-medium text-white"
             :class="!friend.online ? 'grayscale opacity-70' : ''"
           >
             <img v-if="friend.avatar" :src="friend.avatar" class="h-full w-full object-cover" />
@@ -39,7 +55,7 @@ const confirmRemove = ref(false);
             <div class="mt-1 flex items-center gap-1.5 text-sm text-[var(--gosslan-text-2)]">
               <span
                 class="h-2 w-2 rounded-full"
-                :class="friend.online ? 'bg-emerald-500' : 'bg-neutral-400'"
+                :class="friend.online ? 'bg-primary' : 'bg-neutral-400'"
               ></span>
               {{ friend.online ? "在线" : "离线" }}
             </div>
@@ -49,14 +65,14 @@ const confirmRemove = ref(false);
         <!-- 操作：发消息 / 删除好友 -->
         <div class="mt-6 flex gap-3">
           <button
-            class="flex flex-1 items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-white transition hover:bg-primary-hover"
+            class="flex flex-1 items-center justify-center gap-2 rounded-[var(--gosslan-avatar-radius)] bg-primary px-4 py-2.5 text-sm font-medium text-white transition hover:bg-primary-hover"
             @click="emit('send-message', friend.device_id)"
           >
             <MessageCircle class="h-4 w-4" />
             发消息
           </button>
           <button
-            class="flex items-center justify-center gap-2 rounded-xl border border-[var(--gosslan-border)] px-4 py-2.5 text-sm text-red-500 transition hover:bg-red-500/10"
+            class="flex items-center justify-center gap-2 rounded-[var(--gosslan-avatar-radius)] border border-[var(--gosslan-border)] px-4 py-2.5 text-sm text-red-500 transition hover:bg-red-500/10"
             @click="confirmRemove = true"
           >
             <UserMinus class="h-4 w-4" />
@@ -86,7 +102,7 @@ const confirmRemove = ref(false);
             </div>
             <div class="flex items-center justify-between gap-4 px-4 py-3">
               <dt class="shrink-0 text-[var(--gosslan-text-2)]">端到端加密</dt>
-              <dd class="text-xs text-emerald-600">已启用（X25519 + ChaCha20-Poly1305）</dd>
+              <dd class="text-xs text-primary">已启用（X25519 + ChaCha20-Poly1305）</dd>
             </div>
           </dl>
         </div>

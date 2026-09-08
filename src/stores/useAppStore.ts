@@ -58,6 +58,18 @@ export const useAppStore = defineStore("app", () => {
   // 响应式布局状态
   const isMobile = ref(false);
   const mobileView = ref<"list" | "chat">("list");
+  /** 移动端软键盘是否弹出（视口被压缩超过阈值即认为弹出）：用于收起底部导航，避免浮在键盘上方。 */
+  const keyboardOpen = ref(false);
+
+  function watchKeyboard() {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const onChange = () => {
+      keyboardOpen.value = window.innerHeight - vv.height > 120;
+    };
+    vv.addEventListener("resize", onChange);
+    vv.addEventListener("scroll", onChange);
+  }
 
   function applyThemeNow() {
     applyTheme(themeColor.value, fontFamily.value);
@@ -146,6 +158,7 @@ export const useAppStore = defineStore("app", () => {
     const mq = window.matchMedia("(max-width: 767px)");
     isMobile.value = mq.matches;
     mq.addEventListener("change", (e) => (isMobile.value = e.matches));
+    watchKeyboard();
 
     device.value = await api.getDeviceInfo();
     interfaces.value = await api.listInterfaces();
@@ -232,6 +245,7 @@ export const useAppStore = defineStore("app", () => {
     peerStyles,
     isMobile,
     mobileView,
+    keyboardOpen,
     init,
     toggleDark,
     updateProfile,

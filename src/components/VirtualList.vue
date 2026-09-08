@@ -218,6 +218,18 @@ onBeforeUnmount(() => {
 watch(visible, () => scheduleRemeasure(), { flush: "post" });
 watch(() => props.items, () => scheduleRemeasure(), { flush: "post" });
 
+// 总高度变化（实测修正估算 / 追加消息）后：
+// 1) 原本贴底则钉住贴底（高度收缩时浏览器会静默钳制 scrollTop，把用户顶离底部）
+// 2) 重算 nearBottom —— 否则滚动条没动、nearBottom 却过期，"回到最新"误弹
+watch(totalHeight, () => {
+  void nextTick(() => {
+    const el = container.value;
+    if (!el) return;
+    if (lastNearBottom) el.scrollTop = el.scrollHeight;
+    computeScrollState();
+  });
+});
+
 defineExpose({ scrollToBottom, scrollToIndex });
 </script>
 

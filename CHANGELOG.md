@@ -8,6 +8,27 @@
 
 版本号统一由 `npm run version:patch|minor|major` 维护，一次改动同步 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 三处，并把本文件 `[Unreleased]` 小节落为带日期的版本小节。
 
+## [Unreleased]
+### Changed
+- **视觉收敛：会话列表与聊天区分层、选中态改浅灰、去刺眼主色填充**（在上轮纯白极窄版之上纠偏）：
+  - 三栏恢复**层次感**：侧栏浅灰 `--gosslan-rail #f2f3f5`、会话列表 `--gosslan-list #f4f5f7`、聊天区 `--gosslan-chat #fff`，告别"三块纯白靠细线"的空旷感
+  - **选中态彻底去掉主题色填充**（用户反馈太丑）：`--gosslan-list-active` 由主色改为中性浅灰 `#e2e4e8`（深色 `#38393d`），会话/好友选中行不再整行变蓝/白字，文字保持深灰；侧栏激活项由主色整块改为**浅色胶囊 + 主色图标**（`--gosslan-rail-active` 改白/浅灰）
+  - 侧栏加宽 52→**64px**，图标/头像加大（44px 触控块、图标 22px、本人头像 40px），激活项 `rounded-xl` + 轻投影，不再逼仄空旷
+  - 列表头搜索框改**白底 + 细边框胶囊**（在浅灰栏上清晰可辨），聚焦描主色
+  - 头像圆角 4→6px、气泡圆角 4→6px（更协调不锋利）
+- **视觉改版：对齐微信 4.0 Windows 桌面版（按截图精确还原，自定义能力全部保留）**：此前在 `f223dbb` / `b2d6e0e` 基础上按用户截图校准的过渡版本（纯白三栏 + 52px 极窄栏 + 选中主色填充），已在本版本收敛为上述更耐看的层次化设计。**气泡配色预设、主题色取色器与色板、字号、紧凑模式等自定义项全部保留，出厂默认保持经典蓝**
+- **顶部窗口条 & 聊天输入区再校准（微信 4.0）**：
+  - 顶部拖拽条背景由纯白改为浅灰 app 底色 `--gosslan-app-bg`，高度收敛为 `--gosslan-title-h:30px`；盖在浅灰列表上自然融合、盖在白聊天区上呈微信那种"浅灰 caption 浮于内容上方"，不再是一条割裂的白色横杠；窗口按钮加宽到 44px 触控，关闭键 hover 走系统红 `#e81123`
+  - 输入区图标改 `rounded-md`、放大到 19px、去 30px 空高挤得更紧；文本域去掉固定 72px 初高/`rows`，改 `min-h-7` 随内容自然生长（发送/清空仍即时自适应）；发送键由"大号纯白文字+高填充胶囊"改为微信式小圆角主色按钮，未输入时降为灰块禁用（主题色仍可自定义，语义不变）
+- **前端组件拆分（纯结构重构，交互与视觉不变）**：`MessageItem`（668 行）拆为 `components/message/` 下的 Avatar / TextBubble / CodeBubble / FileBubble / ImageBubble / Receipt / ContentModal，并把「气泡配色与连续消息合并判定」「文件与附件预览」「复制反馈」抽成 `composables/useMessageDisplay`、`useMessageFile`、`useClipboard`；`ConversationList` 拆出会话行 / 好友行 / 好友申请 / 右键菜单，搜索抽为 `useConversationSearch`；`ChatWindow` 拆出 `ChatHeader` / `MessageComposer` / `RenameGroupModal`，行高估算抽为 `utils/messageHeight.ts`（与 `previewMetrics` 同源）；`SettingsPanel` 拆为 Profile / Appearance / ChatStyle / Network / Storage / Security / About 七个分区，并新增基础开关 `SettingsToggle`。行高估算与渲染仍共用同一套常量，虚拟列表定位与气泡高度不受影响
+
+### Fixed
+- **移动端列表↔聊天切换挤压内容**：原先靠宽度动画（`w-0` ↔ `w-full`）切换，动画期间列表内容被横向压缩。改为整屏抽屉 + `translate-x` 滑动
+- **移动端底部导航与内容区未适配安全区**：导航本身有 `env(safe-area-inset-bottom)`，内容区却固定 `pb-16`，全面屏机型底部会被导航遮住。现内容区按 `calc(4rem + env(safe-area-inset-bottom))` 留位
+- **移动端软键盘弹出时底部导航浮在键盘上方遮挡输入**：监听 `visualViewport`，键盘弹出即收起底部导航并收紧内容区留白
+- **移动端进入好友资料页后无返回入口**：资料页加移动端返回条，可回到列表
+- **移动端无法删除好友**：`contextmenu` 在触屏不会触发，现长按好友 500ms 呼出同一菜单（桌面右键行为不变）
+
 ## [0.13.1] - 2026-09-08
 ### Fixed
 - **Android APK 构建失败（v0.13.0 起 CI 连续失败）**：自绘标题栏的窗口控制命令 `window_minimize` / `window_toggle_maximize` 调用了 Tauri 仅桌面端提供的 `WebviewWindow::minimize` / `maximize` / `unmaximize`，交叉编译到 `*-linux-android` 时报 E0599（`is_maximized` 与 `hide` 两端都有，因此只有这两个命令受影响）。现沿用仓库既有的 `focus_window` 做法补 `#[cfg(mobile)]` 实现：移动端无独立窗口概念，`window_minimize` 为 no-op、`window_toggle_maximize` 返回 `false`；两个命令在桌面/移动两端仍然都注册，桌面实现逐字未改。前端 `TitleBar.vue` 本身以 `v-if="!app.isMobile"` 只在桌面渲染，移动端行为无任何变化，桌面端功能不受影响

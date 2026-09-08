@@ -80,7 +80,7 @@ async function create() {
         >
           <Check v-if="selected.includes(f.device_id)" class="h-3 w-3 text-white" />
         </div>
-        <div class="flex h-8 w-8 items-center justify-center overflow-hidden rounded-full bg-primary text-white">
+        <div class="flex h-8 w-8 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] bg-primary text-white">
           <img v-if="f.avatar" :src="f.avatar" class="h-full w-full object-cover" />
           <span v-else class="text-xs font-semibold">{{ initials(f.nickname) }}</span>
         </div>

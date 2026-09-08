@@ -39,7 +39,7 @@ const activeGroup = ref(0);
 <template>
   <div
     v-if="open"
-    class="absolute bottom-full left-0 z-50 mb-2 w-[300px] select-none rounded-xl border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] shadow-xl"
+    class="frost absolute bottom-full left-0 z-50 mb-2 w-[300px] select-none rounded-xl border border-[var(--gosslan-border)] shadow-xl"
     @click.stop
   >
     <div class="flex items-center gap-1 border-b border-[var(--gosslan-border)] px-2 py-1.5">
@@ -51,13 +51,15 @@ const activeGroup = ref(0);
         @click="activeGroup = i"
       >{{ g.label }}</button>
     </div>
-    <div class="grid max-h-[180px] grid-cols-8 gap-0.5 overflow-y-auto p-2">
-      <button
-        v-for="e in GROUPS[activeGroup].items"
-        :key="e"
-        class="flex h-8 w-8 items-center justify-center rounded-md text-lg transition hover:bg-[var(--gosslan-hover)]"
-        @click="emit('select', e)"
-      >{{ e }}</button>
+    <div class="px-2 py-2" style="height: 120px">
+      <div class="grid h-full grid-cols-8 content-start gap-0.5 overflow-y-auto">
+        <button
+          v-for="e in GROUPS[activeGroup].items"
+          :key="e"
+          class="flex h-8 w-8 items-center justify-center rounded-md text-lg transition hover:bg-[var(--gosslan-hover)]"
+          @click="emit('select', e)"
+        >{{ e }}</button>
+      </div>
     </div>
   </div>
 </template>
