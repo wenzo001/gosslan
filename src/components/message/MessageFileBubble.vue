@@ -12,6 +12,8 @@ defineProps<{
   statusText: string | null;
   failed: boolean;
   note: string | null;
+  /** 群文件（gfile-）专用：按成员聚合的投递状态（单聊为 null 不显示）。 */
+  delivery?: { completed: number; failed: number; waiting: number } | null;
 }>();
 const emit = defineEmits<{
   (e: "open"): void;
@@ -51,6 +53,12 @@ const emit = defineEmits<{
       >
         <Download class="h-4 w-4" />
       </button>
+    </div>
+    <!-- 群文件成员投递状态：已发送给 N 人 · M 人待上线（失败单列） -->
+    <div v-if="delivery" class="flex items-center gap-1.5 text-[11px] opacity-70">
+      <span>已发送给 {{ delivery.completed }} 人</span>
+      <span v-if="delivery.waiting > 0">· {{ delivery.waiting }} 人待上线</span>
+      <span v-if="delivery.failed > 0" class="text-red-500">· {{ delivery.failed }} 人失败</span>
     </div>
     <!-- 传输进度条（发送/接收中实时显示，完成后消失） -->
     <template v-if="progress !== null">

@@ -117,6 +117,9 @@ CREATE TABLE IF NOT EXISTS group_file_recipients (
 );
 CREATE INDEX IF NOT EXISTS idx_group_file_recipients_status
     ON group_file_recipients(transfer_id, status);
+-- 离线投递定向查询：peer 上线时按 recipient 精确取其 pending 群文件
+CREATE INDEX IF NOT EXISTS idx_group_file_recipients_recipient
+    ON group_file_recipients(recipient_id, status);
 
 -- 待发已读回执：进程重启后从 DB 恢复，避免 ReadReceipt 丢失
 CREATE TABLE IF NOT EXISTS pending_reads (
@@ -825,8 +828,19 @@ pub fn upsert_transfer(
     Ok(())
 }
 
-pub fn list_transfers(conn: &Connection) -> Result<Vec<TransferInfo>> {
-    let mut stmt = conn.prepare(
+/// 取单条 transfer 的本地 path（群文件离线投递时校验源文件仍在）。
+pub fn get_transfer_path(conn: &Connection, id: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT path FROM file_transfers WHERE id = ?1",
+        params![id],
+        |r| r.get(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
+}
+
+pub fn list_transfers(conn: &Connection) -> Result<Vec<TransferInfo>> {    let mut stmt = conn.prepare(
         "SELECT id, peer_id, name, size, direction, status, path, progress FROM file_transfers ORDER BY created_at DESC",
     )?;
     let rows = stmt.query_map([], |r| {
@@ -916,6 +930,65 @@ pub fn get_group_file(conn: &Connection, transfer_id: &str) -> Option<GroupFile>
     .optional()
     .ok()
     .flatten()
+}
+
+/// 离线投递定向查询：某 peer 的全部 pending 群文件（按 recipient 精确命中
+/// idx_group_file_recipients_recipient 索引，不扫描全表）。
+/// 返回 (transfer_id, group_id) 供逐个投递。
+pub fn list_pending_group_files_for_recipient(
+    conn: &Connection,
+    recipient_id: &str,
+) -> Result<Vec<(String, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT r.transfer_id, f.group_id
+         FROM group_file_recipients r
+         JOIN group_files f ON f.transfer_id = r.transfer_id
+         WHERE r.recipient_id = ?1 AND r.status = 'pending'
+         ORDER BY f.created_at",
+    )?;
+    let rows = stmt.query_map(params![recipient_id], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    })?;
+    rows.collect()
+}
+
+/// 群文件 recipient 投递状态摘要（气泡文案用）：
+/// completed/failed/pending(or sending) 计数。
+#[derive(serde::Serialize)]
+pub struct GroupFileDeliverySummary {
+    pub total: i64,
+    pub completed: i64,
+    pub failed: i64,
+    pub waiting: i64, // pending + sending（未到终态）
+}
+
+/// 汇总某群文件的全部 recipient 状态（定向查询，气泡显示用）。
+pub fn get_group_file_delivery_summary(
+    conn: &Connection,
+    transfer_id: &str,
+) -> Option<GroupFileDeliverySummary> {
+    get_group_file(conn, transfer_id)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT
+               COUNT(*),
+               SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END),
+               SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END),
+               SUM(CASE WHEN status NOT IN ('completed','failed') THEN 1 ELSE 0 END)
+             FROM group_file_recipients WHERE transfer_id = ?1",
+        )
+        .ok()?;
+    let r = stmt
+        .query_row(params![transfer_id], |r| {
+            Ok(GroupFileDeliverySummary {
+                total: r.get::<_, i64>(0)?,
+                completed: r.get::<_, i64>(1).unwrap_or(0),
+                failed: r.get::<_, i64>(2).unwrap_or(0),
+                waiting: r.get::<_, i64>(3).unwrap_or(0),
+            })
+        })
+        .ok()?;
+    Some(r)
 }
 
 /// 为群文件添加一个 recipient 投递状态（初始 pending）。

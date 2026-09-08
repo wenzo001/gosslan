@@ -1526,13 +1526,11 @@ pub async fn send_group_file(
         .lock()
         .unwrap()
         .insert(transfer_id.clone(), file_key);
-
-    // 可达成员：有 TCP link 且 peers 信息完整；其余保持 pending
-    let mut reachable: Vec<String> = Vec::new();
-    for m in &members {
-        if s.links.lock().await.contains_key(m) && resolve_member_x25519(&s, m).is_some() {
-            reachable.push(m.clone());
-        }
+    // 密封 file_key 持久化（群密钥封装，非明文）：重启后离线 pending
+    // 群文件的投递仍能恢复 file_key（群密钥 gk:% 本身保留）
+    {
+        let dbc = s.db.lock().unwrap();
+        db::set_setting(&dbc, &format!("gfk:{transfer_id}"), &sealed_file_key).ok();
     }
 
     // 可达成员：有 TCP link 且 peers 信息完整；其余保持 pending
@@ -1546,6 +1544,8 @@ pub async fn send_group_file(
         // 全员不可达：明确报错让前端反馈，而不是静默成功让用户"毫无反应"
         return Err("群内成员当前均不在线，无法发送群文件".to_string());
     }
+    // 发起成功即返回 transfer_id：离线成员保持 pending，
+    // 由成员上线事件（Hello/心跳/建链）触发自动投递（见 dispatch_pending_group_files）
 
     // 发送者本地气泡：群文件发起在会话中可见（msg_id 与接收端一致，
     // 便于 CompleteAck 后双方各自推进状态）
@@ -1611,147 +1611,231 @@ pub async fn send_group_file(
         }
     }
 
-    // 分片发送：流式读取（256KB），逐片 AEAD 加密后发给全部可达 recipient。
-    // 后台执行（与一对一 send_file 一致）；单个 recipient 失败只标该 recipient
-    // failed，不阻塞其他 recipient，也不把整个 GroupFile 标 failed。
+    // 逐可达成员并行投递（每个 recipient 独立任务：Offer → Chunk → Done）。
+    // 单个 recipient 失败只标它 failed，不阻塞其他；离线成员保持 pending，
+    // 由上线事件（flush_pending_group_files）自动投递。
     let s2 = s.clone();
     let tid = transfer_id.clone();
     let gid = group_id.clone();
-    let sid = s.device_id.clone();
-    let rcpt = reachable.clone();
-    tokio::spawn(async move {
-        let mut f = match tokio::fs::File::open(&p).await {
-            Ok(f) => f,
-            Err(_) => {
-                // 文件读取失败：全部可达 recipient 置 failed
-                let dbc = s2.db.lock().unwrap();
-                for m in &rcpt {
-                    let _ = db::update_group_file_recipient(&dbc, &tid, m, "failed", 0.0);
-                }
-                return;
+    let src = p.clone();
+    for m in &reachable {
+        let s3 = s2.clone();
+        let tid3 = tid.clone();
+        let gid3 = gid.clone();
+        let src3 = src.clone();
+        let m3 = m.clone();
+        tokio::spawn(async move {
+            if let Err(e) = dispatch_group_file_to_peer(&s3, &tid3, &gid3, &m3, src3.to_string_lossy().as_ref()).await {
+                app_handle_log(&s3, &format!("group-file dispatch {tid3} -> {m3} failed: {e}"));
             }
-        };
-        use tokio::io::AsyncReadExt;
-        let mut buf = vec![0u8; FILE_CHUNK];
-        let mut seq: u32 = 0;
-        let mut sent: u64 = 0;
-        let mut last_report = std::time::Instant::now() - std::time::Duration::from_secs(1);
-        // 分片发送失败的 recipient：只标它 failed，不参与 Done，不阻塞其他
-        let mut failed: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let set_progress = |progress: f64| {
-            let dbc = s2.db.lock().unwrap();
-            db::upsert_transfer(
-                &dbc,
-                &tid,
-                &gid,
-                "群文件",
-                size,
-                "send",
-                "active",
-                None,
-                progress,
-            )
-            .ok();
-        };
-        loop {
-            let n = match f.read(&mut buf).await {
-                Ok(n) => n,
-                Err(_) => {
-                    let dbc = s2.db.lock().unwrap();
-                    for m in &rcpt {
-                        let _ = db::update_group_file_recipient(&dbc, &tid, m, "failed", 0.0);
-                    }
-                    return;
-                }
-            };
-            if n == 0 {
-                break; // 文件读完：发送 GroupFileDone，最终状态由接收端校验决定
-            }
-            // 每片独立随机 nonce 的 AEAD 密文；file_key 从运行态读取（不重生成）
-            let Some(key) = s2.group_file_keys.lock().unwrap().get(&tid).copied() else {
-                return; // session 丢失：不发送明文
-            };
-            let sealed = match crypto::seal_symmetric(&key, &buf[..n]) {
-                Some(v) => v,
-                None => {
-                    let dbc = s2.db.lock().unwrap();
-                    for m in &rcpt {
-                        let _ = db::update_group_file_recipient(&dbc, &tid, m, "failed", 0.0);
-                    }
-                    return;
-                }
-            };
-            let data = STANDARD.encode(&sealed);
-            for m in &rcpt {
-                if failed.contains(m) {
-                    continue; // 已失败：不再发送后续分片
-                }
-                let chunk = Message::GroupFileChunk {
-                    transfer_id: tid.clone(),
-                    group_id: gid.clone(),
-                    sender_id: sid.clone(),
-                    seq,
-                    data: data.clone(),
-                };
-                if try_send(&s2, m, &chunk).await.is_err() {
-                    // 单个 recipient 失败：只标记它，不阻塞其他
-                    failed.insert(m.clone());
-                    let dbc = s2.db.lock().unwrap();
-                    let _ = db::update_group_file_recipient(&dbc, &tid, m, "failed", 0.0);
-                }
-            }
-            sent += n as u64;
-            // 真实本地进度节流上报（250ms）：sender 自己的字节计数，不依赖 ACK
-            if last_report.elapsed() >= std::time::Duration::from_millis(250) {
-                last_report = std::time::Instant::now();
-                set_progress(sent as f64 / size.max(1) as f64);
-            }
-            seq += 1;
-        }
-        // 本机分片全部发完：transfer 推进到 done/1.0（气泡 delivered 由
-        // CompleteAck 聚合决定，这里只表达"本机发送已完成"）
-        set_progress(1.0);
-        {
-            let dbc = s2.db.lock().unwrap();
-            let final_status = if failed.len() >= rcpt.len() && !rcpt.is_empty() {
-                "failed"
-            } else {
-                "done"
-            };
-            // path 保留源文件位置：失败/完成后用户仍可打开自己的源文件
-            db::upsert_transfer(
-                &dbc,
-                &tid,
-                &gid,
-                "群文件",
-                size,
-                "send",
-                final_status,
-                Some(p.to_string_lossy().as_ref()),
-                if final_status == "done" { 1.0 } else { 0.0 },
-            )
-            .ok();
-        }
-        // GroupFileDone：发给仍处于发送流程中的 recipient（未 failed）。
-        // Done 不等于接收完成——sender-side recipient 保持 sending，
-        // 不伪造 completed（完成确认机制留待后续阶段）。
-        for m in &rcpt {
-            if failed.contains(m) {
-                continue;
-            }
-            let done = Message::GroupFileDone {
-                transfer_id: tid.clone(),
-                group_id: gid.clone(),
-                sender_id: sid.clone(),
-            };
-            let _ = try_send(&s2, m, &done).await;
-        }
-    });
+        });
+    }
 
     Ok(transfer_id)
 }
 
+/// 群文件投递失败诊断（emit 给 DevDiag 面板；不打印任何密钥/明文内容）。
+fn app_handle_log(state: &Arc<AppState>, msg: &str) {
+    let _ = state.app.emit("group-file-log", msg);
+}
+
+/// 向单个 recipient 执行完整群文件投递：Offer → 流式 Chunk → Done。
+/// 元数据/源路径/密钥均从 DB 与运行态恢复，支持离线 pending 的延迟投递。
+async fn dispatch_group_file_to_peer(
+    state: &Arc<AppState>,
+    transfer_id: &str,
+    group_id: &str,
+    recipient: &str,
+    source_path: &str,
+) -> Result<(), String> {
+    let gf = db::get_group_file(&state.db.lock().unwrap(), transfer_id)
+        .ok_or("群文件记录不存在")?;
+    let group_key = get_group_key(state, group_id).await.ok_or("群密钥缺失")?;
+    let file_key = ensure_group_file_key(state, transfer_id, group_id, &group_key)
+        .ok_or("文件会话密钥缺失")?;
+    let sealed_file_key = STANDARD.encode(
+        crypto::seal_symmetric(&group_key, &file_key).ok_or("封装文件密钥失败")?,
+    );
+
+    // 源文件必须仍存在：不存在则该 recipient 置 failed（明确状态变化，
+    // 不允许数据库停留在 pending 却永远无法投递）
+    let src = std::path::PathBuf::from(source_path);
+    let size = match std::fs::metadata(&src) {
+        Ok(m) if m.is_file() => m.len(),
+        _ => {
+            let dbc = state.db.lock().unwrap();
+            let _ = db::update_group_file_recipient(&dbc, transfer_id, recipient, "failed", 0.0);
+            return Err("源文件已不存在".to_string());
+        }
+    };
+
+    // recipient → sending + Offer
+    {
+        let dbc = state.db.lock().unwrap();
+        let _ = db::update_group_file_recipient(&dbc, transfer_id, recipient, "sending", 0.0);
+    }
+    let offer = Message::GroupFileOffer {
+        transfer_id: transfer_id.to_string(),
+        group_id: group_id.to_string(),
+        sender_id: state.device_id.clone(),
+        name: gf.name.clone(),
+        size,
+        sha256: gf.sha256.clone(),
+        sealed_file_key,
+    };
+    try_send(state, recipient, &offer)
+        .await
+        .map_err(|e| format!("Offer 发送失败：{e}"))?;
+
+    // 流式分片：256KB → AEAD（独立随机 nonce）→ Base64 → GroupFileChunk
+    let mut f = tokio::fs::File::open(&src).await.map_err(|e| e.to_string())?;
+    use tokio::io::AsyncReadExt;
+    let mut buf = vec![0u8; FILE_CHUNK];
+    let mut seq: u32 = 0;
+    let mut sent: u64 = 0;
+    let mut last_report = std::time::Instant::now() - std::time::Duration::from_secs(1);
+    loop {
+        let n = f.read(&mut buf).await.map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        let Some(key) = state.group_file_keys.lock().unwrap().get(transfer_id).copied() else {
+            return Err("文件会话密钥丢失".to_string());
+        };
+        let sealed = crypto::seal_symmetric(&key, &buf[..n]).ok_or("分片加密失败")?;
+        let data = STANDARD.encode(&sealed);
+        let chunk = Message::GroupFileChunk {
+            transfer_id: transfer_id.to_string(),
+            group_id: group_id.to_string(),
+            sender_id: state.device_id.clone(),
+            seq,
+            data,
+        };
+        try_send(state, recipient, &chunk)
+            .await
+            .map_err(|e| format!("分片发送失败：{e}"))?;
+        sent += n as u64;
+        // 真实本地进度节流落库（250ms）
+        if last_report.elapsed() >= std::time::Duration::from_millis(250) {
+            last_report = std::time::Instant::now();
+            let dbc = state.db.lock().unwrap();
+            let _ = db::update_group_file_recipient(
+                &dbc,
+                transfer_id,
+                recipient,
+                "sending",
+                sent as f64 / size.max(1) as f64,
+            );
+        }
+        seq += 1;
+    }
+    // Done：分片全部发出，接收端据此做最终校验
+    let done = Message::GroupFileDone {
+        transfer_id: transfer_id.to_string(),
+        group_id: group_id.to_string(),
+        sender_id: state.device_id.clone(),
+    };
+    try_send(state, recipient, &done)
+        .await
+        .map_err(|e| format!("Done 发送失败：{e}"))?;
+    Ok(())
+}
+
+/// 恢复/获取群文件会话密钥：优先内存运行态；
+/// 缺失时从持久化的密封密钥（gfk:{tid}，群密钥封装）解封并回填内存。
+/// 明文 file_key 仍不落库（gfk 存的是群密钥封装后的密文，与 wire 一致）。
+pub fn ensure_group_file_key(
+    state: &AppState,
+    transfer_id: &str,
+    group_id: &str,
+    group_key: &[u8; 32],
+) -> Option<[u8; 32]> {
+    let _ = group_id; // 预留：未来按群隔离密钥命名空间
+    if let Some(k) = state.group_file_keys.lock().unwrap().get(transfer_id) {
+        return Some(*k);
+    }
+    let sealed_b64 = {
+        let dbc = state.db.lock().unwrap();
+        db::get_setting(&dbc, &format!("gfk:{transfer_id}"))
+    }?;
+    let sealed = STANDARD.decode(sealed_b64).ok()?;
+    let key: [u8; 32] = crypto::open_symmetric(group_key, &sealed)?.try_into().ok()?;
+    state
+        .group_file_keys
+        .lock()
+        .unwrap()
+        .insert(transfer_id.to_string(), key);
+    Some(key)
+}
+
+/// peer 上线（Hello / 心跳 / 建链）后触发：把该 peer 的 pending 群文件
+/// 顺序投递（同一 peer 串行，不同 peer 并行）。
+/// 防重入：group_file_sending 标记保证同一 peer 同时只有一个投递任务；
+/// 源文件已不存在 → recipient 置 failed（不留永远无法投递的 pending）；
+/// 无 link 时保持 pending，本次直接返回（下次连接事件再触发）。
+pub async fn flush_pending_group_files(state: &Arc<AppState>, peer_id: &str) {
+    if !state
+        .group_file_sending
+        .lock()
+        .unwrap()
+        .insert(peer_id.to_string())
+    {
+        return; // 该 peer 已有投递任务在执行
+    }
+    let pending = {
+        let dbc = state.db.lock().unwrap();
+        db::list_pending_group_files_for_recipient(&dbc, peer_id).unwrap_or_default()
+    };
+    if pending.is_empty() {
+        state.group_file_sending.lock().unwrap().remove(peer_id);
+        return;
+    }
+    let mut tasks: Vec<(String, String, String)> = Vec::new();
+    for (tid, gid) in pending {
+        // 源文件仍在本机（file_transfers send 行的 path）才可投递
+        let src = {
+            let dbc = state.db.lock().unwrap();
+            db::get_transfer_path(&dbc, &tid)
+        };
+        let ok = src
+            .as_deref()
+            .map(|p| std::fs::metadata(p).map(|m| m.is_file()).unwrap_or(false))
+            .unwrap_or(false);
+        if ok {
+            tasks.push((tid, gid, src.unwrap()));
+        } else {
+            let dbc = state.db.lock().unwrap();
+            let _ = db::update_group_file_recipient(&dbc, &tid, peer_id, "failed", 0.0);
+        }
+    }
+    if tasks.is_empty() {
+        state.group_file_sending.lock().unwrap().remove(peer_id);
+        return;
+    }
+    let s2 = state.clone();
+    let peer = peer_id.to_string();
+    tauri::async_runtime::spawn(async move {
+        for (tid, gid, src) in tasks {
+            if let Err(e) = dispatch_group_file_to_peer(&s2, &tid, &gid, &peer, &src).await {
+                app_handle_log(&s2, &format!("group-file dispatch {tid} -> {peer} failed: {e}"));
+            }
+        }
+        s2.group_file_sending.lock().unwrap().remove(&peer);
+    });
+}
+
 // ---------------- 文件传输 ----------------
+
+/// 群文件投递摘要（气泡成员状态文案用）：总数/completed/failed/待投递。
+#[tauri::command]
+pub fn get_group_file_delivery_summary(
+    state: State<'_, Arc<AppState>>,
+    transfer_id: String,
+) -> Option<db::GroupFileDeliverySummary> {
+    let dbc = state.inner().db.lock().unwrap();
+    db::get_group_file_delivery_summary(&dbc, &transfer_id)
+}
+
 
 #[tauri::command]
 pub async fn send_file(

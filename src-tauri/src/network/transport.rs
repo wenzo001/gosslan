@@ -274,6 +274,8 @@ async fn connect_to_peer(state: &Arc<AppState>, peer_id: &str, ip: &str, tcp_por
     flush_pending_reads(state, peer_id).await;
     // 主动拨号建链完成：补发此前因无 link 而未送达的群密钥
     flush_pending_group_keys(state, peer_id).await;
+    // 群文件离线投递：该 peer 的 pending GroupFile 顺序发送
+    crate::commands::flush_pending_group_files(state, peer_id).await;
 }
 
 // ---------------- 消息分发 ----------------
@@ -315,6 +317,8 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             flush_pending_reads(state, &device_id).await;
             // 链路刚建立：补发此前因无 link 而未送达的群密钥
             flush_pending_group_keys(state, &device_id).await;
+            // 群文件离线投递：该 peer 的 pending GroupFile 顺序发送
+            crate::commands::flush_pending_group_files(state, &device_id).await;
         }
         Message::Heartbeat { device_id } => {
             if device_id != peer_id {
@@ -324,6 +328,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             flush_outbox(state, &device_id).await;
             flush_pending_reads(state, &device_id).await;
             flush_pending_group_keys(state, &device_id).await;
+            crate::commands::flush_pending_group_files(state, &device_id).await;
         }
         Message::UserInfo {
             device_id,

@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
+import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { useClipboard } from "@/composables/useClipboard";
@@ -45,6 +46,28 @@ const props = withDefaults(
 
 const app = useAppStore();
 const chat = useChatStore();
+
+// 群文件（gfile-）投递摘要：成员状态语义（已发送给 N 人 · M 人待上线）。
+// status 变化（含 CompleteAck 推进）时自动刷新。
+const deliverySummary = ref<{ completed: number; failed: number; waiting: number } | null>(null);
+const isGroupFile = computed(() => props.message.msg_id.startsWith("gfile-"));
+watch(
+  [() => props.message.msg_id, () => props.message.status],
+  async ([msgId]: [string, unknown]) => {
+    if (!msgId.startsWith("gfile-")) {
+      deliverySummary.value = null;
+      return;
+    }
+    try {
+      deliverySummary.value = await invoke("get_group_file_delivery_summary", {
+        transferId: msgId.slice(6),
+      });
+    } catch {
+      deliverySummary.value = null;
+    }
+  },
+  { immediate: true },
+);
 
 const display = useMessageDisplay({
   message: () => props.message,
@@ -311,6 +334,7 @@ async function retrySend() {
             :status-text="fileStatusText"
             :failed="sendState === 'failed'"
             :note="previewNote"
+            :delivery="isGroupFile ? deliverySummary : null"
             @open="openFile"
             @save="saveAs"
           />

@@ -105,6 +105,7 @@ pub fn run() {
             commands::window_close,
             commands::send_group_message,
             commands::send_group_file,
+            commands::get_group_file_delivery_summary,
             commands::send_file,
             commands::send_file_auto,
             commands::send_file_relay,
