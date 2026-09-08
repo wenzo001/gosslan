@@ -8,6 +8,7 @@
 //!   逐片解密写入 `.part` 临时文件，`FileDone` 时改名落盘。密文绝不落盘。
 //! - 中继路径：中继节点只透传密文切片，不持有会话密钥、无法解密。
 
+use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -356,16 +357,51 @@ pub fn begin_receive(
     file_key: [u8; 32],
     expected_sha256: String,
 ) -> Result<PathBuf, String> {
+    let final_path = make_receiver(
+        state,
+        transfer_id,
+        peer_id,
+        name,
+        size,
+        file_key,
+        expected_sha256,
+        &state.file_receivers,
+    )?;
+    {
+        let dbc = state.db.lock().unwrap();
+        db::upsert_transfer(
+            &dbc,
+            transfer_id,
+            peer_id,
+            name,
+            size,
+            "receive",
+            "active",
+            Some(final_path.to_string_lossy().as_ref()),
+            0.0,
+        )
+        .ok();
+    }
+    Ok(final_path)
+}
+
+/// 构造接收端状态（路径安全 + `.part` 创建 + 插入对应接收表），
+/// 一对一与群文件共用；差异只在写入哪个接收 map 与是否记录 file_transfers。
+fn make_receiver(
+    state: &AppState,
+    transfer_id: &str,
+    peer_id: &str,
+    name: &str,
+    size: u64,
+    file_key: [u8; 32],
+    expected_sha256: String,
+    receivers: &std::sync::Mutex<HashMap<String, FileReceiver>>,
+) -> Result<PathBuf, String> {
     let safe_name = safe_file_name(name).ok_or("文件名非法")?;
     if size > i64::MAX as u64 {
         return Err("文件过大，无法安全保存".to_string());
     }
-    if state
-        .file_receivers
-        .lock()
-        .unwrap()
-        .contains_key(transfer_id)
-    {
+    if receivers.lock().unwrap().contains_key(transfer_id) {
         return Err("重复的文件传输".to_string());
     }
     std::fs::create_dir_all(&state.downloads_dir).ok();
@@ -373,7 +409,7 @@ pub fn begin_receive(
     let tmp_path = PathBuf::from(format!("{}.part", final_path.display()));
     let f = std::fs::File::create(&tmp_path).map_err(|e| e.to_string())?;
 
-    state.file_receivers.lock().unwrap().insert(
+    receivers.lock().unwrap().insert(
         transfer_id.to_string(),
         FileReceiver {
             file: f,
@@ -393,23 +429,39 @@ pub fn begin_receive(
             },
         },
     );
-
-    {
-        let dbc = state.db.lock().unwrap();
-        db::upsert_transfer(
-            &dbc,
-            transfer_id,
-            peer_id,
-            name,
-            size,
-            "receive",
-            "active",
-            Some(final_path.to_string_lossy().as_ref()),
-            0.0,
-        )
-        .ok();
-    }
     Ok(final_path)
+}
+
+/// 群文件接收：创建 `.part` 接收状态。
+/// 路径安全（safe_file_name + downloads 目录内 unique_path）与一对一相同；
+/// 不写 file_transfers——群文件的进度/状态记录在 group_files /
+/// group_file_recipients 表中。
+pub fn begin_group_receive(
+    state: &AppState,
+    transfer_id: &str,
+    peer_id: &str,
+    name: &str,
+    size: u64,
+    file_key: [u8; 32],
+    expected_sha256: String,
+) -> Result<PathBuf, String> {
+    make_receiver(
+        state,
+        transfer_id,
+        peer_id,
+        name,
+        size,
+        file_key,
+        expected_sha256,
+        &state.group_file_receivers,
+    )
+}
+
+/// 群文件接收失败：删除 `.part` 并移除接收状态（不 rename、不标 done）。
+pub fn fail_group_receive(state: &AppState, transfer_id: &str) {
+    if let Some(r) = state.group_file_receivers.lock().unwrap().remove(transfer_id) {
+        let _ = std::fs::remove_file(&r.tmp_path);
+    }
 }
 
 /// 接收方：写入一个分片，返回累计字节数。
@@ -1201,5 +1253,175 @@ mod tests {
         let msg = b"group file content";
         let sealed = crypto::seal_symmetric(&k1, msg).unwrap();
         assert!(crypto::open_symmetric(&k2, &sealed).is_none());
+    }
+
+    // ---------- GroupFileChunk（协议 + 接收语义） ----------
+
+    use crate::protocol::Message;
+
+    /// 1+2. GroupFileChunk JSON round-trip：字段完整保留（serde tag + 字段名）。
+    #[test]
+    fn group_file_chunk_roundtrip_preserves_fields() {
+        let msg = Message::GroupFileChunk {
+            transfer_id: "gf-1".into(),
+            group_id: "g-1".into(),
+            sender_id: "dev-a".into(),
+            seq: 7,
+            data: "bm9uY2UrY2lwaGVydGV4dA==".into(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"group_file_chunk\""), "serde tag 必须是 group_file_chunk");
+        assert!(json.contains("\"transfer_id\":\"gf-1\""));
+        assert!(json.contains("\"group_id\":\"g-1\""));
+        assert!(json.contains("\"sender_id\":\"dev-a\""));
+        assert!(json.contains("\"seq\":7"));
+        let back: Message = serde_json::from_str(&json).unwrap();
+        match back {
+            Message::GroupFileChunk {
+                transfer_id,
+                group_id,
+                sender_id,
+                seq,
+                data,
+            } => {
+                assert_eq!(transfer_id, "gf-1");
+                assert_eq!(group_id, "g-1");
+                assert_eq!(sender_id, "dev-a");
+                assert_eq!(seq, 7);
+                assert_eq!(data, "bm9uY2UrY2lwaGVydGV4dA==");
+            }
+            _ => panic!("应为 GroupFileChunk"),
+        }
+    }
+
+    /// 6. 同一 file_key 加密同一明文两次 → 密文不同（每片独立随机 nonce，无重用）。
+    #[test]
+    fn group_chunks_use_distinct_nonces() {
+        let file_key = crypto::random_key();
+        let plaintext = vec![42u8; 1024];
+        let c1 = crypto::seal_symmetric(&file_key, &plaintext).unwrap();
+        let c2 = crypto::seal_symmetric(&file_key, &plaintext).unwrap();
+        assert_ne!(c1, c2, "随机 nonce 下相同明文的两次密文必须不同");
+        // 但都能解回同一明文
+        assert_eq!(crypto::open_symmetric(&file_key, &c1).unwrap(), plaintext);
+        assert_eq!(crypto::open_symmetric(&file_key, &c2).unwrap(), plaintext);
+    }
+
+    /// 构造群文件接收状态的测试 helper（与 handle_group_file_chunk 写入序列一致）。
+    fn group_receiver(
+        tag: &str,
+        size: u64,
+        expected: String,
+        file_key: [u8; 32],
+    ) -> crate::state::FileReceiver {
+        let (f, part_path) = temp_part(tag);
+        crate::state::FileReceiver {
+            file: f,
+            name: format!("{tag}.bin"),
+            size,
+            received: 0,
+            next_seq: 0,
+            tmp_path: part_path.clone(),
+            final_path: part_path,
+            peer_id: "dev-a".into(),
+            last_report_ms: 0,
+            file_key,
+            expected_sha256: expected,
+            hasher: {
+                use sha2::Digest as _;
+                sha2::Sha256::new()
+            },
+        }
+    }
+
+    /// 模拟 handle_group_file_chunk 的单分片处理：seq 校验 → 解密 → 大小校验 → 哈希/写盘。
+    /// 返回 Err 表示该分片被拒绝（调用方应终止接收）。
+    fn receive_group_chunk(
+        r: &mut crate::state::FileReceiver,
+        seq: u32,
+        sealed: &[u8],
+    ) -> Result<f64, String> {
+        use std::io::Write;
+        if seq != r.next_seq {
+            return Err("分片顺序错误".to_string());
+        }
+        let plaintext = crypto::open_symmetric(&r.file_key, sealed)
+            .ok_or_else(|| "分片解密失败".to_string())?;
+        if plaintext.len() as u64 > r.size.saturating_sub(r.received) {
+            return Err("超出声明大小".to_string());
+        }
+        use sha2::Digest;
+        r.hasher.update(&plaintext);
+        r.file.write_all(&plaintext).map_err(|e| e.to_string())?;
+        r.received += plaintext.len() as u64;
+        r.next_seq += 1;
+        Ok(if r.size == 0 {
+            1.0
+        } else {
+            (r.received as f64 / r.size as f64).min(1.0)
+        })
+    }
+
+    /// 8+11+17+20. seq 0→1→2 正常、明文写入 `.part`、进度递增且不超过 1.0。
+    #[test]
+    fn group_receive_seq_progress_and_part_writes() {
+        let original: Vec<u8> = (0..1024).map(|i| (i % 97) as u8).collect();
+        let file_key = crypto::random_key();
+        let mut r = group_receiver("seq-ok", original.len() as u64, hex_of(&original), file_key);
+
+        let mut last_progress = 0.0;
+        for (seq, chunk) in original.chunks(400).enumerate() {
+            let sealed = crypto::seal_symmetric(&file_key, chunk).unwrap();
+            let progress = receive_group_chunk(&mut r, seq as u32, &sealed).unwrap();
+            assert!(progress > last_progress && progress <= 1.0);
+            last_progress = progress;
+        }
+        assert_eq!(r.received, original.len() as u64);
+        assert_eq!(r.next_seq, 3);
+        assert_eq!(last_progress, 1.0);
+        let _ = std::fs::remove_file(&r.tmp_path);
+    }
+
+    /// 9+10. 跳号（0→2）与重复 seq（0→0）都被拒绝。
+    #[test]
+    fn group_receive_rejects_gap_and_duplicate_seq() {
+        let file_key = crypto::random_key();
+        let mut r = group_receiver("seq-bad", 4096, hex_of(b"whatever"), file_key);
+        let sealed = crypto::seal_symmetric(&file_key, b"chunk0").unwrap();
+
+        // seq 0 成功
+        receive_group_chunk(&mut r, 0, &sealed).unwrap();
+        // 跳号 2 → 拒绝
+        assert!(receive_group_chunk(&mut r, 2, &sealed).is_err());
+        // 重复 0 → 拒绝
+        assert!(receive_group_chunk(&mut r, 0, &sealed).is_err());
+        let _ = std::fs::remove_file(&r.tmp_path);
+    }
+
+    /// 12. 分片总明文超过声明大小 → 拒绝（防恶意 sender 溢出写）。
+    #[test]
+    fn group_receive_rejects_oversize() {
+        let file_key = crypto::random_key();
+        let mut r = group_receiver("oversize", 10, hex_of(b"0123456789"), file_key);
+        // 第一片 6 字节 OK
+        let s0 = crypto::seal_symmetric(&file_key, b"012345").unwrap();
+        receive_group_chunk(&mut r, 0, &s0).unwrap();
+        // 第二片 6 字节：6+6 > 10 → 拒绝
+        let s1 = crypto::seal_symmetric(&file_key, b"abcdef").unwrap();
+        assert!(receive_group_chunk(&mut r, 1, &s1).is_err());
+        let _ = std::fs::remove_file(&r.tmp_path);
+    }
+
+    /// 14（AEAD 面）. 错误 file_key 解密失败 → 调用方终止接收（返回 Err）。
+    #[test]
+    fn group_receive_rejects_wrong_file_key() {
+        let right_key = crypto::random_key();
+        let wrong_key = crypto::random_key();
+        // 接收端持有 wrong_key（模拟 session key 不匹配）
+        let mut r = group_receiver("wrong-key", 1024, hex_of(b"x"), wrong_key);
+        let sealed = crypto::seal_symmetric(&right_key, b"secret chunk").unwrap();
+        // 接收端持有 wrong_key：解密失败 → handle_group_file_chunk 走 fail 收尾
+        assert!(receive_group_chunk(&mut r, 0, &sealed).is_err());
+        let _ = std::fs::remove_file(&r.tmp_path);
     }
 }

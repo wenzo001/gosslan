@@ -348,6 +348,10 @@ pub struct AppState {
     /// 接收侧：GroupFileOffer 解封后保存，供后续解密使用。
     /// 同一 transfer 全体成员使用同一个 file_key（经群密钥封装分发）。
     pub group_file_keys: Mutex<HashMap<String, [u8; 32]>>,
+    /// 群文件接收端 `.part` 状态：transfer_id -> 接收状态。
+    /// 与一对一 `file_receivers` 生命周期独立；复用 FileReceiver 结构
+    /// （file_key/next_seq/hasher 语义相同），不写 file_transfers 表。
+    pub group_file_receivers: Mutex<HashMap<String, FileReceiver>>,
     /// 正在接收的文件：transfer_id -> FileReceiver
     pub file_receivers: Mutex<HashMap<String, FileReceiver>>,
     /// 等待共享目录树响应：request_id -> 应答通道
@@ -476,6 +480,7 @@ impl AppState {
             pending_file_accept: Mutex::new(HashMap::new()),
             relay_file_keys: Mutex::new(HashMap::new()),
             group_file_keys: Mutex::new(HashMap::new()),
+            group_file_receivers: Mutex::new(HashMap::new()),
             file_receivers: Mutex::new(HashMap::new()),
             pending_share_tree: Mutex::new(HashMap::new()),
             peers_dirty: AtomicBool::new(false),

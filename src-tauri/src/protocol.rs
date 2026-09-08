@@ -306,6 +306,16 @@ pub enum Message {
         sha256: String,
         sealed_file_key: String,
     },
+    /// 群文件分片。`data` = Base64(nonce || AEAD(file_key, plaintext))，
+    /// file_key 仅存在于收发双方内存（AppState.group_file_keys），
+    /// 群密钥只负责封装 file_key，绝不直接加密文件内容。
+    GroupFileChunk {
+        transfer_id: String,
+        group_id: String,
+        sender_id: String,
+        seq: u32,
+        data: String,
+    },
     /// 群名变更广播（创建者改名后通知各成员同步本地群名）
     GroupRename {
         group_id: String,

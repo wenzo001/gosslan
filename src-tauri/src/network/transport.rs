@@ -1036,6 +1036,16 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             )
             .await;
         }
+        Message::GroupFileChunk {
+            transfer_id,
+            group_id,
+            sender_id,
+            seq,
+            data,
+        } => {
+            handle_group_file_chunk(state, peer_id, transfer_id, group_id, sender_id, seq, data)
+                .await;
+        }
     }
 }
 
@@ -1899,6 +1909,121 @@ async fn handle_group_file_offer(
         .lock()
         .unwrap()
         .insert(transfer_id, file_key);
+}
+
+/// 失败收尾：删除 `.part`、移除接收状态与会话密钥、recipient 置 failed。
+/// 只影响本 transfer，不 panic、不影响其他群文件。
+fn fail_group_file_chunk(state: &Arc<AppState>, transfer_id: &str) {
+    file::fail_group_receive(state, transfer_id);
+    state.group_file_keys.lock().unwrap().remove(transfer_id);
+    let dbc = state.db.lock().unwrap();
+    let _ = db::update_group_file_recipient(&dbc, transfer_id, &state.device_id, "failed", 0.0);
+}
+
+/// 处理群文件分片（E2EE 解密 → seq/size 校验 → 增量哈希 → 写 `.part`）。
+/// 无 GroupFileDone / 无 rename / 不标 completed——完成确认在下一阶段。
+async fn handle_group_file_chunk(
+    state: &Arc<AppState>,
+    peer_id: &str,
+    transfer_id: String,
+    group_id: String,
+    sender_id: String,
+    seq: u32,
+    data: String,
+) {
+    // 权限：链路 sender 与声明一致、不能是自己、群存在、sender 是群成员
+    if sender_id != peer_id || sender_id == state.device_id {
+        return;
+    }
+    let (group_exists, sender_is_member) = {
+        let dbc = state.db.lock().unwrap();
+        match db::get_group(&dbc, &group_id) {
+            Some(g) => (true, g.members.contains(&sender_id)),
+            None => (false, false),
+        }
+    };
+    if !group_exists || !sender_is_member {
+        return;
+    }
+    // 会话必须已经由合法 GroupFileOffer 建立；无 key 直接丢弃（不尝试其他密钥）
+    let Some(file_key) = state.group_file_keys.lock().unwrap().get(&transfer_id).copied() else {
+        return;
+    };
+    // 本地群文件记录（Offer 阶段建立）提供 name/size/sha256
+    let Some(gf) = db::get_group_file(&state.db.lock().unwrap(), &transfer_id) else {
+        return;
+    };
+
+    // 首个合法 chunk 到达时才创建 `.part`（安全路径，downloads 目录内）
+    if !state.group_file_receivers.lock().unwrap().contains_key(&transfer_id) {
+        if let Err(_) = file::begin_group_receive(
+            state,
+            &transfer_id,
+            &sender_id,
+            &gf.name,
+            gf.size,
+            file_key,
+            gf.sha256.clone(),
+        ) {
+            return;
+        }
+    }
+
+    // 解密（AEAD 失败 → 失败收尾：删 `.part`、置 failed，不写错误明文）
+    let Ok(sealed) = STANDARD.decode(&data) else {
+        fail_group_file_chunk(state, &transfer_id);
+        return;
+    };
+    let Some(plaintext) = crypto::open_symmetric(&file_key, &sealed) else {
+        fail_group_file_chunk(state, &transfer_id);
+        return;
+    };
+
+    // seq / size 校验与写盘（复用一对一 FileReceiver 的严格语义）
+    {
+        use std::io::Write;
+        let mut recv = state.group_file_receivers.lock().unwrap();
+        let Some(r) = recv.get_mut(&transfer_id) else {
+            return;
+        };
+        if seq != r.next_seq {
+            // 顺序错误：终止当前接收（TCP 有序，跳号/重复即异常）
+            drop(recv);
+            fail_group_file_chunk(state, &transfer_id);
+            return;
+        }
+        if plaintext.len() as u64 > r.size.saturating_sub(r.received) {
+            // 超出声明大小：防恶意 sender
+            drop(recv);
+            fail_group_file_chunk(state, &transfer_id);
+            return;
+        }
+        // 增量哈希（为下一阶段 FileDone 校验准备；本阶段不比对）
+        use sha2::Digest;
+        r.hasher.update(&plaintext);
+        if r.file.write_all(&plaintext).is_err() {
+            drop(recv);
+            fail_group_file_chunk(state, &transfer_id);
+            return;
+        }
+        r.received += plaintext.len() as u64;
+        r.next_seq = r.next_seq.wrapping_add(1);
+        let progress = if r.size == 0 {
+            1.0
+        } else {
+            (r.received as f64 / r.size as f64).min(1.0)
+        };
+        drop(recv);
+        // 进度落库：本阶段最高 sending，不标 completed
+        let dbc = state.db.lock().unwrap();
+        let _ = db::update_group_file_recipient(
+            &dbc,
+            &transfer_id,
+            &state.device_id,
+            "sending",
+            progress,
+        );
+    }
 }
 
 /// 处理群名变更广播：仅群创建者可发起，成员端校验后同步本地群名与会话标题。

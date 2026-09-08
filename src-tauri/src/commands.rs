@@ -28,7 +28,7 @@ use crate::network::transport::{
     resolve_member_x25519, resolve_nickname, try_send,
 };
 use crate::network::{self, file};
-use crate::protocol::{GossipKind, Message, MsgKind, ShareEntry};
+use crate::protocol::{GossipKind, Message, MsgKind, ShareEntry, FILE_CHUNK};
 use crate::relay_manager::ChunkData;
 use crate::state::{
     AppState, Conversation, DeviceInfo, Friend, Group, GroupFile, InterfaceInfo, MessageRecord,
@@ -1442,22 +1442,36 @@ pub async fn send_group_message(
 
 /// 发起群文件（本阶段只建立 Offer 与 file session key，不含分片传输）。
 ///
-/// 入参为文件元数据（name/size/sha256）：实际文件内容读取与分片加密在下一阶段
-/// GroupFileChunk 实现，本阶段禁止读文件（sha256 由调用方提供，后续由发送流程计算填充）。
-///
 /// 流程：校验发起者是群成员 → 实时读取当前成员快照 → 事务内创建
 /// group_files + 全部 recipient 行（避免半完成状态）→ 生成随机 file_key
-/// 存内存 → 对有 TCP link 的成员发送 GroupFileOffer（群密钥封装 file_key）。
-/// 无 link 的成员保持 pending（不标 failed），待后续 retry/offline recovery。
+/// 存内存 → 对可达成员发送 GroupFileOffer（群密钥封装 file_key）→
+/// 流式读取文件、逐 256KB 分片 AEAD 加密后向全部可达 recipient 发送
+/// GroupFileChunk（seq 从 0 严格递增）。不可达成员保持 pending。
 #[tauri::command]
 pub async fn send_group_file(
     state: State<'_, Arc<AppState>>,
     group_id: String,
-    name: String,
-    size: u64,
-    sha256: String,
+    path: String,
 ) -> Result<String, String> {
     let s = state.inner();
+
+    // 文件校验：存在 + 普通文件；size/name 取自本地 metadata，不进入协议
+    let p = std::path::PathBuf::from(&path);
+    let meta = std::fs::metadata(&p).map_err(|e| format!("文件不存在或不可读：{e}"))?;
+    if !meta.is_file() {
+        return Err("只能发送普通文件".to_string());
+    }
+    let size = meta.len();
+    let name = p
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "unnamed".to_string());
+    // 文件级 SHA-256：256KB 分块流式计算放阻塞线程池（不整读内存、不卡 async runtime）
+    let p_sha = p.clone();
+    let sha256 = tokio::task::spawn_blocking(move || file::sha256_file_hex(&p_sha))
+        .await
+        .map_err(|e| e.to_string())??;
+
     // 发起者必须是群成员（本地群存在）
     let members: Vec<String> = {
         let dbc = s.db.lock().unwrap();
@@ -1508,14 +1522,16 @@ pub async fn send_group_file(
         .unwrap()
         .insert(transfer_id.clone(), file_key);
 
-    // 逐成员发送 Offer：有 TCP link 且成员公钥可解析（peers 信息完整）才发送
-    // 并置 sending；无 link / 信息不全保持 pending，不阻塞其他 recipient
+    // 可达成员：有 TCP link 且 peers 信息完整；其余保持 pending
+    let mut reachable: Vec<String> = Vec::new();
     for m in &members {
-        let reachable = s.links.lock().await.contains_key(m)
-            && resolve_member_x25519(&s, m).is_some();
-        if !reachable {
-            continue; // 保持 pending，等待后续 retry / offline recovery
+        if s.links.lock().await.contains_key(m) && resolve_member_x25519(&s, m).is_some() {
+            reachable.push(m.clone());
         }
+    }
+
+    // 逐可达成员发送 Offer
+    for m in &reachable {
         let msg = Message::GroupFileOffer {
             transfer_id: transfer_id.clone(),
             group_id: group_id.clone(),
@@ -1530,6 +1546,76 @@ pub async fn send_group_file(
             let _ = db::update_group_file_recipient(&dbc, &transfer_id, m, "sending", 0.0);
         }
     }
+
+    // 分片发送：流式读取（256KB），逐片 AEAD 加密后发给全部可达 recipient。
+    // 后台执行（与一对一 send_file 一致）；单个 recipient 失败只标该 recipient
+    // failed，不阻塞其他 recipient，也不把整个 GroupFile 标 failed。
+    let s2 = s.clone();
+    let tid = transfer_id.clone();
+    let gid = group_id.clone();
+    let sid = s.device_id.clone();
+    let rcpt = reachable.clone();
+    tokio::spawn(async move {
+        let mut f = match tokio::fs::File::open(&p).await {
+            Ok(f) => f,
+            Err(_) => {
+                // 文件读取失败：全部可达 recipient 置 failed
+                let dbc = s2.db.lock().unwrap();
+                for m in &rcpt {
+                    let _ = db::update_group_file_recipient(&dbc, &tid, m, "failed", 0.0);
+                }
+                return;
+            }
+        };
+        use tokio::io::AsyncReadExt;
+        let mut buf = vec![0u8; FILE_CHUNK];
+        let mut seq: u32 = 0;
+        loop {
+            let n = match f.read(&mut buf).await {
+                Ok(n) => n,
+                Err(_) => {
+                    let dbc = s2.db.lock().unwrap();
+                    for m in &rcpt {
+                        let _ = db::update_group_file_recipient(&dbc, &tid, m, "failed", 0.0);
+                    }
+                    return;
+                }
+            };
+            if n == 0 {
+                break; // 文件读完：保持 sending（completed 由下一阶段 FileDone 确认）
+            }
+            // 每片独立随机 nonce 的 AEAD 密文；file_key 从运行态读取（不重生成）
+            let Some(key) = s2.group_file_keys.lock().unwrap().get(&tid).copied() else {
+                return; // session 丢失：不发送明文
+            };
+            let sealed = match crypto::seal_symmetric(&key, &buf[..n]) {
+                Some(v) => v,
+                None => {
+                    let dbc = s2.db.lock().unwrap();
+                    for m in &rcpt {
+                        let _ = db::update_group_file_recipient(&dbc, &tid, m, "failed", 0.0);
+                    }
+                    return;
+                }
+            };
+            let data = STANDARD.encode(&sealed);
+            for m in &rcpt {
+                let chunk = Message::GroupFileChunk {
+                    transfer_id: tid.clone(),
+                    group_id: gid.clone(),
+                    sender_id: sid.clone(),
+                    seq,
+                    data: data.clone(),
+                };
+                if try_send(&s2, m, &chunk).await.is_err() {
+                    // 单个 recipient 失败：只标记它，不阻塞其他
+                    let dbc = s2.db.lock().unwrap();
+                    let _ = db::update_group_file_recipient(&dbc, &tid, m, "failed", 0.0);
+                }
+            }
+            seq += 1;
+        }
+    });
 
     Ok(transfer_id)
 }
