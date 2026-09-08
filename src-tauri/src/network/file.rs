@@ -1424,4 +1424,155 @@ mod tests {
         assert!(receive_group_chunk(&mut r, 0, &sealed).is_err());
         let _ = std::fs::remove_file(&r.tmp_path);
     }
+
+    // ---------- GroupFileDone（最终校验 + 正式文件落盘） ----------
+
+    use crate::protocol::Message as ProtocolMessage;
+
+    /// 1. GroupFileDone JSON round-trip：字段完整保留。
+    #[test]
+    fn group_file_done_roundtrip_preserves_fields() {
+        let msg = ProtocolMessage::GroupFileDone {
+            transfer_id: "gf-1".into(),
+            group_id: "g-1".into(),
+            sender_id: "dev-a".into(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("\"group_file_done\""), "serde tag 必须是 group_file_done");
+        assert!(json.contains("\"transfer_id\":\"gf-1\""));
+        assert!(json.contains("\"group_id\":\"g-1\""));
+        assert!(json.contains("\"sender_id\":\"dev-a\""));
+        let back: ProtocolMessage = serde_json::from_str(&json).unwrap();
+        match back {
+            ProtocolMessage::GroupFileDone {
+                transfer_id,
+                group_id,
+                sender_id,
+            } => {
+                assert_eq!(transfer_id, "gf-1");
+                assert_eq!(group_id, "g-1");
+                assert_eq!(sender_id, "dev-a");
+            }
+            _ => panic!("应为 GroupFileDone"),
+        }
+    }
+
+    /// 模拟 handle_group_file_done 的最终校验与落盘序列：
+    /// size → SHA-256 → sync_all → drop(file) → rename（与生产代码同序）。
+    fn finalize_group_receive(
+        mut r: crate::state::FileReceiver,
+    ) -> Result<std::path::PathBuf, String> {
+        if r.received != r.size {
+            let _ = std::fs::remove_file(&r.tmp_path);
+            return Err("文件传输未完成".to_string());
+        }
+        {
+            use sha2::Digest;
+            let actual_hex: String = r
+                .hasher
+                .clone()
+                .finalize()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect();
+            if !actual_hex.eq_ignore_ascii_case(&r.expected_sha256) {
+                let _ = std::fs::remove_file(&r.tmp_path);
+                return Err("文件完整性校验失败".to_string());
+            }
+        }
+        r.file.sync_all().map_err(|e| {
+            let _ = std::fs::remove_file(&r.tmp_path);
+            e.to_string()
+        })?;
+        drop(r.file);
+        std::fs::rename(&r.tmp_path, &r.final_path)
+            .map_err(|e| {
+                let _ = std::fs::remove_file(&r.tmp_path);
+                e.to_string()
+            })?;
+        Ok(r.final_path)
+    }
+
+    /// 2+3+4. 正常多 chunk + Done：SHA-256 正确 → rename 成功 → 正式文件内容一致，
+    /// progress 对应 1.0 / completed 语义。
+    #[test]
+    fn group_done_success_renames_part() {
+        let original: Vec<u8> = (0..2048).map(|i| (i % 173) as u8).collect();
+        let file_key = crypto::random_key();
+        let mut r = group_receiver("done-ok", original.len() as u64, hex_of(&original), file_key);
+        for (seq, chunk) in original.chunks(700).enumerate() {
+            let sealed = crypto::seal_symmetric(&file_key, chunk).unwrap();
+            receive_group_chunk(&mut r, seq as u32, &sealed).unwrap();
+        }
+        assert_eq!(r.received as f64 / r.size as f64, 1.0, "progress 必须为 1.0");
+
+        let final_path = finalize_group_receive(r).expect("最终校验应通过");
+        assert!(!final_path.as_os_str().is_empty());
+        let saved = std::fs::read(&final_path).unwrap();
+        assert_eq!(saved, original, "正式文件内容必须与原文件一致");
+        let _ = std::fs::remove_file(&final_path);
+    }
+
+    /// 5. received < size → failed（不 rename、删 .part）。
+    #[test]
+    fn group_done_short_receive_fails() {
+        let file_key = crypto::random_key();
+        let mut r = group_receiver("done-short", 1024, hex_of(b"0123456789"), file_key);
+        let sealed = crypto::seal_symmetric(&file_key, b"012345").unwrap();
+        receive_group_chunk(&mut r, 0, &sealed).unwrap(); // 只收 6 字节 < 1024
+
+        let part = r.tmp_path.clone();
+        let err = finalize_group_receive(r).unwrap_err();
+        assert_eq!(err, "文件传输未完成");
+        assert!(!part.exists(), "失败后 .part 必须被删除");
+    }
+
+    /// 7. SHA-256 mismatch → failed + .part 删除（绝不 rename）。
+    #[test]
+    fn group_done_sha_mismatch_fails_and_cleans_part() {
+        let file_key = crypto::random_key();
+        let mut r = group_receiver("done-mismatch", 8, hex_of(b"deadbeef"), file_key);
+        let sealed = crypto::seal_symmetric(&file_key, b"content8").unwrap();
+        receive_group_chunk(&mut r, 0, &sealed).unwrap(); // size 对但内容不同
+
+        let part = r.tmp_path.clone();
+        let err = finalize_group_receive(r).unwrap_err();
+        assert_eq!(err, "文件完整性校验失败");
+        assert!(!part.exists(), "SHA 不匹配后 .part 必须被删除");
+    }
+
+    /// 9. rename 失败 → failed（final_path 非法/被占用），不报告完成。
+    #[test]
+    fn group_done_rename_failure_fails() {
+        let file_key = crypto::random_key();
+        let mut r = group_receiver("done-rename", 4, hex_of(b"data"), file_key);
+        let sealed = crypto::seal_symmetric(&file_key, b"data").unwrap();
+        receive_group_chunk(&mut r, 0, &sealed).unwrap();
+
+        // final_path 指向一个已存在的目录 → rename 必然失败
+        let dir = std::env::temp_dir().join(format!("gosslan-test-dir-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        r.final_path = dir.clone();
+
+        let part = r.tmp_path.clone();
+        assert!(finalize_group_receive(r).is_err());
+        assert!(!part.exists(), "rename 失败后 .part 必须被清理");
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    /// 19. 空文件：无 Chunk，Done 阶段 size==0 → 空文件 SHA-256 → 正式文件创建，
+    /// completed / progress 1.0 语义成立。
+    #[test]
+    fn group_done_empty_file_creates_zero_byte_file() {
+        // 空文件 SHA-256（发送端对 0 字节文件计算的结果）
+        let expected = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        let file_key = crypto::random_key();
+        let mut r = group_receiver("done-empty", 0, expected.to_string(), file_key);
+        assert_eq!(r.received, 0, "空文件无任何 Chunk");
+
+        let final_path = finalize_group_receive(r).expect("空文件必须能正常完成");
+        let meta = std::fs::metadata(&final_path).unwrap();
+        assert_eq!(meta.len(), 0, "正式文件必须是 0 字节");
+        let _ = std::fs::remove_file(&final_path);
+    }
 }

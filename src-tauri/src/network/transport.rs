@@ -1046,6 +1046,13 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             handle_group_file_chunk(state, peer_id, transfer_id, group_id, sender_id, seq, data)
                 .await;
         }
+        Message::GroupFileDone {
+            transfer_id,
+            group_id,
+            sender_id,
+        } => {
+            handle_group_file_done(state, peer_id, transfer_id, group_id, sender_id).await;
+        }
     }
 }
 
@@ -1918,6 +1925,119 @@ fn fail_group_file_chunk(state: &Arc<AppState>, transfer_id: &str) {
     state.group_file_keys.lock().unwrap().remove(transfer_id);
     let dbc = state.db.lock().unwrap();
     let _ = db::update_group_file_recipient(&dbc, transfer_id, &state.device_id, "failed", 0.0);
+}
+
+/// 处理群文件发送完毕：最终校验（size + SHA-256）→ sync_all → rename → completed。
+/// 幂等：session 已清理（已完成或从未建立）时安全忽略。
+/// sender-side 的 completed 只代表「本机接收完成」，不是发送端 recipient 状态。
+async fn handle_group_file_done(
+    state: &Arc<AppState>,
+    peer_id: &str,
+    transfer_id: String,
+    group_id: String,
+    sender_id: String,
+) {
+    if sender_id != peer_id || sender_id == state.device_id {
+        return;
+    }
+    // 幂等 / 无 session：已完成或从未建立 Offer session → 安全忽略
+    if !state.group_file_keys.lock().unwrap().contains_key(&transfer_id) {
+        return;
+    }
+    // 权限：群存在 && sender 是群成员
+    let (group_exists, sender_is_member) = {
+        let dbc = state.db.lock().unwrap();
+        match db::get_group(&dbc, &group_id) {
+            Some(g) => (true, g.members.contains(&sender_id)),
+            None => (false, false),
+        }
+    };
+    if !group_exists || !sender_is_member {
+        return;
+    }
+    let Some(gf) = db::get_group_file(&state.db.lock().unwrap(), &transfer_id) else {
+        return;
+    };
+
+    // 空文件：无 Chunk 阶段，Done 时才建立接收状态（0 字节 .part）
+    if !state.group_file_receivers.lock().unwrap().contains_key(&transfer_id) {
+        if gf.size == 0 {
+            if file::begin_group_receive(
+                state,
+                &transfer_id,
+                &sender_id,
+                &gf.name,
+                0,
+                [0u8; 32],
+                gf.sha256.clone(),
+            )
+            .is_err()
+            {
+                return;
+            }
+        } else {
+            // 有声明大小但一个分片都没收到 → 不完整：failed + 清理
+            fail_group_file_chunk(state, &transfer_id);
+            return;
+        }
+    }
+
+    // 从接收表移除（取得所有权），做最终校验与落盘
+    let r = match state.group_file_receivers.lock().unwrap().remove(&transfer_id) {
+        Some(r) => r,
+        None => return,
+    };
+
+    // 1. size 校验：received 必须等于声明大小
+    if r.received != r.size {
+        let _ = std::fs::remove_file(&r.tmp_path);
+        state.group_file_keys.lock().unwrap().remove(&transfer_id);
+        let dbc = state.db.lock().unwrap();
+        let _ = db::update_group_file_recipient(&dbc, &transfer_id, &state.device_id, "failed", 0.0);
+        return;
+    }
+    // 2. SHA-256 校验：finalize 增量哈希（不重读 .part），与发送方声明比对
+    {
+        use sha2::Digest;
+        let actual_hex: String = r
+            .hasher
+            .clone()
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        if !actual_hex.eq_ignore_ascii_case(&r.expected_sha256) {
+            let _ = std::fs::remove_file(&r.tmp_path);
+            state.group_file_keys.lock().unwrap().remove(&transfer_id);
+            let dbc = state.db.lock().unwrap();
+            let _ = db::update_group_file_recipient(&dbc, &transfer_id, &state.device_id, "failed", 0.0);
+            return;
+        }
+    }
+    // 3. sync_all：落盘前确保数据写透
+    if let Err(e) = r.file.sync_all() {
+        let _ = e.to_string();
+        let _ = std::fs::remove_file(&r.tmp_path);
+        state.group_file_keys.lock().unwrap().remove(&transfer_id);
+        let dbc = state.db.lock().unwrap();
+        let _ = db::update_group_file_recipient(&dbc, &transfer_id, &state.device_id, "failed", 0.0);
+        return;
+    }
+    // 4. drop 文件句柄后 rename（Windows 不允许 rename 打开中的文件）
+    drop(r.file);
+    if let Err(_) = std::fs::rename(&r.tmp_path, &r.final_path) {
+        let _ = std::fs::remove_file(&r.tmp_path);
+        state.group_file_keys.lock().unwrap().remove(&transfer_id);
+        let dbc = state.db.lock().unwrap();
+        let _ = db::update_group_file_recipient(&dbc, &transfer_id, &state.device_id, "failed", 0.0);
+        return;
+    }
+    // 全部成功：正式文件已落盘 → completed / progress 1.0 → 清理 session key
+    {
+        let dbc = state.db.lock().unwrap();
+        let _ = db::update_group_file_recipient(&dbc, &transfer_id, &state.device_id, "completed", 1.0);
+    }
+    state.group_file_keys.lock().unwrap().remove(&transfer_id);
 }
 
 /// 处理群文件分片（E2EE 解密 → seq/size 校验 → 增量哈希 → 写 `.part`）。

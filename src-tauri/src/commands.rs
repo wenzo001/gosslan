@@ -1570,6 +1570,8 @@ pub async fn send_group_file(
         use tokio::io::AsyncReadExt;
         let mut buf = vec![0u8; FILE_CHUNK];
         let mut seq: u32 = 0;
+        // 分片发送失败的 recipient：只标它 failed，不参与 Done，不阻塞其他
+        let mut failed: std::collections::HashSet<String> = std::collections::HashSet::new();
         loop {
             let n = match f.read(&mut buf).await {
                 Ok(n) => n,
@@ -1582,7 +1584,7 @@ pub async fn send_group_file(
                 }
             };
             if n == 0 {
-                break; // 文件读完：保持 sending（completed 由下一阶段 FileDone 确认）
+                break; // 文件读完：发送 GroupFileDone，最终状态由接收端校验决定
             }
             // 每片独立随机 nonce 的 AEAD 密文；file_key 从运行态读取（不重生成）
             let Some(key) = s2.group_file_keys.lock().unwrap().get(&tid).copied() else {
@@ -1600,6 +1602,9 @@ pub async fn send_group_file(
             };
             let data = STANDARD.encode(&sealed);
             for m in &rcpt {
+                if failed.contains(m) {
+                    continue; // 已失败：不再发送后续分片
+                }
                 let chunk = Message::GroupFileChunk {
                     transfer_id: tid.clone(),
                     group_id: gid.clone(),
@@ -1609,11 +1614,26 @@ pub async fn send_group_file(
                 };
                 if try_send(&s2, m, &chunk).await.is_err() {
                     // 单个 recipient 失败：只标记它，不阻塞其他
+                    failed.insert(m.clone());
                     let dbc = s2.db.lock().unwrap();
                     let _ = db::update_group_file_recipient(&dbc, &tid, m, "failed", 0.0);
                 }
             }
             seq += 1;
+        }
+        // GroupFileDone：发给仍处于发送流程中的 recipient（未 failed）。
+        // Done 不等于接收完成——sender-side recipient 保持 sending，
+        // 不伪造 completed（完成确认机制留待后续阶段）。
+        for m in &rcpt {
+            if failed.contains(m) {
+                continue;
+            }
+            let done = Message::GroupFileDone {
+                transfer_id: tid.clone(),
+                group_id: gid.clone(),
+                sender_id: sid.clone(),
+            };
+            let _ = try_send(&s2, m, &done).await;
         }
     });
 

@@ -316,6 +316,14 @@ pub enum Message {
         seq: u32,
         data: String,
     },
+    /// 群文件发送完毕（发送方全部分片已发出）。
+    /// 接收端据此做最终校验（size + SHA-256）并落盘正式文件；
+    /// 接收完成与否以接收端本地校验结果为准，本消息不是完成确认。
+    GroupFileDone {
+        transfer_id: String,
+        group_id: String,
+        sender_id: String,
+    },
     /// 群名变更广播（创建者改名后通知各成员同步本地群名）
     GroupRename {
         group_id: String,
