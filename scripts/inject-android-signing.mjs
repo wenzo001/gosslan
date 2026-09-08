@@ -87,6 +87,19 @@ function injectReleaseSigning(source, storePassword, keyAlias, keyPassword) {
   return out;
 }
 
+// Android 强制竖屏：内测阶段移动端只做竖屏布局，横屏会破坏安全区/导航布局。
+function injectPortraitManifest(manifestPath) {
+  if (!fs.existsSync(manifestPath)) return;
+  let manifest = fs.readFileSync(manifestPath, "utf8");
+  if (manifest.includes('android:screenOrientation="portrait"')) return;
+  manifest = manifest.replace(
+    /(<activity\b)/,
+    '$1\n            android:screenOrientation="portrait"',
+  );
+  fs.writeFileSync(manifestPath, manifest);
+  console.log("[android-manifest] 已注入 android:screenOrientation=\"portrait\"。");
+}
+
 const base64Keystore = process.env.ANDROID_KEYSTORE_BASE64?.trim();
 const storePassword = process.env.ANDROID_KEYSTORE_PASSWORD ?? "";
 const keyAlias = process.env.ANDROID_KEY_ALIAS ?? "";
@@ -121,3 +134,15 @@ if (base64Keystore) {
 }
 
 fs.writeFileSync(gradlePath, text);
+
+const manifestPath = path.join(
+  root,
+  "src-tauri",
+  "gen",
+  "android",
+  "app",
+  "src",
+  "main",
+  "AndroidManifest.xml",
+);
+injectPortraitManifest(manifestPath);

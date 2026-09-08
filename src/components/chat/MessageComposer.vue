@@ -197,6 +197,7 @@ function fileToDataUrl(f: File): Promise<string> {
           class="ml-auto flex h-7 shrink-0 items-center rounded-md bg-[var(--gosslan-hover)] px-4 text-[13px] transition"
           :class="draft.trim() ? 'text-primary hover:bg-[var(--gosslan-list-active)]' : 'cursor-default text-[var(--gosslan-text-2)]'"
           :disabled="!draft.trim()"
+          @mousedown.prevent
           @click="send()"
         >
           发送

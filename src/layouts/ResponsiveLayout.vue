@@ -164,6 +164,9 @@ function onResizeEnd() {
       ? ''
       : 'rounded-xl ring-1 ring-inset ring-[var(--gosslan-window-ring)]'"
   >
+    <!-- 移动端顶部安全区：大圆角/刘海屏下为状态栏留出空间，避免搜索框顶到屏幕外框 -->
+    <div v-if="app.isMobile" class="safe-top shrink-0"></div>
+
     <!-- 顶部 caption：横贯整个窗口（盖在 rail + list + chat 三列之上），微信 4.0 顶部是整条浅灰拖拽条 -->
     <TitleBar />
 

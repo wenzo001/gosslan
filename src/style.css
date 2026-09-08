@@ -145,6 +145,10 @@ body {
 }
 
 /* 移动端安全区 */
+.safe-top {
+  height: env(safe-area-inset-top);
+}
+
 .safe-bottom {
   padding-bottom: env(safe-area-inset-bottom);
 }
