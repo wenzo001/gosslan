@@ -60,10 +60,13 @@ const totalHeight = computed(() => offsets.value[offsets.value.length - 1] ?? 0)
 /** 记录某槽位实测高度，图片加载或预览切换后由 ResizeObserver 及时更新。 */
 function commitHeight(i: number, measured: number) {
   if (i < 0 || i >= props.items.length) return;
+  // 快速滚动时部分节点可能处于未布局/隐藏状态，offsetHeight 会短暂为 0 或异常值；
+  // 一旦把 0 写进 heightOverride，后续消息的 top 会全部塌缩到顶部，表现为消息堆叠。
+  if (!Number.isFinite(measured) || measured <= 0) return;
   const it = props.items[i];
   const k = keyOf(it);
   const est = props.estimateHeight(it, i);
-  const h = measured;
+  const h = Math.round(measured);
   if (Math.abs((heightOverride.get(k) ?? est) - h) > 1) {
     heightOverride.set(k, h);
     heightVersion.value += 1;

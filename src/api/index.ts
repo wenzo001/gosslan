@@ -53,6 +53,7 @@ export const api = {
     invoke<MessageRecord>("send_message", { friendId, content, kind }),
   getMessages: (convId: string, limit?: number, offset?: number) =>
     invoke<MessageRecord[]>("get_messages", { convId, limit, offset }),
+  getMessageCount: (convId: string) => invoke<number>("get_message_count", { convId }),
   getConversations: () => invoke<Conversation[]>("get_conversations"),
   ensureConversation: (friendId: string) =>
     invoke<Conversation>("ensure_conversation", { friendId }),

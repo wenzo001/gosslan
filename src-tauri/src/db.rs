@@ -697,6 +697,15 @@ pub fn message_exists(conn: &Connection, msg_id: &str) -> bool {
     .is_some()
 }
 
+pub fn count_messages(conn: &Connection, conv_id: &str) -> i64 {
+    conn.query_row(
+        "SELECT COUNT(*) FROM messages WHERE conv_id = ?1",
+        params![conv_id],
+        |r| r.get::<_, i64>(0),
+    )
+    .unwrap_or(0)
+}
+
 pub fn get_messages(
     conn: &Connection,
     conv_id: &str,

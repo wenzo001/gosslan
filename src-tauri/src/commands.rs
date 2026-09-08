@@ -870,6 +870,12 @@ pub fn get_messages(
 }
 
 #[tauri::command]
+pub fn get_message_count(state: State<'_, Arc<AppState>>, conv_id: String) -> i64 {
+    let dbc = state.inner().db.lock().unwrap();
+    db::count_messages(&dbc, &conv_id)
+}
+
+#[tauri::command]
 pub fn get_conversations(state: State<'_, Arc<AppState>>) -> Vec<Conversation> {
     let dbc = state.inner().db.lock().unwrap();
     db::list_conversations(&dbc).unwrap_or_default()

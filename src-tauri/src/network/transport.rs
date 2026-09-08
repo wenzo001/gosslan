@@ -98,9 +98,15 @@ pub async fn spawn(
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<(), String> {
     let bind = format!("{ip}:{tcp_port}");
-    let listener = TcpListener::bind(&bind)
-        .await
-        .map_err(|e| format!("TCP 绑定 {bind} 失败: {e}"))?;
+    let listener = match TcpListener::bind(&bind).await {
+        Ok(l) => l,
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+            return Err(format!(
+                "TCP 绑定 {bind} 失败：端口被占用。通常是有另一个 Gosslan 实例还在后台运行，请先通过托盘图标选择「退出」后再启动"
+            ));
+        }
+        Err(e) => return Err(format!("TCP 绑定 {bind} 失败: {e}")),
+    };
     let state_for_heartbeat = state.clone();
     let shutdown_for_heartbeat = shutdown.clone();
     tokio::spawn(async move {
