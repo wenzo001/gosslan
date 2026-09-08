@@ -125,13 +125,32 @@ export const useChatStore = defineStore("chat", () => {
           });
         } else {
           // 桌面端：plugin 的 actionPerformed 事件桥仅在 iOS/Android 实现，
-          // Windows/macOS 点击通知不会回调 onAction → 改用 WebView 原生
-          // Notification（plugin 桌面端底层同为此 API），onclick 闭包直接
-          // 捕获会话 id：点击 = 弹前台 + 打开对应会话。
-          const n = new Notification(title, { body });
-          n.onclick = () => {
-            void handleNotificationClick(convId);
-          };
+          // Windows/macOS 点击通知不会回调 onAction。桌面走 WebView 原生
+          // Notification（plugin JS 端 sendNotification 底层同为此 API）：
+          // Windows WebView2 下由系统通知中心显示，点击会激活宿主窗口并
+          // 触发 onclick → focusWindow + openConversation。
+          // macOS WKWebView 无此 API → 回退 plugin 通知（有提示、无点击，平台限制）。
+          let n: Notification | null = null;
+          try {
+            n = new Notification(title, { body });
+          } catch {
+            n = null; // permission 异常等：回退 plugin，不让通知链静默失败
+          }
+          if (n) {
+            n.onclick = () => {
+              void handleNotificationClick(convId);
+            };
+          } else {
+            const id = notifSeq++;
+            notifMap.set(id, convId);
+            void sendNotification({
+              id,
+              title,
+              body,
+              autoCancel: true,
+              extra: { type: "chat", conv_id: convId },
+            });
+          }
         }
       }
     });
