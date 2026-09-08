@@ -33,8 +33,13 @@ function initials(n: string) {
   return n.slice(0, 1).toUpperCase();
 }
 
-/** 解析成员资料（昵称/头像/是否在线）：好友表优先，其次在线节点表 */
+/** 解析成员资料（昵称/头像/是否在线）：自己 → 本机 DeviceInfo；好友表优先；其次在线节点表 */
 function memberProfile(id: string): { name: string; avatar: string | null; online: boolean } {
+  // 自己：device_id 不属于 friends 也不会出现在 peers（不把自己加入 peers），
+  // 直接使用本机 DeviceInfo（app.device）的昵称/头像/在线状态，否则必然落入 offline 分支
+  if (id === myId.value && app.device) {
+    return { name: app.device.nickname, avatar: app.device.avatar, online: app.device.online };
+  }
   const friend = chat.friends.find((f) => f.device_id === id);
   if (friend) return { name: friend.nickname, avatar: friend.avatar, online: friend.online };
   const peer = chat.peers.find((p) => p.device_id === id);
