@@ -2013,6 +2013,43 @@ mod tests {
         assert_eq!(recipients[0].status, "pending");
     }
 
+    /// 事务原子性：任一 recipient 创建失败（群外成员）→ 整体回滚，
+    /// 不留「group_files 已建但 recipient 只建了一半」的半完成状态；
+    /// 发送端据此在 DB 初始化失败时不发送 Offer、不残留内存 file_key。
+    #[test]
+    fn group_file_creation_is_atomic() {
+        let conn = group_file_fixture();
+        let f = group_file("gf-1");
+        let tx = conn.unchecked_transaction().unwrap();
+        insert_group_file(&tx, &f).unwrap();
+        insert_group_file_recipient(&tx, "gf-1", "b").unwrap();
+        // 群外成员触发失败
+        assert!(insert_group_file_recipient(&tx, "gf-1", "outsider").is_err());
+        // 模拟发送端在 Err 后放弃提交（rollback）
+        drop(tx);
+
+        // 半完成状态不存在：group_files 与 recipients 均未落库
+        assert!(get_group_file(&conn, "gf-1").is_none());
+        assert!(list_group_file_recipients(&conn, "gf-1").unwrap().is_empty());
+    }
+
+    /// sender 自己不进入 recipient state（快照只含其他成员）。
+    #[test]
+    fn sender_not_in_recipient_states() {
+        let conn = group_file_fixture();
+        insert_group_file(&conn, &group_file("gf-1")).unwrap(); // sender = "a"
+        for rid in ["b", "c", "d"] {
+            insert_group_file_recipient(&conn, "gf-1", rid).unwrap();
+        }
+        let ids: Vec<String> = list_group_file_recipients(&conn, "gf-1")
+            .unwrap()
+            .into_iter()
+            .map(|r| r.recipient_id)
+            .collect();
+        assert!(!ids.contains(&"a".to_string()), "sender 不应有 recipient state");
+        assert_eq!(ids.len(), 3);
+    }
+
     /// file session key 不进入 SQLite 持久化：两张群文件表均无密钥列。
     #[test]
     fn group_file_keys_not_persisted() {

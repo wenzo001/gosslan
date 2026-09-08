@@ -1495,22 +1495,26 @@ pub async fn send_group_file(
         tx.commit().map_err(|e| e.to_string())?;
     }
 
+    // 群密钥获取与 file_key 封装先于运行态写入：任何失败都不残留内存状态
+    let group_key = get_group_key(s, &group_id).await.ok_or("群密钥缺失")?;
+
     // 随机 file session key：一个 transfer 只生成一次（CSPRNG，仅内存）
     let file_key = crypto::random_key();
+    let sealed_file_key = STANDARD.encode(
+        crypto::seal_symmetric(&group_key, &file_key).ok_or("封装文件密钥失败")?,
+    );
     s.group_file_keys
         .lock()
         .unwrap()
         .insert(transfer_id.clone(), file_key);
 
-    // 群密钥封装 file_key：同一 sealed 密文对全体成员有效（成员共享 GroupKey）
-    let group_key = get_group_key(s, &group_id).await.ok_or("群密钥缺失")?;
-    let sealed_file_key = STANDARD.encode(crypto::seal_symmetric(&group_key, &file_key).ok_or("封装文件密钥失败")?);
-
-    // 逐成员发送 Offer：有 TCP link 才发送并置 sending；无 link 保持 pending
+    // 逐成员发送 Offer：有 TCP link 且成员公钥可解析（peers 信息完整）才发送
+    // 并置 sending；无 link / 信息不全保持 pending，不阻塞其他 recipient
     for m in &members {
-        let has_link = s.links.lock().await.contains_key(m);
-        if !has_link {
-            continue; // 无 link：recipient 保持 pending，等待后续 retry
+        let reachable = s.links.lock().await.contains_key(m)
+            && resolve_member_x25519(&s, m).is_some();
+        if !reachable {
+            continue; // 保持 pending，等待后续 retry / offline recovery
         }
         let msg = Message::GroupFileOffer {
             transfer_id: transfer_id.clone(),
