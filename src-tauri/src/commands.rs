@@ -29,6 +29,7 @@ use crate::network::transport::{
 };
 use crate::network::{self, file};
 use crate::protocol::{GossipKind, Message, MsgKind, ShareEntry};
+use crate::relay_manager::ChunkData;
 use crate::state::{
     AppState, Conversation, DeviceInfo, Friend, Group, InterfaceInfo, MessageRecord, Peer,
     PendingRequest, TopologyInfo, TransferInfo,
@@ -1561,7 +1562,36 @@ pub async fn send_file_relay(
     if total_chunks == 0 {
         return Err("空文件不支持中继发送，请使用直连传输".to_string());
     }
-    s.relay.lock().unwrap().register_send(&transfer_id, chunks);
+
+    // E2EE：本 transfer 独立的随机文件会话密钥（CSPRNG，仅存内存），
+    // 用接收方公钥封装进 RelayFileOffer；每个切片以此密钥 AEAD 加密——
+    // 中继节点只透传密文，无法解密。
+    let file_key = crypto::random_key();
+    let receiver_pubkey = resolve_member_x25519(&s, &friend_id);
+    let sealed_key_b64 = (|| {
+        let pubkey = receiver_pubkey.as_deref()?;
+        let shared = crypto::shared_secret(&s.identity.x25519_secret, pubkey)?;
+        Some(STANDARD.encode(crypto::seal(&shared, &file_key)?))
+    })();
+    let Some(sealed_key_b64) = sealed_key_b64 else {
+        return Err("无法获取对方公钥，无法加密文件".to_string());
+    };
+    // 切片逐片加密：ChunkData.data 为 base64（明文）→ decode → AEAD 加密 → 重新 encode
+    // （随机 nonce，同密钥不同片 nonce 必不相同）
+    let sealed_chunks: Vec<ChunkData> = chunks
+        .into_iter()
+        .enumerate()
+        .map(|(seq, c)| {
+            let plain = STANDARD.decode(&c.data).map_err(|e| e.to_string())?;
+            let sealed = crypto::seal_symmetric(&file_key, &plain)
+                .ok_or_else(|| "文件分片加密失败".to_string())?;
+            Ok::<_, String>(ChunkData {
+                seq: seq as u32,
+                data: STANDARD.encode(sealed),
+            })
+        })
+        .collect::<Result<_, _>>()?;
+    s.relay.lock().unwrap().register_send(&transfer_id, sealed_chunks);
 
     // 元数据直接发给接收方
     let offer = Message::RelayFileOffer {
@@ -1571,6 +1601,7 @@ pub async fn send_file_relay(
         name: name.clone(),
         size,
         total_chunks,
+        sealed_file_key: sealed_key_b64,
     };
     try_send(s, &friend_id, &offer).await?;
 

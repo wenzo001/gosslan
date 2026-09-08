@@ -696,6 +696,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             from,
             name,
             size,
+            sealed_file_key,
         } => {
             if from != peer_id || from == state.device_id {
                 return;
@@ -708,7 +709,19 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 let _ = try_send(state, peer_id, &Message::FileReject { transfer_id }).await;
                 return;
             }
-            match file::begin_receive(state, &transfer_id, &from, &name, size) {
+            // E2EE：解封文件会话密钥（发送方用我方公钥封装，只有我能解开）。
+            // 解封失败必须拒绝传输——密文分片绝不能落盘。
+            let file_key = (|| {
+                let sender_pub = resolve_member_x25519(state, &from)?;
+                let shared = crypto::shared_secret(&state.identity.x25519_secret, &sender_pub)?;
+                let sealed = STANDARD.decode(&sealed_file_key).ok()?;
+                crypto::open(&shared, &sealed).and_then(|k| k.try_into().ok())
+            })();
+            let Some(file_key) = file_key else {
+                let _ = try_send(state, peer_id, &Message::FileReject { transfer_id }).await;
+                return;
+            };
+            match file::begin_receive(state, &transfer_id, &from, &name, size, file_key) {
                 Ok(_) => {
                     let _ = try_send(
                         state,
@@ -930,6 +943,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             name,
             size,
             total_chunks,
+            sealed_file_key,
         } => {
             handle_relay_file_offer(
                 state,
@@ -940,6 +954,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 name,
                 size,
                 total_chunks,
+                sealed_file_key,
             )
             .await;
         }
@@ -1396,6 +1411,7 @@ fn parse_gossip_payload(pt: &[u8]) -> (String, String) {
 
 // ---------------- 中继文件传输 ----------------
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_relay_file_offer(
     state: &Arc<AppState>,
     peer_id: &str,
@@ -1405,6 +1421,7 @@ async fn handle_relay_file_offer(
     name: String,
     size: u64,
     total_chunks: u32,
+    sealed_file_key: String,
 ) {
     if to != state.device_id {
         return; // 中继节点无需重组，只转发切片
@@ -1422,6 +1439,22 @@ async fn handle_relay_file_offer(
     if !is_friend {
         return;
     }
+    // E2EE：解封文件会话密钥（发送方用我方公钥封装）。中继节点不持有密钥；
+    // 解封失败直接放弃——密文分片绝不落盘。
+    let file_key = (|| {
+        let sender_pub = resolve_member_x25519(state, &from)?;
+        let shared = crypto::shared_secret(&state.identity.x25519_secret, &sender_pub)?;
+        let sealed = STANDARD.decode(&sealed_file_key).ok()?;
+        crypto::open(&shared, &sealed).and_then(|k| k.try_into().ok())
+    })();
+    let Some(file_key) = file_key else {
+        return;
+    };
+    state
+        .relay_file_keys
+        .lock()
+        .unwrap()
+        .insert(transfer_id.clone(), file_key);
     state
         .relay
         .lock()
@@ -1462,8 +1495,15 @@ async fn handle_relay_chunk(
     ttl: u8,
 ) {
     if to == state.device_id {
-        // 最终接收方：重组
-        let Ok(bytes) = STANDARD.decode(&data) else {
+        // 最终接收方：先解密（E2EE，密文不落盘），再重组
+        let file_key = state.relay_file_keys.lock().unwrap().get(&transfer_id).copied();
+        let Some(file_key) = file_key else {
+            return;
+        };
+        let Ok(sealed) = STANDARD.decode(&data) else {
+            return;
+        };
+        let Some(bytes) = crypto::open_symmetric(&file_key, &sealed) else {
             return;
         };
         let completed = {
@@ -1471,6 +1511,8 @@ async fn handle_relay_chunk(
             relay.add_chunk(&transfer_id, seq, bytes)
         };
         if let Some((name, expected_size, full)) = completed {
+            // 重组结束（无论成败）：会话密钥只在本 transfer 期间有效
+            state.relay_file_keys.lock().unwrap().remove(&transfer_id);
             if full.len() as u64 != expected_size {
                 let dbc = state.db.lock().unwrap();
                 db::upsert_transfer(

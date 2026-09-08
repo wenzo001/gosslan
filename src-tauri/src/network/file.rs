@@ -1,9 +1,12 @@
 //! 文件传输与共享目录服务。
 //!
-//! 传输流程：
-//! - 发送方：`send_file_from_path` 发送 `FileOffer`，等待 `FileAccept`（oneshot 握手），
-//!   随后以 256KB 分片 base64 编码的 `FileChunk` 流式发送，最后 `FileDone`。
-//! - 接收方：收到 `FileOffer` 后自动接受，把分片写入 `.part` 临时文件，`FileDone` 时改名落盘。
+//! 传输流程（E2EE）：
+//! - 发送方：`send_file_from_path` 为本 transfer 生成随机文件会话密钥，用接收方
+//!   X25519 公钥 ECDH + AEAD 封装后随 `FileOffer` 发出；等待 `FileAccept`
+//!   （oneshot 握手）后，以 256KB 分片**逐片加密**为 `FileChunk` 流式发送，最后 `FileDone`。
+//! - 接收方：收到 `FileOffer` 后解封会话密钥（只有我能解开），自动接受，
+//!   逐片解密写入 `.part` 临时文件，`FileDone` 时改名落盘。密文绝不落盘。
+//! - 中继路径：中继节点只透传密文切片，不持有会话密钥、无法解密。
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -12,8 +15,9 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use tauri::Emitter;
 use tokio::time::Duration;
 
+use crate::crypto;
 use crate::db;
-use crate::network::transport::try_send;
+use crate::network::transport::{resolve_member_x25519, try_send};
 use crate::protocol::{Message, ShareEntry, FILE_CHUNK};
 use crate::state::{AppState, FileDoneInfo, FileFailedInfo, FileReceiver};
 
@@ -53,6 +57,21 @@ pub async fn send_file_from_path(
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "unnamed".to_string());
 
+    // ---- E2EE：本 transfer 独立的随机文件会话密钥（CSPRNG），仅存内存 ----
+    let file_key = crypto::random_key();
+    // 接收方公钥：peers 优先、friends 回落（与 GroupKey 分发同一来源策略）
+    let receiver_pubkey = resolve_member_x25519(state, peer_id);
+    let sealed_key_b64 = (|| {
+        let pubkey = receiver_pubkey.as_deref()?;
+        let shared = crypto::shared_secret(&state.identity.x25519_secret, pubkey)?;
+        Some(STANDARD.encode(crypto::seal(&shared, &file_key)?))
+    })();
+    let Some(sealed_key_b64) = sealed_key_b64 else {
+        let reason = "无法获取对方公钥，无法加密文件";
+        emit_failed(state, transfer_id, reason);
+        return Err(reason.to_string());
+    };
+
     {
         let dbc = state.db.lock().unwrap();
         db::upsert_transfer(
@@ -81,6 +100,7 @@ pub async fn send_file_from_path(
         from: state.device_id.clone(),
         name: name.clone(),
         size,
+        sealed_file_key: sealed_key_b64,
     };
     if let Err(e) = try_send(state, peer_id, &offer).await {
         state
@@ -136,7 +156,7 @@ pub async fn send_file_from_path(
     }
 
     // 传输中断（链路断开等）也要把记录标记为 failed，避免永远停在 active
-    match stream_file(state, peer_id, transfer_id, path, name, size).await {
+    match stream_file(state, peer_id, transfer_id, path, name, size, file_key).await {
         Ok(()) => Ok(()),
         Err(e) => {
             let dbc = state.db.lock().unwrap();
@@ -165,6 +185,7 @@ async fn stream_file(
     path: PathBuf,
     name: String,
     size: u64,
+    file_key: [u8; 32],
 ) -> Result<(), String> {
     use tokio::io::AsyncReadExt;
 
@@ -198,7 +219,11 @@ async fn stream_file(
         if n == 0 {
             break;
         }
-        let data = STANDARD.encode(&buf[..n]);
+        // E2EE：每片独立随机 nonce 的 AEAD 密文（crypto::seal = nonce || ct），
+        // 同一密钥不同片 nonce 必不相同，无 nonce 重用。
+        let sealed = crypto::seal_symmetric(&file_key, &buf[..n])
+            .ok_or_else(|| "文件分片加密失败".to_string())?;
+        let data = STANDARD.encode(&sealed);
         let chunk = Message::FileChunk {
             transfer_id: transfer_id.to_string(),
             seq,
@@ -299,6 +324,7 @@ pub fn begin_receive(
     peer_id: &str,
     name: &str,
     size: u64,
+    file_key: [u8; 32],
 ) -> Result<PathBuf, String> {
     let safe_name = safe_file_name(name).ok_or("文件名非法")?;
     if size > i64::MAX as u64 {
@@ -329,6 +355,7 @@ pub fn begin_receive(
             final_path: final_path.clone(),
             peer_id: peer_id.to_string(),
             last_report_ms: 0,
+            file_key,
         },
     );
 
@@ -351,6 +378,8 @@ pub fn begin_receive(
 }
 
 /// 接收方：写入一个分片，返回累计字节数。
+/// 入参 `data` 为 AEAD 密文（nonce || ciphertext）：先解密再写盘，
+/// 解密失败直接报错——密文绝不落盘。
 pub fn write_chunk(
     state: &AppState,
     transfer_id: &str,
@@ -367,11 +396,13 @@ pub fn write_chunk(
     if seq != r.next_seq {
         return Err("文件分片顺序错误".to_string());
     }
-    if data.len() as u64 > r.size.saturating_sub(r.received) {
+    let plaintext = crypto::open_symmetric(&r.file_key, data)
+        .ok_or_else(|| "文件分片解密失败".to_string())?;
+    if plaintext.len() as u64 > r.size.saturating_sub(r.received) {
         return Err("文件分片超出声明大小".to_string());
     }
-    r.file.write_all(data).map_err(|e| e.to_string())?;
-    r.received += data.len() as u64;
+    r.file.write_all(&plaintext).map_err(|e| e.to_string())?;
+    r.received += plaintext.len() as u64;
     r.next_seq = r.next_seq.checked_add(1).ok_or("文件分片序号溢出")?;
     Ok(r.received)
 }
@@ -681,5 +712,161 @@ mod tests {
             assert!(safe_file_name(name).is_none(), "{name} must be rejected");
         }
         assert_eq!(safe_file_name("report.txt").as_deref(), Some("report.txt"));
+    }
+
+    // ---------- 文件传输 E2EE（协议层模拟，不依赖 AppState） ----------
+
+    use super::super::super::crypto;
+    use crate::protocol::FILE_CHUNK;
+    use base64::Engine as _;
+
+    /// 1. FileOffer.sealed_file_key：发送方以接收方公钥封装、接收方解封，
+    ///    必须还原出同一个文件会话密钥（ECDH 对称性）。
+    #[test]
+    fn file_offer_sealed_key_roundtrip() {
+        let sender = crypto::Identity::generate();
+        let receiver = crypto::Identity::generate();
+        let file_key = crypto::random_key();
+
+        // 发送端（send_file_from_path 同逻辑）：receiver 公钥封装
+        let shared = crypto::shared_secret(&sender.x25519_secret, &receiver.x25519_public_b64())
+            .expect("ECDH 失败");
+        let sealed_key_b64 = base64::engine::general_purpose::STANDARD
+            .encode(crypto::seal(&shared, &file_key).expect("封装失败"));
+
+        // 接收端（handle_message FileOffer 同逻辑）：sender 公钥解封
+        let shared_rx = crypto::shared_secret(&receiver.x25519_secret, &sender.x25519_public_b64())
+            .expect("ECDH 失败");
+        let sealed = base64::engine::general_purpose::STANDARD
+            .decode(&sealed_key_b64)
+            .expect("base64 非法");
+        let opened = crypto::open(&shared_rx, &sealed).expect("解封失败");
+        assert_eq!(opened.len(), 32);
+        assert_eq!(opened, file_key, "解封出的文件会话密钥必须与原密钥一致");
+    }
+
+    /// 2. FileChunk 加密→解密 roundtrip：原始 bytes 完整还原。
+    #[test]
+    fn file_chunk_encrypt_roundtrip() {
+        let file_key = crypto::random_key();
+        let plaintext: Vec<u8> = (0u8..=255).cycle().take(FILE_CHUNK).collect();
+        let sealed = crypto::seal_symmetric(&file_key, &plaintext).expect("加密失败");
+        let opened = crypto::open_symmetric(&file_key, &sealed).expect("解密失败");
+        assert_eq!(opened, plaintext);
+    }
+
+    /// 3. 密文被篡改后解密必须失败（AEAD 完整性），不能产出可用明文。
+    #[test]
+    fn tampered_chunk_fails_to_decrypt() {
+        let file_key = crypto::random_key();
+        let plaintext = b"gosslan file chunk";
+        let mut sealed = crypto::seal_symmetric(&file_key, plaintext).expect("加密失败");
+        let last = sealed.len() - 1;
+        sealed[last] ^= 0xFF; // 翻转密文最后一比特
+        assert!(
+            crypto::open_symmetric(&file_key, &sealed).is_none(),
+            "篡改后的密文必须解密失败"
+        );
+    }
+
+    /// 4. 每个 transfer 生成独立的随机文件会话密钥，不得共用。
+    #[test]
+    fn distinct_transfers_have_distinct_keys() {
+        let a = crypto::random_key();
+        let b = crypto::random_key();
+        assert_ne!(a, b, "两次 random_key() 必须产生不同密钥（CSPRNG）");
+        // 密文互换后必须解不开：证明密钥确实互不通用
+        let msg = b"content of transfer";
+        let sealed_with_a = crypto::seal_symmetric(&a, msg).unwrap();
+        assert!(crypto::open_symmetric(&b, &sealed_with_a).is_none());
+    }
+
+    /// 5. 中继节点原样转发密文（RelayChunk 只透传 data），
+    ///    接收端用自己解封的会话密钥仍可解密——中继无需也无法解密。
+    #[test]
+    fn relay_forwarded_ciphertext_still_decryptable() {
+        let sender = crypto::Identity::generate();
+        let receiver = crypto::Identity::generate();
+        let file_key = crypto::random_key();
+
+        // 发送端：封装会话密钥 + 加密 chunk
+        let shared = crypto::shared_secret(&sender.x25519_secret, &receiver.x25519_public_b64())
+            .unwrap();
+        let sealed_key_b64 = base64::engine::general_purpose::STANDARD
+            .encode(crypto::seal(&shared, &file_key).unwrap());
+        let plaintext = b"chunk travels through relay nodes";
+        let ciphertext_b64 = base64::engine::general_purpose::STANDARD
+            .encode(crypto::seal_symmetric(&file_key, plaintext).unwrap());
+
+        // 模拟中继：data 原样透传（无密钥、无修改）——中继不可见明文
+        let forwarded = ciphertext_b64.clone();
+
+        // 接收端：解封密钥 → 解密转发的密文
+        let shared_rx = crypto::shared_secret(&receiver.x25519_secret, &sender.x25519_public_b64())
+            .unwrap();
+        let opened_key: [u8; 32] = crypto::open(
+            &shared_rx,
+            &base64::engine::general_purpose::STANDARD
+                .decode(&sealed_key_b64)
+                .unwrap(),
+        )
+        .unwrap()
+        .try_into()
+        .unwrap();
+        let decrypted = crypto::open_symmetric(
+            &opened_key,
+            &base64::engine::general_purpose::STANDARD.decode(&forwarded).unwrap(),
+        )
+        .expect("中继转发后的密文必须仍可解密");
+        assert_eq!(decrypted, plaintext);
+    }
+
+    /// 6. 完整传输生命周期（协议层）：解封密钥 → 多分片逐片加解密 →
+    ///    拼接还原 + 大小校验通过——与 finish_receive 的裁决一致。
+    #[test]
+    fn full_transfer_lifecycle_still_completes() {
+        let sender = crypto::Identity::generate();
+        let receiver = crypto::Identity::generate();
+
+        // 原始文件：3 片（末片不满 256KB，覆盖边界）
+        let mut original: Vec<u8> = Vec::new();
+        for i in 0..(FILE_CHUNK * 3 - 1234) {
+            original.push((i % 251) as u8);
+        }
+        let chunks: Vec<&[u8]> = original.chunks(FILE_CHUNK).collect();
+
+        // 发送端生命周期：random_key → 封装 → 逐片加密
+        let file_key = crypto::random_key();
+        let shared = crypto::shared_secret(&sender.x25519_secret, &receiver.x25519_public_b64())
+            .unwrap();
+        let sealed_key_b64 = base64::engine::general_purpose::STANDARD
+            .encode(crypto::seal(&shared, &file_key).unwrap());
+        let wire_chunks: Vec<Vec<u8>> = chunks
+            .iter()
+            .map(|c| crypto::seal_symmetric(&file_key, c).unwrap())
+            .collect();
+
+        // 接收端生命周期：解封密钥 → 逐片解密重组 → 大小校验
+        let shared_rx = crypto::shared_secret(&receiver.x25519_secret, &sender.x25519_public_b64())
+            .unwrap();
+        let restored_key: [u8; 32] = crypto::open(
+            &shared_rx,
+            &base64::engine::general_purpose::STANDARD
+                .decode(&sealed_key_b64)
+                .unwrap(),
+        )
+        .unwrap()
+        .try_into()
+        .unwrap();
+        let mut assembled: Vec<u8> = Vec::new();
+        for (seq, wire) in wire_chunks.iter().enumerate() {
+            // seq 严格递增校验（write_chunk 语义）：乱序片在这里被拒绝
+            assert_eq!(seq as usize, assembled.chunks(FILE_CHUNK).count());
+            let plain = crypto::open_symmetric(&restored_key, wire)
+                .unwrap_or_else(|| panic!("分片 {seq} 解密失败"));
+            assembled.extend_from_slice(&plain);
+        }
+        assert_eq!(assembled.len(), original.len(), "重组大小必须一致");
+        assert_eq!(assembled, original, "重组内容必须与原文件一致");
     }
 }

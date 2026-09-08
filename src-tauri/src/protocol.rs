@@ -221,11 +221,15 @@ pub enum Message {
         last_read_ts: i64,
     },
     // ---- 文件传输 ----
+    /// 发起文件传输。`sealed_file_key`：发送方为本 transfer 生成的随机
+    /// 32B 文件会话密钥，用接收方 X25519 公钥 ECDH + AEAD 封装——
+    /// 只有接收方能解封；后续 FileChunk.data 均用该密钥加密。
     FileOffer {
         transfer_id: String,
         from: String,
         name: String,
         size: u64,
+        sealed_file_key: String,
     },
     FileAccept {
         transfer_id: String,
@@ -233,6 +237,8 @@ pub enum Message {
     FileReject {
         transfer_id: String,
     },
+    /// `data`：文件会话密钥 AEAD 加密后的 base64（nonce || ciphertext），
+    /// 密文在 TCP / 中继上均不透明。
     FileChunk {
         transfer_id: String,
         seq: u32,
@@ -297,7 +303,9 @@ pub enum Message {
         from: String,
         to: String,
     },
-    /// 中继文件传输元数据（切片总数等，先于 RelayChunk）
+    /// 中继文件传输元数据（切片总数等，先于 RelayChunk）。
+    /// `sealed_file_key`：与 FileOffer 同义——用接收方公钥封装的文件会话密钥，
+    /// 中继节点不持有也不解封，仅接收方能解开。
     RelayFileOffer {
         transfer_id: String,
         from: String,
@@ -305,6 +313,7 @@ pub enum Message {
         name: String,
         size: u64,
         total_chunks: u32,
+        sealed_file_key: String,
     },
 }
 

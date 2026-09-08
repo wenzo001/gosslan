@@ -243,6 +243,9 @@ pub struct FileReceiver {
     pub peer_id: String,
     /// 上次进度上报时间（毫秒），用于节流 IPC 事件
     pub last_report_ms: i64,
+    /// 本 transfer 的文件会话密钥：FileOffer 中以我方公钥 E2EE 封装，
+    /// 解封后仅存于内存；每个分片以此 AEAD 解密，密文绝不落盘。
+    pub file_key: [u8; 32],
 }
 
 /// 网络运行时句柄
@@ -296,6 +299,10 @@ pub struct AppState {
 
     /// 等待对方接受的文件传输：transfer_id -> 接受信号
     pub pending_file_accept: Mutex<HashMap<String, tokio::sync::oneshot::Sender<()>>>,
+    /// 中继接收的文件会话密钥：transfer_id -> file_key。
+    /// RelayFileOffer 中以我方公钥 E2EE 封装，解封后仅存内存；
+    /// 中继节点不持有密钥、不参与解密，只透传密文切片。
+    pub relay_file_keys: Mutex<HashMap<String, [u8; 32]>>,
     /// 正在接收的文件：transfer_id -> FileReceiver
     pub file_receivers: Mutex<HashMap<String, FileReceiver>>,
     /// 等待共享目录树响应：request_id -> 应答通道
@@ -422,6 +429,7 @@ impl AppState {
             nickname: Mutex::new(nickname),
             avatar: Mutex::new(avatar),
             pending_file_accept: Mutex::new(HashMap::new()),
+            relay_file_keys: Mutex::new(HashMap::new()),
             file_receivers: Mutex::new(HashMap::new()),
             pending_share_tree: Mutex::new(HashMap::new()),
             peers_dirty: AtomicBool::new(false),
