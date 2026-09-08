@@ -458,7 +458,48 @@ Rust private key
 
 ---
 
-# 19. Invariant Change Procedure
+## 19. Logical Ordering
+
+### INV-P19 — Per-Conversation Logical Sequence
+
+同一会话内的消息排序使用本地维护的逻辑序号 `seq`，不使用墙上时钟，也不猜测对端时钟。
+
+- 发送：`seq = local_clock + 1`，并持久化 `conversation_clocks`。
+- 接收：`seq = max(1, received_seq)`，并推进本地时钟。
+- 排序：`seq ASC, id ASC`。
+- 群聊清空边界：记录清空时的 `seq`，`seq <= boundary` 的旧消息不再回灌。
+
+禁止：
+
+```text
+sender_wall_clock 直接决定消息顺序
+receiver 纠正/猜测 sender 时钟
+```
+
+---
+
+## 20. Transport Priority
+
+### INV-P20 — Chat Must Not Be Starved By Bulk Transfers
+
+每条 TCP 连接同时维护：
+
+```text
+priority 通道：聊天 / Gossip / Ack / 回执 / 好友群控制 / 心跳 / Hello / 文件握手
+bulk 通道：FileChunk / GroupFileChunk / RelayChunk / FileDone / GroupFileDone
+```
+
+文件终止帧必须和分片同属 bulk 通道，保证 `Offer → Chunk... → Done` 的协议顺序不被破坏。
+
+禁止：
+
+```text
+大文件分片占满唯一队列，导致聊天消息长时间排队
+```
+
+---
+
+# 21. Invariant Change Procedure
 
 如果一个新需求必须违反现有 invariant：
 
@@ -478,7 +519,7 @@ AI 不得直接修改。
 
 ---
 
-# 20. Required Test Matrix
+# 22. Required Test Matrix
 
 核心消息功能至少覆盖：
 
@@ -497,3 +538,7 @@ AI 不得直接修改。
 | Key missing | Visible failure |
 | Key changed | Security-relevant handling |
 | Gossip TTL exhausted | Stop forwarding |
+| Big file + chat burst | Chat delivered promptly |
+| File chunk order | Chunk N before Done |
+| Group clear boundary | seq <= boundary blocked |
+| Clock skew | Ordering/read state unaffected |

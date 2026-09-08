@@ -8,7 +8,12 @@
 
 版本号统一由 `npm run version:patch|minor|major` 维护，一次改动同步 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 三处，并把本文件 `[Unreleased]` 小节落为带日期的版本小节。
 
-## [Unreleased]
+## [1.0.0] - 2026-09-08
+
+> **正式版 1.0.0 发布。** 本版本在 UI 收敛之上，完成了 LAN Chat 稳定性与跨设备一致性：
+> 群消息离线补发、文件离线补发与完成确认、每会话逻辑序号（Lamport）、传输优先级双队列、
+> Android 安全区/竖屏/运行时权限、最新消息优先分页、文件进度条修复。
+
 ### Changed
 - **视觉收敛：会话列表与聊天区分层、选中态改浅灰、去刺眼主色填充**（在上轮纯白极窄版之上纠偏）：
   - 三栏恢复**层次感**：侧栏浅灰 `--gosslan-rail #f2f3f5`、会话列表 `--gosslan-list #f4f5f7`、聊天区 `--gosslan-chat #fff`，告别"三块纯白靠细线"的空旷感

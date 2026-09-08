@@ -12,12 +12,12 @@
 ## 🤖 AI 开发必读（约束文档索引）
 
 > **任何 AI 编程助手在修改本项目代码前，必须先阅读以下文档。**
-> **当前目标：把 Gosslan 做成稳定、简单、可继续扩展的 LAN Chat（v0.12）。**
+> **当前目标：把 Gosslan 做成稳定、简单、可继续扩展的 LAN Chat（v1.0）。**
 
 | 优先级 | 文档 | 内容 |
 |---|---|---|
 | **★★★ 必读** | [AI_RULES.md](AI_RULES.md) | **AI 工程宪法**（41 章）：核心不变量 INV-001~008、任务复杂度分级 L1/L2/L3、既有代码优先、协议/DB 规则、状态机、Bug 修复流程、冻结功能清单、Definition of Done |
-| **★★★ 必读** | [docs/acceptance/0.12-stable-lan-chat.md](docs/acceptance/0.12-stable-lan-chat.md) | **v0.12 验收标准**：P0/P1 验收清单、开发策略、必须运行的验证命令 |
+| **★★★ 必读** | [docs/acceptance/1.0-release.md](docs/acceptance/1.0-release.md) | **v1.0 验收标准**：P0/P1 验收清单、开发策略、必须运行的验证命令 |
 | **★★★ 必读** | [AI_PROJECT_HANDOFF.md](AI_PROJECT_HANDOFF.md) | **项目全景**：完整功能清单、架构与代码导读、E2EE 状态机、工程约定、测试口径 |
 | **★★ 参考** | [docs/protocol-invariants.md](docs/protocol-invariants.md) | **协议不变量明细**（INV-P01~P18）+ 必须覆盖的测试矩阵：改协议/网络核心前必读 |
 | **★★ 参考** | [docs/AI_ENGINEERING_INDEX.md](docs/AI_ENGINEERING_INDEX.md) | 约束文档导航索引 + 文档与代码冲突时的处理规则 |
@@ -26,7 +26,7 @@
 | **★ 按需** | [docs/templates/BUG_FIX.md](docs/templates/BUG_FIX.md) | Bug 修复报告模板（复现 / 根因 / 影响 / 修复 / 回归） |
 | **★ 按需** | [docs/templates/ADR.md](docs/templates/ADR.md) | 新增架构决策记录模板 |
 
-**阅读顺序**：`AI_RULES.md`（约束）→ `docs/acceptance/0.12-stable-lan-chat.md`（目标与验收）→ `AI_PROJECT_HANDOFF.md`（项目全貌）→ 涉及网络/协议时读 `docs/protocol-invariants.md` 与相关 ADR → 代码。
+**阅读顺序**：`AI_RULES.md`（约束）→ `docs/acceptance/1.0-release.md`（目标与验收）→ `AI_PROJECT_HANDOFF.md`（项目全貌）→ 涉及网络/协议时读 `docs/protocol-invariants.md` 与相关 ADR → 代码。
 
 ---
 
@@ -68,7 +68,7 @@ gosslan/
 ├── docs/
 │   ├── AI_ENGINEERING_INDEX.md   # 约束文档导航
 │   ├── protocol-invariants.md    # 协议不变量明细 INV-P01~P18
-│   ├── acceptance/               # 版本验收标准（当前：0.12 stable LAN chat）
+│   ├── acceptance/               # 版本验收标准（当前：1.0 release）
 │   ├── adr/                      # 架构决策记录
 │   └── templates/                # Bug 修复 / ADR 模板
 ├── src/                      # Vue 3 前端
@@ -195,10 +195,10 @@ npm run dist:win:msi    # 额外产出 MSI
 仓库内置三端 workflow（Windows / macOS / Android），推送一个 `v*` 标签即自动构建三端安装包并发布 Release（apk/dmg/exe 三件套）：
 
 ```bash
-npm run version:patch                 # 例：0.11.0 -> 0.11.1（同步 4 处版本 + CHANGELOG）
-git add -A && git commit -m "release v0.11.1"
-git tag v0.11.1
-git push origin main && git push origin v0.11.1
+npm run version:patch                 # 例：1.0.0 -> 1.0.1（同步 4 处版本 + CHANGELOG）
+git add -A && git commit -m "release v1.0.1"
+git tag v1.0.1
+git push origin main && git push origin v1.0.1
 ```
 
 > GitHub 托管 runner 已预装 Rust / Node / JDK / Android SDK，无需本地环境即可出包。
@@ -285,10 +285,10 @@ cd src-tauri && cargo test
 
 ---
 
-## 🧭 后续路线图（v0.12 明确冻结，勿主动实现）
+## 🧭 后续路线图（v1.0 之后规划，勿主动实现）
 
-> 以下方向**在 v0.12 稳定版完成前一律不做**（见 [AI_RULES.md](AI_RULES.md) 冻结功能清单与
-> [docs/acceptance/0.12-stable-lan-chat.md](docs/acceptance/0.12-stable-lan-chat.md)）。
+> 以下方向**在 v1.0 正式版之后另行规划**（见 [AI_RULES.md](AI_RULES.md) 冻结功能清单与
+> [docs/acceptance/1.0-release.md](docs/acceptance/1.0-release.md)）。
 > 仅作为已评估过的扩展点记录，**不要因为看到这一节就去实现**。
 
 - **前向保密**：静态 X25519 派生长期密钥 → 升级 Noise XX 会话（`snow`），建链握手派生会话密钥

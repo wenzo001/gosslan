@@ -6,7 +6,7 @@
 > ③ fork 后想二次开发的人。
 >
 > 内容包括：全部功能、架构与代码导读、协议与加密状态机、工程约定、测试口径、
-> 历史演进与未来设想。最后更新：**2026-09-05（v0.11.2）**。
+> 历史演进与未来设想。最后更新：**2026-09-08（v1.0.0）**。
 >
 > ⚠️ **AI 编程助手请先阅读 [AI_RULES.md](AI_RULES.md)**（工程宪法：不变量 / 禁止事项 / 强制流程），
 > 再读本文件了解项目全貌。架构设计原因见 [docs/adr/](docs/adr/)。
@@ -24,14 +24,14 @@
 - 界面高度模仿**飞书 / 钉钉**，交互优先「乐观更新 + 失败可感知」
 
 - 仓库：`github.com/fwd001/gosslan`（public，默认分支 `main`）
-- 当前版本：**0.11.0**（package.json / src-tauri/Cargo.toml / src-tauri/tauri.conf.json / Cargo.lock 四处一致）
+- 当前版本：**1.0.0**（package.json / src-tauri/Cargo.toml / src-tauri/tauri.conf.json / Cargo.lock 四处一致）
 - 应用标识：`com.gosslan.app`，ProductName：`Gosslan`，CSS 前缀 `--gosslan-*`
 - 技术栈：**Tauri v2 + Rust 2021 + Vue 3 + TypeScript + Vite + Tailwind CSS + Headless UI + Lucide + Pinia + SQLite（rusqlite bundled）**
 - 作者：wd.f（fuwedong），MIT 协议
 
 ---
 
-## 2. 完整功能清单（v0.11.0 现状）
+## 2. 完整功能清单（v1.0.0 现状）
 
 ### 2.1 网络与消息核心
 
@@ -43,11 +43,13 @@
 | Gossip 广播 | Epidemic 泛洪，Bloom Filter + LRU 去重，fanout + TTL 衰减；信封 SHA-256 message_id + Ed25519 签名 | 0.2.0 |
 | E2EE | **恒开且不可关闭**（v0.11.0 起）：X25519 ECDH 派生密钥 + ChaCha20-Poly1305 AEAD；详见 §5 | 0.2.0→0.11.0 |
 | 群聊 | 随机群密钥对称加密；群密钥用各成员公钥 ECDH 单独加密分发（`GroupKey`） | 0.2.0 |
-| 离线补发 | 消息一律写 outbox（INSERT OR IGNORE 幂等），**Ack 到达才删行**；对方上线建链/心跳触发 `flush_outbox`；接收方按 msg_id 去重 | 0.4.0 / 0.7.0 |
-| 已读回执 | `ReadReceipt`（合并式 last_read_ts）；对方打开会话 / 会话内来消息防抖 600ms → 我方消息绿勾；窗口重新可见时补标已读。链路不可用时回执暂存于内存，由建链/Hello/心跳冲刷补发 | 0.6.0 / 0.12.0 |
+| 离线补发 | 单聊消息写 `outbox`，群消息写 `group_outbox`，文件写 `file_outbox`；**Ack / GroupAck / FileCompleteAck 到达才删行**；对方上线建链/心跳触发对应 flush；接收方按 msg_id / transfer_id 幂等去重 | 0.4.0 / 0.7.0 / 1.0.0 |
+| 已读回执 | 单聊 `ReadReceipt`、群聊 `GroupReadReceipt` 均携带 `last_read_msg_id`，发送方用消息 ID 换算自己的本地序号，不依赖双方墙上时钟；链路不可用时暂存 `pending_reads` / `pending_group_reads`，由建链/Hello/心跳补发 | 0.6.0 / 1.0.0 |
+| 逻辑序号 | 每会话 `conversation_clocks` 维护 Lamport 风格逻辑序号 `seq`；消息按 `seq,id` 排序，群聊清空边界也按 `seq` 判断，完全不依赖墙上时钟 | 1.0.0 |
+| 传输优先级 | 每条 TCP 连接有 bulk / priority 双队列；文件分片走 bulk，聊天/控制/回执走 priority，大文件传输不会再饿死普通消息 | 1.0.0 |
 | 局域网默认开启 | 桌面端启动即自动联网（`start_from_prefs`，沿用 `bind_ip`，网卡失效时回落 0.0.0.0）；用户在设置页关闭后写 `settings.lan_enabled="0"`，重启保持关闭。移动端仍为手动开启 | 0.12.0 |
 | 心跳探活 | 每 5s 向已建链节点发 Heartbeat，静默断连及时清理 | 0.4.0 |
-| 大文件 | **BitTorrent 式切片中继**：64KB–512KB 分片，并行分发到空闲中继二次转发，乱序重组；直连/中继**自动路由**（`send_file_auto`） | 0.2.0 / 0.4.0 |
+| 大文件 | 直连流式分片 + `file_outbox` 断线补发；接收方校验 size/SHA-256 后回 `FileCompleteAck`，发送方确认成功才标 delivered。中继自动路由暂统一为「直连 + 离线队列」 | 0.2.0 / 1.0.0 |
 | 共享目录 | 设置本地共享文件夹，好友点对点浏览目录树并下载（防目录穿越） | 0.1.0 |
 | 多开 | `--instance N`：独立 DB / TCP 端口 / 指纹，UDP 共享（SO_REUSEADDR + unix 上 SO_REUSEPORT） | 0.3.0 / 0.4.1 |
 
@@ -105,7 +107,7 @@ gosslan/
 ├── docs/
 │   ├── AI_ENGINEERING_INDEX.md  # ★ 约束文档导航 + 文档/代码冲突处理规则
 │   ├── protocol-invariants.md   # ★ 协议不变量明细 INV-P01~P18 + 测试矩阵
-│   ├── acceptance/              # 版本验收标准（当前：0.12-stable-lan-chat.md）
+│   ├── acceptance/              # 版本验收标准（当前：1.0-release.md）
 │   ├── adr/                     # 架构决策记录
 │   │   ├── 0007-protocol-versioning.md
 │   │   ├── 0008-state-machine-boundaries.md
@@ -189,9 +191,9 @@ gosslan/
 接收方 handle ChatMessage:
   content 有 "enc1:" 前缀?
     ├─ 查发送方公钥: friends 表 → peers 表
-    │   ├─ 解密成功 → 明文落库
-    │   └─ 失败/缺公钥 → 落库为 system 消息 "[加密消息] …"（不静默丢弃）
-    └─ 无前缀 → 明文直接落库
+    │   ├─ 解密成功 → 明文落库并回 Ack
+    │   └─ 失败/缺公钥 → 不落库、不 Ack；outbox 保留，等待用最新公钥重封后补发
+    └─ 无前缀 → 当前版本直接拒绝（E2EE 恒开）
 
 接收方 handle Gossip:
   env.encrypted == false → base64 明文
@@ -207,10 +209,10 @@ gosslan/
 ### 4.4 已读回执链路
 
 1. 触发标记已读（三处）：打开会话 / 会话内收到新消息（防抖 600ms）/ 窗口重新可见
-2. Rust 查该会话 `MAX(ts)` → 发 `ReadReceipt{last_read_ts}` 给对方
-3. 链路不可用（未建链 / 半开）⇒ 回执暂存 `state.pending_reads`（只留最大值），
-   由建链 / Hello / 心跳的 `flush_pending_reads` 补发 —— 与 outbox 补发同一批触发点
-4. 对方收到 → 我发的、ts ≤ last_read_ts 的消息全部置 `read` → **绿勾**
+2. Rust 查该会话里「对方最近一条消息」的 `msg_id + seq` → 发 `ReadReceipt{last_read_msg_id, last_read_ts}`
+3. 链路不可用（未建链 / 半开）⇒ 回执暂存 `pending_reads` / `pending_group_reads`，
+   由建链 / Hello / 心跳补发 —— 与 outbox 补发同一批触发点
+4. 对方收到 → 用 `last_read_msg_id` 换算出自己的本地 `seq`，把 ts ≤ 该序号的消息全部置 `read` → **绿勾**
 5. 状态流转：`sending`（转圈）→ `delivered`（Ack 到达，空心圆）→ `read`（绿勾）；失败 = 红叉
 6. **送达状态只前进不回退**：outbox 补发会带回迟到的重复 Ack，`set_message_status`
    与前端 `onMessageAcked` 都必须跳过已置 `read` 的记录
@@ -312,8 +314,8 @@ cargo check --target aarch64-linux-android
 
 ## 8. 演进设想（未来方向）
 
-> ⚠️ **以下均为 v0.12 冻结方向，不要在当前阶段主动实现。**
-> 冻结范围见 [AI_RULES.md](AI_RULES.md) 与 [docs/acceptance/0.12-stable-lan-chat.md](docs/acceptance/0.12-stable-lan-chat.md)；
+> ⚠️ **以下均为 v1.0 后规划方向，不要在当前阶段主动实现。**
+> 规划范围见 [AI_RULES.md](AI_RULES.md) 与 [docs/acceptance/1.0-release.md](docs/acceptance/1.0-release.md)；
 > 这里仅保留摘要与产品层面的记录。
 
 ### 8.1 协议安全（P0–P1）
@@ -402,7 +404,7 @@ CI：push `main` / push `v*` tag / 手动触发。tag 额外发布 Release。
 | 文档 | 内容 |
 |---|---|
 | `AI_RULES.md` | **★ AI 工程宪法**（41 章）：不变量 INV-001~008、任务分级 L1/L2/L3、协议/DB/加密规则、Bug 修复流程、冻结功能清单、Definition of Done |
-| `docs/acceptance/0.12-stable-lan-chat.md` | **★ 当前版本验收标准**：P0/P1 清单、开发策略、必跑验证命令 |
+| `docs/acceptance/1.0-release.md` | **★ 当前版本验收标准**：P0/P1 清单、开发策略、必跑验证命令 |
 | `AI_PROJECT_HANDOFF.md` | **本文件**：给 AI 编程/源码阅读/fork 者的完整上下文 |
 | `docs/protocol-invariants.md` | **协议不变量明细** INV-P01~P18 + 必覆盖测试矩阵 |
 | `docs/AI_ENGINEERING_INDEX.md` | 约束文档导航 + 文档与代码冲突时的处理规则 |

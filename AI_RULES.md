@@ -1,7 +1,7 @@
 # Gosslan AI Development Rules
 
-> Version: 0.12
-> Status: Pre-release / Stable LAN Chat
+> Version: 1.0
+> Status: Release / Stable LAN Chat
 > Project type: Tauri v2 + Vue 3 + TypeScript + Rust + SQLite
 > Primary goal: Stable LAN Chat
 >
@@ -42,9 +42,9 @@ Do not sacrifice current chat stability for future architecture.
 
 ---
 
-# 2. v0.12 Scope
+# 2. v1.0 Scope
 
-## 2.1 v0.12 Core Goals
+## 2.1 v1.0 Core Goals
 
 The following are P0:
 
@@ -80,7 +80,7 @@ The following are P1:
 
 ---
 
-# 3. Explicitly Frozen for v0.12
+# 3. Explicitly Frozen for v1.0
 
 Do NOT proactively implement, redesign, optimize, or expand:
 
@@ -1137,7 +1137,7 @@ For message/network changes, prefer real protocol-path testing over mocks.
 
 ---
 
-# 29. v0.12 Minimum Verification
+# 29. v1.0 Minimum Verification
 
 At minimum:
 
@@ -1459,7 +1459,7 @@ Never sacrifice a working current chat system to prepare for a feature that does
 
 ---
 
-# 40. v0.12 Development Principle
+# 40. v1.0 Development Principle
 
 The current phase is:
 
@@ -1499,9 +1499,9 @@ Create more complexity
 
 ---
 
-# 41. v0.12 Success Criteria
+# 41. v1.0 Success Criteria
 
-v0.12 is successful when two real LAN devices can reliably:
+v1.0 is successful when two real LAN devices can reliably:
 
 ```text
 Discover each other
