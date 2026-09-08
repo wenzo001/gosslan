@@ -2,6 +2,7 @@
 import { fmtConversationTime } from "@/utils/time";
 import { highlightText } from "@/utils/highlight";
 import { X } from "lucide-vue-next";
+import { computed } from "vue";
 import { useChatStore } from "@/stores/useChatStore";
 import { useMemberProfile } from "@/composables/useMemberProfile";
 import type { Conversation } from "@/types";
@@ -27,10 +28,11 @@ function initials(name: string) {
   return name.slice(0, 1).toUpperCase();
 }
 
-/** 群头像九宫格成员（微信式 2x2）：资料解析统一走 useMemberProfile（本机/好友/节点），
- *  无头像时用彩色块+白字首字符（微信默认头像风格）。 */
+/** 群头像九宫格成员（微信式 2x2）：资料解析统一走 useMemberProfile（本机/好友/节点，
+ *  离线好友照常显示）。必须保持响应式：好友/群数据是异步加载的，非响应式会在
+ *  启动时算死成占位块且不再更新。无头像时用彩色块+白字首字符。 */
 const TILE_COLORS = ["#5b8def", "#58b178", "#f0a04e", "#9a7ff0"];
-const gridTiles = (() => {
+const gridTiles = computed(() => {
   if (props.conv.kind !== "group") return [];
   const groupId = props.conv.id.replace(/^group:/, "");
   const memberIds = chat.groups.find((g) => g.id === groupId)?.members ?? [];
@@ -43,7 +45,7 @@ const gridTiles = (() => {
     tiles.push({ avatar: null, label: initials(props.conv.name), color: TILE_COLORS[tiles.length % 4] });
   }
   return tiles;
-})();
+});
 </script>
 
 <template>

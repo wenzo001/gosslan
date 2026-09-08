@@ -168,7 +168,7 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
         <ConversationListItem
           v-for="c in filtered"
           :key="c.id"
-          v-memo="[c.last_ts, c.last_msg, c.unread, c.avatar, c.name, chat.activeConv === c.id, isOnline(c.id), keyword, results.length]"
+          v-memo="[c.last_ts, c.last_msg, c.unread, c.avatar, c.name, chat.activeConv === c.id, isOnline(c.id), keyword, results.length, chat.friends.length, chat.groups.length]"
           :conv="c"
           :active="chat.activeConv === c.id"
           :online="isOnline(c.id)"
