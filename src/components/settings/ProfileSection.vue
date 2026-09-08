@@ -58,7 +58,7 @@ async function onAvatarChange(e: Event) {
   <section>
     <h3 class="mb-3 text-[13px] font-semibold text-[var(--gosslan-text)]">个人资料</h3>
     <div class="flex items-center gap-4">
-      <div class="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] bg-primary text-white">
+      <div class="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] brand-surface text-white">
         <img v-if="avatar" :src="avatar" class="h-full w-full object-cover" />
         <span v-else class="text-2xl font-semibold">{{ nickname.slice(0, 1) || "我" }}</span>
       </div>
@@ -80,8 +80,8 @@ async function onAvatarChange(e: Event) {
         <input ref="avatarInput" type="file" accept="image/*" class="hidden" @change="onAvatarChange" />
         <!-- 本人在线状态（从原右上角拓扑栏移入，明确标识是「我」的状态） -->
         <div class="mt-2.5 flex items-center gap-1.5 text-xs">
-          <span class="h-2 w-2 rounded-full" :class="app.online ? 'bg-primary' : 'bg-neutral-400'"></span>
-          <span :class="app.online ? 'text-primary' : 'text-[var(--gosslan-text-2)]'">
+          <span class="h-2 w-2 rounded-full" :class="app.online ? 'bg-emerald-500' : 'bg-neutral-400'"></span>
+          <span :class="app.online ? 'text-emerald-600' : 'text-[var(--gosslan-text-2)]'">
             {{ app.online ? "我在线 · 局域网已连接" : "我离线 · 局域网未连接" }}
           </span>
         </div>

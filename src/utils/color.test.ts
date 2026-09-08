@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { hexToRgb, lighten, darken, rgba, humanSize } from "./color.ts";
 
 test("hexToRgb 解析 6 位与 3 位 hex", () => {
-  assert.deepEqual(hexToRgb("#3370ff"), [51, 112, 255]);
+  assert.deepEqual(hexToRgb("#3b82f6"), [59, 130, 246]);
   assert.deepEqual(hexToRgb("#ffffff"), [255, 255, 255]);
   assert.deepEqual(hexToRgb("#fff"), [255, 255, 255]);
 });
@@ -14,13 +14,13 @@ test("lighten 向白混合、darken 向黑混合", () => {
 });
 
 test("rgba 输出带透明度", () => {
-  assert.equal(rgba("#3370ff", 0.12), "rgba(51, 112, 255, 0.12)");
+  assert.equal(rgba("#3b82f6", 0.12), "rgba(59, 130, 246, 0.12)");
 });
 
 test("主题色派生链：hover 比主色浅、active 比主色深", () => {
-  const base = [51, 112, 255];
-  const hv = (lighten("#3370ff", 0.08).match(/\d+/g) ?? []).map(Number);
-  const av = (darken("#3370ff", 0.08).match(/\d+/g) ?? []).map(Number);
+  const base = [59, 130, 246];
+  const hv = (lighten("#3b82f6", 0.08).match(/\d+/g) ?? []).map(Number);
+  const av = (darken("#3b82f6", 0.08).match(/\d+/g) ?? []).map(Number);
   assert.ok(hv[0] >= base[0]);
   assert.ok(av[0] <= base[0]);
 });

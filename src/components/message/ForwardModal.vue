@@ -58,7 +58,7 @@ const kindLabel = computed(
           </span>
           <span
             v-else
-            class="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] bg-primary text-sm text-white"
+            class="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] brand-surface text-sm text-white"
           >
             <img v-if="c.avatar" :src="c.avatar" class="h-full w-full object-cover" />
             <span v-else>{{ c.name.slice(0, 1).toUpperCase() }}</span>

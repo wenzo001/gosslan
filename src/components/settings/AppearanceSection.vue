@@ -5,7 +5,7 @@ import { Moon, Sun } from "lucide-vue-next";
 
 const app = useAppStore();
 
-const presets = ["#3370ff", "#00b578", "#ff6b35", "#8b5cf6", "#e53e3e", "#0ea5e9"];
+const presets = ["#3b82f6", "#00b578", "#ff6b35", "#8b5cf6", "#e53e3e", "#0ea5e9"];
 const fonts = [
   { value: "", label: "系统默认" },
   {

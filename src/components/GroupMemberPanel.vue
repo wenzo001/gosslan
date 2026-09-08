@@ -83,7 +83,7 @@ async function removeMember(id: string) {
             </div>
             <span
               class="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border-2 border-[var(--gosslan-panel)]"
-              :class="memberProfile(id).online ? 'bg-primary' : 'bg-neutral-400'"
+              :class="memberProfile(id).online ? 'bg-emerald-500' : 'bg-neutral-400'"
             ></span>
           </div>
           <div class="min-w-0 flex-1">
@@ -139,7 +139,7 @@ async function removeMember(id: string) {
               class="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 transition hover:bg-[var(--gosslan-hover)]"
               @click="addMember(f)"
             >
-              <div class="flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] bg-primary text-white">
+              <div class="flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] brand-surface text-white">
                 <img v-if="f.avatar" :src="f.avatar" class="h-full w-full object-cover" />
                 <span v-else class="text-[11px] font-semibold">{{ initials(f.nickname) }}</span>
               </div>

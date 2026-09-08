@@ -3,84 +3,85 @@
 @tailwind utilities;
 
 :root {
-  /* 品牌色：出厂默认值，用户在设置里改色后由 applyTheme 覆盖这四个变量 */
-  --gosslan-primary: #3370ff;
-  --gosslan-primary-hover: #4c83ff;
-  --gosslan-primary-active: #2b5fd9;
-  --gosslan-primary-light: rgba(51, 112, 255, 0.12);
+  /* 品牌色：出厂默认值（设计规范强调/按钮色 #3B82F6），用户在设置里改色后由 applyTheme 覆盖 */
+  --gosslan-primary: #3b82f6;
+  --gosslan-primary-hover: #60a5fa;
+  --gosslan-primary-active: #2563eb;
+  --gosslan-primary-light: rgba(59, 130, 246, 0.12);
+  /* 功能绿（设计稿成功/安全色 #10B981，与 emerald-500 一致） */
+  --gosslan-success: #10b981;
   --gosslan-font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   /* 聊天消息字号（设置页可改，由 app store 动态覆盖） */
   --gosslan-msg-size: 14px;
 
-  /* 微信 4.0 Windows 主面板色：rail/caption 深一档(#ededed)、列表浅一档(#f7f7f7)、聊天区纯白，
-     三档灰阶拉开层次，栏间用发丝分割线区隔（微信同款）。 */
-  /* 微信 4.0 实测色值(PIL 取样): rail/顶栏 #e0e0e0、列表 #eeeeee、聊天 #fafafa，
-     三档灰阶 + 面板圆角交界。 */
-  --gosslan-caption: #e0e0e0;
-  --gosslan-rail: #e0e0e0;
-  --gosslan-rail-text: #5f6368;
+  /* 主面板三档灰阶（Slate 系，对应设计规范）：rail/顶栏 #E2E8F0、列表 #F1F5F9、聊天 #F8FAFC，
+     由深到浅拉开层次，面板圆角交界。 */
+  --gosslan-caption: #e2e8f0;
+  --gosslan-rail: #e2e8f0;
+  --gosslan-rail-text: #64748b;
   --gosslan-rail-text-active: var(--gosslan-primary);
-  --gosslan-rail-hover: rgba(0, 0, 0, 0.06);
-  --gosslan-rail-active: #d5d5d5;
-  --gosslan-list: #eeeeee;
-  --gosslan-list-hover: rgba(0, 0, 0, 0.04);
-  --gosslan-list-active: #d3d4d8;
+  --gosslan-rail-hover: rgba(15, 23, 42, 0.06);
+  --gosslan-rail-active: #cbd5e1;
+  --gosslan-list: #f1f5f9;
+  --gosslan-list-hover: rgba(15, 23, 42, 0.04);
+  --gosslan-list-active: #dbe3ed;
   --gosslan-list-active-text: var(--gosslan-text);
-  --gosslan-chat: #fafafa;
+  --gosslan-chat: #f8fafc;
   --gosslan-panel: #ffffff;
-  --gosslan-bg: #f5f5f5;
-  --gosslan-border: #e2e3e7;
-  --gosslan-divider: #e6e7ea;
-  --gosslan-text: #191919;
-  --gosslan-text-2: #7b7f87;
-  --gosslan-hover: rgba(0, 0, 0, 0.05);
+  --gosslan-bg: #f1f5f9;
+  --gosslan-border: #e2e8f0;
+  --gosslan-divider: #e2e8f0;
+  --gosslan-text: #0f172a;
+  --gosslan-text-2: #64748b;
+  --gosslan-hover: rgba(15, 23, 42, 0.05);
 
   /* 版式尺寸：64px 侧栏（图标有呼吸感）+ 250px 列表栏 + 56px 头部 */
   --gosslan-rail-w: 64px;
   --gosslan-list-w: 250px;
   --gosslan-header-h: 56px;
-  /* 顶部窗口拖拽条高度：微信 4.0 的 caption 容纳顶部铃铛 + 右上三枚窗口按钮 */
+  /* 顶部窗口拖拽条高度：caption 容纳右上三枚窗口按钮 */
   --gosslan-title-h: 38px;
   /* 头像 6px 圆角（既不像方角生硬也不完全圆润）；行无圆角贴边；气泡小圆角 */
   --gosslan-avatar-radius: 6px;
   --gosslan-item-radius: 8px;
   --gosslan-bubble-radius: 6px;
 
-  /* 窗口外圈描边线：微信 4.0 窗口外缘有一整圈细浅灰圆角描边（DWM 边框视觉），
+  /* 窗口外圈描边线：窗口外缘一整圈细浅灰圆角描边（DWM 边框视觉），
      用 inset ring 画在最外层容器上，不占布局；深色下用微亮线 */
-  --gosslan-window-ring: rgba(0, 0, 0, 0.08);
+  --gosslan-window-ring: rgba(15, 23, 42, 0.08);
 
   /* 磨砂：弹框/弹层用轻毛玻璃（背景半透明 + backdrop blur），不糊内容 */
   --gosslan-blur: saturate(130%) blur(6px);
   /* 毛玻璃浮层面板底色（配合 .glass 使用） */
   --gosslan-panel-frost: rgba(255, 255, 255, 0.85);
   /* 底层底色：接近列表灰，保证半透明浮层过渡自然 */
-  --gosslan-app-bg: #eef0f3;
-  --gosslan-shadow: 0 1px 3px rgba(16, 24, 40, 0.05), 0 4px 12px rgba(16, 24, 40, 0.06);
+  --gosslan-app-bg: #edf1f6;
+  --gosslan-shadow: 0 1px 3px rgba(15, 23, 42, 0.05), 0 4px 12px rgba(15, 23, 42, 0.06);
 }
 
 .dark {
-  --gosslan-caption: #1f1f21;
-  --gosslan-rail: #1f1f21;
-  --gosslan-rail-text: #9a9ba1;
+  /* 深色主题：基于规范深色背景 #0F172A（Slate 系）分层 */
+  --gosslan-caption: #16202f;
+  --gosslan-rail: #16202f;
+  --gosslan-rail-text: #94a3b8;
   --gosslan-rail-text-active: var(--gosslan-primary);
-  --gosslan-rail-hover: rgba(255, 255, 255, 0.07);
-  --gosslan-rail-active: #2a2a2c;
-  --gosslan-list: #2a2a2c;
-  --gosslan-list-hover: rgba(255, 255, 255, 0.06);
-  --gosslan-list-active: #38393d;
+  --gosslan-rail-hover: rgba(248, 250, 252, 0.07);
+  --gosslan-rail-active: #253246;
+  --gosslan-list: #1e293b;
+  --gosslan-list-hover: rgba(248, 250, 252, 0.05);
+  --gosslan-list-active: #334155;
   --gosslan-list-active-text: var(--gosslan-text);
-  --gosslan-chat: #1f1f21;
-  --gosslan-panel: #2a2a2c;
-  --gosslan-bg: #1f1f21;
-  --gosslan-border: #3a3b3e;
-  --gosslan-divider: #3d3e42;
-  --gosslan-text: #e8e8ea;
-  --gosslan-text-2: #9a9ba1;
-  --gosslan-hover: rgba(255, 255, 255, 0.06);
-  --gosslan-app-bg: #1a1b1d;
-  --gosslan-window-ring: rgba(255, 255, 255, 0.09);
-  --gosslan-panel-frost: rgba(42, 42, 44, 0.85);
+  --gosslan-chat: #0f172a;
+  --gosslan-panel: #1e293b;
+  --gosslan-bg: #0f172a;
+  --gosslan-border: #2c3a52;
+  --gosslan-divider: #28344a;
+  --gosslan-text: #f1f5f9;
+  --gosslan-text-2: #94a3b8;
+  --gosslan-hover: rgba(248, 250, 252, 0.06);
+  --gosslan-app-bg: #0b1220;
+  --gosslan-window-ring: rgba(248, 250, 252, 0.09);
+  --gosslan-panel-frost: rgba(30, 41, 59, 0.85);
   --gosslan-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), 0 4px 12px rgba(0, 0, 0, 0.32);
 }
 
@@ -117,6 +118,19 @@ body {
   background: var(--gosslan-panel-frost);
   -webkit-backdrop-filter: var(--gosslan-blur);
   backdrop-filter: var(--gosslan-blur);
+}
+
+/* 品牌面：头像兜底等强调面用主题色实底（白字），无渐变 */
+.brand-surface {
+  background-color: var(--gosslan-primary);
+}
+
+/* 切换深浅色瞬间：临时禁用所有过渡，避免颜色变量整体翻转时的渐变闪烁 */
+.theme-switching,
+.theme-switching *,
+.theme-switching *::before,
+.theme-switching *::after {
+  transition: none !important;
 }
 
 /* 图片预览遮罩：也是弹框，用半透明黑 + 轻毛玻璃 */

@@ -34,7 +34,7 @@ function initials(name: string) {
         </button>
       </div>
       <div v-for="r in requests" :key="r.from" class="flex h-16 items-center gap-2.5 px-3">
-        <div class="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] bg-primary text-white">
+        <div class="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] brand-surface text-white">
           <img v-if="r.from_avatar" :src="r.from_avatar" class="h-full w-full object-cover" />
           <span v-else class="text-sm font-semibold">{{ initials(r.from_nickname) }}</span>
         </div>

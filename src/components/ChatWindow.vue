@@ -40,7 +40,6 @@ function estimateHeight(m: MessageRecord, index?: number): number {
     messages: messages.value,
     isGroup: isGroup.value,
     selfId: app.device?.device_id,
-    compact: app.chatStyle.compact,
     fontSize: app.chatStyle.fontSize,
   });
 }
@@ -87,26 +86,42 @@ const unreadIndex = computed(() => {
 const nearBottom = ref(true);
 
 // 打开会话/未读定位：优先跳到第一条未读（该消息贴视口顶部），无未读则贴底。
+// 跳转后显式解除贴底：防止总高度重测的钉底把用户从未读位置拽回底部。
+// unreadJump.index = -1 表示「有未读但消息还在加载、索引未知」，此时不动滚动。
 watch(
   () => chat.unreadJump,
   async (uj) => {
     if (!uj || uj.convId !== chat.activeConv) return;
+    if (uj.index < 0) return;
     await nextTick();
     await nextTick();
     listRef.value?.scrollToIndex(uj.index, "top");
+    listRef.value?.setPinned(false);
   },
   { immediate: true },
 );
 
-// 用 lastMsgId 精确区分 append（末尾新增）与 prepend（开头插入历史）：
-// prepend 不滚动，由 VirtualList 的锚定保持位置。
+// 区分 append（末尾新增）、prepend（开头插入历史）与切会话：
+// - append 且（自己发的 / 已在底部）→ 贴底；prepend 不滚动（VirtualList 锚定保持位置）；
+// - 切会话时重置跟踪，首屏定位交给 unreadJump / VirtualList 的 swap 逻辑，
+//   不做 append 式贴底（否则缓存会话切换时会先被拽到底部，再跳未读，来回闪）。
 let lastMsgId: string | number | null = null;
 watch(
-  () => messages.value.length,
-  async (_, oldLen) => {
-    if (oldLen === undefined) return;
+  () => [chat.activeConv, messages.value.length] as const,
+  async ([convId], old) => {
+    const [oldConvId, oldLen] = old ?? [null, 0];
+    if (convId !== oldConvId) {
+      lastMsgId = messages.value.at(-1)?.msg_id ?? null;
+      // 首次加载（0→N）且没有未读跳转 → 打开即贴底；有未读则等 unreadJump 定位
+      if (oldLen === 0 && !(chat.unreadJump && chat.unreadJump.convId === convId)) {
+        await nextTick();
+        listRef.value?.scrollToBottom();
+      }
+      return;
+    }
+
     if (oldLen === 0) {
-      if (!(chat.unreadJump && chat.unreadJump.convId === chat.activeConv)) {
+      if (!(chat.unreadJump && chat.unreadJump.convId === convId)) {
         await nextTick();
         listRef.value?.scrollToBottom();
       }
@@ -120,9 +135,10 @@ watch(
     lastMsgId = newLastId;
 
     if (isAppend) {
-      // 自己发的消息无论 nearBottom 都贴底；对方的消息仅在用户已在底部附近时贴底
+      // 自己发的消息无论 nearBottom 都贴底；对方的消息仅在用户已在底部附近时贴底。
+      // 用户 1.2s 内主动向上滚动过则不打扰（否则新消息会反复把人拽回底部）
       const isMine = newLast?.sender_id === app.device?.device_id;
-      if (isMine || nearBottom.value) {
+      if ((isMine || nearBottom.value) && !listRef.value?.recentScrollUp?.()) {
         await nextTick();
         listRef.value?.scrollToBottom();
       }
@@ -143,10 +159,26 @@ async function onSend({ content, kind }: { content: string; kind: MsgKind }) {
 
 // ---------------- 引用 / 转发 ----------------
 /** 待引用消息（MessageItem 右键"引用"设置，随发送或手动取消清除）。 */
-const quote = ref<{ sender: string; snippet: string } | null>(null);
+const quote = ref<{ sender: string; snippet: string; msgId: string | number } | null>(null);
 
 /** 转发弹窗状态（MessageItem 右键"转发"设置）。 */
 const forward = ref<{ kind: MsgKind; content: string; snippet: string } | null>(null);
+
+/** 点击引用块定位原消息：滚动 + 短暂高亮 */
+const highlightId = ref<string | number | null>(null);
+let highlightTimer = 0;
+function locateMessage(id: string) {
+  const idx = messages.value.findIndex((m) => (m.msg_id ?? m.id) === id);
+  if (idx < 0) {
+    app.toast("原消息不在已加载范围内", "info");
+    return;
+  }
+  listRef.value?.scrollToIndex(idx, "top");
+  listRef.value?.setPinned(false);
+  highlightId.value = id;
+  window.clearTimeout(highlightTimer);
+  highlightTimer = window.setTimeout(() => (highlightId.value = null), 1600);
+}
 
 async function doForward(convId: string) {
   const f = forward.value;
@@ -208,6 +240,7 @@ function onLoadMore() {
         v-else
         ref="listRef"
         :items="messages"
+        :auto-scroll-on-swap="!(chat.unreadJump && chat.unreadJump.convId === chat.activeConv)"
         :estimate-height="estimateHeight"
         @load-more="onLoadMore"
         @near-bottom="nearBottom = $event"
@@ -216,13 +249,14 @@ function onLoadMore() {
           <MessageItem
             :message="item"
             :prev="index > 0 ? messages[index - 1] : null"
-            :next="index < messages.length - 1 ? messages[index + 1] : null"
             :is-group="isGroup"
             :sender-name="isGroup ? chat.nicknameOf(item.sender_id) : ''"
             :group-reader-ids="isGroup && activeGroupId ? chat.groupReaderIds(activeGroupId, item.ts) : []"
             :show-unread-divider="index === unreadIndex"
+            :highlight-id="highlightId"
             @quote="quote = $event"
             @forward="forward = $event"
+            @locate="locateMessage"
           />
         </template>
       </VirtualList>
@@ -231,7 +265,7 @@ function onLoadMore() {
       <button
         v-if="!nearBottom"
         class="absolute bottom-4 right-5 z-10 flex items-center gap-1.5 rounded-full border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-3 py-1.5 text-xs text-[var(--gosslan-text)] shadow-lg transition hover:bg-[var(--gosslan-hover)]"
-        @click="listRef?.scrollToBottom()"
+        @click="nearBottom = true; listRef?.scrollToBottom()"
       >
         <ArrowDown class="h-3.5 w-3.5" />
         回到最新

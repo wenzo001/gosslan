@@ -60,7 +60,7 @@ onUnmounted(clearPress);
     <div class="absolute bottom-0 left-[64px] right-0 h-px bg-[var(--gosslan-divider)]"></div>
     <div class="relative shrink-0">
       <div
-        class="flex h-10 w-10 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] bg-primary text-white"
+        class="flex h-10 w-10 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] brand-surface text-white"
         :class="!friend.online ? 'grayscale opacity-70' : ''"
       >
         <img v-if="friend.avatar" :src="friend.avatar" class="h-full w-full object-cover" />
@@ -68,7 +68,7 @@ onUnmounted(clearPress);
       </div>
       <span
         class="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-[var(--gosslan-list)]"
-        :class="friend.online ? 'bg-primary' : 'bg-neutral-400'"
+        :class="friend.online ? 'bg-emerald-500' : 'bg-neutral-400'"
       ></span>
     </div>
     <div class="min-w-0 flex-1">

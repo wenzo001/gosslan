@@ -27,20 +27,22 @@ const pendingLabel = computed(() =>
     class="hidden shrink-0 select-none flex-col items-center bg-[var(--gosslan-rail)] py-3 md:flex"
     :style="{ width: 'var(--gosslan-rail-w)' }"
   >
-    <!-- 顶部：本人头像（点开设置/我） -->
-    <button
-      class="relative flex h-10 w-10 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] bg-primary text-white transition hover:opacity-90"
-      :title="app.online ? '我在线（局域网已连接）' : '离线（局域网未连接）'"
-      @click="emit('open-settings')"
-    >
-      <img v-if="app.device?.avatar" :src="app.device.avatar" class="h-full w-full object-cover" />
-      <span v-else class="text-sm font-medium">{{ initials }}</span>
+    <!-- 顶部：本人头像（点开设置/我）；在线点放在 overflow-hidden 按钮外层，避免被裁切 -->
+    <div class="relative shrink-0">
+      <button
+        class="flex h-10 w-10 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] brand-surface text-white transition hover:opacity-90"
+        :title="app.online ? '我在线（局域网已连接）' : '离线（局域网未连接）'"
+        @click="emit('open-settings')"
+      >
+        <img v-if="app.device?.avatar" :src="app.device.avatar" class="h-full w-full object-cover" />
+        <span v-else class="text-sm font-medium">{{ initials }}</span>
+      </button>
       <!-- 本人在线状态点 -->
       <span
         class="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-[var(--gosslan-rail)]"
-        :class="app.online ? 'bg-primary' : 'bg-neutral-400'"
+        :class="app.online ? 'bg-emerald-500' : 'bg-neutral-400'"
       ></span>
-    </button>
+    </div>
 
     <!-- 中部：聊天 / 通讯录（选中仅图标变主题色，无背景块） -->
     <div class="mt-5 flex flex-col items-center gap-2">

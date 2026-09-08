@@ -31,7 +31,7 @@ export const useAppStore = defineStore("app", () => {
   const shareDir = ref<string | null>(null);
 
   const dark = ref<boolean>(localStorage.getItem(DARK_KEY) === "1");
-  const themeColor = ref<string>(localStorage.getItem(THEME_KEY) || "#3370ff");
+  const themeColor = ref<string>(localStorage.getItem(THEME_KEY) || "#3b82f6");
   const fontFamily = ref<string>(localStorage.getItem(FONT_KEY) || "");
 
   /** 本机聊天显示样式（气泡配色 / 字号 / 紧凑模式），即点即存并广播同步。 */
@@ -103,7 +103,11 @@ export const useAppStore = defineStore("app", () => {
   function toggleDark() {
     dark.value = !dark.value;
     localStorage.setItem(DARK_KEY, dark.value ? "1" : "0");
+    // 切换瞬间禁用全站过渡：变量整体翻转时 transition-colors 会产生渐变"闪一下"
+    const root = document.documentElement;
+    root.classList.add("theme-switching");
     applyDarkNow();
+    window.setTimeout(() => root.classList.remove("theme-switching"), 250);
     void persistSettings();
   }
 
@@ -186,7 +190,7 @@ export const useAppStore = defineStore("app", () => {
       device.value.avatar = null;
     }
     await api.resetSettings();
-    themeColor.value = "#3370ff";
+    themeColor.value = "#3b82f6";
     fontFamily.value = "";
     dark.value = false;
     preferredIp.value = null;

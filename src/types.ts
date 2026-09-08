@@ -159,7 +159,7 @@ export interface AppSettings {
   fontFamily: string | null;
   darkMode: boolean | null;
   bindIp: string | null;
-  /** 聊天显示样式 JSON：{"preset":"classic","fontSize":"md","compact":true} */
+  /** 聊天显示样式 JSON：{"preset":"theme","fontSize":"md"} */
   chatStyle: string | null;
   /** 对端样式表 JSON（device_id -> style JSON，后端收 ChatStyle 消息时写入） */
   peerStyles: string | null;

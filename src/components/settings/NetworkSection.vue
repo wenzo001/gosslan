@@ -98,7 +98,7 @@ async function toggleBluetooth() {
           <span class="text-sm">局域网通道</span>
         </div>
         <div class="flex items-center gap-2">
-          <span class="text-xs" :class="app.online ? 'text-primary' : 'text-[var(--gosslan-text-2)]'">
+          <span class="text-xs" :class="app.online ? 'text-emerald-500' : 'text-[var(--gosslan-text-2)]'">
             {{ app.online ? `${lanStatus?.peers ?? 0} 个节点在线` : "未开启" }}
           </span>
           <SettingsToggle :model-value="app.online" @update:model-value="toggleLan" />

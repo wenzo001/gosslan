@@ -1,30 +1,26 @@
 import { computed, toValue, type CSSProperties, type MaybeRefOrGetter } from "vue";
 import dayjs from "dayjs";
 import { useAppStore } from "@/stores/useAppStore";
-import { findPreset, parsePeerStyle } from "@/utils/chatStyle";
+import { findPreset, parsePeerStyle, resolveChatColors } from "@/utils/chatStyle";
 import type { MessageRecord } from "@/types";
 
 export type SendState = "sending" | "sent" | "delivered" | "read" | "failed";
 
-/** 同发送者合并窗口：5 分钟内省略头像 / 昵称。 */
-const SENDER_RUN_WINDOW = 5 * 60 * 1000;
 /** 时间分割线阈值：与上一条间隔 ≥ 5 分钟。 */
 const TIME_DIVIDER_GAP = 5 * 60 * 1000;
 
 /**
- * 消息外观与版面判定（气泡配色、连续消息合并、时间行、发送状态）。
+ * 消息外观与版面判定（气泡配色、时间行、发送状态）。
  * MessageItem 与其子组件共用同一份判定，避免两边各写一套导致布局错位。
  */
 export function useMessageDisplay(opts: {
   message: MaybeRefOrGetter<MessageRecord>;
   prev: MaybeRefOrGetter<MessageRecord | null | undefined>;
-  next: MaybeRefOrGetter<MessageRecord | null | undefined>;
   isGroup: MaybeRefOrGetter<boolean>;
 }) {
   const app = useAppStore();
   const message = computed(() => toValue(opts.message));
   const prev = computed(() => toValue(opts.prev) ?? null);
-  const next = computed(() => toValue(opts.next) ?? null);
   const isGroup = computed(() => toValue(opts.isGroup));
 
   const mine = computed(() => message.value.sender_id === app.device?.device_id);
@@ -37,7 +33,9 @@ export function useMessageDisplay(opts: {
     }
     return findPreset(app.chatStyle.preset);
   });
-  const colors = computed(() => (app.dark ? preset.value.dark : preset.value.light));
+  /** 气泡配色："theme" 预设按当前主题色运行时派生（本机消息跟随我的主题色，
+   *  对方消息按对方广播的偏好渲染），其余预设取表中明/暗值。 */
+  const colors = computed(() => resolveChatColors(preset.value.key, app.themeColor, app.dark));
   /** 气泡：圆角/尖角取微信式，配色仍由用户预设决定（--bubble-bg 供尖角取色）。 */
   const bubbleStyle = computed<CSSProperties>(
     () =>
@@ -51,39 +49,11 @@ export function useMessageDisplay(opts: {
       }) as CSSProperties,
   );
 
-  /** 连续消息合并：同一发送者 5 分钟内的消息省略头像/昵称（紧凑模式可关）。 */
-  const sameSenderRun = computed(() => {
-    if (!app.chatStyle.compact) return false;
-    const p = prev.value;
-    if (!p || p.kind === "system" || p.sender_id !== message.value.sender_id) return false;
-    return message.value.ts - p.ts < SENDER_RUN_WINDOW;
-  });
-  /** 同一分钟内的连续消息：合并显示（省略时间行、气泡更紧凑），不依赖紧凑开关。 */
-  const sameMinuteRun = computed(() => {
-    const p = prev.value;
-    if (!p || p.kind === "system") return false;
-    return dayjs(p.ts).isSame(message.value.ts, "minute");
-  });
-  const nextContinuesSenderRun = computed(() => {
-    const n = next.value;
-    if (!n || n.kind === "system" || message.value.kind === "system") return false;
-    if (!app.chatStyle.compact || n.sender_id !== message.value.sender_id) return false;
-    return n.ts - message.value.ts < SENDER_RUN_WINDOW;
-  });
-  /** 时间行只显示在分钟组的末条，避免时间标签把同一组的首条与第二条撑开。 */
-  const isLastInMinute = computed(() => {
-    const n = next.value;
-    if (!n) return true;
-    if (nextContinuesSenderRun.value) return false;
-    return !dayjs(n.ts).isSame(message.value.ts, "minute");
-  });
-  const tight = computed(() => sameSenderRun.value || sameMinuteRun.value);
+  /** 每条消息独立完整渲染（不再合并连续消息）：时间行恒显示。 */
   const showTimeDivider = computed(
     () => !prev.value || message.value.ts - prev.value.ts >= TIME_DIVIDER_GAP,
   );
-  const showNickname = computed(
-    () => isGroup.value && !mine.value && !sameSenderRun.value,
-  );
+  const showNickname = computed(() => isGroup.value && !mine.value);
 
   const time = computed(() => dayjs(message.value.ts).format("YYYY年MM月DD日 HH:mm"));
   const fullTime = computed(() => dayjs(message.value.ts).format("YYYY-MM-DD HH:mm:ss"));
@@ -109,11 +79,6 @@ export function useMessageDisplay(opts: {
   return {
     mine,
     bubbleStyle,
-    sameSenderRun,
-    sameMinuteRun,
-    nextContinuesSenderRun,
-    isLastInMinute,
-    tight,
     showTimeDivider,
     showNickname,
     time,

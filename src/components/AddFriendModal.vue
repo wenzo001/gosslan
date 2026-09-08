@@ -79,7 +79,7 @@ async function add(peerId: string) {
           :key="p.device_id"
           class="flex items-center gap-3 border-b border-[var(--gosslan-border)] px-1 py-2 last:border-0"
         >
-          <div class="flex h-9 w-9 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] bg-primary text-white">
+          <div class="flex h-9 w-9 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] brand-surface text-white">
             <img v-if="p.avatar" :src="p.avatar" class="h-full w-full object-cover" />
             <span v-else class="text-sm font-semibold">{{ initials(p.nickname) }}</span>
           </div>

@@ -1,7 +1,6 @@
 // 消息行高度估算：VirtualList 按它排布，MessageItem 按 previewMetrics 渲染，
 // 两边必须共用同一套常量（见 previewMetrics.ts 顶部说明），否则相邻消息会互相遮挡。
 
-import dayjs from "dayjs";
 import {
   CLAMPED_CODE_BLOCK_HEIGHT,
   codeBlockHeight,
@@ -10,8 +9,6 @@ import {
 import type { FontSizeKey } from "@/utils/chatStyle";
 import type { MessageRecord } from "@/types";
 
-/** 同发送者合并窗口（与 MessageItem 一致）。 */
-const SENDER_RUN_WINDOW = 5 * 60 * 1000;
 /** 时间分割线阈值（≥5 分钟）。 */
 const TIME_DIVIDER_GAP = 5 * 60 * 1000;
 
@@ -35,7 +32,6 @@ export interface EstimateContext {
   isGroup: boolean;
   /** 本机 device_id：用于判断「非本人」及昵称行。 */
   selfId?: string;
-  compact: boolean;
   fontSize: FontSizeKey;
 }
 
@@ -46,8 +42,6 @@ export function estimateMessageHeight(
   ctx: EstimateContext,
 ): number {
   const prev = index != null && index > 0 ? ctx.messages[index - 1] : null;
-  const next =
-    index != null && index < ctx.messages.length - 1 ? ctx.messages[index + 1] : null;
 
   let bubble: number;
   switch (m.kind) {
@@ -80,29 +74,14 @@ export function estimateMessageHeight(
       bubble = textBubbleHeight(m.content, ctx.fontSize);
   }
 
-  // 连续消息判断（昵称显示与 MessageItem 一致）
-  const sameSender =
-    !!prev &&
-    prev.kind !== "system" &&
-    prev.sender_id === m.sender_id &&
-    m.ts - prev.ts < SENDER_RUN_WINDOW &&
-    ctx.compact;
-  const nextContinuesSenderRun =
-    !!next &&
-    m.kind !== "system" &&
-    next.kind !== "system" &&
-    ctx.compact &&
-    next.sender_id === m.sender_id &&
-    next.ts - m.ts < SENDER_RUN_WINDOW;
-  const isLastInMinute = !next || (!nextContinuesSenderRun && !dayjs(next.ts).isSame(m.ts, "minute"));
-
+  // 每条消息独立完整渲染（无合并）：时间行恒有；群聊非本人显示昵称
   const showDivider = !prev || m.ts - prev.ts >= TIME_DIVIDER_GAP;
-  const showNickname = ctx.isGroup && m.sender_id !== ctx.selfId && !sameSender;
+  const showNickname = ctx.isGroup && m.sender_id !== ctx.selfId;
 
   return (
     bubble +
     ROW_PADDING +
-    (isLastInMinute ? TIME_ROW : 0) +
+    TIME_ROW +
     (showNickname ? NICKNAME_ROW : 0) +
     (showDivider ? TIME_DIVIDER : 0)
   );

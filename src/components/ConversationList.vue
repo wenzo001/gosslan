@@ -190,7 +190,7 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
           @click="emit('open-requests')"
         >
           <span class="relative shrink-0">
-            <span class="flex h-10 w-10 items-center justify-center rounded-[var(--gosslan-avatar-radius)] bg-primary text-white">
+            <span class="flex h-10 w-10 items-center justify-center rounded-[var(--gosslan-avatar-radius)] brand-surface text-white">
               <UserPlus class="h-5 w-5" />
             </span>
             <span

@@ -311,7 +311,12 @@ export const useChatStore = defineStore("chat", () => {
 
   async function openConversation(id: string) {
     activeConv.value = id;
-    unreadJump.value = null;
+    // 打开前先记录未读数（markRead 会清零），用于「跳到第一条未读」定位。
+    // 有未读时提前占位（index=-1 = 加载中、索引未知）：让 ChatWindow 与
+    // autoScrollOnSwap 在 loadMessages 完成前就知道「要跳未读」，避免先贴底再
+    // 跳未读造成闪烁。
+    const unreadBefore = conversations.value.find((c) => c.id === id)?.unread ?? 0;
+    unreadJump.value = unreadBefore > 0 ? { convId: id, index: -1 } : null;
     // 会话行不存在（如新加好友还没发过消息）→ 后端补建，保证左侧列表有对应可高亮的项
     if (!conversations.value.some((c) => c.id === id) && !id.startsWith("group:")) {
       try {
@@ -321,8 +326,6 @@ export const useChatStore = defineStore("chat", () => {
         /* 忽略：不影响打开聊天 */
       }
     }
-    // 打开前先记录未读数（markRead 会清零），用于「跳到第一条未读」定位
-    const unreadBefore = conversations.value.find((c) => c.id === id)?.unread ?? 0;
     // 先发 ReadReceipt（不等 loadMessages），让对方尽早看到绿勾
     void api.markRead(id).then(() => {
       const conv = conversations.value.find((c) => c.id === id);
@@ -334,6 +337,9 @@ export const useChatStore = defineStore("chat", () => {
       const idx = list.length - Math.min(unreadBefore, list.length);
       if (idx >= 0 && idx < list.length) {
         unreadJump.value = { convId: id, index: idx };
+      } else {
+        // 无可定位的未读（空列表等异常）→ 不跳，交给贴底兜底
+        unreadJump.value = null;
       }
     }
     await api.markRead(id);
@@ -370,8 +376,8 @@ export const useChatStore = defineStore("chat", () => {
     const existing = messages.value[convId] ?? [];
     messages.value[convId] = mergeMessages(existing, older);
     pagesLoaded.set(convId, pages + 1);
-    // prepend 历史后，「第一条未读」的索引整体后移
-    if (unreadJump.value?.convId === convId) {
+    // prepend 历史后，「第一条未读」的索引整体后移（index=-1 占位态不参与）
+    if (unreadJump.value?.convId === convId && unreadJump.value.index >= 0) {
       unreadJump.value = { ...unreadJump.value, index: unreadJump.value.index + older.length };
     }
   }

@@ -44,7 +44,7 @@ const confirmRemove = ref(false);
         <!-- 头部：头像 + 昵称 + 在线状态 -->
         <div class="flex items-center gap-4">
           <div
-            class="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] bg-primary text-2xl font-medium text-white"
+            class="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] brand-surface text-2xl font-medium text-white"
             :class="!friend.online ? 'grayscale opacity-70' : ''"
           >
             <img v-if="friend.avatar" :src="friend.avatar" class="h-full w-full object-cover" />
@@ -55,7 +55,7 @@ const confirmRemove = ref(false);
             <div class="mt-1 flex items-center gap-1.5 text-sm text-[var(--gosslan-text-2)]">
               <span
                 class="h-2 w-2 rounded-full"
-                :class="friend.online ? 'bg-primary' : 'bg-neutral-400'"
+                :class="friend.online ? 'bg-emerald-500' : 'bg-neutral-400'"
               ></span>
               {{ friend.online ? "在线" : "离线" }}
             </div>
@@ -102,7 +102,7 @@ const confirmRemove = ref(false);
             </div>
             <div class="flex items-center justify-between gap-4 px-4 py-3">
               <dt class="shrink-0 text-[var(--gosslan-text-2)]">端到端加密</dt>
-              <dd class="text-xs text-primary">已启用（X25519 + ChaCha20-Poly1305）</dd>
+              <dd class="text-xs text-emerald-600">已启用（X25519 + ChaCha20-Poly1305）</dd>
             </div>
           </dl>
         </div>

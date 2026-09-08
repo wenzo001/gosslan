@@ -75,7 +75,7 @@ const gridTiles = computed(() => {
       </div>
       <div
         v-else
-        class="flex h-10 w-10 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] bg-primary text-white"
+        class="flex h-10 w-10 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] brand-surface text-white"
         :class="online === false ? 'grayscale opacity-70' : ''"
       >
         <img v-if="conv.avatar" :src="conv.avatar" class="h-full w-full object-cover" />
@@ -85,7 +85,7 @@ const gridTiles = computed(() => {
       <span
         v-if="online !== null"
         class="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-[var(--gosslan-list)]"
-        :class="online ? 'bg-primary' : 'bg-neutral-400'"
+        :class="online ? 'bg-emerald-500' : 'bg-neutral-400'"
       ></span>
       <!-- 未读小红点：正常显示 -->
       <span

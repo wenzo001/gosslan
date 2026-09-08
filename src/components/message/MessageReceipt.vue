@@ -102,7 +102,7 @@ function readerAvatar(id: string): string | null {
         :key="id"
         class="flex items-center gap-2 rounded px-2 py-1 hover:bg-[var(--gosslan-hover)]"
       >
-        <span class="flex h-5 w-5 items-center justify-center overflow-hidden rounded-full bg-primary text-[9px] text-white">
+        <span class="flex h-5 w-5 items-center justify-center overflow-hidden rounded-full brand-surface text-[9px] text-white">
           <img v-if="readerAvatar(id)" :src="readerAvatar(id) ?? undefined" class="h-full w-full object-cover" />
           <span v-else>{{ readerName(id).slice(0, 1) }}</span>
         </span>
@@ -122,6 +122,6 @@ function readerAvatar(id: string): string | null {
       <RefreshCw class="h-3.5 w-3.5" />
     </button>
     <Circle v-else-if="state === 'delivered'" class="h-3.5 w-3.5 text-[var(--gosslan-text-2)]" />
-    <Check v-else-if="state === 'read'" class="h-4 w-4 text-primary" />
+    <Check v-else-if="state === 'read'" class="h-4 w-4 text-emerald-500" />
   </span>
 </template>
