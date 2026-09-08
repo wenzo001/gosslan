@@ -2119,6 +2119,21 @@ async fn handle_group_file_complete_ack(
     if gf.sender_id != state.device_id || gf.group_id != group_id {
         return;
     }
+    // 幂等保护：completed 是终态。该 recipient 已 completed 时，
+    // 后续 success=false ACK（重放/异常）不得把 completed 降级为 failed；
+    // success=true ACK 重复到达则是无害的幂等更新。
+    if !success {
+        let already_completed = {
+            let dbc = state.db.lock().unwrap();
+            db::list_group_file_recipients(&dbc, &transfer_id)
+                .unwrap_or_default()
+                .into_iter()
+                .any(|r| r.recipient_id == peer_id && r.status == "completed")
+        };
+        if already_completed {
+            return;
+        }
+    }
     // 4. ACK 发送者必须是该 transfer 的 recipient，且状态按 success 迁移；
     //    只修改该 recipient，不影响其他成员。不命中（非 recipient）→ 拒绝。
     let (status, progress) = if success {
@@ -2165,6 +2180,12 @@ async fn handle_group_file_chunk(
     let Some(gf) = db::get_group_file(&state.db.lock().unwrap(), &transfer_id) else {
         return;
     };
+    // 只有该 transfer 的原始 sender 发来的 chunk 才合法。
+    // 其他群成员（无 file_key）发送的垃圾 chunk 不得终止合法接收：
+    // 直接忽略，不删 .part、不清 session、不改 recipient 状态。
+    if gf.sender_id != sender_id {
+        return;
+    }
 
     // 首个合法 chunk 到达时才创建 `.part`（安全路径，downloads 目录内）
     if !state.group_file_receivers.lock().unwrap().contains_key(&transfer_id) {

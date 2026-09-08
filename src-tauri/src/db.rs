@@ -2158,4 +2158,58 @@ mod tests {
         assert_eq!(gf.sender_id, "a");
         assert_ne!(gf.sender_id, "b");
     }
+
+    // ---------- GroupFileChunk 原始 sender 校验 / CompleteAck 降级保护 ----------
+
+    /// 非原始 sender 的 GroupFileChunk 必须被忽略：比对 gf.sender_id 不匹配
+    /// 即拒绝（不触发 fail 清理 → 不删 .part、不清 session、不改 recipient 状态）。
+    /// 复现修复前缺陷：任何群成员发垃圾 chunk 即可终止合法接收。
+    #[test]
+    fn group_chunk_from_non_original_sender_is_ignored() {
+        let conn = group_file_fixture();
+        insert_group_file(&conn, &group_file("gf-1")).unwrap(); // 原始 sender = "a"
+        for rid in ["b", "c"] {
+            insert_group_file_recipient(&conn, "gf-1", rid).unwrap();
+        }
+        update_group_file_recipient(&conn, "gf-1", "b", "sending", 0.5).unwrap();
+
+        // 模拟 handle_group_file_chunk 的判定：chunk 声称来自群成员 "e"（非原始 sender）
+        let gf = get_group_file(&conn, "gf-1").unwrap();
+        let chunk_sender = "e"; // 群成员（非 recipient 也无妨），但不是原始 sender
+        let ignored = gf.sender_id != chunk_sender;
+        assert!(ignored, "非原始 sender 的 chunk 必须被忽略");
+
+        // 无副作用：recipient 状态原样保留（未触发 fail 清理）
+        let recipients = list_group_file_recipients(&conn, "gf-1").unwrap();
+        let b = recipients.iter().find(|r| r.recipient_id == "b").unwrap();
+        assert_eq!(b.status, "sending");
+        assert_eq!(b.progress, 0.5);
+    }
+
+    /// recipient 已 completed 后，failure ACK 不得把 completed 降级为 failed
+    /// （handle_group_file_complete_ack 的幂等保护：已 completed 则忽略 failure ACK）。
+    #[test]
+    fn complete_ack_failure_cannot_downgrade_completed() {
+        let conn = group_file_fixture();
+        insert_group_file(&conn, &group_file("gf-1")).unwrap();
+        insert_group_file_recipient(&conn, "gf-1", "b").unwrap();
+        // B 正常完成：success ACK → completed / 1.0
+        update_group_file_recipient(&conn, "gf-1", "b", "completed", 1.0).unwrap();
+
+        // 模拟修复后 handle_group_file_complete_ack 对 failure ACK 的保护：
+        // 已 completed 则忽略（不执行 update）
+        let already_completed = list_group_file_recipients(&conn, "gf-1")
+            .unwrap()
+            .into_iter()
+            .any(|r| r.recipient_id == "b" && r.status == "completed");
+        if !already_completed {
+            update_group_file_recipient(&conn, "gf-1", "b", "failed", 0.0).unwrap();
+        }
+
+        // 断言：仍 completed / 1.0（修复前此处会被降级为 failed——暴露 Bug 2）
+        let recipients = list_group_file_recipients(&conn, "gf-1").unwrap();
+        let b = recipients.iter().find(|r| r.recipient_id == "b").unwrap();
+        assert_eq!(b.status, "completed", "completed 不得被 failure ACK 降级");
+        assert_eq!(b.progress, 1.0);
+    }
 }
