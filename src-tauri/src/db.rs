@@ -183,6 +183,27 @@ pub fn set_setting(conn: &Connection, key: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+// ---------------- 群聊删除边界（清除聊天数据后旧消息防回灌） ----------------
+
+/// 本地删除边界键：记录本机清除该群聊数据的时间戳（毫秒）。
+pub fn clear_boundary_key(group_id: &str) -> String {
+    format!("clear_boundary:group:{group_id}")
+}
+
+/// 写入群聊删除边界（清除/删除群会话时调用）。
+pub fn set_clear_boundary(conn: &Connection, group_id: &str, ts: i64) -> Result<()> {
+    set_setting(conn, &clear_boundary_key(group_id), &ts.to_string())
+}
+
+/// 群消息落库前的边界判定：本机清除过该群且消息时间早于（或等于）清除时刻
+/// → 视为旧历史，不得重新写入本机。清除之后的新消息（ts > boundary）正常接收。
+pub fn group_message_blocked_by_boundary(conn: &Connection, group_id: &str, ts: i64) -> bool {
+    get_setting(conn, &clear_boundary_key(group_id))
+        .and_then(|v| v.parse::<i64>().ok())
+        .map(|boundary| ts <= boundary)
+        .unwrap_or(false)
+}
+
 /// 删除一条设置（「恢复默认」时清除偏好键，让上层回落到默认值）。
 pub fn delete_setting(conn: &Connection, key: &str) -> Result<()> {
     conn.execute("DELETE FROM settings WHERE key = ?1", params![key])?;
@@ -2211,5 +2232,34 @@ mod tests {
         let b = recipients.iter().find(|r| r.recipient_id == "b").unwrap();
         assert_eq!(b.status, "completed", "completed 不得被 failure ACK 降级");
         assert_eq!(b.progress, 1.0);
+    }
+
+    // ---------- 群聊删除边界（清除聊天数据后旧消息防回灌） ----------
+
+    /// 清除时写入的边界按 ts 拦截旧消息：ts ≤ boundary 拒绝、ts > boundary 放行。
+    #[test]
+    fn clear_boundary_blocks_old_group_messages() {
+        let conn = group_file_fixture();
+        let clear_time = 1_700_000_000_000i64;
+        set_clear_boundary(&conn, "g1", clear_time).unwrap();
+
+        // Test A：清除前的旧历史（ts <= boundary）→ 拦截
+        assert!(group_message_blocked_by_boundary(&conn, "g1", clear_time));
+        assert!(group_message_blocked_by_boundary(&conn, "g1", clear_time - 1));
+        // Test B：清除后的新消息（ts > boundary）→ 正常接收
+        assert!(!group_message_blocked_by_boundary(&conn, "g1", clear_time + 1));
+        // 未设置边界的群不拦截（离线消息补偿不受影响）
+        assert!(!group_message_blocked_by_boundary(&conn, "g2", clear_time - 1));
+        // 重复清除：边界覆盖为新值
+        set_clear_boundary(&conn, "g1", clear_time + 100).unwrap();
+        assert!(group_message_blocked_by_boundary(&conn, "g1", clear_time + 50));
+    }
+
+    /// 删除单个群会话同样写入边界（delete_conversation 群分支语义）。
+    #[test]
+    fn deleting_group_conversation_sets_boundary() {
+        let conn = group_file_fixture();
+        set_clear_boundary(&conn, "g1", 123456789).unwrap();
+        assert!(group_message_blocked_by_boundary(&conn, "g1", 123456789));
     }
 }

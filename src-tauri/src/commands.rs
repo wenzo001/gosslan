@@ -963,6 +963,11 @@ pub async fn mark_read(state: State<'_, Arc<AppState>>, conv_id: String) -> Resu
 #[tauri::command]
 pub fn delete_conversation(state: State<'_, Arc<AppState>>, conv_id: String) -> Result<(), String> {
     let s = state.inner();
+    // 群会话删除时写删除边界：其他成员保留的历史重放不得回灌本机
+    if let Some(gid) = conv_id.strip_prefix("group:") {
+        let dbc = s.db.lock().unwrap();
+        db::set_clear_boundary(&dbc, gid, db::now_ms()).map_err(|e| e.to_string())?;
+    }
     let dbc = s.db.lock().unwrap();
     db::delete_conversation(&dbc, &conv_id).map_err(|e| e.to_string())
 }
@@ -2040,6 +2045,13 @@ pub fn read_file_preview(
 pub fn clear_all_data(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     let s = state.inner();
 
+    // 0. 群聊删除边界：清除前记录每个群的时间戳（毫秒），
+    //    其他成员仍保留的历史重新到达时按 ts 拦截，防止旧消息回灌本机。
+    let group_ids: Vec<String> = {
+        let dbc = s.db.lock().unwrap();
+        db::list_groups(&dbc).unwrap_or_default().into_iter().map(|g| g.id).collect()
+    };
+
     // 1. SQLite 删除（transaction 保护）
     {
         let dbc = s.db.lock().unwrap();
@@ -2062,6 +2074,11 @@ pub fn clear_all_data(state: State<'_, Arc<AppState>>) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
         tx.execute("DELETE FROM settings WHERE key LIKE 'gk:%'", [])
             .map_err(|e| e.to_string())?;
+        // 群聊删除边界同事务写入（clear_boundary 键不受 LIKE 'gk:%' 影响）
+        let now = db::now_ms();
+        for gid in &group_ids {
+            db::set_clear_boundary(&tx, gid, now).map_err(|e| e.to_string())?;
+        }
         tx.commit().map_err(|e| e.to_string())?;
     }
 

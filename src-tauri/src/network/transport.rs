@@ -1393,6 +1393,17 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                     }
                     _ => return,
                 };
+                // 群聊删除边界：本机清除过该群（ts ≤ boundary）的旧历史不得回灌
+                // ——不落库、不计未读、不通知、不兜底建群。新消息（ts > boundary）正常。
+                if env.kind == GossipKind::Group {
+                    let gid = env.group_id.clone().unwrap_or_default();
+                    let dbc = state.db.lock().unwrap();
+                    let blocked = db::group_message_blocked_by_boundary(&dbc, &gid, env.ts);
+                    drop(dbc);
+                    if blocked {
+                        return;
+                    }
+                }
                 // 群消息顺带建群：成员端可能从未收到 GroupKey（本地无 groups 行），
                 // 但这条群消息携带了完整成员表 → 据此 upsert 建群，成员面板才能显示。
                 // 已有则只刷新（成员随踢人/加人变化时也能及时同步）。
@@ -2439,7 +2450,30 @@ pub async fn upsert_peer(
     // 仅新节点或公钥变化时补发群密钥（处理对方离线时建群的情况）
     if is_new || key_changed {
         redistribute_group_keys(state, device_id).await;
+        // 重发本机聊天样式：对方离线期间错过 broadcastChatStyle 广播，
+        // 且样式广播无离线补偿——对方上线后必须补发，否则永远看不到配色
+        resend_chat_style(state, device_id);
     }
+}
+
+/// 向指定 peer 重发本机聊天样式（复用既有 ChatStyle 消息，无新协议）。
+fn resend_chat_style(state: &AppState, peer_id: &str) {
+    let style = {
+        let dbc = state.db.lock().unwrap();
+        db::get_setting(&dbc, "chat_style")
+    };
+    let Some(style) = style else {
+        return;
+    };
+    if style.is_empty() {
+        return;
+    }
+    let msg = Message::ChatStyle {
+        from: state.device_id.clone(),
+        to: Some(peer_id.to_string()),
+        style,
+    };
+    let _ = try_send(state, peer_id, &msg);
 }
 
 /// 群密钥发送失败的原因。仅 `NoLink` 可重试（登记 pending 等建链后 flush）。

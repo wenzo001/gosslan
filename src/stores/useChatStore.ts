@@ -78,23 +78,57 @@ export const useChatStore = defineStore("chat", () => {
 
   const myDeviceId = computed(() => app.device?.device_id ?? "");
 
+  // ---------------- 通知：抑制 + 短窗口合并 ----------------
+  // 抑制矩阵：前台且正查看该会话 → 不通知；其他会话 / 后台 → 进入合并队列。
+  // 合并：首条消息开 1.5s 窗口，窗口内同会话只累积；窗口结束按会话各发一条
+  // （count > 1 显示「…等 N 条新消息」）。窗口结束前用户已切到该会话 → 跳过。
+  const NOTIFY_DEBOUNCE_MS = 1500;
+  const notifyQueue = new Map<string, { count: number; last: MessageRecord }>();
+  let notifyTimer: number | null = null;
+
+  function queueNotification(rec: MessageRecord) {
+    const q = notifyQueue.get(rec.conv_id);
+    if (q) {
+      q.count += 1;
+      q.last = rec;
+    } else {
+      notifyQueue.set(rec.conv_id, { count: 1, last: rec });
+    }
+    if (notifyTimer !== null) return;
+    notifyTimer = window.setTimeout(() => {
+      notifyTimer = null;
+      flushNotifications();
+    }, NOTIFY_DEBOUNCE_MS);
+  }
+
+  function flushNotifications() {
+    const entries = [...notifyQueue.values()];
+    notifyQueue.clear();
+    void ensureNotifyPermission().then(() => {
+      if (!notifyPermission) return;
+      for (const { count, last } of entries) {
+        // 窗口期间用户已切到该会话且前台 → 该会话跳过通知
+        if (document.hasFocus() && activeConv.value === last.conv_id) continue;
+        const id = notifSeq++;
+        notifMap.set(id, last.conv_id);
+        const title = nicknameOf(last.sender_id);
+        sendNotification({
+          id,
+          title,
+          body: count > 1 ? `${title} 等 ${count} 条新消息` : previewText(last),
+          autoCancel: true,
+          extra: { type: "chat", conv_id: last.conv_id },
+        });
+      }
+    });
+  }
+
   function maybeNotify(rec: MessageRecord) {
     const myId = app.device?.device_id;
     if (!myId || rec.sender_id === myId) return;
-    // 应用在前台且正查看该会话 → 不通知
+    // 应用在前台且正查看该会话 → 不通知（不进队列）
     if (document.hasFocus() && activeConv.value === rec.conv_id) return;
-    void ensureNotifyPermission().then(() => {
-      if (!notifyPermission) return;
-      const id = notifSeq++;
-      notifMap.set(id, rec.conv_id);
-      sendNotification({
-        id,
-        title: nicknameOf(rec.sender_id),
-        body: previewText(rec),
-        autoCancel: true,
-        extra: { type: "chat", conv_id: rec.conv_id },
-      });
-    });
+    queueNotification(rec);
   }
 
   async function handleNotificationClick(convId: string) {
@@ -524,6 +558,20 @@ export const useChatStore = defineStore("chat", () => {
     return api.sendFileRelay(convId, path);
   }
 
+  /** 清除聊天数据：后端清库（含群聊删除边界）后重置本 store 全部会话状态。
+   *  activeConv 必须置 null——否则左侧无选中而右侧仍显示失效 ChatWindow。 */
+  async function clearAllData() {
+    await api.clearAllData();
+    messages.value = {};
+    conversations.value = [];
+    groups.value = [];
+    groupReads.value = {};
+    activeConv.value = null;
+    pendingAcks.clear();
+    void refreshTransfers();
+  }
+
+
   /** 群文件发送：走群文件链路（Offer → Chunk → Done → CompleteAck）。
    *  群文件气泡/进度展示留待后续阶段，本封装只负责触发后端传输。 */
   async function sendGroupFileTo(groupId: string, path: string) {
@@ -768,6 +816,7 @@ export const useChatStore = defineStore("chat", () => {
     sendFileTo,
     sendFileRelayTo,
     sendGroupFileTo,
+    clearAllData,
     enqueueMessage,
   };
 });

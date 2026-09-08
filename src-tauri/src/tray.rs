@@ -42,9 +42,11 @@ pub fn setup<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()> 
 /// 构建托盘图标与菜单。
 fn build_tray<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()> {
     let show_item = MenuItemBuilder::with_id("show", "显示主窗口").build(app)?;
+    let restart_item = MenuItemBuilder::with_id("restart", "重启").build(app)?;
     let quit_item = MenuItemBuilder::with_id("quit", "退出").build(app)?;
     let menu = MenuBuilder::new(app)
         .item(&show_item)
+        .item(&restart_item)
         .item(&quit_item)
         .build()?;
 
@@ -53,6 +55,18 @@ fn build_tray<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()>
         .tooltip("Gosslan · 局域网即时通讯")
         .on_menu_event(|app, event| match event.id().as_ref() {
             "show" => show_main_window(app),
+            "restart" => {
+                // 重启 = 释放网络资源（TCP listener / UDP socket / shutdown 任务）
+                // 后以同一可执行文件重新启动自身。
+                // 必须用 network::stop（不改持久化偏好），不能用 stop_network 命令
+                // ——后者会写 lan_enabled=false，重启后不再自动联网。
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    let state = app.state::<std::sync::Arc<crate::state::AppState>>();
+                    crate::network::stop(&state).await;
+                    app.restart();
+                });
+            }
             "quit" => app.exit(0),
             _ => {}
         })
