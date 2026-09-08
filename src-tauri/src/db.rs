@@ -1961,4 +1961,79 @@ mod tests {
         let conn = mem();
         assert!(get_group_file(&conn, "nope").is_none());
     }
+
+    // ---------- GroupFileOffer / session-key 阶段 ----------
+
+    /// recipient 集合 = 创建时的成员快照：建文件后再加群成员不影响已建 recipients。
+    #[test]
+    fn group_file_recipients_are_creation_snapshot() {
+        let conn = group_file_fixture();
+        insert_group_file(&conn, &group_file("gf-1")).unwrap();
+        for rid in ["b", "c", "d"] {
+            insert_group_file_recipient(&conn, "gf-1", rid).unwrap();
+        }
+        // 创建快照之后群新增成员 e（动态成员语义后续阶段处理）
+        add_group_member(&conn, "g1", "e").unwrap();
+
+        let ids: Vec<String> = list_group_file_recipients(&conn, "gf-1")
+            .unwrap()
+            .into_iter()
+            .map(|r| r.recipient_id)
+            .collect();
+        assert_eq!(ids, vec!["b".to_string(), "c".to_string(), "d".to_string()]);
+    }
+
+    /// 接收端权限判定基础：get_group 返回成员表，群外 sender 不在其中。
+    /// （handle_group_file_offer 用同一判定：local group exists && sender ∈ members）
+    #[test]
+    fn outsider_sender_not_in_local_group_members() {
+        let conn = group_file_fixture();
+        let g = get_group(&conn, "g1").unwrap();
+        assert!(g.members.contains(&"a".to_string()));
+        assert!(!g.members.contains(&"outsider".to_string()));
+        assert!(get_group(&conn, "g-missing").is_none(), "本地群不存在");
+    }
+
+    /// 幂等：相同 transfer_id 的 Offer 重复处理时，已存在记录即安全忽略
+    /// （接收端依据 get_group_file 是否已存在；DB 层重复插入本身被 PK 拒绝）。
+    #[test]
+    fn duplicate_transfer_id_offer_is_idempotent() {
+        let conn = group_file_fixture();
+        insert_group_file(&conn, &group_file("gf-1")).unwrap();
+        insert_group_file_recipient(&conn, "gf-1", "b").unwrap();
+
+        // 已存在 → 接收端直接 return（模拟判定条件）
+        assert!(get_group_file(&conn, "gf-1").is_some());
+        // 即使重复插入也被 PK 拒绝，不会覆盖既有状态
+        assert!(insert_group_file(&conn, &group_file("gf-1")).is_err());
+        assert!(insert_group_file_recipient(&conn, "gf-1", "b").is_err());
+        // 既有状态未被覆盖
+        let recipients = list_group_file_recipients(&conn, "gf-1").unwrap();
+        assert_eq!(recipients.len(), 1);
+        assert_eq!(recipients[0].status, "pending");
+    }
+
+    /// file session key 不进入 SQLite 持久化：两张群文件表均无密钥列。
+    #[test]
+    fn group_file_keys_not_persisted() {
+        let conn = group_file_fixture();
+        insert_group_file(&conn, &group_file("gf-1")).unwrap();
+        insert_group_file_recipient(&conn, "gf-1", "b").unwrap();
+
+        for table in ["group_files", "group_file_recipients"] {
+            let cols: Vec<String> = conn
+                .prepare(&format!("SELECT name FROM pragma_table_info('{table}')"))
+                .unwrap()
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .filter_map(|r| r.ok())
+                .collect();
+            for col in &cols {
+                assert!(
+                    !col.to_lowercase().contains("file_key") && !col.to_lowercase().contains("key"),
+                    "{table}.{col} 不应持久化文件会话密钥"
+                );
+            }
+        }
+    }
 }

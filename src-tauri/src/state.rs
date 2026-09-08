@@ -343,6 +343,11 @@ pub struct AppState {
     /// RelayFileOffer 中以我方公钥 E2EE 封装，解封后仅存内存；
     /// 中继节点不持有密钥、不参与解密与校验，只透传密文切片。
     pub relay_file_keys: Mutex<HashMap<String, RelayFileReceive>>,
+    /// 群文件会话密钥：transfer_id -> file_key（仅内存，不落库、不进日志）。
+    /// 发送侧：send_group_file 生成后暂存，供后续 GroupFileChunk 加密使用；
+    /// 接收侧：GroupFileOffer 解封后保存，供后续解密使用。
+    /// 同一 transfer 全体成员使用同一个 file_key（经群密钥封装分发）。
+    pub group_file_keys: Mutex<HashMap<String, [u8; 32]>>,
     /// 正在接收的文件：transfer_id -> FileReceiver
     pub file_receivers: Mutex<HashMap<String, FileReceiver>>,
     /// 等待共享目录树响应：request_id -> 应答通道
@@ -470,6 +475,7 @@ impl AppState {
             avatar: Mutex::new(avatar),
             pending_file_accept: Mutex::new(HashMap::new()),
             relay_file_keys: Mutex::new(HashMap::new()),
+            group_file_keys: Mutex::new(HashMap::new()),
             file_receivers: Mutex::new(HashMap::new()),
             pending_share_tree: Mutex::new(HashMap::new()),
             peers_dirty: AtomicBool::new(false),

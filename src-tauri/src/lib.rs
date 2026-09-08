@@ -104,6 +104,7 @@ pub fn run() {
             commands::window_is_maximized,
             commands::window_close,
             commands::send_group_message,
+            commands::send_group_file,
             commands::send_file,
             commands::send_file_auto,
             commands::send_file_relay,

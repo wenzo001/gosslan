@@ -1014,6 +1014,28 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             }
             handle_group_member_removed(state, group_id, from, to).await;
         }
+        Message::GroupFileOffer {
+            transfer_id,
+            group_id,
+            sender_id,
+            name,
+            size,
+            sha256,
+            sealed_file_key,
+        } => {
+            handle_group_file_offer(
+                state,
+                peer_id,
+                transfer_id,
+                group_id,
+                sender_id,
+                name,
+                size,
+                sha256,
+                sealed_file_key,
+            )
+            .await;
+        }
     }
 }
 
@@ -1797,6 +1819,86 @@ async fn handle_group_key(
     }
     let _ = state.app.emit("group-key-received", &group_id);
     let _ = state.app.emit("groups-updated", &group_id);
+}
+
+/// 处理群文件发起（Offer → 验证 → file_key 解封 → 保存会话状态）。
+/// 本阶段不写文件、不创建 `.part`、不自动 FileAccept——分片传输在下一阶段。
+async fn handle_group_file_offer(
+    state: &Arc<AppState>,
+    peer_id: &str,
+    transfer_id: String,
+    group_id: String,
+    sender_id: String,
+    name: String,
+    size: u64,
+    sha256: String,
+    sealed_file_key: String,
+) {
+    // 链路上报的 sender 必须与 Offer 声明一致，且不能是自己
+    if sender_id != peer_id || sender_id == state.device_id {
+        return;
+    }
+    // 幂等：相同 transfer_id 重复 Offer 安全忽略（session 已建立则不重建）
+    if state.group_file_keys.lock().unwrap().contains_key(&transfer_id)
+        || db::get_group_file(&state.db.lock().unwrap(), &transfer_id).is_some()
+    {
+        return;
+    }
+    // 权限：本地群存在，且 sender ∈ group_members（防群外 peer 伪造 Offer）
+    let (group_exists, sender_is_member) = {
+        let dbc = state.db.lock().unwrap();
+        match db::get_group(&dbc, &group_id) {
+            Some(g) => (true, g.members.contains(&sender_id)),
+            None => (false, false),
+        }
+    };
+    if !group_exists || !sender_is_member {
+        return;
+    }
+    // 本地 GroupKey 解封 file_key（GroupKey 不离开设备；群外无法解开）
+    let Some(group_key) = get_group_key(state, &group_id).await else {
+        return;
+    };
+    let Ok(sealed) = STANDARD.decode(&sealed_file_key) else {
+        return;
+    };
+    let Some(file_key) = crypto::open_symmetric(&group_key, &sealed).and_then(|k| k.try_into().ok())
+    else {
+        return;
+    };
+
+    // 事务：本地群文件记录 + 自己的 recipient 行（接收进度将更新在这里）
+    {
+        let dbc = state.db.lock().unwrap();
+        let gf = crate::state::GroupFile {
+            transfer_id: transfer_id.clone(),
+            group_id: group_id.clone(),
+            sender_id: sender_id.clone(),
+            name: name.clone(),
+            size,
+            sha256: sha256.clone(),
+            status: "sending".to_string(),
+            created_at: db::now_ms(),
+        };
+        let tx = match dbc.unchecked_transaction() {
+            Ok(tx) => tx,
+            Err(_) => return,
+        };
+        if db::insert_group_file(&tx, &gf).is_err()
+            || db::insert_group_file_recipient(&tx, &transfer_id, &state.device_id).is_err()
+        {
+            return; // 建立失败：不留半完成状态，也不保存 file_key
+        }
+        if tx.commit().is_err() {
+            return;
+        }
+    }
+    // 会话密钥仅存内存，供下一阶段解密 GroupFileChunk
+    state
+        .group_file_keys
+        .lock()
+        .unwrap()
+        .insert(transfer_id, file_key);
 }
 
 /// 处理群名变更广播：仅群创建者可发起，成员端校验后同步本地群名与会话标题。

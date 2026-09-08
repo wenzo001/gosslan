@@ -293,6 +293,19 @@ pub enum Message {
         #[serde(default)]
         members: Vec<String>,
     },
+    /// 群文件发起（不含文件内容）。`sealed_file_key`：发送方为本 transfer
+    /// 生成的随机 32B 文件会话密钥，用**群密钥** AEAD 封装（seal_symmetric）——
+    /// 群内成员用本地 GroupKey 解封，群外与中继无法解开。
+    /// 后续群文件分片均以该 file_key 加密（下一阶段实现）。
+    GroupFileOffer {
+        transfer_id: String,
+        group_id: String,
+        sender_id: String,
+        name: String,
+        size: u64,
+        sha256: String,
+        sealed_file_key: String,
+    },
     /// 群名变更广播（创建者改名后通知各成员同步本地群名）
     GroupRename {
         group_id: String,

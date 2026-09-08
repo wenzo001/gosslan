@@ -1140,4 +1140,66 @@ mod tests {
             "中继场景最终校验必须通过"
         );
     }
+
+    // ---------- 群文件 session key（GroupFileOffer 阶段） ----------
+
+    /// 5. file_key 用 GroupKey seal/open round-trip：群内成员可解封。
+    #[test]
+    fn group_file_key_roundtrip_with_group_key() {
+        let group_key = crypto::random_key();
+        let file_key = crypto::random_key();
+        let sealed = crypto::seal_symmetric(&group_key, &file_key).unwrap();
+        let opened: [u8; 32] = crypto::open_symmetric(&group_key, &sealed)
+            .unwrap()
+            .try_into()
+            .unwrap();
+        assert_eq!(opened, file_key);
+    }
+
+    /// 6. 错误 GroupKey / 篡改密文 → 解封失败（群外与篡改者无法获得 file_key）。
+    #[test]
+    fn group_file_key_rejects_wrong_key_or_tampered_ciphertext() {
+        let group_key = crypto::random_key();
+        let wrong_key = crypto::random_key();
+        let file_key = crypto::random_key();
+        let sealed = crypto::seal_symmetric(&group_key, &file_key).unwrap();
+
+        // 错误群密钥（群外 peer 用自己的“群密钥”）
+        assert!(crypto::open_symmetric(&wrong_key, &sealed).is_none());
+        // 篡改密文
+        let mut tampered = sealed.clone();
+        let last = tampered.len() - 1;
+        tampered[last] ^= 0xFF;
+        assert!(crypto::open_symmetric(&group_key, &tampered).is_none());
+    }
+
+    /// 9. 一个 transfer 的多个 recipient 使用同一个 file session key：
+    ///    同一份 sealed 密文被每个成员解封，得到同一个 file_key。
+    #[test]
+    fn all_recipients_share_one_session_key() {
+        let group_key = crypto::random_key(); // 全体成员相同的群密钥
+        let file_key = crypto::random_key();
+        let sealed = crypto::seal_symmetric(&group_key, &file_key).unwrap();
+
+        let mut opened_keys = Vec::new();
+        for _recipient in ["b", "c", "d"] {
+            let opened: [u8; 32] = crypto::open_symmetric(&group_key, &sealed)
+                .unwrap()
+                .try_into()
+                .unwrap();
+            opened_keys.push(opened);
+        }
+        assert!(opened_keys.iter().all(|k| *k == file_key));
+    }
+
+    /// 4. 每个 transfer 生成独立的随机 file session key（群文件版断言）。
+    #[test]
+    fn group_file_keys_distinct_across_transfers() {
+        let k1 = crypto::random_key();
+        let k2 = crypto::random_key();
+        assert_ne!(k1, k2);
+        let msg = b"group file content";
+        let sealed = crypto::seal_symmetric(&k1, msg).unwrap();
+        assert!(crypto::open_symmetric(&k2, &sealed).is_none());
+    }
 }

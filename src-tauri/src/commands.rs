@@ -31,8 +31,8 @@ use crate::network::{self, file};
 use crate::protocol::{GossipKind, Message, MsgKind, ShareEntry};
 use crate::relay_manager::ChunkData;
 use crate::state::{
-    AppState, Conversation, DeviceInfo, Friend, Group, InterfaceInfo, MessageRecord, Peer,
-    PendingRequest, TopologyInfo, TransferInfo,
+    AppState, Conversation, DeviceInfo, Friend, Group, GroupFile, InterfaceInfo, MessageRecord,
+    Peer, PendingRequest, TopologyInfo, TransferInfo,
 };
 use crate::storage::cache_cleaner::{self, CachePolicy, CleanupReport};
 use crate::transport::{ChannelStatus, TransportManager};
@@ -1436,6 +1436,98 @@ pub async fn send_group_message(
     broadcast_gossip(s, env).await;
 
     Ok(rec)
+}
+
+// ---------------- 群文件（Offer / session-key 阶段） ----------------
+
+/// 发起群文件（本阶段只建立 Offer 与 file session key，不含分片传输）。
+///
+/// 入参为文件元数据（name/size/sha256）：实际文件内容读取与分片加密在下一阶段
+/// GroupFileChunk 实现，本阶段禁止读文件（sha256 由调用方提供，后续由发送流程计算填充）。
+///
+/// 流程：校验发起者是群成员 → 实时读取当前成员快照 → 事务内创建
+/// group_files + 全部 recipient 行（避免半完成状态）→ 生成随机 file_key
+/// 存内存 → 对有 TCP link 的成员发送 GroupFileOffer（群密钥封装 file_key）。
+/// 无 link 的成员保持 pending（不标 failed），待后续 retry/offline recovery。
+#[tauri::command]
+pub async fn send_group_file(
+    state: State<'_, Arc<AppState>>,
+    group_id: String,
+    name: String,
+    size: u64,
+    sha256: String,
+) -> Result<String, String> {
+    let s = state.inner();
+    // 发起者必须是群成员（本地群存在）
+    let members: Vec<String> = {
+        let dbc = s.db.lock().unwrap();
+        let group = db::get_group(&dbc, &group_id).ok_or("群不存在")?;
+        if !group.members.contains(&s.device_id) {
+            return Err("你不是该群成员".to_string());
+        }
+        // 成员快照：创建时当前群成员（不含自己），作为 recipient 集合
+        group.members.into_iter().filter(|m| m != &s.device_id).collect()
+    };
+    if members.is_empty() {
+        return Err("群内没有其他成员".to_string());
+    }
+
+    let transfer_id = Uuid::new_v4().to_string();
+
+    // 事务：group_files + 全部 recipient 行一次写入，避免半完成状态
+    {
+        let dbc = s.db.lock().unwrap();
+        let gf = GroupFile {
+            transfer_id: transfer_id.clone(),
+            group_id: group_id.clone(),
+            sender_id: s.device_id.clone(),
+            name: name.clone(),
+            size,
+            sha256: sha256.clone(),
+            status: "pending".to_string(),
+            created_at: db::now_ms(),
+        };
+        let tx = dbc.unchecked_transaction().map_err(|e| e.to_string())?;
+        db::insert_group_file(&tx, &gf).map_err(|e| e.to_string())?;
+        for m in &members {
+            db::insert_group_file_recipient(&tx, &transfer_id, m).map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+    }
+
+    // 随机 file session key：一个 transfer 只生成一次（CSPRNG，仅内存）
+    let file_key = crypto::random_key();
+    s.group_file_keys
+        .lock()
+        .unwrap()
+        .insert(transfer_id.clone(), file_key);
+
+    // 群密钥封装 file_key：同一 sealed 密文对全体成员有效（成员共享 GroupKey）
+    let group_key = get_group_key(s, &group_id).await.ok_or("群密钥缺失")?;
+    let sealed_file_key = STANDARD.encode(crypto::seal_symmetric(&group_key, &file_key).ok_or("封装文件密钥失败")?);
+
+    // 逐成员发送 Offer：有 TCP link 才发送并置 sending；无 link 保持 pending
+    for m in &members {
+        let has_link = s.links.lock().await.contains_key(m);
+        if !has_link {
+            continue; // 无 link：recipient 保持 pending，等待后续 retry
+        }
+        let msg = Message::GroupFileOffer {
+            transfer_id: transfer_id.clone(),
+            group_id: group_id.clone(),
+            sender_id: s.device_id.clone(),
+            name: name.clone(),
+            size,
+            sha256: sha256.clone(),
+            sealed_file_key: sealed_file_key.clone(),
+        };
+        if try_send(s, m, &msg).await.is_ok() {
+            let dbc = s.db.lock().unwrap();
+            let _ = db::update_group_file_recipient(&dbc, &transfer_id, m, "sending", 0.0);
+        }
+    }
+
+    Ok(transfer_id)
 }
 
 // ---------------- 文件传输 ----------------
