@@ -281,6 +281,11 @@ pub struct AppState {
     /// 待发已读回执：peer_id -> last_read_ts。链路不可用时暂存，
     /// 由建链 / Hello / 心跳（与 outbox 补发同一批触发点）冲刷，只保留最大值。
     pub pending_reads: Mutex<HashMap<String, i64>>,
+    /// 待发群密钥：peer_id -> 待补发的 group_id 集合。
+    /// `redistribute_group_keys` 在 TCP link 尚未建立（announce 先于 ensure_link）
+    /// 时发送会失败，此前被静默丢弃导致成员永久拿不到群密钥。
+    /// 此处登记失败项，由建链 / Hello / 心跳的 flush_pending_group_keys 重试。
+    pub pending_group_keys: Mutex<HashMap<String, std::collections::HashSet<String>>>,
 
     /// 共享目录（本机）
     pub share_dir: Mutex<Option<String>>,
@@ -412,6 +417,7 @@ impl AppState {
             pending_requests: Mutex::new(HashMap::new()),
             network: Mutex::new(None),
             pending_reads: Mutex::new(pending_reads_map),
+            pending_group_keys: Mutex::new(HashMap::new()),
             share_dir: Mutex::new(share_dir),
             nickname: Mutex::new(nickname),
             avatar: Mutex::new(avatar),

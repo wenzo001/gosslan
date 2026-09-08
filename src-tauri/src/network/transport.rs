@@ -4,6 +4,7 @@
 //! - 每个节点对，由 **device_id 字典序较小** 的一方主动拨号（dial），较大的一方只被动接受。
 //! - 双方各自维护一个出站 mpsc 发送端，读循环负责解析帧并分发。
 
+use std::collections::{HashMap, HashSet};
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -271,6 +272,8 @@ async fn connect_to_peer(state: &Arc<AppState>, peer_id: &str, ip: &str, tcp_por
     tokio::spawn(reader_loop(state.clone(), r, peer_id.to_string(), tx));
     flush_outbox(state, peer_id).await;
     flush_pending_reads(state, peer_id).await;
+    // 主动拨号建链完成：补发此前因无 link 而未送达的群密钥
+    flush_pending_group_keys(state, peer_id).await;
 }
 
 // ---------------- 消息分发 ----------------
@@ -310,6 +313,8 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             maybe_update_friend(state, &device_id, &nickname, avatar);
             flush_outbox(state, &device_id).await;
             flush_pending_reads(state, &device_id).await;
+            // 链路刚建立：补发此前因无 link 而未送达的群密钥
+            flush_pending_group_keys(state, &device_id).await;
         }
         Message::Heartbeat { device_id } => {
             if device_id != peer_id {
@@ -318,6 +323,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             touch_peer(state, &device_id).await;
             flush_outbox(state, &device_id).await;
             flush_pending_reads(state, &device_id).await;
+            flush_pending_group_keys(state, &device_id).await;
         }
         Message::UserInfo {
             device_id,
@@ -1871,13 +1877,114 @@ pub async fn upsert_peer(
     }
 }
 
-async fn redistribute_group_keys(state: &AppState, peer_id: &str) {
+/// 群密钥发送失败的原因。仅 `NoLink` 可重试（登记 pending 等建链后 flush）。
+enum GroupKeySendErr {
+    /// TCP link 不可用（未建立连接 / 已断开）——可重试
+    NoLink,
+    /// 缺公钥 / 非群成员 / 无本地密钥 / 加密失败——重试无意义
+    Fatal,
+}
+
+// ---------------- 待发群密钥登记表（纯逻辑，便于单测；不涉及网络与 AppState） ----------------
+
+/// 登记一个待发群密钥（幂等）。
+fn mark_pending_group_key(
+    pending: &mut HashMap<String, HashSet<String>>,
+    peer_id: &str,
+    group_id: &str,
+) {
+    pending
+        .entry(peer_id.to_string())
+        .or_default()
+        .insert(group_id.to_string());
+}
+
+/// 取指定 peer 的待发 group_id 快照（无登记项时为空）。
+fn pending_group_key_ids(
+    pending: &HashMap<String, HashSet<String>>,
+    peer_id: &str,
+) -> Vec<String> {
+    match pending.get(peer_id) {
+        Some(set) => set.iter().cloned().collect(),
+        None => Vec::new(),
+    }
+}
+
+/// 清除一个待发登记项；该 peer 的集合空了则一并移除键，避免无意义增长。
+fn clear_pending_group_key(
+    pending: &mut HashMap<String, HashSet<String>>,
+    peer_id: &str,
+    group_id: &str,
+) {
+    let empty = match pending.get_mut(peer_id) {
+        Some(set) => {
+            set.remove(group_id);
+            set.is_empty()
+        }
+        None => false,
+    };
+    if empty {
+        pending.remove(peer_id);
+    }
+}
+
+/// 是否保留登记项等待重试：只有「链路不可用」才保留；
+/// 发送成功或失败原因重试无意义（非成员 / 无密钥 / 缺公钥）都清除。
+fn should_retain_pending_group_key(result: &Result<(), GroupKeySendErr>) -> bool {
+    matches!(result, Err(GroupKeySendErr::NoLink))
+}
+
+/// 向指定 peer 发送一次群密钥。GroupKey 消息格式、加密方式与公钥来源
+/// （peers 表）均与既有 `redistribute_group_keys` 保持一致。
+async fn try_send_group_key(
+    state: &AppState,
+    peer_id: &str,
+    group_id: &str,
+) -> Result<(), GroupKeySendErr> {
     let pubkey = {
         let peers = state.peers.lock().unwrap();
         peers.get(peer_id).and_then(|p| p.x25519_pubkey.clone())
     };
-    let Some(pubkey) = pubkey else { return };
+    let Some(pubkey) = pubkey else {
+        return Err(GroupKeySendErr::Fatal);
+    };
+    let found_group = {
+        let dbc = state.db.lock().unwrap();
+        db::list_groups(&dbc)
+            .unwrap_or_default()
+            .into_iter()
+            .find(|g| g.id == group_id)
+    };
+    let Some(g) = found_group else {
+        return Err(GroupKeySendErr::Fatal);
+    };
+    if !g.members.contains(&peer_id.to_string()) {
+        return Err(GroupKeySendErr::Fatal);
+    }
+    let Some(key) = get_group_key(state, group_id).await else {
+        return Err(GroupKeySendErr::Fatal);
+    };
+    let Some(shared) = crypto::shared_secret(&state.identity.x25519_secret, &pubkey) else {
+        return Err(GroupKeySendErr::Fatal);
+    };
+    let Some(sealed) = crypto::seal(&shared, &key) else {
+        return Err(GroupKeySendErr::Fatal);
+    };
+    let msg = Message::GroupKey {
+        group_id: group_id.to_string(),
+        from: state.device_id.clone(),
+        to: peer_id.to_string(),
+        key: STANDARD.encode(&sealed),
+        group_name: g.name.clone(),
+        members: g.members.clone(),
+    };
+    // try_send 返回 Err 只可能是「未建立连接」（links 无该 peer）
+    try_send(state, peer_id, &msg)
+        .await
+        .map_err(|_| GroupKeySendErr::NoLink)
+}
 
+async fn redistribute_group_keys(state: &AppState, peer_id: &str) {
     let groups = {
         let dbc = state.db.lock().unwrap();
         db::list_groups(&dbc).unwrap_or_default()
@@ -1886,24 +1993,36 @@ async fn redistribute_group_keys(state: &AppState, peer_id: &str) {
         if !g.members.contains(&peer_id.to_string()) {
             continue;
         }
-        let Some(key) = get_group_key(state, &g.id).await else {
+        match try_send_group_key(state, peer_id, &g.id).await {
+            Ok(()) => {}
+            Err(GroupKeySendErr::NoLink) => {
+                // announce 先于 ensure_link 执行时 link 尚未建立，此前会静默丢弃
+                // 且后续 is_new/key_changed 不再触发 → 成员永久拿不到群密钥。
+                // 登记待发，由建链 / Hello / 心跳的 flush_pending_group_keys 重试。
+                let mut pending = state.pending_group_keys.lock().unwrap();
+                mark_pending_group_key(&mut pending, peer_id, &g.id);
+            }
+            // 缺公钥 / 非成员 / 无密钥：重试无意义，不登记
+            Err(GroupKeySendErr::Fatal) => {}
+        }
+    }
+}
+
+/// 冲刷指定 peer 的待发群密钥：仅处理该 peer，发送成功即移除登记项；
+/// link 仍不可用则保留，等下一次 flush（Hello / 心跳 / 建链）重试。
+pub async fn flush_pending_group_keys(state: &AppState, peer_id: &str) {
+    let group_ids: Vec<String> = {
+        let pending = state.pending_group_keys.lock().unwrap();
+        pending_group_key_ids(&pending, peer_id)
+    };
+    for gid in group_ids {
+        let result = try_send_group_key(state, peer_id, &gid).await;
+        if should_retain_pending_group_key(&result) {
+            // 仍无链路：保留登记项，等待下一次 flush（Hello / 心跳 / 建链）
             continue;
-        };
-        let Some(shared) = crypto::shared_secret(&state.identity.x25519_secret, &pubkey) else {
-            continue;
-        };
-        let Some(sealed) = crypto::seal(&shared, &key) else {
-            continue;
-        };
-        let msg = Message::GroupKey {
-            group_id: g.id.clone(),
-            from: state.device_id.clone(),
-            to: peer_id.to_string(),
-            key: STANDARD.encode(&sealed),
-            group_name: g.name.clone(),
-            members: g.members.clone(),
-        };
-        let _ = try_send(state, peer_id, &msg).await;
+        }
+        let mut pending = state.pending_group_keys.lock().unwrap();
+        clear_pending_group_key(&mut pending, peer_id, &gid);
     }
 }
 
@@ -2769,5 +2888,79 @@ mod tests {
             }
             _ => panic!("应为 FriendMessageBlocked"),
         }
+    }
+
+    // ---------- 待发群密钥 pending 表（最小 P0 修复） ----------
+
+    /// 链路未建立时（announce 先于 ensure_link）群密钥发送失败，
+    /// 必须登记到 pending，否则后续 is_new/key_changed 不再触发 → 永久丢密钥。
+    #[test]
+    fn redistribute_failure_registers_pending() {
+        let mut pending: HashMap<String, HashSet<String>> = HashMap::new();
+
+        // 模拟 announce → upsert_peer → redistribute_group_keys → try_send 失败（无 link）
+        // 失败分支必须调用 mark_pending_group_key（见 transport.rs::redistribute_group_keys）
+        mark_pending_group_key(&mut pending, "peer-b", "g-1");
+        mark_pending_group_key(&mut pending, "peer-b", "g-2");
+        // 同 (peer, group) 重复登记应幂等
+        mark_pending_group_key(&mut pending, "peer-b", "g-1");
+
+        let ids = pending_group_key_ids(&pending, "peer-b");
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&"g-1".to_string()));
+        assert!(ids.contains(&"g-2".to_string()));
+    }
+
+    /// 链路就绪后 flush_pending_group_keys 成功 → 必须清除登记项，
+    /// 否则 pending 永远不被消费（不增长、不泄漏、达成"成功即清"）。
+    #[test]
+    fn flush_success_clears_pending() {
+        let mut pending: HashMap<String, HashSet<String>> = HashMap::new();
+        mark_pending_group_key(&mut pending, "peer-b", "g-1");
+        mark_pending_group_key(&mut pending, "peer-b", "g-2");
+        mark_pending_group_key(&mut pending, "peer-c", "g-1");
+
+        // 模拟 flush_pending_group_keys：peer-b 已建链、两条都发送成功
+        let result: Result<(), GroupKeySendErr> = Ok(());
+        assert!(!should_retain_pending_group_key(&result));
+        for gid in ["g-1", "g-2"] {
+            clear_pending_group_key(&mut pending, "peer-b", gid);
+        }
+
+        // peer-b 的登记应被清空（键一并移除，避免无意义增长）
+        assert!(pending_group_key_ids(&pending, "peer-b").is_empty());
+        assert!(!pending.contains_key("peer-b"));
+        // peer-c 不受影响
+        assert_eq!(pending_group_key_ids(&pending, "peer-c"), vec!["g-1".to_string()]);
+    }
+
+    /// 链路仍未就绪（NoLink）或非可重试原因（Fatal）的判定：
+    /// NoLink 必须保留登记项等待下一次 flush；Fatal / Ok 必须清除。
+    #[test]
+    fn flush_failure_retains_or_clears_pending_correctly() {
+        // 仍无链路 → 保留
+        assert!(should_retain_pending_group_key(&Err(GroupKeySendErr::NoLink)));
+        // 非可重试 → 清除
+        assert!(!should_retain_pending_group_key(&Err(GroupKeySendErr::Fatal)));
+        assert!(!should_retain_pending_group_key(&Ok(())));
+
+        // 验证 flush 逻辑：NoLink 分支不调用 clear，pending 保持
+        let mut pending: HashMap<String, HashSet<String>> = HashMap::new();
+        mark_pending_group_key(&mut pending, "peer-b", "g-1");
+        let result: Result<(), GroupKeySendErr> = Err(GroupKeySendErr::NoLink);
+        if should_retain_pending_group_key(&result) {
+            // 故意不调用 clear_pending_group_key：等待下一次 flush
+        } else {
+            clear_pending_group_key(&mut pending, "peer-b", "g-1");
+        }
+        assert_eq!(pending_group_key_ids(&pending, "peer-b"), vec!["g-1".to_string()]);
+
+        // 下一轮 flush：Fatal 分支必须清除（重试无意义：缺公钥 / 非成员 / 无密钥）
+        clear_pending_group_key(&mut pending, "peer-b", "g-1");
+        let result: Result<(), GroupKeySendErr> = Err(GroupKeySendErr::Fatal);
+        if !should_retain_pending_group_key(&result) {
+            clear_pending_group_key(&mut pending, "peer-b", "g-1");
+        }
+        assert!(pending_group_key_ids(&pending, "peer-b").is_empty());
     }
 }
