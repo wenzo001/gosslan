@@ -109,16 +109,30 @@ export const useChatStore = defineStore("chat", () => {
       for (const { count, last } of entries) {
         // 窗口期间用户已切到该会话且前台 → 该会话跳过通知
         if (document.hasFocus() && activeConv.value === last.conv_id) continue;
-        const id = notifSeq++;
-        notifMap.set(id, last.conv_id);
         const title = nicknameOf(last.sender_id);
-        sendNotification({
-          id,
-          title,
-          body: count > 1 ? `${title} 等 ${count} 条新消息` : previewText(last),
-          autoCancel: true,
-          extra: { type: "chat", conv_id: last.conv_id },
-        });
+        const body = count > 1 ? `${title} 等 ${count} 条新消息` : previewText(last);
+        const convId = last.conv_id;
+        if (app.isMobile) {
+          // 移动端：plugin 通知（Android 有 actionPerformed 点击事件桥）
+          const id = notifSeq++;
+          notifMap.set(id, convId);
+          void sendNotification({
+            id,
+            title,
+            body,
+            autoCancel: true,
+            extra: { type: "chat", conv_id: convId },
+          });
+        } else {
+          // 桌面端：plugin 的 actionPerformed 事件桥仅在 iOS/Android 实现，
+          // Windows/macOS 点击通知不会回调 onAction → 改用 WebView 原生
+          // Notification（plugin 桌面端底层同为此 API），onclick 闭包直接
+          // 捕获会话 id：点击 = 弹前台 + 打开对应会话。
+          const n = new Notification(title, { body });
+          n.onclick = () => {
+            void handleNotificationClick(convId);
+          };
+        }
       }
     });
   }

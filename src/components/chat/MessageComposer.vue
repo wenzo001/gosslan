@@ -55,7 +55,19 @@ function send(kind?: MsgKind, content?: string) {
   draft.value = "";
   if (!kind) codeMode.value = false;
   if (props.quote) emit("close-quote");
-  void nextTick(autoResize);
+  // 清空 + DOM 更新后重新聚焦并把光标放到末尾：连续发送/继续输入无缝衔接
+  // （Enter 与点击发送共用本函数，行为完全一致；autoResize 由既有 watch 驱动）
+  void nextTick(() => {
+    autoResize();
+    if (!app.isMobile) {
+      const el = inputRef.value;
+      if (el) {
+        el.focus();
+        const end = el.value.length;
+        el.setSelectionRange(end, end);
+      }
+    }
+  });
   emit("send", { content: text, kind: k });
 }
 

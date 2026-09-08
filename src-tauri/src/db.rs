@@ -2333,4 +2333,32 @@ mod tests {
         update_group_file_recipient(&conn, "gf-1", "c", "completed", 1.0).unwrap();
         assert_eq!(aggregate_bubble(&states()), Some("delivered"));
     }
+
+    /// 群文件本地路径经 file_transfers 持久化（gfile-{tid}）：
+    /// 接收完成写入 receive/done + final_path，打开/另存/历史加载
+    /// 经 transfer_id 关联到真实本地文件（重启后仍有效）。
+    #[test]
+    fn gfile_transfer_record_persists_local_path() {
+        let conn = mem();
+        upsert_transfer(
+            &conn,
+            "gfile-t1",
+            "a",
+            "report.pdf",
+            2048,
+            "receive",
+            "done",
+            Some("/downloads/report.pdf"),
+            1.0,
+        )
+        .unwrap();
+        let t = list_transfers(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.id == "gfile-t1")
+            .expect("群文件 transfer 记录应存在");
+        assert_eq!(t.path.as_deref(), Some("/downloads/report.pdf"));
+        assert_eq!(t.status, "done");
+        assert_eq!(t.progress, 1.0);
+    }
 }

@@ -2116,9 +2116,42 @@ async fn handle_group_file_done(
     {
         let dbc = state.db.lock().unwrap();
         let _ = db::update_group_file_recipient(&dbc, &transfer_id, &state.device_id, "completed", 1.0);
+        // 群文件本地路径持久化到 transfer 记录：打开/另存/历史加载经
+        // transfer_id（gfile-{tid}）关联到该真实本地路径（重启后仍有效）
+        db::upsert_transfer(
+            &dbc,
+            &transfer_id,
+            &sender_id,
+            &gf.name,
+            gf.size,
+            "receive",
+            "done",
+            Some(r.final_path.to_string_lossy().as_ref()),
+            1.0,
+        )
+        .ok();
     }
-    set_gfile_bubble_status(state, &transfer_id, "delivered");
     state.group_file_keys.lock().unwrap().remove(&transfer_id);
+    // 重发带本地路径的记录（applyIncoming 按 msg_id 合并更新，未读不重复）：
+    // 前端气泡 content.path 就绪 → 打开/另存/图片代码预览立即可用
+    let done_rec = crate::state::MessageRecord {
+        id: 0,
+        msg_id: format!("gfile-{transfer_id}"),
+        conv_id: format!("group:{group_id}"),
+        sender_id: sender_id.clone(),
+        receiver_id: state.device_id.clone(),
+        kind: "file".to_string(),
+        content: serde_json::json!({
+            "name": gf.name,
+            "path": r.final_path.to_string_lossy(),
+            "size": gf.size,
+            "sha256": gf.sha256,
+        })
+        .to_string(),
+        ts: db::now_ms(),
+        status: "delivered".to_string(),
+    };
+    let _ = state.app.emit("message-received", &done_rec);
     // 完成确认：无论 ACK 发送成败，file_key 已清理不再保留（ACK 丢失由后续阶段处理）
     send_group_file_complete_ack(state, &transfer_id, &group_id, &sender_id, true).await;
 }

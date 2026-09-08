@@ -445,7 +445,7 @@ pub fn begin_group_receive(
     file_key: [u8; 32],
     expected_sha256: String,
 ) -> Result<PathBuf, String> {
-    make_receiver(
+    let final_path = make_receiver(
         state,
         transfer_id,
         peer_id,
@@ -454,7 +454,25 @@ pub fn begin_group_receive(
         file_key,
         expected_sha256,
         &state.group_file_receivers,
-    )
+    )?;
+    // 持久化本地路径到 file_transfers（复用现有表，无 schema 变更）：
+    // 群文件气泡的打开/另存/历史加载经 transfer_id 关联到该真实本地路径。
+    {
+        let dbc = state.db.lock().unwrap();
+        db::upsert_transfer(
+            &dbc,
+            transfer_id,
+            peer_id,
+            name,
+            size,
+            "receive",
+            "active",
+            Some(final_path.to_string_lossy().as_ref()),
+            0.0,
+        )
+        .ok();
+    }
+    Ok(final_path)
 }
 
 /// 群文件接收失败：删除 `.part` 并移除接收状态（不 rename、不标 done）。

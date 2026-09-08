@@ -1549,7 +1549,10 @@ pub async fn send_group_file(
 
     // 发送者本地气泡：群文件发起在会话中可见（msg_id 与接收端一致，
     // 便于 CompleteAck 后双方各自推进状态）
-    let content = serde_json::json!({ "name": name, "size": size, "sha256": sha256 }).to_string();
+    // 本地气泡 content 携带源文件路径：发送端打开/图片代码预览立即可用
+    let content =
+        serde_json::json!({ "name": name, "path": path, "size": size, "sha256": sha256 })
+            .to_string();
     let rec = MessageRecord {
         id: 0,
         msg_id: format!("gfile-{transfer_id}"),
@@ -1564,6 +1567,19 @@ pub async fn send_group_file(
     {
         let dbc = s.db.lock().unwrap();
         db::insert_message(&dbc, &rec).ok();
+        // 发送端 transfer 记录：本机保留源文件路径（打开/另存直接打开源文件）
+        db::upsert_transfer(
+            &dbc,
+            &transfer_id,
+            &group_id,
+            &name,
+            size,
+            "send",
+            "active",
+            Some(p.to_string_lossy().as_ref()),
+            0.0,
+        )
+        .ok();
         let group_name = db::get_group(&dbc, &group_id).map(|g| g.name).unwrap_or_default();
         db::touch_conversation(
             &dbc,

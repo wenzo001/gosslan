@@ -10,9 +10,11 @@ import type { FileMeta, MessageRecord } from "@/types";
 
 export type { FileMeta };
 
-/** 文件消息的 msg_id 即 "file-{transfer_id}"。 */
+/** 文件消息的 msg_id 与 transfer_id 的映射：单聊 "file-{id}"，群文件 "gfile-{id}"。 */
 function transferIdOf(msgId: string): string | null {
-  return msgId.startsWith("file-") ? msgId.slice(5) : null;
+  if (msgId.startsWith("file-")) return msgId.slice(5);
+  if (msgId.startsWith("gfile-")) return msgId.slice(6);
+  return null;
 }
 
 /**
