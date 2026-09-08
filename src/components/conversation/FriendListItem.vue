@@ -1,0 +1,85 @@
+<script setup lang="ts">
+import { onUnmounted } from "vue";
+import type { Friend } from "@/types";
+
+defineProps<{ friend: Friend; active: boolean }>();
+const emit = defineEmits<{
+  (e: "open", friend: Friend): void;
+  /** 右键 / 移动端长按：上报坐标，由父组件定位菜单（x/y 为视口坐标）。 */
+  (e: "context", friend: Friend, x: number, y: number): void;
+}>();
+
+function initials(name: string) {
+  return name.slice(0, 1).toUpperCase();
+}
+
+function onContextMenu(friend: Friend, e: MouseEvent) {
+  e.preventDefault();
+  e.stopPropagation();
+  emit("context", friend, e.clientX, e.clientY);
+}
+
+// 移动端没有 contextmenu：长按 500ms 视为「删除好友」入口
+const LONG_PRESS_MS = 500;
+let pressTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearPress() {
+  if (pressTimer) {
+    clearTimeout(pressTimer);
+    pressTimer = null;
+  }
+}
+
+function onTouchStart(friend: Friend, e: TouchEvent) {
+  const t = e.touches[0];
+  if (!t) return;
+  clearPress();
+  pressTimer = setTimeout(() => {
+    pressTimer = null;
+    emit("context", friend, t.clientX, t.clientY);
+  }, LONG_PRESS_MS);
+}
+
+onUnmounted(clearPress);
+</script>
+
+<template>
+  <div
+    class="relative flex h-[64px] cursor-pointer items-center gap-3 px-3 transition-colors"
+    :class="active
+      ? 'bg-[var(--gosslan-list-active)]'
+      : 'hover:bg-[var(--gosslan-list-hover)]'"
+    @click="emit('open', friend)"
+    @contextmenu="onContextMenu(friend, $event)"
+    @touchstart.passive="onTouchStart(friend, $event)"
+    @touchmove.passive="clearPress"
+    @touchend.passive="clearPress"
+    @touchcancel.passive="clearPress"
+  >
+    <!-- 微信式行间细分隔线：从文本列起（头像后缩进） -->
+    <div class="absolute bottom-0 left-[64px] right-0 h-px bg-[var(--gosslan-divider)]"></div>
+    <div class="relative shrink-0">
+      <div
+        class="flex h-10 w-10 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] bg-primary text-white"
+        :class="!friend.online ? 'grayscale opacity-70' : ''"
+      >
+        <img v-if="friend.avatar" :src="friend.avatar" class="h-full w-full object-cover" />
+        <span v-else class="text-sm font-medium">{{ initials(friend.nickname) }}</span>
+      </div>
+      <span
+        class="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-[var(--gosslan-list)]"
+        :class="friend.online ? 'bg-primary' : 'bg-neutral-400'"
+      ></span>
+    </div>
+    <div class="min-w-0 flex-1">
+      <div class="truncate text-[13.5px] leading-5" :class="active ? 'font-medium text-[var(--gosslan-text)]' : 'text-[var(--gosslan-text)]'">
+        {{ friend.nickname }}
+      </div>
+      <div
+        class="truncate text-xs leading-5 text-[var(--gosslan-text-2)]"
+      >
+        {{ friend.online ? "在线" : "离线" }}
+      </div>
+    </div>
+  </div>
+</template>

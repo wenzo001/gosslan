@@ -1,26 +1,21 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, ref, watch, type CSSProperties } from "vue";
-import dayjs from "dayjs";
-const VueEasyLightbox = defineAsyncComponent(() => import("vue-easy-lightbox/external-css"));
-import "vue-easy-lightbox/external-css/vue-easy-lightbox.css";
-import { loadFilePreview } from "@/utils/filePreview";
-import {
-  CODE_CLAMP_HEIGHT,
-  PREVIEW_LINES,
-  codeNeedsClamp,
-  textNeedsClamp,
-} from "@/utils/previewMetrics";
+import { computed, ref } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
-import { save } from "@tauri-apps/plugin-dialog";
-import { openPath } from "@tauri-apps/plugin-opener";
-import { invoke } from "@tauri-apps/api/core";
-import CodeBlock from "@/components/CodeBlock.vue";
-import BaseModal from "@/components/BaseModal.vue";
-import { Check, Circle, Copy, Download, FileText, Loader2, RefreshCw, X } from "lucide-vue-next";
-import { humanSize } from "@/utils/color";
-import { findPreset, parsePeerStyle } from "@/utils/chatStyle";
-import type { MessageRecord } from "@/types";
+import { useClipboard } from "@/composables/useClipboard";
+import { useMessageDisplay } from "@/composables/useMessageDisplay";
+import { useMessageFile } from "@/composables/useMessageFile";
+import { textNeedsClamp } from "@/utils/previewMetrics";
+import MessageAvatar from "@/components/message/MessageAvatar.vue";
+import MessageTextBubble from "@/components/message/MessageTextBubble.vue";
+import MessageCodeBubble from "@/components/message/MessageCodeBubble.vue";
+import MessageFileBubble from "@/components/message/MessageFileBubble.vue";
+import MessageImageBubble from "@/components/message/MessageImageBubble.vue";
+import MessageReceipt from "@/components/message/MessageReceipt.vue";
+import MessageContentModal from "@/components/message/MessageContentModal.vue";
+import MessageContextMenu from "@/components/message/MessageContextMenu.vue";
+import ImageLightbox from "@/components/message/ImageLightbox.vue";
+import type { MessageRecord, MsgKind } from "@/types";
 
 const props = withDefaults(
   defineProps<{
@@ -50,165 +45,55 @@ const props = withDefaults(
 
 const app = useAppStore();
 const chat = useChatStore();
-const mine = computed(() => props.message.sender_id === app.device?.device_id);
 
-// ---------------- 显示样式（本机偏好 + 对端广播偏好） ----------------
-/** 我发的消息用我的样式；对方发的消息优先用对方广播的样式（未同步过则回退本机）。 */
-const preset = computed(() => {
-  if (!mine.value) {
-    const raw = app.peerStyles[props.message.sender_id];
-    if (raw) return findPreset(parsePeerStyle(raw).preset);
-  }
-  return findPreset(app.chatStyle.preset);
+const display = useMessageDisplay({
+  message: () => props.message,
+  prev: () => props.prev,
+  next: () => props.next,
+  isGroup: () => props.isGroup,
 });
-const colors = computed(() =>
-  app.dark ? preset.value.dark : preset.value.light,
+const {
+  mine,
+  bubbleStyle,
+  sameSenderRun,
+  tight,
+  isLastInMinute,
+  showTimeDivider,
+  showNickname,
+  time,
+  fullTime,
+  timeDividerText,
+  sendState,
+  receiptTitle,
+} = display;
+
+const {
+  streamCode,
+  streamCodeClamped,
+  fileMeta,
+  fileProgress,
+  fileStatusText,
+  attachmentUrl,
+  previewNote,
+  openFile,
+  saveAs,
+} = useMessageFile(() => props.message, () => sendState.value);
+const { copiedKey, copyContent } = useClipboard();
+
+const avatarName = computed(() =>
+  mine.value
+    ? app.device?.nickname || "我"
+    : props.senderName || props.message.sender_id,
 );
-const bubbleStyle = computed<CSSProperties>(() => ({
-  background: mine.value ? colors.value.mineBubble : colors.value.otherBubble,
-  color: mine.value ? colors.value.mineText : colors.value.otherText,
-  border: mine.value ? "1px solid transparent" : "1px solid var(--gosslan-border)",
-}));
+/** 头像只在本人的消息上取本机头像；对端头像由会话/通讯录提供，消息里不带。 */
+const avatarSrc = computed(() => (mine.value ? (app.device?.avatar ?? null) : null));
 
-/** 连续消息合并：同一发送者 5 分钟内的消息省略头像/昵称（紧凑模式可关）。 */
-const sameSenderRun = computed(() => {
-  if (!app.chatStyle.compact) return false;
-  const p = props.prev;
-  if (!p || p.kind === "system" || p.sender_id !== props.message.sender_id) return false;
-  return props.message.ts - p.ts < 5 * 60 * 1000;
-});
-/** 同一分钟内的连续消息：合并显示（省略时间行、气泡更紧凑），不依赖紧凑开关。
- *  时间属于时间轴，不属于发送者——不因 sender 变化而重复时间。 */
-const sameMinuteRun = computed(() => {
-  const p = props.prev;
-  if (!p || p.kind === "system") return false;
-  return dayjs(p.ts).isSame(props.message.ts, "minute");
-});
-/** 时间行显示在发送者连续消息的末尾，避免时间标签把首条与第二条撑开。 */
-const nextContinuesSenderRun = computed(() => {
-  const n = props.next;
-  if (!n || n.kind === "system" || props.message.kind === "system") return false;
-  if (!app.chatStyle.compact || n.sender_id !== props.message.sender_id) return false;
-  return n.ts - props.message.ts < 5 * 60 * 1000;
-});
-const isLastInMinute = computed(() => {
-  const n = props.next;
-  if (!n) return true; // 最后一条消息
-  if (nextContinuesSenderRun.value) return false;
-  return !dayjs(n.ts).isSame(props.message.ts, "minute");
-});
-/** 紧凑布局：连续 run 或同分钟消息。 */
-const tight = computed(() => sameSenderRun.value || sameMinuteRun.value);
-/** 时间分割线：与上一条间隔 ≥ 5 分钟。 */
-const showTimeDivider = computed(() => {
-  const p = props.prev;
-  return !p || props.message.ts - p.ts >= 5 * 60 * 1000;
-});
-/** 群聊非本人消息首条：显示昵称。 */
-const showNickname = computed(() => props.isGroup && !mine.value && !sameSenderRun.value);
-const groupReaders = computed(() => props.groupReaderIds ?? []);
-const visibleGroupReaders = computed(() => groupReaders.value.slice(0, 3));
-const extraGroupReaders = computed(() => groupReaders.value.slice(3));
-const groupReadersOpen = ref(false);
-
-function readerName(id: string) {
-  return chat.nicknameOf(id);
-}
-
-function readerAvatar(id: string): string | null {
-  const friend = chat.friends.find((item) => item.device_id === id);
-  if (friend?.avatar) return friend.avatar;
-  return chat.peers.find((item) => item.device_id === id)?.avatar ?? null;
-}
-
-const time = computed(() => dayjs(props.message.ts).format("YYYY年MM月DD日 HH:mm"));
-const fullTime = computed(() => dayjs(props.message.ts).format("YYYY-MM-DD HH:mm:ss"));
-const timeDividerText = computed(() => dayjs(props.message.ts).format("YYYY-MM-DD HH:mm"));
-
-// ---------------- 发送状态（sending / delivered / read / failed） ----------------
-/** sending/sent=转圈（发出中或未确认送达）；delivered=空圆框（对方收到未读）；read=绿勾（已读）。 */
-const sendState = computed(() => props.message.status as "sending" | "sent" | "delivered" | "read" | "failed");
-const receiptTitle = computed(() => {
-  switch (sendState.value) {
-    case "sending":
-    case "sent":
-      return "发送中…";
-    case "delivered":
-      return "对方已收到，未读";
-    case "read":
-      return "对方已读";
-    case "failed":
-      return "发送失败";
-    default:
-      return "";
-  }
-});
-
-// ---------------- 文件传输进度 ----------------
-/** 文件消息的 msg_id 即 "file-{transfer_id}"，据此查传输记录。 */
-const transferId = computed(() =>
-  props.message.msg_id.startsWith("file-") ? props.message.msg_id.slice(5) : null,
+/** 长文本判定与 estimateHeight 共用 textNeedsClamp：字号档位变了两边一起变。 */
+const isLongText = computed(
+  () =>
+    props.message.kind === "text" &&
+    textNeedsClamp(props.message.content, app.chatStyle.fontSize),
 );
-const transfer = computed(() =>
-  transferId.value ? chat.transfers.find((t) => t.id === transferId.value) : null,
-);
-
-// ---------------- 文件 ----------------
-interface FileMeta {
-  name: string;
-  path: string;
-  size: number;
-  /** 后端按扩展名分类的附件子类型；历史消息缺省按 file 处理。 */
-  subtype: string;
-}
-/** 乐观上屏的文件气泡可能缺 size/path，用传输记录补齐。 */
-const fileMeta = computed<FileMeta | null>(() => {
-  if (props.message.kind !== "file") return null;
-  try {
-    const meta = JSON.parse(props.message.content) as Partial<FileMeta>;
-    const t = transfer.value;
-    return {
-      name: meta.name ?? t?.name ?? "文件",
-      path: meta.path ?? t?.path ?? "",
-      size: meta.size ?? t?.size ?? 0,
-      subtype: meta.subtype ?? "file",
-    };
-  } catch {
-    return null;
-  }
-});
-
-/** 进度 0~1；无记录（历史消息）返回 null 表示不显示进度条。 */
-const fileProgress = computed(() => {
-  if (!transfer.value) return null;
-  const t = transfer.value;
-  if (t.status === "done") return null; // 完成：不再显示条
-  return t.progress;
-});
-const fileStatusText = computed(() => {
-  const t = transfer.value;
-  if (!t) return null;
-  if (t.status === "done") return null;
-  const pct = Math.round((t.progress ?? 0) * 100);
-  return t.direction === "send" ? `发送中 ${pct}%` : `接收中 ${pct}%`;
-});
-
-// ---------------- 预览：消息流内固定 5 行，全文只在独立 Modal 里 ----------------
-/** 复制反馈：同一时刻只有一个复制按钮处于「已复制」态。 */
-const copiedKey = ref<"text" | "code" | "full" | null>(null);
-function copyContent(key: "text" | "code" | "full", text: string) {
-  navigator.clipboard
-    .writeText(text)
-    .then(() => {
-      copiedKey.value = key;
-      setTimeout(() => {
-        if (copiedKey.value === key) copiedKey.value = null;
-      }, 1500);
-    })
-    .catch(() => {
-      /* 剪贴板不可用时静默：不弹 toast 打扰发送 */
-    });
-}
 
 /** 全文弹窗：文本与代码共用一个 Modal，DOM 在消息之外，不参与 VirtualList 排布。 */
 const fullModalOpen = ref(false);
@@ -219,27 +104,8 @@ function openFullModal(kind: "text" | "code", content: string) {
   fullModalContent.value = content;
   fullModalOpen.value = true;
 }
-function closeFullModal() {
-  fullModalOpen.value = false;
-}
 
-/** 长文本判定与 estimateHeight 共用 textNeedsClamp：字号档位变了两边一起变。 */
-const isLongText = computed(
-  () => props.message.kind === "text" && textNeedsClamp(props.message.content, app.chatStyle.fontSize),
-);
-/** 截断样式由 PREVIEW_LINES 驱动，避免 Tailwind 类名里的行数与估算常量各写一份。 */
-const textClampStyle = computed<CSSProperties>(() =>
-  isLongText.value
-    ? {
-        display: "-webkit-box",
-        WebkitBoxOrient: "vertical",
-        WebkitLineClamp: PREVIEW_LINES,
-        overflow: "hidden",
-      }
-    : {},
-);
-
-// ---------------- 图片查看器（vue-easy-lightbox：缩放 / 拖拽 / 滚轮 / Esc / 点遮罩） ----------------
+/** 图片查看器（vue-easy-lightbox：缩放 / 拖拽 / 滚轮 / Esc / 点遮罩） */
 const lightboxOpen = ref(false);
 const lightboxSrc = ref("");
 function openImageLightbox(src: string) {
@@ -248,97 +114,94 @@ function openImageLightbox(src: string) {
   lightboxOpen.value = true;
 }
 
-// ---------------- 附件预览（file + subtype = image | code） ----------------
-/** 附件图片 objectURL / 附件代码文本 / 超限提示。全空 = 尚未就绪或失败 → 回退文件卡片。 */
-const attachmentUrl = ref<string | null>(null);
-const attachmentCode = ref<string | null>(null);
-const previewNote = ref<string | null>(null);
+// ---------------- 消息右键菜单：复制 / 保存图片 / 引用 / 转发 ----------------
+const ctxMenu = ref<{ x: number; y: number } | null>(null);
 
-/** 仅当 file 消息本地路径就绪（= 已完成接收 / 本机自选文件）、未失败、且为 image/code 时可预览。 */
-const previewSubtype = computed<"image" | "code" | null>(() => {
-  const meta = fileMeta.value;
-  if (props.message.kind !== "file" || !meta || !meta.path) return null;
-  if (sendState.value === "failed") return null;
-  return meta.subtype === "image" || meta.subtype === "code" ? meta.subtype : null;
-});
-
-async function ensureAttachmentPreview() {
-  const sub = previewSubtype.value;
-  const meta = fileMeta.value;
-  if (!sub || !meta) {
-    attachmentUrl.value = null;
-    attachmentCode.value = null;
-    previewNote.value = null;
-    return;
-  }
-  const r = await loadFilePreview(props.message.msg_id, sub, meta.name);
-  // await 期间该气泡可能已不满足预览条件（切换/失败）→ 丢弃，避免贴到错误气泡。
-  if (previewSubtype.value !== sub) return;
-  attachmentUrl.value = r.url ?? null;
-  attachmentCode.value = r.text ?? null;
-  previewNote.value = r.note ?? null;
+function openContextMenu(e: MouseEvent) {
+  if (props.message.kind === "system") return;
+  ctxMenu.value = { x: e.clientX, y: e.clientY };
 }
 
-// 传输完成或乐观→真实替换后，path/subtype/name 变化会自动触发，无需仅在 mounted 读一次。
-// 必须显式读 path/name：Vue 对 watcher 返回的数组做浅比对，若源里不包含这些字段
-// 的读取，optimistic({path:""})→real({path:"/…",name:"x"}) 替换时 msg_id+subtype 不变
-// → 数组值相等 → callback 不触发。
-watch(
-  () => [
-    previewSubtype.value,
-    props.message.msg_id,
-    fileMeta.value?.path,
-    fileMeta.value?.name,
-  ] as const,
-  () => void ensureAttachmentPreview(),
-  { immediate: true },
-);
-
-/** 消息流里的代码：inline code 消息取 content，代码附件取本地读到的文本（null=未就绪/失败）。 */
-const streamCode = computed<string | null>(() => {
-  if (props.message.kind === "code") return props.message.content;
-  return attachmentCode.value;
+/** 图片消息的内容即 dataURL；解出 base64 供剪贴板 / 另存。 */
+const imageDataUrl = computed(() => {
+  if (props.message.kind === "image") return props.message.content;
+  if (props.message.kind === "file" && attachmentUrl.value) return attachmentUrl.value;
+  return "";
 });
-/** 截断态用固定高度容器裁掉 CodeBlock 的其余部分：不出现内部滚动条，也不会向下撑开。 */
-const streamCodeClamped = computed(() => (streamCode.value ? codeNeedsClamp(streamCode.value) : false));
 
-/**
- * 操作条取 CodeBlock 代码区的同款底色与描边色（对应 CodeBlock.vue 的 codeBg / borderStyle），
- * 这样「代码块 + 操作条」是一整张卡片，中间不再露出聊天背景。
- */
-const codeActionsStyle = computed(() => ({
-  background: app.dark ? "#0d1117" : "#f6f8fa",
-  borderColor: app.dark ? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.1)",
-}));
-
-async function openFile() {
-  const path = fileMeta.value?.path;
-  if (!path) {
-    app.toast("文件路径不可用", "error");
-    return;
-  }
+async function copyImage() {
+  ctxMenu.value = null;
+  const url = imageDataUrl.value;
+  if (!url) return;
   try {
-    await openPath(path);
-  } catch (e) {
-    app.toast(`打开文件失败：${e}`, "error");
+    const blob = await (await fetch(url)).blob();
+    const png = blob.type === "image/png" ? blob : await toPngBlob(url);
+    await navigator.clipboard.write([new ClipboardItem({ "image/png": png })]);
+    app.toast("图片已复制", "success");
+  } catch {
+    app.toast("复制图片失败（浏览器剪贴板不可用）", "error");
   }
 }
-async function saveAs() {
-  const source = fileMeta.value?.path;
-  const filename = fileMeta.value?.name;
-  if (!source || !filename) {
-    app.toast("文件路径不可用", "error");
-    return;
-  }
+
+/** 非 PNG 源转 PNG：经 canvas 重绘。 */
+async function toPngBlob(url: string): Promise<Blob> {
+  const img = new Image();
+  img.src = url;
+  await img.decode();
+  const canvas = document.createElement("canvas");
+  canvas.width = img.naturalWidth;
+  canvas.height = img.naturalHeight;
+  canvas.getContext("2d")!.drawImage(img, 0, 0);
+  return await new Promise<Blob>((resolve) => canvas.toBlob((b) => resolve(b!), "image/png"));
+}
+
+async function saveImage() {
+  ctxMenu.value = null;
+  const url = imageDataUrl.value;
+  if (!url) return;
   try {
-    const destination = await save({ defaultPath: filename });
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const { invoke } = await import("@tauri-apps/api/core");
+    const destination = await save({ defaultPath: `图片-${Date.now()}.png` });
     if (!destination) return; // 用户取消
-    await invoke("copy_file", { source, destination });
-    app.toast("文件已保存", "success");
+    const base64 = url.includes(",") ? url.split(",")[1] : btoa(url);
+    await invoke("save_data_file", { base64Data: base64, destination });
+    app.toast("图片已保存", "success");
   } catch (e) {
-    app.toast(`保存文件失败：${e}`, "error");
+    app.toast(`保存图片失败：${e}`, "error");
   }
 }
+
+/** 引用片段：文本取前 40 字，其它类型用占位标签。 */
+function quoteSnippet(kind: MsgKind, content: string): string {
+  if (kind === "image") return "[图片]";
+  if (kind === "code") return "[代码]";
+  if (kind === "file") return "[文件]";
+  const oneLine = content.replace(/\s+/g, " ").trim();
+  return oneLine.length > 40 ? `${oneLine.slice(0, 40)}…` : oneLine;
+}
+
+const emit = defineEmits<{
+  (e: "quote", payload: { sender: string; snippet: string }): void;
+  (e: "forward", payload: { kind: MsgKind; content: string; snippet: string }): void;
+}>();
+
+function doQuote() {
+  ctxMenu.value = null;
+  const msg = props.message;
+  emit("quote", {
+    sender: mine.value ? app.device?.nickname || "我" : props.senderName || msg.sender_id,
+    snippet: quoteSnippet(msg.kind, msg.content),
+  });
+}
+
+function doForward() {
+  const msg = props.message;
+  const payload = { kind: msg.kind as MsgKind, content: msg.content, snippet: quoteSnippet(msg.kind, msg.content) };
+  ctxMenu.value = null;
+  emit("forward", payload);
+}
+
 async function retrySend() {
   const msg = props.message;
   if (msg.status !== "failed" || msg.kind === "file") return;
@@ -351,9 +214,9 @@ async function retrySend() {
 </script>
 
 <template>
-  <div class="py-1">
-    <!-- 时间分割线（间隔 ≥ 5 分钟） -->
-    <div v-if="showTimeDivider" class="my-2 text-center text-[11px] text-[var(--gosslan-text-2)]">
+  <div class="py-0.5">
+    <!-- 时间分割线（间隔 ≥ 5 分钟）：居中浅灰小字 -->
+    <div v-if="showTimeDivider" class="py-2 text-center text-[11px] text-[var(--gosslan-text-2)]">
       {{ timeDividerText }}
     </div>
 
@@ -364,24 +227,15 @@ async function retrySend() {
       <div class="h-px flex-1 bg-primary/30"></div>
     </div>
 
-    <div class="flex gap-2 px-3" :class="mine ? 'flex-row-reverse' : ''">
+    <div class="flex gap-2 px-4" :class="mine ? 'flex-row-reverse' : ''">
       <!-- 头像：连续消息合并时省略（保留占位对齐） -->
-      <div v-if="!sameSenderRun" class="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-full bg-primary text-white">
-        <img
-          v-if="mine && app.device?.avatar"
-          :src="app.device.avatar"
-          class="h-full w-full object-cover"
-        />
-        <span v-else class="text-xs font-semibold">
-          {{ mine ? (app.device?.nickname.slice(0, 1) || "我") : (senderName || props.message.sender_id).slice(0, 1) }}
-        </span>
-      </div>
-      <div v-else class="w-8 shrink-0"></div>
+      <MessageAvatar v-if="!sameSenderRun" :name="avatarName" :avatar="avatarSrc" />
+      <div v-else class="w-9 shrink-0"></div>
 
-      <div class="flex min-w-0 max-w-[78%] flex-col" :class="mine ? 'items-end' : 'items-start'">
+      <div class="flex min-w-0 max-w-[72%] flex-col" :class="mine ? 'items-end' : 'items-start'">
         <!-- 群聊发送者昵称 -->
-        <div v-if="showNickname" class="mb-0.5 px-1 text-xs text-[var(--gosslan-text-2)]">
-          {{ senderName || props.message.sender_id }}
+        <div v-if="showNickname" class="mb-0.5 px-1 text-[11px] text-[var(--gosslan-text-2)]">
+          {{ senderName || message.sender_id }}
         </div>
 
         <!-- 系统消息 -->
@@ -392,187 +246,75 @@ async function retrySend() {
           {{ message.content }}
         </div>
 
-        <!-- 消息行：气泡 + 侧挂回执（mine 时回执在气泡左侧） -->
+        <!-- 消息行：气泡 + 侧挂回执（mine 时回执在气泡左侧）；右键弹消息菜单 -->
         <div
           v-else
           class="group/row flex w-full items-end gap-1.5"
           :class="mine ? 'justify-end' : 'justify-start'"
+          @contextmenu.prevent="openContextMenu"
         >
-        <!-- 群聊显示实际已读成员头像；单聊继续显示单个状态图标。 -->
-        <div v-if="mine && isGroup" class="relative shrink-0 pb-1.5">
-          <button
-            v-if="groupReaders.length > 0"
-            class="flex items-center -space-x-1 rounded-full p-0.5 transition hover:bg-[var(--gosslan-hover)]"
-            :title="`已读 ${groupReaders.length} 人`"
-            @click="groupReadersOpen = !groupReadersOpen"
-          >
-            <span
-              v-for="id in visibleGroupReaders"
-              :key="id"
-              class="flex h-4 w-4 items-center justify-center overflow-hidden rounded-full border border-[var(--gosslan-panel)] bg-primary text-[8px] text-white"
-            >
-              <img v-if="readerAvatar(id)" :src="readerAvatar(id) ?? undefined" class="h-full w-full object-cover" />
-              <span v-else>{{ readerName(id).slice(0, 1) }}</span>
-            </span>
-            <span v-if="extraGroupReaders.length > 0" class="ml-1 rounded-full bg-[var(--gosslan-hover)] px-1 text-[9px] text-[var(--gosslan-text-2)]">
-              +{{ extraGroupReaders.length }}
-            </span>
-          </button>
-          <div
-            v-if="groupReadersOpen && groupReaders.length > 0"
-            class="absolute bottom-7 right-0 z-20 max-h-60 min-w-36 overflow-y-auto rounded-lg border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] p-1.5 text-xs shadow-lg"
-          >
-            <div class="px-2 py-1 text-[var(--gosslan-text-2)]">已读成员（{{ groupReaders.length }}）</div>
-            <div v-for="id in groupReaders" :key="id" class="flex items-center gap-2 rounded px-2 py-1 hover:bg-[var(--gosslan-hover)]">
-              <span class="flex h-5 w-5 items-center justify-center overflow-hidden rounded-full bg-primary text-[9px] text-white">
-                <img v-if="readerAvatar(id)" :src="readerAvatar(id) ?? undefined" class="h-full w-full object-cover" />
-                <span v-else>{{ readerName(id).slice(0, 1) }}</span>
-              </span>
-              <span class="max-w-28 truncate">{{ readerName(id) }}</span>
-            </div>
+          <MessageReceipt
+            v-if="mine"
+            :state="sendState"
+            :title="receiptTitle"
+            :is-group="isGroup"
+            :reader-ids="groupReaderIds"
+            :msg-key="message.msg_id ?? message.id"
+            @retry="retrySend"
+          />
+
+          <!-- 文本 -->
+          <MessageTextBubble
+            v-if="message.kind === 'text'"
+            :content="message.content"
+            :bubble-style="bubbleStyle"
+            :clamped="isLongText"
+            :copied="copiedKey === 'text'"
+            @expand="openFullModal('text', $event)"
+            @copy="copyContent('text', $event)"
+          />
+
+          <!-- 代码：inline code 消息与代码附件同一套预览；超过 5 行裁断，全文进 Modal -->
+          <MessageCodeBubble
+            v-else-if="streamCode !== null"
+            :code="streamCode"
+            :clamped="streamCodeClamped"
+            :copied="copiedKey === 'code'"
+            :dark="app.dark"
+            @expand="openFullModal('code', $event)"
+            @copy="copyContent('code', $event)"
+          />
+
+          <!-- 图片 -->
+          <MessageImageBubble
+            v-else-if="message.kind === 'image'"
+            :src="message.content"
+            @open="openImageLightbox"
+          />
+
+          <!-- 附件图片预览（file + subtype:image，接收完成后显示本地图片） -->
+          <MessageImageBubble
+            v-else-if="message.kind === 'file' && attachmentUrl"
+            :src="attachmentUrl"
+            @open="openImageLightbox"
+          />
+
+          <!-- 文件 -->
+          <MessageFileBubble
+            v-else-if="message.kind === 'file' && fileMeta"
+            :meta="fileMeta"
+            :bubble-style="bubbleStyle"
+            :progress="fileProgress"
+            :status-text="fileStatusText"
+            :failed="sendState === 'failed'"
+            :note="previewNote"
+            @open="openFile"
+            @save="saveAs"
+          />
+
+          <div v-else class="px-3 py-2 text-sm" :style="bubbleStyle">
+            {{ message.content }}
           </div>
-        </div>
-        <!-- mine 时回执固定在气泡左侧（视觉上贴近对话人头像方向） -->
-        <span v-else-if="mine" class="shrink-0 pb-1.5" :title="receiptTitle">
-          <Loader2 v-if="sendState === 'sending' || sendState === 'sent'" class="h-3.5 w-3.5 animate-spin text-[var(--gosslan-text-2)]" />
-          <button v-else-if="sendState === 'failed'" class="flex h-5 w-5 items-center justify-center rounded text-red-500 transition hover:bg-red-500/10" title="重新发送" @click="retrySend">
-            <RefreshCw class="h-3.5 w-3.5" />
-          </button>
-          <Circle v-else-if="sendState === 'delivered'" class="h-3.5 w-3.5 text-[var(--gosslan-text-2)]" />
-          <Check v-else-if="sendState === 'read'" class="h-4 w-4 text-emerald-500" />
-        </span>
-
-        <!-- 文本 -->
-        <div
-          v-if="message.kind === 'text'"
-          class="group relative min-w-0 rounded-2xl px-3 py-2 leading-relaxed shadow-sm"
-          :style="{ ...bubbleStyle, fontSize: 'var(--gosslan-msg-size, 14px)' }"
-        >
-          <div
-            class="whitespace-pre-wrap break-words"
-            :style="{ wordBreak: 'break-word', ...textClampStyle }"
-          >{{ message.content }}</div>
-          <!-- 长文本操作条：高度固定，展开走独立 Modal，消息 DOM 不再变化 -->
-          <div v-if="isLongText" class="mt-1.5 flex items-center gap-2 border-t pt-1.5" :style="{ borderColor: 'rgba(128,128,128,0.2)' }">
-            <button
-              class="text-xs opacity-70 transition hover:opacity-100"
-              @click="openFullModal('text', message.content)"
-            >展开显示</button>
-            <button
-              class="flex items-center gap-1 whitespace-nowrap text-xs transition"
-              :class="copiedKey === 'text' ? 'text-emerald-600 dark:text-emerald-400' : 'opacity-70 hover:opacity-100'"
-              @click="copyContent('text', message.content)"
-            >
-              <Check v-if="copiedKey === 'text'" class="h-3 w-3" />
-              <Copy v-else class="h-3 w-3" />
-              {{ copiedKey === "text" ? "已复制" : "复制" }}
-            </button>
-          </div>
-          <!-- 普通文本悬停复制按钮 -->
-          <button
-            v-else
-            class="absolute -top-3 right-1 z-10 hidden items-center gap-1 whitespace-nowrap rounded-md border px-1.5 py-0.5 text-xs shadow transition group-hover:flex"
-            :class="copiedKey === 'text'
-              ? 'border-emerald-300 bg-emerald-50 text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400'
-              : 'border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] text-[var(--gosslan-text-2)]'"
-            @click="copyContent('text', message.content)"
-          >
-            <Check v-if="copiedKey === 'text'" class="h-3 w-3" />
-            <Copy v-else class="h-3 w-3" />
-            {{ copiedKey === "text" ? "已复制" : "复制" }}
-          </button>
-        </div>
-
-        <!-- 代码：inline code 消息与代码附件同一套预览；超过 5 行裁断，全文进 Modal -->
-        <div v-else-if="streamCode !== null" class="min-w-0 flex-1">
-          <div v-if="streamCodeClamped" class="overflow-hidden rounded-t-lg" :style="{ height: `${CODE_CLAMP_HEIGHT}px` }">
-            <CodeBlock :code="streamCode" />
-          </div>
-          <CodeBlock v-else :code="streamCode" />
-          <!-- 操作条＝代码卡片的底栏：总高恒为 previewMetrics.CODE_ACTION_BAR(28px)，改样式不要动高度 -->
-          <div
-            class="code-actions"
-            :class="streamCodeClamped ? 'code-actions-divided' : ''"
-            :style="codeActionsStyle"
-          >
-            <button
-              v-if="streamCodeClamped"
-              class="preview-action"
-              @click="openFullModal('code', streamCode)"
-            >展开显示</button>
-            <button
-              class="preview-action"
-              :class="copiedKey === 'code' ? 'text-emerald-600 dark:text-emerald-400' : ''"
-              @click="copyContent('code', streamCode)"
-            >
-              <Check v-if="copiedKey === 'code'" class="h-3 w-3" />
-              <Copy v-else class="h-3 w-3" />
-              {{ copiedKey === "code" ? "已复制" : "复制" }}
-            </button>
-          </div>
-        </div>
-
-        <!-- 图片 -->
-        <div v-else-if="message.kind === 'image'" class="overflow-hidden rounded-xl cursor-pointer" @click="openImageLightbox(message.content)">
-          <img :src="message.content" class="block max-h-72 max-w-full rounded-xl object-contain" />
-        </div>
-
-        <!-- 附件图片预览（file + subtype:image，接收完成后显示本地图片，点击→查看器） -->
-        <div v-else-if="message.kind === 'file' && attachmentUrl" class="overflow-hidden rounded-xl cursor-pointer" @click="openImageLightbox(attachmentUrl)">
-          <img :src="attachmentUrl" class="block max-h-72 max-w-full rounded-xl object-contain" />
-        </div>
-
-        <!-- 文件 -->
-        <div
-          v-else-if="message.kind === 'file' && fileMeta"
-          class="flex min-w-0 flex-1 flex-col gap-2 rounded-xl px-3 py-2.5 shadow-sm"
-          :style="bubbleStyle"
-        >
-          <div class="flex items-center gap-3">
-            <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg"
-              :class="sendState === 'failed' ? 'bg-red-100 text-red-500 dark:bg-red-900/30' : 'bg-primary-light text-primary'"
-            >
-              <FileText v-if="sendState !== 'failed'" class="h-5 w-5" />
-              <X v-else class="h-5 w-5" />
-            </div>
-            <div class="min-w-0 flex-1">
-              <div class="truncate text-sm font-medium">{{ fileMeta.name }}</div>
-              <div v-if="sendState === 'failed'" class="text-xs text-red-500">发送失败</div>
-              <div v-else class="text-xs opacity-70">{{ humanSize(fileMeta.size) }}</div>
-              <div v-if="previewNote" class="text-[11px] opacity-70">{{ previewNote }}</div>
-            </div>
-            <button
-              v-if="sendState !== 'failed'"
-              class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-primary transition hover:bg-[var(--gosslan-hover)]"
-              title="打开文件"
-              @click="openFile"
-            >
-              <FileText class="h-4 w-4" />
-            </button>
-            <button
-              v-if="sendState !== 'failed'"
-              class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-primary transition hover:bg-[var(--gosslan-hover)]"
-              title="下载文件"
-              @click="saveAs"
-            >
-              <Download class="h-4 w-4" />
-            </button>
-          </div>
-          <!-- 传输进度条（发送/接收中实时显示，完成后消失） -->
-          <template v-if="fileProgress !== null">
-            <div class="h-1.5 overflow-hidden rounded-full bg-black/10 dark:bg-white/10">
-              <div
-                class="h-full rounded-full bg-primary transition-all duration-200"
-                :style="{ width: `${Math.round(fileProgress * 100)}%` }"
-              ></div>
-            </div>
-            <div class="text-[11px] opacity-70">{{ fileStatusText }}</div>
-          </template>
-        </div>
-
-        <div v-else class="rounded-2xl px-3 py-2 text-sm shadow-sm" :style="bubbleStyle">
-          {{ message.content }}
-        </div>
         </div>
 
         <!-- 时间行：仅分钟组末条显示时间，hover 可见秒级 -->
@@ -596,73 +338,29 @@ async function retrySend() {
     </div>
   </div>
 
-  <!-- 全文弹窗：文本 / 代码共用，内容可滚动、可复制；关闭后消息布局不变 -->
-  <BaseModal :open="fullModalOpen" :title="fullModalKind === 'code' ? '代码预览' : '完整文本'" width="max-w-4xl" @close="closeFullModal">
-    <div class="max-h-[70vh] overflow-y-auto">
-      <CodeBlock v-if="fullModalKind === 'code'" :code="fullModalContent" />
-      <div
-        v-else
-        class="whitespace-pre-wrap break-words text-sm leading-relaxed text-[var(--gosslan-text)]"
-        :style="{ wordBreak: 'break-word' }"
-      >{{ fullModalContent }}</div>
-    </div>
-    <div class="mt-3 flex justify-end">
-      <button
-        class="preview-action"
-        :class="copiedKey === 'full' ? 'text-emerald-600 dark:text-emerald-400' : ''"
-        @click="copyContent('full', fullModalContent)"
-      >
-        <Check v-if="copiedKey === 'full'" class="h-3 w-3" />
-        <Copy v-else class="h-3 w-3" />
-        {{ copiedKey === "full" ? "已复制" : "复制" }}
-      </button>
-    </div>
-  </BaseModal>
-
-  <!-- 图片查看器：缩放 / 拖拽 / 滚轮 / 双击 / Esc / 点遮罩均由 vue-easy-lightbox 提供 -->
-  <VueEasyLightbox
-    v-if="lightboxOpen"
-    :visible="lightboxOpen"
-    :imgs="lightboxSrc"
-    :rotate-disabled="true"
-    teleport="body"
-    @hide="lightboxOpen = false"
+  <MessageContentModal
+    :open="fullModalOpen"
+    :kind="fullModalKind"
+    :content="fullModalContent"
+    :copied="copiedKey === 'full'"
+    @close="fullModalOpen = false"
+    @copy="copyContent('full', $event)"
   />
-</template>
 
-<style scoped>
-/* 代码卡片底栏：与上面的 CodeBlock 共用同款底色和描边，衔接成一张完整卡片。
-   高度锁死 28px（border-box，含边框）= previewMetrics.CODE_ACTION_BAR，
-   与代码块之间不留 margin，否则中间会露出聊天背景。 */
-.code-actions {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  box-sizing: border-box;
-  height: 28px;
-  padding: 0 4px;
-  border-style: solid;
-  border-width: 0 1px 1px;
-  border-radius: 0 0 8px 8px;
-}
-/* 截断态代码块被裁掉、自身没有下边框，分隔线由底栏画；未截断态用 CodeBlock 的下边框，不重复叠加。 */
-.code-actions-divided {
-  border-top-width: 1px;
-}
-/* 按钮：padding 4px + line-height 16px = 24px，放进 28px 底栏上下各余 2px（含边框） */
-.preview-action {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 10px;
-  font-size: 11px;
-  line-height: 16px;
-  border-radius: 6px;
-  color: var(--gosslan-text-2);
-  white-space: nowrap;
-}
-.preview-action:hover {
-  background: rgba(128, 128, 128, 0.12);
-  color: var(--gosslan-text);
-}
-</style>
+  <!-- 消息右键菜单 -->
+  <MessageContextMenu
+    v-if="ctxMenu"
+    :x="ctxMenu.x"
+    :y="ctxMenu.y"
+    :kind="message.kind"
+    @close="ctxMenu = null"
+    @copy-text="ctxMenu = null; copyContent(message.kind === 'code' ? 'code' : 'text', message.content)"
+    @copy-image="copyImage"
+    @save-image="saveImage"
+    @quote="doQuote"
+    @forward="doForward"
+  />
+
+  <!-- 图片查看器（自研：与其它弹窗同风格，滚轮缩放/拖动/Esc） -->
+  <ImageLightbox :src="lightboxSrc" :open="lightboxOpen" @close="lightboxOpen = false" />
+</template>

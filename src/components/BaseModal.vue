@@ -19,7 +19,7 @@ const emit = defineEmits<{ (e: "close"): void }>();
         leave-from="opacity-100"
         leave-to="opacity-0"
       >
-        <div class="fixed inset-0 bg-black/40" aria-hidden="true" />
+        <div class="glass fixed inset-0 bg-black/40" aria-hidden="true" />
       </TransitionChild>
       <div class="fixed inset-0 overflow-y-auto">
         <div class="flex min-h-full items-center justify-center p-4">
@@ -33,7 +33,7 @@ const emit = defineEmits<{ (e: "close"): void }>();
             leave-to="opacity-0 scale-95"
           >
             <DialogPanel
-              class="w-full rounded-2xl bg-[var(--gosslan-panel)] p-5 shadow-xl text-left align-middle text-[var(--gosslan-text)]"
+              class="elevated w-full rounded-2xl bg-[var(--gosslan-panel)] p-5 text-left align-middle text-[var(--gosslan-text)]"
               :class="width"
             >
               <DialogTitle v-if="title" as="h3" class="text-base font-semibold mb-4">

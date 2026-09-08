@@ -14,15 +14,16 @@
       {
         "label": "main",
         "title": "Gosslan",
-        "width": 1200,
-        "height": 780,
+        "width": 1000,
+        "height": 680,
         "minWidth": 920,
         "minHeight": 640,
         "center": true,
         "resizable": true,
         "fullscreen": false,
         "decorations": false,
-        "transparent": false
+        "transparent": false,
+        "shadow": true
       }
     ],
     "security": {

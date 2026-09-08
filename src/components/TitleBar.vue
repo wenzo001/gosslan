@@ -27,39 +27,37 @@ onMounted(refreshMaximized);
 </script>
 
 <template>
-  <!-- 自绘标题栏：与下方导航/列表同 panel 底色、无割裂分割线，视觉上与主界面连成一体。
-       data-tauri-drag-region 提供拖拽移动窗口能力（Tauri v2）。 -->
+  <!-- 顶部 caption（桌面端）：横贯整窗，作为窗口拖拽区 + 左侧铃铛 + 右上窗口按钮，
+       整条浅灰，与下方三列的 rail/chat 浅灰连成一体（list 白底除外）。 -->
   <div
     v-if="!app.isMobile"
     data-tauri-drag-region
-    class="flex h-9 shrink-0 select-none items-center justify-between bg-[var(--gosslan-panel)] pl-3"
+    class="flex shrink-0 select-none items-center justify-end bg-[var(--gosslan-caption)] px-2"
+    :style="{ height: 'var(--gosslan-title-h)' }"
   >
-    <div class="flex items-center gap-2 text-xs text-[var(--gosslan-text-2)]">
-      <span class="font-semibold text-[var(--gosslan-text)]">Gosslan</span>
-      <span class="opacity-60">· 无服务器局域网即时通讯</span>
-    </div>
+    <!-- 右侧：窗口三键（应用无通知中心，不放假铃铛）；左侧整条为拖拽区 -->
     <div class="flex h-full items-stretch">
       <button
-        class="flex w-11 items-center justify-center text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+        class="flex w-11 items-center justify-center text-[var(--gosslan-rail-text)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]"
         title="最小化"
         @click="api.windowMinimize()"
       >
-        <Minus class="h-4 w-4" />
+        <Minus class="h-3.5 w-3.5" />
       </button>
       <button
-        class="flex w-11 items-center justify-center text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+        class="flex w-11 items-center justify-center text-[var(--gosslan-rail-text)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]"
         :title="maximized ? '向下还原' : '最大化'"
         @click="toggleMaximize"
       >
-        <Minimize2 v-if="maximized" class="h-3.5 w-3.5" />
-        <Maximize2 v-else class="h-3.5 w-3.5" />
+        <Minimize2 v-if="maximized" class="h-3 w-3" />
+        <Maximize2 v-else class="h-3 w-3" />
       </button>
       <button
-        class="flex w-11 items-center justify-center text-[var(--gosslan-text-2)] transition hover:bg-red-500 hover:text-white"
+        class="flex w-11 items-center justify-center text-[var(--gosslan-rail-text)] transition hover:bg-[#e81123] hover:text-white"
         title="关闭（最小化到托盘，后台继续收消息）"
         @click="api.windowClose()"
       >
-        <X class="h-4 w-4" />
+        <X class="h-3.5 w-3.5" />
       </button>
     </div>
   </div>

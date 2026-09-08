@@ -1,64 +1,25 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
-import dayjs from "dayjs";
+import { computed, nextTick, ref, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import MessageItem from "@/components/MessageItem.vue";
 import VirtualList from "@/components/VirtualList.vue";
 import GroupMemberPanel from "@/components/GroupMemberPanel.vue";
-import EmojiPicker from "@/components/EmojiPicker.vue";
-import BaseModal from "@/components/BaseModal.vue";
-import {
-  CLAMPED_CODE_BLOCK_HEIGHT,
-  codeBlockHeight,
-  textBubbleHeight,
-} from "@/utils/previewMetrics";
-import {
-  ArrowDown,
-  ArrowLeft,
-  Code2,
-  FilePlus,
-  FolderOpen,
-  Lock,
-  Pencil,
-  Send,
-  Smile,
-  Users,
-} from "lucide-vue-next";
-import type { MessageRecord } from "@/types";
+import ChatHeader from "@/components/chat/ChatHeader.vue";
+import MessageComposer from "@/components/chat/MessageComposer.vue";
+import RenameGroupModal from "@/components/chat/RenameGroupModal.vue";
+import ForwardModal from "@/components/message/ForwardModal.vue";
+import { estimateMessageHeight } from "@/utils/messageHeight";
+import { ArrowDown } from "lucide-vue-next";
+import type { MessageRecord, MsgKind } from "@/types";
 
 const emit = defineEmits<{ (e: "open-share"): void }>();
 
 const app = useAppStore();
 const chat = useChatStore();
 
-const draft = ref("");
-const codeMode = ref(false);
 const listRef = ref<InstanceType<typeof VirtualList> | null>(null);
-const inputRef = ref<HTMLTextAreaElement | null>(null);
-
-/** 输入框自适应高度：内容换行时自动长高，超过 5 行（max-h-32 ≈ 8rem）出现滚动。 */
-function autoResize() {
-  const el = inputRef.value;
-  if (!el) return;
-  el.style.height = "auto";
-  el.style.height = `${Math.min(el.scrollHeight, 128)}px`;
-}
-
-watch(draft, () => autoResize());
-watch(codeMode, () => nextTick(() => autoResize()));
-
-// 打开会话即聚焦输入框（移动端不自动弹软键盘）
-watch(
-  () => chat.activeConv,
-  async () => {
-    await nextTick();
-    if (!app.isMobile) inputRef.value?.focus();
-    autoResize();
-  },
-  { immediate: true },
-);
 
 const conv = computed(() => chat.activeConversation);
 const isGroup = computed(() => chat.activeConv?.startsWith("group:") ?? false);
@@ -72,6 +33,17 @@ const isPeerFriend = computed(() => {
   if (!conv.value || conv.value.kind !== "single") return true;
   return chat.friends.some((f) => f.device_id === conv.value!.id);
 });
+
+/** 与 MessageItem 共用 previewMetrics 常量：估算高度 = 真实渲染高度。 */
+function estimateHeight(m: MessageRecord, index?: number): number {
+  return estimateMessageHeight(m, index, {
+    messages: messages.value,
+    isGroup: isGroup.value,
+    selfId: app.device?.device_id,
+    compact: app.chatStyle.compact,
+    fontSize: app.chatStyle.fontSize,
+  });
+}
 
 // ---------------- 群：成员面板 + 改名 ----------------
 const membersOpen = ref(false);
@@ -89,17 +61,12 @@ const canRename = computed(() => {
   return chat.groups.find((g) => g.id === gid)?.creator === app.device?.device_id;
 });
 const renameOpen = ref(false);
-const renameInput = ref("");
-function openRename() {
-  const gid = activeGroupId.value;
-  if (!gid) return;
-  renameInput.value = chat.groups.find((g) => g.id === gid)?.name ?? "";
-  renameOpen.value = true;
-}
-async function confirmRename() {
-  const gid = activeGroupId.value;
-  const name = renameInput.value.trim();
+const renameCurrent = computed(
+  () => chat.groups.find((g) => g.id === activeGroupId.value)?.name ?? "",
+);
+async function confirmRename(name: string) {
   renameOpen.value = false;
+  const gid = activeGroupId.value;
   if (!gid || !name) return;
   try {
     await chat.renameGroup(gid, name);
@@ -116,92 +83,10 @@ const unreadIndex = computed(() => {
   return uj.index;
 });
 
-// 滚动贴底状态（离开底部时显示「回到最新」按钮）
+// ---------------- 滚动 ----------------
 const nearBottom = ref(true);
-function onNearBottom(v: boolean) {
-  nearBottom.value = v;
-}
 
-function jumpToLatest() {
-  listRef.value?.scrollToBottom();
-}
-
-function estimateHeight(m: MessageRecord, index?: number): number {
-  const prev = index != null && index > 0 ? messages.value[index - 1] : null;
-
-  // --- 基础高度：气泡区域 ---
-  // 文本与代码的高度算法与 MessageItem 的截断判断共用 previewMetrics，
-  // 保证「流里那 5 行预览的真实 DOM 高度」就是这里估出来的高度。
-  let bubble: number;
-  switch (m.kind) {
-    case "code":
-      bubble = codeBlockHeight(m.content);
-      break;
-    case "image":
-      // MessageItem: max-h-72 (288px), object-contain 保持比例，≤320px 宽
-      bubble = 288;
-      break;
-    case "file": {
-      // 普通文件卡片 92；附件图片 ≤288；附件代码按截断态占位（读文件前预知不了行数）。
-      let sub = "file";
-      let hasPath = false;
-      try {
-        const o = JSON.parse(m.content) as { subtype?: string; path?: string };
-        sub = o?.subtype ?? "file";
-        hasPath = !!o?.path;
-      } catch {
-        /* 历史 / 异常内容按普通 file 卡片估 */
-      }
-      if (hasPath && sub === "image") bubble = 288;
-      else if (hasPath && sub === "code") bubble = CLAMPED_CODE_BLOCK_HEIGHT;
-      else bubble = 92;
-      break;
-    }
-    case "system":
-      bubble = 28;
-      break;
-    default:
-      bubble = textBubbleHeight(m.content, app.chatStyle.fontSize);
-  }
-
-  // --- 连续消息判断（昵称显示与 MessageItem 一致）---
-  const sameSender = prev
-    && prev.kind !== "system"
-    && prev.sender_id === m.sender_id
-    && m.ts - prev.ts < 5 * 60 * 1000
-    && app.chatStyle.compact;
-  // 分钟组末条：下一条不在同一分钟，或是列表最后一条
-  const next = index != null && index < messages.value.length - 1 ? messages.value[index + 1] : null;
-  const nextContinuesSenderRun = next
-    && m.kind !== "system"
-    && next.kind !== "system"
-    && app.chatStyle.compact
-    && next.sender_id === m.sender_id
-    && next.ts - m.ts < 5 * 60 * 1000;
-  const isLastInMinute = !next || (!nextContinuesSenderRun && !dayjs(next.ts).isSame(m.ts, "minute"));
-
-  // --- 时间分割线（≥5 分钟）：32px ---
-  const showDivider = !prev || m.ts - prev.ts >= 5 * 60 * 1000;
-
-  // --- 群聊昵称行（首条非本人消息）：20px ---
-  const showNickname = isGroup && m.sender_id !== app.device?.device_id && !sameSender;
-
-  // --- 消息行垂直 padding：所有消息统一，避免连续三条消息首条间距更大 ---
-  const py = 8; /* MessageItem: py-1 */
-  // --- 气泡下方时间行 ---
-  const timeH = isLastInMinute ? 18 /* mt-0.5(2) + text-[11px](16) */ : 0;
-  // --- 昵称行 ---
-  const nickH = showNickname ? 20 : 0;
-  // --- 分割线 ---
-  const divH = showDivider ? 32 : 0;
-
-  // 头像 h-8 w-8 与气泡同处 flex row（items-end），行高由更高的子元素决定，
-  // 不作为额外纵向高度计入。
-  return bubble + py + timeH + nickH + divH;
-}
-
-// 打开会话/未读定位：优先跳到第一条未读（该消息贴视口顶部，分割线置上），
-// 无未读则贴底。方向（上跳/下跳）由虚拟列表绝对定位直接定位，无布局抖动。
+// 打开会话/未读定位：优先跳到第一条未读（该消息贴视口顶部），无未读则贴底。
 watch(
   () => chat.unreadJump,
   async (uj) => {
@@ -213,8 +98,9 @@ watch(
   { immediate: true },
 );
 
+// 用 lastMsgId 精确区分 append（末尾新增）与 prepend（开头插入历史）：
+// prepend 不滚动，由 VirtualList 的锚定保持位置。
 let lastMsgId: string | number | null = null;
-
 watch(
   () => messages.value.length,
   async (_, oldLen) => {
@@ -230,80 +116,48 @@ watch(
 
     const newLast = messages.value.at(-1);
     const newLastId = newLast?.msg_id ?? null;
-
-    // 用 lastMsgId 精确区分 append（末尾新增）和 prepend（开头插入历史）
     const isAppend = newLastId !== null && newLastId !== lastMsgId;
     lastMsgId = newLastId;
 
     if (isAppend) {
-      // 自己发的消息：无论 nearBottom 如何都滚到底部
-      // 对方的消息：仅当用户原本就在底部附近时才滚到底部
+      // 自己发的消息无论 nearBottom 都贴底；对方的消息仅在用户已在底部附近时贴底
       const isMine = newLast?.sender_id === app.device?.device_id;
       if (isMine || nearBottom.value) {
         await nextTick();
         listRef.value?.scrollToBottom();
       }
     }
-    // prepend：不滚动，由 VirtualList 的 prepend 锚定保持位置
   },
 );
 
-async function sendMsg(content?: string, kind?: string) {
+// ---------------- 发送 ----------------
+async function onSend({ content, kind }: { content: string; kind: MsgKind }) {
   const convId = chat.activeConv;
-  if (!convId) return;
-  if (!isPeerFriend.value) return;
-  const text = content ?? draft.value;
-  const k = kind ?? (codeMode.value ? "code" : "text");
-  if (k === "text" && !text.trim()) return;
-  // 立即清空输入框（optimistic UI：不等 IPC 返回）
-  draft.value = "";
-  if (!kind) codeMode.value = false;
-  await nextTick();
-  autoResize();
-  // 后台执行实际发送
+  if (!convId || !isPeerFriend.value) return;
   try {
-    await chat.send(convId, text, k);
+    await chat.send(convId, content, kind);
   } catch (e) {
     app.toast(`发送失败：${e}`, "error");
   }
 }
 
-function onKeydown(e: KeyboardEvent) {
-  if (e.key === "Enter" && !e.shiftKey) {
-    e.preventDefault();
-    void sendMsg();
+// ---------------- 引用 / 转发 ----------------
+/** 待引用消息（MessageItem 右键"引用"设置，随发送或手动取消清除）。 */
+const quote = ref<{ sender: string; snippet: string } | null>(null);
+
+/** 转发弹窗状态（MessageItem 右键"转发"设置）。 */
+const forward = ref<{ kind: MsgKind; content: string; snippet: string } | null>(null);
+
+async function doForward(convId: string) {
+  const f = forward.value;
+  forward.value = null;
+  if (!f) return;
+  try {
+    await chat.send(convId, f.content, f.kind);
+    app.toast("转发成功", "success");
+  } catch (e) {
+    app.toast(`转发失败：${e}`, "error");
   }
-}
-
-// ---------------- 表情面板 ----------------
-const emojiOpen = ref(false);
-
-/** 点击面板外关闭（面板自身已 @click.stop，触发按钮也 stop） */
-function onDocClickForEmoji() {
-  emojiOpen.value = false;
-}
-onMounted(() => document.addEventListener("click", onDocClickForEmoji));
-onUnmounted(() => document.removeEventListener("click", onDocClickForEmoji));
-watch(emojiOpen, () => {
-  if (emojiOpen.value) autoResize();
-});
-
-/** 把表情插到输入框光标处（无光标信息则追加末尾），保持焦点便于连续插入。 */
-function insertEmoji(e: string) {
-  const el = inputRef.value;
-  if (!el) {
-    draft.value += e;
-    return;
-  }
-  const start = el.selectionStart ?? draft.value.length;
-  const end = el.selectionEnd ?? draft.value.length;
-  draft.value = draft.value.slice(0, start) + e + draft.value.slice(end);
-  void nextTick(() => {
-    el.focus();
-    const pos = start + e.length;
-    el.setSelectionRange(pos, pos);
-    autoResize();
-  });
 }
 
 /** 统一发送文件：自动路由（直连优先，弱网/无直连自动中继），无需用户选择。 */
@@ -321,106 +175,25 @@ function onLoadMore() {
   const convId = chat.activeConv;
   if (convId) void chat.loadMoreMessages(convId);
 }
-
-async function onPaste(e: ClipboardEvent) {
-  const items = e.clipboardData?.items;
-  if (!items) return;
-  for (const item of Array.from(items)) {
-    if (item.kind === "file" && item.type.startsWith("image/")) {
-      const f = item.getAsFile();
-      if (f) {
-        const dataUrl = await fileToDataUrl(f);
-        await sendMsg(dataUrl, "image");
-      }
-      break;
-    }
-  }
-}
-
-function fileToDataUrl(f: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const r = new FileReader();
-    r.onload = () => resolve(r.result as string);
-    r.onerror = reject;
-    r.readAsDataURL(f);
-  });
-}
 </script>
 
 <template>
-  <div class="flex h-full flex-col bg-[var(--gosslan-panel)]">
-    <!-- 头部 -->
-    <div
-      class="flex items-center justify-between border-b border-[var(--gosslan-border)] px-4"
-      style="height: 56px"
-    >
-      <div class="flex min-w-0 items-center gap-2">
-        <button
-          v-if="app.isMobile"
-          class="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-          @click="app.mobileView = 'list'"
-        >
-          <ArrowLeft class="h-5 w-5" />
-        </button>
-        <!-- 对方头像 + 在线角标（绿点=在线可连接；离线头像置灰 + 灰点） -->
-        <div v-if="!isGroup" class="relative shrink-0">
-          <div
-            class="flex h-9 w-9 items-center justify-center overflow-hidden rounded-full bg-primary text-white"
-            :class="!online ? 'grayscale opacity-70' : ''"
-          >
-            <img v-if="conv?.avatar" :src="conv.avatar" class="h-full w-full object-cover" />
-            <span v-else class="text-sm font-semibold">{{ (conv?.name || "?").slice(0, 1).toUpperCase() }}</span>
-          </div>
-          <span
-            class="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border-2 border-[var(--gosslan-panel)]"
-            :class="online ? 'bg-emerald-500' : 'bg-neutral-400'"
-          ></span>
-        </div>
-        <span class="truncate text-base font-semibold">{{ conv?.name || "会话" }}</span>
-        <!-- E2EE 徽标：v0.11.0 起恒开且不可关闭，始终显示绿锁 -->
-        <span
-          class="flex shrink-0 items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] text-emerald-600"
-          title="端到端加密：消息经 X25519 + ChaCha20-Poly1305 加密，中继与旁观者无法查看"
-        >
-          <Lock class="h-3 w-3" />
-          端到端加密
-        </span>
-        <span v-if="!isGroup" class="flex items-center gap-1 text-xs" :class="online ? 'text-emerald-600' : 'text-[var(--gosslan-text-2)]'">
-          <span class="h-1.5 w-1.5 rounded-full" :class="online ? 'bg-emerald-500' : 'bg-neutral-400'"></span>
-          {{ online ? "对方在线" : "对方离线" }}
-        </span>
-      </div>
-      <div class="flex items-center gap-1">
-        <button
-          v-if="isGroup"
-          class="flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-          title="群成员"
-          @click="membersOpen = true"
-        >
-          <Users class="h-4 w-4" />
-          {{ memberCount }}
-        </button>
-        <button
-          v-if="isGroup && canRename"
-          class="flex items-center justify-center rounded-lg p-2 text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-          title="修改群名称"
-          @click="openRename"
-        >
-          <Pencil class="h-4 w-4" />
-        </button>
-        <button
-          v-if="!isGroup"
-          class="flex items-center justify-center rounded-lg p-2 text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-          title="共享目录"
-          @click="emit('open-share')"
-        >
-          <FolderOpen class="h-5 w-5" />
-        </button>
-      </div>
-    </div>
+  <div class="flex h-full flex-col bg-[var(--gosslan-chat)]">
+    <ChatHeader
+      :conv="conv"
+      :is-group="isGroup"
+      :online="online"
+      :member-count="memberCount"
+      :can-rename="canRename"
+      :show-back="app.isMobile"
+      @back="app.mobileView = 'list'"
+      @open-members="membersOpen = true"
+      @rename="renameOpen = true"
+      @open-share="emit('open-share')"
+    />
 
-    <!-- 消息区（虚拟滚动，仅纵向） -->
-    <div class="relative min-h-0 flex-1 overflow-hidden bg-[var(--gosslan-bg)]">
+    <!-- 消息区（虚拟滚动，仅纵向）：与头部同底色，无缝衔接 -->
+    <div class="relative min-h-0 flex-1 overflow-hidden bg-[var(--gosslan-chat)]">
       <div v-if="messages.length === 0" class="mt-20 text-center text-sm text-[var(--gosslan-text-2)]">
         暂无消息，打个招呼吧
       </div>
@@ -430,7 +203,7 @@ function fileToDataUrl(f: File): Promise<string> {
         :items="messages"
         :estimate-height="estimateHeight"
         @load-more="onLoadMore"
-        @near-bottom="onNearBottom"
+        @near-bottom="nearBottom = $event"
       >
         <template #default="{ item, index }">
           <MessageItem
@@ -441,6 +214,8 @@ function fileToDataUrl(f: File): Promise<string> {
             :sender-name="isGroup ? chat.nicknameOf(item.sender_id) : ''"
             :group-reader-ids="isGroup && activeGroupId ? chat.groupReaderIds(activeGroupId, item.ts) : []"
             :show-unread-divider="index === unreadIndex"
+            @quote="quote = $event"
+            @forward="forward = $event"
           />
         </template>
       </VirtualList>
@@ -449,74 +224,26 @@ function fileToDataUrl(f: File): Promise<string> {
       <button
         v-if="!nearBottom"
         class="absolute bottom-4 right-5 z-10 flex items-center gap-1.5 rounded-full border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-3 py-1.5 text-xs text-[var(--gosslan-text)] shadow-lg transition hover:bg-[var(--gosslan-hover)]"
-        @click="jumpToLatest"
+        @click="listRef?.scrollToBottom()"
       >
         <ArrowDown class="h-3.5 w-3.5" />
         回到最新
       </button>
     </div>
 
-    <!-- 输入区：输入框在上，操作行（代码/文件/提示/发送）移到底部 -->
-    <div class="border-t border-[var(--gosslan-border)] px-4 pb-4 pt-2.5">
-      <div v-if="isGroup || isPeerFriend" class="space-y-2">
-        <div class="flex items-end gap-2">
-        <textarea
-          ref="inputRef"
-          v-model="draft"
-          rows="1"
-          maxlength="50000"
-          class="max-h-32 min-h-10 min-w-0 flex-1 resize-none overflow-y-auto rounded-xl bg-[var(--gosslan-bg)] px-3.5 py-2.5 text-sm leading-relaxed outline-none placeholder:text-[var(--gosslan-text-2)]"
-          :class="codeMode ? 'font-mono' : ''"
-          :style="{ overflowWrap: 'anywhere', wordBreak: 'break-word' }"
-          :placeholder="codeMode ? '粘贴或输入代码…' : '输入消息…'"
-          @keydown="onKeydown"
-          @paste="onPaste"
-        ></textarea>
-        </div>
-        <div class="flex items-center justify-between gap-2">
-        <div class="flex min-w-0 items-center gap-1">
-          <div class="relative">
-            <button
-              class="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs transition"
-              :class="emojiOpen ? 'bg-primary-light text-primary' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
-              title="表情"
-              @click.stop="emojiOpen = !emojiOpen"
-            >
-              <Smile class="h-4 w-4" />
-            </button>
-            <EmojiPicker :open="emojiOpen" @select="insertEmoji" @close="emojiOpen = false" />
-          </div>
-          <button
-            class="flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs transition"
-            :class="codeMode ? 'bg-primary-light text-primary' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
-            @click="codeMode = !codeMode"
-          >
-            <Code2 class="h-3.5 w-3.5" />
-            代码
-          </button>
-          <button
-            class="flex shrink-0 items-center gap-1 rounded-md border border-[var(--gosslan-border)] px-2 py-1 text-xs transition hover:bg-[var(--gosslan-hover)]"
-            title="发送文件（自动选择最优路线）"
-            @click="attachFile"
-          >
-            <FilePlus class="h-4 w-4" />
-            发送文件
-          </button>
-          <span class="ml-1 truncate text-[11px] text-[var(--gosslan-text-2)]">Enter 发送 · Shift+Enter 换行 · 支持粘贴图片</span>
-        </div>
-        <button
-          class="flex h-8 shrink-0 items-center gap-1.5 rounded-lg bg-primary px-3.5 text-xs font-medium text-white transition hover:bg-primary-hover disabled:opacity-40"
-          :disabled="!draft.trim()"
-          @click="sendMsg()"
-        >
-          <Send class="h-3.5 w-3.5" />
-          发送
-        </button>
-        </div>
-      </div>
+    <!-- 输入区：浅灰底上放一个白底圆角卡片，无顶部分割线 -->
+    <div class="shrink-0 bg-[var(--gosslan-chat)] px-4 pb-3 pt-2">
+      <MessageComposer
+        v-if="isGroup || isPeerFriend"
+        :conv-id="chat.activeConv"
+        :quote="quote"
+        @send="onSend"
+        @attach="attachFile"
+        @close-quote="quote = null"
+      />
       <div
         v-else
-        class="flex min-h-14 items-center justify-center rounded-xl bg-[var(--gosslan-bg)] px-4 text-center text-sm text-[var(--gosslan-text-2)]"
+        class="flex min-h-16 items-center justify-center rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-panel)] px-4 text-center text-[13px] text-[var(--gosslan-text-2)]"
       >
         对方还不是你的好友，添加好友后才能继续聊天。当前仅可查看聊天记录。
       </div>
@@ -525,29 +252,22 @@ function fileToDataUrl(f: File): Promise<string> {
     <!-- 群成员面板 -->
     <GroupMemberPanel :open="membersOpen" :group-id="activeGroupId" @close="membersOpen = false" />
 
+    <!-- 转发弹窗 -->
+    <ForwardModal
+      v-if="forward"
+      :open="true"
+      :kind="forward.kind"
+      :snippet="forward.snippet"
+      @close="forward = null"
+      @pick="doForward"
+    />
+
     <!-- 修改群名称（仅群主可见入口） -->
-    <BaseModal :open="renameOpen" title="修改群名称" @close="renameOpen = false">
-      <div class="space-y-3">
-        <input
-          v-model="renameInput"
-          maxlength="30"
-          placeholder="请输入群名称"
-          class="w-full rounded-lg bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none"
-          @keydown.enter="confirmRename"
-        />
-        <p class="text-xs text-[var(--gosslan-text-2)]">修改后会同步给所有群成员。</p>
-        <div class="flex justify-end gap-2 pt-1">
-          <button
-            class="rounded-lg px-4 py-1.5 text-sm transition hover:bg-[var(--gosslan-hover)]"
-            @click="renameOpen = false"
-          >取消</button>
-          <button
-            class="rounded-lg bg-primary px-4 py-1.5 text-sm text-white transition hover:bg-primary-hover disabled:opacity-40"
-            :disabled="!renameInput.trim()"
-            @click="confirmRename"
-          >保存</button>
-        </div>
-      </div>
-    </BaseModal>
+    <RenameGroupModal
+      :open="renameOpen"
+      :current-name="renameCurrent"
+      @close="renameOpen = false"
+      @confirm="confirmRename"
+    />
   </div>
 </template>

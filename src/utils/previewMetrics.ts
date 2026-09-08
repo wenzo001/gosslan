@@ -30,8 +30,9 @@ const CODE_PADDING = 12;
 const CODE_LINE_HEIGHT = 20;
 /** 代码块下方操作条：mt-1(4) + py-1(8) + leading-4(16)。 */
 const CODE_ACTION_BAR = 28;
-/** 一个视觉行的半角列数（气泡 max-w-[78%] 实测 ≈40 个半角字符 / 14px 正文）。 */
-const COLUMNS_PER_LINE = 40;
+/** 一个视觉行的半角列数（气泡 max-w-[72%] 实测 ≈37 个半角字符 / 14px 正文）。
+ *  改 MessageItem 的气泡宽度上限时，这里必须同步（偏小只会多留白，偏大会遮挡下一条）。 */
+const COLUMNS_PER_LINE = 37;
 /** COLUMNS_PER_LINE 对应的基准字号；字号变大时每行放不下的字符按比例减少。 */
 const BASE_FONT_PX = 14;
 

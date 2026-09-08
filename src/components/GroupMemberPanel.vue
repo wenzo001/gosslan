@@ -3,6 +3,7 @@ import { computed, ref, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import BaseModal from "@/components/BaseModal.vue";
+import { useMemberProfile } from "@/composables/useMemberProfile";
 import { Crown, Plus, UserMinus, X } from "lucide-vue-next";
 import type { Friend } from "@/types";
 
@@ -11,9 +12,8 @@ const emit = defineEmits<{ (e: "close"): void }>();
 
 const app = useAppStore();
 const chat = useChatStore();
-
+const { memberProfile, myId } = useMemberProfile();
 const group = computed(() => chat.groups.find((g) => g.id === props.groupId) ?? null);
-const myId = computed(() => app.device?.device_id ?? "");
 /** 当前用户是否为群主（可见「添加/移除成员」操作） */
 const isOwner = computed(() => !!group.value && group.value.creator === myId.value);
 /** 展示「添加成员」面板 */
@@ -33,19 +33,7 @@ function initials(n: string) {
   return n.slice(0, 1).toUpperCase();
 }
 
-/** 解析成员资料（昵称/头像/是否在线）：自己 → 本机 DeviceInfo；好友表优先；其次在线节点表 */
-function memberProfile(id: string): { name: string; avatar: string | null; online: boolean } {
-  // 自己：device_id 不属于 friends 也不会出现在 peers（不把自己加入 peers），
-  // 直接使用本机 DeviceInfo（app.device）的昵称/头像/在线状态，否则必然落入 offline 分支
-  if (id === myId.value && app.device) {
-    return { name: app.device.nickname, avatar: app.device.avatar, online: app.device.online };
-  }
-  const friend = chat.friends.find((f) => f.device_id === id);
-  if (friend) return { name: friend.nickname, avatar: friend.avatar, online: friend.online };
-  const peer = chat.peers.find((p) => p.device_id === id);
-  if (peer) return { name: peer.nickname, avatar: peer.avatar ?? null, online: true };
-  return { name: chat.nicknameOf(id), avatar: null, online: false };
-}
+/** 成员资料解析统一走 useMemberProfile（本机/好友表/在线节点），此处不再重复实现。 */
 
 /** 可用于加入该群的好友 = 好友 - 已是成员 - 自己 */
 const addableFriends = computed(() => {
@@ -87,7 +75,7 @@ async function removeMember(id: string) {
         >
           <div class="relative shrink-0">
             <div
-              class="flex h-9 w-9 items-center justify-center overflow-hidden rounded-full bg-primary text-white"
+              class="flex h-9 w-9 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] bg-primary text-white"
               :class="!memberProfile(id).online ? 'grayscale opacity-70' : ''"
             >
               <img v-if="memberProfile(id).avatar" :src="memberProfile(id).avatar ?? undefined" class="h-full w-full object-cover" />
@@ -95,7 +83,7 @@ async function removeMember(id: string) {
             </div>
             <span
               class="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border-2 border-[var(--gosslan-panel)]"
-              :class="memberProfile(id).online ? 'bg-emerald-500' : 'bg-neutral-400'"
+              :class="memberProfile(id).online ? 'bg-primary' : 'bg-neutral-400'"
             ></span>
           </div>
           <div class="min-w-0 flex-1">
@@ -151,7 +139,7 @@ async function removeMember(id: string) {
               class="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 transition hover:bg-[var(--gosslan-hover)]"
               @click="addMember(f)"
             >
-              <div class="flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-full bg-primary text-white">
+              <div class="flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] bg-primary text-white">
                 <img v-if="f.avatar" :src="f.avatar" class="h-full w-full object-cover" />
                 <span v-else class="text-[11px] font-semibold">{{ initials(f.nickname) }}</span>
               </div>

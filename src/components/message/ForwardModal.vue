@@ -1,0 +1,72 @@
+<script setup lang="ts">
+import { computed, ref } from "vue";
+import { useChatStore } from "@/stores/useChatStore";
+import BaseModal from "@/components/BaseModal.vue";
+import type { MsgKind } from "@/types";
+
+const props = defineProps<{
+  open: boolean;
+  /** 转发的消息类型（决定预览文案）。 */
+  kind: MsgKind;
+  /** 预览片段（截断后）。 */
+  snippet: string;
+}>();
+const emit = defineEmits<{ (e: "close"): void; (e: "pick", convId: string): void }>();
+
+const chat = useChatStore();
+const keyword = ref("");
+
+const filtered = computed(() => {
+  const kw = keyword.value.trim().toLowerCase();
+  if (!kw) return chat.conversations;
+  return chat.conversations.filter((c) => c.name.toLowerCase().includes(kw));
+});
+
+const kindLabel = computed(
+  () => ({ text: "文本", code: "代码", image: "图片", file: "文件", system: "系统" })[props.kind] ?? "消息",
+);
+</script>
+
+<template>
+  <BaseModal :open="open" title="转发到" @close="emit('close')">
+    <div class="space-y-3">
+      <!-- 引用预览 -->
+      <div class="rounded-lg bg-[var(--gosslan-hover)] px-3 py-2 text-xs text-[var(--gosslan-text-2)]">
+        <span class="mr-1 rounded bg-[var(--gosslan-panel)] px-1.5 py-0.5 text-[10px] text-[var(--gosslan-text)]">{{ kindLabel }}</span>
+        <span class="align-middle">{{ snippet }}</span>
+      </div>
+
+      <input
+        v-model="keyword"
+        maxlength="50"
+        placeholder="搜索会话"
+        class="w-full rounded-lg border border-[var(--gosslan-border)] bg-transparent px-3 py-2 text-[13px] outline-none placeholder:text-[var(--gosslan-text-2)] focus:border-[var(--gosslan-primary)]"
+      />
+
+      <div class="max-h-64 select-none overflow-y-auto">
+        <button
+          v-for="c in filtered"
+          :key="c.id"
+          class="flex h-[52px] w-full items-center gap-3 rounded-lg px-2 text-left transition hover:bg-[var(--gosslan-hover)]"
+          @click="emit('pick', c.id)"
+        >
+          <span
+            v-if="c.kind === 'group'"
+            class="flex h-9 w-9 shrink-0 items-center justify-center rounded-[var(--gosslan-avatar-radius)] bg-[var(--gosslan-rail-active)] text-xs text-[var(--gosslan-text-2)]"
+          >
+            群
+          </span>
+          <span
+            v-else
+            class="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] bg-primary text-sm text-white"
+          >
+            <img v-if="c.avatar" :src="c.avatar" class="h-full w-full object-cover" />
+            <span v-else>{{ c.name.slice(0, 1).toUpperCase() }}</span>
+          </span>
+          <span class="min-w-0 flex-1 truncate text-[13.5px] text-[var(--gosslan-text)]">{{ c.name }}</span>
+        </button>
+        <div v-if="filtered.length === 0" class="py-8 text-center text-sm text-[var(--gosslan-text-2)]">无匹配会话</div>
+      </div>
+    </div>
+  </BaseModal>
+</template>
