@@ -14,6 +14,7 @@ pub const DEFAULT_CHUNK_SIZE: usize = 256 * 1024;
 pub const MAX_CHUNK_SIZE: usize = 512 * 1024;
 
 /// 一个文件切片（base64 编码后的负载）。
+#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct ChunkData {
     pub seq: u32,
@@ -21,6 +22,7 @@ pub struct ChunkData {
 }
 
 /// 并行分发计划：某一切片交给某个中继节点。
+#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct RelayPlan {
     pub peer_id: String,

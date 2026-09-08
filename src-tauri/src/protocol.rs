@@ -220,6 +220,13 @@ pub enum Message {
         group_id: String,
         last_read_ts: i64,
     },
+    /// 群消息送达确认：接收方成功持久化某条群消息后回给原始发送者，
+    /// 发送方据此删除对应 `group_outbox(msg_id, peer_id)` 行。
+    GroupAck {
+        group_id: String,
+        msg_id: String,
+        from: String,
+    },
     // ---- 文件传输 ----
     /// 发起文件传输。`sealed_file_key`：发送方为本 transfer 生成的随机
     /// 32B 文件会话密钥，用接收方 X25519 公钥 ECDH + AEAD 封装——
@@ -249,6 +256,12 @@ pub enum Message {
     },
     FileDone {
         transfer_id: String,
+    },
+    /// 接收方对文件传输的最终确认（成功持久化并校验完成后才允许回 success=true）。
+    /// 发送方只有收到 success=true 才能把本地文件消息推进到 delivered。
+    FileCompleteAck {
+        transfer_id: String,
+        success: bool,
     },
     // ---- 共享目录 ----
     ShareTreeRequest {
@@ -462,5 +475,43 @@ mod tests {
         assert_eq!(MsgKind::from_str("code"), MsgKind::Code);
         assert_eq!(MsgKind::from_str("unknown"), MsgKind::Text);
         assert_eq!(MsgKind::Code.as_str(), "code");
+    }
+
+    #[test]
+    fn group_ack_and_file_complete_ack_roundtrip() {
+        let group_ack = Message::GroupAck {
+            group_id: "g1".into(),
+            msg_id: "m1".into(),
+            from: "dev-a".into(),
+        };
+        let json = serde_json::to_string(&group_ack).unwrap();
+        match serde_json::from_str::<Message>(&json).unwrap() {
+            Message::GroupAck {
+                group_id,
+                msg_id,
+                from,
+            } => {
+                assert_eq!(group_id, "g1");
+                assert_eq!(msg_id, "m1");
+                assert_eq!(from, "dev-a");
+            }
+            _ => panic!("expect group_ack"),
+        }
+
+        let file_ack = Message::FileCompleteAck {
+            transfer_id: "t1".into(),
+            success: true,
+        };
+        let json = serde_json::to_string(&file_ack).unwrap();
+        match serde_json::from_str::<Message>(&json).unwrap() {
+            Message::FileCompleteAck {
+                transfer_id,
+                success,
+            } => {
+                assert_eq!(transfer_id, "t1");
+                assert!(success);
+            }
+            _ => panic!("expect file_complete_ack"),
+        }
     }
 }

@@ -339,6 +339,9 @@ pub struct AppState {
 
     /// 等待对方接受的文件传输：transfer_id -> 接受信号
     pub pending_file_accept: Mutex<HashMap<String, tokio::sync::oneshot::Sender<()>>>,
+    /// 等待接收方完成确认的直连文件传输：transfer_id -> 完成信号。
+    /// 发送方在 FileDone 之后等待 FileCompleteAck，只有 success=true 才推进 delivered。
+    pub pending_file_complete: Mutex<HashMap<String, tokio::sync::oneshot::Sender<bool>>>,
     /// 中继接收的文件会话状态：transfer_id -> 密钥 + 预期 SHA-256 + 增量哈希。
     /// RelayFileOffer 中以我方公钥 E2EE 封装，解封后仅存内存；
     /// 中继节点不持有密钥、不参与解密与校验，只透传密文切片。
@@ -351,6 +354,8 @@ pub struct AppState {
     /// 群文件离线投递进行中标记：同一 peer 同时最多一个投递任务
     /// （顺序发送其 pending 群文件）；不同 peer 之间并行。
     pub group_file_sending: Mutex<std::collections::HashSet<String>>,
+    /// 一对一文件离线投递进行中标记：同一 peer 同时最多一个投递任务。
+    pub file_sending: Mutex<std::collections::HashSet<String>>,
     /// 群文件接收端 `.part` 状态：transfer_id -> 接收状态。
     /// 与一对一 `file_receivers` 生命周期独立；复用 FileReceiver 结构
     /// （file_key/next_seq/hasher 语义相同），不写 file_transfers 表。
@@ -481,10 +486,12 @@ impl AppState {
             nickname: Mutex::new(nickname),
             avatar: Mutex::new(avatar),
             pending_file_accept: Mutex::new(HashMap::new()),
+            pending_file_complete: Mutex::new(HashMap::new()),
             relay_file_keys: Mutex::new(HashMap::new()),
             group_file_keys: Mutex::new(HashMap::new()),
             group_file_receivers: Mutex::new(HashMap::new()),
             group_file_sending: Mutex::new(std::collections::HashSet::new()),
+            file_sending: Mutex::new(std::collections::HashSet::new()),
             file_receivers: Mutex::new(HashMap::new()),
             pending_share_tree: Mutex::new(HashMap::new()),
             peers_dirty: AtomicBool::new(false),

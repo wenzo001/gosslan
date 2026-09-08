@@ -58,25 +58,53 @@ pub fn valid_sha256_hex(s: &str) -> bool {
     s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+/// 文件发送失败分类：`retryable = true` 表示链路/超时等可恢复错误，
+/// 应保留在 `file_outbox` 等待重试；`false` 表示文件缺失、非好友、缺公钥等永久错误。
+#[derive(Debug, Clone)]
+pub struct SendFileError {
+    pub retryable: bool,
+    pub message: String,
+}
+
+impl SendFileError {
+    fn retryable(message: impl Into<String>) -> Self {
+        Self {
+            retryable: true,
+            message: message.into(),
+        }
+    }
+
+    fn permanent(message: impl Into<String>) -> Self {
+        Self {
+            retryable: false,
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for SendFileError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+
+impl std::error::Error for SendFileError {}
+
 /// 主动向 `peer_id` 发送本地文件。
+///
+/// 这是一个低层投递原语：只负责把文件完整送达并拿到接收方完成确认。
+/// 不负责重试与持久化队列；调用方（`commands::flush_pending_files`）根据
+/// `SendFileError::retryable` 决定保留重试还是标记失败。
 pub async fn send_file_from_path(
     state: &Arc<AppState>,
     peer_id: &str,
     transfer_id: &str,
     path: PathBuf,
-) -> Result<(), String> {
-    let meta = match std::fs::metadata(&path) {
-        Ok(meta) => meta,
-        Err(e) => {
-            let reason = e.to_string();
-            emit_failed(state, transfer_id, &reason);
-            return Err(reason);
-        }
-    };
+) -> Result<(), SendFileError> {
+    let meta = std::fs::metadata(&path)
+        .map_err(|e| SendFileError::permanent(format!("文件不存在或不可读：{e}")))?;
     if !meta.is_file() {
-        let reason = "只能发送普通文件";
-        emit_failed(state, transfer_id, reason);
-        return Err(reason.to_string());
+        return Err(SendFileError::permanent("只能发送普通文件"));
     }
     let size = meta.len();
     let name = path
@@ -86,9 +114,7 @@ pub async fn send_file_from_path(
 
     // ---- E2EE：本 transfer 独立的随机文件会话密钥（CSPRNG），仅存内存 ----
     let file_key = crypto::random_key();
-    // 文件级完整性：流式计算原文件 SHA-256（256KB 分块，不整读内存）
-    let file_sha256 = sha256_file_hex(&path)?;
-    // 接收方公钥：peers 优先、friends 回落（与 GroupKey 分发同一来源策略）
+    let file_sha256 = sha256_file_hex(&path).map_err(|e| SendFileError::permanent(e))?;
     let receiver_pubkey = resolve_member_x25519(state, peer_id);
     let sealed_key_b64 = (|| {
         let pubkey = receiver_pubkey.as_deref()?;
@@ -96,9 +122,7 @@ pub async fn send_file_from_path(
         Some(STANDARD.encode(crypto::seal(&shared, &file_key)?))
     })();
     let Some(sealed_key_b64) = sealed_key_b64 else {
-        let reason = "无法获取对方公钥，无法加密文件";
-        emit_failed(state, transfer_id, reason);
-        return Err(reason.to_string());
+        return Err(SendFileError::permanent("无法获取对方公钥，无法加密文件"));
     };
 
     {
@@ -138,21 +162,7 @@ pub async fn send_file_from_path(
             .lock()
             .unwrap()
             .remove(transfer_id);
-        let dbc = state.db.lock().unwrap();
-        db::upsert_transfer(
-            &dbc,
-            transfer_id,
-            peer_id,
-            &name,
-            size,
-            "send",
-            "failed",
-            None,
-            0.0,
-        )
-        .ok();
-        emit_failed(state, transfer_id, &e);
-        return Err(e);
+        return Err(SendFileError::retryable(format!("建立文件传输失败：{e}")));
     }
 
     // 等待对方接受（超时 15 秒）
@@ -164,48 +174,13 @@ pub async fn send_file_from_path(
                 .lock()
                 .unwrap()
                 .remove(transfer_id);
-            {
-                let dbc = state.db.lock().unwrap();
-                db::upsert_transfer(
-                    &dbc,
-                    transfer_id,
-                    peer_id,
-                    &name,
-                    size,
-                    "send",
-                    "failed",
-                    None,
-                    0.0,
-                )
-                .ok();
-            }
-            let reason = "对方未接受文件";
-            emit_failed(state, transfer_id, reason);
-            return Err(reason.to_string());
+            return Err(SendFileError::retryable("对方未接受文件"));
         }
     }
 
-    // 传输中断（链路断开等）也要把记录标记为 failed，避免永远停在 active
-    match stream_file(state, peer_id, transfer_id, path, name, size, file_key).await {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            let dbc = state.db.lock().unwrap();
-            db::upsert_transfer(
-                &dbc,
-                transfer_id,
-                peer_id,
-                "",
-                size,
-                "send",
-                "failed",
-                None,
-                0.0,
-            )
-            .ok();
-            emit_failed(state, transfer_id, &e);
-            Err(e)
-        }
-    }
+    stream_file(state, peer_id, transfer_id, path, name, size, file_key)
+        .await
+        .map_err(|e| SendFileError::retryable(e))
 }
 
 async fn stream_file(
@@ -296,6 +271,15 @@ async fn stream_file(
         }
     }
 
+    // 发送方在 FileDone 之后必须等待接收方 FileCompleteAck：
+    // TCP write 成功不代表文件已成功持久化，只有接收方 size/SHA-256 校验通过并落盘，
+    // 才允许把本地消息推进到 delivered。
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    state
+        .pending_file_complete
+        .lock()
+        .unwrap()
+        .insert(transfer_id.to_string(), tx);
     try_send(
         state,
         peer_id,
@@ -304,6 +288,19 @@ async fn stream_file(
         },
     )
     .await?;
+    let completed = match tokio::time::timeout(Duration::from_secs(30), rx).await {
+        Ok(Ok(true)) => true,
+        _ => false,
+    };
+    state
+        .pending_file_complete
+        .lock()
+        .unwrap()
+        .remove(transfer_id);
+    if !completed {
+        return Err("接收方未确认文件完成".to_string());
+    }
+
     {
         let dbc = state.db.lock().unwrap();
         db::upsert_transfer(
@@ -318,8 +315,7 @@ async fn stream_file(
             1.0,
         )
         .ok();
-        // 发送方消息状态也要推进到 delivered：否则气泡永远停在「发送中」spinner，
-        // 因为后端不会给自己的消息回 Ack/FileDone 事件。
+        // 接收方已确认完成，此时推进 delivered 才是真实的。
         db::set_message_status(&dbc, &format!("file-{transfer_id}"), "delivered").ok();
     }
     // 通知前端发送方文件消息已完成（前端 onMessageAcked 会把 spinner 切为空圆框）
@@ -1189,7 +1185,7 @@ mod tests {
         };
 
         let mut assembled: Vec<u8> = Vec::new();
-        for (seq, chunk) in original.chunks(FILE_CHUNK).enumerate() {
+        for (_, chunk) in original.chunks(FILE_CHUNK).enumerate() {
             let sealed = crypto::seal_symmetric(&file_key, chunk).unwrap(); // 发送端
             let _forwarded = sealed.clone(); // 中继：原样透传
             let plain = crypto::open_symmetric(&rs.file_key, &_forwarded).unwrap(); // 接收端
@@ -1478,7 +1474,7 @@ mod tests {
     /// 模拟 handle_group_file_done 的最终校验与落盘序列：
     /// size → SHA-256 → sync_all → drop(file) → rename（与生产代码同序）。
     fn finalize_group_receive(
-        mut r: crate::state::FileReceiver,
+        r: crate::state::FileReceiver,
     ) -> Result<std::path::PathBuf, String> {
         if r.received != r.size {
             let _ = std::fs::remove_file(&r.tmp_path);
@@ -1585,7 +1581,7 @@ mod tests {
         // 空文件 SHA-256（发送端对 0 字节文件计算的结果）
         let expected = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
         let file_key = crypto::random_key();
-        let mut r = group_receiver("done-empty", 0, expected.to_string(), file_key);
+        let r = group_receiver("done-empty", 0, expected.to_string(), file_key);
         assert_eq!(r.received, 0, "空文件无任何 Chunk");
 
         let final_path = finalize_group_receive(r).expect("空文件必须能正常完成");

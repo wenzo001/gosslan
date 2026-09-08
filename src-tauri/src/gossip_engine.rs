@@ -18,11 +18,15 @@ pub struct BloomFilter {
     bits: Vec<u64>,
     num_bits: usize,
     num_hashes: usize,
+    /// 期望容量：达到后轮换整个位图，避免长期运行误判率无限上升。
+    capacity: usize,
+    count: usize,
 }
 
 impl BloomFilter {
     /// `capacity`：期望元素数；`false_positive`：误判率（如 0.01）。
     pub fn new(capacity: usize, false_positive: f64) -> Self {
+        let capacity = capacity.max(1);
         let ln2 = std::f64::consts::LN_2;
         let num_bits = (-(capacity as f64) * false_positive.ln() / (ln2 * ln2)).ceil() as usize;
         let num_hashes = ((num_bits as f64 / capacity as f64) * ln2).ceil() as usize;
@@ -32,6 +36,8 @@ impl BloomFilter {
             bits: vec![0u64; (num_bits + 63) / 64],
             num_bits,
             num_hashes,
+            capacity,
+            count: 0,
         }
     }
 
@@ -44,9 +50,16 @@ impl BloomFilter {
     }
 
     pub fn insert(&mut self, data: &str) {
+        if self.count >= self.capacity {
+            for word in &mut self.bits {
+                *word = 0;
+            }
+            self.count = 0;
+        }
         for p in self.positions(data) {
             self.bits[p / 64] |= 1u64 << (p % 64);
         }
+        self.count += 1;
     }
 
     pub fn contains(&self, data: &str) -> bool {
@@ -198,6 +211,18 @@ mod tests {
         assert!(engine.is_new("abc"));
         assert!(!engine.is_new("abc"));
         assert!(engine.is_new("def"));
+    }
+
+    /// Bloom 达到容量后必须轮换：位图清零，count 归零，避免长期运行误判率无限上升。
+    #[test]
+    fn bloom_rotates_when_full() {
+        let mut bloom = BloomFilter::new(2, 0.01);
+        bloom.insert("a");
+        bloom.insert("b");
+        // 此时 count == capacity，下一次插入应先清零位图再插入。
+        bloom.insert("c");
+        assert_eq!(bloom.count, 1);
+        assert!(bloom.contains("c"));
     }
 
     #[test]

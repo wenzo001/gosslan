@@ -23,6 +23,7 @@ use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
+use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
@@ -69,6 +70,11 @@ fn seal_direct(identity: &Identity, receiver_x25519: &str, content: &str) -> Str
         .expect("valid receiver key");
     let sealed = crypto::seal(&shared, content.as_bytes()).expect("direct encryption succeeds");
     format!("enc1:{}", STANDARD.encode(sealed))
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 struct Report {
@@ -452,6 +458,13 @@ async fn main() {
     let content: Vec<u8> = (0..700_000usize)
         .map(|i| (b'a' + (i % 26) as u8) as u8)
         .collect();
+    let file_key = crypto::random_key();
+    let file_sha256 = sha256_hex(&content);
+    let file_shared = crypto::shared_secret(&identity.x25519_secret, &app_x25519)
+        .expect("app receiver key valid");
+    let sealed_file_key = STANDARD.encode(
+        crypto::seal(&file_shared, &file_key).expect("file key seal succeeds"),
+    );
     let _ = send_frame(
         &mut w,
         &Message::FileOffer {
@@ -459,6 +472,8 @@ async fn main() {
             from: PEER_ID.into(),
             name: FILE_NAME.into(),
             size: content.len() as u64,
+            sealed_file_key: sealed_file_key.clone(),
+            file_sha256: file_sha256.clone(),
         },
     )
     .await;
@@ -479,12 +494,14 @@ async fn main() {
     }
     let mut seq = 0u32;
     for chunk in content.chunks(FILE_CHUNK) {
+        let sealed_chunk =
+            crypto::seal_symmetric(&file_key, chunk).expect("file chunk encryption succeeds");
         let _ = send_frame(
             &mut w,
             &Message::FileChunk {
                 transfer_id: TRANSFER_ID.into(),
                 seq,
-                data: STANDARD.encode(chunk),
+                data: STANDARD.encode(sealed_chunk),
             },
         )
         .await;

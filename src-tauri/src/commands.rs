@@ -29,7 +29,6 @@ use crate::network::transport::{
 };
 use crate::network::{self, file};
 use crate::protocol::{GossipKind, Message, MsgKind, ShareEntry, FILE_CHUNK};
-use crate::relay_manager::ChunkData;
 use crate::state::{
     AppState, Conversation, DeviceInfo, Friend, Group, GroupFile, InterfaceInfo, MessageRecord,
     Peer, PendingRequest, TopologyInfo, TransferInfo,
@@ -606,6 +605,7 @@ pub async fn remove_friend(state: State<'_, Arc<AppState>>, peer_id: String) -> 
     {
         let dbc = s.db.lock().unwrap();
         db::remove_friend(&dbc, &peer_id).map_err(|e| e.to_string())?;
+        db::delete_file_outbox_for_peer(&dbc, &peer_id).ok();
     }
     // 通知对方解除好友关系（对方收到后也会删除本机好友行）
     let msg = Message::FriendRemove {
@@ -1265,6 +1265,8 @@ pub async fn group_remove_member(
     {
         let dbc = s.db.lock().unwrap();
         db::remove_group_member(&dbc, &group_id, &device_id).map_err(|e| e.to_string())?;
+        // 被移除者不再属于该群：清掉仍指向它的待补发群消息，避免重连时向群外成员投递。
+        db::delete_group_outbox_for_peer_in_group(&dbc, &group_id, &device_id).ok();
     }
     // 轮换群密钥：被移除者失去解密能力
     let key = crypto::random_key();
@@ -1405,7 +1407,7 @@ pub async fn send_group_message(
             ts,
         );
         env.group_creator = group_creator;
-        env.group_members = group_members;
+        env.group_members = group_members.clone();
         // group_creator / group_members 属于签名材料（GossipEnvelope::signing_bytes），
         // 而 build_envelope 内部已按「尚未填值」的状态算过 message_id 与 sender_sig。
         // 若此处不重算重签，接收端 verify_envelope 会用最终字段重新计算签名材料，
@@ -1431,11 +1433,26 @@ pub async fn send_group_message(
         ts,
         status: "sent".to_string(),
     };
+    // 群消息与单聊一样需要可靠投递：本地落库 + 每个成员的 outbox 在同一事务里完成，
+    // 再由建链 / Hello / 心跳触发 flush_group_outbox 补发，收到 GroupAck 才删行。
+    let gossip_msg = Message::Gossip {
+        envelope: env.clone(),
+    };
+    let payload = serde_json::to_string(&gossip_msg).map_err(|e| e.to_string())?;
     {
         let dbc = s.db.lock().unwrap();
-        db::insert_message(&dbc, &rec).map_err(|e| format!("消息写入失败：{e}"))?;
-        db::touch_conversation(&dbc, &conv_id, "group", &group_name, None, &preview, 0)
+        let tx = dbc.unchecked_transaction().map_err(|e| e.to_string())?;
+        db::insert_message(&tx, &rec).map_err(|e| format!("消息写入失败：{e}"))?;
+        db::touch_conversation(&tx, &conv_id, "group", &group_name, None, &preview, 0)
             .map_err(|e| format!("会话写入失败：{e}"))?;
+        for member in &group_members {
+            if member == &s.device_id {
+                continue;
+            }
+            db::insert_group_outbox(&tx, &rec.msg_id, &group_id, member, &payload)
+                .map_err(|e| format!("群消息入队失败：{e}"))?;
+        }
+        tx.commit().map_err(|e| format!("群消息写入失败：{e}"))?;
     }
 
     broadcast_gossip(s, env).await;
@@ -1533,23 +1550,8 @@ pub async fn send_group_file(
         db::set_setting(&dbc, &format!("gfk:{transfer_id}"), &sealed_file_key).ok();
     }
 
-    // 可达成员：有 TCP link 且 peers 信息完整；其余保持 pending
-    let mut reachable: Vec<String> = Vec::new();
-    for m in &members {
-        if s.links.lock().await.contains_key(m) && resolve_member_x25519(&s, m).is_some() {
-            reachable.push(m.clone());
-        }
-    }
-    if reachable.is_empty() {
-        // 全员不可达：明确报错让前端反馈，而不是静默成功让用户"毫无反应"
-        return Err("群内成员当前均不在线，无法发送群文件".to_string());
-    }
-    // 发起成功即返回 transfer_id：离线成员保持 pending，
-    // 由成员上线事件（Hello/心跳/建链）触发自动投递（见 dispatch_pending_group_files）
-
-    // 发送者本地气泡：群文件发起在会话中可见（msg_id 与接收端一致，
-    // 便于 CompleteAck 后双方各自推进状态）
-    // 本地气泡 content 携带源文件路径：发送端打开/图片代码预览立即可用
+    // 发送者本地气泡先落库：无论成员当前是否在线，用户看到的都是「发送中/待投递」，
+    // 而不是一个报错后又偷偷排队的隐藏任务。
     let content =
         serde_json::json!({ "name": name, "path": path, "size": size, "sha256": sha256 })
             .to_string();
@@ -1567,7 +1569,6 @@ pub async fn send_group_file(
     {
         let dbc = s.db.lock().unwrap();
         db::insert_message(&dbc, &rec).ok();
-        // 发送端 transfer 记录：本机保留源文件路径（打开/另存直接打开源文件）
         db::upsert_transfer(
             &dbc,
             &transfer_id,
@@ -1593,6 +1594,14 @@ pub async fn send_group_file(
         .ok();
     }
     let _ = s.app.emit("message-received", &rec);
+
+    // 可达成员：有 TCP link 且 peers 信息完整；其余保持 pending，由上线事件自动投递。
+    let mut reachable: Vec<String> = Vec::new();
+    for m in &members {
+        if s.links.lock().await.contains_key(m) && resolve_member_x25519(&s, m).is_some() {
+            reachable.push(m.clone());
+        }
+    }
 
     // 逐可达成员发送 Offer
     for m in &reachable {
@@ -1837,6 +1846,112 @@ pub fn get_group_file_delivery_summary(
 }
 
 
+/// 构造一条本地文件消息记录（发送方）。
+fn build_file_message(
+    state: &AppState,
+    transfer_id: &str,
+    friend_id: &str,
+    path: &str,
+    name: &str,
+    size: u64,
+) -> MessageRecord {
+    let content = serde_json::json!({
+        "name": name,
+        "path": path,
+        "size": size,
+        "subtype": file::classify_file_subtype(name),
+    })
+    .to_string();
+    MessageRecord {
+        id: 0,
+        msg_id: format!("file-{transfer_id}"),
+        conv_id: friend_id.to_string(),
+        sender_id: state.device_id.clone(),
+        receiver_id: friend_id.to_string(),
+        kind: "file".to_string(),
+        content,
+        ts: db::now_ms(),
+        status: "sent".to_string(),
+    }
+}
+
+/// 永久失败收尾：队列置 failed，消息气泡置 failed，并通知前端。
+fn fail_file_job(state: &AppState, transfer_id: &str, reason: &str) {
+    {
+        let dbc = state.db.lock().unwrap();
+        db::mark_file_outbox_failed(&dbc, transfer_id).ok();
+        db::set_message_status(&dbc, &format!("file-{transfer_id}"), "failed").ok();
+        // 保持 file_transfers 行已有的 name/size/path，仅把状态推进到 failed。
+        let _ = dbc.execute(
+            "UPDATE file_transfers SET status = 'failed', progress = 0.0 WHERE id = ?1",
+            rusqlite::params![transfer_id],
+        );
+    }
+    let _ = state.app.emit(
+        "file-failed",
+        &crate::state::FileFailedInfo {
+            transfer_id: transfer_id.to_string(),
+            reason: reason.to_string(),
+        },
+    );
+}
+
+/// 尝试投递某 peer 的全部 pending 文件（同一 peer 串行，不同 peer 并行）。
+/// 触发点与 `flush_outbox` / `flush_group_outbox` 一致：建链 / Hello / 心跳。
+pub async fn flush_pending_files(state: &Arc<AppState>, peer_id: &str) {
+    if !state.file_sending.lock().unwrap().insert(peer_id.to_string()) {
+        return;
+    }
+    // 没有链路时不做无谓尝试，保持 pending，等下一次连接事件再触发。
+    if !state.links.lock().await.contains_key(peer_id) {
+        state.file_sending.lock().unwrap().remove(peer_id);
+        return;
+    }
+    let pending = {
+        let dbc = state.db.lock().unwrap();
+        db::list_pending_file_outbox(&dbc, peer_id).unwrap_or_default()
+    };
+    if pending.is_empty() {
+        state.file_sending.lock().unwrap().remove(peer_id);
+        return;
+    }
+    let st = state.clone();
+    let peer = peer_id.to_string();
+    tauri::async_runtime::spawn(async move {
+        for (transfer_id, local_path) in pending {
+            if !st.links.lock().await.contains_key(&peer) {
+                break;
+            }
+            {
+                let dbc = st.db.lock().unwrap();
+                db::mark_file_outbox_sending(&dbc, &transfer_id, 0).ok();
+            }
+            match file::send_file_from_path(
+                &st,
+                &peer,
+                &transfer_id,
+                std::path::PathBuf::from(local_path),
+            )
+            .await
+            {
+                Ok(()) => {
+                    let dbc = st.db.lock().unwrap();
+                    db::delete_file_outbox(&dbc, &transfer_id).ok();
+                }
+                Err(e) if !e.retryable => {
+                    fail_file_job(&st, &transfer_id, &e.message);
+                }
+                Err(_) => {
+                    // 可恢复失败：保留 pending，稍后由连接/心跳再次触发。
+                    let dbc = st.db.lock().unwrap();
+                    db::mark_file_outbox_pending(&dbc, &transfer_id, 5_000).ok();
+                }
+            }
+        }
+        st.file_sending.lock().unwrap().remove(&peer);
+    });
+}
+
 #[tauri::command]
 pub async fn send_file(
     state: State<'_, Arc<AppState>>,
@@ -1851,7 +1966,6 @@ pub async fn send_file(
             return Err("对方不是好友，请先扫描添加好友之后再继续聊天。".to_string());
         }
     }
-    let transfer_id = Uuid::new_v4().to_string();
     let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
     if !meta.is_file() {
         return Err("只能发送普通文件".to_string());
@@ -1860,26 +1974,17 @@ pub async fn send_file(
     let name = std::path::Path::new(&path)
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_default();
-
-    let content = serde_json::json!({ "name": name.clone(), "path": path, "size": size, "subtype": file::classify_file_subtype(&name) }).to_string();
-    let rec = MessageRecord {
-        id: 0,
-        msg_id: format!("file-{transfer_id}"),
-        conv_id: friend_id.clone(),
-        sender_id: s.device_id.clone(),
-        receiver_id: friend_id.clone(),
-        kind: "file".to_string(),
-        content,
-        ts: db::now_ms(),
-        status: "sent".to_string(),
-    };
+        .unwrap_or_else(|| "unnamed".to_string());
+    let transfer_id = Uuid::new_v4().to_string();
+    let rec = build_file_message(s, &transfer_id, &friend_id, &path, &name, size);
+    // 注意：不能在持有 db 锁时调用 resolve_nickname（其内部会再次锁 db）。
+    let nm = resolve_nickname(s, &friend_id);
     {
         let dbc = s.db.lock().unwrap();
-        db::insert_message(&dbc, &rec).ok();
-        let nm = resolve_nickname(s, &friend_id);
+        let tx = dbc.unchecked_transaction().map_err(|e| e.to_string())?;
+        db::insert_message(&tx, &rec).map_err(|e| e.to_string())?;
         db::touch_conversation(
-            &dbc,
+            &tx,
             &friend_id,
             "single",
             &nm,
@@ -1887,194 +1992,41 @@ pub async fn send_file(
             &format!("[文件] {name}"),
             0,
         )
-        .ok();
+        .map_err(|e| e.to_string())?;
+        db::insert_file_outbox(&tx, &transfer_id, &friend_id, None, &path, &name, size)
+            .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
     }
     let _ = s.app.emit("message-received", &rec);
 
     let arc = state.inner().clone();
-    let fid = friend_id;
-    let tid = transfer_id.clone();
-    let p = PathBuf::from(path);
+    let fid = friend_id.clone();
     tokio::spawn(async move {
-        let _ = file::send_file_from_path(&arc, &fid, &tid, p).await;
+        flush_pending_files(&arc, &fid).await;
     });
     Ok(transfer_id)
 }
 
-/// 统一文件发送入口：自动路由。
-/// - 与对方有直连 TCP 链路 → 直连分片流（可靠有序）。
-/// - 无直连但周围有在线节点 → 切片中继（经其他节点转发）。
-/// - 都不可达 → 返回明确错误。
+/// 统一文件发送入口：当前稳定版统一走「直连 + 离线队列」。
+/// 只要好友最终上线，文件就会在连接事件触发时自动补发，不再依赖不可达的中继路径。
 #[tauri::command]
 pub async fn send_file_auto(
     state: State<'_, Arc<AppState>>,
     friend_id: String,
     path: String,
 ) -> Result<String, String> {
-    let s = state.inner();
-    let direct = s.links.lock().await.contains_key(&friend_id);
-    if direct {
-        return send_file(state.clone(), friend_id, path).await;
-    }
-
-    // 无直连：若周围完全没有任何已建链节点，中继也走不通
-    let relay_available = { !s.links.lock().await.is_empty() };
-    if !relay_available {
-        return Err("对方与周围节点均不在线，无法发送文件".to_string());
-    }
-    send_file_relay(state, friend_id, path).await
+    send_file(state, friend_id, path).await
 }
 
-/// 中继切片发送：把文件切片并行分发给接收方 + 空闲中继节点。
+/// 中继切片发送入口：保留命令名以兼容前端，当前实现回退到与直连相同的可靠队列，
+/// 避免「看似已发送、实际无法投递」的假成功。
 #[tauri::command]
 pub async fn send_file_relay(
     state: State<'_, Arc<AppState>>,
     friend_id: String,
     path: String,
 ) -> Result<String, String> {
-    let s = state.inner();
-    // 好友关系检查
-    {
-        let dbc = s.db.lock().unwrap();
-        if db::get_friend(&dbc, &friend_id).is_none() {
-            return Err("对方不是好友，请先扫描添加好友之后再继续聊天。".to_string());
-        }
-    }
-    let transfer_id = Uuid::new_v4().to_string();
-
-    // 文件读取 + base64 切片是同步重活：放阻塞线程池，避免卡住 async runtime（界面卡死根因）
-    let chunk_size = { s.relay.lock().unwrap().chunk_size };
-    let p = std::path::PathBuf::from(&path);
-    let (name, size, chunks, file_sha256) = tokio::task::spawn_blocking(move || {
-        // 文件级 SHA-256（256KB 分块流式，不整读内存），与切片同批后台完成
-        let sha = crate::network::file::sha256_file_hex(&p)?;
-        let (name, size, chunks) =
-            crate::relay_manager::RelayManager::slice_file_with(&p, chunk_size)
-                .map_err(|e| e.to_string())?;
-        Ok::<_, String>((name, size, chunks, sha))
-    })
-    .await
-    .map_err(|e| e.to_string())??;
-    if size > i64::MAX as u64 {
-        return Err("文件过大，无法安全发送".to_string());
-    }
-
-    let total_chunks = chunks.len() as u32;
-    if total_chunks == 0 {
-        return Err("空文件不支持中继发送，请使用直连传输".to_string());
-    }
-
-    // E2EE：本 transfer 独立的随机文件会话密钥（CSPRNG，仅存内存），
-    // 用接收方公钥封装进 RelayFileOffer；每个切片以此密钥 AEAD 加密——
-    // 中继节点只透传密文，无法解密。
-    let file_key = crypto::random_key();
-    let receiver_pubkey = resolve_member_x25519(&s, &friend_id);
-    let sealed_key_b64 = (|| {
-        let pubkey = receiver_pubkey.as_deref()?;
-        let shared = crypto::shared_secret(&s.identity.x25519_secret, pubkey)?;
-        Some(STANDARD.encode(crypto::seal(&shared, &file_key)?))
-    })();
-    let Some(sealed_key_b64) = sealed_key_b64 else {
-        return Err("无法获取对方公钥，无法加密文件".to_string());
-    };
-    // 切片逐片加密：ChunkData.data 为 base64（明文）→ decode → AEAD 加密 → 重新 encode
-    // （随机 nonce，同密钥不同片 nonce 必不相同）
-    let sealed_chunks: Vec<ChunkData> = chunks
-        .into_iter()
-        .enumerate()
-        .map(|(seq, c)| {
-            let plain = STANDARD.decode(&c.data).map_err(|e| e.to_string())?;
-            let sealed = crypto::seal_symmetric(&file_key, &plain)
-                .ok_or_else(|| "文件分片加密失败".to_string())?;
-            Ok::<_, String>(ChunkData {
-                seq: seq as u32,
-                data: STANDARD.encode(sealed),
-            })
-        })
-        .collect::<Result<_, _>>()?;
-    s.relay.lock().unwrap().register_send(&transfer_id, sealed_chunks);
-
-    // 元数据直接发给接收方
-    let offer = Message::RelayFileOffer {
-        transfer_id: transfer_id.clone(),
-        from: s.device_id.clone(),
-        to: friend_id.clone(),
-        name: name.clone(),
-        size,
-        total_chunks,
-        sealed_file_key: sealed_key_b64,
-        file_sha256,
-    };
-    try_send(s, &friend_id, &offer).await?;
-
-    // 选择中继节点：在线且非接收方（最多 3 个）
-    let relays: Vec<String> = {
-        let peers = s.peers.lock().unwrap();
-        peers
-            .keys()
-            .filter(|k| k.as_str() != friend_id)
-            .cloned()
-            .take(3)
-            .collect()
-    };
-    let mut targets = vec![friend_id.clone()];
-    targets.extend(relays);
-
-    // 轮询分发切片
-    let plan = {
-        s.relay
-            .lock()
-            .unwrap()
-            .plan_distribution(&transfer_id, &targets)
-    };
-    for p in plan {
-        let chunk = Message::RelayChunk {
-            transfer_id: transfer_id.clone(),
-            seq: p.chunk.seq,
-            data: p.chunk.data,
-            from: s.device_id.clone(),
-            to: friend_id.clone(),
-            ttl: 3,
-        };
-        let _ = try_send(s, &p.peer_id, &chunk).await;
-    }
-    s.relay.lock().unwrap().finish_send(&transfer_id);
-
-    // 本机消息记录
-    let content = serde_json::json!({ "name": name.clone(), "path": path, "size": size, "subtype": file::classify_file_subtype(&name) }).to_string();
-    let rec = MessageRecord {
-        id: 0,
-        msg_id: format!("file-{transfer_id}"),
-        conv_id: friend_id.clone(),
-        sender_id: s.device_id.clone(),
-        receiver_id: friend_id.clone(),
-        kind: "file".to_string(),
-        content,
-        ts: db::now_ms(),
-        status: "sent".to_string(),
-    };
-    {
-        let dbc = s.db.lock().unwrap();
-        db::insert_message(&dbc, &rec).ok();
-        // 与 Direct stream_file 一致：发送方消息状态推进到 delivered，
-        // 否则 Relay sender 气泡永远停在「发送中」spinner。
-        db::set_message_status(&dbc, &rec.msg_id, "delivered").ok();
-        let nm = resolve_nickname(s, &friend_id);
-        db::touch_conversation(
-            &dbc,
-            &friend_id,
-            "single",
-            &nm,
-            None,
-            &format!("[文件] {name}"),
-            0,
-        )
-        .ok();
-    }
-    let _ = s.app.emit("message-received", &rec);
-    let _ = s.app.emit("message-acked", &rec.msg_id);
-
-    Ok(transfer_id)
+    send_file(state, friend_id, path).await
 }
 
 #[tauri::command]
@@ -2255,6 +2207,10 @@ pub fn clear_all_data(state: State<'_, Arc<AppState>>) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
         tx.execute("DELETE FROM outbox", [])
             .map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM group_outbox", [])
+            .map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM file_outbox", [])
+            .map_err(|e| e.to_string())?;
         tx.execute("DELETE FROM file_transfers", [])
             .map_err(|e| e.to_string())?;
         tx.execute("DELETE FROM pending_reads", [])
@@ -2280,12 +2236,15 @@ pub fn clear_all_data(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     s.pending_requests.lock().unwrap().clear();
     s.pending_reads.lock().unwrap().clear();
     s.pending_file_accept.lock().unwrap().clear();
+    s.pending_file_complete.lock().unwrap().clear();
     s.pending_share_tree.lock().unwrap().clear();
-    // 群文件接收/发送运行态与待发群密钥同属聊天数据运行态（不清会残留
+    // 群文件/文件投递运行态与待发群密钥同属聊天数据运行态（不清会残留
     // 已删群的 file_key，且 pending 群密钥可能在重连时复活已删群记录）
     s.group_file_receivers.lock().unwrap().clear();
     s.group_file_keys.lock().unwrap().clear();
     s.pending_group_keys.lock().unwrap().clear();
+    s.group_file_sending.lock().unwrap().clear();
+    s.file_sending.lock().unwrap().clear();
     *s.relay.lock().unwrap() = crate::relay_manager::RelayManager::new();
     // 先关闭未完成接收的文件句柄，再清理 downloads 目录中的 .part 临时文件。
     s.file_receivers.lock().unwrap().clear();

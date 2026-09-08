@@ -205,6 +205,20 @@ async fn reader_loop(
         }
     }
     file::fail_receives_for_peer(&state, &peer_id);
+    // 群文件接收状态同样按对端断链清理，避免 `.part` 与内存状态泄漏。
+    {
+        let group_ids: Vec<String> = state
+            .group_file_receivers
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, r)| r.peer_id == peer_id)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for tid in group_ids {
+            fail_group_file_chunk(&state, &tid);
+        }
+    }
     // 只移除「本条连接」的 link：若对端已重拨建立了新连接，旧的 reader 退出时
     // 不能把新连接的发送端删掉（否则会出现「消息发不出去」的间歇性故障）。
     let was_live_link = {
@@ -271,7 +285,9 @@ async fn connect_to_peer(state: &Arc<AppState>, peer_id: &str, ip: &str, tcp_por
 
     tokio::spawn(reader_loop(state.clone(), r, peer_id.to_string(), tx));
     flush_outbox(state, peer_id).await;
+    flush_group_outbox(state, peer_id).await;
     flush_pending_reads(state, peer_id).await;
+    crate::commands::flush_pending_files(state, peer_id).await;
     // 主动拨号建链完成：补发此前因无 link 而未送达的群密钥
     flush_pending_group_keys(state, peer_id).await;
     // 群文件离线投递：该 peer 的 pending GroupFile 顺序发送
@@ -314,7 +330,9 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             .await;
             maybe_update_friend(state, &device_id, &nickname, avatar);
             flush_outbox(state, &device_id).await;
+            flush_group_outbox(state, &device_id).await;
             flush_pending_reads(state, &device_id).await;
+            crate::commands::flush_pending_files(state, &device_id).await;
             // 链路刚建立：补发此前因无 link 而未送达的群密钥
             flush_pending_group_keys(state, &device_id).await;
             // 群文件离线投递：该 peer 的 pending GroupFile 顺序发送
@@ -326,7 +344,9 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             }
             touch_peer(state, &device_id).await;
             flush_outbox(state, &device_id).await;
+            flush_group_outbox(state, &device_id).await;
             flush_pending_reads(state, &device_id).await;
+            crate::commands::flush_pending_files(state, &device_id).await;
             flush_pending_group_keys(state, &device_id).await;
             crate::commands::flush_pending_group_files(state, &device_id).await;
         }
@@ -696,6 +716,23 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 }),
             );
         }
+        Message::GroupAck {
+            group_id,
+            msg_id,
+            from,
+        } => {
+            if from != peer_id || from == state.device_id {
+                return;
+            }
+            // 只清除该 peer 在该群中的待发记录；不存在时删除是安全的 no-op。
+            // 命中失败不向外暴露，避免用伪造 Ack 探测本地 outbox。
+            let dbc = state.db.lock().unwrap();
+            let _ = db::delete_group_outbox(&dbc, &msg_id, &from);
+            let _ = state.app.emit(
+                "group-message-acked",
+                &serde_json::json!({ "group_id": group_id, "msg_id": msg_id }),
+            );
+        }
         Message::FileOffer {
             transfer_id,
             from,
@@ -782,6 +819,32 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 .unwrap()
                 .remove(&transfer_id);
         }
+        Message::FileCompleteAck {
+            transfer_id,
+            success,
+        } => {
+            // 只有该 transfer 的实际接收方发来的完成确认才有效。
+            let expected_peer = {
+                let dbc = state.db.lock().unwrap();
+                dbc.query_row(
+                    "SELECT peer_id FROM file_transfers WHERE id = ?1",
+                    params![transfer_id],
+                    |r| r.get::<_, String>(0),
+                )
+                .ok()
+            };
+            if expected_peer.as_deref() != Some(peer_id) {
+                return;
+            }
+            if let Some(tx) = state
+                .pending_file_complete
+                .lock()
+                .unwrap()
+                .remove(&transfer_id)
+            {
+                let _ = tx.send(success);
+            }
+        }
         Message::FileChunk {
             transfer_id,
             seq,
@@ -830,45 +893,77 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                     let _ = state.app.emit(
                         "file-failed",
                         &FileFailedInfo {
-                            transfer_id,
+                            transfer_id: transfer_id.clone(),
                             reason: e,
                         },
                     );
-                }
-                Ok(None) => {}
-                Ok(Some((name, size, path, sender_id))) => {
-                    let dbc = state.db.lock().unwrap();
-                    let content = serde_json::json!({
-                        "name": name,
-                        "path": path.to_string_lossy().to_string(),
-                        "size": size,
-                        "subtype": file::classify_file_subtype(&name),
-                    })
-                    .to_string();
-                    let rec = MessageRecord {
-                        id: 0,
-                        msg_id: format!("file-{transfer_id}"),
-                        conv_id: sender_id.clone(),
-                        sender_id: sender_id.clone(),
-                        receiver_id: state.device_id.clone(),
-                        kind: "file".to_string(),
-                        content,
-                        ts: db::now_ms(),
-                        status: "delivered".to_string(),
-                    };
-                    db::insert_message(&dbc, &rec).ok();
-                    let nm = resolve_nickname(state, &sender_id);
-                    db::touch_conversation(
-                        &dbc,
-                        &sender_id,
-                        "single",
-                        &nm,
-                        None,
-                        &format!("[文件] {name}"),
-                        1,
+                    let _ = try_send(
+                        state,
+                        peer_id,
+                        &Message::FileCompleteAck {
+                            transfer_id,
+                            success: false,
+                        },
                     )
-                    .ok();
-                    drop(dbc);
+                    .await;
+                }
+                Ok(None) => {
+                    // 重复 FileDone：若本机此前已成功完成该 transfer，则补一个成功确认，
+                    // 避免发送方因重试而一直等待。
+                    let already_done = {
+                        let dbc = state.db.lock().unwrap();
+                        db::list_transfers(&dbc)
+                            .unwrap_or_default()
+                            .into_iter()
+                            .any(|t| t.id == transfer_id && t.status == "done")
+                    };
+                    if already_done {
+                        let _ = try_send(
+                            state,
+                            peer_id,
+                            &Message::FileCompleteAck {
+                                transfer_id,
+                                success: true,
+                            },
+                        )
+                        .await;
+                    }
+                }
+                Ok(Some((name, size, path, sender_id))) => {
+                    let rec = {
+                        let dbc = state.db.lock().unwrap();
+                        let content = serde_json::json!({
+                            "name": name,
+                            "path": path.to_string_lossy().to_string(),
+                            "size": size,
+                            "subtype": file::classify_file_subtype(&name),
+                        })
+                        .to_string();
+                        let rec = MessageRecord {
+                            id: 0,
+                            msg_id: format!("file-{transfer_id}"),
+                            conv_id: sender_id.clone(),
+                            sender_id: sender_id.clone(),
+                            receiver_id: state.device_id.clone(),
+                            kind: "file".to_string(),
+                            content,
+                            ts: db::now_ms(),
+                            status: "delivered".to_string(),
+                        };
+                        db::insert_message(&dbc, &rec).ok();
+                        let nm = resolve_nickname(state, &sender_id);
+                        db::touch_conversation(
+                            &dbc,
+                            &sender_id,
+                            "single",
+                            &nm,
+                            None,
+                            &format!("[文件] {name}"),
+                            1,
+                        )
+                        .ok();
+                        rec
+                    };
                     let _ = state.app.emit("message-received", &rec);
                     let _ = state.app.emit(
                         "file-done",
@@ -879,6 +974,15 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                             path: path.to_string_lossy().to_string(),
                         },
                     );
+                    let _ = try_send(
+                        state,
+                        peer_id,
+                        &Message::FileCompleteAck {
+                            transfer_id,
+                            success: true,
+                        },
+                    )
+                    .await;
                 }
             }
         }
@@ -947,7 +1051,16 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             let st = state.clone();
             let from = from.clone();
             tokio::spawn(async move {
-                let _ = file::send_file_from_path(&st, &from, &transfer_id, canon_full).await;
+                if let Err(e) = file::send_file_from_path(&st, &from, &transfer_id, canon_full).await
+                {
+                    let _ = st.app.emit(
+                        "file-failed",
+                        &FileFailedInfo {
+                            transfer_id,
+                            reason: e.message,
+                        },
+                    );
+                }
             });
         }
         // ---- Gossip 广播 ----
@@ -1462,9 +1575,20 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                     }
                     (rec, inserted)
                 };
-                // 重复投递与数据库失败都不产生本地副作用；Gossip 本就不回 Ack，转发已在上面完成
+                // 重复投递与数据库失败都不产生本地副作用；Gossip 的转发已在上面完成。
                 if announced_on(&inserted) {
                     let _ = state.app.emit("message-received", &out_rec);
+                }
+                // 群消息现在有 outbox 兜底：只要消息确实已持久化（无论本次是否新建），
+                // 就回 GroupAck 让发送方删除对应 (msg_id, peer_id) 的待发记录。
+                // 数据库 Err 时不回 Ack，发送方保留 outbox 继续补发。
+                if conv_kind == "group" && !matches!(&inserted, Err(_)) {
+                    let ack = Message::GroupAck {
+                        group_id: env.group_id.clone().unwrap_or_default(),
+                        msg_id: env.message_id.clone(),
+                        from: state.device_id.clone(),
+                    };
+                    let _ = try_send(state, &env.sender_id, &ack).await;
                 }
             }
         }
@@ -2910,6 +3034,23 @@ pub async fn flush_outbox(state: &AppState, peer_id: &str) {
         };
         let msg = reseal_for_send(state, msg);
         let _ = try_send(state, peer_id, &msg).await;
+    }
+}
+
+/// 补发指定成员的群消息离线队列。
+///
+/// 与单聊 outbox 同一语义：**只补发、不删除**，GroupAck 到达才删除对应行。
+/// Gossip 信封在发送时已经签名，重发无需重新签名，接收方按 msg_id 幂等去重。
+pub async fn flush_group_outbox(state: &AppState, peer_id: &str) {
+    let pending = {
+        let dbc = state.db.lock().unwrap();
+        db::list_group_outbox(&dbc, peer_id).unwrap_or_default()
+    };
+    for (_id, payload) in pending {
+        let Ok(Message::Gossip { envelope }) = serde_json::from_str::<Message>(&payload) else {
+            continue;
+        };
+        let _ = try_send(state, peer_id, &Message::Gossip { envelope }).await;
     }
 }
 

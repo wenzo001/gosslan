@@ -559,21 +559,9 @@ export const useChatStore = defineStore("chat", () => {
     try {
       const id = await api.sendFileAuto(convId, path);
       void refreshTransfers();
-      // 乐观上屏：拿到 transfer_id 即插入文件气泡（后端同 msg_id 的事件会被去重合并）；
-      // 进度条随 file-progress 事件实时更新
-      const fileMsgId = `file-${id}`;
-      const acked = pendingAcks.delete(fileMsgId);
-      enqueueMessage({
-        id: -1,
-        msg_id: fileMsgId,
-        conv_id: convId,
-        sender_id: app.device?.device_id ?? "",
-        receiver_id: convId,
-        kind: "file",
-        content: JSON.stringify({ name }),
-        ts: Math.max(Date.now(), messages.value[convId]?.at(-1)?.ts ?? 0),
-        status: acked ? "delivered" : "sending",
-      });
+      // 后端 send_file 会在返回前同步 emit `message-received`（携带完整的
+      // name/size/subtype/path 记录），前端不再手工拼一个只有 name 的乐观气泡，
+      // 避免与真实记录因同 msg_id 去重竞态而丢失元数据。
       return id;
     } catch (e) {
       // API 失败：插入明确 failed 状态的文件消息，不让消息永久停在 sending

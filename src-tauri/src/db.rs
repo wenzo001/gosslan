@@ -80,6 +80,19 @@ CREATE TABLE IF NOT EXISTS outbox (
 );
 CREATE INDEX IF NOT EXISTS idx_outbox_peer ON outbox(peer_id);
 
+-- 群消息离线补发队列：同一 msg_id 需按成员各自维护投递状态。
+CREATE TABLE IF NOT EXISTS group_outbox (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    msg_id     TEXT NOT NULL,
+    group_id   TEXT NOT NULL,
+    peer_id    TEXT NOT NULL,
+    payload    TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    UNIQUE(msg_id, peer_id)
+);
+CREATE INDEX IF NOT EXISTS idx_group_outbox_peer ON group_outbox(peer_id);
+CREATE INDEX IF NOT EXISTS idx_group_outbox_group ON group_outbox(group_id);
+
 CREATE TABLE IF NOT EXISTS file_transfers (
     id         TEXT PRIMARY KEY,
     peer_id    TEXT NOT NULL,
@@ -91,6 +104,22 @@ CREATE TABLE IF NOT EXISTS file_transfers (
     progress   REAL NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL
 );
+
+-- 文件离线投递队列：断线后重启可恢复，重连后自动补发。
+CREATE TABLE IF NOT EXISTS file_outbox (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    transfer_id     TEXT NOT NULL UNIQUE,
+    peer_id         TEXT NOT NULL,
+    group_id        TEXT,
+    local_path      TEXT NOT NULL,
+    name            TEXT NOT NULL,
+    size            INTEGER NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'pending',  -- 'pending' | 'sending' | 'failed'
+    attempts        INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at INTEGER NOT NULL,
+    created_at      INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_file_outbox_peer ON file_outbox(peer_id, status);
 
 -- 群文件：一个 transfer_id 对应一个群文件。
 -- 每个群成员的投递状态在 group_file_recipients 中独立维护（DB 是最终状态来源）。
@@ -498,6 +527,7 @@ pub fn delete_group(conn: &Connection, group_id: &str) -> Result<()> {
         "DELETE FROM group_files WHERE group_id = ?1",
         params![group_id],
     )?;
+    delete_group_outbox_for_group(conn, group_id)?;
     conn.execute("DELETE FROM groups WHERE id = ?1", params![group_id])?;
     conn.execute(
         "DELETE FROM conversations WHERE id = ?1",
@@ -806,6 +836,65 @@ pub fn delete_outbox(conn: &Connection, id: i64) -> Result<()> {
     Ok(())
 }
 
+// ---------------- 群消息离线补发队列 ----------------
+
+/// 幂等写入一条群消息离线投递记录。`(msg_id, peer_id)` 唯一，
+/// 重复写入不会产生第二行。
+pub fn insert_group_outbox(
+    conn: &Connection,
+    msg_id: &str,
+    group_id: &str,
+    peer_id: &str,
+    payload: &str,
+) -> Result<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO group_outbox(msg_id, group_id, peer_id, payload, created_at)
+         VALUES(?1, ?2, ?3, ?4, ?5)",
+        params![msg_id, group_id, peer_id, payload, now_ms()],
+    )?;
+    Ok(())
+}
+
+/// 取某成员的全部待补发群消息（按插入顺序）。
+pub fn list_group_outbox(conn: &Connection, peer_id: &str) -> Result<Vec<(i64, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, payload FROM group_outbox WHERE peer_id = ?1 ORDER BY id",
+    )?;
+    let rows = stmt.query_map(params![peer_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// 收到 GroupAck 后删除指定成员、指定消息的待发记录。
+pub fn delete_group_outbox(conn: &Connection, msg_id: &str, peer_id: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM group_outbox WHERE msg_id = ?1 AND peer_id = ?2",
+        params![msg_id, peer_id],
+    )?;
+    Ok(())
+}
+
+/// 删除指定群的全部待发记录（删除群 / 清空数据时使用）。
+pub fn delete_group_outbox_for_group(conn: &Connection, group_id: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM group_outbox WHERE group_id = ?1",
+        params![group_id],
+    )?;
+    Ok(())
+}
+
+/// 删除指定成员在指定群中的待发记录（移人出群时使用）。
+pub fn delete_group_outbox_for_peer_in_group(
+    conn: &Connection,
+    group_id: &str,
+    peer_id: &str,
+) -> Result<()> {
+    conn.execute(
+        "DELETE FROM group_outbox WHERE group_id = ?1 AND peer_id = ?2",
+        params![group_id, peer_id],
+    )?;
+    Ok(())
+}
+
 // ---------------- 文件传输记录 ----------------
 
 pub fn upsert_transfer(
@@ -856,6 +945,82 @@ pub fn list_transfers(conn: &Connection) -> Result<Vec<TransferInfo>> {    let m
         })
     })?;
     Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+// ---------------- 文件离线投递队列 ----------------
+
+/// 幂等写入一条待发文件记录（transfer_id 唯一）。
+pub fn insert_file_outbox(
+    conn: &Connection,
+    transfer_id: &str,
+    peer_id: &str,
+    group_id: Option<&str>,
+    local_path: &str,
+    name: &str,
+    size: u64,
+) -> Result<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO file_outbox(transfer_id, peer_id, group_id, local_path, name, size, status, attempts, next_attempt_at, created_at)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, 'pending', 0, ?7, ?7)",
+        params![transfer_id, peer_id, group_id, local_path, name, size as i64, now_ms()],
+    )?;
+    Ok(())
+}
+
+/// 取某 peer 的待投递文件（仅 `pending`，且已到重试时间）。
+pub fn list_pending_file_outbox(conn: &Connection, peer_id: &str) -> Result<Vec<(String, String)>> {
+    let now = now_ms();
+    let mut stmt = conn.prepare(
+        "SELECT transfer_id, local_path FROM file_outbox
+         WHERE peer_id = ?1 AND status = 'pending' AND next_attempt_at <= ?2
+         ORDER BY created_at, id",
+    )?;
+    let rows = stmt.query_map(params![peer_id, now], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    })?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// 投递开始：pending → sending，并累计一次尝试。
+pub fn mark_file_outbox_sending(conn: &Connection, transfer_id: &str, backoff_ms: i64) -> Result<()> {
+    conn.execute(
+        "UPDATE file_outbox SET status = 'sending', attempts = attempts + 1, next_attempt_at = ?2 WHERE transfer_id = ?1",
+        params![transfer_id, now_ms().saturating_add(backoff_ms)],
+    )?;
+    Ok(())
+}
+
+/// 投递失败但可重试：回到 pending，等待下次连接/心跳触发。
+pub fn mark_file_outbox_pending(conn: &Connection, transfer_id: &str, backoff_ms: i64) -> Result<()> {
+    conn.execute(
+        "UPDATE file_outbox SET status = 'pending', next_attempt_at = ?2 WHERE transfer_id = ?1",
+        params![transfer_id, now_ms().saturating_add(backoff_ms)],
+    )?;
+    Ok(())
+}
+
+/// 投递成功：删除队列行。
+pub fn delete_file_outbox(conn: &Connection, transfer_id: &str) -> Result<()> {
+    conn.execute("DELETE FROM file_outbox WHERE transfer_id = ?1", params![transfer_id])?;
+    Ok(())
+}
+
+/// 永久失败：标记 failed，不再参与重试。
+pub fn mark_file_outbox_failed(conn: &Connection, transfer_id: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE file_outbox SET status = 'failed' WHERE transfer_id = ?1",
+        params![transfer_id],
+    )?;
+    Ok(())
+}
+
+/// 删除指定 peer 的全部文件投递记录（删除好友时使用）。
+pub fn delete_file_outbox_for_peer(conn: &Connection, peer_id: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM file_outbox WHERE peer_id = ?1",
+        params![peer_id],
+    )?;
+    Ok(())
 }
 
 // ---------------- 群文件（per-recipient 投递状态） ----------------
@@ -2433,5 +2598,62 @@ mod tests {
         assert_eq!(t.path.as_deref(), Some("/downloads/report.pdf"));
         assert_eq!(t.status, "done");
         assert_eq!(t.progress, 1.0);
+    }
+
+    /// 群消息 outbox：同一 msg_id 对不同 peer 各保留一行；GroupAck 只删对应行。
+    #[test]
+    fn group_outbox_per_peer_and_delete_by_msg_peer() {
+        let conn = mem();
+        insert_group_outbox(&conn, "m1", "g1", "b", "p1").unwrap();
+        insert_group_outbox(&conn, "m1", "g1", "c", "p1").unwrap();
+        insert_group_outbox(&conn, "m1", "g1", "b", "p1").unwrap(); // 幂等
+        assert_eq!(list_group_outbox(&conn, "b").unwrap().len(), 1);
+        assert_eq!(list_group_outbox(&conn, "c").unwrap().len(), 1);
+
+        delete_group_outbox(&conn, "m1", "b").unwrap();
+        assert!(list_group_outbox(&conn, "b").unwrap().is_empty());
+        assert_eq!(list_group_outbox(&conn, "c").unwrap().len(), 1);
+
+        delete_group_outbox_for_peer_in_group(&conn, "g1", "c").unwrap();
+        assert!(list_group_outbox(&conn, "c").unwrap().is_empty());
+    }
+
+    /// 群 outbox 可整体按群清理（删除群时）。
+    #[test]
+    fn group_outbox_delete_by_group() {
+        let conn = mem();
+        insert_group_outbox(&conn, "m1", "g1", "b", "p").unwrap();
+        insert_group_outbox(&conn, "m2", "g1", "c", "p").unwrap();
+        insert_group_outbox(&conn, "m3", "g2", "b", "p").unwrap();
+        delete_group_outbox_for_group(&conn, "g1").unwrap();
+        assert!(list_group_outbox(&conn, "c").unwrap().is_empty());
+        // g2 仍在 b 名下
+        assert_eq!(list_group_outbox(&conn, "b").unwrap().len(), 1);
+    }
+
+    /// 文件 outbox 生命周期：pending → sending → pending（重试）→ 成功删除。
+    #[test]
+    fn file_outbox_lifecycle() {
+        let conn = mem();
+        insert_file_outbox(&conn, "t1", "b", None, "/tmp/a.txt", "a.txt", 10).unwrap();
+        assert_eq!(list_pending_file_outbox(&conn, "b").unwrap().len(), 1);
+
+        mark_file_outbox_sending(&conn, "t1", 0).unwrap();
+        assert!(list_pending_file_outbox(&conn, "b").unwrap().is_empty());
+
+        mark_file_outbox_pending(&conn, "t1", 0).unwrap();
+        assert_eq!(list_pending_file_outbox(&conn, "b").unwrap().len(), 1);
+
+        delete_file_outbox(&conn, "t1").unwrap();
+        assert!(list_pending_file_outbox(&conn, "b").unwrap().is_empty());
+    }
+
+    /// 文件 outbox 永久失败后不再参与待投递查询。
+    #[test]
+    fn file_outbox_failed_is_not_pending() {
+        let conn = mem();
+        insert_file_outbox(&conn, "t1", "b", None, "/tmp/a.txt", "a.txt", 10).unwrap();
+        mark_file_outbox_failed(&conn, "t1").unwrap();
+        assert!(list_pending_file_outbox(&conn, "b").unwrap().is_empty());
     }
 }
