@@ -75,7 +75,12 @@ pub async fn read_frame<R: AsyncRead + Unpin>(r: &mut R) -> std::io::Result<Mess
 fn is_bulk_message(msg: &Message) -> bool {
     matches!(
         msg,
-        Message::FileChunk { .. } | Message::RelayChunk { .. } | Message::GroupFileChunk { .. }
+        Message::FileChunk { .. }
+            | Message::RelayChunk { .. }
+            | Message::GroupFileChunk { .. }
+            // 终止帧必须和分片同队列，保证「分片 → Done」的协议顺序不被优先级通道打乱。
+            | Message::FileDone { .. }
+            | Message::GroupFileDone { .. }
     )
 }
 
@@ -3353,6 +3358,17 @@ mod tests {
             data: "abc".into(),
         };
         assert!(is_bulk_message(&group_file_chunk));
+        // 文件终止帧必须走 bulk，避免跑到未写完的分片前面。
+        let file_done = Message::FileDone {
+            transfer_id: "t1".into(),
+        };
+        assert!(is_bulk_message(&file_done));
+        let group_file_done = Message::GroupFileDone {
+            transfer_id: "t1".into(),
+            group_id: "g1".into(),
+            sender_id: "a".into(),
+        };
+        assert!(is_bulk_message(&group_file_done));
     }
 
     #[tokio::test]
