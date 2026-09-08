@@ -24,7 +24,8 @@ const MAX_IMAGE_CONTENT_LEN: usize = 8_000_000;
 use crate::crypto;
 use crate::db;
 use crate::network::transport::{
-    broadcast_gossip, get_group_key, mark_pending_group_key, resolve_nickname, try_send,
+    broadcast_gossip, get_group_key, mark_pending_group_key, maybe_update_friend,
+    resolve_member_x25519, resolve_nickname, try_send,
 };
 use crate::network::{self, file};
 use crate::protocol::{GossipKind, Message, MsgKind, ShareEntry};
@@ -666,6 +667,11 @@ pub async fn respond_friend_request(
             db::add_friend(&dbc, &peer_id, &name, None).ok();
             db::ensure_conversation(&dbc, &peer_id, "single", &name, None).ok();
         }
+        // 补写 peers 表已有的公钥到 friends 表：accept 路径此前不写公钥，
+        // 而建链（Hello）早于加好友、公钥不变时 key_changed 不触发补写，
+        // 导致 friends 公钥永久缺失 → 群密钥分发被静默跳过。
+        // 与 transport.rs 中 FriendAccept 接收路径的补写行为一致。
+        maybe_update_friend(s, &peer_id, &name, None);
         let msg = Message::FriendAccept {
             from: s.device_id.clone(),
             to: peer_id.clone(),
@@ -1056,11 +1062,11 @@ pub async fn distribute_group_key(
         if m == &s.device_id {
             continue;
         }
-        let pubkey = {
-            let dbc = s.db.lock().unwrap();
-            db::get_friend_x25519(&dbc, m)
+        // peers 优先、friends 回落：peers 由 announce/Hello 实时维护，
+        // friends 表公钥可能因 accept 路径未补写而缺失（曾致 GroupKey 静默跳过）
+        let Some(pubkey) = resolve_member_x25519(s, m) else {
+            continue;
         };
-        let Some(pubkey) = pubkey else { continue };
         let Some(shared) = crypto::shared_secret(&s.identity.x25519_secret, &pubkey) else {
             continue;
         };
@@ -1156,10 +1162,8 @@ async fn resend_group_key_to(s: &AppState, group_id: &str, members: &[String], k
         if m == &s.device_id {
             continue;
         }
-        let Some(pubkey) = (|| {
-            let dbc = s.db.lock().unwrap();
-            db::get_friend_x25519(&dbc, m)
-        })() else {
+        // peers 优先、friends 回落（与 distribute_group_key 同一来源策略）
+        let Some(pubkey) = resolve_member_x25519(s, m) else {
             continue;
         };
         let Some(shared) = crypto::shared_secret(&s.identity.x25519_secret, &pubkey) else {

@@ -2039,7 +2039,12 @@ async fn mark_peer_offline(state: &Arc<AppState>, device_id: &str) {
     state.emit_peers();
 }
 
-fn maybe_update_friend(state: &AppState, device_id: &str, nickname: &str, avatar: Option<String>) {
+pub(crate) fn maybe_update_friend(
+    state: &AppState,
+    device_id: &str,
+    nickname: &str,
+    avatar: Option<String>,
+) {
     let (x, e) = {
         let peers = state.peers.lock().unwrap();
         peers
@@ -2056,6 +2061,29 @@ fn maybe_update_friend(state: &AppState, device_id: &str, nickname: &str, avatar
             db::update_friend_pubkeys(&dbc, device_id, x.as_deref(), e.as_deref()).ok();
         }
     }
+}
+
+/// 群成员公钥选择：peers 表优先、friends 表回落（纯逻辑，便于单测）。
+/// peers 表由 announce / Hello 实时维护，几乎总是最新；
+/// friends 表可能缺失——accept 方路径此前不补写公钥，
+/// 且公钥不变时 key_changed 不触发 maybe_update_friend。
+fn pick_member_x25519(peers_key: Option<String>, friends_key: Option<String>) -> Option<String> {
+    peers_key.or(friends_key)
+}
+
+/// 解析群成员的 X25519 公钥：peers 优先、friends 回落，都缺失才返回 None。
+/// 群密钥分发（distribute_group_key / resend_group_key_to）统一走这里，
+/// 避免 friends 表公钥缺失导致 GroupKey 被静默跳过、成员永久拿不到群密钥。
+pub(crate) fn resolve_member_x25519(state: &AppState, member_id: &str) -> Option<String> {
+    let peers_key = {
+        let peers = state.peers.lock().unwrap();
+        peers.get(member_id).and_then(|p| p.x25519_pubkey.clone())
+    };
+    let friends_key = {
+        let dbc = state.db.lock().unwrap();
+        db::get_friend_x25519(&dbc, member_id)
+    };
+    pick_member_x25519(peers_key, friends_key)
 }
 
 pub fn resolve_nickname(state: &AppState, id: &str) -> String {
@@ -2962,5 +2990,51 @@ mod tests {
             clear_pending_group_key(&mut pending, "peer-b", "g-1");
         }
         assert!(pending_group_key_ids(&pending, "peer-b").is_empty());
+    }
+
+    // ---------- 群成员公钥解析（peers 优先、friends 回落） ----------
+
+    /// 群密钥分发的公钥选择规则：peers 表优先（announce/Hello 实时维护）、
+    /// friends 表回落、两边都缺才返回 None（安全跳过）。
+    #[test]
+    fn pick_member_x25519_prefers_peers_then_friends() {
+        // peers 有 → 用 peers（即使 friends 也有）
+        assert_eq!(
+            pick_member_x25519(Some("pk-peer".into()), Some("pk-friend".into())).as_deref(),
+            Some("pk-peer")
+        );
+        // peers 无、friends 有 → 回落 friends
+        assert_eq!(
+            pick_member_x25519(None, Some("pk-friend".into())).as_deref(),
+            Some("pk-friend")
+        );
+        // 两边都无 → None（调用方 continue 安全跳过）
+        assert_eq!(pick_member_x25519(None, None), None);
+    }
+
+    /// respond_friend_request accept 路径的公钥补写（对齐 FriendAccept 接收路径）：
+    /// add_friend 时不带公钥 → maybe_update_friend 从 peers 补写 → friends 可查。
+    /// 此前 accept 方不补写且 key_changed 不再触发 → 公钥永久缺失 →
+    /// 群密钥分发 continue 静默跳过（B 后加群收不到的根因）。
+    #[test]
+    fn friend_accept_backfills_pubkeys_from_peers() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(db::SCHEMA).unwrap();
+        // accept：add_friend 不带公钥（commands.rs respond_friend_request 现状）
+        db::add_friend(&conn, "b", "Bob", None).unwrap();
+        assert!(
+            db::get_friend_x25519(&conn, "b").is_none(),
+            "accept 后 friends 公钥应为空（复现补写前状态）"
+        );
+        // maybe_update_friend 的补写行为：peers 表已有公钥 → 写入 friends
+        db::update_friend_pubkeys(&conn, "b", Some("xk-b"), Some("ek-b")).ok();
+        assert_eq!(
+            db::get_friend_x25519(&conn, "b").as_deref(),
+            Some("xk-b"),
+            "补写后群密钥分发必须能取到公钥"
+        );
+        // 重复补写幂等（maybe_update_friend 每次都可能调用）
+        db::update_friend_pubkeys(&conn, "b", Some("xk-b"), Some("ek-b")).ok();
+        assert_eq!(db::get_friend_x25519(&conn, "b").as_deref(), Some("xk-b"));
     }
 }
