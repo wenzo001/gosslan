@@ -2282,4 +2282,55 @@ mod tests {
         // 明显早于边界的旧消息被拦截
         assert!(group_message_blocked_by_boundary(&conn, "g1", 123456789 - 60_001));
     }
+
+    // ---------- GroupFile 多 recipient 气泡状态聚合 ----------
+
+    /// 聚合判定（handle_group_file_complete_ack failure 分支）：
+    /// 全部终态且有人 completed → delivered（mixed）；全部 failed → failed；
+    /// 仍有 pending/sending → 保持当前（不产生最终状态）。
+    fn aggregate_bubble(recipients: &[GroupFileRecipient]) -> Option<&'static str> {
+        let all_terminal = recipients
+            .iter()
+            .all(|r| r.status == "completed" || r.status == "failed");
+        if !all_terminal {
+            return None; // 气泡保持当前（sending）
+        }
+        Some(if recipients.iter().any(|r| r.status == "completed") {
+            "delivered"
+        } else {
+            "failed"
+        })
+    }
+
+    /// B success + C success → delivered；B failure + C failure → failed；
+    /// B success + C failure（mixed）→ delivered；C 未确认 → 保持 sending。
+    #[test]
+    fn group_file_ack_aggregation_semantics() {
+        let conn = group_file_fixture();
+        insert_group_file(&conn, &group_file("gf-1")).unwrap();
+        for rid in ["b", "c"] {
+            insert_group_file_recipient(&conn, "gf-1", rid).unwrap();
+        }
+        let states = || -> Vec<GroupFileRecipient> {
+            list_group_file_recipients(&conn, "gf-1").unwrap()
+        };
+
+        // mixed：B completed / C failed → delivered（有人收到即算）
+        update_group_file_recipient(&conn, "gf-1", "b", "completed", 1.0).unwrap();
+        update_group_file_recipient(&conn, "gf-1", "c", "failed", 0.0).unwrap();
+        assert_eq!(aggregate_bubble(&states()), Some("delivered"));
+
+        // 全 failed → failed
+        update_group_file_recipient(&conn, "gf-1", "b", "failed", 0.0).unwrap();
+        assert_eq!(aggregate_bubble(&states()), Some("failed"));
+
+        // C 未确认（sending）→ None：气泡保持当前，不被单个 ACK 覆盖
+        update_group_file_recipient(&conn, "gf-1", "c", "sending", 0.4).unwrap();
+        update_group_file_recipient(&conn, "gf-1", "b", "completed", 1.0).unwrap();
+        assert_eq!(aggregate_bubble(&states()), None);
+
+        // 全部 success → delivered
+        update_group_file_recipient(&conn, "gf-1", "c", "completed", 1.0).unwrap();
+        assert_eq!(aggregate_bubble(&states()), Some("delivered"));
+    }
 }

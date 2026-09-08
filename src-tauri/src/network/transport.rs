@@ -2192,11 +2192,33 @@ async fn handle_group_file_complete_ack(
     } else {
         ("failed", 0.0)
     };
-    // 发送端气泡随接收端真实结果推进：success → delivered，failure → failed
-    let bubble = if success { "delivered" } else { "failed" };
+    // 发送端气泡 = 全体 recipient 结果的聚合（v0.12 最小语义），
+    // 避免最后一个 ACK 直接覆盖之前更准确的总体状态：
+    // - success ACK → delivered（有人收到即算；mixed 亦然，且不回退）
+    // - failure ACK → 全部 recipient 都到终态（completed/failed）时：
+    //     有人 completed → delivered；全部 failed → failed；
+    //   仍有 pending/sending → 气泡保持当前状态（sending），等后续 ACK。
+    let bubble;
     {
         let dbc = state.db.lock().unwrap();
         let _ = db::update_group_file_recipient(&dbc, &transfer_id, &peer_id, status, progress);
+        if success {
+            bubble = "delivered";
+        } else {
+            let recipients =
+                db::list_group_file_recipients(&dbc, &transfer_id).unwrap_or_default();
+            let all_terminal = recipients
+                .iter()
+                .all(|r| r.status == "completed" || r.status == "failed");
+            if !all_terminal {
+                return; // 仍有进行中的 recipient：气泡保持当前，等后续 ACK
+            }
+            bubble = if recipients.iter().any(|r| r.status == "completed") {
+                "delivered"
+            } else {
+                "failed"
+            };
+        }
         let _ = db::set_message_status(&dbc, &format!("gfile-{transfer_id}"), bubble).ok();
     }
     if bubble == "delivered" {
