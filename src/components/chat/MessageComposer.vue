@@ -8,8 +8,8 @@ import type { MsgKind } from "@/types";
 const props = defineProps<{
   /** 会话切换时聚焦输入框（切换会话 = 新会话，重置草稿由父组件卸载/挂载决定）。 */
   convId: string | null;
-  /** 待引用消息（右键"引用"设置）；发送时拼进消息首行，显示为引用块。 */
-  quote?: { sender: string; snippet: string } | null;
+  /** 待引用消息（右键"引用"设置）；发送时拼进消息首行，显示为引用块。msgId 用于点击跳转原消息。 */
+  quote?: { sender: string; snippet: string; msgId?: string | number } | null;
 }>();
 const emit = defineEmits<{
   (e: "send", payload: { content: string; kind: MsgKind }): void;
@@ -50,7 +50,8 @@ function send(kind?: MsgKind, content?: string) {
   const k = kind ?? (codeMode.value ? "code" : "text");
   if (k === "text" && !text.trim()) return;
   if (k === "text" && props.quote && text.trim()) {
-    text = `「引用 ${props.quote.sender}：${props.quote.snippet}」\n${text}`;
+    const idSuffix = props.quote.msgId != null ? `|${props.quote.msgId}` : "";
+    text = `「引用 ${props.quote.sender}：${props.quote.snippet}${idSuffix}」\n${text}`;
   }
   draft.value = "";
   if (!kind) codeMode.value = false;

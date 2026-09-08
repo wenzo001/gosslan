@@ -1,9 +1,14 @@
 <script setup lang="ts">
 import { useAppStore } from "@/stores/useAppStore";
-import SettingsToggle from "@/components/settings/SettingsToggle.vue";
-import { CHAT_FONT_SIZES, CHAT_PRESETS } from "@/utils/chatStyle";
+import { CHAT_FONT_SIZES, CHAT_PRESETS, resolveChatColors, type ChatPreset } from "@/utils/chatStyle";
 
 const app = useAppStore();
+
+/** 预览色："theme" 预设按当前主题色实时派生，其余取表明暗值。 */
+function swatchOf(p: ChatPreset): { mineBubble: string; otherBubble: string } {
+  const c = resolveChatColors(p.key, app.themeColor, app.dark);
+  return { mineBubble: c.mineBubble, otherBubble: c.otherBubble };
+}
 </script>
 
 <template>
@@ -40,10 +45,10 @@ const app = useAppStore();
           >
             <div class="mb-1 text-center text-[11px] text-[var(--gosslan-text-2)]">{{ p.label }}</div>
             <div class="flex items-center gap-1">
-              <span class="h-4 flex-1 rounded" :style="{ background: p[app.dark ? 'dark' : 'light'].mineBubble }"></span>
+              <span class="h-4 flex-1 rounded" :style="{ background: swatchOf(p).mineBubble }"></span>
               <span
                 class="h-4 flex-1 rounded border border-[var(--gosslan-border)]"
-                :style="{ background: p[app.dark ? 'dark' : 'light'].otherBubble }"
+                :style="{ background: swatchOf(p).otherBubble }"
               ></span>
             </div>
           </button>
@@ -51,18 +56,6 @@ const app = useAppStore();
         <p class="mt-1.5 text-[11px] leading-relaxed text-[var(--gosslan-text-2)]">
           我的消息用所选配色；对方也会按我的配色看到我发的消息（自动同步到已连接设备）。
         </p>
-      </div>
-
-      <!-- 紧凑模式 -->
-      <div class="flex items-center justify-between rounded-lg border border-[var(--gosslan-border)] px-3 py-2">
-        <div class="min-w-0">
-          <div class="text-sm">消息合并显示</div>
-          <div class="text-[11px] text-[var(--gosslan-text-2)]">连续消息省略头像与昵称（群聊推荐）</div>
-        </div>
-        <SettingsToggle
-          :model-value="app.chatStyle.compact"
-          @update:model-value="app.setChatStyle({ compact: $event })"
-        />
       </div>
     </div>
   </section>

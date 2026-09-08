@@ -20,10 +20,8 @@ import type { MessageRecord, MsgKind } from "@/types";
 const props = withDefaults(
   defineProps<{
     message: MessageRecord;
-    /** 上一条消息（同会话），用于连续消息合并与时间分割线 */
+    /** 上一条消息（同会话），用于时间分割线判定 */
     prev?: MessageRecord | null;
-    /** 下一条消息（同会话），用于判断是否为分钟组末条 */
-    next?: MessageRecord | null;
     /** 群聊：显示发送者昵称 */
     isGroup?: boolean;
     /** 在本条消息上方显示未读分割线 */
@@ -32,14 +30,16 @@ const props = withDefaults(
     senderName?: string;
     /** 已读该群消息的成员 ID（由父组件按消息时间计算） */
     groupReaderIds?: string[];
+    /** 正在闪烁定位的消息键（点击引用块跳转时高亮 1.6s） */
+    highlightId?: string | number | null;
   }>(),
   {
     prev: null,
-    next: null,
     isGroup: false,
     showUnreadDivider: false,
     senderName: "",
     groupReaderIds: () => [],
+    highlightId: null,
   },
 );
 
@@ -49,15 +49,11 @@ const chat = useChatStore();
 const display = useMessageDisplay({
   message: () => props.message,
   prev: () => props.prev,
-  next: () => props.next,
   isGroup: () => props.isGroup,
 });
 const {
   mine,
   bubbleStyle,
-  sameSenderRun,
-  tight,
-  isLastInMinute,
   showTimeDivider,
   showNickname,
   time,
@@ -87,6 +83,11 @@ const avatarName = computed(() =>
 );
 /** 头像只在本人的消息上取本机头像；对端头像由会话/通讯录提供，消息里不带。 */
 const avatarSrc = computed(() => (mine.value ? (app.device?.avatar ?? null) : null));
+
+/** 是否为被点击引用所定位的消息（短暂高亮） */
+const highlighted = computed(
+  () => props.highlightId != null && props.highlightId === (props.message.msg_id ?? props.message.id),
+);
 
 /** 长文本判定与 estimateHeight 共用 textNeedsClamp：字号档位变了两边一起变。 */
 const isLongText = computed(
@@ -182,8 +183,9 @@ function quoteSnippet(kind: MsgKind, content: string): string {
 }
 
 const emit = defineEmits<{
-  (e: "quote", payload: { sender: string; snippet: string }): void;
+  (e: "quote", payload: { sender: string; snippet: string; msgId: string | number }): void;
   (e: "forward", payload: { kind: MsgKind; content: string; snippet: string }): void;
+  (e: "locate", msgId: string): void;
 }>();
 
 function doQuote() {
@@ -192,6 +194,7 @@ function doQuote() {
   emit("quote", {
     sender: mine.value ? app.device?.nickname || "我" : props.senderName || msg.sender_id,
     snippet: quoteSnippet(msg.kind, msg.content),
+    msgId: msg.msg_id ?? msg.id,
   });
 }
 
@@ -214,7 +217,7 @@ async function retrySend() {
 </script>
 
 <template>
-  <div class="py-0.5">
+  <div class="py-0.5" :class="highlighted ? 'rounded-lg bg-primary/5 ring-1 ring-primary/25' : ''">
     <!-- 时间分割线（间隔 ≥ 5 分钟）：居中浅灰小字 -->
     <div v-if="showTimeDivider" class="py-2 text-center text-[11px] text-[var(--gosslan-text-2)]">
       {{ timeDividerText }}
@@ -228,9 +231,8 @@ async function retrySend() {
     </div>
 
     <div class="flex gap-2 px-4" :class="mine ? 'flex-row-reverse' : ''">
-      <!-- 头像：连续消息合并时省略（保留占位对齐） -->
-      <MessageAvatar v-if="!sameSenderRun" :name="avatarName" :avatar="avatarSrc" />
-      <div v-else class="w-9 shrink-0"></div>
+      <!-- 头像：每条消息独立完整渲染 -->
+      <MessageAvatar :name="avatarName" :avatar="avatarSrc" />
 
       <div class="flex min-w-0 max-w-[72%] flex-col" :class="mine ? 'items-end' : 'items-start'">
         <!-- 群聊发送者昵称 -->
@@ -272,6 +274,7 @@ async function retrySend() {
             :copied="copiedKey === 'text'"
             @expand="openFullModal('text', $event)"
             @copy="copyContent('text', $event)"
+            @locate="emit('locate', $event)"
           />
 
           <!-- 代码：inline code 消息与代码附件同一套预览；超过 5 行裁断，全文进 Modal -->
@@ -317,22 +320,13 @@ async function retrySend() {
           </div>
         </div>
 
-        <!-- 时间行：仅分钟组末条显示时间，hover 可见秒级 -->
+        <!-- 时间行：每条消息独立显示，hover 可见秒级 -->
         <div
-          v-if="isLastInMinute"
           class="mt-0.5 px-1 text-[11px] text-[var(--gosslan-text-2)]"
           :class="mine ? 'text-right' : ''"
         >
           <span class="group-hover/row:hidden">{{ time }}</span>
           <span class="hidden group-hover/row:inline">{{ fullTime }}</span>
-        </div>
-        <!-- tight 非末条：仅 hover 显示秒级 -->
-        <div
-          v-else-if="tight"
-          class="mt-0.5 hidden px-1 text-[10px] text-[var(--gosslan-text-2)] group-hover/row:block"
-          :class="mine ? 'text-right' : ''"
-        >
-          {{ fullTime }}
         </div>
       </div>
     </div>

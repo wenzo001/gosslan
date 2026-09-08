@@ -45,6 +45,13 @@ function openRequests() {
   profileFriend.value = null;
 }
 
+/** 收起「新的朋友」页：有会话在聊时切回「聊天」tab，
+ *  否则会出现右侧在聊、左侧还停在通讯录的错位。 */
+function closeRequests() {
+  showRequests.value = false;
+  if (chat.activeConv) view.value = "chats";
+}
+
 async function acceptRequest(r: PendingRequest) {
   try {
     await chat.respondRequest(r.from, true);
@@ -80,12 +87,15 @@ async function removeFriend(f: Friend) {
   }
 }
 
-// 打开会话/切走时收起资料页与新朋友页，避免右侧同时出现多个内容区
+// 打开会话/切走时收起资料页与新朋友页，避免右侧同时出现多个内容区；
+// 会话一旦打开（接受好友申请自动开会话 / 通知点击跳转等），主视图切回「聊天」tab，
+// 否则右侧在聊、左侧 tab 还停在通讯录，布局与底部高亮都错位。
 watch(
   () => chat.activeConv,
-  () => {
+  (convId) => {
     profileFriend.value = null;
     showRequests.value = false;
+    if (convId) view.value = "chats";
   },
 );
 
@@ -215,7 +225,7 @@ function onResizeEnd() {
             <FriendRequestList
               :requests="chat.pendingRequests"
               :open="true"
-              @close="showRequests = false"
+              @close="closeRequests"
               @accept="acceptRequest"
               @reject="rejectRequest"
             />

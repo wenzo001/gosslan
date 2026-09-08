@@ -1,4 +1,4 @@
-// 聊天显示样式：预设配色（可读性优先，5-6 套）与字号档位。
+// 聊天显示样式：预设配色（可读性优先）与字号档位。
 // 本机偏好持久化（后端 settings.chat_style），同时经 ChatStyle 消息广播给
 // 已连接节点：对方设备持久化后按「我的偏好」渲染我发出的消息气泡。
 
@@ -16,8 +16,16 @@ export interface ChatPreset {
   dark: ChatPresetColors;
 }
 
-/** 气泡配色预设：每套均通过明暗双主题下的正文对比度检查（≥ 4.5:1）。 */
+/** 气泡配色预设：每套均通过明暗双主题下的正文对比度检查（≥ 4.5:1）。
+ *  "theme"（跟随主题）为默认：颜色运行时按主题色派生（resolveChatColors），
+ *  表中 light/dark 仅作为回退值。 */
 export const CHAT_PRESETS: ChatPreset[] = [
+  {
+    key: "theme",
+    label: "跟随主题",
+    light: { mineBubble: "#dbeafe", mineText: "#1e3a8a", otherBubble: "#f1f5f9", otherText: "#0f172a" },
+    dark: { mineBubble: "#1d4ed8", mineText: "#ffffff", otherBubble: "#1e293b", otherText: "#e2e8f0" },
+  },
   {
     key: "classic",
     label: "经典蓝",
@@ -68,14 +76,25 @@ export type FontSizeKey = (typeof CHAT_FONT_SIZES)[number]["key"];
 export interface ChatStyleConfig {
   preset: string;
   fontSize: FontSizeKey;
-  /** 连续消息紧凑显示（群聊大信息量推荐开启） */
-  compact: boolean;
 }
 
-export const DEFAULT_CHAT_STYLE: ChatStyleConfig = { preset: "classic", fontSize: "md", compact: true };
+export const DEFAULT_CHAT_STYLE: ChatStyleConfig = { preset: "theme", fontSize: "md" };
 
 export function findPreset(key: string | undefined | null): ChatPreset {
   return CHAT_PRESETS.find((p) => p.key === key) ?? CHAT_PRESETS[0];
+}
+
+/** 解析某预设的实际气泡配色。"theme" 预设按主题色运行时派生：
+ *  设计稿：自己的气泡 = 主题色实底 + 白字（微信式右蓝）；对方气泡 = 浅灰底 + 深字。 */
+export function resolveChatColors(key: string, themeColor: string, dark: boolean): ChatPresetColors {
+  const preset = findPreset(key);
+  if (preset.key !== "theme") return dark ? preset.dark : preset.light;
+  return {
+    mineBubble: themeColor,
+    mineText: "#ffffff",
+    otherBubble: dark ? "#1e293b" : "#f1f5f9",
+    otherText: dark ? "#e2e8f0" : "#0f172a",
+  };
 }
 
 export function fontPx(size: FontSizeKey): number {
@@ -91,7 +110,6 @@ export function parsePeerStyle(raw: string): ChatStyleConfig {
       fontSize: (["sm", "md", "lg"] as const).includes(v.fontSize as FontSizeKey)
         ? (v.fontSize as FontSizeKey)
         : DEFAULT_CHAT_STYLE.fontSize,
-      compact: typeof v.compact === "boolean" ? v.compact : DEFAULT_CHAT_STYLE.compact,
     };
   } catch {
     return DEFAULT_CHAT_STYLE;
