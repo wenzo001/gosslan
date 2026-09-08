@@ -145,4 +145,81 @@ const manifestPath = path.join(
   "main",
   "AndroidManifest.xml",
 );
+
+// 注入权限片段：GitHub 工作流有独立步骤，GitLab/本地 android:build 则在这里统一补齐。
+function injectPermissionsManifest(manifestPath) {
+  if (!fs.existsSync(manifestPath)) return;
+  let manifest = fs.readFileSync(manifestPath, "utf8");
+  if (manifest.includes("NEARBY_WIFI_DEVICES")) return;
+  const permsPath = path.join(root, "scripts", "android", "permissions.xml");
+  if (!fs.existsSync(permsPath)) return;
+  const perms = fs.readFileSync(permsPath, "utf8").trim();
+  manifest = manifest.replace("<application", `${perms}\n    <application`);
+  fs.writeFileSync(manifestPath, manifest);
+  console.log("[android-manifest] 已注入 Gosslan 权限片段。");
+}
+
+injectPermissionsManifest(manifestPath);
 injectPortraitManifest(manifestPath);
+
+// Android 13+ 运行时权限：在 MainActivity.onCreate 里主动申请「附近设备 / 蓝牙 / 通知」。
+function injectMainActivityPermissions(activityPath) {
+  if (!fs.existsSync(activityPath)) return;
+  let src = fs.readFileSync(activityPath, "utf8");
+  if (src.includes("requestRuntimePermissions")) {
+    return;
+  }
+  src = src.replace(
+    /import androidx\.activity\.enableEdgeToEdge\n/,
+    "import androidx.activity.enableEdgeToEdge\n" +
+      "import android.Manifest\n" +
+      "import android.content.pm.PackageManager\n" +
+      "import android.os.Build\n" +
+      "import androidx.core.app.ActivityCompat\n" +
+      "import androidx.core.content.ContextCompat\n",
+  );
+  src = src.replace(
+    /super\.onCreate\(savedInstanceState\)/,
+    "super.onCreate(savedInstanceState)\n    requestRuntimePermissions()",
+  );
+  const method = `
+  private fun requestRuntimePermissions() {
+    val permissions = mutableListOf<String>()
+    if (Build.VERSION.SDK_INT >= 33) {
+      permissions.add(Manifest.permission.NEARBY_WIFI_DEVICES)
+      permissions.add(Manifest.permission.POST_NOTIFICATIONS)
+    }
+    if (Build.VERSION.SDK_INT >= 31) {
+      permissions.add(Manifest.permission.BLUETOOTH_SCAN)
+      permissions.add(Manifest.permission.BLUETOOTH_CONNECT)
+    }
+    val missing = permissions.filter {
+      ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+    }
+    if (missing.isNotEmpty()) {
+      ActivityCompat.requestPermissions(this, missing.toTypedArray(), 1001)
+    }
+  }
+`;
+  const lastBrace = src.lastIndexOf("}");
+  if (lastBrace === -1) return;
+  src = src.slice(0, lastBrace) + method + src.slice(lastBrace);
+  fs.writeFileSync(activityPath, src);
+  console.log("[android-permissions] 已注入运行时权限申请（附近设备 / 蓝牙 / 通知）。");
+}
+
+const activityPath = path.join(
+  root,
+  "src-tauri",
+  "gen",
+  "android",
+  "app",
+  "src",
+  "main",
+  "java",
+  "com",
+  "gosslan",
+  "app",
+  "MainActivity.kt",
+);
+injectMainActivityPermissions(activityPath);

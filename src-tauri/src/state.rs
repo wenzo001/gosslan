@@ -319,6 +319,8 @@ pub struct AppState {
     pub peers: Mutex<HashMap<String, Peer>>,
     /// 已建立的 TCP 连接出站发送端：device_id -> mpsc Sender
     pub links: tokio::sync::Mutex<HashMap<String, mpsc::Sender<Message>>>,
+    /// 同一连接的高优先级发送端：聊天/控制消息走这里，避免被大文件分片饿死。
+    pub priority_links: tokio::sync::Mutex<HashMap<String, mpsc::Sender<Message>>>,
     /// 待处理好友申请：from_id -> request
     pub pending_requests: Mutex<HashMap<String, PendingRequest>>,
     /// 网络运行时（None 表示未启动）
@@ -480,6 +482,7 @@ impl AppState {
             group_keys: Mutex::new(HashMap::new()),
             peers: Mutex::new(HashMap::new()),
             links: tokio::sync::Mutex::new(HashMap::new()),
+            priority_links: tokio::sync::Mutex::new(HashMap::new()),
             pending_requests: Mutex::new(HashMap::new()),
             network: Mutex::new(None),
             pending_reads: Mutex::new(pending_reads_map),

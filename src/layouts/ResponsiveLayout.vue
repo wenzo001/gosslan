@@ -159,10 +159,10 @@ function onResizeEnd() {
 
 <template>
     <div
-    class="flex h-screen w-full flex-col overflow-hidden bg-[var(--gosslan-caption)] font-gosslan text-[var(--gosslan-text)]"
+    class="flex w-full flex-col overflow-hidden bg-[var(--gosslan-caption)] font-gosslan text-[var(--gosslan-text)]"
     :class="app.isMobile
-      ? ''
-      : 'rounded-xl ring-1 ring-inset ring-[var(--gosslan-window-ring)]'"
+      ? 'h-dvh'
+      : 'h-screen rounded-xl ring-1 ring-inset ring-[var(--gosslan-window-ring)]'"
   >
     <!-- 移动端顶部安全区：大圆角/刘海屏下为状态栏留出空间，避免搜索框顶到屏幕外框 -->
     <div v-if="app.isMobile" class="safe-top shrink-0"></div>

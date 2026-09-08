@@ -97,7 +97,7 @@ pub async fn update_profile(
         nickname,
         avatar,
     };
-    let links = s.links.lock().await;
+    let links = s.priority_links.lock().await;
     for tx in links.values() {
         let _ = tx.send(msg.clone()).await;
     }
@@ -570,7 +570,7 @@ pub async fn broadcast_chat_style(
         to: None,
         style,
     };
-    let links = s.links.lock().await;
+    let links = s.priority_links.lock().await;
     for tx in links.values() {
         let _ = tx.send(msg.clone()).await;
     }
@@ -1776,16 +1776,47 @@ async fn dispatch_group_file_to_peer(
             .await
             .map_err(|e| format!("分片发送失败：{e}"))?;
         sent += n as u64;
-        // 真实本地进度节流落库（250ms）
+        // 真实本地进度节流落库（250ms），并向前端推送进度事件。
         if last_report.elapsed() >= std::time::Duration::from_millis(250) {
             last_report = std::time::Instant::now();
+            let progress = if size == 0 {
+                1.0
+            } else {
+                sent as f64 / size as f64
+            };
             let dbc = state.db.lock().unwrap();
             let _ = db::update_group_file_recipient(
                 &dbc,
                 transfer_id,
                 recipient,
                 "sending",
-                sent as f64 / size.max(1) as f64,
+                progress,
+            );
+            // 发送方气泡展示全体 recipient 的最大进度，避免多成员时进度回退。
+            let max_progress = db::list_group_file_recipients(&dbc, transfer_id)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|r| r.progress)
+                .fold(progress, f64::max);
+            let _ = db::upsert_transfer(
+                &dbc,
+                transfer_id,
+                group_id,
+                &gf.name,
+                size,
+                "send",
+                "active",
+                Some(source_path),
+                max_progress,
+            );
+            drop(dbc);
+            let _ = state.app.emit(
+                "file-progress",
+                &crate::state::FileProgress {
+                    transfer_id: transfer_id.to_string(),
+                    received: (size as f64 * max_progress) as u64,
+                    total: size,
+                },
             );
         }
         seq += 1;
@@ -2048,6 +2079,19 @@ pub async fn send_file(
             None,
             &format!("[文件] {name}"),
             0,
+        )
+        .map_err(|e| e.to_string())?;
+        // 先建立 file_transfers 记录，前端刷新传输列表后能立刻拿到进度条载体。
+        db::upsert_transfer(
+            &tx,
+            &transfer_id,
+            &friend_id,
+            &name,
+            size,
+            "send",
+            "pending",
+            Some(path.as_str()),
+            0.0,
         )
         .map_err(|e| e.to_string())?;
         db::insert_file_outbox(&tx, &transfer_id, &friend_id, None, &path, &name, size)

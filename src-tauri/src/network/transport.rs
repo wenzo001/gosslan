@@ -71,19 +71,35 @@ pub async fn read_frame<R: AsyncRead + Unpin>(r: &mut R) -> std::io::Result<Mess
 
 // ---------------- 出站发送 ----------------
 
+/// 大数据分片走普通通道；聊天/控制/小控制帧走高优先级通道，避免被大文件饿死。
+fn is_bulk_message(msg: &Message) -> bool {
+    matches!(
+        msg,
+        Message::FileChunk { .. } | Message::RelayChunk { .. } | Message::GroupFileChunk { .. }
+    )
+}
+
 /// 尝试通过已建立连接发送消息；无连接则返回 Err。
 pub async fn try_send(state: &AppState, peer_id: &str, msg: &Message) -> Result<(), String> {
-    let links = state.links.lock().await;
-    match links.get(peer_id) {
-        Some(tx) => tx.send(msg.clone()).await.map_err(|e| e.to_string()),
-        None => Err("未建立连接".to_string()),
+    if is_bulk_message(msg) {
+        let links = state.links.lock().await;
+        match links.get(peer_id) {
+            Some(tx) => tx.send(msg.clone()).await.map_err(|e| e.to_string()),
+            None => Err("未建立连接".to_string()),
+        }
+    } else {
+        let links = state.priority_links.lock().await;
+        match links.get(peer_id) {
+            Some(tx) => tx.send(msg.clone()).await.map_err(|e| e.to_string()),
+            None => Err("未建立连接".to_string()),
+        }
     }
 }
 
 /// 向所有已连接节点广播一条 Gossip 消息。
 pub async fn broadcast_gossip(state: &AppState, envelope: GossipEnvelope) {
     let msg = Message::Gossip { envelope };
-    let links = state.links.lock().await;
+    let links = state.priority_links.lock().await;
     for tx in links.values() {
         let _ = tx.send(msg.clone()).await;
     }
@@ -132,7 +148,7 @@ pub async fn spawn(
             tokio::select! {
                 _ = shutdown.changed() => break,
                 _ = tick.tick() => {
-                    let links = state.links.lock().await;
+                    let links = state.priority_links.lock().await;
                     for tx in links.values() {
                         let _ = tx.send(Message::Heartbeat { device_id: state.device_id.clone() }).await;
                     }
@@ -153,9 +169,25 @@ async fn handle_incoming(state: Arc<AppState>, stream: TcpStream, peer_addr: std
         Message::Hello { device_id, .. } => device_id.clone(),
         _ => return, // 首帧必须是 Hello
     };
-    let (tx, rx) = mpsc::channel(1024);
-    state.links.lock().await.insert(peer_id.clone(), tx.clone());
-    tokio::spawn(writer_loop(state.clone(), peer_id.clone(), w, rx));
+    let (bulk_tx, bulk_rx) = mpsc::channel(1024);
+    let (prio_tx, prio_rx) = mpsc::channel(1024);
+    state
+        .links
+        .lock()
+        .await
+        .insert(peer_id.clone(), bulk_tx.clone());
+    state
+        .priority_links
+        .lock()
+        .await
+        .insert(peer_id.clone(), prio_tx);
+    tokio::spawn(writer_loop(
+        state.clone(),
+        peer_id.clone(),
+        w,
+        bulk_rx,
+        prio_rx,
+    ));
     handle_message(&state, &peer_id, first).await;
     // 用 TCP 对端的真实地址补全 peer IP：解决「被动连接方 peers 表 IP 为空或虚拟」的问题。
     // 新地址必须是非虚拟、非 link-local 的可直连 LAN 地址才写入。
@@ -173,27 +205,54 @@ async fn handle_incoming(state: Arc<AppState>, stream: TcpStream, peer_addr: std
         }
     }
     state.emit_peers();
-    reader_loop(state, r, peer_id, tx).await;
+    reader_loop(state, r, peer_id, bulk_tx).await;
 }
 
 async fn writer_loop(
     state: Arc<AppState>,
     peer_id: String,
     mut w: OwnedWriteHalf,
-    mut rx: mpsc::Receiver<Message>,
+    mut bulk_rx: mpsc::Receiver<Message>,
+    mut prio_rx: mpsc::Receiver<Message>,
 ) {
-    while let Some(msg) = rx.recv().await {
-        if write_frame(&mut w, &msg).await.is_err() {
-            // TCP write 失败：普通消息由 outbox 重发；ReadReceipt 需要特殊处理——
-            // 它没有 outbox 行，如果 pending 已被 flush_pending_reads 清除，
-            // 此处不恢复就永久丢失。将 timestamp 重新放回 pending_reads，
-            // 下一次建链 / Hello / Heartbeat 会再次 flush 重发。
-            if let Message::ReadReceipt { last_read_ts, .. } = &msg {
-                let mut pending = state.pending_reads.lock().unwrap();
-                let cur = pending.entry(peer_id.clone()).or_insert(*last_read_ts);
-                *cur = (*cur).max(*last_read_ts);
-            }
+    let mut bulk_open = true;
+    let mut prio_open = true;
+    loop {
+        if !bulk_open && !prio_open {
             break;
+        }
+        let msg = tokio::select! {
+            biased;
+            maybe = prio_rx.recv(), if prio_open => maybe,
+            maybe = bulk_rx.recv(), if bulk_open => maybe,
+        };
+        match msg {
+            Some(msg) => {
+                if write_frame(&mut w, &msg).await.is_err() {
+                    // TCP write 失败：普通消息由 outbox 重发；ReadReceipt 需要特殊处理——
+                    // 它没有 outbox 行，如果 pending 已被 flush_pending_reads 清除，
+                    // 此处不恢复就永久丢失。将 timestamp 重新放回 pending_reads，
+                    // 下一次建链 / Hello / Heartbeat 会再次 flush 重发。
+                    if let Message::ReadReceipt { last_read_ts, .. } = &msg {
+                        let mut pending = state.pending_reads.lock().unwrap();
+                        let cur = pending.entry(peer_id.clone()).or_insert(*last_read_ts);
+                        *cur = (*cur).max(*last_read_ts);
+                    }
+                    break;
+                }
+            }
+            None => {
+                // select 无法直接区分是哪个分支关闭，用两个 recv 的 is_closed 兜底。
+                if prio_rx.is_closed() {
+                    prio_open = false;
+                }
+                if bulk_rx.is_closed() {
+                    bulk_open = false;
+                }
+                if !bulk_open && !prio_open {
+                    break;
+                }
+            }
         }
     }
 }
@@ -235,6 +294,7 @@ async fn reader_loop(
             .unwrap_or(false);
         if is_live {
             links.remove(&peer_id);
+            state.priority_links.lock().await.remove(&peer_id);
         }
         is_live
     };
@@ -271,13 +331,25 @@ async fn connect_to_peer(state: &Arc<AppState>, peer_id: &str, ip: &str, tcp_por
     };
 
     let (r, w) = stream.into_split();
-    let (tx, rx) = mpsc::channel(1024);
+    let (bulk_tx, bulk_rx) = mpsc::channel(1024);
+    let (prio_tx, prio_rx) = mpsc::channel(1024);
     state
         .links
         .lock()
         .await
-        .insert(peer_id.to_string(), tx.clone());
-    tokio::spawn(writer_loop(state.clone(), peer_id.to_string(), w, rx));
+        .insert(peer_id.to_string(), bulk_tx.clone());
+    state
+        .priority_links
+        .lock()
+        .await
+        .insert(peer_id.to_string(), prio_tx.clone());
+    tokio::spawn(writer_loop(
+        state.clone(),
+        peer_id.to_string(),
+        w,
+        bulk_rx,
+        prio_rx,
+    ));
 
     let conv_clock = {
         let dbc = state.db.lock().unwrap();
@@ -292,9 +364,14 @@ async fn connect_to_peer(state: &Arc<AppState>, peer_id: &str, ip: &str, tcp_por
         ed25519_pubkey: state.identity.ed25519_public_b64(),
         conv_clock,
     };
-    let _ = tx.send(hello).await;
+    let _ = prio_tx.send(hello).await;
 
-    tokio::spawn(reader_loop(state.clone(), r, peer_id.to_string(), tx));
+    tokio::spawn(reader_loop(
+        state.clone(),
+        r,
+        peer_id.to_string(),
+        bulk_tx,
+    ));
     flush_outbox(state, peer_id).await;
     flush_group_outbox(state, peer_id).await;
     flush_pending_reads(state, peer_id).await;
@@ -3248,6 +3325,34 @@ mod tests {
             Message::Heartbeat { device_id } => assert_eq!(device_id, "dev-1"),
             _ => panic!("类型不符"),
         }
+    }
+
+    #[test]
+    fn bulk_messages_are_only_large_chunks() {
+        let chat = Message::ChatMessage {
+            msg_id: "m1".into(),
+            from: "a".into(),
+            to: "b".into(),
+            kind: MsgKind::Text,
+            content: "hi".into(),
+            ts: 1,
+            seq: 1,
+        };
+        assert!(!is_bulk_message(&chat));
+        let file_chunk = Message::FileChunk {
+            transfer_id: "t1".into(),
+            seq: 0,
+            data: "abc".into(),
+        };
+        assert!(is_bulk_message(&file_chunk));
+        let group_file_chunk = Message::GroupFileChunk {
+            transfer_id: "t1".into(),
+            group_id: "g1".into(),
+            sender_id: "a".into(),
+            seq: 0,
+            data: "abc".into(),
+        };
+        assert!(is_bulk_message(&group_file_chunk));
     }
 
     #[tokio::test]
