@@ -245,4 +245,67 @@ mod tests {
         let env = engine.build_envelope(&id, "dev-a", GossipKind::Chat, None, None, "cipher", 42);
         assert_eq!(env.ttl, 6);
     }
+
+    /// 群信封：group_creator / group_members 在 build_envelope 之后才填入，
+    /// 必须重算 message_id 并重签，否则接收端 verify_envelope 必然失败
+    /// （这是群消息被对端静默丢弃的根因回归测试）。
+    #[test]
+    fn group_envelope_resign_covers_creator_and_members() {
+        let id = crate::crypto::Identity::generate();
+        let engine = GossipEngine::new(100, 10, 4, 6);
+
+        // 复刻 send_group_message 的顺序：build → 再填成员字段
+        let mut env = engine.build_envelope(
+            &id,
+            "dev-a",
+            GossipKind::Group,
+            Some("g1".to_string()),
+            Some("群聊".to_string()),
+            "cipher",
+            42,
+        );
+        env.group_creator = Some("dev-a".to_string());
+        env.group_members = vec!["dev-a".into(), "dev-b".into()];
+
+        // 未重签 → 验签失败（正是线上群消息收不到的原因）
+        assert!(!engine.verify_envelope(&env));
+
+        // 重算 message_id + 重签 → 验签通过
+        env.compute_message_id();
+        env.sender_sig = id.sign_b64(&env.signing_bytes());
+        assert!(engine.verify_envelope(&env));
+
+        // 重签后再篡改成员表 → 验签失败，证明成员表确实进入签名范围
+        let mut tampered = env.clone();
+        tampered.group_members.push("dev-evil".into());
+        assert!(!engine.verify_envelope(&tampered));
+
+        // 重签后再篡改 creator → 同样失败
+        let mut tampered_creator = env.clone();
+        tampered_creator.group_creator = Some("dev-evil".into());
+        assert!(!engine.verify_envelope(&tampered_creator));
+    }
+
+    /// 重签不改变 message_id 语义：message_id 只由 sender_id + ts + payload 决定，
+    /// 与 group_creator / group_members 无关，因此重算后保持一致。
+    /// 这也是「本地 messages.msg_id 可直接取 env.message_id」的前提。
+    #[test]
+    fn group_envelope_message_id_stable_after_resign() {
+        let id = crate::crypto::Identity::generate();
+        let engine = GossipEngine::new(100, 10, 4, 6);
+        let mut env = engine.build_envelope(
+            &id,
+            "dev-a",
+            GossipKind::Group,
+            Some("g1".to_string()),
+            Some("群聊".to_string()),
+            "cipher",
+            42,
+        );
+        let before = env.message_id.clone();
+        env.group_creator = Some("dev-a".to_string());
+        env.group_members = vec!["dev-a".into(), "dev-b".into()];
+        env.compute_message_id();
+        assert_eq!(env.message_id, before);
+    }
 }

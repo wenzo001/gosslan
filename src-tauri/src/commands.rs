@@ -1365,9 +1365,41 @@ pub async fn send_group_message(
     let conv_id = format!("group:{group_id}");
     let preview = preview(&kind, &content);
 
+    // 群密钥加密 + Gossip 信封（E2EE 恒开：载荷用群密钥 ChaCha20-Poly1305 加密）
+    let plaintext =
+        serde_json::json!({ "kind": kind_enum.as_str(), "content": content }).to_string();
+    let sealed = crypto::seal_symmetric(&key, plaintext.as_bytes()).ok_or("加密失败")?;
+    let payload_b64 = STANDARD.encode(&sealed);
+    let env = {
+        let gossip = s.gossip.lock().unwrap();
+        let mut env = gossip.build_envelope(
+            &s.identity,
+            &s.device_id,
+            GossipKind::Group,
+            Some(group_id.clone()),
+            Some(group_name.clone()),
+            &payload_b64,
+            ts,
+        );
+        env.group_creator = group_creator;
+        env.group_members = group_members;
+        // group_creator / group_members 属于签名材料（GossipEnvelope::signing_bytes），
+        // 而 build_envelope 内部已按「尚未填值」的状态算过 message_id 与 sender_sig。
+        // 若此处不重算重签，接收端 verify_envelope 会用最终字段重新计算签名材料，
+        // 与旧签名不一致 → 验签失败 → handle_gossip 静默丢弃群消息（群聊收不到的根因）。
+        // compute_message_id 只依赖 sender_id + ts + payload，重算后 message_id 不变，
+        // 与既有协议语义保持一致。
+        env.compute_message_id();
+        env.sender_sig = s.identity.sign_b64(&env.signing_bytes());
+        env
+    };
+    // 信封 encrypted 默认 true（build_envelope 内置），无需改写
+
+    // 本地落库：msg_id 统一用 envelope.message_id（与单聊发送路径一致），
+    // 保证同一条群消息在本地记录 / Gossip 投递 / 接收端落库三处身份一致。
     let rec = MessageRecord {
         id: 0,
-        msg_id: Uuid::new_v4().to_string(),
+        msg_id: env.message_id.clone(),
         conv_id: conv_id.clone(),
         sender_id: s.device_id.clone(),
         receiver_id: group_id.clone(),
@@ -1383,27 +1415,6 @@ pub async fn send_group_message(
             .map_err(|e| format!("会话写入失败：{e}"))?;
     }
 
-    // 群密钥加密 + Gossip 广播（E2EE 恒开：载荷用群密钥 ChaCha20-Poly1305 加密）
-    let plaintext =
-        serde_json::json!({ "kind": kind_enum.as_str(), "content": content }).to_string();
-    let sealed = crypto::seal_symmetric(&key, plaintext.as_bytes()).ok_or("加密失败")?;
-    let payload_b64 = STANDARD.encode(&sealed);
-    let env = {
-        let gossip = s.gossip.lock().unwrap();
-        let mut env = gossip.build_envelope(
-            &s.identity,
-            &s.device_id,
-            GossipKind::Group,
-            Some(group_id),
-            Some(group_name),
-            &payload_b64,
-            ts,
-        );
-        env.group_creator = group_creator;
-        env.group_members = group_members;
-        env
-    };
-    // 信封 encrypted 默认 true（build_envelope 内置），无需改写
     broadcast_gossip(s, env).await;
 
     Ok(rec)
