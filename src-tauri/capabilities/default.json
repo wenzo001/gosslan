@@ -23,8 +23,11 @@
     "opener:default",
     {
       "identifier": "opener:allow-open-path",
+      "description": "允许用系统默认程序打开本机文件：接收文件固定在 downloads 目录（正/反斜杠 glob 双写覆盖 Windows）；发送方源文件由用户自行选择，位置任意，故保留 ** 兜底。仅授「打开」能力，不含读写删除。",
       "allow": [
-        { "path": "$APPDATA/downloads/**" }
+        { "path": "$APPDATA/downloads/**" },
+        { "path": "$APPDATA\\downloads\\**" },
+        { "path": "**" }
       ]
     }
   ]

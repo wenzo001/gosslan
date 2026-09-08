@@ -1634,8 +1634,25 @@ pub async fn send_group_file(
         use tokio::io::AsyncReadExt;
         let mut buf = vec![0u8; FILE_CHUNK];
         let mut seq: u32 = 0;
+        let mut sent: u64 = 0;
+        let mut last_report = std::time::Instant::now() - std::time::Duration::from_secs(1);
         // 分片发送失败的 recipient：只标它 failed，不参与 Done，不阻塞其他
         let mut failed: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let set_progress = |progress: f64| {
+            let dbc = s2.db.lock().unwrap();
+            db::upsert_transfer(
+                &dbc,
+                &tid,
+                &gid,
+                "群文件",
+                size,
+                "send",
+                "active",
+                None,
+                progress,
+            )
+            .ok();
+        };
         loop {
             let n = match f.read(&mut buf).await {
                 Ok(n) => n,
@@ -1683,7 +1700,37 @@ pub async fn send_group_file(
                     let _ = db::update_group_file_recipient(&dbc, &tid, m, "failed", 0.0);
                 }
             }
+            sent += n as u64;
+            // 真实本地进度节流上报（250ms）：sender 自己的字节计数，不依赖 ACK
+            if last_report.elapsed() >= std::time::Duration::from_millis(250) {
+                last_report = std::time::Instant::now();
+                set_progress(sent as f64 / size.max(1) as f64);
+            }
             seq += 1;
+        }
+        // 本机分片全部发完：transfer 推进到 done/1.0（气泡 delivered 由
+        // CompleteAck 聚合决定，这里只表达"本机发送已完成"）
+        set_progress(1.0);
+        {
+            let dbc = s2.db.lock().unwrap();
+            let final_status = if failed.len() >= rcpt.len() && !rcpt.is_empty() {
+                "failed"
+            } else {
+                "done"
+            };
+            // path 保留源文件位置：失败/完成后用户仍可打开自己的源文件
+            db::upsert_transfer(
+                &dbc,
+                &tid,
+                &gid,
+                "群文件",
+                size,
+                "send",
+                final_status,
+                Some(p.to_string_lossy().as_ref()),
+                if final_status == "done" { 1.0 } else { 0.0 },
+            )
+            .ok();
         }
         // GroupFileDone：发给仍处于发送流程中的 recipient（未 failed）。
         // Done 不等于接收完成——sender-side recipient 保持 sending，

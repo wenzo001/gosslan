@@ -2052,6 +2052,19 @@ async fn handle_group_file_done(
             let dbc = state.db.lock().unwrap();
             let _ =
                 db::update_group_file_recipient(&dbc, &transfer_id, &state.device_id, "failed", 0.0);
+            // 接收 transfer 同步 failed
+            db::upsert_transfer(
+                &dbc,
+                &transfer_id,
+                &sender_id,
+                &gf.name,
+                gf.size,
+                "receive",
+                "failed",
+                None,
+                0.0,
+            )
+            .ok();
         }
         send_group_file_complete_ack(state, &transfer_id, &group_id, &sender_id, false).await;
         return;
@@ -2094,6 +2107,19 @@ async fn handle_group_file_done(
             let dbc = state.db.lock().unwrap();
             let _ =
                 db::update_group_file_recipient(&dbc, &transfer_id, &state.device_id, "failed", 0.0);
+            // 接收 transfer 同步 failed
+            db::upsert_transfer(
+                &dbc,
+                &transfer_id,
+                &sender_id,
+                &gf.name,
+                gf.size,
+                "receive",
+                "failed",
+                None,
+                0.0,
+            )
+            .ok();
         }
         send_group_file_complete_ack(state, &transfer_id, &group_id, &sender_id, false).await;
         return;
@@ -2108,6 +2134,19 @@ async fn handle_group_file_done(
             let dbc = state.db.lock().unwrap();
             let _ =
                 db::update_group_file_recipient(&dbc, &transfer_id, &state.device_id, "failed", 0.0);
+            // 接收 transfer 同步 failed
+            db::upsert_transfer(
+                &dbc,
+                &transfer_id,
+                &sender_id,
+                &gf.name,
+                gf.size,
+                "receive",
+                "failed",
+                None,
+                0.0,
+            )
+            .ok();
         }
         send_group_file_complete_ack(state, &transfer_id, &group_id, &sender_id, false).await;
         return;
@@ -2253,6 +2292,26 @@ async fn handle_group_file_complete_ack(
             };
         }
         let _ = db::set_message_status(&dbc, &format!("gfile-{transfer_id}"), bubble).ok();
+        // sender 的 transfer 记录随聚合结果推进（delivered → done/1.0，failed → failed/0）
+        let tf_status = if bubble == "delivered" { "done" } else { "failed" };
+        let tf_progress = if bubble == "delivered" { 1.0 } else { 0.0 };
+        let path = db::list_transfers(&dbc)
+            .unwrap_or_default()
+            .into_iter()
+            .find(|t| t.id == transfer_id)
+            .and_then(|t| t.path);
+        db::upsert_transfer(
+            &dbc,
+            &transfer_id,
+            &gf.group_id,
+            &gf.name,
+            gf.size,
+            "send",
+            tf_status,
+            path.as_deref(),
+            tf_progress,
+        )
+        .ok();
     }
     if bubble == "delivered" {
         let _ = state.app.emit("message-acked", &format!("gfile-{transfer_id}"));
