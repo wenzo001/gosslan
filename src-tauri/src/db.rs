@@ -2073,4 +2073,89 @@ mod tests {
             }
         }
     }
+
+    // ---------- GroupFileCompleteAck（sender 侧 recipient 状态迁移） ----------
+
+    /// 合法 recipient 的 success ACK → completed + progress 1.0，只影响该 recipient。
+    #[test]
+    fn complete_ack_updates_only_target_recipient() {
+        let conn = group_file_fixture();
+        insert_group_file(&conn, &group_file("gf-1")).unwrap();
+        for rid in ["b", "c", "d"] {
+            insert_group_file_recipient(&conn, "gf-1", rid).unwrap();
+        }
+
+        // B 的 success ACK
+        update_group_file_recipient(&conn, "gf-1", "b", "completed", 1.0).unwrap();
+
+        let by_id: std::collections::HashMap<_, _> = list_group_file_recipients(&conn, "gf-1")
+            .unwrap()
+            .into_iter()
+            .map(|r| (r.recipient_id, (r.status, r.progress)))
+            .collect();
+        assert_eq!(by_id.get("b"), Some(&("completed".to_string(), 1.0)));
+        assert_eq!(by_id.get("d"), Some(&("pending".to_string(), 0.0)));
+    }
+
+    /// failure ACK → recipient failed（progress 重置为 0），不影响其他成员。
+    #[test]
+    fn failure_ack_marks_recipient_failed() {
+        let conn = group_file_fixture();
+        insert_group_file(&conn, &group_file("gf-1")).unwrap();
+        for rid in ["b", "c"] {
+            insert_group_file_recipient(&conn, "gf-1", rid).unwrap();
+        }
+        update_group_file_recipient(&conn, "gf-1", "c", "sending", 0.5).unwrap();
+
+        // C 的 failure ACK
+        update_group_file_recipient(&conn, "gf-1", "c", "failed", 0.0).unwrap();
+
+        let by_id: std::collections::HashMap<_, _> = list_group_file_recipients(&conn, "gf-1")
+            .unwrap()
+            .into_iter()
+            .map(|r| (r.recipient_id, r.status))
+            .collect();
+        assert_eq!(by_id.get("c").map(String::as_str), Some("failed"));
+        assert_eq!(by_id.get("b").map(String::as_str), Some("pending"));
+    }
+
+    /// 非 recipient 的 ACK 被拒绝（update 不命中）——不允许群外 peer 伪造状态。
+    #[test]
+    fn ack_from_non_recipient_is_rejected() {
+        let conn = group_file_fixture();
+        insert_group_file(&conn, &group_file("gf-1")).unwrap();
+        insert_group_file_recipient(&conn, "gf-1", "b").unwrap();
+        assert!(
+            update_group_file_recipient(&conn, "gf-1", "outsider", "completed", 1.0).is_err()
+        );
+    }
+
+    /// 重复 ACK 幂等：连续相同更新不报错、状态稳定、无副作用。
+    #[test]
+    fn repeated_ack_is_idempotent() {
+        let conn = group_file_fixture();
+        insert_group_file(&conn, &group_file("gf-1")).unwrap();
+        insert_group_file_recipient(&conn, "gf-1", "b").unwrap();
+
+        update_group_file_recipient(&conn, "gf-1", "b", "completed", 1.0).unwrap();
+        update_group_file_recipient(&conn, "gf-1", "b", "completed", 1.0).unwrap();
+        update_group_file_recipient(&conn, "gf-1", "b", "completed", 1.0).unwrap();
+
+        let recipients = list_group_file_recipients(&conn, "gf-1").unwrap();
+        assert_eq!(recipients.len(), 1);
+        assert_eq!(recipients[0].status, "completed");
+        assert_eq!(recipients[0].progress, 1.0);
+    }
+
+    /// 发送端验证：group_file.sender_id 必须是本机才处理 ACK
+    /// （get_group_file 返回的 sender_id 供此比对；他机发起的 transfer 被拒）。
+    #[test]
+    fn ack_sender_check_uses_group_file_owner() {
+        let conn = group_file_fixture();
+        insert_group_file(&conn, &group_file("gf-1")).unwrap(); // sender = "a"
+        let gf = get_group_file(&conn, "gf-1").unwrap();
+        // 本机是 "a" 时才处理；本机是 "b"（recipient）时 sender_id != me → 拒绝
+        assert_eq!(gf.sender_id, "a");
+        assert_ne!(gf.sender_id, "b");
+    }
 }

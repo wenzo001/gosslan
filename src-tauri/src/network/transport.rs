@@ -1053,6 +1053,15 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
         } => {
             handle_group_file_done(state, peer_id, transfer_id, group_id, sender_id).await;
         }
+        Message::GroupFileCompleteAck {
+            transfer_id,
+            group_id,
+            sender_id,
+            success,
+        } => {
+            handle_group_file_complete_ack(state, peer_id, transfer_id, group_id, sender_id, success)
+                .await;
+        }
     }
 }
 
@@ -1992,8 +2001,12 @@ async fn handle_group_file_done(
     if r.received != r.size {
         let _ = std::fs::remove_file(&r.tmp_path);
         state.group_file_keys.lock().unwrap().remove(&transfer_id);
-        let dbc = state.db.lock().unwrap();
-        let _ = db::update_group_file_recipient(&dbc, &transfer_id, &state.device_id, "failed", 0.0);
+        {
+            let dbc = state.db.lock().unwrap();
+            let _ =
+                db::update_group_file_recipient(&dbc, &transfer_id, &state.device_id, "failed", 0.0);
+        }
+        send_group_file_complete_ack(state, &transfer_id, &group_id, &sender_id, false).await;
         return;
     }
     // 2. SHA-256 校验：finalize 增量哈希（不重读 .part），与发送方声明比对
@@ -2009,8 +2022,17 @@ async fn handle_group_file_done(
         if !actual_hex.eq_ignore_ascii_case(&r.expected_sha256) {
             let _ = std::fs::remove_file(&r.tmp_path);
             state.group_file_keys.lock().unwrap().remove(&transfer_id);
-            let dbc = state.db.lock().unwrap();
-            let _ = db::update_group_file_recipient(&dbc, &transfer_id, &state.device_id, "failed", 0.0);
+            {
+                let dbc = state.db.lock().unwrap();
+                let _ = db::update_group_file_recipient(
+                    &dbc,
+                    &transfer_id,
+                    &state.device_id,
+                    "failed",
+                    0.0,
+                );
+            }
+            send_group_file_complete_ack(state, &transfer_id, &group_id, &sender_id, false).await;
             return;
         }
     }
@@ -2019,8 +2041,12 @@ async fn handle_group_file_done(
         let _ = e.to_string();
         let _ = std::fs::remove_file(&r.tmp_path);
         state.group_file_keys.lock().unwrap().remove(&transfer_id);
-        let dbc = state.db.lock().unwrap();
-        let _ = db::update_group_file_recipient(&dbc, &transfer_id, &state.device_id, "failed", 0.0);
+        {
+            let dbc = state.db.lock().unwrap();
+            let _ =
+                db::update_group_file_recipient(&dbc, &transfer_id, &state.device_id, "failed", 0.0);
+        }
+        send_group_file_complete_ack(state, &transfer_id, &group_id, &sender_id, false).await;
         return;
     }
     // 4. drop 文件句柄后 rename（Windows 不允许 rename 打开中的文件）
@@ -2028,8 +2054,12 @@ async fn handle_group_file_done(
     if let Err(_) = std::fs::rename(&r.tmp_path, &r.final_path) {
         let _ = std::fs::remove_file(&r.tmp_path);
         state.group_file_keys.lock().unwrap().remove(&transfer_id);
-        let dbc = state.db.lock().unwrap();
-        let _ = db::update_group_file_recipient(&dbc, &transfer_id, &state.device_id, "failed", 0.0);
+        {
+            let dbc = state.db.lock().unwrap();
+            let _ =
+                db::update_group_file_recipient(&dbc, &transfer_id, &state.device_id, "failed", 0.0);
+        }
+        send_group_file_complete_ack(state, &transfer_id, &group_id, &sender_id, false).await;
         return;
     }
     // 全部成功：正式文件已落盘 → completed / progress 1.0 → 清理 session key
@@ -2038,6 +2068,68 @@ async fn handle_group_file_done(
         let _ = db::update_group_file_recipient(&dbc, &transfer_id, &state.device_id, "completed", 1.0);
     }
     state.group_file_keys.lock().unwrap().remove(&transfer_id);
+    // 完成确认：无论 ACK 发送成败，file_key 已清理不再保留（ACK 丢失由后续阶段处理）
+    send_group_file_complete_ack(state, &transfer_id, &group_id, &sender_id, true).await;
+}
+
+/// 向原始群文件发送者回送接收完成确认（receiver → sender）。
+/// ACK 丢失可接受（发送端保持 sending，等待后续 retry/offline recovery），
+/// 不因此重新保留 file_key。
+async fn send_group_file_complete_ack(
+    state: &Arc<AppState>,
+    transfer_id: &str,
+    group_id: &str,
+    original_sender: &str,
+    success: bool,
+) {
+    let ack = Message::GroupFileCompleteAck {
+        transfer_id: transfer_id.to_string(),
+        group_id: group_id.to_string(),
+        sender_id: state.device_id.clone(),
+        success,
+    };
+    let _ = try_send(state, original_sender, &ack).await;
+}
+
+/// 处理接收完成确认（sender 侧）：更新对应 recipient 的 completed/failed 状态。
+///
+/// 身份验证（防伪造）：
+/// 1. ACK.sender_id == TCP peer_id（不能只相信消息字段）；
+/// 2. sender_id != 本机；
+/// 3. transfer 对应的 group_file.sender_id == 本机（只有本机发起的群文件
+///    的 ACK 才会被处理，B 发给 A 的 transfer 的 ACK 到 C 手上会被拒绝）；
+/// 4. ACK 发送者必须是该 transfer 的 recipient（update 不命中即拒绝）。
+/// 幂等：重复 ACK 重复 UPDATE 同状态，无副作用、不报错。
+async fn handle_group_file_complete_ack(
+    state: &Arc<AppState>,
+    peer_id: &str,
+    transfer_id: String,
+    group_id: String,
+    sender_id: String,
+    success: bool,
+) {
+    // 1+2. ACK 发送者必须与链路对端一致，且不能是自己
+    if sender_id != peer_id || sender_id == state.device_id {
+        return;
+    }
+    // 3. transfer 必须是本机发出的群文件，且 group_id 一致
+    let Some(gf) = db::get_group_file(&state.db.lock().unwrap(), &transfer_id) else {
+        return;
+    };
+    if gf.sender_id != state.device_id || gf.group_id != group_id {
+        return;
+    }
+    // 4. ACK 发送者必须是该 transfer 的 recipient，且状态按 success 迁移；
+    //    只修改该 recipient，不影响其他成员。不命中（非 recipient）→ 拒绝。
+    let (status, progress) = if success {
+        ("completed", 1.0)
+    } else {
+        ("failed", 0.0)
+    };
+    {
+        let dbc = state.db.lock().unwrap();
+        let _ = db::update_group_file_recipient(&dbc, &transfer_id, &peer_id, status, progress);
+    }
 }
 
 /// 处理群文件分片（E2EE 解密 → seq/size 校验 → 增量哈希 → 写 `.part`）。

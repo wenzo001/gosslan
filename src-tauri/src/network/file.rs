@@ -1575,4 +1575,37 @@ mod tests {
         assert_eq!(meta.len(), 0, "正式文件必须是 0 字节");
         let _ = std::fs::remove_file(&final_path);
     }
+
+    // ---------- GroupFileCompleteAck（协议 round-trip） ----------
+
+    /// 1+2+3. GroupFileCompleteAck JSON round-trip：success=true / false 均完整保留。
+    #[test]
+    fn group_file_complete_ack_roundtrip() {
+        for success in [true, false] {
+            let msg = ProtocolMessage::GroupFileCompleteAck {
+                transfer_id: "gf-1".into(),
+                group_id: "g-1".into(),
+                sender_id: "dev-b".into(),
+                success,
+            };
+            let json = serde_json::to_string(&msg).unwrap();
+            assert!(json.contains("\"group_file_complete_ack\""));
+            assert!(json.contains(&format!("\"success\":{}", success)));
+            let back: ProtocolMessage = serde_json::from_str(&json).unwrap();
+            match back {
+                ProtocolMessage::GroupFileCompleteAck {
+                    transfer_id,
+                    group_id,
+                    sender_id,
+                    success: s,
+                } => {
+                    assert_eq!(transfer_id, "gf-1");
+                    assert_eq!(group_id, "g-1");
+                    assert_eq!(sender_id, "dev-b");
+                    assert_eq!(s, success);
+                }
+                _ => panic!("应为 GroupFileCompleteAck"),
+            }
+        }
+    }
 }

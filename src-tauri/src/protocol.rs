@@ -324,6 +324,16 @@ pub enum Message {
         group_id: String,
         sender_id: String,
     },
+    /// 群文件接收完成确认（receiver → 原始 sender）。
+    /// `sender_id` = ACK 发送者（即原 recipient），发送方必须校验
+    /// sender_id == TCP peer_id，且 transfer 的 group_file.sender_id 是本机。
+    /// success = 本地 size/SHA-256 校验通过并已 rename 落盘。
+    GroupFileCompleteAck {
+        transfer_id: String,
+        group_id: String,
+        sender_id: String,
+        success: bool,
+    },
     /// 群名变更广播（创建者改名后通知各成员同步本地群名）
     GroupRename {
         group_id: String,
