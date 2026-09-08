@@ -5,7 +5,9 @@ use std::path::Path;
 
 use rusqlite::{params, Connection, OptionalExtension, Result};
 
-use crate::state::{Conversation, Friend, Group, MessageRecord, TransferInfo};
+use crate::state::{
+    Conversation, Friend, Group, GroupFile, GroupFileRecipient, MessageRecord, TransferInfo,
+};
 
 /// 建表脚本（与 `schema.sql` 保持一致）
 pub const SCHEMA: &str = r#"
@@ -89,6 +91,32 @@ CREATE TABLE IF NOT EXISTS file_transfers (
     progress   REAL NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL
 );
+
+-- 群文件：一个 transfer_id 对应一个群文件。
+-- 每个群成员的投递状态在 group_file_recipients 中独立维护（DB 是最终状态来源）。
+CREATE TABLE IF NOT EXISTS group_files (
+    transfer_id TEXT PRIMARY KEY,
+    group_id    TEXT NOT NULL,
+    sender_id   TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    size        INTEGER NOT NULL,
+    sha256      TEXT NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'pending',  -- 'pending' | 'sending' | 'completed' | 'failed'
+    created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_group_files_group ON group_files(group_id);
+
+-- 群文件 per-recipient 投递状态：同一 (transfer_id, recipient_id) 唯一
+CREATE TABLE IF NOT EXISTS group_file_recipients (
+    transfer_id  TEXT NOT NULL,
+    recipient_id TEXT NOT NULL,
+    status       TEXT NOT NULL DEFAULT 'pending',  -- 'pending' | 'sending' | 'completed' | 'failed'
+    progress     REAL NOT NULL DEFAULT 0,
+    updated_at   INTEGER NOT NULL,
+    PRIMARY KEY (transfer_id, recipient_id)
+);
+CREATE INDEX IF NOT EXISTS idx_group_file_recipients_status
+    ON group_file_recipients(transfer_id, status);
 
 -- 待发已读回执：进程重启后从 DB 恢复，避免 ReadReceipt 丢失
 CREATE TABLE IF NOT EXISTS pending_reads (
@@ -425,10 +453,20 @@ pub fn list_group_reads(conn: &Connection, group_id: &str) -> Result<Vec<(String
     rows.collect()
 }
 
-/// 彻底删除一个群：群表 + 成员关系 + 会话。被移除的成员端收到通知后调用。
+/// 彻底删除一个群：群表 + 成员关系 + 会话 + 群文件投递数据。被移除的成员端收到通知后调用。
 pub fn delete_group(conn: &Connection, group_id: &str) -> Result<()> {
     conn.execute(
         "DELETE FROM group_members WHERE group_id = ?1",
+        params![group_id],
+    )?;
+    // 群文件投递数据随群删除，避免悬挂（按 group_id 关联逐层清理）
+    conn.execute(
+        "DELETE FROM group_file_recipients WHERE transfer_id IN
+         (SELECT transfer_id FROM group_files WHERE group_id = ?1)",
+        params![group_id],
+    )?;
+    conn.execute(
+        "DELETE FROM group_files WHERE group_id = ?1",
         params![group_id],
     )?;
     conn.execute("DELETE FROM groups WHERE id = ?1", params![group_id])?;
@@ -778,6 +816,165 @@ pub fn list_transfers(conn: &Connection) -> Result<Vec<TransferInfo>> {
         })
     })?;
     Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+// ---------------- 群文件（per-recipient 投递状态） ----------------
+
+/// 插入群文件记录。校验：群必须存在、sender 必须是群成员。
+// 传输流程在后续 GroupFileOffer 步骤启用；本步骤仅 DB 层 + 测试调用。
+#[allow(dead_code)]
+pub fn insert_group_file(conn: &Connection, f: &GroupFile) -> Result<()> {
+    let exists: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM groups WHERE id = ?1",
+            params![f.group_id],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|n| n > 0)?;
+    if !exists {
+        return Err(rusqlite::Error::InvalidParameterName(format!(
+            "群不存在：{}",
+            f.group_id
+        )));
+    }
+    let is_member: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM group_members WHERE group_id = ?1 AND device_id = ?2",
+            params![f.group_id, f.sender_id],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|n| n > 0)?;
+    if !is_member {
+        return Err(rusqlite::Error::InvalidParameterName(format!(
+            "发送者不是群成员：{}",
+            f.sender_id
+        )));
+    }
+    conn.execute(
+        "INSERT INTO group_files(transfer_id, group_id, sender_id, name, size, sha256, status, created_at)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            f.transfer_id,
+            f.group_id,
+            f.sender_id,
+            f.name,
+            f.size as i64,
+            f.sha256,
+            f.status,
+            f.created_at
+        ],
+    )?;
+    Ok(())
+}
+
+/// 取单个群文件。不存在返回 None。
+#[allow(dead_code)]
+pub fn get_group_file(conn: &Connection, transfer_id: &str) -> Option<GroupFile> {
+    conn.query_row(
+        "SELECT transfer_id, group_id, sender_id, name, size, sha256, status, created_at
+         FROM group_files WHERE transfer_id = ?1",
+        params![transfer_id],
+        |r| {
+            Ok(GroupFile {
+                transfer_id: r.get(0)?,
+                group_id: r.get(1)?,
+                sender_id: r.get(2)?,
+                name: r.get(3)?,
+                size: r.get::<_, i64>(4)? as u64,
+                sha256: r.get(5)?,
+                status: r.get(6)?,
+                created_at: r.get(7)?,
+            })
+        },
+    )
+    .optional()
+    .ok()
+    .flatten()
+}
+
+/// 为群文件添加一个 recipient 投递状态（初始 pending）。
+/// 校验：群文件必须存在、recipient 必须是群成员（不允许给群外 peer 建 state）；
+/// 同一 (transfer_id, recipient_id) 重复插入报错（PRIMARY KEY 冲突）。
+#[allow(dead_code)]
+pub fn insert_group_file_recipient(
+    conn: &Connection,
+    transfer_id: &str,
+    recipient_id: &str,
+) -> Result<()> {
+    let group_id: Option<String> = conn
+        .query_row(
+            "SELECT group_id FROM group_files WHERE transfer_id = ?1",
+            params![transfer_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(group_id) = group_id else {
+        return Err(rusqlite::Error::InvalidParameterName(format!(
+            "群文件不存在：{transfer_id}"
+        )));
+    };
+    let is_member: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM group_members WHERE group_id = ?1 AND device_id = ?2",
+            params![group_id, recipient_id],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|n| n > 0)?;
+    if !is_member {
+        return Err(rusqlite::Error::InvalidParameterName(format!(
+            "接收者不是群成员：{recipient_id}"
+        )));
+    }
+    conn.execute(
+        "INSERT INTO group_file_recipients(transfer_id, recipient_id, status, progress, updated_at)
+         VALUES(?1, ?2, 'pending', 0.0, ?3)",
+        params![transfer_id, recipient_id, now_ms()],
+    )?;
+    Ok(())
+}
+
+/// 列出群文件的全部 recipient 投递状态（按 recipient_id 稳定排序）。
+#[allow(dead_code)]
+pub fn list_group_file_recipients(
+    conn: &Connection,
+    transfer_id: &str,
+) -> Result<Vec<GroupFileRecipient>> {
+    let mut stmt = conn.prepare(
+        "SELECT recipient_id, status, progress, updated_at
+         FROM group_file_recipients WHERE transfer_id = ?1 ORDER BY recipient_id",
+    )?;
+    let rows = stmt.query_map(params![transfer_id], |r| {
+        Ok(GroupFileRecipient {
+            recipient_id: r.get(0)?,
+            status: r.get(1)?,
+            progress: r.get(2)?,
+            updated_at: r.get(3)?,
+        })
+    })?;
+    rows.collect()
+}
+
+/// 更新单个 recipient 的投递状态与进度（时间戳只进不退由 updated_at 刷新保证）。
+/// recipient 不存在时报错（不静默创建群外 state）。
+#[allow(dead_code)]
+pub fn update_group_file_recipient(
+    conn: &Connection,
+    transfer_id: &str,
+    recipient_id: &str,
+    status: &str,
+    progress: f64,
+) -> Result<()> {
+    let n = conn.execute(
+        "UPDATE group_file_recipients SET status = ?3, progress = ?4, updated_at = ?5
+         WHERE transfer_id = ?1 AND recipient_id = ?2",
+        params![transfer_id, recipient_id, status, progress, now_ms()],
+    )?;
+    if n == 0 {
+        return Err(rusqlite::Error::InvalidParameterName(format!(
+            "群文件投递状态不存在：{transfer_id}/{recipient_id}"
+        )));
+    }
+    Ok(())
 }
 
 // ---------------- 待发已读回执 ----------------
@@ -1632,5 +1829,136 @@ mod tests {
         assert!(get_friend(&conn, "f1").is_some());
         assert_eq!(get_setting(&conn, "device_id").as_deref(), Some("dev-1"));
         assert_eq!(get_setting(&conn, "nickname").as_deref(), Some("昵称"));
+    }
+
+    // ---------- 群文件 per-recipient 投递状态 ----------
+
+    fn group_file(transfer_id: &str) -> GroupFile {
+        GroupFile {
+            transfer_id: transfer_id.to_string(),
+            group_id: "g1".to_string(),
+            sender_id: "a".to_string(),
+            name: "report.pdf".to_string(),
+            size: 1024,
+            sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                .to_string(),
+            status: "pending".to_string(),
+            created_at: now_ms(),
+        }
+    }
+
+    fn group_file_fixture() -> Connection {
+        let conn = mem();
+        // 群 g1：成员 a（sender）/ b / c / d
+        create_group(
+            &conn,
+            "g1",
+            "测试群",
+            "a",
+            &["a".to_string(), "b".to_string(), "c".to_string(), "d".to_string()],
+        )
+        .unwrap();
+        conn
+    }
+
+    /// 1+2+3：建群文件 + 为 B/C/D 建 recipient state + 分别置 completed/sending/pending。
+    #[test]
+    fn group_file_recipient_states_persist() {
+        let conn = group_file_fixture();
+        let f = group_file("gf-1");
+        insert_group_file(&conn, &f).unwrap();
+        assert_eq!(get_group_file(&conn, "gf-1").unwrap().name, "report.pdf");
+
+        for rid in ["b", "c", "d"] {
+            insert_group_file_recipient(&conn, "gf-1", rid).unwrap();
+        }
+        update_group_file_recipient(&conn, "gf-1", "b", "completed", 1.0).unwrap();
+        update_group_file_recipient(&conn, "gf-1", "c", "sending", 0.4).unwrap();
+        // d 保持初始 pending
+
+        let recipients = list_group_file_recipients(&conn, "gf-1").unwrap();
+        let by_id: std::collections::HashMap<_, _> = recipients
+            .iter()
+            .map(|r| (r.recipient_id.as_str(), (r.status.as_str(), r.progress)))
+            .collect();
+        assert_eq!(by_id.get("b"), Some(&("completed", 1.0)));
+        assert_eq!(by_id.get("c"), Some(&("sending", 0.4)));
+        assert_eq!(by_id.get("d"), Some(&("pending", 0.0)));
+    }
+
+    /// 5：更新 C → completed 不影响 B/D 的状态。
+    #[test]
+    fn update_one_recipient_does_not_affect_others() {
+        let conn = group_file_fixture();
+        insert_group_file(&conn, &group_file("gf-1")).unwrap();
+        for rid in ["b", "c", "d"] {
+            insert_group_file_recipient(&conn, "gf-1", rid).unwrap();
+        }
+        update_group_file_recipient(&conn, "gf-1", "b", "completed", 1.0).unwrap();
+
+        update_group_file_recipient(&conn, "gf-1", "c", "completed", 1.0).unwrap();
+
+        let by_id: std::collections::HashMap<_, _> =
+            list_group_file_recipients(&conn, "gf-1")
+                .unwrap()
+                .into_iter()
+                .map(|r| (r.recipient_id, r.status))
+                .collect();
+        assert_eq!(by_id.get("b").map(String::as_str), Some("completed"));
+        assert_eq!(by_id.get("c").map(String::as_str), Some("completed"));
+        assert_eq!(by_id.get("d").map(String::as_str), Some("pending"));
+    }
+
+    /// 6：同一 (transfer_id, recipient_id) 重复插入必须报错（PRIMARY KEY）。
+    #[test]
+    fn duplicate_recipient_insert_rejected() {
+        let conn = group_file_fixture();
+        insert_group_file(&conn, &group_file("gf-1")).unwrap();
+        insert_group_file_recipient(&conn, "gf-1", "b").unwrap();
+        assert!(insert_group_file_recipient(&conn, "gf-1", "b").is_err());
+    }
+
+    /// 权限边界：群不存在 / sender 非成员 / recipient 非成员 → 拒绝。
+    #[test]
+    fn group_file_permission_checks() {
+        let conn = group_file_fixture();
+
+        // 群不存在
+        let mut f = group_file("gf-x");
+        f.group_id = "g-missing".to_string();
+        assert!(insert_group_file(&conn, &f).is_err());
+
+        // sender 不是群成员
+        let mut f = group_file("gf-1");
+        f.sender_id = "outsider".to_string();
+        assert!(insert_group_file(&conn, &f).is_err());
+
+        // 群外 peer 不能建 recipient state
+        insert_group_file(&conn, &group_file("gf-1")).unwrap();
+        assert!(insert_group_file_recipient(&conn, "gf-1", "outsider").is_err());
+        // recipient 更新不存在的 state 报错（不静默创建）
+        assert!(update_group_file_recipient(&conn, "gf-1", "outsider", "pending", 0.0).is_err());
+    }
+
+    /// 7：删除群 → 群文件与 recipient 数据级联清理（delete_group 事务语义）。
+    #[test]
+    fn delete_group_cascades_group_files() {
+        let conn = group_file_fixture();
+        insert_group_file(&conn, &group_file("gf-1")).unwrap();
+        for rid in ["b", "c", "d"] {
+            insert_group_file_recipient(&conn, "gf-1", rid).unwrap();
+        }
+
+        delete_group(&conn, "g1").unwrap();
+
+        assert!(get_group_file(&conn, "gf-1").is_none());
+        assert!(list_group_file_recipients(&conn, "gf-1").unwrap().is_empty());
+    }
+
+    /// get_group_file 不存在的 transfer 返回 None。
+    #[test]
+    fn get_group_file_missing_returns_none() {
+        let conn = mem();
+        assert!(get_group_file(&conn, "nope").is_none());
     }
 }

@@ -230,6 +230,32 @@ pub struct TransferInfo {
     pub progress: f64,
 }
 
+/// 群文件元数据（DB 表 group_files）。一个 transfer_id 对应一个群文件；
+/// 成员投递状态在 group_file_recipients 中按 (transfer_id, recipient_id) 独立维护。
+pub struct GroupFile {
+    pub transfer_id: String,
+    pub group_id: String,
+    pub sender_id: String,
+    pub name: String,
+    pub size: u64,
+    pub sha256: String,
+    /// 'pending' | 'sending' | 'completed' | 'failed'
+    pub status: String,
+    pub created_at: i64,
+}
+
+/// 群文件单个成员的投递状态（DB 表 group_file_recipients）。
+// 传输流程在后续 GroupFileOffer 步骤启用；本步骤仅 DB 层 + 测试调用。
+#[allow(dead_code)]
+pub struct GroupFileRecipient {
+    pub recipient_id: String,
+    /// 'pending' | 'sending' | 'completed' | 'failed'
+    pub status: String,
+    /// 0.0 ~ 1.0，与 file_transfers.progress 同一表示
+    pub progress: f64,
+    pub updated_at: i64,
+}
+
 /// 正在接收的文件状态
 pub struct FileReceiver {
     pub file: std::fs::File,
