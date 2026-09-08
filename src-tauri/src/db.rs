@@ -185,6 +185,10 @@ pub fn set_setting(conn: &Connection, key: &str, value: &str) -> Result<()> {
 
 // ---------------- 群聊删除边界（清除聊天数据后旧消息防回灌） ----------------
 
+/// 清除后立刻发送的新消息可能因发送端时钟偏慢而 ts 略小于本机 boundary，
+/// 放行窗口 = 60s（仅容差，不做时钟同步/逻辑时钟）。
+const CLEAR_BOUNDARY_SKEW_MS: i64 = 60_000;
+
 /// 本地删除边界键：记录本机清除该群聊数据的时间戳（毫秒）。
 pub fn clear_boundary_key(group_id: &str) -> String {
     format!("clear_boundary:group:{group_id}")
@@ -195,12 +199,13 @@ pub fn set_clear_boundary(conn: &Connection, group_id: &str, ts: i64) -> Result<
     set_setting(conn, &clear_boundary_key(group_id), &ts.to_string())
 }
 
-/// 群消息落库前的边界判定：本机清除过该群且消息时间早于（或等于）清除时刻
-/// → 视为旧历史，不得重新写入本机。清除之后的新消息（ts > boundary）正常接收。
+/// 群消息落库前的边界判定：本机清除过该群且消息时间明显早于清除时刻
+/// （ts < boundary - 60s 时钟容差）→ 视为旧历史，不得重新写入本机。
+/// boundary 附近（容差内）与之后的消息视为清除后产生的新消息，正常接收。
 pub fn group_message_blocked_by_boundary(conn: &Connection, group_id: &str, ts: i64) -> bool {
     get_setting(conn, &clear_boundary_key(group_id))
         .and_then(|v| v.parse::<i64>().ok())
-        .map(|boundary| ts <= boundary)
+        .map(|boundary| ts < boundary - CLEAR_BOUNDARY_SKEW_MS)
         .unwrap_or(false)
 }
 
@@ -2236,23 +2241,37 @@ mod tests {
 
     // ---------- 群聊删除边界（清除聊天数据后旧消息防回灌） ----------
 
-    /// 清除时写入的边界按 ts 拦截旧消息：ts ≤ boundary 拒绝、ts > boundary 放行。
+    /// 清除边界按 ts + 60s 时钟容差拦截：明显早于 boundary 的旧历史拦截，
+    /// boundary 附近（慢钟新消息）与之后的新消息放行；无边界不拦截。
     #[test]
     fn clear_boundary_blocks_old_group_messages() {
         let conn = group_file_fixture();
         let clear_time = 1_700_000_000_000i64;
         set_clear_boundary(&conn, "g1", clear_time).unwrap();
 
-        // Test A：清除前的旧历史（ts <= boundary）→ 拦截
-        assert!(group_message_blocked_by_boundary(&conn, "g1", clear_time));
-        assert!(group_message_blocked_by_boundary(&conn, "g1", clear_time - 1));
-        // Test B：清除后的新消息（ts > boundary）→ 正常接收
+        // Test A：清除前的旧历史（早于 boundary - 60s 容差）→ 拦截
+        assert!(group_message_blocked_by_boundary(
+            &conn,
+            "g1",
+            clear_time - CLEAR_BOUNDARY_SKEW_MS - 1
+        ));
+        // Test B：清除后即时发送的新消息（慢钟落入 60s 容差）→ 放行
+        assert!(!group_message_blocked_by_boundary(
+            &conn,
+            "g1",
+            clear_time - CLEAR_BOUNDARY_SKEW_MS
+        ));
+        assert!(!group_message_blocked_by_boundary(&conn, "g1", clear_time));
         assert!(!group_message_blocked_by_boundary(&conn, "g1", clear_time + 1));
         // 未设置边界的群不拦截（离线消息补偿不受影响）
         assert!(!group_message_blocked_by_boundary(&conn, "g2", clear_time - 1));
-        // 重复清除：边界覆盖为新值
+        // 重复清除：边界覆盖为新值（新 boundary 之前的旧消息再次被拦截）
         set_clear_boundary(&conn, "g1", clear_time + 100).unwrap();
-        assert!(group_message_blocked_by_boundary(&conn, "g1", clear_time + 50));
+        assert!(group_message_blocked_by_boundary(
+            &conn,
+            "g1",
+            clear_time + 100 - CLEAR_BOUNDARY_SKEW_MS - 1
+        ));
     }
 
     /// 删除单个群会话同样写入边界（delete_conversation 群分支语义）。
@@ -2260,6 +2279,7 @@ mod tests {
     fn deleting_group_conversation_sets_boundary() {
         let conn = group_file_fixture();
         set_clear_boundary(&conn, "g1", 123456789).unwrap();
-        assert!(group_message_blocked_by_boundary(&conn, "g1", 123456789));
+        // 明显早于边界的旧消息被拦截
+        assert!(group_message_blocked_by_boundary(&conn, "g1", 123456789 - 60_001));
     }
 }

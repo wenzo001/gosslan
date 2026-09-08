@@ -2074,6 +2074,11 @@ pub fn clear_all_data(state: State<'_, Arc<AppState>>) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
         tx.execute("DELETE FROM settings WHERE key LIKE 'gk:%'", [])
             .map_err(|e| e.to_string())?;
+        // 群文件投递数据同属聊天数据（残留会导致 transfer 记录悬挂）
+        tx.execute("DELETE FROM group_files", [])
+            .map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM group_file_recipients", [])
+            .map_err(|e| e.to_string())?;
         // 群聊删除边界同事务写入（clear_boundary 键不受 LIKE 'gk:%' 影响）
         let now = db::now_ms();
         for gid in &group_ids {
@@ -2088,6 +2093,11 @@ pub fn clear_all_data(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     s.pending_reads.lock().unwrap().clear();
     s.pending_file_accept.lock().unwrap().clear();
     s.pending_share_tree.lock().unwrap().clear();
+    // 群文件接收/发送运行态与待发群密钥同属聊天数据运行态（不清会残留
+    // 已删群的 file_key，且 pending 群密钥可能在重连时复活已删群记录）
+    s.group_file_receivers.lock().unwrap().clear();
+    s.group_file_keys.lock().unwrap().clear();
+    s.pending_group_keys.lock().unwrap().clear();
     *s.relay.lock().unwrap() = crate::relay_manager::RelayManager::new();
     // 先关闭未完成接收的文件句柄，再清理 downloads 目录中的 .part 临时文件。
     s.file_receivers.lock().unwrap().clear();
