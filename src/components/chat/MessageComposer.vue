@@ -450,10 +450,13 @@ function fileToDataUrl(f: File): Promise<string> {
           </button>
           <EmojiPicker :open="emojiOpen" @select="insertEmoji" @close="emojiOpen = false" />
         </div>
+        <!-- @mousedown.prevent 保持编辑器焦点：否则点击按钮后焦点落到按钮上，
+             紧接着按 Enter 会激活按钮（把 codeMode 再切回去）而非走编辑器 keydown 发送。 -->
         <button
           class="flex h-7 w-7 items-center justify-center rounded-md transition"
           :class="codeMode ? 'text-primary' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
           title="代码消息"
+          @mousedown.prevent
           @click="codeMode = !codeMode"
         >
           <Code2 class="h-[18px] w-[18px]" />
