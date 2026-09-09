@@ -5,6 +5,8 @@ import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import BaseModal from "@/components/BaseModal.vue";
 import DevDiagPanel from "@/components/DevDiagPanel.vue";
+import SettingsGroup from "@/components/settings/SettingsGroup.vue";
+import SettingsRow from "@/components/settings/SettingsRow.vue";
 import ProfileSection from "@/components/settings/ProfileSection.vue";
 import AppearanceSection from "@/components/settings/AppearanceSection.vue";
 import ChatStyleSection from "@/components/settings/ChatStyleSection.vue";
@@ -71,51 +73,50 @@ async function clearAllDataConfirm() {
 
 <template>
   <BaseModal :open="open" title="设置" width="max-w-xl" @close="emit('close')">
-    <div class="max-h-[75vh] space-y-6 overflow-y-auto px-4 py-1">
+    <div class="-mx-5 -mb-5 max-h-[75vh] space-y-5 overflow-y-auto overflow-x-hidden rounded-b-2xl bg-[var(--gosslan-bg)] p-5">
       <ProfileSection :active="open" :reload-token="reloadToken" />
       <AppearanceSection />
       <ChatStyleSection />
       <NetworkSection :active="open" :reload-token="reloadToken" />
-      <StorageSection :active="open" :reload-token="reloadToken" />
 
       <!-- 共享目录 -->
-      <section>
-        <h3 class="mb-3 text-[13px] font-semibold text-[var(--gosslan-text)]">共享目录</h3>
-        <div class="flex items-center gap-2">
+      <SettingsGroup title="共享目录" footer="允许好友浏览并下载你共享的文件夹内容">
+        <SettingsRow label="共享文件夹" :description="app.shareDir || '未设置'" last>
           <button
             class="flex items-center gap-1.5 rounded-lg border border-[var(--gosslan-border)] px-3 py-1.5 text-xs transition hover:bg-[var(--gosslan-hover)]"
             @click="pickShareDir"
           >
-            <FolderOpen class="h-4 w-4" />
+            <FolderOpen class="h-3.5 w-3.5" />
             选择文件夹
           </button>
-          <span class="truncate text-xs text-[var(--gosslan-text-2)]">{{ app.shareDir || "未设置" }}</span>
-        </div>
-      </section>
+        </SettingsRow>
+      </SettingsGroup>
 
+      <StorageSection :active="open" :reload-token="reloadToken" />
       <SecuritySection />
       <AboutSection @dev-open="devDiagOpen = true" />
 
-      <!-- 恢复默认 -->
-      <button
-        class="flex w-full items-center justify-center gap-2 rounded-xl border border-[var(--gosslan-border)] py-2 text-sm text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-        @click="restoreDefaults"
-      >
-        <RotateCcw class="h-4 w-4" />
-        恢复默认设置
-      </button>
-      <p class="text-center text-[11px] text-[var(--gosslan-text-2)]">
-        将外观、昵称、头像、网卡和缓存策略恢复为默认值，不影响好友、聊天记录和设备身份。
+      <!-- 重置 / 清除 -->
+      <SettingsGroup title="重置与数据">
+        <button
+          class="flex w-full items-center justify-center gap-2 px-4 py-3 text-sm text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
+          @click="restoreDefaults"
+        >
+          <RotateCcw class="h-4 w-4" />
+          恢复默认设置
+        </button>
+        <div class="ml-4 h-px bg-[var(--gosslan-divider)]" />
+        <button
+          class="flex w-full items-center justify-center gap-2 px-4 py-3 text-sm text-red-500 transition hover:bg-red-50 dark:hover:bg-red-900/20"
+          @click="clearAllDataConfirm"
+        >
+          <Trash2 class="h-4 w-4" />
+          清除聊天数据
+        </button>
+      </SettingsGroup>
+      <p class="px-1 text-center text-[11px] leading-relaxed text-[var(--gosslan-text-2)]">
+        恢复默认不影响好友、聊天记录和设备身份；清除聊天数据仅删除本机消息与会话。
       </p>
-
-      <!-- 清除聊天数据 -->
-      <button
-        class="mt-2 flex w-full items-center justify-center gap-2 rounded-xl border border-red-300 py-2 text-sm text-red-500 transition hover:bg-red-50 dark:border-red-800 dark:hover:bg-red-900/20"
-        @click="clearAllDataConfirm"
-      >
-        <Trash2 class="h-4 w-4" />
-        清除聊天数据
-      </button>
     </div>
   </BaseModal>
 

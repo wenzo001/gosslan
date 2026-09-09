@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { useAppStore } from "@/stores/useAppStore";
+import SettingsGroup from "@/components/settings/SettingsGroup.vue";
 import { CHAT_FONT_SIZES, CHAT_PRESETS, resolveChatColors, type ChatPreset } from "@/utils/chatStyle";
 
 const app = useAppStore();
@@ -12,51 +13,50 @@ function swatchOf(p: ChatPreset): { mineBubble: string; otherBubble: string } {
 </script>
 
 <template>
-  <section>
-    <h3 class="mb-3 text-[13px] font-semibold text-[var(--gosslan-text)]">聊天显示</h3>
-    <div class="space-y-3">
-      <!-- 字体大小 -->
-      <div>
-        <div class="mb-1.5 text-sm">字体大小</div>
-        <div class="flex gap-1 rounded-lg border border-[var(--gosslan-border)] p-0.5">
-          <button
-            v-for="f in CHAT_FONT_SIZES"
-            :key="f.key"
-            class="flex-1 rounded-md py-1.5 text-sm transition"
-            :class="app.chatStyle.fontSize === f.key ? 'bg-primary text-white' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
-            @click="app.setChatStyle({ fontSize: f.key })"
-          >
-            {{ f.label }}
-          </button>
-        </div>
-      </div>
-
-      <!-- 气泡配色（可读性预设，双气泡预览） -->
-      <div>
-        <div class="mb-1.5 text-sm">气泡配色</div>
-        <div class="grid grid-cols-3 gap-2">
-          <button
-            v-for="p in CHAT_PRESETS"
-            :key="p.key"
-            class="rounded-lg border p-2 transition hover:bg-[var(--gosslan-hover)]"
-            :class="app.chatStyle.preset === p.key ? 'border-primary ring-1 ring-primary' : 'border-[var(--gosslan-border)]'"
-            :title="p.label"
-            @click="app.setChatStyle({ preset: p.key })"
-          >
-            <div class="mb-1 text-center text-[11px] text-[var(--gosslan-text-2)]">{{ p.label }}</div>
-            <div class="flex items-center gap-1">
-              <span class="h-4 flex-1 rounded" :style="{ background: swatchOf(p).mineBubble }"></span>
-              <span
-                class="h-4 flex-1 rounded border border-[var(--gosslan-border)]"
-                :style="{ background: swatchOf(p).otherBubble }"
-              ></span>
-            </div>
-          </button>
-        </div>
-        <p class="mt-1.5 text-[11px] leading-relaxed text-[var(--gosslan-text-2)]">
-          我的消息用所选配色；对方也会按我的配色看到我发的消息（自动同步到已连接设备）。
-        </p>
+  <SettingsGroup
+    title="聊天显示"
+    footer="我的消息用所选配色；对方也会按我的配色看到我发的消息（自动同步到已连接设备）。"
+  >
+    <!-- 字体大小 -->
+    <div class="px-4 py-3">
+      <div class="mb-2 text-sm text-[var(--gosslan-text)]">字体大小</div>
+      <div class="flex gap-1 rounded-lg bg-[var(--gosslan-bg)] p-0.5">
+        <button
+          v-for="f in CHAT_FONT_SIZES"
+          :key="f.key"
+          class="flex-1 rounded-md py-1.5 text-sm transition"
+          :class="app.chatStyle.fontSize === f.key ? 'bg-[var(--gosslan-panel)] text-[var(--gosslan-text)] shadow-sm' : 'text-[var(--gosslan-text-2)] hover:text-[var(--gosslan-text)]'"
+          @click="app.setChatStyle({ fontSize: f.key })"
+        >
+          {{ f.label }}
+        </button>
       </div>
     </div>
-  </section>
+
+    <div class="ml-4 h-px bg-[var(--gosslan-divider)]" />
+
+    <!-- 气泡配色 -->
+    <div class="px-4 py-3">
+      <div class="mb-2 text-sm text-[var(--gosslan-text)]">气泡配色</div>
+      <div class="grid grid-cols-3 gap-2">
+        <button
+          v-for="p in CHAT_PRESETS"
+          :key="p.key"
+          class="rounded-lg border p-2 transition hover:bg-[var(--gosslan-hover)]"
+          :class="app.chatStyle.preset === p.key ? 'border-primary ring-1 ring-primary' : 'border-[var(--gosslan-border)]'"
+          :title="p.label"
+          @click="app.setChatStyle({ preset: p.key })"
+        >
+          <div class="mb-1 text-center text-[11px] text-[var(--gosslan-text-2)]">{{ p.label }}</div>
+          <div class="flex items-center gap-1">
+            <span class="h-4 flex-1 rounded" :style="{ background: swatchOf(p).mineBubble }"></span>
+            <span
+              class="h-4 flex-1 rounded border border-[var(--gosslan-border)]"
+              :style="{ background: swatchOf(p).otherBubble }"
+            ></span>
+          </div>
+        </button>
+      </div>
+    </div>
+  </SettingsGroup>
 </template>

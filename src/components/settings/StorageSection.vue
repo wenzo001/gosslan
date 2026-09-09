@@ -2,8 +2,10 @@
 import { computed, ref, watch } from "vue";
 import { api } from "@/api";
 import { useAppStore } from "@/stores/useAppStore";
+import SettingsGroup from "@/components/settings/SettingsGroup.vue";
+import SettingsRow from "@/components/settings/SettingsRow.vue";
 import { formatBytes } from "@/utils/format";
-import { HardDrive, Trash2 } from "lucide-vue-next";
+import { Trash2 } from "lucide-vue-next";
 import type { CacheInfo } from "@/types";
 
 const props = defineProps<{ active: boolean; reloadToken?: number }>();
@@ -79,43 +81,43 @@ watch(
 </script>
 
 <template>
-  <section>
-    <h3 class="mb-3 text-[13px] font-semibold text-[var(--gosslan-text)]">存储与缓存</h3>
-    <div class="mb-3 flex items-center gap-2 text-xs text-[var(--gosslan-text-2)]">
-      <HardDrive class="h-3.5 w-3.5" />
-      当前缓存 {{ cacheInfo?.file_count ?? 0 }} 个文件 · 占用 {{ formatBytes(cacheInfo?.total_bytes ?? 0) }}
-    </div>
-    <div class="mb-3 flex items-center gap-3">
-      <span class="w-16 shrink-0 text-sm">保留时长</span>
+  <SettingsGroup
+    title="存储与缓存"
+    footer="磁盘上限为「无限制」时缓存不会被自动清理；设置上限后，缓存超过该值会自动删除最旧的图片 / 文件。改动即时生效并自动保存。"
+  >
+    <SettingsRow label="保留时长">
       <select
         v-model="retentionDays"
-        class="flex-1 rounded-lg bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none"
+        class="rounded-lg bg-[var(--gosslan-bg)] px-3 py-1.5 text-sm outline-none"
       >
         <option :value="0">永久保存</option>
         <option :value="3">3 天</option>
         <option :value="7">7 天</option>
         <option :value="30">30 天</option>
       </select>
-    </div>
-    <div class="flex items-center gap-3">
-      <span class="w-16 shrink-0 text-sm">磁盘上限</span>
+    </SettingsRow>
+
+    <SettingsRow label="磁盘上限">
       <select
         v-model.number="maxQuotaMb"
-        class="flex-1 rounded-lg bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none"
+        class="rounded-lg bg-[var(--gosslan-bg)] px-3 py-1.5 text-sm outline-none"
       >
         <option v-for="q in quotaOptions" :key="q.value" :value="q.value">{{ q.label }}</option>
       </select>
+    </SettingsRow>
+
+    <div class="flex items-center justify-between px-4 py-3">
+      <span class="text-xs text-[var(--gosslan-text-2)]">
+        当前缓存 {{ cacheInfo?.file_count ?? 0 }} 个文件 · 占用 {{ formatBytes(cacheInfo?.total_bytes ?? 0) }}
+      </span>
+      <button
+        class="flex items-center gap-1.5 rounded-lg border border-[var(--gosslan-border)] px-3 py-1.5 text-xs transition hover:bg-[var(--gosslan-hover)] disabled:opacity-50"
+        :disabled="cleaning"
+        @click="cleanNow"
+      >
+        <Trash2 class="h-3.5 w-3.5" />
+        立即清理
+      </button>
     </div>
-    <p class="mb-3 mt-1.5 text-[11px] leading-relaxed text-[var(--gosslan-text-2)]">
-      磁盘上限为「无限制」时缓存不会被自动清理；设置上限后，缓存超过该值会自动删除最旧的图片 / 文件。改动即时生效并自动保存。
-    </p>
-    <button
-      class="flex w-full items-center justify-center gap-1.5 rounded-xl border border-[var(--gosslan-border)] py-2 text-sm transition hover:bg-[var(--gosslan-hover)] disabled:opacity-50"
-      :disabled="cleaning"
-      @click="cleanNow"
-    >
-      <Trash2 class="h-4 w-4" />
-      立即清理
-    </button>
-  </section>
+  </SettingsGroup>
 </template>

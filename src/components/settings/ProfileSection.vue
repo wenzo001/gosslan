@@ -2,7 +2,9 @@
 import { ref, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
+import SettingsGroup from "@/components/settings/SettingsGroup.vue";
 import { avatarInitial, nameToColor } from "@/utils/color";
+import { Camera } from "lucide-vue-next";
 
 const props = defineProps<{ active: boolean; reloadToken?: number }>();
 
@@ -42,54 +44,110 @@ function onNicknameKeydown(e: KeyboardEvent) {
   }
 }
 
+/** 头像文件大小上限（2MB，原始文件、预处理前校验）。 */
+const MAX_AVATAR_FILE_SIZE = 2 * 1024 * 1024;
+/** 头像输出边长：中心裁剪成正方形后缩放到该尺寸（不放大），PNG 体积小且清晰。 */
+const AVATAR_SIZE = 512;
+
 async function onAvatarChange(e: Event) {
   const input = e.target as HTMLInputElement;
   const f = input.files?.[0];
+  input.value = ""; // 清空，允许重复选择同一文件
   if (!f) return;
-  const r = new FileReader();
-  r.onload = async () => {
-    avatar.value = r.result as string;
+  if (!f.type.startsWith("image/")) {
+    app.toast("请选择图片文件", "error");
+    return;
+  }
+  if (f.size > MAX_AVATAR_FILE_SIZE) {
+    app.toast("头像不能超过 2MB", "error");
+    return;
+  }
+  try {
+    avatar.value = await processAvatar(f);
     await saveProfileNow();
-  };
-  r.readAsDataURL(f);
+  } catch {
+    app.toast("头像处理失败", "error");
+  }
+}
+
+/**
+ * 中心裁剪为正方形 → 缩放到 AVATAR_SIZE（不放大）→ 导出 PNG data URL（无损）。
+ * 裁剪规则：上下长取宽度、左右长取高度，即以较短边为基准、居中裁成正方形。
+ */
+function processAvatar(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const side = Math.min(img.naturalWidth, img.naturalHeight);
+        const sx = (img.naturalWidth - side) / 2;
+        const sy = (img.naturalHeight - side) / 2;
+        const out = Math.min(side, AVATAR_SIZE);
+        const canvas = document.createElement("canvas");
+        canvas.width = out;
+        canvas.height = out;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) throw new Error("no 2d context");
+        ctx.drawImage(img, sx, sy, side, side, 0, 0, out, out);
+        URL.revokeObjectURL(url);
+        resolve(canvas.toDataURL("image/png"));
+      } catch (err) {
+        URL.revokeObjectURL(url);
+        reject(err);
+      }
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error("image load failed"));
+    };
+    img.src = url;
+  });
 }
 </script>
 
 <template>
-  <section>
-    <h3 class="mb-3 text-[13px] font-semibold text-[var(--gosslan-text)]">个人资料</h3>
-    <div class="flex items-center gap-4">
-      <div
-        class="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
+  <SettingsGroup title="个人资料">
+    <div class="flex items-center gap-4 p-4">
+      <!-- 头像：点击更换 -->
+      <button
+        class="group relative h-16 w-16 shrink-0 overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
         :style="{ backgroundColor: nameToColor(nickname) }"
+        title="更换头像"
+        @click="avatarInput?.click()"
       >
         <img v-if="avatar" :src="avatar" class="h-full w-full object-cover" />
         <span v-else class="text-2xl font-semibold">{{ avatarInitial(nickname) }}</span>
-      </div>
+        <span
+          class="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 transition group-hover:opacity-100"
+        >
+          <Camera class="h-5 w-5" />
+        </span>
+      </button>
+
       <div class="min-w-0 flex-1">
         <input
           v-model="nickname"
           maxlength="30"
-          class="mb-2 w-full rounded-lg bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none"
+          class="w-full rounded-lg bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none transition focus:ring-2 focus:ring-primary"
           placeholder="昵称（修改后自动保存）"
           @blur="saveProfileNow"
           @keydown="onNicknameKeydown"
         />
-        <button
-          class="rounded-lg border border-[var(--gosslan-border)] px-3 py-1.5 text-xs transition hover:bg-[var(--gosslan-hover)]"
-          @click="avatarInput?.click()"
-        >
-          更换头像
-        </button>
-        <input ref="avatarInput" type="file" accept="image/*" class="hidden" @change="onAvatarChange" />
-        <!-- 本人在线状态（从原右上角拓扑栏移入，明确标识是「我」的状态） -->
-        <div class="mt-2.5 flex items-center gap-1.5 text-xs">
-          <span class="h-2 w-2 rounded-full" :class="app.online ? 'bg-emerald-500' : 'bg-neutral-400'"></span>
-          <span :class="app.online ? 'text-emerald-600' : 'text-[var(--gosslan-text-2)]'">
-            {{ app.online ? "我在线 · 局域网已连接" : "我离线 · 局域网未连接" }}
+        <div class="mt-2.5 flex items-center justify-between">
+          <button
+            class="rounded-lg border border-[var(--gosslan-border)] px-3 py-1.5 text-xs transition hover:bg-[var(--gosslan-hover)]"
+            @click="avatarInput?.click()"
+          >
+            更换头像
+          </button>
+          <span class="flex items-center gap-1.5 text-xs text-[var(--gosslan-text-2)]">
+            <span class="h-2 w-2 rounded-full" :class="app.online ? 'bg-emerald-500' : 'bg-neutral-400'"></span>
+            {{ app.online ? "我在线" : "我离线" }}
           </span>
         </div>
       </div>
     </div>
-  </section>
+    <input ref="avatarInput" type="file" accept="image/*" class="hidden" @change="onAvatarChange" />
+  </SettingsGroup>
 </template>

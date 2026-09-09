@@ -3,8 +3,9 @@ import { computed, ref, watch } from "vue";
 import { api } from "@/api";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
+import SettingsGroup from "@/components/settings/SettingsGroup.vue";
+import SettingsRow from "@/components/settings/SettingsRow.vue";
 import SettingsToggle from "@/components/settings/SettingsToggle.vue";
-import { Bluetooth, Monitor, Network } from "lucide-vue-next";
 import type { ChannelStatus } from "@/types";
 
 const props = defineProps<{ active: boolean; reloadToken?: number }>();
@@ -87,47 +88,34 @@ async function toggleBluetooth() {
 </script>
 
 <template>
-  <section>
-    <h3 class="mb-3 text-[13px] font-semibold text-[var(--gosslan-text)]">网络通道</h3>
-
-    <!-- 局域网 -->
-    <div class="rounded-xl border border-[var(--gosslan-border)] p-3">
-      <div class="flex items-center justify-between">
-        <div class="flex items-center gap-2">
-          <Network class="h-4 w-4 text-primary" />
-          <span class="text-sm">局域网通道</span>
-        </div>
-        <div class="flex items-center gap-2">
-          <span class="text-xs" :class="app.online ? 'text-emerald-500' : 'text-[var(--gosslan-text-2)]'">
-            {{ app.online ? `${lanStatus?.peers ?? 0} 个节点在线` : "未开启" }}
-          </span>
-          <SettingsToggle :model-value="app.online" @update:model-value="toggleLan" />
-        </div>
-      </div>
-      <div class="mt-3 flex items-center gap-2">
-        <Monitor class="h-4 w-4 shrink-0 text-[var(--gosslan-text-2)]" />
-        <select
-          v-model="selectedIp"
-          class="w-full rounded-lg bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none"
-          @change="onInterfaceChange"
-        >
-          <option v-for="o in interfaceOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
-        </select>
-      </div>
-      <p class="mt-1.5 text-[11px] leading-relaxed text-[var(--gosslan-text-2)]">
-        选择网卡后即开启通道并扫描节点；通道开启时可随时切换网卡。
-      </p>
-    </div>
-
-    <!-- 蓝牙 -->
-    <div
-      class="mt-2 flex items-center justify-between rounded-xl border border-[var(--gosslan-border)] p-3 opacity-60"
-      :class="{ 'pointer-events-none': !btStatus?.available }"
-    >
+  <SettingsGroup
+    title="网络通道"
+    footer="选择网卡后即开启局域网通道并扫描节点；通道开启时可随时切换网卡。"
+  >
+    <SettingsRow label="局域网通道" description="发现并连接同一局域网内的其他设备">
       <div class="flex items-center gap-2">
-        <Bluetooth class="h-4 w-4 text-[var(--gosslan-text-2)]" />
-        <span class="text-sm">蓝牙通道</span>
+        <span class="text-xs" :class="app.online ? 'text-emerald-500' : 'text-[var(--gosslan-text-2)]'">
+          {{ app.online ? `${lanStatus?.peers ?? 0} 个节点在线` : "未开启" }}
+        </span>
+        <SettingsToggle :model-value="app.online" @update:model-value="toggleLan" />
       </div>
+    </SettingsRow>
+
+    <SettingsRow label="网卡">
+      <select
+        v-model="selectedIp"
+        class="max-w-[200px] rounded-lg bg-[var(--gosslan-bg)] px-3 py-1.5 text-sm outline-none"
+        @change="onInterfaceChange"
+      >
+        <option v-for="o in interfaceOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
+      </select>
+    </SettingsRow>
+
+    <SettingsRow
+      label="蓝牙通道"
+      :description="btStatus?.available ? undefined : '蓝牙后端尚未编译（当前版本暂不支持），将在后续版本提供'"
+      last
+    >
       <div class="flex items-center gap-2">
         <span class="text-xs text-[var(--gosslan-text-2)]">
           {{ btStatus?.available ? (btStatus.enabled ? "已开启" : "已关闭") : "暂不可用" }}
@@ -138,9 +126,6 @@ async function toggleBluetooth() {
           @update:model-value="toggleBluetooth"
         />
       </div>
-    </div>
-    <p v-if="!btStatus?.available" class="mt-1 text-[11px] text-[var(--gosslan-text-2)]">
-      蓝牙后端尚未编译（当前版本暂不支持），将在后续版本提供。
-    </p>
-  </section>
+    </SettingsRow>
+  </SettingsGroup>
 </template>
