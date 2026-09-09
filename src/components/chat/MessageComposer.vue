@@ -328,6 +328,9 @@ async function onPaste(e: ClipboardEvent) {
     kind: i.kind,
     type: i.type,
   }));
+  // WKWebView/Safari 的 paste 事件里 items 可能为空，截图/网页复制图片的位图只经 files 暴露，
+  // 必须一起读 files 才能识别出图片（否则会误判成纯文本 → 无反应）。
+  const files = Array.from(cd.files ?? []);
 
   // 真实文件路径（资源管理器复制的 CF_HDROP）：需异步问原生剪贴板，先同步拦默认插入
   // （await 之后再 preventDefault 就晚了）。
@@ -342,7 +345,7 @@ async function onPaste(e: ClipboardEvent) {
     }
   }
 
-  const action = classifyPaste(types, items, filePaths.length > 0);
+  const action = classifyPaste(types, items, files, filePaths.length > 0);
 
   if (action.kind === "files") {
     emit("paste-files", filePaths);
@@ -353,12 +356,19 @@ async function onPaste(e: ClipboardEvent) {
   // 注意不能只靠 types 里的 "Files" 判断——截图剪贴板的 types 常是 image/png 而非 Files。
   if (action.kind === "image") {
     e.preventDefault();
+    // 优先从 files 取（跨平台最可靠，WKWebView 下是唯一来源），items.getAsFile() 作 Chromium 兜底。
+    const f = files.find((x) => x.type.startsWith("image/"));
+    if (f) {
+      // P1：粘贴图片走 save_outgoing_image → 文件传输，data URL 不进入 SQLite
+      emit("send-image", await fileToDataUrl(f));
+      return;
+    }
     for (const item of Array.from(cd.items)) {
       if (item.kind === "file" && item.type.startsWith("image/")) {
-        const f = item.getAsFile();
-        if (f) {
+        const ff = item.getAsFile();
+        if (ff) {
           // P1：粘贴图片走 save_outgoing_image → 文件传输，data URL 不进入 SQLite
-          emit("send-image", await fileToDataUrl(f));
+          emit("send-image", await fileToDataUrl(ff));
         }
         break;
       }

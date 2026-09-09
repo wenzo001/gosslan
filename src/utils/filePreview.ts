@@ -47,14 +47,20 @@ export function loadFilePreview(
   const max = subtype === "code" ? CODE_MAX_BYTES : IMAGE_MAX_BYTES;
   const p = (async (): Promise<PreviewResult> => {
     try {
-      const buf = await api.readFilePreview(msgId, max);
+      const raw = await api.readFilePreview(msgId, max);
+      // 后端 raw bytes 在 macOS(WKWebView) 上经 JSON 序列化回传为 number[]，
+      // 其余平台是 ArrayBuffer。必须统一归一成字节再消费：
+      //  - new Blob([number[]]) 会被强转成 "137,80,78,…" 字符串 → 图片损坏、无法预览；
+      //  - new TextDecoder().decode(number[]) 直接抛 TypeError → 代码预览同样崩。
+      // new Uint8Array 同时接受 ArrayBuffer 与 number[]（ArrayLike<number>），一处归一。
+      const bytes = new Uint8Array(raw);
       if (subtype === "image") {
-        const url = URL.createObjectURL(new Blob([buf], { type: imageMime(name) }));
+        const url = URL.createObjectURL(new Blob([bytes], { type: imageMime(name) }));
         const r: PreviewResult = { url };
         cache.set(msgId, r);
         return r;
       }
-      const r: PreviewResult = { text: new TextDecoder().decode(buf) };
+      const r: PreviewResult = { text: new TextDecoder().decode(bytes) };
       cache.set(msgId, r);
       return r;
     } catch (e) {
