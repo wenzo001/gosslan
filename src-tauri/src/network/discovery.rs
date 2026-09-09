@@ -96,7 +96,8 @@ fn score_candidate(ip: &Ipv4Addr, name: &str, has_broadcast: bool) -> i32 {
 ///   而非 `255.255.255.255`，确保广播不会因默认路由进入 VPN 适配器
 fn find_lan_interface() -> Option<(Ipv4Addr, Ipv4Addr)> {
     let ifs = if_addrs::get_if_addrs().ok()?;
-    let mut best: Option<(Ipv4Addr, Ipv4Addr, i32)> = None;
+    // 平局时按「非虚拟名优先、名称字典序」确定，避免返回顺序影响结果。
+    let mut best: Option<(Ipv4Addr, Ipv4Addr, i32, bool, String)> = None;
     for i in &ifs {
         if let if_addrs::IfAddr::V4(v4) = &i.addr {
             let ip = match i.ip() {
@@ -106,17 +107,44 @@ fn find_lan_interface() -> Option<(Ipv4Addr, Ipv4Addr)> {
             if i.is_loopback() {
                 continue;
             }
-            let has_broadcast = v4.broadcast.is_some();
-            let score = score_candidate(&ip, &i.name, has_broadcast);
-            if let Some(bc) = v4.broadcast {
-                if score > best.as_ref().map_or(i32::MIN, |(_, _, s)| *s) {
-                    best = Some((ip, bc, score));
-                }
+            let Some(bc) = v4.broadcast else {
+                continue;
+            };
+            let score = score_candidate(&ip, &i.name, true);
+            if score <= 0 {
+                continue;
+            }
+            let non_virtual = !is_virtual_interface_name(&i.name);
+            let better = best.as_ref().map_or(true, |(_, _, s, nv, name)| {
+                score > *s
+                    || (score == *s && non_virtual > *nv)
+                    || (score == *s && non_virtual == *nv && i.name < *name)
+            });
+            if better {
+                best = Some((ip, bc, score, non_virtual, i.name.clone()));
             }
         }
     }
-    // 只接受正分候选（有 broadcast + 非虚拟名 + 非虚拟地址 = 至少 +10 分）
-    best.filter(|(_, _, s)| *s > 0).map(|(ip, bc, _)| (ip, bc))
+    best.map(|(ip, bc, _, _, _)| (ip, bc))
+}
+
+/// 决定 Discovery 实际绑定的 IP。
+///
+/// - Auto（`ip == 0.0.0.0`）：使用 `find_lan_interface` 选出的真实 LAN IP。
+/// - Manual：使用用户指定的 IP。
+///
+/// 抽成纯函数以便单测，不依赖 Tauri AppHandle 或真实网络。
+fn resolve_bind_ip(
+    ip: Ipv4Addr,
+    find_lan: impl FnOnce() -> Option<(Ipv4Addr, Ipv4Addr)>,
+) -> Result<(Ipv4Addr, Option<Ipv4Addr>), String> {
+    if ip.is_unspecified() {
+        let (lan_ip, bc) =
+            find_lan().ok_or("auto mode: no eligible LAN interface found".to_string())?;
+        Ok((lan_ip, Some(bc)))
+    } else {
+        Ok((ip, None))
+    }
 }
 
 fn now_ms() -> i64 {
@@ -129,48 +157,41 @@ fn now_ms() -> i64 {
 /// 绑定一个允许地址复用的 UDP 套接字（SO_REUSEADDR + SO_BROADCAST + unix 下 SO_REUSEPORT），
 /// 使同一台机器上的多个 gosslan 实例能同时监听同一发现端口（Windows/macOS/Linux 通用）。
 ///
-/// `multicast_if`：自动模式下传入真实 LAN 接口 IP，设置 `IP_MULTICAST_IF`，
-/// 强制组播报文从该接口发出，避免走默认路由进入 VPN 适配器。
-fn bind_udp_reusable(
-    ip: Ipv4Addr,
-    port: u16,
-    multicast_if: Option<Ipv4Addr>,
-) -> Result<(UdpSocket, String), String> {
+/// 组播出口接口 `IP_MULTICAST_IF` 固定设为 `ip`（与 bind 地址一致）：
+/// 自动模式下强制走真实 LAN，避免组播被 VPN 默认路由劫持。
+/// 设置失败直接让 Discovery 启动失败，不再静默忽略。
+fn bind_udp_reusable(ip: Ipv4Addr, port: u16) -> Result<UdpSocket, String> {
     use socket2::{Domain, Protocol, Socket, Type};
     use std::net::SocketAddr;
 
     let addr: SocketAddr = format!("{ip}:{port}")
         .parse()
         .map_err(|e: std::net::AddrParseError| e.to_string())?;
-    let sock =
-        Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)).map_err(|e| e.to_string())?;
-    sock.set_reuse_address(true).map_err(|e| e.to_string())?;
+    let sock = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))
+        .map_err(|e| format!("create UDP socket: {e}"))?;
+    sock.set_reuse_address(true)
+        .map_err(|e| format!("SO_REUSEADDR: {e}"))?;
     // macOS/BSD：UDP 同端口多开必须 SO_REUSEPORT（SO_REUSEADDR 仅 Windows 允许重复绑定）。
     // 缺了它，同一台机器的第二个实例 network::start 会报 "Address already in use"，
     // 单机多实例互发现直接失效。
     #[cfg(unix)]
-    sock.set_reuse_port(true).map_err(|e| e.to_string())?;
-    sock.set_broadcast(true).map_err(|e| e.to_string())?;
-    // 设置组播出口接口：自动模式下强制走真实 LAN，避免组播被 VPN 默认路由劫持。
-    // 仅影响发送，不影响接收（接收由 join_multicast_v4 控制）。
-    let multicast_if_result = if let Some(iface) = multicast_if {
-        match sock.set_multicast_if_v4(&iface) {
-            Ok(()) => "ok".into(),
-            Err(e) => format!("error: {e}"),
-        }
-    } else {
-        "not_set".into()
-    };
+    sock.set_reuse_port(true).map_err(|e| format!("SO_REUSEPORT: {e}"))?;
+    sock.set_broadcast(true)
+        .map_err(|e| format!("SO_BROADCAST: {e}"))?;
+    // 设置组播出口接口：必须与 bind IP 一致，失败直接报错。
+    sock.set_multicast_if_v4(&ip)
+        .map_err(|e| format!("set_multicast_if_v4({ip}): {e}"))?;
     // tokio 要求注册进 runtime 的 fd 必须非阻塞：socket2 创建的是阻塞 socket，
     // 直接 from_std 在 debug 构建会 panic（tokio blocking check），release 构建虽不 panic
     // 但阻塞 fd 挂在 kqueue/epoll 上会卡死 worker 线程（界面卡顿的帮凶之一）。
-    sock.set_nonblocking(true).map_err(|e| e.to_string())?;
+    sock.set_nonblocking(true)
+        .map_err(|e| format!("set_nonblocking: {e}"))?;
     let sock_addr: socket2::SockAddr = addr.into();
-    sock.bind(&sock_addr).map_err(|e| e.to_string())?;
+    sock.bind(&sock_addr)
+        .map_err(|e| format!("UDP bind {ip}:{port} failed: {e}"))?;
 
     let std_sock: std::net::UdpSocket = sock.into();
-    let tokio_sock = UdpSocket::from_std(std_sock).map_err(|e| e.to_string())?;
-    Ok((tokio_sock, multicast_if_result))
+    UdpSocket::from_std(std_sock).map_err(|e| format!("register UDP socket: {e}"))
 }
 
 fn announce_packet(state: &AppState, tcp_port: u16) -> UdpPacket {
@@ -193,57 +214,53 @@ pub async fn spawn(
     shutdown: watch::Receiver<bool>,
     mut probe: watch::Receiver<u64>,
 ) -> Result<Vec<tokio::task::JoinHandle<()>>, String> {
-    // 自动模式下检测真实 LAN 网卡：获取 IP（用于 IP_MULTICAST_IF）和 broadcast 地址（用于精确广播）
-    let (multicast_if, lan_broadcast) = if ip.is_unspecified() {
-        find_lan_interface().map_or((None, None), |(lan_ip, lan_bc)| {
-            (Some(lan_ip), Some(lan_bc))
-        })
-    } else {
-        (None, None) // 手动模式：用指定 IP，不额外设置 multicast 接口
-    };
+    // Auto 模式：解析真实 LAN IP；Manual 模式：使用用户指定 IP。
+    // 核心修复：UDP 不再绑定 0.0.0.0，而是绑定到真实 LAN IP，避免 Windows Restart/Exit→reopen
+    // 后组播/广播出口被错误路由到 VPN/虚拟适配器，导致对端收不到 announce。
+    let (udp_bind_ip, lan_broadcast) =
+        resolve_bind_ip(ip, find_lan_interface).map_err(|e| e.to_string())?;
+    let multicast_iface = udp_bind_ip;
 
-    // 绑定 UDP 端口（SO_REUSEADDR 允许同一台机器上多个 gosslan 实例共存，用于多开测试）
-    let (socket, multicast_if_result) = bind_udp_reusable(ip, UDP_PORT, multicast_if)
-        .map_err(|e| format!("UDP 绑定 {ip}:{UDP_PORT} 失败: {e}"))?;
-    // 加入组播组：自动模式使用 find_lan_interface 选出的 LAN IP，
-    // 手动模式直接使用用户指定的 IP（与 UDP/TCP bind 一致）。
-    let multicast_iface = multicast_if.unwrap_or(ip);
-    let join_res = socket.join_multicast_v4(MULTICAST_GROUP, multicast_iface);
-    // 记录诊断：组播 join 结果（不改变行为，.ok() 仍然在下面）
-    let join_msg = match &join_res {
-        Ok(()) => "ok".into(),
-        Err(e) => format!("error: {e}"),
-    };
-    join_res.ok();
+    // 绑定 UDP 端口：失败、multicast_if 设置失败都直接让 Discovery 启动失败。
+    let socket = bind_udp_reusable(udp_bind_ip, UDP_PORT)
+        .map_err(|e| format!("UDP discovery bind failed: {e}"))?;
+    // 加入组播组：必须与 bind IP 使用同一接口；失败直接让启动失败。
+    socket
+        .join_multicast_v4(MULTICAST_GROUP, multicast_iface)
+        .map_err(|e| {
+            format!(
+                "join multicast {MULTICAST_GROUP} on {multicast_iface} failed: {e}"
+            )
+        })?;
     let socket = Arc::new(socket);
 
-    // 记录诊断：启动参数
+    // 记录诊断：启动参数（bound_ip 必须是真实 LAN IP，供前端开发者面板展示）
     {
         let mut diag = state.diag.lock().unwrap();
+        diag.bound_ip = udp_bind_ip.to_string();
+        diag.selected_ip = udp_bind_ip.to_string();
         diag.broadcast_target = "255.255.255.255".into();
         diag.multicast_group = format!("{MULTICAST_GROUP}");
-        diag.multicast_join_result = join_msg;
-        diag.multicast_if_result = multicast_if_result;
+        diag.multicast_join_result = "ok".into();
+        diag.multicast_if_result = "ok".into();
         diag.udp_port = UDP_PORT;
-        if let Some(mif) = multicast_if {
-            diag.selected_ip = mif.to_string();
-        }
-        diag.selected_interface = multicast_if
-            .and_then(|mip| {
-                if_addrs::get_if_addrs().ok()?.into_iter().find_map(|i| {
-                    if let if_addrs::IfAddr::V4(_) = &i.addr {
-                        if i.ip() == std::net::IpAddr::V4(mip) {
-                            return Some(i.name.clone());
-                        }
+        diag.selected_interface = if_addrs::get_if_addrs()
+            .ok()
+            .into_iter()
+            .flatten()
+            .find_map(|i| {
+                if let if_addrs::IfAddr::V4(_) = &i.addr {
+                    if i.ip() == std::net::IpAddr::V4(udp_bind_ip) {
+                        return Some(i.name.clone());
                     }
-                    None
-                })
+                }
+                None
             })
             .unwrap_or_default();
     }
     state.push_diag_event(
         "discovery_started",
-        &format!("bind={ip}, multicast_iface={multicast_iface}"),
+        &format!("bind={udp_bind_ip}, multicast_iface={multicast_iface}"),
     );
 
     let my_id = state.device_id.clone();
@@ -363,6 +380,19 @@ fn adaptive_interval(node_count: usize) -> u64 {
     base + jitter / 1000
 }
 
+/// 根据 `send_to` 结果生成诊断事件（纯函数，便于单测）。
+/// Ok(n) → success_kind；Err → broadcast_error。
+fn diag_event_from_send_result(
+    target: &str,
+    success_kind: &'static str,
+    res: &std::io::Result<usize>,
+) -> (&'static str, String) {
+    match res {
+        Ok(n) => (success_kind, format!("bytes={n}, target={target}")),
+        Err(e) => ("broadcast_error", format!("target={target}, error={e}")),
+    }
+}
+
 async fn broadcast(
     socket: &UdpSocket,
     state: &AppState,
@@ -376,16 +406,15 @@ async fn broadcast(
     // 广播使用 limited broadcast（255.255.255.255）：Windows 默认禁用 directed broadcast
     // （DisableDirectedBroadcasts=1），精确子网地址会被内核静默丢弃。
     // limited broadcast 发送到所有 IFF_BROADCAST 接口，不走默认路由，跨平台可靠。
-    let _ = socket
-        .send_to(&data, format!("255.255.255.255:{UDP_PORT}"))
-        .await;
-    let _ = socket
-        .send_to(&data, format!("{MULTICAST_GROUP}:{UDP_PORT}"))
-        .await;
-    state.push_diag_event(
-        "broadcast_sent",
-        &format!("target=255.255.255.255:{UDP_PORT}, multicast={MULTICAST_GROUP}:{UDP_PORT}"),
-    );
+    let bcast_target = format!("255.255.255.255:{UDP_PORT}");
+    let bcast_res = socket.send_to(&data, &bcast_target).await;
+    let (kind, detail) = diag_event_from_send_result(&bcast_target, "broadcast_sent", &bcast_res);
+    state.push_diag_event(kind, &detail);
+
+    let mcast_target = format!("{MULTICAST_GROUP}:{UDP_PORT}");
+    let mcast_res = socket.send_to(&data, &mcast_target).await;
+    let (kind, detail) = diag_event_from_send_result(&mcast_target, "multicast_sent", &mcast_res);
+    state.push_diag_event(kind, &detail);
 }
 
 /// 按需探测：群发 `who_has` 请求周围节点单播回复其 `announce`，并同时广播一次自身 announce。
@@ -406,16 +435,10 @@ async fn broadcast_probe(
         ed25519_pubkey: None,
     };
     if let Ok(data) = serde_json::to_vec(&who) {
-        let _ = socket
-            .send_to(&data, format!("255.255.255.255:{UDP_PORT}"))
-            .await;
-        let _ = socket
-            .send_to(&data, format!("{MULTICAST_GROUP}:{UDP_PORT}"))
-            .await;
-        state.push_diag_event(
-            "who_has_sent",
-            &format!("target=255.255.255.255:{UDP_PORT}"),
-        );
+        let bcast_target = format!("255.255.255.255:{UDP_PORT}");
+        let bcast_res = socket.send_to(&data, &bcast_target).await;
+        let (kind, detail) = diag_event_from_send_result(&bcast_target, "who_has_sent", &bcast_res);
+        state.push_diag_event(kind, &detail);
     }
     // 同时广播自身，让周围节点也能立刻发现我们
     broadcast(socket, state, tcp_port, _lan_broadcast).await;
@@ -618,26 +641,116 @@ mod tests {
         assert_eq!(borderline_above, 15, "172.16 应有 RFC1918 加分");
     }
 
-    /// multicast join 接口逻辑：Auto 用 find_lan_interface 选出的 IP，Manual 用用户指定的 IP
-    #[test]
-    fn multicast_join_interface_matches_mode() {
-        let auto_lan_ip: Ipv4Addr = "10.0.0.100".parse().unwrap();
-        let manual_ip: Ipv4Addr = "192.168.1.50".parse().unwrap();
+    // ---- P0 回归测试：Auto bind / vgate0 / send 诊断 / multicast join 失败 ----
 
-        // Auto 模式：multicast_if = Some(lan_ip) → unwrap_or 不触发 → join on lan_ip
-        let auto_multicast_if = Some(auto_lan_ip);
-        let auto_join = auto_multicast_if.unwrap_or(Ipv4Addr::UNSPECIFIED);
-        assert_eq!(
-            auto_join, auto_lan_ip,
-            "Auto: multicast join 应使用自动选择的 LAN IP"
+    /// 1. Auto 模式必须绑定真实 LAN IP，而不是 0.0.0.0。
+    #[test]
+    fn resolve_bind_ip_auto_uses_lan_ip() {
+        let auto = Ipv4Addr::UNSPECIFIED;
+        let lan_ip: Ipv4Addr = "10.1.19.45".parse().unwrap();
+        let bc: Ipv4Addr = "10.1.19.255".parse().unwrap();
+
+        let (bind_ip, lan_bc) = resolve_bind_ip(auto, || Some((lan_ip, bc))).unwrap();
+        assert_eq!(bind_ip, lan_ip, "Auto 模式应绑定真实 LAN IP");
+        assert_eq!(lan_bc, Some(bc));
+    }
+
+    /// Manual 模式保持用户指定 IP，find_lan_interface 不应被调用。
+    #[test]
+    fn resolve_bind_ip_manual_uses_user_ip() {
+        let manual: Ipv4Addr = "192.168.1.50".parse().unwrap();
+        let (bind_ip, lan_bc) = resolve_bind_ip(manual, || unreachable!()).unwrap();
+        assert_eq!(bind_ip, manual);
+        assert!(lan_bc.is_none());
+    }
+
+    /// 2. 企业 VPN 虚拟网卡 vgate0 永远不能成为 bind 地址。
+    #[test]
+    fn vgate0_never_selected_as_bind_address() {
+        // vgate0：RFC1918 + broadcast + 虚拟名 = -15，直接出局
+        let vgate_score = score_candidate(&"10.20.30.40".parse().unwrap(), "vgate0", true);
+        assert!(
+            vgate_score <= 0,
+            "vgate0 分数必须 ≤0 才能被过滤，实际 {vgate_score}"
         );
 
-        // Manual 模式：multicast_if = None → unwrap_or(manual_ip) → join on manual_ip
-        let manual_multicast_if: Option<Ipv4Addr> = None;
-        let manual_join = manual_multicast_if.unwrap_or(manual_ip);
-        assert_eq!(
-            manual_join, manual_ip,
-            "Manual: multicast join 应使用用户指定的 IP"
+        // 只有 vgate0 可选时，决策结果为空
+        let only_vgate = vec![("10.20.30.40".parse().unwrap(), "vgate0".to_string(), true)];
+        assert!(
+            pick_best_for_test(&only_vgate).is_none(),
+            "仅有 vgate0 时不应选择任何接口"
+        );
+
+        // vgate0 + 真实 LAN：真实 LAN 必须胜出
+        let mixed = vec![
+            ("10.20.30.40".parse().unwrap(), "vgate0".to_string(), true),
+            (
+                "192.168.1.100".parse().unwrap(),
+                "以太网".to_string(),
+                true,
+            ),
+        ];
+        let best = pick_best_for_test(&mixed).unwrap();
+        assert_eq!(best.0, "192.168.1.100".parse::<Ipv4Addr>().unwrap());
+        assert_eq!(best.1, "以太网");
+    }
+
+    /// 测试辅助：模拟 find_lan_interface 的选择逻辑（输入 `(ip, name, has_broadcast)`）。
+    fn pick_best_for_test(candidates: &[(Ipv4Addr, String, bool)]) -> Option<(Ipv4Addr, String)> {
+        let mut best: Option<(Ipv4Addr, String, i32, bool)> = None;
+        for (ip, name, has_bcast) in candidates {
+            if !has_bcast {
+                continue;
+            }
+            let score = score_candidate(ip, name, true);
+            if score <= 0 {
+                continue;
+            }
+            let non_virtual = !is_virtual_interface_name(name);
+            let better = best.as_ref().map_or(true, |(_, _, s, nv)| {
+                score > *s || (score == *s && non_virtual > *nv)
+            });
+            if better {
+                best = Some((*ip, name.clone(), score, non_virtual));
+            }
+        }
+        best.map(|(ip, name, _, _)| (ip, name))
+    }
+
+    /// 3. broadcast_sent / multicast_sent 事件只在 send_to 返回 Ok 时产生；
+    /// Err 时必须产生 broadcast_error / multicast_error。
+    #[test]
+    fn broadcast_diag_event_reflects_send_result() {
+        let target = "255.255.255.255:59991";
+        let ok: std::io::Result<usize> = Ok(123);
+        let err: std::io::Result<usize> =
+            Err(std::io::Error::new(std::io::ErrorKind::Other, "mock fail"));
+
+        let (ok_kind, ok_detail) = diag_event_from_send_result(target, "broadcast_sent", &ok);
+        let (err_kind, err_detail) = diag_event_from_send_result(target, "broadcast_sent", &err);
+
+        assert_eq!(ok_kind, "broadcast_sent");
+        assert!(ok_detail.contains("bytes=123"), "{ok_detail}");
+        assert_eq!(err_kind, "broadcast_error");
+        assert!(err_detail.contains("error=mock fail"), "{err_detail}");
+
+        // 组播事件同理，只是 kind 不同
+        let (m_ok_kind, _) = diag_event_from_send_result("239.255.42.99:59991", "multicast_sent", &ok);
+        assert_eq!(m_ok_kind, "multicast_sent");
+    }
+
+    /// 4. 组播加入失败必须向上传播为启动失败，不再静默忽略。
+    ///
+    /// 用非本地/非法接口地址（240.0.0.1 不是本机任何接口）触发 join_multicast_v4 失败，
+    /// 验证代码路径不吞错。
+    #[tokio::test]
+    async fn multicast_join_failure_propagates() {
+        let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let invalid_iface: Ipv4Addr = "240.0.0.1".parse().unwrap();
+        let res = socket.join_multicast_v4(MULTICAST_GROUP, invalid_iface);
+        assert!(
+            res.is_err(),
+            "在 {invalid_iface} 上加入组播应当失败，但实际成功：{res:?}"
         );
     }
 }

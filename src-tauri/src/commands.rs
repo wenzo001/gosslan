@@ -280,7 +280,13 @@ pub fn get_discovery_diag(state: State<'_, Arc<AppState>>) -> crate::state::Disc
         } else {
             "manual".into()
         };
-        result.bound_ip = h.bound_ip.clone();
+        // auto 模式下 Discovery 实际绑定的是真实 LAN IP，而不是 0.0.0.0。
+        // tcp_listen 仍使用用户配置的地址（TCP 监听地址）。
+        result.bound_ip = if h.actual_bound_ip.is_empty() {
+            h.bound_ip.clone()
+        } else {
+            h.actual_bound_ip.clone()
+        };
         result.tcp_listen = format!("{}:{}", h.bound_ip, h.tcp_port);
         result.udp_port = crate::protocol::UDP_PORT;
     } else {

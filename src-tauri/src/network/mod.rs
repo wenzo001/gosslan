@@ -58,10 +58,13 @@ pub async fn start(state: Arc<AppState>, bind_ip: String) -> Result<(), String> 
     )
     .await?;
 
+    // Discovery 实际绑定的是真实 LAN IP（auto 模式下），需要让诊断面板展示它。
+    let actual_bound_ip = state.diag.lock().unwrap().bound_ip.clone();
     *state.probe.lock().unwrap() = Some(probe_tx);
     *state.network.lock().unwrap() = Some(NetworkHandle {
         shutdown: shutdown_tx,
         bound_ip: bind_ip,
+        actual_bound_ip,
         tcp_port,
         tasks,
     });

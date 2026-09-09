@@ -293,7 +293,11 @@ pub struct RelayFileReceive {
 /// 网络运行时句柄
 pub struct NetworkHandle {
     pub shutdown: tokio::sync::watch::Sender<bool>,
+    /// 用户配置的绑定地址（"0.0.0.0" 表示 auto，否则为手动指定的 IP）。
     pub bound_ip: String,
+    /// Discovery 实际绑定的 UDP IP（auto 模式下为 find_lan_interface 选出的 LAN IP）。
+    /// 用于诊断面板显示真实 bind 地址。
+    pub actual_bound_ip: String,
     pub tcp_port: u16,
     /// 后台任务句柄（discovery 收包 / 广播、transport accept / 心跳）。
     ///
