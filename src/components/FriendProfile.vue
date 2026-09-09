@@ -4,6 +4,7 @@ import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { ArrowLeft, MessageCircle, UserMinus } from "lucide-vue-next";
 import BaseModal from "@/components/BaseModal.vue";
+import { nameToColor } from "@/utils/color";
 import type { Friend } from "@/types";
 
 const props = defineProps<{ friend: Friend }>();
@@ -44,8 +45,9 @@ const confirmRemove = ref(false);
         <!-- 头部：头像 + 昵称 + 在线状态 -->
         <div class="flex items-center gap-4">
           <div
-            class="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] brand-surface text-2xl font-medium text-white"
+            class="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-2xl font-medium text-white"
             :class="!friend.online ? 'grayscale opacity-70' : ''"
+            :style="{ backgroundColor: nameToColor(friend.nickname) }"
           >
             <img v-if="friend.avatar" :src="friend.avatar" class="h-full w-full object-cover" />
             <span v-else>{{ initial }}</span>

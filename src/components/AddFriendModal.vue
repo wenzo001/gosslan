@@ -3,6 +3,7 @@ import { computed, ref, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import BaseModal from "@/components/BaseModal.vue";
+import { nameToColor } from "@/utils/color";
 import { Check, UserPlus } from "lucide-vue-next";
 
 const props = defineProps<{ open: boolean }>();
@@ -79,7 +80,10 @@ async function add(peerId: string) {
           :key="p.device_id"
           class="flex items-center gap-3 border-b border-[var(--gosslan-border)] px-1 py-2 last:border-0"
         >
-          <div class="flex h-9 w-9 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] brand-surface text-white">
+          <div
+            class="flex h-9 w-9 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
+            :style="{ backgroundColor: nameToColor(p.nickname) }"
+          >
             <img v-if="p.avatar" :src="p.avatar" class="h-full w-full object-cover" />
             <span v-else class="text-sm font-semibold">{{ initials(p.nickname) }}</span>
           </div>

@@ -39,7 +39,7 @@ const emit = defineEmits<{
       </div>
       <button
         v-if="!failed"
-        class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-primary transition hover:bg-[var(--gosslan-hover)]"
+        class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition hover:bg-black/10 dark:hover:bg-white/15"
         title="打开文件"
         @click="emit('open')"
       >
@@ -47,7 +47,7 @@ const emit = defineEmits<{
       </button>
       <button
         v-if="!failed"
-        class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-primary transition hover:bg-[var(--gosslan-hover)]"
+        class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition hover:bg-black/10 dark:hover:bg-white/15"
         title="下载文件"
         @click="emit('save')"
       >

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { fmtConversationTime } from "@/utils/time";
 import { highlightText } from "@/utils/highlight";
+import { nameToColor } from "@/utils/color";
 import { X } from "lucide-vue-next";
 import { computed } from "vue";
 import { useChatStore } from "@/stores/useChatStore";
@@ -30,8 +31,8 @@ function initials(name: string) {
 
 /** 群头像九宫格成员（微信式 2x2）：资料解析统一走 useMemberProfile（本机/好友/节点，
  *  离线好友照常显示）。必须保持响应式：好友/群数据是异步加载的，非响应式会在
- *  启动时算死成占位块且不再更新。无头像时用彩色块+白字首字符。 */
-const TILE_COLORS = ["#5b8def", "#58b178", "#f0a04e", "#9a7ff0"];
+ *  启动时算死成占位块且不再更新。九宫格每格用成员名 hash → nameToColor，保证
+ *  同一成员在单聊列表和群聊九宫格里默认色一致。 */
 const gridTiles = computed(() => {
   if (props.conv.kind !== "group") return [];
   const groupId = props.conv.id.replace(/^group:/, "");
@@ -39,10 +40,10 @@ const gridTiles = computed(() => {
   const tiles: { avatar: string | null; label: string; color: string }[] = [];
   for (const id of memberIds.slice(0, 4)) {
     const p = memberProfile(id);
-    tiles.push({ avatar: p.avatar, label: initials(p.name), color: TILE_COLORS[tiles.length % 4] });
+    tiles.push({ avatar: p.avatar, label: initials(p.name), color: nameToColor(p.name) });
   }
   while (tiles.length < Math.min(4, Math.max(memberIds.length, 1))) {
-    tiles.push({ avatar: null, label: initials(props.conv.name), color: TILE_COLORS[tiles.length % 4] });
+    tiles.push({ avatar: null, label: initials(props.conv.name), color: nameToColor(props.conv.name) });
   }
   return tiles;
 });
@@ -75,8 +76,9 @@ const gridTiles = computed(() => {
       </div>
       <div
         v-else
-        class="flex h-10 w-10 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] brand-surface text-white"
+        class="flex h-10 w-10 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
         :class="online === false ? 'grayscale opacity-70' : ''"
+        :style="{ backgroundColor: nameToColor(conv.name) }"
       >
         <img v-if="conv.avatar" :src="conv.avatar" class="h-full w-full object-cover" />
         <span v-else class="text-sm font-medium">{{ initials(conv.name) }}</span>

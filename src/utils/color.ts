@@ -51,3 +51,28 @@ export function humanSize(bytes: number): string {
   }
   return `${v.toFixed(1)} ${units[i]}`;
 }
+
+/**
+ * 默认头像底色：同一名字在单聊列表 / 群聊九宫格 / 消息头像 / 通讯录等所有位置
+ * 都得到同一颜色，解决「同一个名称在单聊和群聊里默认头像不一样」的问题。
+ * 调色板 8 色，djb2 哈希取模；空名走兜底色，确保始终有合法值。
+ */
+const AVATAR_PALETTE = [
+  "#5b8def", // 蓝
+  "#58b178", // 绿
+  "#f0a04e", // 橙
+  "#9a7ff0", // 紫
+  "#e36b6b", // 珊瑚红
+  "#4cb8b8", // 青
+  "#c87ec4", // 品红
+  "#6b7280", // 石板灰（兜底）
+];
+
+export function nameToColor(name: string): string {
+  const key = (name ?? "").trim() || "?";
+  let h = 5381;
+  for (let i = 0; i < key.length; i++) {
+    h = ((h << 5) + h) ^ key.charCodeAt(i);
+  }
+  return AVATAR_PALETTE[Math.abs(h) % AVATAR_PALETTE.length];
+}

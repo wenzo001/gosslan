@@ -3,6 +3,7 @@ import { ref, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import BaseModal from "@/components/BaseModal.vue";
+import { nameToColor } from "@/utils/color";
 import { Check } from "lucide-vue-next";
 
 const props = defineProps<{ open: boolean }>();
@@ -80,7 +81,10 @@ async function create() {
         >
           <Check v-if="selected.includes(f.device_id)" class="h-3 w-3 text-white" />
         </div>
-        <div class="flex h-8 w-8 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] brand-surface text-white">
+        <div
+          class="flex h-8 w-8 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
+          :style="{ backgroundColor: nameToColor(f.nickname) }"
+        >
           <img v-if="f.avatar" :src="f.avatar" class="h-full w-full object-cover" />
           <span v-else class="text-xs font-semibold">{{ initials(f.nickname) }}</span>
         </div>

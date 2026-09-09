@@ -8,6 +8,7 @@ const openReadersKey = vueRef<string | number | null>(null);
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useChatStore } from "@/stores/useChatStore";
+import { nameToColor } from "@/utils/color";
 import type { SendState } from "@/composables/useMessageDisplay";
 import { Check, Circle, Loader2, RefreshCw } from "lucide-vue-next";
 
@@ -102,7 +103,10 @@ function readerAvatar(id: string): string | null {
         :key="id"
         class="flex items-center gap-2 rounded px-2 py-1 hover:bg-[var(--gosslan-hover)]"
       >
-        <span class="flex h-5 w-5 items-center justify-center overflow-hidden rounded-full brand-surface text-[9px] text-white">
+        <span
+          class="flex h-5 w-5 items-center justify-center overflow-hidden rounded-full text-[9px] text-white"
+          :style="{ backgroundColor: nameToColor(readerName(id)) }"
+        >
           <img v-if="readerAvatar(id)" :src="readerAvatar(id) ?? undefined" class="h-full w-full object-cover" />
           <span v-else>{{ readerName(id).slice(0, 1) }}</span>
         </span>

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onUnmounted } from "vue";
+import { nameToColor } from "@/utils/color";
 import type { Friend } from "@/types";
 
 defineProps<{ friend: Friend; active: boolean }>();
@@ -60,8 +61,9 @@ onUnmounted(clearPress);
     <div class="absolute bottom-0 left-[64px] right-0 h-px bg-[var(--gosslan-divider)]"></div>
     <div class="relative shrink-0">
       <div
-        class="flex h-10 w-10 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] brand-surface text-white"
+        class="flex h-10 w-10 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
         :class="!friend.online ? 'grayscale opacity-70' : ''"
+        :style="{ backgroundColor: nameToColor(friend.nickname) }"
       >
         <img v-if="friend.avatar" :src="friend.avatar" class="h-full w-full object-cover" />
         <span v-else class="text-sm font-medium">{{ initials(friend.nickname) }}</span>

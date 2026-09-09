@@ -6,6 +6,7 @@ import { useChatStore } from "@/stores/useChatStore";
 import { useClipboard } from "@/composables/useClipboard";
 import { useMessageDisplay } from "@/composables/useMessageDisplay";
 import { useMessageFile } from "@/composables/useMessageFile";
+import { useMemberProfile } from "@/composables/useMemberProfile";
 import { textNeedsClamp } from "@/utils/previewMetrics";
 import MessageAvatar from "@/components/message/MessageAvatar.vue";
 import MessageTextBubble from "@/components/message/MessageTextBubble.vue";
@@ -46,6 +47,7 @@ const props = withDefaults(
 
 const app = useAppStore();
 const chat = useChatStore();
+const { memberProfile } = useMemberProfile();
 
 // 群文件（gfile-）投递摘要：成员状态语义（已发送给 N 人 · M 人待上线）。
 // status 变化（含 CompleteAck 推进）时自动刷新。
@@ -104,8 +106,15 @@ const avatarName = computed(() =>
     ? app.device?.nickname || "我"
     : props.senderName || props.message.sender_id,
 );
-/** 头像只在本人的消息上取本机头像；对端头像由会话/通讯录提供，消息里不带。 */
-const avatarSrc = computed(() => (mine.value ? (app.device?.avatar ?? null) : null));
+/**
+ * 头像：自己取本机；对端从好友/在线节点表取（peer 改资料后由 syncProfileFromPeers
+ * 同步到 friends / peers，这里读到的就是最新头像）。没有头像就走 MessageAvatar 的
+ * nameToColor 默认块——同一名字在单聊/群聊/消息列表永远同色。
+ */
+const avatarSrc = computed(() => {
+  if (mine.value) return app.device?.avatar ?? null;
+  return memberProfile(props.message.sender_id).avatar;
+});
 
 /** 是否为被点击引用所定位的消息（短暂高亮） */
 const highlighted = computed(

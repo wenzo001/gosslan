@@ -2,6 +2,7 @@
 import { computed } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
+import { nameToColor } from "@/utils/color";
 import { MessageCircle, Moon, Sun, Users } from "lucide-vue-next";
 
 defineProps<{ view: "chats" | "contacts" }>();
@@ -30,7 +31,8 @@ const pendingLabel = computed(() =>
     <!-- 顶部：本人头像（点开设置/我）；在线点放在 overflow-hidden 按钮外层，避免被裁切 -->
     <div class="relative shrink-0">
       <button
-        class="flex h-10 w-10 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] brand-surface text-white transition hover:opacity-90"
+        class="flex h-10 w-10 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white transition hover:opacity-90"
+        :style="{ backgroundColor: nameToColor(app.device?.nickname ?? '?') }"
         :title="app.online ? '我在线（局域网已连接）' : '离线（局域网未连接）'"
         @click="emit('open-settings')"
       >

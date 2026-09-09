@@ -4,6 +4,7 @@ import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import BaseModal from "@/components/BaseModal.vue";
 import { useMemberProfile } from "@/composables/useMemberProfile";
+import { nameToColor } from "@/utils/color";
 import { Crown, Plus, UserMinus, X } from "lucide-vue-next";
 import type { Friend } from "@/types";
 
@@ -75,8 +76,9 @@ async function removeMember(id: string) {
         >
           <div class="relative shrink-0">
             <div
-              class="flex h-9 w-9 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] bg-primary text-white"
+              class="flex h-9 w-9 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
               :class="!memberProfile(id).online ? 'grayscale opacity-70' : ''"
+              :style="{ backgroundColor: nameToColor(memberProfile(id).name) }"
             >
               <img v-if="memberProfile(id).avatar" :src="memberProfile(id).avatar ?? undefined" class="h-full w-full object-cover" />
               <span v-else class="text-xs font-semibold">{{ initials(memberProfile(id).name) }}</span>
@@ -139,7 +141,10 @@ async function removeMember(id: string) {
               class="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 transition hover:bg-[var(--gosslan-hover)]"
               @click="addMember(f)"
             >
-              <div class="flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] brand-surface text-white">
+              <div
+                class="flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
+                :style="{ backgroundColor: nameToColor(f.nickname) }"
+              >
                 <img v-if="f.avatar" :src="f.avatar" class="h-full w-full object-cover" />
                 <span v-else class="text-[11px] font-semibold">{{ initials(f.nickname) }}</span>
               </div>
