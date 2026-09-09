@@ -11,6 +11,11 @@ import { fontPx, type FontSizeKey } from "@/utils/chatStyle";
 /** 消息流内预览行数上限（文本 / 代码 / 附件代码一致），超出部分只能在 Modal 里看。 */
 export const PREVIEW_LINES = 5;
 
+/** 代码卡片底色：暗色用比聊天背景（#0f172a）亮一档的 surface 色，卡片才有「浮起」的层次；
+ *  原先的 #0d1117 比背景还暗，整块糊在一起。CodeBlock 与 MessageCodeBubble 共用，
+ *  避免两处各写一份导致代码区和操作条出现色差。 */
+export const CODE_SURFACE = { dark: "#161b22", light: "#f6f8fa" } as const;
+
 /** 文本气泡：leading-relaxed = 1.625 倍行距。 */
 const TEXT_LINE_RATIO = 1.625;
 /** 文本气泡：py-2 纵向内边距。 */

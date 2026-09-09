@@ -3,7 +3,7 @@ import { ref, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import BaseModal from "@/components/BaseModal.vue";
-import { nameToColor } from "@/utils/color";
+import { avatarInitial, nameToColor } from "@/utils/color";
 import { Check } from "lucide-vue-next";
 
 const props = defineProps<{ open: boolean }>();
@@ -32,7 +32,7 @@ function toggle(id: string) {
 }
 
 function initials(n: string) {
-  return n.slice(0, 1).toUpperCase();
+  return avatarInitial(n);
 }
 
 async function create() {

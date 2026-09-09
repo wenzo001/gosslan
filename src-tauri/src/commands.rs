@@ -2233,6 +2233,46 @@ pub fn copy_file(source: String, destination: String) -> Result<(), String> {
     Ok(())
 }
 
+/// 把文件本体写入系统剪贴板（Windows CF_HDROP）。
+/// 之后既可在资源管理器 / 桌面 Ctrl+V 粘贴出文件，也可粘贴回聊天框直接发送（微信式）。
+#[tauri::command]
+pub fn copy_file_to_clipboard(path: String) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use clipboard_win::Setter;
+        if !std::path::Path::new(&path).is_file() {
+            return Err(format!("文件不存在或不可访问：{path}"));
+        }
+        let _clip = clipboard_win::Clipboard::new_attempts(10)
+            .map_err(|e| format!("无法访问系统剪贴板：{e}"))?;
+        clipboard_win::formats::FileList
+            .write_clipboard(&[path.as_str()])
+            .map_err(|e| format!("复制文件到剪贴板失败：{e}"))
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = path;
+        Err("当前平台暂不支持复制文件到剪贴板".into())
+    }
+}
+
+/// 读取剪贴板里的文件路径列表（CF_HDROP）。空列表表示剪贴板里没有真实文件
+/// （截图 / 网页图片是位图数据，不是文件）。供输入框粘贴时区分「粘贴文件」与「粘贴图片」。
+#[tauri::command]
+pub fn read_clipboard_file_paths() -> Vec<String> {
+    #[cfg(target_os = "windows")]
+    {
+        // 读不到（格式不符 / 被占用）一律按"无文件"处理，前端回退到图片粘贴分支。
+        let paths: Vec<String> = clipboard_win::get_clipboard(clipboard_win::formats::FileList)
+            .unwrap_or_default();
+        paths
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        Vec::new()
+    }
+}
+
 /// 将 base64 数据写入目标路径（用于图片消息"另存为"：前端把 dataURL 解出 base64 传回）。
 #[tauri::command]
 pub fn save_data_file(base64_data: String, destination: String) -> Result<(), String> {

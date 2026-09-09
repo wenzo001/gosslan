@@ -12,11 +12,9 @@ import type { MessageRecord } from "@/types";
 /** 时间分割线阈值（≥5 分钟）。 */
 const TIME_DIVIDER_GAP = 5 * 60 * 1000;
 
-/** MessageItem: py-0.5 */
-const ROW_PADDING = 4;
-/** 气泡下方时间行：mt-0.5(2) + text-[11px](16) */
-const TIME_ROW = 18;
-/** 群聊昵称行：mb-0.5(2) + text-[11px](16) */
+/** MessageItem: py-1.5（同发方连续消息间距 12px，学微信的呼吸感） */
+const ROW_PADDING = 12;
+/** 群聊昵称行：mb-0.5(2) + text-[11px](16)。消息下的常驻时间行已删（微信式：时间只在分割线出现）。 */
 const NICKNAME_ROW = 18;
 /** 时间分割线（含 py-2） */
 const TIME_DIVIDER = 32;
@@ -81,7 +79,6 @@ export function estimateMessageHeight(
   return (
     bubble +
     ROW_PADDING +
-    TIME_ROW +
     (showNickname ? NICKNAME_ROW : 0) +
     (showDivider ? TIME_DIVIDER : 0)
   );

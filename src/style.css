@@ -26,7 +26,7 @@
   --gosslan-list-hover: rgba(15, 23, 42, 0.04);
   --gosslan-list-active: #dbe3ed;
   --gosslan-list-active-text: var(--gosslan-text);
-  --gosslan-chat: #f8fafc;
+  --gosslan-chat: #fafafa;
   --gosslan-panel: #ffffff;
   --gosslan-bg: #f1f5f9;
   --gosslan-border: #e2e8f0;
@@ -185,4 +185,44 @@ body {
 }
 ::-webkit-scrollbar-track {
   background: transparent;
+}
+
+/* 聊天气泡指向头像的小尖角（微信式）。颜色取气泡自身的 --bubble-bg，
+   子组件给根 div 加 position: relative（bubbleStyle 已设），直接挂类即可。 */
+.bubble-tail {
+  position: absolute;
+  top: 10px;
+  width: 0;
+  height: 0;
+  border-style: solid;
+  pointer-events: none;
+}
+/* 我发的（右侧气泡）：尖角在右，指向右侧头像 */
+.tail-mine {
+  right: -5px;
+  border-width: 6px 0 6px 6px;
+  border-color: transparent transparent transparent var(--bubble-bg);
+}
+/* 对方发的（左侧气泡）：尖角在左，指向左侧头像 */
+.tail-other {
+  left: -5px;
+  border-width: 6px 6px 6px 0;
+  border-color: transparent var(--bubble-bg) transparent transparent;
+}
+
+/* 群聊 @ 提及高亮（微信式：带淡色底的强调文字）。
+   走 currentColor + color-mix：气泡底色明暗/主题色都可能变，主色文字在浅蓝气泡上对比不够（历史坑）。 */
+.mention-token {
+  font-weight: 500;
+  border-radius: 3px;
+  padding: 0 2px;
+  background: color-mix(in srgb, currentColor 10%, transparent);
+}
+
+/* contenteditable 输入框的 placeholder（textarea 才有原生 placeholder）：
+   :empty 时显示 data-placeholder；normalizeEmpty 会把空壳规范化成真·空。 */
+[contenteditable][data-placeholder]:empty::before {
+  content: attr(data-placeholder);
+  color: var(--gosslan-text-2);
+  pointer-events: none;
 }

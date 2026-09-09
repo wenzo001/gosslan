@@ -8,7 +8,7 @@ const openReadersKey = vueRef<string | number | null>(null);
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useChatStore } from "@/stores/useChatStore";
-import { nameToColor } from "@/utils/color";
+import { avatarInitial, nameToColor } from "@/utils/color";
 import type { SendState } from "@/composables/useMessageDisplay";
 import { Check, Circle, Loader2, RefreshCw } from "lucide-vue-next";
 
@@ -79,10 +79,11 @@ function readerAvatar(id: string): string | null {
       <span
         v-for="id in visibleReaders"
         :key="id"
-        class="flex h-4 w-4 items-center justify-center overflow-hidden rounded-full border border-[var(--gosslan-panel)] bg-primary text-[8px] text-white"
+        class="flex h-4 w-4 items-center justify-center overflow-hidden rounded-full border border-[var(--gosslan-panel)] text-[8px] text-white"
+        :style="{ backgroundColor: nameToColor(readerName(id)) }"
       >
         <img v-if="readerAvatar(id)" :src="readerAvatar(id) ?? undefined" class="h-full w-full object-cover" />
-        <span v-else>{{ readerName(id).slice(0, 1) }}</span>
+        <span v-else>{{ avatarInitial(readerName(id)) }}</span>
       </span>
       <span
         v-if="extraReaders.length > 0"
@@ -108,7 +109,7 @@ function readerAvatar(id: string): string | null {
           :style="{ backgroundColor: nameToColor(readerName(id)) }"
         >
           <img v-if="readerAvatar(id)" :src="readerAvatar(id) ?? undefined" class="h-full w-full object-cover" />
-          <span v-else>{{ readerName(id).slice(0, 1) }}</span>
+          <span v-else>{{ avatarInitial(readerName(id)) }}</span>
         </span>
         <span class="max-w-28 truncate">{{ readerName(id) }}</span>
       </div>

@@ -4,7 +4,7 @@ import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import BaseModal from "@/components/BaseModal.vue";
 import { useMemberProfile } from "@/composables/useMemberProfile";
-import { nameToColor } from "@/utils/color";
+import { avatarInitial, nameToColor } from "@/utils/color";
 import { Crown, Plus, UserMinus, X } from "lucide-vue-next";
 import type { Friend } from "@/types";
 
@@ -31,7 +31,7 @@ watch(
 );
 
 function initials(n: string) {
-  return n.slice(0, 1).toUpperCase();
+  return avatarInitial(n);
 }
 
 /** 成员资料解析统一走 useMemberProfile（本机/好友表/在线节点），此处不再重复实现。 */

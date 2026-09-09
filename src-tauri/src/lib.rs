@@ -116,6 +116,8 @@ pub fn run() {
             commands::request_share_tree,
             commands::download_shared_file,
             commands::copy_file,
+            commands::copy_file_to_clipboard,
+            commands::read_clipboard_file_paths,
             commands::save_data_file,
             commands::read_file_preview,
             commands::search_messages,

@@ -6,6 +6,7 @@ import {
   applyReplacements,
   furthestStatus,
   mergeMessages,
+  messageMentionsName,
   preserveDeliveryStatus,
   previewText,
   syncProfileFromPeers,
@@ -43,6 +44,9 @@ export const useChatStore = defineStore("chat", () => {
   // group_id -> reader_id -> reader 已读到的最大时间戳
   const groupReads = ref<Record<string, Record<string, number>>>({});
   const activeConv = ref<string | null>(null);
+  // 群聊里有人 @ 我且未读的会话 id 集合 → 列表摘要前显示 [有人@我]。
+  // 纯前端运行时标志（不落库）：打开会话即清除，重启后随未读一起消失。
+  const mentionedConvs = ref(new Set<string>());
   const topology = ref<TopologyInfo>({
     node_count: 0,
     relay_count: 0,
@@ -236,6 +240,20 @@ export const useChatStore = defineStore("chat", () => {
       }
       if (fresh.length) newByConv.set(cid, fresh);
     }
+    // 被 @ 检测（微信式 [有人@我]）：仅群聊、非自己发的、且当前没开着这个会话。
+    // 与未读同源（本地真正新增的消息），重复投递不会反复触发。
+    const myName = app.device?.nickname ?? "";
+    if (myName) {
+      for (const [cid, fresh] of newByConv) {
+        if (cid === activeConv.value || !cid.startsWith("group:")) continue;
+        for (const rec of fresh) {
+          if (rec.sender_id !== myDeviceId.value && messageMentionsName(rec, myName)) {
+            mentionedConvs.value.add(cid);
+            break;
+          }
+        }
+      }
+    }
     // 会话列表中不存在的会话（新好友 / 后端新创建）：本地合并不了，直接从后端拉取
     const knownIds = new Set(conversations.value.map((c) => c.id));
     const missing = [...byConv.keys()].filter((id) => !knownIds.has(id));
@@ -311,6 +329,8 @@ export const useChatStore = defineStore("chat", () => {
 
   async function openConversation(id: string) {
     activeConv.value = id;
+    // 打开即视为看到 → [有人@我] 标志随之清除
+    mentionedConvs.value.delete(id);
     // 打开前先记录未读数（markRead 会清零），用于「跳到第一条未读」定位。
     // 有未读时提前占位（index=-1 = 加载中、索引未知）：让 ChatWindow 与
     // autoScrollOnSwap 在 loadMessages 完成前就知道「要跳未读」，避免先贴底再
@@ -488,6 +508,7 @@ export const useChatStore = defineStore("chat", () => {
     const prevConvs = conversations.value;
     const prevMessages = messages.value[convId];
     conversations.value = conversations.value.filter((c) => c.id !== convId);
+    mentionedConvs.value.delete(convId);
     // 清空该会话的内存消息缓存，避免下次打开时短暂闪烁旧数据
     const nextMessages = { ...messages.value };
     delete nextMessages[convId];
@@ -601,6 +622,7 @@ export const useChatStore = defineStore("chat", () => {
     groups.value = [];
     groupReads.value = {};
     activeConv.value = null;
+    mentionedConvs.value = new Set();
     pendingAcks.clear();
     void refreshTransfers();
   }
@@ -826,6 +848,7 @@ export const useChatStore = defineStore("chat", () => {
     groupReads,
     groupReaderIds,
     activeConv,
+    mentionedConvs,
     topology,
     activeConversation,
     totalUnread,

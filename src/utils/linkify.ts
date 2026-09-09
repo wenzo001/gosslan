@@ -8,12 +8,30 @@
 
 export type LinkSegment =
   | { kind: "text"; value: string }
-  | { kind: "link"; value: string; href: string };
+  | { kind: "link"; value: string; href: string }
+  | { kind: "mention"; value: string };
 
 const URL_RE = /https?:\/\/[^\s<>"'()\[\]{}]+/g;
 const TRAILING_PUNCT = /[.,;:!?)\]}>]+$/;
 
-export function linkify(text: string): LinkSegment[] {
+/** @name 边界：@ 前须是行首/空白（防邮箱误判），名字后允许跟空白或中英文常用标点。
+ *  导出供 messages.ts 的「被 @ 检测」复用——高亮与检测必须同一套边界语义。 */
+export const MENTION_AFTER = String.raw`(?=$|[\s，。！？；：、,.!?;:)）】》"'])`;
+
+export function escapeRe(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** 成员名 → @提及 正则（长名优先，防短名吃掉长名前缀；无有效名字返回 null）。 */
+function buildMentionRe(names: string[]): RegExp | null {
+  const uniq = [...new Set(names.map((n) => n.trim()).filter(Boolean))].sort(
+    (a, b) => b.length - a.length,
+  );
+  if (uniq.length === 0) return null;
+  return new RegExp(`(^|\\s)@(${uniq.map(escapeRe).join("|")})${MENTION_AFTER}`, "g");
+}
+
+function linkifyUrls(text: string): LinkSegment[] {
   if (!text) return [];
   const segments: LinkSegment[] = [];
   let lastIndex = 0;
@@ -33,6 +51,33 @@ export function linkify(text: string): LinkSegment[] {
   }
   if (lastIndex < text.length) {
     segments.push({ kind: "text", value: text.slice(lastIndex) });
+  }
+  return segments;
+}
+
+/**
+ * 聊天正文切分：链接 + @提及。mentions 传群成员名列表（@name 高亮）。
+ * 返回 text/link/mention 段数组，渲染端按段拼回去即可（不要用 v-html 拼接，已天然防 XSS）。
+ */
+export function linkify(text: string, mentions: string[] = []): LinkSegment[] {
+  if (!text) return [];
+  const mentionRe = buildMentionRe(mentions);
+  if (!mentionRe) return linkifyUrls(text);
+
+  const segments: LinkSegment[] = [];
+  let lastIndex = 0;
+  for (const m of text.matchAll(mentionRe)) {
+    const start = m.index ?? 0;
+    const lead = m[1]; // 行首或前导空白
+    const mentionStart = start + lead.length;
+    if (mentionStart > lastIndex) {
+      segments.push(...linkifyUrls(text.slice(lastIndex, mentionStart)));
+    }
+    segments.push({ kind: "mention", value: `@${m[2]}` });
+    lastIndex = start + m[0].length;
+  }
+  if (lastIndex < text.length) {
+    segments.push(...linkifyUrls(text.slice(lastIndex)));
   }
   return segments;
 }

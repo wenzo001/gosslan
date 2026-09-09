@@ -3,7 +3,7 @@ import { computed, ref, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import BaseModal from "@/components/BaseModal.vue";
-import { nameToColor } from "@/utils/color";
+import { avatarInitial, nameToColor } from "@/utils/color";
 import { Check, UserPlus } from "lucide-vue-next";
 
 const props = defineProps<{ open: boolean }>();
@@ -45,7 +45,7 @@ watch(
 );
 
 function initials(name: string) {
-  return name.slice(0, 1).toUpperCase();
+  return avatarInitial(name);
 }
 
 async function add(peerId: string) {
