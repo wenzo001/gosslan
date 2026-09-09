@@ -2,6 +2,7 @@
 import type { CSSProperties } from "vue";
 import type { FileMeta } from "@/types";
 import { humanSize } from "@/utils/color";
+import { ICON_WELL_BG } from "@/utils/quoteStyle";
 import { Download, FileText, X } from "lucide-vue-next";
 
 defineProps<{
@@ -26,7 +27,8 @@ const emit = defineEmits<{
     <div class="flex items-center gap-3">
       <div
         class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg"
-        :class="failed ? 'bg-red-100 text-red-500 dark:bg-red-900/30' : 'bg-primary-light text-primary'"
+        :class="failed ? 'bg-red-100 text-red-500 dark:bg-red-900/30' : ''"
+        :style="failed ? undefined : { backgroundColor: ICON_WELL_BG }"
       >
         <FileText v-if="!failed" class="h-5 w-5" />
         <X v-else class="h-5 w-5" />

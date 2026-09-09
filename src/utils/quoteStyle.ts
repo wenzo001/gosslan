@@ -12,3 +12,8 @@ export const QUOTE_BORDER = "color-mix(in srgb, currentColor 35%, transparent)";
 export const QUOTE_BG = "color-mix(in srgb, currentColor 8%, transparent)";
 /** 引用文字：继承气泡主色再降到 72%，保证和正文同档对比又不抢戏。 */
 export const QUOTE_TEXT_STYLE = "color: currentColor; opacity: 0.72;";
+
+/** 文件/代码气泡的图标底色圆角块：用气泡字色做轻底，图标继承字色。
+ * 替代原先的 `bg-primary-light`（rgba 主色 0.12）+ `text-primary`——那个组合在
+ * 本机气泡（主色背景）上底色和图标都是主色，几乎不可见。 */
+export const ICON_WELL_BG = "color-mix(in srgb, currentColor 14%, transparent)";
