@@ -1,9 +1,13 @@
 <script setup lang="ts">
+import { computed } from "vue";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { useAppStore } from "@/stores/useAppStore";
 import BaseModal from "@/components/BaseModal.vue";
 import CodeBlock from "@/components/CodeBlock.vue";
+import { linkify, displayUrl, type LinkSegment } from "@/utils/linkify";
 import { Check, Copy } from "lucide-vue-next";
 
-defineProps<{
+const props = defineProps<{
   open: boolean;
   kind: "text" | "code";
   content: string;
@@ -13,6 +17,19 @@ const emit = defineEmits<{
   (e: "close"): void;
   (e: "copy", content: string): void;
 }>();
+
+const app = useAppStore();
+const segments = computed<LinkSegment[]>(() =>
+  props.kind === "text" ? linkify(props.content) : [],
+);
+
+async function openLink(href: string) {
+  try {
+    await openUrl(href);
+  } catch (e) {
+    app.toast(`打开链接失败：${e}`, "error");
+  }
+}
 </script>
 
 <template>
@@ -29,7 +46,17 @@ const emit = defineEmits<{
         v-else
         class="whitespace-pre-wrap break-words text-sm leading-relaxed text-[var(--gosslan-text)]"
         :style="{ wordBreak: 'break-word' }"
-      >{{ content }}</div>
+      >
+        <template v-for="(seg, i) in segments" :key="i">
+          <a
+            v-if="seg.kind === 'link'"
+            class="cursor-pointer break-all text-primary underline decoration-1 underline-offset-2 transition hover:opacity-80"
+            :title="seg.href"
+            @click.stop.prevent="openLink(seg.href)"
+          >{{ displayUrl(seg.value) }}</a>
+          <span v-else>{{ seg.value }}</span>
+        </template>
+      </div>
     </div>
     <div class="mt-3 flex justify-end">
       <button

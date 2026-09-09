@@ -1,6 +1,10 @@
 <script setup lang="ts">
 import { computed, type CSSProperties } from "vue";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { useAppStore } from "@/stores/useAppStore";
 import { PREVIEW_LINES } from "@/utils/previewMetrics";
+import { linkify, displayUrl, type LinkSegment } from "@/utils/linkify";
+import { QUOTE_BORDER, QUOTE_BG, QUOTE_TEXT_STYLE } from "@/utils/quoteStyle";
 import { Check, Copy } from "lucide-vue-next";
 
 const props = defineProps<{
@@ -15,6 +19,8 @@ const emit = defineEmits<{
   (e: "copy", content: string): void;
   (e: "locate", msgId: string): void;
 }>();
+
+const app = useAppStore();
 
 /** 截断行数由 PREVIEW_LINES 驱动，避免 Tailwind 类名与估算常量各写一份。 */
 const clampStyle = computed<CSSProperties>(() =>
@@ -53,6 +59,18 @@ const parsed = computed(() => {
   }
   return { quote: line, body: props.content.slice(nl + 1), msgId };
 });
+
+/** 正文切成 text/link 段，按段渲染（不拼 HTML，天然防 XSS）。 */
+const segments = computed<LinkSegment[]>(() => linkify(parsed.value.body));
+
+/** 点击链接：调 Tauri opener 走系统默认浏览器；失败 toast 提示。 */
+async function openLink(href: string) {
+  try {
+    await openUrl(href);
+  } catch (e) {
+    app.toast(`打开链接失败：${e}`, "error");
+  }
+}
 </script>
 
 <template>
@@ -63,24 +81,34 @@ const parsed = computed(() => {
     <!-- 引用块：首行「引用 发送者：片段」，带 msg_id 时可点击跳转原消息 -->
     <button
       v-if="parsed.quote && parsed.msgId"
-      class="mb-1.5 block w-full cursor-pointer rounded-md border-l-2 px-2 py-1 text-left text-[12px] leading-4 text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-      :style="{ borderColor: 'rgba(128,128,128,0.45)', background: 'rgba(128,128,128,0.08)' }"
-      title="点击定位到原消息"
+      class="quote-block mb-1.5 block w-full cursor-pointer rounded-md border-l-2 px-2 py-1 text-left text-[12px] leading-4 transition hover:brightness-110"
+      :style="{ borderColor: QUOTE_BORDER, background: QUOTE_BG }"
+      :title="`点击定位到原消息（${parsed.msgId}）`"
       @click="emit('locate', parsed.msgId)"
     >
-      {{ parsed.quote }}
+      <span class="quote-text" :style="QUOTE_TEXT_STYLE">{{ parsed.quote }}</span>
     </button>
     <div
       v-else-if="parsed.quote"
-      class="mb-1.5 rounded-md border-l-2 px-2 py-1 text-[12px] leading-4 text-[var(--gosslan-text-2)]"
-      :style="{ borderColor: 'rgba(128,128,128,0.45)', background: 'rgba(128,128,128,0.08)' }"
+      class="quote-block mb-1.5 rounded-md border-l-2 px-2 py-1 text-[12px] leading-4"
+      :style="{ borderColor: QUOTE_BORDER, background: QUOTE_BG }"
     >
-      {{ parsed.quote }}
+      <span class="quote-text" :style="QUOTE_TEXT_STYLE">{{ parsed.quote }}</span>
     </div>
     <div
       class="whitespace-pre-wrap break-words"
       :style="{ wordBreak: 'break-word', ...clampStyle }"
-    >{{ parsed.body }}</div>
+    >
+      <template v-for="(seg, i) in segments" :key="i">
+        <a
+          v-if="seg.kind === 'link'"
+          class="cursor-pointer break-all underline decoration-1 underline-offset-2 transition hover:opacity-80"
+          :title="seg.href"
+          @click.stop.prevent="openLink(seg.href)"
+        >{{ displayUrl(seg.value) }}</a>
+        <span v-else>{{ seg.value }}</span>
+      </template>
+    </div>
     <!-- 长文本操作条：高度固定，展开走独立 Modal，消息 DOM 不再变化 -->
     <div
       v-if="clamped"

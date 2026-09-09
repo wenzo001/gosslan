@@ -2,6 +2,7 @@
 import { nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import EmojiPicker from "@/components/EmojiPicker.vue";
+import { QUOTE_BORDER, QUOTE_BG, QUOTE_TEXT_STYLE } from "@/utils/quoteStyle";
 import { Code2, FilePlus, Smile, X } from "lucide-vue-next";
 import type { MsgKind } from "@/types";
 
@@ -143,10 +144,10 @@ function fileToDataUrl(f: File): Promise<string> {
       <!-- 引用预览条：右键"引用"后出现在输入框上方，可取消 -->
       <div
         v-if="quote"
-        class="mb-1.5 flex items-center gap-2 rounded-md border-l-2 px-2 py-1 text-[12px] text-[var(--gosslan-text-2)]"
-        :style="{ borderColor: 'rgba(128,128,128,0.45)', background: 'rgba(128,128,128,0.08)' }"
+        class="mb-1.5 flex items-center gap-2 rounded-md border-l-2 px-2 py-1 text-[12px]"
+        :style="{ borderColor: QUOTE_BORDER, background: QUOTE_BG, color: 'var(--gosslan-text)' }"
       >
-        <span class="min-w-0 flex-1 truncate">引用 {{ quote.sender }}：{{ quote.snippet }}</span>
+        <span class="min-w-0 flex-1 truncate" :style="QUOTE_TEXT_STYLE">引用 {{ quote.sender }}：{{ quote.snippet }}</span>
         <button
           class="flex h-5 w-5 shrink-0 items-center justify-center rounded transition hover:bg-[var(--gosslan-hover)]"
           title="取消引用"
