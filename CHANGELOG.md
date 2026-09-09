@@ -8,6 +8,24 @@
 
 版本号统一由 `npm run version:patch|minor|major` 维护，一次改动同步 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 三处，并把本文件 `[Unreleased]` 小节落为带日期的版本小节。
 
+## [1.2.0] - 2026-09-10
+
+> **1.2 版本：抖音表情 + 图片相册预览 + 设置页 iOS 化重构，并修复局域网发现、群图片接收等真机回归。** 表情不再依赖 Unicode、改用 214 张抖音图片统一三端渲染；消息图片支持相册式浏览；设置页统一为 iOS 分组卡片风格；同时根治「头像撑爆 UDP 广播导致搜不到设备」与「群图片接收方加载失败」两个顽疾。
+
+### Added
+- **抖音表情**：214 个抖音评论区表情以图片形式统一三端渲染（不依赖 Unicode），输入框新增抖音式表情弹窗（上下滚动网格），选中插入 `[名字]` 语法；正文中 `[名字]` 与文字自然混合排版，正方形副格子 + `object-contain` 保持原图比例（兼容非正方形源图），只匹配已知表情名、不误吞 `[图片]`/`[代码]` 占位
+- **图片相册预览**：点击消息里的图片，打开会话内全部图片的相册浏览，左右箭头 / 键盘 ←→ 切换，保留滚轮缩放 / 拖拽 / 保存 / Esc
+
+### Changed
+- **设置页 UI 重构（iOS 分组卡片风）**：抽出 `SettingsGroup` / `SettingsRow` 标准组件统一七个分区，灰底白卡 + 行分隔，分区按「个人资料 → 外观 → 聊天显示 → 网络 → 共享目录 → 存储 → 安全 → 关于 → 重置」优先级重排；头像改为可点 + hover 相机遮罩
+- **标题栏平台化**：macOS 左侧红黄绿「红绿灯」（模拟系统样式，悬停整组显示符号），Windows/Linux 右侧三键（关闭键顶到窗口右缘、去掉空隙）
+
+### Fixed
+- **局域网发现失效（Message too long / EMSGSIZE）**：UDP announce 曾携带完整 base64 头像，超过 UDP 报文上限导致广播发送失败、节点互相搜不到；现从 announce 移除头像（发现只需 device_id/nickname/公钥/tcp_port），头像改由 TCP 建链后的 UserInfo 同步，且 `upsert_peer` 对 None 头像不覆盖、双向兼容旧版本
+- **群图片接收方「加载失败」**：群文件 `GroupFileDone` 只 emit 带本地 path 的记录、从不更新 messages 表，`read_file_preview` 按 msg_id 反查 content 拿到 Offer 阶段无 path 的旧内容而失败；现 Done 阶段显式回填 content 的 path 与 status（与单聊 FileDone 一致）
+- **头像存储爆炸风险**：头像此前无大小限制地以 base64 落库并广播；现前端限制 2MB + 中心裁剪 + 512×512 PNG 无损压缩，后端 `update_profile` 兜底拒绝超限头像
+- **Cmd+W / Ctrl+W 关闭窗口**：macOS Cmd+W、Windows/Linux Ctrl+W 均可关闭窗口（隐藏到托盘），前端 keydown 兜底，不依赖系统原生菜单对无边框窗口的 Cmd+W 支持是否生效
+
 ## [1.1.0] - 2026-09-09
 
 > **1.1 版本：夜间模式 + 微信式聊天 UI 全面优化，以及图片消息彻底移出 SQLite（P1）。** 图片不再以 base64 内联存储——粘贴/接收的图片经「本地文件 + 文件传输链路」流转，`kind` 保持 `image`，协议与 schema 零变更；同时修掉 macOS 图片粘贴无反应、附件图片无预览、发送方图片无回显三个真机回归。
