@@ -33,9 +33,9 @@ export function useMessageFile(
     return id ? (chat.transfers.find((t) => t.id === id) ?? null) : null;
   });
 
-  /** 乐观上屏的文件气泡可能缺 size/path，用传输记录补齐。 */
+  /** 乐观上屏的文件/图片气泡可能缺 size/path，用传输记录补齐。 */
   const fileMeta = computed<FileMeta | null>(() => {
-    if (msg.value.kind !== "file") return null;
+    if (msg.value.kind !== "file" && msg.value.kind !== "image") return null;
     try {
       const meta = JSON.parse(msg.value.content) as Partial<FileMeta>;
       const t = transfer.value;
@@ -43,7 +43,7 @@ export function useMessageFile(
         name: meta.name ?? t?.name ?? "文件",
         path: meta.path ?? t?.path ?? "",
         size: meta.size ?? t?.size ?? 0,
-        subtype: meta.subtype ?? "file",
+        subtype: meta.subtype ?? (msg.value.kind === "image" ? "image" : "file"),
       };
     } catch {
       return null;
@@ -67,10 +67,10 @@ export function useMessageFile(
   const attachmentCode = ref<string | null>(null);
   const previewNote = ref<string | null>(null);
 
-  /** 仅当 file 消息本地路径就绪、未失败、且为 image/code 时可预览。 */
+  /** 当 file/image 消息本地路径就绪、未失败、且为 image/code 时可预览。 */
   const previewSubtype = computed<"image" | "code" | null>(() => {
     const meta = fileMeta.value;
-    if (msg.value.kind !== "file" || !meta || !meta.path) return null;
+    if ((msg.value.kind !== "file" && msg.value.kind !== "image") || !meta || !meta.path) return null;
     if (toValue(sendState) === "failed") return null;
     return meta.subtype === "image" || meta.subtype === "code" ? meta.subtype : null;
   });

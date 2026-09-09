@@ -80,7 +80,12 @@ test("不改动输入的 existing 数组（无副作用）", () => {
 
 test("previewText：文件/图片/代码显示特殊标记", () => {
   assert.equal(previewText(msg({ msg_id: "x", kind: "file", content: "{}" })), "[文件]");
+  // 旧格式 data URL 与新格式 JSON 元数据都应显示 [图片]，不能泄露 JSON 内容
   assert.equal(previewText(msg({ msg_id: "x", kind: "image", content: "data:" })), "[图片]");
+  assert.equal(
+    previewText(msg({ msg_id: "x", kind: "image", content: '{"name":"a.png","path":"/x/a.png","size":1}' })),
+    "[图片]",
+  );
   assert.equal(previewText(msg({ msg_id: "x", kind: "code", content: "fn()" })), "[代码]");
 });
 

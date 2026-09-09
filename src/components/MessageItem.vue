@@ -161,9 +161,14 @@ function openContextMenu(e: MouseEvent) {
   ctxMenu.value = { x: e.clientX, y: e.clientY };
 }
 
-/** 图片消息的内容即 dataURL；解出 base64 供剪贴板 / 另存。 */
+/** 图片可预览 URL：新格式走 objectURL（JSON 元数据），旧格式兼容 content=dataURL。 */
 const imageDataUrl = computed(() => {
-  if (props.message.kind === "image") return props.message.content;
+  if (props.message.kind === "image") {
+    if (attachmentUrl.value) return attachmentUrl.value;
+    // 旧格式兼容（开发阶段遗留的 data URL）
+    if (props.message.content.startsWith("data:")) return props.message.content;
+    return "";
+  }
   if (props.message.kind === "file" && attachmentUrl.value) return attachmentUrl.value;
   return "";
 });
@@ -203,8 +208,13 @@ async function saveImage() {
     const { invoke } = await import("@tauri-apps/api/core");
     const destination = await save({ defaultPath: `图片-${Date.now()}.png` });
     if (!destination) return; // 用户取消
-    const base64 = url.includes(",") ? url.split(",")[1] : btoa(url);
-    await invoke("save_data_file", { base64Data: base64, destination });
+    const buf = new Uint8Array(await (await fetch(url)).arrayBuffer());
+    let binary = "";
+    const chunk = 0x8000;
+    for (let i = 0; i < buf.length; i += chunk) {
+      binary += String.fromCharCode(...buf.subarray(i, i + chunk));
+    }
+    await invoke("save_data_file", { base64Data: btoa(binary), destination });
     app.toast("图片已保存", "success");
   } catch (e) {
     app.toast(`保存图片失败：${e}`, "error");
@@ -370,7 +380,7 @@ async function copyFileToClipboard() {
           <!-- 图片 -->
           <MessageImageBubble
             v-else-if="message.kind === 'image'"
-            :src="message.content"
+            :src="imageDataUrl"
             @open="openImageLightbox"
           />
 

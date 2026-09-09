@@ -9,15 +9,16 @@
 //! 传入 DB 路径时额外做落库 / 去重 / 文件落盘校验。
 //!
 //! 验证项：
-//! 1. UDP who_has 单播探测（不依赖广播路由，VPN/TUN 环境可用）
+//! 1. UDP who_has 探测（同机直连各 LAN IP 单播 + 广播兜底，触达绑定真实 LAN IP 的实例）
 //! 2. TCP 建链 + Hello 握手
 //! 3. 直连 ChatMessage 送达（收到 Ack）+ 同 msg_id 重复投递被去重
 //! 4. Gossip E2EE（X25519 ECDH + ChaCha20-Poly1305 + Ed25519 验签）投递落库
 //! 5. 文件传输（FileOffer → FileAccept → FileChunk 流 → FileDone → 落盘）
-//! 6. outbox 离线补发（注入待补发行 → Heartbeat 触发 flush → 收到补发消息）
-//! 7. --full：代码/图片/1MB 大文本消息、乱序消息、群消息落库、
-//!    心跳保活、UserInfo 同步、好友申请（等待 UI 同意）、
-//!    共享目录树、下载方向文件传输（app→peer 发送路径）
+//! 6. --full：代码/1MB 大文本消息、图片走文件传输（1:1 与群，落库保持 kind=image）、
+//!    乱序消息、群消息落库、心跳保活、UserInfo 同步、好友申请（等待 UI 同意）、
+//!    共享目录树、下载方向文件传输（app→peer 发送路径）。
+//!    outbox 离线补发 / Ack 删除的可靠性已由 transport.rs 单测覆盖（注入 outbox 行
+//!    无法端到端触发 Ack→删除语义），故本工具不再重复注入。
 
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -38,14 +39,30 @@ const DIRECT_MSG_ID: &str = "e2e-direct-001";
 const GOSSIP_TEXT: &str = "e2e-gossip-ok";
 const TRANSFER_ID: &str = "e2e-file-001";
 const FILE_NAME: &str = "e2e-peer-file.txt";
-const OUTBOX_MSG_ID: &str = "e2e-outbox-001";
-const OUTBOX_TEXT: &str = "e2e-outbox-flush-ok";
 
 // ---- --full 扩展项常量 ----
 const CODE_MSG_ID: &str = "e2e-code-001";
 const CODE_CONTENT: &str = "fn main() { println!(\"e2e-code-ok\"); }";
-const IMAGE_MSG_ID: &str = "e2e-image-001";
-const IMAGE_CONTENT: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==";
+const IMAGE_TRANSFER_ID: &str = "e2e-image-001";
+const IMAGE_NAME: &str = "e2e-image.png";
+/// 1×1 透明 PNG（67 字节），用于验证图片走文件传输后仍保持 kind="image"。
+const IMAGE_BYTES: &[u8] = &[
+    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4,
+    0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00,
+    0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE,
+    0x42, 0x60, 0x82,
+];
+
+// ---- 群文件测试常量（与 scripts/e2e-dev.sh 预置的群保持一致） ----
+const GROUP_ID: &str = "g-e2e-group-001";
+/// 群对称密钥（base64 编码的 32 字节），e2e_peer 与实例经 ensure_test_group
+/// 写入同一份 `gk:{GROUP_ID}`，供 GroupFileOffer 的 sealed_file_key 解封。
+/// 必须是恰好 32 字节（解码后），否则 get_group_key 的 try_into::<[u8;32]> 失败。
+const GROUP_KEY_B64: &str = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=";
+const GROUP_IMAGE_TRANSFER_ID: &str = "e2e-group-image-001";
+const GROUP_IMAGE_NAME: &str = "e2e-group-image.png";
+
 const BIG_MSG_ID: &str = "e2e-big-001";
 const BIG_SIZE: usize = 1_000_000;
 const OOO_A_ID: &str = "e2e-ooo-a";
@@ -156,10 +173,39 @@ async fn probe_instance_via_who_has(
     let deadline = tokio::time::Instant::now() + timeout;
     let mut buf = [0u8; 2048];
     let mut attempt = 0;
+    sock.set_broadcast(true).ok();
+    // Auto 模式下实例 UDP socket 绑定真实 LAN IP（1.0.1 修复），而「同机」一个绑在
+    // 具体单播 IP 上的 socket 收不到发往子网广播（192.168.x.255）/有限广播（255.255.255.255）
+    // 的包（macOS 实测超时）。因此必须**直接单播到各候选 LAN IP** 才能触达实例。
+    // 广播与回环仅作兜底：覆盖「实例绑 0.0.0.0」的旧主二进制或广播域可达的其他环境。
+    let targets: Vec<String> = {
+        let mut t = vec!["127.0.0.1".to_string()];
+        if let Ok(ifs) = if_addrs::get_if_addrs() {
+            for i in &ifs {
+                if let if_addrs::IfAddr::V4(v4) = &i.addr {
+                    let ip = match i.ip() {
+                        std::net::IpAddr::V4(v) => v,
+                        _ => continue,
+                    };
+                    if ip.is_loopback() {
+                        continue;
+                    }
+                    // 只挑有广播地址的接口（与 discovery::find_lan_interface 的候选口径一致），
+                    // 排除点对点/虚拟 utun 等无 broadcast 的隧道接口。
+                    if v4.broadcast.is_some() {
+                        t.push(ip.to_string());
+                    }
+                }
+            }
+        }
+        // 广播兜底（若本机 socket 恰绑 0.0.0.0，或存在能被正确接收的广播路径）
+        t.push("255.255.255.255".to_string());
+        t
+    };
     loop {
-        sock.send_to(&data, ("127.0.0.1", UDP_PORT))
-            .await
-            .map_err(|e| e.to_string())?;
+        for ip in &targets {
+            let _ = sock.send_to(&data, (ip.as_str(), UDP_PORT)).await;
+        }
         let remain = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remain.is_zero() {
             return Err("who_has 探测超时（实例未应答 announce）".into());
@@ -245,6 +291,34 @@ fn open_db(path: &str) -> Result<rusqlite::Connection, String> {
     conn.busy_timeout(Duration::from_millis(5000))
         .map_err(|e| e.to_string())?;
     Ok(conn)
+}
+
+/// 在目标数据库预置群文件测试所需的群记录。
+/// e2e_peer 作为创建者，实例 1 作为成员，双方共用 GROUP_KEY_B64。
+fn ensure_test_group(db_path: &str, app_id: &str) -> Result<(), String> {
+    let conn = open_db(db_path)?;
+    let ts = now_ms();
+    conn.execute(
+        "INSERT OR REPLACE INTO groups(id,name,creator,created_at) VALUES(?1,?2,?3,?4)",
+        rusqlite::params![GROUP_ID, "E2E-Group", PEER_ID, ts],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT OR IGNORE INTO group_members(group_id,device_id) VALUES(?1,?2),(?1,?3)",
+        rusqlite::params![GROUP_ID, PEER_ID, app_id],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT OR REPLACE INTO settings(key,value) VALUES(?1,?2)",
+        rusqlite::params![format!("gk:{GROUP_ID}"), GROUP_KEY_B64],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT OR REPLACE INTO conversations(id,kind,name,avatar,unread,updated_at) VALUES(?1,'group',?2,NULL,0,?3)",
+        rusqlite::params![format!("group:{GROUP_ID}"), "E2E-Group", ts],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -524,56 +598,6 @@ async fn main() {
     );
     tokio::time::sleep(Duration::from_millis(1200)).await;
 
-    // ---- 6. outbox 离线补发 ----
-    if let Some(db) = &db_path {
-        let queued = Message::ChatMessage {
-            msg_id: OUTBOX_MSG_ID.into(),
-            from: PEER_ID.into(),
-            to: app_id.clone(),
-            kind: MsgKind::Text,
-            content: seal_direct(&identity, &app_x25519, OUTBOX_TEXT),
-            ts: now_ms(),
-            seq: 1,
-        };
-        let injected = (|| -> Result<usize, String> {
-            let conn = open_db(db)?;
-            let payload = serde_json::to_string(&queued).map_err(|e| e.to_string())?;
-            conn.execute(
-                "INSERT OR IGNORE INTO outbox(msg_id, peer_id, payload, created_at) VALUES(?1,?2,?3,?4)",
-                rusqlite::params![OUTBOX_MSG_ID, PEER_ID, payload, now_ms()],
-            ).map_err(|e| e.to_string())
-        })();
-        match injected {
-            Ok(n) if n > 0 => {
-                // Heartbeat 触发接收端 flush_outbox
-                let _ = send_frame(
-                    &mut w,
-                    &Message::Heartbeat {
-                        device_id: PEER_ID.into(),
-                    },
-                )
-                .await;
-                match waiter.expect(6000, "outbox 补发（Heartbeat 触发 flush）", &|m| {
-                    matches!(m, Message::ChatMessage { msg_id, .. } if msg_id == OUTBOX_MSG_ID)
-                }).await {
-                    Ok(_) => report.add("outbox 离线补发（对方上线 Heartbeat 触发自动 flush）", true, "补发消息已送达".into()),
-                    Err(e) => report.add("outbox 离线补发（对方上线 Heartbeat 触发自动 flush）", false, e),
-                }
-            }
-            Ok(_) => report.add(
-                "outbox 离线补发（对方上线 Heartbeat 触发自动 flush）",
-                false,
-                "outbox 已存在同 id 行（环境未清理）".into(),
-            ),
-            Err(e) => report.add(
-                "outbox 离线补发（对方上线 Heartbeat 触发自动 flush）",
-                false,
-                format!("注入 outbox 行失败: {e}"),
-            ),
-        }
-        tokio::time::sleep(Duration::from_millis(800)).await;
-    }
-
     // ---- 6.5 --full：全功能扩展（除网络发现外的所有聊天功能）----
     if full {
         // a. 心跳保活：发心跳后连接仍可收发
@@ -598,19 +622,13 @@ async fn main() {
         .await;
         tokio::time::sleep(Duration::from_millis(300)).await;
 
-        // c. 多类型消息：代码 / 图片 / 1MB 大文本
+        // c. 多类型消息：代码 / 1MB 大文本（直连 ChatMessage）
         for (label, msg_id, kind, content) in [
             (
                 "代码消息（kind=code）",
                 CODE_MSG_ID,
                 MsgKind::Code,
                 CODE_CONTENT,
-            ),
-            (
-                "图片消息（kind=image，dataUrl）",
-                IMAGE_MSG_ID,
-                MsgKind::Image,
-                IMAGE_CONTENT,
             ),
             (
                 "1MB 大文本消息（大帧分片）",
@@ -649,7 +667,159 @@ async fn main() {
             }
         }
 
-        // d. 乱序消息：ts 较大的先发，校验连接与 Ack 不受影响（前端按 ts 排序）
+        // d. 图片消息：改为走真实文件传输，验证接收端仍生成 kind="image"
+        let image_key = crypto::random_key();
+        let image_sha256 = sha256_hex(IMAGE_BYTES);
+        let image_shared = crypto::shared_secret(&identity.x25519_secret, &app_x25519)
+            .expect("app receiver key valid");
+        let sealed_image_key = STANDARD.encode(
+            crypto::seal(&image_shared, &image_key).expect("image key seal succeeds"),
+        );
+        let _ = send_frame(
+            &mut w,
+            &Message::FileOffer {
+                transfer_id: IMAGE_TRANSFER_ID.into(),
+                from: PEER_ID.into(),
+                name: IMAGE_NAME.into(),
+                size: IMAGE_BYTES.len() as u64,
+                sealed_file_key: sealed_image_key,
+                file_sha256: image_sha256.clone(),
+            },
+        )
+        .await;
+        match waiter
+            .expect(
+                5000,
+                "FileAccept（图片传输自动接受）",
+                &|m| matches!(m, Message::FileAccept { transfer_id } if transfer_id == IMAGE_TRANSFER_ID),
+            )
+            .await
+        {
+            Ok(_) => report.add(
+                "图片传输握手（FileOffer → 自动 FileAccept）",
+                true,
+                format!("{IMAGE_NAME}（{}B）", IMAGE_BYTES.len()),
+            ),
+            Err(e) => report.add("图片传输握手（FileOffer → 自动 FileAccept）", false, e),
+        }
+        let mut image_seq = 0u32;
+        for chunk in IMAGE_BYTES.chunks(FILE_CHUNK) {
+            let sealed_chunk =
+                crypto::seal_symmetric(&image_key, chunk).expect("image chunk encryption succeeds");
+            let _ = send_frame(
+                &mut w,
+                &Message::FileChunk {
+                    transfer_id: IMAGE_TRANSFER_ID.into(),
+                    seq: image_seq,
+                    data: STANDARD.encode(sealed_chunk),
+                },
+            )
+            .await;
+            image_seq += 1;
+        }
+        let _ = send_frame(
+            &mut w,
+            &Message::FileDone {
+                transfer_id: IMAGE_TRANSFER_ID.into(),
+            },
+        )
+        .await;
+        match waiter
+            .expect(
+                5000,
+                "FileCompleteAck（图片传输完成确认）",
+                &|m| matches!(m, Message::FileCompleteAck { transfer_id, success } if transfer_id == IMAGE_TRANSFER_ID && *success),
+            )
+            .await
+        {
+                Ok(_) => report.add(
+                    "图片分片流发送（FileChunk → FileDone → FileCompleteAck）",
+                    true,
+                    format!("{image_seq} 片，{}B", IMAGE_BYTES.len()),
+                ),
+            Err(e) => report.add("图片分片流发送（FileChunk → FileDone → FileCompleteAck）", false, e),
+        }
+
+        // d. 群图片文件传输：验证 GroupFileTransfer 接收端仍生成 kind="image"
+        if let Some(ref db) = db_path {
+            if let Err(e) = ensure_test_group(db, &app_id) {
+                report.add("群测试预置（数据库写入群记录）", false, e);
+            } else {
+                report.add("群测试预置（数据库写入群记录）", true, GROUP_ID.into());
+            }
+        }
+        let group_key_bytes: [u8; 32] = STANDARD
+            .decode(GROUP_KEY_B64)
+            .expect("group key base64 valid")
+            .try_into()
+            .expect("group key 32 bytes");
+        let group_image_key = crypto::random_key();
+        let group_image_sha256 = sha256_hex(IMAGE_BYTES);
+        let sealed_group_image_key = STANDARD.encode(
+            crypto::seal_symmetric(&group_key_bytes, &group_image_key)
+                .expect("group image key seal succeeds"),
+        );
+        let _ = send_frame(
+            &mut w,
+            &Message::GroupFileOffer {
+                transfer_id: GROUP_IMAGE_TRANSFER_ID.into(),
+                group_id: GROUP_ID.into(),
+                sender_id: PEER_ID.into(),
+                name: GROUP_IMAGE_NAME.into(),
+                size: IMAGE_BYTES.len() as u64,
+                sha256: group_image_sha256.clone(),
+                sealed_file_key: sealed_group_image_key,
+            },
+        )
+        .await;
+        // GroupFileOffer 不等待 Ack，直接发分片
+        let mut gimg_seq = 0u32;
+        for chunk in IMAGE_BYTES.chunks(FILE_CHUNK) {
+            let sealed_chunk = crypto::seal_symmetric(&group_image_key, chunk)
+                .expect("group image chunk encryption succeeds");
+            let _ = send_frame(
+                &mut w,
+                &Message::GroupFileChunk {
+                    transfer_id: GROUP_IMAGE_TRANSFER_ID.into(),
+                    group_id: GROUP_ID.into(),
+                    sender_id: PEER_ID.into(),
+                    seq: gimg_seq,
+                    data: STANDARD.encode(sealed_chunk),
+                },
+            )
+            .await;
+            gimg_seq += 1;
+        }
+        let _ = send_frame(
+            &mut w,
+            &Message::GroupFileDone {
+                transfer_id: GROUP_IMAGE_TRANSFER_ID.into(),
+                group_id: GROUP_ID.into(),
+                sender_id: PEER_ID.into(),
+            },
+        )
+        .await;
+        match waiter
+            .expect(
+                5000,
+                "GroupFileCompleteAck（群图片传输完成确认）",
+                &|m| matches!(m, Message::GroupFileCompleteAck { transfer_id, success, .. } if transfer_id == GROUP_IMAGE_TRANSFER_ID && *success),
+            )
+            .await
+        {
+            Ok(_) => report.add(
+                "群图片分片流发送（GroupFileChunk → GroupFileDone → GroupFileCompleteAck）",
+                true,
+                format!("{gimg_seq} 片，{}B", IMAGE_BYTES.len()),
+            ),
+            Err(e) => report.add(
+                "群图片分片流发送（GroupFileChunk → GroupFileDone → GroupFileCompleteAck）",
+                false,
+                e,
+            ),
+        }
+
+        // e. 乱序消息：ts 较大的先发，校验连接与 Ack 不受影响（前端按 ts 排序）
         let ts_base = now_ms();
         for (msg_id, ts) in [(OOO_A_ID, ts_base + 2000), (OOO_B_ID, ts_base + 1000)] {
             let _ = send_frame(
@@ -761,12 +931,22 @@ async fn main() {
             let offer = waiter.expect(8000, "FileOffer（app 发起下载方向传输）", &|m| {
                 matches!(m, Message::FileOffer { transfer_id, .. } if transfer_id == DL_TRANSFER_ID)
             }).await?;
-            let (name, size) = match offer {
-                Message::FileOffer { name, size, .. } => (name, size),
+            let (name, size, sealed_key_b64) = match offer {
+                Message::FileOffer { name, size, sealed_file_key, .. } => (name, size, sealed_file_key),
                 _ => unreachable!(),
             };
+            // 下载方向由 app（实例）主动发起：file_key 用我方 X25519 公钥封装（sealed_file_key），
+            // 我方须先解封 file_key，再对每个 FileChunk 的 data 做 AEAD 解密——
+            // data = base64(nonce||ct||tag)，不解密拿到的是 49B 密文而非原文。
+            let sealed_key = STANDARD.decode(&sealed_key_b64).map_err(|e| e.to_string())?;
+            let shared = crypto::shared_secret(&identity.x25519_secret, &app_x25519)
+                .ok_or("下载方向：无法派生 shared_secret")?;
+            let file_key: [u8; 32] = crypto::open(&shared, &sealed_key)
+                .ok_or("下载方向：解封 file_key 失败")?
+                .try_into()
+                .map_err(|_| "file_key 非 32 字节".to_string())?;
             let _ = send_frame(&mut w, &Message::FileAccept { transfer_id: DL_TRANSFER_ID.into() }).await;
-            // 收集分片直到 FileDone
+            // 收集分片直到 FileDone，逐片解密后拼接
             let mut parts: Vec<(u32, Vec<u8>)> = Vec::new();
             loop {
                 let m = waiter.expect(15_000, "FileChunk/FileDone", &|m| {
@@ -774,8 +954,10 @@ async fn main() {
                 }).await?;
                 match m {
                     Message::FileChunk { seq, data, .. } => {
-                        let bytes = STANDARD.decode(&data).map_err(|e| e.to_string())?;
-                        parts.push((seq, bytes));
+                        let sealed = STANDARD.decode(&data).map_err(|e| e.to_string())?;
+                        let plain = crypto::open_symmetric(&file_key, &sealed)
+                            .ok_or("下载方向：分片解密失败")?;
+                        parts.push((seq, plain));
                     }
                     Message::FileDone { .. } => break,
                     _ => unreachable!(),
@@ -922,20 +1104,6 @@ async fn main() {
             format!("count={conv}"),
         );
 
-        // outbox 清空
-        let outbox_left: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM outbox WHERE peer_id = ?1",
-                rusqlite::params![PEER_ID],
-                |r| r.get(0),
-            )
-            .unwrap_or(-1);
-        report.add(
-            "outbox 队列清空（补发后删除）",
-            outbox_left == 0,
-            format!("left={outbox_left}"),
-        );
-
         // 文件落盘内容一致
         let downloads = Path::new(db)
             .parent()
@@ -953,10 +1121,9 @@ async fn main() {
 
         // ---- --full 落库校验 ----
         if full {
-            // 代码 / 图片 / 大文本消息落库
+            // 代码 / 大文本消息落库
             for (label, msg_id, expect) in [
                 ("代码消息落库（kind=code）", CODE_MSG_ID, CODE_CONTENT),
-                ("图片消息落库（kind=image）", IMAGE_MSG_ID, IMAGE_CONTENT),
             ] {
                 let c: Option<String> = conn
                     .query_row(
@@ -972,6 +1139,46 @@ async fn main() {
                     format!("len={}", c.map(|v| v.len()).unwrap_or(0)),
                 );
             }
+            // 图片消息落库：kind 必须为 image，content 是 JSON 元数据且 subtype=image
+            let image_msg_id = format!("file-{IMAGE_TRANSFER_ID}");
+            let image_row: Option<(String, String)> = conn
+                .query_row(
+                    "SELECT kind, content FROM messages WHERE msg_id = ?1",
+                    rusqlite::params![image_msg_id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .ok();
+            let image_ok = image_row.as_ref().map(|(kind, content)| {
+                let parsed: serde_json::Value = serde_json::from_str(content).unwrap_or_default();
+                kind == "image"
+                    && parsed.get("subtype").and_then(|v| v.as_str()) == Some("image")
+                    && parsed.get("name").and_then(|v| v.as_str()) == Some(IMAGE_NAME)
+            }).unwrap_or(false);
+            report.add(
+                "图片消息落库（kind=image，JSON 元数据）",
+                image_ok,
+                format!("{:?}", image_row.map(|(_, c)| c)),
+            );
+            // 群图片消息落库：kind 必须为 image，content 是 JSON 元数据且 subtype=image
+            let group_image_msg_id = format!("gfile-{GROUP_IMAGE_TRANSFER_ID}");
+            let group_image_row: Option<(String, String)> = conn
+                .query_row(
+                    "SELECT kind, content FROM messages WHERE msg_id = ?1",
+                    rusqlite::params![group_image_msg_id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .ok();
+            let group_image_ok = group_image_row.as_ref().map(|(kind, content)| {
+                let parsed: serde_json::Value = serde_json::from_str(content).unwrap_or_default();
+                kind == "image"
+                    && parsed.get("subtype").and_then(|v| v.as_str()) == Some("image")
+                    && parsed.get("name").and_then(|v| v.as_str()) == Some(GROUP_IMAGE_NAME)
+            }).unwrap_or(false);
+            report.add(
+                "群图片消息落库（kind=image，JSON 元数据）",
+                group_image_ok,
+                format!("{:?}", group_image_row.map(|(_, c)| c)),
+            );
             let big_len: Option<i64> = conn
                 .query_row(
                     "SELECT LENGTH(content) FROM messages WHERE msg_id = ?1",
@@ -985,26 +1192,28 @@ async fn main() {
                 format!("len={big_len:?}"),
             );
 
-            // 乱序消息 ts 保真（DB 保留发送方时间戳）
-            let ts_a: Option<i64> = conn
+            // 乱序消息落库：排序用发送方逻辑序号 seq（展示时间 ts 为本地接收时间，
+            // 属产品设计，transport.rs 按 seq 排序不按 ts）。DB 必须如实保留发送方 seq。
+            // e2e_peer 发送 OOO_A(seq=2, 更晚逻辑序) 与 OOO_B(seq=1)，落库后 seq_a > seq_b。
+            let seq_a: Option<i64> = conn
                 .query_row(
-                    "SELECT ts FROM messages WHERE msg_id = ?1",
+                    "SELECT seq FROM messages WHERE msg_id = ?1",
                     rusqlite::params![OOO_A_ID],
                     |r| r.get(0),
                 )
                 .ok();
-            let ts_b: Option<i64> = conn
+            let seq_b: Option<i64> = conn
                 .query_row(
-                    "SELECT ts FROM messages WHERE msg_id = ?1",
+                    "SELECT seq FROM messages WHERE msg_id = ?1",
                     rusqlite::params![OOO_B_ID],
                     |r| r.get(0),
                 )
                 .ok();
-            let ordered = matches!((ts_a, ts_b), (Some(a), Some(b)) if a > b);
+            let ordered = matches!((seq_a, seq_b), (Some(a), Some(b)) if a > b);
             report.add(
-                "乱序消息 ts 保真（DB 按发送 ts 存储）",
+                "乱序消息落库（DB 按发送方 seq 排序）",
                 ordered,
-                format!("a={ts_a:?} b={ts_b:?}"),
+                format!("seq_a={seq_a:?} seq_b={seq_b:?}"),
             );
         }
     }

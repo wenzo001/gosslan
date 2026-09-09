@@ -641,6 +641,27 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
+  /** 粘贴图片发送：data URL → 本地文件 → 文件传输（单聊/群聊复用同一条可靠链路）。
+   *  发送初始化失败时删除已保存的孤儿图片。 */
+  async function sendImage(convId: string, dataUrl: string) {
+    const { path } = await api.saveOutgoingImage(dataUrl);
+    try {
+      if (convId.startsWith("group:")) {
+        const id = await api.sendGroupFile(convId.slice(6), path);
+        void refreshTransfers();
+        return id;
+      }
+      const id = await api.sendFileAuto(convId, path);
+      void refreshTransfers();
+      return id;
+    } catch (e) {
+      // 初始化失败：清理孤儿图片，避免 downloads 目录堆积垃圾
+      await api.deleteFile(path).catch(() => {});
+      app.toast(`图片发送失败：${e}`, "error");
+      return null;
+    }
+  }
+
   function updateTransferProgress(p: FileProgress) {
     const t = transfers.value.find((x) => x.id === p.transfer_id);
     if (t) t.progress = p.total > 0 ? p.received / p.total : 0;
@@ -728,7 +749,7 @@ export const useChatStore = defineStore("chat", () => {
       onMessage: (rec) => {
         enqueueMessage(rec);
         maybeNotify(rec);
-        if (rec.kind === "file") void refreshTransfers();
+        if (rec.kind === "file" || rec.kind === "image") void refreshTransfers();
         // 正在看这个会话且窗口可见 → 自动已读并回执
         if (rec.sender_id !== myDeviceId.value && rec.conv_id === activeConv.value) {
           debounceMarkRead(rec.conv_id);
@@ -879,6 +900,7 @@ export const useChatStore = defineStore("chat", () => {
     sendFileTo,
     sendFileRelayTo,
     sendGroupFileTo,
+    sendImage,
     clearAllData,
     enqueueMessage,
   };

@@ -1175,11 +1175,13 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 Ok(Some((name, size, path, sender_id))) => {
                     let rec = {
                         let dbc = state.db.lock().unwrap();
+                        let subtype = file::classify_file_subtype(&name);
+                        let kind = if subtype == "image" { "image" } else { "file" };
                         let content = serde_json::json!({
                             "name": name,
                             "path": path.to_string_lossy().to_string(),
                             "size": size,
-                            "subtype": file::classify_file_subtype(&name),
+                            "subtype": subtype,
                         })
                         .to_string();
                         let seq = db::next_clock(&dbc, &sender_id).unwrap_or(1);
@@ -1189,7 +1191,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                             conv_id: sender_id.clone(),
                             sender_id: sender_id.clone(),
                             receiver_id: state.device_id.clone(),
-                            kind: "file".to_string(),
+                            kind: kind.to_string(),
                             content,
                             ts: db::now_ms(),
                             seq,
@@ -1197,13 +1199,14 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                         };
                         db::insert_message(&dbc, &rec).ok();
                         let nm = resolve_nickname(state, &sender_id);
+                        let preview = if kind == "image" { "[图片]".to_string() } else { format!("[文件] {name}") };
                         db::touch_conversation(
                             &dbc,
                             &sender_id,
                             "single",
                             &nm,
                             None,
-                            &format!("[文件] {name}"),
+                            &preview,
                             1,
                         )
                         .ok();
@@ -2314,6 +2317,9 @@ async fn handle_group_file_offer(
     }
     // 接收气泡：与发送端同一 msg_id（gfile-{transfer_id}），前端据 file-progress
     // 之外的状态事件推进。此处 status=sending，Done 校验通过后转 delivered。
+    // 图片文件保持 kind="image"，业务语义不降级。
+    let subtype = file::classify_file_subtype(&name);
+    let kind = if subtype == "image" { "image" } else { "file" };
     let conv_id = format!("group:{group_id}");
     let seq = {
         let dbc = state.db.lock().unwrap();
@@ -2325,8 +2331,8 @@ async fn handle_group_file_offer(
         conv_id: conv_id.clone(),
         sender_id: sender_id.clone(),
         receiver_id: state.device_id.clone(),
-        kind: "file".to_string(),
-        content: serde_json::json!({ "name": name, "size": size, "sha256": sha256 }).to_string(),
+        kind: kind.to_string(),
+        content: serde_json::json!({ "name": name, "size": size, "sha256": sha256, "subtype": subtype }).to_string(),
         ts: db::now_ms(),
         seq,
         status: "sending".to_string(),
@@ -2571,18 +2577,21 @@ async fn handle_group_file_done(
         )
         .unwrap_or(1)
     };
+    let subtype = file::classify_file_subtype(&gf.name);
+    let kind = if subtype == "image" { "image" } else { "file" };
     let done_rec = crate::state::MessageRecord {
         id: 0,
         msg_id,
         conv_id: format!("group:{group_id}"),
         sender_id: sender_id.clone(),
         receiver_id: state.device_id.clone(),
-        kind: "file".to_string(),
+        kind: kind.to_string(),
         content: serde_json::json!({
             "name": gf.name,
             "path": r.final_path.to_string_lossy(),
             "size": gf.size,
             "sha256": gf.sha256,
+            "subtype": subtype,
         })
         .to_string(),
         ts: db::now_ms(),

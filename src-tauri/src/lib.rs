@@ -119,6 +119,8 @@ pub fn run() {
             commands::copy_file_to_clipboard,
             commands::read_clipboard_file_paths,
             commands::save_data_file,
+            commands::delete_file,
+            commands::save_outgoing_image,
             commands::read_file_preview,
             commands::search_messages,
             commands::clear_all_data,

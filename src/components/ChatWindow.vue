@@ -173,6 +173,13 @@ async function onSend({ content, kind }: { content: string; kind: MsgKind }) {
   }
 }
 
+/** 粘贴图片：走 save_outgoing_image → 文件传输，data URL 不进入 SQLite。 */
+async function onSendImage(dataUrl: string) {
+  const convId = chat.activeConv;
+  if (!convId || !isPeerFriend.value) return;
+  await chat.sendImage(convId, dataUrl);
+}
+
 // ---------------- 引用 / 转发 ----------------
 /** 待引用消息（MessageItem 右键"引用"设置，随发送或手动取消清除）。 */
 const quote = ref<{ sender: string; snippet: string; msgId: string | number } | null>(null);
@@ -327,6 +334,7 @@ function onLoadMore() {
         :quote="quote"
         :mention-members="mentionMembers"
         @send="onSend"
+        @send-image="onSendImage"
         @attach="attachFile"
         @paste-files="sendPastedFiles"
         @close-quote="quote = null"

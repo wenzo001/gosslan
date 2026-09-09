@@ -19,6 +19,7 @@ const props = defineProps<{
 }>();
 const emit = defineEmits<{
   (e: "send", payload: { content: string; kind: MsgKind }): void;
+  (e: "send-image", dataUrl: string): void;
   (e: "attach"): void;
   (e: "close-quote"): void;
   (e: "paste-files", paths: string[]): void;
@@ -338,8 +339,9 @@ async function onPaste(e: ClipboardEvent) {
       if (item.kind === "file" && item.type.startsWith("image/")) {
         const f = item.getAsFile();
         if (f) {
+          // P1：粘贴图片走 save_outgoing_image → 文件传输，data URL 不进入 SQLite
           const dataUrl = await fileToDataUrl(f);
-          send("image", dataUrl);
+          emit("send-image", dataUrl);
         }
         return;
       }

@@ -15,11 +15,10 @@ const MAX_NICKNAME_LEN: usize = 30;
 pub const MAX_GROUP_NAME_LEN: usize = 30;
 const MAX_SEARCH_LEN: usize = 100;
 const MAX_MESSAGE_LEN: usize = 50_000;
-/// 内联图片（`kind:"image"`）的 data URL 是 Base64：从中间截断会直接损坏图片，
-/// 故不参与 MAX_MESSAGE_LEN 的文本截断。这里给一个"合理上限"而非无限放行——
-/// Base64 解码后 ≈ 3/4 字符数，8M 字符 ≈ 6 MiB 原图，封框（ChaCha20+Base64）后仍
-/// 远低于传输层 MAX_FRAME(64 MiB)。超限一律报错拒发，绝不静默截断。
-const MAX_IMAGE_CONTENT_LEN: usize = 8_000_000;
+/// 粘贴/拖拽图片的解码后字节上限。Base64 解码后 ≈ 3/4 字符数，
+/// 8 MiB 对应约 11 MB data URL，封框后仍远低于传输层 MAX_FRAME(64 MiB)。
+/// 超限一律报错拒发，绝不静默截断。
+const MAX_OUTGOING_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
 
 use crate::crypto;
 use crate::db;
@@ -711,7 +710,6 @@ pub async fn send_message(
     let msg_kind = match kind.as_str() {
         "text" => MsgKind::Text,
         "code" => MsgKind::Code,
-        "image" => MsgKind::Image,
         "file" => MsgKind::File,
         _ => return Err("不支持的消息类型".to_string()),
     };
@@ -724,20 +722,8 @@ pub async fn send_message(
         }
     }
 
-    // 长度保护：
-    // - text/code 等普通内容按字符截断（UTF-8 安全），沿用既有 50000 上限；
-    // - image 的 data URL 是 Base64，中途截断 = 图片损坏，因此绝不截断：
-    //   上限内原样透传，超限直接报错拒发（提示改用「发送文件」）。
-    let content: String = if kind == "image" {
-        if content.chars().count() > MAX_IMAGE_CONTENT_LEN {
-            return Err(format!(
-                "图片过大（超过 {MAX_IMAGE_CONTENT_LEN} 字符），请压缩后重试或改用发送文件"
-            ));
-        }
-        content
-    } else {
-        content.chars().take(MAX_MESSAGE_LEN).collect()
-    };
+    // 长度保护：text/code 等普通内容按字符截断（UTF-8 安全），沿用既有 50000 上限。
+    let content: String = content.chars().take(MAX_MESSAGE_LEN).collect();
 
     // E2EE 恒开（v0.11.0 起默认且不可关闭）：发送必须拿到对端 X25519 公钥。
     // 好友表优先，回退在线节点表；都缺失时主动探测一次（who_has）等对方/中继
@@ -1407,17 +1393,9 @@ pub async fn send_group_message(
     let kind_enum = match kind.as_str() {
         "text" => MsgKind::Text,
         "code" => MsgKind::Code,
-        "image" => MsgKind::Image,
         _ => return Err("群聊不支持该消息类型".to_string()),
     };
-    let content: String = if kind == "image" {
-        if content.chars().count() > MAX_IMAGE_CONTENT_LEN {
-            return Err("图片过大，请改用发送文件".to_string());
-        }
-        content
-    } else {
-        content.chars().take(MAX_MESSAGE_LEN).collect()
-    };
+    let content: String = content.chars().take(MAX_MESSAGE_LEN).collect();
     let ts = db::now_ms();
     let conv_id = format!("group:{group_id}");
     let seq = {
@@ -1604,8 +1582,11 @@ pub async fn send_group_file(
 
     // 发送者本地气泡先落库：无论成员当前是否在线，用户看到的都是「发送中/待投递」，
     // 而不是一个报错后又偷偷排队的隐藏任务。
+    // 图片文件保持 kind="image"，预览摘要为 [图片]，其余走 kind="file"。
+    let subtype = file::classify_file_subtype(&name);
+    let kind = if subtype == "image" { "image" } else { "file" };
     let content =
-        serde_json::json!({ "name": name, "path": path, "size": size, "sha256": sha256 })
+        serde_json::json!({ "name": name, "path": path, "size": size, "sha256": sha256, "subtype": subtype })
             .to_string();
     let conv_id = format!("group:{group_id}");
     let seq = {
@@ -1618,7 +1599,7 @@ pub async fn send_group_file(
         conv_id,
         sender_id: s.device_id.clone(),
         receiver_id: group_id.clone(),
-        kind: "file".to_string(),
+        kind: kind.to_string(),
         content,
         ts: db::now_ms(),
         seq,
@@ -1640,13 +1621,14 @@ pub async fn send_group_file(
         )
         .ok();
         let group_name = db::get_group(&dbc, &group_id).map(|g| g.name).unwrap_or_default();
+        let preview = if kind == "image" { "[图片]".to_string() } else { format!("[群文件] {name}") };
         db::touch_conversation(
             &dbc,
             &format!("group:{group_id}"),
             "group",
             &group_name,
             None,
-            &format!("[群文件] {name}"),
+            &preview,
             0,
         )
         .ok();
@@ -1924,6 +1906,80 @@ pub async fn flush_pending_group_files(state: &Arc<AppState>, peer_id: &str) {
 
 // ---------------- 文件传输 ----------------
 
+/// 图片 MIME → 扩展名（仅接受常见格式）。
+fn image_extension(mime: &str) -> Option<&'static str> {
+    match mime.to_lowercase().as_str() {
+        "image/png" => Some("png"),
+        "image/jpeg" => Some("jpg"),
+        "image/gif" => Some("gif"),
+        "image/webp" => Some("webp"),
+        _ => None,
+    }
+}
+
+/// 纯函数：验证并解码 data URL 图片，返回 (扩展名, 解码后字节)。
+/// 用于单元测试覆盖 MIME/大小/base64 等校验逻辑，不涉及文件系统。
+fn decode_outgoing_image(data_url: &str) -> Result<(&'static str, Vec<u8>), String> {
+    const PREFIX: &str = "data:";
+    if !data_url.starts_with(PREFIX) {
+        return Err("非法的 data URL".to_string());
+    }
+    let rest = &data_url[PREFIX.len()..];
+    let Some((meta, encoded)) = rest.split_once(',') else {
+        return Err("非法的 data URL".to_string());
+    };
+    let meta = meta.to_lowercase();
+    if !meta.ends_with(";base64") {
+        return Err("只接受 base64 编码的 data URL".to_string());
+    }
+    let mime = meta.trim_end_matches(";base64").trim();
+    if !mime.starts_with("image/") {
+        return Err("只接受图片文件".to_string());
+    }
+    let Some(ext) = image_extension(mime) else {
+        return Err("不支持的图片格式".to_string());
+    };
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded.as_bytes())
+        .map_err(|e| format!("图片解码失败：{e}"))?;
+    if bytes.len() as u64 > MAX_OUTGOING_IMAGE_BYTES {
+        return Err(format!(
+            "图片过大（{} > {}），请压缩后重试",
+            bytes.len(),
+            MAX_OUTGOING_IMAGE_BYTES
+        ));
+    }
+    if bytes.is_empty() {
+        return Err("图片内容为空".to_string());
+    }
+    Ok((ext, bytes))
+}
+
+/// 把前端 paste 产生的 data URL 解码保存为本地文件。
+/// 仅接受 image/* 常见格式，按解码后字节数限制，返回本地路径/文件名/大小。
+#[tauri::command]
+pub fn save_outgoing_image(
+    state: State<'_, Arc<AppState>>,
+    data_url: String,
+) -> Result<serde_json::Value, String> {
+    let (ext, bytes) = decode_outgoing_image(&data_url)?;
+    let name = format!("image-{}.{ext}", Uuid::new_v4());
+    let path = state.inner().downloads_dir.join(&name);
+    std::fs::create_dir_all(&state.inner().downloads_dir).map_err(|e| e.to_string())?;
+    std::fs::write(&path, &bytes).map_err(|e| format!("图片保存失败：{e}"))?;
+    Ok(serde_json::json!({
+        "path": path.to_string_lossy().to_string(),
+        "name": name,
+        "size": bytes.len() as u64,
+    }))
+}
+
+/// 删除本地文件（用于图片发送初始化失败后清理孤儿文件）。
+#[tauri::command]
+pub fn delete_file(path: String) -> Result<(), String> {
+    std::fs::remove_file(&path).map_err(|e| e.to_string())
+}
+
 /// 群文件投递摘要（气泡成员状态文案用）：总数/completed/failed/待投递。
 #[tauri::command]
 pub fn get_group_file_delivery_summary(
@@ -1935,7 +1991,8 @@ pub fn get_group_file_delivery_summary(
 }
 
 
-/// 构造一条本地文件消息记录（发送方）。
+/// 构造一条本地文件/图片消息记录（发送方）。
+/// kind 由调用方根据 subtype 决定：image 子类型保持 kind="image"，其余为 "file"。
 fn build_file_message(
     state: &AppState,
     transfer_id: &str,
@@ -1943,12 +2000,14 @@ fn build_file_message(
     path: &str,
     name: &str,
     size: u64,
+    kind: &str,
+    subtype: &str,
 ) -> MessageRecord {
     let content = serde_json::json!({
         "name": name,
         "path": path,
         "size": size,
-        "subtype": file::classify_file_subtype(name),
+        "subtype": subtype,
     })
     .to_string();
     let seq = {
@@ -1961,7 +2020,7 @@ fn build_file_message(
         conv_id: friend_id.to_string(),
         sender_id: state.device_id.clone(),
         receiver_id: friend_id.to_string(),
-        kind: "file".to_string(),
+        kind: kind.to_string(),
         content,
         ts: db::now_ms(),
         seq,
@@ -2070,9 +2129,16 @@ pub async fn send_file(
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "unnamed".to_string());
     let transfer_id = Uuid::new_v4().to_string();
-    let rec = build_file_message(s, &transfer_id, &friend_id, &path, &name, size);
+    let subtype = file::classify_file_subtype(&name);
+    let kind = if subtype == "image" { "image" } else { "file" };
+    let rec = build_file_message(s, &transfer_id, &friend_id, &path, &name, size, kind, subtype);
     // 注意：不能在持有 db 锁时调用 resolve_nickname（其内部会再次锁 db）。
     let nm = resolve_nickname(s, &friend_id);
+    let preview = if kind == "image" {
+        "[图片]".to_string()
+    } else {
+        format!("[文件] {name}")
+    };
     {
         let dbc = s.db.lock().unwrap();
         let tx = dbc.unchecked_transaction().map_err(|e| e.to_string())?;
@@ -2083,7 +2149,7 @@ pub async fn send_file(
             "single",
             &nm,
             None,
-            &format!("[文件] {name}"),
+            &preview,
             0,
         )
         .map_err(|e| e.to_string())?;
@@ -2505,5 +2571,85 @@ fn preview(kind: &str, content: &str) -> String {
                 c
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{decode_outgoing_image, image_extension, MAX_OUTGOING_IMAGE_BYTES};
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+
+    #[test]
+    fn image_extension_maps_common_mimes() {
+        assert_eq!(image_extension("image/png"), Some("png"));
+        assert_eq!(image_extension("image/jpeg"), Some("jpg"));
+        assert_eq!(image_extension("image/gif"), Some("gif"));
+        assert_eq!(image_extension("image/webp"), Some("webp"));
+        assert_eq!(image_extension("IMAGE/PNG"), Some("png"));
+        assert_eq!(image_extension("image/bmp"), None);
+        assert_eq!(image_extension("text/plain"), None);
+    }
+
+    fn data_url(mime: &str, bytes: &[u8]) -> String {
+        format!("data:{};base64,{}", mime, STANDARD.encode(bytes))
+    }
+
+    #[test]
+    fn decode_accepts_png_jpeg_gif_webp() {
+        for mime in ["image/png", "image/jpeg", "image/gif", "image/webp"] {
+            let expected_ext = image_extension(mime).unwrap();
+            let url = data_url(mime, b"fake-image-body");
+            let (ext, bytes) = decode_outgoing_image(&url).unwrap();
+            assert_eq!(ext, expected_ext);
+            assert_eq!(bytes, b"fake-image-body");
+        }
+    }
+
+    #[test]
+    fn decode_rejects_non_image_mime() {
+        let url = data_url("text/plain", b"hello");
+        assert!(decode_outgoing_image(&url).unwrap_err().contains("图片"));
+    }
+
+    #[test]
+    fn decode_rejects_unsupported_image_mime() {
+        let url = data_url("image/bmp", b"hello");
+        assert!(decode_outgoing_image(&url).unwrap_err().contains("不支持"));
+    }
+
+    #[test]
+    fn decode_rejects_invalid_base64() {
+        let url = "data:image/png;base64,!!!";
+        assert!(decode_outgoing_image(url).unwrap_err().contains("解码失败"));
+    }
+
+    #[test]
+    fn decode_rejects_malformed_data_url() {
+        assert!(decode_outgoing_image("not-a-data-url").is_err());
+        assert!(decode_outgoing_image("data:image/png").is_err());
+        assert!(decode_outgoing_image("data:image/png,raw").is_err());
+    }
+
+    #[test]
+    fn decode_rejects_empty_image() {
+        let url = data_url("image/png", b"");
+        assert!(decode_outgoing_image(&url).unwrap_err().contains("为空"));
+    }
+
+    #[test]
+    fn decode_rejects_over_byte_limit() {
+        let big = vec![0u8; (MAX_OUTGOING_IMAGE_BYTES + 1) as usize];
+        let url = data_url("image/png", &big);
+        let err = decode_outgoing_image(&url).unwrap_err();
+        assert!(err.contains("过大"));
+        assert!(err.contains(&MAX_OUTGOING_IMAGE_BYTES.to_string()));
+    }
+
+    #[test]
+    fn decode_respects_exact_byte_limit() {
+        let exact = vec![0u8; MAX_OUTGOING_IMAGE_BYTES as usize];
+        let url = data_url("image/png", &exact);
+        let (_, bytes) = decode_outgoing_image(&url).unwrap();
+        assert_eq!(bytes.len() as u64, MAX_OUTGOING_IMAGE_BYTES);
     }
 }

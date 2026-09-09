@@ -87,6 +87,9 @@ export const api = {
     invoke<string>("send_file_relay", { friendId, path }),
   sendGroupFile: (groupId: string, path: string) =>
     invoke<string>("send_group_file", { groupId, path }),
+  saveOutgoingImage: (dataUrl: string) =>
+    invoke<{ path: string; name: string; size: number }>("save_outgoing_image", { dataUrl }),
+  deleteFile: (path: string) => invoke<void>("delete_file", { path }),
   getTransfers: () => invoke<TransferInfo[]>("get_transfers"),
 
   /** 读取附件预览原始字节（图片→Blob/objectURL，代码→TextDecoder）。超限后端 reject "TOO_LARGE"。 */

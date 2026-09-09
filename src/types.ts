@@ -181,11 +181,6 @@ export interface CleanupReport {
   freed_bytes: number;
 }
 
-/** 图片消息（粘贴板发图）的内容载荷 */
-export interface ImagePayload {
-  dataUrl: string;
-}
-
 /** 搜索结果 */
 export interface SearchResult {
   conv_id: string;
