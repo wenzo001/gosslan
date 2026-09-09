@@ -295,6 +295,12 @@ pub struct NetworkHandle {
     pub shutdown: tokio::sync::watch::Sender<bool>,
     pub bound_ip: String,
     pub tcp_port: u16,
+    /// 后台任务句柄（discovery 收包 / 广播、transport accept / 心跳）。
+    ///
+    /// `stop()` 必须等它们真正退出再返回：否则旧进程（或同一进程内旧实例）的
+    /// TCP listener 仍挂在端口上，紧接着的 `start()`/新进程 bind 就会撞上
+    /// AddrInUse（Windows 上表现为重启后永久掉线）。
+    pub tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 
 pub struct AppState {

@@ -112,14 +112,34 @@ pub async fn broadcast_gossip(state: &AppState, envelope: GossipEnvelope) {
 
 // ---------------- 服务启动 ----------------
 
+/// TCP 监听端口绑定重试次数与间隔（仅用于 `AddrInUse`）。
+///
+/// 退避的目的**不是**绕过 TIME_WAIT（那是连接关闭生命周期要解决的问题，见
+/// `set_abortive_close`），而是覆盖「上一进程正在退出、端口尚未被 OS 释放」
+/// 这段短窗口。`app.restart()` 是先 spawn 新进程再 `exit(0)`，两者存在重叠。
+const BIND_RETRY_TIMES: u32 = 6;
+const BIND_RETRY_INTERVAL: Duration = Duration::from_millis(250);
+
 pub async fn spawn(
     state: Arc<AppState>,
     ip: Ipv4Addr,
     tcp_port: u16,
     mut shutdown: watch::Receiver<bool>,
-) -> Result<(), String> {
+) -> Result<Vec<tokio::task::JoinHandle<()>>, String> {
     let bind = format!("{ip}:{tcp_port}");
-    let listener = match TcpListener::bind(&bind).await {
+    // 绑定策略（Windows 关键）：
+    // - **刻意不设 SO_REUSEADDR**。Windows 上 SO_REUSEADDR 的语义是「允许强行绑定
+    //   另一个 socket 正在使用的端口」，MSDN 明确指出这会让同端口上的行为变得不
+    //   确定，是端口劫持（hijack）的入口；Unix 上同名的选项只用于跳过 TIME_WAIT，
+    //   语义完全不同。mio 也正是因此只在非 Windows 平台设置它
+    //   （mio/src/net/tcp/listener.rs:81 `#[cfg(not(windows))] set_reuseaddr`）。
+    // - 因此 Windows 上重绑失败不能靠 socket 选项硬解，只能靠连接关闭生命周期：
+    //   见 `set_abortive_close`。
+    // - 未设置 SO_EXCLUSIVEADDRUSE：它只是「防劫持加固」（MSDN 建议所有服务端
+    //   都设），对 TIME_WAIT 重绑没有任何帮助（MSDN 明确写了 exclusive socket
+    //   关闭后仍要等原有连接变为 inactive），且会改变占用时的错误码，属加固项而非
+    //   本次 P0 范围，保持 1.0 现状不动。
+    let listener = match bind_with_retry(&bind).await {
         Ok(l) => l,
         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
             return Err(format!(
@@ -130,21 +150,23 @@ pub async fn spawn(
     };
     let state_for_heartbeat = state.clone();
     let shutdown_for_heartbeat = shutdown.clone();
-    tokio::spawn(async move {
+    let accept_task = tokio::spawn(async move {
         loop {
             tokio::select! {
                 _ = shutdown.changed() => break,
                 accept = listener.accept() => {
                     let Ok((stream, peer_addr)) = accept else { continue };
                     let st = state.clone();
-                    tokio::spawn(handle_incoming(st, stream, peer_addr));
+                    let sd = shutdown.clone();
+                    tokio::spawn(handle_incoming(st, stream, peer_addr, sd));
                 }
             }
         }
+        // listener 在此 drop：stop() 之后端口立即空闲，新进程/新实例可立即 bind。
     });
     // 心跳：周期性向所有已建链节点发送 Heartbeat，
     // 及时发现静默断连（写失败 → writer 退出 → link 移除 → 在线状态修正）。
-    tokio::spawn(async move {
+    let heartbeat_task = tokio::spawn(async move {
         let state = state_for_heartbeat;
         let mut shutdown = shutdown_for_heartbeat;
         let mut tick = tokio::time::interval(Duration::from_secs(5));
@@ -161,10 +183,66 @@ pub async fn spawn(
             }
         }
     });
-    Ok(())
+    Ok(vec![accept_task, heartbeat_task])
 }
 
-async fn handle_incoming(state: Arc<AppState>, stream: TcpStream, peer_addr: std::net::SocketAddr) {
+/// 绑定监听端口，仅在 `AddrInUse` 时做有限退避重试。
+///
+/// 覆盖「上一进程正在退出，OS 尚未释放 59992」这一短窗口；
+/// TIME_WAIT 场景由 `set_abortive_close` 从源头消除，不靠重试兜底。
+async fn bind_with_retry(bind: &str) -> std::io::Result<TcpListener> {
+    let mut last = match TcpListener::bind(bind).await {
+        Ok(l) => return Ok(l),
+        Err(e) => e,
+    };
+    for _ in 0..BIND_RETRY_TIMES {
+        if last.kind() != std::io::ErrorKind::AddrInUse {
+            break;
+        }
+        tokio::time::sleep(BIND_RETRY_INTERVAL).await;
+        match TcpListener::bind(bind).await {
+            Ok(l) => return Ok(l),
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
+}
+
+/// Windows：让连接在关闭时发 RST 而不是 FIN，本端不进入 TIME_WAIT。
+///
+/// **为什么必须做**：accepted connection 的本地端口 == 监听端口 59992。
+/// 谁先发 FIN，谁就在该端口上留下 TIME_WAIT（Windows 默认 120s，
+/// TcpTimedWaitDelay）。进程退出时 OS 会替我们关闭所有 socket，等于我们
+/// 先发 FIN ⇒ 59992 被 TIME_WAIT 占死 ⇒ 重启后 `bind()` 直接
+/// WSAEADDRINUSE ⇒ 局域网永久掉线（生产 1.0 的真实故障）。
+///
+/// **为什么不设 SO_REUSEADDR**：Windows 上该选项会开放端口劫持（见 `spawn`
+/// 处注释与 MSDN《Using SO_REUSEADDR and SO_EXCLUSIVEADDRUSE》）。
+/// 用 SO_LINGER=0 做 abortive close 才是 Windows 上唯一既安全又能立即重绑的做法。
+///
+/// **副作用**：RST 会丢弃发送缓冲区中尚未发出的字节。本代码库中连接只在
+/// 「进程停止」「对端已断」「写失败」三类路径上关闭，都不是需要排空发送缓冲的
+/// 正常收尾；消息可靠性由 outbox / pending 重发保证，不依赖 TCP 优雅关闭。
+///
+/// Unix 不需要：mio 已在非 Windows 平台设置 SO_REUSEADDR（仅跳过 TIME_WAIT，
+/// 不允许多监听并存），保持优雅关闭语义。
+#[cfg(windows)]
+fn set_abortive_close(stream: &TcpStream) {
+    use socket2::SockRef;
+    if let Err(e) = SockRef::from(stream).set_linger(Some(Duration::ZERO)) {
+        eprintln!("[lan] 设置 SO_LINGER 失败，重启后可能短暂无法绑定端口: {e}");
+    }
+}
+
+async fn handle_incoming(
+    state: Arc<AppState>,
+    stream: TcpStream,
+    peer_addr: std::net::SocketAddr,
+    shutdown: watch::Receiver<bool>,
+) {
+    // Windows：先标记 abortive close，再拆分成读写半（拆分后拿不到 socket 句柄了）。
+    #[cfg(windows)]
+    set_abortive_close(&stream);
     let (mut r, w) = stream.into_split();
     let first = match read_frame(&mut r).await {
         Ok(m) => m,
@@ -192,6 +270,7 @@ async fn handle_incoming(state: Arc<AppState>, stream: TcpStream, peer_addr: std
         w,
         bulk_rx,
         prio_rx,
+        shutdown.clone(),
     ));
     handle_message(&state, &peer_id, first).await;
     // 用 TCP 对端的真实地址补全 peer IP：解决「被动连接方 peers 表 IP 为空或虚拟」的问题。
@@ -210,7 +289,7 @@ async fn handle_incoming(state: Arc<AppState>, stream: TcpStream, peer_addr: std
         }
     }
     state.emit_peers();
-    reader_loop(state, r, peer_id, bulk_tx).await;
+    reader_loop(state, r, peer_id, bulk_tx, shutdown).await;
 }
 
 async fn writer_loop(
@@ -219,6 +298,7 @@ async fn writer_loop(
     mut w: OwnedWriteHalf,
     mut bulk_rx: mpsc::Receiver<Message>,
     mut prio_rx: mpsc::Receiver<Message>,
+    mut shutdown: watch::Receiver<bool>,
 ) {
     let mut bulk_open = true;
     let mut prio_open = true;
@@ -228,6 +308,9 @@ async fn writer_loop(
         }
         let msg = tokio::select! {
             biased;
+            // 停止信号优先：立刻放弃待发帧并 drop 写半，让 socket 尽快关闭
+            // （Windows 上配合 SO_LINGER=0 发 RST，不留下 TIME_WAIT）。
+            _ = shutdown.changed() => break,
             maybe = prio_rx.recv(), if prio_open => maybe,
             maybe = bulk_rx.recv(), if bulk_open => maybe,
         };
@@ -267,9 +350,14 @@ async fn reader_loop(
     mut r: OwnedReadHalf,
     peer_id: String,
     link_tx: mpsc::Sender<Message>,
+    mut shutdown: watch::Receiver<bool>,
 ) {
     loop {
-        match read_frame(&mut r).await {
+        let res = tokio::select! {
+            _ = shutdown.changed() => break,
+            res = read_frame(&mut r) => res,
+        };
+        match res {
             Ok(msg) => handle_message(&state, &peer_id, msg).await,
             Err(_) => break,
         }
@@ -311,17 +399,29 @@ async fn reader_loop(
 
 // ---------------- 主动建链（小 ID 拨号） ----------------
 
-pub async fn ensure_link(state: &Arc<AppState>, peer_id: &str, ip: &str, tcp_port: u16) {
+pub async fn ensure_link(
+    state: &Arc<AppState>,
+    peer_id: &str,
+    ip: &str,
+    tcp_port: u16,
+    shutdown: watch::Receiver<bool>,
+) {
     if peer_id >= state.device_id.as_str() {
         return; // 只有小 ID 拨号
     }
     if state.links.lock().await.contains_key(peer_id) {
         return;
     }
-    connect_to_peer(state, peer_id, ip, tcp_port).await;
+    connect_to_peer(state, peer_id, ip, tcp_port, shutdown).await;
 }
 
-async fn connect_to_peer(state: &Arc<AppState>, peer_id: &str, ip: &str, tcp_port: u16) {
+async fn connect_to_peer(
+    state: &Arc<AppState>,
+    peer_id: &str,
+    ip: &str,
+    tcp_port: u16,
+    shutdown: watch::Receiver<bool>,
+) {
     {
         let links = state.links.lock().await;
         if links.contains_key(peer_id) {
@@ -354,6 +454,7 @@ async fn connect_to_peer(state: &Arc<AppState>, peer_id: &str, ip: &str, tcp_por
         w,
         bulk_rx,
         prio_rx,
+        shutdown.clone(),
     ));
 
     let conv_clock = {
@@ -376,6 +477,7 @@ async fn connect_to_peer(state: &Arc<AppState>, peer_id: &str, ip: &str, tcp_por
         r,
         peer_id.to_string(),
         bulk_tx,
+        shutdown,
     ));
     flush_outbox(state, peer_id).await;
     flush_group_outbox(state, peer_id).await;
@@ -4200,5 +4302,211 @@ mod tests {
         // 重复补写幂等（maybe_update_friend 每次都可能调用）
         db::update_friend_pubkeys(&conn, "b", Some("xk-b"), Some("ek-b")).ok();
         assert_eq!(db::get_friend_x25519(&conn, "b").as_deref(), Some("xk-b"));
+    }
+
+    // ---------------- P0：TCP 监听端口生命周期（生产 1.0 重启掉线） ----------------
+
+    /// 取一个空闲端口（绑到 0 再读回内核分配的端口）。
+    async fn free_port() -> u16 {
+        let probe = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("探测端口失败");
+        probe.local_addr().expect("读取本地地址失败").port()
+    }
+
+    /// Test 1：listener → accept 一条真实连接 → 关闭 → 在同一端口重新建 listener。
+    ///
+    /// 这条测试用来锁定「accepted connection 的本地端口 == 监听端口」这一事实在
+    /// 当前平台上的后果：
+    /// - Unix：mio 已设置 SO_REUSEADDR（仅跳过 TIME_WAIT，不允许多监听并存），
+    ///   TIME_WAIT 不应阻止重绑；若将来有人绕过 mio 建 listener，这里会立刻失败。
+    /// - Windows：没有 SO_REUSEADDR，且本测试没有走 `set_abortive_close`，
+    ///   允许出现 AddrInUse —— 这正是生产故障的成因，被这条测试如实记录下来。
+    ///   Windows 上「能立即重绑」由 `windows_abortive_close_allows_immediate_rebind`
+    ///   单独验证。
+    #[tokio::test]
+    async fn rebind_after_accepted_connection_matches_platform_semantics() {
+        let port = free_port().await;
+        let listener = TcpListener::bind(("127.0.0.1", port))
+            .await
+            .expect("首次绑定失败");
+        let client = TcpStream::connect(("127.0.0.1", port))
+            .await
+            .expect("连接失败");
+        let (conn, _) = listener.accept().await.expect("accept 失败");
+
+        // 主动关闭（本测试不设置 SO_LINGER，保留平台默认关闭语义）
+        drop(client);
+        drop(conn);
+        drop(listener);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let rebind = TcpListener::bind(("127.0.0.1", port)).await;
+        if cfg!(windows) {
+            match rebind {
+                Ok(_) => {}
+                Err(e) => assert_eq!(
+                    e.kind(),
+                    std::io::ErrorKind::AddrInUse,
+                    "Windows 上重绑失败只允许是端口占用，实际: {e}"
+                ),
+            }
+        } else {
+            assert!(
+                rebind.is_ok(),
+                "Unix 上 mio 已设置 SO_REUSEADDR，TIME_WAIT 不应阻止重绑: {:?}",
+                rebind.err()
+            );
+        }
+    }
+
+    /// Test 1（Windows 专属）：走生产路径 `set_abortive_close`（SO_LINGER=0）关闭
+    /// accepted connection 后，监听端口必须**立即可重绑**。
+    ///
+    /// 这是 Windows 生产环境「C 重启/退出重进后 59992 无法 bind」的直接回归测试。
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn windows_abortive_close_allows_immediate_rebind() {
+        let port = free_port().await;
+        let listener = TcpListener::bind(("127.0.0.1", port))
+            .await
+            .expect("首次绑定失败");
+        let client = TcpStream::connect(("127.0.0.1", port))
+            .await
+            .expect("连接失败");
+        let (conn, _) = listener.accept().await.expect("accept 失败");
+
+        // 与 handle_incoming 完全相同的处理顺序：先标记 abortive close，再关闭
+        set_abortive_close(&conn);
+        drop(client);
+        drop(conn);
+        drop(listener);
+
+        // 不等待：RST 关闭不应在监听端口留下任何 TIME_WAIT
+        TcpListener::bind(("127.0.0.1", port))
+            .await
+            .expect("SO_LINGER=0 关闭的连接不应在监听端口留下 TIME_WAIT");
+    }
+
+    /// Test 2：accept 任务收到 shutdown 并**真正退出**后，同端口必须立即可重绑。
+    ///
+    /// 对应 `network::stop()` 的语义：不等到旧 listener 释放就继续走，
+    /// 同进程切换网卡（stop→start）或 `app.restart()` 起来的新进程都会撞上
+    /// AddrInUse。这条测试锁住「任务退出 ⇒ 端口释放」。
+    #[tokio::test]
+    async fn port_is_free_immediately_after_accept_loop_exits() {
+        let port = free_port().await;
+        let (tx, rx) = watch::channel(false);
+        let listener = TcpListener::bind(("127.0.0.1", port))
+            .await
+            .expect("首次绑定失败");
+
+        // 与 transport::spawn 的 accept 循环同构
+        let task = tokio::spawn(async move {
+            let mut shutdown = rx;
+            loop {
+                tokio::select! {
+                    _ = shutdown.changed() => break,
+                    accept = listener.accept() => {
+                        if let Ok((stream, _)) = accept { drop(stream); }
+                    }
+                }
+            }
+            // listener 在此 drop
+        });
+
+        // 先产生一条真实连接，确认 accept 循环确实在工作
+        let client = TcpStream::connect(("127.0.0.1", port))
+            .await
+            .expect("连接失败");
+        drop(client);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let _ = tx.send(true);
+        tokio::time::timeout(Duration::from_secs(2), task)
+            .await
+            .expect("accept 任务应在 shutdown 后立即退出")
+            .expect("accept 任务不应 panic");
+
+        TcpListener::bind(("127.0.0.1", port))
+            .await
+            .expect("旧 accept 任务退出后端口必须立即可用");
+    }
+
+    /// Test 4：start → 客户端真实收发 → stop → start，网络功能仍然完整。
+    ///
+    /// 端到端覆盖监听端口的整个生命周期（不含 Gossip/协议层，只验证 TCP 通路）。
+    #[tokio::test]
+    async fn start_stop_start_accept_loop_keeps_serving() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        /// 起一个 echo accept 循环，返回 (shutdown 发送端, 任务句柄)。
+        async fn spawn_echo(
+            port: u16,
+        ) -> (
+            tokio::sync::watch::Sender<bool>,
+            tokio::task::JoinHandle<()>,
+        ) {
+            let listener = TcpListener::bind(("127.0.0.1", port))
+                .await
+                .expect("绑定失败");
+            let (tx, rx) = watch::channel(false);
+            let task = tokio::spawn(async move {
+                let mut shutdown = rx;
+                loop {
+                    tokio::select! {
+                        _ = shutdown.changed() => break,
+                        accept = listener.accept() => {
+                            let Ok((mut stream, _)) = accept else { continue };
+                            tokio::spawn(async move {
+                                let mut buf = [0u8; 4];
+                                if stream.read_exact(&mut buf).await.is_ok() {
+                                    let _ = stream.write_all(&buf).await;
+                                }
+                            });
+                        }
+                    }
+                }
+            });
+            (tx, task)
+        }
+
+        async fn echo_roundtrip(port: u16) -> bool {
+            let mut c = match TcpStream::connect(("127.0.0.1", port)).await {
+                Ok(c) => c,
+                Err(_) => return false,
+            };
+            if c.write_all(b"ping").await.is_err() {
+                return false;
+            }
+            let mut buf = [0u8; 4];
+            match c.read_exact(&mut buf).await {
+                Ok(_) => &buf == b"ping",
+                Err(_) => false,
+            }
+        }
+
+        let port = free_port().await;
+
+        // ---- 第一次 start ----
+        let (tx1, task1) = spawn_echo(port).await;
+        assert!(echo_roundtrip(port).await, "第一次 start 后应能正常收发");
+
+        // ---- stop（等任务真正退出）----
+        let _ = tx1.send(true);
+        tokio::time::timeout(Duration::from_secs(2), task1)
+            .await
+            .expect("stop 应立即结束 accept 任务")
+            .expect("accept 任务不应 panic");
+
+        // ---- 第二次 start（同一端口，立即）----
+        let (tx2, task2) = spawn_echo(port).await;
+        assert!(
+            echo_roundtrip(port).await,
+            "stop 后立即 start，同一端口必须仍能正常收发"
+        );
+
+        let _ = tx2.send(true);
+        let _ = tokio::time::timeout(Duration::from_secs(2), task2).await;
     }
 }

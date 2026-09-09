@@ -192,7 +192,7 @@ pub async fn spawn(
     tcp_port: u16,
     shutdown: watch::Receiver<bool>,
     mut probe: watch::Receiver<u64>,
-) -> Result<(), String> {
+) -> Result<Vec<tokio::task::JoinHandle<()>>, String> {
     // 自动模式下检测真实 LAN 网卡：获取 IP（用于 IP_MULTICAST_IF）和 broadcast 地址（用于精确广播）
     let (multicast_if, lan_broadcast) = if ip.is_unspecified() {
         find_lan_interface().map_or((None, None), |(lan_ip, lan_bc)| {
@@ -249,7 +249,7 @@ pub async fn spawn(
     let my_id = state.device_id.clone();
 
     // ---- 接收循环 ----
-    {
+    let recv_task = {
         let socket = socket.clone();
         let state = state.clone();
         let my_id = my_id.clone();
@@ -286,7 +286,14 @@ pub async fn spawn(
                                     pkt.ed25519_pubkey.clone(),
                                     None,
                                 ).await;
-                                ensure_link(&state, &pkt.device_id, &src.ip().to_string(), pkt.tcp_port).await;
+                                ensure_link(
+                                    &state,
+                                    &pkt.device_id,
+                                    &src.ip().to_string(),
+                                    pkt.tcp_port,
+                                    shutdown.clone(),
+                                )
+                                .await;
                             }
                             "who_has" => {
                                 let reply = announce_packet(&state, tcp_port);
@@ -299,11 +306,11 @@ pub async fn spawn(
                     }
                 }
             }
-        });
-    }
+        })
+    };
 
     // ---- 广播循环（自适应周期 + 抖动，避免大规模节点广播风暴与同步惊群） ----
-    {
+    let broadcast_task = {
         let socket = socket.clone();
         let state = state.clone();
         let lan_broadcast = lan_broadcast;
@@ -327,10 +334,10 @@ pub async fn spawn(
                     }
                 }
             }
-        });
-    }
+        })
+    };
 
-    Ok(())
+    Ok(vec![recv_task, broadcast_task])
 }
 
 /// 下一轮广播周期（秒）：读一次在线节点数即放锁，绝不跨 await 持锁。

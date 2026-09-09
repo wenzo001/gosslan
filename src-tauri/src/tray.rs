@@ -67,7 +67,18 @@ fn build_tray<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()>
                     app.restart();
                 });
             }
-            "quit" => app.exit(0),
+            "quit" => {
+                // 退出前先停网络：等 TCP listener 与后台任务真正退出后再结束进程。
+                // 直接 exit 会让 OS 替我们关闭 socket（Windows 上可能以 FIN 优雅关闭，
+                // 在 59992 留下 120s TIME_WAIT），下一次启动就 bind 不上。
+                // 与 restart 分支一致：用 network::stop（不改持久化偏好）。
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    let state = app.state::<std::sync::Arc<crate::state::AppState>>();
+                    crate::network::stop(&state).await;
+                    app.exit(0);
+                });
+            }
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
