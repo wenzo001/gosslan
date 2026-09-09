@@ -298,6 +298,20 @@ fn open_db(path: &str) -> Result<rusqlite::Connection, String> {
 fn ensure_test_group(db_path: &str, app_id: &str) -> Result<(), String> {
     let conn = open_db(db_path)?;
     let ts = now_ms();
+    // 清理上一次运行残留的群文件传输状态：handle_group_file_offer 对已存在的
+    // transfer_id 幂等跳过（transport.rs 幂等检查），残留会导致 GroupFileOffer 被忽略、
+    // GroupFileCompleteAck 永不返回而超时。先删 recipients（引用 group_files）再删 group_files。
+    conn.execute(
+        "DELETE FROM group_file_recipients WHERE transfer_id IN
+         (SELECT transfer_id FROM group_files WHERE group_id = ?1)",
+        rusqlite::params![GROUP_ID],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM group_files WHERE group_id = ?1",
+        rusqlite::params![GROUP_ID],
+    )
+    .map_err(|e| e.to_string())?;
     conn.execute(
         "INSERT OR REPLACE INTO groups(id,name,creator,created_at) VALUES(?1,?2,?3,?4)",
         rusqlite::params![GROUP_ID, "E2E-Group", PEER_ID, ts],
@@ -316,6 +330,28 @@ fn ensure_test_group(db_path: &str, app_id: &str) -> Result<(), String> {
     conn.execute(
         "INSERT OR REPLACE INTO conversations(id,kind,name,avatar,unread,updated_at) VALUES(?1,'group',?2,NULL,0,?3)",
         rusqlite::params![format!("group:{GROUP_ID}"), "E2E-Group", ts],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// 在目标数据库预置好友关系：写入本次运行 identity 的真实 X25519/Ed25519 公钥。
+///
+/// 为什么必须：实例侧 is_friend 门禁（transport.rs）会拦掉非好友的直连/Gossip/文件/共享
+/// 等业务消息。历史上这些测试靠 friends 表里残留的 `e2e-peer` 行才通过；全新 DB 下会 FAIL。
+/// 这里用 INSERT OR REPLACE 幂等预置，不改变生产好友申请/同意语义（只发生在测试二进制里）。
+fn ensure_test_friend(db_path: &str, identity: &Identity) -> Result<(), String> {
+    let conn = open_db(db_path)?;
+    conn.execute(
+        "INSERT OR REPLACE INTO friends(device_id, nickname, avatar, x25519_pubkey, ed25519_pubkey, added_at)
+         VALUES(?1,?2,NULL,?3,?4,?5)",
+        rusqlite::params![
+            PEER_ID,
+            "E2E-Peer",
+            identity.x25519_public_b64(),
+            identity.ed25519_public_b64(),
+            now_ms()
+        ],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -412,6 +448,18 @@ async fn main() {
         format!("127.0.0.1:{app_port} 已建立"),
     );
     tokio::time::sleep(Duration::from_millis(300)).await;
+
+    // ---- 好友关系预置：实例侧 is_friend 门禁依赖 friends 表，须在直连消息前落库 ----
+    if let Some(ref db) = db_path {
+        match ensure_test_friend(db, &identity) {
+            Ok(()) => report.add(
+                "好友关系预置（friends 表写入 e2e-peer 及公钥）",
+                true,
+                PEER_ID.into(),
+            ),
+            Err(e) => report.add("好友关系预置（friends 表写入 e2e-peer 及公钥）", false, e),
+        }
+    }
 
     // ---- 好友申请（路径覆盖，结果在内存/通知，不在本工具断言范围）----
     let _ = send_frame(

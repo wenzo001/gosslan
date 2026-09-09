@@ -6,6 +6,7 @@ import EmojiPicker from "@/components/EmojiPicker.vue";
 import { QUOTE_BORDER, QUOTE_BG, QUOTE_TEXT_STYLE } from "@/utils/quoteStyle";
 import { mentionHighlightColor, resolveChatColors } from "@/utils/chatStyle";
 import { avatarInitial, nameToColor } from "@/utils/color";
+import { classifyPaste, type ClipboardItemLike } from "@/utils/clipboard";
 import { Code2, FilePlus, Smile, X } from "lucide-vue-next";
 import type { MsgKind } from "@/types";
 
@@ -321,33 +322,50 @@ function insertEmoji(e: string) {
 async function onPaste(e: ClipboardEvent) {
   const cd = e.clipboardData;
   if (!cd) return;
-  // 剪贴板带文件数据：同步先拦掉默认插入（await 之后再 preventDefault 就晚了），
-  // 再问原生剪贴板里是否有真实文件（资源管理器复制的 CF_HDROP）——
-  // 有 → 直接当文件发送（微信式）；没有 → 是位图（截图/网页图片），走下方图片分支。
-  if (Array.from(cd.types ?? []).includes("Files")) {
+
+  const types = Array.from(cd.types ?? []);
+  const items: ClipboardItemLike[] = Array.from(cd.items).map((i) => ({
+    kind: i.kind,
+    type: i.type,
+  }));
+
+  // 真实文件路径（资源管理器复制的 CF_HDROP）：需异步问原生剪贴板，先同步拦默认插入
+  // （await 之后再 preventDefault 就晚了）。
+  let filePaths: string[] = [];
+  if (types.includes("Files")) {
     e.preventDefault();
     try {
-      const paths = await invoke<string[]>("read_clipboard_file_paths");
-      if (paths.length > 0) {
-        emit("paste-files", paths);
-        return;
-      }
+      filePaths = await invoke<string[]>("read_clipboard_file_paths");
     } catch {
       // 非 Windows / 命令缺失 → 回退图片分支
+      filePaths = [];
     }
+  }
+
+  const action = classifyPaste(types, items, filePaths.length > 0);
+
+  if (action.kind === "files") {
+    emit("paste-files", filePaths);
+    return;
+  }
+
+  // 图片位图（截图 / 网页「复制图片」）：type 以 image/ 开头的 file 项。
+  // 注意不能只靠 types 里的 "Files" 判断——截图剪贴板的 types 常是 image/png 而非 Files。
+  if (action.kind === "image") {
+    e.preventDefault();
     for (const item of Array.from(cd.items)) {
       if (item.kind === "file" && item.type.startsWith("image/")) {
         const f = item.getAsFile();
         if (f) {
           // P1：粘贴图片走 save_outgoing_image → 文件传输，data URL 不进入 SQLite
-          const dataUrl = await fileToDataUrl(f);
-          emit("send-image", dataUrl);
+          emit("send-image", await fileToDataUrl(f));
         }
-        return;
+        break;
       }
     }
     return;
   }
+
   // 纯文本：contenteditable 默认粘贴会带外来 HTML 结构（污染 token/样式），
   // 统一拦掉按纯文本插入（execCommand 保 undo 栈；含 \n 时 Chromium 自行转 <br>）。
   e.preventDefault();
