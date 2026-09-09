@@ -8,6 +8,28 @@
 
 版本号统一由 `npm run version:patch|minor|major` 维护，一次改动同步 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 三处，并把本文件 `[Unreleased]` 小节落为带日期的版本小节。
 
+## [1.1.0] - 2026-09-09
+
+> **1.1 版本：夜间模式 + 微信式聊天 UI 全面优化，以及图片消息彻底移出 SQLite（P1）。** 图片不再以 base64 内联存储——粘贴/接收的图片经「本地文件 + 文件传输链路」流转，`kind` 保持 `image`，协议与 schema 零变更；同时修掉 macOS 图片粘贴无反应、附件图片无预览、发送方图片无回显三个真机回归。
+
+### Added
+- **夜间模式（深色主题）**：全项目暗色适配；暗色下「我的气泡」经 softenMineForDark 压暗，气泡/画布/文字对比度护栏卡死 ≥4.5:1
+- **群聊 @提及**：输入框升级 contenteditable，@成员转为内联原子 token（主题色高亮、退格整删、光标原生管理）；新增 @成员选择器（模糊过滤/键盘导航）；被 @ 的会话在列表显示红色 [有人@我]
+- **图片消息链路重构（P1）**：粘贴/拖拽的图片 data URL 仅作前端临时输入 → Rust `save_outgoing_image` 解码落盘本地文件（MIME 校验 + ≤8MiB + UUID 文件名）→ 复用既有 1:1 / 群文件传输链路 → SQLite 只存 JSON 元数据 `{name,path,size,subtype:"image"}`；新增 `delete_file` 清理发送失败孤儿文件
+- **文件交互（微信式）**：文件气泡右键「复制文件」把 CF_HDROP 写入系统剪贴板（资源管理器可直接粘贴）；输入框粘贴真实文件直接发送（位图回退图片分支）
+
+### Changed
+- **微信式聊天 UI 全面优化**：气泡头像侧 CSS 尖角；文件气泡按类型着色图标（8 类）、整卡点击打开、下载态切换；图片气泡 loading/failed 占位；智能时间分割线（今天/昨天/星期/跨年）并删除消息底部常驻时间行
+- **配色体系重构**：亮色改 luma 定标（二分 HSL 让任意主题色气泡亮度稳定在 207±2）、饱和度上限 0.62 雾感；派生统一走 HSL；头像颜色/取字全项目按昵称哈希统一
+
+### Fixed
+- **macOS Ctrl+V 图片粘贴无反应**：WKWebView/Safari 的 paste 事件里 items 为空、位图只经 `clipboardData.files` 暴露，此前按 items 判断误判为纯文本；现 `classifyPaste` 优先 files、items 兜底
+- **附件图片无预览（仅图标）**：`read_file_preview` 在 macOS 上把 raw 字节 JSON 序列化成 `number[]`，`new Blob([number[]])` 被强转成 "137,80,78,…" 字符串导致图片损坏；现统一 `new Uint8Array(raw)` 归一成字节再消费
+- **图片发送方无回显**：图片气泡 `<img loading="lazy">` 叠加 `hidden`（display:none）——懒加载图片在隐藏态永远进不了视口懒加载距离，`@load` 永不触发、骨架占位永不解除；现移除 `loading="lazy"`，图片即时解码显示
+- **代码模式 Enter 无法发送**：代码消息按钮 `@mousedown` 抢占输入框焦点，Enter 激活按钮而非触发编辑器发送；现 `@mousedown.prevent` 保持编辑器焦点
+- **macOS Cmd+W 无法关闭窗口**：`decorations:false` 使窗口缺失 Closable 位，系统「关闭窗口」菜单项（Cmd+W / performClose:）不可用；现窗口创建后补回 Closable 位，Cmd+W 恢复且关闭动作仍走托盘隐藏路径
+- **e2e 测试基建修复**：新增 ensure_test_friend 用本次运行身份真实公钥预置好友关系；ensure_test_group 清理 group_files 残留；恢复图片粘贴回归用例
+
 ## [1.0.1] - 2026-09-09
 
 > **1.0.0 之后的稳定性修复集合。** 聚焦两件事：Windows 上"重启/退出后再打开就永久掉线"的 LAN 顽疾，以及 1.0.0 UI 收敛留下的配色/头像一致性问题。
