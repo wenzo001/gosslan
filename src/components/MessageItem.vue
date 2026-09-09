@@ -16,7 +16,6 @@ import MessageImageBubble from "@/components/message/MessageImageBubble.vue";
 import MessageReceipt from "@/components/message/MessageReceipt.vue";
 import MessageContentModal from "@/components/message/MessageContentModal.vue";
 import MessageContextMenu from "@/components/message/MessageContextMenu.vue";
-import ImageLightbox from "@/components/message/ImageLightbox.vue";
 import type { MessageRecord, MsgKind } from "@/types";
 
 const props = withDefaults(
@@ -144,13 +143,9 @@ function openFullModal(kind: "text" | "code", content: string) {
   fullModalOpen.value = true;
 }
 
-/** 图片查看器（vue-easy-lightbox：缩放 / 拖拽 / 滚轮 / Esc / 点遮罩） */
-const lightboxOpen = ref(false);
-const lightboxSrc = ref("");
-function openImageLightbox(src: string) {
-  if (!src) return;
-  lightboxSrc.value = src;
-  lightboxOpen.value = true;
+/** 图片查看器（相册式，由 ChatWindow 统一承载）：点图只上抛 msg_id，定位到该图。 */
+function openImageLightbox() {
+  emit("open-image", props.message.msg_id);
 }
 
 // ---------------- 消息右键菜单：复制 / 保存图片 / 引用 / 转发 ----------------
@@ -234,6 +229,7 @@ const emit = defineEmits<{
   (e: "quote", payload: { sender: string; snippet: string; msgId: string | number }): void;
   (e: "forward", payload: { kind: MsgKind; content: string; snippet: string; filePath?: string }): void;
   (e: "locate", msgId: string): void;
+  (e: "open-image", msgId: string): void;
 }>();
 
 function doQuote() {
@@ -440,7 +436,4 @@ async function copyFileToClipboard() {
     @quote="doQuote"
     @forward="doForward"
   />
-
-  <!-- 图片查看器（自研：与其它弹窗同风格，滚轮缩放/拖动/Esc） -->
-  <ImageLightbox :src="lightboxSrc" :open="lightboxOpen" @close="lightboxOpen = false" />
 </template>

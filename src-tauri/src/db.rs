@@ -756,6 +756,18 @@ pub fn set_message_status(conn: &Connection, msg_id: &str, status: &str) -> Resu
     Ok(())
 }
 
+/// 回填消息内容与状态（群文件接收完成时用）：content 需随传输完成补上本地 `path`，
+/// 状态同时前进到 delivered。与 `set_message_status` 不同，这里会改写 content——
+/// `read_file_preview` 按 msg_id 反查 content 定位本地文件，群文件 Offer 阶段先落库
+/// 无 path 的内容，Done 时必须显式回填，否则接收方图片/代码预览因缺 path 失败。
+pub fn update_message_content(conn: &Connection, msg_id: &str, content: &str, status: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE messages SET content = ?2, status = ?3 WHERE msg_id = ?1",
+        params![msg_id, content, status],
+    )?;
+    Ok(())
+}
+
 /// 搜索消息内容，返回匹配的会话 ID 列表（去重，按最新匹配排序）。
 /// LIKE 通配符（% _）被转义为普通字符，只做字面包含搜索。
 pub fn search_messages(conn: &Connection, keyword: &str, limit: i64) -> Result<Vec<String>> {
@@ -1684,6 +1696,30 @@ mod tests {
             insert_message(&conn, &rec_as("m2", "f1", "text", "hi")).is_err(),
             "包装函数同样冒泡"
         );
+    }
+
+    /// 群文件接收完成回填 path：update_message_content 必须改写 content + status，
+    /// 使 read_file_preview 能按 msg_id 反查到本地路径（否则接收方图片/代码预览缺 path）。
+    #[test]
+    fn update_message_content_backfills_path_for_preview() {
+        let conn = mem();
+        // Offer 阶段先落库无 path 的内容（模拟 handle_group_file_offer）
+        insert_message(
+            &conn,
+            &rec_as("gfile-1", "group:g1", "image", r#"{"name":"a.png","size":3,"subtype":"image"}"#),
+        )
+        .unwrap();
+        // Done 阶段回填 path（模拟 handle_group_file_done）
+        update_message_content(
+            &conn,
+            "gfile-1",
+            r#"{"name":"a.png","path":"/tmp/a.png","size":3,"subtype":"image"}"#,
+            "delivered",
+        )
+        .unwrap();
+        let (_, content) = get_message_preview_source(&conn, "gfile-1").unwrap();
+        assert!(content.contains("\"path\""), "Done 后 content 必须回填 path");
+        assert!(content.contains("/tmp/a.png"), "path 必须指向本地文件");
     }
 
     /// Test 1 + Test 2（单聊）：Direct→Gossip 与 Gossip→Direct 两种顺序都只生效一次。

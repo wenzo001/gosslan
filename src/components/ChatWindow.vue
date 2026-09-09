@@ -10,6 +10,7 @@ import ChatHeader from "@/components/chat/ChatHeader.vue";
 import MessageComposer from "@/components/chat/MessageComposer.vue";
 import RenameGroupModal from "@/components/chat/RenameGroupModal.vue";
 import ForwardModal from "@/components/message/ForwardModal.vue";
+import ImageLightbox from "@/components/message/ImageLightbox.vue";
 import { estimateMessageHeight } from "@/utils/messageHeight";
 import { ArrowDown } from "lucide-vue-next";
 import type { MessageRecord, MsgKind } from "@/types";
@@ -42,6 +43,46 @@ function estimateHeight(m: MessageRecord, index?: number): number {
     selfId: app.device?.device_id,
     fontSize: app.chatStyle.fontSize,
   });
+}
+
+// ---------------- 图片相册预览（点击图片 → 打开本会话全部图片，可左右切换） ----------------
+const lightboxOpen = ref(false);
+const lightboxIndex = ref(0);
+/** 会话内全部图片（kind=image 或 kind=file 且 subtype=image），按消息顺序排列。 */
+const lightboxImages = computed<{ msgId: string; name: string; dataSrc: string | null }[]>(() =>
+  messages.value
+    .filter((m) => {
+      if (m.kind === "image") return true;
+      if (m.kind === "file") {
+        try {
+          return (JSON.parse(m.content) as { subtype?: string }).subtype === "image";
+        } catch {
+          return false;
+        }
+      }
+      return false;
+    })
+    .map((m) => {
+      let name = "image.png";
+      let dataSrc: string | null = null;
+      if (m.content.startsWith("data:")) {
+        dataSrc = m.content; // 旧格式：base64 data URL 直接作为 src
+      } else {
+        try {
+          name = (JSON.parse(m.content) as { name?: string }).name ?? "image.png";
+        } catch {
+          /* 异常内容按默认名处理 */
+        }
+      }
+      return { msgId: m.msg_id, name, dataSrc };
+    }),
+);
+
+function openImageAt(msgId: string) {
+  const idx = lightboxImages.value.findIndex((x) => x.msgId === msgId);
+  if (idx < 0) return;
+  lightboxIndex.value = idx;
+  lightboxOpen.value = true;
 }
 
 // ---------------- 群：成员面板 + 改名 ----------------
@@ -311,6 +352,7 @@ function onLoadMore() {
             @quote="quote = $event"
             @forward="forward = $event"
             @locate="locateMessage"
+            @open-image="openImageAt"
           />
         </template>
       </VirtualList>
@@ -366,6 +408,14 @@ function onLoadMore() {
       :current-name="renameCurrent"
       @close="renameOpen = false"
       @confirm="confirmRename"
+    />
+
+    <!-- 图片相册预览（会话内全部图片，左右箭头 / 键盘 ←→ 切换） -->
+    <ImageLightbox
+      :images="lightboxImages"
+      v-model:index="lightboxIndex"
+      :open="lightboxOpen"
+      @close="lightboxOpen = false"
     />
   </div>
 </template>

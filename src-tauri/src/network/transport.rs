@@ -2598,6 +2598,13 @@ async fn handle_group_file_done(
         seq,
         status: "delivered".to_string(),
     };
+    // 回填本地 path 到 messages 表：read_file_preview 按 msg_id 反查 content 定位文件。
+    // 单聊 FileDone 走 insert_message 直接落库带 path 的内容；群聊 Offer 先落库无 path 的
+    // 内容（文件尚未下载），Done 时必须显式更新，否则接收方图片/代码预览因缺 path 失败。
+    {
+        let dbc = state.db.lock().unwrap();
+        db::update_message_content(&dbc, &done_rec.msg_id, &done_rec.content, &done_rec.status).ok();
+    }
     let _ = state.app.emit("message-received", &done_rec);
     // 完成确认：无论 ACK 发送成败，file_key 已清理不再保留（ACK 丢失由后续阶段处理）
     send_group_file_complete_ack(state, &transfer_id, &group_id, &sender_id, true).await;
