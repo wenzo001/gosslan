@@ -8,7 +8,7 @@
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test": "node --test --experimental-strip-types --disable-warning=ExperimentalWarning src/utils/messages.test.ts src/utils/color.test.ts src/utils/chatStyle.test.ts src/utils/cn.test.ts src/utils/linkify.test.ts src/utils/clipboard.test.ts",
+    "test": "node --test --experimental-strip-types --disable-warning=ExperimentalWarning src/utils/messages.test.ts src/utils/color.test.ts src/utils/chatStyle.test.ts src/utils/cn.test.ts src/utils/linkify.test.ts src/utils/clipboard.test.ts src/data/emojis.test.ts",
     "tauri": "tauri",
     "icon": "tauri icon src-tauri/icons/icon.png",
     "version:show": "node scripts/version.mjs show",

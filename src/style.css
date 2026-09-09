@@ -226,3 +226,16 @@ body {
   color: var(--gosslan-text-2);
   pointer-events: none;
 }
+
+/* 内联图片表情（抖音表情）：正方形副格子 + object-contain 保持原图比例，
+   高度随正文字号（1em 基准）缩放；vertical-align 对齐文字基线，与原生 Unicode 表情观感一致。 */
+.emoji-img {
+  display: inline-block;
+  width: 1.25em;
+  height: 1.25em;
+  object-fit: contain;
+  vertical-align: -0.25em;
+  /* 防止行高被撑大：图片盒不再参与行内盒的额外高度计算 */
+  line-height: 0;
+}
+

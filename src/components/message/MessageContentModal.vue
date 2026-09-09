@@ -5,6 +5,7 @@ import { useAppStore } from "@/stores/useAppStore";
 import BaseModal from "@/components/BaseModal.vue";
 import CodeBlock from "@/components/CodeBlock.vue";
 import { linkify, displayUrl, type LinkSegment } from "@/utils/linkify";
+import { splitEmoji } from "@/utils/emoji";
 import { Check, Copy } from "lucide-vue-next";
 
 const props = defineProps<{
@@ -19,9 +20,16 @@ const emit = defineEmits<{
 }>();
 
 const app = useAppStore();
-const segments = computed<LinkSegment[]>(() =>
-  props.kind === "text" ? linkify(props.content) : [],
-);
+type RenderSegment = LinkSegment | { kind: "emoji"; value: string; name: string; url: string };
+const segments = computed<RenderSegment[]>(() => {
+  if (props.kind !== "text") return [];
+  const out: RenderSegment[] = [];
+  for (const s of splitEmoji(props.content)) {
+    if (s.kind === "emoji") out.push({ kind: "emoji", value: s.value, name: s.name, url: s.url });
+    else out.push(...linkify(s.value));
+  }
+  return out;
+});
 
 async function openLink(href: string) {
   try {
@@ -54,6 +62,13 @@ async function openLink(href: string) {
             :title="seg.href"
             @click.stop.prevent="openLink(seg.href)"
           >{{ displayUrl(seg.value) }}</a>
+          <img
+            v-else-if="seg.kind === 'emoji'"
+            :src="seg.url"
+            :alt="seg.value"
+            :title="seg.value"
+            class="emoji-img"
+          />
           <span v-else>{{ seg.value }}</span>
         </template>
       </div>

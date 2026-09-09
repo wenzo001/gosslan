@@ -4,6 +4,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { useAppStore } from "@/stores/useAppStore";
 import { PREVIEW_LINES } from "@/utils/previewMetrics";
 import { linkify, displayUrl, type LinkSegment } from "@/utils/linkify";
+import { splitEmoji } from "@/utils/emoji";
 import { mentionHighlightColor } from "@/utils/chatStyle";
 import { QUOTE_BORDER, QUOTE_BG, QUOTE_TEXT_STYLE } from "@/utils/quoteStyle";
 import { Check, Copy } from "lucide-vue-next";
@@ -65,8 +66,23 @@ const parsed = computed(() => {
   return { quote: line, body: props.content.slice(nl + 1), msgId };
 });
 
-/** 正文切成 text/link/mention 段，按段渲染（不拼 HTML，天然防 XSS）。 */
-const segments = computed<LinkSegment[]>(() => linkify(parsed.value.body, props.mentionNames ?? []));
+/** 渲染段：text / link / mention / emoji，按段渲染（不拼 HTML，天然防 XSS）。 */
+type RenderSegment =
+  | LinkSegment
+  | { kind: "emoji"; value: string; name: string; url: string };
+
+/** 正文先按表情 token 切段，文本段再交给 linkify 切链接/提及。 */
+const segments = computed<RenderSegment[]>(() => {
+  const out: RenderSegment[] = [];
+  for (const s of splitEmoji(parsed.value.body)) {
+    if (s.kind === "emoji") {
+      out.push({ kind: "emoji", value: s.value, name: s.name, url: s.url });
+    } else {
+      out.push(...linkify(s.value, props.mentionNames ?? []));
+    }
+  }
+  return out;
+});
 
 /**
  * @提及 高亮文字色（微信式蓝字）：按主题色派生，并以当前气泡的实际底色
@@ -121,6 +137,13 @@ async function openLink(href: string) {
           :title="seg.href"
           @click.stop.prevent="openLink(seg.href)"
         >{{ displayUrl(seg.value) }}</a>
+        <img
+          v-else-if="seg.kind === 'emoji'"
+          :src="seg.url"
+          :alt="seg.value"
+          :title="seg.value"
+          class="emoji-img"
+        />
         <span
           v-else-if="seg.kind === 'mention'"
           class="mention-token"
