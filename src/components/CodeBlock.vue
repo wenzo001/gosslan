@@ -15,6 +15,7 @@ import sql from "highlight.js/lib/languages/sql";
 import typescript from "highlight.js/lib/languages/typescript";
 import yaml from "highlight.js/lib/languages/yaml";
 import { useAppStore } from "@/stores/useAppStore";
+import { CODE_SURFACE } from "@/utils/previewMetrics";
 import darkCss from "highlight.js/styles/github-dark.css?raw";
 import lightCss from "highlight.js/styles/github.css?raw";
 
@@ -62,7 +63,7 @@ const detectedLang = computed(() => {
 
 const langLabel = computed(() => (detectedLang.value === "plaintext" ? "text" : detectedLang.value));
 
-const codeBg = computed(() => (app.dark ? "#0d1117" : "#f6f8fa"));
+const codeBg = computed(() => (app.dark ? CODE_SURFACE.dark : CODE_SURFACE.light));
 const codeFg = computed(() => (app.dark ? "#e6edf3" : "#24292e"));
 const toolbarBg = computed(() => (app.dark ? "rgba(255,255,255,0.05)" : "rgba(0,0,0,0.04)"));
 const toolbarFg = computed(() => (app.dark ? "rgba(255,255,255,0.5)" : "rgba(0,0,0,0.4)"));

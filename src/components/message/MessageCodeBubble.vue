@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import CodeBlock from "@/components/CodeBlock.vue";
-import { CODE_CLAMP_HEIGHT } from "@/utils/previewMetrics";
+import { CODE_CLAMP_HEIGHT, CODE_SURFACE } from "@/utils/previewMetrics";
 import { Check, Copy } from "lucide-vue-next";
 
 const props = defineProps<{
@@ -10,6 +10,8 @@ const props = defineProps<{
   clamped: boolean;
   copied: boolean;
   dark: boolean;
+  /** 自己的消息气泡尖角朝右、对方朝左，指向头像。 */
+  mine: boolean;
 }>();
 const emit = defineEmits<{
   (e: "expand", code: string): void;
@@ -21,13 +23,15 @@ const emit = defineEmits<{
  * 这样「代码块 + 操作条」是一整张卡片，中间不再露出聊天背景。
  */
 const actionsStyle = computed(() => ({
-  background: props.dark ? "#0d1117" : "#f6f8fa",
+  background: props.dark ? CODE_SURFACE.dark : CODE_SURFACE.light,
   borderColor: props.dark ? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.1)",
 }));
+/** 尖角取代码卡片底色（代码气泡不走 bubbleStyle，得自己给 --bubble-bg 赋值）。 */
+const tailBg = computed(() => (props.dark ? CODE_SURFACE.dark : CODE_SURFACE.light));
 </script>
 
 <template>
-  <div class="min-w-0 flex-1">
+  <div class="relative min-w-0 flex-1" :style="{ '--bubble-bg': tailBg }">
     <div v-if="clamped" class="overflow-hidden rounded-t-lg" :style="{ height: `${CODE_CLAMP_HEIGHT}px` }">
       <CodeBlock :code="code" />
     </div>
@@ -37,7 +41,7 @@ const actionsStyle = computed(() => ({
       <button v-if="clamped" class="preview-action" @click="emit('expand', code)">展开显示</button>
       <button
         class="preview-action"
-        :class="copied ? 'text-primary' : ''"
+        :class="copied ? 'opacity-100' : 'opacity-70 hover:opacity-100'"
         @click="emit('copy', code)"
       >
         <Check v-if="copied" class="h-3 w-3" />
@@ -45,6 +49,7 @@ const actionsStyle = computed(() => ({
         {{ copied ? "已复制" : "复制" }}
       </button>
     </div>
+    <span aria-hidden="true" class="bubble-tail" :class="mine ? 'tail-mine' : 'tail-other'"></span>
   </div>
 </template>
 

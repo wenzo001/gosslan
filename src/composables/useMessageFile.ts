@@ -115,6 +115,9 @@ export function useMessageFile(
     streamCode.value ? codeNeedsClamp(streamCode.value) : false,
   );
 
+  /** 文件是否已就绪可打开：本地路径非空（发送方＝源文件；接收方＝传输完成落盘，路径经 file_transfers 持久化）。 */
+  const fileReady = computed(() => !!fileMeta.value?.path);
+
   async function openFile() {
     const path = fileMeta.value?.path;
     if (!path) {
@@ -148,6 +151,7 @@ export function useMessageFile(
   return {
     transfer,
     fileMeta,
+    fileReady,
     fileProgress,
     fileStatusText,
     attachmentUrl,

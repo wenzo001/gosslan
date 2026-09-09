@@ -34,6 +34,8 @@ const props = withDefaults(
     groupReaderIds?: string[];
     /** 正在闪烁定位的消息键（点击引用块跳转时高亮 1.6s） */
     highlightId?: string | number | null;
+    /** 群成员名列表：文本气泡据此高亮 @提及（单聊不传） */
+    mentionNames?: string[];
   }>(),
   {
     prev: null,
@@ -42,6 +44,7 @@ const props = withDefaults(
     senderName: "",
     groupReaderIds: () => [],
     highlightId: null,
+    mentionNames: () => [],
   },
 );
 
@@ -79,9 +82,9 @@ const display = useMessageDisplay({
 const {
   mine,
   bubbleStyle,
+  cardStyle,
   showTimeDivider,
   showNickname,
-  time,
   fullTime,
   timeDividerText,
   sendState,
@@ -92,6 +95,7 @@ const {
   streamCode,
   streamCodeClamped,
   fileMeta,
+  fileReady,
   fileProgress,
   fileStatusText,
   attachmentUrl,
@@ -101,10 +105,12 @@ const {
 } = useMessageFile(() => props.message, () => sendState.value);
 const { copiedKey, copyContent } = useClipboard();
 
+/** 头像取色名：必须与列表/回执/弹层同源（昵称），否则同一人两处颜色分叉。
+ *  群聊由父组件传 nicknameOf 结果；单聊在此兜一把，防止退化成按设备 ID 哈希。 */
 const avatarName = computed(() =>
   mine.value
-    ? app.device?.nickname || "我"
-    : props.senderName || props.message.sender_id,
+    ? app.device?.nickname || ""
+    : props.senderName || chat.nicknameOf(props.message.sender_id) || props.message.sender_id,
 );
 /**
  * 头像：自己取本机；对端从好友/在线节点表取（peer 改资料后由 syncProfileFromPeers
@@ -216,7 +222,7 @@ function quoteSnippet(kind: MsgKind, content: string): string {
 
 const emit = defineEmits<{
   (e: "quote", payload: { sender: string; snippet: string; msgId: string | number }): void;
-  (e: "forward", payload: { kind: MsgKind; content: string; snippet: string }): void;
+  (e: "forward", payload: { kind: MsgKind; content: string; snippet: string; filePath?: string }): void;
   (e: "locate", msgId: string): void;
 }>();
 
@@ -232,7 +238,13 @@ function doQuote() {
 
 function doForward() {
   const msg = props.message;
-  const payload = { kind: msg.kind as MsgKind, content: msg.content, snippet: quoteSnippet(msg.kind, msg.content) };
+  const payload = {
+    kind: msg.kind as MsgKind,
+    content: msg.content,
+    snippet: quoteSnippet(msg.kind, msg.content),
+    // 文件转发按本地路径重走传输链路（内容里的 JSON 只是元信息）
+    filePath: msg.kind === "file" ? (fileMeta.value?.path ?? "") : undefined,
+  };
   ctxMenu.value = null;
   emit("forward", payload);
 }
@@ -246,10 +258,41 @@ async function retrySend() {
     // 失败状态已由 send() 内部处理
   }
 }
+
+// ---------------- 文件消息：微信式交互（整卡打开 / 右键保存·转发·复制） ----------------
+
+/** 未就绪时点「下载」：接收是自动的（对方设备上线即传输），这里只解释状态。 */
+function onFileDownload() {
+  ctxMenu.value = null;
+  app.toast("文件会在对方设备上线后自动接收，完成后点击即可打开", "info");
+}
+
+/** 右键「保存」：另存为（复制本地已就绪的文件到用户选择的位置）。 */
+function saveFileTo() {
+  ctxMenu.value = null;
+  void saveAs();
+}
+
+/** 右键「复制文件」：文件本体写系统剪贴板（CF_HDROP），
+ *  可在资源管理器粘贴出文件，也可直接粘贴回聊天框发送（微信式）。 */
+async function copyFileToClipboard() {
+  ctxMenu.value = null;
+  const path = fileMeta.value?.path;
+  if (!path) {
+    app.toast("文件尚未同步到本机", "info");
+    return;
+  }
+  try {
+    await invoke("copy_file_to_clipboard", { path });
+    app.toast("已复制文件，可粘贴到聊天框或资源管理器", "success");
+  } catch (e) {
+    app.toast(`复制失败：${e}`, "error");
+  }
+}
 </script>
 
 <template>
-  <div class="py-0.5" :class="highlighted ? 'rounded-lg bg-primary/5 ring-1 ring-primary/25' : ''">
+  <div class="py-1.5" :class="highlighted ? 'rounded-lg bg-primary/5 ring-1 ring-primary/25' : ''">
     <!-- 时间分割线（间隔 ≥ 5 分钟）：居中浅灰小字 -->
     <div v-if="showTimeDivider" class="py-2 text-center text-[11px] text-[var(--gosslan-text-2)]">
       {{ timeDividerText }}
@@ -280,11 +323,12 @@ async function retrySend() {
           {{ message.content }}
         </div>
 
-        <!-- 消息行：气泡 + 侧挂回执（mine 时回执在气泡左侧）；右键弹消息菜单 -->
+        <!-- 消息行：气泡 + 侧挂回执（mine 时回执在气泡左侧）；右键弹消息菜单，悬停看完整时间 -->
         <div
           v-else
           class="group/row flex w-full items-end gap-1.5"
           :class="mine ? 'justify-end' : 'justify-start'"
+          :title="fullTime"
           @contextmenu.prevent="openContextMenu"
         >
           <MessageReceipt
@@ -304,6 +348,8 @@ async function retrySend() {
             :bubble-style="bubbleStyle"
             :clamped="isLongText"
             :copied="copiedKey === 'text'"
+            :mine="mine"
+            :mention-names="mentionNames"
             @expand="openFullModal('text', $event)"
             @copy="copyContent('text', $event)"
             @locate="emit('locate', $event)"
@@ -316,6 +362,7 @@ async function retrySend() {
             :clamped="streamCodeClamped"
             :copied="copiedKey === 'code'"
             :dark="app.dark"
+            :mine="mine"
             @expand="openFullModal('code', $event)"
             @copy="copyContent('code', $event)"
           />
@@ -338,28 +385,22 @@ async function retrySend() {
           <MessageFileBubble
             v-else-if="message.kind === 'file' && fileMeta"
             :meta="fileMeta"
-            :bubble-style="bubbleStyle"
+            :bubble-style="cardStyle"
             :progress="fileProgress"
             :status-text="fileStatusText"
             :failed="sendState === 'failed'"
             :note="previewNote"
             :delivery="isGroupFile ? deliverySummary : null"
+            :mine="mine"
+            :ready="fileReady"
             @open="openFile"
             @save="saveAs"
+            @download="onFileDownload"
           />
 
           <div v-else class="px-3 py-2 text-sm" :style="bubbleStyle">
             {{ message.content }}
           </div>
-        </div>
-
-        <!-- 时间行：每条消息独立显示，hover 可见秒级 -->
-        <div
-          class="mt-0.5 px-1 text-[11px] text-[var(--gosslan-text-2)]"
-          :class="mine ? 'text-right' : ''"
-        >
-          <span class="group-hover/row:hidden">{{ time }}</span>
-          <span class="hidden group-hover/row:inline">{{ fullTime }}</span>
         </div>
       </div>
     </div>
@@ -384,6 +425,8 @@ async function retrySend() {
     @copy-text="ctxMenu = null; copyContent(message.kind === 'code' ? 'code' : 'text', message.content)"
     @copy-image="copyImage"
     @save-image="saveImage"
+    @save-file="saveFileTo"
+    @copy-file="copyFileToClipboard"
     @quote="doQuote"
     @forward="doForward"
   />

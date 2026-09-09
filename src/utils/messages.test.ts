@@ -5,6 +5,7 @@ import {
   applyReplacements,
   furthestStatus,
   mergeMessages,
+  messageMentionsName,
   preserveDeliveryStatus,
   previewText,
   syncProfileFromPeers,
@@ -334,4 +335,37 @@ test("syncProfileFromPeers: 无匹配 peer 时保持原值", () => {
   syncProfileFromPeers(friends, convs, []);
   assert.equal(friends[0].nickname, "不变");
   assert.equal(convs[0].name, "不变");
+});
+
+// ---------------- messageMentionsName：被 @ 检测（[有人@我] 的判定核心） ----------------
+
+test("被 @ 检测：选择器插入（@名字 尾随空格）与手打行首均命中", () => {
+  assert.equal(messageMentionsName(msg({ content: "@周工 你好" }), "周工"), true);
+  assert.equal(messageMentionsName(msg({ content: "@周工" }), "周工"), true);
+  assert.equal(messageMentionsName(msg({ content: "叫上 @周工 一起" }), "周工"), true);
+});
+
+test("被 @ 检测：名字后跟中英文标点也命中", () => {
+  assert.equal(messageMentionsName(msg({ content: "@周工，来一下" }), "周工"), true);
+  assert.equal(messageMentionsName(msg({ content: "@周工!" }), "周工"), true);
+});
+
+test("被 @ 检测：前缀名不误伤（我是小王，@的是小王爷）", () => {
+  assert.equal(messageMentionsName(msg({ content: "@小王爷 吃饭" }), "小王"), false);
+  assert.equal(messageMentionsName(msg({ content: "@小王 吃饭" }), "小王爷"), false);
+});
+
+test("被 @ 检测：邮箱里的 @ 与普通文本不误判", () => {
+  assert.equal(messageMentionsName(msg({ content: "邮件发我 a@周工.com" }), "周工"), false);
+  assert.equal(messageMentionsName(msg({ content: "周工在吗" }), "周工"), false);
+});
+
+test("被 @ 检测：非文本消息与空名不参与判断", () => {
+  assert.equal(messageMentionsName(msg({ kind: "code", content: "@周工 code()" }), "周工"), false);
+  assert.equal(messageMentionsName(msg({ content: "@周工 hi" }), "  "), false);
+});
+
+test("被 @ 检测：昵称含正则特殊字符按字面匹配", () => {
+  assert.equal(messageMentionsName(msg({ content: "@a.b(1) 看看" }), "a.b(1)"), true);
+  assert.equal(messageMentionsName(msg({ content: "@aXbX1 看看" }), "a.b(1)"), false);
 });

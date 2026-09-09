@@ -63,6 +63,22 @@ const renameOpen = ref(false);
 const renameCurrent = computed(
   () => chat.groups.find((g) => g.id === activeGroupId.value)?.name ?? "",
 );
+
+// ---------------- 群聊 @ ----------------
+/** @ 选择选项（不含自己）：名字与消息流昵称同源（nicknameOf），插入的 @名字 必须能和渲染端对上。 */
+const mentionMembers = computed(() => {
+  const gid = activeGroupId.value;
+  const g = gid ? chat.groups.find((x) => x.id === gid) : null;
+  if (!g) return [];
+  const me = app.device?.device_id;
+  return g.members.filter((id) => id !== me).map((id) => ({ id, name: chat.nicknameOf(id) }));
+});
+/** 渲染端 @ 高亮用的成员名列表（含自己：别人发的消息里可以 @ 我）。 */
+const mentionNames = computed(() => {
+  const gid = activeGroupId.value;
+  const g = gid ? chat.groups.find((x) => x.id === gid) : null;
+  return g ? g.members.map((id) => chat.nicknameOf(id)) : [];
+});
 async function confirmRename(name: string) {
   renameOpen.value = false;
   const gid = activeGroupId.value;
@@ -161,8 +177,8 @@ async function onSend({ content, kind }: { content: string; kind: MsgKind }) {
 /** 待引用消息（MessageItem 右键"引用"设置，随发送或手动取消清除）。 */
 const quote = ref<{ sender: string; snippet: string; msgId: string | number } | null>(null);
 
-/** 转发弹窗状态（MessageItem 右键"转发"设置）。 */
-const forward = ref<{ kind: MsgKind; content: string; snippet: string } | null>(null);
+/** 转发弹窗状态（MessageItem 右键"转发"设置）。文件消息带本地路径，转发即重发文件。 */
+const forward = ref<{ kind: MsgKind; content: string; snippet: string; filePath?: string } | null>(null);
 
 /** 点击引用块定位原消息：滚动 + 短暂高亮 */
 const highlightId = ref<string | number | null>(null);
@@ -185,7 +201,20 @@ async function doForward(convId: string) {
   forward.value = null;
   if (!f) return;
   try {
-    await chat.send(convId, f.content, f.kind);
+    if (f.kind === "file") {
+      // 文件转发＝按本地路径把文件重发一遍（内容 JSON 只是元信息，直接转发会指向本机路径）
+      if (!f.filePath) {
+        app.toast("文件尚未同步到本机，无法转发", "info");
+        return;
+      }
+      if (convId.startsWith("group:")) {
+        await chat.sendGroupFileTo(convId.slice(6), f.filePath);
+      } else {
+        await chat.sendFileTo(convId, f.filePath);
+      }
+    } else {
+      await chat.send(convId, f.content, f.kind);
+    }
     app.toast("转发成功", "success");
   } catch (e) {
     app.toast(`转发失败：${e}`, "error");
@@ -194,18 +223,35 @@ async function doForward(convId: string) {
 
 /** 统一发送文件：自动路由（直连优先，弱网/无直连自动中继），无需用户选择。
  *  群聊会话走群文件链路（send_group_file：Offer → Chunk → Done → CompleteAck）。 */
-async function attachFile() {
-  const convId = chat.activeConv;
-  if (!convId) return;
-  if (!isGroup.value && !isPeerFriend.value) return;
-  const picked = await openDialog({ multiple: false });
-  if (typeof picked !== "string") return;
+async function sendOneFile(convId: string, picked: string) {
   if (isGroup.value) {
     const gid = activeGroupId.value;
     if (!gid) return;
     await chat.sendGroupFileTo(gid, picked);
   } else {
     await chat.sendFileTo(convId, picked);
+  }
+}
+
+async function attachFile() {
+  const convId = chat.activeConv;
+  if (!convId) return;
+  if (!isGroup.value && !isPeerFriend.value) return;
+  const picked = await openDialog({ multiple: false });
+  if (typeof picked !== "string") return;
+  await sendOneFile(convId, picked);
+}
+
+/** 输入框粘贴文件（资源管理器复制后 Ctrl+V，微信式）：按真实路径直接走发送链路。 */
+async function sendPastedFiles(paths: string[]) {
+  const convId = chat.activeConv;
+  if (!convId) return;
+  for (const p of paths) {
+    try {
+      await sendOneFile(convId, p);
+    } catch (e) {
+      app.toast(`发送失败：${e}`, "error");
+    }
   }
 }
 
@@ -254,6 +300,7 @@ function onLoadMore() {
             :group-reader-ids="isGroup && activeGroupId ? chat.groupReaderIds(activeGroupId, item.ts) : []"
             :show-unread-divider="index === unreadIndex"
             :highlight-id="highlightId"
+            :mention-names="mentionNames"
             @quote="quote = $event"
             @forward="forward = $event"
             @locate="locateMessage"
@@ -278,8 +325,10 @@ function onLoadMore() {
         v-if="isGroup || isPeerFriend"
         :conv-id="chat.activeConv"
         :quote="quote"
+        :mention-members="mentionMembers"
         @send="onSend"
         @attach="attachFile"
+        @paste-files="sendPastedFiles"
         @close-quote="quote = null"
       />
       <div

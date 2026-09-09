@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { fmtConversationTime } from "@/utils/time";
 import { highlightText } from "@/utils/highlight";
-import { nameToColor } from "@/utils/color";
+import { avatarInitial, nameToColor } from "@/utils/color";
 import { X } from "lucide-vue-next";
 import { computed } from "vue";
 import { useChatStore } from "@/stores/useChatStore";
@@ -25,8 +25,11 @@ const emit = defineEmits<{
 const chat = useChatStore();
 const { memberProfile } = useMemberProfile();
 
+/** 群里有人 @ 我且未读（打开会话即清除）：微信式红色标签，显示在摘要前。 */
+const mentioned = computed(() => chat.mentionedConvs.has(props.conv.id));
+
 function initials(name: string) {
-  return name.slice(0, 1).toUpperCase();
+  return avatarInitial(name);
 }
 
 /** 群头像九宫格成员（微信式 2x2）：资料解析统一走 useMemberProfile（本机/好友/节点，
@@ -117,7 +120,10 @@ const gridTiles = computed(() => {
           <template v-if="snippet">
             <span v-html="highlightText(snippet, keyword.trim())"></span>
           </template>
-          <template v-else>{{ conv.last_msg || "暂无消息" }}</template>
+          <template v-else>
+            <span v-if="mentioned" class="font-medium text-red-500">[有人@我]</span
+            >{{ conv.last_msg || "暂无消息" }}
+          </template>
         </span>
       </div>
     </div>

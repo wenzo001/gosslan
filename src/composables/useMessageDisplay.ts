@@ -1,7 +1,7 @@
 import { computed, toValue, type CSSProperties, type MaybeRefOrGetter } from "vue";
 import dayjs from "dayjs";
 import { useAppStore } from "@/stores/useAppStore";
-import { findPreset, parsePeerStyle, resolveChatColors } from "@/utils/chatStyle";
+import { findPreset, formatTimeDivider, parsePeerStyle, resolveChatColors } from "@/utils/chatStyle";
 import type { MessageRecord } from "@/types";
 
 export type SendState = "sending" | "sent" | "delivered" | "read" | "failed";
@@ -49,15 +49,32 @@ export function useMessageDisplay(opts: {
       }) as CSSProperties,
   );
 
+  /**
+   * 卡片型气泡（文件/代码）走中性色：学微信——非文本气泡不跟随主题色，
+   * 自己发的和对方发的同色，靠左右位置和尖角区分归属，避免满屏都是品牌色。
+   * 亮色＝浅灰卡片浮在近白画布上（靠 1px 描边区分），暗色＝比画布亮一档的深灰。
+   */
+  const cardStyle = computed<CSSProperties>(
+    () =>
+      ({
+        "--bubble-bg": app.dark ? "#1c2434" : "#eeeef0",
+        background: "var(--bubble-bg)",
+        color: app.dark ? "#e2e8f0" : "#0f172a",
+        borderRadius: "var(--gosslan-bubble-radius, 4px)",
+        border: `1px solid ${app.dark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)"}`,
+        // 不加阴影：学微信，纯色卡片 + 1px 描边就够，阴影反而显脏
+        position: "relative",
+      }) as CSSProperties,
+  );
+
   /** 每条消息独立完整渲染（不再合并连续消息）：时间行恒显示。 */
   const showTimeDivider = computed(
     () => !prev.value || message.value.ts - prev.value.ts >= TIME_DIVIDER_GAP,
   );
   const showNickname = computed(() => isGroup.value && !mine.value);
 
-  const time = computed(() => dayjs(message.value.ts).format("YYYY年MM月DD日 HH:mm"));
   const fullTime = computed(() => dayjs(message.value.ts).format("YYYY-MM-DD HH:mm:ss"));
-  const timeDividerText = computed(() => dayjs(message.value.ts).format("YYYY-MM-DD HH:mm"));
+  const timeDividerText = computed(() => formatTimeDivider(message.value.ts));
 
   const sendState = computed(() => message.value.status as SendState);
   const receiptTitle = computed(() => {
@@ -79,9 +96,9 @@ export function useMessageDisplay(opts: {
   return {
     mine,
     bubbleStyle,
+    cardStyle,
     showTimeDivider,
     showNickname,
-    time,
     fullTime,
     timeDividerText,
     sendState,

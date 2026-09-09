@@ -4,7 +4,7 @@ import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { ArrowLeft, MessageCircle, UserMinus } from "lucide-vue-next";
 import BaseModal from "@/components/BaseModal.vue";
-import { nameToColor } from "@/utils/color";
+import { avatarInitial, nameToColor } from "@/utils/color";
 import type { Friend } from "@/types";
 
 const props = defineProps<{ friend: Friend }>();
@@ -17,7 +17,7 @@ const app = useAppStore();
 const chat = useChatStore();
 /** 在线节点信息（IP / 端口 / 公钥），离线好友为 undefined */
 const peer = computed(() => chat.peers.find((p) => p.device_id === props.friend.device_id));
-const initial = computed(() => props.friend.nickname.slice(0, 1).toUpperCase());
+const initial = computed(() => avatarInitial(props.friend.nickname));
 /** 设备指纹尾码：用于当面核对身份（完整 ID 过长，不便口头比对） */
 const shortId = computed(() => props.friend.device_id.slice(-8).toUpperCase());
 

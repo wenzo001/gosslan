@@ -45,6 +45,11 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 machine-uid = "0.5"
 
+# Windows 剪贴板文件列表（CF_HDROP）：文件消息「复制」＝复制文件本体，
+# 可在资源管理器粘贴、也可直接粘贴回聊天框发送（微信式）。
+[target.'cfg(target_os = "windows")'.dependencies]
+clipboard-win = "5"
+
 [features]
 # 默认启用自定义协议；可扩展为自定义 deep-link 唤醒
 default = ["custom-protocol"]

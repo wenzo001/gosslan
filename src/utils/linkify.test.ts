@@ -80,3 +80,49 @@ test("displayUrl: 超长 URL 中间省略号", () => {
   assert.ok(out.startsWith("https://"), "保留协议头");
   assert.ok(long.endsWith(out.slice(-3).replace("…", out.slice(-1))), "保留尾部");
 });
+
+// ---------------- @提及（群聊） ----------------
+
+test("linkify: @成员名切成 mention 段", () => {
+  assert.deepEqual(linkify("叫上 @张三 开会", ["张三"]), [
+    { kind: "text", value: "叫上 " },
+    { kind: "mention", value: "@张三" },
+    { kind: "text", value: " 开会" },
+  ]);
+});
+
+test("linkify: 行首与多提 及、重名最长优先", () => {
+  const segs = linkify("@张三 @张三四", ["张三", "张三四"]);
+  assert.deepEqual(segs, [
+    { kind: "mention", value: "@张三" },
+    { kind: "text", value: " " },
+    { kind: "mention", value: "@张三四" },
+  ]);
+});
+
+test("linkify: 邮箱里的 @ 不误判（@ 前非空白）", () => {
+  const segs = linkify("发到 a@b.com 了", ["b"]);
+  assert.equal(segs.length, 1);
+  assert.equal(segs[0].kind, "text");
+});
+
+test("linkify: 名字后跟中文标点仍高亮，未知名字不高亮", () => {
+  const segs = linkify("@张三，收到请回复 @李四", ["张三"]);
+  assert.deepEqual(segs, [
+    { kind: "mention", value: "@张三" },
+    { kind: "text", value: "，收到请回复 @李四" },
+  ]);
+});
+
+test("linkify: mention 与 URL 混排", () => {
+  const segs = linkify("@张三 看 https://a.com", ["张三"]);
+  assert.deepEqual(segs, [
+    { kind: "mention", value: "@张三" },
+    { kind: "text", value: " 看 " },
+    { kind: "link", value: "https://a.com", href: "https://a.com" },
+  ]);
+});
+
+test("linkify: 不传成员名时行为不变", () => {
+  assert.deepEqual(linkify("@张三 好"), [{ kind: "text", value: "@张三 好" }]);
+});

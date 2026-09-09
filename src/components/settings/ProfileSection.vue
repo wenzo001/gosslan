@@ -2,7 +2,7 @@
 import { ref, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
-import { nameToColor } from "@/utils/color";
+import { avatarInitial, nameToColor } from "@/utils/color";
 
 const props = defineProps<{ active: boolean; reloadToken?: number }>();
 
@@ -61,10 +61,10 @@ async function onAvatarChange(e: Event) {
     <div class="flex items-center gap-4">
       <div
         class="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
-        :style="{ backgroundColor: nameToColor(nickname || '我') }"
+        :style="{ backgroundColor: nameToColor(nickname) }"
       >
         <img v-if="avatar" :src="avatar" class="h-full w-full object-cover" />
-        <span v-else class="text-2xl font-semibold">{{ nickname.slice(0, 1) || "我" }}</span>
+        <span v-else class="text-2xl font-semibold">{{ avatarInitial(nickname) }}</span>
       </div>
       <div class="min-w-0 flex-1">
         <input

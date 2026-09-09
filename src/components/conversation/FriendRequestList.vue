@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Check, X } from "lucide-vue-next";
-import { nameToColor } from "@/utils/color";
+import { avatarInitial, nameToColor } from "@/utils/color";
 import type { PendingRequest } from "@/types";
 
 defineProps<{
@@ -15,7 +15,7 @@ const emit = defineEmits<{
 }>();
 
 function initials(name: string) {
-  return name.slice(0, 1).toUpperCase();
+  return avatarInitial(name);
 }
 </script>
 

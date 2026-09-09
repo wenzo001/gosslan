@@ -4,6 +4,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { useAppStore } from "@/stores/useAppStore";
 import { PREVIEW_LINES } from "@/utils/previewMetrics";
 import { linkify, displayUrl, type LinkSegment } from "@/utils/linkify";
+import { mentionHighlightColor } from "@/utils/chatStyle";
 import { QUOTE_BORDER, QUOTE_BG, QUOTE_TEXT_STYLE } from "@/utils/quoteStyle";
 import { Check, Copy } from "lucide-vue-next";
 
@@ -13,6 +14,10 @@ const props = defineProps<{
   /** 超过预览行数：正文截断为固定行数，「展开显示」走独立 Modal。 */
   clamped: boolean;
   copied: boolean;
+  /** 自己的消息气泡尖角朝右、对方朝左，指向头像。 */
+  mine: boolean;
+  /** 群成员名列表：正文里的 @name 按此高亮（不传不高亮）。 */
+  mentionNames?: string[];
 }>();
 const emit = defineEmits<{
   (e: "expand", content: string): void;
@@ -60,8 +65,18 @@ const parsed = computed(() => {
   return { quote: line, body: props.content.slice(nl + 1), msgId };
 });
 
-/** 正文切成 text/link 段，按段渲染（不拼 HTML，天然防 XSS）。 */
-const segments = computed<LinkSegment[]>(() => linkify(parsed.value.body));
+/** 正文切成 text/link/mention 段，按段渲染（不拼 HTML，天然防 XSS）。 */
+const segments = computed<LinkSegment[]>(() => linkify(parsed.value.body, props.mentionNames ?? []));
+
+/**
+ * @提及 高亮文字色（微信式蓝字）：按主题色派生，并以当前气泡的实际底色
+ * （bubbleStyle.background）校验对比 ≥4.5——预设差异被天然覆盖。
+ * 不直接用主题色：text-primary 在浅蓝气泡上对比只有 2.94（历史坑）。
+ */
+const mentionFg = computed(() => {
+  const bg = typeof props.bubbleStyle.background === "string" ? props.bubbleStyle.background : "";
+  return mentionHighlightColor(app.themeColor, app.dark, bg || "#ffffff");
+});
 
 /** 点击链接：调 Tauri opener 走系统默认浏览器；失败 toast 提示。 */
 async function openLink(href: string) {
@@ -106,6 +121,11 @@ async function openLink(href: string) {
           :title="seg.href"
           @click.stop.prevent="openLink(seg.href)"
         >{{ displayUrl(seg.value) }}</a>
+        <span
+          v-else-if="seg.kind === 'mention'"
+          class="mention-token"
+          :style="{ color: mentionFg || undefined }"
+        >{{ seg.value }}</span>
         <span v-else>{{ seg.value }}</span>
       </template>
     </div>
@@ -120,7 +140,7 @@ async function openLink(href: string) {
       </button>
       <button
         class="flex items-center gap-1 whitespace-nowrap text-xs transition"
-        :class="copied ? 'text-primary' : 'opacity-70 hover:opacity-100'"
+        :class="copied ? 'opacity-100' : 'opacity-70 hover:opacity-100'"
         @click="emit('copy', content)"
       >
         <Check v-if="copied" class="h-3 w-3" />
@@ -129,5 +149,6 @@ async function openLink(href: string) {
       </button>
     </div>
     <!-- 普通文本：不显示悬停复制气泡（复制走右键菜单），避免干扰 -->
+    <span aria-hidden="true" class="bubble-tail" :class="mine ? 'tail-mine' : 'tail-other'"></span>
   </div>
 </template>

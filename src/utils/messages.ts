@@ -1,4 +1,5 @@
 import type { Conversation, MessageRecord } from "@/types";
+import { MENTION_AFTER, escapeRe } from "./linkify.ts";
 
 /**
  * 合并去重并排序消息列表 —— Gossip 密集广播防重复的核心纯函数。
@@ -112,6 +113,18 @@ export function previewText(rec: MessageRecord): string {
     default:
       return rec.content.slice(0, 30);
   }
+}
+
+/**
+ * 该消息是否 @ 了指定昵称（仅文本消息参与判断）。
+ * 边界语义与 linkify 的 @提及高亮同源：@ 前须是行首/空白，名字后须是
+ * 空白/常用标点/行尾——@张三 不会误吞 @张三丰，手打的 @名字 同样命中。
+ */
+export function messageMentionsName(rec: MessageRecord, name: string): boolean {
+  if (rec.kind !== "text") return false;
+  const n = name.trim();
+  if (!n) return false;
+  return new RegExp(`(^|\\s)@${escapeRe(n)}${MENTION_AFTER}`).test(rec.content);
 }
 
 /**

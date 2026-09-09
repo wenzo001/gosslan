@@ -2,7 +2,7 @@
 import { computed } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
-import { nameToColor } from "@/utils/color";
+import { avatarInitial, nameToColor } from "@/utils/color";
 import { MessageCircle, Moon, Sun, Users } from "lucide-vue-next";
 
 defineProps<{ view: "chats" | "contacts" }>();
@@ -13,7 +13,7 @@ const emit = defineEmits<{
 
 const app = useAppStore();
 const chat = useChatStore();
-const initials = computed(() => (app.device?.nickname ?? "?").slice(0, 1).toUpperCase());
+const initials = computed(() => avatarInitial(app.device?.nickname));
 /** 未读徽标显示上限 */
 const unreadLabel = computed(() => (chat.totalUnread > 99 ? "99+" : String(chat.totalUnread)));
 const pendingLabel = computed(() =>
@@ -32,7 +32,7 @@ const pendingLabel = computed(() =>
     <div class="relative shrink-0">
       <button
         class="flex h-10 w-10 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white transition hover:opacity-90"
-        :style="{ backgroundColor: nameToColor(app.device?.nickname ?? '?') }"
+        :style="{ backgroundColor: nameToColor(app.device?.nickname ?? '') }"
         :title="app.online ? '我在线（局域网已连接）' : '离线（局域网未连接）'"
         @click="emit('open-settings')"
       >

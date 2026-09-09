@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onUnmounted } from "vue";
-import { nameToColor } from "@/utils/color";
+import { avatarInitial, nameToColor } from "@/utils/color";
 import type { Friend } from "@/types";
 
 defineProps<{ friend: Friend; active: boolean }>();
@@ -11,7 +11,7 @@ const emit = defineEmits<{
 }>();
 
 function initials(name: string) {
-  return name.slice(0, 1).toUpperCase();
+  return avatarInitial(name);
 }
 
 function onContextMenu(friend: Friend, e: MouseEvent) {

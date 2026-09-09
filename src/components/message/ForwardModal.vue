@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { useChatStore } from "@/stores/useChatStore";
-import { nameToColor } from "@/utils/color";
+import { avatarInitial, nameToColor } from "@/utils/color";
 import BaseModal from "@/components/BaseModal.vue";
 import type { MsgKind } from "@/types";
 
@@ -63,7 +63,7 @@ const kindLabel = computed(
             :style="{ backgroundColor: nameToColor(c.name) }"
           >
             <img v-if="c.avatar" :src="c.avatar" class="h-full w-full object-cover" />
-            <span v-else>{{ c.name.slice(0, 1).toUpperCase() }}</span>
+            <span v-else>{{ avatarInitial(c.name) }}</span>
           </span>
           <span class="min-w-0 flex-1 truncate text-[13.5px] text-[var(--gosslan-text)]">{{ c.name }}</span>
         </button>
