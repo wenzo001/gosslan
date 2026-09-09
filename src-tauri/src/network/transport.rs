@@ -153,6 +153,7 @@ pub async fn spawn(
     let accept_task = tokio::spawn(async move {
         loop {
             tokio::select! {
+                biased;
                 _ = shutdown.changed() => break,
                 accept = listener.accept() => {
                     let Ok((stream, peer_addr)) = accept else { continue };
@@ -173,6 +174,7 @@ pub async fn spawn(
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
+                biased;
                 _ = shutdown.changed() => break,
                 _ = tick.tick() => {
                     let links = state.priority_links.lock().await;
@@ -354,6 +356,7 @@ async fn reader_loop(
 ) {
     loop {
         let res = tokio::select! {
+            biased;
             _ = shutdown.changed() => break,
             res = read_frame(&mut r) => res,
         };

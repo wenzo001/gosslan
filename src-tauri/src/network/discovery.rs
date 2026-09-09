@@ -258,6 +258,7 @@ pub async fn spawn(
             let mut buf = vec![0u8; 2048];
             loop {
                 tokio::select! {
+                    biased;
                     _ = shutdown.changed() => break,
                     res = socket.recv_from(&mut buf) => {
                         let (len, src) = match res {
@@ -322,6 +323,7 @@ pub async fn spawn(
             let mut next_at = Instant::now() + Duration::from_secs(next_wait(&state));
             loop {
                 tokio::select! {
+                    biased;
                     _ = shutdown.changed() => break,
                     _ = sleep_until(next_at) => {
                         broadcast(&socket, &state, tcp_port, lan_broadcast).await;
