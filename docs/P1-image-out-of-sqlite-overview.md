@@ -1,6 +1,6 @@
 # P1 修复交付概览：图片不再以 base64 内联 SQLite
 
-> 提交：`40e77f098e1d64dca0ffb0b3c81d679ba77aeb86`（短 `40e77f0`，独立 commit，未 squash）
+> 提交：`46188c0`（rebased 至 origin/main e27cf53 之上；含夜间模式 PR #5 合并，独立 commit）
 > 分支：main。协议版本 / schema / DB 迁移 **零改动**。
 
 ## 背景问题（P1）
@@ -42,7 +42,7 @@ UI 用既有 `read_file_preview` + Blob/objectURL 展示。
 |---|---|
 | `cargo test --lib` | **196 passed, 0 failed** |
 | `cargo check` / `cargo build` | clean（无 warning） |
-| `npm test` | **50 passed, 0 failed** |
+| `npm test` | **79 passed, 0 failed**（含夜间模式 PR 新增用例） |
 | `npm run build` | 成功 |
 | `bash scripts/e2e-dev.sh` | **30 项：29 PASS / 0 FAIL / 1 SKIP**（SKIP=人工 UI 好友同意，预期） |
 
