@@ -32,6 +32,17 @@ pub fn run() {
             // 系统托盘：关闭主窗口仅隐藏到托盘，退出需走托盘菜单
             #[cfg(desktop)]
             tray::setup(app.handle())?;
+            // macOS：`decorations: false` 使 tao 以 `Borderless`（不含 `Closable` 位）样式
+            // 掩码创建 NSWindow，AppKit 据此把「关闭窗口」菜单项（Cmd+W / performClose:）
+            // 判为不可用，导致 Cmd+W 无效。窗口创建后补回 `Closable` 位，恢复系统原生
+            // Cmd+W（仍无标题栏/关闭按钮，因未加 `Titled` 位）；关闭动作照旧走
+            // CloseRequested → 托盘隐藏路径，与点击自定义标题栏「×」行为一致。
+            #[cfg(all(desktop, target_os = "macos"))]
+            if let Some(win) = app.handle().get_webview_window(tray::MAIN_WINDOW_LABEL) {
+                if let Err(e) = win.set_closable(true) {
+                    eprintln!("[window] 恢复 macOS Cmd+W 关闭能力失败: {e}");
+                }
+            }
             // 局域网默认开启：首次安装（以及尚未写入该键的旧版本升级）启动即自动联网；
             // 用户在设置页关闭后持久化为关闭，重启不再联网。「恢复默认」清除该键 ⇒ 回到默认开启。
             // GOSSLAN_AUTOSTART=1 强制以 0.0.0.0 开启（headless 多实例互测，
