@@ -35,7 +35,6 @@ watch(
       :src="src"
       class="block max-h-72 max-w-full rounded-[var(--gosslan-bubble-radius)] object-contain"
       :class="state === 'loaded' ? '' : 'hidden'"
-      loading="lazy"
       @load="state = 'loaded'"
       @error="state = 'failed'"
     />
