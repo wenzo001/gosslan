@@ -19,6 +19,9 @@ const MAX_MESSAGE_LEN: usize = 50_000;
 /// 8 MiB 对应约 11 MB data URL，封框后仍远低于传输层 MAX_FRAME(64 MiB)。
 /// 超限一律报错拒发，绝不静默截断。
 const MAX_OUTGOING_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
+/// 头像（base64 data URI）解码后字节上限。头像经前端中心裁剪 + 缩放到 512×512 后再上传，
+/// 正常远小于 2 MiB；此处作为兜底，防止超大/恶意 data URL 撑爆 SQLite 与 UDP 发现广播。
+const MAX_AVATAR_BYTES: usize = 2 * 1024 * 1024;
 
 use crate::crypto;
 use crate::db;
@@ -72,6 +75,12 @@ pub fn get_device_info(state: State<'_, Arc<AppState>>) -> DeviceInfo {
     }
 }
 
+/// 头像 data URL 解码后字节数；非法 base64 返回 usize::MAX（视为超限拒绝）。
+fn avatar_decoded_len(data_url: &str) -> usize {
+    let payload = data_url.split_once(',').map(|(_, p)| p).unwrap_or(data_url);
+    STANDARD.decode(payload).map(|b| b.len()).unwrap_or(usize::MAX)
+}
+
 #[tauri::command]
 pub async fn update_profile(
     state: State<'_, Arc<AppState>>,
@@ -81,6 +90,12 @@ pub async fn update_profile(
     let s = state.inner();
     // 昵称长度保护：按字符截断（UTF-8 安全）
     let nickname: String = nickname.chars().take(MAX_NICKNAME_LEN).collect();
+    // 头像大小兜底：超限直接拒绝，防止超大 base64 落库 / 撑爆 UDP 广播
+    if let Some(a) = &avatar {
+        if avatar_decoded_len(a) > MAX_AVATAR_BYTES {
+            return Err("头像过大，请压缩到 2MB 以内".to_string());
+        }
+    }
     {
         let dbc = s.db.lock().unwrap();
         db::set_setting(&dbc, "nickname", &nickname).map_err(|e| e.to_string())?;

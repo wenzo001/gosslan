@@ -411,7 +411,6 @@ pub struct UdpPacket {
     pub kind: String,
     pub device_id: String,
     pub nickname: String,
-    pub avatar: Option<String>,
     pub tcp_port: u16,
     /// X25519 公钥（base64，用于 ECDH）
     pub x25519_pubkey: Option<String>,

@@ -195,11 +195,12 @@ fn bind_udp_reusable(ip: Ipv4Addr, port: u16) -> Result<UdpSocket, String> {
 }
 
 fn announce_packet(state: &AppState, tcp_port: u16) -> UdpPacket {
+    // 注意：announce 不携带 avatar——头像可能很大，塞进 UDP 广播会超报文上限
+    // （EMSGSIZE "Message too long"）导致发现失效；头像改由 TCP 建链后的 UserInfo 同步。
     UdpPacket {
         kind: "announce".to_string(),
         device_id: state.device_id.clone(),
         nickname: state.nickname.lock().unwrap().clone(),
-        avatar: state.avatar.lock().unwrap().clone(),
         tcp_port,
         x25519_pubkey: Some(state.identity.x25519_public_b64()),
         ed25519_pubkey: Some(state.identity.ed25519_public_b64()),
@@ -297,7 +298,7 @@ pub async fn spawn(
                                     &state,
                                     &pkt.device_id,
                                     &pkt.nickname,
-                                    pkt.avatar.clone(),
+                                    None,
                                     &src.ip().to_string(),
                                     pkt.tcp_port,
                                     pkt.x25519_pubkey.clone(),
@@ -429,7 +430,6 @@ async fn broadcast_probe(
         kind: "who_has".to_string(),
         device_id: state.device_id.clone(),
         nickname: String::new(),
-        avatar: None,
         tcp_port,
         x25519_pubkey: None,
         ed25519_pubkey: None,
