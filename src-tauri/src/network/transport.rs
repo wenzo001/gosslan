@@ -301,7 +301,7 @@ fn verify_hello(
     }
     // 已绑定身份：好友表优先（持久），在线节点表回落（对方可能尚未成为好友但已在发现阶段绑定）
     let bound = {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::get_friend_ed25519(&dbc, device_id)
     }
     .or_else(|| {
@@ -339,8 +339,8 @@ pub fn build_signed_hello(state: &AppState, conv_clock: i64) -> Message {
     ));
     Message::Hello {
         device_id,
-        nickname: state.nickname.lock().unwrap().clone(),
-        avatar: state.avatar.lock().unwrap().clone(),
+        nickname: state.nickname.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+        avatar: state.avatar.lock().unwrap_or_else(|e| e.into_inner()).clone(),
         tcp_port,
         x25519_pubkey,
         ed25519_pubkey,
@@ -415,15 +415,15 @@ async fn handle_incoming(
     ));
     handle_message(&state, &peer_id, first).await;
     // 用 TCP 对端的真实地址补全 peer IP：解决「被动连接方 peers 表 IP 为空或虚拟」的问题。
-    // 新地址必须是非虚拟、非 link-local 的可直连 LAN 地址才写入。
+    // 新地址必须是非虚拟的可直连 LAN 地址才写入；link-local（169.254.0.0/16）已包含在
+    // is_virtual_ip 内，不要在此重复判断——曾有写法 `octets()[0] != 169 && octets()[1] != 254`
+    // 既把「169.x 且 x.254」错写成两个独立条件（误杀 10.0.254.x 这类合法局域网地址），
+    // 又是完全冗余的（is_virtual_ip 已覆盖该网段）。
     {
-        let mut peers = state.peers.lock().unwrap();
+        let mut peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(p) = peers.get_mut(&peer_id) {
             if let std::net::IpAddr::V4(new_ip) = peer_addr.ip() {
-                let new_ok = !is_virtual_ip(&new_ip)
-                    && new_ip.octets()[0] != 169
-                    && new_ip.octets()[1] != 254;
-                if new_ok && (p.ip.is_empty() || is_virtual_ip_str(&p.ip)) {
+                if !is_virtual_ip(&new_ip) && (p.ip.is_empty() || is_virtual_ip_str(&p.ip)) {
                     p.ip = new_ip.to_string();
                 }
             }
@@ -463,7 +463,7 @@ async fn writer_loop(
                     // 此处不恢复就永久丢失。将 timestamp 重新放回 pending_reads，
                     // 下一次建链 / Hello / Heartbeat 会再次 flush 重发。
                     if let Message::ReadReceipt { last_read_ts, .. } = &msg {
-                        let mut pending = state.pending_reads.lock().unwrap();
+                        let mut pending = state.pending_reads.lock().unwrap_or_else(|e| e.into_inner());
                         let cur = pending.entry(peer_id.clone()).or_insert(*last_read_ts);
                         *cur = (*cur).max(*last_read_ts);
                     }
@@ -600,7 +600,7 @@ async fn connect_to_peer(
     ));
 
     let conv_clock = {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::get_clock(&dbc, peer_id)
     };
     let hello = build_signed_hello(state, conv_clock);
@@ -662,7 +662,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             .await;
             // 对齐单聊逻辑时钟：避免离线期间的时钟落差让后续新消息序号偏小。
             {
-                let dbc = state.db.lock().unwrap();
+                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                 db::observe_clock(&dbc, &device_id, conv_clock).ok();
             }
             maybe_update_friend(state, &device_id, &nickname, avatar);
@@ -718,7 +718,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             .await;
             maybe_update_friend(state, &device_id, &nickname, avatar.clone());
             // 同步更新 single 会话的昵称/头像（conversations DB）
-            let dbc = state.db.lock().unwrap();
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
             db::update_conversation_profile(&dbc, &device_id, &nickname, avatar.as_deref()).ok();
         }
         Message::ChatStyle { from, to, style } => {
@@ -732,7 +732,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             }
             // 持久化对端样式表（device_id -> style JSON），前端按发送者渲染其消息气泡
             {
-                let dbc = state.db.lock().unwrap();
+                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                 let mut map: serde_json::Map<String, serde_json::Value> =
                     db::get_setting(&dbc, "chat_peer_styles")
                         .and_then(|s| serde_json::from_str(&s).ok())
@@ -790,11 +790,11 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             }
             let name = resolve_nickname(state, &from);
             {
-                let dbc = state.db.lock().unwrap();
+                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                 db::add_friend(&dbc, &from, &name, None).ok();
                 // 同步公钥（否则首次加密发送会失败）
                 let (x, e) = {
-                    let peers = state.peers.lock().unwrap();
+                    let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
                     peers
                         .get(&from)
                         .map(|p| (p.x25519_pubkey.clone(), p.ed25519_pubkey.clone()))
@@ -818,7 +818,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             if to != state.device_id {
                 return;
             }
-            state.pending_requests.lock().unwrap().remove(&from);
+            state.pending_requests.lock().unwrap_or_else(|e| e.into_inner()).remove(&from);
             let _ = state.app.emit("friend-rejected", &from);
         }
         Message::FriendRemove { from, to } => {
@@ -829,7 +829,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 return;
             }
             // 对方删除了好友关系：移除本地好友行（不删除聊天记录）
-            let dbc = state.db.lock().unwrap();
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
             db::remove_friend(&dbc, &from).ok();
             drop(dbc);
             let _ = state.app.emit("friend-removed", &from);
@@ -878,7 +878,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             // 于是只回 Ack。必须早于解密——否则对方轮换密钥后重投的那份「已收好的」
             // 消息会因当前密钥打不开旧密文而被误判为失败。
             let exists = {
-                let dbc = state.db.lock().unwrap();
+                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                 db::message_exists(&dbc, &msg_id)
             };
             if exists {
@@ -887,7 +887,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             }
             // 好友关系检查：非好友消息不落库、不 Ack、通知发送方
             let is_friend = {
-                let dbc = state.db.lock().unwrap();
+                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                 db::get_friend(&dbc, &from).is_some()
             };
             if !is_friend {
@@ -925,7 +925,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             // （MutexGuard 非 Send）。首次与否由 INSERT 的受影响行数裁决，而不是先查后写：
             // 与 Gossip 并发时只有一方拿到 Ok(true)，未读 +1 / message-received 因此各只一次。
             let (out_rec, inserted) = {
-                let dbc = state.db.lock().unwrap();
+                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                 // 展示时间用本地接收时间；排序用对端给出的逻辑序号 seq。
                 let ts = db::now_ms();
                 let seq = seq.max(1);
@@ -963,7 +963,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             // 查询原始发送方：如果这条消息不是我发的，说明我是中继节点，
             // 需要把 Ack 转发给原始发送方（而非本地处理）。
             let original_sender: Option<String> = {
-                let dbc = state.db.lock().unwrap();
+                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                 dbc.query_row(
                     "SELECT sender_id FROM messages WHERE msg_id = ?1",
                     params![msg_id],
@@ -974,7 +974,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             match original_sender {
                 Some(sender) if sender == state.device_id => {
                     // 情况 1：Ack 对应的原始消息是我发的 → 正常处理
-                    let dbc = state.db.lock().unwrap();
+                    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                     // Ack 没有可伪造的 sender 字段，必须同时命中本连接对应的
                     // outbox 目标，避免任意 LAN 节点猜到 msg_id 后伪造送达。
                     let is_expected_peer: bool = dbc
@@ -1015,7 +1015,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             // 优先用 msg_id 换算回「我」的本地时间戳：接收方落库时对时间做过钳制，
             // 直接拿 last_read_ts 在跨设备时钟偏差下会匹配不到我发出的原始消息。
             let effective_ts = {
-                let dbc = state.db.lock().unwrap();
+                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                 last_read_msg_id
                     .as_deref()
                     .and_then(|msg_id| {
@@ -1030,7 +1030,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             };
             // 对方已读：把「我发给对方、ts ≤ effective_ts」的消息标记为 read（幂等）
             {
-                let dbc = state.db.lock().unwrap();
+                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                 let _ = dbc.execute(
                     "UPDATE messages SET status = 'read'
                      WHERE conv_id = ?1 AND sender_id = ?2 AND status != 'read' AND ts <= ?3",
@@ -1056,7 +1056,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 return;
             }
             let is_member = {
-                let dbc = state.db.lock().unwrap();
+                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                 db::get_group(&dbc, &group_id)
                     .map(|g| g.members.contains(&from) && g.members.contains(&state.device_id))
                     .unwrap_or(false)
@@ -1065,7 +1065,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 return;
             }
             let effective_ts = {
-                let dbc = state.db.lock().unwrap();
+                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                 last_read_msg_id
                     .as_deref()
                     .and_then(|msg_id| {
@@ -1079,7 +1079,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                     .unwrap_or(last_read_ts)
             };
             {
-                let dbc = state.db.lock().unwrap();
+                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                 db::upsert_group_read(&dbc, &group_id, &from, effective_ts).ok();
             }
             let _ = state.app.emit(
@@ -1101,7 +1101,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             }
             // 只清除该 peer 在该群中的待发记录；不存在时删除是安全的 no-op。
             // 命中失败不向外暴露，避免用伪造 Ack 探测本地 outbox。
-            let dbc = state.db.lock().unwrap();
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
             let _ = db::delete_group_outbox(&dbc, &msg_id, &from);
             let _ = state.app.emit(
                 "group-message-acked",
@@ -1120,7 +1120,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 return;
             }
             let is_friend = {
-                let dbc = state.db.lock().unwrap();
+                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                 db::get_friend(&dbc, &from).is_some()
             };
             if !is_friend {
@@ -1200,7 +1200,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
         } => {
             // 只有该 transfer 的实际接收方发来的完成确认才有效。
             let expected_peer = {
-                let dbc = state.db.lock().unwrap();
+                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                 dbc.query_row(
                     "SELECT peer_id FROM file_transfers WHERE id = ?1",
                     params![transfer_id],
@@ -1233,7 +1233,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 Ok(received) => {
                     // 节流：每 250ms 至多上报一次进度，避免大文件 IPC 事件风暴
                     let (total, should_emit) = {
-                        let mut recv = state.file_receivers.lock().unwrap();
+                        let mut recv = state.file_receivers.lock().unwrap_or_else(|e| e.into_inner());
                         match recv.get_mut(&transfer_id) {
                             Some(r) => {
                                 let now = db::now_ms();
@@ -1286,7 +1286,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                     // 重复 FileDone：若本机此前已成功完成该 transfer，则补一个成功确认，
                     // 避免发送方因重试而一直等待。
                     let already_done = {
-                        let dbc = state.db.lock().unwrap();
+                        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                         db::list_transfers(&dbc)
                             .unwrap_or_default()
                             .into_iter()
@@ -1306,7 +1306,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 }
                 Ok(Some((name, size, path, sender_id))) => {
                     let rec = {
-                        let dbc = state.db.lock().unwrap();
+                        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                         let subtype = file::classify_file_subtype(&name);
                         let kind = if subtype == "image" { "image" } else { "file" };
                         let content = serde_json::json!({
@@ -1375,14 +1375,14 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 return;
             }
             let is_friend = {
-                let dbc = state.db.lock().unwrap();
+                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                 db::get_friend(&dbc, &from).is_some()
             };
             if !is_friend {
                 return;
             }
             let entries = {
-                let share = state.share_dir.lock().unwrap().clone();
+                let share = state.share_dir.lock().unwrap_or_else(|e| e.into_inner()).clone();
                 match share {
                     Some(dir) => file::walk_share_dir(Path::new(&dir)),
                     None => Vec::new(),
@@ -1400,7 +1400,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             entries,
             ..
         } => {
-            if let Some(tx) = state.pending_share_tree.lock().unwrap().remove(&request_id) {
+            if let Some(tx) = state.pending_share_tree.lock().unwrap_or_else(|e| e.into_inner()).remove(&request_id) {
                 let _ = tx.send(entries);
             }
         }
@@ -1413,13 +1413,13 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 return;
             }
             let is_friend = {
-                let dbc = state.db.lock().unwrap();
+                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                 db::get_friend(&dbc, &from).is_some()
             };
             if !is_friend {
                 return;
             }
-            let share = state.share_dir.lock().unwrap().clone();
+            let share = state.share_dir.lock().unwrap_or_else(|e| e.into_inner()).clone();
             let Some(root) = share else { return };
             let root = PathBuf::from(root);
             let canon_root = root.canonicalize().unwrap_or_else(|_| root.clone());
@@ -1595,7 +1595,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
 /// 因此「对方换了身份」最长一个广播周期后就会收敛到这里。
 fn sender_x25519_pubkey(state: &AppState, from: &str) -> Option<String> {
     let from_db = {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::get_friend_x25519(&dbc, from)
     };
     from_db.or_else(|| {
@@ -1667,7 +1667,7 @@ fn reseal_for_send(state: &AppState, msg: Message) -> Message {
         };
     }
     let (plaintext, from_db) = {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         // 只认「我自己发出的那条记录」：接收方行的 content 是对方会话的明文，语义不同
         let plaintext = dbc
             .query_row(
@@ -1732,7 +1732,7 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
         if env.sender_id == state.device_id {
             false
         } else {
-            let peers = state.peers.lock().unwrap();
+            let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
             peers.get(&env.sender_id).is_some_and(|p| {
                 let direct_peer = peer_id == env.sender_id;
                 (p.ed25519_pubkey.as_deref() == Some(env.sender_ed25519.as_str())
@@ -1751,7 +1751,7 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
     // 直连 TCP 对端在 Hello 中没有携带公钥时，首次合法 Gossip 可完成 TOFU
     // 绑定；之后所有经中继或直连的信封都必须匹配这组键。
     if peer_id == env.sender_id {
-        let mut peers = state.peers.lock().unwrap();
+        let mut peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(p) = peers.get_mut(&env.sender_id) {
             if p.ed25519_pubkey.is_none() {
                 p.ed25519_pubkey = Some(env.sender_ed25519.clone());
@@ -1764,12 +1764,12 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
     // 1. 先验签，再进入去重缓存。否则攻击者可以用伪造的唯一 message_id
     // 污染 Bloom/LRU，甚至抢先占用真实消息的 id 造成合法消息被丢弃。
     {
-        let gossip = state.gossip.lock().unwrap();
+        let gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
         if !gossip.verify_envelope(&env) {
             return;
         }
         drop(gossip);
-        let mut gossip = state.gossip.lock().unwrap();
+        let mut gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
         if !gossip.is_new(&env.message_id) {
             return;
         }
@@ -1780,12 +1780,12 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
     //    条目（不做 insert，避免为未通过 Discovery 的节点创建残缺记录），
     //    同时用 COALESCE 安全地补充 friends 表的 NULL pubkey。
     if env.encrypted && matches!(env.kind, GossipKind::Chat) {
-        let mut peers = state.peers.lock().unwrap();
+        let mut peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(p) = peers.get_mut(&env.sender_id) {
             if p.x25519_pubkey.is_none() {
                 p.x25519_pubkey = Some(env.sender_pubkey.clone());
                 p.last_seen = db::now_ms();
-                let dbc = state.db.lock().unwrap();
+                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                 db::update_friend_pubkeys(&dbc, &env.sender_id, Some(&env.sender_pubkey), None)
                     .ok();
             }
@@ -1836,9 +1836,9 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
 
     // 4. 转发（fan-out，TTL 衰减）— 所有 GossipKind 统一转发
     if env.ttl > 1 {
-        let peers: Vec<String> = state.peers.lock().unwrap().keys().cloned().collect();
+        let peers: Vec<String> = state.peers.lock().unwrap_or_else(|e| e.into_inner()).keys().cloned().collect();
         let targets = {
-            let gossip = state.gossip.lock().unwrap();
+            let gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
             gossip.choose_fanout(&peers, &env.sender_id)
         };
         let mut fwd = env.clone();
@@ -1871,13 +1871,13 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                 // GossipKind::Chat：好友关系检查（非好友不落库、不通知、通知发送方）
                 if env.kind == GossipKind::Chat {
                     let is_friend = {
-                        let dbc = state.db.lock().unwrap();
+                        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                         db::get_friend(&dbc, &env.sender_id).is_some()
                     };
                     if !is_friend {
                         // 通过 Gossip 广播拒绝通知（多跳场景下也能回到原始发送方）
                         let mut blocked_env = {
-                            let gossip = state.gossip.lock().unwrap();
+                            let gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
                             let payload =
                                 serde_json::json!({ "original_sender": env.sender_id }).to_string();
                             let payload_b64 = STANDARD.encode(payload.as_bytes());
@@ -1924,7 +1924,7 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                 // 逻辑序号不依赖墙上时钟，也不猜测发送方时钟。
                 if env.kind == GossipKind::Group {
                     let gid = env.group_id.clone().unwrap_or_default();
-                    let dbc = state.db.lock().unwrap();
+                    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                     let blocked = db::group_message_blocked_by_boundary(&dbc, &gid, env.seq);
                     drop(dbc);
                     if blocked {
@@ -1946,7 +1946,7 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                             all.push(state.device_id.clone());
                         }
                         {
-                            let dbc = state.db.lock().unwrap();
+                            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                             db::upsert_group(&dbc, &gid, &display_name, &creator, &all).ok();
                         }
                         let _ = state.app.emit("groups-updated", &gid);
@@ -1959,7 +1959,7 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                 // 与 Direct 分支共用 announced_on 裁决，两路径并发时只有一方拿到 Ok(true)。
                 // 单聊与群聊走同一块 ⇒ 两种 GossipKind 都被覆盖。
                 let (out_rec, inserted) = {
-                    let dbc = state.db.lock().unwrap();
+                    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                     // 展示时间用本地接收时间；排序用信封携带的逻辑序号 seq。
                     let ts = db::now_ms();
                     let seq = env.seq.max(1);
@@ -2046,7 +2046,7 @@ async fn handle_relay_file_offer(
         return;
     }
     let is_friend = {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::get_friend(&dbc, &from).is_some()
     };
     if !is_friend {
@@ -2067,7 +2067,7 @@ async fn handle_relay_file_offer(
     let Some(file_key) = file_key else {
         return;
     };
-    state.relay_file_keys.lock().unwrap().insert(
+    state.relay_file_keys.lock().unwrap_or_else(|e| e.into_inner()).insert(
         transfer_id.clone(),
         crate::state::RelayFileReceive {
             file_key,
@@ -2084,7 +2084,7 @@ async fn handle_relay_file_offer(
         .unwrap()
         .begin_reassemble(&transfer_id, &name, total_chunks, size);
     {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::upsert_transfer(
             &dbc,
             &transfer_id,
@@ -2119,7 +2119,7 @@ async fn handle_relay_chunk(
 ) {
     if to == state.device_id {
         // 最终接收方：先解密（E2EE，密文不落盘），再增量哈希、重组
-        let mut keys = state.relay_file_keys.lock().unwrap();
+        let mut keys = state.relay_file_keys.lock().unwrap_or_else(|e| e.into_inner());
         let Some(rs) = keys.get_mut(&transfer_id) else {
             return;
         };
@@ -2133,14 +2133,14 @@ async fn handle_relay_chunk(
         rs.hasher.update(&bytes);
         drop(keys);
         let completed = {
-            let mut relay = state.relay.lock().unwrap();
+            let mut relay = state.relay.lock().unwrap_or_else(|e| e.into_inner());
             relay.add_chunk(&transfer_id, seq, bytes)
         };
         if let Some((name, expected_size, full)) = completed {
             // 重组结束（无论成败）：移除会话状态，取哈希做完整性校验
-            let rs = state.relay_file_keys.lock().unwrap().remove(&transfer_id);
+            let rs = state.relay_file_keys.lock().unwrap_or_else(|e| e.into_inner()).remove(&transfer_id);
             if full.len() as u64 != expected_size {
-                let dbc = state.db.lock().unwrap();
+                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                 db::upsert_transfer(
                     &dbc,
                     &transfer_id,
@@ -2172,7 +2172,7 @@ async fn handle_relay_chunk(
                     .map(|b| format!("{b:02x}"))
                     .collect();
                 if !actual_hex.eq_ignore_ascii_case(&rs.expected_sha256) {
-                    let dbc = state.db.lock().unwrap();
+                    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                     db::upsert_transfer(
                         &dbc,
                         &transfer_id,
@@ -2198,7 +2198,7 @@ async fn handle_relay_chunk(
             let path = match save_received_bytes(state, &name, &full) {
                 Ok(path) => path,
                 Err(reason) => {
-                    let dbc = state.db.lock().unwrap();
+                    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                     db::upsert_transfer(
                         &dbc,
                         &transfer_id,
@@ -2223,7 +2223,7 @@ async fn handle_relay_chunk(
             };
             let path_str = path.to_string_lossy().to_string();
             let rec = {
-                let dbc = state.db.lock().unwrap();
+                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                 db::upsert_transfer(
                     &dbc,
                     &transfer_id,
@@ -2297,7 +2297,7 @@ async fn handle_relay_chunk(
 }
 
 fn save_received_bytes(state: &AppState, name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
-    let dir = state.downloads_dir.lock().unwrap().clone();
+    let dir = state.downloads_dir.lock().unwrap_or_else(|e| e.into_inner()).clone();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let safe_name = file::safe_file_name(name).ok_or("文件名非法")?;
     let base = dir.join(safe_name);
@@ -2345,16 +2345,23 @@ async fn handle_group_key(
     }
     // 只有群创建者能够分发/轮换群密钥；同时要求消息携带的成员表
     // 明确包含发送者和接收者，避免任意好友注入一个伪造群或密钥。
+    //
+    // ⚠️ 这道校验**不能放宽给普通成员**：若任意成员都能推送新密钥，恶意成员即可用
+    // 自己持有的密钥替换受害者的群密钥，从而读到受害者后续发出的群消息。
+    // 因此「群主离线时密钥无法传播」不能靠放宽此处解决，而靠**不制造只有群主才有的密钥**——
+    // 见 `group_add_member`：加人不再轮换群密钥；轮换只保留在「移除成员」路径
+    // （那个时机群主必然在线，且撤权本就需要换新密钥）。
+    // 无本地群记录时（新成员首次拿密钥）此处放行，这是新成员入群的唯一途径。
     if !members.iter().any(|m| m == &from) || !members.iter().any(|m| m == &to) {
         return;
     }
-    if let Some(group) = db::get_group(&state.db.lock().unwrap(), &group_id) {
+    if let Some(group) = db::get_group(&state.db.lock().unwrap_or_else(|e| e.into_inner()), &group_id) {
         if group.creator != from {
             return;
         }
     }
     let pubkey = {
-        let peers = state.peers.lock().unwrap();
+        let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
         peers.get(&from).and_then(|p| p.x25519_pubkey.clone())
     };
     let Some(pubkey) = pubkey else { return };
@@ -2372,9 +2379,9 @@ async fn handle_group_key(
     }
     let mut k = [0u8; 32];
     k.copy_from_slice(&raw);
-    state.group_keys.lock().unwrap().insert(group_id.clone(), k);
+    state.group_keys.lock().unwrap_or_else(|e| e.into_inner()).insert(group_id.clone(), k);
     {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::set_setting(&dbc, &format!("gk:{group_id}"), &STANDARD.encode(k)).ok();
     }
     // 建本地群记录：没有它，收到群消息时群名只能兜底成「群聊 g-xxxx」，
@@ -2390,7 +2397,7 @@ async fn handle_group_key(
         group_name
     };
     {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::upsert_group(&dbc, &group_id, &display_name, &from, &all).ok();
         db::ensure_conversation(&dbc, &conv_id, "group", &display_name, None).ok();
         db::observe_clock(&dbc, &conv_id, clock).ok();
@@ -2419,12 +2426,12 @@ async fn handle_group_file_offer(
     // 幂等：会话已激活（内存有 file_key）→ 重复 Offer 忽略。
     // 注意不能因为「group_files 里有记录」就跳过：重启后内存 key 丢失但记录还在，
     // 跳过会让离线补发永远无法重建会话（接收卡死）。改为下方「已完成则跳过」+「幂等重建」。
-    if state.group_file_keys.lock().unwrap().contains_key(&transfer_id) {
+    if state.group_file_keys.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&transfer_id) {
         return;
     }
     // 权限：本地群存在，且 sender ∈ group_members（防群外 peer 伪造 Offer）
     let (group_exists, sender_is_member) = {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         match db::get_group(&dbc, &group_id) {
             Some(g) => (true, g.members.contains(&sender_id)),
             None => (false, false),
@@ -2447,7 +2454,7 @@ async fn handle_group_file_offer(
 
     // 已完成的 transfer → 忽略（避免重复接收 / 重复 emit）
     let already_done = {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::get_group_file_recipient_status(&dbc, &transfer_id, &state.device_id)
             .as_deref()
             == Some("completed")
@@ -2458,7 +2465,7 @@ async fn handle_group_file_offer(
 
     // 幂等建立/重建接收会话（重启后内存 file_key 丢失，这里回填 key + 复位 recipient）
     {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         let gf = crate::state::GroupFile {
             transfer_id: transfer_id.clone(),
             group_id: group_id.clone(),
@@ -2480,7 +2487,7 @@ async fn handle_group_file_offer(
     let kind = if subtype == "image" { "image" } else { "file" };
     let conv_id = format!("group:{group_id}");
     let seq = {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::next_clock(&dbc, &conv_id).unwrap_or(1)
     };
     let rec = crate::state::MessageRecord {
@@ -2496,7 +2503,7 @@ async fn handle_group_file_offer(
         status: "sending".to_string(),
     };
     {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::insert_message(&dbc, &rec).ok();
         db::touch_conversation(
             &dbc,
@@ -2523,14 +2530,14 @@ async fn handle_group_file_offer(
 fn fail_group_file_chunk(state: &Arc<AppState>, transfer_id: &str) {
     file::fail_group_receive(state, transfer_id);
     set_gfile_bubble_status(state, transfer_id, "failed");
-    state.group_file_keys.lock().unwrap().remove(transfer_id);
-    let dbc = state.db.lock().unwrap();
+    state.group_file_keys.lock().unwrap_or_else(|e| e.into_inner()).remove(transfer_id);
+    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
     let _ = db::update_group_file_recipient(&dbc, transfer_id, &state.device_id, "failed", 0.0);
 }
 
 /// 群文件气泡状态推进：msg_id = gfile-{transfer_id}（收发双方本地记录）。
 fn set_gfile_bubble_status(state: &AppState, transfer_id: &str, status: &str) {
-    let dbc = state.db.lock().unwrap();
+    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
     db::set_message_status(&dbc, &format!("gfile-{transfer_id}"), status).ok();
 }
 
@@ -2548,12 +2555,12 @@ async fn handle_group_file_done(
         return;
     }
     // 幂等 / 无 session：已完成或从未建立 Offer session → 安全忽略
-    if !state.group_file_keys.lock().unwrap().contains_key(&transfer_id) {
+    if !state.group_file_keys.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&transfer_id) {
         return;
     }
     // 权限：群存在 && sender 是群成员
     let (group_exists, sender_is_member) = {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         match db::get_group(&dbc, &group_id) {
             Some(g) => (true, g.members.contains(&sender_id)),
             None => (false, false),
@@ -2562,12 +2569,12 @@ async fn handle_group_file_done(
     if !group_exists || !sender_is_member {
         return;
     }
-    let Some(gf) = db::get_group_file(&state.db.lock().unwrap(), &transfer_id) else {
+    let Some(gf) = db::get_group_file(&state.db.lock().unwrap_or_else(|e| e.into_inner()), &transfer_id) else {
         return;
     };
 
     // 空文件：无 Chunk 阶段，Done 时才建立接收状态（0 字节 .part）
-    if !state.group_file_receivers.lock().unwrap().contains_key(&transfer_id) {
+    if !state.group_file_receivers.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&transfer_id) {
         if gf.size == 0 {
             if file::begin_group_receive(
                 state,
@@ -2590,7 +2597,7 @@ async fn handle_group_file_done(
     }
 
     // 从接收表移除（取得所有权），做最终校验与落盘
-    let r = match state.group_file_receivers.lock().unwrap().remove(&transfer_id) {
+    let r = match state.group_file_receivers.lock().unwrap_or_else(|e| e.into_inner()).remove(&transfer_id) {
         Some(r) => r,
         None => return,
     };
@@ -2599,9 +2606,9 @@ async fn handle_group_file_done(
     if r.received != r.size {
         let _ = std::fs::remove_file(&r.tmp_path);
         set_gfile_bubble_status(state, &transfer_id, "failed");
-        state.group_file_keys.lock().unwrap().remove(&transfer_id);
+        state.group_file_keys.lock().unwrap_or_else(|e| e.into_inner()).remove(&transfer_id);
         {
-            let dbc = state.db.lock().unwrap();
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
             let _ =
                 db::update_group_file_recipient(&dbc, &transfer_id, &state.device_id, "failed", 0.0);
             // 接收 transfer 同步 failed
@@ -2634,9 +2641,9 @@ async fn handle_group_file_done(
         if !actual_hex.eq_ignore_ascii_case(&r.expected_sha256) {
             let _ = std::fs::remove_file(&r.tmp_path);
             set_gfile_bubble_status(state, &transfer_id, "failed");
-            state.group_file_keys.lock().unwrap().remove(&transfer_id);
+            state.group_file_keys.lock().unwrap_or_else(|e| e.into_inner()).remove(&transfer_id);
             {
-                let dbc = state.db.lock().unwrap();
+                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                 let _ = db::update_group_file_recipient(
                     &dbc,
                     &transfer_id,
@@ -2654,9 +2661,9 @@ async fn handle_group_file_done(
         let _ = e.to_string();
         let _ = std::fs::remove_file(&r.tmp_path);
         set_gfile_bubble_status(state, &transfer_id, "failed");
-        state.group_file_keys.lock().unwrap().remove(&transfer_id);
+        state.group_file_keys.lock().unwrap_or_else(|e| e.into_inner()).remove(&transfer_id);
         {
-            let dbc = state.db.lock().unwrap();
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
             let _ =
                 db::update_group_file_recipient(&dbc, &transfer_id, &state.device_id, "failed", 0.0);
             // 接收 transfer 同步 failed
@@ -2681,9 +2688,9 @@ async fn handle_group_file_done(
     if let Err(_) = std::fs::rename(&r.tmp_path, &r.final_path) {
         let _ = std::fs::remove_file(&r.tmp_path);
         set_gfile_bubble_status(state, &transfer_id, "failed");
-        state.group_file_keys.lock().unwrap().remove(&transfer_id);
+        state.group_file_keys.lock().unwrap_or_else(|e| e.into_inner()).remove(&transfer_id);
         {
-            let dbc = state.db.lock().unwrap();
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
             let _ =
                 db::update_group_file_recipient(&dbc, &transfer_id, &state.device_id, "failed", 0.0);
             // 接收 transfer 同步 failed
@@ -2705,7 +2712,7 @@ async fn handle_group_file_done(
     }
     // 全部成功：正式文件已落盘 → completed / progress 1.0 → 气泡转 delivered → 清理
     {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         let _ = db::update_group_file_recipient(&dbc, &transfer_id, &state.device_id, "completed", 1.0);
         // 群文件本地路径持久化到 transfer 记录：打开/另存/历史加载经
         // transfer_id（gfile-{tid}）关联到该真实本地路径（重启后仍有效）
@@ -2722,12 +2729,12 @@ async fn handle_group_file_done(
         )
         .ok();
     }
-    state.group_file_keys.lock().unwrap().remove(&transfer_id);
+    state.group_file_keys.lock().unwrap_or_else(|e| e.into_inner()).remove(&transfer_id);
     // 重发带本地路径的记录（applyIncoming 按 msg_id 合并更新，未读不重复）：
     // 前端气泡 content.path 就绪 → 打开/另存/图片代码预览立即可用
     let msg_id = format!("gfile-{transfer_id}");
     let seq = {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         dbc.query_row(
             "SELECT seq FROM messages WHERE msg_id = ?1",
             params![msg_id],
@@ -2760,7 +2767,7 @@ async fn handle_group_file_done(
     // 单聊 FileDone 走 insert_message 直接落库带 path 的内容；群聊 Offer 先落库无 path 的
     // 内容（文件尚未下载），Done 时必须显式更新，否则接收方图片/代码预览因缺 path 失败。
     {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::update_message_content(&dbc, &done_rec.msg_id, &done_rec.content, &done_rec.status).ok();
     }
     let _ = state.app.emit("message-received", &done_rec);
@@ -2809,7 +2816,7 @@ async fn handle_group_file_complete_ack(
         return;
     }
     // 3. transfer 必须是本机发出的群文件，且 group_id 一致
-    let Some(gf) = db::get_group_file(&state.db.lock().unwrap(), &transfer_id) else {
+    let Some(gf) = db::get_group_file(&state.db.lock().unwrap_or_else(|e| e.into_inner()), &transfer_id) else {
         return;
     };
     if gf.sender_id != state.device_id || gf.group_id != group_id {
@@ -2820,7 +2827,7 @@ async fn handle_group_file_complete_ack(
     // success=true ACK 重复到达则是无害的幂等更新。
     if !success {
         let already_completed = {
-            let dbc = state.db.lock().unwrap();
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
             db::list_group_file_recipients(&dbc, &transfer_id)
                 .unwrap_or_default()
                 .into_iter()
@@ -2845,7 +2852,7 @@ async fn handle_group_file_complete_ack(
     //   仍有 pending/sending → 气泡保持当前状态（sending），等后续 ACK。
     let bubble;
     {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         let _ = db::update_group_file_recipient(&dbc, &transfer_id, &peer_id, status, progress);
         if success {
             bubble = "delivered";
@@ -2907,7 +2914,7 @@ async fn handle_group_file_chunk(
         return;
     }
     let (group_exists, sender_is_member) = {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         match db::get_group(&dbc, &group_id) {
             Some(g) => (true, g.members.contains(&sender_id)),
             None => (false, false),
@@ -2917,11 +2924,11 @@ async fn handle_group_file_chunk(
         return;
     }
     // 会话必须已经由合法 GroupFileOffer 建立；无 key 直接丢弃（不尝试其他密钥）
-    let Some(file_key) = state.group_file_keys.lock().unwrap().get(&transfer_id).copied() else {
+    let Some(file_key) = state.group_file_keys.lock().unwrap_or_else(|e| e.into_inner()).get(&transfer_id).copied() else {
         return;
     };
     // 本地群文件记录（Offer 阶段建立）提供 name/size/sha256
-    let Some(gf) = db::get_group_file(&state.db.lock().unwrap(), &transfer_id) else {
+    let Some(gf) = db::get_group_file(&state.db.lock().unwrap_or_else(|e| e.into_inner()), &transfer_id) else {
         return;
     };
     // 只有该 transfer 的原始 sender 发来的 chunk 才合法。
@@ -2932,7 +2939,7 @@ async fn handle_group_file_chunk(
     }
 
     // 首个合法 chunk 到达时才创建 `.part`（安全路径，downloads 目录内）
-    if !state.group_file_receivers.lock().unwrap().contains_key(&transfer_id) {
+    if !state.group_file_receivers.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&transfer_id) {
         if let Err(_) = file::begin_group_receive(
             state,
             &transfer_id,
@@ -2959,7 +2966,7 @@ async fn handle_group_file_chunk(
     // seq / size 校验与写盘（复用一对一 FileReceiver 的严格语义）
     {
         use std::io::Write;
-        let mut recv = state.group_file_receivers.lock().unwrap();
+        let mut recv = state.group_file_receivers.lock().unwrap_or_else(|e| e.into_inner());
         let Some(r) = recv.get_mut(&transfer_id) else {
             return;
         };
@@ -2992,7 +2999,7 @@ async fn handle_group_file_chunk(
         };
         drop(recv);
         // 进度落库：本阶段最高 sending，不标 completed
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         let _ = db::update_group_file_recipient(
             &dbc,
             &transfer_id,
@@ -3011,7 +3018,7 @@ async fn handle_group_rename(state: &Arc<AppState>, group_id: String, from: Stri
     let name: String = name.chars().take(MAX_GROUP_NAME_LEN).collect();
     // 只接受群创建者的改名
     let is_creator = {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::get_group(&dbc, &group_id)
             .map(|g| g.creator == from)
             .unwrap_or(false)
@@ -3020,7 +3027,7 @@ async fn handle_group_rename(state: &Arc<AppState>, group_id: String, from: Stri
         return;
     }
     {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::rename_group(&dbc, &group_id, &name).ok();
     }
     let _ = state.app.emit("groups-updated", &group_id);
@@ -3037,7 +3044,7 @@ async fn handle_group_member_removed(
         return;
     }
     let is_creator = {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::get_group(&dbc, &group_id)
             .map(|g| g.creator == from)
             .unwrap_or(false)
@@ -3046,14 +3053,14 @@ async fn handle_group_member_removed(
         return;
     }
     {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::delete_group(&dbc, &group_id).ok();
         let _ = dbc.execute(
             "DELETE FROM settings WHERE key = ?1",
             params![format!("gk:{group_id}")],
         );
     }
-    state.group_keys.lock().unwrap().remove(&group_id);
+    state.group_keys.lock().unwrap_or_else(|e| e.into_inner()).remove(&group_id);
     let _ = state.app.emit("group-member-removed", &group_id);
     let _ = state.app.emit("groups-updated", &group_id);
 }
@@ -3070,7 +3077,7 @@ async fn handle_group_creator_changed(
         return; // 本机发起的转让，本地已更新
     }
     let ok = {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         match db::get_group(&dbc, &group_id) {
             Some(g) => g.creator == from && g.members.contains(&to),
             None => false,
@@ -3080,7 +3087,7 @@ async fn handle_group_creator_changed(
         return;
     }
     {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::set_group_creator(&dbc, &group_id, &to).ok();
     }
     let _ = state.app.emit("groups-updated", &group_id);
@@ -3093,7 +3100,7 @@ async fn handle_group_member_left(state: &Arc<AppState>, group_id: String, from:
         return; // 本机发起的退群，本地已处理
     }
     let changed = {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         match db::get_group(&dbc, &group_id) {
             Some(g) if g.creator != from && g.members.contains(&from) => {
                 db::remove_group_member(&dbc, &group_id, &from).is_ok()
@@ -3107,11 +3114,11 @@ async fn handle_group_member_left(state: &Arc<AppState>, group_id: String, from:
 }
 
 pub async fn get_group_key(state: &AppState, group_id: &str) -> Option<[u8; 32]> {
-    if let Some(k) = state.group_keys.lock().unwrap().get(group_id) {
+    if let Some(k) = state.group_keys.lock().unwrap_or_else(|e| e.into_inner()).get(group_id) {
         return Some(*k);
     }
     let key_b64 = {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::get_setting(&dbc, &format!("gk:{group_id}"))
     }?;
     let bytes = STANDARD.decode(key_b64).ok()?;
@@ -3125,6 +3132,44 @@ pub async fn get_group_key(state: &AppState, group_id: &str) -> Option<[u8; 32]>
 }
 
 // ---------------- 节点与好友辅助 ----------------
+
+/// 同一 device_id 报出与已绑定值不同的公钥时，向用户给出**一次**可见告警。
+///
+/// 为什么必须让用户看见：这是区分「对方重装了应用」与「有人冒名顶替」的唯一外部信号。
+/// 静默处理会让用户无法判断，违反 AI_RULES §19「不得静默接受不可验证的密钥」。
+/// 为什么只在首次告警：announce 每 5s 一次、冲突会持续存在，不去重会把聊天记录刷爆。
+///
+/// 安全行为不变：冲突时**绝不覆盖**已绑定的公钥（见 `upsert_peer` 的 key_conflict 分支），
+/// 因此最坏情况只是对方真的重装后我方需要重新建立信任，而不会把消息发给冒充者的密钥。
+fn warn_key_conflict_once(state: &AppState, device_id: &str) {
+    {
+        let mut warned = state.key_conflict_warned.lock().unwrap_or_else(|e| e.into_inner());
+        if !warned.insert(device_id.to_string()) {
+            return;
+        }
+    }
+    // 非好友不建会话：避免陌生节点刷出一串空会话
+    let name = resolve_nickname(state, device_id);
+    let is_friend = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::get_friend(&dbc, device_id).is_some()
+    };
+    if !is_friend {
+        return;
+    }
+    {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::ensure_conversation(&dbc, device_id, "single", &name, None).ok();
+    }
+    crate::commands::insert_system_message(
+        state,
+        device_id,
+        &format!(
+            "⚠️「{name}」的身份密钥发生变化，已保留原密钥未替换。可能是对方重装了应用；\
+             也不能排除有人冒名顶替，建议当面核对后再继续通信。"
+        ),
+    );
+}
 
 pub async fn upsert_peer(
     state: &AppState,
@@ -3141,7 +3186,7 @@ pub async fn upsert_peer(
     // 判断是否「新节点」或「公钥首次学到/变化」，据此决定是否做昂贵的落库与群密钥补发。
     // 500-1000 节点下，若每条 announce 都写库 + 遍历群组，会形成明显热点。
     let (is_new, key_changed, key_conflict) = {
-        let mut peers = state.peers.lock().unwrap();
+        let mut peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
         match peers.get_mut(device_id) {
             None => {
                 peers.insert(
@@ -3198,20 +3243,21 @@ pub async fn upsert_peer(
 
     if key_conflict {
         state.push_diag_event("identity_key_conflict", &format!("device_id={device_id}"));
+        warn_key_conflict_once(state, device_id);
         return;
     }
 
     // 仅在公钥首次学到/变化时才落库（避免每条 announce 都写库）
     if key_changed {
         let (x, e) = {
-            let peers = state.peers.lock().unwrap();
+            let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
             peers
                 .get(device_id)
                 .map(|p| (p.x25519_pubkey.clone(), p.ed25519_pubkey.clone()))
                 .unwrap_or((None, None))
         };
         if x.is_some() || e.is_some() {
-            let dbc = state.db.lock().unwrap();
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
             db::update_friend_pubkeys(&dbc, device_id, x.as_deref(), e.as_deref()).ok();
         }
         // 公钥变化时同步到 friends 表：Hello 可能在 announce 之前到达，
@@ -3219,7 +3265,7 @@ pub async fn upsert_peer(
         // announce 到达后更新了 peers，但 friends 表不会自动刷新。
         // 此处补一次 maybe_update_friend 确保 friends 表与 peers 同步。
         let (nick, av) = {
-            let peers = state.peers.lock().unwrap();
+            let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
             peers
                 .get(device_id)
                 .map(|p| (p.nickname.clone(), p.avatar.clone()))
@@ -3240,7 +3286,7 @@ pub async fn upsert_peer(
 /// 向指定 peer 重发本机聊天样式（复用既有 ChatStyle 消息，无新协议）。
 fn resend_chat_style(state: &AppState, peer_id: &str) {
     let style = {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::get_setting(&dbc, "chat_style")
     };
     let Some(style) = style else {
@@ -3322,14 +3368,14 @@ async fn try_send_group_key(
     group_id: &str,
 ) -> Result<(), GroupKeySendErr> {
     let pubkey = {
-        let peers = state.peers.lock().unwrap();
+        let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
         peers.get(peer_id).and_then(|p| p.x25519_pubkey.clone())
     };
     let Some(pubkey) = pubkey else {
         return Err(GroupKeySendErr::Fatal);
     };
     let found_group = {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::list_groups(&dbc)
             .unwrap_or_default()
             .into_iter()
@@ -3351,7 +3397,7 @@ async fn try_send_group_key(
         return Err(GroupKeySendErr::Fatal);
     };
     let clock = {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::get_clock(&dbc, &format!("group:{group_id}"))
     };
     let msg = Message::GroupKey {
@@ -3371,7 +3417,7 @@ async fn try_send_group_key(
 
 async fn redistribute_group_keys(state: &AppState, peer_id: &str) {
     let groups = {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::list_groups(&dbc).unwrap_or_default()
     };
     for g in groups {
@@ -3384,7 +3430,7 @@ async fn redistribute_group_keys(state: &AppState, peer_id: &str) {
                 // announce 先于 ensure_link 执行时 link 尚未建立，此前会静默丢弃
                 // 且后续 is_new/key_changed 不再触发 → 成员永久拿不到群密钥。
                 // 登记待发，由建链 / Hello / 心跳的 flush_pending_group_keys 重试。
-                let mut pending = state.pending_group_keys.lock().unwrap();
+                let mut pending = state.pending_group_keys.lock().unwrap_or_else(|e| e.into_inner());
                 mark_pending_group_key(&mut pending, peer_id, &g.id);
             }
             // 缺公钥 / 非成员 / 无密钥：重试无意义，不登记
@@ -3397,7 +3443,7 @@ async fn redistribute_group_keys(state: &AppState, peer_id: &str) {
 /// link 仍不可用则保留，等下一次 flush（Hello / 心跳 / 建链）重试。
 pub async fn flush_pending_group_keys(state: &AppState, peer_id: &str) {
     let group_ids: Vec<String> = {
-        let pending = state.pending_group_keys.lock().unwrap();
+        let pending = state.pending_group_keys.lock().unwrap_or_else(|e| e.into_inner());
         pending_group_key_ids(&pending, peer_id)
     };
     for gid in group_ids {
@@ -3406,21 +3452,21 @@ pub async fn flush_pending_group_keys(state: &AppState, peer_id: &str) {
             // 仍无链路：保留登记项，等待下一次 flush（Hello / 心跳 / 建链）
             continue;
         }
-        let mut pending = state.pending_group_keys.lock().unwrap();
+        let mut pending = state.pending_group_keys.lock().unwrap_or_else(|e| e.into_inner());
         clear_pending_group_key(&mut pending, peer_id, &gid);
     }
 }
 
 pub async fn touch_peer(state: &AppState, device_id: &str) {
     let ts = db::now_ms();
-    if let Some(p) = state.peers.lock().unwrap().get_mut(device_id) {
+    if let Some(p) = state.peers.lock().unwrap_or_else(|e| e.into_inner()).get_mut(device_id) {
         p.last_seen = ts;
     }
     state.emit_peers();
 }
 
 async fn mark_peer_offline(state: &Arc<AppState>, device_id: &str) {
-    state.peers.lock().unwrap().remove(device_id);
+    state.peers.lock().unwrap_or_else(|e| e.into_inner()).remove(device_id);
     state.emit_peers();
 }
 
@@ -3431,13 +3477,13 @@ pub(crate) fn maybe_update_friend(
     avatar: Option<String>,
 ) {
     let (x, e) = {
-        let peers = state.peers.lock().unwrap();
+        let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
         peers
             .get(device_id)
             .map(|p| (p.x25519_pubkey.clone(), p.ed25519_pubkey.clone()))
             .unwrap_or((None, None))
     };
-    let dbc = state.db.lock().unwrap();
+    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
     if db::get_friend(&dbc, device_id).is_some() {
         db::add_friend(&dbc, device_id, nickname, avatar.as_deref()).ok();
         // 好友行常在公钥落库之后才创建（好友申请通过才 add_friend），
@@ -3461,33 +3507,33 @@ fn pick_member_x25519(peers_key: Option<String>, friends_key: Option<String>) ->
 /// 避免 friends 表公钥缺失导致 GroupKey 被静默跳过、成员永久拿不到群密钥。
 pub(crate) fn resolve_member_x25519(state: &AppState, member_id: &str) -> Option<String> {
     let peers_key = {
-        let peers = state.peers.lock().unwrap();
+        let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
         peers.get(member_id).and_then(|p| p.x25519_pubkey.clone())
     };
     let friends_key = {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::get_friend_x25519(&dbc, member_id)
     };
     pick_member_x25519(peers_key, friends_key)
 }
 
 pub fn resolve_nickname(state: &AppState, id: &str) -> String {
-    if let Some(p) = state.peers.lock().unwrap().get(id) {
+    if let Some(p) = state.peers.lock().unwrap_or_else(|e| e.into_inner()).get(id) {
         if !p.nickname.is_empty() {
             return p.nickname.clone();
         }
     }
-    if let Some(r) = state.pending_requests.lock().unwrap().get(id) {
+    if let Some(r) = state.pending_requests.lock().unwrap_or_else(|e| e.into_inner()).get(id) {
         return r.from_nickname.clone();
     }
-    if let Some((n, _)) = db::get_friend(&state.db.lock().unwrap(), id) {
+    if let Some((n, _)) = db::get_friend(&state.db.lock().unwrap_or_else(|e| e.into_inner()), id) {
         return n;
     }
     id.to_string()
 }
 
 fn resolve_group_name(state: &AppState, group_id: &str) -> String {
-    let dbc = state.db.lock().unwrap();
+    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
     if let Ok(groups) = db::list_groups(&dbc) {
         if let Some(g) = groups.into_iter().find(|g| g.id == group_id) {
             return g.name;
@@ -3522,7 +3568,7 @@ fn preview_content(kind: &str, content: &str) -> String {
 /// 密文，若之后接收方换了身份，旧密文重发多少次都解不开；`msg_id` 不变，幂等性不受影响。
 pub async fn flush_outbox(state: &AppState, peer_id: &str) {
     let pending = {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::list_outbox(&dbc, peer_id).unwrap_or_default()
     };
     for (_id, payload) in pending {
@@ -3540,7 +3586,7 @@ pub async fn flush_outbox(state: &AppState, peer_id: &str) {
 /// Gossip 信封在发送时已经签名，重发无需重新签名，接收方按 msg_id 幂等去重。
 pub async fn flush_group_outbox(state: &AppState, peer_id: &str) {
     let pending = {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::list_group_outbox(&dbc, peer_id).unwrap_or_default()
     };
     for (_id, payload) in pending {
@@ -3557,18 +3603,18 @@ pub async fn flush_group_outbox(state: &AppState, peer_id: &str) {
 /// 同时清除两者；失败时内存已由 remove 清除但会重新写入，DB 保留不动
 /// （由 `mark_read` 写入，下次 flush 重试）。
 pub async fn flush_pending_reads(state: &AppState, peer_id: &str) {
-    let Some(_last_read_ts) = state.pending_reads.lock().unwrap().remove(peer_id) else {
+    let Some(_last_read_ts) = state.pending_reads.lock().unwrap_or_else(|e| e.into_inner()).remove(peer_id) else {
         return;
     };
     // 补发时重新取「对方最近一条消息」的 msg_id + ts，而不是使用之前内存里的 ts。
     // 因为 ts 可能只是被钳制后的值，msg_id 才能让发送方换算回自己的本地时间戳。
     let last = {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::last_message_from_sender(&dbc, peer_id, peer_id)
     };
     let Some((msg_id, last_read_ts)) = last else {
         // 对方没有可标记已读的消息，直接清掉 pending 即可。
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::delete_pending_read(&dbc, peer_id).ok();
         return;
     };
@@ -3580,12 +3626,12 @@ pub async fn flush_pending_reads(state: &AppState, peer_id: &str) {
     };
     if try_send(state, peer_id, &msg).await.is_err() {
         // 发送失败：内存重新放入 pending，DB 保留（已由 mark_read 写入）
-        let mut pending = state.pending_reads.lock().unwrap();
+        let mut pending = state.pending_reads.lock().unwrap_or_else(|e| e.into_inner());
         let cur = pending.entry(peer_id.to_string()).or_insert(last_read_ts);
         *cur = (*cur).max(last_read_ts);
     } else {
         // 发送成功：清除 DB 中的 pending 记录
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::delete_pending_read(&dbc, peer_id).ok();
     }
 }
@@ -3593,17 +3639,17 @@ pub async fn flush_pending_reads(state: &AppState, peer_id: &str) {
 /// 冲刷指定 peer 的待发群已读回执（触发点与单聊 pending_reads 一致）。
 pub async fn flush_pending_group_reads(state: &AppState, peer_id: &str) {
     let rows = {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::list_pending_group_reads(&dbc, peer_id).unwrap_or_default()
     };
     for (group_id, _last_read_ts) in rows {
         let conv_id = format!("group:{group_id}");
         let last = {
-            let dbc = state.db.lock().unwrap();
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
             db::last_message_from_sender(&dbc, &conv_id, peer_id)
         };
         let Some((msg_id, last_read_ts)) = last else {
-            let dbc = state.db.lock().unwrap();
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
             db::delete_pending_group_read(&dbc, &group_id, peer_id).ok();
             continue;
         };
@@ -3614,7 +3660,7 @@ pub async fn flush_pending_group_reads(state: &AppState, peer_id: &str) {
             last_read_msg_id: Some(msg_id),
         };
         if try_send(state, peer_id, &msg).await.is_ok() {
-            let dbc = state.db.lock().unwrap();
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
             db::delete_pending_group_read(&dbc, &group_id, peer_id).ok();
         }
     }

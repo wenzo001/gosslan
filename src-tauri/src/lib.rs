@@ -55,7 +55,7 @@ pub fn run() {
                     // 键缺失（首次安装 / 旧版本升级）→ 持久化为 true，之后每次启动
                     // 读到明确的 "1" 而非依赖 unwrap_or(true) 的隐式默认。
                     let enabled = {
-                        let dbc = st.db.lock().unwrap();
+                        let dbc = st.db.lock().unwrap_or_else(|e| e.into_inner());
                         crate::db::get_lan_enabled(&dbc)
                     };
                     if forced || enabled {

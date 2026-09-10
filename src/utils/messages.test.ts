@@ -8,6 +8,7 @@ import {
   messageMentionsName,
   preserveDeliveryStatus,
   previewText,
+  selectCachedConversations,
   syncProfileFromPeers,
 } from "./messages.ts";
 import type { Conversation, MessageRecord } from "../types";
@@ -373,4 +374,29 @@ test("被 @ 检测：非文本消息与空名不参与判断", () => {
 test("被 @ 检测：昵称含正则特殊字符按字面匹配", () => {
   assert.equal(messageMentionsName(msg({ content: "@a.b(1) 看看" }), "a.b(1)"), true);
   assert.equal(messageMentionsName(msg({ content: "@aXbX1 看看" }), "a.b(1)"), false);
+});
+
+// ---------------- 消息缓存上界（useChatStore 的 messages 淘汰判定） ----------------
+
+test("消息缓存上界：其余会话按 LRU 保留最近 N 个", () => {
+  // lruOrder 末尾 = 最近使用
+  const keep = selectCachedConversations(["c1", "c2", "c3", "c4", "c5"], "c5", 3);
+  assert.deepEqual([...keep].sort(), ["c3", "c4", "c5"]);
+  assert.equal(keep.has("c1"), false, "最旧的会话必须被淘汰");
+  assert.equal(keep.has("c2"), false);
+});
+
+test("消息缓存上界：活跃会话即使不在 LRU 中也必须保留", () => {
+  // 从系统通知直接打开、尚未 touch 过的会话：淘汰它会直接让用户看到空白
+  const keep = selectCachedConversations(["c1", "c2"], "cX", 1);
+  assert.equal(keep.has("cX"), true);
+  assert.equal(keep.has("c2"), true);
+  assert.equal(keep.has("c1"), false);
+});
+
+test("消息缓存上界：上限大于已缓存数量时全保留；activeId 为空时不误加", () => {
+  assert.deepEqual([...selectCachedConversations(["c1"], "c1", 4)], ["c1"]);
+  assert.deepEqual([...selectCachedConversations(["c1", "c2"], null, 1)], ["c2"]);
+  assert.deepEqual([...selectCachedConversations(["c1"], undefined, 2)], ["c1"]);
+  assert.deepEqual([...selectCachedConversations([], null, 2)], []);
 });

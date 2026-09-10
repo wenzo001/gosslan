@@ -9,6 +9,7 @@ import {
   messageMentionsName,
   preserveDeliveryStatus,
   previewText,
+  selectCachedConversations,
   syncProfileFromPeers,
 } from "@/utils/messages";
 import { useAppStore } from "@/stores/useAppStore";
@@ -260,7 +261,10 @@ export const useChatStore = defineStore("chat", () => {
     for (const [convId, incoming] of byConv) {
       const existing = messages.value[convId] ?? [];
       messages.value[convId] = mergeMessages(existing, incoming);
+      touchCacheOrder(convId);
     }
+    // 收完一批就收缩一次缓存（本轮可能让若干非活跃会话的缓存变冷）
+    enforceMessageCacheBound();
     if (missing.length > 0) {
       // 新会话：以 DB 为准拉全量（DB 已按新消息 +1），前端不再自行叠加
       await refreshConversations();
@@ -329,6 +333,8 @@ export const useChatStore = defineStore("chat", () => {
 
   async function openConversation(id: string) {
     activeConv.value = id;
+    // 标记为最近使用，并在加载完成后收缩缓存（活跃会话始终保留）
+    touchCacheOrder(id);
     // 打开即视为看到 → [有人@我] 标志随之清除
     mentionedConvs.value.delete(id);
     // 打开前先记录未读数（markRead 会清零），用于「跳到第一条未读」定位。
@@ -365,6 +371,8 @@ export const useChatStore = defineStore("chat", () => {
     await api.markRead(id);
     const conv = conversations.value.find((c) => c.id === id);
     if (conv) conv.unread = 0;
+    // 切会话后收缩一次：刚被切走的会话若已冷，就可释放其内存副本
+    enforceMessageCacheBound();
   }
 
   // ---------------- 会话内消息分页：每会话最多缓存页数（防内存无限增长） ----------------
@@ -374,8 +382,60 @@ export const useChatStore = defineStore("chat", () => {
   // 加载竞态守卫：快速切换会话时丢弃过期响应
   let loadSeq = 0;
 
+  // ---------------- 消息缓存上界：限制「同时缓存多少个会话」 ----------------
+  //
+  // 为什么需要：MAX_PAGES 只限制「一个会话能往上翻几页」，而 messages 是按会话累积的
+  // 内存副本——聊天对象一多，几十个会话各留最多 1000 条，长期挂机内存会持续增长。
+  //
+  // 为什么可以安全淘汰非活跃会话：UI 只渲染活跃会话（ChatWindow 只读 activeConv 的
+  // 消息列表），其它会话的缓存纯粹是内存副本，切回时由 loadMessages 从 SQLite 重新
+  // 加载最新一页，因此丢弃不影响任何展示。
+  //
+  // 去重不受影响：后端 insert_message_if_new 只在「真的新建一行」时 emit
+  // message-received（见 db.rs 注释），跨批次去重以它为权威；前端这份缓存只是二级保险。
+  //
+  // 仍未覆盖（已知遗留）：单个会话的实时新消息仍会不断追加，条数没有硬上界。
+  // 未做是因为裁剪头部会改变 VirtualList 的滚动锚定（用户正向上翻阅时内容会跳动），
+  // 需要与滚动状态联动，收益（每会话几 MB）不值这个回退风险。
+  const MAX_CACHED_CONVS = 4;
+  /** 会话缓存的 LRU 顺序（最近使用的在末尾） */
+  const cacheOrder: string[] = [];
+
+  function touchCacheOrder(convId: string) {
+    const i = cacheOrder.indexOf(convId);
+    if (i >= 0) cacheOrder.splice(i, 1);
+    cacheOrder.push(convId);
+  }
+
+  /** 把消息缓存收缩到 MAX_CACHED_CONVS 个会话（保留活跃会话 + 最近使用的若干个）。 */
+  function enforceMessageCacheBound() {
+    const keys = Object.keys(messages.value);
+    if (keys.length <= MAX_CACHED_CONVS) return;
+    const keep = selectCachedConversations(cacheOrder, activeConv.value, MAX_CACHED_CONVS);
+    for (const cid of keys) {
+      if (keep.has(cid)) continue;
+      delete messages.value[cid];
+      // 分页簿记一并清掉：切回该会话时 loadMessages 会重新从 DB 取最新一页
+      pagesLoaded.delete(cid);
+    }
+    // 同步收缩 LRU，避免它自身无限增长
+    for (let i = cacheOrder.length - 1; i >= 0; i--) {
+      if (!Object.prototype.hasOwnProperty.call(messages.value, cacheOrder[i])) {
+        cacheOrder.splice(i, 1);
+      }
+    }
+    // 未读定位指向已被淘汰的会话 → 清除（正常指向活跃会话，几乎不会走到）
+    if (
+      unreadJump.value &&
+      !Object.prototype.hasOwnProperty.call(messages.value, unreadJump.value.convId)
+    ) {
+      unreadJump.value = null;
+    }
+  }
+
   async function loadMessages(convId: string) {
     const seq = ++loadSeq;
+    touchCacheOrder(convId);
     // 打开会话应先加载「最新一页」，而不是最旧一页；否则底部会停在第 100 条历史，
     // 最新消息与文件都要靠后续滚动才出现。
     const total = await api.getMessageCount(convId);

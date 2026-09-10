@@ -307,6 +307,14 @@ pub struct NetworkHandle {
     pub tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 
+/// 全局应用状态。
+///
+/// 加锁约定：所有 `std::sync::Mutex` 一律用
+/// `lock().unwrap_or_else(|e| e.into_inner())` 取锁，**不要写 `.lock().unwrap()`**。
+/// 原因：Rust 的互斥量在「持锁线程 panic」后会进入中毒状态，若后续都用 `.unwrap()`，
+/// 一次 panic 就会让之后**所有**加锁点级联 panic（整个应用不可用）；
+/// `into_inner()` 取回内部数据继续用，把影响限制在最初那次 panic。
+/// （`tokio::sync::Mutex` 无中毒概念，正常 `.lock().await` 即可。）
 pub struct AppState {
     pub app: AppHandle,
     pub db: Mutex<Connection>,
@@ -395,6 +403,9 @@ pub struct AppState {
     /// Hello 握手防重放：近期已接受的 nonce（有界 FIFO，超出丢弃最旧）。
     /// 与本地时钟无关，因此不受设备间时间偏差影响。
     pub seen_hello_nonces: Mutex<VecDeque<String>>,
+    /// 已就「身份密钥冲突」告警过的 device_id（本进程内去重）。
+    /// announce 每 5s 一次、冲突会持续存在，不去重会把聊天记录刷爆。
+    pub key_conflict_warned: Mutex<std::collections::HashSet<String>>,
 }
 
 impl AppState {
@@ -526,6 +537,7 @@ impl AppState {
             diag: Mutex::new(DiscoveryDiag::default()),
             diag_events: Mutex::new(VecDeque::with_capacity(50)),
             seen_hello_nonces: Mutex::new(VecDeque::new()),
+            key_conflict_warned: Mutex::new(std::collections::HashSet::new()),
         }))
     }
 
@@ -535,7 +547,7 @@ impl AppState {
     /// 不依赖墙上时钟，避免设备间时间偏差影响判定。
     pub fn accept_hello_nonce(&self, nonce: &str) -> bool {
         const HELLO_NONCE_CACHE: usize = 512;
-        let mut q = self.seen_hello_nonces.lock().unwrap();
+        let mut q = self.seen_hello_nonces.lock().unwrap_or_else(|e| e.into_inner());
         if q.iter().any(|n| n == nonce) {
             return false;
         }
@@ -558,7 +570,7 @@ impl AppState {
 
     /// 实际序列化并推送节点表（仅由节流任务调用）。
     fn emit_peers_now(&self) {
-        let peers: Vec<Peer> = self.peers.lock().unwrap().values().cloned().collect();
+        let peers: Vec<Peer> = self.peers.lock().unwrap_or_else(|e| e.into_inner()).values().cloned().collect();
         let _ = self.app.emit("peers-updated", peers);
     }
 
@@ -569,7 +581,7 @@ impl AppState {
             kind: kind.to_string(),
             detail: detail.to_string(),
         };
-        let mut buf = self.diag_events.lock().unwrap();
+        let mut buf = self.diag_events.lock().unwrap_or_else(|e| e.into_inner());
         if buf.len() >= 50 {
             buf.pop_front();
         }

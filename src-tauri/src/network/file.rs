@@ -126,7 +126,7 @@ pub async fn send_file_from_path(
     };
 
     {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::upsert_transfer(
             &dbc,
             transfer_id,
@@ -204,7 +204,7 @@ async fn stream_file(
     let mut last_report = std::time::Instant::now() - Duration::from_secs(1);
 
     {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::upsert_transfer(
             &dbc,
             transfer_id,
@@ -246,7 +246,7 @@ async fn stream_file(
                 sent as f64 / size as f64
             };
             {
-                let dbc = state.db.lock().unwrap();
+                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                 db::upsert_transfer(
                     &dbc,
                     transfer_id,
@@ -302,7 +302,7 @@ async fn stream_file(
     }
 
     {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::upsert_transfer(
             &dbc,
             transfer_id,
@@ -364,7 +364,7 @@ pub fn begin_receive(
         &state.file_receivers,
     )?;
     {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::upsert_transfer(
             &dbc,
             transfer_id,
@@ -397,16 +397,16 @@ fn make_receiver(
     if size > i64::MAX as u64 {
         return Err("文件过大，无法安全保存".to_string());
     }
-    if receivers.lock().unwrap().contains_key(transfer_id) {
+    if receivers.lock().unwrap_or_else(|e| e.into_inner()).contains_key(transfer_id) {
         return Err("重复的文件传输".to_string());
     }
-    let dl = state.downloads_dir.lock().unwrap().clone();
+    let dl = state.downloads_dir.lock().unwrap_or_else(|e| e.into_inner()).clone();
     std::fs::create_dir_all(&dl).ok();
     let final_path = unique_path(&dl, &safe_name);
     let tmp_path = PathBuf::from(format!("{}.part", final_path.display()));
     let f = std::fs::File::create(&tmp_path).map_err(|e| e.to_string())?;
 
-    receivers.lock().unwrap().insert(
+    receivers.lock().unwrap_or_else(|e| e.into_inner()).insert(
         transfer_id.to_string(),
         FileReceiver {
             file: f,
@@ -455,7 +455,7 @@ pub fn begin_group_receive(
     // 持久化本地路径到 file_transfers（复用现有表，无 schema 变更）：
     // 群文件气泡的打开/另存/历史加载经 transfer_id 关联到该真实本地路径。
     {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::upsert_transfer(
             &dbc,
             transfer_id,
@@ -474,7 +474,7 @@ pub fn begin_group_receive(
 
 /// 群文件接收失败：删除 `.part` 并移除接收状态（不 rename、不标 done）。
 pub fn fail_group_receive(state: &AppState, transfer_id: &str) {
-    if let Some(r) = state.group_file_receivers.lock().unwrap().remove(transfer_id) {
+    if let Some(r) = state.group_file_receivers.lock().unwrap_or_else(|e| e.into_inner()).remove(transfer_id) {
         let _ = std::fs::remove_file(&r.tmp_path);
     }
 }
@@ -490,7 +490,7 @@ pub fn write_chunk(
     data: &[u8],
 ) -> Result<u64, String> {
     use std::io::Write;
-    let mut recv = state.file_receivers.lock().unwrap();
+    let mut recv = state.file_receivers.lock().unwrap_or_else(|e| e.into_inner());
     let r = recv.get_mut(transfer_id).ok_or("未知传输")?;
     if r.peer_id != peer_id {
         return Err("文件传输来源不匹配".to_string());
@@ -514,7 +514,7 @@ pub fn write_chunk(
 
 /// 终止损坏或超时的接收，删除临时文件，避免留下永远占空间的 `.part` 文件。
 pub fn fail_receive(state: &AppState, transfer_id: &str, peer_id: &str, reason: &str) -> bool {
-    let mut recv = state.file_receivers.lock().unwrap();
+    let mut recv = state.file_receivers.lock().unwrap_or_else(|e| e.into_inner());
     let Some(r) = recv.remove(transfer_id) else {
         return false;
     };
@@ -523,7 +523,7 @@ pub fn fail_receive(state: &AppState, transfer_id: &str, peer_id: &str, reason: 
         return false;
     }
     let _ = std::fs::remove_file(&r.tmp_path);
-    let dbc = state.db.lock().unwrap();
+    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
     db::upsert_transfer(
         &dbc,
         transfer_id,
@@ -561,7 +561,7 @@ pub fn finish_receive(
     transfer_id: &str,
     peer_id: &str,
 ) -> Result<Option<(String, u64, PathBuf, String)>, String> {
-    let mut recv = state.file_receivers.lock().unwrap();
+    let mut recv = state.file_receivers.lock().unwrap_or_else(|e| e.into_inner());
     let r = match recv.remove(transfer_id) {
         Some(r) => r,
         None => return Ok(None),
@@ -572,7 +572,7 @@ pub fn finish_receive(
     }
     if r.received != r.size {
         let _ = std::fs::remove_file(&r.tmp_path);
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::upsert_transfer(
             &dbc,
             transfer_id,
@@ -594,7 +594,7 @@ pub fn finish_receive(
         let actual_hex: String = actual.iter().map(|b| format!("{b:02x}")).collect();
         if !actual_hex.eq_ignore_ascii_case(&r.expected_sha256) {
             let _ = std::fs::remove_file(&r.tmp_path);
-            let dbc = state.db.lock().unwrap();
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
             db::upsert_transfer(
                 &dbc,
                 transfer_id,
@@ -613,7 +613,7 @@ pub fn finish_receive(
     if let Err(e) = r.file.sync_all() {
         let reason = e.to_string();
         let _ = std::fs::remove_file(&r.tmp_path);
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::upsert_transfer(
             &dbc,
             transfer_id,
@@ -631,7 +631,7 @@ pub fn finish_receive(
     drop(r.file);
     if let Err(e) = std::fs::rename(&r.tmp_path, &r.final_path) {
         let reason = e.to_string();
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::upsert_transfer(
             &dbc,
             transfer_id,
@@ -647,7 +647,7 @@ pub fn finish_receive(
         return Err(reason);
     }
     {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::upsert_transfer(
             &dbc,
             transfer_id,
@@ -764,7 +764,26 @@ fn unique_path(dir: &Path, name: &str) -> PathBuf {
             return cand;
         }
     }
-    base
+    // 同名文件已达 999 个（异常）：退回随机后缀。
+    // 旧实现在此直接 `return base`，而 base 必定已存在 → 静默覆盖用户已有文件。
+    for _ in 0..32 {
+        let token = STANDARD.encode(crypto::random_key());
+        let cand = if ext.is_empty() {
+            dir.join(format!("{stem}-{}", &token[..8]))
+        } else {
+            dir.join(format!("{stem}-{}.{ext}", &token[..8]))
+        };
+        if !cand.exists() {
+            return cand;
+        }
+    }
+    // 32 次随机后缀仍冲突：用完整随机串兜底（实际不可能发生）
+    let token = STANDARD.encode(crypto::random_key());
+    if ext.is_empty() {
+        dir.join(format!("{stem}-{token}"))
+    } else {
+        dir.join(format!("{stem}-{token}.{ext}"))
+    }
 }
 
 /// 文件名来自远端协议，必须只允许 basename，避免 `../` / Windows `\\` 穿越下载目录。
@@ -793,7 +812,7 @@ pub fn human_size(bytes: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_file_subtype, safe_file_name};
+    use super::{classify_file_subtype, safe_file_name, unique_path};
 
     #[test]
     fn image_extensions() {
@@ -840,6 +859,39 @@ mod tests {
             assert!(safe_file_name(name).is_none(), "{name} must be rejected");
         }
         assert_eq!(safe_file_name("report.txt").as_deref(), Some("report.txt"));
+    }
+
+    /// `unique_path` 在任何分支下都不得返回已存在的路径。
+    /// 旧实现在「同名文件已达 999 个」时直接 `return base`（base 必定已存在），
+    /// 会静默覆盖用户已有文件——这条测试锁定该兜底分支。
+    #[test]
+    fn unique_path_never_returns_existing_path() {
+        use std::fs;
+        let dir = std::env::temp_dir().join(format!("gosslan-uniquepath-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        // 无冲突：原样返回
+        assert_eq!(unique_path(&dir, "a.txt"), dir.join("a.txt"));
+
+        // 占满基准名与 1..999 全部候选名，逼出随机后缀分支
+        fs::write(dir.join("a.txt"), b"x").unwrap();
+        for i in 1..1000 {
+            fs::write(dir.join(format!("a ({i}).txt")), b"x").unwrap();
+        }
+        let got = unique_path(&dir, "a.txt");
+        assert!(!got.exists(), "返回了已存在的路径，会覆盖用户文件：{got:?}");
+        assert_ne!(got, dir.join("a.txt"));
+
+        // 无扩展名走同一分支
+        fs::write(dir.join("README"), b"x").unwrap();
+        for i in 1..1000 {
+            fs::write(dir.join(format!("README ({i})")), b"x").unwrap();
+        }
+        let got2 = unique_path(&dir, "README");
+        assert!(!got2.exists(), "返回了已存在的路径：{got2:?}");
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     // ---------- 文件传输 E2EE（协议层模拟，不依赖 AppState） ----------

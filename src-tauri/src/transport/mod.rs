@@ -77,7 +77,7 @@ impl TransportManager {
     pub fn new(state: Arc<AppState>) -> Self {
         // 从本地设置恢复蓝牙通道开关状态
         let bt_enabled = {
-            let dbc = state.db.lock().unwrap();
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
             crate::db::get_setting(&dbc, "bt_enabled")
                 .map(|v| v == "1")
                 .unwrap_or(false)

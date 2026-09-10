@@ -59,9 +59,9 @@ pub async fn start(state: Arc<AppState>, bind_ip: String) -> Result<(), String> 
     .await?;
 
     // Discovery 实际绑定的是真实 LAN IP（auto 模式下），需要让诊断面板展示它。
-    let actual_bound_ip = state.diag.lock().unwrap().bound_ip.clone();
-    *state.probe.lock().unwrap() = Some(probe_tx);
-    *state.network.lock().unwrap() = Some(NetworkHandle {
+    let actual_bound_ip = state.diag.lock().unwrap_or_else(|e| e.into_inner()).bound_ip.clone();
+    *state.probe.lock().unwrap_or_else(|e| e.into_inner()) = Some(probe_tx);
+    *state.network.lock().unwrap_or_else(|e| e.into_inner()) = Some(NetworkHandle {
         shutdown: shutdown_tx,
         bound_ip: bind_ip,
         actual_bound_ip,
@@ -75,7 +75,7 @@ pub async fn start(state: Arc<AppState>, bind_ip: String) -> Result<(), String> 
 pub async fn stop(state: &AppState) {
     // 先取出句柄再 await：`std::sync::MutexGuard` 不能跨 await，否则 stop() 的
     // future 不是 Send，无法放进 `tauri::async_runtime::spawn`。
-    let handle = state.network.lock().unwrap().take();
+    let handle = state.network.lock().unwrap_or_else(|e| e.into_inner()).take();
     if let Some(handle) = handle {
         let _ = handle.shutdown.send(true);
         // 必须等：旧的 TCP listener 只有 accept 任务退出后才真正释放。
@@ -83,10 +83,10 @@ pub async fn stop(state: &AppState) {
         // 起来的新进程）都可能撞上 AddrInUse，Windows 上表现为重启后永久掉线。
         await_tasks(handle.tasks).await;
     }
-    *state.probe.lock().unwrap() = None;
+    *state.probe.lock().unwrap_or_else(|e| e.into_inner()) = None;
     state.links.lock().await.clear();
     state.priority_links.lock().await.clear();
-    state.peers.lock().unwrap().clear();
+    state.peers.lock().unwrap_or_else(|e| e.into_inner()).clear();
     state.emit_peers();
 }
 
@@ -156,7 +156,7 @@ const AUTO_BIND_IP: &str = "0.0.0.0";
 /// 否则「默认开启」会比手动开启更脆弱：绑定失败后通道静默不在线。
 pub async fn start_from_prefs(state: Arc<AppState>) -> Result<(), String> {
     let bind_ip = {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         crate::db::get_setting(&dbc, "bind_ip").unwrap_or_else(|| AUTO_BIND_IP.to_string())
     };
     match start(state.clone(), bind_ip.clone()).await {

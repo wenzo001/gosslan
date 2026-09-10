@@ -66,10 +66,10 @@ pub fn get_device_info(state: State<'_, Arc<AppState>>) -> DeviceInfo {
     let s = state.inner();
     DeviceInfo {
         device_id: s.device_id.clone(),
-        nickname: s.nickname.lock().unwrap().clone(),
-        avatar: s.avatar.lock().unwrap().clone(),
+        nickname: s.nickname.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+        avatar: s.avatar.lock().unwrap_or_else(|e| e.into_inner()).clone(),
         tcp_port: s.tcp_port,
-        online: s.network.lock().unwrap().is_some(),
+        online: s.network.lock().unwrap_or_else(|e| e.into_inner()).is_some(),
         x25519_pubkey: s.identity.x25519_public_b64(),
         ed25519_pubkey: s.identity.ed25519_public_b64(),
     }
@@ -97,14 +97,14 @@ pub async fn update_profile(
         }
     }
     {
-        let dbc = s.db.lock().unwrap();
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         db::set_setting(&dbc, "nickname", &nickname).map_err(|e| e.to_string())?;
         if let Some(a) = &avatar {
             db::set_setting(&dbc, "avatar", a).map_err(|e| e.to_string())?;
         }
     }
-    *s.nickname.lock().unwrap() = nickname.clone();
-    *s.avatar.lock().unwrap() = avatar.clone();
+    *s.nickname.lock().unwrap_or_else(|e| e.into_inner()) = nickname.clone();
+    *s.avatar.lock().unwrap_or_else(|e| e.into_inner()) = avatar.clone();
 
     let msg = Message::UserInfo {
         device_id: s.device_id.clone(),
@@ -119,10 +119,10 @@ pub async fn update_profile(
 
     Ok(DeviceInfo {
         device_id: s.device_id.clone(),
-        nickname: s.nickname.lock().unwrap().clone(),
-        avatar: s.avatar.lock().unwrap().clone(),
+        nickname: s.nickname.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+        avatar: s.avatar.lock().unwrap_or_else(|e| e.into_inner()).clone(),
         tcp_port: s.tcp_port,
-        online: s.network.lock().unwrap().is_some(),
+        online: s.network.lock().unwrap_or_else(|e| e.into_inner()).is_some(),
         x25519_pubkey: s.identity.x25519_public_b64(),
         ed25519_pubkey: s.identity.ed25519_public_b64(),
     })
@@ -178,7 +178,7 @@ pub fn list_interfaces() -> Vec<InterfaceInfo> {
 pub async fn start_network(state: State<'_, Arc<AppState>>, bind_ip: String) -> Result<(), String> {
     let arc = state.inner().clone();
     network::start(arc, bind_ip).await?;
-    let dbc = state.db.lock().unwrap();
+    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
     db::set_lan_enabled(&dbc, true).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -186,7 +186,7 @@ pub async fn start_network(state: State<'_, Arc<AppState>>, bind_ip: String) -> 
 #[tauri::command]
 pub async fn stop_network(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     network::stop(state.inner()).await;
-    let dbc = state.db.lock().unwrap();
+    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
     db::set_lan_enabled(&dbc, false).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -194,7 +194,7 @@ pub async fn stop_network(state: State<'_, Arc<AppState>>) -> Result<(), String>
 #[tauri::command]
 pub fn get_network_status(state: State<'_, Arc<AppState>>) -> NetworkStatus {
     let s = state.inner();
-    let net = s.network.lock().unwrap();
+    let net = s.network.lock().unwrap_or_else(|e| e.into_inner());
     NetworkStatus {
         online: net.is_some(),
         bound_ip: net.as_ref().map(|n| n.bound_ip.clone()),
@@ -221,7 +221,7 @@ pub fn get_peers(state: State<'_, Arc<AppState>>) -> Vec<Peer> {
 pub async fn search_nearby_peers(state: State<'_, Arc<AppState>>) -> Result<Vec<Peer>, String> {
     let s = state.inner();
     // 触发一次探测（若网络已启动）
-    let triggered = if let Some(tx) = s.probe.lock().unwrap().as_ref() {
+    let triggered = if let Some(tx) = s.probe.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
         let next = tx.borrow().saturating_add(1);
         let _ = tx.send(next);
         true
@@ -232,7 +232,7 @@ pub async fn search_nearby_peers(state: State<'_, Arc<AppState>>) -> Result<Vec<
     if triggered {
         tokio::time::sleep(Duration::from_millis(1500)).await;
     }
-    let mut peers: Vec<Peer> = s.peers.lock().unwrap().values().cloned().collect();
+    let mut peers: Vec<Peer> = s.peers.lock().unwrap_or_else(|e| e.into_inner()).values().cloned().collect();
     peers.sort_by(|a, b| a.device_id.cmp(&b.device_id));
     Ok(peers)
 }
@@ -261,7 +261,7 @@ pub fn focus_window(_app: tauri::AppHandle) -> Result<(), String> {
 #[tauri::command]
 pub fn get_topology(state: State<'_, Arc<AppState>>) -> TopologyInfo {
     let s = state.inner();
-    let peers = s.peers.lock().unwrap();
+    let peers = s.peers.lock().unwrap_or_else(|e| e.into_inner());
     let node_count = peers.len();
     let rtts: Vec<u64> = peers.values().filter_map(|p| p.rtt_ms).collect();
     let avg_rtt_ms = if rtts.is_empty() {
@@ -269,8 +269,8 @@ pub fn get_topology(state: State<'_, Arc<AppState>>) -> TopologyInfo {
     } else {
         Some(rtts.iter().sum::<u64>() / rtts.len() as u64)
     };
-    let relay_count = s.relay.lock().unwrap().active_sends();
-    let online = s.network.lock().unwrap().is_some();
+    let relay_count = s.relay.lock().unwrap_or_else(|e| e.into_inner()).active_sends();
+    let online = s.network.lock().unwrap_or_else(|e| e.into_inner()).is_some();
     TopologyInfo {
         node_count,
         relay_count,
@@ -285,8 +285,8 @@ pub fn get_topology(state: State<'_, Arc<AppState>>) -> TopologyInfo {
 #[tauri::command]
 pub fn get_discovery_diag(state: State<'_, Arc<AppState>>) -> crate::state::DiscoveryDiag {
     let s = state.inner();
-    let net = s.network.lock().unwrap();
-    let diag = s.diag.lock().unwrap().clone();
+    let net = s.network.lock().unwrap_or_else(|e| e.into_inner());
+    let diag = s.diag.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let mut result = diag;
     if let Some(ref h) = *net {
         result.mode = if h.bound_ip == "0.0.0.0" {
@@ -307,7 +307,7 @@ pub fn get_discovery_diag(state: State<'_, Arc<AppState>>) -> crate::state::Disc
         result.mode = "offline".into();
     }
     // 附加最近事件
-    result.recent_events = s.diag_events.lock().unwrap().iter().cloned().collect();
+    result.recent_events = s.diag_events.lock().unwrap_or_else(|e| e.into_inner()).iter().cloned().collect();
     result
 }
 
@@ -423,7 +423,7 @@ pub async fn set_channel_enabled(
             } else {
                 network::stop(s).await;
             }
-            let dbc = s.db.lock().unwrap();
+            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
             db::set_lan_enabled(&dbc, enabled).ok();
             Ok(())
         }
@@ -432,7 +432,7 @@ pub async fn set_channel_enabled(
             if enabled {
                 mgr.set_bluetooth_enabled(true).await
             } else {
-                let dbc = s.db.lock().unwrap();
+                let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
                 db::set_setting(&dbc, "bt_enabled", "0").ok();
                 Ok(())
             }
@@ -445,7 +445,7 @@ const RETENTION_KEY: &str = "cache_retention_days";
 const MAX_BYTES_KEY: &str = "cache_max_bytes";
 
 fn load_policy(s: &AppState) -> CachePolicy {
-    let dbc = s.db.lock().unwrap();
+    let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
     let retention = db::get_setting(&dbc, RETENTION_KEY)
         .and_then(|v| v.parse::<u32>().ok())
         .filter(|&d| d > 0);
@@ -480,7 +480,7 @@ pub fn set_cache_policy(
     max_bytes: Option<u64>,
 ) -> Result<(), String> {
     let s = state.inner();
-    let dbc = s.db.lock().unwrap();
+    let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
     let d = retention_days.unwrap_or(0);
     db::set_setting(&dbc, RETENTION_KEY, &d.to_string()).map_err(|e| e.to_string())?;
     let m = max_bytes.unwrap_or(0);
@@ -493,7 +493,7 @@ pub fn set_cache_policy(
 pub fn clean_cache_now(state: State<'_, Arc<AppState>>) -> CleanupReport {
     let s = state.inner();
     let policy = load_policy(s);
-    let dbc = s.db.lock().unwrap();
+    let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
     cache_cleaner::clean(&s.cache_dir, policy, &*dbc)
 }
 
@@ -528,7 +528,7 @@ const SETTINGS_KEYS: [&str; 7] = [
 
 #[tauri::command]
 pub fn get_settings(state: State<'_, Arc<AppState>>) -> Settings {
-    let dbc = state.inner().db.lock().unwrap();
+    let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
     Settings {
         theme_color: db::get_setting(&dbc, "theme_color"),
         font_family: db::get_setting(&dbc, "font_family"),
@@ -541,7 +541,7 @@ pub fn get_settings(state: State<'_, Arc<AppState>>) -> Settings {
 
 #[tauri::command]
 pub fn save_settings(state: State<'_, Arc<AppState>>, settings: Settings) -> Result<(), String> {
-    let dbc = state.inner().db.lock().unwrap();
+    let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(v) = settings.theme_color {
         db::set_setting(&dbc, "theme_color", &v).map_err(|e| e.to_string())?;
     }
@@ -564,7 +564,7 @@ pub fn save_settings(state: State<'_, Arc<AppState>>, settings: Settings) -> Res
 /// 保留 device_id、x25519_secret、ed25519_secret、好友列表、聊天记录。
 #[tauri::command]
 pub fn reset_settings(state: State<'_, Arc<AppState>>) -> Result<(), String> {
-    let dbc = state.inner().db.lock().unwrap();
+    let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
     for key in SETTINGS_KEYS.iter().chain([
         &RETENTION_KEY,
         &MAX_BYTES_KEY,
@@ -602,7 +602,7 @@ pub async fn broadcast_chat_style(
 #[tauri::command]
 pub fn get_friends(state: State<'_, Arc<AppState>>) -> Vec<Friend> {
     let s = state.inner();
-    let peers = s.peers.lock().unwrap();
+    let peers = s.peers.lock().unwrap_or_else(|e| e.into_inner());
     // 同时检查活跃 TCP 链接：链路存活但 peer 已被 discovery sweep 清掉时，
     // 仍应显示在线，避免「实际可通信但 UI 显示离线」。
     let active_links: std::collections::HashSet<String> = s
@@ -610,7 +610,7 @@ pub fn get_friends(state: State<'_, Arc<AppState>>) -> Vec<Friend> {
         .try_lock()
         .map(|l| l.keys().cloned().collect())
         .unwrap_or_default();
-    let dbc = s.db.lock().unwrap();
+    let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
     let mut friends = db::list_friends(&dbc).unwrap_or_default();
     for f in friends.iter_mut() {
         f.online = peers.contains_key(&f.device_id) || active_links.contains(&f.device_id);
@@ -623,7 +623,7 @@ pub fn get_friends(state: State<'_, Arc<AppState>>) -> Vec<Friend> {
 pub async fn remove_friend(state: State<'_, Arc<AppState>>, peer_id: String) -> Result<(), String> {
     let s = state.inner();
     {
-        let dbc = s.db.lock().unwrap();
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         db::remove_friend(&dbc, &peer_id).map_err(|e| e.to_string())?;
         db::delete_file_outbox_for_peer(&dbc, &peer_id).ok();
     }
@@ -658,13 +658,13 @@ pub async fn send_friend_request(
     if peer_id.is_empty() || peer_id == s.device_id {
         return Err("不能向自己发送好友申请".to_string());
     }
-    if !s.peers.lock().unwrap().contains_key(&peer_id) {
+    if !s.peers.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&peer_id) {
         return Err("未找到该在线节点，请先重新扫描".to_string());
     }
     let msg = Message::FriendRequest {
         from: s.device_id.clone(),
-        from_nickname: s.nickname.lock().unwrap().clone(),
-        from_avatar: s.avatar.lock().unwrap().clone(),
+        from_nickname: s.nickname.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+        from_avatar: s.avatar.lock().unwrap_or_else(|e| e.into_inner()).clone(),
         to: peer_id.clone(),
         ts: db::now_ms(),
     };
@@ -678,13 +678,13 @@ pub async fn respond_friend_request(
     accept: bool,
 ) -> Result<(), String> {
     let s = state.inner();
-    if !s.pending_requests.lock().unwrap().contains_key(&peer_id) {
+    if !s.pending_requests.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&peer_id) {
         return Err("好友申请不存在或已处理".to_string());
     }
     if accept {
         let name = resolve_nickname(s, &peer_id);
         {
-            let dbc = s.db.lock().unwrap();
+            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
             db::add_friend(&dbc, &peer_id, &name, None).ok();
             db::ensure_conversation(&dbc, &peer_id, "single", &name, None).ok();
         }
@@ -698,7 +698,7 @@ pub async fn respond_friend_request(
             to: peer_id.clone(),
         };
         try_send(s, &peer_id, &msg).await?;
-        s.pending_requests.lock().unwrap().remove(&peer_id);
+        s.pending_requests.lock().unwrap_or_else(|e| e.into_inner()).remove(&peer_id);
         let _ = s.app.emit("friend-accepted", &peer_id);
     } else {
         let msg = Message::FriendReject {
@@ -706,7 +706,7 @@ pub async fn respond_friend_request(
             to: peer_id.clone(),
         };
         try_send(s, &peer_id, &msg).await?;
-        s.pending_requests.lock().unwrap().remove(&peer_id);
+        s.pending_requests.lock().unwrap_or_else(|e| e.into_inner()).remove(&peer_id);
     }
     Ok(())
 }
@@ -731,7 +731,7 @@ pub async fn send_message(
 
     // 好友关系检查：必须优先于公钥查找
     {
-        let dbc = s.db.lock().unwrap();
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         if db::get_friend(&dbc, &friend_id).is_none() {
             return Err("对方不是好友，请先扫描添加好友之后再继续聊天。".to_string());
         }
@@ -745,7 +745,7 @@ pub async fn send_message(
     // announce 落库（约 1.2s）后再查，仍缺失则报错指引。
     let pubkey = {
         let from_db = {
-            let dbc = s.db.lock().unwrap();
+            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
             db::get_friend_x25519(&dbc, &friend_id)
         };
         let from_peers = s
@@ -757,7 +757,7 @@ pub async fn send_message(
         match from_db.or(from_peers) {
             Some(k) => Some(k),
             None => {
-                let triggered = if let Some(tx) = s.probe.lock().unwrap().as_ref() {
+                let triggered = if let Some(tx) = s.probe.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
                     let next = tx.borrow().saturating_add(1);
                     let _ = tx.send(next);
                     true
@@ -768,7 +768,7 @@ pub async fn send_message(
                     tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
                 }
                 let again_db = {
-                    let dbc = s.db.lock().unwrap();
+                    let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
                     db::get_friend_x25519(&dbc, &friend_id)
                 };
                 let again_peers = s
@@ -789,7 +789,7 @@ pub async fn send_message(
 
     let ts = db::now_ms();
     let seq = {
-        let dbc = s.db.lock().unwrap();
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         db::next_clock(&dbc, &friend_id).map_err(|e| format!("逻辑时钟推进失败：{e}"))?
     };
     let name = resolve_nickname(s, &friend_id);
@@ -804,7 +804,7 @@ pub async fn send_message(
     let payload_b64 = STANDARD.encode(&sealed);
     let wire_content = format!("enc1:{}", STANDARD.encode(&sealed_content));
     let env = {
-        let gossip = s.gossip.lock().unwrap();
+        let gossip = s.gossip.lock().unwrap_or_else(|e| e.into_inner());
         gossip.build_envelope(
             &s.identity,
             &s.device_id,
@@ -849,7 +849,7 @@ pub async fn send_message(
     };
     let payload = serde_json::to_string(&queued).map_err(|e| e.to_string())?;
     {
-        let dbc = s.db.lock().unwrap();
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         db::insert_message_and_outbox(&dbc, &rec, &friend_id, &payload)
             .map_err(|e| format!("消息写入失败：{e}"))?;
         db::touch_conversation(&dbc, &friend_id, "single", &name, None, &preview, 0)
@@ -870,7 +870,7 @@ pub fn get_messages(
     limit: Option<i64>,
     offset: Option<i64>,
 ) -> Vec<MessageRecord> {
-    let dbc = state.inner().db.lock().unwrap();
+    let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
     let safe_limit = limit.unwrap_or(100).clamp(1, 500);
     let safe_offset = offset.unwrap_or(0).max(0);
     db::get_messages(&dbc, &conv_id, safe_limit, safe_offset).unwrap_or_default()
@@ -878,13 +878,13 @@ pub fn get_messages(
 
 #[tauri::command]
 pub fn get_message_count(state: State<'_, Arc<AppState>>, conv_id: String) -> i64 {
-    let dbc = state.inner().db.lock().unwrap();
+    let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
     db::count_messages(&dbc, &conv_id)
 }
 
 #[tauri::command]
 pub fn get_conversations(state: State<'_, Arc<AppState>>) -> Vec<Conversation> {
-    let dbc = state.inner().db.lock().unwrap();
+    let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
     db::list_conversations(&dbc).unwrap_or_default()
 }
 
@@ -898,11 +898,11 @@ pub fn ensure_conversation(
     let s = state.inner();
     let name = resolve_nickname(s, &friend_id);
     let avatar = {
-        let peers = s.peers.lock().unwrap();
+        let peers = s.peers.lock().unwrap_or_else(|e| e.into_inner());
         peers.get(&friend_id).and_then(|p| p.avatar.clone())
     };
     {
-        let dbc = s.db.lock().unwrap();
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         db::ensure_conversation(&dbc, &friend_id, "single", &name, avatar.as_deref())
             .map_err(|e| e.to_string())?;
     }
@@ -922,7 +922,7 @@ pub fn ensure_conversation(
 pub async fn mark_read(state: State<'_, Arc<AppState>>, conv_id: String) -> Result<(), String> {
     let s = state.inner();
     {
-        let dbc = s.db.lock().unwrap();
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         db::mark_read(&dbc, &conv_id).map_err(|e| e.to_string())?;
     }
     if !conv_id.starts_with("group:") {
@@ -931,7 +931,7 @@ pub async fn mark_read(state: State<'_, Arc<AppState>>, conv_id: String) -> Resu
         // 落库时被时钟钳制过，直接回传 ts 会让对方用自己的原始时间戳匹配不上。
         // 回传 msg_id，由发送方换算成自己的本地时间戳。
         let last = {
-            let dbc = s.db.lock().unwrap();
+            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
             db::last_message_from_sender(&dbc, &conv_id, &conv_id)
         };
         if let Some((msg_id, ts)) = last {
@@ -946,20 +946,20 @@ pub async fn mark_read(state: State<'_, Arc<AppState>>, conv_id: String) -> Resu
             // 因此无论 Ok/Err 都保留 pending：下一次心跳/建链时 flush 重发。
             let _ = crate::network::transport::try_send(s, &conv_id, &msg).await;
             {
-                let mut pending = s.pending_reads.lock().unwrap();
+                let mut pending = s.pending_reads.lock().unwrap_or_else(|e| e.into_inner());
                 let cur = pending.entry(conv_id.clone()).or_insert(ts);
                 *cur = (*cur).max(ts);
             }
             // 持久化到 DB：进程重启后 pending_reads 内存丢失时可从 DB 恢复。
             // 使用 max 语义（upsert_pending_read）保证较旧 timestamp 不覆盖较新。
             {
-                let dbc = s.db.lock().unwrap();
+                let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
                 db::upsert_pending_read(&dbc, &conv_id, ts).ok();
             }
         }
     } else if let Some(group_id) = conv_id.strip_prefix("group:") {
         let group = {
-            let dbc = s.db.lock().unwrap();
+            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
             db::get_group(&dbc, group_id)
         };
         if let Some(group) = group {
@@ -969,7 +969,7 @@ pub async fn mark_read(state: State<'_, Arc<AppState>>, conv_id: String) -> Resu
                 }
                 // 群回执同样按「该成员最近一条消息」发送，避免跨设备时钟偏差。
                 let last = {
-                    let dbc = s.db.lock().unwrap();
+                    let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
                     db::last_message_from_sender(&dbc, &conv_id, &member)
                 };
                 let Some((msg_id, last_read_ts)) = last else {
@@ -984,7 +984,7 @@ pub async fn mark_read(state: State<'_, Arc<AppState>>, conv_id: String) -> Resu
                 let _ = crate::network::transport::try_send(s, &member, &msg).await;
                 // 无论即时发送是否成功都持久化待发记录，由建链/Hello/心跳补发；
                 // 接收端按 (group_id, reader_id) 单调去重，重复送达无副作用。
-                let dbc = s.db.lock().unwrap();
+                let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
                 db::upsert_pending_group_read(&dbc, group_id, &member, last_read_ts).ok();
             }
         }
@@ -1001,11 +1001,11 @@ pub fn delete_conversation(state: State<'_, Arc<AppState>>, conv_id: String) -> 
     // 群会话删除时写删除边界：其他成员保留的历史重放不得回灌本机。
     // 边界记录当前逻辑序号，而非墙上时钟。
     if let Some(gid) = conv_id.strip_prefix("group:") {
-        let dbc = s.db.lock().unwrap();
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         let boundary = db::get_clock(&dbc, &conv_id);
         db::set_clear_boundary(&dbc, gid, boundary).map_err(|e| e.to_string())?;
     }
-    let dbc = s.db.lock().unwrap();
+    let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
     db::delete_conversation(&dbc, &conv_id).map_err(|e| e.to_string())
 }
 
@@ -1034,7 +1034,7 @@ pub fn create_group(
     all.sort();
     all.dedup();
     {
-        let dbc = s.db.lock().unwrap();
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         for member in &all {
             if db::get_friend(&dbc, member).is_none() {
                 return Err("只能把好友加入群聊".to_string());
@@ -1048,7 +1048,7 @@ pub fn create_group(
     // 生成群密钥并持久化
     let key = crypto::random_key();
     {
-        let dbc = s.db.lock().unwrap();
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         let tx = dbc.unchecked_transaction().map_err(|e| e.to_string())?;
         tx.execute(
             "INSERT INTO groups(id, name, creator, created_at) VALUES(?1, ?2, ?3, ?4)",
@@ -1075,7 +1075,7 @@ pub fn create_group(
         .map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
     }
-    s.group_keys.lock().unwrap().insert(id.clone(), key);
+    s.group_keys.lock().unwrap_or_else(|e| e.into_inner()).insert(id.clone(), key);
 
     Ok(Group {
         id,
@@ -1096,13 +1096,13 @@ pub async fn distribute_group_key(
     let key = get_group_key(s, &group_id).await.ok_or("群密钥缺失")?;
     // 同时取群名与成员：成员端靠它建立/刷新本地群记录（含成员表）
     let (group_name, members) = {
-        let dbc = s.db.lock().unwrap();
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         db::get_group(&dbc, &group_id)
             .map(|g| (g.name, g.members))
             .unwrap_or_default()
     };
     let clock = {
-        let dbc = s.db.lock().unwrap();
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         db::get_clock(&dbc, &format!("group:{group_id}"))
     };
     for m in &members {
@@ -1133,7 +1133,7 @@ pub async fn distribute_group_key(
             // 目标成员尚无 TCP link（建群时 ensure_link 可能尚未执行）：
             // 不再静默丢弃，登记待发，由建链 / Hello / 心跳的
             // flush_pending_group_keys 补发（与 redistribute_group_keys 同一机制）。
-            let mut pending = s.pending_group_keys.lock().unwrap();
+            let mut pending = s.pending_group_keys.lock().unwrap_or_else(|e| e.into_inner());
             mark_pending_group_key(&mut pending, m, &group_id);
         }
     }
@@ -1142,13 +1142,13 @@ pub async fn distribute_group_key(
 
 #[tauri::command]
 pub fn get_groups(state: State<'_, Arc<AppState>>) -> Vec<Group> {
-    let dbc = state.inner().db.lock().unwrap();
+    let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
     db::list_groups(&dbc).unwrap_or_default()
 }
 
 #[tauri::command]
 pub fn get_group_reads(state: State<'_, Arc<AppState>>, group_id: String) -> Vec<GroupReadInfo> {
-    let dbc = state.inner().db.lock().unwrap();
+    let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
     db::list_group_reads(&dbc, &group_id)
         .unwrap_or_default()
         .into_iter()
@@ -1173,14 +1173,14 @@ pub async fn rename_group(
         return Err("群名称不能为空".to_string());
     }
     let group = {
-        let dbc = s.db.lock().unwrap();
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         db::get_group(&dbc, &group_id).ok_or_else(|| "群不存在".to_string())?
     };
     if group.creator != s.device_id {
         return Err("只有群创建者可以修改群名称".to_string());
     }
     {
-        let dbc = s.db.lock().unwrap();
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         db::rename_group(&dbc, &group_id, &name).map_err(|e| e.to_string())?;
     }
     for m in &group.members {
@@ -1201,13 +1201,13 @@ pub async fn rename_group(
 /// 向成员列表里的每一位重发当前群密钥（携带群名 + 最新成员表）。
 async fn resend_group_key_to(s: &AppState, group_id: &str, members: &[String], key: [u8; 32]) {
     let group_name = {
-        let dbc = s.db.lock().unwrap();
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         db::get_group(&dbc, group_id)
             .map(|g| g.name)
             .unwrap_or_default()
     };
     let clock = {
-        let dbc = s.db.lock().unwrap();
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         db::get_clock(&dbc, &format!("group:{group_id}"))
     };
     for m in members {
@@ -1236,13 +1236,20 @@ async fn resend_group_key_to(s: &AppState, group_id: &str, members: &[String], k
         if let Err(_) = try_send(s, m, &msg).await {
             // 目标成员尚无 TCP link：登记待发，由建链 / Hello / 心跳的
             // flush_pending_group_keys 补发（与 redistribute_group_keys 同一机制）。
-            let mut pending = s.pending_group_keys.lock().unwrap();
+            let mut pending = s.pending_group_keys.lock().unwrap_or_else(|e| e.into_inner());
             mark_pending_group_key(&mut pending, m, group_id);
         }
     }
 }
 
-/// 加人入群：仅创建者。本地落成员 + 轮换群密钥后重发给全体当前成员（含新成员）。
+/// 加人入群：仅创建者。本地落成员后，用**当前**群密钥重发给全体成员（含新成员）。
+///
+/// ⚠️ 这里刻意**不轮换**群密钥：
+/// - 加人没有前向保密收益——新成员本来就没有旧密钥，转不转旧消息他都解不开；
+/// - `handle_group_key` 只接受**群主**分发的密钥（防止成员伪造密钥劫持群聊），
+///   所以一旦轮换，新密钥就只存在于群主本机。群主一旦离线，其他成员永远拿不到，
+///   整群消息都无法解密。不轮换则密钥始终是全体成员都持有的那一个，与群主是否在线无关。
+/// - 轮换只在「移除成员」时做（撤销被移除者的解密能力），那个时机群主必然在线。
 #[tauri::command]
 pub async fn group_add_member(
     state: State<'_, Arc<AppState>>,
@@ -1251,7 +1258,7 @@ pub async fn group_add_member(
 ) -> Result<(), String> {
     let s = state.inner();
     let group = {
-        let dbc = s.db.lock().unwrap();
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         db::get_group(&dbc, &group_id).ok_or_else(|| "群不存在".to_string())?
     };
     if group.creator != s.device_id {
@@ -1261,28 +1268,25 @@ pub async fn group_add_member(
         return Err("该成员已在群中".to_string());
     }
     {
-        let dbc = s.db.lock().unwrap();
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         if db::get_friend(&dbc, &device_id).is_none() {
             return Err("只能添加好友入群".to_string());
         }
     }
     {
-        let dbc = s.db.lock().unwrap();
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         db::add_group_member(&dbc, &group_id, &device_id).map_err(|e| e.to_string())?;
     }
-    // 轮换群密钥：加人后新老成员统一换新
-    let key = crypto::random_key();
-    {
-        let dbc = s.db.lock().unwrap();
-        db::set_setting(&dbc, &format!("gk:{group_id}"), &STANDARD.encode(key)).ok();
-    }
-    s.group_keys.lock().unwrap().insert(group_id.clone(), key);
+    let key = get_group_key(s, &group_id)
+        .await
+        .ok_or_else(|| "群密钥缺失".to_string())?;
     let current = {
-        let dbc = s.db.lock().unwrap();
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         db::get_group(&dbc, &group_id)
             .map(|g| g.members)
             .unwrap_or_default()
     };
+    // 现有成员收到的是同一把密钥（幂等刷新），新成员借此首次拿到密钥
     resend_group_key_to(s, &group_id, &current, key).await;
     let _ = s.app.emit("groups-updated", &group_id);
     Ok(())
@@ -1297,7 +1301,7 @@ pub async fn group_remove_member(
 ) -> Result<(), String> {
     let s = state.inner();
     let group = {
-        let dbc = s.db.lock().unwrap();
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         db::get_group(&dbc, &group_id).ok_or_else(|| "群不存在".to_string())?
     };
     if group.creator != s.device_id {
@@ -1310,7 +1314,7 @@ pub async fn group_remove_member(
         return Err("该成员不在群中".to_string());
     }
     {
-        let dbc = s.db.lock().unwrap();
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         db::remove_group_member(&dbc, &group_id, &device_id).map_err(|e| e.to_string())?;
         // 被移除者不再属于该群：清掉仍指向它的待补发群消息，避免重连时向群外成员投递。
         db::delete_group_outbox_for_peer_in_group(&dbc, &group_id, &device_id).ok();
@@ -1318,12 +1322,12 @@ pub async fn group_remove_member(
     // 轮换群密钥：被移除者失去解密能力
     let key = crypto::random_key();
     {
-        let dbc = s.db.lock().unwrap();
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         db::set_setting(&dbc, &format!("gk:{group_id}"), &STANDARD.encode(key)).ok();
     }
-    s.group_keys.lock().unwrap().insert(group_id.clone(), key);
+    s.group_keys.lock().unwrap_or_else(|e| e.into_inner()).insert(group_id.clone(), key);
     let remaining = {
-        let dbc = s.db.lock().unwrap();
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         db::get_group(&dbc, &group_id)
             .map(|g| g.members)
             .unwrap_or_default()
@@ -1351,7 +1355,7 @@ pub async fn transfer_group_creator(
 ) -> Result<(), String> {
     let s = state.inner();
     let group = {
-        let dbc = s.db.lock().unwrap();
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         db::get_group(&dbc, &group_id).ok_or_else(|| "群不存在".to_string())?
     };
     if group.creator != s.device_id {
@@ -1364,7 +1368,7 @@ pub async fn transfer_group_creator(
         return Err("只能转让给群成员".to_string());
     }
     {
-        let dbc = s.db.lock().unwrap();
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         db::set_group_creator(&dbc, &group_id, &new_creator).map_err(|e| e.to_string())?;
     }
     for m in &group.members {
@@ -1389,7 +1393,7 @@ pub async fn transfer_group_creator(
 pub async fn leave_group(state: State<'_, Arc<AppState>>, group_id: String) -> Result<(), String> {
     let s = state.inner();
     let group = {
-        let dbc = s.db.lock().unwrap();
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         db::get_group(&dbc, &group_id).ok_or_else(|| "群不存在".to_string())?
     };
     if group.creator == s.device_id {
@@ -1408,14 +1412,14 @@ pub async fn leave_group(state: State<'_, Arc<AppState>>, group_id: String) -> R
         let _ = try_send(s, m, &msg).await;
     }
     {
-        let dbc = s.db.lock().unwrap();
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         db::delete_group(&dbc, &group_id).map_err(|e| e.to_string())?;
         let _ = dbc.execute(
             "DELETE FROM settings WHERE key = ?1",
             rusqlite::params![format!("gk:{group_id}")],
         );
     }
-    s.group_keys.lock().unwrap().remove(&group_id);
+    s.group_keys.lock().unwrap_or_else(|e| e.into_inner()).remove(&group_id);
     let _ = s.app.emit("groups-updated", &group_id);
     Ok(())
 }
@@ -1494,13 +1498,13 @@ pub async fn send_group_message(
     let ts = db::now_ms();
     let conv_id = format!("group:{group_id}");
     let seq = {
-        let dbc = s.db.lock().unwrap();
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         db::next_clock(&dbc, &conv_id).map_err(|e| format!("逻辑时钟推进失败：{e}"))?
     };
     // 把群名 + 创建者 + 当前成员一并带上：跨端成员即便从未收到 GroupKey、
     // 只凭这条群消息也能在本地正确建群（含成员表），成员面板因此不为空。
     let group_meta = {
-        let dbc = s.db.lock().unwrap();
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         db::get_group(&dbc, &group_id).map(|g| (g.name, g.creator, g.members))
     };
     let (group_name, group_creator, group_members) = match group_meta {
@@ -1519,7 +1523,7 @@ pub async fn send_group_message(
     let sealed = crypto::seal_symmetric(&key, plaintext.as_bytes()).ok_or("加密失败")?;
     let payload_b64 = STANDARD.encode(&sealed);
     let env = {
-        let gossip = s.gossip.lock().unwrap();
+        let gossip = s.gossip.lock().unwrap_or_else(|e| e.into_inner());
         let mut env = gossip.build_envelope(
             &s.identity,
             &s.device_id,
@@ -1565,7 +1569,7 @@ pub async fn send_group_message(
     };
     let payload = serde_json::to_string(&gossip_msg).map_err(|e| e.to_string())?;
     {
-        let dbc = s.db.lock().unwrap();
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         let tx = dbc.unchecked_transaction().map_err(|e| e.to_string())?;
         db::insert_message(&tx, &rec).map_err(|e| format!("消息写入失败：{e}"))?;
         db::touch_conversation(&tx, &conv_id, "group", &group_name, None, &preview, 0)
@@ -1621,7 +1625,7 @@ pub async fn send_group_file(
 
     // 发起者必须是群成员（本地群存在）
     let members: Vec<String> = {
-        let dbc = s.db.lock().unwrap();
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         let group = db::get_group(&dbc, &group_id).ok_or("群不存在")?;
         if !group.members.contains(&s.device_id) {
             return Err("你不是该群成员".to_string());
@@ -1637,7 +1641,7 @@ pub async fn send_group_file(
 
     // 事务：group_files + 全部 recipient 行一次写入，避免半完成状态
     {
-        let dbc = s.db.lock().unwrap();
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         let gf = GroupFile {
             transfer_id: transfer_id.clone(),
             group_id: group_id.clone(),
@@ -1671,7 +1675,7 @@ pub async fn send_group_file(
     // 密封 file_key 持久化（群密钥封装，非明文）：重启后离线 pending
     // 群文件的投递仍能恢复 file_key（群密钥 gk:% 本身保留）
     {
-        let dbc = s.db.lock().unwrap();
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         db::set_setting(&dbc, &format!("gfk:{transfer_id}"), &sealed_file_key).ok();
     }
 
@@ -1685,7 +1689,7 @@ pub async fn send_group_file(
             .to_string();
     let conv_id = format!("group:{group_id}");
     let seq = {
-        let dbc = s.db.lock().unwrap();
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         db::next_clock(&dbc, &conv_id).unwrap_or(1)
     };
     let rec = MessageRecord {
@@ -1701,7 +1705,7 @@ pub async fn send_group_file(
         status: "sending".to_string(),
     };
     {
-        let dbc = s.db.lock().unwrap();
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         db::insert_message(&dbc, &rec).ok();
         db::upsert_transfer(
             &dbc,
@@ -1750,7 +1754,7 @@ pub async fn send_group_file(
             sealed_file_key: sealed_file_key.clone(),
         };
         if try_send(s, m, &msg).await.is_ok() {
-            let dbc = s.db.lock().unwrap();
+            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
             let _ = db::update_group_file_recipient(&dbc, &transfer_id, m, "sending", 0.0);
         }
     }
@@ -1792,7 +1796,7 @@ async fn dispatch_group_file_to_peer(
     recipient: &str,
     source_path: &str,
 ) -> Result<(), String> {
-    let gf = db::get_group_file(&state.db.lock().unwrap(), transfer_id)
+    let gf = db::get_group_file(&state.db.lock().unwrap_or_else(|e| e.into_inner()), transfer_id)
         .ok_or("群文件记录不存在")?;
     let group_key = get_group_key(state, group_id).await.ok_or("群密钥缺失")?;
     let file_key = ensure_group_file_key(state, transfer_id, group_id, &group_key)
@@ -1807,7 +1811,7 @@ async fn dispatch_group_file_to_peer(
     let size = match std::fs::metadata(&src) {
         Ok(m) if m.is_file() => m.len(),
         _ => {
-            let dbc = state.db.lock().unwrap();
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
             let _ = db::update_group_file_recipient(&dbc, transfer_id, recipient, "failed", 0.0);
             return Err("源文件已不存在".to_string());
         }
@@ -1815,7 +1819,7 @@ async fn dispatch_group_file_to_peer(
 
     // recipient → sending + Offer
     {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         let _ = db::update_group_file_recipient(&dbc, transfer_id, recipient, "sending", 0.0);
     }
     let offer = Message::GroupFileOffer {
@@ -1843,7 +1847,7 @@ async fn dispatch_group_file_to_peer(
         if n == 0 {
             break;
         }
-        let Some(key) = state.group_file_keys.lock().unwrap().get(transfer_id).copied() else {
+        let Some(key) = state.group_file_keys.lock().unwrap_or_else(|e| e.into_inner()).get(transfer_id).copied() else {
             return Err("文件会话密钥丢失".to_string());
         };
         let sealed = crypto::seal_symmetric(&key, &buf[..n]).ok_or("分片加密失败")?;
@@ -1867,7 +1871,7 @@ async fn dispatch_group_file_to_peer(
             } else {
                 sent as f64 / size as f64
             };
-            let dbc = state.db.lock().unwrap();
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
             let _ = db::update_group_file_recipient(
                 &dbc,
                 transfer_id,
@@ -1926,11 +1930,11 @@ pub fn ensure_group_file_key(
     group_key: &[u8; 32],
 ) -> Option<[u8; 32]> {
     let _ = group_id; // 预留：未来按群隔离密钥命名空间
-    if let Some(k) = state.group_file_keys.lock().unwrap().get(transfer_id) {
+    if let Some(k) = state.group_file_keys.lock().unwrap_or_else(|e| e.into_inner()).get(transfer_id) {
         return Some(*k);
     }
     let sealed_b64 = {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::get_setting(&dbc, &format!("gfk:{transfer_id}"))
     }?;
     let sealed = STANDARD.decode(sealed_b64).ok()?;
@@ -1958,18 +1962,18 @@ pub async fn flush_pending_group_files(state: &Arc<AppState>, peer_id: &str) {
         return; // 该 peer 已有投递任务在执行
     }
     let pending = {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::list_pending_group_files_for_recipient(&dbc, peer_id).unwrap_or_default()
     };
     if pending.is_empty() {
-        state.group_file_sending.lock().unwrap().remove(peer_id);
+        state.group_file_sending.lock().unwrap_or_else(|e| e.into_inner()).remove(peer_id);
         return;
     }
     let mut tasks: Vec<(String, String, String)> = Vec::new();
     for (tid, gid) in pending {
         // 源文件仍在本机（file_transfers send 行的 path）才可投递
         let src = {
-            let dbc = state.db.lock().unwrap();
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
             db::get_transfer_path(&dbc, &tid)
         };
         let ok = src
@@ -1979,12 +1983,12 @@ pub async fn flush_pending_group_files(state: &Arc<AppState>, peer_id: &str) {
         if ok {
             tasks.push((tid, gid, src.unwrap()));
         } else {
-            let dbc = state.db.lock().unwrap();
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
             let _ = db::update_group_file_recipient(&dbc, &tid, peer_id, "failed", 0.0);
         }
     }
     if tasks.is_empty() {
-        state.group_file_sending.lock().unwrap().remove(peer_id);
+        state.group_file_sending.lock().unwrap_or_else(|e| e.into_inner()).remove(peer_id);
         return;
     }
     let s2 = state.clone();
@@ -1995,7 +1999,7 @@ pub async fn flush_pending_group_files(state: &Arc<AppState>, peer_id: &str) {
                 app_handle_log(&s2, &format!("group-file dispatch {tid} -> {peer} failed: {e}"));
             }
         }
-        s2.group_file_sending.lock().unwrap().remove(&peer);
+        s2.group_file_sending.lock().unwrap_or_else(|e| e.into_inner()).remove(&peer);
     });
 }
 
@@ -2059,7 +2063,7 @@ pub fn save_outgoing_image(
 ) -> Result<serde_json::Value, String> {
     let (ext, bytes) = decode_outgoing_image(&data_url)?;
     let name = format!("image-{}.{ext}", Uuid::new_v4());
-    let dl = state.inner().downloads_dir.lock().unwrap().clone();
+    let dl = state.inner().downloads_dir.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let path = dl.join(&name);
     std::fs::create_dir_all(&dl).map_err(|e| e.to_string())?;
     std::fs::write(&path, &bytes).map_err(|e| format!("图片保存失败：{e}"))?;
@@ -2082,7 +2086,7 @@ pub fn get_group_file_delivery_summary(
     state: State<'_, Arc<AppState>>,
     transfer_id: String,
 ) -> Option<db::GroupFileDeliverySummary> {
-    let dbc = state.inner().db.lock().unwrap();
+    let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
     db::get_group_file_delivery_summary(&dbc, &transfer_id)
 }
 
@@ -2107,7 +2111,7 @@ fn build_file_message(
     })
     .to_string();
     let seq = {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::next_clock(&dbc, friend_id).unwrap_or(1)
     };
     MessageRecord {
@@ -2127,7 +2131,7 @@ fn build_file_message(
 /// 永久失败收尾：队列置 failed，消息气泡置 failed，并通知前端。
 fn fail_file_job(state: &AppState, transfer_id: &str, reason: &str) {
     {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::mark_file_outbox_failed(&dbc, transfer_id).ok();
         db::set_message_status(&dbc, &format!("file-{transfer_id}"), "failed").ok();
         // 保持 file_transfers 行已有的 name/size/path，仅把状态推进到 failed。
@@ -2148,20 +2152,20 @@ fn fail_file_job(state: &AppState, transfer_id: &str, reason: &str) {
 /// 尝试投递某 peer 的全部 pending 文件（同一 peer 串行，不同 peer 并行）。
 /// 触发点与 `flush_outbox` / `flush_group_outbox` 一致：建链 / Hello / 心跳。
 pub async fn flush_pending_files(state: &Arc<AppState>, peer_id: &str) {
-    if !state.file_sending.lock().unwrap().insert(peer_id.to_string()) {
+    if !state.file_sending.lock().unwrap_or_else(|e| e.into_inner()).insert(peer_id.to_string()) {
         return;
     }
     // 没有链路时不做无谓尝试，保持 pending，等下一次连接事件再触发。
     if !state.links.lock().await.contains_key(peer_id) {
-        state.file_sending.lock().unwrap().remove(peer_id);
+        state.file_sending.lock().unwrap_or_else(|e| e.into_inner()).remove(peer_id);
         return;
     }
     let pending = {
-        let dbc = state.db.lock().unwrap();
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::list_pending_file_outbox(&dbc, peer_id).unwrap_or_default()
     };
     if pending.is_empty() {
-        state.file_sending.lock().unwrap().remove(peer_id);
+        state.file_sending.lock().unwrap_or_else(|e| e.into_inner()).remove(peer_id);
         return;
     }
     let st = state.clone();
@@ -2172,7 +2176,7 @@ pub async fn flush_pending_files(state: &Arc<AppState>, peer_id: &str) {
                 break;
             }
             {
-                let dbc = st.db.lock().unwrap();
+                let dbc = st.db.lock().unwrap_or_else(|e| e.into_inner());
                 db::mark_file_outbox_sending(&dbc, &transfer_id, 0).ok();
             }
             match file::send_file_from_path(
@@ -2184,7 +2188,7 @@ pub async fn flush_pending_files(state: &Arc<AppState>, peer_id: &str) {
             .await
             {
                 Ok(()) => {
-                    let dbc = st.db.lock().unwrap();
+                    let dbc = st.db.lock().unwrap_or_else(|e| e.into_inner());
                     db::delete_file_outbox(&dbc, &transfer_id).ok();
                 }
                 Err(e) if !e.retryable => {
@@ -2192,12 +2196,12 @@ pub async fn flush_pending_files(state: &Arc<AppState>, peer_id: &str) {
                 }
                 Err(_) => {
                     // 可恢复失败：保留 pending，稍后由连接/心跳再次触发。
-                    let dbc = st.db.lock().unwrap();
+                    let dbc = st.db.lock().unwrap_or_else(|e| e.into_inner());
                     db::mark_file_outbox_pending(&dbc, &transfer_id, 5_000).ok();
                 }
             }
         }
-        st.file_sending.lock().unwrap().remove(&peer);
+        st.file_sending.lock().unwrap_or_else(|e| e.into_inner()).remove(&peer);
     });
 }
 
@@ -2210,7 +2214,7 @@ pub async fn send_file(
     let s = state.inner();
     // 好友关系检查
     {
-        let dbc = s.db.lock().unwrap();
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         if db::get_friend(&dbc, &friend_id).is_none() {
             return Err("对方不是好友，请先扫描添加好友之后再继续聊天。".to_string());
         }
@@ -2236,7 +2240,7 @@ pub async fn send_file(
         format!("[文件] {name}")
     };
     {
-        let dbc = s.db.lock().unwrap();
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         let tx = dbc.unchecked_transaction().map_err(|e| e.to_string())?;
         db::insert_message(&tx, &rec).map_err(|e| e.to_string())?;
         db::touch_conversation(
@@ -2300,7 +2304,7 @@ pub async fn send_file_relay(
 
 #[tauri::command]
 pub fn get_transfers(state: State<'_, Arc<AppState>>) -> Vec<TransferInfo> {
-    let dbc = state.inner().db.lock().unwrap();
+    let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
     db::list_transfers(&dbc).unwrap_or_default()
 }
 
@@ -2313,16 +2317,16 @@ pub fn set_share_dir(state: State<'_, Arc<AppState>>, path: String) -> Result<()
     }
     let s = state.inner();
     {
-        let dbc = s.db.lock().unwrap();
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         db::set_setting(&dbc, "share_dir", &path).map_err(|e| e.to_string())?;
     }
-    *s.share_dir.lock().unwrap() = Some(path);
+    *s.share_dir.lock().unwrap_or_else(|e| e.into_inner()) = Some(path);
     Ok(())
 }
 
 #[tauri::command]
 pub fn get_share_dir(state: State<'_, Arc<AppState>>) -> Option<String> {
-    state.inner().share_dir.lock().unwrap().clone()
+    state.inner().share_dir.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 /// 文件接收目录（接收的文件/图片落盘于此，可改、可在资源管理器打开）。
@@ -2346,17 +2350,17 @@ pub fn set_downloads_dir(state: State<'_, Arc<AppState>>, path: String) -> Resul
     }
     let s = state.inner();
     {
-        let dbc = s.db.lock().unwrap();
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         db::set_setting(&dbc, "downloads_dir", &path).map_err(|e| e.to_string())?;
     }
-    *s.downloads_dir.lock().unwrap() = p;
+    *s.downloads_dir.lock().unwrap_or_else(|e| e.into_inner()) = p;
     Ok(())
 }
 
 /// 在系统资源管理器中打开文件接收目录。
 #[tauri::command]
 pub fn open_downloads_dir(state: State<'_, Arc<AppState>>) -> Result<(), String> {
-    let p = state.inner().downloads_dir.lock().unwrap().clone();
+    let p = state.inner().downloads_dir.lock().unwrap_or_else(|e| e.into_inner()).clone();
     std::fs::create_dir_all(&p).map_err(|e| e.to_string())?;
     open_in_file_manager(&p)
 }
@@ -2394,7 +2398,7 @@ pub async fn request_share_tree(
 ) -> Result<Vec<ShareEntry>, String> {
     let s = state.inner();
     {
-        let dbc = s.db.lock().unwrap();
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         if db::get_friend(&dbc, &friend_id).is_none() {
             return Err("对方不是好友".to_string());
         }
@@ -2412,14 +2416,14 @@ pub async fn request_share_tree(
         to: friend_id.clone(),
     };
     if let Err(e) = try_send(s, &friend_id, &msg).await {
-        s.pending_share_tree.lock().unwrap().remove(&request_id);
+        s.pending_share_tree.lock().unwrap_or_else(|e| e.into_inner()).remove(&request_id);
         return Err(e);
     }
 
     match tokio::time::timeout(Duration::from_secs(10), rx).await {
         Ok(Ok(entries)) => Ok(entries),
         _ => {
-            s.pending_share_tree.lock().unwrap().remove(&request_id);
+            s.pending_share_tree.lock().unwrap_or_else(|e| e.into_inner()).remove(&request_id);
             Err("获取共享目录超时".to_string())
         }
     }
@@ -2433,7 +2437,7 @@ pub async fn download_shared_file(
 ) -> Result<String, String> {
     let s = state.inner();
     {
-        let dbc = s.db.lock().unwrap();
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         if db::get_friend(&dbc, &friend_id).is_none() {
             return Err("对方不是好友".to_string());
         }
@@ -2459,9 +2463,11 @@ pub async fn download_shared_file(
     Ok(transfer_id)
 }
 
-/// 插入一条本地系统消息到指定会话并推送给前端（共享下载提示等本地事件用）。
-pub fn insert_system_message(state: &Arc<AppState>, conv_id: &str, text: &str) {
-    let dbc = state.db.lock().unwrap();
+/// 插入一条本地系统消息到指定会话并推送给前端（共享下载提示、身份密钥变更告警等本地事件用）。
+/// 取 `&AppState`（而非 `&Arc<AppState>`）以便网络层 `upsert_peer` 等只持有 `&AppState`
+/// 的调用点复用；调用方传 `&Arc<AppState>` 时由 deref 自动转换。
+pub fn insert_system_message(state: &AppState, conv_id: &str, text: &str) {
+    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
     let rec = crate::state::MessageRecord {
         id: 0,
         msg_id: format!("sys-{}", Uuid::new_v4()),
@@ -2554,7 +2560,7 @@ pub fn read_file_preview(
     let s = state.inner();
     let max_bytes = max_bytes.min(15 * 1024 * 1024);
     let (sender_id, content) =
-        db::get_message_preview_source(&s.db.lock().unwrap(), &msg_id).ok_or("消息不存在")?;
+        db::get_message_preview_source(&s.db.lock().unwrap_or_else(|e| e.into_inner()), &msg_id).ok_or("消息不存在")?;
     let path = serde_json::from_str::<serde_json::Value>(&content)
         .ok()
         .and_then(|v| {
@@ -2565,7 +2571,7 @@ pub fn read_file_preview(
         .ok_or("元数据缺少路径")?;
 
     let file = std::fs::canonicalize(&path).map_err(|_| "文件不存在".to_string())?;
-    let under_downloads = std::fs::canonicalize(s.downloads_dir.lock().unwrap().as_path())
+    let under_downloads = std::fs::canonicalize(s.downloads_dir.lock().unwrap_or_else(|e| e.into_inner()).as_path())
         .map(|dir| file.starts_with(dir))
         .unwrap_or(false);
     if !under_downloads && sender_id != s.device_id {
@@ -2594,7 +2600,7 @@ pub fn clear_all_data(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     //    否则「清除聊天数据」后群还留在列表里（重新安装后还会被群主/成员的
     //    群密钥分发重新拉回）。
     {
-        let dbc = s.db.lock().unwrap();
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         let tx = dbc.unchecked_transaction().map_err(|e| e.to_string())?;
         tx.execute("DELETE FROM messages", [])
             .map_err(|e| e.to_string())?;
@@ -2634,22 +2640,22 @@ pub fn clear_all_data(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     }
 
     // 2. Runtime state 清理：群密钥内存缓存一并清空（彻底退出群聊）。
-    s.pending_requests.lock().unwrap().clear();
-    s.pending_reads.lock().unwrap().clear();
-    s.pending_file_accept.lock().unwrap().clear();
-    s.pending_file_complete.lock().unwrap().clear();
-    s.pending_share_tree.lock().unwrap().clear();
+    s.pending_requests.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    s.pending_reads.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    s.pending_file_accept.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    s.pending_file_complete.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    s.pending_share_tree.lock().unwrap_or_else(|e| e.into_inner()).clear();
     // 群文件/文件投递运行态与待发群密钥同属聊天数据运行态（不清会残留
     // 已删群的 file_key，且 pending 群密钥可能在重连时复活已删群记录）
-    s.group_file_receivers.lock().unwrap().clear();
-    s.group_file_keys.lock().unwrap().clear();
-    s.group_keys.lock().unwrap().clear();
-    s.pending_group_keys.lock().unwrap().clear();
-    s.group_file_sending.lock().unwrap().clear();
-    s.file_sending.lock().unwrap().clear();
-    *s.relay.lock().unwrap() = crate::relay_manager::RelayManager::new();
+    s.group_file_receivers.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    s.group_file_keys.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    s.group_keys.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    s.pending_group_keys.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    s.group_file_sending.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    s.file_sending.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    *s.relay.lock().unwrap_or_else(|e| e.into_inner()) = crate::relay_manager::RelayManager::new();
     // 先关闭未完成接收的文件句柄，再清理 downloads 目录中的 .part 临时文件。
-    s.file_receivers.lock().unwrap().clear();
+    s.file_receivers.lock().unwrap_or_else(|e| e.into_inner()).clear();
 
     // 3. 文件系统清理（DB commit 成功后执行）
     //    收集错误而非立即返回，避免文件清理失败伪装成"整个操作失败"
@@ -2675,7 +2681,7 @@ pub fn clear_all_data(state: State<'_, Arc<AppState>>) -> Result<(), String> {
         }
     }
     // 清空 downloads_dir 内容（保留目录本身）
-    let dl = s.downloads_dir.lock().unwrap().clone();
+    let dl = s.downloads_dir.lock().unwrap_or_else(|e| e.into_inner()).clone();
     if dl.exists() {
         for entry in std::fs::read_dir(&dl)
             .map_err(|e| e.to_string())?
@@ -2714,7 +2720,7 @@ pub fn search_messages(
     let s = state.inner();
     // 搜索关键词长度保护：按字符截断（UTF-8 安全）
     let keyword: String = keyword.chars().take(MAX_SEARCH_LEN).collect();
-    let dbc = s.db.lock().unwrap();
+    let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
     let conv_ids = db::search_messages(&dbc, &keyword, 20).map_err(|e| e.to_string())?;
     let mut results = Vec::new();
     for conv_id in conv_ids {

@@ -200,7 +200,7 @@ fn announce_packet(state: &AppState, tcp_port: u16) -> UdpPacket {
     UdpPacket {
         kind: "announce".to_string(),
         device_id: state.device_id.clone(),
-        nickname: state.nickname.lock().unwrap().clone(),
+        nickname: state.nickname.lock().unwrap_or_else(|e| e.into_inner()).clone(),
         tcp_port,
         x25519_pubkey: Some(state.identity.x25519_public_b64()),
         ed25519_pubkey: Some(state.identity.ed25519_public_b64()),
@@ -237,7 +237,7 @@ pub async fn spawn(
 
     // 记录诊断：启动参数（bound_ip 必须是真实 LAN IP，供前端开发者面板展示）
     {
-        let mut diag = state.diag.lock().unwrap();
+        let mut diag = state.diag.lock().unwrap_or_else(|e| e.into_inner());
         diag.bound_ip = udp_bind_ip.to_string();
         diag.selected_ip = udp_bind_ip.to_string();
         diag.broadcast_target = "255.255.255.255".into();
@@ -362,7 +362,7 @@ pub async fn spawn(
 
 /// 下一轮广播周期（秒）：读一次在线节点数即放锁，绝不跨 await 持锁。
 fn next_wait(state: &AppState) -> u64 {
-    let node_count = state.peers.lock().unwrap().len();
+    let node_count = state.peers.lock().unwrap_or_else(|e| e.into_inner()).len();
     adaptive_interval(node_count)
 }
 
@@ -455,7 +455,7 @@ fn sweep_peers(state: &AppState) {
         .map(|l| l.keys().cloned().collect())
         .unwrap_or_default();
     let changed = {
-        let mut peers = state.peers.lock().unwrap();
+        let mut peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
         let before = peers.len();
         peers.retain(|id, p| p.last_seen >= cutoff || active_links.contains(id));
         before != peers.len()

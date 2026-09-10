@@ -128,6 +128,23 @@ export function messageMentionsName(rec: MessageRecord, name: string): boolean {
 }
 
 /**
+ * 计算「消息缓存该保留哪些会话」：活跃会话必留，其余按 LRU 保留最近使用的至多 `maxConvs` 个。
+ *
+ * 纯函数，供 useChatStore 的消息缓存上界使用；调用方负责删除未保留的键。
+ * 单独抽出来的原因：这是「会不会把用户正在看的会话淘汰掉」的唯一判定点，必须有单测锁定。
+ */
+export function selectCachedConversations(
+  lruOrder: string[],
+  activeId: string | null | undefined,
+  maxConvs: number,
+): Set<string> {
+  const keep = new Set<string>(lruOrder.slice(-maxConvs));
+  // 活跃会话可能不在 LRU 里（例如从系统通知直接打开、尚未 touch 过）→ 必须补上
+  if (activeId) keep.add(activeId);
+  return keep;
+}
+
+/**
  * 将一批新消息应用到会话列表：更新 last_msg/last_ts、累计未读（活跃会话不计）、
  * 按 last_ts 降序重排。纯函数，便于测试与复用。
  */

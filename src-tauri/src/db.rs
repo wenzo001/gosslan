@@ -1840,10 +1840,10 @@ mod tests {
             let (c, g, w) = (conn.clone(), gate.clone(), winners.clone());
             handles.push(thread::spawn(move || {
                 g.wait();
-                let dbc = c.lock().unwrap();
+                let dbc = c.lock().unwrap_or_else(|e| e.into_inner());
                 if insert_message_if_new(&dbc, &rec_as("m1", "f1", "text", "hello")).unwrap() {
                     touch_conversation(&dbc, "f1", "single", "张三", None, "hello", 1).ok();
-                    *w.lock().unwrap() += 1;
+                    *w.lock().unwrap_or_else(|e| e.into_inner()) += 1;
                 }
             }));
         }
@@ -1851,11 +1851,11 @@ mod tests {
             h.join().unwrap();
         }
         assert_eq!(
-            *winners.lock().unwrap(),
+            *winners.lock().unwrap_or_else(|e| e.into_inner()),
             1,
             "同一 msg_id 只能有一个首次插入者"
         );
-        let dbc = conn.lock().unwrap();
+        let dbc = conn.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(get_messages(&dbc, "f1", 10, 0).unwrap().len(), 1);
         assert_eq!(list_conversations(&dbc).unwrap()[0].unread, 1);
     }
