@@ -1340,6 +1340,86 @@ pub async fn group_remove_member(
     Ok(())
 }
 
+/// 转让群主：仅**当前**群主可发起，目标必须是群成员。
+/// 本地更新创建者后广播 `GroupCreatorChanged` 给全体成员（含新群主本人）。
+/// 用于群主更换设备/卸载前移交管理权，避免群永久失去改名/加人/踢人能力。
+#[tauri::command]
+pub async fn transfer_group_creator(
+    state: State<'_, Arc<AppState>>,
+    group_id: String,
+    new_creator: String,
+) -> Result<(), String> {
+    let s = state.inner();
+    let group = {
+        let dbc = s.db.lock().unwrap();
+        db::get_group(&dbc, &group_id).ok_or_else(|| "群不存在".to_string())?
+    };
+    if group.creator != s.device_id {
+        return Err("只有群创建者可以转让群主".to_string());
+    }
+    if new_creator == s.device_id {
+        return Err("不能把群主转让给自己".to_string());
+    }
+    if !group.members.contains(&new_creator) {
+        return Err("只能转让给群成员".to_string());
+    }
+    {
+        let dbc = s.db.lock().unwrap();
+        db::set_group_creator(&dbc, &group_id, &new_creator).map_err(|e| e.to_string())?;
+    }
+    for m in &group.members {
+        if m == &s.device_id {
+            continue;
+        }
+        let msg = Message::GroupCreatorChanged {
+            group_id: group_id.clone(),
+            from: s.device_id.clone(),
+            to: new_creator.clone(),
+        };
+        let _ = try_send(s, m, &msg).await;
+    }
+    let _ = s.app.emit("groups-updated", &group_id);
+    Ok(())
+}
+
+/// 退出群聊：群主须先转让（否则该群会永久失去管理权）。
+/// 退群后清理本地群记录 / 会话 / 群密钥，并广播 `GroupMemberLeft` 让其余成员更新成员表。
+/// 复用与「被移出群」同一套本地清理路径（`db::delete_group`）。
+#[tauri::command]
+pub async fn leave_group(state: State<'_, Arc<AppState>>, group_id: String) -> Result<(), String> {
+    let s = state.inner();
+    let group = {
+        let dbc = s.db.lock().unwrap();
+        db::get_group(&dbc, &group_id).ok_or_else(|| "群不存在".to_string())?
+    };
+    if group.creator == s.device_id {
+        return Err("群主退群前请先转让群主".to_string());
+    }
+    // 先通知其余成员（本地记录删除前取成员表）；对方离线时消息会丢失，
+    // 但成员表也会随后续群消息（Gossip group_members / GroupKey）自愈。
+    for m in &group.members {
+        if m == &s.device_id {
+            continue;
+        }
+        let msg = Message::GroupMemberLeft {
+            group_id: group_id.clone(),
+            from: s.device_id.clone(),
+        };
+        let _ = try_send(s, m, &msg).await;
+    }
+    {
+        let dbc = s.db.lock().unwrap();
+        db::delete_group(&dbc, &group_id).map_err(|e| e.to_string())?;
+        let _ = dbc.execute(
+            "DELETE FROM settings WHERE key = ?1",
+            rusqlite::params![format!("gk:{group_id}")],
+        );
+    }
+    s.group_keys.lock().unwrap().remove(&group_id);
+    let _ = s.app.emit("groups-updated", &group_id);
+    Ok(())
+}
+
 // ---------------- 自绘标题栏：窗口控制 ----------------
 
 /// 最小化主窗口。

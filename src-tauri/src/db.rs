@@ -422,6 +422,17 @@ pub fn get_friend_x25519(conn: &Connection, device_id: &str) -> Option<String> {
     .flatten()
 }
 
+/// 获取好友的 Ed25519 公钥（用于 Hello 握手验签，确认 TCP 对端确实是该 device_id）。
+pub fn get_friend_ed25519(conn: &Connection, device_id: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT ed25519_pubkey FROM friends WHERE device_id = ?1",
+        params![device_id],
+        |r| r.get::<_, Option<String>>(0),
+    )
+    .ok()
+    .flatten()
+}
+
 pub fn list_friends(conn: &Connection) -> Result<Vec<Friend>> {
     let mut stmt =
         conn.prepare("SELECT device_id, nickname, avatar FROM friends ORDER BY added_at")?;
@@ -528,6 +539,15 @@ pub fn rename_group(conn: &Connection, id: &str, name: &str) -> Result<()> {
             params![name, format!("group:{id}")],
         )?;
     }
+    Ok(())
+}
+
+/// 转让群主：把群创建者改为 `creator`（调用方负责校验权限与成员资格）。
+pub fn set_group_creator(conn: &Connection, group_id: &str, creator: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE groups SET creator = ?1 WHERE id = ?2",
+        params![creator, group_id],
+    )?;
     Ok(())
 }
 
@@ -2451,6 +2471,26 @@ mod tests {
     fn get_group_file_missing_returns_none() {
         let conn = mem();
         assert!(get_group_file(&conn, "nope").is_none());
+    }
+
+    /// 群主转让：只改 creator，成员表保持不变。
+    #[test]
+    fn set_group_creator_updates_creator_only() {
+        let conn = mem();
+        let members: Vec<String> = ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
+        upsert_group(&conn, "g1", "群", "a", &members).unwrap();
+
+        set_group_creator(&conn, "g1", "b").unwrap();
+
+        let g = get_group(&conn, "g1").unwrap();
+        assert_eq!(g.creator, "b");
+        let mut got = g.members.clone();
+        got.sort();
+        assert_eq!(got, vec!["a".to_string(), "b".to_string(), "c".to_string()]);
+
+        // 不存在的群：影响 0 行，不报错也不产生记录
+        set_group_creator(&conn, "nope", "x").unwrap();
+        assert!(get_group(&conn, "nope").is_none());
     }
 
     // ---------- GroupFileOffer / session-key 阶段 ----------

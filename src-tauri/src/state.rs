@@ -392,6 +392,9 @@ pub struct AppState {
     pub diag: Mutex<DiscoveryDiag>,
     /// Discovery 事件 ring buffer（最近 50 条，防无限增长）
     pub diag_events: Mutex<VecDeque<DiscoveryEvent>>,
+    /// Hello 握手防重放：近期已接受的 nonce（有界 FIFO，超出丢弃最旧）。
+    /// 与本地时钟无关，因此不受设备间时间偏差影响。
+    pub seen_hello_nonces: Mutex<VecDeque<String>>,
 }
 
 impl AppState {
@@ -522,7 +525,25 @@ impl AppState {
             probe: Mutex::new(None),
             diag: Mutex::new(DiscoveryDiag::default()),
             diag_events: Mutex::new(VecDeque::with_capacity(50)),
+            seen_hello_nonces: Mutex::new(VecDeque::new()),
         }))
+    }
+
+    /// 记录一个 Hello nonce，返回 false 表示该 nonce 近期已出现过（重放）。
+    ///
+    /// 有界 FIFO（容量 `HELLO_NONCE_CACHE`）：握手是低频事件，线性查重成本可忽略；
+    /// 不依赖墙上时钟，避免设备间时间偏差影响判定。
+    pub fn accept_hello_nonce(&self, nonce: &str) -> bool {
+        const HELLO_NONCE_CACHE: usize = 512;
+        let mut q = self.seen_hello_nonces.lock().unwrap();
+        if q.iter().any(|n| n == nonce) {
+            return false;
+        }
+        q.push_back(nonce.to_string());
+        while q.len() > HELLO_NONCE_CACHE {
+            q.pop_front();
+        }
+        true
     }
 
     /// 标记节点表已变更，并唤醒节流推送任务。

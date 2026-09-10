@@ -499,7 +499,43 @@ bulk 通道：FileChunk / GroupFileChunk / RelayChunk / FileDone / GroupFileDone
 
 ---
 
-# 21. Invariant Change Procedure
+## 21. Handshake Identity
+
+### INV-P21 — Peer Identity Authenticated Before Link
+
+TCP 链路建立**之前**，必须先用密码学手段确认对端确实是 `peer_id` 本人。
+
+`Hello` 必须携带：
+
+```text
+nonce  : 每次握手新生成的随机串（防重放）
+sig    : Ed25519 签名，覆盖 device_id | tcp_port | nonce | x25519_pubkey | ed25519_pubkey
+```
+
+接收方校验规则：
+
+```text
+friends / peers 中已绑定该 device_id 的 Ed25519 公钥？
+    ├── 是 → 自报公钥必须等于绑定公钥，且 sig 必须用该公钥验证通过
+    └── 否 → TOFU：sig 必须用 Hello 自报的 ed25519_pubkey 验证通过
+校验失败 → 直接丢弃连接，且不得把 peer_id 写入 links / priority_links
+```
+
+原因：`handle_message` 中大量**明文控制消息**（`GroupMemberRemoved` / `GroupRename` /
+`FriendRemove` / `FriendAccept` / `ReadReceipt` / `Heartbeat` / `UserInfo`）只做
+`from == peer_id` 绑定校验。若 `peer_id` 可冒充，这些消息即可被伪造 —— 例如冒用群主
+`device_id` 发送 `GroupMemberRemoved` 可让受害者本地删除整个群。
+
+禁止：
+
+```text
+未经验签就把 Hello 自报的 device_id 当作链路身份
+为「兼容旧版本」保留无签名的 Hello 分支
+```
+
+---
+
+# 22. Invariant Change Procedure
 
 如果一个新需求必须违反现有 invariant：
 
@@ -519,7 +555,7 @@ AI 不得直接修改。
 
 ---
 
-# 22. Required Test Matrix
+# 23. Required Test Matrix
 
 核心消息功能至少覆盖：
 

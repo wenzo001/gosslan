@@ -109,6 +109,8 @@ pub fn run() {
             commands::rename_group,
             commands::group_add_member,
             commands::group_remove_member,
+            commands::transfer_group_creator,
+            commands::leave_group,
             commands::get_groups,
             commands::get_group_reads,
             commands::window_minimize,

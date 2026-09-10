@@ -31,7 +31,8 @@ use tokio::sync::mpsc;
 
 use gosslan_lib::crypto::{self, Identity};
 use gosslan_lib::protocol::{
-    GossipEnvelope, GossipKind, Message, MsgKind, UdpPacket, FILE_CHUNK, UDP_PORT,
+    hello_signing_bytes, GossipEnvelope, GossipKind, Message, MsgKind, UdpPacket, FILE_CHUNK,
+    UDP_PORT,
 };
 
 const PEER_ID: &str = "e2e-peer";
@@ -425,14 +426,26 @@ async fn main() {
 
     if let Err(e) = send_frame(
         &mut w,
-        &Message::Hello {
-            device_id: PEER_ID.into(),
-            nickname: "E2E-Peer".into(),
-            avatar: None,
-            tcp_port: 0,
-            x25519_pubkey: identity.x25519_public_b64(),
-            ed25519_pubkey: identity.ed25519_public_b64(),
-            conv_clock: 0,
+        &{
+            // Hello 必须带 Ed25519 签名：实例侧在建立链路前会验证
+            // 「该 TCP 对端确实持有 PEER_ID 绑定的私钥」，否则拒绝连接。
+            let (xk, ek) = (
+                identity.x25519_public_b64(),
+                identity.ed25519_public_b64(),
+            );
+            let nonce = STANDARD.encode(crypto::random_key());
+            let sig = identity.sign_b64(&hello_signing_bytes(PEER_ID, 0, &nonce, &xk, &ek));
+            Message::Hello {
+                device_id: PEER_ID.into(),
+                nickname: "E2E-Peer".into(),
+                avatar: None,
+                tcp_port: 0,
+                x25519_pubkey: xk,
+                ed25519_pubkey: ek,
+                conv_clock: 0,
+                nonce,
+                sig,
+            }
         },
     )
     .await

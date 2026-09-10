@@ -5,7 +5,7 @@ import { useChatStore } from "@/stores/useChatStore";
 import BaseModal from "@/components/BaseModal.vue";
 import { useMemberProfile } from "@/composables/useMemberProfile";
 import { avatarInitial, nameToColor } from "@/utils/color";
-import { Crown, Plus, UserMinus, X } from "lucide-vue-next";
+import { ArrowRightLeft, Crown, LogOut, Plus, UserMinus, X } from "lucide-vue-next";
 import type { Friend } from "@/types";
 
 const props = defineProps<{ open: boolean; groupId: string | null }>();
@@ -62,6 +62,39 @@ async function removeMember(id: string) {
     app.toast(String(e), "error");
   }
 }
+
+/** 转让群主（仅当前群主）：把管理权交给指定成员，避免换机后群无法管理。 */
+async function transferOwner(id: string) {
+  if (!props.groupId) return;
+  const p = memberProfile(id);
+  const ok = window.confirm(
+    `确定把群主转让给 ${p.name} 吗？\n\n转让后你将失去改名、添加与移除成员的权限。`,
+  );
+  if (!ok) return;
+  try {
+    await chat.transferGroupCreator(props.groupId, id);
+    app.toast(`已将群主转让给 ${p.name}`, "success");
+  } catch (e) {
+    app.toast(String(e), "error");
+  }
+}
+
+/** 退出群聊（群主须先转让，后端会拒绝并给出提示）。 */
+async function leaveGroup() {
+  if (!props.groupId) return;
+  const name = group.value?.name ?? "该群聊";
+  const ok = window.confirm(
+    `确定退出「${name}」吗？\n\n本机将删除该群的聊天记录，需要重新被拉入才能恢复。`,
+  );
+  if (!ok) return;
+  try {
+    await chat.leaveGroup(props.groupId);
+    app.toast("已退出群聊", "success");
+    emit("close");
+  } catch (e) {
+    app.toast(String(e), "error");
+  }
+}
 </script>
 
 <template>
@@ -98,7 +131,15 @@ async function removeMember(id: string) {
               {{ memberProfile(id).online ? "在线" : "离线" }}
             </div>
           </div>
-          <!-- 群主移除成员（不能移自己/创建者本人） -->
+          <!-- 群主操作：转让群主 / 移除成员（不能操作自己/创建者本人） -->
+          <button
+            v-if="isOwner && id !== myId"
+            class="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-[var(--gosslan-text-2)] transition hover:bg-amber-500/10 hover:text-amber-500"
+            :title="`把群主转让给 ${memberProfile(id).name}`"
+            @click="transferOwner(id)"
+          >
+            <ArrowRightLeft class="h-4 w-4" />
+          </button>
           <button
             v-if="isOwner && id !== myId"
             class="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-[var(--gosslan-text-2)] transition hover:bg-red-500/10 hover:text-red-500"
@@ -158,8 +199,20 @@ async function removeMember(id: string) {
         </div>
       </template>
 
+      <!-- 退出群聊：群主须先转让后再退出（后端会拒绝群主直接退群） -->
+      <button
+        v-if="!isOwner"
+        class="flex w-full items-center justify-center gap-1.5 rounded-xl border border-[var(--gosslan-border)] py-2 text-sm text-red-500 transition hover:bg-red-500/10"
+        @click="leaveGroup"
+      >
+        <LogOut class="h-4 w-4" />
+        退出群聊
+      </button>
       <p v-if="!isOwner" class="text-[11px] text-[var(--gosslan-text-2)]">
-        仅群创建者可管理成员
+        仅群创建者可管理成员（添加 / 移除 / 转让群主）。
+      </p>
+      <p v-else class="text-[11px] text-[var(--gosslan-text-2)]">
+        群主如需退出群聊，请先把群主转让给其他成员。
       </p>
     </div>
   </BaseModal>

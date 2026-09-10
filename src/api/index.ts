@@ -69,6 +69,9 @@ export const api = {
     invoke<void>("group_add_member", { groupId, deviceId }),
   groupRemoveMember: (groupId: string, deviceId: string) =>
     invoke<void>("group_remove_member", { groupId, deviceId }),
+  transferGroupCreator: (groupId: string, newCreator: string) =>
+    invoke<void>("transfer_group_creator", { groupId, newCreator }),
+  leaveGroup: (groupId: string) => invoke<void>("leave_group", { groupId }),
   getGroups: () => invoke<Group[]>("get_groups"),
   getGroupReads: (groupId: string) => invoke<GroupReadInfo[]>("get_group_reads", { groupId }),
   sendGroupMessage: (groupId: string, content: string, kind: string) =>

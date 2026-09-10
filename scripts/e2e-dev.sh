@@ -64,7 +64,11 @@ for i in $(seq 1 10); do
 done
 sqlite3 "$DB" "PRAGMA wal_checkpoint(TRUNCATE);" >/dev/null 2>&1
 
-echo "==> [4/5] 启动实例 1（GOSSLAN_AUTOSTART=1，TCP 60002）"
+echo "==> [4/5] 清理上一轮 e2e-peer 身份绑定 + 启动实例 1（GOSSLAN_AUTOSTART=1，TCP 60002）"
+# e2e_peer 每次运行都生成全新身份密钥。实例侧的 Hello 身份认证会用 friends 表里
+# 绑定的公钥验签，若沿用上一轮的绑定，新身份的 Hello 会因「公钥与已绑定身份不符」
+# 被正确拒绝（这正是认证生效的表现）。因此测前清掉该测试身份，让本轮走 TOFU 重新绑定。
+sqlite3 "$DB" "DELETE FROM friends WHERE device_id='e2e-peer';" >/dev/null 2>&1
 GOSSLAN_AUTOSTART=1 "$BIN" --instance 1 >/tmp/gosslan-dev.log 2>&1 &
 APP_PID=$!
 READY=0

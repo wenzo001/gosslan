@@ -567,6 +567,18 @@ export const useChatStore = defineStore("chat", () => {
     await refreshConversations();
   }
 
+  /** 转让群主（仅当前群主）。后端会向全体成员广播新群主。 */
+  async function transferGroupCreator(groupId: string, newCreator: string) {
+    await api.transferGroupCreator(groupId, newCreator);
+    await refreshGroups();
+  }
+
+  /** 退出群聊（群主须先转让）。退出后复用「被移出群」的本地清理路径。 */
+  async function leaveGroup(groupId: string) {
+    await api.leaveGroup(groupId);
+    await handleSelfRemovedFromGroup(groupId);
+  }
+
   /** 自己被移出群：关闭该会话并刷新。 */
   async function handleSelfRemovedFromGroup(groupId: string) {
     const convId = `group:${groupId}`;
@@ -900,6 +912,8 @@ export const useChatStore = defineStore("chat", () => {
     renameGroup,
     addGroupMember,
     removeGroupMember,
+    transferGroupCreator,
+    leaveGroup,
     handleSelfRemovedFromGroup,
     sendFileTo,
     sendFileRelayTo,

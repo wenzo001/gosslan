@@ -23,7 +23,7 @@ use crate::commands::{is_virtual_ip, MAX_GROUP_NAME_LEN};
 use crate::crypto;
 use crate::db;
 use crate::network::file;
-use crate::protocol::{GossipEnvelope, GossipKind, Message, MsgKind, MAX_FRAME};
+use crate::protocol::{hello_signing_bytes, GossipEnvelope, GossipKind, Message, MsgKind, MAX_FRAME};
 use crate::state::{
     AppState, FileDoneInfo, FileFailedInfo, FileProgress, MessageRecord, Peer, PendingRequest,
 };
@@ -236,6 +236,120 @@ fn set_abortive_close(stream: &TcpStream) {
     }
 }
 
+/// Hello 认证的**纯判定**：给定「已绑定公钥」（`None` = 首次接触 TOFU），
+/// 判断本次 Hello 是否可信。抽出来是为了可单测（不依赖 AppState）。
+fn hello_auth_decision(
+    bound: Option<&str>,
+    device_id: &str,
+    tcp_port: u16,
+    nonce: &str,
+    x25519_pubkey: &str,
+    ed25519_pubkey: &str,
+    sig_b64: &str,
+) -> Result<(), String> {
+    if nonce.is_empty() || sig_b64.is_empty() {
+        return Err(format!("Hello 缺少 nonce/sig（device_id={device_id}）"));
+    }
+    let data = hello_signing_bytes(device_id, tcp_port, nonce, x25519_pubkey, ed25519_pubkey);
+    match bound {
+        // 已知身份：自报公钥必须与绑定公钥一致，且签名必须由该公钥验证通过。
+        // 攻击者即便拿到真实公钥也签不出来；用自己公钥签名则与绑定值不符。
+        Some(expected) => {
+            if expected != ed25519_pubkey {
+                return Err(format!("Hello 公钥与已绑定身份不符（device_id={device_id}）"));
+            }
+            if !crypto::verify_signature(expected, &data, sig_b64) {
+                return Err(format!("Hello 签名校验失败（device_id={device_id}）"));
+            }
+            Ok(())
+        }
+        // 首次接触（TOFU）：仅要求自洽签名；密钥绑定在后续 announce/upsert 中固化。
+        // 注意：TOFU 分支无法冒充「已建立信任的身份」——那是上面 Some 分支的事。
+        None => {
+            if !crypto::verify_signature(ed25519_pubkey, &data, sig_b64) {
+                return Err(format!("Hello 自签名校验失败（device_id={device_id}）"));
+            }
+            Ok(())
+        }
+    }
+}
+
+/// 校验 Hello 握手，确认 TCP 对端确实持有 `device_id` 绑定的 Ed25519 私钥。
+///
+/// 信任根：`friends`（持久、权威）→ `peers`（运行时）中该 device_id 已绑定的
+/// Ed25519 公钥。两者都没有时才走 TOFU（首次接触），用 Hello 自带的公钥验签。
+///
+/// 这封堵的是：任意局域网节点在 Hello 里自报好友/群主的 device_id 即可建立链路，
+/// 随后利用 `from == peer_id` 的绑定关系伪造 GroupMemberRemoved / GroupRename 等
+/// 明文控制消息（把群从受害者本地删掉、改名）。已建立信任的身份必须签名匹配。
+///
+/// 返回 `Err(原因)` 表示必须拒绝该连接。
+fn verify_hello(
+    state: &AppState,
+    device_id: &str,
+    tcp_port: u16,
+    nonce: &str,
+    x25519_pubkey: &str,
+    ed25519_pubkey: &str,
+    sig_b64: &str,
+) -> Result<(), String> {
+    if nonce.is_empty() || sig_b64.is_empty() {
+        return Err(format!("Hello 缺少 nonce/sig（device_id={device_id}）"));
+    }
+    if !state.accept_hello_nonce(nonce) {
+        return Err(format!("Hello nonce 重放（device_id={device_id}）"));
+    }
+    // 已绑定身份：好友表优先（持久），在线节点表回落（对方可能尚未成为好友但已在发现阶段绑定）
+    let bound = {
+        let dbc = state.db.lock().unwrap();
+        db::get_friend_ed25519(&dbc, device_id)
+    }
+    .or_else(|| {
+        state
+            .peers
+            .lock()
+            .unwrap()
+            .get(device_id)
+            .and_then(|p| p.ed25519_pubkey.clone())
+    });
+    hello_auth_decision(
+        bound.as_deref(),
+        device_id,
+        tcp_port,
+        nonce,
+        x25519_pubkey,
+        ed25519_pubkey,
+        sig_b64,
+    )
+}
+
+/// 构造带签名的 Hello（nonce 每次新生成，签名覆盖连接身份的全部字段）。
+pub fn build_signed_hello(state: &AppState, conv_clock: i64) -> Message {
+    let device_id = state.device_id.clone();
+    let tcp_port = state.tcp_port;
+    let x25519_pubkey = state.identity.x25519_public_b64();
+    let ed25519_pubkey = state.identity.ed25519_public_b64();
+    let nonce = STANDARD.encode(crypto::random_key());
+    let sig = state.identity.sign_b64(&hello_signing_bytes(
+        &device_id,
+        tcp_port,
+        &nonce,
+        &x25519_pubkey,
+        &ed25519_pubkey,
+    ));
+    Message::Hello {
+        device_id,
+        nickname: state.nickname.lock().unwrap().clone(),
+        avatar: state.avatar.lock().unwrap().clone(),
+        tcp_port,
+        x25519_pubkey,
+        ed25519_pubkey,
+        conv_clock,
+        nonce,
+        sig,
+    }
+}
+
 async fn handle_incoming(
     state: Arc<AppState>,
     stream: TcpStream,
@@ -250,8 +364,33 @@ async fn handle_incoming(
         Ok(m) => m,
         Err(_) => return,
     };
+    // 首帧必须是 Hello，且必须先通过身份认证才允许建立链路。
+    // 认证失败直接丢弃连接（不插入 links），否则任意节点可冒用他人 device_id 建链。
     let peer_id = match &first {
-        Message::Hello { device_id, .. } => device_id.clone(),
+        Message::Hello {
+            device_id,
+            tcp_port,
+            nonce,
+            sig,
+            x25519_pubkey,
+            ed25519_pubkey,
+            ..
+        } => {
+            if let Err(reason) = verify_hello(
+                &state,
+                device_id,
+                *tcp_port,
+                nonce,
+                x25519_pubkey,
+                ed25519_pubkey,
+                sig,
+            ) {
+                state.push_diag_event("hello_rejected", &format!("{reason}; from={peer_addr}"));
+                eprintln!("[transport] 拒绝未通过身份认证的 Hello: {reason}");
+                return;
+            }
+            device_id.clone()
+        }
         _ => return, // 首帧必须是 Hello
     };
     let (bulk_tx, bulk_rx) = mpsc::channel(1024);
@@ -464,15 +603,7 @@ async fn connect_to_peer(
         let dbc = state.db.lock().unwrap();
         db::get_clock(&dbc, peer_id)
     };
-    let hello = Message::Hello {
-        device_id: state.device_id.clone(),
-        nickname: state.nickname.lock().unwrap().clone(),
-        avatar: state.avatar.lock().unwrap().clone(),
-        tcp_port: state.tcp_port,
-        x25519_pubkey: state.identity.x25519_public_b64(),
-        ed25519_pubkey: state.identity.ed25519_public_b64(),
-        conv_clock,
-    };
+    let hello = build_signed_hello(state, conv_clock);
     let _ = prio_tx.send(hello).await;
 
     tokio::spawn(reader_loop(
@@ -505,6 +636,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             x25519_pubkey,
             ed25519_pubkey,
             conv_clock,
+            ..
         } => {
             if device_id != peer_id {
                 return;
@@ -1392,6 +1524,18 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 return;
             }
             handle_group_member_removed(state, group_id, from, to).await;
+        }
+        Message::GroupCreatorChanged { group_id, from, to } => {
+            if from != peer_id {
+                return;
+            }
+            handle_group_creator_changed(state, group_id, from, to).await;
+        }
+        Message::GroupMemberLeft { group_id, from } => {
+            if from != peer_id {
+                return;
+            }
+            handle_group_member_left(state, group_id, from).await;
         }
         Message::GroupFileOffer {
             transfer_id,
@@ -2914,6 +3058,54 @@ async fn handle_group_member_removed(
     let _ = state.app.emit("groups-updated", &group_id);
 }
 
+/// 处理「群主转让」：只接受**当前创建者**发起、且新群主确实是群成员的转让。
+/// 广播给全体成员，因此新任群主自己也会收到并更新本地记录。
+async fn handle_group_creator_changed(
+    state: &Arc<AppState>,
+    group_id: String,
+    from: String,
+    to: String,
+) {
+    if from == state.device_id {
+        return; // 本机发起的转让，本地已更新
+    }
+    let ok = {
+        let dbc = state.db.lock().unwrap();
+        match db::get_group(&dbc, &group_id) {
+            Some(g) => g.creator == from && g.members.contains(&to),
+            None => false,
+        }
+    };
+    if !ok {
+        return;
+    }
+    {
+        let dbc = state.db.lock().unwrap();
+        db::set_group_creator(&dbc, &group_id, &to).ok();
+    }
+    let _ = state.app.emit("groups-updated", &group_id);
+}
+
+/// 处理「成员主动退群」：把 `from` 从本地成员表移除（幂等）。
+/// 群主不允许直接退群（须先转让），因此忽略「群主退出」这类异常/伪造消息。
+async fn handle_group_member_left(state: &Arc<AppState>, group_id: String, from: String) {
+    if from == state.device_id {
+        return; // 本机发起的退群，本地已处理
+    }
+    let changed = {
+        let dbc = state.db.lock().unwrap();
+        match db::get_group(&dbc, &group_id) {
+            Some(g) if g.creator != from && g.members.contains(&from) => {
+                db::remove_group_member(&dbc, &group_id, &from).is_ok()
+            }
+            _ => false,
+        }
+    };
+    if changed {
+        let _ = state.app.emit("groups-updated", &group_id);
+    }
+}
+
 pub async fn get_group_key(state: &AppState, group_id: &str) -> Option<[u8; 32]> {
     if let Some(k) = state.group_keys.lock().unwrap().get(group_id) {
         return Some(*k);
@@ -3450,6 +3642,95 @@ pub fn notify_with_extra(
 mod tests {
     use super::*;
     use crate::gossip_engine::GossipEngine;
+
+    // ---- Hello 握手身份认证（P0 安全修复回归）----
+
+    /// 用 `signer` 对其公钥 + 指定字段签名，返回 (x25519_pub, ed25519_pub, sig)。
+    fn signed_hello(
+        signer: &crypto::Identity,
+        device_id: &str,
+        tcp_port: u16,
+        nonce: &str,
+    ) -> (String, String, String) {
+        let xk = signer.x25519_public_b64();
+        let ek = signer.ed25519_public_b64();
+        let sig = signer.sign_b64(&hello_signing_bytes(device_id, tcp_port, nonce, &xk, &ek));
+        (xk, ek, sig)
+    }
+
+    #[test]
+    fn hello_auth_accepts_bound_identity() {
+        let id = crypto::Identity::generate();
+        let (xk, ek, sig) = signed_hello(&id, "dev-a", 59992, "n1");
+        let bound = id.ed25519_public_b64();
+        assert!(hello_auth_decision(Some(&bound), "dev-a", 59992, "n1", &xk, &ek, &sig).is_ok());
+    }
+
+    #[test]
+    fn hello_auth_rejects_attacker_declaring_own_key() {
+        // 攻击者用自己的密钥签一个「自称是受害者 device_id」的 Hello。
+        // 我方已绑定受害者真实公钥 → 自报公钥与绑定不符 → 拒绝。
+        let attacker = crypto::Identity::generate();
+        let victim = crypto::Identity::generate();
+        let (xk, ek, sig) = signed_hello(&attacker, "victim-device", 59992, "n1");
+        let bound = victim.ed25519_public_b64();
+        assert!(hello_auth_decision(Some(&bound), "victim-device", 59992, "n1", &xk, &ek, &sig)
+            .is_err());
+    }
+
+    #[test]
+    fn hello_auth_rejects_forged_sig_with_victim_pubkey() {
+        // 攻击者偷到受害者公钥（announce 里是公开信息），但没有私钥 → 签名验不过。
+        let attacker = crypto::Identity::generate();
+        let victim = crypto::Identity::generate();
+        let victim_ek = victim.ed25519_public_b64();
+        let victim_xk = victim.x25519_public_b64();
+        let sig = attacker.sign_b64(&hello_signing_bytes(
+            "victim-device",
+            59992,
+            "n1",
+            &victim_xk,
+            &victim_ek,
+        ));
+        assert!(
+            hello_auth_decision(
+                Some(&victim_ek),
+                "victim-device",
+                59992,
+                "n1",
+                &victim_xk,
+                &victim_ek,
+                &sig
+            )
+            .is_err(),
+            "冒用绑定公钥但签名不匹配必须被拒"
+        );
+    }
+
+    #[test]
+    fn hello_auth_rejects_missing_signature_and_tampering() {
+        let id = crypto::Identity::generate();
+        let (xk, ek, sig) = signed_hello(&id, "dev-a", 59992, "n1");
+        let bound = id.ed25519_public_b64();
+        // 缺 nonce / sig
+        assert!(hello_auth_decision(Some(&bound), "dev-a", 59992, "", &xk, &ek, &sig).is_err());
+        assert!(hello_auth_decision(Some(&bound), "dev-a", 59992, "n1", &xk, &ek, "").is_err());
+        // 篡改被签名覆盖的字段 → 验签失败
+        assert!(hello_auth_decision(Some(&bound), "dev-a", 1, "n1", &xk, &ek, &sig).is_err());
+        assert!(hello_auth_decision(Some(&bound), "dev-a", 59992, "n2", &xk, &ek, &sig).is_err());
+    }
+
+    #[test]
+    fn hello_auth_tofu_requires_self_consistent_signature() {
+        let id = crypto::Identity::generate();
+        let (xk, ek, sig) = signed_hello(&id, "new-node", 59992, "n1");
+        // 首次接触：自洽签名可接受
+        assert!(hello_auth_decision(None, "new-node", 59992, "n1", &xk, &ek, &sig).is_ok());
+        // 首次接触但签名与自报公钥不匹配 → 仍然拒绝
+        let other = crypto::Identity::generate();
+        let (oxk, oek, _) = signed_hello(&other, "new-node", 59992, "n1");
+        assert!(hello_auth_decision(None, "new-node", 59992, "n1", &oxk, &oek, &sig).is_err());
+    }
 
     #[tokio::test]
     async fn frame_roundtrip() {

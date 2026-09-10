@@ -153,7 +153,12 @@ impl GossipEnvelope {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Message {
-    /// 连接建立后首先发送的握手包
+    /// 连接建立后首先发送的握手包。
+    ///
+    /// `nonce` + `sig` 是**连接身份认证**：只有持有 `device_id` 绑定私钥的一方
+    /// 能对 `hello_signing_bytes()` 产出合法签名。接收方在建立链路前用它确认
+    /// 「这个 TCP 对端确实是 device_id 本人」，杜绝任意节点冒用他人（好友/群主）
+    /// device_id 建链后伪造明文控制消息（GroupMemberRemoved / GroupRename 等）。
     Hello {
         device_id: String,
         nickname: String,
@@ -165,6 +170,12 @@ pub enum Message {
         /// 避免双方时钟长期不同步导致新消息序号偏小。
         #[serde(default)]
         conv_clock: i64,
+        /// 每次握手新生成的随机串（base64），参与签名并供接收方防重放去重。
+        #[serde(default)]
+        nonce: String,
+        /// Ed25519 签名（base64），覆盖 `hello_signing_bytes()` 的全部字段。
+        #[serde(default)]
+        sig: String,
     },
     /// 心跳
     Heartbeat {
@@ -388,6 +399,20 @@ pub enum Message {
         from: String,
         to: String,
     },
+    /// 群主转让：仅**当前**创建者可发起。接收方校验 `from` 是本地记录的创建者、
+    /// `to` 是群成员后，把本地群创建者改为 `to`。用于群主更换设备/卸载前移交
+    /// 管理权，避免群永久失去改名/加人/踢人能力。
+    GroupCreatorChanged {
+        group_id: String,
+        from: String,
+        to: String,
+    },
+    /// 成员主动退群（非群主）。接收方把 `from` 从本地群成员中移除。
+    /// 群主退出前必须先转让（由 `leave_group` 命令强制）。
+    GroupMemberLeft {
+        group_id: String,
+        from: String,
+    },
     /// 中继文件传输元数据（切片总数等，先于 RelayChunk）。
     /// `sealed_file_key`：与 FileOffer 同义——用接收方公钥封装的文件会话密钥，
     /// 中继节点不持有也不解封，仅接收方能解开。
@@ -402,6 +427,29 @@ pub enum Message {
         sealed_file_key: String,
         file_sha256: String,
     },
+}
+
+/// Hello 帧的签名材料（版本前缀 + 全部连接身份字段）。
+///
+/// 用 `serde_json` 序列化元组而非手写字符串拼接：避免字段里出现分隔符时产生
+/// 「不同字段组合出同一段字节」的歧义（长度前缀/分隔符逃逸问题）。
+/// 接收方以 `device_id` 绑定的 Ed25519 公钥验签，从而确认 peer_id 不可冒充。
+pub fn hello_signing_bytes(
+    device_id: &str,
+    tcp_port: u16,
+    nonce: &str,
+    x25519_pubkey: &str,
+    ed25519_pubkey: &str,
+) -> Vec<u8> {
+    serde_json::to_vec(&(
+        "gosslan-hello-v1",
+        device_id,
+        tcp_port,
+        nonce,
+        x25519_pubkey,
+        ed25519_pubkey,
+    ))
+    .unwrap_or_default()
 }
 
 /// UDP 广播/回复包
@@ -515,6 +563,83 @@ mod tests {
         assert_eq!(MsgKind::from_str("code"), MsgKind::Code);
         assert_eq!(MsgKind::from_str("unknown"), MsgKind::Text);
         assert_eq!(MsgKind::Code.as_str(), "code");
+    }
+
+    #[test]
+    fn hello_signing_bytes_sensitive_to_every_field() {
+        let base = hello_signing_bytes("dev-a", 59992, "n1", "xk", "ek");
+        // 相同输入必须产出相同字节（签名可复现）
+        assert_eq!(base, hello_signing_bytes("dev-a", 59992, "n1", "xk", "ek"));
+        // 任一字段变化都必须改变签名材料：否则攻击者可平移字段伪造身份
+        assert_ne!(base, hello_signing_bytes("dev-b", 59992, "n1", "xk", "ek"));
+        assert_ne!(base, hello_signing_bytes("dev-a", 1, "n1", "xk", "ek"));
+        assert_ne!(base, hello_signing_bytes("dev-a", 59992, "n2", "xk", "ek"));
+        assert_ne!(base, hello_signing_bytes("dev-a", 59992, "n1", "xk2", "ek"));
+        assert_ne!(base, hello_signing_bytes("dev-a", 59992, "n1", "xk", "ek2"));
+        // 拼接歧义防护：把不同字段切成另一种组合不应撞车
+        assert_ne!(
+            hello_signing_bytes("ab", 1, "c", "d", "e"),
+            hello_signing_bytes("a", 1, "bc", "d", "e")
+        );
+    }
+
+    #[test]
+    fn hello_carries_nonce_and_sig_roundtrip() {
+        let hello = Message::Hello {
+            device_id: "dev-a".into(),
+            nickname: "A".into(),
+            avatar: None,
+            tcp_port: 59992,
+            x25519_pubkey: "xk".into(),
+            ed25519_pubkey: "ek".into(),
+            conv_clock: 7,
+            nonce: "n1".into(),
+            sig: "sig".into(),
+        };
+        let json = serde_json::to_string(&hello).unwrap();
+        match serde_json::from_str::<Message>(&json).unwrap() {
+            Message::Hello { nonce, sig, .. } => {
+                assert_eq!(nonce, "n1");
+                assert_eq!(sig, "sig");
+            }
+            _ => panic!("expect hello"),
+        }
+        // 不带 nonce/sig 的旧 Hello 仍可解析（serde default），但会在验证层被拒
+        let legacy = r#"{"type":"hello","device_id":"a","nickname":"A","avatar":null,"tcp_port":1,"x25519_pubkey":"x","ed25519_pubkey":"e","conv_clock":0}"#;
+        match serde_json::from_str::<Message>(legacy).unwrap() {
+            Message::Hello { nonce, sig, .. } => {
+                assert!(nonce.is_empty() && sig.is_empty());
+            }
+            _ => panic!("expect hello"),
+        }
+    }
+
+    #[test]
+    fn group_lifecycle_messages_roundtrip() {
+        let changed = Message::GroupCreatorChanged {
+            group_id: "g1".into(),
+            from: "old".into(),
+            to: "new".into(),
+        };
+        let json = serde_json::to_string(&changed).unwrap();
+        match serde_json::from_str::<Message>(&json).unwrap() {
+            Message::GroupCreatorChanged { group_id, from, to } => {
+                assert_eq!((group_id.as_str(), from.as_str(), to.as_str()), ("g1", "old", "new"));
+            }
+            _ => panic!("expect group_creator_changed"),
+        }
+
+        let left = Message::GroupMemberLeft {
+            group_id: "g1".into(),
+            from: "dev-a".into(),
+        };
+        let json = serde_json::to_string(&left).unwrap();
+        match serde_json::from_str::<Message>(&json).unwrap() {
+            Message::GroupMemberLeft { group_id, from } => {
+                assert_eq!((group_id.as_str(), from.as_str()), ("g1", "dev-a"));
+            }
+            _ => panic!("expect group_member_left"),
+        }
     }
 
     #[test]
