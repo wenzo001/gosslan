@@ -35,22 +35,44 @@ export interface EstimateContext {
   fontSize: FontSizeKey;
 }
 
-/** 单条消息的占位高度（气泡 + 时间/昵称/分割线，头像与气泡同行不计入）。 */
-export function estimateMessageHeight(
-  m: MessageRecord,
-  index: number | undefined,
-  ctx: EstimateContext,
-): number {
-  const prev = index != null && index > 0 ? ctx.messages[index - 1] : null;
+/**
+ * 气泡高度缓存：键 = 字号 + msg_id。
+ *
+ * 为什么必须有：VirtualList 的 offsets 是**全表前缀和**（O(n)），任何时候有行的实测高度与估算
+ * 不一致，就会触发整表重算 → 重算里对每条消息都要调一次估算。50 万条的会话一重算就是
+ * 50 万次估算，而估算对 file 类消息还要 `JSON.parse(content)`（10% 的消息命中）。
+ *
+ * 为什么只缓存「气泡」这一段：整体的高度还包含昵称行与时间分割线，而**分割线取决于上一条消息
+ * 的时间**（`prev.ts`），所以整函数的结果随下标变化、不能按 msg_id 缓存。气泡段只依赖
+ * (kind, content, 字号)，这三者对同一条消息是不变的（本应用没有「编辑消息」功能）。
+ *
+ * 为什么把字号放进键里：唯一会变的就是设置页的字号——放进去之后改字号自然全部失效，
+ * 不需要任何手动清理逻辑。
+ */
+const bubbleCache = new Map<string, number>();
+/** 缓存上限：超出后按插入顺序淘汰最早的一条（Map 保序，O(1)）。 */
+const BUBBLE_CACHE_MAX = 50_000;
 
-  let bubble: number;
+function bubbleHeightCached(m: MessageRecord, fontSize: FontSizeKey): number {
+  const key = `${fontSize}|${m.msg_id}`;
+  const hit = bubbleCache.get(key);
+  if (hit !== undefined) return hit;
+  const v = computeBubbleHeight(m, fontSize);
+  if (bubbleCache.size >= BUBBLE_CACHE_MAX) {
+    const oldest = bubbleCache.keys().next().value;
+    if (oldest !== undefined) bubbleCache.delete(oldest);
+  }
+  bubbleCache.set(key, v);
+  return v;
+}
+
+/** 气泡本身的高度（不含昵称行 / 时间分割线）。 */
+function computeBubbleHeight(m: MessageRecord, fontSize: FontSizeKey): number {
   switch (m.kind) {
     case "code":
-      bubble = codeBlockHeight(m.content);
-      break;
+      return codeBlockHeight(m.content);
     case "image":
-      bubble = IMAGE_BUBBLE;
-      break;
+      return IMAGE_BUBBLE;
     case "file": {
       // 普通文件卡片 92；附件图片 ≤288；附件代码按截断态占位（读文件前预知不了行数）。
       let sub = "file";
@@ -62,17 +84,26 @@ export function estimateMessageHeight(
       } catch {
         /* 历史 / 异常内容按普通 file 卡片估 */
       }
-      if (hasPath && sub === "image") bubble = IMAGE_BUBBLE;
-      else if (hasPath && sub === "code") bubble = CLAMPED_CODE_BLOCK_HEIGHT;
-      else bubble = FILE_CARD;
-      break;
+      if (hasPath && sub === "image") return IMAGE_BUBBLE;
+      if (hasPath && sub === "code") return CLAMPED_CODE_BLOCK_HEIGHT;
+      return FILE_CARD;
     }
     case "system":
-      bubble = SYSTEM_ROW;
-      break;
+      return SYSTEM_ROW;
     default:
-      bubble = textBubbleHeight(m.content, ctx.fontSize);
+      return textBubbleHeight(m.content, fontSize);
   }
+}
+
+/** 单条消息的占位高度（气泡 + 时间/昵称/分割线，头像与气泡同行不计入）。 */
+export function estimateMessageHeight(
+  m: MessageRecord,
+  index: number | undefined,
+  ctx: EstimateContext,
+): number {
+  const prev = index != null && index > 0 ? ctx.messages[index - 1] : null;
+
+  const bubble = bubbleHeightCached(m, ctx.fontSize);
 
   // 每条消息独立完整渲染（无合并）：时间行恒有；群聊非本人显示昵称
   const showDivider = !prev || m.ts - prev.ts >= TIME_DIVIDER_GAP;
