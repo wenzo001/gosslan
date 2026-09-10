@@ -164,7 +164,6 @@ async fn probe_instance_via_who_has(
         kind: "who_has".to_string(),
         device_id: PEER_ID.into(),
         nickname: "E2E-Peer".into(),
-        avatar: None,
         tcp_port: 0,
         x25519_pubkey: None,
         ed25519_pubkey: None,
