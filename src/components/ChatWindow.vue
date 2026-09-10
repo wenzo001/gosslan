@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import MessageItem from "@/components/MessageItem.vue";
 import VirtualList from "@/components/VirtualList.vue";
 import GroupMemberPanel from "@/components/GroupMemberPanel.vue";
@@ -306,6 +307,60 @@ async function attachFile() {
   await sendOneFile(convId, picked);
 }
 
+// ---------------- 拖拽文件发送 ----------------
+// 用 Tauri 的**原生**拖拽事件，而不是 HTML5 drag：WebView 里的 HTML5 drag 拿不到真实文件路径
+// （File 对象没有 path），而 Tauri 的 drag-drop 直接给绝对路径，正好接上 sendPastedFiles。
+const chatAreaRef = ref<HTMLElement | null>(null);
+const fileDragOver = ref(false);
+let unlistenDragDrop: (() => void) | null = null;
+let dragDropDisposed = false;
+
+/** 拖拽位置是否落在消息区上（Tauri 给的是物理像素，除以 DPR 才能跟 DOM 坐标比）。 */
+function isOverChatArea(pos: { x: number; y: number }) {
+  const el = chatAreaRef.value;
+  if (!el) return false;
+  const r = el.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  const x = pos.x / dpr;
+  const y = pos.y / dpr;
+  return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+}
+
+/** 准入条件与附件按钮一致：好友单聊 / 群聊才允许拖进来发。 */
+function canDropInto() {
+  return !!chat.activeConv && (isGroup.value || isPeerFriend.value);
+}
+
+onMounted(() => {
+  if (app.isMobile) return; // 拖拽是桌面端行为
+  void getCurrentWebview()
+    .onDragDropEvent((event) => {
+      const p = event.payload;
+      if (p.type === "enter" || p.type === "over") {
+        fileDragOver.value = canDropInto() && isOverChatArea(p.position);
+        return;
+      }
+      if (p.type === "drop") {
+        const droppedHere = fileDragOver.value;
+        fileDragOver.value = false;
+        if (!droppedHere || p.paths.length === 0) return;
+        void sendPastedFiles(p.paths);
+        return;
+      }
+      fileDragOver.value = false; // leave
+    })
+    .then((un) => {
+      // 组件可能已卸载：那时立刻退订，避免监听泄漏
+      if (dragDropDisposed) un();
+      else unlistenDragDrop = un;
+    });
+});
+
+onBeforeUnmount(() => {
+  dragDropDisposed = true;
+  unlistenDragDrop?.();
+});
+
 /** 输入框粘贴文件（资源管理器复制后 Ctrl+V，微信式）：按真实路径直接走发送链路。 */
 async function sendPastedFiles(paths: string[]) {
   const convId = chat.activeConv;
@@ -314,8 +369,7 @@ async function sendPastedFiles(paths: string[]) {
     try {
       await sendOneFile(convId, p);
     } catch (e) {
-      app.toast(`发送失败：${e}`, "error");
-    }
+      app.toast(`发送失败：${e}`, "error");    }
   }
 }
 
@@ -342,7 +396,20 @@ function onLoadMore() {
     />
 
     <!-- 消息区（虚拟滚动，仅纵向）：与头部同底色，无缝衔接 -->
-    <div class="relative min-h-0 flex-1 overflow-hidden bg-[var(--gosslan-chat)]">
+    <div ref="chatAreaRef" class="relative min-h-0 flex-1 overflow-hidden bg-[var(--gosslan-chat)]">
+      <!-- 拖拽文件到聊天区：松手即发送。
+           用 Tauri 的原生拖拽事件（HTML5 drag 拿不到真实路径），发送复用「粘贴文件」那条链路。
+           pointer-events-none：提示层不能吃掉拖拽/点击事件。 -->
+      <div
+        v-if="fileDragOver"
+        class="pointer-events-none absolute inset-2 z-30 flex items-center justify-center rounded-[var(--gosslan-radius-lg)] border-2 border-dashed border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)]"
+      >
+        <span
+          class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-panel)] px-3 py-2 text-[13px] text-[var(--gosslan-text)] shadow-lg"
+        >
+          {{ isGroup ? "松手发送到群聊" : "松手发送文件" }}
+        </span>
+      </div>
       <!-- 加载骨架：切会话时**立即**渲染（store 的 loadMessages 完成前 messages[convId] 是 undefined）。
            没有它就会先闪一句"暂无消息，打个招呼吧"再跳出内容——既不准又显得卡。
            规则：UI 先出、数据后到（详见 docs/design-guidelines.md §9）。 -->
