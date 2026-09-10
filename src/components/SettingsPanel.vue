@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { computed, ref } from "vue";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
@@ -16,7 +16,7 @@ import StorageSection from "@/components/settings/StorageSection.vue";
 import SecuritySection from "@/components/settings/SecuritySection.vue";
 import AboutSection from "@/components/settings/AboutSection.vue";
 import { FolderOpen, RotateCcw, Trash2 } from "lucide-vue-next";
-import { t, LOCALES } from "@/i18n";
+import { t, type LanguagePreference } from "@/i18n";
 
 defineProps<{ open: boolean }>();
 const emit = defineEmits<{ (e: "close"): void }>();
@@ -27,6 +27,16 @@ const chat = useChatStore();
 /** 各分区按需加载：打开时刷新一次，恢复默认等外部改动后 bump 令牌触发重载。 */
 const reloadToken = ref(0);
 const devDiagOpen = ref(false);
+
+/**
+ * 语言切换三态。语言名（简体中文 / English）按国际惯例**不自翻译**，任何语言下都认得；
+ * 「跟随系统」是动作说明，必须随当前语言翻译 → 放 computed 里调 t() 建立响应式依赖。
+ */
+const languageOptions = computed<{ value: LanguagePreference; label: string }[]>(() => [
+  { value: "system", label: t("settings.language.system") },
+  { value: "zh-CN", label: "简体中文" },
+  { value: "en-US", label: "English" },
+]);
 
 async function pickShareDir() {
   const picked = await openDialog({ directory: true });
@@ -75,11 +85,12 @@ async function doClearAllData() {
       <!-- 语言 -->
       <SettingsGroup :title="t('settings.language.title')" :footer="t('settings.language.desc')">
         <SettingsRow :label="t('settings.language.title')" last>
-          <div class="flex items-center gap-1">
+          <!-- flex-wrap + whitespace-nowrap：英文「Follow System」较长，放不下时换行而不是溢出/挤压 -->
+          <div class="flex flex-wrap items-center gap-1">
             <button
-              v-for="l in LOCALES"
+              v-for="l in languageOptions"
               :key="l.value"
-              class="rounded-[var(--gosslan-radius-sm)] px-2.5 py-1 text-xs transition"
+              class="whitespace-nowrap rounded-[var(--gosslan-radius-sm)] px-2.5 py-1 text-xs transition"
               :class="app.language === l.value
                 ? 'bg-primary text-white'
                 : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"

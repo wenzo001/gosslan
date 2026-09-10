@@ -43,7 +43,11 @@
       "PrivacyInfo.xcprivacy"
     ],
     "macOS": {
-      "entitlements": "entitlements.plist"
+      "entitlements": "entitlements.plist",
+      "files": {
+        "Resources/en.lproj/InfoPlist.strings": "infoplist/en.lproj/InfoPlist.strings",
+        "Resources/zh-Hans.lproj/InfoPlist.strings": "infoplist/zh-Hans.lproj/InfoPlist.strings"
+      }
     },
     "iOS": {
       "infoPlist": "Info.plist"

@@ -27,6 +27,24 @@
           if (wantDark) el.classList.add("dark");
           var c = localStorage.getItem("gosslan.themeColor");
           if (c) el.style.setProperty("--gosslan-primary", c);
+
+          // 语言首帧：跟随系统语言（与 src/i18n 的 detectSystemLocale 逻辑一致，改动请同步）。
+          // 显式偏好（gosslan.locale）优先；否则 zh* → 中文，其余（含 en*）→ 英文。
+          var lang = "en-US";
+          var prefLang = localStorage.getItem("gosslan.locale");
+          if (prefLang === "zh-CN" || prefLang === "en-US") {
+            lang = prefLang;
+          } else {
+            var sys = navigator.languages && navigator.languages.length
+              ? navigator.languages
+              : [navigator.language];
+            for (var i = 0; i < sys.length; i++) {
+              var tag = (sys[i] || "").toLowerCase();
+              if (tag.indexOf("zh") === 0) { lang = "zh-CN"; break; }
+              if (tag.indexOf("en") === 0) { lang = "en-US"; break; }
+            }
+          }
+          el.lang = lang;
         } catch (e) {
           /* localStorage / matchMedia 不可用（隐私模式等）→ 按浅色渲染即可，不影响后续 */
         }

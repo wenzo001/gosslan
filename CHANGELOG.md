@@ -56,6 +56,19 @@
 - **⌘/Ctrl + = / − 调整消息字号（Dynamic Type 精神）**：在 小/标准/大 三档间切换，直接改 store（`useShortcuts` 里处理，不走 window 事件），与设置页「字体大小」共用同一套 `CHAT_FONT_SIZES`。
 - **macOS 滚动条恢复系统 overlay**：`html.platform-mac`（store init 按 `isMac` 标记）+ CSS 覆盖，macOS 上滚动条回到「滚动才浮出、不占布局」，Windows/Android 保留 6px 常显细滚动条。
 - **移动端消息长按 → 底部 Action Sheet**：新建 `ActionSheet.vue`（底部滑出、遮罩、取消按钮、安全区），移动端长按消息唤出「复制/保存/引用/转发」等操作——此前移动端**没有右键、也没有长按**，消息操作在触屏上完全不可用（真实功能缺失）。
+- **语言跟随系统（三态：跟随系统 / 简体中文 / English）**：此前语言默认写死中文。现在：
+  - 后端 `language` 键扩展为 `system` | `zh-CN` | `en-US`（缺省即 `system`，脏值忽略）；
+  - `src/i18n` 抽出 `detectSystemLocale()`（系统 `zh*` → 中文，其余 → 英文）+ `LanguagePreference` 三态，`locale` 改为 computed（`preference === "system" ? 系统语言 : 偏好`）；
+  - 设置页语言切换改为三选一（「跟随系统」随当前语言翻译，「简体中文 / English」按国际惯例不自翻译）；
+  - `index.html` 首帧脚本同步检测系统语言设置 `lang`（避免启动瞬间静态 `lang="zh-CN"` 与真界面不一致）；
+  - 护栏 `src/i18n/index.test.ts` 扩展：`detectSystemLocale` 纯函数覆盖 + `refreshSystemLocale()` 重解析 + 显式偏好不受系统语言变化影响。
+- **应用名本地化「小院儿」/ "Gosslan"**：应用中文名「小院儿」、英文名 "Gosslan"，桌面/主屏图标名按系统语言显示：
+  - macOS：`src-tauri/infoplist/{en,zh-Hans}.lproj/InfoPlist.strings` 本地化 `CFBundleDisplayName`，经 `bundle.macOS.files` 精确放入 `Contents/Resources/<lang>.lproj/`（Tauri 不自动生成 InfoPlist.strings；官方推荐的 `resources` glob 也可行，这里用 `files` 显式映射更精确）；
+  - iOS：`Info.plist` 设 `CFBundleDisplayName = "小院儿"`（中文主市场默认），英文系统的本地化待 iOS 工程生成后补 `en.lproj/InfoPlist.strings`；
+  - ⚠️ Windows 桌面快捷方式名 = `productName`（NSIS 不支持按系统语言），保持 "Gosslan" 不变（改 productName 会连带数据目录/bundle id，不推荐）。
+- **英文翻译按 Apple 规范润色**：Title Case 一致性（`Mark as Read` / `Show Message Content`）、`&`→`and`、全大写强调 `NOT`→`not`、语法修正（`switch interface`→`switch the interface`）、描述用 sentence case、无障碍 label 更清晰（`My profile, {status}. Open settings.`）。
+- **英文样式适配**：语言分段控件加 `flex-wrap + whitespace-nowrap`（英文「Follow System」较长，放不下换行而非溢出）；设置页 label/footer 均 flex + 自动换行，英文长文案安全。
+- **README 参与贡献模块**：顶部加 release / contributors / license 徽章，License 前加「参与贡献」区块，用 `contrib.rocks` 动态展示提交量前 10 位贡献者头像。
 
 ### Fixed
 - **触摸端无法删除会话**（真实功能缺失）：会话行的删除键写成 `hidden` + `group-hover:flex`，而 **Android 没有 hover 事件 → 该按钮永远不显示**，表现为"桌面能删、手机删不掉"（同一层的"删除好友"有长按兜底，聊天记录却没有）。新增全局工具类 `.hover-reveal` / `.hover-reveal-op`（`@media (hover: none)` 下退化为常显），并把「凡用 `group-hover` / `opacity-0` 揭示的元素都必须加其中之一」写进设计规范
@@ -91,7 +104,7 @@
 - **输入框移动端键盘提示**：`MessageComposer` 的 contenteditable 补 `enterkeyhint="send"`（回车即发送，iOS/Android 键盘显示"发送"而非"换行"），并按代码模式切换 `spellcheck` / `autocorrect` / `autocapitalize`（代码模式关闭纠错，避免改坏粘贴的代码）。
 
 ### 校验
-- `npm test` **182/182**（原 121；新增 `errors` 8 例、`a11yLabels` 12 例、`templateBranches` 3 例、`appearance` 10 例、`designGuards` 12 例、`platform` 4 例、`shortcuts` 6 例、`notifications` 5 例、`clipboard` 1 例（图片优先回归））
+- `npm test` **196/196**（原 121；新增 `errors` 8 例、`a11yLabels` 12 例、`templateBranches` 3 例、`appearance` 10 例、`designGuards` 12 例、`platform` 4 例、`shortcuts` 6 例、`notifications` 5 例、`clipboard` 1 例（图片优先回归）、`i18n` 14 例（含 `detectSystemLocale` 纯函数 + 跟随系统重解析））
 - `npx vue-tsc --noEmit` 0 错误；`cargo check` 0 error / 0 warning；`cargo test --lib` **219/219**（新增 `markdown_is_a_document_not_code`）
 - **降级 CSS 用无头浏览器实测计算值**（不靠推理）：`prefers-reduced-transparency` 下 `.frost` / `.glass` / `.vel-modal` 的 `backdrop-filter` 均为 `none`、`.glass` 背景变为 `rgba(0,0,0,0.62)`；`.hover-reveal` 的 `display` 确为 `flex`（证明 `!important` 压过了 Tailwind 的 `hidden`）；`prefers-contrast: more` 下 `--gosslan-border` = `#94a3b8`。⚠️ 这三段媒体查询**必须留在 `style.css` 末尾**——`.glass` / `.frost` 的定义在文件中更靠后，同优先级下"后定义者胜"，写在前面会被直接覆盖（首版即踩，已实测确认）
 

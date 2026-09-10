@@ -596,8 +596,9 @@ const SETTINGS_KEYS: [&str; 11] = [
 /// appearance_mode 的合法取值：脏值一律忽略（宁可回落"跟随系统"，也不要写进库）。
 const APPEARANCE_MODES: [&str; 3] = ["system", "light", "dark"];
 
-/// language 的合法取值：脏值一律忽略（回落默认中文）。
-const LANGUAGES: [&str; 2] = ["zh-CN", "en-US"];
+/// language 的合法取值：脏值一律忽略（回落"跟随系统"）。
+/// "system" = 前端按系统语言决定（zh* → 中文，其余 → 英文）。
+const LANGUAGES: [&str; 3] = ["system", "zh-CN", "en-US"];
 
 #[tauri::command]
 pub fn get_settings(state: State<'_, Arc<AppState>>) -> Settings {

@@ -61,7 +61,8 @@ export const zhCN: MessageDict = {
 
   // ---- 语言切换 ----
   "settings.language.title": "语言",
-  "settings.language.desc": "界面显示语言，重启后保持",
+  "settings.language.system": "跟随系统",
+  "settings.language.desc": "跟随系统语言，或手动选择界面语言",
 
   // ---- 清除聊天数据确认弹窗 ----
   "settings.clear.title": "清除聊天数据",
@@ -93,7 +94,7 @@ export const enUS: MessageDict = {
   "common.cancel": "Cancel",
   "common.confirm": "Confirm",
   "common.clear": "Clear",
-  "common.notSet": "Not set",
+  "common.notSet": "Not Set",
   "common.chooseFolder": "Choose Folder",
 
   // ---- Navigation ----
@@ -104,7 +105,7 @@ export const enUS: MessageDict = {
   "nav.darkMode": "Dark Mode",
   "nav.me.online": "Online (LAN connected)",
   "nav.me.offline": "Offline (LAN not connected)",
-  "nav.me.openSettings": "Me, {status}, open settings",
+  "nav.me.openSettings": "My profile, {status}. Open settings.",
   "nav.chats.unread": "Chats, {n} unread",
   "nav.contacts.pending": "Contacts, {n} friend requests",
 
@@ -113,59 +114,63 @@ export const enUS: MessageDict = {
   "settings.group.appearance": "Appearance",
   "settings.group.profile": "Profile",
   "settings.group.chatStyle": "Chat Display",
-  "settings.group.chatStyle.footer": "My messages use the chosen colors; friends also see my messages in my colors (synced to connected devices).",
+  "settings.group.chatStyle.footer":
+    "Your messages use the chosen colors. Friends see your messages in these colors too, synced to connected devices.",
   "settings.group.network": "Network Channel",
-  "settings.group.network.footer": "Selecting an interface enables the LAN channel and scans peers; you can switch interface anytime while enabled.",
+  "settings.group.network.footer":
+    "Selecting an interface enables the LAN channel and scans for peers. You can switch the interface anytime while it's enabled.",
   "settings.group.storage": "Storage",
-  "settings.group.storage.footer": "This page only covers locally saved images/files (attachments received in chats) and the chat database. Chat text is never auto-cleaned. Changes save instantly; keep \"Forever + Unlimited\" to disable auto-deletion.",
+  "settings.group.storage.footer":
+    "Covers locally saved images and files (attachments received in chats) and the chat database. Chat text is never deleted automatically. Changes save instantly; choose \"Forever + Unlimited\" to disable auto-deletion.",
   "settings.group.security": "Security",
   "settings.group.about": "About",
-  "settings.group.about.footer": "Gosslan v{version} · Serverless P2P · End-to-end encrypted · Data stays on device",
+  "settings.group.about.footer": "Gosslan v{version} · Serverless P2P · End-to-End Encrypted · Data Stays on Device",
   "settings.group.notifications": "Notifications",
   "settings.group.notifications.footer":
-    "Notify new messages when the app is in the background or you're viewing another conversation",
+    "Notify you of new messages when the app is in the background or you're viewing another conversation",
   "settings.group.share": "Shared Folder",
   "settings.group.share.footer": "Let friends browse and download the folder you share",
   "settings.group.reset": "Reset & Data",
 
   "settings.notify.enabled": "Desktop Notifications",
-  "settings.notify.enabled.desc": "When off, you won't receive any new-message notifications",
-  "settings.notify.showContent": "Show message content",
+  "settings.notify.enabled.desc": "When off, you won't receive notifications for new messages",
+  "settings.notify.showContent": "Show Message Content",
   "settings.notify.showContent.desc":
-    "When off, notifications only say \"New message\" and hide the body on lock screen & notification center",
+    "When off, notifications only show \"New message\" and hide the content on the lock screen and in Notification Center",
 
   "settings.share.folder": "Shared Folder",
 
   "settings.reset.restore": "Restore Defaults",
   "settings.reset.clearChat": "Clear Chat Data",
   "settings.reset.footnote":
-    "Restoring defaults keeps friends, chat history and device identity. Clearing chat data deletes all local messages, conversations and transfer records, and exits all groups (friends and device identity are kept).",
+    "Restoring defaults keeps your friends, chat history, and device identity. Clearing chat data deletes all local messages, conversations, and transfer records, and exits all groups (friends and device identity are kept).",
 
   // ---- Language ----
   "settings.language.title": "Language",
-  "settings.language.desc": "Interface language, persists across restarts",
+  "settings.language.system": "Follow System",
+  "settings.language.desc": "Follow the system language or choose manually",
 
   // ---- Clear chat data confirm ----
   "settings.clear.title": "Clear Chat Data",
-  "settings.clear.warning": "The following local data will be deleted and cannot be undone:",
+  "settings.clear.warning": "This deletes the following local data and can't be undone:",
   "settings.clear.item.messages": "All messages and conversations (including groups)",
   "settings.clear.item.transfers": "File transfers and group-file records",
   "settings.clear.item.cache": "App cache",
   "settings.clear.item.groups": "Exit all groups (removed from the list)",
-  "settings.clear.unaffected": "The following are NOT affected:",
+  "settings.clear.unaffected": "The following are not affected:",
   "settings.clear.item.friends": "Friend list",
   "settings.clear.item.identity": "Device identity and encryption keys",
-  "settings.clear.item.profile": "Nickname, avatar and all settings",
+  "settings.clear.item.profile": "Nickname, avatar, and all settings",
   "settings.clear.item.otherDevices": "Chat history on other devices",
   "settings.clear.note": "New messages received after clearing will still arrive normally.",
 
   // ---- Settings toasts ----
-  "settings.toast.shareSet": "Shared folder set",
-  "settings.toast.shareFail": "Failed to set shared folder",
-  "settings.toast.defaultsRestored": "Default settings restored",
-  "settings.toast.chatCleared": "Chat data cleared",
-  "settings.toast.clearFail": "Clear failed",
+  "settings.toast.shareSet": "Shared Folder Set",
+  "settings.toast.shareFail": "Failed to Set Shared Folder",
+  "settings.toast.defaultsRestored": "Default Settings Restored",
+  "settings.toast.chatCleared": "Chat Data Cleared",
+  "settings.toast.clearFail": "Clear Failed",
 
   // ---- Notification actions ----
-  "notification.markRead": "Mark as read",
+  "notification.markRead": "Mark as Read",
 };

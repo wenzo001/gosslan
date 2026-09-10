@@ -13,7 +13,12 @@ import {
   type AppearanceMode,
 } from "@/utils/appearance";
 import { DEFAULT_CHAT_STYLE, fontPx, parsePeerStyle, type ChatStyleConfig } from "@/utils/chatStyle";
-import { applyLocale, currentLocale, isLocale, type Locale } from "@/i18n";
+import {
+  applyPreference,
+  currentPreference,
+  isLanguagePreference,
+  type LanguagePreference,
+} from "@/i18n";
 import { isMac } from "@/utils/platform";
 import type { DeviceInfo, InterfaceInfo } from "@/types";
 
@@ -109,13 +114,13 @@ export const useAppStore = defineStore("app", () => {
   }
 
   // ---------------- 语言 ----------------
-  /** 界面语言（后端持久化；默认中文）。真值在 i18n 模块的 locale，这里镜像一份供模板/持久化用。 */
-  const language = ref<Locale>(currentLocale());
+  /** 语言偏好（system / zh-CN / en-US，后端持久化；默认跟随系统）。 */
+  const language = ref<LanguagePreference>(currentPreference());
 
-  /** 切换语言：立即生效（i18n 响应式更新）+ 持久化到后端。 */
-  function setLanguage(l: Locale) {
-    applyLocale(l);
-    language.value = l;
+  /** 切换语言偏好：立即生效（i18n 响应式更新）+ 持久化到后端。 */
+  function setLanguage(p: LanguagePreference) {
+    applyPreference(p);
+    language.value = p;
     void persistSettings();
   }
 
@@ -294,9 +299,9 @@ export const useAppStore = defineStore("app", () => {
     // 通知偏好（null = 未设置，按默认 true 处理）
     if (s.notifyEnabled != null) notifyEnabled.value = s.notifyEnabled;
     if (s.notifyShowContent != null) notifyShowContent.value = s.notifyShowContent;
-    // 语言（null/脏值 = 默认中文）
-    if (isLocale(s.language)) applyLocale(s.language);
-    language.value = currentLocale();
+    // 语言（null/脏值 = 默认跟随系统）
+    if (isLanguagePreference(s.language)) applyPreference(s.language);
+    language.value = currentPreference();
     preferredIp.value = s.bindIp;
     if (s.chatStyle) chatStyle.value = parsePeerStyle(s.chatStyle);
     if (s.peerStyles) {
@@ -347,8 +352,8 @@ export const useAppStore = defineStore("app", () => {
     appearance.value = "system";
     notifyEnabled.value = true;
     notifyShowContent.value = true;
-    applyLocale("zh-CN");
-    language.value = "zh-CN";
+    applyPreference("system");
+    language.value = "system";
     preferredIp.value = null;
     boundIp.value = null;
     chatStyle.value = { ...DEFAULT_CHAT_STYLE };
