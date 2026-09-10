@@ -400,8 +400,9 @@ fn make_receiver(
     if receivers.lock().unwrap().contains_key(transfer_id) {
         return Err("重复的文件传输".to_string());
     }
-    std::fs::create_dir_all(&state.downloads_dir).ok();
-    let final_path = unique_path(&state.downloads_dir, &safe_name);
+    let dl = state.downloads_dir.lock().unwrap().clone();
+    std::fs::create_dir_all(&dl).ok();
+    let final_path = unique_path(&dl, &safe_name);
     let tmp_path = PathBuf::from(format!("{}.part", final_path.display()));
     let f = std::fs::File::create(&tmp_path).map_err(|e| e.to_string())?;
 

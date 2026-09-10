@@ -312,7 +312,8 @@ pub struct AppState {
     pub db: Mutex<Connection>,
     pub device_id: String,
     pub tcp_port: u16,
-    pub downloads_dir: PathBuf,
+    /// 文件接收落盘目录（可变：设置页可改，改后新接收的文件落到新目录）。
+    pub downloads_dir: Mutex<PathBuf>,
     /// 缓存目录：图片 / 音频 / 文件等二进制落盘于此（SQLite 不存 BLOB）
     pub cache_dir: PathBuf,
 
@@ -398,8 +399,8 @@ impl AppState {
     pub fn init(app: AppHandle) -> Result<Arc<AppState>, Box<dyn std::error::Error>> {
         let app_data = app.path().app_data_dir()?;
         std::fs::create_dir_all(&app_data).ok();
-        let downloads_dir = app_data.join("downloads");
-        std::fs::create_dir_all(&downloads_dir).ok();
+        let default_downloads = app_data.join("downloads");
+        std::fs::create_dir_all(&default_downloads).ok();
         let cache_dir = app_data.join("cache");
         std::fs::create_dir_all(&cache_dir).ok();
 
@@ -411,6 +412,13 @@ impl AppState {
             "gosslan.db".to_string()
         };
         let conn = db::init(&app_data.join(db_name))?;
+
+        // 文件接收目录：默认 app_data/downloads，允许用户在设置里改（持久化到 settings）。
+        let downloads_dir = db::get_setting(&conn, "downloads_dir")
+            .map(PathBuf::from)
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(default_downloads);
+        std::fs::create_dir_all(&downloads_dir).ok();
 
         // 设备指纹：优先机器码，回退持久化 UUID
         let base_device = if let Some(id) = hardware_fingerprint() {
@@ -484,7 +492,7 @@ impl AppState {
             db: Mutex::new(conn),
             device_id,
             tcp_port,
-            downloads_dir,
+            downloads_dir: Mutex::new(downloads_dir),
             cache_dir,
             identity,
             gossip: Mutex::new(GossipEngine::new(100_000, 10_000, 4, 6)),

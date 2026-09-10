@@ -831,7 +831,7 @@ pub fn touch_conversation(
         "INSERT INTO conversations(id, kind, name, avatar, last_msg, last_ts, unread, updated_at)
          VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?6)
          ON CONFLICT(id) DO UPDATE SET
-            name = excluded.name,
+            name = CASE WHEN conversations.kind = 'group' THEN conversations.name ELSE excluded.name END,
             avatar = COALESCE(excluded.avatar, conversations.avatar),
             last_msg = excluded.last_msg,
             last_ts = excluded.last_ts,
@@ -1355,6 +1355,59 @@ pub fn update_group_file_recipient(
             "群文件投递状态不存在：{transfer_id}/{recipient_id}"
         )));
     }
+    Ok(())
+}
+
+/// 取单个 recipient 的投递状态（用于「已完成则跳过重建」判断）。不存在返回 None。
+pub fn get_group_file_recipient_status(
+    conn: &Connection,
+    transfer_id: &str,
+    recipient_id: &str,
+) -> Option<String> {
+    conn.query_row(
+        "SELECT status FROM group_file_recipients WHERE transfer_id = ?1 AND recipient_id = ?2",
+        params![transfer_id, recipient_id],
+        |r| r.get(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
+}
+
+/// 接收方：幂等建立/重建群文件接收会话。
+/// 用于重启后（内存 file_key 丢失）离线补发重建——group_file / recipient 记录已存在时
+/// 不报错、不覆盖已完成（completed）状态，只把未完成的中断态复位回 sending。
+/// 权限（群存在 + sender 是成员）已由调用方 `handle_group_file_offer` 校验。
+pub fn upsert_group_file_receive(conn: &Connection, f: &GroupFile, recipient_id: &str) -> Result<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO group_files(transfer_id, group_id, sender_id, name, size, sha256, status, created_at)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            f.transfer_id,
+            f.group_id,
+            f.sender_id,
+            f.name,
+            f.size as i64,
+            f.sha256,
+            f.status,
+            f.created_at
+        ],
+    )?;
+    // 未完成的遗留记录复位回 sending（completed 不动）
+    conn.execute(
+        "UPDATE group_files SET status = 'sending' WHERE transfer_id = ?1 AND status != 'completed'",
+        params![f.transfer_id],
+    )?;
+    conn.execute(
+        "INSERT OR IGNORE INTO group_file_recipients(transfer_id, recipient_id, status, progress, updated_at)
+         VALUES(?1, ?2, 'sending', 0.0, ?3)",
+        params![f.transfer_id, recipient_id, now_ms()],
+    )?;
+    conn.execute(
+        "UPDATE group_file_recipients SET status = 'sending', progress = 0.0, updated_at = ?2
+         WHERE transfer_id = ?1 AND recipient_id = ?3 AND status != 'completed'",
+        params![f.transfer_id, now_ms(), recipient_id],
+    )?;
     Ok(())
 }
 
@@ -2291,6 +2344,37 @@ mod tests {
         assert_eq!(by_id.get("b"), Some(&("completed", 1.0)));
         assert_eq!(by_id.get("c"), Some(&("sending", 0.4)));
         assert_eq!(by_id.get("d"), Some(&("pending", 0.0)));
+    }
+
+    /// 重启后离线补发：upsert_group_file_receive 幂等重建会话，
+    /// 未完成态复位回 sending，completed 不被覆盖。
+    #[test]
+    fn upsert_group_file_receive_reestablishes_session() {
+        let conn = group_file_fixture();
+        let f = group_file("gf-1");
+
+        // 首次 Offer：建立记录 + recipient（sending）
+        upsert_group_file_receive(&conn, &f, "b").unwrap();
+        assert_eq!(
+            get_group_file_recipient_status(&conn, "gf-1", "b").as_deref(),
+            Some("sending")
+        );
+
+        // 模拟中断置 failed → 重启后重发 Offer → 复位回 sending
+        update_group_file_recipient(&conn, "gf-1", "b", "failed", 0.0).unwrap();
+        upsert_group_file_receive(&conn, &f, "b").unwrap();
+        assert_eq!(
+            get_group_file_recipient_status(&conn, "gf-1", "b").as_deref(),
+            Some("sending")
+        );
+
+        // 已完成态不被重建覆盖
+        update_group_file_recipient(&conn, "gf-1", "b", "completed", 1.0).unwrap();
+        upsert_group_file_receive(&conn, &f, "b").unwrap();
+        assert_eq!(
+            get_group_file_recipient_status(&conn, "gf-1", "b").as_deref(),
+            Some("completed")
+        );
     }
 
     /// 5：更新 C → completed 不影响 B/D 的状态。

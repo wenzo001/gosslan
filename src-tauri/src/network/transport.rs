@@ -1298,6 +1298,18 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             }
             let st = state.clone();
             let from = from.clone();
+            // 本地提示：对方下载了你的共享文件（聊天信息内简约系统消息）
+            let file_name = path
+                .rsplit('/')
+                .next()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| path.clone());
+            let from_name = resolve_nickname(state, &from);
+            crate::commands::insert_system_message(
+                state,
+                &from,
+                &format!("「{from_name}」下载了你的文件「{file_name}」"),
+            );
             tokio::spawn(async move {
                 if let Err(e) = file::send_file_from_path(&st, &from, &transfer_id, canon_full).await
                 {
@@ -2141,8 +2153,8 @@ async fn handle_relay_chunk(
 }
 
 fn save_received_bytes(state: &AppState, name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
-    let dir = &state.downloads_dir;
-    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let dir = state.downloads_dir.lock().unwrap().clone();
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let safe_name = file::safe_file_name(name).ok_or("文件名非法")?;
     let base = dir.join(safe_name);
     if !base.exists() {
@@ -2260,10 +2272,10 @@ async fn handle_group_file_offer(
     if sender_id != peer_id || sender_id == state.device_id {
         return;
     }
-    // 幂等：相同 transfer_id 重复 Offer 安全忽略（session 已建立则不重建）
-    if state.group_file_keys.lock().unwrap().contains_key(&transfer_id)
-        || db::get_group_file(&state.db.lock().unwrap(), &transfer_id).is_some()
-    {
+    // 幂等：会话已激活（内存有 file_key）→ 重复 Offer 忽略。
+    // 注意不能因为「group_files 里有记录」就跳过：重启后内存 key 丢失但记录还在，
+    // 跳过会让离线补发永远无法重建会话（接收卡死）。改为下方「已完成则跳过」+「幂等重建」。
+    if state.group_file_keys.lock().unwrap().contains_key(&transfer_id) {
         return;
     }
     // 权限：本地群存在，且 sender ∈ group_members（防群外 peer 伪造 Offer）
@@ -2289,7 +2301,18 @@ async fn handle_group_file_offer(
         return;
     };
 
-    // 事务：本地群文件记录 + 自己的 recipient 行（接收进度将更新在这里）
+    // 已完成的 transfer → 忽略（避免重复接收 / 重复 emit）
+    let already_done = {
+        let dbc = state.db.lock().unwrap();
+        db::get_group_file_recipient_status(&dbc, &transfer_id, &state.device_id)
+            .as_deref()
+            == Some("completed")
+    };
+    if already_done {
+        return;
+    }
+
+    // 幂等建立/重建接收会话（重启后内存 file_key 丢失，这里回填 key + 复位 recipient）
     {
         let dbc = state.db.lock().unwrap();
         let gf = crate::state::GroupFile {
@@ -2302,16 +2325,7 @@ async fn handle_group_file_offer(
             status: "sending".to_string(),
             created_at: db::now_ms(),
         };
-        let tx = match dbc.unchecked_transaction() {
-            Ok(tx) => tx,
-            Err(_) => return,
-        };
-        if db::insert_group_file(&tx, &gf).is_err()
-            || db::insert_group_file_recipient(&tx, &transfer_id, &state.device_id).is_err()
-        {
-            return; // 建立失败：不留半完成状态，也不保存 file_key
-        }
-        if tx.commit().is_err() {
+        if db::upsert_group_file_receive(&dbc, &gf, &state.device_id).is_err() {
             return;
         }
     }

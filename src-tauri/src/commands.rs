@@ -1979,8 +1979,9 @@ pub fn save_outgoing_image(
 ) -> Result<serde_json::Value, String> {
     let (ext, bytes) = decode_outgoing_image(&data_url)?;
     let name = format!("image-{}.{ext}", Uuid::new_v4());
-    let path = state.inner().downloads_dir.join(&name);
-    std::fs::create_dir_all(&state.inner().downloads_dir).map_err(|e| e.to_string())?;
+    let dl = state.inner().downloads_dir.lock().unwrap().clone();
+    let path = dl.join(&name);
+    std::fs::create_dir_all(&dl).map_err(|e| e.to_string())?;
     std::fs::write(&path, &bytes).map_err(|e| format!("图片保存失败：{e}"))?;
     Ok(serde_json::json!({
         "path": path.to_string_lossy().to_string(),
@@ -2244,6 +2245,68 @@ pub fn get_share_dir(state: State<'_, Arc<AppState>>) -> Option<String> {
     state.inner().share_dir.lock().unwrap().clone()
 }
 
+/// 文件接收目录（接收的文件/图片落盘于此，可改、可在资源管理器打开）。
+#[tauri::command]
+pub fn get_downloads_dir(state: State<'_, Arc<AppState>>) -> String {
+    state
+        .inner()
+        .downloads_dir
+        .lock()
+        .unwrap()
+        .to_string_lossy()
+        .to_string()
+}
+
+/// 修改文件接收目录：校验目录存在后持久化，后续新接收的文件落到新目录。
+#[tauri::command]
+pub fn set_downloads_dir(state: State<'_, Arc<AppState>>, path: String) -> Result<(), String> {
+    let p = PathBuf::from(&path);
+    if !p.is_dir() {
+        return Err("目录不存在".to_string());
+    }
+    let s = state.inner();
+    {
+        let dbc = s.db.lock().unwrap();
+        db::set_setting(&dbc, "downloads_dir", &path).map_err(|e| e.to_string())?;
+    }
+    *s.downloads_dir.lock().unwrap() = p;
+    Ok(())
+}
+
+/// 在系统资源管理器中打开文件接收目录。
+#[tauri::command]
+pub fn open_downloads_dir(state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    let p = state.inner().downloads_dir.lock().unwrap().clone();
+    std::fs::create_dir_all(&p).map_err(|e| e.to_string())?;
+    open_in_file_manager(&p)
+}
+
+/// 跨平台在系统文件管理器里打开指定目录。
+fn open_in_file_manager(path: &std::path::Path) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(path)
+            .spawn()
+            .map_err(|e| format!("打开目录失败：{e}"))?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(path)
+            .spawn()
+            .map_err(|e| format!("打开目录失败：{e}"))?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(path)
+            .spawn()
+            .map_err(|e| format!("打开目录失败：{e}"))?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn request_share_tree(
     state: State<'_, Arc<AppState>>,
@@ -2299,10 +2362,41 @@ pub async fn download_shared_file(
     let msg = Message::ShareFileRequest {
         transfer_id: transfer_id.clone(),
         from: s.device_id.clone(),
-        path: remote_path,
+        path: remote_path.clone(),
     };
     try_send(s, &friend_id, &msg).await?;
+    // 本地提示：你正在下载好友的文件（聊天信息内简约系统消息）
+    let file_name = std::path::Path::new(&remote_path)
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| remote_path.clone());
+    let friend_name = resolve_nickname(s, &friend_id);
+    insert_system_message(
+        s,
+        &friend_id,
+        &format!("你正在下载「{friend_name}」的文件「{file_name}」"),
+    );
     Ok(transfer_id)
+}
+
+/// 插入一条本地系统消息到指定会话并推送给前端（共享下载提示等本地事件用）。
+pub fn insert_system_message(state: &Arc<AppState>, conv_id: &str, text: &str) {
+    let dbc = state.db.lock().unwrap();
+    let rec = crate::state::MessageRecord {
+        id: 0,
+        msg_id: format!("sys-{}", Uuid::new_v4()),
+        conv_id: conv_id.to_string(),
+        sender_id: state.device_id.clone(),
+        receiver_id: state.device_id.clone(),
+        kind: "system".to_string(),
+        content: text.to_string(),
+        ts: db::now_ms(),
+        seq: db::next_clock(&dbc, conv_id).unwrap_or(1),
+        status: "sent".to_string(),
+    };
+    db::insert_message(&dbc, &rec).ok();
+    drop(dbc);
+    let _ = state.app.emit("message-received", &rec);
 }
 
 // ---------------- 辅助 ----------------
@@ -2391,7 +2485,7 @@ pub fn read_file_preview(
         .ok_or("元数据缺少路径")?;
 
     let file = std::fs::canonicalize(&path).map_err(|_| "文件不存在".to_string())?;
-    let under_downloads = std::fs::canonicalize(&s.downloads_dir)
+    let under_downloads = std::fs::canonicalize(s.downloads_dir.lock().unwrap().as_path())
         .map(|dir| file.starts_with(dir))
         .unwrap_or(false);
     if !under_downloads && sender_id != s.device_id {
@@ -2415,17 +2509,10 @@ pub fn read_file_preview(
 pub fn clear_all_data(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     let s = state.inner();
 
-    // 0. 群聊删除边界：清除前记录每个群的时间戳（毫秒），
-    //    其他成员仍保留的历史重新到达时按 ts 拦截，防止旧消息回灌本机。
-    let group_ids: Vec<String> = {
-        let dbc = s.db.lock().unwrap();
-        db::list_groups(&dbc).unwrap_or_default().into_iter().map(|g| g.id).collect()
-    };
-
     // 1. SQLite 删除（transaction 保护）。
-    //    语义（真机验收确定）：清除聊天数据 = 删除本机消息/会话/文件记录，
-    //    **不退出群聊**——保留 groups/group_members/群密钥（gk:% 与
-    //    group_keys），否则清除后无法解密新群消息，必须重启靠密钥重发才能恢复。
+    //    语义：彻底清除 = 删除本机消息/会话/文件/群记录，**并退出所有群聊**——
+    //    否则「清除聊天数据」后群还留在列表里（重新安装后还会被群主/成员的
+    //    群密钥分发重新拉回）。
     {
         let dbc = s.db.lock().unwrap();
         let tx = dbc.unchecked_transaction().map_err(|e| e.to_string())?;
@@ -2452,18 +2539,21 @@ pub fn clear_all_data(state: State<'_, Arc<AppState>>) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
         tx.execute("DELETE FROM group_file_recipients", [])
             .map_err(|e| e.to_string())?;
-        // 群聊删除边界同事务写入（clear_boundary 键不受 LIKE 'gk:%' 影响）
-        // 边界取该群当前逻辑序号，不依赖墙上时钟。
-        for gid in &group_ids {
-            let boundary = db::get_clock(&tx, &format!("group:{gid}"));
-            db::set_clear_boundary(&tx, gid, boundary).map_err(|e| e.to_string())?;
-        }
+        // 彻底清除 = 也退出所有群聊：删群成员/群记录/群密钥/群时钟，
+        // 否则「清除聊天数据」后群还留在列表里（重新安装后还会被群主/成员
+        // 的群密钥分发重新拉回）。
+        tx.execute("DELETE FROM group_members", [])
+            .map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM groups", [])
+            .map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM settings WHERE key LIKE 'gk:%'", [])
+            .map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM conversation_clocks WHERE conv_id LIKE 'group:%'", [])
+            .map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
     }
 
-    // 2. Runtime state 清理。
-    //    注意：group_keys（群密钥内存缓存）**保留**——清除聊天数据不退出群聊，
-    //    密钥仍在才能解密清除后到达的新群消息（旧消息由 boundary 拦截）。
+    // 2. Runtime state 清理：群密钥内存缓存一并清空（彻底退出群聊）。
     s.pending_requests.lock().unwrap().clear();
     s.pending_reads.lock().unwrap().clear();
     s.pending_file_accept.lock().unwrap().clear();
@@ -2473,6 +2563,7 @@ pub fn clear_all_data(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     // 已删群的 file_key，且 pending 群密钥可能在重连时复活已删群记录）
     s.group_file_receivers.lock().unwrap().clear();
     s.group_file_keys.lock().unwrap().clear();
+    s.group_keys.lock().unwrap().clear();
     s.pending_group_keys.lock().unwrap().clear();
     s.group_file_sending.lock().unwrap().clear();
     s.file_sending.lock().unwrap().clear();
@@ -2504,8 +2595,9 @@ pub fn clear_all_data(state: State<'_, Arc<AppState>>) -> Result<(), String> {
         }
     }
     // 清空 downloads_dir 内容（保留目录本身）
-    if s.downloads_dir.exists() {
-        for entry in std::fs::read_dir(&s.downloads_dir)
+    let dl = s.downloads_dir.lock().unwrap().clone();
+    if dl.exists() {
+        for entry in std::fs::read_dir(&dl)
             .map_err(|e| e.to_string())?
             .filter_map(|e| e.ok())
         {
