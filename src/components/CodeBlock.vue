@@ -24,9 +24,14 @@ const app = useAppStore();
 const props = defineProps<{
   code: string;
   language?: string;
-  /** 置 true 时不画卡片下边框：用于被 MessageCodeBubble 截断的卡片，
-   *  下方衔接的操作条会用自己的上边框绘制同一条分隔线，否则两线叠加。 */
-  flushBottom?: boolean;
+  /**
+   * 作为「气泡卡片的上半部分」使用（消息流里的代码气泡）：
+   * - **不画描边**——描边会在卡片右缘与气泡尖角处露出一条竖线，尖角看着像"贴上去的"；
+   *   去掉后卡片与尖角同色同边，融为一体（卡片与画布的区分由底色明暗差承担）。
+   * - **下圆角抹平**、上圆角保留——下方紧接操作条，两者拼成一整块圆角卡片。
+   * 独立展示（全文弹窗）时保持默认值，仍有描边与四角圆角。
+   */
+  attached?: boolean;
 }>();
 
 for (const [name, language] of Object.entries({
@@ -89,9 +94,9 @@ const html = computed(() => {
 <template>
   <component :is="'style'">{{ app.dark ? darkCss : lightCss }}</component>
   <div
-    class="overflow-hidden rounded-lg text-left"
-    :class="borderStyle"
-    :style="{ borderWidth: '1px', borderBottomWidth: flushBottom ? '0px' : '1px' }"
+    class="overflow-hidden text-left"
+    :class="attached ? 'rounded-t-lg' : ['rounded-lg', borderStyle]"
+    :style="{ borderWidth: attached ? '0px' : '1px' }"
   >
     <div class="flex items-center justify-between px-3" style="height: 32px" :style="{ background: toolbarBg }">
       <span class="text-xs" :style="{ color: toolbarFg }">{{ langLabel }} · {{ lineCount }} 行</span>

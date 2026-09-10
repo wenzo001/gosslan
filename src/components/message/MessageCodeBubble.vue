@@ -23,7 +23,7 @@ const emit = defineEmits<{
  * 截断容器若透明，CodeBlock 实际高度不足 CODE_CLAMP_HEIGHT 时，容器底部会露出一条画布色亮缝。
  */
 const surface = computed(() => (props.dark ? CODE_SURFACE.dark : CODE_SURFACE.light));
-/** 操作条与 CodeBlock 代码区同底同描边，衔接成一整张卡片。 */
+/** 操作条与 CodeBlock 代码区同底色（分隔线颜色仍取同款描边色）。 */
 const actionsStyle = computed(() => ({
   background: surface.value,
   borderColor: props.dark ? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.1)",
@@ -43,11 +43,11 @@ const tailBg = computed(() => surface.value);
       class="overflow-hidden rounded-t-lg"
       :style="{ height: `${CODE_CLAMP_HEIGHT}px`, background: surface }"
     >
-      <CodeBlock :code="code" flush-bottom />
+      <CodeBlock :code="code" attached />
     </div>
-    <CodeBlock v-else :code="code" />
+    <CodeBlock v-else :code="code" attached />
     <!-- 操作条＝代码卡片的底栏：总高恒为 previewMetrics.CODE_ACTION_BAR(28px)，改样式不要动高度 -->
-    <div class="code-actions" :class="clamped ? 'code-actions-divided' : ''" :style="actionsStyle">
+    <div class="code-actions" :style="actionsStyle">
       <button v-if="clamped" class="preview-action" @click="emit('expand', code)">展开显示</button>
       <button
         class="preview-action"
@@ -64,14 +64,29 @@ const tailBg = computed(() => surface.value);
 </template>
 
 <style scoped>
-/* 代码气泡尖角：代码卡片顶部是 32px toolbar，尖角对齐到 toolbar 中线（16px），
-   与文本气泡（无 toolbar、top 10px）区分开。 */
+/* 代码气泡尖角：代码卡片顶部是 32px toolbar，尖角对齐到 toolbar 中线（16px）。
+   颜色必须取「卡片底 + toolbar 蒙层」的等效色——尖角整段都落在 toolbar 高度内，
+   相邻色就是 toolbar 而不是卡片本体；直接用卡片色会比 toolbar 亮一档，仍能看出边界。
+   蒙层与 CodeBlock 的 toolbarBg 保持同款（亮色 4% 黑 / 暗色 5% 白）。 */
 .bubble-tail {
   top: 16px;
 }
-/* 代码卡片底栏：与上面的 CodeBlock 共用同款底色和描边，衔接成一张完整卡片。
-   高度锁死 28px（border-box，含边框）= previewMetrics.CODE_ACTION_BAR，
-   与代码块之间不留 margin，否则中间会露出聊天背景。 */
+.bubble-tail.tail-mine {
+  border-left-color: color-mix(in srgb, var(--bubble-bg) 96%, #000);
+}
+.bubble-tail.tail-other {
+  border-right-color: color-mix(in srgb, var(--bubble-bg) 96%, #000);
+}
+:global(.dark) .bubble-tail.tail-mine {
+  border-left-color: color-mix(in srgb, var(--bubble-bg) 95%, #fff);
+}
+:global(.dark) .bubble-tail.tail-other {
+  border-right-color: color-mix(in srgb, var(--bubble-bg) 95%, #fff);
+}
+/* 代码卡片底栏：与上面的 CodeBlock 共用同款底色，衔接成一张完整卡片。
+   高度锁死 28px（border-box）= previewMetrics.CODE_ACTION_BAR，不要动。
+   卡片已无描边，这里也只画「上分隔线」——代码区与底栏同色，没有这条线会糊成一片；
+   四边描边则会让气泡重新出现一圈外描边（正是本次要去掉的东西）。 */
 .code-actions {
   display: flex;
   align-items: center;
@@ -80,11 +95,7 @@ const tailBg = computed(() => surface.value);
   height: 28px;
   padding: 0 4px;
   border-style: solid;
-  border-width: 0 1px 1px;
+  border-width: 1px 0 0;
   border-radius: 0 0 8px 8px;
-}
-/* 截断态代码块被裁掉、自身没有下边框，分隔线由底栏画；未截断态用 CodeBlock 的下边框，不重复叠加。 */
-.code-actions-divided {
-  border-top-width: 1px;
 }
 </style>

@@ -84,17 +84,20 @@ onBeforeUnmount(() => {
       </button>
     </div>
 
-    <!-- Windows/Linux：右侧三键（顶到窗口最右缘） -->
+    <!-- Windows/Linux：右侧三键（顶到窗口最右缘）。
+         hover 背景用全局 --gosslan-item-radius（8px），与 rail/列表项的悬停态一致；
+         不写圆角时是纯方块，关闭键右上角还会被窗口外框的 rounded-xl（12px）裁一刀，
+         与全局圆角对不上。 -->
     <div v-else class="flex h-full items-stretch">
       <button
-        class="flex w-11 items-center justify-center text-[var(--gosslan-rail-text)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]"
+        class="flex w-11 items-center justify-center rounded-[var(--gosslan-item-radius)] text-[var(--gosslan-rail-text)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]"
         title="最小化"
         @click="api.windowMinimize()"
       >
         <Minus class="h-3.5 w-3.5" />
       </button>
       <button
-        class="flex w-11 items-center justify-center text-[var(--gosslan-rail-text)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]"
+        class="flex w-11 items-center justify-center rounded-[var(--gosslan-item-radius)] text-[var(--gosslan-rail-text)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]"
         :title="maximized ? '向下还原' : '最大化'"
         @click="toggleMaximize"
       >
@@ -102,7 +105,7 @@ onBeforeUnmount(() => {
         <Maximize2 v-else class="h-3 w-3" />
       </button>
       <button
-        class="flex w-11 items-center justify-center text-[var(--gosslan-rail-text)] transition hover:bg-[#e81123] hover:text-white"
+        class="flex w-11 items-center justify-center rounded-[var(--gosslan-item-radius)] text-[var(--gosslan-rail-text)] transition hover:bg-[#e81123] hover:text-white"
         title="关闭（最小化到托盘，后台继续收消息）"
         @click="api.windowClose()"
       >

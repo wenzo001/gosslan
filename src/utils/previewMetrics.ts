@@ -27,8 +27,8 @@ const TEXT_BUBBLE_BORDER = 2;
 /** 文本气泡内长文本操作条：mt-1.5(6) + pt-1.5(6) + border-top(1) + text-xs 行高(16)。 */
 const TEXT_ACTION_BAR = 29;
 
-/** CodeBlock：单侧 1px 边框（上下各一条）。 */
-const CODE_BORDER = 1;
+/** CodeBlock 在消息流里以「无描边的气泡卡片」呈现（描边会与气泡尖角露出拼接感，故去掉），
+ *  因此高度里不含边框。独立的全文弹窗不走这里的估算。 */
 /** CodeBlock：toolbar 固定 32px。 */
 const CODE_TOOLBAR = 32;
 /** CodeBlock：pre 上下各 12px 内边距。 */
@@ -86,22 +86,16 @@ export function codeNeedsClamp(content: string): boolean {
   return visualLineCount(content, COLUMNS_PER_LINE) > PREVIEW_LINES;
 }
 
-/** 完整代码块（未截断）自身高度：上下边框 + toolbar + 上下内边距 + 若干行。 */
+/** 完整代码块（未截断）自身高度：toolbar + 上下内边距 + 若干行（消息流里的卡片无描边）。 */
 function codeBlockNaturalHeight(lines: number): number {
-  return (
-    CODE_BORDER * 2 +
-    CODE_TOOLBAR +
-    CODE_PADDING * 2 +
-    lines * CODE_LINE_HEIGHT
-  );
+  return CODE_TOOLBAR + CODE_PADDING * 2 + lines * CODE_LINE_HEIGHT;
 }
 
 /**
- * 截断容器高度：从顶部往下裁，可见部分只有「上边框 + toolbar + pre 上内边距 + 5 个整行」。
+ * 截断容器高度：从顶部往下裁，可见部分只有「toolbar + pre 上内边距 + 5 个整行」。
  * 不能再带上内边距和下边框，否则会在第 6 行上裁出一个笔尖。
  */
-export const CODE_CLAMP_HEIGHT =
-  CODE_BORDER + CODE_TOOLBAR + CODE_PADDING + PREVIEW_LINES * CODE_LINE_HEIGHT;
+export const CODE_CLAMP_HEIGHT = CODE_TOOLBAR + CODE_PADDING + PREVIEW_LINES * CODE_LINE_HEIGHT;
 
 /** 代码块占位高度 = 预览区（截断时为固定 5 行）+ 常驻操作条（复制 / 展开显示）。 */
 export function codeBlockHeight(content: string): number {
