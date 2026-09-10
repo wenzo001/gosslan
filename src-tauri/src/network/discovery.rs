@@ -315,10 +315,21 @@ pub async fn spawn(
                                 .await;
                             }
                             "who_has" => {
-                                let reply = announce_packet(&state, tcp_port);
-                                if let Ok(data) = serde_json::to_vec(&reply) {
-                                    let _ = socket.send_to(&data, src).await;
-                                }
+                                // 惊群治理：who_has 是「打开添加好友」时向全网发的一次探测，
+                                // 收到就立刻回包的话，1000 个节点会在同一瞬间把请求方的收包
+                                // 与建链路径打满（回包风暴 + 一次性 ensure_link）。
+                                // 这里让每个节点各自等一个 0~500ms 随机时长再回，
+                                // 把回包摊开；对"打开添加好友"的感知延迟影响可忽略。
+                                let socket = socket.clone();
+                                let state = state.clone();
+                                tokio::spawn(async move {
+                                    let jitter = OsRng.next_u64() % 500;
+                                    tokio::time::sleep(Duration::from_millis(jitter)).await;
+                                    let reply = announce_packet(&state, tcp_port);
+                                    if let Ok(data) = serde_json::to_vec(&reply) {
+                                        let _ = socket.send_to(&data, src).await;
+                                    }
+                                });
                             }
                             _ => {}
                         }
