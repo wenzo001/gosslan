@@ -100,6 +100,7 @@
 - **群成员面板两处仍用 `window.confirm`**（转让群主 / 退出群聊）：改为应用内 `BaseModal` 二次确认，与「清除聊天数据 / 删除好友」统一。⚠️ 剩余一处 `StorageSection` 的缓存策略确认仍用 `window.confirm` —— 它在 `watch` 里依赖**同步**弹窗 + 立即回滚的时序，改异步弹窗需重排该回滚逻辑，风险较高，留作后续。
 - **截图粘贴时好时坏**：Windows 11 截图（Win+Shift+S）的剪贴板**同时**带一个临时文件引用（CF_HDROP 指向 Temp 下的 PNG），原逻辑「文件路径优先」会把截图误判成文件、去发那个可能已被清理的临时路径，导致"有时发得出去、有时发不出去"。修复两处：① `classifyPaste` 改为**图片优先于文件路径**；② `onPaste` 在**任何 `await` 之前**同步捕获图片 `File`（`files` 优先、`items.getAsFile()` 兜底）——Chromium/WebKit 会在 paste 事件返回后清空 clipboardData，先 `await` 再读 `items` 会拿到 `null`。
 - **发送文件（尤其 .md）被渲染成代码块**：文件消息此前按 `subtype=code` 渲染成**内联代码预览块**（把 .js/.md 内容拉出来高亮显示），而不是文件卡片。现在**文件一律按文件卡片渲染**——代码块只来自「代码消息」（kind=code，输入框粘贴/发送的文本），文件不再依据扩展名变代码块。同时 `.md`（Markdown 是文档而非代码）从 `classify_file_subtype` 与文件卡片图标的 `code` 分类中移除，归为普通 `file`/文档图标。
+- **群关系同步会凭空重建群聊会话**（产品语义错误）：`handle_group_key`（收到 GroupKey 后的群关系同步路径）在 `upsert_group` 之后**多调了一次 `ensure_conversation`**，导致用户清库/重装后仅凭群关系同步（群名/群成员/群密钥），之前加入过的群聊就会自动重新出现在聊天列表。这混淆了「群关系」与「聊天会话」——conversation 是**聊天活动驱动的会话索引**，只有收到新消息（`insert_message` + `touch_conversation`）时才应创建。修复：删掉这一处 `ensure_conversation`，保留 `upsert_group`（写 groups/group_members）与 `observe_clock`（群时钟推进）；群消息接收路径的 `touch_conversation` 不动，因此新群消息仍会正常创建会话。新增 db 层测试锁定不变量（群关系同步不建会话 / 新消息建会话 / 已有会话不被删除或重复创建）。
 
 ### Changed
 - **空态只有陈述、没有下一步**：主聊天区、会话列表的「暂无会话 / 暂无好友」此前都只有一句话。新用户最常卡在"怎么加人"，现在空态直接给「添加好友」按钮（**搜索无结果时不给**——那是"换个词"的场景，不是"去加人"）。
