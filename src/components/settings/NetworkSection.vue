@@ -6,6 +6,7 @@ import { useChatStore } from "@/stores/useChatStore";
 import SettingsGroup from "@/components/settings/SettingsGroup.vue";
 import SettingsRow from "@/components/settings/SettingsRow.vue";
 import SettingsToggle from "@/components/settings/SettingsToggle.vue";
+import { t } from "@/i18n";
 import type { ChannelStatus } from "@/types";
 
 const props = defineProps<{ active: boolean; reloadToken?: number }>();
@@ -89,8 +90,8 @@ async function toggleBluetooth() {
 
 <template>
   <SettingsGroup
-    title="网络通道"
-    footer="选择网卡后即开启局域网通道并扫描节点；通道开启时可随时切换网卡。"
+    :title="t('settings.group.network')"
+    :footer="t('settings.group.network.footer')"
   >
     <SettingsRow label="局域网通道" description="发现并连接同一局域网内的其他设备">
       <div class="flex items-center gap-2">

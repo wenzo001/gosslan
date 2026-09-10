@@ -168,6 +168,8 @@ export interface AppSettings {
   notifyEnabled: boolean | null;
   /** 通知是否显示消息正文（null 视为显示；关掉后只提示"收到新消息"，保护锁屏隐私）。 */
   notifyShowContent: boolean | null;
+  /** 界面语言："zh-CN" | "en-US"（null 视为中文）。 */
+  language: string | null;
   bindIp: string | null;
   /** 聊天显示样式 JSON：{"preset":"theme","fontSize":"md"} */
   chatStyle: string | null;

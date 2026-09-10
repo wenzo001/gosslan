@@ -16,6 +16,7 @@ import StorageSection from "@/components/settings/StorageSection.vue";
 import SecuritySection from "@/components/settings/SecuritySection.vue";
 import AboutSection from "@/components/settings/AboutSection.vue";
 import { FolderOpen, RotateCcw, Trash2 } from "lucide-vue-next";
+import { t, LOCALES } from "@/i18n";
 
 defineProps<{ open: boolean }>();
 const emit = defineEmits<{ (e: "close"): void }>();
@@ -32,9 +33,9 @@ async function pickShareDir() {
   if (typeof picked === "string") {
     try {
       await app.setShareDir(picked);
-      app.toast("共享目录已设置", "success");
+      app.toast(t("settings.toast.shareSet"), "success");
     } catch (e) {
-      app.toastError(e, "设置共享目录失败");
+      app.toastError(e, t("settings.toast.shareFail"));
     }
   }
 }
@@ -43,7 +44,7 @@ async function pickShareDir() {
 async function restoreDefaults() {
   await app.resetDefaults();
   reloadToken.value++;
-  app.toast("已恢复默认设置", "success");
+  app.toast(t("settings.toast.defaultsRestored"), "success");
 }
 
 /** 清除聊天数据：二次确认走**应用内弹窗**。
@@ -57,40 +58,60 @@ async function doClearAllData() {
     await chat.clearAllData();
     await chat.refreshFriends();
     await chat.refreshPending();
-    app.toast("聊天数据已清除", "success");
+    app.toast(t("settings.toast.chatCleared"), "success");
   } catch (e) {
-    app.toastError(e, "清除失败");
+    app.toastError(e, t("settings.toast.clearFail"));
   }
 }
 </script>
 
 <template>
-  <BaseModal :open="open" title="设置" width="max-w-xl" @close="emit('close')">
+  <BaseModal :open="open" :title="t('settings.title')" width="max-w-xl" @close="emit('close')">
     <div class="-mx-5 -mb-5 max-h-[75vh] space-y-5 overflow-y-auto overflow-x-hidden rounded-b-[var(--gosslan-radius-xl)] bg-[var(--gosslan-bg)] p-5">
       <ProfileSection :active="open" :reload-token="reloadToken" />
       <AppearanceSection />
       <ChatStyleSection />
+
+      <!-- 语言 -->
+      <SettingsGroup :title="t('settings.language.title')" :footer="t('settings.language.desc')">
+        <SettingsRow :label="t('settings.language.title')" last>
+          <div class="flex items-center gap-1">
+            <button
+              v-for="l in LOCALES"
+              :key="l.value"
+              class="rounded-[var(--gosslan-radius-sm)] px-2.5 py-1 text-xs transition"
+              :class="app.language === l.value
+                ? 'bg-primary text-white'
+                : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
+              @click="app.setLanguage(l.value)"
+            >
+              {{ l.label }}
+            </button>
+          </div>
+        </SettingsRow>
+      </SettingsGroup>
+
       <NetworkSection :active="open" :reload-token="reloadToken" />
 
       <!-- 通知 -->
       <SettingsGroup
-        title="通知"
-        footer="应用在后台、或正在看别的会话时，用系统通知提醒新消息"
+        :title="t('settings.group.notifications')"
+        :footer="t('settings.group.notifications.footer')"
       >
-        <SettingsRow label="桌面通知" description="关闭后不再收到任何新消息通知">
+        <SettingsRow :label="t('settings.notify.enabled')" :description="t('settings.notify.enabled.desc')">
           <SettingsToggle
-            label="桌面通知"
+            :label="t('settings.notify.enabled')"
             :model-value="app.notifyEnabled"
             @update:model-value="app.setNotifyEnabled"
           />
         </SettingsRow>
         <SettingsRow
-          label="通知显示消息内容"
-          description="关闭后只提示「收到新消息」，锁屏与通知中心不显示正文"
+          :label="t('settings.notify.showContent')"
+          :description="t('settings.notify.showContent.desc')"
           last
         >
           <SettingsToggle
-            label="通知显示消息内容"
+            :label="t('settings.notify.showContent')"
             :model-value="app.notifyShowContent"
             :disabled="!app.notifyEnabled"
             @update:model-value="app.setNotifyShowContent"
@@ -99,14 +120,14 @@ async function doClearAllData() {
       </SettingsGroup>
 
       <!-- 共享目录 -->
-      <SettingsGroup title="共享目录" footer="允许好友浏览并下载你共享的文件夹内容">
-        <SettingsRow label="共享文件夹" :description="app.shareDir || '未设置'" last>
+      <SettingsGroup :title="t('settings.group.share')" :footer="t('settings.group.share.footer')">
+        <SettingsRow :label="t('settings.share.folder')" :description="app.shareDir || t('common.notSet')" last>
           <button
             class="flex items-center gap-1.5 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3 py-1.5 text-xs transition hover:bg-[var(--gosslan-hover)]"
             @click="pickShareDir"
           >
             <FolderOpen class="h-3.5 w-3.5" />
-            选择文件夹
+            {{ t("common.chooseFolder") }}
           </button>
         </SettingsRow>
       </SettingsGroup>
@@ -116,13 +137,13 @@ async function doClearAllData() {
       <AboutSection @dev-open="devDiagOpen = true" />
 
       <!-- 重置 / 清除 -->
-      <SettingsGroup title="重置与数据">
+      <SettingsGroup :title="t('settings.group.reset')">
         <button
           class="flex w-full items-center justify-center gap-2 px-4 py-3 text-sm text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
           @click="restoreDefaults"
         >
           <RotateCcw class="h-4 w-4" />
-          恢复默认设置
+          {{ t("settings.reset.restore") }}
         </button>
         <div class="ml-4 h-px bg-[var(--gosslan-divider)]" />
         <button
@@ -130,12 +151,11 @@ async function doClearAllData() {
           @click="clearConfirmOpen = true"
         >
           <Trash2 class="h-4 w-4" />
-          清除聊天数据
+          {{ t("settings.reset.clearChat") }}
         </button>
       </SettingsGroup>
       <p class="px-1 text-center text-[11px] leading-relaxed text-[var(--gosslan-text-2)]">
-        恢复默认不影响好友、聊天记录和设备身份。清除聊天数据会删除本机全部消息、会话与文件传输记录，
-        并<strong>退出所有群聊</strong>（好友关系与设备身份保留）。
+        {{ t("settings.reset.footnote") }}
       </p>
     </div>
   </BaseModal>
@@ -144,32 +164,32 @@ async function doClearAllData() {
   <DevDiagPanel :open="devDiagOpen" @close="devDiagOpen = false" />
 
   <!-- 清除聊天数据：破坏性操作，逐条讲清"删什么 / 不删什么"，再给红色确认键 -->
-  <BaseModal :open="clearConfirmOpen" title="清除聊天数据" @close="clearConfirmOpen = false">
+  <BaseModal :open="clearConfirmOpen" :title="t('settings.clear.title')" @close="clearConfirmOpen = false">
     <div class="space-y-3">
-      <p class="text-sm text-[var(--gosslan-text)]">将删除本机的以下内容，且<strong>无法撤销</strong>：</p>
+      <p class="text-sm text-[var(--gosslan-text)]">{{ t("settings.clear.warning") }}</p>
       <ul class="space-y-1 text-xs text-[var(--gosslan-text-2)]">
-        <li>· 所有聊天消息与会话（含群聊）</li>
-        <li>· 文件传输与群文件记录</li>
-        <li>· 应用缓存</li>
-        <li>· 退出所有群聊（群聊会从列表中移除）</li>
+        <li>· {{ t("settings.clear.item.messages") }}</li>
+        <li>· {{ t("settings.clear.item.transfers") }}</li>
+        <li>· {{ t("settings.clear.item.cache") }}</li>
+        <li>· {{ t("settings.clear.item.groups") }}</li>
       </ul>
-      <p class="text-sm text-[var(--gosslan-text)]">以下内容不受影响：</p>
+      <p class="text-sm text-[var(--gosslan-text)]">{{ t("settings.clear.unaffected") }}</p>
       <ul class="space-y-1 text-xs text-[var(--gosslan-text-2)]">
-        <li>· 好友列表</li>
-        <li>· 设备身份与加密密钥</li>
-        <li>· 昵称、头像与所有设置</li>
-        <li>· 其他设备上的聊天记录</li>
+        <li>· {{ t("settings.clear.item.friends") }}</li>
+        <li>· {{ t("settings.clear.item.identity") }}</li>
+        <li>· {{ t("settings.clear.item.profile") }}</li>
+        <li>· {{ t("settings.clear.item.otherDevices") }}</li>
       </ul>
-      <p class="text-xs text-[var(--gosslan-text-2)]">清除后收到的新消息仍会正常接收。</p>
+      <p class="text-xs text-[var(--gosslan-text-2)]">{{ t("settings.clear.note") }}</p>
       <div class="flex justify-end gap-2 pt-2">
         <button
           class="rounded-[var(--gosslan-radius-md)] px-4 py-1.5 text-sm transition hover:bg-[var(--gosslan-hover)]"
           @click="clearConfirmOpen = false"
-        >取消</button>
+        >{{ t("common.cancel") }}</button>
         <button
           class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-1.5 text-sm text-white transition hover:bg-[var(--gosslan-danger)]"
           @click="doClearAllData"
-        >清除</button>
+        >{{ t("common.clear") }}</button>
       </div>
     </div>
   </BaseModal>

@@ -2,6 +2,7 @@
 import { useAppStore, type AppearanceMode } from "@/stores/useAppStore";
 import SettingsGroup from "@/components/settings/SettingsGroup.vue";
 import SettingsRow from "@/components/settings/SettingsRow.vue";
+import { t } from "@/i18n";
 
 const app = useAppStore();
 
@@ -30,7 +31,7 @@ const appearanceOptions: { value: AppearanceMode; label: string }[] = [
 </script>
 
 <template>
-  <SettingsGroup title="外观">
+  <SettingsGroup :title="t('settings.group.appearance')">
     <SettingsRow label="外观" description="跟随系统，或固定为浅色 / 深色">
       <!-- 分段控件：外圆角 md(8) + p-0.5(2) → 内圆角取 sm(6)，符合同心公式（design-guidelines §1.3） -->
       <div

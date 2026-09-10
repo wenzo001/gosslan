@@ -46,6 +46,12 @@
   - **上次会话恢复**：打开会话即记 `gosslan.lastConv`（localStorage），重启后若该会话仍存在则自动打开——三端一致，回到上次离开的地方。
   - **窗口尺寸/位置恢复**（桌面 macOS/Windows）：接入官方 `tauri-plugin-window-state`，只持久化 `SIZE/POSITION/MAXIMIZED/FULLSCREEN`。⚠️ **刻意排除 `VISIBLE`**——本应用「关闭=隐藏到托盘」，若把可见性也持久化，会记成"关闭后是隐藏态"、重启就不显示窗口了；`DECORATIONS` 也排除（自绘标题栏由本项目管理）。
   - **移动端方向统一竖屏**：iOS `Info.plist` 补 `UISupportedInterfaceOrientations=Portrait`，与 Android 既有的 `screenOrientation="portrait"`（`scripts/inject-android-signing.mjs`）对齐——当前移动端横屏布局尚未适配（会破坏安全区/导航），等横屏就绪后再放开 iPad 多方向。
+- **本地化骨架（App Store 全球上架阻断项）**：此前全中文硬编码、无任何 i18n。本轮建立：
+  - `src/i18n/`：轻量字典（`zh-CN`/`en-US`）+ 响应式 `t()`（支持 `{name}` 插值）+ `applyLocale`/`isLocale`，自写而非引入 vue-i18n（文案量有限，避免新依赖）。
+  - 后端新增 `language` 设置键（脏值忽略，回落中文），store 加 `language`/`setLanguage`（切语言即时生效 + 持久化）。
+  - 设置页加「语言」切换入口（简体中文 / English），**覆盖系统 UI（导航栏）与设置页主框架 + 各分组标题/footer + 通知/共享/重置/清除 + 清除确认弹窗**。
+  - 护栏 `src/i18n/index.test.ts`：**断言中英字典 key 集合完全一致**（漏翻译会变红）+ t() 翻译/插值/缺 key 回退。
+  - ⚠️ 各分组**内部字段文案**（外观三态、气泡配色预设名、存储清理策略、网卡列表等）仍为增量待迁——切语言后这些字段暂不随动，后续批量补。
 
 ### Fixed
 - **触摸端无法删除会话**（真实功能缺失）：会话行的删除键写成 `hidden` + `group-hover:flex`，而 **Android 没有 hover 事件 → 该按钮永远不显示**，表现为"桌面能删、手机删不掉"（同一层的"删除好友"有长按兜底，聊天记录却没有）。新增全局工具类 `.hover-reveal` / `.hover-reveal-op`（`@media (hover: none)` 下退化为常显），并把「凡用 `group-hover` / `opacity-0` 揭示的元素都必须加其中之一」写进设计规范

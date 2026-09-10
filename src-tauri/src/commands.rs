@@ -567,6 +567,8 @@ pub struct Settings {
     pub notify_enabled: Option<bool>,
     /// 通知是否显示消息正文（隐私：关掉后只显示"收到新消息"，锁屏/通知中心不泄内容）。
     pub notify_show_content: Option<bool>,
+    /// 界面语言："zh-CN" | "en-US"。缺省视为 "zh-CN"。
+    pub language: Option<String>,
     pub bind_ip: Option<String>,
     /// 聊天显示样式 JSON：{"preset":"classic","fontSize":"md","compact":true}
     pub chat_style: Option<String>,
@@ -577,13 +579,14 @@ pub struct Settings {
 
 /// e2ee_enabled 键保留在 reset 链中仅为清理 v0.10.0 及更早版本的残留值；
 /// v0.11.0 起 E2EE 恒开、不可关闭，该键不再被读写。
-const SETTINGS_KEYS: [&str; 10] = [
+const SETTINGS_KEYS: [&str; 11] = [
     "theme_color",
     "font_family",
     "dark_mode",
     "appearance_mode",
     "notify_enabled",
     "notify_show_content",
+    "language",
     "bind_ip",
     "chat_style",
     "e2ee_enabled",
@@ -592,6 +595,9 @@ const SETTINGS_KEYS: [&str; 10] = [
 
 /// appearance_mode 的合法取值：脏值一律忽略（宁可回落"跟随系统"，也不要写进库）。
 const APPEARANCE_MODES: [&str; 3] = ["system", "light", "dark"];
+
+/// language 的合法取值：脏值一律忽略（回落默认中文）。
+const LANGUAGES: [&str; 2] = ["zh-CN", "en-US"];
 
 #[tauri::command]
 pub fn get_settings(state: State<'_, Arc<AppState>>) -> Settings {
@@ -604,6 +610,7 @@ pub fn get_settings(state: State<'_, Arc<AppState>>) -> Settings {
         // 通知默认开启、默认显示正文：缺省时按 `Some(true)`，旧记录与未设置都能有合理行为。
         notify_enabled: db::get_setting(&dbc, "notify_enabled").map(|v| v != "0").or(Some(true)),
         notify_show_content: db::get_setting(&dbc, "notify_show_content").map(|v| v != "0").or(Some(true)),
+        language: db::get_setting(&dbc, "language"),
         bind_ip: db::get_setting(&dbc, "bind_ip"),
         chat_style: db::get_setting(&dbc, "chat_style"),
         peer_styles: db::get_setting(&dbc, "chat_peer_styles"),
@@ -632,6 +639,11 @@ pub fn save_settings(state: State<'_, Arc<AppState>>, settings: Settings) -> Res
     }
     if let Some(v) = settings.notify_show_content {
         db::set_setting(&dbc, "notify_show_content", if v { "1" } else { "0" }).map_err(|e| e.to_string())?;
+    }
+    if let Some(v) = settings.language {
+        if LANGUAGES.contains(&v.as_str()) {
+            db::set_setting(&dbc, "language", &v).map_err(|e| e.to_string())?;
+        }
     }
     if let Some(v) = settings.bind_ip {
         db::set_setting(&dbc, "bind_ip", &v).map_err(|e| e.to_string())?;

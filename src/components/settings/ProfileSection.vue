@@ -5,6 +5,7 @@ import { useChatStore } from "@/stores/useChatStore";
 import SettingsGroup from "@/components/settings/SettingsGroup.vue";
 import { avatarInitial, nameToColor } from "@/utils/color";
 import { Camera } from "lucide-vue-next";
+import { t } from "@/i18n";
 
 const props = defineProps<{ active: boolean; reloadToken?: number }>();
 
@@ -107,7 +108,7 @@ function processAvatar(file: File): Promise<string> {
 </script>
 
 <template>
-  <SettingsGroup title="个人资料">
+  <SettingsGroup :title="t('settings.group.profile')">
     <div class="flex items-center gap-4 p-4">
       <!-- 头像：点击更换 -->
       <button

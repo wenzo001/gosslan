@@ -7,6 +7,7 @@ import SettingsGroup from "@/components/settings/SettingsGroup.vue";
 import SettingsRow from "@/components/settings/SettingsRow.vue";
 import { formatBytes } from "@/utils/format";
 import { Download, FolderOpen, Trash2 } from "lucide-vue-next";
+import { t } from "@/i18n";
 import type { CacheInfo } from "@/types";
 
 const props = defineProps<{ active: boolean; reloadToken?: number }>();
@@ -177,8 +178,8 @@ watch(
 
 <template>
   <SettingsGroup
-    title="存储"
-    footer="本页只管「本机落盘的图片与文件」（聊天里收到的附件）和聊天数据库占用；聊天文字不会被自动清理。改动即时保存。保持「永久保存 + 无限制」即不做任何自动删除。"
+    :title="t('settings.group.storage')"
+    :footer="t('settings.group.storage.footer')"
   >
     <SettingsRow
       label="图片与文件保留时长"

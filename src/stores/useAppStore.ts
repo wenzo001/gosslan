@@ -13,6 +13,7 @@ import {
   type AppearanceMode,
 } from "@/utils/appearance";
 import { DEFAULT_CHAT_STYLE, fontPx, parsePeerStyle, type ChatStyleConfig } from "@/utils/chatStyle";
+import { applyLocale, currentLocale, isLocale, type Locale } from "@/i18n";
 import type { DeviceInfo, InterfaceInfo } from "@/types";
 
 export type { AppearanceMode };
@@ -106,6 +107,17 @@ export const useAppStore = defineStore("app", () => {
     void persistSettings();
   }
 
+  // ---------------- 语言 ----------------
+  /** 界面语言（后端持久化；默认中文）。真值在 i18n 模块的 locale，这里镜像一份供模板/持久化用。 */
+  const language = ref<Locale>(currentLocale());
+
+  /** 切换语言：立即生效（i18n 响应式更新）+ 持久化到后端。 */
+  function setLanguage(l: Locale) {
+    applyLocale(l);
+    language.value = l;
+    void persistSettings();
+  }
+
   // 轻量 toast
   interface Toast {
     id: number;
@@ -176,6 +188,7 @@ export const useAppStore = defineStore("app", () => {
         appearanceMode: appearance.value,
         notifyEnabled: notifyEnabled.value,
         notifyShowContent: notifyShowContent.value,
+        language: language.value,
         bindIp: boundIp.value ?? preferredIp.value,
         chatStyle: JSON.stringify(chatStyle.value),
         peerStyles: null, // 对端样式表由后端维护，前端只读
@@ -276,6 +289,9 @@ export const useAppStore = defineStore("app", () => {
     // 通知偏好（null = 未设置，按默认 true 处理）
     if (s.notifyEnabled != null) notifyEnabled.value = s.notifyEnabled;
     if (s.notifyShowContent != null) notifyShowContent.value = s.notifyShowContent;
+    // 语言（null/脏值 = 默认中文）
+    if (isLocale(s.language)) applyLocale(s.language);
+    language.value = currentLocale();
     preferredIp.value = s.bindIp;
     if (s.chatStyle) chatStyle.value = parsePeerStyle(s.chatStyle);
     if (s.peerStyles) {
@@ -326,6 +342,8 @@ export const useAppStore = defineStore("app", () => {
     appearance.value = "system";
     notifyEnabled.value = true;
     notifyShowContent.value = true;
+    applyLocale("zh-CN");
+    language.value = "zh-CN";
     preferredIp.value = null;
     boundIp.value = null;
     chatStyle.value = { ...DEFAULT_CHAT_STYLE };
@@ -385,6 +403,8 @@ export const useAppStore = defineStore("app", () => {
     setNotifyEnabled,
     setNotifyShowContent,
     ensureNotifyPermission,
+    language,
+    setLanguage,
     themeColor,
     fontFamily,
     chatStyle,

@@ -2,6 +2,7 @@
 import { useAppStore } from "@/stores/useAppStore";
 import SettingsGroup from "@/components/settings/SettingsGroup.vue";
 import { CHAT_FONT_SIZES, CHAT_PRESETS, resolveChatColors, type ChatPreset } from "@/utils/chatStyle";
+import { t } from "@/i18n";
 
 const app = useAppStore();
 
@@ -14,8 +15,8 @@ function swatchOf(p: ChatPreset): { mineBubble: string; otherBubble: string } {
 
 <template>
   <SettingsGroup
-    title="聊天显示"
-    footer="我的消息用所选配色；对方也会按我的配色看到我发的消息（自动同步到已连接设备）。"
+    :title="t('settings.group.chatStyle')"
+    :footer="t('settings.group.chatStyle.footer')"
   >
     <!-- 字体大小 -->
     <div class="px-4 py-3">

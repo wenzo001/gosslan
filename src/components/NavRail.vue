@@ -4,6 +4,7 @@ import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { avatarInitial, nameToColor } from "@/utils/color";
 import { MessageCircle, Moon, Sun, Users } from "lucide-vue-next";
+import { t } from "@/i18n";
 
 defineProps<{ view: "chats" | "contacts" }>();
 const emit = defineEmits<{
@@ -33,8 +34,8 @@ const pendingLabel = computed(() =>
       <button
         class="flex h-10 w-10 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white transition hover:opacity-90"
         :style="{ backgroundColor: nameToColor(app.device?.nickname ?? '') }"
-        :title="app.online ? '我在线（局域网已连接）' : '离线（局域网未连接）'"
-        :aria-label="`我，${app.online ? '在线' : '离线'}，打开设置`"
+        :title="app.online ? t('nav.me.online') : t('nav.me.offline')"
+        :aria-label="t('nav.me.openSettings', { status: app.online ? t('nav.me.online') : t('nav.me.offline') })"
         @click="emit('open-settings')"
       >
         <img alt="" v-if="app.device?.avatar" :src="app.device.avatar" class="h-full w-full object-cover" />
@@ -54,8 +55,8 @@ const pendingLabel = computed(() =>
         :class="view === 'chats'
           ? 'text-[var(--gosslan-rail-text-active)]'
           : 'text-[var(--gosslan-rail-text)] hover:bg-[var(--gosslan-rail-hover)]'"
-        title="聊天"
-        :aria-label="chat.totalUnread > 0 ? `聊天，${chat.totalUnread} 条未读` : '聊天'"
+        :title="t('nav.chats')"
+        :aria-label="chat.totalUnread > 0 ? t('nav.chats.unread', { n: chat.totalUnread }) : t('nav.chats')"
         @click="emit('update:view', 'chats')"
       >
         <MessageCircle class="h-[22px] w-[22px]" :fill="view === 'chats' ? 'currentColor' : 'none'" :stroke-width="view === 'chats' ? 2 : 1.9" />
@@ -71,8 +72,8 @@ const pendingLabel = computed(() =>
         :class="view === 'contacts'
           ? 'text-[var(--gosslan-rail-text-active)]'
           : 'text-[var(--gosslan-rail-text)] hover:bg-[var(--gosslan-rail-hover)]'"
-        title="通讯录"
-        :aria-label="chat.pendingRequests.length ? `通讯录，${chat.pendingRequests.length} 条好友申请` : '通讯录'"
+        :title="t('nav.contacts')"
+        :aria-label="chat.pendingRequests.length ? t('nav.contacts.pending', { n: chat.pendingRequests.length }) : t('nav.contacts')"
         @click="emit('update:view', 'contacts')"
       >
         <Users class="h-[22px] w-[22px]" :fill="view === 'contacts' ? 'currentColor' : 'none'" :stroke-width="view === 'contacts' ? 2 : 1.9" />
@@ -89,7 +90,7 @@ const pendingLabel = computed(() =>
     <div class="mt-auto flex flex-col items-center gap-2">
       <button
         class="flex h-10 w-10 items-center justify-center rounded-[var(--gosslan-radius-lg)] text-[var(--gosslan-rail-text)] transition hover:bg-[var(--gosslan-rail-hover)]"
-        :title="app.dark ? '浅色模式' : '深色模式'" :aria-label="app.dark ? '浅色模式' : '深色模式'"
+        :title="app.dark ? t('nav.lightMode') : t('nav.darkMode')" :aria-label="app.dark ? t('nav.lightMode') : t('nav.darkMode')"
         @click="app.toggleDark()"
       >
         <Sun v-if="app.dark" class="h-[19px] w-[19px]" />
@@ -97,7 +98,7 @@ const pendingLabel = computed(() =>
       </button>
       <button
         class="flex h-10 w-10 items-center justify-center rounded-[var(--gosslan-radius-lg)] text-[var(--gosslan-rail-text)] transition hover:bg-[var(--gosslan-rail-hover)]"
-        title="设置" aria-label="设置"
+        :title="t('nav.settings')" :aria-label="t('nav.settings')"
         @click="emit('open-settings')"
       >
         <svg viewBox="0 0 24 24" class="h-[19px] w-[19px]" fill="none" stroke="currentColor" stroke-width="1.9">
