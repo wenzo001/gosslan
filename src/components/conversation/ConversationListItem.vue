@@ -100,7 +100,7 @@ const gridTiles = computed(() => {
       <span
         v-if="online !== null"
         class="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-[var(--gosslan-list)]"
-        :class="online ? 'bg-emerald-500' : 'bg-neutral-400'"
+        :class="online ? 'bg-[var(--gosslan-success)]' : 'bg-[var(--gosslan-status-offline)]'"
       ></span>
       <!-- 未读小红点：正常显示 -->
       <span
@@ -131,7 +131,7 @@ const gridTiles = computed(() => {
             <span v-html="highlightText(snippet, keyword.trim())"></span>
           </template>
           <template v-else>
-            <span v-if="mentioned" class="font-medium text-[var(--gosslan-danger)]">[有人@我]</span
+            <span v-if="mentioned" class="font-medium text-[var(--gosslan-danger-ink)]">[有人@我]</span
             >{{ conv.last_msg || "暂无消息" }}
           </template>
         </span>
@@ -142,7 +142,7 @@ const gridTiles = computed(() => {
     <!-- 删除聊天记录入口：hover 行时浮现 -->
     <button
       v-if="!active"
-      class="absolute bottom-1.5 right-1.5 z-10 hidden h-6 w-6 items-center justify-center rounded-[var(--gosslan-radius-xs)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-danger-soft)] hover:text-[var(--gosslan-danger)] group-hover/conv:flex"
+      class="absolute bottom-1.5 right-1.5 z-10 hidden h-6 w-6 items-center justify-center rounded-[var(--gosslan-radius-xs)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-danger-soft)] hover:text-[var(--gosslan-danger-ink)] group-hover/conv:flex"
       title="删除聊天记录"
       @click="emit('ask-delete', conv, $event)"
     >

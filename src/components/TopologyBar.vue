@@ -11,7 +11,9 @@ const rtt = computed(() => {
 });
 
 const status = computed(() => (chat.topology.online ? "在线" : "离线"));
-const statusColor = computed(() => (chat.topology.online ? "text-emerald-500" : "text-neutral-400"));
+const statusColor = computed(() =>
+  chat.topology.online ? "text-[var(--gosslan-success-ink)]" : "text-[var(--gosslan-status-offline)]",
+);
 </script>
 
 <template>
@@ -32,7 +34,7 @@ const statusColor = computed(() => (chat.topology.online ? "text-emerald-500" : 
       <span>平均时延 {{ rtt }}</span>
     </span>
     <span class="ml-auto flex items-center gap-1.5">
-      <span class="h-1.5 w-1.5 rounded-full" :class="chat.topology.online ? 'bg-emerald-500' : 'bg-neutral-400'"></span>
+      <span class="h-1.5 w-1.5 rounded-full" :class="chat.topology.online ? 'bg-[var(--gosslan-success)]' : 'bg-[var(--gosslan-status-offline)]'"></span>
       <span :class="statusColor">{{ status }}</span>
     </span>
   </div>

@@ -3,13 +3,34 @@
 @tailwind utilities;
 
 :root {
+  /* 原生控件（<select> 下拉、<input type=color>、滚动条、日期选择器）跟随外观：
+     不声明就会永远按浅色渲染 —— 深色主题下原生 select 弹出白底白字的下拉，
+     是"主题没关联上"最典型的破绽。改主题时这一条必须成对出现。 */
+  color-scheme: light;
+
   /* 品牌色：出厂默认值（设计规范强调/按钮色 #3B82F6），用户在设置里改色后由 applyTheme 覆盖 */
   --gosslan-primary: #3b82f6;
   --gosslan-primary-hover: #60a5fa;
   --gosslan-primary-active: #2563eb;
   --gosslan-primary-light: rgba(59, 130, 246, 0.12);
-  /* 功能绿（设计稿成功/安全色 #10B981，与 emerald-500 一致） */
+  /* 主题色当「文字/图标」用时的可读版本（--gosslan-primary 只作填充面）。
+     直接用主题色写字，亮色下 3.7 / 暗色下 4.0，都够不到正文 4.5——老坑见 chatStyle.ts。
+     按 Apple 的做法「同色相、按外观调明度」：亮色压暗、暗色提亮，
+     两者都取 72% 主题色 + 28% 黑/白。六套预置主题色实测 4.85~7.10（亮）/ 5.10~7.11（暗）。
+     因为主色是用户可选、且由 applyTheme 以 inline style 写在 <html> 上，
+     暗色版本**不能**靠 `.dark { --gosslan-primary: … }` 覆盖（inline 优先级更高），
+     只能用 color-mix 派生出这个独立 token —— 这正是本项目保留它的原因。 */
+  --gosslan-accent-ink: color-mix(in srgb, var(--gosslan-primary) 72%, #000000);
+  /* 功能绿：填充/状态点用（在线点、成功态）。暗色档见 .dark。 */
   --gosslan-success: #10b981;
+  /* 功能绿的「文字」档：绿在浅底上天然难达标（emerald-500 在白底只有 2.5），
+     所以文字必须比状态点深一档，与 --gosslan-accent-ink 同一套做法。 */
+  --gosslan-success-ink: #047857;
+  --gosslan-success-soft: rgba(16, 185, 129, 0.12);
+  /* 离线状态点：中性灰，语义上不是"错误"也不是"禁用"，单独一个 token 避免各处写死色阶。
+     取 Apple systemGray #8e8e93（原 #a3a3a3 在白底只有 2.52，连图形档 3.0 都不到）：
+     面板 3.26 达标，且与暗色档同值 —— 同一个"离线"语义在两种外观下是同一个灰。 */
+  --gosslan-status-offline: #8e8e93;
   --gosslan-font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   /* 聊天消息字号（设置页可改，由 app store 动态覆盖） */
   --gosslan-msg-size: 14px;
@@ -42,7 +63,7 @@
   --gosslan-caption: #e2e8f0;
   --gosslan-rail: #e2e8f0;
   --gosslan-rail-text: #64748b;
-  --gosslan-rail-text-active: var(--gosslan-primary);
+  --gosslan-rail-text-active: var(--gosslan-accent-ink);
   --gosslan-rail-hover: rgba(15, 23, 42, 0.06);
   --gosslan-rail-active: #cbd5e1;
   --gosslan-list: #f1f5f9;
@@ -52,18 +73,38 @@
   --gosslan-chat: #fafafa;
   --gosslan-panel: #ffffff;
   --gosslan-bg: #f1f5f9;
+  /* 输入类控件底色（搜索框 / 输入卡）：必须与所在面板拉开一档，
+     否则输入框"没有边界"（暗色下 panel 与 list 同色时最容易踩）。 */
+  --gosslan-field: #ffffff;
+  /* 中性卡片气泡底（文件 / 代码 / 无类型兜底）：不跟随主题色的那类气泡。
+     必须与聊天画布差一档，否则气泡等于没有（见 utils/previewMetrics.ts 的历史坑）。 */
+  --gosslan-card: #eeeef0;
+  --gosslan-card-ink: #0f172a;
+  --gosslan-card-line: rgba(0, 0, 0, 0.06);
   --gosslan-border: #e2e8f0;
   --gosslan-divider: #e2e8f0;
   --gosslan-text: #0f172a;
-  --gosslan-text-2: #64748b;
+  /* 次要文字（说明文案 / 会话摘要 / 占位符 / 辅助图标）：11~13px 小字同样按正文标准 4.5 判。
+     原 #64748b 只达 4.34（列表底）/ 4.11（卡片底），不达标 → 按项目既有的 Slate 梯度下走一档。
+     现 Slate-600 #475569：卡片 6.54 / 列表 6.92 / 画布 7.26 / 面板 7.58，全部达标且仍明显浅于正文。 */
+  --gosslan-text-2: #475569;
   --gosslan-hover: rgba(15, 23, 42, 0.05);
   /* 按压态：比 hover 深一档。iOS 要求交互元素**必须有 press 反馈**，不能只有 hover */
   --gosslan-pressed: rgba(15, 23, 42, 0.09);
   /* 语义色（Apple 系统色，Light 值；Dark 在 .dark 里覆盖）。
-     危险/警告只用语义 token，不写死十六进制、也不用 Tailwind 的 red-500 一类固定色阶。 */
+     危险/警告只用语义 token，不写死十六进制、也不用 Tailwind 的 red-500 一类固定色阶。
+     每个语义色分「填充档」与「文字档」两条（与 --gosslan-success / -success-ink 同一套做法）：
+     填充档（*-danger / *-warning）用于实底、徽标、hover 底；文字档（*-ink）用于文字与图标。
+     ⚠️ 新增 :root token 必须同步核对 .dark，否则暗色会继承亮色的档位（方向正好反了）。 */
   --gosslan-danger: #ff3b30;
+  /* 危险色「文字档」：系统红 #ff3b30 当文字只有 3.55（白底），11px 的「发送失败」这类提示读不动。
+     压暗到 #cc2418 → 面板 5.48 / 列表 5.00 / 卡片 4.73，全部达标；填充档保持系统红不变。 */
+  --gosslan-danger-ink: #cc2418;
   --gosslan-danger-soft: rgba(255, 59, 48, 0.12);
   --gosslan-warning: #ff9500;
+  /* 警告色「图标档」：琥珀当图标只有 2.20（白底），连图形档 3.0 都不到（群主皇冠 / 文件夹图标）。
+     压暗到 #c67600 → 面板 3.50 / 列表 3.20 / 卡片 3.02，跨过图形档；填充档仍是系统橙。 */
+  --gosslan-warning-ink: #c67600;
   --gosslan-warning-soft: rgba(255, 149, 0, 0.12);
   /* 键盘焦点环：只用 :focus-visible 触达，鼠标点击不出现 */
   --gosslan-focus-ring: color-mix(in srgb, var(--gosslan-primary) 55%, transparent);
@@ -110,6 +151,10 @@
 
   /* 磨砂：弹框/弹层用轻毛玻璃（背景半透明 + backdrop blur），不糊内容 */
   --gosslan-blur: saturate(130%) blur(6px);
+  /* HUD（toast）底色：与主题色解耦的中性深底 + 白字（微信式）。
+     亮色下深底浮在浅界面上最清楚；暗色下必须**抬亮一档**，
+     否则深 toast 与深画布糊在一起（对比只剩 1.28，看不出是一块浮层）。 */
+  --gosslan-hud: rgba(38, 38, 38, 0.9);
   /* 毛玻璃浮层面板底色（配合 .glass 使用） */
   --gosslan-panel-frost: rgba(255, 255, 255, 0.85);
   /* 底层底色：接近列表灰，保证半透明浮层过渡自然 */
@@ -118,11 +163,18 @@
 }
 
 .dark {
-  /* 深色主题：基于规范深色背景 #0F172A（Slate 系）分层 */
+  /* 深色主题：基于规范深色背景 #0F172A（Slate 系）分层。
+     分层原则（对齐 Apple「用明度表达层级」）：
+       app-bg #0b1220 < chat/bg #0f172a < caption/rail #16202f < list/panel #1e293b < list-active #334155
+     越靠前越"深"（越靠近屏幕底），越靠后越"高"（越靠近用户），不允许倒置。 */
+  color-scheme: dark;
+  /* 主题色的「文字档」暗色版：亮色下是压暗、暗色下必须**提亮**（+28% 白）。
+     漏了这一条就会继承 :root 的压暗值 —— 深底上再压暗，方向正好反了。 */
+  --gosslan-accent-ink: color-mix(in srgb, var(--gosslan-primary) 72%, #ffffff);
   --gosslan-caption: #16202f;
   --gosslan-rail: #16202f;
   --gosslan-rail-text: #94a3b8;
-  --gosslan-rail-text-active: var(--gosslan-primary);
+  --gosslan-rail-text-active: var(--gosslan-accent-ink);
   --gosslan-rail-hover: rgba(248, 250, 252, 0.07);
   --gosslan-rail-active: #253246;
   --gosslan-list: #1e293b;
@@ -132,20 +184,46 @@
   --gosslan-chat: #0f172a;
   --gosslan-panel: #1e293b;
   --gosslan-bg: #0f172a;
-  --gosslan-border: #2c3a52;
+  /* 暗色输入框：比 list(#1e293b) 抬亮一档 → 1.27（亮色同位置是 1.10），
+     搜索框/输入卡在暗色下才有"这是一个输入框"的边界。 */
+  --gosslan-field: #2a3a52;
+  --gosslan-card: #1c2434;
+  --gosslan-card-ink: #e2e8f0;
+  --gosslan-card-line: rgba(255, 255, 255, 0.08);
+  /* 组件边界：暗色下原来的 #2c3a52 贴在 list 上只有 1.28 的对比，
+     输入框/按钮/卡片的边"看不见"；抬到 1.64（对画布 1.74）才分辨得出。
+     ⚠️ 只动 border，分隔线（--gosslan-divider）保持更淡 —— 分隔线是"分栏"，边框是"控件"。 */
+  --gosslan-border: #3a4a66;
   --gosslan-divider: #28344a;
   --gosslan-text: #f1f5f9;
   --gosslan-text-2: #94a3b8;
   --gosslan-hover: rgba(248, 250, 252, 0.06);
   /* 深色下 press 要"提亮"而不是压暗（暗面上再压暗几乎看不出反馈） */
   --gosslan-pressed: rgba(248, 250, 252, 0.11);
-  --gosslan-danger: #ff453a;
-  --gosslan-danger-soft: rgba(255, 69, 58, 0.18);
+  /* Apple 系统色（dark）：红/橙/绿都比浅色档更亮，因为深底上需要更高亮度才"跳得出来"。
+     红取 #ff5548 而不是 #ff453a：后者当**文字**只有 4.29（不够 4.5），
+     再亮又会拖低"白字压红底"（未读徽标）的对比，4.63 / 3.16 是两者的平衡点。 */
+  --gosslan-danger: #ff5548;
+  /* 文字档在暗色下与填充档同值：暗底上 #ff5548 已能当文字（列表底 4.63 / 画布 5.65），
+     不必像亮色那样再压暗。新增 :root 的 *-ink 时这里必须成对出现。 */
+  --gosslan-danger-ink: #ff5548;
+  --gosslan-danger-soft: rgba(255, 85, 72, 0.18);
   --gosslan-warning: #ff9f0a;
+  /* 琥珀在暗底上本来就够亮（面板底 7.12），文字档与填充档同值。 */
+  --gosslan-warning-ink: #ff9f0a;
   --gosslan-warning-soft: rgba(255, 159, 10, 0.18);
+  --gosslan-success: #30d158;
+  --gosslan-success-ink: #30d158;
+  --gosslan-success-soft: rgba(48, 209, 88, 0.18);
+  --gosslan-status-offline: #8e8e93;
   --gosslan-app-bg: #0b1220;
   --gosslan-window-ring: rgba(248, 250, 252, 0.09);
-  --gosslan-panel-frost: rgba(30, 41, 59, 0.85);
+  /* 毛玻璃浮层（右键菜单 / 表情面板 / 下拉）：原来是 rgba(30,41,59,.85)，
+     与列表栏 list(#1e293b) 复合后**完全同色**（对比 1.00）——浮层浮在列表上等于隐形。
+     抬到 1.32（对画布 1.57）才看得出是"↑ 浮起来的一层"。 */
+  --gosslan-panel-frost: rgba(48, 62, 88, 0.9);
+  /* toast：抬到中性灰 4 档，与画布（1.96）和面板（1.60）都分得开，白字仍有 9.1:1 */
+  --gosslan-hud: rgba(72, 72, 74, 0.92);
   --gosslan-shadow: 0 1px 3px rgba(0, 0, 0, 0.3), 0 4px 12px rgba(0, 0, 0, 0.32);
 }
 

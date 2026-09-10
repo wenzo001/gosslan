@@ -68,7 +68,7 @@ watch(
     </div>
 
     <div class="max-h-80 overflow-y-auto">
-      <div v-if="error" class="py-4 text-sm text-[var(--gosslan-danger)]">{{ error }}</div>
+      <div v-if="error" class="py-4 text-sm text-[var(--gosslan-danger-ink)]">{{ error }}</div>
       <div v-else-if="entries.length === 0 && !loading" class="py-8 text-center text-sm text-[var(--gosslan-text-2)]">
         对方未设置共享目录或目录为空
       </div>
@@ -79,12 +79,12 @@ watch(
         class="flex items-center gap-2 rounded-[var(--gosslan-radius-sm)] px-2 transition hover:bg-[var(--gosslan-hover)]"
         :style="{ paddingLeft: `${12 + depth(e.path) * 16}px`, height: '36px' }"
       >
-        <Folder v-if="e.is_dir" class="h-4 w-4 shrink-0 text-[var(--gosslan-warning)]" />
+        <Folder v-if="e.is_dir" class="h-4 w-4 shrink-0 text-[var(--gosslan-warning-ink)]" />
         <span class="flex-1 truncate text-sm">{{ e.name }}</span>
         <span v-if="!e.is_dir" class="text-[11px] text-[var(--gosslan-text-2)]">{{ humanSize(e.size) }}</span>
         <button
           v-if="!e.is_dir"
-          class="flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-md)] text-primary transition hover:bg-[var(--gosslan-hover)]"
+          class="flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-accent-ink)] transition hover:bg-[var(--gosslan-hover)]"
           title="下载"
           @click="download(e)"
         >

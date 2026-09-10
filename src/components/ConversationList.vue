@@ -161,8 +161,11 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
       class="flex shrink-0 items-center gap-1.5 border-b border-[var(--gosslan-divider)] px-3"
       :style="{ height: 'var(--gosslan-header-h)' }"
     >
+      <!-- 搜索框底色必须用 --gosslan-field 而不是 panel：
+           暗色下 panel(#1e293b) 与本栏 list(#1e293b) 是同一个值，输入框会"消失"；
+           field 在两套主题里都与所在栏拉开一档。 -->
       <div
-        class="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-2.5 transition focus-within:border-[var(--gosslan-primary)]"
+        class="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-field)] px-2.5 transition focus-within:border-[var(--gosslan-primary)]"
       >
         <Search class="h-4 w-4 shrink-0 text-[var(--gosslan-text-2)]" />
         <input
@@ -274,7 +277,7 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
     <BaseModal :open="pendingDelete !== null" title="删除聊天记录" @close="pendingDelete = null">
       <div class="space-y-3">
         <p class="text-sm text-[var(--gosslan-text)]">
-          将删除与「<span class="font-medium text-[var(--gosslan-danger)]">{{ pendingDelete?.name }}</span>」的全部本地聊天记录。
+          将删除与「<span class="font-medium text-[var(--gosslan-danger-ink)]">{{ pendingDelete?.name }}</span>」的全部本地聊天记录。
         </p>
         <ul class="space-y-1 text-xs text-[var(--gosslan-text-2)]">
           <li>· 对方聊天记录不受影响</li>

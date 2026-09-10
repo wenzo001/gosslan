@@ -125,13 +125,13 @@ function readerAvatar(id: string): string | null {
     <Loader2 v-if="state === 'sending' || state === 'sent'" class="h-3.5 w-3.5 animate-spin text-[var(--gosslan-text-2)]" />
     <button
       v-else-if="state === 'failed'"
-      class="flex h-5 w-5 items-center justify-center rounded-[var(--gosslan-radius-xs)] text-[var(--gosslan-danger)] transition hover:bg-[var(--gosslan-danger-soft)]"
+      class="flex h-5 w-5 items-center justify-center rounded-[var(--gosslan-radius-xs)] text-[var(--gosslan-danger-ink)] transition hover:bg-[var(--gosslan-danger-soft)]"
       title="重新发送"
       @click="emit('retry')"
     >
       <RefreshCw class="h-3.5 w-3.5" />
     </button>
     <Circle v-else-if="state === 'delivered'" class="h-3.5 w-3.5 text-[var(--gosslan-text-2)]" />
-    <Check v-else-if="state === 'read'" class="h-4 w-4 text-emerald-500" />
+    <Check v-else-if="state === 'read'" class="h-4 w-4 text-[var(--gosslan-success-ink)]" />
   </span>
 </template>

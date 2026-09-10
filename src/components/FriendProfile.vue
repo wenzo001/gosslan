@@ -57,7 +57,7 @@ const confirmRemove = ref(false);
             <div class="mt-1 flex items-center gap-1.5 text-sm text-[var(--gosslan-text-2)]">
               <span
                 class="h-2 w-2 rounded-full"
-                :class="friend.online ? 'bg-emerald-500' : 'bg-neutral-400'"
+                :class="friend.online ? 'bg-[var(--gosslan-success)]' : 'bg-[var(--gosslan-status-offline)]'"
               ></span>
               {{ friend.online ? "在线" : "离线" }}
             </div>
@@ -74,7 +74,7 @@ const confirmRemove = ref(false);
             发消息
           </button>
           <button
-            class="flex items-center justify-center gap-2 rounded-[var(--gosslan-avatar-radius)] border border-[var(--gosslan-border)] px-4 py-2.5 text-sm text-[var(--gosslan-danger)] transition hover:bg-[var(--gosslan-danger-soft)]"
+            class="flex items-center justify-center gap-2 rounded-[var(--gosslan-avatar-radius)] border border-[var(--gosslan-border)] px-4 py-2.5 text-sm text-[var(--gosslan-danger-ink)] transition hover:bg-[var(--gosslan-danger-soft)]"
             @click="confirmRemove = true"
           >
             <UserMinus class="h-4 w-4" />
@@ -104,7 +104,7 @@ const confirmRemove = ref(false);
             </div>
             <div class="flex items-center justify-between gap-4 px-4 py-3">
               <dt class="shrink-0 text-[var(--gosslan-text-2)]">端到端加密</dt>
-              <dd class="text-xs text-emerald-600">已启用（X25519 + ChaCha20-Poly1305）</dd>
+              <dd class="text-xs text-[var(--gosslan-success-ink)]">已启用（X25519 + ChaCha20-Poly1305）</dd>
             </div>
           </dl>
         </div>
@@ -118,7 +118,7 @@ const confirmRemove = ref(false);
     <BaseModal :open="confirmRemove" title="删除好友" @close="confirmRemove = false">
       <div class="space-y-3">
         <p class="text-sm">
-          确定删除好友「<span class="font-medium text-[var(--gosslan-danger)]">{{ friend.nickname }}</span>」？
+          确定删除好友「<span class="font-medium text-[var(--gosslan-danger-ink)]">{{ friend.nickname }}</span>」？
         </p>
         <ul class="space-y-1 text-xs text-[var(--gosslan-text-2)]">
           <li>· 聊天记录保留在本地，可通过「添加好友」重新添加</li>

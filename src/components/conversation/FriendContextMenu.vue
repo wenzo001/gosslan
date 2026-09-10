@@ -16,7 +16,7 @@ const emit = defineEmits<{
       @click.stop
     >
       <button
-        class="flex w-full items-center gap-2 rounded-[var(--gosslan-radius-xs)] px-3 py-2 text-left text-sm text-[var(--gosslan-danger)] transition hover:bg-[var(--gosslan-hover)]"
+        class="flex w-full items-center gap-2 rounded-[var(--gosslan-radius-xs)] px-3 py-2 text-left text-sm text-[var(--gosslan-danger-ink)] transition hover:bg-[var(--gosslan-hover)]"
         @click="emit('confirm')"
       >
         <UserMinus class="h-4 w-4" />

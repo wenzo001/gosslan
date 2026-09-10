@@ -513,7 +513,7 @@ function fileToDataUrl(f: File): Promise<string> {
         <div class="relative">
           <button
             class="flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] transition"
-            :class="emojiOpen ? 'text-primary' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
+            :class="emojiOpen ? 'text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
             title="表情"
             @click.stop="toggleEmoji"
           >
@@ -525,7 +525,7 @@ function fileToDataUrl(f: File): Promise<string> {
              紧接着按 Enter 会激活按钮（把 codeMode 再切回去）而非走编辑器 keydown 发送。 -->
         <button
           class="flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] transition"
-          :class="codeMode ? 'text-primary' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
+          :class="codeMode ? 'text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
           title="代码消息"
           @mousedown.prevent
           @click="codeMode = !codeMode"
@@ -541,7 +541,7 @@ function fileToDataUrl(f: File): Promise<string> {
         </button>
         <button
           class="ml-auto flex h-7 shrink-0 items-center rounded-[var(--gosslan-radius-sm)] bg-[var(--gosslan-hover)] px-4 text-[13px] transition"
-          :class="hasDraft ? 'text-primary hover:bg-[var(--gosslan-list-active)]' : 'cursor-default text-[var(--gosslan-text-2)]'"
+          :class="hasDraft ? 'text-[var(--gosslan-accent-ink)] hover:bg-[var(--gosslan-list-active)]' : 'cursor-default text-[var(--gosslan-text-2)]'"
           :disabled="!hasDraft"
           @mousedown.prevent
           @click="send()"

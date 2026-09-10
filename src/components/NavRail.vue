@@ -42,7 +42,7 @@ const pendingLabel = computed(() =>
       <!-- 本人在线状态点 -->
       <span
         class="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-[var(--gosslan-rail)]"
-        :class="app.online ? 'bg-emerald-500' : 'bg-neutral-400'"
+        :class="app.online ? 'bg-[var(--gosslan-success)]' : 'bg-[var(--gosslan-status-offline)]'"
       ></span>
     </div>
 

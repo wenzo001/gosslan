@@ -73,7 +73,7 @@ onUnmounted(clearPress);
       </div>
       <span
         class="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-[var(--gosslan-list)]"
-        :class="friend.online ? 'bg-emerald-500' : 'bg-neutral-400'"
+        :class="friend.online ? 'bg-[var(--gosslan-success)]' : 'bg-[var(--gosslan-status-offline)]'"
       ></span>
     </div>
     <div class="min-w-0 flex-1">

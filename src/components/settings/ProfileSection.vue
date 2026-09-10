@@ -142,7 +142,7 @@ function processAvatar(file: File): Promise<string> {
             更换头像
           </button>
           <span class="flex items-center gap-1.5 text-xs text-[var(--gosslan-text-2)]">
-            <span class="h-2 w-2 rounded-full" :class="app.online ? 'bg-emerald-500' : 'bg-neutral-400'"></span>
+            <span class="h-2 w-2 rounded-full" :class="app.online ? 'bg-[var(--gosslan-success)]' : 'bg-[var(--gosslan-status-offline)]'"></span>
             {{ app.online ? "我在线" : "我离线" }}
           </span>
         </div>

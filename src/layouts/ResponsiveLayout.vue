@@ -268,7 +268,7 @@ function onResizeEnd() {
     >
       <button
         class="relative flex flex-1 flex-col items-center gap-0.5 py-2.5"
-        :class="view === 'chats' && app.mobileView === 'list' ? 'text-primary' : 'text-[var(--gosslan-text-2)]'"
+        :class="view === 'chats' && app.mobileView === 'list' ? 'text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)]'"
         @click="app.mobileView = 'list'; view = 'chats'"
       >
         <span class="relative">
@@ -284,7 +284,7 @@ function onResizeEnd() {
       </button>
       <button
         class="relative flex flex-1 flex-col items-center gap-0.5 py-2.5"
-        :class="view === 'contacts' && app.mobileView === 'list' ? 'text-primary' : 'text-[var(--gosslan-text-2)]'"
+        :class="view === 'contacts' && app.mobileView === 'list' ? 'text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)]'"
         @click="app.mobileView = 'list'; view = 'contacts'"
       >
         <span class="relative">
@@ -313,13 +313,14 @@ function onResizeEnd() {
     <GroupCreateModal :open="groupOpen" @close="groupOpen = false" />
     <ShareDirectory :open="shareOpen" @close="shareOpen = false" />
 
-    <!-- Toast：统一深色中性底 + 白字（微信式，与主题色解耦；错误红保留语义） -->
+    <!-- Toast：统一中性 HUD 底 + 白字（微信式，与主题色解耦；错误红保留语义）。
+         底色走 --gosslan-hud：亮色是深灰、暗色抬亮一档，两套主题下都是"浮在界面之上"的一层。 -->
     <div class="pointer-events-none fixed left-1/2 top-4 z-[60] flex -translate-x-1/2 flex-col items-center gap-2">
       <div
         v-for="t in app.toasts"
         :key="t.id"
         class="flex items-center gap-2 rounded-[var(--gosslan-radius-md)] px-4 py-2 text-sm text-white shadow-lg backdrop-blur-sm"
-        :class="t.type === 'error' ? 'bg-[var(--gosslan-danger)]' : 'bg-neutral-800/90'"
+        :class="t.type === 'error' ? 'bg-[var(--gosslan-danger)]' : 'bg-[var(--gosslan-hud)]'"
       >
         <CheckCircle2 v-if="t.type === 'success'" class="h-4 w-4 shrink-0" />
         <XCircle v-else-if="t.type === 'error'" class="h-4 w-4 shrink-0" />

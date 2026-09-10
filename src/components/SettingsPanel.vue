@@ -108,7 +108,7 @@ async function clearAllDataConfirm() {
         </button>
         <div class="ml-4 h-px bg-[var(--gosslan-divider)]" />
         <button
-          class="flex w-full items-center justify-center gap-2 px-4 py-3 text-sm text-[var(--gosslan-danger)] transition hover:bg-[var(--gosslan-danger-soft)] dark:hover:bg-[var(--gosslan-danger-soft)]"
+          class="flex w-full items-center justify-center gap-2 px-4 py-3 text-sm text-[var(--gosslan-danger-ink)] transition hover:bg-[var(--gosslan-danger-soft)] dark:hover:bg-[var(--gosslan-danger-soft)]"
           @click="clearAllDataConfirm"
         >
           <Trash2 class="h-4 w-4" />

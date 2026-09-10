@@ -175,7 +175,7 @@ const pct = computed(() => Math.round((props.progress ?? 0) * 100));
       </div>
       <div class="min-w-0 flex-1">
         <div class="line-clamp-2 break-all text-[13px] font-medium leading-snug">{{ meta.name }}</div>
-        <div v-if="failed" class="mt-0.5 text-[11px] text-[var(--gosslan-danger)]">发送失败</div>
+        <div v-if="failed" class="mt-0.5 text-[11px] text-[var(--gosslan-danger-ink)]">发送失败</div>
         <div v-else class="mt-0.5 flex items-center gap-1 text-[11px] opacity-70">
           <span>{{ extLabel }}</span>
           <span>·</span>
@@ -215,7 +215,7 @@ const pct = computed(() => Math.round((props.progress ?? 0) * 100));
     >
       <span>已发送给 {{ delivery.completed }} 人</span>
       <span v-if="delivery.waiting > 0">· {{ delivery.waiting }} 人待上线</span>
-      <span v-if="delivery.failed > 0" class="text-[var(--gosslan-danger)]">· {{ delivery.failed }} 人失败</span>
+      <span v-if="delivery.failed > 0" class="text-[var(--gosslan-danger-ink)]">· {{ delivery.failed }} 人失败</span>
     </div>
     <!-- 传输进度条（发送/接收中实时显示，完成后消失）。卡片是中性色，进度条用主题色做强调 -->
     <template v-if="progress !== null">

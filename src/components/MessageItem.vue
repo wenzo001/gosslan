@@ -323,7 +323,7 @@ async function copyFileToClipboard() {
     <!-- 未读分割线（打开会话时定位的第一条未读上方） -->
     <div v-if="showUnreadDivider" class="my-1.5 flex items-center gap-2 px-3">
       <div class="h-px flex-1 bg-primary/30"></div>
-      <span class="rounded-full bg-primary-light px-2 py-0.5 text-[11px] text-primary">以下是未读消息</span>
+      <span class="rounded-full bg-primary-light px-2 py-0.5 text-[11px] text-[var(--gosslan-accent-ink)]">以下是未读消息</span>
       <div class="h-px flex-1 bg-primary/30"></div>
     </div>
 
@@ -399,9 +399,13 @@ async function copyFileToClipboard() {
           />
 
           <!-- 图片：已被存储清理时给出明确占位，而不是一个永远转圈/裂开的图片框。
-               尺寸与 MessageImageBubble 的骨架一致（h-32 w-52），避免清理前后高度跳变。 -->
+               尺寸与 MessageImageBubble 的骨架一致（h-32 w-52），避免清理前后高度跳变。
+               ⚠️ 必须是 v-else-if：这里若写成 v-if 会**切断上面的 v-if/v-else-if 链**，
+               使这条新链末尾的 <div v-else> 变成"对所有 text / code 消息都成立的兜底"——
+               于是每条文本消息都被渲染两遍（MessageTextBubble 一遍 + 原始文字一遍，
+               表现为表情显示成 [摊手] 原文、普通消息整条重复）。历史缺陷见 fd02f62。 -->
           <div
-            v-if="message.kind === 'image' && attachmentMissing"
+            v-else-if="message.kind === 'image' && attachmentMissing"
             class="flex h-32 w-52 flex-col items-center justify-center gap-1 rounded-[var(--gosslan-bubble-radius)] bg-black/5 text-[11px] text-[var(--gosslan-text-2)] dark:bg-white/5"
           >
             <ImageOff class="h-6 w-6 opacity-50" />

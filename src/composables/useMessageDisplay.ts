@@ -52,16 +52,18 @@ export function useMessageDisplay(opts: {
   /**
    * 卡片型气泡（文件/代码）走中性色：学微信——非文本气泡不跟随主题色，
    * 自己发的和对方发的同色，靠左右位置和尖角区分归属，避免满屏都是品牌色。
-   * 亮色＝浅灰卡片浮在近白画布上（靠 1px 描边区分），暗色＝比画布亮一档的深灰。
+   * 配色一律取主题 token（--gosslan-card*）：亮色＝浅灰卡片浮在近白画布上（靠 1px 描边区分），
+   * 暗色＝比画布亮一档的深灰。**不要在组件里写死这两档色值**——
+   * 写死就等于脱离主题，深浅切换时只能靠人肉记住两处都改（这正是本次收敛掉的东西）。
    */
   const cardStyle = computed<CSSProperties>(
     () =>
       ({
-        "--bubble-bg": app.dark ? "#1c2434" : "#eeeef0",
+        "--bubble-bg": "var(--gosslan-card)",
         background: "var(--bubble-bg)",
-        color: app.dark ? "#e2e8f0" : "#0f172a",
+        color: "var(--gosslan-card-ink)",
         borderRadius: "var(--gosslan-bubble-radius, 4px)",
-        border: `1px solid ${app.dark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)"}`,
+        border: "1px solid var(--gosslan-card-line)",
         // 不加阴影：学微信，纯色卡片 + 1px 描边就够，阴影反而显脏
         position: "relative",
       }) as CSSProperties,

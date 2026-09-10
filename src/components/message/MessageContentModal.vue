@@ -74,7 +74,7 @@ async function openLink(href: string) {
         <template v-for="(seg, i) in segments" :key="i">
           <a
             v-if="seg.kind === 'link'"
-            class="cursor-pointer break-all text-primary underline decoration-1 underline-offset-2 transition hover:opacity-80"
+            class="cursor-pointer break-all text-[var(--gosslan-accent-ink)] underline decoration-1 underline-offset-2 transition hover:opacity-80"
             :title="seg.href"
             @click.stop.prevent="openLink(seg.href)"
           >{{ displayUrl(seg.value) }}</a>
@@ -97,7 +97,7 @@ async function openLink(href: string) {
     <div class="mt-3 flex justify-end">
       <button
         class="preview-action"
-        :class="copied ? 'text-primary' : ''"
+        :class="copied ? 'text-[var(--gosslan-accent-ink)]' : ''"
         @click="emit('copy', content)"
       >
         <Check v-if="copied" class="h-3 w-3" />
