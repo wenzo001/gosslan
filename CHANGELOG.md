@@ -10,6 +10,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- **macOS 窗口圆角仍不生效 + 暗色下露白角**：此前在 `setup` 里给 contentView 设圆角，但 wry 在**窗口显示时才**用 `WryWebViewParent` 替换 NSWindow 的 contentView，setup 阶段的圆角被替换丢失；且窗口背景色写死浅色 `#edf1f6`，暗色主题下圆角外露出浅色边。修复：① 圆角改到 **WebView 加载完成后**设置（前端 `App.vue` onMounted 调新命令 `apply_macos_window_shape`），此时 contentView 已是 wry 的 parent_view；② 窗口背景色**运行时跟随主题**（浅 `#f1f5f9` / 深 `#0f172a`，与 `--gosslan-bg` 一致），消除暗色露白；③ `setHasShadow(false)` 留在 setup（NSWindow 级、不被替换）。新增 `macos_window::disable_shadow` / `apply_rounded_corners` 两函数。
+
 ## [2.1.1] - 2026-09-10
 
 ### Fixed

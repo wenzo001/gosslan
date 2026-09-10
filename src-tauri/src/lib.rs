@@ -81,10 +81,10 @@ pub fn run() {
                 if let Err(e) = win.set_closable(true) {
                     eprintln!("[window] 恢复 macOS Cmd+W 关闭能力失败: {e}");
                 }
-                // macOS squircle 圆角：borderless 窗口的 NSWindow 10.15+ 支持 cornerRadius。
-                // 系统阴影与圆角不兼容（shadow 画在窗口外，矩形与圆角冲突），关掉；
-                // 阴影由 WebView 根容器的 CSS box-shadow 接管（如需可后续加 token）。
-                macos_window::apply(&win);
+                // 关系统阴影（与圆角冲突；NSWindow 级、不被 wry 替换 contentView 影响）。
+                // 圆角本身在 WebView 加载完成后由前端调 `apply_macos_window_shape` 命令设置
+                // （wry 在窗口显示时才用 parent_view 替换 contentView，setup 阶段设圆角会丢）。
+                macos_window::disable_shadow(&win);
             }
             // 窗口以 `visible: false` 创建（见 tauri.conf.json），由前端在挂载完成后调用
             // `focus_window` 显示——目的是让窗口露出来的第一帧就是 index.html 的内联骨架，
@@ -203,6 +203,7 @@ pub fn run() {
             commands::delete_file,
             commands::save_outgoing_image,
             commands::open_file_native,
+            commands::apply_macos_window_shape,
             commands::read_file_preview,
             commands::media_present,
             commands::export_chat_text,

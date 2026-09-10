@@ -98,6 +98,9 @@ export const api = {
   /** 用系统默认应用打开本地文件：macOS 走 NSWorkspace（沙盒下 /usr/bin/open 被拦），
    *  Windows/Linux 走 opener。 */
   openFileNative: (path: string) => invoke<void>("open_file_native", { path }),
+  /** macOS 窗口圆角：WebView 加载完成后调用（setup 阶段设会被 wry 替换 contentView 丢失）。 */
+  applyMacosWindowShape: (dark: boolean) =>
+    invoke<void>("apply_macos_window_shape", { dark }),
   getTransfers: () => invoke<TransferInfo[]>("get_transfers"),
 
   /** 读取附件预览原始字节（图片→Blob/objectURL，代码→TextDecoder）。超限后端 reject "TOO_LARGE"。

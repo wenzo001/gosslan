@@ -2209,6 +2209,22 @@ pub fn open_file_native(path: String) -> Result<(), String> {
     crate::macos_open::open_path_native(std::path::Path::new(&path))
 }
 
+/// macOS 窗口圆角：WebView 加载完成后（前端 onMounted 触发）设背景色跟随主题 +
+/// contentView 圆角（setup 阶段设会被 wry 替换 contentView 丢失）。非 macOS 无操作。
+#[tauri::command]
+pub fn apply_macos_window_shape(
+    window: tauri::WebviewWindow,
+    dark: bool,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    return crate::macos_window::apply_rounded_corners(&window, dark);
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, dark);
+        Ok(())
+    }
+}
+
 /// 群文件投递摘要（气泡成员状态文案用）：总数/completed/failed/待投递。
 #[tauri::command]
 pub fn get_group_file_delivery_summary(
