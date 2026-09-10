@@ -114,11 +114,19 @@ const mentionMembers = computed(() => {
   const me = app.device?.device_id;
   return g.members.filter((id) => id !== me).map((id) => ({ id, name: chat.nicknameOf(id) }));
 });
-/** 渲染端 @ 高亮用的成员名列表（含自己：别人发的消息里可以 @ 我）。 */
+/** 渲染端 @ 高亮用的成员名列表（含自己：别人发的消息里可以 @ 我）。
+ *  ⚠️ 自己的名字必须直接取本机昵称：`nicknameOf(我的 device_id)` 查不到——
+ *  我既不在自己的好友表里、也不在 peers（那是"别的节点"），会退化成设备指纹，
+ *  导致别人 @我 时匹配不上、不高亮，与 @其他人 的样式不一致。 */
 const mentionNames = computed(() => {
   const gid = activeGroupId.value;
   const g = gid ? chat.groups.find((x) => x.id === gid) : null;
-  return g ? g.members.map((id) => chat.nicknameOf(id)) : [];
+  if (!g) return [];
+  const me = app.device?.device_id;
+  const myName = app.device?.nickname ?? "";
+  // 其余成员保持原样（nicknameOf 查不到时回退设备指纹，与插入端行为一致）；
+  // 只有"自己"这一项必须换成昵称，否则 @我 永远匹配不上。
+  return g.members.map((id) => (id === me ? myName || id : chat.nicknameOf(id)));
 });
 async function confirmRename(name: string) {
   renameOpen.value = false;

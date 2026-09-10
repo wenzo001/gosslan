@@ -430,6 +430,7 @@ async function copyFileToClipboard() {
     :open="fullModalOpen"
     :kind="fullModalKind"
     :content="fullModalContent"
+    :mention-names="mentionNames"
     :copied="copiedKey === 'full'"
     @close="fullModalOpen = false"
     @copy="copyContent('full', $event)"

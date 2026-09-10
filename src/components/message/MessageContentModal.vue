@@ -6,6 +6,7 @@ import BaseModal from "@/components/BaseModal.vue";
 import CodeBlock from "@/components/CodeBlock.vue";
 import { linkify, displayUrl, type LinkSegment } from "@/utils/linkify";
 import { splitEmoji } from "@/utils/emoji";
+import { mentionHighlightColor } from "@/utils/chatStyle";
 import { Check, Copy } from "lucide-vue-next";
 
 const props = defineProps<{
@@ -13,6 +14,8 @@ const props = defineProps<{
   kind: "text" | "code";
   content: string;
   copied: boolean;
+  /** 群成员名列表：与气泡共用同一套 @ 高亮，避免"气泡里高亮、全文里是纯文本"。 */
+  mentionNames?: string[];
 }>();
 const emit = defineEmits<{
   (e: "close"): void;
@@ -26,10 +29,15 @@ const segments = computed<RenderSegment[]>(() => {
   const out: RenderSegment[] = [];
   for (const s of splitEmoji(props.content)) {
     if (s.kind === "emoji") out.push({ kind: "emoji", value: s.value, name: s.name, url: s.url });
-    else out.push(...linkify(s.value));
+    else out.push(...linkify(s.value, props.mentionNames ?? []));
   }
   return out;
 });
+
+/** @提及配色：以弹窗面板底色为对比基准（气泡那套是按气泡底色算的，这里不能复用）。 */
+const mentionFg = computed(() =>
+  mentionHighlightColor(app.themeColor, app.dark, app.dark ? "#1e293b" : "#ffffff"),
+);
 
 async function openLink(href: string) {
   try {
@@ -69,6 +77,11 @@ async function openLink(href: string) {
             :title="seg.value"
             class="emoji-img"
           />
+          <span
+            v-else-if="seg.kind === 'mention'"
+            class="mention-token"
+            :style="{ color: mentionFg || undefined }"
+          >{{ seg.value }}</span>
           <span v-else>{{ seg.value }}</span>
         </template>
       </div>
