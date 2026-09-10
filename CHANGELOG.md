@@ -10,6 +10,9 @@
 
 ## [Unreleased]
 
+### Fixed
+- **粘贴超长文本卡死输入框**：粘贴大段文字时 `execCommand("insertText")` 把整段（可能几十万字符）塞进 contenteditable，随后 input 事件里的 `innerText` 读取又强制同步 reflow，界面卡死。修复：① 粘贴前先 `slice(0, 50000)` 截断到硬上限（新增 `MAX_INPUT_LENGTH = 50_000`，与发送时的兜底截断共用同一常量）；② `syncDraftState` / `normalizeEmpty` 改用 `textContent` 替代 `innerText`（`innerText` 每次读取都触发 reflow，`textContent` 不触发布局）。发送序列化仍保留 `innerText`（只在发送时读一次，需保留 `<br>`→`\n` 换行语义）。
+
 ## [2.1.0] - 2026-09-10
 
 > 本轮为 **Apple HIG（2026 版）体验审计后的修复**，分三批 + 一次「App Store 上架前置」：

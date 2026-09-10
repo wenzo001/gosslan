@@ -31,6 +31,10 @@ const emit = defineEmits<{
 
 const app = useAppStore();
 const codeMode = ref(false);
+
+/** 输入框单条消息的字符硬上限：超过即截断。粘贴与发送两处都会兜底，
+ *  防止粘贴超大文本时 contenteditable 塞进几十万字符、把界面卡死。 */
+const MAX_INPUT_LENGTH = 50_000;
 // ---------------- contenteditable 输入框（DOM 为源，uncontrolled） ----------------
 // textarea 画不了局部颜色、overlay mirror 又会排版错位（已踩坑回退），改用
 // contenteditable：@提及 是真正的内联原子 token（contenteditable=false 的 span，
@@ -59,7 +63,9 @@ function autoResize() {
 /** 清空但残留空壳（空的 div/br）时规范化为真·空，让 :empty 的 placeholder 回来。 */
 function normalizeEmpty() {
   const el = editorRef.value;
-  if (el && el.innerText.trim() === "") el.innerHTML = "";
+  // 用 textContent 而非 innerText：innerText 会强制同步 reflow（对超长文本极慢），
+  // 这里只需判断"是否空壳"，textContent 语义足够且不触发布局。
+  if (el && (el.textContent ?? "").trim() === "") el.innerHTML = "";
 }
 
 watch(codeMode, () => nextTick(() => autoResize()));
@@ -93,7 +99,7 @@ function focusEditor(atEnd = true) {
 /** 序列化草稿：innerText 把 token 读成 @名字、<br>/块边界读成 \n；
  *  块尾的 \n 是渲染 artifact，剥掉；maxlength 语义挪到发送前截断兜底。 */
 function serializeDraft(): string {
-  return (editorRef.value?.innerText ?? "").replace(/\n+$/, "").slice(0, 50000);
+  return (editorRef.value?.innerText ?? "").replace(/\n+$/, "").slice(0, MAX_INPUT_LENGTH);
 }
 
 /** 发送：立即清空输入框（optimistic UI，不等 IPC 返回）。引用消息在首行拼接引用头。 */
@@ -279,7 +285,9 @@ function deleteMentionBeforeCaret(): boolean {
  */
 function syncDraftState() {
   const el = editorRef.value;
-  hasDraft.value = (el?.innerText.trim().length ?? 0) > 0;
+  // textContent 替代 innerText：innerText 每次读取都触发同步 reflow，
+  // 粘贴长文本后这里会被 input 事件高频调用，reflow 累加即"卡死"。
+  hasDraft.value = ((el?.textContent ?? "").trim().length) > 0;
 }
 
 /** input 统一入口：投影 hasDraft、规范化空壳、非组合输入时更新 @ 触发态。 */
@@ -430,7 +438,9 @@ async function onPaste(e: ClipboardEvent) {
   // 纯文本：contenteditable 默认粘贴会带外来 HTML 结构（污染 token/样式），
   // 统一拦掉按纯文本插入（execCommand 保 undo 栈；含 \n 时 Chromium 自行转 <br>）。
   const text = cd.getData("text/plain");
-  if (text) document.execCommand("insertText", false, text);
+  // 截断到硬上限：超长文本若完整塞进 contenteditable，插入 + 后续 innerText 读都会
+  // 触发大范围 reflow，几十万字符足以把界面卡死（"粘贴一大段就卡死"的根因）。
+  if (text) document.execCommand("insertText", false, text.slice(0, MAX_INPUT_LENGTH));
 }
 
 function fileToDataUrl(f: File): Promise<string> {
