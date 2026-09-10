@@ -53,12 +53,13 @@ clipboard-win = "5"
 
 # macOS 打开文件：App Sandbox 禁止 fork /usr/bin/open（tauri-plugin-opener 在 macOS 走的正是
 # 这条路径），改用 NSWorkspace.openURL —— 纯 Foundation API，沙盒应用允许调用。
-# 同时给 macOS 窗口加 squircle 圆角（NSWindow.setCornerRadius:，macOS 10.15+），
-# 并关掉与圆角不兼容的系统阴影（阴影由 WebView CSS box-shadow 接管）。
+# 同时给 macOS 窗口加圆角：NSWindow 没有 setCornerRadius:，正确做法是给 contentView 的
+# layer 设 cornerRadius（公开 API），并关掉与圆角不兼容的系统阴影。
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", features = ["NSWorkspace", "NSWindow"] }
+objc2-app-kit = { version = "0.3", features = ["NSWorkspace", "NSWindow", "NSView", "objc2-quartz-core"] }
 objc2-foundation = { version = "0.3", features = ["NSString", "NSURL"] }
+objc2-quartz-core = { version = "0.3", features = ["CALayer"] }
 
 [features]
 # 默认启用自定义协议；可扩展为自定义 deep-link 唤醒

@@ -16,7 +16,7 @@
         "title": "Gosslan",
         "width": 1000,
         "height": 680,
-        "minWidth": 920,
+        "minWidth": 360,
         "minHeight": 640,
         "center": true,
         "resizable": true,

@@ -13,7 +13,10 @@
 ### Fixed
 - **粘贴超长文本卡死输入框**：粘贴大段文字时 `execCommand("insertText")` 把整段（可能几十万字符）塞进 contenteditable，随后 input 事件里的 `innerText` 读取又强制同步 reflow，界面卡死。修复：① 粘贴前先 `slice(0, 50000)` 截断到硬上限（新增 `MAX_INPUT_LENGTH = 50_000`，与发送时的兜底截断共用同一常量）；② `syncDraftState` / `normalizeEmpty` 改用 `textContent` 替代 `innerText`（`innerText` 每次读取都触发 reflow，`textContent` 不触发布局）。发送序列化仍保留 `innerText`（只在发送时读一次，需保留 `<br>`→`\n` 换行语义）。
 - **macOS 打开文件失败（App Sandbox 拦截 `/usr/bin/open`）**：`tauri-plugin-opener` 在 macOS 底层走 `open` crate → `Command::new("/usr/bin/open")`，而 App Sandbox 禁止沙盒应用 fork 外部可执行文件，故 Mac 端点开文件一律失败（Windows 端无沙盒正常）。修复：新增 `src-tauri/src/macos_open.rs`，macOS 改用 `NSWorkspace.openURL`（纯 Foundation API，沙盒允许），Windows/Linux 回落 opener；新增 `open_file_native` 命令并加 `path.exists()` 前置检查，文件不存在时返回明确错误（区分「文件不存在」与「无默认应用」）。
-- **macOS 窗口四周无圆角**：跨平台用 `decorations: false` 自绘标题栏，关掉了 macOS 系统装饰（Windows 11 仍由 DWM 画圆角，所以 Mac 看起来直角、Win 看起来圆角，跨平台割裂）。修复：新增 `src-tauri/src/macos_window.rs`，运行时调 `NSWindow.setCornerRadius:`（macOS 10.15+ 公开 API，`objc2::msg_send!` 手动调，selector 在 objc2 0.3.2 未自动生成），半径 10.0（与系统窗口一致）；同时 `setHasShadow:false`（系统阴影画在窗口外、是矩形，与圆角冲突，改由 WebView 根容器 CSS box-shadow 接管可后续加）。**没**改 tauri.conf.json 的 `decorations`（单平台共用字段，改了会破坏 Windows 自绘）。
+- **macOS 窗口四周无圆角**：跨平台用 `decorations: false` 自绘标题栏，关掉了 macOS 系统装饰（Windows 11 仍由 DWM 画圆角，所以 Mac 看起来直角、Win 看起来圆角，跨平台割裂）。修复：新增 `src-tauri/src/macos_window.rs`，运行时给窗口 `contentView` 的 layer 设 `cornerRadius: 10.0` + `masksToBounds`（公开 API；⚠️ NSWindow **没有** `setCornerRadius:`，容易误以为有——cornerRadius 是 CALayer 的属性）；同时 `setHasShadow: false`（系统阴影画在窗口外、是矩形，与圆角冲突）。**没**改 tauri.conf.json 的 `decorations`（单平台共用字段，改了会破坏 Windows 自绘）。
+
+### Changed
+- **PC 端窗口可缩到移动端宽度**：窗口最小宽度 `minWidth` 从 920 降到 **360**。`isMobile` 本就是响应式判定（`matchMedia("(max-width: 767px)")`，非平台判定），此前被 920 的 `minWidth` 挡住、PC 上永远触发不了移动端布局；现在缩窗口到 767px 以下即切换成移动端 UI（单列抽屉 + 底部导航），PC 上也能体验移动端形态。
 
 ## [2.1.0] - 2026-09-10
 
