@@ -176,8 +176,11 @@ const mentionFiltered = computed(() => {
   return (q ? list.filter((m) => m.name.toLowerCase().includes(q)) : list).slice(0, 8);
 });
 
-function isMentionSpan(n: Node | null): boolean {
-  return n !== null && n.nodeType === Node.ELEMENT_NODE && (n as Element).classList.contains("mention-token");
+/** 原子 token：@提及 与 表情 都是 contentEditable=false 的 span，退格时都应整体删除。 */
+function isTokenSpan(n: Node | null): boolean {
+  if (n === null || n.nodeType !== Node.ELEMENT_NODE) return false;
+  const cl = (n as Element).classList;
+  return cl.contains("mention-token") || cl.contains("emoji-token");
 }
 
 /** caret 的 Range 上下文：仅当 selection 折叠且落在编辑器内的文本节点上时有效。 */
@@ -258,7 +261,7 @@ function deleteMentionBeforeCaret(): boolean {
   const text = node.textContent ?? "";
   if (offset !== 1 || text[offset - 1] !== "\u00A0") return false;
   const prev = node.previousSibling;
-  if (!isMentionSpan(prev) || !prev) return false;
+  if (!isTokenSpan(prev) || !prev) return false;
   const range = document.createRange();
   range.setStartBefore(prev);
   range.setEnd(node, 1);
@@ -348,21 +351,28 @@ function insertEmoji(e: string) {
   const el = editorRef.value;
   closeEmoji();
   if (!el) return;
+  // ⚠️ 两个分支都必须插「token span」，不能插纯文本：
+  // token 是 contentEditable=false → 退格/选区删除整体生效；
+  // 插纯文本会被浏览器一个字一个字地删掉（就是"表情文字被拆开"的那个 bug）。
+  const span = document.createElement("span");
+  span.className = "emoji-token";
+  span.contentEditable = "false";
+  span.textContent = e; // 如 "[黄脸干杯]"，serializeDraft 经 innerText 读回原文
   const sel = window.getSelection();
   if (sel && sel.rangeCount > 0 && el.contains(sel.anchorNode)) {
     const range = sel.getRangeAt(0);
     range.deleteContents();
-    const span = document.createElement("span");
-    span.className = "emoji-token";
-    span.contentEditable = "false";
-    span.textContent = e; // 如 "[黄脸干杯]"，serializeDraft 经 innerText 读回原文
     range.insertNode(span);
-    range.setStartAfter(span);
+    // 与 @mention 同一套：token 后补一个不换行空格，caret 才能落到 token 之后
+    const space = document.createTextNode("\u00A0");
+    span.after(space);
+    range.setStartAfter(space);
     range.collapse(true);
     sel.removeAllRanges();
     sel.addRange(range);
   } else {
-    el.appendChild(document.createTextNode(e));
+    el.appendChild(span);
+    el.appendChild(document.createTextNode("\u00A0"));
     if (!app.isMobile) focusEditor();
   }
   // 直接改 DOM 不会触发 input 事件 → 必须手动同步，否则「只有表情时发送键是灰的」
