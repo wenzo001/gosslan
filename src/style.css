@@ -442,6 +442,18 @@ button:not(:disabled):active,
   background: transparent;
 }
 
+/* macOS：恢复系统 overlay 滚动条（滚动时才浮出、不占布局宽度，符合 HIG）。
+   Windows/Android 保留上面的 6px 细滚动条（自绘标题栏/触屏语境下常显更明确）。
+   ⚠️ 必须写在上面全局滚动条样式**之后**：同优先级"后定义者胜"，写前面会被覆盖。 */
+.platform-mac ::-webkit-scrollbar {
+  width: auto;
+  height: auto;
+}
+.platform-mac ::-webkit-scrollbar-thumb,
+.platform-mac ::-webkit-scrollbar-thumb:hover {
+  background: initial;
+}
+
 /* 聊天气泡指向头像的小尖角（微信式）。颜色取气泡自身的 --bubble-bg，
    子组件给根 div 加 position: relative（bubbleStyle 已设），直接挂类即可。 */
 .bubble-tail {

@@ -83,6 +83,9 @@ export const zhCN: MessageDict = {
   "settings.toast.defaultsRestored": "已恢复默认设置",
   "settings.toast.chatCleared": "聊天数据已清除",
   "settings.toast.clearFail": "清除失败",
+
+  // ---- 通知动作 ----
+  "notification.markRead": "标记已读",
 };
 
 export const enUS: MessageDict = {
@@ -162,4 +165,7 @@ export const enUS: MessageDict = {
   "settings.toast.defaultsRestored": "Default settings restored",
   "settings.toast.chatCleared": "Chat data cleared",
   "settings.toast.clearFail": "Clear failed",
+
+  // ---- Notification actions ----
+  "notification.markRead": "Mark as read",
 };

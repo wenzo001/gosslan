@@ -52,6 +52,10 @@
   - 设置页加「语言」切换入口（简体中文 / English），**覆盖系统 UI（导航栏）与设置页主框架 + 各分组标题/footer + 通知/共享/重置/清除 + 清除确认弹窗**。
   - 护栏 `src/i18n/index.test.ts`：**断言中英字典 key 集合完全一致**（漏翻译会变红）+ t() 翻译/插值/缺 key 回退。
   - ⚠️ 各分组**内部字段文案**（外观三态、气泡配色预设名、存储清理策略、网卡列表等）仍为增量待迁——切语言后这些字段暂不随动，后续批量补。
+- **通知「标记已读」动作（移动端）**：Android/iOS 通知增加「标记已读」按钮（`registerActionTypes` + `actionTypeId`），点按不唤起窗口、直接标记该会话已读（发已读回执 + 清未读角标）。桌面端 Web Notification 不支持按钮，保持「点击打开」。
+- **⌘/Ctrl + = / − 调整消息字号（Dynamic Type 精神）**：在 小/标准/大 三档间切换，直接改 store（`useShortcuts` 里处理，不走 window 事件），与设置页「字体大小」共用同一套 `CHAT_FONT_SIZES`。
+- **macOS 滚动条恢复系统 overlay**：`html.platform-mac`（store init 按 `isMac` 标记）+ CSS 覆盖，macOS 上滚动条回到「滚动才浮出、不占布局」，Windows/Android 保留 6px 常显细滚动条。
+- **移动端消息长按 → 底部 Action Sheet**：新建 `ActionSheet.vue`（底部滑出、遮罩、取消按钮、安全区），移动端长按消息唤出「复制/保存/引用/转发」等操作——此前移动端**没有右键、也没有长按**，消息操作在触屏上完全不可用（真实功能缺失）。
 
 ### Fixed
 - **触摸端无法删除会话**（真实功能缺失）：会话行的删除键写成 `hidden` + `group-hover:flex`，而 **Android 没有 hover 事件 → 该按钮永远不显示**，表现为"桌面能删、手机删不掉"（同一层的"删除好友"有长按兜底，聊天记录却没有）。新增全局工具类 `.hover-reveal` / `.hover-reveal-op`（`@media (hover: none)` 下退化为常显），并把「凡用 `group-hover` / `opacity-0` 揭示的元素都必须加其中之一」写进设计规范

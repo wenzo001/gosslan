@@ -14,6 +14,7 @@ import {
 } from "@/utils/appearance";
 import { DEFAULT_CHAT_STYLE, fontPx, parsePeerStyle, type ChatStyleConfig } from "@/utils/chatStyle";
 import { applyLocale, currentLocale, isLocale, type Locale } from "@/i18n";
+import { isMac } from "@/utils/platform";
 import type { DeviceInfo, InterfaceInfo } from "@/types";
 
 export type { AppearanceMode };
@@ -274,6 +275,10 @@ export const useAppStore = defineStore("app", () => {
   }
 
   async function init() {
+    // 平台标记：供 CSS 按平台差异化（如 macOS 恢复系统 overlay 滚动条）
+    if (typeof document !== "undefined") {
+      document.documentElement.classList.toggle("platform-mac", isMac);
+    }
     // 从后端恢复持久化偏好（外观 / 网卡 / 聊天样式），优先于 localStorage
     const s = await api.getSettings();
     if (s.themeColor) themeColor.value = s.themeColor;

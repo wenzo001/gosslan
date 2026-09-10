@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
@@ -17,7 +17,8 @@ import MessageImageBubble from "@/components/message/MessageImageBubble.vue";
 import MessageReceipt from "@/components/message/MessageReceipt.vue";
 import MessageContentModal from "@/components/message/MessageContentModal.vue";
 import MessageContextMenu from "@/components/message/MessageContextMenu.vue";
-import { ImageOff } from "lucide-vue-next";
+import ActionSheet from "@/components/ActionSheet.vue";
+import { Copy, CornerUpLeft, Save, Share2, ImageOff } from "lucide-vue-next";
 import type { MessageRecord, MsgKind } from "@/types";
 
 const props = withDefaults(
@@ -170,6 +171,44 @@ function openContextMenu(e: MouseEvent) {
 function closeContextMenu() {
   ctxMenuPopup.release();
   ctxMenu.value = null;
+}
+
+// ---------------- 移动端长按 → 底部 Action Sheet（HIG：触屏用长按唤出上下文操作） ----------------
+// 桌面端走右键菜单（MessageContextMenu），移动端没有右键，用长按唤出底部操作面板。
+const sheetOpen = ref(false);
+let longPressTimer: ReturnType<typeof setTimeout> | null = null;
+
+function openActionSheet() {
+  if (props.message.kind === "system") return;
+  sheetOpen.value = true;
+  ctxMenuPopup.claim();
+}
+
+function closeActionSheet() {
+  ctxMenuPopup.release();
+  sheetOpen.value = false;
+}
+
+function onTouchStart() {
+  if (!app.isMobile || props.message.kind === "system") return;
+  longPressTimer = setTimeout(() => {
+    longPressTimer = null;
+    openActionSheet();
+  }, 500);
+}
+
+function cancelLongPress() {
+  if (longPressTimer) {
+    clearTimeout(longPressTimer);
+    longPressTimer = null;
+  }
+}
+
+onBeforeUnmount(() => cancelLongPress());
+
+/** 转发支持：与 MessageContextMenu 同一判据。 */
+function forwardable(k: MsgKind) {
+  return k === "text" || k === "code" || k === "image" || k === "file";
 }
 
 /** 图片可预览 URL：新格式走 objectURL（JSON 元数据），旧格式兼容 content=dataURL。 */
@@ -354,13 +393,17 @@ async function copyFileToClipboard() {
           {{ message.content }}
         </div>
 
-        <!-- 消息行：气泡 + 侧挂回执（mine 时回执在气泡左侧）；右键弹消息菜单，悬停看完整时间 -->
+        <!-- 消息行：气泡 + 侧挂回执（mine 时回执在气泡左侧）；右键（桌面）/长按（移动端）弹消息菜单 -->
         <div
           v-else
           class="group/row flex w-full items-end gap-1.5"
           :class="mine ? 'justify-end' : 'justify-start'"
           :title="fullTime"
           @contextmenu.prevent="openContextMenu"
+          @touchstart="onTouchStart"
+          @touchend="cancelLongPress"
+          @touchmove="cancelLongPress"
+          @touchcancel="cancelLongPress"
         >
           <MessageReceipt
             v-if="mine"
@@ -478,4 +521,65 @@ async function copyFileToClipboard() {
     @quote="doQuote"
     @forward="doForward"
   />
+
+  <!-- 移动端长按 → 底部操作面板（Action Sheet）。操作与右键菜单同源，只是展示形态不同。 -->
+  <ActionSheet :open="sheetOpen" @close="closeActionSheet()">
+    <div class="flex flex-col">
+      <button
+        v-if="message.kind === 'text' || message.kind === 'code'"
+        class="flex items-center gap-3 px-4 py-3 text-left text-[15px] text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
+        @click="closeActionSheet(); copyContent(message.kind === 'code' ? 'code' : 'text', message.content)"
+      >
+        <Copy class="h-5 w-5 text-[var(--gosslan-text-2)]" />
+        复制
+      </button>
+      <template v-if="message.kind === 'image'">
+        <button
+          class="flex items-center gap-3 px-4 py-3 text-left text-[15px] text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
+          @click="copyImage"
+        >
+          <Copy class="h-5 w-5 text-[var(--gosslan-text-2)]" />
+          复制图片
+        </button>
+        <button
+          class="flex items-center gap-3 px-4 py-3 text-left text-[15px] text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
+          @click="saveImage"
+        >
+          <Save class="h-5 w-5 text-[var(--gosslan-text-2)]" />
+          保存图片
+        </button>
+      </template>
+      <template v-if="message.kind === 'file'">
+        <button
+          class="flex items-center gap-3 px-4 py-3 text-left text-[15px] text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
+          @click="saveFileTo"
+        >
+          <Save class="h-5 w-5 text-[var(--gosslan-text-2)]" />
+          保存
+        </button>
+        <button
+          class="flex items-center gap-3 px-4 py-3 text-left text-[15px] text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
+          @click="copyFileToClipboard"
+        >
+          <Copy class="h-5 w-5 text-[var(--gosslan-text-2)]" />
+          复制文件
+        </button>
+      </template>
+      <button
+        class="flex items-center gap-3 px-4 py-3 text-left text-[15px] text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
+        @click="doQuote"
+      >
+        <CornerUpLeft class="h-5 w-5 text-[var(--gosslan-text-2)]" />
+        引用
+      </button>
+      <button
+        v-if="forwardable(message.kind)"
+        class="flex items-center gap-3 px-4 py-3 text-left text-[15px] text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
+        @click="doForward"
+      >
+        <Share2 class="h-5 w-5 text-[var(--gosslan-text-2)]" />
+        转发
+      </button>
+    </div>
+  </ActionSheet>
 </template>

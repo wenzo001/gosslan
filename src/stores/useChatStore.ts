@@ -14,8 +14,10 @@ import {
 } from "@/utils/messages";
 import { useAppStore } from "@/stores/useAppStore";
 import { notificationBody } from "@/utils/notifications";
+import { t } from "@/i18n";
 import {
   onAction,
+  registerActionTypes,
   sendNotification,
 } from "@tauri-apps/plugin-notification";
 import type {
@@ -122,6 +124,8 @@ export const useChatStore = defineStore("chat", () => {
             title,
             body,
             autoCancel: true,
+            // 「标记已读」动作按钮：见 init 里 registerActionTypes；桌面端 Web Notification 不支持按钮
+            actionTypeId: "chat",
             extra: { type: "chat", conv_id: convId },
           });
         } else {
@@ -975,17 +979,48 @@ export const useChatStore = defineStore("chat", () => {
         void handleSelfRemovedFromGroup(groupId);
       },
     });
+    // 移动端注册通知动作类别（「标记已读」按钮）。桌面端无此能力（Web Notification 不支持按钮），
+    // 命令也不存在，故只对移动端调用。语言切换后按钮文案不随动（原生注册一次），可接受。
+    if (app.isMobile) {
+      void registerActionTypes([
+        {
+          id: "chat",
+          actions: [{ id: "mark-read", title: t("notification.markRead") }],
+        },
+      ]).catch(() => {
+        /* 注册失败不影响通知主体（只是没有动作按钮） */
+      });
+    }
     // 注册系统通知点击回调：点击通知 → 唤起窗口 + 定位到发送者会话
     void onAction((n) => {
-      // 点击通知的第一动作：无论能否解析出会话，先把窗口弹到前台
-      // （最小化/隐藏/被遮挡时都恢复，unminimize+show+set_focus 幂等）
-      void api.focusWindow();
-      // 兼容不同平台回调形状：对象 { id, extra } 或裸 id（number/string）
+      // 兼容不同平台回调形状：对象 { id, actionId, extra } 或裸 id（number/string）
       const raw = (typeof n === "object" && n !== null
         ? n
-        : { id: n }) as { id?: unknown; extra?: Record<string, unknown> };
+        : { id: n }) as {
+        id?: unknown;
+        actionId?: string;
+        extra?: Record<string, unknown>;
+      };
       const id = typeof raw.id === "number" ? raw.id : undefined;
       const extraType = raw.extra?.type as string | undefined;
+
+      // 「标记已读」动作按钮：不唤起窗口，只把该会话标为已读（发已读回执 + 清未读角标）
+      if (raw.actionId === "mark-read") {
+        let convId = id != null ? notifMap.get(id) : undefined;
+        if (!convId && raw.extra?.conv_id) convId = String(raw.extra.conv_id);
+        if (id != null) notifMap.delete(id);
+        if (convId) {
+          void api.markRead(convId).then(() => {
+            const conv = conversations.value.find((c) => c.id === convId);
+            if (conv) conv.unread = 0;
+          });
+        }
+        return;
+      }
+
+      // 点击通知本体：无论能否解析出会话，先把窗口弹到前台
+      // （最小化/隐藏/被遮挡时都恢复，unminimize+show+set_focus 幂等）
+      void api.focusWindow();
 
       if (extraType === "friend_request") {
         // 好友申请通知：唤起窗口 + 切换到联系人视图
