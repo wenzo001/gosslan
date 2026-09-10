@@ -33,7 +33,7 @@ const confirmRemove = ref(false);
     >
       <button
         class="flex h-9 w-9 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-        title="返回"
+        title="返回" aria-label="返回"
         @click="app.mobileView = 'list'"
       >
         <ArrowLeft class="h-5 w-5" />
@@ -49,7 +49,7 @@ const confirmRemove = ref(false);
             :class="!friend.online ? 'grayscale opacity-70' : ''"
             :style="{ backgroundColor: nameToColor(friend.nickname) }"
           >
-            <img v-if="friend.avatar" :src="friend.avatar" class="h-full w-full object-cover" />
+            <img alt="" v-if="friend.avatar" :src="friend.avatar" class="h-full w-full object-cover" />
             <span v-else>{{ initial }}</span>
           </div>
           <div class="min-w-0">

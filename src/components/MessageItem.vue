@@ -228,7 +228,7 @@ async function saveImage() {
     await invoke("save_data_file", { base64Data: btoa(binary), destination });
     app.toast("图片已保存", "success");
   } catch (e) {
-    app.toast(`保存图片失败：${e}`, "error");
+    app.toastError(e, "保存图片失败");
   }
 }
 
@@ -308,7 +308,7 @@ async function copyFileToClipboard() {
     await invoke("copy_file_to_clipboard", { path });
     app.toast("已复制文件，可粘贴到聊天框或资源管理器", "success");
   } catch (e) {
-    app.toast(`复制失败：${e}`, "error");
+    app.toastError(e, "复制失败");
   }
 }
 </script>

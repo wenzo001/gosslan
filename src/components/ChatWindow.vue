@@ -145,7 +145,7 @@ async function confirmRename(name: string) {
     await chat.renameGroup(gid, name);
     app.toast("群名称已更新", "success");
   } catch (e) {
-    app.toast(`重命名失败：${e}`, "error");
+    app.toastError(e, "重命名失败");
   }
 }
 
@@ -227,7 +227,7 @@ async function onSend({ content, kind }: { content: string; kind: MsgKind }) {
   try {
     await chat.send(convId, content, kind);
   } catch (e) {
-    app.toast(`发送失败：${e}`, "error");
+    app.toastError(e, "发送失败");
   }
 }
 
@@ -248,10 +248,13 @@ const forward = ref<{ kind: MsgKind; content: string; snippet: string; filePath?
 /** 点击引用块定位原消息：滚动 + 短暂高亮 */
 const highlightId = ref<string | number | null>(null);
 let highlightTimer = 0;
-function locateMessage(id: string) {
-  const idx = messages.value.findIndex((m) => (m.msg_id ?? m.id) === id);
+/** `id` 用 String 比较：msg_id 是字符串，但历史数据/乐观记录里可能是数字 id，
+ *  宽松比较能同时覆盖"引用定位"与"搜索定位"两条来源。 */
+function locateMessage(id: string | number) {
+  const target = String(id);
+  const idx = messages.value.findIndex((m) => String(m.msg_id ?? m.id) === target);
   if (idx < 0) {
-    app.toast("原消息不在已加载范围内", "info");
+    app.toast("原消息更早，已不在可加载范围内", "info");
     return;
   }
   listRef.value?.scrollToIndex(idx, "top");
@@ -260,6 +263,20 @@ function locateMessage(id: string) {
   window.clearTimeout(highlightTimer);
   highlightTimer = window.setTimeout(() => (highlightId.value = null), 1600);
 }
+
+// 搜索命中定位：store 侧已把会话打开并（必要时逐页）把目标消息加载进来，
+// 这里只负责滚动 + 高亮，然后立即清掉请求，避免下次切会话时重复触发。
+watch(
+  () => chat.locateRequest,
+  async (req) => {
+    if (!req || req.convId !== chat.activeConv) return;
+    await nextTick();
+    await nextTick();
+    locateMessage(req.msgId);
+    chat.clearLocateRequest();
+  },
+  { immediate: true },
+);
 
 async function doForward(convId: string) {
   const f = forward.value;
@@ -282,7 +299,7 @@ async function doForward(convId: string) {
     }
     app.toast("转发成功", "success");
   } catch (e) {
-    app.toast(`转发失败：${e}`, "error");
+    app.toastError(e, "转发失败");
   }
 }
 
@@ -369,7 +386,7 @@ async function sendPastedFiles(paths: string[]) {
     try {
       await sendOneFile(convId, p);
     } catch (e) {
-      app.toast(`发送失败：${e}`, "error");    }
+      app.toastError(e, "发送失败");    }
   }
 }
 

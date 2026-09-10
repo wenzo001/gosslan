@@ -43,7 +43,7 @@ async function download(e: ShareEntry) {
     app.toast(`开始下载「${e.name}」`, "success");
     chat.refreshTransfers();
   } catch (err) {
-    app.toast(`下载失败：${err}`, "error");
+    app.toastError(err, "下载失败");
   }
 }
 
@@ -60,7 +60,9 @@ watch(
     <div class="mb-2 flex items-center justify-between">
       <span class="text-xs text-[var(--gosslan-text-2)]">对方共享的文件，点击下载将点对点传输</span>
       <button
-        class="flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+        class="tap-safe flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+        title="刷新目录"
+        aria-label="刷新共享目录"
         @click="load"
       >
         <RefreshCw class="h-4 w-4" :class="loading ? 'animate-spin' : ''" />
@@ -84,8 +86,8 @@ watch(
         <span v-if="!e.is_dir" class="text-[11px] text-[var(--gosslan-text-2)]">{{ humanSize(e.size) }}</span>
         <button
           v-if="!e.is_dir"
-          class="flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-accent-ink)] transition hover:bg-[var(--gosslan-hover)]"
-          title="下载"
+          class="tap-safe flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-accent-ink)] transition hover:bg-[var(--gosslan-hover)]"
+          title="下载" aria-label="下载"
           @click="download(e)"
         >
           <Download class="h-4 w-4" />

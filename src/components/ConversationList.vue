@@ -29,7 +29,7 @@ const emit = defineEmits<{
 const app = useAppStore();
 const chat = useChatStore();
 
-const { keyword, results, filtered, snippet } = useConversationSearch(
+const { keyword, results, filtered, snippet, hitMsgId } = useConversationSearch(
   computed(() => chat.conversations),
 );
 
@@ -77,9 +77,21 @@ function isOnline(id: string): boolean | null {
   return chat.friends.find((f) => f.device_id === id)?.online ?? false;
 }
 
-function openConv(conv: Conversation) {
-  chat.openConversation(conv.id);
+/**
+ * 打开会话。若会话列表正处于**搜索结果**态，且命中里有具体消息 → 直接跳到那一条。
+ * 只把用户丢进会话、让他自己翻，搜索就只完成了一半（HIG：搜索的价值是"降低定位成本"）。
+ * 定位失败时按**原因**分别告知，不静默、也不说错原因。
+ */
+async function openConv(conv: Conversation) {
   if (app.isMobile) app.mobileView = "chat";
+  const hit = hitMsgId(conv.id);
+  if (hit) {
+    const outcome = await chat.locateMessageInConv(conv.id, hit);
+    if (outcome === "not-found") app.toast("命中的消息较早，已打开会话但未能自动定位", "info");
+    else if (outcome === "error") app.toast("定位消息时出错，已打开会话", "error");
+    return;
+  }
+  chat.openConversation(conv.id);
 }
 /** 通讯录点击好友 → 打开资料页（发消息由资料页按钮触发，不再直接开会话） */
 function openFriend(f: Friend) {
@@ -109,16 +121,28 @@ function onFriendContext(f: Friend, x: number, y: number) {
   friendMenuPopup.claim();
 }
 
-/** 删除好友：保留聊天记录；对方仍出现在扫描列表，可重新添加。乐观移除，失败回滚。 */
-async function confirmDeleteFriend() {
-  const f = friendMenu.value?.friend;
+/** 删除好友：保留聊天记录；对方仍出现在扫描列表，可重新添加。乐观移除，失败回滚。
+ *
+ *  ⚠️ 必须二次确认：右键菜单此前**单击即删**，而「删除聊天记录」和资料页的「删除好友」
+ *  都有确认弹窗——同一类破坏性操作三种行为不一致，右键菜单那条最容易误触。
+ *  这里刻意**不做"撤销"**：删除好友在后端不是可本地回滚的操作（对方可能已同步移除，
+ *  重新建立关系要走一次好友申请），给一个假的"撤销"比不给更糟。 */
+const pendingRemoveFriend = ref<Friend | null>(null);
+
+function onAskDeleteFriend() {
+  pendingRemoveFriend.value = friendMenu.value?.friend ?? null;
   closeFriendMenu();
+}
+
+async function confirmDeleteFriend() {
+  const f = pendingRemoveFriend.value;
+  pendingRemoveFriend.value = null;
   if (!f) return;
   try {
     await chat.removeFriend(f.device_id);
     app.toast(`已删除好友 ${f.nickname}（可在添加好友中重新添加）`, "info");
   } catch (e) {
-    app.toast(`删除失败：${e}`, "error");
+    app.toastError(e, "删除失败");
   }
 }
 
@@ -138,7 +162,7 @@ async function confirmDeleteConv() {
     await chat.deleteConversation(c.id);
     app.toast(`已删除与「${c.name}」的聊天记录`, "success");
   } catch (e) {
-    app.toast(`删除失败：${e}`, "error");
+    app.toastError(e, "删除失败");
   }
 }
 
@@ -178,8 +202,8 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
       <div class="relative flex shrink-0 items-center">
         <!-- 微信式：单个加号，点开下拉（添加好友 / 创建群聊） -->
         <button
-          class="flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-list-hover)]"
-          title="添加好友 / 创建群聊"
+          class="tap-safe flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-list-hover)]"
+          title="添加好友 / 创建群聊" aria-label="添加好友 / 创建群聊"
           @click.stop="togglePlus"
         >
           <Plus class="h-[18px] w-[18px]" />
@@ -220,8 +244,16 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
           @open="openConv"
           @ask-delete="onAskDeleteConv"
         />
-        <div v-if="filtered.length === 0" class="mt-16 text-center text-sm text-[var(--gosslan-text-2)]">
-          暂无会话
+        <div v-if="filtered.length === 0" class="mt-16 flex flex-col items-center gap-3 text-center text-sm text-[var(--gosslan-text-2)]">
+          <span>{{ keyword.trim() ? "没有匹配的会话" : "暂无会话" }}</span>
+          <!-- 空态给下一步：新用户在这里直接能去加人（搜索无结果时不给，那是"换个词"的场景） -->
+          <button
+            v-if="!keyword.trim()"
+            class="rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3 py-1.5 text-xs text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
+            @click="emit('open-add-friend')"
+          >
+            添加好友
+          </button>
         </div>
       </template>
 
@@ -259,8 +291,15 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
           @open="openFriend"
           @context="onFriendContext"
         />
-        <div v-if="filteredFriends.length === 0" class="mt-16 text-center text-sm text-[var(--gosslan-text-2)]">
-          暂无好友
+        <div v-if="filteredFriends.length === 0" class="mt-16 flex flex-col items-center gap-3 text-center text-sm text-[var(--gosslan-text-2)]">
+          <span>{{ keyword.trim() ? "没有匹配的联系人" : "暂无好友" }}</span>
+          <button
+            v-if="!keyword.trim()"
+            class="rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3 py-1.5 text-xs text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
+            @click="emit('open-add-friend')"
+          >
+            添加好友
+          </button>
         </div>
       </template>
     </div>
@@ -270,8 +309,36 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
       :x="friendMenu.x"
       :y="friendMenu.y"
       @close="closeFriendMenu"
-      @confirm="confirmDeleteFriend"
+      @confirm="onAskDeleteFriend"
     />
+
+    <!-- 二次确认：删除好友（保留聊天记录，可重新添加） -->
+    <BaseModal
+      :open="pendingRemoveFriend !== null"
+      title="删除好友"
+      @close="pendingRemoveFriend = null"
+    >
+      <div class="space-y-3">
+        <p class="text-sm text-[var(--gosslan-text)]">
+          将把「<span class="font-medium text-[var(--gosslan-danger-ink)]">{{ pendingRemoveFriend?.nickname }}</span>」从好友列表移除。
+        </p>
+        <ul class="space-y-1 text-xs text-[var(--gosslan-text-2)]">
+          <li>· 聊天记录会保留在本机</li>
+          <li>· 对方无法再给你发消息，除非重新添加</li>
+          <li>· 可随时通过「添加好友」重新建立关系</li>
+        </ul>
+        <div class="flex justify-end gap-2 pt-2">
+          <button
+            class="rounded-[var(--gosslan-radius-md)] px-4 py-1.5 text-sm transition hover:bg-[var(--gosslan-hover)]"
+            @click="pendingRemoveFriend = null"
+          >取消</button>
+          <button
+            class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-1.5 text-sm text-white transition hover:bg-[var(--gosslan-danger)]"
+            @click="confirmDeleteFriend"
+          >删除好友</button>
+        </div>
+      </div>
+    </BaseModal>
 
     <!-- 二次确认：删除聊天记录（仅本地清理，不影响对方） -->
     <BaseModal :open="pendingDelete !== null" title="删除聊天记录" @close="pendingDelete = null">

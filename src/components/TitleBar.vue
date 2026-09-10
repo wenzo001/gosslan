@@ -60,26 +60,26 @@ onBeforeUnmount(() => {
     <div v-if="isMac" class="group/traffic flex h-full items-center gap-2">
       <button
         class="flex h-3 w-3 items-center justify-center rounded-full border border-black/15 bg-[#ff5f57]"
-        title="关闭"
+        title="关闭" aria-label="关闭"
         @click="api.windowClose()"
       >
-        <X class="h-2 w-2 text-black/50 opacity-0 transition-opacity group-hover/traffic:opacity-100" />
+        <X class="hover-reveal-op h-2 w-2 text-black/50 opacity-0 transition-opacity group-hover/traffic:opacity-100" />
       </button>
       <button
         class="flex h-3 w-3 items-center justify-center rounded-full border border-black/15 bg-[#febc2e]"
-        title="最小化"
+        title="最小化" aria-label="最小化"
         @click="api.windowMinimize()"
       >
-        <Minus class="h-2 w-2 text-black/50 opacity-0 transition-opacity group-hover/traffic:opacity-100" />
+        <Minus class="hover-reveal-op h-2 w-2 text-black/50 opacity-0 transition-opacity group-hover/traffic:opacity-100" />
       </button>
       <button
         class="flex h-3 w-3 items-center justify-center rounded-full border border-black/15 bg-[#28c840]"
-        :title="maximized ? '向下还原' : '缩放'"
+        :title="maximized ? '向下还原' : '缩放'" :aria-label="maximized ? '向下还原' : '缩放'"
         @click="toggleMaximize"
       >
         <component
           :is="maximized ? Minimize2 : Maximize2"
-          class="h-2 w-2 text-black/50 opacity-0 transition-opacity group-hover/traffic:opacity-100"
+          class="hover-reveal-op h-2 w-2 text-black/50 opacity-0 transition-opacity group-hover/traffic:opacity-100"
         />
       </button>
     </div>
@@ -94,14 +94,14 @@ onBeforeUnmount(() => {
     <div v-else class="flex h-full items-stretch">
       <button
         class="flex w-11 items-center justify-center text-[var(--gosslan-rail-text)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]"
-        title="最小化"
+        title="最小化" aria-label="最小化"
         @click="api.windowMinimize()"
       >
         <Minus class="h-3.5 w-3.5" />
       </button>
       <button
         class="flex w-11 items-center justify-center text-[var(--gosslan-rail-text)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]"
-        :title="maximized ? '向下还原' : '最大化'"
+        :title="maximized ? '向下还原' : '最大化'" :aria-label="maximized ? '向下还原' : '最大化'"
         @click="toggleMaximize"
       >
         <Minimize2 v-if="maximized" class="h-3 w-3" />
@@ -109,7 +109,7 @@ onBeforeUnmount(() => {
       </button>
       <button
         class="flex w-11 items-center justify-center text-[var(--gosslan-rail-text)] transition hover:bg-[var(--gosslan-danger)] hover:text-white"
-        title="关闭（最小化到托盘，后台继续收消息）"
+        title="关闭（最小化到托盘，后台继续收消息）" aria-label="关闭（最小化到托盘，后台继续收消息）"
         @click="api.windowClose()"
       >
         <X class="h-3.5 w-3.5" />

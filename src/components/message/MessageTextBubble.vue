@@ -105,7 +105,7 @@ async function openLink(href: string) {
   try {
     await openUrl(href);
   } catch (e) {
-    app.toast(`打开链接失败：${e}`, "error");
+    app.toastError(e, "打开链接失败");
   }
 }
 </script>

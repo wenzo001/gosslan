@@ -73,7 +73,7 @@ async function add(peerId: string) {
     await chat.sendFriendRequest(peerId);
     app.toast("好友申请已发送，等待对方确认", "success");
   } catch (e) {
-    app.toast(`发送失败：${e}`, "error");
+    app.toastError(e, "发送失败");
   }
 }
 </script>
@@ -104,7 +104,7 @@ async function add(peerId: string) {
             class="flex h-9 w-9 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
             :style="{ backgroundColor: nameToColor(p.nickname) }"
           >
-            <img v-if="p.avatar" :src="p.avatar" class="h-full w-full object-cover" />
+            <img alt="" v-if="p.avatar" :src="p.avatar" class="h-full w-full object-cover" />
             <span v-else class="text-sm font-semibold">{{ initials(p.nickname) }}</span>
           </div>
           <div class="min-w-0 flex-1">

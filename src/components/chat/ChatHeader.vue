@@ -29,8 +29,8 @@ const emit = defineEmits<{
     <div class="flex min-w-0 items-center gap-1.5">
       <button
         v-if="showBack"
-        class="-ml-2 mr-1 flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-        title="返回"
+        class="tap-safe -ml-2 mr-1 flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+        title="返回" aria-label="返回"
         @click="emit('back')"
       >
         <ArrowLeft class="h-5 w-5" />
@@ -41,24 +41,24 @@ const emit = defineEmits<{
       <!-- 只保留有真实功能的入口；不放没有实现的功能按钮（音视频通话/更多已移除） -->
       <button
         v-if="isGroup"
-        class="flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-        title="群成员"
+        class="tap-safe flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+        title="群成员" aria-label="群成员"
         @click="emit('open-members')"
       >
         <Users class="h-[18px] w-[18px]" />
       </button>
       <button
         v-if="isGroup && canRename"
-        class="flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-        title="修改群名称"
+        class="tap-safe flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+        title="修改群名称" aria-label="修改群名称"
         @click="emit('rename')"
       >
         <Pencil class="h-[17px] w-[17px]" />
       </button>
       <button
         v-if="!isGroup"
-        class="flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-        title="共享目录"
+        class="tap-safe flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+        title="共享目录" aria-label="共享目录"
         @click="emit('open-share')"
       >
         <FolderOpen class="h-[18px] w-[18px]" />

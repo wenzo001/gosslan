@@ -50,7 +50,7 @@ async function create() {
     emit("close");
     chat.openConversation(`group:${g.id}`);
   } catch (e) {
-    app.toast(String(e), "error");
+    app.toastError(e, "创建群聊失败");
   }
 }
 </script>
@@ -85,7 +85,7 @@ async function create() {
           class="flex h-8 w-8 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
           :style="{ backgroundColor: nameToColor(f.nickname) }"
         >
-          <img v-if="f.avatar" :src="f.avatar" class="h-full w-full object-cover" />
+          <img alt="" v-if="f.avatar" :src="f.avatar" class="h-full w-full object-cover" />
           <span v-else class="text-xs font-semibold">{{ initials(f.nickname) }}</span>
         </div>
         <span class="flex-1 text-sm">{{ f.nickname }}</span>

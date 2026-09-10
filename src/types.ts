@@ -160,6 +160,10 @@ export interface AppSettings {
   themeColor: string | null;
   fontFamily: string | null;
   darkMode: boolean | null;
+  /** 外观模式："system"（跟随系统，默认）| "light" | "dark"。
+   *  `darkMode` 是**解析后的结果**（跟随系统时由前端按系统偏好解析后回写），
+   *  本字段才是**用户意图**。旧记录没有该字段 → 视为 "system"。 */
+  appearanceMode: string | null;
   bindIp: string | null;
   /** 聊天显示样式 JSON：{"preset":"theme","fontSize":"md"} */
   chatStyle: string | null;
@@ -200,6 +204,8 @@ export interface SearchResult {
   name: string;
   match_content: string;
   match_ts: number;
+  /** 命中消息的 msg_id —— 用于「跳到那一条」，见 useChatStore.locateMessageInConv。 */
+  match_msg_id: string;
 }
 
 // ---------------- Discovery 诊断（隐藏开发者面板用） ----------------

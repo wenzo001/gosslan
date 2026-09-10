@@ -116,10 +116,10 @@ function processAvatar(file: File): Promise<string> {
         title="更换头像"
         @click="avatarInput?.click()"
       >
-        <img v-if="avatar" :src="avatar" class="h-full w-full object-cover" />
+        <img alt="" v-if="avatar" :src="avatar" class="h-full w-full object-cover" />
         <span v-else class="text-2xl font-semibold">{{ avatarInitial(nickname) }}</span>
         <span
-          class="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 transition group-hover:opacity-100"
+          class="hover-reveal-op absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 transition group-hover:opacity-100"
         >
           <Camera class="h-5 w-5" />
         </span>

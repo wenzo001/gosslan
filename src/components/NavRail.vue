@@ -34,9 +34,10 @@ const pendingLabel = computed(() =>
         class="flex h-10 w-10 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white transition hover:opacity-90"
         :style="{ backgroundColor: nameToColor(app.device?.nickname ?? '') }"
         :title="app.online ? '我在线（局域网已连接）' : '离线（局域网未连接）'"
+        :aria-label="`我，${app.online ? '在线' : '离线'}，打开设置`"
         @click="emit('open-settings')"
       >
-        <img v-if="app.device?.avatar" :src="app.device.avatar" class="h-full w-full object-cover" />
+        <img alt="" v-if="app.device?.avatar" :src="app.device.avatar" class="h-full w-full object-cover" />
         <span v-else class="text-sm font-medium">{{ initials }}</span>
       </button>
       <!-- 本人在线状态点 -->
@@ -54,6 +55,7 @@ const pendingLabel = computed(() =>
           ? 'text-[var(--gosslan-rail-text-active)]'
           : 'text-[var(--gosslan-rail-text)] hover:bg-[var(--gosslan-rail-hover)]'"
         title="聊天"
+        :aria-label="chat.totalUnread > 0 ? `聊天，${chat.totalUnread} 条未读` : '聊天'"
         @click="emit('update:view', 'chats')"
       >
         <MessageCircle class="h-[22px] w-[22px]" :fill="view === 'chats' ? 'currentColor' : 'none'" :stroke-width="view === 'chats' ? 2 : 1.9" />
@@ -70,6 +72,7 @@ const pendingLabel = computed(() =>
           ? 'text-[var(--gosslan-rail-text-active)]'
           : 'text-[var(--gosslan-rail-text)] hover:bg-[var(--gosslan-rail-hover)]'"
         title="通讯录"
+        :aria-label="chat.pendingRequests.length ? `通讯录，${chat.pendingRequests.length} 条好友申请` : '通讯录'"
         @click="emit('update:view', 'contacts')"
       >
         <Users class="h-[22px] w-[22px]" :fill="view === 'contacts' ? 'currentColor' : 'none'" :stroke-width="view === 'contacts' ? 2 : 1.9" />
@@ -86,7 +89,7 @@ const pendingLabel = computed(() =>
     <div class="mt-auto flex flex-col items-center gap-2">
       <button
         class="flex h-10 w-10 items-center justify-center rounded-[var(--gosslan-radius-lg)] text-[var(--gosslan-rail-text)] transition hover:bg-[var(--gosslan-rail-hover)]"
-        :title="app.dark ? '浅色模式' : '深色模式'"
+        :title="app.dark ? '浅色模式' : '深色模式'" :aria-label="app.dark ? '浅色模式' : '深色模式'"
         @click="app.toggleDark()"
       >
         <Sun v-if="app.dark" class="h-[19px] w-[19px]" />
@@ -94,7 +97,7 @@ const pendingLabel = computed(() =>
       </button>
       <button
         class="flex h-10 w-10 items-center justify-center rounded-[var(--gosslan-radius-lg)] text-[var(--gosslan-rail-text)] transition hover:bg-[var(--gosslan-rail-hover)]"
-        title="设置"
+        title="设置" aria-label="设置"
         @click="emit('open-settings')"
       >
         <svg viewBox="0 0 24 24" class="h-[19px] w-[19px]" fill="none" stroke="currentColor" stroke-width="1.9">

@@ -559,6 +559,10 @@ pub struct Settings {
     pub theme_color: Option<String>,
     pub font_family: Option<String>,
     pub dark_mode: Option<bool>,
+    /// 外观模式："system" | "light" | "dark"。缺省视为 "system"（跟随系统）。
+    /// 与 `dark_mode` 的关系：`appearance_mode` 是**用户意图**，`dark_mode` 是**解析后的结果**
+    /// （跟随系统时由前端按系统偏好解析后回写），二者同时持久化，互不冲突。
+    pub appearance_mode: Option<String>,
     pub bind_ip: Option<String>,
     /// 聊天显示样式 JSON：{"preset":"classic","fontSize":"md","compact":true}
     pub chat_style: Option<String>,
@@ -569,15 +573,19 @@ pub struct Settings {
 
 /// e2ee_enabled 键保留在 reset 链中仅为清理 v0.10.0 及更早版本的残留值；
 /// v0.11.0 起 E2EE 恒开、不可关闭，该键不再被读写。
-const SETTINGS_KEYS: [&str; 7] = [
+const SETTINGS_KEYS: [&str; 8] = [
     "theme_color",
     "font_family",
     "dark_mode",
+    "appearance_mode",
     "bind_ip",
     "chat_style",
     "e2ee_enabled",
     "lan_enabled",
 ];
+
+/// appearance_mode 的合法取值：脏值一律忽略（宁可回落"跟随系统"，也不要写进库）。
+const APPEARANCE_MODES: [&str; 3] = ["system", "light", "dark"];
 
 #[tauri::command]
 pub fn get_settings(state: State<'_, Arc<AppState>>) -> Settings {
@@ -586,6 +594,7 @@ pub fn get_settings(state: State<'_, Arc<AppState>>) -> Settings {
         theme_color: db::get_setting(&dbc, "theme_color"),
         font_family: db::get_setting(&dbc, "font_family"),
         dark_mode: db::get_setting(&dbc, "dark_mode").map(|v| v == "1"),
+        appearance_mode: db::get_setting(&dbc, "appearance_mode"),
         bind_ip: db::get_setting(&dbc, "bind_ip"),
         chat_style: db::get_setting(&dbc, "chat_style"),
         peer_styles: db::get_setting(&dbc, "chat_peer_styles"),
@@ -603,6 +612,11 @@ pub fn save_settings(state: State<'_, Arc<AppState>>, settings: Settings) -> Res
     }
     if let Some(v) = settings.dark_mode {
         db::set_setting(&dbc, "dark_mode", if v { "1" } else { "0" }).map_err(|e| e.to_string())?;
+    }
+    if let Some(v) = settings.appearance_mode {
+        if APPEARANCE_MODES.contains(&v.as_str()) {
+            db::set_setting(&dbc, "appearance_mode", &v).map_err(|e| e.to_string())?;
+        }
     }
     if let Some(v) = settings.bind_ip {
         db::set_setting(&dbc, "bind_ip", &v).map_err(|e| e.to_string())?;
@@ -2874,6 +2888,7 @@ pub fn search_messages(
                 name,
                 match_content: m.content,
                 match_ts: m.ts,
+                match_msg_id: m.msg_id,
             });
         }
     }
@@ -2886,6 +2901,9 @@ pub struct SearchResult {
     name: String,
     match_content: String,
     match_ts: i64,
+    /// 命中消息的 msg_id：前端据此"跳到那一条"（只给 conv_id 的话，
+    /// 用户点进去还要自己在会话里翻，搜索就只完成了一半）。
+    match_msg_id: String,
 }
 
 fn preview(kind: &str, content: &str) -> String {

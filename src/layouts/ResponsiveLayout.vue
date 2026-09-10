@@ -57,7 +57,7 @@ async function acceptRequest(r: PendingRequest) {
     await chat.respondRequest(r.from, true);
     app.toast(`已同意 ${r.from_nickname} 的好友申请`, "success");
   } catch (e) {
-    app.toast(`操作失败：${e}`, "error");
+    app.toastError(e, "操作失败");
   }
 }
 async function rejectRequest(r: PendingRequest) {
@@ -65,7 +65,7 @@ async function rejectRequest(r: PendingRequest) {
     await chat.respondRequest(r.from, false);
     app.toast("已拒绝该好友申请", "info");
   } catch (e) {
-    app.toast(`操作失败：${e}`, "error");
+    app.toastError(e, "操作失败");
   }
 }
 
@@ -83,7 +83,7 @@ async function removeFriend(f: Friend) {
     await chat.removeFriend(f.device_id);
     app.toast(`已删除好友 ${f.nickname}（可在添加好友中重新添加）`, "info");
   } catch (e) {
-    app.toast(`删除失败：${e}`, "error");
+    app.toastError(e, "删除失败");
   }
 }
 
@@ -256,6 +256,15 @@ function onResizeEnd() {
           <MessageCircle class="h-16 w-16 opacity-25" />
           <div class="text-base">选择会话，开始局域网聊天</div>
           <div class="text-xs opacity-70">无服务器 · 纯 P2P · 端到端加密 · 数据仅存本机</div>
+          <!-- 空态要给**下一步**，不只陈述状态（HIG：empty state should guide）。
+               新用户最常卡在"怎么加人"，这里直接给入口，省得去找左上角的加号。 -->
+          <button
+            class="mt-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-4 py-2 text-sm font-medium text-white transition hover:bg-[var(--gosslan-primary-hover)]"
+            @click="addFriendOpen = true"
+          >
+            添加好友
+          </button>
+          <div class="text-xs opacity-70">好友与本机处于同一局域网时会被自动发现</div>
         </div>
       </div>
     </main>
@@ -314,17 +323,26 @@ function onResizeEnd() {
     <ShareDirectory :open="shareOpen" @close="shareOpen = false" />
 
     <!-- Toast：统一中性 HUD 底 + 白字（微信式，与主题色解耦；错误红保留语义）。
-         底色走 --gosslan-hud：亮色是深灰、暗色抬亮一档，两套主题下都是"浮在界面之上"的一层。 -->
-    <div class="pointer-events-none fixed left-1/2 top-4 z-[60] flex -translate-x-1/2 flex-col items-center gap-2">
+         底色走 --gosslan-hud：亮色是深灰、暗色抬亮一档，两套主题下都是"浮在界面之上"的一层。
+         ♿ role="status" + aria-live：toast 是**唯一的失败反馈通道**（发送失败/删除失败都靠它），
+         没有 live region 时读屏用户完全收不到 —— 等于失败被静默。polite 而非 assertive，
+         避免连续失败时打断朗读；每条 aria-atomic 让整句被完整播报而不是只读增量。
+         图标纯装饰，标 aria-hidden，否则读屏会念出图形名。 -->
+    <div
+      role="status"
+      aria-live="polite"
+      class="pointer-events-none fixed left-1/2 top-4 z-[60] flex -translate-x-1/2 flex-col items-center gap-2"
+    >
       <div
         v-for="t in app.toasts"
         :key="t.id"
+        aria-atomic="true"
         class="flex items-center gap-2 rounded-[var(--gosslan-radius-md)] px-4 py-2 text-sm text-white shadow-lg backdrop-blur-sm"
         :class="t.type === 'error' ? 'bg-[var(--gosslan-danger)]' : 'bg-[var(--gosslan-hud)]'"
       >
-        <CheckCircle2 v-if="t.type === 'success'" class="h-4 w-4 shrink-0" />
-        <XCircle v-else-if="t.type === 'error'" class="h-4 w-4 shrink-0" />
-        <Info v-else class="h-4 w-4 shrink-0" />
+        <CheckCircle2 v-if="t.type === 'success'" class="h-4 w-4 shrink-0" aria-hidden="true" />
+        <XCircle v-else-if="t.type === 'error'" class="h-4 w-4 shrink-0" aria-hidden="true" />
+        <Info v-else class="h-4 w-4 shrink-0" aria-hidden="true" />
         {{ t.text }}
       </div>
     </div>

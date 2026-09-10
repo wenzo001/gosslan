@@ -66,5 +66,10 @@ export function useConversationSearch(conversations: Ref<Conversation[]>) {
     return s;
   }
 
-  return { keyword, results, isSearching, filtered, snippet };
+  /** 命中消息的 msg_id —— 供"点进去直接跳到那一条"用；无命中返回 null。 */
+  function hitMsgId(convId: string): string | null {
+    return results.value.find((r) => r.conv_id === convId)?.match_msg_id ?? null;
+  }
+
+  return { keyword, results, isSearching, filtered, snippet, hitMsgId };
 }

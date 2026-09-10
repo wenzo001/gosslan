@@ -331,6 +331,53 @@ export const useChatStore = defineStore("chat", () => {
   /** 打开会话时的未读定位：记录第一条未读消息索引（-1 = 无未读，贴底显示）。 */
   const unreadJump = ref<{ convId: string; index: number } | null>(null);
 
+  /**
+   * 「跳到某条消息」请求（搜索结果点击时发起，由 ChatWindow 消费）。
+   * 与 unreadJump **分开**是刻意的：unreadJump 会画「以下是未读消息」分割线，
+   * 而"搜索定位"只是滚过去 + 高亮，语义不同，复用会画错东西。
+   */
+  const locateRequest = ref<{ convId: string; msgId: string } | null>(null);
+
+  function clearLocateRequest() {
+    locateRequest.value = null;
+  }
+
+  /**
+   * 打开会话并定位到指定消息（搜索结果点击）。
+   *
+   * 命中可能**早于已加载窗口**（默认只加载最近 100 条）→ 逐页往前找，
+   * 上限沿用 MAX_PAGES（与用户手动上翻一致，不会为一句话翻遍整库）。
+   *
+   * 返回三态而非布尔：翻页中途出错与"翻到顶也没找到"是**两回事**，
+   * 调用方要给不同的话（HIG：异步路径必须有终态，且不能说错原因）。
+   */
+  async function locateMessageInConv(
+    convId: string,
+    msgId: string,
+  ): Promise<"found" | "not-found" | "error"> {
+    await openConversation(convId);
+    // 用户明确说"我要看这条"，就不要再去跳未读分割线（两者会互相抢滚动位置）
+    unreadJump.value = null;
+    try {
+      for (let guard = 0; guard <= MAX_PAGES; guard++) {
+        const list = messages.value[convId] ?? [];
+        if (list.some((m) => m.msg_id === msgId)) {
+          locateRequest.value = { convId, msgId };
+          return "found";
+        }
+        const before = list.length;
+        await loadMoreMessages(convId);
+        // 长度没变 = 已翻到顶或已达页数上限 → 再循环无意义
+        if ((messages.value[convId]?.length ?? 0) === before) break;
+      }
+    } catch (e) {
+      // 不静默吞掉：留排查线索，并把"出错"这一态如实返回给调用方
+      console.warn("[gosslan] 定位搜索命中消息失败", e);
+      return "error";
+    }
+    return "not-found";
+  }
+
   async function openConversation(id: string) {
     activeConv.value = id;
     // 标记为最近使用，并在加载完成后收缩缓存（活跃会话始终保留）
@@ -958,6 +1005,9 @@ export const useChatStore = defineStore("chat", () => {
     activeConversation,
     totalUnread,
     unreadJump,
+    locateRequest,
+    clearLocateRequest,
+    locateMessageInConv,
     nicknameOf,
     init,
     refreshPeers,

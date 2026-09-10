@@ -72,7 +72,7 @@ async function saveImage() {
     await invoke("save_data_file", { base64Data: btoa(binary), destination });
     app.toast("图片已保存", "success");
   } catch (e) {
-    app.toast(`保存图片失败：${e}`, "error");
+    app.toastError(e, "保存图片失败");
   }
 }
 
@@ -170,8 +170,8 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
             保存
           </button>
           <button
-            class="flex h-9 w-9 items-center justify-center rounded-full text-white/85 transition hover:bg-white/15"
-            title="关闭 (Esc)"
+            class="tap-safe flex h-9 w-9 items-center justify-center rounded-full text-white/85 transition hover:bg-white/15"
+            title="关闭 (Esc)" aria-label="关闭 (Esc)"
             @click.stop="emit('close')"
           >
             <X class="h-5 w-5" />
@@ -182,7 +182,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
         <button
           v-if="hasMultiple"
           class="absolute left-4 top-1/2 z-10 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full bg-white/10 text-white/90 transition hover:bg-white/20"
-          title="上一张 (←)"
+          title="上一张 (←)" aria-label="上一张 (←)"
           @click.stop="go(-1)"
         >
           <ChevronLeft class="h-6 w-6" />
@@ -192,7 +192,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
         <button
           v-if="hasMultiple"
           class="absolute right-4 top-1/2 z-10 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full bg-white/10 text-white/90 transition hover:bg-white/20"
-          title="下一张 (→)"
+          title="下一张 (→)" aria-label="下一张 (→)"
           @click.stop="go(1)"
         >
           <ChevronRight class="h-6 w-6" />
@@ -200,7 +200,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
 
         <!-- 图片主体 -->
         <template v-if="src">
-          <img
+          <img :alt="current?.name || '图片预览'"
             :src="src"
             class="max-h-[85vh] max-w-[88vw] select-none rounded-[var(--gosslan-radius-lg)] shadow-2xl"
             :style="{

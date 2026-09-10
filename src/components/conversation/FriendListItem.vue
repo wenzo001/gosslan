@@ -48,12 +48,19 @@ onUnmounted(clearPress);
 </script>
 
 <template>
+  <!-- 键盘可达（HIG "Full Keyboard Access"）：role=button + tabindex，Enter/Space 打开资料页。
+       本行不是真 <button>，因为要挂 contextmenu / 长按等手势，用 div 更直接。 -->
   <div
+    role="button"
+    tabindex="0"
     class="relative flex h-[64px] cursor-pointer items-center gap-3 px-3 transition-colors"
     :class="active
       ? 'bg-[var(--gosslan-list-active)]'
       : 'hover:bg-[var(--gosslan-list-hover)]'"
+    :aria-label="`${friend.nickname}，${friend.online ? '在线' : '离线'}`"
     @click="emit('open', friend)"
+    @keydown.enter.prevent="emit('open', friend)"
+    @keydown.space.prevent="emit('open', friend)"
     @contextmenu="onContextMenu(friend, $event)"
     @touchstart.passive="onTouchStart(friend, $event)"
     @touchmove.passive="clearPress"
@@ -68,7 +75,7 @@ onUnmounted(clearPress);
         :class="!friend.online ? 'grayscale opacity-70' : ''"
         :style="{ backgroundColor: nameToColor(friend.nickname) }"
       >
-        <img v-if="friend.avatar" :src="friend.avatar" class="h-full w-full object-cover" />
+        <img alt="" v-if="friend.avatar" :src="friend.avatar" class="h-full w-full object-cover" />
         <span v-else class="text-sm font-medium">{{ initials(friend.nickname) }}</span>
       </div>
       <span

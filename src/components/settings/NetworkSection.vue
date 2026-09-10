@@ -49,7 +49,7 @@ async function toggleLan() {
       app.toast("局域网通道已开启，正在扫描节点…", "success");
       await chat.refreshPeers();
     } catch (e) {
-      app.toast(String(e), "error");
+      app.toastError(e, "切换局域网通道失败");
     }
   }
   await loadChannels();
@@ -70,7 +70,7 @@ async function onInterfaceChange() {
     }
     await chat.refreshPeers();
   } catch (e) {
-    app.toast(String(e), "error");
+    app.toastError(e, "切换网卡失败");
   }
   await loadChannels();
 }
@@ -81,7 +81,7 @@ async function toggleBluetooth() {
     await api.setChannelEnabled("bluetooth", !cur);
     app.toast(cur ? "蓝牙通道已关闭" : "蓝牙通道已开启", cur ? "info" : "success");
   } catch (e) {
-    app.toast(String(e), "error");
+    app.toastError(e, "切换蓝牙通道失败");
   }
   await loadChannels();
 }
@@ -97,7 +97,7 @@ async function toggleBluetooth() {
         <span class="text-xs" :class="app.online ? 'text-[var(--gosslan-success-ink)]' : 'text-[var(--gosslan-text-2)]'">
           {{ app.online ? `${lanStatus?.peers ?? 0} 个节点在线` : "未开启" }}
         </span>
-        <SettingsToggle :model-value="app.online" @update:model-value="toggleLan" />
+        <SettingsToggle label="局域网通道" :model-value="app.online" @update:model-value="toggleLan" />
       </div>
     </SettingsRow>
 
@@ -121,6 +121,7 @@ async function toggleBluetooth() {
           {{ btStatus?.available ? (btStatus.enabled ? "已开启" : "已关闭") : "暂不可用" }}
         </span>
         <SettingsToggle
+          label="蓝牙通道"
           :model-value="!!btStatus?.enabled"
           :disabled="!btStatus?.available"
           @update:model-value="toggleBluetooth"

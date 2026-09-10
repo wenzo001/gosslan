@@ -28,7 +28,7 @@ function initials(name: string) {
         <span>好友申请</span>
         <button
           class="flex items-center justify-center rounded-[var(--gosslan-radius-xs)] p-0.5 text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-          title="收起"
+          title="收起" aria-label="收起"
           @click="emit('close')"
         >
           <X class="h-3.5 w-3.5" />
@@ -39,7 +39,7 @@ function initials(name: string) {
           class="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
           :style="{ backgroundColor: nameToColor(r.from_nickname) }"
         >
-          <img v-if="r.from_avatar" :src="r.from_avatar" class="h-full w-full object-cover" />
+          <img alt="" v-if="r.from_avatar" :src="r.from_avatar" class="h-full w-full object-cover" />
           <span v-else class="text-sm font-semibold">{{ initials(r.from_nickname) }}</span>
         </div>
         <div class="min-w-0 flex-1">
@@ -47,15 +47,15 @@ function initials(name: string) {
           <div class="text-xs text-[var(--gosslan-text-2)]">请求添加你为好友</div>
         </div>
         <button
-          class="flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--gosslan-avatar-radius)] bg-primary text-white transition hover:bg-primary-hover"
-          title="同意"
+          class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--gosslan-avatar-radius)] bg-primary text-white transition hover:bg-primary-hover"
+          title="同意" aria-label="同意"
           @click="emit('accept', r)"
         >
           <Check class="h-4 w-4" />
         </button>
         <button
-          class="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-[var(--gosslan-border)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-          title="拒绝"
+          class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-[var(--gosslan-border)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+          title="拒绝" aria-label="拒绝"
           @click="emit('reject', r)"
         >
           <X class="h-4 w-4" />
@@ -69,7 +69,7 @@ function initials(name: string) {
       <span>暂无好友申请</span>
       <button
         class="flex items-center justify-center rounded-[var(--gosslan-radius-xs)] p-0.5 transition hover:bg-[var(--gosslan-hover)]"
-        title="收起"
+        title="收起" aria-label="收起"
         @click="emit('close')"
       >
         <X class="h-3.5 w-3.5" />

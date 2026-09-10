@@ -48,7 +48,7 @@ async function addMember(f: Friend) {
     await chat.addGroupMember(props.groupId, f.device_id);
     app.toast(`已将 ${f.nickname} 加入群聊`, "success");
   } catch (e) {
-    app.toast(String(e), "error");
+    app.toastError(e, "加入群聊失败");
   }
 }
 
@@ -59,7 +59,7 @@ async function removeMember(id: string) {
     await chat.removeGroupMember(props.groupId, id);
     app.toast(`已将 ${p.name} 移出群聊`, "success");
   } catch (e) {
-    app.toast(String(e), "error");
+    app.toastError(e, "移出群聊失败");
   }
 }
 
@@ -75,7 +75,7 @@ async function transferOwner(id: string) {
     await chat.transferGroupCreator(props.groupId, id);
     app.toast(`已将群主转让给 ${p.name}`, "success");
   } catch (e) {
-    app.toast(String(e), "error");
+    app.toastError(e, "转让群主失败");
   }
 }
 
@@ -92,7 +92,7 @@ async function leaveGroup() {
     app.toast("已退出群聊", "success");
     emit("close");
   } catch (e) {
-    app.toast(String(e), "error");
+    app.toastError(e, "退出群聊失败");
   }
 }
 </script>
@@ -113,7 +113,7 @@ async function leaveGroup() {
               :class="!memberProfile(id).online ? 'grayscale opacity-70' : ''"
               :style="{ backgroundColor: nameToColor(memberProfile(id).name) }"
             >
-              <img v-if="memberProfile(id).avatar" :src="memberProfile(id).avatar ?? undefined" class="h-full w-full object-cover" />
+              <img alt="" v-if="memberProfile(id).avatar" :src="memberProfile(id).avatar ?? undefined" class="h-full w-full object-cover" />
               <span v-else class="text-xs font-semibold">{{ initials(memberProfile(id).name) }}</span>
             </div>
             <span
@@ -134,16 +134,16 @@ async function leaveGroup() {
           <!-- 群主操作：转让群主 / 移除成员（不能操作自己/创建者本人） -->
           <button
             v-if="isOwner && id !== myId"
-            class="flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-warning-soft)] hover:text-[var(--gosslan-warning-ink)]"
-            :title="`把群主转让给 ${memberProfile(id).name}`"
+            class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-warning-soft)] hover:text-[var(--gosslan-warning-ink)]"
+            :title="`把群主转让给 ${memberProfile(id).name}`" :aria-label="`把群主转让给 ${memberProfile(id).name}`"
             @click="transferOwner(id)"
           >
             <ArrowRightLeft class="h-4 w-4" />
           </button>
           <button
             v-if="isOwner && id !== myId"
-            class="flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-danger-soft)] hover:text-[var(--gosslan-danger-ink)]"
-            :title="`将 ${memberProfile(id).name} 移出群聊`"
+            class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-danger-soft)] hover:text-[var(--gosslan-danger-ink)]"
+            :title="`将 ${memberProfile(id).name} 移出群聊`" :aria-label="`将 ${memberProfile(id).name} 移出群聊`"
             @click="removeMember(id)"
           >
             <UserMinus class="h-4 w-4" />
@@ -169,7 +169,7 @@ async function leaveGroup() {
             <span class="text-xs font-medium text-[var(--gosslan-text-2)]">选择好友加入</span>
             <button
               class="flex items-center justify-center rounded-[var(--gosslan-radius-xs)] p-1 text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-              title="收起"
+              title="收起" aria-label="收起"
               @click="showAdd = false"
             >
               <X class="h-3.5 w-3.5" />
@@ -186,7 +186,7 @@ async function leaveGroup() {
                 class="flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
                 :style="{ backgroundColor: nameToColor(f.nickname) }"
               >
-                <img v-if="f.avatar" :src="f.avatar" class="h-full w-full object-cover" />
+                <img alt="" v-if="f.avatar" :src="f.avatar" class="h-full w-full object-cover" />
                 <span v-else class="text-[11px] font-semibold">{{ initials(f.nickname) }}</span>
               </div>
               <span class="min-w-0 flex-1 truncate text-sm">{{ f.nickname }}</span>

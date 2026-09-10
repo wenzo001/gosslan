@@ -65,7 +65,7 @@ async function changeDownloadsDir() {
     downloadsDir.value = picked;
     app.toast("文件存储目录已更新", "success");
   } catch (e) {
-    app.toast(String(e), "error");
+    app.toastError(e, "修改存储目录失败");
   }
 }
 
@@ -73,7 +73,7 @@ async function openDownloadsDir() {
   try {
     await api.openDownloadsDir();
   } catch (e) {
-    app.toast(String(e), "error");
+    app.toastError(e, "打开目录失败");
   }
 }
 
@@ -126,7 +126,7 @@ async function exportChat() {
   try {
     destination = await saveDialog({ defaultPath: `gosslan-聊天记录-${stamp}.md` });
   } catch (e) {
-    app.toast(`无法打开保存对话框：${e}`, "error");
+    app.toastError(e, "无法打开保存对话框");
     return;
   }
   if (!destination) return; // 用户取消
@@ -138,7 +138,7 @@ async function exportChat() {
     const r = await api.exportChatText(destination, -now.getTimezoneOffset());
     app.toast(`已导出 ${r.conversations} 个会话、${r.messages} 条消息`, "success");
   } catch (e) {
-    app.toast(`导出失败：${e}`, "error");
+    app.toastError(e, "导出失败");
   } finally {
     exporting.value = false;
   }
@@ -156,7 +156,7 @@ async function cleanNow() {
       app.toast(`已清理 ${r.removed} 个图片/文件，释放 ${formatBytes(r.freed_bytes)}`, "success");
     }
   } catch (e) {
-    app.toast(String(e), "error");
+    app.toastError(e, "清理失败");
   } finally {
     cleaning.value = false;
     await loadCache();

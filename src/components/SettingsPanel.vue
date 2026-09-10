@@ -33,7 +33,7 @@ async function pickShareDir() {
       await app.setShareDir(picked);
       app.toast("共享目录已设置", "success");
     } catch (e) {
-      app.toast(String(e), "error");
+      app.toastError(e, "设置共享目录失败");
     }
   }
 }
@@ -45,29 +45,20 @@ async function restoreDefaults() {
   app.toast("已恢复默认设置", "success");
 }
 
-async function clearAllDataConfirm() {
-  const ok = window.confirm(
-    "确定要清除聊天数据吗？\n\n" +
-      "将删除（仅本机）：\n" +
-      "· 所有聊天消息和会话（含群聊）\n" +
-      "· 文件传输与群文件记录\n" +
-      "· 应用缓存\n" +
-      "· 退出所有群聊（群聊会从列表中移除）\n\n" +
-      "不会删除 / 不受影响：\n" +
-      "· 好友列表\n" +
-      "· 设备身份、加密密钥\n" +
-      "· 昵称、头像和所有设置\n" +
-      "· 其他设备上的聊天记录\n\n" +
-      "清除后收到的新消息将正常接收。",
-  );
-  if (!ok) return;
+/** 清除聊天数据：二次确认走**应用内弹窗**。
+ *  ⚠️ 原实现用 `window.confirm` —— 那是 WebView 的系统对话框，样式与 App 完全脱节，
+ *  在无边框窗口里尤其突兀；HIG 也要求破坏性操作使用与 App 一致的对话样式并讲清后果。 */
+const clearConfirmOpen = ref(false);
+
+async function doClearAllData() {
+  clearConfirmOpen.value = false;
   try {
     await chat.clearAllData();
     await chat.refreshFriends();
     await chat.refreshPending();
     app.toast("聊天数据已清除", "success");
   } catch (e) {
-    app.toast(`清除失败：${e}`, "error");
+    app.toastError(e, "清除失败");
   }
 }
 </script>
@@ -109,7 +100,7 @@ async function clearAllDataConfirm() {
         <div class="ml-4 h-px bg-[var(--gosslan-divider)]" />
         <button
           class="flex w-full items-center justify-center gap-2 px-4 py-3 text-sm text-[var(--gosslan-danger-ink)] transition hover:bg-[var(--gosslan-danger-soft)] dark:hover:bg-[var(--gosslan-danger-soft)]"
-          @click="clearAllDataConfirm"
+          @click="clearConfirmOpen = true"
         >
           <Trash2 class="h-4 w-4" />
           清除聊天数据
@@ -124,4 +115,35 @@ async function clearAllDataConfirm() {
 
   <!-- 开发者诊断面板（隐藏入口：连续点击设备指纹 7 次） -->
   <DevDiagPanel :open="devDiagOpen" @close="devDiagOpen = false" />
+
+  <!-- 清除聊天数据：破坏性操作，逐条讲清"删什么 / 不删什么"，再给红色确认键 -->
+  <BaseModal :open="clearConfirmOpen" title="清除聊天数据" @close="clearConfirmOpen = false">
+    <div class="space-y-3">
+      <p class="text-sm text-[var(--gosslan-text)]">将删除本机的以下内容，且<strong>无法撤销</strong>：</p>
+      <ul class="space-y-1 text-xs text-[var(--gosslan-text-2)]">
+        <li>· 所有聊天消息与会话（含群聊）</li>
+        <li>· 文件传输与群文件记录</li>
+        <li>· 应用缓存</li>
+        <li>· 退出所有群聊（群聊会从列表中移除）</li>
+      </ul>
+      <p class="text-sm text-[var(--gosslan-text)]">以下内容不受影响：</p>
+      <ul class="space-y-1 text-xs text-[var(--gosslan-text-2)]">
+        <li>· 好友列表</li>
+        <li>· 设备身份与加密密钥</li>
+        <li>· 昵称、头像与所有设置</li>
+        <li>· 其他设备上的聊天记录</li>
+      </ul>
+      <p class="text-xs text-[var(--gosslan-text-2)]">清除后收到的新消息仍会正常接收。</p>
+      <div class="flex justify-end gap-2 pt-2">
+        <button
+          class="rounded-[var(--gosslan-radius-md)] px-4 py-1.5 text-sm transition hover:bg-[var(--gosslan-hover)]"
+          @click="clearConfirmOpen = false"
+        >取消</button>
+        <button
+          class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-1.5 text-sm text-white transition hover:bg-[var(--gosslan-danger)]"
+          @click="doClearAllData"
+        >清除</button>
+      </div>
+    </div>
+  </BaseModal>
 </template>

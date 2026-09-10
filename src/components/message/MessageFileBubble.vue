@@ -200,8 +200,8 @@ const pct = computed(() => Math.round((props.progress ?? 0) * 100));
         </span>
         <button
           v-else
-          class="flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] transition hover:bg-black/10 dark:hover:bg-white/15"
-          title="下载文件"
+          class="tap-safe flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] transition hover:bg-black/10 dark:hover:bg-white/15"
+          title="下载文件" aria-label="下载文件"
           @click="emit('download')"
         >
           <Download class="h-3.5 w-3.5" />

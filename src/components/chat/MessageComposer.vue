@@ -488,7 +488,7 @@ function fileToDataUrl(f: File): Promise<string> {
         <span class="min-w-0 flex-1 truncate" :style="QUOTE_TEXT_STYLE">引用 {{ quote.sender }}：{{ quote.snippet }}</span>
         <button
           class="flex h-5 w-5 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-xs)] transition hover:bg-[var(--gosslan-hover)]"
-          title="取消引用"
+          title="取消引用" aria-label="取消引用"
           @click="emit('close-quote')"
         >
           <X class="h-3.5 w-3.5" />
@@ -514,7 +514,7 @@ function fileToDataUrl(f: File): Promise<string> {
           <button
             class="flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] transition"
             :class="emojiOpen ? 'text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
-            title="表情"
+            title="表情" aria-label="表情"
             @click.stop="toggleEmoji"
           >
             <Smile class="h-[18px] w-[18px]" />
@@ -526,7 +526,7 @@ function fileToDataUrl(f: File): Promise<string> {
         <button
           class="flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] transition"
           :class="codeMode ? 'text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
-          title="代码消息"
+          title="代码消息" aria-label="代码消息"
           @mousedown.prevent
           @click="codeMode = !codeMode"
         >
@@ -534,7 +534,7 @@ function fileToDataUrl(f: File): Promise<string> {
         </button>
         <button
           class="flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-          title="发送文件（自动选择最优路线）"
+          title="发送文件（自动选择最优路线）" aria-label="发送文件（自动选择最优路线）"
           @click="emit('attach')"
         >
           <FilePlus class="h-[18px] w-[18px]" />

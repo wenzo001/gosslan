@@ -62,7 +62,7 @@ const kindLabel = computed(
             class="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-sm text-white"
             :style="{ backgroundColor: nameToColor(c.name) }"
           >
-            <img v-if="c.avatar" :src="c.avatar" class="h-full w-full object-cover" />
+            <img alt="" v-if="c.avatar" :src="c.avatar" class="h-full w-full object-cover" />
             <span v-else>{{ avatarInitial(c.name) }}</span>
           </span>
           <span class="min-w-0 flex-1 truncate text-[13px] text-[var(--gosslan-text)]">{{ c.name }}</span>

@@ -7,15 +7,28 @@
     <script>
       // 首屏主题：必须在样式/脚本资源就位**之前**决定亮暗与主色，
       // 否则 WebView 会先按浅色渲染再切深色（用户看到"闪一下白"）。
-      // 键名与 useAppStore 里的 THEME_KEY / DARK_KEY 保持一致，改动请同步。
+      // 键名与 useAppStore 里的 APPEARANCE_KEY / THEME_KEY / LEGACY_DARK_KEY 保持一致，改动请同步。
+      //
+      // 外观三态：显式 light / dark 直接生效；"system"（或旧数据）跟随系统偏好。
+      // ⚠️ 这段逻辑必须与 useAppStore 的 readLocalAppearance() + dark computed 完全一致，
+      //    否则首帧骨架与真界面会呈现不同外观（启动瞬间闪一下）。
       (function () {
         try {
           var el = document.documentElement;
-          if (localStorage.getItem("gosslan.dark") === "1") el.classList.add("dark");
+          var mode = localStorage.getItem("gosslan.appearance");
+          if (mode !== "system" && mode !== "light" && mode !== "dark") {
+            // 旧版本只存了 gosslan.dark 布尔值：迁移为显式模式（不静默丢弃用户偏好）
+            var legacy = localStorage.getItem("gosslan.dark");
+            mode = legacy === "1" ? "dark" : legacy === "0" ? "light" : "system";
+          }
+          var wantDark =
+            mode === "dark" ||
+            (mode === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
+          if (wantDark) el.classList.add("dark");
           var c = localStorage.getItem("gosslan.themeColor");
           if (c) el.style.setProperty("--gosslan-primary", c);
         } catch (e) {
-          /* localStorage 不可用（隐私模式等）→ 按浅色渲染即可，不影响后续 */
+          /* localStorage / matchMedia 不可用（隐私模式等）→ 按浅色渲染即可，不影响后续 */
         }
       })();
     </script>
