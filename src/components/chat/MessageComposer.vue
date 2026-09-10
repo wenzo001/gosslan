@@ -267,10 +267,20 @@ function deleteMentionBeforeCaret(): boolean {
   return true;
 }
 
-/** input 统一入口：投影 hasDraft、规范化空壳、非组合输入时更新 @ 触发态。 */
-function onInput(e: Event) {
+/**
+ * 把「输入框里有没有内容」投影成响应式 `hasDraft`（模板只读它，避免每次渲染都读 innerText）。
+ *
+ * ⚠️ 程序化改动内容后**必须**手动调它：浏览器的 `input` 事件只在用户输入时触发，
+ * 我们直接改 DOM（如插入表情 token）不会触发 → 不调它就会出现「只有表情时发送键点不动」。
+ */
+function syncDraftState() {
   const el = editorRef.value;
   hasDraft.value = (el?.innerText.trim().length ?? 0) > 0;
+}
+
+/** input 统一入口：投影 hasDraft、规范化空壳、非组合输入时更新 @ 触发态。 */
+function onInput(e: Event) {
+  syncDraftState();
   normalizeEmpty();
   if (!(e as InputEvent).isComposing) updateMentionState();
 }
@@ -355,6 +365,8 @@ function insertEmoji(e: string) {
     el.appendChild(document.createTextNode(e));
     if (!app.isMobile) focusEditor();
   }
+  // 直接改 DOM 不会触发 input 事件 → 必须手动同步，否则「只有表情时发送键是灰的」
+  syncDraftState();
   autoResize();
 }
 
