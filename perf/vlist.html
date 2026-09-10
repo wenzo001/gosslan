@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>VirtualList 压测（5 万 / 10 万条）</title>
+    <style>
+      html, body { height: 100%; margin: 0; background: #fafafa; font-family: -apple-system, "PingFang SC", sans-serif; }
+      #perf-root { height: 100vh; display: flex; flex-direction: column; }
+      #perf-head { flex: none; padding: 6px 12px; font: 12px/18px ui-monospace, monospace; background: #e2e8f0; }
+      #perf-scroll { flex: 1; min-height: 0; }
+      .pl-row { display: flex; gap: 8px; padding: 6px 16px; }
+      .pl-ava { width: 36px; height: 36px; flex: none; border-radius: 6px; background: #7c6bd6; color: #fff;
+                display: flex; align-items: center; justify-content: center; font-size: 15px; }
+      .pl-col { min-width: 0; max-width: 72%; display: flex; flex-direction: column; align-items: flex-start; }
+      .pl-name { font-size: 11px; line-height: 11px; margin-bottom: 7px; padding: 0 4px; color: #64748b; }
+      .pl-bubble { background: #eeeef0; border-radius: 6px; padding: 8px 12px; font-size: 14px;
+                   line-height: 1.625; color: #0f172a; white-space: pre-wrap; word-break: break-word; }
+    </style>
+  </head>
+  <body>
+    <div id="perf-root">
+      <div id="perf-head">VirtualList 压测</div>
+      <div id="perf-scroll"></div>
+    </div>
+    <script type="module" src="/perf/vlist.ts"></script>
+  </body>
+</html>
