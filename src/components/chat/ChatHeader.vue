@@ -36,9 +36,6 @@ const emit = defineEmits<{
         <ArrowLeft class="h-5 w-5" />
       </button>
       <span class="truncate text-[15px] font-medium leading-6">{{ conv?.name || "会话" }}<template v-if="isGroup && memberCount > 0"> ({{ memberCount }})</template></span>
-      <span v-if="isGroup" class="ml-0.5 shrink-0 text-[var(--gosslan-text-2)]">
-        <Users class="h-[15px] w-[15px]" />
-      </span>
     </div>
     <div class="flex shrink-0 items-center gap-0.5">
       <!-- 只保留有真实功能的入口；不放没有实现的功能按钮（音视频通话/更多已移除） -->
