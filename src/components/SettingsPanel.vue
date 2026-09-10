@@ -7,6 +7,7 @@ import BaseModal from "@/components/BaseModal.vue";
 import DevDiagPanel from "@/components/DevDiagPanel.vue";
 import SettingsGroup from "@/components/settings/SettingsGroup.vue";
 import SettingsRow from "@/components/settings/SettingsRow.vue";
+import SettingsToggle from "@/components/settings/SettingsToggle.vue";
 import ProfileSection from "@/components/settings/ProfileSection.vue";
 import AppearanceSection from "@/components/settings/AppearanceSection.vue";
 import ChatStyleSection from "@/components/settings/ChatStyleSection.vue";
@@ -70,6 +71,32 @@ async function doClearAllData() {
       <AppearanceSection />
       <ChatStyleSection />
       <NetworkSection :active="open" :reload-token="reloadToken" />
+
+      <!-- 通知 -->
+      <SettingsGroup
+        title="通知"
+        footer="应用在后台、或正在看别的会话时，用系统通知提醒新消息"
+      >
+        <SettingsRow label="桌面通知" description="关闭后不再收到任何新消息通知">
+          <SettingsToggle
+            label="桌面通知"
+            :model-value="app.notifyEnabled"
+            @update:model-value="app.setNotifyEnabled"
+          />
+        </SettingsRow>
+        <SettingsRow
+          label="通知显示消息内容"
+          description="关闭后只提示「收到新消息」，锁屏与通知中心不显示正文"
+          last
+        >
+          <SettingsToggle
+            label="通知显示消息内容"
+            :model-value="app.notifyShowContent"
+            :disabled="!app.notifyEnabled"
+            @update:model-value="app.setNotifyShowContent"
+          />
+        </SettingsRow>
+      </SettingsGroup>
 
       <!-- 共享目录 -->
       <SettingsGroup title="共享目录" footer="允许好友浏览并下载你共享的文件夹内容">

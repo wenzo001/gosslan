@@ -563,6 +563,10 @@ pub struct Settings {
     /// 与 `dark_mode` 的关系：`appearance_mode` 是**用户意图**，`dark_mode` 是**解析后的结果**
     /// （跟随系统时由前端按系统偏好解析后回写），二者同时持久化，互不冲突。
     pub appearance_mode: Option<String>,
+    /// 桌面通知开关（缺省视为开启——否则用户会漏消息且不知道有开关）。
+    pub notify_enabled: Option<bool>,
+    /// 通知是否显示消息正文（隐私：关掉后只显示"收到新消息"，锁屏/通知中心不泄内容）。
+    pub notify_show_content: Option<bool>,
     pub bind_ip: Option<String>,
     /// 聊天显示样式 JSON：{"preset":"classic","fontSize":"md","compact":true}
     pub chat_style: Option<String>,
@@ -573,11 +577,13 @@ pub struct Settings {
 
 /// e2ee_enabled 键保留在 reset 链中仅为清理 v0.10.0 及更早版本的残留值；
 /// v0.11.0 起 E2EE 恒开、不可关闭，该键不再被读写。
-const SETTINGS_KEYS: [&str; 8] = [
+const SETTINGS_KEYS: [&str; 10] = [
     "theme_color",
     "font_family",
     "dark_mode",
     "appearance_mode",
+    "notify_enabled",
+    "notify_show_content",
     "bind_ip",
     "chat_style",
     "e2ee_enabled",
@@ -595,6 +601,9 @@ pub fn get_settings(state: State<'_, Arc<AppState>>) -> Settings {
         font_family: db::get_setting(&dbc, "font_family"),
         dark_mode: db::get_setting(&dbc, "dark_mode").map(|v| v == "1"),
         appearance_mode: db::get_setting(&dbc, "appearance_mode"),
+        // 通知默认开启、默认显示正文：缺省时按 `Some(true)`，旧记录与未设置都能有合理行为。
+        notify_enabled: db::get_setting(&dbc, "notify_enabled").map(|v| v != "0").or(Some(true)),
+        notify_show_content: db::get_setting(&dbc, "notify_show_content").map(|v| v != "0").or(Some(true)),
         bind_ip: db::get_setting(&dbc, "bind_ip"),
         chat_style: db::get_setting(&dbc, "chat_style"),
         peer_styles: db::get_setting(&dbc, "chat_peer_styles"),
@@ -617,6 +626,12 @@ pub fn save_settings(state: State<'_, Arc<AppState>>, settings: Settings) -> Res
         if APPEARANCE_MODES.contains(&v.as_str()) {
             db::set_setting(&dbc, "appearance_mode", &v).map_err(|e| e.to_string())?;
         }
+    }
+    if let Some(v) = settings.notify_enabled {
+        db::set_setting(&dbc, "notify_enabled", if v { "1" } else { "0" }).map_err(|e| e.to_string())?;
+    }
+    if let Some(v) = settings.notify_show_content {
+        db::set_setting(&dbc, "notify_show_content", if v { "1" } else { "0" }).map_err(|e| e.to_string())?;
     }
     if let Some(v) = settings.bind_ip {
         db::set_setting(&dbc, "bind_ip", &v).map_err(|e| e.to_string())?;
@@ -1539,6 +1554,33 @@ pub fn window_is_maximized(app: tauri::AppHandle) -> bool {
     app.get_webview_window("main")
         .and_then(|w| w.is_maximized().ok())
         .unwrap_or(false)
+}
+
+/// 切换窗口全屏，返回切换后的状态。
+/// 用于 macOS 绿灯的 option-click（HIG：缩放按钮按住 Option 即进入/退出全屏）。
+#[cfg(desktop)]
+#[tauri::command]
+pub fn window_toggle_fullscreen(app: tauri::AppHandle) -> bool {
+    let Some(w) = app.get_webview_window("main") else {
+        return false;
+    };
+    match w.is_fullscreen() {
+        Ok(true) => {
+            let _ = w.set_fullscreen(false);
+            false
+        }
+        _ => {
+            let _ = w.set_fullscreen(true);
+            true
+        }
+    }
+}
+
+/// 移动端无"全屏"概念（窗口本就铺满屏幕），返回 false。
+#[cfg(mobile)]
+#[tauri::command]
+pub fn window_toggle_fullscreen(_app: tauri::AppHandle) -> bool {
+    false
 }
 
 #[tauri::command]

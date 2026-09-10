@@ -164,6 +164,10 @@ export interface AppSettings {
    *  `darkMode` 是**解析后的结果**（跟随系统时由前端按系统偏好解析后回写），
    *  本字段才是**用户意图**。旧记录没有该字段 → 视为 "system"。 */
   appearanceMode: string | null;
+  /** 桌面通知开关（null 视为开启）。 */
+  notifyEnabled: boolean | null;
+  /** 通知是否显示消息正文（null 视为显示；关掉后只提示"收到新消息"，保护锁屏隐私）。 */
+  notifyShowContent: boolean | null;
   bindIp: string | null;
   /** 聊天显示样式 JSON：{"preset":"theme","fontSize":"md"} */
   chatStyle: string | null;

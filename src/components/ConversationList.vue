@@ -8,6 +8,7 @@ import ConversationListItem from "@/components/conversation/ConversationListItem
 import FriendListItem from "@/components/conversation/FriendListItem.vue";
 import FriendContextMenu from "@/components/conversation/FriendContextMenu.vue";
 import BaseModal from "@/components/BaseModal.vue";
+import { APP_ACTION } from "@/api";
 import { Plus, Search, UserPlus, UsersRound } from "lucide-vue-next";
 import type { Conversation, Friend } from "@/types";
 
@@ -70,6 +71,15 @@ function onDocClickForPlus() {
 }
 onMounted(() => document.addEventListener("click", onDocClickForPlus));
 onUnmounted(() => document.removeEventListener("click", onDocClickForPlus));
+
+// 聚焦搜索框（⌘F / Ctrl+F 与 macOS 菜单「会话 → 搜索」共用同一动作）
+const searchInput = ref<HTMLInputElement | null>(null);
+function focusSearch() {
+  searchInput.value?.focus();
+  searchInput.value?.select();
+}
+onMounted(() => window.addEventListener(APP_ACTION.focusSearch, focusSearch));
+onUnmounted(() => window.removeEventListener(APP_ACTION.focusSearch, focusSearch));
 
 /** 对端在线状态：群聊返回 null（无在线概念）；单聊查好友表。 */
 function isOnline(id: string): boolean | null {
@@ -193,6 +203,7 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
       >
         <Search class="h-4 w-4 shrink-0 text-[var(--gosslan-text-2)]" />
         <input
+          ref="searchInput"
           v-model="keyword"
           maxlength="100"
           class="w-full bg-transparent text-[13px] outline-none placeholder:text-[var(--gosslan-text-2)]"

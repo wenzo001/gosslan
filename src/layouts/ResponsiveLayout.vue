@@ -2,6 +2,9 @@
 import { ref, onMounted, onUnmounted, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
+import { APP_ACTION, bindMenuEvents } from "@/api";
+import { useShortcuts } from "@/composables/useShortcuts";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 import NavRail from "@/components/NavRail.vue";
 import TitleBar from "@/components/TitleBar.vue";
 import ConversationList from "@/components/ConversationList.vue";
@@ -126,8 +129,31 @@ function onNavigateToContacts() {
   view.value = "contacts";
   if (app.isMobile) app.mobileView = "list";
 }
-onMounted(() => window.addEventListener("navigate-to-contacts", onNavigateToContacts));
-onUnmounted(() => window.removeEventListener("navigate-to-contacts", onNavigateToContacts));
+
+// ---------------- 应用级动作：原生菜单与键盘快捷键共用 ----------------
+// macOS 的菜单栏（src-tauri/src/menu.rs）与下面的快捷键都只"发出意图"，
+// 真正的动作在这里执行 —— 保证两条路径行为完全一致。
+function onAddFriendAction() {
+  addFriendOpen.value = true;
+  if (app.isMobile) app.mobileView = "list";
+}
+useShortcuts();
+
+let unlistenMenu: UnlistenFn[] | null = null;
+
+onMounted(() => {
+  window.addEventListener("navigate-to-contacts", onNavigateToContacts);
+  window.addEventListener(APP_ACTION.openSettings, openSettings);
+  window.addEventListener(APP_ACTION.addFriend, onAddFriendAction);
+  // 原生菜单（仅 macOS）；非 macOS 平台该 Promise 仍会 resolve，只是收不到事件
+  void bindMenuEvents().then((fns) => (unlistenMenu = fns));
+});
+onUnmounted(() => {
+  window.removeEventListener("navigate-to-contacts", onNavigateToContacts);
+  window.removeEventListener(APP_ACTION.openSettings, openSettings);
+  window.removeEventListener(APP_ACTION.addFriend, onAddFriendAction);
+  unlistenMenu?.forEach((fn) => fn());
+});
 
 // ---------------- 桌面端：列表栏宽度拖拽（rail 64px 固定，列表 200~420px，持久化） ----------------
 const RAIL_W = 64;

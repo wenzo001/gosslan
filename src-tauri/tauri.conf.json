@@ -39,6 +39,15 @@
     "category": "SocialNetworking",
     "shortDescription": "无服务器 P2P 局域网即时通讯",
     "longDescription": "Gosslan 是一款无中央服务器的 P2P 局域网即时通讯工具，支持设备发现、好友、群聊、文件传输与共享目录。",
+    "resources": [
+      "PrivacyInfo.xcprivacy"
+    ],
+    "macOS": {
+      "entitlements": "entitlements.plist"
+    },
+    "iOS": {
+      "infoPlist": "Info.plist"
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

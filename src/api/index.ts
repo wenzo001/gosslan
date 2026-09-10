@@ -82,6 +82,7 @@ export const api = {
   windowMinimize: () => invoke<void>("window_minimize"),
   windowToggleMaximize: () => invoke<boolean>("window_toggle_maximize"),
   windowIsMaximized: () => invoke<boolean>("window_is_maximized"),
+  windowToggleFullscreen: () => invoke<boolean>("window_toggle_fullscreen"),
   windowClose: () => invoke<void>("window_close"),
 
   sendFile: (friendId: string, path: string) => invoke<string>("send_file", { friendId, path }),
@@ -189,4 +190,24 @@ export async function bindEvents(h: EventHandlers): Promise<UnlistenFn[]> {
     listen<string>("group-member-removed", (e) => h.onGroupMemberRemoved(e.payload)),
   ]);
   return unlisteners;
+}
+
+// ---------------- 应用级动作（原生菜单 ↔ 键盘快捷键） ----------------
+// 动作名与 emitAction 抽到 utils/appActions.ts：useShortcuts / shortcuts 这类纯逻辑也要用，
+// 而纯逻辑会被 node:test 直接 import（Node 无法解析 @/ 别名）。这里继续 re-export，
+// 保证既有的 `import { APP_ACTION } from "@/api"` 调用处无需改动。
+import { APP_ACTION, emitAction } from "../utils/appActions";
+export { APP_ACTION, emitAction };
+
+/**
+ * 监听 macOS 原生菜单栏的自定义项 → 转成应用级动作。
+ * 菜单只在 macOS 建立（见 src-tauri/src/menu.rs），非 macOS 平台 listen 静默无事件。
+ */
+export async function bindMenuEvents(): Promise<UnlistenFn[]> {
+  const to = (action: string) => () => emitAction(action);
+  return Promise.all([
+    listen("menu://settings", to(APP_ACTION.openSettings)),
+    listen("menu://add-friend", to(APP_ACTION.addFriend)),
+    listen("menu://search", to(APP_ACTION.focusSearch)),
+  ]);
 }

@@ -17,6 +17,10 @@ mod storage;
 mod transport;
 #[cfg(desktop)]
 mod tray;
+/// macOS 原生菜单栏（自绘标题栏 + `decorations: false` 导致系统菜单栏缺失，需补回）。
+/// 只在 macOS 建：Windows / Linux 用自绘标题栏，加系统菜单条会顶在标题栏之上破坏布局。
+#[cfg(target_os = "macos")]
+mod menu;
 
 use tauri::Manager;
 
@@ -34,6 +38,13 @@ pub fn run() {
             // 系统托盘：关闭主窗口仅隐藏到托盘，退出需走托盘菜单
             #[cfg(desktop)]
             tray::setup(app.handle())?;
+            // macOS 菜单栏：⌘Q / ⌘, / ⌘W / ⌘M 与标准「编辑」项。
+            // 属"锦上添花"——初始化失败**不阻断启动**（与托盘不同：托盘失败会改行为，
+            // 菜单失败只是没有菜单，快捷键还有前端兜底）。
+            #[cfg(target_os = "macos")]
+            if let Err(e) = menu::setup(app.handle()) {
+                eprintln!("[gosslan] 菜单栏初始化失败（不影响启动）：{e}");
+            }
             // macOS：`decorations: false` 使 tao 以 `Borderless`（不含 `Closable` 位）样式
             // 掩码创建 NSWindow，AppKit 据此把「关闭窗口」菜单项（Cmd+W / performClose:）
             // 判为不可用，导致 Cmd+W 无效。窗口创建后补回 `Closable` 位，恢复系统原生
@@ -139,6 +150,7 @@ pub fn run() {
             commands::window_minimize,
             commands::window_toggle_maximize,
             commands::window_is_maximized,
+            commands::window_toggle_fullscreen,
             commands::window_close,
             commands::send_group_message,
             commands::send_group_file,

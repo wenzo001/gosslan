@@ -13,10 +13,9 @@ import {
   syncProfileFromPeers,
 } from "@/utils/messages";
 import { useAppStore } from "@/stores/useAppStore";
+import { notificationBody } from "@/utils/notifications";
 import {
-  isPermissionGranted,
   onAction,
-  requestPermission,
   sendNotification,
 } from "@tauri-apps/plugin-notification";
 import type {
@@ -62,16 +61,8 @@ export const useChatStore = defineStore("chat", () => {
 
   // ---------------- 系统通知（后台 / 非当前会话才触发） ----------------
   const app = useAppStore();
-  let notifyPermission = false;
   let notifSeq = 1;
   const notifMap = new Map<number, string>();
-
-  async function ensureNotifyPermission() {
-    if (notifyPermission) return;
-    let granted = await isPermissionGranted();
-    if (!granted) granted = (await requestPermission()) === "granted";
-    notifyPermission = granted;
-  }
 
   function nicknameOf(id: string): string {
     const f = friends.value.find((x) => x.device_id === id);
@@ -109,13 +100,15 @@ export const useChatStore = defineStore("chat", () => {
   function flushNotifications() {
     const entries = [...notifyQueue.values()];
     notifyQueue.clear();
-    void ensureNotifyPermission().then(() => {
-      if (!notifyPermission) return;
+    // 用户关了通知 → 一条都不发；权限在这条之后才去查（关着就不该弹权限）
+    if (!app.notifyEnabled || entries.length === 0) return;
+    void app.ensureNotifyPermission().then((granted) => {
+      if (!granted) return;
       for (const { count, last } of entries) {
         // 窗口期间用户已切到该会话且前台 → 该会话跳过通知
         if (document.hasFocus() && activeConv.value === last.conv_id) continue;
         const title = nicknameOf(last.sender_id);
-        const body = count > 1 ? `${title} 等 ${count} 条新消息` : previewText(last);
+        const body = notifyBody(count, last);
         const convId = last.conv_id;
         if (app.isMobile) {
           // 移动端：plugin 通知（Android 有 actionPerformed 点击事件桥）
@@ -161,7 +154,22 @@ export const useChatStore = defineStore("chat", () => {
     });
   }
 
+  /**
+   * 通知正文：按「显示消息内容」隐私开关决定是否带正文。
+   * 关掉时只提示"收到新消息"（锁屏 / 通知中心不泄内容），标题仍保留发送者昵称。
+   * 拼装逻辑在 utils/notifications.ts（纯函数、有单测），这里只喂入实时数据。
+   */
+  function notifyBody(count: number, last: MessageRecord): string {
+    return notificationBody({
+      showContent: app.notifyShowContent,
+      count,
+      sender: nicknameOf(last.sender_id),
+      preview: previewText(last),
+    });
+  }
+
   function maybeNotify(rec: MessageRecord) {
+    if (!app.notifyEnabled) return;
     const myId = app.device?.device_id;
     if (!myId || rec.sender_id === myId) return;
     // 应用在前台且正查看该会话 → 不通知（不进队列）

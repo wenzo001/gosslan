@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 import { api } from "@/api";
+import { isPermissionGranted, requestPermission } from "@tauri-apps/plugin-notification";
 import { applyTheme } from "@/utils/color";
 import { reportError } from "@/utils/errors";
 import {
@@ -65,6 +66,45 @@ export const useAppStore = defineStore("app", () => {
   const chatStyle = ref<ChatStyleConfig>(loadLocalChatStyle());
   /** 对端样式表（device_id -> 样式 JSON）：按「发送者自己的偏好」渲染其消息气泡。 */
   const peerStyles = ref<Record<string, string>>({});
+
+  // ---------------- 通知偏好 ----------------
+  /** 桌面通知开关（后端持久化；默认开）。 */
+  const notifyEnabled = ref<boolean>(true);
+  /** 通知是否显示消息正文（隐私开关；默认显示）。 */
+  const notifyShowContent = ref<boolean>(true);
+  /** 权限缓存：已申请过且通过就不再弹（isPermissionGranted 每次重新查，这里只做短路）。 */
+  let notifyPermission = false;
+
+  /** 显式请求通知权限（供设置页开关在**用户动作上下文**里调用，符合 HIG）。 */
+  async function ensureNotifyPermission(): Promise<boolean> {
+    if (notifyPermission) return true;
+    let granted = await isPermissionGranted();
+    if (!granted) granted = (await requestPermission()) === "granted";
+    notifyPermission = granted;
+    return granted;
+  }
+
+  /**
+   * 打开/关闭桌面通知。
+   * 打开时先请求权限（在用户点开关这个上下文里，而不是等某条消息到达时才弹）；
+   * 被拒绝则保持关闭并明确告知，不写脏状态。
+   */
+  async function setNotifyEnabled(v: boolean) {
+    if (v) {
+      const ok = await ensureNotifyPermission();
+      if (!ok) {
+        toast("通知权限未授予，请在系统设置中允许", "error");
+        return;
+      }
+    }
+    notifyEnabled.value = v;
+    void persistSettings();
+  }
+
+  function setNotifyShowContent(v: boolean) {
+    notifyShowContent.value = v;
+    void persistSettings();
+  }
 
   // 轻量 toast
   interface Toast {
@@ -134,6 +174,8 @@ export const useAppStore = defineStore("app", () => {
         // appearanceMode = 用户的**意图**，重启后据此恢复。
         darkMode: dark.value,
         appearanceMode: appearance.value,
+        notifyEnabled: notifyEnabled.value,
+        notifyShowContent: notifyShowContent.value,
         bindIp: boundIp.value ?? preferredIp.value,
         chatStyle: JSON.stringify(chatStyle.value),
         peerStyles: null, // 对端样式表由后端维护，前端只读
@@ -231,6 +273,9 @@ export const useAppStore = defineStore("app", () => {
       appearance.value = s.darkMode ? "dark" : "light";
       localStorage.setItem(APPEARANCE_STORAGE_KEY, appearance.value);
     }
+    // 通知偏好（null = 未设置，按默认 true 处理）
+    if (s.notifyEnabled != null) notifyEnabled.value = s.notifyEnabled;
+    if (s.notifyShowContent != null) notifyShowContent.value = s.notifyShowContent;
     preferredIp.value = s.bindIp;
     if (s.chatStyle) chatStyle.value = parsePeerStyle(s.chatStyle);
     if (s.peerStyles) {
@@ -279,6 +324,8 @@ export const useAppStore = defineStore("app", () => {
     themeColor.value = "#3b82f6";
     fontFamily.value = "";
     appearance.value = "system";
+    notifyEnabled.value = true;
+    notifyShowContent.value = true;
     preferredIp.value = null;
     boundIp.value = null;
     chatStyle.value = { ...DEFAULT_CHAT_STYLE };
@@ -333,6 +380,11 @@ export const useAppStore = defineStore("app", () => {
     /** 外观模式（用户意图）：system | light | dark */
     appearance,
     setAppearance,
+    notifyEnabled,
+    notifyShowContent,
+    setNotifyEnabled,
+    setNotifyShowContent,
+    ensureNotifyPermission,
     themeColor,
     fontFamily,
     chatStyle,

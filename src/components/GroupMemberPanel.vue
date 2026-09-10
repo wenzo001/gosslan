@@ -19,6 +19,12 @@ const group = computed(() => chat.groups.find((g) => g.id === props.groupId) ?? 
 const isOwner = computed(() => !!group.value && group.value.creator === myId.value);
 /** 展示「添加成员」面板 */
 const showAdd = ref(false);
+/** 待确认的破坏性操作（转让群主 / 退出群聊）。null = 无弹窗。 */
+const pendingConfirm = ref<
+  | null
+  | { kind: "transfer"; targetId: string; name: string }
+  | { kind: "leave"; name: string }
+>(null);
 
 watch(
   () => props.open,
@@ -64,35 +70,39 @@ async function removeMember(id: string) {
 }
 
 /** 转让群主（仅当前群主）：把管理权交给指定成员，避免换机后群无法管理。 */
-async function transferOwner(id: string) {
+function transferOwner(id: string) {
   if (!props.groupId) return;
   const p = memberProfile(id);
-  const ok = window.confirm(
-    `确定把群主转让给 ${p.name} 吗？\n\n转让后你将失去改名、添加与移除成员的权限。`,
-  );
-  if (!ok) return;
-  try {
-    await chat.transferGroupCreator(props.groupId, id);
-    app.toast(`已将群主转让给 ${p.name}`, "success");
-  } catch (e) {
-    app.toastError(e, "转让群主失败");
-  }
+  pendingConfirm.value = { kind: "transfer", targetId: id, name: p.name };
 }
 
 /** 退出群聊（群主须先转让，后端会拒绝并给出提示）。 */
-async function leaveGroup() {
+function leaveGroup() {
   if (!props.groupId) return;
   const name = group.value?.name ?? "该群聊";
-  const ok = window.confirm(
-    `确定退出「${name}」吗？\n\n本机将删除该群的聊天记录，需要重新被拉入才能恢复。`,
-  );
-  if (!ok) return;
-  try {
-    await chat.leaveGroup(props.groupId);
-    app.toast("已退出群聊", "success");
-    emit("close");
-  } catch (e) {
-    app.toastError(e, "退出群聊失败");
+  pendingConfirm.value = { kind: "leave", name };
+}
+
+/** 确认弹窗的「确定」：按类型执行真实的破坏性操作。 */
+async function confirmAction() {
+  const a = pendingConfirm.value;
+  if (!a || !props.groupId) return;
+  pendingConfirm.value = null;
+  if (a.kind === "transfer") {
+    try {
+      await chat.transferGroupCreator(props.groupId, a.targetId);
+      app.toast(`已将群主转让给 ${a.name}`, "success");
+    } catch (e) {
+      app.toastError(e, "转让群主失败");
+    }
+  } else {
+    try {
+      await chat.leaveGroup(props.groupId);
+      app.toast("已退出群聊", "success");
+      emit("close");
+    } catch (e) {
+      app.toastError(e, "退出群聊失败");
+    }
   }
 }
 </script>
@@ -215,5 +225,37 @@ async function leaveGroup() {
         群主如需退出群聊，请先把群主转让给其他成员。
       </p>
     </div>
+  </BaseModal>
+
+  <!-- 破坏性操作二次确认（替代 window.confirm：应用内弹窗，与整体样式一致） -->
+  <BaseModal
+    :open="!!pendingConfirm"
+    :title="pendingConfirm?.kind === 'transfer' ? '转让群主' : '退出群聊'"
+    @close="pendingConfirm = null"
+  >
+    <template v-if="pendingConfirm">
+      <p class="text-sm leading-relaxed text-[var(--gosslan-text-2)]">
+        <template v-if="pendingConfirm.kind === 'transfer'">
+          确定把群主转让给「{{ pendingConfirm.name }}」吗？转让后你将失去改名、添加与移除成员的权限。
+        </template>
+        <template v-else>
+          确定退出「{{ pendingConfirm.name }}」吗？本机将删除该群的聊天记录，需要重新被拉入才能恢复。
+        </template>
+      </p>
+      <div class="mt-5 flex justify-end gap-2">
+        <button
+          class="rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3 py-1.5 text-sm text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
+          @click="pendingConfirm = null"
+        >
+          取消
+        </button>
+        <button
+          class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-3 py-1.5 text-sm text-white transition hover:opacity-90"
+          @click="confirmAction"
+        >
+          确定
+        </button>
+      </div>
+    </template>
   </BaseModal>
 </template>
