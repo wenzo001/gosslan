@@ -210,13 +210,15 @@ body {
   border-color: transparent var(--bubble-bg) transparent transparent;
 }
 
-/* 群聊 @ 提及高亮（微信式：带淡色底的强调文字）。
-   走 currentColor + color-mix：气泡底色明暗/主题色都可能变，主色文字在浅蓝气泡上对比不够（历史坑）。 */
+/* 群聊 @ 提及高亮（微信/钉钉式：淡色块 + 强调字）。
+   文字色由 mentionHighlightColor 派生（inline color），背景走 inline background（主题色淡块）；
+   此处的 background 仅作兜底，实际渲染时被 inline 覆盖。 */
 .mention-token {
-  font-weight: 500;
-  border-radius: 3px;
-  padding: 0 2px;
-  background: color-mix(in srgb, currentColor 10%, transparent);
+  font-weight: 600;
+  border-radius: 4px;
+  padding: 1px 4px;
+  margin: 0 1px;
+  background: color-mix(in srgb, currentColor 12%, transparent);
 }
 
 /* contenteditable 输入框的 placeholder（textarea 才有原生 placeholder）：

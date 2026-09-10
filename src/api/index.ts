@@ -100,6 +100,9 @@ export const api = {
 
   setShareDir: (path: string) => invoke<void>("set_share_dir", { path }),
   getShareDir: () => invoke<string | null>("get_share_dir"),
+  getDownloadsDir: () => invoke<string>("get_downloads_dir"),
+  setDownloadsDir: (path: string) => invoke<void>("set_downloads_dir", { path }),
+  openDownloadsDir: () => invoke<void>("open_downloads_dir"),
   requestShareTree: (friendId: string) => invoke<ShareEntry[]>("request_share_tree", { friendId }),
   downloadSharedFile: (friendId: string, remotePath: string) =>
     invoke<string>("download_shared_file", { friendId, remotePath }),

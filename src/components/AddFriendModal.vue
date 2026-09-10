@@ -48,7 +48,22 @@ function initials(name: string) {
   return avatarInitial(name);
 }
 
+/** 发送好友申请后的冷却期：同一节点 3 秒内置灰防连点（显示「完成」）。 */
+const SEND_COOLDOWN_MS = 3000;
+const cooldown = ref<Record<string, number>>({});
+
+function inCooldown(peerId: string): boolean {
+  return Date.now() - (cooldown.value[peerId] ?? 0) < SEND_COOLDOWN_MS;
+}
+
 async function add(peerId: string) {
+  if (inCooldown(peerId)) return; // 防抖：3 秒内不重复发送
+  cooldown.value = { ...cooldown.value, [peerId]: Date.now() };
+  setTimeout(() => {
+    const next = { ...cooldown.value };
+    delete next[peerId];
+    cooldown.value = next;
+  }, SEND_COOLDOWN_MS);
   try {
     await chat.sendFriendRequest(peerId);
     app.toast("好友申请已发送，等待对方确认", "success");
@@ -98,6 +113,14 @@ async function add(peerId: string) {
             <Check class="h-3.5 w-3.5" />
             已加好友
           </span>
+          <button
+            v-else-if="inCooldown(p.device_id)"
+            disabled
+            class="flex cursor-default items-center gap-1 rounded-lg bg-[var(--gosslan-hover)] px-3 py-1.5 text-xs font-medium text-[var(--gosslan-text-2)]"
+          >
+            <Check class="h-3.5 w-3.5" />
+            完成
+          </button>
           <button
             v-else
             class="flex items-center gap-1 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-white transition hover:bg-primary-hover"

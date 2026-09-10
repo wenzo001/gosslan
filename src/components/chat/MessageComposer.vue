@@ -304,14 +304,25 @@ watch(emojiOpen, () => {
   if (emojiOpen.value) autoResize();
 });
 
-/** 把表情插到输入框 caret 处（insertText 保 undo 栈）；caret 不在编辑器内则追加末尾。 */
+/** 把表情作为原子 token 插入输入框 caret 处（contentEditable=false，退格/选区整体删除，
+ *  与 @mention token 同一机制）；caret 不在编辑器内则追加末尾。 */
 function insertEmoji(e: string) {
   const el = editorRef.value;
   emojiOpen.value = false;
   if (!el) return;
   const sel = window.getSelection();
   if (sel && sel.rangeCount > 0 && el.contains(sel.anchorNode)) {
-    document.execCommand("insertText", false, e);
+    const range = sel.getRangeAt(0);
+    range.deleteContents();
+    const span = document.createElement("span");
+    span.className = "emoji-token";
+    span.contentEditable = "false";
+    span.textContent = e; // 如 "[黄脸干杯]"，serializeDraft 经 innerText 读回原文
+    range.insertNode(span);
+    range.setStartAfter(span);
+    range.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(range);
   } else {
     el.appendChild(document.createTextNode(e));
     if (!app.isMobile) focusEditor();

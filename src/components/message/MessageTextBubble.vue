@@ -94,6 +94,12 @@ const mentionFg = computed(() => {
   return mentionHighlightColor(app.themeColor, app.dark, bg || "#ffffff");
 });
 
+/** @提及 淡背景：取 mentionFg（主题色派生）的低透明度，做成互联网公司式的浅色块。 */
+const mentionBg = computed(() => {
+  const fg = mentionFg.value;
+  return fg ? `color-mix(in srgb, ${fg} 16%, transparent)` : undefined;
+});
+
 /** 点击链接：调 Tauri opener 走系统默认浏览器；失败 toast 提示。 */
 async function openLink(href: string) {
   try {
@@ -147,7 +153,7 @@ async function openLink(href: string) {
         <span
           v-else-if="seg.kind === 'mention'"
           class="mention-token"
-          :style="{ color: mentionFg || undefined }"
+          :style="{ color: mentionFg || undefined, background: mentionBg || undefined }"
         >{{ seg.value }}</span>
         <span v-else>{{ seg.value }}</span>
       </template>

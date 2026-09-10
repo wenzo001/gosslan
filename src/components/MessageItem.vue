@@ -236,7 +236,7 @@ function doQuote() {
   ctxMenu.value = null;
   const msg = props.message;
   emit("quote", {
-    sender: mine.value ? app.device?.nickname || "我" : props.senderName || msg.sender_id,
+    sender: mine.value ? app.device?.nickname || "我" : props.senderName || chat.nicknameOf(msg.sender_id),
     snippet: quoteSnippet(msg.kind, msg.content),
     msgId: msg.msg_id ?? msg.id,
   });
@@ -318,7 +318,7 @@ async function copyFileToClipboard() {
       <div class="flex min-w-0 max-w-[72%] flex-col" :class="mine ? 'items-end' : 'items-start'">
         <!-- 群聊发送者昵称 -->
         <div v-if="showNickname" class="mb-0.5 px-1 text-[11px] text-[var(--gosslan-text-2)]">
-          {{ senderName || message.sender_id }}
+          {{ senderName || chat.nicknameOf(message.sender_id) }}
         </div>
 
         <!-- 系统消息 -->

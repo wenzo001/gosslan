@@ -54,6 +54,11 @@ const tailBg = computed(() => (props.dark ? CODE_SURFACE.dark : CODE_SURFACE.lig
 </template>
 
 <style scoped>
+/* 代码气泡尖角：代码卡片顶部是 32px toolbar，尖角对齐到 toolbar 中线（16px），
+   与文本气泡（无 toolbar、top 10px）区分开。 */
+.bubble-tail {
+  top: 16px;
+}
 /* 代码卡片底栏：与上面的 CodeBlock 共用同款底色和描边，衔接成一张完整卡片。
    高度锁死 28px（border-box，含边框）= previewMetrics.CODE_ACTION_BAR，
    与代码块之间不留 margin，否则中间会露出聊天背景。 */

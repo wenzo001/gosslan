@@ -733,7 +733,11 @@ export const useChatStore = defineStore("chat", () => {
         void refreshTopology();
       },
       onFriendRequest: (req) => {
-        pendingRequests.value = [req, ...pendingRequests.value];
+        // 去重：同一设备多次申请只保留最新一条（过滤历史重复申请）
+        pendingRequests.value = [
+          req,
+          ...pendingRequests.value.filter((r) => r.from !== req.from),
+        ];
       },
       onFriendAccepted: async () => {
         await refreshFriends();
