@@ -1,13 +1,7 @@
-<script lang="ts">
-// 模块级共享展开键：全局同一时间只允许一个「已读成员」弹层展开，
-// 点另一条消息的已读头像会自动收起上一条（虚拟列表回收行时也不会残留）。
-import { ref as vueRef } from "vue";
-const openReadersKey = vueRef<string | number | null>(null);
-</script>
-
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useChatStore } from "@/stores/useChatStore";
+import { useExclusivePopup } from "@/composables/useExclusivePopup";
 import { avatarInitial, nameToColor } from "@/utils/color";
 import type { SendState } from "@/composables/useMessageDisplay";
 import { Check, Circle, Loader2, RefreshCw } from "lucide-vue-next";
@@ -32,10 +26,21 @@ const extraReaders = computed(() => readerIds.value.slice(3));
 /** 弹层向上还是向下：消息靠近消息区顶部时改为向下弹出，避免被裁剪。 */
 const openUp = ref(true);
 
+/**
+ * 「已读成员」弹层：接入全局浮层互斥（同一时刻只允许一个弹层展开）。
+ * 点另一条消息的已读头像会自动收起上一条，虚拟列表回收行时也不会残留；
+ * 与右键菜单/表情面板同属一套机制，互相之间也会自动收起。
+ * 模板里用到 `readersOpen`，故解构出来（模板不会自动解包嵌套在对象里的 ref）。
+ */
+const {
+  isActive: readersOpen,
+  claim: claimReaders,
+  release: releaseReaders,
+} = useExclusivePopup(`readers:${props.msgKey ?? ""}`);
+
 function toggleReaders(e: MouseEvent) {
-  const key = props.msgKey ?? "";
-  if (openReadersKey.value === key) {
-    openReadersKey.value = null;
+  if (readersOpen.value) {
+    closeReaders();
     return;
   }
   const btn = e.currentTarget as HTMLElement | null;
@@ -48,11 +53,11 @@ function toggleReaders(e: MouseEvent) {
   } else {
     openUp.value = true;
   }
-  openReadersKey.value = key;
+  claimReaders();
 }
 
 function closeReaders() {
-  openReadersKey.value = null;
+  releaseReaders();
 }
 onMounted(() => document.addEventListener("click", closeReaders));
 onUnmounted(() => document.removeEventListener("click", closeReaders));
@@ -93,7 +98,7 @@ function readerAvatar(id: string): string | null {
       </span>
     </button>
     <div
-      v-if="openReadersKey === (props.msgKey ?? '') && readerIds.length > 0"
+      v-if="readersOpen && readerIds.length > 0"
       class="frost absolute right-0 z-20 max-h-60 min-w-36 overflow-y-auto rounded-lg border border-[var(--gosslan-border)] p-1.5 text-xs shadow-lg"
       :class="openUp ? 'bottom-7' : 'top-7'"
       @click.stop

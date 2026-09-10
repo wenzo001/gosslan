@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "@/stores/useAppStore";
 import EmojiPicker from "@/components/EmojiPicker.vue";
 import { QUOTE_BORDER, QUOTE_BG, QUOTE_TEXT_STYLE } from "@/utils/quoteStyle";
+import { useExclusivePopup } from "@/composables/useExclusivePopup";
 import { mentionHighlightColor, resolveChatColors } from "@/utils/chatStyle";
 import { avatarInitial, nameToColor } from "@/utils/color";
 import { classifyPaste, type ClipboardItemLike } from "@/utils/clipboard";
@@ -280,9 +281,32 @@ function onSelectionChange() {
 // ---------------- 表情面板 ----------------
 const emojiOpen = ref(false);
 
+/**
+ * 表情面板参与全局浮层互斥：右键菜单/已读弹层打开时会自动收起它，
+ * 反之打开表情面板也会收起那两者（避免两层浮层叠在一起）。
+ */
+const emojiPopup = useExclusivePopup("emoji-picker");
+watch(emojiPopup.isActive, (mine) => {
+  if (!mine) emojiOpen.value = false;
+});
+
+function toggleEmoji() {
+  if (emojiOpen.value) {
+    closeEmoji();
+    return;
+  }
+  emojiOpen.value = true;
+  emojiPopup.claim();
+}
+
+function closeEmoji() {
+  emojiPopup.release();
+  emojiOpen.value = false;
+}
+
 /** 点击面板外关闭（面板自身已 @click.stop，触发按钮也 stop） */
 function onDocClickForEmoji() {
-  emojiOpen.value = false;
+  closeEmoji();
 }
 /** @ 成员选择：点击输入卡以外任意处关闭（卡内点击交给 updateMentionState 按光标推断） */
 function onDocClickForMention(e: MouseEvent) {
@@ -308,7 +332,7 @@ watch(emojiOpen, () => {
  *  与 @mention token 同一机制）；caret 不在编辑器内则追加末尾。 */
 function insertEmoji(e: string) {
   const el = editorRef.value;
-  emojiOpen.value = false;
+  closeEmoji();
   if (!el) return;
   const sel = window.getSelection();
   if (sel && sel.rangeCount > 0 && el.contains(sel.anchorNode)) {
@@ -465,11 +489,11 @@ function fileToDataUrl(f: File): Promise<string> {
             class="flex h-7 w-7 items-center justify-center rounded-md transition"
             :class="emojiOpen ? 'text-primary' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
             title="表情"
-            @click.stop="emojiOpen = !emojiOpen"
+            @click.stop="toggleEmoji"
           >
             <Smile class="h-[18px] w-[18px]" />
           </button>
-          <EmojiPicker :open="emojiOpen" @select="insertEmoji" @close="emojiOpen = false" />
+          <EmojiPicker :open="emojiOpen" @select="insertEmoji" @close="closeEmoji" />
         </div>
         <!-- @mousedown.prevent 保持编辑器焦点：否则点击按钮后焦点落到按钮上，
              紧接着按 Enter 会激活按钮（把 codeMode 再切回去）而非走编辑器 keydown 发送。 -->

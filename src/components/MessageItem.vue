@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { useClipboard } from "@/composables/useClipboard";
+import { useExclusivePopup } from "@/composables/useExclusivePopup";
 import { useMessageDisplay } from "@/composables/useMessageDisplay";
 import { useMessageFile } from "@/composables/useMessageFile";
 import { useMemberProfile } from "@/composables/useMemberProfile";
@@ -149,11 +150,24 @@ function openImageLightbox() {
 }
 
 // ---------------- 消息右键菜单：复制 / 保存图片 / 引用 / 转发 ----------------
+// 展开态参与全局浮层互斥：右键另一条消息（或好友菜单）时，本菜单自动收起。
+// 关键在于右键只触发 contextmenu、不触发 click，靠 document click 关闭靠不住。
+const ctxMenuPopup = useExclusivePopup(`menu:${props.message.msg_id ?? props.message.id}`);
 const ctxMenu = ref<{ x: number; y: number } | null>(null);
+
+watch(ctxMenuPopup.isActive, (mine) => {
+  if (!mine && ctxMenu.value) ctxMenu.value = null;
+});
 
 function openContextMenu(e: MouseEvent) {
   if (props.message.kind === "system") return;
   ctxMenu.value = { x: e.clientX, y: e.clientY };
+  ctxMenuPopup.claim();
+}
+
+function closeContextMenu() {
+  ctxMenuPopup.release();
+  ctxMenu.value = null;
 }
 
 /** 图片可预览 URL：新格式走 objectURL（JSON 元数据），旧格式兼容 content=dataURL。 */
@@ -169,7 +183,7 @@ const imageDataUrl = computed(() => {
 });
 
 async function copyImage() {
-  ctxMenu.value = null;
+  closeContextMenu();
   const url = imageDataUrl.value;
   if (!url) return;
   try {
@@ -195,7 +209,7 @@ async function toPngBlob(url: string): Promise<Blob> {
 }
 
 async function saveImage() {
-  ctxMenu.value = null;
+  closeContextMenu();
   const url = imageDataUrl.value;
   if (!url) return;
   try {
@@ -233,7 +247,7 @@ const emit = defineEmits<{
 }>();
 
 function doQuote() {
-  ctxMenu.value = null;
+  closeContextMenu();
   const msg = props.message;
   emit("quote", {
     sender: mine.value ? app.device?.nickname || "我" : props.senderName || chat.nicknameOf(msg.sender_id),
@@ -251,7 +265,7 @@ function doForward() {
     // 文件转发按本地路径重走传输链路（内容里的 JSON 只是元信息）
     filePath: msg.kind === "file" ? (fileMeta.value?.path ?? "") : undefined,
   };
-  ctxMenu.value = null;
+  closeContextMenu();
   emit("forward", payload);
 }
 
@@ -269,20 +283,20 @@ async function retrySend() {
 
 /** 未就绪时点「下载」：接收是自动的（对方设备上线即传输），这里只解释状态。 */
 function onFileDownload() {
-  ctxMenu.value = null;
+  closeContextMenu();
   app.toast("文件会在对方设备上线后自动接收，完成后点击即可打开", "info");
 }
 
 /** 右键「保存」：另存为（复制本地已就绪的文件到用户选择的位置）。 */
 function saveFileTo() {
-  ctxMenu.value = null;
+  closeContextMenu();
   void saveAs();
 }
 
 /** 右键「复制文件」：文件本体写系统剪贴板（CF_HDROP），
  *  可在资源管理器粘贴出文件，也可直接粘贴回聊天框发送（微信式）。 */
 async function copyFileToClipboard() {
-  ctxMenu.value = null;
+  closeContextMenu();
   const path = fileMeta.value?.path;
   if (!path) {
     app.toast("文件尚未同步到本机", "info");
@@ -427,8 +441,8 @@ async function copyFileToClipboard() {
     :x="ctxMenu.x"
     :y="ctxMenu.y"
     :kind="message.kind"
-    @close="ctxMenu = null"
-    @copy-text="ctxMenu = null; copyContent(message.kind === 'code' ? 'code' : 'text', message.content)"
+    @close="closeContextMenu()"
+    @copy-text="closeContextMenu(); copyContent(message.kind === 'code' ? 'code' : 'text', message.content)"
     @copy-image="copyImage"
     @save-image="saveImage"
     @save-file="saveFileTo"

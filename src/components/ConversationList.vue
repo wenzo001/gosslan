@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { useConversationSearch } from "@/composables/useConversationSearch";
+import { useExclusivePopup } from "@/composables/useExclusivePopup";
 import ConversationListItem from "@/components/conversation/ConversationListItem.vue";
 import FriendListItem from "@/components/conversation/FriendListItem.vue";
 import FriendContextMenu from "@/components/conversation/FriendContextMenu.vue";
@@ -38,11 +39,34 @@ const filteredFriends = computed(() => {
   return chat.friends.filter((f) => f.nickname.toLowerCase().includes(kw));
 });
 
-/** 加号下拉菜单展开态：点击外部自动收起。 */
+/**
+ * 加号下拉菜单展开态：点击外部自动收起；并参与全局浮层互斥
+ * ——右键消息菜单 / 已读弹层展开时会自动收起它（右键不触发 click，靠点击关闭会漏）。
+ */
+const plusPopup = useExclusivePopup("plus-menu");
 const plusOpen = ref(false);
-watch(() => props.view, () => (plusOpen.value = false));
-function onDocClickForPlus() {
+
+watch(plusPopup.isActive, (mine) => {
+  if (!mine && plusOpen.value) plusOpen.value = false;
+});
+watch(() => props.view, () => closePlus());
+
+function togglePlus() {
+  if (plusOpen.value) {
+    closePlus();
+    return;
+  }
+  plusOpen.value = true;
+  plusPopup.claim();
+}
+
+function closePlus() {
+  plusPopup.release();
   plusOpen.value = false;
+}
+
+function onDocClickForPlus() {
+  closePlus();
 }
 onMounted(() => document.addEventListener("click", onDocClickForPlus));
 onUnmounted(() => document.removeEventListener("click", onDocClickForPlus));
@@ -64,7 +88,14 @@ function openFriend(f: Friend) {
 }
 
 // ---------------- 右键菜单：删除好友 ----------------
+// 参与全局浮层互斥：右键消息、或打开「已读成员」弹层时，本菜单会自动收起
+// （右键只触发 contextmenu 不触发 click，仅靠 document click 关闭会漏）。
+const friendMenuPopup = useExclusivePopup("friend-menu");
 const friendMenu = ref<{ x: number; y: number; friend: Friend } | null>(null);
+
+watch(friendMenuPopup.isActive, (mine) => {
+  if (!mine && friendMenu.value) friendMenu.value = null;
+});
 
 /** 右键（桌面）/ 长按（移动端）触发：菜单定位贴近屏幕边缘时向内收，避免溢出。 */
 function onFriendContext(f: Friend, x: number, y: number) {
@@ -75,12 +106,13 @@ function onFriendContext(f: Friend, x: number, y: number) {
     y: Math.max(8, Math.min(y, window.innerHeight - mh - 8)),
     friend: f,
   };
+  friendMenuPopup.claim();
 }
 
 /** 删除好友：保留聊天记录；对方仍出现在扫描列表，可重新添加。乐观移除，失败回滚。 */
 async function confirmDeleteFriend() {
   const f = friendMenu.value?.friend;
-  friendMenu.value = null;
+  closeFriendMenu();
   if (!f) return;
   try {
     await chat.removeFriend(f.device_id);
@@ -111,6 +143,7 @@ async function confirmDeleteConv() {
 }
 
 function closeFriendMenu() {
+  friendMenuPopup.release();
   friendMenu.value = null;
 }
 onMounted(() => document.addEventListener("click", closeFriendMenu));
@@ -137,7 +170,7 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
         <button
           class="flex h-7 w-7 items-center justify-center rounded-lg text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-list-hover)]"
           title="添加好友 / 创建群聊"
-          @click.stop="plusOpen = !plusOpen"
+          @click.stop="togglePlus"
         >
           <Plus class="h-[18px] w-[18px]" />
         </button>
@@ -147,14 +180,14 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
         >
           <button
             class="flex w-full items-center gap-2 px-3 py-2 text-[13px] text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
-            @click.stop="plusOpen = false; emit('open-add-friend')"
+            @click.stop="closePlus(); emit('open-add-friend')"
           >
             <UserPlus class="h-4 w-4 text-[var(--gosslan-text-2)]" />
             添加好友
           </button>
           <button
             class="flex w-full items-center gap-2 px-3 py-2 text-[13px] text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
-            @click.stop="plusOpen = false; emit('open-group')"
+            @click.stop="closePlus(); emit('open-group')"
           >
             <UsersRound class="h-4 w-4 text-[var(--gosslan-text-2)]" />
             创建群聊
@@ -226,7 +259,7 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
       v-if="friendMenu"
       :x="friendMenu.x"
       :y="friendMenu.y"
-      @close="friendMenu = null"
+      @close="closeFriendMenu"
       @confirm="confirmDeleteFriend"
     />
 
