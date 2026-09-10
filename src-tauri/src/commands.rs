@@ -264,13 +264,27 @@ pub async fn search_nearby_peers(state: State<'_, Arc<AppState>>) -> Result<Vec<
     Ok(peers)
 }
 
-/// 从后台唤起并聚焦主窗口（点击系统通知后调用）。
+/// 从后台唤起并聚焦主窗口（冷启动首显 / 点击系统通知 / 消息点击唤起）。
 #[cfg(desktop)]
 #[tauri::command]
-pub fn focus_window(app: tauri::AppHandle) -> Result<(), String> {
+pub fn focus_window(app: tauri::AppHandle, state: State<'_, Arc<AppState>>) -> Result<(), String> {
     let Some(win) = app.get_webview_window("main") else {
         return Err("主窗口不存在".to_string());
     };
+    // 冷启动白闪修复：窗口 show 的第一帧会露出 WebView2 的默认背景色（tauri.conf.json
+    // 写死浅色 #edf1f6）。暗色主题用户在骨架合成前会看到"闪一下白"。show 之前把窗口
+    // 底色改成跟随主题（浅 #f1f5f9 / 深 #0f172a，与 --gosslan-bg 一致），第一帧即正确
+    // 底色而非浅色。dark_mode 是"解析后的结果"（跟随系统时已按系统偏好算好），冷启动直接可用。
+    let dark = {
+        let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
+        db::get_setting(&dbc, "dark_mode").map(|v| v == "1").unwrap_or(false)
+    };
+    let color = if dark {
+        tauri::window::Color(15, 23, 42, 255) // #0f172a
+    } else {
+        tauri::window::Color(241, 245, 249, 255) // #f1f5f9
+    };
+    let _ = win.set_background_color(Some(color));
     let _ = win.unminimize();
     let _ = win.show();
     let _ = win.set_focus();
