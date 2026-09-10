@@ -132,7 +132,6 @@ const kind = computed<FileKind>(() => {
     case "toml":
     case "yml":
     case "yaml":
-    case "md":
     case "xml":
       return "code";
     case "pdf":

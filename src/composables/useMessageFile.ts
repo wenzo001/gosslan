@@ -66,7 +66,6 @@ export function useMessageFile(
   });
 
   const attachmentUrl = ref<string | null>(null);
-  const attachmentCode = ref<string | null>(null);
   const previewNote = ref<string | null>(null);
   /**
    * 本地媒体已被「存储清理」删除。
@@ -76,17 +75,20 @@ export function useMessageFile(
    */
   const attachmentMissing = ref(false);
 
-  /** 当 file/image 消息本地路径就绪、未失败、且为 image/code 时可预览。 */
-  const previewSubtype = computed<"image" | "code" | null>(() => {
+  /** 当 file/image 消息本地路径就绪、未失败、且为 image 时可预览。
+   *  ⚠️ 刻意**不**为 `code` 子类型做内联预览：发送的文件就是文件（按文件卡片渲染），
+   *  代码块只应来自「代码消息」（kind=code，输入框粘贴/发送的文本），而不是把 .js/.py
+   *  这类文件内容拉出来渲染成代码块（用户反馈：复制 md 文件发送不应变成代码块）。 */
+  const previewSubtype = computed<"image" | null>(() => {
     const meta = fileMeta.value;
     if ((msg.value.kind !== "file" && msg.value.kind !== "image") || !meta || !meta.path) return null;
     if (toValue(sendState) === "failed") return null;
-    return meta.subtype === "image" || meta.subtype === "code" ? meta.subtype : null;
+    return meta.subtype === "image" ? "image" : null;
   });
 
   /**
    * 普通文件（subtype=file）没有"读预览"这条路径，因此拿不到可达性信号，
-   * 需要单独问一次后端文件还在不在。图片/代码附件由预览读取代劳，不重复探测。
+   * 需要单独问一次后端文件还在不在。图片附件由预览读取代劳，不重复探测。
    */
   const needsPresenceProbe = computed(() =>
     shouldProbePresence(msg.value.kind, fileMeta.value),
@@ -100,13 +102,11 @@ export function useMessageFile(
       // await 期间该气泡可能已不满足预览条件（切换/失败）→ 丢弃，避免贴到错误气泡。
       if (previewSubtype.value !== sub) return;
       attachmentUrl.value = r.url ?? null;
-      attachmentCode.value = r.text ?? null;
       previewNote.value = r.note ?? null;
       attachmentMissing.value = r.missing === true;
       return;
     }
     attachmentUrl.value = null;
-    attachmentCode.value = null;
     previewNote.value = null;
     attachmentMissing.value = false;
     if (!needsPresenceProbe.value) return;
@@ -134,11 +134,11 @@ export function useMessageFile(
     { immediate: true },
   );
 
-  /** 消息流里的代码：inline code 消息取 content，代码附件取本地读到的文本。 */
-  const streamCode = computed<string | null>(() => {
-    if (msg.value.kind === "code") return msg.value.content;
-    return attachmentCode.value;
-  });
+  /** 消息流里的代码：只来自 inline code 消息（kind=code，输入框粘贴/发送的文本）。
+   *  文件消息不再渲染成代码块——发送的文件就按文件卡片显示。 */
+  const streamCode = computed<string | null>(() =>
+    msg.value.kind === "code" ? msg.value.content : null,
+  );
   const streamCodeClamped = computed(() =>
     streamCode.value ? codeNeedsClamp(streamCode.value) : false,
   );

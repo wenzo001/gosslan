@@ -8,7 +8,7 @@ import { useExclusivePopup } from "@/composables/useExclusivePopup";
 import { haptic } from "@/utils/haptics";
 import { mentionHighlightColor, resolveChatColors } from "@/utils/chatStyle";
 import { avatarInitial, nameToColor } from "@/utils/color";
-import { classifyPaste, type ClipboardItemLike } from "@/utils/clipboard";
+import { classifyPaste } from "@/utils/clipboard";
 import { Code2, FilePlus, Smile, X } from "lucide-vue-next";
 import type { MsgKind } from "@/types";
 
@@ -383,63 +383,51 @@ function insertEmoji(e: string) {
 async function onPaste(e: ClipboardEvent) {
   const cd = e.clipboardData;
   if (!cd) return;
+  // 无论最终归到哪条分支，都在同步阶段拦掉默认插入（图片/文件/文本都不该由浏览器塞进编辑器）
+  e.preventDefault();
 
   const types = Array.from(cd.types ?? []);
-  const items: ClipboardItemLike[] = Array.from(cd.items).map((i) => ({
-    kind: i.kind,
-    type: i.type,
-  }));
-  // WKWebView/Safari 的 paste 事件里 items 可能为空，截图/网页复制图片的位图只经 files 暴露，
-  // 必须一起读 files 才能识别出图片（否则会误判成纯文本 → 无反应）。
   const files = Array.from(cd.files ?? []);
+  const items = Array.from(cd.items).map((i) => ({ kind: i.kind, type: i.type }));
 
-  // 真实文件路径（资源管理器复制的 CF_HDROP）：需异步问原生剪贴板，先同步拦默认插入
-  // （await 之后再 preventDefault 就晚了）。
+  // 同步捕获图片 File：files 优先，其次 items.getAsFile()。
+  // ⚠️ 必须在任何 await 之前完成——Chromium/WebKit 会在 paste 事件返回后清空 clipboardData，
+  // 若先 await 再读 items，getAsFile() 会拿到 null，表现为"截图有时发不出去"。
+  let imageFile: File | null = files.find((x) => x.type.startsWith("image/")) ?? null;
+  if (!imageFile) {
+    for (const item of Array.from(cd.items)) {
+      if (item.kind === "file" && item.type.startsWith("image/")) {
+        imageFile = item.getAsFile();
+        if (imageFile) break;
+      }
+    }
+  }
+
+  // 图片优先：截图位图即使同时带 "Files"（Win11 临时文件引用），也按图片发送，
+  // 避免去发那个可能已被清理的临时路径。
+  if (imageFile) {
+    emit("send-image", await fileToDataUrl(imageFile));
+    return;
+  }
+
+  // 无图片 → 尝试真实文件路径（资源管理器复制的 CF_HDROP）。非 Windows 命令返回空，回退文本。
   let filePaths: string[] = [];
   if (types.includes("Files")) {
-    e.preventDefault();
     try {
       filePaths = await invoke<string[]>("read_clipboard_file_paths");
     } catch {
-      // 非 Windows / 命令缺失 → 回退图片分支
       filePaths = [];
     }
   }
 
   const action = classifyPaste(types, items, files, filePaths.length > 0);
-
   if (action.kind === "files") {
     emit("paste-files", filePaths);
     return;
   }
 
-  // 图片位图（截图 / 网页「复制图片」）：type 以 image/ 开头的 file 项。
-  // 注意不能只靠 types 里的 "Files" 判断——截图剪贴板的 types 常是 image/png 而非 Files。
-  if (action.kind === "image") {
-    e.preventDefault();
-    // 优先从 files 取（跨平台最可靠，WKWebView 下是唯一来源），items.getAsFile() 作 Chromium 兜底。
-    const f = files.find((x) => x.type.startsWith("image/"));
-    if (f) {
-      // P1：粘贴图片走 save_outgoing_image → 文件传输，data URL 不进入 SQLite
-      emit("send-image", await fileToDataUrl(f));
-      return;
-    }
-    for (const item of Array.from(cd.items)) {
-      if (item.kind === "file" && item.type.startsWith("image/")) {
-        const ff = item.getAsFile();
-        if (ff) {
-          // P1：粘贴图片走 save_outgoing_image → 文件传输，data URL 不进入 SQLite
-          emit("send-image", await fileToDataUrl(ff));
-        }
-        break;
-      }
-    }
-    return;
-  }
-
   // 纯文本：contenteditable 默认粘贴会带外来 HTML 结构（污染 token/样式），
   // 统一拦掉按纯文本插入（execCommand 保 undo 栈；含 \n 时 Chromium 自行转 <br>）。
-  e.preventDefault();
   const text = cd.getData("text/plain");
   if (text) document.execCommand("insertText", false, text);
 }
