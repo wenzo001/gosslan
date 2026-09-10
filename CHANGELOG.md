@@ -8,7 +8,7 @@
 
 版本号统一由 `npm run version:patch|minor|major` 维护，一次改动同步 `package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`、`src-tauri/tauri.conf.json` 五处，并把本文件 `[Unreleased]` 小节落为带日期的版本小节。
 
-## [Unreleased]
+## [2.1.2] - 2026-09-11
 
 ### Fixed
 - **macOS 圆角外"淡淡一层颜色"（白主题淡白 / 黑主题淡黑）**：窗口背景色误用了 `--gosslan-bg`（浅 `#f1f5f9` / 深 `#0f172a`），而 body 实际底色是 `--gosslan-app-bg`（浅 `#edf1f6` / 深 `#0b1220`），两者差一档 → 圆角外透出与内容不同色的"淡淡一层"。修复：窗口背景色改用 `--gosslan-app-bg`，与内容零色差。真透明（透出桌面）需 `macos-private-api` 私有 API、会失去 App Store 上架资格，用户确认**保持可上架**，故不采用。
