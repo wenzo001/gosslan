@@ -169,8 +169,11 @@ export interface AppSettings {
 
 /** 缓存目录占用与策略 */
 export interface CacheInfo {
-  file_count: number;
-  total_bytes: number;
+  /** 已接收的图片 / 文件（落在「文件存储目录」）：文件数与合计占用 */
+  media_count: number;
+  media_bytes: number;
+  /** 聊天记录数据库占用（含 -wal/-shm） */
+  db_bytes: number;
   retention_days: number | null;
   max_bytes: number | null;
 }

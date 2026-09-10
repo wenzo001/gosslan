@@ -74,7 +74,7 @@ async function clearAllDataConfirm() {
 
 <template>
   <BaseModal :open="open" title="设置" width="max-w-xl" @close="emit('close')">
-    <div class="-mx-5 -mb-5 max-h-[75vh] space-y-5 overflow-y-auto overflow-x-hidden rounded-b-2xl bg-[var(--gosslan-bg)] p-5">
+    <div class="-mx-5 -mb-5 max-h-[75vh] space-y-5 overflow-y-auto overflow-x-hidden rounded-b-[var(--gosslan-radius-xl)] bg-[var(--gosslan-bg)] p-5">
       <ProfileSection :active="open" :reload-token="reloadToken" />
       <AppearanceSection />
       <ChatStyleSection />
@@ -84,7 +84,7 @@ async function clearAllDataConfirm() {
       <SettingsGroup title="共享目录" footer="允许好友浏览并下载你共享的文件夹内容">
         <SettingsRow label="共享文件夹" :description="app.shareDir || '未设置'" last>
           <button
-            class="flex items-center gap-1.5 rounded-lg border border-[var(--gosslan-border)] px-3 py-1.5 text-xs transition hover:bg-[var(--gosslan-hover)]"
+            class="flex items-center gap-1.5 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3 py-1.5 text-xs transition hover:bg-[var(--gosslan-hover)]"
             @click="pickShareDir"
           >
             <FolderOpen class="h-3.5 w-3.5" />
@@ -108,7 +108,7 @@ async function clearAllDataConfirm() {
         </button>
         <div class="ml-4 h-px bg-[var(--gosslan-divider)]" />
         <button
-          class="flex w-full items-center justify-center gap-2 px-4 py-3 text-sm text-red-500 transition hover:bg-red-50 dark:hover:bg-red-900/20"
+          class="flex w-full items-center justify-center gap-2 px-4 py-3 text-sm text-[var(--gosslan-danger)] transition hover:bg-[var(--gosslan-danger-soft)] dark:hover:bg-[var(--gosslan-danger-soft)]"
           @click="clearAllDataConfirm"
         >
           <Trash2 class="h-4 w-4" />
@@ -116,7 +116,8 @@ async function clearAllDataConfirm() {
         </button>
       </SettingsGroup>
       <p class="px-1 text-center text-[11px] leading-relaxed text-[var(--gosslan-text-2)]">
-        恢复默认不影响好友、聊天记录和设备身份；清除聊天数据仅删除本机消息与会话。
+        恢复默认不影响好友、聊天记录和设备身份。清除聊天数据会删除本机全部消息、会话与文件传输记录，
+        并<strong>退出所有群聊</strong>（好友关系与设备身份保留）。
       </p>
     </div>
   </BaseModal>

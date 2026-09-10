@@ -44,11 +44,18 @@ pub struct NetworkStatus {
     bound_ip: Option<String>,
 }
 
-/// 缓存目录占用与策略（存储管理页展示）。
+/// 存储占用与清理策略（设置页「存储与缓存」展示）。
+///
+/// ⚠️ 统计的是**真实落盘的媒体**（「文件存储目录」里接收的图片 / 文件）+ 聊天数据库，
+/// 而不是历史遗留的 `cache/` 目录：P1 重构后媒体改落 downloads，`cache/` 已无写入方，
+/// 只统计它会让「聊了半天还是 0 个文件」，用户完全看不懂。
 #[derive(Serialize)]
 pub struct CacheInfo {
-    file_count: usize,
-    total_bytes: u64,
+    /// 已接收的图片 / 文件：文件数与合计占用
+    media_count: usize,
+    media_bytes: u64,
+    /// 聊天记录数据库占用（含 -wal/-shm）
+    db_bytes: u64,
     retention_days: Option<u32>,
     max_bytes: Option<u64>,
 }
@@ -458,15 +465,39 @@ fn load_policy(s: &AppState) -> CachePolicy {
     }
 }
 
-/// 缓存目录占用与当前清理策略。
+/// 纳入统计与清理的目录：接收的图片/文件目录 + 历史遗留的 cache 目录。
+/// 旧的 `cache/` 可能残留早期版本抽取的图片，一并纳入，避免"看不见也清不掉"。
+fn media_dirs(s: &AppState) -> Vec<PathBuf> {
+    let downloads = s
+        .downloads_dir
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    vec![downloads, s.cache_dir.clone()]
+}
+
+/// SQLite 数据库文件占用（含 -wal / -shm 两个伴随文件）。
+fn db_file_bytes(s: &AppState) -> u64 {
+    let base = s.db_path.to_string_lossy().to_string();
+    let mut total = 0u64;
+    for suffix in ["", "-wal", "-shm"] {
+        if let Ok(m) = std::fs::metadata(format!("{base}{suffix}")) {
+            total += m.len();
+        }
+    }
+    total
+}
+
+/// 存储占用与当前清理策略。
 #[tauri::command]
 pub fn get_cache_info(state: State<'_, Arc<AppState>>) -> CacheInfo {
     let s = state.inner();
-    let (file_count, total_bytes) = cache_cleaner::usage(&s.cache_dir);
     let policy = load_policy(s);
+    let (media_count, media_bytes) = cache_cleaner::usage(&media_dirs(s));
     CacheInfo {
-        file_count,
-        total_bytes,
+        media_count,
+        media_bytes,
+        db_bytes: db_file_bytes(s),
         retention_days: policy.retention_days,
         max_bytes: policy.max_bytes,
     }
@@ -488,13 +519,15 @@ pub fn set_cache_policy(
     Ok(())
 }
 
-/// 立即执行一次缓存清理（过期 / 超配额删除 + SQLite VACUUM）。
+/// 立即执行一次清理：按保留时长 / 配额删除过期的图片与文件（含历史遗留 cache 目录），
+/// 并对数据库执行 VACUUM。**不删除聊天文字**；被清理的图片/文件在历史消息里将无法再打开。
 #[tauri::command]
 pub fn clean_cache_now(state: State<'_, Arc<AppState>>) -> CleanupReport {
     let s = state.inner();
     let policy = load_policy(s);
+    let dirs = media_dirs(s);
     let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-    cache_cleaner::clean(&s.cache_dir, policy, &*dbc)
+    cache_cleaner::clean(&dirs, policy, &*dbc)
 }
 
 // ---------------- 应用偏好设置（本地持久化） ----------------

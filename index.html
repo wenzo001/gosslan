@@ -4,8 +4,310 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Gosslan</title>
+    <script>
+      // 首屏主题：必须在样式/脚本资源就位**之前**决定亮暗与主色，
+      // 否则 WebView 会先按浅色渲染再切深色（用户看到"闪一下白"）。
+      // 键名与 useAppStore 里的 THEME_KEY / DARK_KEY 保持一致，改动请同步。
+      (function () {
+        try {
+          var el = document.documentElement;
+          if (localStorage.getItem("gosslan.dark") === "1") el.classList.add("dark");
+          var c = localStorage.getItem("gosslan.themeColor");
+          if (c) el.style.setProperty("--gosslan-primary", c);
+        } catch (e) {
+          /* localStorage 不可用（隐私模式等）→ 按浅色渲染即可，不影响后续 */
+        }
+      })();
+    </script>
+    <style>
+      /* ===================================================================
+         首屏骨架的内联关键样式。
+         为什么内联：src/style.css 由 main.ts import，要等 JS 下载+执行后才生效；
+         在那之前 WebView 只有一张白纸 —— 这就是用户反馈的"启动白屏"。
+         这里只放首屏骨架必需的最小集合（底色 + 三栏骨架 + 微光动画），
+         真实样式仍由 src/style.css 提供，不重复维护。
+         色值取自 style.css 的 :root / .dark（改主题色请同步这两处）。
+         =================================================================== */
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+        padding: 0;
+      }
+      /* 与 style.css 的 `* { box-sizing: border-box }` 保持一致：
+         否则骨架里的 width + padding 会按 content-box 计算，列宽比真实布局胖一圈，
+         骨架切到真界面时会有可见跳动。 */
+      * {
+        box-sizing: border-box;
+      }
+      :root {
+        --boot-app-bg: #edf1f6;
+        --boot-caption: #e2e8f0;
+        --boot-rail: #e2e8f0;
+        --boot-list: #f1f5f9;
+        --boot-chat: #fafafa;
+        --boot-line: #dbe3ed;
+        --boot-ink: #64748b;
+        --boot-primary: #3b82f6;
+        --boot-ring: rgba(15, 23, 42, 0.08);
+      }
+      html.dark {
+        --boot-app-bg: #0b1220;
+        --boot-caption: #16202f;
+        --boot-rail: #16202f;
+        --boot-list: #1e293b;
+        --boot-chat: #0f172a;
+        --boot-line: #2c3a52;
+        --boot-ink: #94a3b8;
+        --boot-ring: rgba(248, 250, 252, 0.09);
+      }
+      body {
+        background: var(--boot-app-bg);
+        color: var(--boot-ink);
+        font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+        -webkit-font-smoothing: antialiased;
+        overflow: hidden;
+      }
+      /* ⚠️ 骨架屏的圆角/底色必须与 src/style.css 的设计 token 同步（改 token 时同步这里）。
+         窗口外框**不要画圆角**：窗口形状由系统提供（Windows DWM / macOS 系统圆角，最大化时系统不圆角），
+         骨架画了圆角、真界面没有，启动瞬间就会看到"角落跳一下"，窗口角也会露出 body 底色。
+         其余圆角取 token 值：xs=4 / sm=6 / md=8 / lg=12 / xl=16（详见 docs/design-guidelines.md）。 */
+      #boot {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        background: var(--boot-app-bg);
+      }
+      #boot.boot-hide {
+        opacity: 0;
+        transition: opacity 0.18s ease-out;
+      }
+      .boot-win {
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+        background: var(--boot-caption);
+        overflow: hidden;
+        box-shadow: inset 0 0 0 1px var(--boot-ring);
+      }
+      .boot-cap {
+        height: 38px;
+        flex: none;
+        display: flex;
+        align-items: center;
+        padding: 0 14px;
+      }
+      .boot-brand {
+        font-size: 12px;
+        letter-spacing: 0.3px;
+        color: var(--boot-ink);
+      }
+      .boot-main {
+        flex: 1;
+        min-height: 0;
+        display: flex;
+      }
+      .boot-rail {
+        width: 64px;
+        flex: none;
+        background: var(--boot-rail);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 16px;
+        padding-top: 14px;
+      }
+      .boot-list {
+        width: 250px;
+        flex: none;
+        background: var(--boot-list);
+        border-top-left-radius: 12px;
+        padding: 12px 10px;
+      }
+      .boot-chat {
+        flex: 1;
+        min-width: 0;
+        background: var(--boot-chat);
+        display: flex;
+        flex-direction: column;
+      }
+      .boot-head {
+        height: 56px;
+        flex: none;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        gap: 7px;
+        padding: 0 16px;
+        border-bottom: 1px solid var(--boot-line);
+      }
+      .boot-msgs {
+        flex: 1;
+        min-height: 0;
+        padding: 18px 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+      }
+      .boot-composer {
+        flex: none;
+        margin: 0 16px 14px;
+        height: 76px;
+        border-radius: 8px; /* = token md，与真实输入框一致 */
+      }
+      .boot-ava {
+        width: 40px;
+        height: 40px;
+        border-radius: 6px;
+        flex: none;
+      }
+      .boot-ico {
+        width: 22px;
+        height: 22px;
+        border-radius: 6px;
+      }
+      .boot-search {
+        height: 28px;
+        border-radius: 8px;
+        margin-bottom: 14px;
+      }
+      .boot-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 14px;
+      }
+      .boot-lines {
+        flex: 1;
+        min-width: 0;
+      }
+      .boot-bubble {
+        height: 38px;
+        width: 38%;
+        border-radius: 6px;
+      }
+      .boot-bubble.right {
+        align-self: flex-end;
+        background: var(--boot-primary);
+        opacity: 0.22;
+      }
+      .boot-bubble.short {
+        width: 22%;
+      }
+      /* 所有占位块共用底色 + 微光呼吸：传达"正在加载"，而不是"卡住了" */
+      .boot-ava,
+      .boot-ico,
+      .boot-search,
+      .boot-bubble,
+      .boot-composer,
+      .boot-lines i,
+      .boot-title-line,
+      .boot-sub-line {
+        background: var(--boot-line);
+        animation: boot-breathe 1.5s ease-in-out infinite;
+      }
+      .boot-lines i {
+        display: block;
+        height: 11px;
+        border-radius: 4px;
+      }
+      .boot-lines i + i {
+        margin-top: 8px;
+        width: 46%;
+      }
+      .boot-title-line {
+        width: 92px;
+        height: 12px;
+        border-radius: 4px;
+      }
+      .boot-sub-line {
+        width: 54px;
+        height: 9px;
+        border-radius: 4px;
+      }
+      @keyframes boot-breathe {
+        0%,
+        100% {
+          opacity: 0.5;
+        }
+        50% {
+          opacity: 1;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .boot-ava,
+        .boot-ico,
+        .boot-search,
+        .boot-bubble,
+        .boot-composer,
+        .boot-lines i,
+        .boot-title-line,
+        .boot-sub-line {
+          animation: none;
+          opacity: 0.75;
+        }
+      }
+    </style>
   </head>
   <body>
+    <!-- 首屏骨架：结构照抄真实布局（caption 38 + rail 64 + list 250 + 聊天区 + 输入条），
+         让用户点开的一瞬间就认得这是 Gosslan 的哪一屏。
+         由 main.ts 在真实数据就绪后加 .boot-hide 淡出并移除；初始化异常时也有兜底定时器。 -->
+    <div id="boot" aria-hidden="true">
+      <div class="boot-win">
+        <div class="boot-cap"><span class="boot-brand">Gosslan · 正在启动…</span></div>
+        <div class="boot-main">
+          <div class="boot-rail">
+            <div class="boot-ava"></div>
+            <div class="boot-ico"></div>
+            <div class="boot-ico"></div>
+            <div class="boot-ico"></div>
+            <div class="boot-ico"></div>
+          </div>
+          <div class="boot-list">
+            <div class="boot-search"></div>
+            <div class="boot-row">
+              <div class="boot-ava"></div>
+              <div class="boot-lines"><i></i><i></i></div>
+            </div>
+            <div class="boot-row">
+              <div class="boot-ava"></div>
+              <div class="boot-lines"><i></i><i></i></div>
+            </div>
+            <div class="boot-row">
+              <div class="boot-ava"></div>
+              <div class="boot-lines"><i></i><i></i></div>
+            </div>
+            <div class="boot-row">
+              <div class="boot-ava"></div>
+              <div class="boot-lines"><i></i><i></i></div>
+            </div>
+            <div class="boot-row">
+              <div class="boot-ava"></div>
+              <div class="boot-lines"><i></i><i></i></div>
+            </div>
+            <div class="boot-row">
+              <div class="boot-ava"></div>
+              <div class="boot-lines"><i></i><i></i></div>
+            </div>
+          </div>
+          <div class="boot-chat">
+            <div class="boot-head">
+              <div class="boot-title-line"></div>
+              <div class="boot-sub-line"></div>
+            </div>
+            <div class="boot-msgs">
+              <div class="boot-bubble"></div>
+              <div class="boot-bubble short"></div>
+              <div class="boot-bubble right"></div>
+              <div class="boot-bubble"></div>
+              <div class="boot-bubble right short"></div>
+            </div>
+            <div class="boot-composer"></div>
+          </div>
+        </div>
+      </div>
+    </div>
     <div id="app"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>

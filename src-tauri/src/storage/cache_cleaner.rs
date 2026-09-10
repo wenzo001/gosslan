@@ -3,8 +3,12 @@
 //! - **保留时长**：`retention_days`（3 / 7 / 30 天，`None` = 永久）。
 //! - **磁盘配额**：`max_bytes`（超过后按「最旧优先」删除，`None` = 不限制）。
 //! - 清理后对 SQLite 执行 `VACUUM`，回收被删除消息 / 会话占用的碎片。
+//!
+//! ⚠️ 注意「清理对象」是**落盘的二进制媒体**（接收的图片 / 文件），
+//! 不是聊天文字。历史遗留的 `cache/` 目录已无写入方（P1 重构后媒体改落 downloads），
+//! 但仍一并纳入统计与清理，避免早期版本残留在里面既看不见也清不掉。
 
-use std::path::Path;
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
@@ -80,32 +84,37 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// 执行一次缓存清理：按策略删除过期 / 超配额文件，并对数据库执行 `VACUUM`。
-pub fn clean(cache_dir: &Path, policy: CachePolicy, db: &rusqlite::Connection) -> CleanupReport {
+/// 执行一次清理：跨 `dirs` 统一按策略删除过期 / 超配额文件，并对数据库执行 `VACUUM`。
+///
+/// 多个目录合并成一个条目列表再规划删除：配额按「全部媒体的总占用」判断，
+/// 删除顺序仍是全局最旧优先（不会出现「A 目录空着不删、B 目录超额」的偏差）。
+pub fn clean(dirs: &[PathBuf], policy: CachePolicy, db: &rusqlite::Connection) -> CleanupReport {
     let now = now_ms();
     let mut entries: Vec<(String, CacheEntry)> = Vec::new();
 
-    if let Ok(rd) = std::fs::read_dir(cache_dir) {
-        for e in rd.flatten() {
-            let p = e.path();
-            if !p.is_file() {
-                continue;
+    for dir in dirs {
+        if let Ok(rd) = std::fs::read_dir(dir) {
+            for e in rd.flatten() {
+                let p = e.path();
+                if !p.is_file() {
+                    continue;
+                }
+                let Ok(meta) = e.metadata() else { continue };
+                let mtime = meta
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                    .map(|d| d.as_millis() as i64)
+                    .unwrap_or(0);
+                let size = meta.len();
+                entries.push((
+                    p.to_string_lossy().to_string(),
+                    CacheEntry {
+                        mtime_ms: mtime,
+                        size,
+                    },
+                ));
             }
-            let Ok(meta) = e.metadata() else { continue };
-            let mtime = meta
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                .map(|d| d.as_millis() as i64)
-                .unwrap_or(0);
-            let size = meta.len();
-            entries.push((
-                p.to_string_lossy().to_string(),
-                CacheEntry {
-                    mtime_ms: mtime,
-                    size,
-                },
-            ));
         }
     }
 
@@ -123,16 +132,18 @@ pub fn clean(cache_dir: &Path, policy: CachePolicy, db: &rusqlite::Connection) -
     report
 }
 
-/// 计算缓存目录的当前占用（文件数 + 总字节数），用于存储管理页展示。
-pub fn usage(cache_dir: &Path) -> (usize, u64) {
+/// 计算若干目录的合计占用（文件数 + 总字节数），用于存储管理页展示。
+pub fn usage(dirs: &[PathBuf]) -> (usize, u64) {
     let mut count = 0usize;
     let mut bytes = 0u64;
-    if let Ok(rd) = std::fs::read_dir(cache_dir) {
-        for e in rd.flatten() {
-            if let Ok(meta) = e.metadata() {
-                if meta.is_file() {
-                    count += 1;
-                    bytes += meta.len();
+    for dir in dirs {
+        if let Ok(rd) = std::fs::read_dir(dir) {
+            for e in rd.flatten() {
+                if let Ok(meta) = e.metadata() {
+                    if meta.is_file() {
+                        count += 1;
+                        bytes += meta.len();
+                    }
                 }
             }
         }

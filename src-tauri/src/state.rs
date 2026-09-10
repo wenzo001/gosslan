@@ -324,6 +324,8 @@ pub struct AppState {
     pub downloads_dir: Mutex<PathBuf>,
     /// 缓存目录：图片 / 音频 / 文件等二进制落盘于此（SQLite 不存 BLOB）
     pub cache_dir: PathBuf,
+    /// SQLite 数据库文件路径（存储页展示占用用；含 -wal/-shm 伴生文件）。
+    pub db_path: PathBuf,
 
     /// 节点身份（X25519 + Ed25519）
     pub identity: Identity,
@@ -425,7 +427,8 @@ impl AppState {
         } else {
             "gosslan.db".to_string()
         };
-        let conn = db::init(&app_data.join(db_name))?;
+        let db_path = app_data.join(db_name);
+        let conn = db::init(&db_path)?;
 
         // 文件接收目录：默认 app_data/downloads，允许用户在设置里改（持久化到 settings）。
         let downloads_dir = db::get_setting(&conn, "downloads_dir")
@@ -508,6 +511,7 @@ impl AppState {
             tcp_port,
             downloads_dir: Mutex::new(downloads_dir),
             cache_dir,
+            db_path,
             identity,
             gossip: Mutex::new(GossipEngine::new(100_000, 10_000, 4, 6)),
             relay: Mutex::new(RelayManager::new()),

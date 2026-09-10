@@ -11,8 +11,14 @@ onMounted(async () => {
   // 屏蔽 WebView 默认右键菜单（返回 / 刷新 / 另存为等），改为应用自定义交互：
   // 有功能的元素自行绑定右键菜单（见 MessageItem 的复制菜单），无功能的区域右键无效果。
   window.addEventListener("contextmenu", (e) => e.preventDefault());
-  await app.init();
-  await chat.init();
+  try {
+    await app.init();
+    await chat.init();
+  } finally {
+    // 真实数据就绪 → 让 main.ts 撤掉首屏骨架（index.html 内联）。
+    // 放在 finally：init 失败也要撤，否则骨架会一直挡在界面上。
+    window.dispatchEvent(new Event("gosslan:app-ready"));
+  }
 });
 </script>
 
