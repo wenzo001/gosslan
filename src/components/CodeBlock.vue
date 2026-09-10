@@ -21,7 +21,13 @@ import lightCss from "highlight.js/styles/github.css?raw";
 
 const app = useAppStore();
 
-const props = defineProps<{ code: string; language?: string }>();
+const props = defineProps<{
+  code: string;
+  language?: string;
+  /** 置 true 时不画卡片下边框：用于被 MessageCodeBubble 截断的卡片，
+   *  下方衔接的操作条会用自己的上边框绘制同一条分隔线，否则两线叠加。 */
+  flushBottom?: boolean;
+}>();
 
 for (const [name, language] of Object.entries({
   bash,
@@ -82,7 +88,11 @@ const html = computed(() => {
 
 <template>
   <component :is="'style'">{{ app.dark ? darkCss : lightCss }}</component>
-  <div class="overflow-hidden rounded-lg text-left" :class="borderStyle" :style="{ borderWidth: '1px' }">
+  <div
+    class="overflow-hidden rounded-lg text-left"
+    :class="borderStyle"
+    :style="{ borderWidth: '1px', borderBottomWidth: flushBottom ? '0px' : '1px' }"
+  >
     <div class="flex items-center justify-between px-3" style="height: 32px" :style="{ background: toolbarBg }">
       <span class="text-xs" :style="{ color: toolbarFg }">{{ langLabel }} · {{ lineCount }} 行</span>
     </div>
