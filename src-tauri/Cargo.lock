@@ -1549,6 +1549,7 @@ dependencies = [
  "hostname",
  "if-addrs",
  "machine-uid",
+ "objc2",
  "objc2-app-kit",
  "objc2-foundation",
  "rand_core 0.6.4",

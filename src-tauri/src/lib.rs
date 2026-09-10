@@ -23,6 +23,10 @@ mod tray;
 mod menu;
 /// 打开本地文件：macOS 用 NSWorkspace（沙盒下 /usr/bin/open 被拦），Windows/Linux 走 opener。
 mod macos_open;
+/// macOS 窗口外观：运行时加 squircle 圆角 + 关掉与圆角不兼容的系统阴影。
+/// 见 macos_window.rs 注释（与自绘标题栏的取舍）。
+#[cfg(target_os = "macos")]
+mod macos_window;
 
 use tauri::Manager;
 
@@ -77,6 +81,10 @@ pub fn run() {
                 if let Err(e) = win.set_closable(true) {
                     eprintln!("[window] 恢复 macOS Cmd+W 关闭能力失败: {e}");
                 }
+                // macOS squircle 圆角：borderless 窗口的 NSWindow 10.15+ 支持 cornerRadius。
+                // 系统阴影与圆角不兼容（shadow 画在窗口外，矩形与圆角冲突），关掉；
+                // 阴影由 WebView 根容器的 CSS box-shadow 接管（如需可后续加 token）。
+                macos_window::apply(&win);
             }
             // 窗口以 `visible: false` 创建（见 tauri.conf.json），由前端在挂载完成后调用
             // `focus_window` 显示——目的是让窗口露出来的第一帧就是 index.html 的内联骨架，
