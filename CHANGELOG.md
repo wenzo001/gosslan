@@ -6,9 +6,11 @@
 - **minor**：新增功能（向下兼容）
 - **patch**：Bug 修复与细节优化
 
-版本号统一由 `npm run version:patch|minor|major` 维护，一次改动同步 `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 三处，并把本文件 `[Unreleased]` 小节落为带日期的版本小节。
+版本号统一由 `npm run version:patch|minor|major` 维护，一次改动同步 `package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`、`src-tauri/tauri.conf.json` 五处，并把本文件 `[Unreleased]` 小节落为带日期的版本小节。
 
 ## [Unreleased]
+
+## [2.0.3] - 2026-09-10
 
 ### Added
 - **首屏骨架屏（消除启动白屏）**：此前 `index.html` 只有一个空 `#app`，样式与脚本要等 `main.ts` 执行后才生效——WebView 加载期间用户看到的是一整片纯白，容易误以为"卡了"。现在 `index.html` 内联了首屏骨架：**关键底色 + 三栏布局骨架（caption 38 / rail 64 / 列表 250 / 聊天区 / 输入条）+ 轻微呼吸动画**，并内联脚本在样式加载前先按 localStorage 恢复**亮暗主题与主色**（顺带消除"先白后暗"的闪烁）。真实数据就绪后淡出移除；另有 5s 兜底定时器，初始化异常也不会把骨架永久挡在界面上
