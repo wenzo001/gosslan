@@ -1538,3 +1538,32 @@ Continue chatting
 without major crashes, message loss, duplicate messages, or state corruption.
 
 That is the current definition of **Stable LAN Chat**.
+
+---
+
+# 42. UI / Design System Rules
+
+Applies to **any change that touches UI** (样式、布局、交互态). Normative source:
+**`docs/design-guidelines.md`** (based on Apple HIG / WWDC25 *Shape & Concentricity*).
+
+**Default rule:** new features follow that document unless the task explicitly specifies otherwise.
+Deviating requires stating the reason in the change description.
+
+Hard rules (violations are review blockers):
+
+1. **No literal radii.** Use `--gosslan-radius-*` tokens from `src/style.css`
+   (`rounded-[var(--gosslan-radius-md)]`), never `rounded-lg` or `border-radius: 8px`.
+2. **Concentric nesting:** inner radius = outer radius − padding, and inner must be **smaller**
+   than outer. Never leave inner corners pinched or flared.
+3. **The system owns the window shape.** Never put a radius on the window root container or on
+   the title-bar window buttons — the OS (DWM / macOS) rounds the window, and it does **not**
+   round when maximized. An app-drawn radius leaves a gap of `body` background at the corner.
+4. **No hardcoded state colors.** hover / press / danger / warning go through semantic tokens
+   (`--gosslan-hover`, `--gosslan-danger`, `--gosslan-danger-soft`, …), defined for both
+   light and dark. Never `#e81123`, `hover:bg-red-500/10`, `hover:bg-amber-500/10`, etc.
+5. **Every interactive element needs a press state** (a global rule already covers
+   `button` / `[role=button]`; do not override it away).
+6. **If you change layout dimensions or tokens**, also sync the two places that duplicate them:
+   `index.html` (boot skeleton, which cannot use CSS variables) and
+   `utils/previewMetrics.ts` / `utils/messageHeight.ts` (virtual-list height estimation).
+

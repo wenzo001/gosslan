@@ -158,11 +158,16 @@ function onResizeEnd() {
 </script>
 
 <template>
+    <!-- ⚠️ 根容器**不要**加圆角（曾经是 rounded-[var(--gosslan-radius-lg)]）：
+        窗口形状由系统负责——Windows 由 DWM（`shadow:true`，Win11 自动圆角，**最大化时不再圆角**）、
+        macOS 由系统窗口圆角。应用再画一层圆角就会与系统边界错位：容器圆角之外那圈露出 body 底色
+        （亮色 #edf1f6 ≈ 白），表现为「窗口角上有一道白缝」，关闭键 hover 成红色后尤其刺眼，
+        最大化时四角全会出现。圆角交给系统 = 曲线唯一、严丝合缝。 -->
     <div
     class="flex w-full flex-col overflow-hidden bg-[var(--gosslan-caption)] font-gosslan text-[var(--gosslan-text)]"
     :class="app.isMobile
       ? 'h-dvh'
-      : 'h-screen rounded-xl ring-1 ring-inset ring-[var(--gosslan-window-ring)]'"
+      : 'h-screen ring-1 ring-inset ring-[var(--gosslan-window-ring)]'"
   >
     <!-- 移动端顶部安全区：大圆角/刘海屏下为状态栏留出空间，避免搜索框顶到屏幕外框 -->
     <div v-if="app.isMobile" class="safe-top shrink-0"></div>
@@ -177,7 +182,7 @@ function onResizeEnd() {
 
     <!-- 会话列表：桌面宽度可拖拽调（默认250px，持久化）；移动端整屏抽屉，靠 translate 滑动切换 -->
     <aside
-      class="h-full shrink-0 overflow-hidden rounded-tl-xl bg-[var(--gosslan-list)]"
+      class="h-full shrink-0 overflow-hidden rounded-tl-[var(--gosslan-radius-lg)] bg-[var(--gosslan-list)]"
       :class="app.isMobile
         ? 'absolute inset-y-0 left-0 z-20 w-full transition-transform duration-300 ease-out ' +
           (app.mobileView === 'list' ? 'translate-x-0' : '-translate-x-full')
@@ -210,7 +215,7 @@ function onResizeEnd() {
 
     <!-- 右侧聊天区：白色面板，左上角圆角与列表相交（微信式），面板色差替代分割线 -->
     <main
-      class="flex h-full min-w-0 flex-1 flex-col rounded-tl-xl bg-[var(--gosslan-chat)]"
+      class="flex h-full min-w-0 flex-1 flex-col rounded-tl-[var(--gosslan-radius-lg)] bg-[var(--gosslan-chat)]"
       :class="app.isMobile && app.mobileView === 'list' ? 'hidden' : ''"
     >
       <div
@@ -270,12 +275,12 @@ function onResizeEnd() {
           <MessageCircle class="h-5 w-5" />
           <span
             v-if="chat.totalUnread > 0"
-            class="absolute -right-2.5 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-medium text-white"
+            class="absolute -right-2.5 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--gosslan-danger)] px-1 text-[11px] font-medium text-white"
           >
             {{ chat.totalUnread > 99 ? "99+" : chat.totalUnread }}
           </span>
         </span>
-        <span class="text-[10px]">消息</span>
+        <span class="text-[11px]">消息</span>
       </button>
       <button
         class="relative flex flex-1 flex-col items-center gap-0.5 py-2.5"
@@ -286,19 +291,19 @@ function onResizeEnd() {
           <Users class="h-5 w-5" />
           <span
             v-if="chat.pendingRequests.length"
-            class="absolute -right-2.5 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-medium text-white"
+            class="absolute -right-2.5 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--gosslan-danger)] px-1 text-[11px] font-medium text-white"
           >
             {{ chat.pendingRequests.length > 99 ? "99+" : chat.pendingRequests.length }}
           </span>
         </span>
-        <span class="text-[10px]">联系人</span>
+        <span class="text-[11px]">联系人</span>
       </button>
       <button
         class="flex flex-1 flex-col items-center gap-0.5 py-2.5 text-[var(--gosslan-text-2)]"
         @click="openSettings"
       >
         <Settings class="h-5 w-5" />
-        <span class="text-[10px]">设置</span>
+        <span class="text-[11px]">设置</span>
       </button>
     </nav>
 
@@ -313,8 +318,8 @@ function onResizeEnd() {
       <div
         v-for="t in app.toasts"
         :key="t.id"
-        class="flex items-center gap-2 rounded-lg px-4 py-2 text-sm text-white shadow-lg backdrop-blur-sm"
-        :class="t.type === 'error' ? 'bg-red-600/95' : 'bg-neutral-800/90'"
+        class="flex items-center gap-2 rounded-[var(--gosslan-radius-md)] px-4 py-2 text-sm text-white shadow-lg backdrop-blur-sm"
+        :class="t.type === 'error' ? 'bg-[var(--gosslan-danger)]' : 'bg-neutral-800/90'"
       >
         <CheckCircle2 v-if="t.type === 'success'" class="h-4 w-4 shrink-0" />
         <XCircle v-else-if="t.type === 'error'" class="h-4 w-4 shrink-0" />

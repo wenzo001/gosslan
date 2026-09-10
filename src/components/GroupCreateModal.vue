@@ -61,7 +61,7 @@ async function create() {
       <div class="mb-1.5 text-sm">群名称</div>
       <input
         v-model="name"
-        class="w-full rounded-lg bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none"
+        class="w-full rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none"
         placeholder="输入群聊名称"
         maxlength="32"
       />
@@ -72,11 +72,11 @@ async function create() {
       <div
         v-for="f in chat.friends"
         :key="f.device_id"
-        class="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-2 transition hover:bg-[var(--gosslan-hover)]"
+        class="flex cursor-pointer items-center gap-2 rounded-[var(--gosslan-radius-md)] px-2 py-2 transition hover:bg-[var(--gosslan-hover)]"
         @click="toggle(f.device_id)"
       >
         <div
-          class="flex h-4 w-4 items-center justify-center rounded border"
+          class="flex h-4 w-4 items-center justify-center rounded-[var(--gosslan-radius-xs)] border"
           :class="selected.includes(f.device_id) ? 'border-primary bg-primary' : 'border-[var(--gosslan-border)]'"
         >
           <Check v-if="selected.includes(f.device_id)" class="h-3 w-3 text-white" />
@@ -97,7 +97,7 @@ async function create() {
     </div>
 
     <button
-      class="mt-4 w-full rounded-xl bg-primary py-2.5 text-sm font-medium text-white transition hover:bg-primary-hover disabled:opacity-40"
+      class="mt-4 w-full rounded-[var(--gosslan-radius-lg)] bg-primary py-2.5 text-sm font-medium text-white transition hover:bg-primary-hover disabled:opacity-40"
       :disabled="selected.length === 0 || !name.trim()"
       @click="create"
     >

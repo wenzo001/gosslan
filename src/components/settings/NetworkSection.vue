@@ -104,7 +104,7 @@ async function toggleBluetooth() {
     <SettingsRow label="网卡">
       <select
         v-model="selectedIp"
-        class="max-w-[200px] rounded-lg bg-[var(--gosslan-bg)] px-3 py-1.5 text-sm outline-none"
+        class="max-w-[200px] rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] px-3 py-1.5 text-sm outline-none"
         @change="onInterfaceChange"
       >
         <option v-for="o in interfaceOptions" :key="o.value" :value="o.value">{{ o.label }}</option>

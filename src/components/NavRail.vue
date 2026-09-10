@@ -49,7 +49,7 @@ const pendingLabel = computed(() =>
     <!-- 中部：聊天 / 通讯录（选中仅图标变主题色，无背景块） -->
     <div class="mt-5 flex flex-col items-center gap-2">
       <button
-        class="relative flex h-11 w-11 items-center justify-center rounded-xl transition"
+        class="relative flex h-11 w-11 items-center justify-center rounded-[var(--gosslan-radius-lg)] transition"
         :class="view === 'chats'
           ? 'text-[var(--gosslan-rail-text-active)]'
           : 'text-[var(--gosslan-rail-text)] hover:bg-[var(--gosslan-rail-hover)]'"
@@ -59,13 +59,13 @@ const pendingLabel = computed(() =>
         <MessageCircle class="h-[22px] w-[22px]" :fill="view === 'chats' ? 'currentColor' : 'none'" :stroke-width="view === 'chats' ? 2 : 1.9" />
         <span
           v-if="chat.totalUnread > 0"
-          class="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-medium leading-none text-white"
+          class="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--gosslan-danger)] px-1 text-[11px] font-medium leading-none text-white"
         >
           {{ unreadLabel }}
         </span>
       </button>
       <button
-        class="relative flex h-11 w-11 items-center justify-center rounded-xl transition"
+        class="relative flex h-11 w-11 items-center justify-center rounded-[var(--gosslan-radius-lg)] transition"
         :class="view === 'contacts'
           ? 'text-[var(--gosslan-rail-text-active)]'
           : 'text-[var(--gosslan-rail-text)] hover:bg-[var(--gosslan-rail-hover)]'"
@@ -75,7 +75,7 @@ const pendingLabel = computed(() =>
         <Users class="h-[22px] w-[22px]" :fill="view === 'contacts' ? 'currentColor' : 'none'" :stroke-width="view === 'contacts' ? 2 : 1.9" />
         <span
           v-if="chat.pendingRequests.length"
-          class="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-medium leading-none text-white"
+          class="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--gosslan-danger)] px-1 text-[11px] font-medium leading-none text-white"
         >
           {{ pendingLabel }}
         </span>
@@ -85,7 +85,7 @@ const pendingLabel = computed(() =>
     <!-- 底部：深浅色切换 + 设置 -->
     <div class="mt-auto flex flex-col items-center gap-2">
       <button
-        class="flex h-10 w-10 items-center justify-center rounded-xl text-[var(--gosslan-rail-text)] transition hover:bg-[var(--gosslan-rail-hover)]"
+        class="flex h-10 w-10 items-center justify-center rounded-[var(--gosslan-radius-lg)] text-[var(--gosslan-rail-text)] transition hover:bg-[var(--gosslan-rail-hover)]"
         :title="app.dark ? '浅色模式' : '深色模式'"
         @click="app.toggleDark()"
       >
@@ -93,7 +93,7 @@ const pendingLabel = computed(() =>
         <Moon v-else class="h-[19px] w-[19px]" />
       </button>
       <button
-        class="flex h-10 w-10 items-center justify-center rounded-xl text-[var(--gosslan-rail-text)] transition hover:bg-[var(--gosslan-rail-hover)]"
+        class="flex h-10 w-10 items-center justify-center rounded-[var(--gosslan-radius-lg)] text-[var(--gosslan-rail-text)] transition hover:bg-[var(--gosslan-rail-hover)]"
         title="设置"
         @click="emit('open-settings')"
       >

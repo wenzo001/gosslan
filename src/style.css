@@ -14,6 +14,29 @@
   /* 聊天消息字号（设置页可改，由 app store 动态覆盖） */
   --gosslan-msg-size: 14px;
 
+  /* ---------------- 排版标尺（对齐 Apple HIG Text Styles） ----------------
+     Apple 的字号是有语义档位的（Subheadline 15 / Body 17 / Footnote 13 / Caption1 12 / Caption2 11），
+     不允许随手写中间值。本应用是密集聊天界面，整体比 iOS 正文小一档，映射如下：
+
+       token                        值    Apple 档位        用在哪
+       --gosslan-text-title        15px  Subheadline     会话标题、群名（字号最大的一级）
+       --gosslan-text-body         14px  Body（可调）     消息正文 = --gosslan-msg-size，用户可在设置里改
+       --gosslan-text-callout      13px  Footnote        列表行标题、输入框、次级正文
+       --gosslan-text-footnote     12px  Caption1        摘要、引用块、辅助说明
+       --gosslan-text-caption      11px  Caption2        **正文最小可用字号**：昵称、时间、徽标
+
+     约束（写新 UI 时照此选，不要写 10px/13.5px 这类中间值）：
+       —— 字号必须取自上面五档；**11px 是下限**（Apple 正文最小档），再小就不可读了。
+       —— 字重只用 Regular(400，默认) / Medium(500) / Semibold(600) 三级；
+          Bold/Black 不用于正文与列表（本仓现状合规，只有 medium/semibold）。
+       —— 字号与行高成对：11px↔16px、12px↔20px、13px↔20px、14px↔22px（leading-relaxed）、15px↔24px。
+       —— 不要用负 letter-spacing（本仓未使用 tracking 负值，保持）。 */
+  --gosslan-text-title: 15px;
+  --gosslan-text-body: 14px;
+  --gosslan-text-callout: 13px;
+  --gosslan-text-footnote: 12px;
+  --gosslan-text-caption: 11px;
+
   /* 主面板三档灰阶（Slate 系，对应设计规范）：rail/顶栏 #E2E8F0、列表 #F1F5F9、聊天 #F8FAFC，
      由深到浅拉开层次，面板圆角交界。 */
   --gosslan-caption: #e2e8f0;
@@ -34,6 +57,26 @@
   --gosslan-text: #0f172a;
   --gosslan-text-2: #64748b;
   --gosslan-hover: rgba(15, 23, 42, 0.05);
+  /* 按压态：比 hover 深一档。iOS 要求交互元素**必须有 press 反馈**，不能只有 hover */
+  --gosslan-pressed: rgba(15, 23, 42, 0.09);
+  /* 语义色（Apple 系统色，Light 值；Dark 在 .dark 里覆盖）。
+     危险/警告只用语义 token，不写死十六进制、也不用 Tailwind 的 red-500 一类固定色阶。 */
+  --gosslan-danger: #ff3b30;
+  --gosslan-danger-soft: rgba(255, 59, 48, 0.12);
+  --gosslan-warning: #ff9500;
+  --gosslan-warning-soft: rgba(255, 149, 0, 0.12);
+  /* 键盘焦点环：只用 :focus-visible 触达，鼠标点击不出现 */
+  --gosslan-focus-ring: color-mix(in srgb, var(--gosslan-primary) 55%, transparent);
+
+  /* 动效令牌（iOS 取向）：
+     —— 直接交互（点击/展开/弹层）用**强 ease-out**：起步快、收尾稳，最"跟手"；
+        Tailwind 默认的 standard 曲线（.4,0,.2,1）起手偏沉，是"网页感"的一部分。
+     —— 时长：轻反馈 150ms（hover/变色），结构性变化 240ms（展开/弹层）。
+        HIG 对"状态变化"给的是 300–500ms + 减速曲线；本应用是密集聊天界面，
+        取更短的区间以免拖沓。 */
+  --gosslan-ease: cubic-bezier(0.32, 0.72, 0, 1);
+  --gosslan-duration-fast: 150ms;
+  --gosslan-duration: 240ms;
 
   /* 版式尺寸：64px 侧栏（图标有呼吸感）+ 250px 列表栏 + 56px 头部 */
   --gosslan-rail-w: 64px;
@@ -41,10 +84,25 @@
   --gosslan-header-h: 56px;
   /* 顶部窗口拖拽条高度：caption 容纳右上三枚窗口按钮 */
   --gosslan-title-h: 38px;
-  /* 头像 6px 圆角（既不像方角生硬也不完全圆润）；行无圆角贴边；气泡小圆角 */
-  --gosslan-avatar-radius: 6px;
-  --gosslan-item-radius: 8px;
-  --gosslan-bubble-radius: 6px;
+  /* ---------------- 圆角梯度（对齐 iOS HIG / WWDC25「Shape & Concentricity」） ----------------
+     选形状看"密度与层级"，不要到处都圆：
+       ① 固定半径 —— 本应用绝大多数元素（紧凑、密集的桌面/移动控件）
+       ② 胶囊 --gosslan-radius-pill —— 头像圆点、在线状态点、高强调大按钮
+       ③ 同心圆角 —— 嵌套面：**内圆角 = 外圆角 − 内外间距**；不要出现内角被夹扁/外翻
+     梯度与 Tailwind 旧类一一对应（换算时用 `rounded-<size>` → 同名 token，**零观感变化**）：
+       Tailwind `rounded`=4px、`rounded-md`=6px、`rounded-lg`=8px、`rounded-xl`=12px、`rounded-2xl`=16px
+     完整规则见 docs/design-guidelines.md；**新功能默认按该文档执行**。 */
+  --gosslan-radius-xs: 4px; /* 内联小色块：@提及、行内代码 */
+  --gosslan-radius-sm: 6px; /* 紧凑控件：下拉项、工具条按钮、气泡 */
+  --gosslan-radius-md: 8px; /* 标准控件：列表行、导航项、菜单容器、输入框 */
+  --gosslan-radius-lg: 12px; /* 浮层与卡片：弹层、设置分组、代码卡片 */
+  --gosslan-radius-xl: 16px; /* 大面板：模态、资料卡 */
+  --gosslan-radius-pill: 9999px;
+
+  /* 语义别名（保留旧名以免大范围改动；值统一来自上面的梯度） */
+  --gosslan-avatar-radius: var(--gosslan-radius-sm);
+  --gosslan-item-radius: var(--gosslan-radius-md);
+  --gosslan-bubble-radius: var(--gosslan-radius-sm);
 
   /* 窗口外圈描边线：窗口外缘一整圈细浅灰圆角描边（DWM 边框视觉），
      用 inset ring 画在最外层容器上，不占布局；深色下用微亮线 */
@@ -79,6 +137,12 @@
   --gosslan-text: #f1f5f9;
   --gosslan-text-2: #94a3b8;
   --gosslan-hover: rgba(248, 250, 252, 0.06);
+  /* 深色下 press 要"提亮"而不是压暗（暗面上再压暗几乎看不出反馈） */
+  --gosslan-pressed: rgba(248, 250, 252, 0.11);
+  --gosslan-danger: #ff453a;
+  --gosslan-danger-soft: rgba(255, 69, 58, 0.18);
+  --gosslan-warning: #ff9f0a;
+  --gosslan-warning-soft: rgba(255, 159, 10, 0.18);
   --gosslan-app-bg: #0b1220;
   --gosslan-window-ring: rgba(248, 250, 252, 0.09);
   --gosslan-panel-frost: rgba(30, 41, 59, 0.85);
@@ -105,6 +169,103 @@ body {
 
 * {
   box-sizing: border-box;
+}
+
+/* ---------------- 原生手感基线（触摸 / 按压 / 滚动 / 动效） ----------------
+   WebView 默认带着"网页感"，主要来自这四件事，逐条关掉：
+   ① 点击高亮：Android 上是一块半透明蓝灰闪一下，最像网页的一处
+   ② 双击缩放判定：会吃掉首次点击的即时反馈
+   ③ 整页橡皮筋：内容滚到头还把整页拖出去再弹回来，原生应用不会
+   ④ hover 的过渡把"按下"的变色拖慢约 150ms，按下去像没反应 */
+html {
+  -webkit-tap-highlight-color: transparent;
+  /* manipulation = 只关双击缩放，**保留捏合缩放**（不禁用缩放本身，符合无障碍要求） */
+  touch-action: manipulation;
+  overscroll-behavior: none;
+}
+body {
+  overscroll-behavior: none;
+}
+/* 滚动容器（消息区 / 列表 / 弹层）：滚到头不要把整页带出去 */
+.overflow-y-auto,
+.overflow-auto {
+  overscroll-behavior: contain;
+}
+/* 控件不长按选中、不弹系统菜单；正文消息区不在此列——那里要能选字复制 */
+button,
+[role="button"] {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+/* 交互态基线（hover / press / focus） ----------------
+   iOS 取向：hover 必须克制——只做轻微加深/提亮，不做位移与缩放（密集列表里位移会让"行在跳"）；
+   而且**必须有 press 态**，否则按下像没反应。 */
+button:not(:disabled):active,
+[role="button"]:not([aria-disabled="true"]):active {
+  /* 按下必须"立即"反馈：:active 里把过渡时长归零 → 变色瞬间发生；
+     状态消失后过渡参数回到普通规则（150ms）→ 松手仍是平滑回落。
+     这就是原生的那一下手感：按下瞬时、回弹平滑。 */
+  transition-duration: 0s;
+  /* 用 filter 而不是改背景色：一处生效、不参与布局、也不覆盖各组件自己的 hover 底色 */
+  filter: brightness(0.95);
+}
+/* 深色面上再压暗几乎看不出反馈 → 深色下改为提亮 */
+.dark button:not(:disabled):active,
+.dark [role="button"]:not([aria-disabled="true"]):active {
+  filter: brightness(1.15);
+}
+/* 可点击的"行"（会话行 / 好友行 / 消息行用的是 <div>，不是 <button>）也要有按下反馈。
+   按 Tailwind 的 cursor-pointer 约定选：写这个类就意味着"这里是可点的"。
+   不给它们加 role="button" 是为了不动无障碍语义（那要配套键盘处理，属后续项）。 */
+.cursor-pointer:active {
+  transition-duration: 0s;
+  filter: brightness(0.95);
+}
+.dark .cursor-pointer:active {
+  filter: brightness(1.15);
+}
+/* 键盘焦点环：只对 :focus-visible 生效（鼠标点击不出现焦点环） */
+:where(button, a, input, textarea, select, [tabindex]):focus-visible {
+  outline: 2px solid var(--gosslan-focus-ring);
+  outline-offset: 1px;
+}
+
+/* 统一过渡曲线：覆盖 Tailwind 的 .transition 系列（同优先级、本文件在 @tailwind 之后 → 后者胜） */
+.transition,
+.transition-colors,
+.transition-opacity,
+.transition-shadow,
+.transition-transform,
+.transition-all {
+  transition-timing-function: var(--gosslan-ease);
+}
+
+/* 触屏上把过小的点按目标扩到 44px（Apple 最小点按目标）。
+   只扩**垂直**方向、不扩水平：横向相邻控件间距很小，横向扩会互相抢点击
+   （严格说连垂直也可能与上下相邻元素重叠，所以只给确实独立的小按钮加）。
+   用法：给小于 44px 的独立小按钮加 class="tap-safe"。 */
+@media (pointer: coarse) {
+  .tap-safe {
+    position: relative;
+  }
+  .tap-safe::after {
+    content: "";
+    position: absolute;
+    inset: -8px 0;
+  }
+}
+
+/* 尊重"减弱动态效果"（Apple 无障碍要求）：关掉过渡与动画 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
 }
 
 /* 毛玻璃：窗口不透明，模糊的是 body 上的渐变底 */
@@ -162,7 +323,7 @@ body {
   padding: 4px 10px;
   font-size: 11px;
   line-height: 16px;
-  border-radius: 6px;
+  border-radius: var(--gosslan-radius-sm);
   color: var(--gosslan-text-2);
   white-space: nowrap;
 }
@@ -178,7 +339,7 @@ body {
 }
 ::-webkit-scrollbar-thumb {
   background: rgba(128, 128, 128, 0.3);
-  border-radius: 3px;
+  border-radius: var(--gosslan-radius-pill);
 }
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(128, 128, 128, 0.5);
@@ -219,7 +380,7 @@ body {
    只强化边界、不改填充，对比度不受影响。 */
 .mention-token {
   font-weight: 600;
-  border-radius: 4px;
+  border-radius: var(--gosslan-radius-xs);
   padding: 1px 4px;
   margin: 0 1px;
   background: color-mix(in srgb, currentColor 12%, transparent);
@@ -236,16 +397,19 @@ body {
 
 /* 内联图片表情（抖音表情）：正方形副格子 + object-contain 保持原图比例，
    高度随正文字号（em 基准）缩放；vertical-align 对齐文字基线，与原生 Unicode 表情观感一致。
-   尺寸 1.15em 的由来：原 1.25em（14px 正文下 17.5px）比正文大出一圈，气泡上下几乎没有留白，
-   连排表情还彼此贴死，观感拥挤；缩到 1.15em（≈16px）后仍在正文之上但不再"顶格"。
-   横向 1px 间隙让连排表情不粘连。两侧都只改"渲染宽度"、不改行高——行高由正文字号的
-   line-height 决定，因此**不影响 VirtualList 的高度估算**（气泡高度不变）。
-   若改这里的高度，不要顺手改气泡内边距：那会改变所有文本气泡的实际高度，
-   必须同步 previewMetrics.TEXT_BUBBLE_PADDING，否则相邻消息会错位。 */
+   尺寸 1.3em 的由来：源图多为 96×96、少数 108×96（宽图被 object-contain 内缩），
+   所以**实际墨迹比盒子还小一圈**——1.15em 时看着"和文字差不多大"，高分屏更显小。
+   1.3em（14px 正文下 18.2px）明显大于正文又不过分，混排时最和谐。
+   横向 1px 间隙让连排表情不粘连。
+   ⚠️ 已实测：13/14/16px 三档字号下，1.15em 与 1.3em 的气泡渲染高度**完全一致**
+   （表情受 line-height 约束、不参与行盒增高），因此**不影响 VirtualList 的高度估算**。
+   若要再放大，务必用同样方式复测三档字号下的气泡高度，别凭感觉——一旦撑高行盒，
+   相邻消息就会错位。也**不要**顺手改气泡内边距：那会改所有文本气泡高度，
+   必须同步 previewMetrics.TEXT_BUBBLE_PADDING。 */
 .emoji-img {
   display: inline-block;
-  width: 1.15em;
-  height: 1.15em;
+  width: 1.3em;
+  height: 1.3em;
   object-fit: contain;
   vertical-align: -0.25em;
   margin: 0 1px;

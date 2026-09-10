@@ -438,9 +438,17 @@ export const useChatStore = defineStore("chat", () => {
     touchCacheOrder(convId);
     // 打开会话应先加载「最新一页」，而不是最旧一页；否则底部会停在第 100 条历史，
     // 最新消息与文件都要靠后续滚动才出现。
-    const total = await api.getMessageCount(convId);
-    const offset = Math.max(0, total - PAGE_SIZE);
-    const list = await api.getMessages(convId, PAGE_SIZE, offset);
+    let list: MessageRecord[];
+    try {
+      const total = await api.getMessageCount(convId);
+      const offset = Math.max(0, total - PAGE_SIZE);
+      list = await api.getMessages(convId, PAGE_SIZE, offset);
+    } catch {
+      // 读库失败也要把该会话标记为「已加载」：留 undefined 会让 ChatWindow 的加载骨架
+      // 永远停在那里（UI 先行就得保证"必有终态"）。给空列表 = 回到"暂无消息"的正常态。
+      if (messages.value[convId] === undefined) messages.value[convId] = [];
+      return;
+    }
     if (seq !== loadSeq || activeConv.value !== convId) return;
     // 快照可能取自 Ack / peer-read 落库之前：与查询期间已推进的内存状态合并，
     // 否则刚亮的绿勾会被这份旧快照退回「发送中」。

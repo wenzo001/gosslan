@@ -105,7 +105,7 @@ async function leaveGroup() {
         <div
           v-for="id in group.members"
           :key="id"
-          class="flex items-center gap-2.5 rounded-lg px-2 py-2"
+          class="flex items-center gap-2.5 rounded-[var(--gosslan-radius-md)] px-2 py-2"
         >
           <div class="relative shrink-0">
             <div
@@ -124,7 +124,7 @@ async function leaveGroup() {
           <div class="min-w-0 flex-1">
             <div class="flex items-center gap-1.5">
               <span class="truncate text-sm font-medium">{{ memberProfile(id).name }}</span>
-              <Crown v-if="group.creator === id" class="h-3.5 w-3.5 shrink-0 text-amber-500" title="群主" />
+              <Crown v-if="group.creator === id" class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-warning)]" title="群主" />
               <span v-if="id === myId" class="shrink-0 text-[11px] text-[var(--gosslan-text-2)]">（我）</span>
             </div>
             <div class="text-xs text-[var(--gosslan-text-2)]">
@@ -134,7 +134,7 @@ async function leaveGroup() {
           <!-- 群主操作：转让群主 / 移除成员（不能操作自己/创建者本人） -->
           <button
             v-if="isOwner && id !== myId"
-            class="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-[var(--gosslan-text-2)] transition hover:bg-amber-500/10 hover:text-amber-500"
+            class="flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-warning-soft)] hover:text-[var(--gosslan-warning)]"
             :title="`把群主转让给 ${memberProfile(id).name}`"
             @click="transferOwner(id)"
           >
@@ -142,7 +142,7 @@ async function leaveGroup() {
           </button>
           <button
             v-if="isOwner && id !== myId"
-            class="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-[var(--gosslan-text-2)] transition hover:bg-red-500/10 hover:text-red-500"
+            class="flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-danger-soft)] hover:text-[var(--gosslan-danger)]"
             :title="`将 ${memberProfile(id).name} 移出群聊`"
             @click="removeMember(id)"
           >
@@ -158,17 +158,17 @@ async function leaveGroup() {
       <template v-if="isOwner">
         <button
           v-if="!showAdd"
-          class="flex w-full items-center justify-center gap-1.5 rounded-xl border border-dashed border-[var(--gosslan-border)] py-2 text-sm text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+          class="flex w-full items-center justify-center gap-1.5 rounded-[var(--gosslan-radius-lg)] border border-dashed border-[var(--gosslan-border)] py-2 text-sm text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
           @click="showAdd = true"
         >
           <Plus class="h-4 w-4" />
           添加成员
         </button>
-        <div v-else class="rounded-xl border border-[var(--gosslan-border)] p-2">
+        <div v-else class="rounded-[var(--gosslan-radius-lg)] border border-[var(--gosslan-border)] p-2">
           <div class="mb-1 flex items-center justify-between px-1">
             <span class="text-xs font-medium text-[var(--gosslan-text-2)]">选择好友加入</span>
             <button
-              class="flex items-center justify-center rounded p-1 text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+              class="flex items-center justify-center rounded-[var(--gosslan-radius-xs)] p-1 text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
               title="收起"
               @click="showAdd = false"
             >
@@ -179,7 +179,7 @@ async function leaveGroup() {
             <div
               v-for="f in addableFriends"
               :key="f.device_id"
-              class="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 transition hover:bg-[var(--gosslan-hover)]"
+              class="flex cursor-pointer items-center gap-2 rounded-[var(--gosslan-radius-md)] px-2 py-1.5 transition hover:bg-[var(--gosslan-hover)]"
               @click="addMember(f)"
             >
               <div
@@ -202,7 +202,7 @@ async function leaveGroup() {
       <!-- 退出群聊：群主须先转让后再退出（后端会拒绝群主直接退群） -->
       <button
         v-if="!isOwner"
-        class="flex w-full items-center justify-center gap-1.5 rounded-xl border border-[var(--gosslan-border)] py-2 text-sm text-red-500 transition hover:bg-red-500/10"
+        class="flex w-full items-center justify-center gap-1.5 rounded-[var(--gosslan-radius-lg)] border border-[var(--gosslan-border)] py-2 text-sm text-[var(--gosslan-danger)] transition hover:bg-[var(--gosslan-danger-soft)]"
         @click="leaveGroup"
       >
         <LogOut class="h-4 w-4" />

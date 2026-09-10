@@ -40,7 +40,7 @@ const tailBg = computed(() => surface.value);
          同时卡片不画下边框，分隔线统一由操作条上边框绘制，避免叠出双线。 -->
     <div
       v-if="clamped"
-      class="overflow-hidden rounded-t-lg"
+      class="overflow-hidden rounded-t-[var(--gosslan-radius-sm)]"
       :style="{ height: `${CODE_CLAMP_HEIGHT}px`, background: surface }"
     >
       <CodeBlock :code="code" attached />
@@ -96,6 +96,6 @@ const tailBg = computed(() => surface.value);
   padding: 0 4px;
   border-style: solid;
   border-width: 1px 0 0;
-  border-radius: 0 0 8px 8px;
+  border-radius: 0 0 var(--gosslan-radius-md) var(--gosslan-radius-md);
 }
 </style>

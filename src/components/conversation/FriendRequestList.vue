@@ -21,13 +21,13 @@ function initials(name: string) {
 
 <template>
   <div v-if="open" class="mb-1">
-    <div v-if="requests.length" class="rounded-xl">
+    <div v-if="requests.length" class="rounded-[var(--gosslan-radius-lg)]">
       <div
         class="flex items-center justify-between px-2 pb-1 pt-0.5 text-[11px] font-medium uppercase tracking-wide text-[var(--gosslan-text-2)]"
       >
         <span>好友申请</span>
         <button
-          class="flex items-center justify-center rounded p-0.5 text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+          class="flex items-center justify-center rounded-[var(--gosslan-radius-xs)] p-0.5 text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
           title="收起"
           @click="emit('close')"
         >
@@ -64,11 +64,11 @@ function initials(name: string) {
     </div>
     <div
       v-else
-      class="flex items-center justify-between rounded-xl px-2 py-1.5 text-xs text-[var(--gosslan-text-2)]"
+      class="flex items-center justify-between rounded-[var(--gosslan-radius-lg)] px-2 py-1.5 text-xs text-[var(--gosslan-text-2)]"
     >
       <span>暂无好友申请</span>
       <button
-        class="flex items-center justify-center rounded p-0.5 transition hover:bg-[var(--gosslan-hover)]"
+        class="flex items-center justify-center rounded-[var(--gosslan-radius-xs)] p-0.5 transition hover:bg-[var(--gosslan-hover)]"
         title="收起"
         @click="emit('close')"
       >

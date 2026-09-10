@@ -23,7 +23,7 @@ const fonts = [
   <SettingsGroup title="外观">
     <SettingsRow label="深色模式" description="开启后使用深色主题界面">
       <SettingsToggle :model-value="app.dark" size="md" @update:model-value="app.toggleDark()">
-        <Sun v-if="app.dark" class="h-3 w-3 text-amber-500" />
+        <Sun v-if="app.dark" class="h-3 w-3 text-[var(--gosslan-warning)]" />
         <Moon v-else class="h-3 w-3 text-[var(--gosslan-text-2)]" />
       </SettingsToggle>
     </SettingsRow>
@@ -40,7 +40,7 @@ const fonts = [
         <input
           type="color"
           :value="app.themeColor"
-          class="h-6 w-7 cursor-pointer rounded border-0 bg-transparent p-0"
+          class="h-6 w-7 cursor-pointer rounded-[var(--gosslan-radius-xs)] border-0 bg-transparent p-0"
           title="自定义颜色"
           @input="(e) => app.setThemeColor((e.target as HTMLInputElement).value)"
         />
@@ -49,7 +49,7 @@ const fonts = [
 
     <SettingsRow label="字体" last>
       <select
-        class="max-w-[180px] rounded-lg bg-[var(--gosslan-bg)] px-3 py-1.5 text-sm outline-none"
+        class="max-w-[180px] rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] px-3 py-1.5 text-sm outline-none"
         :value="app.fontFamily"
         @change="(e) => app.setFontFamily((e.target as HTMLSelectElement).value)"
       >

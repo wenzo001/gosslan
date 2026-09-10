@@ -86,7 +86,7 @@ onBeforeUnmount(() => {
 
     <!-- Windows/Linux：右侧三键（顶到窗口最右缘）。
          ⚠️ 这三个按钮**不要加圆角**：外框容器（ResponsiveLayout 根节点）是
-         `rounded-xl + overflow-hidden`，关闭键右上角由它裁——两者曲线重合，hover 底
+         `rounded-[var(--gosslan-radius-lg)] + overflow-hidden`，关闭键右上角由它裁——两者曲线重合，hover 底
          与窗口边界严丝合缝。若给按钮自己加 border-radius（试过 8px），按钮的圆角曲线
          与窗口边界曲线不重合，中间会夹出一条浅色月牙缝（看起来"没贴合"）。
          同理只加圆角不加宽度补偿也不行：那会让 hover 底与窗口边缘脱开。
@@ -108,7 +108,7 @@ onBeforeUnmount(() => {
         <Maximize2 v-else class="h-3 w-3" />
       </button>
       <button
-        class="flex w-11 items-center justify-center text-[var(--gosslan-rail-text)] transition hover:bg-[#e81123] hover:text-white"
+        class="flex w-11 items-center justify-center text-[var(--gosslan-rail-text)] transition hover:bg-[var(--gosslan-danger)] hover:text-white"
         title="关闭（最小化到托盘，后台继续收消息）"
         @click="api.windowClose()"
       >

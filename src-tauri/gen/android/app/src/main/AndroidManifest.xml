@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 触觉反馈：WebView 里的 navigator.vibrate 需要此权限；缺失时 utils/haptics 会静默 no-op。
+         只用于按钮/长按等交互反馈，不做任何后台震动。 -->
+    <uses-permission android:name="android.permission.VIBRATE" />
 
     <!-- AndroidTV support -->
     <uses-feature android:name="android.software.leanback" android:required="false" />

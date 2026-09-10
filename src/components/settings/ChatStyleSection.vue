@@ -20,11 +20,11 @@ function swatchOf(p: ChatPreset): { mineBubble: string; otherBubble: string } {
     <!-- 字体大小 -->
     <div class="px-4 py-3">
       <div class="mb-2 text-sm text-[var(--gosslan-text)]">字体大小</div>
-      <div class="flex gap-1 rounded-lg bg-[var(--gosslan-bg)] p-0.5">
+      <div class="flex gap-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] p-0.5">
         <button
           v-for="f in CHAT_FONT_SIZES"
           :key="f.key"
-          class="flex-1 rounded-md py-1.5 text-sm transition"
+          class="flex-1 rounded-[var(--gosslan-radius-sm)] py-1.5 text-sm transition"
           :class="app.chatStyle.fontSize === f.key ? 'bg-[var(--gosslan-panel)] text-[var(--gosslan-text)] shadow-sm' : 'text-[var(--gosslan-text-2)] hover:text-[var(--gosslan-text)]'"
           @click="app.setChatStyle({ fontSize: f.key })"
         >
@@ -42,16 +42,16 @@ function swatchOf(p: ChatPreset): { mineBubble: string; otherBubble: string } {
         <button
           v-for="p in CHAT_PRESETS"
           :key="p.key"
-          class="rounded-lg border p-2 transition hover:bg-[var(--gosslan-hover)]"
+          class="rounded-[var(--gosslan-radius-md)] border p-2 transition hover:bg-[var(--gosslan-hover)]"
           :class="app.chatStyle.preset === p.key ? 'border-primary ring-1 ring-primary' : 'border-[var(--gosslan-border)]'"
           :title="p.label"
           @click="app.setChatStyle({ preset: p.key })"
         >
           <div class="mb-1 text-center text-[11px] text-[var(--gosslan-text-2)]">{{ p.label }}</div>
           <div class="flex items-center gap-1">
-            <span class="h-4 flex-1 rounded" :style="{ background: swatchOf(p).mineBubble }"></span>
+            <span class="h-4 flex-1 rounded-[var(--gosslan-radius-xs)]" :style="{ background: swatchOf(p).mineBubble }"></span>
             <span
-              class="h-4 flex-1 rounded border border-[var(--gosslan-border)]"
+              class="h-4 flex-1 rounded-[var(--gosslan-radius-xs)] border border-[var(--gosslan-border)]"
               :style="{ background: swatchOf(p).otherBubble }"
             ></span>
           </div>

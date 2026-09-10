@@ -39,7 +39,7 @@ function fmtTs(ts: number) {
     <div class="max-h-[75vh] overflow-y-auto space-y-5 text-xs leading-relaxed">
       <!-- 刷新 -->
       <div class="flex items-center justify-between">
-        <button class="rounded-md px-2.5 py-1 transition hover:bg-black/5 dark:hover:bg-white/10" @click="refresh">
+        <button class="rounded-[var(--gosslan-radius-sm)] px-2.5 py-1 transition hover:bg-black/5 dark:hover:bg-white/10" @click="refresh">
           {{ loading ? "刷新中..." : "刷新数据" }}
         </button>
       </div>
@@ -66,13 +66,13 @@ function fmtTs(ts: number) {
             <div><span class="opacity-60">组播地址：</span>{{ diag.multicast_group || "-" }}</div>
             <div>
               <span class="opacity-60">multicast_if：</span>
-              <span :class="diag.multicast_if_result.startsWith('ok') || diag.multicast_if_result === 'not_set' ? '' : 'text-red-500'">
+              <span :class="diag.multicast_if_result.startsWith('ok') || diag.multicast_if_result === 'not_set' ? '' : 'text-[var(--gosslan-danger)]'">
                 {{ diag.multicast_if_result || "-" }}
               </span>
             </div>
             <div>
               <span class="opacity-60">join_multicast：</span>
-              <span :class="diag.multicast_join_result.startsWith('ok') ? '' : 'text-red-500'">
+              <span :class="diag.multicast_join_result.startsWith('ok') ? '' : 'text-[var(--gosslan-danger)]'">
                 {{ diag.multicast_join_result || "-" }}
               </span>
             </div>
@@ -122,7 +122,7 @@ function fmtTs(ts: number) {
           <div class="max-h-48 overflow-y-auto space-y-0.5 font-mono text-[11px]">
             <div v-for="(ev, i) in diag.recent_events" :key="i" class="flex gap-2">
               <span class="shrink-0 opacity-50 w-20">{{ fmtTs(ev.ts) }}</span>
-              <span class="shrink-0 w-28 truncate" :class="ev.kind.includes('error') ? 'text-red-500' : ''">{{ ev.kind }}</span>
+              <span class="shrink-0 w-28 truncate" :class="ev.kind.includes('error') ? 'text-[var(--gosslan-danger)]' : ''">{{ ev.kind }}</span>
               <span class="opacity-70 truncate">{{ ev.detail }}</span>
             </div>
           </div>

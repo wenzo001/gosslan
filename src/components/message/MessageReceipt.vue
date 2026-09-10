@@ -84,7 +84,7 @@ function readerAvatar(id: string): string | null {
       <span
         v-for="id in visibleReaders"
         :key="id"
-        class="flex h-4 w-4 items-center justify-center overflow-hidden rounded-full border border-[var(--gosslan-panel)] text-[8px] text-white"
+        class="flex h-4 w-4 items-center justify-center overflow-hidden rounded-full border border-[var(--gosslan-panel)] text-[11px] text-white"
         :style="{ backgroundColor: nameToColor(readerName(id)) }"
       >
         <img v-if="readerAvatar(id)" :src="readerAvatar(id) ?? undefined" class="h-full w-full object-cover" />
@@ -92,14 +92,14 @@ function readerAvatar(id: string): string | null {
       </span>
       <span
         v-if="extraReaders.length > 0"
-        class="ml-1 rounded-full bg-[var(--gosslan-hover)] px-1 text-[9px] text-[var(--gosslan-text-2)]"
+        class="ml-1 rounded-full bg-[var(--gosslan-hover)] px-1 text-[11px] text-[var(--gosslan-text-2)]"
       >
         +{{ extraReaders.length }}
       </span>
     </button>
     <div
       v-if="readersOpen && readerIds.length > 0"
-      class="frost absolute right-0 z-20 max-h-60 min-w-36 overflow-y-auto rounded-lg border border-[var(--gosslan-border)] p-1.5 text-xs shadow-lg"
+      class="frost absolute right-0 z-20 max-h-60 min-w-36 overflow-y-auto rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] p-1.5 text-xs shadow-lg"
       :class="openUp ? 'bottom-7' : 'top-7'"
       @click.stop
     >
@@ -107,10 +107,10 @@ function readerAvatar(id: string): string | null {
       <div
         v-for="id in readerIds"
         :key="id"
-        class="flex items-center gap-2 rounded px-2 py-1 hover:bg-[var(--gosslan-hover)]"
+        class="flex items-center gap-2 rounded-[var(--gosslan-radius-xs)] px-2 py-1 hover:bg-[var(--gosslan-hover)]"
       >
         <span
-          class="flex h-5 w-5 items-center justify-center overflow-hidden rounded-full text-[9px] text-white"
+          class="flex h-5 w-5 items-center justify-center overflow-hidden rounded-full text-[11px] text-white"
           :style="{ backgroundColor: nameToColor(readerName(id)) }"
         >
           <img v-if="readerAvatar(id)" :src="readerAvatar(id) ?? undefined" class="h-full w-full object-cover" />
@@ -125,7 +125,7 @@ function readerAvatar(id: string): string | null {
     <Loader2 v-if="state === 'sending' || state === 'sent'" class="h-3.5 w-3.5 animate-spin text-[var(--gosslan-text-2)]" />
     <button
       v-else-if="state === 'failed'"
-      class="flex h-5 w-5 items-center justify-center rounded text-red-500 transition hover:bg-red-500/10"
+      class="flex h-5 w-5 items-center justify-center rounded-[var(--gosslan-radius-xs)] text-[var(--gosslan-danger)] transition hover:bg-[var(--gosslan-danger-soft)]"
       title="重新发送"
       @click="emit('retry')"
     >

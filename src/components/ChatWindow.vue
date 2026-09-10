@@ -26,6 +26,14 @@ const conv = computed(() => chat.activeConversation);
 const isGroup = computed(() => chat.activeConv?.startsWith("group:") ?? false);
 const messages = computed(() => chat.messages[chat.activeConv ?? ""] ?? []);
 
+/**
+ * 消息是否还没加载完：`loadMessages` 完成前 `messages[convId]` 是 undefined。
+ * 用它先渲染骨架 —— 否则切会话会先闪一句"暂无消息"再跳出内容（UI 不能等数据）。
+ */
+const messagesLoading = computed(
+  () => !!chat.activeConv && chat.messages[chat.activeConv] === undefined,
+);
+
 const online = computed(() => {
   if (!conv.value || conv.value.kind !== "single") return false;
   return chat.friends.some((f) => f.device_id === conv.value!.id && f.online);
@@ -335,7 +343,27 @@ function onLoadMore() {
 
     <!-- 消息区（虚拟滚动，仅纵向）：与头部同底色，无缝衔接 -->
     <div class="relative min-h-0 flex-1 overflow-hidden bg-[var(--gosslan-chat)]">
-      <div v-if="messages.length === 0" class="mt-20 text-center text-sm text-[var(--gosslan-text-2)]">
+      <!-- 加载骨架：切会话时**立即**渲染（store 的 loadMessages 完成前 messages[convId] 是 undefined）。
+           没有它就会先闪一句"暂无消息，打个招呼吧"再跳出内容——既不准又显得卡。
+           规则：UI 先出、数据后到（详见 docs/design-guidelines.md §9）。 -->
+      <div v-if="messagesLoading" class="flex flex-col gap-3 px-4 py-5" aria-hidden="true">
+        <div class="flex gap-2">
+          <div class="h-9 w-9 shrink-0 animate-pulse rounded-[var(--gosslan-avatar-radius)] bg-[var(--gosslan-hover)]"></div>
+          <div class="h-9 w-40 animate-pulse rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-hover)]"></div>
+        </div>
+        <div class="flex flex-row-reverse gap-2">
+          <div class="h-9 w-9 shrink-0 animate-pulse rounded-[var(--gosslan-avatar-radius)] bg-[var(--gosslan-hover)]"></div>
+          <div class="h-9 w-56 animate-pulse rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-hover)]"></div>
+        </div>
+        <div class="flex gap-2">
+          <div class="h-9 w-9 shrink-0 animate-pulse rounded-[var(--gosslan-avatar-radius)] bg-[var(--gosslan-hover)]"></div>
+          <div class="h-9 w-32 animate-pulse rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-hover)]"></div>
+        </div>
+      </div>
+      <div
+        v-else-if="messages.length === 0"
+        class="mt-20 text-center text-sm text-[var(--gosslan-text-2)]"
+      >
         暂无消息，打个招呼吧
       </div>
       <VirtualList

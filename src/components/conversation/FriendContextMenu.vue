@@ -11,12 +11,12 @@ const emit = defineEmits<{
 <template>
   <Teleport to="body">
     <div
-      class="frost fixed z-50 min-w-[150px] select-none rounded-lg border border-[var(--gosslan-border)] p-1 shadow-xl"
+      class="frost fixed z-50 min-w-[150px] select-none rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] p-1 shadow-xl"
       :style="{ left: x + 'px', top: y + 'px' }"
       @click.stop
     >
       <button
-        class="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm text-red-600 transition hover:bg-[var(--gosslan-hover)]"
+        class="flex w-full items-center gap-2 rounded-[var(--gosslan-radius-xs)] px-3 py-2 text-left text-sm text-[var(--gosslan-danger)] transition hover:bg-[var(--gosslan-hover)]"
         @click="emit('confirm')"
       >
         <UserMinus class="h-4 w-4" />

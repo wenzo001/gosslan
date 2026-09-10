@@ -152,10 +152,17 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
 
 <template>
   <div class="flex h-full flex-col bg-[var(--gosslan-list)]">
-    <!-- 列表头：搜索框（白底+细边，在浅灰栏上清晰）+ 操作按钮 -->
-    <div class="flex items-center gap-1.5 px-3 py-2">
+    <!-- 列表头：搜索框（白底+细边，在浅灰栏上清晰）+ 操作按钮。
+         高度必须与右栏 ChatHeader 同源（--gosslan-header-h）并同样画下边框：
+         两栏从同一个 y 起算，只有高度与底边线都一致，那条分隔线才是**一条连续的线**。
+         之前这里是 px-3 py-2 + h-9 搜索框 = 52px（比右栏 56px 矮 4px）且无底边线，
+         于是左右永远差 4px、右栏那条线在左栏没有对应物。改高度/内边距时留意这条约束。 -->
+    <div
+      class="flex shrink-0 items-center gap-1.5 border-b border-[var(--gosslan-divider)] px-3"
+      :style="{ height: 'var(--gosslan-header-h)' }"
+    >
       <div
-        class="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-lg border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-2.5 transition focus-within:border-[var(--gosslan-primary)]"
+        class="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-2.5 transition focus-within:border-[var(--gosslan-primary)]"
       >
         <Search class="h-4 w-4 shrink-0 text-[var(--gosslan-text-2)]" />
         <input
@@ -168,7 +175,7 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
       <div class="relative flex shrink-0 items-center">
         <!-- 微信式：单个加号，点开下拉（添加好友 / 创建群聊） -->
         <button
-          class="flex h-7 w-7 items-center justify-center rounded-lg text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-list-hover)]"
+          class="flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-list-hover)]"
           title="添加好友 / 创建群聊"
           @click.stop="togglePlus"
         >
@@ -176,7 +183,7 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
         </button>
         <div
           v-if="plusOpen"
-          class="frost absolute right-0 top-8 z-30 w-36 overflow-hidden rounded-lg border border-[var(--gosslan-border)] py-1 shadow-lg"
+          class="frost absolute right-0 top-8 z-30 w-36 overflow-hidden rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] py-1 shadow-lg"
         >
           <button
             class="flex w-full items-center gap-2 px-3 py-2 text-[13px] text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
@@ -228,13 +235,13 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
             </span>
             <span
               v-if="chat.pendingRequests.length"
-              class="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-medium leading-none text-white"
+              class="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--gosslan-danger)] px-1 text-[11px] font-medium leading-none text-white"
             >
               {{ chat.pendingRequests.length > 99 ? "99+" : chat.pendingRequests.length }}
             </span>
           </span>
           <span class="min-w-0 flex-1 text-left">
-            <span class="block truncate text-[13.5px] leading-5 text-[var(--gosslan-text)]">新的朋友</span>
+            <span class="block truncate text-[13px] leading-5 text-[var(--gosslan-text)]">新的朋友</span>
             <span class="block truncate text-[12px] leading-5 text-[var(--gosslan-text-2)]">
               {{ chat.pendingRequests.length ? `${chat.pendingRequests.length} 条待处理申请` : "暂无好友申请" }}
             </span>
@@ -267,7 +274,7 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
     <BaseModal :open="pendingDelete !== null" title="删除聊天记录" @close="pendingDelete = null">
       <div class="space-y-3">
         <p class="text-sm text-[var(--gosslan-text)]">
-          将删除与「<span class="font-medium text-red-500">{{ pendingDelete?.name }}</span>」的全部本地聊天记录。
+          将删除与「<span class="font-medium text-[var(--gosslan-danger)]">{{ pendingDelete?.name }}</span>」的全部本地聊天记录。
         </p>
         <ul class="space-y-1 text-xs text-[var(--gosslan-text-2)]">
           <li>· 对方聊天记录不受影响</li>
@@ -276,11 +283,11 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
         </ul>
         <div class="flex justify-end gap-2 pt-2">
           <button
-            class="rounded-lg px-4 py-1.5 text-sm transition hover:bg-[var(--gosslan-hover)]"
+            class="rounded-[var(--gosslan-radius-md)] px-4 py-1.5 text-sm transition hover:bg-[var(--gosslan-hover)]"
             @click="pendingDelete = null"
           >取消</button>
           <button
-            class="rounded-lg bg-red-500 px-4 py-1.5 text-sm text-white transition hover:bg-red-600"
+            class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-1.5 text-sm text-white transition hover:bg-[var(--gosslan-danger)]"
             @click="confirmDeleteConv"
           >删除</button>
         </div>

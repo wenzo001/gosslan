@@ -15,6 +15,6 @@ export function highlightText(text: string, kw: string): string {
   const regex = new RegExp(`(${safeKw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "gi");
   return safe.replace(
     regex,
-    '<mark class="bg-yellow-200 dark:bg-yellow-800/50 rounded px-0.5">$1</mark>',
+    '<mark class="bg-yellow-200 dark:bg-yellow-800/50 rounded-[var(--gosslan-radius-xs)] px-0.5">$1</mark>',
   );
 }

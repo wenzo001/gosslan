@@ -32,7 +32,7 @@ const confirmRemove = ref(false);
       class="flex items-center gap-2 border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-chat)] px-2 py-2"
     >
       <button
-        class="flex h-9 w-9 items-center justify-center rounded-lg text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+        class="flex h-9 w-9 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
         title="返回"
         @click="app.mobileView = 'list'"
       >
@@ -74,7 +74,7 @@ const confirmRemove = ref(false);
             发消息
           </button>
           <button
-            class="flex items-center justify-center gap-2 rounded-[var(--gosslan-avatar-radius)] border border-[var(--gosslan-border)] px-4 py-2.5 text-sm text-red-500 transition hover:bg-red-500/10"
+            class="flex items-center justify-center gap-2 rounded-[var(--gosslan-avatar-radius)] border border-[var(--gosslan-border)] px-4 py-2.5 text-sm text-[var(--gosslan-danger)] transition hover:bg-[var(--gosslan-danger-soft)]"
             @click="confirmRemove = true"
           >
             <UserMinus class="h-4 w-4" />
@@ -83,7 +83,7 @@ const confirmRemove = ref(false);
         </div>
 
         <!-- 资料明细 -->
-        <div class="mt-8 overflow-hidden rounded-xl border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)]">
+        <div class="mt-8 overflow-hidden rounded-[var(--gosslan-radius-lg)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)]">
           <div class="border-b border-[var(--gosslan-border)] px-4 py-2.5 text-sm font-medium">资料</div>
           <dl class="divide-y divide-[var(--gosslan-border)] text-sm">
             <div class="flex items-start justify-between gap-4 px-4 py-3">
@@ -118,7 +118,7 @@ const confirmRemove = ref(false);
     <BaseModal :open="confirmRemove" title="删除好友" @close="confirmRemove = false">
       <div class="space-y-3">
         <p class="text-sm">
-          确定删除好友「<span class="font-medium text-red-500">{{ friend.nickname }}</span>」？
+          确定删除好友「<span class="font-medium text-[var(--gosslan-danger)]">{{ friend.nickname }}</span>」？
         </p>
         <ul class="space-y-1 text-xs text-[var(--gosslan-text-2)]">
           <li>· 聊天记录保留在本地，可通过「添加好友」重新添加</li>
@@ -126,11 +126,11 @@ const confirmRemove = ref(false);
         </ul>
         <div class="flex justify-end gap-2 pt-2">
           <button
-            class="rounded-lg px-4 py-1.5 text-sm transition hover:bg-[var(--gosslan-hover)]"
+            class="rounded-[var(--gosslan-radius-md)] px-4 py-1.5 text-sm transition hover:bg-[var(--gosslan-hover)]"
             @click="confirmRemove = false"
           >取消</button>
           <button
-            class="rounded-lg bg-red-500 px-4 py-1.5 text-sm text-white transition hover:bg-red-600"
+            class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-1.5 text-sm text-white transition hover:bg-[var(--gosslan-danger)]"
             @click="confirmRemove = false; emit('remove', friend)"
           >删除</button>
         </div>

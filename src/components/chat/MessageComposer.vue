@@ -5,6 +5,7 @@ import { useAppStore } from "@/stores/useAppStore";
 import EmojiPicker from "@/components/EmojiPicker.vue";
 import { QUOTE_BORDER, QUOTE_BG, QUOTE_TEXT_STYLE } from "@/utils/quoteStyle";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
+import { haptic } from "@/utils/haptics";
 import { mentionHighlightColor, resolveChatColors } from "@/utils/chatStyle";
 import { avatarInitial, nameToColor } from "@/utils/color";
 import { classifyPaste, type ClipboardItemLike } from "@/utils/clipboard";
@@ -113,6 +114,9 @@ function send(kind?: MsgKind, content?: string) {
     autoResize();
     if (!app.isMobile) focusEditor();
   });
+  // 消息已经乐观入列（DOM 立刻更新）→ 给一下轻触觉，确认"发出去了"。
+  // 按 Apple 的触觉规则：只在关键动作给，且是按下即给（不是等网络回来才给）。
+  haptic("light");
   emit("send", { content: text, kind: k });
 }
 
@@ -431,23 +435,23 @@ function fileToDataUrl(f: File): Promise<string> {
 <template>
   <div class="flex flex-col gap-2">
     <!-- 微信 4.0 输入卡：白底圆角带细边；文本域在上，图标行在卡内底部，发送键靠右下 -->
-    <div ref="composerCard" class="relative rounded-lg border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-3 pb-1.5 pt-2">
+    <div ref="composerCard" class="relative rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-3 pb-1.5 pt-2">
       <!-- 群聊 @ 成员选择：输入 @ 后浮出，↑↓ 导航 / Enter 或点击选中 -->
       <div
         v-if="mention && mentionFiltered.length > 0"
-        class="frost absolute bottom-full left-2 right-2 z-30 mb-2 max-h-44 overflow-y-auto rounded-lg border border-[var(--gosslan-border)] p-1 shadow-lg"
+        class="frost absolute bottom-full left-2 right-2 z-30 mb-2 max-h-44 overflow-y-auto rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] p-1 shadow-lg"
       >
         <div class="px-2 py-1 text-[11px] text-[var(--gosslan-text-2)]">选择提醒的人</div>
         <button
           v-for="(m, i) in mentionFiltered"
           :key="m.id"
-          class="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] transition"
+          class="flex w-full items-center gap-2 rounded-[var(--gosslan-radius-sm)] px-2 py-1.5 text-left text-[13px] transition"
           :class="i === mentionActive ? 'bg-[var(--gosslan-list-active)]' : 'hover:bg-[var(--gosslan-hover)]'"
           @mousedown.prevent
           @click="applyMention(m)"
         >
           <span
-            class="flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-full text-[10px] text-white"
+            class="flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-full text-[11px] text-white"
             :style="{ backgroundColor: nameToColor(m.name) }"
           >{{ avatarInitial(m.name) }}</span>
           <span class="min-w-0 flex-1 truncate">{{ m.name }}</span>
@@ -456,12 +460,12 @@ function fileToDataUrl(f: File): Promise<string> {
       <!-- 引用预览条：右键"引用"后出现在输入框上方，可取消 -->
       <div
         v-if="quote"
-        class="mb-1.5 flex items-center gap-2 rounded-md border-l-2 px-2 py-1 text-[12px]"
+        class="mb-1.5 flex items-center gap-2 rounded-[var(--gosslan-radius-sm)] border-l-2 px-2 py-1 text-[12px]"
         :style="{ borderColor: QUOTE_BORDER, background: QUOTE_BG, color: 'var(--gosslan-text)' }"
       >
         <span class="min-w-0 flex-1 truncate" :style="QUOTE_TEXT_STYLE">引用 {{ quote.sender }}：{{ quote.snippet }}</span>
         <button
-          class="flex h-5 w-5 shrink-0 items-center justify-center rounded transition hover:bg-[var(--gosslan-hover)]"
+          class="flex h-5 w-5 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-xs)] transition hover:bg-[var(--gosslan-hover)]"
           title="取消引用"
           @click="emit('close-quote')"
         >
@@ -486,7 +490,7 @@ function fileToDataUrl(f: File): Promise<string> {
       <div class="mt-1 flex items-center gap-1">
         <div class="relative">
           <button
-            class="flex h-7 w-7 items-center justify-center rounded-md transition"
+            class="flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] transition"
             :class="emojiOpen ? 'text-primary' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
             title="表情"
             @click.stop="toggleEmoji"
@@ -498,7 +502,7 @@ function fileToDataUrl(f: File): Promise<string> {
         <!-- @mousedown.prevent 保持编辑器焦点：否则点击按钮后焦点落到按钮上，
              紧接着按 Enter 会激活按钮（把 codeMode 再切回去）而非走编辑器 keydown 发送。 -->
         <button
-          class="flex h-7 w-7 items-center justify-center rounded-md transition"
+          class="flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] transition"
           :class="codeMode ? 'text-primary' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
           title="代码消息"
           @mousedown.prevent
@@ -507,14 +511,14 @@ function fileToDataUrl(f: File): Promise<string> {
           <Code2 class="h-[18px] w-[18px]" />
         </button>
         <button
-          class="flex h-7 w-7 items-center justify-center rounded-md text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+          class="flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
           title="发送文件（自动选择最优路线）"
           @click="emit('attach')"
         >
           <FilePlus class="h-[18px] w-[18px]" />
         </button>
         <button
-          class="ml-auto flex h-7 shrink-0 items-center rounded-md bg-[var(--gosslan-hover)] px-4 text-[13px] transition"
+          class="ml-auto flex h-7 shrink-0 items-center rounded-[var(--gosslan-radius-sm)] bg-[var(--gosslan-hover)] px-4 text-[13px] transition"
           :class="hasDraft ? 'text-primary hover:bg-[var(--gosslan-list-active)]' : 'cursor-default text-[var(--gosslan-text-2)]'"
           :disabled="!hasDraft"
           @mousedown.prevent

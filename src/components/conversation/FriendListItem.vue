@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onUnmounted } from "vue";
 import { avatarInitial, nameToColor } from "@/utils/color";
+import { haptic } from "@/utils/haptics";
 import type { Friend } from "@/types";
 
 defineProps<{ friend: Friend; active: boolean }>();
@@ -37,6 +38,8 @@ function onTouchStart(friend: Friend, e: TouchEvent) {
   clearPress();
   pressTimer = setTimeout(() => {
     pressTimer = null;
+    // 长按菜单弹出时给一次"重"触觉（对应 iOS 的 impact(.heavy) at menu appear）
+    haptic("heavy");
     emit("context", friend, t.clientX, t.clientY);
   }, LONG_PRESS_MS);
 }
@@ -74,7 +77,7 @@ onUnmounted(clearPress);
       ></span>
     </div>
     <div class="min-w-0 flex-1">
-      <div class="truncate text-[13.5px] leading-5" :class="active ? 'font-medium text-[var(--gosslan-text)]' : 'text-[var(--gosslan-text)]'">
+      <div class="truncate text-[13px] leading-5" :class="active ? 'font-medium text-[var(--gosslan-text)]' : 'text-[var(--gosslan-text)]'">
         {{ friend.nickname }}
       </div>
       <div

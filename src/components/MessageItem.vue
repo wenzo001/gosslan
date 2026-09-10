@@ -312,7 +312,7 @@ async function copyFileToClipboard() {
 </script>
 
 <template>
-  <div class="py-1.5" :class="highlighted ? 'rounded-lg bg-primary/5 ring-1 ring-primary/25' : ''">
+  <div class="py-1.5" :class="highlighted ? 'rounded-[var(--gosslan-radius-md)] bg-primary/5 ring-1 ring-primary/25' : ''">
     <!-- 时间分割线（间隔 ≥ 5 分钟）：居中浅灰小字 -->
     <div v-if="showTimeDivider" class="py-2 text-center text-[11px] text-[var(--gosslan-text-2)]">
       {{ timeDividerText }}
@@ -330,8 +330,17 @@ async function copyFileToClipboard() {
       <MessageAvatar :name="avatarName" :avatar="avatarSrc" />
 
       <div class="flex min-w-0 max-w-[72%] flex-col" :class="mine ? 'items-end' : 'items-start'">
-        <!-- 群聊发送者昵称 -->
-        <div v-if="showNickname" class="mb-0.5 px-1 text-[11px] text-[var(--gosslan-text-2)]">
+        <!-- 群聊发送者昵称。
+             视觉对齐：外层 flex 没有 items-*，所以**头像顶边 = 本行行盒顶边**。
+             原先 `mb-0.5 text-[11px]`（行高 1.5 → 16.5px）会把墨迹往下推半行距约 3.7px，
+             看起来名字比头像"低一点"（中英文都一样，实测 3.5px）。
+             改成 `leading-none`（行盒 = 11px）+ `mb-[7px]`：墨迹贴到行盒顶（≈0.5px），
+             与头像顶边齐平；且 **11 + 7 = 18px 与原来的 16.5 + 2 = 18.5 基本一致**，
+             正好等于 messageHeight.NICKNAME_ROW(18)，虚拟列表估算不受影响。 -->
+        <div
+          v-if="showNickname"
+          class="mb-[7px] px-1 text-[11px] leading-none text-[var(--gosslan-text-2)]"
+        >
           {{ senderName || chat.nicknameOf(message.sender_id) }}
         </div>
 

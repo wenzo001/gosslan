@@ -6,9 +6,10 @@
 2. `docs/acceptance/1.0-release.md` — current goal and acceptance bar
 3. `AI_PROJECT_HANDOFF.md`
 4. `docs/protocol-invariants.md` — when touching protocol / network / crypto / DB
-5. Relevant ADR
-6. Relevant tests
-7. `CHANGELOG.md` history when touching a previously-fixed area
+5. `docs/design-guidelines.md` — when touching UI (圆角 / hover / 配色 / 窗口边界)
+6. Relevant ADR
+7. Relevant tests
+8. `CHANGELOG.md` history when touching a previously-fixed area
 
 ## Templates
 

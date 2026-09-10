@@ -118,7 +118,7 @@ async function openLink(href: string) {
     <!-- 引用块：首行「引用 发送者：片段」，带 msg_id 时可点击跳转原消息 -->
     <button
       v-if="parsed.quote && parsed.msgId"
-      class="quote-block mb-1.5 block w-full cursor-pointer rounded-md border-l-2 px-2 py-1 text-left text-[12px] leading-4 transition hover:brightness-110"
+      class="quote-block mb-1.5 block w-full cursor-pointer rounded-[var(--gosslan-radius-sm)] border-l-2 px-2 py-1 text-left text-[12px] leading-4 transition hover:brightness-110"
       :style="{ borderColor: QUOTE_BORDER, background: QUOTE_BG }"
       :title="`点击定位到原消息（${parsed.msgId}）`"
       @click="emit('locate', parsed.msgId)"
@@ -127,7 +127,7 @@ async function openLink(href: string) {
     </button>
     <div
       v-else-if="parsed.quote"
-      class="quote-block mb-1.5 rounded-md border-l-2 px-2 py-1 text-[12px] leading-4"
+      class="quote-block mb-1.5 rounded-[var(--gosslan-radius-sm)] border-l-2 px-2 py-1 text-[12px] leading-4"
       :style="{ borderColor: QUOTE_BORDER, background: QUOTE_BG }"
     >
       <span class="quote-text" :style="QUOTE_TEXT_STYLE">{{ parsed.quote }}</span>

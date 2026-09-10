@@ -29,7 +29,7 @@ const emit = defineEmits<{
     <div class="flex min-w-0 items-center gap-1.5">
       <button
         v-if="showBack"
-        class="-ml-2 mr-1 flex h-8 w-8 items-center justify-center rounded-md text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+        class="-ml-2 mr-1 flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
         title="返回"
         @click="emit('back')"
       >
@@ -44,7 +44,7 @@ const emit = defineEmits<{
       <!-- 只保留有真实功能的入口；不放没有实现的功能按钮（音视频通话/更多已移除） -->
       <button
         v-if="isGroup"
-        class="flex h-8 w-8 items-center justify-center rounded-md text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+        class="flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
         title="群成员"
         @click="emit('open-members')"
       >
@@ -52,7 +52,7 @@ const emit = defineEmits<{
       </button>
       <button
         v-if="isGroup && canRename"
-        class="flex h-8 w-8 items-center justify-center rounded-md text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+        class="flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
         title="修改群名称"
         @click="emit('rename')"
       >
@@ -60,7 +60,7 @@ const emit = defineEmits<{
       </button>
       <button
         v-if="!isGroup"
-        class="flex h-8 w-8 items-center justify-center rounded-md text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+        class="flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
         title="共享目录"
         @click="emit('open-share')"
       >

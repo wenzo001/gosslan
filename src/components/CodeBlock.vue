@@ -95,7 +95,7 @@ const html = computed(() => {
   <component :is="'style'">{{ app.dark ? darkCss : lightCss }}</component>
   <div
     class="overflow-hidden text-left"
-    :class="attached ? 'rounded-t-lg' : ['rounded-lg', borderStyle]"
+    :class="attached ? 'rounded-t-[var(--gosslan-radius-sm)]' : ['rounded-[var(--gosslan-radius-md)]', borderStyle]"
     :style="{ borderWidth: attached ? '0px' : '1px' }"
   >
     <div class="flex items-center justify-between px-3" style="height: 32px" :style="{ background: toolbarBg }">

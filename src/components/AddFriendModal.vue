@@ -86,7 +86,7 @@ async function add(peerId: string) {
     <template v-else>
       <input
         v-model="keyword"
-        class="mb-2 w-full rounded-lg bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none"
+        class="mb-2 w-full rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none"
         placeholder="搜索昵称 / IP / 设备 ID"
       />
       <div class="max-h-72 overflow-y-auto">
@@ -108,7 +108,7 @@ async function add(peerId: string) {
           </div>
           <span
             v-if="friendIds.has(p.device_id)"
-            class="flex items-center gap-1 rounded-lg px-3 py-1.5 text-xs font-medium text-[var(--gosslan-text-2)]"
+            class="flex items-center gap-1 rounded-[var(--gosslan-radius-md)] px-3 py-1.5 text-xs font-medium text-[var(--gosslan-text-2)]"
           >
             <Check class="h-3.5 w-3.5" />
             已加好友
@@ -116,14 +116,14 @@ async function add(peerId: string) {
           <button
             v-else-if="inCooldown(p.device_id)"
             disabled
-            class="flex cursor-default items-center gap-1 rounded-lg bg-[var(--gosslan-hover)] px-3 py-1.5 text-xs font-medium text-[var(--gosslan-text-2)]"
+            class="flex cursor-default items-center gap-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-hover)] px-3 py-1.5 text-xs font-medium text-[var(--gosslan-text-2)]"
           >
             <Check class="h-3.5 w-3.5" />
             完成
           </button>
           <button
             v-else
-            class="flex items-center gap-1 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-white transition hover:bg-primary-hover"
+            class="flex items-center gap-1 rounded-[var(--gosslan-radius-md)] bg-primary px-3 py-1.5 text-xs font-medium text-white transition hover:bg-primary-hover"
             @click="add(p.device_id)"
           >
             <UserPlus class="h-3.5 w-3.5" />

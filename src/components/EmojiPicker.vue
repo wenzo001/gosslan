@@ -19,7 +19,7 @@ const emit = defineEmits<{
        8px 后留白翻倍，而可视高度 300 内仍是 7 行（36 + 44×6 = 300，正好 7 行）不损失行数。 -->
   <div
     v-if="open"
-    class="frost absolute bottom-full left-0 z-50 mb-2 w-[360px] select-none rounded-xl border border-[var(--gosslan-border)] shadow-xl"
+    class="frost absolute bottom-full left-0 z-50 mb-2 w-[360px] select-none rounded-[var(--gosslan-radius-lg)] border border-[var(--gosslan-border)] shadow-xl"
     @click.stop
   >
     <div
@@ -29,7 +29,7 @@ const emit = defineEmits<{
       <button
         v-for="e in EMOJIS"
         :key="e.file"
-        class="flex h-9 w-9 items-center justify-center rounded-md transition hover:bg-[var(--gosslan-hover)]"
+        class="flex h-9 w-9 items-center justify-center rounded-[var(--gosslan-radius-xs)] transition hover:bg-[var(--gosslan-hover)]"
         :title="e.displayName"
         @click="emit('select', e.displayName)"
       >

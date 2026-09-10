@@ -14,7 +14,9 @@ const TIME_DIVIDER_GAP = 5 * 60 * 1000;
 
 /** MessageItem: py-1.5（同发方连续消息间距 12px，学微信的呼吸感） */
 const ROW_PADDING = 12;
-/** 群聊昵称行：mb-0.5(2) + text-[11px](16)。消息下的常驻时间行已删（微信式：时间只在分割线出现）。 */
+/** 群聊昵称行：leading-none(11) + mb-[7px](7) = 18px。
+ *  字号/行高改动必须同步这里与 MessageItem 的昵称行（两者是同一份高度的两处表达）。
+ *  行高取 leading-none 是为了让墨迹贴住行盒顶、与头像顶边齐平（行高 1.5 会往下推 ~3.7px，看着"名字偏低"）。 */
 const NICKNAME_ROW = 18;
 /** 时间分割线（含 py-2） */
 const TIME_DIVIDER = 32;

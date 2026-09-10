@@ -129,14 +129,14 @@ function processAvatar(file: File): Promise<string> {
         <input
           v-model="nickname"
           maxlength="30"
-          class="w-full rounded-lg bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none transition focus:ring-2 focus:ring-primary"
+          class="w-full rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none transition focus:ring-2 focus:ring-primary"
           placeholder="昵称（修改后自动保存）"
           @blur="saveProfileNow"
           @keydown="onNicknameKeydown"
         />
         <div class="mt-2.5 flex items-center justify-between">
           <button
-            class="rounded-lg border border-[var(--gosslan-border)] px-3 py-1.5 text-xs transition hover:bg-[var(--gosslan-hover)]"
+            class="rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3 py-1.5 text-xs transition hover:bg-[var(--gosslan-hover)]"
             @click="avatarInput?.click()"
           >
             更换头像

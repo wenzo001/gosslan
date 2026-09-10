@@ -6,6 +6,7 @@ import { X } from "lucide-vue-next";
 import { computed } from "vue";
 import { useChatStore } from "@/stores/useChatStore";
 import { useMemberProfile } from "@/composables/useMemberProfile";
+import { haptic } from "@/utils/haptics";
 import type { Conversation } from "@/types";
 
 const props = defineProps<{
@@ -24,6 +25,15 @@ const emit = defineEmits<{
 
 const chat = useChatStore();
 const { memberProfile } = useMemberProfile();
+
+/**
+ * 打开会话：先给一下「选择」触觉（切会话属于离散选择变化，对应 iOS 的
+ * UISelectionFeedbackGenerator），再抛事件。触觉只在支持的平台生效。
+ */
+function openConv(conv: Conversation) {
+  haptic("selection");
+  emit("open", conv);
+}
 
 /** 群里有人 @ 我且未读（打开会话即清除）：微信式红色标签，显示在摘要前。 */
 const mentioned = computed(() => chat.mentionedConvs.has(props.conv.id));
@@ -59,7 +69,7 @@ const gridTiles = computed(() => {
     :class="active
       ? 'bg-[var(--gosslan-list-active)] text-[var(--gosslan-list-active-text)]'
       : 'hover:bg-[var(--gosslan-list-hover)]'"
-    @click="emit('open', conv)"
+    @click="openConv(conv)"
   >
     <div class="relative shrink-0">
       <!-- 群聊：微信式 2x2 九宫格头像；单聊：单头像 -->
@@ -70,7 +80,7 @@ const gridTiles = computed(() => {
         <div
           v-for="(t, i) in gridTiles"
           :key="i"
-          class="flex items-center justify-center overflow-hidden text-[10px] font-medium text-white"
+          class="flex items-center justify-center overflow-hidden text-[11px] font-medium text-white"
           :style="{ backgroundColor: t.color }"
         >
           <img v-if="t.avatar" :src="t.avatar" class="h-full w-full object-cover" />
@@ -95,14 +105,14 @@ const gridTiles = computed(() => {
       <!-- 未读小红点：正常显示 -->
       <span
         v-if="conv.unread > 0"
-        class="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-medium leading-none text-white"
+        class="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--gosslan-danger)] px-1 text-[11px] font-medium leading-none text-white"
       >
         {{ conv.unread > 99 ? "99+" : conv.unread }}
       </span>
     </div>
     <div class="min-w-0 flex-1 overflow-hidden">
       <div class="flex items-center justify-between gap-2">
-        <span class="truncate text-[13.5px] leading-5" :class="active ? 'font-medium text-[var(--gosslan-list-active-text)]' : 'text-[var(--gosslan-text)]'">
+        <span class="truncate text-[13px] leading-5" :class="active ? 'font-medium text-[var(--gosslan-list-active-text)]' : 'text-[var(--gosslan-text)]'">
           {{ conv.name }}
         </span>
         <span
@@ -121,7 +131,7 @@ const gridTiles = computed(() => {
             <span v-html="highlightText(snippet, keyword.trim())"></span>
           </template>
           <template v-else>
-            <span v-if="mentioned" class="font-medium text-red-500">[有人@我]</span
+            <span v-if="mentioned" class="font-medium text-[var(--gosslan-danger)]">[有人@我]</span
             >{{ conv.last_msg || "暂无消息" }}
           </template>
         </span>
@@ -132,7 +142,7 @@ const gridTiles = computed(() => {
     <!-- 删除聊天记录入口：hover 行时浮现 -->
     <button
       v-if="!active"
-      class="absolute bottom-1.5 right-1.5 z-10 hidden h-6 w-6 items-center justify-center rounded text-[var(--gosslan-text-2)] transition hover:bg-red-500/10 hover:text-red-500 group-hover/conv:flex"
+      class="absolute bottom-1.5 right-1.5 z-10 hidden h-6 w-6 items-center justify-center rounded-[var(--gosslan-radius-xs)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-danger-soft)] hover:text-[var(--gosslan-danger)] group-hover/conv:flex"
       title="删除聊天记录"
       @click="emit('ask-delete', conv, $event)"
     >

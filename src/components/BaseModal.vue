@@ -33,7 +33,7 @@ const emit = defineEmits<{ (e: "close"): void }>();
             leave-to="opacity-0 scale-95"
           >
             <DialogPanel
-              class="elevated w-full rounded-2xl bg-[var(--gosslan-panel)] p-5 text-left align-middle text-[var(--gosslan-text)]"
+              class="elevated w-full rounded-[var(--gosslan-radius-xl)] bg-[var(--gosslan-panel)] p-5 text-left align-middle text-[var(--gosslan-text)]"
               :class="width"
             >
               <DialogTitle v-if="title" as="h3" class="text-base font-semibold mb-4">
