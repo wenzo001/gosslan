@@ -39,6 +39,14 @@ const mentionFg = computed(() =>
   mentionHighlightColor(app.themeColor, app.dark, app.dark ? "#1e293b" : "#ffffff"),
 );
 
+/** @提及 淡背景：与气泡同款取法（mentionFg 的 16%）。
+ *  ⚠️ 必须显式给：不给就落到 style.css 里 12% 的兜底值，同一句话在气泡与全文里
+ *  色块深浅会不一致（这正是本次要消除的"两处样式不一样"）。 */
+const mentionBg = computed(() => {
+  const fg = mentionFg.value;
+  return fg ? `color-mix(in srgb, ${fg} 16%, transparent)` : undefined;
+});
+
 async function openLink(href: string) {
   try {
     await openUrl(href);
@@ -80,7 +88,7 @@ async function openLink(href: string) {
           <span
             v-else-if="seg.kind === 'mention'"
             class="mention-token"
-            :style="{ color: mentionFg || undefined }"
+            :style="{ color: mentionFg || undefined, background: mentionBg || undefined }"
           >{{ seg.value }}</span>
           <span v-else>{{ seg.value }}</span>
         </template>
