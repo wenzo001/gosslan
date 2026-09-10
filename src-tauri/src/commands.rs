@@ -273,16 +273,17 @@ pub fn focus_window(app: tauri::AppHandle, state: State<'_, Arc<AppState>>) -> R
     };
     // 冷启动白闪修复：窗口 show 的第一帧会露出 WebView2 的默认背景色（tauri.conf.json
     // 写死浅色 #edf1f6）。暗色主题用户在骨架合成前会看到"闪一下白"。show 之前把窗口
-    // 底色改成跟随主题（浅 #f1f5f9 / 深 #0f172a，与 --gosslan-bg 一致），第一帧即正确
-    // 底色而非浅色。dark_mode 是"解析后的结果"（跟随系统时已按系统偏好算好），冷启动直接可用。
+    // 底色改成跟随主题（浅 #edf1f6 / 深 #0b1220，与 body 的 --gosslan-app-bg 一致），
+    // 第一帧即正确底色而非浅色。dark_mode 是"解析后的结果"（跟随系统时已按系统偏好算好），
+    // 冷启动直接可用。
     let dark = {
         let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
         db::get_setting(&dbc, "dark_mode").map(|v| v == "1").unwrap_or(false)
     };
     let color = if dark {
-        tauri::window::Color(15, 23, 42, 255) // #0f172a
+        tauri::window::Color(11, 18, 32, 255) // #0b1220
     } else {
-        tauri::window::Color(241, 245, 249, 255) // #f1f5f9
+        tauri::window::Color(237, 241, 246, 255) // #edf1f6
     };
     let _ = win.set_background_color(Some(color));
     let _ = win.unminimize();

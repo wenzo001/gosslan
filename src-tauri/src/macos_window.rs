@@ -25,10 +25,12 @@
 //!
 //! contentView 圆角只裁内容层，圆角外露出 NSWindow 的 backgroundColor（tauri.conf.json
 //! 写死浅色 `#edf1f6`）——暗色主题下就成了"白角"。故运行时按主题把窗口背景色设成
-//! 与 `--gosslan-bg` 一致的浅/深色（浅 `#f1f5f9` / 深 `#0f172a`），圆角外与内容同色。
+//! 与 body 实际底色 `--gosslan-app-bg` 一致的浅/深色（浅 `#edf1f6` / 深 `#0b1220`），
+//! 圆角外与内容同色、零色差（早期误用 `--gosslan-bg` `#f1f5f9`/`#0f172a`，比 body 亮
+//! 一档，圆角外透出"淡淡一层"）。
 //!
 //! 真透明窗口（圆角外透出桌面）需 `macos-private-api`，会失去 App Store 上架资格，
-//! 故不采用。
+//! 故不采用（用户已确认优先保持上架资格）。
 
 #[cfg(target_os = "macos")]
 pub fn disable_shadow(window: &tauri::WebviewWindow) {
@@ -52,12 +54,13 @@ pub fn apply_rounded_corners(window: &tauri::WebviewWindow, dark: bool) -> Resul
     }
     let ns_window: &NSWindow = unsafe { &*(raw as *mut NSWindow) };
 
-    // 背景色跟随主题（与 style.css 的 --gosslan-bg 一致：浅 #f1f5f9 / 深 #0f172a），
-    // 消除暗色主题下圆角外露浅色（"白角"）。
+    // 背景色跟随主题（与 body 实际底色 --gosslan-app-bg 一致：浅 #edf1f6 / 深 #0b1220），
+    // 圆角外与内容同色、零色差（早期误用 --gosslan-bg #f1f5f9/#0f172a，比 body 亮一档，
+    // 圆角外透出"淡淡一层"）。透明需 macos-private-api（会失去 App Store 上架资格），不采用。
     let (r, g, b) = if dark {
-        (15.0 / 255.0, 23.0 / 255.0, 42.0 / 255.0)
+        (11.0 / 255.0, 18.0 / 255.0, 32.0 / 255.0)
     } else {
-        (241.0 / 255.0, 245.0 / 255.0, 249.0 / 255.0)
+        (237.0 / 255.0, 241.0 / 255.0, 246.0 / 255.0)
     };
     let color = NSColor::colorWithSRGBRed_green_blue_alpha(r, g, b, 1.0);
     ns_window.setBackgroundColor(Some(&color));

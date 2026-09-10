@@ -11,8 +11,9 @@
 ## [Unreleased]
 
 ### Fixed
-- **Windows 冷启动暗色下"闪一下白"**：窗口以 `visible: false` 创建，由前端挂载后调 `focus_window` 显示；但 `focus_window` 只 `show()` 没动背景色，`show()` 的第一帧会露出 WebView2 的默认背景色（`tauri.conf.json` 的 `backgroundColor` 写死浅色 `#edf1f6`），暗色主题用户在骨架合成前看到"骨架之前还有一帧白色"。修复：`focus_window` 在 `show()` 之前读后端 SQLite 的 `dark_mode`（"解析后的结果"，跟随系统时已按系统偏好算好），用 `set_background_color` 把窗口底色改成跟随主题（浅 `#f1f5f9` / 深 `#0f172a`，与 `--gosslan-bg` 一致），第一帧即正确底色。命令消息 FIFO 顺序保证「先设色、后 show」，冷启动不再露浅色。
-- **macOS 窗口圆角仍不生效 + 暗色下露白角**：此前在 `setup` 里给 contentView 设圆角，但 wry 在**窗口显示时才**用 `WryWebViewParent` 替换 NSWindow 的 contentView，setup 阶段的圆角被替换丢失；且窗口背景色写死浅色 `#edf1f6`，暗色主题下圆角外露出浅色边。修复：① 圆角改到 **WebView 加载完成后**设置（前端 `App.vue` onMounted 调新命令 `apply_macos_window_shape`），此时 contentView 已是 wry 的 parent_view；② 窗口背景色**运行时跟随主题**（浅 `#f1f5f9` / 深 `#0f172a`，与 `--gosslan-bg` 一致），消除暗色露白；③ `setHasShadow(false)` 留在 setup（NSWindow 级、不被替换）。新增 `macos_window::disable_shadow` / `apply_rounded_corners` 两函数。
+- **macOS 圆角外"淡淡一层颜色"（白主题淡白 / 黑主题淡黑）**：窗口背景色误用了 `--gosslan-bg`（浅 `#f1f5f9` / 深 `#0f172a`），而 body 实际底色是 `--gosslan-app-bg`（浅 `#edf1f6` / 深 `#0b1220`），两者差一档 → 圆角外透出与内容不同色的"淡淡一层"。修复：窗口背景色改用 `--gosslan-app-bg`，与内容零色差。真透明（透出桌面）需 `macos-private-api` 私有 API、会失去 App Store 上架资格，用户确认**保持可上架**，故不采用。
+- **Windows 冷启动暗色下"闪一下白"**：窗口以 `visible: false` 创建，由前端挂载后调 `focus_window` 显示；但 `focus_window` 只 `show()` 没动背景色，`show()` 的第一帧会露出 WebView2 的默认背景色（`tauri.conf.json` 的 `backgroundColor` 写死浅色 `#edf1f6`），暗色主题用户在骨架合成前看到"骨架之前还有一帧白色"。修复：`focus_window` 在 `show()` 之前读后端 SQLite 的 `dark_mode`（"解析后的结果"，跟随系统时已按系统偏好算好），用 `set_background_color` 把窗口底色改成跟随主题（浅 `#edf1f6` / 深 `#0b1220`，与 body 的 `--gosslan-app-bg` 一致），第一帧即正确底色。命令消息 FIFO 顺序保证「先设色、后 show」，冷启动不再露浅色。
+- **macOS 窗口圆角仍不生效 + 暗色下露白角**：此前在 `setup` 里给 contentView 设圆角，但 wry 在**窗口显示时才**用 `WryWebViewParent` 替换 NSWindow 的 contentView，setup 阶段的圆角被替换丢失；且窗口背景色写死浅色 `#edf1f6`，暗色主题下圆角外露出浅色边。修复：① 圆角改到 **WebView 加载完成后**设置（前端 `App.vue` onMounted 调新命令 `apply_macos_window_shape`），此时 contentView 已是 wry 的 parent_view；② 窗口背景色**运行时跟随主题**，消除暗色露白；③ `setHasShadow(false)` 留在 setup（NSWindow 级、不被替换）。新增 `macos_window::disable_shadow` / `apply_rounded_corners` 两函数。
 
 ## [2.1.1] - 2026-09-10
 
