@@ -2597,7 +2597,7 @@ async fn handle_group_file_done(
     }
 
     // 从接收表移除（取得所有权），做最终校验与落盘
-    let r = match state.group_file_receivers.lock().unwrap_or_else(|e| e.into_inner()).remove(&transfer_id) {
+    let mut r = match state.group_file_receivers.lock().unwrap_or_else(|e| e.into_inner()).remove(&transfer_id) {
         Some(r) => r,
         None => return,
     };
@@ -2685,6 +2685,13 @@ async fn handle_group_file_done(
     }
     // 4. drop 文件句柄后 rename（Windows 不允许 rename 打开中的文件）
     drop(r.file);
+    // 最终名是"开始接收"时就定下的，那一刻同样在途的同名传输还没落盘、unique_path 看不到它
+    // → 两条同名传输可能选中同一个名字。这里在真正落盘前再确认一次：被占走就换名。
+    // （单聊路径本来就是在写盘时才定名，所以没有这个竞态——这也是"群聊出问题、单聊正常"的原因。）
+    if r.final_path.exists() {
+        let dl = state.downloads_dir.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        r.final_path = file::unique_path(&dl, &r.name);
+    }
     if let Err(_) = std::fs::rename(&r.tmp_path, &r.final_path) {
         let _ = std::fs::remove_file(&r.tmp_path);
         set_gfile_bubble_status(state, &transfer_id, "failed");

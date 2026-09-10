@@ -403,7 +403,11 @@ fn make_receiver(
     let dl = state.downloads_dir.lock().unwrap_or_else(|e| e.into_inner()).clone();
     std::fs::create_dir_all(&dl).ok();
     let final_path = unique_path(&dl, &safe_name);
-    let tmp_path = PathBuf::from(format!("{}.part", final_path.display()));
+    // ⚠️ 临时文件必须按 **transfer_id** 命名，不能从 final_path 派生：
+    // 两张同名图同时在途时，begin 那一刻磁盘上还没有同名文件 → unique_path 会给两者同一个 final_path
+    // → 由它派生的 .part 也相同 → 两份字节交错写进同一文件 → sha256 校验失败
+    // （表现为"第一张能看、第二张加载不出来"）。
+    let tmp_path = dl.join(format!("{transfer_id}.part"));
     let f = std::fs::File::create(&tmp_path).map_err(|e| e.to_string())?;
 
     receivers.lock().unwrap_or_else(|e| e.into_inner()).insert(
@@ -741,7 +745,7 @@ pub fn classify_file_subtype(name: &str) -> &'static str {
 }
 
 /// 避免重名：`a.txt` -> `a (1).txt`
-fn unique_path(dir: &Path, name: &str) -> PathBuf {
+pub(crate) fn unique_path(dir: &Path, name: &str) -> PathBuf {
     let base = dir.join(name);
     if !base.exists() {
         return base;
