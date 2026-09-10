@@ -21,6 +21,8 @@ mod tray;
 /// 只在 macOS 建：Windows / Linux 用自绘标题栏，加系统菜单条会顶在标题栏之上破坏布局。
 #[cfg(target_os = "macos")]
 mod menu;
+/// 打开本地文件：macOS 用 NSWorkspace（沙盒下 /usr/bin/open 被拦），Windows/Linux 走 opener。
+mod macos_open;
 
 use tauri::Manager;
 
@@ -192,6 +194,7 @@ pub fn run() {
             commands::save_data_file,
             commands::delete_file,
             commands::save_outgoing_image,
+            commands::open_file_native,
             commands::read_file_preview,
             commands::media_present,
             commands::export_chat_text,

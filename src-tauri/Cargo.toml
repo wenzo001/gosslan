@@ -51,6 +51,12 @@ machine-uid = "0.5"
 [target.'cfg(target_os = "windows")'.dependencies]
 clipboard-win = "5"
 
+# macOS 打开文件：App Sandbox 禁止 fork /usr/bin/open（tauri-plugin-opener 在 macOS 走的正是
+# 这条路径），改用 NSWorkspace.openURL —— 纯 Foundation API，沙盒应用允许调用。
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "0.3", features = ["NSWorkspace"] }
+objc2-foundation = { version = "0.3", features = ["NSString", "NSURL"] }
+
 [features]
 # 默认启用自定义协议；可扩展为自定义 deep-link 唤醒
 default = ["custom-protocol"]

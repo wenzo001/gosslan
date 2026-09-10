@@ -1,7 +1,6 @@
 import { t as $t } from "@/i18n";
 import { computed, ref, toValue, watch, type MaybeRefOrGetter } from "vue";
 import { save } from "@tauri-apps/plugin-dialog";
-import { openPath } from "@tauri-apps/plugin-opener";
 import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
@@ -159,7 +158,9 @@ export function useMessageFile(
       return;
     }
     try {
-      await openPath(path);
+      // 走原生 open_file_native：macOS 用 NSWorkspace（沙盒下 opener 的 /usr/bin/open 被拦），
+      // Windows/Linux 由后端回落 opener。文件不存在时后端返回明确错误。
+      await api.openFileNative(path);
     } catch (e) {
       app.toastError(e, $t("msg.openFileFail"));
     }

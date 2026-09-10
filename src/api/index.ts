@@ -95,6 +95,9 @@ export const api = {
   saveOutgoingImage: (dataUrl: string) =>
     invoke<{ path: string; name: string; size: number }>("save_outgoing_image", { dataUrl }),
   deleteFile: (path: string) => invoke<void>("delete_file", { path }),
+  /** 用系统默认应用打开本地文件：macOS 走 NSWorkspace（沙盒下 /usr/bin/open 被拦），
+   *  Windows/Linux 走 opener。 */
+  openFileNative: (path: string) => invoke<void>("open_file_native", { path }),
   getTransfers: () => invoke<TransferInfo[]>("get_transfers"),
 
   /** 读取附件预览原始字节（图片→Blob/objectURL，代码→TextDecoder）。超限后端 reject "TOO_LARGE"。

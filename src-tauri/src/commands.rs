@@ -2202,6 +2202,13 @@ pub fn delete_file(path: String) -> Result<(), String> {
     std::fs::remove_file(&path).map_err(|e| e.to_string())
 }
 
+/// 用系统默认应用打开本地文件。
+/// macOS 走 NSWorkspace（沙盒下 /usr/bin/open 被拦），Windows/Linux 走 opener。
+#[tauri::command]
+pub fn open_file_native(path: String) -> Result<(), String> {
+    crate::macos_open::open_path_native(std::path::Path::new(&path))
+}
+
 /// 群文件投递摘要（气泡成员状态文案用）：总数/completed/failed/待投递。
 #[tauri::command]
 pub fn get_group_file_delivery_summary(
