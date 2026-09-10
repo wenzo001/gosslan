@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from "@/i18n";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
@@ -143,9 +144,9 @@ async function confirmRename(name: string) {
   if (!gid || !name) return;
   try {
     await chat.renameGroup(gid, name);
-    app.toast("群名称已更新", "success");
+    app.toast(t("chat.toast.groupRenamed"), "success");
   } catch (e) {
-    app.toastError(e, "重命名失败");
+    app.toastError(e, t("chat.toast.renameFail"));
   }
 }
 
@@ -227,7 +228,7 @@ async function onSend({ content, kind }: { content: string; kind: MsgKind }) {
   try {
     await chat.send(convId, content, kind);
   } catch (e) {
-    app.toastError(e, "发送失败");
+    app.toastError(e, t("msg.sendFailed"));
   }
 }
 
@@ -254,7 +255,7 @@ function locateMessage(id: string | number) {
   const target = String(id);
   const idx = messages.value.findIndex((m) => String(m.msg_id ?? m.id) === target);
   if (idx < 0) {
-    app.toast("原消息更早，已不在可加载范围内", "info");
+    app.toast(t("chat.toast.originalEarlier"), "info");
     return;
   }
   listRef.value?.scrollToIndex(idx, "top");
@@ -286,7 +287,7 @@ async function doForward(convId: string) {
     if (f.kind === "file") {
       // 文件转发＝按本地路径把文件重发一遍（内容 JSON 只是元信息，直接转发会指向本机路径）
       if (!f.filePath) {
-        app.toast("文件尚未同步到本机，无法转发", "info");
+        app.toast(t("chat.toast.fileNotForward"), "info");
         return;
       }
       if (convId.startsWith("group:")) {
@@ -297,9 +298,9 @@ async function doForward(convId: string) {
     } else {
       await chat.send(convId, f.content, f.kind);
     }
-    app.toast("转发成功", "success");
+    app.toast(t("chat.toast.forwarded"), "success");
   } catch (e) {
-    app.toastError(e, "转发失败");
+    app.toastError(e, t("chat.toast.forwardFail"));
   }
 }
 
@@ -386,7 +387,7 @@ async function sendPastedFiles(paths: string[]) {
     try {
       await sendOneFile(convId, p);
     } catch (e) {
-      app.toastError(e, "发送失败");    }
+      app.toastError(e, t("msg.sendFailed"));    }
   }
 }
 
@@ -424,7 +425,7 @@ function onLoadMore() {
         <span
           class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-panel)] px-3 py-2 text-[13px] text-[var(--gosslan-text)] shadow-lg"
         >
-          {{ isGroup ? "松手发送到群聊" : "松手发送文件" }}
+          {{ isGroup ? t("chat.dropToGroup") : t("chat.dropToSend") }}
         </span>
       </div>
       <!-- 加载骨架：切会话时**立即**渲染（store 的 loadMessages 完成前 messages[convId] 是 undefined）。
@@ -448,7 +449,7 @@ function onLoadMore() {
         v-else-if="messages.length === 0"
         class="mt-20 text-center text-sm text-[var(--gosslan-text-2)]"
       >
-        暂无消息，打个招呼吧
+        {{ t("chat.empty") }}
       </div>
       <VirtualList
         v-else
@@ -484,7 +485,7 @@ function onLoadMore() {
         @click="nearBottom = true; listRef?.scrollToBottom()"
       >
         <ArrowDown class="h-3.5 w-3.5" />
-        回到最新
+        {{ t("chat.backToLatest") }}
       </button>
     </div>
 
@@ -505,7 +506,7 @@ function onLoadMore() {
         v-else
         class="flex min-h-16 items-center justify-center rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-panel)] px-4 text-center text-[13px] text-[var(--gosslan-text-2)]"
       >
-        对方还不是你的好友，添加好友后才能继续聊天。当前仅可查看聊天记录。
+        {{ t("chat.notFriend") }}
       </div>
     </div>
 

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from "@/i18n";
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "@/stores/useAppStore";
@@ -451,7 +452,7 @@ function fileToDataUrl(f: File): Promise<string> {
         v-if="mention && mentionFiltered.length > 0"
         class="frost absolute bottom-full left-2 right-2 z-30 mb-2 max-h-44 overflow-y-auto rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] p-1 shadow-lg"
       >
-        <div class="px-2 py-1 text-[11px] text-[var(--gosslan-text-2)]">选择提醒的人</div>
+        <div class="px-2 py-1 text-[11px] text-[var(--gosslan-text-2)]">{{ t("chat.composer.remind") }}</div>
         <button
           v-for="(m, i) in mentionFiltered"
           :key="m.id"
@@ -473,10 +474,10 @@ function fileToDataUrl(f: File): Promise<string> {
         class="mb-1.5 flex items-center gap-2 rounded-[var(--gosslan-radius-sm)] border-l-2 px-2 py-1 text-[12px]"
         :style="{ borderColor: QUOTE_BORDER, background: QUOTE_BG, color: 'var(--gosslan-text)' }"
       >
-        <span class="min-w-0 flex-1 truncate" :style="QUOTE_TEXT_STYLE">引用 {{ quote.sender }}：{{ quote.snippet }}</span>
+        <span class="min-w-0 flex-1 truncate" :style="QUOTE_TEXT_STYLE">{{ t("common.quote") }} {{ quote.sender }}：{{ quote.snippet }}</span>
         <button
           class="flex h-5 w-5 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-xs)] transition hover:bg-[var(--gosslan-hover)]"
-          title="取消引用" aria-label="取消引用"
+          :title="t('chat.composer.cancelQuote')" :aria-label="t('chat.composer.cancelQuote')"
           @click="emit('close-quote')"
         >
           <X class="h-3.5 w-3.5" />
@@ -495,7 +496,7 @@ function fileToDataUrl(f: File): Promise<string> {
         class="min-h-12 w-full overflow-y-auto bg-transparent px-0.5 py-0.5 leading-relaxed outline-none whitespace-pre-wrap break-words"
         :class="codeMode ? 'font-mono text-[13px]' : ''"
         :style="{ fontSize: 'var(--gosslan-msg-size, 14px)', overflowWrap: 'anywhere', wordBreak: 'break-word' }"
-        :data-placeholder="codeMode ? '粘贴或输入代码…' : '输入消息…'"
+        :data-placeholder="codeMode ? t('chat.composer.codePlaceholder') : t('chat.composer.placeholder')"
         @keydown="onKeydown"
         @input="onInput"
         @click="updateMentionState"
@@ -506,7 +507,7 @@ function fileToDataUrl(f: File): Promise<string> {
           <button
             class="flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] transition"
             :class="emojiOpen ? 'text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
-            title="表情" aria-label="表情"
+            :title="t('chat.composer.emoji')" :aria-label="t('chat.composer.emoji')"
             @click.stop="toggleEmoji"
           >
             <Smile class="h-[18px] w-[18px]" />
@@ -518,7 +519,7 @@ function fileToDataUrl(f: File): Promise<string> {
         <button
           class="flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] transition"
           :class="codeMode ? 'text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
-          title="代码消息" aria-label="代码消息"
+          :title="t('chat.composer.code')" :aria-label="t('chat.composer.code')"
           @mousedown.prevent
           @click="codeMode = !codeMode"
         >
@@ -526,7 +527,7 @@ function fileToDataUrl(f: File): Promise<string> {
         </button>
         <button
           class="flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-          title="发送文件（自动选择最优路线）" aria-label="发送文件（自动选择最优路线）"
+          :title="t('chat.composer.sendFile')" :aria-label="t('chat.composer.sendFile')"
           @click="emit('attach')"
         >
           <FilePlus class="h-[18px] w-[18px]" />
@@ -538,7 +539,7 @@ function fileToDataUrl(f: File): Promise<string> {
           @mousedown.prevent
           @click="send()"
         >
-          发送
+          {{ t("common.send") }}
         </button>
       </div>
     </div>

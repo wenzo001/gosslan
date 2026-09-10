@@ -731,7 +731,7 @@ export const useChatStore = defineStore("chat", () => {
   /** 统一文件发送：后端自动路由（有直连走直连，无直连自动中继）。 */
   async function sendFileTo(convId: string, path: string) {
     if (convId.startsWith("group:")) return null;
-    const name = path.split(/[\\/]/).pop() ?? "文件";
+    const name = path.split(/[\\/]/).pop() ?? t("common.file");
     try {
       const id = await api.sendFileAuto(convId, path);
       void refreshTransfers();
@@ -753,7 +753,7 @@ export const useChatStore = defineStore("chat", () => {
         seq: Number.MAX_SAFE_INTEGER,
         status: "failed",
       });
-      app.toast(`文件发送失败：${e}`, "error");
+      app.toastError(e, t("send.fileFail"));
       return null;
     }
   }
@@ -785,7 +785,7 @@ export const useChatStore = defineStore("chat", () => {
       void refreshTransfers();
       return id;
     } catch (e) {
-      app.toast(`群文件发送失败：${e}`, "error");
+      app.toastError(e, t("send.groupFileFail"));
       return null;
     }
   }
@@ -806,7 +806,7 @@ export const useChatStore = defineStore("chat", () => {
     } catch (e) {
       // 初始化失败：清理孤儿图片，避免 downloads 目录堆积垃圾
       await api.deleteFile(path).catch(() => {});
-      app.toast(`图片发送失败：${e}`, "error");
+      app.toastError(e, t("send.imageFail"));
       return null;
     }
   }
@@ -836,7 +836,7 @@ export const useChatStore = defineStore("chat", () => {
         break;
       }
     }
-    app.toast(`文件发送失败：${d.reason}`, "error");
+    app.toast(`${t("send.fileFail")}：${d.reason}`, "error");
   }
 
   function onGroupRead(p: GroupReadInfo) {
@@ -907,7 +907,7 @@ export const useChatStore = defineStore("chat", () => {
         await refreshFriends();
       },
       onFriendMessageBlocked: () => {
-        app.toast(`对方不是好友，请先扫描添加好友之后再继续聊天。`, "error");
+        app.toast(t("send.notFriend"), "error");
       },
       onMessage: (rec) => {
         enqueueMessage(rec);

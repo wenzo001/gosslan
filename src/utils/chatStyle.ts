@@ -14,6 +14,7 @@ export interface ChatPresetColors {
 
 export interface ChatPreset {
   key: string;
+  /** i18n 字典 key（如 "chatStyle.preset.classic"），由组件 `t(label)` 翻译显示。 */
   label: string;
   light: ChatPresetColors;
   dark: ChatPresetColors;
@@ -25,52 +26,52 @@ export interface ChatPreset {
 export const CHAT_PRESETS: ChatPreset[] = [
   {
     key: "theme",
-    label: "跟随主题",
+    label: "chatStyle.preset.theme",
     light: { mineBubble: "#60a5fa", mineText: "#172554", otherBubble: "#eeeef0", otherText: "#0f172a" },
     dark: { mineBubble: "#1d4ed8", mineText: "#ffffff", otherBubble: "#1e293b", otherText: "#e2e8f0" },
   },
   {
     key: "classic",
-    label: "经典蓝",
+    label: "chatStyle.preset.classic",
     light: { mineBubble: "#60a5fa", mineText: "#172554", otherBubble: "#eeeef0", otherText: "#1f2937" },
     dark: { mineBubble: "#1d4ed8", mineText: "#ffffff", otherBubble: "#252e3b", otherText: "#e5e7eb" },
   },
   {
     key: "mint",
-    label: "薄荷绿",
+    label: "chatStyle.preset.mint",
     light: { mineBubble: "#34d399", mineText: "#064e3b", otherBubble: "#eeeef0", otherText: "#1f2937" },
     dark: { mineBubble: "#065f46", mineText: "#ecfdf5", otherBubble: "#252e3b", otherText: "#e5e7eb" },
   },
   {
     key: "amber",
-    label: "暖阳橙",
+    label: "chatStyle.preset.amber",
     light: { mineBubble: "#fb923c", mineText: "#431407", otherBubble: "#eeeef0", otherText: "#1f2937" },
     dark: { mineBubble: "#9a3412", mineText: "#fff7ed", otherBubble: "#252e3b", otherText: "#e5e7eb" },
   },
   {
     key: "celadon",
-    label: "青瓷",
+    label: "chatStyle.preset.celadon",
     light: { mineBubble: "#2dd4bf", mineText: "#134e4a", otherBubble: "#eeeef0", otherText: "#1f2937" },
     dark: { mineBubble: "#115e59", mineText: "#f0fdfa", otherBubble: "#252e3b", otherText: "#e5e7eb" },
   },
   {
     key: "rose",
-    label: "樱花粉",
+    label: "chatStyle.preset.rose",
     light: { mineBubble: "#f472b6", mineText: "#500724", otherBubble: "#eeeef0", otherText: "#1f2937" },
     dark: { mineBubble: "#9d174d", mineText: "#fdf2f8", otherBubble: "#252e3b", otherText: "#e5e7eb" },
   },
   {
     key: "slate",
-    label: "石墨灰",
+    label: "chatStyle.preset.slate",
     light: { mineBubble: "#9ca3af", mineText: "#111827", otherBubble: "#eeeef0", otherText: "#374151" },
     dark: { mineBubble: "#374151", mineText: "#f9fafb", otherBubble: "#1f2937", otherText: "#d1d5db" },
   },
 ];
 
 export const CHAT_FONT_SIZES = [
-  { key: "sm", label: "小", px: 13 },
-  { key: "md", label: "标准", px: 14 },
-  { key: "lg", label: "大", px: 16 },
+  { key: "sm", label: "chatStyle.fontSize.sm", px: 13 },
+  { key: "md", label: "chatStyle.fontSize.md", px: 14 },
+  { key: "lg", label: "chatStyle.fontSize.lg", px: 16 },
 ] as const;
 
 export type FontSizeKey = (typeof CHAT_FONT_SIZES)[number]["key"];

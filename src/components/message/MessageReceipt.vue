@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from "@/i18n";
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useChatStore } from "@/stores/useChatStore";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
@@ -78,8 +79,8 @@ function readerAvatar(id: string): string | null {
     <button
       v-if="readerIds.length > 0"
       class="-space-x-1 flex items-center rounded-full p-0.5 transition hover:bg-[var(--gosslan-hover)]"
-      :title="`已读 ${readerIds.length} 人`"
-      :aria-label="`已读 ${readerIds.length} 人，查看已读成员`"
+      :title="t('msg.readBy', { n: readerIds.length })"
+      :aria-label="t('msg.readByView', { n: readerIds.length })"
       @click.stop="toggleReaders"
     >
       <span
@@ -104,7 +105,7 @@ function readerAvatar(id: string): string | null {
       :class="openUp ? 'bottom-7' : 'top-7'"
       @click.stop
     >
-      <div class="px-2 py-1 text-[var(--gosslan-text-2)]">已读成员（{{ readerIds.length }}）</div>
+      <div class="px-2 py-1 text-[var(--gosslan-text-2)]">{{ t("msg.readMembers", { n: readerIds.length }) }}</div>
       <div
         v-for="id in readerIds"
         :key="id"
@@ -130,7 +131,7 @@ function readerAvatar(id: string): string | null {
     <button
       v-else-if="state === 'failed'"
       class="tap-safe flex h-5 w-5 items-center justify-center rounded-[var(--gosslan-radius-xs)] text-[var(--gosslan-danger-ink)] transition hover:bg-[var(--gosslan-danger-soft)]"
-      title="重新发送" aria-label="重新发送"
+      :title="t('msg.resend')" :aria-label="t('msg.resend')"
       @click="emit('retry')"
     >
       <RefreshCw class="h-3.5 w-3.5" />

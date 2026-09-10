@@ -35,7 +35,7 @@ function onFingerprintTap() {
 <template>
   <SettingsGroup :title="t('settings.group.about')" :footer="t('settings.group.about.footer', { version })">
     <div class="px-4 py-3">
-      <div class="text-sm text-[var(--gosslan-text)]">设备指纹</div>
+      <div class="text-sm text-[var(--gosslan-text)]">{{ t("settings.about.fingerprint") }}</div>
       <div
         class="mt-1 select-text break-all font-mono text-xs leading-relaxed text-[var(--gosslan-text-2)]"
         @click="onFingerprintTap"

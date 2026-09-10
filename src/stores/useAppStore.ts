@@ -14,6 +14,7 @@ import {
 } from "@/utils/appearance";
 import { DEFAULT_CHAT_STYLE, fontPx, parsePeerStyle, type ChatStyleConfig } from "@/utils/chatStyle";
 import {
+  t,
   applyPreference,
   currentPreference,
   isLanguagePreference,
@@ -100,7 +101,7 @@ export const useAppStore = defineStore("app", () => {
     if (v) {
       const ok = await ensureNotifyPermission();
       if (!ok) {
-        toast("通知权限未授予，请在系统设置中允许", "error");
+        toast(t("notify.permissionDenied"), "error");
         return;
       }
     }
@@ -342,8 +343,8 @@ export const useAppStore = defineStore("app", () => {
   async function resetDefaults() {
     // 先广播昵称/头像恢复默认（LAN 仍在线，好友可收到 UserInfo）
     if (device.value) {
-      await api.updateProfile("Gosslan 用户", null);
-      device.value.nickname = "Gosslan 用户";
+      await api.updateProfile(t("common.defaultNickname"), null);
+      device.value.nickname = t("common.defaultNickname");
       device.value.avatar = null;
     }
     await api.resetSettings();

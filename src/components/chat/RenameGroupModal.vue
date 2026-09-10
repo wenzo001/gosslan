@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from "@/i18n";
 import { ref, watch } from "vue";
 import BaseModal from "@/components/BaseModal.vue";
 
@@ -18,26 +19,26 @@ watch(
 </script>
 
 <template>
-  <BaseModal :open="open" title="修改群名称" @close="emit('close')">
+  <BaseModal :open="open" :title="t('group.rename.title')" @close="emit('close')">
     <div class="space-y-3">
       <input
         v-model="name"
         maxlength="30"
-        placeholder="请输入群名称"
+        :placeholder="t('group.namePlaceholder')"
         class="w-full rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none"
         @keydown.enter="name.trim() && emit('confirm', name.trim())"
       />
-      <p class="text-xs text-[var(--gosslan-text-2)]">修改后会同步给所有群成员。</p>
+      <p class="text-xs text-[var(--gosslan-text-2)]">{{ t("group.rename.note") }}</p>
       <div class="flex justify-end gap-2 pt-1">
         <button
           class="rounded-[var(--gosslan-radius-md)] px-4 py-1.5 text-sm transition hover:bg-[var(--gosslan-hover)]"
           @click="emit('close')"
-        >取消</button>
+        >{{ t("common.cancel") }}</button>
         <button
           class="rounded-[var(--gosslan-radius-md)] bg-primary px-4 py-1.5 text-sm text-white transition hover:bg-primary-hover disabled:opacity-40"
           :disabled="!name.trim()"
           @click="emit('confirm', name.trim())"
-        >保存</button>
+        >{{ t("common.save") }}</button>
       </div>
     </div>
   </BaseModal>

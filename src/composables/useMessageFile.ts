@@ -1,3 +1,4 @@
+import { t as $t } from "@/i18n";
 import { computed, ref, toValue, watch, type MaybeRefOrGetter } from "vue";
 import { save } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
@@ -42,7 +43,7 @@ export function useMessageFile(
       const meta = JSON.parse(msg.value.content) as Partial<FileMeta>;
       const t = transfer.value;
       return {
-        name: meta.name ?? t?.name ?? "文件",
+        name: meta.name ?? t?.name ?? $t("common.file"),
         path: meta.path ?? t?.path ?? "",
         size: meta.size ?? t?.size ?? 0,
         subtype: meta.subtype ?? (msg.value.kind === "image" ? "image" : "file"),
@@ -62,7 +63,7 @@ export function useMessageFile(
     const t = transfer.value;
     if (!t || t.status === "done") return null;
     const pct = Math.round((t.progress ?? 0) * 100);
-    return t.direction === "send" ? `发送中 ${pct}%` : `接收中 ${pct}%`;
+    return t.direction === "send" ? $t("send.sendingPct", { pct }) : $t("send.receivingPct", { pct });
   });
 
   const attachmentUrl = ref<string | null>(null);
@@ -116,7 +117,7 @@ export function useMessageFile(
     // 同上：期间消息可能已被替换（乐观 → 真实），只在仍指向同一条时落地。
     if (!needsPresenceProbe.value || msg.value.msg_id !== msgId) return;
     attachmentMissing.value = !present;
-    if (!present) previewNote.value = "已被清理";
+    if (!present) previewNote.value = $t("msg.cleaned");
   }
 
   // 显式读 path/name/subtype：Vue 对 watcher 返回的数组做浅比对，若源里不包含这些字段的读取，
@@ -154,13 +155,13 @@ export function useMessageFile(
   async function openFile() {
     const path = fileMeta.value?.path;
     if (!path) {
-      app.toast("文件路径不可用", "error");
+      app.toast($t("msg.filePathUnavailable"), "error");
       return;
     }
     try {
       await openPath(path);
     } catch (e) {
-      app.toast(`打开文件失败：${e}`, "error");
+      app.toastError(e, $t("msg.openFileFail"));
     }
   }
 
@@ -168,16 +169,16 @@ export function useMessageFile(
     const source = fileMeta.value?.path;
     const filename = fileMeta.value?.name;
     if (!source || !filename) {
-      app.toast("文件路径不可用", "error");
+      app.toast($t("msg.filePathUnavailable"), "error");
       return;
     }
     try {
       const destination = await save({ defaultPath: filename });
       if (!destination) return; // 用户取消
       await invoke("copy_file", { source, destination });
-      app.toast("文件已保存", "success");
+      app.toast($t("msg.fileSaved"), "success");
     } catch (e) {
-      app.toast(`保存文件失败：${e}`, "error");
+      app.toastError(e, $t("msg.saveFileFail"));
     }
   }
 

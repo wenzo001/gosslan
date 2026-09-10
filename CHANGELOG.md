@@ -69,6 +69,12 @@
 - **英文翻译按 Apple 规范润色**：Title Case 一致性（`Mark as Read` / `Show Message Content`）、`&`→`and`、全大写强调 `NOT`→`not`、语法修正（`switch interface`→`switch the interface`）、描述用 sentence case、无障碍 label 更清晰（`My profile, {status}. Open settings.`）。
 - **英文样式适配**：语言分段控件加 `flex-wrap + whitespace-nowrap`（英文「Follow System」较长，放不下换行而非溢出）；设置页 label/footer 均 flex + 自动换行，英文长文案安全。
 - **README 参与贡献模块**：顶部加 release / contributors / license 徽章，License 前加「参与贡献」区块，用 `contrib.rocks` 动态展示提交量前 10 位贡献者头像。
+- **聊天以外全库文案 i18n 全覆盖**：把上一轮只覆盖「系统 UI + 设置页主框架」的本地化，扩展到**除聊天消息内容外的全部用户可见文案**（44 个文件、约 500 个字典 key）：
+  - 设置页 7 个 Section 内部字段（外观三态、主题色、字体、气泡配色预设名、字号档位、存储策略、网卡列表、资料、安全、关于）；
+  - 所有 `title` / `aria-label`（标题栏窗口按钮、聊天头部、消息操作、回执、图片预览、文件气泡、输入区、会话/好友列表等）；
+  - 所有弹窗 / 菜单 / toast / 空态 / placeholder / 状态标签（群组、好友、会话删除、共享目录、转发、诊断面板、移动端导航）；
+  - `chatStyle.ts` 的气泡预设 `label` 与字号 `label` 改为 i18n key（纯数据模块零依赖，组件 `t(label)` 翻译）；
+  - store/composable 的直接 toast（发送失败、权限、文件操作）统一走 `toastError` / `t()`。
 
 ### Fixed
 - **触摸端无法删除会话**（真实功能缺失）：会话行的删除键写成 `hidden` + `group-hover:flex`，而 **Android 没有 hover 事件 → 该按钮永远不显示**，表现为"桌面能删、手机删不掉"（同一层的"删除好友"有长按兜底，聊天记录却没有）。新增全局工具类 `.hover-reveal` / `.hover-reveal-op`（`@media (hover: none)` 下退化为常显），并把「凡用 `group-hover` / `opacity-0` 揭示的元素都必须加其中之一」写进设计规范

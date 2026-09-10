@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import { computed } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
@@ -23,7 +24,7 @@ export function useMemberProfile() {
   function memberProfile(id: string): MemberProfile {
     if (id === myId.value) {
       return {
-        name: app.device?.nickname || "我",
+        name: app.device?.nickname || t("common.me"),
         avatar: app.device?.avatar ?? null,
         online: app.online,
       };

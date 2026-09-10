@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from "@/i18n";
 import { computed } from "vue";
 import { useChatStore } from "@/stores/useChatStore";
 import { Activity, Network, Server } from "lucide-vue-next";
@@ -10,7 +11,7 @@ const rtt = computed(() => {
   return `${chat.topology.avg_rtt_ms}ms`;
 });
 
-const status = computed(() => (chat.topology.online ? "在线" : "离线"));
+const status = computed(() => (chat.topology.online ? t("common.online") : t("common.offline")));
 const statusColor = computed(() =>
   chat.topology.online ? "text-[var(--gosslan-success-ink)]" : "text-[var(--gosslan-status-offline)]",
 );
@@ -23,15 +24,15 @@ const statusColor = computed(() =>
   >
     <span class="flex items-center gap-1.5">
       <Network class="h-3.5 w-3.5" />
-      <span>{{ chat.topology.node_count }} 节点</span>
+      <span>{{ t("topo.nodes", { n: chat.topology.node_count }) }}</span>
     </span>
     <span class="flex items-center gap-1.5">
       <Server class="h-3.5 w-3.5" />
-      <span>{{ chat.topology.relay_count }} 中继</span>
+      <span>{{ t("topo.relays", { n: chat.topology.relay_count }) }}</span>
     </span>
     <span class="flex items-center gap-1.5">
       <Activity class="h-3.5 w-3.5" />
-      <span>平均时延 {{ rtt }}</span>
+      <span>{{ t("topo.rtt", { rtt }) }}</span>
     </span>
     <span class="ml-auto flex items-center gap-1.5">
       <span class="h-1.5 w-1.5 rounded-full" :class="chat.topology.online ? 'bg-[var(--gosslan-success)]' : 'bg-[var(--gosslan-status-offline)]'"></span>

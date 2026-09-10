@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from "@/i18n";
 import { computed, ref, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
@@ -52,9 +53,9 @@ async function addMember(f: Friend) {
   if (!props.groupId) return;
   try {
     await chat.addGroupMember(props.groupId, f.device_id);
-    app.toast(`已将 ${f.nickname} 加入群聊`, "success");
+    app.toast(t("group.toast.added", { name: f.nickname }), "success");
   } catch (e) {
-    app.toastError(e, "加入群聊失败");
+    app.toastError(e, t("group.toast.addFail"));
   }
 }
 
@@ -63,9 +64,9 @@ async function removeMember(id: string) {
   const p = memberProfile(id);
   try {
     await chat.removeGroupMember(props.groupId, id);
-    app.toast(`已将 ${p.name} 移出群聊`, "success");
+    app.toast(t("group.toast.removed", { name: p.name }), "success");
   } catch (e) {
-    app.toastError(e, "移出群聊失败");
+    app.toastError(e, t("group.toast.removeFail"));
   }
 }
 
@@ -79,7 +80,7 @@ function transferOwner(id: string) {
 /** 退出群聊（群主须先转让，后端会拒绝并给出提示）。 */
 function leaveGroup() {
   if (!props.groupId) return;
-  const name = group.value?.name ?? "该群聊";
+  const name = group.value?.name ?? t("group.thisGroup");
   pendingConfirm.value = { kind: "leave", name };
 }
 
@@ -91,24 +92,24 @@ async function confirmAction() {
   if (a.kind === "transfer") {
     try {
       await chat.transferGroupCreator(props.groupId, a.targetId);
-      app.toast(`已将群主转让给 ${a.name}`, "success");
+      app.toast(t("group.toast.transferred", { name: a.name }), "success");
     } catch (e) {
-      app.toastError(e, "转让群主失败");
+      app.toastError(e, t("group.toast.transferFail"));
     }
   } else {
     try {
       await chat.leaveGroup(props.groupId);
-      app.toast("已退出群聊", "success");
+      app.toast(t("group.toast.left"), "success");
       emit("close");
     } catch (e) {
-      app.toastError(e, "退出群聊失败");
+      app.toastError(e, t("group.toast.leaveFail"));
     }
   }
 }
 </script>
 
 <template>
-  <BaseModal :open="open" :title="group ? `群成员（${group.members.length}）` : '群成员'" @close="emit('close')">
+  <BaseModal :open="open" :title="group ? t('group.membersCount', { n: group.members.length }) : t('group.members')" @close="emit('close')">
     <div v-if="group" class="space-y-3">
       <!-- 当前成员 -->
       <div class="max-h-56 overflow-y-auto">
@@ -134,18 +135,18 @@ async function confirmAction() {
           <div class="min-w-0 flex-1">
             <div class="flex items-center gap-1.5">
               <span class="truncate text-sm font-medium">{{ memberProfile(id).name }}</span>
-              <Crown v-if="group.creator === id" class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-warning-ink)]" title="群主" />
-              <span v-if="id === myId" class="shrink-0 text-[11px] text-[var(--gosslan-text-2)]">（我）</span>
+              <Crown v-if="group.creator === id" class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-warning-ink)]" :title="t('group.owner')" />
+              <span v-if="id === myId" class="shrink-0 text-[11px] text-[var(--gosslan-text-2)]">{{ t("group.me") }}</span>
             </div>
             <div class="text-xs text-[var(--gosslan-text-2)]">
-              {{ memberProfile(id).online ? "在线" : "离线" }}
+              {{ memberProfile(id).online ? t("common.online") : t("common.offline") }}
             </div>
           </div>
           <!-- 群主操作：转让群主 / 移除成员（不能操作自己/创建者本人） -->
           <button
             v-if="isOwner && id !== myId"
             class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-warning-soft)] hover:text-[var(--gosslan-warning-ink)]"
-            :title="`把群主转让给 ${memberProfile(id).name}`" :aria-label="`把群主转让给 ${memberProfile(id).name}`"
+            :title="t('group.transferOwner', { name: memberProfile(id).name })" :aria-label="t('group.transferOwner', { name: memberProfile(id).name })"
             @click="transferOwner(id)"
           >
             <ArrowRightLeft class="h-4 w-4" />
@@ -153,14 +154,14 @@ async function confirmAction() {
           <button
             v-if="isOwner && id !== myId"
             class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-danger-soft)] hover:text-[var(--gosslan-danger-ink)]"
-            :title="`将 ${memberProfile(id).name} 移出群聊`" :aria-label="`将 ${memberProfile(id).name} 移出群聊`"
+            :title="t('group.removeMember', { name: memberProfile(id).name })" :aria-label="t('group.removeMember', { name: memberProfile(id).name })"
             @click="removeMember(id)"
           >
             <UserMinus class="h-4 w-4" />
           </button>
         </div>
         <div v-if="group.members.length === 0" class="py-6 text-center text-sm text-[var(--gosslan-text-2)]">
-          暂无成员
+          {{ t("group.noMembers") }}
         </div>
       </div>
 
@@ -172,14 +173,14 @@ async function confirmAction() {
           @click="showAdd = true"
         >
           <Plus class="h-4 w-4" />
-          添加成员
+          {{ t("group.addMember") }}
         </button>
         <div v-else class="rounded-[var(--gosslan-radius-lg)] border border-[var(--gosslan-border)] p-2">
           <div class="mb-1 flex items-center justify-between px-1">
-            <span class="text-xs font-medium text-[var(--gosslan-text-2)]">选择好友加入</span>
+            <span class="text-xs font-medium text-[var(--gosslan-text-2)]">{{ t("group.selectFriends") }}</span>
             <button
               class="flex items-center justify-center rounded-[var(--gosslan-radius-xs)] p-1 text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-              title="收起" aria-label="收起"
+              :title="t('common.collapse')" :aria-label="t('common.collapse')"
               @click="showAdd = false"
             >
               <X class="h-3.5 w-3.5" />
@@ -203,7 +204,7 @@ async function confirmAction() {
               <Plus class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-text-2)]" />
             </div>
             <div v-if="addableFriends.length === 0" class="py-3 text-center text-xs text-[var(--gosslan-text-2)]">
-              所有好友都已在群中
+              {{ t("group.allInGroup") }}
             </div>
           </div>
         </div>
@@ -216,13 +217,13 @@ async function confirmAction() {
         @click="leaveGroup"
       >
         <LogOut class="h-4 w-4" />
-        退出群聊
+        {{ t("group.leave") }}
       </button>
       <p v-if="!isOwner" class="text-[11px] text-[var(--gosslan-text-2)]">
-        仅群创建者可管理成员（添加 / 移除 / 转让群主）。
+        {{ t("group.manageHint") }}
       </p>
       <p v-else class="text-[11px] text-[var(--gosslan-text-2)]">
-        群主如需退出群聊，请先把群主转让给其他成员。
+        {{ t("group.leaveHint") }}
       </p>
     </div>
   </BaseModal>
@@ -230,16 +231,16 @@ async function confirmAction() {
   <!-- 破坏性操作二次确认（替代 window.confirm：应用内弹窗，与整体样式一致） -->
   <BaseModal
     :open="!!pendingConfirm"
-    :title="pendingConfirm?.kind === 'transfer' ? '转让群主' : '退出群聊'"
+    :title="pendingConfirm?.kind === 'transfer' ? t('group.confirmTransfer.title') : t('group.confirmLeave.title')"
     @close="pendingConfirm = null"
   >
     <template v-if="pendingConfirm">
       <p class="text-sm leading-relaxed text-[var(--gosslan-text-2)]">
         <template v-if="pendingConfirm.kind === 'transfer'">
-          确定把群主转让给「{{ pendingConfirm.name }}」吗？转让后你将失去改名、添加与移除成员的权限。
+          {{ t("group.confirmTransfer.body", { name: pendingConfirm.name }) }}
         </template>
         <template v-else>
-          确定退出「{{ pendingConfirm.name }}」吗？本机将删除该群的聊天记录，需要重新被拉入才能恢复。
+          {{ t("group.confirmLeave.body", { name: pendingConfirm.name }) }}
         </template>
       </p>
       <div class="mt-5 flex justify-end gap-2">
@@ -247,13 +248,13 @@ async function confirmAction() {
           class="rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3 py-1.5 text-sm text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
           @click="pendingConfirm = null"
         >
-          取消
+          {{ t("common.cancel") }}
         </button>
         <button
           class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-3 py-1.5 text-sm text-white transition hover:opacity-90"
           @click="confirmAction"
         >
-          确定
+          {{ t("common.confirm") }}
         </button>
       </div>
     </template>

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from "@/i18n";
 import { ref, onMounted, onUnmounted, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
@@ -58,17 +59,17 @@ function closeRequests() {
 async function acceptRequest(r: PendingRequest) {
   try {
     await chat.respondRequest(r.from, true);
-    app.toast(`已同意 ${r.from_nickname} 的好友申请`, "success");
+    app.toast(t("layout.toast.accepted", { name: r.from_nickname }), "success");
   } catch (e) {
-    app.toastError(e, "操作失败");
+    app.toastError(e, t("common.operationFail"));
   }
 }
 async function rejectRequest(r: PendingRequest) {
   try {
     await chat.respondRequest(r.from, false);
-    app.toast("已拒绝该好友申请", "info");
+    app.toast(t("layout.toast.rejected"), "info");
   } catch (e) {
-    app.toastError(e, "操作失败");
+    app.toastError(e, t("common.operationFail"));
   }
 }
 
@@ -84,9 +85,9 @@ async function removeFriend(f: Friend) {
   profileFriend.value = null;
   try {
     await chat.removeFriend(f.device_id);
-    app.toast(`已删除好友 ${f.nickname}（可在添加好友中重新添加）`, "info");
+    app.toast(t("conv.toast.friendRemoved", { name: f.nickname }), "info");
   } catch (e) {
-    app.toastError(e, "删除失败");
+    app.toastError(e, t("common.deleteFail"));
   }
 }
 
@@ -253,7 +254,7 @@ function onResizeEnd() {
         <!-- 新的朋友页：右侧展示好友申请列表（微信式） -->
         <div v-if="showRequests" class="flex h-full flex-col">
           <div class="flex shrink-0 items-center border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-chat)] px-4" :style="{ height: 'var(--gosslan-header-h)' }">
-            <span class="text-[15px] font-medium">新的朋友</span>
+            <span class="text-[15px] font-medium">{{ t("conv.newFriends") }}</span>
           </div>
           <div class="min-h-0 flex-1 overflow-y-auto bg-[var(--gosslan-chat)] p-2">
             <FriendRequestList
@@ -264,7 +265,7 @@ function onResizeEnd() {
               @reject="rejectRequest"
             />
             <div v-if="chat.pendingRequests.length === 0" class="mt-20 text-center text-sm text-[var(--gosslan-text-2)]">
-              暂无好友申请
+              {{ t("friend.request.empty") }}
             </div>
           </div>
         </div>
@@ -280,17 +281,17 @@ function onResizeEnd() {
           class="flex h-full select-none flex-col items-center justify-center gap-3 text-[var(--gosslan-text-2)]"
         >
           <MessageCircle class="h-16 w-16 opacity-25" />
-          <div class="text-base">选择会话，开始局域网聊天</div>
-          <div class="text-xs opacity-70">无服务器 · 纯 P2P · 端到端加密 · 数据仅存本机</div>
+          <div class="text-base">{{ t("layout.selectConversation") }}</div>
+          <div class="text-xs opacity-70">{{ t("layout.tagline") }}</div>
           <!-- 空态要给**下一步**，不只陈述状态（HIG：empty state should guide）。
                新用户最常卡在"怎么加人"，这里直接给入口，省得去找左上角的加号。 -->
           <button
             class="mt-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-4 py-2 text-sm font-medium text-white transition hover:bg-[var(--gosslan-primary-hover)]"
             @click="addFriendOpen = true"
           >
-            添加好友
+            {{ t("common.addFriend") }}
           </button>
-          <div class="text-xs opacity-70">好友与本机处于同一局域网时会被自动发现</div>
+          <div class="text-xs opacity-70">{{ t("layout.autoDiscover") }}</div>
         </div>
       </div>
     </main>
@@ -315,7 +316,7 @@ function onResizeEnd() {
             {{ chat.totalUnread > 99 ? "99+" : chat.totalUnread }}
           </span>
         </span>
-        <span class="text-[11px]">消息</span>
+        <span class="text-[11px]">{{ t("nav.chats") }}</span>
       </button>
       <button
         class="relative flex flex-1 flex-col items-center gap-0.5 py-2.5"
@@ -331,14 +332,14 @@ function onResizeEnd() {
             {{ chat.pendingRequests.length > 99 ? "99+" : chat.pendingRequests.length }}
           </span>
         </span>
-        <span class="text-[11px]">联系人</span>
+        <span class="text-[11px]">{{ t("nav.contacts") }}</span>
       </button>
       <button
         class="flex flex-1 flex-col items-center gap-0.5 py-2.5 text-[var(--gosslan-text-2)]"
         @click="openSettings"
       >
         <Settings class="h-5 w-5" />
-        <span class="text-[11px]">设置</span>
+        <span class="text-[11px]">{{ t("nav.settings") }}</span>
       </button>
     </nav>
 

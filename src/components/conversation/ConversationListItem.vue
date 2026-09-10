@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from "@/i18n";
 import { fmtConversationTime } from "@/utils/time";
 import { highlightText } from "@/utils/highlight";
 import { avatarInitial, nameToColor } from "@/utils/color";
@@ -76,7 +77,7 @@ const gridTiles = computed(() => {
     :class="active
       ? 'bg-[var(--gosslan-list-active)] text-[var(--gosslan-list-active-text)]'
       : 'hover:bg-[var(--gosslan-list-hover)]'"
-    :aria-label="conv.unread > 0 ? `${conv.name}，${conv.unread} 条未读` : conv.name"
+    :aria-label="conv.unread > 0 ? t('conv.unread', { name: conv.name, n: conv.unread }) : conv.name"
     @click="openConv(conv)"
     @keydown.enter.prevent="openConv(conv)"
     @keydown.space.prevent="openConv(conv)"
@@ -141,8 +142,8 @@ const gridTiles = computed(() => {
             <span v-html="highlightText(snippet, keyword.trim())"></span>
           </template>
           <template v-else>
-            <span v-if="mentioned" class="font-medium text-[var(--gosslan-danger-ink)]">[有人@我]</span
-            >{{ conv.last_msg || "暂无消息" }}
+            <span v-if="mentioned" class="font-medium text-[var(--gosslan-danger-ink)]">{{ t("msg.mentioned") }}</span
+            >{{ conv.last_msg || t("msg.noMessage") }}
           </template>
         </span>
       </div>
@@ -156,8 +157,8 @@ const gridTiles = computed(() => {
     <button
       v-if="!active"
       class="hover-reveal tap-safe absolute bottom-1.5 right-1.5 z-10 hidden h-6 w-6 items-center justify-center rounded-[var(--gosslan-radius-xs)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-danger-soft)] hover:text-[var(--gosslan-danger-ink)] group-hover/conv:flex"
-      title="删除聊天记录"
-      :aria-label="`删除与 ${conv.name} 的聊天记录`"
+      :title="t('conv.delete')"
+      :aria-label="t('conv.deleteAria', { name: conv.name })"
       @click="emit('ask-delete', conv, $event)"
     >
       <X class="h-3.5 w-3.5" />

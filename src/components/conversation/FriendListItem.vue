@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from "@/i18n";
 import { onUnmounted } from "vue";
 import { avatarInitial, nameToColor } from "@/utils/color";
 import { haptic } from "@/utils/haptics";
@@ -57,7 +58,7 @@ onUnmounted(clearPress);
     :class="active
       ? 'bg-[var(--gosslan-list-active)]'
       : 'hover:bg-[var(--gosslan-list-hover)]'"
-    :aria-label="`${friend.nickname}，${friend.online ? '在线' : '离线'}`"
+    :aria-label="t('friend.listItem.aria', { name: friend.nickname, status: friend.online ? t('common.online') : t('common.offline') })"
     @click="emit('open', friend)"
     @keydown.enter.prevent="emit('open', friend)"
     @keydown.space.prevent="emit('open', friend)"
@@ -90,7 +91,7 @@ onUnmounted(clearPress);
       <div
         class="truncate text-xs leading-5 text-[var(--gosslan-text-2)]"
       >
-        {{ friend.online ? "在线" : "离线" }}
+        {{ friend.online ? t("common.online") : t("common.offline") }}
       </div>
     </div>
   </div>

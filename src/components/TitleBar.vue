@@ -4,6 +4,7 @@ import { useAppStore } from "@/stores/useAppStore";
 import { api } from "@/api";
 import { Minus, X, Maximize2, Minimize2 } from "lucide-vue-next";
 import { isMac } from "@/utils/platform";
+import { t } from "@/i18n";
 
 const app = useAppStore();
 const maximized = ref(false);
@@ -90,22 +91,22 @@ onBeforeUnmount(() => {
     <div v-if="isMac" class="group/traffic flex h-full items-center gap-2" @dblclick.stop>
       <button
         class="flex h-3 w-3 items-center justify-center rounded-full border border-black/15 bg-[#ff5f57]"
-        title="关闭" aria-label="关闭"
+        :title="t('window.close')" :aria-label="t('window.close')"
         @click="api.windowClose()"
       >
         <X class="hover-reveal-op h-2 w-2 text-black/50 opacity-0 transition-opacity group-hover/traffic:opacity-100" />
       </button>
       <button
         class="flex h-3 w-3 items-center justify-center rounded-full border border-black/15 bg-[#febc2e]"
-        title="最小化" aria-label="最小化"
+        :title="t('window.minimize')" :aria-label="t('window.minimize')"
         @click="api.windowMinimize()"
       >
         <Minus class="hover-reveal-op h-2 w-2 text-black/50 opacity-0 transition-opacity group-hover/traffic:opacity-100" />
       </button>
       <button
         class="flex h-3 w-3 items-center justify-center rounded-full border border-black/15 bg-[#28c840]"
-        :title="fullscreen ? '退出全屏' : maximized ? '向下还原' : '缩放'"
-        :aria-label="fullscreen ? '退出全屏' : maximized ? '向下还原' : '缩放'"
+        :title="fullscreen ? t('window.fullscreenExit') : maximized ? t('window.restore') : t('window.zoom')"
+        :aria-label="fullscreen ? t('window.fullscreenExit') : maximized ? t('window.restore') : t('window.zoom')"
         @click="onGreenClick"
       >
         <component
@@ -125,14 +126,14 @@ onBeforeUnmount(() => {
     <div v-else class="flex h-full items-stretch">
       <button
         class="flex w-11 items-center justify-center text-[var(--gosslan-rail-text)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]"
-        title="最小化" aria-label="最小化"
+        :title="t('window.minimize')" :aria-label="t('window.minimize')"
         @click="api.windowMinimize()"
       >
         <Minus class="h-3.5 w-3.5" />
       </button>
       <button
         class="flex w-11 items-center justify-center text-[var(--gosslan-rail-text)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]"
-        :title="maximized ? '向下还原' : '最大化'" :aria-label="maximized ? '向下还原' : '最大化'"
+        :title="maximized ? t('window.restore') : t('window.maximize')" :aria-label="maximized ? t('window.restore') : t('window.maximize')"
         @click="toggleMaximize"
       >
         <Minimize2 v-if="maximized" class="h-3 w-3" />
@@ -140,7 +141,7 @@ onBeforeUnmount(() => {
       </button>
       <button
         class="flex w-11 items-center justify-center text-[var(--gosslan-rail-text)] transition hover:bg-[var(--gosslan-danger)] hover:text-white"
-        title="关闭（最小化到托盘，后台继续收消息）" aria-label="关闭（最小化到托盘，后台继续收消息）"
+        :title="t('window.closeToTray')" :aria-label="t('window.closeToTray')"
         @click="api.windowClose()"
       >
         <X class="h-3.5 w-3.5" />

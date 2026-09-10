@@ -7,14 +7,15 @@ import { t } from "@/i18n";
 const app = useAppStore();
 
 const presets = ["#3b82f6", "#00b578", "#ff6b35", "#8b5cf6", "#e53e3e", "#0ea5e9"];
+/** label 存 i18n key，由模板 `t(f.label)` 翻译显示。 */
 const fonts = [
-  { value: "", label: "系统默认" },
+  { value: "", label: "settings.appearance.font.system" },
   {
     value: "-apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif",
-    label: "苹方 / 微软雅黑",
+    label: "settings.appearance.font.pingfang",
   },
-  { value: "'Noto Sans SC', 'Source Han Sans SC', sans-serif", label: "思源黑体" },
-  { value: "'JetBrains Mono', Consolas, monospace", label: "等宽字体" },
+  { value: "'Noto Sans SC', 'Source Han Sans SC', sans-serif", label: "settings.appearance.font.siyuan" },
+  { value: "'JetBrains Mono', Consolas, monospace", label: "settings.appearance.font.mono" },
 ];
 
 /**
@@ -24,19 +25,22 @@ const fonts = [
  * 导航栏的太阳/月亮按钮仍保留为快捷开关（它总是切成显式的浅/深）。
  */
 const appearanceOptions: { value: AppearanceMode; label: string }[] = [
-  { value: "system", label: "跟随系统" },
-  { value: "light", label: "浅色" },
-  { value: "dark", label: "深色" },
+  { value: "system", label: "settings.appearance.system" },
+  { value: "light", label: "settings.appearance.light" },
+  { value: "dark", label: "settings.appearance.dark" },
 ];
 </script>
 
 <template>
   <SettingsGroup :title="t('settings.group.appearance')">
-    <SettingsRow label="外观" description="跟随系统，或固定为浅色 / 深色">
+    <SettingsRow
+      :label="t('settings.appearance.mode')"
+      :description="t('settings.appearance.mode.desc')"
+    >
       <!-- 分段控件：外圆角 md(8) + p-0.5(2) → 内圆角取 sm(6)，符合同心公式（design-guidelines §1.3） -->
       <div
         role="radiogroup"
-        aria-label="外观模式"
+        :aria-label="t('settings.appearance.mode.aria')"
         class="flex items-center gap-0.5 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] p-0.5"
       >
         <button
@@ -50,12 +54,15 @@ const appearanceOptions: { value: AppearanceMode; label: string }[] = [
             : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
           @click="app.setAppearance(m.value)"
         >
-          {{ m.label }}
+          {{ t(m.label) }}
         </button>
       </div>
     </SettingsRow>
 
-    <SettingsRow label="主题色" description="应用于按钮、选中态与强调色">
+    <SettingsRow
+      :label="t('settings.appearance.themeColor')"
+      :description="t('settings.appearance.themeColor.desc')"
+    >
       <div class="flex items-center gap-1.5">
         <!-- aria-label：色板格子只有颜色没有文字，读屏下必须靠 label 才知道它是什么 -->
         <button
@@ -63,7 +70,7 @@ const appearanceOptions: { value: AppearanceMode; label: string }[] = [
           :key="c"
           class="h-6 w-6 rounded-full transition hover:scale-110"
           :style="{ background: c, outline: app.themeColor === c ? '2px solid var(--gosslan-text)' : 'none', outlineOffset: '1px' }"
-          :aria-label="`主题色 ${c}`"
+          :aria-label="t('settings.appearance.themeColor.aria', { color: c })"
           :aria-pressed="app.themeColor === c"
           @click="app.setThemeColor(c)"
         ></button>
@@ -71,21 +78,21 @@ const appearanceOptions: { value: AppearanceMode; label: string }[] = [
           type="color"
           :value="app.themeColor"
           class="h-6 w-7 cursor-pointer rounded-[var(--gosslan-radius-xs)] border-0 bg-transparent p-0"
-          title="自定义颜色"
-          aria-label="自定义主题色"
+          :title="t('settings.appearance.customColor')"
+          :aria-label="t('settings.appearance.customColor.aria')"
           @input="(e) => app.setThemeColor((e.target as HTMLInputElement).value)"
         />
       </div>
     </SettingsRow>
 
-    <SettingsRow label="字体" last>
+    <SettingsRow :label="t('settings.appearance.font')" last>
       <select
-        aria-label="界面字体"
+        :aria-label="t('settings.appearance.font.aria')"
         class="max-w-[180px] rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] px-3 py-1.5 text-sm outline-none"
         :value="app.fontFamily"
         @change="(e) => app.setFontFamily((e.target as HTMLSelectElement).value)"
       >
-        <option v-for="f in fonts" :key="f.value" :value="f.value">{{ f.label }}</option>
+        <option v-for="f in fonts" :key="f.value" :value="f.value">{{ t(f.label) }}</option>
       </select>
     </SettingsRow>
   </SettingsGroup>

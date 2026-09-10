@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from "@/i18n";
 import { Dialog, DialogPanel, TransitionChild, TransitionRoot } from "@headlessui/vue";
 
 /**
@@ -52,7 +53,7 @@ const emit = defineEmits<{ (e: "close"): void }>();
               class="mt-2 w-full rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-hover)] py-3 text-center text-[15px] font-medium text-[var(--gosslan-text)] transition active:opacity-70"
               @click="emit('close')"
             >
-              <slot name="cancel">取消</slot>
+              <slot name="cancel">{{ t("common.cancel") }}</slot>
             </button>
           </DialogPanel>
         </TransitionChild>
