@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { api } from "@/api";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { useAppStore } from "@/stores/useAppStore";
 import SettingsGroup from "@/components/settings/SettingsGroup.vue";
 import SettingsRow from "@/components/settings/SettingsRow.vue";
 import { formatBytes } from "@/utils/format";
-import { FolderOpen, Trash2 } from "lucide-vue-next";
+import { Download, FolderOpen, Trash2 } from "lucide-vue-next";
 import type { CacheInfo } from "@/types";
 
 const props = defineProps<{ active: boolean; reloadToken?: number }>();
@@ -17,6 +17,8 @@ const cacheInfo = ref<CacheInfo | null>(null);
 const retentionDays = ref(0);
 const maxQuotaMb = ref(0);
 const cleaning = ref(false);
+/** 导出进行中（读库 + 渲染可能耗时，期间禁用按钮防重复触发）。 */
+const exporting = ref(false);
 /** 文件接收目录（接收的图片/文件落盘于此，未手动另存前都在这里）。 */
 const downloadsDir = ref("");
 
@@ -109,6 +111,39 @@ async function applyCachePolicy(silent = false) {
   await loadCache();
 }
 
+/**
+ * 导出全部聊天文字为单个 Markdown 文件。
+ *
+ * 这是磁盘吃紧 / 换机前**唯一的自救手段**：存储清理只会删媒体，但库本身如果出问题，
+ * 没有导出入口就只能看着聊天记录丢。只导文字（媒体仅留文件名），所以不需要新依赖。
+ */
+async function exportChat() {
+  const now = new Date();
+  const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(
+    now.getDate(),
+  ).padStart(2, "0")}`;
+  let destination: string | null;
+  try {
+    destination = await saveDialog({ defaultPath: `gosslan-聊天记录-${stamp}.md` });
+  } catch (e) {
+    app.toast(`无法打开保存对话框：${e}`, "error");
+    return;
+  }
+  if (!destination) return; // 用户取消
+
+  exporting.value = true;
+  try {
+    // 时区偏移交给前端给（Rust 侧不引入时区库），getTimezoneOffset 的符号与
+    // "本地 = UTC + 偏移" 相反，因此取负。
+    const r = await api.exportChatText(destination, -now.getTimezoneOffset());
+    app.toast(`已导出 ${r.conversations} 个会话、${r.messages} 条消息`, "success");
+  } catch (e) {
+    app.toast(`导出失败：${e}`, "error");
+  } finally {
+    exporting.value = false;
+  }
+}
+
 async function cleanNow() {
   cleaning.value = true;
   try {
@@ -197,6 +232,21 @@ watch(
           </button>
         </div>
       </div>
+    </SettingsRow>
+
+    <SettingsRow
+      label="导出聊天记录"
+      description="把全部聊天文字导出成一个 Markdown 文件；图片与文件只保留文件名，不含本体"
+    >
+      <button
+        class="flex shrink-0 items-center gap-1.5 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3 py-1.5 text-xs transition hover:bg-[var(--gosslan-hover)] disabled:opacity-50"
+        :disabled="exporting"
+        title="导出后可用任意文本编辑器或 Markdown 阅读器打开"
+        @click="exportChat"
+      >
+        <Download class="h-3.5 w-3.5" />
+        {{ exporting ? "导出中…" : "导出" }}
+      </button>
     </SettingsRow>
 
     <div class="flex items-center justify-between gap-3 px-4 py-3">

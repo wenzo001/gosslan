@@ -28,8 +28,11 @@ const props = defineProps<{
   delivery?: { completed: number; failed: number; waiting: number } | null;
   /** 自己的消息气泡尖角朝右、对方朝左，指向头像。 */
   mine: boolean;
-  /** 文件已就绪（本地路径可用）：整卡可点击打开（微信式：下载完成后点消息即打开）。 */
+  /** 文件已就绪（本地路径可用）**且文件确实还在**：整卡可点击打开（微信式：下载完成后点消息即打开）。 */
   ready: boolean;
+  /** 本地文件已被「存储清理」删除。此时不提供"下载"入口——重新获取需要对方重发，
+   *  而不是等对方上线自动补传（那个入口的文案会误导）。 */
+  missing?: boolean;
 }>();
 const emit = defineEmits<{
   (e: "open"): void;
@@ -184,8 +187,9 @@ const pct = computed(() => Math.round((props.progress ?? 0) * 100));
         </div>
       </div>
       <!-- 微信式按钮逻辑：未就绪才显示——接收中＝转圈+百分比；等待传输＝下载按钮。
-           就绪后整卡可点打开，另存/转发/复制走右键菜单，不再放常驻按钮。 -->
-      <div v-if="!failed && !ready" class="flex shrink-0 items-center">
+           就绪后整卡可点打开，另存/转发/复制走右键菜单，不再放常驻按钮。
+           已被清理时不显示下载入口：文件不会"等对方上线"自己回来。 -->
+      <div v-if="!failed && !ready && !missing" class="flex shrink-0 items-center">
         <span
           v-if="progress !== null"
           class="flex h-7 items-center gap-1 text-[11px] tabular-nums opacity-70"

@@ -184,6 +184,16 @@ export interface CleanupReport {
   freed_bytes: number;
 }
 
+/** 聊天记录导出结果 */
+export interface ExportSummary {
+  /** 实际写入的会话数（只统计有消息的会话） */
+  conversations: number;
+  /** 实际写入的消息条数 */
+  messages: number;
+  /** 落盘路径 */
+  path: string;
+}
+
 /** 搜索结果 */
 export interface SearchResult {
   conv_id: string;

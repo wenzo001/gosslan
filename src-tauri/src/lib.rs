@@ -5,6 +5,8 @@ mod commands;
 pub mod crypto;
 mod db;
 mod device;
+/// 聊天记录导出（纯文字单文件）：磁盘满 / 换机时的自救手段。
+pub mod export;
 mod gossip_engine;
 mod network;
 pub mod protocol;
@@ -42,6 +44,27 @@ pub fn run() {
                 if let Err(e) = win.set_closable(true) {
                     eprintln!("[window] 恢复 macOS Cmd+W 关闭能力失败: {e}");
                 }
+            }
+            // 窗口以 `visible: false` 创建（见 tauri.conf.json），由前端在挂载完成后调用
+            // `focus_window` 显示——目的是让窗口露出来的第一帧就是 index.html 的内联骨架，
+            // 消除暗色主题下"整屏浅色一闪"（窗口静态 backgroundColor 只能是浅色或深色之一）。
+            //
+            // 兜底：前端若因初始化异常没能调用，必须仍然把窗口显示出来。否则用户面对的是
+            // 「应用启动了、却没有窗口」——比闪一下白严重得多，且无法自行恢复。
+            // 只在"确定处于隐藏态"时才强制显示，避免 4 秒后抢走用户当前焦点。
+            #[cfg(desktop)]
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+                    if let Some(win) = handle.get_webview_window(tray::MAIN_WINDOW_LABEL) {
+                        if matches!(win.is_visible(), Ok(false)) {
+                            eprintln!("[window] 前端未在超时内显示窗口，兜底显示");
+                            let _ = win.show();
+                            let _ = win.set_focus();
+                        }
+                    }
+                });
             }
             // 局域网默认开启：首次安装（以及尚未写入该键的旧版本升级）启动即自动联网；
             // 用户在设置页关闭后持久化为关闭，重启不再联网。「恢复默认」清除该键 ⇒ 回到默认开启。
@@ -138,6 +161,8 @@ pub fn run() {
             commands::delete_file,
             commands::save_outgoing_image,
             commands::read_file_preview,
+            commands::media_present,
+            commands::export_chat_text,
             commands::search_messages,
             commands::clear_all_data,
             commands::get_discovery_diag,

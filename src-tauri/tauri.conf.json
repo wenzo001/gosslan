@@ -25,6 +25,7 @@
         "transparent": false,
         "shadow": true,
         "backgroundColor": "#edf1f6",
+        "visible": false,
         "dragDropEnabled": true
       }
     ],

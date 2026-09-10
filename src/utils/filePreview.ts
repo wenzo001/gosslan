@@ -5,8 +5,9 @@
 // 按 msg_id 缓存并做 in-flight 去重，避免 VirtualList 滚动反复读同一文件。
 
 import { api } from "@/api";
+import { previewFailureResult, type PreviewResult } from "@/utils/mediaAvailability";
 
-export type PreviewResult = { url?: string; text?: string; note?: string };
+export type { PreviewResult };
 
 /** 代码预览上限：超过则回退文件卡片并提示，避免把巨大文件读进前端。 */
 const CODE_MAX_BYTES = 512 * 1024;
@@ -66,7 +67,7 @@ export function loadFilePreview(
     } catch (e) {
       const msg = String(e);
       console.error(`[filePreview] ${subtype} preview failed (msgId=${msgId}, name=${name}): ${msg}`);
-      const r: PreviewResult = msg.includes("TOO_LARGE") ? { note: "文件过大，无法预览" } : {};
+      const r: PreviewResult = previewFailureResult(msg);
       cache.set(msgId, r);
       return r;
     } finally {

@@ -17,6 +17,7 @@ import MessageImageBubble from "@/components/message/MessageImageBubble.vue";
 import MessageReceipt from "@/components/message/MessageReceipt.vue";
 import MessageContentModal from "@/components/message/MessageContentModal.vue";
 import MessageContextMenu from "@/components/message/MessageContextMenu.vue";
+import { ImageOff } from "lucide-vue-next";
 import type { MessageRecord, MsgKind } from "@/types";
 
 const props = withDefaults(
@@ -99,6 +100,7 @@ const {
   fileProgress,
   fileStatusText,
   attachmentUrl,
+  attachmentMissing,
   previewNote,
   openFile,
   saveAs,
@@ -396,6 +398,17 @@ async function copyFileToClipboard() {
             @copy="copyContent('code', $event)"
           />
 
+          <!-- 图片：已被存储清理时给出明确占位，而不是一个永远转圈/裂开的图片框。
+               尺寸与 MessageImageBubble 的骨架一致（h-32 w-52），避免清理前后高度跳变。 -->
+          <div
+            v-if="message.kind === 'image' && attachmentMissing"
+            class="flex h-32 w-52 flex-col items-center justify-center gap-1 rounded-[var(--gosslan-bubble-radius)] bg-black/5 text-[11px] text-[var(--gosslan-text-2)] dark:bg-white/5"
+          >
+            <ImageOff class="h-6 w-6 opacity-50" />
+            <span>图片已被清理</span>
+            <span class="opacity-70">可向对方重新索取</span>
+          </div>
+
           <!-- 图片 -->
           <MessageImageBubble
             v-else-if="message.kind === 'image'"
@@ -419,6 +432,7 @@ async function copyFileToClipboard() {
             :status-text="fileStatusText"
             :failed="sendState === 'failed'"
             :note="previewNote"
+            :missing="attachmentMissing"
             :delivery="isGroupFile ? deliverySummary : null"
             :mine="mine"
             :ready="fileReady"

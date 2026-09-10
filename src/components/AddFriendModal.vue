@@ -14,8 +14,13 @@ const chat = useChatStore();
 const loading = ref(false);
 const keyword = ref("");
 
-// 大规模局域网（500-1000 节点）下，列表按需过滤 + 截断渲染，避免一次挂载上千行
-const MAX_RENDER = 200;
+// 大规模局域网（设计规模 500–1000 节点）下最多渲染多少行。
+//
+// 原先这里截断到 200 行并提示"可用搜索缩小范围"——但那等于第 201 个之后的节点
+// 压根找不到，是真实的功能缺口。现在行上加了 `content-visibility: auto`：
+// 离屏行不参与布局与绘制，多渲染几百行几乎不花代价（节点表本身也已按 300ms 节流推送），
+// 所以上限提到设计规模本身。保留上限只为挡住异常膨胀的节点表（例如广播洪水）。
+const MAX_RENDER = 1000;
 
 const friendIds = computed(() => new Set(chat.friends.map((f) => f.device_id)));
 
@@ -93,7 +98,7 @@ async function add(peerId: string) {
         <div
           v-for="p in filteredPeers.list"
           :key="p.device_id"
-          class="flex items-center gap-3 border-b border-[var(--gosslan-border)] px-1 py-2 last:border-0"
+          class="flex items-center gap-3 border-b border-[var(--gosslan-border)] px-1 py-2 last:border-0 [contain-intrinsic-size:auto_53px] [content-visibility:auto]"
         >
           <div
             class="flex h-9 w-9 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"

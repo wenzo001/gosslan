@@ -14,7 +14,26 @@ use uuid::Uuid;
 const MAX_NICKNAME_LEN: usize = 30;
 pub const MAX_GROUP_NAME_LEN: usize = 30;
 const MAX_SEARCH_LEN: usize = 100;
+/// 单条消息内容上限（按**字符数**，非字节数）。UTF-8 下一个中文字符 3 字节，
+/// 5 万字符对应最大约 150 KB 落库——足够覆盖任何真实聊天输入，又不可能被
+/// "一次粘贴"撑爆数据库。
+///
+/// ⚠️ 超限必须**报错拒发**，绝不能 `chars().take()` 静默截断：静默截断会让用户
+/// 以为整段发出去了，实际对方只收到前半段，且本机不留任何痕迹（违反
+/// AI_RULES INV-005「不允许静默丢失」）。与 `MAX_OUTGOING_IMAGE_BYTES`
+/// 「超限一律报错拒发，绝不静默截断」的既有约定一致。
 const MAX_MESSAGE_LEN: usize = 50_000;
+
+/// 校验单条消息内容长度，超限返回面向用户的明确错误（不修改内容）。
+fn check_message_content(content: String) -> Result<String, String> {
+    let len = content.chars().count();
+    if len > MAX_MESSAGE_LEN {
+        return Err(format!(
+            "消息过长（{len} 字符，上限 {MAX_MESSAGE_LEN} 字符）。请分段发送，或改用文件发送。"
+        ));
+    }
+    Ok(content)
+}
 /// 粘贴/拖拽图片的解码后字节上限。Base64 解码后 ≈ 3/4 字符数，
 /// 8 MiB 对应约 11 MB data URL，封框后仍远低于传输层 MAX_FRAME(64 MiB)。
 /// 超限一律报错拒发，绝不静默截断。
@@ -25,6 +44,7 @@ const MAX_AVATAR_BYTES: usize = 2 * 1024 * 1024;
 
 use crate::crypto;
 use crate::db;
+use crate::export;
 use crate::network::transport::{
     broadcast_gossip, get_group_key, mark_pending_group_key, maybe_update_friend,
     resolve_member_x25519, resolve_nickname, try_send,
@@ -770,8 +790,8 @@ pub async fn send_message(
         }
     }
 
-    // 长度保护：text/code 等普通内容按字符截断（UTF-8 安全），沿用既有 50000 上限。
-    let content: String = content.chars().take(MAX_MESSAGE_LEN).collect();
+    // 长度保护：text/code 等普通内容超限直接报错（UTF-8 安全，按字符数计）。
+    let content = check_message_content(content)?;
 
     // E2EE 恒开（v0.11.0 起默认且不可关闭）：发送必须拿到对端 X25519 公钥。
     // 好友表优先，回退在线节点表；都缺失时主动探测一次（who_has）等对方/中继
@@ -1527,7 +1547,7 @@ pub async fn send_group_message(
         "code" => MsgKind::Code,
         _ => return Err("群聊不支持该消息类型".to_string()),
     };
-    let content: String = content.chars().take(MAX_MESSAGE_LEN).collect();
+    let content = check_message_content(content)?;
     let ts = db::now_ms();
     let conv_id = format!("group:{group_id}");
     let seq = {
@@ -2578,12 +2598,72 @@ pub fn save_data_file(base64_data: String, destination: String) -> Result<(), St
     Ok(())
 }
 
+/// 解析 `msg_id` 指向的本地媒体文件的结果。
+///
+/// 由 `read_file_preview` 与 `media_present` 共用，避免出现第二份路径解析实现
+/// （安全边界必须只有一处）。
+enum MediaPath {
+    /// 文件存在且通过安全校验。
+    Present(Box<PathBuf>),
+    /// 查不到这条消息 / 元数据缺路径 / 路径未通过安全校验 —— **无法判断**媒体是否还在。
+    /// 尚未落库的乐观消息会落到这里，因此调用方不能据此断言"已被清理"。
+    /// 附带面向用户的错误文案。
+    Unknown(String),
+    /// 消息记录里的路径已解析不到文件 —— 已被「存储清理」删除。
+    Gone,
+}
+
+/// 校验并解析 `msg_id` 的媒体路径。
+///
+/// 安全边界：路径必须落在 downloads 目录内（接收方文件），或该消息由本机发出
+/// （发送方自选的文件）——两者都不允许对端通过消息内容诱导读取本机任意路径。
+fn resolve_media_path(s: &AppState, msg_id: &str) -> MediaPath {
+    let Some((sender_id, content)) =
+        db::get_message_preview_source(&s.db.lock().unwrap_or_else(|e| e.into_inner()), msg_id)
+    else {
+        return MediaPath::Unknown("消息不存在".to_string());
+    };
+    let Some(path) = serde_json::from_str::<serde_json::Value>(&content)
+        .ok()
+        .and_then(|v| v.get("path").and_then(|p| p.as_str()).map(|p| p.to_string()))
+    else {
+        return MediaPath::Unknown("元数据缺少路径".to_string());
+    };
+
+    let Ok(file) = std::fs::canonicalize(&path) else {
+        return MediaPath::Gone;
+    };
+    let under_downloads =
+        std::fs::canonicalize(s.downloads_dir.lock().unwrap_or_else(|e| e.into_inner()).as_path())
+            .map(|dir| file.starts_with(dir))
+            .unwrap_or(false);
+    if !under_downloads && sender_id != s.device_id {
+        return MediaPath::Unknown("路径越权".to_string());
+    }
+    match std::fs::metadata(&file) {
+        Ok(meta) if meta.is_file() => MediaPath::Present(Box::new(file)),
+        Ok(_) => MediaPath::Unknown("非普通文件".to_string()),
+        Err(_) => MediaPath::Gone,
+    }
+}
+
+/// 媒体是否**仍在本机**（未被存储清理删除）。
+///
+/// 前端据此把"已被清理"的消息渲染成明确提示，而不是一个空白/裂开的图片框——后者
+/// 会让人误以为是对端发来的文件本身有问题。只有能确定「文件已被删除」时才返回 `false`；
+/// 查不到消息（例如尚未落库的乐观消息）一律按"存在"处理，绝不能把在途消息误标成已清理。
+#[tauri::command]
+pub fn media_present(state: State<'_, Arc<AppState>>, msg_id: String) -> Result<bool, String> {
+    let s = state.inner();
+    Ok(!matches!(resolve_media_path(s, &msg_id), MediaPath::Gone))
+}
+
 /// 读取附件预览内容（原始字节，不走 base64 IPC）。
 ///
 /// 按 `msg_id` 反查记录里的本地 `path` 再读，前端据此渲染图片（→Blob/objectURL）
-/// 或代码（→TextDecoder）。安全边界：路径必须落在 downloads 目录内（接收方文件），
-/// 或该消息由本机发出（发送方自选的文件）——两者都不允许对端通过消息内容
-/// 诱导读取任意本地路径。超过 `max_bytes` 返回 "TOO_LARGE"，由前端回退文件卡片。
+/// 或代码（→TextDecoder）。安全边界见 [`resolve_media_path`]。
+/// 超过 `max_bytes` 返回 "TOO_LARGE"，由前端回退文件卡片；文件已被清理返回
+/// "文件不存在"，由前端渲染成「已清理」占位。
 #[tauri::command]
 pub fn read_file_preview(
     state: State<'_, Arc<AppState>>,
@@ -2592,33 +2672,58 @@ pub fn read_file_preview(
 ) -> Result<tauri::ipc::Response, String> {
     let s = state.inner();
     let max_bytes = max_bytes.min(15 * 1024 * 1024);
-    let (sender_id, content) =
-        db::get_message_preview_source(&s.db.lock().unwrap_or_else(|e| e.into_inner()), &msg_id).ok_or("消息不存在")?;
-    let path = serde_json::from_str::<serde_json::Value>(&content)
-        .ok()
-        .and_then(|v| {
-            v.get("path")
-                .and_then(|p| p.as_str())
-                .map(|p| p.to_string())
-        })
-        .ok_or("元数据缺少路径")?;
-
-    let file = std::fs::canonicalize(&path).map_err(|_| "文件不存在".to_string())?;
-    let under_downloads = std::fs::canonicalize(s.downloads_dir.lock().unwrap_or_else(|e| e.into_inner()).as_path())
-        .map(|dir| file.starts_with(dir))
-        .unwrap_or(false);
-    if !under_downloads && sender_id != s.device_id {
-        return Err("路径越权".to_string());
-    }
+    let file = match resolve_media_path(s, &msg_id) {
+        MediaPath::Present(p) => *p,
+        MediaPath::Unknown(e) => return Err(e),
+        MediaPath::Gone => return Err("文件不存在".to_string()),
+    };
     let meta = std::fs::metadata(&file).map_err(|e| e.to_string())?;
-    if !meta.is_file() {
-        return Err("非普通文件".to_string());
-    }
     if meta.len() > max_bytes {
         return Err("TOO_LARGE".to_string());
     }
     let bytes = std::fs::read(&file).map_err(|e| e.to_string())?;
     Ok(tauri::ipc::Response::new(bytes))
+}
+
+/// 导出全部聊天文字到用户指定文件（Markdown 单文件）。
+///
+/// 定位：磁盘满 / 换机时的**自救手段**——存储清理只删媒体、不动文字，但一旦库损坏
+/// 或要迁机，没有导出入口就只能看着数据丢。只导出文字，媒体仅保留文件名
+/// （见 `export` 模块说明：刻意不产出 HTML，避免对端消息在本机浏览器里执行）。
+///
+/// `utc_offset_minutes` 由前端给出（`-new Date().getTimezoneOffset()`）：Rust 侧不引入
+/// 时区库（`AI_RULES §25`），跨夏令时切换的历史消息可能有 1 小时偏差，已在模块注释说明。
+#[tauri::command]
+pub fn export_chat_text(
+    state: State<'_, Arc<AppState>>,
+    destination: String,
+    utc_offset_minutes: i64,
+) -> Result<export::ExportSummary, String> {
+    let s = state.inner();
+    if destination.trim().is_empty() {
+        return Err("导出路径为空".to_string());
+    }
+    let device_name = s.nickname.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let my_id = s.device_id.clone();
+
+    // 只把「读库」放进锁里：渲染几十万条消息 + 写盘可能耗时较长，
+    // 不能让一次导出把消息落库卡住。
+    let sections = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        export::collect_sections(&dbc, &my_id)?
+    };
+
+    let messages: usize = sections.iter().map(|(_, m)| m.len()).sum();
+    let conversations = sections.len();
+    let generated_at = export::format_local_time(db::now_ms(), utc_offset_minutes);
+    let text = export::render_markdown(&device_name, &generated_at, &sections, utc_offset_minutes);
+
+    std::fs::write(&destination, text.as_bytes()).map_err(|e| format!("写入导出文件失败：{e}"))?;
+    Ok(export::ExportSummary {
+        conversations,
+        messages,
+        path: destination,
+    })
 }
 
 /// 清除所有聊天数据（保留好友、身份、设置）。
@@ -2802,8 +2907,48 @@ fn preview(kind: &str, content: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_outgoing_image, image_extension, MAX_OUTGOING_IMAGE_BYTES};
+    use super::{
+        check_message_content, decode_outgoing_image, image_extension, MAX_MESSAGE_LEN,
+        MAX_OUTGOING_IMAGE_BYTES,
+    };
     use base64::{engine::general_purpose::STANDARD, Engine as _};
+
+    // ---------- 单条消息长度上限：超限报错，绝不静默截断 ----------
+
+    #[test]
+    fn message_content_within_limit_is_returned_unchanged() {
+        let ok = "a".repeat(MAX_MESSAGE_LEN);
+        let got = check_message_content(ok.clone()).unwrap();
+        assert_eq!(got, ok, "恰好到上限必须原样通过，不能被改动");
+    }
+
+    #[test]
+    fn message_content_over_limit_is_rejected_not_truncated() {
+        let over = "b".repeat(MAX_MESSAGE_LEN + 1);
+        let err = check_message_content(over).unwrap_err();
+        assert!(err.contains("过长"), "错误文案应说明「过长」：{err}");
+        assert!(
+            err.contains(&(MAX_MESSAGE_LEN + 1).to_string()),
+            "应告知实际长度，便于用户判断如何分段：{err}"
+        );
+    }
+
+    #[test]
+    fn message_length_is_counted_in_chars_not_bytes() {
+        // 按字符计数：5 万汉字（15 万字节）合法，5 万零 1 个汉字才拒绝。
+        // 若误按字节计数，5 万汉字会被判超限，正常长文就发不出去了。
+        let cjk = "中".repeat(MAX_MESSAGE_LEN);
+        assert!(check_message_content(cjk).is_ok());
+
+        let cjk_over = "中".repeat(MAX_MESSAGE_LEN + 1);
+        assert!(check_message_content(cjk_over).is_err());
+    }
+
+    #[test]
+    fn empty_message_content_is_allowed_at_this_layer() {
+        // 空内容的拦截属于上层（发送键置灰），这里不做业务判断，避免产生第二处规则。
+        assert!(check_message_content(String::new()).is_ok());
+    }
 
     #[test]
     fn image_extension_maps_common_mimes() {

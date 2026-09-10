@@ -7,6 +7,7 @@ import type {
   CacheInfo,
   ChannelStatus,
   CleanupReport,
+  ExportSummary,
   Conversation,
   DeviceInfo,
   FileDoneInfo,
@@ -101,6 +102,10 @@ export const api = {
   readFilePreview: (msgId: string, maxBytes: number) =>
     invoke<ArrayBuffer | number[]>("read_file_preview", { msgId, maxBytes }),
 
+  /** 媒体是否仍在本机（未被「存储清理」删除）。仅"确定已删除"时返回 false，
+   *  查不到消息（在途的乐观消息）返回 true——不能把在途消息误标成已清理。 */
+  mediaPresent: (msgId: string) => invoke<boolean>("media_present", { msgId }),
+
   setShareDir: (path: string) => invoke<void>("set_share_dir", { path }),
   getShareDir: () => invoke<string | null>("get_share_dir"),
   getDownloadsDir: () => invoke<string>("get_downloads_dir"),
@@ -117,6 +122,11 @@ export const api = {
   setCachePolicy: (retentionDays: number | null, maxBytes: number | null) =>
     invoke<void>("set_cache_policy", { retentionDays, maxBytes }),
   cleanCacheNow: () => invoke<CleanupReport>("clean_cache_now"),
+
+  /** 导出全部聊天文字到指定文件。`utcOffsetMinutes` = -new Date().getTimezoneOffset()：
+   *  Rust 侧不引入时区库，本地时间换算需要前端给出偏移。 */
+  exportChatText: (destination: string, utcOffsetMinutes: number) =>
+    invoke<ExportSummary>("export_chat_text", { destination, utcOffsetMinutes }),
 
   getSettings: () => invoke<AppSettings>("get_settings"),
   saveSettings: (s: AppSettings) => invoke<void>("save_settings", { settings: s }),
