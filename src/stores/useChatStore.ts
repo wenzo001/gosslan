@@ -33,6 +33,9 @@ import type {
   TransferInfo,
 } from "@/types";
 
+/** 上次打开的会话（重启后恢复，纯前端 UI 状态，各端统一）。 */
+const LAST_CONV_KEY = "gosslan.lastConv";
+
 export const useChatStore = defineStore("chat", () => {
   const peers = ref<Peer[]>([]);
   const friends = ref<Friend[]>([]);
@@ -388,6 +391,13 @@ export const useChatStore = defineStore("chat", () => {
 
   async function openConversation(id: string) {
     activeConv.value = id;
+    // 记住上次会话：重启后恢复（HIG State Restoration；localStorage 只作 UI 状态，
+    // 失败不影响打开聊天）。
+    try {
+      localStorage.setItem(LAST_CONV_KEY, id);
+    } catch {
+      /* localStorage 不可用则跳过，不影响本次打开 */
+    }
     // 标记为最近使用，并在加载完成后收缩缓存（活跃会话始终保留）
     touchCacheOrder(id);
     // 打开即视为看到 → [有人@我] 标志随之清除
@@ -845,6 +855,16 @@ export const useChatStore = defineStore("chat", () => {
       refreshPeers(),
       refreshTopology(),
     ]);
+    // 恢复上次打开的会话（若仍存在）。HIG State Restoration：重启后回到上次离开的地方。
+    // 用 void 触发：不阻塞 init，也避免其异步失败拖垮启动。
+    try {
+      const last = localStorage.getItem(LAST_CONV_KEY);
+      if (last && conversations.value.some((c) => c.id === last)) {
+        void openConversation(last);
+      }
+    } catch {
+      /* localStorage 不可用则跳过恢复 */
+    }
     // 会话打开期间收到新消息：去抖标记已读（同时把已读回执发给对方 → 对方绿勾）
     let markReadTimer: ReturnType<typeof setTimeout> | null = null;
     const debounceMarkRead = (convId: string) => {

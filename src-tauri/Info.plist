@@ -4,5 +4,11 @@
 <dict>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Gosslan 需要访问本地网络，用于发现并连接同一局域网内的设备，实现无服务器的即时通讯与文件传输。</string>
+	<!-- 方向：移动端当前只做竖屏布局（与 Android 的 screenOrientation="portrait" 保持一致）。
+	     横屏布局尚未适配（会破坏安全区/导航），等横屏布局就绪后再放开 iPad 多方向。 -->
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+	</array>
 </dict>
 </plist>
