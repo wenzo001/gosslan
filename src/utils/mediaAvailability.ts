@@ -27,8 +27,8 @@ export function previewFailureResult(err: string): PreviewResult {
 /**
  * 该消息是否需要单独向后端探测"文件还在不在"。
  *
- * 图片 / 代码附件走"读预览"这条路径，读取失败本身就带回了可达性信号，不必重复探测；
- * 普通文件（subtype=file）没有预览读取，只能单独问一次。
+ * 图片附件走"读预览"这条路径，读取失败本身就带回了可达性信号，不必重复探测；
+ * 普通文件（subtype=file/code）没有预览读取，只能单独问一次。
  * 路径为空表示文件还没到本机（正在接收/等待），此时探测没有意义。
  */
 export function shouldProbePresence(
@@ -36,5 +36,5 @@ export function shouldProbePresence(
   meta: { subtype: string; path: string } | null | undefined,
 ): boolean {
   if (kind !== "file" || !meta?.path) return false;
-  return meta.subtype !== "image" && meta.subtype !== "code";
+  return meta.subtype !== "image";
 }

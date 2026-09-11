@@ -13,9 +13,13 @@
  * 类型检查、既有单测都发现不了它（模板结构不在二者的覆盖面内）。
  *
  * 判据刻意收紧，避免把合法写法误报：
- *   —— 只有当被切断的链**本身是多分支（≥2）**、且新链末尾带 `v-else` 时才报；
+ *   —— 只有当被切断的链**本身是多分支（≥2）**、该多分支里**确实含 `v-else-if`/`v-else`
+ *      （即真的是一条"链"）**、且新链末尾带 `v-else` 时才报；
  *   —— 单独一个 `v-if`（如 `v-if="mine"` 的回执、`v-if="fileDragOver"` 的拖拽提示层、
- *      `v-if="showNickname"` 的昵称）彼此独立、互斥关系不存在，**不报**。
+ *      `v-if="showNickname"` 的昵称）彼此独立、互斥关系不存在，**不报**；
+ *   —— **连续多个独立 `v-if`** 也不算链（如两个 `v-if="hasMultiple"` 的翻页按钮、
+ *      `v-if="!isOwner"` 的按钮 + 提示）：`v-else` 只挂到紧邻的条件元素上，插在其后是安全的。
+ *      （2026-09-10 补：旧实现按"前面有几个条件兄弟"计数，会把这类合法写法误报。）
  *
  * 逃生阀：文件里带 `vue-branch-chain-ok` 注释则整个文件跳过检查（给确有必要的
  * 写法留出口，避免护栏变成阻塞）。
@@ -60,14 +64,23 @@ function directiveOf(attrs: string): string | null {
   return null;
 }
 
-/** 从 .vue 源码里取出 <template> 片段；注释置为等量空行，保证行号不漂移。 */
+/** 从 .vue 源码里取出**顶层** <template> 片段；注释置为等量空行，保证行号不漂移。
+ *
+ *  ⚠️ 必须按「首个 `<template>` → **最后**一个 `</template>`」取整块，
+ *  **不能**用非贪婪的 `/<template>([\s\S]*?)<\/template>/`：模板内部的嵌套 `<template>`
+ *  （如 `ChatHeader.vue` 的 `<template v-if="isGroup"> ({{ n }})</template>`、
+ *  `ChatWindow.vue` 的 `#default` 插槽）会让非贪婪匹配在**第一个 `</template>` 处截断**，
+ *  其后整段模板不再被检查 —— 护栏给出"全绿"的**假象**，而"静默漏报"正是本护栏最该避免的失败模式。
+ *  2026-09-10 实测：修正前 `ChatHeader.vue` 的 4 个 `<button>` 只扫得到 1 个。 */
 export function extractTemplate(src: string): { body: string; baseLine: number } | null {
-  const m = /<template>([\s\S]*?)<\/template>/.exec(src);
-  if (!m) return null;
-  const body = m[1].replace(/<!--[\s\S]*?-->/g, (c) => "\n".repeat(countNewlines(c)));
-  // body 的第 0 个字符与 `<template>` 同一行；body 内 k 个换行 → 源文件第 `tagLine + k` 行。
-  const tagLine = countNewlines(src.slice(0, m.index)) + 1;
-  return { body, baseLine: tagLine };
+  const open = src.indexOf("<template>");
+  const close = src.lastIndexOf("</template>");
+  if (open < 0 || close <= open) return null;
+  const body = src
+    .slice(open + "<template>".length, close)
+    .replace(/<!--[\s\S]*?-->/g, (c) => "\n".repeat(countNewlines(c)));
+  // body 的第 0 个字符与 `<template>` 同一行；body 内 k 个换行 → 源文件第 `openLine + k` 行。
+  return { body, baseLine: countNewlines(src.slice(0, open)) + 1 };
 }
 
 function parseTemplate(body: string, baseLine: number): Node {
@@ -107,17 +120,25 @@ function walk(node: Node, out: BranchIssue[]): void {
     } else chain = false;
   }
 
-  // ② 链被切断：新 v-if 前面存在一条多分支链，且新链末尾带 v-else
+  // ② 链被切断：新 v-if 前面存在一条**真链**，且新链末尾带 v-else
   for (let i = 0; i < kids.length; i++) {
     const c = kids[i];
     if (c.dir !== "v-if") continue;
     let branches = 0;
+    /** 前面的连续分支里是否出现过 v-else-if / v-else —— 有才说明确实存在一条"链"。 */
+    let sawChainBranch = false;
     for (let j = i - 1; j >= 0; j--) {
       const d = kids[j].dir;
-      if (d === "v-if" || d === "v-else-if" || d === "v-else") branches++;
-      else break;
+      if (d === "v-if" || d === "v-else-if" || d === "v-else") {
+        branches++;
+        if (d === "v-else-if" || d === "v-else") sawChainBranch = true;
+      } else break;
     }
-    if (branches < 2) continue;
+    // ⚠️ 只靠"前面有 ≥2 个带条件指令的兄弟"会**误报**：连续多个**独立** v-if
+    // （例如两个 `v-if="hasMultiple"` 的按钮、`v-if="!isOwner"` 的按钮与提示）
+    // 彼此不成链，Vue 里 v-else 只挂到**紧邻**的那个条件元素上，插在其后不会双渲染。
+    // 真正危险的是：被切断的是一条**含 v-else-if / v-else 的链**（作者用它们表达了"互斥"）。
+    if (branches < 2 || !sawChainBranch) continue;
     let hasElse = false;
     for (let k = i + 1; k < kids.length; k++) {
       const d = kids[k].dir;

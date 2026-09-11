@@ -77,6 +77,70 @@ test("单层 v-if / v-else 是正常的，不报", () => {
   assert.deepEqual(findBranchIssues(ok), []);
 });
 
+// ---------------- 2026-09-10 修正：两个此前被掩盖的问题 ----------------
+//
+// ① 提取模板时用非贪婪 `</template>` → 遇到**嵌套 <template>** 就截断，
+//    其后整段模板不检查（护栏给出"全绿"假象）。修正后 `ChatHeader.vue`
+//    从"只扫到 1 个按钮"变为扫到全部。
+// ② 判据只看"前面有几个带条件的兄弟"，会把**连续多个独立 v-if** 误判为链。
+//    真实误报：`ImageLightbox` 的两个 `v-if="hasMultiple"` 翻页按钮、
+//    `GroupMemberPanel` 的 `v-if="!isOwner"` 按钮 + 提示。
+
+test("嵌套 <template> 之后的模板仍会被检查（不再截断）", () => {
+  // 下面的嵌套 <template> 会让旧的 extractTemplate 提前收尾；
+  // 若不修，后面那个真正的链切断会被静默漏掉。
+  const nested = `<template>
+    <div>
+      <span>{{ name }}<template v-if="isGroup"> ({{ n }})</template></span>
+      <A v-if="k === 'a'" />
+      <B v-else-if="k === 'b'" />
+      <C v-if="extra" />
+      <D v-else />
+    </div>
+  </template>`;
+  const issues = findBranchIssues(nested);
+  assert.equal(issues.length, 1, "嵌套 template 之后的链切断必须被扫到");
+  assert.equal(issues[0].tag, "C");
+});
+
+test("连续多个独立 v-if 不算链，插在其后的 v-else 不报（真实误报回归）", () => {
+  // 形状取自 ImageLightbox：两个 v-if="hasMultiple" 的按钮，之后才是 v-if/v-else。
+  const lightbox = `<template>
+    <div>
+      <button v-if="hasMultiple">上一张</button>
+      <button v-if="hasMultiple">下一张</button>
+      <template v-if="src" />
+      <div v-else>无法预览</div>
+    </div>
+  </template>`;
+  assert.deepEqual(findBranchIssues(lightbox), []);
+
+  // 形状取自 GroupMemberPanel：独立 v-if 的按钮 + 独立的 v-if/v-else 提示。
+  const panel = `<template>
+    <div>
+      <template v-if="isOwner">群主区</template>
+      <button v-if="!isOwner">退出群聊</button>
+      <p v-if="!isOwner">仅群创建者可管理成员</p>
+      <p v-else>群主如需退出请先转让</p>
+    </div>
+  </template>`;
+  assert.deepEqual(findBranchIssues(panel), []);
+});
+
+test("真链（含 v-else-if）被切断仍然要报 —— 收紧判据不能放过真缺陷", () => {
+  const real = `<template>
+    <div>
+      <A v-if="k === 'a'" />
+      <B v-else-if="k === 'b'" />
+      <C v-if="extra" />
+      <D v-else />
+    </div>
+  </template>`;
+  const issues = findBranchIssues(real);
+  assert.equal(issues.length, 1);
+  assert.equal(issues[0].kind, "chain-break");
+});
+
 // ---------------- 全库扫描：本项目现存模板必须全部干净 ----------------
 //
 // 这条是真正的护栏。上面那个缺陷是"静默"的 —— vue-tsc 与既有单测都覆盖不到

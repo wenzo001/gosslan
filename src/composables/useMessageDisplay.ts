@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import { computed, toValue, type CSSProperties, type MaybeRefOrGetter } from "vue";
 import dayjs from "dayjs";
 import { useAppStore } from "@/stores/useAppStore";
@@ -83,13 +84,13 @@ export function useMessageDisplay(opts: {
     switch (sendState.value) {
       case "sending":
       case "sent":
-        return "发送中…";
+        return t("msg.sending");
       case "delivered":
-        return "对方已收到，未读";
+        return t("msg.delivered");
       case "read":
-        return "对方已读";
+        return t("msg.read");
       case "failed":
-        return "发送失败";
+        return t("msg.sendFailed");
       default:
         return "";
     }

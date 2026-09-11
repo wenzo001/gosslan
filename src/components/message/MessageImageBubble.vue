@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from "@/i18n";
 import { ref, watch } from "vue";
 import { ImageOff, ImageIcon } from "lucide-vue-next";
 
@@ -29,9 +30,9 @@ watch(
       <ImageIcon v-else class="h-6 w-6 animate-pulse opacity-40" />
     </div>
     <span v-if="state === 'failed'" class="absolute inset-x-0 bottom-1 text-center text-[11px] opacity-70">
-      图片加载失败
+      {{ t("msg.imageLoadFailed") }}
     </span>
-    <img
+    <img :alt="t('msg.imageMessage')"
       :src="src"
       class="block max-h-72 max-w-full rounded-[var(--gosslan-bubble-radius)] object-contain"
       :class="state === 'loaded' ? '' : 'hidden'"

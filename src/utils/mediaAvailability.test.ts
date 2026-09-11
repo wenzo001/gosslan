@@ -43,9 +43,10 @@ test("普通文件才需要单独探测", () => {
   assert.equal(shouldProbePresence("file", { subtype: "file", path: "/d/a.pdf" }), true);
 });
 
-test("图片/代码附件由预览读取代劳，不重复探测", () => {
+test("图片附件由预览读取代劳，不重复探测；文件/代码附件都单独探测", () => {
   assert.equal(shouldProbePresence("file", { subtype: "image", path: "/d/a.png" }), false);
-  assert.equal(shouldProbePresence("file", { subtype: "code", path: "/d/a.ts" }), false);
+  assert.equal(shouldProbePresence("file", { subtype: "code", path: "/d/a.ts" }), true);
+  assert.equal(shouldProbePresence("file", { subtype: "file", path: "/d/a.md" }), true);
 });
 
 test("路径为空表示还没到本机，探测无意义", () => {

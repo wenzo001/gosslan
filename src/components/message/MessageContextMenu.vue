@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from "@/i18n";
 import { computed, onBeforeUnmount, onMounted } from "vue";
 import { Copy, CornerUpLeft, Save, Share2 } from "lucide-vue-next";
 import type { MsgKind } from "@/types";
@@ -59,7 +60,7 @@ onBeforeUnmount(() => {
         @click="emit('copy-text')"
       >
         <Copy class="h-4 w-4 text-[var(--gosslan-text-2)]" />
-        复制
+        {{ t("common.copy") }}
       </button>
       <template v-if="kind === 'image'">
         <button
@@ -67,14 +68,14 @@ onBeforeUnmount(() => {
           @click="emit('copy-image')"
         >
           <Copy class="h-4 w-4 text-[var(--gosslan-text-2)]" />
-          复制图片
+          {{ t("common.copyImage") }}
         </button>
         <button
           class="flex w-full items-center gap-2.5 rounded-[var(--gosslan-radius-xs)] px-3 py-2 text-left text-[13px] text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
           @click="emit('save-image')"
         >
           <Save class="h-4 w-4 text-[var(--gosslan-text-2)]" />
-          保存图片
+          {{ t("common.saveImage") }}
         </button>
       </template>
       <!-- 文件：保存（另存为）+ 复制（文件本体写 CF_HDROP，可在资源管理器/聊天框直接粘贴） -->
@@ -84,14 +85,14 @@ onBeforeUnmount(() => {
           @click="emit('save-file')"
         >
           <Save class="h-4 w-4 text-[var(--gosslan-text-2)]" />
-          保存
+          {{ t("common.save") }}
         </button>
         <button
           class="flex w-full items-center gap-2.5 rounded-[var(--gosslan-radius-xs)] px-3 py-2 text-left text-[13px] text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
           @click="emit('copy-file')"
         >
           <Copy class="h-4 w-4 text-[var(--gosslan-text-2)]" />
-          复制文件
+          {{ t("common.copyFile") }}
         </button>
       </template>
       <button
@@ -99,7 +100,7 @@ onBeforeUnmount(() => {
         @click="emit('quote')"
       >
         <CornerUpLeft class="h-4 w-4 text-[var(--gosslan-text-2)]" />
-        引用
+        {{ t("common.quote") }}
       </button>
       <button
         v-if="forwardable(kind)"
@@ -107,7 +108,7 @@ onBeforeUnmount(() => {
         @click="emit('forward')"
       >
         <Share2 class="h-4 w-4 text-[var(--gosslan-text-2)]" />
-        转发
+        {{ t("common.forward") }}
       </button>
     </div>
   </Teleport>

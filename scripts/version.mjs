@@ -77,7 +77,10 @@ if (existsSync(changelogPath)) {
     const insertAt = firstSection === -1 ? ch.length : firstSection;
     ch = ch.slice(0, insertAt) + "\n" + placeholder + ch.slice(insertAt);
   }
-  ch = ch.replace("## [Unreleased]", `## [${next}] - ${new Date().toISOString().slice(0, 10)}`);
+  // 用**本地日期**（toISOString 是 UTC，凌晨发版会日期错一天，如 GMT+8 的 00:25 落成前一天）。
+  const now = new Date();
+  const localDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+  ch = ch.replace("## [Unreleased]", `## [${next}] - ${localDate}`);
   writeFileSync(changelogPath, ch);
 }
 

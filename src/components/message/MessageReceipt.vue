@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from "@/i18n";
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useChatStore } from "@/stores/useChatStore";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
@@ -78,7 +79,8 @@ function readerAvatar(id: string): string | null {
     <button
       v-if="readerIds.length > 0"
       class="-space-x-1 flex items-center rounded-full p-0.5 transition hover:bg-[var(--gosslan-hover)]"
-      :title="`已读 ${readerIds.length} 人`"
+      :title="t('msg.readBy', { n: readerIds.length })"
+      :aria-label="t('msg.readByView', { n: readerIds.length })"
       @click.stop="toggleReaders"
     >
       <span
@@ -87,7 +89,7 @@ function readerAvatar(id: string): string | null {
         class="flex h-4 w-4 items-center justify-center overflow-hidden rounded-full border border-[var(--gosslan-panel)] text-[11px] text-white"
         :style="{ backgroundColor: nameToColor(readerName(id)) }"
       >
-        <img v-if="readerAvatar(id)" :src="readerAvatar(id) ?? undefined" class="h-full w-full object-cover" />
+        <img alt="" v-if="readerAvatar(id)" :src="readerAvatar(id) ?? undefined" class="h-full w-full object-cover" />
         <span v-else>{{ avatarInitial(readerName(id)) }}</span>
       </span>
       <span
@@ -103,7 +105,7 @@ function readerAvatar(id: string): string | null {
       :class="openUp ? 'bottom-7' : 'top-7'"
       @click.stop
     >
-      <div class="px-2 py-1 text-[var(--gosslan-text-2)]">已读成员（{{ readerIds.length }}）</div>
+      <div class="px-2 py-1 text-[var(--gosslan-text-2)]">{{ t("msg.readMembers", { n: readerIds.length }) }}</div>
       <div
         v-for="id in readerIds"
         :key="id"
@@ -113,20 +115,23 @@ function readerAvatar(id: string): string | null {
           class="flex h-5 w-5 items-center justify-center overflow-hidden rounded-full text-[11px] text-white"
           :style="{ backgroundColor: nameToColor(readerName(id)) }"
         >
-          <img v-if="readerAvatar(id)" :src="readerAvatar(id) ?? undefined" class="h-full w-full object-cover" />
+          <img alt="" v-if="readerAvatar(id)" :src="readerAvatar(id) ?? undefined" class="h-full w-full object-cover" />
           <span v-else>{{ avatarInitial(readerName(id)) }}</span>
         </span>
         <span class="max-w-28 truncate">{{ readerName(id) }}</span>
       </div>
     </div>
   </div>
-  <!-- 单聊：回执图标固定在气泡左侧（视觉上贴近对话人头像方向） -->
-  <span v-else class="shrink-0 pb-1.5" :title="title">
+  <!-- 单聊：回执图标固定在气泡左侧（视觉上贴近对话人头像方向）。
+       ♿ 回执是**纯图标**状态（转圈/空心圆/绿勾/红叉），读屏下原本什么也读不到 ——
+       发送中 / 已送达 / 已读 是聊天最核心的状态，必须给可访问名。
+       role="img" + aria-label 让状态被朗读出来；内部的 Loader2/Circle/Check 都是装饰。 -->
+  <span v-else class="shrink-0 pb-1.5" role="img" :title="title" :aria-label="title">
     <Loader2 v-if="state === 'sending' || state === 'sent'" class="h-3.5 w-3.5 animate-spin text-[var(--gosslan-text-2)]" />
     <button
       v-else-if="state === 'failed'"
-      class="flex h-5 w-5 items-center justify-center rounded-[var(--gosslan-radius-xs)] text-[var(--gosslan-danger-ink)] transition hover:bg-[var(--gosslan-danger-soft)]"
-      title="重新发送"
+      class="tap-safe flex h-5 w-5 items-center justify-center rounded-[var(--gosslan-radius-xs)] text-[var(--gosslan-danger-ink)] transition hover:bg-[var(--gosslan-danger-soft)]"
+      :title="t('msg.resend')" :aria-label="t('msg.resend')"
       @click="emit('retry')"
     >
       <RefreshCw class="h-3.5 w-3.5" />

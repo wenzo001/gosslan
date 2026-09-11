@@ -6,6 +6,7 @@ import { useChatStore } from "@/stores/useChatStore";
 import SettingsGroup from "@/components/settings/SettingsGroup.vue";
 import SettingsRow from "@/components/settings/SettingsRow.vue";
 import SettingsToggle from "@/components/settings/SettingsToggle.vue";
+import { t } from "@/i18n";
 import type { ChannelStatus } from "@/types";
 
 const props = defineProps<{ active: boolean; reloadToken?: number }>();
@@ -19,7 +20,7 @@ const selectedIp = ref("0.0.0.0");
 const btStatus = computed(() => channels.value.find((c) => c.channel === "bluetooth"));
 const lanStatus = computed(() => channels.value.find((c) => c.channel === "lan"));
 const interfaceOptions = computed(() => [
-  { value: "0.0.0.0", label: "自动（所有网卡）" },
+  { value: "0.0.0.0", label: "settings.network.interface.auto" },
   ...app.interfaces.map((i) => ({ value: i.ip, label: `${i.name}（${i.ip}）` })),
 ]);
 
@@ -42,14 +43,14 @@ watch(
 async function toggleLan() {
   if (app.online) {
     await app.stopNetwork();
-    app.toast("局域网通道已关闭", "info");
+    app.toast(t("settings.network.toast.lanOff"), "info");
   } else {
     try {
       await app.startNetwork(selectedIp.value);
-      app.toast("局域网通道已开启，正在扫描节点…", "success");
+      app.toast(t("settings.network.toast.lanOn"), "success");
       await chat.refreshPeers();
     } catch (e) {
-      app.toast(String(e), "error");
+      app.toastError(e, t("settings.network.toast.lanFail"));
     }
   }
   await loadChannels();
@@ -63,14 +64,14 @@ async function onInterfaceChange() {
       if (app.boundIp === ip) return;
       await app.stopNetwork();
       await app.startNetwork(ip);
-      app.toast(`已切换到网卡 ${ip}，正在重新扫描…`, "success");
+      app.toast(t("settings.network.toast.interfaceSwitched", { ip }), "success");
     } else {
       await app.startNetwork(ip);
-      app.toast("局域网通道已开启，正在扫描节点…", "success");
+      app.toast(t("settings.network.toast.lanOn"), "success");
     }
     await chat.refreshPeers();
   } catch (e) {
-    app.toast(String(e), "error");
+    app.toastError(e, t("settings.network.toast.interfaceFail"));
   }
   await loadChannels();
 }
@@ -79,9 +80,9 @@ async function toggleBluetooth() {
   const cur = btStatus.value?.enabled ?? false;
   try {
     await api.setChannelEnabled("bluetooth", !cur);
-    app.toast(cur ? "蓝牙通道已关闭" : "蓝牙通道已开启", cur ? "info" : "success");
+    app.toast(cur ? t("settings.network.toast.btOff") : t("settings.network.toast.btOn"), cur ? "info" : "success");
   } catch (e) {
-    app.toast(String(e), "error");
+    app.toastError(e, t("settings.network.toast.btFail"));
   }
   await loadChannels();
 }
@@ -89,38 +90,39 @@ async function toggleBluetooth() {
 
 <template>
   <SettingsGroup
-    title="网络通道"
-    footer="选择网卡后即开启局域网通道并扫描节点；通道开启时可随时切换网卡。"
+    :title="t('settings.group.network')"
+    :footer="t('settings.group.network.footer')"
   >
-    <SettingsRow label="局域网通道" description="发现并连接同一局域网内的其他设备">
+    <SettingsRow :label="t('settings.network.lan')" :description="t('settings.network.lan.desc')">
       <div class="flex items-center gap-2">
         <span class="text-xs" :class="app.online ? 'text-[var(--gosslan-success-ink)]' : 'text-[var(--gosslan-text-2)]'">
-          {{ app.online ? `${lanStatus?.peers ?? 0} 个节点在线` : "未开启" }}
+          {{ app.online ? t("settings.network.lan.peers", { n: lanStatus?.peers ?? 0 }) : t("settings.network.lan.off") }}
         </span>
-        <SettingsToggle :model-value="app.online" @update:model-value="toggleLan" />
+        <SettingsToggle :label="t('settings.network.lan')" :model-value="app.online" @update:model-value="toggleLan" />
       </div>
     </SettingsRow>
 
-    <SettingsRow label="网卡">
+    <SettingsRow :label="t('settings.network.interface')">
       <select
         v-model="selectedIp"
         class="max-w-[200px] rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] px-3 py-1.5 text-sm outline-none"
         @change="onInterfaceChange"
       >
-        <option v-for="o in interfaceOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
+        <option v-for="o in interfaceOptions" :key="o.value" :value="o.value">{{ t(o.label) }}</option>
       </select>
     </SettingsRow>
 
     <SettingsRow
-      label="蓝牙通道"
-      :description="btStatus?.available ? undefined : '蓝牙后端尚未编译（当前版本暂不支持），将在后续版本提供'"
+      :label="t('settings.network.bluetooth')"
+      :description="btStatus?.available ? undefined : t('settings.network.bluetooth.unavailable')"
       last
     >
       <div class="flex items-center gap-2">
         <span class="text-xs text-[var(--gosslan-text-2)]">
-          {{ btStatus?.available ? (btStatus.enabled ? "已开启" : "已关闭") : "暂不可用" }}
+          {{ btStatus?.available ? (btStatus.enabled ? t("settings.network.bluetooth.on") : t("settings.network.bluetooth.off")) : t("settings.network.bluetooth.na") }}
         </span>
         <SettingsToggle
+          :label="t('settings.network.bluetooth')"
           :model-value="!!btStatus?.enabled"
           :disabled="!btStatus?.available"
           @update:model-value="toggleBluetooth"

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from "@/i18n";
 import { computed, ref } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
@@ -33,7 +34,7 @@ const confirmRemove = ref(false);
     >
       <button
         class="flex h-9 w-9 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-        title="返回"
+        :title="t('common.back')" :aria-label="t('common.back')"
         @click="app.mobileView = 'list'"
       >
         <ArrowLeft class="h-5 w-5" />
@@ -49,7 +50,7 @@ const confirmRemove = ref(false);
             :class="!friend.online ? 'grayscale opacity-70' : ''"
             :style="{ backgroundColor: nameToColor(friend.nickname) }"
           >
-            <img v-if="friend.avatar" :src="friend.avatar" class="h-full w-full object-cover" />
+            <img alt="" v-if="friend.avatar" :src="friend.avatar" class="h-full w-full object-cover" />
             <span v-else>{{ initial }}</span>
           </div>
           <div class="min-w-0">
@@ -59,7 +60,7 @@ const confirmRemove = ref(false);
                 class="h-2 w-2 rounded-full"
                 :class="friend.online ? 'bg-[var(--gosslan-success)]' : 'bg-[var(--gosslan-status-offline)]'"
               ></span>
-              {{ friend.online ? "在线" : "离线" }}
+              {{ friend.online ? t("common.online") : t("common.offline") }}
             </div>
           </div>
         </div>
@@ -71,68 +72,68 @@ const confirmRemove = ref(false);
             @click="emit('send-message', friend.device_id)"
           >
             <MessageCircle class="h-4 w-4" />
-            发消息
+            {{ t("common.sendMessage") }}
           </button>
           <button
             class="flex items-center justify-center gap-2 rounded-[var(--gosslan-avatar-radius)] border border-[var(--gosslan-border)] px-4 py-2.5 text-sm text-[var(--gosslan-danger-ink)] transition hover:bg-[var(--gosslan-danger-soft)]"
             @click="confirmRemove = true"
           >
             <UserMinus class="h-4 w-4" />
-            删除好友
+            {{ t("common.deleteFriend") }}
           </button>
         </div>
 
         <!-- 资料明细 -->
         <div class="mt-8 overflow-hidden rounded-[var(--gosslan-radius-lg)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)]">
-          <div class="border-b border-[var(--gosslan-border)] px-4 py-2.5 text-sm font-medium">资料</div>
+          <div class="border-b border-[var(--gosslan-border)] px-4 py-2.5 text-sm font-medium">{{ t("friend.profile.title") }}</div>
           <dl class="divide-y divide-[var(--gosslan-border)] text-sm">
             <div class="flex items-start justify-between gap-4 px-4 py-3">
-              <dt class="shrink-0 text-[var(--gosslan-text-2)]">设备 ID</dt>
+              <dt class="shrink-0 text-[var(--gosslan-text-2)]">{{ t("friend.profile.deviceId") }}</dt>
               <dd class="break-all text-right font-mono text-xs">{{ friend.device_id }}</dd>
             </div>
             <div class="flex items-center justify-between gap-4 px-4 py-3">
-              <dt class="shrink-0 text-[var(--gosslan-text-2)]">指纹尾码</dt>
+              <dt class="shrink-0 text-[var(--gosslan-text-2)]">{{ t("friend.profile.fingerprint") }}</dt>
               <dd class="font-mono text-xs">{{ shortId }}</dd>
             </div>
             <div class="flex items-center justify-between gap-4 px-4 py-3">
-              <dt class="shrink-0 text-[var(--gosslan-text-2)]">IP 地址</dt>
+              <dt class="shrink-0 text-[var(--gosslan-text-2)]">{{ t("friend.profile.ip") }}</dt>
               <dd class="font-mono text-xs">{{ peer?.ip || "—" }}</dd>
             </div>
             <div class="flex items-center justify-between gap-4 px-4 py-3">
-              <dt class="shrink-0 text-[var(--gosslan-text-2)]">传输端口</dt>
+              <dt class="shrink-0 text-[var(--gosslan-text-2)]">{{ t("friend.profile.port") }}</dt>
               <dd class="font-mono text-xs">{{ peer?.tcp_port || "—" }}</dd>
             </div>
             <div class="flex items-center justify-between gap-4 px-4 py-3">
-              <dt class="shrink-0 text-[var(--gosslan-text-2)]">端到端加密</dt>
-              <dd class="text-xs text-[var(--gosslan-success-ink)]">已启用（X25519 + ChaCha20-Poly1305）</dd>
+              <dt class="shrink-0 text-[var(--gosslan-text-2)]">{{ t("friend.profile.e2ee") }}</dt>
+              <dd class="text-xs text-[var(--gosslan-success-ink)]">{{ t("friend.profile.e2eeOn") }}</dd>
             </div>
           </dl>
         </div>
         <p class="mt-3 px-1 text-xs leading-relaxed text-[var(--gosslan-text-2)]">
-          资料来自局域网广播，随对方上线自动同步；对方离线时 IP / 端口显示为「—」。
+          {{ t("friend.profile.note") }}
         </p>
       </div>
     </div>
 
     <!-- 删除好友二次确认 -->
-    <BaseModal :open="confirmRemove" title="删除好友" @close="confirmRemove = false">
+    <BaseModal :open="confirmRemove" :title="t('friend.remove.title')" @close="confirmRemove = false">
       <div class="space-y-3">
         <p class="text-sm">
-          确定删除好友「<span class="font-medium text-[var(--gosslan-danger-ink)]">{{ friend.nickname }}</span>」？
+          {{ t("friend.remove.bodyPrefix") }}<span class="font-medium text-[var(--gosslan-danger-ink)]">{{ friend.nickname }}</span>{{ t("friend.remove.bodySuffix") }}
         </p>
         <ul class="space-y-1 text-xs text-[var(--gosslan-text-2)]">
-          <li>· 聊天记录保留在本地，可通过「添加好友」重新添加</li>
-          <li>· 对方不受影响，仅解除本机好友关系</li>
+          <li>· {{ t("friend.remove.item1") }}</li>
+          <li>· {{ t("friend.remove.item2") }}</li>
         </ul>
         <div class="flex justify-end gap-2 pt-2">
           <button
             class="rounded-[var(--gosslan-radius-md)] px-4 py-1.5 text-sm transition hover:bg-[var(--gosslan-hover)]"
             @click="confirmRemove = false"
-          >取消</button>
+          >{{ t("common.cancel") }}</button>
           <button
             class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-1.5 text-sm text-white transition hover:bg-[var(--gosslan-danger)]"
             @click="confirmRemove = false; emit('remove', friend)"
-          >删除</button>
+          >{{ t("common.delete") }}</button>
         </div>
       </div>
     </BaseModal>

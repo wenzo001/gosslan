@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from "@/i18n";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ChevronLeft, ChevronRight, Save, X } from "lucide-vue-next";
 import { useAppStore } from "@/stores/useAppStore";
@@ -61,7 +62,7 @@ async function saveImage() {
   try {
     const { save } = await import("@tauri-apps/plugin-dialog");
     const { invoke } = await import("@tauri-apps/api/core");
-    const destination = await save({ defaultPath: `图片-${Date.now()}.png` });
+    const destination = await save({ defaultPath: `${t("common.image")}-${Date.now()}.png` });
     if (!destination) return; // 用户取消
     const buf = new Uint8Array(await (await fetch(src.value)).arrayBuffer());
     let binary = "";
@@ -70,9 +71,9 @@ async function saveImage() {
       binary += String.fromCharCode(...buf.subarray(i, i + chunk));
     }
     await invoke("save_data_file", { base64Data: btoa(binary), destination });
-    app.toast("图片已保存", "success");
+    app.toast(t("msg.imageSaved"), "success");
   } catch (e) {
-    app.toast(`保存图片失败：${e}`, "error");
+    app.toastError(e, t("msg.saveImageFail"));
   }
 }
 
@@ -163,15 +164,15 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
         <div class="absolute right-4 top-4 z-10 flex items-center gap-1">
           <button
             class="flex h-9 items-center gap-1.5 rounded-full px-3 text-[13px] text-white/85 transition hover:bg-white/15"
-            title="保存图片"
+            :title="t('common.saveImage')"
             @click.stop="saveImage"
           >
             <Save class="h-4 w-4" />
-            保存
+            {{ t("common.save") }}
           </button>
           <button
-            class="flex h-9 w-9 items-center justify-center rounded-full text-white/85 transition hover:bg-white/15"
-            title="关闭 (Esc)"
+            class="tap-safe flex h-9 w-9 items-center justify-center rounded-full text-white/85 transition hover:bg-white/15"
+            :title="t('common.closeEsc')" :aria-label="t('common.closeEsc')"
             @click.stop="emit('close')"
           >
             <X class="h-5 w-5" />
@@ -182,7 +183,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
         <button
           v-if="hasMultiple"
           class="absolute left-4 top-1/2 z-10 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full bg-white/10 text-white/90 transition hover:bg-white/20"
-          title="上一张 (←)"
+          :title="t('common.prev')" :aria-label="t('common.prev')"
           @click.stop="go(-1)"
         >
           <ChevronLeft class="h-6 w-6" />
@@ -192,7 +193,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
         <button
           v-if="hasMultiple"
           class="absolute right-4 top-1/2 z-10 flex h-11 w-11 -translate-y-1/2 items-center justify-center rounded-full bg-white/10 text-white/90 transition hover:bg-white/20"
-          title="下一张 (→)"
+          :title="t('common.next')" :aria-label="t('common.next')"
           @click.stop="go(1)"
         >
           <ChevronRight class="h-6 w-6" />
@@ -200,7 +201,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
 
         <!-- 图片主体 -->
         <template v-if="src">
-          <img
+          <img :alt="current?.name || t('msg.imagePreview')"
             :src="src"
             class="max-h-[85vh] max-w-[88vw] select-none rounded-[var(--gosslan-radius-lg)] shadow-2xl"
             :style="{
@@ -220,13 +221,13 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
           v-else
           class="flex h-48 items-center justify-center px-8 text-sm text-white/70"
         >
-          {{ note ?? "无法预览该图片" }}
+          {{ note ?? t("msg.cannotPreview") }}
         </div>
 
         <!-- 底部提示：计数 + 操作说明 -->
         <div class="absolute bottom-5 left-1/2 -translate-x-1/2 rounded-full bg-black/45 px-3 py-1 text-xs text-white/85">
-          <template v-if="hasMultiple">{{ index + 1 }} / {{ images.length }} · ←/→ 切换 · 滚轮缩放 · Esc 关闭</template>
-          <template v-else>滚轮缩放 · 放大后拖动 · 双击复位 · Esc 关闭</template>
+          <template v-if="hasMultiple">{{ t("msg.lightbox.multiHint", { i: index + 1, n: images.length }) }}</template>
+          <template v-else>{{ t("msg.lightbox.singleHint") }}</template>
         </div>
       </div>
     </Transition>

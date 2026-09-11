@@ -1,13 +1,32 @@
 import { defineStore } from "pinia";
-import { ref } from "vue";
+import { computed, ref } from "vue";
 import { api } from "@/api";
+import { isPermissionGranted, requestPermission } from "@tauri-apps/plugin-notification";
 import { applyTheme } from "@/utils/color";
+import { reportError } from "@/utils/errors";
+import {
+  APPEARANCE_STORAGE_KEY,
+  LEGACY_DARK_STORAGE_KEY,
+  isAppearanceMode,
+  readStoredAppearance,
+  resolveDark,
+  type AppearanceMode,
+} from "@/utils/appearance";
 import { DEFAULT_CHAT_STYLE, fontPx, parsePeerStyle, type ChatStyleConfig } from "@/utils/chatStyle";
+import {
+  t,
+  applyPreference,
+  currentPreference,
+  isLanguagePreference,
+  type LanguagePreference,
+} from "@/i18n";
+import { isMac } from "@/utils/platform";
 import type { DeviceInfo, InterfaceInfo } from "@/types";
+
+export type { AppearanceMode };
 
 const THEME_KEY = "gosslan.themeColor";
 const FONT_KEY = "gosslan.fontFamily";
-const DARK_KEY = "gosslan.dark";
 const CHAT_STYLE_KEY = "gosslan.chatStyle";
 
 /** 从 localStorage 读取聊天样式（启动先本地，后端返回后覆盖）。 */
@@ -30,7 +49,24 @@ export const useAppStore = defineStore("app", () => {
   const preferredIp = ref<string | null>(null);
   const shareDir = ref<string | null>(null);
 
-  const dark = ref<boolean>(localStorage.getItem(DARK_KEY) === "1");
+  /** 外观模式（用户意图）。跟随系统时 dark 由系统偏好解析而来。 */
+  const appearance = ref<AppearanceMode>(readStoredAppearance(localStorage));
+  /**
+   * 系统当前是否为深色。**在 store 创建时就同步取值**，而不是等到 init —— 
+   * 这样第一次 applyDarkNow()（可能发生在 init 之前）就已经拿到正确的系统值。
+   */
+  const systemDark = ref<boolean>(
+    typeof window !== "undefined" && typeof window.matchMedia === "function"
+      ? window.matchMedia("(prefers-color-scheme: dark)").matches
+      : false,
+  );
+  /**
+   * 当前**实际**外观。解析规则在 utils/appearance.ts（纯函数 + 有测试，
+   * 且与 index.html 骨架里的那份内联实现同源、由测试对照）。
+   * 刻意做成 computed：既有代码里大量 `app.dark` 读取处无需任何改动即可继续工作，
+   * 写入则统一走 applyAppearance()。
+   */
+  const dark = computed<boolean>(() => resolveDark(appearance.value, systemDark.value));
   const themeColor = ref<string>(localStorage.getItem(THEME_KEY) || "#3b82f6");
   const fontFamily = ref<string>(localStorage.getItem(FONT_KEY) || "");
 
@@ -38,6 +74,56 @@ export const useAppStore = defineStore("app", () => {
   const chatStyle = ref<ChatStyleConfig>(loadLocalChatStyle());
   /** 对端样式表（device_id -> 样式 JSON）：按「发送者自己的偏好」渲染其消息气泡。 */
   const peerStyles = ref<Record<string, string>>({});
+
+  // ---------------- 通知偏好 ----------------
+  /** 桌面通知开关（后端持久化；默认开）。 */
+  const notifyEnabled = ref<boolean>(true);
+  /** 通知是否显示消息正文（隐私开关；默认显示）。 */
+  const notifyShowContent = ref<boolean>(true);
+  /** 权限缓存：已申请过且通过就不再弹（isPermissionGranted 每次重新查，这里只做短路）。 */
+  let notifyPermission = false;
+
+  /** 显式请求通知权限（供设置页开关在**用户动作上下文**里调用，符合 HIG）。 */
+  async function ensureNotifyPermission(): Promise<boolean> {
+    if (notifyPermission) return true;
+    let granted = await isPermissionGranted();
+    if (!granted) granted = (await requestPermission()) === "granted";
+    notifyPermission = granted;
+    return granted;
+  }
+
+  /**
+   * 打开/关闭桌面通知。
+   * 打开时先请求权限（在用户点开关这个上下文里，而不是等某条消息到达时才弹）；
+   * 被拒绝则保持关闭并明确告知，不写脏状态。
+   */
+  async function setNotifyEnabled(v: boolean) {
+    if (v) {
+      const ok = await ensureNotifyPermission();
+      if (!ok) {
+        toast(t("notify.permissionDenied"), "error");
+        return;
+      }
+    }
+    notifyEnabled.value = v;
+    void persistSettings();
+  }
+
+  function setNotifyShowContent(v: boolean) {
+    notifyShowContent.value = v;
+    void persistSettings();
+  }
+
+  // ---------------- 语言 ----------------
+  /** 语言偏好（system / zh-CN / en-US，后端持久化；默认跟随系统）。 */
+  const language = ref<LanguagePreference>(currentPreference());
+
+  /** 切换语言偏好：立即生效（i18n 响应式更新）+ 持久化到后端。 */
+  function setLanguage(p: LanguagePreference) {
+    applyPreference(p);
+    language.value = p;
+    void persistSettings();
+  }
 
   // 轻量 toast
   interface Toast {
@@ -47,12 +133,25 @@ export const useAppStore = defineStore("app", () => {
   }
   const toasts = ref<Toast[]>([]);
   let toastId = 0;
+  /**
+   * 停留时长：错误要留够"读 + 听"的时间（读屏播报比扫一眼慢得多），
+   * 成功/信息类短一些免得挡住界面。原实现一律 3000ms，错误常常没看完就消失了。
+   */
+  const TOAST_MS: Record<Toast["type"], number> = { success: 3000, info: 3000, error: 6000 };
   function toast(text: string, type: Toast["type"] = "info") {
     const id = ++toastId;
     toasts.value.push({ id, text, type });
     setTimeout(() => {
       toasts.value = toasts.value.filter((t) => t.id !== id);
-    }, 3000);
+    }, TOAST_MS[type]);
+  }
+
+  /**
+   * 错误提示统一出口：把异常转成用户能读懂的说明再展示，原始串只进 console。
+   * 所有 `catch` 里的错误提示都应走这里，不要自己拼 `：${e}`（见 utils/errors.ts）。
+   */
+  function toastError(e: unknown, prefix: string) {
+    toast(reportError(e, prefix), "error");
   }
 
   // 响应式布局状态
@@ -90,7 +189,13 @@ export const useAppStore = defineStore("app", () => {
       await api.saveSettings({
         themeColor: themeColor.value,
         fontFamily: fontFamily.value,
+        // darkMode = 解析后的**结果**（跟随系统时按系统偏好算出来），保留写入以兼容旧读取方；
+        // appearanceMode = 用户的**意图**，重启后据此恢复。
         darkMode: dark.value,
+        appearanceMode: appearance.value,
+        notifyEnabled: notifyEnabled.value,
+        notifyShowContent: notifyShowContent.value,
+        language: language.value,
         bindIp: boundIp.value ?? preferredIp.value,
         chatStyle: JSON.stringify(chatStyle.value),
         peerStyles: null, // 对端样式表由后端维护，前端只读
@@ -100,15 +205,49 @@ export const useAppStore = defineStore("app", () => {
     }
   }
 
-  function toggleDark() {
-    dark.value = !dark.value;
-    localStorage.setItem(DARK_KEY, dark.value ? "1" : "0");
-    // 切换瞬间禁用全站过渡：变量整体翻转时 transition-colors 会产生渐变"闪一下"
+  /**
+   * 切换外观的**唯一**写入口：改模式 → 落 localStorage → 应用到 DOM → 持久化。
+   * `theme-switching` 用来在变量整体翻转的那一帧禁用全站过渡（否则会看到渐变色闪一下）。
+   */
+  function applyAppearance(mode: AppearanceMode) {
+    appearance.value = mode;
+    localStorage.setItem(APPEARANCE_STORAGE_KEY, mode);
     const root = document.documentElement;
     root.classList.add("theme-switching");
     applyDarkNow();
     window.setTimeout(() => root.classList.remove("theme-switching"), 250);
     void persistSettings();
+  }
+
+  /** 设置页的三选一：跟随系统 / 浅色 / 深色。 */
+  function setAppearance(mode: AppearanceMode) {
+    applyAppearance(mode);
+  }
+
+  /**
+   * 导航栏的快捷切换（太阳 / 月亮）：在当前**实际**外观上取反，并写成显式选择。
+   * 刻意不回落到"跟随系统"—— 快捷开关的语义就是"我现在就要另一个外观"。
+   */
+  function toggleDark() {
+    applyAppearance(dark.value ? "light" : "dark");
+  }
+
+  /**
+   * 跟随系统：监听系统外观变化。
+   * 只有 appearance === "system" 时才需要改界面；强制模式下系统怎么变都不该影响用户的选择。
+   */
+  function watchSystemAppearance() {
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    systemDark.value = mq.matches;
+    mq.addEventListener("change", (e) => {
+      systemDark.value = e.matches;
+      if (appearance.value !== "system") return;
+      const root = document.documentElement;
+      root.classList.add("theme-switching");
+      applyDarkNow();
+      window.setTimeout(() => root.classList.remove("theme-switching"), 250);
+      void persistSettings(); // 解析结果变了，顺手把 darkMode 刷新到位
+    });
   }
 
   function setThemeColor(c: string) {
@@ -142,11 +281,28 @@ export const useAppStore = defineStore("app", () => {
   }
 
   async function init() {
+    // 平台标记：供 CSS 按平台差异化（如 macOS 恢复系统 overlay 滚动条）
+    if (typeof document !== "undefined") {
+      document.documentElement.classList.toggle("platform-mac", isMac);
+    }
     // 从后端恢复持久化偏好（外观 / 网卡 / 聊天样式），优先于 localStorage
     const s = await api.getSettings();
     if (s.themeColor) themeColor.value = s.themeColor;
     if (s.fontFamily != null) fontFamily.value = s.fontFamily;
-    if (s.darkMode != null) dark.value = s.darkMode;
+    // 外观：优先用「用户意图」(appearanceMode)；旧记录只有布尔 darkMode → 视为一次显式选择。
+    if (isAppearanceMode(s.appearanceMode)) {
+      appearance.value = s.appearanceMode;
+      localStorage.setItem(APPEARANCE_STORAGE_KEY, s.appearanceMode);
+    } else if (s.darkMode != null) {
+      appearance.value = s.darkMode ? "dark" : "light";
+      localStorage.setItem(APPEARANCE_STORAGE_KEY, appearance.value);
+    }
+    // 通知偏好（null = 未设置，按默认 true 处理）
+    if (s.notifyEnabled != null) notifyEnabled.value = s.notifyEnabled;
+    if (s.notifyShowContent != null) notifyShowContent.value = s.notifyShowContent;
+    // 语言（null/脏值 = 默认跟随系统）
+    if (isLanguagePreference(s.language)) applyPreference(s.language);
+    language.value = currentPreference();
     preferredIp.value = s.bindIp;
     if (s.chatStyle) chatStyle.value = parsePeerStyle(s.chatStyle);
     if (s.peerStyles) {
@@ -159,6 +315,8 @@ export const useAppStore = defineStore("app", () => {
     applyThemeNow();
     applyDarkNow();
     applyChatStyleNow();
+    // 注册系统外观监听（跟随系统模式下，用户在系统设置里切换要即时生效，不必重启）
+    watchSystemAppearance();
     const mq = window.matchMedia("(max-width: 767px)");
     isMobile.value = mq.matches;
     mq.addEventListener("change", (e) => (isMobile.value = e.matches));
@@ -181,25 +339,30 @@ export const useAppStore = defineStore("app", () => {
     }, 500);
   }
 
-  /** 恢复默认：后端清除偏好键，前端回落默认值（默认蓝色主题 / 系统字体 / 浅色 / 自动网卡）。 */
+  /** 恢复默认：后端清除偏好键，前端回落默认值（默认蓝色主题 / 系统字体 / **跟随系统** / 自动网卡）。 */
   async function resetDefaults() {
     // 先广播昵称/头像恢复默认（LAN 仍在线，好友可收到 UserInfo）
     if (device.value) {
-      await api.updateProfile("Gosslan 用户", null);
-      device.value.nickname = "Gosslan 用户";
+      await api.updateProfile(t("common.defaultNickname"), null);
+      device.value.nickname = t("common.defaultNickname");
       device.value.avatar = null;
     }
     await api.resetSettings();
     themeColor.value = "#3b82f6";
     fontFamily.value = "";
-    dark.value = false;
+    appearance.value = "system";
+    notifyEnabled.value = true;
+    notifyShowContent.value = true;
+    applyPreference("system");
+    language.value = "system";
     preferredIp.value = null;
     boundIp.value = null;
     chatStyle.value = { ...DEFAULT_CHAT_STYLE };
     peerStyles.value = {};
     localStorage.removeItem(THEME_KEY);
     localStorage.removeItem(FONT_KEY);
-    localStorage.removeItem(DARK_KEY);
+    localStorage.removeItem(APPEARANCE_STORAGE_KEY);
+    localStorage.removeItem(LEGACY_DARK_STORAGE_KEY);
     localStorage.removeItem(CHAT_STYLE_KEY);
     applyThemeNow();
     applyDarkNow();
@@ -243,6 +406,16 @@ export const useAppStore = defineStore("app", () => {
     preferredIp,
     shareDir,
     dark,
+    /** 外观模式（用户意图）：system | light | dark */
+    appearance,
+    setAppearance,
+    notifyEnabled,
+    notifyShowContent,
+    setNotifyEnabled,
+    setNotifyShowContent,
+    ensureNotifyPermission,
+    language,
+    setLanguage,
     themeColor,
     fontFamily,
     chatStyle,
@@ -264,5 +437,6 @@ export const useAppStore = defineStore("app", () => {
     resetDefaults,
     toasts,
     toast,
+    toastError,
   };
 });

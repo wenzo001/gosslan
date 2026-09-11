@@ -2493,6 +2493,65 @@ mod tests {
         assert!(get_group(&conn, "nope").is_none());
     }
 
+    // ---------- 群关系同步 ≠ 聊天会话（conversation 只能由聊天活动驱动） ----------
+
+    /// Test 1 + Test 4：群关系同步（GroupKey → `upsert_group`）只建立 groups / group_members，
+    /// **不得**创建 conversation —— conversation 是「聊天会话索引」，只有收到新消息
+    /// （`insert_message` + `touch_conversation`）时才产生。等价于「重新安装后只同步群关系」。
+    #[test]
+    fn group_relation_sync_does_not_create_conversation() {
+        let conn = mem();
+        let members: Vec<String> = ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
+
+        // 初始：groups / conversations / messages 全空（重新安装语义）
+        assert!(list_groups(&conn).unwrap().is_empty());
+        assert!(list_conversations(&conn).unwrap().is_empty());
+
+        // 群关系同步（等价于 handle_group_key 收到 GroupKey 后调用 upsert_group）
+        upsert_group(&conn, "g1", "群", "a", &members).unwrap();
+
+        // groups 恢复，但 conversations 不创建、messages 仍为空
+        assert_eq!(list_groups(&conn).unwrap().len(), 1);
+        assert!(list_conversations(&conn).unwrap().is_empty());
+        assert_eq!(count_messages(&conn, "group:g1"), 0);
+    }
+
+    /// Test 2 + Test 5：新群消息（落库 + `touch_conversation`）才创建 conversation。
+    /// 在「只同步过群关系、无会话」的基础上收到新消息 → conversation 出现。
+    #[test]
+    fn group_message_creates_conversation() {
+        let conn = mem();
+        let members: Vec<String> = ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
+        upsert_group(&conn, "g1", "群", "a", &members).unwrap();
+        assert!(list_conversations(&conn).unwrap().is_empty());
+
+        // 收到新群消息 → insert_message + touch_conversation（transport.rs 群消息接收路径）
+        insert_message(&conn, &rec_as("m4", "group:g1", "text", "hi")).unwrap();
+        touch_conversation(&conn, "group:g1", "group", "群", None, "hi", 1).unwrap();
+
+        assert_eq!(list_groups(&conn).unwrap().len(), 1);
+        assert_eq!(list_conversations(&conn).unwrap().len(), 1);
+        assert_eq!(count_messages(&conn, "group:g1"), 1);
+    }
+
+    /// Test 3：已有 conversation 时，再次群关系同步既不删除、也不重复创建。
+    /// 即「GroupKey 更新永远不能删掉已存在的 conversation」。
+    #[test]
+    fn existing_conversation_survives_group_relation_sync() {
+        let conn = mem();
+        let members: Vec<String> = ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
+
+        // 先产生一个真实聊天会话（收到过群消息）
+        upsert_group(&conn, "g1", "群", "a", &members).unwrap();
+        touch_conversation(&conn, "group:g1", "group", "群", None, "hi", 1).unwrap();
+        assert_eq!(list_conversations(&conn).unwrap().len(), 1);
+
+        // 再次群关系同步（重复 GroupKey，含群名刷新）→ conversation 仍为 1
+        upsert_group(&conn, "g1", "群改名", "a", &members).unwrap();
+        assert_eq!(list_groups(&conn).unwrap().len(), 1);
+        assert_eq!(list_conversations(&conn).unwrap().len(), 1);
+    }
+
     // ---------- GroupFileOffer / session-key 阶段 ----------
 
     /// recipient 集合 = 创建时的成员快照：建文件后再加群成员不影响已建 recipients。

@@ -731,6 +731,10 @@ fn walk(dir: &Path, rel: &str, out: &mut Vec<ShareEntry>, depth: usize) {
 /// 未用 MIME 魔数嗅探的原因：那要么需要给 FileOffer/RelayFileOffer 加 kind 字段
 /// （违反「不修改文件传输协议」），要么两端各自读字节嗅探（引入 sender/receiver 分歧）。
 /// 任务给出的图片/代码清单本身即扩展名，扩展名判定已足够保守且确定。
+///
+/// ⚠️ `md`（Markdown）是**文档**而非代码，刻意排除在 `code` 之外——若把 .md 归为 code，
+/// 接收端会按「代码附件」渲染成代码预览块而非文件卡片（用户明确反馈：复制 md 文件发送
+/// 不应变成代码块）。
 pub fn classify_file_subtype(name: &str) -> &'static str {
     let ext = Path::new(name)
         .extension()
@@ -739,7 +743,7 @@ pub fn classify_file_subtype(name: &str) -> &'static str {
     match ext.as_str() {
         "png" | "jpg" | "jpeg" | "gif" | "webp" => "image",
         "rs" | "ts" | "tsx" | "js" | "jsx" | "vue" | "py" | "go" | "java" | "c" | "cpp" | "h"
-        | "hpp" | "json" | "yaml" | "yml" | "md" | "html" | "css" | "sql" | "sh" => "code",
+        | "hpp" | "json" | "yaml" | "yml" | "html" | "css" | "sql" | "sh" => "code",
         _ => "file",
     }
 }
@@ -829,11 +833,18 @@ mod tests {
     fn code_extensions() {
         for n in [
             "a.rs", "a.ts", "a.tsx", "a.js", "a.jsx", "a.vue", "a.py", "a.go", "a.java", "a.c",
-            "a.cpp", "a.h", "a.hpp", "a.json", "a.yaml", "a.yml", "a.md", "a.html", "a.css",
+            "a.cpp", "a.h", "a.hpp", "a.json", "a.yaml", "a.yml", "a.html", "a.css",
             "a.sql", "a.sh",
         ] {
             assert_eq!(classify_file_subtype(n), "code", "{n}");
         }
+    }
+
+    #[test]
+    fn markdown_is_a_document_not_code() {
+        // Markdown 是文档不是代码：发送 .md 文件应按文件卡片渲染，而不是代码预览块。
+        assert_eq!(classify_file_subtype("a.md"), "file");
+        assert_eq!(classify_file_subtype("README.MD"), "file");
     }
 
     #[test]

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from "@/i18n";
 import { UserMinus } from "lucide-vue-next";
 
 defineProps<{ x: number; y: number }>();
@@ -20,10 +21,10 @@ const emit = defineEmits<{
         @click="emit('confirm')"
       >
         <UserMinus class="h-4 w-4" />
-        删除好友
+        {{ t("common.deleteFriend") }}
       </button>
       <div class="px-3 pb-1.5 pt-1 text-[11px] leading-relaxed text-[var(--gosslan-text-2)]">
-        保留聊天记录，可通过「添加好友」重新添加
+        {{ t("friend.delete.keepHistory") }}
       </div>
     </div>
   </Teleport>

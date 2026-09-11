@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from "@/i18n";
 import { ref, onMounted } from "vue";
 import BaseModal from "@/components/BaseModal.vue";
 import { api } from "@/api";
@@ -35,35 +36,35 @@ function fmtTs(ts: number) {
 </script>
 
 <template>
-  <BaseModal :open="open" title="网络诊断（开发者）" width="max-w-3xl" @close="emit('close')">
+  <BaseModal :open="open" :title="t('diag.title')" width="max-w-3xl" @close="emit('close')">
     <div class="max-h-[75vh] overflow-y-auto space-y-5 text-xs leading-relaxed">
       <!-- 刷新 -->
       <div class="flex items-center justify-between">
         <button class="rounded-[var(--gosslan-radius-sm)] px-2.5 py-1 transition hover:bg-black/5 dark:hover:bg-white/10" @click="refresh">
-          {{ loading ? "刷新中..." : "刷新数据" }}
+          {{ loading ? t("diag.refreshing") : t("diag.refresh") }}
         </button>
       </div>
 
       <template v-if="diag">
         <!-- 网络模式 -->
         <section>
-          <h4 class="mb-1.5 font-semibold text-[13px]">网络状态</h4>
+          <h4 class="mb-1.5 font-semibold text-[13px]">{{ t("diag.networkStatus") }}</h4>
           <div class="grid grid-cols-2 gap-x-6 gap-y-1">
-            <div><span class="opacity-60">模式：</span>{{ diag.mode }}</div>
-            <div><span class="opacity-60">绑定 IP：</span>{{ diag.bound_ip || "-" }}</div>
-            <div><span class="opacity-60">选中接口：</span>{{ diag.selected_interface || "（自动）" }}</div>
-            <div><span class="opacity-60">选中 IP：</span>{{ diag.selected_ip || diag.bound_ip || "-" }}</div>
-            <div><span class="opacity-60">TCP 监听：</span>{{ diag.tcp_listen || "-" }}</div>
-            <div><span class="opacity-60">UDP 端口：</span>{{ diag.udp_port || "-" }}</div>
+            <div><span class="opacity-60">{{ t("diag.mode") }}</span>{{ diag.mode }}</div>
+            <div><span class="opacity-60">{{ t("diag.boundIp") }}</span>{{ diag.bound_ip || "-" }}</div>
+            <div><span class="opacity-60">{{ t("diag.selectedInterface") }}</span>{{ diag.selected_interface || t("diag.auto") }}</div>
+            <div><span class="opacity-60">{{ t("diag.selectedIp") }}</span>{{ diag.selected_ip || diag.bound_ip || "-" }}</div>
+            <div><span class="opacity-60">{{ t("diag.tcpListen") }}</span>{{ diag.tcp_listen || "-" }}</div>
+            <div><span class="opacity-60">{{ t("diag.udpPort") }}</span>{{ diag.udp_port || "-" }}</div>
           </div>
         </section>
 
         <!-- Broadcast / Multicast -->
         <section>
-          <h4 class="mb-1.5 font-semibold text-[13px]">Discovery 通道</h4>
+          <h4 class="mb-1.5 font-semibold text-[13px]">{{ t("diag.discovery") }}</h4>
           <div class="grid grid-cols-2 gap-x-6 gap-y-1">
-            <div><span class="opacity-60">广播目标：</span>{{ diag.broadcast_target || "-" }}</div>
-            <div><span class="opacity-60">组播地址：</span>{{ diag.multicast_group || "-" }}</div>
+            <div><span class="opacity-60">{{ t("diag.broadcastTarget") }}</span>{{ diag.broadcast_target || "-" }}</div>
+            <div><span class="opacity-60">{{ t("diag.multicastGroup") }}</span>{{ diag.multicast_group || "-" }}</div>
             <div>
               <span class="opacity-60">multicast_if：</span>
               <span :class="diag.multicast_if_result.startsWith('ok') || diag.multicast_if_result === 'not_set' ? '' : 'text-[var(--gosslan-danger-ink)]'">
@@ -81,18 +82,18 @@ function fmtTs(ts: number) {
 
         <!-- 候选接口 -->
         <section>
-          <h4 class="mb-1.5 font-semibold text-[13px]">网卡候选（评分）</h4>
+          <h4 class="mb-1.5 font-semibold text-[13px]">{{ t("diag.candidates") }}</h4>
           <div class="overflow-x-auto">
             <table class="w-full text-left">
               <thead>
                 <tr class="border-b border-[var(--gosslan-border)] opacity-60">
-                  <th class="pr-3 py-1">名称</th>
+                  <th class="pr-3 py-1">{{ t("diag.name") }}</th>
                   <th class="pr-3 py-1">IPv4</th>
                   <th class="pr-3 py-1">Broadcast</th>
                   <th class="pr-3 py-1">RFC1918</th>
-                  <th class="pr-3 py-1">虚拟</th>
+                  <th class="pr-3 py-1">{{ t("diag.virtual") }}</th>
                   <th class="pr-3 py-1 text-right">Score</th>
-                  <th class="py-1">选中</th>
+                  <th class="py-1">{{ t("diag.selected") }}</th>
                 </tr>
               </thead>
               <tbody>
@@ -117,8 +118,8 @@ function fmtTs(ts: number) {
 
         <!-- 事件日志 -->
         <section>
-          <h4 class="mb-1.5 font-semibold text-[13px]">最近事件（{{ diag.recent_events.length }}）</h4>
-          <div v-if="diag.recent_events.length === 0" class="opacity-50">暂无事件</div>
+          <h4 class="mb-1.5 font-semibold text-[13px]">{{ t("diag.events", { n: diag.recent_events.length }) }}</h4>
+          <div v-if="diag.recent_events.length === 0" class="opacity-50">{{ t("diag.noEvents") }}</div>
           <div class="max-h-48 overflow-y-auto space-y-0.5 font-mono text-[11px]">
             <div v-for="(ev, i) in diag.recent_events" :key="i" class="flex gap-2">
               <span class="shrink-0 opacity-50 w-20">{{ fmtTs(ev.ts) }}</span>
@@ -129,7 +130,7 @@ function fmtTs(ts: number) {
         </section>
       </template>
 
-      <div v-else-if="loading" class="opacity-50 text-center py-4">加载中...</div>
+      <div v-else-if="loading" class="opacity-50 text-center py-4">{{ t("diag.loading") }}</div>
     </div>
   </BaseModal>
 </template>

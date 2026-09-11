@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from "@/i18n";
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "@/stores/useAppStore";
@@ -8,7 +9,7 @@ import { useExclusivePopup } from "@/composables/useExclusivePopup";
 import { haptic } from "@/utils/haptics";
 import { mentionHighlightColor, resolveChatColors } from "@/utils/chatStyle";
 import { avatarInitial, nameToColor } from "@/utils/color";
-import { classifyPaste, type ClipboardItemLike } from "@/utils/clipboard";
+import { classifyPaste } from "@/utils/clipboard";
 import { Code2, FilePlus, Smile, X } from "lucide-vue-next";
 import type { MsgKind } from "@/types";
 
@@ -30,6 +31,10 @@ const emit = defineEmits<{
 
 const app = useAppStore();
 const codeMode = ref(false);
+
+/** 输入框单条消息的字符硬上限：超过即截断。粘贴与发送两处都会兜底，
+ *  防止粘贴超大文本时 contenteditable 塞进几十万字符、把界面卡死。 */
+const MAX_INPUT_LENGTH = 50_000;
 // ---------------- contenteditable 输入框（DOM 为源，uncontrolled） ----------------
 // textarea 画不了局部颜色、overlay mirror 又会排版错位（已踩坑回退），改用
 // contenteditable：@提及 是真正的内联原子 token（contenteditable=false 的 span，
@@ -58,7 +63,9 @@ function autoResize() {
 /** 清空但残留空壳（空的 div/br）时规范化为真·空，让 :empty 的 placeholder 回来。 */
 function normalizeEmpty() {
   const el = editorRef.value;
-  if (el && el.innerText.trim() === "") el.innerHTML = "";
+  // 用 textContent 而非 innerText：innerText 会强制同步 reflow（对超长文本极慢），
+  // 这里只需判断"是否空壳"，textContent 语义足够且不触发布局。
+  if (el && (el.textContent ?? "").trim() === "") el.innerHTML = "";
 }
 
 watch(codeMode, () => nextTick(() => autoResize()));
@@ -92,7 +99,7 @@ function focusEditor(atEnd = true) {
 /** 序列化草稿：innerText 把 token 读成 @名字、<br>/块边界读成 \n；
  *  块尾的 \n 是渲染 artifact，剥掉；maxlength 语义挪到发送前截断兜底。 */
 function serializeDraft(): string {
-  return (editorRef.value?.innerText ?? "").replace(/\n+$/, "").slice(0, 50000);
+  return (editorRef.value?.innerText ?? "").replace(/\n+$/, "").slice(0, MAX_INPUT_LENGTH);
 }
 
 /** 发送：立即清空输入框（optimistic UI，不等 IPC 返回）。引用消息在首行拼接引用头。 */
@@ -278,7 +285,9 @@ function deleteMentionBeforeCaret(): boolean {
  */
 function syncDraftState() {
   const el = editorRef.value;
-  hasDraft.value = (el?.innerText.trim().length ?? 0) > 0;
+  // textContent 替代 innerText：innerText 每次读取都触发同步 reflow，
+  // 粘贴长文本后这里会被 input 事件高频调用，reflow 累加即"卡死"。
+  hasDraft.value = ((el?.textContent ?? "").trim().length) > 0;
 }
 
 /** input 统一入口：投影 hasDraft、规范化空壳、非组合输入时更新 @ 触发态。 */
@@ -383,65 +392,55 @@ function insertEmoji(e: string) {
 async function onPaste(e: ClipboardEvent) {
   const cd = e.clipboardData;
   if (!cd) return;
+  // 无论最终归到哪条分支，都在同步阶段拦掉默认插入（图片/文件/文本都不该由浏览器塞进编辑器）
+  e.preventDefault();
 
   const types = Array.from(cd.types ?? []);
-  const items: ClipboardItemLike[] = Array.from(cd.items).map((i) => ({
-    kind: i.kind,
-    type: i.type,
-  }));
-  // WKWebView/Safari 的 paste 事件里 items 可能为空，截图/网页复制图片的位图只经 files 暴露，
-  // 必须一起读 files 才能识别出图片（否则会误判成纯文本 → 无反应）。
   const files = Array.from(cd.files ?? []);
+  const items = Array.from(cd.items).map((i) => ({ kind: i.kind, type: i.type }));
 
-  // 真实文件路径（资源管理器复制的 CF_HDROP）：需异步问原生剪贴板，先同步拦默认插入
-  // （await 之后再 preventDefault 就晚了）。
+  // 同步捕获图片 File：files 优先，其次 items.getAsFile()。
+  // ⚠️ 必须在任何 await 之前完成——Chromium/WebKit 会在 paste 事件返回后清空 clipboardData，
+  // 若先 await 再读 items，getAsFile() 会拿到 null，表现为"截图有时发不出去"。
+  let imageFile: File | null = files.find((x) => x.type.startsWith("image/")) ?? null;
+  if (!imageFile) {
+    for (const item of Array.from(cd.items)) {
+      if (item.kind === "file" && item.type.startsWith("image/")) {
+        imageFile = item.getAsFile();
+        if (imageFile) break;
+      }
+    }
+  }
+
+  // 图片优先：截图位图即使同时带 "Files"（Win11 临时文件引用），也按图片发送，
+  // 避免去发那个可能已被清理的临时路径。
+  if (imageFile) {
+    emit("send-image", await fileToDataUrl(imageFile));
+    return;
+  }
+
+  // 无图片 → 尝试真实文件路径（资源管理器复制的 CF_HDROP）。非 Windows 命令返回空，回退文本。
   let filePaths: string[] = [];
   if (types.includes("Files")) {
-    e.preventDefault();
     try {
       filePaths = await invoke<string[]>("read_clipboard_file_paths");
     } catch {
-      // 非 Windows / 命令缺失 → 回退图片分支
       filePaths = [];
     }
   }
 
   const action = classifyPaste(types, items, files, filePaths.length > 0);
-
   if (action.kind === "files") {
     emit("paste-files", filePaths);
     return;
   }
 
-  // 图片位图（截图 / 网页「复制图片」）：type 以 image/ 开头的 file 项。
-  // 注意不能只靠 types 里的 "Files" 判断——截图剪贴板的 types 常是 image/png 而非 Files。
-  if (action.kind === "image") {
-    e.preventDefault();
-    // 优先从 files 取（跨平台最可靠，WKWebView 下是唯一来源），items.getAsFile() 作 Chromium 兜底。
-    const f = files.find((x) => x.type.startsWith("image/"));
-    if (f) {
-      // P1：粘贴图片走 save_outgoing_image → 文件传输，data URL 不进入 SQLite
-      emit("send-image", await fileToDataUrl(f));
-      return;
-    }
-    for (const item of Array.from(cd.items)) {
-      if (item.kind === "file" && item.type.startsWith("image/")) {
-        const ff = item.getAsFile();
-        if (ff) {
-          // P1：粘贴图片走 save_outgoing_image → 文件传输，data URL 不进入 SQLite
-          emit("send-image", await fileToDataUrl(ff));
-        }
-        break;
-      }
-    }
-    return;
-  }
-
   // 纯文本：contenteditable 默认粘贴会带外来 HTML 结构（污染 token/样式），
   // 统一拦掉按纯文本插入（execCommand 保 undo 栈；含 \n 时 Chromium 自行转 <br>）。
-  e.preventDefault();
   const text = cd.getData("text/plain");
-  if (text) document.execCommand("insertText", false, text);
+  // 截断到硬上限：超长文本若完整塞进 contenteditable，插入 + 后续 innerText 读都会
+  // 触发大范围 reflow，几十万字符足以把界面卡死（"粘贴一大段就卡死"的根因）。
+  if (text) document.execCommand("insertText", false, text.slice(0, MAX_INPUT_LENGTH));
 }
 
 function fileToDataUrl(f: File): Promise<string> {
@@ -463,7 +462,7 @@ function fileToDataUrl(f: File): Promise<string> {
         v-if="mention && mentionFiltered.length > 0"
         class="frost absolute bottom-full left-2 right-2 z-30 mb-2 max-h-44 overflow-y-auto rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] p-1 shadow-lg"
       >
-        <div class="px-2 py-1 text-[11px] text-[var(--gosslan-text-2)]">选择提醒的人</div>
+        <div class="px-2 py-1 text-[11px] text-[var(--gosslan-text-2)]">{{ t("chat.composer.remind") }}</div>
         <button
           v-for="(m, i) in mentionFiltered"
           :key="m.id"
@@ -485,10 +484,10 @@ function fileToDataUrl(f: File): Promise<string> {
         class="mb-1.5 flex items-center gap-2 rounded-[var(--gosslan-radius-sm)] border-l-2 px-2 py-1 text-[12px]"
         :style="{ borderColor: QUOTE_BORDER, background: QUOTE_BG, color: 'var(--gosslan-text)' }"
       >
-        <span class="min-w-0 flex-1 truncate" :style="QUOTE_TEXT_STYLE">引用 {{ quote.sender }}：{{ quote.snippet }}</span>
+        <span class="min-w-0 flex-1 truncate" :style="QUOTE_TEXT_STYLE">{{ t("common.quote") }} {{ quote.sender }}：{{ quote.snippet }}</span>
         <button
           class="flex h-5 w-5 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-xs)] transition hover:bg-[var(--gosslan-hover)]"
-          title="取消引用"
+          :title="t('chat.composer.cancelQuote')" :aria-label="t('chat.composer.cancelQuote')"
           @click="emit('close-quote')"
         >
           <X class="h-3.5 w-3.5" />
@@ -500,10 +499,14 @@ function fileToDataUrl(f: File): Promise<string> {
         contenteditable="true"
         role="textbox"
         aria-multiline="true"
+        enterkeyhint="send"
+        :spellcheck="!codeMode"
+        :autocorrect="codeMode ? 'off' : 'on'"
+        :autocapitalize="codeMode ? 'off' : 'sentences'"
         class="min-h-12 w-full overflow-y-auto bg-transparent px-0.5 py-0.5 leading-relaxed outline-none whitespace-pre-wrap break-words"
         :class="codeMode ? 'font-mono text-[13px]' : ''"
         :style="{ fontSize: 'var(--gosslan-msg-size, 14px)', overflowWrap: 'anywhere', wordBreak: 'break-word' }"
-        :data-placeholder="codeMode ? '粘贴或输入代码…' : '输入消息…'"
+        :data-placeholder="codeMode ? t('chat.composer.codePlaceholder') : t('chat.composer.placeholder')"
         @keydown="onKeydown"
         @input="onInput"
         @click="updateMentionState"
@@ -514,7 +517,7 @@ function fileToDataUrl(f: File): Promise<string> {
           <button
             class="flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] transition"
             :class="emojiOpen ? 'text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
-            title="表情"
+            :title="t('chat.composer.emoji')" :aria-label="t('chat.composer.emoji')"
             @click.stop="toggleEmoji"
           >
             <Smile class="h-[18px] w-[18px]" />
@@ -526,7 +529,7 @@ function fileToDataUrl(f: File): Promise<string> {
         <button
           class="flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] transition"
           :class="codeMode ? 'text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
-          title="代码消息"
+          :title="t('chat.composer.code')" :aria-label="t('chat.composer.code')"
           @mousedown.prevent
           @click="codeMode = !codeMode"
         >
@@ -534,7 +537,7 @@ function fileToDataUrl(f: File): Promise<string> {
         </button>
         <button
           class="flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-          title="发送文件（自动选择最优路线）"
+          :title="t('chat.composer.sendFile')" :aria-label="t('chat.composer.sendFile')"
           @click="emit('attach')"
         >
           <FilePlus class="h-[18px] w-[18px]" />
@@ -546,7 +549,7 @@ function fileToDataUrl(f: File): Promise<string> {
           @mousedown.prevent
           @click="send()"
         >
-          发送
+          {{ t("common.send") }}
         </button>
       </div>
     </div>

@@ -5,6 +5,7 @@ import { useChatStore } from "@/stores/useChatStore";
 import SettingsGroup from "@/components/settings/SettingsGroup.vue";
 import { avatarInitial, nameToColor } from "@/utils/color";
 import { Camera } from "lucide-vue-next";
+import { t } from "@/i18n";
 
 const props = defineProps<{ active: boolean; reloadToken?: number }>();
 
@@ -27,14 +28,14 @@ watch(() => [props.active, props.reloadToken], () => {
 async function saveProfileNow() {
   const name = nickname.value.trim();
   if (!name) {
-    app.toast("昵称不能为空", "error");
+    app.toast(t("settings.profile.toast.nicknameEmpty"), "error");
     nickname.value = app.device?.nickname ?? "";
     return;
   }
   if (name === app.device?.nickname && avatar.value === app.device?.avatar) return;
   await app.updateProfile(name, avatar.value);
   await chat.refreshFriends();
-  app.toast("资料已保存并同步", "success");
+  app.toast(t("settings.profile.toast.saved"), "success");
 }
 
 function onNicknameKeydown(e: KeyboardEvent) {
@@ -55,18 +56,18 @@ async function onAvatarChange(e: Event) {
   input.value = ""; // 清空，允许重复选择同一文件
   if (!f) return;
   if (!f.type.startsWith("image/")) {
-    app.toast("请选择图片文件", "error");
+    app.toast(t("settings.profile.toast.notImage"), "error");
     return;
   }
   if (f.size > MAX_AVATAR_FILE_SIZE) {
-    app.toast("头像不能超过 2MB", "error");
+    app.toast(t("settings.profile.toast.avatarTooLarge"), "error");
     return;
   }
   try {
     avatar.value = await processAvatar(f);
     await saveProfileNow();
   } catch {
-    app.toast("头像处理失败", "error");
+    app.toast(t("settings.profile.toast.avatarFail"), "error");
   }
 }
 
@@ -107,19 +108,19 @@ function processAvatar(file: File): Promise<string> {
 </script>
 
 <template>
-  <SettingsGroup title="个人资料">
+  <SettingsGroup :title="t('settings.group.profile')">
     <div class="flex items-center gap-4 p-4">
       <!-- 头像：点击更换 -->
       <button
         class="group relative h-16 w-16 shrink-0 overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
         :style="{ backgroundColor: nameToColor(nickname) }"
-        title="更换头像"
+        :title="t('settings.profile.changeAvatar')"
         @click="avatarInput?.click()"
       >
-        <img v-if="avatar" :src="avatar" class="h-full w-full object-cover" />
+        <img alt="" v-if="avatar" :src="avatar" class="h-full w-full object-cover" />
         <span v-else class="text-2xl font-semibold">{{ avatarInitial(nickname) }}</span>
         <span
-          class="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 transition group-hover:opacity-100"
+          class="hover-reveal-op absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 transition group-hover:opacity-100"
         >
           <Camera class="h-5 w-5" />
         </span>
@@ -130,7 +131,7 @@ function processAvatar(file: File): Promise<string> {
           v-model="nickname"
           maxlength="30"
           class="w-full rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none transition focus:ring-2 focus:ring-primary"
-          placeholder="昵称（修改后自动保存）"
+          :placeholder="t('settings.profile.nickname.placeholder')"
           @blur="saveProfileNow"
           @keydown="onNicknameKeydown"
         />
@@ -139,11 +140,11 @@ function processAvatar(file: File): Promise<string> {
             class="rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3 py-1.5 text-xs transition hover:bg-[var(--gosslan-hover)]"
             @click="avatarInput?.click()"
           >
-            更换头像
+            {{ t("settings.profile.changeAvatar") }}
           </button>
           <span class="flex items-center gap-1.5 text-xs text-[var(--gosslan-text-2)]">
             <span class="h-2 w-2 rounded-full" :class="app.online ? 'bg-[var(--gosslan-success)]' : 'bg-[var(--gosslan-status-offline)]'"></span>
-            {{ app.online ? "我在线" : "我离线" }}
+            {{ app.online ? t("settings.profile.online") : t("settings.profile.offline") }}
           </span>
         </div>
       </div>

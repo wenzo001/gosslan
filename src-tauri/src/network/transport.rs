@@ -2399,7 +2399,10 @@ async fn handle_group_key(
     {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::upsert_group(&dbc, &group_id, &display_name, &from, &all).ok();
-        db::ensure_conversation(&dbc, &conv_id, "group", &display_name, None).ok();
+        // 群关系同步（GroupKey / 群成员 / 群密钥 / 群名）只更新 groups / group_members，
+        // **不得创建 conversation**：conversation 是「聊天会话索引」，只能由聊天活动驱动
+        // （收到新群消息 → insert_message → touch_conversation）。否则用户清库重装后仅凭
+        // 群关系同步，群聊就会凭空重新出现在聊天列表（关系同步 ≠ 聊天同步）。
         db::observe_clock(&dbc, &conv_id, clock).ok();
     }
     let _ = state.app.emit("group-key-received", &group_id);

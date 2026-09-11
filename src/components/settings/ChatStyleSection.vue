@@ -2,6 +2,7 @@
 import { useAppStore } from "@/stores/useAppStore";
 import SettingsGroup from "@/components/settings/SettingsGroup.vue";
 import { CHAT_FONT_SIZES, CHAT_PRESETS, resolveChatColors, type ChatPreset } from "@/utils/chatStyle";
+import { t } from "@/i18n";
 
 const app = useAppStore();
 
@@ -14,12 +15,12 @@ function swatchOf(p: ChatPreset): { mineBubble: string; otherBubble: string } {
 
 <template>
   <SettingsGroup
-    title="聊天显示"
-    footer="我的消息用所选配色；对方也会按我的配色看到我发的消息（自动同步到已连接设备）。"
+    :title="t('settings.group.chatStyle')"
+    :footer="t('settings.group.chatStyle.footer')"
   >
     <!-- 字体大小 -->
     <div class="px-4 py-3">
-      <div class="mb-2 text-sm text-[var(--gosslan-text)]">字体大小</div>
+      <div class="mb-2 text-sm text-[var(--gosslan-text)]">{{ t("settings.chatStyle.fontSize") }}</div>
       <div class="flex gap-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] p-0.5">
         <button
           v-for="f in CHAT_FONT_SIZES"
@@ -28,7 +29,7 @@ function swatchOf(p: ChatPreset): { mineBubble: string; otherBubble: string } {
           :class="app.chatStyle.fontSize === f.key ? 'bg-[var(--gosslan-panel)] text-[var(--gosslan-text)] shadow-sm' : 'text-[var(--gosslan-text-2)] hover:text-[var(--gosslan-text)]'"
           @click="app.setChatStyle({ fontSize: f.key })"
         >
-          {{ f.label }}
+          {{ t(f.label) }}
         </button>
       </div>
     </div>
@@ -37,17 +38,17 @@ function swatchOf(p: ChatPreset): { mineBubble: string; otherBubble: string } {
 
     <!-- 气泡配色 -->
     <div class="px-4 py-3">
-      <div class="mb-2 text-sm text-[var(--gosslan-text)]">气泡配色</div>
+      <div class="mb-2 text-sm text-[var(--gosslan-text)]">{{ t("settings.chatStyle.bubble") }}</div>
       <div class="grid grid-cols-3 gap-2">
         <button
           v-for="p in CHAT_PRESETS"
           :key="p.key"
           class="rounded-[var(--gosslan-radius-md)] border p-2 transition hover:bg-[var(--gosslan-hover)]"
           :class="app.chatStyle.preset === p.key ? 'border-primary ring-1 ring-primary' : 'border-[var(--gosslan-border)]'"
-          :title="p.label"
+          :title="t(p.label)"
           @click="app.setChatStyle({ preset: p.key })"
         >
-          <div class="mb-1 text-center text-[11px] text-[var(--gosslan-text-2)]">{{ p.label }}</div>
+          <div class="mb-1 text-center text-[11px] text-[var(--gosslan-text-2)]">{{ t(p.label) }}</div>
           <div class="flex items-center gap-1">
             <span class="h-4 flex-1 rounded-[var(--gosslan-radius-xs)]" :style="{ background: swatchOf(p).mineBubble }"></span>
             <span

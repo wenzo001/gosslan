@@ -3,6 +3,7 @@ import { computed } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import SettingsGroup from "@/components/settings/SettingsGroup.vue";
 import { version } from "../../../package.json";
+import { t } from "@/i18n";
 
 const emit = defineEmits<{ (e: "dev-open"): void }>();
 const app = useAppStore();
@@ -32,9 +33,9 @@ function onFingerprintTap() {
 </script>
 
 <template>
-  <SettingsGroup title="关于" :footer="`Gosslan v${version} · 无服务器 P2P · 端到端加密 · 数据仅存本机`">
+  <SettingsGroup :title="t('settings.group.about')" :footer="t('settings.group.about.footer', { version })">
     <div class="px-4 py-3">
-      <div class="text-sm text-[var(--gosslan-text)]">设备指纹</div>
+      <div class="text-sm text-[var(--gosslan-text)]">{{ t("settings.about.fingerprint") }}</div>
       <div
         class="mt-1 select-text break-all font-mono text-xs leading-relaxed text-[var(--gosslan-text-2)]"
         @click="onFingerprintTap"

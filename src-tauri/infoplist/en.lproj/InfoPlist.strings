@@ -1,0 +1,4 @@
+/* 本地化显示名：英文系统下，Dock / Finder 显示 "Gosslan"（与 Info.plist 默认一致）。
+   通过 tauri.conf.json > bundle.macOS.files 复制到
+   <App>.app/Contents/Resources/en.lproj/InfoPlist.strings。 */
+"CFBundleDisplayName" = "Gosslan";

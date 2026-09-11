@@ -1,6 +1,6 @@
 [package]
 name = "gosslan"
-version = "2.0.3"
+version = "2.1.2"
 description = "Gosslan — 无服务器 P2P 局域网即时通讯"
 authors = ["wd.f"]
 edition = "2021"
@@ -21,6 +21,7 @@ tauri-plugin-notification = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-opener = "2"
+tauri-plugin-window-state = "2"
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -49,6 +50,16 @@ machine-uid = "0.5"
 # 可在资源管理器粘贴、也可直接粘贴回聊天框发送（微信式）。
 [target.'cfg(target_os = "windows")'.dependencies]
 clipboard-win = "5"
+
+# macOS 打开文件：App Sandbox 禁止 fork /usr/bin/open（tauri-plugin-opener 在 macOS 走的正是
+# 这条路径），改用 NSWorkspace.openURL —— 纯 Foundation API，沙盒应用允许调用。
+# 同时给 macOS 窗口加圆角：NSWindow 没有 setCornerRadius:，正确做法是给 contentView 的
+# layer 设 cornerRadius（公开 API），并关掉与圆角不兼容的系统阴影。
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSWorkspace", "NSWindow", "NSView", "objc2-quartz-core"] }
+objc2-foundation = { version = "0.3", features = ["NSString", "NSURL"] }
+objc2-quartz-core = { version = "0.3", features = ["CALayer"] }
 
 [features]
 # 默认启用自定义协议；可扩展为自定义 deep-link 唤醒

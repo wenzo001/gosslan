@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from "@/i18n";
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
@@ -8,6 +9,7 @@ import ConversationListItem from "@/components/conversation/ConversationListItem
 import FriendListItem from "@/components/conversation/FriendListItem.vue";
 import FriendContextMenu from "@/components/conversation/FriendContextMenu.vue";
 import BaseModal from "@/components/BaseModal.vue";
+import { APP_ACTION } from "@/api";
 import { Plus, Search, UserPlus, UsersRound } from "lucide-vue-next";
 import type { Conversation, Friend } from "@/types";
 
@@ -29,7 +31,7 @@ const emit = defineEmits<{
 const app = useAppStore();
 const chat = useChatStore();
 
-const { keyword, results, filtered, snippet } = useConversationSearch(
+const { keyword, results, filtered, snippet, hitMsgId } = useConversationSearch(
   computed(() => chat.conversations),
 );
 
@@ -71,15 +73,36 @@ function onDocClickForPlus() {
 onMounted(() => document.addEventListener("click", onDocClickForPlus));
 onUnmounted(() => document.removeEventListener("click", onDocClickForPlus));
 
+// 聚焦搜索框（⌘F / Ctrl+F 与 macOS 菜单「会话 → 搜索」共用同一动作）
+const searchInput = ref<HTMLInputElement | null>(null);
+function focusSearch() {
+  searchInput.value?.focus();
+  searchInput.value?.select();
+}
+onMounted(() => window.addEventListener(APP_ACTION.focusSearch, focusSearch));
+onUnmounted(() => window.removeEventListener(APP_ACTION.focusSearch, focusSearch));
+
 /** 对端在线状态：群聊返回 null（无在线概念）；单聊查好友表。 */
 function isOnline(id: string): boolean | null {
   if (id.startsWith("group:")) return null;
   return chat.friends.find((f) => f.device_id === id)?.online ?? false;
 }
 
-function openConv(conv: Conversation) {
-  chat.openConversation(conv.id);
+/**
+ * 打开会话。若会话列表正处于**搜索结果**态，且命中里有具体消息 → 直接跳到那一条。
+ * 只把用户丢进会话、让他自己翻，搜索就只完成了一半（HIG：搜索的价值是"降低定位成本"）。
+ * 定位失败时按**原因**分别告知，不静默、也不说错原因。
+ */
+async function openConv(conv: Conversation) {
   if (app.isMobile) app.mobileView = "chat";
+  const hit = hitMsgId(conv.id);
+  if (hit) {
+    const outcome = await chat.locateMessageInConv(conv.id, hit);
+    if (outcome === "not-found") app.toast(t("conv.toast.locateNotFound"), "info");
+    else if (outcome === "error") app.toast(t("conv.toast.locateError"), "error");
+    return;
+  }
+  chat.openConversation(conv.id);
 }
 /** 通讯录点击好友 → 打开资料页（发消息由资料页按钮触发，不再直接开会话） */
 function openFriend(f: Friend) {
@@ -109,16 +132,28 @@ function onFriendContext(f: Friend, x: number, y: number) {
   friendMenuPopup.claim();
 }
 
-/** 删除好友：保留聊天记录；对方仍出现在扫描列表，可重新添加。乐观移除，失败回滚。 */
-async function confirmDeleteFriend() {
-  const f = friendMenu.value?.friend;
+/** 删除好友：保留聊天记录；对方仍出现在扫描列表，可重新添加。乐观移除，失败回滚。
+ *
+ *  ⚠️ 必须二次确认：右键菜单此前**单击即删**，而「删除聊天记录」和资料页的「删除好友」
+ *  都有确认弹窗——同一类破坏性操作三种行为不一致，右键菜单那条最容易误触。
+ *  这里刻意**不做"撤销"**：删除好友在后端不是可本地回滚的操作（对方可能已同步移除，
+ *  重新建立关系要走一次好友申请），给一个假的"撤销"比不给更糟。 */
+const pendingRemoveFriend = ref<Friend | null>(null);
+
+function onAskDeleteFriend() {
+  pendingRemoveFriend.value = friendMenu.value?.friend ?? null;
   closeFriendMenu();
+}
+
+async function confirmDeleteFriend() {
+  const f = pendingRemoveFriend.value;
+  pendingRemoveFriend.value = null;
   if (!f) return;
   try {
     await chat.removeFriend(f.device_id);
-    app.toast(`已删除好友 ${f.nickname}（可在添加好友中重新添加）`, "info");
+    app.toast(t("conv.toast.friendRemoved", { name: f.nickname }), "info");
   } catch (e) {
-    app.toast(`删除失败：${e}`, "error");
+    app.toastError(e, t("common.deleteFail"));
   }
 }
 
@@ -136,9 +171,9 @@ async function confirmDeleteConv() {
   if (!c) return;
   try {
     await chat.deleteConversation(c.id);
-    app.toast(`已删除与「${c.name}」的聊天记录`, "success");
+    app.toast(t("conv.toast.historyDeleted", { name: c.name }), "success");
   } catch (e) {
-    app.toast(`删除失败：${e}`, "error");
+    app.toastError(e, t("common.deleteFail"));
   }
 }
 
@@ -169,17 +204,18 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
       >
         <Search class="h-4 w-4 shrink-0 text-[var(--gosslan-text-2)]" />
         <input
+          ref="searchInput"
           v-model="keyword"
           maxlength="100"
           class="w-full bg-transparent text-[13px] outline-none placeholder:text-[var(--gosslan-text-2)]"
-          :placeholder="view === 'chats' ? '搜索' : '搜索联系人'"
+          :placeholder="view === 'chats' ? t('common.search') : t('common.searchContacts')"
         />
       </div>
       <div class="relative flex shrink-0 items-center">
         <!-- 微信式：单个加号，点开下拉（添加好友 / 创建群聊） -->
         <button
-          class="flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-list-hover)]"
-          title="添加好友 / 创建群聊"
+          class="tap-safe flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-list-hover)]"
+          :title="t('conv.addTitle')" :aria-label="t('conv.addTitle')"
           @click.stop="togglePlus"
         >
           <Plus class="h-[18px] w-[18px]" />
@@ -193,14 +229,14 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
             @click.stop="closePlus(); emit('open-add-friend')"
           >
             <UserPlus class="h-4 w-4 text-[var(--gosslan-text-2)]" />
-            添加好友
+            {{ t("common.addFriend") }}
           </button>
           <button
             class="flex w-full items-center gap-2 px-3 py-2 text-[13px] text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
             @click.stop="closePlus(); emit('open-group')"
           >
             <UsersRound class="h-4 w-4 text-[var(--gosslan-text-2)]" />
-            创建群聊
+            {{ t("common.createGroup") }}
           </button>
         </div>
       </div>
@@ -220,8 +256,16 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
           @open="openConv"
           @ask-delete="onAskDeleteConv"
         />
-        <div v-if="filtered.length === 0" class="mt-16 text-center text-sm text-[var(--gosslan-text-2)]">
-          暂无会话
+        <div v-if="filtered.length === 0" class="mt-16 flex flex-col items-center gap-3 text-center text-sm text-[var(--gosslan-text-2)]">
+          <span>{{ keyword.trim() ? t("conv.noMatchConv") : t("conv.noConversation") }}</span>
+          <!-- 空态给下一步：新用户在这里直接能去加人（搜索无结果时不给，那是"换个词"的场景） -->
+          <button
+            v-if="!keyword.trim()"
+            class="rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3 py-1.5 text-xs text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
+            @click="emit('open-add-friend')"
+          >
+            {{ t("common.addFriend") }}
+          </button>
         </div>
       </template>
 
@@ -244,9 +288,9 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
             </span>
           </span>
           <span class="min-w-0 flex-1 text-left">
-            <span class="block truncate text-[13px] leading-5 text-[var(--gosslan-text)]">新的朋友</span>
+            <span class="block truncate text-[13px] leading-5 text-[var(--gosslan-text)]">{{ t("conv.newFriends") }}</span>
             <span class="block truncate text-[12px] leading-5 text-[var(--gosslan-text-2)]">
-              {{ chat.pendingRequests.length ? `${chat.pendingRequests.length} 条待处理申请` : "暂无好友申请" }}
+              {{ chat.pendingRequests.length ? t("conv.pendingRequests", { n: chat.pendingRequests.length }) : t("friend.request.empty") }}
             </span>
           </span>
         </button>
@@ -259,8 +303,15 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
           @open="openFriend"
           @context="onFriendContext"
         />
-        <div v-if="filteredFriends.length === 0" class="mt-16 text-center text-sm text-[var(--gosslan-text-2)]">
-          暂无好友
+        <div v-if="filteredFriends.length === 0" class="mt-16 flex flex-col items-center gap-3 text-center text-sm text-[var(--gosslan-text-2)]">
+          <span>{{ keyword.trim() ? t("conv.noMatchContact") : t("conv.noFriends") }}</span>
+          <button
+            v-if="!keyword.trim()"
+            class="rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3 py-1.5 text-xs text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
+            @click="emit('open-add-friend')"
+          >
+            {{ t("common.addFriend") }}
+          </button>
         </div>
       </template>
     </div>
@@ -270,29 +321,57 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
       :x="friendMenu.x"
       :y="friendMenu.y"
       @close="closeFriendMenu"
-      @confirm="confirmDeleteFriend"
+      @confirm="onAskDeleteFriend"
     />
 
-    <!-- 二次确认：删除聊天记录（仅本地清理，不影响对方） -->
-    <BaseModal :open="pendingDelete !== null" title="删除聊天记录" @close="pendingDelete = null">
+    <!-- 二次确认：删除好友（保留聊天记录，可重新添加） -->
+    <BaseModal
+      :open="pendingRemoveFriend !== null"
+      :title="t('common.deleteFriend')"
+      @close="pendingRemoveFriend = null"
+    >
       <div class="space-y-3">
         <p class="text-sm text-[var(--gosslan-text)]">
-          将删除与「<span class="font-medium text-[var(--gosslan-danger-ink)]">{{ pendingDelete?.name }}</span>」的全部本地聊天记录。
+          {{ t("conv.removeFriend.bodyPrefix") }}<span class="font-medium text-[var(--gosslan-danger-ink)]">{{ pendingRemoveFriend?.nickname }}</span>{{ t("conv.removeFriend.bodySuffix") }}
         </p>
         <ul class="space-y-1 text-xs text-[var(--gosslan-text-2)]">
-          <li>· 对方聊天记录不受影响</li>
-          <li>· 好友关系将保留（删除好友请在「联系人」中操作）</li>
-          <li>· 此操作不可撤销</li>
+          <li>· {{ t("conv.removeFriend.item1") }}</li>
+          <li>· {{ t("conv.removeFriend.item2") }}</li>
+          <li>· {{ t("conv.removeFriend.item3") }}</li>
+        </ul>
+        <div class="flex justify-end gap-2 pt-2">
+          <button
+            class="rounded-[var(--gosslan-radius-md)] px-4 py-1.5 text-sm transition hover:bg-[var(--gosslan-hover)]"
+            @click="pendingRemoveFriend = null"
+          >{{ t("common.cancel") }}</button>
+          <button
+            class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-1.5 text-sm text-white transition hover:bg-[var(--gosslan-danger)]"
+            @click="confirmDeleteFriend"
+          >{{ t("common.deleteFriend") }}</button>
+        </div>
+      </div>
+    </BaseModal>
+
+    <!-- 二次确认：删除聊天记录（仅本地清理，不影响对方） -->
+    <BaseModal :open="pendingDelete !== null" :title="t('conv.delete')" @close="pendingDelete = null">
+      <div class="space-y-3">
+        <p class="text-sm text-[var(--gosslan-text)]">
+          {{ t("conv.delete.bodyPrefix") }}<span class="font-medium text-[var(--gosslan-danger-ink)]">{{ pendingDelete?.name }}</span>{{ t("conv.delete.bodySuffix") }}
+        </p>
+        <ul class="space-y-1 text-xs text-[var(--gosslan-text-2)]">
+          <li>· {{ t("conv.delete.item1") }}</li>
+          <li>· {{ t("conv.delete.item2") }}</li>
+          <li>· {{ t("conv.delete.item3") }}</li>
         </ul>
         <div class="flex justify-end gap-2 pt-2">
           <button
             class="rounded-[var(--gosslan-radius-md)] px-4 py-1.5 text-sm transition hover:bg-[var(--gosslan-hover)]"
             @click="pendingDelete = null"
-          >取消</button>
+          >{{ t("common.cancel") }}</button>
           <button
             class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-1.5 text-sm text-white transition hover:bg-[var(--gosslan-danger)]"
             @click="confirmDeleteConv"
-          >删除</button>
+          >{{ t("common.delete") }}</button>
         </div>
       </div>
     </BaseModal>
