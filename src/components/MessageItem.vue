@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
@@ -9,6 +9,7 @@ import { useMessageDisplay } from "@/composables/useMessageDisplay";
 import { useMessageFile } from "@/composables/useMessageFile";
 import { useMemberProfile } from "@/composables/useMemberProfile";
 import { textNeedsClamp } from "@/utils/previewMetrics";
+import { t } from "@/i18n";
 import MessageAvatar from "@/components/message/MessageAvatar.vue";
 import MessageTextBubble from "@/components/message/MessageTextBubble.vue";
 import MessageCodeBubble from "@/components/message/MessageCodeBubble.vue";
@@ -17,7 +18,8 @@ import MessageImageBubble from "@/components/message/MessageImageBubble.vue";
 import MessageReceipt from "@/components/message/MessageReceipt.vue";
 import MessageContentModal from "@/components/message/MessageContentModal.vue";
 import MessageContextMenu from "@/components/message/MessageContextMenu.vue";
-import { ImageOff } from "lucide-vue-next";
+import ActionSheet from "@/components/ActionSheet.vue";
+import { Copy, CornerUpLeft, Save, Share2, ImageOff } from "lucide-vue-next";
 import type { MessageRecord, MsgKind } from "@/types";
 
 const props = withDefaults(
@@ -172,6 +174,44 @@ function closeContextMenu() {
   ctxMenu.value = null;
 }
 
+// ---------------- 移动端长按 → 底部 Action Sheet（HIG：触屏用长按唤出上下文操作） ----------------
+// 桌面端走右键菜单（MessageContextMenu），移动端没有右键，用长按唤出底部操作面板。
+const sheetOpen = ref(false);
+let longPressTimer: ReturnType<typeof setTimeout> | null = null;
+
+function openActionSheet() {
+  if (props.message.kind === "system") return;
+  sheetOpen.value = true;
+  ctxMenuPopup.claim();
+}
+
+function closeActionSheet() {
+  ctxMenuPopup.release();
+  sheetOpen.value = false;
+}
+
+function onTouchStart() {
+  if (!app.isMobile || props.message.kind === "system") return;
+  longPressTimer = setTimeout(() => {
+    longPressTimer = null;
+    openActionSheet();
+  }, 500);
+}
+
+function cancelLongPress() {
+  if (longPressTimer) {
+    clearTimeout(longPressTimer);
+    longPressTimer = null;
+  }
+}
+
+onBeforeUnmount(() => cancelLongPress());
+
+/** 转发支持：与 MessageContextMenu 同一判据。 */
+function forwardable(k: MsgKind) {
+  return k === "text" || k === "code" || k === "image" || k === "file";
+}
+
 /** 图片可预览 URL：新格式走 objectURL（JSON 元数据），旧格式兼容 content=dataURL。 */
 const imageDataUrl = computed(() => {
   if (props.message.kind === "image") {
@@ -192,9 +232,9 @@ async function copyImage() {
     const blob = await (await fetch(url)).blob();
     const png = blob.type === "image/png" ? blob : await toPngBlob(url);
     await navigator.clipboard.write([new ClipboardItem({ "image/png": png })]);
-    app.toast("图片已复制", "success");
+    app.toast(t("msg.imageCopied"), "success");
   } catch {
-    app.toast("复制图片失败（浏览器剪贴板不可用）", "error");
+    app.toast(t("msg.copyImageFail"), "error");
   }
 }
 
@@ -217,7 +257,7 @@ async function saveImage() {
   try {
     const { save } = await import("@tauri-apps/plugin-dialog");
     const { invoke } = await import("@tauri-apps/api/core");
-    const destination = await save({ defaultPath: `图片-${Date.now()}.png` });
+    const destination = await save({ defaultPath: `${t("common.image")}-${Date.now()}.png` });
     if (!destination) return; // 用户取消
     const buf = new Uint8Array(await (await fetch(url)).arrayBuffer());
     let binary = "";
@@ -226,17 +266,17 @@ async function saveImage() {
       binary += String.fromCharCode(...buf.subarray(i, i + chunk));
     }
     await invoke("save_data_file", { base64Data: btoa(binary), destination });
-    app.toast("图片已保存", "success");
+    app.toast(t("msg.imageSaved"), "success");
   } catch (e) {
-    app.toast(`保存图片失败：${e}`, "error");
+    app.toastError(e, t("msg.saveImageFail"));
   }
 }
 
 /** 引用片段：文本取前 40 字，其它类型用占位标签。 */
 function quoteSnippet(kind: MsgKind, content: string): string {
-  if (kind === "image") return "[图片]";
-  if (kind === "code") return "[代码]";
-  if (kind === "file") return "[文件]";
+  if (kind === "image") return t("msg.image");
+  if (kind === "code") return t("msg.code");
+  if (kind === "file") return t("msg.file");
   const oneLine = content.replace(/\s+/g, " ").trim();
   return oneLine.length > 40 ? `${oneLine.slice(0, 40)}…` : oneLine;
 }
@@ -252,7 +292,7 @@ function doQuote() {
   closeContextMenu();
   const msg = props.message;
   emit("quote", {
-    sender: mine.value ? app.device?.nickname || "我" : props.senderName || chat.nicknameOf(msg.sender_id),
+    sender: mine.value ? app.device?.nickname || t("common.me") : props.senderName || chat.nicknameOf(msg.sender_id),
     snippet: quoteSnippet(msg.kind, msg.content),
     msgId: msg.msg_id ?? msg.id,
   });
@@ -286,7 +326,7 @@ async function retrySend() {
 /** 未就绪时点「下载」：接收是自动的（对方设备上线即传输），这里只解释状态。 */
 function onFileDownload() {
   closeContextMenu();
-  app.toast("文件会在对方设备上线后自动接收，完成后点击即可打开", "info");
+  app.toast(t("msg.fileWillReceive"), "info");
 }
 
 /** 右键「保存」：另存为（复制本地已就绪的文件到用户选择的位置）。 */
@@ -301,14 +341,14 @@ async function copyFileToClipboard() {
   closeContextMenu();
   const path = fileMeta.value?.path;
   if (!path) {
-    app.toast("文件尚未同步到本机", "info");
+    app.toast(t("msg.fileNotSynced"), "info");
     return;
   }
   try {
     await invoke("copy_file_to_clipboard", { path });
-    app.toast("已复制文件，可粘贴到聊天框或资源管理器", "success");
+    app.toast(t("msg.fileCopied"), "success");
   } catch (e) {
-    app.toast(`复制失败：${e}`, "error");
+    app.toastError(e, t("msg.copyFail"));
   }
 }
 </script>
@@ -323,7 +363,7 @@ async function copyFileToClipboard() {
     <!-- 未读分割线（打开会话时定位的第一条未读上方） -->
     <div v-if="showUnreadDivider" class="my-1.5 flex items-center gap-2 px-3">
       <div class="h-px flex-1 bg-primary/30"></div>
-      <span class="rounded-full bg-primary-light px-2 py-0.5 text-[11px] text-[var(--gosslan-accent-ink)]">以下是未读消息</span>
+      <span class="rounded-full bg-primary-light px-2 py-0.5 text-[11px] text-[var(--gosslan-accent-ink)]">{{ t("msg.unreadDivider") }}</span>
       <div class="h-px flex-1 bg-primary/30"></div>
     </div>
 
@@ -354,13 +394,17 @@ async function copyFileToClipboard() {
           {{ message.content }}
         </div>
 
-        <!-- 消息行：气泡 + 侧挂回执（mine 时回执在气泡左侧）；右键弹消息菜单，悬停看完整时间 -->
+        <!-- 消息行：气泡 + 侧挂回执（mine 时回执在气泡左侧）；右键（桌面）/长按（移动端）弹消息菜单 -->
         <div
           v-else
           class="group/row flex w-full items-end gap-1.5"
           :class="mine ? 'justify-end' : 'justify-start'"
           :title="fullTime"
           @contextmenu.prevent="openContextMenu"
+          @touchstart="onTouchStart"
+          @touchend="cancelLongPress"
+          @touchmove="cancelLongPress"
+          @touchcancel="cancelLongPress"
         >
           <MessageReceipt
             v-if="mine"
@@ -409,8 +453,8 @@ async function copyFileToClipboard() {
             class="flex h-32 w-52 flex-col items-center justify-center gap-1 rounded-[var(--gosslan-bubble-radius)] bg-black/5 text-[11px] text-[var(--gosslan-text-2)] dark:bg-white/5"
           >
             <ImageOff class="h-6 w-6 opacity-50" />
-            <span>图片已被清理</span>
-            <span class="opacity-70">可向对方重新索取</span>
+            <span>{{ t("msg.imageCleaned") }}</span>
+            <span class="opacity-70">{{ t("msg.imageReRequest") }}</span>
           </div>
 
           <!-- 图片 -->
@@ -478,4 +522,65 @@ async function copyFileToClipboard() {
     @quote="doQuote"
     @forward="doForward"
   />
+
+  <!-- 移动端长按 → 底部操作面板（Action Sheet）。操作与右键菜单同源，只是展示形态不同。 -->
+  <ActionSheet :open="sheetOpen" @close="closeActionSheet()">
+    <div class="flex flex-col">
+      <button
+        v-if="message.kind === 'text' || message.kind === 'code'"
+        class="flex items-center gap-3 px-4 py-3 text-left text-[15px] text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
+        @click="closeActionSheet(); copyContent(message.kind === 'code' ? 'code' : 'text', message.content)"
+      >
+        <Copy class="h-5 w-5 text-[var(--gosslan-text-2)]" />
+        {{ t("common.copy") }}
+      </button>
+      <template v-if="message.kind === 'image'">
+        <button
+          class="flex items-center gap-3 px-4 py-3 text-left text-[15px] text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
+          @click="copyImage"
+        >
+          <Copy class="h-5 w-5 text-[var(--gosslan-text-2)]" />
+          {{ t("common.copyImage") }}
+        </button>
+        <button
+          class="flex items-center gap-3 px-4 py-3 text-left text-[15px] text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
+          @click="saveImage"
+        >
+          <Save class="h-5 w-5 text-[var(--gosslan-text-2)]" />
+          {{ t("common.saveImage") }}
+        </button>
+      </template>
+      <template v-if="message.kind === 'file'">
+        <button
+          class="flex items-center gap-3 px-4 py-3 text-left text-[15px] text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
+          @click="saveFileTo"
+        >
+          <Save class="h-5 w-5 text-[var(--gosslan-text-2)]" />
+          {{ t("common.save") }}
+        </button>
+        <button
+          class="flex items-center gap-3 px-4 py-3 text-left text-[15px] text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
+          @click="copyFileToClipboard"
+        >
+          <Copy class="h-5 w-5 text-[var(--gosslan-text-2)]" />
+          {{ t("common.copyFile") }}
+        </button>
+      </template>
+      <button
+        class="flex items-center gap-3 px-4 py-3 text-left text-[15px] text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
+        @click="doQuote"
+      >
+        <CornerUpLeft class="h-5 w-5 text-[var(--gosslan-text-2)]" />
+        {{ t("common.quote") }}
+      </button>
+      <button
+        v-if="forwardable(message.kind)"
+        class="flex items-center gap-3 px-4 py-3 text-left text-[15px] text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
+        @click="doForward"
+      >
+        <Share2 class="h-5 w-5 text-[var(--gosslan-text-2)]" />
+        {{ t("common.forward") }}
+      </button>
+    </div>
+  </ActionSheet>
 </template>

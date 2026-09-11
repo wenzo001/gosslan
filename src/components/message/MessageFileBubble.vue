@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from "@/i18n";
 import { computed, type Component, type CSSProperties } from "vue";
 import type { FileMeta } from "@/types";
 import { humanSize, rgba } from "@/utils/color";
@@ -132,7 +133,6 @@ const kind = computed<FileKind>(() => {
     case "toml":
     case "yml":
     case "yaml":
-    case "md":
     case "xml":
       return "code";
     case "pdf":
@@ -152,7 +152,7 @@ const iconWellStyle = computed(() => ({
   backgroundColor: rgba(accent.value, 0.12),
   color: accent.value,
 }));
-const extLabel = computed(() => (ext.value ? ext.value.toUpperCase().slice(0, 4) : "文件"));
+const extLabel = computed(() => (ext.value ? ext.value.toUpperCase().slice(0, 4) : t("common.file")));
 /** 传输中按钮上的百分比（微信下载按钮同款：下载中显示进度数字）。 */
 const pct = computed(() => Math.round((props.progress ?? 0) * 100));
 </script>
@@ -162,7 +162,7 @@ const pct = computed(() => Math.round((props.progress ?? 0) * 100));
     class="flex min-w-0 w-[264px] max-w-full flex-col gap-2 rounded-[var(--gosslan-bubble-radius)] px-3 py-2.5"
     :class="ready ? 'cursor-pointer' : ''"
     :style="bubbleStyle"
-    :title="ready ? '点击打开文件' : undefined"
+    :title="ready ? t('msg.clickToOpen') : undefined"
     @click="ready && emit('open')"
   >
     <div class="flex items-center gap-2.5">
@@ -175,7 +175,7 @@ const pct = computed(() => Math.round((props.progress ?? 0) * 100));
       </div>
       <div class="min-w-0 flex-1">
         <div class="line-clamp-2 break-all text-[13px] font-medium leading-snug">{{ meta.name }}</div>
-        <div v-if="failed" class="mt-0.5 text-[11px] text-[var(--gosslan-danger-ink)]">发送失败</div>
+        <div v-if="failed" class="mt-0.5 text-[11px] text-[var(--gosslan-danger-ink)]">{{ t("msg.sendFailed") }}</div>
         <div v-else class="mt-0.5 flex items-center gap-1 text-[11px] opacity-70">
           <span>{{ extLabel }}</span>
           <span>·</span>
@@ -193,15 +193,15 @@ const pct = computed(() => Math.round((props.progress ?? 0) * 100));
         <span
           v-if="progress !== null"
           class="flex h-7 items-center gap-1 text-[11px] tabular-nums opacity-70"
-          title="接收中"
+          :title="t('msg.receiving')"
         >
           <Loader2 class="h-3.5 w-3.5 animate-spin" />
           {{ pct }}%
         </span>
         <button
           v-else
-          class="flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] transition hover:bg-black/10 dark:hover:bg-white/15"
-          title="下载文件"
+          class="tap-safe flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] transition hover:bg-black/10 dark:hover:bg-white/15"
+          :title="t('msg.downloadFile')" :aria-label="t('msg.downloadFile')"
           @click="emit('download')"
         >
           <Download class="h-3.5 w-3.5" />
@@ -213,9 +213,9 @@ const pct = computed(() => Math.round((props.progress ?? 0) * 100));
       v-if="delivery"
       class="flex items-center gap-1.5 border-t border-current/10 pt-1.5 text-[11px] opacity-70"
     >
-      <span>已发送给 {{ delivery.completed }} 人</span>
-      <span v-if="delivery.waiting > 0">· {{ delivery.waiting }} 人待上线</span>
-      <span v-if="delivery.failed > 0" class="text-[var(--gosslan-danger-ink)]">· {{ delivery.failed }} 人失败</span>
+      <span>{{ t("msg.sentTo", { n: delivery.completed }) }}</span>
+      <span v-if="delivery.waiting > 0">· {{ t("msg.waitingOnline", { n: delivery.waiting }) }}</span>
+      <span v-if="delivery.failed > 0" class="text-[var(--gosslan-danger-ink)]">· {{ t("msg.failedCount", { n: delivery.failed }) }}</span>
     </div>
     <!-- 传输进度条（发送/接收中实时显示，完成后消失）。卡片是中性色，进度条用主题色做强调 -->
     <template v-if="progress !== null">

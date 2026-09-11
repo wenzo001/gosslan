@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from "@/i18n";
 import { computed } from "vue";
 import CodeBlock from "@/components/CodeBlock.vue";
 import { CODE_CLAMP_HEIGHT, CODE_SURFACE } from "@/utils/previewMetrics";
@@ -48,7 +49,7 @@ const tailBg = computed(() => surface.value);
     <CodeBlock v-else :code="code" attached />
     <!-- 操作条＝代码卡片的底栏：总高恒为 previewMetrics.CODE_ACTION_BAR(28px)，改样式不要动高度 -->
     <div class="code-actions" :style="actionsStyle">
-      <button v-if="clamped" class="preview-action" @click="emit('expand', code)">展开显示</button>
+      <button v-if="clamped" class="preview-action" @click="emit('expand', code)">{{ t("common.expand") }}</button>
       <button
         class="preview-action"
         :class="copied ? 'opacity-100' : 'opacity-70 hover:opacity-100'"
@@ -56,7 +57,7 @@ const tailBg = computed(() => surface.value);
       >
         <Check v-if="copied" class="h-3 w-3" />
         <Copy v-else class="h-3 w-3" />
-        {{ copied ? "已复制" : "复制" }}
+        {{ copied ? t("common.copied") : t("common.copy") }}
       </button>
     </div>
     <span aria-hidden="true" class="bubble-tail" :class="mine ? 'tail-mine' : 'tail-other'"></span>

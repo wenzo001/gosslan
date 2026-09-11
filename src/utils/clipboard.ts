@@ -20,7 +20,11 @@ export interface ClipboardFileLike {
 export type PasteAction = { kind: "files" } | { kind: "image" } | { kind: "text" };
 
 /**
- * 分类优先级：真实文件路径（资源管理器复制）> 图片位图（截图/复制图片）> 纯文本。
+ * 分类优先级：图片位图（截图/复制图片）> 真实文件路径（资源管理器复制）> 纯文本。
+ *
+ * 图片必须排在最前：Windows 11 截图（Win+Shift+S）的剪贴板**同时**带一个临时文件引用
+ * （CF_HDROP 指向 Temp 下的 PNG），若按「文件路径优先」会把截图误判成文件去发那个
+ * 可能已被清理的临时路径，表现为"截图有时发得出去、有时发不出去"。
  *
  * 图片位图必须同时看 `files` 与 `items`：WKWebView/Safari 的 paste 事件里
  * `clipboardData.items` 可能为空，截图位图只经 `clipboardData.files` 暴露——
@@ -37,10 +41,12 @@ export function classifyPaste(
   files: readonly ClipboardFileLike[],
   hasFilePaths: boolean,
 ): PasteAction {
-  if (types.includes("Files") && hasFilePaths) return { kind: "files" };
-  if (files.some((f) => f.type.startsWith("image/"))) return { kind: "image" };
-  if (items.some((i) => i.kind === "file" && i.type.startsWith("image/"))) {
+  if (
+    files.some((f) => f.type.startsWith("image/")) ||
+    items.some((i) => i.kind === "file" && i.type.startsWith("image/"))
+  ) {
     return { kind: "image" };
   }
+  if (types.includes("Files") && hasFilePaths) return { kind: "files" };
   return { kind: "text" };
 }

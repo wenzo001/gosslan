@@ -10,6 +10,138 @@
 
 ## [Unreleased]
 
+## [2.1.2] - 2026-09-11
+
+### Fixed
+- **macOS 圆角外"淡淡一层颜色"（白主题淡白 / 黑主题淡黑）**：窗口背景色误用了 `--gosslan-bg`（浅 `#f1f5f9` / 深 `#0f172a`），而 body 实际底色是 `--gosslan-app-bg`（浅 `#edf1f6` / 深 `#0b1220`），两者差一档 → 圆角外透出与内容不同色的"淡淡一层"。修复：窗口背景色改用 `--gosslan-app-bg`，与内容零色差。真透明（透出桌面）需 `macos-private-api` 私有 API、会失去 App Store 上架资格，用户确认**保持可上架**，故不采用。
+- **Windows 冷启动暗色下"闪一下白"**：窗口以 `visible: false` 创建，由前端挂载后调 `focus_window` 显示；但 `focus_window` 只 `show()` 没动背景色，`show()` 的第一帧会露出 WebView2 的默认背景色（`tauri.conf.json` 的 `backgroundColor` 写死浅色 `#edf1f6`），暗色主题用户在骨架合成前看到"骨架之前还有一帧白色"。修复：`focus_window` 在 `show()` 之前读后端 SQLite 的 `dark_mode`（"解析后的结果"，跟随系统时已按系统偏好算好），用 `set_background_color` 把窗口底色改成跟随主题（浅 `#edf1f6` / 深 `#0b1220`，与 body 的 `--gosslan-app-bg` 一致），第一帧即正确底色。命令消息 FIFO 顺序保证「先设色、后 show」，冷启动不再露浅色。
+- **macOS 窗口圆角仍不生效 + 暗色下露白角**：此前在 `setup` 里给 contentView 设圆角，但 wry 在**窗口显示时才**用 `WryWebViewParent` 替换 NSWindow 的 contentView，setup 阶段的圆角被替换丢失；且窗口背景色写死浅色 `#edf1f6`，暗色主题下圆角外露出浅色边。修复：① 圆角改到 **WebView 加载完成后**设置（前端 `App.vue` onMounted 调新命令 `apply_macos_window_shape`），此时 contentView 已是 wry 的 parent_view；② 窗口背景色**运行时跟随主题**，消除暗色露白；③ `setHasShadow(false)` 留在 setup（NSWindow 级、不被替换）。新增 `macos_window::disable_shadow` / `apply_rounded_corners` 两函数。
+
+## [2.1.1] - 2026-09-10
+
+### Fixed
+- **粘贴超长文本卡死输入框**：粘贴大段文字时 `execCommand("insertText")` 把整段（可能几十万字符）塞进 contenteditable，随后 input 事件里的 `innerText` 读取又强制同步 reflow，界面卡死。修复：① 粘贴前先 `slice(0, 50000)` 截断到硬上限（新增 `MAX_INPUT_LENGTH = 50_000`，与发送时的兜底截断共用同一常量）；② `syncDraftState` / `normalizeEmpty` 改用 `textContent` 替代 `innerText`（`innerText` 每次读取都触发 reflow，`textContent` 不触发布局）。发送序列化仍保留 `innerText`（只在发送时读一次，需保留 `<br>`→`\n` 换行语义）。
+- **macOS 打开文件失败（App Sandbox 拦截 `/usr/bin/open`）**：`tauri-plugin-opener` 在 macOS 底层走 `open` crate → `Command::new("/usr/bin/open")`，而 App Sandbox 禁止沙盒应用 fork 外部可执行文件，故 Mac 端点开文件一律失败（Windows 端无沙盒正常）。修复：新增 `src-tauri/src/macos_open.rs`，macOS 改用 `NSWorkspace.openURL`（纯 Foundation API，沙盒允许），Windows/Linux 回落 opener；新增 `open_file_native` 命令并加 `path.exists()` 前置检查，文件不存在时返回明确错误（区分「文件不存在」与「无默认应用」）。
+- **macOS 窗口四周无圆角**：跨平台用 `decorations: false` 自绘标题栏，关掉了 macOS 系统装饰（Windows 11 仍由 DWM 画圆角，所以 Mac 看起来直角、Win 看起来圆角，跨平台割裂）。修复：新增 `src-tauri/src/macos_window.rs`，运行时给窗口 `contentView` 的 layer 设 `cornerRadius: 10.0` + `masksToBounds`（公开 API；⚠️ NSWindow **没有** `setCornerRadius:`，容易误以为有——cornerRadius 是 CALayer 的属性）；同时 `setHasShadow: false`（系统阴影画在窗口外、是矩形，与圆角冲突）。**没**改 tauri.conf.json 的 `decorations`（单平台共用字段，改了会破坏 Windows 自绘）。
+
+### Changed
+- **PC 端窗口可缩到移动端宽度**：窗口最小宽度 `minWidth` 从 920 降到 **360**。`isMobile` 本就是响应式判定（`matchMedia("(max-width: 767px)")`，非平台判定），此前被 920 的 `minWidth` 挡住、PC 上永远触发不了移动端布局；现在缩窗口到 767px 以下即切换成移动端 UI（单列抽屉 + 底部导航），PC 上也能体验移动端形态。
+
+## [2.1.0] - 2026-09-10
+
+> 本轮为 **Apple HIG（2026 版）体验审计后的修复**，分三批 + 一次「App Store 上架前置」：
+> **第一批**（改动小、收益确定）：辅助功能媒体适配、触摸端删除会话、Toast 可达性、`tap-safe`、图片 `alt`；
+> **第二批**（需碰数据/结构）：搜索命中定位到消息、破坏性操作二次确认、空态行动入口；
+> **第三批**（功能变更）：外观三态、macOS 原生菜单栏 + 快捷键、窗口控件系统行为、通知设置；
+> **第四批**（为 iOS/macOS 上架铺路）：隐私清单、iOS 目的字符串、macOS 权限，以及第三批逻辑的单测覆盖。
+> 未改任何消息投递、加密与存储语义。
+> 审计报告见 `.workbuddy/artifacts/apple-hig-ux-audit-2026-09-10.md`，交付报告见 `p0-fixes-report-2026-09-10.md`。
+
+### Added
+- **macOS 原生菜单栏 + 跨平台快捷键**：自绘标题栏 + `decorations:false` 导致 macOS **没有系统菜单栏**，而 HIG 明确菜单栏是 Mac 应用的基础（⌘Q / ⌘, / ⌘W / ⌘M / 标准「编辑」项都靠它）。现在 `src-tauri/src/menu.rs` 在 macOS 建立应用菜单（关于 / 偏好设置 ⌘, / 服务 / 隐藏 / 退出 ⌘Q）、编辑（撤销/重做/剪切/复制/粘贴/全选）、会话（添加好友 ⌘N / 搜索 ⌘F）、窗口（最小化/关闭/缩放/全屏，`set_as_windows_menu_for_nsapp` 交给系统接管）。设计要点：
+  - 自定义项**只发事件**、由前端执行，与快捷键走**同一条路径**（`window` 事件广播，见 `api/index.ts` 的 `APP_ACTION`），保证菜单与快捷键行为一致；
+  - 菜单属"锦上添花"，**初始化失败不阻断启动**（与托盘不同，只打印日志）；
+  - 跨平台快捷键 `useShortcuts`：⌘/Ctrl + `,`（设置）/ `F`（搜索）/ `N`（添加好友），**绝不碰** ⌘C/⌘V/⌘A/⌘X（那是系统编辑键）；组合态（中文输入法）放行。
+- **通知设置**：新增后端键 `notify_enabled` / `notify_show_content`。设置页加「通知」分组：桌面通知开关（**打开时在用户动作上下文里请求权限**，被拒则保持关闭并提示，不再等某条消息到达才弹权限）+ 「通知显示消息内容」隐私开关（关掉后只提示"收到新消息"，锁屏/通知中心不泄正文）。
+- **搜索命中可直接跳到那条消息**：此前搜到会话后点进去，用户还得自己在会话里翻——搜索只完成了一半。现在：
+  - 后端 `SearchResult` 增加 `match_msg_id`（`db::search_messages_in_conv` 本就返回完整消息，只是此前没往外传）；
+  - store 新增 `locateMessageInConv(convId, msgId)`：打开会话后若命中不在已加载窗口（默认最近 100 条），**逐页往前找**，上限沿用 `MAX_PAGES`（与手动上翻一致，不会为一句话翻遍整库）；找到后置 `locateRequest`，由 `ChatWindow` 滚动 + 高亮（复用既有的引用定位渲染路径）；
+  - ⚠️ `locateRequest` **刻意不复用** `unreadJump`：后者会画「以下是未读消息」分割线，语义不同，复用会画错东西；
+  - 返回**三态**（`found` / `not-found` / `error`）而不是布尔：翻到顶没找到、与翻页中途出错是两回事，要给不同的话——不能静默，也不能说错原因。
+- **外观跟随系统（三态：跟随系统 / 浅色 / 深色）**：此前只有"深色模式"布尔开关，用户在 macOS / Android 系统里切换外观时 App **不跟随**——这是最容易被感知的"不像原生"之处（Apple HIG *Dark Mode* 要求 Respect the system appearance）。现在：
+  - 新增后端设置键 `appearance_mode`（`system` | `light` | `dark`，缺省即 `system`），与既有 `dark_mode` **并存不冲突**：前者是**用户意图**，后者是**解析后的结果**（跟随系统时由前端按系统偏好算出来回写）。`save_settings` 对非法值直接忽略（宁可回落"跟随系统"也不写脏值），并已加入 `SETTINGS_KEYS` 使"恢复默认"能清干净
+  - store 里 `dark` 由可写 ref 改为 **computed**（`appearance === "system" ? 系统偏好 : 强制值`）——既有大量 `app.dark` 读取处**零改动**，写入统一收敛到唯一入口 `applyAppearance()`
+  - 跟随系统模式下监听 `prefers-color-scheme` 变化，系统切外观 App **即时**跟随，无需重启；强制模式下系统怎么变都不影响用户选择
+  - **旧数据不丢**：≤2.0.3 只写了 `gosslan.dark` 布尔值，那是用户的一次**显式**选择；升级后按 `1→dark / 0→light` 迁移成显式模式，不会被静默改成"跟随系统"
+  - `index.html` 首屏骨架的判定同步（骨架先于 bundle 执行，判定逻辑必须与 store 完全一致，否则启动瞬间会看到"骨架浅色 → 界面深色"闪一下）
+- **错误文案收敛模块 `utils/errors.ts`**：把 IPC 抛出的异常转成「能读懂 + 可行动」的一句话。⚠️ 实测前提：本项目 Rust 侧**大部分错误本来就是写好的中文说明**（如「对方不是好友，请先扫描添加好友之后再继续聊天」），所以策略不是"一律换成通用文案"（那会抹掉有用信息），而是：命中需额外解释的模式 → 换成更有帮助的说法（如公钥缺失时说明"消息已保留、对方上线会自动补发"）；看起来已是给人读的 → 原样保留；其余（`os error 2` 这类 IO/库英文串）→ 换通用文案，**原文只进 console**，既不给用户看转储也不丢排查线索
+- **自动化护栏 `utils/a11yLabels.ts` + 测试（含全库扫描）**：扫描 `src` 下全部 `.vue`，报出"纯图标且没有任何名字来源"的 `<button>`。判据刻意收紧（已有 `aria-label`/`aria-labelledby`（含 `:`/`v-bind:` 动态绑定）/`v-html`/可见文本或插值/带非空 `alt` 的 `<img>` 都跳过），避免误报
+- **App Store 上架前置配置（macOS / iOS，均为 App Store 强制项，此前完全缺失）**：
+  - **隐私清单 `src-tauri/PrivacyInfo.xcprivacy`**：声明不追踪、不采集数据（本应用纯 P2P、无服务器、无统计 SDK），并登记 Tauri 运行时用到的 required-reason API（`UserDefaults` / `FileTimestamp` / `SystemBootTime` / `DiskSpace`，各带正确的 reason 码），通过 `bundle.resources` 打入产物；
+  - **iOS 目的字符串 `src-tauri/Info.plist`**：`NSLocalNetworkUsageDescription` —— 本应用靠 UDP 广播发现 + TCP 直连局域网，iOS 14+ 缺了它会在访问本地网络时被系统拦截甚至崩溃；通过 `bundle.iOS.infoPlist` 合并进默认 Info.plist（iOS 工程尚未生成，此为预置）；
+  - **macOS 权限 `src-tauri/entitlements.plist`**：App Sandbox + `network.client/server` + 用户自选文件读写 + Downloads 读写，通过 `bundle.macOS.entitlements` 接入。
+- **纯函数模块 `utils/appActions.ts` / `utils/shortcuts.ts` / `utils/notifications.ts`**：把「应用级动作名」「快捷键命中判定」「通知正文拼装」从 api/composable/store 里抽成零 `@/` 依赖的纯函数（Node 单测无法解析 `@/` 别名），并补齐单测。
+- **状态恢复（各端统一，Apple HIG *State Restoration*）**：
+  - **上次会话恢复**：打开会话即记 `gosslan.lastConv`（localStorage），重启后若该会话仍存在则自动打开——三端一致，回到上次离开的地方。
+  - **窗口尺寸/位置恢复**（桌面 macOS/Windows）：接入官方 `tauri-plugin-window-state`，只持久化 `SIZE/POSITION/MAXIMIZED/FULLSCREEN`。⚠️ **刻意排除 `VISIBLE`**——本应用「关闭=隐藏到托盘」，若把可见性也持久化，会记成"关闭后是隐藏态"、重启就不显示窗口了；`DECORATIONS` 也排除（自绘标题栏由本项目管理）。
+  - **移动端方向统一竖屏**：iOS `Info.plist` 补 `UISupportedInterfaceOrientations=Portrait`，与 Android 既有的 `screenOrientation="portrait"`（`scripts/inject-android-signing.mjs`）对齐——当前移动端横屏布局尚未适配（会破坏安全区/导航），等横屏就绪后再放开 iPad 多方向。
+- **本地化骨架（App Store 全球上架阻断项）**：此前全中文硬编码、无任何 i18n。本轮建立：
+  - `src/i18n/`：轻量字典（`zh-CN`/`en-US`）+ 响应式 `t()`（支持 `{name}` 插值）+ `applyLocale`/`isLocale`，自写而非引入 vue-i18n（文案量有限，避免新依赖）。
+  - 后端新增 `language` 设置键（脏值忽略，回落中文），store 加 `language`/`setLanguage`（切语言即时生效 + 持久化）。
+  - 设置页加「语言」切换入口（简体中文 / English），**覆盖系统 UI（导航栏）与设置页主框架 + 各分组标题/footer + 通知/共享/重置/清除 + 清除确认弹窗**。
+  - 护栏 `src/i18n/index.test.ts`：**断言中英字典 key 集合完全一致**（漏翻译会变红）+ t() 翻译/插值/缺 key 回退。
+  - ⚠️ 各分组**内部字段文案**（外观三态、气泡配色预设名、存储清理策略、网卡列表等）仍为增量待迁——切语言后这些字段暂不随动，后续批量补。
+- **通知「标记已读」动作（移动端）**：Android/iOS 通知增加「标记已读」按钮（`registerActionTypes` + `actionTypeId`），点按不唤起窗口、直接标记该会话已读（发已读回执 + 清未读角标）。桌面端 Web Notification 不支持按钮，保持「点击打开」。
+- **⌘/Ctrl + = / − 调整消息字号（Dynamic Type 精神）**：在 小/标准/大 三档间切换，直接改 store（`useShortcuts` 里处理，不走 window 事件），与设置页「字体大小」共用同一套 `CHAT_FONT_SIZES`。
+- **macOS 滚动条恢复系统 overlay**：`html.platform-mac`（store init 按 `isMac` 标记）+ CSS 覆盖，macOS 上滚动条回到「滚动才浮出、不占布局」，Windows/Android 保留 6px 常显细滚动条。
+- **移动端消息长按 → 底部 Action Sheet**：新建 `ActionSheet.vue`（底部滑出、遮罩、取消按钮、安全区），移动端长按消息唤出「复制/保存/引用/转发」等操作——此前移动端**没有右键、也没有长按**，消息操作在触屏上完全不可用（真实功能缺失）。
+- **语言跟随系统（三态：跟随系统 / 简体中文 / English）**：此前语言默认写死中文。现在：
+  - 后端 `language` 键扩展为 `system` | `zh-CN` | `en-US`（缺省即 `system`，脏值忽略）；
+  - `src/i18n` 抽出 `detectSystemLocale()`（系统 `zh*` → 中文，其余 → 英文）+ `LanguagePreference` 三态，`locale` 改为 computed（`preference === "system" ? 系统语言 : 偏好`）；
+  - 设置页语言切换改为三选一（「跟随系统」随当前语言翻译，「简体中文 / English」按国际惯例不自翻译）；
+  - `index.html` 首帧脚本同步检测系统语言设置 `lang`（避免启动瞬间静态 `lang="zh-CN"` 与真界面不一致）；
+  - 护栏 `src/i18n/index.test.ts` 扩展：`detectSystemLocale` 纯函数覆盖 + `refreshSystemLocale()` 重解析 + 显式偏好不受系统语言变化影响。
+- **应用名本地化「小院儿」/ "Gosslan"**：应用中文名「小院儿」、英文名 "Gosslan"，桌面/主屏图标名按系统语言显示：
+  - macOS：`src-tauri/infoplist/{en,zh-Hans}.lproj/InfoPlist.strings` 本地化 `CFBundleDisplayName`，经 `bundle.macOS.files` 精确放入 `Contents/Resources/<lang>.lproj/`（Tauri 不自动生成 InfoPlist.strings；官方推荐的 `resources` glob 也可行，这里用 `files` 显式映射更精确）；
+  - iOS：`Info.plist` 设 `CFBundleDisplayName = "小院儿"`（中文主市场默认），英文系统的本地化待 iOS 工程生成后补 `en.lproj/InfoPlist.strings`；
+  - ⚠️ Windows 桌面快捷方式名 = `productName`（NSIS 不支持按系统语言），保持 "Gosslan" 不变（改 productName 会连带数据目录/bundle id，不推荐）。
+- **英文翻译按 Apple 规范润色**：Title Case 一致性（`Mark as Read` / `Show Message Content`）、`&`→`and`、全大写强调 `NOT`→`not`、语法修正（`switch interface`→`switch the interface`）、描述用 sentence case、无障碍 label 更清晰（`My profile, {status}. Open settings.`）。
+- **英文样式适配**：语言分段控件加 `flex-wrap + whitespace-nowrap`（英文「Follow System」较长，放不下换行而非溢出）；设置页 label/footer 均 flex + 自动换行，英文长文案安全。
+- **README 参与贡献模块**：顶部加 release / contributors / license 徽章，License 前加「参与贡献」区块，用 `contrib.rocks` 动态展示提交量前 10 位贡献者头像。
+- **聊天以外全库文案 i18n 全覆盖**：把上一轮只覆盖「系统 UI + 设置页主框架」的本地化，扩展到**除聊天消息内容外的全部用户可见文案**（44 个文件、约 500 个字典 key）：
+  - 设置页 7 个 Section 内部字段（外观三态、主题色、字体、气泡配色预设名、字号档位、存储策略、网卡列表、资料、安全、关于）；
+  - 所有 `title` / `aria-label`（标题栏窗口按钮、聊天头部、消息操作、回执、图片预览、文件气泡、输入区、会话/好友列表等）；
+  - 所有弹窗 / 菜单 / toast / 空态 / placeholder / 状态标签（群组、好友、会话删除、共享目录、转发、诊断面板、移动端导航）；
+  - `chatStyle.ts` 的气泡预设 `label` 与字号 `label` 改为 i18n key（纯数据模块零依赖，组件 `t(label)` 翻译）；
+  - store/composable 的直接 toast（发送失败、权限、文件操作）统一走 `toastError` / `t()`。
+
+### Fixed
+- **触摸端无法删除会话**（真实功能缺失）：会话行的删除键写成 `hidden` + `group-hover:flex`，而 **Android 没有 hover 事件 → 该按钮永远不显示**，表现为"桌面能删、手机删不掉"（同一层的"删除好友"有长按兜底，聊天记录却没有）。新增全局工具类 `.hover-reveal` / `.hover-reveal-op`（`@media (hover: none)` 下退化为常显），并把「凡用 `group-hover` / `opacity-0` 揭示的元素都必须加其中之一」写进设计规范
+- **读屏用户收不到失败反馈**：toast 是**唯一的失败反馈通道**（发送失败 / 删除失败都靠它），但容器没有 live region → 失败被静默。补 `role="status"` + `aria-live="polite"`（每条 `aria-atomic` 保证整句播报），装饰图标加 `aria-hidden`；错误停留时长 **3s → 6s**（读屏播报比扫一眼慢得多，原值常常没播完就消失）
+- **错误提示直接暴露原始异常串**：31 处 `catch` 里写成 ``toast(`发送失败：${e}`)`` / `toast(String(e))`，会把 Rust 侧 `Err(String)` 原文（含 device_id、`os error 2` 之类）直接给用户看。统一改走 `app.toastError(e, "发送失败")`（14 个文件、31 处；按所在函数给了语义化前缀）
+- **图标按钮在读屏下等于"无名按钮"**：全库 60 余处只写了 `title`，而 `title` 是**鼠标工具提示**、不是可访问名（触屏 VoiceOver/TalkBack 基本读不到）。为 **31 个纯图标按钮**补 `aria-label`（与 `title` 并存：一个给读屏、一个给鼠标），覆盖导航栏、标题栏窗口按钮、聊天头部、图片预览、群成员面板、输入区工具栏、申请列表等；动态值用 `:aria-label` 保持跟随
+- **发送状态对读屏不可见**：回执是纯图标（转圈 / 空心圆 / 绿勾 / 红叉），读屏什么也读不到——而"发送中 / 已送达 / 已读"是聊天最核心的状态。给回执容器加 `role="img"` + 可访问名
+- **列表行键盘不可达**：会话行 / 好友行是 `<div class="cursor-pointer">`，键盘用户无法 Tab 进入（`style.css` 注释里此前已自认"属后续项"）。补 `tabindex="0"` + `role="button"` + `:aria-label` + Enter/Space 激活；焦点环复用既有的全局 `:focus-visible` 规则，无需新增样式
+- **未适配辅助功能媒体**：Apple 2026 HIG 明确要求适配「降低透明度 / 提高对比度」（macOS 27 另有 "Show Borders"），而项目大量使用毛玻璃且**完全没有**对应的降级。补两段媒体查询：`prefers-reduced-transparency: reduce` 时 `.frost` 退回不透明实底、`.glass`（模态遮罩）去模糊并加深压暗、`.vel-modal` 同理；`prefers-contrast: more` 时把**边界类** token（`border` / `divider` / `hover` / `window-ring`）提档。**刻意只动表面与边界、不动文字色**——文字可读性已由 `tokenContrast` 契约在亮/暗两套外观下逐对保证，在此再改会绕过那道护栏
+- **44pt 最小点按目标规则"定义了却从未使用"**：`style.css` 早有 `.tap-safe`，但全库 **0 处引用**；而多数独立小图标按钮只有 24~32px，低于 Apple 的最小点按目标。本轮给 **15 处**补上（会话删除键、列表头的加号、聊天头部 4 个、申请行的同意/拒绝、共享目录的刷新/下载、群成员面板的转让/移出、文件气泡的下载、回执的重发、图片预览的关闭）。**刻意不为所有小按钮都加**，判据是「垂直方向有没有紧邻另一个可交互元素」：
+  - ✗ **导航栏的图标栈**（`gap-2` 紧凑堆叠）：扩 8px 会盖到相邻按钮；
+  - ✗ **输入区工具栏**（正下方是 `contenteditable` 正文区）：扩 8px 会抢走"点正文最后一行"的点击，反而更难用。
+  这正是 `style.css` 里"只扩垂直、不给横向相邻控件加"那条告诫的延伸（触屏下多扩的命中区落在**非交互**空间才安全）。
+- **`<img>` 全部声明 alt**：此前全库 17 处 `<img>` 无一带 alt，读屏可能念出文件名/URL。**分两类处理、不一刀切**：
+  - **装饰性头像 15 处** → `alt=""`（HTML 规范里"这是装饰、读屏请跳过"的**正确**写法）——它们所在的行/按钮**已有可访问名或可见姓名**，再写一次人名只会让读屏重复念；
+  - **内容图片 2 处** → 真实 alt：消息内图片 `alt="图片消息"`，图片预览用 `:alt="current?.name || '图片预览'"`（用文件名，取不到时回退）。
+  - 判据是「**出现过** alt」而不是「alt 非空」——`alt=""` 合法，要禁的是"忘记写"。
+- **破坏性操作的确认行为不一致**（同类的三处三种待遇）：
+  - **右键删除好友此前"单击即删"**，而「删除聊天记录」和资料页的「删除好友」都有确认弹窗 → 右键那条最容易误触。现补二次确认（讲清"聊天记录保留 / 对方无法再发消息 / 可重新添加"）。
+  - 这里**刻意不做"撤销"**：删除好友在后端不是可本地回滚的操作（对方可能已同步移除，重建关系要走一次好友申请），给一个做不到的"撤销"比不给更糟——所以选确认，而不是选一个假的甜点。
+  - **「清除聊天数据」原本用 `window.confirm`**：那是 WebView 的系统对话框，样式与 App 完全脱节，在无边框窗口里尤其突兀。改为应用内 `BaseModal`（与其它破坏性确认同一套样式，并逐条列出"删什么 / 不删什么"）。
+- **平台判定把 iOS 误判成 macOS**（iOS 上架前必须修掉）：`isMac` 用 `/Macintosh|Mac OS X/` 匹配 UA，而 iOS 的 UA 形如 `... (iPhone; CPU iPhone OS 17_0 like Mac OS X) ...`，其中 `like Mac OS X` 会命中 → iPhone/iPad 被当成 Mac（移动端错误显示红绿灯、快捷键误用 ⌘ 而非 ctrl）。改为只匹配桌面 macOS 独有的 `Macintosh`，并加 `navigator` 守卫（供 Node 单测 import）。
+- **群成员面板两处仍用 `window.confirm`**（转让群主 / 退出群聊）：改为应用内 `BaseModal` 二次确认，与「清除聊天数据 / 删除好友」统一。⚠️ 剩余一处 `StorageSection` 的缓存策略确认仍用 `window.confirm` —— 它在 `watch` 里依赖**同步**弹窗 + 立即回滚的时序，改异步弹窗需重排该回滚逻辑，风险较高，留作后续。
+- **截图粘贴时好时坏**：Windows 11 截图（Win+Shift+S）的剪贴板**同时**带一个临时文件引用（CF_HDROP 指向 Temp 下的 PNG），原逻辑「文件路径优先」会把截图误判成文件、去发那个可能已被清理的临时路径，导致"有时发得出去、有时发不出去"。修复两处：① `classifyPaste` 改为**图片优先于文件路径**；② `onPaste` 在**任何 `await` 之前**同步捕获图片 `File`（`files` 优先、`items.getAsFile()` 兜底）——Chromium/WebKit 会在 paste 事件返回后清空 clipboardData，先 `await` 再读 `items` 会拿到 `null`。
+- **发送文件（尤其 .md）被渲染成代码块**：文件消息此前按 `subtype=code` 渲染成**内联代码预览块**（把 .js/.md 内容拉出来高亮显示），而不是文件卡片。现在**文件一律按文件卡片渲染**——代码块只来自「代码消息」（kind=code，输入框粘贴/发送的文本），文件不再依据扩展名变代码块。同时 `.md`（Markdown 是文档而非代码）从 `classify_file_subtype` 与文件卡片图标的 `code` 分类中移除，归为普通 `file`/文档图标。
+- **群关系同步会凭空重建群聊会话**（产品语义错误）：`handle_group_key`（收到 GroupKey 后的群关系同步路径）在 `upsert_group` 之后**多调了一次 `ensure_conversation`**，导致用户清库/重装后仅凭群关系同步（群名/群成员/群密钥），之前加入过的群聊就会自动重新出现在聊天列表。这混淆了「群关系」与「聊天会话」——conversation 是**聊天活动驱动的会话索引**，只有收到新消息（`insert_message` + `touch_conversation`）时才应创建。修复：删掉这一处 `ensure_conversation`，保留 `upsert_group`（写 groups/group_members）与 `observe_clock`（群时钟推进）；群消息接收路径的 `touch_conversation` 不动，因此新群消息仍会正常创建会话。新增 db 层测试锁定不变量（群关系同步不建会话 / 新消息建会话 / 已有会话不被删除或重复创建）。
+
+### Changed
+- **空态只有陈述、没有下一步**：主聊天区、会话列表的「暂无会话 / 暂无好友」此前都只有一句话。新用户最常卡在"怎么加人"，现在空态直接给「添加好友」按钮（**搜索无结果时不给**——那是"换个词"的场景，不是"去加人"）。
+- **`docs/design-guidelines.md` 新增 §10「系统与辅助功能跟随」**：把本轮确立的三条硬规则写进规范（辅助功能媒体必须响应、可访问名是准入项、悬停不能是唯一入口），并更新 §7.2 的"已知偏差"——「未新增跟随系统外观」已由本轮修复，从偏差表移除
+- 设置页「外观」由二态开关改为**三选一分段控件**（跟随系统 / 浅色 / 深色）；导航栏的太阳/月亮按钮保留为快捷开关（语义明确为"切成显式的浅/深"，不再在城市与系统之间来回）
+- **macOS 窗口控件补齐系统行为**：绿灯 option-click 进入/退出全屏（此前只有缩放，新增 `window_toggle_fullscreen`）；双击标题栏 = 缩放（仅 macOS，Windows 由 tao 原生处理）。⚠️ 系统偏好「双击标题栏的动作」无法从 WebView 读取，这里用系统默认的"缩放"，若需完全跟随需改 `decorations + titleBarStyle: Overlay`（属后续项）。
+- **前端不再在 macOS 兜底 ⌘W**：此前靠 `TitleBar` 的 keydown 兜底，现由原生「窗口 → 关闭」菜单（配合 lib.rs 恢复的 NSWindow `Closable` 位）接管，避免双触发；Windows/Linux 的 Ctrl+W 兜底保留。
+- **输入框移动端键盘提示**：`MessageComposer` 的 contenteditable 补 `enterkeyhint="send"`（回车即发送，iOS/Android 键盘显示"发送"而非"换行"），并按代码模式切换 `spellcheck` / `autocorrect` / `autocapitalize`（代码模式关闭纠错，避免改坏粘贴的代码）。
+
+### 校验
+- `npm test` **196/196**（原 121；新增 `errors` 8 例、`a11yLabels` 12 例、`templateBranches` 3 例、`appearance` 10 例、`designGuards` 12 例、`platform` 4 例、`shortcuts` 6 例、`notifications` 5 例、`clipboard` 1 例（图片优先回归）、`i18n` 14 例（含 `detectSystemLocale` 纯函数 + 跟随系统重解析））
+- `npx vue-tsc --noEmit` 0 错误；`cargo check` 0 error / 0 warning；`cargo test --lib` **219/219**（新增 `markdown_is_a_document_not_code`）
+- **降级 CSS 用无头浏览器实测计算值**（不靠推理）：`prefers-reduced-transparency` 下 `.frost` / `.glass` / `.vel-modal` 的 `backdrop-filter` 均为 `none`、`.glass` 背景变为 `rgba(0,0,0,0.62)`；`.hover-reveal` 的 `display` 确为 `flex`（证明 `!important` 压过了 Tailwind 的 `hidden`）；`prefers-contrast: more` 下 `--gosslan-border` = `#94a3b8`。⚠️ 这三段媒体查询**必须留在 `style.css` 末尾**——`.glass` / `.frost` 的定义在文件中更靠后，同优先级下"后定义者胜"，写在前面会被直接覆盖（首版即踩，已实测确认）
+
+> **三批的完成情况**：第一批（辅助功能媒体适配、触摸端删除会话、Toast 可达性、`tap-safe`、图片 `alt`）✅；
+> 第二批（搜索定位到消息、破坏性操作二次确认、空态行动入口）✅；
+> 第三批（外观三态、macOS 原生菜单栏 + 快捷键、窗口控件系统行为、通知设置）✅。
+> 第一批里的「抽 `IconButton` 组件」**有意未做**：图标按钮的可访问名已用 inline `aria-label` 补齐，
+> 并加了全库扫描护栏；此情此景引入一个组件抽象违反 `AI_RULES §33`（不要无必要的抽象），
+> 且会让 31 处改动的 diff 变大、收益为零。
+> 路线图（P2 形态类：侧栏贴边/图标着色、字号覆盖整套 `--gosslan-text-*`、常显滚动条）未动。
+
 ## [2.0.3] - 2026-09-10
 
 ### Added

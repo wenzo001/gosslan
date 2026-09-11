@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from "@/i18n";
 import { computed } from "vue";
 import hljs from "highlight.js/lib/core";
 import bash from "highlight.js/lib/languages/bash";
@@ -102,7 +103,7 @@ const html = computed(() => {
     :style="{ borderWidth: attached ? '0px' : '1px' }"
   >
     <div class="flex items-center justify-between px-3" style="height: 32px" :style="{ background: toolbarBg }">
-      <span class="text-xs" :style="{ color: toolbarFg }">{{ langLabel }} · {{ lineCount }} 行</span>
+      <span class="text-xs" :style="{ color: toolbarFg }">{{ langLabel }} · {{ t("common.lines", { n: lineCount }) }}</span>
     </div>
     <pre
       class="code-pre"

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from "@/i18n";
 import { ref, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
@@ -37,37 +38,37 @@ function initials(n: string) {
 
 async function create() {
   if (!name.value.trim()) {
-    app.toast("请输入群名称", "error");
+    app.toast(t("group.toast.nameEmpty"), "error");
     return;
   }
   if (selected.value.length === 0) {
-    app.toast("请至少选择一位好友", "error");
+    app.toast(t("group.toast.noMember"), "error");
     return;
   }
   try {
     const g = await chat.createGroup(name.value.trim(), selected.value);
-    app.toast(`群聊「${g.name}」已创建`, "success");
+    app.toast(t("group.toast.created", { name: g.name }), "success");
     emit("close");
     chat.openConversation(`group:${g.id}`);
   } catch (e) {
-    app.toast(String(e), "error");
+    app.toastError(e, t("group.toast.createFail"));
   }
 }
 </script>
 
 <template>
-  <BaseModal :open="open" title="创建群聊" @close="emit('close')">
+  <BaseModal :open="open" :title="t('group.create.title')" @close="emit('close')">
     <div class="mb-4">
-      <div class="mb-1.5 text-sm">群名称</div>
+      <div class="mb-1.5 text-sm">{{ t("group.name") }}</div>
       <input
         v-model="name"
         class="w-full rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none"
-        placeholder="输入群聊名称"
+        :placeholder="t('group.namePlaceholder')"
         maxlength="32"
       />
     </div>
 
-    <div class="mb-1.5 text-sm">选择成员（P2P 组网）</div>
+    <div class="mb-1.5 text-sm">{{ t("group.selectMembers") }}</div>
     <div class="max-h-56 overflow-y-auto">
       <div
         v-for="f in chat.friends"
@@ -85,14 +86,14 @@ async function create() {
           class="flex h-8 w-8 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
           :style="{ backgroundColor: nameToColor(f.nickname) }"
         >
-          <img v-if="f.avatar" :src="f.avatar" class="h-full w-full object-cover" />
+          <img alt="" v-if="f.avatar" :src="f.avatar" class="h-full w-full object-cover" />
           <span v-else class="text-xs font-semibold">{{ initials(f.nickname) }}</span>
         </div>
         <span class="flex-1 text-sm">{{ f.nickname }}</span>
-        <span class="text-xs text-[var(--gosslan-text-2)]">{{ f.online ? "在线" : "离线" }}</span>
+        <span class="text-xs text-[var(--gosslan-text-2)]">{{ f.online ? t("common.online") : t("common.offline") }}</span>
       </div>
       <div v-if="chat.friends.length === 0" class="py-6 text-center text-sm text-[var(--gosslan-text-2)]">
-        暂无好友，请先添加好友
+        {{ t("group.noFriends") }}
       </div>
     </div>
 
@@ -101,7 +102,7 @@ async function create() {
       :disabled="selected.length === 0 || !name.trim()"
       @click="create"
     >
-      创建群聊
+      {{ t("common.createGroup") }}
     </button>
   </BaseModal>
 </template>

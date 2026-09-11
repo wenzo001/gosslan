@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from "@/i18n";
 import { computed, ref, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
@@ -71,28 +72,28 @@ async function add(peerId: string) {
   }, SEND_COOLDOWN_MS);
   try {
     await chat.sendFriendRequest(peerId);
-    app.toast("好友申请已发送，等待对方确认", "success");
+    app.toast(t("friend.add.toast.sent"), "success");
   } catch (e) {
-    app.toast(`发送失败：${e}`, "error");
+    app.toastError(e, t("msg.sendFailed"));
   }
 }
 </script>
 
 <template>
-  <BaseModal :open="open" title="添加好友" @close="emit('close')">
+  <BaseModal :open="open" :title="t('friend.add.title')" @close="emit('close')">
     <div v-if="loading" class="py-8 text-center text-sm text-[var(--gosslan-text-2)]">
-      正在扫描局域网节点…
+      {{ t("friend.add.scanning") }}
     </div>
 
     <div v-else-if="chat.peers.length === 0" class="py-8 text-center text-sm text-[var(--gosslan-text-2)]">
-      未发现局域网节点，请先确保双方已启动网络
+      {{ t("friend.add.noPeers") }}
     </div>
 
     <template v-else>
       <input
         v-model="keyword"
         class="mb-2 w-full rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none"
-        placeholder="搜索昵称 / IP / 设备 ID"
+        :placeholder="t('friend.add.searchPlaceholder')"
       />
       <div class="max-h-72 overflow-y-auto">
         <div
@@ -104,7 +105,7 @@ async function add(peerId: string) {
             class="flex h-9 w-9 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
             :style="{ backgroundColor: nameToColor(p.nickname) }"
           >
-            <img v-if="p.avatar" :src="p.avatar" class="h-full w-full object-cover" />
+            <img alt="" v-if="p.avatar" :src="p.avatar" class="h-full w-full object-cover" />
             <span v-else class="text-sm font-semibold">{{ initials(p.nickname) }}</span>
           </div>
           <div class="min-w-0 flex-1">
@@ -116,7 +117,7 @@ async function add(peerId: string) {
             class="flex items-center gap-1 rounded-[var(--gosslan-radius-md)] px-3 py-1.5 text-xs font-medium text-[var(--gosslan-text-2)]"
           >
             <Check class="h-3.5 w-3.5" />
-            已加好友
+            {{ t("friend.add.alreadyFriend") }}
           </span>
           <button
             v-else-if="inCooldown(p.device_id)"
@@ -124,7 +125,7 @@ async function add(peerId: string) {
             class="flex cursor-default items-center gap-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-hover)] px-3 py-1.5 text-xs font-medium text-[var(--gosslan-text-2)]"
           >
             <Check class="h-3.5 w-3.5" />
-            完成
+            {{ t("friend.add.done") }}
           </button>
           <button
             v-else
@@ -132,7 +133,7 @@ async function add(peerId: string) {
             @click="add(p.device_id)"
           >
             <UserPlus class="h-3.5 w-3.5" />
-            加好友
+            {{ t("friend.add.add") }}
           </button>
         </div>
       </div>
@@ -140,7 +141,7 @@ async function add(peerId: string) {
         v-if="filteredPeers.total > MAX_RENDER"
         class="mt-1 text-center text-xs text-[var(--gosslan-text-2)]"
       >
-        仅显示前 {{ MAX_RENDER }} 个，共 {{ filteredPeers.total }} 个节点，可用搜索缩小范围
+        {{ t("friend.add.truncated", { shown: MAX_RENDER, total: filteredPeers.total }) }}
       </div>
     </template>
   </BaseModal>

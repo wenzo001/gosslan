@@ -1,5 +1,9 @@
 # Gosslan · 无服务器 P2P 局域网即时通讯
 
+[![GitHub release](https://img.shields.io/github/v/release/fwd001/gosslan?sort=semver)](https://github.com/fwd001/gosslan/releases)
+[![Contributors](https://img.shields.io/github/contributors/fwd001/gosslan)](https://github.com/fwd001/gosslan/graphs/contributors)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 一个**没有中央服务器**的局域网即时通讯软件，界面高度模仿飞书 / 钉钉。
 数据**只存本机**（SQLite），节点间通过 **UDP 组播/广播发现 + TCP 点对点传输**直接通信，
 **端到端加密强制开启**，无需注册登录，用**设备指纹**识别同一用户，连上局域网即自动同步用户资料。
@@ -307,6 +311,18 @@ cd src-tauri && cargo test
 - 端到端加密，中继节点无法解密消息内容。
 - 共享目录访问做了路径规范化校验，杜绝目录穿越。
 - 如需更强的元数据隐藏，可将单聊的接收方标识从协议中移除（全节点尝试解密，仅接收方成功）。
+
+---
+
+## 👥 参与贡献
+
+感谢所有为本项目提交代码或参与贡献的人。按提交量排序，展示贡献最多的前 10 位：
+
+<a href="https://github.com/fwd001/gosslan/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=fwd001/gosslan&max=10" alt="贡献者头像" />
+</a>
+
+想参与贡献？欢迎提交 [Issue](https://github.com/fwd001/gosslan/issues) 或 [Pull Request](https://github.com/fwd001/gosslan/pulls)。
 
 ---
 

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from "@/i18n";
 import { ref, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
@@ -40,10 +41,10 @@ async function load() {
 async function download(e: ShareEntry) {
   try {
     await api.downloadSharedFile(friendId(), e.path);
-    app.toast(`开始下载「${e.name}」`, "success");
+    app.toast(t("share.toast.downloading", { name: e.name }), "success");
     chat.refreshTransfers();
   } catch (err) {
-    app.toast(`下载失败：${err}`, "error");
+    app.toastError(err, t("share.toast.downloadFail"));
   }
 }
 
@@ -56,11 +57,13 @@ watch(
 </script>
 
 <template>
-  <BaseModal :open="open" :title="`共享目录 · ${friendName()}`" width="max-w-lg" @close="emit('close')">
+  <BaseModal :open="open" :title="t('share.title', { name: friendName() })" width="max-w-lg" @close="emit('close')">
     <div class="mb-2 flex items-center justify-between">
-      <span class="text-xs text-[var(--gosslan-text-2)]">对方共享的文件，点击下载将点对点传输</span>
+      <span class="text-xs text-[var(--gosslan-text-2)]">{{ t("share.desc") }}</span>
       <button
-        class="flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+        class="tap-safe flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+        :title="t('share.refresh')"
+        :aria-label="t('share.refreshAria')"
         @click="load"
       >
         <RefreshCw class="h-4 w-4" :class="loading ? 'animate-spin' : ''" />
@@ -70,7 +73,7 @@ watch(
     <div class="max-h-80 overflow-y-auto">
       <div v-if="error" class="py-4 text-sm text-[var(--gosslan-danger-ink)]">{{ error }}</div>
       <div v-else-if="entries.length === 0 && !loading" class="py-8 text-center text-sm text-[var(--gosslan-text-2)]">
-        对方未设置共享目录或目录为空
+        {{ t("share.empty") }}
       </div>
 
       <div
@@ -84,8 +87,8 @@ watch(
         <span v-if="!e.is_dir" class="text-[11px] text-[var(--gosslan-text-2)]">{{ humanSize(e.size) }}</span>
         <button
           v-if="!e.is_dir"
-          class="flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-accent-ink)] transition hover:bg-[var(--gosslan-hover)]"
-          title="下载"
+          class="tap-safe flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-accent-ink)] transition hover:bg-[var(--gosslan-hover)]"
+          :title="t('common.download')" :aria-label="t('common.download')"
           @click="download(e)"
         >
           <Download class="h-4 w-4" />

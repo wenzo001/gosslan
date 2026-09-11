@@ -1,7 +1,11 @@
 <script setup lang="ts">
+import { t } from "@/i18n";
 import { ref, onMounted, onUnmounted, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
+import { APP_ACTION, bindMenuEvents } from "@/api";
+import { useShortcuts } from "@/composables/useShortcuts";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 import NavRail from "@/components/NavRail.vue";
 import TitleBar from "@/components/TitleBar.vue";
 import ConversationList from "@/components/ConversationList.vue";
@@ -55,17 +59,17 @@ function closeRequests() {
 async function acceptRequest(r: PendingRequest) {
   try {
     await chat.respondRequest(r.from, true);
-    app.toast(`已同意 ${r.from_nickname} 的好友申请`, "success");
+    app.toast(t("layout.toast.accepted", { name: r.from_nickname }), "success");
   } catch (e) {
-    app.toast(`操作失败：${e}`, "error");
+    app.toastError(e, t("common.operationFail"));
   }
 }
 async function rejectRequest(r: PendingRequest) {
   try {
     await chat.respondRequest(r.from, false);
-    app.toast("已拒绝该好友申请", "info");
+    app.toast(t("layout.toast.rejected"), "info");
   } catch (e) {
-    app.toast(`操作失败：${e}`, "error");
+    app.toastError(e, t("common.operationFail"));
   }
 }
 
@@ -81,9 +85,9 @@ async function removeFriend(f: Friend) {
   profileFriend.value = null;
   try {
     await chat.removeFriend(f.device_id);
-    app.toast(`已删除好友 ${f.nickname}（可在添加好友中重新添加）`, "info");
+    app.toast(t("conv.toast.friendRemoved", { name: f.nickname }), "info");
   } catch (e) {
-    app.toast(`删除失败：${e}`, "error");
+    app.toastError(e, t("common.deleteFail"));
   }
 }
 
@@ -126,8 +130,31 @@ function onNavigateToContacts() {
   view.value = "contacts";
   if (app.isMobile) app.mobileView = "list";
 }
-onMounted(() => window.addEventListener("navigate-to-contacts", onNavigateToContacts));
-onUnmounted(() => window.removeEventListener("navigate-to-contacts", onNavigateToContacts));
+
+// ---------------- 应用级动作：原生菜单与键盘快捷键共用 ----------------
+// macOS 的菜单栏（src-tauri/src/menu.rs）与下面的快捷键都只"发出意图"，
+// 真正的动作在这里执行 —— 保证两条路径行为完全一致。
+function onAddFriendAction() {
+  addFriendOpen.value = true;
+  if (app.isMobile) app.mobileView = "list";
+}
+useShortcuts();
+
+let unlistenMenu: UnlistenFn[] | null = null;
+
+onMounted(() => {
+  window.addEventListener("navigate-to-contacts", onNavigateToContacts);
+  window.addEventListener(APP_ACTION.openSettings, openSettings);
+  window.addEventListener(APP_ACTION.addFriend, onAddFriendAction);
+  // 原生菜单（仅 macOS）；非 macOS 平台该 Promise 仍会 resolve，只是收不到事件
+  void bindMenuEvents().then((fns) => (unlistenMenu = fns));
+});
+onUnmounted(() => {
+  window.removeEventListener("navigate-to-contacts", onNavigateToContacts);
+  window.removeEventListener(APP_ACTION.openSettings, openSettings);
+  window.removeEventListener(APP_ACTION.addFriend, onAddFriendAction);
+  unlistenMenu?.forEach((fn) => fn());
+});
 
 // ---------------- 桌面端：列表栏宽度拖拽（rail 64px 固定，列表 200~420px，持久化） ----------------
 const RAIL_W = 64;
@@ -227,7 +254,7 @@ function onResizeEnd() {
         <!-- 新的朋友页：右侧展示好友申请列表（微信式） -->
         <div v-if="showRequests" class="flex h-full flex-col">
           <div class="flex shrink-0 items-center border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-chat)] px-4" :style="{ height: 'var(--gosslan-header-h)' }">
-            <span class="text-[15px] font-medium">新的朋友</span>
+            <span class="text-[15px] font-medium">{{ t("conv.newFriends") }}</span>
           </div>
           <div class="min-h-0 flex-1 overflow-y-auto bg-[var(--gosslan-chat)] p-2">
             <FriendRequestList
@@ -238,7 +265,7 @@ function onResizeEnd() {
               @reject="rejectRequest"
             />
             <div v-if="chat.pendingRequests.length === 0" class="mt-20 text-center text-sm text-[var(--gosslan-text-2)]">
-              暂无好友申请
+              {{ t("friend.request.empty") }}
             </div>
           </div>
         </div>
@@ -254,8 +281,17 @@ function onResizeEnd() {
           class="flex h-full select-none flex-col items-center justify-center gap-3 text-[var(--gosslan-text-2)]"
         >
           <MessageCircle class="h-16 w-16 opacity-25" />
-          <div class="text-base">选择会话，开始局域网聊天</div>
-          <div class="text-xs opacity-70">无服务器 · 纯 P2P · 端到端加密 · 数据仅存本机</div>
+          <div class="text-base">{{ t("layout.selectConversation") }}</div>
+          <div class="text-xs opacity-70">{{ t("layout.tagline") }}</div>
+          <!-- 空态要给**下一步**，不只陈述状态（HIG：empty state should guide）。
+               新用户最常卡在"怎么加人"，这里直接给入口，省得去找左上角的加号。 -->
+          <button
+            class="mt-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-4 py-2 text-sm font-medium text-white transition hover:bg-[var(--gosslan-primary-hover)]"
+            @click="addFriendOpen = true"
+          >
+            {{ t("common.addFriend") }}
+          </button>
+          <div class="text-xs opacity-70">{{ t("layout.autoDiscover") }}</div>
         </div>
       </div>
     </main>
@@ -280,7 +316,7 @@ function onResizeEnd() {
             {{ chat.totalUnread > 99 ? "99+" : chat.totalUnread }}
           </span>
         </span>
-        <span class="text-[11px]">消息</span>
+        <span class="text-[11px]">{{ t("nav.chats") }}</span>
       </button>
       <button
         class="relative flex flex-1 flex-col items-center gap-0.5 py-2.5"
@@ -296,14 +332,14 @@ function onResizeEnd() {
             {{ chat.pendingRequests.length > 99 ? "99+" : chat.pendingRequests.length }}
           </span>
         </span>
-        <span class="text-[11px]">联系人</span>
+        <span class="text-[11px]">{{ t("nav.contacts") }}</span>
       </button>
       <button
         class="flex flex-1 flex-col items-center gap-0.5 py-2.5 text-[var(--gosslan-text-2)]"
         @click="openSettings"
       >
         <Settings class="h-5 w-5" />
-        <span class="text-[11px]">设置</span>
+        <span class="text-[11px]">{{ t("nav.settings") }}</span>
       </button>
     </nav>
 
@@ -314,17 +350,26 @@ function onResizeEnd() {
     <ShareDirectory :open="shareOpen" @close="shareOpen = false" />
 
     <!-- Toast：统一中性 HUD 底 + 白字（微信式，与主题色解耦；错误红保留语义）。
-         底色走 --gosslan-hud：亮色是深灰、暗色抬亮一档，两套主题下都是"浮在界面之上"的一层。 -->
-    <div class="pointer-events-none fixed left-1/2 top-4 z-[60] flex -translate-x-1/2 flex-col items-center gap-2">
+         底色走 --gosslan-hud：亮色是深灰、暗色抬亮一档，两套主题下都是"浮在界面之上"的一层。
+         ♿ role="status" + aria-live：toast 是**唯一的失败反馈通道**（发送失败/删除失败都靠它），
+         没有 live region 时读屏用户完全收不到 —— 等于失败被静默。polite 而非 assertive，
+         避免连续失败时打断朗读；每条 aria-atomic 让整句被完整播报而不是只读增量。
+         图标纯装饰，标 aria-hidden，否则读屏会念出图形名。 -->
+    <div
+      role="status"
+      aria-live="polite"
+      class="pointer-events-none fixed left-1/2 top-4 z-[60] flex -translate-x-1/2 flex-col items-center gap-2"
+    >
       <div
         v-for="t in app.toasts"
         :key="t.id"
+        aria-atomic="true"
         class="flex items-center gap-2 rounded-[var(--gosslan-radius-md)] px-4 py-2 text-sm text-white shadow-lg backdrop-blur-sm"
         :class="t.type === 'error' ? 'bg-[var(--gosslan-danger)]' : 'bg-[var(--gosslan-hud)]'"
       >
-        <CheckCircle2 v-if="t.type === 'success'" class="h-4 w-4 shrink-0" />
-        <XCircle v-else-if="t.type === 'error'" class="h-4 w-4 shrink-0" />
-        <Info v-else class="h-4 w-4 shrink-0" />
+        <CheckCircle2 v-if="t.type === 'success'" class="h-4 w-4 shrink-0" aria-hidden="true" />
+        <XCircle v-else-if="t.type === 'error'" class="h-4 w-4 shrink-0" aria-hidden="true" />
+        <Info v-else class="h-4 w-4 shrink-0" aria-hidden="true" />
         {{ t.text }}
       </div>
     </div>

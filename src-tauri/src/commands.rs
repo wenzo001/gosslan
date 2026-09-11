@@ -264,13 +264,28 @@ pub async fn search_nearby_peers(state: State<'_, Arc<AppState>>) -> Result<Vec<
     Ok(peers)
 }
 
-/// 从后台唤起并聚焦主窗口（点击系统通知后调用）。
+/// 从后台唤起并聚焦主窗口（冷启动首显 / 点击系统通知 / 消息点击唤起）。
 #[cfg(desktop)]
 #[tauri::command]
-pub fn focus_window(app: tauri::AppHandle) -> Result<(), String> {
+pub fn focus_window(app: tauri::AppHandle, state: State<'_, Arc<AppState>>) -> Result<(), String> {
     let Some(win) = app.get_webview_window("main") else {
         return Err("主窗口不存在".to_string());
     };
+    // 冷启动白闪修复：窗口 show 的第一帧会露出 WebView2 的默认背景色（tauri.conf.json
+    // 写死浅色 #edf1f6）。暗色主题用户在骨架合成前会看到"闪一下白"。show 之前把窗口
+    // 底色改成跟随主题（浅 #edf1f6 / 深 #0b1220，与 body 的 --gosslan-app-bg 一致），
+    // 第一帧即正确底色而非浅色。dark_mode 是"解析后的结果"（跟随系统时已按系统偏好算好），
+    // 冷启动直接可用。
+    let dark = {
+        let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
+        db::get_setting(&dbc, "dark_mode").map(|v| v == "1").unwrap_or(false)
+    };
+    let color = if dark {
+        tauri::window::Color(11, 18, 32, 255) // #0b1220
+    } else {
+        tauri::window::Color(237, 241, 246, 255) // #edf1f6
+    };
+    let _ = win.set_background_color(Some(color));
     let _ = win.unminimize();
     let _ = win.show();
     let _ = win.set_focus();
@@ -559,6 +574,16 @@ pub struct Settings {
     pub theme_color: Option<String>,
     pub font_family: Option<String>,
     pub dark_mode: Option<bool>,
+    /// 外观模式："system" | "light" | "dark"。缺省视为 "system"（跟随系统）。
+    /// 与 `dark_mode` 的关系：`appearance_mode` 是**用户意图**，`dark_mode` 是**解析后的结果**
+    /// （跟随系统时由前端按系统偏好解析后回写），二者同时持久化，互不冲突。
+    pub appearance_mode: Option<String>,
+    /// 桌面通知开关（缺省视为开启——否则用户会漏消息且不知道有开关）。
+    pub notify_enabled: Option<bool>,
+    /// 通知是否显示消息正文（隐私：关掉后只显示"收到新消息"，锁屏/通知中心不泄内容）。
+    pub notify_show_content: Option<bool>,
+    /// 界面语言："zh-CN" | "en-US"。缺省视为 "zh-CN"。
+    pub language: Option<String>,
     pub bind_ip: Option<String>,
     /// 聊天显示样式 JSON：{"preset":"classic","fontSize":"md","compact":true}
     pub chat_style: Option<String>,
@@ -569,15 +594,26 @@ pub struct Settings {
 
 /// e2ee_enabled 键保留在 reset 链中仅为清理 v0.10.0 及更早版本的残留值；
 /// v0.11.0 起 E2EE 恒开、不可关闭，该键不再被读写。
-const SETTINGS_KEYS: [&str; 7] = [
+const SETTINGS_KEYS: [&str; 11] = [
     "theme_color",
     "font_family",
     "dark_mode",
+    "appearance_mode",
+    "notify_enabled",
+    "notify_show_content",
+    "language",
     "bind_ip",
     "chat_style",
     "e2ee_enabled",
     "lan_enabled",
 ];
+
+/// appearance_mode 的合法取值：脏值一律忽略（宁可回落"跟随系统"，也不要写进库）。
+const APPEARANCE_MODES: [&str; 3] = ["system", "light", "dark"];
+
+/// language 的合法取值：脏值一律忽略（回落"跟随系统"）。
+/// "system" = 前端按系统语言决定（zh* → 中文，其余 → 英文）。
+const LANGUAGES: [&str; 3] = ["system", "zh-CN", "en-US"];
 
 #[tauri::command]
 pub fn get_settings(state: State<'_, Arc<AppState>>) -> Settings {
@@ -586,6 +622,11 @@ pub fn get_settings(state: State<'_, Arc<AppState>>) -> Settings {
         theme_color: db::get_setting(&dbc, "theme_color"),
         font_family: db::get_setting(&dbc, "font_family"),
         dark_mode: db::get_setting(&dbc, "dark_mode").map(|v| v == "1"),
+        appearance_mode: db::get_setting(&dbc, "appearance_mode"),
+        // 通知默认开启、默认显示正文：缺省时按 `Some(true)`，旧记录与未设置都能有合理行为。
+        notify_enabled: db::get_setting(&dbc, "notify_enabled").map(|v| v != "0").or(Some(true)),
+        notify_show_content: db::get_setting(&dbc, "notify_show_content").map(|v| v != "0").or(Some(true)),
+        language: db::get_setting(&dbc, "language"),
         bind_ip: db::get_setting(&dbc, "bind_ip"),
         chat_style: db::get_setting(&dbc, "chat_style"),
         peer_styles: db::get_setting(&dbc, "chat_peer_styles"),
@@ -603,6 +644,22 @@ pub fn save_settings(state: State<'_, Arc<AppState>>, settings: Settings) -> Res
     }
     if let Some(v) = settings.dark_mode {
         db::set_setting(&dbc, "dark_mode", if v { "1" } else { "0" }).map_err(|e| e.to_string())?;
+    }
+    if let Some(v) = settings.appearance_mode {
+        if APPEARANCE_MODES.contains(&v.as_str()) {
+            db::set_setting(&dbc, "appearance_mode", &v).map_err(|e| e.to_string())?;
+        }
+    }
+    if let Some(v) = settings.notify_enabled {
+        db::set_setting(&dbc, "notify_enabled", if v { "1" } else { "0" }).map_err(|e| e.to_string())?;
+    }
+    if let Some(v) = settings.notify_show_content {
+        db::set_setting(&dbc, "notify_show_content", if v { "1" } else { "0" }).map_err(|e| e.to_string())?;
+    }
+    if let Some(v) = settings.language {
+        if LANGUAGES.contains(&v.as_str()) {
+            db::set_setting(&dbc, "language", &v).map_err(|e| e.to_string())?;
+        }
     }
     if let Some(v) = settings.bind_ip {
         db::set_setting(&dbc, "bind_ip", &v).map_err(|e| e.to_string())?;
@@ -1527,6 +1584,33 @@ pub fn window_is_maximized(app: tauri::AppHandle) -> bool {
         .unwrap_or(false)
 }
 
+/// 切换窗口全屏，返回切换后的状态。
+/// 用于 macOS 绿灯的 option-click（HIG：缩放按钮按住 Option 即进入/退出全屏）。
+#[cfg(desktop)]
+#[tauri::command]
+pub fn window_toggle_fullscreen(app: tauri::AppHandle) -> bool {
+    let Some(w) = app.get_webview_window("main") else {
+        return false;
+    };
+    match w.is_fullscreen() {
+        Ok(true) => {
+            let _ = w.set_fullscreen(false);
+            false
+        }
+        _ => {
+            let _ = w.set_fullscreen(true);
+            true
+        }
+    }
+}
+
+/// 移动端无"全屏"概念（窗口本就铺满屏幕），返回 false。
+#[cfg(mobile)]
+#[tauri::command]
+pub fn window_toggle_fullscreen(_app: tauri::AppHandle) -> bool {
+    false
+}
+
 #[tauri::command]
 pub fn window_close(app: tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
@@ -2131,6 +2215,29 @@ pub fn save_outgoing_image(
 #[tauri::command]
 pub fn delete_file(path: String) -> Result<(), String> {
     std::fs::remove_file(&path).map_err(|e| e.to_string())
+}
+
+/// 用系统默认应用打开本地文件。
+/// macOS 走 NSWorkspace（沙盒下 /usr/bin/open 被拦），Windows/Linux 走 opener。
+#[tauri::command]
+pub fn open_file_native(path: String) -> Result<(), String> {
+    crate::macos_open::open_path_native(std::path::Path::new(&path))
+}
+
+/// macOS 窗口圆角：WebView 加载完成后（前端 onMounted 触发）设背景色跟随主题 +
+/// contentView 圆角（setup 阶段设会被 wry 替换 contentView 丢失）。非 macOS 无操作。
+#[tauri::command]
+pub fn apply_macos_window_shape(
+    window: tauri::WebviewWindow,
+    dark: bool,
+) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    return crate::macos_window::apply_rounded_corners(&window, dark);
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (window, dark);
+        Ok(())
+    }
 }
 
 /// 群文件投递摘要（气泡成员状态文案用）：总数/completed/failed/待投递。
@@ -2874,6 +2981,7 @@ pub fn search_messages(
                 name,
                 match_content: m.content,
                 match_ts: m.ts,
+                match_msg_id: m.msg_id,
             });
         }
     }
@@ -2886,6 +2994,9 @@ pub struct SearchResult {
     name: String,
     match_content: String,
     match_ts: i64,
+    /// 命中消息的 msg_id：前端据此"跳到那一条"（只给 conv_id 的话，
+    /// 用户点进去还要自己在会话里翻，搜索就只完成了一半）。
+    match_msg_id: String,
 }
 
 fn preview(kind: &str, content: &str) -> String {

@@ -17,16 +17,46 @@ mod storage;
 mod transport;
 #[cfg(desktop)]
 mod tray;
+/// macOS 原生菜单栏（自绘标题栏 + `decorations: false` 导致系统菜单栏缺失，需补回）。
+/// 只在 macOS 建：Windows / Linux 用自绘标题栏，加系统菜单条会顶在标题栏之上破坏布局。
+#[cfg(target_os = "macos")]
+mod menu;
+/// 打开本地文件：macOS 用 NSWorkspace（沙盒下 /usr/bin/open 被拦），Windows/Linux 走 opener。
+mod macos_open;
+/// macOS 窗口外观：运行时加 squircle 圆角 + 关掉与圆角不兼容的系统阴影。
+/// 见 macos_window.rs 注释（与自绘标题栏的取舍）。
+#[cfg(target_os = "macos")]
+mod macos_window;
 
 use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let app = tauri::Builder::default()
+    let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
-        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_opener::init());
+
+    // 桌面端记住窗口尺寸/位置（HIG：重开应用恢复窗口状态，macOS/Windows 一致）。
+    // 只保存 SIZE/POSITION/MAXIMIZED/FULLSCREEN，**刻意排除 VISIBLE**：
+    // 本应用「关闭=隐藏到托盘」，若把 visible 也持久化，会记成"关闭后是隐藏态"，
+    // 重启就可能不再显示窗口。DECORATIONS 也排除——自绘标题栏由本项目自己管理。
+    #[cfg(desktop)]
+    {
+        builder = builder.plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(
+                    tauri_plugin_window_state::StateFlags::SIZE
+                        | tauri_plugin_window_state::StateFlags::POSITION
+                        | tauri_plugin_window_state::StateFlags::MAXIMIZED
+                        | tauri_plugin_window_state::StateFlags::FULLSCREEN,
+                )
+                .build(),
+        );
+    }
+
+    let app = builder
         .setup(|app| {
             let state = state::AppState::init(app.handle().clone())?;
             state::AppState::spawn_peer_emitter(&state);
@@ -34,6 +64,13 @@ pub fn run() {
             // 系统托盘：关闭主窗口仅隐藏到托盘，退出需走托盘菜单
             #[cfg(desktop)]
             tray::setup(app.handle())?;
+            // macOS 菜单栏：⌘Q / ⌘, / ⌘W / ⌘M 与标准「编辑」项。
+            // 属"锦上添花"——初始化失败**不阻断启动**（与托盘不同：托盘失败会改行为，
+            // 菜单失败只是没有菜单，快捷键还有前端兜底）。
+            #[cfg(target_os = "macos")]
+            if let Err(e) = menu::setup(app.handle()) {
+                eprintln!("[gosslan] 菜单栏初始化失败（不影响启动）：{e}");
+            }
             // macOS：`decorations: false` 使 tao 以 `Borderless`（不含 `Closable` 位）样式
             // 掩码创建 NSWindow，AppKit 据此把「关闭窗口」菜单项（Cmd+W / performClose:）
             // 判为不可用，导致 Cmd+W 无效。窗口创建后补回 `Closable` 位，恢复系统原生
@@ -44,6 +81,10 @@ pub fn run() {
                 if let Err(e) = win.set_closable(true) {
                     eprintln!("[window] 恢复 macOS Cmd+W 关闭能力失败: {e}");
                 }
+                // 关系统阴影（与圆角冲突；NSWindow 级、不被 wry 替换 contentView 影响）。
+                // 圆角本身在 WebView 加载完成后由前端调 `apply_macos_window_shape` 命令设置
+                // （wry 在窗口显示时才用 parent_view 替换 contentView，setup 阶段设圆角会丢）。
+                macos_window::disable_shadow(&win);
             }
             // 窗口以 `visible: false` 创建（见 tauri.conf.json），由前端在挂载完成后调用
             // `focus_window` 显示——目的是让窗口露出来的第一帧就是 index.html 的内联骨架，
@@ -139,6 +180,7 @@ pub fn run() {
             commands::window_minimize,
             commands::window_toggle_maximize,
             commands::window_is_maximized,
+            commands::window_toggle_fullscreen,
             commands::window_close,
             commands::send_group_message,
             commands::send_group_file,
@@ -160,6 +202,8 @@ pub fn run() {
             commands::save_data_file,
             commands::delete_file,
             commands::save_outgoing_image,
+            commands::open_file_native,
+            commands::apply_macos_window_shape,
             commands::read_file_preview,
             commands::media_present,
             commands::export_chat_text,

@@ -346,6 +346,22 @@ button:not(:disabled):active,
   }
 }
 
+/* ---------------- 悬停揭示的触屏兜底（Apple HIG：不要靠悬停暴露操作） ----------------
+   触屏没有 hover：用 `group-hover:*` 揭示的操作在手机上**永远出不来**，等于功能缺失
+   （会话行的删除键就踩过这个坑 —— 桌面能删、手机删不掉，见 2026-09-10 审计 P0-1）。
+   约定：凡是用 `group-hover:*` 或 `opacity-0` 揭示的元素，都必须同时加下面其中一个类，
+   让无 hover 的设备退化成"常显"。取值用 !important 是为了压过 Tailwind 的 `hidden` /
+   `opacity-0`（它们在 @tailwind utilities 里，本文件在其之后，同优先级本文件胜；
+   但 `hidden` 与 `group-hover:flex` 同属 utilities，加 !important 才能稳定压过两者）。 */
+@media (hover: none) {
+  .hover-reveal {
+    display: flex !important;
+  }
+  .hover-reveal-op {
+    opacity: 1 !important;
+  }
+}
+
 /* 毛玻璃：窗口不透明，模糊的是 body 上的渐变底 */
 .glass {
   -webkit-backdrop-filter: var(--gosslan-blur);
@@ -426,6 +442,18 @@ button:not(:disabled):active,
   background: transparent;
 }
 
+/* macOS：恢复系统 overlay 滚动条（滚动时才浮出、不占布局宽度，符合 HIG）。
+   Windows/Android 保留上面的 6px 细滚动条（自绘标题栏/触屏语境下常显更明确）。
+   ⚠️ 必须写在上面全局滚动条样式**之后**：同优先级"后定义者胜"，写前面会被覆盖。 */
+.platform-mac ::-webkit-scrollbar {
+  width: auto;
+  height: auto;
+}
+.platform-mac ::-webkit-scrollbar-thumb,
+.platform-mac ::-webkit-scrollbar-thumb:hover {
+  background: initial;
+}
+
 /* 聊天气泡指向头像的小尖角（微信式）。颜色取气泡自身的 --bubble-bg，
    子组件给根 div 加 position: relative（bubbleStyle 已设），直接挂类即可。 */
 .bubble-tail {
@@ -493,5 +521,60 @@ button:not(:disabled):active,
   margin: 0 1px;
   /* 防止行高被撑大：图片盒不再参与行内盒的额外高度计算 */
   line-height: 0;
+}
+
+/* ================================================================================
+   辅助功能媒体查询：必须留在**文件最末尾**。
+   原因：`.glass` / `.frost` 的定义在本文件更靠后处，CSS 同优先级下"后定义者胜"；
+   把降级规则写在它们之前会被直接覆盖（曾经写在中部 → 实测无效）。
+   新增任何"覆盖既有类"的系统级降级规则，都请追加到这里。
+   ================================================================================ */
+
+/* 1) 降低透明度：模糊会让浮层上的文字失去可读性 → 退回不透明实底。
+   Apple 2026 HIG 要求 Liquid Glass 适配该设置，用户开了它就应自动降级，
+   而不是要求用户自己去关掉毛玻璃。 */
+@media (prefers-reduced-transparency: reduce) {
+  .frost {
+    background: var(--gosslan-panel);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  /* ⚠️ `.glass` 目前只用在 BaseModal 的遮罩上（`glass fixed inset-0 bg-black/40`）：
+     去模糊后改用更实的压暗，遮罩才仍然是"遮罩"。若将来把 .glass 复用到别处，
+     这里的覆盖需要一并重新判断。 */
+  .glass {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+    background: rgba(0, 0, 0, 0.62);
+  }
+  /* 图片预览遮罩同理（vue-easy-lightbox 自带类名） */
+  .vel-modal {
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+    background: rgba(0, 0, 0, 0.78) !important;
+  }
+}
+
+/* 2) 提高对比度：把"边界"类 token 提到更实的档位。
+   亮色原本靠阴影表达层级、边框刻意很淡（见本文件顶部注释与 design-guidelines §3.3）；
+   系统开了"增加对比度"就说明用户需要边界更明确 → 分隔线与控件边框一并提档。
+   **只动表面与边界，绝不动文字色** —— 文字可读性由 utils/tokenContrast.ts 的契约表
+   在亮/暗两套外观下逐对保证，在这里改文字色会绕过那道护栏。
+   （选择器与顶部保持一致便于对照；护栏只取文件中第一个同名块，始终命中顶部那份。） */
+@media (prefers-contrast: more) {
+  :root {
+    --gosslan-border: #94a3b8;
+    --gosslan-divider: #a7b6c8;
+    --gosslan-list-hover: rgba(15, 23, 42, 0.09);
+    --gosslan-hover: rgba(15, 23, 42, 0.11);
+    --gosslan-window-ring: rgba(15, 23, 42, 0.45);
+  }
+  .dark {
+    --gosslan-border: #8fa3c0;
+    --gosslan-divider: #6b7f9e;
+    --gosslan-list-hover: rgba(248, 250, 252, 0.12);
+    --gosslan-hover: rgba(248, 250, 252, 0.14);
+    --gosslan-window-ring: rgba(248, 250, 252, 0.5);
+  }
 }
 

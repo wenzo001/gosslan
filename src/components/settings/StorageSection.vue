@@ -7,6 +7,7 @@ import SettingsGroup from "@/components/settings/SettingsGroup.vue";
 import SettingsRow from "@/components/settings/SettingsRow.vue";
 import { formatBytes } from "@/utils/format";
 import { Download, FolderOpen, Trash2 } from "lucide-vue-next";
+import { t } from "@/i18n";
 import type { CacheInfo } from "@/types";
 
 const props = defineProps<{ active: boolean; reloadToken?: number }>();
@@ -26,7 +27,7 @@ const downloadsDir = ref("");
 let suppressAutoSave = false;
 
 const quotas = [
-  { value: 0, label: "无限制" },
+  { value: 0, label: "settings.storage.quota.unlimited" },
   { value: 256, label: "256 MB" },
   { value: 512, label: "512 MB" },
   { value: 1024, label: "1 GB" },
@@ -63,9 +64,9 @@ async function changeDownloadsDir() {
   try {
     await api.setDownloadsDir(picked);
     downloadsDir.value = picked;
-    app.toast("文件存储目录已更新", "success");
+    app.toast(t("settings.storage.toast.dirUpdated"), "success");
   } catch (e) {
-    app.toast(String(e), "error");
+    app.toastError(e, t("settings.storage.toast.dirFail"));
   }
 }
 
@@ -73,7 +74,7 @@ async function openDownloadsDir() {
   try {
     await api.openDownloadsDir();
   } catch (e) {
-    app.toast(String(e), "error");
+    app.toastError(e, t("settings.storage.toast.openFail"));
   }
 }
 
@@ -82,13 +83,9 @@ watch([retentionDays, maxQuotaMb], (_nv, ov) => {
   // 开启「自动删除」前必须让用户明确知道代价：被清理的图片/文件在历史消息里会打不开。
   // 默认（永久 + 无限制）不会走到这里，所以不改默认行为、也不影响任何人。
   if (retentionDays.value > 0 || maxQuotaMb.value > 0) {
-    const keep = retentionDays.value > 0 ? `只保留 ${retentionDays.value} 天内` : "永久保留";
-    const cap = maxQuotaMb.value > 0 ? `总占用不超过 ${maxQuotaMb.value} MB` : "占用不限制";
-    const ok = window.confirm(
-      `将改为「${keep}、${cap}」。\n\n` +
-        "超出范围的**已接收图片与文件**会被自动删除（聊天文字不受影响），" +
-        "但历史消息里对应的图片/文件将无法再打开。\n\n确定吗？",
-    );
+    const keep = retentionDays.value > 0 ? t("settings.storage.confirm.keepDays", { n: retentionDays.value }) : t("settings.storage.confirm.keepForever");
+    const cap = maxQuotaMb.value > 0 ? t("settings.storage.confirm.cap", { n: maxQuotaMb.value }) : t("settings.storage.confirm.capUnlimited");
+    const ok = window.confirm(t("settings.storage.confirm.body", { keep, cap }));
     if (!ok) {
       // 用户取消：把两个下拉回滚到改动前的值
       const prev = ov as [number, number];
@@ -107,7 +104,7 @@ async function applyCachePolicy(silent = false) {
     retentionDays.value === 0 ? null : retentionDays.value,
     maxQuotaMb.value === 0 ? null : maxQuotaMb.value * 1048576,
   );
-  if (!silent) app.toast("缓存策略已保存", "success");
+  if (!silent) app.toast(t("settings.storage.toast.saved"), "success");
   await loadCache();
 }
 
@@ -124,9 +121,9 @@ async function exportChat() {
   ).padStart(2, "0")}`;
   let destination: string | null;
   try {
-    destination = await saveDialog({ defaultPath: `gosslan-聊天记录-${stamp}.md` });
+    destination = await saveDialog({ defaultPath: `gosslan-${t("settings.storage.export.filename")}-${stamp}.md` });
   } catch (e) {
-    app.toast(`无法打开保存对话框：${e}`, "error");
+    app.toastError(e, t("settings.storage.toast.exportDialogFail"));
     return;
   }
   if (!destination) return; // 用户取消
@@ -136,9 +133,9 @@ async function exportChat() {
     // 时区偏移交给前端给（Rust 侧不引入时区库），getTimezoneOffset 的符号与
     // "本地 = UTC + 偏移" 相反，因此取负。
     const r = await api.exportChatText(destination, -now.getTimezoneOffset());
-    app.toast(`已导出 ${r.conversations} 个会话、${r.messages} 条消息`, "success");
+    app.toast(t("settings.storage.toast.exported", { conversations: r.conversations, messages: r.messages }), "success");
   } catch (e) {
-    app.toast(`导出失败：${e}`, "error");
+    app.toastError(e, t("settings.storage.toast.exportFail"));
   } finally {
     exporting.value = false;
   }
@@ -151,12 +148,12 @@ async function cleanNow() {
     // 结果要说清"清了什么"：0 个时明确告诉用户当前设置下无需清理，
     // 而不是丢一句"删除 0 个文件"让人不知道点了什么。
     if (r.removed === 0) {
-      app.toast("没有需要清理的图片或文件（当前保留时长 / 上限下无需删除）", "info");
+      app.toast(t("settings.storage.toast.nothing"), "info");
     } else {
-      app.toast(`已清理 ${r.removed} 个图片/文件，释放 ${formatBytes(r.freed_bytes)}`, "success");
+      app.toast(t("settings.storage.toast.cleaned", { n: r.removed, bytes: formatBytes(r.freed_bytes) }), "success");
     }
   } catch (e) {
-    app.toast(String(e), "error");
+    app.toastError(e, t("settings.storage.toast.cleanFail"));
   } finally {
     cleaning.value = false;
     await loadCache();
@@ -177,92 +174,92 @@ watch(
 
 <template>
   <SettingsGroup
-    title="存储"
-    footer="本页只管「本机落盘的图片与文件」（聊天里收到的附件）和聊天数据库占用；聊天文字不会被自动清理。改动即时保存。保持「永久保存 + 无限制」即不做任何自动删除。"
+    :title="t('settings.group.storage')"
+    :footer="t('settings.group.storage.footer')"
   >
     <SettingsRow
-      label="图片与文件保留时长"
-      description="超过时长的已接收图片/文件会被自动清理，历史消息里对应内容将无法再打开"
+      :label="t('settings.storage.retention')"
+      :description="t('settings.storage.retention.desc')"
     >
       <select
         v-model="retentionDays"
         class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] px-3 py-1.5 text-sm outline-none"
       >
-        <option :value="0">永久保存</option>
-        <option :value="3">3 天</option>
-        <option :value="7">7 天</option>
-        <option :value="30">30 天</option>
+        <option :value="0">{{ t("settings.storage.retention.forever") }}</option>
+        <option :value="3">{{ t("settings.storage.retention.days", { n: 3 }) }}</option>
+        <option :value="7">{{ t("settings.storage.retention.days", { n: 7 }) }}</option>
+        <option :value="30">{{ t("settings.storage.retention.days", { n: 30 }) }}</option>
       </select>
     </SettingsRow>
 
     <SettingsRow
-      label="图片与文件占用上限"
-      description="超过上限时按「最旧优先」自动清理，直到降回上限以内"
+      :label="t('settings.storage.quota')"
+      :description="t('settings.storage.quota.desc')"
     >
       <select
         v-model.number="maxQuotaMb"
         class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] px-3 py-1.5 text-sm outline-none"
       >
-        <option v-for="q in quotaOptions" :key="q.value" :value="q.value">{{ q.label }}</option>
+        <option v-for="q in quotaOptions" :key="q.value" :value="q.value">{{ t(q.label) }}</option>
       </select>
     </SettingsRow>
 
     <SettingsRow
-      label="文件存储目录"
-      description="聊天里收到的图片与文件都保存在这里"
+      :label="t('settings.storage.dir')"
+      :description="t('settings.storage.dir.desc')"
     >
       <div class="flex min-w-0 flex-col items-end gap-1">
-        <span class="max-w-[240px] truncate text-[11px] text-[var(--gosslan-text-2)]" :title="downloadsDir || '使用默认目录'">
-          {{ downloadsDir || "使用默认目录" }}
+        <span class="max-w-[240px] truncate text-[11px] text-[var(--gosslan-text-2)]" :title="downloadsDir || t('settings.storage.dir.default')">
+          {{ downloadsDir || t("settings.storage.dir.default") }}
         </span>
         <div class="flex items-center gap-1.5">
           <button
             class="flex items-center gap-1 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-2.5 py-1 text-xs transition hover:bg-[var(--gosslan-hover)]"
-            title="在资源管理器中打开"
+            :title="t('settings.storage.dir.open.title')"
             @click="openDownloadsDir"
           >
             <FolderOpen class="h-3.5 w-3.5" />
-            打开
+            {{ t("settings.storage.dir.open") }}
           </button>
           <button
             class="rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-2.5 py-1 text-xs transition hover:bg-[var(--gosslan-hover)]"
             @click="changeDownloadsDir"
           >
-            更改
+            {{ t("settings.storage.dir.change") }}
           </button>
         </div>
       </div>
     </SettingsRow>
 
     <SettingsRow
-      label="导出聊天记录"
-      description="把全部聊天文字导出成一个 Markdown 文件；图片与文件只保留文件名，不含本体"
+      :label="t('settings.storage.export')"
+      :description="t('settings.storage.export.desc')"
     >
       <button
         class="flex shrink-0 items-center gap-1.5 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3 py-1.5 text-xs transition hover:bg-[var(--gosslan-hover)] disabled:opacity-50"
         :disabled="exporting"
-        title="导出后可用任意文本编辑器或 Markdown 阅读器打开"
+        :title="t('settings.storage.export.title')"
         @click="exportChat"
       >
         <Download class="h-3.5 w-3.5" />
-        {{ exporting ? "导出中…" : "导出" }}
+        {{ exporting ? t("settings.storage.export.exporting") : t("settings.storage.export.btn") }}
       </button>
     </SettingsRow>
 
     <div class="flex items-center justify-between gap-3 px-4 py-3">
       <span class="min-w-0 text-xs leading-5 text-[var(--gosslan-text-2)]">
-        已接收图片/文件 <b>{{ cacheInfo?.media_count ?? 0 }}</b> 个 ·
+        {{ t("settings.storage.stats.media") }} <b>{{ cacheInfo?.media_count ?? 0 }}</b> {{ t("settings.storage.stats.unit") }} ·
         <b>{{ formatBytes(cacheInfo?.media_bytes ?? 0) }}</b><br />
-        聊天数据库 <b>{{ formatBytes(cacheInfo?.db_bytes ?? 0) }}</b>
+        {{ t("settings.storage.stats.db") }} <b>{{ formatBytes(cacheInfo?.db_bytes ?? 0) }}</b>
       </span>
       <button
         class="flex shrink-0 items-center gap-1.5 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3 py-1.5 text-xs transition hover:bg-[var(--gosslan-hover)] disabled:opacity-50"
         :disabled="cleaning"
-        title="按上面的设置清理过期/超限的图片与文件（不删除聊天文字）"
+        :title="t('settings.storage.clean.title')"
         @click="cleanNow"
       >
         <Trash2 class="h-3.5 w-3.5" />
-        立即清理
+        {{ t("settings.storage.clean.btn") }}
       </button>
     </div>
   </SettingsGroup>

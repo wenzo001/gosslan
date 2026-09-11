@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from "@/i18n";
 import { computed, type CSSProperties } from "vue";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useAppStore } from "@/stores/useAppStore";
@@ -105,7 +106,7 @@ async function openLink(href: string) {
   try {
     await openUrl(href);
   } catch (e) {
-    app.toast(`打开链接失败：${e}`, "error");
+    app.toastError(e, t("msg.openLinkFail"));
   }
 }
 </script>
@@ -120,7 +121,7 @@ async function openLink(href: string) {
       v-if="parsed.quote && parsed.msgId"
       class="quote-block mb-1.5 block w-full cursor-pointer rounded-[var(--gosslan-radius-sm)] border-l-2 px-2 py-1 text-left text-[12px] leading-4 transition hover:brightness-110"
       :style="{ borderColor: QUOTE_BORDER, background: QUOTE_BG }"
-      :title="`点击定位到原消息（${parsed.msgId}）`"
+      :title="t('msg.locateOriginal', { id: parsed.msgId })"
       @click="emit('locate', parsed.msgId)"
     >
       <span class="quote-text" :style="QUOTE_TEXT_STYLE">{{ parsed.quote }}</span>
@@ -165,7 +166,7 @@ async function openLink(href: string) {
       :style="{ borderColor: 'rgba(128,128,128,0.2)' }"
     >
       <button class="text-xs opacity-70 transition hover:opacity-100" @click="emit('expand', content)">
-        展开显示
+        {{ t("common.expand") }}
       </button>
       <button
         class="flex items-center gap-1 whitespace-nowrap text-xs transition"
@@ -174,7 +175,7 @@ async function openLink(href: string) {
       >
         <Check v-if="copied" class="h-3 w-3" />
         <Copy v-else class="h-3 w-3" />
-        {{ copied ? "已复制" : "复制" }}
+        {{ copied ? t("common.copied") : t("common.copy") }}
       </button>
     </div>
     <!-- 普通文本：不显示悬停复制气泡（复制走右键菜单），避免干扰 -->

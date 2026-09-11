@@ -12,7 +12,7 @@ defineProps<{
     class="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
     :style="{ backgroundColor: nameToColor(name) }"
   >
-    <img v-if="avatar" :src="avatar" class="h-full w-full object-cover" />
+    <img alt="" v-if="avatar" :src="avatar" class="h-full w-full object-cover" />
     <span v-else class="text-sm font-medium">{{ avatarInitial(name) }}</span>
   </div>
 </template>

@@ -13,10 +13,11 @@ import {
   syncProfileFromPeers,
 } from "@/utils/messages";
 import { useAppStore } from "@/stores/useAppStore";
+import { notificationBody } from "@/utils/notifications";
+import { t } from "@/i18n";
 import {
-  isPermissionGranted,
   onAction,
-  requestPermission,
+  registerActionTypes,
   sendNotification,
 } from "@tauri-apps/plugin-notification";
 import type {
@@ -33,6 +34,9 @@ import type {
   TopologyInfo,
   TransferInfo,
 } from "@/types";
+
+/** 上次打开的会话（重启后恢复，纯前端 UI 状态，各端统一）。 */
+const LAST_CONV_KEY = "gosslan.lastConv";
 
 export const useChatStore = defineStore("chat", () => {
   const peers = ref<Peer[]>([]);
@@ -62,16 +66,8 @@ export const useChatStore = defineStore("chat", () => {
 
   // ---------------- 系统通知（后台 / 非当前会话才触发） ----------------
   const app = useAppStore();
-  let notifyPermission = false;
   let notifSeq = 1;
   const notifMap = new Map<number, string>();
-
-  async function ensureNotifyPermission() {
-    if (notifyPermission) return;
-    let granted = await isPermissionGranted();
-    if (!granted) granted = (await requestPermission()) === "granted";
-    notifyPermission = granted;
-  }
 
   function nicknameOf(id: string): string {
     const f = friends.value.find((x) => x.device_id === id);
@@ -109,13 +105,15 @@ export const useChatStore = defineStore("chat", () => {
   function flushNotifications() {
     const entries = [...notifyQueue.values()];
     notifyQueue.clear();
-    void ensureNotifyPermission().then(() => {
-      if (!notifyPermission) return;
+    // 用户关了通知 → 一条都不发；权限在这条之后才去查（关着就不该弹权限）
+    if (!app.notifyEnabled || entries.length === 0) return;
+    void app.ensureNotifyPermission().then((granted) => {
+      if (!granted) return;
       for (const { count, last } of entries) {
         // 窗口期间用户已切到该会话且前台 → 该会话跳过通知
         if (document.hasFocus() && activeConv.value === last.conv_id) continue;
         const title = nicknameOf(last.sender_id);
-        const body = count > 1 ? `${title} 等 ${count} 条新消息` : previewText(last);
+        const body = notifyBody(count, last);
         const convId = last.conv_id;
         if (app.isMobile) {
           // 移动端：plugin 通知（Android 有 actionPerformed 点击事件桥）
@@ -126,6 +124,8 @@ export const useChatStore = defineStore("chat", () => {
             title,
             body,
             autoCancel: true,
+            // 「标记已读」动作按钮：见 init 里 registerActionTypes；桌面端 Web Notification 不支持按钮
+            actionTypeId: "chat",
             extra: { type: "chat", conv_id: convId },
           });
         } else {
@@ -161,7 +161,22 @@ export const useChatStore = defineStore("chat", () => {
     });
   }
 
+  /**
+   * 通知正文：按「显示消息内容」隐私开关决定是否带正文。
+   * 关掉时只提示"收到新消息"（锁屏 / 通知中心不泄内容），标题仍保留发送者昵称。
+   * 拼装逻辑在 utils/notifications.ts（纯函数、有单测），这里只喂入实时数据。
+   */
+  function notifyBody(count: number, last: MessageRecord): string {
+    return notificationBody({
+      showContent: app.notifyShowContent,
+      count,
+      sender: nicknameOf(last.sender_id),
+      preview: previewText(last),
+    });
+  }
+
   function maybeNotify(rec: MessageRecord) {
+    if (!app.notifyEnabled) return;
     const myId = app.device?.device_id;
     if (!myId || rec.sender_id === myId) return;
     // 应用在前台且正查看该会话 → 不通知（不进队列）
@@ -331,8 +346,62 @@ export const useChatStore = defineStore("chat", () => {
   /** 打开会话时的未读定位：记录第一条未读消息索引（-1 = 无未读，贴底显示）。 */
   const unreadJump = ref<{ convId: string; index: number } | null>(null);
 
+  /**
+   * 「跳到某条消息」请求（搜索结果点击时发起，由 ChatWindow 消费）。
+   * 与 unreadJump **分开**是刻意的：unreadJump 会画「以下是未读消息」分割线，
+   * 而"搜索定位"只是滚过去 + 高亮，语义不同，复用会画错东西。
+   */
+  const locateRequest = ref<{ convId: string; msgId: string } | null>(null);
+
+  function clearLocateRequest() {
+    locateRequest.value = null;
+  }
+
+  /**
+   * 打开会话并定位到指定消息（搜索结果点击）。
+   *
+   * 命中可能**早于已加载窗口**（默认只加载最近 100 条）→ 逐页往前找，
+   * 上限沿用 MAX_PAGES（与用户手动上翻一致，不会为一句话翻遍整库）。
+   *
+   * 返回三态而非布尔：翻页中途出错与"翻到顶也没找到"是**两回事**，
+   * 调用方要给不同的话（HIG：异步路径必须有终态，且不能说错原因）。
+   */
+  async function locateMessageInConv(
+    convId: string,
+    msgId: string,
+  ): Promise<"found" | "not-found" | "error"> {
+    await openConversation(convId);
+    // 用户明确说"我要看这条"，就不要再去跳未读分割线（两者会互相抢滚动位置）
+    unreadJump.value = null;
+    try {
+      for (let guard = 0; guard <= MAX_PAGES; guard++) {
+        const list = messages.value[convId] ?? [];
+        if (list.some((m) => m.msg_id === msgId)) {
+          locateRequest.value = { convId, msgId };
+          return "found";
+        }
+        const before = list.length;
+        await loadMoreMessages(convId);
+        // 长度没变 = 已翻到顶或已达页数上限 → 再循环无意义
+        if ((messages.value[convId]?.length ?? 0) === before) break;
+      }
+    } catch (e) {
+      // 不静默吞掉：留排查线索，并把"出错"这一态如实返回给调用方
+      console.warn("[gosslan] 定位搜索命中消息失败", e);
+      return "error";
+    }
+    return "not-found";
+  }
+
   async function openConversation(id: string) {
     activeConv.value = id;
+    // 记住上次会话：重启后恢复（HIG State Restoration；localStorage 只作 UI 状态，
+    // 失败不影响打开聊天）。
+    try {
+      localStorage.setItem(LAST_CONV_KEY, id);
+    } catch {
+      /* localStorage 不可用则跳过，不影响本次打开 */
+    }
     // 标记为最近使用，并在加载完成后收缩缓存（活跃会话始终保留）
     touchCacheOrder(id);
     // 打开即视为看到 → [有人@我] 标志随之清除
@@ -662,7 +731,7 @@ export const useChatStore = defineStore("chat", () => {
   /** 统一文件发送：后端自动路由（有直连走直连，无直连自动中继）。 */
   async function sendFileTo(convId: string, path: string) {
     if (convId.startsWith("group:")) return null;
-    const name = path.split(/[\\/]/).pop() ?? "文件";
+    const name = path.split(/[\\/]/).pop() ?? t("common.file");
     try {
       const id = await api.sendFileAuto(convId, path);
       void refreshTransfers();
@@ -684,7 +753,7 @@ export const useChatStore = defineStore("chat", () => {
         seq: Number.MAX_SAFE_INTEGER,
         status: "failed",
       });
-      app.toast(`文件发送失败：${e}`, "error");
+      app.toastError(e, t("send.fileFail"));
       return null;
     }
   }
@@ -716,7 +785,7 @@ export const useChatStore = defineStore("chat", () => {
       void refreshTransfers();
       return id;
     } catch (e) {
-      app.toast(`群文件发送失败：${e}`, "error");
+      app.toastError(e, t("send.groupFileFail"));
       return null;
     }
   }
@@ -737,7 +806,7 @@ export const useChatStore = defineStore("chat", () => {
     } catch (e) {
       // 初始化失败：清理孤儿图片，避免 downloads 目录堆积垃圾
       await api.deleteFile(path).catch(() => {});
-      app.toast(`图片发送失败：${e}`, "error");
+      app.toastError(e, t("send.imageFail"));
       return null;
     }
   }
@@ -767,7 +836,7 @@ export const useChatStore = defineStore("chat", () => {
         break;
       }
     }
-    app.toast(`文件发送失败：${d.reason}`, "error");
+    app.toast(`${t("send.fileFail")}：${d.reason}`, "error");
   }
 
   function onGroupRead(p: GroupReadInfo) {
@@ -790,6 +859,16 @@ export const useChatStore = defineStore("chat", () => {
       refreshPeers(),
       refreshTopology(),
     ]);
+    // 恢复上次打开的会话（若仍存在）。HIG State Restoration：重启后回到上次离开的地方。
+    // 用 void 触发：不阻塞 init，也避免其异步失败拖垮启动。
+    try {
+      const last = localStorage.getItem(LAST_CONV_KEY);
+      if (last && conversations.value.some((c) => c.id === last)) {
+        void openConversation(last);
+      }
+    } catch {
+      /* localStorage 不可用则跳过恢复 */
+    }
     // 会话打开期间收到新消息：去抖标记已读（同时把已读回执发给对方 → 对方绿勾）
     let markReadTimer: ReturnType<typeof setTimeout> | null = null;
     const debounceMarkRead = (convId: string) => {
@@ -828,7 +907,7 @@ export const useChatStore = defineStore("chat", () => {
         await refreshFriends();
       },
       onFriendMessageBlocked: () => {
-        app.toast(`对方不是好友，请先扫描添加好友之后再继续聊天。`, "error");
+        app.toast(t("send.notFriend"), "error");
       },
       onMessage: (rec) => {
         enqueueMessage(rec);
@@ -900,17 +979,48 @@ export const useChatStore = defineStore("chat", () => {
         void handleSelfRemovedFromGroup(groupId);
       },
     });
+    // 移动端注册通知动作类别（「标记已读」按钮）。桌面端无此能力（Web Notification 不支持按钮），
+    // 命令也不存在，故只对移动端调用。语言切换后按钮文案不随动（原生注册一次），可接受。
+    if (app.isMobile) {
+      void registerActionTypes([
+        {
+          id: "chat",
+          actions: [{ id: "mark-read", title: t("notification.markRead") }],
+        },
+      ]).catch(() => {
+        /* 注册失败不影响通知主体（只是没有动作按钮） */
+      });
+    }
     // 注册系统通知点击回调：点击通知 → 唤起窗口 + 定位到发送者会话
     void onAction((n) => {
-      // 点击通知的第一动作：无论能否解析出会话，先把窗口弹到前台
-      // （最小化/隐藏/被遮挡时都恢复，unminimize+show+set_focus 幂等）
-      void api.focusWindow();
-      // 兼容不同平台回调形状：对象 { id, extra } 或裸 id（number/string）
+      // 兼容不同平台回调形状：对象 { id, actionId, extra } 或裸 id（number/string）
       const raw = (typeof n === "object" && n !== null
         ? n
-        : { id: n }) as { id?: unknown; extra?: Record<string, unknown> };
+        : { id: n }) as {
+        id?: unknown;
+        actionId?: string;
+        extra?: Record<string, unknown>;
+      };
       const id = typeof raw.id === "number" ? raw.id : undefined;
       const extraType = raw.extra?.type as string | undefined;
+
+      // 「标记已读」动作按钮：不唤起窗口，只把该会话标为已读（发已读回执 + 清未读角标）
+      if (raw.actionId === "mark-read") {
+        let convId = id != null ? notifMap.get(id) : undefined;
+        if (!convId && raw.extra?.conv_id) convId = String(raw.extra.conv_id);
+        if (id != null) notifMap.delete(id);
+        if (convId) {
+          void api.markRead(convId).then(() => {
+            const conv = conversations.value.find((c) => c.id === convId);
+            if (conv) conv.unread = 0;
+          });
+        }
+        return;
+      }
+
+      // 点击通知本体：无论能否解析出会话，先把窗口弹到前台
+      // （最小化/隐藏/被遮挡时都恢复，unminimize+show+set_focus 幂等）
+      void api.focusWindow();
 
       if (extraType === "friend_request") {
         // 好友申请通知：唤起窗口 + 切换到联系人视图
@@ -958,6 +1068,9 @@ export const useChatStore = defineStore("chat", () => {
     activeConversation,
     totalUnread,
     unreadJump,
+    locateRequest,
+    clearLocateRequest,
+    locateMessageInConv,
     nicknameOf,
     init,
     refreshPeers,

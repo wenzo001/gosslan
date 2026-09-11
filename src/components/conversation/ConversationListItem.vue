@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from "@/i18n";
 import { fmtConversationTime } from "@/utils/time";
 import { highlightText } from "@/utils/highlight";
 import { avatarInitial, nameToColor } from "@/utils/color";
@@ -64,12 +65,22 @@ const gridTiles = computed(() => {
 
 <template>
   <!-- 微信 4.0：行高 ~64px、贴边；选中态中性浅灰底 + 正文深色文字（不用主题色/彩色，用户要求） -->
+  <!-- 键盘可达（HIG "Full Keyboard Access"）：整行 role=button + tabindex，Enter/Space 激活。
+       焦点环复用 style.css 的全局 :focus-visible 规则，无需额外样式。
+       说明：删除键是本行的子元素，严格 ARIA 不建议在 role=button 里嵌交互元素；
+       这里可接受——本行是 div[role=button] 而非真 <button>（真 button 才会把后代
+       强制视为 presentational），后代仍留在无障碍树中，读屏能分别读到两者。 -->
   <div
+    role="button"
+    tabindex="0"
     class="group/conv relative flex h-[64px] cursor-pointer items-center gap-3 px-3 transition-colors"
     :class="active
       ? 'bg-[var(--gosslan-list-active)] text-[var(--gosslan-list-active-text)]'
       : 'hover:bg-[var(--gosslan-list-hover)]'"
+    :aria-label="conv.unread > 0 ? t('conv.unread', { name: conv.name, n: conv.unread }) : conv.name"
     @click="openConv(conv)"
+    @keydown.enter.prevent="openConv(conv)"
+    @keydown.space.prevent="openConv(conv)"
   >
     <div class="relative shrink-0">
       <!-- 群聊：微信式 2x2 九宫格头像；单聊：单头像 -->
@@ -83,7 +94,7 @@ const gridTiles = computed(() => {
           class="flex items-center justify-center overflow-hidden text-[11px] font-medium text-white"
           :style="{ backgroundColor: t.color }"
         >
-          <img v-if="t.avatar" :src="t.avatar" class="h-full w-full object-cover" />
+          <img alt="" v-if="t.avatar" :src="t.avatar" class="h-full w-full object-cover" />
           <span v-else>{{ t.label }}</span>
         </div>
       </div>
@@ -93,7 +104,7 @@ const gridTiles = computed(() => {
         :class="online === false ? 'grayscale opacity-70' : ''"
         :style="{ backgroundColor: nameToColor(conv.name) }"
       >
-        <img v-if="conv.avatar" :src="conv.avatar" class="h-full w-full object-cover" />
+        <img alt="" v-if="conv.avatar" :src="conv.avatar" class="h-full w-full object-cover" />
         <span v-else class="text-sm font-medium">{{ initials(conv.name) }}</span>
       </div>
       <!-- 在线标识：群聊不显示；离线标灰半透 -->
@@ -131,19 +142,23 @@ const gridTiles = computed(() => {
             <span v-html="highlightText(snippet, keyword.trim())"></span>
           </template>
           <template v-else>
-            <span v-if="mentioned" class="font-medium text-[var(--gosslan-danger-ink)]">[有人@我]</span
-            >{{ conv.last_msg || "暂无消息" }}
+            <span v-if="mentioned" class="font-medium text-[var(--gosslan-danger-ink)]">{{ t("msg.mentioned") }}</span
+            >{{ conv.last_msg || t("msg.noMessage") }}
           </template>
         </span>
       </div>
     </div>
     <!-- 微信式行间细分隔线：从文本列起（头像后缩进），最后一行不显（由容器裁边） -->
     <div class="absolute bottom-0 left-[64px] right-0 h-px bg-[var(--gosslan-divider)]"></div>
-    <!-- 删除聊天记录入口：hover 行时浮现 -->
+    <!-- 删除聊天记录入口：桌面端悬停行时浮现。
+         `hover-reveal`：触屏没有 hover —— 没有它这个按钮在手机上永远不显示，
+         等于「桌面能删、手机删不掉」（见 2026-09-10 审计 P0-1）。
+         `tap-safe`：24px 小于 44pt 最小点按目标，触屏下垂直扩命中区（见 style.css）。 -->
     <button
       v-if="!active"
-      class="absolute bottom-1.5 right-1.5 z-10 hidden h-6 w-6 items-center justify-center rounded-[var(--gosslan-radius-xs)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-danger-soft)] hover:text-[var(--gosslan-danger-ink)] group-hover/conv:flex"
-      title="删除聊天记录"
+      class="hover-reveal tap-safe absolute bottom-1.5 right-1.5 z-10 hidden h-6 w-6 items-center justify-center rounded-[var(--gosslan-radius-xs)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-danger-soft)] hover:text-[var(--gosslan-danger-ink)] group-hover/conv:flex"
+      :title="t('conv.delete')"
+      :aria-label="t('conv.deleteAria', { name: conv.name })"
       @click="emit('ask-delete', conv, $event)"
     >
       <X class="h-3.5 w-3.5" />

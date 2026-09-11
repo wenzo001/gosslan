@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { t } from "@/i18n";
 import { computed } from "vue";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useAppStore } from "@/stores/useAppStore";
@@ -51,7 +52,7 @@ async function openLink(href: string) {
   try {
     await openUrl(href);
   } catch (e) {
-    app.toast(`打开链接失败：${e}`, "error");
+    app.toastError(e, t("msg.openLinkFail"));
   }
 }
 </script>
@@ -60,7 +61,7 @@ async function openLink(href: string) {
   <!-- 全文弹窗：文本 / 代码共用，内容可滚动、可复制；关闭后消息布局不变 -->
   <BaseModal
     :open="open"
-    :title="kind === 'code' ? '代码预览' : '完整文本'"
+    :title="kind === 'code' ? t('msg.codePreview') : t('msg.fullText')"
     width="max-w-4xl"
     @close="emit('close')"
   >
@@ -102,7 +103,7 @@ async function openLink(href: string) {
       >
         <Check v-if="copied" class="h-3 w-3" />
         <Copy v-else class="h-3 w-3" />
-        {{ copied ? "已复制" : "复制" }}
+        {{ copied ? t("common.copied") : t("common.copy") }}
       </button>
     </div>
   </BaseModal>

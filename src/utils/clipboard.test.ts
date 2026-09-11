@@ -30,9 +30,14 @@ test("图片粘贴绝不落入文本分支（不触发普通文本插入）", ()
   assert.equal(action.kind, "image");
 });
 
-test("资源管理器复制文件（有真实路径）→ 优先按文件发送", () => {
-  const action = classifyPaste(["Files"], [IMG], [IMG_FILE], true);
+test("资源管理器复制**非图片**文件（有真实路径）→ 按文件发送", () => {
+  const action = classifyPaste(["Files"], [], [], true);
   assert.equal(action.kind, "files");
+});
+
+test("剪贴板同时带图片与文件路径（截图带临时文件引用）→ 图片优先", () => {
+  const action = classifyPaste(["Files"], [IMG], [IMG_FILE], true);
+  assert.equal(action.kind, "image");
 });
 
 test("剪贴板带 Files 但无真实文件路径（位图）→ 回退图片", () => {
