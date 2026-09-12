@@ -305,6 +305,63 @@ fn should_dial_ble(my_id: &str, peer_id: &str) -> bool {
     my_id > peer_id
 }
 
+/// 往已有链路投递，还是当作**新连接**重新握手（外设侧收到一帧时的唯一判据）。
+#[cfg(any(target_os = "macos", target_os = "android"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PeripheralRouteAction {
+    /// 投给该 central 已登记的链路（正常数据帧）。
+    ToExistingLink,
+    /// 走握手路径（没有链路，或这是**重连**发来的新 Hello）。
+    ToHandshake,
+}
+
+/// 判定外设侧收到的一帧该投给旧链路还是重新握手。
+///
+/// ## 为什么必须有这条判据（2026-09-12 真机）
+///
+/// BLE 上同一个 central 的地址在**重连**时会被复用（macOS 侧是 CoreBluetooth 给同一台
+/// 手机分配的 UUID，Android 侧是同一个 MAC）。旧连接的链路任务可能还没被清理，
+/// 于是新连接发来的 **Hello 会被投给旧链路的管道**：
+///   · 旧链路的写句柄指向**旧连接** ⇒ 新连接永远收不到 Hello 回应
+///     ⇒ 对端报「握手超时：对端未回 Hello」；
+///   · 旧链路把这条 Hello 当普通帧消费掉 ⇒ 对端报「对端首帧不是 Hello」。
+/// 两种报错在用户侧都是"蓝牙时好时坏、加好友没反应"。
+///
+/// 所以：**有活路由 + 收到 Hello ⇒ 一定是重连**，必须换路由并重新握手。
+/// 其余情况（普通数据帧、或本来就没有路由）都按原来的投递/握手走。
+///
+/// 抽成纯函数的理由同 `should_dial_ble`：这类判据写反了在真机上极难复现，
+/// 而这里可以把它一次钉死，并让护栏在有人改成"永远投旧链路"时立刻 FAIL。
+#[cfg(any(target_os = "macos", target_os = "android"))]
+fn peripheral_route_action(has_route: bool, frame_is_hello: bool) -> PeripheralRouteAction {
+    // 没有活路由 ⇒ 只能握手；有路由且这帧是 Hello ⇒ 一定是重连 ⇒ 也必须握手。
+    // 只有「有路由 + 不是 Hello」才是正常的"在已有链路上收数据"。
+    if !has_route || frame_is_hello {
+        PeripheralRouteAction::ToHandshake
+    } else {
+        PeripheralRouteAction::ToExistingLink
+    }
+}
+
+/// 判断一帧**是不是 Hello** 的成本上限（字节）：Hello 只有设备 id + 两个公钥 + 签名，
+/// 几百字节量级；超过这个长度的帧不可能是握手首帧，直接跳过解析。
+///
+/// 为什么要设上限：外设侧会对**每一个**到达的帧做这个判断（见
+/// `peripheral_accept_loop`），而大文件分片是 256 KiB —— 对它们做一次
+/// `serde_json::from_slice::<Message>` 就是白烧一倍解析成本。
+#[cfg(any(target_os = "macos", target_os = "android"))]
+const HELLO_PEEK_MAX_BYTES: usize = 1024;
+
+/// 轻量判断：这帧是不是 `Message::Hello`（用于上面的重连判据）。
+#[cfg(any(target_os = "macos", target_os = "android"))]
+fn frame_is_hello(bytes: &[u8]) -> bool {
+    bytes.len() <= HELLO_PEEK_MAX_BYTES
+        && matches!(
+            serde_json::from_slice::<Message>(bytes),
+            Ok(Message::Hello { .. })
+        )
+}
+
 /// 连接一个候选 → 双向 Hello 验签 → 登记链路 → 起收发循环。
 async fn dial_and_register(
     state: Arc<AppState>,
@@ -341,7 +398,10 @@ async fn dial_and_register(
         ..
     } = &first
     else {
-        return Err("对端首帧不是 Hello".to_string());
+        // ⚠️ 必须把**收到的是什么**写进错误里：真机（2026-09-12）只看到
+        // 「对端首帧不是 Hello」时，完全无法区分"对端在重连时把旧链路的帧发了过来"
+        // /"对端状态机还没重置"/"对面根本不是 Gosslan"。带上类型名后一眼可判。
+        return Err(format!("对端首帧不是 Hello（收到 {}）", first.wire_kind()));
     };
     crate::network::transport::verify_hello_for_ble(
         &state,
@@ -727,19 +787,31 @@ async fn peripheral_accept_loop(
 
         match ev {
             PeripheralEvent::Frame { central, bytes } => {
-                // 有活路由就投递。投递失败（接收端已 drop）= 旧链路已死，
-                // 这一帧很可能正是对端**重连**后的 Hello ⇒ 落到下面的握手分支。
+                // 先判「投旧链路 还是 重新握手」（判据与理由见 `peripheral_route_action`）：
+                // 同一个 central 地址的**重连**发来的 Hello 绝不能被投给旧链路的管道,
+                // 否则新连接永远收不到 Hello 回应（对端表现为"握手超时"/"首帧不是 Hello"）。
+                let has_route = routes.contains_key(&central);
+                let action = peripheral_route_action(has_route, has_route && frame_is_hello(&bytes));
                 let mut pending = Some(bytes);
-                if let Some(tx) = routes.get(&central).cloned() {
-                    match tx.send(pending.take().expect("pending 刚被设置")).await {
-                        Ok(()) => continue,
-                        Err(e) => {
-                            pending = Some(e.0);
-                            routes.remove(&central);
-                            state.logger.info(
-                                "ble",
-                                format!("外设侧旧链路已失效，按重连处理 central={central}"),
-                            );
+                if action == PeripheralRouteAction::ToHandshake && has_route {
+                    routes.remove(&central);
+                    state.logger.info(
+                        "ble",
+                        format!("外设侧收到新连接的 Hello（central={central}）⇒ 换路由并重新握手"),
+                    );
+                }
+                if action == PeripheralRouteAction::ToExistingLink {
+                    if let Some(tx) = routes.get(&central).cloned() {
+                        match tx.send(pending.take().expect("pending 刚被设置")).await {
+                            Ok(()) => continue,
+                            Err(e) => {
+                                pending = Some(e.0);
+                                routes.remove(&central);
+                                state.logger.info(
+                                    "ble",
+                                    format!("外设侧旧链路已失效，按重连处理 central={central}"),
+                                );
+                            }
                         }
                     }
                 }
@@ -834,7 +906,10 @@ async fn try_accept_handshake(
         ..
     } = &first
     else {
-        return Err("对端首帧不是 Hello".to_string());
+        return Err(format!(
+            "外设侧首帧不是 Hello（收到 {}，central={central}）",
+            first.wire_kind()
+        ));
     };
     crate::network::transport::verify_hello_for_ble(
         state,
@@ -956,4 +1031,74 @@ async fn try_accept_handshake(
     crate::commands::flush_pending_files(state, &peer_id).await;
     crate::commands::flush_pending_group_files(state, &peer_id).await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(unused_imports)]
+    use super::*;
+
+    /// **重连判据**：同一个 central 地址的**新连接**发来的 Hello，绝不能被投给旧链路。
+    ///
+    /// 真机（2026-09-12）：旧链路的写句柄指向旧连接 ⇒ 新连接收不到 Hello 回应，
+    /// 对端报「握手超时：对端未回 Hello」，或者旧链路把 Hello 当普通帧吃掉 ⇒
+    /// 对端报「对端首帧不是 Hello」。用户看到的是"蓝牙时好时坏、加好友没反应"。
+    #[test]
+    fn reconnect_hello_must_not_go_to_the_stale_route() {
+        assert_eq!(
+            peripheral_route_action(true, true),
+            PeripheralRouteAction::ToHandshake,
+            "有活路由 + 收到 Hello ⇒ 一定是重连，必须换路由重新握手"
+        );
+        // 三条对照：普通数据帧仍走旧链路；没有路由时一律走握手分支（与旧行为一致）
+        assert_eq!(
+            peripheral_route_action(true, false),
+            PeripheralRouteAction::ToExistingLink
+        );
+        assert_eq!(
+            peripheral_route_action(false, true),
+            PeripheralRouteAction::ToHandshake
+        );
+        assert_eq!(
+            peripheral_route_action(false, false),
+            PeripheralRouteAction::ToHandshake
+        );
+    }
+
+    /// `frame_is_hello` 必须**真的认得出 Hello**，且不把大分片当 Hello 去解析。
+    #[test]
+    fn frame_is_hello_peeks_only_small_hello_frames() {
+        let hello = Message::Hello {
+            device_id: "dev-a".into(),
+            nickname: "A".into(),
+            avatar: None,
+            device_type: "desktop".into(),
+            tcp_port: 59992,
+            x25519_pubkey: "xk".into(),
+            ed25519_pubkey: "ek".into(),
+            conv_clock: 0,
+            nonce: "n1".into(),
+            sig: "sig".into(),
+        };
+        let bytes = serde_json::to_vec(&hello).unwrap();
+        assert!(
+            bytes.len() < HELLO_PEEK_MAX_BYTES,
+            "真实 Hello（{} 字节）必须在上限内，否则重连判据会失效",
+            bytes.len()
+        );
+        assert!(frame_is_hello(&bytes), "Hello 必须被认出来");
+
+        // 非 Hello 的小帧：认成 false，而不是 panic
+        let hb = serde_json::to_vec(&Message::Heartbeat {
+            device_id: "dev-a".into(),
+        })
+        .unwrap();
+        assert!(!frame_is_hello(&hb));
+
+        // 超上限的帧：一律 false（跳过解析，避免给 256KiB 分片白烧一次解析）
+        let big = vec![b'{'; HELLO_PEEK_MAX_BYTES + 1];
+        assert!(!frame_is_hello(&big));
+        // 坏帧也不能 panic
+        assert!(!frame_is_hello(b"not json at all"));
+    }
 }

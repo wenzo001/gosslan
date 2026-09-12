@@ -508,6 +508,21 @@ pub enum Message {
     },
 }
 
+impl Message {
+    /// 诊断用：这条消息的**线格式类型名**（= `#[serde(tag = "type")]` 里的那个值）。
+    ///
+    /// 为什么从序列化结果反读、而不是手写一遍 `match`：`Message` 有 36 个变体，
+    /// 手写映射就是给协议加了**第二份事实来源** —— 将来新增变体时忘了同步，
+    /// 日志里会出现**错误的类型名**，比没有日志更坏（真机排查会被带偏）。
+    /// 这里永远与 serde 一致，代价是序列化一次；**只在错误/诊断路径**调用。
+    pub fn wire_kind(&self) -> String {
+        serde_json::to_value(self)
+            .ok()
+            .and_then(|v| v.get("type").and_then(|t| t.as_str()).map(str::to_string))
+            .unwrap_or_else(|| "未知类型".to_string())
+    }
+}
+
 /// 单个不透明外部帧的载荷上限（解码后字节）。取 256 KiB：足够装下 BitChat 的典型包
 /// （其 MTU 是几十~几百字节），又远小于 `MAX_FRAME`，不会成为内存放大入口。
 pub const MAX_OPAQUE_PAYLOAD: usize = 256 * 1024;
@@ -831,6 +846,39 @@ mod tests {
         assert_eq!(MsgKind::from_str("code"), MsgKind::Code);
         assert_eq!(MsgKind::from_str("unknown"), MsgKind::Text);
         assert_eq!(MsgKind::Code.as_str(), "code");
+    }
+
+    /// 诊断用的类型名必须与**线格式**一致（真机排查只认日志里这个词）。
+    ///
+    /// 为什么这条测试值得存在：BLE 握手失败时日志现在会写「对端首帧不是 Hello（收到 xxx）」，
+    /// `xxx` 就是 `wire_kind()` 的输出。若哪天有人把它改成手写 match 又漏了变体，
+    /// 这里会立刻红 —— 而不是等到真机上看着一个错误的类型名猜半天。
+    #[test]
+    fn wire_kind_matches_the_serde_tag() {
+        let hello = Message::Hello {
+            device_id: "dev-a".into(),
+            nickname: "A".into(),
+            avatar: None,
+            device_type: "desktop".into(),
+            tcp_port: 59992,
+            x25519_pubkey: "xk".into(),
+            ed25519_pubkey: "ek".into(),
+            conv_clock: 0,
+            nonce: "n1".into(),
+            sig: "sig".into(),
+        };
+        assert_eq!(hello.wire_kind(), "hello");
+        // 与真实序列化结果的 `type` 字段逐字一致（不是"看起来差不多"）
+        let v: serde_json::Value = serde_json::to_value(&hello).unwrap();
+        assert_eq!(v["type"], serde_json::json!("hello"));
+
+        assert_eq!(
+            Message::Heartbeat {
+                device_id: "dev-a".into()
+            }
+            .wire_kind(),
+            "heartbeat"
+        );
     }
 
     /// **协议事实**（ADR-0017 §2）：`Message` 是 `#[serde(tag = "type")]` 枚举，

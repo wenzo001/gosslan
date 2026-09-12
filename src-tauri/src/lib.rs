@@ -881,6 +881,43 @@ mod tests {
         );
     }
 
+    /// **外设侧收到的 Hello 必须换路由重新握手**（重连时的经典坑，真机踩过）。
+    ///
+    /// 2026-09-12 真机：Mac（central）反复报 `对端首帧不是 Hello` / `握手超时：对端未回 Hello`。
+    /// BLE 上同一个 central 的地址在**重连**时复用，旧连接的链路任务可能还没清理：
+    /// 新连接的 Hello 一旦被投给**旧链路的管道**，旧链路的写句柄写的是旧连接
+    /// ⇒ 新连接永远收不到 Hello 回应。用户侧表现就是"蓝牙时好时坏、加好友没反应"。
+    ///
+    /// 这条护栏盯三件事：① 判据函数存在且语义正确（真值表由 `ble::tests` 钉住）；
+    /// ② 接收循环**真的调用**它（判据再好，调用点写错也白搭）；③ 诊断信息必须带上
+    /// 收到的类型名 —— 否则下次真机日志里还是只有一句"不是 Hello"，无从下手。
+    #[test]
+    fn peripheral_reconnect_hello_replaces_the_stale_route() {
+        let ble = include_str!("network/ble.rs");
+        let action = rust_fn_body(ble, "fn peripheral_route_action(");
+        assert!(
+            action.contains("!has_route || frame_is_hello"),
+            "判据必须是『没有活路由 或 这帧是 Hello ⇒ 走握手』，其余才投已有链路"
+        );
+        assert!(
+            ble.contains("peripheral_route_action(has_route, has_route && frame_is_hello(&bytes))"),
+            "接收循环必须**真的调用**这个判据（只在有路由时才解析首帧，避免给大分片白烧一次解析）"
+        );
+        assert!(
+            ble.contains("外设侧收到新连接的 Hello"),
+            "换路由必须留痕：真机上这是区分『重连接管』与『链路抖动』的唯一日志"
+        );
+        // 诊断信息必须带类型名（两处：central 侧拨号 + 外设侧接收入站）
+        assert!(
+            ble.matches("首帧不是 Hello（收到").count() >= 2,
+            "central 与外设两侧的『首帧不是 Hello』都必须带上**收到的类型**（`wire_kind()`）"
+        );
+        assert!(
+            ble.contains("wire_kind()"),
+            "类型名要走 `Message::wire_kind()`（与 serde tag 同一份事实来源）"
+        );
+    }
+
     /// **release 包必须 keep 住 Rust 按名字调用的 Kotlin 方法**。
     ///
     /// R8 在 release 下会把它们改名（**实测**：`stop`/`start`/`send`/… 全变成 `a`/`b`/`c`/…），

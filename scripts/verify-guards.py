@@ -809,6 +809,37 @@ CASES: list[Case] = [
         tags=["rust", "network", "discovery"],
     ),
     Case(
+        name="BLE 重连：Hello 必须换路由重新握手（不能投给旧链路）",
+        why="真机 2026-09-12：Mac 反复报『对端首帧不是 Hello』/『握手超时：对端未回 Hello』。"
+        "BLE 上同一个 central 地址在重连时复用，旧连接的链路任务可能还没清理 —— 新连接的 Hello "
+        "一旦被投给旧链路的管道，旧链路写的是旧连接 ⇒ 新连接永远收不到 Hello 回应。"
+        "用户侧表现：蓝牙时好时坏、加好友没反应",
+        file=TAURI / "src" / "network" / "ble.rs",
+        injections=[("    if !has_route || frame_is_hello {", "    if false {")],
+        # ⚠️ BLE 代码在 `--features bluetooth` 下才编译，测试必须带这个 feature
+        cmd=cargo("test", "--lib", "--features", "bluetooth", "reconnect_hello_must_not_go_to_the_stale_route"),
+        cwd=TAURI,
+        expect_fail_hint="有活路由 + 收到 Hello",
+        tags=["rust", "ble", "network"],
+    ),
+    Case(
+        name="BLE 握手失败必须说出『收到的是什么』",
+        why="同一轮真机排查里，日志只有一句『对端首帧不是 Hello』，完全无法区分"
+        "『对端重连时把旧链路的帧发了过来』『对端状态机没重置』『对面不是 Gosslan』"
+        "⇒ 只能靠猜。central 与外设**两侧**的错误都必须带上收到的类型名，"
+        "且类型名要走 `Message::wire_kind()`（与 serde tag 同一份事实来源：手写 match "
+        "漏一个变体就会打出错的类型名，比没有日志更坏）",
+        file=TAURI / "src" / "network" / "ble.rs",
+        injections=[(
+            '"对端首帧不是 Hello（收到 {}）"',
+            '"对端首帧不是 Hello（这里曾经不带类型名）"',
+        )],
+        cmd=cargo("test", "--lib", "peripheral_reconnect_hello_replaces_the_stale_route"),
+        cwd=TAURI,
+        expect_fail_hint="都必须带上",
+        tags=["rust", "ble", "diagnostics"],
+    ),
+    Case(
         name="应用样式（三个窗口都必须加载 style.css）",
         why="真实缺陷：一窗一入口重构时漏掉了 `import \"./style.css\"`，dev 起来整个界面\"像没有 CSS\"，"
         "而且不报错、不影响任何测试 —— 只有这条守卫能拦住",

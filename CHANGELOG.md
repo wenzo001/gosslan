@@ -10,6 +10,41 @@
 
 ## [Unreleased]
 
+## [4.2.12] - 2026-09-13
+
+### Fixed (BLE 重连：新连接的 Hello 被投给**旧链路** ⇒ 对端报「首帧不是 Hello / 未回 Hello」)
+
+真机（用户 4.2.11 会话）Mac 日志反复出现两种失败，指不到原因：
+
+```
+[ble] 候选 8474c5dd-… 未建立链路：对端首帧不是 Hello
+[ble] 候选 8474c5dd-… 未建立链路：握手超时：对端未回 Hello
+```
+
+**根因**：BLE 上同一个 central 的地址在**重连**时会被复用（macOS 侧是 CoreBluetooth 给同一台
+手机分配的 UUID，Android 侧是同一个 MAC）。外设侧收到一帧时只按"这个 central 有没有活路由"
+决定投递，于是**新连接发来的 Hello 被投进了旧链路的管道**：旧链路的写句柄指向**旧连接**
+⇒ 新连接永远收不到 Hello 回应（对端报"握手超时"）；旧链路把这条 Hello 当普通帧消费掉
+⇒ 对端报"对端首帧不是 Hello"。用户侧看到的就是"蓝牙时好时坏、加好友没反应"。
+
+**修法**：外设侧新增唯一判据 `peripheral_route_action(has_route, frame_is_hello)` ——
+**没有活路由 或 这帧是 Hello ⇒ 换路由并重新握手**（有活路由 + Hello ⇒ 一定是重连），
+其余才投已有链路；判据是纯函数，真值表由 `ble::tests` 钉住。为了不给 256 KiB 的分片白烧一次
+解析，只对 ≤ `HELLO_PEEK_MAX_BYTES`(1024) 的帧做"是不是 Hello"的轻量判断。
+
+**顺带把诊断补上**（这一轮排查卡在"日志只说不是 Hello，没说是什么"）：central 与外设**两侧**
+的握手失败都改成 `…（收到 {wire_kind()}）`；`Message::wire_kind()` 从**序列化结果**反读
+`type` 字段（与 serde tag 同一份事实来源 —— 36 个变体手写 match 漏一个就会打出**错的**类型名，
+比没有日志更坏），并有单测 `wire_kind_matches_the_serde_tag` 对齐真实 tag。
+
+**护栏**：`reconnect_hello_must_not_go_to_the_stale_route`（真值表）+ 源码级
+`peripheral_reconnect_hello_replaces_the_stale_route`（判据存在、接收循环**真的调用**它、
+两处错误都带类型名）；`verify-guards.py` 两条对应非空转用例（把判据改成 `if false`、
+把 central 侧的类型名去掉，都必须 FAIL），现共 **53** 条。
+
+> ⚠️ 这一版没有改任何**线格式**（`Message` 变体零改动）⇒ 与 4.2.10/4.2.11 混用不会断链；
+> 上面那份"未知 type 即硬解析错误"的契约（ADR-0017）依然成立：升级要整批进行。
+
 ## [4.2.11] - 2026-09-12
 
 ### Fixed (🔴「同一个 Wi‑Fi 里互相搜不到」的真因：发现 socket 绑了**具体 IP** ⇒ macOS 收不到广播)
