@@ -1098,6 +1098,23 @@ pub async fn broadcast_chat_style(
 
 // ---------------- 好友 ----------------
 
+/// 好友「在线」判据：**最近 [`FRIEND_ONLINE_GRACE_MS`] 内见过**（announce / Presence /
+/// 握手都算 `last_seen`）**或**手里有活链路。
+///
+/// 为什么不沿用「在不在 `peers` 表里」：`mark_peer_offline` 现在**故意保留**刚掉线的
+/// 节点条目（BLE 上"连上→被对端退让→断开"是常态；删掉的话 Mac 的「添加好友」列表里
+/// 安卓只闪一下、用户根本点不到），所以"在表里"不再等价于"在线"，必须看
+/// `last_seen` 的新鲜度 —— 否则就是 2026-09-12 复核抓到的那个 High 缺陷
+/// （一次「连过又掉线」的节点永久显示在线）。
+///
+/// 15s ≈ 3 个 announce 周期（5s 基础 + 0~3s 抖动）：够容忍局域网丢一两轮广播，
+/// 又不会把早已离开的节点长时间标成在线。
+fn friend_is_online(last_seen: i64, now: i64, has_active_link: bool) -> bool {
+    has_active_link || last_seen >= now - FRIEND_ONLINE_GRACE_MS
+}
+
+const FRIEND_ONLINE_GRACE_MS: i64 = 15_000;
+
 #[tauri::command(async)]
 pub fn get_friends(state: State<'_, Arc<AppState>>) -> Vec<Friend> {
     let s = state.inner();
@@ -1116,10 +1133,12 @@ pub fn get_friends(state: State<'_, Arc<AppState>>) -> Vec<Friend> {
                 .collect()
         })
         .unwrap_or_default();
+    let now = crate::db::now_ms();
     let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
     let mut friends = db::list_friends(&dbc).unwrap_or_default();
     for f in friends.iter_mut() {
-        f.online = peers.contains_key(&f.device_id) || active_links.contains(&f.device_id);
+        let last_seen = peers.get(&f.device_id).map(|p| p.last_seen).unwrap_or(0);
+        f.online = friend_is_online(last_seen, now, active_links.contains(&f.device_id));
         // 设备类型从 peers 表现场读取（Hello/UserInfo/Presence 都会更新它）。
         f.device_type = peers
             .get(&f.device_id)
@@ -4352,6 +4371,8 @@ pub fn close_log_window(_app: tauri::AppHandle) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use super::{friend_is_online, FRIEND_ONLINE_GRACE_MS};
+
     /// `generate_handler!` 里列出的命令在**移动端也必须存在**。
     ///
     /// 为什么必须守：`lib.rs` 的 `generate_handler!` 是**无条件**列出命令名的，而
@@ -4420,6 +4441,25 @@ mod tests {
 
     fn online(ids: &[&str]) -> HashSet<String> {
         ids.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// 好友在线判据：**最近见过 或 有活链路**；只"在节点表里"不算在线。
+    ///
+    /// 两条真机结论一起钉住：① 节点条目在掉线后会**保留**（`mark_peer_offline` 不再删，
+    /// 否则 Mac 的「添加好友」列表里对端只闪一下）；② 因此"在表里"绝不能等价于"在线"，
+    /// 否则就是复核抓到过的"连过又掉线 ⇒ 永久在线"。
+    #[test]
+    fn friend_online_needs_freshness_or_an_active_link() {
+        let now = 1_000_000_000_000_i64;
+        // 刚见过（节点条目保留着）⇒ 在线
+        assert!(friend_is_online(now - 1_000, now, false));
+        // 15s 边界内 ⇒ 在线（announce 5s 一轮 + 抖动，容忍丢一两轮）
+        assert!(friend_is_online(now - FRIEND_ONLINE_GRACE_MS, now, false));
+        // 超过窗口且没有链路 ⇒ 离线（就是"连过又掉线"的那个场景）
+        assert!(!friend_is_online(now - FRIEND_ONLINE_GRACE_MS - 1, now, false));
+        assert!(!friend_is_online(0, now, false));
+        // 有活链路 ⇒ 恒在线（哪怕很久没有 announce：跨子网中继场景）
+        assert!(friend_is_online(0, now, true));
     }
 
     /// 用户口径：进度条只按**发送时在线的成员**算。

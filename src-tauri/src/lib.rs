@@ -918,6 +918,47 @@ mod tests {
         );
     }
 
+    /// **掉线的节点要留在发现列表里，但不能算"在线"**（两个坑必须同时躲开）。
+    ///
+    /// 2026-09-12 真机（用户 4.2.11，只开蓝牙）：**手机能看到 Mac（"已发现未建联"），
+    /// Mac 里安卓什么都不显示**。根因是链路一断就把节点条目删了 —— BLE 上
+    /// "连上 → 被对端按指定拨号方退让 → 断开"是常态，Mac 刚学到身份就被删，
+    /// 「添加好友」列表里只闪一下，用户根本点不到。
+    ///
+    /// 反过来，如果只是"保留条目"而沿用旧的「在 peers 表里就算在线」判据，
+    /// 就会把复核抓到过的那个 High 缺陷重新引入（一次"连过又掉线"的节点永久在线）。
+    /// 所以两件事必须一起成立：**条目保留**（`mark_peer_offline` 不删 peer）+
+    /// **在线看 last_seen 新鲜度**（`friend_is_online`）。
+    #[test]
+    fn offline_peer_stays_listed_but_is_not_online() {
+        let transport = include_str!("network/transport.rs");
+        let body = rust_fn_body(transport, "pub(crate) async fn mark_peer_offline(");
+        assert!(
+            !body.contains("remove(device_id)"),
+            "链路断了**不能**立刻删节点条目：BLE 上「连上→退让→断开」是常态，\
+             删掉的话「添加好友」列表里对端只闪一下（真机症状）"
+        );
+        assert!(
+            body.contains("clear_conv_link"),
+            "链路快照必须立刻清掉 —— 否则聊天头部会一直显示「桥接 N」（用户实测过）"
+        );
+
+        let commands = include_str!("commands.rs");
+        assert!(
+            commands.contains("fn friend_is_online("),
+            "在线判据必须是独立纯函数（可单测、可护栏）"
+        );
+        assert!(
+            commands.contains("friend_is_online(last_seen, now, active_links.contains(&f.device_id))"),
+            "get_friends 必须走 friend_is_online：**只看「在不在节点表里」会让刚掉线的节点\
+             保持在线的假象**（就是那个 High 缺陷）"
+        );
+        assert!(
+            !commands.contains("f.online = peers.contains_key(&f.device_id)"),
+            "旧的 presence 判据不得复活（条目现在会被保留，presence 不再等价于在线）"
+        );
+    }
+
     /// **release 包必须 keep 住 Rust 按名字调用的 Kotlin 方法**。
     ///
     /// R8 在 release 下会把它们改名（**实测**：`stop`/`start`/`send`/… 全变成 `a`/`b`/`c`/…），

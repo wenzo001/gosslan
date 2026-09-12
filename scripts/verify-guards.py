@@ -840,6 +840,23 @@ CASES: list[Case] = [
         tags=["rust", "ble", "diagnostics"],
     ),
     Case(
+        name="掉线节点：留在发现列表里，但不得算「在线」",
+        why="真机 2026-09-12（只开蓝牙）：手机能看到 Mac（已发现未建联），Mac 里安卓什么都不显示 —— "
+        "根因是链路一断就删节点条目，而 BLE 上「连上→被对端退让→断开」是常态，"
+        "「添加好友」列表里只闪一下、用户点不到。反向的坑是复核抓到过的 High 缺陷："
+        "若保留条目却仍按「在 peers 表里 = 在线」判定，就变成「连过又掉线 ⇒ 永久在线」。"
+        "两件事必须一起成立：条目保留 + 在线看 last_seen 新鲜度",
+        file=TAURI / "src" / "commands.rs",
+        injections=[(
+            "        f.online = friend_is_online(last_seen, now, active_links.contains(&f.device_id));",
+            "        f.online = peers.contains_key(&f.device_id) || active_links.contains(&f.device_id);",
+        )],
+        cmd=cargo("test", "--lib", "offline_peer_stays_listed_but_is_not_online"),
+        cwd=TAURI,
+        expect_fail_hint="friend_is_online",
+        tags=["rust", "presence", "network"],
+    ),
+    Case(
         name="应用样式（三个窗口都必须加载 style.css）",
         why="真实缺陷：一窗一入口重构时漏掉了 `import \"./style.css\"`，dev 起来整个界面\"像没有 CSS\"，"
         "而且不报错、不影响任何测试 —— 只有这条守卫能拦住",

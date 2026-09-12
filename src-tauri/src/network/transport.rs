@@ -5408,11 +5408,27 @@ pub async fn touch_peer(state: &AppState, device_id: &str) {
     state.emit_peers();
 }
 
+/// 链路全断时调用：清掉"当前可达路径"，但**保留节点条目**。
+///
+/// ## 为什么不再立刻删节点（2026-09-12 真机，用户 4.2.11 复测）
+///
+/// 用户真机（只开蓝牙）：**手机能看到 Mac（显示"已发现未建联"），Mac 里安卓什么都不显示**。
+/// 根因就在这一行：BLE 上"连上 → 被对端按指定拨号方退让 → 断开"是**常态**
+/// （见 `dial_and_register` 的 `should_dial_ble`），Mac 每次刚学到手机身份（`new_peer=true`）
+/// 就因对端退让而断链，于是立刻被这里删掉 ⇒ 「添加好友」列表（数据源就是节点表）里
+/// **只闪一下就没了**，用户根本没机会点"加好友"；而小 id 那一侧（手机）自退让时
+/// 从未登记过链路，自然不会调到这里，所以它反而一直显示"已发现未建联"。
+///
+/// 现在保留条目、交给 `sweep_peers` 的 45s 超时收割：
+///   · 「添加好友」能在 45s 窗口里列出刚见过的节点（与手机侧行为一致）；
+///   · 待发的好友申请也能在这段时间里随下一次建链补发
+///     （`flush_pending_friend_request` 在建链/Hello 时触发）。
+/// "在线"不再靠"在不在节点表里"判定 —— 见 `commands::friend_is_online`
+/// （那条 presence 判据正是 2026-09-12 复核抓到的"连过又掉线 ⇒ 永久在线"的 High 缺陷来源）。
 pub(crate) async fn mark_peer_offline(state: &Arc<AppState>, device_id: &str) {
-    state.peers.lock().unwrap_or_else(|e| e.into_inner()).remove(device_id);
-    // 链路快照随之失效：`conv_link` 记的是"当前可达路径"，节点已离线 ⇒ 该路径不存在。
+    // 链路快照必须立刻失效：`conv_link` 记的是"当前可达路径"，链路没了路径就没了。
     // 不清掉的话，聊天头部的链路徽标会在离线后继续显示（用户 2026-09-12 反馈的
-    // 「离线却显示『桥接 1』」）。前端也做了 `online` 绑定，这里是数据侧的对称清理。
+    // 「离线却显示『桥接 1』」）。
     clear_conv_link(state, device_id);
     state.emit_peers();
 }
