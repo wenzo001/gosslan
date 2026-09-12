@@ -793,6 +793,22 @@ CASES: list[Case] = [
         tags=["rust", "friend"],
     ),
     Case(
+        name="发现 socket 必须收得到广播（绑具体 IP 在 macOS 上收不到）",
+        why="用户真机：Mac 与手机同一个 Wi‑Fi、都开了局域网，却「互相搜不到」；Mac 列表里安卓只闪一下。"
+        "根因是发现 socket 绑定到**具体 LAN IP** —— macOS 上这种 socket 收不到 255.255.255.255 广播、"
+        "也收不到组播（本机实测 0 包；绑 0.0.0.0 收得到全部），于是 Mac 发得出去（手机看得到 Mac）、"
+        "却一个 announce 都收不到。收发必须是两个 socket：收的绑 0.0.0.0、发的绑具体 LAN IP",
+        file=TAURI / "src" / "network" / "discovery.rs",
+        injections=[(
+            "pub fn discovery_recv_bind_ip() -> Ipv4Addr {\n    Ipv4Addr::UNSPECIFIED\n}",
+            "pub fn discovery_recv_bind_ip() -> Ipv4Addr {\n    Ipv4Addr::LOCALHOST\n}",
+        )],
+        cmd=cargo("test", "--lib", "discovery_recv_socket_actually_receives_broadcast"),
+        cwd=TAURI,
+        expect_fail_hint="收不到 255.255.255.255 广播",
+        tags=["rust", "network", "discovery"],
+    ),
+    Case(
         name="应用样式（三个窗口都必须加载 style.css）",
         why="真实缺陷：一窗一入口重构时漏掉了 `import \"./style.css\"`，dev 起来整个界面\"像没有 CSS\"，"
         "而且不报错、不影响任何测试 —— 只有这条守卫能拦住",

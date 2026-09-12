@@ -196,6 +196,59 @@ fn bind_udp_reusable(ip: Ipv4Addr, port: u16) -> Result<UdpSocket, String> {
     UdpSocket::from_std(std_sock).map_err(|e| format!("register UDP socket: {e}"))
 }
 
+/// **接收** socket 必须绑的地址：`0.0.0.0`（不是具体 LAN IP）。
+///
+/// ## 为什么（2026-09-12 实测，macOS）
+///
+/// 绑定到**具体网卡地址**的 UDP socket，在 macOS 上**收不到** `255.255.255.255` 广播、
+/// 也收不到组播 —— 本机实测（空闲端口，无任何竞争）：
+///
+/// | 接收方 bind | 收到的广播 | 收到的组播 |
+/// |---|---|---|
+/// | `192.168.31.113:60001`（具体地址） | **0** | **0** |
+/// | `0.0.0.0:60001` | 3 | 3 |
+///
+/// 后果（用户真机症状）：Mac 的 announce **发得出去**（手机能看到 Mac），但 Mac
+/// **一个 announce 都收不到** ⇒ 局域网里「手机看得到 Mac、Mac 看不到手机」，
+/// Mac 只能靠 BLE 建立一次会立刻断掉的链路（列表里"闪一下"）。
+///
+/// ## 为什么不干脆全绑 0.0.0.0
+///
+/// 发送侧必须钉在 LAN 接口上（见 `bind_udp_reusable` 的注释：Windows 上
+/// 组播/广播出口会被 VPN/虚拟网卡劫持）。所以这里是**两个 socket**：
+/// 收的绑 `0.0.0.0`（本函数），发的绑具体 LAN IP（`bind_udp_reusable`），
+/// 两个都读，避免 SO_REUSEPORT 把数据报只投给其中一个。
+pub fn discovery_recv_bind_ip() -> Ipv4Addr {
+    Ipv4Addr::UNSPECIFIED
+}
+
+/// 绑定**接收** socket：`0.0.0.0:port`，允许地址复用（与发送 socket 共用端口）。
+///
+/// 不改 `IP_MULTICAST_IF`：出口选择是发送 socket 的事；这个 socket 只负责收。
+fn bind_udp_recv(port: u16) -> Result<UdpSocket, String> {
+    use socket2::{Domain, Protocol, Socket, Type};
+
+    let addr: std::net::SocketAddr = format!("{}:{port}", discovery_recv_bind_ip())
+        .parse()
+        .map_err(|e: std::net::AddrParseError| e.to_string())?;
+    let sock = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))
+        .map_err(|e| format!("create UDP recv socket: {e}"))?;
+    sock.set_reuse_address(true)
+        .map_err(|e| format!("SO_REUSEADDR(recv): {e}"))?;
+    #[cfg(unix)]
+    sock.set_reuse_port(true)
+        .map_err(|e| format!("SO_REUSEPORT(recv): {e}"))?;
+    sock.set_broadcast(true)
+        .map_err(|e| format!("SO_BROADCAST(recv): {e}"))?;
+    sock.set_nonblocking(true)
+        .map_err(|e| format!("set_nonblocking(recv): {e}"))?;
+    let sock_addr: socket2::SockAddr = addr.into();
+    sock.bind(&sock_addr)
+        .map_err(|e| format!("UDP recv bind {addr} failed: {e}"))?;
+    let std_sock: std::net::UdpSocket = sock.into();
+    UdpSocket::from_std(std_sock).map_err(|e| format!("register UDP recv socket: {e}"))
+}
+
 fn announce_packet(state: &AppState, tcp_port: u16) -> UdpPacket {
     // 注意：announce 不携带 avatar——头像可能很大，塞进 UDP 广播会超报文上限
     // （EMSGSIZE "Message too long"）导致发现失效；头像改由 TCP 建链后的 UserInfo 同步。
@@ -225,17 +278,30 @@ pub async fn spawn(
     let multicast_iface = udp_bind_ip;
 
     // 绑定 UDP 端口：失败、multicast_if 设置失败都直接让 Discovery 启动失败。
-    let socket = bind_udp_reusable(udp_bind_ip, UDP_PORT)
+    //
+    // ⚠️ **两个 socket**（2026-09-12 起因「Mac 看不到手机」的真因）：
+    //   · `send_socket` 绑**具体 LAN IP** ⇒ 出口钉在真实 LAN（Windows 上躲开 VPN 劫持，
+    //     见 `bind_udp_reusable` 的注释）；
+    //   · `recv_socket` 绑 **0.0.0.0** ⇒ macOS 上才收得到广播/组播（绑具体地址收不到，
+    //     实测见 `discovery_recv_bind_ip`）。
+    // 两个都进接收循环读取：SO_REUSEPORT 会把同一份数据报只投给其中**一个** socket，
+    // 只读一个就会漏包。
+    let send_socket = bind_udp_reusable(udp_bind_ip, UDP_PORT)
         .map_err(|e| format!("UDP discovery bind failed: {e}"))?;
+    let recv_socket = bind_udp_recv(UDP_PORT)
+        .map_err(|e| format!("UDP discovery recv bind failed: {e}"))?;
     // 加入组播组：必须与 bind IP 使用同一接口；失败直接让启动失败。
-    socket
-        .join_multicast_v4(MULTICAST_GROUP, multicast_iface)
-        .map_err(|e| {
-            format!(
-                "join multicast {MULTICAST_GROUP} on {multicast_iface} failed: {e}"
-            )
-        })?;
-    let socket = Arc::new(socket);
+    // 发送侧那个 socket 也要加（Linux 上它一直是真正收组播的那个，别退化）。
+    for sock in [&send_socket, &recv_socket] {
+        sock.join_multicast_v4(MULTICAST_GROUP, multicast_iface)
+            .map_err(|e| {
+                format!(
+                    "join multicast {MULTICAST_GROUP} on {multicast_iface} failed: {e}"
+                )
+            })?;
+    }
+    let send_socket = Arc::new(send_socket);
+    let recv_socket = Arc::new(recv_socket);
 
     // 记录诊断：启动参数（bound_ip 必须是真实 LAN IP，供前端开发者面板展示）
     {
@@ -263,90 +329,40 @@ pub async fn spawn(
     }
     state.push_diag_event(
         "discovery_started",
-        &format!("bind={udp_bind_ip}, multicast_iface={multicast_iface}"),
+        &format!(
+            "send_bind={udp_bind_ip}, recv_bind={}, multicast_iface={multicast_iface}",
+            discovery_recv_bind_ip()
+        ),
     );
 
     let my_id = state.device_id.clone();
 
     // ---- 接收循环 ----
+    //
+    // 两个 socket 都要读：`recv_socket`(0.0.0.0) 负责广播/组播（macOS 上只有它能收到），
+    // `send_socket`(具体 LAN IP) 负责发给「具体地址」的单播 —— macOS 的 SO_REUSEPORT
+    // 会把同一份数据报只投给其中一个 socket，只读一个就会漏掉一半的发现包。
     let recv_task = {
-        let socket = socket.clone();
+        let recv_socket = recv_socket.clone();
+        let send_socket = send_socket.clone();
         let state = state.clone();
         let my_id = my_id.clone();
         let mut shutdown = shutdown.clone();
         tokio::spawn(async move {
-            let mut buf = vec![0u8; 2048];
+            // 两个 socket 各一个缓冲区：`tokio::select!` 的两条分支不能同时可变借用同一个 buf。
+            let mut buf_recv = vec![0u8; 2048];
+            let mut buf_send = vec![0u8; 2048];
             loop {
                 tokio::select! {
                     biased;
                     _ = shutdown.changed() => break,
-                    res = socket.recv_from(&mut buf) => {
-                        let (len, src) = match res {
-                            Ok(v) => v,
-                            Err(_) => continue,
-                        };
-                        let Ok(pkt) = serde_json::from_slice::<UdpPacket>(&buf[..len]) else {
-                            continue;
-                        };
-                        if pkt.device_id == my_id {
-                            continue;
-                        }
-                        match pkt.kind.as_str() {
-                            "announce" => {
-                                state.push_diag_event("announce_recv", &format!("from={} via={}", pkt.device_id, src.ip()));
-                                // 不用对端时间戳推算 RTT：那依赖双方时钟同步，纯本地业务不应
-                                // 假设对端时钟。这里只做在线发现与建链，时延指标留待真正的往返测量。
-                                upsert_peer(
-                                    &state,
-                                    &pkt.device_id,
-                                    &pkt.nickname,
-                                    None,
-                                    "",
-                                    &src.ip().to_string(),
-                                    pkt.tcp_port,
-                                    pkt.x25519_pubkey.clone(),
-                                    pkt.ed25519_pubkey.clone(),
-                                    None,
-                                ).await;
-                                // ⚠️ **必须 spawn**：`ensure_link` 内部会做 connect + 握手，
-                                // 最坏阻塞 = CONNECT_TIMEOUT(5s) + HANDSHAKE_TIMEOUT(5s) ≈ 10s。
-                                // 而 announce 周期只有 5s ⇒ 串行 await 会让收包循环**永远落后**：
-                                // 一个收得到 UDP、TCP 被 DROP 的"黑洞"对端（VPN/防火墙场景）就足以
-                                // 把循环堵死，UDP 接收缓冲溢出后其它节点的 announce/who_has 静默丢失
-                                // —— 用户看到的是"扫不到节点 / 加不上好友"。
-                                // 拨号风暴由 `connect_to_peer` 的在途去重 + 并发上限挡住。
-                                let state = state.clone();
-                                let shutdown = shutdown.clone();
-                                tokio::spawn(async move {
-                                    ensure_link(
-                                        &state,
-                                        &pkt.device_id,
-                                        &src.ip().to_string(),
-                                        pkt.tcp_port,
-                                        shutdown,
-                                    )
-                                    .await;
-                                });
-                            }
-                            "who_has" => {
-                                // 惊群治理：who_has 是「打开添加好友」时向全网发的一次探测，
-                                // 收到就立刻回包的话，1000 个节点会在同一瞬间把请求方的收包
-                                // 与建链路径打满（回包风暴 + 一次性 ensure_link）。
-                                // 这里让每个节点各自等一个 0~500ms 随机时长再回，
-                                // 把回包摊开；对"打开添加好友"的感知延迟影响可忽略。
-                                let socket = socket.clone();
-                                let state = state.clone();
-                                tokio::spawn(async move {
-                                    let jitter = OsRng.next_u64() % 500;
-                                    tokio::time::sleep(Duration::from_millis(jitter)).await;
-                                    let reply = announce_packet(&state, tcp_port);
-                                    if let Ok(data) = serde_json::to_vec(&reply) {
-                                        let _ = socket.send_to(&data, src).await;
-                                    }
-                                });
-                            }
-                            _ => {}
-                        }
+                    res = recv_socket.recv_from(&mut buf_recv) => {
+                        let Ok((len, src)) = res else { continue };
+                        handle_datagram(&state, &send_socket, &my_id, &buf_recv[..len], src, tcp_port, &shutdown).await;
+                    }
+                    res = send_socket.recv_from(&mut buf_send) => {
+                        let Ok((len, src)) = res else { continue };
+                        handle_datagram(&state, &send_socket, &my_id, &buf_send[..len], src, tcp_port, &shutdown).await;
                     }
                 }
             }
@@ -355,7 +371,7 @@ pub async fn spawn(
 
     // ---- 广播循环（自适应周期 + 抖动，避免大规模节点广播风暴与同步惊群） ----
     let broadcast_task = {
-        let socket = socket.clone();
+        let socket = send_socket.clone();
         let state = state.clone();
         let lan_broadcast = lan_broadcast;
         let mut shutdown = shutdown.clone();
@@ -416,6 +432,85 @@ fn diag_event_from_send_result(
     match res {
         Ok(n) => (success_kind, format!("bytes={n}, target={target}")),
         Err(e) => ("broadcast_error", format!("target={target}, error={e}")),
+    }
+}
+
+/// 处理一个收到的发现报文（`announce` / `who_has`）。
+///
+/// 从接收循环里抽出来是为了**两个 socket 共用同一套逻辑**（见 `spawn` 里为什么有两个）。
+/// 出包一律走 `send_socket`（绑具体 LAN IP）—— 对端会拿 `src.ip()` 回连我们，
+/// 源地址必须是真实 LAN IP。
+#[allow(clippy::too_many_arguments)]
+async fn handle_datagram(
+    state: &Arc<AppState>,
+    send_socket: &Arc<UdpSocket>,
+    my_id: &str,
+    buf: &[u8],
+    src: std::net::SocketAddr,
+    tcp_port: u16,
+    shutdown: &watch::Receiver<bool>,
+) {
+    let Ok(pkt) = serde_json::from_slice::<UdpPacket>(buf) else {
+        return;
+    };
+    if pkt.device_id == my_id {
+        return;
+    }
+    match pkt.kind.as_str() {
+        "announce" => {
+            state.push_diag_event(
+                "announce_recv",
+                &format!("from={} via={}", pkt.device_id, src.ip()),
+            );
+            // 不用对端时间戳推算 RTT：那依赖双方时钟同步，纯本地业务不应
+            // 假设对端时钟。这里只做在线发现与建链，时延指标留待真正的往返测量。
+            upsert_peer(
+                state,
+                &pkt.device_id,
+                &pkt.nickname,
+                None,
+                "",
+                &src.ip().to_string(),
+                pkt.tcp_port,
+                pkt.x25519_pubkey.clone(),
+                pkt.ed25519_pubkey.clone(),
+                None,
+            )
+            .await;
+            // ⚠️ **必须 spawn**：`ensure_link` 内部会做 connect + 握手，
+            // 最坏阻塞 = CONNECT_TIMEOUT(5s) + HANDSHAKE_TIMEOUT(5s) ≈ 10s。
+            // 而 announce 周期只有 5s ⇒ 串行 await 会让收包循环**永远落后**：
+            // 一个收得到 UDP、TCP 被 DROP 的"黑洞"对端（VPN/防火墙场景）就足以
+            // 把循环堵死，UDP 接收缓冲溢出后其它节点的 announce/who_has 静默丢失
+            // —— 用户看到的是"扫不到节点 / 加不上好友"。
+            // 拨号风暴由 `connect_to_peer` 的在途去重 + 并发上限挡住。
+            let state = state.clone();
+            let shutdown = shutdown.clone();
+            let device_id = pkt.device_id.clone();
+            let ip = src.ip().to_string();
+            let port = pkt.tcp_port;
+            tokio::spawn(async move {
+                ensure_link(&state, &device_id, &ip, port, shutdown).await;
+            });
+        }
+        "who_has" => {
+            // 惊群治理：who_has 是「打开添加好友」时向全网发的一次探测，
+            // 收到就立刻回包的话，1000 个节点会在同一瞬间把请求方的收包
+            // 与建链路径打满（回包风暴 + 一次性 ensure_link）。
+            // 这里让每个节点各自等一个 0~500ms 随机时长再回，
+            // 把回包摊开；对"打开添加好友"的感知延迟影响可忽略。
+            let socket = send_socket.clone();
+            let state = state.clone();
+            tokio::spawn(async move {
+                let jitter = OsRng.next_u64() % 500;
+                tokio::time::sleep(Duration::from_millis(jitter)).await;
+                let reply = announce_packet(&state, tcp_port);
+                if let Ok(data) = serde_json::to_vec(&reply) {
+                    let _ = socket.send_to(&data, src).await;
+                }
+            });
+        }
+        _ => {}
     }
 }
 
@@ -735,6 +830,49 @@ mod tests {
         let (bind_ip, lan_bc) = resolve_bind_ip(manual, || unreachable!()).unwrap();
         assert_eq!(bind_ip, manual);
         assert!(lan_bc.is_none());
+    }
+
+    /// **真机根因的回归护栏**：接收 socket 必须真的收得到 `255.255.255.255` 广播。
+    ///
+    /// 2026-09-12 用户真机：「Mac 和手机同一个 Wi‑Fi、都开了局域网，却互相搜不到；
+    /// Mac 列表里安卓只闪一下」。根因是发现 socket **绑定到具体 LAN IP**：
+    /// macOS 上这种 socket 收不到广播/组播（本机实测 0 包；绑 `0.0.0.0` 收得到全部），
+    /// 于是 Mac 发得出去（手机看得到 Mac）、却一个 announce 都收不到。
+    ///
+    /// 这个测试做一次**真实的本机收发**：接收方按 `discovery_recv_bind_ip()` 绑、
+    /// 发送方绑本机 LAN IP 并往 `255.255.255.255` 发。把接收绑定改回具体 IP，
+    /// 它在 macOS 上会立刻红 —— 也就是这次事故会当场被拦下。
+    ///
+    /// 没有可用 LAN 接口时（纯 CI/容器）直接跳过：这种环境里本来也测不了广播。
+    #[test]
+    fn discovery_recv_socket_actually_receives_broadcast() {
+        use std::net::UdpSocket as StdUdpSocket;
+
+        let Some((lan_ip, _)) = find_lan_interface() else {
+            return;
+        };
+        let recv = StdUdpSocket::bind((discovery_recv_bind_ip(), 0))
+            .expect("绑定接收 socket 失败");
+        let port = recv.local_addr().expect("取接收端口失败").port();
+        recv.set_read_timeout(Some(std::time::Duration::from_millis(1500)))
+            .expect("设置读超时失败");
+
+        let send = StdUdpSocket::bind((lan_ip, 0)).expect("绑定发送 socket 失败");
+        send.set_broadcast(true).expect("SO_BROADCAST 失败");
+        send.send_to(b"gosslan-discovery-probe", (Ipv4Addr::BROADCAST, port))
+            .expect("发送广播失败");
+
+        let mut buf = [0u8; 64];
+        let got = recv.recv_from(&mut buf);
+        let Ok((n, _src)) = got else {
+            panic!(
+                "接收 socket（bind={}）收不到 255.255.255.255 广播 —— \
+                 接收侧必须绑 0.0.0.0：macOS 上绑具体网卡地址的 UDP socket \
+                 收不到广播/组播，真机症状是「对方看得到我、我看不到对方」",
+                discovery_recv_bind_ip()
+            );
+        };
+        assert_eq!(&buf[..n], b"gosslan-discovery-probe");
     }
 
     /// 2. 企业 VPN 虚拟网卡 vgate0 永远不能成为 bind 地址。
