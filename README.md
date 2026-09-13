@@ -156,6 +156,40 @@ npm run tauri dev
 
 > 局域网联调建议使用两台真实电脑 / 虚拟机，且处于**同一网段**。双方启动网络后会自动互相发现。
 
+### 一键出包 `npm run dist`（推荐，按当前平台自动决定打什么）
+
+**规则（用户定的）**：
+
+- **macOS 上**：同时产出 **Android 包 + macOS 包**，两者 **并行**构建（不串行）。
+- **Windows 上**：只产出**当前环境**适配的那一个 Windows 包（当前架构 + NSIS）。
+
+```bash
+npm run dist                 # 当前平台一键出包
+npm run dist -- --dry-run    # 只打印将要执行的命令与环境（不构建）
+npm run dist -- --dmg        # macOS 额外出 DMG（默认只出 .app + .zip）
+npm run dist -- --all-abis   # Android 两个 ABI（默认只出 arm64-v8a）
+npm run dist -- --fat-lto    # 发布级 LTO（仓库默认配置，最慢、体积最小）
+npm run dist -- --serial     # 串行 + 共用旧 target 目录（复用缓存）
+npm run dist -- --migrate-cache   # 一次性：把旧 target/ 的安卓产物搬进 target-android/
+npm run dist -- --debug      # Android debug 包
+```
+
+产物：`release-artifacts/android/*.apk`、`release-artifacts/macos/*.app.zip`（Windows 在
+`src-tauri/target/<triple>/release/bundle/nsis/`）。
+
+**为什么快**（实现见 `scripts/package.mjs` 头部注释）：
+
+| 优化 | 原来 | 现在 |
+|---|---|---|
+| 前端构建 | mac + 每个 ABI 各跑一遍 `vue-tsc + vite`（2~3 遍） | **只跑一遍**，其余进程用 `GOSSLAN_SKIP_FRONTEND=1` 短路 |
+| macOS bundling | `targets: "all"` ⇒ 每次都做 DMG（几分钟） | 默认只出 `.app` + zip；`--dmg` 才出 DMG |
+| Android ABI | 每次两个 ABI ⇒ 两次完整 release 构建 | 默认只出 arm64-v8a；`--all-abis` 才出两个 |
+| 并行 | mac 与安卓串行（cargo 对 target 目录加独占锁） | 安卓用独立 `CARGO_TARGET_DIR=src-tauri/target-android`，**真正并行** |
+| release profile | `lto = true` + `codegen-units = 1`（最慢） | 默认 `thin` LTO + 16 CGU；`--fat-lto` 回到发布级 |
+
+> ⚠️ 默认走 thin LTO（编译快 2~3 倍，二进制略大）。**首次**会因为 profile 变化重建一次
+> 发布缓存，之后增量都很快；要发布级产物（fat LTO）加 `--fat-lto`。
+
 ### 跨平台（Windows + Android）环境配置与多开
 
 常用环境检查与打包命令：

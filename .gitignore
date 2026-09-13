@@ -45,3 +45,8 @@ src-tauri/gen/schemas
 
 # 本地固定签名 keystore（**绝不入库**；丢了就只能卸载重装）
 /scripts/android/keystore/
+# 注入脚本从上面那份**解出来的副本**（AGP 实际用它签名）。
+# 它同样是私钥 ⇒ 必须忽略，否则一次 `git add -A` 就会把签名密钥提交上去
+# （`git check-ignore` 之前对它返回"未忽略"，2026-09-13 审计发现）。
+src-tauri/gen/android/app/release.keystore
+src-tauri/gen/android/app/*.keystore

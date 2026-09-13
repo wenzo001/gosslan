@@ -401,10 +401,21 @@ cargo check --target aarch64-linux-android      # Android 编译检查（env 见
 npm run version:show / patch / minor / major
 git tag vX.Y.Z && git push origin main && git push origin vX.Y.Z
 
-# 打包
+# 打包（★ 首选：一键出包，按当前平台自动决定打什么）
+npm run dist                    # macOS ⇒ 安卓 + mac **并行**；Windows ⇒ 只出当前环境的 win 包
+npm run dist -- --dry-run       # 只打印命令与环境
+npm run dist -- --dmg           # mac 额外出 DMG（默认只出 .app + zip）
+npm run dist -- --all-abis      # 安卓两个 ABI（默认只 arm64-v8a）
+npm run dist -- --fat-lto       # 发布级 LTO（仓库默认配置；不加则用 thin LTO，编译快 2~3 倍）
+npm run dist -- --serial        # 串行 + 共用旧 target 目录
+# 「mac 上必须同时出安卓包和 mac 包、且并行；Windows 上只出当前环境的包」是用户硬要求，
+# 实现在 scripts/package.mjs（头部注释逐条写了 5 个提速点）。
+
+# 打包（单平台细粒度命令，CI / 特殊场景用）
 npm run dist:win                # Windows NSIS（需在 Windows 上）
+npm run dist:mac:app            # macOS .app + zip
 npm run tauri -- build --target universal-apple-darwin   # macOS universal
-npm run android:init && npm run android:build            # Android release APK
+npm run android:build:release   # Android release APK（走 build-android-releases.sh 的校验）
 npm run dist:win:portable       # Windows 便携版 zip（Windows）
 npm run multi:run               # 单机多开 3 实例模拟多节点（Windows）
 npm run env:check / env:install # Windows 环境检查/安装（PowerShell）
