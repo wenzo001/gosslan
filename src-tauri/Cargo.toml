@@ -19,17 +19,9 @@ tauri-build = { version = "2", features = [] }
 # 放在主 [dependencies] 而不是某个 target 段：它跨平台（CoreBluetooth / WinRT / BlueZ / Android），
 # 且因为是 optional，默认构建既不会下载也不会编译它。
 #
-# ⚠️ **本地打过补丁的副本**（`vendor/btleplug`，Gosslan 2026-09-13）：
-# 上游 WinRT 后端在连接时用 `FromBluetoothAddressAsync(address)`，**丢掉了扫描时采集到的
-# 地址类型**（`args.BluetoothAddressType()`）。对**随机地址（Random）**的 BLE 外设
-# （安卓 `BluetoothLeAdvertiser` 默认就是随机地址）这会拿到一个"连不上"的设备对象：
-# 之后每次 GATT 操作都以 `Unreachable` 失败，被翻成 `Not connected`，且**没有任何被拒的迹象**
-# —— 真机现象就是"能扫到、永远连不上"（Windows ↔ 安卓，关掉局域网只留蓝牙）。
-# 补丁只有两处（约 30 行）：`ble/device.rs` 的 `BLEDevice::new` 多一个 `address_type` 参数并按
-# `Random` 选带地址类型的重载；`peripheral.rs` 把 `self.shared.address_type` 传进去。
-# **Public / 取不到地址类型时完全走上游原路径**，所以对 macOS/Android/Linux 后端零影响。
-# 升级 btleplug 时请重放这两处补丁（`grep -rn "本地补丁" vendor/btleplug`）。
-btleplug = { path = "vendor/btleplug", version = "0.13", optional = true }
+# 这里保持**上游语义**（`version = "0.13"`）；打补丁的副本用文件末尾的
+# `[patch.crates-io]` 覆盖过去 —— 这样版本约束仍然表达"我要 0.13 这条线"。
+btleplug = { version = "0.13", optional = true }
 # 消费 BLE 的通知流需要 `StreamExt`（btleplug 只把它作为内部依赖，不 re-export）。
 # 同样 optional：默认构建不引入。
 futures = { version = "0.3", optional = true }
@@ -149,3 +141,35 @@ strip = true
 # 本项目"警告零容忍"，但这行**不是缺陷、也无法通过改代码消除**（换链接参数只会换个说法），
 # 所以在 rustc lint 层收掉它。**只收这一条**：其余 lint 全部保持 rustc 默认可见性。
 linker_messages = "allow"
+
+[patch.crates-io]
+# ⚠️ **打过补丁的 btleplug 副本**（Gosslan 2026-09-13）。
+#
+# 为什么必须打补丁：上游 WinRT 后端在**连接**时用
+# `BluetoothLEDevice::FromBluetoothAddressAsync(address)` —— **丢掉了扫描时已经采集到的
+# 地址类型**（`args.BluetoothAddressType()` → `shared.address_type`）。
+# 对**随机地址（Random）**的 BLE 外设（安卓 `BluetoothLeAdvertiser` 默认就是随机地址）
+# 这会拿到一个"连不上"的设备对象：之后每次 GATT 操作都以 `Unreachable` 失败，
+# 被翻成 `Not connected`，且**没有任何被拒的迹象**。
+# 真机现象就是"能扫到、永远连不上"（Windows ↔ 安卓，关掉局域网只留蓝牙）。
+# WinRT 其实有带地址类型的重载 `FromBluetoothAddressWithBluetoothAddressTypeAsync`。
+#
+# 补丁只有两处（约 30 行，都在 winrtble 里，`grep -rn "本地补丁" vendor/btleplug`）：
+#   1. `ble/device.rs` 的 `BLEDevice::new` 多一个 `address_type` 参数；
+#      **只有 `Random`** 才走带地址类型的重载，Public / 取不到时完全走上游原路径；
+#   2. `peripheral.rs` 把 `self.shared.address_type` 映射成 WinRT 的
+#      `BluetoothAddressType` 传进去。
+# 对 macOS / Android / Linux 后端**零影响**（补丁只在 winrtble 内）。
+#
+# 用 `[patch.crates-io]`（而不是把主依赖写成 `path =`）的理由：
+# 主依赖处仍保留 `version = "0.13"` 的**语义**（"我要 0.13 这条线"），
+# 补丁只是把这一条线的来源换成工作区内的副本；将来升级上游时改主依赖的版本号即可，
+# 不必在一堆注释里找那行 path。
+#
+# ⚠️ **升级 btleplug 时**：先看上游是否已修（搜 `BluetoothAddressType`），
+# 修了就直接删掉本节；没修就把这两处补丁重放到新版本上。
+#
+# ⚠️ **构建缓存**：换成 patch 会让 `btleplug` 的 fingerprint 变化 ⇒ **首次构建会整包重编**
+# （实测 Windows 上 `cargo check --features bluetooth` 约 3~13 分钟，之后恢复正常）。
+# CI 上表现为"某一次突然变慢"，属预期、不是回归。
+btleplug = { path = "vendor/btleplug" }
