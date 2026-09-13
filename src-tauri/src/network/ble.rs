@@ -350,9 +350,28 @@ async fn scan_loop(
                     let st = state.clone();
                     let sd = shutdown.clone();
                     let dial_id = peripheral.id().to_string();
+                    // 把**广播里能拿到的事实**一起打出来（真机 2026-09-13 第二轮补）：
+                    // 之前只打地址，于是"信号多强、是不是随机地址、对端有没有报名字、
+                    // 它自报的服务列表是什么"这些一眼能定性的信息全丢了，
+                    // 只剩一句 `Not connected` 无从判断。
+                    // 这些字段都在 `PeripheralProperties` 里（btleplug 从广播/扫描响应解析）。
+                    let facts = match peripheral.properties().await {
+                        Ok(Some(p)) => format!(
+                            "rssi={:?} 地址类型={:?} 名字={:?} 广播服务数={} 发射功率={:?}",
+                            p.rssi,
+                            p.address_type,
+                            p.local_name.as_deref().or(p.advertisement_name.as_deref()),
+                            p.services.len(),
+                            p.tx_power_level
+                        ),
+                        Ok(None) => "广播属性暂不可用".to_string(),
+                        Err(e) => format!("读广播属性失败：{e}"),
+                    };
                     state.logger.info(
                         "ble",
-                        format!("[DISCOVERY] 候选可拨 id={dial_id} ⇒ 开始连接（GATT central）"),
+                        format!(
+                            "[DISCOVERY] 候选可拨 id={dial_id} ⇒ 开始连接（GATT central）｜{facts}"
+                        ),
                     );
                     // 每个候选一个任务：连接 + 握手最长 10s，串行会把扫描周期拖垮
                     tokio::spawn(async move {
