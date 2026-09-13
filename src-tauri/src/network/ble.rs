@@ -1332,11 +1332,47 @@ async fn peripheral_accept_loop(
                 }
             }
             PeripheralEvent::Unlinked { central } => {
+                // ⚠️ 真机 2026-09-13 第五轮：**"取消订阅"不能当成"断开"立刻摘链路**。
+                //
+                // 现象（用户三台设备：手机 + Mac + Windows，Android 侧日志）：
+                //   `外设侧对端取消订阅（视为断开）central=34:13:E8:90:51:B3`
+                //   每 1~2 秒一条，**14 分钟刷了几百次** —— 而那个地址是 Mac。
+                // 旧行为：每一条都立刻 `handshaking.remove` + `routes.remove` +
+                // `detach_by_endpoint` ⇒ 事件循环被这条洪水灌满，**同一时刻正在握手的
+                // 另一台设备（Windows，17:50:16 已连上、MTU=517 都协商完了）被挤掉**，
+                // 永远走不到 `[SESSION] 已就绪（外设侧）`。用户看到的仍是"互相搜不到"。
+                //
+                // GATT 语义本来就允许"取消订阅"与"断开"是两件事（两者都会走这个回调），
+                // 所以这里按**有没有待给的链路**分流：
+                //   · 没有已登记链路（还在握手 / 刚连上）⇒ 只清握手标记、**绝不动路由**，
+                //     那条链路让握手自己去完成或超时收尾；
+                //   · 已有链路 ⇒ 才是真的断开，按原逻辑摘掉。
+                let established = {
+                    let links = state.links.lock().await;
+                    links.values().flatten().any(|l| {
+                        l.path_kind == PathKind::Bluetooth
+                            && matches!(
+                                &l.endpoint,
+                                MeshEndpoint::Ble(b)
+                                    if b.address.eq_ignore_ascii_case(&central)
+                            )
+                    })
+                };
                 handshaking.remove(&central);
+                if !established {
+                    // 只留痕、**不摘路由**：拒绝把"握手中的链路"误伤掉
+                    state.logger.info(
+                        "ble",
+                        format!(
+                            "外设侧取消订阅 central={central}（尚无已登记链路 ⇒ 视为重连前的噪声，保留路由与握手）"
+                        ),
+                    );
+                    continue;
+                }
                 routes.remove(&central);
                 state
                     .logger
-                    .info("ble", format!("外设侧对端取消订阅（视为断开）central={central}"));
+                    .info("ble", format!("外设侧已登记链路断开 central={central}"));
                 let ep = MeshEndpoint::Ble(BleEndpoint::new(central));
                 detach_by_endpoint(&state, &ep).await;
             }
