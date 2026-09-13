@@ -257,3 +257,5 @@
 | 255 | `16d009a` | 2026-09-13 | chore | 小（patch） | 29.4.12 | 非功能性/内部改动（按规则也进一位 patch） | chore(release): 4.3.4（长按面板点任何一项都收起） |
 | 256 | `e1ee61c` | 2026-09-13 | fix | 小（patch） | 29.4.13 | 缺陷修复 | fix(ble): rebase 合并修复 + 评审发现的两处问题（Mac/Android 回归） |
 | 257 | `facd2ad` | 2026-09-13 | fix | 小（patch） | 29.4.14 | 缺陷修复 | fix(build): Windows 的日常包一直没有蓝牙 —— 一键入口 npm run dist 漏了 --features bluetooth |
+| 258 | `f383a59` | 2026-09-13 | chore | 小（patch） | 29.4.15 | 非功能性/内部改动（按规则也进一位 patch） | chore(release): 4.3.5（Windows 包 feature 修复 + 台账重生成） |
+| 259 | `c936874` | 2026-09-13 | fix | 小（patch） | 29.4.16 | 缺陷修复 | fix(ble): 已装的安卓就地迁移掉旧 device_id 的 dev- 前缀（不必清应用数据） |

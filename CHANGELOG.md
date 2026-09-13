@@ -10,6 +10,8 @@
 
 ## [Unreleased]
 
+## [4.3.6] - 2026-09-13
+
 ### Fixed (已装的安卓仍然带着 `dev-` 前缀的旧 device_id —— 现在就地迁移，不必清数据)
 
 Windows 那边把 `state.rs` 兜底路径里多套的那层 `dev-` 前缀去掉了（`dev-gosslan-…` ⇒
