@@ -392,6 +392,21 @@ CASES: list[Case] = [
         tags=["frontend", "selection"],
     ),
     Case(
+        name="操作面板：点任何一项都要收起（引用/转发会跳到别处）",
+        why="用户 2026-09-13 安卓实测：「点『引用』这个 sheet 应该自动隐藏；点『转发』也应该"
+        "自动隐藏，因为它会跳转到界面内去操作聊天」。不在 ActionSheet 面板层统一收，就得每个"
+        "入口各写一遍（漏一个：点『保存图片』这类也一样挂着），而且跳转后的界面会被它挡住",
+        file=ROOT / "src" / "components" / "ActionSheet.vue",
+        injections=[(
+            "            @click=\"emit('close')\"\n          >",
+            "          >",
+        )],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="必须在点击时收起",
+        tags=["frontend", "mobile", "selection"],
+    ),
+    Case(
         name="通道开关必须乐观更新（否则点一下要等后端 2~3s 才动）",
         why="用户 2026-09-13：Mac 上「点了一下，过了好一会儿才会关；再点一下，"
         "过了好一会儿才会开」。根因是开关要等 `await api.setChannelEnabled` 回来才改状态，"

@@ -424,6 +424,11 @@ const emit = defineEmits<{
 }>();
 
 function doQuote() {
+  // ⚠️ 必须收起**底部面板**（不只是桌面右键菜单）：用户 2026-09-13 安卓实测
+  // 「点『引用』之后那个 sheet 还挂在那儿」。引用会跳到输入框去操作，浮层留着就是挡路。
+  // `ActionSheet` 面板层已经统一做了"点任何一项即收起"，这里是**第二道保险**：
+  // 这两个动作是"跳到别处去操作"，即使以后面板的通用规则改了，也不该让 sheet 留在新界面上面。
+  closeActionSheet();
   closeContextMenu();
   const msg = props.message;
   emit("quote", {
@@ -442,6 +447,8 @@ function doForward() {
     // 文件转发按本地路径重走传输链路（内容里的 JSON 只是元信息）
     filePath: msg.kind === "file" ? (fileMeta.value?.path ?? "") : undefined,
   };
+  // 同上：转发会打开转发弹窗（跳转到界面内去操作），底部面板必须先收掉
+  closeActionSheet();
   closeContextMenu();
   emit("forward", payload);
 }

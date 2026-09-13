@@ -10,6 +10,33 @@
 
 ## [Unreleased]
 
+### Fixed (安卓长按面板：点「引用」「转发」后面板还挂着 —— 现在点任何一项都收起)
+
+用户 2026-09-13（Android）：「点击文字『引用』，这个 sheet 应该自动隐藏；点击『转发』应该也是
+自动隐藏，因为它会跳转到界面内去操作聊天。」
+
+**根因**：`MessageItem` 的 `doQuote` / `doForward` 只调了 `closeContextMenu()`（桌面右键菜单），
+**没调** `closeActionSheet()`；而"点完收起"这件事原来是**每个按钮各写一遍**的
+（复制 / 选择文字那两项写了），于是漏一个就漏一个 —— 同一批里「复制图片」「保存图片」
+「保存文件」「复制文件」四项同样不会收起。
+
+**修法**：把"点一项即收起"提到 `ActionSheet` 的**面板层**
+（`<DialogPanel @click="emit('close')">`）—— 这是成熟产品（iOS ActionSheet / 微信 / Telegram
+底部菜单）的通行行为，一处覆盖所有入口，以后新增入口也不会再漏。
+另外给「引用」「转发」在 handler 里加了**第二道保险**（`closeActionSheet()`）：
+它们是"跳到别处去操作"（引用草稿 / 转发弹窗），即使以后面板的通用规则变了，
+也不该让面板留在跳转后的界面上面。
+
+⚠️ 踩坑记录：面板层那段说明注释**必须写在 `TransitionChild as="template"` 外面** ——
+放插槽里会多出一个注释节点，HeadlessUI 立刻抛 `Passing props on template!`
+（`designGuards` 里现成的护栏在本次编辑时就抓到了，没有进到提交里）。
+
+**护栏**：`src/utils/longPress.test.ts` 新增一条（面板**开标签**必须含收起、引用/转发 handler
+必须自己收）；`scripts/verify-guards.py` 加了对应非空转用例。
+⚠️ 这条用例第一次跑就**抓出护栏本身是空转的**：原来的断言拿整段
+`<DialogPanel>…</DialogPanel>` 去匹配，而"取消"按钮自己也有 `@click="emit('close')"`
+⇒ 把面板上的收起删掉照样通过。已改成只看**开标签**，重跑确认"改坏即 FAIL、恢复即 PASS"。
+
 ## [4.3.3] - 2026-09-13
 
 ### Fixed (🔴 外设侧重连后第一条消息会丢 —— 分片重组器带着上一轮连接的残留)

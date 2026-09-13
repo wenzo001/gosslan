@@ -70,6 +70,38 @@ test("抬手吞掉规则：只有「面板是这次按压弹出的 + 面板还�
   assert.equal(shouldSwallowLongPressRelease({ openedByHeldPress: false, sheetOpen: false }), false);
 });
 
+test("操作面板：点任何一项都必须收起（引用/转发会跳到别处，更必须先收）", () => {
+  // ① 面板层统一收起：成熟产品（iOS ActionSheet / 微信 / Telegram 底部菜单）都是"点一项即消失"。
+  //    用户 2026-09-13 安卓实测：「点『引用』这个 sheet 应该自动隐藏；点『转发』也应该自动隐藏，
+  //    因为它会跳转到界面内去操作聊天」—— 不在这一层统一收，就得每个入口各写一遍，漏一个就挡住新界面。
+  const sheet = read("components/ActionSheet.vue");
+  const panelAt = sheet.indexOf("<DialogPanel");
+  assert.ok(panelAt > 0, "ActionSheet 里找不到 <DialogPanel>（模板结构变了？）");
+  // ⚠️ 只看**开标签本身**：整个 `<DialogPanel>…</DialogPanel>` 里还含"取消"按钮，
+  //    它自己也有 `@click=\"emit('close')\"` —— 用整段去断言的话，把面板上的收起删掉也测不出来
+  //    （这个空转正是 `verify-guards.py` 抓出来的）。
+  const panelOpenTag = sheet.slice(panelAt, sheet.indexOf(">", panelAt) + 1);
+  assert.match(
+    panelOpenTag,
+    /@click="emit\('close'\)"/,
+    "ActionSheet 的 <DialogPanel> 开标签必须在点击时收起 —— 否则点完『引用/转发/保存图片』面板还挂在那儿",
+  );
+
+  // ② 引用 / 转发另加一道保险：它们是"跳到别处去操作"（引用草稿 / 转发弹窗），
+  //    即使以后面板的通用规则改了，也不该让 sheet 留在跳转后的界面上面。
+  const item = read("components/MessageItem.vue");
+  for (const fn of ["function doQuote", "function doForward"]) {
+    const at = item.indexOf(fn);
+    assert.ok(at > 0, `找不到 ${fn}（护栏需要同步更新）`);
+    const body = item.slice(at, at + 600);
+    assert.match(
+      body,
+      /closeActionSheet\(\)/,
+      `${fn} 必须调用 closeActionSheet() —— 用户实测点它之后底部面板不会自己消失`,
+    );
+  }
+});
+
 test("MessageItem：长按判据必须走 utils/longPress 的纯函数，并传全语境", () => {
   const item = read("components/MessageItem.vue");
   assert.match(item, /shouldStartLongPress\(\{/, "长按判据必须调用纯函数（别在组件里再写一份 if）");
