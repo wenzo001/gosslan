@@ -19,7 +19,9 @@ use tokio::time::Duration;
 
 use crate::crypto;
 use crate::db;
-use crate::network::transport::{resolve_member_x25519, try_send};
+use crate::network::transport::{
+    clear_file_wire_progress, file_wire_progress_at, resolve_member_x25519, try_send,
+};
 use crate::protocol::{Message, ShareEntry, FILE_CHUNK};
 use crate::state::{AppState, FileDoneInfo, FileFailedInfo, FileReceiver};
 
@@ -314,15 +316,14 @@ async fn stream_file(
         },
     )
     .await?;
-    let completed = match tokio::time::timeout(Duration::from_secs(30), rx).await {
-        Ok(Ok(true)) => true,
-        _ => false,
-    };
+    let completed = wait_complete_ack(state, transfer_id, rx).await;
     state
         .pending_file_complete
         .lock()
         .unwrap()
         .remove(transfer_id);
+    // 进展记录用完即清（成功/失败都清），避免这张表随历史传输无限增长。
+    clear_file_wire_progress(state, transfer_id);
     if !completed {
         return Err("接收方未确认文件完成".to_string());
     }
@@ -432,8 +433,18 @@ fn make_receiver(
     if size > i64::MAX as u64 {
         return Err("文件过大，无法安全保存".to_string());
     }
-    if receivers.lock().unwrap_or_else(|e| e.into_inner()).contains_key(transfer_id) {
-        return Err("重复的文件传输".to_string());
+    // 同一个 transfer_id 又收到一次 Offer = 发送方在**重试**（它每次都从 seq 0 重新开始）。
+    // 旧实现这里直接返回「重复的文件传输」⇒ 接收方拒收 ⇒ 发送方 15s 等 accept 超时 ⇒
+    // 可恢复失败 ⇒ 再重试 —— 死循环；而新 attempt 的分片与旧状态交错，就报出
+    // 「文件分片顺序错误」。现在：把旧状态丢掉、从零重新开始。
+    // 安全性：临时文件按 `transfer_id` 命名，下面 `File::create` 会**截断**它，
+    // 新 attempt 不会与旧字节混写；`final_path` 仍走 `unique_path`（旧 final 未完成 ⇒ 不存在）。
+    if let Some(old) = receivers
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(transfer_id)
+    {
+        let _ = std::fs::remove_file(&old.tmp_path);
     }
     let dl = state.downloads_dir.lock().unwrap_or_else(|e| e.into_inner()).clone();
     std::fs::create_dir_all(&dl).ok();
@@ -518,6 +529,74 @@ pub fn fail_group_receive(state: &AppState, transfer_id: &str) {
     }
 }
 
+/// `FileCompleteAck` 的等待窗口：**安静**这么久没有"写出进展"才算失败。
+const FILE_ACK_IDLE: Duration = Duration::from_secs(30);
+
+/// 等 `FileCompleteAck`：按**链路上还有没有进展**判定，而不是固定墙钟。
+///
+/// ## 为什么必须改（2026-09-13 审计抓到的真缺陷）
+///
+/// 分块是**一次性全部入队**的（mpsc 容量 1024），而 `FileDone` 排在所有分块**后面**：
+/// 1MB 文件在 BLE 上把 256 个分块在 **1 秒内**塞满队列，30s 只走得掉约 30KB
+/// ⇒ 固定 30s **必然超时** ⇒ `retryable` ⇒ 每 5s 心跳从头重传（`seq` 也从 0 重来）
+/// ⇒ 接收方要么报「重复的文件传输」、要么报「文件分片顺序错误」
+/// ⇒ **BLE 上超过 ~20KB 的文件事实上永远传不完**（用户实测：500KB 图片传很久、最后报分片错误）。
+///
+/// ## 现在的判据
+///
+/// 每次超时只问一句：**这块传输最近有没有分块真的离开过链路**（`file_wire_progress`，
+/// 由两条 writer_loop 在**写成功**时刷新）。有 ⇒ 重置窗口继续等；没有 ⇒ 才判失败。
+/// 真断链 / 真丢包仍然会在 30s 安静之后失败，可靠性判据一点没放松。
+async fn wait_complete_ack(
+    state: &Arc<AppState>,
+    transfer_id: &str,
+    mut rx: tokio::sync::oneshot::Receiver<bool>,
+) -> bool {
+    let mut last_progress = file_wire_progress_at(state, transfer_id);
+    loop {
+        match tokio::time::timeout(FILE_ACK_IDLE, &mut rx).await {
+            // 明确收到确认（true）/ 明确的否定或发送端被 drop（false）
+            Ok(Ok(true)) => return true,
+            Ok(_) => return false,
+            Err(_) => {
+                let now_progress = file_wire_progress_at(state, transfer_id);
+                if now_progress > last_progress {
+                    last_progress = now_progress;
+                    continue; // 还有分块在真的往链路上走 ⇒ 继续等，不算失败
+                }
+                return false; // 安静了整整一个窗口 ⇒ 真的没进展
+            }
+        }
+    }
+}
+
+/// 收到一片文件分片时该怎么处理（**纯函数**，便于单测钉住"重复不致命"这条规则）。
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum ChunkSeq {
+    /// 重复或迟到的分片（`seq` 落在已收范围内）⇒ **忽略**，绝不让整单失败。
+    Duplicate,
+    /// 正好是下一片 ⇒ 写入。
+    Accept,
+    /// 跳号（中间真缺片）⇒ 只能靠重传解决。
+    Gap,
+}
+
+/// 判据：`seq < next_seq` **忽略**、相等**接受**、大于**报错**。
+///
+/// 为什么"重复"不能报错（2026-09-13 审计的真缺陷）：发送方一次 attempt 超时后会**从头重传**
+/// （`seq` 从 0 重来），上一轮的残片可能仍在链路上。旧实现一律报「文件分片顺序错误」，
+/// 于是接收方整单失败、状态被清 ⇒ 新 attempt 也永远拼不齐 ⇒
+/// **BLE 上 >20KB 的文件事实上永远传不完**（用户实测的那条报错就是它）。
+/// 只挡"跳号"仍然安全：整份字节由文件级 SHA-256 兜底校验。
+pub(crate) fn chunk_seq_decision(seq: u32, next_seq: u32) -> ChunkSeq {
+    use std::cmp::Ordering;
+    match seq.cmp(&next_seq) {
+        Ordering::Less => ChunkSeq::Duplicate,
+        Ordering::Equal => ChunkSeq::Accept,
+        Ordering::Greater => ChunkSeq::Gap,
+    }
+}
+
 /// 接收方：写入一个分片，返回累计字节数。
 /// 入参 `data` 为 AEAD 密文（nonce || ciphertext）：先解密再写盘，
 /// 解密失败直接报错——密文绝不落盘。
@@ -534,8 +613,14 @@ pub fn write_chunk(
     if r.peer_id != peer_id {
         return Err("文件传输来源不匹配".to_string());
     }
-    if seq != r.next_seq {
-        return Err("文件分片顺序错误".to_string());
+    // 重复/迟到的分片必须**忽略**，而不是整单失败：发送方一次 attempt 超时后会**从头重传**
+    // （`seq` 从 0 重来），而上一轮的残片可能仍在链路上。旧实现直接 Err ⇒ 接收方整单失败、
+    // 清掉状态 ⇒ 新 attempt 也永远拼不齐（这正是用户看到的「文件分片顺序错误」）。
+    // 这里只挡"**跳号**"（真缺片，只能靠重传解决）；整份字节仍由文件级 SHA-256 兜底。
+    match chunk_seq_decision(seq, r.next_seq) {
+        ChunkSeq::Duplicate => return Ok(r.received),
+        ChunkSeq::Gap => return Err("文件分片顺序错误".to_string()),
+        ChunkSeq::Accept => {}
     }
     let plaintext = crypto::open_symmetric(&r.file_key, data)
         .ok_or_else(|| "文件分片解密失败".to_string())?;
@@ -855,7 +940,27 @@ pub fn human_size(bytes: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_file_subtype, safe_file_name, unique_path};
+    use super::{
+        chunk_seq_decision, classify_file_subtype, safe_file_name, unique_path, ChunkSeq,
+    };
+
+    /// **收到分片的判定规则**（2026-09-13 审计的真缺陷，必须钉住）。
+    ///
+    /// 反例就是用户报的那条「文件分片顺序错误」：发送方重试时 `seq` 从 0 重来，
+    /// 而旧实现把"重复/迟到"也当成致命错误 ⇒ 接收方整单失败 ⇒ 新 attempt 永远拼不齐。
+    #[test]
+    fn chunk_seq_rule_only_rejects_real_gaps() {
+        // 正好下一片 ⇒ 写入
+        assert_eq!(chunk_seq_decision(0, 0), ChunkSeq::Accept);
+        assert_eq!(chunk_seq_decision(7, 7), ChunkSeq::Accept);
+        // 重复 / 迟到（重传时上一轮的残片）⇒ **忽略**，不许失败
+        assert_eq!(chunk_seq_decision(0, 3), ChunkSeq::Duplicate);
+        assert_eq!(chunk_seq_decision(2, 3), ChunkSeq::Duplicate);
+        // 跳号（中间真缺片）⇒ 报错，靠重传补齐
+        assert_eq!(chunk_seq_decision(4, 3), ChunkSeq::Gap);
+        // 边界：u32 极值也不 panic
+        assert_eq!(chunk_seq_decision(u32::MAX, u32::MAX - 1), ChunkSeq::Gap);
+    }
 
     #[test]
     fn image_extensions() {

@@ -166,6 +166,13 @@ export const api = {
   // 开发者诊断（隐藏面板用）
   getDiscoveryDiag: () => invoke<DiscoveryDiag>("get_discovery_diag"),
   getInterfaceCandidates: () => invoke<InterfaceCandidate[]>("get_interface_candidates"),
+  /**
+   * 上报「应用是否在前台且窗口聚焦」。
+   *
+   * 后端蓝牙扫描据此在快/慢节奏间切换（前台 5s、后台/失焦 30s，见 `network/ble.rs`），
+   * 并在切回前台时立刻补扫一轮。调用方只有一处（`App.vue` 的可见性/聚焦监听）。
+   */
+  setAppActive: (active: boolean) => invoke<void>("set_app_active", { active }),
 
   // 运行日志（「运行日志」页 / 独立窗口用）
   /**

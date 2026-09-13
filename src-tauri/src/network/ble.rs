@@ -34,7 +34,8 @@ use crate::mesh::{BleEndpoint, Endpoint as MeshEndpoint, PathKind};
 use crate::network::transport::{
     build_signed_hello, flush_group_outbox, flush_outbox, flush_pending_group_keys,
     flush_pending_group_reads, flush_pending_reads, handle_message, link_snapshot,
-    mark_peer_offline, register_connection, should_accept_inbound_public, unregister_connection,
+    mark_conn_seen, mark_file_wire_progress, mark_peer_offline, register_connection,
+    should_accept_inbound_public, unregister_connection,
 };
 use crate::protocol::Message;
 use crate::state::{AppState, Link};
@@ -64,21 +65,27 @@ use crate::transport::bluetooth_peripheral_windows::{PeripheralEvent, Peripheral
 
 /// 每轮扫描的观察窗口（`btleplug` 的扫描是"持续到显式停止"，给一个窗口再收结果）。
 ///
-/// 2026-09-13 用户要求「扫描快一点」：窗口从 3s 收到 2s —— BLE 广播周期通常
-/// 20ms~1.28s，2s 已能覆盖多轮广播；窗口越短，两轮之间的间隔占比越高（发现更快）。
+/// 2026-09-13 两条要求合流（用户先说「扫描快一点」，后说「按前台/后台分级」）：
+/// 窗口从 3s 收到 **2s**（BLE 广播周期通常 20ms~1.28s，2s 已覆盖多轮广播；
+/// 窗口越短，等待占比越高、发现越快，而且 `stop()` 等扫描任务退出时也少等 1s），
+/// 而两轮之间的**间隔**按前台/后台分级（见下）—— 快在"用户正在用的时候"，
+/// 省电在"没人在看的时候"。
 const SCAN_WINDOW: Duration = Duration::from_secs(2);
-/// 两轮扫描之间的**等待**（不含扫描窗口本身）。
+/// **前台/聚焦**时两轮扫描之间的间隔（2s 窗口 + 5s 等待 ≈ 7s 一轮，比旧值快一倍多）。
 ///
-/// 2026-09-13 用户要求「尽量扫描快一点」：从 10s 压到 2s ⇒ 实际节奏约 **4s 一轮**
-/// （2s 扫描 + 2s 等待）。BLE 扫描是低占空比的被动监听，这个量级对功耗与其它蓝牙设备
-/// 的影响可以接受；真机排查阶段"能多快看到对方"比省电重要。
-/// 用户主动触发（`ble_scan_now`）会**跳过**这段等待，立刻开扫。
-const SCAN_INTERVAL: Duration = Duration::from_secs(2);
+/// 用户 2026-09-13：「APP 在前台（用户正在使用时）可以提高一下信息的刷新率」。
+const SCAN_INTERVAL_ACTIVE: Duration = Duration::from_secs(5);
+/// **后台/失焦**时两轮扫描之间的间隔。
+///
+/// 用户 2026-09-13：「APP 在后台可以降低一下扫描率」。30s 保证"别人发来的好友申请
+/// 最终仍能到"，但把射频占空比从 2s/5s 降到 2s/30s（耗电与对周围设备的打扰都显著下降）。
+/// 「APP 被杀死 ⇒ 直接关掉」不需要额外代码：进程没了，扫描任务自然不存在。
+const SCAN_INTERVAL_IDLE: Duration = Duration::from_secs(30);
 /// 用户主动要求扫描时，给拨号退避打的折扣（重试更快，但仍留一点间隔避免连打）。
 ///
 /// 为什么需要（真机 2026-09-13）：退避上限 60s 是给"自动重试"用的礼貌间隔，
 /// 但用户点了「扫描」却因为退避还在 40s 而**什么都不发生**，体感就是"搜不到"。
-/// 于是用户触发的那一轮把退避窗口压到这个值。
+/// 于是用户触发的那一轮把退避窗口压到这个值（`ble_scan_now` ⇒ `user_triggered`）。
 const USER_TRIGGER_BACKOFF_FACTOR: i64 = 8;
 /// 握手（发自己的 Hello → 等对端 Hello）上限。
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -87,6 +94,25 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const READ_IDLE: Duration = Duration::from_millis(1_500);
 /// 停止时等待后台任务的上限（与 LAN 的 `STOP_TASK_TIMEOUT` 同口径）。
 const STOP_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// 扫描窗口（毫秒）—— 供诊断面板展示当前节奏。
+pub fn scan_window_ms() -> u64 {
+    SCAN_WINDOW.as_millis() as u64
+}
+
+/// 指定节奏下的扫描间隔（毫秒）—— 供诊断面板展示当前节奏。
+pub fn scan_interval_ms(active: bool) -> u64 {
+    scan_interval(active).as_millis() as u64
+}
+
+/// 指定节奏下的扫描间隔（扫描循环与上面的诊断共用一个判据，避免两处各写一份）。
+fn scan_interval(active: bool) -> Duration {
+    if active {
+        SCAN_INTERVAL_ACTIVE
+    } else {
+        SCAN_INTERVAL_IDLE
+    }
+}
 
 /// 蓝牙运行时的句柄（放在 `AppState` 里，与 LAN 的 `NetworkHandle` 同思路）。
 pub struct BleHandle {
@@ -150,22 +176,31 @@ pub async fn start(state: Arc<AppState>) -> Result<(), String> {
     let st = state.clone();
     let task = tokio::spawn(async move { scan_loop(st, adapter, shutdown_rx, scan_now_rx).await });
 
+    // ⚠️ **先把句柄放进去，再 spawn 外设**（顺序不能反）：`stop()` 靠这个句柄发停机信号，
+    // 句柄晚一步写入就会出现"刚开就关"时 `stop()` 拿不到 handle ⇒ 外设任务永远活着。
+    *state.ble.lock().unwrap_or_else(|e| e.into_inner()) = Some(BleHandle {
+        shutdown: shutdown_tx.clone(),
+        task,
+    });
+
     // 外设角色（GATT server）：三端都实现了（macOS CoreBluetooth / Android Kotlin /
     // Windows WinRT GattServiceProvider），见 ADR-0015 §7.9 与
     // `docs/notes/windows-ble-diagnosis-2026-09-13.md`。
     // 这里独立启动、独立失败：外设起不来只影响"别人连我们"，不该把整个蓝牙开关判死。
+    //
+    // ⚠️ **不要 await 它**（用户 2026-09-13：「点蓝牙开关很卡，过好一会儿才会开」）：
+    // 这条路径里要等 CoreBluetooth 回报状态（`peripheral::STATE_WAIT = 3s`），
+    // 而 `start()` 在 `set_channel_enabled` 的关键路径上 ⇒ 命令要等满 3 秒才返回，
+    // 开关就跟着卡 3 秒。外设角色既然"独立失败"，就没有任何理由阻塞"通道已启动"这个结论。
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
-    start_peripheral(state.clone(), shutdown_tx.subscribe()).await;
+    let _ = tokio::spawn(start_peripheral(state.clone(), shutdown_tx.subscribe()));
 
-    *state.ble.lock().unwrap_or_else(|e| e.into_inner()) = Some(BleHandle {
-        shutdown: shutdown_tx,
-        task,
-    });
     state.logger.info(
         "ble",
         format!(
-            "蓝牙通道已启动（每 {}s 扫描 {}s；打开「添加好友」会立刻再扫一轮）",
-            SCAN_INTERVAL.as_secs(),
+            "蓝牙通道已启动（前台 {}s / 后台 {}s 一轮，窗口 {}s；打开「添加好友」会立刻再扫一轮）",
+            SCAN_INTERVAL_ACTIVE.as_secs(),
+            SCAN_INTERVAL_IDLE.as_secs(),
             SCAN_WINDOW.as_secs()
         ),
     );
@@ -178,6 +213,10 @@ pub async fn start(state: Arc<AppState>) -> Result<(), String> {
 ///
 /// 与 LAN 的 `search_nearby_peers` 同一个思路：**周期扫描负责"保持发现"，
 /// 用户动作负责"立刻发现"** —— 后者才是用户感知到"快"的地方。
+///
+/// 与 [`wake_scan`] 的分工（两条链路的语义不同，不要合并）：
+///   · 这一个 = **用户主动触发** ⇒ 立刻扫，并给拨号退避打折（`USER_TRIGGER_BACKOFF_FACTOR`）；
+///   · `wake_scan` = **内部信号**（断链立刻重拨 / 从后台切回前台）⇒ 立刻扫，但不打折。
 pub fn trigger_scan_now(state: &Arc<AppState>) -> bool {
     let slot = state.ble_scan_now.lock().unwrap_or_else(|e| e.into_inner());
     match slot.as_ref() {
@@ -191,6 +230,15 @@ pub fn trigger_scan_now(state: &Arc<AppState>) -> bool {
         }
         None => false,
     }
+}
+
+/// 请求扫描循环**立刻扫一轮**（从后台切回前台 / 断链后立刻重拨时调用）。
+///
+/// 用 `Notify` 而不是重启循环：不打断正在进行的扫描，只是把"下一轮"的等待清零 ——
+/// 否则后台节奏下用户点开「添加好友」最多要干等 30s，体感就是"搜不到人"。
+pub fn wake_scan(state: &AppState) {
+    state.ble_wake.notify_one();
+}
 }
 
 /// 停止蓝牙通道：发停机信号 → 有界等待 → **摘掉所有 BLE 链路**（不动 LAN 链路）。
@@ -275,6 +323,26 @@ async fn teardown_link(state: &Arc<AppState>, peer_id: &str, ep: &MeshEndpoint) 
     if peer_offline {
         mark_peer_offline(state, peer_id).await;
     }
+
+    // **断链后立刻重拨**（2026-09-13 审计）：
+    //
+    // 原来这里只清理链路，不唤醒扫描 —— 于是"链路断掉 → 重新发现对端"要等**下一轮扫描**，
+    // 前台最多 5s、**后台最多 30s**（后台节奏见 `SCAN_INTERVAL_IDLE`）。
+    // 真机体感就是"断开后几十秒没反应"，而它本该是"立刻重连"。
+    //
+    // 另外把该 BLE 地址的**失败退避清掉**：退避是给"连不上"用的，
+    // 而这条链路本来是**通的**（刚断），不该被它上一次的失败计数拖住重连。
+    // 安全性：拆链的频率由"链路建立"决定，不是紧循环；对端真走了的话，
+    // 下一轮扫描找不到它就自然回到常规节奏（退避也会重新累计）。
+    // 与平台无关：外设角色只在 macOS/Android 有，但 central（拨号）侧各平台都在跑。
+    if let MeshEndpoint::Ble(ble) = ep {
+        state
+            .ble_dial_failures
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&ble.address);
+        wake_scan(state);
+    }
 }
 
 async fn scan_loop(
@@ -302,6 +370,13 @@ async fn scan_loop(
                         if user_triggered { "（用户主动触发）" } else { "" }
                     ),
                 );
+                // 记进诊断状态（面板要在不重新扫的情况下知道最近一轮看到了什么）
+                *state.ble_scan.lock().unwrap_or_else(|e| e.into_inner()) =
+                    crate::state::BleScanStats {
+                        last_ts: crate::db::now_ms(),
+                        total: total as u32,
+                        matched: peers.len() as u32,
+                    };
                 for peripheral in peers {
                     if *shutdown.borrow() {
                         return;
@@ -430,18 +505,21 @@ async fn scan_loop(
             Err(e) => state.logger.warn("ble", format!("扫描失败：{e}")),
         }
         // 本轮结束：决定等多久再开下一轮。
-        // `ble_scan_now` 是**用户主动触发**（打开「添加好友」、点「扫描」）—— 立刻开扫，
-        // 不等 `SCAN_INTERVAL`。这就是"上层把扫描调快"的落点：周期是 2s，
-        // 而用户想要的那一刻是**立刻**。
+        // 节奏由**应用是否在前台/聚焦**决定（用户 2026-09-13 的功耗策略）：前台 5s、后台 30s。
+        // 两个"立刻扫"的入口都要认（语义不同，见 helper 的注释）：
+        //   · `ble_scan_now` = 用户主动触发（打开「添加好友」/点扫描）⇒ 立刻扫 + 退避打折；
+        //   · `ble_wake`     = 内部信号（断链立刻重拨 / 从后台切回前台）⇒ 立刻扫，不打折。
         user_triggered = false;
         if skip_initial_wait {
             skip_initial_wait = false;
             continue;
         }
+        let active = state.app_active.load(std::sync::atomic::Ordering::Relaxed);
+        let interval = scan_interval(active);
         tokio::select! {
             biased;
             _ = shutdown.changed() => break,
-            // 触发通道：收到新值 ⇒ 跳过等待，马上扫一轮
+            // 用户主动触发：收到新值 ⇒ 跳过等待，马上扫一轮（并给退避打折）
             res = scan_now.changed() => {
                 if res.is_err() {
                     // 发送端被丢掉（通道停止）：继续按周期跑，不要退出扫描循环
@@ -449,7 +527,11 @@ async fn scan_loop(
                     user_triggered = true;
                 }
             }
-            _ = tokio::time::sleep(SCAN_INTERVAL) => {}
+            // 内部唤醒：断链立刻重拨 / 从后台切回前台 ⇒ 也立刻扫，但**不打折**退避
+            _ = state.ble_wake.notified() => {
+                state.logger.info("ble", "[SCAN] 收到唤醒信号 ⇒ 立刻扫描一轮");
+            }
+            _ = tokio::time::sleep(interval) => {}
         }
     }
 }
@@ -671,6 +753,19 @@ async fn finish_dial(
     let ble_id = peripheral.id().to_string();
     let ep = MeshEndpoint::Ble(BleEndpoint::new(ble_id.clone()));
     let (mut writer, mut reader) = conn.into_split();
+
+    // **协商到的 MTU 必须留痕**（2026-09-13 审计）：它是 BLE 吞吐的**唯一**决定因素
+    // （每片有效载荷 = MTU-3-6；速率 ≈ 载荷 / 每片间隔）。
+    // 此前全仓库没有这一行，于是文档里的"MTU=23 ⇒ 1KB/s"一直是**猜测**，
+    // 而代码其实会协商到 182~514 字节载荷（btleplug：macOS `maximumWriteValueLength+3`、
+    // Android `requestMtu(517)`）—— 差一个数量级。没有这条日志就没法判断"慢"到底慢在哪。
+    state.logger.info(
+        "ble",
+        format!(
+            "[GATT] MTU 协商结果 ep={ble_id} 每片有效载荷={} 字节（MTU=载荷+3+6 分片头）",
+            writer.payload_mtu()
+        ),
+    );
 
     // ---- 握手：先发自己的 Hello，再读对端的、并**必须验签**（§8 / ADR-0011）----
     // BLE 地址不是身份，所以这里身份一定是"未知"（conv_clock 传 0 即可：
@@ -1011,11 +1106,23 @@ trait FrameSource: Send {
     fn frag_stats(&self) -> Option<(u64, usize, u64)> {
         None
     }
+    /// 被丢弃的分片 `(累计条数, 最近一次原因)`；没有这层信息就返回 `None`。
+    ///
+    /// 只有 central 侧（`BleReader`）实现了它 —— 外设侧的分片在各自的驱动里重组，
+    /// 拿不到这个计数。`None` 时读循环不会打任何东西。
+    fn frag_drops(&self) -> Option<(u64, &'static str)> {
+        None
+    }
 }
 
 /// 泛型薄封装：让读循环不必关心具体实现有没有分片统计。
 fn stats_fn<S: FrameSource>(reader: &S) -> Option<(u64, usize, u64)> {
     reader.frag_stats()
+}
+
+/// 同上，取"被丢弃的分片"（诊断用）。
+fn drops_fn<S: FrameSource>(reader: &S) -> Option<(u64, &'static str)> {
+    reader.frag_drops()
 }
 
 #[async_trait::async_trait]
@@ -1028,6 +1135,9 @@ impl FrameSource for BleReader {
     }
     fn frag_stats(&self) -> Option<(u64, usize, u64)> {
         Some(BleReader::stats(self))
+    }
+    fn frag_drops(&self) -> Option<(u64, &'static str)> {
+        Some(BleReader::drop_stats(self))
     }
 }
 
@@ -1097,6 +1207,12 @@ async fn ble_writer_loop<S: FrameSink + 'static>(
                         format!("[SEND] {trace} → peer={peer_id} ep={ep} bytes={} 分片={n}", bytes.len()),
                     );
                 }
+                // 文件分块**真的写出去了**才算进展（发送侧等 FileCompleteAck 的判据，
+                // 见 `transport.rs::mark_file_wire_progress` 的注释）。BLE 上这一步尤其关键：
+                // 一个 4KiB 文件块要 399 片 × 12ms ≈ 5.5s，判据必须落在"写出去"上。
+                if res.is_ok() {
+                    mark_file_wire_progress(&state, &msg);
+                }
                 if let Err(e) = &res {
                     // 「帧无法分片」是**这一帧**太大/MTU 异常，不是链路坏了：拆链路会让
                     // 同一条连接上的其它传输全部失败（真机：一张大图把链路打死，之后的好友
@@ -1147,6 +1263,7 @@ async fn ble_reader_loop<S: FrameSource + 'static>(
     // 分片统计只在 central 侧（`BleReader`）有意义；外设侧没有这个计数。
     let mut last_frag_n: u64 = 0;
     let mut last_frag_other: u64 = 0;
+    let mut last_drop_n: u64 = 0;
     loop {
         let frame = tokio::select! {
             biased;
@@ -1167,6 +1284,19 @@ async fn ble_reader_loop<S: FrameSource + 'static>(
                             ),
                         );
                     }
+                    // ⚠️ **读到帧 = 这条链路还活着**，必须回灌 mesh 健康度（2026-09-13 审计）。
+                    //
+                    // 漏掉这一句的后果（真机体感就是"蓝牙时好时坏、延迟很高"）：
+                    // `ConnectionHealth` 的读活性只在**建链时播种一次**
+                    // （`transport.rs::register_connection` → `seed_connection_read_seen`），
+                    // 此后只由 `reader_loop` 刷新 —— 而 BLE 的读循环原来没有调用它。
+                    // 于是任何健康的 BLE 链路：15s 后 `is_healthy` 判假（选路/镜像去重都会
+                    // 按"不健康"处理），45s 被健康看门狗（`stale_connections`）当作死链路
+                    // **拆掉**；对端再拨回来，45s 后再拆一次，无限循环。
+                    // TCP 侧的对应调用见 `transport.rs` 的 `reader_loop`。
+                    // 本函数同时服务 central（`BleReader`）与外设（`ChannelSource`）两条路径，
+                    // 所以一处调用两个方向都覆盖。
+                    mark_conn_seen(&state, &peer_id, &ep);
                     handle_message(&state, &peer_id, msg).await
                 }
                 Err(e) => state
@@ -1188,6 +1318,21 @@ async fn ble_reader_loop<S: FrameSource + 'static>(
                         );
                         last_frag_n = n;
                         last_frag_other = other;
+                    }
+                }
+                // **被丢弃的分片**：坏片原来在重组器里被静默吞掉 —— 真机上只看到
+                // "图片没到"，看不到"到了、被分片层丢了、原因是…"。这里只在计数**增加**时
+                // 打一条 warn（不是每片一条），所以不会刷屏。
+                if let Some((drops, reason)) = drops_fn(&reader) {
+                    if drops != last_drop_n {
+                        state.logger.warn(
+                            "ble",
+                            format!(
+                                "[FRAG] 丢弃分片 {drops} 片（新增 {}，最近原因：{reason}）                                 ← peer={peer_id} ep={ep}",
+                                drops - last_drop_n
+                            ),
+                        );
+                        last_drop_n = drops;
                     }
                 }
             }
@@ -1220,6 +1365,19 @@ enum RouteCtl {
     Add {
         central: String,
         tx: mpsc::Sender<Vec<u8>>,
+    },
+    /// 握手**失败**收尾 ⇒ 从 `handshaking` 里摘掉这个 central，允许它再次触发握手。
+    ///
+    /// 为什么必须有（2026-09-13 审计抓到的"加入不了 mesh"缺陷）：旧实现只在
+    /// `Add`（握手成功）与 `Unlinked`（对端退订）时清理 `handshaking`，
+    /// 而**握手失败**（对端根本不是 Gosslan 端、Hello 验签不过、首帧异常…）时**不清理**
+    /// ⇒ 那个 central 之后发来的**真 Hello 会被「已在握手」静默丢弃** ⇒ 设备再也进不来。
+    /// macOS 外设没有断连回调（`Unlinked` 不一定到），这个条目可能**永久残留**。
+    ///
+    /// ⚠️ 只在失败时发：成功路径由 `Add` 清理；若成功也发，会与"刚起来的第二次握手"
+    /// 抢同一个标记（把新握手的 `handshaking` 误清 ⇒ 同一 central 叠起多条握手）。
+    HandshakeFailed {
+        central: String,
     },
 }
 
@@ -1281,9 +1439,16 @@ async fn peripheral_accept_loop(
             biased;
             _ = shutdown.changed() => break,
             Some(ctl) = route_rx.recv() => {
-                let RouteCtl::Add { central, tx } = ctl;
-                handshaking.remove(&central);
-                routes.insert(central, tx);
+                match ctl {
+                    RouteCtl::Add { central, tx } => {
+                        handshaking.remove(&central);
+                        routes.insert(central, tx);
+                    }
+                    // 握手失败 ⇒ 解除"握手中"标记（否则这个 central 的真 Hello 永远被丢）
+                    RouteCtl::HandshakeFailed { central } => {
+                        handshaking.remove(&central);
+                    }
+                }
                 continue;
             }
             maybe = server.events.recv() => match maybe {
@@ -1339,14 +1504,25 @@ async fn peripheral_accept_loop(
                     continue;
                 }
                 if handshaking.insert(central.clone()) {
-                    tokio::spawn(accept_handshake(
-                        state.clone(),
-                        server.writer.clone(),
-                        central,
-                        bytes,
-                        route_tx.clone(),
-                        shutdown.clone(),
-                    ));
+                    let st = state.clone();
+                    let wrt = server.writer.clone();
+                    let ctl_tx = route_tx.clone();
+                    let failed_central = central.clone();
+                    // ⚠️ `shutdown` 必须在**进入 async move 之前**克隆：它是循环外的
+                    // `watch::Receiver`，循环顶部的 `select!` 每轮都要用；
+                    // 让 `async move` 直接捕获它会把它搬出循环（E0382）。
+                    let sd = shutdown.clone();
+                    tokio::spawn(async move {
+                        let ok = accept_handshake(st, wrt, central, bytes, ctl_tx.clone(), sd).await;
+                        // ⚠️ **只在失败时**解除"握手中"标记（成功路径由 `RouteCtl::Add` 解除）。
+                        // 失败不解标记 ⇒ 这个 central 的真 Hello 永远被丢 ⇒ 设备再也加入不进来
+                        // （macOS 外设没有断连回调，条目可能永久残留）。
+                        if !ok {
+                            let _ = ctl_tx
+                                .send(RouteCtl::HandshakeFailed { central: failed_central })
+                                .await;
+                        }
+                    });
                 }
             }
             PeripheralEvent::Unlinked { central } => {
@@ -1421,6 +1597,9 @@ async fn detach_by_endpoint(state: &Arc<AppState>, ep: &MeshEndpoint) {
 }
 
 /// 外设侧握手的外壳：失败一律**只记日志**（对端可能只是路过、或者根本不是 Gosslan 端）。
+///
+/// 返回值 = 是否**真的建链成功**（`try_accept_handshake` 已发出 `RouteCtl::Add`）。
+/// 调用方据此决定要不要解除 `handshaking` 标记 —— 见 `RouteCtl::HandshakeFailed` 的注释。
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
 async fn accept_handshake(
     state: Arc<AppState>,
@@ -1429,13 +1608,15 @@ async fn accept_handshake(
     first_bytes: Vec<u8>,
     route_tx: mpsc::Sender<RouteCtl>,
     shutdown: watch::Receiver<bool>,
-) {
-    if let Err(e) =
-        try_accept_handshake(&state, writer, &central, first_bytes, route_tx, shutdown).await
-    {
-        state
-            .logger
-            .info("ble", format!("外设侧未建链 central={central}：{e}"));
+) -> bool {
+    match try_accept_handshake(&state, writer, &central, first_bytes, route_tx, shutdown).await {
+        Ok(()) => true,
+        Err(e) => {
+            state
+                .logger
+                .info("ble", format!("外设侧未建链 central={central}：{e}"));
+            false
+        }
     }
 }
 
@@ -1450,6 +1631,17 @@ async fn try_accept_handshake(
     shutdown: watch::Receiver<bool>,
 ) -> Result<(), String> {
     let ep = MeshEndpoint::Ble(BleEndpoint::new(central.to_string()));
+
+    // **外设侧的 MTU 同样必须留痕**（2026-09-13 审计）：它决定"我们发通知时每片能塞多少字节"，
+    // 与 central 侧的写方向是两个独立的值（对端可能协商出不同结果）。
+    // 真机"手机→电脑传得慢/传不完"时，第一件事就是比这两条日志。
+    state.logger.info(
+        "ble",
+        format!(
+            "[GATT] 外设侧 MTU 协商结果 central={central} 每片有效载荷={} 字节",
+            writer.payload_mtu(central)
+        ),
+    );
 
     // ---- 1. 首帧必须是 Hello，且签名必须验过（BLE 地址不是身份）----
     let first: Message = serde_json::from_slice(&first_bytes)
@@ -1604,14 +1796,42 @@ mod tests {
     #![allow(unused_imports)]
     use super::*;
 
-    /// **拨号退避不能把重试饿死**（2026-09-13 第三轮真机）。
+    /// **握手失败必须解除"握手中"标记**（2026-09-13 审计的"加入不了 mesh"缺陷）。
     ///
-    /// 真机日志：`跳过候选 … 原因=退避中 剩余=7849ms` 占了近一半的日志行 ——
-    /// 扫描周期已经是 2s，而退避是 5s→10s→20s→40s ⇒ **大部分轮次根本不去连**。
-    /// 用户看到的"搜不出来"，很大一部分是我们自己不去试。
+    /// 旧实现只在 `RouteCtl::Add`（成功）与 `Unlinked`（对端退订）时清理 `handshaking`，
+    /// 握手**失败**时不清理 ⇒ 该 central 之后的**真 Hello 被「已在握手」静默丢弃** ⇒
+    /// 设备再也连不进来；macOS 外设没有断连回调，条目可能永久残留。
     ///
-    /// "别打扰对端"这件事已经由 `DialGuard` 在途去重保证了（同一对端不会叠连接，
-    /// 那是真机第一轮踩出来的 bug），所以每轮都试是安全的。
+    /// 为什么用源码断言：外设事件循环需要真实 BLE 栈（射频 + GATT server），单测跑不了；
+    /// 但"失败路径有没有回传 `HandshakeFailed`"是纯静态事实 —— 而漏了它
+    /// **不会让任何测试失败**，只会让真机上表现为"第一次没连上就永远连不上"。
+    #[test]
+    fn peripheral_handshake_failure_clears_the_handshaking_mark() {
+        let src = include_str!("ble.rs");
+        let start = src
+            .find("async fn peripheral_accept_loop")
+            .expect("必须还有 peripheral_accept_loop（本护栏锚点）");
+        let body = &src[start..];
+        let end = body.find("\n}\n").unwrap_or(body.len());
+        let body = &body[..end];
+        assert!(
+            body.contains("RouteCtl::HandshakeFailed"),
+            "外设事件循环必须在**握手失败**时回传 RouteCtl::HandshakeFailed —— \
+             少了它，那台设备之后的真 Hello 会被『已在握手』永久丢弃，再也加入不进 mesh"
+        );
+        assert!(
+            body.contains("if !ok"),
+            "必须只在**失败**时回传 HandshakeFailed（成功路径由 RouteCtl::Add 清理，\
+             成功也回传会与刚起来的第二次握手抢同一个标记）"
+        );
+    }
+
+    /// **拨号退避不能把重试饿死**（两轮真机的结论：先前是"等 5~6 分钟"，
+    /// 后来是"日志里近一半是跳过候选"）。
+    ///
+    /// 现在的策略：**前 3 次失败不退避**（"搜不出来"最直接的解药），之后固定 5s 冷却。
+    /// 为什么每轮都试是安全的：`DialGuard` 已经在途去重（同一对端不会叠连接，
+    /// 那是真机第一轮踩出来的 bug），所以"退避"不再是防打扰的唯一手段。
     #[test]
     fn dial_backoff_does_not_starve_retries() {
         // 前 3 次失败：立刻可再试（不等于"忙等" —— 节奏由 2s 的扫描周期决定）
@@ -1767,5 +1987,33 @@ mod tests {
         );
         // 对端不广播时**不许**登记"不要再拨"（登记了就等于自己放弃唯一能建链的方式）
         assert!(should_dial_ble("a", "z", false));
+    /// **BLE 读循环必须回灌读活性**（2026-09-13 审计抓到的真缺陷）。
+    ///
+    /// `ConnectionHealth` 的读活性只在**建链时播种一次**
+    /// （`transport.rs::register_connection` → `seed_connection_read_seen`），
+    /// 此后只由**读循环**刷新（TCP 侧见 `transport.rs` 的 `reader_loop`）。
+    /// BLE 读循环原来漏了这一步 ⇒ 任何**健康**的蓝牙链路：
+    /// 15s 后 `is_healthy` 判假（选路与镜像去重都会按"不健康"处理）、
+    /// 45s 被健康看门狗 `stale_connections` 当作死链路**拆掉**，对端再拨回来、再拆，
+    /// 无限循环 —— 真机体感就是"蓝牙时好时坏、加好友/消息过一会儿才到"。
+    ///
+    /// 为什么用**源码断言**而不是跑真实链路：射频行为在单测里无法覆盖，
+    /// 但"读循环里有没有这一句"是纯静态事实，而且漏了**不会编译失败**、
+    /// 只会让链路每 45s 自断一次 —— 正是最该由护栏盯住的那类退化。
+    #[test]
+    fn ble_reader_loop_refreshes_read_activity() {
+        let src = include_str!("ble.rs");
+        let start = src
+            .find("async fn ble_reader_loop")
+            .expect("必须还有 ble_reader_loop（本护栏锚点）");
+        let body = &src[start..];
+        // 顶层函数的闭合花括号在行首（缩进的都是内部块）
+        let end = body.find("\n}\n").unwrap_or(body.len());
+        let body = &body[..end];
+        assert!(
+            body.contains("mark_conn_seen("),
+            "ble_reader_loop 里必须调用 mark_conn_seen —— 少了它，健康的 BLE 链路会在 \
+             15s 被判不健康、45s 被看门狗自己拆掉（真机表现为蓝牙时好时坏）"
+        );
     }
 }

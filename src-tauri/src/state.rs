@@ -22,13 +22,6 @@ use crate::mesh::router::MeshRouter;
 use crate::protocol::{Message, TCP_PORT};
 use crate::relay_manager::RelayManager;
 
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
-
 /// 系统语言是否为中文（供「跟随系统」语言偏好时判断应用显示名）。
 ///
 /// 后端不引入系统 locale 库，用 POSIX 环境变量 `LANG` / `LC_ALL` / `LC_MESSAGES`
@@ -328,9 +321,16 @@ fn default_true() -> bool {
     true
 }
 
-/// 网络接口候选（含评分），供开发者诊断面板展示 Discovery 实际看到的候选列表。
+/// 链路候选（含评分），供开发者诊断面板展示 Discovery 实际看到的候选列表。
+///
+/// 用户 2026-09-13 要求「网卡-候选 也可以加上蓝牙」：于是 `kind` 把两类候选
+/// 统一进一张表 —— `lan`（真实网卡）与 `bluetooth`（BLE 适配器这一条链路）。
+/// 蓝牙行没有 IP/广播（蓝牙链路上没有这些概念），所以 `ip` / `broadcast` 为空，
+/// 人类可读的状态放进 `detail`。
 #[derive(Serialize, Clone, Debug)]
 pub struct InterfaceCandidate {
+    /// `lan` | `bluetooth`
+    pub kind: String,
     pub name: String,
     pub ip: String,
     pub has_broadcast: bool,
@@ -339,23 +339,71 @@ pub struct InterfaceCandidate {
     pub is_virtual: bool,
     pub score: i32,
     pub selected: bool,
-}
-
-/// Discovery 诊断事件（ring buffer 条目）。
-#[derive(Serialize, Clone, Debug)]
-pub struct DiscoveryEvent {
-    /// 事件发生时的 Unix 毫秒时间戳
-    pub ts: i64,
-    /// 事件类型
-    pub kind: String,
-    /// 简短描述（不含密钥/私密数据，IP 地址可显示）
+    /// 一句话状态（蓝牙行用：「运行中 · 前台节奏 · 1 个对端」；网卡行为空）
     pub detail: String,
 }
 
+/// 蓝牙候选的失败退避条目（诊断面板展示"为什么这一轮没拨它"）。
+#[derive(Serialize, Clone, Debug)]
+pub struct BleBackoff {
+    /// BLE 外设标识（**不是身份** —— 身份由 Hello 验签建立）
+    pub id: String,
+    /// 连续失败次数
+    pub failures: u32,
+    /// 距下次允许尝试还有多少毫秒（≤0 表示已到期）
+    pub remaining_ms: i64,
+}
+
+/// 蓝牙运行时的可观测事实（诊断面板用）。
+///
+/// 为什么要单独一组：原来的诊断数据**全是局域网的**，纯蓝牙用户看到的是
+/// `mode = offline`（用户 2026-09-13 反馈）。蓝牙是独立通道，必须有自己的状态。
+#[derive(Serialize, Clone, Debug, Default)]
+pub struct BleDiag {
+    /// 本次构建是否编译了蓝牙特性（没编译时其余字段无意义）
+    pub feature_compiled: bool,
+    /// 用户开关状态（= 后端真实运行状态，见 `channels[bluetooth].enabled`）
+    pub enabled: bool,
+    /// 适配器是否可用（没有适配器 / 没有权限 = false）
+    pub available: bool,
+    pub running: bool,
+    /// 已建立 BLE 链路的对端数
+    pub peers: usize,
+    /// 当前扫描节奏来源：`active`（前台/聚焦）| `idle`（后台/失焦）
+    pub activity: String,
+    pub scan_window_ms: u64,
+    pub scan_interval_ms: u64,
+    /// 最近一次扫描完成时间（ms since epoch，0=从未）
+    pub last_scan_ts: i64,
+    /// 最近一次扫描收到的广播总数
+    pub last_scan_total: u32,
+    /// 其中属于本应用服务的个数
+    pub last_scan_matched: u32,
+    /// 正在退避中的候选（按剩余时间倒序）
+    pub backoff: Vec<BleBackoff>,
+/// 「不要再拨」名单大小（对端是指定拨号方时登记）
+    pub no_dial: usize,
+}
+
+/// BLE 最近一轮扫描的统计（不直接序列化，由 `BleDiag` 组装给前端）。
+#[cfg(feature = "bluetooth")]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BleScanStats {
+    /// 该轮扫描完成时间（ms since epoch）
+    pub last_ts: i64,
+    /// 收到多少个广播
+    pub total: u32,
+    /// 其中多少个带本应用的服务 UUID
+    pub matched: u32,
+}
+
 /// Discovery 运行时诊断状态（只读，供开发者面板展示）。
+///
+/// ⚠️ 用户 2026-09-13：「最近事件」已**合并进运行日志**（见 `AppState::push_diag_event`），
+/// 不再在这里保留 ring buffer —— 事件该和别的日志在一起被搜索/复制，而不是孤零零一个面板。
 #[derive(Serialize, Clone, Debug, Default)]
 pub struct DiscoveryDiag {
-    /// 当前网络模式：auto / manual / offline
+    /// 当前网络模式：auto / manual / offline（**仅指局域网**；蓝牙状态看 `bluetooth`）
     pub mode: String,
     /// 实际绑定的 IP
     pub bound_ip: String,
@@ -381,10 +429,10 @@ pub struct DiscoveryDiag {
     pub last_multicast_send: i64,
     /// 最近一次 announce 接收时间
     pub last_announce_recv: i64,
-    /// 候选接口列表（含评分）
+    /// 候选链路列表（网卡 + 蓝牙，含评分）
     pub candidates: Vec<InterfaceCandidate>,
-    /// 最近事件（ring buffer，最新在末尾）
-    pub recent_events: Vec<DiscoveryEvent>,
+    /// 蓝牙通道事实（独立于局域网，纯蓝牙用户也看得见自己的状态）
+    pub bluetooth: BleDiag,
 }
 
 /// 网络拓扑摘要（供拓扑状态栏展示）
@@ -633,6 +681,19 @@ pub struct AppState {
     /// 把手机拨过来的那条好链路反复打断。
     #[cfg(feature = "bluetooth")]
     pub ble_dial_failures: Mutex<std::collections::HashMap<String, (u32, i64)>>,
+    /// 应用是否处于「前台且窗口聚焦」（用户 2026-09-13 提的功耗策略）。
+    ///
+    /// 由前端在 `visibilitychange` / `focus` / `blur` 时调 `set_app_active` 更新，
+    /// 蓝牙扫描循环据此选快/慢节奏（见 `network::ble::SCAN_INTERVAL_*`）：
+    /// 前台（用户在用/PC 窗口聚焦）= 提高刷新率；后台/失焦 = 降频；进程退出/被杀 = 天然停止。
+    pub app_active: AtomicBool,
+    /// 唤醒 BLE 扫描循环**立刻扫一轮**：从后台切回前台、或用户打开「添加好友」时，
+    /// 不必再等一个（后台节奏下最长 30s 的）慢周期。
+    #[cfg(feature = "bluetooth")]
+    pub ble_wake: Arc<Notify>,
+    /// BLE 最近一轮扫描统计（诊断面板用）。
+    #[cfg(feature = "bluetooth")]
+    pub ble_scan: Mutex<BleScanStats>,
     /// 中继授权配置（P2 / M4）：策略 + 白名单。
     ///
     /// 为什么缓存在内存：转发热路径上 gossip 可能每秒几十条，为了一个策略字段去锁
@@ -755,6 +816,12 @@ pub struct AppState {
     pub group_file_receivers: Mutex<HashMap<String, FileReceiver>>,
     /// 正在接收的文件：transfer_id -> FileReceiver
     pub file_receivers: Mutex<HashMap<String, FileReceiver>>,
+    /// **文件发送的"真的写出去了"进展**：transfer_id -> 最近一次有分块离开链路的时刻（ms）。
+    ///
+    /// 用途：把 `FileCompleteAck` 的等待从"固定 30s 墙钟"改成"**安静** 30s 才算失败"
+    /// （见 `network/file.rs::wait_complete_ack`）。判据必须落在**写出**而不是"入队"上 ——
+    /// 队列能装 1024 帧，1MB 文件会在 1 秒内全部入队，而链路上要跑几分钟。
+    pub file_wire_progress: Mutex<HashMap<String, i64>>,
     /// 等待共享目录树响应：request_id -> 应答通道
     pub pending_share_tree:
         Mutex<HashMap<String, tokio::sync::oneshot::Sender<Vec<crate::protocol::ShareEntry>>>>,
@@ -776,8 +843,6 @@ pub struct AppState {
 
     /// Discovery 诊断状态（隐藏开发者面板用，只读展示不改变网络行为）
     pub diag: Mutex<DiscoveryDiag>,
-    /// Discovery 事件 ring buffer（最近 50 条，防无限增长）
-    pub diag_events: Mutex<VecDeque<DiscoveryEvent>>,
     /// Hello 握手防重放：近期已接受的 nonce（有界 FIFO，超出丢弃最旧）。
     /// 与本地时钟无关，因此不受设备间时间偏差影响。
     pub seen_hello_nonces: Mutex<VecDeque<String>>,
@@ -988,13 +1053,18 @@ impl AppState {
             group_file_online_targets: Mutex::new(HashMap::new()),
             file_sending: Mutex::new(std::collections::HashSet::new()),
             file_receivers: Mutex::new(HashMap::new()),
+            file_wire_progress: Mutex::new(HashMap::new()),
             pending_share_tree: Mutex::new(HashMap::new()),
             peers_dirty: AtomicBool::new(false),
             network_generation: AtomicU64::new(0),
             peers_notify: Arc::new(Notify::new()),
             probe: Mutex::new(None),
             diag: Mutex::new(DiscoveryDiag::default()),
-            diag_events: Mutex::new(VecDeque::with_capacity(50)),
+            app_active: AtomicBool::new(true),
+            #[cfg(feature = "bluetooth")]
+            ble_wake: Arc::new(Notify::new()),
+            #[cfg(feature = "bluetooth")]
+            ble_scan: Mutex::new(BleScanStats::default()),
             seen_hello_nonces: Mutex::new(VecDeque::new()),
             key_conflict_warned: Mutex::new(std::collections::HashSet::new()),
         }))
@@ -1182,18 +1252,53 @@ impl AppState {
         let _ = self.app.emit("peers-updated", peers);
     }
 
-    /// 推送一条诊断事件到 ring buffer（最多保留 50 条，淘汰最旧）。
+    /// 记录一条网络诊断事件 —— **直接进运行日志**（用户 2026-09-13 要求）。
+    ///
+    /// ## 为什么不再用独立 ring buffer
+    ///
+    /// 原来这里只把事件塞进一个"最近 50 条"的内存环形缓冲，只有隐藏的开发者面板能看，
+    /// 用户能贴出来的「运行日志」里一个字都没有 —— 让这两处数据各活各的，等于白记。
+    /// 现在统一进 `Logger`：可搜索、可复制、可落盘。
+    ///
+    /// ## 哪些留、哪些丢（不是无脑全打）
+    ///
+    /// 日志规范（见 `logging.rs` 顶部）明确要求**不记高频循环**。这里的调用点里，
+    /// `announce_recv` 每收一个节点广播一条（秒级）、`broadcast_sent` / `multicast_sent`
+    /// 每 10s 一条 —— 全打进去会在几分钟内把 500 条内存 buffer 冲干净，真问题反而被淹没。
+    /// 所以只把**有排查价值的异常/状态跃迁**落日志，纯心跳成功事件直接丢弃：
+    ///
+    /// | kind | 去留 |
+    /// |---|---|
+    /// | `discovery_started` | 留（info，一次性状态跃迁） |
+    /// | `broadcast_error` 等 `*_error` | 留（warn） |
+    /// | `hello_rejected` / `hello_mismatch` / `identity_key_conflict` | **丢** —— 见下 |
+    /// | `announce_recv` / `*_sent` | **丢**（高频心跳，没有排查价值） |
+    ///
+    /// 后一类「丢」不是漏了：它们的**每一个调用点旁边都已经有一条更完整的 `logger.warn`**
+    /// （`transport.rs` 的「拒绝未通过身份认证的 Hello: …」「握手身份不符：…」「握手验签失败：…」，
+    /// 以及 `warn_key_conflict_once`）。在这里再打一遍只会让日志出现成对的近似重复行 ——
+    /// 用户的诉求是「别单开一块，进日志里」，而这些本来就在日志里。
     pub fn push_diag_event(&self, kind: &str, detail: &str) {
-        let ev = DiscoveryEvent {
-            ts: now_ms(),
-            kind: kind.to_string(),
-            detail: detail.to_string(),
-        };
-        let mut buf = self.diag_events.lock().unwrap_or_else(|e| e.into_inner());
-        if buf.len() >= 50 {
-            buf.pop_front();
+        const DROPPED: &[&str] = &[
+            // 纯心跳（高频，且没有排查价值）
+            "announce_recv",
+            "broadcast_sent",
+            "multicast_sent",
+            "who_has_sent",
+            // 已在各自的调用点旁边用更完整的上下文记过（重复打只会刷屏）
+            "hello_rejected",
+            "hello_mismatch",
+            "identity_key_conflict",
+        ];
+        if DROPPED.contains(&kind) {
+            return;
         }
-        buf.push_back(ev);
+        let message = format!("diag/{kind}: {detail}");
+        if kind.ends_with("_error") {
+            self.logger.warn("discovery", message);
+        } else {
+            self.logger.info("discovery", message);
+        }
     }
 
     /// 启动节点表节流推送任务（合并高频更新，避免 IPC 风暴）。

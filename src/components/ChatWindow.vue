@@ -15,7 +15,7 @@ import RenameGroupModal from "@/components/chat/RenameGroupModal.vue";
 import ForwardModal from "@/components/message/ForwardModal.vue";
 import ImageLightbox from "@/components/message/ImageLightbox.vue";
 import { estimateMessageHeight } from "@/utils/messageHeight";
-import { ArrowDown } from "lucide-vue-next";
+import { ArrowDown, Bluetooth, X } from "lucide-vue-next";
 import type { LinkState, MessageRecord, MsgKind } from "@/types";
 
 const emit = defineEmits<{ (e: "open-share"): void }>();
@@ -61,6 +61,26 @@ watch(
   () => [chat.activeConv, messages.value.length] as const,
   refreshLinkState,
   { immediate: true },
+);
+
+/**
+ * 当前单聊是否真的走在蓝牙链路上（用户 2026-09-13 要求：蓝牙聊天框要说明传输速度）。
+ *
+ * 判据取**在线节点表的实时链路**（`peer.link`，由后端 `fill_peer_links` 按真实链路填），
+ * 而不是上面的 `linkState` —— 后者是"最近一条消息走的路径"的快照，链路可能早就切了。
+ * 提示必须和"现在这条链路"一致，否则会在 Wi-Fi 链路上误导用户。
+ */
+const btLink = computed(() => {
+  if (!conv.value || conv.value.kind !== "single") return false;
+  return chat.peers.find((p) => p.device_id === conv.value!.id)?.link === "bluetooth";
+});
+/** 速度提示可关闭：按会话各记一次（切走再回来重新提示，因为换会话就是换链路场景）。 */
+const btHintDismissed = ref(false);
+watch(
+  () => chat.activeConv,
+  () => {
+    btHintDismissed.value = false;
+  },
 );
 /**
  * 切会话：清掉"跟着输入框走的发送上下文"（引用 / 转发草稿）。
@@ -476,6 +496,25 @@ function onLoadMore() {
       @rename="renameOpen = true"
       @open-share="emit('open-share')"
     />
+
+    <!-- 蓝牙链路速度提示（用户 2026-09-13 要求）：蓝牙分片载荷受 20 字节 MTU 限制，
+         实测吞吐约 1 KB/s，一张 500 KB 的图片要几分钟。让用户在大文件开始**之前**
+         就有预期，而不是看着进度条一直不动以为卡死。可关闭，切换会话后重新提示。 -->
+    <div
+      v-if="btLink && !btHintDismissed"
+      class="flex shrink-0 items-center gap-2 border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-warning-soft)] px-4 py-1.5 text-[12px] leading-[18px] text-[var(--gosslan-warning-ink)]"
+    >
+      <Bluetooth class="h-3.5 w-3.5 shrink-0" />
+      <span class="min-w-0 flex-1">{{ t("chat.bt.slowHint") }}</span>
+      <button
+        class="tap-safe shrink-0 rounded-[var(--gosslan-radius-sm)] px-1.5 py-0.5 transition hover:bg-black/5 dark:hover:bg-white/10"
+        :title="t('chat.bt.dismiss')"
+        :aria-label="t('chat.bt.dismiss')"
+        @click="btHintDismissed = true"
+      >
+        <X class="h-3.5 w-3.5" />
+      </button>
+    </div>
 
     <!-- 消息区（虚拟滚动，仅纵向）：与头部同底色，无缝衔接 -->
     <div ref="chatAreaRef" class="relative min-h-0 flex-1 overflow-hidden bg-[var(--gosslan-chat)]">

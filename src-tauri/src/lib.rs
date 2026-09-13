@@ -335,6 +335,7 @@ pub fn run() {
             commands::clear_all_data,
             commands::get_discovery_diag,
             commands::get_interface_candidates,
+            commands::set_app_active,
             commands::list_routed_endpoints,
             commands::add_routed_endpoint,
             commands::remove_routed_endpoint,

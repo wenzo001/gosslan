@@ -55,7 +55,7 @@ use crate::network::transport::{
     resolve_member_x25519, resolve_nickname, try_send,
 };
 use crate::network::{self, file};
-use crate::protocol::{GossipKind, Message, MsgKind, ShareEntry, FILE_CHUNK};
+use crate::protocol::{GossipKind, Message, MsgKind, ShareEntry};
 use crate::state::{
     AppState, BleRuntimeFacts, RuntimeSnapshot, Conversation, DeviceInfo, Friend, Group, GroupFile, InterfaceInfo, MessageRecord,
     Peer, PendingRequest, TopologyInfo, TransferInfo,
@@ -314,6 +314,36 @@ pub async fn search_nearby_peers(state: State<'_, Arc<AppState>>) -> Result<Vec<
     Ok(peers)
 }
 
+/// 更新「应用是否在前台且窗口聚焦」（用户 2026-09-13 的功耗策略）。
+///
+/// 前端在 `visibilitychange`（页面是否可见）与 `focus` / `blur`（PC 窗口是否聚焦）时调用。
+/// 蓝牙扫描循环据此在快/慢节奏间切换：
+///   · 前台 / 聚焦 ⇒ 5s 一轮（发现更快，加好友不用干等）；
+///   · 后台 / 失焦 ⇒ 30s 一轮（省电；好友申请仍能最终到达）；
+///   · 进程退出 / 被系统杀死 ⇒ 扫描任务随进程消失，无需额外代码。
+///
+/// 从后台变回前台时额外 **wake** 一次扫描，立刻补一轮，而不是等完当前慢周期。
+#[tauri::command(async)]
+pub fn set_app_active(state: State<'_, Arc<AppState>>, active: bool) {
+    use std::sync::atomic::Ordering;
+    let s = state.inner();
+    if s.app_active.swap(active, Ordering::Relaxed) == active {
+        return;
+    }
+    #[cfg(feature = "bluetooth")]
+    {
+        crate::network::ble::wake_scan(s);
+        s.logger.info(
+            "ble",
+            format!(
+                "[SCAN] 应用{} ⇒ 扫描节奏切换为 {}",
+                if active { "回到前台/聚焦" } else { "进入后台/失焦" },
+                if active { "5s" } else { "30s" }
+            ),
+        );
+    }
+}
+
 /// 从后台唤起并聚焦主窗口（冷启动首显 / 点击系统通知 / 消息点击唤起）。
 #[cfg(desktop)]
 #[tauri::command(async)]
@@ -373,39 +403,103 @@ pub fn get_topology(state: State<'_, Arc<AppState>>) -> TopologyInfo {
 
 // ---------------- 开发者诊断（隐藏面板用，只读不改网络行为） ----------------
 
-/// 获取 Discovery 运行时诊断状态（供隐藏开发者面板展示）。
-#[tauri::command(async)]
-pub fn get_discovery_diag(state: State<'_, Arc<AppState>>) -> crate::state::DiscoveryDiag {
-    let s = state.inner();
-    let net = s.network.lock().unwrap_or_else(|e| e.into_inner());
-    let diag = s.diag.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    let mut result = diag;
-    if let Some(ref h) = *net {
-        result.mode = if h.bound_ip == "0.0.0.0" {
-            "auto".into()
-        } else {
-            "manual".into()
-        };
-        // auto 模式下 Discovery 实际绑定的是真实 LAN IP，而不是 0.0.0.0。
-        // tcp_listen 仍使用用户配置的地址（TCP 监听地址）。
-        result.bound_ip = if h.actual_bound_ip.is_empty() {
-            h.bound_ip.clone()
-        } else {
-            h.actual_bound_ip.clone()
-        };
-        result.tcp_listen = format!("{}:{}", h.bound_ip, h.tcp_port);
-        result.udp_port = crate::protocol::UDP_PORT;
-    } else {
-        result.mode = "offline".into();
+/// 同步收集蓝牙通道事实（诊断面板用）。
+///
+/// 为什么不用 `network::ble::runtime_state`（那个是 async）：本函数在**同步命令**里跑，
+/// 而 `state.links` 是 `tokio::sync::Mutex`。这里用 `try_lock` 尽力而为 —— 拿不到锁就把
+/// 对端数留成通道给的值（下一轮刷新会补上），诊断面板绝不能因为统计而阻塞网络。
+fn collect_ble_diag(s: &Arc<AppState>) -> crate::state::BleDiag {
+    let mut d = crate::state::BleDiag {
+        feature_compiled: cfg!(feature = "bluetooth"),
+        activity: "idle".into(),
+        ..Default::default()
+    };
+    // 通道 available / enabled：与 `RuntimeSnapshot` 完全同一口径（唯一真相源）。
+    if let Some(bt) = TransportManager::new(s.clone())
+        .status()
+        .into_iter()
+        .find(|c| c.channel == "bluetooth")
+    {
+        d.available = bt.available;
+        d.enabled = bt.enabled;
+        d.running = bt.running;
+        d.peers = bt.peers;
     }
-    // 附加最近事件
-    result.recent_events = s.diag_events.lock().unwrap_or_else(|e| e.into_inner()).iter().cloned().collect();
-    result
+    #[cfg(feature = "bluetooth")]
+    {
+        // 链路表口径的"已建链对端数"：比通道计数更准，也不依赖那个占位 Transport 实现。
+        d.peers = s
+            .links
+            .try_lock()
+            .map(|links| {
+                links
+                    .values()
+                    .filter(|ls| ls.iter().any(|l| l.path_kind == crate::mesh::PathKind::Bluetooth))
+                    .count()
+            })
+            .unwrap_or(d.peers);
+        d.running = s.ble.lock().unwrap_or_else(|e| e.into_inner()).is_some();
+        // 与通道同口径：起不来就是关（用户在设置里点的开，其实就是"真的在跑"）。
+        d.enabled = d.running;
+        d.available = d.available || d.running;
+        d.no_dial = s.ble_no_dial.lock().unwrap_or_else(|e| e.into_inner()).len();
+        let now = crate::db::now_ms();
+        let mut backoff: Vec<crate::state::BleBackoff> = s
+            .ble_dial_failures
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .map(|(id, (failures, next))| crate::state::BleBackoff {
+                id: id.clone(),
+                failures: *failures,
+                remaining_ms: (*next - now).max(0),
+            })
+            .collect();
+        backoff.sort_by(|a, b| b.remaining_ms.cmp(&a.remaining_ms));
+        d.backoff = backoff;
+        let active = s.app_active.load(std::sync::atomic::Ordering::Relaxed);
+        d.activity = if active { "active".into() } else { "idle".into() };
+        d.scan_window_ms = crate::network::ble::scan_window_ms();
+        d.scan_interval_ms = crate::network::ble::scan_interval_ms(active);
+        let stats = *s.ble_scan.lock().unwrap_or_else(|e| e.into_inner());
+        d.last_scan_ts = stats.last_ts;
+        d.last_scan_total = stats.total;
+        d.last_scan_matched = stats.matched;
+    }
+    d
 }
 
-/// 获取候选网卡列表（含评分），供诊断面板展示 Discovery 自动选择逻辑的实际数据。
-#[tauri::command(async)]
-pub fn get_interface_candidates() -> Vec<crate::state::InterfaceCandidate> {
+/// 蓝牙候选行的一句话状态（诊断面板「候选链路」表里显示）。
+fn ble_candidate_detail(d: &crate::state::BleDiag) -> String {
+    if !d.feature_compiled {
+        return "本次构建未编译蓝牙特性".into();
+    }
+    if !d.running {
+        return if d.available {
+            "未开启".into()
+        } else {
+            "不可用（无适配器或未授权）".into()
+        };
+    }
+    let cadence = if d.activity == "active" { "前台" } else { "后台" };
+    format!(
+        "运行中 · {}节奏（{}s 扫描 / {}s 间隔）· {} 个对端",
+        cadence,
+        d.scan_window_ms / 1000,
+        d.scan_interval_ms / 1000,
+        d.peers
+    )
+}
+
+/// 收集候选链路（网卡 + 蓝牙），供诊断面板展示自动选择逻辑的实际数据。
+///
+/// 用户 2026-09-13：「网卡-候选 也可以加上蓝牙」—— 于是蓝牙作为**一条候选**进同一张表，
+/// 但它的字段语义与网卡不同（没有 IP / 广播 / RFC1918 / 虚拟网卡），
+/// 所以用 `kind` 区分、用 `detail` 说人话，前端按 kind 渲染不同列。
+///
+/// `bt` 由调用方传入（一次采集、两处共用）：既省一次锁，也保证「候选表里的蓝牙行」
+/// 与「蓝牙卡片」说的是**同一时刻**的状态。
+fn collect_candidates(bt: &crate::state::BleDiag) -> Vec<crate::state::InterfaceCandidate> {
     use std::net::Ipv4Addr;
 
     fn is_virtual_ip(ip: &Ipv4Addr) -> bool {
@@ -475,6 +569,7 @@ pub fn get_interface_candidates() -> Vec<crate::state::InterfaceCandidate> {
                     score -= 30;
                 }
                 out.push(crate::state::InterfaceCandidate {
+                    kind: "lan".into(),
                     name: i.name.clone(),
                     ip: ip.to_string(),
                     has_broadcast: has_bc,
@@ -483,12 +578,72 @@ pub fn get_interface_candidates() -> Vec<crate::state::InterfaceCandidate> {
                     is_virtual: virt_ip || virt_name,
                     score,
                     selected: false, // 由调用方根据实际 bind_ip 设置
+                    detail: String::new(),
                 });
             }
         }
     }
     out.sort_by(|a, b| b.score.cmp(&a.score).then(a.ip.cmp(&b.ip)));
+
+    // 蓝牙作为一条候选排在网卡后面（它不是"第 N 张网卡"，是另一条链路）。
+    out.push(crate::state::InterfaceCandidate {
+        kind: "bluetooth".into(),
+        name: "蓝牙（BLE）".into(),
+        ip: String::new(),
+        has_broadcast: false,
+        broadcast: None,
+        is_rfc1918: false,
+        is_virtual: false,
+        score: 0,
+        selected: bt.running,
+        detail: ble_candidate_detail(bt),
+    });
     out
+}
+
+/// 获取网络诊断状态（供隐藏开发者面板展示）。
+///
+/// 数据分两块，**互不冒充**：`mode`/`bound_ip`/… 只描述局域网；蓝牙在 `bluetooth` 里
+/// 独立描述。纯蓝牙用户不会再看到"整机 offline"（用户 2026-09-13 的反馈）。
+/// 「最近事件」已合并进运行日志，这里不再返回（见 `AppState::push_diag_event`）。
+#[tauri::command(async)]
+pub fn get_discovery_diag(state: State<'_, Arc<AppState>>) -> crate::state::DiscoveryDiag {
+    let s = state.inner();
+    let mut result = s.diag.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    {
+        let net = s.network.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(ref h) = *net {
+            result.mode = if h.bound_ip == "0.0.0.0" {
+                "auto".into()
+            } else {
+                "manual".into()
+            };
+            // auto 模式下 Discovery 实际绑定的是真实 LAN IP，而不是 0.0.0.0。
+            // tcp_listen 仍使用用户配置的地址（TCP 监听地址）。
+            result.bound_ip = if h.actual_bound_ip.is_empty() {
+                h.bound_ip.clone()
+            } else {
+                h.actual_bound_ip.clone()
+            };
+            result.tcp_listen = format!("{}:{}", h.bound_ip, h.tcp_port);
+            result.udp_port = crate::protocol::UDP_PORT;
+        } else {
+            result.mode = "offline".into();
+        }
+    }
+    // 候选链路（网卡 + 蓝牙）一次给全：面板只调一个命令，不会出现"两个命令数据不一致"。
+    // 蓝牙事实只采集一次，候选表与蓝牙卡片共用同一份（保证同一时刻的状态）。
+    let bt = collect_ble_diag(s);
+    result.candidates = collect_candidates(&bt);
+    result.bluetooth = bt;
+    result
+}
+
+/// 获取候选链路列表（网卡 + 蓝牙，含评分）。
+#[tauri::command(async)]
+pub fn get_interface_candidates(state: State<'_, Arc<AppState>>) -> Vec<crate::state::InterfaceCandidate> {
+    let bt = collect_ble_diag(state.inner());
+    collect_candidates(&bt)
 }
 
 // ---------------- 双通道与缓存 ----------------
@@ -2806,10 +2961,18 @@ async fn dispatch_group_file_to_peer(
         .await
         .map_err(|e| format!("Offer 发送失败：{e}"))?;
 
-    // 流式分片：256KB → AEAD（独立随机 nonce）→ Base64 → GroupFileChunk
+    // 流式分片：按**该接收者的实际链路**选块大小 → AEAD（独立随机 nonce）→ Base64 → GroupFileChunk。
+    //
+    // ⚠️ 不能再用固定的 256KiB（原 `FILE_CHUNK`）：BLE 上 256KiB base64 后约 350KB，
+    // MTU=23 时需 ≈25000 片 > `MAX_BLE_CHUNKS_PER_MESSAGE`(8192) ⇒ `fragment()` 返回 `None`
+    // ⇒ 整帧被丢（只留一条 warn），而发送方界面照旧显示"已发送"
+    // —— 即**群文件在 BLE 上等于 0 字节可达**。
+    // 单聊路径早已用 `chunk_size_for_path` 修掉同一个坑（推导见 `network/file.rs`），这里补齐。
+    let path_kind = crate::network::transport::inbound_path_kind(state, recipient).await;
+    let chunk_size = file::chunk_size_for_path(&path_kind);
     let mut f = tokio::fs::File::open(&src).await.map_err(|e| e.to_string())?;
     use tokio::io::AsyncReadExt;
-    let mut buf = vec![0u8; FILE_CHUNK];
+    let mut buf = vec![0u8; chunk_size];
     let mut seq: u32 = 0;
     let mut sent: u64 = 0;
     let mut last_report = std::time::Instant::now() - std::time::Duration::from_secs(1);

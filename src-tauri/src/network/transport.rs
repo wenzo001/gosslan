@@ -1173,7 +1173,10 @@ async fn handle_incoming(
 ///
 /// 复杂度：每条连接每 5s 至少一次（心跳），加上真实收发，都是 std 锁上的一次查表 ——
 /// 与 `register_connection` 同量级，不构成热点。
-fn mark_conn_seen(state: &AppState, peer_id: &str, endpoint: &MeshEndpoint) {
+/// ⚠️ **每一种传输的读循环都必须调用它**（2026-09-13 审计发现：BLE 链路漏了这一句，
+/// 于是健康的蓝牙链路 15s 后就被判"不健康"、45s 被看门狗自己拆掉，循环往复）。
+/// `pub(crate)` 就是为了让 `network/ble.rs` 也能调。
+pub(crate) fn mark_conn_seen(state: &AppState, peer_id: &str, endpoint: &MeshEndpoint) {
     let mut pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
     pm.mark_connection_seen(
         peer_id,
@@ -1197,6 +1200,48 @@ fn mark_conn_write_seen(state: &AppState, peer_id: &str, endpoint: &MeshEndpoint
         None,
         false,
     );
+}
+
+/// 记录「某个文件传输又有一帧**真的离开了链路**」。
+///
+/// 为什么必须落在"写出"而不是"入队"：发送侧 mpsc 容量 1024，1MB 文件的分块会在
+/// **1 秒内**全部入队，而链路上要跑几分钟（BLE 上更久）。`FileCompleteAck` 的等待窗口
+/// 正是靠这张表从"固定 30s 墙钟"改成"安静 30s 才算失败"（`file.rs::wait_complete_ack`）。
+/// 放在 writer_loop 里是唯一正确的位置 —— 它是"字节真的走了"的唯一证据点。
+///
+/// TCP 与 BLE 两条写循环都要调（BLE 见 `network/ble.rs`）。
+pub(crate) fn mark_file_wire_progress(state: &AppState, msg: &Message) {
+    let transfer_id = match msg {
+        Message::FileChunk { transfer_id, .. } => transfer_id,
+        // 群文件走同一个"等确认"语义（确认是 GroupFileCompleteAck）
+        Message::GroupFileChunk { transfer_id, .. } => transfer_id,
+        _ => return,
+    };
+    state
+        .file_wire_progress
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(transfer_id.clone(), db::now_ms());
+}
+
+/// 读「该 transfer 最近一次真的写出字节」的时刻（0 = 从未写出过）。
+pub(crate) fn file_wire_progress_at(state: &AppState, transfer_id: &str) -> i64 {
+    state
+        .file_wire_progress
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(transfer_id)
+        .copied()
+        .unwrap_or(0)
+}
+
+/// 传输收尾时清掉进展记录（成功/失败都清），避免这张表随历史传输无限增长。
+pub(crate) fn clear_file_wire_progress(state: &AppState, transfer_id: &str) {
+    state
+        .file_wire_progress
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(transfer_id);
 }
 
 
@@ -1265,6 +1310,8 @@ async fn writer_loop(
                     // 写成功只记**出站**活性（诊断口径）。M3-0b 起它**不**参与 is_healthy：
                     // 半开 TCP 上写会一直"成功"，那是本缺陷要被排除的伪证据。
                     mark_conn_write_seen(&state, &peer_id, &endpoint);
+                    // 文件分块**真的写出去了**才叫进展（发送侧等 FileCompleteAck 的判据）。
+                    mark_file_wire_progress(&state, &msg);
                     continue;
                 }
                 if matches!(outcome, WriteOutcome::Stopped) {
@@ -3328,6 +3375,37 @@ fn may_ack(inserted: &Result<bool, rusqlite::Error>) -> bool {
 ///
 /// 转发是**尽力而为**：失败可忽略。Gossip 的可靠性由 outbox / dedup 保证，
 /// 不依赖中继成功。
+/// 群信封能否被**本机消费**（= 是否允许进入第 5 步的本地处理）。
+///
+/// ⚠️ 这条判据**只管"消费"，不管"转发"**（2026-09-13 审计的真缺陷）。
+///
+/// 旧实现在这里直接 `return`，于是**非成员中继根本不会转发群消息**：
+/// 三个 BLE-only 设备串成 A—B—C 时，只要 B 不在群里，A 发的群消息到 B 就没了
+/// —— 而同一条链路上单聊是通的（单聊走定向 target 分支）。
+/// 表现就是"BLE mesh 上群聊永远不通、私聊却正常"。
+///
+/// 语义边界（为什么"非成员转发"是安全的）：
+/// - 群消息正文用**群密钥**对称加密，非成员没有密钥 ⇒ 解不开（`plaintext = None`），
+///   转发它只是搬密文，不泄露任何内容；
+/// - 是否愿意替别人转发，由**中继授权（M4）**决定（`decide_forward`），不靠这条判据；
+/// - `sender` 必须在成员表里：签名只证明"是谁发的"，不证明"发送者有权把人拉进群"，
+///   所以伪造者发的群信封即使广播过来，本机也不消费它。
+pub(crate) fn group_envelope_consumable(
+    kind: &GossipKind,
+    members: &[String],
+    me: &str,
+    sender: &str,
+) -> bool {
+    if !matches!(kind, GossipKind::Group) {
+        return true;
+    }
+    // 成员表为空 = 旧端 / 早期实现发的群信封，保持兼容（与旧代码同口径）
+    if members.is_empty() {
+        return true;
+    }
+    members.iter().any(|m| m == me) && members.iter().any(|m| m == sender)
+}
+
 async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope) {
     // Gossip 可经第三方转发，不能仅凭信封内自报的 Ed25519 公钥建立身份。
     // 公钥必须先由 Discovery/Hello 绑定到同一个 device_id；若已知 X25519
@@ -3495,15 +3573,13 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
         }
     };
 
-    // 群信封即使签名正确，也只能被群成员消费；签名证明“是谁发的”，
+    // 群信封即使签名正确，也只能被群成员**消费**；签名证明“是谁发的”，
     // 不代表发送者有权把任意节点加入一个群。
-    if matches!(env.kind, GossipKind::Group) && !env.group_members.is_empty() {
-        if !env.group_members.iter().any(|m| m == &state.device_id)
-            || !env.group_members.iter().any(|m| m == &env.sender_id)
-        {
-            return;
-        }
-    }
+    //
+    // ⚠️ 这里**只记判据、不 return**（2026-09-13 审计）：非成员也要继续走第 4 步的转发，
+    // 否则 BLE-only 三点中继里的群聊永远不通（细节见 `group_envelope_consumable` 的注释）。
+    let group_consumable =
+        group_envelope_consumable(&env.kind, &env.group_members, &state.device_id, &env.sender_id);
 
     // 4. 转发（fan-out，TTL 衰减）— 先过**中继授权**（P2 / M4），再选人转发。
     //
@@ -3586,6 +3662,12 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
     }
 
     // 5. 按 GossipKind 处理
+    //
+    // 非成员**跳过本地消费**（上面的转发已经做完了）：群密钥不在手上，本来也解不开，
+    // 但绝不能因为"我不是这个群的成员"就把整条消息丢掉 —— 那样多跳群聊永远不通。
+    if !group_consumable {
+        return;
+    }
     match env.kind {
         GossipKind::FriendMessageBlocked => {
             // 控制消息：检查本机是否为原始发送方
@@ -5898,6 +5980,52 @@ pub fn notify_with_extra(
 mod tests {
     use super::*;
     use crate::gossip_engine::GossipEngine;
+
+    /// **群信封的"可消费"判据**（2026-09-13 审计的真缺陷，必须钉住）。
+    ///
+    /// 反例：旧实现把"我不是群成员"直接 `return` 掉，于是**非成员中继不转发群消息**
+    /// ⇒ BLE-only 三点中继（手机—电脑—手机）里群聊永远不通，而同链路单聊正常。
+    /// 这条测试只钉"能不能消费"；"非成员仍要转发"由下面那条 + `handle_gossip` 的结构保证。
+    #[test]
+    fn group_envelope_consumption_rule() {
+        let members = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let group = members(&["me", "other"]);
+        let me = "me";
+        let other = "other";
+
+        // 是群成员、且发送者也在成员表里 ⇒ 可以消费
+        assert!(group_envelope_consumable(&GossipKind::Group, &group, me, other));
+        // 我不是成员 ⇒ 不消费（但**不影响转发** —— 见 group_envelope_consumable 的注释）
+        assert!(!group_envelope_consumable(&GossipKind::Group, &group, "stranger", other));
+        // 发送者自称不在成员表里（伪造者想把群消息广播给别人）⇒ 不消费
+        assert!(!group_envelope_consumable(&GossipKind::Group, &group, me, "outsider"));
+        // 成员表为空 = 旧端发的群信封 ⇒ 保持兼容，允许消费
+        assert!(group_envelope_consumable(&GossipKind::Group, &[], me, other));
+        // 非群种类一律不受这条判据影响
+        assert!(group_envelope_consumable(&GossipKind::Presence, &group, "stranger", other));
+        assert!(group_envelope_consumable(&GossipKind::ChatAck, &group, "stranger", other));
+    }
+
+    /// **非成员中继必须转发群消息**（结构护栏）：`handle_gossip` 里那句早期 `return` 一旦
+    /// 被加回来，BLE-only 多跳的群聊就又断了 —— 而它**不会让任何测试失败**，
+    /// 只会让真机上的群聊静默不通。所以用源码断言把"只记判据、不 return"钉住。
+    #[test]
+    fn handle_gossip_does_not_bail_out_for_non_members() {
+        let src = include_str!("transport.rs");
+        let start = src.find("async fn handle_gossip").expect("必须还有 handle_gossip");
+        let body = &src[start..];
+        let end = body.find("\n}\n").unwrap_or(body.len());
+        let body = &body[..end];
+        assert!(
+            body.contains("group_envelope_consumable("),
+            "handle_gossip 必须用 group_envelope_consumable 判据"
+        );
+        assert!(
+            !body.contains("if matches!(env.kind, GossipKind::Group) && !env.group_members.is_empty()"),
+            "不能恢复『非成员直接 return』的旧写法 —— 那会让非成员中继不再转发群消息，\
+             多跳（BLE-only 手机↔电脑↔手机）群聊永远不通"
+        );
+    }
 
     /// **好友同意回执补发策略**：窗口 + 次数 + 间隔三条边界。
     ///

@@ -386,6 +386,14 @@ pub mod driver {
         seen_bytes: usize,
         /// 不属于本特征的通知（同连接上可能订阅了别的东西）。
         seen_other_uuid: u64,
+        /// **被丢弃的分片数 + 最近一次原因**（诊断用）。
+        ///
+        /// 为什么需要（用户 2026-09-13 真机：「发图片时报了分片/顺序相关的错」）：
+        /// `BleReassembler::push` 对坏片（重复 / 越界 / 分片数不一致 / 超上限）只返回
+        /// `Dropped(&str)`，**原来这一路是静默吞掉的** —— 真机上只看到"图片没到"，
+        /// 看不到"到了、但被分片层丢了、原因是…"。把原因留给上层读循环按需打日志。
+        dropped: u64,
+        last_drop_reason: &'static str,
     }
 
     impl BleConnection {
@@ -404,6 +412,8 @@ pub mod driver {
                     seen_notifications: 0,
                     seen_bytes: 0,
                     seen_other_uuid: 0,
+                    dropped: 0,
+                    last_drop_reason: "",
                 },
             )
         }
@@ -474,7 +484,14 @@ pub mod driver {
                 self.seen_bytes += notification.value.len();
                 match self.reassembler.push(&notification.value, crate::db::now_ms()) {
                     PushOutcome::Complete(payload) => return Ok(Some(payload)),
-                    PushOutcome::Incomplete | PushOutcome::Dropped(_) => continue,
+                    PushOutcome::Incomplete => continue,
+                    // 坏片：记下来（原因留给上层读循环打日志），继续等下一片 ——
+                    // 绝不因为一个畸形分片拆掉整条链路。
+                    PushOutcome::Dropped(reason) => {
+                        self.dropped += 1;
+                        self.last_drop_reason = reason;
+                        continue;
+                    }
                 }
             }
         }
@@ -491,6 +508,11 @@ pub mod driver {
                 self.seen_bytes,
                 self.seen_other_uuid,
             )
+        }
+
+        /// 被丢弃的分片：`(累计条数, 最近一次原因)`（诊断用，见 `dropped` 字段的注释）。
+        pub fn drop_stats(&self) -> (u64, &'static str) {
+            (self.dropped, self.last_drop_reason)
         }
     }
 
