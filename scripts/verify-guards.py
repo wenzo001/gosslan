@@ -440,10 +440,12 @@ CASES: list[Case] = [
         name="「蓝牙直连」不得用『没有 IP』反推（⑤）",
         why="用户 2026-09-12 实测：与 Mac 同一 Tailscale 网段的设备也被标成「蓝牙直连」——"
         "因为界面写的是 `p.ip || 蓝牙直连`；链路类型只有后端知道（Link::path_kind 由来路决定）",
-        file=ROOT / "src" / "components" / "AddFriendModal.vue",
+        # 判据在 4.2.19 抽到 `utils/peerConnectionInfo.ts`（资料页与添加好友页共用一份），
+        # 所以注入点跟着搬过去：这里模拟"按『没有 IP』反推蓝牙"的旧写法。
+        file=ROOT / "src" / "utils" / "peerConnectionInfo.ts",
         injections=[(
-            '  if (p.link === "bluetooth") return t("friend.add.viaBluetooth");',
-            '  if (p.ip || true) return t("friend.add.viaBluetooth");',
+            '  if (info.link === "bluetooth") return "peer.link.bluetooth";',
+            '  if (!info.ip || true) return "peer.link.bluetooth";',
         )],
         cmd=npm("test"),
         cwd=ROOT,
@@ -949,6 +951,21 @@ CASES: list[Case] = [
         cwd=TAURI,
         expect_fail_hint="BLE 分块大小必须能被分片",
         tags=["rust", "ble", "file"],
+    ),
+    Case(
+        name="连接信息按链路类型显示（蓝牙不显示 IP）",
+        why="用户 2026-09-13：蓝牙链路原来也显示一行『IP 地址：—』，设备类型还直接显示 "
+        "desktop/mobile 英文原值。不同链路该说不同的事实：蓝牙说『蓝牙直连（近距离）』且"
+        "**不显示 IP**；局域网/跨网段给 ip:port；中继只说跳数（没有直连地址就不许编一个）",
+        file=ROOT / "src" / "utils" / "peerConnectionInfo.ts",
+        injections=[(
+            '  if (info.link === "bluetooth") return false;',
+            "  if (false) return false;",
+        )],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="蓝牙没有 IP 概念",
+        tags=["frontend", "peer", "display"],
     ),
     Case(
         name="应用样式（三个窗口都必须加载 style.css）",

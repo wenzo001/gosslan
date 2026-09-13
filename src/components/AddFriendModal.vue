@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
+import { addressText, linkLabelKey, linkLabelParams } from "@/utils/peerConnectionInfo";
 import { computed, ref, watch } from "vue";
 import { useDeferredRef } from "@/composables/useDeferredRef";
 import { useAppStore } from "@/stores/useAppStore";
@@ -102,11 +103,21 @@ const filteredPeers = computed(() => {
  * · 跨网段（routed）且没有 IP 时显示「跨网段/VPN」；
  * · 只是"发现过、还没建链"就显示「已发现（未建链）」——不许猜。
  */
+/**
+ * 列表里的"怎么连上他"：**与资料页共用同一份判据**（`utils/peerConnectionInfo.ts`），
+ * 差别只是这里为了行宽只显示 IP、不带端口。
+ */
 function peerAddress(p: Peer): string {
-  if (p.link === "bluetooth") return t("friend.add.viaBluetooth");
-  if (p.ip) return p.ip;
-  if (p.link === "routed") return t("friend.add.viaRouted");
-  return t("friend.add.discovered");
+  const info = {
+    link: p.link ?? null,
+    ip: p.ip ?? null,
+    tcp_port: p.tcp_port ?? null,
+    hop: 0,
+    online: false,
+  };
+  const label = t(linkLabelKey(info), linkLabelParams(info));
+  const addr = addressText(info);
+  return addr ? `${label} · ${addr.split(":")[0]}` : label;
 }
 
 const channels = computed(() => app.channels ?? []);

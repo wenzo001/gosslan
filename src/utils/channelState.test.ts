@@ -134,8 +134,22 @@ test("「蓝牙直连」只能由后端链路类型判定（不许用『没有 I
     !/p\.ip \|\| t\("friend\.add\.viaBluetooth"\)/.test(modal),
     "不得再用 `p.ip || 蓝牙直连` 反推 —— Tailscale 同网段（Routed）的设备会被误标（用户实测）",
   );
-  assert.match(modal, /p\.link === "bluetooth"/, "只有后端说 bluetooth 才显示「蓝牙直连」");
+  // 判据已抽到 utils/peerConnectionInfo.ts（资料页与添加好友页共用同一份），
+  // 所以这里断言"调用那份判据"，而**不是**在组件里再写一遍 `p.link === "bluetooth"`。
   assert.match(modal, /function peerAddress\(/, "地址/链路文案必须收在一个函数里判定");
+  assert.match(modal, /linkLabelKey\(/, "链路文案必须走 peerConnectionInfo 的唯一判据");
+  assert.match(modal, /addressText\(/, "地址文案同样要走唯一判据（蓝牙/中继无地址）");
+  const info = read("utils/peerConnectionInfo.ts");
+  assert.match(
+    info,
+    /info\.link === "bluetooth"/,
+    "只有后端说 bluetooth 才算蓝牙直连（不许用『没有 IP』反推）",
+  );
+  assert.match(
+    info,
+    /if \(info\.link === "bluetooth"\) return false;/,
+    "蓝牙链路不显示 IP 行（蓝牙上没有 IP 概念）",
+  );
   // 后端：命令返回时必须把链路类型填上（事件推送里没有它）
   const commands = readFileSync(join(srcDir, "..", "src-tauri", "src", "commands.rs"), "utf8");
   assert.match(commands, /async fn fill_peer_links\(/, "必须有唯一的『补链路类型』实现");

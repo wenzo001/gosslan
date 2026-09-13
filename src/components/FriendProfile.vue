@@ -8,8 +8,16 @@
  * 这里照这个结构重排，但**字段沿用本应用现有的**（设备 ID / 指纹 / IP / 端口 / E2EE）——
  * 通信工具的身份核对面是设备指纹与公钥，不是微信号，凭空照搬反而误导。
  */
+import { api } from "@/api";
+import type { LinkState } from "@/types";
 import { t } from "@/i18n";
-import { computed, ref } from "vue";
+import {
+  addressText,
+  deviceTypeKey,
+  linkLabelKey,
+  linkLabelParams,
+} from "@/utils/peerConnectionInfo";
+import { computed, ref, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { ArrowLeft, MessageCircle, UserMinus } from "lucide-vue-next";
@@ -30,11 +38,34 @@ const peer = computed(() => chat.peers.find((p) => p.device_id === props.friend.
 const initial = computed(() => avatarInitial(props.friend.nickname));
 /** 设备指纹尾码：用于当面核对身份（完整 ID 过长，不便口头比对） */
 const shortId = computed(() => props.friend.device_id.slice(-8).toUpperCase());
-/** 连接地址：微信资料页在头部展示"地区/微信号"，这里对应我们的"怎么连上他"。 */
+/** 中继跳数：与聊天头部那颗链路徽标**同一来源**（`get_conv_link`），不另造一份。 */
+const convLink = ref<LinkState | null>(null);
+watch(
+  () => props.friend.device_id,
+  async (id) => {
+    convLink.value = id ? await api.getConvLink(id).catch(() => null) : null;
+  },
+  { immediate: true },
+);
+/** 连接信息：**按链路类型说各自的事实**（见 utils/peerConnectionInfo.ts 的约定）。 */
+const linkInfo = computed(() => ({
+  // `Peer.link` 是**活链路**（最权威）；没有活链路时退回会话链路快照
+  link: peer.value?.link ?? convLink.value?.path ?? null,
+  ip: peer.value?.ip ?? null,
+  tcp_port: peer.value?.tcp_port ?? null,
+  hop: convLink.value?.hop ?? 0,
+  online: props.friend.online,
+  device_type: props.friend.device_type,
+}));
+/** 头部那行"怎么连上他"：蓝牙说"蓝牙直连"，局域网给 ip:port，中继说"经 N 跳"。 */
 const address = computed(() => {
-  const p = peer.value;
-  return p && p.ip ? `${p.ip}${p.tcp_port ? `:${p.tcp_port}` : ""}` : "—";
+  const info = linkInfo.value;
+  const label = t(linkLabelKey(info), linkLabelParams(info));
+  const addr = addressText(info);
+  return addr ? `${label} · ${addr}` : label;
 });
+/** 地址行：蓝牙/中继**不显示**（蓝牙上没有 IP，中继没有直连地址）。 */
+const addressLine = computed(() => addressText(linkInfo.value));
 
 const confirmRemove = ref(false);
 </script>
@@ -89,7 +120,7 @@ const confirmRemove = ref(false);
             <!-- 小字段：（微信这里是 微信号/地区；我们对应 设备指纹尾码/连接地址） -->
             <div class="mt-2 space-y-0.5 text-[12px] leading-relaxed text-[var(--gosslan-text-2)]">
               <div>{{ t("friend.profile.fingerprint") }}：<span class="font-mono">{{ shortId }}</span></div>
-              <div class="truncate" :title="address">{{ t("friend.profile.ip") }}：<span class="font-mono">{{ address }}</span></div>
+              <div class="truncate" :title="address">{{ t("peer.link.label") }}：<span class="font-mono">{{ address }}</span></div>
             </div>
           </div>
         </div>
@@ -107,13 +138,18 @@ const confirmRemove = ref(false);
             <div class="h-px bg-[var(--gosslan-divider)]"></div>
             <div class="flex items-center justify-between gap-4 px-4 py-3 text-sm">
               <span class="shrink-0 text-[var(--gosslan-text-2)]">{{ t("friend.profile.deviceType") }}</span>
-              <span>{{ friend.device_type || "—" }}</span>
+              <!-- 后端只给 desktop/mobile；这里翻成"电脑/手机"，不认识就说"未知设备" -->
+              <span>{{ t(deviceTypeKey(friend.device_type)) }}</span>
             </div>
             <div class="h-px bg-[var(--gosslan-divider)]"></div>
-            <div class="flex items-center justify-between gap-4 px-4 py-3 text-sm">
-              <span class="shrink-0 text-[var(--gosslan-text-2)]">{{ t("friend.profile.ip") }}</span>
-              <span class="font-mono text-xs">{{ peer?.ip || "—" }}</span>
-            </div>
+            <!-- 地址行：**蓝牙与中继不显示**（蓝牙上没有 IP，中继没有直连地址）—— 见 peerConnectionInfo -->
+            <template v-if="addressLine">
+              <div class="flex items-center justify-between gap-4 px-4 py-3 text-sm">
+                <span class="shrink-0 text-[var(--gosslan-text-2)]">{{ t("friend.profile.ip") }}</span>
+                <span class="truncate font-mono text-xs" :title="addressLine">{{ addressLine }}</span>
+              </div>
+              <div class="h-px bg-[var(--gosslan-divider)]"></div>
+            </template>
             <div class="h-px bg-[var(--gosslan-divider)]"></div>
             <div class="flex items-center justify-between gap-4 px-4 py-3 text-sm">
               <span class="shrink-0 text-[var(--gosslan-text-2)]">{{ t("friend.profile.port") }}</span>
