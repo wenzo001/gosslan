@@ -2,7 +2,11 @@
 
 - Status: **Accepted**（2026-09-12 用户审核通过）。实现已落地：central `cc273b5`/`c2124ef`、
   macOS 外设 `b317c27`、Android 外设（Kotlin + JNI）`e66fd8b`/`badd668`；
-  默认关闭由 feature 门 + 设置开关双重保证。iOS 外设与 Windows 外设**明确不做**（用户 2026-09-12 决定）
+  默认关闭由 feature 门 + 设置开关双重保证。
+  ⚠️ **2026-09-13 更新**：Windows 外设角色**已经做了**（`26969a9`，见 §7.10）——
+  2026-09-12 那句"Windows 外设明确不做"已被用户当天的新要求取代（"Windows 不能广播 ⇒
+  手机永远发现不了它"，真机上就是"搜到了但连不上/连不上又搜不到"的死局）。
+  **iOS 外设仍不做**。
 - 进度：7-a/7-b/7-c 完成；7-e **central + macOS peripheral 两侧接线均已完成**（编译/单测验证），真机待做；7-d 待设计；7-f（移动端做 peripheral）待做
 - Date: 2026-09-12
 - Owners: Gosslan
@@ -119,7 +123,7 @@ BLE 的价值正在这里：它**不依赖 IP 网段**，天然满足"零配置�
 `cargo test --lib --features bluetooth` = **371 passed / 0 warning**，Android target 同样 0 warning。
 剩：**三平台真机**。 |
 | 7-f | 移动端/Windows 的 peripheral 角色 | 🚧 **Android 整体完成**（Kotlin `e66fd8b` + Rust JNI 桥；真实 APK 构建验证；仅剩真机）。手机做 peripheral（Android `BluetoothLeAdvertiser` + `BluetoothGattServer` 经 JNI；iOS 与 macOS **同款 `CBPeripheralManager` 代码**）后，Windows/手机之间才能不经 Mac 直连；Windows 仍需 `GattServiceProvider`（WinRT）。 |
-| 7-g | **Windows central 接线**（2026-09-13，用户要求） | ✅ **本机 Windows x64 编译 + 单测 + 打包验证**（真机待验）。之前 Windows **完全没接**：`network/ble.rs` 的 7 处 `cfg(any(macos, android))` 把 Windows 整段排掉（`cargo check --features bluetooth` 直接编译不过），且 `dist:win` 不带 `--features bluetooth` —— 也就是"Windows 端蓝牙"从来没进过包。本轮：① central 路径的门加 `windows`，外设路径仍只留 macOS/Android（见 §7.9）；② 拨号判据补 `peer_advertises` 事实来源，解决"只做 central 的一方在 id 更小时两侧都不拨"的死局；③ `dist:win*` + CI + 新增 `npm run dist:win:test` 全部带 `--features bluetooth`，CI 另加"`Cargo.lock` 无 `btleplug` 即失败"的护栏。**Windows 做 peripheral（WinRT `GattServiceProvider`）仍未做**，见 §7.9。 |
+| 7-g | **Windows central 接线**（2026-09-13，用户要求） | ✅ **本机 Windows x64 编译 + 单测 + 打包验证**（真机待验）。之前 Windows **完全没接**：`network/ble.rs` 的 7 处 `cfg(any(macos, android))` 把 Windows 整段排掉（`cargo check --features bluetooth` 直接编译不过），且 `dist:win` 不带 `--features bluetooth` —— 也就是"Windows 端蓝牙"从来没进过包。本轮：① central 路径的门加 `windows`，外设路径仍只留 macOS/Android（见 §7.9）；② 拨号判据补 `peer_advertises` 事实来源，解决"只做 central 的一方在 id 更小时两侧都不拨"的死局；③ `dist:win*` + CI + 新增 `npm run dist:win:test` 全部带 `--features bluetooth`，CI 另加"`Cargo.lock` 无 `btleplug` 即失败"的护栏。**Windows 做 peripheral（WinRT `GattServiceProvider`）已在 `26969a9` 补齐**，见 §7.10。 |
 
 ---
 
@@ -346,10 +350,45 @@ Java 对象），所以两侧必须通过 JNI 对接。要点：
    `cargo test --lib --features bluetooth` → `tauri build ... --bundles nsis`
    → 产物收进 `dist-windows/` 并打印 SHA-256。
 
-**仍未做（下一轮）**：Windows 的 peripheral 角色（WinRT `GattServiceProvider`，需要新增
-`windows` crate 依赖与第三套平台实现）。在它落地前：
-**Windows 不能被连**，只能主动连别人；Windows ↔ Mac 直连要等 Mac 侧广播
-（Mac 有外设角色，所以这条其实是通的），Windows ↔ 手机靠手机的外设角色。
+**当时仍未做（已于同日补齐，见 §7.10）**：Windows 的 peripheral 角色
+（WinRT `GattServiceProvider`）。上面那句"**Windows 不能被连**"在 §7.10 之后**不再成立**。
 **真机判据**（用户 2026-09-13 选定 Windows + Android 手机）：见
 `docs/notes/ble-audit-2026-09-13.md` §7 的 Test A~F，把 Mac 换成 Windows。
+
+---
+
+### 7.10 Windows 外设角色（WinRT `GattServiceProvider`，`26969a9`）
+
+**为什么必须做**（§7.9 的收尾，真机教训）：只做 central 的一方**永远不被对端发现** ——
+手机扫不到 Windows，而镜像护栏又让 id 较小的一方不主动拨 ⇒ 两侧都在等对方。
+ADR §5 那句"Windows 外设明确不做"因此被用户当天的新要求取代。
+
+**实现**（第三套平台实现，与 macOS/Android **接口逐字同形**，所以 `network/ble.rs`
+的外设逻辑三端共用一份）：
+- `transport/bluetooth_peripheral_windows.rs`（约 690 行）：广播（`GattServiceProvider`）+
+  服务/特征 + 通知（`NotifyValueAsync`）+ 写请求回调；
+- **通知节流 12ms**（与 Android 侧同参数、同理由：连发会丢中间分片）；
+- 分片载荷换算**与 central 侧共用** `ble_framing::att_payload_budget`
+  （`MaxNotificationSize()` 已含 ATT 头，两侧不会各说各话）；
+- 对端标识用 `GattSession.DeviceId().Id()`（`BluetoothDeviceId` **没有 `Display`**），
+  取不到时落到固定常量 `unknown-central` —— ⚠️ 注意它**不是 MAC**（见下"待办"）。
+
+**同一轮顺带修的两件事**（都属于"平台 API 报成功 ≠ 功能生效"）：
+1. **btleplug WinRT 连接丢地址类型** ⇒ 对随机地址（安卓广播默认随机）的外设拿到一个
+   "连不上"的设备对象、每次 GATT 操作都以 `Unreachable` 失败。上游 0.13.0 没修 ⇒
+   **本地打补丁的副本** `src-tauri/vendor/btleplug`（只有 2 处补丁，都在
+   `src/winrtble/`，`grep -rn "本地补丁" src-tauri/vendor/btleplug` 可定位；对
+   macOS/Android/Linux 后端零影响 —— 2026-09-13 与 crates.io 0.13.0 逐文件比对过）。
+2. **广播没有真正生效却报 Ok** ⇒ 显式 `SetIsDiscoverable(true)` + 盯住
+   `GattServiceProviderAdvertisementStatus`（`Aborted` / `StartedWithoutAllAdvertisementData`
+   都会让对端基本认不出我们，而旧代码从不查这个状态）。
+
+**待办 / 风险**（2026-09-13 合并评审记录）：
+- `BluetoothDeviceId` 与 central 侧的 `BDAddr`（MAC）**不是同一种字符串**。它目前只在
+  外设侧内部当键用（对端身份最终由双向 Hello 验签决定），但要确认"同一对端从两个角色
+  看到不同地址串"不会造成重复端点（镜像链路）；日志里也不该把它当"蓝牙地址"展示。
+- 12ms 节流在 Windows 上**没有真机 A/B**（Android 的 12ms 是踩坑换来的），
+  先用同一参数保持一致，等真机吞吐数据再定。
+- vendored 目录建议改用 `[patch.crates-io]`（保留 `version = "0.13"` 语义）并裁掉
+  不参与编译的部分；注意 `path` 依赖会让**构建缓存失效**（首次 `cargo check` 会全量重编）。
 

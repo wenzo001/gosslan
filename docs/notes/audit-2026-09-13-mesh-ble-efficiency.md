@@ -1,7 +1,8 @@
 # 审计：BLE 加入 mesh 的稳定性 · 聊天效率 · 手机↔电脑 / 手机↔手机 mesh
 
-- 日期：2026-09-13
-- 基线：`b4b82fb`（4.2.19）+ 工作区未提交改动
+- 日期：2026-09-13（**当晚合并回填到 4.3.6**：把 Windows 那一侧的 10 个提交 rebase 进 `next`、
+  逐条 code review、修掉三处问题之后复核过一遍，见 §9 的"合并回填"）
+- 基线：`b4b82fb`（4.2.19）+ 工作区未提交改动；**复核基线：`08d1d0e`（4.3.6）**
 - 范围：按用户 2026-09-13 的优先级 —— ① 蓝牙设备加入 mesh 的**稳定性** ② **聊天高效**
   ③ **BLE↔BLE / 手机↔手机 mesh**（先手机↔电脑，再手机↔手机）。Windows 蓝牙与 UI 交互靠后。
 - 方法：读代码（`文件:行号` 取证）+ 三路并行深审（BLE 传输层 / mesh 多跳 / 聊天效率）+ 对照 btleplug 0.13 实际实现。
@@ -37,6 +38,15 @@
 7. **⬜ 多跳 mesh 仍有 2 个阻断点**（已修掉 2 个：群消息非成员不转发 ✅、断链不立刻重拨 ✅）：
    **跨跳无补发**、**无 store-and-forward**；另有 fanout 候选取 `peers`、「M3-d 源发不按健康度选路」。
    "3 节点、同时在线、单聊"这条路推演可通，但**从未真机验收**（测试计划 T6）。
+8. **✅ Windows 外设角色已补齐**（Windows 那一侧，`26969a9`）：WinRT `GattServiceProvider` +
+   显式 `SetIsDiscoverable` + 盯广播真实状态；另外**本地打补丁的 btleplug** 修了 WinRT
+   "连接时丢掉地址类型 ⇒ 随机地址（安卓默认）永远连不上"（ADR-0015 §7.10）。
+   这一条把"③ 手机↔电脑"里 Windows 那一端的结构性缺口补掉了。
+9. **🔴→✅ 同一轮抓到的两个"身份/构建"类静默故障**（合并评审）：
+   ① 安卓的 `device_id` 多套了一层 `dev-` 前缀 ⇒ `'d' < 'g'` ⇒ **三端里恒为最小 id ⇒
+   永不主动拨号**（只能等别人连它）——已修 + 对**已装设备做就地迁移**（不必清数据）；
+   ② **`npm run dist` 在 Windows 上没带 `--features bluetooth`** ⇒ 日常包**没有蓝牙**而构建照样成功。
+   另有一处性能回归：`driver::connect` 的"便宜路径"会让 **Mac/安卓每次拨号白等 3 秒**（已修）。
 
 ---
 
@@ -54,7 +64,7 @@
 | 外部帧流水线（Phase 8 线格式+转发） | ✅ 代码在，**无生产者** | `protocol.rs:501`、`transport.rs:2164-2227` |
 | 离线补发 outbox/group_outbox/file_outbox + Ack 才删 | ✅（**不支持跨跳**） | `commands.rs:1822-1834`、`transport.rs:5748` |
 | BLE 分片/重组 + 在途/大小上限 | ✅ | `transport/ble_framing.rs` |
-| BLE 外设：macOS ✅ / Android ✅ / Windows ⬜ | — | `ble.rs:133,1079`（仅 macos/android） |
+| BLE 外设：macOS ✅ / Android ✅ / **Windows ✅**（2026-09-13 由 Windows 那一侧补齐） | ✅ | `network/ble.rs` 的 `peripheral` 别名三平台；`transport/bluetooth_peripheral_windows.rs`（WinRT `GattServiceProvider`，ADR-0015 §7.10） |
 | 读活性看门狗 + 死链拆除 | ✅ | `transport.rs:457-503`、`mesh/manager.rs:154-168` |
 
 ---
@@ -178,6 +188,7 @@ macOS 外设走 `updateValue` 队列+连接间隔（`bluetooth_peripheral.rs:225
 | `.workbuddy/mesh-task/P2-P3-开发计划.md` §9.1 | Phase 8 ⬜"已授权可开工" | **代码已实现**（`transport.rs:2164`） |
 | `AI_PROJECT_HANDOFF.md` | "Android 侧仅为接口契约，未接线" | 早已接线 |
 | `docs/adr/0017` | "Phase 8 已落地" | 线格式+流水线在，但**没有生产者**（见 §5 第 6 条）——两边都只对一半 |
+| `docs/adr/0015` §5 / §6(7-g) / §7.9 | "Windows 外设**明确不做** / 仍未做" | ✅ **已于 2026-09-13 由本审计修正**（新增 §7.10 记录 `26969a9` 的 Windows 外设、vendored btleplug 补丁、广播状态核查与三条待办） |
 | `docs/notes/ble-audit-2026-09-13.md:89` | "MTU 只有 23 ⇒ 1.2KB/s" | **未实测的假设**（见 §3） |
 | `useAppStore.ts:647-650` 注释 | "移动端启动路径不申请任何权限" | `:645` 无条件 2s 后调 `ensureBluetoothOn()`（含权限申请） |
 
@@ -208,7 +219,9 @@ macOS 外设走 `updateValue` 队列+连接间隔（`bluetooth_peripheral.rs:225
 7. ⬜ **BLE 拨号并发上限**（①，拥挤环境下的稳定性）。
 8. ⬜ **外设重连清重组器**（①，手机重连后第一条消息可能整条被丢）。
 9. ⬜ 文档治理（`AI_RULES.md` §3 / `acceptance/1.0-release.md` / handoff 与现状不一致）。
-10. ⬜ Windows 蓝牙外设 / UI 样式（你明确说靠后）。
+10. ✅（Windows 那一侧，2026-09-13）**Windows 蓝牙外设（WinRT `GattServiceProvider`）** +
+    随机地址连接补丁 + 广播真实状态核查 —— 见 ADR-0015 §7.10 与本文件 §9 的"合并回填"。
+    ⬜ UI 交互样式（你明确说靠后）仍不做。
 
 ---
 
@@ -240,6 +253,19 @@ macOS 外设走 `updateValue` 队列+连接间隔（`bluetooth_peripheral.rs:225
 | 蓝牙开关点一下要等 2~3s 才动（前端等 IPC + 后端等 CoreBluetooth + 3s 冷却丢意图） | ✅ 已修 | `fb25ccd`（4.3.1）：乐观更新 + 外设启动移出关键路径 + 冷却"排队合并" |
 | 安卓长按气泡：按文字不弹 / 一放手就缩回 | ✅ 已修 | `97c7d57`（4.3.2）：判据抽纯函数 + window 捕获吞掉抬手那一下 |
 
+**合并回填（2026-09-13 晚：把 Windows 那一侧的 10 个提交 rebase 进 `next` 之后逐条 code review）**
+
+| 项 | 结论 | 证据/提交 |
+|---|---|---|
+| vendored btleplug（`src-tauri/vendor/btleplug`）对 macOS/Android 的影响 | ✅ **零影响（已逐文件比对）** | 与 crates.io **0.13.0** 对比：只有 2 处补丁，且都在 `src/winrtble/`（Windows 专属）；`Cargo.toml` 与上游一致；Android 那 28 个 Java 与 `scripts/android/btleplug-java` **逐字节相同** |
+| `should_dial_ble(my, peer, peer_advertises)` 是否破坏 Mac↔手机 | ✅ 等价 | 扫描见过的对端 `peer_advertises=true` ⇒ 与旧规则（大 id 拨）逐字节一致；新活口只在"没看到对端广播"时生效 |
+| `driver::connect` 的"便宜路径"（12×250ms 先试 `discover_services`） | 🔴 **Mac/Android 每次拨号白等 3 秒** → ✅ 已修 | `e1ee61c`：先用 `is_connected()` 判（Windows 语义不变）；护栏 `ble_connect_cheap_path_requires_an_existing_connection` |
+| 一键入口 `npm run dist` 在 Windows 上漏 `--features bluetooth` | 🔴 **打出来的日常包没有蓝牙**（构建照样成功）→ ✅ 已修 | `facd2ad`：补 feature + 护栏（同时扫 `package.json` 与 `package.mjs`） |
+| `dev-` device_id 前缀：只治新装设备 | 🔴 已装安卓仍是"恒最小 id ⇒ 永不主动拨号" → ✅ 已就地迁移 | `c936874`：`device::strip_legacy_dev_prefix()` + 单测（含两个负例），**不必清应用数据** |
+| Windows 侧 2 条提交的 `Version-Bump` 与 `semver.mjs` 判定不一致 | ⚠️ 记录在案（**未改他们的历史**） | `73c9c43`（`feat`+「蓝牙」+679 行）会被判 **major** 而声明 minor；`26969a9` 是 `fix`（⇒patch）却声明 minor。⇒ 这批**不能用 `version:release` 自动取档**（会跳 5.0.0），按用户档位标准发 patch/minor 序列 |
+| `BluetoothDeviceId`（Windows 外设侧对端标识）≠ MAC | ⚠️ 待真机确认 | 只在外设侧内部当键；需确认"同一对端两个角色地址串不同"不产生重复端点；日志文案不该称其为"蓝牙地址"（已记进 ADR-0015 §7.10 待办） |
+| Windows 外设通知 12ms 节流 | ⚠️ 无真机 A/B | 与 Android 同参数（Android 的 12ms 是踩坑换来的），等 T2/T13 数据再定 |
+
 **版本规则的实际使用（用户要求"真正用起来"）**
 
 - 每个提交都带 `Version-Bump:` 声明；`npm run version:check` 作为门禁（声明档位 == 判定档位 +
@@ -252,10 +278,12 @@ macOS 外设走 `updateValue` 队列+连接间隔（`bluetooth_peripheral.rs:225
   ⚠️ 台账里的"累计版本"列是**逐提交字面累加**的审计口径（会把 `b4b82fb` 那种
   "feat + 线索词 + 330 行"算成 major ⇒ 28.0.0），**不是**发版口径；发版只认"一次发布取最高档"。
 
-**验证状态（4.3.2）**：`cargo test --lib --features bluetooth` **436/436** ·
-`cargo check --lib`（默认 feature）**0 warning** · `npm test` **367/367** ·
-`npm run build`（vue-tsc + vite）通过 · `npm run version:check` 通过 ·
-前端 3 条新护栏都做了非空转验证（改坏即 FAIL、恢复即 PASS）。
+**验证状态（合并后的 4.3.6）**：`cargo test --lib --features bluetooth` **441/441** ·
+`cargo check --lib`（默认 feature 与 bluetooth）**0 warning** · `npm test` **369/369** ·
+`npm run build`（vue-tsc + vite）通过 · `npm run version:check` 通过（4.3.6 ≥ 4.3.6）·
+本轮新增/改动的护栏（乐观更新、长按面板收起、外设订阅清重组器、`connect` 便宜路径、
+打包 feature、device_id 迁移）都做了非空转验证（改坏即 FAIL、恢复即 PASS）。
+发布序列：4.3.0 → 4.3.1 → 4.3.2 → 4.3.3 → 4.3.4 → 4.3.5 → **4.3.6**；台账覆盖到 `c936874`。
 
 ---
 
@@ -279,7 +307,11 @@ macOS 外设走 `updateValue` 队列+连接间隔（`bluetooth_peripheral.rs:225
 | ③ 手机↔手机 mesh | M3-d 源发不按健康度选路 | `fix(mesh): 源发按健康度选路` | patch | 小 |
 | 安全/放大 | Gossip TTL 上限失效（自报 255 可扩散 255 跳） | `fix(security): 钳制 gossip TTL` | patch | 极小 |
 | 文档 | `AI_RULES.md` §3 / `acceptance/1.0-release.md` / handoff 与现状不符 | `docs: 治理与现状不一致的规则文档` | patch | 小 |
-| 靠后 | Windows 蓝牙外设、UI 样式 | — | — | 你明确说靠后 |
+| ✅ 已完成 | ~~Windows 蓝牙外设~~ | Windows 那边 `26969a9`（WinRT 服务提供者）+ 本审计的合并回填 | — | 见 §9 / ADR-0015 §7.10 |
+| ① 加入稳定性 | Windows 外设侧对端标识（`BluetoothDeviceId`）与 central 侧 MAC 不是同一种串 | `fix(ble): 外设侧对端标识不再冒充蓝牙地址`（或确认无重复端点后只改日志） | patch | 小，但需真机确认 |
+| ② 聊天高效 | Windows 外设通知的 12ms 节流无真机数据 | 先跑 T13 取数，再决定是否 `fix(ble): Windows 通知按对端节奏自适应` | patch | 小（等数据） |
+| 工具/流程 | Windows 侧 2 条提交的档位声明与 `semver.mjs` 不一致 | 让那边改标题（去掉线索词）或把 `26969a9` 改成 `feat` | patch | 极小，但影响"自动取档"能否用 |
+| 靠后 | UI 交互样式 | — | — | 你明确说靠后 |
 
 **执行顺序建议**：先做 4 个"极小 + patch"项（外设重组器 / 并发上限 / 坏片日志 / Gossip TTL），
 它们各自一条提交、各自 `Version-Bump: patch`，攒完一批跑一次 `version:release`（⇒ 4.3.x）；
