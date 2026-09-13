@@ -10,6 +10,34 @@
 
 ## [Unreleased]
 
+### Fixed (🔴 Windows 的广播一直没人看得见：显式 `SetIsDiscoverable(true)` + 盯住广播状态)
+
+真机 2026-09-13 第六轮，用户三台设备的完整日志把范围压到最后一处：
+
+**成果（前几轮的修复确实生效了）**：安卓 ↔ Mac 已打通并互发消息
+（`通知已发出 #140 status=0`、`[RECV] type=chat_message`），
+而且**安卓能看到 Mac 的广播**（`候选可拨 id=50:A6:D8:AE:B2:69` = Mac 的公有地址）。
+
+**唯一剩下的缺口：Windows 的广播，安卓和 Mac 从头到尾都收不到**
+（两端日志里没有出现过 Windows 的地址），而 Windows 自己以为一切正常。
+
+原因是 WinRT 的一个"沉默失败"面：`StartAdvertisingWithParameters` 返回 `Ok`
+**不代表广播真的生效**。`GattServiceProviderAdvertisementStatus` 有四个取值，
+其中 `Aborted(3)` 与 `StartedWithoutAllAdvertisementData(4)` 都意味着
+"对端基本认不出我们"，而旧代码**从来没查过这个状态**，也假设
+`IsDiscoverable` 默认为 true（那句注释直接写"不调 `SetIsDiscoverable`：默认即为可发现"）。
+
+修法两处：
+1. **显式 `SetIsDiscoverable(true)`**，不再依赖平台默认值；
+2. **启动时查一次状态 + 注册 `AdvertisementStatusChanged` 持续盯着**，
+   状态一变就留痕（`Started` / `StartedWithoutAllAdvertisementData` / `Aborted` / `Stopped`）。
+   Windows 会在省电、无线电被别的应用抢占、蓝牙被关再开等情形下**静默 Aborted**，
+   而那时旧日志里只剩一条"已启动"，用户看到的正是"刚才还能搜到、现在搜不到了"。
+
+这一轮的教训与 btleplug 那次同源：**平台 API 报成功 ≠ 功能生效**，
+所以凡是"报了成功但对端没反应"的地方都必须把真实状态读出来。
+
+
 ### Fixed (🔴 两处一起才解释"还是搜不到"：Mac 每秒刷"取消订阅"把外设事件循环灌满)
 
 真机 2026-09-13 第五轮：用户提供**三台设备**（手机 + Mac + Windows）的两侧日志。

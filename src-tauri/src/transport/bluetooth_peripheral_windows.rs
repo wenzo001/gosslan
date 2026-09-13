@@ -201,14 +201,72 @@ pub fn start() -> Result<PeripheralStart, String> {
     // ---- 4. 开广播 ----
     // `IsConnectable(true)` 是**必须**的：不可连接的广播会让对端"搜得到、连不上"
     //（Windows 上那正是我们自己在 central 侧踩过的形态）。
-    // 不调 `SetIsDiscoverable`：默认即为可发现（与 macOS/Android 只放服务 UUID 的约定一致）。
+    //
+    // ⚠️ 真机 2026-09-13 第六轮：**必须显式 `SetIsDiscoverable(true)`**。
+    // 上游注释假设"默认即可发现"，但真机结果是 **安卓和 Mac 都收不到 Windows 的广播**
+    //（两端日志里从头到尾没有 Windows 的地址），而 Windows 自己以为一切正常。
+    // 这类"广播了但没人看得见"在 WinRT 上不会报错，只能靠显式打开 + 查状态发现。
     let adv = GattServiceProviderAdvertisingParameters::new()
         .map_err(|e| format!("构造广播参数失败：{e}"))?;
     adv.SetIsConnectable(true)
         .map_err(|e| format!("设置可连接广播失败：{e}"))?;
+    adv.SetIsDiscoverable(true)
+        .map_err(|e| format!("设置可被发现广播失败：{e}"))?;
     provider
         .StartAdvertisingWithParameters(&adv)
         .map_err(|e| format!("启动 BLE 广播失败：{e}"))?;
+
+    // **把广播的真实状态查出来**（本轮的教训：`StartAdvertising` 返回 Ok 不等于广播生效）。
+    // WinRT 的状态含义（见 `GattServiceProviderAdvertisementStatus`）：
+    //   Started(2)                        = 广播正常
+    //   StartedWithoutAllAdvertisementData(4) = **广播了，但数据不全**（对端可能认不出服务 UUID）
+    //   Aborted(3) / Stopped(1)           = 没在广播
+    // 这三个在日志里长得完全不一样，而"对端搜不到"的下一步动作取决于到底是哪个。
+    match provider.AdvertisementStatus() {
+        Ok(st) => {
+            let code = st.0;
+            if code == 2 {
+                shared.notice(
+                    "Windows 蓝牙广播已生效（状态=Started，服务 UUID 已随广播发出）".to_string(),
+                );
+            } else {
+                shared.warn(format!(
+                    "Windows 蓝牙广播状态异常：code={code}（2=Started / 3=Aborted / \
+                     4=StartedWithoutAllAdvertisementData）—— 对端很可能搜不到本机"
+                ));
+            }
+        }
+        Err(e) => shared.warn(format!("读取广播状态失败：{e}")),
+    }
+
+    // **持续盯着广播状态**：Windows 会在若干情形下（系统省电、无线电被别的应用抢占、
+    // 蓝牙被关闭再打开）**静默 Aborted** —— 而那时我们的日志里只有一条"已启动"，
+    // 用户看到的就是"刚才还能搜到、现在搜不到了"。状态一变就留痕。
+    {
+        let adv_shared = shared.clone();
+        let token = provider
+            .AdvertisementStatusChanged(&windows::Foundation::TypedEventHandler::<
+                GattServiceProvider,
+                windows::Devices::Bluetooth::GenericAttributeProfile::GattServiceProviderAdvertisementStatusChangedEventArgs,
+            >::new(move |_sender, args| {
+                let Ok(args) = args.ok() else { return Ok(()) };
+                let code = args.Status().map(|s| s.0).unwrap_or(-1);
+                match code {
+                    2 => adv_shared.notice("Windows 蓝牙广播状态 → Started（已生效）"),
+                    4 => adv_shared.warn(
+                        "Windows 蓝牙广播状态 → StartedWithoutAllAdvertisementData\
+                         （广播数据不全，对端可能认不出服务 UUID）",
+                    ),
+                    3 => adv_shared.warn("Windows 蓝牙广播状态 → Aborted（**广播已停，对端搜不到本机**）"),
+                    1 => adv_shared.warn("Windows 蓝牙广播状态 → Stopped"),
+                    other => adv_shared.notice(format!("Windows 蓝牙广播状态 → code={other}")),
+                }
+                Ok(())
+            }))
+            .map_err(|e| format!("注册广播状态回调失败：{e}"))?;
+        // token 随 provider 一起存活；显式 drop 会让回调失效，所以这里只记录不释放
+        let _ = token;
+    }
 
     shared.notice("Windows 蓝牙外设角色已启动（GattServiceProvider 广播中，等待对端连入）");
 
