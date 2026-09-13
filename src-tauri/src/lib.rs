@@ -1509,6 +1509,49 @@ mod tests {
         );
     }
 
+    /// **解除好友关系必须同时解除内存里的身份绑定**（用户 2026-09-13 真机：不然"必须重启"）。
+    ///
+    /// 真机链路：对方重装后公钥变了 → 我们的身份表只补空、不覆盖（INV-P11）→
+    /// 用户按提示删好友重新加，`friends` 表那行没了，但 `verify_hello` 还会回落到
+    /// **内存 `peers` 表**里广播学来的旧公钥 ⇒ Hello 一直被硬拒 ⇒ 消息与好友申请都进不来，
+    /// **只有重启**（内存清空）才回落到 TOFU。
+    ///
+    /// 判据：两条解除关系的路径（本地删好友 / 对方发来 FriendRemove）都必须调用
+    /// `forget_peer_identity`；并且给用户的提示必须写出**可行动的下一步**
+    /// （否则用户只能自己猜，或者干脆重启）。
+    #[test]
+    fn removing_a_friend_also_drops_the_in_memory_identity_binding() {
+        let cmd = include_str!("commands.rs");
+        let body = rust_fn_body(cmd, "pub async fn remove_friend(");
+        assert!(
+            body.contains("forget_peer_identity"),
+            "`remove_friend` 必须调 `forget_peer_identity` —— 只删 friends 表那一行，\
+             内存里的旧公钥会继续当信任根用（症状：删了好友重新加也没用，必须重启）"
+        );
+        let tr = include_str!("network/transport.rs");
+        // 对方解除关系那条路径（Message::FriendRemove）同样要清
+        let start = tr
+            .find("Message::FriendRemove {")
+            .expect("必须还有 FriendRemove 分支（本护栏锚点）");
+        let tail = &tr[start..];
+        // 取一个足够覆盖该分支的窗口（分支实现变了也不会假绿：下面断言的锚点就在分支里）
+        let branch = &tail[..tail.len().min(1500)];
+        assert!(
+            branch.contains("forget_peer_identity"),
+            "收到 FriendRemove（对方删了我）时也要解除身份绑定，与 `remove_friend` 对称"
+        );
+        // 提示必须可行动：说清"删掉好友重新添加"且"不用重启"
+        let warn = tr
+            .find("fn warn_key_conflict_once")
+            .expect("必须还有密钥冲突提示（本护栏锚点）");
+        let warn_body = &tr[warn..warn + 2000];
+        assert!(
+            warn_body.contains("重新添加") && warn_body.contains("不用重启"),
+            "密钥变化的安全提示必须写清可行动的下一步（重新添加 + 不用重启）—— \
+             只写「建议当面核对」等于把用户扔在原地"
+        );
+    }
+
     /// **`driver::connect` 的"便宜路径"必须先判 `is_connected()`**（2026-09-13 合并评审）。
     ///
     /// 判据：12 × 250ms = 3 秒的 `discover_services()` 重试只在**已经连着**时才有意义。

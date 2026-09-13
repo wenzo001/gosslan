@@ -1398,6 +1398,10 @@ pub async fn remove_friend(state: State<'_, Arc<AppState>>, peer_id: String) -> 
         db::remove_friend(&dbc, &peer_id).map_err(|e| e.to_string())?;
         db::delete_file_outbox_for_peer(&dbc, &peer_id).ok();
     }
+    // ⚠️ **同时解除内存里的身份绑定**（用户 2026-09-13 真机：不这么做就"必须重启"）。
+    // `friends` 表那一行删掉只解除了一条腿；`verify_hello` 还会回落到内存 `peers` 表里
+    // 广播学来的旧公钥 ⇒ 对方重装换过公钥时，删了好友重新加也照样被硬拒。
+    crate::network::transport::forget_peer_identity(s, &peer_id);
     // 通知对方解除好友关系（对方收到后也会删除本机好友行）
     let msg = Message::FriendRemove {
         from: s.device_id.clone(),

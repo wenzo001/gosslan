@@ -687,7 +687,10 @@ fn hello_auth_decision(
         // 攻击者即便拿到真实公钥也签不出来；用自己公钥签名则与绑定值不符。
         Some(expected) => {
             if expected != ed25519_pubkey {
-                return Err(format!("Hello 公钥与已绑定身份不符（device_id={device_id}）"));
+                return Err(format!(
+                    "Hello 公钥与已绑定身份不符（device_id={device_id}）：对方可能重装了应用。\
+                     若确认是本人重装，删掉该好友后重新添加即可（聊天记录保留、无需重启）"
+                ));
             }
             if !crypto::verify_signature(expected, &data, sig_b64) {
                 return Err(format!("Hello 签名校验失败（device_id={device_id}）"));
@@ -1513,6 +1516,46 @@ pub(crate) fn update_conv_link(state: &AppState, conv_id: &str, path: &str, hop:
         );
         state.logger.info("link", format!("conv={conv_id} path={path} hop={hop}"));
     }
+}
+
+/// 忘掉某个 device_id 的**内存态身份绑定**（公钥 / 首见时间），链路不动。
+///
+/// ## 为什么必须有（用户 2026-09-13 真机：「必须重启才能重新加好友」）
+///
+/// 对方重装应用后公钥变了，而我们的身份表**只补空、不覆盖**（INV-P11：公钥冲突不静默覆盖）。
+/// 用户按提示"删掉好友重新加"时，`friends` 表那一行确实没了 —— 但 `verify_hello` 的绑定
+/// 还有**第二条腿**：内存里的 `peers` 表（广播里学来的、**未经验签**的旧公钥）。
+/// 于是 Hello 继续被硬拒 ⇒ 消息与好友申请全都进不来 ⇒ **只有重启**（内存清空）才回落到 TOFU。
+///
+/// 删除好友 = 用户**显式**解除了这层信任 ⇒ 内存绑定必须一起失效。
+/// 只清身份（公钥 / 首见时间），**不动链路、昵称、IP** —— 正在连着的会话不该被这一下打断。
+pub(crate) fn forget_peer_identity(state: &AppState, device_id: &str) {
+    {
+        let mut peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(p) = peers.get_mut(device_id) {
+            p.x25519_pubkey = None;
+            p.ed25519_pubkey = None;
+            p.first_seen = None;
+        }
+    }
+    state
+        .peer_manager
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .forget_identity(device_id);
+    // 允许下次**再提示一次**（否则"删了又加、对方又变了"时用户永远不再被告知）
+    state
+        .key_conflict_warned
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(device_id);
+    state.logger.info(
+        "identity",
+        format!(
+            "已解除设备身份绑定 device_id={device_id}\
+             （删好友 / 对方解除关系；下次连接以验签结果重新绑定，无需重启）"
+        ),
+    );
 }
 
 /// 连接建立后：把这条连接登记到 mesh 层的 `PeerManager`。
@@ -2437,6 +2480,9 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 return;
             }
             // 对方删除了好友关系：移除本地好友行（不删除聊天记录）
+            // ⚠️ 与 `remove_friend` 对称：**关系解除就解除身份绑定**，否则对方重装换过公钥后
+            // 这条内存里的旧公钥会一直当信任根用（症状同样是"只能重启"）。
+            forget_peer_identity(state, &from);
             let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
             db::remove_friend(&dbc, &from).ok();
             drop(dbc);
@@ -5320,8 +5366,9 @@ fn warn_key_conflict_once(state: &AppState, device_id: &str) {
         state,
         device_id,
         &format!(
-            "⚠️「{name}」的身份密钥发生变化，已保留原密钥未替换。可能是对方重装了应用；\
-             也不能排除有人冒名顶替，建议当面核对后再继续通信。"
+            "⚠️「{name}」的身份密钥发生变化，已保留原密钥未替换。\
+             如果对方刚重装过应用：**删掉这个好友再重新添加即可**（聊天记录会保留、不用重启）；\
+             如果不是本人操作，就别继续，对方可能被人冒名顶替。"
         ),
     );
 }

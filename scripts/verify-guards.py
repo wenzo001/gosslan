@@ -392,6 +392,29 @@ CASES: list[Case] = [
         tags=["frontend", "selection"],
     ),
     Case(
+        name="解除好友关系必须同时解除内存身份绑定（否则重装后只能重启）",
+        why="用户 2026-09-13 真机：对方重装换过公钥后，删好友重新加也收不到任何东西，"
+        "**必须重启**。根因是 `verify_hello` 的绑定有两条腿：friends 表 + 内存 peers 表"
+        "（广播学来、未验签的公钥）。删好友只断了第一条腿，内存那条旧公钥继续当信任根 ⇒ "
+        "Hello 一直被硬拒。这条退化的形态是「功能看着都在、就是连不上」，只能靠源码护栏盯住",
+        file=TAURI / "src" / "commands.rs",
+        injections=[(
+            "    crate::network::transport::forget_peer_identity(s, &peer_id);\n",
+            "",
+        )],
+        cmd=cargo(
+            "test",
+            "--offline",
+            "--lib",
+            "--features",
+            "bluetooth",
+            "removing_a_friend_also_drops_the_in_memory_identity_binding",
+        ),
+        cwd=TAURI,
+        expect_fail_hint="forget_peer_identity",
+        tags=["rust", "identity", "friend"],
+    ),
+    Case(
         name="打生产包必须带 --features bluetooth（否则产物静默地没有蓝牙）",
         why="BLE 是可选 feature，漏了 `--features bluetooth` 的后果是**静默**的：构建成功、"
         "产物正常、只是那个包完全没有蓝牙（开关起不来、搜不到设备）。"

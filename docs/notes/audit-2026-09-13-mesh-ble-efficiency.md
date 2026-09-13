@@ -310,6 +310,9 @@ macOS 外设走 `updateValue` 队列+连接间隔（`bluetooth_peripheral.rs:225
 | ✅ 已完成 | ~~Windows 蓝牙外设~~ | Windows 那边 `26969a9`（WinRT 服务提供者）+ 本审计的合并回填 | — | 见 §9 / ADR-0015 §7.10 |
 | ① 加入稳定性 | Windows 外设侧对端标识（`BluetoothDeviceId`）与 central 侧 MAC 不是同一种串 | `fix(ble): 外设侧对端标识不再冒充蓝牙地址`（或确认无重复端点后只改日志） | patch | 小，但需真机确认 |
 | ② 聊天高效 | Windows 外设通知的 12ms 节流无真机数据 | 先跑 T13 取数，再决定是否 `fix(ble): Windows 通知按对端节奏自适应` | patch | 小（等数据） |
+| ① 加入稳定性 | ~~对方重装换公钥后"必须重启"才能重新加好友~~ | ✅ **已修**：`forget_peer_identity`（删好友/收到 FriendRemove 就解除内存身份绑定）+ 提示写成可行动路径 | patch | 已完成 |
+| ① 加入稳定性 | 非好友的内存公钥绑定仍会硬拒一次重装（要用户删一次好友才能恢复） | `fix(identity): 非好友按验签结果重新绑定（好友仍硬拒）` | patch | 小 |
+| ① 加入稳定性 | 缺"重新配对"对话框（并排展示旧/新指纹） | `feat(identity): 一键信任新身份（知情同意）` | **minor** | 中（要设计 + i18n） |
 | 工具/流程 | Windows 侧 2 条提交的档位声明与 `semver.mjs` 不一致 | 让那边改标题（去掉线索词）或把 `26969a9` 改成 `feat` | patch | 极小，但影响"自动取档"能否用 |
 | 靠后 | UI 交互样式 | — | — | 你明确说靠后 |
 

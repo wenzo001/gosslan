@@ -179,6 +179,19 @@ impl PeerManager {
     pub fn remove_peer(&mut self, device_id: &str) -> Option<Peer> {
         self.peers.remove(device_id)
     }
+
+    /// **忘掉某个 device_id 的身份绑定**（公钥与首见时间），链路/在线状态不动。
+    ///
+    /// 用途：用户显式解除关系（删好友 / 对方发来 FriendRemove）之后，
+    /// 内存里那份"广播学来的旧公钥"不能再当信任根用 —— 否则对方重装换了公钥时，
+    /// 用户"删了好友重新加"也会继续被硬拒，**只能重启**（用户 2026-09-13 真机）。
+    /// 只清身份：正在连着的链路、昵称、IP 都不该被这一下打断。
+    pub fn forget_identity(&mut self, device_id: &str) {
+        if let Some(p) = self.peers.get_mut(device_id) {
+            p.identity.x25519_public_key = None;
+            p.identity.ed25519_public_key = None;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -320,6 +333,40 @@ mod tests {
         assert_eq!(peer.identity.x25519_public_key.as_deref(), Some("x1"));
         // 空字段被补齐
         assert_eq!(peer.identity.ed25519_public_key.as_deref(), Some("e2"));
+    }
+
+    /// `forget_identity` 必须**只清身份**，链路/在线状态/昵称一概不动。
+    ///
+    /// 为什么值得一条单测（用户 2026-09-13 真机："删了好友重新加也没用，必须重启"）：
+    /// 删好友时要解除内存里的旧公钥绑定，否则对方重装换过公钥后 Hello 一直被硬拒；
+    /// 但**不能**顺手把链路一起拆掉 —— 那会把"正在聊天"变成断线，属于另一类退化。
+    #[test]
+    fn forget_identity_clears_keys_but_keeps_the_connection() {
+        let mut m = PeerManager::new(10_000, 3);
+        let mut id = PeerIdentity::default();
+        id.x25519_public_key = Some("x1".into());
+        id.ed25519_public_key = Some("e1".into());
+        m.merge(PeerCandidate::new("ABC123", id, lan(), PathKind::Lan));
+
+        assert_eq!(m.get("ABC123").unwrap().connections().len(), 1, "前置：已有一条连接");
+
+        m.forget_identity("ABC123");
+
+        let peer = m.get("ABC123").expect("peer 本身不该被删掉");
+        assert!(peer.identity.x25519_public_key.is_none(), "x25519 绑定必须清掉");
+        assert!(peer.identity.ed25519_public_key.is_none(), "ed25519 绑定必须清掉");
+        assert_eq!(
+            m.get("ABC123").unwrap().connections().len(),
+            1,
+            "清身份**不许**动链路（否则删好友会顺带把正在聊的会话打断）"
+        );
+        // 清完之后，新的公钥可以正常补进来（TOFU 重新绑定）
+        let mut id2 = PeerIdentity::default();
+        id2.ed25519_public_key = Some("e2".into());
+        m.merge(PeerCandidate::new("ABC123", id2, lan(), PathKind::Lan));
+        assert_eq!(m.get("ABC123").unwrap().identity.ed25519_public_key.as_deref(), Some("e2"));
+        // 未知 device_id 不 panic
+        m.forget_identity("NEVER-SEEN");
     }
 
     /// M3#6 死链路拆除的判据：只有**读活性过期**的连接才会进候选。
