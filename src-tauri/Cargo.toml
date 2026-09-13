@@ -59,6 +59,27 @@ machine-uid = "0.5"
 # 可在资源管理器粘贴、也可直接粘贴回聊天框发送（微信式）。
 [target.'cfg(target_os = "windows")'.dependencies]
 clipboard-win = "5"
+# Windows 的 BLE **外设（GATT server）** 角色：btleplug 只做 central（ADR-0015 §3.1），
+# 而 Windows 要能被手机/其它电脑发现与连入，就必须自己广播并提供 GATT 服务。
+# 原生做法是 WinRT 的 `GattServiceProvider`，feature 列表**照抄 btleplug 的 winrtble 后端**
+# （已证明这套 feature 足够完成「广播 + 服务/特征 + 通知 + 写请求」）。
+#
+# ⚠️ **没有引入任何新的第三方 crate**：`windows` 早就在依赖树里（btleplug 的 Windows 后端
+# 依赖它），这里只是我们自己也要用它。optional ⇒ 只有 `--features bluetooth` 的 Windows
+# 构建才引入（默认构建零新增依赖，与 ADR-0015 §2 的硬性约定一致）。
+windows = { version = "0.62", optional = true, features = [
+    "Devices_Bluetooth",
+    "Devices_Bluetooth_GenericAttributeProfile",
+    "Foundation",
+    "Foundation_Collections",
+    "Storage_Streams",
+] }
+# WinRT 的 async 操作（`IAsyncOperation`）是"**先 `.into_future()`、再 `.join()`/`.await`**"两步：
+# `into_future()` 由 `std::future::IntoFuture` 提供，而阻塞式 `join()` 在 `windows_future::Async`
+# trait 上 —— `windows` crate 只 re-export **类型**、不 re-export 这个 trait，
+# 所以要用 `join()` 就得自己依赖它。同样是 optional + 只在 Windows 目标上。
+# （版本必须与 `windows` 0.62 内部使用的一致，否则 `IAsyncOperation` 会是两个不同的类型。）
+windows-future = { version = "0.3", optional = true }
 
 # macOS 打开文件：App Sandbox 禁止 fork /usr/bin/open（tauri-plugin-opener 在 macOS 走的正是
 # 这条路径），改用 NSWorkspace.openURL —— 纯 Foundation API，沙盒应用允许调用。
@@ -94,7 +115,7 @@ custom-protocol = ["tauri/custom-protocol"]
 # BLE 传输（P3 / Phase 7）：**默认关闭** —— 不开 feature 时依赖不下载、代码不编译，
 # 产物与行为与今天逐字节一致（ADR-0015 §2 的硬性约定）。
 # 引入前必须先读 docs/adr/0015-ble-transport.md（项目规矩：新依赖必须 ADR）。
-bluetooth = ["dep:btleplug", "dep:futures", "dep:objc2-core-bluetooth"]
+bluetooth = ["dep:btleplug", "dep:futures", "dep:objc2-core-bluetooth", "dep:windows", "dep:windows-future"]
 
 [profile.release]
 # 安卓上必须是 `panic = "abort"`：Tauri 的 `mobile_entry_point` 宏用 `stop_unwind` 包住入口，

@@ -17,6 +17,12 @@ pub mod bluetooth_peripheral;
 // Android 外设角色的 Rust 侧（JNI 桥，见该文件注释与 ADR-0015 §7.7）。
 #[cfg(all(feature = "bluetooth", target_os = "android"))]
 pub mod ble_android;
+// Windows 外设角色的 Rust 侧（WinRT `GattServiceProvider`，见该文件注释与 ADR-0015 §7.9）。
+// 与 macOS/Android 是**第三套平台实现**，但对外接口逐字同形 ⇒ `network/ble.rs` 三边共用一份。
+// 没有它，Windows 从不广播 ⇒ 手机永远发现不了 Windows（真机 2026-09-13，
+// 见 docs/notes/windows-ble-diagnosis-2026-09-13.md）。
+#[cfg(all(feature = "bluetooth", target_os = "windows"))]
+pub mod bluetooth_peripheral_windows;
 pub mod lan;
 pub mod tcp;
 

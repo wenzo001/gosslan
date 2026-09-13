@@ -44,6 +44,40 @@ use std::collections::HashMap;
 /// 分片头长度（字节）。
 pub const BLE_CHUNK_HEADER_LEN: usize = 6;
 
+/// 一次 GATT 操作**应用层可用**的字节数上限（分片有效载荷），两端共用这一条换算。
+///
+/// ## 为什么必须两边共用（真机 2026-09-13，Windows 外设）
+///
+/// 同一个概念在三个地方有三个名字：**central** 侧是 btleplug 协商出的 ATT MTU、
+/// **peripheral** 侧是 CoreBluetooth 的 `maximumUpdateValueLength`（macOS）/
+/// `MaxNotificationSize`（Windows WinRT）；而 ATT 的 3 字节头
+/// （1 opcode + 2 handle）在**两边都要扣掉**，最后剩下的才是 [`fragment`] 能用的载荷。
+///
+/// 这三处写法一旦漂移，症状是「有的平台发得出去、有的平台发不出去」——
+/// 而对外表现只是"某台设备收不到消息"，极难定位。所以换算只留这一份。
+///
+/// `negotiated` 是**对方那条链路上的**属性：central 传协商 MTU，
+/// peripheral 传"这条订阅允许的最大通知长度"。非法值（0 / 装不下 ATT 头）一律退回
+/// 默认 MTU 23 ⇒ 20 字节 —— **绝不返回 0**（返回 0 会让 `fragment` 拒绝一切，
+/// 表现为"蓝牙永远发不出去且没有明显错误"）。
+///
+/// 注意本函数**只管换算**，不做"保证 `fragment` 能用"的美化：`att_payload_budget(4) == 1`
+/// 是合法的（4 - 3），至于 1 字节装不下 6 字节分片头那是 [`fragment`] 自己拒绝的事
+/// （真实链路上 MTU 至少 23 ⇒ 20 字节，够用）。
+pub fn att_payload_budget(negotiated: u16) -> usize {
+    /// 蓝牙规范的最小 ATT MTU。
+    const BLE_DEFAULT_MTU: u16 = 23;
+    /// ATT 头：1 字节 opcode + 2 字节句柄。
+    const ATT_HEADER_LEN: usize = 3;
+
+    let mtu = if (negotiated as usize) <= ATT_HEADER_LEN {
+        BLE_DEFAULT_MTU
+    } else {
+        negotiated
+    };
+    mtu as usize - ATT_HEADER_LEN
+}
+
 /// 单条 BLE 消息的字节上限。
 ///
 /// 取 512KiB：够装下一个文件分片（256KiB 原始 ⇒ base64 后约 342KB）与常见聊天帧，

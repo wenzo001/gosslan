@@ -72,6 +72,40 @@ pub mod driver {
     use super::{CHAR_RX_UUID, CHAR_TX_UUID, SERVICE_UUID};
     use crate::transport::ble_framing::{fragment, BleReassembler, PushOutcome};
 
+    /// BLE 链路建立后**等待服务可读**的重试参数（真机 2026-09-13，Windows P0）。
+    ///
+    /// ## 为什么必须重试（不是"更稳一点"，而是 Windows 上根本连不上）
+    ///
+    /// `driver::connect` 原本是「`connect()` 然后立刻 `discover_services()`」，一次重试都没有。
+    /// 这在 macOS/Android 上恰好能过，但在 **Windows** 上必失败，因为 btleplug 的 WinRT 后端里
+    /// "连接"**本身就是一次 `GetGattServicesAsync(Uncached)`**：
+    ///
+    /// ```text
+    /// // btleplug-0.13.0/src/winrtble/peripheral.rs:488  connect()
+    /// let device = BLEDevice::new(...).await?;
+    /// device.connect().await?;                       // ← 这里
+    /// // btleplug-0.13.0/src/winrtble/ble/device.rs:112  BLEDevice::connect()
+    /// let service_result = self.get_gatt_services(BluetoothCacheMode::Uncached).await?;
+    /// utils::to_error(service_result.Status()?)   // Unreachable → Error::NotConnected
+    /// ```
+    ///
+    /// BLE 从"发起连接"到"对端 GATT 数据库可读"之间有几百 ms~数秒的窗口，这个窗口里
+    /// WinRT 返回 `GattCommunicationStatus::Unreachable`，btleplug 原样翻成 `NotConnected`，
+    /// 于是日志里就是「连接失败：Not connected」——**看着像被拒，其实是"还没准备好"**。
+    ///
+    /// 真机证据（`%APPDATA%\com.gosslan.app\logs\gosslan.log`）：
+    /// `[DISCOVERY] 候选可拨 … ⇒ 开始连接` → **2~3 秒后** `连接失败：Not connected`，
+    /// 13 秒一轮反复出现，从未走到握手阶段。
+    /// 详见 `docs/notes/windows-ble-diagnosis-2026-09-13.md`。
+    pub const LINK_READY_ATTEMPTS: u32 = 12;
+    /// 两次尝试之间的等待。12 × 250ms = 3s 上限：够覆盖 WinRT 的准备窗口，
+    /// 又不会把 10s 的扫描周期拖垮（`network/ble.rs` 给每个候选一个独立任务）。
+    pub const LINK_READY_WAIT: Duration = Duration::from_millis(250);
+    /// 整条连接（`connect()`）失败后的退避：给协议栈一点时间再重来，而不是立刻猛敲。
+    pub const CONNECT_RETRY_WAIT: Duration = Duration::from_millis(400);
+    /// 整条 `connect()` 的尝试次数（含第一次）。
+    pub const CONNECT_ATTEMPTS: u32 = 3;
+
     /// BLE 未协商时的默认 ATT MTU（蓝牙规范最小值）。
     pub const BLE_DEFAULT_MTU: u16 = 23;
     /// ATT 头长度（1 字节 opcode + 2 字节句柄）：MTU 减去它才是应用可用载荷。
@@ -79,15 +113,12 @@ pub mod driver {
 
     /// 把协商到的 MTU 换算成**分片有效载荷上限**。
     ///
-    /// 异常值（0、或连 ATT 头都装不下）一律退回默认 MTU —— 绝不能返回 0，
-    /// 那会让 `fragment` 直接拒绝一切（表现为"蓝牙永远发不出去且没有明显错误"）。
+    /// 换算本体在 [`crate::transport::ble_framing::att_payload_budget`] ——
+    /// **外设侧（macOS 的 `maximumUpdateValueLength` / Windows 的 `MaxNotificationSize`）
+    /// 用的是同一个函数**，这样"两边对一条链路能发多大一片"永远不会各说各话
+    /// （那类漂移的症状是"某台设备就是收不到消息"，极难定位）。
     pub fn payload_mtu(negotiated: u16) -> usize {
-        let mtu = if negotiated <= ATT_HEADER_LEN as u16 {
-            BLE_DEFAULT_MTU
-        } else {
-            negotiated
-        };
-        mtu as usize - ATT_HEADER_LEN
+        crate::transport::ble_framing::att_payload_budget(negotiated)
     }
 
     fn uuid(s: &str) -> Uuid {
@@ -183,15 +214,58 @@ pub mod driver {
     }
 
     /// 连上并发现特征。对方不是 Gosslan 端时返回 Err（上层静默跳过即可）。
+    ///
+    /// ## 为什么要重试（Windows P0，见 `LINK_READY_ATTEMPTS` 的文档注释）
+    ///
+    /// `connect()` 与 `discover_services()` 都可能**暂时性**失败：前者在 Windows 上
+    /// 直接就是一次 uncached 的服务查询，链路刚建立时它会返回 `Unreachable`/`NotConnected`。
+    /// 所以这里做两层有界重试，**失败原因原样带出去**（真机排障只认这条日志）。
+    ///
+    /// 重试是**无副作用**的：`connect()` 幂等（btleplug 内部 `is_connected` 先判一次），
+    /// `discover_services()` 只是重读 GATT 数据库。macOS/Android 上第一次就成功，
+    /// 因此不会多等一次 —— 这条改动不会降低它们的可用性。
     pub async fn connect(peripheral: &Peripheral) -> Result<BleConnection, String> {
-        peripheral
-            .connect()
-            .await
-            .map_err(|e| format!("连接失败：{e}"))?;
-        peripheral
-            .discover_services()
-            .await
-            .map_err(|e| format!("发现 GATT 服务失败：{e}"))?;
+        // ---- 第 1 层：整条 connect() 重试（对付"设备还在被上一轮扫描占着"这类瞬时失败）----
+        let mut last_connect_err = String::new();
+        for attempt in 1..=CONNECT_ATTEMPTS {
+            match peripheral.connect().await {
+                Ok(()) => {
+                    last_connect_err.clear();
+                    break;
+                }
+                Err(e) => {
+                    last_connect_err = format!("连接失败（第 {attempt}/{CONNECT_ATTEMPTS} 次）：{e}");
+                    if attempt < CONNECT_ATTEMPTS {
+                        tokio::time::sleep(CONNECT_RETRY_WAIT).await;
+                    }
+                }
+            }
+        }
+        if !last_connect_err.is_empty() {
+            return Err(last_connect_err);
+        }
+
+        // ---- 第 2 层：等 GATT 数据库可读（Windows 上 connect() 成功 ≠ 服务已可发现）----
+        let mut last_discover_err = String::new();
+        let mut discovered = false;
+        for attempt in 1..=LINK_READY_ATTEMPTS {
+            match peripheral.discover_services().await {
+                Ok(()) => {
+                    discovered = true;
+                    break;
+                }
+                Err(e) => {
+                    last_discover_err =
+                        format!("发现 GATT 服务失败（第 {attempt}/{LINK_READY_ATTEMPTS} 次）：{e}");
+                    if attempt < LINK_READY_ATTEMPTS {
+                        tokio::time::sleep(LINK_READY_WAIT).await;
+                    }
+                }
+            }
+        }
+        if !discovered {
+            return Err(last_discover_err);
+        }
 
         let svc = uuid(SERVICE_UUID);
         let rx_uuid = uuid(CHAR_RX_UUID);

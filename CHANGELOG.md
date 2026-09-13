@@ -10,6 +10,65 @@
 
 ## [Unreleased]
 
+### Added (Windows 蓝牙**外设角色**：WinRT GattServiceProvider —— 手机终于能搜到 Windows)
+
+真机 2026-09-13 暴露了我上一轮判断的错误：**「先只做 central、外设下一轮」行不通**。
+证据在 `%APPDATA%\com.gosslan.app\logs\gosslan.log`：Windows **搜得到**手机
+（`BLE 扫描：收到 10 个广播，其中 1 个是本应用服务` → `[DISCOVERY] 候选可拨 id=50:A6:D8:AE:B2:69`），
+但 `connect()` 立刻 `Not connected`。而反方向**永远不可能**：Windows 不广播 ⇒ 手机扫描里没有它；
+再叠加「大 id 拨、小 id 只接受」的镜像护栏（Windows 的 `device_id` 更小 ⇒ 判定"该由对端拨我"）
+⇒ **两侧都在等对方**。完整诊断见 `docs/notes/windows-ble-diagnosis-2026-09-13.md`。
+
+新增 `src-tauri/src/transport/bluetooth_peripheral_windows.rs`：用 WinRT
+`GattServiceProvider` 实现 Windows 的 GATT server + 广播，**与 macOS/Android 接口逐字同形**
+（`start` / `PeripheralServer` / `PeripheralWriter` / `PeripheralEvent` / `STATE_WAIT`），
+因此 `network/ble.rs` 里的事件循环、双向 Hello 握手、路由、读写循环**三平台共用一份**，
+只有 `use ... as peripheral` 那一行按平台切换。
+
+**没有引入新的第三方 crate**：`windows` 早就在依赖树里（btleplug 的 WinRT 后端依赖它），
+这里只是自己也用它；`windows-future` 只为 `IAsyncOperation` 的 inherent `join()`。
+两者都 optional + 只在 Windows 目标 + 只在 `--features bluetooth` 下编译
+（默认构建与 macOS/Linux 产物逐字节不变，符合 ADR-0015 §2）。
+
+实现里守住的四条行为契约（每条都对应一类"看着成功其实不通"）：
+1. **写请求必须 `Respond()`** —— 否则 central 每次写都等到超时（与 ADR-0015 §7.3 第 5 条同款）；
+2. **`NotifyValueForSubscribedClientAsync` 的返回 status 必须看** —— 非 `Success` 说明这一片没送到；
+3. **分片之间节流 12ms** —— 与 Android 侧同一条真机教训（连发会被协议栈丢中间片）；
+4. **WinRT 对象绝不跨 `.await`** —— `IBuffer`/`GattSubscribedClient` **既非 `Send` 也非 `Sync`**，
+   所以真正的发送放进 `tokio::task::spawn_blocking`，异步侧只传 `Vec<u8>`。
+
+新增两处护栏单测（都是"两端各写一份就会漂移"的那类）：
+`peripheral_and_central_agree_on_payload_budget`（外设的 `MaxNotificationSize` 与 central 的协商 MTU
+必须走出**同一个** `ble_framing::att_payload_budget`）、
+`fragmentation_round_trips_at_windows_notification_size`。
+
+### Fixed (🔴 Windows 上 `connect()` 与 `discover_services()` 之间没有重试 ⇒ 永远 `Not connected`)
+
+`driver::connect()` 原本是「`connect()` 然后立刻 `discover_services()`」，**一次重试都没有**。
+这在 macOS/Android 上恰好能过，但在 Windows 上必失败 —— 因为 btleplug 的 WinRT 后端里
+**"连接"本身就是一次 `GetGattServicesAsync(Uncached)`**
+（`winrtble/peripheral.rs:488` → `ble/device.rs:112`，`Unreachable` 被原样翻成 `NotConnected`），
+而 BLE 链路建立到 GATT 数据库可读之间有几百 ms~数秒的窗口。日志形态完全吻合：
+`开始连接` → **2~3 秒后** `Not connected` → 退避 → 13 秒后又来一次，从未走到握手。
+
+修法是两层**有界**重试（整条 `connect()` 最多 3 次；GATT 服务可读最多 12 次 × 250ms = 3s），
+失败原因**原样带出去**（真机排障只认这条日志）。重试无副作用（两个调用都幂等），
+macOS/Android 第一次就成功 ⇒ 不会多等一次。
+
+### Changed (外设的载荷换算收敛到唯一一份 `ble_framing::att_payload_budget`)
+
+同一个概念在三个地方有三个名字（central 的协商 MTU / macOS 的 `maximumUpdateValueLength` /
+Windows 的 `MaxNotificationSize`），而"扣掉 3 字节 ATT 头"这一步**两边都要做**。
+现在三处都调 `att_payload_budget`，`driver::payload_mtu` 与
+`bluetooth_peripheral::{central_payload_mtu, Windows 外设}` 不再各写一份减法 ——
+那类漂移的症状是"某台设备就是收不到消息"，极难定位。
+
+### Changed (ADR-0015 §7.9 修正：Windows 外设从「不做」改为已实现)
+
+上一轮写的 §7.9 结论（「Windows 只做 central 就够，Windows↔手机这条是通的」）**是错的**，
+已在原处标注更正并给出真机反例。
+
+
 ### Added (Windows 蓝牙打通：BLE central 接线 + 每次提交都能出一份带蓝牙的生产包)
 
 用户 2026-09-13 要求：「把 Windows 端的蓝牙接口连接打通，和 mac 手机等其他端」+

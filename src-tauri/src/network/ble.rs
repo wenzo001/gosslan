@@ -17,10 +17,10 @@
 //! 本模块整体 `#[cfg(feature = "bluetooth")]`，且即使用 feature 构建，
 //! 也要用户在设置里打开「蓝牙」（`bt_enabled`，默认关闭）才会启动 ——
 //! 局域网路径在任何情况下都不受影响。
-// `HashMap`/`HashSet` 只有**外设侧**（`peripheral_accept_loop` 的 routes/handshaking）
-// 用到，所以按外设的平台集合门控 —— 加进 central 集合会在只做 central 的平台
-// （Windows）上变成 unused import 警告，而本项目是警告零容忍。
-#[cfg(any(target_os = "macos", target_os = "android"))]
+// `HashMap`/`HashSet` 只有**外设侧**（`peripheral_accept_loop` 的 routes/handshaking）用到，
+// 所以按**外设**的平台集合门控；跟着 central 集合一起加平台会变成 unused import 警告，
+// 而本项目是警告零容忍。三个平台现在都有外设角色，所以集合一致。
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
@@ -39,17 +39,26 @@ use crate::network::transport::{
 use crate::protocol::Message;
 use crate::state::{AppState, Link};
 use crate::transport::bluetooth::driver::{self, BleReader, BleWriter};
-// 外设角色的驱动按平台切换：macOS 用 CoreBluetooth（objc2），Android 用 JNI 调 Kotlin。
-// 两者对外接口**完全同形**（`start` / `PeripheralServer` / `PeripheralWriter` / `PeripheralEvent`），
-// 因此下面所有外设逻辑（事件循环、握手、路由、读写循环）两个平台共用一份。
+// 外设角色的驱动按平台切换：macOS 用 CoreBluetooth（objc2）、Android 用 JNI 调 Kotlin、
+// Windows 用 WinRT `GattServiceProvider`。三者对外接口**完全同形**
+// （`start` / `PeripheralServer` / `PeripheralWriter` / `PeripheralEvent`），
+// 因此下面所有外设逻辑（事件循环、握手、路由、读写循环）三个平台共用一份。
+//
+// 真机 2026-09-13 的教训（`docs/notes/windows-ble-diagnosis-2026-09-13.md`）：
+// 「先只做 central、外设下一轮」**行不通** —— 不能广播的一方永远不被对端发现，
+// 而镜像护栏又让它（当 id 更小时）不主动拨 ⇒ 两侧都在等对方。外设角色是**必需**的。
 #[cfg(target_os = "macos")]
 use crate::transport::bluetooth_peripheral as peripheral;
 #[cfg(target_os = "android")]
 use crate::transport::ble_android as peripheral;
+#[cfg(target_os = "windows")]
+use crate::transport::bluetooth_peripheral_windows as peripheral;
 #[cfg(target_os = "macos")]
 use crate::transport::bluetooth_peripheral::{PeripheralEvent, PeripheralWriter};
 #[cfg(target_os = "android")]
 use crate::transport::ble_android::{PeripheralEvent, PeripheralWriter};
+#[cfg(target_os = "windows")]
+use crate::transport::bluetooth_peripheral_windows::{PeripheralEvent, PeripheralWriter};
 
 /// 每轮扫描的观察窗口（`btleplug` 的扫描是"持续到显式停止"，给一个窗口再收结果）。
 const SCAN_WINDOW: Duration = Duration::from_secs(3);
@@ -112,7 +121,7 @@ pub async fn start(state: Arc<AppState>) -> Result<(), String> {
     // 后果是"Windows 只能连别人、不能被连"——由 `should_dial_ble` 的
     // `peer_advertises` 参数接手：对端不广播时我们**无条件主动拨**，
     // 因此 Windows ↔ 手机（手机在广播）仍然连得上。
-    #[cfg(any(target_os = "macos", target_os = "android"))]
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
     start_peripheral(state.clone(), shutdown_tx.subscribe()).await;
 
     *state.ble.lock().unwrap_or_else(|e| e.into_inner()) = Some(BleHandle {
@@ -376,7 +385,7 @@ fn should_dial_ble(my_id: &str, peer_id: &str, peer_advertises: bool) -> bool {
 }
 
 /// 往已有链路投递，还是当作**新连接**重新握手（外设侧收到一帧时的唯一判据）。
-#[cfg(any(target_os = "macos", target_os = "android"))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PeripheralRouteAction {
     /// 投给该 central 已登记的链路（正常数据帧）。
@@ -402,7 +411,7 @@ enum PeripheralRouteAction {
 ///
 /// 抽成纯函数的理由同 `should_dial_ble`：这类判据写反了在真机上极难复现，
 /// 而这里可以把它一次钉死，并让护栏在有人改成"永远投旧链路"时立刻 FAIL。
-#[cfg(any(target_os = "macos", target_os = "android"))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
 fn peripheral_route_action(has_route: bool, frame_is_hello: bool) -> PeripheralRouteAction {
     // 没有活路由 ⇒ 只能握手；有路由且这帧是 Hello ⇒ 一定是重连 ⇒ 也必须握手。
     // 只有「有路由 + 不是 Hello」才是正常的"在已有链路上收数据"。
@@ -419,11 +428,11 @@ fn peripheral_route_action(has_route: bool, frame_is_hello: bool) -> PeripheralR
 /// 为什么要设上限：外设侧会对**每一个**到达的帧做这个判断（见
 /// `peripheral_accept_loop`），而大文件分片是 256 KiB —— 对它们做一次
 /// `serde_json::from_slice::<Message>` 就是白烧一倍解析成本。
-#[cfg(any(target_os = "macos", target_os = "android"))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
 const HELLO_PEEK_MAX_BYTES: usize = 1024;
 
 /// 轻量判断：这帧是不是 `Message::Hello`（用于上面的重连判据）。
-#[cfg(any(target_os = "macos", target_os = "android"))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
 fn frame_is_hello(bytes: &[u8]) -> bool {
     bytes.len() <= HELLO_PEEK_MAX_BYTES
         && matches!(
@@ -802,13 +811,13 @@ impl FrameSink for BleWriter {
 }
 
 /// 外设侧的一条链路 = 「发通知的句柄 + 对端 central 标识」。
-#[cfg(any(target_os = "macos", target_os = "android"))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
 struct PeripheralSink {
     writer: PeripheralWriter,
     central: String,
 }
 
-#[cfg(any(target_os = "macos", target_os = "android"))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
 #[async_trait::async_trait]
 impl FrameSink for PeripheralSink {
     async fn send_frame(&mut self, payload: &[u8]) -> Result<usize, String> {
@@ -849,12 +858,12 @@ impl FrameSource for BleReader {
 }
 
 /// 外设侧的读方向：帧已经重组好，直接从通道拿。
-#[cfg(any(target_os = "macos", target_os = "android"))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
 struct ChannelSource {
     rx: mpsc::Receiver<Vec<u8>>,
 }
 
-#[cfg(any(target_os = "macos", target_os = "android"))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
 #[async_trait::async_trait]
 impl FrameSource for ChannelSource {
     async fn next_frame(&mut self, _wait: Duration) -> Result<Option<Vec<u8>>, String> {
@@ -1032,7 +1041,7 @@ async fn ble_reader_loop<S: FrameSource + 'static>(
 // 因此下面没有第二套身份/信任判断 —— 身份**只能**由双向 Hello 验签建立。
 
 /// 外设事件循环收到的路由控制消息（握手成功后把"往这个 central 投帧"的管道交给循环）。
-#[cfg(any(target_os = "macos", target_os = "android"))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
 enum RouteCtl {
     Add {
         central: String,
@@ -1042,7 +1051,7 @@ enum RouteCtl {
 
 /// 启动外设角色。失败只记日志：能扫别人但别人连不上我们，属于**降级**而不是故障，
 /// 不该把整个蓝牙开关判为不可用（LAN 更不受影响）。
-#[cfg(any(target_os = "macos", target_os = "android"))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
 async fn start_peripheral(state: Arc<AppState>, shutdown: watch::Receiver<bool>) {
     let startup = match peripheral::start() {
         Ok(startup) => startup,
@@ -1082,7 +1091,7 @@ async fn start_peripheral(state: Arc<AppState>, shutdown: watch::Receiver<bool>)
 }
 
 /// 外设侧的总循环：把每个 central 的帧分派给它的链路任务，首帧走握手。
-#[cfg(any(target_os = "macos", target_os = "android"))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
 async fn peripheral_accept_loop(
     state: Arc<AppState>,
     mut server: peripheral::PeripheralServer,
@@ -1187,7 +1196,7 @@ async fn peripheral_accept_loop(
 }
 
 /// 按 BLE 端点摘链路（外设侧只知道 central 标识，peer_id 要反查）。
-#[cfg(any(target_os = "macos", target_os = "android"))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
 async fn detach_by_endpoint(state: &Arc<AppState>, ep: &MeshEndpoint) {
     let peer = {
         let links = state.links.lock().await;
@@ -1202,7 +1211,7 @@ async fn detach_by_endpoint(state: &Arc<AppState>, ep: &MeshEndpoint) {
 }
 
 /// 外设侧握手的外壳：失败一律**只记日志**（对端可能只是路过、或者根本不是 Gosslan 端）。
-#[cfg(any(target_os = "macos", target_os = "android"))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
 async fn accept_handshake(
     state: Arc<AppState>,
     writer: PeripheralWriter,
@@ -1221,7 +1230,7 @@ async fn accept_handshake(
 }
 
 /// 真身：验签对端 Hello → 回我们的 Hello → 登记链路 → 起收发。
-#[cfg(any(target_os = "macos", target_os = "android"))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
 async fn try_accept_handshake(
     state: &Arc<AppState>,
     writer: PeripheralWriter,
@@ -1449,7 +1458,7 @@ mod tests {
     /// 门控：`peripheral_route_action` / `frame_is_hello` / `HELLO_PEEK_MAX_BYTES`
     /// 只存在于**有外设角色**的平台（macOS / Android）—— Windows 这一轮只做 central，
     /// 这些符号不会编译出来，测试也必须跟着门控，否则 Windows 上 `cargo test` 直接编不过。
-    #[cfg(any(target_os = "macos", target_os = "android"))]
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
     #[test]
     fn reconnect_hello_must_not_go_to_the_stale_route() {
         assert_eq!(
@@ -1474,7 +1483,7 @@ mod tests {
 
     /// `frame_is_hello` 必须**真的认得出 Hello**，且不把大分片当 Hello 去解析。
     /// 门控同 `reconnect_hello_must_not_go_to_the_stale_route`（仅外设角色平台有该函数）。
-    #[cfg(any(target_os = "macos", target_os = "android"))]
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
     #[test]
     fn frame_is_hello_peeks_only_small_hello_frames() {
         let hello = Message::Hello {
