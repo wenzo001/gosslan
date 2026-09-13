@@ -674,6 +674,18 @@ pub struct AppState {
     /// 收到同意（`FriendAccept`）或拒绝（`FriendReject`）后清除。
     pub pending_out_requests: Mutex<std::collections::HashSet<String>>,
 
+    /// **待补发的好友同意回执**：peer_id -> (首次登记时刻 ms, 已补发次数, 上次补发时刻 ms)。
+    ///
+    /// 与 `pending_out_requests` 对称、但**必须分开**：申请是"等对方动作"（收到同意/拒绝才清），
+    /// 而同意回执**没有回执**（发送方无从得知对方是否收到），只能"窗口内补发若干次"。
+    ///
+    /// 为什么必须有（用户 2026-09-13 真机）：Android 点了「接受」，Android 侧好友列表已出现，
+    /// 但 **Mac 端状态一直没同步** —— 因为 `accept_friend_request` 只发一次
+    /// （直连 `try_send` 或广播兜底），而 BLE 链路正好在那一刻抖动/还没建好时，
+    /// 这一帧**静默丢失**且永不重发 ⇒ 单边好友关系（我这儿有他、他那儿没我）。
+    pub pending_out_accepts:
+        Mutex<std::collections::HashMap<String, (i64, u32, i64)>>,
+
     /// 会话的「当前链路」快照：conv_id -> LinkState（最近一条消息的链路 + 跳数）。
     /// 收发单聊消息时更新，前端聊天窗口据此显示连接图标（LAN / 桥接 / 蓝牙）。
     pub conv_link: Mutex<HashMap<String, LinkState>>,
@@ -915,6 +927,7 @@ impl AppState {
             dial_permits: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_DIALS)),
             inbound_permits: Arc::new(tokio::sync::Semaphore::new(MAX_INBOUND_CONNECTIONS)),
             pending_out_requests: Mutex::new(std::collections::HashSet::new()),
+            pending_out_accepts: Mutex::new(std::collections::HashMap::new()),
             group_keys: Mutex::new(HashMap::new()),
             peers: Mutex::new(HashMap::new()),
             links: tokio::sync::Mutex::new(HashMap::new()),

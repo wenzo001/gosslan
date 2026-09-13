@@ -857,6 +857,35 @@ CASES: list[Case] = [
         tags=["rust", "presence", "network"],
     ),
     Case(
+        name="BLE 拨号退避必须 1 分钟内恢复（旧上限 10 分钟 = 好友申请等几分钟）",
+        why="真机 2026-09-13：好友申请等了 5～6 分钟才到。根因之一就是退避上限 600s："
+        "BLE 上「连过去被拒」是常态，每次失败把一个**稳定地址**推进下一档，而"
+        "「小 id 只接受」又让只有一侧会拨 ⇒ 唯一的拨号通道被锁死到分钟级。"
+        "这条护栏把 5s→10s→20s→40s→60s 封顶钉死",
+        file=TAURI / "src" / "network" / "ble.rs",
+        injections=[("    const MAX_MS: i64 = 60_000;", "    const MAX_MS: i64 = 600_000;")],
+        cmd=cargo("test", "--lib", "--features", "bluetooth", "dial_backoff_recovers_within_a_minute"),
+        cwd=TAURI,
+        expect_fail_hint="上限必须 60s",
+        tags=["rust", "ble", "backoff"],
+    ),
+    Case(
+        name="好友同意回执必须有界补发（否则一次丢帧 = 永久单边好友）",
+        why="真机 2026-09-13：Android 点「接受」、Android 侧好友已出现，但 Mac 端状态一直没同步 —— "
+        "FriendAccept 只发一次且**没有回执**，链路抖动时静默丢失就永不重发。"
+        "修法是窗口 + 次数 + 间隔的有界补发；策略写反了要么永不补发、要么疯狂打扰对端，"
+        "所以用真值表钉住",
+        file=TAURI / "src" / "network" / "transport.rs",
+        injections=[(
+            "    if now - issued > window_ms || attempts >= max_attempts {",
+            "    if false {",
+        )],
+        cmd=cargo("test", "--lib", "friend_accept_flush_is_bounded_and_spaced"),
+        cwd=TAURI,
+        expect_fail_hint="GiveUp",
+        tags=["rust", "friend", "reliability"],
+    ),
+    Case(
         name="应用样式（三个窗口都必须加载 style.css）",
         why="真实缺陷：一窗一入口重构时漏掉了 `import \"./style.css\"`，dev 起来整个界面\"像没有 CSS\"，"
         "而且不报错、不影响任何测试 —— 只有这条守卫能拦住",

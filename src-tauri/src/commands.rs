@@ -1409,6 +1409,64 @@ pub async fn send_friend_request(
 ///   ② 收到一个**已经是我的好友**的人发来的申请时自动同意（`transport::auto_accept_if_already_friend`）。
 /// 两者只要有一处漏了落库或漏了回执，就会造出"我这儿有他、他那儿没我"的**单边好友关系**，
 /// 而那种状态在界面上表现为"对方加不上我"（用户 2026-09-12 实测的那个 bug）。
+/// **好友同意回执（`FriendAccept`）**这条路径的**唯一**发送实现。
+///
+/// 为什么抽出来：`accept_friend_request` 发一次之后**没有任何回执**能证明对端收到了，
+/// 所以链路抖动时必须能**用同一条路径重发**（`transport::flush_pending_friend_accept`
+/// 在建链/心跳时调用）。两处各写一份的话，"重发的那份"迟早会漏掉定向/重签/加密。
+pub(crate) async fn send_friend_accept_via_link(
+    s: &Arc<AppState>,
+    peer_id: &str,
+) -> Result<(), String> {
+    // 对方公钥优先从 peers 表读（接收 FriendRequest 时已 upsert_peer 记录），
+    // friends 表兜底（maybe_update_friend 可能已持久化）。
+    let target_pubkey = {
+        let from_peers = {
+            let peers = s.peers.lock().unwrap_or_else(|e| e.into_inner());
+            peers.get(peer_id).and_then(|p| p.x25519_pubkey.clone())
+        };
+        let from_friends = {
+            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+            db::get_friend_x25519(&dbc, peer_id)
+        };
+        from_peers.or(from_friends)
+    };
+    let Some(target_pubkey) = target_pubkey else {
+        // 缺对端公钥时**绝不静默**：本地已加好友，但回执发不出去会导致好友关系
+        // 单边成立。打日志留痕（对方 Presence 尚未到达 / 已被 sweep 清理）。
+        s.logger.warn(
+            "friend",
+            format!("同意好友但缺对端公钥，FriendAccept 未发送 peer={peer_id}"),
+        );
+        return Err("缺对端公钥".to_string());
+    };
+    let shared = crypto::shared_secret(&s.identity.x25519_secret, &target_pubkey)
+        .ok_or("密钥交换失败")?;
+    let sealed = crypto::seal(&shared, b"{}").ok_or("加密失败")?;
+    let payload_b64 = STANDARD.encode(&sealed);
+    let mut env = {
+        let gossip = s.gossip.lock().unwrap_or_else(|e| e.into_inner());
+        gossip.build_envelope(
+            &s.identity,
+            &s.device_id,
+            GossipKind::FriendAccept,
+            None,
+            None,
+            &payload_b64,
+            db::now_ms(),
+            0,
+        )
+    };
+    env.target = Some(peer_id.to_string());
+    env.sender_sig = s.identity.sign_b64(&env.signing_bytes());
+    if s.has_link(peer_id).await {
+        try_send(s, peer_id, &Message::Gossip { envelope: env }).await?;
+    } else {
+        broadcast_gossip(s, env).await;
+    }
+    Ok(())
+}
+
 pub(crate) async fn accept_friend_request(
     s: &Arc<AppState>,
     peer_id: &str,
@@ -1424,51 +1482,19 @@ pub(crate) async fn accept_friend_request(
     // 导致 friends 公钥永久缺失 → 群密钥分发被静默跳过。
     // 与 transport.rs 中 FriendAccept 接收路径的补写行为一致。
     maybe_update_friend(s, &peer_id, &name, None);
-    // FriendAccept 改走 Gossip 定向：跨跳场景下 try_send 直连发不出去。
-    // 对方公钥优先从 peers 表读（接收 FriendRequest 时已 upsert_peer 记录），
-    // friends 表兜底（maybe_update_friend 可能已持久化）。
-    let target_pubkey = {
-        let from_peers = {
-            let peers = s.peers.lock().unwrap_or_else(|e| e.into_inner());
-            peers.get(peer_id).and_then(|p| p.x25519_pubkey.clone())
-        };
-        let from_friends = {
-            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-            db::get_friend_x25519(&dbc, &peer_id)
-        };
-        from_peers.or(from_friends)
-    };
-    if let Some(target_pubkey) = target_pubkey {
-        let shared = crypto::shared_secret(&s.identity.x25519_secret, &target_pubkey)
-            .ok_or("密钥交换失败")?;
-        let sealed = crypto::seal(&shared, b"{}").ok_or("加密失败")?;
-        let payload_b64 = STANDARD.encode(&sealed);
-        let mut env = {
-            let gossip = s.gossip.lock().unwrap_or_else(|e| e.into_inner());
-            gossip.build_envelope(
-                &s.identity,
-                &s.device_id,
-                GossipKind::FriendAccept,
-                None,
-                None,
-                &payload_b64,
-                db::now_ms(),
-                0,
-            )
-        };
-        env.target = Some(peer_id.to_string());
-        env.sender_sig = s.identity.sign_b64(&env.signing_bytes());
-        if s.has_link(&peer_id).await {
-            try_send(s, &peer_id, &Message::Gossip { envelope: env }).await?;
-        } else {
-            broadcast_gossip(s, env).await;
-        }
-    } else {
-        // 缺对端公钥时**绝不静默**：本地已加好友，但回执发不出去会导致好友关系
-        // 单边成立。打日志留痕（对方 Presence 尚未到达 / 已被 sweep 清理）。
+    // **先登记再发**（与好友申请同一条纪律）：同意回执没有回执，链路抖动时它会静默丢失，
+    // 而发送方界面已显示"已同意" ⇒ 另一端永远停在"等待对方确认"（真机 2026-09-13）。
+    {
+        let now = db::now_ms();
+        s.pending_out_accepts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(peer_id.to_string(), (now, 0, 0));
+    }
+    if let Err(e) = send_friend_accept_via_link(s, &peer_id).await {
         s.logger.warn(
             "friend",
-            format!("同意好友但缺对端公钥，FriendAccept 未发送 peer={peer_id}"),
+            format!("好友同意回执发送失败（已登记待补发）peer={peer_id}: {e}"),
         );
     }
     crate::network::transport::forget_pending_request(s, &peer_id);

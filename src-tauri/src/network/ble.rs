@@ -215,19 +215,40 @@ async fn scan_loop(state: Arc<AppState>, adapter: Adapter, mut shutdown: watch::
                     {
                         continue;
                     }
-                    // 失败退避：刚连不上的候选先别急着再试（指数退避到 10 分钟上限）。
-                    // 为什么必须有：BLE 上"连过去被拒"是常态（镜像链路、对端正忙），
-                    // 而**每一次连接尝试都会打扰对端**；不设冷却就会形成
-                    // "每轮扫描都去打扰一次"的抖动（用户真机日志里 13s 一轮）。
+                    // 失败退避：刚连不上的候选先别急着再试（指数退避 5s→60s，见
+                    // `ble_dial_backoff_ms` 的注释：旧上限 10 分钟会把暂时性失败变成
+                    // 用户可见的"好友申请等了几分钟"）。
+                    //
+                    // ⚠️ 跳过时**必须留痕**（含剩余毫秒）：否则真机上只能看到
+                    // "候选 X 未建立链路"，完全看不出"其实是被退避锁住了"。
                     {
                         let now = crate::db::now_ms();
                         let skip = ble_dial_backoff(&state, &peripheral.id().to_string(), now);
                         if skip {
+                            let left = state
+                                .ble_dial_failures
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .get(&peripheral.id().to_string())
+                                .map(|(_, next)| (*next - now).max(0))
+                                .unwrap_or(0);
+                            state.logger.info(
+                                "ble",
+                                format!(
+                                    "[DISCOVERY] 跳过候选 id={} 原因=退避中 剩余={left}ms",
+                                    peripheral.id()
+                                ),
+                            );
                             continue;
                         }
                     }
                     let st = state.clone();
                     let sd = shutdown.clone();
+                    let dial_id = peripheral.id().to_string();
+                    state.logger.info(
+                        "ble",
+                        format!("[DISCOVERY] 候选可拨 id={dial_id} ⇒ 开始连接（GATT central）"),
+                    );
                     // 每个候选一个任务：连接 + 握手最长 10s，串行会把扫描周期拖垮
                     tokio::spawn(async move {
                         let id = peripheral.id().to_string();
@@ -238,7 +259,10 @@ async fn scan_loop(state: Arc<AppState>, adapter: Adapter, mut shutdown: watch::
                             // 记 info 不记 warn —— 否则日志会被邻居设备刷满
                             Err(e) => {
                                 note_ble_dial_failure(&st, &id);
-                                st.logger.info("ble", format!("候选 {id} 未建立链路：{e}"));
+                                st.logger.info(
+                                    "ble",
+                                    format!("[DISCONNECT] 候选 {id} 未建立链路：{e}（已进入退避）"),
+                                );
                             }
                         }
                     });
@@ -256,12 +280,21 @@ async fn scan_loop(state: Arc<AppState>, adapter: Adapter, mut shutdown: watch::
 
 /// BLE 候选失败退避的**纯函数内核**：连续失败 `failures` 次后，要等多久才允许再试。
 ///
-/// 指数退避：60s → 120s → 240s → 480s → 600s（上限 10 分钟）。
-/// 为什么起点就不小：每一次尝试都会**打扰对端**（连接会替换它 GATT server 上的旧连接），
-/// 而"连过去被拒"在 BLE 上是常态 —— 宁可让它晚点再试，也不要形成 10s 一轮的抖动。
+/// 指数退避：5s → 10s → 20s → 40s → 60s（上限 1 分钟）。
+///
+/// ## 为什么上限从 10 分钟砍到 1 分钟（2026-09-13 真机）
+///
+/// 旧值 60s→…→600s（10 分钟）。用户真机实测：**好友申请等了 5～6 分钟才到**。
+/// 复盘：BLE 上"连过去被拒"是常态（对端 GATT server 还没起来、镜像链路、对端正忙），
+/// 每次失败都把一个**稳定的** BLE 地址推进下一档退避；而"小 id 只接受"那条规则又让
+/// **只有一侧会拨**（另一方永远不拨），于是这条唯一的拨号通道被退避锁死到分钟级 ——
+/// 一旦恰好卡在 480s/600s 档，好友申请就真的等几分钟。
+///
+/// 退避的本意是"别每 10s 打扰对端一次"，5s 起步 + 60s 上限已经足够做到这一点
+/// （扫描周期本来就是 10s），而 10 分钟的上限只会把**暂时性**失败变成用户可见的故障。
 fn ble_dial_backoff_ms(failures: u32) -> i64 {
-    const BASE_MS: i64 = 60_000;
-    const MAX_MS: i64 = 600_000;
+    const BASE_MS: i64 = 5_000;
+    const MAX_MS: i64 = 60_000;
     let shift = failures.saturating_sub(1).min(4);
     (BASE_MS << shift).min(MAX_MS)
 }
@@ -374,7 +407,15 @@ async fn dial_and_register(
     if state.has_endpoint_addr(&ep).await {
         return Ok(());
     }
+    state.logger.info(
+        "ble",
+        format!("[CONNECT] 开始连接 ep={ble_id}（connect → service discovery → subscribe）"),
+    );
     let conn = driver::connect(&peripheral).await?;
+    state.logger.info(
+        "ble",
+        format!("[GATT] 已就绪 ep={ble_id}（连接 + 服务发现 + 通知订阅都成功）"),
+    );
     let (mut writer, mut reader) = conn.into_split();
 
     // ---- 握手：先发自己的 Hello，再读对端的、并**必须验签**（§8 / ADR-0011）----
@@ -470,6 +511,10 @@ async fn dial_and_register(
     register_connection(&state, &peer_id, ep.clone(), PathKind::Bluetooth);
     state.logger.info(
         "ble",
+        format!("[SESSION] 已就绪 peer={peer_id} ep={ep}（双向 Hello 已验签，transport 可用）"),
+    );
+    state.logger.info(
+        "ble",
         format!("+ble-link peer={peer_id} ep={ep}（双向 Hello 已验签）"),
     );
 
@@ -530,6 +575,37 @@ async fn read_one(
         return serde_json::from_slice::<Message>(&frame)
             .map(Some)
             .map_err(|e| format!("握手帧无法解析：{e}"));
+    }
+}
+
+/// 这一帧值不值得在 BLE 生命周期日志里留一行。
+///
+/// 为什么过滤：`Heartbeat` / `Presence` 每 5s 一条、`Gossip` 也可能是同一件事的转发；
+/// 全打会把真机日志刷满，而排查"好友申请为什么几分钟才到 / 消息为什么一直发送中"
+/// 需要的恰恰是**控制帧与业务帧**的收发轨迹（用户 2026-09-13 明确要求）。
+fn is_logworthy_frame(msg: &Message) -> bool {
+    match msg {
+        Message::Heartbeat { .. } | Message::UserInfo { .. } => false,
+        // Presence（节点通告）每 5s 一条，经 Gossip 承载 ⇒ 只跳过它；
+        // 其它 Gossip（好友申请/同意、单聊、群聊、送达确认）都值得留痕。
+        Message::Gossip { envelope } => envelope.kind != crate::protocol::GossipKind::Presence,
+        _ => true,
+    }
+}
+
+/// 一条帧的**可 grep 标识**：类型名 + 消息 id（如果有）。
+fn frame_trace(msg: &Message) -> String {
+    match msg {
+        Message::Ack { msg_id } => format!("type=ack msg_id={msg_id}"),
+        Message::ChatMessage { msg_id, kind, .. } => {
+            format!("type=chat_message kind={kind:?} msg_id={msg_id}")
+        }
+        Message::FriendRequest { from, .. } => format!("type=friend_request from={from}"),
+        Message::FriendAccept { from, .. } => format!("type=friend_accept from={from}"),
+        Message::FileChunk { transfer_id, seq, .. } => {
+            format!("type=file_chunk transfer={transfer_id} seq={seq}")
+        }
+        other => format!("type={}", other.wire_kind()),
     }
 }
 
@@ -631,6 +707,7 @@ async fn ble_writer_loop<S: FrameSink + 'static>(
         };
         match msg {
             Some(msg) => {
+                let trace = is_logworthy_frame(&msg).then(|| frame_trace(&msg));
                 let Ok(bytes) = serde_json::to_vec(&msg) else {
                     continue;
                 };
@@ -642,8 +719,20 @@ async fn ble_writer_loop<S: FrameSink + 'static>(
                     res = writer.send_frame(&bytes) => res.is_ok(),
                 };
                 if !ok {
-                    state.logger.info("ble", format!("写失败，结束该 BLE 链路的写循环 peer={peer_id} ep={ep}"));
+                    state.logger.warn(
+                        "ble",
+                        format!(
+                            "[SEND] 写失败 ⇒ 结束该链路写循环 peer={peer_id} ep={ep} {}{}",
+                            trace.as_deref().unwrap_or("type=?"),
+                            ""
+                        ),
+                    );
                     break;
+                }
+                if let Some(trace) = trace {
+                    state
+                        .logger
+                        .info("ble", format!("[SEND] {trace} → peer={peer_id} ep={ep} bytes={}", bytes.len()));
                 }
             }
             None => {
@@ -675,7 +764,19 @@ async fn ble_reader_loop<S: FrameSource + 'static>(
         };
         match frame {
             Ok(Some(bytes)) => match serde_json::from_slice::<Message>(&bytes) {
-                Ok(msg) => handle_message(&state, &peer_id, msg).await,
+                Ok(msg) => {
+                    if is_logworthy_frame(&msg) {
+                        state.logger.info(
+                            "ble",
+                            format!(
+                                "[RECV] {} ← peer={peer_id} ep={ep} bytes={}",
+                                frame_trace(&msg),
+                                bytes.len()
+                            ),
+                        );
+                    }
+                    handle_message(&state, &peer_id, msg).await
+                }
                 Err(e) => state
                     .logger
                     .warn("ble", format!("丢弃无法解析的 BLE 帧 peer={peer_id}: {e}")),
@@ -992,6 +1093,14 @@ async fn try_accept_handshake(
             cancel: cancel_tx,
         });
     register_connection(state, &peer_id, ep.clone(), PathKind::Bluetooth);
+    // 对端能连上我们 ⇒ 之前"我拨不上它"的失败计数已经过期，必须清掉。
+    // 不清的话：唯一的拨号方（大 id/不能被拨入的那侧）会被自己的退避锁住，
+    // 而它恰恰是断线后唯一会重连的一方（真机表现：好友申请等几分钟）。
+    clear_ble_dial_failure(state, central);
+    state.logger.info(
+        "ble",
+        format!("[SESSION] 已就绪（外设侧）peer={peer_id} ep={ep}（双向 Hello 已验签）"),
+    );
     state.logger.info(
         "ble",
         format!("+ble-link(外设) peer={peer_id} ep={ep}（双向 Hello 已验签）"),
@@ -1037,6 +1146,33 @@ async fn try_accept_handshake(
 mod tests {
     #![allow(unused_imports)]
     use super::*;
+
+    /// **拨号退避必须"能快速恢复"**：旧上限 10 分钟把暂时性失败变成用户可见的故障
+    /// （真机：好友申请等了 5～6 分钟才到）。
+    #[test]
+    fn dial_backoff_recovers_within_a_minute() {
+        // 5s → 10s → 20s → 40s → 60s（封顶 1 分钟）
+        assert_eq!(ble_dial_backoff_ms(1), 5_000);
+        assert_eq!(ble_dial_backoff_ms(2), 10_000);
+        assert_eq!(ble_dial_backoff_ms(3), 20_000);
+        assert_eq!(ble_dial_backoff_ms(4), 40_000);
+        assert_eq!(
+            ble_dial_backoff_ms(5),
+            60_000,
+            "第 5 次失败必须封顶在 60s（上限必须 60s）"
+        );
+        // 上限必须**封在 1 分钟**：再多失败也不许退到分钟级以上
+        for n in 6..50 {
+            assert_eq!(
+                ble_dial_backoff_ms(n),
+                60_000,
+                "第 {n} 次失败仍在退避 {0}ms —— 上限必须 60s",
+                ble_dial_backoff_ms(n)
+            );
+        }
+        // 0 次失败（理论上不会查）也不能 panic / 退化为 0
+        assert!(ble_dial_backoff_ms(0) >= 5_000);
+    }
 
     /// **重连判据**：同一个 central 地址的**新连接**发来的 Hello，绝不能被投给旧链路。
     ///

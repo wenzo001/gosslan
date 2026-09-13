@@ -10,6 +10,55 @@
 
 ## [Unreleased]
 
+## [4.2.14] - 2026-09-13
+
+### Fixed (BLE 首轮稳定性：好友申请等 5～6 分钟、同意后对端状态不同步)
+
+用户真机（Mac ↔ Android、**只开蓝牙**）：发现要等一会儿、发现后"未连接"；
+最严重一次**好友申请 5～6 分钟才到**；Android 接受后 **Mac 端好友状态一直没同步**；
+之后发消息长期停在"发送中"。
+
+**审计结论**（完整版见 `docs/notes/ble-audit-2026-09-13.md`，含 20 问逐条答案）：
+
+1. **5～6 分钟的主因 = 拨号退避上限 10 分钟**。`ble_dial_backoff_ms` 旧值是
+   `60s→120s→240s→480s→600s`，按 **BLE 地址**记账，只有"我们拨成功"才清零；
+   而 `should_dial_ble` 的规则是"大 id 拨、小 id 只接受"⇒ **只有一侧会拨**——
+   唯一的拨号通道一旦连续失败（BLE 上"连过去被拒"是常态），就被自己的退避锁死到分钟级。
+   而日志里只写"候选 X 未建立链路"，**完全看不出是被退避锁住了**。
+2. **"接受好友后对端不同步"= `FriendAccept` 只发一次且没有回执/重发**：
+   旧 `accept_friend_request` 发完就 `Ok(())` 并清 pending，广播在"没有直连"时还是静默无操作
+   ⇒ 一次丢帧 = **永久单边好友**（我这儿有他、他那儿没我）。
+3. **"消息一直发送中"不是消息丢了**：`send_message` 一律先落 outbox，UI 的"发送中"只是
+   **没收到 ACK**；接收方对**重复投递会再回 ACK**（`transport.rs` 的 `exists` 分支），
+   所以它不会永久卡死——**持续时间 = 链路恢复时间**，要修的仍是链路可用性/恢复速度。
+
+**修法**（只动 BLE 接入链路，线格式/E2EE/outbox/ACK 语义零改动）：
+
+- 退避改成 **5s→10s→20s→40s→60s 封顶**（`ble_dial_backoff_ms`）；
+- **对端拨我们成功时也清零退避**（`try_accept_handshake`）——对端能连上，
+  说明"我拨不上它"的历史已过期，否则唯一拨号方会被自己的退避锁住；
+- 跳过退避时**留痕**（含剩余毫秒）：`[DISCOVERY] 跳过候选 id=… 原因=退避中 剩余=…ms`；
+- **`FriendAccept` 有界补发**：新增 `state::pending_out_accepts` +
+  `commands::send_friend_accept_via_link`（抽出唯一发送实现）+
+  `transport::flush_pending_friend_accept`（2 分钟窗口 / 最多 3 次 / 两次至少隔 5s，
+  策略抽成纯函数 `friend_accept_flush_decision`）；
+- 好友申请与同意回执**也在心跳时补发**（原来只在建链时补发）。
+
+**日志**（用户要求，全部可 grep）：`[DISCOVERY]`（可拨/被退避跳过）、`[CONNECT]`、
+`[GATT] 已就绪`（连接+服务发现+订阅）、`[SESSION] 已就绪`（双向 Hello 验签）、
+`[SEND]/[RECV] type=… msg_id=…`、`[ACK] 已持久化 ⇒ 回执` / `[ACK] 重复消息仍回执`、
+`[DISCONNECT]`。`Heartbeat/Presence/UserInfo` 过滤掉（每 5s 一条会刷满）。
+
+**护栏**：`dial_backoff_recovers_within_a_minute`、`friend_accept_flush_is_bounded_and_spaced` +
+两条 `verify-guards.py` 非空转用例（改 `MAX_MS`/把窗口判据改成 `if false` 都必须 FAIL），
+现共 **56** 条。
+
+**门禁**：`cargo test --lib --features bluetooth` 423/423 · `npm test` 350/350 ·
+`check-mobile --bluetooth` PASS(0 warning) · `verify-guards` 56/56。
+
+> 与 4.2.12/4.2.13 一起才完整：4.2.12 修"重连时 Hello 投给旧链路"、4.2.13 修"掉线即删节点"、
+> 4.2.14 修"退避锁死 + 同意回执不重发 + 可观测性"。P0 真机测试清单见审计文档 §7。
+
 ## [4.2.13] - 2026-09-13
 
 ### Fixed (🔴 只开蓝牙时「Mac 搜不到安卓 / 安卓显示已发现未建联」的真因：链路一断就删节点)

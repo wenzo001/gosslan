@@ -836,6 +836,109 @@ pub async fn flush_pending_friend_request(state: &Arc<AppState>, peer_id: &str) 
     }
 }
 
+/// 好友同意回执「补发一次 / 收尾 / 什么都不做」的判定结果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FriendAcceptFlush {
+    /// 补发，且这是第几次（1-based）。
+    Flush(u32),
+    /// 窗口或次数用尽 ⇒ 清掉登记并留一条 warn。
+    GiveUp,
+    /// 还没到间隔，或根本没有登记。
+    Nothing,
+}
+
+/// 好友同意回执补发策略的**纯函数内核**：
+/// `entry` = `(issed_at, attempts, last_at)`，`None` = 没有待补发登记。
+///
+/// 策略：`window_ms` 窗口内最多 `max_attempts` 次、两次之间至少隔 `min_interval_ms`。
+/// 为什么是"有界补发"而不是无限重试：对方收到重复的 `FriendAccept` 是幂等的（多一次
+/// `add_friend` + 一个 UI 事件），但没必要一直打扰；3 次足以覆盖"一次建链 + 两次心跳"。
+pub fn friend_accept_flush_decision(
+    entry: Option<(i64, u32, i64)>,
+    now: i64,
+    max_attempts: u32,
+    min_interval_ms: i64,
+    window_ms: i64,
+) -> FriendAcceptFlush {
+    let Some((issued, attempts, last)) = entry else {
+        return FriendAcceptFlush::Nothing;
+    };
+    if now - issued > window_ms || attempts >= max_attempts {
+        return FriendAcceptFlush::GiveUp;
+    }
+    if now - last < min_interval_ms {
+        return FriendAcceptFlush::Nothing;
+    }
+    FriendAcceptFlush::Flush(attempts + 1)
+}
+
+/// **补发好友同意回执**（`FriendAccept`）。
+///
+/// 与 `flush_pending_friend_request` 的关键差别：申请是"等对方动作"（收到同意/拒绝才清），
+/// 而同意回执**没有回执** —— 发送方无从得知对方是否收到。所以这里用**有界补发**：
+/// 2 分钟窗口内最多 3 次、两次之间至少隔 5s（心跳周期），窗口/次数用尽就打一条 warn 收尾。
+///
+/// 为什么必须做（用户 2026-09-13 真机）：Android 点「接受」后 Android 侧好友列表已经有对方，
+/// 但 **Mac 端状态一直没同步** —— 那一帧在 BLE 链路抖动/尚未建好时静默丢了，且永不重发。
+pub async fn flush_pending_friend_accept(state: &Arc<AppState>, peer_id: &str) {
+    const MAX_ATTEMPTS: u32 = 3;
+    const MIN_INTERVAL_MS: i64 = 5_000;
+    const WINDOW_MS: i64 = 120_000;
+    let now = crate::db::now_ms();
+
+    // 锁内只做判定（**绝不跨 await 持锁**）；判定本身是纯函数
+    // （`friend_accept_flush_decision`）—— "窗口 + 次数 + 间隔"这类策略最容易写反，
+    // 写在 async + 锁里就没法单测。
+    let decision = {
+        let entry = state
+            .pending_out_accepts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(peer_id)
+            .copied();
+        friend_accept_flush_decision(entry, now, MAX_ATTEMPTS, MIN_INTERVAL_MS, WINDOW_MS)
+    };
+    let attempt = match decision {
+        FriendAcceptFlush::Nothing => return,
+        FriendAcceptFlush::GiveUp => {
+            let removed = state
+                .pending_out_accepts
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(peer_id);
+            state.logger.warn(
+                "friend",
+                format!(
+                    "好友同意回执补发结束 peer={peer_id}（窗口/次数用尽：now={now} 登记={removed:?}）"
+                ),
+            );
+            return;
+        }
+        FriendAcceptFlush::Flush(attempt) => attempt,
+    };
+    // 判定是纯的 ⇒ 次数/时刻的写入在执行侧完成
+    {
+        let mut map = state
+            .pending_out_accepts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(entry) = map.get_mut(peer_id) {
+            entry.1 = attempt;
+            entry.2 = now;
+        }
+    }
+    match crate::commands::send_friend_accept_via_link(state, peer_id).await {
+        Ok(()) => state.logger.info(
+            "friend",
+            format!("[FRIEND] 补发好友同意回执 peer={peer_id}（第 {attempt} 次）"),
+        ),
+        Err(e) => state.logger.warn(
+            "friend",
+            format!("[FRIEND] 补发好友同意回执失败 peer={peer_id}（第 {attempt} 次）：{e}"),
+        ),
+    }
+}
+
 /// 构造带签名的 Hello（nonce 每次新生成，签名覆盖连接身份的全部字段）。
 pub fn build_signed_hello(state: &AppState, conv_clock: i64) -> Message {
     let device_id = state.device_id.clone();
@@ -2051,6 +2154,8 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             // 好友申请没有回执：建链补全时补发一次（用户真机：链路抖动丢过一次，
             // 对方什么都没收到，而我方界面显示"已发送"）。
             flush_pending_friend_request(state, &device_id).await;
+            // 好友同意回执同样没有回执：建链后补发（真机：Mac 端好友状态一直没同步）。
+            flush_pending_friend_accept(state, &device_id).await;
         }
         // ---- Phase 8（ADR-0017）：外部 mesh（BitChat）的不透明帧，Gosslan 只当中继 ----
         //
@@ -2132,6 +2237,10 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             crate::commands::flush_pending_files(state, &device_id).await;
             flush_pending_group_keys(state, &device_id).await;
             crate::commands::flush_pending_group_files(state, &device_id).await;
+            // 心跳 = 链路确实活着。这一帧丢了的好友申请/同意回执在这里补发，
+            // 不必等到链路再断一次、重新建链（真机：点了加好友要等几分钟才有反应）。
+            flush_pending_friend_request(state, &device_id).await;
+            flush_pending_friend_accept(state, &device_id).await;
         }
         Message::UserInfo {
             device_id,
@@ -2334,6 +2443,11 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 db::message_exists(&dbc, &msg_id)
             };
             if exists {
+                // 重复投递也要回 Ack（否则一次丢 ACK = 发送方永远"发送中"）：
+                // 留痕区分"没收到"与"收到了但 ACK 丢了"。
+                state
+                    .logger
+                    .info("ble", format!("[ACK] 重复消息仍回执 msg_id={msg_id} ← peer={peer_id}"));
                 let _ = try_send(state, peer_id, &Message::Ack { msg_id }).await;
                 return;
             }
@@ -2412,6 +2526,11 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 update_conv_link(state, &from, &path, 0);
             }
             // Ack 与「是否本次新建」无关：消息已在库中（无论是哪条路径先写的）即代表已成功接收
+            // 留痕（用户要求）：没有这条日志时，"发送中"到底是"没收到"还是"ACK 丢了"分不清。
+            state.logger.info(
+                "ble",
+                format!("[ACK] 已持久化 ⇒ 回执 msg_id={msg_id} → peer={peer_id}"),
+            );
             let _ = try_send(state, peer_id, &Message::Ack { msg_id }).await;
         }
         Message::Ack { msg_id } => {
@@ -5760,6 +5879,49 @@ pub fn notify_with_extra(
 mod tests {
     use super::*;
     use crate::gossip_engine::GossipEngine;
+
+    /// **好友同意回执补发策略**：窗口 + 次数 + 间隔三条边界。
+    ///
+    /// 真机（2026-09-13）：Android 点了「接受」、Android 侧好友已出现，但 Mac 端状态一直
+    /// 没同步 —— 那一帧在 BLE 链路抖动时静默丢了且**永不重发**。修法是"有界补发"，
+    /// 而"窗口 + 次数 + 间隔"这种策略最容易写反（写反的后果是要么永不补发、要么疯狂打扰
+    /// 对端），所以在这里用真值表钉死。
+    #[test]
+    fn friend_accept_flush_is_bounded_and_spaced() {
+        let now = 1_000_000_i64;
+        let (max, interval, window) = (3u32, 5_000i64, 120_000i64);
+
+        // 没有登记 ⇒ 什么都不做
+        assert_eq!(
+            friend_accept_flush_decision(None, now, max, interval, window),
+            FriendAcceptFlush::Nothing
+        );
+        // 刚登记（last=0）⇒ 立刻补发第 1 次
+        assert_eq!(
+            friend_accept_flush_decision(Some((now, 0, 0)), now, max, interval, window),
+            FriendAcceptFlush::Flush(1)
+        );
+        // 刚发过（距上次不足间隔）⇒ 等下一次心跳，不打扰
+        assert_eq!(
+            friend_accept_flush_decision(Some((now - 10_000, 1, now - 1_000)), now, max, interval, window),
+            FriendAcceptFlush::Nothing
+        );
+        // 距上次够了 ⇒ 继续补发（第 2 次）
+        assert_eq!(
+            friend_accept_flush_decision(Some((now - 10_000, 1, now - 5_000)), now, max, interval, window),
+            FriendAcceptFlush::Flush(2)
+        );
+        // 次数用尽 ⇒ 收尾
+        assert_eq!(
+            friend_accept_flush_decision(Some((now - 10_000, 3, now - 60_000)), now, max, interval, window),
+            FriendAcceptFlush::GiveUp
+        );
+        // 窗口用尽（哪怕一次都没发出去）⇒ 收尾，并让调用方留一条 warn
+        assert_eq!(
+            friend_accept_flush_decision(Some((now - 121_000, 1, now - 60_000)), now, max, interval, window),
+            FriendAcceptFlush::GiveUp
+        );
+    }
 
     // ---- 群成员变更：接收端的分支选择 ----
     //
