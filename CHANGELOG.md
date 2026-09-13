@@ -10,6 +10,8 @@
 
 ## [Unreleased]
 
+## [4.3.5] - 2026-09-13
+
 ### Fixed (Windows 的日常包一直没有蓝牙 —— 一键入口 `npm run dist` 漏了 `--features bluetooth`)
 
 2026-09-13 合并评审（把 Windows 那边的 10 个提交 rebase 进来之后逐条 code review）发现的。
