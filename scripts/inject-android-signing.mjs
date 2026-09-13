@@ -1,10 +1,18 @@
 #!/usr/bin/env node
 // 为 Tauri 生成的 Android 工程注入 release 签名配置。
 //
-// 签名策略：
-// - 若 CI/本地环境提供 ANDROID_KEYSTORE_BASE64（keystore 文件的 base64），
-//   则解码为 src-tauri/gen/android/app/release.keystore，并使用 release 签名。
-// - 若未提供，则 release 回退到 Android 的 debug 签名，保证内测 APK 可以直接安装。
+// 签名策略（**必须稳定**：同一台手机上换签名 = 装不上，只能卸载重装、丢数据）：
+// - 若 CI/本地环境提供 ANDROID_KEYSTORE_BASE64，则解码为
+//   src-tauri/gen/android/app/release.keystore 并用它签名（CI 的唯一入口）。
+// - 否则使用**仓库内固定路径的本地 keystore**（`scripts/android/keystore/gosslan-release.keystore`）：
+//   首次运行自动生成一次，之后**所有构建共用同一把钥匙**，与 HOME / ANDROID_USER_HOME 无关。
+//
+// ⚠️ 真实事故（用户 2026-09-13）：以前这里在缺少 ANDROID_KEYSTORE_BASE64 时会**回退到
+//    Android debug 签名**，而 debug keystore 的位置随 `$HOME`/`$ANDROID_USER_HOME` 变化
+//    ⇒ 不同机器/不同会话打出来的包**签名不同**，手机上报
+//    `INSTALL_FAILED_UPDATE_INCOMPATIBLE: signatures do not match`。
+//    所以现在：本地也必须用固定 keystore，**绝不回退 debug**（`--allow-debug-signing`
+//    显式传参才允许，且会打印醒目警告）。
 //
 // 幂等：重复执行会先移除上一次注入的标记块，再按当前环境重新注入。
 // 使用方式：在 `tauri android build --apk` 之前执行（package.json 的 android:build 已集成）。
@@ -102,6 +110,41 @@ function injectPortraitManifest(manifestPath) {
 }
 
 const base64Keystore = process.env.ANDROID_KEYSTORE_BASE64?.trim();
+const allowDebugSigning = process.argv.includes("--allow-debug-signing");
+// 仓库内**固定路径**的本地 keystore：路径与凭据都写死在这里 ⇒ 与 HOME/ANDROID_USER_HOME
+// 无关，任何会话/任何机器上打的包签名一致（这正是"配死"的目的）。
+const LOCAL_KEYSTORE_REL = "scripts/android/keystore/gosslan-release.keystore";
+const LOCAL_KEY_ALIAS = "gosslan";
+const LOCAL_STORE_PASSWORD = "gosslan-local";
+const LOCAL_KEY_PASSWORD = "gosslan-local";
+
+/** 本地固定 keystore：不存在就用 keytool 生成一次（之后永远复用）。 */
+function ensureLocalKeystore() {
+  const abs = path.join(root, LOCAL_KEYSTORE_REL);
+  if (fs.existsSync(abs)) return abs;
+  fs.mkdirSync(path.dirname(abs), { recursive: true });
+  const keytool = process.env.JAVA_HOME
+    ? path.join(process.env.JAVA_HOME, "bin", "keytool")
+    : "keytool";
+  execFileSync(
+    keytool,
+    [
+      "-genkeypair",
+      "-keystore", abs,
+      "-alias", LOCAL_KEY_ALIAS,
+      "-keyalg", "RSA",
+      "-keysize", "2048",
+      "-validity", "10950",
+      "-storepass", LOCAL_STORE_PASSWORD,
+      "-keypass", LOCAL_KEY_PASSWORD,
+      "-dname", "CN=Gosslan, O=Gosslan, C=CN",
+    ],
+    { stdio: "inherit" },
+  );
+  console.log(`[android-signing] 已生成固定本地 keystore：${LOCAL_KEYSTORE_REL}（之后一直复用）`);
+  return abs;
+}
+
 const storePassword = process.env.ANDROID_KEYSTORE_PASSWORD ?? "";
 const keyAlias = process.env.ANDROID_KEY_ALIAS ?? "";
 const keyPassword = process.env.ANDROID_KEY_PASSWORD ?? storePassword;
@@ -127,10 +170,22 @@ if (base64Keystore) {
   fs.writeFileSync(keystorePath, decoded);
   text = injectReleaseSigning(text, storePassword, keyAlias, keyPassword);
   console.log("[android-signing] 已注入 release 签名配置。");
-} else {
+} else if (allowDebugSigning) {
   text = injectDebugFallback(text);
+  console.warn(
+    "⚠️ [android-signing] 显式允许 debug 签名：该包与固定 keystore 打的包**签名不同**，" +
+      "覆盖安装会失败（INSTALL_FAILED_UPDATE_INCOMPATIBLE）。仅用于一次性内测。",
+  );
+} else {
+  const abs = ensureLocalKeystore();
+  // 注入到 gen 工程（gradle 里 storeFile 是相对 app 目录的路径）
+  // 文件名必须与 `injectReleaseSigning` 里写的 `file("release.keystore")` 一致
+  // （踩过一次：复制成 gosslan-release.keystore ⇒ Gradle 报 "Keystore file ... not found"）。
+  const gradleKeystore = path.join(root, "src-tauri", "gen", "android", "app", "release.keystore");
+  fs.copyFileSync(abs, gradleKeystore);
+  text = injectReleaseSigning(text, LOCAL_STORE_PASSWORD, LOCAL_KEY_ALIAS, LOCAL_KEY_PASSWORD);
   console.log(
-    "[android-signing] 未检测到 release keystore，release 将使用 debug 签名（内测可安装）。",
+    `[android-signing] 已注入**固定本地 release 签名**（${LOCAL_KEYSTORE_REL}）—— 所有构建共用同一把钥匙。`,
   );
 }
 

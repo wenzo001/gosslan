@@ -68,7 +68,8 @@ fi
 # 工程注入必须发生在 `tauri android build` 之前：`tauri android init` 会重新生成
 # `gen/android` 整个工程（权限清单 / 竖屏锁定 / release 签名配置 / R8 keep 规则都在里面），
 # 把我们的改动全冲掉。两种构建都注入（脚本自身幂等）：
-#   - 有 `ANDROID_KEYSTORE_BASE64` 就用真 release keystore，否则 release 回退 debug 签名；
+#   - 有 `ANDROID_KEYSTORE_BASE64` 用 CI keystore；否则用仓库内固定路径的本地 keystore
+#     （`scripts/android/keystore/gosslan-release.keystore`，首次自动生成）——**绝不回退 debug**；
 #   - release 少了签名会产出**装不上**的未签名 APK，少了 R8 keep 会让蓝牙在真机上
 #     NoSuchMethodError，所以这一步失败必须直接中止。
 echo "==> 注入签名 / 权限清单 / 竖屏 / R8 keep …"
@@ -203,6 +204,20 @@ GOSSLAN_BTLEPLUG_DEX_CHECK
     if ! "$APKSIGNER" verify --min-sdk-version 24 "$DST" >/tmp/gosslan-apksigner.txt 2>&1; then
       echo "    ❌ $TAG 签名校验失败（手机上会装不上）："
       head -5 /tmp/gosslan-apksigner.txt
+      FAIL=1
+      continue
+    fi
+    # ①b **签名必须是固定的那把钥匙**（用户 2026-09-13 的事故：
+    #   缺少 ANDROID_KEYSTORE_BASE64 时静默回退 debug 签名 ⇒ 与手机上已装的包签名不同 ⇒
+    #   `INSTALL_FAILED_UPDATE_INCOMPATIBLE`）。这里把证书打出来，并**拦住 debug 签名**。
+    CERT_LINE=$("$APKSIGNER" verify --print-certs "$DST" 2>/dev/null | grep -m1 "Signer #1 certificate DN" || true)
+    CERT_SC=$( "$APKSIGNER" verify --print-certs "$DST" 2>/dev/null | grep -m1 "Signer #1 certificate SHA-256 digest" || true)
+    echo "    ${CERT_LINE#Signer #1 certificate }"
+    echo "    ${CERT_SC#Signer #1 certificate }"
+    if echo "$CERT_LINE" | grep -q "CN=Android Debug" && [ "${GOSSLAN_ALLOW_DEBUG_SIGNING:-0}" != "1" ]; then
+      echo "    ❌ $TAG 用的是 **Android Debug 签名**（与固定 keystore 不同 ⇒ 覆盖安装必然失败）。"
+      echo "       请确认 scripts/android/keystore/gosslan-release.keystore 存在（会自动生成）；"
+      echo "       确实要 debug 签名请显式 export GOSSLAN_ALLOW_DEBUG_SIGNING=1。"
       FAIL=1
       continue
     fi

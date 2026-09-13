@@ -10,399 +10,225 @@
 
 ## [Unreleased]
 
-### Fixed (🔴 Android 的 device_id 多了一层 `dev-` 前缀 ⇒ 三端里恒为最小 id ⇒ 永远不主动拨号)
+### Fixed (🔴 BLE 健康链路每 45s 被看门狗自己拆掉 —— 蓝牙"时好时坏"的根因)
 
-真机 2026-09-13 第七轮：日志里安卓的对端自称 `dev-gosslan-f3d6b7dddf73aab2`，
-而 Mac / Windows 是 `gosslan-…`。原因是 `state.rs` 的兜底路径**又套了一层前缀**：
+2026-09-13 框架审计（`docs/notes/audit-2026-09-13-mesh-ble-efficiency.md`）抓到的最严重缺陷。
 
-```rust
-let id = format!("dev-{}", hostname_fingerprint());  // hostname_fingerprint 本身已带 gosslan-
-```
+**证据链**：`ConnectionHealth` 的**读活性**只在建链时播种一次
+（`transport.rs::register_connection` → `seed_connection_read_seen`），此后**只由读循环刷新** ——
+TCP 侧确实每次都刷（`transport.rs` 的 `reader_loop` → `mark_conn_seen`），
+而 **BLE 读循环（`network/ble.rs::ble_reader_loop`）一次都没调**。
 
-两个后果都是真的：
-1. **身份形状不一致**（`gosslan-` 的命名约定被打断，日志/库/UI 里出现两种形状）；
-2. **`'d' < 'g'` ⇒ 安卓在三端里恒为最小 id**，而镜像规则是「大 id 拨、小 id 只接受」
-   ⇒ **安卓永远不主动拨任何人**，只能等对方来连它 —— 这让"安卓搜不到 Windows"
-   这一侧失去了唯一的自救通道（它本可以主动拨过去）。
+**后果**：任何**健康**的蓝牙链路 —— 15s 后 `is_healthy` 判假（选路与镜像去重都按"不健康"处理）、
+45s 被健康看门狗 `stale_connections` 当死链路**拆掉**，对端再拨回来、45s 后再拆，无限循环。
+真机体感正是：**蓝牙时好时坏、加好友/消息过一会儿才到、大图传到一半失败**。
 
-已改为直接用 `hostname_fingerprint()`，并加护栏 `every_fingerprint_path_shares_one_prefix`
-把"前缀只有一个、长度一致"钉死（再套前缀即 FAIL）。
+**修法**：读循环收到帧即回灌读活性。该函数同时服务 central（`BleReader`）与外设
+（`ChannelSource`）两条路径，**一处调用覆盖两个方向**。
 
-⚠️ `device_id` 一旦写进库就持久化了，**已装的安卓需要清一次数据**才会换到新 id。
+**顺带**：两侧各加一条 **MTU 协商结果日志**（central：`[GATT] MTU 协商结果 …`；
+外设：`[GATT] 外设侧 MTU 协商结果 …`）。审计发现文档里的"MTU=23 ⇒ 1KB/s"一直是**猜测** ——
+btleplug 实测是 macOS `maximumWriteValueLength+3`（≈185）、Android `requestMtu(517)`，
+即真实载荷本应 182~512 字节；没有这条日志，"蓝牙到底多慢"根本无从判断。
 
-### Added (扫描日志打出**命中的服务 UUID**，区分"对端没广播"与"广播的是别的 UUID")
+**护栏**：Rust 单测 `ble_reader_loop_refreshes_read_activity`（源码断言：读循环里必须有
+`mark_conn_seen`，漏了必 FAIL —— 这种退化不会编译失败、只会让链路自断）+
+`verify-guards.py` 新增非空转用例。
 
-真机 2026-09-13 第七轮出现的怪现象：**Windows 能扫到安卓和 Mac、Mac 能扫到 Windows，
-但安卓的扫描里始终只有 1 个本应用服务**（Mac 能同时看到 2 个）。
-"对端根本没广播"和"对端广播的是另一个 UUID（旧版本/另一份构建）"在旧日志里长得一模一样。
+### Added (框架审计报告 + 真机测试计划)
 
-`[DISCOVERY] 候选可拨 …` 现在带上 `命中=<UUID>`（或 `(未在本设备广播里看到我们的 UUID)`），
-这条日志能直接判定上面两种情形。
+- `docs/notes/audit-2026-09-13-mesh-ble-efficiency.md`：按用户新优先级
+  （BLE 加入 mesh 稳定性 / 聊天高效 / 手机↔手机 mesh）逐项审核，带 `文件:行号` 证据。
+  结论摘要：框架齐备（三链路、多跳、中继授权、外部帧流水线都在主干），
+  缺口集中在 ① BLE 链路生命周期 ② 弱链路吞吐的可观测性与节流 ③ 文件传输的固定超时
+  ④ 群消息中转与跨跳补发。
+- `docs/notes/device-test-plan-2026-09-13.md`：8 条真机测试，每条都写明"看哪个日志/数字"；
+  T1（链路是否活过 45s）与 T2（真实 MTU/吞吐基准）是前提。
 
+## [4.2.20] - 2026-09-13
 
+### Fixed (🔴 安卓包签名不稳定 ⇒ `INSTALL_FAILED_UPDATE_INCOMPATIBLE`：不再回退 debug，签名配死)
 
-### Fixed (🔴 Windows 的广播一直没人看得见：显式 `SetIsDiscoverable(true)` + 盯住广播状态)
+用户真机：`adb install` 报 `INSTALL_FAILED_UPDATE_INCOMPATIBLE: signatures do not match`。
+查证（`apksigner verify --print-certs` + `dumpsys package`）：我打出来的 4.2.19 APK 是
+**Android Debug 签名**（`CN=Android Debug`，SHA-256 `D2:27:81:F7…`），而手机上已装的包是
+**另一把钥匙**（`signatures=[7f46ed86]` ⇒ SHA-256 `86:ED:46:7F…`）。
 
-真机 2026-09-13 第六轮，用户三台设备的完整日志把范围压到最后一处：
+**根因**：`scripts/inject-android-signing.mjs` 在缺少 `ANDROID_KEYSTORE_BASE64` 时会**静默
+回退 Android debug 签名**，而 debug keystore 的位置随 `$HOME`/`$ANDROID_USER_HOME` 变化
+⇒ 不同会话/机器打出来的包签名不同，以前只是恰好一致才没暴露。
 
-**成果（前几轮的修复确实生效了）**：安卓 ↔ Mac 已打通并互发消息
-（`通知已发出 #140 status=0`、`[RECV] type=chat_message`），
-而且**安卓能看到 Mac 的广播**（`候选可拨 id=50:A6:D8:AE:B2:69` = Mac 的公有地址）。
+**修法**（用户要求「算法配死，跟以前一样」）：
 
-**唯一剩下的缺口：Windows 的广播，安卓和 Mac 从头到尾都收不到**
-（两端日志里没有出现过 Windows 的地址），而 Windows 自己以为一切正常。
+1. **固定本地 keystore**：`scripts/android/keystore/gosslan-release.keystore`（首次 `keytool`
+   自动生成；路径与凭据**写死在脚本里**，与 `HOME`/`ANDROID_USER_HOME` 无关）⇒ 所有构建共用
+   同一把钥匙；CI 仍可用 `ANDROID_KEYSTORE_BASE64` 覆盖；
+2. **不再静默回退 debug**：只有显式 `--allow-debug-signing` 才允许；
+3. **构建脚本把证书钉住**：打印 `DN` + `SHA-256`，检测到 `CN=Android Debug` 直接让构建失败
+   （除非 `GOSSLAN_ALLOW_DEBUG_SIGNING=1`）——这类退化以前只会以"装不上"的形式暴露；
+4. `.gitignore` 排除 keystore 目录（**私钥绝不入库**）。
 
-原因是 WinRT 的一个"沉默失败"面：`StartAdvertisingWithParameters` 返回 `Ok`
-**不代表广播真的生效**。`GattServiceProviderAdvertisementStatus` 有四个取值，
-其中 `Aborted(3)` 与 `StartedWithoutAllAdvertisementData(4)` 都意味着
-"对端基本认不出我们"，而旧代码**从来没查过这个状态**，也假设
-`IsDiscoverable` 默认为 true（那句注释直接写"不调 `SetIsDiscoverable`：默认即为可发现"）。
+实测：重建后 APK 证书 `DN=CN=Gosslan, O=Gosslan, C=CN`、SHA-256 `05:EC:D5:40…`（稳定）。
+⚠️ 手机上当前装的是**旧钥匙**的包：要么提供原来的 `ANDROID_KEYSTORE_BASE64`（我固化到固定路径），
+要么**卸载一次**（丢本机数据）后再装 —— 之后不会再变。
 
-修法两处：
-1. **显式 `SetIsDiscoverable(true)`**，不再依赖平台默认值；
-2. **启动时查一次状态 + 注册 `AdvertisementStatusChanged` 持续盯着**，
-   状态一变就留痕（`Started` / `StartedWithoutAllAdvertisementData` / `Aborted` / `Stopped`）。
-   Windows 会在省电、无线电被别的应用抢占、蓝牙被关再开等情形下**静默 Aborted**，
-   而那时旧日志里只剩一条"已启动"，用户看到的正是"刚才还能搜到、现在搜不到了"。
+### Fixed (文本选择：PC 拖选气泡不再"刚选中就取消"；移动端选中文字能弹「复制」；头像不可选)
 
-这一轮的教训与 btleplug 那次同源：**平台 API 报成功 ≠ 功能生效**，
-所以凡是"报了成功但对端没反应"的地方都必须把真实状态读出来。
+用户 2026-09-13 报了三件事：
 
+1. **PC**：右键气泡能复制整条文本，但**鼠标拖选不行 —— 刚选中立刻被取消**。
+2. **移动端**：(a) 长按菜单（右键气泡）不好用；(b) 选中文本后**不弹「复制/全选」工具条**。
+3. **头像不该被选中**（将来会有点击事件，但依然不能选择）；移动端**长按与"长按选字"互相打架**。
 
-### Fixed (🔴 两处一起才解释"还是搜不到"：Mac 每秒刷"取消订阅"把外设事件循环灌满)
+逐条根因与修法：
 
-真机 2026-09-13 第五轮：用户提供**三台设备**（手机 + Mac + Windows）的两侧日志。
-先更正一个我一直搞错的事实 —— **Mac 也有蓝牙**，而且 `34:13:E8:90:51:B3` 就是它
-（`7D:BF:C7:5C:EF:7F` 才是 Windows，它 17:50:16 连上了安卓、MTU=517 都协商完了）。
-
-**发现 A：上一轮的随机地址补丁确实生效了。** 安卓侧第一次出现
-`对端已连接（7D:BF:C7:5C:EF:7F）` + `MTU 已协商=517` —— 这是整轮里第一次真的连上。
-
-**发现 B（本轮修掉的）：Mac 每 1~2 秒"连上 → 取消订阅"一次，14 分钟刷了几百条**
-`外设侧对端取消订阅（视为断开）central=34:13:E8:90:51:B3`。
-而旧代码把**每一条**都当成断开，立刻 `handshaking.remove` + `routes.remove` +
-`detach_by_endpoint` ⇒ 安卓的外设事件循环被这条洪水灌满，**同一时刻正在握手的 Windows
-（已连上、MTU 都协商完了）被挤掉**，永远走不到 `[SESSION] 已就绪（外设侧）`。
-用户看到的仍然是"互相搜不到"。
-
-修法：按**有没有已登记链路**分流，而不是见"取消订阅"就摘：
-- 没有已登记链路（还在握手 / 刚连上）⇒ 只清握手标记、**保留路由**，让握手自己完成或超时；
-- 已有链路 ⇒ 才是真断开，按原逻辑摘掉。
-
-GATT 语义本来就允许"取消订阅"与"断开"是两件事（两者都走同一个回调），
-所以这不是绕过症状 —— 旧行为会**误伤一切"刚连上还没握手完"的链路**，
-而 Windows 每次连上安卓都正好落在这个窗口里。
-
-**发现 C（仍未修，需要 Mac 侧日志）：Mac 为什么会每秒重连。**
-它现在还在空转，会持续占用安卓 GATT server 的连接槽。这需要 Mac 的日志才能定位
-（Mac 必须先用 `next` 分支重打，它现在的 v2.1.2 **没有蓝牙代码**）。
-
-
-### Fixed (🔴🔴 Windows 连不上安卓的**真因**：btleplug 的 WinRT 后端连接时丢掉了地址类型)
-
-真机 2026-09-13 第四轮，用户关掉局域网只留蓝牙，日志给出了**决定性**证据。
-
-先用 RSSI 分布把"哪个地址是哪台设备"钉死（这是前几轮我一直搞反的地方）：
-
-| 地址 | RSSI 分布 | 地址类型 | 判断 |
-|---|---|---|---|
-| `50:A6:D8:AE:B2:69` | -55~-61（**6dB 内，非常稳定**） | Public | 固定不动、很近 ⇒ **Windows 自己** |
-| `78:AB:78:64:07:45` | -68~-83（**15dB 波动、明显更弱**） | **Random** | 会移动 ⇒ **安卓手机** |
-
-（前几轮我一直把 `50:A6` 当成手机，**方向是反的**。本轮另加了"本机蓝牙适配器地址"一行日志，
-以后这类判断是事实比对，不再需要推理。）
-
-真因：**btleplug 0.13 的 WinRT 后端在连接时不传地址类型。**
-- 它在扫描回调里**采集了**地址类型（`args.BluetoothAddressType()` → `shared.address_type`）；
-- 但连接时走的是 `BluetoothLEDevice::FromBluetoothAddressAsync(address)` —— **不带类型**；
-- WinRT 另有 `FromBluetoothAddressWithBluetoothAddressTypeAsync(address, type)`（我们已核实存在）。
-
-对 **Random（随机地址）** 的 BLE 外设（安卓 `BluetoothLeAdvertiser` 默认就是随机地址），
-不带类型的那条会返回一个"连不上"的设备对象 ⇒ 之后每次 GATT 操作都以
-`GattCommunicationStatus::Unreachable` 失败 ⇒ 被翻成 `Not connected`。
-**扫描完全正常（广播不受影响），所以症状就是"能扫到、永远连不上、且没有任何被拒的迹象"。**
-
-修法：把 btleplug **vendor 进仓库并打补丁**（`src-tauri/vendor/btleplug`，约 30 行，两处）：
-1. `winrtble/ble/device.rs`：`BLEDevice::new` 多一个 `address_type` 参数；
-   `Random` ⇒ 走带地址类型的重载，其余**完全走上游原路径**；
-2. `winrtble/peripheral.rs`：把 `self.shared.address_type` 映射成 WinRT 的
-   `BluetoothAddressType` 传进去。
-
-为什么必须 vendor 而不是绕开：`connect()` 与后续 `discover_services()` 都依赖 btleplug
-自己建的那条链路 —— 从外面用 WinRT 连上，btleplug 的对象仍然是"未连接"，
-GATT 操作照样失败。上游升级时重放补丁即可（`grep -rn "本地补丁" src-tauri/vendor/btleplug`）。
-对 macOS / Android / Linux 后端**零影响**（补丁只在 `winrtble` 里，且 Public/None 走原路）。
-
-### Added (启动时打出**本机蓝牙适配器地址**)
-
-`本机蓝牙适配器地址 = XX:XX:…（扫描结果里出现这个地址就是**自己**）`
-
-排查中最大的困扰是"扫描结果里哪个地址是这台机器自己"——自己的广播**也会**出现在扫描结果里
-（`收到 N 个广播，其中 M 个是本应用服务`）。之前只能靠 RSSI 波动幅度去猜，
-而**猜错会让整个判断反向**（本轮就是这样被纠正的）。现在是一行事实。
-
-
-### Fixed (🔴 退避把重试饿死了 —— 日志里近一半是"跳过候选 原因=退避中")
-
-真机 2026-09-13 第三轮日志（用户要求"看一下日志"）暴露出一个**自己造成的**问题：
-
-```
-L104  跳过候选 78:AB:78:64:07:45 原因=退避中 剩余=1314ms
-L122  跳过候选 78:AB:78:64:07:45 原因=退避中 剩余=1387ms
-L130  跳过候选 50:A6:D8:AE:B2:69 原因=退避中 剩余=7849ms
-```
-
-扫描周期已经是 2s，而退避是 5s→10s→20s→40s ⇒ **大部分轮次根本不去连**。
-用户看到的"搜不出来"，很大一部分是**我们自己不去试**。
-
-关键认识：退避的初衷（别在对端上叠连接）**已经由 `DialGuard` 在途去重实现了**
-（真机第一轮踩出来的那个 bug），所以每轮都试是安全的。新策略：
-**前 3 次失败不退避**（立刻可再试，节奏由 2s 扫描周期决定），之后固定 **5s** 冷却，
-**不再指数增长**。护栏 `dial_backoff_does_not_starve_retries` 钉死这两条
-（任何人改回指数退避都会立刻 FAIL）。
-
-### Added (握手成功时把设备身份写进日志 —— 用来把"蓝牙地址"和"哪台设备"对上)
-
-真机 2026-09-13 第三轮发现：**Windows 自己的广播也被搜到了**
-（`BLE 扫描：收到 15 个广播，其中 2 个是本应用服务`，以前只有 1 个），
-于是日志里出现两个候选地址（`50:A6:D8:AE:B2:69` tx=12、`78:AB:78:64:07:45` tx 无），
-而**无法判断哪个是手机、哪个是 Mac** —— 前几轮我曾把 `50:A6` 当成手机，可能一直是反的。
-
-`[SESSION] 已就绪` 现在带上昵称与设备类型：
-
-```
-[SESSION] 已就绪 peer=gosslan-… 昵称="Silent Heron DQ2" 类型=mobile ep=ble:78:AB:…
-          （双向 Hello 已验签；**这个 ep 就是该设备对应的蓝牙地址**）
-```
-
-这样只要**任意一对设备**握手成功一次，地址与设备的对应关系就永久可查 ——
-下次不用再猜。
-
-
-### Added (BLE 候选日志补上广播事实：RSSI / 地址类型 / 名字 / 发射功率)
-
-真机 2026-09-13 第三轮：用户反馈「运行日志里能搜到这个设备，但添加好友列表里永远出不来」。
-查清列表那条是**数据源断层**（见下方 Changed），而排查连接失败时又发现日志**信息丢了** ——
-`[DISCOVERY] 候选可拨 id=…` 只打地址，而 btleplug 的 `PeripheralProperties` 里明明有
-`rssi` / `address_type` / `local_name` / `tx_power_level` 等一眼能定性的信息。
-现在一并打出来，形如：
-
-```
-[DISCOVERY] 候选可拨 id=50:A6:D8:AE:B2:69 ⇒ 开始连接（GATT central）
-            ｜rssi=Some(-62) 地址类型=Some(Public) 名字=None 广播服务数=1 发射功率=None
-```
-
-为什么值得（本项目的日志是排障的**一手依据**）：这三个字段直接决定下一步往哪查 ——
-`rssi` 过弱 ⇒ 距离/干扰问题；`地址类型=Random` ⇒ 连接要走带地址类型的重载；
-`名字=None` ⇒ 对端没在广播里报名字（正常，我们刻意不报，省 31 字节的广播预算）。
-
-
-### Changed (BLE 扫描提速 + 用户动作立刻触发 —— 用户要求「尽量扫描快一点」)
-
-用户 2026-09-13：「希望在上层的时候，尽量扫描快一点」。真因是**周期与用户动作完全错开**：
-BLE 一直是「扫 3s → 等 10s」的固定节奏，而用户点开「添加好友」的那一刻，
-最多要等**一整个周期**才可能看到对端；而且若某个候选正在退避期，用户点什么都不会发生。
-
-| 项 | 之前 | 现在 |
+| 现象 | 根因 | 修法 |
 |---|---|---|
-| 扫描窗口 | 3s | **2s** |
-| 两轮之间等待 | 10s | **2s**（实际节奏约 4s 一轮） |
-| 启动后第一轮 | 先等 10s | **立即扫**（`skip_initial_wait`） |
-| 用户动作 | 只触发 LAN 的 `who_has` | **同时立刻再扫一轮 BLE**（`ble_scan_now`） |
-| 退避期内的候选 | 原样跳过（用户点了也没反应） | 用户触发时**打折 8 倍**，打完折就试 |
+| 拖选刚选中就取消 | 正文被 `px-3 py-1.5` 内边距包着，从内边距/气泡边缘起拖时**选区锚点落在不可选区域**，WebKit 立刻收敛选区 | `MessageTextBubble` 气泡根加 `select-text`（只让"可选中"，**不**加 `.gosslan-selectable`——那是长按让路标记） |
+| 拖选划过表情就中断 | 正文表情是 `<img>`，浏览器**默认允许拖图**，拖选划过去就变成拖图片 | `.emoji-img` 加 `-webkit-user-drag: none` + 模板 `draggable="false"`。⚠️ 刻意**不加** `user-select: none`：那会让复制选区时丢掉表情（`alt` 是用户可见文本） |
+| 移动端选中后没有「复制」工具条 | ① `button,[role=button]` 的 `-webkit-touch-callout: none` 会盖到正文；② 全局 `contextmenu` **无条件** `preventDefault()`，把选区的系统菜单也吃了（Android WebView 的选择工具条依赖它的默认行为） | `.gosslan-selectable` 显式 `-webkit-touch-callout: default`；`App.vue` 的 `contextmenu` 改为**有非空选区时放行系统菜单**，其余仍屏蔽 |
+| 头像能被拖进选区 | 头像容器没有 `user-select` 约束（`button,[role=button]` 只覆盖按钮形态） | `.gosslan-avatar-box`（13 个头像调用点都带这个类）加 `user-select: none`；头像 `<img>` 加 `draggable="false"` |
+| 移动端长按"不太灵" | `@touchmove` **直接绑 `cancelLongPress`** —— 手指动 1px 就取消，真机上几乎不可能"完全不动地按住 500ms" | 改绑 `onTouchMove`：**12px 抖动容差**；到点加一次 `haptic("heavy")` 触觉反馈（"到点了"必须有明确反馈） |
 
-新增 `AppState::ble_scan_now`（`watch<u64>`，与 LAN 的 `probe` 同一范式）+
-`network::ble::trigger_scan_now()`；扫描循环的等待分支改 `select!` 监听它。
-`search_nearby_peers`（用户打开「添加好友」时调用的那个命令）现在**同时**触发 LAN 探测与
-BLE 立刻扫描，等待从 1.5s 调到 2s（覆盖 BLE 的扫描窗口）。
-**前端无需改动** —— `AddFriendModal.vue` 本来就在打开与手动刷新时调这个命令。
+**护栏**：新增 `checkSelectionContract`（`utils/designGuards.ts`）+ 真值对用例（`designGuards.test.ts`：
+"同一份源码既要有 `gosslan-selectable`，又**不能**把气泡根标成它"，以及"`.emoji-img` 不许出现
+`user-select: none`"这类反向约束）。`verify-guards.py` 新增用例「聊天区文本选择契约」并已验证
+**改坏即 FAIL、恢复即 PASS**。
 
-### Changed (连接重试的形状：先试便宜的 `discover_services`，再重建设备对象)
+⚠️ 仍待用户确认：「PC 上拖选立刻取消」我只复现到了**结构性**成因（内边距锚点 + 图片可拖），
+如果修完仍复现，需要知道①系统是 Windows 还是 macOS、②纯文字（无表情）消息是否同样复现 ——
+macOS 15 的 WKWebView 有一条已知的选区回归，Windows 上则可能是 `tauri.conf.json` 里
+`dragDropEnabled: true` 的原生拖放注册在抢手势。
 
-真机 2026-09-13 第二轮：`connect()` 三次重试**全都失败**（`第 3/3 次：Not connected`）。
-复盘发现重试形状本身有问题 —— 每次重试都重建 `BluetoothLEDevice`（WinRT 内部要
-`FromBluetoothAddressAsync` + `GattSession::FromDeviceIdAsync`），既慢又可能因为
-"上一个对象还没释放"而互相干扰。改成：
-① 先用**便宜**的 `discover_services()` 反复试（链路若已就绪，一次就成）；
-② 只有它也不成，才走完整 `connect()`。
-两条路径都汇到抽出来的 `finish_connect()`（取特征/订阅/组装只留一份）。
+### Changed (打包提速：一键 `npm run dist`，mac 上安卓+mac **并行**、Windows 只出当前环境的包)
 
-### Added (失败时把"系统此刻怎么看这条链路"打进日志)
+用户 2026-09-13：「Mac 端要打一个安卓包和一个 Mac 包，**要并行、不要串行**，尽可能优化打包时间；
+Windows 端就只打当前环境适配的那个包。」
 
-`dial_and_register` 现在记录 `is_connected()` 的**连接前 / 失败后**两个状态，失败信息形如
-`连接失败（第 3/3 次）：Not connected｜系统链路状态：连接前=Ok(false) 失败后=Ok(false)`。
+新增 `scripts/package.mjs`（`npm run dist`，平台自动判定）与 `scripts/frontend-build.mjs`。
+原来慢在 5 处，逐个消掉：
 
-为什么必须加（这一轮的教训）：`is_connected=false` 与 `=true` 是**两个完全不同的故障面**——
-前者是射频层根本没连上，后者是连上了但 GATT 数据库没就绪（后者重试才有意义）。
-没有这一行，两者在日志里长得一模一样，只能靠猜。
+| 优化 | 原来 | 现在 |
+|---|---|---|
+| 前端构建 | mac + 每个 ABI 各跑一遍 `vue-tsc + vite`（2~3 遍） | **只跑一遍**；其余 tauri 进程由 `GOSSLAN_SKIP_FRONTEND=1` 短路钩子 |
+| macOS bundling | `targets: "all"` ⇒ 每次做 DMG（分钟级） | 默认只出 `.app` + zip；`--dmg` 才出 |
+| Android ABI | 每次两个 ABI（两次完整 release 构建） | 默认只 arm64-v8a；`--all-abis` 才两个 |
+| 并行 | mac 与安卓串行 —— cargo 对 target 目录加**独占锁**（实测并发时打印 `Blocking waiting for file lock on build directory`） | 安卓用独立 `CARGO_TARGET_DIR=src-tauri/target-android`，两个构建**真正并行** |
+| release profile | `lto = true` + `codegen-units = 1`（体积最优、编译最慢） | 默认 `thin` LTO + 16 CGU；`--fat-lto` 回到发布级 |
 
-### Changed (启动日志如实报扫描节奏)
+其它：`--dry-run` 可先看命令；`--serial` 回退串行（复用旧缓存）；`--migrate-cache` 一次性把旧
+`target/` 里的安卓产物搬进 `target-android/`（同盘 rename，秒级）；结束时打印每个任务的用时汇总。
+`npm run build` 改为走 `scripts/frontend-build.mjs`（保留 `vue-tsc + vite` 两步与耗时输出，
+只是多了一个"跳过"开关）。`.gitignore` 加 `src-tauri/target-android`。
 
-`蓝牙通道已启动（每 2s 扫描 2s；打开「添加好友」会立刻再扫一轮）` —— 旧文案写死
-「每 10s 扫描一次」，改了参数之后它就成了假信息（本项目的日志是排障的一手依据）。
+**本机实测（macOS arm64 / 8 核，`npm run dist`）**：
 
-
-### Added (Windows 蓝牙**外设角色**：WinRT GattServiceProvider —— 手机终于能搜到 Windows)
-
-真机 2026-09-13 暴露了我上一轮判断的错误：**「先只做 central、外设下一轮」行不通**。
-证据在 `%APPDATA%\com.gosslan.app\logs\gosslan.log`：Windows **搜得到**手机
-（`BLE 扫描：收到 10 个广播，其中 1 个是本应用服务` → `[DISCOVERY] 候选可拨 id=50:A6:D8:AE:B2:69`），
-但 `connect()` 立刻 `Not connected`。而反方向**永远不可能**：Windows 不广播 ⇒ 手机扫描里没有它；
-再叠加「大 id 拨、小 id 只接受」的镜像护栏（Windows 的 `device_id` 更小 ⇒ 判定"该由对端拨我"）
-⇒ **两侧都在等对方**。完整诊断见 `docs/notes/windows-ble-diagnosis-2026-09-13.md`。
-
-新增 `src-tauri/src/transport/bluetooth_peripheral_windows.rs`：用 WinRT
-`GattServiceProvider` 实现 Windows 的 GATT server + 广播，**与 macOS/Android 接口逐字同形**
-（`start` / `PeripheralServer` / `PeripheralWriter` / `PeripheralEvent` / `STATE_WAIT`），
-因此 `network/ble.rs` 里的事件循环、双向 Hello 握手、路由、读写循环**三平台共用一份**，
-只有 `use ... as peripheral` 那一行按平台切换。
-
-**没有引入新的第三方 crate**：`windows` 早就在依赖树里（btleplug 的 WinRT 后端依赖它），
-这里只是自己也用它；`windows-future` 只为 `IAsyncOperation` 的 inherent `join()`。
-两者都 optional + 只在 Windows 目标 + 只在 `--features bluetooth` 下编译
-（默认构建与 macOS/Linux 产物逐字节不变，符合 ADR-0015 §2）。
-
-实现里守住的四条行为契约（每条都对应一类"看着成功其实不通"）：
-1. **写请求必须 `Respond()`** —— 否则 central 每次写都等到超时（与 ADR-0015 §7.3 第 5 条同款）；
-2. **`NotifyValueForSubscribedClientAsync` 的返回 status 必须看** —— 非 `Success` 说明这一片没送到；
-3. **分片之间节流 12ms** —— 与 Android 侧同一条真机教训（连发会被协议栈丢中间片）；
-4. **WinRT 对象绝不跨 `.await`** —— `IBuffer`/`GattSubscribedClient` **既非 `Send` 也非 `Sync`**，
-   所以真正的发送放进 `tokio::task::spawn_blocking`，异步侧只传 `Vec<u8>`。
-
-新增两处护栏单测（都是"两端各写一份就会漂移"的那类）：
-`peripheral_and_central_agree_on_payload_budget`（外设的 `MaxNotificationSize` 与 central 的协商 MTU
-必须走出**同一个** `ble_framing::att_payload_budget`）、
-`fragmentation_round_trips_at_windows_notification_size`。
-
-### Fixed (🔴 Windows 上 `connect()` 与 `discover_services()` 之间没有重试 ⇒ 永远 `Not connected`)
-
-`driver::connect()` 原本是「`connect()` 然后立刻 `discover_services()`」，**一次重试都没有**。
-这在 macOS/Android 上恰好能过，但在 Windows 上必失败 —— 因为 btleplug 的 WinRT 后端里
-**"连接"本身就是一次 `GetGattServicesAsync(Uncached)`**
-（`winrtble/peripheral.rs:488` → `ble/device.rs:112`，`Unreachable` 被原样翻成 `NotConnected`），
-而 BLE 链路建立到 GATT 数据库可读之间有几百 ms~数秒的窗口。日志形态完全吻合：
-`开始连接` → **2~3 秒后** `Not connected` → 退避 → 13 秒后又来一次，从未走到握手。
-
-修法是两层**有界**重试（整条 `connect()` 最多 3 次；GATT 服务可读最多 12 次 × 250ms = 3s），
-失败原因**原样带出去**（真机排障只认这条日志）。重试无副作用（两个调用都幂等），
-macOS/Android 第一次就成功 ⇒ 不会多等一次。
-
-### Changed (外设的载荷换算收敛到唯一一份 `ble_framing::att_payload_budget`)
-
-同一个概念在三个地方有三个名字（central 的协商 MTU / macOS 的 `maximumUpdateValueLength` /
-Windows 的 `MaxNotificationSize`），而"扣掉 3 字节 ATT 头"这一步**两边都要做**。
-现在三处都调 `att_payload_budget`，`driver::payload_mtu` 与
-`bluetooth_peripheral::{central_payload_mtu, Windows 外设}` 不再各写一份减法 ——
-那类漂移的症状是"某台设备就是收不到消息"，极难定位。
-
-### Changed (ADR-0015 §7.9 修正：Windows 外设从「不做」改为已实现)
-
-上一轮写的 §7.9 结论（「Windows 只做 central 就够，Windows↔手机这条是通的」）**是错的**，
-已在原处标注更正并给出真机反例。
-
-
-### Added (Windows 蓝牙打通：BLE central 接线 + 每次提交都能出一份带蓝牙的生产包)
-
-用户 2026-09-13 要求：「把 Windows 端的蓝牙接口连接打通，和 mac 手机等其他端」+
-「每次提交测试时，都生成一个当前环境下能打的 Windows 生产包」。
-
-盘出来的真因**不是射频代码缺失**，而是三处"平台门"与一处"构建开关"：
-
-| # | 缺口 | 之前 | 现在 |
+| 场景 | mac | android | 总耗时 |
 |---|---|---|---|
-| 1 | `network/ble.rs` 的 7 处 `cfg(any(macos, android))` 把 Windows 整段排掉 | Windows 上 `should_dial_ble` 等符号根本不存在 ⇒ `cargo check --features bluetooth` **编译不过** | central 路径的门改成 `any(macos, windows, android)`；外设路径仍只留 macOS/Android |
-| 2 | `package.json` 的 `dist:win` **不带** `--features bluetooth` | 打出来的 Windows 包**没有蓝牙**（Cargo feature 默认关），而构建照样"成功" | `dist:win` / `dist:win:arm64` / `dist:win:msi` / 便携版脚本一律加 `--features bluetooth` |
-| 3 | `.github/workflows/build.yml` 用 `npm run dist:win` | 硬编码 x64 ⇒ ARM64 job 打出 x64 包却按 arm64 命名；且同样没有蓝牙 | 改用 `--target ${{ matrix.target }}` + `--features bluetooth`，并新增护栏：`Cargo.lock` 里没有 `btleplug` 就**直接失败**（拦"构建成功但 feature 没生效"这类静默故障） |
-| 4 | 拨号判据 `should_dial_ble(my_id, peer_id) = my_id > peer_id` 只在**两端都能广播**时成立 | Windows 只做 central（本轮不做 WinRT 外设）⇒ 一旦 Windows 的 id 更小，**两侧都不拨**，现象是"搜到了但永远连不上" | 判据补一项事实来源：`ble_peer_advertises`（扫到谁在广播就登记）。**对端不广播 ⇒ 必须由我们拨**；两端都广播时行为与今天逐字节一致 |
+| 首次（profile 换了 ⇒ 两个 target 全量重编） | 819.1s | 744.8s（Rust 已完成） | **820.9s**（串行约 1564s） |
+| 稳态（缓存都在、只改了前端） | 133.6s | 223.4s | **234.6s**（前端只跑一次 11.2s） |
 
-`ble_framing` / E2EE / outbox / ACK / `handle_message` / 线格式 / SQLite **零改动** ——
-Windows BLE 复用的是与 Mac、Android **完全同一份**消息层（ADR-0015 §2 的硬性约定）。
+产物：`release-artifacts/macos/gosslan-4.2.19-aarch64-apple-darwin.app.zip`（6.6M）与
+`release-artifacts/android/gosslan-4.2.19-arm64-v8a-release.apk`（13M，含 apksigner / 单 ABI /
+btleplug Java 类 / 包内前端一致性四项既有校验）。日志里能看到
+`[frontend] GOSSLAN_SKIP_FRONTEND=1 ⇒ 复用已构建的 dist/` —— 前端确实只构建了一次。
 
-### Added (一条命令出 Windows 生产包：`npm run dist:win:test`)
+### Added (默认头像取字规则升级：英文取前 4 字母、中文取首字、中英混排有明确截断)
 
-`scripts/build-windows-release.ps1`：环境自检（Rust 目标 + MSVC）→ 护栏
-（`npm test` + `cargo test --lib --features bluetooth`，**默认不跳**）→
-`tauri build --features bluetooth --bundles nsis` → 产物收集到 `dist-windows/` 并打印 SHA-256。
-产物与 CI（`.github/workflows/build.yml`）**完全一致**。`-SkipGuards` 可只打包不跑测试，
-`-Portable` 可额外出一个免安装 zip。
+用户 2026-09-13 提出：个人信息页等所有「默认头像」都是用户名生成的，取字规则应当更明确。
+旧规则只有一条「取首字符大写」（`avatarInitial`），英文名只出一个字母，和用户预期不符。
 
-### Fixed (🔴 Windows 上这批"源码文本护栏"全部失效 —— `rust_fn_body` 的 CRLF 锚点)
+**新规则（`src/utils/color.ts::avatarInitial`，全部按码点取、字母转大写、空名兜底 `?`）**：
 
-`src-tauri/src/lib.rs` 的 `rust_fn_body` 用 `"\n}\n"` 从源码里抠函数体，供
-`ble_link_has_a_designated_dialer` 等一批护栏断言"某接线必须存在/必须不存在"。
-而 git 的 `core.autocrlf=true`（Windows 默认）把 .rs 检出成 **CRLF**，函数结尾是
-`\n}\r\n`，**不含**该锚点 ⇒ 它静默退化成"返回**整个文件剩余部分**"，于是：
-`assert!(contains)` 全部**假绿**，`assert!(!contains)` 全部**误报失败**
-（本轮新加断言时正是这样被它误报，才顺藤摸到这条）。Windows 上实测：
-修前 `cargo test --lib` 有 2 条失败（其中 `aux_window_open_is_singleton_serialized_and_resident`
-**是本条缺陷的误报，不是真缺陷**）；修后 **416 passed / 0 failed**。
+| 用户名 | 结果 | 规则 |
+|---|---|---|
+| `zhou` | `ZHOU` | 纯英文 ⇒ 前 4 个字母 |
+| `周工` | `周` | 纯中文 ⇒ 首字 |
+| `周san` | `周` | 中文开头，后面是英文 ⇒ 仍是首字 |
+| `a中` | `A` | 字母 + 中文，字母 1 个 ⇒ 只取字母 |
+| `ab中` | `AB中` | 字母 + 中文，字母 2 个 ⇒ 两个字母 + 一个中文 |
+| `abc中` | `ABC` | 字母 + 中文，字母 3 个 ⇒ 只截断到字母 |
+| `abcde中` | `ABCD` | 字母超过 4 个 ⇒ 前 4 个字母 |
+| `John Smith` / `lee_2` | `JOHN` / `LEE` | 只对「中英混排」特判，其余归入英文那一档 |
+| `👍周工` | `👍` | 非 ASCII 字母开头（emoji / 数字 / 符号）⇒ 首字符 |
 
-两层修法（不依赖开发者的 git 配置）：
-1. `rust_fn_body` 先归一化行尾再找锚点，返回 `Cow`（LF 检出零拷贝，CRLF 才复制）；
-2. 新增 **`.gitattributes`**（`* text=auto eol=lf` + 明确的二进制清单），
-   让仓库在所有平台上都按 LF 检出。
+**渲染适配**：3~4 个字（如 `ZHOU`）在旧字号下会撑破头像圆。新增 `.gosslan-avatar-box`
+（`container-type: inline-size`）与 `.gosslan-avatar-initial[data-len]`，用 `cqw` 让字号
+随**头像框宽度**缩放 —— 16px 的已读小头像与 64px 的资料页大头像自动各自合适，
+不必在 13 个调用点各写一份字号；1~2 个字沿用原字号（零视觉变化），
+不支持容器查询的旧 WebView 回落到原字号（顶多略挤，不会看不见）。
+13 个渲染点全部接上（消息流 / 会话列表 / 通讯录 / 群成员 / 转发弹窗 / 已读回执 /
+@提及 / 侧栏 / 资料页 / 添加好友 / 群九宫格）。
 
-### Fixed (`verify-guards.py` 在 Windows 上跑不起来也跑不对 —— 元护栏本身的三个坑)
+**护栏**：`color.test.ts` 新增中英混排真值表 + `avatarInitialLen`（按**渲染结果**数字数，
+不是原始用户名长度）用例。
 
-`scripts/verify-guards.py`（61 条"改坏必须 FAIL、恢复必须 PASS"的非空转验证）是**检查护栏
-有没有在守东西**的那一层，而它在 Windows 上首次运行时三处都不对，全部修掉：
+### Added (蓝牙链路聊天框加传输速度提示)
 
-1. **npm 解析**：Windows 上 `npm` 是 `npm.cmd` 批处理，而 `subprocess.run(["npm", …])`
-   **不走 shell**、CreateProcess 也不补 `.cmd`/`.bat` 后缀 ⇒
-   `[WinError 2] 系统找不到指定的文件`，本脚本里所有前端用例（一多半）全报"验证过程出错"。
-   现在显式 `shutil.which` 解析成完整路径（仍保持 `shell=False`，不引入引号/注入面变化），
-   并把子进程输出钉成 UTF-8（cp1252 会把中文输出变成 `UnicodeDecodeError`，也是首跑挂点之一）。
-2. **平台误报**：`transport/bluetooth_peripheral.rs` 整个文件是
-   `#![cfg(all(feature = "bluetooth", target_os = "macos"))]`，`reconnect_hello_...`
-   单测也只在**有外设角色**的平台编译 ⇒ 在 Windows 上"改坏"之后 `cargo test` **一个用例都不跑**、
-   退出码 0，脚本据此判成"护栏空转"——**这是误报**（护栏在 macOS 上是好的，只是本平台没有那段代码）。
-   新增 `Case.platforms`（默认 `None` = 全平台），不适用时**显式跳过并说明原因**；
-   另加 `--strict-platform` 可把跳过重新算成失败。Windows 上现在：**33 条 Rust 用例全过、
-   3 条 macOS 专属显式跳过**。
-3. **注入锚点随判据更新**：「BLE 指定拨号方」用例的锚点原为 `my_id > peer_id`，
-   而判据本轮加了 `peer_advertises` 前缀 ⇒ 锚点命中 0 次。已更新为新判据的整条表达式。
+用户 2026-09-13 实测「电脑给手机发图片，500K 传了很久」。真因是 BLE 分片载荷受
+20 字节 MTU 限制，实测吞吐只有 **~1 KB/s** 量级（见 4.2.17 的 CHANGELOG），
+一张 500 KB 的图片要几分钟 —— 用户不知道这个量级，只会以为卡死。
 
-### Fixed (`build-windows-release.ps1` 被 Windows PowerShell 5.1 读坏 —— 缺 UTF-8 BOM)
+`ChatWindow.vue` 在**当前单聊真的走在蓝牙链路**时，于头部下方显示一条可关闭的提示
+（文案进 i18n）：`蓝牙直连较慢（约 1 KB/s），大图片/文件可能要几分钟；传大文件建议双方连同一个 Wi-Fi。`
+判据取**在线节点表的实时链路**（`peer.link`），而不是 `get_conv_link`（那是"最近一条消息
+走的路径"的快照，可能早已切链路）；切会话后提示重新出现。
 
-脚本以 UTF-8 **无 BOM** 保存，而 `npm run dist:win:test` 走的是 `powershell`（5.1），
-它按 ANSI 解码 ⇒ 中文注释/字符串变成乱码、脚本解析中途失效（现象是：只打印了"0/5"就直接跳到
-产物汇总然后 `dist-windows` 不存在）。加 BOM 后复跑：`exit 0`，264 行完整输出，
-`dist-windows/Gosslan_4.2.19_x64-setup.exe` 正常产出并打印 SHA-256。
-（`pwsh` 7 默认按 UTF-8 读，所以本地用 pwsh 手跑不会暴露这条 —— 必须按 npm 脚本的真实路径验。）
+### Added (BLE 坏分片不再静默：丢了几片、最近原因是什么，进日志)
 
-### Changed (只收掉 release 下那条"链接器 stdout"警告 —— 其余 lint 保持默认)
+用户 2026-09-13 真机（手机→电脑发图片）提到过"分片顺序错误"。`BleReassembler::push`
+对重复 / 越界 / 分片数不一致 / 超上限的坏片只返回 `Dropped(&str)`，**central 侧这一路原来是
+静默 `continue`** —— 真机上只看到"图片没到"，看不到"到了、但被分片层丢了、原因是什么"。
+现在 `BleReader` 记下累计丢弃条数与最近原因，读循环在计数增加时打一条
+`[FRAG] 丢弃分片 N 片（新增 M，最近原因：…）`（只增才打，不会刷屏）。
+外设侧（帧在各自驱动里重组）暂未覆盖 —— 那里拿不到这个计数，`FrameSource::frag_drops`
+返回 `None` 时读循环什么都不打。
 
-MSVC 在 `release`（LTO + `codegen-units=1` + cdylib）下会往 stdout 打
-「正在创建库 …gosslan_lib.dll.lib 和对象 …dll.exp」，Rust 1.98 起由 `linker_messages`
-lint 转成 `warning: linker stdout: …`。本项目"警告零容忍"，但这一行**不是缺陷、也改不掉**
-（是链接器对 cdylib 的常规输出），于是在 `[lints.rust]` 里**只** allow 这一条，
-其余 lint 一律保持 rustc 默认可见性。修后 `cargo build --release --features bluetooth` 零警告。
+### Changed (网络诊断重做：蓝牙有自己的状态，不再被判 offline；网卡候选加入蓝牙)
 
-### Changed (BLE 日志与注释：外设分支的平台边界写清楚)
+用户 2026-09-13：「网络诊断里，如果是蓝牙用户（纯蓝牙或局域网+蓝牙），应该有相应的信息
+可以看出来并标注，不像现在还是 offline。网卡-候选其实也可以加上蓝牙。这个组件重新设计一下。」
 
-`network/ble.rs` 顶部与 `start_peripheral` 调用点补注释：Windows 本轮**不做外设**
-（WinRT `GattServiceProvider` 是第三套平台代码，见 ADR-0015 §7-f，单独一轮），
-以及"因此必须靠 `should_dial_ble` 的对端不广播分支兜住"这条因果。
+- **后端**：`DiscoveryDiag` 新增 `bluetooth: BleDiag`（feature_compiled / enabled / available /
+  running / peers / **当前扫描节奏** / 扫描窗口与间隔 / 最近一轮扫描的 `收到广播数 / 本应用数` /
+  失败退避明细 / 不拨名单）。扫码统计由 `scan_loop` 写入 `state.ble_scan`。
+- **候选链路**：`InterfaceCandidate` 增加 `kind`（`lan` / `bluetooth`）与 `detail`；蓝牙作为
+  **一条候选**进同一张表，状态用一句人话说清（`运行中 · 前台节奏（3s 扫描 / 5s 间隔）· 1 个对端`），
+  网卡的 IP/广播/RFC1918/虚拟网卡字段对蓝牙一律不适用。
+- **前端**：`DevDiagPanel.vue` 整块重做 —— 一条通道一张卡（局域网 / 蓝牙各自说自己的状态）、
+  候选链路按 `kind` 渲染成卡片列表（窄屏不横向滚动）、局域网没开时明确写「局域网未开启
+  （不影响蓝牙通道）」并隐藏发现细节、新增蓝牙退避明细区。
 
-**门禁（Windows x64 实测）**：`cargo check --features bluetooth` 0 error / **0 warning** ·
-`cargo build --release --features bluetooth` **0 warning** ·
-`cargo test --lib --features bluetooth` **416/416** · `cargo test --lib`（默认 feature）**411/411** ·
-`npm run build`（vue-tsc + vite）通过 · `npm run dist:win:test` 端到端出包成功 ·
-`npm test` 与 `verify-guards.py` 见下方"已知"一节。
+### Changed (「最近事件」合并进运行日志，诊断面板不再单列)
 
-**已知（环境边界，不是本轮改动引入的）**：
-1. `npm test` 有 2 条 `src/i18n/index.test.ts` 失败 —— 它们假设"node 环境无 `navigator`
-   ⇒ 回落英文"，而 Node 25 已提供 `navigator.language`，在中文 Windows 上必然拿到 `zh-CN`。
-   这是**测试对环境敏感**，不是应用缺陷。
-2. `verify-guards.py` 的 **28 条前端用例**在本机沙箱报 `spawn EPERM` —— 它的 `cmd` 是
-   `npm test`，而 `node --test` 会为每个测试文件 fork 子进程，本机沙箱禁止 piped stdio 的子进程。
-   单跑 `npm test` 正常，即与本改动无关。
+用户 2026-09-13：「最近事件这块其实可以移到日志里……如果没办法让我们 debug、没什么意义
+的话也可以去掉。」
 
-**实机验证状态（必须真机，射频层无法离线验证）**：Windows(central) ↔ Android(peripheral)
-的发现 → 连接 → 双向 Hello 验签 → 单聊 → ACK 闭环**待用户实测**；
-判据见 `docs/notes/ble-audit-2026-09-13.md` §7 的 Test A~F（把 Mac 换成 Windows）。
+`AppState::push_diag_event` 从「写 50 条内存环形缓冲」改为**直接进运行日志**
+（可搜索 / 可复制 / 可落盘），`DiscoveryDiag.recent_events` 与面板的事件区一并删除。
+**不是无脑全打**（日志规范明确不记高频循环）：`discovery_started` / `*_error` 落日志，
+纯心跳的 `announce_recv` / `broadcast_sent` / `multicast_sent` / `who_has_sent` 直接丢弃 ——
+它们每 5~10s 一条，打进去几分钟就把 500 条内存缓冲冲干净，真问题反而被淹没。
+`hello_rejected` / `hello_mismatch` / `identity_key_conflict` 也**不重复打**：它们的每个调用点
+旁边本来就有一条上下文更完整的 `logger.warn`（用户的诉求是"别单开一块"，而这些早已在日志里）。
+
+### Changed (蓝牙扫描按前台/失焦分级刷新率；点「添加好友」立刻补扫)
+
+用户 2026-09-13：「APP 在前台可以提高刷新率，后台降低扫描率，被杀掉直接关掉；
+PC 端窗口聚焦就提高刷新率，窗口关闭或不在聚焦那一层就降低。」
+
+- 扫描节奏从固定 10s 改为**自适应**：前台/聚焦 **5s** 一轮（发现更快、加好友不用干等），
+  后台/失焦 **30s** 一轮（射频占空比 3/5 → 3/30，省电）；「被杀掉直接关掉」不需要代码 ——
+  进程没了扫描任务自然不存在。
+- 新增命令 `set_app_active`：`App.vue` 在 `visibilitychange` / `focus` / `blur` 时上报
+  （**移动端不看 focus/blur**：软键盘与系统弹框会误触发 blur）；从后台切回前台时后端
+  `wake` 一次扫描，立刻补一轮而不是等完慢周期。
+- `search_nearby_peers`（打开「添加好友」）顺带唤醒蓝牙扫描一轮；**不等待** BLE 结果
+  （一轮扫描窗口 3s，等它会把弹窗卡住），新对端通过 `peers-updated` 自己冒出来。
+- 诊断面板实时显示当前节奏（前台/后台、5s/30s），用户看得到策略在生效。
 
 ## [4.2.19] - 2026-09-13
+
 
 ### Changed (连接信息按链路类型显示：蓝牙不再显示"IP 地址：—"，设备类型不再显示英文原值)
 

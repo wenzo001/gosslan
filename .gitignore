@@ -6,6 +6,8 @@ dist-ssr
 
 # Rust / Tauri
 src-tauri/target
+# 安卓专用的 cargo target 目录（scripts/package.mjs 为了与 mac 并行而拆分；见该脚本头注释）
+src-tauri/target-android
 # 仓库根目录的 target/：在根目录误跑 cargo（例如只看元信息的 cargo info/search）
 # 会留下它；它是构建产物，绝不入库
 /target/
@@ -40,3 +42,6 @@ src-tauri/gen/schemas
 /dist-portable/
 # 仓库根目录随手放置的安装包（构建脚本复制出来的那一份，不入库）
 /*.exe
+
+# 本地固定签名 keystore（**绝不入库**；丢了就只能卸载重装）
+/scripts/android/keystore/
