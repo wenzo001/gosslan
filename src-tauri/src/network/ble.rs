@@ -865,8 +865,21 @@ async fn ble_writer_loop<S: FrameSink + 'static>(
                         format!("[SEND] {trace} → peer={peer_id} ep={ep} bytes={} 分片={n}", bytes.len()),
                     );
                 }
-                let ok = res.is_ok();
-                if !ok {
+                if let Err(e) = &res {
+                    // 「帧无法分片」是**这一帧**太大/MTU 异常，不是链路坏了：拆链路会让
+                    // 同一条连接上的其它传输全部失败（真机：一张大图把链路打死，之后的好友
+                    // 请求/消息全断）。这里只丢这一帧并留 warn —— 上层 outbox 会按自己的节奏
+                    // 重发；真正的写失败（对端走了）仍然拆链路。
+                    if e.starts_with("帧无法分片") {
+                        state.logger.warn(
+                            "ble",
+                            format!(
+                                "[SEND] 丢弃无法分片的帧（链路保留）peer={peer_id} ep={ep} bytes={} 原因={e}",
+                                bytes.len()
+                            ),
+                        );
+                        continue;
+                    }
                     state.logger.warn(
                         "ble",
                         format!(

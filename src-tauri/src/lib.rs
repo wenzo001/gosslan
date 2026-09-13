@@ -944,6 +944,42 @@ mod tests {
         );
     }
 
+    /// **BLE 文件分块必须小，且不能让一帧打死链路**（真机 2026-09-13：大图"两边都成功"）。
+    ///
+    /// 日志证据：`[SEND] 写失败 ⇒ 结束该链路写循环 … type=file_chunk`；而接收侧反复
+    /// `接收文件初始化失败: 重复的文件传输` + `file_reject`。根因：一对一文件流每块默认
+    /// 256 KiB，在 MTU=23 的 BLE 上需要 18725 个分片 > `MAX_BLE_CHUNKS_PER_MESSAGE`(8192)
+    /// ⇒ `fragment()` 返回 None ⇒ 写循环把**整条链路**拆掉；同时重复的 offer 被 reject
+    /// ⇒ 对端停止重试 ⇒ 文件永远到不了，而发送方界面显示"已发送/已读"。
+    ///
+    /// 这条护栏盯三件事：① 分块按链路选路结果决定；② "帧无法分片"只丢这一帧、不拆链路；
+    /// ③ 重复的 offer 必须幂等回 accept。
+    #[test]
+    fn ble_file_transfer_respects_link_limits() {
+        let file = include_str!("network/file.rs");
+        let stream = rust_fn_body(file, "async fn stream_file(");
+        assert!(
+            stream.contains("chunk_size_for_path("),
+            "文件分块大小必须按链路能力决定（BLE 上 256 KiB 分不出片）"
+        );
+        assert!(
+            stream.contains("inbound_path_kind("),
+            "分块大小必须取自**实际选路结果**，不能按平台写死"
+        );
+
+        let ble = include_str!("network/ble.rs");
+        assert!(
+            ble.contains("丢弃无法分片的帧（链路保留）"),
+            "「帧无法分片」只该丢这一帧：拆链路会让同连接上其它传输一起失败"
+        );
+
+        let transport = include_str!("network/transport.rs");
+        assert!(
+            transport.contains("file::has_receiver(state, &transfer_id)"),
+            "重复的 FileOffer 必须幂等回 accept（旧行为 reject ⇒ 对端停止重试、文件永远收不到）"
+        );
+    }
+
     /// **扫描结果不得再用 `Peripheral::services()` 二次过滤**（真机踩过，症状极隐蔽）。
     ///
     /// `start_scan(ScanFilter{services})` 已在平台层过滤；而 `services()` 在 **Android 上

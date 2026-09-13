@@ -10,6 +10,51 @@
 
 ## [Unreleased]
 
+## [4.2.18] - 2026-09-13
+
+### Fixed (🔴 大图片「两边都显示已发送/已读、对方列表里却没有」：分块超出 BLE 分片上限，一帧打死整条链路)
+
+用户 4.2.17 真机（纯蓝牙）：**文字聊天与加好友都通了**，但大图片两边都显示成功、双方都看到
+已读，接收侧列表里却没有这张图。日志把三个结构性缺陷一次暴露：
+
+```
+[SEND] type=file_chunk transfer=…… bytes=282900 分片=…      ← 一块 256 KiB
+[SEND] 写失败 ⇒ 结束该链路写循环 … type=file_chunk transfer=…  ← 链路被这一帧打死
+[RECV] type=file_offer → [file] 接收文件初始化失败: 重复的文件传输
+[SEND] type=file_reject                                       ← 重发被拒 ⇒ 对端停止重试
+```
+
+**根因（三条，缺一条都不会好）**：
+
+1. **分块大小与链路能力不匹配**：一对一文件流每块默认 **256 KiB**，在 MTU=23 的 BLE 上需要
+   ⌈262144/14⌉ = **18725 个分片**，而 BLE 分片层上限是 `MAX_BLE_CHUNKS_PER_MESSAGE` = 8192
+   ⇒ `fragment()` 返回 `None` ⇒ 写循环把它当**写失败**并**拆掉整条链路**（连带把好友请求、
+   消息一起打断）。
+2. **一帧的问题被升级成链路问题**：上面那次拆分让同一条连接上的其它传输全部失败。
+3. **重复的 `FileOffer` 被 reject**：对端没收到 accept 会重发同一个 `transfer_id`，而接收侧
+   回 `FileReject("重复的文件传输")` ⇒ 对端判定失败、**停止重试** ⇒ 文件永远到不了。
+   加上「文件流只要最终校验失败就整份重来」，而大图在 BLE 上要几分钟 ⇒ 表面"成功"、
+   实际永远差一块。
+
+**修法**（只改文件接入与 BLE 写循环，Frozen Core 语义零改动）：
+
+- `file::chunk_size_for_path(path_kind)`：按**实际选路结果**决定分块 —— Bluetooth 用
+  `BLE_FILE_CHUNK = 4 KiB`（293 片，距上限 28× 余量；非蓝牙仍用 256 KiB 保吞吐）；
+  `stream_file` 用它切块；
+- BLE 写循环遇到 `帧无法分片` **只丢这一帧**并留 warn，不拆链路（真正的写失败仍然拆）；
+- 接收侧遇到重复 `FileOffer` **幂等回 `FileAccept`**（不再 reject），让对端把剩下的分片发完。
+
+**护栏**：行为级 `ble_file_chunk_actually_fits_the_ble_fragment_layer`（把两种分块大小真的
+喂给 `fragment()`：4 KiB 必须成功且余量 ≥4×，256 KiB 必须失败 —— 把 bug 成因钉在测试里）+
+源码级 `ble_file_transfer_respects_link_limits`（分块按选路、丢帧不拆链、重复 offer 幂等）+
+`verify-guards.py` 对应用例，现共 **60** 条。
+
+**门禁**：`cargo test --lib --features bluetooth` 429/429 · `npm test` 350/350 ·
+`check-mobile --bluetooth` PASS(0 warning) · `verify-guards` 60/60。
+
+> 仍未解决：BLE 的 MTU 只有 23（20 字节载荷）⇒ 1.2 KB/s 级别的吞吐，大图仍需数分钟；
+> 下一步是让 Mac 侧把 MTU 谈大（或按 `onNotificationSent` 做流控替代固定 12ms 节流）。
+
 ## [4.2.17] - 2026-09-13
 
 ### Fixed (🔴 好友申请到了安卓、Mac 却什么都收不到：Android 外设**连发通知丢片**)

@@ -53,6 +53,29 @@ pub fn sha256_file_hex(path: &Path) -> Result<String, String> {
         .collect())
 }
 
+/// BLE 上每个文件分块的大小（见 `chunk_size_for_path` 的完整推导）。
+pub const BLE_FILE_CHUNK: usize = 4 * 1024;
+
+/// **文件分块大小必须匹配链路的字节层能力**（真机 2026-09-13：大图"两边都显示成功、
+/// 对方列表里却没有"的真因之一）。
+///
+/// 一对一文件流的每块默认是 [`FILE_CHUNK`] = 256 KiB。在局域网 TCP 上没问题；
+/// 但在 **MTU=23 的 BLE** 上，一块 256 KiB 需要 ⌈262144/14⌉ = **18725 个分片**，
+/// 而 BLE 分片层的上限是 `MAX_BLE_CHUNKS_PER_MESSAGE` = 8192 ⇒ `fragment()` 直接返回
+/// `None` ⇒ 写循环把它当**写失败**并拆掉整条链路（真机日志：
+/// `[SEND] 写失败 ⇒ 结束该链路写循环 … type=file_chunk`）⇒ 传输永远完不成，
+/// 而发送方界面照样显示"已发送/已读"。
+///
+/// 4 KiB 在同样链路上只要 293 片（安全余量 28×），单块耗时 ≈ 293 × 12ms ≈ 3.5s。
+/// 更大的块没有意义：BLE 的瓶颈是链路速率，不是分块数。
+pub fn chunk_size_for_path(path: &str) -> usize {
+    if path == crate::mesh::PathKind::Bluetooth.as_str() {
+        BLE_FILE_CHUNK
+    } else {
+        FILE_CHUNK
+    }
+}
+
 /// SHA-256 hex 表示校验（64 位 hex，大小写均可；比较时统一小写）。
 pub fn valid_sha256_hex(s: &str) -> bool {
     s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
@@ -197,7 +220,10 @@ async fn stream_file(
     let mut f = tokio::fs::File::open(&path)
         .await
         .map_err(|e| e.to_string())?;
-    let mut buf = vec![0u8; FILE_CHUNK];
+    // 分块大小按**当前链路的实际选路结果**决定（BLE 上必须小，见 `chunk_size_for_path`）。
+    let path_kind = crate::network::transport::inbound_path_kind(state, peer_id).await;
+    let chunk_size = chunk_size_for_path(&path_kind);
+    let mut buf = vec![0u8; chunk_size];
     let mut seq = 0u32;
     let mut sent = 0u64;
     // 进度节流：避免每片一次 SQLite 写 + IPC 事件（大文件会形成事件风暴卡死界面）
@@ -382,6 +408,15 @@ pub fn begin_receive(
 }
 
 /// 构造接收端状态（路径安全 + `.part` 创建 + 插入对应接收表），
+/// 该 transfer 是否已经在接收中（用于把"重复的 offer"幂等化成 re-accept）。
+pub fn has_receiver(state: &AppState, transfer_id: &str) -> bool {
+    state
+        .file_receivers
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains_key(transfer_id)
+}
+
 /// 一对一与群文件共用；差异只在写入哪个接收 map 与是否记录 file_transfers。
 fn make_receiver(
     state: &AppState,
@@ -913,7 +948,42 @@ mod tests {
 
     use super::super::super::crypto;
     use super::{sha256_file_hex, valid_sha256_hex};
+    use super::chunk_size_for_path;
     use crate::protocol::FILE_CHUNK;
+
+    /// **分块大小必须能真的被 BLE 分片层发出去**（真机 2026-09-13：大图两边都显示成功、
+    /// 对方列表里却没有）。这条测试是**行为级**的：直接把两种分块大小喂给真正的
+    /// `fragment()`，用默认 MTU（23 ⇒ 20 字节载荷 ⇒ 每片 14 字节）。
+    ///
+    /// 旧行为（256 KiB）在这一步会返回 `None` ⇒ 写循环把它当写失败并**拆掉整条链路**
+    /// ⇒ 传输永远完不成，而发送方界面照样显示"已发送/已读"。
+    #[test]
+    fn ble_file_chunk_actually_fits_the_ble_fragment_layer() {
+        use crate::transport::ble_framing::{fragment, MAX_BLE_CHUNKS_PER_MESSAGE};
+        let mtu = 20; // MTU 23 - 3 字节 ATT 头
+
+        // ① BLE 的分块大小必须能分片成功，且离上限有充足余量
+        let ble_chunk = vec![0u8; chunk_size_for_path("bluetooth")];
+        let chunks = fragment(&ble_chunk, mtu, 1)
+            .expect("BLE 分块大小必须能被分片 —— 否则写循环会拆掉整条链路");
+        assert!(
+            chunks.len() * 4 <= MAX_BLE_CHUNKS_PER_MESSAGE,
+            "分片数 {} 必须离上限 {} 有 ≥4× 余量",
+            chunks.len(),
+            MAX_BLE_CHUNKS_PER_MESSAGE
+        );
+
+        // ② 对照：桌面默认的 256 KiB 在小 MTU 上**分不出片**（这正是那个 bug 的形态）
+        assert!(
+            fragment(&vec![0u8; FILE_CHUNK], mtu, 1).is_none(),
+            "256 KiB 在 MTU=23 上必然超过分片上限 —— 这条断言把 bug 的成因钉在测试里"
+        );
+
+        // ③ 非蓝牙链路仍用大块（局域网带宽高，小块会拖慢吞吐）
+        assert_eq!(chunk_size_for_path("lan"), FILE_CHUNK);
+        assert_eq!(chunk_size_for_path("routed"), FILE_CHUNK);
+    }
+
     use base64::Engine as _;
 
     /// 在系统临时目录创建唯一的 .part 文件（测试接收端用），返回句柄与路径。

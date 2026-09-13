@@ -2718,6 +2718,25 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 let _ = try_send(state, peer_id, &Message::FileReject { transfer_id }).await;
                 return;
             };
+            // **重复的 offer 必须幂等接受**：对端没收到我们的 accept 时会重发同一个
+            // transfer_id，旧行为回 `FileReject("重复的文件传输")` ⇒ 对端判定失败、停止重试
+            // ⇒ 文件永远到不了（真机：大图两边都显示成功、接收侧列表里没有）。这里直接
+            // 再回一次 accept，让对端继续把剩下的分片发完。
+            if file::has_receiver(state, &transfer_id) {
+                state.logger.info(
+                    "file",
+                    format!("重复的文件请求 ⇒ 幂等回 accept transfer={transfer_id}"),
+                );
+                let _ = try_send(
+                    state,
+                    peer_id,
+                    &Message::FileAccept {
+                        transfer_id: transfer_id.clone(),
+                    },
+                )
+                .await;
+                return;
+            }
             match file::begin_receive(
                 state,
                 &transfer_id,

@@ -934,6 +934,23 @@ CASES: list[Case] = [
         tags=["rust", "ble", "android"],
     ),
     Case(
+        name="BLE 文件分块必须能被分片层发出去（否则一帧打死链路）",
+        why="真机 2026-09-13：大图两边都显示成功、对方列表里却没有。日志证据 "
+        "`[SEND] 写失败 ⇒ 结束该链路写循环 … type=file_chunk` + 接收侧反复 "
+        "`接收文件初始化失败: 重复的文件传输` → `file_reject`。根因：一对一文件流每块 "
+        "256 KiB，在 MTU=23 上要 18725 片 > 上限 8192 ⇒ fragment() 返回 None ⇒ 拆链路；"
+        "重复 offer 又被 reject ⇒ 对端停止重试 ⇒ 文件永远到不了",
+        file=TAURI / "src" / "network" / "file.rs",
+        injections=[(
+            '    if path == crate::mesh::PathKind::Bluetooth.as_str() {',
+            "    if false {",
+        )],
+        cmd=cargo("test", "--lib", "--features", "bluetooth", "ble_file_chunk_actually_fits_the_ble_fragment_layer"),
+        cwd=TAURI,
+        expect_fail_hint="BLE 分块大小必须能被分片",
+        tags=["rust", "ble", "file"],
+    ),
+    Case(
         name="应用样式（三个窗口都必须加载 style.css）",
         why="真实缺陷：一窗一入口重构时漏掉了 `import \"./style.css\"`，dev 起来整个界面\"像没有 CSS\"，"
         "而且不报错、不影响任何测试 —— 只有这条守卫能拦住",
