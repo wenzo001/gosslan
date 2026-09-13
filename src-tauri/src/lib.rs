@@ -1509,6 +1509,39 @@ mod tests {
         );
     }
 
+    /// **BLE 写失败必须"退避重试 → 拆链路"，绝不能只结束写循环**（真机 2026-09-13 安卓）。
+    ///
+    /// 真机链路：Android 与 Mac/Windows 的 BLE 会话都 `[SESSION] 已就绪`，随后一阵群 gossip
+    /// 洪水把链路写满 ⇒ `[SEND] 写失败 ⇒ 结束该链路写循环`（两条链路各一次）⇒ 从此**发不出去**，
+    /// 界面报「发送失败，连接已关闭」，而**读**还在正常收 ⇒ 看门狗按读活性判健康、45s 也不拆
+    /// ⇒ 只能重启应用。根因是"只结束写循环、把链路留成能收不能发的僵尸"。
+    ///
+    /// 判据：写循环必须有重试上限常量、最终失败要走链路表的 `cancel.send(true)`（让读循环
+    /// 收尾时 `teardown_link` 清链路+清退避+wake_scan），并且失败日志要带上**原因**（旧实现
+    /// 只打 `type=?`，真机上完全看不出为什么写失败）。
+    #[test]
+    fn ble_write_failure_retries_then_tears_the_link_down() {
+        let ble = include_str!("network/ble.rs");
+        let body = rust_fn_body(ble, "async fn ble_writer_loop<S: FrameSink + 'static>(");
+        assert!(
+            body.contains("WRITE_RETRY_ATTEMPTS"),
+            "写失败必须**退避重试**（瞬态失败一次性判死会把链路变成僵尸）"
+        );
+        assert!(
+            body.contains("l.cancel.send(true)"),
+            "写循环最终失败必须去链路表里取消这一条（否则读循环还活着 ⇒ \
+             能收不能发的僵尸链路，看门狗按读活性判健康、永远不拆，只能重启应用）"
+        );
+        assert!(
+            body.contains("原因={e}"),
+            "失败日志必须带上真实原因（旧实现只打 `type=?`，真机上无从判断）"
+        );
+        assert!(
+            ble.contains("WRITE_RETRY_WAIT"),
+            "重试间隔必须是常量（可读、可调）"
+        );
+    }
+
     /// **⌘W 必须由我们自己的菜单项处理**（用户 2026-09-13 真机：主窗口 ⌘W 只会"滴滴滴"）。
     ///
     /// 系统预定义项 `PredefinedMenuItem::close_window` 的动作是 `performClose:`，AppKit 按

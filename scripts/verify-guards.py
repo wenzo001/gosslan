@@ -392,6 +392,37 @@ CASES: list[Case] = [
         tags=["frontend", "selection"],
     ),
     Case(
+        name="BLE 写失败必须重试并拆链路（否则留下能收不能发的僵尸链路）",
+        why="真机 2026-09-13 安卓：两条 BLE 会话都就绪后，一阵群 gossip 把链路写满 ⇒ 各出现一次"
+        "「写失败 ⇒ 结束该链路写循环」⇒ 从此发不出去（界面报连接已关闭），而读还在正常收 ⇒ "
+        "看门狗按读活性判健康、45s 也不拆 ⇒ 只能重启应用。根因是只结束写循环、把链路留成僵尸",
+        file=TAURI / "src" / "network" / "ble.rs",
+        injections=[(
+            "                    {\n"
+            "                        let links = state.links.lock().await;\n"
+            "                        if let Some(l) = links\n"
+            "                            .get(&peer_id)\n"
+            "                            .and_then(|v| v.iter().find(|l| l.endpoint == ep))\n"
+            "                        {\n"
+            "                            let _ = l.cancel.send(true);\n"
+            "                        }\n"
+            "                    }\n"
+            "                    break;",
+            "                    break;",
+        )],
+        cmd=cargo(
+            "test",
+            "--offline",
+            "--lib",
+            "--features",
+            "bluetooth",
+            "ble_write_failure_retries_then_tears_the_link_down",
+        ),
+        cwd=TAURI,
+        expect_fail_hint="最终失败必须去链路表里取消",
+        tags=["rust", "ble", "perf"],
+    ),
+    Case(
         name="⌘W 必须由自定义菜单项处理（系统预定义项在无边框窗口上会被判不可用）",
         why="用户 2026-09-13 真机：Mac 上主窗口 ⌘W 只会「滴滴滴」，而设置/日志窗口正常，"
         "⌘Q 也正常。系统预定义关闭项的动作是 performClose:，AppKit 按窗口的 Closable "

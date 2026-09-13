@@ -94,6 +94,14 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const READ_IDLE: Duration = Duration::from_millis(1_500);
 /// 停止时等待后台任务的上限（与 LAN 的 `STOP_TASK_TIMEOUT` 同口径）。
 const STOP_TIMEOUT: Duration = Duration::from_secs(2);
+/// 一次写失败后的**退避重试**次数与间隔（见 `ble_writer_loop` 里那段说明）。
+///
+/// 为什么需要（真机 2026-09-13 安卓日志）：写失败一次就把写循环结束掉，而**读循环还活着**
+/// ⇒ 链路变成"能收不能发"的僵尸：上层发送永远报「连接关闭」，
+/// 又因为读活性还新鲜、45s 看门狗按"读"判健康 ⇒ 永远拆不掉 ⇒ 只能重启应用。
+/// BLE 的写失败大多是瞬态的（对端 GATT 通知队列满、链路忙、连发被拒），退避重试即可。
+const WRITE_RETRY_ATTEMPTS: u32 = 4;
+const WRITE_RETRY_WAIT: Duration = Duration::from_millis(120);
 
 /// 扫描窗口（毫秒）—— 供诊断面板展示当前节奏。
 pub fn scan_window_ms() -> u64 {
@@ -1206,12 +1214,45 @@ async fn ble_writer_loop<S: FrameSink + 'static>(
                 let Ok(bytes) = serde_json::to_vec(&msg) else {
                     continue;
                 };
-                // 写也要能被停机/判死打断（与 TCP 的 writer_loop 同一考虑）
-                let res = tokio::select! {
-                    biased;
-                    _ = shutdown.changed() => Err("停机中".to_string()),
-                    _ = cancel.changed() => Err("链路已取消".to_string()),
-                    res = writer.send_frame(&bytes) => res,
+                // 写也要能被停机/判死打断（与 TCP 的 writer_loop 同一考虑）。
+                //
+                // ⚠️ **写失败先退避重试，不能一次就判死**（真机 2026-09-13 安卓日志）：
+                // 旧实现在第一次写失败就 `break` 结束**写**循环，而**读**循环还活着 ⇒
+                // 这条链路变成"能收不能发"的僵尸：上层发送永远报「连接失败/连接已关闭」，
+                // 而 45s 看门狗是按**读**活性判健康的（还在收到对端的 gossip）⇒ 永远不拆 ⇒
+                // 只能重启应用才恢复。BLE 的写失败大多是瞬态的（对端通知队列满 / 链路忙 /
+                // 连发被拒），退避重试即可；真死了也走下面的"拆链路"而不是留个半死链路。
+                let mut attempt = 1u32;
+                let res = loop {
+                    let one = tokio::select! {
+                        biased;
+                        _ = shutdown.changed() => Err("停机中".to_string()),
+                        _ = cancel.changed() => Err("链路已取消".to_string()),
+                        res = writer.send_frame(&bytes) => res,
+                    };
+                    match one {
+                        Ok(n) => break Ok(n),
+                        Err(e) => {
+                            // 「帧无法分片」是**这一帧**的问题（太大/MTU 异常），重试无意义
+                            if e.starts_with("帧无法分片") || attempt >= WRITE_RETRY_ATTEMPTS {
+                                break Err(e);
+                            }
+                            state.logger.warn(
+                                "ble",
+                                format!(
+                                    "[SEND] 写失败第 {attempt}/{WRITE_RETRY_ATTEMPTS} 次（{}ms 后重试）peer={peer_id} ep={ep} 原因={e}",
+                                    WRITE_RETRY_WAIT.as_millis()
+                                ),
+                            );
+                            tokio::select! {
+                                biased;
+                                _ = shutdown.changed() => break Err("停机中".to_string()),
+                                _ = cancel.changed() => break Err("链路已取消".to_string()),
+                                _ = tokio::time::sleep(WRITE_RETRY_WAIT) => {}
+                            }
+                            attempt += 1;
+                        }
+                    }
                 };
                 // 分片数要留痕：对端会打 `[FRAG] 收到通知 N 条`，两边的数字一比就知道
                 // **是发少了还是收丢了**（真机 2026-09-13：742B 的帧需要 53 片，对端只到 38 片）。
@@ -1245,11 +1286,26 @@ async fn ble_writer_loop<S: FrameSink + 'static>(
                     state.logger.warn(
                         "ble",
                         format!(
-                            "[SEND] 写失败 ⇒ 结束该链路写循环 peer={peer_id} ep={ep} {}{}",
-                            trace.as_deref().unwrap_or("type=?"),
-                            ""
+                            "[SEND] 写失败（已重试 {WRITE_RETRY_ATTEMPTS} 次）⇒ 拆掉该链路并等待重拨 peer={peer_id} ep={ep} {} 原因={e}",
+                            trace.as_deref().unwrap_or("type=?")
                         ),
                     );
+                    // ⚠️ **必须连读循环一起取消**（`teardown_link` 在读循环收尾里）：
+                    // 只结束写循环会留下"能收不能发"的僵尸链路，而看门狗按读活性判健康、
+                    // 永远不拆它 ⇒ 用户只能重启（真机 2026-09-13）。
+                    // 拆掉之后 `teardown_link` 会清该地址的退避并 `wake_scan`，
+                    // 下一轮扫描即可重拨。
+                    // 写循环手里只有 `cancel` 的**接收端**，所以要按端点去链路表里
+                    // 找这一条的取消发送端（与看门狗同一套"按端点定位"的写法）。
+                    {
+                        let links = state.links.lock().await;
+                        if let Some(l) = links
+                            .get(&peer_id)
+                            .and_then(|v| v.iter().find(|l| l.endpoint == ep))
+                        {
+                            let _ = l.cancel.send(true);
+                        }
+                    }
                     break;
                 }
 
