@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { api } from "@/api";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -14,8 +15,8 @@ import RenameGroupModal from "@/components/chat/RenameGroupModal.vue";
 import ForwardModal from "@/components/message/ForwardModal.vue";
 import ImageLightbox from "@/components/message/ImageLightbox.vue";
 import { estimateMessageHeight } from "@/utils/messageHeight";
-import { ArrowDown } from "lucide-vue-next";
-import type { MessageRecord, MsgKind } from "@/types";
+import { ArrowDown, Bluetooth, X } from "lucide-vue-next";
+import type { LinkState, MessageRecord, MsgKind } from "@/types";
 
 const emit = defineEmits<{ (e: "open-share"): void }>();
 
@@ -40,6 +41,63 @@ const online = computed(() => {
   if (!conv.value || conv.value.kind !== "single") return false;
   return chat.friends.some((f) => f.device_id === conv.value!.id && f.online);
 });
+/** 单聊对方的设备类型（"desktop"/"mobile"，空串 = 未知）。群聊不显示。 */
+const deviceType = computed(() => {
+  if (!conv.value || conv.value.kind !== "single") return "";
+  return chat.friends.find((f) => f.device_id === conv.value!.id)?.device_type ?? "";
+});
+
+/** 会话当前链路（最近一条消息的链路 + 跳数）。单聊显示，群聊不显示。 */
+const linkState = ref<LinkState | null>(null);
+async function refreshLinkState() {
+  const id = chat.activeConv;
+  if (!id || id.startsWith("group:")) {
+    linkState.value = null;
+    return;
+  }
+  linkState.value = await api.getConvLink(id);
+}
+watch(
+  () => [chat.activeConv, messages.value.length] as const,
+  refreshLinkState,
+  { immediate: true },
+);
+
+/**
+ * 当前单聊是否真的走在蓝牙链路上（用户 2026-09-13 要求：蓝牙聊天框要说明传输速度）。
+ *
+ * 判据取**在线节点表的实时链路**（`peer.link`，由后端 `fill_peer_links` 按真实链路填），
+ * 而不是上面的 `linkState` —— 后者是"最近一条消息走的路径"的快照，链路可能早就切了。
+ * 提示必须和"现在这条链路"一致，否则会在 Wi-Fi 链路上误导用户。
+ */
+const btLink = computed(() => {
+  if (!conv.value || conv.value.kind !== "single") return false;
+  return chat.peers.find((p) => p.device_id === conv.value!.id)?.link === "bluetooth";
+});
+/** 速度提示可关闭：按会话各记一次（切走再回来重新提示，因为换会话就是换链路场景）。 */
+const btHintDismissed = ref(false);
+watch(
+  () => chat.activeConv,
+  () => {
+    btHintDismissed.value = false;
+  },
+);
+/**
+ * 切会话：清掉"跟着输入框走的发送上下文"（引用 / 转发草稿）。
+ *
+ * 为什么必须显式清：这两项只在"发送成功"或"用户点取消"时才被清空，
+ * 切会话时留着就会出现 —— 在 B 会话看到 A 的引用条，发出去的消息还带着 A 的消息片段。
+ * 这是会把内容发错会话的缺陷，不是观感问题。
+ * 输入框里的**文字**由模板上的 `:key="chat.activeConv"` 让 MessageComposer 整体重建来清
+ * （编辑器是 contenteditable，DOM 是唯一真相，没有"清空"之外的复位路径）。
+ */
+watch(
+  () => chat.activeConv,
+  () => {
+    quote.value = null;
+    forward.value = null;
+  },
+);
 const isPeerFriend = computed(() => {
   if (!conv.value || conv.value.kind !== "single") return true;
   return chat.friends.some((f) => f.device_id === conv.value!.id);
@@ -58,9 +116,26 @@ function estimateHeight(m: MessageRecord, index?: number): number {
 // ---------------- 图片相册预览（点击图片 → 打开本会话全部图片，可左右切换） ----------------
 const lightboxOpen = ref(false);
 const lightboxIndex = ref(0);
-/** 会话内全部图片（kind=image 或 kind=file 且 subtype=image），按消息顺序排列。 */
-const lightboxImages = computed<{ msgId: string; name: string; dataSrc: string | null }[]>(() =>
-  messages.value
+/**
+ * 会话内图片列表（kind=image，或 kind=file 且 subtype=image），**打开预览时才构建**。
+ *
+ * ⚠️ 这里刻意**不用 computed**（用户 2026-09-12 要求「不要有任何阻断渲染的操作」）：
+ * 原先它是 computed，于是**每次消息变化都会重扫全部消息并对每条文件消息 JSON.parse**
+ * —— 而消息变化发生在每收一条、每改一次状态（送达/已读回执）时；单会话缓存上限是
+ * 10 页 × 100 条 = 1000 条，等于每条消息都要付一次 O(n) 扫描 + 解析。
+ * 而这份列表**只在打开图片预览时用得到**，且打开期间图片集合不会变
+ * （新图片到达时用户正在看图，让他下次打开再看到即可）。
+ * 因此改为**命令式快照**：只在 `openImageAt` 里构建一次并存入 ref，
+ * 热路径（消息流）不再有任何全表扫描。
+ */
+interface LightboxImage {
+  msgId: string;
+  name: string;
+  dataSrc: string | null;
+}
+
+function buildLightboxImages(): LightboxImage[] {
+  return messages.value
     .filter((m) => {
       if (m.kind === "image") return true;
       if (m.kind === "file") {
@@ -85,10 +160,14 @@ const lightboxImages = computed<{ msgId: string; name: string; dataSrc: string |
         }
       }
       return { msgId: m.msg_id, name, dataSrc };
-    }),
-);
+    });
+}
+
+/** 打开期间的图片快照（只在 openImageAt 里赋值）。 */
+const lightboxImages = ref<LightboxImage[]>([]);
 
 function openImageAt(msgId: string) {
+  lightboxImages.value = buildLightboxImages();
   const idx = lightboxImages.value.findIndex((x) => x.msgId === msgId);
   if (idx < 0) return;
   lightboxIndex.value = idx;
@@ -322,7 +401,10 @@ async function attachFile() {
   if (!isGroup.value && !isPeerFriend.value) return;
   const picked = await openDialog({ multiple: false });
   if (typeof picked !== "string") return;
-  await sendOneFile(convId, picked);
+  // ⚠️ 必须先"落地"：Android 的选择器给的是 `content://` URI，直接丢给后端发送必然失败
+  //（`std::fs` 打不开 URI）—— 这个命令在安卓上把它复制进缓存并返回真实路径，桌面端原样返回。
+  const local = await api.importPickedFile(picked);
+  await sendOneFile(convId, local);
 }
 
 // ---------------- 拖拽文件发送 ----------------
@@ -404,6 +486,8 @@ function onLoadMore() {
       :conv="conv"
       :is-group="isGroup"
       :online="online"
+      :device-type="deviceType"
+      :link-state="linkState"
       :member-count="memberCount"
       :can-rename="canRename"
       :show-back="app.isMobile"
@@ -412,6 +496,25 @@ function onLoadMore() {
       @rename="renameOpen = true"
       @open-share="emit('open-share')"
     />
+
+    <!-- 蓝牙链路速度提示（用户 2026-09-13 要求）：蓝牙分片载荷受 20 字节 MTU 限制，
+         实测吞吐约 1 KB/s，一张 500 KB 的图片要几分钟。让用户在大文件开始**之前**
+         就有预期，而不是看着进度条一直不动以为卡死。可关闭，切换会话后重新提示。 -->
+    <div
+      v-if="btLink && !btHintDismissed"
+      class="flex shrink-0 items-center gap-2 border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-warning-soft)] px-4 py-1.5 text-[12px] leading-[18px] text-[var(--gosslan-warning-ink)]"
+    >
+      <Bluetooth class="h-3.5 w-3.5 shrink-0" />
+      <span class="min-w-0 flex-1">{{ t("chat.bt.slowHint") }}</span>
+      <button
+        class="tap-safe shrink-0 rounded-[var(--gosslan-radius-sm)] px-1.5 py-0.5 transition hover:bg-black/5 dark:hover:bg-white/10"
+        :title="t('chat.bt.dismiss')"
+        :aria-label="t('chat.bt.dismiss')"
+        @click="btHintDismissed = true"
+      >
+        <X class="h-3.5 w-3.5" />
+      </button>
+    </div>
 
     <!-- 消息区（虚拟滚动，仅纵向）：与头部同底色，无缝衔接 -->
     <div ref="chatAreaRef" class="relative min-h-0 flex-1 overflow-hidden bg-[var(--gosslan-chat)]">
@@ -455,6 +558,7 @@ function onLoadMore() {
         v-else
         ref="listRef"
         :items="messages"
+        live
         :auto-scroll-on-swap="!(chat.unreadJump && chat.unreadJump.convId === chat.activeConv)"
         :estimate-height="estimateHeight"
         @load-more="onLoadMore"
@@ -481,7 +585,7 @@ function onLoadMore() {
       <!-- 回到最新（离开底部时出现） -->
       <button
         v-if="!nearBottom"
-        class="absolute bottom-4 right-5 z-10 flex items-center gap-1.5 rounded-full border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-3 py-1.5 text-xs text-[var(--gosslan-text)] shadow-lg transition hover:bg-[var(--gosslan-hover)]"
+        class="tap-safe absolute bottom-4 right-5 z-10 flex items-center gap-1.5 rounded-full border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-3 py-1.5 text-xs text-[var(--gosslan-text)] shadow-lg transition hover:bg-[var(--gosslan-hover)]"
         @click="nearBottom = true; listRef?.scrollToBottom()"
       >
         <ArrowDown class="h-3.5 w-3.5" />
@@ -493,6 +597,7 @@ function onLoadMore() {
     <div class="shrink-0 bg-[var(--gosslan-chat)] px-4 pb-3 pt-2">
       <MessageComposer
         v-if="isGroup || isPeerFriend"
+        :key="chat.activeConv ?? 'none'"
         :conv-id="chat.activeConv"
         :quote="quote"
         :mention-members="mentionMembers"

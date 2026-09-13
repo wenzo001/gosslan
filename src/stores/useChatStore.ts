@@ -1,4 +1,4 @@
-import { defineStore } from "pinia";
+import { acceptHMRUpdate, defineStore } from "pinia";
 import { computed, ref } from "vue";
 import { api, bindEvents } from "@/api";
 import {
@@ -13,8 +13,10 @@ import {
   syncProfileFromPeers,
 } from "@/utils/messages";
 import { useAppStore } from "@/stores/useAppStore";
+import { actionableRequests } from "@/utils/friendRequests";
 import { notificationBody } from "@/utils/notifications";
 import { t } from "@/i18n";
+import { shouldRunThrottled } from "@/utils/defer";
 import {
   onAction,
   registerActionTypes,
@@ -41,7 +43,26 @@ const LAST_CONV_KEY = "gosslan.lastConv";
 export const useChatStore = defineStore("chat", () => {
   const peers = ref<Peer[]>([]);
   const friends = ref<Friend[]>([]);
-  const pendingRequests = ref<PendingRequest[]>([]);
+  /** 后端给的**原始**好友申请列表（可能含已经过期的：对方已同意 / 我已把他加上了）。 */
+  const rawPendingRequests = ref<PendingRequest[]>([]);
+  /**
+   * 展示用的好友申请列表：**已经在好友列表里的申请自动消失**。
+   *
+   * 用户 2026-09-12 真机实测的规则：「如果双方已经互相是好友了，另一个人点进『新朋友』列表，
+   * 那条好友申请就应该自动清除掉」。
+   *
+   * 做成 computed 而不是在各处手动删，有两个原因：
+   *   ① 四个地方都读 `chat.pendingRequests`（会话列表红点、通讯录「新的朋友」、
+   *      窄导航徽标、添加好友页的「同意/拒绝」行）—— 一处过滤，四处同时生效；
+   *   ② 无论这条申请是**怎么**被解决的（我同意、对方同意、重启后重新拉取），
+   *      只要 `friends` 里有这个人，那一行就立刻消失，不依赖某条回执消息有没有送达。
+   */
+  const pendingRequests = computed(() =>
+    actionableRequests(
+      rawPendingRequests.value,
+      friends.value.map((f) => f.device_id),
+    ),
+  );
   const conversations = ref<Conversation[]>([]);
   const groups = ref<Group[]>([]);
   const transfers = ref<TransferInfo[]>([]);
@@ -312,7 +333,7 @@ export const useChatStore = defineStore("chat", () => {
     friends.value = await api.getFriends();
   }
   async function refreshPending() {
-    pendingRequests.value = await api.getPendingRequests();
+    rawPendingRequests.value = await api.getPendingRequests();
   }
   async function refreshConversations() {
     conversations.value = await api.getConversations();
@@ -329,6 +350,34 @@ export const useChatStore = defineStore("chat", () => {
     groupReads.value = next;
   }
 
+  /**
+   * 「另一个窗口清空了聊天数据」→ 本窗口先**清空本地视图**，再把"还在的东西"重拉一遍。
+   *
+   * 为什么不能只重拉：会话/群/转移单来自后端（重拉就会变空），但 `messages`、
+   * `rawPendingRequests`、`activeConv` 是**本地态** —— 不清的话主界面仍然挂着
+   * 已被删除的会话内容与已经处理完的申请。用户实测（Mac 4.1.10）：在设置里清了
+   * 「缓存 / 目录 / 聊天记录」，主界面一点反应都没有，看起来像没清掉。
+   *
+   * 好友**不清**：`clear_all_data` 不动好友表（重置数据不等于断交），所以这里同样保留。
+   */
+  async function resetAfterDataCleared() {
+    messages.value = {};
+    conversations.value = [];
+    groups.value = [];
+    groupReads.value = {};
+    rawPendingRequests.value = [];
+    transfers.value = [];
+    activeConv.value = null;
+    pending = [];  // 后台滞留待冲刷的消息批次（`let pending`，见上）
+    await Promise.all([
+      refreshConversations(),
+      refreshGroups(),
+      refreshTransfers(),
+      refreshPending(),
+      refreshFriends(),
+    ]);
+  }
+
   function groupReaderIds(groupId: string, messageTs: number): string[] {
     const myId = app.device?.device_id;
     const members = new Set(groups.value.find((group) => group.id === groupId)?.members ?? []);
@@ -339,6 +388,17 @@ export const useChatStore = defineStore("chat", () => {
   async function refreshTransfers() {
     transfers.value = await api.getTransfers();
   }
+  /** 上一次真正拉取拓扑的时间（`refreshTopologyThrottled` 用）。 */
+  let lastTopologyAt = 0;
+
+  /** 由高频事件触发的拓扑刷新：最多 1s 一次（判据是纯函数，见 `utils/defer`）。 */
+  function refreshTopologyThrottled() {
+    const now = Date.now();
+    if (!shouldRunThrottled(now, lastTopologyAt, 1000)) return;
+    lastTopologyAt = now;
+    void refreshTopology();
+  }
+
   async function refreshTopology() {
     topology.value = await api.getTopology();
   }
@@ -412,21 +472,36 @@ export const useChatStore = defineStore("chat", () => {
     // 跳未读造成闪烁。
     const unreadBefore = conversations.value.find((c) => c.id === id)?.unread ?? 0;
     unreadJump.value = unreadBefore > 0 ? { convId: id, index: -1 } : null;
-    // 会话行不存在（如新加好友还没发过消息）→ 后端补建，保证左侧列表有对应可高亮的项
-    if (!conversations.value.some((c) => c.id === id) && !id.startsWith("group:")) {
-      try {
-        const conv = await api.ensureConversation(id);
-        conversations.value = [conv, ...conversations.value];
-      } catch {
-        /* 忽略：不影响打开聊天 */
-      }
-    }
-    // 先发 ReadReceipt（不等 loadMessages），让对方尽早看到绿勾
-    void api.markRead(id).then(() => {
-      const conv = conversations.value.find((c) => c.id === id);
-      if (conv) conv.unread = 0;
+    // 未读清零走**乐观更新**（用户 2026-09-12 要求「所有异步操作尽量乐观更新」）：
+    // 打开会话即视为已读，本地立刻清零，别让红点在 await 期间继续显示。
+    const optimisticClearUnread = (convId: string) => {
+      const conv = conversations.value.find((c) => c.id === convId);
+      if (conv && conv.unread !== 0) conv.unread = 0;
+    };
+    optimisticClearUnread(id);
+    // 会话行不存在（如新加好友还没发过消息）→ 后端补建，保证左侧列表有对应可高亮的项。
+    // ⚠️ **不阻塞消息加载**：补建会话行与 loadMessages 互不依赖，串行 await 会让
+    // 「切到一个全新会话」白等一次 IPC（骨架已经渲染，但内容迟迟不来）。
+    // 因此并行发起，回来后若仍未出现再补进列表。
+    const ensureConv = conversations.value.some((c) => c.id === id) || id.startsWith("group:")
+      ? Promise.resolve()
+      : api
+          .ensureConversation(id)
+          .then((conv) => {
+            if (!conversations.value.some((c) => c.id === id)) {
+              conversations.value = [conv, ...conversations.value];
+            }
+          })
+          .catch(() => {
+            /* 忽略：不影响打开聊天 */
+          });
+    // ReadReceipt 与消息加载并行：让对方尽早看到绿勾，且不拖慢本端渲染。
+    // 原先这里发了两次 markRead（一次 void、末尾再一次 await），属重复 IPC，一并去掉。
+    const readReceipt = api.markRead(id).catch(() => {
+      /* 回执失败不回滚已读：本地确实已经看到了 */
     });
-    await loadMessages(id);
+    await Promise.all([loadMessages(id), ensureConv]);
+    await readReceipt;
     if (unreadBefore > 0) {
       const list = messages.value[id] ?? [];
       const idx = list.length - Math.min(unreadBefore, list.length);
@@ -437,9 +512,8 @@ export const useChatStore = defineStore("chat", () => {
         unreadJump.value = null;
       }
     }
-    await api.markRead(id);
-    const conv = conversations.value.find((c) => c.id === id);
-    if (conv) conv.unread = 0;
+    // 未读已在上面乐观清零；这里只做一次兜底（若期间又来了新消息把 unread 加回去，
+    // 说明是"打开之后"到达的，此时不该再清）。
     // 切会话后收缩一次：刚被切走的会话若已冷，就可释放其内存副本
     enforceMessageCacheBound();
   }
@@ -608,12 +682,12 @@ export const useChatStore = defineStore("chat", () => {
   }
   /** 乐观交互：立即移出申请列表，失败回滚（调用方负责 toast）。 */
   async function respondRequest(peerId: string, accept: boolean) {
-    const prev = pendingRequests.value;
-    pendingRequests.value = prev.filter((r) => r.from !== peerId);
+    const prev = rawPendingRequests.value;
+    rawPendingRequests.value = prev.filter((r) => r.from !== peerId);
     try {
       await api.respondFriendRequest(peerId, accept);
     } catch (e) {
-      pendingRequests.value = prev; // 回滚
+      rawPendingRequests.value = prev; // 回滚
       throw e;
     }
     if (accept) {
@@ -690,29 +764,105 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
+  /**
+   * 群操作的**乐观更新**骨架（用户 2026-09-12 要求「所有异步操作尽量乐观更新」）。
+   *
+   * 原先四个群操作都是「await 后端 → await refreshGroups → await refreshConversations」：
+   * 点一下要等 **3 个 IPC 往返**才看到变化（成员列表、群主标识都不动），
+   * 与「不阻断渲染」的要求相反。这里统一成与 `renameGroup` 相同的范式：
+   * **先本地改（可感知即时）→ 调后端 → 失败回滚 + 抛错**（调用方负责 toast）。
+   * 后端仍是权威：成功后会 refresh 一次收敛（成员/会话行以后端为准）。
+   */
+  function withGroupRollback<T>(
+    mutate: () => () => void,
+    call: () => Promise<T>,
+  ): Promise<T> {
+    const rollback = mutate();
+    return call().catch((e) => {
+      rollback();
+      throw e;
+    });
+  }
+
   /** 加人入群（群主）。 */
   async function addGroupMember(groupId: string, deviceId: string) {
-    await api.groupAddMember(groupId, deviceId);
+    await withGroupRollback(
+      () => {
+        const prev = groups.value;
+        groups.value = groups.value.map((g) =>
+          g.id === groupId && !g.members.includes(deviceId)
+            ? { ...g, members: [...g.members, deviceId] }
+            : g,
+        );
+        return () => {
+          groups.value = prev;
+        };
+      },
+      () => api.groupAddMember(groupId, deviceId),
+    );
     await refreshGroups();
     await refreshConversations();
   }
 
   /** 移除成员（群主）。 */
   async function removeGroupMember(groupId: string, deviceId: string) {
-    await api.groupRemoveMember(groupId, deviceId);
+    await withGroupRollback(
+      () => {
+        const prev = groups.value;
+        groups.value = groups.value.map((g) =>
+          g.id === groupId ? { ...g, members: g.members.filter((m) => m !== deviceId) } : g,
+        );
+        return () => {
+          groups.value = prev;
+        };
+      },
+      () => api.groupRemoveMember(groupId, deviceId),
+    );
     await refreshGroups();
     await refreshConversations();
   }
 
   /** 转让群主（仅当前群主）。后端会向全体成员广播新群主。 */
   async function transferGroupCreator(groupId: string, newCreator: string) {
-    await api.transferGroupCreator(groupId, newCreator);
+    await withGroupRollback(
+      () => {
+        const prev = groups.value;
+        groups.value = groups.value.map((g) =>
+          g.id === groupId ? { ...g, creator: newCreator } : g,
+        );
+        return () => {
+          groups.value = prev;
+        };
+      },
+      () => api.transferGroupCreator(groupId, newCreator),
+    );
     await refreshGroups();
   }
 
   /** 退出群聊（群主须先转让）。退出后复用「被移出群」的本地清理路径。 */
   async function leaveGroup(groupId: string) {
-    await api.leaveGroup(groupId);
+    const convId = `group:${groupId}`;
+    const prevGroups = groups.value;
+    const prevConvs = conversations.value;
+    const prevActive = activeConv.value;
+    const prevMessages = messages.value[convId];
+    // 乐观：立刻把群从本地移除并关掉会话（用户点了"退出"就该马上看到结果）
+    groups.value = groups.value.filter((g) => g.id !== groupId);
+    conversations.value = conversations.value.filter((c) => c.id !== convId);
+    if (activeConv.value === convId) {
+      activeConv.value = null;
+      unreadJump.value = null;
+    }
+    try {
+      await api.leaveGroup(groupId);
+    } catch (e) {
+      // 回滚：退群失败（例如群主未转让）时把群与会话原样放回
+      groups.value = prevGroups;
+      conversations.value = prevConvs;
+      activeConv.value = prevActive;
+      if (prevMessages !== undefined) messages.value = { ...messages.value, [convId]: prevMessages };
+      throw e;
+    }
     await handleSelfRemovedFromGroup(groupId);
   }
 
@@ -875,7 +1025,10 @@ export const useChatStore = defineStore("chat", () => {
       if (markReadTimer) clearTimeout(markReadTimer);
       markReadTimer = setTimeout(() => {
         markReadTimer = null;
-        if (activeConv.value !== convId || document.hidden) return;
+        // ⚠️ 三个条件缺一不可：得是这个会话、应用在前台、**而且聊天视图真的可见**
+        // （移动端可能正盖着设置/新的朋友等整页浮层 —— 那时用户根本没看到这条消息，
+        //  判已读等于替用户撒谎、还会把回执发回去。用户 2026-09-12 实测报告）。
+        if (activeConv.value !== convId || document.hidden || !app.chatVisible) return;
         void api.markRead(convId).then(() => {
           const conv = conversations.value.find((c) => c.id === convId);
           if (conv) conv.unread = 0;
@@ -889,13 +1042,16 @@ export const useChatStore = defineStore("chat", () => {
         friends.value.forEach((f) => (f.online = onlineIds.has(f.device_id)));
         // 同步好友/单聊会话的昵称/头像（对方改名后立即生效）
         syncProfileFromPeers(friends.value, conversations.value, p);
-        void refreshTopology();
+        // 拓扑（节点数/中继数/平均 RTT/在线）变化很慢，而 peers-updated 最多 3/s；
+        // 每个事件都发一次 IPC 纯属浪费（每次 IPC 都要跨进程 + 过主线程消息循环，
+        // 攒起来就是"顿"）。这里节流到最多 1s 一次，另有 5s 定时器兜底。
+        refreshTopologyThrottled();
       },
       onFriendRequest: (req) => {
         // 去重：同一设备多次申请只保留最新一条（过滤历史重复申请）
-        pendingRequests.value = [
+        rawPendingRequests.value = [
           req,
-          ...pendingRequests.value.filter((r) => r.from !== req.from),
+          ...rawPendingRequests.value.filter((r) => r.from !== req.from),
         ];
       },
       onFriendAccepted: async () => {
@@ -978,6 +1134,9 @@ export const useChatStore = defineStore("chat", () => {
         // 被移出群：后端已删本地群，前端关闭会话 + 刷新
         void handleSelfRemovedFromGroup(groupId);
       },
+      onDataCleared: () => {
+        void resetAfterDataCleared();
+      },
     });
     // 移动端注册通知动作类别（「标记已读」按钮）。桌面端无此能力（Web Notification 不支持按钮），
     // 命令也不存在，故只对移动端调用。语言切换后按钮文案不随动（原生注册一次），可接受。
@@ -1043,7 +1202,8 @@ export const useChatStore = defineStore("chat", () => {
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) return;
       if (pending.length) scheduleFlush();
-      if (activeConv.value) {
+      // 同 `debounceMarkRead`：回到前台也要确认"聊天视图真的可见"才补发已读回执
+      if (activeConv.value && app.chatVisible) {
         void api.markRead(activeConv.value).then(() => {
           const conv = conversations.value.find((c) => c.id === activeConv.value);
           if (conv) conv.unread = 0;
@@ -1079,6 +1239,7 @@ export const useChatStore = defineStore("chat", () => {
     refreshPending,
     refreshConversations,
     refreshGroups,
+    resetAfterDataCleared,
     refreshTransfers,
     refreshTopology,
     openConversation,
@@ -1104,3 +1265,13 @@ export const useChatStore = defineStore("chat", () => {
     enqueueMessage,
   };
 });
+
+// Vite HMR：**改了 store 必须让新 store 生效**。
+//
+// 踩坑（用户实测"点设置卡、过一会儿弹出好几个设置、主题延迟切换"）：Pinia 的 store 是
+// 缓存过的单例，**不接 HMR 就一直是旧实例** —— 我这一轮给 store 新增了 `channels` /
+// `channels`/`setChannelEnabled`，而用户长时间运行的 dev 会话里还是旧 store ⇒ 设置页里
+// `app.setChannelEnabled is not a function`、`channels.value.find` 抛错 ⇒ **整页渲染卡死**
+// （一个分区渲染抛错，Vue 之后再也 patch 不动这个页面）。加上这一行之后，
+// 以后改 store 都不必重启 dev。
+if (import.meta.hot) import.meta.hot.accept(acceptHMRUpdate(useChatStore, import.meta.hot));

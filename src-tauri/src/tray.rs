@@ -5,6 +5,8 @@
 //! - 点击托盘图标 / 菜单「显示主窗口」：恢复窗口
 //! - 菜单「退出」：`app.exit(0)` 真正结束进程
 
+use std::sync::Arc;
+
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -28,7 +30,8 @@ pub fn show_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
 /// 容错：托盘创建失败时**不拦截关闭**（保持系统默认退出行为），
 /// 避免出现「窗口关不掉、又没有托盘可恢复」的死角。
 pub fn setup<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()> {
-    match build_tray(app) {
+    let state = app.state::<Arc<crate::state::AppState>>();
+    match build_tray(app, &state) {
         Ok(()) => {
             install_close_to_tray(app);
         }
@@ -40,7 +43,10 @@ pub fn setup<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()> 
 }
 
 /// 构建托盘图标与菜单。
-fn build_tray<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()> {
+fn build_tray<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &Arc<crate::state::AppState>,
+) -> tauri::Result<()> {
     let show_item = MenuItemBuilder::with_id("show", "显示主窗口").build(app)?;
     let restart_item = MenuItemBuilder::with_id("restart", "重启").build(app)?;
     let quit_item = MenuItemBuilder::with_id("quit", "退出").build(app)?;
@@ -50,9 +56,14 @@ fn build_tray<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()>
         .item(&quit_item)
         .build()?;
 
+    let tooltip = if state.is_zh() {
+        "小院儿 · 局域网即时通讯".to_string()
+    } else {
+        "Gosslan · LAN Messenger".to_string()
+    };
     let mut builder = TrayIconBuilder::with_id("gosslan-tray")
         .menu(&menu)
-        .tooltip("Gosslan · 局域网即时通讯")
+        .tooltip(tooltip)
         .on_menu_event(|app, event| match event.id().as_ref() {
             "show" => show_main_window(app),
             "restart" => {
@@ -71,11 +82,34 @@ fn build_tray<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<()>
                 // 退出前先停网络：等 TCP listener 与后台任务真正退出后再结束进程。
                 // 直接 exit 会让 OS 替我们关闭 socket（Windows 上可能以 FIN 优雅关闭，
                 // 在 59992 留下 120s TIME_WAIT），下一次启动就 bind 不上。
-                // 与 restart 分支一致：用 network::stop（不改持久化偏好）。
+                //
+                // ⚠️ 但**绝不能因此退不出去**（用户 2026-09-12 实测：macOS 托盘「退出」点了没反应）。
+                // 原实现是「spawn 里 await network::stop 之后才 app.exit(0)」——
+                // 只要那一步卡住（任务不结束 / 锁竞争 / BLE 收尾慢），退出就永远不会发生，
+                // 而用户看到的就是"点了没反应"。现在的做法：
+                //   ① 一条**守护线程**先兜底：1.5s 后无论如何 `process::exit(0)`；
+                //   ② 正常路径仍然走 `app.exit(0)`（让插件有机会保存窗口状态），
+                //      但网络停止最多等 800ms（超时就放弃，宁可留 TIME_WAIT 也不能退不出去）。
+                let handle = app.clone();
+                handle
+                    .state::<std::sync::Arc<crate::state::AppState>>()
+                    .logger
+                    .info("app", "托盘「退出」被点击：开始收尾");
+                std::thread::spawn(|| {
+                    std::thread::sleep(std::time::Duration::from_millis(1500));
+                    eprintln!("[gosslan][app] 正常退出路径未在 1.5s 内完成，强制退出");
+                    std::process::exit(0);
+                });
                 let app = app.clone();
                 tauri::async_runtime::spawn(async move {
                     let state = app.state::<std::sync::Arc<crate::state::AppState>>();
-                    crate::network::stop(&state).await;
+                    let stopped =
+                        tokio::time::timeout(std::time::Duration::from_millis(800), crate::network::stop(&state))
+                            .await
+                            .is_ok();
+                    state
+                        .logger
+                        .info("app", format!("网络已停止（{stopped}），正在退出"));
                     app.exit(0);
                 });
             }

@@ -23,9 +23,9 @@ watch(
     <div class="space-y-3">
       <input
         v-model="name"
-        maxlength="30"
+        maxlength="40"
         :placeholder="t('group.namePlaceholder')"
-        class="w-full rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none"
+        class="w-full rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] px-3 py-2 text-sm"
         @keydown.enter="name.trim() && emit('confirm', name.trim())"
       />
       <p class="text-xs text-[var(--gosslan-text-2)]">{{ t("group.rename.note") }}</p>

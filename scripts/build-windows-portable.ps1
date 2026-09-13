@@ -1,4 +1,4 @@
-# =============================================================================
+﻿# =============================================================================
 #  构建 Windows 便携版（绿色版）：生成单个 gosslan.exe 并打包成 zip
 #  用途：周一多台 Windows 电脑「即点即用」，无需安装依赖（Win10/11 已内置 WebView2）
 #  用法：项目根目录执行  .\scripts\build-windows-portable.ps1
@@ -8,7 +8,7 @@ $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
 Write-Host "==> 1/2 构建 Windows 便携版（无安装包，仅原始 exe）" -ForegroundColor Cyan
-npm run tauri -- build --no-bundle
+npm run tauri -- build --features bluetooth --no-bundle
 if ($LASTEXITCODE -ne 0) { Write-Error "构建失败"; exit $LASTEXITCODE }
 
 $exe = Join-Path $root "src-tauri\target\release\gosslan.exe"

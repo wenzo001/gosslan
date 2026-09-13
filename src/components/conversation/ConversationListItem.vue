@@ -1,13 +1,12 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
 import { fmtConversationTime } from "@/utils/time";
-import { highlightText } from "@/utils/highlight";
-import { avatarInitial, nameToColor } from "@/utils/color";
-import { X } from "lucide-vue-next";
-import { computed } from "vue";
+import { avatarInitial, avatarInitialLen, nameToColor } from "@/utils/color";
+import { computed, onUnmounted } from "vue";
 import { useChatStore } from "@/stores/useChatStore";
 import { useMemberProfile } from "@/composables/useMemberProfile";
 import { haptic } from "@/utils/haptics";
+import UnreadBadge from "@/components/UnreadBadge.vue";
 import type { Conversation } from "@/types";
 
 const props = defineProps<{
@@ -16,12 +15,17 @@ const props = defineProps<{
   /** 单聊查好友表；群聊无在线概念，传 null 表示不显示状态点。 */
   online: boolean | null;
   /** 搜索命中摘要（null 时显示最后一条消息）。 */
-  snippet: string | null;
-  keyword: string;
 }>();
 const emit = defineEmits<{
   (e: "open", conv: Conversation): void;
-  (e: "ask-delete", conv: Conversation, ev: MouseEvent): void;
+  /**
+   * 右键 / 移动端长按：上报坐标，由父组件弹出统一菜单。
+   * 用户 2026-09-12 晚 #3：「选中框上的『删除好友』的叉叉感觉很丑……取消叉叉，
+   * 改为统一的右键删除操作。即每一个选项都做成单击右键弹出菜单，再点击『删除』。」
+   * ⇒ 原先的悬停叉叉按钮已删除，删除入口只保留右键菜单（移动端用长按等价入口，
+   *   这正是本项目 hover 揭示必须有触屏兜底的既有护栏要求）。
+   */
+  (e: "context", conv: Conversation, x: number, y: number): void;
 }>();
 
 const chat = useChatStore();
@@ -32,6 +36,11 @@ const { memberProfile } = useMemberProfile();
  * UISelectionFeedbackGenerator），再抛事件。触觉只在支持的平台生效。
  */
 function openConv(conv: Conversation) {
+  // 长按刚弹出菜单的那一次 click 要吃掉：否则同一次手势会「弹菜单 + 开会话」同时发生
+  if (suppressClick) {
+    suppressClick = false;
+    return;
+  }
   haptic("selection");
   emit("open", conv);
 }
@@ -43,6 +52,68 @@ function initials(name: string) {
   return avatarInitial(name);
 }
 
+function onContextMenu(conv: Conversation, e: MouseEvent) {
+  e.preventDefault();
+  e.stopPropagation();
+  // 键盘唤起（Shift+F10 / 菜单键）时 clientX/Y 为 0 ⇒ 菜单会被贴到窗口左上角，
+  // 而不是这一行。此时改用**行的矩形**定位（取行底部左缘），与鼠标右键体验一致。
+  const fromKeyboard = e.clientX === 0 && e.clientY === 0;
+  if (fromKeyboard) {
+    const rect = (e.currentTarget as HTMLElement | null)?.getBoundingClientRect();
+    if (rect) {
+      emit("context", conv, rect.left + 24, rect.bottom - 4);
+      return;
+    }
+  }
+  emit("context", conv, e.clientX, e.clientY);
+}
+
+// 移动端没有 contextmenu：长按 500ms 视为同一个菜单入口（与 FriendListItem 一致）
+const LONG_PRESS_MS = 500;
+/** 手指抖动容差（px）：小于它不算"滑动"，不取消长按（否则轻微抖动就长按不出来）。 */
+const PRESS_MOVE_TOLERANCE = 10;
+let pressTimer: ReturnType<typeof setTimeout> | null = null;
+let pressStart: { x: number; y: number } | null = null;
+/**
+ * 本次手势已经触发过长按 ⇒ 抑制随之而来的 click。
+ * 不抑制的话同一次长按会「一边弹出菜单、一边把会话/资料页打开」，菜单刚出来就被盖住。
+ * 只在**同一次手势内**生效：下一次 touchstart 会复位，所以不会吃掉用户的下一次点击。
+ */
+let suppressClick = false;
+
+function clearPress() {
+  if (pressTimer) {
+    clearTimeout(pressTimer);
+    pressTimer = null;
+  }
+  pressStart = null;
+}
+
+/** 位移超阈值才取消长按（横向滑动列表 / 纵向滚动时不误弹菜单）。 */
+function onPressMove(e: TouchEvent) {
+  const t = e.touches[0];
+  if (!t || !pressStart) return;
+  if (Math.hypot(t.clientX - pressStart.x, t.clientY - pressStart.y) > PRESS_MOVE_TOLERANCE) {
+    clearPress();
+  }
+}
+
+function onTouchStart(conv: Conversation, e: TouchEvent) {
+  const t = e.touches[0];
+  if (!t) return;
+  clearPress();
+  suppressClick = false; // 新手势开始：复位上一次的抑制标记
+  pressStart = { x: t.clientX, y: t.clientY };
+  pressTimer = setTimeout(() => {
+    pressTimer = null;
+    suppressClick = true;
+    haptic("heavy");
+    emit("context", conv, t.clientX, t.clientY);
+  }, LONG_PRESS_MS);
+}
+
+onUnmounted(clearPress);
+
 /** 群头像九宫格成员（微信式 2x2）：资料解析统一走 useMemberProfile（本机/好友/节点，
  *  离线好友照常显示）。必须保持响应式：好友/群数据是异步加载的，非响应式会在
  *  启动时算死成占位块且不再更新。九宫格每格用成员名 hash → nameToColor，保证
@@ -51,13 +122,13 @@ const gridTiles = computed(() => {
   if (props.conv.kind !== "group") return [];
   const groupId = props.conv.id.replace(/^group:/, "");
   const memberIds = chat.groups.find((g) => g.id === groupId)?.members ?? [];
-  const tiles: { avatar: string | null; label: string; color: string }[] = [];
+  const tiles: { avatar: string | null; label: string; len: number; color: string }[] = [];
   for (const id of memberIds.slice(0, 4)) {
     const p = memberProfile(id);
-    tiles.push({ avatar: p.avatar, label: initials(p.name), color: nameToColor(p.name) });
+    tiles.push({ avatar: p.avatar, label: initials(p.name), len: avatarInitialLen(p.name), color: nameToColor(p.name) });
   }
   while (tiles.length < Math.min(4, Math.max(memberIds.length, 1))) {
-    tiles.push({ avatar: null, label: initials(props.conv.name), color: nameToColor(props.conv.name) });
+    tiles.push({ avatar: null, label: initials(props.conv.name), len: avatarInitialLen(props.conv.name), color: nameToColor(props.conv.name) });
   }
   return tiles;
 });
@@ -81,6 +152,11 @@ const gridTiles = computed(() => {
     @click="openConv(conv)"
     @keydown.enter.prevent="openConv(conv)"
     @keydown.space.prevent="openConv(conv)"
+    @contextmenu="onContextMenu(conv, $event)"
+    @touchstart.passive="onTouchStart(conv, $event)"
+    @touchmove.passive="onPressMove"
+    @touchend.passive="clearPress"
+    @touchcancel.passive="clearPress"
   >
     <div class="relative shrink-0">
       <!-- 群聊：微信式 2x2 九宫格头像；单聊：单头像 -->
@@ -91,21 +167,21 @@ const gridTiles = computed(() => {
         <div
           v-for="(t, i) in gridTiles"
           :key="i"
-          class="flex items-center justify-center overflow-hidden text-[11px] font-medium text-white"
+          class="gosslan-avatar-box flex items-center justify-center overflow-hidden text-[11px] font-medium text-white"
           :style="{ backgroundColor: t.color }"
         >
           <img alt="" v-if="t.avatar" :src="t.avatar" class="h-full w-full object-cover" />
-          <span v-else>{{ t.label }}</span>
+          <span v-else class="gosslan-avatar-initial" :data-len="t.len">{{ t.label }}</span>
         </div>
       </div>
       <div
         v-else
-        class="flex h-10 w-10 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
+        class="gosslan-avatar-box flex h-10 w-10 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
         :class="online === false ? 'grayscale opacity-70' : ''"
         :style="{ backgroundColor: nameToColor(conv.name) }"
       >
         <img alt="" v-if="conv.avatar" :src="conv.avatar" class="h-full w-full object-cover" />
-        <span v-else class="text-sm font-medium">{{ initials(conv.name) }}</span>
+        <span v-else class="gosslan-avatar-initial text-sm font-medium" :data-len="avatarInitialLen(conv.name)">{{ initials(conv.name) }}</span>
       </div>
       <!-- 在线标识：群聊不显示；离线标灰半透 -->
       <span
@@ -114,16 +190,17 @@ const gridTiles = computed(() => {
         :class="online ? 'bg-[var(--gosslan-success)]' : 'bg-[var(--gosslan-status-offline)]'"
       ></span>
       <!-- 未读小红点：正常显示 -->
-      <span
-        v-if="conv.unread > 0"
-        class="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--gosslan-danger)] px-1 text-[11px] font-medium leading-none text-white"
-      >
-        {{ conv.unread > 99 ? "99+" : conv.unread }}
-      </span>
+      <UnreadBadge v-if="conv.unread > 0" :count="conv.unread" class="absolute -right-1 -top-1" />
     </div>
     <div class="min-w-0 flex-1 overflow-hidden">
       <div class="flex items-center justify-between gap-2">
-        <span class="truncate text-[13px] leading-5" :class="active ? 'font-medium text-[var(--gosslan-list-active-text)]' : 'text-[var(--gosslan-text)]'">
+        <!-- 名字会被截断（`truncate`），必须给 title：否则悬停看不到完整名字。
+             整行的 aria-label 只服务读屏，不产生 tooltip。 -->
+        <span
+          class="truncate text-[13px] leading-5"
+          :class="active ? 'font-medium text-[var(--gosslan-list-active-text)]' : 'text-[var(--gosslan-text)]'"
+          :title="conv.name"
+        >
           {{ conv.name }}
         </span>
         <span
@@ -137,31 +214,18 @@ const gridTiles = computed(() => {
         <span
           class="truncate text-[12px] leading-5"
           :class="active ? 'text-[var(--gosslan-list-active-text)] opacity-90' : 'text-[var(--gosslan-text-2)]'"
+          :title="conv.last_msg || t('msg.noMessage')"
         >
-          <template v-if="snippet">
-            <span v-html="highlightText(snippet, keyword.trim())"></span>
-          </template>
-          <template v-else>
-            <span v-if="mentioned" class="font-medium text-[var(--gosslan-danger-ink)]">{{ t("msg.mentioned") }}</span
-            >{{ conv.last_msg || t("msg.noMessage") }}
-          </template>
+          <span v-if="mentioned" class="font-medium text-[var(--gosslan-danger-ink)]">{{ t("msg.mentioned") }}</span
+          >{{ conv.last_msg || t("msg.noMessage") }}
         </span>
       </div>
     </div>
     <!-- 微信式行间细分隔线：从文本列起（头像后缩进），最后一行不显（由容器裁边） -->
     <div class="absolute bottom-0 left-[64px] right-0 h-px bg-[var(--gosslan-divider)]"></div>
-    <!-- 删除聊天记录入口：桌面端悬停行时浮现。
-         `hover-reveal`：触屏没有 hover —— 没有它这个按钮在手机上永远不显示，
-         等于「桌面能删、手机删不掉」（见 2026-09-10 审计 P0-1）。
-         `tap-safe`：24px 小于 44pt 最小点按目标，触屏下垂直扩命中区（见 style.css）。 -->
-    <button
-      v-if="!active"
-      class="hover-reveal tap-safe absolute bottom-1.5 right-1.5 z-10 hidden h-6 w-6 items-center justify-center rounded-[var(--gosslan-radius-xs)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-danger-soft)] hover:text-[var(--gosslan-danger-ink)] group-hover/conv:flex"
-      :title="t('conv.delete')"
-      :aria-label="t('conv.deleteAria', { name: conv.name })"
-      @click="emit('ask-delete', conv, $event)"
-    >
-      <X class="h-3.5 w-3.5" />
-    </button>
+    <!-- 删除入口**不再有悬停叉叉**（用户 2026-09-12 晚 #3：「选中框上的叉叉感觉很丑……
+         取消叉叉，改为统一的右键删除操作」）：删除走本行的右键菜单（由父组件渲染），
+         移动端用长按等价入口（见本组件 `onTouchStart`，满足 hover 兜底护栏）。
+         顺带消除了"选中态要不要常显叉叉"这个历史难题。 -->
   </div>
 </template>

@@ -3,7 +3,7 @@ import { t } from "@/i18n";
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useChatStore } from "@/stores/useChatStore";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
-import { avatarInitial, nameToColor } from "@/utils/color";
+import { avatarInitial, avatarInitialLen, nameToColor } from "@/utils/color";
 import type { SendState } from "@/composables/useMessageDisplay";
 import { Check, Circle, Loader2, RefreshCw } from "lucide-vue-next";
 
@@ -78,7 +78,7 @@ function readerAvatar(id: string): string | null {
   <div v-if="isGroup" class="relative shrink-0 pb-1.5">
     <button
       v-if="readerIds.length > 0"
-      class="-space-x-1 flex items-center rounded-full p-0.5 transition hover:bg-[var(--gosslan-hover)]"
+      class="tap-safe -space-x-1 flex items-center rounded-full p-0.5 transition hover:bg-[var(--gosslan-hover)]"
       :title="t('msg.readBy', { n: readerIds.length })"
       :aria-label="t('msg.readByView', { n: readerIds.length })"
       @click.stop="toggleReaders"
@@ -86,11 +86,11 @@ function readerAvatar(id: string): string | null {
       <span
         v-for="id in visibleReaders"
         :key="id"
-        class="flex h-4 w-4 items-center justify-center overflow-hidden rounded-full border border-[var(--gosslan-panel)] text-[11px] text-white"
+        class="gosslan-avatar-box flex h-4 w-4 items-center justify-center overflow-hidden rounded-full border border-[var(--gosslan-panel)] text-[11px] text-white"
         :style="{ backgroundColor: nameToColor(readerName(id)) }"
       >
         <img alt="" v-if="readerAvatar(id)" :src="readerAvatar(id) ?? undefined" class="h-full w-full object-cover" />
-        <span v-else>{{ avatarInitial(readerName(id)) }}</span>
+        <span v-else class="gosslan-avatar-initial" :data-len="avatarInitialLen(readerName(id))">{{ avatarInitial(readerName(id)) }}</span>
       </span>
       <span
         v-if="extraReaders.length > 0"
@@ -112,31 +112,36 @@ function readerAvatar(id: string): string | null {
         class="flex items-center gap-2 rounded-[var(--gosslan-radius-xs)] px-2 py-1 hover:bg-[var(--gosslan-hover)]"
       >
         <span
-          class="flex h-5 w-5 items-center justify-center overflow-hidden rounded-full text-[11px] text-white"
+          class="gosslan-avatar-box flex h-5 w-5 items-center justify-center overflow-hidden rounded-full text-[11px] text-white"
           :style="{ backgroundColor: nameToColor(readerName(id)) }"
         >
           <img alt="" v-if="readerAvatar(id)" :src="readerAvatar(id) ?? undefined" class="h-full w-full object-cover" />
-          <span v-else>{{ avatarInitial(readerName(id)) }}</span>
+          <span v-else class="gosslan-avatar-initial" :data-len="avatarInitialLen(readerName(id))">{{ avatarInitial(readerName(id)) }}</span>
         </span>
-        <span class="max-w-28 truncate">{{ readerName(id) }}</span>
+        <span class="max-w-28 truncate" :title="readerName(id)">{{ readerName(id) }}</span>
       </div>
     </div>
   </div>
   <!-- 单聊：回执图标固定在气泡左侧（视觉上贴近对话人头像方向）。
        ♿ 回执是**纯图标**状态（转圈/空心圆/绿勾/红叉），读屏下原本什么也读不到 ——
        发送中 / 已送达 / 已读 是聊天最核心的状态，必须给可访问名。
-       role="img" + aria-label 让状态被朗读出来；内部的 Loader2/Circle/Check 都是装饰。 -->
-  <span v-else class="shrink-0 pb-1.5" role="img" :title="title" :aria-label="title">
-    <Loader2 v-if="state === 'sending' || state === 'sent'" class="h-3.5 w-3.5 animate-spin text-[var(--gosslan-text-2)]" />
+       ⚠️ `role="img"` 只能加在**只包静态图标**的元素上：ARIA 的 `img` 会应用
+       *Children Presentational*，把后代的角色/名字/动作**从无障碍树里抹掉**。
+       此前它套在含「重发」按钮的外层 ⇒ 读屏用户**点不到重发**（失败消息无法重发）。
+       现在：按钮是兄弟节点，`role="img"` 只包状态图标。 -->
+  <span v-else class="flex shrink-0 items-center pb-1.5">
     <button
-      v-else-if="state === 'failed'"
+      v-if="state === 'failed'"
       class="tap-safe flex h-5 w-5 items-center justify-center rounded-[var(--gosslan-radius-xs)] text-[var(--gosslan-danger-ink)] transition hover:bg-[var(--gosslan-danger-soft)]"
       :title="t('msg.resend')" :aria-label="t('msg.resend')"
       @click="emit('retry')"
     >
       <RefreshCw class="h-3.5 w-3.5" />
     </button>
-    <Circle v-else-if="state === 'delivered'" class="h-3.5 w-3.5 text-[var(--gosslan-text-2)]" />
-    <Check v-else-if="state === 'read'" class="h-4 w-4 text-[var(--gosslan-success-ink)]" />
+    <span v-else class="flex items-center" role="img" :title="title" :aria-label="title">
+      <Loader2 v-if="state === 'sending' || state === 'sent'" class="h-3.5 w-3.5 animate-spin text-[var(--gosslan-text-2)]" />
+      <Circle v-else-if="state === 'delivered'" class="h-3.5 w-3.5 text-[var(--gosslan-text-2)]" />
+      <Check v-else-if="state === 'read'" class="h-4 w-4 text-[var(--gosslan-success-ink)]" />
+    </span>
   </span>
 </template>

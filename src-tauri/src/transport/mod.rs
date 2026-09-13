@@ -9,8 +9,22 @@
 //! - **智能分流**：双通道同时开启时按流量特征分流——大负载走局域网高带宽通道，
 //!   轻量心跳 / 控制信令优先走蓝牙。
 
+pub mod ble_framing;
 pub mod bluetooth;
+// BLE 外设（GATT server）角色：只有 macOS + `--features bluetooth` 才编译。
+#[cfg(all(feature = "bluetooth", target_os = "macos"))]
+pub mod bluetooth_peripheral;
+// Android 外设角色的 Rust 侧（JNI 桥，见该文件注释与 ADR-0015 §7.7）。
+#[cfg(all(feature = "bluetooth", target_os = "android"))]
+pub mod ble_android;
+// Windows 外设角色的 Rust 侧（WinRT `GattServiceProvider`，见该文件注释与 ADR-0015 §7.9）。
+// 与 macOS/Android 是**第三套平台实现**，但对外接口逐字同形 ⇒ `network/ble.rs` 三边共用一份。
+// 没有它，Windows 从不广播 ⇒ 手机永远发现不了 Windows（真机 2026-09-13，
+// 见 docs/notes/windows-ble-diagnosis-2026-09-13.md）。
+#[cfg(all(feature = "bluetooth", target_os = "windows"))]
+pub mod bluetooth_peripheral_windows;
 pub mod lan;
+pub mod tcp;
 
 use std::sync::Arc;
 
@@ -75,12 +89,10 @@ pub struct TransportManager {
 
 impl TransportManager {
     pub fn new(state: Arc<AppState>) -> Self {
-        // 从本地设置恢复蓝牙通道开关状态
+        // 从本地设置恢复蓝牙通道开关状态（缺省值由平台决定：手机默认开，见 `db::get_bt_enabled`）
         let bt_enabled = {
             let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-            crate::db::get_setting(&dbc, "bt_enabled")
-                .map(|v| v == "1")
-                .unwrap_or(false)
+            crate::db::get_bt_enabled(&dbc)
         };
         Self {
             lan: lan::LanTransport::new(state),
@@ -97,6 +109,11 @@ impl TransportManager {
     }
 
     /// 切换蓝牙通道开关。
+    ///
+    /// ⚠️ 开了 `bluetooth` feature 时**不用它**：那时真正的运行时是 `network::ble`
+    /// （扫描/连接/握手/链路登记），命令层直接调它的 `start/stop`；
+    /// 本方法只服务"未编译 BLE 后端"的默认构建（保留它才能给出明确错误）。
+    #[cfg_attr(feature = "bluetooth", allow(dead_code))]
     pub async fn set_bluetooth_enabled(&mut self, on: bool) -> Result<(), String> {
         if on == self.bt_enabled {
             return Ok(());

@@ -439,6 +439,7 @@ async fn main() {
                 device_id: PEER_ID.into(),
                 nickname: "E2E-Peer".into(),
                 avatar: None,
+                device_type: "desktop".into(),
                 tcp_port: 0,
                 x25519_pubkey: xk,
                 ed25519_pubkey: ek,
@@ -555,6 +556,7 @@ async fn main() {
                         ts: now_ms(),
                         seq: 1,
                         encrypted: true,
+                        target: None,
                     };
                     env.compute_message_id();
                     env.sender_sig = identity.sign_b64(&env.signing_bytes());
@@ -677,6 +679,7 @@ async fn main() {
                 device_id: PEER_ID.into(),
                 nickname: "E2E-Peer-Renamed".into(),
                 avatar: None,
+                device_type: "desktop".into(),
             },
         )
         .await;

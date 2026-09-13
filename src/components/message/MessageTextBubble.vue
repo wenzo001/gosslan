@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
-import { computed, type CSSProperties } from "vue";
+import { computed, nextTick, ref, watch, type CSSProperties } from "vue";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useAppStore } from "@/stores/useAppStore";
 import { PREVIEW_LINES } from "@/utils/previewMetrics";
@@ -20,12 +20,39 @@ const props = defineProps<{
   mine: boolean;
   /** 群成员名列表：正文里的 @name 按此高亮（不传不高亮）。 */
   mentionNames?: string[];
+  /**
+   * 移动端「选择文字」模式（用户 2026-09-13）：
+   * 触屏下气泡默认**不可选**（长按归消息菜单），只有进入这个模式才开放原生选字。
+   * 见 style.css 里 `@media (pointer: coarse)` 的说明。
+   */
+  selectMode?: boolean;
 }>();
 const emit = defineEmits<{
   (e: "expand", content: string): void;
   (e: "copy", content: string): void;
   (e: "locate", msgId: string): void;
 }>();
+
+/**
+ * 进入「选择文字」模式时**自动选中整条正文**：系统那条「复制/全选」工具条只有存在选区时
+ * 才会弹出来 —— 不自动选的话用户会以为"点了没反应"（他只看到气泡变了下样子）。
+ * 随后用户可以拖手柄调整范围（系统的选区手柄就是为此存在的）。
+ */
+const contentEl = ref<HTMLElement | null>(null);
+watch(
+  () => props.selectMode,
+  async (on) => {
+    if (!on) return;
+    await nextTick();
+    const el = contentEl.value;
+    const sel = window.getSelection();
+    if (!el || !sel) return;
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    sel.removeAllRanges();
+    sel.addRange(range);
+  },
+);
 
 const app = useAppStore();
 
@@ -112,8 +139,21 @@ async function openLink(href: string) {
 </script>
 
 <template>
+  <!-- 气泡排版（用户 2026-09-12 反馈：「气泡高度太高了，不如微信里和谐；字重又太细了，
+       一眼看上去不够清晰」）：
+       - 纵向内边距 py-1.5(12px 合计) 与 leading-normal(行高 1.5)：更紧凑、更接近微信；
+       - `font-medium`(500)：比默认 400 更清晰，又不至于到 600 显得"加粗标题"。
+       ⚠️ 这三个值都被 `utils/previewMetrics.ts` 的 `TEXT_LINE_RATIO` / `TEXT_BUBBLE_PADDING`
+       镜像用于虚拟列表高度估算 —— **改这里必须同步改那里**，否则相邻消息会互相遮挡
+       （该文件顶部写明了这条契约）。 -->
+  <!-- ⚠️ 气泡根也 `select-text`（用户 2026-09-13：「鼠标去划选不中，刚选中立马取消」）：
+       正文被 `px-3 py-1.5` 的内边距包着，从内边距或气泡边缘起拖时选区锚点落在
+       "不可选"区域上，WebKit 会立刻把选区收敛掉 —— 表现就是"刚选中就没了"。
+       刻意**不用** `.gosslan-selectable` 这个类：它同时是"移动端长按让路给原生选字"的
+       标记，标到气泡根上会让长按再也弹不出操作面板（气泡正是长按的主落点）。 -->
   <div
-    class="group relative min-w-0 px-3 py-2 leading-relaxed"
+    class="group gosslan-bubble-text select-text relative min-w-0 px-3 py-1.5 font-medium leading-normal"
+    :class="selectMode ? 'gosslan-selecting' : ''"
     :style="bubbleStyle"
   >
     <!-- 引用块：首行「引用 发送者：片段」，带 msg_id 时可点击跳转原消息 -->
@@ -134,7 +174,8 @@ async function openLink(href: string) {
       <span class="quote-text" :style="QUOTE_TEXT_STYLE">{{ parsed.quote }}</span>
     </div>
     <div
-      class="whitespace-pre-wrap break-words"
+      ref="contentEl"
+      class="gosslan-selectable whitespace-pre-wrap break-words"
       :style="{ wordBreak: 'break-word', ...clampStyle }"
     >
       <template v-for="(seg, i) in segments" :key="i">
@@ -149,6 +190,7 @@ async function openLink(href: string) {
           :src="seg.url"
           :alt="seg.value"
           :title="seg.value"
+          draggable="false"
           class="emoji-img"
         />
         <span
@@ -165,11 +207,11 @@ async function openLink(href: string) {
       class="mt-1.5 flex items-center gap-2 border-t pt-1.5"
       :style="{ borderColor: 'rgba(128,128,128,0.2)' }"
     >
-      <button class="text-xs opacity-70 transition hover:opacity-100" @click="emit('expand', content)">
+      <button class="tap-safe text-xs opacity-70 transition hover:opacity-100" @click="emit('expand', content)">
         {{ t("common.expand") }}
       </button>
       <button
-        class="flex items-center gap-1 whitespace-nowrap text-xs transition"
+        class="tap-safe flex items-center gap-1 whitespace-nowrap text-xs transition"
         :class="copied ? 'opacity-100' : 'opacity-70 hover:opacity-100'"
         @click="emit('copy', content)"
       >

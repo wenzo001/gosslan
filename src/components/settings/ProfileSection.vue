@@ -3,7 +3,7 @@ import { ref, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import SettingsGroup from "@/components/settings/SettingsGroup.vue";
-import { avatarInitial, nameToColor } from "@/utils/color";
+import { avatarInitial, avatarInitialLen, nameToColor } from "@/utils/color";
 import { Camera } from "lucide-vue-next";
 import { t } from "@/i18n";
 
@@ -23,6 +23,15 @@ function syncFromDevice() {
 watch(() => [props.active, props.reloadToken], () => {
   if (props.active) syncFromDevice();
 }, { immediate: true });
+/**
+ * 设备信息是**异步**到位的（`app.init()` / `updateProfile()` / 「恢复默认」都会改它），
+ * 只在 active/reloadToken 变化时同步会漏掉这些时刻 —— 独立设置窗口一开场
+ * 就会把空昵称、null 头像写进 ref，之后再不更新（用户看到"名字和头像不对劲"）。
+ * 用户**正在输入**时 device 不会变（保存后才变），因此这里不会覆盖未保存的编辑。
+ */
+watch(() => [app.device?.nickname, app.device?.avatar], () => {
+  if (props.active) syncFromDevice();
+});
 
 /** 昵称：失焦或回车即保存（即点即存，无「保存」按钮）。 */
 async function saveProfileNow() {
@@ -112,13 +121,19 @@ function processAvatar(file: File): Promise<string> {
     <div class="flex items-center gap-4 p-4">
       <!-- 头像：点击更换 -->
       <button
-        class="group relative h-16 w-16 shrink-0 overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
+        class="gosslan-avatar-box group relative h-16 w-16 shrink-0 overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
         :style="{ backgroundColor: nameToColor(nickname) }"
         :title="t('settings.profile.changeAvatar')"
+        :aria-label="t('settings.profile.changeAvatar')"
         @click="avatarInput?.click()"
       >
         <img alt="" v-if="avatar" :src="avatar" class="h-full w-full object-cover" />
-        <span v-else class="text-2xl font-semibold">{{ avatarInitial(nickname) }}</span>
+        <span
+          v-else
+          class="gosslan-avatar-initial text-2xl font-semibold"
+          :data-len="avatarInitialLen(nickname)"
+          >{{ avatarInitial(nickname) }}</span
+        >
         <span
           class="hover-reveal-op absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 transition group-hover:opacity-100"
         >
@@ -129,7 +144,7 @@ function processAvatar(file: File): Promise<string> {
       <div class="min-w-0 flex-1">
         <input
           v-model="nickname"
-          maxlength="30"
+          maxlength="40"
           class="w-full rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none transition focus:ring-2 focus:ring-primary"
           :placeholder="t('settings.profile.nickname.placeholder')"
           @blur="saveProfileNow"
@@ -143,8 +158,8 @@ function processAvatar(file: File): Promise<string> {
             {{ t("settings.profile.changeAvatar") }}
           </button>
           <span class="flex items-center gap-1.5 text-xs text-[var(--gosslan-text-2)]">
-            <span class="h-2 w-2 rounded-full" :class="app.online ? 'bg-[var(--gosslan-success)]' : 'bg-[var(--gosslan-status-offline)]'"></span>
-            {{ app.online ? t("settings.profile.online") : t("settings.profile.offline") }}
+            <span class="h-2 w-2 rounded-full" :class="app.present ? 'bg-[var(--gosslan-success)]' : 'bg-[var(--gosslan-status-offline)]'"></span>
+            {{ app.present ? t("settings.profile.online") : t("settings.profile.offline") }}
           </span>
         </div>
       </div>

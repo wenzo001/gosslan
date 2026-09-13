@@ -12,12 +12,48 @@ pub const UDP_PORT: u16 = 59991;
 pub const TCP_PORT: u16 = 59992;
 /// 单帧最大字节数（64MB）
 pub const MAX_FRAME: usize = 64 * 1024 * 1024;
+
+/// **预认证阶段**的单帧上限（Hello 帧远小于此：device_id + 公钥 + 签名 ≈ 数百字节）。
+///
+/// 为什么需要单独一个更小的上限：首帧由**任何**能连上 TCP 端口的主机发送，
+/// 而 `read_bytes` 会先 `vec![0u8; len]` 再读——声明 64MiB 只发 4 字节头即可让本机
+/// 先分配缓冲，且（在加超时之前）可以无限期挂在那里。预认证阶段收紧到 64KiB，
+/// 把这种"未验签就吃内存"的路子堵住；验签之后才按 `MAX_FRAME` 收。
+///
+/// 这是"我们拒收更大帧"，不改我们发出的字节 ⇒ 无 wire 兼容问题。
+pub const MAX_PREAUTH_FRAME: usize = 64 * 1024;
+
+/// 首帧（Hello）等待上限。超时即断开：对端 accept 后一个字节都不发、
+/// 或对端断电导致的半开连接，都不会再永久占着任务与 socket。
+pub const FIRST_FRAME_TIMEOUT_SECS: u64 = 10;
 /// 文件分片原始大小（256KB，base64 后约 342KB）
 pub const FILE_CHUNK: usize = 256 * 1024;
 /// 广播/发现周期（秒）
 pub const ANNOUNCE_INTERVAL_SECS: u64 = 5;
-/// 节点离线判定阈值（秒）
-pub const PEER_TIMEOUT_SECS: i64 = 15;
+/// 跨跳（无直连）节点离线判定阈值（秒）。
+///
+/// 跨跳节点没有直连 TCP，`last_seen` 只能靠 Presence（10s 周期）经中继转发刷新。
+/// 若沿用 15s，10s 周期只留 5s 余量，Tailscale 等高延迟中继一旦抖动，某次 Presence
+/// 迟到超过 15s 就被 `sweep_peers` 误删 → 在线状态「一会儿绿一会儿灰」。
+/// 45s ≈ 4.5 个 Presence 周期，给中继延迟留足余量；代价是跨跳节点真正离线后
+/// 最多约 45s 才判离线（可接受）。
+///
+/// 有直连 TCP 的节点不依赖本阈值：`sweep_peers` 用 `active_links` 直接豁免，
+/// 且连接断开时由 `mark_peer_offline` 立即移除（无需超时兜底）。
+pub const RELAY_PEER_TIMEOUT_SECS: i64 = 45;
+
+/// 当前平台的设备类型标识（"desktop" / "mobile"）。
+///
+/// 供 Hello / UserInfo / Presence 携带，让对端知道「我是电脑还是手机」。
+/// 它是**展示信息**（不参与签名、不绑定身份），旧端缺省时按空串处理。
+#[cfg(desktop)]
+pub fn current_device_type() -> &'static str {
+    "desktop"
+}
+#[cfg(mobile)]
+pub fn current_device_type() -> &'static str {
+    "mobile"
+}
 
 /// 消息内容类型
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -71,6 +107,23 @@ pub enum GossipKind {
     Group,
     /// 好友关系拦截通知（明文 JSON payload，携带 original_sender）
     FriendMessageBlocked,
+    /// 节点通告：周期广播自身身份，跨跳传播让全网节点互相可见（TOFU 语义）。
+    /// 明文（encrypted=false），payload 为 JSON（昵称 / 头像）。
+    Presence,
+    /// 好友申请（定向跨跳）：payload 为 E2EE 密文（用目标 X25519 公钥加密），
+    /// `target` 指定接收方 device_id；中间节点按 target 定向转发（一跳精确，
+    /// 无路由表时洪泛兜底）。
+    FriendRequest,
+    /// 好友申请同意（定向跨跳）：方向与 FriendRequest 相反，其余同理。
+    FriendAccept,
+    /// 单聊送达确认（定向跨跳）：接收方成功持久化某条单聊 Gossip 后回给原始发送方。
+    /// 明文（encrypted=false），payload 为 JSON `{"msg_id":"..."}`，`target` = 原始发送方。
+    /// 与直连 `Message::Ack` 语义一致，但可跨跳（跨 Tailscale 无直连时 Ack 到不了发送方）。
+    ChatAck,
+    /// 单聊已读回执（定向跨跳）：接收方读到某发送方消息后回执。明文，
+    /// payload 为 JSON `{"last_read_ts":n,"last_read_msg_id":"..."}`，`target` = 原始发送方。
+    /// 与直连 `Message::ReadReceipt` 语义一致，但可跨跳。
+    ChatReadReceipt,
 }
 
 /// Gossip 广播信封（Epidemic 协议消息体）。
@@ -111,6 +164,10 @@ pub struct GossipEnvelope {
     #[serde(default)]
     pub seq: i64,
     pub encrypted: bool,
+    /// 定向目标 device_id（仅 `FriendRequest` 使用；`None` = 广播）。
+    /// 参与签名，中间节点不可篡改目标；不参与 message_id（nonce 已保证唯一）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
 }
 
 impl GossipEnvelope {
@@ -144,6 +201,7 @@ impl GossipEnvelope {
             &self.ts,
             &self.seq,
             &self.encrypted,
+            &self.target,
         ))
         .unwrap_or_default()
     }
@@ -163,6 +221,9 @@ pub enum Message {
         device_id: String,
         nickname: String,
         avatar: Option<String>,
+        /// 设备类型（"desktop" / "mobile"，空串 = 旧端/未知）。展示信息，不参与签名。
+        #[serde(default)]
+        device_type: String,
         tcp_port: u16,
         x25519_pubkey: String,
         ed25519_pubkey: String,
@@ -186,6 +247,9 @@ pub enum Message {
         device_id: String,
         nickname: String,
         avatar: Option<String>,
+        /// 设备类型（"desktop" / "mobile"，空串 = 旧端/未知）。
+        #[serde(default)]
+        device_type: String,
     },
     /// 聊天样式同步：发送方广播自己的气泡/字体偏好，接收方持久化并按其偏好渲染该发送者的消息
     ChatStyle {
@@ -427,6 +491,74 @@ pub enum Message {
         sealed_file_key: String,
         file_sha256: String,
     },
+    // ---- Phase 8（ADR-0017）：外部 mesh（BitChat）的不透明帧 ----
+    /// 外部 mesh 的包：Gosslan **只当中继** —— 收得到 / 去得掉重 / TTL 递减后转发，
+    /// 不解密、不落库、不建用户/channel。`payload` 是原样字节的 base64。
+    ///
+    /// ⚠️ 决策更新（ADR-0017，用户裁定）：本版**不考虑旧版兼容**，
+    /// 所以不需要能力门控/双读窗口；但保留健壮性底线 —— 畸形/超限帧**只丢这一帧、不断链**
+    /// （见 [`validate_opaque_external`]）。
+    OpaqueExternal {
+        /// 外部帧的自有 id（仅用于去重；不进 Gosslan 的 message_id 体系）
+        id: String,
+        /// 剩余跳数（路由器会按自己的上限再裁剪一次）
+        ttl: u8,
+        /// 原样载荷（base64）
+        payload: String,
+    },
+}
+
+impl Message {
+    /// 诊断用：这条消息的**线格式类型名**（= `#[serde(tag = "type")]` 里的那个值）。
+    ///
+    /// 为什么从序列化结果反读、而不是手写一遍 `match`：`Message` 有 36 个变体，
+    /// 手写映射就是给协议加了**第二份事实来源** —— 将来新增变体时忘了同步，
+    /// 日志里会出现**错误的类型名**，比没有日志更坏（真机排查会被带偏）。
+    /// 这里永远与 serde 一致，代价是序列化一次；**只在错误/诊断路径**调用。
+    pub fn wire_kind(&self) -> String {
+        serde_json::to_value(self)
+            .ok()
+            .and_then(|v| v.get("type").and_then(|t| t.as_str()).map(str::to_string))
+            .unwrap_or_else(|| "未知类型".to_string())
+    }
+}
+
+/// 单个不透明外部帧的载荷上限（解码后字节）。取 256 KiB：足够装下 BitChat 的典型包
+/// （其 MTU 是几十~几百字节），又远小于 `MAX_FRAME`，不会成为内存放大入口。
+pub const MAX_OPAQUE_PAYLOAD: usize = 256 * 1024;
+/// 外部帧允许声明的最大 TTL（路由器另有自己的 `max_ttl` 再裁剪一层）。
+pub const MAX_OPAQUE_TTL: u8 = 16;
+/// 外部帧 id 的长度上限。
+pub const MAX_OPAQUE_ID: usize = 128;
+
+/// 校验不透明外部帧（**纯函数，主机可单测**）。
+///
+/// 返回解码后的原样字节；任何不合规都返回 `Err(原因)`，调用方**只丢这一帧**并记日志
+/// （这是 ADR-0017 决策更新里保留的那条底线：健壮性，不是兼容性）。
+pub fn validate_opaque_external(id: &str, ttl: u8, payload_b64: &str) -> Result<Vec<u8>, String> {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    if id.is_empty() || id.len() > MAX_OPAQUE_ID {
+        return Err(format!("id 长度非法（{}）", id.len()));
+    }
+    if !id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | ':'))
+    {
+        return Err("id 含非法字符".to_string());
+    }
+    if ttl == 0 || ttl > MAX_OPAQUE_TTL {
+        return Err(format!("ttl 非法（{ttl}）"));
+    }
+    let bytes = STANDARD
+        .decode(payload_b64)
+        .map_err(|e| format!("payload 不是合法 base64：{e}"))?;
+    if bytes.is_empty() {
+        return Err("payload 为空".to_string());
+    }
+    if bytes.len() > MAX_OPAQUE_PAYLOAD {
+        return Err(format!("payload 过大（{} 字节）", bytes.len()));
+    }
+    Ok(bytes)
 }
 
 /// Hello 帧的签名材料（版本前缀 + 全部连接身份字段）。
@@ -468,6 +600,48 @@ pub struct UdpPacket {
 
 #[cfg(test)]
 mod tests {
+    /// Phase 8（ADR-0017）：不透明外部帧的边界校验 —— **畸形/超限只丢该帧，不断链**。
+    #[test]
+    fn opaque_external_validation_bounds() {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        let ok = STANDARD.encode(b"bitchat-packet");
+        assert_eq!(
+            super::validate_opaque_external("pkt-1", 3, &ok).unwrap(),
+            b"bitchat-packet"
+        );
+        assert!(super::validate_opaque_external("pkt-1", 0, &ok).is_err());
+        assert!(super::validate_opaque_external("pkt-1", super::MAX_OPAQUE_TTL + 1, &ok).is_err());
+        assert!(super::validate_opaque_external("", 3, &ok).is_err());
+        assert!(super::validate_opaque_external(&"x".repeat(super::MAX_OPAQUE_ID + 1), 3, &ok).is_err());
+        assert!(super::validate_opaque_external("bad id!", 3, &ok).is_err());
+        assert!(super::validate_opaque_external("pkt-1", 3, "not base64!!").is_err());
+        assert!(super::validate_opaque_external("pkt-1", 3, "").is_err());
+        let huge = STANDARD.encode(vec![0u8; super::MAX_OPAQUE_PAYLOAD + 1]);
+        assert!(super::validate_opaque_external("pkt-1", 3, &huge).is_err());
+    }
+
+    /// 线格式必须能原样往返（Gosslan 不解码载荷，只透传）。
+    #[test]
+    fn opaque_external_round_trips_through_wire_format() {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        let payload = STANDARD.encode(vec![0u8, 1, 2, 250, 255]);
+        let msg = super::Message::OpaqueExternal {
+            id: "pkt-9".to_string(),
+            ttl: 5,
+            payload: payload.clone(),
+        };
+        let json = serde_json::to_vec(&msg).unwrap();
+        let back: super::Message = serde_json::from_slice(&json).unwrap();
+        match back {
+            super::Message::OpaqueExternal { id, ttl, payload: p } => {
+                assert_eq!(id, "pkt-9");
+                assert_eq!(ttl, 5);
+                assert_eq!(p, payload);
+            }
+            other => panic!("往返后类型变了：{other:?}"),
+        }
+    }
+
     use super::*;
 
     fn env() -> GossipEnvelope {
@@ -488,7 +662,116 @@ mod tests {
             ts: 123456,
             seq: 1,
             encrypted: true,
+            target: None,
         }
+    }
+
+    /// 好友申请（定向）信封：加密、签名、验签、解密、target 完整性。
+    #[test]
+    fn friend_request_envelope_encrypt_sign_decrypt_and_target_integrity() {
+        use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+        use crate::crypto::Identity;
+        use crate::gossip_engine::GossipEngine;
+
+        let a = Identity::generate();
+        let c = Identity::generate();
+        let engine = GossipEngine::new(100, 10, 4, 6);
+
+        // A 构造 FriendRequest（target=C，用 C 的 X25519 公钥加密内容）
+        let payload = r#"{"from_nickname":"Alice","from_avatar":null}"#;
+        let shared = crate::crypto::shared_secret(&a.x25519_secret, &c.x25519_public_b64())
+            .unwrap();
+        let sealed = crate::crypto::seal(&shared, payload.as_bytes()).unwrap();
+        let payload_b64 = B64.encode(&sealed);
+        let mut env = engine.build_envelope(
+            &a,
+            "dev-a",
+            GossipKind::FriendRequest,
+            None,
+            None,
+            &payload_b64,
+            123456,
+            0,
+        );
+        env.target = Some("dev-c".into());
+        env.sender_sig = a.sign_b64(&env.signing_bytes());
+
+        // 验签通过（target 参与签名）
+        assert!(engine.verify_envelope(&env));
+
+        // C 用自己的私钥解开内容
+        let shared2 = crate::crypto::shared_secret(&c.x25519_secret, &env.sender_pubkey).unwrap();
+        let pt = crate::crypto::open(&shared2, &B64.decode(&env.payload).unwrap()).unwrap();
+        assert_eq!(String::from_utf8(pt).unwrap(), payload);
+
+        // 中间节点篡改 target → 验签失败（target 不可篡改）
+        let mut tampered = env.clone();
+        tampered.target = Some("dev-eve".into());
+        assert!(!engine.verify_envelope(&tampered));
+
+        // target 序列化：None 不写键，Some 写入
+        let json_none = serde_json::to_string(&GossipEnvelope {
+            target: None,
+            ..env.clone()
+        })
+        .unwrap();
+        assert!(!json_none.contains("target"), "None 不应写 target 键: {json_none}");
+        let json_some = serde_json::to_string(&env).unwrap();
+        assert!(json_some.contains("dev-c"), "Some 应写 target: {json_some}");
+    }
+
+    /// ChatAck / ChatReadReceipt（定向、明文）信封：签名、验签、target 完整性、明文往返。
+    #[test]
+    fn chat_ack_and_read_receipt_plaintext_directed_envelope_integrity() {
+        use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+        use crate::crypto::Identity;
+        use crate::gossip_engine::GossipEngine;
+
+        let c = Identity::generate();
+        let engine = GossipEngine::new(100, 10, 4, 6);
+
+        // ChatAck：接收方 C 回给原始发送方 A，明文 { msg_id }
+        let ack_payload = r#"{"msg_id":"deadbeef"}"#;
+        let mut ack = engine.build_envelope(
+            &c,
+            "dev-c",
+            GossipKind::ChatAck,
+            None,
+            None,
+            &B64.encode(ack_payload.as_bytes()),
+            123456,
+            0,
+        );
+        ack.encrypted = false;
+        ack.target = Some("dev-a".into());
+        ack.sender_sig = c.sign_b64(&ack.signing_bytes());
+
+        // 验签通过（target 参与签名）
+        assert!(engine.verify_envelope(&ack));
+        // 明文：直接 base64 解码即可得到原始 JSON，无需解密
+        assert_eq!(B64.decode(&ack.payload).unwrap(), ack_payload.as_bytes());
+        // 篡改 target → 验签失败
+        let mut tampered = ack.clone();
+        tampered.target = Some("dev-eve".into());
+        assert!(!engine.verify_envelope(&tampered));
+
+        // ChatReadReceipt：定向明文，payload 含 last_read_ts / last_read_msg_id
+        let rr_payload = r#"{"last_read_ts":99,"last_read_msg_id":"m-1"}"#;
+        let mut rr = engine.build_envelope(
+            &c,
+            "dev-c",
+            GossipKind::ChatReadReceipt,
+            None,
+            None,
+            &B64.encode(rr_payload.as_bytes()),
+            123456,
+            0,
+        );
+        rr.encrypted = false;
+        rr.target = Some("dev-a".into());
+        rr.sender_sig = c.sign_b64(&rr.signing_bytes());
+        assert!(engine.verify_envelope(&rr));
+        assert_eq!(B64.decode(&rr.payload).unwrap(), rr_payload.as_bytes());
     }
 
     #[test]
@@ -565,6 +848,68 @@ mod tests {
         assert_eq!(MsgKind::Code.as_str(), "code");
     }
 
+    /// 诊断用的类型名必须与**线格式**一致（真机排查只认日志里这个词）。
+    ///
+    /// 为什么这条测试值得存在：BLE 握手失败时日志现在会写「对端首帧不是 Hello（收到 xxx）」，
+    /// `xxx` 就是 `wire_kind()` 的输出。若哪天有人把它改成手写 match 又漏了变体，
+    /// 这里会立刻红 —— 而不是等到真机上看着一个错误的类型名猜半天。
+    #[test]
+    fn wire_kind_matches_the_serde_tag() {
+        let hello = Message::Hello {
+            device_id: "dev-a".into(),
+            nickname: "A".into(),
+            avatar: None,
+            device_type: "desktop".into(),
+            tcp_port: 59992,
+            x25519_pubkey: "xk".into(),
+            ed25519_pubkey: "ek".into(),
+            conv_clock: 0,
+            nonce: "n1".into(),
+            sig: "sig".into(),
+        };
+        assert_eq!(hello.wire_kind(), "hello");
+        // 与真实序列化结果的 `type` 字段逐字一致（不是"看起来差不多"）
+        let v: serde_json::Value = serde_json::to_value(&hello).unwrap();
+        assert_eq!(v["type"], serde_json::json!("hello"));
+
+        assert_eq!(
+            Message::Heartbeat {
+                device_id: "dev-a".into()
+            }
+            .wire_kind(),
+            "heartbeat"
+        );
+    }
+
+    /// **协议事实**（ADR-0017 §2）：`Message` 是 `#[serde(tag = "type")]` 枚举，
+    /// 旧端收到未知 `type` 时反序列化**失败** ⇒ `read_frame` 返回 `InvalidData`
+    /// ⇒ `reader_loop` 视为坏帧并**断开整条连接**（不是"忽略一个包"）。
+    ///
+    /// 这条测试把该事实钉住：将来做 BitChat 中继（Phase 8）新增线格式变体时，
+    /// **必须**能力门控（只在对方声明支持后才发），否则混版本拓扑会直接断链。
+    /// 改这条测试（比如让未知变体被容忍）就等于改变兼容性契约 —— 需要 ADR。
+    #[test]
+    fn unknown_message_type_is_a_hard_parse_error() {
+        // ⚠️ 这里原先用 `opaque_external` 当"未知类型"的例子（当时它还没实现）。
+        // Phase 8 落地后它**已经是已知变体**，例子必须换成一个真正不存在的类型，
+        // 否则这条断言会因为"帧能解析成功"而失败 —— 顺手也说明：
+        // ADR-0017 的决策更新（本版不做旧版兼容）改变的是"要不要容忍未知类型"的**立场**，
+        // 没有改变**行为**：未知 type 依旧是硬解析错误，于是混版本拓扑会断链
+        // ⇒ 升级说明里必须写"所有设备一起升级"。
+        let unknown = br#"{"type":"some_future_kind","id":"x"}"#;
+        assert!(
+            serde_json::from_slice::<Message>(unknown).is_err(),
+            "未知 type 必须是硬错误（混版本会断链，所以升级必须整批进行）"
+        );
+        // 对照：已知变体必须能解析（否则上面那条断言会因为"全都解析失败"而变成空转）。
+        // `Heartbeat` 需要 `device_id`，这里给全字段。
+        let known = br#"{"type":"heartbeat","device_id":"dev-a"}"#;
+        assert!(
+            serde_json::from_slice::<Message>(known).is_ok(),
+            "对照用例必须能解析，否则上面的断言是空转（全都失败也算通过）"
+        );
+    }
+
     #[test]
     fn hello_signing_bytes_sensitive_to_every_field() {
         let base = hello_signing_bytes("dev-a", 59992, "n1", "xk", "ek");
@@ -589,6 +934,7 @@ mod tests {
             device_id: "dev-a".into(),
             nickname: "A".into(),
             avatar: None,
+            device_type: "desktop".into(),
             tcp_port: 59992,
             x25519_pubkey: "xk".into(),
             ed25519_pubkey: "ek".into(),
@@ -610,6 +956,34 @@ mod tests {
             Message::Hello { nonce, sig, .. } => {
                 assert!(nonce.is_empty() && sig.is_empty());
             }
+            _ => panic!("expect hello"),
+        }
+    }
+
+    /// device_type：序列化往返保持，旧 Hello 缺省为空串（旧端兼容，不参与签名）。
+    #[test]
+    fn hello_device_type_roundtrip_and_legacy_default() {
+        let hello = Message::Hello {
+            device_id: "a".into(),
+            nickname: "A".into(),
+            avatar: None,
+            device_type: "mobile".into(),
+            tcp_port: 1,
+            x25519_pubkey: "x".into(),
+            ed25519_pubkey: "e".into(),
+            conv_clock: 0,
+            nonce: "n".into(),
+            sig: "s".into(),
+        };
+        let json = serde_json::to_string(&hello).unwrap();
+        match serde_json::from_str::<Message>(&json).unwrap() {
+            Message::Hello { device_type, .. } => assert_eq!(device_type, "mobile"),
+            _ => panic!("expect hello"),
+        }
+        // 旧 Hello（无 device_type 字段）→ 缺省空串
+        let legacy = r#"{"type":"hello","device_id":"a","nickname":"A","avatar":null,"tcp_port":1,"x25519_pubkey":"x","ed25519_pubkey":"e","conv_clock":0}"#;
+        match serde_json::from_str::<Message>(legacy).unwrap() {
+            Message::Hello { device_type, .. } => assert!(device_type.is_empty()),
             _ => panic!("expect hello"),
         }
     }

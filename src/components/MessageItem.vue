@@ -9,6 +9,8 @@ import { useMessageDisplay } from "@/composables/useMessageDisplay";
 import { useMessageFile } from "@/composables/useMessageFile";
 import { useMemberProfile } from "@/composables/useMemberProfile";
 import { textNeedsClamp } from "@/utils/previewMetrics";
+import { haptic } from "@/utils/haptics";
+import { shouldStartLongPress, shouldSwallowLongPressRelease } from "@/utils/longPress";
 import { t } from "@/i18n";
 import MessageAvatar from "@/components/message/MessageAvatar.vue";
 import MessageTextBubble from "@/components/message/MessageTextBubble.vue";
@@ -19,7 +21,7 @@ import MessageReceipt from "@/components/message/MessageReceipt.vue";
 import MessageContentModal from "@/components/message/MessageContentModal.vue";
 import MessageContextMenu from "@/components/message/MessageContextMenu.vue";
 import ActionSheet from "@/components/ActionSheet.vue";
-import { Copy, CornerUpLeft, Save, Share2, ImageOff } from "lucide-vue-next";
+import { Copy, CornerUpLeft, Save, Share2, ImageOff, TextSelect } from "lucide-vue-next";
 import type { MessageRecord, MsgKind } from "@/types";
 
 const props = withDefaults(
@@ -109,6 +111,17 @@ const {
 } = useMessageFile(() => props.message, () => sendState.value);
 const { copiedKey, copyContent } = useClipboard();
 
+/**
+ * 复制文本并**给出反馈**（右键菜单与移动端操作面板用）。
+ * 这两处点完菜单立刻关闭，气泡上的"已复制"勾不会渲染（它只在长文本操作条里），
+ * 所以必须用 toast 告知结果 —— 否则用户以为没复制上，会反复长按。
+ * 气泡内联的复制按钮仍只靠自身勾选反馈（就在指尖，无需 toast 打扰）。
+ */
+async function copyTextWithToast(key: string, text: string) {
+  const ok = await copyContent(key, text);
+  app.toast(ok ? t("common.copied") : t("msg.copyFail"), ok ? "success" : "error");
+}
+
 /** 头像取色名：必须与列表/回执/弹层同源（昵称），否则同一人两处颜色分叉。
  *  群聊由父组件传 nicknameOf 结果；单聊在此兜一把，防止退化成按设备 ID 哈希。 */
 const avatarName = computed(() =>
@@ -165,6 +178,11 @@ watch(ctxMenuPopup.isActive, (mine) => {
 
 function openContextMenu(e: MouseEvent) {
   if (props.message.kind === "system") return;
+  // 移动端没有右键：长按走底部 ActionSheet。部分 WebView 在长按之后仍会补发
+  // `contextmenu`（也会在长按选中文字时弹系统菜单），若这里再弹一次，就会出现
+  // 「右键菜单 + ActionSheet」同时挂在屏幕上，而两者 claim 的是**同一个**互斥 key
+  // （`menu:${msg_id}`）⇒ 谁也无法通过互斥关掉对方。
+  if (app.isMobile) return;
   ctxMenu.value = { x: e.clientX, y: e.clientY };
   ctxMenuPopup.claim();
 }
@@ -177,7 +195,33 @@ function closeContextMenu() {
 // ---------------- 移动端长按 → 底部 Action Sheet（HIG：触屏用长按唤出上下文操作） ----------------
 // 桌面端走右键菜单（MessageContextMenu），移动端没有右键，用长按唤出底部操作面板。
 const sheetOpen = ref(false);
+/**
+ * 移动端「选择文字」模式（用户 2026-09-13）。
+ *
+ * 触屏下气泡**默认不可选**，长按一律弹消息菜单；"部分选字"是菜单里的一个二级入口
+ * —— 这是微信 / Telegram / WhatsApp / iMessage 的通行模型，也是唯一能同时要"长按必出菜单"
+ * 和"能选字"的做法（见 `style.css` 里 `@media (pointer: coarse)` 那段注释）。
+ */
+const textSelecting = ref(false);
 let longPressTimer: ReturnType<typeof setTimeout> | null = null;
+/** 长按起点：用来做"手指抖动容差"（见 `onTouchMove`）。 */
+let longPressOrigin: { x: number; y: number } | null = null;
+/**
+ * 长按那根手指是否还按着（面板就是这次按压弹出来的）。
+ *
+ * 用途只有一个：**吞掉抬手指那一下**（见 `swallowLongPressRelease`）。
+ * 放在 `touchstart` 置位、在 `touchend`/`touchcancel` 的**窗口捕获**处理里复位。
+ */
+let longPressHeld = false;
+/** 长按判定时长：与 iOS/微信一致（500ms 是 HIG 的常用值）。 */
+const LONG_PRESS_MS = 500;
+/**
+ * 手指抖动容差（px）。用户 2026-09-13：「长按触发的效果感觉不太灵」。
+ * 旧实现把 `@touchmove` 直接接到 `cancelLongPress` —— **手指动 1px 就取消**，
+ * 真机上几乎不可能"完全不动地按住 500ms"，于是长按十次九次不触发。
+ * 现在只有移动超过容差（或明显是滑动/滚动）才取消。
+ */
+const LONG_PRESS_MOVE_TOLERANCE = 12;
 
 function openActionSheet() {
   if (props.message.kind === "system") return;
@@ -190,12 +234,97 @@ function closeActionSheet() {
   sheetOpen.value = false;
 }
 
-function onTouchStart() {
-  if (!app.isMobile || props.message.kind === "system") return;
+/**
+ * 吞掉"弹面板那一下"的抬手事件。
+ *
+ * 根因（用户 2026-09-13 Android 实测「弹出 sheet 之后一放手立马就缩回去了」）：
+ * 面板是 HeadlessUI `Dialog`，它的 `useOutsideClick` 在 **document 捕获阶段** 挂了 `touchend`，
+ * 判据是"`touchend` 的 target 在不在对话框容器里" —— 而 touch 事件的 target 在
+ * **`touchstart` 那一刻就固定**成那条消息了，所以抬手必被判成"点了外面" ⇒ 立刻 `@close`。
+ *
+ * ⚠️ 监听**必须挂在 `window` 的捕获阶段**：HeadlessUI 挂的是 `document` 捕获，两者同阶段时
+ * 按注册顺序执行（它先注册，我们一定排在后面）；而捕获路径是 `window → document → … → target`，
+ * 只有挂 `window` 才抢得到它前面。它内部有 `if (e.defaultPrevented) return`，`preventDefault` 就够。
+ * 顺带也杀掉了这次 tap 的合成 `click`（不会误触气泡里的链接）。
+ */
+function swallowLongPressRelease(e: TouchEvent) {
+  if (!shouldSwallowLongPressRelease({ openedByHeldPress: longPressHeld, sheetOpen: sheetOpen.value })) {
+    longPressHeld = false;
+    return;
+  }
+  longPressHeld = false;
+  e.preventDefault();
+}
+
+/** 面板展开期间才需要拦（平时一次监听都不挂，避免影响滚动/其它手势）。 */
+watch(sheetOpen, (open) => {
+  if (open) {
+    window.addEventListener("touchend", swallowLongPressRelease, { capture: true, passive: false });
+    window.addEventListener("touchcancel", swallowLongPressRelease, { capture: true });
+  } else {
+    window.removeEventListener("touchend", swallowLongPressRelease, { capture: true });
+    window.removeEventListener("touchcancel", swallowLongPressRelease, { capture: true });
+    longPressHeld = false;
+  }
+});
+
+/** 进「选择文字」：关掉菜单 → 本条气泡开放原生选字（`MessageTextBubble` 会自动全选）。 */
+function enterTextSelect() {
+  closeActionSheet();
+  textSelecting.value = true;
+}
+
+/**
+ * 选区一消失就退出选择模式（用户点了别处、收起了系统手柄）。
+ * 不退出的后果：这条气泡一直"可选择"，下次长按又弹不出菜单（典型的状态残留）。
+ */
+function onSelectingChanged() {
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || sel.toString().length === 0) textSelecting.value = false;
+}
+watch(textSelecting, (on) => {
+  if (on) document.addEventListener("selectionchange", onSelectingChanged);
+  else document.removeEventListener("selectionchange", onSelectingChanged);
+});
+
+function onTouchStart(e: TouchEvent) {
+  cancelLongPress();
+  const el = e.target as HTMLElement | null;
+  // 判据全部收在 `utils/longPress.ts`（纯函数、有真值表单测）：
+  // 桌面走右键 / 系统消息没有菜单 / 「选择文字」模式让给系统手柄 /
+  // ⚠️ 触屏下**正文气泡里**的 `.gosslan-selectable` 不再让路 —— 它已经被
+  // `@media (pointer: coarse)` 关掉选中，而那个类还在 DOM 上，之前因此导致
+  // "按在文字上长按不弹、按到内边距才弹"（用户 2026-09-13 实测）。
+  const canStart = shouldStartLongPress({
+    isMobile: app.isMobile,
+    isSystem: props.message.kind === "system",
+    selectMode: textSelecting.value,
+    hitSelectable: !!el?.closest(".gosslan-selectable"),
+    insideTextBubble: !!el?.closest(".gosslan-bubble-text"),
+  });
+  if (!canStart) return;
+  const t0 = e.touches[0];
+  if (!t0) return;
+  longPressHeld = true;
+  longPressOrigin = { x: t0.clientX, y: t0.clientY };
   longPressTimer = setTimeout(() => {
     longPressTimer = null;
+    longPressOrigin = null;
+    // 触觉反馈：长按"到点了"必须有一下明确的反馈，否则用户会以为没生效而反复长按
+    // （`heavy` 的语义就是"长按菜单弹出"，见 utils/haptics.ts）
+    haptic("heavy");
     openActionSheet();
-  }, 500);
+  }, LONG_PRESS_MS);
+}
+
+/** 手指移动超过容差才取消长按（旧实现是"一动就取消"，真机上等于长按失灵）。 */
+function onTouchMove(e: TouchEvent) {
+  if (!longPressTimer || !longPressOrigin) return;
+  const t0 = e.touches[0];
+  if (!t0) return;
+  const dx = t0.clientX - longPressOrigin.x;
+  const dy = t0.clientY - longPressOrigin.y;
+  if (Math.hypot(dx, dy) > LONG_PRESS_MOVE_TOLERANCE) cancelLongPress();
 }
 
 function cancelLongPress() {
@@ -203,9 +332,15 @@ function cancelLongPress() {
     clearTimeout(longPressTimer);
     longPressTimer = null;
   }
+  longPressOrigin = null;
 }
 
-onBeforeUnmount(() => cancelLongPress());
+onBeforeUnmount(() => {
+  cancelLongPress();
+  // 窗口级监听不随组件卸载自动消失（它挂在 window 上），必须自己摘
+  window.removeEventListener("touchend", swallowLongPressRelease, { capture: true });
+  window.removeEventListener("touchcancel", swallowLongPressRelease, { capture: true });
+});
 
 /** 转发支持：与 MessageContextMenu 同一判据。 */
 function forwardable(k: MsgKind) {
@@ -289,6 +424,11 @@ const emit = defineEmits<{
 }>();
 
 function doQuote() {
+  // ⚠️ 必须收起**底部面板**（不只是桌面右键菜单）：用户 2026-09-13 安卓实测
+  // 「点『引用』之后那个 sheet 还挂在那儿」。引用会跳到输入框去操作，浮层留着就是挡路。
+  // `ActionSheet` 面板层已经统一做了"点任何一项即收起"，这里是**第二道保险**：
+  // 这两个动作是"跳到别处去操作"，即使以后面板的通用规则改了，也不该让 sheet 留在新界面上面。
+  closeActionSheet();
   closeContextMenu();
   const msg = props.message;
   emit("quote", {
@@ -307,6 +447,8 @@ function doForward() {
     // 文件转发按本地路径重走传输链路（内容里的 JSON 只是元信息）
     filePath: msg.kind === "file" ? (fileMeta.value?.path ?? "") : undefined,
   };
+  // 同上：转发会打开转发弹窗（跳转到界面内去操作），底部面板必须先收掉
+  closeActionSheet();
   closeContextMenu();
   emit("forward", payload);
 }
@@ -403,7 +545,7 @@ async function copyFileToClipboard() {
           @contextmenu.prevent="openContextMenu"
           @touchstart="onTouchStart"
           @touchend="cancelLongPress"
-          @touchmove="cancelLongPress"
+          @touchmove="onTouchMove"
           @touchcancel="cancelLongPress"
         >
           <MessageReceipt
@@ -425,6 +567,7 @@ async function copyFileToClipboard() {
             :copied="copiedKey === 'text'"
             :mine="mine"
             :mention-names="mentionNames"
+            :select-mode="textSelecting"
             @expand="openFullModal('text', $event)"
             @copy="copyContent('text', $event)"
             @locate="emit('locate', $event)"
@@ -489,7 +632,9 @@ async function copyFileToClipboard() {
             @download="onFileDownload"
           />
 
-          <div v-else class="px-3 py-2 text-sm" :style="bubbleStyle">
+          <!-- 未知 kind 的兜底气泡：排版必须与 MessageTextBubble 一致（py-1.5 / leading-normal），
+               否则虚拟列表按 `previewMetrics.TEXT_BUBBLE_PADDING` 估的高度会对不上。 -->
+          <div v-else class="select-text px-3 py-1.5 text-sm leading-normal" :style="bubbleStyle">
             {{ message.content }}
           </div>
         </div>
@@ -514,7 +659,7 @@ async function copyFileToClipboard() {
     :y="ctxMenu.y"
     :kind="message.kind"
     @close="closeContextMenu()"
-    @copy-text="closeContextMenu(); copyContent(message.kind === 'code' ? 'code' : 'text', message.content)"
+    @copy-text="closeContextMenu(); copyTextWithToast(message.kind === 'code' ? 'code' : 'text', message.content)"
     @copy-image="copyImage"
     @save-image="saveImage"
     @save-file="saveFileTo"
@@ -529,10 +674,23 @@ async function copyFileToClipboard() {
       <button
         v-if="message.kind === 'text' || message.kind === 'code'"
         class="flex items-center gap-3 px-4 py-3 text-left text-[15px] text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
-        @click="closeActionSheet(); copyContent(message.kind === 'code' ? 'code' : 'text', message.content)"
+        @click="closeActionSheet(); copyTextWithToast(message.kind === 'code' ? 'code' : 'text', message.content)"
       >
         <Copy class="h-5 w-5 text-[var(--gosslan-text-2)]" />
         {{ t("common.copy") }}
+      </button>
+      <!-- 「选择文字」：触屏下部分选字的**唯一入口**（长按已被消息菜单占用）。
+           Telegram 的 Select Text / iMessage 的再长按是同一个模型；微信则在菜单里直接"复制整条"。
+           进入后本条气泡开放原生选字并自动全选，系统工具条随即出现。
+           ⚠️ 只对 **text** 开放：代码气泡的可选元素在 `CodeBlock` 里，本轮没给它接选择模式，
+           给个点了没反应的入口比不给更糟。 -->
+      <button
+        v-if="message.kind === 'text'"
+        class="flex items-center gap-3 px-4 py-3 text-left text-[15px] text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
+        @click="enterTextSelect"
+      >
+        <TextSelect class="h-5 w-5 text-[var(--gosslan-text-2)]" />
+        {{ t("common.selectText") }}
       </button>
       <template v-if="message.kind === 'image'">
         <button

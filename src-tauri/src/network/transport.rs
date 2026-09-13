@@ -1,19 +1,25 @@
 //! TCP 消息传输与协议分发（含 Gossip 广播、中继切片、群密钥、E2EE 解密）。
 //!
 //! 连接建立规则（避免重复建链的竞态）：
-//! - 每个节点对，由 **device_id 字典序较小** 的一方主动拨号（dial），较大的一方只被动接受。
+//! - **已有连接就不拨**：`ensure_link` 只负责**连通性**（「和这个看得见的 peer 建立联系」），
+//!   只要该 peer 已有任意连接就短路返回 —— 否则被动方会因为端点表示不对称而反向再拨一条，
+//!   形成镜像重复连接（详见 `ensure_link` 的注释）。
+//! - 首次建链：默认由 **device_id 字典序较大** 的一方主动拨号（dial），较小的一方被动接受；
+//! - 较小的一方在「对端在线却迟迟连不上」（单向可达）时**兜底拨号**（见 `should_dial`）。
+//! - **多路径不由本模块负责**：一个 peer 同时持有多条连接（LAN + Routed + BLE）由各
+//!   Transport 自己的驱动产生（Routed 由配置驱动、BLE 由 BLE 发现驱动），它们都不经过
+//!   `ensure_link`。这里保持「连通性」与「多路径」关注点分离。
 //! - 双方各自维护一个出站 mpsc 发送端，读循环负责解析帧并分发。
 
 use std::collections::{HashMap, HashSet};
-use std::net::Ipv4Addr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use rusqlite::params;
 use tauri::Emitter;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, watch};
 use tokio::time::Duration;
@@ -23,10 +29,15 @@ use crate::commands::{is_virtual_ip, MAX_GROUP_NAME_LEN};
 use crate::crypto;
 use crate::db;
 use crate::network::file;
-use crate::protocol::{hello_signing_bytes, GossipEnvelope, GossipKind, Message, MsgKind, MAX_FRAME};
+use crate::protocol::{hello_signing_bytes, GossipEnvelope, GossipKind, Message, MsgKind};
 use crate::state::{
-    AppState, FileDoneInfo, FileFailedInfo, FileProgress, MessageRecord, Peer, PendingRequest,
+    AppState, FileDoneInfo, FileFailedInfo, FileProgress, Link, LinkState, MessageRecord, Peer,
+    PendingRequest,
 };
+use crate::mesh::router::{ForwardDecision, MeshDestination, MeshFrame, MeshFrameKind};
+use crate::discovery::routed::{parse_endpoints, ROUTED_ENDPOINTS_KEY};
+use crate::mesh::{Endpoint as MeshEndpoint, PathKind, PeerCandidate, PeerIdentity, PeerOnlineState};
+use crate::transport::tcp::{TcpReceiver, TcpSender};
 
 /// 字符串 IP 是否为虚拟地址（用于 peers 表中已存储的 IP 字符串判断）。
 fn is_virtual_ip_str(ip_str: &str) -> bool {
@@ -41,30 +52,21 @@ fn is_virtual_ip_str(ip_str: &str) -> bool {
 pub async fn write_frame<W: AsyncWrite + Unpin>(w: &mut W, msg: &Message) -> std::io::Result<()> {
     let json = serde_json::to_vec(msg)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    if json.is_empty() || json.len() > MAX_FRAME || json.len() > u32::MAX as usize {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "帧过大",
-        ));
-    }
-    let len = json.len() as u32;
-    w.write_all(&len.to_be_bytes()).await?;
-    w.write_all(&json).await?;
-    Ok(())
+    // 分帧（4 字节大端长度 + payload）与长度校验统一交给 bytes 层，
+    // 业务侧只负责序列化 —— 单一真相源见 `transport::tcp`（P-A03）。
+    crate::transport::tcp::write_bytes(w, &json).await
 }
 
 pub async fn read_frame<R: AsyncRead + Unpin>(r: &mut R) -> std::io::Result<Message> {
-    let mut len_buf = [0u8; 4];
-    r.read_exact(&mut len_buf).await?;
-    let len = u32::from_be_bytes(len_buf) as usize;
-    if len == 0 || len > MAX_FRAME {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "非法帧长度",
-        ));
-    }
-    let mut buf = vec![0u8; len];
-    r.read_exact(&mut buf).await?;
+    // 同上：解帧与长度校验由 bytes 层负责，这里只做业务反序列化。
+    let buf = crate::transport::tcp::read_bytes(r).await?;
+    serde_json::from_slice(&buf)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+}
+
+/// 预认证阶段读首帧：上限收紧到 `MAX_PREAUTH_FRAME`（未验签的连接不得要求大缓冲）。
+async fn read_frame_preauth<R: AsyncRead + Unpin>(r: &mut R) -> std::io::Result<Message> {
+    let buf = crate::transport::tcp::read_bytes_capped(r, crate::protocol::MAX_PREAUTH_FRAME).await?;
     serde_json::from_slice(&buf)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
@@ -84,30 +86,243 @@ fn is_bulk_message(msg: &Message) -> bool {
     )
 }
 
-/// 尝试通过已建立连接发送消息；无连接则返回 Err。
-pub async fn try_send(state: &AppState, peer_id: &str, msg: &Message) -> Result<(), String> {
-    if is_bulk_message(msg) {
-        let links = state.links.lock().await;
-        match links.get(peer_id) {
-            Some(tx) => tx.send(msg.clone()).await.map_err(|e| e.to_string()),
-            None => Err("未建立连接".to_string()),
-        }
-    } else {
-        let links = state.priority_links.lock().await;
-        match links.get(peer_id) {
-            Some(tx) => tx.send(msg.clone()).await.map_err(|e| e.to_string()),
-            None => Err("未建立连接".to_string()),
+/// 计算一次发送要按什么顺序尝试各条链路（纯函数，便于单测 + 护栏非空转）。
+///
+/// ## 为什么需要「按端点对齐」这一层
+/// mesh 层（`Connection`）与传输层（`Link`）是**两套**链路表，且**不保证 1:1 同序**：
+/// `handle_incoming` 追加 `Link` 时**不做端点去重**，而 `upsert_connection` 按端点去重；
+/// 两者还有各自的登记/清理窗口。所以 `pick_link` 返回的**下标绝不能直接拿去索引 `Link`**
+/// —— 必须用端点把 mesh 连接映射回传输链路。这正是复核里点名的坑。
+///
+/// ## 缺候选时怎么办（登记窗口）
+/// 传输链路存在、mesh 侧还没登记（或刚被清理）时**合成一条「刚播种」的候选**，
+/// 当作健康处理：它是一条**我们刚接受/建立的真实 TCP 连接**，不能因为登记窗口而
+/// 被判不可用。反过来 mesh 侧多出来的连接（传输已清理）不参与排序。
+///
+/// 返回：`links` 的下标序列，按「优先尝试」排序。全部不健康时 `pick_link` 会退回
+/// 首条（保持可用），其余链路仍然排在后面做 failover。
+fn route_order(
+    links: &[crate::state::Link],
+    peer_id: &str,
+    conns: &[crate::mesh::Connection],
+    now_ms: i64,
+    health_timeout_ms: i64,
+    max_failures: u32,
+) -> Vec<usize> {
+
+    // 与 `links` 同序的候选：能按端点命中就用真实健康信息，否则合成「刚播种」候选。
+    let candidates: Vec<crate::mesh::Connection> = links
+        .iter()
+        .map(|l| {
+            let ep = l.endpoint.clone();
+            if let Some(c) = conns.iter().find(|c| c.endpoint == ep) {
+                c.clone()
+            } else {
+                let mut fresh = crate::mesh::Connection::new(peer_id, ep, l.path_kind);
+                fresh.health.seed_read_seen(now_ms);
+                fresh
+            }
+        })
+        .collect();
+
+    let Some(best) = crate::mesh::pick_link(&candidates, now_ms, health_timeout_ms, max_failures)
+    else {
+        return Vec::new();
+    };
+    // 选中的排最前，其余保持插入序做 failover。
+    let mut order: Vec<usize> = Vec::with_capacity(candidates.len());
+    order.push(best);
+    for i in 0..candidates.len() {
+        if i != best {
+            order.push(i);
         }
     }
+    order
+}
+
+/// `try_send` 第一轮全部遇到「信道满」时的**有界**补试时长。
+///
+/// 之所以不是直接 `Err`：信道满只说明对端这一拍消费不过来（writer 正在写 TCP），
+/// 短暂等待通常能成功，直接失败会让上层误判「发送失败」。
+/// 之所以有界：无界等待会在对端僵死时**永久挂起**调用方（复核确认的真实缺陷）。
+const SEND_QUEUE_FULL_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// 尝试通过已建立连接发送消息；无连接则返回 Err。
+///
+/// 一个 peer 可能有多条连接（LAN + Tailscale + BLE）：**依次尝试**。
+/// 某条连接已断（channel 关闭 → send 失败）就自动换下一条 —— 这是连接级 failover。
+/// 任一连接成功即返回，所以消息仍然只发出一次（单连接场景下与改造前等价）。
+///
+/// ## 顺序由选路决定（M3-b）
+/// 自 M3-b 起，尝试顺序不再等于插入顺序，而是 `route_order` 给出的顺序：
+/// **活性过滤 + 路径优先级 LAN > Routed > Bluetooth + 稳定序打破平局**（ADR-0014 §3.2，
+/// `mesh::selection::pick_link`）。单链路时顺序无变化（行为零变化）。
+///
+/// ## 为什么先快照 Sender 再发送（而不是持锁发送）
+///
+/// `state.links` 是**全局**连接表：建链登记、读循环清理、`has_link`/`ensure_link`、
+/// 心跳、所有 peer 的发送都要拿它。原先这里在**持锁**状态下 `tx.send(..).await` ——
+/// mpsc 容量有限（1024），一条拥塞/僵死的链路会让 `send` **挂起**（而不是返回 Err），
+/// 于是：① 整张连接表被锁住，别人的建链/清理/发送全部阻塞；② 本函数的「换下一条」
+/// 永远走不到（只有 channel **关闭**才返回 Err）。
+/// 快照只克隆 `mpsc::Sender`（廉价、可 clone），锁在 await 之前就释放。
+///
+/// ## 两轮发送（复核确认的 High 缺陷的修法）
+///
+/// 第一轮**全部用非阻塞 `try_send`**：`Closed` / `Full` 都只意味着「这一条现在不行」，
+/// 立刻换下一条。这样「信道满」也能触发 failover —— 原实现只有 `Closed` 才换。
+/// 若所有链路都满（对端普遍消费不过来），才对**第一条满的**做一次有界补试
+/// （`SEND_QUEUE_FULL_TIMEOUT`），超时即返回 Err，**绝不无限挂起**。
+/// 注意：`Err` 不代表消息丢了 —— 单聊消息在 `send_message` 里已先入 outbox，
+/// 由 Hello/心跳触发 `flush_outbox` 补发（这是既有契约）。
+/// 按给定顺序尝试把消息投进各连接的 mpsc；任一成功即返回。
+///
+/// 抽成独立函数的唯一目的是**可测**：failover（「被选中那条断了 → 下一条仍送达」）
+/// 是 M3-b 的核心承诺，但它埋在 `try_send` 里、要先构造 `AppState` 才能验证。
+/// 这里只依赖「若干对 Sender + 一个顺序」，于是可以用真实 mpsc 信道直接钉死：
+/// 关掉被选中那条的接收端、断言消息落到了下一条。
+///
+/// 两轮策略（复核确认的 High 缺陷的修法）：
+/// ① 第一轮全用**非阻塞** `try_send`：`Closed` / `Full` 都只说明「这一条现在不行」，
+///    立刻换下一条 —— 原实现只有 `Closed` 才换，信道满会**挂起**（并锁死调用方）；
+/// ② 全部为 `Full` 时才对该条做**有界**补试（`SEND_QUEUE_FULL_TIMEOUT`），超时即 `Err`。
+async fn send_over_order(
+    senders: &[(mpsc::Sender<Message>, mpsc::Sender<Message>)],
+    order: &[usize],
+    msg: &Message,
+    bulk: bool,
+) -> Result<(), String> {
+    let mut last_err = "未建立连接".to_string();
+    let mut first_full: Option<&mpsc::Sender<Message>> = None;
+    for &i in order {
+        let Some((bulk_tx, prio_tx)) = senders.get(i) else { continue };
+        let tx = if bulk { bulk_tx } else { prio_tx };
+        match tx.try_send(msg.clone()) {
+            Ok(()) => return Ok(()),
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                last_err = "连接已关闭".to_string();
+            }
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                if first_full.is_none() {
+                    first_full = Some(tx);
+                }
+            }
+        }
+    }
+    if let Some(tx) = first_full {
+        return match tokio::time::timeout(SEND_QUEUE_FULL_TIMEOUT, tx.send(msg.clone())).await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => Err(e.to_string()),
+            Err(_) => Err("发送队列已满（对端消费不过来）".to_string()),
+        };
+    }
+    Err(last_err)
+}
+
+/// 尝试通过已建立连接发送消息；无连接则返回 Err。
+pub async fn try_send(state: &AppState, peer_id: &str, msg: &Message) -> Result<(), String> {
+    // ① 锁作用域内只做「取 + 克隆」，不 await（锁跨 await 会让一条拥塞链路锁死全表）。
+    let links: Vec<crate::state::Link> = {
+        let g = state.links.lock().await;
+        match g.get(peer_id) {
+            Some(l) if !l.is_empty() => l.clone(),
+            _ => return Err("未建立连接".to_string()),
+        }
+    };
+
+    // ② 取健康阈值与 mesh 连接（两把锁分别取，不嵌套）。
+    let (health_timeout_ms, max_failures) = {
+        let pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
+        (pm.health_timeout_ms(), pm.max_failures())
+    };
+    let conns: Vec<crate::mesh::Connection> = {
+        let pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
+        pm.get(peer_id).map(|p| p.connections().to_vec()).unwrap_or_default()
+    };
+    // ③ 选路（M3-b）：按**端点**对齐两套链路表后交给 `pick_link`，返回发送顺序。
+    let order = route_order(&links, peer_id, &conns, db::now_ms(), health_timeout_ms, max_failures);
+
+    // ④ 按选路顺序投递（两轮策略见 `send_over_order`）。
+    let senders: Vec<(mpsc::Sender<Message>, mpsc::Sender<Message>)> =
+        links.iter().map(|l| (l.bulk.clone(), l.priority.clone())).collect();
+    send_over_order(&senders, &order, msg, is_bulk_message(msg)).await
 }
 
 /// 向所有已连接节点广播一条 Gossip 消息。
 pub async fn broadcast_gossip(state: &AppState, envelope: GossipEnvelope) {
-    let msg = Message::Gossip { envelope };
-    let links = state.priority_links.lock().await;
-    for tx in links.values() {
+    let msg = Message::Gossip {
+        envelope: envelope.clone(),
+    };
+
+    // 与 `try_send` 同理：锁内只做决策 + 克隆 Sender，发送一律在锁外。
+    // 原来在持有 `links` 锁时 `send().await`，一条拥塞链路会锁死整张连接表。
+    let targets: Vec<mpsc::Sender<Message>> = {
+        let links = state.links.lock().await;
+        // 出站目标经 MeshRouter 裁决（§18 source exclusion）。
+        //
+        // 这里刻意用 `exclude_source` 而**不是** `select_outgoing`：后者带 fanout 截断，
+        // 只适用于**转发**（§20 控制风暴）。源发必须覆盖所有直连节点，一旦截断，
+        // 连接数超过 fanout 的节点就会收不到 —— 群消息静默漏发。
+        let candidates: Vec<String> = links.keys().cloned().collect();
+        let picked = {
+            let router = state.mesh_router.lock().unwrap_or_else(|e| e.into_inner());
+            router.exclude_source(&candidates, &envelope.sender_id)
+        };
+        // 每个 peer 仍取第一条（M3-d 才改为按策略选路），但只克隆 Sender。
+        picked
+            .iter()
+            .filter_map(|peer| links.get(*peer).and_then(|v| v.first()).map(|l| l.priority.clone()))
+            .collect()
+    };
+
+    for tx in &targets {
         let _ = tx.send(msg.clone()).await;
     }
+}
+
+/// 广播一次 Presence：携带自身昵称/头像，靠 Gossip fan-out 跨跳传播。
+///
+/// 与 announce 的区别：announce 是 UDP 单跳、只覆盖本地网段；Presence 走
+/// Gossip 广播（ttl 衰减 + fan-out 转发），能穿过中继节点让 A→B→C 里 A 也
+/// 「看到」C。这是「去中心化、节点即服务器」发现层的第一块拼图。
+async fn broadcast_presence(state: &Arc<AppState>) {
+    let nickname = state
+        .nickname
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let avatar = state
+        .avatar
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    // payload：明文 JSON（昵称/头像/设备类型）。身份与双公钥已在 GossipEnvelope 字段里。
+    let payload = serde_json::json!({
+        "nickname": nickname,
+        "avatar": avatar,
+        "device_type": crate::protocol::current_device_type(),
+    })
+    .to_string();
+    let payload_b64 = STANDARD.encode(payload.as_bytes());
+
+    let mut env = {
+        let gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
+        gossip.build_envelope(
+            &state.identity,
+            &state.device_id,
+            GossipKind::Presence,
+            None,
+            None,
+            &payload_b64,
+            db::now_ms(),
+            0,
+        )
+    };
+    // Presence 是公开的节点身份通告，明文。`signing_bytes()` 覆盖 `encrypted`，
+    // 改后必须重签（与 FriendMessageBlocked 同模式）。
+    env.encrypted = false;
+    env.sender_sig = state.identity.sign_b64(&env.signing_bytes());
+    broadcast_gossip(state, env).await;
 }
 
 // ---------------- 服务启动 ----------------
@@ -148,8 +363,14 @@ pub async fn spawn(
         }
         Err(e) => return Err(format!("TCP 绑定 {bind} 失败: {e}")),
     };
+    // 两个后台任务都要用 state / shutdown，且 `async move` 会把它们移进闭包，
+    // 因此必须在 accept_task 之前把所有副本准备好。
     let state_for_heartbeat = state.clone();
     let shutdown_for_heartbeat = shutdown.clone();
+    let state_for_routed = state.clone();
+    let shutdown_for_routed = shutdown.clone();
+    let state_for_presence = state.clone();
+    let shutdown_for_presence = shutdown.clone();
     let accept_task = tokio::spawn(async move {
         loop {
             tokio::select! {
@@ -157,9 +378,22 @@ pub async fn spawn(
                 _ = shutdown.changed() => break,
                 accept = listener.accept() => {
                     let Ok((stream, peer_addr)) = accept else { continue };
+                    // **入站连接上限**：没有它，一台主机可以无限建连（每个连接 2 个 1024
+                    // 容量信道 + 2 个任务）。拿不到许可就直接 drop stream（等价于拒绝），
+                    // 不排队 —— 排队只会把资源消耗推迟到以后。
+                    let Ok(permit) = state.inbound_permits.clone().try_acquire_owned() else {
+                        continue;
+                    };
                     let st = state.clone();
                     let sd = shutdown.clone();
-                    tokio::spawn(handle_incoming(st, stream, peer_addr, sd));
+                    // 捕获**接受时刻**的世代：握手可能持续数秒，期间用户可能切换网卡
+                    // （stop→start）。旧世代的任务握手成功后**不允许**登记链路。
+                    let generation = state.network_generation();
+                    tokio::spawn(async move {
+                        // permit 随任务存活：连接结束（函数返回）才释放
+                        let _permit = permit;
+                        handle_incoming(st, stream, peer_addr, sd, generation).await;
+                    });
                 }
             }
         }
@@ -170,22 +404,219 @@ pub async fn spawn(
     let heartbeat_task = tokio::spawn(async move {
         let state = state_for_heartbeat;
         let mut shutdown = shutdown_for_heartbeat;
-        let mut tick = tokio::time::interval(Duration::from_secs(5));
+        let mut tick = tokio::time::interval(Duration::from_secs(HEARTBEAT_INTERVAL_SECS));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // 拥塞告警限频（心跳每 5s 一轮，不限频会把日志刷满）。
+        let mut last_congestion_warn = std::time::Instant::now() - Duration::from_secs(60);
+        loop {
+            tokio::select! {
+                biased;
+                _ = shutdown.changed() => break,
+                _ = tick.tick() => {
+                    // 与 `try_send`/`broadcast_gossip` 同理：心跳每 5s 给**每条**链路发一次，
+                    // 若持 `links` 锁 await，一条拥塞链路会把整张连接表连同心跳一起卡住。
+                    // 锁内只克隆 Sender。
+                    let txs: Vec<mpsc::Sender<Message>> = {
+                        let links = state.links.lock().await;
+                        links.values().flatten().map(|l| l.priority.clone()).collect()
+                    };
+                    let hb = Message::Heartbeat { device_id: state.device_id.clone() };
+                    let mut congested = 0usize;
+                    for tx in &txs {
+                        // **非阻塞**发送：心跳是"可丢弃"的活性信号，不值得为它排队等待。
+                        // 复核发现的原实现缺陷：串行 `send().await` ⇒ 一条满信道会**推迟
+                        // 给其后所有链路的心跳**，对端读活性随之过期，被判成"不健康"
+                        // —— 一条拥塞链路能伪造出全网链路故障。
+                        if tx.try_send(hb.clone()).is_err() {
+                            congested += 1;
+                        }
+                    }
+                    // 拥塞是"可能出错"的关键状态跃迁：限频记录（30s 一次），
+                    // 否则每 5s 一条会把日志刷满（logging 规范：只记可能出错的）。
+                    if congested > 0 && last_congestion_warn.elapsed() >= Duration::from_secs(30) {
+                        last_congestion_warn = std::time::Instant::now();
+                        state.logger.warn(
+                            "mesh",
+                            format!(
+                                "heartbeat 丢弃 {congested}/{} 条 —— 发送队列已满（对端消费不过来）",
+                                txs.len()
+                            ),
+                        );
+                    }
+
+                    // ---- 死链路拆除（M3#6）----
+                    //
+                    // 半开 TCP（对端消失、本机内核仍收写）上：读循环**永久阻塞**、
+                    // `Link` 一直留在表里 ⇒ `ensure_link` 认为已连通不再重拨；
+                    // 而 `try_send` 只把消息投进 mpsc 就返回 `Ok` ⇒ 前端显示「已发送」，
+                    // 消息却**静默投进死路**（outbox 也不会被触发补发，因为没有任何入站帧）。
+                    //
+                    // 判据刻意保守：读活性要跨过 **3 × 健康超时**（15s × 3 = 45s）才算死。
+                    // 健康连接每 5s 必有一次入站心跳，所以正常链路**永远不会**落到这里；
+                    // 只有真正半开/僵死的连接会被拆。拆掉后下一轮 announce（≤5s）即可重拨。
+                    let stale_ms = {
+                        let pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
+                        pm.health_timeout_ms().saturating_mul(3)
+                    };
+                    let reaped = {
+                        let pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
+                        let max_failures = pm.max_failures();
+                        pm.stale_connections(db::now_ms(), stale_ms, max_failures)
+                    };
+                    for (peer, ep) in reaped {
+                        // ⚠️ 不再 `let MeshEndpoint::Tcp(addr) = ep else { continue }`：
+                        // 那样**非 TCP 端点（BLE）永远拆不掉**，死链路会永久占着选路候选。
+                        //
+                        // 身份口径统一到 **channel**（`same_channel`），与 `reader_loop`
+                        // 收尾时一致：按端点定位/删除时，若同一端点存在两条（历史上确实
+                        // 出现过镜像连接），`find` 只取消第一条、`retain` 却删掉两条 ——
+                        // 剩下那条的 socket 与读写任务变成孤儿（既不收 cancel 也不注销）。
+                        let bulk = {
+                            let links = state.links.lock().await;
+                            links
+                                .get(&peer)
+                                .and_then(|v| v.iter().find(|l| l.endpoint == ep))
+                                .map(|l| (l.bulk.clone(), l.cancel.clone()))
+                        };
+                        let Some((bulk, cancel)) = bulk else { continue };
+                        // ① 精确取消这一条连接的读写任务（半开的读只有它能打断）。
+                        let _ = cancel.send(true);
+                        // ② 从传输链路表移除（空 Vec 连 key 一起删），让 `ensure_link` 能重拨。
+                        {
+                            let mut links = state.links.lock().await;
+                            if let Some(v) = links.get_mut(&peer) {
+                                v.retain(|l| !l.bulk.same_channel(&bulk));
+                                if v.is_empty() {
+                                    links.remove(&peer);
+                                }
+                            }
+                        }
+                        // ③ 同步 mesh 层（读循环收尾时也会做一次，这里是幂等的）。
+                        unregister_connection(&state, &peer, &ep);
+                        state.logger.warn(
+                            "mesh",
+                            format!(
+                                "-conn peer={peer} ep={ep} 读活性超过 {}s 无入站帧 ⇒ 拆除死链路并等待重拨",
+                                stale_ms / 1000
+                            ),
+                        );
+                    }
+                }
+            }
+        }
+    });
+
+    // 节点通告（Presence）：周期广播自身身份，跨跳传播让全网节点互相可见。
+    //
+    // 这是「去中心化、节点即服务器」的第一块拼图：announce 是 UDP 单跳、只覆盖
+    // 本地网段；Presence 走 Gossip fan-out（ttl 衰减）跨跳扩散，让 A→B→C 链式
+    // 拓扑里 A 也能「看到」C（经 B 转发）。接收侧按 TOFU 记录远端节点（见
+    // handle_gossip 的 Presence 分支）。
+    let presence_task = tokio::spawn(async move {
+        let state = state_for_presence;
+        let mut shutdown = shutdown_for_presence;
+        // 周期必须**明显小于**跨跳节点超时（RELAY_PEER_TIMEOUT_SECS=45s）：跨跳节点
+        // 没有直连 TCP，全靠 Presence 刷新 last_seen 保活。取 10s（4.5 个周期），
+        // 给 Tailscale 等高延迟中继的转发抖动留足余量 —— 早期 30s 周期 + 15s 超时
+        // 导致节点「出现 15s、消失 15s」，表现为「扫好几次才扫到」且 FriendAccept
+        // 静默丢。跨跳超时已放宽（见 sweep_peers），此处 10s 远小于 45s。
+        let mut tick = tokio::time::interval(Duration::from_secs(10));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                biased;
+                _ = shutdown.changed() => break,
+                _ = tick.tick() => broadcast_presence(&state).await,
+            }
+        }
+    });
+
+    // 跨子网（Routed）端点拨号：手动配置的端点周期性重试，直到连上。
+    //
+    // 每次循环都重新读配置 —— 这样运行时新增的端点无需重启即可生效。
+    // 与 LAN 广播发现不同，这里是**配了就拨**（原因见循环内的注释），
+    // 因此只需单侧配置即可建链，不必指望 ID 大小恰好合适的那一边。
+    let routed_task = tokio::spawn(async move {
+        let state = state_for_routed;
+        let mut shutdown = shutdown_for_routed;
+        let mut tick = tokio::time::interval(Duration::from_secs(10));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             tokio::select! {
                 biased;
                 _ = shutdown.changed() => break,
                 _ = tick.tick() => {
-                    let links = state.priority_links.lock().await;
-                    for tx in links.values() {
-                        let _ = tx.send(Message::Heartbeat { device_id: state.device_id.clone() }).await;
+                    let list = {
+                        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                        parse_endpoints(
+                            &db::get_setting(&dbc, ROUTED_ENDPOINTS_KEY).unwrap_or_default(),
+                        )
+                    };
+                    // 并发拨号：一个「黑洞」端点不能把同一轮里的其他端点拖住。
+                    let mut dials = tokio::task::JoinSet::new();
+                    for ep in list {
+                        // 解析失败**必须留痕**：用户配置了东西却什么都不发生时，
+                        // 这条日志是唯一的线索（此前是静默 `continue`）。
+                        let Some(addr) = ep.socket_addr() else {
+                            state.logger.warn(
+                                "routed",
+                                format!(
+                                    "跳过无法解析的地址 peer={} address={:?}",
+                                    ep.display_id(),
+                                    ep.address
+                                ),
+                            );
+                            continue;
+                        };
+                        // 刻意**不走** `ensure_link`：那条路径带「只有小 device_id 拨号」
+                        // 的规则，用于避免 LAN 广播发现时两端同时拨号。但 Routed 端点
+                        // 是用户显式配置的明确意图，50% 概率会因 ID 大小被静默跳过，
+                        // 表现为「配了却连不上且无任何提示」。这里直接拨号。
+                        //
+                        // 去重**只在** `connect_to_peer` 里做（按身份，或身份未知时按端点）——
+                        // 「同一判断两处实现、行为还不一致」是这个项目踩过的坑。
+                        // `device_id` 可省略（`None` = 身份由握手学），见 `RoutedEndpoint`。
+                        let state = state.clone();
+                        let shutdown = shutdown.clone();
+                        dials.spawn(async move {
+                            match connect_to_peer(
+                                &state,
+                                ep.device_id.as_deref(),
+                                addr,
+                                PathKind::Routed,
+                                shutdown,
+                            )
+                            .await
+                            {
+                                DialOutcome::Connected => {
+                                    state.logger.info(
+                                        "routed",
+                                        format!("已连上 peer={} ep={addr}", ep.display_id()),
+                                    )
+                                }
+                                // 每 10s 一轮的常态：端点已有连接 / 已有拨号在途 / 并发已满，静默。
+                                DialOutcome::AlreadyConnected
+                                | DialOutcome::AlreadyDialing
+                                | DialOutcome::DialBusy => {}
+                                DialOutcome::Failed(e) => state.logger.warn(
+                                    "routed",
+                                    format!("拨号未成功 peer={} ep={addr}：{e}", ep.display_id()),
+                                ),
+                                // 正常停机：不打日志，否则退出时会多出一批误导性的「失败」
+                                DialOutcome::Stopped => {}
+                            }
+                        });
                     }
+                    // **必须排空**：`JoinSet` 被 drop 时会立刻 abort 掉所有未完成任务，
+                    // 不等就永远拨不完。排空也顺带保证「单轮耗时 < tick 间隔」，
+                    // 下一轮才可能对同一端点重拨 —— 按端点去重的前提才成立。
+                    while dials.join_next().await.is_some() {}
                 }
             }
         }
     });
-    Ok(vec![accept_task, heartbeat_task])
+
+    Ok(vec![accept_task, heartbeat_task, routed_task, presence_task])
 }
 
 /// 绑定监听端口，仅在 `AddrInUse` 时做有限退避重试。
@@ -256,7 +687,10 @@ fn hello_auth_decision(
         // 攻击者即便拿到真实公钥也签不出来；用自己公钥签名则与绑定值不符。
         Some(expected) => {
             if expected != ed25519_pubkey {
-                return Err(format!("Hello 公钥与已绑定身份不符（device_id={device_id}）"));
+                return Err(format!(
+                    "Hello 公钥与已绑定身份不符（device_id={device_id}）：对方可能重装了应用。\
+                     若确认是本人重装，删掉该好友后重新添加即可（聊天记录保留、无需重启）"
+                ));
             }
             if !crypto::verify_signature(expected, &data, sig_b64) {
                 return Err(format!("Hello 签名校验失败（device_id={device_id}）"));
@@ -284,7 +718,7 @@ fn hello_auth_decision(
 /// 明文控制消息（把群从受害者本地删掉、改名）。已建立信任的身份必须签名匹配。
 ///
 /// 返回 `Err(原因)` 表示必须拒绝该连接。
-fn verify_hello(
+pub(crate) fn verify_hello(
     state: &AppState,
     device_id: &str,
     tcp_port: u16,
@@ -323,6 +757,191 @@ fn verify_hello(
     )
 }
 
+/// 同意好友之后**忘掉这条申请**（内存态 `pending_requests` 里的那一行）。
+///
+/// 真实缺陷（用户 2026-09-12 真机实测）：双方互发过申请时，A 点了同意，B 的「新朋友」里
+/// 那条申请**还在** —— 因为直连路径（`Message::FriendAccept`）只加了好友、没有清 pending，
+/// 而跨跳路径（`GossipKind::FriendAccept`）清了。同一件事两条路径行为不一致，
+/// 于是"有时候会清、有时候不清"。现在两条路径 + `respond_friend_request` 都走这一个助手，
+/// 前端再用 `pendingRequests`（按好友列表过滤）兜一层，不会再出现"已经是好友还挂在申请里"。
+/// 收到好友申请时的统一前置判断：**对方已经是我的好友就直接同意**。
+///
+/// 返回 `true` 表示"已经自动处理掉了，不要再往 pending 里插"。
+///
+/// ## 为什么必须有（用户 2026-09-12 真机实测的 bug）
+/// B 的好友列表里已经有 A，而 A 是**重置过的账号**、列表里没有 B：
+///   · A 发申请 → 旧实现只在 B 侧插一条 pending；
+///   · 而 `get_pending_requests` 又会把"申请人是已是好友"的条目**过滤掉**
+///     （那是为了修"已经是好友了、申请还挂着"）；
+///   ⇒ 两边都看不到、谁也加不上。用户只能先**删掉** B 里的 A、再加回来。
+///
+/// 正确语义（用户给的规则）：**"他已经是我的好友"就等于我已经同意了这件事** ——
+/// 收到这种申请时直接走完整的"同意"路径（落库 + 回执 + 清 pending + 通知 UI），
+/// 双方关系立刻收敛，不需要任何人工动作。
+///
+/// 为什么放在两条 FriendRequest 路径**都**调：直连（`Message::FriendRequest`）与跨跳
+/// （`GossipKind::FriendRequest`）是两套独立的入口，只在一条上修就会"同一件事两种行为"。
+async fn auto_accept_if_already_friend(state: &Arc<AppState>, peer_id: &str) -> bool {
+    let already_friend = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::get_friend(&dbc, peer_id).is_some()
+    };
+    if !already_friend {
+        return false;
+    }
+    state.logger.info(
+        "friend",
+        format!("收到已是好友的申请：自动同意 peer={peer_id}（双方关系收敛）"),
+    );
+    if let Err(e) = crate::commands::accept_friend_request(state, peer_id).await {
+        state
+            .logger
+            .warn("friend", format!("自动同意失败 peer={peer_id}：{e}"));
+    }
+    true
+}
+
+pub fn forget_pending_request(state: &AppState, peer_id: &str) {
+    state
+        .pending_requests
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(peer_id);
+    // 同一条路径也清掉"我方已发出、等对方确认"的登记：对方既然回执了（同意/拒绝），
+    // 就不该再补发（`flush_pending_friend_request` 只对仍未处理的申请生效）。
+    state
+        .pending_out_requests
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(peer_id);
+}
+
+/// **补发"我方已发出、还未被处理"的好友申请**（建链 / Hello 补全时调用）。
+///
+/// 为什么需要（用户 2026-09-12 真机）：「好友已发送，等待对方确认」，但对方**什么都没收到**
+/// —— 好友申请是**没有回执**的定向帧，链路正好在那一刻抖动（BLE 镜像互拨打断链路）时
+/// 它就静默丢了，而发送方界面依然显示"已发送"。现在发出即登记，这里补发一次；
+/// 收到同意/拒绝（走 `forget_pending_request`）后清除，所以不会无限重发。
+pub async fn flush_pending_friend_request(state: &Arc<AppState>, peer_id: &str) {
+    let pending = state
+        .pending_out_requests
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(peer_id);
+    if !pending {
+        return;
+    }
+    // 复用同一条发送路径（含目标定向 + 重签），失败也不清登记 —— 下次建链再试
+    if crate::commands::send_friend_request_via_link(state, peer_id).await.is_ok() {
+        state
+            .logger
+            .info("friend", format!("补发好友申请 peer={peer_id}（此前链路抖动丢过）"));
+    }
+}
+
+/// 好友同意回执「补发一次 / 收尾 / 什么都不做」的判定结果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FriendAcceptFlush {
+    /// 补发，且这是第几次（1-based）。
+    Flush(u32),
+    /// 窗口或次数用尽 ⇒ 清掉登记并留一条 warn。
+    GiveUp,
+    /// 还没到间隔，或根本没有登记。
+    Nothing,
+}
+
+/// 好友同意回执补发策略的**纯函数内核**：
+/// `entry` = `(issed_at, attempts, last_at)`，`None` = 没有待补发登记。
+///
+/// 策略：`window_ms` 窗口内最多 `max_attempts` 次、两次之间至少隔 `min_interval_ms`。
+/// 为什么是"有界补发"而不是无限重试：对方收到重复的 `FriendAccept` 是幂等的（多一次
+/// `add_friend` + 一个 UI 事件），但没必要一直打扰；3 次足以覆盖"一次建链 + 两次心跳"。
+pub fn friend_accept_flush_decision(
+    entry: Option<(i64, u32, i64)>,
+    now: i64,
+    max_attempts: u32,
+    min_interval_ms: i64,
+    window_ms: i64,
+) -> FriendAcceptFlush {
+    let Some((issued, attempts, last)) = entry else {
+        return FriendAcceptFlush::Nothing;
+    };
+    if now - issued > window_ms || attempts >= max_attempts {
+        return FriendAcceptFlush::GiveUp;
+    }
+    if now - last < min_interval_ms {
+        return FriendAcceptFlush::Nothing;
+    }
+    FriendAcceptFlush::Flush(attempts + 1)
+}
+
+/// **补发好友同意回执**（`FriendAccept`）。
+///
+/// 与 `flush_pending_friend_request` 的关键差别：申请是"等对方动作"（收到同意/拒绝才清），
+/// 而同意回执**没有回执** —— 发送方无从得知对方是否收到。所以这里用**有界补发**：
+/// 2 分钟窗口内最多 3 次、两次之间至少隔 5s（心跳周期），窗口/次数用尽就打一条 warn 收尾。
+///
+/// 为什么必须做（用户 2026-09-13 真机）：Android 点「接受」后 Android 侧好友列表已经有对方，
+/// 但 **Mac 端状态一直没同步** —— 那一帧在 BLE 链路抖动/尚未建好时静默丢了，且永不重发。
+pub async fn flush_pending_friend_accept(state: &Arc<AppState>, peer_id: &str) {
+    const MAX_ATTEMPTS: u32 = 3;
+    const MIN_INTERVAL_MS: i64 = 5_000;
+    const WINDOW_MS: i64 = 120_000;
+    let now = crate::db::now_ms();
+
+    // 锁内只做判定（**绝不跨 await 持锁**）；判定本身是纯函数
+    // （`friend_accept_flush_decision`）—— "窗口 + 次数 + 间隔"这类策略最容易写反，
+    // 写在 async + 锁里就没法单测。
+    let decision = {
+        let entry = state
+            .pending_out_accepts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(peer_id)
+            .copied();
+        friend_accept_flush_decision(entry, now, MAX_ATTEMPTS, MIN_INTERVAL_MS, WINDOW_MS)
+    };
+    let attempt = match decision {
+        FriendAcceptFlush::Nothing => return,
+        FriendAcceptFlush::GiveUp => {
+            let removed = state
+                .pending_out_accepts
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(peer_id);
+            state.logger.warn(
+                "friend",
+                format!(
+                    "好友同意回执补发结束 peer={peer_id}（窗口/次数用尽：now={now} 登记={removed:?}）"
+                ),
+            );
+            return;
+        }
+        FriendAcceptFlush::Flush(attempt) => attempt,
+    };
+    // 判定是纯的 ⇒ 次数/时刻的写入在执行侧完成
+    {
+        let mut map = state
+            .pending_out_accepts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(entry) = map.get_mut(peer_id) {
+            entry.1 = attempt;
+            entry.2 = now;
+        }
+    }
+    match crate::commands::send_friend_accept_via_link(state, peer_id).await {
+        Ok(()) => state.logger.info(
+            "friend",
+            format!("[FRIEND] 补发好友同意回执 peer={peer_id}（第 {attempt} 次）"),
+        ),
+        Err(e) => state.logger.warn(
+            "friend",
+            format!("[FRIEND] 补发好友同意回执失败 peer={peer_id}（第 {attempt} 次）：{e}"),
+        ),
+    }
+}
+
 /// 构造带签名的 Hello（nonce 每次新生成，签名覆盖连接身份的全部字段）。
 pub fn build_signed_hello(state: &AppState, conv_clock: i64) -> Message {
     let device_id = state.device_id.clone();
@@ -341,6 +960,7 @@ pub fn build_signed_hello(state: &AppState, conv_clock: i64) -> Message {
         device_id,
         nickname: state.nickname.lock().unwrap_or_else(|e| e.into_inner()).clone(),
         avatar: state.avatar.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+        device_type: crate::protocol::current_device_type().to_string(),
         tcp_port,
         x25519_pubkey,
         ed25519_pubkey,
@@ -355,14 +975,31 @@ async fn handle_incoming(
     stream: TcpStream,
     peer_addr: std::net::SocketAddr,
     shutdown: watch::Receiver<bool>,
+    // 接受这条连接时的网络世代（见 `AppState::network_generation`）
+    generation: u64,
 ) {
     // Windows：先标记 abortive close，再拆分成读写半（拆分后拿不到 socket 句柄了）。
     #[cfg(windows)]
     set_abortive_close(&stream);
-    let (mut r, w) = stream.into_split();
-    let first = match read_frame(&mut r).await {
-        Ok(m) => m,
-        Err(_) => return,
+    // 读写半包装成 transport 端点：端点只搬字节，分帧由 `transport::tcp` 负责（P-A03）。
+    let (raw_r, raw_w) = stream.into_split();
+    let mut r = TcpReceiver::new(raw_r);
+    let w = TcpSender::new(raw_w);
+    // ⚠️ 首帧必须**有超时且能被停机打断**：验签前的连接既不在 `links` 也不在
+    // `peer_manager`，45s 死链路 watchdog 覆盖不到它 —— 对端 accept 后一个字节都不发
+    // （或对端断电留下的半开连接），任务与 socket 就会永久存活。这里两条都堵住。
+    let mut shutdown_first = shutdown.clone();
+    let first = tokio::select! {
+        biased;
+        _ = shutdown_first.changed() => return,
+        res = tokio::time::timeout(
+            Duration::from_secs(crate::protocol::FIRST_FRAME_TIMEOUT_SECS),
+            read_frame_preauth(&mut r),
+        ) => match res {
+            Ok(Ok(m)) => m,
+            // 超时 / 非法帧 / 连接断开：直接返回 ⇒ drop socket，不留残留状态
+            _ => return,
+        },
     };
     // 首帧必须是 Hello，且必须先通过身份认证才允许建立链路。
     // 认证失败直接丢弃连接（不插入 links），否则任意节点可冒用他人 device_id 建链。
@@ -386,33 +1023,122 @@ async fn handle_incoming(
                 sig,
             ) {
                 state.push_diag_event("hello_rejected", &format!("{reason}; from={peer_addr}"));
-                eprintln!("[transport] 拒绝未通过身份认证的 Hello: {reason}");
+                state.logger.warn(
+                    "transport",
+                    format!("拒绝未通过身份认证的 Hello: {reason}"),
+                );
                 return;
             }
             device_id.clone()
         }
         _ => return, // 首帧必须是 Hello
     };
+    // ⚠️ **世代校验**：握手跨了 stop/start（换网卡、重开通道）就必须自我否决 ——
+    // 否则会把链路登记进新世代的表里，成为一条无人管理、也收不到新 shutdown 的幽灵连接。
+    if !generation_is_current(generation, state.network_generation()) {
+        state.logger.info(
+            "transport",
+            format!("丢弃跨世代的入站连接 peer={peer_id} ep={peer_addr}（网络已重启）"),
+        );
+        return;
+    }
+    // ⚠️ **入站去重**：验签之后、登记链路之前判（判据见 `should_accept_inbound`）。
+    // 放在这里而不是更早：身份要验签通过才有意义；也不能更晚：登记后再拒会留下半条状态。
+    let existing: Vec<(MeshEndpoint, PathKind, bool)> = {
+        // ① 先取链路快照（锁内只克隆，不 await 别的锁）
+        let list = {
+            let links = state.links.lock().await;
+            links.get(&peer_id).cloned().unwrap_or_default()
+        };
+        // ② 再取健康判据与 mesh 侧连接（health 与选路同一套判据，避免两处各判一次）
+        let (timeout_ms, max_failures, conns) = {
+            let pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
+            (
+                pm.health_timeout_ms(),
+                pm.max_failures(),
+                pm.get(&peer_id)
+                    .map(|p| p.connections().to_vec())
+                    .unwrap_or_default(),
+            )
+        };
+        let now = db::now_ms();
+        list.iter()
+            .map(|l| {
+                let healthy = conns
+                    .iter()
+                    .find(|c| c.endpoint == l.endpoint)
+                    // 查不到健康信息时**按健康处理**（保守：优先抑制镜像）。
+                    // 正常情况下 `register_connection` 与链路登记同时发生，查不到属异常；
+                    // 此时宁可少收一条新连接（watchdog 最长 45s 会拆掉死链路），
+                    // 也不要放过镜像 —— 后者会污染多路径验收且永久并存。
+                    .map(|c| c.health.is_healthy(now, timeout_ms, max_failures))
+                    .unwrap_or(true);
+                (l.endpoint.clone(), l.path_kind, healthy)
+            })
+            .collect()
+    };
+    if !should_accept_inbound(&state.device_id, &peer_id, PathKind::Lan, &existing) {
+        state.logger.info(
+            "transport",
+            format!(
+                "拒收重复入站连接 peer={peer_id} ep={peer_addr} path=lan（已有 {} 条链路）",
+                existing.len()
+            ),
+        );
+        return;
+    }
     let (bulk_tx, bulk_rx) = mpsc::channel(1024);
     let (prio_tx, prio_rx) = mpsc::channel(1024);
+    // 本连接独立的取消信号（M3#6）：健康 watchdog 判定僵尸链路时精确断开这一条。
+    let (cancel_tx, cancel_rx) = watch::channel(false);
+    // 追加到该 peer 的连接列表（而非覆盖）—— 多连接支持的基础。
+    // 端点取 TCP 对端的真实地址，使「同一 peer 的不同端点」可被区分。
     state
         .links
         .lock()
         .await
-        .insert(peer_id.clone(), bulk_tx.clone());
-    state
-        .priority_links
-        .lock()
-        .await
-        .insert(peer_id.clone(), prio_tx);
+        .entry(peer_id.clone())
+        .or_default()
+        .push(Link {
+            endpoint: MeshEndpoint::Tcp(peer_addr),
+            // 入站连接只可能来自本机 TCP 监听端口 ⇒ LAN 路径（Routed 都是我们主动拨出）
+            path_kind: PathKind::Lan,
+            bulk: bulk_tx.clone(),
+            // priority 留一个 sender 在作用域内：首帧验签后要回发 Hello（见下）。
+            priority: prio_tx.clone(),
+            cancel: cancel_tx,
+        });
+    // 同步到 mesh 层：让 Peer/Connection 模型知道这条连接存在
+    register_connection(&state, &peer_id, MeshEndpoint::Tcp(peer_addr), PathKind::Lan);
     tokio::spawn(writer_loop(
         state.clone(),
         peer_id.clone(),
+        MeshEndpoint::Tcp(peer_addr),
         w,
         bulk_rx,
         prio_rx,
         shutdown.clone(),
+        cancel_rx.clone(),
     ));
+    // 验签通过后**回发**自己的 Hello：让拨号方也能学到本节点的身份与双公钥。
+    //
+    // 为什么需要：只有拨号方发 Hello，被连的一方不回 —— 于是**拨号方**永远不知道
+    // 对面是谁。LAN 场景有 announce 兜底（UDP 广播连带把身份和公钥送过去了）所以
+    // 看不出来；Routed / 跨网场景没有 announce，缺口就暴露为：对端永远不出现在
+    // `peers` 表 →「添加好友」列表里没有它、拿不到 X25519 公钥 → 消息发不出去。
+    //
+    // 防乒乓：只在**首帧**这里回发一次（每条连接一次）；`handle_message` 的 Hello
+    // 分支刻意不回发，因此两个节点之间不会来回刷 Hello。
+    // 走 priority 队列，与主动方发 Hello 的路径对称（不被 bulk 积压排在后面）。
+    let conv_clock = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::get_clock(&dbc, &peer_id)
+    };
+    let _ = prio_tx.send(build_signed_hello(&state, conv_clock)).await;
+    state.logger.info(
+        "transport",
+        format!("握手补全：已向对端回发本节点 Hello（peer={peer_id}）"),
+    );
     handle_message(&state, &peer_id, first).await;
     // 用 TCP 对端的真实地址补全 peer IP：解决「被动连接方 peers 表 IP 为空或虚拟」的问题。
     // 新地址必须是非虚拟的可直连 LAN 地址才写入；link-local（169.254.0.0/16）已包含在
@@ -430,16 +1156,125 @@ async fn handle_incoming(
         }
     }
     state.emit_peers();
-    reader_loop(state, r, peer_id, bulk_tx, shutdown).await;
+    reader_loop(
+        state,
+        r,
+        peer_id,
+        MeshEndpoint::Tcp(peer_addr),
+        bulk_tx,
+        shutdown,
+        cancel_rx,
+    )
+    .await;
+}
+
+/// 把「某条连接成功收发」喂给 mesh 层的 `ConnectionHealth`（ADR-0014 §3.1）。
+///
+/// 信号**全部复用现有帧**，零新协议。RTT 恒传 `None`：`Message::Heartbeat` 是**单向**的
+/// （收到只 `touch_peer` + flush，不回包），没有可靠的往返测量来源；ADR-0014 明确本阶段
+/// 不做 RTT，这里也不假装有数据。
+///
+/// 复杂度：每条连接每 5s 至少一次（心跳），加上真实收发，都是 std 锁上的一次查表 ——
+/// 与 `register_connection` 同量级，不构成热点。
+/// ⚠️ **每一种传输的读循环都必须调用它**（2026-09-13 审计发现：BLE 链路漏了这一句，
+/// 于是健康的蓝牙链路 15s 后就被判"不健康"、45s 被看门狗自己拆掉，循环往复）。
+/// `pub(crate)` 就是为了让 `network/ble.rs` 也能调。
+pub(crate) fn mark_conn_seen(state: &AppState, peer_id: &str, endpoint: &MeshEndpoint) {
+    let mut pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
+    pm.mark_connection_seen(
+        peer_id,
+        endpoint,
+        db::now_ms(),
+        None,
+        true,
+    );
+}
+
+/// 记录一次**写出成功**（M3-0b：只刷出站活性，**不**参与 `is_healthy`）。
+///
+/// 半开 TCP 上写会持续「成功」，因此它绝不能算成「对端活着」的证据 ——
+/// 否则死链路会永久被判健康，选路一直选中它（ADR-0014 §7）。
+fn mark_conn_write_seen(state: &AppState, peer_id: &str, endpoint: &MeshEndpoint) {
+    let mut pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
+    pm.mark_connection_seen(
+        peer_id,
+        endpoint,
+        db::now_ms(),
+        None,
+        false,
+    );
+}
+
+/// 记录「某个文件传输又有一帧**真的离开了链路**」。
+///
+/// 为什么必须落在"写出"而不是"入队"：发送侧 mpsc 容量 1024，1MB 文件的分块会在
+/// **1 秒内**全部入队，而链路上要跑几分钟（BLE 上更久）。`FileCompleteAck` 的等待窗口
+/// 正是靠这张表从"固定 30s 墙钟"改成"安静 30s 才算失败"（`file.rs::wait_complete_ack`）。
+/// 放在 writer_loop 里是唯一正确的位置 —— 它是"字节真的走了"的唯一证据点。
+///
+/// TCP 与 BLE 两条写循环都要调（BLE 见 `network/ble.rs`）。
+pub(crate) fn mark_file_wire_progress(state: &AppState, msg: &Message) {
+    let transfer_id = match msg {
+        Message::FileChunk { transfer_id, .. } => transfer_id,
+        // 群文件走同一个"等确认"语义（确认是 GroupFileCompleteAck）
+        Message::GroupFileChunk { transfer_id, .. } => transfer_id,
+        _ => return,
+    };
+    state
+        .file_wire_progress
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(transfer_id.clone(), db::now_ms());
+}
+
+/// 读「该 transfer 最近一次真的写出字节」的时刻（0 = 从未写出过）。
+pub(crate) fn file_wire_progress_at(state: &AppState, transfer_id: &str) -> i64 {
+    state
+        .file_wire_progress
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(transfer_id)
+        .copied()
+        .unwrap_or(0)
+}
+
+/// 传输收尾时清掉进展记录（成功/失败都清），避免这张表随历史传输无限增长。
+pub(crate) fn clear_file_wire_progress(state: &AppState, transfer_id: &str) {
+    state
+        .file_wire_progress
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(transfer_id);
+}
+
+
+/// 把「某条连接失败」喂给 mesh 层（写失败）。读循环退出时链路会被 `unregister_connection`
+/// 整条摘掉，无需再记失败。
+fn mark_conn_failure(state: &AppState, peer_id: &str, endpoint: &MeshEndpoint) {
+    let mut pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
+    pm.mark_connection_failure(peer_id, endpoint);
+}
+
+/// 单次写出的结果（D8-4）。把"主动放弃"与"写失败"分开：
+/// 前者是我们在停机/拆链路，不该记成链路故障（否则选路会把正在关闭的链路算成失败）。
+enum WriteOutcome {
+    Ok,
+    Failed,
+    Stopped,
 }
 
 async fn writer_loop(
     state: Arc<AppState>,
     peer_id: String,
-    mut w: OwnedWriteHalf,
+    // 本连接的端点：健康信号要按**连接**记，必须能唯一定位到是哪一条。
+    // 类型是 transport 无关的 `Endpoint`（BLE 也需要它）。
+    endpoint: MeshEndpoint,
+    mut w: TcpSender,
     mut bulk_rx: mpsc::Receiver<Message>,
     mut prio_rx: mpsc::Receiver<Message>,
     mut shutdown: watch::Receiver<bool>,
+    // 本连接的取消信号（M3#6）：由健康 watchdog 在半开链路上触发。
+    mut cancel: watch::Receiver<bool>,
 ) {
     let mut bulk_open = true;
     let mut prio_open = true;
@@ -452,12 +1287,40 @@ async fn writer_loop(
             // 停止信号优先：立刻放弃待发帧并 drop 写半，让 socket 尽快关闭
             // （Windows 上配合 SO_LINGER=0 发 RST，不留下 TIME_WAIT）。
             _ = shutdown.changed() => break,
+            // 本连接被判死（读活性长期过期）→ 与全局停机同样立即收尾。
+            _ = cancel.changed() => break,
             maybe = prio_rx.recv(), if prio_open => maybe,
             maybe = bulk_rx.recv(), if bulk_open => maybe,
         };
         match msg {
             Some(msg) => {
-                if write_frame(&mut w, &msg).await.is_err() {
+                // ⚠️ **写必须可被打断**（D8-4）：对端不读时发送缓冲满，`write_all` 会长时间
+                // 阻塞；而 shutdown/cancel 只有在回到循环顶部才会被轮询 ⇒ 退出流程与
+                // watchdog 的"精确拆链路"在写阻塞场景下都会失效（STOP_TASK_TIMEOUT 兜底
+                // 也只能打日志放行）。放进 select 后，停机与判死都能立刻放弃这一帧。
+                //
+                // 主动放弃时**不记失败**：那不是链路故障，是我们自己在拆。半写出去的分片
+                // 会让对端看到截断帧并自行断开 —— 本来就是要断的链路，无妨。
+                let outcome = tokio::select! {
+                    biased;
+                    _ = shutdown.changed() => WriteOutcome::Stopped,
+                    _ = cancel.changed() => WriteOutcome::Stopped,
+                    res = write_frame(&mut w, &msg) => {
+                        if res.is_ok() { WriteOutcome::Ok } else { WriteOutcome::Failed }
+                    }
+                };
+                if matches!(outcome, WriteOutcome::Ok) {
+                    // 写成功只记**出站**活性（诊断口径）。M3-0b 起它**不**参与 is_healthy：
+                    // 半开 TCP 上写会一直"成功"，那是本缺陷要被排除的伪证据。
+                    mark_conn_write_seen(&state, &peer_id, &endpoint);
+                    // 文件分块**真的写出去了**才叫进展（发送侧等 FileCompleteAck 的判据）。
+                    mark_file_wire_progress(&state, &msg);
+                    continue;
+                }
+                if matches!(outcome, WriteOutcome::Stopped) {
+                    break;
+                }
+                {
                     // TCP write 失败：普通消息由 outbox 重发；ReadReceipt 需要特殊处理——
                     // 它没有 outbox 行，如果 pending 已被 flush_pending_reads 清除，
                     // 此处不恢复就永久丢失。将 timestamp 重新放回 pending_reads，
@@ -467,6 +1330,8 @@ async fn writer_loop(
                         let cur = pending.entry(peer_id.clone()).or_insert(*last_read_ts);
                         *cur = (*cur).max(*last_read_ts);
                     }
+                    // 这条连接已经写不出去了 —— 记一次失败，供 M3 的选路与收敛使用。
+                    mark_conn_failure(&state, &peer_id, &endpoint);
                     break;
                 }
             }
@@ -488,19 +1353,29 @@ async fn writer_loop(
 
 async fn reader_loop(
     state: Arc<AppState>,
-    mut r: OwnedReadHalf,
+    mut r: TcpReceiver,
     peer_id: String,
+    // 本连接的端点，用于按连接记健康信号。
+    endpoint: MeshEndpoint,
     link_tx: mpsc::Sender<Message>,
     mut shutdown: watch::Receiver<bool>,
+    // 本连接的取消信号（M3#6）：半开链路上的读会永久阻塞，只有它能打断。
+    mut cancel: watch::Receiver<bool>,
 ) {
     loop {
         let res = tokio::select! {
             biased;
             _ = shutdown.changed() => break,
+            _ = cancel.changed() => break,
             res = read_frame(&mut r) => res,
         };
         match res {
-            Ok(msg) => handle_message(&state, &peer_id, msg).await,
+            Ok(msg) => {
+                // 入站读到帧是比「写成功」**更强**的活性证据：对端确实活着（不只是内核收下了
+                // 我们的字节）。这条信号正是半开 TCP 场景下唯一能区分「真活 / 假活」的东西。
+                mark_conn_seen(&state, &peer_id, &endpoint);
+                handle_message(&state, &peer_id, msg).await
+            }
             Err(_) => break,
         }
     }
@@ -519,27 +1394,524 @@ async fn reader_loop(
             fail_group_file_chunk(&state, &tid);
         }
     }
-    // 只移除「本条连接」的 link：若对端已重拨建立了新连接，旧的 reader 退出时
-    // 不能把新连接的发送端删掉（否则会出现「消息发不出去」的间歇性故障）。
-    let was_live_link = {
+    // 只移除**这一条**连接（按 channel 身份匹配），不是整条删光：
+    // 同一 peer 可能还连着别的端点（LAN + Tailscale），断一条 ≠ peer 下线 ——
+    // 这正是 6b 的核心语义。旧实现整条 remove，会让另一条连接一起消失。
+    let peer_now_offline = {
+        // 先记下被移除的是哪个端点（mesh 层要按端点删对应的 Connection）
+        let removed_endpoint = {
+            let links = state.links.lock().await;
+            links
+                .get(&peer_id)
+                .and_then(|list| list.iter().find(|l| l.bulk.same_channel(&link_tx)))
+                .map(|l| l.endpoint.clone())
+        };
         let mut links = state.links.lock().await;
-        let is_live = links
-            .get(&peer_id)
-            .map(|tx| tx.same_channel(&link_tx))
-            .unwrap_or(false);
-        if is_live {
+        let removed = match links.get_mut(&peer_id) {
+            Some(list) => {
+                let before = list.len();
+                list.retain(|l| !l.bulk.same_channel(&link_tx));
+                list.len() != before
+            }
+            None => false,
+        };
+        // 移除后该 peer 已无任何连接 → 才算真的离线，并**把空的 Vec 一起删掉**。
+        let empty = links.get(&peer_id).map_or(true, |v| v.is_empty());
+        if removed && empty {
+            // ⚠️ 只 retain 不删 key 会留下一个**空 Vec**，而好几处判定用的是
+            // `links.keys()` / `contains_key`（不是 `has_link` 的非空判据）：
+            //  - `sweep_peers` 认为「有活跃链路」→ 该 peer 永不被清扫；
+            //  - `get_friends` 的 Friend.online 恒 true → 前端**永久显示在线**；
+            //  - 定向转发 `contains_key` 命中「直连」分支 → `try_send` 失败后
+            //    **不再洪泛兜底**，跨跳的好友申请/回执可能永久丢失。
+            // 一次「连过又掉线」的节点就能让上述三条同时成立（复核抓到的 High 缺陷）。
             links.remove(&peer_id);
-            state.priority_links.lock().await.remove(&peer_id);
         }
-        is_live
+        let offline = removed && empty;
+        drop(links);
+        // 释放 links 锁后再动 mesh 层（避免持锁嵌套）
+        if let Some(ep) = removed_endpoint {
+            unregister_connection(&state, &peer_id, &ep);
+        }
+        offline
     };
-    // 仅当退出的就是当前活跃链路时才标记离线（新链路已接管则不影响在线状态）
-    if was_live_link {
+    // 所有连接都断了才标记离线；还剩别的连接则保持在线（failover 生效）
+    if peer_now_offline {
         mark_peer_offline(&state, &peer_id).await;
     }
 }
 
+// ---------------- 传输层 ↔ mesh 层 同步（6b-3） ----------------
+
+/// 依据端点地址判断路径类型。
+///
+/// 私有 / 环回 / 链路本地地址视为 LAN；其余（含 Tailscale 的 100.64/10 CGNAT 段，
+/// 它**不是** RFC1918 私有地址）视为 Routed —— 正好符合「跨子网走 Routed」的预期。
+///
+/// 注意 IPv6 的 ULA（`fc00::/7`，含 Tailscale 的 `fd7a:115c:a1e0::/48`）**故意**留在
+/// Routed：它虽然叫「唯一本地地址」，但实践中主要出现在跨子网隧道里。判定只依赖
+/// 地址属性，不针对任何具体软件（§36：不要把 Clash / Tailscale 写死进网络核心）。
+
+/// 某 peer 当前第一条连接（入站视角）的路径类型字符串。
+///
+/// 直连时这就是「对方 ↔ 我」的真实路径；桥接时是「中继 ↔ 我」的最后一段。
+pub(crate) async fn inbound_path_kind(state: &AppState, peer_id: &str) -> String {
+    // ① 锁作用域内只取快照（与 `try_send` 同规矩：不在锁里 await 别的锁）
+    let links: Vec<crate::state::Link> = {
+        let g = state.links.lock().await;
+        match g.get(peer_id) {
+            Some(l) if !l.is_empty() => l.clone(),
+            _ => return PathKind::Lan.as_str().to_string(),
+        }
+    };
+    // ② 取健康阈值与 mesh 连接，跑**与发送完全相同**的选路
+    let (health_timeout_ms, max_failures) = {
+        let pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
+        (pm.health_timeout_ms(), pm.max_failures())
+    };
+    let conns: Vec<crate::mesh::Connection> = {
+        let pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
+        pm.get(peer_id)
+            .map(|p| p.connections().to_vec())
+            .unwrap_or_default()
+    };
+    let order = route_order(&links, peer_id, &conns, db::now_ms(), health_timeout_ms, max_failures);
+    // ③ 徽标显示「实际会走的那条」= 选路结果的第一条（见 `badge_path_kind`）。
+    //
+    // 为什么不能用 `first()`（旧实现）：一个 peer 可能同时有 LAN + Routed(+BLE) 多条连接，
+    // `first()` 是**插入顺序**，与 `pick_link`（LAN > Routed > Bluetooth + 活性过滤）
+    // 可能不一致 ⇒ 界面显示"桥接 N"，消息实际走的是 LAN（用户 2026-09-12 反馈过徽标不符）。
+    // 选路函数返回空只可能发生在"全部候选都不可用"，此时退回首条（与发送时的兜底一致）。
+    badge_path_kind(&links, &order).as_str().to_string()
+}
+
+/// 「当前链路」徽标该显示哪条路径：**选路结果的第一条**。
+///
+/// 抽成纯函数的原因：徽标是用户唯一能直接看见的链路信息，而它的正确性判据是
+/// 「与实际发送选的同一条」—— 那是个下标对应关系，端到端很难复现
+/// （要先制造 LAN + Routed 双路径、再对比徽标与日志），但纯函数可以一次钉死。
+/// `order` 为空（全部候选不可用）时退回首条，与发送路径的兜底一致。
+fn badge_path_kind(links: &[crate::state::Link], order: &[usize]) -> PathKind {
+    let idx = order.first().copied().unwrap_or(0);
+    links.get(idx).map(|l| l.path_kind).unwrap_or(PathKind::Lan)
+}
+
+/// 更新会话的「当前链路」快照（最近一条消息的链路 + 中间节点数）。
+///
+/// 只在链路**变化**时写并留一行日志——链路状态是内存态，日志是唯一可观测手段
+/// （真机排障看连接实际走了哪条路）。收发消息频繁，不做无谓的重复写。
+pub(crate) fn update_conv_link(state: &AppState, conv_id: &str, path: &str, hop: u8) {
+    let mut links = state.conv_link.lock().unwrap_or_else(|e| e.into_inner());
+    let changed = match links.get(conv_id) {
+        Some(old) => old.path != path || old.hop != hop,
+        None => true,
+    };
+    if changed {
+        links.insert(
+            conv_id.to_string(),
+            LinkState {
+                path: path.to_string(),
+                hop,
+            },
+        );
+        state.logger.info("link", format!("conv={conv_id} path={path} hop={hop}"));
+    }
+}
+
+/// 忘掉某个 device_id 的**内存态身份绑定**（公钥 / 首见时间），链路不动。
+///
+/// ## 为什么必须有（用户 2026-09-13 真机：「必须重启才能重新加好友」）
+///
+/// 对方重装应用后公钥变了，而我们的身份表**只补空、不覆盖**（INV-P11：公钥冲突不静默覆盖）。
+/// 用户按提示"删掉好友重新加"时，`friends` 表那一行确实没了 —— 但 `verify_hello` 的绑定
+/// 还有**第二条腿**：内存里的 `peers` 表（广播里学来的、**未经验签**的旧公钥）。
+/// 于是 Hello 继续被硬拒 ⇒ 消息与好友申请全都进不来 ⇒ **只有重启**（内存清空）才回落到 TOFU。
+///
+/// 删除好友 = 用户**显式**解除了这层信任 ⇒ 内存绑定必须一起失效。
+/// 只清身份（公钥 / 首见时间），**不动链路、昵称、IP** —— 正在连着的会话不该被这一下打断。
+pub(crate) fn forget_peer_identity(state: &AppState, device_id: &str) {
+    {
+        let mut peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(p) = peers.get_mut(device_id) {
+            p.x25519_pubkey = None;
+            p.ed25519_pubkey = None;
+            p.first_seen = None;
+        }
+    }
+    state
+        .peer_manager
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .forget_identity(device_id);
+    // 允许下次**再提示一次**（否则"删了又加、对方又变了"时用户永远不再被告知）
+    state
+        .key_conflict_warned
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(device_id);
+    state.logger.info(
+        "identity",
+        format!(
+            "已解除设备身份绑定 device_id={device_id}\
+             （删好友 / 对方解除关系；下次连接以验签结果重新绑定，无需重启）"
+        ),
+    );
+}
+
+/// 连接建立后：把这条连接登记到 mesh 层的 `PeerManager`。
+///
+/// 这样 mesh 层的 Peer/Connection 才与传输层的 `Link` 一一对应，
+/// Phase 2 建立的「任一 Connection 健康 ⇒ Online」才有真实连接数据支撑。
+/// 公钥在此刻可能尚未学到（拨号侧），留空即可 —— 收到 Hello / announce 后由
+/// `PeerIdentity::merge_missing` 补齐（只补空、不覆盖）。
+pub(crate) fn register_connection(state: &AppState, peer_id: &str, endpoint: MeshEndpoint, path_kind: PathKind) {
+    let identity = {
+        let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
+        peers
+            .get(peer_id)
+            .map(|p| PeerIdentity {
+                x25519_public_key: p.x25519_pubkey.clone(),
+                ed25519_public_key: p.ed25519_pubkey.clone(),
+            })
+            .unwrap_or_default()
+    };
+
+    // 路径类型来自调用方（见 `Link::path_kind` 注释：从 IP 反推会把用户配置的
+    // 私有段 Routed 端点误判成 LAN）
+    let path = path_kind;
+    let candidate = PeerCandidate::new(peer_id, identity, endpoint.clone(), path.clone());
+    let mut pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
+    let (_, outcome) = pm.merge(candidate);
+    // 建链即算一次「成功收发」—— 否则「已建立但还没收发」的连接会被健康判据算作不健康
+    // （ADR-0014 §3.1 的硬性注意 ①：漏掉这一步，M3 的选路会把刚建好的连接判为不可用，
+    // 进而退化成「按固定顺序挑」，甚至触发反复重拨）。
+    let now = db::now_ms();
+    // M3-0b：建链播种的是**读**活性（"刚建好就算活"），此后只由 `reader_loop` 刷新。
+    // 若这里改成写活性，半开链路会重新变成永久健康。
+    //
+    // ⚠️ **只在真的是新连接时播种**（`is_new_connection`）。
+    // 复核发现的原实现缺陷：无条件播种 ⇒ 同一个端点在握手/重连路径上被再次
+    // `register_connection` 时，一条**已经死掉**（读活性过期）的 Connection 会被
+    // 重新"续命"一个完整超时窗口；更糟的是刚播种的 LAN 链路（可能已是半开）
+    // 会在该窗口内**压过一条真正健康的 Routed 链路**（选路按 LAN > Routed 排序）。
+    if outcome.is_new_connection {
+        pm.seed_connection_read_seen(peer_id, &endpoint, now);
+    }
+    // `online` 是 mesh 健康信号**在生产路径**唯一的外部可观测点：`ConnectionHealth` 是内存态，
+    // 没有它就只能靠读代码相信「信号接上了」（这正是 M3-0 之前的状态）。
+    let online = pm.online_state(peer_id, now) == PeerOnlineState::Online;
+    state.logger.info(
+        "mesh",
+        format!(
+            "+conn peer={peer_id} ep={endpoint} path={path:?} \
+             new_peer={} new_conn={} conns={} online={}",
+            outcome.is_new_peer,
+            outcome.is_new_connection,
+            pm.get(peer_id).map(|p| p.connection_count()).unwrap_or(0),
+            u8::from(online),
+        ),
+    );
+}
+
+/// 连接断开后：从 mesh 层移除**这一条** Connection（同一 peer 的其他连接保留）。
+pub(crate) fn unregister_connection(state: &AppState, peer_id: &str, endpoint: &MeshEndpoint) {
+    let mut pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
+    pm.remove_connection(peer_id, endpoint);
+    state.logger.info(
+        "mesh",
+        format!(
+            "-conn peer={peer_id} ep={endpoint} conns={}",
+            pm.get(peer_id).map(|p| p.connection_count()).unwrap_or(0)
+        ),
+    );
+}
+
+#[cfg(test)]
+mod mesh_sync_tests {
+    use super::*;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    fn sa(a: u8, b: u8, c: u8, d: u8) -> std::net::SocketAddr {
+        std::net::SocketAddr::new(IpAddr::V4(Ipv4Addr::new(a, b, c, d)), 59992)
+    }
+
+    fn sa6(s: &str) -> std::net::SocketAddr {
+        std::net::SocketAddr::new(s.parse::<IpAddr>().unwrap(), 59992)
+    }
+
+
+
+    /// 地址构造不依赖「拼字符串再解析」，因此 IPv6 **不需要方括号**。
+    ///
+    /// 旧实现 `format!("{ip}:{port}").parse()` 在 IPv6 上会得到 `fd7a::1:59992`
+    /// 这种非法地址 → 解析失败 → 静默丢掉连接。这正是「IPv6 端点配了却不拨号」的根因。
+    #[test]
+    fn socket_addr_from_accepts_v4_and_bare_v6() {
+        assert_eq!(socket_addr_from("192.168.1.20", 59992), Some(sa(192, 168, 1, 20)));
+        assert_eq!(
+            socket_addr_from("fd7a:115c:a1e0::1", 59992),
+            Some(sa6("fd7a:115c:a1e0::1"))
+        );
+        assert_eq!(socket_addr_from("::1", 59992), Some(sa6("::1")));
+        // 非法输入返回 None（调用方跳过本轮，不 panic）
+        assert_eq!(socket_addr_from("not-an-ip", 1), None);
+        assert_eq!(socket_addr_from("", 1), None);
+        // 方括号写法是 `"host:port"` 整体的语法，不是裸 IP —— 传到这里应当被拒绝
+        assert_eq!(socket_addr_from("[fd7a::1]", 1), None);
+    }
+}
+
 // ---------------- 主动建链（小 ID 拨号） ----------------
+
+/// 拨号连接的超时上限。
+///
+/// 存在的理由：`TcpStream::connect` 在「SYN 被静默丢弃」时（对端防火墙 DROP、
+/// VPN / 虚拟网卡路由黑洞）要等操作系统把 SYN 重传耗尽才返回 —— Linux/macOS
+/// 可达 75s 以上，Windows 约 21s。
+///
+/// 而 `ensure_link` 是在 **UDP announce 接收循环里 `.await`** 的，没有上限就意味着
+/// 一个收得到广播、TCP 却被丢弃的对端会把**整个发现循环堵死**（表现为发现假死、
+/// 其他节点迟迟不出现）。Routed 拨号同样受影响。
+///
+/// 5s 远大于正常握手（同链路 <1ms；Tailscale 直连或经中继通常 <2s），只用于截断黑洞。
+/// 心跳周期（秒）。**健康超时必须 ≥ 3 个周期**，见 `state.rs` 里
+/// `PeerManager::new(15_000, 3)` 附近的说明与不变量测试；改这里要同步那个值。
+pub const HEARTBEAT_INTERVAL_SECS: u64 = 5;
+
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// 主动拨号时等待对端回发 Hello 的上限 —— **只有「身份未知」的 Routed 端点会等**
+/// （已知身份的路径不等，行为与历史一致）。
+///
+/// 远大于正常握手（同链路 <1ms、Tailscale 直连或中继 <2s），只用来兜住
+/// 「对端是未升级的旧版本、不会回发 Hello」——否则该轮拨号会一直挂着。
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// 由字符串 IP + 端口构造 `SocketAddr`。
+///
+/// **刻意不用 `format!("{ip}:{port}").parse()`**：那种写法把地址与端口先拼成字符串，
+/// 而 IPv6 只有写成 `[fd7a::1]:59992` 才是合法 SocketAddr，直接拼会得到
+/// `fd7a::1:59992` → 解析失败。调用方拿到的地址在配置层已校验通过，重建失败就等于
+/// **把一条合法配置静默丢掉**（曾真实发生：IPv6 端点「配了却永远不拨号」）。
+/// 分开解析 IP 与端口，v4 / v6 都成立，也不需要方括号。
+fn socket_addr_from(ip: &str, port: u16) -> Option<SocketAddr> {
+    ip.parse::<IpAddr>().ok().map(|ip| SocketAddr::new(ip, port))
+}
+
+/// 拨号结果。
+///
+/// `Stopped` 与 `Failed` 分开，是为了在正常停机时不产生误导性的「拨号失败」日志；
+/// LAN 路径的正常失败（对端离线、或该由对端拨号）则完全不打日志，避免刷屏。
+enum DialOutcome {
+    /// 本次真正建链成功（含首次握手学身份）。
+    Connected,
+    /// 端点已有一条连接（去重命中）。拨号任务每 10s 一轮，这是**常态**，不打日志
+    /// —— 否则「已连上」会每 10s 重复刷屏，把真正的新连接淹掉。
+    AlreadyConnected,
+    /// 同一目标已有拨号在途（D6 在途去重命中）⇒ 本次不拨。同样是常态，不打日志。
+    AlreadyDialing,
+    /// 并发拨号已达上限（`MAX_CONCURRENT_DIALS`）⇒ 本轮放弃，下个周期再试。常态，不打日志。
+    DialBusy,
+    /// 拨号被停机信号中断（应用正在退出 / 切换网络）。
+    Stopped,
+    Failed(String),
+}
+
+/// 世代是否仍然有效（D8-4）。抽成纯函数是为了让"跨世代必须否决"这条**安全属性**
+/// 有一个能被检索到、能被单测钉住的落点（真实路径要构造 AppState，单测造不出来）。
+/// 某 peer 现有链路的快照 `(端点, 路径类型, 该连接是否健康)`。
+///
+/// 抽成 `pub(crate)` 的唯一目的是**让 BLE 走同一套入站/出站去重判据**
+/// （`should_accept_inbound`），而不是在第三种传输里复制一份"有没有同路径连接"的判断 ——
+/// 复核报告点名过"同一判断两处实现、行为还不一致"是这个项目踩过的坑。
+#[cfg(feature = "bluetooth")]
+pub(crate) async fn link_snapshot(
+    state: &AppState,
+    peer_id: &str,
+) -> Vec<(MeshEndpoint, PathKind, bool)> {
+    let list = {
+        let links = state.links.lock().await;
+        links.get(peer_id).cloned().unwrap_or_default()
+    };
+    let (timeout_ms, max_failures, conns) = {
+        let pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
+        (
+            pm.health_timeout_ms(),
+            pm.max_failures(),
+            pm.get(peer_id)
+                .map(|p| p.connections().to_vec())
+                .unwrap_or_default(),
+        )
+    };
+    let now = db::now_ms();
+    list.iter()
+        .map(|l| {
+            let healthy = conns
+                .iter()
+                .find(|c| c.endpoint == l.endpoint)
+                .map(|c| c.health.is_healthy(now, timeout_ms, max_failures))
+                .unwrap_or(true);
+            (l.endpoint.clone(), l.path_kind, healthy)
+        })
+        .collect()
+}
+
+/// Hello 验签的 `pub(crate)` 包装：BLE 运行时（`network/ble.rs`）复用同一份验签逻辑，
+/// **不允许**任何传输自己实现一遍（身份认证只应有一个实现）。
+#[cfg(feature = "bluetooth")]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn verify_hello_for_ble(
+    state: &AppState,
+    device_id: &str,
+    tcp_port: u16,
+    nonce: &str,
+    x25519_pubkey: &str,
+    ed25519_pubkey: &str,
+    sig_b64: &str,
+) -> Result<(), String> {
+    verify_hello(
+        state,
+        device_id,
+        tcp_port,
+        nonce,
+        x25519_pubkey,
+        ed25519_pubkey,
+        sig_b64,
+    )
+}
+
+/// 入站去重判据（BLE 侧复用；TCP 侧在 `handle_incoming` 内联调用同一个函数）。
+#[cfg(feature = "bluetooth")]
+pub(crate) fn should_accept_inbound_public(
+    my_id: &str,
+    peer_id: &str,
+    incoming: PathKind,
+    existing: &[(MeshEndpoint, PathKind, bool)],
+) -> bool {
+    should_accept_inbound(my_id, peer_id, incoming, existing)
+}
+
+/// 世代是否仍然有效（D8-4）。
+fn generation_is_current(captured: u64, current: u64) -> bool {
+    captured == current
+}
+
+/// 单个 peer 允许并存的最大链路数（防御"同 peer 反复建链"的无界增长）。
+///
+/// 正常拓扑一个 peer 最多 3 条（LAN + Routed + BLE），取 6 留余量（例如换网瞬间新旧并存）。
+pub(crate) const MAX_LINKS_PER_PEER: usize = 6;
+
+/// **入站去重判据**（D6-2/D6-3 的核心，纯函数便于钉住）。
+///
+/// 背景：接受侧原先**无条件**把新连接 append 进 `links`，于是——
+/// * 任意已验签对端可以反复建链，链条无界增长（每条 2 个 1024 容量信道 + 2 个任务）；
+/// * 两侧都配了对方地址（或 LAN announce 时序不对称）时，同一对等关系会稳定停在
+///   2 条镜像 TCP，`route_order`/心跳/候选都翻倍，还污染 M3 的多路径验收。
+///
+/// 判据设计（必须**确定性且对称**，否则会两边互拒导致谁也连不上）：
+/// 1. 已有同**路径类型**的连接，且「本机是指定拨号方」（`my_id > peer_id`，与
+///    `should_dial` 同一规则）⇒ 拒收这条入站：镜像里保留**我方拨出的**那条
+///    （我方连接由我方健康判据管理，语义最清楚）。对端（小 ID）在同一条件下
+///    会接受我们的拨入 ⇒ 双方算出同一个赢家，不会互拒。
+/// 2. 链路数已达 `MAX_LINKS_PER_PEER` ⇒ 拒收（防无界增长）。
+/// 3. 其余一律接受 —— 尤其**一条都没有时必须接受**，否则直接断掉连通性。
+fn should_accept_inbound(
+    my_id: &str,
+    peer_id: &str,
+    incoming: PathKind,
+    // (端点, 路径类型, 该连接**当前是否健康**)
+    existing: &[(MeshEndpoint, PathKind, bool)],
+) -> bool {
+    if existing.len() >= MAX_LINKS_PER_PEER {
+        return false;
+    }
+    // 只有"指定拨号方"才拒绝镜像；小 ID 方始终接受（它本来就不主动拨）。
+    //
+    // ⚠️ 必须再加"那条已有连接**仍然健康**"：若它已经半开/僵死（还没被 watchdog 拆），
+    // 按路径存在就拒收会把对端**刚拨进来的新鲜连接**也挡掉 —— 而本机因为
+    // `has_lan_path` 仍为真也不会重拨（`ensure_link` 以为 LAN 已连通），于是双方
+    // 要等 watchdog（最长 45s）拆掉死链路才能恢复。加了这个条件，新鲜连接立刻接管，
+    // 恢复时间从"最长 45s"变成"这一次握手"。
+    if my_id > peer_id
+        && existing
+            .iter()
+            .any(|(_, k, healthy)| *k == incoming && *healthy)
+    {
+        return false;
+    }
+    true
+}
+
+/// 小 ID 兜底拨号的触发阈值：对端在线（announce 首次学到）却在本机无连接超过该时长，
+/// 说明大 ID 一方拨不过来（单向可达 / 大 ID 长期离线），小 ID 兜底主动拨号。
+/// 10s = 2 个 announce 周期（announce 5s 一轮），给大 ID 足够时间先拨通。
+const BACKUP_DIAL_AFTER_MS: i64 = 10_000;
+
+/// `ensure_link` 判据的**纯函数内核**（便于非空转单测）：
+/// 该 peer 现有的这些端点里，是否已有**走 LAN 路径**的连接。
+///
+/// 单独抽出来的理由：D5 的回归点正是「把任意连接当成 LAN 已连通」——
+/// 那是**一行布尔表达式**的错误，端到端很难复现（要先 Routed 连上、再等 announce），
+/// 而这里可以逐条钉死：只有 Routed 端点 ⇒ `false`（要继续拨 LAN）。
+fn has_lan_path(links: &[(MeshEndpoint, PathKind)]) -> bool {
+    links.iter().any(|(_, kind)| *kind == PathKind::Lan)
+}
+
+/// 拨号决策的**可测入口**：把「现有连接 → 是否还要拨 LAN」这一步也收进函数里。
+///
+/// 为什么不直接在 `ensure_link` 里算 `has_lan_link`：那样「把任意连接当成 LAN 已连通」
+/// 这个回归（D5）只会体现在一行布尔表达式上，测试无从钉住（helper 单独测是空的 ——
+/// 只要调用点写错，helper 再对也没用）。收进来后，测试直接喂「只有 Routed 端点」，
+/// 回归时该断言必然 FAIL。
+fn should_dial_for_peer(
+    my_id: &str,
+    peer_id: &str,
+    has_endpoint: bool,
+    existing: &[(MeshEndpoint, PathKind)],
+    first_seen: Option<i64>,
+    now_ms: i64,
+) -> bool {
+    // 判据是**同路径（LAN）已连通**，不是「有任意连接」：后者会让先经 Routed 连上的
+    // 对等关系永远拿不到 LAN 链路（D5）。
+    let has_lan_link = has_endpoint || has_lan_path(existing);
+    should_dial(my_id, peer_id, has_endpoint, has_lan_link, first_seen, now_ms)
+}
+
+/// 是否该主动拨这个端点（纯函数，便于单测 + 护栏非空转）。
+///
+/// 决策顺序（越靠前越确定、越便宜，命中即短路）：
+/// 1. `has_endpoint`：**这个端点**已经连上了 → 无事可做。
+/// 2. `has_lan_link`：**LAN 这条路径**已经连通 → 不拨。
+///    这一条源自 P1-2 的修正（原为「任意链路」），但 2026-09-12 复核发现原判据过宽：
+///    只要 peer 有任何一条连接（例如先经 Routed/Tailscale 连上），LAN 路径就**永远拿不到**
+///    ⇒ M3 的「LAN > Routed」优先级在这些拓扑里**永不生效**，多路径退化成单路径。
+///    现在只在「LAN 已连通」时短路，Routed-first 的对等关系仍会补一条 LAN。
+///
+///    为什么不能按「这个端点」判（`has_endpoint` 单独判不行）：接受侧 `handle_incoming`
+///    记录的 `Link.endpoint` 是 TCP **源地址（临时端口）**，而这里拿到的是 announce 自报的
+///    **监听地址**，两者永不相等 ⇒ 被动方（小 ID）的第 1 条永远不命中，10s 后兜底拨号会
+///    反向再拨一条，同一对节点稳定停留 **2 条镜像 TCP**。所以「同路径是否已连通」必须按
+///    **路径类型**判（LAN 链路无论端点记的是监听地址还是临时端口，路径都是 LAN）。
+/// 3. 本机是大 ID（`my_id > peer_id`）：恒拨（对称场景的确定性拨号方）。
+/// 4. 本机是小 ID：仅当对端在线（`first_seen` 有值）且「首次发现」已超过
+///    `BACKUP_DIAL_AFTER_MS` 才兜底拨 —— 给大 ID 足够时间先拨通；单侧不可达
+///    （不对称 NAT / 防火墙）时由小 ID 补齐连通性。
+fn should_dial(
+    my_id: &str,
+    peer_id: &str,
+    has_endpoint: bool,
+    has_lan_link: bool,
+    first_seen: Option<i64>,
+    now_ms: i64,
+) -> bool {
+    if has_endpoint || has_lan_link {
+        return false;
+    }
+    if my_id > peer_id {
+        return true;
+    }
+    first_seen.is_some_and(|since| now_ms - since >= BACKUP_DIAL_AFTER_MS)
+}
 
 pub async fn ensure_link(
     state: &Arc<AppState>,
@@ -548,80 +1920,272 @@ pub async fn ensure_link(
     tcp_port: u16,
     shutdown: watch::Receiver<bool>,
 ) {
-    if peer_id >= state.device_id.as_str() {
-        return; // 只有小 ID 拨号
-    }
-    if state.links.lock().await.contains_key(peer_id) {
+    // 端点解析失败则放弃本轮（下一轮 announce 会再试）。
+    let Some(endpoint) = socket_addr_from(ip, tcp_port) else { return };
+    // ① 这个端点已经连上了（典型是「自己拨出去的那条」）→ 本轮无事可做。
+    let has_endpoint = state
+        .has_endpoint(peer_id, &MeshEndpoint::Tcp(endpoint))
+        .await;
+    // ② **LAN 这条路径**已经连通 → 不再拨。
+    //
+    // 判据是「同路径是否已连通」，不是「有没有任意连接」也不是「有没有连到这个端点」：
+    //   · 按端点判：接受侧记的是临时端口、这里比的是监听地址，永不相等 ⇒ 镜像重拨
+    //     （见 `should_dial` 注释）；
+    //   · 按「任意连接」判：先经 Routed/Tailscale/BLE 连上的对等关系**永远拿不到 LAN 链路**
+    //     ⇒ M3 的「LAN > Routed」优先级永不生效（2026-09-12 复核抓到的多路径硬阻塞）。
+    // 本函数只负责**给 LAN 路径补连通性**；Routed 由配置驱动、BLE 由发现驱动，都不经过这里。
+    // 现有连接的端点快照（锁内只取数据，决策在锁外做）。
+    // 快照里带上**路径类型**：判"LAN 是否已连通"必须看 Link 自己记的路径，
+    // 不能按端点 IP 段反推（用户配置的私有段 Routed 端点会被误判成 LAN）。
+    let existing_links: Vec<(MeshEndpoint, PathKind)> = {
+        let links = state.links.lock().await;
+        links
+            .get(peer_id)
+            .map(|v| v.iter().map(|l| (l.endpoint.clone(), l.path_kind)).collect())
+            .unwrap_or_default()
+    };
+    // 首次建链：大 ID 立即拨号，小 ID 等大 ID 拨；小 ID 在「对端在线却迟迟连不上」时兜底。
+    let should = {
+        let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
+        let first_seen = peers.get(peer_id).and_then(|p| p.first_seen);
+        should_dial_for_peer(
+            &state.device_id,
+            peer_id,
+            has_endpoint,
+            &existing_links,
+            first_seen,
+            db::now_ms(),
+        )
+    };
+    if !should {
         return;
     }
-    connect_to_peer(state, peer_id, ip, tcp_port, shutdown).await;
+    // LAN 发现路径的拨号失败是常态（对端离线、或本轮该由对端拨），刻意不打日志；
+    // 但**握手验签失败/身份不符**会在 `connect_to_peer` 内以 warn + 诊断事件留痕
+    // （那是「有人冒充」或「配置写错」的信号，不能静默）。
+    let _ = connect_to_peer(state, Some(peer_id), endpoint, PathKind::Lan, shutdown).await;
 }
 
+/// 建立一条到 `endpoint` 的连接。
+///
+/// 调用方传 **已解析好的 `SocketAddr`**：地址的解析与校验在配置/announce 层各做一次，
+/// 这里不再「拼字符串再解析」（那是 IPv6 丢方括号的根源）。
+///
+/// `known_id` 决定握手方式：
+/// - `Some(id)`：身份已知（LAN announce 学到 / 用户显式配置了 `device_id`）。
+///   ⚠️ **仍然要握手验签**：`id` 只说明「对方自称/我们以为它是谁」，
+///   未认证的 announce 不能充当身份（否则任意进程可冒用好友 id 接链并伪造 Ack /
+///   FriendRemove）。且要求对端自称的 device_id 与 `id` 一致，不一致即失败留痕 ——
+///   这样「配置写错」不再表现为静默单向黑洞。
+/// - `None`：身份未知（Routed 端点只填了地址）。此时**必须先握手**：发自己的 Hello →
+///   等对端回发的 Hello → 验签 → 得到真实 `device_id` 与双公钥，再登记链路。
+///   这正是 §8 的 `IP:PORT → TCP → Hello → Node ID → Identity`，
+///   也是「不用手填 device_id」的实现方式。
+///
+/// 为什么必须「先握手、再登记」：链路 key（`links` 的 HashMap key，以及 `writer_loop`
+/// 持有的 `peer_id`）必须在 spawn 之前确定，而 `writer_loop` 要用它回写
+/// `pending_reads`，事后无法改名。
 async fn connect_to_peer(
     state: &Arc<AppState>,
-    peer_id: &str,
-    ip: &str,
-    tcp_port: u16,
-    shutdown: watch::Receiver<bool>,
-) {
-    {
-        let links = state.links.lock().await;
-        if links.contains_key(peer_id) {
-            return;
-        }
+    known_id: Option<&str>,
+    endpoint: SocketAddr,
+    path_kind: PathKind,
+    mut shutdown: watch::Receiver<bool>,
+) -> DialOutcome {
+    // 传输无关的端点表示（拨号本身仍是 TCP：BLE 走自己的拨号路径，见 ADR-0015）
+    let ep = MeshEndpoint::Tcp(endpoint);
+    // ① **在途去重（D6）**：`has_endpoint` 与"登记链路"之间隔着 connect + 握手（最长 10s），
+    //    两条并发路径会同时看到"还没连上"从而各拨一条 ⇒ `links[peer]` 出现两条同端点链路。
+    //    这里用 RAII 守卫登记"我正在拨"，任何提前返回/panic 都会自动释放。
+    //    键：身份已知用 `peer:`（同一 peer 的不同地址不该同时拨），否则用 `ep:`。
+    let dial_key = match known_id {
+        Some(id) => format!("peer:{id}"),
+        None => format!("ep:{endpoint}"),
+    };
+    let _in_flight = match crate::state::DialGuard::try_acquire(state, dial_key) {
+        Some(g) => g,
+        None => return DialOutcome::AlreadyDialing,
+    };
+    // ② 并发上限：挡"大量**不同**目标"的拨号洪泛（伪造 announce 可批量制造）。
+    //    拿不到许可就本轮放弃 —— announce 5s 一轮、Routed 10s 一轮，都会再来。
+    let Ok(_permit) = state.dial_permits.clone().try_acquire_owned() else {
+        return DialOutcome::DialBusy;
+    };
+    // ③ 按端点去重：与 `ensure_link` 的检查构成双重保险（announce 与 Routed 拨号会并发触发）。
+    // 身份未知时只能按端点判 —— 否则 10s 重试的每一轮都会重复建链。
+    let already = match known_id {
+        Some(id) => state.has_endpoint(id, &ep).await,
+        None => state.has_endpoint_addr(&ep).await,
+    };
+    if already {
+        return DialOutcome::AlreadyConnected;
     }
 
-    let addr = format!("{ip}:{tcp_port}");
-    let stream = match TcpStream::connect(&addr).await {
-        Ok(s) => s,
-        Err(_) => return,
+    // connect 与停机信号赛跑：`stop()` 只等后台任务 2s，若 connect 正在等超时，
+    // 不中断就会拖慢退出 / `app.restart()`（后者还会与端口释放抢时间）。
+    let stream = tokio::select! {
+        biased;
+        _ = shutdown.changed() => return DialOutcome::Stopped,
+        res = tokio::time::timeout(CONNECT_TIMEOUT, TcpStream::connect(endpoint)) => match res {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => return DialOutcome::Failed(format!("连接失败: {e}")),
+            Err(_) => {
+                return DialOutcome::Failed(format!(
+                    "连接超时（{}s 内未建立）",
+                    CONNECT_TIMEOUT.as_secs()
+                ))
+            }
+        },
     };
 
-    let (r, w) = stream.into_split();
+    let (raw_r, raw_w) = stream.into_split();
+    // 握手阶段要直接读写 socket（此时还没有 writer / reader 循环），故声明为 mut。
+    let mut r = TcpReceiver::new(raw_r);
+    let mut w = TcpSender::new(raw_w);
+
+    // ---- 握手：**两条路径都必须验签**（§8 / ADR-0011）----
+    //
+    // 这里刻意**不做**「已知 id 就跳过握手」的捷径。复核抓到的 High 缺陷正是这个捷径：
+    // `known_id` 来自**未认证的 UDP announce**（`pkt.device_id` + `src.ip()`）或本地配置，
+    // 它只是「对方自称是谁 / 我们以为它是谁」，**不是身份**。跳过握手 ⇒ 任意进程只要
+    // 广播一个好友的 device_id，就会被拨号并**以此身份**接链；随后它能伪造
+    // FriendRemove（静默删好友）/ UserInfo / ReadReceipt / **Ack** —— 其中 Ack 会让
+    // 发送方删掉 outbox 行，等于对**真实**好友的消息静默永久丢失。
+    // 同理，配置里写错或过期的 device_id 会变成「能连上、但对方所有帧都被丢弃」的
+    // 单向黑洞，而且原先**一行日志都没有**。
+    //
+    // 现在：先发自己的 Hello → 读对端 Hello → **必须验签**；`Some(id)` 还要求
+    // 对端自称的 device_id 与预期一致，不一致直接失败并留日志。
+    let conv_clock = match known_id {
+        // 已知身份：可以带上真实会话时钟（未知身份只能发 0，对端 observe_clock 取 max 不会倒退）。
+        Some(id) => {
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+            db::get_clock(&dbc, id)
+        }
+        None => 0,
+    };
+    let hello = build_signed_hello(state, conv_clock);
+    if let Err(e) = write_frame(&mut w, &hello).await {
+        return DialOutcome::Failed(format!("握手发送失败: {e}"));
+    }
+    // 读对端回发的 Hello（对端收到我们的 Hello 后会回发，见 `handle_incoming`）。
+    let first = tokio::select! {
+        biased;
+        _ = shutdown.changed() => return DialOutcome::Stopped,
+        res = tokio::time::timeout(HANDSHAKE_TIMEOUT, read_frame(&mut r)) => match res {
+            Ok(Ok(m)) => m,
+            Ok(Err(e)) => return DialOutcome::Failed(format!("握手读取失败: {e}")),
+            Err(_) => {
+                return DialOutcome::Failed(format!(
+                    "握手超时（{}s 内未收到对端 Hello —— 对端可能不是 Gosslan 节点）",
+                    HANDSHAKE_TIMEOUT.as_secs()
+                ))
+            }
+        },
+    };
+    let Message::Hello {
+        device_id,
+        tcp_port,
+        nonce,
+        sig,
+        x25519_pubkey,
+        ed25519_pubkey,
+        ..
+    } = &first
+    else {
+        return DialOutcome::Failed("握手失败: 对端首帧不是 Hello".to_string());
+    };
+    // 身份一致性：拨号目标是我们**以为**的 id 时，对端必须就是它。
+    // 不匹配就断开并留日志 —— 既堵住冒充，也让「配置写错」不再表现为静默黑洞。
+    if let Some(expected) = known_id {
+        if device_id != expected {
+            let reason = format!(
+                "握手身份不符：预期 {expected}，对端自称 {device_id}（端点 {endpoint}）"
+            );
+            state.push_diag_event("hello_mismatch", &reason);
+            state.logger.warn("transport", reason.clone());
+            return DialOutcome::Failed(reason);
+        }
+    }
+    if let Err(reason) = verify_hello(
+        state,
+        device_id,
+        *tcp_port,
+        nonce,
+        x25519_pubkey,
+        ed25519_pubkey,
+        sig,
+    ) {
+        state.push_diag_event("hello_rejected", &format!("{reason}; from={endpoint}"));
+        state.logger.warn("transport", format!("握手验签失败：{reason}（端点 {endpoint}）"));
+        return DialOutcome::Failed(format!("握手失败: {reason}"));
+    }
+    let peer_id: String = device_id.clone();
+    let learned_hello: Option<Message> = Some(first);
+
     let (bulk_tx, bulk_rx) = mpsc::channel(1024);
     let (prio_tx, prio_rx) = mpsc::channel(1024);
+    // 本连接独立的取消信号（M3#6），语义同 `handle_incoming`。
+    let (cancel_tx, cancel_rx) = watch::channel(false);
     state
         .links
         .lock()
         .await
-        .insert(peer_id.to_string(), bulk_tx.clone());
-    state
-        .priority_links
-        .lock()
-        .await
-        .insert(peer_id.to_string(), prio_tx.clone());
+        .entry(peer_id.clone())
+        .or_default()
+        .push(Link {
+            endpoint: MeshEndpoint::Tcp(endpoint),
+            path_kind,
+            bulk: bulk_tx.clone(),
+            priority: prio_tx.clone(),
+            cancel: cancel_tx,
+        });
+    // 同步到 mesh 层（拨号侧同样登记，路径类型由调用方携带）
+    register_connection(state, &peer_id, ep.clone(), path_kind);
     tokio::spawn(writer_loop(
         state.clone(),
-        peer_id.to_string(),
+        peer_id.clone(),
+        ep.clone(),
         w,
         bulk_rx,
         prio_rx,
         shutdown.clone(),
+        cancel_rx.clone(),
     ));
 
-    let conv_clock = {
-        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::get_clock(&dbc, peer_id)
-    };
-    let hello = build_signed_hello(state, conv_clock);
-    let _ = prio_tx.send(hello).await;
+    // 握手已在建链前完成（两条路径都发过自己的 Hello，且都验过对端的 Hello），
+    // 这里就地处理对端首帧 —— 走的正是 `handle_incoming` 那条路径
+    // （写身份 + 双公钥、对齐会话时钟、冲刷待发队列）。
+    if known_id.is_none() {
+        // 留痕：配置里没写 device_id 时，这行日志是用户/开发者**唯一**能确认
+        // 「到底连上了谁」的地方。
+        state.logger.info(
+            "transport",
+            format!("握手学到对端身份 peer={peer_id} ep={endpoint}"),
+        );
+    }
+    if let Some(first) = learned_hello {
+        handle_message(state, &peer_id, first).await;
+    }
 
     tokio::spawn(reader_loop(
         state.clone(),
         r,
-        peer_id.to_string(),
+        peer_id.clone(),
+        ep.clone(),
         bulk_tx,
-        shutdown,
+        shutdown, cancel_rx,
     ));
-    flush_outbox(state, peer_id).await;
-    flush_group_outbox(state, peer_id).await;
-    flush_pending_reads(state, peer_id).await;
-    flush_pending_group_reads(state, peer_id).await;
-    crate::commands::flush_pending_files(state, peer_id).await;
+    flush_outbox(state, &peer_id).await;
+    flush_group_outbox(state, &peer_id).await;
+    flush_pending_reads(state, &peer_id).await;
+    flush_pending_group_reads(state, &peer_id).await;
+    crate::commands::flush_pending_files(state, &peer_id).await;
     // 主动拨号建链完成：补发此前因无 link 而未送达的群密钥
-    flush_pending_group_keys(state, peer_id).await;
+    flush_pending_group_keys(state, &peer_id).await;
     // 群文件离线投递：该 peer 的 pending GroupFile 顺序发送
-    crate::commands::flush_pending_group_files(state, peer_id).await;
+    crate::commands::flush_pending_group_files(state, &peer_id).await;
+    DialOutcome::Connected
 }
 
 // ---------------- 消息分发 ----------------
@@ -632,6 +2196,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             device_id,
             nickname,
             avatar,
+            device_type,
             tcp_port,
             x25519_pubkey,
             ed25519_pubkey,
@@ -653,6 +2218,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 &device_id,
                 &nickname,
                 avatar.clone(),
+                &device_type,
                 &ip,
                 tcp_port,
                 Some(x25519_pubkey),
@@ -675,6 +2241,79 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             flush_pending_group_keys(state, &device_id).await;
             // 群文件离线投递：该 peer 的 pending GroupFile 顺序发送
             crate::commands::flush_pending_group_files(state, &device_id).await;
+            // 好友申请没有回执：建链补全时补发一次（用户真机：链路抖动丢过一次，
+            // 对方什么都没收到，而我方界面显示"已发送"）。
+            flush_pending_friend_request(state, &device_id).await;
+            // 好友同意回执同样没有回执：建链后补发（真机：Mac 端好友状态一直没同步）。
+            flush_pending_friend_accept(state, &device_id).await;
+        }
+        // ---- Phase 8（ADR-0017）：外部 mesh（BitChat）的不透明帧，Gosslan 只当中继 ----
+        //
+        // 三个行为，别的什么都不做：**收得到 · 去得掉重 · TTL 递减后转发**。
+        // 不解密、不落库、不建 BitChat 用户/channel；载荷对 Gosslan 永远是不透明字节。
+        Message::OpaqueExternal { id, ttl, payload } => {
+            // 健壮性底线（ADR-0017 决策更新里保留的那条）：畸形/超限帧**只丢这一帧**，
+            // 绝不断链 —— 记一条日志就返回，连接的读循环继续跑。
+            let bytes = match crate::protocol::validate_opaque_external(&id, ttl, &payload) {
+                Ok(b) => b,
+                Err(why) => {
+                    state
+                        .logger
+                        .warn("mesh", format!("丢弃不透明外部帧（{why}）from={peer_id}"));
+                    return;
+                }
+            };
+            // 去重 + TTL 递减：与业务帧**同一条流水线**（MeshRouter 不解析载荷，P-A03）。
+            let decision = {
+                let mut router = state.mesh_router.lock().unwrap_or_else(|e| e.into_inner());
+                router.on_receive(
+                    MeshFrame {
+                        frame_id: id.clone(),
+                        source_node_id: peer_id.to_string(),
+                        destination: MeshDestination::Broadcast,
+                        ttl,
+                        kind: MeshFrameKind::OpaqueExternal,
+                        // 载荷交给路由器只为"同样的流水线"，它不解析、不落库
+                        payload: bytes,
+                    },
+                    &state.device_id,
+                )
+            };
+            let ForwardDecision::Forward { frame, .. } = decision else {
+                // 重复帧或 TTL 耗尽 —— 这正是"去得掉重"的落点
+                state
+                    .logger
+                    .info("mesh", format!("不透明外部帧未转发（重复或 TTL 耗尽）id={id}"));
+                return;
+            };
+            // 转发用路由器给出的 ttl（**已经递减**），fan-out 选邻居并排除来源节点
+            let fwd = Message::OpaqueExternal {
+                id: frame.frame_id.clone(),
+                ttl: frame.ttl,
+                payload,
+            };
+            let targets: Vec<String> = {
+                let peers: Vec<String> = state
+                    .peers
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .keys()
+                    .cloned()
+                    .collect();
+                let gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
+                gossip.choose_fanout(&peers, peer_id)
+            };
+            if targets.is_empty() {
+                return;
+            }
+            // 与业务转发同一纪律：**不阻塞本连接的读循环**，用一个任务串行发完
+            let st = state.clone();
+            let msg = fwd;
+            tokio::spawn(async move {
+                for t in targets {
+                    let _ = try_send(&st, &t, &msg).await;
+                }
+            });
         }
         Message::Heartbeat { device_id } => {
             if device_id != peer_id {
@@ -688,11 +2327,16 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             crate::commands::flush_pending_files(state, &device_id).await;
             flush_pending_group_keys(state, &device_id).await;
             crate::commands::flush_pending_group_files(state, &device_id).await;
+            // 心跳 = 链路确实活着。这一帧丢了的好友申请/同意回执在这里补发，
+            // 不必等到链路再断一次、重新建链（真机：点了加好友要等几分钟才有反应）。
+            flush_pending_friend_request(state, &device_id).await;
+            flush_pending_friend_accept(state, &device_id).await;
         }
         Message::UserInfo {
             device_id,
             nickname,
             avatar,
+            device_type,
         } => {
             if device_id != peer_id {
                 return;
@@ -709,6 +2353,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 &device_id,
                 &nickname,
                 avatar.clone(),
+                &device_type,
                 &ip,
                 0,
                 None,
@@ -760,6 +2405,10 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             if to != state.device_id {
                 return;
             }
+            // 他已经是我的好友 ⇒ 直接同意（别插 pending，见 auto_accept_if_already_friend）
+            if auto_accept_if_already_friend(state, &from).await {
+                return;
+            }
             let req = PendingRequest {
                 from: from.clone(),
                 from_nickname: from_nickname.clone(),
@@ -804,6 +2453,8 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                     db::update_friend_pubkeys(&dbc, &from, x.as_deref(), e.as_deref()).ok();
                 }
             }
+            // 已经是好友了 ⇒ 这条申请必须消失（否则「新朋友」里会留着一条永远处理不掉的申请）
+            forget_pending_request(state, &from);
             let _ = state.app.emit("friend-accepted", &from);
             notify(
                 &state.app,
@@ -829,6 +2480,9 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 return;
             }
             // 对方删除了好友关系：移除本地好友行（不删除聊天记录）
+            // ⚠️ 与 `remove_friend` 对称：**关系解除就解除身份绑定**，否则对方重装换过公钥后
+            // 这条内存里的旧公钥会一直当信任根用（症状同样是"只能重启"）。
+            forget_peer_identity(state, &from);
             let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
             db::remove_friend(&dbc, &from).ok();
             drop(dbc);
@@ -882,6 +2536,11 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 db::message_exists(&dbc, &msg_id)
             };
             if exists {
+                // 重复投递也要回 Ack（否则一次丢 ACK = 发送方永远"发送中"）：
+                // 留痕区分"没收到"与"收到了但 ACK 丢了"。
+                state
+                    .logger
+                    .info("ble", format!("[ACK] 重复消息仍回执 msg_id={msg_id} ← peer={peer_id}"));
                 let _ = try_send(state, peer_id, &Message::Ack { msg_id }).await;
                 return;
             }
@@ -955,8 +2614,16 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             }
             if announced_on(&inserted) {
                 let _ = state.app.emit("message-received", &out_rec);
+                // 直连单聊消息：链路 = 入站连接的路径，0 个中间节点。
+                let path = inbound_path_kind(state, peer_id).await;
+                update_conv_link(state, &from, &path, 0);
             }
             // Ack 与「是否本次新建」无关：消息已在库中（无论是哪条路径先写的）即代表已成功接收
+            // 留痕（用户要求）：没有这条日志时，"发送中"到底是"没收到"还是"ACK 丢了"分不清。
+            state.logger.info(
+                "ble",
+                format!("[ACK] 已持久化 ⇒ 回执 msg_id={msg_id} → peer={peer_id}"),
+            );
             let _ = try_send(state, peer_id, &Message::Ack { msg_id }).await;
         }
         Message::Ack { msg_id } => {
@@ -1144,6 +2811,25 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 let _ = try_send(state, peer_id, &Message::FileReject { transfer_id }).await;
                 return;
             };
+            // **重复的 offer 必须幂等接受**：对端没收到我们的 accept 时会重发同一个
+            // transfer_id，旧行为回 `FileReject("重复的文件传输")` ⇒ 对端判定失败、停止重试
+            // ⇒ 文件永远到不了（真机：大图两边都显示成功、接收侧列表里没有）。这里直接
+            // 再回一次 accept，让对端继续把剩下的分片发完。
+            if file::has_receiver(state, &transfer_id) {
+                state.logger.info(
+                    "file",
+                    format!("重复的文件请求 ⇒ 幂等回 accept transfer={transfer_id}"),
+                );
+                let _ = try_send(
+                    state,
+                    peer_id,
+                    &Message::FileAccept {
+                        transfer_id: transfer_id.clone(),
+                    },
+                )
+                .await;
+                return;
+            }
             match file::begin_receive(
                 state,
                 &transfer_id,
@@ -1173,7 +2859,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 }
                 Err(e) => {
                     let _ = try_send(state, peer_id, &Message::FileReject { transfer_id }).await;
-                    eprintln!("接收文件初始化失败: {e}");
+                    state.logger.error("file", format!("接收文件初始化失败: {e}"));
                 }
             }
         }
@@ -1724,6 +3410,48 @@ fn may_ack(inserted: &Result<bool, rusqlite::Error>) -> bool {
 
 // ---------------- Gossip 处理 ----------------
 
+/// 多跳转发：把 MeshFrame 载荷还原成 GossipEnvelope，发给选中的下一跳。
+///
+/// **不新增协议**：转发出去的仍是 `Message::Gossip`，下一跳按现有逻辑处理，
+/// 因此 wire 格式不变、新旧客户端仍然互通（避免触发 INV-P13 的协议变更流程）。
+///
+/// 排除两类目标：
+/// ① 原始源节点（§18 source exclusion，由 `select_outgoing` 完成）；
+/// ② 该帧的入站 peer —— 发回去只是浪费，下一跳的 dedup 也会把它丢弃。
+///
+/// 转发是**尽力而为**：失败可忽略。Gossip 的可靠性由 outbox / dedup 保证，
+/// 不依赖中继成功。
+/// 群信封能否被**本机消费**（= 是否允许进入第 5 步的本地处理）。
+///
+/// ⚠️ 这条判据**只管"消费"，不管"转发"**（2026-09-13 审计的真缺陷）。
+///
+/// 旧实现在这里直接 `return`，于是**非成员中继根本不会转发群消息**：
+/// 三个 BLE-only 设备串成 A—B—C 时，只要 B 不在群里，A 发的群消息到 B 就没了
+/// —— 而同一条链路上单聊是通的（单聊走定向 target 分支）。
+/// 表现就是"BLE mesh 上群聊永远不通、私聊却正常"。
+///
+/// 语义边界（为什么"非成员转发"是安全的）：
+/// - 群消息正文用**群密钥**对称加密，非成员没有密钥 ⇒ 解不开（`plaintext = None`），
+///   转发它只是搬密文，不泄露任何内容；
+/// - 是否愿意替别人转发，由**中继授权（M4）**决定（`decide_forward`），不靠这条判据；
+/// - `sender` 必须在成员表里：签名只证明"是谁发的"，不证明"发送者有权把人拉进群"，
+///   所以伪造者发的群信封即使广播过来，本机也不消费它。
+pub(crate) fn group_envelope_consumable(
+    kind: &GossipKind,
+    members: &[String],
+    me: &str,
+    sender: &str,
+) -> bool {
+    if !matches!(kind, GossipKind::Group) {
+        return true;
+    }
+    // 成员表为空 = 旧端 / 早期实现发的群信封，保持兼容（与旧代码同口径）
+    if members.is_empty() {
+        return true;
+    }
+    members.iter().any(|m| m == me) && members.iter().any(|m| m == sender)
+}
+
 async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope) {
     // Gossip 可经第三方转发，不能仅凭信封内自报的 Ed25519 公钥建立身份。
     // 公钥必须先由 Discovery/Hello 绑定到同一个 device_id；若已知 X25519
@@ -1733,16 +3461,36 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
             false
         } else {
             let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
-            peers.get(&env.sender_id).is_some_and(|p| {
-                let direct_peer = peer_id == env.sender_id;
-                (p.ed25519_pubkey.as_deref() == Some(env.sender_ed25519.as_str())
-                    || (direct_peer && p.ed25519_pubkey.is_none()))
-                    && (p
-                        .x25519_pubkey
-                        .as_deref()
-                        .is_none_or(|key| key == env.sender_pubkey)
-                        || (direct_peer && p.x25519_pubkey.is_none()))
-            })
+            match peers.get(&env.sender_id) {
+                // 已认识：公钥必须匹配（无论是直连还是跨跳转发），防冒充。
+                Some(p) => {
+                    let direct_peer = peer_id == env.sender_id;
+                    (p.ed25519_pubkey.as_deref() == Some(env.sender_ed25519.as_str())
+                        || (direct_peer && p.ed25519_pubkey.is_none()))
+                        && (p
+                            .x25519_pubkey
+                            .as_deref()
+                            .is_none_or(|key| key == env.sender_pubkey)
+                            || (direct_peer && p.x25519_pubkey.is_none()))
+                }
+                // 未认识：仅 Presence（节点通告）允许 TOFU —— 它存在的目的就是
+                // 让「不认识」的节点被全网看到。其余消息仍拒，避免陌生人直接投递。
+                None => match env.kind {
+                    GossipKind::Presence
+                    | GossipKind::FriendRequest
+                    | GossipKind::FriendAccept => true,
+                    // 回执/确认不能 TOFU：发送方必须是「已绑定身份」的好友。
+                    // peers 是内存态，进程重启后为空，此处回退到 friends 表
+                    // （持久化的 ed25519 公钥）完成身份绑定，避免重启后跨跳
+                    // 回执被误拒。
+                    GossipKind::ChatAck | GossipKind::ChatReadReceipt => {
+                        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                        db::get_friend_ed25519(&dbc, &env.sender_id).as_deref()
+                            == Some(env.sender_ed25519.as_str())
+                    }
+                    _ => false,
+                },
+            }
         }
     };
     if !sender_trusted {
@@ -1769,6 +3517,33 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
             return;
         }
         drop(gossip);
+        // Mesh 层：**全局去重 + TTL 判定**（§15 / §16 / §17）。
+        //
+        // 必须在**验签之后**才登记去重表，否则攻击者可用伪造的 frame_id 污染
+        // Bloom，抢先占用真实帧的 id 造成合法消息被丢弃 —— 与上面 GossipEngine
+        // 的防护同理。
+        //
+        // ⚠️ 这里**只判定不转发**：真正的多跳转发在下面第 4 步（`decide_forward` +
+        // `choose_fanout`）。历史上这里还有一条由 `MeshRouter::relay_enabled` 门控的
+        // 转发路径（默认关闭、生产从不调用），2026-09-12 已删除 ——
+        // **中继授权的唯一真相是 `settings.relay_policy`**（ADR-0016），
+        // 接 BLE 时不要再复制第二份转发记账。
+        {
+            let mut router = state.mesh_router.lock().unwrap_or_else(|e| e.into_inner());
+            let frame = MeshFrame {
+                frame_id: env.message_id.clone(),
+                source_node_id: env.sender_id.clone(),
+                destination: MeshDestination::Broadcast,
+                ttl: env.ttl,
+                kind: MeshFrameKind::Gosslan,
+                // 转发在别处做，这里只需要元数据（MeshRouter 不解析载荷，P-A03）
+                payload: Vec::new(),
+            };
+            if let ForwardDecision::Drop(_) = router.on_receive(frame, &state.device_id) {
+                return;
+            }
+        }
+        // 业务层去重（Mesh 之后的第二道防线）
         let mut gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
         if !gossip.is_new(&env.message_id) {
             return;
@@ -1821,35 +3596,124 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                 // 已在 encrypted=false 分支处理，这里不应进入
                 return;
             }
+            GossipKind::Presence => {
+                // Presence 必然是明文；收到 encrypted=true 的是异常，丢弃。
+                return;
+            }
+            GossipKind::FriendRequest | GossipKind::FriendAccept => {
+                // 定向好友控制消息：发送方用 target 的 X25519 公钥加密，只有 target
+                // 能用自己的私钥解开；中间节点解不开（plaintext=None），无害。
+                let shared =
+                    crypto::shared_secret(&state.identity.x25519_secret, &env.sender_pubkey);
+                shared.and_then(|s| {
+                    STANDARD
+                        .decode(&env.payload)
+                        .ok()
+                        .and_then(|d| crypto::open(&s, &d))
+                })
+            }
+            GossipKind::ChatAck | GossipKind::ChatReadReceipt => {
+                // 回执/确认必然是明文；收到 encrypted=true 的是异常，丢弃。
+                return;
+            }
         }
     };
 
-    // 群信封即使签名正确，也只能被群成员消费；签名证明“是谁发的”，
+    // 群信封即使签名正确，也只能被群成员**消费**；签名证明“是谁发的”，
     // 不代表发送者有权把任意节点加入一个群。
-    if matches!(env.kind, GossipKind::Group) && !env.group_members.is_empty() {
-        if !env.group_members.iter().any(|m| m == &state.device_id)
-            || !env.group_members.iter().any(|m| m == &env.sender_id)
-        {
-            return;
-        }
-    }
+    //
+    // ⚠️ 这里**只记判据、不 return**（2026-09-13 审计）：非成员也要继续走第 4 步的转发，
+    // 否则 BLE-only 三点中继里的群聊永远不通（细节见 `group_envelope_consumable` 的注释）。
+    let group_consumable =
+        group_envelope_consumable(&env.kind, &env.group_members, &state.device_id, &env.sender_id);
 
-    // 4. 转发（fan-out，TTL 衰减）— 所有 GossipKind 统一转发
-    if env.ttl > 1 {
-        let peers: Vec<String> = state.peers.lock().unwrap_or_else(|e| e.into_inner()).keys().cloned().collect();
-        let targets = {
-            let gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
-            gossip.choose_fanout(&peers, &env.sender_id)
+    // 4. 转发（fan-out，TTL 衰减）— 先过**中继授权**（P2 / M4），再选人转发。
+    //
+    // 三条判据全部收在 `mesh::relay_policy::decide_forward` 里（真值表有单测），
+    // 这里只负责喂事实，避免把传播语义散落成 if：
+    //   ① 定向帧到达目标后**停止转发**（本机就是 target，只消费）：否则目标会把定向帧
+    //      再洪泛给其他邻居，邻居又按 target 定向转发回来，形成冗余中转与回环。真机反馈
+    //      「同网段好友申请一直中转、清掉还冒出来」正是这个回环造成的；
+    //   ② TTL 耗尽不再转发；
+    //   ③ 替**别人**转发要过授权策略（自己发的信封不受策略限制）。
+    //
+    // ⚠️ 默认策略是 `all`（与今天逐字节一致）；好友/白名单查询是**按需**的 ——
+    // `all`/`off` 下一次库都不查，转发热路径零额外开销。
+    let is_target = env.target.as_deref() == Some(state.device_id.as_str());
+    let sender_is_me = env.sender_id == state.device_id;
+    let relay_cfg = state.relay_policy_config();
+    let may_forward = crate::mesh::relay_policy::decide_forward(
+        &relay_cfg,
+        is_target,
+        env.ttl,
+        sender_is_me,
+        &env.sender_id,
+        || {
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+            db::get_friend(&dbc, &env.sender_id).is_some()
+        },
+    );
+    if may_forward {
+        // 定向帧（FriendRequest/FriendAccept/ChatAck/ChatReadReceipt）优先精确定向：
+        // target 是本机直连就只发它；无直连路径时洪泛兜底（第一版无路由表）。广播帧保持 fan-out。
+        let targets: Vec<String> = match env.target.as_deref() {
+            Some(t) => {
+                // ⚠️ 必须判「有**非空**链路」（等价于 `has_link`），不能用 `contains_key`：
+                // 后者会把残留的空 Vec 当成「直连」→ 走只发 target 的分支 →
+                // `try_send` 返回「未建立连接」，而**洪泛兜底不会执行** ⇒
+                // 跨跳的好友申请 / 送达回执 / 已读回执可能永久丢失（复核抓到的缺陷）。
+                let direct = {
+                    let links = state.links.lock().await;
+                    links.get(t).is_some_and(|v| !v.is_empty())
+                };
+                if direct {
+                    vec![t.to_string()]
+                } else {
+                    let peers: Vec<String> = state
+                        .peers
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .keys()
+                        .cloned()
+                        .collect();
+                    let gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
+                    gossip.choose_fanout(&peers, &env.sender_id)
+                }
+            }
+            None => {
+                let peers: Vec<String> = state
+                    .peers
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .keys()
+                    .cloned()
+                    .collect();
+                let gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
+                gossip.choose_fanout(&peers, &env.sender_id)
+            }
         };
         let mut fwd = env.clone();
         fwd.ttl -= 1;
         let fwd_msg = Message::Gossip { envelope: fwd };
-        for t in targets {
-            let _ = try_send(state, &t, &fwd_msg).await;
-        }
+        // ⚠️ 转发**不阻塞本连接的读循环**：`try_send` 在信道满时有界补试 500ms，
+        // 逐条 await 最坏 4 × 500ms = 2s —— 期间这条连接的后续帧（含心跳）都要排队，
+        // shutdown/取消也要等。顺序在这里无关紧要（接收侧按 msg_id 去重，而且这些
+        // 只是同一条消息发给**不同**邻居）。用一个任务串行发完：并发度不变、任务数可控。
+        let st = state.clone();
+        tokio::spawn(async move {
+            for t in targets {
+                let _ = try_send(&st, &t, &fwd_msg).await;
+            }
+        });
     }
 
     // 5. 按 GossipKind 处理
+    //
+    // 非成员**跳过本地消费**（上面的转发已经做完了）：群密钥不在手上，本来也解不开，
+    // 但绝不能因为"我不是这个群的成员"就把整条消息丢掉 —— 那样多跳群聊永远不通。
+    if !group_consumable {
+        return;
+    }
     match env.kind {
         GossipKind::FriendMessageBlocked => {
             // 控制消息：检查本机是否为原始发送方
@@ -1865,7 +3729,236 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                 }
             }
         }
+        GossipKind::Presence => {
+            // TOFU 记录远端节点：跨跳转发的 Presence，sender 可能不在 peers 里。
+            // 「去中心化发现」的落地 —— A 经 B 转发看到 C，C 进入 peers 表，
+            // 前端「添加好友」列表即出现 C（即使 A 与 C 无直连）。
+            if let Some(pt) = plaintext {
+                if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&pt) {
+                    let nickname = v
+                        .get("nickname")
+                        .and_then(|n| n.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let avatar = v
+                        .get("avatar")
+                        .and_then(|a| a.as_str())
+                        .map(|s| s.to_string());
+                    let device_type = v
+                        .get("device_type")
+                        .and_then(|d| d.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    // 首次学到才留痕：peers 是内存结构、不落库，这行日志是唯一可观测
+                    // 「跨跳发现了谁」的手段（与 [mesh] ±conn、握手学到身份同理）。
+                    let is_new = {
+                        let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
+                        !peers.contains_key(&env.sender_id)
+                    };
+                    if is_new {
+                        state.logger.info(
+                            "presence",
+                            format!("学到远端节点 peer={} nickname={}", env.sender_id, nickname),
+                        );
+                    }
+                    // ip 空、tcp_port 0：跨跳转发不知道对端真实地址，仅记录身份
+                    // （可被「看到」，但不可直连）。
+                    upsert_peer(
+                        state,
+                        &env.sender_id,
+                        &nickname,
+                        avatar,
+                        &device_type,
+                        "",
+                        0,
+                        Some(env.sender_pubkey.clone()),
+                        Some(env.sender_ed25519.clone()),
+                        None,
+                    )
+                    .await;
+                }
+            }
+        }
+        GossipKind::FriendRequest => {
+            // 定向好友申请：只有 target == 本机才处理（中间节点已转发，不消费）。
+            if env.target.as_deref() == Some(state.device_id.as_str()) {
+                if let Some(pt) = plaintext {
+                    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&pt) {
+                        let from_nickname = v
+                            .get("from_nickname")
+                            .and_then(|n| n.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let from_avatar = v
+                            .get("from_avatar")
+                            .and_then(|a| a.as_str())
+                            .map(|s| s.to_string());
+                        // 同步记录申请方身份与公钥：这样「同意」时才有对方 X25519 公钥
+                        // 可加密回发的 FriendAccept（跨跳场景下 Presense 可能还没到）。
+                        upsert_peer(
+                            state,
+                            &env.sender_id,
+                            &from_nickname,
+                            from_avatar.clone(),
+                            "",
+                            "",
+                            0,
+                            Some(env.sender_pubkey.clone()),
+                            Some(env.sender_ed25519.clone()),
+                            None,
+                        )
+                        .await;
+                        // 他已经是我的好友 ⇒ 直接同意（公钥刚从信封里记下，回执发得出去）
+                        if auto_accept_if_already_friend(state, &env.sender_id).await {
+                            return;
+                        }
+                        let req = PendingRequest {
+                            from: env.sender_id.clone(),
+                            from_nickname,
+                            from_avatar,
+                            ts: env.ts,
+                        };
+                        state
+                            .pending_requests
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .insert(env.sender_id.clone(), req.clone());
+                        let _ = state.app.emit("friend-request", &req);
+                        // 留痕：跨跳好友申请是内存态（pending_requests），日志是唯一
+                        // 可观测「谁申请了我」的手段（headless 测试与真机排障都靠它）。
+                        state.logger.info(
+                            "friend",
+                            format!(
+                                "收到跨跳好友申请 peer={} nickname={}",
+                                env.sender_id, req.from_nickname
+                            ),
+                        );
+                        let mut extra = std::collections::HashMap::new();
+                        extra.insert("type".to_string(), "friend_request".to_string());
+                        notify_with_extra(
+                            &state.app,
+                            "好友申请",
+                            &format!("{} 请求添加你为好友", req.from_nickname),
+                            extra,
+                        );
+                    }
+                }
+            }
+        }
+        GossipKind::FriendAccept => {
+            // 定向好友同意：只有 target == 本机才处理（即「我发的申请被对方同意」）。
+            if env.target.as_deref() == Some(state.device_id.as_str()) {
+                let from = env.sender_id.clone();
+                let name = resolve_nickname(state, &from);
+                {
+                    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                    db::add_friend(&dbc, &from, &name, None).ok();
+                    // 同步公钥（否则首次加密发送会失败）—— 与 Message::FriendAccept 路径一致。
+                    let (x, e) = {
+                        let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
+                        peers
+                            .get(&from)
+                            .map(|p| (p.x25519_pubkey.clone(), p.ed25519_pubkey.clone()))
+                            .unwrap_or((None, None))
+                    };
+                    if x.is_some() || e.is_some() {
+                        db::update_friend_pubkeys(&dbc, &from, x.as_deref(), e.as_deref()).ok();
+                    }
+                }
+                forget_pending_request(state, &from);
+                let _ = state.app.emit("friend-accepted", &from);
+                // 留痕：跨跳好友同意是落库（friends 表）+ 内存态，日志便于 headless 观测。
+                state.logger.info("friend", format!("收到跨跳好友同意 peer={from}"));
+                notify(
+                    &state.app,
+                    "好友申请已通过",
+                    &format!("{name} 已成为你的好友"),
+                );
+            }
+        }
+        GossipKind::ChatAck => {
+            // 定向送达确认：只有 target == 本机才处理（即「我发的消息被对方收到」）。
+            if env.target.as_deref() == Some(state.device_id.as_str()) {
+                if let Some(pt) = plaintext {
+                    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&pt) {
+                        if let Some(msg_id) = v.get("msg_id").and_then(|m| m.as_str()) {
+                            // 只有「我发给 sender、且仍在 outbox」的 msg_id 才接受：
+                            // msg_id 随机不可预测 + 必须命中 outbox 目标，双重防伪造送达。
+                            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                            let is_expected = dbc
+                                .query_row(
+                                    "SELECT 1 FROM outbox WHERE msg_id = ?1 AND peer_id = ?2",
+                                    params![msg_id, env.sender_id],
+                                    |_| Ok(()),
+                                )
+                                .is_ok();
+                            if !is_expected {
+                                return;
+                            }
+                            db::set_message_status(&dbc, msg_id, "delivered").ok();
+                            dbc.execute("DELETE FROM outbox WHERE msg_id = ?1", params![msg_id])
+                                .ok();
+                            drop(dbc);
+                            let _ = state.app.emit("message-acked", msg_id);
+                        }
+                    }
+                }
+            }
+        }
+        GossipKind::ChatReadReceipt => {
+            // 定向已读回执：只有 target == 本机才处理。
+            if env.target.as_deref() == Some(state.device_id.as_str()) {
+                if let Some(pt) = plaintext {
+                    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&pt) {
+                        let from = env.sender_id.clone();
+                        let last_read_ts = v.get("last_read_ts").and_then(|t| t.as_i64()).unwrap_or(0);
+                        let last_read_msg_id = v
+                            .get("last_read_msg_id")
+                            .and_then(|m| m.as_str())
+                            .map(|s| s.to_string());
+                        // 与 Message::ReadReceipt 分支同构：用 msg_id 换算回本机时间戳。
+                        let effective_ts = {
+                            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                            last_read_msg_id
+                                .as_deref()
+                                .and_then(|msg_id| {
+                                    dbc.query_row(
+                                        "SELECT ts FROM messages WHERE msg_id = ?1 AND sender_id = ?2 AND conv_id = ?3",
+                                        params![msg_id, state.device_id, from],
+                                        |r| r.get::<_, i64>(0),
+                                    )
+                                    .ok()
+                                })
+                                .unwrap_or(last_read_ts)
+                        };
+                        {
+                            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                            let _ = dbc.execute(
+                                "UPDATE messages SET status = 'read'
+                                 WHERE conv_id = ?1 AND sender_id = ?2 AND status != 'read' AND ts <= ?3",
+                                params![from, state.device_id, effective_ts],
+                            );
+                        }
+                        let _ = state.app.emit(
+                            "peer-read",
+                            &serde_json::json!({ "peer_id": from, "last_read_ts": effective_ts }),
+                        );
+                    }
+                }
+            }
+        }
         GossipKind::Chat | GossipKind::Group => {
+            // 单聊定向：target 存在且不是本机 → 中间节点只转发不消费。即便不判断，
+            // 中间节点也会因 ECDH 解不开而 plaintext=None（不会落库），但明确判断
+            // 语义更清晰、也避免无谓的好友关系检查。群聊无 target，走原广播消费逻辑。
+            if env.kind == GossipKind::Chat
+                && env
+                    .target
+                    .as_deref()
+                    .is_some_and(|t| t != state.device_id.as_str())
+            {
+                return;
+            }
             if let Some(pt) = plaintext {
                 let (kind, content) = parse_gossip_payload(&pt);
                 // GossipKind::Chat：好友关系检查（非好友不落库、不通知、通知发送方）
@@ -1987,6 +4080,17 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                 if announced_on(&inserted) {
                     let _ = state.app.emit("message-received", &out_rec);
                 }
+                // 更新会话「当前链路」：单聊消息的 hop 由 Gossip ttl 反推
+                // （初始 ttl - 收到 ttl），path 取入站连接的路径（直连准确，桥接为最后一段）。
+                // 仅首次落库（非重复投递）才更新，避免「走了不同路径的重复副本」干扰。
+                if conv_kind == "single" && announced_on(&inserted) {
+                    let hop = {
+                        let gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
+                        gossip.ttl.saturating_sub(env.ttl) as u8
+                    };
+                    let path = inbound_path_kind(state, peer_id).await;
+                    update_conv_link(state, &conv_id, &path, hop);
+                }
                 // 群消息现在有 outbox 兜底：只要消息确实已持久化（无论本次是否新建），
                 // 就回 GroupAck 让发送方删除对应 (msg_id, peer_id) 的待发记录。
                 // 数据库 Err 时不回 Ack，发送方保留 outbox 继续补发。
@@ -1997,6 +4101,40 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                         from: state.device_id.clone(),
                     };
                     let _ = try_send(state, &env.sender_id, &ack).await;
+                }
+                // 单聊送达确认：跨跳（无直连）时直连 Ack 到不了原始发送方，改走定向
+                // Gossip ChatAck；有直连时也走 Gossip，让「已送达」立即出现，不必等
+                // 心跳触发 outbox 直发补 Ack。接收端按 outbox(msg_id, sender) 命中才接受，
+                // 防伪造送达。
+                if conv_kind == "single" && !matches!(&inserted, Err(_)) {
+                    let payload = serde_json::json!({ "msg_id": env.message_id }).to_string();
+                    let payload_b64 = STANDARD.encode(payload.as_bytes());
+                    let mut ack_env = {
+                        let gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
+                        gossip.build_envelope(
+                            &state.identity,
+                            &state.device_id,
+                            GossipKind::ChatAck,
+                            None,
+                            None,
+                            &payload_b64,
+                            db::now_ms(),
+                            0,
+                        )
+                    };
+                    ack_env.encrypted = false;
+                    ack_env.target = Some(env.sender_id.clone());
+                    ack_env.sender_sig = state.identity.sign_b64(&ack_env.signing_bytes());
+                    if state.has_link(&env.sender_id).await {
+                        let _ = try_send(
+                            state,
+                            &env.sender_id,
+                            &Message::Gossip { envelope: ack_env },
+                        )
+                        .await;
+                    } else {
+                        broadcast_gossip(state, ack_env).await;
+                    }
                 }
             }
         }
@@ -2882,14 +5020,22 @@ async fn handle_group_file_complete_ack(
             };
         }
         let _ = db::set_message_status(&dbc, &format!("gfile-{transfer_id}"), bubble).ok();
-        // sender 的 transfer 记录随聚合结果推进（delivered → done/1.0，failed → failed/0）
+        // sender 的 transfer 记录随聚合结果推进。
+        // 状态：delivered → done，否则 failed（保留原有语义）。
+        // 进度：按**在线成员**口径算，而不是「delivered 就写 1.0」——
+        // 否则「在线成员全到了、但离线成员还 pending」时进度条会提前满格，
+        // 与用户口径（离线不计入分母，在线全到才算完）相冲突。
+        // ⚠️ `group_file_online_progress` 内部取 db 锁：必须先 drop 本段持有的锁，
+        // 否则 std Mutex 同锁重入即死锁。
         let tf_status = if bubble == "delivered" { "done" } else { "failed" };
-        let tf_progress = if bubble == "delivered" { 1.0 } else { 0.0 };
         let path = db::list_transfers(&dbc)
             .unwrap_or_default()
             .into_iter()
             .find(|t| t.id == transfer_id)
             .and_then(|t| t.path);
+        drop(dbc);
+        let tf_progress = crate::commands::group_file_online_progress(state, &transfer_id, 0.0);
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::upsert_transfer(
             &dbc,
             &transfer_id,
@@ -2902,6 +5048,16 @@ async fn handle_group_file_complete_ack(
             tf_progress,
         )
         .ok();
+        // 本 transfer 已到终态（delivered/failed）→ 进度条口径快照用完即弃，
+        // 避免无界增长；注意**不能**只在 `tf_progress >= 1.0` 时清 ——
+        // 「发送时无人在线」的 transfer 进度恒 0，那样就永远清不掉。
+        if bubble == "delivered" || bubble == "failed" {
+            state
+                .group_file_online_targets
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&transfer_id);
+        }
     }
     if bubble == "delivered" {
         let _ = state.app.emit("message-acked", &format!("gfile-{transfer_id}"));
@@ -3043,35 +5199,65 @@ async fn handle_group_rename(state: &Arc<AppState>, group_id: String, from: Stri
     let _ = state.app.emit("groups-updated", &group_id);
 }
 
-/// 处理「成员被移出群」：仅当 `to` 是自己且发起方是群创建者时，清理本地群 + 会话 + 密钥。
+/// 处理「成员被移出群」。
+///
+/// 两个分支，**此前只有第一个**：
+/// 1. `to == 本机`：我本人被移出 → 清理本地群 + 会话 + 群密钥；
+/// 2. `to != 本机`：别人被移出 → 同步本地成员表 + 清掉指向他的待补发群消息 +
+///    落一条群内系统消息，让群里的人都知道。
 async fn handle_group_member_removed(
     state: &Arc<AppState>,
     group_id: String,
     from: String,
     to: String,
 ) {
-    if to != state.device_id || from == state.device_id {
-        return;
+    if from == state.device_id {
+        return; // 本机发起的移人，本地已处理（含系统消息）
     }
+    // 只接受**群创建者**发起的移人（防成员互踢）
     let is_creator = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::get_group(&dbc, &group_id)
             .map(|g| g.creator == from)
             .unwrap_or(false)
     };
-    if !is_creator {
-        return;
+    match member_removed_action(false, is_creator, to == state.device_id) {
+        MemberRemovedAction::Ignore => return,
+        // ---- ① 我本人被移出 ----
+        MemberRemovedAction::RemoveSelf => {
+            {
+                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                db::delete_group(&dbc, &group_id).ok();
+                let _ = dbc.execute(
+                    "DELETE FROM settings WHERE key = ?1",
+                    params![format!("gk:{group_id}")],
+                );
+            }
+            state.group_keys.lock().unwrap_or_else(|e| e.into_inner()).remove(&group_id);
+            let _ = state.app.emit("group-member-removed", &group_id);
+            let _ = state.app.emit("groups-updated", &group_id);
+            return;
+        }
+        // ---- ② 别人被移出：同步成员表 + 群内系统消息 ----
+        MemberRemovedAction::RemoveOther => {}
     }
-    {
+
+    let changed = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::delete_group(&dbc, &group_id).ok();
-        let _ = dbc.execute(
-            "DELETE FROM settings WHERE key = ?1",
-            params![format!("gk:{group_id}")],
-        );
+        match db::get_group(&dbc, &group_id) {
+            Some(g) if g.members.contains(&to) => {
+                // 他已经不是成员了：指向他的待补发群消息也不该再投递
+                db::delete_group_outbox_for_peer_in_group(&dbc, &group_id, &to).ok();
+                db::remove_group_member(&dbc, &group_id, &to).is_ok()
+            }
+            _ => false,
+        }
+    };
+    if !changed {
+        return; // 幂等：已经不在成员表里就不重复插系统消息
     }
-    state.group_keys.lock().unwrap_or_else(|e| e.into_inner()).remove(&group_id);
-    let _ = state.app.emit("group-member-removed", &group_id);
+    let name = resolve_nickname(state, &to);
+    insert_group_system_message(state, &group_id, &group_member_removed_text(state, &name));
     let _ = state.app.emit("groups-updated", &group_id);
 }
 
@@ -3113,12 +5299,17 @@ async fn handle_group_member_left(state: &Arc<AppState>, group_id: String, from:
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         match db::get_group(&dbc, &group_id) {
             Some(g) if g.creator != from && g.members.contains(&from) => {
+                // 他已经退了：指向他的待补发群消息不该再投递
+                db::delete_group_outbox_for_peer_in_group(&dbc, &group_id, &from).ok();
                 db::remove_group_member(&dbc, &group_id, &from).is_ok()
             }
             _ => false,
         }
     };
     if changed {
+        // 群内系统消息 —— 此前成员表会同步，但群里看不到任何提示
+        let name = resolve_nickname(state, &from);
+        insert_group_system_message(state, &group_id, &group_member_left_text(state, &name));
         let _ = state.app.emit("groups-updated", &group_id);
     }
 }
@@ -3175,8 +5366,9 @@ fn warn_key_conflict_once(state: &AppState, device_id: &str) {
         state,
         device_id,
         &format!(
-            "⚠️「{name}」的身份密钥发生变化，已保留原密钥未替换。可能是对方重装了应用；\
-             也不能排除有人冒名顶替，建议当面核对后再继续通信。"
+            "⚠️「{name}」的身份密钥发生变化，已保留原密钥未替换。\
+             如果对方刚重装过应用：**删掉这个好友再重新添加即可**（聊天记录会保留、不用重启）；\
+             如果不是本人操作，就别继续，对方可能被人冒名顶替。"
         ),
     );
 }
@@ -3186,6 +5378,7 @@ pub async fn upsert_peer(
     device_id: &str,
     nickname: &str,
     avatar: Option<String>,
+    device_type: &str,
     ip: &str,
     tcp_port: u16,
     x25519: Option<String>,
@@ -3205,13 +5398,17 @@ pub async fn upsert_peer(
                         device_id: device_id.to_string(),
                         nickname: nickname.to_string(),
                         avatar,
+                        device_type: device_type.to_string(),
                         ip: ip.to_string(),
                         tcp_port,
                         last_seen: ts,
                         rtt_ms,
                         x25519_pubkey: x25519.clone(),
                         ed25519_pubkey: ed25519.clone(),
-                        connected_since: Some(ts),
+                        first_seen: Some(ts),
+                        // 事件推送里的 peer 不带链路类型（同步上下文拿不到 links 锁）；
+                        // 界面读的是命令返回的那份（那里会填），见 `Peer::link` 注释。
+                        link: None,
                     },
                 );
                 (true, true, false)
@@ -3228,6 +5425,9 @@ pub async fn upsert_peer(
                 p.nickname = nickname.to_string();
                 if avatar.is_some() {
                     p.avatar = avatar;
+                }
+                if !device_type.is_empty() {
+                    p.device_type = device_type.to_string();
                 }
                 if !ip.is_empty() {
                     p.ip = ip.to_string();
@@ -3475,9 +5675,38 @@ pub async fn touch_peer(state: &AppState, device_id: &str) {
     state.emit_peers();
 }
 
-async fn mark_peer_offline(state: &Arc<AppState>, device_id: &str) {
-    state.peers.lock().unwrap_or_else(|e| e.into_inner()).remove(device_id);
+/// 链路全断时调用：清掉"当前可达路径"，但**保留节点条目**。
+///
+/// ## 为什么不再立刻删节点（2026-09-12 真机，用户 4.2.11 复测）
+///
+/// 用户真机（只开蓝牙）：**手机能看到 Mac（显示"已发现未建联"），Mac 里安卓什么都不显示**。
+/// 根因就在这一行：BLE 上"连上 → 被对端按指定拨号方退让 → 断开"是**常态**
+/// （见 `dial_and_register` 的 `should_dial_ble`），Mac 每次刚学到手机身份（`new_peer=true`）
+/// 就因对端退让而断链，于是立刻被这里删掉 ⇒ 「添加好友」列表（数据源就是节点表）里
+/// **只闪一下就没了**，用户根本没机会点"加好友"；而小 id 那一侧（手机）自退让时
+/// 从未登记过链路，自然不会调到这里，所以它反而一直显示"已发现未建联"。
+///
+/// 现在保留条目、交给 `sweep_peers` 的 45s 超时收割：
+///   · 「添加好友」能在 45s 窗口里列出刚见过的节点（与手机侧行为一致）；
+///   · 待发的好友申请也能在这段时间里随下一次建链补发
+///     （`flush_pending_friend_request` 在建链/Hello 时触发）。
+/// "在线"不再靠"在不在节点表里"判定 —— 见 `commands::friend_is_online`
+/// （那条 presence 判据正是 2026-09-12 复核抓到的"连过又掉线 ⇒ 永久在线"的 High 缺陷来源）。
+pub(crate) async fn mark_peer_offline(state: &Arc<AppState>, device_id: &str) {
+    // 链路快照必须立刻失效：`conv_link` 记的是"当前可达路径"，链路没了路径就没了。
+    // 不清掉的话，聊天头部的链路徽标会在离线后继续显示（用户 2026-09-12 反馈的
+    // 「离线却显示『桥接 1』」）。
+    clear_conv_link(state, device_id);
     state.emit_peers();
+}
+
+/// 清掉某会话的链路快照（`conv_link` 是内存态；无条目时无操作）。
+pub(crate) fn clear_conv_link(state: &AppState, conv_id: &str) {
+    state
+        .conv_link
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(conv_id);
 }
 
 pub(crate) fn maybe_update_friend(
@@ -3525,6 +5754,65 @@ pub(crate) fn resolve_member_x25519(state: &AppState, member_id: &str) -> Option
         db::get_friend_x25519(&dbc, member_id)
     };
     pick_member_x25519(peers_key, friends_key)
+}
+
+/// 群成员变更的**群内系统消息**文案。
+///
+/// 后端产生的系统消息同样要跟随语言设置 —— 前端 i18n 覆盖不到后端直接写库的行。
+/// 两条文案各自只有一处实现，供「发起方」与「接收方」共用，避免措辞漂移。
+/// 收到 `GroupMemberRemoved` 后本机应做的动作。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MemberRemovedAction {
+    /// 忽略：非创建者发起（防成员互踢），或本消息就来自本机（本地已处理）
+    Ignore,
+    /// 我本人被移出：清理本地群 + 会话 + 群密钥
+    RemoveSelf,
+    /// 别人被移出：同步本地成员表 + 落群内系统消息
+    RemoveOther,
+}
+
+/// 分支选择（纯函数，便于单测）。
+///
+/// 单独抽出来的理由：这次 bug 的根因就是**少了一个分支** —— 接收端只处理「我本人被
+/// 移出」，其余成员直接 return，于是群里其他人的成员表不变小、也看不到任何提示。
+/// 把三分支的选择做成纯函数，「必须有 RemoveOther」这件事就被测试钉住了。
+pub fn member_removed_action(
+    sender_is_me: bool,
+    sender_is_creator: bool,
+    to_is_me: bool,
+) -> MemberRemovedAction {
+    if sender_is_me || !sender_is_creator {
+        return MemberRemovedAction::Ignore;
+    }
+    if to_is_me {
+        MemberRemovedAction::RemoveSelf
+    } else {
+        MemberRemovedAction::RemoveOther
+    }
+}
+
+/// 往指定群的会话插一条本地系统消息。
+///
+/// 群的 conv_id 约定是 `group:{group_id}` —— 这个约定只有一处实现，避免各处手拼前缀。
+pub fn insert_group_system_message(state: &AppState, group_id: &str, text: &str) {
+    crate::commands::insert_system_message(state, &format!("group:{group_id}"), text);
+}
+
+pub fn group_member_removed_text(state: &AppState, name: &str) -> String {
+    if state.is_zh() {
+        format!("「{name}」已被移出群聊")
+    } else {
+        format!("“{name}” has been removed from the group")
+    }
+}
+
+/// 成员**主动退群**的群内系统消息文案（详见 `group_member_removed_text`）。
+pub fn group_member_left_text(state: &AppState, name: &str) -> String {
+    if state.is_zh() {
+        format!("「{name}」退出了群聊")
+    } else {
+        format!("“{name}” left the group")
+    }
 }
 
 pub fn resolve_nickname(state: &AppState, id: &str) -> String {
@@ -3607,6 +5895,53 @@ pub async fn flush_group_outbox(state: &AppState, peer_id: &str) {
     }
 }
 
+/// 发送单聊已读回执：同网段有直连走 `Message::ReadReceipt`（可被 pending 重试），
+/// 跨跳（无直连）改走定向 Gossip `ChatReadReceipt`（广播靠中继按 target 转发）。
+///
+/// 返回是否「已发出」：直连失败返回 false（供 flush 决定是否重新入队），
+/// Gossip 广播是尽力而为、视为已发出返回 true。
+pub async fn send_read_receipt_route(
+    state: &AppState,
+    peer_id: &str,
+    msg_id: Option<String>,
+    last_read_ts: i64,
+) -> bool {
+    if state.has_link(peer_id).await {
+        let msg = Message::ReadReceipt {
+            from: state.device_id.clone(),
+            to: peer_id.to_string(),
+            last_read_ts,
+            last_read_msg_id: msg_id,
+        };
+        try_send(state, peer_id, &msg).await.is_ok()
+    } else {
+        let payload = serde_json::json!({
+            "last_read_ts": last_read_ts,
+            "last_read_msg_id": msg_id,
+        })
+        .to_string();
+        let payload_b64 = STANDARD.encode(payload.as_bytes());
+        let mut env = {
+            let gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
+            gossip.build_envelope(
+                &state.identity,
+                &state.device_id,
+                GossipKind::ChatReadReceipt,
+                None,
+                None,
+                &payload_b64,
+                db::now_ms(),
+                0,
+            )
+        };
+        env.encrypted = false;
+        env.target = Some(peer_id.to_string());
+        env.sender_sig = state.identity.sign_b64(&env.signing_bytes());
+        broadcast_gossip(state, env).await;
+        true
+    }
+}
+
 /// 冲刷待发的单聊已读回执（触发点与 `flush_outbox` 一致：建链 / Hello / 心跳）。
 ///
 /// `mark_read` 将 pending 同时写入内存 HashMap 和 SQLite。此处成功发送后
@@ -3628,14 +5963,8 @@ pub async fn flush_pending_reads(state: &AppState, peer_id: &str) {
         db::delete_pending_read(&dbc, peer_id).ok();
         return;
     };
-    let msg = Message::ReadReceipt {
-        from: state.device_id.clone(),
-        to: peer_id.to_string(),
-        last_read_ts,
-        last_read_msg_id: Some(msg_id),
-    };
-    if try_send(state, peer_id, &msg).await.is_err() {
-        // 发送失败：内存重新放入 pending，DB 保留（已由 mark_read 写入）
+    if !send_read_receipt_route(state, peer_id, Some(msg_id), last_read_ts).await {
+        // 直连发送失败：内存重新放入 pending，DB 保留（已由 mark_read 写入）
         let mut pending = state.pending_reads.lock().unwrap_or_else(|e| e.into_inner());
         let cur = pending.entry(peer_id.to_string()).or_insert(last_read_ts);
         *cur = (*cur).max(last_read_ts);
@@ -3698,6 +6027,577 @@ pub fn notify_with_extra(
 mod tests {
     use super::*;
     use crate::gossip_engine::GossipEngine;
+
+    /// **群信封的"可消费"判据**（2026-09-13 审计的真缺陷，必须钉住）。
+    ///
+    /// 反例：旧实现把"我不是群成员"直接 `return` 掉，于是**非成员中继不转发群消息**
+    /// ⇒ BLE-only 三点中继（手机—电脑—手机）里群聊永远不通，而同链路单聊正常。
+    /// 这条测试只钉"能不能消费"；"非成员仍要转发"由下面那条 + `handle_gossip` 的结构保证。
+    #[test]
+    fn group_envelope_consumption_rule() {
+        let members = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let group = members(&["me", "other"]);
+        let me = "me";
+        let other = "other";
+
+        // 是群成员、且发送者也在成员表里 ⇒ 可以消费
+        assert!(group_envelope_consumable(&GossipKind::Group, &group, me, other));
+        // 我不是成员 ⇒ 不消费（但**不影响转发** —— 见 group_envelope_consumable 的注释）
+        assert!(!group_envelope_consumable(&GossipKind::Group, &group, "stranger", other));
+        // 发送者自称不在成员表里（伪造者想把群消息广播给别人）⇒ 不消费
+        assert!(!group_envelope_consumable(&GossipKind::Group, &group, me, "outsider"));
+        // 成员表为空 = 旧端发的群信封 ⇒ 保持兼容，允许消费
+        assert!(group_envelope_consumable(&GossipKind::Group, &[], me, other));
+        // 非群种类一律不受这条判据影响
+        assert!(group_envelope_consumable(&GossipKind::Presence, &group, "stranger", other));
+        assert!(group_envelope_consumable(&GossipKind::ChatAck, &group, "stranger", other));
+    }
+
+    /// **非成员中继必须转发群消息**（结构护栏）：`handle_gossip` 里那句早期 `return` 一旦
+    /// 被加回来，BLE-only 多跳的群聊就又断了 —— 而它**不会让任何测试失败**，
+    /// 只会让真机上的群聊静默不通。所以用源码断言把"只记判据、不 return"钉住。
+    #[test]
+    fn handle_gossip_does_not_bail_out_for_non_members() {
+        let src = include_str!("transport.rs");
+        let start = src.find("async fn handle_gossip").expect("必须还有 handle_gossip");
+        let body = &src[start..];
+        let end = body.find("\n}\n").unwrap_or(body.len());
+        let body = &body[..end];
+        assert!(
+            body.contains("group_envelope_consumable("),
+            "handle_gossip 必须用 group_envelope_consumable 判据"
+        );
+        assert!(
+            !body.contains("if matches!(env.kind, GossipKind::Group) && !env.group_members.is_empty()"),
+            "不能恢复『非成员直接 return』的旧写法 —— 那会让非成员中继不再转发群消息，\
+             多跳（BLE-only 手机↔电脑↔手机）群聊永远不通"
+        );
+    }
+
+    /// **好友同意回执补发策略**：窗口 + 次数 + 间隔三条边界。
+    ///
+    /// 真机（2026-09-13）：Android 点了「接受」、Android 侧好友已出现，但 Mac 端状态一直
+    /// 没同步 —— 那一帧在 BLE 链路抖动时静默丢了且**永不重发**。修法是"有界补发"，
+    /// 而"窗口 + 次数 + 间隔"这种策略最容易写反（写反的后果是要么永不补发、要么疯狂打扰
+    /// 对端），所以在这里用真值表钉死。
+    #[test]
+    fn friend_accept_flush_is_bounded_and_spaced() {
+        let now = 1_000_000_i64;
+        let (max, interval, window) = (3u32, 5_000i64, 120_000i64);
+
+        // 没有登记 ⇒ 什么都不做
+        assert_eq!(
+            friend_accept_flush_decision(None, now, max, interval, window),
+            FriendAcceptFlush::Nothing
+        );
+        // 刚登记（last=0）⇒ 立刻补发第 1 次
+        assert_eq!(
+            friend_accept_flush_decision(Some((now, 0, 0)), now, max, interval, window),
+            FriendAcceptFlush::Flush(1)
+        );
+        // 刚发过（距上次不足间隔）⇒ 等下一次心跳，不打扰
+        assert_eq!(
+            friend_accept_flush_decision(Some((now - 10_000, 1, now - 1_000)), now, max, interval, window),
+            FriendAcceptFlush::Nothing
+        );
+        // 距上次够了 ⇒ 继续补发（第 2 次）
+        assert_eq!(
+            friend_accept_flush_decision(Some((now - 10_000, 1, now - 5_000)), now, max, interval, window),
+            FriendAcceptFlush::Flush(2)
+        );
+        // 次数用尽 ⇒ 收尾
+        assert_eq!(
+            friend_accept_flush_decision(Some((now - 10_000, 3, now - 60_000)), now, max, interval, window),
+            FriendAcceptFlush::GiveUp
+        );
+        // 窗口用尽（哪怕一次都没发出去）⇒ 收尾，并让调用方留一条 warn
+        assert_eq!(
+            friend_accept_flush_decision(Some((now - 121_000, 1, now - 60_000)), now, max, interval, window),
+            FriendAcceptFlush::GiveUp
+        );
+    }
+
+    // ---- 群成员变更：接收端的分支选择 ----
+    //
+    // 真实事故（2026-09-12 用户反馈）：群主移人后，**其余成员**的成员表不变小、
+    // 也没有任何提示。根因是接收端 `handle_group_member_removed` 开头就
+    // `if to != 本机 { return }` —— 压根没有「别人被移出」这个分支。
+    // 下面把三分支的选择（纯函数）用真值表钉住。
+
+    #[test]
+    fn member_removed_action_full_truth_table() {
+        use MemberRemovedAction::*;
+        // 发起方不是创建者 → 一律忽略（防成员互踢），与 `to` 是谁无关
+        assert_eq!(member_removed_action(false, false, false), Ignore);
+        assert_eq!(member_removed_action(false, false, true), Ignore);
+        // 本机自己发起的 → 忽略（本地已处理，含群主自己的系统消息）
+        assert_eq!(member_removed_action(true, true, false), Ignore);
+        assert_eq!(member_removed_action(true, true, true), Ignore);
+        assert_eq!(member_removed_action(true, false, false), Ignore);
+        assert_eq!(member_removed_action(true, false, true), Ignore);
+        // 创建者发起 + 被移出者是别人 → **同步成员表**（本次补齐的分支，
+        // 这条断言正是对「其余成员不能 Ignore」的回归钉子）
+        assert_eq!(member_removed_action(false, true, false), RemoveOther);
+        // 创建者发起 + 被移出者是我 → 清理本地群
+        assert_eq!(member_removed_action(false, true, true), RemoveSelf);
+    }
+
+    // ---- 拨号决策（M2 双向建链 + P1-2 镜像重复连接修正）----
+
+    #[test]
+    fn should_dial_larger_id_dials_when_not_connected() {
+        // 本机是大 ID（my_id > peer_id）：尚无任何连接时，作为对称场景的确定性拨号方，恒拨。
+        assert!(should_dial("b", "a", false, false, None, 0));
+        assert!(should_dial("b", "a", false, false, Some(0), 0));
+    }
+
+    #[test]
+    fn should_dial_smaller_id_waits_within_threshold() {
+        // 本机是小 ID：对端在线但「首次发现」未超过 10s，不拨（等大 ID 拨）。
+        let now = 1_000_000;
+        assert!(!should_dial("a", "b", false, false, Some(now - 9_000), now));
+        assert!(!should_dial("a", "b", false, false, Some(now), now));
+        // 对端尚未在线（first_seen=None）：不拨。
+        assert!(!should_dial("a", "b", false, false, None, now));
+    }
+
+    #[test]
+    fn should_dial_smaller_id_backups_after_threshold() {
+        // 本机是小 ID：对端在线却超过 10s 连不上（单侧不可达），兜底拨。
+        let now = 1_000_000;
+        assert!(should_dial("a", "b", false, false, Some(now - 10_000), now));
+        assert!(should_dial("a", "b", false, false, Some(now - 60_000), now));
+    }
+
+    /// P1-2 修正的**核心护栏**。
+    ///
+    /// 被动方（小 ID）已经收到过大 ID 拨来的连接时，绝不能因为「端点表示不对称」
+    /// （接受侧 `Link.endpoint` 记的是 TCP 源**临时端口**，而判据比的是 announce 自报的
+    /// **监听地址**）而反向再拨一条 —— 那会让同一对节点稳定停留 2 条镜像 TCP，
+    /// 连接与读写任务翻倍、心跳双份，并让「断一条仍在线」的判据变成假阳性。
+    ///
+    /// 注意判据是 `has_lan_link`（**同路径**已连通），与 `has_endpoint` 无关：
+    /// 这里刻意传 `has_endpoint=false`（真实场景就是如此）来钉住「只按端点判会误拨」。
+    #[test]
+    fn should_dial_skips_when_same_path_already_connected() {
+        let now = 1_000_000;
+        // 小 ID + 已有连接 + 早已超过 10s 阈值 —— 旧实现正是在这里误判为「该兜底拨号」。
+        assert!(!should_dial("a", "b", false, true, Some(now - 60_000), now));
+        // 大 ID 同理：已有连接不重复拨。
+        assert!(!should_dial("b", "a", false, true, Some(now - 60_000), now));
+        // 同一端点已连 → 不拨（无论 ID 大小、无论阈值）。
+        assert!(!should_dial("b", "a", true, true, None, now));
+        assert!(!should_dial("a", "b", true, true, Some(now - 60_000), now));
+    }
+
+    /// D5 护栏：判据必须是「**LAN 路径**是否已连通」，不能是「有没有任意连接」。
+    ///
+    /// 回归场景（复核抓到）：peer 先经 Routed/Tailscale 连上，之后 LAN 的 announce 到达；
+    /// 若把任意连接当成「已连通」，LAN 链路**永远不会建立** ⇒ M3 的「LAN > Routed」
+    /// 优先级在该拓扑里永不生效，多路径退化成单路径。
+    /// 这条测试会在把判据回退成「任意连接」时 FAIL —— 因为它明确区分了两种端点。
+    #[test]
+    fn only_routed_connection_still_dials_lan_path() {
+        let lan: MeshEndpoint = "192.168.1.20:59992".parse::<std::net::SocketAddr>().unwrap().into();
+        let routed: MeshEndpoint = "100.70.10.20:59992".parse::<std::net::SocketAddr>().unwrap().into();
+
+        // 纯函数内核：只有 Routed 端点 ⇒ 不算 LAN 已连通（⇒ 大 ID 会去补一条 LAN）
+        // （`Endpoint` 不是 Copy，测试里 clone 保持可读性）
+        assert!(!has_lan_path(&[(routed.clone(), PathKind::Routed)]));
+        assert!(has_lan_path(&[(lan.clone(), PathKind::Lan)]));
+        assert!(has_lan_path(&[
+            (routed.clone(), PathKind::Routed),
+            (lan.clone(), PathKind::Lan)
+        ]));
+        assert!(!has_lan_path(&[]));
+        // ⚠️ **关键回归**：端点地址是私有段、但来路是"用户配置的路由端点" ⇒ 仍是 Routed。
+        // 此前路径类型是从 IP 段反推的（`path_kind_for`），这条必然被判成 LAN ⇒
+        // ① `ensure_link` 以为 LAN 已连通、不再补真正的 LAN 链路（D5 的修复被绕过去）；
+        // ② 选路时按最高优先级当成 LAN。把判据改回"按 IP 反推"这条断言立刻 FAIL。
+        let private_but_routed: MeshEndpoint =
+            "192.168.1.77:59992".parse::<std::net::SocketAddr>().unwrap().into();
+        assert!(
+            !has_lan_path(&[(private_but_routed.clone(), PathKind::Routed)]),
+            "用户配置的私有段 Routed 端点不得被当成 LAN"
+        );
+
+        // 决策层：**只有 Routed 连接**时，大 ID 仍应去补一条 LAN —— 这正是修复点。
+        // 若把判据回退成「有任意连接就不拨」，下面这条断言会 FAIL（非空转）。
+        let now = 1_000_000;
+        let routed_only = [(routed.clone(), PathKind::Routed)];
+        let lan_only = [(lan.clone(), PathKind::Lan)];
+        let both = [
+            (routed.clone(), PathKind::Routed),
+            (lan.clone(), PathKind::Lan),
+        ];
+        assert!(should_dial_for_peer("b", "a", false, &routed_only, Some(now - 60_000), now));
+        // 已有 LAN 连接 ⇒ 不重复拨（避免镜像重复连接，P1-2）。
+        assert!(!should_dial_for_peer("b", "a", false, &lan_only, Some(now - 60_000), now));
+        // 已有 LAN（含还有一条 Routed 的多路径场景）⇒ 也不拨。
+        assert!(!should_dial_for_peer("b", "a", false, &both, Some(now - 60_000), now));
+        // 完全没有连接 ⇒ 拨（原语义不变）。
+        assert!(should_dial_for_peer("b", "a", false, &[], Some(now - 60_000), now));
+        // 小 ID 兜底：只有 Routed 且超过阈值 ⇒ 也去补 LAN。
+        assert!(should_dial_for_peer("a", "b", false, &routed_only, Some(now - 60_000), now));
+        // 私有段地址 + Routed 来路 ⇒ 仍应补 LAN（与上面的关键回归同一件事，走决策层）
+        assert!(should_dial_for_peer(
+            "b",
+            "a",
+            false,
+            &[(private_but_routed.clone(), PathKind::Routed)],
+            Some(now - 60_000),
+            now
+        ));
+    }
+
+    // ---- M3-b：发送顺序（按端点对齐两套链路表 + pick_link 排序）----
+
+    fn make_link(
+        addr: &str,
+        kind: PathKind,
+    ) -> (crate::state::Link, mpsc::Receiver<Message>, mpsc::Receiver<Message>) {
+        let (b_tx, b_rx) = mpsc::channel(4);
+        let (p_tx, p_rx) = mpsc::channel(4);
+        let (cancel, _cancel_rx) = watch::channel(false);
+        (
+            crate::state::Link {
+                endpoint: MeshEndpoint::Tcp(addr.parse().unwrap()),
+                path_kind: kind,
+                bulk: b_tx,
+                priority: p_tx,
+                cancel,
+            },
+            b_rx,
+            p_rx,
+        )
+    }
+
+    /// 按任意 `Endpoint` 造一条链路（`make_link` 只接受 TCP 地址字符串，BLE 用这个）。
+    fn make_link_endpoint(
+        endpoint: MeshEndpoint,
+        kind: PathKind,
+    ) -> (crate::state::Link, mpsc::Receiver<Message>, mpsc::Receiver<Message>) {
+        let (b_tx, b_rx) = mpsc::channel(4);
+        let (p_tx, p_rx) = mpsc::channel(4);
+        let (cancel, _cancel_rx) = watch::channel(false);
+        (
+            crate::state::Link {
+                endpoint,
+                path_kind: kind,
+                bulk: b_tx,
+                priority: p_tx,
+                cancel,
+            },
+            b_rx,
+            p_rx,
+        )
+    }
+
+    /// 按任意 `Endpoint` 造一个 mesh 层 `Connection`（同上）。
+    fn mesh_conn_endpoint(
+        peer: &str,
+        endpoint: MeshEndpoint,
+        healthy_at: Option<i64>,
+        kind: PathKind,
+    ) -> crate::mesh::Connection {
+        let mut c = crate::mesh::Connection::new(peer, endpoint, kind);
+        if let Some(t) = healthy_at {
+            c.health.seed_read_seen(t);
+        }
+        c
+    }
+
+    fn mesh_conn(
+        peer: &str,
+        addr: &str,
+        healthy_at: Option<i64>,
+        kind: PathKind,
+    ) -> crate::mesh::Connection {
+        let mut c = crate::mesh::Connection::new(
+            peer,
+            crate::mesh::endpoint::Endpoint::Tcp(addr.parse().unwrap()),
+            kind,
+        );
+        if let Some(t) = healthy_at {
+            c.health.seed_read_seen(t);
+        }
+        c
+    }
+
+    /// 单链路：顺序无变化（**行为零变化**，M3-b 的前提）。
+    #[test]
+    fn route_order_single_link_is_unchanged() {
+        let (l0, _b0, _p0) = make_link("192.168.1.20:59992", PathKind::Lan);
+        let links = vec![l0];
+        let conns = vec![mesh_conn("peer", "192.168.1.20:59992", Some(1000), PathKind::Lan)];
+        let order = route_order(&links, "peer", &conns, 1000, 15_000, 3);
+        assert_eq!(order, vec![0]);
+    }
+
+    /// 核心（M3-b 的收益）：两条都健康时**LAN 优先**，与插入顺序无关。
+    #[test]
+    fn route_order_prefers_lan_over_routed_regardless_of_insertion() {
+        // 故意把 Routed 放在下标 0（插入在前），LAN 在下标 1
+        let (routed, _b0, _p0) = make_link("100.70.10.20:59992", PathKind::Routed);
+        let (lan, _b1, _p1) = make_link("192.168.1.20:59992", PathKind::Lan);
+        let links = vec![routed, lan];
+        let conns = vec![
+            mesh_conn("peer", "100.70.10.20:59992", Some(1000), PathKind::Routed),
+            mesh_conn("peer", "192.168.1.20:59992", Some(1000), PathKind::Lan),
+        ];
+        let order = route_order(&links, "peer", &conns, 1000, 15_000, 3);
+        assert_eq!(order[0], 1, "应优先 LAN（下标 1），而不是插入在前的 Routed");
+        // 不变量：其余链路仍排在后面做 failover，**一条都不能丢**
+        assert_eq!(order.len(), 2);
+        assert!(order.contains(&0) && order.contains(&1));
+    }
+
+    /// BLE 链路的两个"不该被当成 LAN"判据（ADR-0015 的 7-c）：
+    /// ① 选路：TCP（LAN/Routed）必须排在 BLE 前面 —— 蓝牙带宽/功耗都差一个量级；
+    /// ② 拨号：只有 BLE 连上**不算**「LAN 已连通」，否则 `ensure_link` 不再补 LAN 链路
+    ///    （用户明明在同一局域网，却一直走蓝牙 —— 电量与速度都吃亏）。
+    #[test]
+    fn ble_link_is_neither_lan_nor_preferred_over_tcp() {
+        let ble = MeshEndpoint::Ble(crate::mesh::BleEndpoint::new("node-1"));
+        let lan: MeshEndpoint = "192.168.1.20:59992"
+            .parse::<std::net::SocketAddr>()
+            .unwrap()
+            .into();
+
+        // ① 选路：BLE 插在前面也不该被优先选
+        let (ble_link, _b0, _p0) = make_link_endpoint(ble.clone(), PathKind::Bluetooth);
+        let (lan_link, _b1, _p1) = make_link_endpoint(lan.clone(), PathKind::Lan);
+        let links = vec![ble_link, lan_link];
+        let conns = vec![
+            mesh_conn_endpoint("peer", ble.clone(), Some(1000), PathKind::Bluetooth),
+            mesh_conn_endpoint("peer", lan.clone(), Some(1000), PathKind::Lan),
+        ];
+        let order = route_order(&links, "peer", &conns, 1000, 15_000, 3);
+        assert_eq!(order.len(), 2, "BLE 链路同样是 failover 候选，不能丢");
+        assert_eq!(order[0], 1, "LAN 必须优先于 BLE");
+
+        // ② 拨号判据：只有 BLE ⇒ LAN 路径尚未连通 ⇒ 仍要去补一条 LAN
+        assert!(!has_lan_path(&[(ble.clone(), PathKind::Bluetooth)]));
+        let now = 1_000_000;
+        assert!(
+            should_dial_for_peer("b", "a", false, &[(ble, PathKind::Bluetooth)], Some(now - 60_000), now),
+            "只有 BLE 连接时仍应补 LAN"
+        );
+    }
+
+    /// 跨世代的入站连接必须被否决（D8-4）。
+    #[test]
+    fn stale_generation_is_rejected() {
+        assert!(generation_is_current(3, 3), "同一世代允许登记");
+        assert!(!generation_is_current(3, 4), "stop/start 之后的旧世代不得登记");
+        // 世代只增不减，但"捕获值比当前大"同样视为无效（防御性：不做大小比较）
+        assert!(!generation_is_current(4, 3));
+    }
+
+    /// 入站去重判据的真值表。这条判据改错的后果是"两边互拒 ⇒ 谁也连不上"，
+    /// 或者"镜像连接永久并存"，两者都不是肉眼能立刻发现的，所以逐格钉住。
+    #[test]
+    fn inbound_dedup_truth_table() {
+        let lan_ep: MeshEndpoint = "192.168.1.20:59992"
+            .parse::<std::net::SocketAddr>()
+            .unwrap()
+            .into();
+        let routed_ep: MeshEndpoint = "100.70.10.20:59992"
+            .parse::<std::net::SocketAddr>()
+            .unwrap()
+            .into();
+
+        // ① 一条都没有 ⇒ **必须接受**（否则彻底断连）
+        assert!(should_accept_inbound("b", "a", PathKind::Lan, &[]));
+
+        // ② 大 ID 方（my_id > peer_id）：已有同路径**且健康** ⇒ 拒收镜像；
+        //    不同路径 ⇒ 接受（多路径！）
+        let with_lan = [(lan_ep.clone(), PathKind::Lan, true)];
+        assert!(!should_accept_inbound("b", "a", PathKind::Lan, &with_lan));
+        assert!(should_accept_inbound("b", "a", PathKind::Routed, &with_lan));
+        // ②b 已有同路径但**已不健康**（半开待拆）⇒ 必须接受对端的新鲜连接，
+        //     否则双方要干等 watchdog（最长 45s）才能恢复
+        let with_dead_lan = [(lan_ep.clone(), PathKind::Lan, false)];
+        assert!(should_accept_inbound("b", "a", PathKind::Lan, &with_dead_lan));
+
+        // ③ 小 ID 方（my_id < peer_id）：**始终接受** —— 否则双方互拒，谁也连不上
+        assert!(should_accept_inbound("a", "b", PathKind::Lan, &with_lan));
+
+        // ④ 链路数到上限 ⇒ 拒收（防无界增长），且与路径是否重复无关
+        let full: Vec<(MeshEndpoint, PathKind, bool)> = (0..MAX_LINKS_PER_PEER)
+            .map(|i| {
+                (
+                    format!("10.0.0.{i}:59992").parse::<std::net::SocketAddr>().unwrap().into(),
+                    if i % 2 == 0 { PathKind::Lan } else { PathKind::Routed },
+                    true,
+                )
+            })
+            .collect();
+        assert!(!should_accept_inbound("a", "b", PathKind::Bluetooth, &full));
+        // 未到上限但已有 Routed ⇒ 接受（③ 的小 ID 方不受 ② 限制）
+        let one_routed = [(routed_ep, PathKind::Routed, true)];
+        assert!(should_accept_inbound("a", "b", PathKind::Routed, &one_routed));
+    }
+
+    /// 徽标必须反映**实际选中的那条**，而不是插入顺序的第一条。
+    ///
+    /// 旧实现取 `links.first()`：用户配了 Routed 又同处一个局域网时（LAN 由 announce
+    /// 后补、插在后面），徽标会一直显示"桥接"，消息却走 LAN —— 用户 2026-09-12
+    /// 反馈过徽标与实际不符。
+    #[test]
+    fn badge_follows_selection_not_insertion_order() {
+        let (routed, _b0, _p0) = make_link("100.70.10.20:59992", PathKind::Routed);
+        let (lan, _b1, _p1) = make_link("192.168.1.20:59992", PathKind::Lan);
+        let links = vec![routed, lan];
+        let conns = vec![
+            mesh_conn("peer", "100.70.10.20:59992", Some(1000), PathKind::Routed),
+            mesh_conn("peer", "192.168.1.20:59992", Some(1000), PathKind::Lan),
+        ];
+        let order = route_order(&links, "peer", &conns, 1000, 15_000, 3);
+        assert_eq!(
+            badge_path_kind(&links, &order),
+            PathKind::Lan,
+            "徽标必须跟着选路走（LAN），而不是插入顺序第一条（Routed）"
+        );
+        // 选路为空（全部不可用）⇒ 退回首条，不能 panic
+        assert_eq!(badge_path_kind(&links, &[]), PathKind::Routed);
+    }
+
+    /// failover 核心：LAN 的读活性过期（半开）而 Routed 健康 → 选 Routed。
+    #[test]
+    fn route_order_skips_unhealthy_lan_when_routed_is_healthy() {
+        let (lan, _b0, _p0) = make_link("192.168.1.20:59992", PathKind::Lan);
+        let (routed, _b1, _p1) = make_link("100.70.10.20:59992", PathKind::Routed);
+        let links = vec![lan, routed];
+        let conns = vec![
+            // LAN：只有很早的读活性（已过期）
+            mesh_conn("peer", "192.168.1.20:59992", Some(0), PathKind::Lan),
+            // Routed：刚刚读到过帧
+            mesh_conn("peer", "100.70.10.20:59992", Some(60_000), PathKind::Routed),
+        ];
+        let order = route_order(&links, "peer", &conns, 60_000, 15_000, 3);
+        assert_eq!(order[0], 1, "LAN 不健康时必须降级到 Routed（真 failover）");
+        assert_eq!(order.len(), 2, "不健康链路仍保留在后面（可作最后手段）");
+    }
+
+    /// 登记窗口：传输链路存在但 mesh 侧还没登记 → 合成「刚播种」候选，不能因此被判不可用。
+    #[test]
+    fn route_order_tolerates_missing_mesh_candidate() {
+        let (only, _b0, _p0) = make_link("192.168.1.20:59992", PathKind::Lan);
+        let links = vec![only];
+        let order = route_order(&links, "peer", &[], 1000, 15_000, 3);
+        assert_eq!(order, vec![0], "缺候选时不得丢链路（登记窗口是常态）");
+    }
+
+    /// 全部不健康：`pick_link` 退回首条（保持可用），且顺序仍是全量排列。
+    #[test]
+    fn route_order_keeps_all_links_when_none_healthy() {
+        let (lan, _b0, _p0) = make_link("192.168.1.20:59992", PathKind::Lan);
+        let (routed, _b1, _p1) = make_link("100.70.10.20:59992", PathKind::Routed);
+        let links = vec![lan, routed];
+        let conns = vec![
+            mesh_conn("peer", "192.168.1.20:59992", Some(0), PathKind::Lan),
+            mesh_conn("peer", "100.70.10.20:59992", Some(0), PathKind::Routed),
+        ];
+        let order = route_order(&links, "peer", &conns, 60_000, 15_000, 3);
+        assert_eq!(order.len(), 2, "全不健康也要把链路交出去（可用性优先于择优）");
+    }
+
+    // ---- M3-b：真实信道上的 failover（ADR-0014 §8「切断被选中那条 → 消息仍送达」的单元版）----
+
+    fn msg(id: &str) -> Message {
+        Message::Heartbeat { device_id: id.to_string() }
+    }
+
+    /// 造 n 对信道，返回 senders + 各接收端（`None` 表示该条"已断"：接收端被丢弃）。
+    #[allow(clippy::type_complexity)]
+    fn channels(
+        n: usize,
+        closed: &[usize],
+    ) -> (
+        Vec<(mpsc::Sender<Message>, mpsc::Sender<Message>)>,
+        Vec<Option<mpsc::Receiver<Message>>>,
+    ) {
+        let mut senders = Vec::new();
+        let mut receivers = Vec::new();
+        for i in 0..n {
+            let (b_tx, b_rx) = mpsc::channel(4);
+            let (p_tx, p_rx) = mpsc::channel(4);
+            senders.push((b_tx, p_tx));
+            if closed.contains(&i) {
+                // 模拟"这条链路已断"：channel 关闭（`try_send` 会返回 Closed）
+                drop(b_rx);
+                drop(p_rx);
+                receivers.push(None);
+            } else {
+                receivers.push(Some(p_rx));
+                drop(b_rx); // 只关心 priority 通道
+            }
+        }
+        (senders, receivers)
+    }
+
+    /// **核心判据**：被选中的那条断了 → 消息必须落到下一条（真 failover，不是"投进死路"）。
+    #[tokio::test]
+    async fn failover_delivers_on_next_link_when_selected_is_closed() {
+        let (senders, mut rx) = channels(2, &[0]); // 下标 0（被选中）已断
+        // 顺序模拟选路结果：先试 0（断），再试 1（活）
+        let order = vec![0usize, 1];
+        let r = send_over_order(&senders, &order, &msg("m1"), false).await;
+        assert!(r.is_ok(), "断一条后必须换下一条送达，实得 {r:?}");
+        let got = rx[1].as_mut().expect("链路 1 应存活").try_recv().expect("应在链路 1 上收到");
+        assert!(matches!(got, Message::Heartbeat { .. }));
+    }
+
+    /// 顺序被尊重：两条都活时只投第一条，**不重复投递**（消息仍然只发出一次）。
+    #[tokio::test]
+    async fn sends_only_on_first_healthy_link_in_order() {
+        let (senders, mut rx) = channels(2, &[]);
+        let order = vec![1usize, 0]; // 选路把下标 1 排前面
+        assert!(send_over_order(&senders, &order, &msg("m2"), false).await.is_ok());
+        assert!(rx[1].as_mut().unwrap().try_recv().is_ok(), "应落在顺序第一的那条");
+        assert!(
+            rx[0].as_mut().unwrap().try_recv().is_err(),
+            "不得同时投到第二条（否则会重复投递）"
+        );
+    }
+
+    /// 全断 → 返回 Err（调用方据此走 outbox 补发，而不是假装成功）。
+    #[tokio::test]
+    async fn all_links_closed_returns_err() {
+        let (senders, _rx) = channels(2, &[0, 1]);
+        let r = send_over_order(&senders, &[0, 1], &msg("m3"), false).await;
+        assert!(r.is_err(), "全断必须报错（Err 由 outbox 兜底补发）");
+    }
+
+    /// 与选路联动的**端到端单元判据**：LAN 不健康 → 顺序把 Routed 排前面
+    /// → 消息真的落在 Routed 那条（而不是仍投给 LAN）。这就是「切一条不中断」的最小复现。
+    #[tokio::test]
+    async fn route_order_plus_send_delivers_on_healthy_link_after_lan_degraded() {
+        let (lan, _b0, _p0) = make_link("192.168.1.20:59992", PathKind::Lan);
+        let (routed, _b1, _p1) = make_link("100.70.10.20:59992", PathKind::Routed);
+        let links = vec![lan, routed];
+        let conns = vec![
+            mesh_conn("peer", "192.168.1.20:59992", Some(0), PathKind::Lan),      // LAN 读活性过期
+            mesh_conn("peer", "100.70.10.20:59992", Some(60_000), PathKind::Routed), // Routed 健康
+        ];
+        let order = route_order(&links, "peer", &conns, 60_000, 15_000, 3);
+        assert_eq!(order[0], 1, "应先试健康的 Routed");
+
+        // 用真实信道复现：LAN 那条已断，Routed 那条活着
+        let (senders, mut rx) = channels(2, &[0]);
+        assert!(send_over_order(&senders, &order, &msg("m4"), false).await.is_ok());
+        assert!(
+            rx[1].as_mut().unwrap().try_recv().is_ok(),
+            "LAN 降级后消息必须从 Routed 送出"
+        );
+    }
+
+    /// 空链路表 → 空顺序（调用方据此返回「未建立连接」）。
+    #[test]
+    fn route_order_empty_when_no_links() {
+        assert!(route_order(&[], "peer", &[], 1000, 15_000, 3).is_empty());
+    }
 
     // ---- Hello 握手身份认证（P0 安全修复回归）----
 

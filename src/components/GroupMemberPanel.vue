@@ -5,7 +5,7 @@ import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import BaseModal from "@/components/BaseModal.vue";
 import { useMemberProfile } from "@/composables/useMemberProfile";
-import { avatarInitial, nameToColor } from "@/utils/color";
+import { avatarInitial, avatarInitialLen, nameToColor } from "@/utils/color";
 import { ArrowRightLeft, Crown, LogOut, Plus, UserMinus, X } from "lucide-vue-next";
 import type { Friend } from "@/types";
 
@@ -20,10 +20,12 @@ const group = computed(() => chat.groups.find((g) => g.id === props.groupId) ?? 
 const isOwner = computed(() => !!group.value && group.value.creator === myId.value);
 /** 展示「添加成员」面板 */
 const showAdd = ref(false);
-/** 待确认的破坏性操作（转让群主 / 退出群聊）。null = 无弹窗。 */
+/** 待确认的破坏性操作（转让群主 / 移除成员 / 退出群聊）。null = 无弹窗。
+ *  「移除成员」是**对别人生效**的操作，一次点击就执行不合适（HIG：让用户容易从错误中恢复）。 */
 const pendingConfirm = ref<
   | null
   | { kind: "transfer"; targetId: string; name: string }
+  | { kind: "remove"; targetId: string; name: string }
   | { kind: "leave"; name: string }
 >(null);
 
@@ -59,15 +61,9 @@ async function addMember(f: Friend) {
   }
 }
 
-async function removeMember(id: string) {
-  if (!props.groupId) return;
-  const p = memberProfile(id);
-  try {
-    await chat.removeGroupMember(props.groupId, id);
-    app.toast(t("group.toast.removed", { name: p.name }), "success");
-  } catch (e) {
-    app.toastError(e, t("group.toast.removeFail"));
-  }
+/** 移除成员：先弹确认，再由 `confirmAction` 执行（复用本组件既有机制）。 */
+function askRemoveMember(id: string) {
+  pendingConfirm.value = { kind: "remove", targetId: id, name: memberProfile(id).name };
 }
 
 /** 转让群主（仅当前群主）：把管理权交给指定成员，避免换机后群无法管理。 */
@@ -96,6 +92,13 @@ async function confirmAction() {
     } catch (e) {
       app.toastError(e, t("group.toast.transferFail"));
     }
+  } else if (a.kind === "remove") {
+    try {
+      await chat.removeGroupMember(props.groupId, a.targetId);
+      app.toast(t("group.toast.removed", { name: a.name }), "success");
+    } catch (e) {
+      app.toastError(e, t("group.toast.removeFail"));
+    }
   } else {
     try {
       await chat.leaveGroup(props.groupId);
@@ -120,12 +123,12 @@ async function confirmAction() {
         >
           <div class="relative shrink-0">
             <div
-              class="flex h-9 w-9 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
+              class="gosslan-avatar-box flex h-9 w-9 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
               :class="!memberProfile(id).online ? 'grayscale opacity-70' : ''"
               :style="{ backgroundColor: nameToColor(memberProfile(id).name) }"
             >
               <img alt="" v-if="memberProfile(id).avatar" :src="memberProfile(id).avatar ?? undefined" class="h-full w-full object-cover" />
-              <span v-else class="text-xs font-semibold">{{ initials(memberProfile(id).name) }}</span>
+              <span v-else class="gosslan-avatar-initial text-xs font-semibold" :data-len="avatarInitialLen(memberProfile(id).name)">{{ initials(memberProfile(id).name) }}</span>
             </div>
             <span
               class="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border-2 border-[var(--gosslan-panel)]"
@@ -134,7 +137,7 @@ async function confirmAction() {
           </div>
           <div class="min-w-0 flex-1">
             <div class="flex items-center gap-1.5">
-              <span class="truncate text-sm font-medium">{{ memberProfile(id).name }}</span>
+              <span class="truncate text-sm font-medium" :title="memberProfile(id).name">{{ memberProfile(id).name }}</span>
               <Crown v-if="group.creator === id" class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-warning-ink)]" :title="t('group.owner')" />
               <span v-if="id === myId" class="shrink-0 text-[11px] text-[var(--gosslan-text-2)]">{{ t("group.me") }}</span>
             </div>
@@ -155,7 +158,7 @@ async function confirmAction() {
             v-if="isOwner && id !== myId"
             class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-danger-soft)] hover:text-[var(--gosslan-danger-ink)]"
             :title="t('group.removeMember', { name: memberProfile(id).name })" :aria-label="t('group.removeMember', { name: memberProfile(id).name })"
-            @click="removeMember(id)"
+            @click="askRemoveMember(id)"
           >
             <UserMinus class="h-4 w-4" />
           </button>
@@ -179,7 +182,7 @@ async function confirmAction() {
           <div class="mb-1 flex items-center justify-between px-1">
             <span class="text-xs font-medium text-[var(--gosslan-text-2)]">{{ t("group.selectFriends") }}</span>
             <button
-              class="flex items-center justify-center rounded-[var(--gosslan-radius-xs)] p-1 text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+              class="tap-safe flex items-center justify-center rounded-[var(--gosslan-radius-xs)] p-1 text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
               :title="t('common.collapse')" :aria-label="t('common.collapse')"
               @click="showAdd = false"
             >
@@ -187,22 +190,24 @@ async function confirmAction() {
             </button>
           </div>
           <div class="max-h-40 overflow-y-auto">
-            <div
+            <!-- 真按钮（不是 `div @click`）：键盘要能 Tab 到并回车添加 -->
+            <button
               v-for="f in addableFriends"
               :key="f.device_id"
-              class="flex cursor-pointer items-center gap-2 rounded-[var(--gosslan-radius-md)] px-2 py-1.5 transition hover:bg-[var(--gosslan-hover)]"
+              type="button"
+              class="flex w-full cursor-pointer items-center gap-2 rounded-[var(--gosslan-radius-md)] px-2 py-1.5 text-left transition hover:bg-[var(--gosslan-hover)]"
               @click="addMember(f)"
             >
               <div
-                class="flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
+                class="gosslan-avatar-box flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
                 :style="{ backgroundColor: nameToColor(f.nickname) }"
               >
                 <img alt="" v-if="f.avatar" :src="f.avatar" class="h-full w-full object-cover" />
-                <span v-else class="text-[11px] font-semibold">{{ initials(f.nickname) }}</span>
+                <span v-else class="gosslan-avatar-initial text-[11px] font-semibold" :data-len="avatarInitialLen(f.nickname)">{{ initials(f.nickname) }}</span>
               </div>
-              <span class="min-w-0 flex-1 truncate text-sm">{{ f.nickname }}</span>
+              <span class="min-w-0 flex-1 truncate text-sm" :title="f.nickname">{{ f.nickname }}</span>
               <Plus class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-text-2)]" />
-            </div>
+            </button>
             <div v-if="addableFriends.length === 0" class="py-3 text-center text-xs text-[var(--gosslan-text-2)]">
               {{ t("group.allInGroup") }}
             </div>
@@ -231,13 +236,20 @@ async function confirmAction() {
   <!-- 破坏性操作二次确认（替代 window.confirm：应用内弹窗，与整体样式一致） -->
   <BaseModal
     :open="!!pendingConfirm"
-    :title="pendingConfirm?.kind === 'transfer' ? t('group.confirmTransfer.title') : t('group.confirmLeave.title')"
+    :title="pendingConfirm?.kind === 'transfer'
+      ? t('group.confirmTransfer.title')
+      : pendingConfirm?.kind === 'remove'
+        ? t('group.confirmRemove.title')
+        : t('group.confirmLeave.title')"
     @close="pendingConfirm = null"
   >
     <template v-if="pendingConfirm">
       <p class="text-sm leading-relaxed text-[var(--gosslan-text-2)]">
         <template v-if="pendingConfirm.kind === 'transfer'">
           {{ t("group.confirmTransfer.body", { name: pendingConfirm.name }) }}
+        </template>
+        <template v-else-if="pendingConfirm.kind === 'remove'">
+          {{ t("group.confirmRemove.body", { name: pendingConfirm.name }) }}
         </template>
         <template v-else>
           {{ t("group.confirmLeave.body", { name: pendingConfirm.name }) }}

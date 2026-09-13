@@ -4,6 +4,7 @@ export interface DeviceInfo {
   device_id: string;
   nickname: string;
   avatar: string | null;
+  device_type: string;
   tcp_port: number;
   online: boolean;
   x25519_pubkey: string;
@@ -14,19 +15,24 @@ export interface Peer {
   device_id: string;
   nickname: string;
   avatar: string | null;
+  device_type: string;
   ip: string;
   tcp_port: number;
   last_seen: number;
   rtt_ms: number | null;
   x25519_pubkey: string | null;
   ed25519_pubkey: string | null;
-  connected_since: number | null;
+  /** 首次发现该节点的时间戳 */
+  first_seen: number | null;
+  /** 当前实际链路类型：`lan` / `routed` / `bluetooth`（无链路时缺省） */
+  link?: string | null;
 }
 
 export interface Friend {
   device_id: string;
   nickname: string;
   avatar: string | null;
+  device_type: string;
   online: boolean;
 }
 
@@ -61,6 +67,12 @@ export interface Conversation {
   last_msg: string | null;
   last_ts: number | null;
   unread: number;
+}
+
+/** 会话的「当前链路」快照：最近一条消息走的链路 + 中间节点数。 */
+export interface LinkState {
+  path: "lan" | "routed" | "bluetooth";
+  hop: number;
 }
 
 export interface Group {
@@ -120,11 +132,6 @@ export interface FileFailedInfo {
   reason: string;
 }
 
-export interface NetworkStatus {
-  online: boolean;
-  bound_ip: string | null;
-}
-
 /** 对方已读回执（peer-read 事件载荷） */
 export interface PeerReadInfo {
   peer_id: string;
@@ -146,12 +153,38 @@ export interface TopologyInfo {
 }
 
 /** 传输通道状态（局域网 / 蓝牙） */
+/**
+ * 运行状态的**唯一快照**（与 Rust 的 `RuntimeSnapshot` 逐字对应，用户要求的第 ② 项）。
+ *
+ * 以前"局域网开着没有"有**两份**前端状态（`channels[lan].enabled` 与 `online`），
+ * 各自被不同命令+事件维护 ⇒ 必然出现"外面开了、里面还是关的"。
+ * 现在前端只认这一份：`api.getRuntimeSnapshot()` / `runtime-changed` 事件载荷。
+ */
+export interface RuntimeSnapshot {
+  channels: ChannelStatus[];
+  online: boolean;
+  boundIp: string | null;
+  /** 蓝牙里"通道状态装不下"的事实（例如本次构建是否编译了蓝牙特性） */
+  ble: { featureCompiled: boolean };
+  /** 在线节点数（完整列表仍走 `peers-updated`，避免每次开关都搬全表） */
+  peerCount: number;
+  /** **我自己的在线状态**：任一通道在跑 = 在线；两个都关才是离线（用户 2026-09-12 定的规则） */
+  present: boolean;
+}
+
 export interface ChannelStatus {
   channel: "lan" | "bluetooth";
   enabled: boolean;
   available: boolean;
   running: boolean;
   peers: number;
+}
+
+/** 手动配置的跨子网端点（Tailscale / VPN / 跨网段）。
+ *  只填地址即可，`device_id` 由握手时自动学到（后端 `RoutedEndpoint` 序列化而来）。 */
+export interface RoutedEndpoint {
+  device_id?: string;
+  address: string;
 }
 
 /** 应用偏好设置（外观 / 网卡选择 / 聊天样式，持久化到本地 SQLite）。
@@ -175,7 +208,14 @@ export interface AppSettings {
   chatStyle: string | null;
   /** 对端样式表 JSON（device_id -> style JSON，后端收 ChatStyle 消息时写入） */
   peerStyles: string | null;
+  /** 中继授权策略："off" | "friends" | "allowlist" | "all"（null 视为 "all"）。 */
+  relayPolicy: string | null;
+  /** 中继白名单 JSON 字符串数组（`allowlist` 策略用）。 */
+  relayAllowlist: string | null;
 }
+
+/** 中继授权策略（与后端 `mesh::relay_policy::RelayPolicy` 一一对应）。 */
+export type RelayPolicy = "off" | "friends" | "allowlist" | "all";
 
 /** 缓存目录占用与策略 */
 export interface CacheInfo {
@@ -214,9 +254,34 @@ export interface SearchResult {
   match_msg_id: string;
 }
 
-// ---------------- Discovery 诊断（隐藏开发者面板用） ----------------
+/** 「搜索聊天记录」结果页的一条命中消息。 */
+export interface ChatSearchMessage {
+  msg_id: string;
+  sender_id: string;
+  sender_name: string;
+  kind: string;
+  content: string;
+  ts: number;
+}
 
+/** 按会话分组的检索结果（左栏一个会话一行，右栏是它的命中消息）。 */
+export interface ChatSearchGroup {
+  conv_id: string;
+  name: string;
+  kind: string;
+  avatar: string | null;
+  /** 当前筛选条件下该会话的命中总数（微信式「共 N 条相关聊天记录」）。 */
+  total: number;
+  latest_ts: number;
+  messages: ChatSearchMessage[];
+}
+
+// ---------------- 网络诊断（隐藏开发者面板用） ----------------
+
+/** 一条候选链路（网卡或蓝牙）。与 Rust `state::InterfaceCandidate` 逐字对应。 */
 export interface InterfaceCandidate {
+  /** `lan`（真实网卡）| `bluetooth`（BLE 链路） */
+  kind: "lan" | "bluetooth" | string;
   name: string;
   ip: string;
   has_broadcast: boolean;
@@ -225,14 +290,46 @@ export interface InterfaceCandidate {
   is_virtual: boolean;
   score: number;
   selected: boolean;
-}
-
-export interface DiscoveryEvent {
-  ts: number;
-  kind: string;
+  /** 一句话状态（蓝牙行用；网卡行为空） */
   detail: string;
 }
 
+/** 蓝牙候选的失败退避条目 */
+export interface BleBackoff {
+  id: string;
+  failures: number;
+  remaining_ms: number;
+}
+
+/**
+ * 蓝牙通道事实。
+ *
+ * 为什么单独一块：诊断数据原来全是局域网的，纯蓝牙用户看到的是 `mode = offline`
+ * （用户 2026-09-13 反馈）。蓝牙是独立通道，必须有自己的状态。
+ */
+export interface BleDiag {
+  feature_compiled: boolean;
+  enabled: boolean;
+  available: boolean;
+  running: boolean;
+  peers: number;
+  /** 当前扫描节奏来源：`active`（前台/聚焦）| `idle`（后台/失焦） */
+  activity: string;
+  scan_window_ms: number;
+  scan_interval_ms: number;
+  last_scan_ts: number;
+  last_scan_total: number;
+  last_scan_matched: number;
+  backoff: BleBackoff[];
+  no_dial: number;
+}
+
+/**
+ * 网络诊断快照。
+ *
+ * 局域网字段（mode / bound_ip / …）**只描述局域网**；蓝牙在 `bluetooth` 里独立描述。
+ * 「最近事件」已合并进运行日志（见 `AppState::push_diag_event`），不再出现在这里。
+ */
 export interface DiscoveryDiag {
   mode: string;
   bound_ip: string;
@@ -248,5 +345,18 @@ export interface DiscoveryDiag {
   last_multicast_send: number;
   last_announce_recv: number;
   candidates: InterfaceCandidate[];
-  recent_events: DiscoveryEvent[];
+  bluetooth: BleDiag;
+}
+
+// ---------------- 运行日志（「运行日志」页用） ----------------
+
+export type LogLevel = "info" | "warn" | "error";
+
+export interface LogEntry {
+  /** Unix 毫秒时间戳 */
+  ts: number;
+  level: LogLevel;
+  /** 子系统名（transport / lan / routed / mesh / friend …） */
+  target: string;
+  message: string;
 }

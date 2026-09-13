@@ -15,17 +15,46 @@ import {
   toHsl,
   hslToHex,
   avatarInitial,
+  avatarInitialLen,
 } from "./color.ts";
 
-test("avatarInitial：首字符大写、码点安全、空名兜底", () => {
-  assert.equal(avatarInitial("zhou"), "Z");
+test("avatarInitial：纯英文取前 4 个字母、纯中文取首字、码点安全、空名兜底", () => {
+  assert.equal(avatarInitial("zhou"), "ZHOU");
+  assert.equal(avatarInitial("Zhou"), "ZHOU");
+  assert.equal(avatarInitial("ab"), "AB");
+  assert.equal(avatarInitial("a"), "A");
+  assert.equal(avatarInitial("abcdefg"), "ABCD", "超过 4 个字母只取前 4 个");
   assert.equal(avatarInitial("周工"), "周");
+  assert.equal(avatarInitial("周san"), "周", "中文开头后面是英文 ⇒ 仍是首字");
   // emoji 是代理对，slice(0,1) 会劈成半边；必须按码点取
   assert.equal(avatarInitial("👍周工"), "👍");
   assert.equal(avatarInitial(""), "?");
   assert.equal(avatarInitial("   "), "?");
   assert.equal(avatarInitial(null), "?");
   assert.equal(avatarInitial(undefined), "?");
+});
+
+test("avatarInitial：字母 + 中文的截断规则（用户 2026-09-13 定稿 + 澄清）", () => {
+  // 分界点是 **3 个字母**：≤2 个字母带中文，≥3 个字母只截字母
+  assert.equal(avatarInitial("a中"), "A中", "1 个字母 ⇒ 字母 + 一个中文（用户澄清）");
+  assert.equal(avatarInitial("ab中"), "AB中", "2 个字母 ⇒ 两个字母 + 一个中文");
+  assert.equal(avatarInitial("abc中"), "ABC", "3 个字母 ⇒ 不加中文，只截字母");
+  assert.equal(avatarInitial("abcd中"), "ABCD", "4 个字母 ⇒ 前 4 个字母（不带中文）");
+  assert.equal(avatarInitial("abcde中"), "ABCD", "超过 4 个字母 ⇒ 前 4 个字母");
+  // 后跟空格/数字/符号的按英文处理（规则只对中英混排特判）
+  assert.equal(avatarInitial("John Smith"), "JOHN");
+  assert.equal(avatarInitial("lee_2"), "LEE");
+});
+
+test("avatarInitialLen：按**渲染结果**数字数（不是原始用户名长度）", () => {
+  assert.equal(avatarInitialLen("zhou"), 4);
+  assert.equal(avatarInitialLen("周工"), 1);
+  assert.equal(avatarInitialLen("abc中"), 3);
+  assert.equal(avatarInitialLen("ab中"), 3);
+  assert.equal(avatarInitialLen("a中"), 2);
+  assert.equal(avatarInitialLen("abcde中"), 4);
+  assert.equal(avatarInitialLen("👍周工"), 1);
+  assert.equal(avatarInitialLen(""), 1);
 });
 
 test("hexToRgb 解析 6 位与 3 位 hex", () => {

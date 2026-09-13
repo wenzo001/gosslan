@@ -4,7 +4,7 @@ import { ref, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import BaseModal from "@/components/BaseModal.vue";
-import { avatarInitial, nameToColor } from "@/utils/color";
+import { avatarInitial, avatarInitialLen, nameToColor } from "@/utils/color";
 import { Check } from "lucide-vue-next";
 
 const props = defineProps<{ open: boolean }>();
@@ -62,18 +62,22 @@ async function create() {
       <div class="mb-1.5 text-sm">{{ t("group.name") }}</div>
       <input
         v-model="name"
-        class="w-full rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none"
+        class="w-full rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] px-3 py-2 text-sm"
         :placeholder="t('group.namePlaceholder')"
-        maxlength="32"
+        maxlength="40"
       />
     </div>
 
     <div class="mb-1.5 text-sm">{{ t("group.selectMembers") }}</div>
     <div class="max-h-56 overflow-y-auto">
-      <div
+      <!-- 选择行必须是**真按钮**：`div @click` 触屏/鼠标能用，键盘 Tab 不到、回车没反应，
+           读屏也只会念成一段普通文本。`aria-pressed` 表达"选中/未选中"开关语义。 -->
+      <button
         v-for="f in chat.friends"
         :key="f.device_id"
-        class="flex cursor-pointer items-center gap-2 rounded-[var(--gosslan-radius-md)] px-2 py-2 transition hover:bg-[var(--gosslan-hover)]"
+        type="button"
+        class="flex w-full cursor-pointer items-center gap-2 rounded-[var(--gosslan-radius-md)] px-2 py-2 text-left transition hover:bg-[var(--gosslan-hover)]"
+        :aria-pressed="selected.includes(f.device_id)"
         @click="toggle(f.device_id)"
       >
         <div
@@ -83,15 +87,15 @@ async function create() {
           <Check v-if="selected.includes(f.device_id)" class="h-3 w-3 text-white" />
         </div>
         <div
-          class="flex h-8 w-8 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
+          class="gosslan-avatar-box flex h-8 w-8 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
           :style="{ backgroundColor: nameToColor(f.nickname) }"
         >
           <img alt="" v-if="f.avatar" :src="f.avatar" class="h-full w-full object-cover" />
-          <span v-else class="text-xs font-semibold">{{ initials(f.nickname) }}</span>
+          <span v-else class="gosslan-avatar-initial text-xs font-semibold" :data-len="avatarInitialLen(f.nickname)">{{ initials(f.nickname) }}</span>
         </div>
         <span class="flex-1 text-sm">{{ f.nickname }}</span>
         <span class="text-xs text-[var(--gosslan-text-2)]">{{ f.online ? t("common.online") : t("common.offline") }}</span>
-      </div>
+      </button>
       <div v-if="chat.friends.length === 0" class="py-6 text-center text-sm text-[var(--gosslan-text-2)]">
         {{ t("group.noFriends") }}
       </div>

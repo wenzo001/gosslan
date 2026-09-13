@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
 import { Check, X } from "lucide-vue-next";
-import { avatarInitial, nameToColor } from "@/utils/color";
+import { avatarInitial, avatarInitialLen, nameToColor } from "@/utils/color";
 import type { PendingRequest } from "@/types";
 
 defineProps<{
@@ -28,7 +28,7 @@ function initials(name: string) {
       >
         <span>{{ t("friend.request.title") }}</span>
         <button
-          class="flex items-center justify-center rounded-[var(--gosslan-radius-xs)] p-0.5 text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+          class="tap-safe flex items-center justify-center rounded-[var(--gosslan-radius-xs)] p-0.5 text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
           :title="t('common.collapse')" :aria-label="t('common.collapse')"
           @click="emit('close')"
         >
@@ -37,14 +37,14 @@ function initials(name: string) {
       </div>
       <div v-for="r in requests" :key="r.from" class="flex h-16 items-center gap-2.5 px-3">
         <div
-          class="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
+          class="gosslan-avatar-box flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
           :style="{ backgroundColor: nameToColor(r.from_nickname) }"
         >
           <img alt="" v-if="r.from_avatar" :src="r.from_avatar" class="h-full w-full object-cover" />
-          <span v-else class="text-sm font-semibold">{{ initials(r.from_nickname) }}</span>
+          <span v-else class="gosslan-avatar-initial text-sm font-semibold" :data-len="avatarInitialLen(r.from_nickname)">{{ initials(r.from_nickname) }}</span>
         </div>
         <div class="min-w-0 flex-1">
-          <div class="truncate text-sm font-medium">{{ r.from_nickname }}</div>
+          <div class="truncate text-sm font-medium" :title="r.from_nickname">{{ r.from_nickname }}</div>
           <div class="text-xs text-[var(--gosslan-text-2)]">{{ t("friend.request.wantsToAdd") }}</div>
         </div>
         <button

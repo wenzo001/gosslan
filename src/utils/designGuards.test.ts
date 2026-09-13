@@ -2,7 +2,19 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { checkStyleCascade, findHoverRevealIssues } from "./designGuards.ts";
+import {
+  checkBubbleMetricsCoupling,
+  findTemplateSlotIssues,
+  checkStyleCascade,
+  checkUnreadBadgeComponent,
+  findHandWrittenBadges,
+  findHoverRevealIssues,
+  findOutlineNoneWithoutFocusRing,
+  findSmallTapTargets,
+  findTappableWithoutKeyboard,
+  findTruncationWithoutTitle,
+  checkSelectionContract,
+} from "./designGuards.ts";
 
 // ---------------- ① 悬停揭示必须有触屏兜底 ----------------
 //
@@ -135,6 +147,439 @@ test(".hover-reveal 定义在 (hover: none) 之外 → 报出（会在有 hover 
   assert.match(messages, /@media \(hover: none\) 之外/);
 });
 
+// ---------------- ③ 未读徽标必须走唯一实现 ----------------
+//
+// 真实踩坑（2026-09-12，用户反馈「红点数字没在圆里居中，上宽下窄」）：
+// 徽标数字需要 1.5px 光学补偿才能垂直居中（字形在行盒里天然偏下：实测上间隙 10 /
+// 下间隙 7，2x 截图，三处徽标一致）。而 5 处手写副本里有 2 处漏了配套的
+// `leading-none` —— 同一徽标在不同位置基线不一致。第一段用例照当时的真实写法缩写。
+
+test("复现历史缺陷：手写未读徽标 → 报出并指向替代组件", () => {
+  const buggy = `<template>
+  <span class="relative">
+    <MessageCircle class="h-5 w-5" />
+    <span
+      v-if="chat.totalUnread > 0"
+      class="absolute -right-2.5 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--gosslan-danger)] px-1 text-[11px] font-medium text-white"
+    >
+      {{ chat.totalUnread }}
+    </span>
+  </span>
+</template>`;
+  const issues = findHandWrittenBadges(buggy);
+  assert.equal(issues.length, 1);
+  assert.equal(issues[0].line, 6, "应精确指到那一行（class 所在行）");
+  assert.match(issues[0].message, /UnreadBadge/);
+});
+
+test("改用 UnreadBadge 组件之后通过", () => {
+  const fixed = `<template>
+  <span class="relative">
+    <MessageCircle class="h-5 w-5" />
+    <UnreadBadge v-if="chat.totalUnread > 0" :count="chat.totalUnread" class="absolute -right-2.5 -top-1" />
+  </span>
+</template>`;
+  assert.deepEqual(findHandWrittenBadges(fixed), []);
+});
+
+test("单独用 min-w-4 或单独用 danger 色、但不是徽标的元素，不报", () => {
+  const ok = `<template>
+  <span class="min-w-4 rounded px-2">标签</span>
+  <span class="bg-[var(--gosslan-danger)] px-2 text-white">错误提示</span>
+</template>`;
+  assert.deepEqual(findHandWrittenBadges(ok), []);
+});
+
+test("徽标组件自身缺补偿或缺 leading-none → 都要报", () => {
+  const full =
+    '<span class="flex h-4 min-w-4 items-center justify-center rounded-full ' +
+    'bg-[var(--gosslan-danger)] px-1 pb-[1.5px] text-[11px] leading-none text-white">3</span>';
+  assert.deepEqual(checkUnreadBadgeComponent(full), []);
+
+  const noPad = full.replace(" pb-[1.5px]", "");
+  assert.equal(checkUnreadBadgeComponent(noPad).length, 1);
+  assert.match(checkUnreadBadgeComponent(noPad)[0].message, /pb-\[1\.5px\]/);
+
+  const noLeading = full.replace(" leading-none", "");
+  assert.equal(checkUnreadBadgeComponent(noLeading).length, 1);
+  assert.match(checkUnreadBadgeComponent(noLeading)[0].message, /leading-none/);
+});
+
+test("注释里提到类名、真实 class 属性里没有 → 仍要报（防「因为注释而通过」）", () => {
+  // 首版护栏用 `src.includes("pb-[1.5px]")` 扫全文，于是组件 JSDoc 里提到这些类名
+  // 就"通过"了 —— 是空转护栏。这条用例把这个假通过固化成反面样本。
+  const commentOnly = `<!-- 参考写法：pb-[1.5px] leading-none -->
+<span class="flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--gosslan-danger)] px-1 text-[11px] text-white">3</span>`;
+  const issues = checkUnreadBadgeComponent(commentOnly);
+  assert.equal(issues.length, 2, "补偿与 leading-none 都缺，两条都要报");
+  assert.match(issues.map((i) => i.message).join("\n"), /pb-\[1\.5px\]/);
+});
+
+// ---------------- ④ 截断文本必须有 title / aria-label ----------------
+//
+// 真实背景：`truncate` 把名字/地址/文件名截成「…」，完整内容只留在 DOM 里 ——
+// 只有在界面上真去 hover 才会发现「看不到全名」。用户 2026-09-10 审计与
+// 2026-09-12 反馈各报了一次（消息列表名、通讯录名、引用预览条…）。
+// 首段用例照当时的真实写法（截断但无 title）缩写。
+
+test("复现历史缺陷：truncate 但没有 title → 报出并指到那一行", () => {
+  const buggy = `<template>
+  <span class="truncate text-sm">{{ name }}</span>
+</template>`;
+  const issues = findTruncationWithoutTitle(buggy);
+  assert.equal(issues.length, 1);
+  assert.equal(issues[0].line, 2, "应精确指到那一行");
+  assert.match(issues[0].message, /title/);
+});
+
+test("跨行的开标签（class 与内容分行）也要抓到", () => {
+  const multiline = `<template>
+  <span
+    class="truncate text-sm"
+  >{{ name }}</span>
+</template>`;
+  assert.equal(findTruncationWithoutTitle(multiline).length, 1);
+});
+
+test("补了 :title 或 aria-label 之后通过", () => {
+  const fixed = `<template>
+  <span class="truncate text-sm" :title="name">{{ name }}</span>
+  <span class="truncate text-sm" aria-label="x">x</span>
+</template>`;
+  assert.deepEqual(findTruncationWithoutTitle(fixed), []);
+});
+
+test("注释里提到 truncate、真实 class 里没有 → 不误报", () => {
+  const commentOnly = `<!-- 这里不要写 truncate -->
+<template><span class="text-sm">{{ name }}</span></template>`;
+  assert.deepEqual(findTruncationWithoutTitle(commentOnly), []);
+});
+
+test("注释里提到 title、真实元素没有 → 仍要报（防「因为注释而通过」）", () => {
+  const commentOnly = `<!-- 参考写法：truncate + :title -->
+<template>
+  <span class="truncate text-sm">{{ name }}</span>
+</template>`;
+  assert.equal(findTruncationWithoutTitle(commentOnly).length, 1);
+});
+
+test("逃生阀：带 truncate-title-ok 注释的文件整体跳过", () => {
+  const optedOut = `<!-- truncate-title-ok：恒为短文案 -->
+<template><span class="truncate">在线</span></template>`;
+  assert.deepEqual(findTruncationWithoutTitle(optedOut), []);
+});
+
+// ---------------- ⑤ 气泡排版必须与虚拟列表高度度量一致 ----------------
+//
+// 真实背景：`previewMetrics.ts` 的 `TEXT_LINE_RATIO` / `TEXT_BUBBLE_PADDING`
+// 是气泡组件 `leading-*` / `py-*` 的镜像。2026-09-12 按用户反馈把气泡从
+// `py-2 + leading-relaxed` 收紧到 `py-1.5 + leading-normal` 时，**两处必须同时改**
+// —— 只改一处不会报错、不会让任何行为测试变红，只有滚动到相邻消息才会互相遮挡。
+
+test("复现风险：气泡行高与度量不一致 → 报出并给出应改的数值", () => {
+  const bubble = `<template>
+  <div class="group relative min-w-0 px-3 py-1.5 leading-relaxed" :style="bubbleStyle"></div>
+</template>`;
+  const metrics = `const TEXT_LINE_RATIO = 1.5;\nconst TEXT_BUBBLE_PADDING = 12;`;
+  const issues = checkBubbleMetricsCoupling(bubble, metrics);
+  assert.equal(issues.length, 1);
+  assert.match(issues[0].message, /leading-relaxed/);
+  assert.match(issues[0].message, /1\.625/, "应指出组件实际行高");
+});
+
+test("复现风险：气泡内边距与度量不一致 → 报出", () => {
+  const bubble = `<template>
+  <div class="group relative min-w-0 px-3 py-2 leading-normal"></div>
+</template>`;
+  const metrics = `const TEXT_LINE_RATIO = 1.5;\nconst TEXT_BUBBLE_PADDING = 12;`;
+  const issues = checkBubbleMetricsCoupling(bubble, metrics);
+  assert.equal(issues.length, 1);
+  assert.match(issues[0].message, /16px/);
+});
+
+test("两边一致 → 通过", () => {
+  const bubble = `<template>
+  <div class="group relative min-w-0 px-3 py-1.5 leading-normal"></div>
+</template>`;
+  const metrics = `const TEXT_LINE_RATIO = 1.5;\nconst TEXT_BUBBLE_PADDING = 12;`;
+  assert.deepEqual(checkBubbleMetricsCoupling(bubble, metrics), []);
+});
+
+test("找不到气泡根元素 / 缺少常量 → 显式报出（不静默通过）", () => {
+  assert.equal(checkBubbleMetricsCoupling(`<template><div></div></template>`, "x").length, 1);
+  const bubble = `<template><div class="min-w-0 leading-normal py-1.5"></div></template>`;
+  assert.equal(checkBubbleMetricsCoupling(bubble, "const NOTHING = 1;").length, 2);
+});
+
+// ---------------- ⑥ 可点击元素必须能用键盘触发 ----------------
+//
+// 真实情况（2026-09-12 复核）：好友选择行、图片/文件气泡、指纹复制都是 `div @click`。
+// 触屏和鼠标都能用，**键盘完全够不着** —— 这类缺陷在真机上"能用"，只有拿键盘走一遍
+// 或开读屏才会发现，因此必须由机器盯住。
+
+test("复现真实缺陷：div + @click 没有任何键盘/语义补充 → 报出", () => {
+  const buggy = `<template>
+  <div class="cursor-pointer" @click="open()">打开</div>
+</template>`;
+  const issues = findTappableWithoutKeyboard(buggy);
+  assert.equal(issues.length, 1);
+  assert.equal(issues[0].line, 2, "应精确指到那一行");
+  assert.match(issues[0].message, /Tab 不到/);
+});
+
+test("role + tabindex + 回车/空格键处理之后通过", () => {
+  const fixed = `<template>
+  <div role="button" tabindex="0" @click="open()" @keydown.enter.prevent="open()" @keydown.space.prevent="open()">打开</div>
+</template>`;
+  assert.deepEqual(findTappableWithoutKeyboard(fixed), []);
+});
+
+test("三种补充写法任意一种即可（含 :role / :tabindex 绑定形式）", () => {
+  for (const extra of [
+    'role="button"',
+    ':role="ready ? \'button\' : undefined"',
+    'tabindex="0"',
+    ':tabindex="ready ? 0 : undefined"',
+    '@keydown.enter="open()"',
+    'v-on:keyup.enter="open()"',
+  ]) {
+    const ok = `<template>\n  <div @click="open()" ${extra}>x</div>\n</template>`;
+    assert.deepEqual(findTappableWithoutKeyboard(ok), [], `补 ${extra} 后不该再报`);
+  }
+});
+
+test("遮罩层（aria-hidden）不是按钮，不报", () => {
+  const backdrop = `<template>
+  <div class="fixed inset-0 bg-black/40" aria-hidden="true" @click="emit('close')" />
+</template>`;
+  assert.deepEqual(findTappableWithoutKeyboard(backdrop), []);
+});
+
+test("只拦冒泡的 @click.stop 不是动作，不报", () => {
+  const stopper = `<template>
+  <div class="frost absolute" @click.stop>
+    <span>内容</span>
+  </div>
+</template>`;
+  assert.deepEqual(findTappableWithoutKeyboard(stopper), []);
+});
+
+test("原生按钮与链接不在扫描范围", () => {
+  const native = `<template>
+  <button type="button" @click="open()">打开</button>
+  <a href="#" @click.prevent="open()">链接</a>
+  <label @click="pick()">选择</label>
+</template>`;
+  assert.deepEqual(findTappableWithoutKeyboard(native), []);
+});
+
+test("tap-keyboard-ok 逃生阀：整文件跳过", () => {
+  const withEscape = `<!-- tap-keyboard-ok -->
+<template>
+  <div @click="open()">x</div>
+</template>`;
+  assert.deepEqual(findTappableWithoutKeyboard(withEscape), []);
+});
+
+// ---------------- ⑦ `outline-none` 必须自带焦点指示 ----------------
+//
+// 真实缺陷（2026-09-12）：全局焦点环写在 `:where(...)` 里（特异性 0），
+// 会被 Tailwind 的 `.outline-none`（0,1,0）**静默覆盖** —— 7 处输入框
+// （含最高频的消息输入框）因此完全没有焦点指示，而代码看起来"有全局规则在管"。
+// 这条护栏把"关掉了轮廓就必须自己给指示"钉死。
+
+test("复现真实缺陷：outline-none 且没有替代指示 → 报出", () => {
+  const buggy = `<template>
+  <input class="w-full outline-none" />
+</template>`;
+  const issues = findOutlineNoneWithoutFocusRing(buggy);
+  assert.equal(issues.length, 1);
+  assert.equal(issues[0].line, 2);
+  assert.match(issues[0].message, /静默覆盖/);
+});
+
+test("给了替代焦点指示就通过（ring / border 都算）", () => {
+  for (const extra of [
+    "focus:ring-2 focus:ring-primary",
+    "focus-visible:ring-2 focus-visible:ring-primary",
+    "focus:border-[var(--gosslan-primary)]",
+    "focus-visible:outline-none focus-visible:ring-1",
+  ]) {
+    const ok = `<template>\n  <input class="outline-none ${extra}" />\n</template>`;
+    assert.deepEqual(findOutlineNoneWithoutFocusRing(ok), [], `带 ${extra} 时不该报`);
+  }
+});
+
+test("删掉 outline-none（改用全局焦点环）就通过", () => {
+  const ok = `<template>
+  <input class="w-full" />
+  <div contenteditable="true" class="min-h-10"></div>
+</template>`;
+  assert.deepEqual(findOutlineNoneWithoutFocusRing(ok), []);
+});
+
+test("focus-ring-ok 逃生阀：菜单/对话框容器整文件跳过", () => {
+  const withEscape = `<!-- focus-ring-ok -->
+<template>
+  <div role="menu" tabindex="-1" class="frost outline-none">…</div>
+</template>`;
+  assert.deepEqual(findOutlineNoneWithoutFocusRing(withEscape), []);
+});
+
+test("注释里提到 outline-none 不算（只看真实 class 属性）", () => {
+  const commentOnly = `<!-- 注意：不要在这里加 outline-none -->
+<template>
+  <input class="w-full" />
+</template>`;
+  assert.deepEqual(findOutlineNoneWithoutFocusRing(commentOnly), []);
+});
+
+// ---------------- ⑧ 小尺寸可交互元素必须有 tap-safe ----------------
+//
+// 真实情况（2026-09-12 复核）：35 个小尺寸可交互元素里仍有 8 处漏掉 `tap-safe` ——
+// 包括移动端的返回键、删除「跨网段端点」的垃圾桶、自定义主题取色控件。
+// 桌面鼠标点 28px 没问题，**手指点就容易不中或误触相邻项**（HIG 最小 44pt）。
+
+test("复现真实缺陷：h-7 图标按钮没有 tap-safe → 报出", () => {
+  const buggy = `<template>
+  <button class="flex h-7 w-7 items-center justify-center" @click="remove()">
+    <Trash2 />
+  </button>
+</template>`;
+  const issues = findSmallTapTargets(buggy);
+  assert.equal(issues.length, 1);
+  assert.equal(issues[0].line, 2);
+  assert.match(issues[0].message, /44×44pt/);
+});
+
+test("加了 tap-safe 就通过", () => {
+  const ok = `<template>
+  <button class="tap-safe flex h-7 w-7 items-center justify-center" @click="remove()">
+    <Trash2 />
+  </button>
+</template>`;
+  assert.deepEqual(findSmallTapTargets(ok), []);
+});
+
+test("达标的尺寸不算小（h-11 = 44px）", () => {
+  const ok = `<template>
+  <button class="flex h-11 w-11 items-center justify-center" @click="ok()">x</button>
+</template>`;
+  assert.deepEqual(findSmallTapTargets(ok), []);
+});
+
+test("不可交互的小元素不报（纯装饰）", () => {
+  const decorative = `<template>
+  <div class="h-6 w-6 rounded-full bg-primary"></div>
+  <span class="h-5 w-5"><Check /></span>
+</template>`;
+  assert.deepEqual(findSmallTapTargets(decorative), []);
+});
+
+test("带 @click 的非按钮小元素同样要 tap-safe", () => {
+  const buggy = `<template>
+  <div class="h-6 w-6 cursor-pointer" role="button" tabindex="0" @click="go()">x</div>
+</template>`;
+  assert.equal(findSmallTapTargets(buggy).length, 1);
+});
+
+test("tap-target-ok 逃生阀：整文件跳过", () => {
+  const withEscape = `<!-- tap-target-ok -->
+<template>
+  <button class="h-6 w-6" @click="go()">x</button>
+</template>`;
+  assert.deepEqual(findSmallTapTargets(withEscape), []);
+});
+
+// ---------------- ⑨ as="template" 插槽不得有注释/多根节点 ----------------
+//
+// 真实事故（2026-09-12 用户实测）：点「+ → 添加好友」整个窗口卡死。根因是
+// `BaseModal.vue` 在 `<TransitionChild as="template">` 的插槽里放了一条 HTML 注释：
+// **dev 构建保留注释** ⇒ 插槽多出一个节点 ⇒ Headless UI 抛 "Passing props on template!"
+// ⇒ Vue 渲染抛错后整个界面再也 patch 不动。生产构建会剥掉注释，所以只在 dev 复现。
+
+test("复现真实缺陷：as=template 的插槽里有 HTML 注释 → 报出", () => {
+  const buggy = `<template>
+<TransitionRoot :show="open" as="template">
+  <Dialog as="div">
+    <TransitionChild as="template">
+      <!-- 说明文字 -->
+      <DialogPanel v-if="fullscreen">A</DialogPanel>
+      <DialogPanel v-else>B</DialogPanel>
+    </TransitionChild>
+  </Dialog>
+</TransitionRoot>
+</template>`;
+  const issues = findTemplateSlotIssues(buggy);
+  assert.equal(issues.length, 1);
+  assert.match(issues[0].message, /HTML 注释/);
+  assert.match(issues[0].message, /卡死/);
+});
+
+test("注释移到组件外面就通过", () => {
+  const ok = `<template>
+<!-- 说明文字放在外面 -->
+<TransitionRoot :show="open" as="template">
+  <Dialog as="div"><TransitionChild as="template"><div /></TransitionChild></Dialog>
+</TransitionRoot>
+</template>`;
+  assert.deepEqual(findTemplateSlotIssues(ok), []);
+});
+
+test("插槽里多个顶层节点 → 报出（同样会抛 template 错误）", () => {
+  const buggy = `<template>
+<Foo as="template">
+  <div>A</div>
+  <div>B</div>
+</Foo>
+</template>`;
+  const issues = findTemplateSlotIssues(buggy);
+  assert.equal(issues.length, 1);
+  assert.match(issues[0].message, /顶层节点/);
+});
+
+test("单节点、嵌套里有注释都不算（只看直接插槽）", () => {
+  const ok = `<template>
+<Foo as="template">
+  <div>
+    <!-- 子元素内部的注释无妨 -->
+    <span>x</span>
+  </div>
+</Foo>
+</template>`;
+  assert.deepEqual(findTemplateSlotIssues(ok), []);
+});
+
+test("v-if / v-else 链只算一个节点", () => {
+  const ok = `<template>
+<Foo as="template">
+  <DialogPanel v-if="fullscreen">A</DialogPanel>
+  <DialogPanel v-else>B</DialogPanel>
+</Foo>
+</template>`;
+  assert.deepEqual(findTemplateSlotIssues(ok), []);
+});
+
+test("两个**独立**元素（没有 v-else 关系）仍然报出", () => {
+  const buggy = `<template>
+<Foo as="template">
+  <div v-if="a">A</div>
+  <div>B</div>
+</Foo>
+</template>`;
+  assert.equal(findTemplateSlotIssues(buggy).length, 1);
+});
+
+test("普通组件（没有 as=template）里有注释不报", () => {
+  const ok = `<template>
+<div>
+  <!-- 随便注释 -->
+  <span>x</span>
+</div>
+</template>`;
+  assert.deepEqual(findTemplateSlotIssues(ok), []);
+});
+
 // ---------------- 全库扫描：真实文件必须干净 ----------------
 
 function collectVueFiles(dir: string, out: string[] = []): string[] {
@@ -145,6 +590,58 @@ function collectVueFiles(dir: string, out: string[] = []): string[] {
   }
   return out;
 }
+
+test("src 下所有小尺寸可交互元素都带 tap-safe", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const files = collectVueFiles(srcDir);
+  assert.ok(files.length > 20, `应扫描到全部组件，实际 ${files.length} 个`);
+  const bad: string[] = [];
+  for (const f of files) {
+    for (const issue of findSmallTapTargets(readFileSync(f, "utf8"))) {
+      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+    }
+  }
+  assert.deepEqual(bad, [], `以下元素点按目标过小：\n${bad.join("\n")}`);
+});
+
+test("src 下所有 as=template 的插槽都干净（无注释、单节点）", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const files = collectVueFiles(srcDir);
+  assert.ok(files.length > 20, `应扫描到全部组件，实际 ${files.length} 个`);
+  const bad: string[] = [];
+  for (const f of files) {
+    for (const issue of findTemplateSlotIssues(readFileSync(f, "utf8"))) {
+      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+    }
+  }
+  assert.deepEqual(bad, [], `以下 as="template" 插槽有问题：\n${bad.join("\n")}`);
+});
+
+test("src 下所有 outline-none 都自带焦点指示", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const files = collectVueFiles(srcDir);
+  assert.ok(files.length > 20, `应扫描到全部组件，实际 ${files.length} 个`);
+  const bad: string[] = [];
+  for (const f of files) {
+    for (const issue of findOutlineNoneWithoutFocusRing(readFileSync(f, "utf8"))) {
+      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+    }
+  }
+  assert.deepEqual(bad, [], `以下元素关掉了焦点指示却没有替代：\n${bad.join("\n")}`);
+});
+
+test("src 下所有可点击元素都能用键盘触发", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const files = collectVueFiles(srcDir);
+  assert.ok(files.length > 20, `应扫描到全部组件，实际 ${files.length} 个`);
+  const bad: string[] = [];
+  for (const f of files) {
+    for (const issue of findTappableWithoutKeyboard(readFileSync(f, "utf8"))) {
+      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+    }
+  }
+  assert.deepEqual(bad, [], `以下元素能点但键盘够不着：\n${bad.join("\n")}`);
+});
 
 test("src 下所有 .vue 的悬停揭示都带了触屏兜底", () => {
   const srcDir = join(import.meta.dirname, "..");
@@ -159,8 +656,114 @@ test("src 下所有 .vue 的悬停揭示都带了触屏兜底", () => {
   assert.deepEqual(bad, [], `发现缺少触屏兜底的悬停揭示：\n${bad.join("\n")}`);
 });
 
+test("src 下所有 .vue 的截断文本都带了 title / aria-label", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const files = collectVueFiles(srcDir);
+  const bad: string[] = [];
+  for (const f of files) {
+    for (const issue of findTruncationWithoutTitle(readFileSync(f, "utf8"))) {
+      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+    }
+  }
+  assert.deepEqual(bad, [], `发现被截断却没有 title 的文本：\n${bad.join("\n")}`);
+});
+
+test("文本气泡排版与虚拟列表高度度量一致（leading-* ↔ TEXT_LINE_RATIO / py-* ↔ TEXT_BUBBLE_PADDING）", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const bubble = readFileSync(join(srcDir, "components", "message", "MessageTextBubble.vue"), "utf8");
+  const metrics = readFileSync(join(srcDir, "utils", "previewMetrics.ts"), "utf8");
+  const issues = checkBubbleMetricsCoupling(bubble, metrics);
+  assert.deepEqual(issues, [], issues.map((i) => `L${i.line} ${i.message}`).join("\n"));
+});
+
+test("触屏命中扩展类直接声明 position → 报出（会盖掉组件的 absolute）", () => {
+  // 复现真实缺陷：安卓端「回到最新」按钮是 `tap-safe absolute bottom-4 right-5`，
+  // 而 .tap-safe{position:relative} 与 .absolute 特异性相同、本文件更靠后 ⇒ 定位被覆盖。
+  const buggy = `
+@tailwind utilities;
+@media (pointer: coarse) {
+  .tap-safe { position: relative; }
+  .tap-safe::after { content: ""; position: absolute; inset: -8px 0; }
+}
+`;
+  const issues = checkStyleCascade(buggy);
+  assert.ok(
+    issues.some((i) => i.message.includes("pointer: coarse")),
+    `应当报出触屏块里的 position 覆盖，实际：${JSON.stringify(issues)}`,
+  );
+});
+
+test("用 :where() 压到 0 特异性 → 通过", () => {
+  const fixed = `
+@tailwind utilities;
+@media (pointer: coarse) {
+  :where(.tap-safe) { position: relative; }
+  :where(.tap-safe)::after { content: ""; position: absolute; inset: -8px 0; }
+}
+`;
+  const issues = checkStyleCascade(fixed).filter((i) => i.message.includes("pointer: coarse"));
+  assert.deepEqual(issues, [], issues.map((i) => i.message).join("\n"));
+});
+
 test("真实的 src/style.css 级联顺序正确", () => {
   const css = readFileSync(join(import.meta.dirname, "..", "style.css"), "utf8");
   const issues = checkStyleCascade(css);
+  assert.deepEqual(issues, [], issues.map((i) => `L${i.line} ${i.message}`).join("\n"));
+});
+
+test("未读徽标只有 UnreadBadge.vue 一处实现，且保留了垂直居中补偿", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const badgePath = join(srcDir, "components", "UnreadBadge.vue");
+  const files = collectVueFiles(srcDir);
+
+  const bad: string[] = [];
+  for (const f of files) {
+    if (f === badgePath) continue;
+    for (const issue of findHandWrittenBadges(readFileSync(f, "utf8"))) {
+      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+    }
+  }
+  assert.deepEqual(bad, [], `发现有手写的未读徽标：\n${bad.join("\n")}`);
+
+  const issues = checkUnreadBadgeComponent(readFileSync(badgePath, "utf8"));
+  assert.deepEqual(issues, [], issues.map((i) => i.message).join("\n"));
+});
+
+// ---------------- ⑧ 聊天区「文本选择」契约 ----------------
+
+test("复现历史缺陷：气泡根不可选 / 表情可拖 → 报出", () => {
+  const buggy = {
+    textBubble: `
+      <div class="group relative px-3 py-1.5">
+        <div class="whitespace-pre-wrap">{{ body }}</div>
+        <img :src="emoji" class="emoji-img" />
+      </div>`,
+    avatar: `<img :src="avatar" class="h-full w-full object-cover" />`,
+    messageItem: `<div @touchmove="cancelLongPress"></div>`,
+    app: `window.addEventListener("contextmenu", (e) => e.preventDefault());`,
+    css: `
+.gosslan-avatar-box { container-type: inline-size; }
+.emoji-img { display: inline-block; }
+.gosslan-selectable { user-select: text; }`,
+  };
+  const issues = checkSelectionContract(buggy);
+  const msgs = issues.map((i) => i.message).join("\n");
+  assert.ok(msgs.includes("gosslan-selectable"), msgs);
+  assert.ok(msgs.includes("select-text"), msgs);
+  assert.ok(msgs.includes("emoji-img"), msgs);
+  assert.ok(msgs.includes("user-select: none"), msgs);
+  assert.ok(msgs.includes("onTouchMove"), msgs);
+  assert.ok(msgs.includes("contextmenu"), msgs);
+});
+
+test("修好之后通过（真实的 5 个源码文件）", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const issues = checkSelectionContract({
+    textBubble: readFileSync(join(srcDir, "components", "message", "MessageTextBubble.vue"), "utf8"),
+    avatar: readFileSync(join(srcDir, "components", "message", "MessageAvatar.vue"), "utf8"),
+    messageItem: readFileSync(join(srcDir, "components", "MessageItem.vue"), "utf8"),
+    app: readFileSync(join(srcDir, "..", "src", "App.vue"), "utf8"),
+    css: readFileSync(join(srcDir, "style.css"), "utf8"),
+  });
   assert.deepEqual(issues, [], issues.map((i) => `L${i.line} ${i.message}`).join("\n"));
 });

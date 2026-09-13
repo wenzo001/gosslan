@@ -6,6 +6,11 @@ dist-ssr
 
 # Rust / Tauri
 src-tauri/target
+# 安卓专用的 cargo target 目录（scripts/package.mjs 为了与 mac 并行而拆分；见该脚本头注释）
+src-tauri/target-android
+# 仓库根目录的 target/：在根目录误跑 cargo（例如只看元信息的 cargo info/search）
+# 会留下它；它是构建产物，绝不入库
+/target/
 src-tauri/gen/schemas
 
 # 敏感信息与本地配置
@@ -16,6 +21,10 @@ src-tauri/gen/schemas
 *.db-wal
 *.db-shm
 
+# NotifyMe 手机通知桥（config.json 含可推送的 UUID 凭据，绝不入库）
+.notifyme/
+.notifyme-docs/
+
 # 编辑器
 .vscode/*
 !.vscode/extensions.json
@@ -25,3 +34,19 @@ src-tauri/gen/schemas
 
 # Agent 工作目录（运行产物 / 记忆，不入库）
 .workbuddy/
+
+# 打包产物（按架构出的 APK / DMG 等，不入库）
+/release-artifacts/
+# Windows 生产包收集目录（npm run dist:win:test 的产物：NSIS 安装包 / 便携版 zip）
+/dist-windows/
+/dist-portable/
+# 仓库根目录随手放置的安装包（构建脚本复制出来的那一份，不入库）
+/*.exe
+
+# 本地固定签名 keystore（**绝不入库**；丢了就只能卸载重装）
+/scripts/android/keystore/
+# 注入脚本从上面那份**解出来的副本**（AGP 实际用它签名）。
+# 它同样是私钥 ⇒ 必须忽略，否则一次 `git add -A` 就会把签名密钥提交上去
+# （`git check-ignore` 之前对它返回"未忽略"，2026-09-13 审计发现）。
+src-tauri/gen/android/app/release.keystore
+src-tauri/gen/android/app/*.keystore
