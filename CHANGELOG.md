@@ -10,7 +10,37 @@
 
 ## [Unreleased]
 
-## [4.2.16] - 2026-09-13
+## [4.2.17] - 2026-09-13
+
+### Fixed (🔴 好友申请到了安卓、Mac 却什么都收不到：Android 外设**连发通知丢片**)
+
+用户 4.2.16 真机：Mac 加安卓 → **安卓收到了、好友也加上了**，但 Mac 侧没反应。日志给出了
+算术级的证据：
+
+```
+Mac：[SESSION] 已就绪 peer=dev-gosslan-…             ← 连接/握手都成功了
+     [SEND] type=gossip kind=FriendRequest bytes=742
+     [FRAG] 收到通知 38 条 / 747 字节（非本特征 0 条）  ← 分片到了，但永远拼不出完整帧
+     （整段日志里一个 [RECV] 都没有）
+```
+
+一个 **742 字节**的帧，在 MTU=23（ATT 头 3 + 分片头 6 ⇒ 每片 14 字节载荷）下需要
+**⌈742/14⌉ = 53 片**；而 Mac 只收到 **38 片** ⇒ **丢 15 片** ⇒ 重组器永远等不到完整帧
+⇒ `handle_message` 从不执行 ⇒ Mac 既看不到好友、也看不到任何消息。
+
+**根因**：Android 的 `notifyCharacteristicChanged` **连发会被协议栈丢包**（发送缓冲有限），
+而 `send()` 返回 `true` 只代表**调用被接受**，不代表已上线 —— 所以安卓侧日志全是"成功"。
+
+**修法**：`transport/ble_android.rs` 的 `PeripheralWriter::send_frame` 在**每片之间**
+`sleep(NOTIFY_CHUNK_INTERVAL = 12ms)`（≈ 一个连接间隔；最后一片不等）。
+配套把**发出的分片数**写进日志（`[SEND] … 分片=53`），与对端的 `[FRAG] 收到通知 N 条`
+一比即可判定"是发少了还是收丢了"——这次正是靠这两个数字对不上才定位到的。
+
+**护栏**：`android_peripheral_paces_its_notifications`（常量存在 + 循环里真的 sleep +
+最后一片不再等 + 发送侧必须打分片数）+ `verify-guards.py` 对应用例，现共 **59** 条。
+
+**门禁**：`cargo test --lib --features bluetooth` 427/427 · `npm test` 350/350 ·
+`check-mobile --bluetooth` PASS(0 warning) · `verify-guards` 59/59。
 
 ## [4.2.16] - 2026-09-13
 

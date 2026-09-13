@@ -851,12 +851,21 @@ async fn ble_writer_loop<S: FrameSink + 'static>(
                     continue;
                 };
                 // 写也要能被停机/判死打断（与 TCP 的 writer_loop 同一考虑）
-                let ok = tokio::select! {
+                let res = tokio::select! {
                     biased;
-                    _ = shutdown.changed() => false,
-                    _ = cancel.changed() => false,
-                    res = writer.send_frame(&bytes) => res.is_ok(),
+                    _ = shutdown.changed() => Err("停机中".to_string()),
+                    _ = cancel.changed() => Err("链路已取消".to_string()),
+                    res = writer.send_frame(&bytes) => res,
                 };
+                // 分片数要留痕：对端会打 `[FRAG] 收到通知 N 条`，两边的数字一比就知道
+                // **是发少了还是收丢了**（真机 2026-09-13：742B 的帧需要 53 片，对端只到 38 片）。
+                if let (Ok(n), Some(trace)) = (&res, trace.as_deref()) {
+                    state.logger.info(
+                        "ble",
+                        format!("[SEND] {trace} → peer={peer_id} ep={ep} bytes={} 分片={n}", bytes.len()),
+                    );
+                }
+                let ok = res.is_ok();
                 if !ok {
                     state.logger.warn(
                         "ble",
@@ -868,11 +877,7 @@ async fn ble_writer_loop<S: FrameSink + 'static>(
                     );
                     break;
                 }
-                if let Some(trace) = trace {
-                    state
-                        .logger
-                        .info("ble", format!("[SEND] {trace} → peer={peer_id} ep={ep} bytes={}", bytes.len()));
-                }
+
             }
             None => {
                 if prio_rx.is_closed() {

@@ -913,6 +913,37 @@ mod tests {
         );
     }
 
+    /// **Android 外设的通知必须节流**（真机 2026-09-13：742B 的帧只到了 38/53 片）。
+    ///
+    /// 算术证据：Mac 侧 `[FRAG] 收到通知 38 条 / 747 字节`；而 742 字节的帧在 MTU=23
+    /// （每片 14 字节载荷 + 6 字节分片头）下需要 **53 片** ⇒ 丢了 15 片 ⇒ 永远拼不出完整帧
+    /// ⇒ 表现就是"安卓收到了好友申请并且加上了，Mac 什么都收不到"。
+    /// `notifyCharacteristicChanged` 连发会被 Android 协议栈丢包，`send()` 返回 true 只代表
+    /// 调用被接受；必须每片之间留一个连接间隔。
+    #[test]
+    fn android_peripheral_paces_its_notifications() {
+        let android = include_str!("transport/ble_android.rs");
+        assert!(
+            android.contains("const NOTIFY_CHUNK_INTERVAL: Duration"),
+            "必须显式定义通知间隔常量（可调、可测），而不是散落的 magic number"
+        );
+        let send = rust_fn_body(android, "    pub async fn send_frame(&self, central: &str, payload: &[u8])");
+        assert!(
+            send.contains("sleep(NOTIFY_CHUNK_INTERVAL).await"),
+            "逐片发送的循环里必须真的 sleep 这个间隔 —— 否则连发丢片会重现"
+        );
+        assert!(
+            send.contains("idx + 1 < total"),
+            "最后一片之后不该再等（否则每帧白等一个间隔）"
+        );
+        // 发送侧的分片数必须留痕：与对端的 [FRAG] 数字对照才能判"发少了 / 收丢了"
+        let ble = include_str!("network/ble.rs");
+        assert!(
+            ble.contains("分片={n}"),
+            "写循环必须打出发出的分片数（与对端 [FRAG] 对照）"
+        );
+    }
+
     /// **扫描结果不得再用 `Peripheral::services()` 二次过滤**（真机踩过，症状极隐蔽）。
     ///
     /// `start_scan(ScanFilter{services})` 已在平台层过滤；而 `services()` 在 **Android 上

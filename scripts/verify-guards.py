@@ -918,6 +918,22 @@ CASES: list[Case] = [
         tags=["rust", "ble", "connection"],
     ),
     Case(
+        name="Android 外设通知必须节流（连发会丢片，帧永远拼不完整）",
+        why="真机 2026-09-13 的算术证据：Mac 侧 `[FRAG] 收到通知 38 条 / 747 字节`，"
+        "而 742 字节的帧在 MTU=23（每片 14 字节载荷）下需要 53 片 ⇒ 丢了 15 片 ⇒ 永远拼不出"
+        "完整帧，表现是「安卓收到了好友申请并加上了，Mac 什么都没发生」。"
+        "notifyCharacteristicChanged 连发会被 Android 协议栈丢包，必须每片留一个连接间隔",
+        file=TAURI / "src" / "transport" / "ble_android.rs",
+        injections=[(
+            "                tokio::time::sleep(NOTIFY_CHUNK_INTERVAL).await;",
+            "                // 非空转验证：把这句去掉",
+        )],
+        cmd=cargo("test", "--lib", "android_peripheral_paces_its_notifications"),
+        cwd=TAURI,
+        expect_fail_hint="必须真的 sleep",
+        tags=["rust", "ble", "android"],
+    ),
+    Case(
         name="应用样式（三个窗口都必须加载 style.css）",
         why="真实缺陷：一窗一入口重构时漏掉了 `import \"./style.css\"`，dev 起来整个界面\"像没有 CSS\"，"
         "而且不报错、不影响任何测试 —— 只有这条守卫能拦住",

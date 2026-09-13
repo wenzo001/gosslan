@@ -42,6 +42,18 @@ use crate::transport::ble_framing::{self, BleReassembler, PushOutcome};
 const WRITE_DEADLINE: Duration = Duration::from_secs(8);
 /// 两次重试之间的间隔。
 const WRITE_RETRY_WAIT: Duration = Duration::from_millis(20);
+
+/// **相邻通知之间的最小间隔**（真机 2026-09-13 的算术证据逼出来的）。
+///
+/// Mac 侧日志：`[FRAG] 收到通知 38 条 / 747 字节`。而一个 **742 字节**的帧在
+/// MTU=23（载荷 20 字节、分片头 6 字节 ⇒ 每片 14 字节）下需要 **⌈742/14⌉ = 53 片** ——
+/// 实际只到了 38 片，**丢了 15 片**，于是重组器永远拼不出完整帧，Mac 侧一个 `[RECV]` 都没有
+/// （表现就是"安卓收到了好友申请并且加上了，Mac 什么都没发生"）。
+///
+/// 原因是 Android 的 GATT server 在 `notifyCharacteristicChanged` **连发**时会丢包：
+/// 协议栈的发送缓冲有限，而 `send()` 返回 true 只代表"调用被接受"，不代表已上线。
+/// 12ms ≈ 一个连接间隔，把连发改成"一片一片来"；阈值取小不取大，避免拖慢握手。
+const NOTIFY_CHUNK_INTERVAL: Duration = Duration::from_millis(12);
 /// 等 CoreBluetooth/Android 上报启动结果的窗口（与 macOS 侧同口径，供 `network/ble.rs` 复用）。
 pub const STATE_WAIT: Duration = Duration::from_secs(3);
 
@@ -218,7 +230,8 @@ impl PeripheralWriter {
         let chunks = ble_framing::fragment(payload, mtu, next_msg_id())
             .ok_or_else(|| format!("帧无法分片（过大或 MTU 非法：len={} mtu={mtu}）", payload.len()))?;
         let deadline = tokio::time::Instant::now() + WRITE_DEADLINE;
-        for chunk in &chunks {
+        let total = chunks.len();
+        for (idx, chunk) in chunks.iter().enumerate() {
             loop {
                 if self.is_subscribed(central) && call_static_send(central, chunk)? {
                     break;
@@ -228,8 +241,13 @@ impl PeripheralWriter {
                 }
                 tokio::time::sleep(WRITE_RETRY_WAIT).await;
             }
+            // **必须节流**：连发会被 Android 协议栈丢掉中间分片（见 NOTIFY_CHUNK_INTERVAL
+            // 的注释：742 字节的帧需要 53 片，实测只到 38 片）。最后一片之后不用再等。
+            if idx + 1 < total {
+                tokio::time::sleep(NOTIFY_CHUNK_INTERVAL).await;
+            }
         }
-        Ok(chunks.len())
+        Ok(total)
     }
 }
 
