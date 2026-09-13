@@ -10,6 +10,21 @@
 
 ## [Unreleased]
 
+### Fixed (Windows 的日常包一直没有蓝牙 —— 一键入口 `npm run dist` 漏了 `--features bluetooth`)
+
+2026-09-13 合并评审（把 Windows 那边的 10 个提交 rebase 进来之后逐条 code review）发现的。
+
+BLE 在 Cargo 里是**可选 feature**（ADR-0015 §2：不开时依赖不下载、代码不编译）。
+Windows 那边已经给 `dist:win` / `dist:win:arm64` / `dist:win:msi` / 便携版脚本补了
+`--features bluetooth`，**但一键入口 `scripts/package.mjs`（= `npm run dist`）漏了** ——
+而按用户定的规则，`npm run dist` 才是日常出包的那条路（Windows 上只出当前环境的包）。
+后果是**静默**的：构建成功、产物正常、只是那个包完全没有蓝牙。
+
+**修法**：`scripts/package.mjs` 的 win32 分支补上 `--features bluetooth`。
+**护栏**：`src/utils/buildConfig.test.ts` 新增一条 —— 扫描 `package.json` 里所有
+`tauri build` 命令与 `scripts/package.mjs` 里的每一条 build 命令，少一个 feature 就 FAIL；
+并进了 `scripts/verify-guards.py` 的非空转验证（改坏即 FAIL、恢复即 PASS）。
+
 ## [4.3.4] - 2026-09-13
 
 ### Fixed (安卓长按面板：点「引用」「转发」后面板还挂着 —— 现在点任何一项都收起)

@@ -39,3 +39,39 @@ test("debug 判定必须是字面量比较（并且真的用在了 minify / sour
   assert.match(viteConfig, /minify:\s*isDebugBuild \? false : "esbuild"/, "minify 必须用它判定");
   assert.match(viteConfig, /sourcemap:\s*isDebugBuild/, "sourcemap 必须用它判定");
 });
+
+/**
+ * **每一个"打生产包"的命令都必须开 `bluetooth` feature**（2026-09-13 合并评审）。
+ *
+ * 为什么：BLE 在 Cargo 里是**可选 feature**（ADR-0015 §2：不开时依赖不下载、代码不编译）。
+ * 漏了 `--features bluetooth` 的后果是**静默**的 —— 构建成功、产物正常、只是那个包
+ * **完全没有蓝牙**（设置页的开关永远起不来、也搜不到任何设备）。
+ * 真机代价：用户拿一个"没有蓝牙的包"去测 Windows ↔ Android，白跑一轮。
+ * 这个坑在 `dist:win` / `dist:win:msi` / 便携版脚本上都出现过，而**一键入口
+ * `npm run dist`（scripts/package.mjs）**也漏过一次 —— 那才是日常用的那条。
+ */
+test("打生产包的命令必须带 --features bluetooth（否则产物静默地没有蓝牙）", () => {
+  const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as {
+    scripts: Record<string, string>;
+  };
+  const missing: string[] = [];
+  for (const [name, cmd] of Object.entries(pkg.scripts)) {
+    // 只看"真的在编应用"的命令：tauri build / bash scripts/build-android-releases.sh
+    const buildsApp = /tauri build|build-android-releases\.sh/.test(cmd);
+    if (!buildsApp) continue;
+    // 安卓那条脚本内部自己带 feature（见该脚本头注释），这里只查 tauri build
+    if (!/tauri build/.test(cmd)) continue;
+    if (!/--features\s+bluetooth/.test(cmd)) missing.push(`package.json:${name} → ${cmd}`);
+  }
+  const packer = readFileSync(join(root, "scripts", "package.mjs"), "utf8");
+  for (const m of packer.matchAll(/cmd:\s*`([^`]*tauri build[^`]*)`/g)) {
+    if (!/--features\s+bluetooth/.test(m[1])) missing.push(`scripts/package.mjs → ${m[1].trim()}`);
+  }
+  assert.deepEqual(
+    missing,
+    [],
+    "下面这些命令会打出**没有蓝牙**的包（构建照样成功！）：\n" +
+      missing.map((m) => `  · ${m}`).join("\n") +
+      "\n请补上 `--features bluetooth`（Tauri 的 feature 默认关闭，ADR-0015 §2）。",
+  );
+});

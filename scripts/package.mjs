@@ -185,7 +185,12 @@ function buildPlan() {
           steps: [
             {
               label: `Windows 构建（${triple}，bundles=nsis）`,
-              cmd: `npx tauri build --bundles nsis --target ${triple}`,
+              // ⚠️ `--features bluetooth` **不能少**（2026-09-13 合并评审发现）：
+              // BLE 在 Cargo 里是可选 feature（ADR-0015 §2），不开时依赖不下载、代码不编译 ⇒
+              // 打出来的 Windows 包**没有蓝牙**，而构建照样"成功"。
+              // 这里曾经漏了它（`dist:win` 那几条 npm 脚本补过，但**一键入口 `npm run dist`
+              // 才是用户日常用的那条**，它漏了就等于 Windows 日常包都没有蓝牙）。
+              cmd: `npx tauri build --features bluetooth --bundles nsis --target ${triple}`,
             },
           ],
         },

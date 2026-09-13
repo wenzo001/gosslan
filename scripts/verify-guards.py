@@ -392,6 +392,22 @@ CASES: list[Case] = [
         tags=["frontend", "selection"],
     ),
     Case(
+        name="打生产包必须带 --features bluetooth（否则产物静默地没有蓝牙）",
+        why="BLE 是可选 feature，漏了 `--features bluetooth` 的后果是**静默**的：构建成功、"
+        "产物正常、只是那个包完全没有蓝牙（开关起不来、搜不到设备）。"
+        "真机代价是拿一个没有蓝牙的包去测 Windows ↔ Android，白跑一轮 —— "
+        "这个坑在 dist:win 系列与**一键入口** `npm run dist`（scripts/package.mjs）上都出现过",
+        file=ROOT / "package.json",
+        injections=[(
+            '"dist:win": "tauri build --features bluetooth --bundles nsis --target x86_64-pc-windows-msvc"',
+            '"dist:win": "tauri build --bundles nsis --target x86_64-pc-windows-msvc"',
+        )],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="没有蓝牙",
+        tags=["frontend", "build"],
+    ),
+    Case(
         name="操作面板：点任何一项都要收起（引用/转发会跳到别处）",
         why="用户 2026-09-13 安卓实测：「点『引用』这个 sheet 应该自动隐藏；点『转发』也应该"
         "自动隐藏，因为它会跳转到界面内去操作聊天」。不在 ActionSheet 面板层统一收，就得每个"
