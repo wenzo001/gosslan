@@ -386,6 +386,23 @@ CASES: list[Case] = [
         expect_fail_hint="乐观更新",
         tags=["frontend", "channel"],
     ),
+    Case(
+        name="长按面板：正文气泡里必须弹得出、抬手指不许把它关掉",
+        why="用户 2026-09-13 Android 实测两条：「长按气泡有的时候弹不出来、有的时候能弹出来」"
+        "（命中 `.gosslan-selectable` 就不起长按 ⇒ 只有按到气泡内边距才弹）与"
+        "「弹出 sheet 之后一放手立马就缩回去了」（HeadlessUI 的 outside-click 在 document "
+        "捕获阶段挂 `touchend`，而 touch 的 target 在 touchstart 就定死成那条消息 ⇒ 抬手被"
+        "判成点了外面）。两条都是「换个位置按/按慢一点就正常」，只能靠判据单测 + 结构护栏",
+        file=ROOT / "src" / "components" / "MessageItem.vue",
+        injections=[(
+            "  if (!shouldSwallowLongPressRelease({ openedByHeldPress: longPressHeld, sheetOpen: sheetOpen.value })) {\n",
+            "  if (false) {\n",
+        )],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="吞不吞要走纯判据",
+        tags=["frontend", "mobile", "selection"],
+    ),
     # ---------------- Rust：Android JNI 签名（跨语言一致性） ----------------
     Case(
         name="Android JNI 签名与 Kotlin 对齐（stop 是 ()V 不是 ()Z）",

@@ -10,6 +10,7 @@ import { useMessageFile } from "@/composables/useMessageFile";
 import { useMemberProfile } from "@/composables/useMemberProfile";
 import { textNeedsClamp } from "@/utils/previewMetrics";
 import { haptic } from "@/utils/haptics";
+import { shouldStartLongPress, shouldSwallowLongPressRelease } from "@/utils/longPress";
 import { t } from "@/i18n";
 import MessageAvatar from "@/components/message/MessageAvatar.vue";
 import MessageTextBubble from "@/components/message/MessageTextBubble.vue";
@@ -205,6 +206,13 @@ const textSelecting = ref(false);
 let longPressTimer: ReturnType<typeof setTimeout> | null = null;
 /** 长按起点：用来做"手指抖动容差"（见 `onTouchMove`）。 */
 let longPressOrigin: { x: number; y: number } | null = null;
+/**
+ * 长按那根手指是否还按着（面板就是这次按压弹出来的）。
+ *
+ * 用途只有一个：**吞掉抬手指那一下**（见 `swallowLongPressRelease`）。
+ * 放在 `touchstart` 置位、在 `touchend`/`touchcancel` 的**窗口捕获**处理里复位。
+ */
+let longPressHeld = false;
 /** 长按判定时长：与 iOS/微信一致（500ms 是 HIG 的常用值）。 */
 const LONG_PRESS_MS = 500;
 /**
@@ -226,6 +234,40 @@ function closeActionSheet() {
   sheetOpen.value = false;
 }
 
+/**
+ * 吞掉"弹面板那一下"的抬手事件。
+ *
+ * 根因（用户 2026-09-13 Android 实测「弹出 sheet 之后一放手立马就缩回去了」）：
+ * 面板是 HeadlessUI `Dialog`，它的 `useOutsideClick` 在 **document 捕获阶段** 挂了 `touchend`，
+ * 判据是"`touchend` 的 target 在不在对话框容器里" —— 而 touch 事件的 target 在
+ * **`touchstart` 那一刻就固定**成那条消息了，所以抬手必被判成"点了外面" ⇒ 立刻 `@close`。
+ *
+ * ⚠️ 监听**必须挂在 `window` 的捕获阶段**：HeadlessUI 挂的是 `document` 捕获，两者同阶段时
+ * 按注册顺序执行（它先注册，我们一定排在后面）；而捕获路径是 `window → document → … → target`，
+ * 只有挂 `window` 才抢得到它前面。它内部有 `if (e.defaultPrevented) return`，`preventDefault` 就够。
+ * 顺带也杀掉了这次 tap 的合成 `click`（不会误触气泡里的链接）。
+ */
+function swallowLongPressRelease(e: TouchEvent) {
+  if (!shouldSwallowLongPressRelease({ openedByHeldPress: longPressHeld, sheetOpen: sheetOpen.value })) {
+    longPressHeld = false;
+    return;
+  }
+  longPressHeld = false;
+  e.preventDefault();
+}
+
+/** 面板展开期间才需要拦（平时一次监听都不挂，避免影响滚动/其它手势）。 */
+watch(sheetOpen, (open) => {
+  if (open) {
+    window.addEventListener("touchend", swallowLongPressRelease, { capture: true, passive: false });
+    window.addEventListener("touchcancel", swallowLongPressRelease, { capture: true });
+  } else {
+    window.removeEventListener("touchend", swallowLongPressRelease, { capture: true });
+    window.removeEventListener("touchcancel", swallowLongPressRelease, { capture: true });
+    longPressHeld = false;
+  }
+});
+
 /** 进「选择文字」：关掉菜单 → 本条气泡开放原生选字（`MessageTextBubble` 会自动全选）。 */
 function enterTextSelect() {
   closeActionSheet();
@@ -246,17 +288,24 @@ watch(textSelecting, (on) => {
 });
 
 function onTouchStart(e: TouchEvent) {
-  if (!app.isMobile || props.message.kind === "system") return;
-  // 「选择文字」模式下长按要交给系统的选区手柄，不能再抢去弹菜单
-  if (textSelecting.value) return;
   cancelLongPress();
-  // 正文气泡里要能**原生选字/复制链接**（style.css 的约定：消息正文区不套 user-select:none）。
-  // 整行无差别起长按定时器会把这套手势劫持掉：手指按住不动超过 500ms 就弹出操作面板，
-  // 选区随之中断。所以命中可选文本气泡时不启动长按（要整条复制走气泡外侧的长按）。
   const el = e.target as HTMLElement | null;
-  if (el?.closest(".gosslan-selectable")) return;
+  // 判据全部收在 `utils/longPress.ts`（纯函数、有真值表单测）：
+  // 桌面走右键 / 系统消息没有菜单 / 「选择文字」模式让给系统手柄 /
+  // ⚠️ 触屏下**正文气泡里**的 `.gosslan-selectable` 不再让路 —— 它已经被
+  // `@media (pointer: coarse)` 关掉选中，而那个类还在 DOM 上，之前因此导致
+  // "按在文字上长按不弹、按到内边距才弹"（用户 2026-09-13 实测）。
+  const canStart = shouldStartLongPress({
+    isMobile: app.isMobile,
+    isSystem: props.message.kind === "system",
+    selectMode: textSelecting.value,
+    hitSelectable: !!el?.closest(".gosslan-selectable"),
+    insideTextBubble: !!el?.closest(".gosslan-bubble-text"),
+  });
+  if (!canStart) return;
   const t0 = e.touches[0];
   if (!t0) return;
+  longPressHeld = true;
   longPressOrigin = { x: t0.clientX, y: t0.clientY };
   longPressTimer = setTimeout(() => {
     longPressTimer = null;
@@ -286,7 +335,12 @@ function cancelLongPress() {
   longPressOrigin = null;
 }
 
-onBeforeUnmount(() => cancelLongPress());
+onBeforeUnmount(() => {
+  cancelLongPress();
+  // 窗口级监听不随组件卸载自动消失（它挂在 window 上），必须自己摘
+  window.removeEventListener("touchend", swallowLongPressRelease, { capture: true });
+  window.removeEventListener("touchcancel", swallowLongPressRelease, { capture: true });
+});
 
 /** 转发支持：与 MessageContextMenu 同一判据。 */
 function forwardable(k: MsgKind) {

@@ -10,6 +10,43 @@
 
 ## [Unreleased]
 
+### Fixed (🔴 安卓长按气泡：有的地方弹不出复制/转发面板，弹出来一放手又缩回去)
+
+用户 2026-09-13（Android 实测）：「长按那个聊天的文字内容的气泡，有的时候弹不出来那个
+复制/转发的 sheet，有的时候又能弹出来，然后你一放手，立马就缩回去了。」
+
+两个独立的缺陷，各自都会让"长按 → 复制/转发"不可用：
+
+1. **按在文字上长按完全不弹**（"有的时候弹不出来"）。
+   正文那层 `<div>` 带着 `.gosslan-selectable`（"可选文本"标记，桌面端靠它选字），
+   而 `onTouchStart` 的老判据是"命中 `.gosslan-selectable` 就不起长按定时器"
+   —— 那个类在 DOM 上一直都在，于是**气泡绝大部分面积（文字）按下去毫无反应**，
+   只有按到 `px-3 py-1.5` 那圈内边距才弹得出来。
+   触屏下这块正文早已被 `@media (pointer: coarse)` 关掉选中（4.3.0 起"部分选字"改走
+   菜单里的「选择文字」二级入口），所以这条"让路"在触屏上已经没有意义。
+   **修法**：判据抽成纯函数 `utils/longPress.ts::shouldStartLongPress`，
+   只有"**当前真的还能选字**的可选区域"（例如代码块）才继续让路；
+   正文气泡（`.gosslan-bubble-text` 内的 `.gosslan-selectable`）不再让路。
+
+2. **弹出来一放手就缩回去**（"你一放手立马就缩回去了"）。
+   面板是 HeadlessUI `Dialog`，它的 `useOutsideClick` 在 **document 捕获阶段**挂了
+   `touchend`，判据是"`touchend` 的 target 在不在对话框容器里"；而 touch 事件的 target
+   在 **`touchstart` 那一刻就固定**成那条消息了 ⇒ **手指一抬必被判成"点了外面"** ⇒
+   立刻 `@close`。所以它其实每次都会缩，只是"弹出来那一下"用户才看得见。
+   **修法**：面板展开期间在 **window 捕获阶段**拦下这次 `touchend` 并 `preventDefault()`
+   （HeadlessUI 的判据里有 `if (e.defaultPrevented) return`，这就够）。
+   ⚠️ 必须挂 `window`：它挂的是 `document` 捕获，同阶段按注册顺序执行（它先注册），
+   而捕获路径是 `window → document → … → target`，只有 `window` 抢得到它前面；
+   顺带也杀掉了这次 tap 的合成 `click`（不会误触气泡里的链接）。
+   规则同样抽成纯函数 `shouldSwallowLongPressRelease`（只有"面板是这次按压弹出的 +
+   面板还开着"才吞，否则用户点遮罩关面板会被误吞）。面板关闭/组件卸载时摘掉监听。
+
+**护栏**：新增 `src/utils/longPress.test.ts`（判据真值表 + `MessageItem` 的两条结构护栏：
+必须走纯函数并传全语境、必须在 window 捕获阶段吞掉抬手且能摘掉监听）；
+`scripts/verify-guards.py` 加一条非空转用例（把吞掉那段改成 `if (false)` ⇒ 必须 FAIL）。
+顺带修掉 `designGuards.ts` 里一句已经过期的注释（`.gosslan-selectable` 不再是
+"移动端长按让路给原生选字"的标记）。
+
 ## [4.3.1] - 2026-09-13
 
 ### Fixed (🔴 蓝牙开关点一下要等好几秒才动 —— 前端在等后端，后端在等 CoreBluetooth)

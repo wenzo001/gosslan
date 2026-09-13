@@ -770,13 +770,16 @@ export interface SelectionContractSources {
 export function checkSelectionContract(s: SelectionContractSources): GuardIssue[] {
   const out: GuardIssue[] = [];
 
-  // ① 正文必须可选字（`gosslan-selectable` 同时是移动端"长按让路给原生选字"的标记）
+  // ① 正文必须可选字。
+  //    ⚠️ 这个类在触屏下**不再**意味着"长按让路给原生选字"（那是 4.3.0 之前的模型）：
+  //    现在 `@media (pointer: coarse)` 会把正文气泡里的它关掉选中，选字改走菜单里的
+  //    「选择文字」二级入口（见 style.css 与 utils/longPress.ts）。
   if (!s.textBubble.includes("gosslan-selectable")) {
     out.push({
       line: 0,
       message:
         "MessageTextBubble：正文缺少 `gosslan-selectable` —— 消息文字将无法选字/复制，" +
-        "移动端长按也会被操作面板劫持。",
+        "「选择文字」模式也没有可选的落点。",
     });
   }
   // ② 气泡根也要可选：否则从内边距起拖会被 WebKit 立刻收敛（用户实测的"刚选中就没了"）
