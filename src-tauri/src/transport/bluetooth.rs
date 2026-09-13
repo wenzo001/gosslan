@@ -250,16 +250,27 @@ pub mod driver {
         // 这样既覆盖"设备对象建好了但服务还读不到"，也避免把重试变成自我干扰。
         let mut last_err = String::new();
 
-        // ---- ① 便宜路径：先直接试读服务（首次调用时通常还没连，会立刻失败，无害）----
-        for attempt in 1..=LINK_READY_ATTEMPTS {
-            match peripheral.discover_services().await {
-                Ok(()) => {
-                    return finish_connect(peripheral).await;
-                }
-                Err(e) => {
-                    last_err = format!("发现 GATT 服务失败（第 {attempt}/{LINK_READY_ATTEMPTS} 次）：{e}");
-                    if attempt < LINK_READY_ATTEMPTS {
-                        tokio::time::sleep(LINK_READY_WAIT).await;
+        // ---- ① 便宜路径：**已经连着**的时候先直接试读服务 ----
+        //
+        // ⚠️ **必须先用 `is_connected()` 判一下**（2026-09-13 合并评审发现）：
+        // `discover_services()` 在**未连接**时必然失败，而这条循环是
+        // 12 次 × 250ms = **3 秒**。原实现无条件先跑它 ⇒ 在 macOS/Android 上每次拨号都会
+        // 凭空多等 3 秒才去真正 `connect()`（这两端本来第一次 connect 就成功），
+        // 白白拖慢握手、还可能撞上 10s 的握手超时。
+        // WinRT 的语义不同（`connect()` 内部就是一次 uncached 服务查询），所以
+        // "先试着读服务"在 Windows 上是有意义的 —— 用 `is_connected()` 精确区分这两种情形。
+        if matches!(peripheral.is_connected().await, Ok(true)) {
+            for attempt in 1..=LINK_READY_ATTEMPTS {
+                match peripheral.discover_services().await {
+                    Ok(()) => {
+                        return finish_connect(peripheral).await;
+                    }
+                    Err(e) => {
+                        last_err =
+                            format!("发现 GATT 服务失败（第 {attempt}/{LINK_READY_ATTEMPTS} 次）：{e}");
+                        if attempt < LINK_READY_ATTEMPTS {
+                            tokio::time::sleep(LINK_READY_WAIT).await;
+                        }
                     }
                 }
             }
@@ -311,7 +322,7 @@ pub mod driver {
     /// `connect()` + 服务发现都成功之后：取特征、订阅通知、组装连接。
     ///
     /// 拆出来是因为它**没有任何重试语义**，而上面的重试路径要在两个不同的入口
-    /// （便宜的 diswover_services 命中 / 完整 connect 命中）都走到这里 ——
+    /// （便宜的 discover_services 命中 / 完整 connect 命中）都走到这里 ——
     /// 复制两份的话，"取特征/订阅"这一步迟早会漂移。
     async fn finish_connect(peripheral: &Peripheral) -> Result<BleConnection, String> {
         let svc = uuid(SERVICE_UUID);

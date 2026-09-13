@@ -239,7 +239,6 @@ pub fn trigger_scan_now(state: &Arc<AppState>) -> bool {
 pub fn wake_scan(state: &AppState) {
     state.ble_wake.notify_one();
 }
-}
 
 /// 停止蓝牙通道：发停机信号 → 有界等待 → **摘掉所有 BLE 链路**（不动 LAN 链路）。
 pub async fn stop(state: &Arc<AppState>) {
@@ -1987,6 +1986,8 @@ mod tests {
         );
         // 对端不广播时**不许**登记"不要再拨"（登记了就等于自己放弃唯一能建链的方式）
         assert!(should_dial_ble("a", "z", false));
+    }
+
     /// **BLE 读循环必须回灌读活性**（2026-09-13 审计抓到的真缺陷）。
     ///
     /// `ConnectionHealth` 的读活性只在**建链时播种一次**

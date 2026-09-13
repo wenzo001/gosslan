@@ -1509,6 +1509,30 @@ mod tests {
         );
     }
 
+    /// **`driver::connect` 的"便宜路径"必须先判 `is_connected()`**（2026-09-13 合并评审）。
+    ///
+    /// 判据：12 × 250ms = 3 秒的 `discover_services()` 重试只在**已经连着**时才有意义。
+    /// 无条件先跑它，等于给 macOS/Android 的每次拨号凭空加 3 秒（它们本来第一次
+    /// `connect()` 就成功），既拖慢握手又可能撞上 10s 的握手超时 —— 而这种退化
+    /// **功能看起来还在**（最终连得上，只是慢/偶尔超时），只能靠结构护栏盯住。
+    #[test]
+    fn ble_connect_cheap_path_requires_an_existing_connection() {
+        let src = include_str!("transport/bluetooth.rs");
+        let body = rust_fn_body(src, "pub async fn connect(peripheral: &Peripheral)");
+        assert!(
+            body.contains("is_connected"),
+            "`connect()` 的便宜路径必须先用 `is_connected()` 判一下 —— 否则未连接时白等 3 秒"
+        );
+        let gate = body.find("is_connected").expect("上面刚断言过");
+        let cheap = body
+            .find("LINK_READY_ATTEMPTS")
+            .expect("必须还有便宜路径（LINK_READY_ATTEMPTS）");
+        assert!(
+            gate < cheap,
+            "`is_connected()` 的判断必须在便宜路径的循环**之前**（先判再跑，否则等于没判）"
+        );
+    }
+
     /// 蓝牙开关**不许卡在"等 CoreBluetooth 回报状态"上**（用户 2026-09-13）。
     ///
     /// `ble::start` 里 `start_peripheral` 要等 `peripheral::STATE_WAIT = 3s`，而它在
