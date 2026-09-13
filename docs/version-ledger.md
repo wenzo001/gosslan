@@ -259,3 +259,5 @@
 | 257 | `facd2ad` | 2026-09-13 | fix | 小（patch） | 29.4.14 | 缺陷修复 | fix(build): Windows 的日常包一直没有蓝牙 —— 一键入口 npm run dist 漏了 --features bluetooth |
 | 258 | `f383a59` | 2026-09-13 | chore | 小（patch） | 29.4.15 | 非功能性/内部改动（按规则也进一位 patch） | chore(release): 4.3.5（Windows 包 feature 修复 + 台账重生成） |
 | 259 | `c936874` | 2026-09-13 | fix | 小（patch） | 29.4.16 | 缺陷修复 | fix(ble): 已装的安卓就地迁移掉旧 device_id 的 dev- 前缀（不必清应用数据） |
+| 260 | `08d1d0e` | 2026-09-13 | chore | 小（patch） | 29.4.17 | 非功能性/内部改动（按规则也进一位 patch） | chore(release): 4.3.6（旧 device_id 就地迁移 + 台账重生成） |
+| 261 | `9edf61a` | 2026-09-13 | docs | 小（patch） | 29.4.18 | 非功能性/内部改动（按规则也进一位 patch） | docs(notes): 审计/测试计划/ADR-0015 回填到"合并 Windows 之后"的 4.3.6 |
