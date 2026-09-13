@@ -1509,6 +1509,48 @@ mod tests {
         );
     }
 
+    /// **⌘W 必须由我们自己的菜单项处理**（用户 2026-09-13 真机：主窗口 ⌘W 只会"滴滴滴"）。
+    ///
+    /// 系统预定义项 `PredefinedMenuItem::close_window` 的动作是 `performClose:`，AppKit 按
+    /// 窗口的 `Closable` 样式位校验可用性；而本项目 `decorations: false` ⇒ Borderless ⇒
+    /// 该项被判不可用 ⇒ 只有系统提示音，且**没有任何日志**（设置/日志窗口是有边框的，
+    /// 所以它们正常，更容易让人以为是"主窗口特有的 bug"）。
+    ///
+    /// 判据：窗口菜单不得再用预定义关闭项；必须有一个带 `CmdOrCtrl+W` 的自定义项，
+    /// 且菜单事件处理里真的关掉"当前聚焦窗口"（回落到主窗口）。
+    #[test]
+    fn cmd_w_is_handled_by_our_own_menu_item() {
+        let m = include_str!("menu.rs");
+        // ⚠️ 先**去掉注释**再查"有没有用错项"：menu.rs 里那段解释恰恰写着这个名字，
+        // 不剥注释就会把"解释这个坑"误判成"又踩了这个坑"（本项目已踩过一次这种假阳性）。
+        let code: String = m
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !code.contains("PredefinedMenuItem::close_window"),
+            "不许用系统预定义的关闭项 —— 它会被 AppKit 按 `Closable` 样式位判为不可用，\
+             表现就是主窗口 ⌘W 只响一声提示音（用户 2026-09-13 真机）"
+        );
+        assert!(
+            m.contains("\"close-window\"") && m.contains("CmdOrCtrl+W"),
+            "必须有一个 id=close-window、快捷键 CmdOrCtrl+W 的自定义菜单项"
+        );
+        let handler = m
+            .find("\"close-window\" =>")
+            .expect("菜单事件处理里必须接住 close-window（否则点了没反应）");
+        let body = &m[handler..(handler + 700).min(m.len())];
+        assert!(
+            body.contains("is_focused"),
+            "关的应当是**当前聚焦**的窗口（与 macOS 原生 ⌘W 语义一致）"
+        );
+        assert!(
+            body.contains(".close()"),
+            "走 `close()` 才会触发各窗口自己的 CloseRequested → 隐藏处理器（与「×」一致）"
+        );
+    }
+
     /// **解除好友关系必须同时解除内存里的身份绑定**（用户 2026-09-13 真机：不然"必须重启"）。
     ///
     /// 真机链路：对方重装后公钥变了 → 我们的身份表只补空、不覆盖（INV-P11）→

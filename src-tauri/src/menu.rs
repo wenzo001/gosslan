@@ -22,7 +22,8 @@ use std::sync::Mutex;
 
 use tauri::{
     menu::{Menu, MenuBuilder, MenuItem, PredefinedMenuItem, SubmenuBuilder},
-    AppHandle, Emitter,
+    // `Manager` 提供 `get_webview_window` / `webview_windows`（⌘W 要关"当前聚焦窗口"）
+    AppHandle, Emitter, Manager,
 };
 
 /// 菜单事件名（前端 `api/index.ts` 监听后转成 window 事件）。
@@ -62,6 +63,8 @@ struct Labels {
     add_friend: &'static str,
     search: &'static str,
     logs: &'static str,
+    /// 「关闭窗口」（⌘W）。**必须是我们自己的项**，见 `build()` 里窗口菜单的注释。
+    close_window: &'static str,
 }
 
 fn labels(lang: UiLang) -> Labels {
@@ -75,6 +78,7 @@ fn labels(lang: UiLang) -> Labels {
             add_friend: "添加好友…",
             search: "搜索",
             logs: "打开日志窗口",
+            close_window: "关闭窗口",
         },
         UiLang::En => Labels {
             edit: "Edit",
@@ -85,6 +89,7 @@ fn labels(lang: UiLang) -> Labels {
             add_friend: "Add Friend…",
             search: "Search",
             logs: "Open Log Window",
+            close_window: "Close Window",
         },
     }
 }
@@ -165,7 +170,24 @@ fn build(app: &AppHandle, lang: UiLang) -> tauri::Result<Menu<tauri::Wry>> {
     // 系统会自动往里补窗口列表、并接管全屏/缩放等标准行为。
     let window_menu = SubmenuBuilder::new(app, l.window)
         .item(&PredefinedMenuItem::minimize(app, None)?)
-        .item(&PredefinedMenuItem::close_window(app, None)?)
+        // ⚠️ **「关闭窗口」必须是我们自己的项，不能用 `PredefinedMenuItem::close_window`**
+        // （用户 2026-09-13 真机：主窗口 ⌘W 只会"滴滴滴"，而设置/日志窗口正常）。
+        //
+        // 系统那个预定义项的动作是 `performClose:`，由 AppKit 按窗口的 `Closable` 样式位
+        // **校验可用性**；而本项目为了自绘标题栏用了 `decorations: false` ⇒ 窗口是
+        // Borderless（不含 `Closable`），于是这一项被判为不可用 ⇒ 按 ⌘W 只有系统提示音。
+        // 之前靠 setup 里 `win.set_closable(true)` 补位（`ce49e1f`），但它依赖
+        // "AppKit 认这个补出来的样式位"，一旦失效就退回"滴滴滴"，且**没有任何日志**。
+        //
+        // 自定义项由 `on_menu_event` 自己处理 ⇒ 不再经过 AppKit 的可用性校验，
+        // 行为与「×」按钮、托盘「显示/隐藏」完全一致（都走 CloseRequested → 隐藏）。
+        .item(&MenuItem::with_id(
+            app,
+            "close-window",
+            l.close_window,
+            true,
+            Some("CmdOrCtrl+W"),
+        )?)
         .item(&PredefinedMenuItem::maximize(app, None)?)
         .separator()
         .item(&PredefinedMenuItem::fullscreen(app, None)?)
@@ -194,7 +216,24 @@ fn build(app: &AppHandle, lang: UiLang) -> tauri::Result<Menu<tauri::Wry>> {
 pub fn setup(app: &AppHandle, lang: UiLang) -> tauri::Result<()> {
     // 自定义项 → 发事件给前端（统一由前端执行动作，避免菜单与快捷键两条路径行为不一致）
     let handle = app.clone();
-    app.on_menu_event(move |_app: &AppHandle, event| match event.id().as_ref() {
+    app.on_menu_event(move |app: &AppHandle, event| match event.id().as_ref() {
+        // 「关闭窗口」（⌘W）：关**当前聚焦**的窗口 —— 与 macOS 原生语义一致。
+        // 各窗口都装了 CloseRequested → 隐藏的处理器（主窗口见 `tray::install_close_to_tray`，
+        // 设置/日志窗口见 `commands::install_hide_on_close`），所以这里直接 `close()` 即可，
+        // 不会真的销毁窗口（设置/日志是常驻的，下次打开是瞬时的）。
+        //
+        // 为什么在**后端**处理而不是发事件给前端：这是窗口级动作，只有后端知道哪个窗口
+        // 是 key window（前端只知道自己在哪个窗口里）。
+        "close-window" => {
+            let target = app
+                .webview_windows()
+                .into_values()
+                .find(|w| w.is_focused().unwrap_or(false))
+                .or_else(|| app.get_webview_window(crate::tray::MAIN_WINDOW_LABEL));
+            if let Some(w) = target {
+                let _ = w.close();
+            }
+        }
         "settings" => {
             let _ = handle.emit(MENU_SETTINGS, ());
         }

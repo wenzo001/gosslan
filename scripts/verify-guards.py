@@ -392,6 +392,29 @@ CASES: list[Case] = [
         tags=["frontend", "selection"],
     ),
     Case(
+        name="⌘W 必须由自定义菜单项处理（系统预定义项在无边框窗口上会被判不可用）",
+        why="用户 2026-09-13 真机：Mac 上主窗口 ⌘W 只会「滴滴滴」，而设置/日志窗口正常，"
+        "⌘Q 也正常。系统预定义关闭项的动作是 performClose:，AppKit 按窗口的 Closable "
+        "样式位校验可用性，而本项目 decorations:false ⇒ Borderless ⇒ 该项被判不可用，"
+        "**而且没有任何日志**；自定义项不经这套校验，行为与「×」一致",
+        file=TAURI / "src" / "menu.rs",
+        injections=[(
+            '        .item(&MenuItem::with_id(\n            app,\n            "close-window",\n            l.close_window,\n            true,\n            Some("CmdOrCtrl+W"),\n        )?)\n',
+            '        .item(&PredefinedMenuItem::close_window(app, None)?)\n',
+        )],
+        cmd=cargo(
+            "test",
+            "--offline",
+            "--lib",
+            "--features",
+            "bluetooth",
+            "cmd_w_is_handled_by_our_own_menu_item",
+        ),
+        cwd=TAURI,
+        expect_fail_hint="不许用系统预定义的关闭项",
+        tags=["rust", "macos", "window"],
+    ),
+    Case(
         name="解除好友关系必须同时解除内存身份绑定（否则重装后只能重启）",
         why="用户 2026-09-13 真机：对方重装换过公钥后，删好友重新加也收不到任何东西，"
         "**必须重启**。根因是 `verify_hello` 的绑定有两条腿：friends 表 + 内存 peers 表"

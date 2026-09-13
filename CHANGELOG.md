@@ -10,6 +10,31 @@
 
 ## [Unreleased]
 
+### Fixed (Mac 主窗口 ⌘W 只会「滴滴滴」—— 关不掉，设置/日志窗口却正常)
+
+用户 2026-09-13（Mac 真机）：「Command+W 关闭主窗口的功能失效了，它就一直"滴滴滴"。
+设置、日志窗口 ⌘W 还是能关的，⌘Q 也正常，就是聊天主窗口关不掉。」
+
+**根因**：窗口菜单里用的是**系统预定义**的关闭项（`PredefinedMenuItem::close_window`），
+它的动作是 AppKit 的 `performClose:`，由系统**按窗口的 `Closable` 样式位校验可用性**。
+而本项目为了自绘标题栏用了 `decorations: false` ⇒ 窗口是 Borderless（不含 `Closable`）
+⇒ 这一项被判为**不可用** ⇒ 按下只有系统提示音，**而且没有任何日志**。
+设置/日志窗口是有边框的普通窗口，`Closable` 位本来就在，所以它们一直正常 ——
+这也解释了"为什么只有主窗口坏"。
+（先前 `ce49e1f` 靠 setup 里 `win.set_closable(true)` 补位修复过同一症状；
+那条依赖"AppKit 认补出来的样式位"，一旦不成立就退回"滴滴滴"且无从察觉。）
+
+**修法**：窗口菜单改成**我们自己的**菜单项（`id=close-window`、`CmdOrCtrl+W`），
+由 `on_menu_event` 直接处理 —— 不再经过 AppKit 的可用性校验，因此不可能再"被系统判为不可用"。
+行为与「×」按钮、托盘一致：关掉**当前聚焦**的窗口（回落到主窗口），
+各窗口自己的 `CloseRequested → 隐藏` 处理器照旧生效（设置/日志常驻窗口不会被销毁）。
+
+**护栏**：`cmd_w_is_handled_by_our_own_menu_item`（源码断言：不许再用预定义关闭项、
+必须有 `CmdOrCtrl+W` 的自定义项、事件处理必须关"当前聚焦窗口"并走 `close()`；
+⚠️ 断言前先剥注释 —— 那段解释里恰好写着 `PredefinedMenuItem::close_window` 这个名字，
+不剥注释会把"解释这个坑"误判成"又踩了这个坑"，本项目踩过这种假阳性）
++ `scripts/verify-guards.py` 对应用例（改回预定义项 ⇒ 必须 FAIL、恢复即 PASS）。
+
 ## [4.3.8] - 2026-09-14
 
 ### Changed (合并评审三项：vendor 用 `[patch.crates-io]`、退避改为缓增封顶、日志措辞纠错)
