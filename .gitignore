@@ -38,3 +38,5 @@ src-tauri/gen/schemas
 # Windows 生产包收集目录（npm run dist:win:test 的产物：NSIS 安装包 / 便携版 zip）
 /dist-windows/
 /dist-portable/
+# 仓库根目录随手放置的安装包（构建脚本复制出来的那一份，不入库）
+/*.exe
