@@ -10,6 +10,50 @@
 
 ## [Unreleased]
 
+### Fixed (🔴🔴 Windows 连不上安卓的**真因**：btleplug 的 WinRT 后端连接时丢掉了地址类型)
+
+真机 2026-09-13 第四轮，用户关掉局域网只留蓝牙，日志给出了**决定性**证据。
+
+先用 RSSI 分布把"哪个地址是哪台设备"钉死（这是前几轮我一直搞反的地方）：
+
+| 地址 | RSSI 分布 | 地址类型 | 判断 |
+|---|---|---|---|
+| `50:A6:D8:AE:B2:69` | -55~-61（**6dB 内，非常稳定**） | Public | 固定不动、很近 ⇒ **Windows 自己** |
+| `78:AB:78:64:07:45` | -68~-83（**15dB 波动、明显更弱**） | **Random** | 会移动 ⇒ **安卓手机** |
+
+（前几轮我一直把 `50:A6` 当成手机，**方向是反的**。本轮另加了"本机蓝牙适配器地址"一行日志，
+以后这类判断是事实比对，不再需要推理。）
+
+真因：**btleplug 0.13 的 WinRT 后端在连接时不传地址类型。**
+- 它在扫描回调里**采集了**地址类型（`args.BluetoothAddressType()` → `shared.address_type`）；
+- 但连接时走的是 `BluetoothLEDevice::FromBluetoothAddressAsync(address)` —— **不带类型**；
+- WinRT 另有 `FromBluetoothAddressWithBluetoothAddressTypeAsync(address, type)`（我们已核实存在）。
+
+对 **Random（随机地址）** 的 BLE 外设（安卓 `BluetoothLeAdvertiser` 默认就是随机地址），
+不带类型的那条会返回一个"连不上"的设备对象 ⇒ 之后每次 GATT 操作都以
+`GattCommunicationStatus::Unreachable` 失败 ⇒ 被翻成 `Not connected`。
+**扫描完全正常（广播不受影响），所以症状就是"能扫到、永远连不上、且没有任何被拒的迹象"。**
+
+修法：把 btleplug **vendor 进仓库并打补丁**（`src-tauri/vendor/btleplug`，约 30 行，两处）：
+1. `winrtble/ble/device.rs`：`BLEDevice::new` 多一个 `address_type` 参数；
+   `Random` ⇒ 走带地址类型的重载，其余**完全走上游原路径**；
+2. `winrtble/peripheral.rs`：把 `self.shared.address_type` 映射成 WinRT 的
+   `BluetoothAddressType` 传进去。
+
+为什么必须 vendor 而不是绕开：`connect()` 与后续 `discover_services()` 都依赖 btleplug
+自己建的那条链路 —— 从外面用 WinRT 连上，btleplug 的对象仍然是"未连接"，
+GATT 操作照样失败。上游升级时重放补丁即可（`grep -rn "本地补丁" src-tauri/vendor/btleplug`）。
+对 macOS / Android / Linux 后端**零影响**（补丁只在 `winrtble` 里，且 Public/None 走原路）。
+
+### Added (启动时打出**本机蓝牙适配器地址**)
+
+`本机蓝牙适配器地址 = XX:XX:…（扫描结果里出现这个地址就是**自己**）`
+
+排查中最大的困扰是"扫描结果里哪个地址是这台机器自己"——自己的广播**也会**出现在扫描结果里
+（`收到 N 个广播，其中 M 个是本应用服务`）。之前只能靠 RSSI 波动幅度去猜，
+而**猜错会让整个判断反向**（本轮就是这样被纠正的）。现在是一行事实。
+
+
 ### Fixed (🔴 退避把重试饿死了 —— 日志里近一半是"跳过候选 原因=退避中")
 
 真机 2026-09-13 第三轮日志（用户要求"看一下日志"）暴露出一个**自己造成的**问题：

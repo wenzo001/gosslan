@@ -120,7 +120,24 @@ pub async fn start(state: Arc<AppState>) -> Result<(), String> {
     }
     // 没有适配器 / 用户未授权 ⇒ 明确报错，由上层把通道标为不可用。
     // **绝不能影响局域网**：调用方（`set_channel_enabled`）只在成功时才认为已开启。
-    let adapter = driver::adapter().await?;
+    let (adapter, local_addr) = driver::adapter().await?;
+    // **本机适配器自己的蓝牙地址**（真机 2026-09-13 第四轮加）。
+    //
+    // 为什么必须打这一行：自己的广播**也会**出现在扫描结果里
+    // （日志里的 `收到 N 个广播，其中 M 个是本应用服务`），而排查中最大的困扰就是
+    // "哪个地址是这台机器自己"。前几轮只能靠 RSSI 波动幅度猜（稳定的像自己的网卡），
+    // 猜错的代价是**整个判断反向** —— 我们一直把对端当成自己。
+    // 有了这一行，扫描结果里"自己 / 对端"就是纯粹的事实比对，不再需要推理。
+    match &local_addr {
+        Some(addr) => state.logger.info(
+            "ble",
+            format!("本机蓝牙适配器地址 = {addr}（扫描结果里出现这个地址就是**自己**）"),
+        ),
+        None => state.logger.warn(
+            "ble",
+            "平台未暴露本机蓝牙适配器地址 —— 扫描结果里无法直接区分自己与对端",
+        ),
+    }
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     // 「立刻扫一轮」的触发通道（与 LAN 的 `probe` 同范式，见 `AppState::ble_scan_now`）
     let (scan_now_tx, scan_now_rx) = watch::channel(0u64);

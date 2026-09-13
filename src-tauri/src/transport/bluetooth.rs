@@ -127,7 +127,15 @@ pub mod driver {
 
     /// 取第一个可用的蓝牙适配器。没有适配器（或系统未授权）时返回 Err，
     /// 上层据此把蓝牙通道标为不可用 —— **绝不能因此影响局域网**。
-    pub async fn adapter() -> Result<Adapter, String> {
+    ///
+    /// 返回值第二个元素是**本机适配器自己的蓝牙地址**（平台不暴露时为 `None`）。
+    ///
+    /// 为什么要把它带出来（真机 2026-09-13 第四轮）：排查中最大的困扰是
+    /// "扫描结果里哪个地址是这台机器自己"—— 自己的广播**也会**出现在扫描结果里
+    /// （日志里的 `收到 N 个广播，其中 M 个是本应用服务`）。
+    /// 之前只能靠 RSSI 波动幅度去猜（稳定的像自己的网卡），而**猜错会让整个判断反向**
+    /// （前几轮就一直把对端当成自己）。带出这一行之后，"哪个是对端"就是纯粹的事实比对。
+    pub async fn adapter() -> Result<(Adapter, Option<String>), String> {
         // Android：btleplug 需要先 `platform::init()`（由 `BlePeripheral.bootstrap` 经 JNI 触发）。
         // 未就绪时**绝不能**往下走 —— `Manager::new()` 会在 crate 内 panic，而安卓 release 是
         // `panic = "abort"`（整进程消失，用户实测的闪退）。这里提前返回 Err，UI 顶多显示"蓝牙不可用"。
@@ -146,10 +154,18 @@ pub mod driver {
             .adapters()
             .await
             .map_err(|e| format!("枚举蓝牙适配器失败：{e}"))?;
-        adapters
+        let adapter = adapters
             .into_iter()
             .next()
-            .ok_or_else(|| "没有可用的蓝牙适配器".to_string())
+            .ok_or_else(|| "没有可用的蓝牙适配器".to_string())?;
+        // 本机适配器自己的地址（平台不暴露时为 None）—— 由调用方写进日志，
+        // 因为 driver 这一层没有 logger（见本函数文档注释里的理由）。
+        let local_addr = match adapter.adapter_address().await {
+            Ok(Some(addr)) => Some(addr.to_string()),
+            Ok(None) => None,
+            Err(_) => None,
+        };
+        Ok((adapter, local_addr))
     }
 
     /// 扫描支持 Gosslan 服务的对端（**只发现、不建连** —— 与 P-A04 一致）。

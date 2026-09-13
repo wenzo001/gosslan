@@ -18,7 +18,18 @@ tauri-build = { version = "2", features = [] }
 # BLE GATT 后端（**可选**，见 [features] bluetooth 与 ADR-0015）。
 # 放在主 [dependencies] 而不是某个 target 段：它跨平台（CoreBluetooth / WinRT / BlueZ / Android），
 # 且因为是 optional，默认构建既不会下载也不会编译它。
-btleplug = { version = "0.13", optional = true }
+#
+# ⚠️ **本地打过补丁的副本**（`vendor/btleplug`，Gosslan 2026-09-13）：
+# 上游 WinRT 后端在连接时用 `FromBluetoothAddressAsync(address)`，**丢掉了扫描时采集到的
+# 地址类型**（`args.BluetoothAddressType()`）。对**随机地址（Random）**的 BLE 外设
+# （安卓 `BluetoothLeAdvertiser` 默认就是随机地址）这会拿到一个"连不上"的设备对象：
+# 之后每次 GATT 操作都以 `Unreachable` 失败，被翻成 `Not connected`，且**没有任何被拒的迹象**
+# —— 真机现象就是"能扫到、永远连不上"（Windows ↔ 安卓，关掉局域网只留蓝牙）。
+# 补丁只有两处（约 30 行）：`ble/device.rs` 的 `BLEDevice::new` 多一个 `address_type` 参数并按
+# `Random` 选带地址类型的重载；`peripheral.rs` 把 `self.shared.address_type` 传进去。
+# **Public / 取不到地址类型时完全走上游原路径**，所以对 macOS/Android/Linux 后端零影响。
+# 升级 btleplug 时请重放这两处补丁（`grep -rn "本地补丁" vendor/btleplug`）。
+btleplug = { path = "vendor/btleplug", version = "0.13", optional = true }
 # 消费 BLE 的通知流需要 `StreamExt`（btleplug 只把它作为内部依赖，不 re-export）。
 # 同样 optional：默认构建不引入。
 futures = { version = "0.3", optional = true }
