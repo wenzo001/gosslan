@@ -892,7 +892,17 @@ impl AppState {
         let base_device = if let Some(id) = hardware_fingerprint() {
             id
         } else if let Some(id) = db::get_setting(&conn, "device_id") {
-            id
+            // ⚠️ **历史值迁移**（2026-09-13 合并评审补）：那时候的兜底路径多套了一层前缀，
+            // 已装的安卓库里存的是 `dev-gosslan-…`。光改生成代码**治不了已经装上的设备** ——
+            // 它们的 id 还是"三端里恒最小、永远不主动拨号"的那个值，
+            // 除非用户清一次应用数据（丢聊天/好友）。所以这里把废弃前缀**就地剥掉**再写回。
+            match crate::device::strip_legacy_dev_prefix(&id) {
+                Some(migrated) => {
+                    db::set_setting(&conn, "device_id", migrated).ok();
+                    migrated.to_string()
+                }
+                None => id,
+            }
         } else {
             // ⚠️ 这里**不能**再套一层前缀（真机 2026-09-13 第七轮发现）。
             //

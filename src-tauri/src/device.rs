@@ -53,6 +53,23 @@ pub fn hostname_fingerprint() -> String {
     format!("gosslan-{}", &hex(&h.finalize())[..16])
 }
 
+/// 剥掉历史遗留的 `dev-` 前缀（返回 `None` = 不需要迁移）。
+///
+/// 为什么需要它（2026-09-13 合并评审）：`state.rs` 的兜底路径曾经写成
+/// `format!("dev-{}", hostname_fingerprint())`，而 `hostname_fingerprint()` 本身已带
+/// `gosslan-` 前缀 ⇒ 已装的安卓库里存的是 **`dev-gosslan-…`**。
+/// 改成不再套前缀只治"新装设备"；**已经装上并写过库的设备**必须就地迁移，
+/// 否则它仍然是"三端里恒最小 id、永远不主动拨号"的那一个
+/// （现象：它只能等别人连它，自己永远搜不到、也拨不动）。
+///
+/// 只剥这一个已知前缀，不做任何其它"美化"（id 是身份，不能顺手改）。
+pub fn strip_legacy_dev_prefix(id: &str) -> Option<&str> {
+    let rest = id.strip_prefix("dev-")?;
+    // 只处理"套在合法指纹外面"的那一层：剥完必须还是一个合法指纹，
+    // 否则宁可不动（例如用户/测试库里恰好有个叫 `dev-xxx` 的 id）。
+    rest.starts_with("gosslan-").then_some(rest)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -94,5 +111,21 @@ mod tests {
                 "机器码路径与主机名兜底路径的 id 长度必须一致，否则前缀约定会被打断"
             );
         }
+    }
+
+    /// 历史 `dev-` 前缀必须能被就地剥掉（否则已装设备永远是最小 id）。
+    #[test]
+    fn legacy_dev_prefix_is_stripped_exactly_once() {
+        assert_eq!(
+            strip_legacy_dev_prefix("dev-gosslan-f3d6b7dddf73aab2"),
+            Some("gosslan-f3d6b7dddf73aab2"),
+            "带 dev- 的老 id 必须迁移成 gosslan-…"
+        );
+        // 正常 id：不动
+        assert_eq!(strip_legacy_dev_prefix("gosslan-f3d6b7dddf73aab2"), None);
+        // 只剥**一层**，且剥完必须是合法指纹：不合法就不动（别把用户自己的 id 改坏）
+        assert_eq!(strip_legacy_dev_prefix("dev-dev-gosslan-abc"), None);
+        assert_eq!(strip_legacy_dev_prefix("dev-whatever"), None);
+        assert_eq!(strip_legacy_dev_prefix(""), None);
     }
 }
