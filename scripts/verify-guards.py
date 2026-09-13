@@ -218,6 +218,28 @@ CASES: list[Case] = [
         tags=["rust", "ble"],
     ),
     Case(
+        name="外设每次订阅都清掉该 central 的重组器（否则重连后第一条消息丢）",
+        why="对端 msg_id 每条连接从 1 重来，而 macOS 外设没有 didDisconnect 回调、"
+        "didUnsubscribe 也不保证到达 ⇒ 上一轮残留的半截消息会和重连后的第一帧撞车、"
+        "那条帧被当坏片丢掉（真机体感：重连后第一条消息丢了）。只靠 30s TTL 兜底太慢",
+        file=TAURI / "src" / "transport" / "bluetooth_peripheral.rs",
+        injections=[(
+            "                .remove(&id);\n            let _ = self.ivars().signal.send(1); // 订阅数变化 ⇒ 唤醒等订阅的写任务",
+            "                .len();\n            let _ = self.ivars().signal.send(1); // 订阅数变化 ⇒ 唤醒等订阅的写任务",
+        )],
+        cmd=cargo(
+            "test",
+            "--offline",
+            "--lib",
+            "--features",
+            "bluetooth",
+            "peripheral_subscribe_resets_that_centrals_reassembler",
+        ),
+        cwd=TAURI,
+        expect_fail_hint="必须**按 central id** remove",
+        tags=["rust", "ble"],
+    ),
+    Case(
         name="蓝牙启动不得阻塞在 CoreBluetooth 状态回执上（否则开关卡 3 秒）",
         why="`start_peripheral` 要等 `peripheral::STATE_WAIT = 3s`（CoreBluetooth 回报状态），"
         "而 `ble::start` 就在 `set_channel_enabled` 的关键路径上 ⇒ 一旦 await 它，"

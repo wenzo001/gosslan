@@ -482,8 +482,23 @@ define_class!(
             {
                 let mut st = self.ivars().state.lock().unwrap_or_else(|e| e.into_inner());
                 st.subscribed.insert(id.clone());
-                st.mtu.insert(id, mtu);
+                // clone：`id` 下面还要用来摘重组器
+                st.mtu.insert(id.clone(), mtu);
             }
+            // ⚠️ **每一次订阅都是一个新的"连接世代"**：清掉这个 central 上一轮留下的半截分片。
+            //
+            // 为什么必须（2026-09-13 框架审计，用户优先级 ①「蓝牙设备加入 mesh 的稳定性」）：
+            // 对端（central）的 `msg_id` **每条连接都从 1 重新开始**，而 macOS 外设角色**没有**
+            // didDisconnect 回调、`didUnsubscribe` 也不保证在断连时到达 ⇒ 上一轮残留的半截消息
+            // 会和重连后的第一帧撞在同一个 `msg_id` 上（分片数/序号对不上）
+            // ⇒ 那条帧被当坏片丢掉/重组出错 —— 表现就是"重连之后第一条消息丢了"。
+            // 只靠 `BleReassembler` 的 30s TTL 兜底太慢：真机重连通常就在几秒内发生。
+            // 只 remove 这一个 central（**不要**整体 clear：那会误伤其它正在线的对端）。
+            self.ivars()
+                .reassemblers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&id);
             let _ = self.ivars().signal.send(1); // 订阅数变化 ⇒ 唤醒等订阅的写任务
         }
 

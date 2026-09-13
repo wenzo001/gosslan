@@ -10,6 +10,26 @@
 
 ## [Unreleased]
 
+### Fixed (🔴 外设侧重连后第一条消息会丢 —— 分片重组器带着上一轮连接的残留)
+
+框架审计（`docs/notes/audit-2026-09-13-mesh-ble-efficiency.md`，用户优先级 ①「蓝牙设备加入
+mesh 的稳定性」）里「§6-3 外设重连不清重组器」这一条。
+
+**证据**：`bluetooth_peripheral.rs::did_unsubscribe` 会按 central 清掉它的分片重组器，
+但 **`did_subscribe` 不会** —— 而 macOS 外设角色**没有** didDisconnect 回调、
+`didUnsubscribe` 也不保证在断连时到达。对端的 `msg_id` 又**每条连接都从 1 重新开始**
+⇒ 重连后第一帧的分片会和上一轮残留的半截消息撞在同一个 `msg_id` 上（分片数/序号对不上）
+⇒ 那条帧被当坏片丢弃。`BleReassembler` 自带 30s TTL 能兜底，但真机重连通常就在**几秒内**
+发生 —— 来不及。真机体感：**"断一下再连上，第一条消息发了对方收不到。"**
+
+**修法**：`did_subscribe` 里**每一次订阅都视作新的"连接世代"**，按 central id `remove` 它的
+重组器（⚠️ 只 remove 这一个，**不整体 clear** —— 那会误伤其它正在线的对端）。
+Android 侧本来就在 `onUnlinked`（Kotlin 会真的回调）与启动时清，不受影响。
+
+**护栏**：Rust 结构护栏 `peripheral_subscribe_resets_that_centrals_reassembler`
+（`did_subscribe` 必须含 `reassemblers` 与 `.remove(&id)`），并进了
+`scripts/verify-guards.py` 的非空转验证（改坏即 FAIL、恢复即 PASS）。
+
 ## [4.3.2] - 2026-09-13
 
 ### Fixed (🔴 安卓长按气泡：有的地方弹不出复制/转发面板，弹出来一放手又缩回去)

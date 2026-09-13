@@ -1478,6 +1478,37 @@ mod tests {
         );
     }
 
+    /// 外设侧**每次订阅都必须清掉该 central 的重组器**（用户优先级 ①：加入 mesh 的稳定性）。
+    ///
+    /// 为什么（2026-09-13 框架审计）：对端的 `msg_id` **每条连接都从 1 重新开始**，而 macOS
+    /// 外设角色**没有** didDisconnect 回调、`didUnsubscribe` 也不保证在断连时到达 ⇒ 上一轮
+    /// 残留的半截消息会和重连后的第一帧撞在同一个 `msg_id` 上（分片数/序号对不上）⇒ 那条帧
+    /// 被当坏片丢掉（真机体感："重连之后第一条消息丢了"）。只靠 `BleReassembler` 的 30s TTL
+    /// 兜底太慢 —— 真机重连通常就在几秒内发生。
+    ///
+    /// 判据：`did_subscribe` 里必须**按 central id `remove`**（不能整体 `clear`：会误伤其它
+    /// 正在线的对端）。
+    #[test]
+    fn peripheral_subscribe_resets_that_centrals_reassembler() {
+        let src = include_str!("transport/bluetooth_peripheral.rs");
+        let start = src
+            .find("fn did_subscribe(")
+            .expect("源码里找不到 `fn did_subscribe(` —— 护栏需要同步更新");
+        let end = src[start..]
+            .find("fn did_unsubscribe(")
+            .map(|i| start + i)
+            .expect("源码里找不到 `fn did_unsubscribe(` —— 护栏需要同步更新");
+        let body = &src[start..end];
+        assert!(
+            body.contains("reassemblers"),
+            "`did_subscribe` 必须清掉该 central 的分片重组器 —— 否则重连后第一条帧会和上一轮的半截消息撞车"
+        );
+        assert!(
+            body.contains(".remove(&id)"),
+            "必须**按 central id** remove（整体 clear 会误伤其它在线对端）"
+        );
+    }
+
     /// 蓝牙开关**不许卡在"等 CoreBluetooth 回报状态"上**（用户 2026-09-13）。
     ///
     /// `ble::start` 里 `start_peripheral` 要等 `peripheral::STATE_WAIT = 3s`，而它在
