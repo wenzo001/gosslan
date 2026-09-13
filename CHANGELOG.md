@@ -10,6 +10,37 @@
 
 ## [Unreleased]
 
+### Fixed (🔴 Android 的 device_id 多了一层 `dev-` 前缀 ⇒ 三端里恒为最小 id ⇒ 永远不主动拨号)
+
+真机 2026-09-13 第七轮：日志里安卓的对端自称 `dev-gosslan-f3d6b7dddf73aab2`，
+而 Mac / Windows 是 `gosslan-…`。原因是 `state.rs` 的兜底路径**又套了一层前缀**：
+
+```rust
+let id = format!("dev-{}", hostname_fingerprint());  // hostname_fingerprint 本身已带 gosslan-
+```
+
+两个后果都是真的：
+1. **身份形状不一致**（`gosslan-` 的命名约定被打断，日志/库/UI 里出现两种形状）；
+2. **`'d' < 'g'` ⇒ 安卓在三端里恒为最小 id**，而镜像规则是「大 id 拨、小 id 只接受」
+   ⇒ **安卓永远不主动拨任何人**，只能等对方来连它 —— 这让"安卓搜不到 Windows"
+   这一侧失去了唯一的自救通道（它本可以主动拨过去）。
+
+已改为直接用 `hostname_fingerprint()`，并加护栏 `every_fingerprint_path_shares_one_prefix`
+把"前缀只有一个、长度一致"钉死（再套前缀即 FAIL）。
+
+⚠️ `device_id` 一旦写进库就持久化了，**已装的安卓需要清一次数据**才会换到新 id。
+
+### Added (扫描日志打出**命中的服务 UUID**，区分"对端没广播"与"广播的是别的 UUID")
+
+真机 2026-09-13 第七轮出现的怪现象：**Windows 能扫到安卓和 Mac、Mac 能扫到 Windows，
+但安卓的扫描里始终只有 1 个本应用服务**（Mac 能同时看到 2 个）。
+"对端根本没广播"和"对端广播的是另一个 UUID（旧版本/另一份构建）"在旧日志里长得一模一样。
+
+`[DISCOVERY] 候选可拨 …` 现在带上 `命中=<UUID>`（或 `(未在本设备广播里看到我们的 UUID)`），
+这条日志能直接判定上面两种情形。
+
+
+
 ### Fixed (🔴 Windows 的广播一直没人看得见：显式 `SetIsDiscoverable(true)` + 盯住广播状态)
 
 真机 2026-09-13 第六轮，用户三台设备的完整日志把范围压到最后一处：

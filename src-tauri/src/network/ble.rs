@@ -39,6 +39,8 @@ use crate::network::transport::{
 use crate::protocol::Message;
 use crate::state::{AppState, Link};
 use crate::transport::bluetooth::driver::{self, BleReader, BleWriter};
+// 扫描日志里要显示"命中的是哪个服务 UUID"（区分"对端没广播"与"对端广播的是别的 UUID"）
+use crate::transport::bluetooth::SERVICE_UUID;
 // 外设角色的驱动按平台切换：macOS 用 CoreBluetooth（objc2）、Android 用 JNI 调 Kotlin、
 // Windows 用 WinRT `GattServiceProvider`。三者对外接口**完全同形**
 // （`start` / `PeripheralServer` / `PeripheralWriter` / `PeripheralEvent`），
@@ -372,15 +374,31 @@ async fn scan_loop(
                     // 它自报的服务列表是什么"这些一眼能定性的信息全丢了，
                     // 只剩一句 `Not connected` 无从判断。
                     // 这些字段都在 `PeripheralProperties` 里（btleplug 从广播/扫描响应解析）。
+                    //
+                    // ⚠️ 2026-09-13 第七轮：把**命中的那个服务 UUID**也打出来。
+                    // 真机上出现过"Windows 搜得到安卓和 Mac，但安卓的扫描里只有 1 个本应用服务"
+                    // —— 到底是对端没广播、还是广播里带的是**另一个** UUID（旧版本 / 另一份构建），
+                    // 只有把 UUID 打出来才能区分。这是"三方都能扫到、偏偏有一方扫不到"的决定性证据。
                     let facts = match peripheral.properties().await {
-                        Ok(Some(p)) => format!(
-                            "rssi={:?} 地址类型={:?} 名字={:?} 广播服务数={} 发射功率={:?}",
-                            p.rssi,
-                            p.address_type,
-                            p.local_name.as_deref().or(p.advertisement_name.as_deref()),
-                            p.services.len(),
-                            p.tx_power_level
-                        ),
+                        Ok(Some(p)) => {
+                            // 直接现算 UUID（`driver::uuid` 是私有的，不为了这条日志去放开它）
+                            let svc = uuid::Uuid::parse_str(SERVICE_UUID)
+                                .expect("BLE 服务 UUID 常量必须合法");
+                            let hit = p
+                                .services
+                                .iter()
+                                .find(|u| **u == svc)
+                                .map(|u| u.to_string())
+                                .unwrap_or_else(|| "(未在本设备广播里看到我们的 UUID)".to_string());
+                            format!(
+                                "rssi={:?} 地址类型={:?} 名字={:?} 广播服务数={} 命中={hit} 发射功率={:?}",
+                                p.rssi,
+                                p.address_type,
+                                p.local_name.as_deref().or(p.advertisement_name.as_deref()),
+                                p.services.len(),
+                                p.tx_power_level
+                            )
+                        }
                         Ok(None) => "广播属性暂不可用".to_string(),
                         Err(e) => format!("读广播属性失败：{e}"),
                     };

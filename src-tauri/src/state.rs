@@ -829,7 +829,19 @@ impl AppState {
         } else if let Some(id) = db::get_setting(&conn, "device_id") {
             id
         } else {
-            let id = format!("dev-{}", hostname_fingerprint());
+            // ⚠️ 这里**不能**再套一层前缀（真机 2026-09-13 第七轮发现）。
+            //
+            // 旧写法是 `format!("dev-{}", hostname_fingerprint())`，而
+            // `hostname_fingerprint()` 本身已经产出 `gosslan-xxxxxxxxxxxxxxxx`，
+            // 于是安卓的 device_id 变成 **`dev-gosslan-…`**，而桌面端（有机器码）是
+            // **`gosslan-…`**。两个后果都是真的：
+            //   ① **身份不一致**：同一个 `gosslan-` 命名约定被打断，日志/库/UI 里出现两种形状；
+            //   ② **永远是"较小 id"**：`'d' < 'g'` ⇒ 安卓在三端里恒为最小
+            //      ⇒ 按「大 id 拨、小 id 只接受」的镜像规则，**安卓永远不主动拨任何人**。
+            //      它只能等别人来连它，而"别人能不能连到它"取决于对方的扫描 —— 这正是
+            //      2026-09-13 那几轮"安卓搜不到 Windows"里最容易被忽略的一层。
+            // `hostname_fingerprint()` 已带前缀，这里直接用。
+            let id = hostname_fingerprint();
             db::set_setting(&conn, "device_id", &id).ok();
             id
         };
