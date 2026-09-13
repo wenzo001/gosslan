@@ -844,6 +844,36 @@ mod tests {
         );
     }
 
+    /// **BLE 握手必须容忍前导帧，且前导帧绝不进业务处理**（真机 2026-09-13）。
+    ///
+    /// 日志证据：`[GATT] 已就绪 → [DISCONNECT] 对端首帧不是 Hello（收到 chat_message）`。
+    /// Android 的 notify 按 **central 地址**投递 ⇒ 上一条链路的待发帧会落在新连接上，
+    /// "首帧必须是 Hello"这条旧判据于是把**本来能建起来的链路**全部打死。
+    ///
+    /// 这条护栏盯两件事：① central 侧走"读到 Hello 为止"的辅助函数（不是裸 read_one）；
+    /// ② 被丢掉的前导帧**不能**进 `handle_message`（身份未验签，那是一条安全边界）。
+    #[test]
+    fn ble_handshake_skips_leading_frames_without_processing_them() {
+        let ble = include_str!("network/ble.rs");
+        assert!(
+            ble.contains("read_hello_frame(&mut reader, HANDSHAKE_TIMEOUT"),
+            "central 侧必须用 read_hello_frame（容忍前导帧），不能退回裸 read_one + 首帧断言"
+        );
+        let helper = rust_fn_body(ble, "async fn read_hello_frame(");
+        assert!(
+            !helper.contains("handle_message"),
+            "前导帧绝不能进 handle_message —— 身份来自 Hello 验签，验签之前它只是字节"
+        );
+        assert!(
+            helper.contains("preamble_action("),
+            "额度判定必须走纯函数 preamble_action（可单测）"
+        );
+        assert!(
+            ble.contains("丢弃外设侧握手前导帧"),
+            "外设侧同样要丢前导帧（同一条 Android notify 语义）"
+        );
+    }
+
     /// **扫描结果不得再用 `Peripheral::services()` 二次过滤**（真机踩过，症状极隐蔽）。
     ///
     /// `start_scan(ScanFilter{services})` 已在平台层过滤；而 `services()` 在 **Android 上
@@ -909,8 +939,12 @@ mod tests {
         );
         // 诊断信息必须带类型名（两处：central 侧拨号 + 外设侧接收入站）
         assert!(
-            ble.matches("首帧不是 Hello（收到").count() >= 2,
-            "central 与外设两侧的『首帧不是 Hello』都必须带上**收到的类型**（`wire_kind()`）"
+            ble.contains("对端首帧不是 Hello（连续 {dropped} 帧都不是，最后一帧 type="),
+            "central 侧失败时必须带**最后一帧的类型**（`wire_kind()`）"
+        );
+        assert!(
+            ble.contains("外设侧首帧不是 Hello（收到 {") && ble.contains("first.wire_kind()"),
+            "外设侧失败时同样必须带**收到的类型**（`wire_kind()`）"
         );
         assert!(
             ble.contains("wire_kind()"),

@@ -39,6 +39,90 @@ use std::sync::Mutex;
 use serde::Serialize;
 
 /// 内存保留的日志条数上限。
+/// Android 的 logcat 镜像：**合批 + 单线程 fork**（见 `Logger::log` 里的说明）。
+///
+/// 为什么需要它：`log` 是外部可执行文件，写一行 = fork+exec 一个进程。BLE 生命周期日志
+/// 一多（每帧一条 `[SEND]/[RECV]`），真机上就变成"一边跑 GATT、一边疯狂 fork"，
+/// 拖慢 Rust 运行时与蓝牙时序。这里把行丢进无界队列，由**一个**常驻线程按
+/// `BATCH_WINDOW` 合批后每批只 fork 一次。
+///
+/// 取舍：logcat 里会晚最多 200ms 出现（日志首行的时间戳是**批次**时间），
+/// 而行级精确时间戳仍然完整保存在落盘日志与内存日志里（`[SEND]/[RECV]` 排查用它）。
+#[cfg(target_os = "android")]
+mod logcat {
+    use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+    use std::sync::OnceLock;
+    use std::time::{Duration, Instant};
+
+    /// 合批窗口：够把一轮扫描/一次 flush 的多行并成一次 fork，又不至于让日志"迟到"太多。
+    const BATCH_WINDOW: Duration = Duration::from_millis(200);
+    /// 单批上限（防止极端刷屏时一条 logcat 消息过长）。
+    const BATCH_MAX_LINES: usize = 64;
+
+    static TX: OnceLock<Sender<String>> = OnceLock::new();
+
+    pub(super) fn push(line: String) {
+        let _ = tx().send(line);
+    }
+
+    fn tx() -> &'static Sender<String> {
+        TX.get_or_init(|| {
+            let (tx, rx) = mpsc::channel::<String>();
+            std::thread::Builder::new()
+                .name("gosslan-logcat".into())
+                .spawn(move || run(rx))
+                .ok();
+            tx
+        })
+    }
+
+    /// 常驻线程：收够一批就 fork 一次 `log -t gosslan <多行>`。
+    fn run(rx: Receiver<String>) {
+        loop {
+            let Ok(first) = rx.recv() else { return };
+            let mut batch = vec![first];
+            let deadline = Instant::now() + BATCH_WINDOW;
+            while batch.len() < BATCH_MAX_LINES {
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    break;
+                }
+                match rx.recv_timeout(left) {
+                    Ok(line) => batch.push(line),
+                    Err(RecvTimeoutError::Timeout) => break,
+                    Err(RecvTimeoutError::Disconnected) => break,
+                }
+            }
+            emit(&batch.join("\n"));
+        }
+    }
+
+    fn emit(msg: &str) {
+        use std::process::{Command, Stdio};
+        // 不等待：日志绝不允许反过来阻塞业务
+        let _ = Command::new("log")
+            .args(["-t", "gosslan", msg])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// 合批函数的边界：窗口内多行必须并成 1 批、超上限必须截断。
+        /// （这里只测"批大小/拼接"的纯逻辑，不真的 fork `log`。）
+        #[test]
+        fn batch_join_keeps_one_message_per_batch() {
+            let lines: Vec<String> = (0..3).map(|i| format!("line{i}")).collect();
+            assert_eq!(lines.join("\n"), "line0\nline1\nline2");
+            assert!(BATCH_MAX_LINES >= 16, "上限太小会把日志切成碎片");
+            assert!(BATCH_WINDOW >= Duration::from_millis(50));
+        }
+    }
+}
+
 const MAX_MEM_LOGS: usize = 500;
 /// 单个日志文件大小上限（字节），超出即轮转。
 const MAX_LOG_FILE_BYTES: u64 = 512 * 1024;
@@ -134,20 +218,21 @@ impl Logger {
         //         之前它们只写文件，用户能贴的 logcat 里什么都没有，于是"互相搜不到"
         //         只能靠猜（那次真正的根因是扫描结果被 `services()` 过滤掉，日志里一个字都没有）。
         //     频率很低（每个扫描周期最多几行，10s 一次），不会把 logcat 刷满。
+        //
+        // ⚠️ **不能每条日志 fork 一个进程**（2026-09-13 真机抓到的真问题）：
+        //     原来这里是 `Command::new("log").spawn()` —— 每行一次 fork+exec。BLE 生命周期
+        //     日志一多（每帧一条 [SEND]/[RECV]），真机上就是"一边跑 GATT、一边疯狂 fork"，
+        //     直接拖慢 Rust 运行时与蓝牙时序（用户看到的"连上就断 / 加好友没反应"）。
+        //     实测证据：`adb logcat -s gosslan` 里**每一行的 PID 都不一样**（每次 fork 新进程）。
+        //     现在改成：丢进队列 → 专用线程按 200ms 合批 → 每批只 fork 一次，整批作为
+        //     一条多行消息发出（`adb logcat` 里依然逐行可见）。
         #[cfg(target_os = "android")]
         {
             let want = matches!(level, Level::Warn | Level::Error)
                 || target == "boot"
                 || target == "ble";
             if want {
-                use std::process::{Command, Stdio};
-                let line = format!("[{}] [{}] {}", level.as_str(), target, message);
-                // 不阻塞主流程：失败就算了（日志不能反过来拖垮应用）
-                let _ = Command::new("log")
-                    .args(["-t", "gosslan", &line])
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .spawn();
+                logcat::push(format!("[{}] [{}] {}", level.as_str(), target, message));
             }
         }
 

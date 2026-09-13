@@ -10,6 +10,55 @@
 
 ## [Unreleased]
 
+## [4.2.15] - 2026-09-13
+
+### Fixed (🔴 Mac↔Android BLE「能发现、连不上」的真因：新连接的第一帧是**上一条链路的残留帧**)
+
+用户 4.2.14 真机（只开蓝牙）新日志给出了决定性证据 —— Mac 侧反复出现：
+
+```
+00:53:55 [GATT] 已就绪 ep=368f5c3f-… → [DISCONNECT] 对端首帧不是 Hello（收到 chat_message）
+01:05:07 [GATT] 已就绪 ep=ec59937a-… → [DISCONNECT] 对端首帧不是 Hello（收到 chat_message）
+00:56:18 [SESSION] 已就绪（同一对端）→ [SEND] gossip + chat_message → [RECV] chat_message
+```
+
+**根因**：Android 的 `notifyCharacteristicChanged` 是**按 central 地址**投递的 —— 上一条链路
+排队待发的帧（outbox flush / 心跳）会落在**新连接**上。而两边握手都要求"**第一帧必须是
+Hello**"，于是这些残留帧把**本来能建起来的链路**全部打死：Mac 放弃 → 重拨 → 对端又在新连接上
+先吐出残留帧 → 再次放弃，双方互相打断，好友申请与消息因此全部过期或延迟数分钟。
+
+注意这不是"握手机制错了"：它是一道**安全边界**（身份只能来自 Hello 的签名验证）。
+所以修法是**容忍前导帧、但绝不提前处理它们**：
+
+- central 侧新增 `read_hello_frame()`：窗口内继续读，**丢弃**非 Hello 前导帧（不喂给
+  `handle_message` —— 验签之前它只是字节），读到 Hello 再握手；额度
+  `MAX_HANDSHAKE_PREAMBLE_FRAMES = 32`，用尽仍明确报错并带上最后一帧类型；
+- 外设侧同一条语义：没有活路由时收到非 Hello 帧 ⇒ 记一条 `[SESSION] 丢弃外设侧握手前导帧`
+  并继续等 Hello（既不投旧路由，也不当握手首帧）；
+- 判定抽成纯函数 `preamble_action(dropped, is_hello)`（可单测 + 护栏）。
+
+### Fixed (Android 日志：**每条日志 fork 一个进程** ⇒ 一边跑 GATT 一边 fork 风暴)
+
+真机抓到的第二个问题：`logging.rs` 原来用 `Command::new("log").spawn()` 镜像到 logcat ——
+**每行一次 fork+exec**（`adb logcat -s gosslan` 里每行 PID 都不同就是铁证）。
+BLE 生命周期日志一多（每帧一条 `[SEND]/[RECV]`），真机上就变成"跑 GATT 的同时疯狂 fork"，
+直接拖慢 Rust 运行时与蓝牙时序。现在改成**队列 + 常驻线程 + 200ms 合批**，
+每批只 fork 一次（整批作为一条多行消息发出），logcat 里依然逐行可见；
+行级精确时间戳仍完整保存在落盘日志与内存日志里。
+
+### Changed (诊断：Gossip 帧必须打出 kind)
+
+`frame_trace` 以前对 `Message::Gossip` 只打 `type=gossip`，**分不清好友申请到底发出去没有**
+（真机排查正是卡在这里）。现在打 `type=gossip kind=FriendRequest/FriendAccept/...`。
+
+**护栏**：`handshake_tolerates_leading_non_hello_frames_but_is_bounded` +
+源码级 `ble_handshake_skips_leading_frames_without_processing_them`（必须走
+`read_hello_frame`、前导帧不得进 `handle_message`、外设侧也要丢）+ `verify-guards.py`
+对应非空转用例，现共 **57** 条。
+
+**门禁**：`cargo test --lib --features bluetooth` 425/425 · `npm test` 350/350 ·
+`check-mobile --bluetooth` PASS(0 warning) · `verify-guards` 57/57。
+
 ## [4.2.14] - 2026-09-13
 
 ### Fixed (BLE 首轮稳定性：好友申请等 5～6 分钟、同意后对端状态不同步)

@@ -831,12 +831,12 @@ CASES: list[Case] = [
         "漏一个变体就会打出错的类型名，比没有日志更坏）",
         file=TAURI / "src" / "network" / "ble.rs",
         injections=[(
-            '"对端首帧不是 Hello（收到 {}）"',
-            '"对端首帧不是 Hello（这里曾经不带类型名）"',
+            "最后一帧 type={}",
+            "最后一帧（这里曾经不带类型名）",
         )],
         cmd=cargo("test", "--lib", "peripheral_reconnect_hello_replaces_the_stale_route"),
         cwd=TAURI,
-        expect_fail_hint="都必须带上",
+        expect_fail_hint="最后一帧的类型",
         tags=["rust", "ble", "diagnostics"],
     ),
     Case(
@@ -884,6 +884,22 @@ CASES: list[Case] = [
         cwd=TAURI,
         expect_fail_hint="GiveUp",
         tags=["rust", "friend", "reliability"],
+    ),
+    Case(
+        name="BLE 握手必须容忍前导帧（否则残留帧把链路全部打死）",
+        why="真机 2026-09-13：Mac 日志反复 `[GATT] 已就绪 → [DISCONNECT] 对端首帧不是 Hello"
+        "（收到 chat_message）` ⇒ 链路永久建不起来（双方各自重拨、互相打断）。"
+        "Android 的 notify 按 central 地址投递：上一条链路的待发帧会落在新连接上，"
+        "而「首帧必须是 Hello」这条旧判据会把本来能建起来的链路全部打死",
+        file=TAURI / "src" / "network" / "ble.rs",
+        injections=[(
+            "    } else if dropped >= MAX_HANDSHAKE_PREAMBLE_FRAMES {",
+            "    } else if true {",
+        )],
+        cmd=cargo("test", "--lib", "--features", "bluetooth", "handshake_tolerates_leading_non_hello_frames_but_is_bounded"),
+        cwd=TAURI,
+        expect_fail_hint="额度过小",
+        tags=["rust", "ble", "handshake"],
     ),
     Case(
         name="应用样式（三个窗口都必须加载 style.css）",

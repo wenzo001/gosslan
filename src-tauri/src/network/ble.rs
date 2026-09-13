@@ -425,10 +425,14 @@ async fn dial_and_register(
     let bytes = serde_json::to_vec(&hello).map_err(|e| format!("Hello 序列化失败：{e}"))?;
     writer.send_frame(&bytes).await?;
 
-    let first = read_one(&mut reader, HANDSHAKE_TIMEOUT, &mut shutdown).await?;
-    let Some(first) = first else {
-        return Err("握手超时：对端未回 Hello".to_string());
-    };
+    // ⚠️ **允许跳过握手前导帧**（2026-09-13 真机抓到的真因）：
+    //    日志里反复出现 `对端首帧不是 Hello（收到 chat_message）` ⇒ 链路**永久建不起来**。
+    //    原因是 Android 的 notify 按**central 地址**投递：上一条链路的待发帧（outbox flush）
+    //    会落在**新连接**上，于是新连接的"第一帧"是先前的业务帧，而不是 Hello。
+    //    旧行为直接放弃 ⇒ 双方各自重拨、互相打断，好友申请/消息全部过期。
+    //    新行为：窗口内继续读，丢掉非 Hello 的前导帧（**不处理**——身份还没验签），
+    //    读到 Hello 就正常握手；窗口耗尽仍只报错（并说明收到了什么）。
+    let first = read_hello_frame(&mut reader, HANDSHAKE_TIMEOUT, &mut shutdown, &state, &ble_id).await?;
     let Message::Hello {
         device_id,
         tcp_port,
@@ -439,10 +443,7 @@ async fn dial_and_register(
         ..
     } = &first
     else {
-        // ⚠️ 必须把**收到的是什么**写进错误里：真机（2026-09-12）只看到
-        // 「对端首帧不是 Hello」时，完全无法区分"对端在重连时把旧链路的帧发了过来"
-        // /"对端状态机还没重置"/"对面根本不是 Gosslan"。带上类型名后一眼可判。
-        return Err(format!("对端首帧不是 Hello（收到 {}）", first.wire_kind()));
+        unreachable!("read_hello_frame 只返回 Hello");
     };
     crate::network::transport::verify_hello_for_ble(
         &state,
@@ -600,12 +601,98 @@ fn frame_trace(msg: &Message) -> String {
         Message::ChatMessage { msg_id, kind, .. } => {
             format!("type=chat_message kind={kind:?} msg_id={msg_id}")
         }
+        // 好友申请/同意走的是 `Gossip` 信封（GossipKind::FriendRequest/FriendAccept）——
+        // **必须把 kind 打出来**，否则日志里只有 `type=gossip`，根本分不清
+        // "好友申请到底发出去没有"（用户 2026-09-13 排查时正是卡在这里）。
+        Message::Gossip { envelope } => format!("type=gossip kind={:?}", envelope.kind),
         Message::FriendRequest { from, .. } => format!("type=friend_request from={from}"),
         Message::FriendAccept { from, .. } => format!("type=friend_accept from={from}"),
         Message::FileChunk { transfer_id, seq, .. } => {
             format!("type=file_chunk transfer={transfer_id} seq={seq}")
         }
         other => format!("type={}", other.wire_kind()),
+    }
+}
+
+/// 握手期间最多跳过多少个"非 Hello 的前导帧"。
+///
+/// 为什么要上限：既能让"上一条链路的残留帧"过去，又不能让对端无限灌帧把握手拖住
+/// （每一帧都要过一遍 JSON 解析）。
+const MAX_HANDSHAKE_PREAMBLE_FRAMES: u32 = 32;
+
+/// 读**首个 Hello**：跳过并丢弃握手前导帧（见调用点的说明）。
+///
+/// 安全性：被丢掉的帧**绝不进入 `handle_message`** —— 身份来自 Hello 的签名验证，
+/// 验签之前任何帧都只是字节。
+async fn read_hello_frame(
+    reader: &mut BleReader,
+    overall: Duration,
+    shutdown: &mut watch::Receiver<bool>,
+    state: &AppState,
+    ep_for_log: &str,
+) -> Result<Message, String> {
+    let deadline = tokio::time::Instant::now() + overall;
+    let mut dropped = 0u32;
+    loop {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if left.is_zero() {
+            return Err(format!(
+                "握手超时：窗口内没等到 Hello（丢掉了 {dropped} 个前导帧）"
+            ));
+        }
+        let Some(frame) = read_one(reader, left, shutdown).await? else {
+            return Err(format!(
+                "握手超时：对端未回 Hello（丢掉了 {dropped} 个前导帧）"
+            ));
+        };
+        match preamble_action(dropped, matches!(frame, Message::Hello { .. })) {
+            PreambleAction::Hello => {
+                if dropped > 0 {
+                    state.logger.info(
+                        "ble",
+                        format!("[SESSION] 跳过 {dropped} 个握手前导帧后收到 Hello ep={ep_for_log}"),
+                    );
+                }
+                return Ok(frame);
+            }
+            PreambleAction::GiveUp => {
+                return Err(format!(
+                    "对端首帧不是 Hello（连续 {dropped} 帧都不是，最后一帧 type={}）",
+                    frame.wire_kind()
+                ));
+            }
+            PreambleAction::Drop => {}
+        }
+        dropped += 1;
+        state.logger.info(
+            "ble",
+            format!(
+                "[SESSION] 丢弃握手前导帧 type={} ep={ep_for_log}（等 Hello，已丢 {dropped}）",
+                frame.wire_kind()
+            ),
+        );
+    }
+}
+
+/// 握手前导帧的处理决定（纯函数内核，见 `read_hello_frame`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PreambleAction {
+    /// 收到 Hello ⇒ 进入握手。
+    Hello,
+    /// 还不是 Hello，但额度没用完 ⇒ 丢掉它继续等。
+    Drop,
+    /// 额度用尽 ⇒ 明确报错（带上最后一帧的类型，便于真机定位）。
+    GiveUp,
+}
+
+/// 纯函数：`dropped` = 已经丢掉了多少个前导帧。
+fn preamble_action(dropped: u32, is_hello: bool) -> PreambleAction {
+    if is_hello {
+        PreambleAction::Hello
+    } else if dropped >= MAX_HANDSHAKE_PREAMBLE_FRAMES {
+        PreambleAction::GiveUp
+    } else {
+        PreambleAction::Drop
     }
 }
 
@@ -917,6 +1004,21 @@ async fn peripheral_accept_loop(
                     }
                 }
                 let bytes = pending.expect("未投递的帧必须还在");
+                // 外设侧的同一类问题：新连接的"第一帧"可能仍是上一条链路的残留业务帧
+                // （Android 的 notify 按 central 地址投递）。这里**丢掉**它并等 Hello ——
+                // 既不能投给旧路由（那条链路已死），也不能当握手首帧（会立刻失败）。
+                if action == PeripheralRouteAction::ToHandshake && !frame_is_hello(&bytes) {
+                    let kind = serde_json::from_slice::<Message>(&bytes)
+                        .map(|m| m.wire_kind())
+                        .unwrap_or_else(|_| "无法解析".to_string());
+                    state.logger.info(
+                        "ble",
+                        format!(
+                            "[SESSION] 丢弃外设侧握手前导帧 type={kind} central={central}（等 Hello）"
+                        ),
+                    );
+                    continue;
+                }
                 if handshaking.insert(central.clone()) {
                     tokio::spawn(accept_handshake(
                         state.clone(),
@@ -1172,6 +1274,34 @@ mod tests {
         }
         // 0 次失败（理论上不会查）也不能 panic / 退化为 0
         assert!(ble_dial_backoff_ms(0) >= 5_000);
+    }
+
+    /// **握手必须容忍前导帧**（真机 2026-09-13 的真因之一）。
+    ///
+    /// 日志证据：`[GATT] 已就绪 → [DISCONNECT] 对端首帧不是 Hello（收到 chat_message）`，
+    /// 反复出现 ⇒ 链路永久建不起来（双方各自重拨、互相打断）。
+    /// 原因是 Android 的 notify 按 **central 地址**投递：上一条链路的待发帧会落在新连接上。
+    #[test]
+    fn handshake_tolerates_leading_non_hello_frames_but_is_bounded() {
+        // Hello 一到就进握手（无论之前丢过几个）
+        assert_eq!(preamble_action(0, true), PreambleAction::Hello);
+        assert_eq!(preamble_action(7, true), PreambleAction::Hello);
+        // 非 Hello：额度内丢掉继续等
+        assert_eq!(
+            preamble_action(0, false),
+            PreambleAction::Drop,
+            "非 Hello 且额度未用尽必须丢弃 —— 额度过小会把残留帧当失败，链路又建不起来"
+        );
+        assert_eq!(
+            preamble_action(MAX_HANDSHAKE_PREAMBLE_FRAMES - 1, false),
+            PreambleAction::Drop
+        );
+        // 额度用尽：明确失败（不能无限被灌帧拖住）
+        assert_eq!(
+            preamble_action(MAX_HANDSHAKE_PREAMBLE_FRAMES, false),
+            PreambleAction::GiveUp
+        );
+        assert!(MAX_HANDSHAKE_PREAMBLE_FRAMES >= 8, "额度过小会让残留帧把链路打死");
     }
 
     /// **重连判据**：同一个 central 地址的**新连接**发来的 Hello，绝不能被投给旧链路。
