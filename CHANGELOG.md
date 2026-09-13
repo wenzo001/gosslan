@@ -10,6 +10,8 @@
 
 ## [Unreleased]
 
+## [4.3.8] - 2026-09-14
+
 ### Changed (合并评审三项：vendor 用 `[patch.crates-io]`、退避改为缓增封顶、日志措辞纠错)
 
 **① vendor 的接线方式改成 `[patch.crates-io]`**（评审建议）。
