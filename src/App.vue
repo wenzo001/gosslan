@@ -51,7 +51,16 @@ function reportActivity() {
 onMounted(async () => {
   // 屏蔽 WebView 默认右键菜单（返回 / 刷新 / 另存为等），改为应用自定义交互：
   // 有功能的元素自行绑定右键菜单（见 MessageItem 的复制菜单），无功能的区域右键无效果。
-  window.addEventListener("contextmenu", (e) => e.preventDefault());
+  //
+  // ⚠️ 例外（用户 2026-09-13）：「选中文本之后，没有弹出『复制』等选项」。
+  // 一刀切 preventDefault 会把**有选区时**的系统菜单也吃掉 —— 桌面端右键选区拿不到
+  // 原生「复制」，Android WebView 的选择工具条同样依赖 contextmenu 的默认行为。
+  // 所以：**有非空选区时放行系统菜单**，其余情况维持原来的屏蔽。
+  window.addEventListener("contextmenu", (e) => {
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed && sel.toString().trim().length > 0) return;
+    e.preventDefault();
+  });
   // 前台/焦点变化 → 调整蓝牙扫描节奏（后端自适应，见 reportActivity）
   document.addEventListener("visibilitychange", reportActivity);
   window.addEventListener("focus", reportActivity);

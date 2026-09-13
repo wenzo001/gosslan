@@ -307,10 +307,42 @@ body {
 
 /* 可选文本标记：正文气泡 / 代码块用。
    两处用途：① 显式允许选字（与下面"控件不选中"的规则区分开）；
-   ② 消息行长按菜单靠它让路 —— 命中可选文本时不弹操作面板，把长按还给原生选字。 */
+   ② 消息行长按菜单靠它让路 —— 命中可选文本时不弹操作面板，把长按还给原生选字。
+   `-webkit-touch-callout: default`（用户 2026-09-13：「选中文本之后没有弹出复制等选项」）：
+   上面 `button,[role=button]` 那条把 callout 关了，这里必须**显式打开** ——
+   否则 iOS/Android 上选中文字后不会弹系统那条「复制/全选」工具条。 */
 .gosslan-selectable {
   -webkit-user-select: text;
   user-select: text;
+  -webkit-touch-callout: default;
+}
+
+/* ── 触屏：气泡默认**不可选**，长按归"消息菜单"；只有进入「选择文字」模式才可选 ──
+ *
+ * 用户 2026-09-13：「长按气泡时，没选文字和弹菜单有点冲突」。
+ * 这是**成熟产品的通行做法**（微信 / Telegram / WhatsApp / iMessage 都是这个模型）：
+ *   · 长按消息 = 弹上下文菜单（复制整条 / 引用 / 转发 / 删除…）——菜单永远是主行为；
+ *   · "部分选字"是**二级模式**：Telegram 的 Select Text、iMessage 的再长按/双击进入；
+ *   微信/WhatsApp 干脆不提供自由选字（"复制"就是整条）。
+ * 反过来做（长按=自由选字、菜单让路）必然两边都不灵：手指不可能"按住 500ms 又完全不动"，
+ * 而且一有选区，系统就会抢走长按去弹自己的工具条。
+ *
+ * 桌面（鼠标）没有长按冲突 ⇒ 保持默认可拖选（见上面 `.gosslan-selectable`）。
+ * ⚠️ 只写 `pointer: coarse`，不要再加 `position` 之类会与工具类打架的声明
+ *   （见 style.css 末尾的级联护栏）。 */
+@media (pointer: coarse) {
+  .gosslan-bubble-text,
+  .gosslan-bubble-text .gosslan-selectable {
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  /* 「选择文字」模式：这一条气泡重新开放原生选择 + 系统复制工具条 */
+  .gosslan-bubble-text.gosslan-selecting,
+  .gosslan-bubble-text.gosslan-selecting .gosslan-selectable {
+    -webkit-user-select: text;
+    user-select: text;
+    -webkit-touch-callout: default;
+  }
 }
 
 /* 控件不长按选中、不弹系统菜单；正文消息区不在此列——那里要能选字复制 */
@@ -677,6 +709,11 @@ button:not(:disabled):active,
   margin: 0 1px;
   /* 防止行高被撑大：图片盒不再参与行内盒的额外高度计算 */
   line-height: 0;
+  /* 表情是图片，浏览器默认允许"拖图" —— 在气泡里拖选文字时划过表情会改成拖图片，
+    选区随之中断（用户 2026-09-13：「鼠标一划，刚选中立马就取消选中了」）。
+    ⚠️ 只禁拖拽，不要加 user-select:none —— 那会让"复制选区"时丢掉表情
+    （`<img alt="[名字]">` 的 alt 是用户可见文本的一部分）。 */
+  -webkit-user-drag: none;
 }
 
 /* ================================================================================

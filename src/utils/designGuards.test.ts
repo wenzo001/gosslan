@@ -13,6 +13,7 @@ import {
   findSmallTapTargets,
   findTappableWithoutKeyboard,
   findTruncationWithoutTitle,
+  checkSelectionContract,
 } from "./designGuards.ts";
 
 // ---------------- ① 悬停揭示必须有触屏兜底 ----------------
@@ -726,4 +727,43 @@ test("未读徽标只有 UnreadBadge.vue 一处实现，且保留了垂直居中
 
   const issues = checkUnreadBadgeComponent(readFileSync(badgePath, "utf8"));
   assert.deepEqual(issues, [], issues.map((i) => i.message).join("\n"));
+});
+
+// ---------------- ⑧ 聊天区「文本选择」契约 ----------------
+
+test("复现历史缺陷：气泡根不可选 / 表情可拖 → 报出", () => {
+  const buggy = {
+    textBubble: `
+      <div class="group relative px-3 py-1.5">
+        <div class="whitespace-pre-wrap">{{ body }}</div>
+        <img :src="emoji" class="emoji-img" />
+      </div>`,
+    avatar: `<img :src="avatar" class="h-full w-full object-cover" />`,
+    messageItem: `<div @touchmove="cancelLongPress"></div>`,
+    app: `window.addEventListener("contextmenu", (e) => e.preventDefault());`,
+    css: `
+.gosslan-avatar-box { container-type: inline-size; }
+.emoji-img { display: inline-block; }
+.gosslan-selectable { user-select: text; }`,
+  };
+  const issues = checkSelectionContract(buggy);
+  const msgs = issues.map((i) => i.message).join("\n");
+  assert.ok(msgs.includes("gosslan-selectable"), msgs);
+  assert.ok(msgs.includes("select-text"), msgs);
+  assert.ok(msgs.includes("emoji-img"), msgs);
+  assert.ok(msgs.includes("user-select: none"), msgs);
+  assert.ok(msgs.includes("onTouchMove"), msgs);
+  assert.ok(msgs.includes("contextmenu"), msgs);
+});
+
+test("修好之后通过（真实的 5 个源码文件）", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const issues = checkSelectionContract({
+    textBubble: readFileSync(join(srcDir, "components", "message", "MessageTextBubble.vue"), "utf8"),
+    avatar: readFileSync(join(srcDir, "components", "message", "MessageAvatar.vue"), "utf8"),
+    messageItem: readFileSync(join(srcDir, "components", "MessageItem.vue"), "utf8"),
+    app: readFileSync(join(srcDir, "..", "src", "App.vue"), "utf8"),
+    css: readFileSync(join(srcDir, "style.css"), "utf8"),
+  });
+  assert.deepEqual(issues, [], issues.map((i) => `L${i.line} ${i.message}`).join("\n"));
 });

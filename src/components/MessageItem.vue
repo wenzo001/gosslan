@@ -9,6 +9,7 @@ import { useMessageDisplay } from "@/composables/useMessageDisplay";
 import { useMessageFile } from "@/composables/useMessageFile";
 import { useMemberProfile } from "@/composables/useMemberProfile";
 import { textNeedsClamp } from "@/utils/previewMetrics";
+import { haptic } from "@/utils/haptics";
 import { t } from "@/i18n";
 import MessageAvatar from "@/components/message/MessageAvatar.vue";
 import MessageTextBubble from "@/components/message/MessageTextBubble.vue";
@@ -19,7 +20,7 @@ import MessageReceipt from "@/components/message/MessageReceipt.vue";
 import MessageContentModal from "@/components/message/MessageContentModal.vue";
 import MessageContextMenu from "@/components/message/MessageContextMenu.vue";
 import ActionSheet from "@/components/ActionSheet.vue";
-import { Copy, CornerUpLeft, Save, Share2, ImageOff } from "lucide-vue-next";
+import { Copy, CornerUpLeft, Save, Share2, ImageOff, TextSelect } from "lucide-vue-next";
 import type { MessageRecord, MsgKind } from "@/types";
 
 const props = withDefaults(
@@ -193,7 +194,26 @@ function closeContextMenu() {
 // ---------------- 移动端长按 → 底部 Action Sheet（HIG：触屏用长按唤出上下文操作） ----------------
 // 桌面端走右键菜单（MessageContextMenu），移动端没有右键，用长按唤出底部操作面板。
 const sheetOpen = ref(false);
+/**
+ * 移动端「选择文字」模式（用户 2026-09-13）。
+ *
+ * 触屏下气泡**默认不可选**，长按一律弹消息菜单；"部分选字"是菜单里的一个二级入口
+ * —— 这是微信 / Telegram / WhatsApp / iMessage 的通行模型，也是唯一能同时要"长按必出菜单"
+ * 和"能选字"的做法（见 `style.css` 里 `@media (pointer: coarse)` 那段注释）。
+ */
+const textSelecting = ref(false);
 let longPressTimer: ReturnType<typeof setTimeout> | null = null;
+/** 长按起点：用来做"手指抖动容差"（见 `onTouchMove`）。 */
+let longPressOrigin: { x: number; y: number } | null = null;
+/** 长按判定时长：与 iOS/微信一致（500ms 是 HIG 的常用值）。 */
+const LONG_PRESS_MS = 500;
+/**
+ * 手指抖动容差（px）。用户 2026-09-13：「长按触发的效果感觉不太灵」。
+ * 旧实现把 `@touchmove` 直接接到 `cancelLongPress` —— **手指动 1px 就取消**，
+ * 真机上几乎不可能"完全不动地按住 500ms"，于是长按十次九次不触发。
+ * 现在只有移动超过容差（或明显是滑动/滚动）才取消。
+ */
+const LONG_PRESS_MOVE_TOLERANCE = 12;
 
 function openActionSheet() {
   if (props.message.kind === "system") return;
@@ -206,17 +226,56 @@ function closeActionSheet() {
   sheetOpen.value = false;
 }
 
+/** 进「选择文字」：关掉菜单 → 本条气泡开放原生选字（`MessageTextBubble` 会自动全选）。 */
+function enterTextSelect() {
+  closeActionSheet();
+  textSelecting.value = true;
+}
+
+/**
+ * 选区一消失就退出选择模式（用户点了别处、收起了系统手柄）。
+ * 不退出的后果：这条气泡一直"可选择"，下次长按又弹不出菜单（典型的状态残留）。
+ */
+function onSelectingChanged() {
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || sel.toString().length === 0) textSelecting.value = false;
+}
+watch(textSelecting, (on) => {
+  if (on) document.addEventListener("selectionchange", onSelectingChanged);
+  else document.removeEventListener("selectionchange", onSelectingChanged);
+});
+
 function onTouchStart(e: TouchEvent) {
   if (!app.isMobile || props.message.kind === "system") return;
+  // 「选择文字」模式下长按要交给系统的选区手柄，不能再抢去弹菜单
+  if (textSelecting.value) return;
+  cancelLongPress();
   // 正文气泡里要能**原生选字/复制链接**（style.css 的约定：消息正文区不套 user-select:none）。
   // 整行无差别起长按定时器会把这套手势劫持掉：手指按住不动超过 500ms 就弹出操作面板，
   // 选区随之中断。所以命中可选文本气泡时不启动长按（要整条复制走气泡外侧的长按）。
   const el = e.target as HTMLElement | null;
   if (el?.closest(".gosslan-selectable")) return;
+  const t0 = e.touches[0];
+  if (!t0) return;
+  longPressOrigin = { x: t0.clientX, y: t0.clientY };
   longPressTimer = setTimeout(() => {
     longPressTimer = null;
+    longPressOrigin = null;
+    // 触觉反馈：长按"到点了"必须有一下明确的反馈，否则用户会以为没生效而反复长按
+    // （`heavy` 的语义就是"长按菜单弹出"，见 utils/haptics.ts）
+    haptic("heavy");
     openActionSheet();
-  }, 500);
+  }, LONG_PRESS_MS);
+}
+
+/** 手指移动超过容差才取消长按（旧实现是"一动就取消"，真机上等于长按失灵）。 */
+function onTouchMove(e: TouchEvent) {
+  if (!longPressTimer || !longPressOrigin) return;
+  const t0 = e.touches[0];
+  if (!t0) return;
+  const dx = t0.clientX - longPressOrigin.x;
+  const dy = t0.clientY - longPressOrigin.y;
+  if (Math.hypot(dx, dy) > LONG_PRESS_MOVE_TOLERANCE) cancelLongPress();
 }
 
 function cancelLongPress() {
@@ -224,6 +283,7 @@ function cancelLongPress() {
     clearTimeout(longPressTimer);
     longPressTimer = null;
   }
+  longPressOrigin = null;
 }
 
 onBeforeUnmount(() => cancelLongPress());
@@ -424,7 +484,7 @@ async function copyFileToClipboard() {
           @contextmenu.prevent="openContextMenu"
           @touchstart="onTouchStart"
           @touchend="cancelLongPress"
-          @touchmove="cancelLongPress"
+          @touchmove="onTouchMove"
           @touchcancel="cancelLongPress"
         >
           <MessageReceipt
@@ -446,6 +506,7 @@ async function copyFileToClipboard() {
             :copied="copiedKey === 'text'"
             :mine="mine"
             :mention-names="mentionNames"
+            :select-mode="textSelecting"
             @expand="openFullModal('text', $event)"
             @copy="copyContent('text', $event)"
             @locate="emit('locate', $event)"
@@ -512,7 +573,7 @@ async function copyFileToClipboard() {
 
           <!-- 未知 kind 的兜底气泡：排版必须与 MessageTextBubble 一致（py-1.5 / leading-normal），
                否则虚拟列表按 `previewMetrics.TEXT_BUBBLE_PADDING` 估的高度会对不上。 -->
-          <div v-else class="px-3 py-1.5 text-sm leading-normal" :style="bubbleStyle">
+          <div v-else class="select-text px-3 py-1.5 text-sm leading-normal" :style="bubbleStyle">
             {{ message.content }}
           </div>
         </div>
@@ -556,6 +617,19 @@ async function copyFileToClipboard() {
       >
         <Copy class="h-5 w-5 text-[var(--gosslan-text-2)]" />
         {{ t("common.copy") }}
+      </button>
+      <!-- 「选择文字」：触屏下部分选字的**唯一入口**（长按已被消息菜单占用）。
+           Telegram 的 Select Text / iMessage 的再长按是同一个模型；微信则在菜单里直接"复制整条"。
+           进入后本条气泡开放原生选字并自动全选，系统工具条随即出现。
+           ⚠️ 只对 **text** 开放：代码气泡的可选元素在 `CodeBlock` 里，本轮没给它接选择模式，
+           给个点了没反应的入口比不给更糟。 -->
+      <button
+        v-if="message.kind === 'text'"
+        class="flex items-center gap-3 px-4 py-3 text-left text-[15px] text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
+        @click="enterTextSelect"
+      >
+        <TextSelect class="h-5 w-5 text-[var(--gosslan-text-2)]" />
+        {{ t("common.selectText") }}
       </button>
       <template v-if="message.kind === 'image'">
         <button

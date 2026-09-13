@@ -715,3 +715,149 @@ function findOverridingPositionInCoarsePointer(css: string): GuardIssue[] {
   }
   return out;
 }
+
+// ---------------- ⑧ 聊天区「文本选择」契约（用户 2026-09-13） ----------------
+
+/** 取 `selector { … }` 的规则体（朴素匹配：本项目 CSS 里这几条规则都没有嵌套花括号）。 */
+function cssRuleBody(css: string, selector: string): string | null {
+  const i = css.indexOf(selector);
+  if (i < 0) return null;
+  const open = css.indexOf("{", i);
+  const close = css.indexOf("}", open);
+  if (open < 0 || close < 0) return null;
+  return css.slice(open + 1, close);
+}
+
+/** 取「class 里含 needle 的那个 <img …> 标签」的完整文本。 */
+function imgTagWithClass(src: string, needle: string): string | null {
+  for (const m of src.matchAll(/<img\b[^>]*>/g)) {
+    if (m[0].includes(needle)) return m[0];
+  }
+  return null;
+}
+
+export interface SelectionContractSources {
+  /** `components/message/MessageTextBubble.vue` */
+  textBubble: string;
+  /** `components/message/MessageAvatar.vue` */
+  avatar: string;
+  /** `components/MessageItem.vue` */
+  messageItem: string;
+  /** `App.vue` */
+  app: string;
+  /** `style.css` */
+  css: string;
+}
+
+/**
+ * 聊天区的**文本选择契约**。
+ *
+ * 用户 2026-09-13 报的三件事，全都是"写对了但不起作用"的静默退化：
+ *
+ * ① PC 上拖选气泡文字，**刚选中立刻被取消**
+ *    —— 正文被 `px-3 py-1.5` 包着，从内边距/气泡边缘起拖时选区锚点落在不可选区域，
+ *       WebKit 会立刻收敛选区；正文里的表情是 `<img>`，浏览器默认允许拖图，
+ *       拖选划过表情会改成"拖图片"，同样打断选区。
+ * ② **头像不该被选中**（用户明确要求：将来会有点击事件，但依然不能选择）。
+ * ③ 移动端**选中文字后不弹系统「复制/全选」工具条**
+ *    —— `button,[role=button]` 那条把 `-webkit-touch-callout` 关了会盖住正文；
+ *       全局 `contextmenu` 无条件 `preventDefault()` 也会吃掉选区菜单
+ *       （Android WebView 的选择工具条依赖它的默认行为）。
+ *
+ * 判据全部是"能不能选中/拖拽"的静态事实，改坏了不会报错、只会让用户用不了，
+ * 所以必须由机器盯住。
+ */
+export function checkSelectionContract(s: SelectionContractSources): GuardIssue[] {
+  const out: GuardIssue[] = [];
+
+  // ① 正文必须可选字（`gosslan-selectable` 同时是移动端"长按让路给原生选字"的标记）
+  if (!s.textBubble.includes("gosslan-selectable")) {
+    out.push({
+      line: 0,
+      message:
+        "MessageTextBubble：正文缺少 `gosslan-selectable` —— 消息文字将无法选字/复制，" +
+        "移动端长按也会被操作面板劫持。",
+    });
+  }
+  // ② 气泡根也要可选：否则从内边距起拖会被 WebKit 立刻收敛（用户实测的"刚选中就没了"）
+  const rootSelectable = [...s.textBubble.matchAll(CLASS_ATTR_RE)].some((m) =>
+    m[1].split(/\s+/).includes("select-text"),
+  );
+  if (!rootSelectable) {
+    out.push({
+      line: 0,
+      message:
+        "MessageTextBubble：气泡根缺少 `select-text` —— 从气泡内边距/边缘起拖时选区锚点落在" +
+        "不可选区域，WebKit 会立刻把选区收敛掉（表现为「刚选中立马取消选中」）。",
+    });
+  }
+  // ③ 正文里的表情图片必须禁用拖拽（否则拖选划过表情会变成拖图片、选区中断）
+  const emojiImg = imgTagWithClass(s.textBubble, "emoji-img");
+  if (!emojiImg) {
+    out.push({ line: 0, message: "MessageTextBubble：找不到 `class=\"emoji-img\"` 的表情 `<img>`（模板结构变了？）。" });
+  } else if (!emojiImg.includes('draggable="false"')) {
+    out.push({
+      line: 0,
+      message: "MessageTextBubble：表情 `<img>` 缺少 `draggable=\"false\"` —— 拖选划过表情会被浏览器改成拖图片，选区中断。",
+    });
+  }
+
+  // ④ 头像不可选、不可拖（用户明确要求）
+  const avatarBox = cssRuleBody(s.css, ".gosslan-avatar-box");
+  if (!avatarBox || !/user-select:\s*none/.test(avatarBox)) {
+    out.push({
+      line: 0,
+      message: "style.css：`.gosslan-avatar-box` 缺少 `user-select: none` —— 头像会被拖选进选区（用户要求头像不可选）。",
+    });
+  }
+  const avatarImg = imgTagWithClass(s.avatar, 'class="h-full w-full object-cover"');
+  if (avatarImg && !avatarImg.includes('draggable="false"')) {
+    out.push({
+      line: 0,
+      message: "MessageAvatar：头像 `<img>` 缺少 `draggable=\"false\"` —— 拖动头像会变成拖图片。",
+    });
+  }
+
+  // ⑤ 表情图片同样不许拖（CSS 兜底，防止某个调用点忘了 draggable 属性）
+  const emojiCss = cssRuleBody(s.css, ".emoji-img");
+  if (!emojiCss || !/-webkit-user-drag:\s*none/.test(emojiCss)) {
+    out.push({
+      line: 0,
+      message: "style.css：`.emoji-img` 缺少 `-webkit-user-drag: none` —— 正文表情仍可被拖走、打断选区。",
+    });
+  }
+  // ⑥ 可选文本必须显式打开 touch-callout，否则 iOS/Android 选中后不弹「复制」工具条
+  const selCss = cssRuleBody(s.css, ".gosslan-selectable");
+  if (!selCss || !/-webkit-touch-callout:\s*default/.test(selCss)) {
+    out.push({
+      line: 0,
+      message:
+        "style.css：`.gosslan-selectable` 缺少 `-webkit-touch-callout: default` —— " +
+        "`button,[role=button]` 的 `none` 会盖住正文，选中文字后系统不弹「复制/全选」工具条。",
+    });
+  }
+
+  // ⑦ 长按必须带手指抖动容差：`@touchmove` 直接接 cancel 会"一动就取消"（真机长按失灵）
+  if (/@touchmove="cancelLongPress"/.test(s.messageItem)) {
+    out.push({
+      line: 0,
+      message:
+        "MessageItem：`@touchmove` 直接绑了 `cancelLongPress` —— 手指动 1px 就取消长按，" +
+        "真机上等于长按永远不触发。应绑 `onTouchMove`（带像素容差）。",
+    });
+  } else if (!/@touchmove="onTouchMove"/.test(s.messageItem)) {
+    out.push({ line: 0, message: "MessageItem：`@touchmove` 没有绑 `onTouchMove`（长按容差判据缺失）。" });
+  }
+
+  // ⑧ 有选区时必须放行系统右键菜单（否则选中的文字没法用原生「复制」）
+  if (!/getSelection\(\)/.test(s.app)) {
+    out.push({
+      line: 0,
+      message:
+        "App.vue：全局 `contextmenu` 没有检查选区 —— 有选中文字时仍然 preventDefault，" +
+        "用户拿不到系统「复制」，Android 的选择工具条也会被吃掉。",
+    });
+  }
+
+  return out;
+}

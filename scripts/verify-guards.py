@@ -178,6 +178,93 @@ CASES: list[Case] = [
         platforms=("darwin",),
     ),
     Case(
+        name="BLE 读循环必须回灌读活性（否则健康链路 45s 自拆）",
+        why="ConnectionHealth 的读活性只在建链时播种、此后只由读循环刷新；BLE 读循环漏了这句"
+        "⇒ 任何健康蓝牙链路 15s 后被判不健康、45s 被看门狗当死链路拆掉，对端再拨回来再拆，"
+        "无限循环（真机体感：蓝牙时好时坏、加好友/消息过一会儿才到）",
+        file=TAURI / "src" / "network" / "ble.rs",
+        injections=[(
+            "                    mark_conn_seen(&state, &peer_id, &ep);",
+            "                    // 回归：不再回灌读活性",
+        )],
+        cmd=cargo(
+            "test",
+            "--features",
+            "bluetooth",
+            "--lib",
+            "ble_reader_loop_refreshes_read_activity",
+        ),
+        cwd=TAURI,
+        expect_fail_hint="mark_conn_seen",
+        tags=["rust", "ble"],
+    ),
+    Case(
+        name="外设握手失败必须解除『握手中』标记（否则设备再也加入不进 mesh）",
+        why="旧实现只在握手成功（RouteCtl::Add）与对端退订（Unlinked）时清理 handshaking，"
+        "握手失败时不清理 ⇒ 该 central 之后的真 Hello 被『已在握手』静默丢弃 ⇒ "
+        "那台设备再也连不进来（macOS 外设没有断连回调，条目可能永久残留）。"
+        "这类退化不会让任何行为测试失败，只能靠结构护栏盯住",
+        file=TAURI / "src" / "network" / "ble.rs",
+        injections=[("if !ok {\n", "if ok {\n")],
+        cmd=cargo(
+            "test",
+            "--lib",
+            "--features",
+            "bluetooth",
+            "peripheral_handshake_failure_clears_the_handshaking_mark",
+        ),
+        cwd=TAURI,
+        expect_fail_hint="HandshakeFailed",
+        tags=["rust", "ble"],
+    ),
+    Case(
+        name="群消息：非成员中继必须继续转发（不能提前 return）",
+        why="旧实现把『我不是群成员』直接 return 掉，位置在转发之前 ⇒ 非成员中继不转发群消息 ⇒ "
+        "BLE-only 三点中继（手机—电脑—手机）里群聊永远不通，而同链路单聊正常。"
+        "这类退化**不会让任何行为测试失败**，只能靠结构护栏盯住",
+        file=TAURI / "src" / "network" / "transport.rs",
+        injections=[(
+            "    let group_consumable =\n",
+            "    if matches!(env.kind, GossipKind::Group) && !env.group_members.is_empty() {\n"
+            "        if !env.group_members.iter().any(|m| m == &state.device_id) {\n"
+            "            return;\n"
+            "        }\n"
+            "    }\n"
+            "    let group_consumable =\n",
+        )],
+        cmd=cargo(
+            "test",
+            "--lib",
+            "--features",
+            "bluetooth",
+            "handle_gossip_does_not_bail_out_for_non_members",
+        ),
+        cwd=TAURI,
+        expect_fail_hint="非成员",
+        tags=["rust", "mesh"],
+    ),
+    Case(
+        name="文件分片：重复/迟到必须忽略（只有真跳号才报错）",
+        why="发送方重试时 seq 从 0 重来，而旧实现把『重复/迟到』也当致命错误 ⇒ 接收方整单失败、"
+        "清掉状态 ⇒ 新 attempt 永远拼不齐（用户实测的那条「文件分片顺序错误」）⇒ "
+        "BLE 上 >20KB 的文件事实上永远传不完",
+        file=TAURI / "src" / "network" / "file.rs",
+        injections=[(
+            "Ordering::Less => ChunkSeq::Duplicate",
+            "Ordering::Less => ChunkSeq::Gap",
+        )],
+        cmd=cargo(
+            "test",
+            "--lib",
+            "--features",
+            "bluetooth",
+            "chunk_seq_rule_only_rejects_real_gaps",
+        ),
+        cwd=TAURI,
+        expect_fail_hint="chunk_seq_rule",
+        tags=["rust", "file"],
+    ),
+    Case(
         name="BLE 离开 PoweredOn 必须摘掉全部订阅",
         why="CoreBluetooth 不会补发「对端断开」⇒ 订阅状态陈旧会让写任务白等 8s 且日志空白",
         file=TAURI / "src" / "transport" / "bluetooth_peripheral.rs",
@@ -240,6 +327,21 @@ CASES: list[Case] = [
         cwd=ROOT,
         expect_fail_hint="truncate",
         tags=["frontend", "a11y"],
+    ),
+    Case(
+        name="聊天区文本选择契约（可选中 / 头像不可选 / 长按容差）",
+        why="用户 2026-09-13 实测的三件静默退化：PC 上拖选气泡「刚选中立马取消」、"
+        "移动端选中文字后不弹「复制」工具条、头像能被拖进选区。这些都是"
+        "「代码看着对、用户一用就不对」，改坏了不会报错，只能靠护栏盯住",
+        file=ROOT / "src" / "App.vue",
+        injections=[(
+            "    const sel = window.getSelection();",
+            "    // 回归：不再检查选区（有选中文字时也 preventDefault）",
+        )],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="contextmenu",
+        tags=["frontend", "selection"],
     ),
     # ---------------- Rust：Android JNI 签名（跨语言一致性） ----------------
     Case(
