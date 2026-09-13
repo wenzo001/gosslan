@@ -1,0 +1,45 @@
+# 行尾统一为 LF —— **不只是风格问题**（2026-09-13）
+#
+# 背景：源码里的护栏测试（`src-tauri/src/lib.rs` 的 `rust_fn_body`）用
+# `"\n}\n"` 这个锚点从源码文本里抠函数体，用来断言"某个接线必须存在/必须不存在"。
+# 而 git 的 `core.autocrlf=true`（Windows 默认）会把 .rs 检出成 **CRLF**，
+# 此时函数结尾是 `\n}\r\n`，**不含**锚点 ⇒ 护栏静默退化成"整文件剩余部分"：
+#   · `assert!(body.contains(..))` 全部假绿；
+#   · `assert!(!body.contains(..))` 全部误报失败（真缺陷在别处也会报到这里）。
+# 也就是说：**在 Windows 上检出 = 这批护栏全部失效**，而它们恰恰是拦
+# "功能看起来正常、其实接线退化"那类缺陷的（见 docs/design-guidelines.md）。
+#
+# 修法有两层，这里只做"根因"这一层：
+#   ① 本文件：仓库内所有文本文件统一 LF 检出（对任何平台都一样）；
+#   ② `rust_fn_body` 自身也不再依赖检出形态（CRLF 下会先归一化，见其文档注释）。
+# 两层都做，是因为护栏不该依赖"开发者的 git 配置对不对"。
+#
+# 注意：`* text=auto eol=lf` 只影响**检出/提交**，不改文件内容语义；
+# 二进制文件由下面的规则明确排除，避免被误转换。
+* text=auto eol=lf
+
+# 二进制：绝不转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.icns binary
+*.ttf binary
+*.otf binary
+*.woff binary
+*.woff2 binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.exe binary
+*.dll binary
+*.so binary
+*.dylib binary
+*.a binary
+*.lib binary
+*.apk binary
+*.dmg binary
+*.db binary
+*.crate binary

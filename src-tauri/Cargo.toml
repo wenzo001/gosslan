@@ -109,3 +109,11 @@ codegen-units = 1
 lto = true
 opt-level = "s"
 strip = true
+
+[lints.rust]
+# MSVC 链接器在 `release`（LTO + codegen-units=1 + cdylib）下会往 stdout 打一行
+# 「正在创建库 …gosslan_lib.dll.lib 和对象 …dll.exp」——这是 cdylib 生成导入库的**正常**
+# 提示，Rust 1.98 起被 `linker_messages` lint 转成 `warning: linker stdout: …`。
+# 本项目"警告零容忍"，但这行**不是缺陷、也无法通过改代码消除**（换链接参数只会换个说法），
+# 所以在 rustc lint 层收掉它。**只收这一条**：其余 lint 全部保持 rustc 默认可见性。
+linker_messages = "allow"

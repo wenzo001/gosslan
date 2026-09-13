@@ -822,21 +822,36 @@ mod tests {
     /// 小 id 那一侧拨过去的连接会被对端按镜像规则拒掉（不回 Hello），但**每次连接本身
     /// 都会打断对端拨过来的那条好链路** ⇒ 好链路 45s 收不到帧被看门狗拆掉 ⇒ 再重来。
     /// 修法：小 id 在握手验签后**记住"不要再拨这个外设"**并主动放弃该镜像链路。
+    ///
+    /// ⚠️ 2026-09-13（Windows Phase 1）本条判据多了 `peer_advertises` 前缀：
+    /// "大 id 拨"只在**两端都能广播**时成立。Windows 只做 central，若照搬会让
+    /// "Windows id 更小"变成两侧都不拨的死局（真机现象：搜到了但永远连不上）。
+    /// 所以既要**保留**镜像护栏（对端在广播时仍按 id 比较），又要
+    /// **保留**"对端不广播 ⇒ 必须我们拨"这个活口 —— 两条都不能被删掉。
     #[test]
     fn ble_link_has_a_designated_dialer() {
         let ble = include_str!("network/ble.rs");
         let body = rust_fn_body(ble, "fn should_dial_ble(");
         assert!(
             body.contains("my_id > peer_id"),
-            "判据必须与 TCP 的 `should_dial` 同一条：**大 id 拨、小 id 只接受**"
+            "判据必须保留 TCP 的 `should_dial` 同款：两端都能广播时**大 id 拨、小 id 只接受**"
         );
         assert!(
-            ble.contains("if !should_dial_ble(&state.device_id, &peer_id)"),
+            body.contains("peer_advertises"),
+            "对端不广播时必须由我们拨（`peer_advertises` 前缀）—— \
+             少了它，只做 central 的平台（Windows）在 id 更小时会两侧都不拨，链路永远建不起来"
+        );
+        assert!(
+            ble.contains("if !should_dial_ble(&state.device_id, &peer_id, peer_advertises)"),
             "central 侧握手后必须用它决定要不要放弃镜像链路"
         );
         assert!(
             ble.contains("ble_no_dial"),
             "必须记住『不要再拨』的名单 —— 否则每轮扫描还会去拨它、反复打断好的那条链路"
+        );
+        assert!(
+            ble.contains("ble_peer_advertises"),
+            "『对端是否在广播』必须有事实来源（扫描结果登记），不能靠平台常量猜"
         );
         assert!(
             ble.contains("contains(&peripheral.id().to_string())"),
@@ -868,6 +883,9 @@ mod tests {
             helper.contains("preamble_action("),
             "额度判定必须走纯函数 preamble_action（可单测）"
         );
+        // 外设侧同理；但只有**有外设角色**的平台才存在那段代码
+        //（Windows Phase 1 只做 central —— ADR-0015 §7-f，外设分支不编译）。
+        #[cfg(any(target_os = "macos", target_os = "android"))]
         assert!(
             ble.contains("丢弃外设侧握手前导帧"),
             "外设侧同样要丢前导帧（同一条 Android notify 语义）"
@@ -1518,13 +1536,34 @@ mod tests {
     ///
     /// 用它做"接线守卫"：这类性质（窗口走单例 helper、URL 指向自己的入口）
     /// 编译器管不着，而退化后**功能看起来仍然正常**，只有连点/开窗慢才暴露。
-    fn rust_fn_body<'a>(src: &'a str, signature: &str) -> &'a str {
-        let start = src
+    ///
+    /// ⚠️ **必须先归一化行尾**（2026-09-13）：本仓库在 Windows 上会被 git
+    /// （`core.autocrlf`）检出成 **CRLF**，此时函数结尾的字节是 `\n}\r\n`，
+    /// **不含**锚点 `"\n}\n"`。旧实现直接在原文上 `find` ⇒ 永远找不到锚点 ⇒
+    /// 静默退化成 `&rest[..]`（**整个文件剩余部分**），于是：
+    ///   · `assert!(body.contains(..))` 全部"通过"（假绿）；
+    ///   · `assert!(!body.contains(..))` 全部**误报失败**（真缺陷在别处也会报到这里）。
+    /// 这正是本项目最该防的那类问题：护栏还在跑，却既盯不住真缺陷、又误报无关代码。
+    ///
+    /// 返回 `Cow`：LF 检出（macOS/Linux）零拷贝借用原文，CRLF 检出才复制一份。
+    fn rust_fn_body<'a>(src: &'a str, signature: &str) -> std::borrow::Cow<'a, str> {
+        let normalized = if src.contains('\r') {
+            std::borrow::Cow::Owned(src.replace("\r\n", "\n"))
+        } else {
+            std::borrow::Cow::Borrowed(src)
+        };
+        let start = normalized
             .find(signature)
             .unwrap_or_else(|| panic!("源码里找不到 `{signature}` —— 护栏需要同步更新"));
-        let rest = &src[start..];
+        let rest = &normalized[start..];
+        // 找不到收尾锚点时返回剩余全部：**这是刻意的**（宁可多看一点，也不要 panic
+        // 让护栏本身变成构建阻塞），但上面那段注释说明了它为什么会掩盖问题。
         let end = rest.find("\n}\n").map(|i| i + 3).unwrap_or(rest.len());
-        &rest[..end]
+        match normalized {
+            // 借用原文时可以直接切原文（偏移一致）
+            std::borrow::Cow::Borrowed(_) => std::borrow::Cow::Borrowed(&src[start..start + end]),
+            std::borrow::Cow::Owned(s) => std::borrow::Cow::Owned(s[start..start + end].to_string()),
+        }
     }
 
     /// **独立窗口必须各自一个前端文档与入口**，不许再共用主窗口的 `index.html`。

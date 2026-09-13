@@ -17,6 +17,9 @@
 //! 本模块整体 `#[cfg(feature = "bluetooth")]`，且即使用 feature 构建，
 //! 也要用户在设置里打开「蓝牙」（`bt_enabled`，默认关闭）才会启动 ——
 //! 局域网路径在任何情况下都不受影响。
+// `HashMap`/`HashSet` 只有**外设侧**（`peripheral_accept_loop` 的 routes/handshaking）
+// 用到，所以按外设的平台集合门控 —— 加进 central 集合会在只做 central 的平台
+// （Windows）上变成 unused import 警告，而本项目是警告零容忍。
 #[cfg(any(target_os = "macos", target_os = "android"))]
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -102,6 +105,13 @@ pub async fn start(state: Arc<AppState>) -> Result<(), String> {
     // 外设角色（GATT server）：只做 central 的话，手机**永远连不上** Mac
     // （btleplug 只能主动连，不能被连 —— ADR-0015 §3.1）。这里独立启动、
     // 独立失败：外设起不来只影响"别人连我们"，不该把整个蓝牙开关判死。
+    //
+    // Windows 暂**不做外设**（Phase 1 只做 central，见 ADR-0015 §7-f 与
+    // `can_advertise`）：WinRT 的 `GattServiceProvider` 要另引入 `windows` crate，
+    // 是与 macOS/Android 完全无关的第三套平台代码，单独一轮做。
+    // 后果是"Windows 只能连别人、不能被连"——由 `should_dial_ble` 的
+    // `peer_advertises` 参数接手：对端不广播时我们**无条件主动拨**，
+    // 因此 Windows ↔ 手机（手机在广播）仍然连得上。
     #[cfg(any(target_os = "macos", target_os = "android"))]
     start_peripheral(state.clone(), shutdown_tx.subscribe()).await;
 
@@ -126,6 +136,12 @@ pub async fn stop(state: &Arc<AppState>) {
     // "不要再拨"的名单只对本次运行有效：下次开启允许重新学（对端可能换了角色/设备）
     state
         .ble_no_dial
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+    // "谁在广播"同理：广播是每次开机重新发生的事，留着只会让下一轮的拨号判据用过时数据
+    state
+        .ble_peer_advertises
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clear();
@@ -204,6 +220,15 @@ async fn scan_loop(state: Arc<AppState>, adapter: Adapter, mut shutdown: watch::
                     if *shutdown.borrow() {
                         return;
                     }
+                    // **扫到 = 对端在广播**（这条扫描结果已经把"服务 UUID 对得上"过滤过了，
+                    // 见 `driver::scan_peers`）。记下来供 `should_dial_ble` 判断：
+                    // 对端不广播时必须由我们无条件拨（只做 central 的平台唯一能建链的方式）。
+                    let adv_id = peripheral.id().to_string();
+                    state
+                        .ble_peer_advertises
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(adv_id);
                     // 对端是这条链路上的**指定拨号方**（它比我大）⇒ 别去拨它：
                     // 我们拨过去只会被它按镜像规则拒掉，而每次连接都会打断它拨过来的那条
                     // 好链路（真机症状：45s 收不到帧 → 看门狗拆链 → "加好友时连接已关闭"）。
@@ -328,14 +353,26 @@ fn clear_ble_dial_failure(state: &Arc<AppState>, id: &str) {
         .remove(id);
 }
 
-/// **BLE 链路谁拨号**：大 id 拨、小 id 只接受（与 TCP 的 `should_dial` 同一条规则）。
+/// **BLE 链路谁拨号**（与 TCP 的 `should_dial` 同一条规则：**大 id 拨、小 id 只接受**）。
 ///
 /// 抽成纯函数的理由：它是"两端都跑 central+peripheral 时不互相拨号"的**唯一判据**，
 /// 而这类缺陷在真机上表现成"链路时好时坏、点加好友说连接已关闭"（镜像链路互相打断），
 /// 极难复现；纯函数可以一次钉死，并让护栏在有人把它改成"总是拨"时立刻 FAIL。
-#[cfg(any(target_os = "macos", target_os = "android"))]
-fn should_dial_ble(my_id: &str, peer_id: &str) -> bool {
-    my_id > peer_id
+///
+/// ## `peer_advertises`：为「只做 central 的平台」留的活口（Windows / ADR-0015 §7-f）
+///
+/// 「大 id 拨」这条规则**只在两端都能广播时才成立** —— 它的前提是"对方也会拨我"。
+/// Windows 这一轮只做 central（不能广播、不能被连），如果照搬这条规则：
+/// 只要 Windows 的 id 比手机小，就**没有任何一侧会拨号**，链路永远建不起来。
+///
+/// 所以判据改成：**只要对端不广播（我们扫不到它的外围广播），就必须由我们拨**；
+/// 只有确认对端在广播时才回到 id 比较。这样：
+///   · Windows（小 id）↔ 手机（广播）⇒ Windows 无条件拨，链路能建；
+///   · Mac ↔ 手机（两侧都广播）⇒ 行为与今天**逐字节一致**（id 比较）。
+///
+/// 注意：这个参数只影响"要不要主动拨"，**不影响身份** —— 身份永远只由双向 Hello 验签建立。
+fn should_dial_ble(my_id: &str, peer_id: &str, peer_advertises: bool) -> bool {
+    !peer_advertises || my_id > peer_id
 }
 
 /// 往已有链路投递，还是当作**新连接**重新握手（外设侧收到一帧时的唯一判据）。
@@ -503,7 +540,16 @@ async fn finish_dial(
     // 过程会打断它拨给我的那条好链路 —— 于是好链路 45s 收不到帧被看门狗拆掉、再重来
     // （用户 2026-09-12 实测：「点加好友：发送失败，连接已关闭」）。
     // 所以：记进"不要再拨"，并主动放弃这一条。
-    if !should_dial_ble(&state.device_id, &peer_id) {
+    //
+    // `peer_advertises`：我们是在**扫描结果**里看到这个端点的（扫到 = 它在广播），
+    // 但只有 `scan_loop` 真的把它记进 `ble_peer_advertises` 才算"确认能广播"。
+    // 传 false（Windows 这类只做 central 的平台，或对端不广播）⇒ 无条件拨，见 `should_dial_ble`。
+    let peer_advertises = state
+        .ble_peer_advertises
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(&ble_id);
+    if !should_dial_ble(&state.device_id, &peer_id, peer_advertises) {
         state
             .ble_no_dial
             .lock()
@@ -662,8 +708,11 @@ const MAX_HANDSHAKE_PREAMBLE_FRAMES: u32 = 32;
 
 /// 读**首个 Hello**：跳过并丢弃握手前导帧（见调用点的说明）。
 ///
-/// 安全性：被丢掉的帧**绝不进入 `handle_message`** —— 身份来自 Hello 的签名验证，
-/// 验签之前任何帧都只是字节。
+/// 安全性：被丢掉的帧**绝不进入业务处理**（`handle_message` 那一层）—— 身份来自 Hello
+/// 的签名验证，验签之前任何帧都只是字节。
+///
+/// 注：护栏 `ble_handshake_skips_leading_frames_without_processing_them` 会检查本函数体里
+/// **不出现**业务入口的调用，所以这里的说明用文字描述、不写成那句调用本身。
 async fn read_hello_frame(
     reader: &mut BleReader,
     overall: Duration,
@@ -1396,6 +1445,11 @@ mod tests {
     /// 真机（2026-09-12）：旧链路的写句柄指向旧连接 ⇒ 新连接收不到 Hello 回应，
     /// 对端报「握手超时：对端未回 Hello」，或者旧链路把 Hello 当普通帧吃掉 ⇒
     /// 对端报「对端首帧不是 Hello」。用户看到的是"蓝牙时好时坏、加好友没反应"。
+    ///
+    /// 门控：`peripheral_route_action` / `frame_is_hello` / `HELLO_PEEK_MAX_BYTES`
+    /// 只存在于**有外设角色**的平台（macOS / Android）—— Windows 这一轮只做 central，
+    /// 这些符号不会编译出来，测试也必须跟着门控，否则 Windows 上 `cargo test` 直接编不过。
+    #[cfg(any(target_os = "macos", target_os = "android"))]
     #[test]
     fn reconnect_hello_must_not_go_to_the_stale_route() {
         assert_eq!(
@@ -1419,6 +1473,8 @@ mod tests {
     }
 
     /// `frame_is_hello` 必须**真的认得出 Hello**，且不把大分片当 Hello 去解析。
+    /// 门控同 `reconnect_hello_must_not_go_to_the_stale_route`（仅外设角色平台有该函数）。
+    #[cfg(any(target_os = "macos", target_os = "android"))]
     #[test]
     fn frame_is_hello_peeks_only_small_hello_frames() {
         let hello = Message::Hello {
@@ -1453,5 +1509,35 @@ mod tests {
         assert!(!frame_is_hello(&big));
         // 坏帧也不能 panic
         assert!(!frame_is_hello(b"not json at all"));
+    }
+
+    /// **拨号判据**：两端都能广播时保持"大 id 拨"，对端不广播时**必须由我们拨**。
+    ///
+    /// 为什么值得一条单测（ADR-0015 §7-f，Windows Phase 1）：Windows 只做 central，
+    /// 照搬"大 id 拨、小 id 只接受"会让"Windows 的 id 更小"变成**两侧都不拨**的死局，
+    /// 而真机上只表现为"搜到了但永远连不上"，没有任何错误信息可循。
+    #[test]
+    fn dial_rule_keeps_mirror_guard_but_rescues_non_advertising_peers() {
+        // 对端在广播（Mac ↔ 手机）：行为必须与今天逐字节一致 —— 大 id 拨、小 id 不动
+        assert!(
+            should_dial_ble("gosslan-bbb", "gosslan-aaa", true),
+            "我 id 更大 ⇒ 由我拨"
+        );
+        assert!(
+            !should_dial_ble("gosslan-aaa", "gosslan-bbb", true),
+            "我 id 更小且对端在广播 ⇒ 不能拨（否则每次连接都打断对端拨过来的好链路）"
+        );
+
+        // 对端不广播（Windows 只做 central，或对面根本不广播）⇒ 无条件拨，否则永远是死局
+        assert!(
+            should_dial_ble("gosslan-aaa", "gosslan-bbb", false),
+            "对端不广播时，小 id 一侧**必须**拨 —— 否则没有任何一侧会拨号"
+        );
+        assert!(
+            should_dial_ble("gosslan-bbb", "gosslan-aaa", false),
+            "对端不广播 + 我 id 更大 ⇒ 当然也拨"
+        );
+        // 对端不广播时**不许**登记"不要再拨"（登记了就等于自己放弃唯一能建链的方式）
+        assert!(should_dial_ble("a", "z", false));
     }
 }

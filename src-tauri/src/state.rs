@@ -600,6 +600,20 @@ pub struct AppState {
     /// 清空时机：蓝牙通道停止时（下次开启重新学一遍）。
     #[cfg(feature = "bluetooth")]
     pub ble_no_dial: Mutex<std::collections::HashSet<String>>,
+    /// **确认在广播的 BLE 外设标识**（central 侧，每次开启蓝牙时清空后重新学）。
+    ///
+    /// 为什么需要（ADR-0015 §7-f，Windows Phase 1）：BLE 上"谁拨号"原本是
+    /// `should_dial_ble(my_id, peer_id) = my_id > peer_id`，而这条规则**只在两端都能广播
+    /// 时才成立**（它的前提是"我不拨，对方也会拨我"）。Windows 这一轮只做 central
+    /// （不能广播、不能被连），照搬该规则就会在"Windows 的 id 更小"时**两侧都不拨**，
+    /// 链路永远建不起来。
+    ///
+    /// 于是判据补一条：**对端不广播 ⇒ 必须由我们拨**。这个集合就是"对端确实在广播"的
+    /// 事实来源 —— 只有真的在扫描结果里见过它的外围广播才登记，不是靠平台常量猜。
+    ///
+    /// 只记内存、不落库：广播是每次开机重新发生的事，持久化只会带来陈旧数据。
+    #[cfg(feature = "bluetooth")]
+    pub ble_peer_advertises: Mutex<std::collections::HashSet<String>>,
     /// BLE 候选的**失败退避**：外设标识 → (连续失败次数, 下次允许尝试的时间)。
     ///
     /// 为什么需要：BLE 上"连过去被拒"是常态，而**每次连接尝试都会打扰对端**
@@ -921,6 +935,8 @@ impl AppState {
             ble: Mutex::new(None),
             #[cfg(feature = "bluetooth")]
             ble_no_dial: Mutex::new(std::collections::HashSet::new()),
+            #[cfg(feature = "bluetooth")]
+            ble_peer_advertises: Mutex::new(std::collections::HashSet::new()),
             #[cfg(feature = "bluetooth")]
             ble_dial_failures: Mutex::new(std::collections::HashMap::new()),
             dialing: Mutex::new(std::collections::HashSet::new()),

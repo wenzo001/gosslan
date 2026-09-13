@@ -85,6 +85,19 @@ class Case:
     #: 需要**同时**改坏的其它文件（路径, 原文, 替换）。例如"事实来源 + 构建时注入的副本"
     #: 两边都要改，否则护栏会先以"两者漂移"失败，证明不了"漏掉方法也会被抓到"。
     extra_injections: list[tuple[Path, str, str]] = field(default_factory=list)
+    #: 这条用例只在哪些平台上**有意义**（`None` = 所有平台）。
+    #:
+    #: 为什么需要（2026-09-13，Windows 首次跑本脚本）：有些护栏盯的是**只在某个平台编译**
+    #: 的代码 —— 例如 `transport/bluetooth_peripheral.rs` 整个文件是
+    #: `#![cfg(all(feature = "bluetooth", target_os = "macos"))]`，`reconnect_hello_...`
+    #: 单测也被 `cfg(any(macos, android))` 门控。在 Windows 上：
+    #:   · 注入照样能改到源码文本（锚点命中），
+    #:   · 但 `cargo test --features bluetooth <那两条>` **一个测试都不会跑**，退出码 0
+    #:   ⇒ 本函数把它判成"改坏之后测试仍然通过 ⇒ 护栏空转"，**这是误报**：
+    #:   护栏在 macOS 上是好的，只是这个平台上根本没有那段代码可改。
+    #: 正确做法是**显式跳过并说清楚**，而不是留一堆假失败把真失败淹掉
+    #: （`--strict-platform` 可把跳过重新当成失败，用于"必须全平台都能守"的场景）。
+    platforms: tuple[str, ...] | None = None
 
 
 def cargo(*args: str) -> list[str]:
@@ -161,6 +174,8 @@ CASES: list[Case] = [
         cwd=TAURI,
         expect_fail_hint="central_mtu_clamps",
         tags=["rust", "ble"],
+        # 目标文件整个是 `#![cfg(all(feature = "bluetooth", target_os = "macos"))]`
+        platforms=("darwin",),
     ),
     Case(
         name="BLE 离开 PoweredOn 必须摘掉全部订阅",
@@ -174,6 +189,7 @@ CASES: list[Case] = [
         cwd=TAURI,
         expect_fail_hint="leaving_powered_on_detaches",
         tags=["rust", "ble"],
+        platforms=("darwin",),
     ),
     # ---------------- 前端：静态设计护栏 ----------------
     Case(
@@ -472,7 +488,10 @@ CASES: list[Case] = [
         why="用户 2026-09-12 真机「点加好友：发送失败，连接已关闭」：两端都跑 central+peripheral ⇒ "
         "互相拨号形成镜像链路，小 id 拨过去的连接会打断对端拨来的好链路 ⇒ 45s 无帧被看门狗拆掉",
         file=TAURI / "src" / "network" / "ble.rs",
-        injections=[("    my_id > peer_id\n}", "    true\n}")],
+        # 2026-09-13：判据多了 `peer_advertises` 前缀（对端不广播 ⇒ 必须我们拨，
+        # 否则只做 central 的 Windows 在 id 更小时两侧都不拨）。注入改成把**整条**
+        # 判据置为恒真 —— 这时候"小 id 也会去拨"必须被护栏抓到。
+        injections=[("!peer_advertises || my_id > peer_id\n}", "true\n}")],
         cmd=cargo("test", "--lib", "ble_link_has_a_designated_dialer"),
         cwd=TAURI,
         expect_fail_hint="大 id 拨、小 id 只接受",
@@ -823,6 +842,10 @@ CASES: list[Case] = [
         cwd=TAURI,
         expect_fail_hint="有活路由 + 收到 Hello",
         tags=["rust", "ble", "network"],
+        # 该单测与 `peripheral_route_action` 一样只存在于**有外设角色**的平台
+        # （`cfg(any(target_os = "macos", target_os = "android"))`）。
+        # Windows 这一轮只做 central（ADR-0015 §7.9），所以此处必须跳过而不是假失败。
+        platforms=("darwin", "linux"),
     ),
     Case(
         name="BLE 握手失败必须说出『收到的是什么』",
@@ -1028,14 +1051,47 @@ CASES: list[Case] = [
 
 
 
+def _resolve_program(name: str) -> str:
+    """把 `npm` / `cargo` 解析成**真正可执行的文件**。
+
+    为什么需要（2026-09-13，Windows 首次跑本脚本）：Windows 上 `npm` 实际是 `npm.cmd`
+    批处理，而 `subprocess.run(["npm", ...])` **不走 shell**、CreateProcess 也不会补
+    `.cmd`/`.bat` 后缀 ⇒ 直接 `[WinError 2] 系统找不到指定的文件`。结果是本脚本里所有
+    前端用例（占一多半）在 Windows 上全部"验证过程出错"，看起来像护栏坏了，其实是
+    调用方式不对。这里显式解析出全路径，既修好 Windows，又保持 `shell=False`
+    （不引入 shell 引号/注入面的变化）。
+    """
+    if os.name != "nt":
+        return name
+    found = shutil.which(name)
+    if found:
+        return found
+    for ext in (".cmd", ".bat", ".exe"):
+        found = shutil.which(name + ext)
+        if found:
+            return found
+    return name  # 交给 subprocess 报它自己的错（错误信息更明确）
+
+
 def run(cmd: list[str], cwd: Path, timeout: int = 900) -> tuple[int, str]:
     env = dict(os.environ)
     # 沙箱/CI 里写不了 ~/.cargo：仓库内已有一份 CARGO_HOME 时优先用它
     local_cargo = ROOT / "target" / "cargo-home"
     if "CARGO_HOME" not in env and local_cargo.is_dir():
         env["CARGO_HOME"] = str(local_cargo)
+    # 顺带把 UTF-8 固定下来：Windows 默认 cp1252 会把测试输出里的中文变成
+    # UnicodeDecodeError（本脚本在 Windows 上第一次跑就是这么挂的）。
+    env.setdefault("PYTHONUTF8", "1")
+    resolved = [_resolve_program(cmd[0]), *cmd[1:]]
     proc = subprocess.run(
-        cmd, cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout
+        resolved,
+        cwd=cwd,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
     )
     return proc.returncode, proc.stdout + proc.stderr
 
@@ -1086,6 +1142,11 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="非空转验证：故意改坏每条护栏，确认测试真的会失败")
     ap.add_argument("--only", default="", help="只跑名字/标签里包含该子串的用例")
     ap.add_argument("--list", action="store_true", help="只列出用例")
+    ap.add_argument(
+        "--strict-platform",
+        action="store_true",
+        help="把「平台不适用而跳过」也算失败（默认跳过只提示，见 Case.platforms）",
+    )
     args = ap.parse_args()
 
     cases = [c for c in CASES if not args.only or args.only in c.name or args.only in c.tags]
@@ -1094,9 +1155,22 @@ def main() -> int:
             print(f"  [{','.join(c.tags)}] {c.name}\n      {c.why}")
         return 0
 
-    print(f"非空转验证：{len(cases)} 条护栏（每条都要求「改坏 → FAIL → 恢复 → PASS」）\n")
+    # 平台判定：Darwin=macOS、Linux=Android 目标宿主、Windows=Windows
+    this_platform = "darwin" if sys.platform == "darwin" else ("win32" if os.name == "nt" else "linux")
+
+    print(f"非空转验证：{len(cases)} 条护栏（每条都要求「改坏 → FAIL → 恢复 → PASS」）")
+    print(f"当前平台：{this_platform}\n")
     bad: list[str] = []
+    skipped: list[tuple[str, str]] = []
     for i, case in enumerate(cases, 1):
+        if case.platforms is not None and this_platform not in case.platforms:
+            # 目标代码在这个平台上根本不编译 ⇒ "改坏也不会失败"是**必然**的，不是缺陷。
+            # 必须显式说出来：否则一堆假失败会把真失败淹掉（这是本次 Windows 首跑的教训）。
+            print(f"[{i}/{len(cases)}] {case.name}")
+            print(f"      ⏭️  跳过：本用例只适用于 {'/'.join(case.platforms)}，当前是 {this_platform}")
+            print()
+            skipped.append((case.name, "/".join(case.platforms)))
+            continue
         print(f"[{i}/{len(cases)}] {case.name}")
         print(f"      {case.why}")
         try:
@@ -1108,12 +1182,23 @@ def main() -> int:
             bad.append(case.name)
         print()
 
+    if skipped:
+        print(f"⏭️  {len(skipped)} 条因平台不适用而跳过（目标代码在本平台不编译）：")
+        for name, plats in skipped:
+            print(f"   - {name}（只适用于 {plats}）")
+        print()
     if bad:
         print(f"❌ {len(bad)} 条不符合预期：")
         for name in bad:
             print(f"   - {name}")
+        if skipped and args.strict_platform:
+            print("（--strict-platform：上述跳过也算失败）")
+            return 1
         return 1
-    print(f"✅ 全部 {len(cases)} 条护栏都通过了非空转验证（改坏即 FAIL、恢复即 PASS）")
+    if skipped and args.strict_platform:
+        print(f"❌ --strict-platform：{len(skipped)} 条被跳过，不算全绿")
+        return 1
+    print(f"✅ 其余 {len(cases) - len(skipped)} 条护栏都通过了非空转验证（改坏即 FAIL、恢复即 PASS）")
     return 0
 
 

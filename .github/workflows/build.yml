@@ -45,8 +45,25 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Build Windows (x64 + ARM64) installer (NSIS)
-        run: npm run dist:win
+      - name: Build Windows installer (NSIS)
+        # ⚠️ `--features bluetooth` 不能少：BLE 传输在 Cargo 里是**可选 feature**
+        # （ADR-0015 §2：不开时依赖不下载、代码不编译）。漏了它打出来的包
+        # **就是没有蓝牙**，而构建照样"成功"——设置页的蓝牙开关永远起不来。
+        # 用 matrix.target 而不是 `npm run dist:win`：后者硬编码 x64，
+        # 在 arm64 那个 job 里会打出 x64 包却按 arm64 命名上传。
+        run: npm run tauri -- build --features bluetooth --bundles nsis --target ${{ matrix.target }}
+
+      - name: Verify the installer really contains Bluetooth
+        shell: pwsh
+        # 旁证：开了 bluetooth feature ⇒ btleplug 会被链进去，Cargo.lock 里必然出现它。
+        # 这条护栏拦的是"构建成功了但 feature 没生效"这类**静默**故障。
+        run: |
+          $lock = Get-Content src-tauri/Cargo.lock -Raw
+          if ($lock -notmatch '(?m)^name = "btleplug"') {
+            Write-Error "Cargo.lock 里没有 btleplug ⇒ 这个包没有蓝牙（是不是漏了 --features bluetooth？）"
+            exit 1
+          }
+          Write-Host "Cargo.lock 含 btleplug —— 蓝牙 feature 已生效"
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4

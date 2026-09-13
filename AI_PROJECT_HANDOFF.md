@@ -13,6 +13,39 @@
 
 ---
 
+## 0. ⚠️ 时效性声明（2026-09-13 核对，**先读这一节**）
+
+本文主体的快照停在 **v1.0.0（2026-09-08）**，而仓库**实际已经在 `4.2.19`**，
+主干是 **`next`** 分支（`main` 停在 v2.1.2，落后 36 个提交）。
+也就是说：**下面 §2 的功能清单、§7 的历史时间线都不是当前全貌**，只能当"早期架构与设计理由"读。
+
+当前状态请以这些为准（按可信度排序）：
+
+| 想知道 | 去哪里看 |
+|---|---|
+| 最近在干什么 / 每个改动为什么 | `CHANGELOG.md` 的 `[Unreleased]` + 最新的带日期小节（当前最新 **4.2.19**） |
+| 蓝牙（BLE）传输的完整设计与平台边界 | **`docs/adr/0015-ble-transport.md`**（含 §7.7 Android 外设、§7.9 Windows central） |
+| 蓝牙真机排查的过程与判据 | `docs/notes/ble-audit-2026-09-13.md`（架构图 / 根因 / Test A~F） |
+| 多路径选路、中继授权、窗口架构 | `docs/adr/0014`（多路径选路）· `0016`（中继授权）· `0018`（窗口架构）· `0017`（外部线格式） |
+| 版本号怎么升（强制流程） | `docs/VERSIONING.md` + `npm run version:check` |
+| UI 规范 | `docs/design-guidelines.md` |
+
+本文仍有价值的部分：§1 定位、§4 核心机制（E2EE 状态机 / 已读回执 / 前端消息管线）、
+§5 工程约定、§6 测试口径。但**任何与代码冲突的地方，一律以代码 + CHANGELOG + ADR 为准**。
+
+与本文已知的**具体过时点**（读到就跳过）：
+
+- §3 目录树：`src-tauri/src/` 现在还有 `discovery/`、`mesh/`、`transport/`（`tcp.rs`/`bluetooth.rs`/
+  `bluetooth_peripheral.rs`/`ble_android.rs`/`ble_framing.rs`）、`network/ble.rs`、`logging.rs`、
+  `menu.rs`、`open_path.rs`、`user_dirs.rs`、`export.rs` 等（见 ADR-0014/0015/0018）。
+- §8.2 第 4 条、§8.4 末条：说"BLE 只是接口契约、未接线"—— **已过时**。
+  Android 与 macOS 的 central + peripheral 都已实现；**Windows 的 central 已于
+  2026-09-13 接线（`7-g`）**，Windows 的 peripheral 仍未做。详见 ADR-0015 §7.9。
+- §9 命令速查：Windows 生产包现在有一条命令 **`npm run dist:win:test`**
+  （`scripts/build-windows-release.ps1`：护栏 → `tauri build --features bluetooth --bundles nsis` → 产物 + SHA-256）。
+
+---
+
 ## 1. 项目一句话定位
 
 **Gosslan**（gossip + LAN）是一款**无中央服务器**的 P2P 局域网即时通讯应用

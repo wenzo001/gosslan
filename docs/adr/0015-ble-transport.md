@@ -119,6 +119,7 @@ BLE 的价值正在这里：它**不依赖 IP 网段**，天然满足"零配置�
 `cargo test --lib --features bluetooth` = **371 passed / 0 warning**，Android target 同样 0 warning。
 剩：**三平台真机**。 |
 | 7-f | 移动端/Windows 的 peripheral 角色 | 🚧 **Android 整体完成**（Kotlin `e66fd8b` + Rust JNI 桥；真实 APK 构建验证；仅剩真机）。手机做 peripheral（Android `BluetoothLeAdvertiser` + `BluetoothGattServer` 经 JNI；iOS 与 macOS **同款 `CBPeripheralManager` 代码**）后，Windows/手机之间才能不经 Mac 直连；Windows 仍需 `GattServiceProvider`（WinRT）。 |
+| 7-g | **Windows central 接线**（2026-09-13，用户要求） | ✅ **本机 Windows x64 编译 + 单测 + 打包验证**（真机待验）。之前 Windows **完全没接**：`network/ble.rs` 的 7 处 `cfg(any(macos, android))` 把 Windows 整段排掉（`cargo check --features bluetooth` 直接编译不过），且 `dist:win` 不带 `--features bluetooth` —— 也就是"Windows 端蓝牙"从来没进过包。本轮：① central 路径的门加 `windows`，外设路径仍只留 macOS/Android（见 §7.9）；② 拨号判据补 `peer_advertises` 事实来源，解决"只做 central 的一方在 id 更小时两侧都不拨"的死局；③ `dist:win*` + CI + 新增 `npm run dist:win:test` 全部带 `--features bluetooth`，CI 另加"`Cargo.lock` 无 `btleplug` 即失败"的护栏。**Windows 做 peripheral（WinRT `GattServiceProvider`）仍未做**，见 §7.9。 |
 
 ---
 
@@ -296,3 +297,59 @@ Java 对象），所以两侧必须通过 JNI 对接。要点：
    （`native_on_frame` → `nativeOnFrame`），数组类型写作 `jbyte[]`；
    而 `call_static_method` 的签名要用**原始 JNI 描述符**
    （`jni_sig!("(Ljava/lang/String;[B)Z")` —— 写成 `(java.lang.String) -> boolean` 会被当成字段签名）。
+
+### 7.9 Windows：本轮只做 central（`7-g`，2026-09-13）
+
+用户要求「把 Windows 端的蓝牙接口连接打通，和 mac 手机等其他端」。盘完代码后确认：
+**缺的不是射频实现**（`btleplug` 0.13 自带 `src/winrtble/`，Windows 的 GATT central
+是现成的），而是三处平台门与一处构建开关：
+
+1. **7 处 `cfg(any(target_os = "macos", target_os = "android"))` 把 Windows 整段排掉**。
+   `cargo check --manifest-path src-tauri/Cargo.toml --features bluetooth`（Windows x64）
+   的事实报错是 `cannot find function should_dial_ble in this scope` —— 连编译都不过。
+   本轮按**角色**重新划线，而不是无脑加 `windows`：
+
+   | 角色 | 平台集合 | 涉及符号 |
+   |---|---|---|
+   | central（扫描 / 连接 / 收发 / 握手） | `macos` + `windows` + `android` | `scan_loop`、`should_dial_ble`、`dial_and_register`、`finish_dial`、`read_hello_frame`、读写循环 |
+   | peripheral（GATT server） | `macos` + `android`（**本轮不含 Windows**） | `PeripheralRouteAction`、`peripheral_route_action`、`frame_is_hello`、`PeripheralSink`、`ChannelSource`、`RouteCtl`、`start_peripheral`、`peripheral_accept_loop`、`accept_handshake`、`try_accept_handshake`、`detach_by_endpoint`、`HashMap/HashSet` 导入 |
+
+   特别注意 `HashMap/HashSet` 的导入：它**只被外设侧**（`peripheral_accept_loop` 的
+   `routes` / `handshaking`）使用，所以它必须留在**外设**集合里 —— 跟着 central 一起加
+   `windows` 会在 Windows 上变成 unused import，而本项目**警告零容忍**。
+
+2. **拨号判据在"只做 central"的一方是错的**（这是本轮唯一的真逻辑改动）。
+   原判据 `should_dial_ble(my_id, peer_id) = my_id > peer_id` 的前提是
+   **两端都能广播**（"我不拨，对方也会拨我"）。Windows 不能广播 ⇒ 一旦 Windows 的
+   `device_id` 更小，**两侧都不拨**，现象是"搜到了但永远连不上"，且没有任何错误可循。
+   修法是补一个**事实来源**而不是平台常量：`AppState::ble_peer_advertises`
+   （`HashSet<BLE 地址>`），`scan_loop` 每轮把扫到的端点登记进去，判据变成
+
+   ```rust
+   fn should_dial_ble(my_id: &str, peer_id: &str, peer_advertises: bool) -> bool {
+       !peer_advertises || my_id > peer_id   // 对端不广播 ⇒ 必须我们拨
+   }
+   ```
+
+   这样 **Mac ↔ 手机（两侧都广播）的行为与今天逐字节一致**（镜像护栏仍在），
+   而 Windows ↔ 手机（手机在广播、Windows 只连不播）由"无条件拨"兜住。
+   该集合在蓝牙通道 `stop()` 时清空（广播是每次开机重新发生的事，不落库）。
+
+3. **构建开关**：`dist:win` 此前**不带** `--features bluetooth` ⇒ 打出来的 Windows 包
+   根本没有蓝牙，而构建照样"成功"。已修 `package.json` 的三个 win 脚本 + 便携版脚本，
+   CI 改用 `--target ${{ matrix.target }} --features bluetooth`
+   （顺带修掉"ARM64 job 用硬编码 x64 的 `npm run dist:win`"），并加护栏：
+   `Cargo.lock` 里没有 `btleplug` 就失败。
+
+4. **每次提交出一份能装的包**：新增 `npm run dist:win:test`
+   （`scripts/build-windows-release.ps1`）—— 环境自检 → `npm test` +
+   `cargo test --lib --features bluetooth` → `tauri build ... --bundles nsis`
+   → 产物收进 `dist-windows/` 并打印 SHA-256。
+
+**仍未做（下一轮）**：Windows 的 peripheral 角色（WinRT `GattServiceProvider`，需要新增
+`windows` crate 依赖与第三套平台实现）。在它落地前：
+**Windows 不能被连**，只能主动连别人；Windows ↔ Mac 直连要等 Mac 侧广播
+（Mac 有外设角色，所以这条其实是通的），Windows ↔ 手机靠手机的外设角色。
+**真机判据**（用户 2026-09-13 选定 Windows + Android 手机）：见
+`docs/notes/ble-audit-2026-09-13.md` §7 的 Test A~F，把 Mac 换成 Windows。
+

@@ -10,6 +10,107 @@
 
 ## [Unreleased]
 
+### Added (Windows 蓝牙打通：BLE central 接线 + 每次提交都能出一份带蓝牙的生产包)
+
+用户 2026-09-13 要求：「把 Windows 端的蓝牙接口连接打通，和 mac 手机等其他端」+
+「每次提交测试时，都生成一个当前环境下能打的 Windows 生产包」。
+
+盘出来的真因**不是射频代码缺失**，而是三处"平台门"与一处"构建开关"：
+
+| # | 缺口 | 之前 | 现在 |
+|---|---|---|---|
+| 1 | `network/ble.rs` 的 7 处 `cfg(any(macos, android))` 把 Windows 整段排掉 | Windows 上 `should_dial_ble` 等符号根本不存在 ⇒ `cargo check --features bluetooth` **编译不过** | central 路径的门改成 `any(macos, windows, android)`；外设路径仍只留 macOS/Android |
+| 2 | `package.json` 的 `dist:win` **不带** `--features bluetooth` | 打出来的 Windows 包**没有蓝牙**（Cargo feature 默认关），而构建照样"成功" | `dist:win` / `dist:win:arm64` / `dist:win:msi` / 便携版脚本一律加 `--features bluetooth` |
+| 3 | `.github/workflows/build.yml` 用 `npm run dist:win` | 硬编码 x64 ⇒ ARM64 job 打出 x64 包却按 arm64 命名；且同样没有蓝牙 | 改用 `--target ${{ matrix.target }}` + `--features bluetooth`，并新增护栏：`Cargo.lock` 里没有 `btleplug` 就**直接失败**（拦"构建成功但 feature 没生效"这类静默故障） |
+| 4 | 拨号判据 `should_dial_ble(my_id, peer_id) = my_id > peer_id` 只在**两端都能广播**时成立 | Windows 只做 central（本轮不做 WinRT 外设）⇒ 一旦 Windows 的 id 更小，**两侧都不拨**，现象是"搜到了但永远连不上" | 判据补一项事实来源：`ble_peer_advertises`（扫到谁在广播就登记）。**对端不广播 ⇒ 必须由我们拨**；两端都广播时行为与今天逐字节一致 |
+
+`ble_framing` / E2EE / outbox / ACK / `handle_message` / 线格式 / SQLite **零改动** ——
+Windows BLE 复用的是与 Mac、Android **完全同一份**消息层（ADR-0015 §2 的硬性约定）。
+
+### Added (一条命令出 Windows 生产包：`npm run dist:win:test`)
+
+`scripts/build-windows-release.ps1`：环境自检（Rust 目标 + MSVC）→ 护栏
+（`npm test` + `cargo test --lib --features bluetooth`，**默认不跳**）→
+`tauri build --features bluetooth --bundles nsis` → 产物收集到 `dist-windows/` 并打印 SHA-256。
+产物与 CI（`.github/workflows/build.yml`）**完全一致**。`-SkipGuards` 可只打包不跑测试，
+`-Portable` 可额外出一个免安装 zip。
+
+### Fixed (🔴 Windows 上这批"源码文本护栏"全部失效 —— `rust_fn_body` 的 CRLF 锚点)
+
+`src-tauri/src/lib.rs` 的 `rust_fn_body` 用 `"\n}\n"` 从源码里抠函数体，供
+`ble_link_has_a_designated_dialer` 等一批护栏断言"某接线必须存在/必须不存在"。
+而 git 的 `core.autocrlf=true`（Windows 默认）把 .rs 检出成 **CRLF**，函数结尾是
+`\n}\r\n`，**不含**该锚点 ⇒ 它静默退化成"返回**整个文件剩余部分**"，于是：
+`assert!(contains)` 全部**假绿**，`assert!(!contains)` 全部**误报失败**
+（本轮新加断言时正是这样被它误报，才顺藤摸到这条）。Windows 上实测：
+修前 `cargo test --lib` 有 2 条失败（其中 `aux_window_open_is_singleton_serialized_and_resident`
+**是本条缺陷的误报，不是真缺陷**）；修后 **416 passed / 0 failed**。
+
+两层修法（不依赖开发者的 git 配置）：
+1. `rust_fn_body` 先归一化行尾再找锚点，返回 `Cow`（LF 检出零拷贝，CRLF 才复制）；
+2. 新增 **`.gitattributes`**（`* text=auto eol=lf` + 明确的二进制清单），
+   让仓库在所有平台上都按 LF 检出。
+
+### Fixed (`verify-guards.py` 在 Windows 上跑不起来也跑不对 —— 元护栏本身的三个坑)
+
+`scripts/verify-guards.py`（61 条"改坏必须 FAIL、恢复必须 PASS"的非空转验证）是**检查护栏
+有没有在守东西**的那一层，而它在 Windows 上首次运行时三处都不对，全部修掉：
+
+1. **npm 解析**：Windows 上 `npm` 是 `npm.cmd` 批处理，而 `subprocess.run(["npm", …])`
+   **不走 shell**、CreateProcess 也不补 `.cmd`/`.bat` 后缀 ⇒
+   `[WinError 2] 系统找不到指定的文件`，本脚本里所有前端用例（一多半）全报"验证过程出错"。
+   现在显式 `shutil.which` 解析成完整路径（仍保持 `shell=False`，不引入引号/注入面变化），
+   并把子进程输出钉成 UTF-8（cp1252 会把中文输出变成 `UnicodeDecodeError`，也是首跑挂点之一）。
+2. **平台误报**：`transport/bluetooth_peripheral.rs` 整个文件是
+   `#![cfg(all(feature = "bluetooth", target_os = "macos"))]`，`reconnect_hello_...`
+   单测也只在**有外设角色**的平台编译 ⇒ 在 Windows 上"改坏"之后 `cargo test` **一个用例都不跑**、
+   退出码 0，脚本据此判成"护栏空转"——**这是误报**（护栏在 macOS 上是好的，只是本平台没有那段代码）。
+   新增 `Case.platforms`（默认 `None` = 全平台），不适用时**显式跳过并说明原因**；
+   另加 `--strict-platform` 可把跳过重新算成失败。Windows 上现在：**33 条 Rust 用例全过、
+   3 条 macOS 专属显式跳过**。
+3. **注入锚点随判据更新**：「BLE 指定拨号方」用例的锚点原为 `my_id > peer_id`，
+   而判据本轮加了 `peer_advertises` 前缀 ⇒ 锚点命中 0 次。已更新为新判据的整条表达式。
+
+### Fixed (`build-windows-release.ps1` 被 Windows PowerShell 5.1 读坏 —— 缺 UTF-8 BOM)
+
+脚本以 UTF-8 **无 BOM** 保存，而 `npm run dist:win:test` 走的是 `powershell`（5.1），
+它按 ANSI 解码 ⇒ 中文注释/字符串变成乱码、脚本解析中途失效（现象是：只打印了"0/5"就直接跳到
+产物汇总然后 `dist-windows` 不存在）。加 BOM 后复跑：`exit 0`，264 行完整输出，
+`dist-windows/Gosslan_4.2.19_x64-setup.exe` 正常产出并打印 SHA-256。
+（`pwsh` 7 默认按 UTF-8 读，所以本地用 pwsh 手跑不会暴露这条 —— 必须按 npm 脚本的真实路径验。）
+
+### Changed (只收掉 release 下那条"链接器 stdout"警告 —— 其余 lint 保持默认)
+
+MSVC 在 `release`（LTO + `codegen-units=1` + cdylib）下会往 stdout 打
+「正在创建库 …gosslan_lib.dll.lib 和对象 …dll.exp」，Rust 1.98 起由 `linker_messages`
+lint 转成 `warning: linker stdout: …`。本项目"警告零容忍"，但这一行**不是缺陷、也改不掉**
+（是链接器对 cdylib 的常规输出），于是在 `[lints.rust]` 里**只** allow 这一条，
+其余 lint 一律保持 rustc 默认可见性。修后 `cargo build --release --features bluetooth` 零警告。
+
+### Changed (BLE 日志与注释：外设分支的平台边界写清楚)
+
+`network/ble.rs` 顶部与 `start_peripheral` 调用点补注释：Windows 本轮**不做外设**
+（WinRT `GattServiceProvider` 是第三套平台代码，见 ADR-0015 §7-f，单独一轮），
+以及"因此必须靠 `should_dial_ble` 的对端不广播分支兜住"这条因果。
+
+**门禁（Windows x64 实测）**：`cargo check --features bluetooth` 0 error / **0 warning** ·
+`cargo build --release --features bluetooth` **0 warning** ·
+`cargo test --lib --features bluetooth` **416/416** · `cargo test --lib`（默认 feature）**411/411** ·
+`npm run build`（vue-tsc + vite）通过 · `npm run dist:win:test` 端到端出包成功 ·
+`npm test` 与 `verify-guards.py` 见下方"已知"一节。
+
+**已知（环境边界，不是本轮改动引入的）**：
+1. `npm test` 有 2 条 `src/i18n/index.test.ts` 失败 —— 它们假设"node 环境无 `navigator`
+   ⇒ 回落英文"，而 Node 25 已提供 `navigator.language`，在中文 Windows 上必然拿到 `zh-CN`。
+   这是**测试对环境敏感**，不是应用缺陷。
+2. `verify-guards.py` 的 **28 条前端用例**在本机沙箱报 `spawn EPERM` —— 它的 `cmd` 是
+   `npm test`，而 `node --test` 会为每个测试文件 fork 子进程，本机沙箱禁止 piped stdio 的子进程。
+   单跑 `npm test` 正常，即与本改动无关。
+
+**实机验证状态（必须真机，射频层无法离线验证）**：Windows(central) ↔ Android(peripheral)
+的发现 → 连接 → 双向 Hello 验签 → 单聊 → ACK 闭环**待用户实测**；
+判据见 `docs/notes/ble-audit-2026-09-13.md` §7 的 Test A~F（把 Mac 换成 Windows）。
+
 ## [4.2.19] - 2026-09-13
 
 ### Changed (连接信息按链路类型显示：蓝牙不再显示"IP 地址：—"，设备类型不再显示英文原值)
