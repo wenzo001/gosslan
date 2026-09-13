@@ -874,6 +874,45 @@ mod tests {
         );
     }
 
+    /// **BLE 拨号必须去重 + 失败必须断开**（真机 2026-09-13：Mac 一个字节都收不到）。
+    ///
+    /// 真机证据：Mac 侧 `[GATT] 已就绪` 之后 `握手超时：对端未回 Hello` 反复出现，
+    /// 而安卓侧 `[SEND] type=gossip kind=FriendRequest` 全部"成功"。根因是**同一对端上叠了
+    /// 多条连接**：扫描每 10s 一轮、握手最长 10s ⇒ 每轮都新起一个拨号任务；
+    /// 失败后又从不 `disconnect()`（drop 一个 btleplug `Peripheral` 不会断开 CoreBluetooth），
+    /// 于是留下"已经没人读"的幽灵连接 + 多个通知流订阅；Android 的 GATT server 对同一地址
+    /// 只保留最后一条连接，通知于是被投给没人读的那条。
+    ///
+    /// 这条护栏盯四件事（少一件就会退回原状）：
+    /// ① 拨号前用 `DialGuard` 去重；② 复用旧连接前先断开；③ 握手失败必须显式断开；
+    /// ④ 分片级统计必须存在（否则"没发出去"与"没收到"永远分不清）。
+    #[test]
+    fn ble_dial_is_deduplicated_and_disconnects_on_failure() {
+        let ble = include_str!("network/ble.rs");
+        let dial = rust_fn_body(ble, "async fn dial_and_register(");
+        assert!(
+            dial.contains("DialGuard::try_acquire") && dial.contains("ble:{ble_id}"),
+            "拨号前必须按外设 id 做在途去重（否则每轮扫描叠一条连接）"
+        );
+        assert!(
+            dial.contains("is_connected()"),
+            "复用旧连接前必须先断开（否则 connect() 会复用幽灵连接、新订阅收不到任何通知）"
+        );
+        assert!(
+            dial.contains("peripheral.disconnect().await"),
+            "失败路径必须显式断开（drop 不会断开 CoreBluetooth 连接）"
+        );
+        assert!(
+            ble.contains("[FRAG] 收到通知"),
+            "读循环必须打**分片级**日志：否则『对端没发』与『发了我没收到』无法区分"
+        );
+        let bt = include_str!("transport/bluetooth.rs");
+        assert!(
+            bt.contains("fn stats(") && bt.contains("seen_notifications"),
+            "BleReader 必须统计收到的通知条数/字节数（分片级可见性的来源）"
+        );
+    }
+
     /// **扫描结果不得再用 `Peripheral::services()` 二次过滤**（真机踩过，症状极隐蔽）。
     ///
     /// `start_scan(ScanFilter{services})` 已在平台层过滤；而 `services()` 在 **Android 上

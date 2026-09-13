@@ -80,6 +80,10 @@ object BlePeripheral {
     /** 已连接/已订阅的对端（地址 → 设备），以及协商到的 ATT MTU。 */
     private val connected = HashMap<String, BluetoothDevice>()
     private val mtu = HashMap<String, Int>()
+    /** 每条连接"协议栈已确认送出"的通知条数（见 onNotificationSent）。 */
+    private val notified = HashMap<String, Int>()
+    /** 每条连接"调用 notify"的次数（与 notified 对比即可看出丢在哪一层）。 */
+    private val sent = HashMap<String, Int>()
 
     // ------------------------------------------------------------------
     // 由 Rust 注册的 native 回调（见 transport/ble_android.rs）
@@ -283,6 +287,8 @@ object BlePeripheral {
         val victims = connected.keys.toList()
         connected.clear()
         mtu.clear()
+        notified.clear()
+        sent.clear()
         rxChar = null
         txChar = null
         // 与服务端断开一样，逐个通知 Rust 侧拆链路（不要指望系统再回调一次）
@@ -298,6 +304,13 @@ object BlePeripheral {
         val server = gattServer ?: return false
         val characteristic = txChar ?: return false
         val device = connected[address] ?: return false
+        sent[address] = (sent[address] ?: 0) + 1
+        val n = sent[address] ?: 0
+        if (n <= 2 || n % 50 == 0) {
+            nativeOnNotice(
+                "notify 调用 #$n len=${value.size} mtu=${mtu[address] ?: 23} address=$address"
+            )
+        }
         return try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 // API 33+：值随调用传入（setValue 已废弃，且"先 setValue 再 notify"在 33+ 有竞态）。
@@ -400,12 +413,35 @@ object BlePeripheral {
             } else if (newState == android.bluetooth.BluetoothProfile.STATE_DISCONNECTED) {
                 connected.remove(address)
                 mtu.remove(address)
+                notified.remove(address)
+                sent.remove(address)
                 nativeOnUnlinked(address)
             }
         }
 
         override fun onMtuChanged(device: BluetoothDevice, newMtu: Int) {
-            device.address?.let { mtu[it] = newMtu }
+            val address = device.address ?: return
+            mtu[address] = newMtu
+            // 留痕：通知方向的分片大小完全由这个值决定；没有它，"对端收不到任何分片"
+            // 就无法区分是分片过大被协议栈丢掉，还是根本没发出去。
+            nativeOnNotice("对端 MTU 已协商=$newMtu（载荷上限=${newMtu - 3}）address=$address")
+        }
+
+        /**
+         * 通知真正被协议栈送出的回调（2026-09-13 加，用于定位"安卓 notify 成功但 Mac 收不到"）。
+         *
+         * `send()` 返回 true 只说明**调用被接受**；只有这个回调才代表协议栈把这条通知发出去了。
+         * 真机现象：安卓侧 `[SEND] … bytes=738` 全是成功，而 Mac 侧一个字节都没收到 ——
+         * 必须靠这条日志区分"没发出去"与"发出去了但对端没收到"。
+         */
+        override fun onNotificationSent(device: BluetoothDevice, status: Int) {
+            val address = device.address ?: return
+            notified[address] = (notified[address] ?: 0) + 1
+            val n = notified[address] ?: 0
+            // 只打前 3 条与每 20 条一条，避免把 logcat 刷满
+            if (n <= 3 || n % 20 == 0) {
+                nativeOnNotice("通知已发出 #$n status=$status address=$address")
+            }
         }
 
         /** 对端写 RX：**必须先应答再处理**，否则对端每次都等到超时（GATT 语义）。 */

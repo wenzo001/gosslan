@@ -902,6 +902,22 @@ CASES: list[Case] = [
         tags=["rust", "ble", "handshake"],
     ),
     Case(
+        name="BLE 拨号去重 + 失败断开（否则叠连接把通知投给没人读的那条）",
+        why="真机 2026-09-13：Mac 侧反复 `[GATT] 已就绪 → 握手超时：对端未回 Hello`，"
+        "而安卓侧 notify 全部成功。根因是同一对端叠了多条连接（扫描 10s 一轮 vs 握手 10s），"
+        "失败又从不 disconnect ⇒ 幽灵连接 + 多个通知流订阅，通知被投给没人读的那条。"
+        "这条护栏盯：DialGuard 去重、复用前先断开、失败显式断开、分片级统计存在",
+        file=TAURI / "src" / "network" / "ble.rs",
+        injections=[(
+            '    let Some(_dial_guard) = crate::state::DialGuard::try_acquire(&state, format!("ble:{ble_id}"))',
+            "    let Some(_dial_guard): Option<crate::state::DialGuard> = None",
+        )],
+        cmd=cargo("test", "--lib", "ble_dial_is_deduplicated_and_disconnects_on_failure"),
+        cwd=TAURI,
+        expect_fail_hint="在途去重",
+        tags=["rust", "ble", "connection"],
+    ),
+    Case(
         name="应用样式（三个窗口都必须加载 style.css）",
         why="真实缺陷：一窗一入口重构时漏掉了 `import \"./style.css\"`，dev 起来整个界面\"像没有 CSS\"，"
         "而且不报错、不影响任何测试 —— 只有这条守卫能拦住",

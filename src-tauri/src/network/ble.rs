@@ -402,20 +402,59 @@ async fn dial_and_register(
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<(), String> {
     let ble_id = peripheral.id().to_string();
+    // ── 在途去重（与 TCP 同款 `DialGuard`）────────────────────────────────
+    // 真机证据（2026-09-13）：扫描每 10s 一轮，而握手最长 10s ⇒ 同一个外设上会**叠起
+    // 2~3 个拨号任务**，每个都建一条 CoreBluetooth 连接并各自订阅一次通知流。
+    // 而 Android 的 GATT server 对同一地址**只保留最后一条连接**，于是通知很可能被投给
+    // "已经没人读的那条" ⇒ Mac 侧一个字节都收不到，而安卓侧 `notify` 全部返回成功。
+    let Some(_dial_guard) = crate::state::DialGuard::try_acquire(&state, format!("ble:{ble_id}"))
+    else {
+        state.logger.info(
+            "ble",
+            format!("[CONNECT] 跳过 {ble_id}：已有在途拨号（避免在同一对端上叠连接）"),
+        );
+        return Ok(());
+    };
     let ep = MeshEndpoint::Ble(BleEndpoint::new(ble_id.clone()));
     // 这个端点已经连着 ⇒ 跳过（`connect_to_peer` 的同款去重）
     if state.has_endpoint_addr(&ep).await {
         return Ok(());
     }
-    state.logger.info(
-        "ble",
-        format!("[CONNECT] 开始连接 ep={ble_id}（connect → service discovery → subscribe）"),
-    );
+    // 上一次失败可能在 CoreBluetooth 上留了一条**已经没人读**的连接：先断开再重连。
+    // 不这么做的话，`connect()` 会直接复用那条旧连接，而新订阅的通知流收不到任何东西。
+    if matches!(peripheral.is_connected().await, Ok(true)) {
+        state.logger.info(
+            "ble",
+            format!("[CONNECT] {ble_id} 仍处于已连接状态 ⇒ 先断开，避免复用幽灵连接"),
+        );
+        let _ = peripheral.disconnect().await;
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
     let conn = driver::connect(&peripheral).await?;
     state.logger.info(
         "ble",
         format!("[GATT] 已就绪 ep={ble_id}（连接 + 服务发现 + 通知订阅都成功）"),
     );
+    // 从这里开始，任何失败都必须**显式断开** —— drop 一个 btleplug `Peripheral`
+    // 不会断开 CoreBluetooth 连接，残留会累积成"幽灵连接"（真机症状见上面的注释）。
+    match finish_dial(state.clone(), &peripheral, conn, &mut shutdown).await {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = peripheral.disconnect().await;
+            Err(e)
+        }
+    }
+}
+
+/// `dial_and_register` 的握手与登记阶段（拆出来只为让失败路径能统一断开连接）。
+async fn finish_dial(
+    state: Arc<AppState>,
+    peripheral: &btleplug::platform::Peripheral,
+    conn: driver::BleConnection,
+    shutdown: &mut watch::Receiver<bool>,
+) -> Result<(), String> {
+    let ble_id = peripheral.id().to_string();
+    let ep = MeshEndpoint::Ble(BleEndpoint::new(ble_id.clone()));
     let (mut writer, mut reader) = conn.into_split();
 
     // ---- 握手：先发自己的 Hello，再读对端的、并**必须验签**（§8 / ADR-0011）----
@@ -432,7 +471,8 @@ async fn dial_and_register(
     //    旧行为直接放弃 ⇒ 双方各自重拨、互相打断，好友申请/消息全部过期。
     //    新行为：窗口内继续读，丢掉非 Hello 的前导帧（**不处理**——身份还没验签），
     //    读到 Hello 就正常握手；窗口耗尽仍只报错（并说明收到了什么）。
-    let first = read_hello_frame(&mut reader, HANDSHAKE_TIMEOUT, &mut shutdown, &state, &ble_id).await?;
+    let first =
+        read_hello_frame(&mut reader, HANDSHAKE_TIMEOUT, &mut *shutdown, &state, &ble_id).await?;
     let Message::Hello {
         device_id,
         tcp_port,
@@ -538,7 +578,7 @@ async fn dial_and_register(
         peer_id.clone(),
         ep.clone(),
         reader,
-        shutdown,
+        shutdown.clone(),
         cancel_rx,
     ));
 
@@ -735,6 +775,15 @@ trait FrameSource: Send {
     async fn next_frame(&mut self, wait: Duration) -> Result<Option<Vec<u8>>, String>;
     /// 回收半截消息（对端半途断连时不会永久占内存）。
     fn gc(&mut self) -> usize;
+    /// 分片级统计 `(本特征通知数, 字节数, 非本特征通知数)`；没有这层信息就返回 `None`。
+    fn frag_stats(&self) -> Option<(u64, usize, u64)> {
+        None
+    }
+}
+
+/// 泛型薄封装：让读循环不必关心具体实现有没有分片统计。
+fn stats_fn<S: FrameSource>(reader: &S) -> Option<(u64, usize, u64)> {
+    reader.frag_stats()
 }
 
 #[async_trait::async_trait]
@@ -744,6 +793,9 @@ impl FrameSource for BleReader {
     }
     fn gc(&mut self) -> usize {
         BleReader::gc(self)
+    }
+    fn frag_stats(&self) -> Option<(u64, usize, u64)> {
+        Some(BleReader::stats(self))
     }
 }
 
@@ -842,6 +894,9 @@ async fn ble_reader_loop<S: FrameSource + 'static>(
     mut shutdown: watch::Receiver<bool>,
     mut cancel: watch::Receiver<bool>,
 ) {
+    // 分片统计只在 central 侧（`BleReader`）有意义；外设侧没有这个计数。
+    let mut last_frag_n: u64 = 0;
+    let mut last_frag_other: u64 = 0;
     loop {
         let frame = tokio::select! {
             biased;
@@ -871,6 +926,20 @@ async fn ble_reader_loop<S: FrameSource + 'static>(
             Ok(None) => {
                 // 窗口内没有分片：顺手回收半截消息（对端在半途断连时不会永久占内存）
                 let _ = reader.gc();
+                // **分片级可见性**：真机里"对端说发了、这边什么都没收到"时，
+                // 这条日志能一眼区分"没发出来"与"发出来但没到"。
+                if let Some((n, bytes, other)) = stats_fn(&reader) {
+                    if n != last_frag_n || other != last_frag_other {
+                        state.logger.info(
+                            "ble",
+                            format!(
+                                "[FRAG] 收到通知 {n} 条 / {bytes} 字节（非本特征 {other} 条）                                 ← peer={peer_id} ep={ep}"
+                            ),
+                        );
+                        last_frag_n = n;
+                        last_frag_other = other;
+                    }
+                }
             }
             Err(e) => {
                 state

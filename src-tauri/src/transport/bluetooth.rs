@@ -256,6 +256,15 @@ pub mod driver {
         notifications: std::pin::Pin<Box<dyn Stream<Item = ValueNotification> + Send>>,
         tx_uuid: Uuid,
         reassembler: BleReassembler,
+        /// 已收到的通知条数 / 字节数（**诊断用**）。
+        ///
+        /// 为什么必须有：真机现象是"安卓侧 notify 全是成功、Mac 侧一个字节都没收到"。
+        /// 只有把"到底有没有分片到过"记下来，才能区分
+        /// **对端没发出去** 与 **发出来了但这边没收到** —— 这两者的修法完全不同。
+        seen_notifications: u64,
+        seen_bytes: usize,
+        /// 不属于本特征的通知（同连接上可能订阅了别的东西）。
+        seen_other_uuid: u64,
     }
 
     impl BleConnection {
@@ -271,6 +280,9 @@ pub mod driver {
                     notifications: self.notifications,
                     tx_uuid: self.tx.uuid,
                     reassembler: self.reassembler,
+                    seen_notifications: 0,
+                    seen_bytes: 0,
+                    seen_other_uuid: 0,
                 },
             )
         }
@@ -334,8 +346,11 @@ pub mod driver {
                 };
                 // 过滤非本特征的通知（同一连接上可能还有别的订阅）
                 if notification.uuid != self.tx_uuid {
+                    self.seen_other_uuid += 1;
                     continue;
                 }
+                self.seen_notifications += 1;
+                self.seen_bytes += notification.value.len();
                 match self.reassembler.push(&notification.value, crate::db::now_ms()) {
                     PushOutcome::Complete(payload) => return Ok(Some(payload)),
                     PushOutcome::Incomplete | PushOutcome::Dropped(_) => continue,
@@ -346,6 +361,15 @@ pub mod driver {
         /// 回收超时的半截消息（断连/对端消失后调用）。
         pub fn gc(&mut self) -> usize {
             self.reassembler.gc(crate::db::now_ms())
+        }
+
+        /// 读到现在的分片统计：`(本特征通知数, 字节数, 非本特征通知数)`。
+        pub fn stats(&self) -> (u64, usize, u64) {
+            (
+                self.seen_notifications,
+                self.seen_bytes,
+                self.seen_other_uuid,
+            )
         }
     }
 

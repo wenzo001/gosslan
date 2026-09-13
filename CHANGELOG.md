@@ -10,6 +10,51 @@
 
 ## [Unreleased]
 
+## [4.2.16] - 2026-09-13
+
+## [4.2.16] - 2026-09-13
+
+### Fixed (🔴 Mac↔Android BLE「安卓发出去了、Mac 一个字节都收不到」：同一对端叠了多条连接)
+
+用户 4.2.15 真机（只开蓝牙）双方日志对照，问题被夹到唯一一条链路上：
+
+```
+安卓侧：对端已订阅通知（50:A6:D8:AE:B2:69）
+        [SESSION] 已就绪（外设侧）peer=gosslan-0672402a0eef460a
+        [SEND] type=gossip kind=FriendRequest … bytes=738      ← 反复发，全部"成功"
+Mac 侧：10:30:25 [GATT] 已就绪 → 10:30:41 [DISCONNECT] 握手超时：对端未回 Hello（丢掉了 0 个前导帧）
+        10:30:38 [GATT] 已就绪 → 10:30:50 同上                    ← 一个 [RECV]/[FRAME] 都没有
+```
+
+**根因**：**同一个对端上叠了多条 BLE 连接**。
+
+- 扫描每 10s 一轮，而一次连接+握手最长 10s ⇒ 每一轮扫描都会为**同一个**外设再起一个
+  `dial_and_register` 任务（原先只按"已登记的端点"去重，**在途拨号不去重**）；
+- 握手失败后**从不 `disconnect()`** —— drop 一个 btleplug `Peripheral` **不会**断开
+  CoreBluetooth 连接 ⇒ 每失败一次就多留一条"已经没人读"的连接 + 一个通知流订阅；
+- 于是 Mac 侧同时挂着 2~3 条连接、2~3 个通知订阅。Android 的 GATT server 对同一地址
+  **只保留最后一条连接**，通知被投给那条时，读它的任务可能早已 `返回`（超时退出）
+  ⇒ Mac 收不到任何分片，而安卓侧 `notifyCharacteristicChanged` 全部返回成功。
+
+**修法**（最小、只碰 BLE 接入链）：
+
+1. **在途拨号去重**：复用 TCP 侧已有的 `DialGuard`（RAII，Drop 即释放），键
+   `ble:<外设 id>` ⇒ 同一外设同时只允许一个拨号任务；
+2. **复用旧连接前先断开**：`is_connected() == true` 时先 `disconnect()` 再连，
+   避免 `connect()` 复用幽灵连接（新订阅的通知流收不到任何东西）；
+3. **失败路径显式断开**：握手/登记阶段拆成 `finish_dial()`，`Err` 时统一
+   `peripheral.disconnect()`；
+4. **分片级可见性**（诊断，用户要求）：`BleReader` 统计收到的通知条数/字节数，
+   读循环空闲窗口打 `[FRAG] 收到通知 N 条 / M 字节`；安卓侧新增
+   **notify 调用/协议栈确认/MTU** 三类日志（`onNotificationSent` + `onMtuChanged`），
+   一眼区分"没发出去"与"发出去没收到"。
+
+**护栏**：源码级 `ble_dial_is_deduplicated_and_disconnects_on_failure`（DialGuard 去重、
+复用前断开、失败显式断开、分片统计必须存在）+ `verify-guards.py` 对应用例，现共 **58** 条。
+
+**门禁**：`cargo test --lib --features bluetooth` 426/426 · `npm test` 350/350 ·
+`check-mobile --bluetooth` PASS(0 warning) · `verify-guards` 58/58。
+
 ## [4.2.15] - 2026-09-13
 
 ### Fixed (🔴 Mac↔Android BLE「能发现、连不上」的真因：新连接的第一帧是**上一条链路的残留帧**)
