@@ -61,9 +61,23 @@ use crate::transport::ble_android::{PeripheralEvent, PeripheralWriter};
 use crate::transport::bluetooth_peripheral_windows::{PeripheralEvent, PeripheralWriter};
 
 /// 每轮扫描的观察窗口（`btleplug` 的扫描是"持续到显式停止"，给一个窗口再收结果）。
-const SCAN_WINDOW: Duration = Duration::from_secs(3);
-/// 两轮扫描之间的间隔。10s 与 LAN 的 announce 周期同量级：足够快发现，也不至于耗电。
-const SCAN_INTERVAL: Duration = Duration::from_secs(10);
+///
+/// 2026-09-13 用户要求「扫描快一点」：窗口从 3s 收到 2s —— BLE 广播周期通常
+/// 20ms~1.28s，2s 已能覆盖多轮广播；窗口越短，两轮之间的间隔占比越高（发现更快）。
+const SCAN_WINDOW: Duration = Duration::from_secs(2);
+/// 两轮扫描之间的**等待**（不含扫描窗口本身）。
+///
+/// 2026-09-13 用户要求「尽量扫描快一点」：从 10s 压到 2s ⇒ 实际节奏约 **4s 一轮**
+/// （2s 扫描 + 2s 等待）。BLE 扫描是低占空比的被动监听，这个量级对功耗与其它蓝牙设备
+/// 的影响可以接受；真机排查阶段"能多快看到对方"比省电重要。
+/// 用户主动触发（`ble_scan_now`）会**跳过**这段等待，立刻开扫。
+const SCAN_INTERVAL: Duration = Duration::from_secs(2);
+/// 用户主动要求扫描时，给拨号退避打的折扣（重试更快，但仍留一点间隔避免连打）。
+///
+/// 为什么需要（真机 2026-09-13）：退避上限 60s 是给"自动重试"用的礼貌间隔，
+/// 但用户点了「扫描」却因为退避还在 40s 而**什么都不发生**，体感就是"搜不到"。
+/// 于是用户触发的那一轮把退避窗口压到这个值。
+const USER_TRIGGER_BACKOFF_FACTOR: i64 = 8;
 /// 握手（发自己的 Hello → 等对端 Hello）上限。
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// 读循环的单次等待窗口：到点就回到循环顶部，让 shutdown/cancel 有机会被轮询，
@@ -108,19 +122,19 @@ pub async fn start(state: Arc<AppState>) -> Result<(), String> {
     // **绝不能影响局域网**：调用方（`set_channel_enabled`）只在成功时才认为已开启。
     let adapter = driver::adapter().await?;
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    // 「立刻扫一轮」的触发通道（与 LAN 的 `probe` 同范式，见 `AppState::ble_scan_now`）
+    let (scan_now_tx, scan_now_rx) = watch::channel(0u64);
+    *state
+        .ble_scan_now
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = Some(scan_now_tx);
     let st = state.clone();
-    let task = tokio::spawn(async move { scan_loop(st, adapter, shutdown_rx).await });
+    let task = tokio::spawn(async move { scan_loop(st, adapter, shutdown_rx, scan_now_rx).await });
 
-    // 外设角色（GATT server）：只做 central 的话，手机**永远连不上** Mac
-    // （btleplug 只能主动连，不能被连 —— ADR-0015 §3.1）。这里独立启动、
-    // 独立失败：外设起不来只影响"别人连我们"，不该把整个蓝牙开关判死。
-    //
-    // Windows 暂**不做外设**（Phase 1 只做 central，见 ADR-0015 §7-f 与
-    // `can_advertise`）：WinRT 的 `GattServiceProvider` 要另引入 `windows` crate，
-    // 是与 macOS/Android 完全无关的第三套平台代码，单独一轮做。
-    // 后果是"Windows 只能连别人、不能被连"——由 `should_dial_ble` 的
-    // `peer_advertises` 参数接手：对端不广播时我们**无条件主动拨**，
-    // 因此 Windows ↔ 手机（手机在广播）仍然连得上。
+    // 外设角色（GATT server）：三端都实现了（macOS CoreBluetooth / Android Kotlin /
+    // Windows WinRT GattServiceProvider），见 ADR-0015 §7.9 与
+    // `docs/notes/windows-ble-diagnosis-2026-09-13.md`。
+    // 这里独立启动、独立失败：外设起不来只影响"别人连我们"，不该把整个蓝牙开关判死。
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
     start_peripheral(state.clone(), shutdown_tx.subscribe()).await;
 
@@ -128,8 +142,36 @@ pub async fn start(state: Arc<AppState>) -> Result<(), String> {
         shutdown: shutdown_tx,
         task,
     });
-    state.logger.info("ble", "蓝牙通道已启动（每 10s 扫描一次）");
+    state.logger.info(
+        "ble",
+        format!(
+            "蓝牙通道已启动（每 {}s 扫描 {}s；打开「添加好友」会立刻再扫一轮）",
+            SCAN_INTERVAL.as_secs(),
+            SCAN_WINDOW.as_secs()
+        ),
+    );
     Ok(())
+}
+
+/// **让扫描循环立刻扫一轮**（用户打开「添加好友」/点「扫描」时调用）。
+///
+/// 返回 `true` = 已通知到（通道在跑）；`false` = 蓝牙通道没开，什么也没做。
+///
+/// 与 LAN 的 `search_nearby_peers` 同一个思路：**周期扫描负责"保持发现"，
+/// 用户动作负责"立刻发现"** —— 后者才是用户感知到"快"的地方。
+pub fn trigger_scan_now(state: &Arc<AppState>) -> bool {
+    let slot = state.ble_scan_now.lock().unwrap_or_else(|e| e.into_inner());
+    match slot.as_ref() {
+        Some(tx) => {
+            let next = tx.borrow().wrapping_add(1);
+            let _ = tx.send(next);
+            state
+                .logger
+                .info("ble", "[DISCOVERY] 用户触发：立刻再扫一轮 BLE");
+            true
+        }
+        None => false,
+    }
 }
 
 /// 停止蓝牙通道：发停机信号 → 有界等待 → **摘掉所有 BLE 链路**（不动 LAN 链路）。
@@ -154,6 +196,12 @@ pub async fn stop(state: &Arc<AppState>) {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clear();
+    // 触发通道也一起撤掉：通道没开时 trigger_scan_now 必须老实返回 false，
+    // 而不是"发进一个没人听的通道、让调用方误以为扫了"。
+    *state
+        .ble_scan_now
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = None;
     state.logger.info("ble", "蓝牙通道已停止");
 }
 
@@ -210,7 +258,16 @@ async fn teardown_link(state: &Arc<AppState>, peer_id: &str, ep: &MeshEndpoint) 
     }
 }
 
-async fn scan_loop(state: Arc<AppState>, adapter: Adapter, mut shutdown: watch::Receiver<bool>) {
+async fn scan_loop(
+    state: Arc<AppState>,
+    adapter: Adapter,
+    mut shutdown: watch::Receiver<bool>,
+    mut scan_now: watch::Receiver<u64>,
+) {
+    // 第一轮**不要等**：用户打开「添加好友」/刚开蓝牙时，最不想等的就是那 2 秒
+    let mut skip_initial_wait = true;
+    // 本轮是不是用户主动触发的（决定拨号退避要不要打折，见下）
+    let mut user_triggered = false;
     loop {
         match driver::scan_peers(&adapter, SCAN_WINDOW).await {
             Ok((peers, total)) => {
@@ -221,8 +278,9 @@ async fn scan_loop(state: Arc<AppState>, adapter: Adapter, mut shutdown: watch::
                 state.logger.info(
                     "ble",
                     format!(
-                        "BLE 扫描：收到 {total} 个广播，其中 {} 个是本应用服务",
-                        peers.len()
+                        "BLE 扫描：收到 {total} 个广播，其中 {} 个是本应用服务{}",
+                        peers.len(),
+                        if user_triggered { "（用户主动触发）" } else { "" }
                     ),
                 );
                 for peripheral in peers {
@@ -259,21 +317,34 @@ async fn scan_loop(state: Arc<AppState>, adapter: Adapter, mut shutdown: watch::
                         let now = crate::db::now_ms();
                         let skip = ble_dial_backoff(&state, &peripheral.id().to_string(), now);
                         if skip {
-                            let left = state
+                            // 用户主动触发 ⇒ 退避窗口打折。理由是实测体感：
+                            // 用户点了「扫描」，而退避还剩 40s ⇒ **什么都不发生**，
+                            // 只能被理解成"搜不到"。打折后仍留一点间隔，不连打。
+                            let raw_left = state
                                 .ble_dial_failures
                                 .lock()
                                 .unwrap_or_else(|e| e.into_inner())
                                 .get(&peripheral.id().to_string())
                                 .map(|(_, next)| (*next - now).max(0))
                                 .unwrap_or(0);
-                            state.logger.info(
-                                "ble",
-                                format!(
-                                    "[DISCOVERY] 跳过候选 id={} 原因=退避中 剩余={left}ms",
-                                    peripheral.id()
-                                ),
-                            );
-                            continue;
+                            let left = if user_triggered {
+                                raw_left / USER_TRIGGER_BACKOFF_FACTOR
+                            } else {
+                                raw_left
+                            };
+                            if left > 0 {
+                                state.logger.info(
+                                    "ble",
+                                    format!(
+                                        "[DISCOVERY] 跳过候选 id={} 原因=退避中 剩余={left}ms{}",
+                                        peripheral.id(),
+                                        if user_triggered { "（已按用户触发打折）" } else { "" }
+                                    ),
+                                );
+                                continue;
+                            }
+                            // 打折后已经可以试了：把退避记录清掉，让下面的拨号正常进行
+                            clear_ble_dial_failure(&state, &peripheral.id().to_string());
                         }
                     }
                     let st = state.clone();
@@ -304,9 +375,26 @@ async fn scan_loop(state: Arc<AppState>, adapter: Adapter, mut shutdown: watch::
             }
             Err(e) => state.logger.warn("ble", format!("扫描失败：{e}")),
         }
+        // 本轮结束：决定等多久再开下一轮。
+        // `ble_scan_now` 是**用户主动触发**（打开「添加好友」、点「扫描」）—— 立刻开扫，
+        // 不等 `SCAN_INTERVAL`。这就是"上层把扫描调快"的落点：周期是 2s，
+        // 而用户想要的那一刻是**立刻**。
+        user_triggered = false;
+        if skip_initial_wait {
+            skip_initial_wait = false;
+            continue;
+        }
         tokio::select! {
             biased;
             _ = shutdown.changed() => break,
+            // 触发通道：收到新值 ⇒ 跳过等待，马上扫一轮
+            res = scan_now.changed() => {
+                if res.is_err() {
+                    // 发送端被丢掉（通道停止）：继续按周期跑，不要退出扫描循环
+                } else {
+                    user_triggered = true;
+                }
+            }
             _ = tokio::time::sleep(SCAN_INTERVAL) => {}
         }
     }
@@ -466,9 +554,17 @@ async fn dial_and_register(
     if state.has_endpoint_addr(&ep).await {
         return Ok(());
     }
-    // 上一次失败可能在 CoreBluetooth 上留了一条**已经没人读**的连接：先断开再重连。
+    // 上一次失败可能留了一条**已经没人读**的连接：先断开再重连。
     // 不这么做的话，`connect()` 会直接复用那条旧连接，而新订阅的通知流收不到任何东西。
-    if matches!(peripheral.is_connected().await, Ok(true)) {
+    //
+    // 同时把**系统报告的链路状态**记下来（真机 2026-09-13 第二轮需要它）：
+    // "Windows 能不能连上手机"这件事有两个完全不同的失败面 ——
+    //   · `is_connected=false` 且 connect 一直 Not connected ⇒ 射频层根本没连上
+    //     （对端没在监听 / 不在范围 / 系统未授权 / 适配器问题）；
+    //   · `is_connected=true` 但服务读不到 ⇒ 连上了、GATT 数据库还没就绪（重试才有意义）。
+    // 没有这一行，日志里两者长得一模一样，只能靠猜。
+    let before_connected = peripheral.is_connected().await;
+    if matches!(before_connected, Ok(true)) {
         state.logger.info(
             "ble",
             format!("[CONNECT] {ble_id} 仍处于已连接状态 ⇒ 先断开，避免复用幽灵连接"),
@@ -476,7 +572,21 @@ async fn dial_and_register(
         let _ = peripheral.disconnect().await;
         tokio::time::sleep(Duration::from_millis(150)).await;
     }
-    let conn = driver::connect(&peripheral).await?;
+    let conn = match driver::connect(&peripheral).await {
+        Ok(c) => c,
+        Err(e) => {
+            // 失败时把"系统此刻怎么看这条链路"一并打出来 —— 这是下一轮排查的**唯一**线索
+            let after = peripheral
+                .is_connected()
+                .await
+                .map(|v| v.to_string())
+                .unwrap_or_else(|err| format!("查询失败({err})"));
+            return Err(format!(
+                "{e}｜系统链路状态：连接前={:?} 失败后={after}",
+                before_connected
+            ));
+        }
+    };
     state.logger.info(
         "ble",
         format!("[GATT] 已就绪 ep={ble_id}（连接 + 服务发现 + 通知订阅都成功）"),

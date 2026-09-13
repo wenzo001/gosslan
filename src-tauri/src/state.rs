@@ -614,6 +614,17 @@ pub struct AppState {
     /// 只记内存、不落库：广播是每次开机重新发生的事，持久化只会带来陈旧数据。
     #[cfg(feature = "bluetooth")]
     pub ble_peer_advertises: Mutex<std::collections::HashSet<String>>,
+    /// **立刻扫一轮 BLE** 的触发通道（与 LAN 的 `probe` 同一个范式）。
+    ///
+    /// 为什么需要（用户 2026-09-13 要求「扫描快一点」）：BLE 的扫描循环是
+    /// 「扫 3s → 等 10s」的周期任务，用户点开「添加好友」时**最多要等一整个周期**
+    /// 才可能看到对端。LAN 那条路早就有按需探测（`search_nearby_peers` + `who_has`），
+    /// BLE 一直缺 —— 用户侧的体感就是"蓝牙搜不到/很慢"。
+    ///
+    /// 语义：发一个新值 ⇒ 扫描循环立刻结束当前的等待、马上开扫一轮（不重置退避，见
+    /// `scan_loop` 里对 `user_triggered` 的处理）。
+    #[cfg(feature = "bluetooth")]
+    pub ble_scan_now: Mutex<Option<tokio::sync::watch::Sender<u64>>>,
     /// BLE 候选的**失败退避**：外设标识 → (连续失败次数, 下次允许尝试的时间)。
     ///
     /// 为什么需要：BLE 上"连过去被拒"是常态，而**每次连接尝试都会打扰对端**
@@ -635,7 +646,6 @@ pub struct AppState {
     pub db_path: PathBuf,
     /// 应用级运行日志（内存 ring buffer + 落盘文件），供「运行日志」页读取与排查。
     pub logger: Logger,
-
     /// 节点身份（X25519 + Ed25519）
     pub identity: Identity,
     /// Gossip 去重 + 扇出引擎
@@ -937,6 +947,8 @@ impl AppState {
             ble_no_dial: Mutex::new(std::collections::HashSet::new()),
             #[cfg(feature = "bluetooth")]
             ble_peer_advertises: Mutex::new(std::collections::HashSet::new()),
+            #[cfg(feature = "bluetooth")]
+            ble_scan_now: Mutex::new(None),
             #[cfg(feature = "bluetooth")]
             ble_dial_failures: Mutex::new(std::collections::HashMap::new()),
             dialing: Mutex::new(std::collections::HashSet::new()),

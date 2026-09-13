@@ -283,6 +283,11 @@ async fn fill_peer_links(s: &Arc<AppState>, peers: &mut [Peer]) {
 
 /// 按需探测周围在线节点：群发一次 `who_has`，等待约 1.5s 收集单播回复后返回当前节点表。
 /// 仅在用户打开「添加好友」时调用，避免启动时持续全网扫描。
+///
+/// ⚠️ 2026-09-13：**同时触发一次 BLE 立刻扫描**。用户实测的体感是"蓝牙搜不到"，
+/// 而真因是 BLE 的周期扫描（当时 10s 一轮）与用户动作**完全错开** ——
+/// 点开「添加好友」后最多要等一整个周期才可能看到对端。
+/// 蓝牙那条路没有 `who_has` 这种"喊一声"的机制，能做的最接近的事就是**立刻扫一轮**。
 #[tauri::command]
 pub async fn search_nearby_peers(state: State<'_, Arc<AppState>>) -> Result<Vec<Peer>, String> {
     let s = state.inner();
@@ -294,9 +299,14 @@ pub async fn search_nearby_peers(state: State<'_, Arc<AppState>>) -> Result<Vec<
     } else {
         false
     };
-    // 等待节点单播回复
-    if triggered {
-        tokio::time::sleep(Duration::from_millis(1500)).await;
+    // 让 BLE 也立刻扫一轮（通道没开时返回 false，不影响 LAN 那条路）
+    #[cfg(feature = "bluetooth")]
+    let ble_triggered = crate::network::ble::trigger_scan_now(s);
+    #[cfg(not(feature = "bluetooth"))]
+    let ble_triggered = false;
+    // 等待节点单播回复（BLE 的扫描窗口是 2s，所以这里取 2s：两边都覆盖得到）
+    if triggered || ble_triggered {
+        tokio::time::sleep(Duration::from_millis(2000)).await;
     }
     let mut peers: Vec<Peer> = s.peers.lock().unwrap_or_else(|e| e.into_inner()).values().cloned().collect();
     peers.sort_by(|a, b| a.device_id.cmp(&b.device_id));

@@ -225,28 +225,50 @@ pub mod driver {
     /// `discover_services()` 只是重读 GATT 数据库。macOS/Android 上第一次就成功，
     /// 因此不会多等一次 —— 这条改动不会降低它们的可用性。
     pub async fn connect(peripheral: &Peripheral) -> Result<BleConnection, String> {
-        // ---- 第 1 层：整条 connect() 重试（对付"设备还在被上一轮扫描占着"这类瞬时失败）----
-        let mut last_connect_err = String::new();
+        // ⚠️ 重试的形状很讲究（真机 2026-09-13 第二轮）：**每次重试都重建
+        // `BluetoothLEDevice` 是错的**。WinRT 的 `connect()` 内部要
+        // `FromBluetoothAddressAsync` + `GattSession::FromDeviceIdAsync`，既慢又可能
+        // 因为"上一个对象还没释放"而互相干扰。所以顺序反过来：
+        //   ① 先用**便宜**的 `discover_services()` 试 —— 链路如果已经好了，一次就成；
+        //   ② 只有它也不成，才走完整的 `connect()`（内部会重建设备对象）。
+        // 这样既覆盖"设备对象建好了但服务还读不到"，也避免把重试变成自我干扰。
+        let mut last_err = String::new();
+
+        // ---- ① 便宜路径：先直接试读服务（首次调用时通常还没连，会立刻失败，无害）----
+        for attempt in 1..=LINK_READY_ATTEMPTS {
+            match peripheral.discover_services().await {
+                Ok(()) => {
+                    return finish_connect(peripheral).await;
+                }
+                Err(e) => {
+                    last_err = format!("发现 GATT 服务失败（第 {attempt}/{LINK_READY_ATTEMPTS} 次）：{e}");
+                    if attempt < LINK_READY_ATTEMPTS {
+                        tokio::time::sleep(LINK_READY_WAIT).await;
+                    }
+                }
+            }
+        }
+
+        // ---- ② 完整路径：重建设备对象 + 等 GATT 数据库可读 ----
         for attempt in 1..=CONNECT_ATTEMPTS {
             match peripheral.connect().await {
                 Ok(()) => {
-                    last_connect_err.clear();
+                    last_err.clear();
                     break;
                 }
                 Err(e) => {
-                    last_connect_err = format!("连接失败（第 {attempt}/{CONNECT_ATTEMPTS} 次）：{e}");
+                    last_err = format!("连接失败（第 {attempt}/{CONNECT_ATTEMPTS} 次）：{e}");
                     if attempt < CONNECT_ATTEMPTS {
                         tokio::time::sleep(CONNECT_RETRY_WAIT).await;
                     }
                 }
             }
         }
-        if !last_connect_err.is_empty() {
-            return Err(last_connect_err);
+        if !last_err.is_empty() {
+            return Err(last_err);
         }
 
-        // ---- 第 2 层：等 GATT 数据库可读（Windows 上 connect() 成功 ≠ 服务已可发现）----
-        let mut last_discover_err = String::new();
+        // connect() 成功之后再读一次服务（WinRT 上"连上"不等于"服务可读"，见上）
         let mut discovered = false;
         for attempt in 1..=LINK_READY_ATTEMPTS {
             match peripheral.discover_services().await {
@@ -255,7 +277,7 @@ pub mod driver {
                     break;
                 }
                 Err(e) => {
-                    last_discover_err =
+                    last_err =
                         format!("发现 GATT 服务失败（第 {attempt}/{LINK_READY_ATTEMPTS} 次）：{e}");
                     if attempt < LINK_READY_ATTEMPTS {
                         tokio::time::sleep(LINK_READY_WAIT).await;
@@ -264,9 +286,18 @@ pub mod driver {
             }
         }
         if !discovered {
-            return Err(last_discover_err);
+            return Err(last_err);
         }
 
+        finish_connect(peripheral).await
+    }
+
+    /// `connect()` + 服务发现都成功之后：取特征、订阅通知、组装连接。
+    ///
+    /// 拆出来是因为它**没有任何重试语义**，而上面的重试路径要在两个不同的入口
+    /// （便宜的 diswover_services 命中 / 完整 connect 命中）都走到这里 ——
+    /// 复制两份的话，"取特征/订阅"这一步迟早会漂移。
+    async fn finish_connect(peripheral: &Peripheral) -> Result<BleConnection, String> {
         let svc = uuid(SERVICE_UUID);
         let rx_uuid = uuid(CHAR_RX_UUID);
         let tx_uuid = uuid(CHAR_TX_UUID);
