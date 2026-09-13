@@ -123,6 +123,15 @@ function peerAddress(p: Peer): string {
 const channels = computed(() => app.channels ?? []);
 const channelBusy = ref<string | null>(null);
 
+/**
+ * 开关某条通道。
+ *
+ * ⚠️ 乐观更新（用户 2026-09-13）：开关**不再等**这个 `await` 回来才动 ——
+ * store 先按用户意图切状态（蓝牙启停要 2~3s，等它就会"点了半天没反应"），
+ * 成功用后端权威快照收尾、失败回退。这里只负责 toast / 权限重试 / 重扫。
+ * `channelBusy` 只用来**挡住重复请求**，不再用来 `disabled` 开关本体
+ * （那样开关会一直停在旧值上，等于把"乐观"又抹掉了）。
+ */
 async function toggleChannel(ch: ChannelStatus, next: boolean) {
   if (channelBusy.value) return;
   channelBusy.value = ch.channel;
@@ -262,7 +271,8 @@ async function add(peerId: string) {
           <SettingsToggle
             v-if="!(app.isMobile && ch.channel === 'bluetooth')"
             :model-value="ch.enabled"
-            :disabled="!ch.available || channelBusy === ch.channel"
+            :pending="channelBusy === ch.channel || app.isChannelPending(ch.channel)"
+            :disabled="!ch.available"
             :label="ch.channel === 'lan' ? t('friend.add.channel.lan') : t('friend.add.channel.bluetooth')"
             @update:model-value="(v: boolean) => toggleChannel(ch, v)"
           />

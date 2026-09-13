@@ -10,6 +10,49 @@
 
 ## [Unreleased]
 
+### Fixed (🔴 蓝牙开关点一下要等好几秒才动 —— 前端在等后端，后端在等 CoreBluetooth)
+
+用户 2026-09-13（Mac 实测）：「蓝牙的开关是可以开和关的，但是点起来很卡。点了一下，
+过了好一会儿才会关；再点一下，过了好一会儿才会开。」用户同时重申了本项目的一贯规则：
+**所有这类操作都以"乐观更新"优先响应用户需求，再去底层执行；失败才 loading → 提示 → 回退数据。**
+
+**为什么慢**（三段时间叠在一起，全都发生在"用户点下去"到"开关动起来"之间）：
+
+1. **前端等 IPC**：开关的值取自通道状态，而 `setChannelEnabled` 是
+   `applyRuntimeSnapshot(await api.setChannelEnabled(...))` —— 后端不返回，开关就不动。
+2. **后端在等蓝牙栈**：`ble::start` 里 `start_peripheral` 要等 CoreBluetooth 回报状态
+   （`peripheral::STATE_WAIT = 3s`）；`ble::stop` 要等扫描任务退出
+   （`STOP_TIMEOUT = 2s`，而 `scan_peers` 一轮就是 `SCAN_WINDOW = 3s`），再逐条拆链路。
+3. **3s 冷却会"丢弃"新意图**：冷却期内到达的请求只记一条 warn 就返回
+   （`忽略高频蓝牙通道切换请求`）—— 用户"关一下马上又开"时第二次点击被静默吞掉，
+   表现进一步恶化成"点了没反应"。
+
+**修法**：
+
+- **前端乐观更新**（`stores/useAppStore.ts`）：开关顺序固定成
+  **先按用户意图改状态 → 再让后端执行 → 成功用权威快照收尾 / 失败回退并抛错**，
+  期间挂 `channelPending`（开关滑杆上一枚小转圈 + `aria-busy`），失败由调用方 toast。
+  同一个规则也补到 `startNetwork` / `stopNetwork`（网卡切换那条路径）。
+  `SettingsToggle` 新增 `pending` 属性；设置页与「添加好友」页都接上；
+  「添加好友」页不再用 `disabled` 表达 busy（`disabled` 会让开关停在旧值上，等于把乐观又抹掉）。
+- **后端不再阻塞命令返回**（`network/ble.rs`）：外设角色本来"独立失败"（起不来只影响
+  别人连我们），所以 `start()` 里改成 `tokio::spawn(start_peripheral(...))`，
+  不再 `await` 那最多 3s 的状态回执。⚠️ 句柄改为**先写进 `state.ble` 再 spawn** ——
+  否则"刚开就关"时 `stop()` 拿不到 handle、发不出停机信号，那个外设任务会永远活着。
+- **冷却从"丢弃意图"改成"排队 + 最后一次意图胜出"**（`commands.rs::bt_switch_plan`）：
+  决策抽成纯函数并单测 —— ① 已被更新的意图取代 ⇒ 什么都不做（那次会做）；
+  ② 运行状态已是目标状态 ⇒ 幂等跳过（2026-09-12 那个"每秒十几次启停把蓝牙栈打满、
+  整个应用顿卡"的抖动护栏照旧）；③ 距上次真实启停不足冷却 ⇒ **等够了再做**（`wait_ms`），
+  不再丢弃。启停本身用一把 `tokio::sync::Mutex` 串行化，所以"关了又马上开"一定会在
+  冷却结束后执行到开，不会丢。
+
+**护栏**：`channelState.test.ts` 新增"通道开关必须乐观更新"（按源码顺序断言
+乐观写入在 `await` 之前 + 失败回退 + pending 清理）；Rust 侧新增
+`bt_switch_plan_coalesces_intent_and_keeps_the_cooldown`（6 个真值分支）与
+`ble_start_does_not_block_on_the_peripheral_state_wait`（结构护栏）。
+两条都进了 `scripts/verify-guards.py` 的非空转验证（改坏即 FAIL、恢复即 PASS）。
+顺带修掉 `verify-guards.py` 一个坑：`--only` 写错时**一条都不跑却打印 ✅**，现在直接报错退出。
+
 ## [4.3.0] - 2026-09-13
 
 ### Fixed (🔴 外设侧握手失败后不解除"握手中"标记 ⇒ 那台设备再也加入不进 mesh)

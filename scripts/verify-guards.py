@@ -218,6 +218,32 @@ CASES: list[Case] = [
         tags=["rust", "ble"],
     ),
     Case(
+        name="蓝牙启动不得阻塞在 CoreBluetooth 状态回执上（否则开关卡 3 秒）",
+        why="`start_peripheral` 要等 `peripheral::STATE_WAIT = 3s`（CoreBluetooth 回报状态），"
+        "而 `ble::start` 就在 `set_channel_enabled` 的关键路径上 ⇒ 一旦 await 它，"
+        "用户点蓝牙开关就要干等 3 秒（用户 2026-09-13 Mac 实测「点了一下，"
+        "过了好一会儿才会开」）。外设角色本来就是独立失败的，必须丢后台任务；"
+        "同时句柄要先写进 state.ble，否则「刚开就关」时 stop() 拿不到 handle、发不出停机信号",
+        file=TAURI / "src" / "network" / "ble.rs",
+        injections=[(
+            "#[cfg(any(target_os = \"macos\", target_os = \"android\"))]\n"
+            "    let _ = tokio::spawn(start_peripheral(state.clone(), shutdown_tx.subscribe()));",
+            "#[cfg(any(target_os = \"macos\", target_os = \"android\"))]\n"
+            "    start_peripheral(state.clone(), shutdown_tx.subscribe()).await;",
+        )],
+        cmd=cargo(
+            "test",
+            "--offline",
+            "--lib",
+            "--features",
+            "bluetooth",
+            "ble_start_does_not_block_on_the_peripheral_state_wait",
+        ),
+        cwd=TAURI,
+        expect_fail_hint="不许 await 外设启动",
+        tags=["rust", "ble", "perf"],
+    ),
+    Case(
         name="群消息：非成员中继必须继续转发（不能提前 return）",
         why="旧实现把『我不是群成员』直接 return 掉，位置在转发之前 ⇒ 非成员中继不转发群消息 ⇒ "
         "BLE-only 三点中继（手机—电脑—手机）里群聊永远不通，而同链路单聊正常。"
@@ -342,6 +368,23 @@ CASES: list[Case] = [
         cwd=ROOT,
         expect_fail_hint="contextmenu",
         tags=["frontend", "selection"],
+    ),
+    Case(
+        name="通道开关必须乐观更新（否则点一下要等后端 2~3s 才动）",
+        why="用户 2026-09-13：Mac 上「点了一下，过了好一会儿才会关；再点一下，"
+        "过了好一会儿才会开」。根因是开关要等 `await api.setChannelEnabled` 回来才改状态，"
+        "而蓝牙启停是 2~3s 级的（`ble::start` 等 CoreBluetooth 状态最多 3s、"
+        "`ble::stop` 等扫描任务退出最多 2s）。这条退化的形态很隐蔽 —— 功能还在、只是慢，"
+        "所以只能靠守卫钉住顺序：先按用户意图改状态 → 再执行 → 失败回退",
+        file=ROOT / "src" / "stores" / "useAppStore.ts",
+        injections=[(
+            "    channels.value = prev.channels.map((c) => (c.channel === channel ? { ...c, enabled } : c));\n",
+            "",
+        )],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="乐观更新",
+        tags=["frontend", "channel"],
     ),
     # ---------------- Rust：Android JNI 签名（跨语言一致性） ----------------
     Case(
@@ -1252,6 +1295,14 @@ def main() -> int:
     args = ap.parse_args()
 
     cases = [c for c in CASES if not args.only or args.only in c.name or args.only in c.tags]
+    if not cases:
+        # ⚠️ 别把"空跑"当"通过"：`--only` 写错一个字符就会一条都不跑，
+        # 而下面的汇总照样打印 ✅（真实踩过：`--only CoreBluetooth状态回执` 少了空格）。
+        print(
+            f"❌ `--only {args.only}` 没有匹配到任何用例（可用 `--list` 看名字/标签）",
+            file=sys.stderr,
+        )
+        return 1
     if args.list:
         for c in cases:
             print(f"  [{','.join(c.tags)}] {c.name}\n      {c.why}")

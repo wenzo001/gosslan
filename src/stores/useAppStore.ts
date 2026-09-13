@@ -281,6 +281,22 @@ export const useAppStore = defineStore("app", () => {
   const runtime = ref<RuntimeSnapshot | null>(null);
 
   /**
+   * 通道开关的「正在切换」标记（key = 通道名），只给 UI 一个 loading 态用。
+   *
+   * 开关是**乐观更新**的（用户 2026-09-13 的规则）：点下去立刻按用户意图切，
+   * 再去后端真正启停。这个标记**不参与**开关的取值 —— 取值永远是"用户意图或权威快照"，
+   * 否则又会变成"等后端"的老毛病。
+   */
+  const channelPending = ref<Record<string, boolean>>({});
+  function markChannelPending(channel: string, pending: boolean) {
+    const next = { ...channelPending.value };
+    if (pending) next[channel] = true;
+    else delete next[channel];
+    channelPending.value = next;
+  }
+  const isChannelPending = (channel: string) => !!channelPending.value[channel];
+
+  /**
    * 应用一份运行状态快照（**唯一入口**）。
    *
    * `channels` / `online` / `boundIp` 三份 UI 状态以前由两个命令 + 两个事件分别维护，
@@ -336,16 +352,43 @@ export const useAppStore = defineStore("app", () => {
   /**
    * 开关某条通道。**错误交给调用方**去 toast（各处文案不同）。
    *
+   * ## 乐观更新（用户 2026-09-13：「所有的这种操作都是以乐观更新优先响应用户需求」）
+   *
+   * 顺序固定为：**先按用户意图改状态 → 再让后端执行 → 成功用权威快照收尾 / 失败回退并抛错**。
+   * 期间挂 `channelPending` 标记，UI 可以在开关上转一个小圈（失败由调用方 toast）。
+   *
+   * 为什么这条路径**必须**乐观：蓝牙启停不是毫秒级的 ——
+   * `ble::start` 里 `start_peripheral` 要等 CoreBluetooth 回报状态（`peripheral::STATE_WAIT = 3s`），
+   * `ble::stop` 要等扫描任务退出（`STOP_TIMEOUT = 2s`）再逐条拆链路。
+   * 原来 `await` 完才改开关 ⇒ 用户点一下要干等 2~3 秒开关才动，体感就是"点了很卡、
+   * 过好一会儿才开/才关"（用户 2026-09-13 Mac 实测）。
+   *
    * ⚠️ 必须同时刷新 **通道状态** 与 **网络状态**：局域网这一件事有两份前端表示
-   * （`channels[lan].enabled` 来自 `get_channel_status`，`online` 来自 `get_network_status`）。
+   * （`channels[lan].enabled` 来自快照，`online` 也来自快照）。
    * 只刷新前者的话，「添加好友」页把局域网打开后，**设置页的开关仍然是关的**
    * —— 用户 2026-09-12 安卓实测报告的"两处不同步"就是这个。
    * 现在两处 UI 都只认这一条路径（设置页也改用通道状态），所以不可能再各说各话。
    */
   async function setChannelEnabled(channel: "lan" | "bluetooth", enabled: boolean) {
-    // 后端把"切换后的运行状态"作为**返回值**给发起窗口（其它窗口走 runtime-changed 事件）——
-    // 所以这里**不需要**再拉一次，也就不存在"拉回来的是旧值"的竞态。
-    applyRuntimeSnapshot(await api.setChannelEnabled(channel, enabled));
+    // 回退用的现场：**改之前**的权威状态（不是"上一次乐观值"）
+    const prev = { channels: channels.value, online: online.value, boundIp: boundIp.value, runtime: runtime.value };
+    // ① 乐观：当帧就按用户意图切，开关立刻响应
+    channels.value = prev.channels.map((c) => (c.channel === channel ? { ...c, enabled } : c));
+    if (channel === "lan") online.value = enabled;
+    markChannelPending(channel, true);
+    try {
+      // ② 后端返回的快照才是权威（其它窗口也靠它同步）：成功就用它收尾，不再多拉一次
+      applyRuntimeSnapshot(await api.setChannelEnabled(channel, enabled));
+    } catch (e) {
+      // ③ 失败：回退到调用前的状态，错误交给调用方 toast
+      channels.value = prev.channels;
+      online.value = prev.online;
+      boundIp.value = prev.boundIp;
+      runtime.value = prev.runtime;
+      throw e;
+    } finally {
+      markChannelPending(channel, false);
+    }
   }
 
   /**
@@ -697,19 +740,53 @@ export const useAppStore = defineStore("app", () => {
     device.value = await api.updateProfile(nickname, avatar);
   }
 
+  /**
+   * 起局域网监听（指定绑定地址；网卡选择那条路径用）。
+   *
+   * **乐观更新**（同 `setChannelEnabled` 的规则）：先把在线状态 / 绑定 IP / 局域网通道
+   * 切到"已开"，再去真正绑定端口；失败回退并抛出（调用方 toast）。
+   * 绑定端口本身是毫秒级的，但这里**没有理由**让 UI 等一次 IPC ——
+   * 而且这条路径也要把 `channels[lan]` 一起改掉，否则设置页的开关会滞后（两处不同步的老毛病）。
+   */
   async function startNetwork(bindIp: string) {
-    await api.startNetwork(bindIp);
+    const prev = { online: online.value, boundIp: boundIp.value, preferredIp: preferredIp.value, channels: channels.value };
     online.value = true;
     boundIp.value = bindIp;
-    preferredIp.value = bindIp;
-    void persistSettings();
+    channels.value = prev.channels.map((c) => (c.channel === "lan" ? { ...c, enabled: true } : c));
+    markChannelPending("lan", true);
+    try {
+      await api.startNetwork(bindIp);
+      preferredIp.value = bindIp;
+      void persistSettings();
+    } catch (e) {
+      online.value = prev.online;
+      boundIp.value = prev.boundIp;
+      preferredIp.value = prev.preferredIp;
+      channels.value = prev.channels;
+      throw e;
+    } finally {
+      markChannelPending("lan", false);
+    }
   }
 
+  /** 停局域网监听。乐观更新同上：先切成"已关"，再真正停；失败回退并抛出。 */
   async function stopNetwork() {
-    await api.stopNetwork();
+    const prev = { online: online.value, boundIp: boundIp.value, channels: channels.value };
     online.value = false;
     boundIp.value = null;
-    void persistSettings();
+    channels.value = prev.channels.map((c) => (c.channel === "lan" ? { ...c, enabled: false } : c));
+    markChannelPending("lan", true);
+    try {
+      await api.stopNetwork();
+      void persistSettings();
+    } catch (e) {
+      online.value = prev.online;
+      boundIp.value = prev.boundIp;
+      channels.value = prev.channels;
+      throw e;
+    } finally {
+      markChannelPending("lan", false);
+    }
   }
 
   /**
@@ -765,6 +842,8 @@ export const useAppStore = defineStore("app", () => {
     refreshRuntime,
     ensureBluetoothOn,
     setChannelEnabled,
+    /** 通道开关是否正在等后端确认（乐观更新期间给开关加 loading 态用）。 */
+    isChannelPending,
     device,
     interfaces,
     online,

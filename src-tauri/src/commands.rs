@@ -714,6 +714,145 @@ pub async fn get_runtime_snapshot(
     Ok(build_runtime_snapshot(state.inner()).await)
 }
 
+/// 蓝牙通道「开关意图」的最后一次值：`1` = 开，`0` = 关，`-1` = 还没有请求。
+///
+/// 为什么需要：冷却期内到达的新意图**不能丢**（见 [`apply_bluetooth_switch`]）。
+#[cfg(feature = "bluetooth")]
+static BT_DESIRED: std::sync::atomic::AtomicI8 = std::sync::atomic::AtomicI8::new(-1);
+
+/// 上一次**真的**启停过蓝牙的时刻（毫秒；0 = 从未启停过）。
+#[cfg(feature = "bluetooth")]
+static BT_LAST_TRANSITION_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// 蓝牙启停的串行锁：同一时刻只有一次真实启停，后到的请求**排队**（而不是被丢掉）。
+#[cfg(feature = "bluetooth")]
+static BT_SWITCH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// 两次**真实**启停之间的最小间隔（防抖；见 [`bt_switch_plan`]）。
+#[cfg(feature = "bluetooth")]
+const BT_SWITCH_COOLDOWN_MS: u64 = 3_000;
+
+/// 一次蓝牙启停请求的决策结果（纯数据，便于单测）。
+#[cfg(feature = "bluetooth")]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct BtSwitchPlan {
+    /// 动手之前要等的毫秒数（0 = 立刻动手）
+    pub wait_ms: u64,
+    /// 是否需要**真的**启停蓝牙栈（false = 幂等命中，或已被更新的意图取代）
+    pub apply: bool,
+    /// 不做 / 等待的原因（写日志用）
+    pub reason: &'static str,
+}
+
+/// 决定"这次蓝牙开关请求该不该动蓝牙栈"。
+///
+/// 顺序即优先级（三条都是真机事故换来的）：
+/// 1. **已被更新的意图取代** ⇒ 什么都不做 —— 那次更新的请求会执行。
+///    这是"意图合并"的关键：用户"关了立刻又开"时，最后一次意图一定会被执行到。
+/// 2. **运行状态已经是目标状态** ⇒ 幂等，不碰蓝牙栈（用户 2026-09-12 的抖动事故：
+///    每秒十几次 `启动→停止→启动` 会把 CoreBluetooth 的 GATT server + 广播反复拆建，
+///    CPU 与蓝牙栈被打满 ⇒ 整个应用顿卡、连局域网消息都变慢）。
+/// 3. **距上次真实启停不足冷却** ⇒ **等够了再做**（`wait_ms`），不是丢弃。
+///    旧实现是"丢弃"（`忽略高频蓝牙通道切换请求`）：用户"关一下马上又开"会静默少执行一次，
+///    表现就是"点了没反应"（用户 2026-09-13）。
+#[cfg(feature = "bluetooth")]
+pub(crate) fn bt_switch_plan(
+    running: bool,
+    enabled: bool,
+    desired: Option<bool>,
+    last_ms: u64,
+    now_ms: u64,
+    cooldown_ms: u64,
+) -> BtSwitchPlan {
+    if desired != Some(enabled) {
+        return BtSwitchPlan { wait_ms: 0, apply: false, reason: "已被更新的开关意图取代" };
+    }
+    if running == enabled {
+        return BtSwitchPlan { wait_ms: 0, apply: false, reason: "运行状态已经是目标状态（幂等）" };
+    }
+    let wait_ms = if last_ms == 0 {
+        0
+    } else {
+        cooldown_ms.saturating_sub(now_ms.saturating_sub(last_ms))
+    };
+    BtSwitchPlan {
+        wait_ms,
+        apply: true,
+        reason: if wait_ms > 0 { "冷却期内，排队等待" } else { "立刻启停" },
+    }
+}
+
+/// 执行一次蓝牙开关（**意图合并 + 冷却排队 + 幂等**）。
+///
+/// ⚠️ 调用方 `await` 它，但**前端不该等它**（用户 2026-09-13 的规则：乐观更新优先）：
+/// 这里可能为了合并抖动等满一个冷却周期（最多 3s）。
+#[cfg(feature = "bluetooth")]
+async fn apply_bluetooth_switch(s: &Arc<AppState>, enabled: bool) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
+    // 先记意图（不需要锁）：排队醒来后要靠它判断"自己还是不是最新意图"
+    BT_DESIRED.store(if enabled { 1 } else { 0 }, Ordering::Relaxed);
+    // 串行化：同一时刻只有一次真实启停，后来者在这里排队
+    let _guard = BT_SWITCH_LOCK.lock().await;
+    for _ in 0..3 {
+        let running = s.ble.lock().unwrap_or_else(|e| e.into_inner()).is_some();
+        let now = db::now_ms().max(0) as u64;
+        let desired = match BT_DESIRED.load(Ordering::Relaxed) {
+            1 => Some(true),
+            0 => Some(false),
+            _ => None,
+        };
+        let plan = bt_switch_plan(
+            running,
+            enabled,
+            desired,
+            BT_LAST_TRANSITION_MS.load(Ordering::Relaxed),
+            now,
+            BT_SWITCH_COOLDOWN_MS,
+        );
+        if !plan.apply {
+            s.logger.info(
+                "ble",
+                format!("蓝牙通道开关：{}（运行中={running}，请求={enabled}）", plan.reason),
+            );
+            break;
+        }
+        if plan.wait_ms > 0 {
+            // **排队而不是丢弃**：用户"关了又马上开"时，最后那次意图一定会被执行到
+            s.logger.info(
+                "ble",
+                format!("蓝牙通道开关进入冷却：等待 {}ms 后执行（合并抖动）", plan.wait_ms),
+            );
+            tokio::time::sleep(Duration::from_millis(plan.wait_ms)).await;
+            continue; // 醒来重判：意图可能又被改过、运行状态也可能变过
+        }
+        BT_LAST_TRANSITION_MS.store(now, Ordering::Relaxed);
+        s.logger.info(
+            "ble",
+            format!(
+                "蓝牙通道切换：{} → {}",
+                if running { "运行中" } else { "已停止" },
+                if enabled { "开启" } else { "关闭" }
+            ),
+        );
+        let result = if enabled {
+            crate::network::ble::start(s.clone()).await
+        } else {
+            crate::network::ble::stop(s).await;
+            Ok(())
+        };
+        if result.is_err() {
+            // ⚠️ **失败要放行重试**：冷却的用途是挡住"成功之后又被反复切换"的抖动，
+            // 不是挡住用户/前端的重试。真实缺陷（用户 4.1.9 实测）：
+            // 第一次 `已停止 → 开启` 失败（当时安卓还缺 btleplug 的 Java 类），
+            // 前端的自动重试落进 3s 冷却被丢掉 ⇒ 表现为"蓝牙没有默认开启"。
+            BT_LAST_TRANSITION_MS.store(0, Ordering::Relaxed);
+        }
+        result?;
+        break;
+    }
+    Ok(())
+}
+
 /// 切换通道开关。局域网复用 `network`；蓝牙后端未编译，开启时返回明确错误。
 #[tauri::command(async)]
 pub async fn set_channel_enabled(
@@ -739,70 +878,7 @@ pub async fn set_channel_enabled(
             // 只写偏好（并返回"后端未编译"的明确错误）。
             #[cfg(feature = "bluetooth")]
             {
-                // ⚠️ **幂等闸门**：目标状态 == 运行状态时只写偏好，**不碰蓝牙栈**。
-                //
-                // 为什么必须有（用户 2026-09-12 Mac 4.1.5 实测日志）：
-                // `蓝牙外设角色已启动 → 已停止广播 → 已启动 …` 每秒循环十几次 ——
-                // 说明有调用方在"开/关"之间抖动（UI 侧的状态回灌或重试），
-                // 而每次都真的拆掉重建 CoreBluetooth 的 GATT server + 广播 ⇒
-                // CPU/蓝牙栈被打满 ⇒ **整个应用顿卡、局域网消息也变慢**。
-                // 现在只要运行状态已经是目标状态，就直接返回（幂等），
-                // 无论上层怎么抖都不会再拆栈；真正的状态变化才启停一次。
-                let running = s
-                    .ble
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .is_some();
-                // **抖动冷却**：3 秒内不允许再次"启停切换"。
-                // 用户 Mac 日志里那种每秒一次的 `启动→停止→启动` 循环，不管调用方是谁，
-                // 都会把 CoreBluetooth 的 GATT server + 广播反复拆建、把 CPU 与蓝牙栈打满
-                // （现象：设置窗口顿卡、连局域网消息都变慢）。这里直接拒绝高频切换：
-                // 状态已是目标值就跳过；否则若距上次真实切换不足 3s，也只记一条日志。
-                static LAST_BT_TRANSITION_MS: std::sync::atomic::AtomicU64 =
-                    std::sync::atomic::AtomicU64::new(0);
-                let now = db::now_ms().max(0) as u64;
-                let last = LAST_BT_TRANSITION_MS.load(std::sync::atomic::Ordering::Relaxed);
-                let in_cooldown = last > 0 && now.saturating_sub(last) < 3_000;
-                if running != enabled && !in_cooldown {
-                    LAST_BT_TRANSITION_MS.store(now, std::sync::atomic::Ordering::Relaxed);
-                    s.logger.info(
-                        "ble",
-                        format!(
-                            "蓝牙通道切换：{} → {}",
-                            if running { "运行中" } else { "已停止" },
-                            if enabled { "开启" } else { "关闭" }
-                        ),
-                    );
-                    let result = if enabled {
-                        crate::network::ble::start(s.clone()).await
-                    } else {
-                        crate::network::ble::stop(s).await;
-                        Ok(())
-                    };
-                    if result.is_err() {
-                        // ⚠️ **失败要放行重试**：冷却的用途是挡住"成功之后又被反复切换"的抖动，
-                        // 不是挡住用户/前端的重试。真实缺陷（用户 4.1.9 实测）：
-                        // 第一次 `已停止 → 开启` 失败（当时安卓还缺 btleplug 的 Java 类），
-                        // 前端的自动重试落进 3s 冷却被丢掉 ⇒ 表现为"蓝牙没有默认开启"。
-                        LAST_BT_TRANSITION_MS.store(0, std::sync::atomic::Ordering::Relaxed);
-                    }
-                    result?;
-                } else if running != enabled {
-                    s.logger.warn(
-                        "ble",
-                        format!(
-                            "忽略高频蓝牙通道切换请求（3s 冷却内）：运行中={running}，请求={enabled}"
-                        ),
-                    );
-                } else {
-                    s.logger.info(
-                        "ble",
-                        format!(
-                            "蓝牙通道已经是{}，跳过启停（只同步偏好）",
-                            if enabled { "开启" } else { "关闭" }
-                        ),
-                    );
-                }
+                apply_bluetooth_switch(s, enabled).await?;
             }
             #[cfg(not(feature = "bluetooth"))]
             {
@@ -5026,5 +5102,46 @@ mod tests {
         // 已是好友 → 不显示（这正是用户报的"点了同意，对方那边申请还挂着"）
         assert!(!super::is_actionable_request(&pending("A"), &ids(&["A"])));
         assert!(!super::is_actionable_request(&pending("A"), &ids(&["A", "B"])));
+    }
+
+    /// 蓝牙开关的决策规则：**最后一次意图胜出**，冷却只排队、不丢弃。
+    ///
+    /// 为什么必须守（用户 2026-09-13）：
+    /// - 旧实现"冷却期内直接忽略请求"会把用户"关一下马上又开"的第二次点击**静默吞掉**
+    ///   ⇒ 开关看起来点了没反应；
+    /// - 反过来，抖动的调用方（每秒十几次开/关）必须仍然被挡住 —— 每次真实启停都要等满冷却，
+    ///   这是 2026-09-12"整个应用顿卡"那个事故的护栏。
+    /// 两条都在下面钉住。
+    #[cfg(feature = "bluetooth")]
+    #[test]
+    fn bt_switch_plan_coalesces_intent_and_keeps_the_cooldown() {
+        use super::bt_switch_plan;
+        const CD: u64 = 3_000;
+
+        // ① 常规：从未启停过 + 运行状态与目标不同 ⇒ 立刻动手
+        let p = bt_switch_plan(false, true, Some(true), 0, 10_000, CD);
+        assert!(p.apply && p.wait_ms == 0, "第一次开启必须立刻执行：{p:?}");
+
+        // ② 幂等：运行状态已经是目标状态 ⇒ 不碰蓝牙栈（抖动护栏）
+        let p = bt_switch_plan(true, true, Some(true), 10_000, 10_100, CD);
+        assert!(!p.apply, "已经是目标状态时不许再启停：{p:?}");
+
+        // ③ 冷却期内**改主意** ⇒ 不是丢弃，而是排队等够冷却再执行
+        let p = bt_switch_plan(false, true, Some(true), 10_000, 11_000, CD);
+        assert!(p.apply, "冷却期内的新意图必须被执行（不能丢）：{p:?}");
+        assert_eq!(p.wait_ms, 2_000, "应等到 3s 冷却结束：{p:?}");
+
+        // ④ 冷却已过 ⇒ 立刻执行
+        let p = bt_switch_plan(false, true, Some(true), 10_000, 14_000, CD);
+        assert!(p.apply && p.wait_ms == 0, "冷却结束后应立刻执行：{p:?}");
+
+        // ⑤ 意图已被更晚的请求改写 ⇒ 本请求什么都不做（让那次去做）
+        let p = bt_switch_plan(false, true, Some(false), 10_000, 20_000, CD);
+        assert!(!p.apply, "被更晚的意图取代的请求不该动蓝牙栈：{p:?}");
+        assert!(p.reason.contains("取代"), "原因要说清楚：{p:?}");
+
+        // ⑥ 时钟回拨 / 毫秒溢出：不允许 panic，也不允许负等待
+        let p = bt_switch_plan(false, true, Some(true), 10_000, 5_000, CD);
+        assert!(p.apply && p.wait_ms == CD, "时钟回拨时按满冷却等待：{p:?}");
     }
 }

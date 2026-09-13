@@ -1478,6 +1478,35 @@ mod tests {
         );
     }
 
+    /// 蓝牙开关**不许卡在"等 CoreBluetooth 回报状态"上**（用户 2026-09-13）。
+    ///
+    /// `ble::start` 里 `start_peripheral` 要等 `peripheral::STATE_WAIT = 3s`，而它在
+    /// `set_channel_enabled` 的关键路径上 —— 一旦 `await` 它，用户点开关就要干等 3 秒
+    /// （用户原话："点了一下，过了好一会儿才会开"）。外设角色本来就是**独立失败**的
+    /// （起不来只影响"别人连我们"），所以必须丢到后台任务里。
+    ///
+    /// 同时**句柄必须先写进 `state.ble` 再 spawn 外设**：反过来会出现"刚开就关"时
+    /// `stop()` 拿不到 handle ⇒ 发不出停机信号 ⇒ 那个外设任务永远活着（蓝牙关不掉）。
+    #[test]
+    fn ble_start_does_not_block_on_the_peripheral_state_wait() {
+        let ble = include_str!("network/ble.rs");
+        let body = rust_fn_body(ble, "pub async fn start(state: Arc<AppState>)");
+        assert!(
+            !body.contains("start_peripheral(state.clone(), shutdown_tx.subscribe()).await"),
+            "不许 await 外设启动（要等最多 3s 的 CoreBluetooth 状态回调）—— 必须 tokio::spawn"
+        );
+        let spawn = body
+            .find("tokio::spawn(start_peripheral(")
+            .expect("外设启动必须在后台任务里跑（`tokio::spawn(start_peripheral(...))`）");
+        let store = body
+            .find("*state.ble.lock()")
+            .expect("必须把 ble 句柄写进 state.ble");
+        assert!(
+            store < spawn,
+            "句柄必须先写进 state.ble、再 spawn 外设，否则「刚开就关」时 stop() 发不出停机信号"
+        );
+    }
+
     /// 通道状态里的蓝牙必须是**真实运行时**状态。
     ///
     /// `TransportManager` 里的 `BluetoothTransport` 是"尚未接线"的占位实现：它的

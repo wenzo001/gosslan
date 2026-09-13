@@ -22,11 +22,11 @@ const read = (p: string) => readFileSync(join(srcDir, p), "utf8");
 test("通道开关只走「一个快照 + 一个事件」（不再两份状态各自刷新）", () => {
   const store = read("stores/useAppStore.ts");
   const at = store.indexOf("async function setChannelEnabled");
-  const body = store.slice(at, at + 700);
+  const body = store.slice(at, at + 2400);
   assert.match(body, /await api\.setChannelEnabled\(channel, enabled\)/, "必须真的调后端");
   assert.match(
     body,
-    /applyRuntimeSnapshot\(await api\.setChannelEnabled/,
+    /applyRuntimeSnapshot\(await api\.setChannelEnabled\(channel, enabled\)\)/,
     "必须直接应用后端返回的快照：命令返回值就是切换后的运行状态，再拉一次既有竞态又是多余 IPC",
   );
   assert.ok(
@@ -41,6 +41,66 @@ test("通道开关只走「一个快照 + 一个事件」（不再两份状态�
     store,
     /function applyRuntimeSnapshot/,
     "通道状态 / 在线 / 绑定 IP 必须只有这一个写入入口",
+  );
+});
+
+/**
+ * 通道开关必须**乐观更新**（用户 2026-09-13：「所有的这种操作都是以乐观更新优先响应用户需求，
+ * 然后再去底层执行。如果执行失败的话，上层 UI 可以去 loading，然后提示，最后回退数据」）。
+ *
+ * 为什么这条必须在开关上钉死：蓝牙启停**不是毫秒级**的 ——
+ * `ble::start` 要等 CoreBluetooth 回报状态（`peripheral::STATE_WAIT = 3s`）、
+ * `ble::stop` 要等扫描任务退出（`STOP_TIMEOUT = 2s`）。所以"等 `await` 回来才动开关"
+ * 就等于让用户干等 2~3 秒（用户实测："点了一下，过了好一会儿才会关/才会开"）。
+ *
+ * 顺序必须是：**先按用户意图改状态 → 再 await 后端 → 成功用权威快照收尾 / 失败回退并抛错**，
+ * 期间挂 pending（UI 可以 loading）。下面按源码顺序断言，写反了就会失败。
+ */
+test("通道开关必须乐观更新：先按用户意图切、再执行、失败回退", () => {
+  const store = read("stores/useAppStore.ts");
+  for (const [name, signature] of [
+    ["setChannelEnabled", "async function setChannelEnabled"],
+    ["startNetwork", "async function startNetwork"],
+    ["stopNetwork", "async function stopNetwork"],
+  ] as const) {
+    const at = store.indexOf(signature);
+    assert.ok(at > 0, `找不到 ${signature}（护栏需要同步更新）`);
+    const body = store.slice(at, at + 2200);
+    const awaitAt = body.indexOf("await api.");
+    assert.ok(awaitAt > 0, `${name} 必须真的调后端`);
+    // ① 乐观：await 之前就已经按用户意图改了状态，并挂上 pending
+    const optimistic = body.indexOf("markChannelPending(");
+    assert.ok(
+      optimistic > 0 && optimistic < awaitAt,
+      `${name} 必须在 await 之前先乐观更新（否则开关要等后端 2~3s 才动）`,
+    );
+    assert.match(
+      body.slice(0, awaitAt),
+      /channels\.value = /,
+      `${name} 的乐观更新必须真的改通道状态（开关取值来自 channels）`,
+    );
+    // ② 失败回退：catch 里把状态还原，并把错误抛给调用方 toast
+    assert.match(body, /catch[\s\S]*?throw e/, `${name} 失败必须回退并抛出（由调用方 toast）`);
+    // ③ pending 必须清掉（成功失败都要），否则转圈会一直转
+    assert.match(body, /finally[\s\S]*?markChannelPending\([^)]*false\)/, `${name} 必须清掉 pending`);
+  }
+  // 取值来自 pending 的 UI 提示（不在 store 里把开关值改成 pending 态）
+  const store2 = read("stores/useAppStore.ts");
+  assert.match(
+    store2,
+    /const isChannelPending = /,
+    "pending 必须由 store 暴露出去（UI 只拿它做 loading，不参与开关取值）",
+  );
+  const section = read("components/settings/NetworkSection.vue");
+  assert.match(
+    section,
+    /:pending="app\.isChannelPending\('bluetooth'\)"/,
+    "设置页的蓝牙开关必须接上 pending（乐观更新期间显示 loading）",
+  );
+  assert.match(
+    section,
+    /:pending="app\.isChannelPending\('lan'\)"/,
+    "设置页的局域网开关同样要 loading",
   );
 });
 

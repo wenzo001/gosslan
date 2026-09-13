@@ -66,6 +66,10 @@ watch(
  *
  * 「网卡选择」仍需按 IP 启停（`onInterfaceChange`），因为要指定绑定地址；
  * 那条路径同样以 `loadChannels()` 收尾，所以两个开关不会各说各话。
+ *
+ * ⚠️ 乐观更新（用户 2026-09-13）：开关值**不再等** `await` 回来才动 ——
+ * store 会先按用户意图切状态，成功用后端权威快照收尾、失败回退。
+ * 这里只负责 toast 与失败后的重试（以及失败时补一次 `loadChannels()` 对齐真值）。
  */
 async function toggleLan() {
   const target = !(lanStatus.value?.enabled ?? app.online);
@@ -78,8 +82,8 @@ async function toggleLan() {
     if (target) await chat.refreshPeers();
   } catch (e) {
     app.toastError(e, t("settings.network.toast.lanFail"));
+    await loadChannels();
   }
-  await loadChannels();
 }
 
 /** 选择网卡：未开启 → 直接以该网卡开启并扫描；已开启 → 切换到新网卡重新扫描。 */
@@ -102,6 +106,14 @@ async function onInterfaceChange() {
   await loadChannels();
 }
 
+/**
+ * 蓝牙通道开关。
+ *
+ * ⚠️ 乐观更新（用户 2026-09-13）：store 会先按用户意图切开关，再去启停蓝牙运行时 ——
+ * `ble::start` 要等 CoreBluetooth 回报状态（最多 3s）、`ble::stop` 要等扫描任务退出（最多 2s），
+ * 所以"等返回再动开关"必然表现为"点一下过好一会儿才开/才关"。
+ * 这里只负责 toast，以及**打开失败**时的权限申请 + 重试一次。
+ */
 async function toggleBluetooth() {
   const cur = btStatus.value?.enabled ?? false;
   const target = !cur;
@@ -129,8 +141,8 @@ async function toggleBluetooth() {
       // 用户拒绝过权限：给一条能照着做的提示（系统设置里的路径）
       app.toast(t("settings.network.toast.btPermissionHint"), "info");
     }
+    await loadChannels();
   }
-  await loadChannels();
 }
 
 // ---- 跨网段（Routed）端点配置 ----
@@ -177,6 +189,7 @@ async function removeEndpoint(address: string) {
         <SettingsToggle
           :label="t('settings.network.lan')"
           :model-value="!!lanStatus?.enabled"
+          :pending="app.isChannelPending('lan')"
           @update:model-value="toggleLan"
         />
       </div>
@@ -212,6 +225,7 @@ async function removeEndpoint(address: string) {
           v-if="!app.isMobile"
           :label="t('settings.network.bluetooth')"
           :model-value="!!btStatus?.enabled"
+          :pending="app.isChannelPending('bluetooth')"
           :disabled="!btStatus?.available"
           @update:model-value="toggleBluetooth"
         />
