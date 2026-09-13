@@ -421,23 +421,28 @@ async fn scan_loop(
 
 /// BLE 候选失败退避的**纯函数内核**：连续失败 `failures` 次后，要等多久才允许再试。
 ///
-/// 指数退避：5s → 10s → 20s → 40s → 60s（上限 1 分钟）。
+/// ## 为什么几乎不退了（2026-09-13 第三轮真机）
 ///
-/// ## 为什么上限从 10 分钟砍到 1 分钟（2026-09-13 真机）
+/// 真机日志暴露出退避**把重试饿死了**：扫描周期已经是 2s，而退避是 5s→10s→20s→40s，
+/// 于是日志里一半的行是 `跳过候选 … 原因=退避中 剩余=7849ms` ——
+/// 用户看到的"搜不出来"，很大程度上是**我们自己不去连**。
 ///
-/// 旧值 60s→…→600s（10 分钟）。用户真机实测：**好友申请等了 5～6 分钟才到**。
-/// 复盘：BLE 上"连过去被拒"是常态（对端 GATT server 还没起来、镜像链路、对端正忙），
-/// 每次失败都把一个**稳定的** BLE 地址推进下一档退避；而"小 id 只接受"那条规则又让
-/// **只有一侧会拨**（另一方永远不拨），于是这条唯一的拨号通道被退避锁死到分钟级 ——
-/// 一旦恰好卡在 480s/600s 档，好友申请就真的等几分钟。
+/// 关键认识：**退避的初衷（别打扰对端）已经被 `DialGuard` 在途去重实现了** ——
+/// 同一个对端不会叠起多条连接（真机 2026-09-13 第一轮就是那个 bug 的教训）。
+/// 既然如此，"每轮扫描都试一次"就是安全的：一轮 4s，对端每 4s 被尝试一次，
+/// 而 BLE 上连不上的尝试本身是廉价且无副作用的。
 ///
-/// 退避的本意是"别每 10s 打扰对端一次"，5s 起步 + 60s 上限已经足够做到这一点
-/// （扫描周期本来就是 10s），而 10 分钟的上限只会把**暂时性**失败变成用户可见的故障。
+/// 所以新策略：**前 3 次失败不退避**（立刻再来），之后才给一个 5s 的短冷却。
 fn ble_dial_backoff_ms(failures: u32) -> i64 {
-    const BASE_MS: i64 = 5_000;
-    const MAX_MS: i64 = 60_000;
-    let shift = failures.saturating_sub(1).min(4);
-    (BASE_MS << shift).min(MAX_MS)
+    /// 前几次失败不退避 —— 这是"搜不出来"最直接的解药。
+    const FREE_ATTEMPTS: u32 = 3;
+    /// 之后每次失败的固定冷却（不用指数：指数只会让"暂时性失败"变成分钟级等待）。
+    const COOLDOWN_MS: i64 = 5_000;
+    if failures <= FREE_ATTEMPTS {
+        0
+    } else {
+        COOLDOWN_MS
+    }
 }
 
 /// 该候选现在是否处于退避期（true = 跳过）。
@@ -650,6 +655,8 @@ async fn finish_dial(
         read_hello_frame(&mut reader, HANDSHAKE_TIMEOUT, &mut *shutdown, &state, &ble_id).await?;
     let Message::Hello {
         device_id,
+        nickname,
+        device_type,
         tcp_port,
         nonce,
         sig,
@@ -736,7 +743,10 @@ async fn finish_dial(
     register_connection(&state, &peer_id, ep.clone(), PathKind::Bluetooth);
     state.logger.info(
         "ble",
-        format!("[SESSION] 已就绪 peer={peer_id} ep={ep}（双向 Hello 已验签，transport 可用）"),
+        format!(
+            "[SESSION] 已就绪 peer={peer_id} 昵称={nickname:?} 类型={device_type} ep={ep}\
+             （双向 Hello 已验签，transport 可用；**这个 ep 就是该设备对应的蓝牙地址**）"
+        ),
     );
     state.logger.info(
         "ble",
@@ -1523,31 +1533,40 @@ mod tests {
     #![allow(unused_imports)]
     use super::*;
 
-    /// **拨号退避必须"能快速恢复"**：旧上限 10 分钟把暂时性失败变成用户可见的故障
-    /// （真机：好友申请等了 5～6 分钟才到）。
+    /// **拨号退避不能把重试饿死**（2026-09-13 第三轮真机）。
+    ///
+    /// 真机日志：`跳过候选 … 原因=退避中 剩余=7849ms` 占了近一半的日志行 ——
+    /// 扫描周期已经是 2s，而退避是 5s→10s→20s→40s ⇒ **大部分轮次根本不去连**。
+    /// 用户看到的"搜不出来"，很大一部分是我们自己不去试。
+    ///
+    /// "别打扰对端"这件事已经由 `DialGuard` 在途去重保证了（同一对端不会叠连接，
+    /// 那是真机第一轮踩出来的 bug），所以每轮都试是安全的。
     #[test]
-    fn dial_backoff_recovers_within_a_minute() {
-        // 5s → 10s → 20s → 40s → 60s（封顶 1 分钟）
-        assert_eq!(ble_dial_backoff_ms(1), 5_000);
-        assert_eq!(ble_dial_backoff_ms(2), 10_000);
-        assert_eq!(ble_dial_backoff_ms(3), 20_000);
-        assert_eq!(ble_dial_backoff_ms(4), 40_000);
-        assert_eq!(
-            ble_dial_backoff_ms(5),
-            60_000,
-            "第 5 次失败必须封顶在 60s（上限必须 60s）"
-        );
-        // 上限必须**封在 1 分钟**：再多失败也不许退到分钟级以上
-        for n in 6..50 {
+    fn dial_backoff_does_not_starve_retries() {
+        // 前 3 次失败：立刻可再试（不等于"忙等" —— 节奏由 2s 的扫描周期决定）
+        for n in 1..=3 {
             assert_eq!(
                 ble_dial_backoff_ms(n),
-                60_000,
-                "第 {n} 次失败仍在退避 {0}ms —— 上限必须 60s",
+                0,
+                "第 {n} 次失败不该有冷却，否则重试被自己的退避饿死"
+            );
+        }
+        // 之后：固定 5s，**绝不允许指数增长**
+        for n in 4..200 {
+            assert_eq!(
+                ble_dial_backoff_ms(n),
+                5_000,
+                "第 {n} 次失败的冷却必须固定 5s（指数退避会把暂时性失败变成分钟级等待）"
+            );
+        }
+        // 上限必须远小于旧值 60s：一旦有人改回指数，这条会立刻 FAIL
+        for n in 1..200 {
+            assert!(
+                ble_dial_backoff_ms(n) < 10_000,
+                "冷却 {0}ms 过大 ⇒ 用户点「扫描」也不会立刻重试",
                 ble_dial_backoff_ms(n)
             );
         }
-        // 0 次失败（理论上不会查）也不能 panic / 退化为 0
-        assert!(ble_dial_backoff_ms(0) >= 5_000);
     }
 
     /// **握手必须容忍前导帧**（真机 2026-09-13 的真因之一）。
