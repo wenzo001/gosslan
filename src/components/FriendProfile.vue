@@ -22,7 +22,7 @@ import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { ArrowLeft, MessageCircle, UserMinus } from "lucide-vue-next";
 import BaseModal from "@/components/BaseModal.vue";
-import { avatarInitial, nameToColor } from "@/utils/color";
+import { avatarInitial, avatarInitialLen, nameToColor } from "@/utils/color";
 import type { Friend } from "@/types";
 
 const props = defineProps<{ friend: Friend }>();
@@ -93,12 +93,12 @@ const confirmRemove = ref(false);
         <!-- 头部：头像 + 昵称 + 状态徽标，右侧跟随几行小字段（微信式） -->
         <div class="flex items-start gap-4">
           <div
-            class="flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-2xl font-medium text-white"
+            class="gosslan-avatar-box flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-2xl font-medium text-white"
             :class="!friend.online ? 'grayscale opacity-70' : ''"
             :style="{ backgroundColor: nameToColor(friend.nickname) }"
           >
             <img alt="" v-if="friend.avatar" :src="friend.avatar" class="h-full w-full object-cover" />
-            <span v-else>{{ initial }}</span>
+            <span v-else class="gosslan-avatar-initial" :data-len="avatarInitialLen(friend.nickname)">{{ initial }}</span>
           </div>
           <div class="min-w-0 flex-1">
             <div class="flex items-center gap-2">

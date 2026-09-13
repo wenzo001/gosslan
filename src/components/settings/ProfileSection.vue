@@ -3,7 +3,7 @@ import { ref, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import SettingsGroup from "@/components/settings/SettingsGroup.vue";
-import { avatarInitial, nameToColor } from "@/utils/color";
+import { avatarInitial, avatarInitialLen, nameToColor } from "@/utils/color";
 import { Camera } from "lucide-vue-next";
 import { t } from "@/i18n";
 
@@ -121,14 +121,19 @@ function processAvatar(file: File): Promise<string> {
     <div class="flex items-center gap-4 p-4">
       <!-- 头像：点击更换 -->
       <button
-        class="group relative h-16 w-16 shrink-0 overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
+        class="gosslan-avatar-box group relative h-16 w-16 shrink-0 overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
         :style="{ backgroundColor: nameToColor(nickname) }"
         :title="t('settings.profile.changeAvatar')"
         :aria-label="t('settings.profile.changeAvatar')"
         @click="avatarInput?.click()"
       >
         <img alt="" v-if="avatar" :src="avatar" class="h-full w-full object-cover" />
-        <span v-else class="text-2xl font-semibold">{{ avatarInitial(nickname) }}</span>
+        <span
+          v-else
+          class="gosslan-avatar-initial text-2xl font-semibold"
+          :data-len="avatarInitialLen(nickname)"
+          >{{ avatarInitial(nickname) }}</span
+        >
         <span
           class="hover-reveal-op absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 transition group-hover:opacity-100"
         >

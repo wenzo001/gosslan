@@ -3,7 +3,7 @@ import { t } from "@/i18n";
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useChatStore } from "@/stores/useChatStore";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
-import { avatarInitial, nameToColor } from "@/utils/color";
+import { avatarInitial, avatarInitialLen, nameToColor } from "@/utils/color";
 import type { SendState } from "@/composables/useMessageDisplay";
 import { Check, Circle, Loader2, RefreshCw } from "lucide-vue-next";
 
@@ -86,11 +86,11 @@ function readerAvatar(id: string): string | null {
       <span
         v-for="id in visibleReaders"
         :key="id"
-        class="flex h-4 w-4 items-center justify-center overflow-hidden rounded-full border border-[var(--gosslan-panel)] text-[11px] text-white"
+        class="gosslan-avatar-box flex h-4 w-4 items-center justify-center overflow-hidden rounded-full border border-[var(--gosslan-panel)] text-[11px] text-white"
         :style="{ backgroundColor: nameToColor(readerName(id)) }"
       >
         <img alt="" v-if="readerAvatar(id)" :src="readerAvatar(id) ?? undefined" class="h-full w-full object-cover" />
-        <span v-else>{{ avatarInitial(readerName(id)) }}</span>
+        <span v-else class="gosslan-avatar-initial" :data-len="avatarInitialLen(readerName(id))">{{ avatarInitial(readerName(id)) }}</span>
       </span>
       <span
         v-if="extraReaders.length > 0"
@@ -112,11 +112,11 @@ function readerAvatar(id: string): string | null {
         class="flex items-center gap-2 rounded-[var(--gosslan-radius-xs)] px-2 py-1 hover:bg-[var(--gosslan-hover)]"
       >
         <span
-          class="flex h-5 w-5 items-center justify-center overflow-hidden rounded-full text-[11px] text-white"
+          class="gosslan-avatar-box flex h-5 w-5 items-center justify-center overflow-hidden rounded-full text-[11px] text-white"
           :style="{ backgroundColor: nameToColor(readerName(id)) }"
         >
           <img alt="" v-if="readerAvatar(id)" :src="readerAvatar(id) ?? undefined" class="h-full w-full object-cover" />
-          <span v-else>{{ avatarInitial(readerName(id)) }}</span>
+          <span v-else class="gosslan-avatar-initial" :data-len="avatarInitialLen(readerName(id))">{{ avatarInitial(readerName(id)) }}</span>
         </span>
         <span class="max-w-28 truncate" :title="readerName(id)">{{ readerName(id) }}</span>
       </div>

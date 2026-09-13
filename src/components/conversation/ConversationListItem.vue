@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
 import { fmtConversationTime } from "@/utils/time";
-import { avatarInitial, nameToColor } from "@/utils/color";
+import { avatarInitial, avatarInitialLen, nameToColor } from "@/utils/color";
 import { computed, onUnmounted } from "vue";
 import { useChatStore } from "@/stores/useChatStore";
 import { useMemberProfile } from "@/composables/useMemberProfile";
@@ -122,13 +122,13 @@ const gridTiles = computed(() => {
   if (props.conv.kind !== "group") return [];
   const groupId = props.conv.id.replace(/^group:/, "");
   const memberIds = chat.groups.find((g) => g.id === groupId)?.members ?? [];
-  const tiles: { avatar: string | null; label: string; color: string }[] = [];
+  const tiles: { avatar: string | null; label: string; len: number; color: string }[] = [];
   for (const id of memberIds.slice(0, 4)) {
     const p = memberProfile(id);
-    tiles.push({ avatar: p.avatar, label: initials(p.name), color: nameToColor(p.name) });
+    tiles.push({ avatar: p.avatar, label: initials(p.name), len: avatarInitialLen(p.name), color: nameToColor(p.name) });
   }
   while (tiles.length < Math.min(4, Math.max(memberIds.length, 1))) {
-    tiles.push({ avatar: null, label: initials(props.conv.name), color: nameToColor(props.conv.name) });
+    tiles.push({ avatar: null, label: initials(props.conv.name), len: avatarInitialLen(props.conv.name), color: nameToColor(props.conv.name) });
   }
   return tiles;
 });
@@ -167,21 +167,21 @@ const gridTiles = computed(() => {
         <div
           v-for="(t, i) in gridTiles"
           :key="i"
-          class="flex items-center justify-center overflow-hidden text-[11px] font-medium text-white"
+          class="gosslan-avatar-box flex items-center justify-center overflow-hidden text-[11px] font-medium text-white"
           :style="{ backgroundColor: t.color }"
         >
           <img alt="" v-if="t.avatar" :src="t.avatar" class="h-full w-full object-cover" />
-          <span v-else>{{ t.label }}</span>
+          <span v-else class="gosslan-avatar-initial" :data-len="t.len">{{ t.label }}</span>
         </div>
       </div>
       <div
         v-else
-        class="flex h-10 w-10 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
+        class="gosslan-avatar-box flex h-10 w-10 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
         :class="online === false ? 'grayscale opacity-70' : ''"
         :style="{ backgroundColor: nameToColor(conv.name) }"
       >
         <img alt="" v-if="conv.avatar" :src="conv.avatar" class="h-full w-full object-cover" />
-        <span v-else class="text-sm font-medium">{{ initials(conv.name) }}</span>
+        <span v-else class="gosslan-avatar-initial text-sm font-medium" :data-len="avatarInitialLen(conv.name)">{{ initials(conv.name) }}</span>
       </div>
       <!-- 在线标识：群聊不显示；离线标灰半透 -->
       <span

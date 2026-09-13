@@ -9,7 +9,7 @@ import type { ChannelStatus, Peer } from "@/types";
 import { api } from "@/api";
 import SettingsToggle from "@/components/settings/SettingsToggle.vue";
 import BaseModal from "@/components/BaseModal.vue";
-import { avatarInitial, nameToColor } from "@/utils/color";
+import { avatarInitial, avatarInitialLen, nameToColor } from "@/utils/color";
 import { Check, UserPlus, X } from "lucide-vue-next";
 
 const props = defineProps<{ open: boolean }>();
@@ -297,11 +297,11 @@ async function add(peerId: string) {
           class="flex items-center gap-3 border-b border-[var(--gosslan-border)] px-1 py-2 last:border-0 [contain-intrinsic-size:auto_53px] [content-visibility:auto]"
         >
           <div
-            class="flex h-9 w-9 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
+            class="gosslan-avatar-box flex h-9 w-9 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
             :style="{ backgroundColor: nameToColor(p.nickname) }"
           >
             <img alt="" v-if="p.avatar" :src="p.avatar" class="h-full w-full object-cover" />
-            <span v-else class="text-sm font-semibold">{{ initials(p.nickname) }}</span>
+            <span v-else class="gosslan-avatar-initial text-sm font-semibold" :data-len="avatarInitialLen(p.nickname)">{{ initials(p.nickname) }}</span>
           </div>
           <div class="min-w-0 flex-1">
             <div class="truncate text-sm" :title="p.nickname">{{ p.nickname }}</div>

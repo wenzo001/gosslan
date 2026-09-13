@@ -2,7 +2,7 @@
 import { computed } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
-import { avatarInitial, nameToColor } from "@/utils/color";
+import { avatarInitial, avatarInitialLen, nameToColor } from "@/utils/color";
 import { Moon, ScrollText, Sun } from "lucide-vue-next";
 import UnreadBadge from "@/components/UnreadBadge.vue";
 import { t } from "@/i18n";
@@ -34,7 +34,7 @@ const initials = computed(() => avatarInitial(app.device?.nickname));
     <!-- 顶部：本人头像（点开设置/我）；在线点放在 overflow-hidden 按钮外层，避免被裁切 -->
     <div class="relative shrink-0">
       <button
-        class="flex h-10 w-10 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white transition hover:opacity-90"
+        class="gosslan-avatar-box flex h-10 w-10 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white transition hover:opacity-90"
         :class="settingsOpening ? 'opacity-60' : ''"
         :aria-busy="settingsOpening"
         :style="{ backgroundColor: nameToColor(app.device?.nickname ?? '') }"
@@ -43,7 +43,12 @@ const initials = computed(() => avatarInitial(app.device?.nickname));
         @click="emit('open-settings')"
       >
         <img alt="" v-if="app.device?.avatar" :src="app.device.avatar" class="h-full w-full object-cover" />
-        <span v-else class="text-sm font-medium">{{ initials }}</span>
+        <span
+          v-else
+          class="gosslan-avatar-initial text-sm font-medium"
+          :data-len="avatarInitialLen(app.device?.nickname)"
+          >{{ initials }}</span
+        >
       </button>
       <!-- 本人在线状态点 -->
       <span

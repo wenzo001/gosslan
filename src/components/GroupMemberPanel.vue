@@ -5,7 +5,7 @@ import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import BaseModal from "@/components/BaseModal.vue";
 import { useMemberProfile } from "@/composables/useMemberProfile";
-import { avatarInitial, nameToColor } from "@/utils/color";
+import { avatarInitial, avatarInitialLen, nameToColor } from "@/utils/color";
 import { ArrowRightLeft, Crown, LogOut, Plus, UserMinus, X } from "lucide-vue-next";
 import type { Friend } from "@/types";
 
@@ -123,12 +123,12 @@ async function confirmAction() {
         >
           <div class="relative shrink-0">
             <div
-              class="flex h-9 w-9 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
+              class="gosslan-avatar-box flex h-9 w-9 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
               :class="!memberProfile(id).online ? 'grayscale opacity-70' : ''"
               :style="{ backgroundColor: nameToColor(memberProfile(id).name) }"
             >
               <img alt="" v-if="memberProfile(id).avatar" :src="memberProfile(id).avatar ?? undefined" class="h-full w-full object-cover" />
-              <span v-else class="text-xs font-semibold">{{ initials(memberProfile(id).name) }}</span>
+              <span v-else class="gosslan-avatar-initial text-xs font-semibold" :data-len="avatarInitialLen(memberProfile(id).name)">{{ initials(memberProfile(id).name) }}</span>
             </div>
             <span
               class="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border-2 border-[var(--gosslan-panel)]"
@@ -199,11 +199,11 @@ async function confirmAction() {
               @click="addMember(f)"
             >
               <div
-                class="flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
+                class="gosslan-avatar-box flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
                 :style="{ backgroundColor: nameToColor(f.nickname) }"
               >
                 <img alt="" v-if="f.avatar" :src="f.avatar" class="h-full w-full object-cover" />
-                <span v-else class="text-[11px] font-semibold">{{ initials(f.nickname) }}</span>
+                <span v-else class="gosslan-avatar-initial text-[11px] font-semibold" :data-len="avatarInitialLen(f.nickname)">{{ initials(f.nickname) }}</span>
               </div>
               <span class="min-w-0 flex-1 truncate text-sm" :title="f.nickname">{{ f.nickname }}</span>
               <Plus class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-text-2)]" />

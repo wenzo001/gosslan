@@ -4,7 +4,7 @@ import { ref, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import BaseModal from "@/components/BaseModal.vue";
-import { avatarInitial, nameToColor } from "@/utils/color";
+import { avatarInitial, avatarInitialLen, nameToColor } from "@/utils/color";
 import { Check } from "lucide-vue-next";
 
 const props = defineProps<{ open: boolean }>();
@@ -87,11 +87,11 @@ async function create() {
           <Check v-if="selected.includes(f.device_id)" class="h-3 w-3 text-white" />
         </div>
         <div
-          class="flex h-8 w-8 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
+          class="gosslan-avatar-box flex h-8 w-8 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
           :style="{ backgroundColor: nameToColor(f.nickname) }"
         >
           <img alt="" v-if="f.avatar" :src="f.avatar" class="h-full w-full object-cover" />
-          <span v-else class="text-xs font-semibold">{{ initials(f.nickname) }}</span>
+          <span v-else class="gosslan-avatar-initial text-xs font-semibold" :data-len="avatarInitialLen(f.nickname)">{{ initials(f.nickname) }}</span>
         </div>
         <span class="flex-1 text-sm">{{ f.nickname }}</span>
         <span class="text-xs text-[var(--gosslan-text-2)]">{{ f.online ? t("common.online") : t("common.offline") }}</span>

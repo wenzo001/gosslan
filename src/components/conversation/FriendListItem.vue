@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
 import { onUnmounted } from "vue";
-import { avatarInitial, nameToColor } from "@/utils/color";
+import { avatarInitial, avatarInitialLen, nameToColor } from "@/utils/color";
 import { haptic } from "@/utils/haptics";
 import type { Friend } from "@/types";
 
@@ -127,12 +127,12 @@ onUnmounted(clearPress);
     ></div>
     <div class="relative shrink-0">
       <div
-        class="flex items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
+        class="gosslan-avatar-box flex items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
         :class="[compact ? 'h-8 w-8' : 'h-10 w-10', !friend.online ? 'grayscale opacity-70' : '']"
         :style="{ backgroundColor: nameToColor(friend.nickname) }"
       >
         <img alt="" v-if="friend.avatar" :src="friend.avatar" class="h-full w-full object-cover" />
-        <span v-else :class="compact ? 'text-xs font-medium' : 'text-sm font-medium'">{{ initials(friend.nickname) }}</span>
+        <span v-else class="gosslan-avatar-initial" :class="compact ? 'text-xs font-medium' : 'text-sm font-medium'" :data-len="avatarInitialLen(friend.nickname)">{{ initials(friend.nickname) }}</span>
       </div>
       <span
         class="absolute -bottom-0.5 -right-0.5 h-2.5 w-2.5 rounded-full border-2 border-[var(--gosslan-list)]"
