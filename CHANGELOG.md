@@ -10,6 +10,12 @@
 
 ## [Unreleased]
 
+### Fixed (e2e 示例编译)
+
+分享消息新增可选 to 字段后，examples/e2e_peer.rs 的 ShareFileRequest 少了 to ⇒
+cargo build --example e2e_peer 编译不过（AI_RULES §29 要求网络/协议改动后必须跑）。
+补上 to: None（e2e 走直连、不做中继）。
+
 ## [4.3.14] - 2026-09-14
 
 ### Fixed (共享目录在中继/桥接下不可用)
