@@ -1606,6 +1606,10 @@ mod tests {
         );
         let transport = include_str!("network/transport.rs");
         assert!(transport.contains("find_source"), "服务端必须按 cid 找本地内容");
+        assert!(
+            transport.contains("db::get_group"),
+            "群成员也应能作为拉取请求方（A→B 成功后，C 可从已收完的 B 拉）"
+        );
     }
 
     /// 外设侧**每次订阅都必须清掉该 central 的重组器**（用户优先级 ①：加入 mesh 的稳定性）。

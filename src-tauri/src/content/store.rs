@@ -169,6 +169,41 @@ pub fn mark_complete(
     Ok(())
 }
 
+/// 记录一份**本机完整持有**的内容（发送成功，或接收落盘完成）。
+///
+/// 之后 find_source 就能按 cid 为任何请求方服务 —— 群聊里 A→B 成功后，C 也能从 B 拉
+/// （已收完的成员一样是种子）。
+#[allow(clippy::too_many_arguments)]
+pub fn record_local(
+    conn: &Connection,
+    cid: &str,
+    peer_id: &str,
+    group_id: Option<&str>,
+    name: &str,
+    size: u64,
+    direction: Direction,
+    path: &str,
+    now_ms: i64,
+) -> rusqlite::Result<()> {
+    let rec = TransferRecord {
+        cid: cid.to_string(),
+        peer_id: peer_id.to_string(),
+        group_id: group_id.map(str::to_string),
+        name: name.to_string(),
+        size,
+        direction,
+        status: TransferStatus::Complete,
+        received: size,
+        attempts: 0,
+        next_attempt_at: 0,
+        last_error: None,
+        path: Some(path.to_string()),
+        created_at: now_ms,
+        updated_at: now_ms,
+    };
+    upsert(conn, &rec)
+}
+
 /// 记录一次失败：按【纯策略】算新状态/退避，再落库。返回更新后的记录。
 pub fn record_failure(
     conn: &Connection,
@@ -259,5 +294,29 @@ mod tests {
             .unwrap();
         assert_eq!(r2.status, TransferStatus::Rejected);
         assert!(list_resumable_for_peer(&conn, "peer-a").unwrap().is_empty());
+    }
+
+    /// 接收落盘 / 发送成功都登记为"本机持有"⇒ find_source 能按 cid 找到并带上群上下文
+    /// （群聊里已收完的成员也能当种子）。
+    #[test]
+    fn record_local_makes_content_servable_with_group_scope() {
+        let conn = mem();
+        record_local(
+            &conn,
+            "cid-1",
+            "dev-a",
+            Some("g1"),
+            "a.png",
+            10,
+            Direction::Receive,
+            "/tmp/a.png",
+            5,
+        )
+        .unwrap();
+        let (owner, group, path) = find_source(&conn, "cid-1").unwrap().unwrap();
+        assert_eq!(owner, "dev-a");
+        assert_eq!(group.as_deref(), Some("g1"));
+        assert_eq!(path, "/tmp/a.png");
+        assert!(find_source(&conn, "nope").unwrap().is_none());
     }
 }

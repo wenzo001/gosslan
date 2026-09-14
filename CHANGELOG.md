@@ -10,6 +10,18 @@
 
 ## [Unreleased]
 
+### Added (内容拉取补全：接收方也能做种 + 群成员可拉 + 授权收紧)
+
+- 接收落盘（单聊 FileDone / 群聊 GroupFileDone）后，接收方同样登记为一颗**种子**
+  （content_transfers: cid → 本地 path）⇒ **群聊里 A→B 成功后，没拿到的 C 可以直接从
+  已收完的 B 拉**，不再依赖 A 在线。这正是"某个群友看不到图"的自愈路径。
+- 拉取授权从"仅好友"放宽到"好友 **或** 该内容所属群的成员"（并仍按 from == 链路对端
+  防冒名）；其余一律拒绝并记日志。
+- 单聊收到的文件消息内容补上 sha256（cid）：本机副本日后被清理时也能按 cid 重取。
+
+护栏：content_pull_requires_capability_negotiation 增补"群成员可拉"断言；
+content::store 新增种子记录单测（cid → path，带群上下文）。
+
 ## [4.4.0] - 2026-09-14
 
 ### Added (内容拉取：点一下，对方自动再发一份 —— ADR-0019 Phase 3)

@@ -2381,20 +2381,30 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                 crate::content::store::find_source(&dbc, &cid).ok().flatten()
             };
-            let Some((_owner, _group, path)) = source else {
+            let Some((_owner, group_id, path)) = source else {
                 state
                     .logger
                     .info("content", format!("ContentRequest：本机没有该内容 cid={cid}"));
                 return;
             };
-            let is_friend = {
+            // 授权：是好友，**或** 是该内容所属群的成员 —— 群聊里 A→B 成功后，
+            // 没拿到的 C 可以从已收完的 B 拉（B 是种子，内容寻址的意义所在）。
+            let allowed = {
                 let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                db::get_friend(&dbc, &from).is_some()
+                if db::get_friend(&dbc, &from).is_some() {
+                    true
+                } else if let Some(g) = group_id.as_deref() {
+                    db::get_group(&dbc, g)
+                        .map(|grp| grp.members.iter().any(|m| m == &from))
+                        .unwrap_or(false)
+                } else {
+                    false
+                }
             };
-            if !is_friend {
+            if !allowed {
                 state.logger.warn(
                     "content",
-                    format!("ContentRequest：请求方不是好友，拒绝服务 cid={cid} from={from}"),
+                    format!("ContentRequest：请求方无权限，拒绝服务 cid={cid} from={from}"),
                 );
                 return;
             }
@@ -4622,6 +4632,17 @@ async fn handle_relay_chunk(
                     return;
                 }
             };
+            // 内容指纹：接收方也算一份 cid —— 之后它自己就是种子
+            // （find_source 按 cid 服务；群聊里 C 可从已收完的 B 拉）。
+            let cid = {
+                use sha2::Digest;
+                let mut h = sha2::Sha256::new();
+                h.update(&full);
+                h.finalize()
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>()
+            };
             let path_str = path.to_string_lossy().to_string();
             let rec = {
                 let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -4637,10 +4658,23 @@ async fn handle_relay_chunk(
                     1.0,
                 )
                 .ok();
+                crate::content::store::record_local(
+                    &dbc,
+                    &cid,
+                    &from,
+                    None,
+                    &name,
+                    full.len() as u64,
+                    crate::content::model::Direction::Receive,
+                    &path_str,
+                    db::now_ms(),
+                )
+                .ok();
                 let content = serde_json::json!({
                     "name": name.clone(),
                     "path": path_str.clone(),
                     "size": full.len(),
+                    "sha256": cid.clone(),
                     "subtype": file::classify_file_subtype(&name),
                 })
                 .to_string();
@@ -5139,6 +5173,18 @@ async fn handle_group_file_done(
             1.0,
         )
         .ok();
+        // 群聊里"已收完的成员"同样登记为种子：C 可从 B 拉（ADR-0019 Phase 3）。
+        let _ = crate::content::store::record_local(
+            &dbc,
+            &gf.sha256,
+            &sender_id,
+            Some(&group_id),
+            &gf.name,
+            gf.size,
+            crate::content::model::Direction::Receive,
+            &r.final_path.to_string_lossy(),
+            db::now_ms(),
+        );
     }
     state.group_file_keys.lock().unwrap_or_else(|e| e.into_inner()).remove(&transfer_id);
     // 重发带本地路径的记录（applyIncoming 按 msg_id 合并更新，未读不重复）：
