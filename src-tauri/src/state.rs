@@ -838,6 +838,9 @@ pub struct AppState {
     pub network_generation: AtomicU64,
     /// 节点表变更通知（节流合并的唤醒信号）
     pub peers_notify: Arc<Notify>,
+    /// 各对端在 Hello 里声明的内容能力位图（device_id -> bits）。**不参与签名**，
+    /// 仅用于"能不能对它发 ContentRequest"；旧端不声明 ⇒ 默认 0 ⇒ 不发新帧（向后兼容）。
+    pub peer_content_features: Mutex<HashMap<String, u32>>,
     /// 按需探测触发：值递增 → 发现任务立即群发一次 `who_has`（好友搜索用）
     pub probe: Mutex<Option<watch::Sender<u64>>>,
 
@@ -1068,6 +1071,7 @@ impl AppState {
             peers_dirty: AtomicBool::new(false),
             network_generation: AtomicU64::new(0),
             peers_notify: Arc::new(Notify::new()),
+            peer_content_features: Mutex::new(HashMap::new()),
             probe: Mutex::new(None),
             diag: Mutex::new(DiscoveryDiag::default()),
             app_active: AtomicBool::new(true),

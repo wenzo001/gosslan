@@ -129,6 +129,46 @@ pub fn list_resumable_for_peer(
     rows.collect()
 }
 
+/// 找一份**可用于服务**的完整内容：status=complete 且 path 非空。
+///
+/// 返回 (peer_id, group_id, path)，多份时取最近更新的那份。
+/// 这是 ContentRequest「拥有即授权」的判据来源（ADR-0019 Phase 3）。
+pub fn find_source(
+    conn: &Connection,
+    cid: &str,
+) -> rusqlite::Result<Option<(String, Option<String>, String)>> {
+    conn.query_row(
+        // 判据是"本地是否真的有这份完整字节" = path 非空；接收侧只在
+        // FileDone 落盘后才写 path，发送侧本来就有整份文件。status 不参与 ——
+        // 内容可用性与"这条投递送没送出去"是两件事。
+        "SELECT peer_id, group_id, path FROM content_transfers
+         WHERE cid=?1 AND path IS NOT NULL
+         ORDER BY updated_at DESC LIMIT 1",
+        params![cid],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )
+    .optional()
+}
+
+/// 把一条记录标记为完成（收/发皆可）。
+pub fn mark_complete(
+    conn: &Connection,
+    cid: &str,
+    peer_id: &str,
+    direction: Direction,
+    path: &str,
+    now_ms: i64,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE content_transfers
+            SET status='complete', received=size, path=?4,
+                next_attempt_at=0, last_error=NULL, updated_at=?5
+          WHERE cid=?1 AND peer_id=?2 AND direction=?3",
+        params![cid, peer_id, direction.as_str(), path, now_ms],
+    )?;
+    Ok(())
+}
+
 /// 记录一次失败：按【纯策略】算新状态/退避，再落库。返回更新后的记录。
 pub fn record_failure(
     conn: &Connection,

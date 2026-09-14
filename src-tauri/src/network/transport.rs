@@ -1060,6 +1060,7 @@ pub fn build_signed_hello(state: &AppState, conv_clock: i64) -> Message {
         nickname: state.nickname.lock().unwrap_or_else(|e| e.into_inner()).clone(),
         avatar,
         device_type: crate::protocol::current_device_type().to_string(),
+        content_features: crate::protocol::content_features(),
         tcp_port,
         x25519_pubkey,
         ed25519_pubkey,
@@ -2369,11 +2370,59 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
         return;
     }
     match msg {
+        // ADR-0019 Phase 3：按 cid 拉取。**拥有即授权**，无需人工确认 —— 但只服务
+        // "确实是我的好友、且 from 就是这条链路的对端（防冒名）"。回发复用既有
+        // FileOffer→Chunk→Done→CompleteAck 流程（send_file_from_path）。
+        Message::ContentRequest { from, cid, .. } => {
+            if from != peer_id {
+                return;
+            }
+            let source = {
+                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                crate::content::store::find_source(&dbc, &cid).ok().flatten()
+            };
+            let Some((_owner, _group, path)) = source else {
+                state
+                    .logger
+                    .info("content", format!("ContentRequest：本机没有该内容 cid={cid}"));
+                return;
+            };
+            let is_friend = {
+                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                db::get_friend(&dbc, &from).is_some()
+            };
+            if !is_friend {
+                state.logger.warn(
+                    "content",
+                    format!("ContentRequest：请求方不是好友，拒绝服务 cid={cid} from={from}"),
+                );
+                return;
+            }
+            let transfer_id = format!("refetch-{}", uuid::Uuid::new_v4());
+            match crate::network::file::send_file_from_path(
+                state,
+                &from,
+                &transfer_id,
+                std::path::PathBuf::from(&path),
+            )
+            .await
+            {
+                Ok(()) => state.logger.info(
+                    "content",
+                    format!("已按 ContentRequest 回发内容 cid={cid} -> {from}"),
+                ),
+                Err(e) => state.logger.warn(
+                    "content",
+                    format!("ContentRequest 服务失败 cid={cid} from={from}: {e:?}"),
+                ),
+            }
+        }
         Message::Hello {
             device_id,
             nickname,
             avatar,
             device_type,
+            content_features,
             tcp_port,
             x25519_pubkey,
             ed25519_pubkey,
@@ -2383,6 +2432,12 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             if device_id != peer_id {
                 return;
             }
+            // 记录对端的内容能力位（不签名，仅用于"是否发拉取帧"）。
+            state
+                .peer_content_features
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(device_id.clone(), content_features);
             let ip = state
                 .peers
                 .lock()

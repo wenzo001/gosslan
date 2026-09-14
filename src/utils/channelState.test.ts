@@ -319,3 +319,15 @@ test("图片预览：在途失败不缓存 + 传输完成时失效重读", () =>
   const mf = read("composables/useMessageFile.ts");
   assert.match(mf, /transfer\.value\?\.status/, "预览必须随传输状态变化重读");
 });
+
+/**
+ * 内容拉取（ADR-0019 Phase 3）：能力协商 + 点击重取。
+ *
+ * 判据：api 暴露 request_content；图片气泡失败可触发重取；前端真的调后端命令。
+ */
+test("内容拉取：点击重取必须接通后端 request_content", () => {
+  assert.match(read("api/index.ts"), /requestContent:/, "api 必须暴露 request_content");
+  const item = read("components/MessageItem.vue");
+  assert.match(item, /@refetch="refetchContent"/, "图片气泡失败必须能触发重取");
+  assert.match(item, /invoke<boolean>\("request_content"/, "必须真的调后端命令");
+});

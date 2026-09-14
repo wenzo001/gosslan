@@ -2081,6 +2081,7 @@ mod tests {
             nickname: "A".into(),
             avatar: None,
             device_type: "desktop".into(),
+            content_features: crate::protocol::content_features(),
             tcp_port: 59992,
             x25519_pubkey: "xk".into(),
             ed25519_pubkey: "ek".into(),

@@ -4,7 +4,13 @@ import { computed, onUnmounted, ref, watch } from "vue";
 import { ImageOff, ImageIcon } from "lucide-vue-next";
 
 const props = defineProps<{ src: string }>();
-const emit = defineEmits<{ (e: "open", src: string): void }>();
+const emit = defineEmits<{ (e: "open", src: string): void; (e: "refetch"): void }>();
+
+/** 加载失败时点一下：先本地重试，同时请对端按 cid 再发一份（ADR-0019 点击重取）。 */
+function onFailedClick() {
+  retry();
+  emit("refetch");
+}
 
 /** 加载态：先撑出骨架占位，避免大图加载时气泡高度塌陷、列表跳动。 */
 const state = ref<"loading" | "loaded" | "failed">("loading");
@@ -84,7 +90,7 @@ onUnmounted(clearTimer);
     :role="state === 'loaded' ? 'button' : undefined"
     :tabindex="state === 'loaded' ? 0 : undefined"
     :aria-label="state === 'loaded' ? t('msg.clickToOpen') : undefined"
-    @click="state === 'loaded' ? emit('open', src) : state === 'failed' && retry()"
+    @click="state === 'loaded' ? emit('open', src) : state === 'failed' && onFailedClick()"
     @keydown.enter.prevent="state === 'loaded' && emit('open', src)"
     @keydown.space.prevent="state === 'loaded' && emit('open', src)"
   >

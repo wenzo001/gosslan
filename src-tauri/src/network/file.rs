@@ -150,6 +150,7 @@ pub async fn send_file_from_path(
         return Err(SendFileError::permanent("无法获取对方公钥，无法加密文件"));
     };
 
+    let path_str = path.to_string_lossy().to_string();
     {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::upsert_transfer(
@@ -160,10 +161,30 @@ pub async fn send_file_from_path(
             size,
             "send",
             "pending",
-            Some(path.to_string_lossy().as_ref()),
+            Some(path_str.as_str()),
             0.0,
         )
         .ok();
+        // 内容索引（ADR-0019 Phase 3）：按 cid 记录"本机持有这份完整字节"，
+        // 之后任何人发 ContentRequest 都能直接回发（拥有即授权，无需确认）。
+        let now = db::now_ms();
+        let rec = crate::content::model::TransferRecord {
+            cid: file_sha256.clone(),
+            peer_id: peer_id.to_string(),
+            group_id: None,
+            name: name.clone(),
+            size,
+            direction: crate::content::model::Direction::Send,
+            status: crate::content::model::TransferStatus::Active,
+            received: size,
+            attempts: 0,
+            next_attempt_at: 0,
+            last_error: None,
+            path: Some(path_str.clone()),
+            created_at: now,
+            updated_at: now,
+        };
+        let _ = crate::content::store::upsert(&dbc, &rec);
     }
 
     let (tx, rx) = tokio::sync::oneshot::channel();

@@ -62,6 +62,9 @@ export const api = {
   getMessages: (convId: string, limit?: number, offset?: number) =>
     invoke<MessageRecord[]>("get_messages", { convId, limit, offset }),
   getConvLink: (convId: string) => invoke<LinkState | null>("get_conv_link", { convId }),
+  /** 请对端按 cid 再发一份内容（图片/文件「点击重取」）。false = 对方版本不支持。 */
+  requestContent: (peerId: string, msgId: string) =>
+    invoke<boolean>("request_content", { peerId, msgId }),
   getMessageCount: (convId: string) => invoke<number>("get_message_count", { convId }),
   getConversations: () => invoke<Conversation[]>("get_conversations"),
   ensureConversation: (friendId: string) =>

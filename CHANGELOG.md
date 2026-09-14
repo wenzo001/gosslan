@@ -10,6 +10,29 @@
 
 ## [Unreleased]
 
+### Added (内容拉取：点一下，对方自动再发一份 —— ADR-0019 Phase 3)
+
+消息系统稳定化的第一批可感知能力：图片 / 文件没拿到时，**点一下**就会自动从对方重新
+取一份，**对方不需要确认**（拥有即授权）。仍然遵循分层与"能扩展"：
+
+- **网络层 · 能力协商**（向后兼容的硬前提）：Hello 增加 content_features 位图，
+  **不参与签名** ⇒ 老端忽略、新端可读；对端没声明 CONTENT_FEATURE_PULL 就**不发新帧**，
+  自动退化成今天的推送式。对端能力位存 state.peer_content_features。
+- **逻辑层 · 内容寻址**：cid = 明文 SHA-256；发送方把它写进文件消息内容，接收方据此
+  知道要拉什么。发送成功即写 content_transfers（cid → 本地 path）；
+  find_source 按 cid 找可服务的完整字节（**内容可用性与投递状态解耦**）。
+- **业务层 · 服务端**：新帧 Message::ContentRequest { from, cid, name, size }；校验
+  「from 就是这条链路的对端、且是好友」后，直接复用 send_file_from_path 回发一份
+  FileOffer（Chunk / Done / CompleteAck 整套复用，零新传输逻辑）。
+- **功能层 · 点击重取**：命令 request_content(peer_id, msg_id)；图片气泡加载失败点一下、
+  以及「图片已被清理 / 可向对方重新索取」占位，都会触发重取。
+
+护栏：content_pull_requires_capability_negotiation（Rust：能力位**不得**进入签名材料）
++ 前端用例（api / 气泡接线）。
+
+> 遗留（下一批）：接收侧完成后的内容索引（让"已收完的群友"也能当种子）、断点续传
+> From(seq)、以及把 content_transfers 状态统一呈现在文件气泡上。
+
 ## [4.3.23] - 2026-09-14
 
 ## [4.3.22] - 2026-09-14

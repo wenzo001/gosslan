@@ -315,6 +315,7 @@ pub fn run() {
             commands::send_group_file,
             commands::get_group_file_delivery_summary,
             commands::send_file,
+            commands::request_content,
             commands::send_file_auto,
             commands::send_file_relay,
             commands::get_transfers,
@@ -1584,6 +1585,27 @@ mod tests {
                 && body.contains("仍在接收"),
             "缺失的 final 文件必须先在途判定（file_receivers / group_file_receivers），在途报 Unknown 而不是 Gone"
         );
+    }
+
+    /// **内容拉取必须走能力协商**（ADR-0019 Phase 3）：旧端不发新帧、新端才拉；
+    /// 且能力位**不能进 Hello 签名材料**，否则老端验签会失败（向后兼容的硬前提）。
+    #[test]
+    fn content_pull_requires_capability_negotiation() {
+        let proto = include_str!("protocol.rs");
+        assert!(proto.contains("CONTENT_FEATURE_PULL"));
+        let sig = rust_fn_body(proto, "pub fn hello_signing_bytes(");
+        assert!(
+            !sig.contains("content_features"),
+            "content_features 不得进入签名材料（否则老端验签失败）"
+        );
+        let cmds = include_str!("commands.rs");
+        let body = rust_fn_body(cmds, "pub async fn request_content(");
+        assert!(
+            body.contains("CONTENT_FEATURE_PULL"),
+            "拉取必须按对端能力位协商，旧端不发新帧"
+        );
+        let transport = include_str!("network/transport.rs");
+        assert!(transport.contains("find_source"), "服务端必须按 cid 找本地内容");
     }
 
     /// 外设侧**每次订阅都必须清掉该 central 的重组器**（用户优先级 ①：加入 mesh 的稳定性）。

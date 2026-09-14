@@ -3425,10 +3425,13 @@ fn build_file_message(
     kind: &str,
     subtype: &str,
 ) -> MessageRecord {
+    // cid = 明文 sha256：接收方据此在需要时按 cid 拉取（ADR-0019 Phase 3）。
+    let cid = file::sha256_file_hex(std::path::Path::new(path)).unwrap_or_default();
     let content = serde_json::json!({
         "name": name,
         "path": path,
         "size": size,
+        "sha256": cid,
         "subtype": subtype,
     })
     .to_string();
@@ -3525,6 +3528,64 @@ pub async fn flush_pending_files(state: &Arc<AppState>, peer_id: &str) {
         }
         st.file_sending.lock().unwrap_or_else(|e| e.into_inner()).remove(&peer);
     });
+}
+
+/// 请对端**按 cid 再发一份**内容（ADR-0019 Phase 3「点击重取」）。
+///
+/// 用户点一下未完成/校验失败的图片或文件时调用。对方**无需确认**：它按 cid 找到本地
+/// 完整字节就直接回发一份 FileOffer（拥有即授权）。只发给 Hello 里声明了
+/// CONTENT_FEATURE_PULL 的对端；旧端返回 Ok(false)（不打扰、不报错）。
+#[tauri::command(async)]
+pub async fn request_content(
+    state: State<'_, Arc<AppState>>,
+    peer_id: String,
+    msg_id: String,
+) -> Result<bool, String> {
+    let s = state.inner();
+    let (cid, name, size) = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        let content = db::get_message_preview_source(&dbc, &msg_id)
+            .map(|(_sender, c)| c)
+            .ok_or_else(|| "消息不存在".to_string())?;
+        let v: serde_json::Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+        (
+            v.get("sha256")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string(),
+            v.get("name")
+                .and_then(|x| x.as_str())
+                .unwrap_or("file")
+                .to_string(),
+            v.get("size").and_then(|x| x.as_u64()).unwrap_or(0),
+        )
+    };
+    if cid.is_empty() {
+        return Err("这条内容没有内容指纹（对方版本较旧），无法重新获取".to_string());
+    }
+    // 能力协商：对方没声明拉取能力就不发新帧（向后兼容）。
+    let supports = s
+        .peer_content_features
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&peer_id)
+        .copied()
+        .unwrap_or(0)
+        & crate::protocol::CONTENT_FEATURE_PULL
+        != 0;
+    if !supports {
+        return Ok(false);
+    }
+    let msg = Message::ContentRequest {
+        from: s.device_id.clone(),
+        cid,
+        name,
+        size,
+    };
+    match try_send(s, &peer_id, &msg).await {
+        Ok(()) => Ok(true),
+        Err(e) => Err(format!("无法联系对方：{e}")),
+    }
 }
 
 #[tauri::command(async)]
