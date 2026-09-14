@@ -458,10 +458,24 @@ pub mod driver {
             for chunk in chunks {
                 // WithoutResponse：蓝牙链路层本身有重传与顺序保证，逐片确认会慢一个量级；
                 // 断连时整条连接都会重建，逐片确认并不能救回消息。
-                self.peripheral
+                if let Err(e) = self
+                    .peripheral
                     .write(&self.rx, &chunk, WriteType::WithoutResponse)
                     .await
-                    .map_err(|e| format!("BLE 写入失败：{e}"))?;
+                {
+                    // 兜底（真机 2026-09-14）：Android 在多片帧上会把第 2 片的 no-response 写
+                    // 直接拒掉。若这条特征也支持带响应写，就用它重试**同一片** —— 慢一档，
+                    // 但比整帧失败→拆链路→重连循环好得多。只在失败路径发生。
+                    if !self.rx.properties.contains(CharPropFlags::WRITE) {
+                        return Err(format!("BLE 写入失败：{e}"));
+                    }
+                    self.peripheral
+                        .write(&self.rx, &chunk, WriteType::WithResponse)
+                        .await
+                        .map_err(|e2| {
+                            format!("BLE 写入失败：{e}｜WithResponse 兜底也失败：{e2}")
+                        })?;
+                }
             }
             Ok(n)
         }

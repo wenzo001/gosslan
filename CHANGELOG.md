@@ -10,6 +10,24 @@
 
 ## [Unreleased]
 
+### Fixed (🔴 安卓蓝牙：多片帧永远发不出去 —— 好友申请/同意 2 片必挂)
+
+真机 2026-09-14（4.3.12，安卓 central ↔ Mac 外设）：
+单片的聊天（272B）能发出去，**2 片的 FriendRequest/FriendAccept（738B）永远失败**，
+日志是 BLE 写入失败：Unable to write characteristic；写失败 4 次即拆链路，
+于是每 2–4s 自拆重连一次，好友永远同步不了（安卓显示还不是好友、Mac 列表没反应）。
+
+根因在 btleplug 的 Android Java 实现：上一次 GATT 操作的 onCharacteristicWrite 回调
+里就直接发起下一次 writeCharacteristic，而 Android 的 mDeviceBusy 此刻还没清
+⇒ 第 2 片起一律返回 false。
+
+修法（本地补丁，见 scripts/android/btleplug-java/README.md）：
+- runNextCommand 改为 post 到主线程，等当前回调返回后再发下一跳；
+- Android 13+ 改用 writeCharacteristic(characteristic, value, writeType) 新重载；
+- Rust 侧兜底：no-response 被拒时，若该特征支持带响应写，就用 WithResponse 重试同一片。
+
+影响：单聊/好友/文件所有帧长 > 1 片的 BLE 发送都受这条修复覆盖。
+
 ## [4.3.12] - 2026-09-14
 
 ### Fixed (🔴 蓝牙优先通道被大头像污染：加好友/消息被堵几分钟)

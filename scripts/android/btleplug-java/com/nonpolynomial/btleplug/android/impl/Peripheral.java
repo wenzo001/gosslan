@@ -8,6 +8,10 @@ import android.bluetooth.BluetoothGattCallback;
 import android.bluetooth.BluetoothGattCharacteristic;
 import android.bluetooth.BluetoothGattDescriptor;
 import android.bluetooth.BluetoothGattService;
+import android.bluetooth.BluetoothStatusCodes;
+import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
@@ -37,6 +41,10 @@ class Peripheral {
     private int supervisionTimeout = -1;  // in 10ms units
 
     private final Queue<Runnable> commandQueue = new LinkedList<>();
+    // 本地补丁（见 scripts/android/btleplug-java README「本地补丁」）：GATT 回调里直接发起
+    // 下一次 writeCharacteristic 时，Android 的 mDeviceBusy 还没清 ⇒ 返回 false（多片帧必挂）。
+    // 把「下一跳」post 到主线程，等当前回调返回后再发。
+    private final Handler commandHandler = new Handler(Looper.getMainLooper());
     private final LinkedList<WeakReference<QueueStream<BluetoothGattCharacteristic>>> notificationStreams = new LinkedList<>();
     private boolean executingCommand = false;
     private CommandCallback commandCallback;
@@ -272,7 +280,14 @@ class Peripheral {
                             });
                         }
                     });
-                    if (!this.gatt.writeCharacteristic(characteristic)) {
+                    // 本地补丁：Android 13（API 33）起用带 value/writeType 的新重载，
+                    // 避免旧重载的 setValue/setWriteType 竞态；旧系统仍走旧重载。
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        int status = this.gatt.writeCharacteristic(characteristic, data, writeType);
+                        if (status != BluetoothStatusCodes.SUCCESS) {
+                            throw new RuntimeException("Unable to write characteristic (status=" + status + ")");
+                        }
+                    } else if (!this.gatt.writeCharacteristic(characteristic)) {
                         throw new RuntimeException("Unable to write characteristic");
                     }
                 });
@@ -540,13 +555,21 @@ class Peripheral {
     }
 
     private void runNextCommand() {
-        assert this.executingCommand;
-        this.commandCallback = null;
-        if (this.commandQueue.isEmpty()) {
-            this.executingCommand = false;
-        } else {
-            Runnable callback = this.commandQueue.remove();
-            callback.run();
+        // 本地补丁：延迟到当前 GATT 回调返回之后再发下一条 —— 否则 mDeviceBusy 仍为 true，
+        // writeCharacteristic 直接返回 false（真机：单片的 chat 能过，2 片的 FriendRequest/Accept 必挂）。
+        this.commandHandler.post(this::runNextCommandNow);
+    }
+
+    private void runNextCommandNow() {
+        synchronized (Peripheral.this) {
+            assert this.executingCommand;
+            this.commandCallback = null;
+            if (this.commandQueue.isEmpty()) {
+                this.executingCommand = false;
+            } else {
+                Runnable callback = this.commandQueue.remove();
+                callback.run();
+            }
         }
     }
 

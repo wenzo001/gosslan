@@ -26,3 +26,19 @@ btleplug 在 Android 上是 **Rust + Java 混合**实现：Java 侧只被 native
 - **升级 btleplug 时必须重新 vendor**：把新版本这两个目录整体覆盖过来，并核对
   `src/droidplug/jni/*.rs` 里 `find_class` / `jni_sig!` 用到的类名是否变化
   （改了就要同步 proguard keep 规则与注入脚本里的文件清单）。
+
+## 本地补丁（重新 vendor 后**必须重新应用**）
+
+`com/nonpolynomial/btleplug/android/impl/Peripheral.java` 有两处本地补丁
+（vendored 副本 `src-tauri/vendor/btleplug/.../Peripheral.java` 必须与本目录逐字一致）：
+
+1. **GATT 回调里不再直接发起下一次操作**：`runNextCommand` 改为把下一跳 post 到主线程的
+   `runNextCommandNow`。真机 2026-09-14：安卓 central 写「2 片及以上」的帧时，
+   第 1 片成功、第 2 片 `writeCharacteristic` 直接返回 false（`Unable to write characteristic`）——
+   因为上一片的 `onCharacteristicWrite` 回调还没返回，Android 的 `mDeviceBusy` 仍为 true。
+   表现：单片的聊天能过，2 片的 FriendRequest/FriendAccept 必挂 ⇒ 好友永远同步不了，
+   而且每 2s 因写失败自拆链路、重连。
+2. **API 33+ 改用 `writeCharacteristic(characteristic, value, writeType)` 重载**
+   （旧重载的 `setValue`/`setWriteType` 在 Android 13 起有竞态）；旧系统仍走旧重载。
+
+排查线索：真机上再出现「单帧能过、多帧必挂」，先确认这两处补丁还在。
