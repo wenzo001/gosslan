@@ -10,6 +10,22 @@
 
 ## [Unreleased]
 
+### Fixed (🔴 Windows CI 打包失败 —— Windows 专用分支的编译错误本地拦不住)
+
+用户 2026-09-14：GitHub Actions 的 Windows 两个 job（x64 + arm64）都卡在
+"Build Windows installer (NSIS)" 步骤失败。
+
+根因：4.3.18 新增的 notifications.rs 里，Windows 专用分支写成了
+curr_dir.ends_with(format!("{SEP}target{SEP}debug"))。str::ends_with 需要 Pattern，
+而 String 没有实现它（只实现了 &String）⇒ Rust 编译失败。这段在 macOS 上被
+#[cfg(windows)] 掉，本地 cargo check 完全看不到 —— 于是两个 Windows job 同时挂，
+而 mac/安卓 CI 照样绿。
+
+修法：补 .as_str()（与 tauri-plugin-notification 上游的写法一致）。
+护栏：新增单测 windows_only_branch_is_source_checkable_for_pattern_bounds ——
+扫描生产代码里每个 ends_with(format!( 必须以 .as_str()) 收尾（跳过注释行、排除测试模块，
+避免“护栏被自己的说明误伤”）；verify-guards.py 加了对应非空转用例。
+
 ## [4.3.18] - 2026-09-14
 
 ### Fixed (🔴 Windows 收不到系统通知 + 通知开关对好友申请无效)

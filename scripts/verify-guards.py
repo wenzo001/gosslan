@@ -245,6 +245,20 @@ CASES: list[Case] = [
         expect_fail_hint="notify_desktop",
         tags=["frontend", "new-guards"],
     ),
+    Case(
+        name="Windows 专用分支的编译错误必须本地可拦（ends_with 少 as_str）",
+        why="2026-09-14 真实事故：notifications.rs 的 Windows 分支写成 ends_with(format!(...))，"
+            "String 未实现 Pattern ⇒ 两个 Windows CI job 全挂；macOS 上该分支被 cfg 掉、本地跑不出来。",
+        file=TAURI / "src" / "notifications.rs",
+        injections=[(
+            'let in_dev = curr_dir.ends_with(format!("{SEP}target{SEP}debug").as_str())',
+            'let in_dev = curr_dir.ends_with(format!("{SEP}target{SEP}debug"))',
+        )],
+        cmd=cargo("test", "--lib", "windows_only_branch_is_source_checkable_for_pattern_bounds"),
+        cwd=TAURI,
+        expect_fail_hint="as_str",
+        tags=["rust", "new-guards"],
+    ),
     # ---------------- Rust：capability 覆盖 ----------------
     Case(
         name="capability 覆盖每个窗口（漏一个窗口 ACL 会静默拒绝）",
