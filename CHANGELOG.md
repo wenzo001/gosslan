@@ -10,6 +10,15 @@
 
 ## [Unreleased]
 
+### Fixed (群聊收文件/图片同样进入统一状态并能自动重试)
+
+- begin_group_receive 一开始就登记 content_transfers（Active + cid）；
+  fail_group_receive（中途断链/失败）由 record_failure 标 **Incomplete**。
+- 于是群聊里"某个人看不到图"也走同一条自愈路径：状态可见、建链自动重取、
+  点一下「重新获取」；且**已收完的成员是种子**（前一条已实现），原发送方不在时也能从群友取。
+
+护栏沿用 incomplete_content_is_auto_retried_behind_capability_gate。
+
 ## [4.7.1] - 2026-09-14
 
 ### Fixed (中途失败/断链的接收不再停在 Active：记为 Incomplete 并自动重试)

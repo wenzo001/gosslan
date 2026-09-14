@@ -633,7 +633,7 @@ pub fn begin_group_receive(
         name,
         size,
         file_key,
-        expected_sha256,
+        expected_sha256.clone(),
         &state.group_file_receivers,
     )?;
     // 持久化本地路径到 file_transfers（复用现有表，无 schema 变更）：
@@ -652,6 +652,27 @@ pub fn begin_group_receive(
             0.0,
         )
         .ok();
+        // 统一状态：群文件接收一开始就登记 Active（cid → 暂无 path）。
+        // 中途失败由 fail_group_receive 标 Incomplete ⇒ 建链自动重取
+        // （群成员也能做种，原发送方不在也能从别人取）。
+        let now = db::now_ms();
+        let rec = crate::content::model::TransferRecord {
+            cid: expected_sha256.clone(),
+            peer_id: peer_id.to_string(),
+            group_id: None,
+            name: name.to_string(),
+            size,
+            direction: crate::content::model::Direction::Receive,
+            status: crate::content::model::TransferStatus::Active,
+            received: 0,
+            attempts: 0,
+            next_attempt_at: 0,
+            last_error: None,
+            path: None,
+            created_at: now,
+            updated_at: now,
+        };
+        let _ = crate::content::store::upsert(&dbc, &rec);
     }
     Ok(final_path)
 }
@@ -660,6 +681,16 @@ pub fn begin_group_receive(
 pub fn fail_group_receive(state: &AppState, transfer_id: &str) {
     if let Some(r) = state.group_file_receivers.lock().unwrap_or_else(|e| e.into_inner()).remove(transfer_id) {
         let _ = std::fs::remove_file(&r.tmp_path);
+        // 统一状态：群文件中途失败/断链 ⇒ Incomplete（可恢复）⇒ 建链时按退避自动重取。
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = crate::content::store::record_failure(
+            &dbc,
+            &r.expected_sha256,
+            &r.peer_id,
+            crate::content::model::Direction::Receive,
+            crate::content::model::FailReason::Partial,
+            db::now_ms(),
+        );
     }
 }
 
