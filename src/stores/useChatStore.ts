@@ -1024,7 +1024,13 @@ export const useChatStore = defineStore("chat", () => {
       onPeers: (p) => {
         peers.value = p;
         const onlineIds = new Set(p.map((x) => x.device_id));
-        friends.value.forEach((f) => (f.online = onlineIds.has(f.device_id)));
+        // 有活跃链路的节点即使在广播里缺席（局域网丢广播 / 刚被 sweep）也算在线，
+        // 与后端 get_friends 的 friend_is_online 口径一致 ——
+        // 否则会「局域网明明连上了，在线状态却不实时/显示离线」。
+        const linkedIds = new Set(p.filter((x) => x.link).map((x) => x.device_id));
+        friends.value.forEach(
+          (f) => (f.online = onlineIds.has(f.device_id) || linkedIds.has(f.device_id)),
+        );
         // 同步好友/单聊会话的昵称/头像（对方改名后立即生效）
         syncProfileFromPeers(friends.value, conversations.value, p);
         // 拓扑（节点数/中继数/平均 RTT/在线）变化很慢，而 peers-updated 最多 3/s；

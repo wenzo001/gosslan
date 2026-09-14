@@ -271,3 +271,27 @@ test("桌面通知必须走后端 notify_desktop（不再依赖被插件替换�
     "设置页必须有「发送测试通知」入口（Windows 静默失败时唯一的自检手段）",
   );
 });
+
+/**
+ * 链路徽标与在线状态必须**实时**（用户 2026-09-14：两边全在局域网，却显示「已桥接」，
+ * 且好友在线状态不实时）。
+ *
+ * 两条根因都在这条测试里钉死：
+ * 1. 前端只按"在不在节点表"判在线 ⇒ 有活跃链路但广播没收到的好友被显示离线；
+ * 2. 聊天头的链路状态只按"消息条数"刷新 ⇒ 链路切回直连后仍显示「桥接」。
+ */
+test("链路徽标/在线状态必须实时（不能只看节点表或消息快照）", () => {
+  const chat = read("stores/useChatStore.ts");
+  assert.match(
+    chat,
+    /linkedIds\.has\(f\.device_id\)/,
+    "在线必须包含「有活跃链路」的节点（与后端 friend_is_online 同口径）",
+  );
+  assert.match(chat, /filter\(\(x\) => x\.link\)/, "peers-updated 的 link 字段必须被用上");
+  const win = read("components/ChatWindow.vue");
+  assert.match(
+    win,
+    /const peerLink = chat\.peers\.find/,
+    "聊天头的链路状态必须在活跃对端链路变化时刷新",
+  );
+});

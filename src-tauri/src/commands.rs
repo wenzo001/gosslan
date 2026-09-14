@@ -2015,20 +2015,30 @@ pub async fn send_message(
     Ok(rec)
 }
 
-/// 读取会话的「当前链路」快照（最近一条消息的链路 + 中间节点数）。
-/// 前端聊天窗口据此显示连接图标（LAN / 桥接 / 蓝牙 + 节点数）。
+/// 读取会话的「当前链路」。前端聊天窗口据此显示连接图标（LAN / 桥接 / 蓝牙 + 节点数）。
+///
+/// **有直连时以此刻实际选路为准（hop=0）**，而不是返回"上一条消息"的快照 ——
+/// 否则链路从蓝牙/中继切回局域网后，聊天头会一直显示「桥接」直到再发一条消息
+/// （用户 2026-09-14 真机：两边全在局域网，却显示「已桥接」）。
+/// 无直连时才回落到最后一次的快照（桥接跳数由消息路径反推，只在收发时更新）。
+/// 注意返回 Result<Option<_>, _>：Tauri 要求"带引用输入的 async 命令"必须返回 Result
+/// （State<'_, _> 就是引用输入）。Ok 会被自动解包，前端拿到的仍是 LinkState | null，
+/// 契约不变。
 #[tauri::command(async)]
-pub fn get_conv_link(
+pub async fn get_conv_link(
     state: State<'_, Arc<AppState>>,
     conv_id: String,
-) -> Option<crate::state::LinkState> {
-    state
-        .inner()
-        .conv_link
+) -> Result<Option<crate::state::LinkState>, String> {
+    let s = state.inner();
+    if s.has_link(&conv_id).await {
+        let path = crate::network::transport::inbound_path_kind(s, &conv_id).await;
+        return Ok(Some(crate::state::LinkState { path, hop: 0 }));
+    }
+    Ok(s.conv_link
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .get(&conv_id)
-        .cloned()
+        .cloned())
 }
 
 #[tauri::command(async)]
