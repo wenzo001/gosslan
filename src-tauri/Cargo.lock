@@ -1656,6 +1656,7 @@ dependencies = [
  "if-addrs",
  "jni 0.22.4",
  "machine-uid",
+ "notify-rust",
  "objc2",
  "objc2-app-kit",
  "objc2-core-bluetooth",

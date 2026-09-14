@@ -2604,8 +2604,9 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             let _ = state.app.emit("friend-request", &req);
             let mut extra = std::collections::HashMap::new();
             extra.insert("type".to_string(), "friend_request".to_string());
-            notify_with_extra(
-                &state.app,
+            // 好友申请是**不经前端**的通知：必须走后端开关 + 错误可见的统一入口。
+            let _ = crate::notifications::show_extra_if_enabled(
+                state,
                 "好友申请",
                 &format!("{from_nickname} 请求添加你为好友"),
                 extra,
@@ -2637,8 +2638,8 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             // 已经是好友了 ⇒ 这条申请必须消失（否则「新朋友」里会留着一条永远处理不掉的申请）
             forget_pending_request(state, &from);
             let _ = state.app.emit("friend-accepted", &from);
-            notify(
-                &state.app,
+            let _ = crate::notifications::show_if_enabled(
+                state,
                 "好友申请已通过",
                 &format!("{name} 已成为你的好友"),
             );
@@ -4035,8 +4036,8 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                         );
                         let mut extra = std::collections::HashMap::new();
                         extra.insert("type".to_string(), "friend_request".to_string());
-                        notify_with_extra(
-                            &state.app,
+                        let _ = crate::notifications::show_extra_if_enabled(
+                            state,
                             "好友申请",
                             &format!("{} 请求添加你为好友", req.from_nickname),
                             extra,
@@ -4069,8 +4070,8 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                 let _ = state.app.emit("friend-accepted", &from);
                 // 留痕：跨跳好友同意是落库（friends 表）+ 内存态，日志便于 headless 观测。
                 state.logger.info("friend", format!("收到跨跳好友同意 peer={from}"));
-                notify(
-                    &state.app,
+                let _ = crate::notifications::show_if_enabled(
+                    state,
                     "好友申请已通过",
                     &format!("{name} 已成为你的好友"),
                 );
@@ -6212,23 +6213,8 @@ pub async fn flush_pending_group_reads(state: &AppState, peer_id: &str) {
     }
 }
 
-pub fn notify(app: &tauri::AppHandle, title: &str, body: &str) {
-    notify_with_extra(app, title, body, std::collections::HashMap::new());
-}
-
-pub fn notify_with_extra(
-    app: &tauri::AppHandle,
-    title: &str,
-    body: &str,
-    extra: std::collections::HashMap<String, String>,
-) {
-    use tauri_plugin_notification::NotificationExt;
-    let mut builder = app.notification().builder().title(title).body(body);
-    for (k, v) in &extra {
-        builder = builder.extra(k, v);
-    }
-    let _ = builder.show();
-}
+// Rust 侧的系统通知统一走 crate::notifications（尊重开关 + 错误可观察），
+// 不再在此处直接调用插件那个会把错误 spawn 掉丢掉的 show()。
 
 #[cfg(test)]
 mod tests {

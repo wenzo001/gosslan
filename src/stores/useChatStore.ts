@@ -131,8 +131,8 @@ export const useChatStore = defineStore("chat", () => {
     void app.ensureNotifyPermission().then((granted) => {
       if (!granted) return;
       for (const { count, last } of entries) {
-        // 窗口期间用户已切到该会话且前台 → 该会话跳过通知
-        if (document.hasFocus() && activeConv.value === last.conv_id) continue;
+        // 窗口期间用户已切到该会话且**可见**前台 → 该会话跳过通知
+        if (!document.hidden && document.hasFocus() && activeConv.value === last.conv_id) continue;
         const title = nicknameOf(last.sender_id);
         const body = notifyBody(count, last);
         const convId = last.conv_id;
@@ -150,33 +150,16 @@ export const useChatStore = defineStore("chat", () => {
             extra: { type: "chat", conv_id: convId },
           });
         } else {
-          // 桌面端：plugin 的 actionPerformed 事件桥仅在 iOS/Android 实现，
-          // Windows/macOS 点击通知不会回调 onAction。桌面走 WebView 原生
-          // Notification（plugin JS 端 sendNotification 底层同为此 API）：
-          // Windows WebView2 下由系统通知中心显示，点击会激活宿主窗口并
-          // 触发 onclick → focusWindow + openConversation。
-          // macOS WKWebView 无此 API → 回退 plugin 通知（有提示、无点击，平台限制）。
-          let n: Notification | null = null;
-          try {
-            n = new Notification(title, { body });
-          } catch {
-            n = null; // permission 异常等：回退 plugin，不让通知链静默失败
-          }
-          if (n) {
-            n.onclick = () => {
-              void handleNotificationClick(convId);
-            };
-          } else {
-            const id = notifSeq++;
-            notifMap.set(id, convId);
-            void sendNotification({
-              id,
-              title,
-              body,
-              autoCancel: true,
-              extra: { type: "chat", conv_id: convId },
-            });
-          }
+          // 桌面端：统一走 notify_desktop 命令（Rust → notify-rust）。
+          //
+          // 为什么不再用 WebView 原生 Notification：Tauri 的 notification 插件会把
+          // window.Notification 换成“转发到 plugin:notification|notify”的实现，所以
+          // 这里的 onclick 永远不会触发（点击无法定位会话）；而且那条链路把真正的
+          // toast 错误 spawn 掉丢了 —— Windows 上“收不到通知”完全没有线索。
+          // 现在由后端发送：失败会返回并记日志，设置页还能“发送测试通知”自检。
+          void api.notifyDesktop(title, body).catch(() => {
+            /* 通知失败不影响聊天本身；后端已记日志 */
+          });
         }
       }
     });
@@ -200,8 +183,10 @@ export const useChatStore = defineStore("chat", () => {
     if (!app.notifyEnabled) return;
     const myId = app.device?.device_id;
     if (!myId || rec.sender_id === myId) return;
-    // 应用在前台且正查看该会话 → 不通知（不进队列）
-    if (document.hasFocus() && activeConv.value === rec.conv_id) return;
+    // 应用在前台且正查看该会话 → 不通知（不进队列）。
+    // 必须同时判 !document.hidden：窗口被隐藏/最小化到托盘时，WebView 的
+    // document.hasFocus() 仍可能是 true，只看它会漏掉真正该提醒的消息。
+    if (!document.hidden && document.hasFocus() && activeConv.value === rec.conv_id) return;
     queueNotification(rec);
   }
 

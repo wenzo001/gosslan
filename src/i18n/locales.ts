@@ -94,6 +94,13 @@ export const zhCN: MessageDict = {
   "settings.notify.enabled.desc": "关闭后不再收到任何新消息通知",
   "settings.notify.showContent": "通知显示消息内容",
   "settings.notify.showContent.desc": "关闭后只提示「收到新消息」，锁屏与通知中心不显示正文",
+  "settings.notify.test": "测试系统通知",
+  "settings.notify.test.desc":
+    "立刻发一条系统通知，确认系统层面是否允许（Windows 便携版 / 未安装 / 专注助手都会导致收不到）",
+  "settings.notify.test.btn": "发送测试",
+  "settings.notify.test.sending": "发送中…",
+  "settings.notify.test.sent": "已发送：{hint}",
+  "settings.notify.test.failed": "测试通知发送失败",
 
   "settings.share.folder": "共享文件夹",
 
@@ -736,6 +743,13 @@ export const enUS: MessageDict = {
   "settings.notify.showContent": "Show Message Content",
   "settings.notify.showContent.desc":
     "When off, notifications only show \"New message\" and hide the content on the lock screen and in Notification Center",
+  "settings.notify.test": "Test System Notification",
+  "settings.notify.test.desc":
+    "Send a system notification right now to confirm the OS allows it (a portable, non-installed Windows build or Focus Assist will block it)",
+  "settings.notify.test.btn": "Send test",
+  "settings.notify.test.sending": "Sending…",
+  "settings.notify.test.sent": "Sent: {hint}",
+  "settings.notify.test.failed": "Test notification failed",
 
   "settings.share.folder": "Shared Folder",
 

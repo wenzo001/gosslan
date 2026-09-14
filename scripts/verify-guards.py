@@ -229,6 +229,22 @@ CASES: list[Case] = [
         expect_fail_hint="偏好",
         tags=["frontend", "new-guards"],
     ),
+    Case(
+        name="桌面通知必须走后端命令（不能依赖被插件替换的 window.Notification）",
+        why="Tauri 的 notification 插件把 window.Notification 换成转发到 plugin:notification|notify，"
+            "onclick 永远不触发、且把真正的 toast 错误 spawn 掉丢了 —— Windows 同事『收不到通知』查无实据。"
+            "现在统一 api.notifyDesktop（失败可返回/记录），并修复隐藏窗口下 hasFocus 仍为 true 的漏通知。",
+        file=ROOT / "src" / "stores" / "useChatStore.ts",
+        injections=[(
+            "void api.notifyDesktop(title, body).catch(() => {",
+            "void Promise.resolve().catch(() => {",
+        )],
+        cmd=["node", "--test", "--experimental-strip-types", "--disable-warning=ExperimentalWarning",
+             "src/utils/channelState.test.ts"],
+        cwd=ROOT,
+        expect_fail_hint="notify_desktop",
+        tags=["frontend", "new-guards"],
+    ),
     # ---------------- Rust：capability 覆盖 ----------------
     Case(
         name="capability 覆盖每个窗口（漏一个窗口 ACL 会静默拒绝）",

@@ -390,6 +390,43 @@ pub fn focus_window(_app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// 桌面消息通知：前端在"应用在后台 / 正在看别的会话"时调用。
+///
+/// 走 crate::notifications（能返回真实错误），并**再判一次总开关**（前端已判，这里是
+/// 第二道闸门：后端也能独立触发通知，不能只依赖前端状态）。返回 false 表示用户关了通知。
+#[tauri::command(async)]
+pub fn notify_desktop(
+    state: State<'_, Arc<AppState>>,
+    title: String,
+    body: String,
+) -> Result<bool, String> {
+    crate::notifications::show_if_enabled(state.inner(), &title, &body)
+}
+
+/// 设置页「发送测试通知」：忽略总开关（用户显式要试），但**如实返回失败原因**。
+///
+/// 为什么需要：Windows 上通知失败可能完全静默（未安装的 exe 没注册 AUMID、专注助手/勿扰、
+/// 系统里把 Gosslan 的通知关了）。没有这个入口，用户只能描述"收不到"，我们无法判断是
+/// 应用链路问题还是系统设置问题。
+#[tauri::command(async)]
+pub fn send_test_notification(state: State<'_, Arc<AppState>>) -> Result<String, String> {
+    let s = state.inner();
+    match crate::notifications::show(
+        &s.app,
+        "Gosslan 测试通知",
+        "如果你看到这条系统通知，说明通知链路正常。",
+    ) {
+        Ok(()) => {
+            s.logger.info("notify", "测试通知已发送");
+            Ok(crate::notifications::platform_hint().to_string())
+        }
+        Err(e) => {
+            s.logger.warn("notify", format!("测试通知发送失败：{e}"));
+            Err(format!("{e}。{}", crate::notifications::platform_hint()))
+        }
+    }
+}
+
 /// 网络拓扑摘要：节点数、中继数、平均时延。
 #[tauri::command(async)]
 pub fn get_topology(state: State<'_, Arc<AppState>>) -> TopologyInfo {

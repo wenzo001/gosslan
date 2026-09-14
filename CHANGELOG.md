@@ -10,6 +10,35 @@
 
 ## [Unreleased]
 
+### Fixed (🔴 Windows 收不到系统通知 + 通知开关对好友申请无效)
+
+用户 2026-09-14：Windows 同事反馈收不到任何消息的系统通知；排查时发现整条通知链路
+**完全不可观测**（失败既不报错也不记日志）。
+
+根因（三处叠在一起）：
+1. tauri-plugin-notification 的桌面 show() 把真正的一次 toast 放进 spawn 然后丢掉结果
+   （spawn 里 let _ = notification.show();）⇒ 失败时日志里连"有没有尝试发"都没有。
+   插件自己的平台说明也写着 "Only works for installed apps." —— Windows 上未安装的 exe /
+   未注册 AUMID / 专注助手（勿扰）都会静默失败。
+2. 前端的桌面分支虽然写了 WebView 原生 new Notification 并挂 onclick，但插件会把
+   window.Notification 换成"转发到 plugin:notification|notify"的实现 ⇒ onclick 永远不触发
+   （点击无法定位会话），而且同样是静默失败。
+3. 好友申请 / 好友通过这两类**不经前端**的通知（Rust 直接发）完全没判 notify_enabled
+   ⇒ 用户关掉通知后仍会被弹。
+
+修法：
+- 新增 src-tauri/src/notifications.rs：桌面直接用 notify-rust（与插件同一底层库），
+  **把错误返回出来并记 info/warn 日志**；移动端仍走插件（保留动作按钮与点击回调）。
+- 后端也判一次 notify_enabled；好友申请/好友通过改走 notifications（开关生效）。
+- 新增 notify_desktop 命令：前端桌面消息通知统一走后端（失败可返回/记录）。
+- 设置页「通知」新增「发送测试通知」按钮（send_test_notification）：如实返回失败原因与
+  平台排查说明 —— Windows 静默失败时终于有自检手段。
+- 顺带修一处漏通知：窗口隐藏/最小化时 WebView 的 document.hasFocus() 仍可能为 true，
+  maybeNotify 现在同时要求 !document.hidden。
+
+护栏：notifications_are_observable_and_respect_the_switch（Rust 源码断言）+
+channelState.test.ts 新增前端用例 + verify-guards.py 非空转用例。
+
 ## [4.3.17] - 2026-09-14
 
 ### Fixed (🔴 桌面端关掉蓝牙后，退出重进又被自动打开)

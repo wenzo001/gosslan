@@ -12,6 +12,7 @@ mod gossip_engine;
 mod logging;
 pub mod mesh;
 mod network;
+mod notifications;
 pub mod protocol;
 mod relay_manager; // 文件切片中继（BitTorrent 式分发），与 `mesh::router` 无关
 mod user_dirs;
@@ -264,6 +265,8 @@ pub fn run() {
             commands::get_peers,
             commands::search_nearby_peers,
             commands::focus_window,
+            commands::notify_desktop,
+            commands::send_test_notification,
             commands::get_topology,
             commands::set_channel_enabled,
             commands::get_cache_info,
@@ -1503,6 +1506,42 @@ mod tests {
         assert!(
             body.contains("c.preferred"),
             "必须把 db 里的偏好写回通道状态"
+        );
+    }
+
+    /// **系统通知必须真的发得出去、且能被观察**（用户 2026-09-14：Windows 同事收不到任何通知）。
+    ///
+    /// 三个必须同时成立的判据：
+    /// 1. Rust 侧通知统一走 crate::notifications（能返回错误），不再用插件那个把错误 spawn
+    ///    掉丢掉的 show()；
+    /// 2. **不经前端**的好友申请/好友通过通知必须尊重 notify_enabled（否则关了通知还会被弹）；
+    /// 3. 设置页要有能如实报告失败的“发送测试通知”入口，否则 Windows 上（未安装 / 勿扰）
+    ///    永远只能靠猜。
+    #[test]
+    fn notifications_are_observable_and_respect_the_switch() {
+        let transport = include_str!("network/transport.rs");
+        assert!(
+            !transport.contains("tauri_plugin_notification::NotificationExt"),
+            "network 层不得再直接用插件的 show()（它把错误 spawn 掉丢了）—— 统一走 crate::notifications"
+        );
+        assert_eq!(
+            transport.matches("crate::notifications::show").count(),
+            4,
+            "四处 Rust 侧通知（好友申请×2 + 好友通过×2）都必须走 notifications（含开关与错误）"
+        );
+        let notif = include_str!("notifications.rs");
+        assert!(
+            notif.contains("pub fn show_if_enabled") && notif.contains("notify_enabled"),
+            "notifications 必须提供“尊重总开关”的入口"
+        );
+        assert!(
+            notif.contains("map_err(|e| e.to_string())"),
+            "notify-rust 的错误必须返回出来，不能吞"
+        );
+        let commands = include_str!("commands.rs");
+        assert!(
+            commands.contains("pub fn send_test_notification("),
+            "必须有设置页可调用的测试通知命令"
         );
     }
 

@@ -242,3 +242,32 @@ test("自动拉起蓝牙必须尊重用户的关闭偏好（不能只看运行�
     "不得再用 enabled（运行时是否在跑）当自动拉起的判据 —— 那正是本 bug 的根因",
   );
 });
+
+/**
+ * 桌面系统通知**必须走后端命令**，不能再依赖被插件替换掉的 window.Notification
+ * （用户 2026-09-14：Windows 同事收不到任何系统通知）。
+ *
+ * Tauri 的 notification 插件会把 window.Notification 换成转发到
+ * plugin:notification|notify 的实现 —— 那条链路的 onclick 永远不触发，而且把真正的
+ * toast 错误 spawn 掉丢了。现在统一 api.notifyDesktop：失败会返回并记日志，
+ * 设置页还有「发送测试通知」自检。
+ */
+test("桌面通知必须走后端 notify_desktop（不再依赖被插件替换的 window.Notification）", () => {
+  const store = read("stores/useChatStore.ts");
+  assert.match(store, /api\.notifyDesktop\(title, body\)/, "桌面分支必须调后端 notify_desktop 命令");
+  assert.ok(
+    !/new Notification\(/.test(store),
+    "不得再用 WebView 原生 Notification（插件已把 window.Notification 换成另一套实现）",
+  );
+  assert.match(
+    store,
+    /if \(!document\.hidden && document\.hasFocus\(\) && activeConv\.value === rec\.conv_id\) return;/,
+    "maybeNotify 必须同时判 !document.hidden（隐藏/最小化时 hasFocus 仍可能为 true）",
+  );
+  assert.match(read("api/index.ts"), /notifyDesktop:/, "api 层要暴露 notify_desktop");
+  assert.match(
+    read("components/settings/NotificationSection.vue"),
+    /sendTestNotification/,
+    "设置页必须有「发送测试通知」入口（Windows 静默失败时唯一的自检手段）",
+  );
+});
