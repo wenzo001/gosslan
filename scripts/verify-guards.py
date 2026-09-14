@@ -123,6 +123,128 @@ CASES: list[Case] = [
         expect_fail_hint="get_settings",
         tags=["rust", "perf"],
     ),
+    # ---------------- 本地新增护栏（2026-09-14）----------------
+
+    Case(
+        name="TitleBar 图标都有 import（删掉它 Windows 最大化按钮整颗消失）",
+        why="0e07dd4 删了 Maximize2/Minimize2 的 import，而 Windows/Linux 分支仍在用 ⇒ "
+            "按钮渲染为空；这类退化不报错、不影响构建，只有这条守卫能拦住",
+        file=ROOT / "src" / "components" / "TitleBar.vue",
+        injections=[(
+            'import { Maximize2, Minus, Minimize2, X } from "lucide-vue-next";',
+            'import { Minus, X } from "lucide-vue-next";',
+        )],
+        cmd=["node", "--test", "--experimental-strip-types", "--disable-warning=ExperimentalWarning",
+             "src/utils/titleBarIcons.test.ts"],
+        cwd=ROOT,
+        expect_fail_hint="必须 import",
+        tags=["frontend", "new-guards"],
+    ),
+    Case(
+        name="Presence 不得内联大头像（否则优先通道被堵）",
+        why="Presence 每 10s 广播一次且走优先通道；一张 400KB 头像会让聊天/好友请求"
+            "排在几百片分片后面（真机：加好友几分钟才到）",
+        file=TAURI / "src" / "network" / "transport.rs",
+        injections=[(
+            "let avatar = hello_avatar_for_wire(raw_avatar.as_deref());",
+            "let avatar = raw_avatar.as_deref();",
+        )],
+        cmd=cargo("test", "--lib", "presence_caps_inline_avatar"),
+        cwd=TAURI,
+        expect_fail_hint="broadcast_presence",
+        tags=["rust", "new-guards"],
+    ),
+    Case(
+        name="大头像资料帧必须降到 bulk 通道（否则堵住优先通道）",
+        why="UserInfo 带大 avatar 时若不降级，会占满优先通道，聊天/好友请求几分钟才到",
+        file=TAURI / "src" / "network" / "transport.rs",
+        injections=[(
+            "Message::UserInfo { avatar: Some(a), .. } if a.len() > CONTROL_AVATAR_MAX_BYTES => true,",
+            "Message::UserInfo { .. } => false,",
+        )],
+        cmd=cargo("test", "--lib", "bulk_messages_are_only_large_chunks"),
+        cwd=TAURI,
+        expect_fail_hint="bulk_messages_are_only_large_chunks",
+        tags=["rust", "new-guards"],
+    ),
+    Case(
+        name="共享目录/中继文件：无直连时借一跳中继（定向转发判定）",
+        why="共享目录原本只支持直连，A 与 B 只能经中继时打不开；这条纯函数决定哪些帧"
+            "要借邻居转投（真机 2026-09-14 全 Windows 局域网）",
+        file=TAURI / "src" / "network" / "transport.rs",
+        injections=[(
+            "Message::RelayFileOffer { to, .. } if to != my_id => Some(to.as_str()),",
+            "Message::RelayFileOffer { .. } => None,",
+        )],
+        cmd=cargo("test", "--lib", "directed_relay_target_routes_share_and_offer_frames"),
+        cwd=TAURI,
+        expect_fail_hint="directed_relay_target_routes_share_and_offer_frames",
+        tags=["rust", "new-guards"],
+    ),
+    Case(
+        name="中继文件接收幂等（重复 offer 不清空已收切片）",
+        why="多邻居泛洪会送来重复的 RelayFileOffer；覆盖式 insert 会清空已收到的切片 ⇒ "
+            "文件永远缺片（完整性校验也必然失败）",
+        file=TAURI / "src" / "relay_manager.rs",
+        injections=[(
+            "        self.reassemblies\n"
+            "            .entry(transfer_id.to_string())\n"
+            "            .or_insert_with(|| Reassembly {",
+            "        self.reassemblies.insert(\n"
+            "            transfer_id.to_string(),\n"
+            "            Reassembly {",
+        )],
+        cmd=cargo("test", "--lib", "begin_reassemble_is_idempotent"),
+        cwd=TAURI,
+        expect_fail_hint="begin_reassemble_is_idempotent",
+        tags=["rust", "new-guards"],
+    ),
+    Case(
+        name="BLE MTU 吞吐估算（净数据必须扣 6 字节分片头）",
+        why="日志里的 KB/s 是给用户的量级预期；算错一个量级会误导排障"
+            "（旧的 1KB/s 注释就是例子）",
+        file=TAURI / "src" / "network" / "ble.rs",
+        injections=[(
+            "let net = payload_budget.saturating_sub(crate::transport::ble_framing::BLE_CHUNK_HEADER_LEN);",
+            "let net = payload_budget;",
+        )],
+        cmd=cargo("test", "--lib", "--features", "bluetooth", "throughput_estimate_matches_real_mtu_budgets"),
+        cwd=TAURI,
+        expect_fail_hint="throughput_estimate_matches_real_mtu_budgets",
+        tags=["rust", "ble", "new-guards"],
+    ),
+    Case(
+        name="自动拉起蓝牙必须尊重用户的关闭偏好（退出重进不能又打开）",
+        why="真机 2026-09-14：电脑端设置里关掉蓝牙，退出重进又被 ensureBluetoothOn 自动拉起。"
+            "判据必须用持久化偏好 preferred，而不是运行时 enabled/running —— 启动瞬间必然没在跑，"
+            "只看运行状态就会把用户的关闭选择覆盖掉。",
+        file=ROOT / "src" / "stores" / "useAppStore.ts",
+        injections=[(
+            "      if (!ch.preferred) return;",
+            "      // 关闭偏好判断被移除（护栏注入）",
+        )],
+        cmd=["node", "--test", "--experimental-strip-types", "--disable-warning=ExperimentalWarning",
+             "src/utils/channelState.test.ts"],
+        cwd=ROOT,
+        expect_fail_hint="偏好",
+        tags=["frontend", "new-guards"],
+    ),
+    Case(
+        name="桌面通知必须走后端命令（不能依赖被插件替换的 window.Notification）",
+        why="Tauri 的 notification 插件把 window.Notification 换成转发到 plugin:notification|notify，"
+            "onclick 永远不触发、且把真正的 toast 错误 spawn 掉丢了 —— Windows 同事『收不到通知』查无实据。"
+            "现在统一 api.notifyDesktop（失败可返回/记录），并修复隐藏窗口下 hasFocus 仍为 true 的漏通知。",
+        file=ROOT / "src" / "stores" / "useChatStore.ts",
+        injections=[(
+            "void api.notifyDesktop(title, body).catch(() => {",
+            "void Promise.resolve().catch(() => {",
+        )],
+        cmd=["node", "--test", "--experimental-strip-types", "--disable-warning=ExperimentalWarning",
+             "src/utils/channelState.test.ts"],
+        cwd=ROOT,
+        expect_fail_hint="notify_desktop",
+        tags=["frontend", "new-guards"],
+    ),
     # ---------------- Rust：capability 覆盖 ----------------
     Case(
         name="capability 覆盖每个窗口（漏一个窗口 ACL 会静默拒绝）",
@@ -390,6 +512,37 @@ CASES: list[Case] = [
         cwd=ROOT,
         expect_fail_hint="contextmenu",
         tags=["frontend", "selection"],
+    ),
+    Case(
+        name="BLE 写失败必须重试并拆链路（否则留下能收不能发的僵尸链路）",
+        why="真机 2026-09-13 安卓：两条 BLE 会话都就绪后，一阵群 gossip 把链路写满 ⇒ 各出现一次"
+        "「写失败 ⇒ 结束该链路写循环」⇒ 从此发不出去（界面报连接已关闭），而读还在正常收 ⇒ "
+        "看门狗按读活性判健康、45s 也不拆 ⇒ 只能重启应用。根因是只结束写循环、把链路留成僵尸",
+        file=TAURI / "src" / "network" / "ble.rs",
+        injections=[(
+            "                    {\n"
+            "                        let links = state.links.lock().await;\n"
+            "                        if let Some(l) = links\n"
+            "                            .get(&peer_id)\n"
+            "                            .and_then(|v| v.iter().find(|l| l.endpoint == ep))\n"
+            "                        {\n"
+            "                            let _ = l.cancel.send(true);\n"
+            "                        }\n"
+            "                    }\n"
+            "                    break;",
+            "                    break;",
+        )],
+        cmd=cargo(
+            "test",
+            "--offline",
+            "--lib",
+            "--features",
+            "bluetooth",
+            "ble_write_failure_retries_then_tears_the_link_down",
+        ),
+        cwd=TAURI,
+        expect_fail_hint="最终失败必须去链路表里取消",
+        tags=["rust", "ble", "perf"],
     ),
     Case(
         name="⌘W 必须由自定义菜单项处理（系统预定义项在无边框窗口上会被判不可用）",

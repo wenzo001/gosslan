@@ -10,6 +10,243 @@
 
 ## [Unreleased]
 
+## [4.3.18] - 2026-09-14
+
+### Fixed (🔴 Windows 收不到系统通知 + 通知开关对好友申请无效)
+
+用户 2026-09-14：Windows 同事反馈收不到任何消息的系统通知；排查时发现整条通知链路
+**完全不可观测**（失败既不报错也不记日志）。
+
+根因（三处叠在一起）：
+1. tauri-plugin-notification 的桌面 show() 把真正的一次 toast 放进 spawn 然后丢掉结果
+   （spawn 里 let _ = notification.show();）⇒ 失败时日志里连"有没有尝试发"都没有。
+   插件自己的平台说明也写着 "Only works for installed apps." —— Windows 上未安装的 exe /
+   未注册 AUMID / 专注助手（勿扰）都会静默失败。
+2. 前端的桌面分支虽然写了 WebView 原生 new Notification 并挂 onclick，但插件会把
+   window.Notification 换成"转发到 plugin:notification|notify"的实现 ⇒ onclick 永远不触发
+   （点击无法定位会话），而且同样是静默失败。
+3. 好友申请 / 好友通过这两类**不经前端**的通知（Rust 直接发）完全没判 notify_enabled
+   ⇒ 用户关掉通知后仍会被弹。
+
+修法：
+- 新增 src-tauri/src/notifications.rs：桌面直接用 notify-rust（与插件同一底层库），
+  **把错误返回出来并记 info/warn 日志**；移动端仍走插件（保留动作按钮与点击回调）。
+- 后端也判一次 notify_enabled；好友申请/好友通过改走 notifications（开关生效）。
+- 新增 notify_desktop 命令：前端桌面消息通知统一走后端（失败可返回/记录）。
+- 设置页「通知」新增「发送测试通知」按钮（send_test_notification）：如实返回失败原因与
+  平台排查说明 —— Windows 静默失败时终于有自检手段。
+- 顺带修一处漏通知：窗口隐藏/最小化时 WebView 的 document.hasFocus() 仍可能为 true，
+  maybeNotify 现在同时要求 !document.hidden。
+
+护栏：notifications_are_observable_and_respect_the_switch（Rust 源码断言）+
+channelState.test.ts 新增前端用例 + verify-guards.py 非空转用例。
+
+## [4.3.17] - 2026-09-14
+
+### Fixed (🔴 桌面端关掉蓝牙后，退出重进又被自动打开)
+
+用户 2026-09-14 真机：设置里把蓝牙通道关掉，退出重进又变成开着的。
+根因不是偏好没写（set_channel_enabled 确实写了 bt_enabled=0），而是**前端启动后无条件
+自动拉起蓝牙**：ensureBluetoothOn（首帧后 2s、以及打开「添加好友」/网络设置时都会调）
+用 channels[bluetooth].enabled 判"要不要拉起"，而快照里 enabled 等于**运行时是否在跑**
+—— 刚启动 BLE 还没拉起，必然是 false ⇒ 它把"用户明确关掉"当成"还没启动"，重新打开。
+
+修法：
+- 后端：ChannelStatus 新增 preferred 字段（持久化偏好），与 running 分开。
+  build_runtime_snapshot 从 lan_enabled / bt_enabled 填充；enabled 保持
+  "运行时是否在跑"的原义（两处 UI 的开关值语义不变）。
+- 前端：ensureBluetoothOn 先判 preferred，为 false 直接返回（尊重用户关闭）；
+  并给 ChannelStatus 类型补上该字段。
+- 行为不变的部分：首次安装 bt_enabled 缺省为开 ⇒ 仍然默认自动开启蓝牙。
+
+护栏：channel_status_exposes_persisted_preference（Rust 源码断言）+
+channelState.test.ts 新增前端用例（偏好判据必须在启用调用之前）+
+verify-guards.py 对应非空转用例（删掉偏好判断 ⇒ 必须 FAIL）。
+
+## [4.3.16] - 2026-09-14
+
+### Tests (新增 6 条非空转护栏)
+
+把本轮改动里最容易「静默退化、且没有编译期信号」的几处固化成
+`scripts/verify-guards.py` 的注入式护栏，并做了非空转验证
+（改坏 → 必须 FAIL → 恢复 → 必须 PASS，实测 6/6 通过）：
+
+- TitleBar 图标 import：缺 Maximize2/Minimize2 会让 Windows 最大化按钮整颗消失。
+- Presence / UserInfo 内联大头像必须降到 bulk 通道，不能堵住优先通道。
+- directed_relay_target：共享目录/中继文件在无直连时借一跳邻居转发。
+- begin_reassemble 幂等：重复 RelayFileOffer 不得清空已收到的切片。
+- BLE MTU 吞吐估算必须扣 6 字节分片头，避免再报错一个量级。
+
+## [4.3.15] - 2026-09-14
+
+### Fixed (e2e 示例编译)
+
+分享消息新增可选 to 字段后，examples/e2e_peer.rs 的 ShareFileRequest 少了 to ⇒
+cargo build --example e2e_peer 编译不过（AI_RULES §29 要求网络/协议改动后必须跑）。
+补上 to: None（e2e 走直连、不做中继）。
+
+## [4.3.14] - 2026-09-14
+
+### Fixed (共享目录在中继/桥接下不可用)
+
+真机 2026-09-14 全 Windows 局域网：A 与 B 只能经中继通信时，A 打不开 B 的共享目录。
+原因是共享目录三件套直接用 try_send（只支持直连），且 ShareTreeRequest/ShareFileRequest
+的处理器要求 from == peer_id，中继转发会被丢弃；ShareTreeResponse 甚至没有 to 字段，
+无法送回。聊天有 broadcast_gossip 兜底，所以聊天能过、共享目录不能。
+
+修法：
+- ShareTreeResponse / ShareFileRequest 增加可选 to（serde default，旧端兼容）。
+- handle_message 顶部新增**定向中继**：不是给我的 ShareTree/ShareFile/RelayFileOffer
+  借邻居的直连转投给 to（一跳）。
+- 发送侧无直连时改走 relay_send_to_neighbors；新增 send_file_via_relay 用既有
+  RelayFileOffer/RelayChunk 发送共享文件（E2EE 与直传一致，中继只透传密文）。
+- 中继接收路径幂等：重复的 RelayFileOffer 不再清空已收到的切片/重置 hasher。
+
+### Fixed (🔴 全 Windows 局域网：同一网段却走桥接 / 共享目录打不开)
+
+真机 2026-09-14：三台 Windows、同一网段、蓝牙都开。A 与 B 之间显示「桥接 · 1」，
+A 打不开 B 的共享目录（C 能打开）。根因不是选路优先级（LAN > Routed > Bluetooth 是对的），
+而是 **A 根本没有到 B 的直连**：
+
+1. 新学到的**跨跳**节点（只有 ip 空的 Presence）永远不会触发 LAN 拨号 ——
+   ensure_link 只由 UDP announce 驱动。若 B 的 UDP 广播没被 A 收到（防火墙 / 虚拟网卡），
+   A 就只能一直走中继。
+2. 入站 TCP 被**无条件记成 LAN**。若对端是从 Clash TUN / VPN / Tailscale 地址拨进来的，
+   它会被当成 LAN，has_lan_path 永真 ⇒ 本机再也不拨对端的真实 LAN 地址。
+3. announce 的源地址未过滤：虚拟地址（Clash fake-ip / Tailscale CGNAT / link-local）
+   也会被当作 LAN 去拨，同样堵死真实 LAN 直连。
+4. broadcast_gossip 按**插入顺序**取第一条链路（v.first），同一 peer 同时有 LAN 与 BLE 时，
+   控制帧/聊天回退可能走 BLE。
+5. conv_link 是「上一条消息」的快照，直连建好后仍显示「桥接」直到再发一条消息。
+
+修法：
+- 学到**新的跨跳节点**时主动喊一轮 who_has：同网段节点用单播回 announce ⇒ 立刻建直连。
+- 入站 TCP 按对端地址分类：虚拟地址记 Routed，其余才记 LAN。
+- ensure_link 跳过虚拟源地址（不拨假 LAN）；真实 LAN 的 announce 会再来一轮。
+- broadcast_gossip 按路径优先级（LAN > Routed > Bluetooth）选链路，不再用插入顺序。
+- 链路登记时把该会话的「桥接」快照纠正为直连（hop=0）。
+
+### Fixed (Windows 聊天窗口最大化/还原按钮消失)
+
+0e07dd4 把 macOS 红绿灯改成自绘后删掉了 Maximize2/Minimize2 的 import，
+但 Windows/Linux 分支仍在用它们 ⇒ 整颗「最大化/还原」按钮渲染为空。
+恢复 import，并加护栏测试（模板用到就必须在 script 里 import）。
+
+## [4.3.13] - 2026-09-14
+
+### Fixed (🔴 安卓蓝牙：多片帧永远发不出去 —— 好友申请/同意 2 片必挂)
+
+真机 2026-09-14（4.3.12，安卓 central ↔ Mac 外设）：
+单片的聊天（272B）能发出去，**2 片的 FriendRequest/FriendAccept（738B）永远失败**，
+日志是 BLE 写入失败：Unable to write characteristic；写失败 4 次即拆链路，
+于是每 2–4s 自拆重连一次，好友永远同步不了（安卓显示还不是好友、Mac 列表没反应）。
+
+根因在 btleplug 的 Android Java 实现：上一次 GATT 操作的 onCharacteristicWrite 回调
+里就直接发起下一次 writeCharacteristic，而 Android 的 mDeviceBusy 此刻还没清
+⇒ 第 2 片起一律返回 false。
+
+修法（本地补丁，见 scripts/android/btleplug-java/README.md）：
+- runNextCommand 改为 post 到主线程，等当前回调返回后再发下一跳；
+- Android 13+ 改用 writeCharacteristic(characteristic, value, writeType) 新重载；
+- Rust 侧兜底：no-response 被拒时，若该特征支持带响应写，就用 WithResponse 重试同一片。
+
+影响：单聊/好友/文件所有帧长 > 1 片的 BLE 发送都受这条修复覆盖。
+
+## [4.3.12] - 2026-09-14
+
+### Fixed (🔴 蓝牙优先通道被大头像污染：加好友/消息被堵几分钟)
+
+继续 4.3.11 之后的真机现象：蓝牙下「加好友要等几分钟」「消息一直发送中」。
+根因不是链路，而是**优先通道里塞了大头像** —— 一张 400KB 头像要分上千片，
+聊天与好友请求全排在它后面：
+
+- broadcast_presence 每 10s 广播一次、走**优先通道**，却把整张 state.avatar 原样内联；
+- update_profile 的 UserInfo、好友申请的 from_avatar 同样原样走优先通道。
+
+修法：
+
+- is_bulk_message 新增两类大而可晚到的帧走 **bulk**：大头像 UserInfo、大载荷 Gossip；
+  文字/好友/回执/握手仍全部 priority（BLE 写循环 biased 先消费 priority）。
+- broadcast_presence 过 hello_avatar_for_wire（2KiB）闸门，超限整个字段不带
+  （接收侧 upsert_peer 只在 Some 时更新头像，缺失不会清空）；好友申请 from_avatar 同样过闸。
+- 新增 send_user_info_to：建链后定向同步一次完整资料，大头像只在每次新建链路同步一次。
+
+### Fixed (在途拨号令牌可能永不释放)
+
+driver::connect 内部的 peripheral.connect() 没有超时：系统调用一旦挂住，拨号任务与
+DialGuard 会一直存活 ⇒ 该对端在整个进程生命周期内再也不被拨号（真机「怎么等都连不上」）。
+现在整条连接建立包 20s 超时（BLE_CONNECT_TIMEOUT）。
+
+### Fixed (安卓：非图片文件点开报错 → 改为系统另存为)
+
+- 收到的文件：点一下弹系统**另存为**（SAF ACTION_CREATE_DOCUMENT），不再 ACTION_VIEW。
+- 自己发的文件：点一下**无任何响应**；长按菜单（另存/复制）保持不变。
+- 新增 Kotlin OpenWith.saveWith / writeBytesWith + Rust JNI 桥；copy_file / save_data_file
+  在 content:// 目标上改走 ContentResolver（原 std::fs 写 content:// 必然失败）。
+- 归一化保存返回值（桌面=字符串、安卓={file:content://}）；取消不再误报「保存失败」。
+
+### Changed
+
+- BLE MTU 日志改为「净数据 + 按 12ms/片估算 KB/s」（旧文案 MTU=载荷+3+6 多算 6 字节）；
+  蓝牙速度提示改为实测量级（约 30～40 KB/s），并明说「头像等大资料可能延迟同步」。
+
+## [4.3.11] - 2026-09-14
+
+### Fixed (🔴 BLE 握手永远成不了：Hello 帧里带了整张头像，一张图 424KB)
+
+用户 2026-09-14 三端日志（Mac + 安卓，同场）：
+
+- Mac：`[DISCOVERY] 候选可拨 id=674ff944-… ⇒ 开始连接` → `[GATT] 已就绪` + MTU 512 →
+  **`[DISCONNECT] 候选 … 未建立链路：握手超时：对端未回 Hello`**；
+  外设侧同一条链路上：`外设侧 MTU 协商结果 … 每片有效载荷=20 字节` →
+  **`外设侧未建链 … 回 Hello 失败：帧无法分片（过大或 MTU 非法：len=424303 mtu=20）`**；
+- 安卓：`[GATT] 已就绪` + MTU 514 → **`[DISCONNECT] … BLE 写入失败：Unable to write characteristic`**。
+- 用户体感：**"搜得到、连不上、发不出消息"**（三台都在广播、都能互相发现）。
+
+**根因（一条）**：`build_signed_hello` 把 `state.avatar` **原样**放进 `Hello` ——
+用户头像是 base64 图片时，这个**握手帧**会到 **几百 KB**（日志里 424303 字节）。
+BLE 上后果是双重的：
+· central 侧：424303 ÷ 514 字节/片 ≈ **826 片 × 12ms ≈ 10s** ⇒ 正好撞上 `HANDSHAKE_TIMEOUT`
+  ⇒ 对端看到的是"握手超时：对端未回 Hello"；
+· 外设侧：`maximumUpdateValueLength` 在某些时序还没更新（MTU 23 ⇒ 每片 20 字节）⇒ 需要
+  **3 万多片** > `MAX_BLE_CHUNKS_PER_MESSAGE`(8192) ⇒ `fragment()` 直接 `None`
+  ⇒ "帧无法分片"（日志里的 `len=424303 mtu=20` 与这条完全对上）。
+
+**修法**：给握手帧加**头像尺寸闸门** `HELLO_AVATAR_MAX_BYTES = 2048`（纯函数
+`hello_avatar_for_wire`）：超过就不放进 Hello，并打一条 warn（附实际字节数）。
+头像本来就有专门的 `Message::UserInfo` 通道同步，握手帧必须小到能秒过。
+
+**护栏**：单测 `hello_avatar_is_capped_for_the_handshake_frame`（None/空串/正常/超限/正好等于上限
+五种情形 + 源码断言 `build_signed_hello` 真的用了这个闸门）。
+⚠️ 写这条测试时踩了个坑并已修：源码里有大量中文，**不能**按"起始 + 2000 字节"硬切字符串
+（会切在多字节字符中间 panic），改成按顶层函数结尾的 `\n}\n` 取切片（与 `rust_fn_body` 同一判据）。
+
+## [4.3.10] - 2026-09-14
+
+### Fixed (🔴 BLE 链路"能收不能发"的僵尸态 —— 写失败一次就把写循环结束掉，只能重启)
+
+用户 2026-09-13（安卓真机日志）：安卓与 Mac/Windows 的 BLE 会话都 `[SESSION] 已就绪`
+（MTU 协商到 514 字节载荷），随后一阵 group gossip 进来，紧接着两条链路各出现一次
+`[SEND] 写失败 ⇒ 结束该链路写循环`；**从那以后就再也发不出去**（界面报「发送失败，连接已关闭」），
+而**读**还在持续正常收 —— 看门狗按**读**活性判健康（15s × 3 = 45s）⇒ 永远不拆这条链路
+⇒ 只能重启应用才恢复。
+
+**根因**：`ble_writer_loop` 在第一次写失败时直接 `break`，只结束了**写**循环，
+链路仍登记在表里、**读**循环还活着 ⇒ 留下"能收不能发"的僵尸链路。
+而 BLE 的写失败大多是**瞬态**的（对端 GATT 通知队列满 / 链路忙 / 连发被拒）。
+旧日志还只打 `type=?`，连失败原因都没有，真机上完全无法定位。
+
+**修法**（三处，都在 `ble_writer_loop`）：
+1. **退避重试**：失败后 120ms 重试，最多 4 次（可被停机/取消打断）；只有"帧无法分片"
+   这种**帧自身**的问题才不重试。
+2. **最终失败 → 拆链路**：按端点去链路表取这一条的 `cancel` 并 `send(true)`，
+   让**读**循环收尾执行 `teardown_link`（清链路 + 清该地址退避 + `wake_scan`）
+   ⇒ 下一轮扫描即可重拨，不再留下半死链路。
+3. **日志带上真实原因**（`原因={e}`）与重试次数。
+
+**护栏**：`ble_write_failure_retries_then_tears_the_link_down`（源码断言：必须有重试上限、
+最终失败必须走链路表的 `cancel.send(true)`、失败日志必须带原因）。
+
 ## [4.3.9] - 2026-09-14
 
 ### Fixed (Mac 主窗口 ⌘W 只会「滴滴滴」—— 关不掉，设置/日志窗口却正常)

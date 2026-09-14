@@ -987,6 +987,8 @@ async fn main() {
                 transfer_id: DL_TRANSFER_ID.into(),
                 from: PEER_ID.into(),
                 path: SHARE_FILE.into(),
+                // e2e 走直连：不做中继，to 留空（与旧端/直连语义一致）。
+                to: None,
             },
         )
         .await;

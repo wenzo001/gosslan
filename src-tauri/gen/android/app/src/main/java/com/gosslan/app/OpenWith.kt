@@ -132,6 +132,56 @@ object OpenWith {
     }
     return "*/*"
   }
+
+  /**
+   * 把应用私有文件写到系统「另存为」对话框返回的 content:// URI。
+   *
+   * 返回 null 表示成功；否则是给用户看的中文原因。
+   * 与 [openWith] 不同：这里只是 IO，不需要回主线程；但同样把所有异常转成原因，
+   * 绝不让 Java 异常穿透 JNI（非主线程抛出的异常会让进程静默消失）。
+   */
+  @JvmStatic
+  fun saveWith(path: String, uriString: String): String? {
+    val ctx = appContext ?: return "应用还没准备好，请稍后重试"
+    return try {
+      val src = File(path)
+      if (!src.exists()) {
+        "文件不存在（可能已被清理）"
+      } else {
+        val uri = Uri.parse(uriString)
+        ctx.contentResolver.openOutputStream(uri, "wt")?.use { out ->
+          src.inputStream().use { input -> input.copyTo(out) }
+          out.flush()
+          null
+        } ?: "无法写入所选位置"
+      }
+    } catch (t: Throwable) {
+      val detail = t.message?.takeIf { it.isNotBlank() }?.let { "：$it" } ?: ""
+      "保存失败（${t.javaClass.simpleName}）$detail"
+    }
+  }
+
+  /**
+   * 把一段字节（图片另存等）写到系统「另存为」对话框返回的 content:// URI。
+   *
+   * 为什么单独一个方法：图片保存走的是 base64 数据而不是文件路径，Rust 侧解码后
+   * 需要一条写字节的通道。返回值与 [saveWith] 相同。
+   */
+  @JvmStatic
+  fun writeBytesWith(bytes: ByteArray, uriString: String): String? {
+    val ctx = appContext ?: return "应用还没准备好，请稍后重试"
+    return try {
+      val uri = Uri.parse(uriString)
+      ctx.contentResolver.openOutputStream(uri, "wt")?.use { out ->
+        out.write(bytes)
+        out.flush()
+        null
+      } ?: "无法写入所选位置"
+    } catch (t: Throwable) {
+      val detail = t.message?.takeIf { it.isNotBlank() }?.let { "：$it" } ?: ""
+      "保存失败（${t.javaClass.simpleName}）$detail"
+    }
+  }
 }
 
 /** Kotlin → Rust：把 JavaVM 与 `OpenWith` 类引用交给 Rust（见本文件顶部注释 2）。 */

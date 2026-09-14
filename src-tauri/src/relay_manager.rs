@@ -163,15 +163,16 @@ impl RelayManager {
         total_chunks: u32,
         expected_size: u64,
     ) {
-        self.reassemblies.insert(
-            transfer_id.to_string(),
-            Reassembly {
+        // 幂等：中继路径下同一份 RelayFileOffer 可能从多条邻居各来一份（泛洪），
+        // 覆盖式 insert 会把已经组好的切片清空 ⇒ 文件永远缺片。已存在就保留。
+        self.reassemblies
+            .entry(transfer_id.to_string())
+            .or_insert_with(|| Reassembly {
                 name: name.to_string(),
                 total_chunks,
                 expected_size,
                 chunks: HashMap::new(),
-            },
-        );
+            });
     }
 
     /// 写入一个切片；返回 `Some((name, 完整字节))` 表示重组完成（乱序安全）。
@@ -238,6 +239,17 @@ mod tests {
         assert_eq!(name, "f.bin");
         assert_eq!(size, data.len() as u64);
         assert_eq!(out, data);
+    }
+
+    /// 重复的 RelayFileOffer（多邻居泛洪）不得清空已收到的切片。
+    #[test]
+    fn begin_reassemble_is_idempotent() {
+        let mut m = RelayManager::new();
+        m.begin_reassemble("t1", "f.bin", 2, 4);
+        assert!(m.add_chunk("t1", 0, vec![1, 2]).is_none());
+        m.begin_reassemble("t1", "f.bin", 2, 4); // 重复的 offer
+        let done = m.add_chunk("t1", 1, vec![3, 4]);
+        assert!(done.is_some(), "重复 begin_reassemble 不能丢已收到的切片");
     }
 
     #[test]

@@ -45,6 +45,11 @@ export const api = {
   getPeers: () => invoke<Peer[]>("get_peers"),
   searchNearbyPeers: () => invoke<Peer[]>("search_nearby_peers"),
   focusWindow: () => invoke<void>("focus_window"),
+  /** 桌面系统通知（原生；返回 false 表示用户关了通知）。移动端仍走 plugin 通知。 */
+  notifyDesktop: (title: string, body: string) =>
+    invoke<boolean>("notify_desktop", { title, body }),
+  /** 设置页「发送测试通知」：成功返回平台说明，失败返回真实原因（供排障）。 */
+  sendTestNotification: () => invoke<string>("send_test_notification"),
   getFriends: () => invoke<Friend[]>("get_friends"),
   removeFriend: (peerId: string) => invoke<void>("remove_friend", { peerId }),
   getPendingRequests: () => invoke<PendingRequest[]>("get_pending_requests"),

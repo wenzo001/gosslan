@@ -77,6 +77,12 @@ pub struct ChannelStatus {
     pub available: bool,
     pub running: bool,
     pub peers: usize,
+    /// **持久化的用户偏好**（“用户选过什么”），与 running（“此刻是否在跑”）分开。
+    ///
+    /// 为什么必须分成两个字段：快照里 enabled 表示“运行时是否在跑”，应用刚启动时必然是
+    /// false ⇒ 前端无法区分“用户明确关掉了”与“还没启动”，自动拉起（ensureBluetoothOn）
+    /// 就会把用户的关闭选择覆盖掉。真机 2026-09-14：电脑端关掉蓝牙，退出重进又被打开。
+    pub preferred: bool,
 }
 
 /// 双通道聚合管理器：通道开关、分流决策、状态汇总。
@@ -137,6 +143,8 @@ impl TransportManager {
                 available: self.lan.available(),
                 running: lan_running,
                 peers: self.lan.peer_count(),
+                // 局域网偏好由 build_runtime_snapshot 从 lan_enabled 覆盖（这里没有 db 句柄）。
+                preferred: lan_running,
             },
             ChannelStatus {
                 channel: "bluetooth",
@@ -144,6 +152,7 @@ impl TransportManager {
                 available: self.bluetooth.available(),
                 running: self.bluetooth.running(),
                 peers: self.bluetooth.peer_count(),
+                preferred: self.bt_enabled,
             },
         ]
     }

@@ -31,6 +31,9 @@ const props = defineProps<{
   mine: boolean;
   /** 文件已就绪（本地路径可用）**且文件确实还在**：整卡可点击打开（微信式：下载完成后点消息即打开）。 */
   ready: boolean;
+  /** 是否允许"点一下打开/另存"。Android 上自己发的文件为 false：点击应无任何响应，
+   *  但长按气泡弹出的菜单不受影响（仍可另存/复制）。缺省 true（旧调用点行为不变）。 */
+  tappable?: boolean;
   /** 本地文件已被「存储清理」删除。此时不提供"下载"入口——重新获取需要对方重发，
    *  而不是等对方上线自动补传（那个入口的文案会误导）。 */
   missing?: boolean;
@@ -155,19 +158,21 @@ const iconWellStyle = computed(() => ({
 const extLabel = computed(() => (ext.value ? ext.value.toUpperCase().slice(0, 4) : t("common.file")));
 /** 传输中按钮上的百分比（微信下载按钮同款：下载中显示进度数字）。 */
 const pct = computed(() => Math.round((props.progress ?? 0) * 100));
+/** 整卡是否可点：就绪 + 允许点。Android 自己发的文件 tappable=false ⇒ 鼠标手型/title/键盘都不给。 */
+const canOpen = computed(() => props.ready && props.tappable !== false);
 </script>
 
 <template>
   <div
     class="flex min-w-0 w-[264px] max-w-full flex-col gap-2 rounded-[var(--gosslan-bubble-radius)] px-3 py-2.5"
-    :class="ready ? 'cursor-pointer' : ''"
+    :class="canOpen ? 'cursor-pointer' : ''"
     :style="bubbleStyle"
-    :title="ready ? t('msg.clickToOpen') : undefined"
-    :role="ready ? 'button' : undefined"
-    :tabindex="ready ? 0 : undefined"
-    @click="ready && emit('open')"
-    @keydown.enter.prevent="ready && emit('open')"
-    @keydown.space.prevent="ready && emit('open')"
+    :title="canOpen ? t('msg.clickToOpen') : undefined"
+    :role="canOpen ? 'button' : undefined"
+    :tabindex="canOpen ? 0 : undefined"
+    @click="canOpen && emit('open')"
+    @keydown.enter.prevent="canOpen && emit('open')"
+    @keydown.space.prevent="canOpen && emit('open')"
   >
     <div class="flex items-center gap-2.5">
       <div

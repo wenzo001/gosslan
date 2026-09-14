@@ -12,6 +12,7 @@ mod gossip_engine;
 mod logging;
 pub mod mesh;
 mod network;
+mod notifications;
 pub mod protocol;
 mod relay_manager; // 文件切片中继（BitTorrent 式分发），与 `mesh::router` 无关
 mod user_dirs;
@@ -264,6 +265,8 @@ pub fn run() {
             commands::get_peers,
             commands::search_nearby_peers,
             commands::focus_window,
+            commands::notify_desktop,
+            commands::send_test_notification,
             commands::get_topology,
             commands::set_channel_enabled,
             commands::get_cache_info,
@@ -610,9 +613,12 @@ mod tests {
                 "没在 BlePeripheral.kt 里解析到 `{expected}` —— Kotlin 写法变了就要同步更新本护栏"
             );
         }
-        // 打开文件的桥：Rust 调 `openWith`，Kotlin 调 `nativeAttachOpenWith`
+        // 打开/保存文件的桥：Rust 调 openWith / saveWith / writeBytesWith，
+        // Kotlin 调 nativeAttachOpenWith
         for (file, fns, expected) in [
             ("OpenWith.kt", &open_fns, "openWith"),
+            ("OpenWith.kt", &open_fns, "saveWith"),
+            ("OpenWith.kt", &open_fns, "writeBytesWith"),
             ("OpenWith.kt", &open_fns, "nativeAttachOpenWith"),
         ] {
             assert!(
@@ -631,8 +637,8 @@ mod tests {
         let open_registered = parse_kotlin_method_registrations(rust_open);
         assert_eq!(
             open_registered.len(),
-            1,
-            "android_open.rs 应恰好登记 1 个 Kotlin 方法（openWith），实际 {} —— \
+            3,
+            "android_open.rs 应恰好登记 3 个 Kotlin 方法（openWith + saveWith + writeBytesWith），实际 {} —— \
              解析器失效或有人漏登记",
             open_registered.len()
         );
@@ -677,8 +683,8 @@ mod tests {
             static_checked += 1;
         }
         assert!(
-            static_checked >= 7,
-            "应检查 ≥7 个 Kotlin 方法（openWith + BlePeripheral 6 个），实际 {static_checked} —— 护栏失效了"
+            static_checked >= 9,
+            "应检查 ≥9 个 Kotlin 方法（OpenWith 3 个 + BlePeripheral 6 个），实际 {static_checked} —— 护栏失效了"
         );
 
         // ② Rust 导出的 native 回调（snake_case → lowerCamelCase）必须在 Kotlin 里是 external fun
@@ -1478,6 +1484,67 @@ mod tests {
         );
     }
 
+    /// **通道偏好必须与运行状态分开表达**（用户 2026-09-14 桌面实测：关掉蓝牙、退出重进又被打开）。
+    ///
+    /// 根因：快照里 channels[bluetooth].enabled 用的是"运行时是否在跑"，应用刚启动、BLE 还没
+    /// 拉起时必然是 false ⇒ 前端 ensureBluetoothOn 无法区分"用户明确关掉"与"还没启动"，
+    /// 于是把偏好覆盖成开。判据：通道状态必须有独立的 preferred 字段，且快照从持久化键
+    /// （lan_enabled / bt_enabled）填充。
+    #[test]
+    fn channel_status_exposes_persisted_preference() {
+        let tm = include_str!("transport/mod.rs");
+        assert!(
+            tm.contains("pub preferred: bool"),
+            "ChannelStatus 必须有独立的 preferred 字段（与 running 分开），否则前端只能拿运行状态猜偏好"
+        );
+        let cmds = include_str!("commands.rs");
+        let body = rust_fn_body(cmds, "pub async fn build_runtime_snapshot(");
+        assert!(
+            body.contains("get_lan_enabled") && body.contains("get_bt_enabled"),
+            "快照必须从持久化键填充 preferred（开机后偏好不能丢）"
+        );
+        assert!(
+            body.contains("c.preferred"),
+            "必须把 db 里的偏好写回通道状态"
+        );
+    }
+
+    /// **系统通知必须真的发得出去、且能被观察**（用户 2026-09-14：Windows 同事收不到任何通知）。
+    ///
+    /// 三个必须同时成立的判据：
+    /// 1. Rust 侧通知统一走 crate::notifications（能返回错误），不再用插件那个把错误 spawn
+    ///    掉丢掉的 show()；
+    /// 2. **不经前端**的好友申请/好友通过通知必须尊重 notify_enabled（否则关了通知还会被弹）；
+    /// 3. 设置页要有能如实报告失败的“发送测试通知”入口，否则 Windows 上（未安装 / 勿扰）
+    ///    永远只能靠猜。
+    #[test]
+    fn notifications_are_observable_and_respect_the_switch() {
+        let transport = include_str!("network/transport.rs");
+        assert!(
+            !transport.contains("tauri_plugin_notification::NotificationExt"),
+            "network 层不得再直接用插件的 show()（它把错误 spawn 掉丢了）—— 统一走 crate::notifications"
+        );
+        assert_eq!(
+            transport.matches("crate::notifications::show").count(),
+            4,
+            "四处 Rust 侧通知（好友申请×2 + 好友通过×2）都必须走 notifications（含开关与错误）"
+        );
+        let notif = include_str!("notifications.rs");
+        assert!(
+            notif.contains("pub fn show_if_enabled") && notif.contains("notify_enabled"),
+            "notifications 必须提供“尊重总开关”的入口"
+        );
+        assert!(
+            notif.contains("map_err(|e| e.to_string())"),
+            "notify-rust 的错误必须返回出来，不能吞"
+        );
+        let commands = include_str!("commands.rs");
+        assert!(
+            commands.contains("pub fn send_test_notification("),
+            "必须有设置页可调用的测试通知命令"
+        );
+    }
+
     /// 外设侧**每次订阅都必须清掉该 central 的重组器**（用户优先级 ①：加入 mesh 的稳定性）。
     ///
     /// 为什么（2026-09-13 框架审计）：对端的 `msg_id` **每条连接都从 1 重新开始**，而 macOS
@@ -1506,6 +1573,39 @@ mod tests {
         assert!(
             body.contains(".remove(&id)"),
             "必须**按 central id** remove（整体 clear 会误伤其它在线对端）"
+        );
+    }
+
+    /// **BLE 写失败必须"退避重试 → 拆链路"，绝不能只结束写循环**（真机 2026-09-13 安卓）。
+    ///
+    /// 真机链路：Android 与 Mac/Windows 的 BLE 会话都 `[SESSION] 已就绪`，随后一阵群 gossip
+    /// 洪水把链路写满 ⇒ `[SEND] 写失败 ⇒ 结束该链路写循环`（两条链路各一次）⇒ 从此**发不出去**，
+    /// 界面报「发送失败，连接已关闭」，而**读**还在正常收 ⇒ 看门狗按读活性判健康、45s 也不拆
+    /// ⇒ 只能重启应用。根因是"只结束写循环、把链路留成能收不能发的僵尸"。
+    ///
+    /// 判据：写循环必须有重试上限常量、最终失败要走链路表的 `cancel.send(true)`（让读循环
+    /// 收尾时 `teardown_link` 清链路+清退避+wake_scan），并且失败日志要带上**原因**（旧实现
+    /// 只打 `type=?`，真机上完全看不出为什么写失败）。
+    #[test]
+    fn ble_write_failure_retries_then_tears_the_link_down() {
+        let ble = include_str!("network/ble.rs");
+        let body = rust_fn_body(ble, "async fn ble_writer_loop<S: FrameSink + 'static>(");
+        assert!(
+            body.contains("WRITE_RETRY_ATTEMPTS"),
+            "写失败必须**退避重试**（瞬态失败一次性判死会把链路变成僵尸）"
+        );
+        assert!(
+            body.contains("l.cancel.send(true)"),
+            "写循环最终失败必须去链路表里取消这一条（否则读循环还活着 ⇒ \
+             能收不能发的僵尸链路，看门狗按读活性判健康、永远不拆，只能重启应用）"
+        );
+        assert!(
+            body.contains("原因={e}"),
+            "失败日志必须带上真实原因（旧实现只打 `type=?`，真机上无从判断）"
+        );
+        assert!(
+            ble.contains("WRITE_RETRY_WAIT"),
+            "重试间隔必须是常量（可读、可调）"
         );
     }
 

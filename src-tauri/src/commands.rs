@@ -134,6 +134,10 @@ pub async fn update_profile(
     *s.nickname.lock().unwrap_or_else(|e| e.into_inner()) = nickname.clone();
     *s.avatar.lock().unwrap_or_else(|e| e.into_inner()) = avatar.clone();
 
+    // 资料帧要不要降级到 bulk 通道：判据与 is_bulk_message 同一份常量，避免两处漂移。
+    let bulk_profile_frame = avatar
+        .as_deref()
+        .is_some_and(|a| a.len() > crate::network::transport::CONTROL_AVATAR_MAX_BYTES);
     let msg = Message::UserInfo {
         device_id: s.device_id.clone(),
         nickname,
@@ -142,7 +146,14 @@ pub async fn update_profile(
     };
     let links = s.links.lock().await;
     for link in links.values().flatten() {
-        let _ = link.priority.send(msg.clone()).await;
+        // 大头像资料帧走 bulk 通道：2MB 头像在 BLE 上要分上千片，绝不能堵住聊天/好友
+        // 请求的优先道；小头像仍走 priority（资料变更要立刻可见）。
+        let tx = if bulk_profile_frame {
+            &link.bulk
+        } else {
+            &link.priority
+        };
+        let _ = tx.send(msg.clone()).await;
     }
     drop(links);
 
@@ -377,6 +388,43 @@ pub fn focus_window(app: tauri::AppHandle, state: State<'_, Arc<AppState>>) -> R
 #[tauri::command]
 pub fn focus_window(_app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
+}
+
+/// 桌面消息通知：前端在"应用在后台 / 正在看别的会话"时调用。
+///
+/// 走 crate::notifications（能返回真实错误），并**再判一次总开关**（前端已判，这里是
+/// 第二道闸门：后端也能独立触发通知，不能只依赖前端状态）。返回 false 表示用户关了通知。
+#[tauri::command(async)]
+pub fn notify_desktop(
+    state: State<'_, Arc<AppState>>,
+    title: String,
+    body: String,
+) -> Result<bool, String> {
+    crate::notifications::show_if_enabled(state.inner(), &title, &body)
+}
+
+/// 设置页「发送测试通知」：忽略总开关（用户显式要试），但**如实返回失败原因**。
+///
+/// 为什么需要：Windows 上通知失败可能完全静默（未安装的 exe 没注册 AUMID、专注助手/勿扰、
+/// 系统里把 Gosslan 的通知关了）。没有这个入口，用户只能描述"收不到"，我们无法判断是
+/// 应用链路问题还是系统设置问题。
+#[tauri::command(async)]
+pub fn send_test_notification(state: State<'_, Arc<AppState>>) -> Result<String, String> {
+    let s = state.inner();
+    match crate::notifications::show(
+        &s.app,
+        "Gosslan 测试通知",
+        "如果你看到这条系统通知，说明通知链路正常。",
+    ) {
+        Ok(()) => {
+            s.logger.info("notify", "测试通知已发送");
+            Ok(crate::notifications::platform_hint().to_string())
+        }
+        Err(e) => {
+            s.logger.warn("notify", format!("测试通知发送失败：{e}"));
+            Err(format!("{e}。{}", crate::notifications::platform_hint()))
+        }
+    }
 }
 
 /// 网络拓扑摘要：节点数、中继数、平均时延。
@@ -685,6 +733,26 @@ pub async fn build_runtime_snapshot(s: &Arc<AppState>) -> RuntimeSnapshot {
         bt.running = bt_running;
         bt.peers = bt_peers;
         bt.enabled = bt_running;
+    }
+    // 持久化偏好必须与“此刻是否在跑”分开表达：应用刚启动时 BLE 还没拉起，enabled/running
+    // 都是 false，前端无法据此区分“用户明确关掉”与“尚未启动”⇒ 自动拉起会覆盖用户的关闭选择
+    // （真机 2026-09-14：关掉蓝牙、退出重进又被打开）。get_*_enabled 在键缺失时会顺手落默认值
+    // （首次安装 ⇒ 默认开）。
+    {
+        let (lan_pref, bt_pref) = {
+            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+            (
+                crate::db::get_lan_enabled(&dbc),
+                crate::db::get_bt_enabled(&dbc),
+            )
+        };
+        for c in list.iter_mut() {
+            match c.channel {
+                "lan" => c.preferred = lan_pref,
+                "bluetooth" => c.preferred = bt_pref,
+                _ => {}
+            }
+        }
     }
     let (online, bound_ip) = {
         let net = s.network.lock().unwrap_or_else(|e| e.into_inner());
@@ -1594,8 +1662,12 @@ pub(crate) async fn send_friend_request_via_link(
         return Err("未找到该节点或缺少其公钥，请先重新扫描".to_string());
     };
     let nickname = s.nickname.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    let avatar = s.avatar.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    // E2EE 加密好友申请内容（昵称/头像）；from/to 已在信封 sender_id / target 里。
+    let raw_avatar = s.avatar.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    // 好友申请是**最需要秒到**的控制帧，且走优先通道：绝不能内联大头像
+    // （几百 KB 会分上千片、还可能超过 BLE 单帧上限被整帧丢弃 ⇒ 对方永远收不到，
+    // 而界面仍显示"已发送"）。超限就不带头像；建链后由 UserInfo 定向同步大头像。
+    let avatar = crate::network::transport::hello_avatar_for_wire(raw_avatar.as_deref());
+    // E2EE 加密好友申请内容（昵称/可选头像）；from/to 已在信封 sender_id / target 里。
     let payload =
         serde_json::json!({ "from_nickname": nickname, "from_avatar": avatar }).to_string();
     let shared = crypto::shared_secret(&s.identity.x25519_secret, &target_pubkey)
@@ -3674,9 +3746,15 @@ pub async fn request_share_tree(
         from: s.device_id.clone(),
         to: friend_id.clone(),
     };
-    if let Err(e) = try_send(s, &friend_id, &msg).await {
-        s.pending_share_tree.lock().unwrap_or_else(|e| e.into_inner()).remove(&request_id);
-        return Err(e);
+    // 有直连就精确发；没有直连则借**一跳中继**（邻居需与目标有直连）。
+    // 这是「即使在桥接状态下，共享目录也要能用」的入口（真机 2026-09-14 全 Windows 局域网）。
+    if s.has_link(&friend_id).await {
+        if let Err(e) = try_send(s, &friend_id, &msg).await {
+            s.pending_share_tree.lock().unwrap_or_else(|e| e.into_inner()).remove(&request_id);
+            return Err(e);
+        }
+    } else {
+        crate::network::transport::relay_send_to_neighbors(s, &friend_id, &msg).await;
     }
 
     match tokio::time::timeout(Duration::from_secs(10), rx).await {
@@ -3706,8 +3784,13 @@ pub async fn download_shared_file(
         transfer_id: transfer_id.clone(),
         from: s.device_id.clone(),
         path: remote_path.clone(),
+        to: Some(friend_id.clone()),
     };
-    try_send(s, &friend_id, &msg).await?;
+    if s.has_link(&friend_id).await {
+        try_send(s, &friend_id, &msg).await?;
+    } else {
+        crate::network::transport::relay_send_to_neighbors(s, &friend_id, &msg).await;
+    }
     // 本地提示：你正在下载好友的文件（聊天信息内简约系统消息）
     let file_name = std::path::Path::new(&remote_path)
         .file_name()
@@ -3749,6 +3832,14 @@ pub fn insert_system_message(state: &AppState, conv_id: &str, text: &str) {
 /// 将文件从 source 复制到 destination（用于"另存为"下载功能）。
 #[tauri::command(async)]
 pub fn copy_file(source: String, destination: String) -> Result<(), String> {
+    // Android 的「另存为」对话框返回的是 content:// URI，std::fs::copy 写不了，
+    // 必须经 ContentResolver（见 android_open::save_path / OpenWith.saveWith）。
+    #[cfg(target_os = "android")]
+    {
+        if destination.starts_with("content://") {
+            return crate::android_open::save_path(&source, &destination);
+        }
+    }
     std::fs::copy(&source, &destination).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -3800,6 +3891,13 @@ pub fn save_data_file(base64_data: String, destination: String) -> Result<(), St
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(base64_data.as_bytes())
         .map_err(|e| e.to_string())?;
+    // Android：目标可能是 content:// URI，std::fs::write 写不了，走 ContentResolver。
+    #[cfg(target_os = "android")]
+    {
+        if destination.starts_with("content://") {
+            return crate::android_open::save_bytes(&bytes, &destination);
+        }
+    }
     std::fs::write(&destination, bytes).map_err(|e| e.to_string())?;
     Ok(())
 }

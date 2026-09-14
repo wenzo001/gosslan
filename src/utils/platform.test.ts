@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isMacUA } from "./platform.ts";
+import { isAndroidUA, isMacUA } from "./platform.ts";
 
 test("isMacUA：桌面 macOS UA 判为 Mac", () => {
   const uas = [
@@ -37,4 +37,26 @@ test("isMacUA：iOS / iPadOS 判为非 Mac（回归：旧正则 /Mac OS X/ 会�
 
 test("isMacUA：空 / 缺失 UA 不抛错、判为非 Mac", () => {
   assert.equal(isMacUA(""), false);
+});
+
+test("isAndroidUA：Android 手机 / 平板 / 桌面模式判为 Android", () => {
+  const uas = [
+    "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+    // Android 平板（无 Mobile 段）
+    "Mozilla/5.0 (Linux; Android 13; SM-X700) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    // Android 桌面模式 / 输入法 WebView 等小写变体
+    "mozilla/5.0 (linux; android 12) applewebkit/537.36",
+  ];
+  for (const ua of uas) assert.equal(isAndroidUA(ua), true, ua);
+});
+
+test("isAndroidUA：桌面三端 / iOS 判为非 Android", () => {
+  const uas = [
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+    "",
+  ];
+  for (const ua of uas) assert.equal(isAndroidUA(ua), false, ua);
 });

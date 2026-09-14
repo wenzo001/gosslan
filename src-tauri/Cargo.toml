@@ -1,6 +1,6 @@
 [package]
 name = "gosslan"
-version = "4.3.9"
+version = "4.3.18"
 description = "Gosslan — 无服务器 P2P 局域网即时通讯"
 authors = ["wd.f"]
 edition = "2021"
@@ -51,6 +51,12 @@ x25519-dalek = { version = "2", features = ["static_secrets"] }
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 chacha20poly1305 = "0.10"
 rand_core = { version = "0.6", features = ["getrandom"] }
+
+# 桌面系统通知：直接用 notify-rust（与 tauri-plugin-notification 用的是同一个底层库，
+# 版本也保持一致）。原因见 src/notifications.rs 头注释：插件的 show() 把真正的错误
+# spawn 掉丢了，用户报"收不到通知"时无法定位。
+[target.'cfg(any(target_os = "macos", windows, target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd"))'.dependencies]
+notify-rust = "4.11"
 
 # machine-uid 0.5 上游不支持 Android/iOS（`machine_id` 模块仅对 linux/macos/windows 等定义），
 # 在 aarch64-linux-android 目标上会编译失败。因此仅对非移动目标引入；

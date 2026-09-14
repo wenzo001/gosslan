@@ -73,17 +73,38 @@ async fn read_frame_preauth<R: AsyncRead + Unpin>(r: &mut R) -> std::io::Result<
 
 // ---------------- 出站发送 ----------------
 
+/// 资料/控制帧内联头像的上限（与 Hello 同一判据）。
+///
+/// 超过它就**不再占优先通道**：聊天与好友请求必须永远排在大头像前面。
+/// 与 HELLO_AVATAR_MAX_BYTES 恒等，避免两个数字漂移出两套行为。
+pub const CONTROL_AVATAR_MAX_BYTES: usize = HELLO_AVATAR_MAX_BYTES;
+
+/// 内联载荷超过这个大小的 Gossip 也降级到 bulk 通道。
+///
+/// 正常聊天/好友帧远小于它；只有「内联大图的通告」才会触到。16KiB 是保守值：
+/// 单帧在 BLE 上按 508B/片算也只有约 32 片（约 0.4s），不会把优先队列拖住。
+const BULK_GOSSIP_PAYLOAD_MAX_BYTES: usize = 16 * 1024;
+
 /// 大数据分片走普通通道；聊天/控制/小控制帧走高优先级通道，避免被大文件饿死。
+///
+/// 除文件分片外，还包含两类**大而可晚到**的帧：大头像的 UserInfo、内联大载荷的
+/// Gossip。它们此前都挤在优先道上，一张 400KB 头像能把聊天与好友请求堵上几分钟。
 fn is_bulk_message(msg: &Message) -> bool {
-    matches!(
-        msg,
+    match msg {
         Message::FileChunk { .. }
-            | Message::RelayChunk { .. }
-            | Message::GroupFileChunk { .. }
-            // 终止帧必须和分片同队列，保证「分片 → Done」的协议顺序不被优先级通道打乱。
-            | Message::FileDone { .. }
-            | Message::GroupFileDone { .. }
-    )
+        | Message::RelayChunk { .. }
+        | Message::GroupFileChunk { .. }
+        // 终止帧必须和分片同队列，保证「分片 → Done」的协议顺序不被优先级通道打乱。
+        | Message::FileDone { .. }
+        | Message::GroupFileDone { .. } => true,
+        // 大头像资料帧：内容大、可晚到，走 bulk，绝不占聊天/好友请求的优先道。
+        Message::UserInfo { avatar: Some(a), .. } if a.len() > CONTROL_AVATAR_MAX_BYTES => true,
+        // 任何大载荷 Gossip（含内联大图的 Presence/自定义通告）同样降级。
+        Message::Gossip { envelope } if envelope.payload.len() > BULK_GOSSIP_PAYLOAD_MAX_BYTES => {
+            true
+        }
+        _ => false,
+    }
 }
 
 /// 计算一次发送要按什么顺序尝试各条链路（纯函数，便于单测 + 护栏非空转）。
@@ -248,6 +269,23 @@ pub async fn try_send(state: &AppState, peer_id: &str, msg: &Message) -> Result<
     send_over_order(&senders, &order, msg, is_bulk_message(msg)).await
 }
 
+/// 无直连时，把一条**定向**帧借一跳中继发给 to（共享目录 / 中继文件在无直连时用）。
+///
+/// 只做「借邻居的直连」这一跳：给所有有直连的邻居各发一份（帧自带 to），邻居收到后
+/// 按 to 直接投递（见 handle_message 顶部的定向中继分支）。邻居若与 to 没有直连就丢弃
+/// —— 与既有 RelayChunk 的单跳限制一致；不泛洪，因此不存在环路。
+pub(crate) async fn relay_send_to_neighbors(state: &AppState, to: &str, msg: &Message) {
+    let peers: Vec<String> = {
+        state.links.lock().await.keys().cloned().collect()
+    };
+    for p in peers {
+        if p == to {
+            continue;
+        }
+        let _ = try_send(state, &p, msg).await;
+    }
+}
+
 /// 向所有已连接节点广播一条 Gossip 消息。
 pub async fn broadcast_gossip(state: &AppState, envelope: GossipEnvelope) {
     let msg = Message::Gossip {
@@ -268,10 +306,20 @@ pub async fn broadcast_gossip(state: &AppState, envelope: GossipEnvelope) {
             let router = state.mesh_router.lock().unwrap_or_else(|e| e.into_inner());
             router.exclude_source(&candidates, &envelope.sender_id)
         };
-        // 每个 peer 仍取第一条（M3-d 才改为按策略选路），但只克隆 Sender。
+        // M3-d（2026-09-14 全 Windows 局域网真机）：按**路径优先级**选一条发送链路，
+        // 而不是 v.first()（插入顺序）。旧写法在同一 peer 同时有 LAN 与 BLE 链路时，
+        // Gossip/控制帧可能走 BLE——表现为「同局域网却走了蓝牙/中继」。
+        // best_link_kind 给出 LAN > Routed > Bluetooth，再取该链路；只克隆 Sender。
         picked
             .iter()
-            .filter_map(|peer| links.get(*peer).and_then(|v| v.first()).map(|l| l.priority.clone()))
+            .filter_map(|peer| {
+                let ls = links.get(*peer)?;
+                let kinds: Vec<PathKind> = ls.iter().map(|l| l.path_kind).collect();
+                let best = crate::state::best_link_kind(&kinds)?;
+                ls.iter()
+                    .find(|l| l.path_kind == best)
+                    .map(|l| l.priority.clone())
+            })
             .collect()
     };
 
@@ -291,18 +339,27 @@ async fn broadcast_presence(state: &Arc<AppState>) {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clone();
-    let avatar = state
+    let raw_avatar = state
         .avatar
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clone();
-    // payload：明文 JSON（昵称/头像/设备类型）。身份与双公钥已在 GossipEnvelope 字段里。
-    let payload = serde_json::json!({
+    // payload：明文 JSON（昵称/可选头像/设备类型）。身份与双公钥已在 GossipEnvelope 字段里。
+    //
+    // ⚠️ Presence 每 10s 广播一次，而且走的是**优先通道**：绝不能内联大头像。
+    // 一张 400KB 的 base64 头像会让优先队列被上千片分片占住，聊天与好友请求全部排在
+    // 它后面（真机症状：开了蓝牙后好友申请几分钟才到、消息一直"发送中"）。
+    // 超过内联上限就**整个字段都不带**（接收侧 upsert_peer 只在 Some 时更新头像，
+    // 缺失/None 不会清空对端已有头像）；大头像改由建链时的 UserInfo 定向同步一次。
+    let avatar = hello_avatar_for_wire(raw_avatar.as_deref());
+    let mut payload_json = serde_json::json!({
         "nickname": nickname,
-        "avatar": avatar,
         "device_type": crate::protocol::current_device_type(),
-    })
-    .to_string();
+    });
+    if let Some(a) = avatar {
+        payload_json["avatar"] = serde_json::Value::String(a.to_string());
+    }
+    let payload = payload_json.to_string();
     let payload_b64 = STANDARD.encode(payload.as_bytes());
 
     let mut env = {
@@ -943,11 +1000,53 @@ pub async fn flush_pending_friend_accept(state: &Arc<AppState>, peer_id: &str) {
 }
 
 /// 构造带签名的 Hello（nonce 每次新生成，签名覆盖连接身份的全部字段）。
+/// Hello 里能带的头像上限（字节）。
+///
+/// ## 为什么必须限制（真机 2026-09-14 三端日志，本批最严重的一条）
+///
+/// `Hello` 是**握手帧**：链路刚建好就要发出去，对端等它的时间就是 `HANDSHAKE_TIMEOUT`（10s）。
+/// 而旧实现把 `state.avatar` **原样**塞进 Hello —— 用户设的是一张 base64 图片时，
+/// 这个帧可以到 **几百 KB**。BLE 上后果是双重的：
+///   · central 侧：424303 字节 ÷ 514 字节/片 ≈ **826 片 × 12ms ≈ 10s** ⇒ 正好撞上握手超时，
+///     对端日志是「握手超时：对端未回 Hello」；
+///   · 外设侧：CoreBluetooth/Android 在某些时序下报的 `maximumUpdateValueLength` 还是默认值
+///     （MTU 23 ⇒ 每片 20 字节）⇒ 需要 **3 万多片** > `MAX_BLE_CHUNKS_PER_MESSAGE`(8192)
+///     ⇒ `fragment()` 直接返回 `None`，日志是「回 Hello 失败：帧无法分片（过大或 MTU 非法：
+///     len=424303 mtu=20）」—— 真机上就是"搜得到、连得上、永远握手不成、发不出消息"。
+///
+/// 头像属于**展示信息**，晚一点、走别的路径同步都可以；握手帧必须小到能秒过。
+/// 取 2 KiB：正常的小图标/首字母头像远小于它，而任何"图片级"头像都会被挡在握手之外。
+pub const HELLO_AVATAR_MAX_BYTES: usize = 2048;
+
+/// 交给 Hello 携带的头像：**过大就返回 `None`**（并且只留一次 warn 让真机可查）。
+///
+/// 纯函数：`Option<&str>` 便于单测。
+pub fn hello_avatar_for_wire(avatar: Option<&str>) -> Option<&str> {
+    match avatar {
+        Some(a) if !a.is_empty() && a.len() <= HELLO_AVATAR_MAX_BYTES => Some(a),
+        _ => None,
+    }
+}
+
 pub fn build_signed_hello(state: &AppState, conv_clock: i64) -> Message {
     let device_id = state.device_id.clone();
     let tcp_port = state.tcp_port;
     let x25519_pubkey = state.identity.x25519_public_b64();
     let ed25519_pubkey = state.identity.ed25519_public_b64();
+    // ⚠️ 头像**必须先过尺寸闸门**再进握手帧（见 `HELLO_AVATAR_MAX_BYTES` 的说明）：
+    // 一张 base64 头像能把 Hello 撑到几百 KB，BLE 上直接导致握手超时或"帧无法分片"。
+    let raw_avatar = state.avatar.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let avatar = hello_avatar_for_wire(raw_avatar.as_deref()).map(str::to_string);
+    if avatar.is_none() && raw_avatar.as_deref().is_some_and(|a| !a.is_empty()) {
+        state.logger.warn(
+            "transport",
+            format!(
+                "Hello 不携带头像：本机头像 {} 字节 > 上限 {} 字节（握手帧必须小；头像由 UserInfo 同步）",
+                raw_avatar.as_deref().map(str::len).unwrap_or(0),
+                HELLO_AVATAR_MAX_BYTES
+            ),
+        );
+    }
     let nonce = STANDARD.encode(crypto::random_key());
     let sig = state.identity.sign_b64(&hello_signing_bytes(
         &device_id,
@@ -959,7 +1058,7 @@ pub fn build_signed_hello(state: &AppState, conv_clock: i64) -> Message {
     Message::Hello {
         device_id,
         nickname: state.nickname.lock().unwrap_or_else(|e| e.into_inner()).clone(),
-        avatar: state.avatar.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+        avatar,
         device_type: crate::protocol::current_device_type().to_string(),
         tcp_port,
         x25519_pubkey,
@@ -968,6 +1067,22 @@ pub fn build_signed_hello(state: &AppState, conv_clock: i64) -> Message {
         nonce,
         sig,
     }
+}
+
+/// 把本机完整资料（昵称/头像/设备类型）**定向**同步给一个对端。
+///
+/// 为什么需要它：Hello 只带不超过 2KiB 的头像、Presence 已不再内联大头像，所以
+/// 「大头像」只剩这一条正式路径 —— 链路建好后同步**一次**。超过
+/// CONTROL_AVATAR_MAX_BYTES 的帧会被 is_bulk_message 降到 bulk 通道，
+/// 不再和聊天/好友请求抢优先道。
+pub async fn send_user_info_to(state: &Arc<AppState>, peer_id: &str) {
+    let msg = Message::UserInfo {
+        device_id: state.device_id.clone(),
+        nickname: state.nickname.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+        avatar: state.avatar.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+        device_type: crate::protocol::current_device_type().to_string(),
+    };
+    let _ = try_send(state, peer_id, &msg).await;
 }
 
 async fn handle_incoming(
@@ -1093,6 +1208,14 @@ async fn handle_incoming(
     let (cancel_tx, cancel_rx) = watch::channel(false);
     // 追加到该 peer 的连接列表（而非覆盖）—— 多连接支持的基础。
     // 端点取 TCP 对端的真实地址，使「同一 peer 的不同端点」可被区分。
+    // 入站连接的路径类型：**不能一律当 LAN**。真机 2026-09-14（全 Windows 局域网）：
+    // 若对端是通过 Clash TUN / VPN / Tailscale 地址拨进来的，把它记成 LAN 会让
+    // has_lan_path 永真 ⇒ 我们再也不拨它的真实 LAN 地址，同网段也一直走隧道/中继。
+    // 只有非虚拟地址才按 LAN 记；虚拟地址按 Routed（与出站 Routed 同一语义）。
+    let inbound_kind = match peer_addr.ip() {
+        std::net::IpAddr::V4(v4) if is_virtual_ip(&v4) => PathKind::Routed,
+        _ => PathKind::Lan,
+    };
     state
         .links
         .lock()
@@ -1101,15 +1224,14 @@ async fn handle_incoming(
         .or_default()
         .push(Link {
             endpoint: MeshEndpoint::Tcp(peer_addr),
-            // 入站连接只可能来自本机 TCP 监听端口 ⇒ LAN 路径（Routed 都是我们主动拨出）
-            path_kind: PathKind::Lan,
+            path_kind: inbound_kind,
             bulk: bulk_tx.clone(),
             // priority 留一个 sender 在作用域内：首帧验签后要回发 Hello（见下）。
             priority: prio_tx.clone(),
             cancel: cancel_tx,
         });
     // 同步到 mesh 层：让 Peer/Connection 模型知道这条连接存在
-    register_connection(&state, &peer_id, MeshEndpoint::Tcp(peer_addr), PathKind::Lan);
+    register_connection(&state, &peer_id, MeshEndpoint::Tcp(peer_addr), inbound_kind);
     tokio::spawn(writer_loop(
         state.clone(),
         peer_id.clone(),
@@ -1558,6 +1680,28 @@ pub(crate) fn forget_peer_identity(state: &AppState, device_id: &str) {
     );
 }
 
+/// 直连链路刚建立时，把该会话的「当前链路」快照从"桥接"纠正为直连。
+///
+/// 为什么需要（真机 2026-09-14 全 Windows 局域网）：conv_link 是**上一条消息**的快照，
+/// 发送方在无直连时乐观写 hop=1；之后即使直连建好了，聊天头也一直显示「桥接 · 1」，
+/// 直到再发一条消息。这里在链路登记时主动纠正，避免界面长期误导。
+///
+/// 只在**已经存在该会话快照**时改，不新造条目。
+fn note_direct_link(state: &AppState, peer_id: &str, path_kind: PathKind) {
+    let mut links = state.conv_link.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(s) = links.get_mut(peer_id) {
+        let path = path_kind.as_str();
+        if s.hop != 0 || s.path != path {
+            s.path = path.to_string();
+            s.hop = 0;
+            state.logger.info(
+                "link",
+                format!("conv={peer_id} path={path} hop=0（直连已建立，纠正桥接快照）"),
+            );
+        }
+    }
+}
+
 /// 连接建立后：把这条连接登记到 mesh 层的 `PeerManager`。
 ///
 /// 这样 mesh 层的 Peer/Connection 才与传输层的 `Link` 一一对应，
@@ -1611,6 +1755,8 @@ pub(crate) fn register_connection(state: &AppState, peer_id: &str, endpoint: Mes
             u8::from(online),
         ),
     );
+    // 直连建好了：把可能残留的"桥接"快照纠正过来（见 note_direct_link 的说明）。
+    note_direct_link(state, peer_id, path_kind);
 }
 
 /// 连接断开后：从 mesh 层移除**这一条** Connection（同一 peer 的其他连接保留）。
@@ -1922,6 +2068,15 @@ pub async fn ensure_link(
 ) {
     // 端点解析失败则放弃本轮（下一轮 announce 会再试）。
     let Some(endpoint) = socket_addr_from(ip, tcp_port) else { return };
+    // 虚拟/隧道源地址（Clash fake-ip、Tailscale/CGNAT、link-local）不当作 LAN 直连去拨：
+    // 真机 2026-09-14 全 Windows 局域网——announce 的源地址未经过滤，若来自 TUN，会拨出
+    // 一条假的「LAN」链路并让 has_lan_path 永真，反而堵死真实 LAN 直连。真实 LAN 的
+    // announce 会用真实地址再来一轮；隧道场景仍由用户配置的 Routed 端点负责。
+    if let Ok(v4) = ip.parse::<Ipv4Addr>() {
+        if is_virtual_ip(&v4) {
+            return;
+        }
+    }
     // ① 这个端点已经连上了（典型是「自己拨出去的那条」）→ 本轮无事可做。
     let has_endpoint = state
         .has_endpoint(peer_id, &MeshEndpoint::Tcp(endpoint))
@@ -2190,7 +2345,29 @@ async fn connect_to_peer(
 
 // ---------------- 消息分发 ----------------
 
+/// 定向中继判定（纯函数，便于钉住）：这帧是不是「不是给我的、需要我借一跳转投」的定向帧？
+///
+/// 返回 Some(to) 表示应把**原帧**投给 to（仅当本机有到 to 的直连；没有则由 try_send 失败丢弃）。
+/// 覆盖共享目录三件套与中继文件元数据；RelayChunk 有独立的 ttl 转发路径，不在这里。
+fn directed_relay_target<'a>(msg: &'a Message, my_id: &str) -> Option<&'a str> {
+    match msg {
+        Message::ShareTreeRequest { to, .. } if to != my_id => Some(to.as_str()),
+        Message::ShareTreeResponse { to: Some(t), .. } if t != my_id => Some(t.as_str()),
+        Message::ShareFileRequest { to: Some(t), .. } if t != my_id => Some(t.as_str()),
+        Message::RelayFileOffer { to, .. } if to != my_id => Some(to.as_str()),
+        _ => None,
+    }
+}
+
 pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) {
+    // ---- 定向中继（一跳）：不是给我的定向帧，借邻居的直连转投给 to ----
+    // 共享目录（ShareTree/ShareFile）在无直连时会走这里；RelayFileOffer 同理。
+    // 只在「我确实有到 to 的直连」时投递；没有就丢弃（单跳中继限制，见
+    // relay_send_to_neighbors 的说明）。
+    if let Some(to) = directed_relay_target(&msg, &state.device_id) {
+        let _ = try_send(state, to, &msg).await;
+        return;
+    }
     match msg {
         Message::Hello {
             device_id,
@@ -2246,6 +2423,10 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             flush_pending_friend_request(state, &device_id).await;
             // 好友同意回执同样没有回执：建链后补发（真机：Mac 端好友状态一直没同步）。
             flush_pending_friend_accept(state, &device_id).await;
+            // 建链后把**我的完整资料**（含大头像）定向发给这一个对端：
+            // Hello 只带小头像、Presence 不再内联大头像，这里是「大头像只同步一次」
+            // 的正式路径。LAN 上瞬间完成；BLE 上走 bulk，慢但不会堵住聊天。
+            send_user_info_to(state, &device_id).await;
         }
         // ---- Phase 8（ADR-0017）：外部 mesh（BitChat）的不透明帧，Gosslan 只当中继 ----
         //
@@ -2423,8 +2604,9 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             let _ = state.app.emit("friend-request", &req);
             let mut extra = std::collections::HashMap::new();
             extra.insert("type".to_string(), "friend_request".to_string());
-            notify_with_extra(
-                &state.app,
+            // 好友申请是**不经前端**的通知：必须走后端开关 + 错误可见的统一入口。
+            let _ = crate::notifications::show_extra_if_enabled(
+                state,
                 "好友申请",
                 &format!("{from_nickname} 请求添加你为好友"),
                 extra,
@@ -2456,8 +2638,8 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             // 已经是好友了 ⇒ 这条申请必须消失（否则「新朋友」里会留着一条永远处理不掉的申请）
             forget_pending_request(state, &from);
             let _ = state.app.emit("friend-accepted", &from);
-            notify(
-                &state.app,
+            let _ = crate::notifications::show_if_enabled(
+                state,
                 "好友申请已通过",
                 &format!("{name} 已成为你的好友"),
             );
@@ -3055,9 +3237,10 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
         Message::ShareTreeRequest {
             request_id,
             from,
-            to,
+            to: _to,
         } => {
-            if from != peer_id || to != state.device_id {
+            // 定向中继已在 handle_message 顶部处理（不是给我的帧不会走到这里）。
+            if from == state.device_id {
                 return;
             }
             let is_friend = {
@@ -3077,9 +3260,15 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             let resp = Message::ShareTreeResponse {
                 request_id,
                 from: state.device_id.clone(),
+                to: Some(from.clone()),
                 entries,
             };
-            let _ = try_send(state, peer_id, &resp).await;
+            // 有直连直接回；没有则借一跳中继送回（与请求路径对称）。
+            if state.has_link(&from).await {
+                let _ = try_send(state, &from, &resp).await;
+            } else {
+                relay_send_to_neighbors(state, &from, &resp).await;
+            }
         }
         Message::ShareTreeResponse {
             request_id,
@@ -3094,8 +3283,10 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             transfer_id,
             from,
             path,
+            to: _to,
         } => {
-            if from != peer_id || from == state.device_id {
+            // 定向中继已在 handle_message 顶部处理。
+            if from == state.device_id {
                 return;
             }
             let is_friend = {
@@ -3129,15 +3320,16 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 &format!("「{from_name}」下载了你的文件「{file_name}」"),
             );
             tokio::spawn(async move {
-                if let Err(e) = file::send_file_from_path(&st, &from, &transfer_id, canon_full).await
-                {
-                    let _ = st.app.emit(
-                        "file-failed",
-                        &FileFailedInfo {
-                            transfer_id,
-                            reason: e.message,
-                        },
-                    );
+                // 有直连走原有可靠直传；没有直连则借一跳中继（RelayFileOffer/RelayChunk）。
+                let result = if st.has_link(&from).await {
+                    file::send_file_from_path(&st, &from, &transfer_id, canon_full)
+                        .await
+                        .map_err(|e| e.message)
+                } else {
+                    file::send_file_via_relay(&st, &from, &transfer_id, canon_full).await
+                };
+                if let Err(reason) = result {
+                    let _ = st.app.emit("file-failed", &FileFailedInfo { transfer_id, reason });
                 }
             });
         }
@@ -3760,6 +3952,15 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                             "presence",
                             format!("学到远端节点 peer={} nickname={}", env.sender_id, nickname),
                         );
+                        // 🎯 同局域网却走桥接的直接修复（真机 2026-09-14 全 Windows 局域网）：
+                        // 新学到的**跨跳**节点只有 ip="" 的 Presence，永远不会触发 LAN 拨号
+                        // （ensure_link 只由 UDP announce 驱动）⇒ 同网段也只能一直走中继。
+                        // 主动喊一轮 who_has：同网段的节点会用**单播**把 announce 回给我们，
+                        // 我们随即建立直连；不在同网段的节点收不到单播、不受影响。
+                        if let Some(tx) = state.probe.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+                            let next = tx.borrow().saturating_add(1);
+                            let _ = tx.send(next);
+                        }
                     }
                     // ip 空、tcp_port 0：跨跳转发不知道对端真实地址，仅记录身份
                     // （可被「看到」，但不可直连）。
@@ -3835,8 +4036,8 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                         );
                         let mut extra = std::collections::HashMap::new();
                         extra.insert("type".to_string(), "friend_request".to_string());
-                        notify_with_extra(
-                            &state.app,
+                        let _ = crate::notifications::show_extra_if_enabled(
+                            state,
                             "好友申请",
                             &format!("{} 请求添加你为好友", req.from_nickname),
                             extra,
@@ -3869,8 +4070,8 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                 let _ = state.app.emit("friend-accepted", &from);
                 // 留痕：跨跳好友同意是落库（friends 表）+ 内存态，日志便于 headless 观测。
                 state.logger.info("friend", format!("收到跨跳好友同意 peer={from}"));
-                notify(
-                    &state.app,
+                let _ = crate::notifications::show_if_enabled(
+                    state,
                     "好友申请已通过",
                     &format!("{name} 已成为你的好友"),
                 );
@@ -4164,7 +4365,7 @@ fn parse_gossip_payload(pt: &[u8]) -> (String, String) {
 #[allow(clippy::too_many_arguments)]
 async fn handle_relay_file_offer(
     state: &Arc<AppState>,
-    peer_id: &str,
+    _peer_id: &str,
     transfer_id: String,
     from: String,
     to: String,
@@ -4177,7 +4378,10 @@ async fn handle_relay_file_offer(
     if to != state.device_id {
         return; // 中继节点无需重组，只转发切片
     }
-    if from != peer_id || from == state.device_id || total_chunks == 0 || size > i64::MAX as u64 {
+    // 中继场景下 from 是**原始发送方**，peer_id 是上一跳邻居 —— 不再要求二者相等；
+    // 由 relay_send_to_neighbors + 顶部定向中继保证帧只被转投给 to，且文件会话密钥
+    // 只能用 from 的私钥解开（伪造 from 无法解封），因此这里是安全的。
+    if from == state.device_id || total_chunks == 0 || size > i64::MAX as u64 {
         return;
     }
     if file::safe_file_name(&name).is_none() {
@@ -4205,17 +4409,21 @@ async fn handle_relay_file_offer(
     let Some(file_key) = file_key else {
         return;
     };
-    state.relay_file_keys.lock().unwrap_or_else(|e| e.into_inner()).insert(
-        transfer_id.clone(),
-        crate::state::RelayFileReceive {
+    // 幂等：重复的 RelayFileOffer（多邻居泛洪）不得重置已累积的 hasher，
+    // 否则完整性校验必然失败（hash 只覆盖后到的切片）。
+    state
+        .relay_file_keys
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .entry(transfer_id.clone())
+        .or_insert_with(|| crate::state::RelayFileReceive {
             file_key,
             expected_sha256: file_sha256,
             hasher: {
                 use sha2::Digest as _;
                 sha2::Sha256::new()
             },
-        },
-    );
+        });
     state
         .relay
         .lock()
@@ -6005,23 +6213,8 @@ pub async fn flush_pending_group_reads(state: &AppState, peer_id: &str) {
     }
 }
 
-pub fn notify(app: &tauri::AppHandle, title: &str, body: &str) {
-    notify_with_extra(app, title, body, std::collections::HashMap::new());
-}
-
-pub fn notify_with_extra(
-    app: &tauri::AppHandle,
-    title: &str,
-    body: &str,
-    extra: std::collections::HashMap<String, String>,
-) {
-    use tauri_plugin_notification::NotificationExt;
-    let mut builder = app.notification().builder().title(title).body(body);
-    for (k, v) in &extra {
-        builder = builder.extra(k, v);
-    }
-    let _ = builder.show();
-}
+// Rust 侧的系统通知统一走 crate::notifications（尊重开关 + 错误可观察），
+// 不再在此处直接调用插件那个会把错误 spawn 掉丢掉的 show()。
 
 #[cfg(test)]
 mod tests {
@@ -6032,6 +6225,66 @@ mod tests {
     ///
     /// 反例：旧实现把"我不是群成员"直接 `return` 掉，于是**非成员中继不转发群消息**
     /// ⇒ BLE-only 三点中继（手机—电脑—手机）里群聊永远不通，而同链路单聊正常。
+    /// **Hello 绝不能带大头像**（真机 2026-09-14 三端日志：握手帧 424303 字节 ⇒ BLE 上
+    /// 要么撞 10s 握手超时、要么在 20 字节/片的外设侧直接「帧无法分片」，表现为
+    /// 「搜得到、连得上、永远建立不了会话」）。
+    #[test]
+    fn hello_avatar_is_capped_for_the_handshake_frame() {
+        assert_eq!(
+            hello_avatar_for_wire(Some("data:image/png;base64,AAAA")),
+            Some("data:image/png;base64,AAAA")
+        );
+        assert_eq!(hello_avatar_for_wire(None), None);
+        assert_eq!(hello_avatar_for_wire(Some("")), None, "空串按没有头像处理");
+        let big = "x".repeat(HELLO_AVATAR_MAX_BYTES + 1);
+        assert_eq!(
+            hello_avatar_for_wire(Some(&big)),
+            None,
+            "超过上限的头像必须被挡在握手帧之外"
+        );
+        let edge = "x".repeat(HELLO_AVATAR_MAX_BYTES);
+        assert_eq!(
+            hello_avatar_for_wire(Some(&edge)).map(str::len),
+            Some(HELLO_AVATAR_MAX_BYTES),
+            "正好等于上限要放行"
+        );
+        // 源码断言：Hello 构造必须真的用这个闸门（否则上面测的只是「函数存在」）
+        let src = include_str!("transport.rs");
+        let at = src
+            .find("pub fn build_signed_hello(state: &AppState")
+            .expect("必须还有 build_signed_hello（本护栏锚点）");
+        // 注意：源码里有大量中文，**不能**按"起始 + 2000 字节"硬切（会切在多字节字符中间 panic）；
+        // 用"顶层函数结尾的 `\n}\n`"作终点（与 lib.rs 的 `rust_fn_body` 同一判据）。
+        let end = src[at..].find("\n}\n").map(|i| at + i + 3).unwrap_or(src.len());
+        let body = &src[at..end];
+        assert!(
+            body.contains("hello_avatar_for_wire"),
+            "`build_signed_hello` 必须用 `hello_avatar_for_wire` 过滤头像"
+        );
+    }
+
+    /// **Presence 不得内联大头像**（与 Hello 同族，且更危险：每 10s 广播一次、走优先通道）。
+    ///
+    /// 这张源码断言盯住"闸门是否还在"：一旦有人把 state.avatar 原样塞回 Presence，
+    /// 一张 400KB 头像会把聊天与好友请求的优先队列堵住几分钟 —— 而单测不会失败。
+    #[test]
+    fn presence_caps_inline_avatar() {
+        let src = include_str!("transport.rs");
+        let at = src
+            .find("async fn broadcast_presence")
+            .expect("必须还有 broadcast_presence（本护栏锚点）");
+        let end = src[at..].find("\n}\n").map(|i| at + i + 3).unwrap_or(src.len());
+        let body = &src[at..end];
+        assert!(
+            body.contains("hello_avatar_for_wire"),
+            "broadcast_presence 必须过 hello_avatar_for_wire 闸门：             否则一张大头像会占满优先通道，聊天与好友请求几分钟才到"
+        );
+        assert!(
+            !body.contains("\"avatar\": avatar"),
+            "不能再把 state.avatar 原样内联进 Presence（那条旧写法正是本次修复的缺陷）"
+        );
+    }
+
     /// 这条测试只钉"能不能消费"；"非成员仍要转发"由下面那条 + `handle_gossip` 的结构保证。
     #[test]
     fn group_envelope_consumption_rule() {
@@ -6704,6 +6957,81 @@ mod tests {
         }
     }
 
+    /// 定向中继判定：共享目录/中继文件在无直连时靠它借一跳；给本机或旧端无 to 的帧不转发。
+    #[test]
+    fn directed_relay_target_routes_share_and_offer_frames() {
+        let me = "me";
+        let tree_to_other = Message::ShareTreeRequest {
+            request_id: "r".into(),
+            from: "a".into(),
+            to: "b".into(),
+        };
+        assert_eq!(directed_relay_target(&tree_to_other, me), Some("b"));
+        let tree_to_me = Message::ShareTreeRequest {
+            request_id: "r".into(),
+            from: "a".into(),
+            to: me.into(),
+        };
+        assert_eq!(directed_relay_target(&tree_to_me, me), None, "给本机的帧不转发");
+        let resp_legacy = Message::ShareTreeResponse {
+            request_id: "r".into(),
+            from: "a".into(),
+            to: None,
+            entries: vec![],
+        };
+        assert_eq!(directed_relay_target(&resp_legacy, me), None, "旧端无 to：按直连处理");
+        let resp_relay = Message::ShareTreeResponse {
+            request_id: "r".into(),
+            from: "a".into(),
+            to: Some("b".into()),
+            entries: vec![],
+        };
+        assert_eq!(directed_relay_target(&resp_relay, me), Some("b"));
+        let file_req = Message::ShareFileRequest {
+            transfer_id: "t".into(),
+            from: "a".into(),
+            path: "p".into(),
+            to: Some("b".into()),
+        };
+        assert_eq!(directed_relay_target(&file_req, me), Some("b"));
+        let offer = Message::RelayFileOffer {
+            transfer_id: "t".into(),
+            from: "a".into(),
+            to: "b".into(),
+            name: "n".into(),
+            size: 1,
+            total_chunks: 1,
+            sealed_file_key: "k".into(),
+            file_sha256: "h".into(),
+        };
+        assert_eq!(directed_relay_target(&offer, me), Some("b"));
+        let normal = Message::Heartbeat { device_id: "a".into() };
+        assert_eq!(directed_relay_target(&normal, me), None);
+    }
+
+    /// 造一个只关心 payload 长度/类型的 Gossip 信封（其余字段对 is_bulk_message 无意义）。
+    fn test_envelope(payload_len: usize, kind: GossipKind) -> GossipEnvelope {
+        GossipEnvelope {
+            message_id: "m".into(),
+            sender_id: "a".into(),
+            nonce: "n".into(),
+            sender_pubkey: "pk".into(),
+            sender_ed25519: "ek".into(),
+            sender_sig: "sig".into(),
+            ttl: 4,
+            kind,
+            group_id: None,
+            group_name: None,
+            group_creator: None,
+            group_members: vec![],
+            payload: "p".repeat(payload_len),
+            ts: 1,
+            seq: 0,
+            encrypted: false,
+            target: None,
+        }
+    }
+
     #[test]
     fn bulk_messages_are_only_large_chunks() {
         let chat = Message::ChatMessage {
@@ -6741,6 +7069,40 @@ mod tests {
             sender_id: "a".into(),
         };
         assert!(is_bulk_message(&group_file_done));
+
+        // 小头像资料帧：资料变更要立刻可见 ⇒ 仍走优先道。
+        let small_user_info = Message::UserInfo {
+            device_id: "a".into(),
+            nickname: "A".into(),
+            avatar: Some("x".repeat(CONTROL_AVATAR_MAX_BYTES)),
+            device_type: "desktop".into(),
+        };
+        assert!(
+            !is_bulk_message(&small_user_info),
+            "恰好等于上限的头像仍应走优先道"
+        );
+
+        // 大头像资料帧：内容大、可晚到 ⇒ 必须降级到 bulk，绝不占聊天/好友的优先道。
+        let big_user_info = Message::UserInfo {
+            device_id: "a".into(),
+            nickname: "A".into(),
+            avatar: Some("x".repeat(CONTROL_AVATAR_MAX_BYTES + 1)),
+            device_type: "desktop".into(),
+        };
+        assert!(
+            is_bulk_message(&big_user_info),
+            "超过上限的头像资料帧必须走 bulk（否则会堵住聊天与好友请求）"
+        );
+
+        // 小载荷 Gossip 走优先道；内联大载荷（例如带大图的 Presence）降级到 bulk。
+        let small_gossip = Message::Gossip {
+            envelope: test_envelope(BULK_GOSSIP_PAYLOAD_MAX_BYTES, GossipKind::Presence),
+        };
+        assert!(!is_bulk_message(&small_gossip));
+        let big_gossip = Message::Gossip {
+            envelope: test_envelope(BULK_GOSSIP_PAYLOAD_MAX_BYTES + 1, GossipKind::Presence),
+        };
+        assert!(is_bulk_message(&big_gossip));
     }
 
     #[tokio::test]

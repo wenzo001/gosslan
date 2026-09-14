@@ -9,6 +9,7 @@ import { useMessageDisplay } from "@/composables/useMessageDisplay";
 import { useMessageFile } from "@/composables/useMessageFile";
 import { useMemberProfile } from "@/composables/useMemberProfile";
 import { textNeedsClamp } from "@/utils/previewMetrics";
+import { isDialogCancelled, saveDestinationOf } from "@/utils/saveDestination";
 import { haptic } from "@/utils/haptics";
 import { shouldStartLongPress, shouldSwallowLongPressRelease } from "@/utils/longPress";
 import { t } from "@/i18n";
@@ -101,6 +102,7 @@ const {
   streamCodeClamped,
   fileMeta,
   fileReady,
+  fileTappable,
   fileProgress,
   fileStatusText,
   attachmentUrl,
@@ -392,7 +394,8 @@ async function saveImage() {
   try {
     const { save } = await import("@tauri-apps/plugin-dialog");
     const { invoke } = await import("@tauri-apps/api/core");
-    const destination = await save({ defaultPath: `${t("common.image")}-${Date.now()}.png` });
+    const picked: unknown = await save({ defaultPath: `${t("common.image")}-${Date.now()}.png` });
+    const destination = saveDestinationOf(picked);
     if (!destination) return; // 用户取消
     const buf = new Uint8Array(await (await fetch(url)).arrayBuffer());
     let binary = "";
@@ -403,6 +406,7 @@ async function saveImage() {
     await invoke("save_data_file", { base64Data: btoa(binary), destination });
     app.toast(t("msg.imageSaved"), "success");
   } catch (e) {
+    if (isDialogCancelled(e)) return; // Android 取消是 reject，不是返回 null
     app.toastError(e, t("msg.saveImageFail"));
   }
 }
@@ -627,6 +631,7 @@ async function copyFileToClipboard() {
             :delivery="isGroupFile ? deliverySummary : null"
             :mine="mine"
             :ready="fileReady"
+            :tappable="fileTappable"
             @open="openFile"
             @save="saveAs"
             @download="onFileDownload"

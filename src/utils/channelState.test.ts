@@ -215,3 +215,59 @@ test("「蓝牙直连」只能由后端链路类型判定（不许用『没有 I
   assert.match(commands, /async fn fill_peer_links\(/, "必须有唯一的『补链路类型』实现");
   assert.match(commands, /best_link_kind/, "链路类型按 LAN > Routed > Bluetooth 的优先级取");
 });
+
+/**
+ * 自动拉起蓝牙**必须尊重用户的关闭偏好**（用户 2026-09-14 桌面实测：
+ * 设置里关掉蓝牙，退出重进又被打开）。
+ *
+ * 根因：ensureBluetoothOn 原来用 channels[bluetooth].enabled（= 运行时是否在跑）判，
+ * 而启动瞬间必然没在跑 ⇒ 把"用户明确关掉"当成"还没启动"，重新打开。
+ * 判据：启用调用之前必须先判持久化偏好 preferred，且为 false 时直接返回。
+ */
+test("自动拉起蓝牙必须尊重用户的关闭偏好（不能只看运行时是否在跑）", () => {
+  const store = read("stores/useAppStore.ts");
+  const at = store.indexOf("async function ensureBluetoothOn");
+  assert.ok(at > 0, "找不到 ensureBluetoothOn（护栏需要同步更新）");
+  const body = store.slice(at, at + 1600);
+  assert.match(
+    body,
+    /if \(!ch\.preferred\) return;/,
+    "必须在拉起前判持久化偏好 preferred；用户明确关掉时不得自动打开",
+  );
+  const prefAt = body.indexOf("!ch.preferred");
+  const enableAt = body.indexOf('setChannelEnabled("bluetooth", true)');
+  assert.ok(prefAt > 0 && enableAt > prefAt, "偏好判据必须在启用调用之前（顺序反了等于没判）");
+  assert.ok(
+    !/\?\.enabled\) return;/.test(body),
+    "不得再用 enabled（运行时是否在跑）当自动拉起的判据 —— 那正是本 bug 的根因",
+  );
+});
+
+/**
+ * 桌面系统通知**必须走后端命令**，不能再依赖被插件替换掉的 window.Notification
+ * （用户 2026-09-14：Windows 同事收不到任何系统通知）。
+ *
+ * Tauri 的 notification 插件会把 window.Notification 换成转发到
+ * plugin:notification|notify 的实现 —— 那条链路的 onclick 永远不触发，而且把真正的
+ * toast 错误 spawn 掉丢了。现在统一 api.notifyDesktop：失败会返回并记日志，
+ * 设置页还有「发送测试通知」自检。
+ */
+test("桌面通知必须走后端 notify_desktop（不再依赖被插件替换的 window.Notification）", () => {
+  const store = read("stores/useChatStore.ts");
+  assert.match(store, /api\.notifyDesktop\(title, body\)/, "桌面分支必须调后端 notify_desktop 命令");
+  assert.ok(
+    !/new Notification\(/.test(store),
+    "不得再用 WebView 原生 Notification（插件已把 window.Notification 换成另一套实现）",
+  );
+  assert.match(
+    store,
+    /if \(!document\.hidden && document\.hasFocus\(\) && activeConv\.value === rec\.conv_id\) return;/,
+    "maybeNotify 必须同时判 !document.hidden（隐藏/最小化时 hasFocus 仍可能为 true）",
+  );
+  assert.match(read("api/index.ts"), /notifyDesktop:/, "api 层要暴露 notify_desktop");
+  assert.match(
+    read("components/settings/NotificationSection.vue"),
+    /sendTestNotification/,
+    "设置页必须有「发送测试通知」入口（Windows 静默失败时唯一的自检手段）",
+  );
+});
