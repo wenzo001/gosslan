@@ -1481,6 +1481,31 @@ mod tests {
         );
     }
 
+    /// **通道偏好必须与运行状态分开表达**（用户 2026-09-14 桌面实测：关掉蓝牙、退出重进又被打开）。
+    ///
+    /// 根因：快照里 channels[bluetooth].enabled 用的是"运行时是否在跑"，应用刚启动、BLE 还没
+    /// 拉起时必然是 false ⇒ 前端 ensureBluetoothOn 无法区分"用户明确关掉"与"还没启动"，
+    /// 于是把偏好覆盖成开。判据：通道状态必须有独立的 preferred 字段，且快照从持久化键
+    /// （lan_enabled / bt_enabled）填充。
+    #[test]
+    fn channel_status_exposes_persisted_preference() {
+        let tm = include_str!("transport/mod.rs");
+        assert!(
+            tm.contains("pub preferred: bool"),
+            "ChannelStatus 必须有独立的 preferred 字段（与 running 分开），否则前端只能拿运行状态猜偏好"
+        );
+        let cmds = include_str!("commands.rs");
+        let body = rust_fn_body(cmds, "pub async fn build_runtime_snapshot(");
+        assert!(
+            body.contains("get_lan_enabled") && body.contains("get_bt_enabled"),
+            "快照必须从持久化键填充 preferred（开机后偏好不能丢）"
+        );
+        assert!(
+            body.contains("c.preferred"),
+            "必须把 db 里的偏好写回通道状态"
+        );
+    }
+
     /// 外设侧**每次订阅都必须清掉该 central 的重组器**（用户优先级 ①：加入 mesh 的稳定性）。
     ///
     /// 为什么（2026-09-13 框架审计）：对端的 `msg_id` **每条连接都从 1 重新开始**，而 macOS

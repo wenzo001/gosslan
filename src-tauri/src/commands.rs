@@ -697,6 +697,26 @@ pub async fn build_runtime_snapshot(s: &Arc<AppState>) -> RuntimeSnapshot {
         bt.peers = bt_peers;
         bt.enabled = bt_running;
     }
+    // 持久化偏好必须与“此刻是否在跑”分开表达：应用刚启动时 BLE 还没拉起，enabled/running
+    // 都是 false，前端无法据此区分“用户明确关掉”与“尚未启动”⇒ 自动拉起会覆盖用户的关闭选择
+    // （真机 2026-09-14：关掉蓝牙、退出重进又被打开）。get_*_enabled 在键缺失时会顺手落默认值
+    // （首次安装 ⇒ 默认开）。
+    {
+        let (lan_pref, bt_pref) = {
+            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+            (
+                crate::db::get_lan_enabled(&dbc),
+                crate::db::get_bt_enabled(&dbc),
+            )
+        };
+        for c in list.iter_mut() {
+            match c.channel {
+                "lan" => c.preferred = lan_pref,
+                "bluetooth" => c.preferred = bt_pref,
+                _ => {}
+            }
+        }
+    }
     let (online, bound_ip) = {
         let net = s.network.lock().unwrap_or_else(|e| e.into_inner());
         (net.is_some(), net.as_ref().map(|n| n.bound_ip.clone()))

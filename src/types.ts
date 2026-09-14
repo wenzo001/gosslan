@@ -178,6 +178,13 @@ export interface ChannelStatus {
   available: boolean;
   running: boolean;
   peers: number;
+  /**
+   * **持久化的用户偏好**：与 running（此刻是否在跑）分开。
+   *
+   * 应用刚启动时通道必然没在跑，不能据此判断"用户关掉了"——自动拉起蓝牙必须看这个字段，
+   * 否则退出重进会把用户明确关闭的蓝牙又打开（真机 2026-09-14）。
+   */
+  preferred: boolean;
 }
 
 /** 手动配置的跨子网端点（Tailscale / VPN / 跨网段）。

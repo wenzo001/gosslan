@@ -322,21 +322,33 @@ export const useAppStore = defineStore("app", () => {
   }
 
   /**
-   * 手机上按需拉起蓝牙通道（幂等、绝不抛错）。
+   * 按需拉起蓝牙通道（幂等、绝不抛错）。
    *
-   * 「像 BitChat 一样默认就开」在**体验**上仍然成立：用户不需要任何设置；区别只是
-   * **启动时不碰 BLE**，等用户真正打开「添加好友」/网络设置时才拉起 —— 这样即使 BLE 启动
-   * 路径里还有崩溃点，也不会表现为"打开应用就闪退"（安卓的入口强制 panic=abort，
-   * 一旦 panic 就是整进程消失、连日志都难拿）。
+   * 「像 BitChat 一样默认就开」在**体验**上仍然成立：首次安装 bt_enabled 缺省为开，这里就会
+   * 把它拉起来；区别只是**启动时不碰 BLE**，等用户真正打开「添加好友」/网络设置时才拉起 ——
+   * 这样即使 BLE 启动路径里还有崩溃点，也不会表现为"打开应用就闪退"（安卓的入口强制
+   * panic=abort，一旦 panic 就是整进程消失、连日志都难拿）。
+   *
+   * ⚠️ **必须尊重用户偏好**（用户 2026-09-14 桌面实测：关掉蓝牙、退出重进又被打开）：
+   * 判据用 preferred（持久化偏好）而**不是** enabled/running（此刻在不在跑）。应用刚启动时
+   * 通道必然没在跑，若拿 running 判就会把"用户明确关掉"重新打开。
    */
   let bluetoothEnsureTried = false;
   async function ensureBluetoothOn() {
     if (bluetoothEnsureTried) return;
-    bluetoothEnsureTried = true;
     try {
+      // 快照还没到（首次安装 / 极早的调用）时先拉一次，别把"尚未加载"误判成"用户关了"。
+      if (!channels.value.some((c) => c.channel === "bluetooth")) await refreshRuntime();
+      const ch = channels.value.find((c) => c.channel === "bluetooth");
+      // 拿不到通道状态 ⇒ 不置位，留给下一次调用（打开「添加好友」/网络设置）重试。
+      if (!ch) return;
+      bluetoothEnsureTried = true;
+      // 用户明确关掉 ⇒ 永远不要自动拉起（本 bug 的修复点）。
+      if (!ch.preferred) return;
+      if (ch.running) return;
       await api.requestBlePermissions().catch(() => {});
       for (let attempt = 0; attempt < 2; attempt++) {
-        if (channels.value.find((c) => c.channel === "bluetooth")?.enabled) return;
+        if (channels.value.find((c) => c.channel === "bluetooth")?.running) return;
         try {
           applyRuntimeSnapshot(await api.setChannelEnabled("bluetooth", true));
           return;

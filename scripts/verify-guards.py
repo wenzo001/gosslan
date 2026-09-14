@@ -213,6 +213,22 @@ CASES: list[Case] = [
         expect_fail_hint="throughput_estimate_matches_real_mtu_budgets",
         tags=["rust", "ble", "new-guards"],
     ),
+    Case(
+        name="自动拉起蓝牙必须尊重用户的关闭偏好（退出重进不能又打开）",
+        why="真机 2026-09-14：电脑端设置里关掉蓝牙，退出重进又被 ensureBluetoothOn 自动拉起。"
+            "判据必须用持久化偏好 preferred，而不是运行时 enabled/running —— 启动瞬间必然没在跑，"
+            "只看运行状态就会把用户的关闭选择覆盖掉。",
+        file=ROOT / "src" / "stores" / "useAppStore.ts",
+        injections=[(
+            "      if (!ch.preferred) return;",
+            "      // 关闭偏好判断被移除（护栏注入）",
+        )],
+        cmd=["node", "--test", "--experimental-strip-types", "--disable-warning=ExperimentalWarning",
+             "src/utils/channelState.test.ts"],
+        cwd=ROOT,
+        expect_fail_hint="偏好",
+        tags=["frontend", "new-guards"],
+    ),
     # ---------------- Rust：capability 覆盖 ----------------
     Case(
         name="capability 覆盖每个窗口（漏一个窗口 ACL 会静默拒绝）",

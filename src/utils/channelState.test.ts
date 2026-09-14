@@ -215,3 +215,30 @@ test("「蓝牙直连」只能由后端链路类型判定（不许用『没有 I
   assert.match(commands, /async fn fill_peer_links\(/, "必须有唯一的『补链路类型』实现");
   assert.match(commands, /best_link_kind/, "链路类型按 LAN > Routed > Bluetooth 的优先级取");
 });
+
+/**
+ * 自动拉起蓝牙**必须尊重用户的关闭偏好**（用户 2026-09-14 桌面实测：
+ * 设置里关掉蓝牙，退出重进又被打开）。
+ *
+ * 根因：ensureBluetoothOn 原来用 channels[bluetooth].enabled（= 运行时是否在跑）判，
+ * 而启动瞬间必然没在跑 ⇒ 把"用户明确关掉"当成"还没启动"，重新打开。
+ * 判据：启用调用之前必须先判持久化偏好 preferred，且为 false 时直接返回。
+ */
+test("自动拉起蓝牙必须尊重用户的关闭偏好（不能只看运行时是否在跑）", () => {
+  const store = read("stores/useAppStore.ts");
+  const at = store.indexOf("async function ensureBluetoothOn");
+  assert.ok(at > 0, "找不到 ensureBluetoothOn（护栏需要同步更新）");
+  const body = store.slice(at, at + 1600);
+  assert.match(
+    body,
+    /if \(!ch\.preferred\) return;/,
+    "必须在拉起前判持久化偏好 preferred；用户明确关掉时不得自动打开",
+  );
+  const prefAt = body.indexOf("!ch.preferred");
+  const enableAt = body.indexOf('setChannelEnabled("bluetooth", true)');
+  assert.ok(prefAt > 0 && enableAt > prefAt, "偏好判据必须在启用调用之前（顺序反了等于没判）");
+  assert.ok(
+    !/\?\.enabled\) return;/.test(body),
+    "不得再用 enabled（运行时是否在跑）当自动拉起的判据 —— 那正是本 bug 的根因",
+  );
+});

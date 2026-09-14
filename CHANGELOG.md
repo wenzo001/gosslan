@@ -10,6 +10,26 @@
 
 ## [Unreleased]
 
+### Fixed (🔴 桌面端关掉蓝牙后，退出重进又被自动打开)
+
+用户 2026-09-14 真机：设置里把蓝牙通道关掉，退出重进又变成开着的。
+根因不是偏好没写（set_channel_enabled 确实写了 bt_enabled=0），而是**前端启动后无条件
+自动拉起蓝牙**：ensureBluetoothOn（首帧后 2s、以及打开「添加好友」/网络设置时都会调）
+用 channels[bluetooth].enabled 判"要不要拉起"，而快照里 enabled 等于**运行时是否在跑**
+—— 刚启动 BLE 还没拉起，必然是 false ⇒ 它把"用户明确关掉"当成"还没启动"，重新打开。
+
+修法：
+- 后端：ChannelStatus 新增 preferred 字段（持久化偏好），与 running 分开。
+  build_runtime_snapshot 从 lan_enabled / bt_enabled 填充；enabled 保持
+  "运行时是否在跑"的原义（两处 UI 的开关值语义不变）。
+- 前端：ensureBluetoothOn 先判 preferred，为 false 直接返回（尊重用户关闭）；
+  并给 ChannelStatus 类型补上该字段。
+- 行为不变的部分：首次安装 bt_enabled 缺省为开 ⇒ 仍然默认自动开启蓝牙。
+
+护栏：channel_status_exposes_persisted_preference（Rust 源码断言）+
+channelState.test.ts 新增前端用例（偏好判据必须在启用调用之前）+
+verify-guards.py 对应非空转用例（删掉偏好判断 ⇒ 必须 FAIL）。
+
 ## [4.3.16] - 2026-09-14
 
 ### Tests (新增 6 条非空转护栏)
