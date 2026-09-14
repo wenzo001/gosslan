@@ -1545,6 +1545,28 @@ mod tests {
         );
     }
 
+    /// **链路徽标与在线状态必须"实时"**（用户 2026-09-14：两边全在局域网，却显示「已桥接」，
+    /// 且好友在线状态不实时）。
+    ///
+    /// 两个必须同时成立的判据：
+    /// 1. get_conv_link 有直连时按**此刻实际选路**返回 hop=0，不再回放"上一条消息"的快照；
+    /// 2. peers-updated 要带上每个节点的活跃链路（link 字段），前端才能把"有链路但广播没收到"
+    ///    的节点也算在线（与后端 friend_is_online 同口径）。
+    #[test]
+    fn link_badge_and_presence_are_live() {
+        let commands = include_str!("commands.rs");
+        let body = rust_fn_body(commands, "pub async fn get_conv_link(");
+        assert!(
+            body.contains("has_link") && body.contains("hop: 0"),
+            "有直连时 get_conv_link 必须以实时链路 + hop=0 返回，不能回放消息快照"
+        );
+        let state = include_str!("state.rs");
+        assert!(
+            state.contains("p.link = best_link_kind(&kinds)"),
+            "peers-updated 必须带上活跃链路（link 字段），否则前端判不出「有链路但广播缺席」的在线"
+        );
+    }
+
     /// 外设侧**每次订阅都必须清掉该 central 的重组器**（用户优先级 ①：加入 mesh 的稳定性）。
     ///
     /// 为什么（2026-09-13 框架审计）：对端的 `msg_id` **每条连接都从 1 重新开始**，而 macOS

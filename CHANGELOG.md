@@ -10,6 +10,31 @@
 
 ## [Unreleased]
 
+## [4.3.20] - 2026-09-14
+
+### Fixed (链路徽标与好友在线状态不实时：全局域网却显示「已桥接」)
+
+用户 2026-09-14 真机：手机之前只用蓝牙、加好友加了一半；打开局域网、两边都直连后，
+聊天窗口仍显示「已桥接」，好友在线状态也不实时。
+
+两处根因：
+1. 聊天头的链路来自**上一条消息的快照**（conv_link），链路从蓝牙/中继切回局域网后不会
+   自动更新，只有再发一条消息才纠正 ⇒ 长期显示「桥接」。
+2. 前端 onPeers 只按"在不在节点表"判在线，忽略了「有活跃链路但广播没收到（防火墙/组播
+   限制）或刚被 sweep 清理」的情况 —— 而后端 get_friends 的 friend_is_online 是
+   "最近 15s 见过 或 有活跃链路"，两边口径不一致 ⇒ 连上了却显示离线。
+
+修法：
+- get_conv_link 改为 async 实时计算：**有直连 ⇒ hop=0 + 当前选路（LAN > Routed > 蓝牙）**；
+  无直连才回落到消息快照。（Tauri 要求带引用输入的 async 命令返回 Result，Ok 自动解包，
+  前端拿到的仍是 LinkState | null，契约不变。）
+- peers-updated 事件带上每个节点的活跃链路（link 字段，try_lock links）；前端 onPeers 把
+  "有链路的节点"也算在线，与后端 friend_is_online 同口径。
+- 聊天头在活跃对端的 link 变化时立即刷新链路状态，不再等新消息。
+
+护栏：link_badge_and_presence_are_live（Rust 源码断言）+ channelState.test.ts 前端用例 +
+verify-guards.py 非空转用例。
+
 ## [4.3.19] - 2026-09-14
 
 ### Fixed (🔴 Windows CI 打包失败 —— Windows 专用分支的编译错误本地拦不住)

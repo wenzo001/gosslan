@@ -259,6 +259,21 @@ CASES: list[Case] = [
         expect_fail_hint="as_str",
         tags=["rust", "new-guards"],
     ),
+    Case(
+        name="在线状态必须包含有活跃链路的节点（不能只看节点表）",
+        why="用户 2026-09-14：局域网直连上了，好友在线状态却不实时。前端原来只按\"在不在 peers 表\""
+            "判在线，而有链路但广播没收到（防火墙/组播限制）或刚被 sweep 的节点会被判离线。",
+        file=ROOT / "src" / "stores" / "useChatStore.ts",
+        injections=[(
+            "f.online = onlineIds.has(f.device_id) || linkedIds.has(f.device_id)",
+            "f.online = onlineIds.has(f.device_id)",
+        )],
+        cmd=["node", "--test", "--experimental-strip-types", "--disable-warning=ExperimentalWarning",
+             "src/utils/channelState.test.ts"],
+        cwd=ROOT,
+        expect_fail_hint="活跃链路",
+        tags=["frontend", "new-guards"],
+    ),
     # ---------------- Rust：capability 覆盖 ----------------
     Case(
         name="capability 覆盖每个窗口（漏一个窗口 ACL 会静默拒绝）",

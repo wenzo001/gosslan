@@ -1258,7 +1258,31 @@ impl AppState {
 
     /// 实际序列化并推送节点表（仅由节流任务调用）。
     fn emit_peers_now(&self) {
-        let peers: Vec<Peer> = self.peers.lock().unwrap_or_else(|e| e.into_inner()).values().cloned().collect();
+        let mut peers: Vec<Peer> = self
+            .peers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .cloned()
+            .collect();
+        // 顺带补上"这个节点此刻有没有活跃链路 + 走哪条路"（link 字段）。
+        //
+        // 为什么必须带上：前端原来只按"在不在节点表"判在线，于是「链路活着、但广播没收到
+        // （被防火墙/组播限制吞掉）或刚被 sweep」的好友会显示离线，而后端 get_friends 的
+        // friend_is_online 却认为在线 ⇒ 用户看到"局域网都连上了，在线状态却不实时"。
+        // try_lock：拿不到锁（网络任务正忙）就照旧发推送，不能让统计阻塞网络。
+        if let Ok(links) = self.links.try_lock() {
+            for p in peers.iter_mut() {
+                if let Some(list) = links.get(&p.device_id) {
+                    if list.is_empty() {
+                        continue;
+                    }
+                    let kinds: Vec<crate::mesh::PathKind> =
+                        list.iter().map(|l| l.path_kind).collect();
+                    p.link = best_link_kind(&kinds).map(|k| k.as_str().to_string());
+                }
+            }
+        }
         let _ = self.app.emit("peers-updated", peers);
     }
 

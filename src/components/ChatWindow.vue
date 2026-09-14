@@ -58,7 +58,13 @@ async function refreshLinkState() {
   linkState.value = await api.getConvLink(id);
 }
 watch(
-  () => [chat.activeConv, messages.value.length] as const,
+  () => {
+    // 活跃对端的**实时链路**也要参与依赖：链路从蓝牙/中继切回局域网时，
+    // peers-updated 会带上新的 link，聊天头必须立刻改成「直连」，
+    // 而不是等用户再发一条消息。
+    const peerLink = chat.peers.find((p) => p.device_id === chat.activeConv)?.link ?? null;
+    return [chat.activeConv, messages.value.length, peerLink] as const;
+  },
   refreshLinkState,
   { immediate: true },
 );
