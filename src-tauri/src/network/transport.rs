@@ -2428,7 +2428,14 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
         // ADR-0019 Phase 3：按 cid 拉取。**拥有即授权**，无需人工确认 —— 但只服务
         // "确实是我的好友、且 from 就是这条链路的对端（防冒名）"。回发复用既有
         // FileOffer→Chunk→Done→CompleteAck 流程（send_file_from_path）。
-        Message::ContentRequest { from, cid, .. } => {
+        Message::ContentRequest {
+            from,
+            cid,
+            transfer_id,
+            from_seq,
+            from_bytes,
+            ..
+        } => {
             if from != peer_id {
                 return;
             }
@@ -2463,12 +2470,19 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 );
                 return;
             }
-            let transfer_id = format!("refetch-{}", uuid::Uuid::new_v4());
-            match crate::network::file::send_file_from_path(
+            // 续传：沿用原 transfer_id（接收端才找得到 <tid>.part），并从已收字节起发。
+            let transfer_id = if transfer_id.is_empty() {
+                format!("refetch-{}", uuid::Uuid::new_v4())
+            } else {
+                transfer_id
+            };
+            match crate::network::file::send_file_from_path_at(
                 state,
                 &from,
                 &transfer_id,
                 std::path::PathBuf::from(&path),
+                from_seq,
+                from_bytes,
             )
             .await
             {
@@ -3087,6 +3101,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             size,
             sealed_file_key,
             file_sha256,
+            from_bytes,
             ..
         } => {
             if from != peer_id || from == state.device_id {
@@ -3136,15 +3151,30 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 .await;
                 return;
             }
-            match file::begin_receive(
-                state,
-                &transfer_id,
-                &from,
-                &name,
-                size,
-                file_key,
-                file_sha256.clone(),
-            ) {
+            // 续传：from_bytes > 0 且本地有对应 .part ⇒ 从断点继续；否则整份重收。
+            let received = if from_bytes > 0 {
+                file::resume_receive(
+                    state,
+                    &transfer_id,
+                    &from,
+                    &name,
+                    size,
+                    file_key,
+                    file_sha256.clone(),
+                    from_bytes,
+                )
+            } else {
+                file::begin_receive(
+                    state,
+                    &transfer_id,
+                    &from,
+                    &name,
+                    size,
+                    file_key,
+                    file_sha256.clone(),
+                )
+            };
+            match received {
                 Ok(_) => {
                     // Phase 1：接收一开始就登记一条 Active 记录（cid → 暂无 path）。
                     // 中途断链 / 超时由 record_failure 标成 Incomplete ⇒ 建链时自动重取。

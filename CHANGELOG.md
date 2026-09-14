@@ -10,6 +10,24 @@
 
 ## [Unreleased]
 
+### Added (断点续传：弱网 / 大文件从断点继续，不再整份重来 —— ADR-0019 Phase 2)
+
+- **协议**：FileOffer 增加 from_seq / from_bytes；ContentRequest 增加
+  transfer_id / from_seq / from_bytes（serde default，旧端互通）。
+- **发送端**：send_file_from_path_at 从 from_bytes 偏移读文件、seq 从 from_seq 编号
+  （stream_file 用 AsyncSeekExt 定位）；自动重试与手动重取都带上 transfer_id + 已收字节。
+- **接收端**：fail_receive / fail_group_receive **保留 .part**（不再删除）；新增
+  resume_receive —— 读入已有前缀播种 SHA-256 hasher、received 接上、next_seq 归零，
+  然后以 append 方式继续收。
+- **服务端**：ContentRequest 处理沿用原 transfer_id，并按 from_bytes 续发。
+- **安全兜底**：前缀长度 / TTL / 边界任何不一致 ⇒ resume_receive 返回 Err ⇒ FileReject
+  ⇒ 发送端整份重传（绝不比今天更差）。TTL 24h，避免 .part 无穷增长。
+- **护栏**：源码断言（resume_receive + send_file_from_path_at 必须在）+
+  content::policy::resume_from_seq 单测（分片边界 / 尾部半片 / 非法分片大小）。
+
+> 设计说明：续传段内 seq 归零重编（hasher 是字节级、与 seq 无关），因此**不需要**
+> 持久化 next_seq；接收端只依赖 from_bytes。ADR-0019 §5 已更新为"已实现"。
+
 ## [4.7.5] - 2026-09-14
 
 ## [4.7.4] - 2026-09-14

@@ -530,6 +530,83 @@ async fn stream_file(
     Ok(())
 }
 
+/// 断点续传：从已保留的 .part 前缀继续接收。
+///
+/// 与 begin_receive 的区别：**不再 truncate**，而是读入已有前缀播种 hasher，
+/// received 从 from_bytes 接上；next_seq 归零（发送端从 from_seq=0 重编，只对本段排序）。
+/// 任何不一致都返回 Err ⇒ 上层回 FileReject ⇒ 发送端整份重传（安全兜底）。
+pub fn resume_receive(
+    state: &AppState,
+    transfer_id: &str,
+    peer_id: &str,
+    name: &str,
+    size: u64,
+    file_key: [u8; 32],
+    expected_sha256: String,
+    from_bytes: u64,
+) -> Result<PathBuf, String> {
+    const TTL_MS: i64 = 24 * 60 * 60 * 1000;
+    let safe_name = safe_file_name(name).ok_or("文件名非法")?;
+    let dl = state
+        .downloads_dir
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let tmp_path = dl.join(format!("{transfer_id}.part"));
+    let meta = std::fs::metadata(&tmp_path).map_err(|_| "续传前缀不存在".to_string())?;
+    if !meta.is_file() || meta.len() != from_bytes || from_bytes == 0 || from_bytes > size {
+        return Err("续传前缀与请求不一致".to_string());
+    }
+    // TTL：太旧的前缀不复用（避免无穷增长），删掉并让上层整份重传。
+    if let Ok(modified) = meta.modified() {
+        if let Ok(age) = modified.elapsed() {
+            if age.as_millis() as i64 > TTL_MS {
+                let _ = std::fs::remove_file(&tmp_path);
+                return Err("续传前缀已过期".to_string());
+            }
+        }
+    }
+    let prefix = std::fs::read(&tmp_path).map_err(|e| e.to_string())?;
+    let hasher = {
+        use sha2::Digest as _;
+        let mut h = sha2::Sha256::new();
+        h.update(&prefix);
+        h
+    };
+    let f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&tmp_path)
+        .map_err(|e| e.to_string())?;
+    let final_path = unique_path(&dl, &safe_name);
+    state
+        .file_receivers
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(transfer_id);
+    state
+        .file_receivers
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(
+            transfer_id.to_string(),
+            FileReceiver {
+                file: f,
+                name: safe_name,
+                size,
+                received: from_bytes,
+                next_seq: 0,
+                tmp_path,
+                final_path: final_path.clone(),
+                peer_id: peer_id.to_string(),
+                last_report_ms: crate::db::now_ms(),
+                file_key,
+                expected_sha256,
+                hasher,
+            },
+        );
+    Ok(final_path)
+}
+
 /// 接收方：准备接收文件，返回最终落盘路径。
 pub fn begin_receive(
     state: &AppState,
@@ -707,7 +784,8 @@ pub fn begin_group_receive(
 /// 群文件接收失败：删除 `.part` 并移除接收状态（不 rename、不标 done）。
 pub fn fail_group_receive(state: &AppState, transfer_id: &str) {
     if let Some(r) = state.group_file_receivers.lock().unwrap_or_else(|e| e.into_inner()).remove(transfer_id) {
-        let _ = std::fs::remove_file(&r.tmp_path);
+        // **保留 .part**（不删）：断点续传的前缀（群友从种子拉取时也走 resume_receive）。
+        let _ = &r.tmp_path;
         // 统一状态：群文件中途失败/断链 ⇒ Incomplete（可恢复）⇒ 建链时按退避自动重取。
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         let _ = crate::content::store::record_failure(
@@ -858,7 +936,8 @@ pub fn fail_receive(state: &AppState, transfer_id: &str, peer_id: &str, reason: 
         recv.insert(transfer_id.to_string(), r);
         return false;
     }
-    let _ = std::fs::remove_file(&r.tmp_path);
+    // **保留 .part**（不删）：这是断点续传的前缀。只有"确定是永久失败"（校验不符）
+    // 才删；超时/断链属于可恢复。陈旧 .part 由 resume_receive 的 TTL 与后续清理收割。
     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
     db::upsert_transfer(
         &dbc,
@@ -872,6 +951,9 @@ pub fn fail_receive(state: &AppState, transfer_id: &str, peer_id: &str, reason: 
         0.0,
     )
     .ok();
+    // 注意：**不能**把 .part 写进 path —— find_source 只看 path 非空就当作可服务内容，
+    // 那样会把"半截文件"当成完整种子发出去。.part 的位置由 transfer_id 推导。
+    let _ = &r.tmp_path;
     // 统一状态：中途失败/超时/断链 ⇒ **Incomplete**（可恢复）。
     // 于是建链时 retry_incomplete_content 会按退避自动重取，而不是永远停在 Active。
     let _ = crate::content::store::record_failure(

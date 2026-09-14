@@ -1,6 +1,6 @@
 # ADR-0019: 统一可靠的内容传输（消息 / 文件 / 图片同一套生命周期）
 
-- Status: Accepted（Phase 1 + Phase 3 已落地；Phase 2 断点续传待实现）
+- Status: Accepted（Phase 1 + 2 + 3 已全部落地）
 - Date: 2026-09-14
 - Owners: Gosslan
 - Related:
@@ -63,7 +63,7 @@ Active 闲置 >60s 也重试；只对支持拉取的对端发 ContentRequest。
 - **Phase 3**（4.4.0 / 4.5.0）：内容寻址 + ContentRequest 拉取 + 能力协商 + 点击重取；
   接收方做种 + 群成员可拉。
 
-## 5. 待实现：Phase 2 断点续传（From(seq)）
+## 5. Phase 2 断点续传（已实现：from_bytes 定位 + 保留 .part + 重新播种 hasher）
 
 **目标**：弱网/大文件从中断处继续，而不是整份重来。
 

@@ -1615,6 +1615,14 @@ mod tests {
             file.contains("record_failure"),
             "中途失败/断链必须在 fail_receive 里记 Incomplete，否则记录永远停在 Active、自动重试不触发"
         );
+        assert!(
+            file.contains("pub fn resume_receive("),
+            "必须有断点续传接收（从 .part 前缀继续）"
+        );
+        assert!(
+            transport.contains("send_file_from_path_at"),
+            "服务端必须支持从偏移续发（from_bytes）"
+        );
     }
 
     /// **内容拉取必须走能力协商**（ADR-0019 Phase 3）：旧端不发新帧、新端才拉；
