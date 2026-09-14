@@ -10,6 +10,8 @@
 
 ## [Unreleased]
 
+## [4.7.0] - 2026-09-14
+
 ### Added (Phase 1 UI：统一内容状态呈现在文件卡片上)
 
 - get_content_transfers 接通前端：store 持有 contentTransfers（随 refreshTransfers 一起刷新，
