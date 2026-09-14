@@ -10,6 +10,17 @@
 
 ## [Unreleased]
 
+### Added (Phase 1 UI：统一内容状态呈现在文件卡片上)
+
+- get_content_transfers 接通前端：store 持有 contentTransfers（随 refreshTransfers 一起刷新，
+  不必额外 IPC 通道）。
+- 文件卡片：当该内容在统一状态里是「未完成 / 校验失败」时，右侧按钮从「下载」变成
+  **「重新获取」**（按 cid 拉一份，对方无需确认）；图片气泡此前已支持点击重取。
+- MessageItem 用消息内容里的 sha256 关联到对应的内容记录（旧消息没有 sha256 ⇒ 不显示，
+  不影响任何现有行为）。
+
+护栏：前端用例（api / store / 文件卡片接线）。
+
 ## [4.6.0] - 2026-09-14
 
 ### Added (Phase 1：未完成内容自动重试 + 统一状态查询)

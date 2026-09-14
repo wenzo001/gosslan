@@ -331,3 +331,13 @@ test("内容拉取：点击重取必须接通后端 request_content", () => {
   assert.match(item, /@refetch="refetchContent"/, "图片气泡失败必须能触发重取");
   assert.match(item, /invoke<boolean>\("request_content"/, "必须真的调后端命令");
 });
+
+/** 统一内容状态（ADR-0019 Phase 1）：未完成/失败的文件卡片必须能给「重新获取」。 */
+test("统一内容状态：未完成/失败的文件必须能给「重新获取」", () => {
+  assert.match(read("api/index.ts"), /getContentTransfers:/, "api 必须暴露 get_content_transfers");
+  assert.match(read("stores/useChatStore.ts"), /contentTransfers/, "store 必须持有统一内容状态");
+  const bubble = read("components/message/MessageFileBubble.vue");
+  assert.match(bubble, /emit\('refetch'\)/, "未完成时按钮必须触发 refetch");
+  const item = read("components/MessageItem.vue");
+  assert.match(item, /:content-retry=/, "MessageItem 必须把统一状态传给文件卡片");
+});

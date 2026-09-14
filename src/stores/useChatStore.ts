@@ -35,6 +35,7 @@ import type {
   Peer,
   PendingRequest,
   TopologyInfo,
+  ContentTransfer,
   TransferInfo,
 } from "@/types";
 
@@ -67,6 +68,8 @@ export const useChatStore = defineStore("chat", () => {
   const conversations = ref<Conversation[]>([]);
   const groups = ref<Group[]>([]);
   const transfers = ref<TransferInfo[]>([]);
+  /** 统一内容状态（ADR-0019）：未完成/失败的气泡据此显示「点击重试」。 */
+  const contentTransfers = ref<ContentTransfer[]>([]);
   const messages = ref<Record<string, MessageRecord[]>>({});
   // group_id -> reader_id -> reader 已读到的最大时间戳
   const groupReads = ref<Record<string, Record<string, number>>>({});
@@ -373,6 +376,8 @@ export const useChatStore = defineStore("chat", () => {
   }
   async function refreshTransfers() {
     transfers.value = await api.getTransfers();
+    // 顺带刷新统一内容状态：未完成 / 校验失败的气泡据此显示「点击重试」。
+    contentTransfers.value = await api.getContentTransfers().catch(() => []);
   }
   /** 上一次真正拉取拓扑的时间（`refreshTopologyThrottled` 用）。 */
   let lastTopologyAt = 0;
@@ -1215,6 +1220,7 @@ export const useChatStore = defineStore("chat", () => {
     conversations,
     groups,
     transfers,
+    contentTransfers,
     messages,
     groupReads,
     groupReaderIds,

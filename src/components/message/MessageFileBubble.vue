@@ -14,6 +14,7 @@ import {
   FileText,
   FileVideo,
   Loader2,
+  RotateCw,
   X,
 } from "lucide-vue-next";
 
@@ -37,12 +38,16 @@ const props = defineProps<{
   /** 本地文件已被「存储清理」删除。此时不提供"下载"入口——重新获取需要对方重发，
    *  而不是等对方上线自动补传（那个入口的文案会误导）。 */
   missing?: boolean;
+  /** 统一内容状态为「未完成 / 校验失败」：按钮改成「重新获取」（按 cid 拉一份）。 */
+  contentRetry?: boolean;
 }>();
 const emit = defineEmits<{
   (e: "open"): void;
   (e: "save"): void;
   /** 尚未就绪时点「下载」：接收是自动的，父组件负责解释（提示等待上线）。 */
   (e: "download"): void;
+  /** 未完成 / 校验失败：按 cid 向对端重新拉取（ADR-0019）。 */
+  (e: "refetch"): void;
 }>();
 const app = useAppStore();
 
@@ -210,10 +215,12 @@ const canOpen = computed(() => props.ready && props.tappable !== false);
         <button
           v-else
           class="tap-safe flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] transition hover:bg-black/10 dark:hover:bg-white/15"
-          :title="t('msg.downloadFile')" :aria-label="t('msg.downloadFile')"
-          @click="emit('download')"
+          :title="t(contentRetry ? 'msg.imageReRequest' : 'msg.downloadFile')"
+          :aria-label="t(contentRetry ? 'msg.imageReRequest' : 'msg.downloadFile')"
+          @click="contentRetry ? emit('refetch') : emit('download')"
         >
-          <Download class="h-3.5 w-3.5" />
+          <RotateCw v-if="contentRetry" class="h-3.5 w-3.5" />
+          <Download v-else class="h-3.5 w-3.5" />
         </button>
       </div>
     </div>

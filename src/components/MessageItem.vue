@@ -75,6 +75,20 @@ async function refetchContent() {
     app.toastError(e, t("msg.refetchFail"));
   }
 }
+
+/** 这条内容在统一状态里是否「未完成 / 校验失败」⇒ 文件卡片给「重新获取」。 */
+const retryableContent = computed(() => {
+  if (props.message.kind !== "file" && props.message.kind !== "image") return null;
+  try {
+    const sha = (JSON.parse(props.message.content) as { sha256?: string }).sha256;
+    if (!sha) return null;
+    const rec = chat.contentTransfers.find((c) => c.cid === sha);
+    if (!rec) return null;
+    return rec.status === "incomplete" || rec.status === "rejected" ? rec : null;
+  } catch {
+    return null;
+  }
+});
 const chat = useChatStore();
 const { memberProfile } = useMemberProfile();
 
@@ -656,9 +670,11 @@ async function copyFileToClipboard() {
             :mine="mine"
             :ready="fileReady"
             :tappable="fileTappable"
+            :content-retry="!!retryableContent"
             @open="openFile"
             @save="saveAs"
             @download="onFileDownload"
+            @refetch="refetchContent"
           />
 
           <!-- 未知 kind 的兜底气泡：排版必须与 MessageTextBubble 一致（py-1.5 / leading-normal），
