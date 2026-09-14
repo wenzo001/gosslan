@@ -3944,8 +3944,32 @@ fn resolve_media_path(s: &AppState, msg_id: &str) -> MediaPath {
         return MediaPath::Unknown("元数据缺少路径".to_string());
     };
 
+    // msg_id → transfer_id：接收侧单聊是 file-{id}，群文件是 gfile-{id}。
+    let transfer_id = msg_id
+        .strip_prefix("file-")
+        .or_else(|| msg_id.strip_prefix("gfile-"));
+    let in_flight = transfer_id
+        .map(|tid| {
+            s.file_receivers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains_key(tid)
+                || s.group_file_receivers
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .contains_key(tid)
+        })
+        .unwrap_or(false);
     let Ok(file) = std::fs::canonicalize(&path) else {
-        return MediaPath::Gone;
+        // **文件还没落盘 ≠ 已被清理**：接收方在 FileDone 之前写的是 <transfer_id>.part，
+        // final 路径尚不存在。若这里报 Gone，前端会把"正在接收的图片"标成「已被清理」并
+        // 缓存下来，从此再也不会重读（真机：图片时好时坏、要重发才出来）。
+        // 在途 ⇒ 报 Unknown，让前端保持"加载中"，等 FileDone 落盘后再读。
+        return if in_flight {
+            MediaPath::Unknown("仍在接收".to_string())
+        } else {
+            MediaPath::Gone
+        };
     };
     let under_downloads =
         std::fs::canonicalize(s.downloads_dir.lock().unwrap_or_else(|e| e.into_inner()).as_path())

@@ -15,6 +15,7 @@ import {
 import { useAppStore } from "@/stores/useAppStore";
 import { actionableRequests } from "@/utils/friendRequests";
 import { notificationBody } from "@/utils/notifications";
+import { invalidateFilePreview } from "@/utils/filePreview";
 import { t } from "@/i18n";
 import { shouldRunThrottled } from "@/utils/defer";
 import {
@@ -957,6 +958,10 @@ export const useChatStore = defineStore("chat", () => {
       t.path = d.path;
       t.progress = 1;
     }
+    // 字节刚落盘：让这条消息的预览缓存失效 —— 收到图片时可能"消息先到、字节后到"，
+    // 在途读预览会得到"仍在接收"；不失效就不会重读，图片只能靠重发才出来。
+    invalidateFilePreview(`file-${d.transfer_id}`);
+    invalidateFilePreview(`gfile-${d.transfer_id}`);
   }
   function onFileFailed(d: FileFailedInfo) {
     const msgId = `file-${d.transfer_id}`;

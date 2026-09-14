@@ -9,6 +9,18 @@ import { previewFailureResult, type PreviewResult } from "@/utils/mediaAvailabil
 
 export type { PreviewResult };
 
+/**
+ * 让某条消息的预览缓存失效（传输刚完成 / 文件刚落盘时调用）。
+ *
+ * 为什么必须有：收到的图片可能是"消息先到、字节后到"——在途时读预览只会得到
+ * 「仍在接收」。若不让缓存失效，即使文件已经落盘，气泡也不会重读（真机：
+ * 图片时好时坏，点几次/等一会儿/重发才出来）。
+ */
+export function invalidateFilePreview(msgId: string) {
+  cache.delete(msgId);
+  inflight.delete(msgId);
+}
+
 /** 代码预览上限：超过则回退文件卡片并提示，避免把巨大文件读进前端。 */
 const CODE_MAX_BYTES = 512 * 1024;
 /** 图片预览上限：远大于常见截图/照片，仍远低于协议 MAX_FRAME。 */
@@ -68,7 +80,10 @@ export function loadFilePreview(
       const msg = String(e);
       console.error(`[filePreview] ${subtype} preview failed (msgId=${msgId}, name=${name}): ${msg}`);
       const r: PreviewResult = previewFailureResult(msg);
-      cache.set(msgId, r);
+      // 只在**确定性**失败时缓存（已被清理 / 文件过大）。
+      // "仍在接收"这类未知失败**绝不缓存** —— 否则文件落盘后也不会重读，
+      // 表现为"图片时好时坏、要重发才出来"（真机 2026-09-14）。
+      if (r.missing || r.note === "文件过大，无法预览") cache.set(msgId, r);
       return r;
     } finally {
       inflight.delete(msgId);

@@ -274,6 +274,21 @@ CASES: list[Case] = [
         expect_fail_hint="活跃链路",
         tags=["frontend", "new-guards"],
     ),
+    Case(
+        name="图片预览：在途失败不能永久缓存（否则字节落盘也不重读）",
+        why="用户 2026-09-14：群里收图时好时坏，点几次/等一会儿/重发才出来。收到图片时可能"
+            "\"消息先到、字节后到\"，在途读预览得到的失败若被永久缓存，文件落盘后也不会重读。",
+        file=ROOT / "src" / "utils" / "filePreview.ts",
+        injections=[(
+            '      if (r.missing || r.note === "文件过大，无法预览") cache.set(msgId, r);',
+            "      cache.set(msgId, r);",
+        )],
+        cmd=["node", "--test", "--experimental-strip-types", "--disable-warning=ExperimentalWarning",
+             "src/utils/channelState.test.ts"],
+        cwd=ROOT,
+        expect_fail_hint="确定性失败",
+        tags=["frontend", "new-guards"],
+    ),
     # ---------------- Rust：capability 覆盖 ----------------
     Case(
         name="capability 覆盖每个窗口（漏一个窗口 ACL 会静默拒绝）",

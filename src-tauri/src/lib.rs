@@ -1567,6 +1567,23 @@ mod tests {
         );
     }
 
+    /// **在途文件不能被当成"已被清理"**（用户 2026-09-14：群里收图时好时坏，点几次/
+    /// 等一会儿/重发才出来）。
+    ///
+    /// 接收方在 FileDone 之前写的是 <transfer_id>.part，final 路径尚不存在。若
+    /// resolve_media_path 直接报 Gone，前端会把"正在接收"的图片标成「已被清理」并缓存。
+    #[test]
+    fn in_flight_media_is_not_reported_as_deleted() {
+        let commands = include_str!("commands.rs");
+        let body = rust_fn_body(commands, "fn resolve_media_path(");
+        assert!(
+            body.contains("file_receivers")
+                && body.contains("group_file_receivers")
+                && body.contains("仍在接收"),
+            "缺失的 final 文件必须先在途判定（file_receivers / group_file_receivers），在途报 Unknown 而不是 Gone"
+        );
+    }
+
     /// 外设侧**每次订阅都必须清掉该 central 的重组器**（用户优先级 ①：加入 mesh 的稳定性）。
     ///
     /// 为什么（2026-09-13 框架审计）：对端的 `msg_id` **每条连接都从 1 重新开始**，而 macOS

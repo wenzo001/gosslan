@@ -10,6 +10,31 @@
 
 ## [Unreleased]
 
+### Fixed (🔴 群聊收图时好时坏：在途文件被当成「已被清理」并永久缓存)
+
+用户 2026-09-14：群里收到别人的图片有时加载失败，点几次 / 等一会儿 / 重发才出来；
+三个人里有时是这个看不到、有时是另一个。
+
+根因（"消息先到、字节后到"的竞态）：
+- 接收方在 FileDone 之前写的是 <transfer_id>.part，**final 路径还不存在**；此时
+  read_file_preview 走 resolve_media_path 的 canonicalize 失败分支，直接报 Gone
+  =「文件不存在」，前端把它当成「已被清理」。
+- 更糟的是 filePreview 把这次失败**按 msg_id 永久缓存**，而且图片气泡的预览不会随
+  "传输完成"重读 ⇒ 文件明明已经落盘，界面也永远不再读（点几次也没用，只能重发——
+  那是新的 msg_id）。
+
+修法：
+- 后端 resolve_media_path：final 文件缺失时先判**在途接收**（file_receivers /
+  group_file_receivers，transfer_id 由 msg_id 反推）；在途报 Unknown("仍在接收")，
+  只有确实不在途才报 Gone（= 真被清理）。
+- 前端 filePreview：只有**确定性**失败（已被清理 / 文件过大）才缓存；新增
+  invalidateFilePreview(msgId)。
+- useMessageFile：预览 watcher 增加 transfer.status 依赖。
+- useChatStore.onFileDone：失效 file-/gfile- 两条消息的预览缓存 ⇒ 字节一到就自动重读。
+
+护栏：in_flight_media_is_not_reported_as_deleted（Rust）+ channelState.test.ts 前端用例 +
+verify-guards.py 非空转用例。
+
 ## [4.3.20] - 2026-09-14
 
 ### Fixed (链路徽标与好友在线状态不实时：全局域网却显示「已桥接」)
