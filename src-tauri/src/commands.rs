@@ -3425,10 +3425,13 @@ fn build_file_message(
     kind: &str,
     subtype: &str,
 ) -> MessageRecord {
+    // cid = 明文 sha256：接收方据此在需要时按 cid 拉取（ADR-0019 Phase 3）。
+    let cid = file::sha256_file_hex(std::path::Path::new(path)).unwrap_or_default();
     let content = serde_json::json!({
         "name": name,
         "path": path,
         "size": size,
+        "sha256": cid,
         "subtype": subtype,
     })
     .to_string();
@@ -3525,6 +3528,91 @@ pub async fn flush_pending_files(state: &Arc<AppState>, peer_id: &str) {
         }
         st.file_sending.lock().unwrap_or_else(|e| e.into_inner()).remove(&peer);
     });
+}
+
+/// 请对端**按 cid 再发一份**内容（ADR-0019 Phase 3「点击重取」）。
+///
+/// 用户点一下未完成/校验失败的图片或文件时调用。对方**无需确认**：它按 cid 找到本地
+/// 完整字节就直接回发一份 FileOffer（拥有即授权）。只发给 Hello 里声明了
+/// CONTENT_FEATURE_PULL 的对端；旧端返回 Ok(false)（不打扰、不报错）。
+#[tauri::command(async)]
+pub async fn request_content(
+    state: State<'_, Arc<AppState>>,
+    peer_id: String,
+    msg_id: String,
+) -> Result<bool, String> {
+    let s = state.inner();
+    let (cid, name, size) = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        let content = db::get_message_preview_source(&dbc, &msg_id)
+            .map(|(_sender, c)| c)
+            .ok_or_else(|| "消息不存在".to_string())?;
+        let v: serde_json::Value = serde_json::from_str(&content).map_err(|e| e.to_string())?;
+        (
+            v.get("sha256")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string(),
+            v.get("name")
+                .and_then(|x| x.as_str())
+                .unwrap_or("file")
+                .to_string(),
+            v.get("size").and_then(|x| x.as_u64()).unwrap_or(0),
+        )
+    };
+    if cid.is_empty() {
+        return Err("这条内容没有内容指纹（对方版本较旧），无法重新获取".to_string());
+    }
+    // 能力协商：对方没声明拉取能力就不发新帧（向后兼容）。
+    let supports = s
+        .peer_content_features
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&peer_id)
+        .copied()
+        .unwrap_or(0)
+        & crate::protocol::CONTENT_FEATURE_PULL
+        != 0;
+    if !supports {
+        return Ok(false);
+    }
+    // 手动重取也尽量续传：读该内容在统一状态里的 transfer_id / 已收字节。
+    let (transfer_id, from_bytes) = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        crate::content::store::get(
+            &dbc,
+            &cid,
+            &peer_id,
+            crate::content::model::Direction::Receive,
+        )
+        .ok()
+        .flatten()
+        .map(|r| (r.transfer_id.unwrap_or_default(), r.received))
+        .unwrap_or_default()
+    };
+    let msg = Message::ContentRequest {
+        from: s.device_id.clone(),
+        cid,
+        transfer_id,
+        from_seq: 0,
+        from_bytes,
+        name,
+        size,
+    };
+    match try_send(s, &peer_id, &msg).await {
+        Ok(()) => Ok(true),
+        Err(e) => Err(format!("无法联系对方：{e}")),
+    }
+}
+
+/// 统一的内容传输状态（ADR-0019 Phase 1）：前端据此在气泡上显示
+/// 发送中 / 等待对方在线 / 网络不佳 / 未完成·点击重试 / 完成。
+#[tauri::command(async)]
+pub fn get_content_transfers(
+    state: State<'_, Arc<AppState>>,
+) -> Vec<crate::content::TransferRecord> {
+    let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
+    crate::content::store::list(&dbc, 200).unwrap_or_default()
 }
 
 #[tauri::command(async)]
@@ -3944,8 +4032,32 @@ fn resolve_media_path(s: &AppState, msg_id: &str) -> MediaPath {
         return MediaPath::Unknown("元数据缺少路径".to_string());
     };
 
+    // msg_id → transfer_id：接收侧单聊是 file-{id}，群文件是 gfile-{id}。
+    let transfer_id = msg_id
+        .strip_prefix("file-")
+        .or_else(|| msg_id.strip_prefix("gfile-"));
+    let in_flight = transfer_id
+        .map(|tid| {
+            s.file_receivers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains_key(tid)
+                || s.group_file_receivers
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .contains_key(tid)
+        })
+        .unwrap_or(false);
     let Ok(file) = std::fs::canonicalize(&path) else {
-        return MediaPath::Gone;
+        // **文件还没落盘 ≠ 已被清理**：接收方在 FileDone 之前写的是 <transfer_id>.part，
+        // final 路径尚不存在。若这里报 Gone，前端会把"正在接收的图片"标成「已被清理」并
+        // 缓存下来，从此再也不会重读（真机：图片时好时坏、要重发才出来）。
+        // 在途 ⇒ 报 Unknown，让前端保持"加载中"，等 FileDone 落盘后再读。
+        return if in_flight {
+            MediaPath::Unknown("仍在接收".to_string())
+        } else {
+            MediaPath::Gone
+        };
     };
     let under_downloads =
         std::fs::canonicalize(s.downloads_dir.lock().unwrap_or_else(|e| e.into_inner()).as_path())

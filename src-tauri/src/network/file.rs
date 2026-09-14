@@ -126,6 +126,19 @@ pub async fn send_file_from_path(
     transfer_id: &str,
     path: PathBuf,
 ) -> Result<(), SendFileError> {
+    send_file_from_path_at(state, peer_id, transfer_id, path, 0, 0).await
+}
+
+/// 同 send_file_from_path，但支持**断点续传**：从 from_bytes 偏移读文件、
+/// 分片序号从 from_seq 起编号（接收端据此接着它已持有的前缀继续）。
+pub async fn send_file_from_path_at(
+    state: &Arc<AppState>,
+    peer_id: &str,
+    transfer_id: &str,
+    path: PathBuf,
+    from_seq: u32,
+    from_bytes: u64,
+) -> Result<(), SendFileError> {
     let meta = std::fs::metadata(&path)
         .map_err(|e| SendFileError::permanent(format!("文件不存在或不可读：{e}")))?;
     if !meta.is_file() {
@@ -150,6 +163,7 @@ pub async fn send_file_from_path(
         return Err(SendFileError::permanent("无法获取对方公钥，无法加密文件"));
     };
 
+    let path_str = path.to_string_lossy().to_string();
     {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::upsert_transfer(
@@ -160,52 +174,90 @@ pub async fn send_file_from_path(
             size,
             "send",
             "pending",
-            Some(path.to_string_lossy().as_ref()),
+            Some(path_str.as_str()),
             0.0,
         )
         .ok();
+        // 内容索引（ADR-0019 Phase 3）：按 cid 记录"本机持有这份完整字节"，
+        // 之后任何人发 ContentRequest 都能直接回发（拥有即授权，无需确认）。
+        let now = db::now_ms();
+        let rec = crate::content::model::TransferRecord {
+            cid: file_sha256.clone(),
+            transfer_id: Some(transfer_id.to_string()),
+            peer_id: peer_id.to_string(),
+            group_id: None,
+            name: name.clone(),
+            size,
+            direction: crate::content::model::Direction::Send,
+            status: crate::content::model::TransferStatus::Active,
+            received: size,
+            attempts: 0,
+            next_attempt_at: 0,
+            last_error: None,
+            path: Some(path_str.clone()),
+            created_at: now,
+            updated_at: now,
+        };
+        let _ = crate::content::store::upsert(&dbc, &rec);
     }
 
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    state
-        .pending_file_accept
-        .lock()
-        .unwrap()
-        .insert(transfer_id.to_string(), tx);
-
-    let offer = Message::FileOffer {
-        transfer_id: transfer_id.to_string(),
-        from: state.device_id.clone(),
-        name: name.clone(),
-        size,
-        sealed_file_key: sealed_key_b64,
-        file_sha256,
-    };
-    if let Err(e) = try_send(state, peer_id, &offer).await {
+    let _ = from_seq;
+    // 发送 Offer → 等接受。接收端若回 FileReject.received = N（它已有 N 字节），
+    // 就从该偏移续发 —— 这正是"outbox 全量重试"与"接收端续传"撞车的正解：
+    // 发送端永远以接收端的真实进度为准，绝不重头覆盖。
+    let mut resume_from = from_bytes;
+    for _attempt in 0..3 {
+        let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), u64>>();
         state
             .pending_file_accept
             .lock()
             .unwrap()
-            .remove(transfer_id);
-        return Err(SendFileError::retryable(format!("建立文件传输失败：{e}")));
-    }
-
-    // 等待对方接受（超时 15 秒）
-    match tokio::time::timeout(Duration::from_secs(15), rx).await {
-        Ok(Ok(())) => {}
-        _ => {
+            .insert(transfer_id.to_string(), tx);
+        let offer = Message::FileOffer {
+            transfer_id: transfer_id.to_string(),
+            from: state.device_id.clone(),
+            name: name.clone(),
+            size,
+            sealed_file_key: sealed_key_b64.clone(),
+            file_sha256: file_sha256.clone(),
+            from_seq: 0,
+            from_bytes: resume_from,
+        };
+        if let Err(e) = try_send(state, peer_id, &offer).await {
             state
                 .pending_file_accept
                 .lock()
                 .unwrap()
                 .remove(transfer_id);
-            return Err(SendFileError::retryable("对方未接受文件"));
+            return Err(SendFileError::retryable(format!("建立文件传输失败：{e}")));
+        }
+        match tokio::time::timeout(Duration::from_secs(15), rx).await {
+            Ok(Ok(Ok(()))) => {
+                return stream_file(
+                    state, peer_id, transfer_id, path, name, size, file_key, 0, resume_from,
+                )
+                .await
+                .map_err(|e| SendFileError::retryable(e));
+            }
+            Ok(Ok(Err(n))) if n > resume_from => {
+                state.logger.info(
+                    "file",
+                    format!("接收端已有 {n} 字节，从断点续发 transfer={transfer_id}"),
+                );
+                resume_from = n;
+                continue;
+            }
+            _ => {
+                state
+                    .pending_file_accept
+                    .lock()
+                    .unwrap()
+                    .remove(transfer_id);
+                return Err(SendFileError::retryable("对方未接受文件"));
+            }
         }
     }
-
-    stream_file(state, peer_id, transfer_id, path, name, size, file_key)
-        .await
-        .map_err(|e| SendFileError::retryable(e))
+    Err(SendFileError::retryable("对方始终未接受文件"))
 }
 /// 无直连时，借**一跳中继**把文件发给 peer_id（接收方是请求下载的共享目录主人）。
 ///
@@ -329,8 +381,10 @@ async fn stream_file(
     name: String,
     size: u64,
     file_key: [u8; 32],
+    from_seq: u32,
+    from_bytes: u64,
 ) -> Result<(), String> {
-    use tokio::io::AsyncReadExt;
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
     let mut f = tokio::fs::File::open(&path)
         .await
@@ -339,8 +393,14 @@ async fn stream_file(
     let path_kind = crate::network::transport::inbound_path_kind(state, peer_id).await;
     let chunk_size = chunk_size_for_path(&path_kind);
     let mut buf = vec![0u8; chunk_size];
-    let mut seq = 0u32;
-    let mut sent = 0u64;
+    // 断点续传：从接收端已持有的前缀之后开始读（分片序号也从 from_seq 接着数）。
+    if from_bytes > 0 {
+        f.seek(std::io::SeekFrom::Start(from_bytes))
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    let mut seq = from_seq;
+    let mut sent = from_bytes;
     // 进度节流：避免每片一次 SQLite 写 + IPC 事件（大文件会形成事件风暴卡死界面）
     let mut last_report = std::time::Instant::now() - Duration::from_secs(1);
 
@@ -483,6 +543,152 @@ async fn stream_file(
     Ok(())
 }
 
+/// 该 transfer_id 已保留的 .part 前缀字节数（无则 0）。
+///
+/// 用于把"接收端已持有多少"回给发送端（FileReject.received），让发送端从真实进度续发。
+pub fn retained_part_len(state: &AppState, transfer_id: &str) -> u64 {
+    let dl = state
+        .downloads_dir
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    std::fs::metadata(dl.join(format!("{transfer_id}.part")))
+        .map(|m| if m.is_file() { m.len() } else { 0 })
+        .unwrap_or(0)
+}
+
+/// 定期清扫：删除超过 TTL、且当前不在接收中的 .part。
+///
+/// 为什么需要（审计 §7 风险 2）：可恢复失败会**保留** .part 作续传前缀，若对端一去不回，
+/// 这些前缀会一直占空间。清扫只删"够旧 + 没人正在用"的，绝不碰活跃接收。
+pub fn sweep_stale_parts(state: &AppState) -> usize {
+    const TTL_MS: u64 = 24 * 60 * 60 * 1000;
+    let dl = state
+        .downloads_dir
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let active: std::collections::HashSet<String> = {
+        let a: Vec<String> = state
+            .file_receivers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .keys()
+            .cloned()
+            .collect();
+        let b: Vec<String> = state
+            .group_file_receivers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .keys()
+            .cloned()
+            .collect();
+        a.into_iter().chain(b).collect()
+    };
+    let mut removed = 0;
+    if let Ok(rd) = std::fs::read_dir(&dl) {
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("part") {
+                continue;
+            }
+            if let Some(tid) = path.file_stem().and_then(|s| s.to_str()) {
+                if active.contains(tid) {
+                    continue;
+                }
+            }
+            let stale = entry
+                .metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.elapsed().ok())
+                .map(|d| d.as_millis() as u64 > TTL_MS)
+                .unwrap_or(false);
+            if stale && std::fs::remove_file(&path).is_ok() {
+                removed += 1;
+            }
+        }
+    }
+    removed
+}
+
+/// 断点续传：从已保留的 .part 前缀继续接收。
+///
+/// 与 begin_receive 的区别：**不再 truncate**，而是读入已有前缀播种 hasher，
+/// received 从 from_bytes 接上；next_seq 归零（发送端从 from_seq=0 重编，只对本段排序）。
+/// 任何不一致都返回 Err ⇒ 上层回 FileReject ⇒ 发送端整份重传（安全兜底）。
+pub fn resume_receive(
+    state: &AppState,
+    transfer_id: &str,
+    peer_id: &str,
+    name: &str,
+    size: u64,
+    file_key: [u8; 32],
+    expected_sha256: String,
+    from_bytes: u64,
+) -> Result<PathBuf, String> {
+    const TTL_MS: i64 = 24 * 60 * 60 * 1000;
+    let safe_name = safe_file_name(name).ok_or("文件名非法")?;
+    let dl = state
+        .downloads_dir
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let tmp_path = dl.join(format!("{transfer_id}.part"));
+    let meta = std::fs::metadata(&tmp_path).map_err(|_| "续传前缀不存在".to_string())?;
+    if !meta.is_file() || meta.len() != from_bytes || from_bytes == 0 || from_bytes > size {
+        return Err("续传前缀与请求不一致".to_string());
+    }
+    // TTL：太旧的前缀不复用（避免无穷增长），删掉并让上层整份重传。
+    if let Ok(modified) = meta.modified() {
+        if let Ok(age) = modified.elapsed() {
+            if age.as_millis() as i64 > TTL_MS {
+                let _ = std::fs::remove_file(&tmp_path);
+                return Err("续传前缀已过期".to_string());
+            }
+        }
+    }
+    let prefix = std::fs::read(&tmp_path).map_err(|e| e.to_string())?;
+    let hasher = {
+        use sha2::Digest as _;
+        let mut h = sha2::Sha256::new();
+        h.update(&prefix);
+        h
+    };
+    let f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&tmp_path)
+        .map_err(|e| e.to_string())?;
+    let final_path = unique_path(&dl, &safe_name);
+    state
+        .file_receivers
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(transfer_id);
+    state
+        .file_receivers
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(
+            transfer_id.to_string(),
+            FileReceiver {
+                file: f,
+                name: safe_name,
+                size,
+                received: from_bytes,
+                next_seq: 0,
+                tmp_path,
+                final_path: final_path.clone(),
+                peer_id: peer_id.to_string(),
+                last_report_ms: crate::db::now_ms(),
+                file_key,
+                expected_sha256,
+                hasher,
+            },
+        );
+    Ok(final_path)
+}
+
 /// 接收方：准备接收文件，返回最终落盘路径。
 pub fn begin_receive(
     state: &AppState,
@@ -612,7 +818,7 @@ pub fn begin_group_receive(
         name,
         size,
         file_key,
-        expected_sha256,
+        expected_sha256.clone(),
         &state.group_file_receivers,
     )?;
     // 持久化本地路径到 file_transfers（复用现有表，无 schema 变更）：
@@ -631,6 +837,28 @@ pub fn begin_group_receive(
             0.0,
         )
         .ok();
+        // 统一状态：群文件接收一开始就登记 Active（cid → 暂无 path）。
+        // 中途失败由 fail_group_receive 标 Incomplete ⇒ 建链自动重取
+        // （群成员也能做种，原发送方不在也能从别人取）。
+        let now = db::now_ms();
+        let rec = crate::content::model::TransferRecord {
+            cid: expected_sha256.clone(),
+            transfer_id: Some(transfer_id.to_string()),
+            peer_id: peer_id.to_string(),
+            group_id: None,
+            name: name.to_string(),
+            size,
+            direction: crate::content::model::Direction::Receive,
+            status: crate::content::model::TransferStatus::Active,
+            received: 0,
+            attempts: 0,
+            next_attempt_at: 0,
+            last_error: None,
+            path: None,
+            created_at: now,
+            updated_at: now,
+        };
+        let _ = crate::content::store::upsert(&dbc, &rec);
     }
     Ok(final_path)
 }
@@ -638,7 +866,18 @@ pub fn begin_group_receive(
 /// 群文件接收失败：删除 `.part` 并移除接收状态（不 rename、不标 done）。
 pub fn fail_group_receive(state: &AppState, transfer_id: &str) {
     if let Some(r) = state.group_file_receivers.lock().unwrap_or_else(|e| e.into_inner()).remove(transfer_id) {
-        let _ = std::fs::remove_file(&r.tmp_path);
+        // **保留 .part**（不删）：断点续传的前缀（群友从种子拉取时也走 resume_receive）。
+        let _ = &r.tmp_path;
+        // 统一状态：群文件中途失败/断链 ⇒ Incomplete（可恢复）⇒ 建链时按退避自动重取。
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = crate::content::store::record_failure(
+            &dbc,
+            &r.expected_sha256,
+            &r.peer_id,
+            crate::content::model::Direction::Receive,
+            crate::content::model::FailReason::Partial,
+            db::now_ms(),
+        );
     }
 }
 
@@ -721,32 +960,52 @@ pub fn write_chunk(
     data: &[u8],
 ) -> Result<u64, String> {
     use std::io::Write;
-    let mut recv = state.file_receivers.lock().unwrap_or_else(|e| e.into_inner());
-    let r = recv.get_mut(transfer_id).ok_or("未知传输")?;
-    if r.peer_id != peer_id {
-        return Err("文件传输来源不匹配".to_string());
+    // 锁作用域：先算完，把要落库的进度取出来，**释放 file_receivers 锁之后**再动 db
+    // （避免 file_receivers -> db 的嵌套锁顺序）。
+    let (received, cid, owner, report) = {
+        let mut recv = state.file_receivers.lock().unwrap_or_else(|e| e.into_inner());
+        let r = recv.get_mut(transfer_id).ok_or("未知传输")?;
+        if r.peer_id != peer_id {
+            return Err("文件传输来源不匹配".to_string());
+        }
+        // 重复/迟到的分片必须**忽略**，而不是整单失败：发送方一次 attempt 超时后会**从头重传**
+        // （seq 从 0 重来），而上一轮的残片可能仍在链路上。只挡"跳号"（真缺片，只能重传）；
+        // 整份字节仍由文件级 SHA-256 兜底。
+        match chunk_seq_decision(seq, r.next_seq) {
+            ChunkSeq::Duplicate => return Ok(r.received),
+            ChunkSeq::Gap => return Err("文件分片顺序错误".to_string()),
+            ChunkSeq::Accept => {}
+        }
+        let plaintext = crypto::open_symmetric(&r.file_key, data)
+            .ok_or_else(|| "文件分片解密失败".to_string())?;
+        if plaintext.len() as u64 > r.size.saturating_sub(r.received) {
+            return Err("文件分片超出声明大小".to_string());
+        }
+        // 文件级完整性：明文增量哈希（与写盘同一份数据，无二次磁盘读取）
+        use sha2::Digest;
+        r.hasher.update(&plaintext);
+        r.file.write_all(&plaintext).map_err(|e| e.to_string())?;
+        r.received += plaintext.len() as u64;
+        r.next_seq = r.next_seq.checked_add(1).ok_or("文件分片序号溢出")?;
+        // 节流 500ms 落一次进度：这是断点续传的起点，也让统一状态显示真实进度。
+        let now = crate::db::now_ms();
+        let report = now - r.last_report_ms >= 500;
+        if report {
+            r.last_report_ms = now;
+        }
+        (r.received, r.expected_sha256.clone(), r.peer_id.clone(), report)
+    };
+    if report {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = crate::content::store::touch_received(
+            &dbc,
+            &cid,
+            &owner,
+            received,
+            crate::db::now_ms(),
+        );
     }
-    // 重复/迟到的分片必须**忽略**，而不是整单失败：发送方一次 attempt 超时后会**从头重传**
-    // （`seq` 从 0 重来），而上一轮的残片可能仍在链路上。旧实现直接 Err ⇒ 接收方整单失败、
-    // 清掉状态 ⇒ 新 attempt 也永远拼不齐（这正是用户看到的「文件分片顺序错误」）。
-    // 这里只挡"**跳号**"（真缺片，只能靠重传解决）；整份字节仍由文件级 SHA-256 兜底。
-    match chunk_seq_decision(seq, r.next_seq) {
-        ChunkSeq::Duplicate => return Ok(r.received),
-        ChunkSeq::Gap => return Err("文件分片顺序错误".to_string()),
-        ChunkSeq::Accept => {}
-    }
-    let plaintext = crypto::open_symmetric(&r.file_key, data)
-        .ok_or_else(|| "文件分片解密失败".to_string())?;
-    if plaintext.len() as u64 > r.size.saturating_sub(r.received) {
-        return Err("文件分片超出声明大小".to_string());
-    }
-    // 文件级完整性：明文增量哈希（与写盘同一份数据，无二次磁盘读取）
-    use sha2::Digest;
-    r.hasher.update(&plaintext);
-    r.file.write_all(&plaintext).map_err(|e| e.to_string())?;
-    r.received += plaintext.len() as u64;
-    r.next_seq = r.next_seq.checked_add(1).ok_or("文件分片序号溢出")?;
-    Ok(r.received)
+    Ok(received)
 }
 
 /// 终止损坏或超时的接收，删除临时文件，避免留下永远占空间的 `.part` 文件。
@@ -759,7 +1018,8 @@ pub fn fail_receive(state: &AppState, transfer_id: &str, peer_id: &str, reason: 
         recv.insert(transfer_id.to_string(), r);
         return false;
     }
-    let _ = std::fs::remove_file(&r.tmp_path);
+    // **保留 .part**（不删）：这是断点续传的前缀。只有"确定是永久失败"（校验不符）
+    // 才删；超时/断链属于可恢复。陈旧 .part 由 resume_receive 的 TTL 与后续清理收割。
     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
     db::upsert_transfer(
         &dbc,
@@ -773,6 +1033,19 @@ pub fn fail_receive(state: &AppState, transfer_id: &str, peer_id: &str, reason: 
         0.0,
     )
     .ok();
+    // 注意：**不能**把 .part 写进 path —— find_source 只看 path 非空就当作可服务内容，
+    // 那样会把"半截文件"当成完整种子发出去。.part 的位置由 transfer_id 推导。
+    let _ = &r.tmp_path;
+    // 统一状态：中途失败/超时/断链 ⇒ **Incomplete**（可恢复）。
+    // 于是建链时 retry_incomplete_content 会按退避自动重取，而不是永远停在 Active。
+    let _ = crate::content::store::record_failure(
+        &dbc,
+        &r.expected_sha256,
+        &r.peer_id,
+        crate::content::model::Direction::Receive,
+        crate::content::model::FailReason::Partial,
+        db::now_ms(),
+    );
     emit_failed(state, transfer_id, reason);
     true
 }

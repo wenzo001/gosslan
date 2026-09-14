@@ -181,6 +181,8 @@ pub fn init(path: &Path) -> Result<Connection> {
     }
     let conn = Connection::open(path)?;
     conn.execute_batch(SCHEMA)?;
+    // 内容传输逻辑层自己的表（schema 归它所有，保持分层）。
+    crate::content::store::ensure_schema(&conn)?;
     // 迁移：早期版本 friends 表缺公钥列，此处幂等补列（兼容已有旧库）
     for col in ["x25519_pubkey", "ed25519_pubkey"] {
         let exists: bool = conn

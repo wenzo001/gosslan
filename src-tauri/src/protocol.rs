@@ -55,6 +55,15 @@ pub fn current_device_type() -> &'static str {
     "mobile"
 }
 
+/// 内容能力位：支持按 cid 拉取（ContentRequest / 拥有即授权服务）。
+pub const CONTENT_FEATURE_PULL: u32 = 1 << 0;
+
+/// 本机支持的内容能力位图。**不参与 Hello 签名**（见 hello_signing_bytes）：
+/// 老端忽略该字段、新端据此决定能不能对它发拉取帧。
+pub fn content_features() -> u32 {
+    CONTENT_FEATURE_PULL
+}
+
 /// 消息内容类型
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -224,6 +233,9 @@ pub enum Message {
         /// 设备类型（"desktop" / "mobile"，空串 = 旧端/未知）。展示信息，不参与签名。
         #[serde(default)]
         device_type: String,
+        /// 内容能力位图（见 CONTENT_FEATURE_PULL）。**不参与签名**：老端忽略、新端可读。
+        #[serde(default)]
+        content_features: u32,
         tcp_port: u16,
         x25519_pubkey: String,
         ed25519_pubkey: String,
@@ -258,6 +270,27 @@ pub enum Message {
         to: Option<String>,
         /// 样式 JSON，如 {"preset":"classic","fontSize":"md","compact":true}
         style: String,
+    },
+    /// **按 cid 拉取内容**（ADR-0019 Phase 3）。
+    ///
+    /// 收到方若持有该 cid 的完整字节（content_transfers: status=complete + path），
+    /// 直接回一份 FileOffer（复用既有 Chunk/Done/CompleteAck 流程）——
+    /// **拥有即授权，无需人工确认**。只应发给 Hello 里声明了 CONTENT_FEATURE_PULL 的对端。
+    ContentRequest {
+        from: String,
+        /// 明文 SHA-256（hex），与 FileOffer.file_sha256 同一口径。
+        cid: String,
+        name: String,
+        size: u64,
+        /// 断点续传：原 transfer_id（服务端要用它回发，接收端才找得到 <tid>.part）。
+        #[serde(default)]
+        transfer_id: String,
+        /// 断点续传：接收端期望的下一片序号。
+        #[serde(default)]
+        from_seq: u32,
+        /// 断点续传：接收端已持有的前缀字节数。
+        #[serde(default)]
+        from_bytes: u64,
     },
     /// 加好友申请
     FriendRequest {
@@ -339,12 +372,21 @@ pub enum Message {
         size: u64,
         sealed_file_key: String,
         file_sha256: String,
+        /// 断点续传：从第几片开始发（缺省 0 = 整份）。
+        #[serde(default)]
+        from_seq: u32,
+        /// 断点续传：从第几字节开始发（接收端已持有的前缀字节数）。
+        #[serde(default)]
+        from_bytes: u64,
     },
     FileAccept {
         transfer_id: String,
     },
     FileReject {
         transfer_id: String,
+        /// 断点续传：接收端**已持有的字节数**（0 = 没有前缀）。发送端据此偏移续发。
+        #[serde(default)]
+        received: u64,
     },
     /// `data`：文件会话密钥 AEAD 加密后的 base64（nonce || ciphertext），
     /// 密文在 TCP / 中继上均不透明。
@@ -866,6 +908,7 @@ mod tests {
             nickname: "A".into(),
             avatar: None,
             device_type: "desktop".into(),
+            content_features: super::content_features(),
             tcp_port: 59992,
             x25519_pubkey: "xk".into(),
             ed25519_pubkey: "ek".into(),
@@ -941,6 +984,7 @@ mod tests {
             nickname: "A".into(),
             avatar: None,
             device_type: "desktop".into(),
+            content_features: super::content_features(),
             tcp_port: 59992,
             x25519_pubkey: "xk".into(),
             ed25519_pubkey: "ek".into(),
@@ -974,6 +1018,7 @@ mod tests {
             nickname: "A".into(),
             avatar: None,
             device_type: "mobile".into(),
+            content_features: super::content_features(),
             tcp_port: 1,
             x25519_pubkey: "x".into(),
             ed25519_pubkey: "e".into(),

@@ -1060,6 +1060,7 @@ pub fn build_signed_hello(state: &AppState, conv_clock: i64) -> Message {
         nickname: state.nickname.lock().unwrap_or_else(|e| e.into_inner()).clone(),
         avatar,
         device_type: crate::protocol::current_device_type().to_string(),
+        content_features: crate::protocol::content_features(),
         tcp_port,
         x25519_pubkey,
         ed25519_pubkey,
@@ -2359,6 +2360,61 @@ fn directed_relay_target<'a>(msg: &'a Message, my_id: &str) -> Option<&'a str> {
     }
 }
 
+/// 建链 / Hello 时：把该 peer 名下**未完成（可恢复）的接收**重新拉一遍（ADR-0019 Phase 1）。
+///
+/// - 只对声明了 CONTENT_FEATURE_PULL 的对端发（旧端不发新帧，保持兼容）；
+/// - 退避未到点的跳过（纯策略 should_retry_now）；
+/// - 只处理 Receive 方向：Send 方向的重试由既有 file_outbox 负责。
+async fn retry_incomplete_content(state: &Arc<AppState>, peer_id: &str) {
+    let caps = state
+        .peer_content_features
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(peer_id)
+        .copied()
+        .unwrap_or(0);
+    if caps & crate::protocol::CONTENT_FEATURE_PULL == 0 {
+        return;
+    }
+    let rows = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        crate::content::store::list_resumable_for_peer(&dbc, peer_id).unwrap_or_default()
+    };
+    let now = db::now_ms();
+    for rec in rows {
+        if rec.direction != crate::content::model::Direction::Receive {
+            continue;
+        }
+        // Incomplete：到点就重试（退避）；Active：长时间没动（丢链/半开）也重试 ——
+        // 中途断链不一定有机会写失败记录，不能让"卡住的 Active"永远不重试。
+        let due = match rec.status {
+            crate::content::model::TransferStatus::Incomplete => {
+                crate::content::policy::should_retry_now(rec.status, now, rec.next_attempt_at)
+            }
+            crate::content::model::TransferStatus::Active => now.saturating_sub(rec.updated_at) > 60_000,
+            _ => false,
+        };
+        if !due {
+            continue;
+        }
+        let msg = Message::ContentRequest {
+            from: state.device_id.clone(),
+            cid: rec.cid.clone(),
+            transfer_id: rec.transfer_id.clone().unwrap_or_default(),
+            from_seq: 0,
+            from_bytes: rec.received,
+            name: rec.name.clone(),
+            size: rec.size,
+        };
+        if try_send(state, peer_id, &msg).await.is_ok() {
+            state.logger.info(
+                "content",
+                format!("建链自动重试未完成内容 cid={} peer={peer_id}", rec.cid),
+            );
+        }
+    }
+}
+
 pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) {
     // ---- 定向中继（一跳）：不是给我的定向帧，借邻居的直连转投给 to ----
     // 共享目录（ShareTree/ShareFile）在无直连时会走这里；RelayFileOffer 同理。
@@ -2369,11 +2425,83 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
         return;
     }
     match msg {
+        // ADR-0019 Phase 3：按 cid 拉取。**拥有即授权**，无需人工确认 —— 但只服务
+        // "确实是我的好友、且 from 就是这条链路的对端（防冒名）"。回发复用既有
+        // FileOffer→Chunk→Done→CompleteAck 流程（send_file_from_path）。
+        Message::ContentRequest {
+            from,
+            cid,
+            transfer_id,
+            from_seq,
+            from_bytes,
+            ..
+        } => {
+            if from != peer_id {
+                return;
+            }
+            let source = {
+                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                crate::content::store::find_source(&dbc, &cid).ok().flatten()
+            };
+            let Some((_owner, group_id, path)) = source else {
+                state
+                    .logger
+                    .info("content", format!("ContentRequest：本机没有该内容 cid={cid}"));
+                return;
+            };
+            // 授权：是好友，**或** 是该内容所属群的成员 —— 群聊里 A→B 成功后，
+            // 没拿到的 C 可以从已收完的 B 拉（B 是种子，内容寻址的意义所在）。
+            let allowed = {
+                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                if db::get_friend(&dbc, &from).is_some() {
+                    true
+                } else if let Some(g) = group_id.as_deref() {
+                    db::get_group(&dbc, g)
+                        .map(|grp| grp.members.iter().any(|m| m == &from))
+                        .unwrap_or(false)
+                } else {
+                    false
+                }
+            };
+            if !allowed {
+                state.logger.warn(
+                    "content",
+                    format!("ContentRequest：请求方无权限，拒绝服务 cid={cid} from={from}"),
+                );
+                return;
+            }
+            // 续传：沿用原 transfer_id（接收端才找得到 <tid>.part），并从已收字节起发。
+            let transfer_id = if transfer_id.is_empty() {
+                format!("refetch-{}", uuid::Uuid::new_v4())
+            } else {
+                transfer_id
+            };
+            match crate::network::file::send_file_from_path_at(
+                state,
+                &from,
+                &transfer_id,
+                std::path::PathBuf::from(&path),
+                from_seq,
+                from_bytes,
+            )
+            .await
+            {
+                Ok(()) => state.logger.info(
+                    "content",
+                    format!("已按 ContentRequest 回发内容 cid={cid} -> {from}"),
+                ),
+                Err(e) => state.logger.warn(
+                    "content",
+                    format!("ContentRequest 服务失败 cid={cid} from={from}: {e:?}"),
+                ),
+            }
+        }
         Message::Hello {
             device_id,
             nickname,
             avatar,
             device_type,
+            content_features,
             tcp_port,
             x25519_pubkey,
             ed25519_pubkey,
@@ -2383,6 +2511,12 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             if device_id != peer_id {
                 return;
             }
+            // 记录对端的内容能力位（不签名，仅用于"是否发拉取帧"）。
+            state
+                .peer_content_features
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(device_id.clone(), content_features);
             let ip = state
                 .peers
                 .lock()
@@ -2423,6 +2557,9 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             flush_pending_friend_request(state, &device_id).await;
             // 好友同意回执同样没有回执：建链后补发（真机：Mac 端好友状态一直没同步）。
             flush_pending_friend_accept(state, &device_id).await;
+            // Phase 1：建链即**自动重试**该 peer 名下未完成的可恢复内容
+            // （只对声明了拉取能力的对端发 ContentRequest；退避未到点的跳过）。
+            retry_incomplete_content(state, &device_id).await;
             // 建链后把**我的完整资料**（含大头像）定向发给这一个对端：
             // Hello 只带小头像、Presence 不再内联大头像，这里是「大头像只同步一次」
             // 的正式路径。LAN 上瞬间完成；BLE 上走 bulk，慢但不会堵住聊天。
@@ -2964,6 +3101,8 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             size,
             sealed_file_key,
             file_sha256,
+            from_bytes,
+            ..
         } => {
             if from != peer_id || from == state.device_id {
                 return;
@@ -2973,12 +3112,12 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 db::get_friend(&dbc, &from).is_some()
             };
             if !is_friend {
-                let _ = try_send(state, peer_id, &Message::FileReject { transfer_id }).await;
+                let _ = try_send(state, peer_id, &Message::FileReject { transfer_id, received: 0 }).await;
                 return;
             }
             // SHA-256 元数据格式校验：非法即拒绝（文件级完整性无法验证）
             if !file::valid_sha256_hex(&file_sha256) {
-                let _ = try_send(state, peer_id, &Message::FileReject { transfer_id }).await;
+                let _ = try_send(state, peer_id, &Message::FileReject { transfer_id, received: 0 }).await;
                 return;
             }
             // E2EE：解封文件会话密钥（发送方用我方公钥封装，只有我能解开）。
@@ -2990,9 +3129,34 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 crypto::open(&shared, &sealed).and_then(|k| k.try_into().ok())
             })();
             let Some(file_key) = file_key else {
-                let _ = try_send(state, peer_id, &Message::FileReject { transfer_id }).await;
+                let _ = try_send(state, peer_id, &Message::FileReject { transfer_id, received: 0 }).await;
                 return;
             };
+            // 断点续传统一入口（接收端是"我有什么"的唯一权威）：本地已保留 .part 且发送端的
+            // from_bytes 与之不符时，回 FileReject.received，让发送端以**真实进度**续发，
+            // 而不是重头覆盖前缀 —— 这是 outbox 全量重试与续传撞车的正解。
+            // 仅在没有活跃接收器时判：活跃中的重复 offer 仍走下面的"幂等 accept"（那修过真机缺陷）。
+            if !file::has_receiver(state, &transfer_id) {
+                let retained = file::retained_part_len(state, &transfer_id);
+                if retained != from_bytes {
+                    state.logger.info(
+                        "file",
+                        format!(
+                            "接收端已有 {retained} 字节，要求发送端从此续发 transfer={transfer_id}"
+                        ),
+                    );
+                    let _ = try_send(
+                        state,
+                        peer_id,
+                        &Message::FileReject {
+                            transfer_id: transfer_id.clone(),
+                            received: retained,
+                        },
+                    )
+                    .await;
+                    return;
+                }
+            }
             // **重复的 offer 必须幂等接受**：对端没收到我们的 accept 时会重发同一个
             // transfer_id，旧行为回 `FileReject("重复的文件传输")` ⇒ 对端判定失败、停止重试
             // ⇒ 文件永远到不了（真机：大图两边都显示成功、接收侧列表里没有）。这里直接
@@ -3012,16 +3176,55 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 .await;
                 return;
             }
-            match file::begin_receive(
-                state,
-                &transfer_id,
-                &from,
-                &name,
-                size,
-                file_key,
-                file_sha256,
-            ) {
+            // 续传：from_bytes > 0 且本地有对应 .part ⇒ 从断点继续；否则整份重收。
+            let received = if from_bytes > 0 {
+                file::resume_receive(
+                    state,
+                    &transfer_id,
+                    &from,
+                    &name,
+                    size,
+                    file_key,
+                    file_sha256.clone(),
+                    from_bytes,
+                )
+            } else {
+                file::begin_receive(
+                    state,
+                    &transfer_id,
+                    &from,
+                    &name,
+                    size,
+                    file_key,
+                    file_sha256.clone(),
+                )
+            };
+            match received {
                 Ok(_) => {
+                    // Phase 1：接收一开始就登记一条 Active 记录（cid → 暂无 path）。
+                    // 中途断链 / 超时由 record_failure 标成 Incomplete ⇒ 建链时自动重取。
+                    {
+                        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                        let now = db::now_ms();
+                        let rec = crate::content::model::TransferRecord {
+                            cid: file_sha256.clone(),
+                            transfer_id: Some(transfer_id.clone()),
+                            peer_id: from.clone(),
+                            group_id: None,
+                            name: name.clone(),
+                            size,
+                            direction: crate::content::model::Direction::Receive,
+                            status: crate::content::model::TransferStatus::Active,
+                            received: 0,
+                            attempts: 0,
+                            next_attempt_at: 0,
+                            last_error: None,
+                            path: None,
+                            created_at: now,
+                            updated_at: now,
+                        };
+                        let _ = crate::content::store::upsert(&dbc, &rec);
+                    }
                     let _ = try_send(
                         state,
                         peer_id,
@@ -3040,7 +3243,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                     );
                 }
                 Err(e) => {
-                    let _ = try_send(state, peer_id, &Message::FileReject { transfer_id }).await;
+                    let _ = try_send(state, peer_id, &Message::FileReject { transfer_id, received: 0 }).await;
                     state.logger.error("file", format!("接收文件初始化失败: {e}"));
                 }
             }
@@ -3052,15 +3255,22 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 .unwrap()
                 .remove(&transfer_id)
             {
-                let _ = tx.send(());
+                let _ = tx.send(Ok(()));
             }
         }
-        Message::FileReject { transfer_id } => {
-            state
+        Message::FileReject {
+            transfer_id,
+            received,
+        } => {
+            if let Some(tx) = state
                 .pending_file_accept
                 .lock()
                 .unwrap()
-                .remove(&transfer_id);
+                .remove(&transfer_id)
+            {
+                // 把"接收端已持有多少字节"回给发送端 ⇒ 它从该偏移续发，无需重头。
+                let _ = tx.send(Err(received));
+            }
         }
         Message::FileCompleteAck {
             transfer_id,
@@ -4531,6 +4741,15 @@ async fn handle_relay_chunk(
                         0.0,
                     )
                     .ok();
+                    // 统一状态：校验失败 ⇒ Rejected（换源重取是唯一出路）。
+                    let _ = crate::content::store::record_failure(
+                        &dbc,
+                        &rs.expected_sha256,
+                        &from,
+                        crate::content::model::Direction::Receive,
+                        crate::content::model::FailReason::HashMismatch,
+                        db::now_ms(),
+                    );
                     let _ = state.app.emit(
                         "file-failed",
                         &FileFailedInfo {
@@ -4567,6 +4786,17 @@ async fn handle_relay_chunk(
                     return;
                 }
             };
+            // 内容指纹：接收方也算一份 cid —— 之后它自己就是种子
+            // （find_source 按 cid 服务；群聊里 C 可从已收完的 B 拉）。
+            let cid = {
+                use sha2::Digest;
+                let mut h = sha2::Sha256::new();
+                h.update(&full);
+                h.finalize()
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>()
+            };
             let path_str = path.to_string_lossy().to_string();
             let rec = {
                 let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -4582,10 +4812,23 @@ async fn handle_relay_chunk(
                     1.0,
                 )
                 .ok();
+                crate::content::store::record_local(
+                    &dbc,
+                    &cid,
+                    &from,
+                    None,
+                    &name,
+                    full.len() as u64,
+                    crate::content::model::Direction::Receive,
+                    &path_str,
+                    db::now_ms(),
+                )
+                .ok();
                 let content = serde_json::json!({
                     "name": name.clone(),
                     "path": path_str.clone(),
                     "size": full.len(),
+                    "sha256": cid.clone(),
                     "subtype": file::classify_file_subtype(&name),
                 })
                 .to_string();
@@ -5084,6 +5327,18 @@ async fn handle_group_file_done(
             1.0,
         )
         .ok();
+        // 群聊里"已收完的成员"同样登记为种子：C 可从 B 拉（ADR-0019 Phase 3）。
+        let _ = crate::content::store::record_local(
+            &dbc,
+            &gf.sha256,
+            &sender_id,
+            Some(&group_id),
+            &gf.name,
+            gf.size,
+            crate::content::model::Direction::Receive,
+            &r.final_path.to_string_lossy(),
+            db::now_ms(),
+        );
     }
     state.group_file_keys.lock().unwrap_or_else(|e| e.into_inner()).remove(&transfer_id);
     // 重发带本地路径的记录（applyIncoming 按 msg_id 合并更新，未读不重复）：

@@ -36,12 +36,25 @@ test("定级：小 / 中 / 大（判据必须确定性）", () => {
   assert.equal(classifyCommit({ subject: "feat: 新增跨网段连接 UI" }).level, "minor");
   assert.equal(classifyCommit({ subject: "perf: 列表滚动更快" }).level, "minor");
   assert.equal(classifyCommit({ subject: "feat: 换架构" }).level, "minor"); // 没有线索词 → 中
+  // 向后兼容的大改动**不是** major：规模/线索词不参与定档（SemVer 2.0.0）
   assert.equal(
     classifyCommit({ subject: "refactor(窗口): 三个窗口各自一个入口", churn: 2398, files: 24 }).level,
-    "major",
+    "patch",
+  );
+  assert.equal(
+    classifyCommit({ subject: "feat: 引入统一 Mesh 网络模型", churn: 3000, files: 40 }).level,
+    "minor",
   );
   assert.equal(classifyCommit({ subject: "feat!: 不兼容的协议变更", churn: 10 }).level, "major");
-  // 架构线索 + 小改动 → 不升级（避免"改个注释就大版本 +1"）
+  // Conventional Commits 的另一种等价声明：正文 BREAKING CHANGE: footer
+  assert.equal(
+    classifyCommit({
+      subject: "feat: 换数据模型",
+      message: "feat: 换数据模型\n\nBREAKING CHANGE: 旧库不兼容",
+      churn: 10,
+    }).level,
+    "major",
+  );
   assert.equal(
     classifyCommit({ subject: "feat: 协议注释微调", churn: 3, files: 1 }).level,
     "minor",

@@ -1,9 +1,10 @@
 // 版本号规则（**单一事实来源**）：提交 → 级别（小/中/大）→ 版本累加。
 //
-// 规则（见 docs/VERSIONING.md）：
-//   · 小功能（patch）：缺陷修复、非功能性改动（docs/test/chore/build/ci/style）、小幅优化
-//   · 中功能（minor）：一个完整的新能力/用户可感知的改进（feat、perf）
-//   · 大功能（major）：架构级/协议级改动、新平台支持、破坏性变更（`!` 或 BREAKING CHANGE）
+// 规则（见 docs/VERSIONING.md，遵循 SemVer 2.0.0 + Conventional Commits）：
+//   · patch：缺陷修复与非功能性改动（fix / docs / test / chore / build / ci / style / refactor）
+//   · minor：**向后兼容**的新能力 / 用户可感知改进（feat、perf）
+//   · major：**只有兼容性被破坏**才是 major（提交带 ! 或正文含 BREAKING CHANGE: footer）。
+//     改动规模与线索词**不参与**定档 —— 一个大而向后兼容的功能仍然只是 minor。
 //
 // 两个"累加"口径，两者都实现、用途不同：
 //   ① accumulate()：**逐提交累加**（字面执行"每次提交都进一位"）—— 只用于审计/台账；
@@ -30,12 +31,8 @@ export const TYPE_LEVEL = {
   style: "patch",
 };
 
-/** 架构级/协议级线索（命中且改动规模足够大时才升级为 major）。 */
-export const MAJOR_CUES = [
-  "协议", "线格式", "架构", "ADR", "Android", "安卓", "蓝牙", "BLE", "传输", "多窗口",
-  "窗口", "mesh", "Mesh", "中继", "relay", "不兼容", "数据模型", "存储结构", "迁移",
-  "身份", "签名", "握手", "重写", "拆分", "聚合", "拓扑", "路由",
-];
+/** 破坏性变更的正文标记（Conventional Commits：与 subject 的 ! 等价）。 */
+export const BREAKING_FOOTER_RE = /^BREAKING[ -]CHANGE:/m;
 
 /** 解析 `type(scope)!: summary`。 */
 export function parseSubject(subject) {
@@ -68,17 +65,18 @@ export function compareVersion(x, y) {
  * 给一个提交定级。`churn` = 增删行数之和，`files` = 改动文件数。
  * 判据必须**确定性**（同样的输入永远同样的级别），否则台账与门禁都对不上。
  */
-export function classifyCommit({ subject, churn = 0, files = 0 }) {
-  const { type, breaking, summary } = parseSubject(subject);
-  if (breaking) return { level: "major", type, reason: "提交带 `!`（显式破坏性变更）" };
-  const cue = MAJOR_CUES.some((k) => summary.includes(k));
-  if (["feat", "refactor", "perf", "build"].includes(type) && cue && churn >= 150) {
-    return { level: "major", type, reason: `架构/协议级改动且规模较大（${files} 文件 / ${churn} 行）` };
+export function classifyCommit({ subject, message = "", churn = 0, files = 0 }) {
+  const { type, breaking: bangBreaking } = parseSubject(subject);
+  // SemVer 2.0.0：MAJOR 等价于「向后不兼容」。Conventional Commits 给了两种等价声明：
+  // subject 里的 ! 与正文的 BREAKING CHANGE: footer。
+  const breaking = bangBreaking || BREAKING_FOOTER_RE.test(message);
+  if (breaking) {
+    return { level: "major", type, reason: "显式破坏性变更（! 或 BREAKING CHANGE:）" };
   }
-  if (type === "feat") return { level: "minor", type, reason: `新功能（${files} 文件 / ${churn} 行）` };
-  if (type === "perf") return { level: "minor", type, reason: "用户可感知的性能改进" };
+  if (type === "feat") return { level: "minor", type, reason: `向后兼容的新功能（${files} 文件 / ${churn} 行）` };
+  if (type === "perf") return { level: "minor", type, reason: "用户可感知的性能改进（向后兼容）" };
   if (type === "fix") return { level: "patch", type, reason: "缺陷修复" };
-  return { level: "patch", type, reason: "非功能性/内部改动（按规则也进一位 patch）" };
+  return { level: "patch", type, reason: "非功能性/内部改动（按规则进一位 patch）" };
 }
 
 /** 一次发布应取的级别 = 这批提交里的**最高档**（SemVer 标准做法）。 */

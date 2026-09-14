@@ -103,6 +103,24 @@ export interface FileMeta {
   subtype: string;
 }
 
+/** 统一内容传输状态（ADR-0019）：前端气泡据此显示发送中/等待/重试/完成。 */
+export interface ContentTransfer {
+  cid: string;
+  peerId: string;
+  groupId: string | null;
+  name: string;
+  size: number;
+  direction: "send" | "receive";
+  status: "queued" | "active" | "verifying" | "complete" | "incomplete" | "rejected";
+  received: number;
+  attempts: number;
+  nextAttemptAt: number;
+  lastError: string | null;
+  path: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface TransferInfo {
   id: string;
   peer_id: string;

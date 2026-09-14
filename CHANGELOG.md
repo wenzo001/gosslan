@@ -10,6 +10,198 @@
 
 ## [Unreleased]
 
+## [4.8.2] - 2026-09-14
+
+### Fixed (审计 §7 风险收口：续传对账 + 过期 .part 定期清扫)
+
+- **风险 1（发送端全量重试 vs 接收端续传撞车）**：让接收端成为"我有什么"的**唯一权威** ——
+  没有活跃接收器时，若本地保留的 .part 前缀长度 ≠ 发送端的 from_bytes，回
+  FileReject.received = 真实前缀长度；发送端据此**从断点续发**而不是重头覆盖
+  （send_file_from_path_at 内最多对账 3 次，之后才报"对方未接受"）。
+  活跃接收器的"重复 offer 幂等 accept"**保持不变**（那条修过真机的大图收不全缺陷）。
+- **风险 2（过期 .part 无清扫）**：新增 sweep_stale_parts —— 启动时 + 之后每小时一次，
+  只删"超过 24h 且当前不在接收中"的 .part，绝不碰活跃接收。
+- 协议：FileReject 增加 received（serde default，旧端缺省 0 ⇒ 退化为整份重传，互通）。
+
+护栏：源码断言（retained_part_len + received: retained + sweep_stale_parts）。
+
+## [4.8.1] - 2026-09-14
+
+## [4.8.0] - 2026-09-14
+
+### Added (断点续传：弱网 / 大文件从断点继续，不再整份重来 —— ADR-0019 Phase 2)
+
+- **协议**：FileOffer 增加 from_seq / from_bytes；ContentRequest 增加
+  transfer_id / from_seq / from_bytes（serde default，旧端互通）。
+- **发送端**：send_file_from_path_at 从 from_bytes 偏移读文件、seq 从 from_seq 编号
+  （stream_file 用 AsyncSeekExt 定位）；自动重试与手动重取都带上 transfer_id + 已收字节。
+- **接收端**：fail_receive / fail_group_receive **保留 .part**（不再删除）；新增
+  resume_receive —— 读入已有前缀播种 SHA-256 hasher、received 接上、next_seq 归零，
+  然后以 append 方式继续收。
+- **服务端**：ContentRequest 处理沿用原 transfer_id，并按 from_bytes 续发。
+- **安全兜底**：前缀长度 / TTL / 边界任何不一致 ⇒ resume_receive 返回 Err ⇒ FileReject
+  ⇒ 发送端整份重传（绝不比今天更差）。TTL 24h，避免 .part 无穷增长。
+- **护栏**：源码断言（resume_receive + send_file_from_path_at 必须在）+
+  content::policy::resume_from_seq 单测（分片边界 / 尾部半片 / 非法分片大小）。
+
+> 设计说明：续传段内 seq 归零重编（hasher 是字节级、与 seq 无关），因此**不需要**
+> 持久化 next_seq；接收端只依赖 from_bytes。ADR-0019 §5 已更新为"已实现"。
+
+## [4.7.5] - 2026-09-14
+
+## [4.7.4] - 2026-09-14
+
+## [4.7.3] - 2026-09-14
+
+### Changed (断点续传前置：接收进度持久化 + 续传起点纯函数)
+
+断点续传（Phase 2）的两块前置，先单独落地并测好，避免一次性改热路径：
+
+- content::policy::resume_from_seq(received, chunk)：把已收字节折算成**分片序号**
+  （向下取整到分片边界；尾部半片必须丢弃重传，否则 hasher 与 seq 对不齐，最终 SHA 必错）。
+- write_chunk 每 500ms 把 received 落库（content_transfers.received，只前进）：
+  这是续传的起点，也让统一状态能拿到真实进度。锁顺序保持
+  file_receivers -> 释放 -> db（不嵌套）。
+
+## [4.7.2] - 2026-09-14
+
+### Fixed (群聊收文件/图片同样进入统一状态并能自动重试)
+
+- begin_group_receive 一开始就登记 content_transfers（Active + cid）；
+  fail_group_receive（中途断链/失败）由 record_failure 标 **Incomplete**。
+- 于是群聊里"某个人看不到图"也走同一条自愈路径：状态可见、建链自动重取、
+  点一下「重新获取」；且**已收完的成员是种子**（前一条已实现），原发送方不在时也能从群友取。
+
+护栏沿用 incomplete_content_is_auto_retried_behind_capability_gate。
+
+## [4.7.1] - 2026-09-14
+
+### Fixed (中途失败/断链的接收不再停在 Active：记为 Incomplete 并自动重试)
+
+- fail_receive（超时 / 断链 / 坏片清理）现在把该内容记为 **Incomplete**（可恢复），
+  于是建链时 retry_incomplete_content 会按退避自动重取 —— 此前这类记录会停在 Active，
+  should_retry_now 判不过，**自动重试实际不会触发**。
+- 新增 **ADR-0019**（统一可靠内容传输）：完整记录分层、内容寻址、拉取式补取、能力协商、
+  自动重试，以及 Phase 2 断点续传 From(seq) 的设计与难点（保留半成品 + 分片边界对齐 +
+  复用 hasher + TTL 清理）。
+
+护栏：incomplete_content_is_auto_retried_behind_capability_gate 增补 file.rs 断言。
+
+## [4.7.0] - 2026-09-14
+
+### Added (Phase 1 UI：统一内容状态呈现在文件卡片上)
+
+- get_content_transfers 接通前端：store 持有 contentTransfers（随 refreshTransfers 一起刷新，
+  不必额外 IPC 通道）。
+- 文件卡片：当该内容在统一状态里是「未完成 / 校验失败」时，右侧按钮从「下载」变成
+  **「重新获取」**（按 cid 拉一份，对方无需确认）；图片气泡此前已支持点击重取。
+- MessageItem 用消息内容里的 sha256 关联到对应的内容记录（旧消息没有 sha256 ⇒ 不显示，
+  不影响任何现有行为）。
+
+护栏：前端用例（api / store / 文件卡片接线）。
+
+## [4.6.0] - 2026-09-14
+
+### Added (Phase 1：未完成内容自动重试 + 统一状态查询)
+
+- **建链自动重试**：Hello / 建链时把该 peer 名下未完成的**接收**重新拉一遍
+  （只对声明了 CONTENT_FEATURE_PULL 的对端发 ContentRequest；Incomplete 按退避到点、
+  Active 超过 60s 没动也重试 —— 中途丢链不一定有机会写失败记录，不能让卡住的 Active
+  永远不重试）。
+- **接收一开始就登记** content_transfers（Active + cid）：于是"卡住 / 失败"有据可查；
+  落盘后由 record_local 转 Complete，SHA 校验失败由 record_failure 转 Rejected。
+- **统一状态查询** get_content_transfers：TransferRecord 现在可序列化给前端，
+  供气泡显示「发送中 / 等待对方在线 / 网络不佳 / 未完成·点击重试 / 完成」
+  （前端展示这批的后半段，下一提交接）。
+
+护栏：incomplete_content_is_auto_retried_behind_capability_gate。
+
+## [4.5.0] - 2026-09-14
+
+### Added (内容拉取补全：接收方也能做种 + 群成员可拉 + 授权收紧)
+
+- 接收落盘（单聊 FileDone / 群聊 GroupFileDone）后，接收方同样登记为一颗**种子**
+  （content_transfers: cid → 本地 path）⇒ **群聊里 A→B 成功后，没拿到的 C 可以直接从
+  已收完的 B 拉**，不再依赖 A 在线。这正是"某个群友看不到图"的自愈路径。
+- 拉取授权从"仅好友"放宽到"好友 **或** 该内容所属群的成员"（并仍按 from == 链路对端
+  防冒名）；其余一律拒绝并记日志。
+- 单聊收到的文件消息内容补上 sha256（cid）：本机副本日后被清理时也能按 cid 重取。
+
+护栏：content_pull_requires_capability_negotiation 增补"群成员可拉"断言；
+content::store 新增种子记录单测（cid → path，带群上下文）。
+
+## [4.4.0] - 2026-09-14
+
+### Added (内容拉取：点一下，对方自动再发一份 —— ADR-0019 Phase 3)
+
+消息系统稳定化的第一批可感知能力：图片 / 文件没拿到时，**点一下**就会自动从对方重新
+取一份，**对方不需要确认**（拥有即授权）。仍然遵循分层与"能扩展"：
+
+- **网络层 · 能力协商**（向后兼容的硬前提）：Hello 增加 content_features 位图，
+  **不参与签名** ⇒ 老端忽略、新端可读；对端没声明 CONTENT_FEATURE_PULL 就**不发新帧**，
+  自动退化成今天的推送式。对端能力位存 state.peer_content_features。
+- **逻辑层 · 内容寻址**：cid = 明文 SHA-256；发送方把它写进文件消息内容，接收方据此
+  知道要拉什么。发送成功即写 content_transfers（cid → 本地 path）；
+  find_source 按 cid 找可服务的完整字节（**内容可用性与投递状态解耦**）。
+- **业务层 · 服务端**：新帧 Message::ContentRequest { from, cid, name, size }；校验
+  「from 就是这条链路的对端、且是好友」后，直接复用 send_file_from_path 回发一份
+  FileOffer（Chunk / Done / CompleteAck 整套复用，零新传输逻辑）。
+- **功能层 · 点击重取**：命令 request_content(peer_id, msg_id)；图片气泡加载失败点一下、
+  以及「图片已被清理 / 可向对方重新索取」占位，都会触发重取。
+
+护栏：content_pull_requires_capability_negotiation（Rust：能力位**不得**进入签名材料）
++ 前端用例（api / 气泡接线）。
+
+> 遗留（下一批）：接收侧完成后的内容索引（让"已收完的群友"也能当种子）、断点续传
+> From(seq)、以及把 content_transfers 状态统一呈现在文件气泡上。
+
+## [4.3.23] - 2026-09-14
+
+## [4.3.22] - 2026-09-14
+
+### Added (内容传输逻辑层：统一生命周期 / 状态机 / 重试策略 / 持久化)
+
+为「消息系统稳定化」（ADR-0019，Phase 1/3）打地基，新增 src-tauri/src/content/：
+
+- model.rs：统一词汇 —— cid = sha256(明文)（内容寻址，任何持有完整字节的端都能当种子）、
+  Direction、TransferStatus(queued/active/verifying/complete/incomplete/rejected)、
+  FailReason（显式区分可恢复与终态）。
+- policy.rs：纯函数状态机 + 指数退避（2s 起、60s 封顶）+ 失败分类；可脱离网络单测。
+- store.rs：content_transfers 表，显式保存 received / attempts / next_attempt_at /
+  last_error —— 这是「断网重启后还能继续」的事实依据；schema 归本层所有（分层）。
+- 分层约定（用户 2026-09-15 要求）：逻辑层不依赖网络层，网络能力后续以 trait 注入；
+  各层只通过能力函数调用，且都能扩展。详见 content/mod.rs 顶部。
+
+本提交只是地基（尚未接线）：业务层接线、能力协商、ContentRequest 拉取与前端统一状态
+在后续提交落地（ADR-0019 有分阶段表）。
+
+## [4.3.21] - 2026-09-14
+
+### Fixed (🔴 群聊收图时好时坏：在途文件被当成「已被清理」并永久缓存)
+
+用户 2026-09-14：群里收到别人的图片有时加载失败，点几次 / 等一会儿 / 重发才出来；
+三个人里有时是这个看不到、有时是另一个。
+
+根因（"消息先到、字节后到"的竞态）：
+- 接收方在 FileDone 之前写的是 <transfer_id>.part，**final 路径还不存在**；此时
+  read_file_preview 走 resolve_media_path 的 canonicalize 失败分支，直接报 Gone
+  =「文件不存在」，前端把它当成「已被清理」。
+- 更糟的是 filePreview 把这次失败**按 msg_id 永久缓存**，而且图片气泡的预览不会随
+  "传输完成"重读 ⇒ 文件明明已经落盘，界面也永远不再读（点几次也没用，只能重发——
+  那是新的 msg_id）。
+
+修法：
+- 后端 resolve_media_path：final 文件缺失时先判**在途接收**（file_receivers /
+  group_file_receivers，transfer_id 由 msg_id 反推）；在途报 Unknown("仍在接收")，
+  只有确实不在途才报 Gone（= 真被清理）。
+- 前端 filePreview：只有**确定性**失败（已被清理 / 文件过大）才缓存；新增
+  invalidateFilePreview(msgId)。
+- useMessageFile：预览 watcher 增加 transfer.status 依赖。
+- useChatStore.onFileDone：失效 file-/gfile- 两条消息的预览缓存 ⇒ 字节一到就自动重读。
+
+护栏：in_flight_media_is_not_reported_as_deleted（Rust）+ channelState.test.ts 前端用例 +
+verify-guards.py 非空转用例。
+
 ## [4.3.20] - 2026-09-14
 
 ### Fixed (链路徽标与好友在线状态不实时：全局域网却显示「已桥接」)

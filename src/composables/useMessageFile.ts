@@ -131,6 +131,9 @@ export function useMessageFile(
         msg.value.msg_id,
         fileMeta.value?.path,
         fileMeta.value?.name,
+        // 传输状态：收到 Done 时（字节刚落盘）必须重读预览，否则在途时读到的
+        // "仍在接收"会把图片钉死在"加载失败/被清理"（真机 2026-09-14）。
+        transfer.value?.status,
       ] as const,
     () => void ensureAttachmentPreview(),
     { immediate: true },

@@ -295,3 +295,49 @@ test("链路徽标/在线状态必须实时（不能只看节点表或消息快�
     "聊天头的链路状态必须在活跃对端链路变化时刷新",
   );
 });
+
+/**
+ * 收到的图片必须能在**字节落盘后**自动加载出来（用户 2026-09-14：群里收图时好时坏，
+ * 点几次 / 等一会儿 / 重发才出来）。
+ *
+ * 判据：在途读预览得到的失败**不能永久缓存**；传输 Done 时必须让该消息的预览缓存失效，
+ * 气泡据此重读。
+ */
+test("图片预览：在途失败不缓存 + 传输完成时失效重读", () => {
+  const fp = read("utils/filePreview.ts");
+  assert.match(fp, /export function invalidateFilePreview\(/, "必须提供预览缓存失效入口");
+  assert.match(
+    fp,
+    /if \(r\.missing \|\| r\.note === "文件过大，无法预览"\) cache\.set\(msgId, r\)/,
+    "只有确定性失败才缓存 —— 在途失败缓存了就永远不会重读",
+  );
+  const store = read("stores/useChatStore.ts");
+  assert.ok(
+    (store.match(/invalidateFilePreview\(/g) ?? []).length >= 2,
+    "FileDone 必须让 file-/gfile- 两条消息的预览缓存失效",
+  );
+  const mf = read("composables/useMessageFile.ts");
+  assert.match(mf, /transfer\.value\?\.status/, "预览必须随传输状态变化重读");
+});
+
+/**
+ * 内容拉取（ADR-0019 Phase 3）：能力协商 + 点击重取。
+ *
+ * 判据：api 暴露 request_content；图片气泡失败可触发重取；前端真的调后端命令。
+ */
+test("内容拉取：点击重取必须接通后端 request_content", () => {
+  assert.match(read("api/index.ts"), /requestContent:/, "api 必须暴露 request_content");
+  const item = read("components/MessageItem.vue");
+  assert.match(item, /@refetch="refetchContent"/, "图片气泡失败必须能触发重取");
+  assert.match(item, /invoke<boolean>\("request_content"/, "必须真的调后端命令");
+});
+
+/** 统一内容状态（ADR-0019 Phase 1）：未完成/失败的文件卡片必须能给「重新获取」。 */
+test("统一内容状态：未完成/失败的文件必须能给「重新获取」", () => {
+  assert.match(read("api/index.ts"), /getContentTransfers:/, "api 必须暴露 get_content_transfers");
+  assert.match(read("stores/useChatStore.ts"), /contentTransfers/, "store 必须持有统一内容状态");
+  const bubble = read("components/message/MessageFileBubble.vue");
+  assert.match(bubble, /emit\('refetch'\)/, "未完成时按钮必须触发 refetch");
+  const item = read("components/MessageItem.vue");
+  assert.match(item, /:content-retry=/, "MessageItem 必须把统一状态传给文件卡片");
+});

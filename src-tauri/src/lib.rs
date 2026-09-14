@@ -1,6 +1,8 @@
 //! Gosslan 应用入口（库目标，供 Tauri 加载）。
 
 mod commands;
+/// 内容传输**逻辑层**（统一生命周期 + 状态机 + 重试策略）；见 content/mod.rs 的分层说明。
+pub mod content;
 /// 公开给 `examples/e2e_peer.rs` 协议级 E2E 测试对端复用（线格式与密码学原语）。
 pub mod crypto;
 mod db;
@@ -253,6 +255,20 @@ pub fn run() {
                     }
                 });
             }
+            // 定期清扫过期的 .part 断点前缀（审计 §7 风险 2）：启动后立即一次，之后每小时一次。
+            {
+                let st = state.clone();
+                tauri::async_runtime::spawn(async move {
+                    loop {
+                        let removed = crate::network::file::sweep_stale_parts(&st);
+                        if removed > 0 {
+                            st.logger
+                                .info("file", format!("清理过期 .part：{removed} 个"));
+                        }
+                        tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+                    }
+                });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -313,6 +329,8 @@ pub fn run() {
             commands::send_group_file,
             commands::get_group_file_delivery_summary,
             commands::send_file,
+            commands::request_content,
+            commands::get_content_transfers,
             commands::send_file_auto,
             commands::send_file_relay,
             commands::get_transfers,
@@ -1564,6 +1582,95 @@ mod tests {
         assert!(
             state.contains("p.link = best_link_kind(&kinds)"),
             "peers-updated 必须带上活跃链路（link 字段），否则前端判不出「有链路但广播缺席」的在线"
+        );
+    }
+
+    /// **在途文件不能被当成"已被清理"**（用户 2026-09-14：群里收图时好时坏，点几次/
+    /// 等一会儿/重发才出来）。
+    ///
+    /// 接收方在 FileDone 之前写的是 <transfer_id>.part，final 路径尚不存在。若
+    /// resolve_media_path 直接报 Gone，前端会把"正在接收"的图片标成「已被清理」并缓存。
+    #[test]
+    fn in_flight_media_is_not_reported_as_deleted() {
+        let commands = include_str!("commands.rs");
+        let body = rust_fn_body(commands, "fn resolve_media_path(");
+        assert!(
+            body.contains("file_receivers")
+                && body.contains("group_file_receivers")
+                && body.contains("仍在接收"),
+            "缺失的 final 文件必须先在途判定（file_receivers / group_file_receivers），在途报 Unknown 而不是 Gone"
+        );
+    }
+
+    /// **未完成的内容要能自动重试，且同样受能力协商约束**（ADR-0019 Phase 1）。
+    #[test]
+    fn incomplete_content_is_auto_retried_behind_capability_gate() {
+        let transport = include_str!("network/transport.rs");
+        assert!(
+            transport.contains("async fn retry_incomplete_content("),
+            "必须实现建链自动重试"
+        );
+        assert!(
+            transport.contains("CONTENT_FEATURE_PULL"),
+            "自动重试也必须走能力协商（旧端不发新帧）"
+        );
+        let cmds = include_str!("commands.rs");
+        assert!(
+            cmds.contains("pub fn get_content_transfers("),
+            "必须有统一状态查询命令（前端气泡据此显示）"
+        );
+        let model = include_str!("content/model.rs");
+        assert!(
+            model.contains("Serialize, Deserialize, Clone, Debug, PartialEq"),
+            "TransferRecord 必须可序列化给前端"
+        );
+        let file = include_str!("network/file.rs");
+        assert!(
+            file.contains("record_failure"),
+            "中途失败/断链必须在 fail_receive 里记 Incomplete，否则记录永远停在 Active、自动重试不触发"
+        );
+        assert!(
+            file.contains("pub fn resume_receive("),
+            "必须有断点续传接收（从 .part 前缀继续）"
+        );
+        assert!(
+            transport.contains("send_file_from_path_at"),
+            "服务端必须支持从偏移续发（from_bytes）"
+        );
+        // 审计 §7 风险 1：接收端必须把"我已有多少字节"回给发送端，发送端据此续发（不重头覆盖）。
+        assert!(
+            transport.contains("retained_part_len") && transport.contains("received: retained"),
+            "接收端必须按真实前缀长度回 FileReject.received，发送端据此续发"
+        );
+        // 审计 §7 风险 2：必须有过期 .part 的定期清扫。
+        assert!(
+            file.contains("pub fn sweep_stale_parts("),
+            "必须有 .part 定期清扫（可恢复失败会保留前缀，不能让它们无限堆积）"
+        );
+    }
+
+    /// **内容拉取必须走能力协商**（ADR-0019 Phase 3）：旧端不发新帧、新端才拉；
+    /// 且能力位**不能进 Hello 签名材料**，否则老端验签会失败（向后兼容的硬前提）。
+    #[test]
+    fn content_pull_requires_capability_negotiation() {
+        let proto = include_str!("protocol.rs");
+        assert!(proto.contains("CONTENT_FEATURE_PULL"));
+        let sig = rust_fn_body(proto, "pub fn hello_signing_bytes(");
+        assert!(
+            !sig.contains("content_features"),
+            "content_features 不得进入签名材料（否则老端验签失败）"
+        );
+        let cmds = include_str!("commands.rs");
+        let body = rust_fn_body(cmds, "pub async fn request_content(");
+        assert!(
+            body.contains("CONTENT_FEATURE_PULL"),
+            "拉取必须按对端能力位协商，旧端不发新帧"
+        );
+        let transport = include_str!("network/transport.rs");
+        assert!(transport.contains("find_source"), "服务端必须按 cid 找本地内容");
+        assert!(
+            transport.contains("db::get_group"),
+            "群成员也应能作为拉取请求方（A→B 成功后，C 可从已收完的 B 拉）"
         );
     }
 

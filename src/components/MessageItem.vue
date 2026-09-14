@@ -55,6 +55,40 @@ const props = withDefaults(
 );
 
 const app = useAppStore();
+
+/**
+ * 「点击重取」：文件/图片没拿到（未完成 / 已被清理）时，请对端按 cid 再发一份。
+ * 对方无需确认（拥有即授权）；对方版本不支持时给出明确提示，而不是静默。
+ */
+async function refetchContent() {
+  const myId = app.device?.device_id;
+  const peer =
+    props.message.sender_id === myId ? props.message.receiver_id : props.message.sender_id;
+  if (!peer) return;
+  try {
+    const ok = await invoke<boolean>("request_content", {
+      peerId: peer,
+      msgId: props.message.msg_id,
+    });
+    app.toast(t(ok ? "msg.refetchRequested" : "msg.refetchUnsupported"), ok ? "info" : "error");
+  } catch (e) {
+    app.toastError(e, t("msg.refetchFail"));
+  }
+}
+
+/** 这条内容在统一状态里是否「未完成 / 校验失败」⇒ 文件卡片给「重新获取」。 */
+const retryableContent = computed(() => {
+  if (props.message.kind !== "file" && props.message.kind !== "image") return null;
+  try {
+    const sha = (JSON.parse(props.message.content) as { sha256?: string }).sha256;
+    if (!sha) return null;
+    const rec = chat.contentTransfers.find((c) => c.cid === sha);
+    if (!rec) return null;
+    return rec.status === "incomplete" || rec.status === "rejected" ? rec : null;
+  } catch {
+    return null;
+  }
+});
 const chat = useChatStore();
 const { memberProfile } = useMemberProfile();
 
@@ -595,20 +629,23 @@ async function copyFileToClipboard() {
                使这条新链末尾的 <div v-else> 变成"对所有 text / code 消息都成立的兜底"——
                于是每条文本消息都被渲染两遍（MessageTextBubble 一遍 + 原始文字一遍，
                表现为表情显示成 [摊手] 原文、普通消息整条重复）。历史缺陷见 fd02f62。 -->
-          <div
+          <button
             v-else-if="message.kind === 'image' && attachmentMissing"
-            class="flex h-32 w-52 flex-col items-center justify-center gap-1 rounded-[var(--gosslan-bubble-radius)] bg-black/5 text-[11px] text-[var(--gosslan-text-2)] dark:bg-white/5"
+            type="button"
+            class="flex h-32 w-52 cursor-pointer flex-col items-center justify-center gap-1 rounded-[var(--gosslan-bubble-radius)] bg-black/5 text-[11px] text-[var(--gosslan-text-2)] transition hover:bg-black/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary dark:bg-white/5 dark:hover:bg-white/10"
+            @click="refetchContent"
           >
             <ImageOff class="h-6 w-6 opacity-50" />
             <span>{{ t("msg.imageCleaned") }}</span>
             <span class="opacity-70">{{ t("msg.imageReRequest") }}</span>
-          </div>
+          </button>
 
           <!-- 图片 -->
           <MessageImageBubble
             v-else-if="message.kind === 'image'"
             :src="imageDataUrl"
             @open="openImageLightbox"
+            @refetch="refetchContent"
           />
 
           <!-- 附件图片预览（file + subtype:image，接收完成后显示本地图片） -->
@@ -616,6 +653,7 @@ async function copyFileToClipboard() {
             v-else-if="message.kind === 'file' && attachmentUrl"
             :src="attachmentUrl"
             @open="openImageLightbox"
+            @refetch="refetchContent"
           />
 
           <!-- 文件 -->
@@ -632,9 +670,11 @@ async function copyFileToClipboard() {
             :mine="mine"
             :ready="fileReady"
             :tappable="fileTappable"
+            :content-retry="!!retryableContent"
             @open="openFile"
             @save="saveAs"
             @download="onFileDownload"
+            @refetch="refetchContent"
           />
 
           <!-- 未知 kind 的兜底气泡：排版必须与 MessageTextBubble 一致（py-1.5 / leading-normal），
