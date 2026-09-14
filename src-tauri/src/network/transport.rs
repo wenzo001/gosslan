@@ -943,11 +943,53 @@ pub async fn flush_pending_friend_accept(state: &Arc<AppState>, peer_id: &str) {
 }
 
 /// 构造带签名的 Hello（nonce 每次新生成，签名覆盖连接身份的全部字段）。
+/// Hello 里能带的头像上限（字节）。
+///
+/// ## 为什么必须限制（真机 2026-09-14 三端日志，本批最严重的一条）
+///
+/// `Hello` 是**握手帧**：链路刚建好就要发出去，对端等它的时间就是 `HANDSHAKE_TIMEOUT`（10s）。
+/// 而旧实现把 `state.avatar` **原样**塞进 Hello —— 用户设的是一张 base64 图片时，
+/// 这个帧可以到 **几百 KB**。BLE 上后果是双重的：
+///   · central 侧：424303 字节 ÷ 514 字节/片 ≈ **826 片 × 12ms ≈ 10s** ⇒ 正好撞上握手超时，
+///     对端日志是「握手超时：对端未回 Hello」；
+///   · 外设侧：CoreBluetooth/Android 在某些时序下报的 `maximumUpdateValueLength` 还是默认值
+///     （MTU 23 ⇒ 每片 20 字节）⇒ 需要 **3 万多片** > `MAX_BLE_CHUNKS_PER_MESSAGE`(8192)
+///     ⇒ `fragment()` 直接返回 `None`，日志是「回 Hello 失败：帧无法分片（过大或 MTU 非法：
+///     len=424303 mtu=20）」—— 真机上就是"搜得到、连得上、永远握手不成、发不出消息"。
+///
+/// 头像属于**展示信息**，晚一点、走别的路径同步都可以；握手帧必须小到能秒过。
+/// 取 2 KiB：正常的小图标/首字母头像远小于它，而任何"图片级"头像都会被挡在握手之外。
+pub const HELLO_AVATAR_MAX_BYTES: usize = 2048;
+
+/// 交给 Hello 携带的头像：**过大就返回 `None`**（并且只留一次 warn 让真机可查）。
+///
+/// 纯函数：`Option<&str>` 便于单测。
+pub fn hello_avatar_for_wire(avatar: Option<&str>) -> Option<&str> {
+    match avatar {
+        Some(a) if !a.is_empty() && a.len() <= HELLO_AVATAR_MAX_BYTES => Some(a),
+        _ => None,
+    }
+}
+
 pub fn build_signed_hello(state: &AppState, conv_clock: i64) -> Message {
     let device_id = state.device_id.clone();
     let tcp_port = state.tcp_port;
     let x25519_pubkey = state.identity.x25519_public_b64();
     let ed25519_pubkey = state.identity.ed25519_public_b64();
+    // ⚠️ 头像**必须先过尺寸闸门**再进握手帧（见 `HELLO_AVATAR_MAX_BYTES` 的说明）：
+    // 一张 base64 头像能把 Hello 撑到几百 KB，BLE 上直接导致握手超时或"帧无法分片"。
+    let raw_avatar = state.avatar.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let avatar = hello_avatar_for_wire(raw_avatar.as_deref()).map(str::to_string);
+    if avatar.is_none() && raw_avatar.as_deref().is_some_and(|a| !a.is_empty()) {
+        state.logger.warn(
+            "transport",
+            format!(
+                "Hello 不携带头像：本机头像 {} 字节 > 上限 {} 字节（握手帧必须小；头像由 UserInfo 同步）",
+                raw_avatar.as_deref().map(str::len).unwrap_or(0),
+                HELLO_AVATAR_MAX_BYTES
+            ),
+        );
+    }
     let nonce = STANDARD.encode(crypto::random_key());
     let sig = state.identity.sign_b64(&hello_signing_bytes(
         &device_id,
@@ -959,7 +1001,7 @@ pub fn build_signed_hello(state: &AppState, conv_clock: i64) -> Message {
     Message::Hello {
         device_id,
         nickname: state.nickname.lock().unwrap_or_else(|e| e.into_inner()).clone(),
-        avatar: state.avatar.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+        avatar,
         device_type: crate::protocol::current_device_type().to_string(),
         tcp_port,
         x25519_pubkey,
@@ -6032,6 +6074,44 @@ mod tests {
     ///
     /// 反例：旧实现把"我不是群成员"直接 `return` 掉，于是**非成员中继不转发群消息**
     /// ⇒ BLE-only 三点中继（手机—电脑—手机）里群聊永远不通，而同链路单聊正常。
+    /// **Hello 绝不能带大头像**（真机 2026-09-14 三端日志：握手帧 424303 字节 ⇒ BLE 上
+    /// 要么撞 10s 握手超时、要么在 20 字节/片的外设侧直接「帧无法分片」，表现为
+    /// 「搜得到、连得上、永远建立不了会话」）。
+    #[test]
+    fn hello_avatar_is_capped_for_the_handshake_frame() {
+        assert_eq!(
+            hello_avatar_for_wire(Some("data:image/png;base64,AAAA")),
+            Some("data:image/png;base64,AAAA")
+        );
+        assert_eq!(hello_avatar_for_wire(None), None);
+        assert_eq!(hello_avatar_for_wire(Some("")), None, "空串按没有头像处理");
+        let big = "x".repeat(HELLO_AVATAR_MAX_BYTES + 1);
+        assert_eq!(
+            hello_avatar_for_wire(Some(&big)),
+            None,
+            "超过上限的头像必须被挡在握手帧之外"
+        );
+        let edge = "x".repeat(HELLO_AVATAR_MAX_BYTES);
+        assert_eq!(
+            hello_avatar_for_wire(Some(&edge)).map(str::len),
+            Some(HELLO_AVATAR_MAX_BYTES),
+            "正好等于上限要放行"
+        );
+        // 源码断言：Hello 构造必须真的用这个闸门（否则上面测的只是「函数存在」）
+        let src = include_str!("transport.rs");
+        let at = src
+            .find("pub fn build_signed_hello(state: &AppState")
+            .expect("必须还有 build_signed_hello（本护栏锚点）");
+        // 注意：源码里有大量中文，**不能**按"起始 + 2000 字节"硬切（会切在多字节字符中间 panic）；
+        // 用"顶层函数结尾的 `\n}\n`"作终点（与 lib.rs 的 `rust_fn_body` 同一判据）。
+        let end = src[at..].find("\n}\n").map(|i| at + i + 3).unwrap_or(src.len());
+        let body = &src[at..end];
+        assert!(
+            body.contains("hello_avatar_for_wire"),
+            "`build_signed_hello` 必须用 `hello_avatar_for_wire` 过滤头像"
+        );
+    }
+
     /// 这条测试只钉"能不能消费"；"非成员仍要转发"由下面那条 + `handle_gossip` 的结构保证。
     #[test]
     fn group_envelope_consumption_rule() {

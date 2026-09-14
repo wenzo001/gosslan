@@ -10,6 +10,35 @@
 
 ## [Unreleased]
 
+### Fixed (🔴 BLE 握手永远成不了：Hello 帧里带了整张头像，一张图 424KB)
+
+用户 2026-09-14 三端日志（Mac + 安卓，同场）：
+
+- Mac：`[DISCOVERY] 候选可拨 id=674ff944-… ⇒ 开始连接` → `[GATT] 已就绪` + MTU 512 →
+  **`[DISCONNECT] 候选 … 未建立链路：握手超时：对端未回 Hello`**；
+  外设侧同一条链路上：`外设侧 MTU 协商结果 … 每片有效载荷=20 字节` →
+  **`外设侧未建链 … 回 Hello 失败：帧无法分片（过大或 MTU 非法：len=424303 mtu=20）`**；
+- 安卓：`[GATT] 已就绪` + MTU 514 → **`[DISCONNECT] … BLE 写入失败：Unable to write characteristic`**。
+- 用户体感：**"搜得到、连不上、发不出消息"**（三台都在广播、都能互相发现）。
+
+**根因（一条）**：`build_signed_hello` 把 `state.avatar` **原样**放进 `Hello` ——
+用户头像是 base64 图片时，这个**握手帧**会到 **几百 KB**（日志里 424303 字节）。
+BLE 上后果是双重的：
+· central 侧：424303 ÷ 514 字节/片 ≈ **826 片 × 12ms ≈ 10s** ⇒ 正好撞上 `HANDSHAKE_TIMEOUT`
+  ⇒ 对端看到的是"握手超时：对端未回 Hello"；
+· 外设侧：`maximumUpdateValueLength` 在某些时序还没更新（MTU 23 ⇒ 每片 20 字节）⇒ 需要
+  **3 万多片** > `MAX_BLE_CHUNKS_PER_MESSAGE`(8192) ⇒ `fragment()` 直接 `None`
+  ⇒ "帧无法分片"（日志里的 `len=424303 mtu=20` 与这条完全对上）。
+
+**修法**：给握手帧加**头像尺寸闸门** `HELLO_AVATAR_MAX_BYTES = 2048`（纯函数
+`hello_avatar_for_wire`）：超过就不放进 Hello，并打一条 warn（附实际字节数）。
+头像本来就有专门的 `Message::UserInfo` 通道同步，握手帧必须小到能秒过。
+
+**护栏**：单测 `hello_avatar_is_capped_for_the_handshake_frame`（None/空串/正常/超限/正好等于上限
+五种情形 + 源码断言 `build_signed_hello` 真的用了这个闸门）。
+⚠️ 写这条测试时踩了个坑并已修：源码里有大量中文，**不能**按"起始 + 2000 字节"硬切字符串
+（会切在多字节字符中间 panic），改成按顶层函数结尾的 `\n}\n` 取切片（与 `rust_fn_body` 同一判据）。
+
 ## [4.3.10] - 2026-09-14
 
 ### Fixed (🔴 BLE 链路"能收不能发"的僵尸态 —— 写失败一次就把写循环结束掉，只能重启)
