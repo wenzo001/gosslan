@@ -89,3 +89,21 @@ Active 闲置 >60s 也重试；只对支持拉取的对端发 ContentRequest。
 - 新旧端互通：老端不发/不认新帧，退化为推送式，功能不残。
 - 内容可用性与投递状态解耦：find_source 只看本地是否有完整字节。
 - 成本：多一张表与一点退避状态；收益是"断了不丢、能自愈、点一下就来"。
+
+## 7. 审计（2026-09-14）：已验证与已知风险
+
+**已验证**
+- cargo test --lib 452 / --features bluetooth 468 全绿；npm test 379 / npm run build 通过。
+- cargo build --example e2e_peer 通过（协议新增字段已同步示例 —— 这正是 §29 的检查项，
+  本次确实"先漏后补"）。
+- 纯函数边界：resume_from_seq（0 / 整片 / 尾部半片 / 非法分片大小）。
+
+**已知风险（后果都是"回退整份重传"，不是数据损坏）**
+1. **outbox 全量重试 vs 续传的竞态**：发送端 file_outbox 重试走 send_file_from_path
+   （from_bytes=0），会 File::create 截断 .part；若此时接收端正好在 resume_receive 读前缀，
+   会读到半截 ⇒ 长度不符 ⇒ FileReject ⇒ 整份重传。SHA 兜底，不会损坏数据，但可能多跑一轮。
+2. **陈旧 .part 的主动清理**：fail_receive/fail_group_receive 现在保留 .part；TTL 只在
+   resume_receive 命中时检查，没有独立定期清扫。"清空数据"路径仍会清。
+3. **群文件原始流（GroupFileOffer）不直接续传**：它失败标 Incomplete 后，由建链自动重取
+   （一条新的 FileOffer，走支持 from_bytes 的路径）来续。
+4. **seq 在续传段内归零重编**：hasher 是字节级、与 seq 无关；未来若做"分片级重传"需重审。

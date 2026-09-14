@@ -440,6 +440,7 @@ async fn main() {
                 nickname: "E2E-Peer".into(),
                 avatar: None,
                 device_type: "desktop".into(),
+                content_features: gosslan_lib::protocol::content_features(),
                 tcp_port: 0,
                 x25519_pubkey: xk,
                 ed25519_pubkey: ek,
@@ -613,6 +614,8 @@ async fn main() {
             size: content.len() as u64,
             sealed_file_key: sealed_file_key.clone(),
             file_sha256: file_sha256.clone(),
+            from_seq: 0,
+            from_bytes: 0,
         },
     )
     .await;
@@ -747,6 +750,8 @@ async fn main() {
                 size: IMAGE_BYTES.len() as u64,
                 sealed_file_key: sealed_image_key,
                 file_sha256: image_sha256.clone(),
+                from_seq: 0,
+                from_bytes: 0,
             },
         )
         .await;
