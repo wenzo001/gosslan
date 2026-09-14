@@ -10,6 +10,8 @@
 
 ## [Unreleased]
 
+## [4.8.0] - 2026-09-14
+
 ### Added (断点续传：弱网 / 大文件从断点继续，不再整份重来 —— ADR-0019 Phase 2)
 
 - **协议**：FileOffer 增加 from_seq / from_bytes；ContentRequest 增加
