@@ -10,6 +10,20 @@
 
 ## [Unreleased]
 
+## [4.3.16] - 2026-09-14
+
+### Tests (新增 6 条非空转护栏)
+
+把本轮改动里最容易「静默退化、且没有编译期信号」的几处固化成
+`scripts/verify-guards.py` 的注入式护栏，并做了非空转验证
+（改坏 → 必须 FAIL → 恢复 → 必须 PASS，实测 6/6 通过）：
+
+- TitleBar 图标 import：缺 Maximize2/Minimize2 会让 Windows 最大化按钮整颗消失。
+- Presence / UserInfo 内联大头像必须降到 bulk 通道，不能堵住优先通道。
+- directed_relay_target：共享目录/中继文件在无直连时借一跳邻居转发。
+- begin_reassemble 幂等：重复 RelayFileOffer 不得清空已收到的切片。
+- BLE MTU 吞吐估算必须扣 6 字节分片头，避免再报错一个量级。
+
 ## [4.3.15] - 2026-09-14
 
 ### Fixed (e2e 示例编译)
