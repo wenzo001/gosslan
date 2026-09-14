@@ -1610,6 +1610,11 @@ mod tests {
             model.contains("Serialize, Deserialize, Clone, Debug, PartialEq"),
             "TransferRecord 必须可序列化给前端"
         );
+        let file = include_str!("network/file.rs");
+        assert!(
+            file.contains("record_failure"),
+            "中途失败/断链必须在 fail_receive 里记 Incomplete，否则记录永远停在 Active、自动重试不触发"
+        );
     }
 
     /// **内容拉取必须走能力协商**（ADR-0019 Phase 3）：旧端不发新帧、新端才拉；

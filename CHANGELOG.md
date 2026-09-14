@@ -10,6 +10,17 @@
 
 ## [Unreleased]
 
+### Fixed (中途失败/断链的接收不再停在 Active：记为 Incomplete 并自动重试)
+
+- fail_receive（超时 / 断链 / 坏片清理）现在把该内容记为 **Incomplete**（可恢复），
+  于是建链时 retry_incomplete_content 会按退避自动重取 —— 此前这类记录会停在 Active，
+  should_retry_now 判不过，**自动重试实际不会触发**。
+- 新增 **ADR-0019**（统一可靠内容传输）：完整记录分层、内容寻址、拉取式补取、能力协商、
+  自动重试，以及 Phase 2 断点续传 From(seq) 的设计与难点（保留半成品 + 分片边界对齐 +
+  复用 hasher + TTL 清理）。
+
+护栏：incomplete_content_is_auto_retried_behind_capability_gate 增补 file.rs 断言。
+
 ## [4.7.0] - 2026-09-14
 
 ### Added (Phase 1 UI：统一内容状态呈现在文件卡片上)
