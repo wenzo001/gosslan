@@ -119,3 +119,85 @@ pub fn open_path(path: &str, mime: &str) -> Result<(), String> {
         Err(e) => Err(format!("JNI 调用失败：{e}")),
     }
 }
+
+/// 把本地文件写到系统「另存为」对话框返回的 content:// URI。
+///
+/// 与 open_path 完全对称，只是调用的 Kotlin 方法不同（OpenWith.saveWith）。
+/// Android 的保存对话框（SAF ACTION_CREATE_DOCUMENT）返回 content:// URI，
+/// 不能用 std::fs 写；必须经 ContentResolver。
+pub fn save_path(path: &str, uri: &str) -> Result<(), String> {
+    if !ready() {
+        return Err("保存文件的能力还没准备好（MainActivity 未调用 OpenWith.bootstrap）".to_string());
+    }
+    let class = KOTLIN_CLASS.get().expect("ready() 已确认类引用存在");
+    let vm = JAVA_VM.get().expect("ready() 已确认 JavaVM 存在");
+
+    let outcome = vm.attach_current_thread(
+        |env| -> jni::errors::Result<Result<(), String>> {
+            let jpath = env.new_string(path)?;
+            let juri = env.new_string(uri)?;
+            let (name, sig) = kotlin_method!(
+                "saveWith",
+                "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;"
+            );
+            let value = env.call_static_method(
+                class,
+                name,
+                sig,
+                &[JValue::Object(&jpath), JValue::Object(&juri)],
+            )?;
+            let obj = value.l()?;
+            if obj.as_raw().is_null() {
+                return Ok(Ok(()));
+            }
+            let message = env.cast_local::<JString>(obj)?.try_to_string(env)?;
+            Ok(Err(message))
+        },
+    );
+
+    match outcome {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(message)) => Err(message),
+        Err(e) => Err(format!("JNI 调用失败：{e}")),
+    }
+}
+
+/// 把一段字节写到系统「另存为」对话框返回的 content:// URI（图片另存用）。
+///
+/// 图片保存走 base64 数据而不是文件路径，所以需要单独的 byte[] 通道。
+pub fn save_bytes(bytes: &[u8], uri: &str) -> Result<(), String> {
+    if !ready() {
+        return Err("保存文件的能力还没准备好（MainActivity 未调用 OpenWith.bootstrap）".to_string());
+    }
+    let class = KOTLIN_CLASS.get().expect("ready() 已确认类引用存在");
+    let vm = JAVA_VM.get().expect("ready() 已确认 JavaVM 存在");
+
+    let outcome = vm.attach_current_thread(
+        |env| -> jni::errors::Result<Result<(), String>> {
+            let jbytes = env.byte_array_from_slice(bytes)?;
+            let juri = env.new_string(uri)?;
+            let (name, sig) = kotlin_method!(
+                "writeBytesWith",
+                "([BLjava/lang/String;)Ljava/lang/String;"
+            );
+            let value = env.call_static_method(
+                class,
+                name,
+                sig,
+                &[JValue::Object(&jbytes), JValue::Object(&juri)],
+            )?;
+            let obj = value.l()?;
+            if obj.as_raw().is_null() {
+                return Ok(Ok(()));
+            }
+            let message = env.cast_local::<JString>(obj)?.try_to_string(env)?;
+            Ok(Err(message))
+        },
+    );
+
+    match outcome {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(message)) => Err(message),
+        Err(e) => Err(format!("JNI 调用失败：{e}")),
+    }
+}

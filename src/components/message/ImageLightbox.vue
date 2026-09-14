@@ -9,6 +9,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { ChevronLeft, ChevronRight, Save, X } from "lucide-vue-next";
 import { useAppStore } from "@/stores/useAppStore";
 import { loadFilePreview } from "@/utils/filePreview";
+import { isDialogCancelled, saveDestinationOf } from "@/utils/saveDestination";
 
 /** 相册里的一张图：新格式走 readFilePreview（msg_id → blob URL），旧格式 data URL 直接用。 */
 interface GalleryImage {
@@ -67,7 +68,8 @@ async function saveImage() {
   try {
     const { save } = await import("@tauri-apps/plugin-dialog");
     const { invoke } = await import("@tauri-apps/api/core");
-    const destination = await save({ defaultPath: `${t("common.image")}-${Date.now()}.png` });
+    const picked: unknown = await save({ defaultPath: `${t("common.image")}-${Date.now()}.png` });
+    const destination = saveDestinationOf(picked);
     if (!destination) return; // 用户取消
     const buf = new Uint8Array(await (await fetch(src.value)).arrayBuffer());
     let binary = "";
@@ -78,6 +80,7 @@ async function saveImage() {
     await invoke("save_data_file", { base64Data: btoa(binary), destination });
     app.toast(t("msg.imageSaved"), "success");
   } catch (e) {
+    if (isDialogCancelled(e)) return; // Android 取消是 reject，不是返回 null
     app.toastError(e, t("msg.saveImageFail"));
   }
 }

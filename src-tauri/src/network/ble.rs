@@ -89,6 +89,14 @@ const SCAN_INTERVAL_IDLE: Duration = Duration::from_secs(30);
 const USER_TRIGGER_BACKOFF_FACTOR: i64 = 8;
 /// 握手（发自己的 Hello → 等对端 Hello）上限。
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+/// 建立 GATT 连接（connect + service discovery + 订阅）的**整体**上限。
+///
+/// 为什么必须有（真机教训，与"已有在途拨号连刷好几分钟"同源）：
+/// driver::connect 内部的 peripheral.connect() 在平台上**没有超时**，
+/// 一旦系统调用因射频/固件异常挂住，这个拨号任务会一直活着，DialGuard 也就一直不释放
+/// ⇒ 该对端在整个进程生命周期内**再也不会被重新拨号**，用户看到的是"怎么等都连不上"。
+/// 定时器把这条路径封死：最长 20s 一定结束，守卫一定释放，下一轮扫描可以重试。
+const BLE_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 /// 读循环的单次等待窗口：到点就回到循环顶部，让 shutdown/cancel 有机会被轮询，
 /// 同时顺手回收半截消息。
 const READ_IDLE: Duration = Duration::from_millis(1_500);
@@ -102,6 +110,18 @@ const STOP_TIMEOUT: Duration = Duration::from_secs(2);
 /// BLE 的写失败大多是瞬态的（对端 GATT 通知队列满、链路忙、连发被拒），退避重试即可。
 const WRITE_RETRY_ATTEMPTS: u32 = 4;
 const WRITE_RETRY_WAIT: Duration = Duration::from_millis(120);
+
+/// 由「每片有效载荷预算」估算 BLE 吞吐。
+///
+/// 返回 (净数据字节, KB/s)。净数据 = 预算 - 6 字节分片头（BLE_CHUNK_HEADER_LEN）。
+/// KB/s 按外设侧每片 12ms 的通知节流估算（Android / Windows 的真机参数）——
+/// central 的写入没有这个节流，所以它是一个**保守下界**，用来给"慢"一个量级参考，
+/// 不是精确预测。MTU 23（预算 20）时约 1.2 KB/s，MTU 517（预算 514）时约 41 KB/s。
+fn ble_throughput_estimate(payload_budget: usize) -> (usize, f64) {
+    const NOTIFY_INTERVAL_SECS: f64 = 0.012;
+    let net = payload_budget.saturating_sub(crate::transport::ble_framing::BLE_CHUNK_HEADER_LEN);
+    (net, net as f64 / NOTIFY_INTERVAL_SECS / 1024.0)
+}
 
 /// 扫描窗口（毫秒）—— 供诊断面板展示当前节奏。
 pub fn scan_window_ms() -> u64 {
@@ -734,9 +754,9 @@ async fn dial_and_register(
         let _ = peripheral.disconnect().await;
         tokio::time::sleep(Duration::from_millis(150)).await;
     }
-    let conn = match driver::connect(&peripheral).await {
-        Ok(c) => c,
-        Err(e) => {
+    let conn = match tokio::time::timeout(BLE_CONNECT_TIMEOUT, driver::connect(&peripheral)).await {
+        Ok(Ok(c)) => c,
+        Ok(Err(e)) => {
             // 失败时把"系统此刻怎么看这条链路"一并打出来 —— 这是下一轮排查的**唯一**线索
             let after = peripheral
                 .is_connected()
@@ -746,6 +766,22 @@ async fn dial_and_register(
             return Err(format!(
                 "{e}｜系统链路状态：连接前={:?} 失败后={after}",
                 before_connected
+            ));
+        }
+        Err(_) => {
+            // 超时（见 BLE_CONNECT_TIMEOUT）：显式断开，DialGuard 随函数返回释放，
+            // 该对端随即可被下一轮扫描重新拨号 —— 不再"永远连不上"。
+            let _ = peripheral.disconnect().await;
+            state.logger.warn(
+                "ble",
+                format!(
+                    "[CONNECT] 连接超时（{}s 内未完成 connect/service discovery）ep={ble_id}",
+                    BLE_CONNECT_TIMEOUT.as_secs()
+                ),
+            );
+            return Err(format!(
+                "连接超时（{}s 内未完成 connect/service discovery）",
+                BLE_CONNECT_TIMEOUT.as_secs()
             ));
         }
     };
@@ -780,11 +816,14 @@ async fn finish_dial(
     // 此前全仓库没有这一行，于是文档里的"MTU=23 ⇒ 1KB/s"一直是**猜测**，
     // 而代码其实会协商到 182~514 字节载荷（btleplug：macOS `maximumWriteValueLength+3`、
     // Android `requestMtu(517)`）—— 差一个数量级。没有这条日志就没法判断"慢"到底慢在哪。
+    // 注意：这里的"每片有效载荷"是**含 6 字节分片头**的 ATT 预算；真正上去的数据是
+    // 预算减 6。以前括号里写"MTU=载荷+3+6"是错的（多了 6），会让真机排查算错一个量级。
+    let mtu_budget = writer.payload_mtu();
+    let (net_bytes, kbps) = ble_throughput_estimate(mtu_budget);
     state.logger.info(
         "ble",
         format!(
-            "[GATT] MTU 协商结果 ep={ble_id} 每片有效载荷={} 字节（MTU=载荷+3+6 分片头）",
-            writer.payload_mtu()
+            "[GATT] MTU 协商结果 ep={ble_id} 每片有效载荷={mtu_budget} 字节（净数据={net_bytes}，分片头 6；按 12ms/片估算 ≈ {kbps:.1} KB/s）"
         ),
     );
 
@@ -1705,11 +1744,12 @@ async fn try_accept_handshake(
     // **外设侧的 MTU 同样必须留痕**（2026-09-13 审计）：它决定"我们发通知时每片能塞多少字节"，
     // 与 central 侧的写方向是两个独立的值（对端可能协商出不同结果）。
     // 真机"手机→电脑传得慢/传不完"时，第一件事就是比这两条日志。
+    let mtu_budget = writer.payload_mtu(central);
+    let (net_bytes, kbps) = ble_throughput_estimate(mtu_budget);
     state.logger.info(
         "ble",
         format!(
-            "[GATT] 外设侧 MTU 协商结果 central={central} 每片有效载荷={} 字节",
-            writer.payload_mtu(central)
+            "[GATT] 外设侧 MTU 协商结果 central={central} 每片有效载荷={mtu_budget} 字节（净数据={net_bytes}；按 12ms/片估算 ≈ {kbps:.1} KB/s）"
         ),
     );
 
@@ -1865,6 +1905,31 @@ async fn try_accept_handshake(
 mod tests {
     #![allow(unused_imports)]
     use super::*;
+
+    /// MTU 日志里的吞吐估算必须与"净数据 / 12ms"一致，并钉住两个真实协商值。
+    ///
+    /// 这不是"测一个数学函数"：它是给用户的**量级预期**（UI 提示、真机排查日志）
+    /// 的唯一计算来源，算错一个量级就会误导排障（旧的 1KB/s 注释就是例子）。
+    #[test]
+    fn throughput_estimate_matches_real_mtu_budgets() {
+        // MTU 23（默认）→ ATT 预算 20 → 净 14 → 约 1.14 KB/s
+        let (net, kbps) = ble_throughput_estimate(20);
+        assert_eq!(net, 14, "净数据必须扣掉 6 字节分片头");
+        assert!(
+            (kbps - 1.14).abs() < 0.05,
+            "MTU23 应约 1.1 KB/s，实际 {kbps}"
+        );
+        // 真机日志（Android central）：预算 514 → 净 508 → 约 41 KB/s
+        let (net, kbps) = ble_throughput_estimate(514);
+        assert_eq!(net, 508);
+        assert!(
+            (kbps - 41.3).abs() < 0.5,
+            "MTU517 应约 41 KB/s，实际 {kbps}"
+        );
+        // 病态输入：不得 panic、不得出现下溢
+        assert_eq!(ble_throughput_estimate(0).0, 0);
+        assert_eq!(ble_throughput_estimate(6).0, 0);
+    }
 
     /// **握手失败必须解除"握手中"标记**（2026-09-13 审计的"加入不了 mesh"缺陷）。
     ///

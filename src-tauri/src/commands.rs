@@ -134,6 +134,10 @@ pub async fn update_profile(
     *s.nickname.lock().unwrap_or_else(|e| e.into_inner()) = nickname.clone();
     *s.avatar.lock().unwrap_or_else(|e| e.into_inner()) = avatar.clone();
 
+    // 资料帧要不要降级到 bulk 通道：判据与 is_bulk_message 同一份常量，避免两处漂移。
+    let bulk_profile_frame = avatar
+        .as_deref()
+        .is_some_and(|a| a.len() > crate::network::transport::CONTROL_AVATAR_MAX_BYTES);
     let msg = Message::UserInfo {
         device_id: s.device_id.clone(),
         nickname,
@@ -142,7 +146,14 @@ pub async fn update_profile(
     };
     let links = s.links.lock().await;
     for link in links.values().flatten() {
-        let _ = link.priority.send(msg.clone()).await;
+        // 大头像资料帧走 bulk 通道：2MB 头像在 BLE 上要分上千片，绝不能堵住聊天/好友
+        // 请求的优先道；小头像仍走 priority（资料变更要立刻可见）。
+        let tx = if bulk_profile_frame {
+            &link.bulk
+        } else {
+            &link.priority
+        };
+        let _ = tx.send(msg.clone()).await;
     }
     drop(links);
 
@@ -1594,8 +1605,12 @@ pub(crate) async fn send_friend_request_via_link(
         return Err("未找到该节点或缺少其公钥，请先重新扫描".to_string());
     };
     let nickname = s.nickname.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    let avatar = s.avatar.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    // E2EE 加密好友申请内容（昵称/头像）；from/to 已在信封 sender_id / target 里。
+    let raw_avatar = s.avatar.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    // 好友申请是**最需要秒到**的控制帧，且走优先通道：绝不能内联大头像
+    // （几百 KB 会分上千片、还可能超过 BLE 单帧上限被整帧丢弃 ⇒ 对方永远收不到，
+    // 而界面仍显示"已发送"）。超限就不带头像；建链后由 UserInfo 定向同步大头像。
+    let avatar = crate::network::transport::hello_avatar_for_wire(raw_avatar.as_deref());
+    // E2EE 加密好友申请内容（昵称/可选头像）；from/to 已在信封 sender_id / target 里。
     let payload =
         serde_json::json!({ "from_nickname": nickname, "from_avatar": avatar }).to_string();
     let shared = crypto::shared_secret(&s.identity.x25519_secret, &target_pubkey)
@@ -3749,6 +3764,14 @@ pub fn insert_system_message(state: &AppState, conv_id: &str, text: &str) {
 /// 将文件从 source 复制到 destination（用于"另存为"下载功能）。
 #[tauri::command(async)]
 pub fn copy_file(source: String, destination: String) -> Result<(), String> {
+    // Android 的「另存为」对话框返回的是 content:// URI，std::fs::copy 写不了，
+    // 必须经 ContentResolver（见 android_open::save_path / OpenWith.saveWith）。
+    #[cfg(target_os = "android")]
+    {
+        if destination.starts_with("content://") {
+            return crate::android_open::save_path(&source, &destination);
+        }
+    }
     std::fs::copy(&source, &destination).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -3800,6 +3823,13 @@ pub fn save_data_file(base64_data: String, destination: String) -> Result<(), St
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(base64_data.as_bytes())
         .map_err(|e| e.to_string())?;
+    // Android：目标可能是 content:// URI，std::fs::write 写不了，走 ContentResolver。
+    #[cfg(target_os = "android")]
+    {
+        if destination.starts_with("content://") {
+            return crate::android_open::save_bytes(&bytes, &destination);
+        }
+    }
     std::fs::write(&destination, bytes).map_err(|e| e.to_string())?;
     Ok(())
 }

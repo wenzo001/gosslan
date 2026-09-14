@@ -10,6 +10,42 @@
 
 ## [Unreleased]
 
+### Fixed (🔴 蓝牙优先通道被大头像污染：加好友/消息被堵几分钟)
+
+继续 4.3.11 之后的真机现象：蓝牙下「加好友要等几分钟」「消息一直发送中」。
+根因不是链路，而是**优先通道里塞了大头像** —— 一张 400KB 头像要分上千片，
+聊天与好友请求全排在它后面：
+
+- broadcast_presence 每 10s 广播一次、走**优先通道**，却把整张 state.avatar 原样内联；
+- update_profile 的 UserInfo、好友申请的 from_avatar 同样原样走优先通道。
+
+修法：
+
+- is_bulk_message 新增两类大而可晚到的帧走 **bulk**：大头像 UserInfo、大载荷 Gossip；
+  文字/好友/回执/握手仍全部 priority（BLE 写循环 biased 先消费 priority）。
+- broadcast_presence 过 hello_avatar_for_wire（2KiB）闸门，超限整个字段不带
+  （接收侧 upsert_peer 只在 Some 时更新头像，缺失不会清空）；好友申请 from_avatar 同样过闸。
+- 新增 send_user_info_to：建链后定向同步一次完整资料，大头像只在每次新建链路同步一次。
+
+### Fixed (在途拨号令牌可能永不释放)
+
+driver::connect 内部的 peripheral.connect() 没有超时：系统调用一旦挂住，拨号任务与
+DialGuard 会一直存活 ⇒ 该对端在整个进程生命周期内再也不被拨号（真机「怎么等都连不上」）。
+现在整条连接建立包 20s 超时（BLE_CONNECT_TIMEOUT）。
+
+### Fixed (安卓：非图片文件点开报错 → 改为系统另存为)
+
+- 收到的文件：点一下弹系统**另存为**（SAF ACTION_CREATE_DOCUMENT），不再 ACTION_VIEW。
+- 自己发的文件：点一下**无任何响应**；长按菜单（另存/复制）保持不变。
+- 新增 Kotlin OpenWith.saveWith / writeBytesWith + Rust JNI 桥；copy_file / save_data_file
+  在 content:// 目标上改走 ContentResolver（原 std::fs 写 content:// 必然失败）。
+- 归一化保存返回值（桌面=字符串、安卓={file:content://}）；取消不再误报「保存失败」。
+
+### Changed
+
+- BLE MTU 日志改为「净数据 + 按 12ms/片估算 KB/s」（旧文案 MTU=载荷+3+6 多算 6 字节）；
+  蓝牙速度提示改为实测量级（约 30～40 KB/s），并明说「头像等大资料可能延迟同步」。
+
 ## [4.3.11] - 2026-09-14
 
 ### Fixed (🔴 BLE 握手永远成不了：Hello 帧里带了整张头像，一张图 424KB)

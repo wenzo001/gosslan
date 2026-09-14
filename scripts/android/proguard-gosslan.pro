@@ -32,6 +32,8 @@
 # `native <methods>;` 里的 `<` 名字由护栏跳过（不需要在 Rust 侧有 kotlin_method! 登记）。
 -keep class com.gosslan.app.OpenWith {
     public static java.lang.String openWith(java.lang.String, java.lang.String);
+    public static java.lang.String saveWith(java.lang.String, java.lang.String);
+    public static java.lang.String writeBytesWith(byte[], java.lang.String);
 }
 -keep class com.gosslan.app.OpenWithKt {
     native <methods>;

@@ -610,9 +610,12 @@ mod tests {
                 "没在 BlePeripheral.kt 里解析到 `{expected}` —— Kotlin 写法变了就要同步更新本护栏"
             );
         }
-        // 打开文件的桥：Rust 调 `openWith`，Kotlin 调 `nativeAttachOpenWith`
+        // 打开/保存文件的桥：Rust 调 openWith / saveWith / writeBytesWith，
+        // Kotlin 调 nativeAttachOpenWith
         for (file, fns, expected) in [
             ("OpenWith.kt", &open_fns, "openWith"),
+            ("OpenWith.kt", &open_fns, "saveWith"),
+            ("OpenWith.kt", &open_fns, "writeBytesWith"),
             ("OpenWith.kt", &open_fns, "nativeAttachOpenWith"),
         ] {
             assert!(
@@ -631,8 +634,8 @@ mod tests {
         let open_registered = parse_kotlin_method_registrations(rust_open);
         assert_eq!(
             open_registered.len(),
-            1,
-            "android_open.rs 应恰好登记 1 个 Kotlin 方法（openWith），实际 {} —— \
+            3,
+            "android_open.rs 应恰好登记 3 个 Kotlin 方法（openWith + saveWith + writeBytesWith），实际 {} —— \
              解析器失效或有人漏登记",
             open_registered.len()
         );
@@ -677,8 +680,8 @@ mod tests {
             static_checked += 1;
         }
         assert!(
-            static_checked >= 7,
-            "应检查 ≥7 个 Kotlin 方法（openWith + BlePeripheral 6 个），实际 {static_checked} —— 护栏失效了"
+            static_checked >= 9,
+            "应检查 ≥9 个 Kotlin 方法（OpenWith 3 个 + BlePeripheral 6 个），实际 {static_checked} —— 护栏失效了"
         );
 
         // ② Rust 导出的 native 回调（snake_case → lowerCamelCase）必须在 Kotlin 里是 external fun

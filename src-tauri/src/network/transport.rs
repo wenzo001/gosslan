@@ -73,17 +73,38 @@ async fn read_frame_preauth<R: AsyncRead + Unpin>(r: &mut R) -> std::io::Result<
 
 // ---------------- 出站发送 ----------------
 
+/// 资料/控制帧内联头像的上限（与 Hello 同一判据）。
+///
+/// 超过它就**不再占优先通道**：聊天与好友请求必须永远排在大头像前面。
+/// 与 HELLO_AVATAR_MAX_BYTES 恒等，避免两个数字漂移出两套行为。
+pub const CONTROL_AVATAR_MAX_BYTES: usize = HELLO_AVATAR_MAX_BYTES;
+
+/// 内联载荷超过这个大小的 Gossip 也降级到 bulk 通道。
+///
+/// 正常聊天/好友帧远小于它；只有「内联大图的通告」才会触到。16KiB 是保守值：
+/// 单帧在 BLE 上按 508B/片算也只有约 32 片（约 0.4s），不会把优先队列拖住。
+const BULK_GOSSIP_PAYLOAD_MAX_BYTES: usize = 16 * 1024;
+
 /// 大数据分片走普通通道；聊天/控制/小控制帧走高优先级通道，避免被大文件饿死。
+///
+/// 除文件分片外，还包含两类**大而可晚到**的帧：大头像的 UserInfo、内联大载荷的
+/// Gossip。它们此前都挤在优先道上，一张 400KB 头像能把聊天与好友请求堵上几分钟。
 fn is_bulk_message(msg: &Message) -> bool {
-    matches!(
-        msg,
+    match msg {
         Message::FileChunk { .. }
-            | Message::RelayChunk { .. }
-            | Message::GroupFileChunk { .. }
-            // 终止帧必须和分片同队列，保证「分片 → Done」的协议顺序不被优先级通道打乱。
-            | Message::FileDone { .. }
-            | Message::GroupFileDone { .. }
-    )
+        | Message::RelayChunk { .. }
+        | Message::GroupFileChunk { .. }
+        // 终止帧必须和分片同队列，保证「分片 → Done」的协议顺序不被优先级通道打乱。
+        | Message::FileDone { .. }
+        | Message::GroupFileDone { .. } => true,
+        // 大头像资料帧：内容大、可晚到，走 bulk，绝不占聊天/好友请求的优先道。
+        Message::UserInfo { avatar: Some(a), .. } if a.len() > CONTROL_AVATAR_MAX_BYTES => true,
+        // 任何大载荷 Gossip（含内联大图的 Presence/自定义通告）同样降级。
+        Message::Gossip { envelope } if envelope.payload.len() > BULK_GOSSIP_PAYLOAD_MAX_BYTES => {
+            true
+        }
+        _ => false,
+    }
 }
 
 /// 计算一次发送要按什么顺序尝试各条链路（纯函数，便于单测 + 护栏非空转）。
@@ -291,18 +312,27 @@ async fn broadcast_presence(state: &Arc<AppState>) {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clone();
-    let avatar = state
+    let raw_avatar = state
         .avatar
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clone();
-    // payload：明文 JSON（昵称/头像/设备类型）。身份与双公钥已在 GossipEnvelope 字段里。
-    let payload = serde_json::json!({
+    // payload：明文 JSON（昵称/可选头像/设备类型）。身份与双公钥已在 GossipEnvelope 字段里。
+    //
+    // ⚠️ Presence 每 10s 广播一次，而且走的是**优先通道**：绝不能内联大头像。
+    // 一张 400KB 的 base64 头像会让优先队列被上千片分片占住，聊天与好友请求全部排在
+    // 它后面（真机症状：开了蓝牙后好友申请几分钟才到、消息一直"发送中"）。
+    // 超过内联上限就**整个字段都不带**（接收侧 upsert_peer 只在 Some 时更新头像，
+    // 缺失/None 不会清空对端已有头像）；大头像改由建链时的 UserInfo 定向同步一次。
+    let avatar = hello_avatar_for_wire(raw_avatar.as_deref());
+    let mut payload_json = serde_json::json!({
         "nickname": nickname,
-        "avatar": avatar,
         "device_type": crate::protocol::current_device_type(),
-    })
-    .to_string();
+    });
+    if let Some(a) = avatar {
+        payload_json["avatar"] = serde_json::Value::String(a.to_string());
+    }
+    let payload = payload_json.to_string();
     let payload_b64 = STANDARD.encode(payload.as_bytes());
 
     let mut env = {
@@ -1010,6 +1040,22 @@ pub fn build_signed_hello(state: &AppState, conv_clock: i64) -> Message {
         nonce,
         sig,
     }
+}
+
+/// 把本机完整资料（昵称/头像/设备类型）**定向**同步给一个对端。
+///
+/// 为什么需要它：Hello 只带不超过 2KiB 的头像、Presence 已不再内联大头像，所以
+/// 「大头像」只剩这一条正式路径 —— 链路建好后同步**一次**。超过
+/// CONTROL_AVATAR_MAX_BYTES 的帧会被 is_bulk_message 降到 bulk 通道，
+/// 不再和聊天/好友请求抢优先道。
+pub async fn send_user_info_to(state: &Arc<AppState>, peer_id: &str) {
+    let msg = Message::UserInfo {
+        device_id: state.device_id.clone(),
+        nickname: state.nickname.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+        avatar: state.avatar.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+        device_type: crate::protocol::current_device_type().to_string(),
+    };
+    let _ = try_send(state, peer_id, &msg).await;
 }
 
 async fn handle_incoming(
@@ -2288,6 +2334,10 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             flush_pending_friend_request(state, &device_id).await;
             // 好友同意回执同样没有回执：建链后补发（真机：Mac 端好友状态一直没同步）。
             flush_pending_friend_accept(state, &device_id).await;
+            // 建链后把**我的完整资料**（含大头像）定向发给这一个对端：
+            // Hello 只带小头像、Presence 不再内联大头像，这里是「大头像只同步一次」
+            // 的正式路径。LAN 上瞬间完成；BLE 上走 bulk，慢但不会堵住聊天。
+            send_user_info_to(state, &device_id).await;
         }
         // ---- Phase 8（ADR-0017）：外部 mesh（BitChat）的不透明帧，Gosslan 只当中继 ----
         //
@@ -6112,6 +6162,28 @@ mod tests {
         );
     }
 
+    /// **Presence 不得内联大头像**（与 Hello 同族，且更危险：每 10s 广播一次、走优先通道）。
+    ///
+    /// 这张源码断言盯住"闸门是否还在"：一旦有人把 state.avatar 原样塞回 Presence，
+    /// 一张 400KB 头像会把聊天与好友请求的优先队列堵住几分钟 —— 而单测不会失败。
+    #[test]
+    fn presence_caps_inline_avatar() {
+        let src = include_str!("transport.rs");
+        let at = src
+            .find("async fn broadcast_presence")
+            .expect("必须还有 broadcast_presence（本护栏锚点）");
+        let end = src[at..].find("\n}\n").map(|i| at + i + 3).unwrap_or(src.len());
+        let body = &src[at..end];
+        assert!(
+            body.contains("hello_avatar_for_wire"),
+            "broadcast_presence 必须过 hello_avatar_for_wire 闸门：             否则一张大头像会占满优先通道，聊天与好友请求几分钟才到"
+        );
+        assert!(
+            !body.contains("\"avatar\": avatar"),
+            "不能再把 state.avatar 原样内联进 Presence（那条旧写法正是本次修复的缺陷）"
+        );
+    }
+
     /// 这条测试只钉"能不能消费"；"非成员仍要转发"由下面那条 + `handle_gossip` 的结构保证。
     #[test]
     fn group_envelope_consumption_rule() {
@@ -6784,6 +6856,29 @@ mod tests {
         }
     }
 
+    /// 造一个只关心 payload 长度/类型的 Gossip 信封（其余字段对 is_bulk_message 无意义）。
+    fn test_envelope(payload_len: usize, kind: GossipKind) -> GossipEnvelope {
+        GossipEnvelope {
+            message_id: "m".into(),
+            sender_id: "a".into(),
+            nonce: "n".into(),
+            sender_pubkey: "pk".into(),
+            sender_ed25519: "ek".into(),
+            sender_sig: "sig".into(),
+            ttl: 4,
+            kind,
+            group_id: None,
+            group_name: None,
+            group_creator: None,
+            group_members: vec![],
+            payload: "p".repeat(payload_len),
+            ts: 1,
+            seq: 0,
+            encrypted: false,
+            target: None,
+        }
+    }
+
     #[test]
     fn bulk_messages_are_only_large_chunks() {
         let chat = Message::ChatMessage {
@@ -6821,6 +6916,40 @@ mod tests {
             sender_id: "a".into(),
         };
         assert!(is_bulk_message(&group_file_done));
+
+        // 小头像资料帧：资料变更要立刻可见 ⇒ 仍走优先道。
+        let small_user_info = Message::UserInfo {
+            device_id: "a".into(),
+            nickname: "A".into(),
+            avatar: Some("x".repeat(CONTROL_AVATAR_MAX_BYTES)),
+            device_type: "desktop".into(),
+        };
+        assert!(
+            !is_bulk_message(&small_user_info),
+            "恰好等于上限的头像仍应走优先道"
+        );
+
+        // 大头像资料帧：内容大、可晚到 ⇒ 必须降级到 bulk，绝不占聊天/好友的优先道。
+        let big_user_info = Message::UserInfo {
+            device_id: "a".into(),
+            nickname: "A".into(),
+            avatar: Some("x".repeat(CONTROL_AVATAR_MAX_BYTES + 1)),
+            device_type: "desktop".into(),
+        };
+        assert!(
+            is_bulk_message(&big_user_info),
+            "超过上限的头像资料帧必须走 bulk（否则会堵住聊天与好友请求）"
+        );
+
+        // 小载荷 Gossip 走优先道；内联大载荷（例如带大图的 Presence）降级到 bulk。
+        let small_gossip = Message::Gossip {
+            envelope: test_envelope(BULK_GOSSIP_PAYLOAD_MAX_BYTES, GossipKind::Presence),
+        };
+        assert!(!is_bulk_message(&small_gossip));
+        let big_gossip = Message::Gossip {
+            envelope: test_envelope(BULK_GOSSIP_PAYLOAD_MAX_BYTES + 1, GossipKind::Presence),
+        };
+        assert!(is_bulk_message(&big_gossip));
     }
 
     #[tokio::test]

@@ -307,9 +307,10 @@ export const zhCN: MessageDict = {
   "chat.header.linkRouted": "跨网段直连",
   "chat.header.linkBluetooth": "蓝牙直连",
   "chat.header.linkRelay": "桥接 · {n} 个中间节点",
-  // 蓝牙链路的传输速度提示（用户 2026-09-13 要求）：实测量级 ~1 KB/s
-  // （BLE 分片载荷受 20 字节 MTU 限制），必须让用户在大文件传输前就有预期。
-  "chat.bt.slowHint": "蓝牙直连较慢（约 1 KB/s），大图片/文件可能要几分钟；传大文件建议双方连同一个 Wi-Fi。",
+  // 蓝牙链路的传输速度提示（用户 2026-09-13 要求）：真机日志显示每片有效载荷约
+  // 508~514 字节（MTU 517/512），按外设 12ms/片节流估算约 30~40 KB/s。
+  // 必须让用户在大文件传输前就有预期，并说明"头像可能延迟同步"。
+  "chat.bt.slowHint": "蓝牙直连较慢（实测约 30～40 KB/s，取决于链路协商）；头像等大资料可能延迟同步，大文件传输会明显更久。传大文件建议双方连同一个 Wi-Fi。",
   "chat.bt.dismiss": "知道了",
 
   // ---- 通用（按钮 / 状态） ----
@@ -948,7 +949,7 @@ export const enUS: MessageDict = {
   "chat.header.linkRouted": "Cross-subnet direct",
   "chat.header.linkBluetooth": "Bluetooth",
   "chat.header.linkRelay": "Relayed · {n} hops",
-  "chat.bt.slowHint": "Bluetooth is slow (~1 KB/s); large images/files can take minutes. Use the same Wi-Fi for big transfers.",
+  "chat.bt.slowHint": "Bluetooth is slow (measured ~30–40 KB/s, link-dependent); large avatars may sync late and big files take much longer. Use the same Wi-Fi for large transfers.",
   "chat.bt.dismiss": "Got it",
 
   // ---- Common (buttons / states) ----

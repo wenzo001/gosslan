@@ -7,6 +7,8 @@ import { useChatStore } from "@/stores/useChatStore";
 import { api } from "@/api";
 import { loadFilePreview } from "@/utils/filePreview";
 import { shouldProbePresence } from "@/utils/mediaAvailability";
+import { isAndroid } from "@/utils/platform";
+import { isDialogCancelled, saveDestinationOf } from "@/utils/saveDestination";
 import { codeNeedsClamp } from "@/utils/previewMetrics";
 import type { FileMeta, MessageRecord } from "@/types";
 
@@ -151,10 +153,37 @@ export function useMessageFile(
    */
   const fileReady = computed(() => !!fileMeta.value?.path && !attachmentMissing.value);
 
+  /**
+   * 这条文件消息是否本机发出。
+   *
+   * Android 上「自己发的文件」点一下必须**没有任何响应**（用户明确要求）；
+   * 长按气泡弹出的菜单不受影响，仍可另存/复制。
+   */
+  const isMineFile = computed(
+    () => !!app.device?.device_id && msg.value.sender_id === app.device.device_id,
+  );
+  /**
+   * 文件卡片是否可点开。
+   *
+   * - Android：自己发的文件 ⇒ 不可点（点击无响应）；收到的文件 ⇒ 可点（弹另存为）。
+   * - 桌面端：保持原样（点开本地文件），不做这个限制。
+   * 与 fileReady 分开：fileReady 还管"下载按钮/已被清理"的显示，不能被这里连累。
+   */
+  const fileTappable = computed(() => !(isAndroid && isMineFile.value));
+
   async function openFile() {
+    // 点自己发的文件：静默返回（连 toast 都不给，避免"看起来有反应"）。
+    if (!fileTappable.value) return;
     const path = fileMeta.value?.path;
     if (!path) {
       app.toast($t("msg.filePathUnavailable"), "error");
+      return;
+    }
+    // Android：系统里经常没有能"打开"这类文件的应用（用户实测：除图片外基本都报错），
+    // 而且应用私有目录里的文件即便被打开，也只是交给对方一个临时只读副本。
+    // 按用户要求，移动端点击**收到的**文件改为弹系统保存对话框（SAF）。
+    if (isAndroid) {
+      await saveAs();
       return;
     }
     try {
@@ -174,11 +203,14 @@ export function useMessageFile(
       return;
     }
     try {
-      const destination = await save({ defaultPath: filename });
+      // 桌面返回路径字符串；Android 的 SAF 返回 { file: content:// } 对象，先归一化。
+      const picked: unknown = await save({ defaultPath: filename });
+      const destination = saveDestinationOf(picked);
       if (!destination) return; // 用户取消
       await invoke("copy_file", { source, destination });
       app.toast($t("msg.fileSaved"), "success");
     } catch (e) {
+      if (isDialogCancelled(e)) return; // Android 取消是 reject，不是返回 null
       app.toastError(e, $t("msg.saveFileFail"));
     }
   }
@@ -187,6 +219,7 @@ export function useMessageFile(
     transfer,
     fileMeta,
     fileReady,
+    fileTappable,
     fileProgress,
     fileStatusText,
     attachmentUrl,
