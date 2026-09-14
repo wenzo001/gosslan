@@ -10,6 +10,8 @@
 
 ## [Unreleased]
 
+## [4.7.2] - 2026-09-14
+
 ### Fixed (群聊收文件/图片同样进入统一状态并能自动重试)
 
 - begin_group_receive 一开始就登记 content_transfers（Active + cid）；
