@@ -10,6 +10,16 @@
 
 ## [Unreleased]
 
+### Changed (断点续传前置：接收进度持久化 + 续传起点纯函数)
+
+断点续传（Phase 2）的两块前置，先单独落地并测好，避免一次性改热路径：
+
+- content::policy::resume_from_seq(received, chunk)：把已收字节折算成**分片序号**
+  （向下取整到分片边界；尾部半片必须丢弃重传，否则 hasher 与 seq 对不齐，最终 SHA 必错）。
+- write_chunk 每 500ms 把 received 落库（content_transfers.received，只前进）：
+  这是续传的起点，也让统一状态能拿到真实进度。锁顺序保持
+  file_receivers -> 释放 -> db（不嵌套）。
+
 ## [4.7.2] - 2026-09-14
 
 ### Fixed (群聊收文件/图片同样进入统一状态并能自动重试)

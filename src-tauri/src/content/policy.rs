@@ -22,6 +22,17 @@ pub fn backoff_ms(attempts: u32) -> i64 {
         .min(RETRY_MAX_MS)
 }
 
+/// 断点续传的起点：把"已收到的字节数"折算成**分片序号**（向下取整到分片边界）。
+///
+/// 只能从分片边界续传 —— 尾部若有一个半片，它对应不上任何完整分片的 seq，
+/// 必须丢弃并重传整片（否则 hasher 与 seq 会对不齐，最终 SHA 必错）。
+pub fn resume_from_seq(received_bytes: u64, chunk_size: u64) -> u32 {
+    if chunk_size == 0 {
+        return 0;
+    }
+    (received_bytes / chunk_size).min(u32::MAX as u64) as u32
+}
+
 /// 失败 ⇒ 下一个状态：可恢复 ⇒ Incomplete，否则 ⇒ Rejected。
 pub fn status_after_failure(reason: FailReason) -> TransferStatus {
     if reason.retryable() {
@@ -103,6 +114,15 @@ mod tests {
         assert!(can_transition(TransferStatus::Incomplete, TransferStatus::Active));
         assert!(can_transition(TransferStatus::Active, TransferStatus::Incomplete));
         assert!(!can_transition(TransferStatus::Queued, TransferStatus::Verifying));
+    }
+
+    #[test]
+    fn resume_only_from_chunk_boundaries() {
+        assert_eq!(resume_from_seq(0, 256), 0);
+        assert_eq!(resume_from_seq(256, 256), 1);
+        assert_eq!(resume_from_seq(300, 256), 1, "尾部半片必须丢弃（向下取整）");
+        assert_eq!(resume_from_seq(512, 256), 2);
+        assert_eq!(resume_from_seq(999, 0), 0, "非法分片大小回退到 0（整份重来）");
     }
 
     #[test]

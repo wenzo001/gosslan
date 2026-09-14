@@ -773,32 +773,52 @@ pub fn write_chunk(
     data: &[u8],
 ) -> Result<u64, String> {
     use std::io::Write;
-    let mut recv = state.file_receivers.lock().unwrap_or_else(|e| e.into_inner());
-    let r = recv.get_mut(transfer_id).ok_or("未知传输")?;
-    if r.peer_id != peer_id {
-        return Err("文件传输来源不匹配".to_string());
+    // 锁作用域：先算完，把要落库的进度取出来，**释放 file_receivers 锁之后**再动 db
+    // （避免 file_receivers -> db 的嵌套锁顺序）。
+    let (received, cid, owner, report) = {
+        let mut recv = state.file_receivers.lock().unwrap_or_else(|e| e.into_inner());
+        let r = recv.get_mut(transfer_id).ok_or("未知传输")?;
+        if r.peer_id != peer_id {
+            return Err("文件传输来源不匹配".to_string());
+        }
+        // 重复/迟到的分片必须**忽略**，而不是整单失败：发送方一次 attempt 超时后会**从头重传**
+        // （seq 从 0 重来），而上一轮的残片可能仍在链路上。只挡"跳号"（真缺片，只能重传）；
+        // 整份字节仍由文件级 SHA-256 兜底。
+        match chunk_seq_decision(seq, r.next_seq) {
+            ChunkSeq::Duplicate => return Ok(r.received),
+            ChunkSeq::Gap => return Err("文件分片顺序错误".to_string()),
+            ChunkSeq::Accept => {}
+        }
+        let plaintext = crypto::open_symmetric(&r.file_key, data)
+            .ok_or_else(|| "文件分片解密失败".to_string())?;
+        if plaintext.len() as u64 > r.size.saturating_sub(r.received) {
+            return Err("文件分片超出声明大小".to_string());
+        }
+        // 文件级完整性：明文增量哈希（与写盘同一份数据，无二次磁盘读取）
+        use sha2::Digest;
+        r.hasher.update(&plaintext);
+        r.file.write_all(&plaintext).map_err(|e| e.to_string())?;
+        r.received += plaintext.len() as u64;
+        r.next_seq = r.next_seq.checked_add(1).ok_or("文件分片序号溢出")?;
+        // 节流 500ms 落一次进度：这是断点续传的起点，也让统一状态显示真实进度。
+        let now = crate::db::now_ms();
+        let report = now - r.last_report_ms >= 500;
+        if report {
+            r.last_report_ms = now;
+        }
+        (r.received, r.expected_sha256.clone(), r.peer_id.clone(), report)
+    };
+    if report {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = crate::content::store::touch_received(
+            &dbc,
+            &cid,
+            &owner,
+            received,
+            crate::db::now_ms(),
+        );
     }
-    // 重复/迟到的分片必须**忽略**，而不是整单失败：发送方一次 attempt 超时后会**从头重传**
-    // （`seq` 从 0 重来），而上一轮的残片可能仍在链路上。旧实现直接 Err ⇒ 接收方整单失败、
-    // 清掉状态 ⇒ 新 attempt 也永远拼不齐（这正是用户看到的「文件分片顺序错误」）。
-    // 这里只挡"**跳号**"（真缺片，只能靠重传解决）；整份字节仍由文件级 SHA-256 兜底。
-    match chunk_seq_decision(seq, r.next_seq) {
-        ChunkSeq::Duplicate => return Ok(r.received),
-        ChunkSeq::Gap => return Err("文件分片顺序错误".to_string()),
-        ChunkSeq::Accept => {}
-    }
-    let plaintext = crypto::open_symmetric(&r.file_key, data)
-        .ok_or_else(|| "文件分片解密失败".to_string())?;
-    if plaintext.len() as u64 > r.size.saturating_sub(r.received) {
-        return Err("文件分片超出声明大小".to_string());
-    }
-    // 文件级完整性：明文增量哈希（与写盘同一份数据，无二次磁盘读取）
-    use sha2::Digest;
-    r.hasher.update(&plaintext);
-    r.file.write_all(&plaintext).map_err(|e| e.to_string())?;
-    r.received += plaintext.len() as u64;
-    r.next_seq = r.next_seq.checked_add(1).ok_or("文件分片序号溢出")?;
-    Ok(r.received)
+    Ok(received)
 }
 
 /// 终止损坏或超时的接收，删除临时文件，避免留下永远占空间的 `.part` 文件。

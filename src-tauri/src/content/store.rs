@@ -150,6 +150,23 @@ pub fn find_source(
     .optional()
 }
 
+/// 传输过程中**节流**更新 received（只前进）。断点续传的起点就是它。
+pub fn touch_received(
+    conn: &Connection,
+    cid: &str,
+    peer_id: &str,
+    received: u64,
+    now_ms: i64,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE content_transfers
+            SET received = MAX(received, ?3), updated_at = ?4
+          WHERE cid = ?1 AND peer_id = ?2 AND direction = 'receive'",
+        params![cid, peer_id, received as i64, now_ms],
+    )?;
+    Ok(())
+}
+
 /// 把一条记录标记为完成（收/发皆可）。
 pub fn mark_complete(
     conn: &Connection,
