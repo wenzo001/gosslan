@@ -123,6 +123,96 @@ CASES: list[Case] = [
         expect_fail_hint="get_settings",
         tags=["rust", "perf"],
     ),
+    # ---------------- 本地新增护栏（2026-09-14）----------------
+
+    Case(
+        name="TitleBar 图标都有 import（删掉它 Windows 最大化按钮整颗消失）",
+        why="0e07dd4 删了 Maximize2/Minimize2 的 import，而 Windows/Linux 分支仍在用 ⇒ "
+            "按钮渲染为空；这类退化不报错、不影响构建，只有这条守卫能拦住",
+        file=ROOT / "src" / "components" / "TitleBar.vue",
+        injections=[(
+            'import { Maximize2, Minus, Minimize2, X } from "lucide-vue-next";',
+            'import { Minus, X } from "lucide-vue-next";',
+        )],
+        cmd=["node", "--test", "--experimental-strip-types", "--disable-warning=ExperimentalWarning",
+             "src/utils/titleBarIcons.test.ts"],
+        cwd=ROOT,
+        expect_fail_hint="必须 import",
+        tags=["frontend", "new-guards"],
+    ),
+    Case(
+        name="Presence 不得内联大头像（否则优先通道被堵）",
+        why="Presence 每 10s 广播一次且走优先通道；一张 400KB 头像会让聊天/好友请求"
+            "排在几百片分片后面（真机：加好友几分钟才到）",
+        file=TAURI / "src" / "network" / "transport.rs",
+        injections=[(
+            "let avatar = hello_avatar_for_wire(raw_avatar.as_deref());",
+            "let avatar = raw_avatar.as_deref();",
+        )],
+        cmd=cargo("test", "--lib", "presence_caps_inline_avatar"),
+        cwd=TAURI,
+        expect_fail_hint="broadcast_presence",
+        tags=["rust", "new-guards"],
+    ),
+    Case(
+        name="大头像资料帧必须降到 bulk 通道（否则堵住优先通道）",
+        why="UserInfo 带大 avatar 时若不降级，会占满优先通道，聊天/好友请求几分钟才到",
+        file=TAURI / "src" / "network" / "transport.rs",
+        injections=[(
+            "Message::UserInfo { avatar: Some(a), .. } if a.len() > CONTROL_AVATAR_MAX_BYTES => true,",
+            "Message::UserInfo { .. } => false,",
+        )],
+        cmd=cargo("test", "--lib", "bulk_messages_are_only_large_chunks"),
+        cwd=TAURI,
+        expect_fail_hint="bulk_messages_are_only_large_chunks",
+        tags=["rust", "new-guards"],
+    ),
+    Case(
+        name="共享目录/中继文件：无直连时借一跳中继（定向转发判定）",
+        why="共享目录原本只支持直连，A 与 B 只能经中继时打不开；这条纯函数决定哪些帧"
+            "要借邻居转投（真机 2026-09-14 全 Windows 局域网）",
+        file=TAURI / "src" / "network" / "transport.rs",
+        injections=[(
+            "Message::RelayFileOffer { to, .. } if to != my_id => Some(to.as_str()),",
+            "Message::RelayFileOffer { .. } => None,",
+        )],
+        cmd=cargo("test", "--lib", "directed_relay_target_routes_share_and_offer_frames"),
+        cwd=TAURI,
+        expect_fail_hint="directed_relay_target_routes_share_and_offer_frames",
+        tags=["rust", "new-guards"],
+    ),
+    Case(
+        name="中继文件接收幂等（重复 offer 不清空已收切片）",
+        why="多邻居泛洪会送来重复的 RelayFileOffer；覆盖式 insert 会清空已收到的切片 ⇒ "
+            "文件永远缺片（完整性校验也必然失败）",
+        file=TAURI / "src" / "relay_manager.rs",
+        injections=[(
+            "        self.reassemblies\n"
+            "            .entry(transfer_id.to_string())\n"
+            "            .or_insert_with(|| Reassembly {",
+            "        self.reassemblies.insert(\n"
+            "            transfer_id.to_string(),\n"
+            "            Reassembly {",
+        )],
+        cmd=cargo("test", "--lib", "begin_reassemble_is_idempotent"),
+        cwd=TAURI,
+        expect_fail_hint="begin_reassemble_is_idempotent",
+        tags=["rust", "new-guards"],
+    ),
+    Case(
+        name="BLE MTU 吞吐估算（净数据必须扣 6 字节分片头）",
+        why="日志里的 KB/s 是给用户的量级预期；算错一个量级会误导排障"
+            "（旧的 1KB/s 注释就是例子）",
+        file=TAURI / "src" / "network" / "ble.rs",
+        injections=[(
+            "let net = payload_budget.saturating_sub(crate::transport::ble_framing::BLE_CHUNK_HEADER_LEN);",
+            "let net = payload_budget;",
+        )],
+        cmd=cargo("test", "--lib", "--features", "bluetooth", "throughput_estimate_matches_real_mtu_budgets"),
+        cwd=TAURI,
+        expect_fail_hint="throughput_estimate_matches_real_mtu_budgets",
+        tags=["rust", "ble", "new-guards"],
+    ),
     # ---------------- Rust：capability 覆盖 ----------------
     Case(
         name="capability 覆盖每个窗口（漏一个窗口 ACL 会静默拒绝）",
