@@ -126,6 +126,19 @@ pub async fn send_file_from_path(
     transfer_id: &str,
     path: PathBuf,
 ) -> Result<(), SendFileError> {
+    send_file_from_path_at(state, peer_id, transfer_id, path, 0, 0).await
+}
+
+/// 同 send_file_from_path，但支持**断点续传**：从 from_bytes 偏移读文件、
+/// 分片序号从 from_seq 起编号（接收端据此接着它已持有的前缀继续）。
+pub async fn send_file_from_path_at(
+    state: &Arc<AppState>,
+    peer_id: &str,
+    transfer_id: &str,
+    path: PathBuf,
+    from_seq: u32,
+    from_bytes: u64,
+) -> Result<(), SendFileError> {
     let meta = std::fs::metadata(&path)
         .map_err(|e| SendFileError::permanent(format!("文件不存在或不可读：{e}")))?;
     if !meta.is_file() {
@@ -202,6 +215,8 @@ pub async fn send_file_from_path(
         size,
         sealed_file_key: sealed_key_b64,
         file_sha256,
+        from_seq,
+        from_bytes,
     };
     if let Err(e) = try_send(state, peer_id, &offer).await {
         state
@@ -225,9 +240,11 @@ pub async fn send_file_from_path(
         }
     }
 
-    stream_file(state, peer_id, transfer_id, path, name, size, file_key)
-        .await
-        .map_err(|e| SendFileError::retryable(e))
+    stream_file(
+        state, peer_id, transfer_id, path, name, size, file_key, from_seq, from_bytes,
+    )
+    .await
+    .map_err(|e| SendFileError::retryable(e))
 }
 /// 无直连时，借**一跳中继**把文件发给 peer_id（接收方是请求下载的共享目录主人）。
 ///
@@ -351,8 +368,10 @@ async fn stream_file(
     name: String,
     size: u64,
     file_key: [u8; 32],
+    from_seq: u32,
+    from_bytes: u64,
 ) -> Result<(), String> {
-    use tokio::io::AsyncReadExt;
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
     let mut f = tokio::fs::File::open(&path)
         .await
@@ -361,8 +380,14 @@ async fn stream_file(
     let path_kind = crate::network::transport::inbound_path_kind(state, peer_id).await;
     let chunk_size = chunk_size_for_path(&path_kind);
     let mut buf = vec![0u8; chunk_size];
-    let mut seq = 0u32;
-    let mut sent = 0u64;
+    // 断点续传：从接收端已持有的前缀之后开始读（分片序号也从 from_seq 接着数）。
+    if from_bytes > 0 {
+        f.seek(std::io::SeekFrom::Start(from_bytes))
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    let mut seq = from_seq;
+    let mut sent = from_bytes;
     // 进度节流：避免每片一次 SQLite 写 + IPC 事件（大文件会形成事件风暴卡死界面）
     let mut last_report = std::time::Instant::now() - Duration::from_secs(1);
 

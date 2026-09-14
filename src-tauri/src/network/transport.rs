@@ -2400,6 +2400,9 @@ async fn retry_incomplete_content(state: &Arc<AppState>, peer_id: &str) {
         let msg = Message::ContentRequest {
             from: state.device_id.clone(),
             cid: rec.cid.clone(),
+            transfer_id: rec.transfer_id.clone().unwrap_or_default(),
+            from_seq: 0,
+            from_bytes: rec.received,
             name: rec.name.clone(),
             size: rec.size,
         };
@@ -3084,6 +3087,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             size,
             sealed_file_key,
             file_sha256,
+            ..
         } => {
             if from != peer_id || from == state.device_id {
                 return;

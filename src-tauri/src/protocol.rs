@@ -282,6 +282,15 @@ pub enum Message {
         cid: String,
         name: String,
         size: u64,
+        /// 断点续传：原 transfer_id（服务端要用它回发，接收端才找得到 <tid>.part）。
+        #[serde(default)]
+        transfer_id: String,
+        /// 断点续传：接收端期望的下一片序号。
+        #[serde(default)]
+        from_seq: u32,
+        /// 断点续传：接收端已持有的前缀字节数。
+        #[serde(default)]
+        from_bytes: u64,
     },
     /// 加好友申请
     FriendRequest {
@@ -363,6 +372,12 @@ pub enum Message {
         size: u64,
         sealed_file_key: String,
         file_sha256: String,
+        /// 断点续传：从第几片开始发（缺省 0 = 整份）。
+        #[serde(default)]
+        from_seq: u32,
+        /// 断点续传：从第几字节开始发（接收端已持有的前缀字节数）。
+        #[serde(default)]
+        from_bytes: u64,
     },
     FileAccept {
         transfer_id: String,

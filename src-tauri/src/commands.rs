@@ -3576,9 +3576,26 @@ pub async fn request_content(
     if !supports {
         return Ok(false);
     }
+    // 手动重取也尽量续传：读该内容在统一状态里的 transfer_id / 已收字节。
+    let (transfer_id, from_bytes) = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        crate::content::store::get(
+            &dbc,
+            &cid,
+            &peer_id,
+            crate::content::model::Direction::Receive,
+        )
+        .ok()
+        .flatten()
+        .map(|r| (r.transfer_id.unwrap_or_default(), r.received))
+        .unwrap_or_default()
+    };
     let msg = Message::ContentRequest {
         from: s.device_id.clone(),
         cid,
+        transfer_id,
+        from_seq: 0,
+        from_bytes,
         name,
         size,
     };
