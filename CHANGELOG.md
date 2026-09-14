@@ -10,6 +10,8 @@
 
 ## [Unreleased]
 
+## [4.7.1] - 2026-09-14
+
 ### Fixed (中途失败/断链的接收不再停在 Active：记为 Incomplete 并自动重试)
 
 - fail_receive（超时 / 断链 / 坏片清理）现在把该内容记为 **Incomplete**（可恢复），
