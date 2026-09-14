@@ -77,8 +77,11 @@ pub fn show(app: &tauri::AppHandle, title: &str, body: &str) -> Result<(), Strin
                 .parent()
                 .map(|p| p.display().to_string())
                 .unwrap_or_default();
-            let in_dev = curr_dir.ends_with(format!("{SEP}target{SEP}debug"))
-                || curr_dir.ends_with(format!("{SEP}target{SEP}release"));
+            // .as_str() 不能省：str::ends_with 要 Pattern，而 String 没实现它（只实现了
+            // &String）—— 漏了会在 **Windows** 上编译失败，而 macOS 这条分支被 cfg 掉、
+            // 本地看不出来（2026-09-14 CI 两个 Windows job 都挂在这）。
+            let in_dev = curr_dir.ends_with(format!("{SEP}target{SEP}debug").as_str())
+                || curr_dir.ends_with(format!("{SEP}target{SEP}release").as_str());
             if !in_dev {
                 notification.app_id(&identifier);
             }
@@ -221,6 +224,37 @@ mod tests {
         assert!(!notifications_enabled(&conn), "显式关掉必须生效");
         crate::db::set_setting(&conn, "notify_enabled", "1").unwrap();
         assert!(notifications_enabled(&conn));
+    }
+
+    /// **Windows-only 分支的编译错误必须在本地就能拦住**（2026-09-14 真实事故：
+    /// `ends_with(format!(...))` 漏了 `.as_str()` —— `String` 没实现 `Pattern`，
+    /// 于是两个 Windows CI job 全挂，而 macOS 上这段被 `#[cfg(windows)]` 掉、死活看不出来）。
+    ///
+    /// 这里做源码级断言：每个 `ends_with(format!(` 都必须以 `.as_str())` 收尾。
+    #[test]
+    fn windows_only_branch_is_source_checkable_for_pattern_bounds() {
+        let src = include_str!("notifications.rs");
+        // 只看生产代码：测试模块自己的断言消息里也会出现这个模式，扫进去会自我误伤。
+        let code = src.split("#[cfg(test)]").next().unwrap_or(src);
+        let mut checked = 0usize;
+        for (i, line) in code.lines().enumerate() {
+            let code = line.trim_start();
+            // 跳过注释行：文档与说明里会原样提到该模式，不能把它们当代码
+            // （本项目踩过这种“护栏被自己的说明误伤”的假阳性）。
+            if code.starts_with("//") {
+                continue;
+            }
+            if line.contains("ends_with(format!(") {
+                checked += 1;
+                assert!(
+                    line.contains(".as_str())"),
+                    "第 {} 行 ends_with(format!(...)) 少 .as_str() ⇒ Windows 编译失败（String 未实现 Pattern）：{}",
+                    i + 1,
+                    line.trim()
+                );
+            }
+        }
+        assert!(checked >= 2, "预期至少两处 ends_with(format!(（Windows dev 路径判定）");
     }
 
     #[test]
