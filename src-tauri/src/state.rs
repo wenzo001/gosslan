@@ -783,7 +783,8 @@ pub struct AppState {
     pub avatar: Mutex<Option<String>>,
 
     /// 等待对方接受的文件传输：transfer_id -> 接受信号
-    pub pending_file_accept: Mutex<HashMap<String, tokio::sync::oneshot::Sender<()>>>,
+    pub pending_file_accept:
+        Mutex<HashMap<String, tokio::sync::oneshot::Sender<Result<(), u64>>>>,
     /// 等待接收方完成确认的直连文件传输：transfer_id -> 完成信号。
     /// 发送方在 FileDone 之后等待 FileCompleteAck，只有 success=true 才推进 delivered。
     pub pending_file_complete: Mutex<HashMap<String, tokio::sync::oneshot::Sender<bool>>>,

@@ -384,6 +384,9 @@ pub enum Message {
     },
     FileReject {
         transfer_id: String,
+        /// 断点续传：接收端**已持有的字节数**（0 = 没有前缀）。发送端据此偏移续发。
+        #[serde(default)]
+        received: u64,
     },
     /// `data`：文件会话密钥 AEAD 加密后的 base64（nonce || ciphertext），
     /// 密文在 TCP / 中继上均不透明。

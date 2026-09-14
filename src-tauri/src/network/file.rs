@@ -201,50 +201,63 @@ pub async fn send_file_from_path_at(
         let _ = crate::content::store::upsert(&dbc, &rec);
     }
 
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    state
-        .pending_file_accept
-        .lock()
-        .unwrap()
-        .insert(transfer_id.to_string(), tx);
-
-    let offer = Message::FileOffer {
-        transfer_id: transfer_id.to_string(),
-        from: state.device_id.clone(),
-        name: name.clone(),
-        size,
-        sealed_file_key: sealed_key_b64,
-        file_sha256,
-        from_seq,
-        from_bytes,
-    };
-    if let Err(e) = try_send(state, peer_id, &offer).await {
+    let _ = from_seq;
+    // 发送 Offer → 等接受。接收端若回 FileReject.received = N（它已有 N 字节），
+    // 就从该偏移续发 —— 这正是"outbox 全量重试"与"接收端续传"撞车的正解：
+    // 发送端永远以接收端的真实进度为准，绝不重头覆盖。
+    let mut resume_from = from_bytes;
+    for _attempt in 0..3 {
+        let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), u64>>();
         state
             .pending_file_accept
             .lock()
             .unwrap()
-            .remove(transfer_id);
-        return Err(SendFileError::retryable(format!("建立文件传输失败：{e}")));
-    }
-
-    // 等待对方接受（超时 15 秒）
-    match tokio::time::timeout(Duration::from_secs(15), rx).await {
-        Ok(Ok(())) => {}
-        _ => {
+            .insert(transfer_id.to_string(), tx);
+        let offer = Message::FileOffer {
+            transfer_id: transfer_id.to_string(),
+            from: state.device_id.clone(),
+            name: name.clone(),
+            size,
+            sealed_file_key: sealed_key_b64.clone(),
+            file_sha256: file_sha256.clone(),
+            from_seq: 0,
+            from_bytes: resume_from,
+        };
+        if let Err(e) = try_send(state, peer_id, &offer).await {
             state
                 .pending_file_accept
                 .lock()
                 .unwrap()
                 .remove(transfer_id);
-            return Err(SendFileError::retryable("对方未接受文件"));
+            return Err(SendFileError::retryable(format!("建立文件传输失败：{e}")));
+        }
+        match tokio::time::timeout(Duration::from_secs(15), rx).await {
+            Ok(Ok(Ok(()))) => {
+                return stream_file(
+                    state, peer_id, transfer_id, path, name, size, file_key, 0, resume_from,
+                )
+                .await
+                .map_err(|e| SendFileError::retryable(e));
+            }
+            Ok(Ok(Err(n))) if n > resume_from => {
+                state.logger.info(
+                    "file",
+                    format!("接收端已有 {n} 字节，从断点续发 transfer={transfer_id}"),
+                );
+                resume_from = n;
+                continue;
+            }
+            _ => {
+                state
+                    .pending_file_accept
+                    .lock()
+                    .unwrap()
+                    .remove(transfer_id);
+                return Err(SendFileError::retryable("对方未接受文件"));
+            }
         }
     }
-
-    stream_file(
-        state, peer_id, transfer_id, path, name, size, file_key, from_seq, from_bytes,
-    )
-    .await
-    .map_err(|e| SendFileError::retryable(e))
+    Err(SendFileError::retryable("对方始终未接受文件"))
 }
 /// 无直连时，借**一跳中继**把文件发给 peer_id（接收方是请求下载的共享目录主人）。
 ///
@@ -528,6 +541,75 @@ async fn stream_file(
         },
     );
     Ok(())
+}
+
+/// 该 transfer_id 已保留的 .part 前缀字节数（无则 0）。
+///
+/// 用于把"接收端已持有多少"回给发送端（FileReject.received），让发送端从真实进度续发。
+pub fn retained_part_len(state: &AppState, transfer_id: &str) -> u64 {
+    let dl = state
+        .downloads_dir
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    std::fs::metadata(dl.join(format!("{transfer_id}.part")))
+        .map(|m| if m.is_file() { m.len() } else { 0 })
+        .unwrap_or(0)
+}
+
+/// 定期清扫：删除超过 TTL、且当前不在接收中的 .part。
+///
+/// 为什么需要（审计 §7 风险 2）：可恢复失败会**保留** .part 作续传前缀，若对端一去不回，
+/// 这些前缀会一直占空间。清扫只删"够旧 + 没人正在用"的，绝不碰活跃接收。
+pub fn sweep_stale_parts(state: &AppState) -> usize {
+    const TTL_MS: u64 = 24 * 60 * 60 * 1000;
+    let dl = state
+        .downloads_dir
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let active: std::collections::HashSet<String> = {
+        let a: Vec<String> = state
+            .file_receivers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .keys()
+            .cloned()
+            .collect();
+        let b: Vec<String> = state
+            .group_file_receivers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .keys()
+            .cloned()
+            .collect();
+        a.into_iter().chain(b).collect()
+    };
+    let mut removed = 0;
+    if let Ok(rd) = std::fs::read_dir(&dl) {
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("part") {
+                continue;
+            }
+            if let Some(tid) = path.file_stem().and_then(|s| s.to_str()) {
+                if active.contains(tid) {
+                    continue;
+                }
+            }
+            let stale = entry
+                .metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.elapsed().ok())
+                .map(|d| d.as_millis() as u64 > TTL_MS)
+                .unwrap_or(false);
+            if stale && std::fs::remove_file(&path).is_ok() {
+                removed += 1;
+            }
+        }
+    }
+    removed
 }
 
 /// 断点续传：从已保留的 .part 前缀继续接收。

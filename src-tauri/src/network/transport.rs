@@ -3112,12 +3112,12 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 db::get_friend(&dbc, &from).is_some()
             };
             if !is_friend {
-                let _ = try_send(state, peer_id, &Message::FileReject { transfer_id }).await;
+                let _ = try_send(state, peer_id, &Message::FileReject { transfer_id, received: 0 }).await;
                 return;
             }
             // SHA-256 元数据格式校验：非法即拒绝（文件级完整性无法验证）
             if !file::valid_sha256_hex(&file_sha256) {
-                let _ = try_send(state, peer_id, &Message::FileReject { transfer_id }).await;
+                let _ = try_send(state, peer_id, &Message::FileReject { transfer_id, received: 0 }).await;
                 return;
             }
             // E2EE：解封文件会话密钥（发送方用我方公钥封装，只有我能解开）。
@@ -3129,9 +3129,34 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 crypto::open(&shared, &sealed).and_then(|k| k.try_into().ok())
             })();
             let Some(file_key) = file_key else {
-                let _ = try_send(state, peer_id, &Message::FileReject { transfer_id }).await;
+                let _ = try_send(state, peer_id, &Message::FileReject { transfer_id, received: 0 }).await;
                 return;
             };
+            // 断点续传统一入口（接收端是"我有什么"的唯一权威）：本地已保留 .part 且发送端的
+            // from_bytes 与之不符时，回 FileReject.received，让发送端以**真实进度**续发，
+            // 而不是重头覆盖前缀 —— 这是 outbox 全量重试与续传撞车的正解。
+            // 仅在没有活跃接收器时判：活跃中的重复 offer 仍走下面的"幂等 accept"（那修过真机缺陷）。
+            if !file::has_receiver(state, &transfer_id) {
+                let retained = file::retained_part_len(state, &transfer_id);
+                if retained != from_bytes {
+                    state.logger.info(
+                        "file",
+                        format!(
+                            "接收端已有 {retained} 字节，要求发送端从此续发 transfer={transfer_id}"
+                        ),
+                    );
+                    let _ = try_send(
+                        state,
+                        peer_id,
+                        &Message::FileReject {
+                            transfer_id: transfer_id.clone(),
+                            received: retained,
+                        },
+                    )
+                    .await;
+                    return;
+                }
+            }
             // **重复的 offer 必须幂等接受**：对端没收到我们的 accept 时会重发同一个
             // transfer_id，旧行为回 `FileReject("重复的文件传输")` ⇒ 对端判定失败、停止重试
             // ⇒ 文件永远到不了（真机：大图两边都显示成功、接收侧列表里没有）。这里直接
@@ -3218,7 +3243,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                     );
                 }
                 Err(e) => {
-                    let _ = try_send(state, peer_id, &Message::FileReject { transfer_id }).await;
+                    let _ = try_send(state, peer_id, &Message::FileReject { transfer_id, received: 0 }).await;
                     state.logger.error("file", format!("接收文件初始化失败: {e}"));
                 }
             }
@@ -3230,15 +3255,22 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 .unwrap()
                 .remove(&transfer_id)
             {
-                let _ = tx.send(());
+                let _ = tx.send(Ok(()));
             }
         }
-        Message::FileReject { transfer_id } => {
-            state
+        Message::FileReject {
+            transfer_id,
+            received,
+        } => {
+            if let Some(tx) = state
                 .pending_file_accept
                 .lock()
                 .unwrap()
-                .remove(&transfer_id);
+                .remove(&transfer_id)
+            {
+                // 把"接收端已持有多少字节"回给发送端 ⇒ 它从该偏移续发，无需重头。
+                let _ = tx.send(Err(received));
+            }
         }
         Message::FileCompleteAck {
             transfer_id,

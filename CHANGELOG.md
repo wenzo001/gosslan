@@ -10,6 +10,19 @@
 
 ## [Unreleased]
 
+### Fixed (审计 §7 风险收口：续传对账 + 过期 .part 定期清扫)
+
+- **风险 1（发送端全量重试 vs 接收端续传撞车）**：让接收端成为"我有什么"的**唯一权威** ——
+  没有活跃接收器时，若本地保留的 .part 前缀长度 ≠ 发送端的 from_bytes，回
+  FileReject.received = 真实前缀长度；发送端据此**从断点续发**而不是重头覆盖
+  （send_file_from_path_at 内最多对账 3 次，之后才报"对方未接受"）。
+  活跃接收器的"重复 offer 幂等 accept"**保持不变**（那条修过真机的大图收不全缺陷）。
+- **风险 2（过期 .part 无清扫）**：新增 sweep_stale_parts —— 启动时 + 之后每小时一次，
+  只删"超过 24h 且当前不在接收中"的 .part，绝不碰活跃接收。
+- 协议：FileReject 增加 received（serde default，旧端缺省 0 ⇒ 退化为整份重传，互通）。
+
+护栏：源码断言（retained_part_len + received: retained + sweep_stale_parts）。
+
 ## [4.8.1] - 2026-09-14
 
 ## [4.8.0] - 2026-09-14

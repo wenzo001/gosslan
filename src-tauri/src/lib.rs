@@ -255,6 +255,20 @@ pub fn run() {
                     }
                 });
             }
+            // 定期清扫过期的 .part 断点前缀（审计 §7 风险 2）：启动后立即一次，之后每小时一次。
+            {
+                let st = state.clone();
+                tauri::async_runtime::spawn(async move {
+                    loop {
+                        let removed = crate::network::file::sweep_stale_parts(&st);
+                        if removed > 0 {
+                            st.logger
+                                .info("file", format!("清理过期 .part：{removed} 个"));
+                        }
+                        tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+                    }
+                });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1622,6 +1636,16 @@ mod tests {
         assert!(
             transport.contains("send_file_from_path_at"),
             "服务端必须支持从偏移续发（from_bytes）"
+        );
+        // 审计 §7 风险 1：接收端必须把"我已有多少字节"回给发送端，发送端据此续发（不重头覆盖）。
+        assert!(
+            transport.contains("retained_part_len") && transport.contains("received: retained"),
+            "接收端必须按真实前缀长度回 FileReject.received，发送端据此续发"
+        );
+        // 审计 §7 风险 2：必须有过期 .part 的定期清扫。
+        assert!(
+            file.contains("pub fn sweep_stale_parts("),
+            "必须有 .part 定期清扫（可恢复失败会保留前缀，不能让它们无限堆积）"
         );
     }
 
