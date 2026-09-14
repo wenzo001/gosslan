@@ -10,6 +10,8 @@
 
 ## [Unreleased]
 
+## [4.3.15] - 2026-09-14
+
 ### Fixed (e2e 示例编译)
 
 分享消息新增可选 to 字段后，examples/e2e_peer.rs 的 ShareFileRequest 少了 to ⇒
