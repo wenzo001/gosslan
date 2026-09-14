@@ -289,10 +289,20 @@ pub async fn broadcast_gossip(state: &AppState, envelope: GossipEnvelope) {
             let router = state.mesh_router.lock().unwrap_or_else(|e| e.into_inner());
             router.exclude_source(&candidates, &envelope.sender_id)
         };
-        // 每个 peer 仍取第一条（M3-d 才改为按策略选路），但只克隆 Sender。
+        // M3-d（2026-09-14 全 Windows 局域网真机）：按**路径优先级**选一条发送链路，
+        // 而不是 v.first()（插入顺序）。旧写法在同一 peer 同时有 LAN 与 BLE 链路时，
+        // Gossip/控制帧可能走 BLE——表现为「同局域网却走了蓝牙/中继」。
+        // best_link_kind 给出 LAN > Routed > Bluetooth，再取该链路；只克隆 Sender。
         picked
             .iter()
-            .filter_map(|peer| links.get(*peer).and_then(|v| v.first()).map(|l| l.priority.clone()))
+            .filter_map(|peer| {
+                let ls = links.get(*peer)?;
+                let kinds: Vec<PathKind> = ls.iter().map(|l| l.path_kind).collect();
+                let best = crate::state::best_link_kind(&kinds)?;
+                ls.iter()
+                    .find(|l| l.path_kind == best)
+                    .map(|l| l.priority.clone())
+            })
             .collect()
     };
 
@@ -1181,6 +1191,14 @@ async fn handle_incoming(
     let (cancel_tx, cancel_rx) = watch::channel(false);
     // 追加到该 peer 的连接列表（而非覆盖）—— 多连接支持的基础。
     // 端点取 TCP 对端的真实地址，使「同一 peer 的不同端点」可被区分。
+    // 入站连接的路径类型：**不能一律当 LAN**。真机 2026-09-14（全 Windows 局域网）：
+    // 若对端是通过 Clash TUN / VPN / Tailscale 地址拨进来的，把它记成 LAN 会让
+    // has_lan_path 永真 ⇒ 我们再也不拨它的真实 LAN 地址，同网段也一直走隧道/中继。
+    // 只有非虚拟地址才按 LAN 记；虚拟地址按 Routed（与出站 Routed 同一语义）。
+    let inbound_kind = match peer_addr.ip() {
+        std::net::IpAddr::V4(v4) if is_virtual_ip(&v4) => PathKind::Routed,
+        _ => PathKind::Lan,
+    };
     state
         .links
         .lock()
@@ -1189,15 +1207,14 @@ async fn handle_incoming(
         .or_default()
         .push(Link {
             endpoint: MeshEndpoint::Tcp(peer_addr),
-            // 入站连接只可能来自本机 TCP 监听端口 ⇒ LAN 路径（Routed 都是我们主动拨出）
-            path_kind: PathKind::Lan,
+            path_kind: inbound_kind,
             bulk: bulk_tx.clone(),
             // priority 留一个 sender 在作用域内：首帧验签后要回发 Hello（见下）。
             priority: prio_tx.clone(),
             cancel: cancel_tx,
         });
     // 同步到 mesh 层：让 Peer/Connection 模型知道这条连接存在
-    register_connection(&state, &peer_id, MeshEndpoint::Tcp(peer_addr), PathKind::Lan);
+    register_connection(&state, &peer_id, MeshEndpoint::Tcp(peer_addr), inbound_kind);
     tokio::spawn(writer_loop(
         state.clone(),
         peer_id.clone(),
@@ -1646,6 +1663,28 @@ pub(crate) fn forget_peer_identity(state: &AppState, device_id: &str) {
     );
 }
 
+/// 直连链路刚建立时，把该会话的「当前链路」快照从"桥接"纠正为直连。
+///
+/// 为什么需要（真机 2026-09-14 全 Windows 局域网）：conv_link 是**上一条消息**的快照，
+/// 发送方在无直连时乐观写 hop=1；之后即使直连建好了，聊天头也一直显示「桥接 · 1」，
+/// 直到再发一条消息。这里在链路登记时主动纠正，避免界面长期误导。
+///
+/// 只在**已经存在该会话快照**时改，不新造条目。
+fn note_direct_link(state: &AppState, peer_id: &str, path_kind: PathKind) {
+    let mut links = state.conv_link.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(s) = links.get_mut(peer_id) {
+        let path = path_kind.as_str();
+        if s.hop != 0 || s.path != path {
+            s.path = path.to_string();
+            s.hop = 0;
+            state.logger.info(
+                "link",
+                format!("conv={peer_id} path={path} hop=0（直连已建立，纠正桥接快照）"),
+            );
+        }
+    }
+}
+
 /// 连接建立后：把这条连接登记到 mesh 层的 `PeerManager`。
 ///
 /// 这样 mesh 层的 Peer/Connection 才与传输层的 `Link` 一一对应，
@@ -1699,6 +1738,8 @@ pub(crate) fn register_connection(state: &AppState, peer_id: &str, endpoint: Mes
             u8::from(online),
         ),
     );
+    // 直连建好了：把可能残留的"桥接"快照纠正过来（见 note_direct_link 的说明）。
+    note_direct_link(state, peer_id, path_kind);
 }
 
 /// 连接断开后：从 mesh 层移除**这一条** Connection（同一 peer 的其他连接保留）。
@@ -2010,6 +2051,15 @@ pub async fn ensure_link(
 ) {
     // 端点解析失败则放弃本轮（下一轮 announce 会再试）。
     let Some(endpoint) = socket_addr_from(ip, tcp_port) else { return };
+    // 虚拟/隧道源地址（Clash fake-ip、Tailscale/CGNAT、link-local）不当作 LAN 直连去拨：
+    // 真机 2026-09-14 全 Windows 局域网——announce 的源地址未经过滤，若来自 TUN，会拨出
+    // 一条假的「LAN」链路并让 has_lan_path 永真，反而堵死真实 LAN 直连。真实 LAN 的
+    // announce 会用真实地址再来一轮；隧道场景仍由用户配置的 Routed 端点负责。
+    if let Ok(v4) = ip.parse::<Ipv4Addr>() {
+        if is_virtual_ip(&v4) {
+            return;
+        }
+    }
     // ① 这个端点已经连上了（典型是「自己拨出去的那条」）→ 本轮无事可做。
     let has_endpoint = state
         .has_endpoint(peer_id, &MeshEndpoint::Tcp(endpoint))
@@ -3852,6 +3902,15 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                             "presence",
                             format!("学到远端节点 peer={} nickname={}", env.sender_id, nickname),
                         );
+                        // 🎯 同局域网却走桥接的直接修复（真机 2026-09-14 全 Windows 局域网）：
+                        // 新学到的**跨跳**节点只有 ip="" 的 Presence，永远不会触发 LAN 拨号
+                        // （ensure_link 只由 UDP announce 驱动）⇒ 同网段也只能一直走中继。
+                        // 主动喊一轮 who_has：同网段的节点会用**单播**把 announce 回给我们，
+                        // 我们随即建立直连；不在同网段的节点收不到单播、不受影响。
+                        if let Some(tx) = state.probe.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+                            let next = tx.borrow().saturating_add(1);
+                            let _ = tx.send(next);
+                        }
                     }
                     // ip 空、tcp_port 0：跨跳转发不知道对端真实地址，仅记录身份
                     // （可被「看到」，但不可直连）。

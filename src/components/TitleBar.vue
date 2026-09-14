@@ -3,7 +3,7 @@ import { onBeforeUnmount, onMounted, ref } from "vue";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useAppStore } from "@/stores/useAppStore";
 import { api } from "@/api";
-import { Minus, X } from "lucide-vue-next";
+import { Maximize2, Minus, Minimize2, X } from "lucide-vue-next";
 import { isMac } from "@/utils/platform";
 import { t } from "@/i18n";
 

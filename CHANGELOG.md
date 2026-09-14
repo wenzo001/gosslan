@@ -10,6 +10,36 @@
 
 ## [Unreleased]
 
+### Fixed (🔴 全 Windows 局域网：同一网段却走桥接 / 共享目录打不开)
+
+真机 2026-09-14：三台 Windows、同一网段、蓝牙都开。A 与 B 之间显示「桥接 · 1」，
+A 打不开 B 的共享目录（C 能打开）。根因不是选路优先级（LAN > Routed > Bluetooth 是对的），
+而是 **A 根本没有到 B 的直连**：
+
+1. 新学到的**跨跳**节点（只有 ip 空的 Presence）永远不会触发 LAN 拨号 ——
+   ensure_link 只由 UDP announce 驱动。若 B 的 UDP 广播没被 A 收到（防火墙 / 虚拟网卡），
+   A 就只能一直走中继。
+2. 入站 TCP 被**无条件记成 LAN**。若对端是从 Clash TUN / VPN / Tailscale 地址拨进来的，
+   它会被当成 LAN，has_lan_path 永真 ⇒ 本机再也不拨对端的真实 LAN 地址。
+3. announce 的源地址未过滤：虚拟地址（Clash fake-ip / Tailscale CGNAT / link-local）
+   也会被当作 LAN 去拨，同样堵死真实 LAN 直连。
+4. broadcast_gossip 按**插入顺序**取第一条链路（v.first），同一 peer 同时有 LAN 与 BLE 时，
+   控制帧/聊天回退可能走 BLE。
+5. conv_link 是「上一条消息」的快照，直连建好后仍显示「桥接」直到再发一条消息。
+
+修法：
+- 学到**新的跨跳节点**时主动喊一轮 who_has：同网段节点用单播回 announce ⇒ 立刻建直连。
+- 入站 TCP 按对端地址分类：虚拟地址记 Routed，其余才记 LAN。
+- ensure_link 跳过虚拟源地址（不拨假 LAN）；真实 LAN 的 announce 会再来一轮。
+- broadcast_gossip 按路径优先级（LAN > Routed > Bluetooth）选链路，不再用插入顺序。
+- 链路登记时把该会话的「桥接」快照纠正为直连（hop=0）。
+
+### Fixed (Windows 聊天窗口最大化/还原按钮消失)
+
+0e07dd4 把 macOS 红绿灯改成自绘后删掉了 Maximize2/Minimize2 的 import，
+但 Windows/Linux 分支仍在用它们 ⇒ 整颗「最大化/还原」按钮渲染为空。
+恢复 import，并加护栏测试（模板用到就必须在 script 里 import）。
+
 ## [4.3.13] - 2026-09-14
 
 ### Fixed (🔴 安卓蓝牙：多片帧永远发不出去 —— 好友申请/同意 2 片必挂)
