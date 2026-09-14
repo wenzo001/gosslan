@@ -1,6 +1,8 @@
 //! Gosslan 应用入口（库目标，供 Tauri 加载）。
 
 mod commands;
+/// 内容传输**逻辑层**（统一生命周期 + 状态机 + 重试策略）；见 content/mod.rs 的分层说明。
+pub mod content;
 /// 公开给 `examples/e2e_peer.rs` 协议级 E2E 测试对端复用（线格式与密码学原语）。
 pub mod crypto;
 mod db;

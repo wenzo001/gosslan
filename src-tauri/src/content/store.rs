@@ -1,0 +1,223 @@
+//! 内容传输的**持久化**（逻辑层的一部分：表结构由本模块拥有，业务/网络层不碰）。
+//!
+//! 与旧表的区别：这里显式保存 received / attempts / next_attempt_at / last_error，
+//! 让"断网后重启还能继续"成为事实而不是口号（见 ADR-0019 §3.1）。
+
+use rusqlite::{params, Connection, OptionalExtension};
+
+use crate::content::model::{Direction, FailReason, TransferRecord, TransferStatus};
+use crate::content::policy;
+
+pub const TABLE: &str = "content_transfers";
+
+/// 建表（幂等）。由 db::init 调用 —— 本层自己拥有 schema，符合分层。
+pub fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS content_transfers (
+            cid            TEXT NOT NULL,
+            peer_id        TEXT NOT NULL,
+            group_id       TEXT,
+            name           TEXT NOT NULL,
+            size           INTEGER NOT NULL,
+            direction      TEXT NOT NULL,   -- 'send' | 'receive'
+            status         TEXT NOT NULL,   -- queued|active|verifying|complete|incomplete|rejected
+            received       INTEGER NOT NULL DEFAULT 0,
+            attempts       INTEGER NOT NULL DEFAULT 0,
+            next_attempt_at INTEGER NOT NULL DEFAULT 0,
+            last_error     TEXT,
+            path           TEXT,
+            created_at     INTEGER NOT NULL,
+            updated_at     INTEGER NOT NULL,
+            PRIMARY KEY (cid, peer_id, direction)
+         );
+         CREATE INDEX IF NOT EXISTS idx_content_transfers_status
+            ON content_transfers(status);",
+    )
+}
+
+fn row_to_record(r: &rusqlite::Row<'_>) -> rusqlite::Result<TransferRecord> {
+    let dir: String = r.get("direction")?;
+    let st: String = r.get("status")?;
+    Ok(TransferRecord {
+        cid: r.get("cid")?,
+        peer_id: r.get("peer_id")?,
+        group_id: r.get("group_id")?,
+        name: r.get("name")?,
+        size: r.get::<_, i64>("size")?.max(0) as u64,
+        direction: Direction::parse(&dir).unwrap_or(Direction::Receive),
+        status: TransferStatus::parse(&st).unwrap_or(TransferStatus::Queued),
+        received: r.get::<_, i64>("received")?.max(0) as u64,
+        attempts: r.get::<_, i64>("attempts")?.max(0) as u32,
+        next_attempt_at: r.get("next_attempt_at")?,
+        last_error: r.get("last_error")?,
+        path: r.get("path")?,
+        created_at: r.get("created_at")?,
+        updated_at: r.get("updated_at")?,
+    })
+}
+
+pub fn upsert(conn: &Connection, rec: &TransferRecord) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO content_transfers
+            (cid, peer_id, group_id, name, size, direction, status, received,
+             attempts, next_attempt_at, last_error, path, created_at, updated_at)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
+         ON CONFLICT(cid, peer_id, direction) DO UPDATE SET
+            group_id = excluded.group_id,
+            name = excluded.name,
+            size = excluded.size,
+            status = excluded.status,
+            received = MAX(content_transfers.received, excluded.received),
+            attempts = excluded.attempts,
+            next_attempt_at = excluded.next_attempt_at,
+            last_error = excluded.last_error,
+            path = COALESCE(excluded.path, content_transfers.path),
+            updated_at = excluded.updated_at",
+        params![
+            rec.cid,
+            rec.peer_id,
+            rec.group_id,
+            rec.name,
+            rec.size as i64,
+            rec.direction.as_str(),
+            rec.status.as_str(),
+            rec.received as i64,
+            rec.attempts as i64,
+            rec.next_attempt_at,
+            rec.last_error,
+            rec.path,
+            rec.created_at,
+            rec.updated_at,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn get(
+    conn: &Connection,
+    cid: &str,
+    peer_id: &str,
+    direction: Direction,
+) -> rusqlite::Result<Option<TransferRecord>> {
+    conn.query_row(
+        "SELECT * FROM content_transfers WHERE cid=?1 AND peer_id=?2 AND direction=?3",
+        params![cid, peer_id, direction.as_str()],
+        row_to_record,
+    )
+    .optional()
+}
+
+pub fn list(conn: &Connection, limit: usize) -> rusqlite::Result<Vec<TransferRecord>> {
+    let mut stmt = conn.prepare(
+        "SELECT * FROM content_transfers ORDER BY updated_at DESC LIMIT ?1",
+    )?;
+    let rows = stmt.query_map(params![limit as i64], row_to_record)?;
+    rows.collect()
+}
+
+/// 该 peer 下仍可恢复的记录（建链时自动重试用）。
+pub fn list_resumable_for_peer(
+    conn: &Connection,
+    peer_id: &str,
+) -> rusqlite::Result<Vec<TransferRecord>> {
+    let mut stmt = conn.prepare(
+        "SELECT * FROM content_transfers
+         WHERE peer_id=?1 AND status IN ('queued','active','incomplete')
+         ORDER BY updated_at ASC",
+    )?;
+    let rows = stmt.query_map(params![peer_id], row_to_record)?;
+    rows.collect()
+}
+
+/// 记录一次失败：按【纯策略】算新状态/退避，再落库。返回更新后的记录。
+pub fn record_failure(
+    conn: &Connection,
+    cid: &str,
+    peer_id: &str,
+    direction: Direction,
+    reason: FailReason,
+    now_ms: i64,
+) -> rusqlite::Result<Option<TransferRecord>> {
+    let Some(mut rec) = get(conn, cid, peer_id, direction)? else {
+        return Ok(None);
+    };
+    if !policy::can_transition(rec.status, policy::status_after_failure(reason)) {
+        return Ok(Some(rec)); // 终态不再改写
+    }
+    let (status, attempts, next_at) = policy::on_failure(rec.attempts, reason, now_ms);
+    rec.status = status;
+    rec.attempts = attempts;
+    rec.next_attempt_at = next_at;
+    rec.last_error = Some(reason.message().to_string());
+    rec.updated_at = now_ms;
+    upsert(conn, &rec)?;
+    Ok(Some(rec))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::content::model::{Direction, FailReason, TransferRecord, TransferStatus};
+
+    fn mem() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_schema(&conn).unwrap();
+        conn
+    }
+
+    fn rec(cid: &str, status: TransferStatus, received: u64) -> TransferRecord {
+        TransferRecord {
+            cid: cid.into(),
+            peer_id: "peer-a".into(),
+            group_id: None,
+            name: "a.png".into(),
+            size: 100,
+            direction: Direction::Receive,
+            status,
+            received,
+            attempts: 0,
+            next_attempt_at: 0,
+            last_error: None,
+            path: None,
+            created_at: 1,
+            updated_at: 1,
+        }
+    }
+
+    #[test]
+    fn upsert_round_trips_and_keeps_max_received() {
+        let conn = mem();
+        upsert(&conn, &rec("c1", TransferStatus::Active, 40)).unwrap();
+        let got = get(&conn, "c1", "peer-a", Direction::Receive).unwrap().unwrap();
+        assert_eq!(got.received, 40);
+        assert_eq!(got.status, TransferStatus::Active);
+        // 进度回退（旧的 40 → 新的 10）不允许把 received 变回去
+        let mut older = rec("c1", TransferStatus::Active, 10);
+        older.path = Some("/tmp/a.png".into());
+        upsert(&conn, &older).unwrap();
+        let got2 = get(&conn, "c1", "peer-a", Direction::Receive).unwrap().unwrap();
+        assert_eq!(got2.received, 40, "received 只能前进");
+        assert_eq!(got2.path.as_deref(), Some("/tmp/a.png"));
+    }
+
+    #[test]
+    fn failure_persists_resumable_or_terminal() {
+        let conn = mem();
+        upsert(&conn, &rec("c2", TransferStatus::Active, 0)).unwrap();
+        let r = record_failure(&conn, "c2", "peer-a", Direction::Receive, FailReason::Timeout, 1_000)
+            .unwrap()
+            .unwrap();
+        assert_eq!(r.status, TransferStatus::Incomplete);
+        assert_eq!(r.attempts, 1);
+        assert!(r.next_attempt_at > 1_000);
+        assert!(r.last_error.is_some());
+        let list = list_resumable_for_peer(&conn, "peer-a").unwrap();
+        assert_eq!(list.len(), 1, "可恢复记录必须能被建链时捞出来");
+        // 终态
+        let r2 = record_failure(&conn, "c2", "peer-a", Direction::Receive, FailReason::HashMismatch, 2_000)
+            .unwrap()
+            .unwrap();
+        assert_eq!(r2.status, TransferStatus::Rejected);
+        assert!(list_resumable_for_peer(&conn, "peer-a").unwrap().is_empty());
+    }
+}

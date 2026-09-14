@@ -10,6 +10,22 @@
 
 ## [Unreleased]
 
+### Added (内容传输逻辑层：统一生命周期 / 状态机 / 重试策略 / 持久化)
+
+为「消息系统稳定化」（ADR-0019，Phase 1/3）打地基，新增 src-tauri/src/content/：
+
+- model.rs：统一词汇 —— cid = sha256(明文)（内容寻址，任何持有完整字节的端都能当种子）、
+  Direction、TransferStatus(queued/active/verifying/complete/incomplete/rejected)、
+  FailReason（显式区分可恢复与终态）。
+- policy.rs：纯函数状态机 + 指数退避（2s 起、60s 封顶）+ 失败分类；可脱离网络单测。
+- store.rs：content_transfers 表，显式保存 received / attempts / next_attempt_at /
+  last_error —— 这是「断网重启后还能继续」的事实依据；schema 归本层所有（分层）。
+- 分层约定（用户 2026-09-15 要求）：逻辑层不依赖网络层，网络能力后续以 trait 注入；
+  各层只通过能力函数调用，且都能扩展。详见 content/mod.rs 顶部。
+
+本提交只是地基（尚未接线）：业务层接线、能力协商、ContentRequest 拉取与前端统一状态
+在后续提交落地（ADR-0019 有分阶段表）。
+
 ## [4.3.21] - 2026-09-14
 
 ### Fixed (🔴 群聊收图时好时坏：在途文件被当成「已被清理」并永久缓存)
