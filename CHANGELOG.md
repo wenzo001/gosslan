@@ -10,6 +10,20 @@
 
 ## [Unreleased]
 
+### Added (Phase 1：未完成内容自动重试 + 统一状态查询)
+
+- **建链自动重试**：Hello / 建链时把该 peer 名下未完成的**接收**重新拉一遍
+  （只对声明了 CONTENT_FEATURE_PULL 的对端发 ContentRequest；Incomplete 按退避到点、
+  Active 超过 60s 没动也重试 —— 中途丢链不一定有机会写失败记录，不能让卡住的 Active
+  永远不重试）。
+- **接收一开始就登记** content_transfers（Active + cid）：于是"卡住 / 失败"有据可查；
+  落盘后由 record_local 转 Complete，SHA 校验失败由 record_failure 转 Rejected。
+- **统一状态查询** get_content_transfers：TransferRecord 现在可序列化给前端，
+  供气泡显示「发送中 / 等待对方在线 / 网络不佳 / 未完成·点击重试 / 完成」
+  （前端展示这批的后半段，下一提交接）。
+
+护栏：incomplete_content_is_auto_retried_behind_capability_gate。
+
 ## [4.5.0] - 2026-09-14
 
 ### Added (内容拉取补全：接收方也能做种 + 群成员可拉 + 授权收紧)

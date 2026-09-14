@@ -3588,6 +3588,16 @@ pub async fn request_content(
     }
 }
 
+/// 统一的内容传输状态（ADR-0019 Phase 1）：前端据此在气泡上显示
+/// 发送中 / 等待对方在线 / 网络不佳 / 未完成·点击重试 / 完成。
+#[tauri::command(async)]
+pub fn get_content_transfers(
+    state: State<'_, Arc<AppState>>,
+) -> Vec<crate::content::TransferRecord> {
+    let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
+    crate::content::store::list(&dbc, 200).unwrap_or_default()
+}
+
 #[tauri::command(async)]
 pub async fn send_file(
     state: State<'_, Arc<AppState>>,

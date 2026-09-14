@@ -2360,6 +2360,58 @@ fn directed_relay_target<'a>(msg: &'a Message, my_id: &str) -> Option<&'a str> {
     }
 }
 
+/// 建链 / Hello 时：把该 peer 名下**未完成（可恢复）的接收**重新拉一遍（ADR-0019 Phase 1）。
+///
+/// - 只对声明了 CONTENT_FEATURE_PULL 的对端发（旧端不发新帧，保持兼容）；
+/// - 退避未到点的跳过（纯策略 should_retry_now）；
+/// - 只处理 Receive 方向：Send 方向的重试由既有 file_outbox 负责。
+async fn retry_incomplete_content(state: &Arc<AppState>, peer_id: &str) {
+    let caps = state
+        .peer_content_features
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(peer_id)
+        .copied()
+        .unwrap_or(0);
+    if caps & crate::protocol::CONTENT_FEATURE_PULL == 0 {
+        return;
+    }
+    let rows = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        crate::content::store::list_resumable_for_peer(&dbc, peer_id).unwrap_or_default()
+    };
+    let now = db::now_ms();
+    for rec in rows {
+        if rec.direction != crate::content::model::Direction::Receive {
+            continue;
+        }
+        // Incomplete：到点就重试（退避）；Active：长时间没动（丢链/半开）也重试 ——
+        // 中途断链不一定有机会写失败记录，不能让"卡住的 Active"永远不重试。
+        let due = match rec.status {
+            crate::content::model::TransferStatus::Incomplete => {
+                crate::content::policy::should_retry_now(rec.status, now, rec.next_attempt_at)
+            }
+            crate::content::model::TransferStatus::Active => now.saturating_sub(rec.updated_at) > 60_000,
+            _ => false,
+        };
+        if !due {
+            continue;
+        }
+        let msg = Message::ContentRequest {
+            from: state.device_id.clone(),
+            cid: rec.cid.clone(),
+            name: rec.name.clone(),
+            size: rec.size,
+        };
+        if try_send(state, peer_id, &msg).await.is_ok() {
+            state.logger.info(
+                "content",
+                format!("建链自动重试未完成内容 cid={} peer={peer_id}", rec.cid),
+            );
+        }
+    }
+}
+
 pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) {
     // ---- 定向中继（一跳）：不是给我的定向帧，借邻居的直连转投给 to ----
     // 共享目录（ShareTree/ShareFile）在无直连时会走这里；RelayFileOffer 同理。
@@ -2488,6 +2540,9 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             flush_pending_friend_request(state, &device_id).await;
             // 好友同意回执同样没有回执：建链后补发（真机：Mac 端好友状态一直没同步）。
             flush_pending_friend_accept(state, &device_id).await;
+            // Phase 1：建链即**自动重试**该 peer 名下未完成的可恢复内容
+            // （只对声明了拉取能力的对端发 ContentRequest；退避未到点的跳过）。
+            retry_incomplete_content(state, &device_id).await;
             // 建链后把**我的完整资料**（含大头像）定向发给这一个对端：
             // Hello 只带小头像、Presence 不再内联大头像，这里是「大头像只同步一次」
             // 的正式路径。LAN 上瞬间完成；BLE 上走 bulk，慢但不会堵住聊天。
@@ -3084,9 +3139,32 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 &name,
                 size,
                 file_key,
-                file_sha256,
+                file_sha256.clone(),
             ) {
                 Ok(_) => {
+                    // Phase 1：接收一开始就登记一条 Active 记录（cid → 暂无 path）。
+                    // 中途断链 / 超时由 record_failure 标成 Incomplete ⇒ 建链时自动重取。
+                    {
+                        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                        let now = db::now_ms();
+                        let rec = crate::content::model::TransferRecord {
+                            cid: file_sha256.clone(),
+                            peer_id: from.clone(),
+                            group_id: None,
+                            name: name.clone(),
+                            size,
+                            direction: crate::content::model::Direction::Receive,
+                            status: crate::content::model::TransferStatus::Active,
+                            received: 0,
+                            attempts: 0,
+                            next_attempt_at: 0,
+                            last_error: None,
+                            path: None,
+                            created_at: now,
+                            updated_at: now,
+                        };
+                        let _ = crate::content::store::upsert(&dbc, &rec);
+                    }
                     let _ = try_send(
                         state,
                         peer_id,
@@ -4596,6 +4674,15 @@ async fn handle_relay_chunk(
                         0.0,
                     )
                     .ok();
+                    // 统一状态：校验失败 ⇒ Rejected（换源重取是唯一出路）。
+                    let _ = crate::content::store::record_failure(
+                        &dbc,
+                        &rs.expected_sha256,
+                        &from,
+                        crate::content::model::Direction::Receive,
+                        crate::content::model::FailReason::HashMismatch,
+                        db::now_ms(),
+                    );
                     let _ = state.app.emit(
                         "file-failed",
                         &FileFailedInfo {

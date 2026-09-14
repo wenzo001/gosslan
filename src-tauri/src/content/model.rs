@@ -92,7 +92,8 @@ impl TransferStatus {
 }
 
 /// 失败原因 —— 决定"自动重试"还是"终态"。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum FailReason {
     /// 链路断开 / 无可用链路。
     LinkDown,
@@ -143,8 +144,9 @@ impl FailReason {
     }
 }
 
-/// 一条内容传输记录（持久化与内存同构）。
-#[derive(Clone, Debug, PartialEq)]
+/// 一条内容传输记录（持久化与内存同构）。可序列化给前端做统一状态展示。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct TransferRecord {
     pub cid: ContentId,
     /// 单聊对端 device_id；群文件是 group_id，另见 group_id 字段。

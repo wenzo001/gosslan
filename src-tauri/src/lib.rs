@@ -316,6 +316,7 @@ pub fn run() {
             commands::get_group_file_delivery_summary,
             commands::send_file,
             commands::request_content,
+            commands::get_content_transfers,
             commands::send_file_auto,
             commands::send_file_relay,
             commands::get_transfers,
@@ -1584,6 +1585,30 @@ mod tests {
                 && body.contains("group_file_receivers")
                 && body.contains("仍在接收"),
             "缺失的 final 文件必须先在途判定（file_receivers / group_file_receivers），在途报 Unknown 而不是 Gone"
+        );
+    }
+
+    /// **未完成的内容要能自动重试，且同样受能力协商约束**（ADR-0019 Phase 1）。
+    #[test]
+    fn incomplete_content_is_auto_retried_behind_capability_gate() {
+        let transport = include_str!("network/transport.rs");
+        assert!(
+            transport.contains("async fn retry_incomplete_content("),
+            "必须实现建链自动重试"
+        );
+        assert!(
+            transport.contains("CONTENT_FEATURE_PULL"),
+            "自动重试也必须走能力协商（旧端不发新帧）"
+        );
+        let cmds = include_str!("commands.rs");
+        assert!(
+            cmds.contains("pub fn get_content_transfers("),
+            "必须有统一状态查询命令（前端气泡据此显示）"
+        );
+        let model = include_str!("content/model.rs");
+        assert!(
+            model.contains("Serialize, Deserialize, Clone, Debug, PartialEq"),
+            "TransferRecord 必须可序列化给前端"
         );
     }
 
