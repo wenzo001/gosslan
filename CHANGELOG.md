@@ -10,6 +10,8 @@
 
 ## [Unreleased]
 
+## [4.3.19] - 2026-09-14
+
 ### Fixed (🔴 Windows CI 打包失败 —— Windows 专用分支的编译错误本地拦不住)
 
 用户 2026-09-14：GitHub Actions 的 Windows 两个 job（x64 + arm64）都卡在
