@@ -3149,6 +3149,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                         let now = db::now_ms();
                         let rec = crate::content::model::TransferRecord {
                             cid: file_sha256.clone(),
+                            transfer_id: Some(transfer_id.clone()),
                             peer_id: from.clone(),
                             group_id: None,
                             name: name.clone(),

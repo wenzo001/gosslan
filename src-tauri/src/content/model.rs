@@ -149,6 +149,8 @@ impl FailReason {
 #[serde(rename_all = "camelCase")]
 pub struct TransferRecord {
     pub cid: ContentId,
+    /// 原始传输 id（接收侧用它定位 <transfer_id>.part，断点续传要用）。
+    pub transfer_id: Option<String>,
     /// 单聊对端 device_id；群文件是 group_id，另见 group_id 字段。
     pub peer_id: String,
     pub group_id: Option<String>,

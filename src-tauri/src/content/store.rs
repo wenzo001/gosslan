@@ -15,6 +15,7 @@ pub fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS content_transfers (
             cid            TEXT NOT NULL,
+            transfer_id    TEXT,
             peer_id        TEXT NOT NULL,
             group_id       TEXT,
             name           TEXT NOT NULL,
@@ -32,7 +33,17 @@ pub fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
          );
          CREATE INDEX IF NOT EXISTS idx_content_transfers_status
             ON content_transfers(status);",
-    )
+    )?;
+    // 迁移：早期 content_transfers 没有 transfer_id（断点续传要按它找 <tid>.part）。
+    let has_tid: bool = conn
+        .prepare("SELECT COUNT(*) FROM pragma_table_info('content_transfers') WHERE name = 'transfer_id'")
+        .and_then(|mut s| s.query_row([], |r| r.get::<_, i64>(0)))
+        .map(|n| n > 0)
+        .unwrap_or(true);
+    if !has_tid {
+        let _ = conn.execute("ALTER TABLE content_transfers ADD COLUMN transfer_id TEXT", []);
+    }
+    Ok(())
 }
 
 fn row_to_record(r: &rusqlite::Row<'_>) -> rusqlite::Result<TransferRecord> {
@@ -40,6 +51,7 @@ fn row_to_record(r: &rusqlite::Row<'_>) -> rusqlite::Result<TransferRecord> {
     let st: String = r.get("status")?;
     Ok(TransferRecord {
         cid: r.get("cid")?,
+        transfer_id: r.get("transfer_id")?,
         peer_id: r.get("peer_id")?,
         group_id: r.get("group_id")?,
         name: r.get("name")?,
@@ -59,10 +71,11 @@ fn row_to_record(r: &rusqlite::Row<'_>) -> rusqlite::Result<TransferRecord> {
 pub fn upsert(conn: &Connection, rec: &TransferRecord) -> rusqlite::Result<()> {
     conn.execute(
         "INSERT INTO content_transfers
-            (cid, peer_id, group_id, name, size, direction, status, received,
+            (cid, transfer_id, peer_id, group_id, name, size, direction, status, received,
              attempts, next_attempt_at, last_error, path, created_at, updated_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)
          ON CONFLICT(cid, peer_id, direction) DO UPDATE SET
+            transfer_id = COALESCE(excluded.transfer_id, content_transfers.transfer_id),
             group_id = excluded.group_id,
             name = excluded.name,
             size = excluded.size,
@@ -75,6 +88,7 @@ pub fn upsert(conn: &Connection, rec: &TransferRecord) -> rusqlite::Result<()> {
             updated_at = excluded.updated_at",
         params![
             rec.cid,
+            rec.transfer_id,
             rec.peer_id,
             rec.group_id,
             rec.name,
@@ -204,6 +218,7 @@ pub fn record_local(
 ) -> rusqlite::Result<()> {
     let rec = TransferRecord {
         cid: cid.to_string(),
+        transfer_id: None,
         peer_id: peer_id.to_string(),
         group_id: group_id.map(str::to_string),
         name: name.to_string(),
@@ -260,6 +275,7 @@ mod tests {
     fn rec(cid: &str, status: TransferStatus, received: u64) -> TransferRecord {
         TransferRecord {
             cid: cid.into(),
+            transfer_id: None,
             peer_id: "peer-a".into(),
             group_id: None,
             name: "a.png".into(),

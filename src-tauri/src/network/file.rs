@@ -170,6 +170,7 @@ pub async fn send_file_from_path(
         let now = db::now_ms();
         let rec = crate::content::model::TransferRecord {
             cid: file_sha256.clone(),
+            transfer_id: Some(transfer_id.to_string()),
             peer_id: peer_id.to_string(),
             group_id: None,
             name: name.clone(),
@@ -658,6 +659,7 @@ pub fn begin_group_receive(
         let now = db::now_ms();
         let rec = crate::content::model::TransferRecord {
             cid: expected_sha256.clone(),
+            transfer_id: Some(transfer_id.to_string()),
             peer_id: peer_id.to_string(),
             group_id: None,
             name: name.to_string(),
