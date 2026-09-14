@@ -371,6 +371,9 @@ pub enum Message {
     ShareTreeResponse {
         request_id: String,
         from: String,
+        /// 目标节点（None = 旧端直连回复）。有它才能在无直连时借中继一站送回。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        to: Option<String>,
         entries: Vec<ShareEntry>,
     },
     /// 请求对方共享目录中的文件（触发对方向我方发起文件传输）
@@ -378,6 +381,9 @@ pub enum Message {
         transfer_id: String,
         from: String,
         path: String,
+        /// 目标节点（None = 旧端直连发送）。见 ShareTreeResponse.to。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        to: Option<String>,
     },
     /// Gossip 广播信封（去中心化消息分发）
     Gossip {

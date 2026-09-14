@@ -207,6 +207,119 @@ pub async fn send_file_from_path(
         .await
         .map_err(|e| SendFileError::retryable(e))
 }
+/// 无直连时，借**一跳中继**把文件发给 peer_id（接收方是请求下载的共享目录主人）。
+///
+/// 与 send_file_from_path 的区别：
+/// - 不做 FileAccept 握手（对方已显式请求下载），也不等 FileCompleteAck（中继无回执）；
+/// - 走 RelayFileOffer + RelayChunk：中继只透传密文，E2EE 与直传一致；
+/// - 单跳：中继必须与目标有直连（与既有 RelayChunk 的限制一致）。
+///
+/// 尽力而为：没有回执，失败只能靠接收方超时/本机日志。
+pub async fn send_file_via_relay(
+    state: &Arc<AppState>,
+    peer_id: &str,
+    transfer_id: &str,
+    path: PathBuf,
+) -> Result<(), String> {
+    let meta = std::fs::metadata(&path).map_err(|e| format!("文件不存在或不可读：{e}"))?;
+    if !meta.is_file() {
+        return Err("只能发送普通文件".to_string());
+    }
+    let size = meta.len();
+    let name = path
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "unnamed".to_string());
+    let file_key = crypto::random_key();
+    let file_sha256 = sha256_file_hex(&path)?;
+    let receiver_pubkey = resolve_member_x25519(state, peer_id)
+        .ok_or_else(|| "无法获取对方公钥，无法加密文件".to_string())?;
+    let shared = crypto::shared_secret(&state.identity.x25519_secret, &receiver_pubkey)
+        .ok_or_else(|| "密钥交换失败".to_string())?;
+    let sealed_key_b64 =
+        STANDARD.encode(crypto::seal(&shared, &file_key).ok_or_else(|| "加密失败".to_string())?);
+    let bytes = std::fs::read(&path).map_err(|e| format!("读取文件失败：{e}"))?;
+    // 64KiB/片：base64 后约 88KB，BLE 单帧也装得下；中继以 LAN 为主。
+    let chunk_size = crate::relay_manager::MIN_CHUNK_SIZE;
+    let total = bytes.len();
+    let chunk_count = total.div_ceil(chunk_size).max(1) as u32;
+
+    {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::upsert_transfer(
+            &dbc, transfer_id, peer_id, &name, size, "send", "active", None, 0.0,
+        )
+        .ok();
+    }
+
+    let offer = Message::RelayFileOffer {
+        transfer_id: transfer_id.to_string(),
+        from: state.device_id.clone(),
+        to: peer_id.to_string(),
+        name: name.clone(),
+        size,
+        total_chunks: chunk_count,
+        sealed_file_key: sealed_key_b64,
+        file_sha256,
+    };
+    crate::network::transport::relay_send_to_neighbors(state, peer_id, &offer).await;
+
+    let mut last_report = std::time::Instant::now() - Duration::from_secs(1);
+    for seq in 0..chunk_count {
+        let start = ((seq as usize) * chunk_size).min(total);
+        let end = (start + chunk_size).min(total);
+        let plain = &bytes[start..end];
+        let sealed = crypto::seal_symmetric(&file_key, plain)
+            .ok_or_else(|| "文件分片加密失败".to_string())?;
+        let data = STANDARD.encode(&sealed);
+        let msg = Message::RelayChunk {
+            transfer_id: transfer_id.to_string(),
+            seq,
+            data,
+            from: state.device_id.clone(),
+            to: peer_id.to_string(),
+            ttl: 3,
+        };
+        crate::network::transport::relay_send_to_neighbors(state, peer_id, &msg).await;
+        let sent = end as u64;
+        if last_report.elapsed() >= Duration::from_millis(250) {
+            last_report = std::time::Instant::now();
+            let progress = if size == 0 { 1.0 } else { sent as f64 / size as f64 };
+            {
+                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                db::upsert_transfer(
+                    &dbc, transfer_id, peer_id, &name, size, "send", "active", None, progress,
+                )
+                .ok();
+            }
+            let _ = state.app.emit(
+                "file-progress",
+                &crate::state::FileProgress {
+                    transfer_id: transfer_id.to_string(),
+                    received: sent,
+                    total: size,
+                },
+            );
+        }
+    }
+    {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::upsert_transfer(
+            &dbc,
+            transfer_id,
+            peer_id,
+            &name,
+            size,
+            "send",
+            "done",
+            Some(path.to_string_lossy().as_ref()),
+            1.0,
+        )
+        .ok();
+    }
+    Ok(())
+}
+
 
 async fn stream_file(
     state: &Arc<AppState>,

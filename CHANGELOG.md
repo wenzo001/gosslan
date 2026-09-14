@@ -10,6 +10,21 @@
 
 ## [Unreleased]
 
+### Fixed (共享目录在中继/桥接下不可用)
+
+真机 2026-09-14 全 Windows 局域网：A 与 B 只能经中继通信时，A 打不开 B 的共享目录。
+原因是共享目录三件套直接用 try_send（只支持直连），且 ShareTreeRequest/ShareFileRequest
+的处理器要求 from == peer_id，中继转发会被丢弃；ShareTreeResponse 甚至没有 to 字段，
+无法送回。聊天有 broadcast_gossip 兜底，所以聊天能过、共享目录不能。
+
+修法：
+- ShareTreeResponse / ShareFileRequest 增加可选 to（serde default，旧端兼容）。
+- handle_message 顶部新增**定向中继**：不是给我的 ShareTree/ShareFile/RelayFileOffer
+  借邻居的直连转投给 to（一跳）。
+- 发送侧无直连时改走 relay_send_to_neighbors；新增 send_file_via_relay 用既有
+  RelayFileOffer/RelayChunk 发送共享文件（E2EE 与直传一致，中继只透传密文）。
+- 中继接收路径幂等：重复的 RelayFileOffer 不再清空已收到的切片/重置 hasher。
+
 ### Fixed (🔴 全 Windows 局域网：同一网段却走桥接 / 共享目录打不开)
 
 真机 2026-09-14：三台 Windows、同一网段、蓝牙都开。A 与 B 之间显示「桥接 · 1」，

@@ -269,6 +269,23 @@ pub async fn try_send(state: &AppState, peer_id: &str, msg: &Message) -> Result<
     send_over_order(&senders, &order, msg, is_bulk_message(msg)).await
 }
 
+/// 无直连时，把一条**定向**帧借一跳中继发给 to（共享目录 / 中继文件在无直连时用）。
+///
+/// 只做「借邻居的直连」这一跳：给所有有直连的邻居各发一份（帧自带 to），邻居收到后
+/// 按 to 直接投递（见 handle_message 顶部的定向中继分支）。邻居若与 to 没有直连就丢弃
+/// —— 与既有 RelayChunk 的单跳限制一致；不泛洪，因此不存在环路。
+pub(crate) async fn relay_send_to_neighbors(state: &AppState, to: &str, msg: &Message) {
+    let peers: Vec<String> = {
+        state.links.lock().await.keys().cloned().collect()
+    };
+    for p in peers {
+        if p == to {
+            continue;
+        }
+        let _ = try_send(state, &p, msg).await;
+    }
+}
+
 /// 向所有已连接节点广播一条 Gossip 消息。
 pub async fn broadcast_gossip(state: &AppState, envelope: GossipEnvelope) {
     let msg = Message::Gossip {
@@ -2328,7 +2345,29 @@ async fn connect_to_peer(
 
 // ---------------- 消息分发 ----------------
 
+/// 定向中继判定（纯函数，便于钉住）：这帧是不是「不是给我的、需要我借一跳转投」的定向帧？
+///
+/// 返回 Some(to) 表示应把**原帧**投给 to（仅当本机有到 to 的直连；没有则由 try_send 失败丢弃）。
+/// 覆盖共享目录三件套与中继文件元数据；RelayChunk 有独立的 ttl 转发路径，不在这里。
+fn directed_relay_target<'a>(msg: &'a Message, my_id: &str) -> Option<&'a str> {
+    match msg {
+        Message::ShareTreeRequest { to, .. } if to != my_id => Some(to.as_str()),
+        Message::ShareTreeResponse { to: Some(t), .. } if t != my_id => Some(t.as_str()),
+        Message::ShareFileRequest { to: Some(t), .. } if t != my_id => Some(t.as_str()),
+        Message::RelayFileOffer { to, .. } if to != my_id => Some(to.as_str()),
+        _ => None,
+    }
+}
+
 pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) {
+    // ---- 定向中继（一跳）：不是给我的定向帧，借邻居的直连转投给 to ----
+    // 共享目录（ShareTree/ShareFile）在无直连时会走这里；RelayFileOffer 同理。
+    // 只在「我确实有到 to 的直连」时投递；没有就丢弃（单跳中继限制，见
+    // relay_send_to_neighbors 的说明）。
+    if let Some(to) = directed_relay_target(&msg, &state.device_id) {
+        let _ = try_send(state, to, &msg).await;
+        return;
+    }
     match msg {
         Message::Hello {
             device_id,
@@ -3197,9 +3236,10 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
         Message::ShareTreeRequest {
             request_id,
             from,
-            to,
+            to: _to,
         } => {
-            if from != peer_id || to != state.device_id {
+            // 定向中继已在 handle_message 顶部处理（不是给我的帧不会走到这里）。
+            if from == state.device_id {
                 return;
             }
             let is_friend = {
@@ -3219,9 +3259,15 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             let resp = Message::ShareTreeResponse {
                 request_id,
                 from: state.device_id.clone(),
+                to: Some(from.clone()),
                 entries,
             };
-            let _ = try_send(state, peer_id, &resp).await;
+            // 有直连直接回；没有则借一跳中继送回（与请求路径对称）。
+            if state.has_link(&from).await {
+                let _ = try_send(state, &from, &resp).await;
+            } else {
+                relay_send_to_neighbors(state, &from, &resp).await;
+            }
         }
         Message::ShareTreeResponse {
             request_id,
@@ -3236,8 +3282,10 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             transfer_id,
             from,
             path,
+            to: _to,
         } => {
-            if from != peer_id || from == state.device_id {
+            // 定向中继已在 handle_message 顶部处理。
+            if from == state.device_id {
                 return;
             }
             let is_friend = {
@@ -3271,15 +3319,16 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 &format!("「{from_name}」下载了你的文件「{file_name}」"),
             );
             tokio::spawn(async move {
-                if let Err(e) = file::send_file_from_path(&st, &from, &transfer_id, canon_full).await
-                {
-                    let _ = st.app.emit(
-                        "file-failed",
-                        &FileFailedInfo {
-                            transfer_id,
-                            reason: e.message,
-                        },
-                    );
+                // 有直连走原有可靠直传；没有直连则借一跳中继（RelayFileOffer/RelayChunk）。
+                let result = if st.has_link(&from).await {
+                    file::send_file_from_path(&st, &from, &transfer_id, canon_full)
+                        .await
+                        .map_err(|e| e.message)
+                } else {
+                    file::send_file_via_relay(&st, &from, &transfer_id, canon_full).await
+                };
+                if let Err(reason) = result {
+                    let _ = st.app.emit("file-failed", &FileFailedInfo { transfer_id, reason });
                 }
             });
         }
@@ -4315,7 +4364,7 @@ fn parse_gossip_payload(pt: &[u8]) -> (String, String) {
 #[allow(clippy::too_many_arguments)]
 async fn handle_relay_file_offer(
     state: &Arc<AppState>,
-    peer_id: &str,
+    _peer_id: &str,
     transfer_id: String,
     from: String,
     to: String,
@@ -4328,7 +4377,10 @@ async fn handle_relay_file_offer(
     if to != state.device_id {
         return; // 中继节点无需重组，只转发切片
     }
-    if from != peer_id || from == state.device_id || total_chunks == 0 || size > i64::MAX as u64 {
+    // 中继场景下 from 是**原始发送方**，peer_id 是上一跳邻居 —— 不再要求二者相等；
+    // 由 relay_send_to_neighbors + 顶部定向中继保证帧只被转投给 to，且文件会话密钥
+    // 只能用 from 的私钥解开（伪造 from 无法解封），因此这里是安全的。
+    if from == state.device_id || total_chunks == 0 || size > i64::MAX as u64 {
         return;
     }
     if file::safe_file_name(&name).is_none() {
@@ -4356,17 +4408,21 @@ async fn handle_relay_file_offer(
     let Some(file_key) = file_key else {
         return;
     };
-    state.relay_file_keys.lock().unwrap_or_else(|e| e.into_inner()).insert(
-        transfer_id.clone(),
-        crate::state::RelayFileReceive {
+    // 幂等：重复的 RelayFileOffer（多邻居泛洪）不得重置已累积的 hasher，
+    // 否则完整性校验必然失败（hash 只覆盖后到的切片）。
+    state
+        .relay_file_keys
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .entry(transfer_id.clone())
+        .or_insert_with(|| crate::state::RelayFileReceive {
             file_key,
             expected_sha256: file_sha256,
             hasher: {
                 use sha2::Digest as _;
                 sha2::Sha256::new()
             },
-        },
-    );
+        });
     state
         .relay
         .lock()
@@ -6913,6 +6969,58 @@ mod tests {
             Message::Heartbeat { device_id } => assert_eq!(device_id, "dev-1"),
             _ => panic!("类型不符"),
         }
+    }
+
+    /// 定向中继判定：共享目录/中继文件在无直连时靠它借一跳；给本机或旧端无 to 的帧不转发。
+    #[test]
+    fn directed_relay_target_routes_share_and_offer_frames() {
+        let me = "me";
+        let tree_to_other = Message::ShareTreeRequest {
+            request_id: "r".into(),
+            from: "a".into(),
+            to: "b".into(),
+        };
+        assert_eq!(directed_relay_target(&tree_to_other, me), Some("b"));
+        let tree_to_me = Message::ShareTreeRequest {
+            request_id: "r".into(),
+            from: "a".into(),
+            to: me.into(),
+        };
+        assert_eq!(directed_relay_target(&tree_to_me, me), None, "给本机的帧不转发");
+        let resp_legacy = Message::ShareTreeResponse {
+            request_id: "r".into(),
+            from: "a".into(),
+            to: None,
+            entries: vec![],
+        };
+        assert_eq!(directed_relay_target(&resp_legacy, me), None, "旧端无 to：按直连处理");
+        let resp_relay = Message::ShareTreeResponse {
+            request_id: "r".into(),
+            from: "a".into(),
+            to: Some("b".into()),
+            entries: vec![],
+        };
+        assert_eq!(directed_relay_target(&resp_relay, me), Some("b"));
+        let file_req = Message::ShareFileRequest {
+            transfer_id: "t".into(),
+            from: "a".into(),
+            path: "p".into(),
+            to: Some("b".into()),
+        };
+        assert_eq!(directed_relay_target(&file_req, me), Some("b"));
+        let offer = Message::RelayFileOffer {
+            transfer_id: "t".into(),
+            from: "a".into(),
+            to: "b".into(),
+            name: "n".into(),
+            size: 1,
+            total_chunks: 1,
+            sealed_file_key: "k".into(),
+            file_sha256: "h".into(),
+        };
+        assert_eq!(directed_relay_target(&offer, me), Some("b"));
+        let normal = Message::Heartbeat { device_id: "a".into() };
+        assert_eq!(directed_relay_target(&normal, me), None);
     }
 
     /// 造一个只关心 payload 长度/类型的 Gossip 信封（其余字段对 is_bulk_message 无意义）。

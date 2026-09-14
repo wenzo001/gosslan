@@ -3689,9 +3689,15 @@ pub async fn request_share_tree(
         from: s.device_id.clone(),
         to: friend_id.clone(),
     };
-    if let Err(e) = try_send(s, &friend_id, &msg).await {
-        s.pending_share_tree.lock().unwrap_or_else(|e| e.into_inner()).remove(&request_id);
-        return Err(e);
+    // 有直连就精确发；没有直连则借**一跳中继**（邻居需与目标有直连）。
+    // 这是「即使在桥接状态下，共享目录也要能用」的入口（真机 2026-09-14 全 Windows 局域网）。
+    if s.has_link(&friend_id).await {
+        if let Err(e) = try_send(s, &friend_id, &msg).await {
+            s.pending_share_tree.lock().unwrap_or_else(|e| e.into_inner()).remove(&request_id);
+            return Err(e);
+        }
+    } else {
+        crate::network::transport::relay_send_to_neighbors(s, &friend_id, &msg).await;
     }
 
     match tokio::time::timeout(Duration::from_secs(10), rx).await {
@@ -3721,8 +3727,13 @@ pub async fn download_shared_file(
         transfer_id: transfer_id.clone(),
         from: s.device_id.clone(),
         path: remote_path.clone(),
+        to: Some(friend_id.clone()),
     };
-    try_send(s, &friend_id, &msg).await?;
+    if s.has_link(&friend_id).await {
+        try_send(s, &friend_id, &msg).await?;
+    } else {
+        crate::network::transport::relay_send_to_neighbors(s, &friend_id, &msg).await;
+    }
     // 本地提示：你正在下载好友的文件（聊天信息内简约系统消息）
     let file_name = std::path::Path::new(&remote_path)
         .file_name()
