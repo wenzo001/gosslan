@@ -885,26 +885,16 @@ fn bound_ed25519_from_peer(peer: Option<&Peer>) -> Option<String> {
 /// 避免在验签与本次写入之间被另一条 announce 插空改动。
 fn mark_peer_keys_verified(state: &AppState, device_id: &str, x25519: &str, ed25519: &str) {
     let mut peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
+    // ⚠️ **只给已存在的记录打标，绝不凭空造记录**。
+    //
+    // 曾经的写法是「Hello 早于 announce ⇒ 先插一条占位记录」，那是错的：
+    // `peers` 的条目还要承载 **ip / tcp_port / nickname**（「添加好友」列表直接读它、
+    // 拨号也用它），凭空造出来的条目这些字段全是空的 —— 表现为「搜得到这个节点、
+    // 但加不上好友」，而且会被当成"在线"参与 UI 判定。
+    //
+    // 对端若还没 announce，这里就什么都不做：`bound` 回落为空 ⇒ 走 TOFU 分支
+    // （与本次改动之前的行为完全一致），下一条 announce 会把它正常登记进来。
     let Some(p) = peers.get_mut(device_id) else {
-        // Hello 早于任何 announce：先落一条已验证的记录（对端随后会被正常建链）
-        peers.insert(
-            device_id.to_string(),
-            Peer {
-                device_id: device_id.to_string(),
-                nickname: String::new(),
-                avatar: None,
-                device_type: String::new(),
-                ip: String::new(),
-                tcp_port: 0,
-                last_seen: db::now_ms(),
-                rtt_ms: None,
-                x25519_pubkey: Some(x25519.to_string()),
-                ed25519_pubkey: Some(ed25519.to_string()),
-                keys_verified: true,
-                first_seen: Some(db::now_ms()),
-                link: None,
-            },
-        );
         return;
     };
     if p.x25519_pubkey.as_deref() != Some(x25519) || p.ed25519_pubkey.as_deref() != Some(ed25519)
