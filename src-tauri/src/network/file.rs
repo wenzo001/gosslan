@@ -629,6 +629,10 @@ pub fn resume_receive(
 ) -> Result<PathBuf, String> {
     const TTL_MS: i64 = 24 * 60 * 60 * 1000;
     let safe_name = safe_file_name(name).ok_or("文件名非法")?;
+    // 续传同样要落 `{id}.part`，消毒口径必须与 make_receiver 完全一致 ——
+    // 否则「首次收被拦、续传绕过」就会留下一条可用的攻击路径。
+    let transfer_id = safe_transfer_id(transfer_id).ok_or("传输标识非法")?;
+    let transfer_id = transfer_id.as_str();
     let dl = state
         .downloads_dir
         .lock()
@@ -749,6 +753,9 @@ fn make_receiver(
     receivers: &std::sync::Mutex<HashMap<String, FileReceiver>>,
 ) -> Result<PathBuf, String> {
     let safe_name = safe_file_name(name).ok_or("文件名非法")?;
+    // transfer_id 会成为 `{id}.part` 的文件名，必须与文件名同级消毒（见 safe_transfer_id）
+    let transfer_id = safe_transfer_id(transfer_id).ok_or("传输标识非法")?;
+    let transfer_id = transfer_id.as_str();
     if size > i64::MAX as u64 {
         return Err("文件过大，无法安全保存".to_string());
     }
@@ -1311,6 +1318,26 @@ pub(crate) fn safe_file_name(name: &str) -> Option<String> {
     Some(name.to_string())
 }
 
+/// `transfer_id` 同样来自远端协议，而且**会被直接拼进落盘路径**（`{transfer_id}.part`）——
+/// 必须和 `safe_file_name` 同级校验，否则一个 `../../../../Users/me/Documents/x` 就能逃出
+/// 下载目录，而 `File::create` 会**创建或截断**目标文件（内容由对端控制，
+/// `Path::join` 遇到绝对路径还会整体替换前缀）。失败收尾路径同样会 `remove_file` 它。
+///
+/// 白名单而非黑名单：只接受 UUID / 测试用的连字符短 id 形态（`[A-Za-z0-9_-]{1,64}`）。
+/// 生产端的 transfer_id 一律是 `Uuid::new_v4().to_string()`。
+pub(crate) fn safe_transfer_id(id: &str) -> Option<String> {
+    if id.is_empty() || id.len() > 64 {
+        return None;
+    }
+    if !id
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return None;
+    }
+    Some(id.to_string())
+}
+
 /// 人类可读的文件大小。
 #[allow(dead_code)]
 pub fn human_size(bytes: u64) -> String {
@@ -1327,7 +1354,8 @@ pub fn human_size(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        chunk_seq_decision, classify_file_subtype, safe_file_name, unique_path, ChunkSeq,
+        chunk_seq_decision, classify_file_subtype, safe_file_name, safe_transfer_id, unique_path,
+        ChunkSeq,
     };
 
     /// **收到分片的判定规则**（2026-09-13 审计的真缺陷，必须钉住）。
@@ -1400,6 +1428,45 @@ mod tests {
             assert!(safe_file_name(name).is_none(), "{name} must be rejected");
         }
         assert_eq!(safe_file_name("report.txt").as_deref(), Some("report.txt"));
+    }
+
+    /// `transfer_id` 会被拼成 `{id}.part` 落盘，必须与文件名同级消毒。
+    /// 未校验时一个 `../../../../Users/me/Documents/x` 就能让 `File::create`
+    /// 在下载目录之外创建/截断文件（内容由对端控制）。
+    #[test]
+    fn rejects_path_traversal_transfer_ids() {
+        for id in [
+            "../../../../Users/me/Documents/report",
+            "..\\..\\windows\\system32\\x",
+            "/etc/passwd",
+            "a/b",
+            "a\\b",
+            "..",
+            ".",
+            "",
+            "with space",
+            "null\0byte",
+            "中文 id",
+        ] {
+            assert!(safe_transfer_id(id).is_none(), "{id:?} 必须被拒");
+        }
+        // 长度上限：超长 id 会成为超长文件名
+        assert!(safe_transfer_id(&"a".repeat(65)).is_none());
+        assert!(safe_transfer_id(&"a".repeat(64)).is_some());
+    }
+
+    /// 生产端用 UUID、E2E 用连字符短 id —— 合法形态一个都不能被误杀。
+    #[test]
+    fn accepts_real_world_transfer_ids() {
+        for id in [
+            "3f2504e0-4f89-11d3-9a0c-0305e82c3301", // Uuid::new_v4()
+            "e2e-file-001",
+            "e2e-group-image-001",
+            "e2e-dl-001",
+            "ABCdef123_-",
+        ] {
+            assert_eq!(safe_transfer_id(id).as_deref(), Some(id), "{id} 不应被拒");
+        }
     }
 
     /// `unique_path` 在任何分支下都不得返回已存在的路径。

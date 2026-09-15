@@ -10,6 +10,56 @@
 
 ## [Unreleased]
 
+### Fixed (后端审计：4 个 High 缺陷收口 —— 其中一条可击穿 E2EE)
+
+审计范围 `src-tauri/src/**`（约 5.4 万行），全部结论均读过源码确认并补了回归测试。
+
+- **未签名的 UDP announce 可永久替换好友公钥 ⇒ E2EE 被击穿（最严重）**。
+  `UdpPacket` 携带 `device_id` 与公钥却**没有签名字段**；`upsert_peer` 对某个
+  `device_id` 首次见到即绑定该公钥，此后遇到不同公钥（哪怕来自**验签通过**的 Hello）
+  只标记冲突并拒绝写入；绑定值还会写进持久化的 `friends` 表。于是局域网内一个伪造
+  announce 即可：覆盖好友真实公钥 → 我发给该好友的消息改用攻击者公钥加密
+  （消息广播给所有已连接节点，攻击者用自己的私钥即可解开）→ 并用自己的 Ed25519
+  冒充该好友（绑定的就是他的公钥，验签必然通过）；真实好友反而永远连不上。
+  根因是**未认证信道的绑定赢过了认证信道**，而 `verify_hello` 的注释把这条设计
+  写在了明处（「密钥绑定在后续 announce/upsert 中固化」）。修复分三处：
+  `Peer` 增加 `keys_verified`（只有 Hello 验签通过才由 `mark_peer_keys_verified` 置位）；
+  `verify_hello` 的身份绑定回落**只采信已验签条目**（抽成 `bound_ed25519_from_peer`
+  并加单测）；写 `friends` 表的路径一律加验签闸门，且
+  `db::update_friend_pubkeys` 改为**只填空位、绝不覆盖已有值**（最坏后果从
+  「E2EE 被击穿」降级为「公钥为空时被抢先填一次」）。
+  遗留：首次接触（TOFU）仍可被抢先冒充 —— 那需要带外指纹核对，
+  与本仓库路线图里的「好友指纹安全码 / QR 校验」是同一件事，未在本次范围内。
+- **`update_profile` / `broadcast_chat_style` 持全局 `links` 锁跨 `.await`**。
+  发送目标都是有界队列（1024），对端僵死时 `send().await` 会永久挂起却握着全局
+  links 锁 ⇒ try_send、心跳、`get_peers`、`mark_peer_offline`、`teardown_link`
+  以及看门狗全部阻塞。看门狗恰恰是唯一能发 cancel 拆掉那条卡死连接、让队列排空的
+  机制，被同一把锁挡住即形成**自锁死循环**，只能靠用户手动重开局域网。
+  改为锁内只克隆发送端快照、发送在锁外做（与心跳发送同一纪律），并加源码断言护栏。
+- **网络下发的 `transfer_id` 未校验即拼进落盘路径（CWE-22）**。接收端用对端完全可控的
+  `transfer_id` 直接构造 `{id}.part` 并 `File::create`（创建或**截断**），
+  一个 `../../../../Users/me/Documents/x` 即可逃出下载目录，失败收尾路径还会
+  `remove_file` 它。显示名早已有 `safe_file_name` 消毒，`transfer_id` 这一半漏了。
+  新增 `safe_transfer_id`（白名单 `[A-Za-z0-9_-]{1,64}`），在 `make_receiver` 与
+  `resume_receive` 两处入口同时校验 —— 单聊与群文件、首传与续传全部覆盖。
+- **群消息路径绕过「仅群主可改名」**。专用 `GroupRename` 帧严格要求群主，
+  但群 Gossip 消息携带的 `group_name` 由 `upsert_group` **无条件覆盖**，
+  任何成员都能改掉所有人的群名（可伪造成「系统通知」做社工），且这条路没有长度上限。
+  修复分两层：`upsert_group` 只允许 creator 一致时更新名字（持久层兜底）；
+  群消息分支再校验 `env.sender_id == creator`（否则成员填真群主的 id 就能对上 creator），
+  并补上 `MAX_GROUP_NAME_LEN` 截断。
+
+护栏：`hello_binding_ignores_unverified_announced_keys`（含反证断言，锁住「为什么必须过滤」）、
+`announced_attacker_key_cannot_bind_and_impersonate`（完整攻击链回归）、
+`update_friend_pubkeys_never_overwrites_a_bound_key`、
+`rejects_path_traversal_transfer_ids` / `accepts_real_world_transfer_ids`、
+`group_name_only_updates_for_the_recorded_creator`、
+`never_awaits_while_holding_the_links_lock`。
+
+验证：cargo test --lib 461 passed（新增 7 项）· cargo check 零警告 ·
+scripts/e2e-dev.sh 30 passed / 0 failed（身份、建链、群聊、文件全链路无回归，
+应用日志零身份拒绝与零密钥冲突）。
+
 ## [4.9.0] - 2026-09-15
 
 ### Added (群协作能力 · 阶段 0：群文件列表 + 会话置顶 + @所有人)

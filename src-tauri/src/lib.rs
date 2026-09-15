@@ -1651,6 +1651,28 @@ mod tests {
         );
     }
 
+    /// 不得「先绑定 `links` 守卫、再在循环里 await 发送」。
+    ///
+    /// `links` 是 `tokio::sync::Mutex`，跨 await 持锁**编译器不拦**，而发送目标都是有界队列
+    /// （1024）：对端僵死（半开 TCP / 休眠 / 写缓冲满）时 `send().await` 会一直挂起却握着
+    /// 全局 links 锁 ⇒ try_send、心跳、get_peers、mark_peer_offline、teardown_link 以及
+    /// 看门狗全部阻塞。看门狗恰恰是唯一能发 cancel 拆掉那条卡死连接、让队列排空的机制，
+    /// 它被同一把锁挡住就是自锁死循环，只能靠用户手动重开局域网。
+    /// 正确写法：锁内只 `clone` 发送端快照，发送放到锁外（与心跳发送同一纪律）。
+    #[test]
+    fn never_awaits_while_holding_the_links_lock() {
+        let cmds = include_str!("commands.rs");
+        for f in ["pub async fn update_profile(", "pub async fn broadcast_chat_style("] {
+            let body = rust_fn_body(cmds, f);
+            assert!(
+                !body.contains("for link in links"),
+                "{f} 又回到「持有 links 守卫时 await 发送」的写法：\
+                 队列有界，对端僵死会让 send().await 永久挂起并握着全局 links 锁，\
+                 连看门狗都拿不到锁 ⇒ 网络层自锁死。必须先 collect 发送端快照、再在锁外发送。"
+            );
+        }
+    }
+
     /// **内容拉取必须走能力协商**（ADR-0019 Phase 3）：旧端不发新帧、新端才拉；
     /// 且能力位**不能进 Hello 签名材料**，否则老端验签会失败（向后兼容的硬前提）。
     #[test]

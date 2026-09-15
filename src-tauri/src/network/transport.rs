@@ -790,18 +790,20 @@ pub(crate) fn verify_hello(
     if !state.accept_hello_nonce(nonce) {
         return Err(format!("Hello nonce 重放（device_id={device_id}）"));
     }
-    // 已绑定身份：好友表优先（持久），在线节点表回落（对方可能尚未成为好友但已在发现阶段绑定）
+    // 已绑定身份：**好友表（持久，权威）优先**；在线节点表只作回落，
+    // 且**回落项必须是已验签的**（`keys_verified`）。
+    //
+    // ⚠️ 为什么回落必须过滤：`peers` 里的公钥可能来自**未签名**的 UDP announce。
+    // 若把广播来的公钥当成绑定，攻击者只要抢先广播（真实节点 5s 才播一次，他 100ms 一次，
+    // 必赢这个竞态）就能让真实好友的 Hello 被判「公钥与已绑定身份不符」而永远连不上，
+    // 同时攻击者自己的 Hello（用他自报的那把公钥验签）却能顺利通过 —— 完成身份冒充。
     let bound = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::get_friend_ed25519(&dbc, device_id)
     }
     .or_else(|| {
-        state
-            .peers
-            .lock()
-            .unwrap()
-            .get(device_id)
-            .and_then(|p| p.ed25519_pubkey.clone())
+        let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
+        bound_ed25519_from_peer(peers.get(device_id))
     });
     hello_auth_decision(
         bound.as_deref(),
@@ -812,6 +814,58 @@ pub(crate) fn verify_hello(
         ed25519_pubkey,
         sig_b64,
     )
+}
+
+/// 在线节点表里的公钥**能否作为 Hello 的身份绑定** —— 唯一判定点。
+///
+/// 只有 `keys_verified`（Hello 验签通过后由 `mark_peer_keys_verified` 置位）的条目才算数。
+/// 未验签的条目只可能来自**未签名**的 UDP announce：任何人拿到 device_id（announce 里
+/// 明文广播）就能以它广播自己的公钥。若这种公钥被当成绑定，攻击者只需抢先广播
+/// （真实节点 5s 播一次、他 100ms 一次，必赢竞态），就能：
+///   ① 让真实好友的 Hello 被判「公钥与已绑定身份不符」而永远连不上；
+///   ② 用自己的私钥签 Hello 冒充该好友 —— 绑定值就是他自己的公钥，验签必然通过。
+/// 抽成独立函数是为了让这条规则有名字、有单测，而不是散在 `or_else` 闭包里。
+fn bound_ed25519_from_peer(peer: Option<&Peer>) -> Option<String> {
+    peer.filter(|p| p.keys_verified)
+        .and_then(|p| p.ed25519_pubkey.clone())
+}
+
+/// 把某节点的公钥标记为**已验证**（Hello 验签通过后调用）。
+///
+/// 为什么必须有这个显式升级点：`peers` 表由两条信任级别完全不同的路径共同维护 ——
+/// 未签名的 UDP announce（可伪造）与验签通过的 Hello（可信）。只靠「表里有值」无法区分
+/// 二者，于是未验证的公钥会被当成身份绑定用（详见 `verify_hello` 与 `upsert_peer` 的注释）。
+/// 这里用一对公钥的**实际值**再核对一次：只有与 Hello 自报值一致时才升级，
+/// 避免在验签与本次写入之间被另一条 announce 插空改动。
+fn mark_peer_keys_verified(state: &AppState, device_id: &str, x25519: &str, ed25519: &str) {
+    let mut peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(p) = peers.get_mut(device_id) else {
+        // Hello 早于任何 announce：先落一条已验证的记录（对端随后会被正常建链）
+        peers.insert(
+            device_id.to_string(),
+            Peer {
+                device_id: device_id.to_string(),
+                nickname: String::new(),
+                avatar: None,
+                device_type: String::new(),
+                ip: String::new(),
+                tcp_port: 0,
+                last_seen: db::now_ms(),
+                rtt_ms: None,
+                x25519_pubkey: Some(x25519.to_string()),
+                ed25519_pubkey: Some(ed25519.to_string()),
+                keys_verified: true,
+                first_seen: Some(db::now_ms()),
+                link: None,
+            },
+        );
+        return;
+    };
+    if p.x25519_pubkey.as_deref() != Some(x25519) || p.ed25519_pubkey.as_deref() != Some(ed25519)
+    {
+        return; // 与自报值不一致：不动（交由既有 key_conflict 路径处理）
+    }
+    p.keys_verified = true;
 }
 
 /// 同意好友之后**忘掉这条申请**（内存态 `pending_requests` 里的那一行）。
@@ -1145,6 +1199,11 @@ async fn handle_incoming(
                 );
                 return;
             }
+            // 验签通过 ⇒ 这对公钥**已被证明**由该 device_id 的持有者使用
+            // （Hello 的 sig 覆盖 device_id|tcp_port|nonce|x25519|ed25519，且用该 ed25519 验签）。
+            // 到此才允许它们参与身份绑定与持久化 —— 这是「已验证」与「只是广播来的」
+            // 之间唯一的升级点。
+            mark_peer_keys_verified(&state, device_id, x25519_pubkey, ed25519_pubkey);
             device_id.clone()
         }
         _ => return, // 首帧必须是 Hello
@@ -4444,15 +4503,41 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                         env.group_creator.clone(),
                         !env.group_members.is_empty(),
                     ) {
-                        let display_name = env.group_name.clone().unwrap_or_else(|| name.clone());
+                        // ⚠️ **信封里的群名只有群主本人能生效**。
+                        //
+                        // `group_name` / `group_creator` 都是发送方自报的字段，任何持群密钥的
+                        // 成员都能填任意文本。但「改名」已经有专用帧 `GroupRename` 且严格要求
+                        // 群主 —— 若这里无条件采信，同一个效果就有了两条路径、一条有检查一条
+                        // 没有，成员即可绕过授权改掉所有人的群名（伪造成"系统通知"做社工）。
+                        //
+                        // 两层判断缺一不可：
+                        //   ① 发送者必须**自称**群主（否则填别人的 id 就能对上 creator）；
+                        //   ② 该自称还要与本地已存的 creator 一致（由 `db::upsert_group` 兜底），
+                        //      挡住「自称是群主、但本地记录里群主另有其人」。
+                        // 本地无该群时（首次接触，无从校验）按 TOFU 采信信封，与建链口径一致。
                         let mut all = env.group_members.clone();
                         if !all.contains(&state.device_id) {
                             all.push(state.device_id.clone());
                         }
-                        {
-                            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                            db::upsert_group(&dbc, &gid, &display_name, &creator, &all).ok();
-                        }
+                        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                        let known = db::get_group(&dbc, &gid);
+                        let is_self_declared_creator = env.sender_id == creator;
+                        let display_name = match &known {
+                            // 已有该群：只有群主自称时才更新名字，否则沿用本地名字
+                            Some(g) => {
+                                if is_self_declared_creator {
+                                    env.group_name.clone().unwrap_or_else(|| g.name.clone())
+                                } else {
+                                    g.name.clone()
+                                }
+                            }
+                            None => env.group_name.clone().unwrap_or_else(|| name.clone()),
+                        };
+                        // 群名长度与建群/改名一致封顶，避免这条路径塞进超长字符串
+                        let display_name: String =
+                            display_name.chars().take(MAX_GROUP_NAME_LEN).collect();
+                        db::upsert_group(&dbc, &gid, &display_name, &creator, &all).ok();
+                        drop(dbc);
                         let _ = state.app.emit("groups-updated", &gid);
                     }
                 }
@@ -5868,6 +5953,11 @@ pub async fn upsert_peer(
                         rtt_ms,
                         x25519_pubkey: x25519.clone(),
                         ed25519_pubkey: ed25519.clone(),
+                        // 本函数由 announce（未签名 UDP）与 Hello 后的同步共同调用。
+                        // 这里一律先标未验证；只有验签通过的路径可以把它改成 true
+                        // （见 `mark_peer_keys_verified`）。宁可保守：未验证的公钥
+                        // 只配用于发现，不配用于身份绑定。
+                        keys_verified: false,
                         first_seen: Some(ts),
                         // 事件推送里的 peer 不带链路类型（同步上下文拿不到 links 锁）；
                         // 界面读的是命令返回的那份（那里会填），见 `Peer::link` 注释。
@@ -5920,8 +6010,18 @@ pub async fn upsert_peer(
         return;
     }
 
-    // 仅在公钥首次学到/变化时才落库（避免每条 announce 都写库）
-    if key_changed {
+    // 仅在公钥首次学到/变化时才落库（避免每条 announce 都写库）。
+    //
+    // ⚠️ **必须同时要求 `keys_verified`**：本函数同时服务两条来源完全不同的路径 ——
+    // 未签名的 UDP announce（任何人可伪造 device_id + 公钥）与验签通过的 Hello。
+    // 若不加这道闸，局域网内一个伪造 announce 就能把攻击者的公钥写进持久化的 friends 表，
+    // 覆盖好友的真实公钥：此后我发给该好友的消息都用攻击者公钥加密，而消息是广播给
+    // 所有已连接节点的 ⇒ 攻击者用自己的私钥即可解开（E2EE 被击穿，且重启不恢复）。
+    let verified = {
+        let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
+        peers.get(device_id).map(|p| p.keys_verified).unwrap_or(false)
+    };
+    if key_changed && verified {
         let (x, e) = {
             let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
             peers
@@ -7194,6 +7294,75 @@ mod tests {
         let other = crypto::Identity::generate();
         let (oxk, oek, _) = signed_hello(&other, "new-node", 59992, "n1");
         assert!(hello_auth_decision(None, "new-node", 59992, "n1", &oxk, &oek, &sig).is_err());
+    }
+
+    fn peer_with(ed25519: &str, keys_verified: bool) -> Peer {
+        Peer {
+            device_id: "victim-device".to_string(),
+            nickname: String::new(),
+            avatar: None,
+            device_type: String::new(),
+            ip: String::new(),
+            tcp_port: 0,
+            last_seen: 0,
+            rtt_ms: None,
+            x25519_pubkey: Some("xk".to_string()),
+            ed25519_pubkey: Some(ed25519.to_string()),
+            keys_verified,
+            first_seen: None,
+            link: None,
+        }
+    }
+
+    /// 未验签（只来自 UDP announce）的公钥**不得**作为身份绑定。
+    /// 这条是「一个伪造广播就能冒充好友」的闸门。
+    #[test]
+    fn hello_binding_ignores_unverified_announced_keys() {
+        let attacker = crypto::Identity::generate();
+        let ek = attacker.ed25519_public_b64();
+
+        assert_eq!(
+            bound_ed25519_from_peer(Some(&peer_with(&ek, false))),
+            None,
+            "announce 广播来的公钥不能被当成身份绑定"
+        );
+        assert_eq!(
+            bound_ed25519_from_peer(Some(&peer_with(&ek, true))),
+            Some(ek),
+            "验签过的公钥才可以作绑定"
+        );
+        assert_eq!(bound_ed25519_from_peer(None), None);
+    }
+
+    /// 完整攻击链的回归：攻击者伪造 announce 抢先把公钥塞进 peers，再用它签 Hello
+    /// 冒充受害者 device_id。
+    /// 修复前：bound 取自 peers → 就是攻击者自己的公钥 → 验签通过（冒充成功）。
+    /// 修复后：未验签 ⇒ bound 为空 ⇒ 落入 TOFU 分支，但**不能**再挤掉已绑定身份；
+    /// 若受害者已是我方好友，bound 直接取好友表的真实公钥 ⇒ 攻击者被拒。
+    #[test]
+    fn announced_attacker_key_cannot_bind_and_impersonate() {
+        let attacker = crypto::Identity::generate();
+        let victim = crypto::Identity::generate();
+        let (axk, aek, asig) = signed_hello(&attacker, "victim-device", 59992, "n1");
+
+        // ① 修复后的 bound 解析：announce 塞进来的条目未验签 → 不构成绑定
+        assert_eq!(bound_ed25519_from_peer(Some(&peer_with(&aek, false))), None);
+
+        // ② 好友表里存着受害者真实公钥时，攻击者的 Hello 必须被拒
+        let victim_ek = victim.ed25519_public_b64();
+        assert!(
+            hello_auth_decision(Some(&victim_ek), "victim-device", 59992, "n1", &axk, &aek, &asig)
+                .is_err(),
+            "用自报公钥冒充已绑定好友必须被拒"
+        );
+
+        // ③ 反证：若 bound 误取自 announce（即修复前的行为），攻击者会通过 ——
+        //    这条断言锁住「为什么必须过滤」，防止有人把 filter 当成多余代码删掉。
+        assert!(
+            hello_auth_decision(Some(&aek), "victim-device", 59992, "n1", &axk, &aek, &asig)
+                .is_ok(),
+            "（反证）把攻击者公钥当绑定就会放行 —— 这正是修复要拦掉的场景"
+        );
     }
 
     #[tokio::test]

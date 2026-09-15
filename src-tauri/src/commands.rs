@@ -144,18 +144,32 @@ pub async fn update_profile(
         avatar,
         device_type: crate::protocol::current_device_type().to_string(),
     };
-    let links = s.links.lock().await;
-    for link in links.values().flatten() {
-        // 大头像资料帧走 bulk 通道：2MB 头像在 BLE 上要分上千片，绝不能堵住聊天/好友
-        // 请求的优先道；小头像仍走 priority（资料变更要立刻可见）。
-        let tx = if bulk_profile_frame {
-            &link.bulk
-        } else {
-            &link.priority
-        };
+    // ⚠️ **锁内只做「取 + 克隆」，绝不 await**（与 `transport.rs` 心跳发送同一纪律）。
+    //
+    // 原先`let links = ...lock().await` 后就地 `tx.send().await`：这些都是**有界**队列
+    // （1024），对端僵死（半开 TCP / 休眠 / 写缓冲满）时 `send().await` 会一直挂起，
+    // 而它**握着全局 links 锁** ⇒ 所有 try_send、心跳、get_peers、mark_peer_offline、
+    // teardown_link 以及看门狗全部阻塞。看门狗恰恰是唯一能发 cancel 拆掉那条卡死连接、
+    // 让队列排空的机制 —— 它被同一把锁挡住，形成自锁死循环，只能靠用户手动重开局域网。
+    let targets = {
+        let links = s.links.lock().await;
+        links
+            .values()
+            .flatten()
+            // 大头像资料帧走 bulk 通道：2MB 头像在 BLE 上要分上千片，绝不能堵住聊天/好友
+            // 请求的优先道；小头像仍走 priority（资料变更要立刻可见）。
+            .map(|link| {
+                if bulk_profile_frame {
+                    link.bulk.clone()
+                } else {
+                    link.priority.clone()
+                }
+            })
+            .collect::<Vec<_>>()
+    };
+    for tx in &targets {
         let _ = tx.send(msg.clone()).await;
     }
-    drop(links);
 
     // 昵称/头像变更：另一个窗口的资料区要跟着刷新。
     // 这两个键不在 `Settings` 形状里（它们是"资料"），所以 patch 里不放值 ——
@@ -1398,9 +1412,18 @@ pub async fn broadcast_chat_style(
         to: None,
         style,
     };
-    let links = s.links.lock().await;
-    for link in links.values().flatten() {
-        let _ = link.priority.send(msg.clone()).await;
+    // 同 update_profile：锁内只克隆发送端，发送在锁外做 —— 否则一条拥塞链路
+    // 就能握着全局 links 锁把整个网络层（含自愈用的看门狗）拖死。
+    let targets = {
+        let links = s.links.lock().await;
+        links
+            .values()
+            .flatten()
+            .map(|link| link.priority.clone())
+            .collect::<Vec<_>>()
+    };
+    for tx in &targets {
+        let _ = tx.send(msg.clone()).await;
     }
     Ok(())
 }

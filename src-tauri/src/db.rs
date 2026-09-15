@@ -440,7 +440,18 @@ pub fn get_friend(conn: &Connection, device_id: &str) -> Option<(String, Option<
     .flatten()
 }
 
-/// 更新好友的 X25519 / Ed25519 公钥（从上线广播中学到后持久化）。
+/// 补齐好友**尚缺**的 X25519 / Ed25519 公钥（首次学到时持久化）。
+///
+/// ⚠️ **只填空位，绝不覆盖已有值**（`COALESCE(x25519_pubkey, ?2)` 而非反过来）。
+///
+/// 这是身份绑定不被劫持的最后一道闸：调用方来自多个信任级别不同的路径，
+/// 只要有一个环节漏判（或将来新增了一条），覆盖式写入就会让一次伪造广播**永久**
+/// 改掉好友的真实公钥 —— 此后发给该好友的消息改用攻击者公钥加密，而消息是广播给
+/// 所有已连接节点的，攻击者用自己的私钥即可解开；重启也不恢复（只有删好友才清）。
+/// 填充式写入把最坏后果从「E2EE 被击穿」降级为「公钥为空时被抢先填一次」。
+///
+/// 密钥**变更**（对方重装应用）不走这里：那需要用户明确确认，
+/// 现有路径是删好友后重新添加（`remove_friend` 会连带删除公钥列，重新添加即重新学习）。
 pub fn update_friend_pubkeys(
     conn: &Connection,
     device_id: &str,
@@ -448,8 +459,8 @@ pub fn update_friend_pubkeys(
     ed25519: Option<&str>,
 ) -> Result<()> {
     conn.execute(
-        "UPDATE friends SET x25519_pubkey = COALESCE(?2, x25519_pubkey),
-                            ed25519_pubkey = COALESCE(?3, ed25519_pubkey)
+        "UPDATE friends SET x25519_pubkey = COALESCE(x25519_pubkey, ?2),
+                            ed25519_pubkey = COALESCE(ed25519_pubkey, ?3)
          WHERE device_id = ?1",
         params![device_id, x25519, ed25519],
     )?;
@@ -545,6 +556,18 @@ pub fn list_groups(conn: &Connection) -> Result<Vec<Group>> {
 
 /// 成员端建立/更新本地群记录（收到 `GroupKey` / 群消息携带成员表时调用）。
 /// 已存在则刷新群名与成员（幂等）。
+///
+/// ⚠️ **群名只由群主改**（`groups.creator == 传入的 creator` 才更新 name）。
+///
+/// 本函数有一条来自**群 Gossip 消息**的调用路径：信封里的 `group_name` / `group_creator`
+/// 都是发送方自报的，任何持群密钥的成员都能填任意文本。若无条件覆盖群名，
+/// 「改名」就出现了两条路径 —— 专用的 `GroupRename` 帧严格要求群主，
+/// 而这条没有任何检查，等于把授权绕过去了（可伪造成"系统通知""群主"做社工）。
+/// 群成员表是 `INSERT OR IGNORE`（只增不减），creator 也只在 INSERT 时写入，故不受影响。
+///
+/// 注意：这只是**持久层的兜底**，调用点还应校验 `env.sender_id == creator` ——
+/// 否则成员只要把 `group_creator` 填成真群主的 id，creator 就对得上，闸门又会失效。
+/// 合法的改名走 `rename_group`（已由 `handle_group_rename` 限群主）。
 pub fn upsert_group(
     conn: &Connection,
     id: &str,
@@ -560,7 +583,10 @@ pub fn upsert_group(
     } else {
         conn.execute(
             "INSERT INTO groups(id, name, creator, created_at) VALUES(?1, ?2, ?3, ?4)
-             ON CONFLICT(id) DO UPDATE SET name = excluded.name",
+             ON CONFLICT(id) DO UPDATE SET name = CASE
+                 WHEN groups.creator = excluded.creator THEN excluded.name
+                 ELSE groups.name
+             END",
             params![id, name, creator, now_ms()],
         )?;
     }
@@ -1739,6 +1765,33 @@ mod tests {
         );
     }
 
+    /// 已绑定的好友公钥**不得被覆盖**（只填空位）。
+    /// 这是「一个伪造 announce 就能永久改掉好友公钥、击穿 E2EE」的最后一道闸。
+    #[test]
+    fn update_friend_pubkeys_never_overwrites_a_bound_key() {
+        let conn = mem();
+        add_friend(&conn, "f1", "张三", None).unwrap();
+        update_friend_pubkeys(&conn, "f1", Some("real-x"), Some("real-e")).unwrap();
+        assert_eq!(get_friend_x25519(&conn, "f1").as_deref(), Some("real-x"));
+
+        // 攻击者广播来的公钥：不得覆盖真实值
+        update_friend_pubkeys(&conn, "f1", Some("attacker-x"), Some("attacker-e")).unwrap();
+        assert_eq!(
+            get_friend_x25519(&conn, "f1").as_deref(),
+            Some("real-x"),
+            "已有公钥被覆盖 = 我发给好友的消息会改用攻击者公钥加密"
+        );
+        assert_eq!(get_friend_ed25519(&conn, "f1").as_deref(), Some("real-e"));
+
+        // 只补缺的那一列：X25519 已绑定，Ed25519 为空时应被填上
+        add_friend(&conn, "f2", "李四", None).unwrap();
+        conn.execute("UPDATE friends SET x25519_pubkey = 'x2' WHERE device_id = 'f2'", [])
+            .unwrap();
+        update_friend_pubkeys(&conn, "f2", Some("x2-fake"), Some("e2")).unwrap();
+        assert_eq!(get_friend_x25519(&conn, "f2").as_deref(), Some("x2"));
+        assert_eq!(get_friend_ed25519(&conn, "f2").as_deref(), Some("e2"));
+    }
+
     #[test]
     fn friend_remove_then_readd_flow() {
         // 删除好友后可重新添加（扫描 → 加好友流程）且历史会话/消息不受影响
@@ -2796,6 +2849,39 @@ mod tests {
         upsert_group(&conn, "g1", "群改名", "a", &members).unwrap();
         assert_eq!(list_groups(&conn).unwrap().len(), 1);
         assert_eq!(list_conversations(&conn).unwrap().len(), 1);
+    }
+
+    /// 群名只能由群主改（持久层兜底）：creator 对不上就不许覆盖名字。
+    ///
+    /// 注意本测试**只覆盖持久层这一半**：`upsert_group` 看不到信封的 `sender_id`，
+    /// 所以「成员把 group_creator 填成真群主的 id」这种伪造它拦不住 ——
+    /// 那一半由调用点（`transport.rs` 群消息分支校验 `env.sender_id == creator`）负责。
+    /// 两层缺一不可，这里把边界钉清楚，避免有人误以为这一层够了。
+    #[test]
+    fn group_name_only_updates_for_the_recorded_creator() {
+        let conn = mem();
+        let members: Vec<String> = ["owner", "member"].iter().map(|s| s.to_string()).collect();
+        upsert_group(&conn, "g1", "产品组", "owner", &members).unwrap();
+        assert_eq!(get_group(&conn, "g1").unwrap().name, "产品组");
+
+        // 群主本人改（creator 一致）→ 生效
+        upsert_group(&conn, "g1", "产品组（改）", "owner", &members).unwrap();
+        assert_eq!(get_group(&conn, "g1").unwrap().name, "产品组（改）");
+
+        // 自称是另一个 creator → 名字不得被覆盖，creator 也不得被顶掉
+        upsert_group(&conn, "g1", "【系统通知】点此领取", "member", &members).unwrap();
+        let g = get_group(&conn, "g1").unwrap();
+        assert_eq!(g.name, "产品组（改）", "非群主不得覆盖群名");
+        assert_eq!(g.creator, "owner", "creator 不得被顶掉");
+
+        // 成员表只增不减（INSERT OR IGNORE）：新成员能加进来
+        upsert_group(&conn, "g1", "产品组（改）", "owner", &[
+            "owner".to_string(),
+            "member".to_string(),
+            "newbie".to_string(),
+        ])
+        .unwrap();
+        assert!(get_group(&conn, "g1").unwrap().members.contains(&"newbie".to_string()));
     }
 
     // ---------- GroupFileOffer / session-key 阶段 ----------

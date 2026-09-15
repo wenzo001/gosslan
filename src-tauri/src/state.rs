@@ -167,6 +167,16 @@ pub struct Peer {
     pub x25519_pubkey: Option<String>,
     /// Ed25519 公钥（base64，验签用）
     pub ed25519_pubkey: Option<String>,
+    /// 这对公钥是否**经过签名验证**（Hello 验签通过，或已验签的 Gossip 信封携带）。
+    ///
+    /// `false` 表示它只来自**未签名**的 UDP announce 广播 —— 那是一条任何人都能伪造的
+    /// 信道（`UdpPacket` 里 device_id 与公钥都是明文，没有签名字段）。
+    /// 因此未验证的公钥**只能用于发现与拨号**，绝不允许：
+    ///   · 作为 `verify_hello` 的身份绑定（否则攻击者抢先广播即可让真实好友的 Hello 被拒）；
+    ///   · 写入持久化的 `friends` 表（否则一次广播就能永久改掉好友的真实公钥，
+    ///     我发给该好友的消息会改用攻击者公钥加密，E2EE 被击穿且重启不恢复）。
+    #[serde(default)]
+    pub keys_verified: bool,
     /// 首次发现该节点的时间戳（announce / Presence 首次学到）。用于「小 ID 兜底拨号」
     /// 判断「对端在线却迟迟连不上」（单向可达）——语义是**发现时间**，不是建链时间。
     #[serde(default)]
