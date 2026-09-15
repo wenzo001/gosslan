@@ -274,7 +274,7 @@ pub async fn get_peers(state: State<'_, Arc<AppState>>) -> Result<Vec<Peer>, Str
         .inner()
         .peers
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .values()
         .cloned()
         .collect();
@@ -1908,7 +1908,7 @@ pub async fn send_message(
         let from_peers = s
             .peers
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .get(&friend_id)
             .and_then(|p| p.x25519_pubkey.clone());
         match from_db.or(from_peers) {
@@ -1931,7 +1931,7 @@ pub async fn send_message(
                 let again_peers = s
                     .peers
                     .lock()
-                    .unwrap()
+                    .unwrap_or_else(|e| e.into_inner())
                     .get(&friend_id)
                     .and_then(|p| p.x25519_pubkey.clone());
                 again_db.or(again_peers)
@@ -2928,7 +2928,7 @@ pub async fn send_group_file(
     );
     s.group_file_keys
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .insert(transfer_id.clone(), file_key);
     // 密封 file_key 持久化（群密钥封装，非明文）：重启后离线 pending
     // 群文件的投递仍能恢复 file_key（群密钥 gk:% 本身保留）
@@ -3280,7 +3280,7 @@ pub fn ensure_group_file_key(
     state
         .group_file_keys
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .insert(transfer_id.to_string(), key);
     Some(key)
 }
@@ -3294,7 +3294,7 @@ pub async fn flush_pending_group_files(state: &Arc<AppState>, peer_id: &str) {
     if !state
         .group_file_sending
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .insert(peer_id.to_string())
     {
         return; // 该 peer 已有投递任务在执行
@@ -3413,9 +3413,26 @@ pub fn save_outgoing_image(
 }
 
 /// 删除本地文件（用于图片发送初始化失败后清理孤儿文件）。
+///
+/// ⚠️ **只允许删除下载目录内的文件**。读取侧早有这条边界（见 `resolve_media_path`：
+/// canonicalize 后必须落在 downloads 内，或该消息确由本机发出），删除侧原先却接受任意路径。
+/// 当前唯一调用方只清理 `save_outgoing_image` 刚写进 downloads 的孤儿图片，
+/// 所以这条限制不影响任何既有功能；但若哪天有 UI 把它接到消息里的 `path`
+/// （该字段由对端控制），没有它就会变成「对端点一下按钮删掉本机任意文件」。
+///
+/// 用 canonicalize 比对，避免 `../` 或符号链接绕过前缀匹配。
 #[tauri::command(async)]
-pub fn delete_file(path: String) -> Result<(), String> {
-    std::fs::remove_file(&path).map_err(|e| e.to_string())
+pub fn delete_file(state: State<'_, Arc<AppState>>, path: String) -> Result<(), String> {
+    let s = state.inner();
+    let file = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
+    let dl = s.downloads_dir.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let under_downloads = std::fs::canonicalize(&dl)
+        .map(|dir| file.starts_with(dir))
+        .unwrap_or(false);
+    if !under_downloads {
+        return Err("只能删除下载目录内的文件".to_string());
+    }
+    std::fs::remove_file(&file).map_err(|e| e.to_string())
 }
 
 /// 用系统默认应用打开本地文件。
@@ -3885,7 +3902,7 @@ pub fn get_downloads_dir(state: State<'_, Arc<AppState>>) -> String {
         .inner()
         .downloads_dir
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .to_string_lossy()
         .to_string()
 }
@@ -3967,7 +3984,7 @@ pub async fn request_share_tree(
     let (tx, rx) = tokio::sync::oneshot::channel();
     s.pending_share_tree
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .insert(request_id.clone(), tx);
 
     let msg = Message::ShareTreeRequest {

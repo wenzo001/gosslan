@@ -324,8 +324,46 @@ pub async fn broadcast_gossip(state: &AppState, envelope: GossipEnvelope) {
     };
 
     for tx in &targets {
-        let _ = tx.send(msg.clone()).await;
+        // ⚠️ **必须有界等待**：这是有界队列（1024），对端僵死（BLE 低带宽 / 半开 TCP）
+        // 时无超时的 `send().await` 会让本函数永久挂起 —— 而它被 `handle_gossip` 内联
+        // await，`handle_gossip` 又由 reader_loop 调用 ⇒ **另一个对端的读循环被卡住**，
+        // 它后续的帧（含心跳）全部排队，最终被判不健康而拆链。
+        // 即"一条拥塞链路伪造出全网链路故障"。口径与 `send_over_order` 一致。
+        let _ = tokio::time::timeout(SEND_QUEUE_FULL_TIMEOUT, tx.send(msg.clone())).await;
     }
+}
+
+/// 中继态的内存 TTL：超过它且仍未完成重组的条目一律回收。
+///
+/// 为什么必须有：`relay_file_keys` 与 `RelayManager::reassemblies` 都以**对端可控**的
+/// `transfer_id` 为键，插入点在收到 `RelayFileOffer` 时，而清除点只在「重组完成/失败」。
+/// 对端（只需是好友）持续发 `RelayFileOffer{ 每次新 id, total_chunks: 1 }` 却永不发分片，
+/// 两张表就只增不减 —— 进程内存单调增长直至 OOM，且没有任何回收路径。
+/// 1 小时与 `.part` 的 24h 口径同源（可恢复失败的保留思路），但内存态更敏感故更短。
+const RELAY_STATE_TTL_MS: i64 = 60 * 60 * 1000;
+
+/// 清扫过期的中继态（`relay_file_keys` + `reassemblies`），返回清掉的条目数。
+/// 与 `sweep_stale_parts` 同一趟定时任务里跑。
+pub fn sweep_stale_relay(state: &AppState) -> usize {
+    let cutoff = db::now_ms() - RELAY_STATE_TTL_MS;
+    let mut n = 0;
+    state
+        .relay_file_keys
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .retain(|_, v| {
+            let keep = v.created_at > cutoff;
+            if !keep {
+                n += 1;
+            }
+            keep
+        });
+    n += state
+        .relay
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .sweep_stale_reassemblies(cutoff);
+    n
 }
 
 /// 广播一次 Presence：携带自身昵称/头像，靠 Gossip fan-out 跨跳传播。
@@ -787,9 +825,6 @@ pub(crate) fn verify_hello(
     if nonce.is_empty() || sig_b64.is_empty() {
         return Err(format!("Hello 缺少 nonce/sig（device_id={device_id}）"));
     }
-    if !state.accept_hello_nonce(nonce) {
-        return Err(format!("Hello nonce 重放（device_id={device_id}）"));
-    }
     // 已绑定身份：**好友表（持久，权威）优先**；在线节点表只作回落，
     // 且**回落项必须是已验签的**（`keys_verified`）。
     //
@@ -813,7 +848,18 @@ pub(crate) fn verify_hello(
         x25519_pubkey,
         ed25519_pubkey,
         sig_b64,
-    )
+    )?;
+    // ⚠️ nonce 的消费必须放在**验签通过之后**。
+    //
+    // 它是一条有界 FIFO（512 条）：先消费等于给任何**未通过验签**的连接发了一张
+    // 污染缓存的入场券 —— 洪泛者可以持续占用/挤出槽位，把合法对端的 nonce 顶掉，
+    // 或在窗口内让合法 Hello 被误判成「重放」而拒掉（表现为"好友时连时断"）。
+    // 顺序调换不改变任何安全性质：重放的 Hello 签名本来就有效，
+    // 依旧会被下面这一判拦下 —— 只是它不再有机会占用槽位。
+    if !state.accept_hello_nonce(nonce) {
+        return Err(format!("Hello nonce 重放（device_id={device_id}）"));
+    }
+    Ok(())
 }
 
 /// 在线节点表里的公钥**能否作为 Hello 的身份绑定** —— 唯一判定点。
@@ -1567,7 +1613,7 @@ async fn reader_loop(
         let group_ids: Vec<String> = state
             .group_file_receivers
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .iter()
             .filter(|(_, r)| r.peer_id == peer_id)
             .map(|(id, _)| id.clone())
@@ -4718,6 +4764,7 @@ async fn handle_relay_file_offer(
                 use sha2::Digest as _;
                 sha2::Sha256::new()
             },
+            created_at: db::now_ms(),
         });
     state
         .relay

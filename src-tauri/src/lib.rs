@@ -265,6 +265,12 @@ pub fn run() {
                             st.logger
                                 .info("file", format!("清理过期 .part：{removed} 个"));
                         }
+                        // 同一趟里清扫内存态的中继表（见 sweep_stale_relay 的说明）。
+                        let swept = crate::network::transport::sweep_stale_relay(&st);
+                        if swept > 0 {
+                            st.logger
+                                .info("relay", format!("清理过期中继态：{swept} 项"));
+                        }
                         tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
                     }
                 });

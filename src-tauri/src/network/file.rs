@@ -211,7 +211,7 @@ pub async fn send_file_from_path_at(
         state
             .pending_file_accept
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .insert(transfer_id.to_string(), tx);
         let offer = Message::FileOffer {
             transfer_id: transfer_id.to_string(),
@@ -227,7 +227,7 @@ pub async fn send_file_from_path_at(
             state
                 .pending_file_accept
                 .lock()
-                .unwrap()
+                .unwrap_or_else(|e| e.into_inner())
                 .remove(transfer_id);
             return Err(SendFileError::retryable(format!("建立文件传输失败：{e}")));
         }
@@ -251,7 +251,7 @@ pub async fn send_file_from_path_at(
                 state
                     .pending_file_accept
                     .lock()
-                    .unwrap()
+                    .unwrap_or_else(|e| e.into_inner())
                     .remove(transfer_id);
                 return Err(SendFileError::retryable("对方未接受文件"));
             }
@@ -479,7 +479,7 @@ async fn stream_file(
     state
         .pending_file_complete
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .insert(transfer_id.to_string(), tx);
     try_send(
         state,
@@ -493,7 +493,7 @@ async fn stream_file(
     state
         .pending_file_complete
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .remove(transfer_id);
     // 进展记录用完即清（成功/失败都清），避免这张表随历史传输无限增长。
     clear_file_wire_progress(state, transfer_id);
@@ -1062,7 +1062,7 @@ pub fn fail_receives_for_peer(state: &AppState, peer_id: &str) {
     let ids: Vec<String> = state
         .file_receivers
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .iter()
         .filter(|(_, r)| r.peer_id == peer_id)
         .map(|(id, _)| id.clone())
@@ -1878,6 +1878,7 @@ mod tests {
                 use sha2::Digest as _;
                 sha2::Sha256::new()
             },
+            created_at: crate::db::now_ms(),
         };
 
         let mut assembled: Vec<u8> = Vec::new();

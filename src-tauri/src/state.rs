@@ -549,6 +549,10 @@ pub struct RelayFileReceive {
     pub expected_sha256: String,
     /// 明文增量哈希：逐片解密后 update，重组完成时 finalize 比对
     pub hasher: sha2::Sha256,
+    /// 收到 RelayFileOffer 的时刻。**必须有**：本表按 transfer_id 索引，
+    /// 而对端可以一直发新 offer 却永不发分片 —— 没有时间戳就无法回收，
+    /// 内存会随对端行为单调增长（见 `sweep_stale_relay`）。
+    pub created_at: i64,
 }
 
 /// 网络运行时句柄

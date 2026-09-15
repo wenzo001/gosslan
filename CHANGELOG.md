@@ -10,6 +10,36 @@
 
 ## [Unreleased]
 
+### Fixed (后端审计续：5 条中低危缺陷收口)
+
+- **`delete_file` 接受任意路径**。读取侧早有边界（`resolve_media_path`：canonicalize 后
+  必须落在 downloads 内，或该消息确由本机发出），删除侧却没有。当前唯一调用方只清理
+  `save_outgoing_image` 刚写进 downloads 的孤儿图片（注释原话「避免 downloads 目录堆积垃圾」），
+  所以按 downloads 目录设限**不影响任何既有功能**；但没有它，任何一处 UI 把它接到消息里的
+  `path`（该字段由对端控制）就会变成「对端点一下按钮删掉本机任意文件」。
+- **`broadcast_gossip` 扇出用无超时的 `send().await`**。目标是有界队列（1024），对端僵死时
+  会永久挂起 —— 而它被 `handle_gossip` 内联 await，后者由 reader_loop 调用 ⇒
+  **另一个对端的读循环被卡住**，其后续帧（含心跳）全部排队直至被判不健康而拆链，
+  即"一条拥塞链路伪造出全网链路故障"。补上与 `send_over_order` 同一口径的有界等待。
+- **Hello nonce 在验签之前就被消费**。nonce 缓存是一条有界 FIFO（512 条），先消费等于给
+  任何**未通过验签**的连接发了一张污染缓存的入场券：洪泛者可持续占用/挤出槽位，把合法对端的
+  nonce 顶掉，或在窗口内让合法 Hello 被误判为「重放」而拒（表现为"好友时连时断"）。
+  改为验签通过后再消费 —— 重放的 Hello 签名本就有效，依旧会被同一判拦下，只是不再占槽位。
+- **四张按对端可控键索引的内存表无界增长**。`relay_file_keys` 与 `RelayManager::reassemblies`
+  以 `transfer_id` 为键、插入于收到 `RelayFileOffer` 时，清除点却只在「重组完成/失败」——
+  对端（只需是好友）持续发新 id 的 Offer 却永不发分片，两张表就只增不减直至 OOM；
+  两者补 `created_at` 并接入既有的每小时定时任务（TTL 1h，与 `.part` 的 24h 同源但内存态更短）。
+  `peer_content_features` / `key_conflict_warned` 原先只在「删好友」时清，而节点进出比删好友
+  频繁得多，改为挂在 `sweep_peers` 已有的节点淘汰点上（同一个回收点，节点已不在 peers 表）。
+- **锁中毒处理写法统一**（15 处生产代码的 `.lock().unwrap()` → `unwrap_or_else(|e| e.into_inner())`，
+  与 `state.rs` 声明的约定一致）。**测试代码保持 `.unwrap()` 不动**：测试里中毒应当大声失败，
+  改成静默自愈反而会掩盖问题。
+
+护栏：`sweep_stale_reassemblies_keeps_active_and_drops_expired`（只清过期、保留进行中、幂等）。
+
+验证：cargo test --lib 462 passed · cargo check 零警告 ·
+scripts/e2e-dev.sh 30 passed / 0 failed（日志零 nonce 重放、零身份拒绝，握手正常）。
+
 ## [4.9.1] - 2026-09-15
 
 ### Fixed (后端审计：4 个 High 缺陷收口 —— 其中一条可击穿 E2EE)
