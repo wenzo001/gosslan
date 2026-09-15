@@ -19,12 +19,13 @@ import MessageCodeBubble from "@/components/message/MessageCodeBubble.vue";
 import MessageFileBubble from "@/components/message/MessageFileBubble.vue";
 import MessageImageBubble from "@/components/message/MessageImageBubble.vue";
 import MessageReceipt from "@/components/message/MessageReceipt.vue";
+import BaseModal from "@/components/BaseModal.vue";
 import MessageReactionBar from "@/components/message/MessageReactionBar.vue";
 import type { ReactionChip } from "@/utils/reactions";
 import MessageContentModal from "@/components/message/MessageContentModal.vue";
 import MessageContextMenu from "@/components/message/MessageContextMenu.vue";
 import ActionSheet from "@/components/ActionSheet.vue";
-import { Copy, CornerUpLeft, Save, Share2, ImageOff, TextSelect } from "lucide-vue-next";
+import { Copy, CornerUpLeft, Save, Share2, ImageOff, TextSelect , Undo2} from "lucide-vue-next";
 import type { MessageRecord, MsgKind } from "@/types";
 
 const props = withDefaults(
@@ -470,6 +471,35 @@ const emit = defineEmits<{
   (e: "open-image", msgId: string): void;
 }>();
 
+/**
+ * 能否撤回：**只有自己发的、且未被撤回的**消息才给入口。
+ *
+ * 后端也只在 `sender_id == 自己` 时才接受撤回 —— 前端隐藏入口不是为了安全
+ * （安全由签名保证），而是不让用户白点一次再收到报错。
+ */
+const canRecall = computed(() => mine && props.message.kind !== "recalled");
+
+/** 撤回前的二次确认：破坏性且不可逆（对方看到的是「消息已撤回」，收不回来）。 */
+const confirmingRecall = ref(false);
+
+function doRecall() {
+  closeContextMenu();
+  closeActionSheet();
+  confirmingRecall.value = true;
+}
+
+async function confirmRecall() {
+  confirmingRecall.value = false;
+  const convId = props.message.conv_id;
+  if (!convId.startsWith("group:")) return;
+  try {
+    await chat.recallMessage(convId.slice(6), props.message.msg_id);
+    app.toast(t("msg.recallDone"), "success");
+  } catch (e) {
+    app.toastError(e, t("msg.recallFail"));
+  }
+}
+
 function doQuote() {
   // ⚠️ 必须收起**底部面板**（不只是桌面右键菜单）：用户 2026-09-13 安卓实测
   // 「点『引用』之后那个 sheet 还挂在那儿」。引用会跳到输入框去操作，浮层留着就是挡路。
@@ -577,12 +607,14 @@ async function copyFileToClipboard() {
           {{ senderName || chat.nicknameOf(message.sender_id) }}
         </div>
 
-        <!-- 系统消息 -->
+        <!-- 系统消息 / 已撤回：同一形态（居中灰条，无气泡、无头像）。
+             「已撤回」刻意**不显示撤回者头像与气泡** —— 它与系统提示同为状态行，
+             给气泡会让人误以为还能点开/复制。 -->
         <div
-          v-if="message.kind === 'system'"
+          v-if="message.kind === 'system' || message.kind === 'recalled'"
           class="w-full text-center text-xs text-[var(--gosslan-text-2)]"
         >
-          {{ message.content }}
+          {{ message.kind === "recalled" ? t("msg.recalled") : message.content }}
         </div>
 
         <!-- 消息行：气泡 + 侧挂回执（mine 时回执在气泡左侧）；右键（桌面）/长按（移动端）弹消息菜单 -->
@@ -709,6 +741,25 @@ async function copyFileToClipboard() {
     @toggle="emit('react', $event)"
   />
 
+  <!-- 撤回二次确认：破坏性且不可逆，必须显式确认（各端一致，移动端同样弹这个） -->
+  <BaseModal :open="confirmingRecall" :title="t('msg.recall')" @close="confirmingRecall = false">
+    <p class="text-sm leading-relaxed text-[var(--gosslan-text)]">{{ t("msg.recallConfirm") }}</p>
+    <div class="mt-5 flex justify-end gap-2">
+      <button
+        class="tap-safe rounded-[var(--gosslan-radius-md)] px-4 py-2 text-sm text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+        @click="confirmingRecall = false"
+      >
+        {{ t("common.cancel") }}
+      </button>
+      <button
+        class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-2 text-sm text-white transition hover:opacity-90"
+        @click="confirmRecall"
+      >
+        {{ t("common.confirm") }}
+      </button>
+    </div>
+  </BaseModal>
+
   <MessageContentModal
     :open="fullModalOpen"
     :kind="fullModalKind"
@@ -732,6 +783,8 @@ async function copyFileToClipboard() {
     @save-file="saveFileTo"
     @copy-file="copyFileToClipboard"
     @quote="doQuote"
+    :can-recall="canRecall"
+    @recall="doRecall"
     @forward="doForward"
   />
 
@@ -797,6 +850,17 @@ async function copyFileToClipboard() {
       >
         <CornerUpLeft class="h-5 w-5 text-[var(--gosslan-text-2)]" />
         {{ t("common.quote") }}
+      </button>
+
+      <!-- 撤回：**仅自己发的**消息可见（其他人的消息连入口都不给 —— 后端也只接受
+           作者本人的撤回，前端隐藏入口是为了不让用户白点一次）。 -->
+      <button
+        v-if="mine && message.kind !== 'recalled'"
+        class="flex items-center gap-3 px-4 py-3 text-left text-[15px] text-[var(--gosslan-danger-ink)] transition active:bg-[var(--gosslan-hover)]"
+        @click="doRecall"
+      >
+        <Undo2 class="h-5 w-5" />
+        {{ t("msg.recall") }}
       </button>
       <button
         v-if="forwardable(message.kind)"

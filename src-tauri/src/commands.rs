@@ -2924,6 +2924,66 @@ pub async fn send_group_message(
     send_group_payload(state.inner(), &group_id, wire_kind, content).await
 }
 
+/// 撤回窗口：超过它就不再允许撤回。
+///
+/// **只在发送端强制**。接收端无法验证发送方的墙上时钟（`env.ts` 不参与排序也不可信），
+/// 所以接收端接受任何来自作者本人的撤回 —— 这是产品规则，不是安全边界。
+/// 真正不可伪造的是**作者身份**：信封被 Ed25519 签名，只有原作者能撤回自己的消息。
+const RECALL_WINDOW_MS: i64 = 120_000;
+
+/// 撤回一条自己发的群消息。
+///
+/// 权限：**仅原作者**。不做"群主撤他人" —— 那需要引入管理员角色，
+/// 而没有中心权威就没有中心授权（本项目无服务器）。
+#[tauri::command(async)]
+pub async fn recall_group_message(
+    state: State<'_, Arc<AppState>>,
+    group_id: String,
+    target: String,
+) -> Result<(), String> {
+    let s = state.inner();
+    let conv_id = format!("group:{group_id}");
+    {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        let Some((sender_id, _)) = db::get_message_preview_source(&dbc, &target) else {
+            return Err("消息不存在".to_string());
+        };
+        if sender_id != s.device_id {
+            return Err("只能撤回自己发送的消息".to_string());
+        }
+        // 时间窗**只在发送端强制**（见 RECALL_WINDOW_MS 的说明：接收端无法验证对方的时钟）。
+        // 用本地记录的 ts 判断：这条消息是本机发出的，本地时钟对它有意义。
+        let ts: i64 = dbc
+            .query_row(
+                "SELECT ts FROM messages WHERE msg_id = ?1",
+                rusqlite::params![target],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        if ts > 0 && db::now_ms() - ts > RECALL_WINDOW_MS {
+            return Err("超过可撤回时间（2 分钟）".to_string());
+        }
+        if db::is_recalled(&dbc, &target) {
+            return Ok(()); // 幂等：已撤回过就直接成功
+        }
+    }
+    let payload = crate::protocol::RecallPayload {
+        target: target.clone(),
+    };
+    let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
+    // 先发事件（走与普通消息同一条可靠管道），成功后再物化本地 ——
+    // 顺序反了会出现「本地显示已撤回、但对端根本没收到」。
+    send_group_payload(s, &group_id, crate::protocol::KIND_RECALL, content).await?;
+    {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        let seq = db::get_clock(&dbc, &conv_id);
+        db::insert_recall(&dbc, &conv_id, &target, &s.device_id, seq).ok();
+        db::materialize_recall(&dbc, &target).ok();
+    }
+    let _ = s.app.emit("message-recalled", &target);
+    Ok(())
+}
+
 /// 表情回应：对某条群消息添加/取消一个表情。
 ///
 /// 它是一条**静默事件**（`kind = "reaction"`）：走与普通群消息完全相同的可靠管道

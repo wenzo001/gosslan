@@ -4594,6 +4594,25 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                     }
                 }
                 let preview = preview_content(&kind, &content);
+                // 撤回事件：把「已撤回」物化到被撤回的那条消息上（幂等）。
+                // 只认**作者本人**的撤回 —— 信封被 Ed25519 签名，sender_id 不可伪造；
+                // 接收端不校验时间窗（无法验证发送方的墙上时钟，那是产品规则不是安全边界）。
+                if kind == crate::protocol::KIND_RECALL {
+                    if let Ok(p) = serde_json::from_str::<crate::protocol::RecallPayload>(&content)
+                    {
+                        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                        let is_author = db::get_message_preview_source(&dbc, &p.target)
+                            .map(|(sid, _)| sid == env.sender_id)
+                            .unwrap_or(false);
+                        if is_author {
+                            db::insert_recall(&dbc, &conv_id, &p.target, &env.sender_id, env.seq)
+                                .ok();
+                            db::materialize_recall(&dbc, &p.target).ok();
+                            drop(dbc);
+                            let _ = state.app.emit("message-recalled", &p.target);
+                        }
+                    }
+                }
                 // 持锁块只做落库；await（fanout 转发已在前面）之后无持锁操作
                 // 业务幂等裁决：Direct（含 outbox 补发）可能已经把同一 msg_id 落库，此时
                 // 不得再计未读、再发 message-received，否则未读数与系统通知都会重复。
@@ -4616,6 +4635,14 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                         seq,
                         status: "delivered".to_string(),
                     };
+                    // **先撤后到**：撤回事件可能早于被撤回的消息到达（Gossip 泛洪与
+                    // outbox 直发是两条无顺序保证的路径）。命中权威集合就直接以
+                    // 「已撤回」形态入库 —— 否则消息会带着完整正文落地，撤回失效。
+                    let mut rec = rec;
+                    if db::is_recalled(&dbc, &rec.msg_id) {
+                        rec.kind = crate::protocol::KIND_RECALLED.to_string();
+                        rec.content = String::new();
+                    }
                     let inserted = db::insert_message_if_new(&dbc, &rec);
                     if announced_on(&inserted) {
                         // 时钟推进与静默**无关**，必须照常：漏掉它本机后续 seq 会落后，

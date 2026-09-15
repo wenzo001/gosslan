@@ -38,6 +38,8 @@ const KIND_LABELS: Record<MsgKind, string> = {
   // 静默事件（表情回应）不该出现在转发列表里；给个中性文案兜底，
   // 真正的拦截在转发入口（不在时间线上渲染，就没有转发菜单可点）。
   reaction: t("msg.reactionMore"),
+  recall: t("msg.recall"),
+  recalled: t("msg.recalled"),
 };
 const kindLabel = computed(() => KIND_LABELS[props.kind] ?? t("msg.message"));
 </script>

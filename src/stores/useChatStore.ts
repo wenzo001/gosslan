@@ -758,6 +758,16 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   /**
+   * 撤回自己发的一条群消息（仅原作者，窗口 2 分钟）。
+   *
+   * 不做乐观更新：先在服务端成功（事件已发出）才改本地 —— 顺序反了会出现
+   * 「本地显示已撤回、对端根本没收到」。事件回来会走 `onMessageRecalled` 统一改本地形态。
+   */
+  async function recallMessage(groupId: string, msgId: string) {
+    await api.recallGroupMessage(groupId, msgId);
+  }
+
+  /**
    * 发一条表情回应（群聊）。
    *
    * 走与普通消息**完全相同**的可靠管道（E2EE + outbox + GroupAck + 去重 + 离线补发），
@@ -1022,6 +1032,34 @@ export const useChatStore = defineStore("chat", () => {
     app.toast(`${t("send.fileFail")}：${d.reason}`, "error");
   }
 
+  /**
+   * 收到撤回事件：把本地那一行改成「已撤回」形态。
+   *
+   * 与后端的物化视图保持一致：`kind` 改 `recalled`、`content` 清空 ——
+   * 这样搜索、预览、复制等所有读 content 的地方**一处都不用改**就自动正确。
+   */
+  function onMessageRecalled(msgId: string) {
+    for (const [convId, list] of Object.entries(messages.value)) {
+      const idx = list.findIndex((m) => m.msg_id === msgId);
+      if (idx < 0) continue;
+      if (list[idx].kind === "recalled") return; // 幂等：重复事件不再改动
+      const next = [...list];
+      next[idx] = { ...next[idx], kind: "recalled", content: "" };
+      messages.value = { ...messages.value, [convId]: next };
+      // 会话列表的预览若正是这条，也要跟着清掉（否则左侧仍显示已被撤回的正文）
+      const conv = conversations.value.find((c) => c.id === convId);
+      if (conv && conv.last_msg && list[idx].content) {
+        const preview = previewText(list[idx]);
+        if (conv.last_msg === preview || conv.last_msg === preview.slice(0, 30)) {
+          conversations.value = conversations.value.map((c) =>
+            c.id === convId ? { ...c, last_msg: t("msg.recalled") } : c,
+          );
+        }
+      }
+      return;
+    }
+  }
+
   function onGroupRead(p: GroupReadInfo) {
     const readers = groupReads.value[p.group_id] ?? {};
     const current = readers[p.reader_id] ?? 0;
@@ -1149,6 +1187,7 @@ export const useChatStore = defineStore("chat", () => {
         }
       },
       onGroupRead,
+      onMessageRecalled,
       onFileProgress: (p) => {
         // 进度由事件载荷直接更新，不再全量刷新传输列表（避免大文件 IPC 风暴卡死界面）
         updateTransferProgress(p);
@@ -1292,6 +1331,7 @@ export const useChatStore = defineStore("chat", () => {
     deleteConversation,
     setConversationPinned,
     sendReaction,
+    recallMessage,
     createGroup,
     renameGroup,
     addGroupMember,

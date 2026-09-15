@@ -120,8 +120,12 @@ pub const WIRE_KINDS: &[(&str, KindClass)] = &[
     ("image", KindClass::Bubble),
     ("file", KindClass::Bubble),
     ("system", KindClass::Bubble),
-    // 阶段 1：表情回应
+    // 阶段 1：表情回应 / 撤回
     ("reaction", KindClass::Silent),
+    ("recall", KindClass::Silent),
+    // 撤回后的消息本体：仍在时间线上占位（居中灰条「消息已撤回」），故是 Bubble。
+    // 它的 content 已被清空 —— 搜索、导出、已读水位因此自动正确，无需各自过滤。
+    ("recalled", KindClass::Bubble),
 ];
 
 /// 未知 kind 一律按 `Bubble` 处理 —— 与 `MsgKind::from_str` 回退到 `Text` 同语义：
@@ -188,6 +192,23 @@ pub fn is_valid_emoji_token(s: &str) -> bool {
     // 内层不得再出现方括号（否则 `[[x]` 这类畸形会被当成合法 token）
     !inner.is_empty() && !inner.contains(['[', ']']) && !s.contains(char::is_control)
 }
+
+/// 撤回的事件载荷（`kind = "recall"`）。
+///
+/// 与表情回应同构：撤回也是**一串独立事件**而非"改一个字段"，
+/// 因为 `message_id` 绑定了 payload，同一条消息不可能带不同 content 重发。
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct RecallPayload {
+    /// 被撤回的消息 msg_id
+    pub target: String,
+}
+
+/// 撤回后消息本体的 `kind`。`content` 被清空、`sender_id`/`ts`/`seq`/`msg_id` 保留 ——
+/// 这样搜索、导出、已读水位**一行都不用改就自动正确**（没有正文可命中、可导出）。
+pub const KIND_RECALLED: &str = "recalled";
+
+/// 撤回事件本身的 `kind`。
+pub const KIND_RECALL: &str = "recall";
 
 /// 共享目录条目
 #[derive(Serialize, Deserialize, Clone, Debug)]

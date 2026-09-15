@@ -16,7 +16,7 @@ export type KindClass = "bubble" | "silent";
  * 宁可多显示一条，也不要把不认识的内容静默吞掉（对端版本更新时不丢消息）。
  */
 export function kindClass(kind: string): KindClass {
-  return kind === "reaction" ? "silent" : "bubble";
+  return SILENT_KINDS.includes(kind) ? "silent" : "bubble";
 }
 
 /** 静默事件：不进时间线、不计未读、不改预览、不弹通知。 */
@@ -28,4 +28,4 @@ export function isSilentKind(kind: string): boolean {
  * 静默种类清单 —— **与 Rust 的 `WIRE_KINDS` 必须一致**，由契约测试锁死。
  * 这里显式列出（而不是从 `kindClass` 反推）是为了让测试能逐项比对。
  */
-export const SILENT_KINDS: readonly string[] = ["reaction"];
+export const SILENT_KINDS: readonly string[] = ["reaction", "recall"];

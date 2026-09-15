@@ -59,6 +59,18 @@ CREATE TABLE IF NOT EXISTS conversation_clocks (
     seq     INTEGER NOT NULL
 );
 
+-- 撤回的**权威集合**（G-Set，只增不减）。`messages` 行的 content 置空 / kind='recalled'
+-- 只是它的**物化视图** —— 两者都必需：撤回事件可能先于被撤回消息到达
+-- （Gossip 泛洪与 outbox 直发是两条无顺序保证的路径），只靠 UPDATE 会打到 0 行，
+-- 随后消息正常落库 ⇒ 撤回失效。落库前查这张表即可解决「先撤后到」。
+CREATE TABLE IF NOT EXISTS group_recalled_messages (
+    conv_id     TEXT NOT NULL,
+    msg_id      TEXT NOT NULL,
+    recaller_id TEXT NOT NULL,
+    seq         INTEGER NOT NULL,
+    PRIMARY KEY (conv_id, msg_id)
+);
+
 CREATE TABLE IF NOT EXISTS groups (
     id         TEXT PRIMARY KEY,
     name       TEXT NOT NULL,
@@ -1829,6 +1841,38 @@ mod tests {
         assert_eq!(friends[0].nickname, "张三回来了");
     }
 
+    /// 撤回：G-Set 幂等 + 物化视图让搜索/预览自动正确。
+    #[test]
+    fn recall_is_idempotent_and_materializes_content() {
+        let conn = mem();
+        insert_message(&conn, &rec_as("m1", "g1", "text", "这句要撤回")).unwrap();
+        assert!(!is_recalled(&conn, "m1"));
+
+        assert!(insert_recall(&conn, "g1", "m1", "a", 5).unwrap(), "首次应返回 true");
+        assert!(!insert_recall(&conn, "g1", "m1", "a", 5).unwrap(), "重复撤回必须幂等");
+        assert!(is_recalled(&conn, "m1"));
+
+        assert!(materialize_recall(&conn, "m1").unwrap());
+        // content 清空 ⇒ 搜索命中数为 0（**不用给 search_history 加任何过滤**）
+        assert_eq!(search_history(&conn, "撤回", None, None, None, 100).unwrap().len(), 0);
+        // 再物化一次不得改变任何东西（幂等）
+        assert!(!materialize_recall(&conn, "m1").unwrap(), "已物化过应返回 false");
+    }
+
+    /// **先撤后到**：撤回事件可能早于被撤回的消息抵达（Gossip 泛洪 vs outbox 直发
+    /// 是两条无顺序保证的路径）。权威集合必须在消息落库**之前**就能查到。
+    #[test]
+    fn recall_recorded_before_the_message_arrives_still_applies() {
+        let conn = mem();
+        // 撤回先到（消息还没落库）
+        insert_recall(&conn, "g1", "later", "a", 9).unwrap();
+        assert!(is_recalled(&conn, "later"), "权威集合独立于消息行存在");
+        // 消息随后到达：调用方据此以「已撤回」形态入库
+        insert_message(&conn, &rec_as("later", "g1", "text", "正文不该留下")).unwrap();
+        assert_eq!(search_history(&conn, "不该留下", None, None, None, 100).unwrap().len(), 1,
+            "本测试只验证权威集合可先于消息存在；入库形态由 transport 层负责");
+    }
+
     /// 静默类（表情回应）不得进入历史检索，也不得顶起群已读水位。
     ///
     /// 这两条都必须**真正执行 SQL** 才算验证：SQL 里的 kind 清单是从 `WIRE_KINDS`
@@ -3519,3 +3563,46 @@ mod tests {
         assert_eq!(list_pending_group_reads(&conn, "c").unwrap().len(), 1);
     }
 }
+
+// ---------------- 撤回（G-Set + 物化视图） ----------------
+
+/// 记下一条撤回事件（幂等）。返回 true 表示本次是首次记录。
+pub fn insert_recall(
+    conn: &Connection,
+    conv_id: &str,
+    msg_id: &str,
+    recaller_id: &str,
+    seq: i64,
+) -> Result<bool> {
+    let n = conn.execute(
+        "INSERT OR IGNORE INTO group_recalled_messages(conv_id, msg_id, recaller_id, seq)
+         VALUES(?1, ?2, ?3, ?4)",
+        params![conv_id, msg_id, recaller_id, seq],
+    )?;
+    Ok(n > 0)
+}
+
+/// 该消息是否已被撤回（权威判定）。
+pub fn is_recalled(conn: &Connection, msg_id: &str) -> bool {
+    conn.query_row(
+        "SELECT 1 FROM group_recalled_messages WHERE msg_id = ?1",
+        params![msg_id],
+        |r| r.get::<_, i64>(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
+    .is_some()
+}
+
+/// 把撤回**物化**到消息行：清空正文、改 kind。
+/// `content` 清空后，搜索 / 导出 / 会话预览 / 已读水位**一行都不用改就自动正确**。
+/// 返回 true 表示确实改到了行（消息已在本机）。
+pub fn materialize_recall(conn: &Connection, msg_id: &str) -> Result<bool> {
+    let n = conn.execute(
+        "UPDATE messages SET kind = ?2, content = '' WHERE msg_id = ?1 AND kind != ?2",
+        params![msg_id, crate::protocol::KIND_RECALLED],
+    )?;
+    Ok(n > 0)
+}
+

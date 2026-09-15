@@ -43,7 +43,15 @@ export interface PendingRequest {
   ts: number;
 }
 
-export type MsgKind = "text" | "code" | "image" | "file" | "system" | "reaction";
+export type MsgKind =
+  | "text"
+  | "code"
+  | "image"
+  | "file"
+  | "system"
+  | "reaction"
+  | "recall"
+  | "recalled";
 
 /** 表情回应的事件载荷（kind = "reaction" 时 content 的 JSON 形态）。 */
 export interface ReactionPayload {

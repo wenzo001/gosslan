@@ -95,6 +95,9 @@ export const api = {
     invoke<MessageRecord>("send_group_message", { groupId, content, kind }),
   listGroupFiles: (groupId: string) =>
     invoke<GroupFileEntry[]>("list_group_files", { groupId }),
+  /** 撤回自己发的一条群消息（仅原作者；窗口 2 分钟，只在发送端强制）。 */
+  recallGroupMessage: (groupId: string, target: string) =>
+    invoke<void>("recall_group_message", { groupId, target }),
   /** 表情回应：一条**静默事件**（不计未读、不改预览、不弹通知）。 */
   sendGroupReaction: (groupId: string, target: string, emoji: string, add: boolean) =>
     invoke<MessageRecord>("send_group_reaction", { groupId, target, emoji, add }),
@@ -261,6 +264,8 @@ export type EventHandlers = {
   onMessageAcked: (msgId: string) => void;
   onPeerRead: (p: PeerReadInfo) => void;
   onGroupRead: (p: GroupReadInfo) => void;
+  /** 某条消息被撤回（msg_id）。本地据此把该行改成「已撤回」形态。 */
+  onMessageRecalled: (msgId: string) => void;
   onFileProgress: (p: FileProgress) => void;
   onFileDone: (d: FileDoneInfo) => void;
   onFileFailed: (d: FileFailedInfo) => void;
@@ -289,6 +294,7 @@ export async function bindEvents(h: EventHandlers): Promise<UnlistenFn[]> {
     listen<{ msg_id: string }>("group-message-acked", (e) => h.onMessageAcked(e.payload.msg_id)),
     listen<PeerReadInfo>("peer-read", (e) => h.onPeerRead(e.payload)),
     listen<GroupReadInfo>("group-read", (e) => h.onGroupRead(e.payload)),
+    listen<string>("message-recalled", (e) => h.onMessageRecalled(e.payload)),
     listen<FileProgress>("file-progress", (e) => h.onFileProgress(e.payload)),
     listen<FileDoneInfo>("file-done", (e) => h.onFileDone(e.payload)),
     listen<FileFailedInfo>("file-failed", (e) => h.onFileFailed(e.payload)),
