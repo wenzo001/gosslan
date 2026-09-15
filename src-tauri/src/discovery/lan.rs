@@ -54,6 +54,9 @@ mod tests {
             tcp_port: port,
             x25519_pubkey: None,
             ed25519_pubkey: None,
+            // 本模块只测「候选解析」，不涉及签名（那由 verify_announce 的单测覆盖）
+            nonce: String::new(),
+            sig: String::new(),
         }
     }
 

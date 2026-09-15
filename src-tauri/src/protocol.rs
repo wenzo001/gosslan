@@ -632,6 +632,29 @@ pub fn hello_signing_bytes(
     .unwrap_or_default()
 }
 
+/// announce 的签名材料。
+///
+/// **只覆盖安全相关字段**：device_id / tcp_port / 两把公钥 / nonce。
+/// 刻意**不含 nickname**：它随用户改名变化、且纯属展示信息，纳入签名会让
+/// 「改个昵称 → 旧签名全部失效」；也不含 `kind`，由调用方保证是 announce。
+pub fn announce_signing_bytes(
+    device_id: &str,
+    tcp_port: u16,
+    nonce: &str,
+    x25519_pubkey: &str,
+    ed25519_pubkey: &str,
+) -> Vec<u8> {
+    serde_json::to_vec(&(
+        "gosslan-announce-v1",
+        device_id,
+        tcp_port,
+        nonce,
+        x25519_pubkey,
+        ed25519_pubkey,
+    ))
+    .unwrap_or_default()
+}
+
 /// UDP 广播/回复包
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct UdpPacket {
@@ -644,10 +667,209 @@ pub struct UdpPacket {
     pub x25519_pubkey: Option<String>,
     /// Ed25519 公钥（base64，用于验签）
     pub ed25519_pubkey: Option<String>,
+    /// 每次广播新生成的随机串（base64），参与签名 —— 防重放。
+    /// 旧端不发送（`serde(default)`），判定见 `verify_announce`。
+    #[serde(default)]
+    pub nonce: String,
+    /// Ed25519 签名（base64），覆盖 `announce_signing_bytes()` 的全部字段。
+    ///
+    /// 历史背景：本字段缺失时，`announce` 是一条**完全无认证**的信道 ——
+    /// 包里的 device_id 与公钥都是明文，任何人都能伪造。曾经的后果是
+    /// 「未签名的广播绑定了身份，且写进持久化的 friends 表」（见 CHANGELOG 4.9.1）。
+    /// 现在补上签名后，**能**做到的：防篡改、防重放、让每条广播可归因到某个密钥持有者。
+    /// **仍做不到**的：阻止攻击者用自己的密钥签一个「自称是某人」的包 ——
+    /// 那是首次接触（TOFU）的固有限制，要靠带外指纹核对（见 `Peer.keys_verified` 的说明）。
+    #[serde(default)]
+    pub sig: String,
+}
+
+/// `announce` 的认证判定结果。
+#[derive(Debug, PartialEq, Eq)]
+pub enum AnnounceAuth {
+    /// 签名有效：广播者持有其所声明 Ed25519 公钥的私钥。
+    /// **注意这仍不等于「他就是那个 device_id」** —— 见 `UdpPacket::sig` 的说明。
+    Verified,
+    /// 无签名（旧端）。**仍然接受用于发现**：它只驱动「拨号」，
+    /// 而真正的身份绑定由 Hello 验签决定（announce 来的公钥一律 `keys_verified = false`）。
+    /// 硬拒会让旧端在局域网内彻底不可见 —— 代价大于收益。
+    Legacy,
+    /// 带签名但验不过：包被篡改或伪造，必须丢弃。
+    Invalid(String),
+}
+
+/// 校验一条 `announce`/`who_has` 包的自签名。**纯函数**，便于单测。
+pub fn verify_announce(pkt: &UdpPacket) -> AnnounceAuth {
+    let (Some(x), Some(e)) = (
+        pkt.x25519_pubkey.as_deref().filter(|s| !s.is_empty()),
+        pkt.ed25519_pubkey.as_deref().filter(|s| !s.is_empty()),
+    ) else {
+        // who_has 不带公钥也不带签名，属正常形态
+        return if pkt.sig.is_empty() {
+            AnnounceAuth::Legacy
+        } else {
+            AnnounceAuth::Invalid("带签名但缺少公钥".to_string())
+        };
+    };
+    if pkt.sig.is_empty() {
+        return AnnounceAuth::Legacy;
+    }
+    if pkt.nonce.is_empty() {
+        return AnnounceAuth::Invalid("带签名但缺少 nonce（无法防重放）".to_string());
+    }
+    let data = announce_signing_bytes(&pkt.device_id, pkt.tcp_port, &pkt.nonce, x, e);
+    if crate::crypto::verify_signature(e, &data, &pkt.sig) {
+        AnnounceAuth::Verified
+    } else {
+        AnnounceAuth::Invalid("签名校验失败".to_string())
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::crypto::Identity;
+
+    // ---------------- announce 自签名 ----------------
+
+    /// 按线上形态构造一条自签名 announce。
+    fn signed_announce(
+        id: &Identity,
+        device_id: &str,
+        port: u16,
+        nonce: &str,
+    ) -> super::UdpPacket {
+        let x = id.x25519_public_b64();
+        let e = id.ed25519_public_b64();
+        let sig = id.sign_b64(&super::announce_signing_bytes(device_id, port, nonce, &x, &e));
+        super::UdpPacket {
+            kind: "announce".to_string(),
+            device_id: device_id.to_string(),
+            nickname: "nick".to_string(),
+            tcp_port: port,
+            x25519_pubkey: Some(x),
+            ed25519_pubkey: Some(e),
+            nonce: nonce.to_string(),
+            sig,
+        }
+    }
+
+    #[test]
+    fn announce_verified_when_self_signed() {
+        let id = Identity::generate();
+        let pkt = signed_announce(&id, "dev-a", 59992, "n1");
+        assert_eq!(super::verify_announce(&pkt), super::AnnounceAuth::Verified);
+    }
+
+    /// 篡改任何**被签名覆盖**的字段都必须失败 —— 这是「防篡改」的全部内容。
+    #[test]
+    fn announce_rejects_tampering_on_every_signed_field() {
+        let id = Identity::generate();
+        let base = signed_announce(&id, "dev-a", 59992, "n1");
+
+        let mut p = base.clone();
+        p.device_id = "victim".to_string();
+        assert!(matches!(super::verify_announce(&p), super::AnnounceAuth::Invalid(_)), "改 device_id");
+
+        let mut p = base.clone();
+        p.tcp_port = 1;
+        assert!(matches!(super::verify_announce(&p), super::AnnounceAuth::Invalid(_)), "改 tcp_port");
+
+        let mut p = base.clone();
+        p.nonce = "n2".to_string();
+        assert!(matches!(super::verify_announce(&p), super::AnnounceAuth::Invalid(_)), "改 nonce");
+
+        // 换成攻击者自己的公钥（想把绑定指向自己的密钥）
+        let attacker = Identity::generate();
+        let mut p = base.clone();
+        p.ed25519_pubkey = Some(attacker.ed25519_public_b64());
+        p.x25519_pubkey = Some(attacker.x25519_public_b64());
+        assert!(matches!(super::verify_announce(&p), super::AnnounceAuth::Invalid(_)), "换公钥");
+
+        // nickname **不在**签名范围内（改名不该让签名失效），故意不测它
+        let mut p = base.clone();
+        p.nickname = "换个昵称".to_string();
+        assert_eq!(super::verify_announce(&p), super::AnnounceAuth::Verified, "nickname 不参与签名");
+    }
+
+    /// 用别人的公钥声称自己是对方：签名一定对不上（攻击者没有对方私钥）。
+    #[test]
+    fn announce_rejects_forged_signature_with_victim_pubkey() {
+        let attacker = Identity::generate();
+        let victim = Identity::generate();
+        let vk = victim.ed25519_public_b64();
+        let vx = victim.x25519_public_b64();
+        // 攻击者用**自己的**私钥签，却声明受害者的公钥
+        let sig = attacker.sign_b64(&super::announce_signing_bytes("victim", 59992, "n1", &vx, &vk));
+        let pkt = super::UdpPacket {
+            kind: "announce".to_string(),
+            device_id: "victim".to_string(),
+            nickname: String::new(),
+            tcp_port: 59992,
+            x25519_pubkey: Some(vx),
+            ed25519_pubkey: Some(vk),
+            nonce: "n1".to_string(),
+            sig,
+        };
+        assert!(matches!(super::verify_announce(&pkt), super::AnnounceAuth::Invalid(_)));
+    }
+
+    /// 旧端不签名 → 放行（Legacy）。硬拒会让旧端在局域网内彻底不可见，
+    /// 而 announce 本就不能用于身份绑定（公钥恒为 keys_verified=false），放行的风险可控。
+    #[test]
+    fn announce_without_signature_is_legacy_not_rejected() {
+        let id = Identity::generate();
+        let mut pkt = signed_announce(&id, "dev-a", 59992, "n1");
+        pkt.sig = String::new();
+        assert_eq!(super::verify_announce(&pkt), super::AnnounceAuth::Legacy);
+
+        // who_has：不带公钥也不带签名，是正常形态
+        let probe = super::UdpPacket {
+            kind: "who_has".to_string(),
+            device_id: "dev-a".to_string(),
+            nickname: String::new(),
+            tcp_port: 59992,
+            x25519_pubkey: None,
+            ed25519_pubkey: None,
+            nonce: String::new(),
+            sig: String::new(),
+        };
+        assert_eq!(super::verify_announce(&probe), super::AnnounceAuth::Legacy);
+    }
+
+    /// 带签名却缺 nonce / 缺公钥 → 无法防重放或无法验签，必须拒。
+    #[test]
+    fn announce_rejects_signed_but_incomplete_packets() {
+        let id = Identity::generate();
+
+        let mut p = signed_announce(&id, "dev-a", 59992, "n1");
+        p.nonce = String::new();
+        assert!(matches!(super::verify_announce(&p), super::AnnounceAuth::Invalid(_)));
+
+        let mut p = signed_announce(&id, "dev-a", 59992, "n1");
+        p.x25519_pubkey = None;
+        assert!(matches!(super::verify_announce(&p), super::AnnounceAuth::Invalid(_)));
+
+        let mut p = signed_announce(&id, "dev-a", 59992, "n1");
+        p.ed25519_pubkey = Some(String::new());
+        assert!(matches!(super::verify_announce(&p), super::AnnounceAuth::Invalid(_)));
+    }
+
+    /// 签名材料对每个字段敏感（防止将来有人漏字段导致"改了也能过"）。
+    #[test]
+    fn announce_signing_bytes_sensitive_to_every_field() {
+        let base = super::announce_signing_bytes("a", 1, "n", "x", "e");
+        assert_ne!(base, super::announce_signing_bytes("b", 1, "n", "x", "e"));
+        assert_ne!(base, super::announce_signing_bytes("a", 2, "n", "x", "e"));
+        assert_ne!(base, super::announce_signing_bytes("a", 1, "m", "x", "e"));
+        assert_ne!(base, super::announce_signing_bytes("a", 1, "n", "y", "e"));
+        assert_ne!(base, super::announce_signing_bytes("a", 1, "n", "x", "f"));
+        // 与 Hello 的材料必须不同域（前缀不同），否则一个协议的签名能拿到另一个用
+        assert_ne!(
+            base,
+            super::hello_signing_bytes("a", 1, "n", "x", "e"),
+            "announce 与 Hello 的签名材料必须域分离"
+        );
+    }
+
     /// Phase 8（ADR-0017）：不透明外部帧的边界校验 —— **畸形/超限只丢该帧，不断链**。
     #[test]
     fn opaque_external_validation_bounds() {

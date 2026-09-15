@@ -16,6 +16,8 @@ use tokio::time::{sleep_until, Duration, Instant};
 
 use rand_core::{OsRng, RngCore};
 
+use base64::{engine::general_purpose::STANDARD, Engine as _};
+
 use crate::commands::is_virtual_ip;
 use crate::network::transport::{ensure_link, upsert_peer};
 use crate::protocol::{
@@ -252,13 +254,29 @@ fn bind_udp_recv(port: u16) -> Result<UdpSocket, String> {
 fn announce_packet(state: &AppState, tcp_port: u16) -> UdpPacket {
     // 注意：announce 不携带 avatar——头像可能很大，塞进 UDP 广播会超报文上限
     // （EMSGSIZE "Message too long"）导致发现失效；头像改由 TCP 建链后的 UserInfo 同步。
+    let x = state.identity.x25519_public_b64();
+    let e = state.identity.ed25519_public_b64();
+    // 每次广播都换一个 nonce：签名因此**不可跨轮重放**（旧包即使被抓到，重发也会因为
+    // nonce 与签名绑定而只是"同一个旧 nonce"——配合接收端的诊断即可识别为异常重复）。
+    let nonce = STANDARD.encode(crate::crypto::random_key());
+    let sig = state
+        .identity
+        .sign_b64(&crate::protocol::announce_signing_bytes(
+            &state.device_id,
+            tcp_port,
+            &nonce,
+            &x,
+            &e,
+        ));
     UdpPacket {
         kind: "announce".to_string(),
         device_id: state.device_id.clone(),
         nickname: state.nickname.lock().unwrap_or_else(|e| e.into_inner()).clone(),
         tcp_port,
-        x25519_pubkey: Some(state.identity.x25519_public_b64()),
-        ed25519_pubkey: Some(state.identity.ed25519_public_b64()),
+        x25519_pubkey: Some(x),
+        ed25519_pubkey: Some(e),
+        nonce,
+        sig,
     }
 }
 
@@ -458,6 +476,23 @@ async fn handle_datagram(
     }
     match pkt.kind.as_str() {
         "announce" => {
+            // 自签名校验：带签名却验不过 = 篡改或伪造，**在它影响任何状态之前**丢掉。
+            // 无签名（旧端）放行 —— 它只能驱动拨号，身份绑定一律由 Hello 验签决定
+            // （announce 来的公钥恒为 keys_verified=false，见 upsert_peer）。
+            match crate::protocol::verify_announce(&pkt) {
+                crate::protocol::AnnounceAuth::Invalid(reason) => {
+                    state.push_diag_event(
+                        "announce_rejected",
+                        &format!("{reason}; from={} via={}", pkt.device_id, src.ip()),
+                    );
+                    return;
+                }
+                crate::protocol::AnnounceAuth::Verified => state.push_diag_event(
+                    "announce_verified",
+                    &format!("from={} via={}", pkt.device_id, src.ip()),
+                ),
+                crate::protocol::AnnounceAuth::Legacy => {}
+            }
             state.push_diag_event(
                 "announce_recv",
                 &format!("from={} via={}", pkt.device_id, src.ip()),
@@ -553,6 +588,10 @@ async fn broadcast_probe(
         tcp_port,
         x25519_pubkey: None,
         ed25519_pubkey: None,
+        // who_has 只是"谁在线"的探测：不声明身份、也不参与任何绑定，故不签名。
+        // 接收端按 AnnounceAuth::Legacy 处理（见 verify_announce）。
+        nonce: String::new(),
+        sig: String::new(),
     };
     if let Ok(data) = serde_json::to_vec(&who) {
         let bcast_target = format!("255.255.255.255:{UDP_PORT}");

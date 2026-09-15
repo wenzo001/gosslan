@@ -33,7 +33,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 // 注意：lib 名是 `gosslan_lib`（Cargo.toml `[lib] name`），不是 `gosslan`。
 use gosslan_lib::crypto::Identity;
-use gosslan_lib::protocol::{hello_signing_bytes, Message, UdpPacket, UDP_PORT};
+use gosslan_lib::protocol::{announce_signing_bytes, hello_signing_bytes, Message, UdpPacket, UDP_PORT};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -84,6 +84,7 @@ async fn dial_in(endpoint: &str, id: &Identity) -> Result<tokio::net::tcp::Owned
         nickname: "mirror-dial".to_string(),
         avatar: None,
         device_type: "desktop".to_string(),
+        content_features: gosslan_lib::protocol::content_features(),
         tcp_port: 0,
         x25519_pubkey: x25519,
         ed25519_pubkey: ed25519,
@@ -125,13 +126,19 @@ fn announce_targets() -> Vec<String> {
 }
 
 fn announce_packet(device_id: &str, id: &Identity, tcp_port: u16) -> UdpPacket {
+    let x = id.x25519_public_b64();
+    let e = id.ed25519_public_b64();
+    let nonce = "mirror-dial-nonce".to_string();
+    let sig = id.sign_b64(&announce_signing_bytes(device_id, tcp_port, &nonce, &x, &e));
     UdpPacket {
         kind: "announce".to_string(),
         device_id: device_id.to_string(),
         nickname: "mirror-dial".to_string(),
         tcp_port,
-        x25519_pubkey: Some(id.x25519_public_b64()),
-        ed25519_pubkey: Some(id.ed25519_public_b64()),
+        x25519_pubkey: Some(x),
+        ed25519_pubkey: Some(e),
+        nonce,
+        sig,
     }
 }
 

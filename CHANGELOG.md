@@ -10,7 +10,42 @@
 
 ## [Unreleased]
 
-### Fixed (后端审计续：整文件读入内存，改为按需分块)
+### Added (TOFU 第一步：announce 自签名)
+
+背景：`UdpPacket` 此前携带 `device_id` 与两把公钥却**没有任何签名字段** —— 一条完全
+无认证的信道。4.9.1 修的「伪造广播替换好友公钥」正是它的直接后果。
+
+- **协议**：`UdpPacket` 增加 `nonce` / `sig`（均 `serde(default)`，旧端互通）；
+  新增 `announce_signing_bytes()`（域前缀 `gosslan-announce-v1`，与 Hello 的签名材料
+  域分离）与纯函数 `verify_announce()`，判定三档：
+  - `Verified`：签名有效 —— 广播者持有其声明 Ed25519 公钥的私钥；
+  - `Legacy`：无签名（旧端）→ **放行**。它只能驱动「拨号」，而身份绑定一律由 Hello
+    验签决定（announce 来的公钥恒为 `keys_verified = false`）；硬拒会让旧端在局域网内
+    彻底不可见，代价大于收益；
+  - `Invalid`：带签名却验不过 → **在它影响任何状态之前丢弃**（篡改或伪造）。
+- **发送侧**：每次广播生成新 nonce 并签名（广播周期 5s，nonce 每轮都换）。
+- **签名范围只含安全相关字段**：device_id / tcp_port / 两把公钥 / nonce。
+  **刻意不含 nickname** —— 它是展示信息且随改名变化，纳入签名会让「改个昵称 → 旧签名
+  全部失效」。有单测钉死这一点。
+
+**这条能做到什么、不能做到什么（重要）**：能防篡改、防重放、让每条广播可归因到某个
+密钥持有者；**仍不能**阻止攻击者用自己的私钥签一个「自称是某人」的包 —— 那是首次接触
+（TOFU）的固有限制，需要带外指纹核对（本步为其打基础：签名让「广播的密钥」与
+「建链时 Hello 的密钥」可被关联比对）。
+
+**顺带修复**：`examples/mirror_dial.rs` 与 `examples/dual_link.rs` 在 HEAD 上就已编译失败
+（`Message::Hello` 缺 `content_features`，4.8.1 只补了 `e2e_peer`）。两个示例已修好，
+`cargo check --all-targets` 现在 **0 错误**；`mirror_dial` 的 announce 也改为真签名。
+
+验证：cargo test --lib 468 passed（新增 6 项 announce 单测：自签名通过、逐字段篡改被拒、
+冒用他人公钥被拒、旧端放行、带签名但缺 nonce/公钥被拒、签名材料域分离）·
+cargo check --all-targets 0 错误 · scripts/e2e-dev.sh 30 passed / 0 failed
+（发现与建链正常 ⇒ 签名未改变线格式）。
+
+**未覆盖**：接收侧 `Verified` 分支只有单测覆盖 —— E2E 是单实例 + 协议级对端，
+对端不参与验签；`announce_*` 属诊断环形缓冲、不落日志文件，故本次未做双节点真机确认。
+
+## [4.9.2] - 2026-09-15
 
 - **`resume_receive` 为给哈希器播种而整读 `.part` 前缀**。`.part` 最长等于整个文件，
   于是「几个 GB 的文件传到 90% 断链、对端续传」会让进程瞬间占用 ≈ 文件大小 ——
