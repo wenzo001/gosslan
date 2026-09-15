@@ -2083,6 +2083,11 @@ pub fn ensure_conversation(
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         db::ensure_conversation(&dbc, &friend_id, "single", &name, avatar.as_deref())
             .map_err(|e| e.to_string())?;
+        // 回读已存在的行：会话可能早已建立且被置顶，凭空造一个 pinned=false
+        // 会让前端把它当成「未置顶」从而覆盖掉用户的置顶状态。
+        if let Some(conv) = db::get_conversation(&dbc, &friend_id) {
+            return Ok(conv);
+        }
     }
     Ok(Conversation {
         id: friend_id.clone(),
@@ -2092,7 +2097,19 @@ pub fn ensure_conversation(
         last_msg: None,
         last_ts: None,
         unread: 0,
+        pinned: false,
     })
+}
+
+/// 设置会话置顶（纯本地偏好，不广播、不同步）。
+#[tauri::command(async)]
+pub fn set_conversation_pinned(
+    state: State<'_, Arc<AppState>>,
+    conv_id: String,
+    pinned: bool,
+) -> Result<(), String> {
+    let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
+    db::set_conversation_pinned(&dbc, &conv_id, pinned).map_err(|e| e.to_string())
 }
 
 /// 标记会话已读；单聊时向对方发送已读回执（触发对方界面的「已读绿勾」）。
@@ -3412,6 +3429,97 @@ pub fn get_group_file_delivery_summary(
     db::get_group_file_delivery_summary(&dbc, &transfer_id)
 }
 
+/// 群文件列表里的一项（前端「群文件」面板）。
+#[derive(serde::Serialize)]
+pub struct GroupFileEntry {
+    pub transfer_id: String,
+    pub name: String,
+    pub size: u64,
+    pub sender_id: String,
+    pub created_at: i64,
+    /// 本机视角的持有状态：`local`（在本机可打开）/ `receiving`（传输中）/
+    /// `remote`（未取到）/ `failed`（取失败，可重试）。
+    /// **不由群投递状态推导**：我发出去的文件对别人是否送达，与我本机能不能打开无关。
+    pub local_state: String,
+    /// 本机完整文件的真实路径（仅 `local_state == "local"` 时给出）。
+    pub local_path: Option<String>,
+    /// 该文件对全群的投递进度（已完成成员数 / 成员总数）。
+    pub delivered: i64,
+    pub total: i64,
+}
+
+/// 列出某群的全部群文件，附带「本机是否持有」与「对全群投递进度」。
+///
+/// 本机持有状态的判定必须**看磁盘**：路径在 DB 里存在不代表文件还在
+/// （缓存清理会删掉媒体文件，见 `clean_cache_now`）。只信 DB 会让面板列出
+/// 一堆点了打不开的条目。
+#[tauri::command(async)]
+pub fn list_group_files(
+    state: State<'_, Arc<AppState>>,
+    group_id: String,
+) -> Result<Vec<GroupFileEntry>, String> {
+    let s = state.inner();
+    let me = s.device_id.clone();
+    // 先把 DB 该给的都取出来，**随即释放 db 锁** —— 下面的磁盘 stat 是阻塞 I/O，
+    // 持着全局 db 锁做 N 次 stat 会把整条消息链路的落库一起堵住。
+    type Row = (crate::state::GroupFile, i64, i64, String, Option<String>);
+    let rows: Vec<Row> = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        let files = db::list_group_files(&dbc, &group_id).map_err(|e| e.to_string())?;
+        files
+            .into_iter()
+            .map(|f| {
+                let summary = db::get_group_file_delivery_summary(&dbc, &f.transfer_id);
+                let (delivered, total) = match summary {
+                    Some(x) => (x.completed, x.total),
+                    None => (0, 0),
+                };
+                let my_status =
+                    db::get_group_file_recipient_status(&dbc, &f.transfer_id, &me).unwrap_or_default();
+                let path = db::get_transfer_path(&dbc, &f.transfer_id);
+                (f, delivered, total, my_status, path)
+            })
+            .collect()
+    };
+    Ok(rows
+        .into_iter()
+        .map(|(f, delivered, total, my_status, path)| {
+            let (local_state, local_path) = if f.sender_id == me {
+                // 发送者不参与 recipients（见 send_group_file 的成员过滤），其 recipient 行
+                // 恒为空 —— 按 my_status 判定会让自己发的文件永远显示"未取到"。
+                // 本机是否还留着原件，只能看磁盘。
+                local_path_state(path)
+            } else {
+                match my_status.as_str() {
+                    "completed" => local_path_state(path),
+                    "sending" | "pending" => ("receiving".to_string(), None),
+                    "failed" => ("failed".to_string(), None),
+                    // 没有 recipient 行：该文件早于本机入群，尚未登记接收
+                    _ => ("remote".to_string(), None),
+                }
+            };
+            GroupFileEntry {
+                transfer_id: f.transfer_id,
+                name: f.name,
+                size: f.size,
+                sender_id: f.sender_id,
+                created_at: f.created_at,
+                local_state,
+                local_path,
+                delivered,
+                total,
+            }
+        })
+        .collect())
+}
+
+/// 路径 → 持有状态：路径存在且**文件仍在磁盘上**才算 `local`，否则回落到 `remote`。
+fn local_path_state(path: Option<String>) -> (String, Option<String>) {
+    match path {
+        Some(p) if std::path::Path::new(&p).is_file() => ("local".to_string(), Some(p)),
+        _ => ("remote".to_string(), None),
+    }
+}
 
 /// 构造一条本地文件/图片消息记录（发送方）。
 /// kind 由调用方根据 subtype 决定：image 子类型保持 kind="image"，其余为 "file"。

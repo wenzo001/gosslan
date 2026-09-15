@@ -267,6 +267,9 @@ pub struct Conversation {
     pub last_msg: Option<String>,
     pub last_ts: Option<i64>,
     pub unread: i64,
+    /// 本机置顶（纯本地偏好，不广播不同步）。列表排序时优先于 last_ts。
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 /// 好友

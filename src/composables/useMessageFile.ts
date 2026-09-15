@@ -1,14 +1,12 @@
 import { t as $t } from "@/i18n";
 import { computed, ref, toValue, watch, type MaybeRefOrGetter } from "vue";
-import { save } from "@tauri-apps/plugin-dialog";
-import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { api } from "@/api";
 import { loadFilePreview } from "@/utils/filePreview";
+import { openLocalFile, saveLocalFile } from "@/utils/localFile";
 import { shouldProbePresence } from "@/utils/mediaAvailability";
 import { isAndroid } from "@/utils/platform";
-import { isDialogCancelled, saveDestinationOf } from "@/utils/saveDestination";
 import { codeNeedsClamp } from "@/utils/previewMetrics";
 import type { FileMeta, MessageRecord } from "@/types";
 
@@ -178,21 +176,14 @@ export function useMessageFile(
     // 点自己发的文件：静默返回（连 toast 都不给，避免"看起来有反应"）。
     if (!fileTappable.value) return;
     const path = fileMeta.value?.path;
-    if (!path) {
+    const name = fileMeta.value?.name;
+    if (!path || !name) {
       app.toast($t("msg.filePathUnavailable"), "error");
       return;
     }
-    // Android：系统里经常没有能"打开"这类文件的应用（用户实测：除图片外基本都报错），
-    // 而且应用私有目录里的文件即便被打开，也只是交给对方一个临时只读副本。
-    // 按用户要求，移动端点击**收到的**文件改为弹系统保存对话框（SAF）。
-    if (isAndroid) {
-      await saveAs();
-      return;
-    }
+    // 平台差异（Android 改走另存为）统一在 utils/localFile 里，与群文件面板同一条路径。
     try {
-      // 走原生 open_file_native：macOS 用 NSWorkspace（沙盒下 opener 的 /usr/bin/open 被拦），
-      // Windows/Linux 由后端回落 opener。文件不存在时后端返回明确错误。
-      await api.openFileNative(path);
+      await openLocalFile(path, name);
     } catch (e) {
       app.toastError(e, $t("msg.openFileFail"));
     }
@@ -206,14 +197,9 @@ export function useMessageFile(
       return;
     }
     try {
-      // 桌面返回路径字符串；Android 的 SAF 返回 { file: content:// } 对象，先归一化。
-      const picked: unknown = await save({ defaultPath: filename });
-      const destination = saveDestinationOf(picked);
-      if (!destination) return; // 用户取消
-      await invoke("copy_file", { source, destination });
-      app.toast($t("msg.fileSaved"), "success");
+      const r = await saveLocalFile(source, filename);
+      if (r === "done") app.toast($t("msg.fileSaved"), "success");
     } catch (e) {
-      if (isDialogCancelled(e)) return; // Android 取消是 reject，不是返回 null
       app.toastError(e, $t("msg.saveFileFail"));
     }
   }

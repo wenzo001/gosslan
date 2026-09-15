@@ -31,6 +31,7 @@ defineProps<{
 const emit = defineEmits<{
   (e: "back"): void;
   (e: "open-members"): void;
+  (e: "open-files"): void;
   (e: "rename"): void;
   (e: "open-share"): void;
 }>();
@@ -106,6 +107,15 @@ function linkIcon(path: string, hop: number): { icon: string; label: string } {
         @click="emit('open-members')"
       >
         <Users class="h-[18px] w-[18px]" />
+      </button>
+      <!-- 群文件：把该群共享过的文件汇总成一份清单（此前只能顺着聊天记录往回翻） -->
+      <button
+        v-if="isGroup"
+        class="tap-safe flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+        :title="t('chat.header.files')" :aria-label="t('chat.header.files')"
+        @click="emit('open-files')"
+      >
+        <FolderOpen class="h-[18px] w-[18px]" />
       </button>
       <button
         v-if="isGroup && canRename"

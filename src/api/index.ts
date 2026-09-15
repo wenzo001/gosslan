@@ -2,7 +2,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppSettings, CacheInfo, ChatSearchGroup, CleanupReport, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, FileDoneInfo, FileFailedInfo, FileProgress, Friend, Group, GroupReadInfo, InterfaceCandidate, InterfaceInfo, LinkState, LogEntry, MessageRecord, Peer, PeerReadInfo, PendingRequest, RoutedEndpoint, RuntimeSnapshot, SearchResult, ShareEntry, TopologyInfo, TransferInfo } from "@/types";
+import type { AppSettings, CacheInfo, ChatSearchGroup, CleanupReport, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, FileDoneInfo, FileFailedInfo, FileProgress, Friend, Group, GroupFileEntry, GroupReadInfo, InterfaceCandidate, InterfaceInfo, LinkState, LogEntry, MessageRecord, Peer, PeerReadInfo, PendingRequest, RoutedEndpoint, RuntimeSnapshot, SearchResult, ShareEntry, TopologyInfo, TransferInfo } from "@/types";
 
 export const api = {
   /**
@@ -70,6 +70,8 @@ export const api = {
   ensureConversation: (friendId: string) =>
     invoke<Conversation>("ensure_conversation", { friendId }),
   markRead: (convId: string) => invoke<void>("mark_read", { convId }),
+  setConversationPinned: (convId: string, pinned: boolean) =>
+    invoke<void>("set_conversation_pinned", { convId, pinned }),
   deleteConversation: (convId: string) =>
     invoke<void>("delete_conversation", { convId }),
 
@@ -88,6 +90,8 @@ export const api = {
   getGroupReads: (groupId: string) => invoke<GroupReadInfo[]>("get_group_reads", { groupId }),
   sendGroupMessage: (groupId: string, content: string, kind: string) =>
     invoke<MessageRecord>("send_group_message", { groupId, content, kind }),
+  listGroupFiles: (groupId: string) =>
+    invoke<GroupFileEntry[]>("list_group_files", { groupId }),
 
   // 自绘标题栏：窗口控制
   windowMinimize: () => invoke<void>("window_minimize"),

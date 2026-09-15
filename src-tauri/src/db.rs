@@ -33,7 +33,9 @@ CREATE TABLE IF NOT EXISTS conversations (
     last_msg  TEXT,
     last_ts   INTEGER,
     unread    INTEGER NOT NULL DEFAULT 0,
-    updated_at INTEGER
+    updated_at INTEGER,
+    -- 本机置顶（纯本地偏好，不广播不同步）：列表排序时优先于 last_ts
+    pinned    INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -210,6 +212,20 @@ pub fn init(path: &Path) -> Result<Connection> {
                        AND (m2.ts < messages.ts
                             OR (m2.ts = messages.ts AND m2.id <= messages.id))
                  )",
+                [],
+            )?;
+        }
+    }
+    // 迁移：conversations 增加置顶列（旧库幂等补列）。纯本地偏好，默认不置顶。
+    {
+        let has_pinned: bool = conn
+            .prepare("SELECT COUNT(*) FROM pragma_table_info('conversations') WHERE name = 'pinned'")
+            .and_then(|mut s| s.query_row([], |r| r.get::<_, i64>(0)))
+            .map(|n| n > 0)
+            .unwrap_or(true);
+        if !has_pinned {
+            conn.execute(
+                "ALTER TABLE conversations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
                 [],
             )?;
         }
@@ -973,23 +989,48 @@ pub fn ensure_conversation(
     Ok(())
 }
 
+/// 会话行 → Conversation 的唯一映射（list / get 共用，避免两处列序漂移）。
+fn row_to_conversation(r: &rusqlite::Row<'_>) -> rusqlite::Result<Conversation> {
+    Ok(Conversation {
+        id: r.get(0)?,
+        kind: r.get(1)?,
+        name: r.get(2)?,
+        avatar: r.get(3)?,
+        last_msg: r.get(4)?,
+        last_ts: r.get(5)?,
+        unread: r.get(6)?,
+        pinned: r.get::<_, i64>(7)? != 0,
+    })
+}
+
 pub fn list_conversations(conn: &Connection) -> Result<Vec<Conversation>> {
     let mut stmt = conn.prepare(
-        "SELECT id, kind, name, avatar, last_msg, last_ts, unread
-         FROM conversations ORDER BY COALESCE(last_ts, updated_at, 0) DESC",
+        "SELECT id, kind, name, avatar, last_msg, last_ts, unread, pinned
+         FROM conversations ORDER BY pinned DESC, COALESCE(last_ts, updated_at, 0) DESC",
     )?;
-    let rows = stmt.query_map([], |r| {
-        Ok(Conversation {
-            id: r.get(0)?,
-            kind: r.get(1)?,
-            name: r.get(2)?,
-            avatar: r.get(3)?,
-            last_msg: r.get(4)?,
-            last_ts: r.get(5)?,
-            unread: r.get(6)?,
-        })
-    })?;
+    let rows = stmt.query_map([], row_to_conversation)?;
     Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+pub fn get_conversation(conn: &Connection, id: &str) -> Option<Conversation> {
+    conn.query_row(
+        "SELECT id, kind, name, avatar, last_msg, last_ts, unread, pinned
+         FROM conversations WHERE id = ?1",
+        params![id],
+        row_to_conversation,
+    )
+    .optional()
+    .ok()
+    .flatten()
+}
+
+/// 设置会话置顶（纯本地偏好，不广播、不同步）。会话不存在时静默成功。
+pub fn set_conversation_pinned(conn: &Connection, conv_id: &str, pinned: bool) -> Result<()> {
+    conn.execute(
+        "UPDATE conversations SET pinned = ?2 WHERE id = ?1",
+        params![conv_id, if pinned { 1 } else { 0 }],
+    )?;
+    Ok(())
 }
 
 pub fn mark_read(conn: &Connection, conv_id: &str) -> Result<()> {
@@ -1307,27 +1348,42 @@ pub fn insert_group_file(conn: &Connection, f: &GroupFile) -> Result<()> {
 
 /// 取单个群文件。不存在返回 None。
 #[allow(dead_code)]
+/// group_files 行 → GroupFile 的唯一映射（get / list 共用，避免两处列序漂移）。
+fn row_to_group_file(r: &rusqlite::Row<'_>) -> rusqlite::Result<GroupFile> {
+    Ok(GroupFile {
+        transfer_id: r.get(0)?,
+        group_id: r.get(1)?,
+        sender_id: r.get(2)?,
+        name: r.get(3)?,
+        size: r.get::<_, i64>(4)? as u64,
+        sha256: r.get(5)?,
+        status: r.get(6)?,
+        created_at: r.get(7)?,
+    })
+}
+
 pub fn get_group_file(conn: &Connection, transfer_id: &str) -> Option<GroupFile> {
     conn.query_row(
         "SELECT transfer_id, group_id, sender_id, name, size, sha256, status, created_at
          FROM group_files WHERE transfer_id = ?1",
         params![transfer_id],
-        |r| {
-            Ok(GroupFile {
-                transfer_id: r.get(0)?,
-                group_id: r.get(1)?,
-                sender_id: r.get(2)?,
-                name: r.get(3)?,
-                size: r.get::<_, i64>(4)? as u64,
-                sha256: r.get(5)?,
-                status: r.get(6)?,
-                created_at: r.get(7)?,
-            })
-        },
+        row_to_group_file,
     )
     .optional()
     .ok()
     .flatten()
+}
+
+/// 列出某群的全部群文件（按创建时间倒序，最新在前）。
+/// 走 idx_group_files_group 索引。注意：这张表**不随「删除聊天记录」清空** ——
+/// 群文件是群级资产（同钉盘/群文件语义），清空聊天历史不应连带删掉文件记录。
+pub fn list_group_files(conn: &Connection, group_id: &str) -> Result<Vec<GroupFile>> {
+    let mut stmt = conn.prepare(
+        "SELECT transfer_id, group_id, sender_id, name, size, sha256, status, created_at
+         FROM group_files WHERE group_id = ?1 ORDER BY created_at DESC",
+    )?;
+    let rows = stmt.query_map(params![group_id], row_to_group_file)?;
+    rows.collect()
 }
 
 /// 离线投递定向查询：某 peer 的全部 pending 群文件（按 recipient 精确命中
@@ -2506,6 +2562,31 @@ mod tests {
         conn
     }
 
+    /// 群文件列表：按群过滤、按创建时间倒序，且不串到别的群。
+    #[test]
+    fn list_group_files_scoped_and_newest_first() {
+        let conn = group_file_fixture();
+        let mut older = group_file("gf-old");
+        older.created_at = 1_000;
+        let mut newer = group_file("gf-new");
+        newer.created_at = 2_000;
+        insert_group_file(&conn, &older).unwrap();
+        insert_group_file(&conn, &newer).unwrap();
+
+        // 另一个群的文件不得混入（insert_group_file 会校验群存在，故先建群）
+        create_group(&conn, "g2", "另一个群", "a", &["a".to_string()]).unwrap();
+        let mut other = group_file("gf-other");
+        other.group_id = "g2".to_string();
+        insert_group_file(&conn, &other).unwrap();
+
+        let listed = list_group_files(&conn, "g1").unwrap();
+        assert_eq!(
+            listed.iter().map(|f| f.transfer_id.as_str()).collect::<Vec<_>>(),
+            vec!["gf-new", "gf-old"]
+        );
+        assert!(list_group_files(&conn, "nonexistent").unwrap().is_empty());
+    }
+
     /// 1+2+3：建群文件 + 为 B/C/D 建 recipient state + 分别置 completed/sending/pending。
     #[test]
     fn group_file_recipient_states_persist() {
@@ -3198,6 +3279,71 @@ mod tests {
         assert_eq!(index_count, 1);
         drop(conn);
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// 旧库没有 pinned 列时，init 必须补列且**保留既有会话数据**。
+    /// 这是「老用户升级后会话列表直接打不开」的唯一防线：SCHEMA 走的是
+    /// CREATE TABLE IF NOT EXISTS，表已存在时不会自动加列。
+    #[test]
+    fn init_migrates_existing_db_without_pinned_column() {
+        let path = std::env::temp_dir().join(format!(
+            "gosslan-test-migrate-pinned-{}.db",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE conversations (
+                    id TEXT PRIMARY KEY,
+                    kind TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    avatar TEXT,
+                    last_msg TEXT,
+                    last_ts INTEGER,
+                    unread INTEGER NOT NULL DEFAULT 0,
+                    updated_at INTEGER
+                );",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO conversations(id, kind, name, unread) VALUES('f1', 'single', '张三', 3)",
+                [],
+            )
+            .unwrap();
+        }
+        let conn = init(&path).unwrap();
+        let convs = list_conversations(&conn).unwrap();
+        assert_eq!(convs.len(), 1, "迁移不得丢会话");
+        assert_eq!(convs[0].name, "张三");
+        assert_eq!(convs[0].unread, 3, "迁移不得重置未读");
+        assert!(!convs[0].pinned, "补列的默认值必须是未置顶");
+        drop(conn);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 置顶只影响本机排序：置顶的旧会话必须排在更新时间更晚的未置顶会话之前。
+    #[test]
+    fn pinned_conversations_sort_before_recency() {
+        let conn = mem();
+        ensure_conversation(&conn, "old", "single", "旧的", None).unwrap();
+        ensure_conversation(&conn, "new", "single", "新的", None).unwrap();
+        touch_conversation(&conn, "old", "single", "旧的", None, "早", 0).unwrap();
+        touch_conversation(&conn, "new", "single", "新的", None, "晚", 0).unwrap();
+        // 直接把 old 的时间戳压到更早，确保「新的」本来排在前面
+        conn.execute("UPDATE conversations SET last_ts = 1 WHERE id = 'old'", []).unwrap();
+        conn.execute("UPDATE conversations SET last_ts = 999 WHERE id = 'new'", []).unwrap();
+        assert_eq!(list_conversations(&conn).unwrap()[0].id, "new");
+
+        set_conversation_pinned(&conn, "old", true).unwrap();
+        assert_eq!(
+            list_conversations(&conn).unwrap()[0].id,
+            "old",
+            "置顶后必须排在更晚的会话之前"
+        );
+        // 取消置顶 → 回到按时间排序
+        set_conversation_pinned(&conn, "old", false).unwrap();
+        assert_eq!(list_conversations(&conn).unwrap()[0].id, "new");
     }
 
     /// 会话逻辑时钟：next_clock 单调递增，observe_clock 只前进不回退。

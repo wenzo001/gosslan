@@ -6,10 +6,12 @@ import {
   applyReplacements,
   furthestStatus,
   mergeMessages,
+  messageMentionsAll,
   messageMentionsName,
   preserveDeliveryStatus,
   previewText,
   selectCachedConversations,
+  sortConversations,
   syncProfileFromPeers,
 } from "@/utils/messages";
 import { useAppStore } from "@/stores/useAppStore";
@@ -268,15 +270,16 @@ export const useChatStore = defineStore("chat", () => {
     }
     // 被 @ 检测（微信式 [有人@我]）：仅群聊、非自己发的、且当前没开着这个会话。
     // 与未读同源（本地真正新增的消息），重复投递不会反复触发。
+    // 「@所有人」对每个成员都等同于被点名，与点名走同一条判定入口。
     const myName = app.device?.nickname ?? "";
-    if (myName) {
-      for (const [cid, fresh] of newByConv) {
-        if (cid === activeConv.value || !cid.startsWith("group:")) continue;
-        for (const rec of fresh) {
-          if (rec.sender_id !== myDeviceId.value && messageMentionsName(rec, myName)) {
-            mentionedConvs.value.add(cid);
-            break;
-          }
+    for (const [cid, fresh] of newByConv) {
+      if (cid === activeConv.value || !cid.startsWith("group:")) continue;
+      for (const rec of fresh) {
+        if (rec.sender_id === myDeviceId.value) continue;
+        const named = myName ? messageMentionsName(rec, myName) : false;
+        if (named || messageMentionsAll(rec)) {
+          mentionedConvs.value.add(cid);
+          break;
         }
       }
     }
@@ -480,7 +483,7 @@ export const useChatStore = defineStore("chat", () => {
           .ensureConversation(id)
           .then((conv) => {
             if (!conversations.value.some((c) => c.id === id)) {
-              conversations.value = [conv, ...conversations.value];
+              conversations.value = sortConversations([conv, ...conversations.value]);
             }
           })
           .catch(() => {
@@ -732,6 +735,24 @@ export const useChatStore = defineStore("chat", () => {
       unreadJump.value = null;
     }
   }
+
+  /**
+   * 置顶/取消置顶会话（纯本地偏好，不广播不同步）。
+   * 乐观更新 + 失败回滚：置顶是高频轻操作，等一次 IPC 往返才动列表会明显发顿。
+   */
+  async function setConversationPinned(convId: string, pinned: boolean) {
+    const prevConvs = conversations.value;
+    conversations.value = sortConversations(
+      conversations.value.map((c) => (c.id === convId ? { ...c, pinned } : c)),
+    );
+    try {
+      await api.setConversationPinned(convId, pinned);
+    } catch (e) {
+      conversations.value = prevConvs;
+      throw e;
+    }
+  }
+
   async function createGroup(name: string, members: string[]) {
     const g = await api.createGroup(name, members);
     await api.distributeGroupKey(g.id);
@@ -1252,6 +1273,7 @@ export const useChatStore = defineStore("chat", () => {
     respondRequest,
     removeFriend,
     deleteConversation,
+    setConversationPinned,
     createGroup,
     renameGroup,
     addGroupMember,

@@ -9,12 +9,14 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import MessageItem from "@/components/MessageItem.vue";
 import VirtualList from "@/components/VirtualList.vue";
 import GroupMemberPanel from "@/components/GroupMemberPanel.vue";
+import GroupFilesPanel from "@/components/GroupFilesPanel.vue";
 import ChatHeader from "@/components/chat/ChatHeader.vue";
 import MessageComposer from "@/components/chat/MessageComposer.vue";
 import RenameGroupModal from "@/components/chat/RenameGroupModal.vue";
 import ForwardModal from "@/components/message/ForwardModal.vue";
 import ImageLightbox from "@/components/message/ImageLightbox.vue";
 import { estimateMessageHeight } from "@/utils/messageHeight";
+import { MENTION_ALL_TOKEN } from "@/utils/messages";
 import { ArrowDown, Bluetooth, X } from "lucide-vue-next";
 import type { LinkState, MessageRecord, MsgKind } from "@/types";
 
@@ -182,6 +184,7 @@ function openImageAt(msgId: string) {
 
 // ---------------- 群：成员面板 + 改名 ----------------
 const membersOpen = ref(false);
+const filesOpen = ref(false);
 const activeGroupId = computed(() =>
   isGroup.value && chat.activeConv ? chat.activeConv.slice(6) : null,
 );
@@ -221,7 +224,9 @@ const mentionNames = computed(() => {
   const myName = app.device?.nickname ?? "";
   // 其余成员保持原样（nicknameOf 查不到时回退设备指纹，与插入端行为一致）；
   // 只有"自己"这一项必须换成昵称，否则 @我 永远匹配不上。
-  return g.members.map((id) => (id === me ? myName || id : chat.nicknameOf(id)));
+  // 「所有人」补进名单，让 @所有人 与 @成员 高亮样式一致（buildMentionRe 会去重，
+  // 真有成员叫这个名字也不会生成重复分支）。
+  return [...g.members.map((id) => (id === me ? myName || id : chat.nicknameOf(id))), MENTION_ALL_TOKEN];
 });
 async function confirmRename(name: string) {
   renameOpen.value = false;
@@ -499,6 +504,7 @@ function onLoadMore() {
       :show-back="app.isMobile"
       @back="app.mobileView = 'list'"
       @open-members="membersOpen = true"
+      @open-files="filesOpen = true"
       @rename="renameOpen = true"
       @open-share="emit('open-share')"
     />
@@ -623,6 +629,9 @@ function onLoadMore() {
 
     <!-- 群成员面板 -->
     <GroupMemberPanel :open="membersOpen" :group-id="activeGroupId" @close="membersOpen = false" />
+
+    <!-- 群文件列表 -->
+    <GroupFilesPanel :open="filesOpen" :group-id="activeGroupId" @close="filesOpen = false" />
 
     <!-- 转发弹窗 -->
     <ForwardModal
