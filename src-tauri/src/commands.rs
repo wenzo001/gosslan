@@ -2934,6 +2934,117 @@ pub async fn send_group_message(
     send_group_payload(state.inner(), &group_id, wire_kind, content).await
 }
 
+/// 群任务标题上限：它是卡片上的一行标题，不是长文。
+const MAX_TODO_TITLE_LEN: usize = 200;
+/// 投票选项数上限（下标要能塞进 u32 且 UI 排得下）。
+const MAX_POLL_OPTIONS: usize = 10;
+
+/// 创建一条群任务（任意成员）。
+///
+/// `todo_id` 取**创建事件自身的 msg_id** —— 由调用方先构造载荷再回填，
+/// 这里用一次占位发送不行（msg_id 依赖 payload）。改为：先生成随机 id 作为
+/// `todo_id`（与后续所有 todo_done 的引用键一致），msg_id 仍是事件的哈希。
+#[tauri::command(async)]
+pub async fn send_group_todo(
+    state: State<'_, Arc<AppState>>,
+    group_id: String,
+    title: String,
+    assignees: Vec<String>,
+    due_ts: i64,
+) -> Result<MessageRecord, String> {
+    let s = state.inner();
+    let title = title.trim().to_string();
+    if title.is_empty() {
+        return Err("任务标题不能为空".to_string());
+    }
+    if title.chars().count() > MAX_TODO_TITLE_LEN {
+        return Err(format!("任务标题不能超过 {MAX_TODO_TITLE_LEN} 字"));
+    }
+    let payload = crate::protocol::TodoPayload {
+        todo_id: format!("todo-{}", Uuid::new_v4()),
+        title,
+        assignees,
+        due_ts,
+        creator: s.device_id.clone(),
+        deleted: false,
+    };
+    let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
+    send_group_payload(s, &group_id, "todo", content).await
+}
+
+/// 勾选 / 取消勾选一条群任务（任意成员；每人只写自己那一格）。
+#[tauri::command(async)]
+pub async fn set_group_todo_done(
+    state: State<'_, Arc<AppState>>,
+    group_id: String,
+    todo_id: String,
+    done: bool,
+) -> Result<MessageRecord, String> {
+    let s = state.inner();
+    if todo_id.is_empty() {
+        return Err("缺少任务标识".to_string());
+    }
+    let content = serde_json::to_string(&crate::protocol::TodoDonePayload { todo_id, done })
+        .map_err(|e| e.to_string())?;
+    send_group_payload(s, &group_id, "todo_done", content).await
+}
+
+/// 发起投票（任意成员）。
+#[tauri::command(async)]
+pub async fn send_group_poll(
+    state: State<'_, Arc<AppState>>,
+    group_id: String,
+    question: String,
+    options: Vec<String>,
+    multi: bool,
+) -> Result<MessageRecord, String> {
+    let s = state.inner();
+    let question = question.trim().to_string();
+    let options: Vec<String> = options
+        .into_iter()
+        .map(|o| o.trim().to_string())
+        .filter(|o| !o.is_empty())
+        .collect();
+    if question.is_empty() {
+        return Err("投票主题不能为空".to_string());
+    }
+    if options.len() < 2 {
+        return Err("至少需要两个选项".to_string());
+    }
+    if options.len() > MAX_POLL_OPTIONS {
+        return Err(format!("最多 {MAX_POLL_OPTIONS} 个选项"));
+    }
+    let payload = crate::protocol::PollPayload {
+        poll_id: format!("poll-{}", Uuid::new_v4()),
+        question,
+        options,
+        multi,
+        closed: false,
+        creator: s.device_id.clone(),
+    };
+    let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
+    send_group_payload(s, &group_id, "poll", content).await
+}
+
+/// 投票 / 改票 / 撤票（任意成员；每人只写自己那一格）。
+/// 撤票就是传空的 `choices`。
+#[tauri::command(async)]
+pub async fn cast_group_poll_vote(
+    state: State<'_, Arc<AppState>>,
+    group_id: String,
+    poll_id: String,
+    choices: Vec<u32>,
+) -> Result<MessageRecord, String> {
+    let s = state.inner();
+    if poll_id.is_empty() {
+        return Err("缺少投票标识".to_string());
+    }
+    let content =
+        serde_json::to_string(&crate::protocol::PollVotePayload { poll_id, choices })
+            .map_err(|e| e.to_string())?;
+    send_group_payload(s, &group_id, "poll_vote", content).await
+}
+
 /// 发布群公告（**仅群主**）。
 ///
 /// 权限口径与 `handle_group_rename` 逐字同构（`group.creator == 我`）：

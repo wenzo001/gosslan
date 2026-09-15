@@ -434,6 +434,12 @@ export const zhCN: MessageDict = {
 
   // ---- 群组 ----
   // ---- 群文件列表 ----
+  "todo.title": "群任务",
+  "todo.create": "新建任务",
+  "todo.empty": "暂无任务",
+  "todo.doneCount": "{n}/{total} 已完成",
+  "poll.title": "投票",
+  "poll.create": "发起投票",
   "group.announce": "群公告",
   "group.announceEmpty": "暂无群公告",
   "group.announcePublish": "发布",
@@ -1132,6 +1138,12 @@ export const enUS: MessageDict = {
 
   // ---- Groups ----
   // ---- Group files list ----
+  "todo.title": "Tasks",
+  "todo.create": "New task",
+  "todo.empty": "No tasks yet",
+  "todo.doneCount": "{n}/{total} done",
+  "poll.title": "Poll",
+  "poll.create": "New poll",
   "group.announce": "Announcement",
   "group.announceEmpty": "No announcement yet",
   "group.announcePublish": "Publish",

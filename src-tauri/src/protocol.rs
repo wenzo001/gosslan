@@ -136,6 +136,11 @@ pub const WIRE_KINDS: &[(&str, KindClass)] = &[
     // 阶段 2：群公告
     ("announcement", KindClass::Card),
     ("announcement_delete", KindClass::Silent),
+    // 阶段 3：群任务 / 投票
+    ("todo", KindClass::Card),
+    ("todo_done", KindClass::Silent),
+    ("poll", KindClass::Card),
+    ("poll_vote", KindClass::Silent),
 ];
 
 /// 未知 kind 一律按 `Bubble` 处理 —— 与 `MsgKind::from_str` 回退到 `Text` 同语义：
@@ -212,6 +217,75 @@ pub fn is_valid_emoji_token(s: &str) -> bool {
     let inner = &s[1..s.len() - 1];
     // 内层不得再出现方括号（否则 `[[x]` 这类畸形会被当成合法 token）
     !inner.is_empty() && !inner.contains(['[', ']']) && !s.contains(char::is_control)
+}
+
+/// 群任务的**定义**层（`kind = "todo"`）。
+///
+/// ⚠️ 任务必须**分解成两层**，不能是单个寄存器：
+/// 朴素做法（一个 `{todo_id, title, assignees, done_by[], rev}`）有经典**丢更新** bug ——
+/// A 和 B 同时勾完成，后到的整体覆盖前者，B 的勾被吞掉。
+///
+/// | 层 | 载荷 | 合并规则 | 谁写 |
+/// |---|---|---|---|
+/// | 定义 | 本结构 | LWW per `todo_id`，版本 `(seq, msg_id)` | 任意成员创建；改/删限创建者或群主 |
+/// | 完成 | [`TodoDonePayload`] | **LWW per `(todo_id, actor)`** | 每人只写自己那一格 |
+///
+/// 每人一格 ⇒ 不存在丢更新；`done: false`（取消勾选）天然支持。
+/// `todo_id` 取**创建事件自身的 msg_id**，不需要额外的生成器。
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct TodoPayload {
+    pub todo_id: String,
+    pub title: String,
+    /// 指派的成员 device_id（空 = 不指派，谁都能认领）
+    #[serde(default)]
+    pub assignees: Vec<String>,
+    /// 截止时间（毫秒，0 = 无）
+    #[serde(default)]
+    pub due_ts: i64,
+    /// 创建者（改/删的授权判据）
+    #[serde(default)]
+    pub creator: String,
+    /// 删除标记（墓碑）：定义层的 LWW 值为它
+    #[serde(default)]
+    pub deleted: bool,
+}
+
+/// 群任务的**完成**层（`kind = "todo_done"`）：每人只写自己那一格。
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct TodoDonePayload {
+    pub todo_id: String,
+    pub done: bool,
+}
+
+/// 投票的**定义**层（`kind = "poll"`）。结构与任务同构。
+///
+/// ⚠️ **`options` 一旦创建不可变**：否则选项下标会错位，`poll_vote` 的 choices
+/// 会指向错误的选项。要改选项就新建一个投票。
+///
+/// **不做匿名投票**：群密钥全员共享 + 选票必然带签名身份，"匿名"只能是界面隐藏，
+/// 无权可验 —— 那比不做更糟（给人虚假的安全感）。
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PollPayload {
+    pub poll_id: String,
+    pub question: String,
+    pub options: Vec<String>,
+    /// 是否多选
+    #[serde(default)]
+    pub multi: bool,
+    /// 是否已关闭（关闭后拒绝新票）
+    #[serde(default)]
+    pub closed: bool,
+    #[serde(default)]
+    pub creator: String,
+}
+
+/// 投票的**选票**层（`kind = "poll_vote"`）：每人只写自己那一格。
+/// **撤票 = `choices: []` 的普通更新**，不是单独的删除事件。
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PollVotePayload {
+    pub poll_id: String,
+    /// 选中的选项下标（空 = 撤票）
+    pub choices: Vec<u32>,
 }
 
 /// 群公告的载荷（`kind = "announcement"`）。

@@ -54,7 +54,11 @@ export type MsgKind =
   | "recalled"
   | "pin"
   | "announcement"
-  | "announcement_delete";
+  | "announcement_delete"
+  | "todo"
+  | "todo_done"
+  | "poll"
+  | "poll_vote";
 
 /** 表情回应的事件载荷（kind = "reaction" 时 content 的 JSON 形态）。 */
 export interface ReactionPayload {

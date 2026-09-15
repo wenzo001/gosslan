@@ -30,10 +30,17 @@ export function isSilentKind(kind: string): boolean {
  * 静默种类清单 —— **与 Rust 的 `WIRE_KINDS` 必须一致**，由契约测试锁死。
  * 这里显式列出（而不是从 `kindClass` 反推）是为了让测试能逐项比对。
  */
-export const SILENT_KINDS: readonly string[] = ["reaction", "recall", "pin", "announcement_delete"];
+export const SILENT_KINDS: readonly string[] = [
+  "reaction",
+  "recall",
+  "pin",
+  "announcement_delete",
+  "todo_done",
+  "poll_vote",
+];
 
 /**
  * 群级沉淀物：**进时间线**（该计未读、该通知），但**不属于"聊天历史"** ——
  * 清空聊天记录不得删、清空边界不得拦。这两点是它与 bubble 的全部差别。
  */
-export const CARD_KINDS: readonly string[] = ["announcement"];
+export const CARD_KINDS: readonly string[] = ["announcement", "todo", "poll"];

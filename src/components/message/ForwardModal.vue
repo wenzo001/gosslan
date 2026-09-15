@@ -44,6 +44,10 @@ const KIND_LABELS: Record<MsgKind, string> = {
   pin: t("msg.pin"),
   announcement: t("group.announce"),
   announcement_delete: t("group.announce"),
+  todo: t("todo.title"),
+  todo_done: t("todo.title"),
+  poll: t("poll.title"),
+  poll_vote: t("poll.title"),
 };
 const kindLabel = computed(() => KIND_LABELS[props.kind] ?? t("msg.message"));
 </script>
