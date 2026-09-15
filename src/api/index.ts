@@ -51,6 +51,9 @@ export const api = {
   /** 设置页「发送测试通知」：成功返回平台说明，失败返回真实原因（供排障）。 */
   sendTestNotification: () => invoke<string>("send_test_notification"),
   getFriends: () => invoke<Friend[]>("get_friends"),
+  /** 与指定对端的**安全码**（双方一致，供带外核对）。null = 还缺对方公钥，算不出来。 */
+  getSafetyNumber: (peerId: string) =>
+    invoke<string | null>("get_safety_number", { peerId }),
   removeFriend: (peerId: string) => invoke<void>("remove_friend", { peerId }),
   getPendingRequests: () => invoke<PendingRequest[]>("get_pending_requests"),
   sendFriendRequest: (peerId: string) => invoke<void>("send_friend_request", { peerId }),

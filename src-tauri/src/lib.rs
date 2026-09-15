@@ -305,6 +305,7 @@ pub fn run() {
             commands::reset_settings,
             commands::broadcast_chat_style,
             commands::get_friends,
+            commands::get_safety_number,
             commands::remove_friend,
             commands::get_pending_requests,
             commands::send_friend_request,

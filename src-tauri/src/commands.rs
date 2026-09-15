@@ -1447,6 +1447,49 @@ fn friend_is_online(last_seen: i64, now: i64, has_active_link: bool) -> bool {
 
 const FRIEND_ONLINE_GRACE_MS: i64 = 15_000;
 
+/// 安全码：本机与指定对端之间那串**双方一致**的核对码（见 `crypto::safety_number`）。
+///
+/// 返回 `None` 表示**还算不出来** —— 缺对方的公钥（尚未通过 Hello/announce 学到）。
+/// 这时**必须如实返回 None 而不是拿 device_id 凑一个**：凑出来的码在真正的中间人
+/// 攻击下与真实对端的码不同，用户核对后会以为"对得上"，比没有更糟。
+///
+/// 对端公钥取 peers 优先、friends 回落（与 `resolve_member_x25519` 同一口径）。
+#[tauri::command(async)]
+pub fn get_safety_number(
+    state: State<'_, Arc<AppState>>,
+    peer_id: String,
+) -> Option<String> {
+    let s = state.inner();
+    let (their_x, their_e) = {
+        let peers = s.peers.lock().unwrap_or_else(|e| e.into_inner());
+        let p = peers.get(&peer_id);
+        (
+            p.and_then(|p| p.x25519_pubkey.clone()),
+            p.and_then(|p| p.ed25519_pubkey.clone()),
+        )
+    };
+    let (their_x, their_e) = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        (
+            their_x.or_else(|| db::get_friend_x25519(&dbc, &peer_id)),
+            their_e.or_else(|| db::get_friend_ed25519(&dbc, &peer_id)),
+        )
+    };
+    let (their_x, their_e) = (their_x?, their_e?);
+    Some(crypto::safety_number(
+        &crypto::SafetyParty {
+            device_id: &s.device_id,
+            x25519_pubkey: &s.identity.x25519_public_b64(),
+            ed25519_pubkey: &s.identity.ed25519_public_b64(),
+        },
+        &crypto::SafetyParty {
+            device_id: &peer_id,
+            x25519_pubkey: &their_x,
+            ed25519_pubkey: &their_e,
+        },
+    ))
+}
+
 #[tauri::command(async)]
 pub fn get_friends(state: State<'_, Arc<AppState>>) -> Vec<Friend> {
     let s = state.inner();
