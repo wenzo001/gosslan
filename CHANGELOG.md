@@ -10,6 +10,53 @@
 
 ## [Unreleased]
 
+### Added (群协作阶段 1 · 第一批：kind 判定点 + 表情回应)
+
+**地基：`kind` 语义的唯一判定点。** 此前「这个 kind 算不算内容」这个知识散在多处各写
+一串 match，接收路径、会话预览、未读、通知、搜索、已读水位都要各问一遍 ——
+每加一个新 kind 就要同时改所有地方，漏一处就是**静默的行为不一致**（最典型的症状：
+回个表情把会话顶到列表最前、还弹一条系统通知）。
+
+- `protocol::KindClass { Bubble, Silent }` + `WIRE_KINDS` 表 + `kind_class()`；
+  **未知 kind 一律按 `Bubble`**，与 `MsgKind::from_str` 回退到 `Text` 同语义 ——
+  宁可多显示一条，也不要把不认识的内容静默吞掉（对端版本更新时不丢消息）。
+- SQL 里的 kind 清单**从 `WIRE_KINDS` 派生**（`sql_kind_list`），不手写：
+  加了新 kind 而忘了同步 SQL 就是一条只在下次有人用那个功能时才暴露的漏判。
+  已接入 `search_history`（静默类没有可搜正文）与 `last_message_from_sender`
+  （否则回个表情就把该发送者的群已读水位顶到最新）。
+- 接收路径按分类分支：静默类**不计未读、不改预览**（只 `ensure_conversation`），
+  但 `observe_clock` **照常执行** —— 漏掉它本机后续 seq 会落后、新消息排到历史前面。
+  单聊与群聊两条 Gossip 落库路径同口径。
+- 前端 `utils/messageKinds.ts` 是 TS 侧的唯一判定点，配**跨语言契约测试**：
+  读 `protocol.rs` 源码逐项比对两张表，防止 Rust/TS 判定漂移
+  （漂移的后果是「服务端算静默、前端照常弹通知」，只在真机跑起来才看得见）。
+
+**表情回应**（钉钉/飞书里使用频率最高的群功能之一，也是"降噪"的核心手段）：
+
+- **协议**：新 kind `reaction`，载荷 `{target, emoji, add}`。建模成**一串独立事件**
+  而不是「给消息加一个可变字段」—— `message_id` 是 `SHA-256(sender_id+nonce+payload)`，
+  同一条业务消息不可能带不同 content 重发（`gossip_engine` 的回归测试钉死了这一点）。
+- **复用整条可靠管道**：发送内核抽成 `send_group_payload()`，表情回应与文本/代码走
+  **同一条路**（群密钥 E2EE + outbox + GroupAck + 四层幂等去重 + 离线补发）。
+  若各写一份，任何一处修 bug 都只会修到其中一条。
+- **收敛**：每个 `(target, actor, emoji)` 是 LWW 寄存器，每人只写自己那一格 ⇒ 无丢更新；
+  版本号用 **`(seq, msg_id)` 元组**，不能只看 seq —— seq 是 Lamport 时钟，两端离线后
+  各发一条都可能拿到同一个 seq，只看 seq 会让不同副本算出不同结果。
+- **UI**：气泡下方的回应条（飞书/微信同款位置），已点过的高亮，点击切换 add/remove。
+  折叠在**会话层算一次**再按 msg_id 分发（放进每条消息各自算就是 O(n²)，群聊一屏几十条
+  时是实打实的卡顿）。
+
+**顺带修正**：快捷表情按钮原本写成 `hidden` + `group-hover/msg:flex`，两处都错 ——
+组名 `msg` 根本不存在（消息行用的是 `group/row`，而回应条是它的**兄弟节点**、
+不在其作用域内），且没有触屏兜底（`designGuards` 的 P0-1 复现：Android 上永远够不到）。
+已加 `group/msg` 到外层容器 + `hover-reveal` 兜底类。另外**移除了「更多表情」按钮** ——
+它没有接实现，而项目原则是不放没有实现的功能按钮。
+
+验证：cargo test --lib 476 passed（新增 4 项：静默类不入检索/不顶已读水位、
+kind 清单派生一致性、表情 token 形态校验、回应载荷往返）· npm test 407 passed
+（新增 11 项：折叠收敛 7 项 + 跨语言契约 3 项 + 形态校验）· npm run build 通过 ·
+scripts/e2e-dev.sh 30 passed / 0 failed。
+
 ## [4.11.0] - 2026-09-15
 
 ### Added (TOFU 第二步：安全码核对)

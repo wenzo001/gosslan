@@ -3026,8 +3026,14 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 };
                 let inserted = db::insert_message_if_new(&dbc, &rec);
                 if announced_on(&inserted) {
-                    db::touch_conversation(&dbc, &from, "single", &name, None, &preview, 1).ok();
+                    // 与群聊分支同一套口径：时钟照常推进，静默类不计未读/不改预览。
                     db::observe_clock(&dbc, &from, seq).ok();
+                    if crate::protocol::is_silent_kind(&kind_str) {
+                        db::ensure_conversation(&dbc, &from, "single", &name, None).ok();
+                    } else {
+                        db::touch_conversation(&dbc, &from, "single", &name, None, &preview, 1)
+                            .ok();
+                    }
                 }
                 (rec, inserted)
             };
@@ -4612,9 +4618,20 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                     };
                     let inserted = db::insert_message_if_new(&dbc, &rec);
                     if announced_on(&inserted) {
-                        db::touch_conversation(&dbc, &conv_id, conv_kind, &name, None, &preview, 1)
-                            .ok();
+                        // 时钟推进与静默**无关**，必须照常：漏掉它本机后续 seq 会落后，
+                        // 之后自己发的消息会排到历史前面。
                         db::observe_clock(&dbc, &conv_id, seq).ok();
+                        if crate::protocol::is_silent_kind(&kind) {
+                            // 静默事件（表情回应/撤回）不计未读、不改会话预览 ——
+                            // 否则「回个表情」会把会话顶到列表最前并弹一条通知。
+                            // 但会话行必须存在，前端要靠它把事件归属到正确的会话。
+                            db::ensure_conversation(&dbc, &conv_id, conv_kind, &name, None).ok();
+                        } else {
+                            db::touch_conversation(
+                                &dbc, &conv_id, conv_kind, &name, None, &preview, 1,
+                            )
+                            .ok();
+                        }
                     }
                     (rec, inserted)
                 };

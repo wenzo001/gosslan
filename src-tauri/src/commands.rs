@@ -233,6 +233,7 @@ pub fn list_interfaces() -> Vec<InterfaceInfo> {
 
 // ---------------- 网络控制 ----------------
 
+
 #[tauri::command(async)]
 pub async fn start_network(
     state: State<'_, Arc<AppState>>,
@@ -2783,19 +2784,18 @@ pub fn window_close(app: tauri::AppHandle) {
 }
 
 #[tauri::command(async)]
-pub async fn send_group_message(
-    state: State<'_, Arc<AppState>>,
-    group_id: String,
+/// 群消息发送的**唯一内核**：群密钥加密 → Gossip 信封 → 落库（消息 + 每个成员的 outbox）
+/// → 广播。文本、代码、表情回应等全部走这一条路。
+///
+/// 为什么必须只有一条：它们都要 E2EE、都要 outbox 兜底、都要 GroupAck、都要被四层幂等
+/// 去重覆盖。若各写一份，任何一处修 bug（历史上最典型的是「填完 group_creator/members
+/// 后忘了重算重签 → 群消息被静默丢弃」）都只会修到其中一条路径。
+async fn send_group_payload(
+    s: &Arc<AppState>,
+    group_id: &str,
+    kind: &str,
     content: String,
-    kind: String,
 ) -> Result<MessageRecord, String> {
-    let s = state.inner();
-    let kind_enum = match kind.as_str() {
-        "text" => MsgKind::Text,
-        "code" => MsgKind::Code,
-        _ => return Err("群聊不支持该消息类型".to_string()),
-    };
-    let content = check_message_content(content)?;
     let ts = db::now_ms();
     let conv_id = format!("group:{group_id}");
     let seq = {
@@ -2820,7 +2820,7 @@ pub async fn send_group_message(
 
     // 群密钥加密 + Gossip 信封（E2EE 恒开：载荷用群密钥 ChaCha20-Poly1305 加密）
     let plaintext =
-        serde_json::json!({ "kind": kind_enum.as_str(), "content": content }).to_string();
+        serde_json::json!({ "kind": kind, "content": content }).to_string();
     let sealed = crypto::seal_symmetric(&key, plaintext.as_bytes()).ok_or("加密失败")?;
     let payload_b64 = STANDARD.encode(&sealed);
     let env = {
@@ -2829,7 +2829,7 @@ pub async fn send_group_message(
             &s.identity,
             &s.device_id,
             GossipKind::Group,
-            Some(group_id.clone()),
+            Some(group_id.to_string()),
             Some(group_name.clone()),
             &payload_b64,
             ts,
@@ -2856,8 +2856,8 @@ pub async fn send_group_message(
         msg_id: env.message_id.clone(),
         conv_id: conv_id.clone(),
         sender_id: s.device_id.clone(),
-        receiver_id: group_id.clone(),
-        kind: kind_enum.as_str().to_string(),
+        receiver_id: group_id.to_string(),
+        kind: kind.to_string(),
         content: content.clone(),
         ts,
         seq,
@@ -2873,8 +2873,15 @@ pub async fn send_group_message(
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         let tx = dbc.unchecked_transaction().map_err(|e| e.to_string())?;
         db::insert_message(&tx, &rec).map_err(|e| format!("消息写入失败：{e}"))?;
-        db::touch_conversation(&tx, &conv_id, "group", &group_name, None, &preview, 0)
-            .map_err(|e| format!("会话写入失败：{e}"))?;
+        if crate::protocol::is_silent_kind(kind) {
+            // 静默事件不改会话预览 —— 否则「自己回了个表情」会把会话列表摘要
+            // 变成一段 JSON。会话行仍要确保存在。
+            db::ensure_conversation(&tx, &conv_id, "group", &group_name, None)
+                .map_err(|e| format!("会话写入失败：{e}"))?;
+        } else {
+            db::touch_conversation(&tx, &conv_id, "group", &group_name, None, &preview, 0)
+                .map_err(|e| format!("会话写入失败：{e}"))?;
+        }
         for member in &group_members {
             if member == &s.device_id {
                 continue;
@@ -2899,6 +2906,54 @@ pub async fn send_group_message(
 /// 存内存 → 对可达成员发送 GroupFileOffer（群密钥封装 file_key）→
 /// 流式读取文件、逐 256KB 分片 AEAD 加密后向全部可达 recipient 发送
 /// GroupFileChunk（seq 从 0 严格递增）。不可达成员保持 pending。
+
+/// 发群消息（文本 / 代码）。校验与长度限制留在这一层，内核只管发送。
+#[tauri::command(async)]
+pub async fn send_group_message(
+    state: State<'_, Arc<AppState>>,
+    group_id: String,
+    content: String,
+    kind: String,
+) -> Result<MessageRecord, String> {
+    let wire_kind = match kind.as_str() {
+        "text" => "text",
+        "code" => "code",
+        _ => return Err("群聊不支持该消息类型".to_string()),
+    };
+    let content = check_message_content(content)?;
+    send_group_payload(state.inner(), &group_id, wire_kind, content).await
+}
+
+/// 表情回应：对某条群消息添加/取消一个表情。
+///
+/// 它是一条**静默事件**（`kind = "reaction"`）：走与普通群消息完全相同的可靠管道
+/// （E2EE + outbox + GroupAck + 幂等去重 + 离线补发），但接收端不计未读、不改预览、
+/// 不弹通知 —— 否则「回个表情」会和发一条消息一样吵闹，正是这个功能要消除的噪音。
+#[tauri::command(async)]
+pub async fn send_group_reaction(
+    state: State<'_, Arc<AppState>>,
+    group_id: String,
+    target: String,
+    emoji: String,
+    add: bool,
+) -> Result<MessageRecord, String> {
+    if target.is_empty() {
+        return Err("回应缺少目标消息".to_string());
+    }
+    // 只接受本应用已知的表情 token 形态（`[名字]`），避免把任意字符串当表情写进库里、
+    // 也避免超长内容进入广播。
+    if !crate::protocol::is_valid_emoji_token(&emoji) {
+        return Err("不认识的表情".to_string());
+    }
+    let payload = crate::protocol::ReactionPayload {
+        target,
+        emoji,
+        add,
+    };
+    let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
+    send_group_payload(state.inner(), &group_id, "reaction", content).await
+}
+
 #[tauri::command(async)]
 pub async fn send_group_file(
     state: State<'_, Arc<AppState>>,

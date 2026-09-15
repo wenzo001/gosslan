@@ -938,18 +938,24 @@ pub fn search_history(
     limit: i64,
 ) -> Result<Vec<ChatSearchHit>> {
     let pattern = format!("%{}%", escape_like(keyword));
-    let mut stmt = conn.prepare(
+    // 清单从 WIRE_KINDS 派生（不手写）：system 是历史遗留的不可搜索项，
+    // 静默类（表情回应/撤回）没有可搜正文。
+    let unsearchable = crate::protocol::sql_kind_list(
+        &["system"],
+        |c| c == crate::protocol::KindClass::Silent,
+    );
+    let mut stmt = conn.prepare(&format!(
         "SELECT conv_id, msg_id, sender_id, kind, content, ts,
                 COUNT(*) OVER (PARTITION BY conv_id) AS total
          FROM messages
          WHERE content LIKE ?1 ESCAPE '\\'
-           AND kind <> 'system'
+           AND kind NOT IN ({unsearchable})
            AND (?2 IS NULL OR sender_id = ?2)
            AND (?3 IS NULL OR ts >= ?3)
            AND (?4 IS NULL OR ts <= ?4)
          ORDER BY ts DESC, id DESC
          LIMIT ?5",
-    )?;
+    ))?;
     let rows = stmt.query_map(
         params![pattern, sender_id, since_ms, until_ms, limit],
         |r| {
@@ -1091,10 +1097,16 @@ pub fn last_message_from_sender(
     conv_id: &str,
     sender_id: &str,
 ) -> Option<(String, i64)> {
+    let silent = crate::protocol::sql_kind_list(&[], |c| c == crate::protocol::KindClass::Silent);
     conn.query_row(
-        "SELECT msg_id, ts FROM messages
-         WHERE conv_id = ?1 AND sender_id = ?2
-         ORDER BY ts DESC, id DESC LIMIT 1",
+        // 排除静默类：否则别人（或我自己）回个表情，就把该发送者的群已读水位
+        // 顶到了"刚回应的那条"上，群里其余消息会被误判为已读。
+        &format!(
+            "SELECT msg_id, ts FROM messages
+             WHERE conv_id = ?1 AND sender_id = ?2
+               AND kind NOT IN ({silent})
+             ORDER BY ts DESC, id DESC LIMIT 1"
+        ),
         params![conv_id, sender_id],
         |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
     )
@@ -1815,6 +1827,52 @@ mod tests {
         let friends = list_friends(&conn).unwrap();
         assert_eq!(friends.len(), 1);
         assert_eq!(friends[0].nickname, "张三回来了");
+    }
+
+    /// 静默类（表情回应）不得进入历史检索，也不得顶起群已读水位。
+    ///
+    /// 这两条都必须**真正执行 SQL** 才算验证：SQL 里的 kind 清单是从 `WIRE_KINDS`
+    /// 拼出来的，拼错（比如占位符没被 `format!` 展开）编译期完全看不出来。
+    #[test]
+    fn silent_kinds_are_excluded_from_search_and_read_watermark() {
+        let conn = mem();
+        insert_message(&conn, &rec_as("m1", "g1", "text", "周报 已发")).unwrap();
+        // 同一条消息的表情回应：正文里也含"周报"，若不过滤就会被搜出来
+        let mut rx = rec_as("m2", "g1", "reaction", "{\"target\":\"m1\",\"emoji\":\"[赞]\",\"add\":true}");
+        rx.ts = 9_999_999; // 比正文晚：若不过滤，它会成为"最后一条"
+        insert_message(&conn, &rx).unwrap();
+
+        let hits = search_history(&conn, "周报", None, None, None, 100).unwrap();
+        assert_eq!(hits.len(), 1, "回应不该出现在搜索结果里");
+        assert_eq!(hits[0].msg_id, "m1");
+
+        // 已读水位：回应晚于正文，若不过滤会把水位顶到回应上
+        let (msg_id, _) = last_message_from_sender(&conn, "g1", "a").unwrap();
+        assert_eq!(msg_id, "m1", "静默类不得顶起已读水位");
+    }
+
+    /// kind 清单从 `WIRE_KINDS` 派生，不是手写的 —— 加新 kind 时不会被漏掉。
+    #[test]
+    fn kind_class_lists_are_derived_from_the_single_table() {
+        use crate::protocol::{is_silent_kind, kind_class, sql_kind_list, KindClass, WIRE_KINDS};
+        // 已登记的 kind 都要分类明确；未知 kind 回退 Bubble（宁可多显示、不静默吞）
+        for (k, _) in WIRE_KINDS {
+            assert_eq!(
+                kind_class(k) == KindClass::Silent,
+                is_silent_kind(k),
+                "{k} 的两个判定入口必须一致"
+            );
+        }
+        assert_eq!(kind_class("reaction"), KindClass::Silent);
+        assert_eq!(kind_class("text"), KindClass::Bubble);
+        assert_eq!(kind_class("未来才有的新类型"), KindClass::Bubble);
+        // 静默清单里必须含 reaction，且不含任何 Bubble 类
+        let silent = sql_kind_list(&[], |c| c == KindClass::Silent);
+        assert!(silent.contains("'reaction'"), "静默清单漏了 reaction：{silent}");
+        assert!(!silent.contains("'text'"), "静默清单混入了正文类型：{silent}");
+        // 检索排除清单 = 静默类 + 显式追加的 system
+        let unsearchable = sql_kind_list(&["system"], |c| c == KindClass::Silent);
+        assert!(unsearchable.contains("'system'") && unsearchable.contains("'reaction'"));
     }
 
     /// 历史检索：发送人/时间过滤、每会话命中总数、排除系统消息。

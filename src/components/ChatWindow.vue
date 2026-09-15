@@ -17,6 +17,7 @@ import ForwardModal from "@/components/message/ForwardModal.vue";
 import ImageLightbox from "@/components/message/ImageLightbox.vue";
 import { estimateMessageHeight } from "@/utils/messageHeight";
 import { MENTION_ALL_TOKEN } from "@/utils/messages";
+import { foldReactions, hasMyReaction, type ReactionChip } from "@/utils/reactions";
 import { ArrowDown, Bluetooth, X } from "lucide-vue-next";
 import type { LinkState, MessageRecord, MsgKind } from "@/types";
 
@@ -202,6 +203,32 @@ const renameOpen = ref(false);
 const renameCurrent = computed(
   () => chat.groups.find((g) => g.id === activeGroupId.value)?.name ?? "",
 );
+
+/**
+ * 表情回应的折叠结果：**在会话层算一次**再按 msg_id 分发。
+ * 放到 MessageItem 里各自算会让每条消息都遍历整份消息列表（O(n²)）——
+ * 群聊一屏几十条时这是实打实的卡顿。
+ */
+const reactionMap = computed(() => {
+  const convId = chat.activeConv;
+  if (!convId) return new Map<string, ReactionChip[]>();
+  return foldReactions(chat.messages[convId] ?? [], app.device?.device_id ?? "");
+});
+
+/** 点 chip：已点过则取消，否则添加。 */
+function toggleReaction(msgId: string, emoji: string) {
+  const convId = chat.activeConv;
+  if (!convId?.startsWith("group:")) return;
+  const mine = hasMyReaction(
+    chat.messages[convId] ?? [],
+    msgId,
+    emoji,
+    app.device?.device_id ?? "",
+  );
+  void chat.sendReaction(convId.slice(6), msgId, emoji, !mine).catch((e) => {
+    app.toastError(e, t("msg.reactionFail"));
+  });
+}
 
 // ---------------- 群聊 @ ----------------
 /** @ 选择选项（不含自己）：名字与消息流昵称同源（nicknameOf），插入的 @名字 必须能和渲染端对上。 */
@@ -586,7 +613,9 @@ function onLoadMore() {
             :show-unread-divider="index === unreadIndex"
             :highlight-id="highlightId"
             :mention-names="mentionNames"
+            :reactions="reactionMap.get(item.msg_id) ?? []"
             @quote="quote = $event"
+            @react="toggleReaction(item.msg_id, $event)"
             @forward="forward = $event"
             @locate="locateMessage"
             @open-image="openImageAt"

@@ -334,6 +334,7 @@ pub fn run() {
             commands::window_toggle_fullscreen,
             commands::window_close,
             commands::send_group_message,
+            commands::send_group_reaction,
             commands::send_group_file,
             commands::get_group_file_delivery_summary,
             commands::list_group_files,

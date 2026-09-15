@@ -19,6 +19,8 @@ import MessageCodeBubble from "@/components/message/MessageCodeBubble.vue";
 import MessageFileBubble from "@/components/message/MessageFileBubble.vue";
 import MessageImageBubble from "@/components/message/MessageImageBubble.vue";
 import MessageReceipt from "@/components/message/MessageReceipt.vue";
+import MessageReactionBar from "@/components/message/MessageReactionBar.vue";
+import type { ReactionChip } from "@/utils/reactions";
 import MessageContentModal from "@/components/message/MessageContentModal.vue";
 import MessageContextMenu from "@/components/message/MessageContextMenu.vue";
 import ActionSheet from "@/components/ActionSheet.vue";
@@ -42,6 +44,8 @@ const props = withDefaults(
     highlightId?: string | number | null;
     /** 群成员名列表：文本气泡据此高亮 @提及（单聊不传） */
     mentionNames?: string[];
+    /** 已折叠的表情回应（由会话层算好传入，避免每条消息各自 O(n) 重算）。 */
+    reactions?: ReactionChip[];
   }>(),
   {
     prev: null,
@@ -55,6 +59,9 @@ const props = withDefaults(
 );
 
 const app = useAppStore();
+
+/** 快捷回应表情：与 EmojiPicker 同一套「[名字]」token（后端按同一形态校验）。 */
+const QUICK_REACTIONS = ["[赞]", "[微笑]", "[捂脸]", "[流泪]"];
 
 /**
  * 「点击重取」：文件/图片没拿到（未完成 / 已被清理）时，请对端按 cid 再发一份。
@@ -458,6 +465,8 @@ const emit = defineEmits<{
   (e: "quote", payload: { sender: string; snippet: string; msgId: string | number }): void;
   (e: "forward", payload: { kind: MsgKind; content: string; snippet: string; filePath?: string }): void;
   (e: "locate", msgId: string): void;
+  /** 点了某个表情 chip（已点过则是取消） */
+  (e: "react", emoji: string): void;
   (e: "open-image", msgId: string): void;
 }>();
 
@@ -534,7 +543,9 @@ async function copyFileToClipboard() {
 </script>
 
 <template>
-  <div class="py-1.5" :class="highlighted ? 'rounded-[var(--gosslan-radius-md)] bg-primary/5 ring-1 ring-primary/25' : ''">
+  <!-- group/msg：表情回应条是"消息行"的**兄弟节点**，不在 group/row 的作用域内 ——
+       悬停揭示必须挂在这一层，否则 group-hover/msg 永远不触发（那个组名以前根本不存在）。 -->
+  <div class="group/msg py-1.5" :class="highlighted ? 'rounded-[var(--gosslan-radius-md)] bg-primary/5 ring-1 ring-primary/25' : ''">
     <!-- 时间分割线（间隔 ≥ 5 分钟）：居中浅灰小字 -->
     <div v-if="showTimeDivider" class="py-2 text-center text-[11px] text-[var(--gosslan-text-2)]">
       {{ timeDividerText }}
@@ -686,6 +697,17 @@ async function copyFileToClipboard() {
       </div>
     </div>
   </div>
+
+  <!-- 表情回应条：挂在消息行**下方**（飞书/微信同款位置），与气泡同侧对齐。
+       放在行内会被 `flex items-end` 摆到气泡右侧，语义不对。 -->
+  <MessageReactionBar
+    v-if="message.kind !== 'system'"
+    :chips="reactions ?? []"
+    :interactive="!!isGroup"
+    :quick="QUICK_REACTIONS"
+    :class="mine ? 'self-end pr-1' : 'self-start pl-1'"
+    @toggle="emit('react', $event)"
+  />
 
   <MessageContentModal
     :open="fullModalOpen"

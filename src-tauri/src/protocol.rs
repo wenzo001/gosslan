@@ -97,6 +97,98 @@ impl MsgKind {
     }
 }
 
+/// 一种 wire kind 在**接收侧**的语义分类。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum KindClass {
+    /// 时间线内容：计未读、进会话预览、弹通知、可搜索。渲染成气泡或卡片。
+    Bubble,
+    /// 静默状态事件（表情回应、撤回 …）：**不进时间线** ——
+    /// 不计未读、不改会话预览、不弹通知。前端按它驱动聚合视图
+    /// （回应显示为气泡下方的 chip，而不是时间线上的一条）。
+    Silent,
+}
+
+/// kind 语义的**唯一判定点**。
+///
+/// 为什么必须收敛到一处：接收路径、会话预览、未读、通知、搜索、已读水位、
+/// 清空边界、导出 —— 全都要问「这个 kind 算不算内容」。此前这个知识散在多处、
+/// 各写一串 match；每加一个新 kind 就要同时改所有地方，漏一处就是静默的行为不一致
+/// （最典型的症状：回个表情把会话顶到列表最前、还弹一条系统通知）。
+pub const WIRE_KINDS: &[(&str, KindClass)] = &[
+    ("text", KindClass::Bubble),
+    ("code", KindClass::Bubble),
+    ("image", KindClass::Bubble),
+    ("file", KindClass::Bubble),
+    ("system", KindClass::Bubble),
+    // 阶段 1：表情回应
+    ("reaction", KindClass::Silent),
+];
+
+/// 未知 kind 一律按 `Bubble` 处理 —— 与 `MsgKind::from_str` 回退到 `Text` 同语义：
+/// 宁可多显示一条，也不要把不认识的内容**静默吞掉**（对端版本更新时不丢消息）。
+pub fn kind_class(kind: &str) -> KindClass {
+    WIRE_KINDS
+        .iter()
+        .find(|(k, _)| *k == kind)
+        .map(|(_, c)| *c)
+        .unwrap_or(KindClass::Bubble)
+}
+
+pub fn is_silent_kind(kind: &str) -> bool {
+    kind_class(kind) == KindClass::Silent
+}
+
+/// 生成 `kind NOT IN (...)` 用的 SQL 字面量列表（**从 `WIRE_KINDS` 派生**）。
+///
+/// 不允许在 SQL 里手写这份清单：加了新 kind 而忘了同步 SQL，就是一条静默漏判 ——
+/// 而它偏偏只在下一次有人用那个功能时才暴露。
+pub fn sql_kind_list(extra: &[&str], pick: impl Fn(KindClass) -> bool) -> String {
+    let mut names: Vec<String> = WIRE_KINDS
+        .iter()
+        .filter(|(_, c)| pick(*c))
+        .map(|(k, _)| format!("'{k}'"))
+        .collect();
+    names.extend(extra.iter().map(|k| format!("'{k}'")));
+    names.join(",")
+}
+
+/// 表情回应的事件载荷（`kind = "reaction"`）。
+///
+/// 建模成**一串独立消息**而不是「给消息加一个可变字段」：`message_id` 是
+/// `SHA-256(sender_id + nonce + payload)`，同一条业务消息不可能带不同 content 重发
+/// （`gossip_engine` 的回归测试钉死了这一点）。所以「状态变化」只能是一串新事件，
+/// 「当前值」由接收端按 `(seq, msg_id)` 折叠出来。
+///
+/// 收敛性：每个 `(target, actor, emoji)` 三元组是一个 LWW 寄存器、值为 bool。
+/// 每个用户只写自己那一格 ⇒ 不存在丢更新；`(seq, msg_id)` 是全序 ⇒ 任意到达顺序收敛。
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ReactionPayload {
+    /// 被回应的消息 msg_id
+    pub target: String,
+    /// 表情 token（如 `[赞]`），与正文里的表情语法同源
+    pub emoji: String,
+    /// true = 添加，false = 取消
+    pub add: bool,
+}
+
+/// 校验一个表情 token 的**形态**（`[名字]`），拒掉空串、超长与控制字符。
+///
+/// 注意这里**不校验表情是否真的存在** —— 表情目录的唯一来源是前端的
+/// `data/emojis.ts`（`EmojiPicker` 与正文渲染都从那里取）。在后端再维护一份名单
+/// 就是第二个真相源，加一个表情要改两处、漏一处就出现「能选但发不出去」。
+/// 后端只负责挡住畸形与超长输入，语义有效性交给前端。
+pub fn is_valid_emoji_token(s: &str) -> bool {
+    if !s.starts_with('[') || !s.ends_with(']') {
+        return false;
+    }
+    if s.len() < 3 || s.len() > 32 {
+        return false;
+    }
+    let inner = &s[1..s.len() - 1];
+    // 内层不得再出现方括号（否则 `[[x]` 这类畸形会被当成合法 token）
+    !inner.is_empty() && !inner.contains(['[', ']']) && !s.contains(char::is_control)
+}
+
 /// 共享目录条目
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ShareEntry {
@@ -868,6 +960,37 @@ mod tests {
             super::hello_signing_bytes("a", 1, "n", "x", "e"),
             "announce 与 Hello 的签名材料必须域分离"
         );
+    }
+
+    /// 表情 token 的**形态**校验：挡畸形与超长，但**不判断表情是否存在**
+    /// （目录的唯一来源是前端，后端再存一份就是第二个真相源）。
+    #[test]
+    fn emoji_token_shape_is_validated_but_not_the_catalogue() {
+        assert!(super::is_valid_emoji_token("[赞]"));
+        assert!(super::is_valid_emoji_token("[微笑]"));
+        // 后端不认识的名字也必须放行 —— 前端加了新表情不该需要同时改后端
+        assert!(super::is_valid_emoji_token("[后端不认识的表情]"));
+        for bad in ["", "[", "]", "[]", "赞", "[赞", "赞]", "[[赞]]", "[赞][踩]", "[a\nb]"] {
+            assert!(!super::is_valid_emoji_token(bad), "{bad:?} 应被拒");
+        }
+        assert!(!super::is_valid_emoji_token(&format!("[{}]", "很".repeat(20))), "超长应被拒");
+    }
+
+    /// 回应载荷的线上往返（发送端序列化 → 接收端反序列化）。
+    #[test]
+    fn reaction_payload_roundtrips() {
+        let p = super::ReactionPayload {
+            target: "msg-1".to_string(),
+            emoji: "[赞]".to_string(),
+            add: true,
+        };
+        let wire = serde_json::to_string(&p).unwrap();
+        let back: super::ReactionPayload = serde_json::from_str(&wire).unwrap();
+        assert_eq!(back.target, "msg-1");
+        assert_eq!(back.emoji, "[赞]");
+        assert!(back.add);
+        // 与群消息 payload 同形（{"kind","content"} 里的 content 就是它）
+        assert!(wire.contains("\"add\":true"));
     }
 
     /// Phase 8（ADR-0017）：不透明外部帧的边界校验 —— **畸形/超限只丢该帧，不断链**。

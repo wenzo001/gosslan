@@ -95,6 +95,9 @@ export const api = {
     invoke<MessageRecord>("send_group_message", { groupId, content, kind }),
   listGroupFiles: (groupId: string) =>
     invoke<GroupFileEntry[]>("list_group_files", { groupId }),
+  /** 表情回应：一条**静默事件**（不计未读、不改预览、不弹通知）。 */
+  sendGroupReaction: (groupId: string, target: string, emoji: string, add: boolean) =>
+    invoke<MessageRecord>("send_group_reaction", { groupId, target, emoji, add }),
 
   // 自绘标题栏：窗口控制
   windowMinimize: () => invoke<void>("window_minimize"),

@@ -43,7 +43,17 @@ export interface PendingRequest {
   ts: number;
 }
 
-export type MsgKind = "text" | "code" | "image" | "file" | "system";
+export type MsgKind = "text" | "code" | "image" | "file" | "system" | "reaction";
+
+/** 表情回应的事件载荷（kind = "reaction" 时 content 的 JSON 形态）。 */
+export interface ReactionPayload {
+  /** 被回应的消息 msg_id */
+  target: string;
+  /** 表情 token，如 "[赞]" */
+  emoji: string;
+  /** true = 添加，false = 取消 */
+  add: boolean;
+}
 
 export interface MessageRecord {
   id: number;

@@ -17,6 +17,7 @@ import {
 import { useAppStore } from "@/stores/useAppStore";
 import { actionableRequests } from "@/utils/friendRequests";
 import { notificationBody } from "@/utils/notifications";
+import { isSilentKind } from "@/utils/messageKinds";
 import { invalidateFilePreview } from "@/utils/filePreview";
 import { t } from "@/i18n";
 import { shouldRunThrottled } from "@/utils/defer";
@@ -187,6 +188,9 @@ export const useChatStore = defineStore("chat", () => {
 
   function maybeNotify(rec: MessageRecord) {
     if (!app.notifyEnabled) return;
+    // 静默事件（表情回应/撤回）不弹通知：它们不是"内容"，
+    // 提醒它们正是这个功能要消除的噪音（"收到""👍"刷屏）。
+    if (isSilentKind(rec.kind)) return;
     const myId = app.device?.device_id;
     if (!myId || rec.sender_id === myId) return;
     // 应用在前台且正查看该会话 → 不通知（不进队列）。
@@ -753,6 +757,19 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
+  /**
+   * 发一条表情回应（群聊）。
+   *
+   * 走与普通消息**完全相同**的可靠管道（E2EE + outbox + GroupAck + 去重 + 离线补发），
+   * 只是接收端会按 kind 归类为静默事件。本地**不做乐观上屏**：回应是幂等的状态事件，
+   * 折叠逻辑已经能正确处理重复，等服务端回执再合并反而更简单、也不会出现
+   * "点了没反应但本地已高亮"的错觉。
+   */
+  async function sendReaction(groupId: string, target: string, emoji: string, add: boolean) {
+    const rec = await api.sendGroupReaction(groupId, target, emoji, add);
+    enqueueMessage(rec);
+  }
+
   async function createGroup(name: string, members: string[]) {
     const g = await api.createGroup(name, members);
     await api.distributeGroupKey(g.id);
@@ -1274,6 +1291,7 @@ export const useChatStore = defineStore("chat", () => {
     removeFriend,
     deleteConversation,
     setConversationPinned,
+    sendReaction,
     createGroup,
     renameGroup,
     addGroupMember,
