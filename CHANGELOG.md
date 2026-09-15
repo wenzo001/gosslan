@@ -10,6 +10,8 @@
 
 ## [Unreleased]
 
+## [4.10.0] - 2026-09-15
+
 ### Added (TOFU 第一步：announce 自签名)
 
 背景：`UdpPacket` 此前携带 `device_id` 与两把公钥却**没有任何签名字段** —— 一条完全
