@@ -126,6 +126,8 @@ pub const WIRE_KINDS: &[(&str, KindClass)] = &[
     // 撤回后的消息本体：仍在时间线上占位（居中灰条「消息已撤回」），故是 Bubble。
     // 它的 content 已被清空 —— 搜索、导出、已读水位因此自动正确，无需各自过滤。
     ("recalled", KindClass::Bubble),
+    // 消息置顶：与表情回应同构的静默状态事件（不进时间线，只在置顶条里体现）
+    ("pin", KindClass::Silent),
 ];
 
 /// 未知 kind 一律按 `Bubble` 处理 —— 与 `MsgKind::from_str` 回退到 `Text` 同语义：
@@ -202,6 +204,19 @@ pub fn is_valid_emoji_token(s: &str) -> bool {
     let inner = &s[1..s.len() - 1];
     // 内层不得再出现方括号（否则 `[[x]` 这类畸形会被当成合法 token）
     !inner.is_empty() && !inner.contains(['[', ']']) && !s.contains(char::is_control)
+}
+
+/// 消息置顶的事件载荷（`kind = "pin"`）。
+///
+/// 与撤回/回应同构：一串独立事件，每个 `target` 是一个按 `(seq, msg_id)` 定序的
+/// LWW 寄存器（值 = 是否置顶）。任意成员都能置顶/取消（可逆、低风险），
+/// 与「仅群主可改名」那类不可逆操作不同。
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PinPayload {
+    /// 被置顶的消息 msg_id
+    pub target: String,
+    /// true = 置顶，false = 取消置顶
+    pub pinned: bool,
 }
 
 /// 撤回的事件载荷（`kind = "recall"`）。

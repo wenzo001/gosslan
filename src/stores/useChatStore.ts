@@ -767,6 +767,12 @@ export const useChatStore = defineStore("chat", () => {
     await api.recallGroupMessage(groupId, msgId);
   }
 
+  /** 置顶/取消置顶一条群消息（任意成员；静默事件，由置顶条体现）。 */
+  async function pinMessage(groupId: string, msgId: string, pinned: boolean) {
+    const rec = await api.pinGroupMessage(groupId, msgId, pinned);
+    void rec;
+  }
+
   /**
    * 发一条表情回应（群聊）。
    *
@@ -1332,6 +1338,7 @@ export const useChatStore = defineStore("chat", () => {
     setConversationPinned,
     sendReaction,
     recallMessage,
+    pinMessage,
     createGroup,
     renameGroup,
     addGroupMember,

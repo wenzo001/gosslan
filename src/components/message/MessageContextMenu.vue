@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
-import { Undo2 } from "lucide-vue-next";
+import { Pin, PinOff, Undo2 } from "lucide-vue-next";
 import { Copy, CornerUpLeft, Save, Share2 } from "lucide-vue-next";
 import type { MsgKind } from "@/types";
 import ContextMenu from "@/components/ContextMenu.vue";
@@ -8,6 +8,10 @@ import ContextMenu from "@/components/ContextMenu.vue";
 defineProps<{
   /** 仅自己的消息才显示撤回（其他人的消息后端也不接受） */
   canRecall?: boolean;
+  /** 群聊才可置顶 */
+  canPin?: boolean;
+  /** 当前是否已置顶（决定文案） */
+  pinned?: boolean;
   x: number;
   y: number;
   kind: MsgKind;
@@ -21,6 +25,7 @@ const emit = defineEmits<{
   (e: "copy-file"): void;
   (e: "quote"): void;
   (e: "recall"): void;
+  (e: "pin"): void;
   (e: "forward"): void;
 }>();
 
@@ -66,6 +71,10 @@ const forwardable = (k: MsgKind) => k === "text" || k === "code" || k === "image
 
     <div class="gosslan-menu-sep" role="separator"></div>
 
+    <button v-if="canPin" role="menuitem" class="gosslan-menu-item" @click="emit('pin')">
+      <component :is="pinned ? PinOff : Pin" />
+      {{ pinned ? t("msg.unpin") : t("msg.pin") }}
+    </button>
     <button
       v-if="canRecall"
       role="menuitem"

@@ -18,7 +18,9 @@ import ImageLightbox from "@/components/message/ImageLightbox.vue";
 import { estimateMessageHeight } from "@/utils/messageHeight";
 import { MENTION_ALL_TOKEN } from "@/utils/messages";
 import { foldReactions, hasMyReaction, type ReactionChip } from "@/utils/reactions";
-import { ArrowDown, Bluetooth, X } from "lucide-vue-next";
+import { foldPinned, isPinned } from "@/utils/pins";
+import { previewText } from "@/utils/messages";
+import { ArrowDown, Bluetooth, X, Pin } from "lucide-vue-next";
 import type { LinkState, MessageRecord, MsgKind } from "@/types";
 
 const emit = defineEmits<{ (e: "open-share"): void }>();
@@ -214,6 +216,41 @@ const reactionMap = computed(() => {
   if (!convId) return new Map<string, ReactionChip[]>();
   return foldReactions(chat.messages[convId] ?? [], app.device?.device_id ?? "");
 });
+
+/** 当前被置顶的消息 id（按置顶版本从新到旧）。与回应同理：会话层算一次。 */
+const pinnedIds = computed(() => {
+  const convId = chat.activeConv;
+  if (!convId) return [];
+  return foldPinned(chat.messages[convId] ?? []);
+});
+
+/** 置顶条要展示的条目：只保留还能在本机找到的消息（已被清空历史的就不列了）。 */
+const pinnedItems = computed(() => {
+  const convId = chat.activeConv;
+  if (!convId) return [];
+  const list = chat.messages[convId] ?? [];
+  return pinnedIds.value
+    .map((id) => list.find((m) => m.msg_id === id))
+    .filter((m): m is NonNullable<typeof m> => !!m)
+    .map((m) => ({ id: m.msg_id, text: previewText(m) }));
+});
+
+/** 点置顶条：跳到那条消息（复用既有的定位机制）。 */
+function gotoPinned(msgId: string) {
+  const convId = chat.activeConv;
+  if (!convId) return;
+  void chat.locateMessageInConv(convId, msgId);
+}
+
+/** 切换置顶。菜单里的文案由 isPinned 决定。 */
+function togglePin(msgId: string) {
+  const convId = chat.activeConv;
+  if (!convId?.startsWith("group:")) return;
+  const next = !isPinned(chat.messages[convId] ?? [], msgId);
+  void chat.pinMessage(convId.slice(6), msgId, next).catch((e) => {
+    app.toastError(e, t("msg.pinFail"));
+  });
+}
 
 /** 点 chip：已点过则取消，否则添加。 */
 function toggleReaction(msgId: string, emoji: string) {
@@ -536,6 +573,27 @@ function onLoadMore() {
       @open-share="emit('open-share')"
     />
 
+    <!-- 置顶条：钉钉/飞书同款位置（头部下方），点击跳到那条消息。
+         只显示**还能在本机找到的**置顶消息 —— 已被清空历史的不列，避免点了没反应。 -->
+    <div
+      v-if="isGroup && pinnedItems.length"
+      class="flex shrink-0 items-center gap-2 border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-chat)] px-4 py-1.5"
+    >
+      <Pin class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-text-2)]" aria-hidden="true" />
+      <button
+        v-for="p in pinnedItems.slice(0, 3)"
+        :key="p.id"
+        class="tap-safe min-w-0 flex-1 truncate rounded-[var(--gosslan-radius-sm)] px-1.5 py-0.5 text-left text-[12px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+        :title="p.text"
+        @click="gotoPinned(p.id)"
+      >
+        {{ p.text }}
+      </button>
+      <span v-if="pinnedItems.length > 3" class="shrink-0 text-[11px] text-[var(--gosslan-text-2)]">
+        +{{ pinnedItems.length - 3 }}
+      </span>
+    </div>
+
     <!-- 蓝牙链路速度提示（用户 2026-09-13 要求）：蓝牙分片载荷受 20 字节 MTU 限制，
          实测吞吐约 1 KB/s，一张 500 KB 的图片要几分钟。让用户在大文件开始**之前**
          就有预期，而不是看着进度条一直不动以为卡死。可关闭，切换会话后重新提示。 -->
@@ -614,8 +672,10 @@ function onLoadMore() {
             :highlight-id="highlightId"
             :mention-names="mentionNames"
             :reactions="reactionMap.get(item.msg_id) ?? []"
+            :pinned="pinnedIds.includes(item.msg_id)"
             @quote="quote = $event"
             @react="toggleReaction(item.msg_id, $event)"
+            @pin="togglePin(item.msg_id)"
             @forward="forward = $event"
             @locate="locateMessage"
             @open-image="openImageAt"

@@ -25,7 +25,7 @@ import type { ReactionChip } from "@/utils/reactions";
 import MessageContentModal from "@/components/message/MessageContentModal.vue";
 import MessageContextMenu from "@/components/message/MessageContextMenu.vue";
 import ActionSheet from "@/components/ActionSheet.vue";
-import { Copy, CornerUpLeft, Save, Share2, ImageOff, TextSelect , Undo2} from "lucide-vue-next";
+import { Copy, CornerUpLeft, Save, Share2, ImageOff, TextSelect , Undo2, Pin } from "lucide-vue-next";
 import type { MessageRecord, MsgKind } from "@/types";
 
 const props = withDefaults(
@@ -47,6 +47,8 @@ const props = withDefaults(
     mentionNames?: string[];
     /** 已折叠的表情回应（由会话层算好传入，避免每条消息各自 O(n) 重算）。 */
     reactions?: ReactionChip[];
+    /** 该消息当前是否被置顶（决定菜单显示「置顶」还是「取消置顶」） */
+    pinned?: boolean;
   }>(),
   {
     prev: null,
@@ -468,6 +470,8 @@ const emit = defineEmits<{
   (e: "locate", msgId: string): void;
   /** 点了某个表情 chip（已点过则是取消） */
   (e: "react", emoji: string): void;
+  /** 切换置顶（群聊） */
+  (e: "pin"): void;
   (e: "open-image", msgId: string): void;
 }>();
 
@@ -784,6 +788,9 @@ async function copyFileToClipboard() {
     @copy-file="copyFileToClipboard"
     @quote="doQuote"
     :can-recall="canRecall"
+    :can-pin="isGroup && message.kind !== 'recalled'"
+    :pinned="!!pinned"
+    @pin="emit('pin')"
     @recall="doRecall"
     @forward="doForward"
   />
@@ -850,6 +857,16 @@ async function copyFileToClipboard() {
       >
         <CornerUpLeft class="h-5 w-5 text-[var(--gosslan-text-2)]" />
         {{ t("common.quote") }}
+      </button>
+
+      <!-- 置顶：任意群成员都能置（可逆、低风险），与撤回不同 -->
+      <button
+        v-if="isGroup && message.kind !== 'recalled'"
+        class="flex items-center gap-3 px-4 py-3 text-left text-[15px] text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
+        @click="closeActionSheet(); emit('pin')"
+      >
+        <Pin class="h-5 w-5 text-[var(--gosslan-text-2)]" />
+        {{ pinned ? t("msg.unpin") : t("msg.pin") }}
       </button>
 
       <!-- 撤回：**仅自己发的**消息可见（其他人的消息连入口都不给 —— 后端也只接受

@@ -2934,6 +2934,29 @@ pub async fn send_group_message(
     send_group_payload(state.inner(), &group_id, wire_kind, content).await
 }
 
+/// 置顶 / 取消置顶一条群消息。
+///
+/// 权限：任意群成员（可逆、低风险）。与「仅群主可改名」那类不可逆操作不同 ——
+/// 置顶错了再取消即可，不必引入管理员角色。
+#[tauri::command(async)]
+pub async fn pin_group_message(
+    state: State<'_, Arc<AppState>>,
+    group_id: String,
+    target: String,
+    pinned: bool,
+) -> Result<(), String> {
+    if target.is_empty() {
+        return Err("缺少目标消息".to_string());
+    }
+    let payload = crate::protocol::PinPayload {
+        target: target.clone(),
+        pinned,
+    };
+    let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
+    send_group_payload(state.inner(), &group_id, "pin", content).await?;
+    Ok(())
+}
+
 /// 撤回窗口：超过它就不再允许撤回。
 ///
 /// **只在发送端强制**。接收端无法验证发送方的墙上时钟（`env.ts` 不参与排序也不可信），

@@ -95,6 +95,9 @@ export const api = {
     invoke<MessageRecord>("send_group_message", { groupId, content, kind }),
   listGroupFiles: (groupId: string) =>
     invoke<GroupFileEntry[]>("list_group_files", { groupId }),
+  /** 置顶/取消置顶一条群消息（任意群成员；静默事件，不进时间线）。 */
+  pinGroupMessage: (groupId: string, target: string, pinned: boolean) =>
+    invoke<void>("pin_group_message", { groupId, target, pinned }),
   /** 撤回自己发的一条群消息（仅原作者；窗口 2 分钟，只在发送端强制）。 */
   recallGroupMessage: (groupId: string, target: string) =>
     invoke<void>("recall_group_message", { groupId, target }),

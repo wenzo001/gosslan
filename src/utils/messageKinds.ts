@@ -28,4 +28,4 @@ export function isSilentKind(kind: string): boolean {
  * 静默种类清单 —— **与 Rust 的 `WIRE_KINDS` 必须一致**，由契约测试锁死。
  * 这里显式列出（而不是从 `kindClass` 反推）是为了让测试能逐项比对。
  */
-export const SILENT_KINDS: readonly string[] = ["reaction", "recall"];
+export const SILENT_KINDS: readonly string[] = ["reaction", "recall", "pin"];
