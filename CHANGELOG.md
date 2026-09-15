@@ -10,6 +10,8 @@
 
 ## [Unreleased]
 
+## [4.16.0] - 2026-09-16
+
 ### Added (群协作阶段 2 · 第三项：群公告，阶段 2 完成)
 
 - **协议**：新 kind `announcement`（Card）+ `announcement_delete`（静默墓碑）。
