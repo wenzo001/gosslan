@@ -10,6 +10,8 @@
 
 ## [Unreleased]
 
+## [4.9.2] - 2026-09-15
+
 ### Fixed (后端审计续：5 条中低危缺陷收口)
 
 - **`delete_file` 接受任意路径**。读取侧早有边界（`resolve_media_path`：canonicalize 后
