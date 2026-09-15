@@ -10,6 +10,32 @@
 
 ## [Unreleased]
 
+### Fixed (后端审计续：整文件读入内存，改为按需分块)
+
+- **`resume_receive` 为给哈希器播种而整读 `.part` 前缀**。`.part` 最长等于整个文件，
+  于是「几个 GB 的文件传到 90% 断链、对端续传」会让进程瞬间占用 ≈ 文件大小 ——
+  而续传本身正是为这种大文件场景设计的。改为分块喂哈希器，峰值只剩一个分片；
+  同时把「磁盘前缀长度 ≠ 声明 from_bytes」记为一条 warn（**只记录不改行为**：
+  `received` 仍以 from_bytes 为准，单方面改动会让两端 seq 对不上）。
+- **`send_file_via_relay` 整读源文件再切片**。中继发送的是共享目录里的文件，
+  整读后逐片 base64（×1.33）内存峰值远超文件本身。改为按需 `seek` + `read_exact`，
+  峰值只剩一个分片。附带修正：`total` 改用 metadata 的 `size`（与 Offer 声明一致），
+  文件在发送途中被截断时 `read_exact` 会**报错**而不是静默发一份短的。
+
+**平台兼容性**：本次改动未引入任何平台相关代码（无 `#[cfg(...)]` / `target_os` /
+平台专用 crate）。用到的 `std::fs::canonicalize`、`std::fs::File::{seek,read_exact}`、
+`tokio::time::timeout`、HashMap `retain`、SQLite `CASE` 均为跨平台。
+`delete_file` 的路径比较**两侧都做 canonicalize**，因此 Windows 上
+`\\?\` 扩展长度前缀是两边一致的（该写法与既有 `resolve_media_path` 同源）。
+前端唯一平台敏感处 `utils/localFile.ts` 是把原有的 `isAndroid` 分支**抽出共用**，
+Android 的 SAF 另存为行为原样保留，且群文件面板也一并获得该行为。
+
+验证：cargo test --lib 462 passed · cargo check 零警告 ·
+scripts/e2e-dev.sh 30 passed / 0 failed（其中「下载方向文件传输」走的正是
+`send_file_via_relay`，断言内容逐字节一致）· npm test 396 passed。
+Android 交叉编译在本机无法执行（缺 NDK 的 `aarch64-linux-android-clang`，
+失败发生在 `cc-rs` 构建 rusqlite 阶段、早于本次改动的任何代码）。
+
 ## [4.9.2] - 2026-09-15
 
 ### Fixed (后端审计续：5 条中低危缺陷收口)

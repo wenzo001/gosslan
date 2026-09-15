@@ -9,7 +9,7 @@
 //! - 中继路径：中继节点只透传密文切片，不持有会话密钥、无法解密。
 
 use std::collections::HashMap;
-use std::io::Read;
+use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -290,11 +290,13 @@ pub async fn send_file_via_relay(
         .ok_or_else(|| "密钥交换失败".to_string())?;
     let sealed_key_b64 =
         STANDARD.encode(crypto::seal(&shared, &file_key).ok_or_else(|| "加密失败".to_string())?);
-    let bytes = std::fs::read(&path).map_err(|e| format!("读取文件失败：{e}"))?;
-    // 64KiB/片：base64 后约 88KB，BLE 单帧也装得下；中继以 LAN 为主。
+    // ⚠️ **逐片读盘，不整读进内存**。这里原先 `std::fs::read(&path)` 把整个文件读进来再切片：
+    // 中继发送的是共享目录里的文件（可能很大），整读后逐片 base64（×1.33）会让内存峰值
+    // 超过文件大小本身。改成按需 seek + read_exact，峰值只剩一个分片。
     let chunk_size = crate::relay_manager::MIN_CHUNK_SIZE;
-    let total = bytes.len();
+    let total = size as usize;
     let chunk_count = total.div_ceil(chunk_size).max(1) as u32;
+    let mut src = std::fs::File::open(&path).map_err(|e| format!("读取文件失败：{e}"))?;
 
     {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -318,10 +320,14 @@ pub async fn send_file_via_relay(
 
     let mut last_report = std::time::Instant::now() - Duration::from_secs(1);
     for seq in 0..chunk_count {
-        let start = ((seq as usize) * chunk_size).min(total);
+        let start = (seq as usize * chunk_size).min(total);
         let end = (start + chunk_size).min(total);
-        let plain = &bytes[start..end];
-        let sealed = crypto::seal_symmetric(&file_key, plain)
+        let mut plain = vec![0u8; end - start];
+        src.seek(std::io::SeekFrom::Start(start as u64))
+            .map_err(|e| format!("定位文件失败：{e}"))?;
+        src.read_exact(&mut plain)
+            .map_err(|e| format!("读取文件分片失败：{e}"))?;
+        let sealed = crypto::seal_symmetric(&file_key, &plain)
             .ok_or_else(|| "文件分片加密失败".to_string())?;
         let data = STANDARD.encode(&sealed);
         let msg = Message::RelayChunk {
@@ -652,11 +658,34 @@ pub fn resume_receive(
             }
         }
     }
-    let prefix = std::fs::read(&tmp_path).map_err(|e| e.to_string())?;
+    // ⚠️ **分块喂哈希器，不整读进内存**。这曾经是 `std::fs::read(&tmp_path)`：
+    // `.part` 前缀最长就等于整个文件，于是「几个 GB 的文件传到 90% 断链、对端续传」
+    // 会让本进程瞬间占用 ≈ 文件大小的内存 —— 而续传恰恰是为了处理这种大文件场景。
     let hasher = {
         use sha2::Digest as _;
         let mut h = sha2::Sha256::new();
-        h.update(&prefix);
+        let mut src = std::fs::File::open(&tmp_path).map_err(|e| e.to_string())?;
+        let mut buf = vec![0u8; FILE_CHUNK];
+        let mut counted: u64 = 0;
+        loop {
+            let n = src.read(&mut buf).map_err(|e| e.to_string())?;
+            if n == 0 {
+                break;
+            }
+            h.update(&buf[..n]);
+            counted += n as u64;
+        }
+        // 只记录、不改行为：`received` 仍以 from_bytes 为准（发送端的分片编号是据此推出来的，
+        // 这里单方面改会让两端的 seq 对不上）。不一致说明该 .part 已被外部改动，
+        // 后续 SHA-256 整体校验会拦下，此处先留下可诊断的痕迹。
+        if counted != from_bytes {
+            state.logger.warn(
+                "file",
+                format!(
+                    "续传前缀长度与声明不符：磁盘 {counted} 字节 / 声明 {from_bytes} 字节（transfer={transfer_id}）"
+                ),
+            );
+        }
         h
     };
     let f = std::fs::OpenOptions::new()
