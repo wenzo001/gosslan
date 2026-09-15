@@ -3028,7 +3028,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 if announced_on(&inserted) {
                     // 与群聊分支同一套口径：时钟照常推进，静默类不计未读/不改预览。
                     db::observe_clock(&dbc, &from, seq).ok();
-                    if crate::protocol::is_silent_kind(&kind_str) {
+                    if crate::protocol::is_non_notifying_kind(&kind_str) {
                         db::ensure_conversation(&dbc, &from, "single", &name, None).ok();
                     } else {
                         db::touch_conversation(&dbc, &from, "single", &name, None, &preview, 1)
@@ -4648,9 +4648,9 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                         // 时钟推进与静默**无关**，必须照常：漏掉它本机后续 seq 会落后，
                         // 之后自己发的消息会排到历史前面。
                         db::observe_clock(&dbc, &conv_id, seq).ok();
-                        if crate::protocol::is_silent_kind(&kind) {
-                            // 静默事件（表情回应/撤回）不计未读、不改会话预览 ——
-                            // 否则「回个表情」会把会话顶到列表最前并弹一条通知。
+                        if crate::protocol::is_non_notifying_kind(&kind) {
+                            // 静默事件（表情回应/撤回）与系统提示都不计未读、不改会话预览 ——
+                            // 否则「回个表情」或「X 加入了群聊」会把会话顶到列表最前并弹通知。
                             // 但会话行必须存在，前端要靠它把事件归属到正确的会话。
                             db::ensure_conversation(&dbc, &conv_id, conv_kind, &name, None).ok();
                         } else {
@@ -6450,6 +6450,17 @@ pub fn member_removed_action(
 /// 群的 conv_id 约定是 `group:{group_id}` —— 这个约定只有一处实现，避免各处手拼前缀。
 pub fn insert_group_system_message(state: &AppState, group_id: &str, text: &str) {
     crate::commands::insert_system_message(state, &format!("group:{group_id}"), text);
+}
+
+/// 加人通知的文案。此前**加人完全没有通知**（只靠 GroupKey 重发 + 群消息自愈），
+/// 群里其他人根本不知道多了一个成员 —— 而踢人/退群都是有系统消息的，
+/// 同一类事件两种待遇。语言跟随本机设置，与既有两条同口径。
+pub fn group_member_added_text(state: &AppState, name: &str) -> String {
+    if state.is_zh() {
+        format!("「{name}」加入了群聊")
+    } else {
+        format!("\"{name}\" joined the group")
+    }
 }
 
 pub fn group_member_removed_text(state: &AppState, name: &str) -> String {

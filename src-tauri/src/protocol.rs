@@ -138,6 +138,17 @@ pub fn kind_class(kind: &str) -> KindClass {
         .unwrap_or(KindClass::Bubble)
 }
 
+/// 「进时间线，但**不打扰**」—— 不计未读、不改会话预览、不弹通知。
+///
+/// 与 `Silent` 的区别：静默事件**根本不进时间线**（表情回应/撤回是状态，不是内容），
+/// 而 `system` 要在时间线上占一行（居中灰条）。但两者都不该把会话顶起来或弹通知：
+/// 此前系统消息只由 `insert_system_message` 在**本机**插入（它不碰未读与预览），
+/// 所以"不打扰"是既有事实；现在加人通知要经消息管道广播给全体成员，
+/// 必须把这条口径显式化，否则「X 加入了群聊」会给每个人推一条通知。
+pub fn is_non_notifying_kind(kind: &str) -> bool {
+    is_silent_kind(kind) || kind == "system"
+}
+
 pub fn is_silent_kind(kind: &str) -> bool {
     kind_class(kind) == KindClass::Silent
 }

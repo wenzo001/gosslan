@@ -2547,6 +2547,16 @@ pub async fn group_add_member(
     };
     // 现有成员收到的是同一把密钥（幂等刷新），新成员借此首次拿到密钥
     resend_group_key_to(s, &group_id, &current, key).await;
+    // 加人通知：此前完全缺失（见 group_member_added_text 的说明）。
+    //
+    // ⚠️ 必须走 `send_group_payload`（群密钥加密 + gossip + 每个成员的 outbox），
+    // **不能**用 `insert_group_system_message` —— 那个只写本机，其他成员看不到，
+    // 就失去了"通知全体"的意义。踢人/退群之所以用本地插入，是因为它们本来就有
+    // 专用控制帧广播（GroupMemberRemoved / GroupMemberLeft）；而加人没有控制帧
+    // （靠 GroupKey 重发携带新成员表），所以直接借用消息管道。
+    let name = resolve_nickname(s, &device_id);
+    let text = crate::network::transport::group_member_added_text(s, &name);
+    send_group_payload(s, &group_id, "system", text).await?;
     let _ = s.app.emit("groups-updated", &group_id);
     Ok(())
 }
@@ -2873,8 +2883,8 @@ async fn send_group_payload(
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         let tx = dbc.unchecked_transaction().map_err(|e| e.to_string())?;
         db::insert_message(&tx, &rec).map_err(|e| format!("消息写入失败：{e}"))?;
-        if crate::protocol::is_silent_kind(kind) {
-            // 静默事件不改会话预览 —— 否则「自己回了个表情」会把会话列表摘要
+        if crate::protocol::is_non_notifying_kind(kind) {
+            // 静默事件与系统提示不改会话预览 —— 否则「自己回了个表情」会把会话列表摘要
             // 变成一段 JSON。会话行仍要确保存在。
             db::ensure_conversation(&tx, &conv_id, "group", &group_name, None)
                 .map_err(|e| format!("会话写入失败：{e}"))?;

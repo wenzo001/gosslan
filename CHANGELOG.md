@@ -10,6 +10,26 @@
 
 ## [Unreleased]
 
+### Added (群协作阶段 2 · 第一项：加人通知)
+
+**此前加人是完全静默的** —— 靠 GroupKey 重发携带新成员表自愈，群里其他人根本不知道
+多了一个成员。而踢人（`GroupMemberRemoved`）与退群（`GroupMemberLeft`）都有系统消息，
+同一类事件两种待遇。
+
+- 新增 `group_member_added_text()`（跟随本机语言，与既有两条同口径），
+  加人成功后广播一条 `system` 群消息。
+- **走消息管道而不是本地插入**：踢人/退群用的是 `insert_group_system_message`（只写本机），
+  因为它们本来就有专用控制帧广播；而加人**没有**控制帧，本地插入就失去了"通知全体"的意义。
+  所以借用 `send_group_payload`（群密钥 E2EE + gossip + 每个成员的 outbox + 离线补发）。
+
+**顺带厘清一档此前隐式的语义**：`is_non_notifying_kind()` = 静默类 + `system`。
+系统消息此前只由 `insert_system_message` 在本机插入，而它**不碰未读与会话预览** ——
+所以"进时间线但不打扰"一直是既有事实，只是从没被写下来。加人通知改走消息管道后，
+若不做这个归类，「X 加入了群聊」会给每个成员推一条系统通知、还会把会话顶到列表最前。
+接收路径（群/单聊两条）与发送路径三处已统一按它分支。
+
+验证：cargo test --lib 478 passed · scripts/e2e-dev.sh 30 passed / 0 failed。
+
 ## [4.13.0] - 2026-09-15
 
 ### Added (群协作阶段 1 · 第二批：消息撤回)

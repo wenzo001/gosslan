@@ -1917,6 +1917,15 @@ mod tests {
         // 检索排除清单 = 静默类 + 显式追加的 system
         let unsearchable = sql_kind_list(&["system"], |c| c == KindClass::Silent);
         assert!(unsearchable.contains("'system'") && unsearchable.contains("'reaction'"));
+
+        // 「进时间线但不打扰」：静默类 + system。system 此前只在本机插入（不碰未读与
+        // 预览），加人通知改走消息管道后必须显式归类，否则会给全体成员推通知。
+        use crate::protocol::is_non_notifying_kind;
+        assert!(is_non_notifying_kind("system"));
+        assert!(is_non_notifying_kind("reaction"));
+        assert!(is_non_notifying_kind("recall"));
+        assert!(!is_non_notifying_kind("text"));
+        assert!(!is_non_notifying_kind("recalled"), "已撤回要在时间线上、且它是别人主动撤回的结果，不该被静默");
     }
 
     /// 历史检索：发送人/时间过滤、每会话命中总数、排除系统消息。
