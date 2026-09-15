@@ -2934,6 +2934,41 @@ pub async fn send_group_message(
     send_group_payload(state.inner(), &group_id, wire_kind, content).await
 }
 
+/// 发布群公告（**仅群主**）。
+///
+/// 权限口径与 `handle_group_rename` 逐字同构（`group.creator == 我`）：
+/// 公告是发给全群的**权威信息**，人人可发就失去了"公告"的意义。
+/// 群主离线时发不了 —— 无中心即无中心授权，不做"降级为任何人可发"。
+#[tauri::command(async)]
+pub async fn send_group_announcement(
+    state: State<'_, Arc<AppState>>,
+    group_id: String,
+    text: String,
+) -> Result<MessageRecord, String> {
+    let s = state.inner();
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        return Err("公告内容不能为空".to_string());
+    }
+    if text.chars().count() > MAX_ANNOUNCEMENT_LEN {
+        return Err(format!("公告不能超过 {MAX_ANNOUNCEMENT_LEN} 字"));
+    }
+    {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        let g = db::get_group(&dbc, &group_id).ok_or("群不存在")?;
+        if g.creator != s.device_id {
+            return Err("只有群主可以发布公告".to_string());
+        }
+    }
+    let content = serde_json::to_string(&crate::protocol::AnnouncementPayload { text })
+        .map_err(|e| e.to_string())?;
+    send_group_payload(s, &group_id, "announcement", content).await
+}
+
+/// 公告长度上限：与群名（40）同档量级 —— 公告是置顶横幅里的一段短文本，
+/// 不是长文（长文该发消息）。同时也是对广播体积的限制。
+const MAX_ANNOUNCEMENT_LEN: usize = 500;
+
 /// 置顶 / 取消置顶一条群消息。
 ///
 /// 权限：任意群成员（可逆、低风险）。与「仅群主可改名」那类不可逆操作不同 ——

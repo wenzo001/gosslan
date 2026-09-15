@@ -102,10 +102,15 @@ impl MsgKind {
 pub enum KindClass {
     /// 时间线内容：计未读、进会话预览、弹通知、可搜索。渲染成气泡或卡片。
     Bubble,
-    /// 静默状态事件（表情回应、撤回 …）：**不进时间线** ——
+    /// 静默状态事件（表情回应、撤回、置顶 …）：**不进时间线** ——
     /// 不计未读、不改会话预览、不弹通知。前端按它驱动聚合视图
     /// （回应显示为气泡下方的 chip，而不是时间线上的一条）。
     Silent,
+    /// 群级沉淀物（群公告）：**进时间线**（是一条发布事件，该计未读、该通知），
+    /// 但**不属于"聊天历史"** —— 清空聊天记录时不得被删、清空边界也不得拦它。
+    /// 这两点正是它与 Bubble 的全部差别（见 `delete_conversation` 与
+    /// `group_message_blocked_by_boundary`）。
+    Card,
 }
 
 /// kind 语义的**唯一判定点**。
@@ -128,6 +133,9 @@ pub const WIRE_KINDS: &[(&str, KindClass)] = &[
     ("recalled", KindClass::Bubble),
     // 消息置顶：与表情回应同构的静默状态事件（不进时间线，只在置顶条里体现）
     ("pin", KindClass::Silent),
+    // 阶段 2：群公告
+    ("announcement", KindClass::Card),
+    ("announcement_delete", KindClass::Silent),
 ];
 
 /// 未知 kind 一律按 `Bubble` 处理 —— 与 `MsgKind::from_str` 回退到 `Text` 同语义：
@@ -204,6 +212,22 @@ pub fn is_valid_emoji_token(s: &str) -> bool {
     let inner = &s[1..s.len() - 1];
     // 内层不得再出现方括号（否则 `[[x]` 这类畸形会被当成合法 token）
     !inner.is_empty() && !inner.contains(['[', ']']) && !s.contains(char::is_control)
+}
+
+/// 群公告的载荷（`kind = "announcement"`）。
+///
+/// 「当前公告」= 按 `(seq, msg_id)` 取最大的那条（**不是**墙上时间）——
+/// 只有群主能发，而群主的 Lamport 时钟单调，自己两条公告不可能同 seq，
+/// tie-break 只是防御。`ann_id` 取发布事件自身的 msg_id，不需要额外的生成器。
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct AnnouncementPayload {
+    pub text: String,
+}
+
+/// 公告删除（`kind = "announcement_delete"`）：墓碑，携带被删公告的 ann_id。
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct AnnouncementDeletePayload {
+    pub ann_id: String,
 }
 
 /// 消息置顶的事件载荷（`kind = "pin"`）。

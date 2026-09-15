@@ -95,6 +95,9 @@ export const api = {
     invoke<MessageRecord>("send_group_message", { groupId, content, kind }),
   listGroupFiles: (groupId: string) =>
     invoke<GroupFileEntry[]>("list_group_files", { groupId }),
+  /** 发布群公告（仅群主；上限 500 字）。 */
+  sendGroupAnnouncement: (groupId: string, text: string) =>
+    invoke<MessageRecord>("send_group_announcement", { groupId, text }),
   /** 置顶/取消置顶一条群消息（任意群成员；静默事件，不进时间线）。 */
   pinGroupMessage: (groupId: string, target: string, pinned: boolean) =>
     invoke<void>("pin_group_message", { groupId, target, pinned }),

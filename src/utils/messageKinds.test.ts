@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { SILENT_KINDS, isSilentKind, kindClass } from "./messageKinds.ts";
+import { CARD_KINDS, SILENT_KINDS, isSilentKind, kindClass } from "./messageKinds.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const protocolRs = readFileSync(join(here, "../../src-tauri/src/protocol.rs"), "utf8");
@@ -41,12 +41,14 @@ test("跨语言契约：kind 分类与 protocol.rs 的 WIRE_KINDS 一致", () =>
   assert.ok(entries.length >= 6, `解析出的 kind 太少（${entries.length}），表格式可能变了`);
 
   const rustSilent = entries.filter(([, c]) => c === "Silent").map(([k]) => k).sort();
-  const tsSilent = [...SILENT_KINDS].sort();
-  assert.deepEqual(tsSilent, rustSilent, "TS 与 Rust 的静默种类清单必须一致");
+  assert.deepEqual([...SILENT_KINDS].sort(), rustSilent, "TS 与 Rust 的静默种类清单必须一致");
+
+  const rustCard = entries.filter(([, c]) => c === "Card").map(([k]) => k).sort();
+  assert.deepEqual([...CARD_KINDS].sort(), rustCard, "TS 与 Rust 的 Card 清单必须一致");
 
   // 逐个 kind 的分类也要对得上（不只是静默那一列）
   for (const [kind, cls] of entries) {
-    const expected = cls === "Silent" ? "silent" : "bubble";
+    const expected = cls === "Silent" ? "silent" : cls === "Card" ? "card" : "bubble";
     assert.equal(kindClass(kind), expected, `${kind} 的分类两侧不一致`);
   }
 });

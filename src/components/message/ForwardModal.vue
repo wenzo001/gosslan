@@ -42,6 +42,8 @@ const KIND_LABELS: Record<MsgKind, string> = {
   recalled: t("msg.recalled"),
   // 静默事件：不在时间线上渲染，就不会有转发入口。给中性文案兜底。
   pin: t("msg.pin"),
+  announcement: t("group.announce"),
+  announcement_delete: t("group.announce"),
 };
 const kindLabel = computed(() => KIND_LABELS[props.kind] ?? t("msg.message"));
 </script>

@@ -4540,7 +4540,8 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                 if env.kind == GossipKind::Group {
                     let gid = env.group_id.clone().unwrap_or_default();
                     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                    let blocked = db::group_message_blocked_by_boundary(&dbc, &gid, env.seq);
+                    let blocked =
+                        db::group_message_blocked_by_boundary(&dbc, &gid, env.seq, &kind);
                     drop(dbc);
                     if blocked {
                         return;

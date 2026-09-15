@@ -434,6 +434,13 @@ export const zhCN: MessageDict = {
 
   // ---- 群组 ----
   // ---- 群文件列表 ----
+  "group.announce": "群公告",
+  "group.announceEmpty": "暂无群公告",
+  "group.announcePublish": "发布",
+  "group.announceEdit": "修改",
+  "group.announcePlaceholder": "输入公告内容（最多 500 字）",
+  "group.announceDone": "公告已发布",
+  "group.announceFail": "发布公告失败",
   "group.files.title": "群文件",
   "group.files.titleCount": "群文件（{n}）",
   "group.files.totalSize": "共 {n} 个文件 · {size}",
@@ -1125,6 +1132,13 @@ export const enUS: MessageDict = {
 
   // ---- Groups ----
   // ---- Group files list ----
+  "group.announce": "Announcement",
+  "group.announceEmpty": "No announcement yet",
+  "group.announcePublish": "Publish",
+  "group.announceEdit": "Edit",
+  "group.announcePlaceholder": "Announcement text (max 500 characters)",
+  "group.announceDone": "Announcement published",
+  "group.announceFail": "Failed to publish the announcement",
   "group.files.title": "Group Files",
   "group.files.titleCount": "Group Files ({n})",
   "group.files.totalSize": "{n} files · {size}",

@@ -356,7 +356,21 @@ pub fn set_clear_boundary(conn: &Connection, group_id: &str, seq: i64) -> Result
 
 /// 群消息落库前的边界判定：逻辑序号 <= 清除边界 → 视为旧历史，不得重新写入本机。
 /// 不再使用墙上时钟，也不猜测发送方时钟。
-pub fn group_message_blocked_by_boundary(conn: &Connection, group_id: &str, seq: i64) -> bool {
+/// 该消息是否被「清空聊天记录」的水位挡住（不该落库）。
+///
+/// ⚠️ **只对 `Bubble` 生效**。水位是**聊天历史**的水位，不该管群级沉淀物：
+/// 一个离线成员的公告（Card）如果 seq ≤ 本机 boundary 就被丢弃，
+/// 会导致**各成员看到的公告不一致** —— 而公告恰恰是要求"所有人都看到同一份"的东西。
+/// 静默事件同理：它们不进时间线，与"清空历史"无关。
+pub fn group_message_blocked_by_boundary(
+    conn: &Connection,
+    group_id: &str,
+    seq: i64,
+    kind: &str,
+) -> bool {
+    if crate::protocol::kind_class(kind) != crate::protocol::KindClass::Bubble {
+        return false;
+    }
     get_setting(conn, &clear_boundary_key(group_id))
         .and_then(|v| v.parse::<i64>().ok())
         .map(|boundary| seq <= boundary)
@@ -1131,7 +1145,17 @@ pub fn last_message_from_sender(
 /// 事务包裹，确保消息与会话行同步删除；不存在则视为成功（幂等）。
 pub fn delete_conversation(conn: &Connection, conv_id: &str) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
-    tx.execute("DELETE FROM messages WHERE conv_id = ?1", params![conv_id])?;
+    // ⚠️ 只删 Bubble。Card（群公告/待办）与 Silent（回应/撤回/置顶）**不属于"聊天历史"** ——
+    // 清空聊天记录顺手删掉群公告是错误语义（钉盘/群文件同理：那是群资产，不是聊天记录）。
+    // 清单从 `WIRE_KINDS` 派生，不手写：加了新 kind 而忘了同步这里就是静默的数据丢失。
+    let keep = crate::protocol::sql_kind_list(
+        &["system"],
+        |c| c != crate::protocol::KindClass::Bubble,
+    );
+    tx.execute(
+        &format!("DELETE FROM messages WHERE conv_id = ?1 AND kind NOT IN ({keep})"),
+        params![conv_id],
+    )?;
     tx.execute("DELETE FROM conversations WHERE id = ?1", params![conv_id])?;
     tx.commit()?;
     Ok(())
@@ -1839,6 +1863,44 @@ mod tests {
         let friends = list_friends(&conn).unwrap();
         assert_eq!(friends.len(), 1);
         assert_eq!(friends[0].nickname, "张三回来了");
+    }
+
+    /// **群级沉淀物不随「清空聊天记录」消失**。
+    /// 清空顺手删掉群公告是错误语义 —— 公告/置顶是群资产，不是聊天历史。
+    #[test]
+    fn clearing_history_keeps_group_level_artifacts() {
+        let conn = mem();
+        insert_message(&conn, &rec_as("m1", "group:g1", "text", "普通消息")).unwrap();
+        insert_message(&conn, &rec_as("a1", "group:g1", "announcement", "{\"text\":\"本周五团建\"}")).unwrap();
+        insert_message(&conn, &rec_as("r1", "group:g1", "reaction", "{}")).unwrap();
+        insert_message(&conn, &rec_as("s1", "group:g1", "system", "「张三」加入了群聊")).unwrap();
+
+        delete_conversation(&conn, "group:g1").unwrap();
+
+        let left: Vec<String> = conn
+            .prepare("SELECT kind FROM messages WHERE conv_id = 'group:g1' ORDER BY kind")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert_eq!(left, vec!["announcement", "reaction", "system"],
+            "清空聊天记录只应删掉 Bubble（普通消息），公告/静默事件/系统提示必须留下");
+    }
+
+    /// **清空边界只挡 Bubble**：若它连公告一起挡，离线成员的公告会被丢弃，
+    /// 各成员看到的公告就不一致了 —— 而公告恰恰要求"所有人看到同一份"。
+    #[test]
+    fn clear_boundary_only_blocks_bubble_kinds() {
+        let conn = mem();
+        set_setting(&conn, &clear_boundary_key("g1"), "100").unwrap();
+        // 水位之下（seq=50 ≤ 100）的各类消息
+        assert!(group_message_blocked_by_boundary(&conn, "g1", 50, "text"), "普通消息该被挡");
+        assert!(!group_message_blocked_by_boundary(&conn, "g1", 50, "announcement"),
+            "公告不得被清空边界挡住（否则离线成员看不到它）");
+        assert!(!group_message_blocked_by_boundary(&conn, "g1", 50, "reaction"));
+        // 水位之上的普通消息照常放行
+        assert!(!group_message_blocked_by_boundary(&conn, "g1", 200, "text"));
     }
 
     /// 撤回：G-Set 幂等 + 物化视图让搜索/预览自动正确。
@@ -3255,16 +3317,16 @@ mod tests {
         set_clear_boundary(&conn, "g1", 100).unwrap();
 
         // 清除边界及更早序号 → 拦截
-        assert!(group_message_blocked_by_boundary(&conn, "g1", 99));
-        assert!(group_message_blocked_by_boundary(&conn, "g1", 100));
+        assert!(group_message_blocked_by_boundary(&conn, "g1", 99, "text"));
+        assert!(group_message_blocked_by_boundary(&conn, "g1", 100, "text"));
         // 清除后的新序号 → 放行
-        assert!(!group_message_blocked_by_boundary(&conn, "g1", 101));
+        assert!(!group_message_blocked_by_boundary(&conn, "g1", 101, "text"));
         // 未设置边界的群不拦截
-        assert!(!group_message_blocked_by_boundary(&conn, "g2", 1));
+        assert!(!group_message_blocked_by_boundary(&conn, "g2", 1, "text"));
         // 重复清除：边界覆盖为新值（新 boundary 之前的旧消息再次被拦截）
         set_clear_boundary(&conn, "g1", 200).unwrap();
-        assert!(group_message_blocked_by_boundary(&conn, "g1", 200));
-        assert!(!group_message_blocked_by_boundary(&conn, "g1", 201));
+        assert!(group_message_blocked_by_boundary(&conn, "g1", 200, "text"));
+        assert!(!group_message_blocked_by_boundary(&conn, "g1", 201, "text"));
     }
 
     /// 删除单个群会话同样写入边界（delete_conversation 群分支语义）。
@@ -3273,8 +3335,8 @@ mod tests {
         let conn = group_file_fixture();
         set_clear_boundary(&conn, "g1", 123456789).unwrap();
         // 边界及更早序号被拦截
-        assert!(group_message_blocked_by_boundary(&conn, "g1", 123456789));
-        assert!(!group_message_blocked_by_boundary(&conn, "g1", 123456790));
+        assert!(group_message_blocked_by_boundary(&conn, "g1", 123456789, "text"));
+        assert!(!group_message_blocked_by_boundary(&conn, "g1", 123456790, "text"));
     }
 
     // ---------- GroupFile 多 recipient 气泡状态聚合 ----------

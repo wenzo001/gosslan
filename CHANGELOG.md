@@ -10,6 +10,42 @@
 
 ## [Unreleased]
 
+### Added (群协作阶段 2 · 第三项：群公告，阶段 2 完成)
+
+- **协议**：新 kind `announcement`（Card）+ `announcement_delete`（静默墓碑）。
+  新增 `KindClass::Card` —— **进时间线**（发布是一条事件，该计未读、该通知），
+  但**不属于"聊天历史"**。这两点是它与 Bubble 的全部差别，也正是它必须单独成档的原因。
+- **权限：仅群主**（与 `handle_group_rename` 的 `creator == 我` 逐字同构）。
+  公告是发给全群的权威信息，人人可发就失去了"公告"的意义。群主离线时发不了 ——
+  无中心即无中心授权，不做"降级为任何人可发"。
+- **「当前公告」按 `(seq, msg_id)` 取最大**，不按墙上时间：只有群主能发、
+  而群主的 Lamport 时钟单调，自己两条公告不可能同 seq，tie-break 只是防御。
+
+#### 两处全局语义改动（本次真正的风险点）
+
+1. **`delete_conversation` 只删 Bubble**。原先 `DELETE FROM messages WHERE conv_id=?`
+   会把公告一起删掉 ——「清空聊天记录」顺手清掉群公告是错误语义（与群文件同理：
+   那是群资产，不是聊天记录）。清单从 `WIRE_KINDS` 派生，不手写。
+2. **`group_message_blocked_by_boundary` 只对 Bubble 生效**（新增 `kind` 参数）。
+   水位是**聊天历史**的水位。若它连公告一起挡，一个离线成员的公告
+   （seq ≤ 本机 boundary）会被丢弃 ⇒ **各成员看到的公告不一致**，
+   而公告恰恰是要求"所有人都看到同一份"的东西。
+
+两处都有专门测试（`clearing_history_keeps_group_level_artifacts`、
+`clear_boundary_only_blocks_bubble_kinds`）。
+
+- **UI**：公告条常驻聊天头部下方（点击看全文），群主额外有「发布/修改」入口
+  （移动端同样可点，弹窗与桌面一致）。上限 500 字 —— 公告是横幅里的一段短文本，
+  长文该发消息；同时也是对广播体积的限制。
+
+**未做**：`state_sync`（新成员入群时补发置顶/公告）。当前新成员看不到入群前的公告，
+与「历史不回填」是同一个已知边界，已在 CHANGELOG 与代码注释里注明；
+公告可以随时由群主重发一次作为绕过。
+
+验证：cargo test --lib 480 passed（新增 2 项：清空历史保留群级产物、边界只挡 Bubble）·
+npm test 414 passed（跨语言契约测试已扩展到 Card 档）· npm run build 通过 ·
+scripts/e2e-dev.sh 30 passed / 0 failed。
+
 ## [4.15.0] - 2026-09-16
 
 ### Added (群协作阶段 2 · 第二项：消息置顶)

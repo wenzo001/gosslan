@@ -767,6 +767,12 @@ export const useChatStore = defineStore("chat", () => {
     await api.recallGroupMessage(groupId, msgId);
   }
 
+  /** 发布群公告（仅群主）。正常入时间线（计未读、可通知），只是不随清空历史消失。 */
+  async function publishAnnouncement(groupId: string, text: string) {
+    const rec = await api.sendGroupAnnouncement(groupId, text);
+    enqueueMessage(rec);
+  }
+
   /** 置顶/取消置顶一条群消息（任意成员；静默事件，由置顶条体现）。 */
   async function pinMessage(groupId: string, msgId: string, pinned: boolean) {
     const rec = await api.pinGroupMessage(groupId, msgId, pinned);
@@ -1339,6 +1345,7 @@ export const useChatStore = defineStore("chat", () => {
     sendReaction,
     recallMessage,
     pinMessage,
+    publishAnnouncement,
     createGroup,
     renameGroup,
     addGroupMember,
