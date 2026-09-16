@@ -549,6 +549,27 @@ CASES: list[Case] = [
         tags=["frontend", "a11y"],
     ),
     Case(
+        name="焦点可见：MessageComposer 里未豁免的元素也必须被守到（豁免不得外溢）",
+        why="2026-09-16 发现：该文件为「消息输入框不画焦点环」这**一个元素**的需求用了**文件级**"
+        "逃生阀 ⇒ 整个文件（含「取消引用」按钮等键盘可聚焦元素）一起失去本条保护，"
+        "而注入该文件的旧用例因此退化成空转（改坏也不报）。改成元素级 `data-focus-ring-ok` 后，"
+        "本用例把**未**打标记的那个按钮改坏，必须报出来 —— 它同时钉住两个坑："
+        "① 元素级豁免不得外溢到同文件其它元素；② 文件级令牌不能是元素级令牌的子串"
+        "（`data-focus-ring-ok` 含有 `focus-ring-ok`，所以文件级必须写成 `focus-ring-ok:file`，"
+        "否则「只豁免一个元素」会被判成「整文件豁免」）。",
+        file=ROOT / "src" / "components" / "chat" / "MessageComposer.vue",
+        injections=[(
+            "flex h-5 w-5 shrink-0 items-center justify-center "
+            "rounded-[var(--gosslan-radius-xs)] transition hover:bg-[var(--gosslan-hover)]",
+            "flex h-5 w-5 shrink-0 items-center justify-center "
+            "rounded-[var(--gosslan-radius-xs)] transition hover:bg-[var(--gosslan-hover)] outline-none",
+        )],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="静默覆盖",
+        tags=["frontend", "a11y", "new-guards"],
+    ),
+    Case(
         name="触屏点按目标（小按钮必须有 tap-safe）",
         why="HIG 最小 44pt；小图标按钮手指容易点不中或误触相邻项",
         file=ROOT / "src" / "components" / "FriendProfile.vue",

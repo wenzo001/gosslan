@@ -653,8 +653,12 @@ function fileToDataUrl(f: File): Promise<string> {
         </button>
       </div>
       <!-- contenteditable 编辑区：@提及 为内联原子 token（高亮+整删）。
-           focus-ring-ok：用户 2026-09-16 明确要求消息输入框不画任何焦点环（不要主题色/黑框），
-           透明即「无替代焦点指示」是用户显式选择。
+           用户 2026-09-16 明确要求消息输入框不画任何焦点环（不要主题色/黑框），
+           透明即「无替代焦点指示」是用户显式选择 ⇒ 下面那个 div 挂了 `data-focus-ring-ok`
+           属性（**元素级**逃生阀，只豁免它自己）。
+           ⚠️ 不要图省事改成**文件级**逃生阀（见 designGuards 里「两个逃生阀」的说明）：
+           那会让本文件里其它键盘可聚焦元素（按钮等）一起失去「焦点可见」护栏的保护，
+           也会让注入本文件的非空转用例退化成空转 —— 2026-09-16 就是这么踩过一次。
            ⚠️ **不放 placeholder**：用户 2026-09-12 明确要求「输入框里也不用 placeholder」
            （参考图是干净的输入区）。原先走 `:data-placeholder` + `:empty::before`，
            现连同 style.css 里的那条规则与两个 i18n key 一起删除，避免留死代码。
@@ -669,6 +673,7 @@ function fileToDataUrl(f: File): Promise<string> {
         :spellcheck="!codeMode"
         :autocorrect="codeMode ? 'off' : 'on'"
         :autocapitalize="codeMode ? 'off' : 'sentences'"
+        data-focus-ring-ok
         class="min-h-10 w-full overflow-y-auto bg-transparent px-0.5 py-0.5 leading-normal whitespace-pre-wrap break-words outline-none"
         :class="codeMode ? 'font-mono text-[13px]' : ''"
         :style="{ fontSize: 'var(--gosslan-msg-size, 14px)', overflowWrap: 'anywhere', wordBreak: 'break-word' }"
