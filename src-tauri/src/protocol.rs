@@ -137,8 +137,16 @@ pub const WIRE_KINDS: &[(&str, KindClass)] = &[
     ("announcement", KindClass::Card),
     ("announcement_delete", KindClass::Silent),
     // 阶段 3：群任务 / 投票
+    //
+    // 任务拆成**两个 kind**，但**共用一个载荷结构**（`TodoPayload`），合并规则也相同
+    // （LWW per `todo_id`）。拆的理由**只是通知口径**，不是合并语义：
+    //   · `todo`（Card）：**创建**任务 —— 这是一次"发布"，该计未读、该弹通知
+    //     （被指派的人得知道自己被派了活）。
+    //   · `todo_update`（Silent）：改状态 / 改标题 / 换指派人 / 删除 —— 这些是**状态微调**，
+    //     与 `pin` / `reaction` 同类。若也算 Card，用户每拖一次状态全群就多一条未读 + 一条通知
+    //     （2026-09-16 实现时先按单 kind 做过，发现这条才拆开）。
     ("todo", KindClass::Card),
-    ("todo_done", KindClass::Silent),
+    ("todo_update", KindClass::Silent),
     ("poll", KindClass::Card),
     ("poll_vote", KindClass::Silent),
 ];
@@ -219,30 +227,30 @@ pub fn is_valid_emoji_token(s: &str) -> bool {
     !inner.is_empty() && !inner.contains(['[', ']']) && !s.contains(char::is_control)
 }
 
-/// 群任务的**定义**层（`kind = "todo"`）。
+/// 群任务（`kind = "todo"`）。
 ///
-/// ⚠️ 任务必须**分解成两层**，不能是单个寄存器：
-/// 朴素做法（一个 `{todo_id, title, assignees, done_by[], rev}`）有经典**丢更新** bug ——
-/// A 和 B 同时勾完成，后到的整体覆盖前者，B 的勾被吞掉。
+/// 任务是**单一寄存器**：一条任务 = 一个 `todo_id` + 它的标题/指派人/状态，
+/// 合并规则 **LWW per `todo_id`，版本 `(seq, msg_id)`**。
 ///
-/// | 层 | 载荷 | 合并规则 | 谁写 |
-/// |---|---|---|---|
-/// | 定义 | 本结构 | LWW per `todo_id`，版本 `(seq, msg_id)` | 任意成员创建；改/删限创建者或群主 |
-/// | 完成 | [`TodoDonePayload`] | **LWW per `(todo_id, actor)`** | 每人只写自己那一格 |
+/// 谁写：任意成员创建；**被指派人或创建者**可改状态；**创建者或群主**可改标题/指派人/删除。
+/// 授权在命令层判定（`commands::may_update_todo`）—— 载荷里的 `creator` 由服务端从库里
+/// 读原值回填，客户端不能自己填，否则"谁有权改"就成了客户端说了算。
 ///
-/// 每人一格 ⇒ 不存在丢更新；`done: false`（取消勾选）天然支持。
-/// `todo_id` 取**创建事件自身的 msg_id**，不需要额外的生成器。
+/// ⚠️ 状态是**任务级**的（一条任务一个状态），不是"每人各自一格"。用户 2026-09-16 定了四态
+/// 且**手动选**（不做截止时间）：代价是并发改状态时按 LWW 收敛，后写者胜 ——
+/// 对"一条任务当前处于什么阶段"这种单值语义，LWW 就是期望行为（看板类工具都这样）。
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct TodoPayload {
     pub todo_id: String,
     pub title: String,
-    /// 指派的成员 device_id（空 = 不指派，谁都能认领）
+    /// 指派的成员 device_id（**至少一人**：用户明确「可以给一个或多个人」，
+    /// 由命令层校验"非空且都是群成员"）
     #[serde(default)]
     pub assignees: Vec<String>,
-    /// 截止时间（毫秒，0 = 无）
-    #[serde(default)]
-    pub due_ts: i64,
-    /// 创建者（改/删的授权判据）
+    /// 任务状态，取值见 [`TODO_STATUSES`]。缺省 = 待办 ⇒ 历史/异常载荷也能解析成一条合法任务。
+    #[serde(default = "default_todo_status")]
+    pub status: String,
+    /// 创建者（改/删的授权判据；由命令层回填，不接受客户端自报）
     #[serde(default)]
     pub creator: String,
     /// 删除标记（墓碑）：定义层的 LWW 值为它
@@ -250,11 +258,23 @@ pub struct TodoPayload {
     pub deleted: bool,
 }
 
-/// 群任务的**完成**层（`kind = "todo_done"`）：每人只写自己那一格。
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct TodoDonePayload {
-    pub todo_id: String,
-    pub done: bool,
+/// 任务状态的**唯一取值表**（用户 2026-09-16 定的四态）。
+///
+/// 与前端 `src/utils/todos.ts` 的 `TODO_STATUSES` **必须一致**，
+/// 由 `src/utils/messageKinds.test.ts` 读本文件逐项比对（与 `WIRE_KINDS` 同一套跨语言契约）。
+///
+/// ⚠️ 状态是**手动选**的：没有截止时间、也没有"过了日期自动变延期"这回事 ——
+/// 「延期」就是人手动标出来的一个状态。
+pub const TODO_STATUSES: [&str; 4] = ["todo", "doing", "overdue", "done"];
+
+/// 缺省状态（新建的任务 = 待办）。也是 `status` 字段缺失时的解析回落值。
+pub fn default_todo_status() -> String {
+    "todo".to_string()
+}
+
+/// 状态取值是否合法（命令层校验用；未知值一律拒收，避免脏状态流进群里）。
+pub fn todo_status_is_valid(s: &str) -> bool {
+    TODO_STATUSES.contains(&s)
 }
 
 /// 投票的**定义**层（`kind = "poll"`）。结构与任务同构。

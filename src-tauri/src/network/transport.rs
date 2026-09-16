@@ -2911,11 +2911,20 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             let mut extra = std::collections::HashMap::new();
             extra.insert("type".to_string(), "friend_request".to_string());
             // 好友申请是**不经前端**的通知：必须走后端开关 + 错误可见的统一入口。
-            let _ = crate::notifications::show_extra_if_enabled(
+            // 点击（Windows）后唤起窗口并跳到「新的朋友」；移动端点击由插件送回前端。
+            let click_app = state.app.clone();
+            let _ = crate::notifications::show_click_if_enabled(
                 state,
                 "好友申请",
                 &format!("{from_nickname} 请求添加你为好友"),
                 extra,
+                move || {
+                    crate::notifications::on_notification_clicked(
+                        &click_app,
+                        "friend_request",
+                        None,
+                    )
+                },
             );
         }
         Message::FriendAccept { from, to } => {
@@ -4421,11 +4430,20 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                         );
                         let mut extra = std::collections::HashMap::new();
                         extra.insert("type".to_string(), "friend_request".to_string());
-                        let _ = crate::notifications::show_extra_if_enabled(
+                        // 与直连那条路径同口径：点击唤起窗口 + 跳到「新的朋友」。
+                        let click_app = state.app.clone();
+                        let _ = crate::notifications::show_click_if_enabled(
                             state,
                             "好友申请",
                             &format!("{} 请求添加你为好友", req.from_nickname),
                             extra,
+                            move || {
+                                crate::notifications::on_notification_clicked(
+                                    &click_app,
+                                    "friend_request",
+                                    None,
+                                )
+                            },
                         );
                     }
                 }
@@ -6046,6 +6064,10 @@ async fn handle_group_creator_changed(
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::set_group_creator(&dbc, &group_id, &to).ok();
     }
+    // 群内提示：转让成功了但群里没人知道，等于"群主静默换人"（见 group_creator_changed_text）。
+    // 幂等由上面的 `ok` 判据保证：第二次收到同一条转让时 `g.creator == from` 已不成立。
+    let name = resolve_nickname(state, &to);
+    insert_group_system_message(state, &group_id, &group_creator_changed_text(state, &name));
     let _ = state.app.emit("groups-updated", &group_id);
 }
 
@@ -6606,7 +6628,25 @@ pub fn group_member_left_text(state: &AppState, name: &str) -> String {
     }
 }
 
+/// **群主转让**的群内系统消息文案（详见 `group_member_removed_text`）。
+///
+/// 此前转让群主**没有任何群内提示**：成员表里的「群主」标记悄悄换了人，群里一声不响 ——
+/// 而加人 / 踢人 / 退群三种成员变更都是有系统消息的，同类事件三种待遇。
+/// 说话人视角对两侧都成立（旧群主发起、其余成员接收），所以两边共用这一句。
+pub fn group_creator_changed_text(state: &AppState, name: &str) -> String {
+    if state.is_zh() {
+        format!("「{name}」成为新群主")
+    } else {
+        format!("“{name}” is now the group owner")
+    }
+}
+
 pub fn resolve_nickname(state: &AppState, id: &str) -> String {
+    // 自己：好友表/节点表里都没有"我"，不特判就会回落到 device_id 原文
+    // （「和自己聊天」的会话名、把自己当发送者时的文案都会变成一串 gosslan-xxxx）。
+    if id == state.device_id {
+        return state.self_display_name();
+    }
     if let Some(p) = state.peers.lock().unwrap_or_else(|e| e.into_inner()).get(id) {
         if !p.nickname.is_empty() {
             return p.nickname.clone();

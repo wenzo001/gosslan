@@ -254,7 +254,13 @@ test("自动拉起蓝牙必须尊重用户的关闭偏好（不能只看运行�
  */
 test("桌面通知必须走后端 notify_desktop（不再依赖被插件替换的 window.Notification）", () => {
   const store = read("stores/useChatStore.ts");
-  assert.match(store, /api\.notifyDesktop\(title, body\)/, "桌面分支必须调后端 notify_desktop 命令");
+  // 第三个参数是 conv_id：**点通知要定位到会话**就得让后端知道这条通知属于谁
+  // （点击是后端 notify-rust 的 handle 捕获的，前端补不了这个信息）。
+  assert.match(
+    store,
+    /api\.notifyDesktop\(title, body, convId\)/,
+    "桌面分支必须调后端 notify_desktop 命令，并把 conv_id 一起传过去",
+  );
   assert.ok(
     !/new Notification\(/.test(store),
     "不得再用 WebView 原生 Notification（插件已把 window.Notification 换成另一套实现）",

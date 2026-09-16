@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { zhCN, enUS } from "./locales.ts";
 import {
   applyPreference,
@@ -145,4 +147,33 @@ test("currentPreference / currentLocale 反映最近一次 applyPreference", () 
   assert.equal(currentLocale(), "en-US");
   applyPreference("zh-CN");
   assert.equal(currentLocale(), "zh-CN");
+});
+
+/**
+ * 启动时必须把**解析后**的语言推给后端。
+ *
+ * 为什么必须守（用户 2026-09-16 实测「加群的提示怎么是英文？」）：
+ * 后端自己生成的文案（群成员变更 / 文件下载 / 托盘提示 / 窗口标题）都按 `AppState::is_zh()`
+ * 选语言，而「跟随系统」的解析规则（`navigator.language`）**只在前端有一份**，
+ * 后端的兜底（`LANG` 等 POSIX 环境变量）在 Windows 上恒为「否」。
+ * 所以「前端启动时推一次」是这条链路的**唯一**入口：漏了它，默认设置（跟随系统）的中文用户
+ * 会把所有后端文案看成英文，而界面本身是中文 —— 这类"两边不一致"只有真机才看得见。
+ */
+test("app.init() 必须把解析后的语言推给后端（后端系统消息文案依赖它）", () => {
+  const store = readFileSync(
+    join(import.meta.dirname, "..", "stores", "useAppStore.ts"),
+    "utf8",
+  );
+  const start = store.indexOf("async function init()");
+  assert.ok(start > 0, "找不到 app store 的 init()");
+  // 截出 init 的函数体：到下一个同级函数声明（缩进两空格的 `function` / `async function`）为止
+  const rest = store.slice(start);
+  const next = rest.slice(1).search(/\n {2}(?:async )?function /);
+  const body = next > 0 ? rest.slice(0, next + 1) : rest;
+  assert.match(
+    body,
+    /pushUiLanguage\(\)/,
+    "init() 里必须调用 pushUiLanguage()：否则「跟随系统」（默认）的用户，后端永远不知道界面是中文，\n" +
+      "群成员变更 / 文件下载等系统消息会显示英文（Rust 侧的 is_zh() 详见 state.rs 的 resolve_is_zh）。",
+  );
 });

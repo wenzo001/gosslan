@@ -339,7 +339,7 @@ pub fn run() {
             commands::pin_group_message,
             commands::send_group_announcement,
             commands::send_group_todo,
-            commands::set_group_todo_done,
+            commands::update_group_todo,
             commands::send_group_poll,
             commands::cast_group_poll_vote,
             commands::send_group_file,
@@ -2094,7 +2094,9 @@ mod tests {
             "`ensure_aux_window` 必须用创建锁串行化（否则并发会开出第二个窗口）"
         );
         assert!(
-            helper.matches("show_existing_aux_window(app, label)").count() >= 2,
+            // 签名在 2026-09-16 多了一个 `geo`（创建时摆尺寸/位置，已存在时重新摆回主窗口那块屏），
+            // 判据本身没变：**拿锁前后各查一次**，少一次就会在并发下开出第二个窗口。
+            helper.matches("show_existing_aux_window(app, label, geo)").count() >= 2,
             "`ensure_aux_window` 必须做双重检查（拿锁前后各查一次），实际只有一次"
         );
         assert!(
@@ -2105,6 +2107,62 @@ mod tests {
         assert!(
             hide.contains("prevent_close()") && hide.contains("hide()"),
             "`install_hide_on_close` 必须是 prevent_close + hide（关闭即隐藏）"
+        );
+
+        // 尺寸/位置必须走**物理像素**的 setter，不能走 builder 的逻辑坐标 `position()`：
+        // `tao` 创建窗口时会把逻辑坐标**逐个显示器**按各自缩放换回物理、取第一个命中的显示器
+        // （见 commands.rs 的 `fit_aux_window`），所以多屏不同缩放时子窗口会跑到另一块屏上
+        // —— 用户 2026-09-16 实测报的正是这个，且它在单屏上完全看不出来。
+        for signature in ["pub fn open_settings_window(", "pub fn open_log_window("] {
+            let body = rust_fn_body(commands, signature);
+            assert!(
+                body.contains("apply_aux_geometry("),
+                "{signature}…）必须用 `apply_aux_geometry` 在 `build()` 之后按物理像素落地尺寸与位置"
+            );
+            assert!(
+                !body.contains(".position("),
+                "{signature}…）不得用 builder 的 `.position()`：它只有逻辑坐标，多屏不同缩放时\n\
+                 会被 tao 换算到另一块显示器上（改用 apply_aux_geometry）"
+            );
+            assert!(
+                body.contains(".visible(false)"),
+                "{signature}…）必须**隐藏创建**：`ensure_aux_window` 随后才 show，\n\
+                 中间这段用来摆位置/尺寸，否则窗口会先在默认位置闪一下再跳过去"
+            );
+        }
+    }
+
+    /// 「和自己聊天」必须是**纯本地**路径（用户 2026-09-16 的功能）。
+    ///
+    /// 为什么必须守：自聊一旦走成网络路径，会同时破坏两条不变量 ——
+    /// ① 自己的消息进 outbox 后**永远等不到 Ack**（没有对端），那一行会被每次心跳/建链的
+    ///    `flush_outbox` 重发，"outbox 必然排空"直接失效；
+    /// ② `target = 自己` 的 gossip 信封对本机（`handle_gossip` 里 `sender == 自己` 早退）
+    ///    和别人（解不开）都是噪声。
+    /// 这两条在界面上**都看不出来**（消息照样显示、列表照样刷新），只有库里悄悄长出一条
+    /// 永不消失的 outbox 行 —— 属于只能靠护栏拦的那类退化。
+    #[test]
+    fn self_chat_stays_local() {
+        let commands = include_str!("commands.rs");
+        let body = rust_fn_body(commands, "fn insert_self_message(");
+        assert!(!body.is_empty(), "找不到 insert_self_message（这条护栏会变成空转）");
+        // 先查"不该有的"：注入成 `insert_message_and_outbox(` 时下面那条 contains 也会失败，
+        // 但真正该说的是"你接回了网络路径"——所以把这条放在前面报。
+        for forbidden in [
+            "insert_message_and_outbox(",
+            "broadcast_gossip(",
+            "try_send(",
+            "crypto::seal(",
+            "seal_symmetric(",
+        ] {
+            assert!(
+                !body.contains(forbidden),
+                "自聊消息里不得出现 `{forbidden}`：消息不出本机、也不该进 outbox（详见该函数文档）"
+            );
+        }
+        assert!(
+            body.contains("db::insert_message("),
+            "自聊消息必须只落本地库（`db::insert_message`）"
         );
     }
 }

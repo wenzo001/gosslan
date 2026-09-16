@@ -13,6 +13,7 @@ import {
   findSmallTapTargets,
   findTappableWithoutKeyboard,
   findTruncationWithoutTitle,
+  checkTextFieldFocusRing,
   checkSelectionContract,
 } from "./designGuards.ts";
 
@@ -848,5 +849,74 @@ test("修好之后通过（真实的 6 个源码文件）", () => {
     linkText: readFileSync(join(srcDir, "components", "message", "MessageLinkText.vue"), "utf8"),
     css: readFileSync(join(srcDir, "style.css"), "utf8"),
   });
+  assert.deepEqual(issues, [], issues.map((i) => `L${i.line} ${i.message}`).join("\n"));
+});
+
+// ---------------- ⑨ 文本输入类的焦点提示：不许画外圈方框 ----------------
+//
+// 真实反馈（用户 2026-09-16）：「整个应用的输入框在焦点态会默认有个主题色的方框，很难看」。
+// 根因见 `checkTextFieldFocusRing` —— 浏览器对 input/textarea/select/[contenteditable]
+// 把 `:focus-visible` 判成**恒成立**，所以全局那条 2px 外圈方框会在**每次点击输入框**时出现。
+// 这条护栏盯的是"改回去"：全局环里再加回输入类、或删掉替代的边线提示。
+
+const BUGGY_FOCUS_CSS = `
+:where(button, a, input, textarea, select, [tabindex], [contenteditable]):focus-visible {
+  outline: 2px solid var(--gosslan-focus-ring);
+  outline-offset: 1px;
+}
+`;
+
+const FIXED_FOCUS_CSS = `
+:where(button, a, [tabindex]):focus-visible {
+  outline: 2px solid var(--gosslan-focus-ring);
+  outline-offset: 1px;
+}
+input:focus,
+textarea:focus,
+select:focus {
+  border-color: var(--gosslan-primary);
+  box-shadow: inset 0 0 0 1px var(--gosslan-focus-ring);
+}
+.gosslan-composer:focus-within {
+  border-color: var(--gosslan-primary);
+}
+`;
+
+test("复现真实反馈：全局焦点环含文本输入类 → 报出（并指到那一行）", () => {
+  // 这个夹具只有"改坏"的那一条规则（故意不带替代提示），所以只断言**方框**这条判据。
+  const issues = checkTextFieldFocusRing(BUGGY_FOCUS_CSS, "gosslan-composer");
+  const rings = issues.filter((i) => /选择器里不该有文本输入类/.test(i.message));
+  assert.equal(rings.length, 1, "全局环含文本输入类必须报一次");
+  assert.match(rings[0].message, /点一下/, "要说清「点一下就出现」这个关键点");
+  assert.equal(rings[0].line, 2, "应指到那条 :focus-visible 规则所在行");
+});
+
+test("修好之后不再报（边线级提示 + 卡片钩子都在）", () => {
+  assert.deepEqual(checkTextFieldFocusRing(FIXED_FOCUS_CSS, "gosslan-composer"), []);
+});
+
+test("删掉替代提示就报（去掉外圈方框≠可以没有焦点提示）", () => {
+  const noFieldRule = FIXED_FOCUS_CSS.replace(/input:focus,[\s\S]*?\}\n/, "");
+  const issues = checkTextFieldFocusRing(noFieldRule, "gosslan-composer");
+  assert.ok(
+    issues.some((i) => /找不到文本输入类的焦点提示规则/.test(i.message)),
+    "少了边线级提示必须报（WCAG 2.4.7）",
+  );
+});
+
+test("消息输入框卡片钩子被摘掉也报（编辑区自己不能画框）", () => {
+  const issues = checkTextFieldFocusRing(FIXED_FOCUS_CSS, "relative rounded-md border");
+  assert.ok(
+    issues.some((i) => /gosslan-composer/.test(i.message)),
+    "卡片少了钩子 ⇒ 消息输入框完全没有焦点提示，必须报",
+  );
+});
+
+test("真实的 style.css + MessageComposer.vue 通过", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const issues = checkTextFieldFocusRing(
+    readFileSync(join(srcDir, "style.css"), "utf8"),
+    readFileSync(join(srcDir, "components", "chat", "MessageComposer.vue"), "utf8"),
+  );
   assert.deepEqual(issues, [], issues.map((i) => `L${i.line} ${i.message}`).join("\n"));
 });

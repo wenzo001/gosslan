@@ -670,6 +670,12 @@ export const useAppStore = defineStore("app", () => {
     // 从后端恢复持久化偏好（外观 / 网卡 / 聊天样式），优先于 localStorage
     const s = await api.getSettings();
     applySettingsSnapshot(s);
+    // 把**解析后**的语言推给后端。为什么不能只靠上面那个 `if (has("language"))`：
+    // 从未改过语言的用户（默认跟随系统）库里根本没有 `language` 这个键，那条分支不会走，
+    // 于是后端永远不知道界面是中文 —— 而 Rust 侧自己生成的文案（群成员变更 / 文件下载 /
+    // 托盘提示 / 窗口标题）都按它选语言，Windows 上的环境变量兜底恒为英文。
+    // 用户 2026-09-16 实测：「加群的提示怎么是英文？」
+    pushUiLanguage();
 
     // 「另一个窗口改了设置」→ 重新拉取并应用（独立设置窗口 ↔ 主窗口必须同步外观/语言/资料）
     settingsUnlisten = await api.onSettingsChanged((patch) => {

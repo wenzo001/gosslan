@@ -9,6 +9,8 @@ import { useMessageDisplay } from "@/composables/useMessageDisplay";
 import { useMessageFile } from "@/composables/useMessageFile";
 import { useMemberProfile } from "@/composables/useMemberProfile";
 import { textNeedsClamp } from "@/utils/previewMetrics";
+import { isTipKind } from "@/utils/messageKinds";
+import { isSelfMessage } from "@/utils/selfChat";
 import { stripQuoteMsgId } from "@/utils/quote";
 import { isDialogCancelled, saveDestinationOf } from "@/utils/saveDestination";
 import { haptic } from "@/utils/haptics";
@@ -208,6 +210,18 @@ const isLongText = computed(
     textNeedsClamp(props.message.content, app.chatStyle.fontSize),
 );
 
+/**
+ * 提示行（撤回 / 文件下载 / 群成员变更…）：微信式居中灰字，**不是一条消息** ——
+ * 不带头像、不带气泡、不带昵称行，也没有任何菜单入口。
+ *
+ * 判定共用 `messageKinds.isTipKind`：`messageHeight` 的高度估算要按同一份清单算，
+ * 两边各写一份的话，估算与实际渲染差一行就会让虚拟列表的两条消息互相遮挡。
+ */
+const isTip = computed(() => isTipKind(props.message.kind));
+
+/** 自聊消息（收发双方都是本机）：不挂回执（见模板里的说明）。 */
+const isSelfMsg = computed(() => isSelfMessage(props.message));
+
 /** 全文弹窗：文本与代码共用一个 Modal，DOM 在消息之外，不参与 VirtualList 排布。 */
 const fullModalOpen = ref(false);
 const fullModalKind = ref<"text" | "code">("text");
@@ -234,7 +248,7 @@ watch(ctxMenuPopup.isActive, (mine) => {
 });
 
 function openContextMenu(e: MouseEvent) {
-  if (props.message.kind === "system") return;
+  if (isTip.value) return;
   // 移动端没有右键：长按走底部 ActionSheet。部分 WebView 在长按之后仍会补发
   // `contextmenu`（也会在长按选中文字时弹系统菜单），若这里再弹一次，就会出现
   // 「右键菜单 + ActionSheet」同时挂在屏幕上，而两者 claim 的是**同一个**互斥 key
@@ -281,7 +295,7 @@ const LONG_PRESS_MS = 500;
 const LONG_PRESS_MOVE_TOLERANCE = 12;
 
 function openActionSheet() {
-  if (props.message.kind === "system") return;
+  if (isTip.value) return;
   sheetOpen.value = true;
   ctxMenuPopup.claim();
 }
@@ -354,7 +368,7 @@ function onTouchStart(e: TouchEvent) {
   // "按在文字上长按不弹、按到内边距才弹"（用户 2026-09-13 实测）。
   const canStart = shouldStartLongPress({
     isMobile: app.isMobile,
-    isSystem: props.message.kind === "system",
+    isSystem: isTip.value,
     selectMode: textSelecting.value,
     hitSelectable: !!el?.closest(".gosslan-selectable"),
     insideTextBubble: !!el?.closest(".gosslan-bubble-text"),
@@ -615,7 +629,18 @@ async function copyFileToClipboard() {
       <div class="h-px flex-1 bg-primary/30"></div>
     </div>
 
-    <div class="flex gap-2 px-4" :class="mine ? 'flex-row-reverse' : ''">
+    <!-- 提示行（系统消息 / 已撤回）：微信式居中灰字，**通栏**、无头像、无气泡。
+         之所以是"消息行"的**兄弟节点**而不是它内部的一支：放进消息行就会带上 36px 头像
+         和 `max-w-[72%]` 的列宽，居中后仍偏向一侧、看着还是一条普通消息 ——
+         那正是用户 2026-09-16 报的问题。 -->
+    <div
+      v-if="isTip"
+      class="px-4 text-center text-xs text-[var(--gosslan-text-2)]"
+    >
+      {{ message.kind === "recalled" ? t("msg.recalled") : message.content }}
+    </div>
+
+    <div v-else class="flex gap-2 px-4" :class="mine ? 'flex-row-reverse' : ''">
       <!-- 头像：每条消息独立完整渲染 -->
       <MessageAvatar :name="avatarName" :avatar="avatarSrc" />
 
@@ -634,19 +659,8 @@ async function copyFileToClipboard() {
           {{ senderName || chat.nicknameOf(message.sender_id) }}
         </div>
 
-        <!-- 系统消息 / 已撤回：同一形态（居中灰条，无气泡、无头像）。
-             「已撤回」刻意**不显示撤回者头像与气泡** —— 它与系统提示同为状态行，
-             给气泡会让人误以为还能点开/复制。 -->
-        <div
-          v-if="message.kind === 'system' || message.kind === 'recalled'"
-          class="w-full text-center text-xs text-[var(--gosslan-text-2)]"
-        >
-          {{ message.kind === "recalled" ? t("msg.recalled") : message.content }}
-        </div>
-
         <!-- 消息行：气泡 + 侧挂回执（mine 时回执在气泡左侧）；右键（桌面）/长按（移动端）弹消息菜单 -->
         <div
-          v-else
           class="group/row flex w-full items-end gap-1.5"
           :class="mine ? 'justify-end' : 'justify-start'"
           :title="fullTime"
@@ -656,8 +670,11 @@ async function copyFileToClipboard() {
           @touchmove="onTouchMove"
           @touchcancel="cancelLongPress"
         >
+          <!-- 回执：自聊消息**没有回执** —— 收发双方都是本机，不存在"已送达/已读"这个过程，
+               挂上去只会显示一个永远转圈的圈（后端给自聊消息的状态直接是 read，
+               但"绿勾已读"出现在自己发给自己上同样没有意义）。见 utils/selfChat。 -->
           <MessageReceipt
-            v-if="mine"
+            v-if="mine && !isSelfMsg"
             :state="sendState"
             :title="receiptTitle"
             :is-group="isGroup"
@@ -760,7 +777,7 @@ async function copyFileToClipboard() {
   <!-- 表情回应条：挂在消息行**下方**（飞书/微信同款位置），与气泡同侧对齐。
        放在行内会被 `flex items-end` 摆到气泡右侧，语义不对。 -->
   <MessageReactionBar
-    v-if="message.kind !== 'system'"
+    v-if="!isTip"
     :chips="reactions ?? []"
     :mine="mine"
     :interactive="!!isGroup"
