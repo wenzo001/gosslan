@@ -164,9 +164,27 @@ jobs:
       # `--features bluetooth` 不能少：bluetooth 是**非默认** feature，
       # 漏掉它 BLE 模块根本不编译 ⇒ 那批用例连同被测代码一起消失，而 cargo test 全绿。
       # 这一点由下一步的清单守卫兜底（会比对基线名单）。
+      #
+      # ⚠️ 失败时把输出尾部提升为 **check 注解**：注解是**公开可读**的（匿名 API 可取），
+      # 而 job 日志要仓库权限才能下载。本项目 2026-09-16 第一次在 CI 跑测试就撞上这一点：
+      # 只拿到 "exit code 101"，看不到任何原因。顺带打印磁盘余量 —— 冷编译 tauri 很占地方，
+      # runner 磁盘打满是 exit 101 的常见成因。
       - name: Rust 单测
         working-directory: src-tauri
-        run: cargo test --features bluetooth
+        run: |
+          set +e
+          cargo test --features bluetooth 2>&1 | tee /tmp/cargo-test.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            echo "———— 磁盘余量 ————"
+            df -h / | tail -1
+            echo "———— 失败注解（与日志尾部相同，便于无仓库权限时定位）————"
+            { df -h / | tail -1; echo "cargo test 退出码 $status"; tail -n 30 /tmp/cargo-test.log; } \
+              | tr -d '\r' | while IFS= read -r line; do
+                  echo "::error::${line//%/%%}"
+                done
+            exit "$status"
+          fi
 
       # 比对「基线名单 ⋈ 实际 --list」：缺名即红，专门拦"测试静默消失"。
       - name: 测试清单守卫（Rust）
