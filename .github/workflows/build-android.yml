@@ -30,6 +30,18 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # ⚠️ 必须显式覆盖 `packages` —— 这个 action 的默认值是 `'tools platform-tools'`，
+          # 而 **Google 已于 2026-09-15 把 `tools` 包从 SDK 仓库下架**：
+          # 实测拉 https://dl.google.com/android/repository/repository2-3.xml（415KB），
+          # 里面已无 `tools` 路径（`platform-tools` / `cmdline-tools;latest` /
+          # `platforms;android-36` / `build-tools;36.0.0` / `ndk;27.1.12297006` 都还在）。
+          # 于是 sdkmanager 报 "Warning: Failed to find package 'tools'" 后 exit 1，
+          # 本步骤约 9 秒即失败、后面全部步骤被跳过 —— 就是 2026-09-16 起 Android 打包红掉的原因
+          # （最后一次成功是 09-14，中间本仓库与 workflow 均无改动，纯外部变更）。
+          # 上游同类报告：android-actions/setup-android#537（2026-09-15 开出）。
+          # ⚠️ 升级到 @v4 **不能**替代这一行：v4 的默认值同样是 `'tools platform-tools'`。
+          packages: 'platform-tools'
 
       - name: Install SDK platform + build-tools + NDK
         # 版本必须跟 `tauri android init` 生成的工程对得上：那份 build.gradle.kts 里是
