@@ -262,7 +262,7 @@ const levelClass = (lv: string) =>
         autocapitalize="off"
         autocorrect="off"
         spellcheck="false"
-        class="min-w-0 flex-1 bg-transparent text-[13px] placeholder:text-[var(--gosslan-text-2)]"
+        class="min-w-0 flex-1 rounded-[var(--gosslan-radius-sm)] border border-transparent bg-transparent text-[13px] placeholder:text-[var(--gosslan-text-2)] outline-none transition focus:border-transparent"
         :placeholder="t('logs.filterPlaceholder')"
         :aria-label="t('logs.filter')"
       />

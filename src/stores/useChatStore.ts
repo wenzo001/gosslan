@@ -164,7 +164,8 @@ export const useChatStore = defineStore("chat", () => {
           // 这里的 onclick 永远不会触发（点击无法定位会话）；而且那条链路把真正的
           // toast 错误 spawn 掉丢了 —— Windows 上“收不到通知”完全没有线索。
           // 现在由后端发送：失败会返回并记日志，设置页还能“发送测试通知”自检。
-          void api.notifyDesktop(title, body).catch(() => {
+          // `convId` 是**点击定位**的依据：点击发生在后端，前端补不了这个信息。
+          void api.notifyDesktop(title, body, convId).catch(() => {
             /* 通知失败不影响聊天本身；后端已记日志 */
           });
         }
@@ -204,6 +205,22 @@ export const useChatStore = defineStore("chat", () => {
     await api.focusWindow();
     await openConversation(convId);
     if (app.isMobile) app.mobileView = "chat";
+  }
+
+  /**
+   * 通知点击的**统一路由**：桌面端（后端 `notification-clicked` 事件）与移动端
+   * （插件的 `actionPerformed`）共用一份 —— 两条路径的载荷同形（`type` / `conv_id`），
+   * 各写一份就一定会漂移（"桌面点得动、手机点不动"这类只在某一个平台现形的缺陷）。
+   */
+  function routeNotificationClick(type: string | undefined, convId: string | undefined) {
+    if (type === "friend_request") {
+      // 唤起窗口后再切视图：窗口还在托盘里时切，用户会在浮出瞬间看到一次跳变。
+      void api.focusWindow().then(() => {
+        window.dispatchEvent(new CustomEvent("navigate-to-contacts"));
+      });
+      return;
+    }
+    if (convId) void handleNotificationClick(convId);
   }
 
   // ---------------- 消息合并（同步） ----------------
@@ -773,6 +790,38 @@ export const useChatStore = defineStore("chat", () => {
     enqueueMessage(rec);
   }
 
+  // ---------------- 群任务（Card kind，不在时间线上渲染，只在任务面板里折叠展示） ----------------
+  // 为什么都要 `enqueueMessage(rec)`：面板里的列表是 `foldTodos(该会话的消息)` 折出来的，
+  // 事件不进 store 就折不出来 —— 界面要等下次重新拉全量（= 重进会话）才刷新
+  // （与置顶/公告同一条理由）。
+
+  /** 新建一条群任务（任意成员）。 */
+  async function createTodo(groupId: string, title: string, assignees: string[]) {
+    const rec = await api.sendGroupTodo(groupId, title, assignees);
+    enqueueMessage(rec);
+  }
+
+  /**
+   * 更新一条群任务：改状态 / 改标题与指派人 / 删除。
+   *
+   * 前端把**整份定义**发过去（标题、指派人、状态一起）：定义层是"同 `todo_id` 取最新一份"
+   * 的 LWW 寄存器，只发改动字段会让没带的字段被清空。`patch` 缺省沿用传进来的 `item`
+   * （调用方从折出来的 `TodoItem` 里取值，本身就是最新的）。
+   */
+  async function updateTodo(
+    groupId: string,
+    item: { todoId: string; title: string; assignees: string[]; status: string },
+    patch: Partial<{ title: string; assignees: string[]; status: string; deleted: boolean }> = {},
+  ) {
+    const rec = await api.updateGroupTodo(groupId, item.todoId, {
+      title: patch.title ?? item.title,
+      assignees: patch.assignees ?? item.assignees,
+      status: patch.status ?? item.status,
+      deleted: patch.deleted ?? false,
+    });
+    enqueueMessage(rec);
+  }
+
   /** 置顶/取消置顶一条群消息（任意成员；静默事件，由置顶条体现）。 */
   async function pinMessage(groupId: string, msgId: string, pinned: boolean) {
     // ⚠️ **必须 enqueue 进 store**：置顶在界面上的呈现（顶部的置顶条）
@@ -1230,6 +1279,10 @@ export const useChatStore = defineStore("chat", () => {
       onDataCleared: () => {
         void resetAfterDataCleared();
       },
+      // 桌面端「点了系统通知」：后端已经唤起主窗口，这里只切界面（见 routeNotificationClick）。
+      onNotificationClicked: (p) => {
+        routeNotificationClick(p.type, p.conv_id);
+      },
     });
     // 移动端注册通知动作类别（「标记已读」按钮）。桌面端无此能力（Web Notification 不支持按钮），
     // 命令也不存在，故只对移动端调用。语言切换后按钮文案不随动（原生注册一次），可接受。
@@ -1270,24 +1323,14 @@ export const useChatStore = defineStore("chat", () => {
         return;
       }
 
-      // 点击通知本体：无论能否解析出会话，先把窗口弹到前台
+      // 点击通知本体：无论能否解析出会话/类型，先把窗口弹到前台
       // （最小化/隐藏/被遮挡时都恢复，unminimize+show+set_focus 幂等）
       void api.focusWindow();
 
-      if (extraType === "friend_request") {
-        // 好友申请通知：唤起窗口 + 切换到联系人视图
-        if (id != null) notifMap.delete(id);
-        void api.focusWindow().then(() => {
-          window.dispatchEvent(new CustomEvent("navigate-to-contacts"));
-        });
-        return;
-      }
-
-      // 默认：聊天消息通知
       let convId = id != null ? notifMap.get(id) : undefined;
       if (!convId && raw.extra?.conv_id) convId = String(raw.extra.conv_id);
       if (id != null) notifMap.delete(id);
-      if (convId) void handleNotificationClick(convId);
+      routeNotificationClick(extraType, convId);
     });
     // 定时刷新拓扑
     setInterval(() => void refreshTopology(), 5000);
@@ -1349,6 +1392,8 @@ export const useChatStore = defineStore("chat", () => {
     recallMessage,
     pinMessage,
     publishAnnouncement,
+    createTodo,
+    updateTodo,
     createGroup,
     renameGroup,
     addGroupMember,

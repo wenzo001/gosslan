@@ -56,7 +56,7 @@ export type MsgKind =
   | "announcement"
   | "announcement_delete"
   | "todo"
-  | "todo_done"
+  | "todo_update"
   | "poll"
   | "poll_vote";
 

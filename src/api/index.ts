@@ -45,9 +45,14 @@ export const api = {
   getPeers: () => invoke<Peer[]>("get_peers"),
   searchNearbyPeers: () => invoke<Peer[]>("search_nearby_peers"),
   focusWindow: () => invoke<void>("focus_window"),
-  /** 桌面系统通知（原生；返回 false 表示用户关了通知）。移动端仍走 plugin 通知。 */
-  notifyDesktop: (title: string, body: string) =>
-    invoke<boolean>("notify_desktop", { title, body }),
+  /**
+   * 桌面系统通知（原生；返回 false 表示用户关了通知）。移动端仍走 plugin 通知。
+   *
+   * `convId` 必须传：**点通知要定位到会话**就得让后端知道这条通知属于谁 ——
+   * 点击是后端（notify-rust 的 handle）捕获的，前端拿不到那个时机。
+   */
+  notifyDesktop: (title: string, body: string, convId: string) =>
+    invoke<boolean>("notify_desktop", { title, body, convId }),
   /** 设置页「发送测试通知」：成功返回平台说明，失败返回真实原因（供排障）。 */
   sendTestNotification: () => invoke<string>("send_test_notification"),
   getFriends: () => invoke<Friend[]>("get_friends"),
@@ -98,6 +103,31 @@ export const api = {
   /** 发布群公告（仅群主；上限 500 字）。 */
   sendGroupAnnouncement: (groupId: string, text: string) =>
     invoke<MessageRecord>("send_group_announcement", { groupId, text }),
+  /**
+   * 新建群任务（任意成员）。`assignees` 至少一人且都得是群成员（后端校验）。
+   * 任务状态初始为「待办」，四态取值见 `utils/todos.ts` 的 `TODO_STATUSES`。
+   */
+  sendGroupTodo: (groupId: string, title: string, assignees: string[]) =>
+    invoke<MessageRecord>("send_group_todo", { groupId, title, assignees }),
+  /**
+   * 更新群任务：改状态 / 改标题与指派人 / 删除（`deleted: true`）。
+   *
+   * 后端会按"只改状态"与"改结构"分别判权限（被指派人 or 创建者 → 创建者 or 群主），
+   * 并把 `creator` 用库里的原值回填（不接受客户端自报）。
+   */
+  updateGroupTodo: (
+    groupId: string,
+    todoId: string,
+    patch: { title: string; assignees: string[]; status: string; deleted: boolean },
+  ) =>
+    invoke<MessageRecord>("update_group_todo", {
+      groupId,
+      todoId,
+      title: patch.title,
+      assignees: patch.assignees,
+      status: patch.status,
+      deleted: patch.deleted,
+    }),
   /** 置顶/取消置顶一条群消息（任意群成员；静默事件，不进时间线）。 */
   pinGroupMessage: (groupId: string, target: string, pinned: boolean) =>
     invoke<MessageRecord>("pin_group_message", { groupId, target, pinned }),
@@ -259,6 +289,14 @@ export interface PeerStyleUpdate {
   style: string;
 }
 
+/** 「用户点了系统通知」的载荷（后端 `notification-clicked` 事件）。 */
+export interface NotificationClick {
+  /** `"chat"` = 聊天消息（带 `conv_id`）；`"friend_request"` = 好友申请。 */
+  type: "chat" | "friend_request";
+  /** 聊天消息才有：点开要定位到哪个会话。 */
+  conv_id?: string;
+}
+
 export type EventHandlers = {
   onPeers: (peers: Peer[]) => void;
   onFriendRequest: (req: PendingRequest) => void;
@@ -280,6 +318,11 @@ export type EventHandlers = {
   onGroupsUpdated: (groupId: string) => void;
   /** 自己被移出群（group_id） */
   onGroupMemberRemoved: (groupId: string) => void;
+  /**
+   * 用户点了系统通知（桌面端；移动端走插件的 `actionPerformed`）。
+   * 后端已经顺手把主窗口唤起，这里只需把界面切到目标会话 / 「新的朋友」。
+   */
+  onNotificationClicked: (p: NotificationClick) => void;
   /** 另一个窗口清空了聊天数据（本窗口必须重建本地视图） */
   onDataCleared: () => void;
 };
@@ -307,6 +350,10 @@ export async function bindEvents(h: EventHandlers): Promise<UnlistenFn[]> {
     listen<PeerStyleUpdate>("peer-style-updated", (e) => h.onPeerStyle(e.payload)),
     listen<string>("groups-updated", (e) => h.onGroupsUpdated(e.payload)),
     listen<string>("group-member-removed", (e) => h.onGroupMemberRemoved(e.payload)),
+    // 「用户点了系统通知」：后端在 notify-rust 的点击回调里唤起主窗口后发出（见
+    // notifications::on_notification_clicked）。桌面端**只有这一条**点击来源 ——
+    // 插件的 actionPerformed 只有移动端会发。
+    listen<NotificationClick>("notification-clicked", (e) => h.onNotificationClicked(e.payload)),
     // 「另一个窗口清了数据」：后端在 clear_all_data 末尾广播（见 state::EVENT_DATA_CLEARED）
     listen("data-cleared", () => h.onDataCleared()),
   ]);

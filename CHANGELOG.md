@@ -10,6 +10,285 @@
 
 ## [Unreleased]
 
+### Added (群任务列表：指派 + 四态状态 —— 用户 2026-09-16)
+
+**需求**：「群里需要能够支持列一些任务列表，每个任务可以给一个或多个人，任务要能区分出
+进行中、延期、完成等这些状态」。
+
+**背景**：协议层与折叠逻辑在 `[4.17.0]` 就已经交付（`todo` kind + `send_group_todo` +
+`utils/todos.ts` 的折叠 + 单测），当时的"未完成"清单第一条就是"任务卡片 UI、创建入口、聚合面板"。
+本轮把它接到界面上，并按用户口径**改了数据模型**。
+
+**数据模型改动（按用户口径）**：
+
+- **状态是任务级的单一字段**（`TodoPayload.status`，四态 `todo / doing / overdue / done`），
+  **手动选、不做截止时间** —— 所以删掉了 `due_ts`，也删掉了原来的第二层 `todo_done`
+  （"每人各自一格完成"）：状态改成单值后它就是多余的第二份真相，且 `todo` 从未发布过，
+  没有兼容包袱（`WIRE_KINDS` / `SILENT_KINDS` / `MsgKind` / 折叠 / 单测同步收敛）。
+  合并规则：**LWW per `todo_id`，版本 `(seq, msg_id)`**，与前端 `newer()` 同规则。
+- **拆成两个 kind，只为通知口径**：`todo`（Card）= **创建**（该计未读、该弹通知 —— 被指派的人
+  得知道自己被派了活）；`todo_update`（Silent）= 改状态 / 改标题 / 换指派人 / 删除。
+  两者**载荷同构、同属一条 LWW 序列**（折叠一视同仁）。若改动也用 Card，用户每拖一次状态
+  全群就多一条未读 + 一条通知（实现时先按单 kind 做过，发现这条才拆开）。
+- **指派人至少一人且必须是群成员**（用户明确"可以给一个或多个人"；指派人同时是改状态的鉴权依据，
+  放进非成员会让这条任务对谁都改不了状态）。
+
+**权限（前后端同一口径）**：
+
+| 改动 | 允许谁 |
+|---|---|
+| 改状态 | 创建者 **或** 被指派人 |
+| 改标题 / 换指派人 / 删除 | 创建者 **或** 群主 |
+
+- 鉴权在**命令层**（`commands::may_update_todo` + `latest_todo_def` 从消息日志里取最新定义）；
+  `creator` 由服务端回填，**不接受客户端自报**（否则传一个别人的 creator 就能改别人的任务）。
+- 前端 `utils/todos.ts` 的 `canUpdateTodo` 是**显示用的镜像**（决定给不给按钮），
+  两侧各有一条独立的授权矩阵用例表（`todo_update_permission_matrix` / 同名前端用例）。
+- 一个命令 `update_group_todo` 覆盖"改状态 / 改标题与指派人 / 删除"：三者都是"重新发一份定义"，
+  拆三个命令就是三份重复的构造与校验。
+
+**界面**：
+
+- 新增 `GroupTasksPanel.vue`：按状态分组（空组不占位，完成组标题带删除线）、
+  每行显示标题 + 指派人（含「我」）+ 状态下拉（有权限时）+ 编辑/删除（有权限时）；
+  新建与编辑走**面板内联表单**（标题 + 成员多选，不开第二层弹窗）；删除有二次确认。
+- 入口两个：群聊头部 `ListChecks` 按钮（与"群成员 / 群文件 / 改名"同一排）、
+  群成员面板里的「群任务」分区（三态计数 + 「查看全部 / 新建」）。
+- `todo` 是 `Card` kind：**不进消息时间线**，只在这个面板里折叠展示（与群公告同一条口径）。
+- 状态色走语义 token 且彩色文字用 `*-ink` 档（待办=中性 / 进行中=主题色 / 延期=危险 / 完成=成功）。
+
+**验证**：`cargo test --lib` **480 全绿**（新增 `latest_todo_def_follows_the_same_lww_rule_as_the_frontend`、
+`todo_update_permission_matrix`）；`npm test` 454 项（新增 `selfChat` + 重写的 `todos` 共 13 条用例、
+`messageKinds` 新增状态表跨语言契约），仅剩 2 条与本轮无关的 zh-CN 环境既有失败；
+`npx vue-tsc --noEmit` 零错误、`npm run build` ✅。真机两人互测仍需人工确认。
+
+### Added (和自己聊天 —— 用户 2026-09-16)
+
+**需求**：要一个能和自己聊天的功能（当备忘录用）。
+
+**做法**：会话 id = **本机 device_id** 的本地会话，消息**只落本机**。
+
+⚠️ **为什么必须是独立路径**（`commands::insert_self_message` 的文档里写了三条理由）：
+`send_message` 要求"对方是好友 + 拿得到对方 X25519 公钥"，自己两条都不满足；即便绕过，
+消息会进 outbox 而**永远等不到 Ack**（没有对端），那一行被每次心跳/建链的 `flush_outbox`
+无限重发 —— 直接破坏"outbox 必然排空"这条不变量。所以自聊：**不进 outbox、不发 gossip、
+不加密**（E2EE 保护传输；本地消息与其它消息一样是 SQLite 明文，不是"加密失败退明文"）。
+
+- `send_message` 开头按 `friend_id == 自己` 分流 ⇒ **前端 `send()` 一行都没改**（乐观气泡 +
+  返回记录替换的既有路径照用）。
+- 状态直接给 `"read"`（不存在"在途"阶段）；前端**不给自聊消息挂回执**
+  （否则会出现"绿勾已读"或永远转圈）。
+- 自己的显示名/头像：`resolve_nickname` / `ensure_conversation` / `conversation_meta` 各加 self 分支，
+  否则会话名会显示成一串 `gosslan-xxxx`。
+- `mark_read` 对自聊**不发已读回执**（否则 `pending_reads` 里会永久堆积一条排不掉的记录）。
+- 只支持**文本**（用户选的口径）：附件按钮在自聊里隐藏，粘贴图片/文件给明确提示，
+  `send_file` 对自聊直接返回明确原因（不是那句对不上场景的"对方不是好友"）。
+- 入口：会话列表「＋」菜单 →「和自己聊天」（用户选的"点过就有"）；列表行不显示在线状态点、
+  头像不按离线灰掉（`isOnline` 对自聊返回 `null`）。
+
+**验证**：`lib.rs` 新增护栏 `self_chat_stays_local`（函数体里**必须**是 `db::insert_message(`，
+**不得**出现 `insert_message_and_outbox(` / `broadcast_gossip(` / `try_send(` / `crypto::seal(`），
+并已通过 `scripts/verify-guards.py --only 自聊消息必须留在本地` 的**非空转**验证（改坏即 FAIL、
+恢复即 PASS）；`utils/selfChat.ts` + 单测覆盖三处界面判据。手工验收（自己发 10 条 → 无未读角标、
+无通知、无回执、重启仍在）仍需人工确认。
+
+### Changed (输入框焦点态不再出现主题色方框 —— 用户 2026-09-16)
+
+**用户症状**：整个应用的输入框一获得焦点就出现一个**主题色的方框**，很难看。
+
+**根因**：全局焦点环把**文本输入类**也算进去了：
+
+```css
+:where(button, a, input, textarea, select, [tabindex], [contenteditable]):focus-visible {
+  outline: 2px solid var(--gosslan-focus-ring);
+}
+```
+
+浏览器对文本类控件一律把 `:focus-visible` 判成**"永远成立"**（点一下就成立，不需要键盘
+Tab 遍历）—— 所以这不是"只有键盘用户才看到"的环，而是**每次点击输入框都会冒出来**的外圈
+方框。消息输入框最难看的那个形态就是这么来的：它的矩形只是卡片里一块**透明的编辑区**
+（`div[contenteditable]`，不是整张卡片），框出来像卡片内部浮着一个方框。
+另外 `ProfileSection` 的昵称输入框自己还写了一个 `focus:ring-2 focus:ring-primary`，
+那是**实心主题色方框**，同一个毛病的第二个来源。
+
+**修法**：焦点提示按控件类型分开（观感沿用本项目既有的写法：`.gosslan-select:focus`
+与各输入框的 `focus:border-[var(--gosslan-primary)]`，不引入新语言）。
+
+| 控件 | 焦点提示 |
+|---|---|
+| `button` / `a` / `[tabindex]` | 键盘焦点环（`:focus-visible`，**保持原样**） |
+| `input` / `textarea` / `select` | 边线变主题色（全局规则；本来没有边框的字段自己补 `border border-transparent`） |
+| 消息输入框编辑区 | 焦点提示挂在**卡片边框**上（新增 `gosslan-composer` 钩子 + `:focus-within`） |
+
+- 顺手补上了原本"只能靠那条外圈方框"才有点击焦点提示的字段（弹窗里的搜索/命名输入框、
+  日志过滤框、主题自定义色块）：给它们常驻一个 `border border-transparent`，
+  聚焦时由全局规则变成主题色边框；
+- `ProfileSection` 的 `focus:ring-2 focus:ring-primary` → 常驻的 `border border-transparent`
+  + `focus:border-[var(--gosslan-primary)]`（**不能**聚焦时才加边框：那会改尺寸、文字跳一下）；
+- **没有**顺手去掉焦点提示本身：WCAG 2.4.7 要求可见焦点，`outline-none` 必须自带替代提示
+  （既有护栏 `findOutlineNoneWithoutFocusRing` 仍在管）。
+
+**验证**：新增护栏 `designGuards.checkTextFieldFocusRing` + 5 条用例（改坏即报、修好即过、
+删掉替代提示要报、卡片钩子被摘掉要报、真实 `style.css` + `MessageComposer.vue` 通过）；
+`npm test` 仅剩 2 条与本轮无关的既有失败（zh-CN 环境下 i18n 默认语言用例）、`npm run build` ✅。
+⚠️ 观感只能真机确认：本机没有浏览器自动化（无 Playwright/Puppeteer），
+`docs/design-guidelines.md` §2.4 已把规则写死。
+
+### Fixed (群成员变更之类的系统提示显示英文 —— 用户 2026-09-16)
+
+**用户症状**：界面是中文，但「谁加入了群聊」这类系统提示是**英文**。
+
+**根因**：后端自己生成的文案由 `AppState::is_zh()` 选语言，而它的「跟随系统」分支只读
+POSIX 环境变量（`LANG` / `LC_ALL` / `LC_MESSAGES`）——**Windows 上这些变量根本不存在**，
+于是恒判为「不是中文」。默认设置就是「跟随系统」，所以中文 Windows 用户看到的
+群成员变更 / 文件下载 / 托盘提示 / 窗口标题全变英文，而界面本身是中文。
+
+（这条限制在 `state.rs` 里原本就被写成了注释，当时判断"影响有限，只有托盘提示与日志窗口
+标题"；但系统消息也走这条判定，直接落在聊天内容里 ⇒ 影响并不有限。）
+
+**修法**：让后端使用前端解析出的语言 —— 「跟随系统」的解析规则（`navigator.language`）
+只在前端有一份，后端不该自己猜。优先级：
+**显式偏好（`settings.language`）> 前端推来的解析结果 > 环境变量兜底**。
+
+- `AppState` 新增内存字段 `ui_lang`（三态，不落库：它是解析结果的缓存，落库会多出一份
+  与"偏好"不一致的状态）；`set_ui_language` 命令除了重建 macOS 菜单栏，也记下这个结果；
+- 前端 `app.init()` 里**无条件**推一次解析后的语言 —— 这一条是关键：此前只有
+  `if (has("language"))` 那条分支会推，而**从未改过语言**的用户库里根本没有这个键，
+  于是后端永远收不到；
+- ⚠️ 残留：一份群提示仍然带着**发送方**的语言 —— 「谁加入了群聊」是唯一一条经消息管道
+  广播（而不是各端本地生成）的群内提示，所以群里其他人看到的是发起人界面语言的文案。
+  （踢人 / 退群 / 群主转让三条都是各端本地生成，天然跟随各自语言。）彻底解决需要把这条
+  改成「结构化载荷 + 各端自行渲染」，本轮未做。
+
+**验证**：新增 `state::tests::ui_language_prefers_preference_then_frontend_hint_then_env`
+（钉住三级优先级与脏值行为）；新增前端接线护栏
+`i18n/index.test.ts`「app.init() 必须把解析后的语言推给后端」——它先改坏再修好过一遍，
+确认非空转。
+
+### Fixed (NSIS 安装包图标是默认的 —— 用户 2026-09-16)
+
+**用户症状**：构建出来的安装包（setup.exe）图标是默认的，不是应用图标。
+（应用本身的 exe 图标是正常的 —— 已验证六个尺寸帧都嵌在 `target/debug/gosslan.exe` 里。）
+
+**根因**：`tauri.conf.json` 的 `bundle.windows.nsis` 里**没有 `installerIcon`**。
+Tauri 的 NSIS 模板只在 `installerIcon` 非空时才 `!define MUI_ICON`，**没有兜底分支、
+也不会回退到应用图标**（`crates/tauri-bundler/src/bundle/windows/nsis/installer.nsi`
+里就是 `!if "${INSTALLERICON}" != ""`）⇒ 留空就等于用 NSIS/MUI2 自带的默认安装程序图标。
+
+**修法**：补上 `installerIcon` 与 `uninstallerIcon`（都指向 `icons/icon.ico`）——
+同一份 `tauri icon` 产物，安装程序图标与卸载项图标都跟着应用图标走。
+
+**验证**：图标文件本身无需改动（结构已核对：6 帧 PNG-compressed，是 `tauri icon` 的标准
+输出）。⚠️ **安装包图标无法在本机验证**（没装 NSIS 工具链，需整包 release 构建），
+请在下次打包后确认 setup.exe 与「应用和功能」里的图标。若仍是默认图标，`tauri build`
+会明确报 `failed to resolve ... installerIcon`（路径解析失败），据此可判断是路径问题。
+
+### Fixed (设置 / 日志窗口不居中、而且比主窗口还大 —— 用户 2026-09-16)
+
+**用户症状**：打开设置、个人资料、日志这些新窗口时**没有居中**，而且窗口
+**比主窗口还大很多**。
+
+**根因**：两个独立窗口的尺寸在 Rust 里写死（设置 780×600、日志 760×560），
+位置完全交给系统默认 —— 既没有 `center()`，也没有跟主窗口的任何关系。
+主窗口是**可缩放**的（默认 1000×680），用户把它拉小之后这两条同时命中：
+子窗口比它大，而且落在屏幕默认位置、离它该贴着的那个窗口很远。
+
+**修法**：新增 `commands::aux_window_geometry`，按**主窗口**算几何：
+
+- 尺寸：装得下就用设计尺寸，装不下按主窗口缩到「两侧各留 24px」；
+- 位置：在主窗口**外框**内居中（主窗口是无边框自绘标题栏，外框≈内尺寸；子窗口带系统标题栏，
+  所以位置在尺寸确定之后按**子窗口自己的真实外框**算，避免差半个标题栏）；
+- 最小尺寸跟着收敛（不能大于实际尺寸，否则系统会把窗口顶回最小值，"缩小"等于白做）；
+- 拿不到主窗口（还没建出来）时退回设计尺寸 + 系统默认摆位。
+
+**⚠️ 同一轮的多屏修复（用户 2026-09-16 追加反馈「多屏时子窗口弹到另一个屏幕上、位置也没居中」）**
+
+第一版把几何交给了 builder 的 `.position(x, y)` / `.inner_size(w, h)` —— **这两个 API 只收逻辑坐标**，
+而 `tao` 创建窗口时会把逻辑坐标**逐个显示器**地按该显示器自己的缩放换回物理，取第一个"换算结果
+落在自己范围内"的显示器；一个都没命中就退回 `CW_USEDEFAULT`（主屏层叠位置）
+（`tao/src/platform_impl/windows/window.rs`）：
+
+- 主窗口在 150% 的副屏、另一块屏 100% 时：按副屏缩放算出的逻辑坐标，再按 100% 换回来，
+  正好落进那块屏 ⇒ **子窗口跑到另一块屏幕上**；
+- 尺寸走同一条换算（按"选中显示器"的缩放）⇒ 大小同样不对。
+
+改成**全程物理像素**：
+
+- 窗口以 `.visible(false)` 创建，`build()` 之后用 `set_min_size` / `set_size` / `set_position`
+  下发**物理**值，再交给 `ensure_aux_window` 的 `show()` —— 用户看不到中间态；
+- 常驻窗口每次**重新打开**时重新居中（只动位置、不动尺寸，留住用户自己拉过的大小）：
+  主窗口被拖到另一块屏之后，留在原地就等于"又开在另一块屏幕上"。
+
+护栏：`aux_window_open_is_singleton_serialized_and_resident` 现在同时断言
+"必须 `apply_aux_geometry` + `visible(false)`"、"**不得**出现 `.position(`"（这条缺陷在单屏上完全看不出来）。
+
+⚠️ 尺寸/位置只在**创建**时算一次（重开只重新居中）：用户自己挪过/拉过的窗口不会被反复重置。
+
+**验证**：`cargo test --lib` **475 项全绿** —— 几何不变式覆盖 7 档主窗口（含 125% / 150% 缩放）
+× 4 个主窗口原点（含 1920 起的副屏与**负坐标**的左侧副屏）× 两组真实窗口参数，
+断言"永不大于主窗口 / 最小尺寸不反超 / 按真实外框居中"；并断言 150% 屏上
+780×600 逻辑 = 1170×900 物理、最小尺寸同样换算。真机多屏外观仍需人工确认。
+
+### Fixed (撤回 / 文件被下载 / 群主变更在时间线上仍像一条普通消息 —— 用户 2026-09-16)
+
+**用户症状**：消息撤回、文件被下载、群主转移这类通知**直接按普通文本消息那样提示**，
+希望改成微信那样——只是居中一行提示。
+
+**根因**：三处各有一半问题。
+
+1. 渲染：居中灰字**已经存在**，但它被放在"头像行"**内部** —— 于是系统消息照样带
+   36×36 头像，还被 `max-w-[72%]` 的列宽挤在一侧、居中后仍偏，看着就是一条普通消息。
+2. 高度估算：`messageHeight` 只给 `system` 记了 28px，`recalled` 落到 default 按空文本
+   气泡估 35px，且**照样加 18px 的昵称行** —— 群聊里一条"对方撤回"会把它下面那条推偏。
+3. 群主转让**根本没有系统消息**：成员表里的「群主」标记悄悄换人，群里一声不响
+   （而加人 / 踢人 / 退群三种成员变更都是有提示的）。
+
+**修法**：
+
+- 抽出 `messageKinds.TIP_KINDS` / `isTipKind` 作为提示行的**唯一判定点**；
+  `MessageItem` 把它移出头像行、做成通栏居中小灰字（无头像、无气泡、无昵称、无菜单），
+  `messageHeight` 按同一份清单估高（`recalled` → 28px，提示行不计昵称行）；
+- `transfer_group_creator`（发起方）与 `handle_group_creator_changed`（接收方）各补一条
+  群内系统消息，文案走 `is_zh()` 双语，与既有三条成员变更同口径。
+
+**验证**：新增 `messageKinds.test.ts` 的「提示行判定只有一个来源」——直接读
+`MessageItem.vue` / `messageHeight.ts` 源码，禁止再自己写 `kind === "system"`
+（那正是会漏掉 `recalled` 的写法）。`npm test`、`npm run build` 全绿。
+
+### Fixed (点系统通知没反应，不能定位到会话 —— 用户 2026-09-16)
+
+**用户症状**：消息到系统通知了，但**点通知没反应**，无法定位到会话。
+
+**根因**：桌面端的 `notify-rust` handle 被立刻丢掉：
+
+```rust
+notification.show().map(|_| ())   // handle 是点击响应的唯一通道，丢在这里
+```
+
+于是点击永远送不进进程。同时前端 `onAction` 监听的是**插件**的
+`plugin:notification:actionPerformed` —— 那条事件只有移动端会发，桌面端从头到尾没有
+点击来源。另外 `notify_desktop` 命令**没有带 `conv_id`**，即便拿到点击也无从定位。
+
+**修法**：
+
+- 新增 `notifications::show_click_if_enabled`：Windows 上把 handle 留在**独立线程**等
+  `wait_for_response`，命中 `Default`（点正文）才回调（`Closed(..)` 是超时/被划掉，
+  不该抢焦点）；点中后 `tray::show_main_window` + 广播 `notification-clicked`；
+- 载荷 `{type, conv_id}` 与移动端插件通知的 `extra` **同形**，前端因此只有一条路由
+  （`routeNotificationClick`），桌面事件与移动端 `actionPerformed` 共用；
+- `notify_desktop` 增加 `conv_id`；好友申请通知（Rust 直发的那两条路径）也接上同一条路，
+  点击跳到「新的朋友」；
+- macOS / Linux 行为**与改动前完全一致**（点击不由 handle 送出，`on_click` 被丢弃）——
+  macOS 的 `notify-rust` 实现是"handle drop 时才发送"，改成阻塞式发送会影响"通知能不能
+  弹出"这件更基本的事，在无法真机验证前不动它。
+
+**验证**：`npm test`（事件契约守卫要求"前端监听的事件必须真有人发"，
+`notification-clicked` 两端都在，已通过）、`cargo check --lib`、`cargo test --lib`。
+⚠️ **Windows 的真机点击链路未验证**：toast 的激活事件由 winrt 的进程内事件送达，
+而 `notify-rust` 只保留 handle（不保留 `ToastNotification` 对象），是否稳定送达需要在
+已安装的构建上实测；若实测点不动，日志里会有"已发送系统通知"但没有后续跳转，届时再评估
+（退路是单实例 + AUMID 激活，或 COM 通知激活器）。
+
 ## [4.18.10] - 2026-09-16
 
 ### Fixed (链接复制保真：省略的应当只是界面，不是数据 —— 用户 2026-09-16)

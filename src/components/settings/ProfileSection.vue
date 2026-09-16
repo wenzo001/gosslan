@@ -142,10 +142,15 @@ function processAvatar(file: File): Promise<string> {
       </button>
 
       <div class="min-w-0 flex-1">
+        <!-- 焦点提示**透明**（与应用其它字段同一套：`focus:border-transparent`）。
+             `border border-transparent` 是常驻的 1px 边框（静止时透明）——不能等聚焦时才加边框，
+             否则聚焦那一下字段尺寸会变、里面的文字跟着跳。
+             用户 2026-09-16 明确不要聚焦色，原本的 `focus:ring-2 focus:ring-primary` 实心方框、
+             以及全局焦点环那条外圈方框都已去掉。 -->
         <input
           v-model="nickname"
           maxlength="40"
-          class="w-full rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none transition focus:ring-2 focus:ring-primary"
+          class="w-full rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none transition focus:border-transparent"
           :placeholder="t('settings.profile.nickname.placeholder')"
           @blur="saveProfileNow"
           @keydown="onNicknameKeydown"

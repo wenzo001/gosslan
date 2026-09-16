@@ -268,7 +268,7 @@ async function removeEndpoint(address: string) {
         v-model="newAddress"
         type="text"
         :placeholder="t('settings.network.routed.placeholder')"
-        class="min-w-0 flex-1 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-transparent px-3 py-1.5 text-[13px] outline-none placeholder:text-[var(--gosslan-text-2)] focus:border-[var(--gosslan-primary)]"
+        class="min-w-0 flex-1 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-transparent px-3 py-1.5 text-[13px] outline-none placeholder:text-[var(--gosslan-text-2)] focus:border-transparent"
         @keyup.enter="addEndpoint"
       />
       <button

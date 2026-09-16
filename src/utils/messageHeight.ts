@@ -7,6 +7,7 @@ import {
   textBubbleHeight,
 } from "@/utils/previewMetrics";
 import type { FontSizeKey } from "@/utils/chatStyle";
+import { isTipKind } from "@/utils/messageKinds";
 import type { MessageRecord } from "@/types";
 
 /** 时间分割线阈值（≥5 分钟）。 */
@@ -24,7 +25,7 @@ const TIME_DIVIDER = 32;
 const IMAGE_BUBBLE = 288;
 /** 普通文件卡片 */
 const FILE_CARD = 92;
-/** 系统消息行 */
+/** 提示行（系统消息 / 已撤回）：text-xs 行盒 16 + ROW_PADDING 12。 */
 const SYSTEM_ROW = 28;
 
 export interface EstimateContext {
@@ -89,6 +90,9 @@ function computeBubbleHeight(m: MessageRecord, fontSize: FontSizeKey): number {
       return FILE_CARD;
     }
     case "system":
+    // 「已撤回」与系统消息是**同一形态**（`messageKinds.TIP_KINDS`）——此前它落到 default
+    // 按空文本气泡估 35px，比实际渲染的 28px 高 7px，虚拟列表就会把它下面那条推偏。
+    case "recalled":
       return SYSTEM_ROW;
     default:
       return textBubbleHeight(m.content, fontSize);
@@ -107,7 +111,10 @@ export function estimateMessageHeight(
 
   // 每条消息独立完整渲染（无合并）：时间行恒有；群聊非本人显示昵称
   const showDivider = !prev || m.ts - prev.ts >= TIME_DIVIDER_GAP;
-  const showNickname = ctx.isGroup && m.sender_id !== ctx.selfId;
+  // 提示行没有昵称行（`MessageItem` 里提示行整支都在头像行之外）—— 这里必须同步，
+  // 否则群聊里一条"对方撤回"会多估 18px。
+  const showNickname =
+    ctx.isGroup && m.sender_id !== ctx.selfId && !isTipKind(m.kind);
 
   return (
     bubble +

@@ -92,7 +92,31 @@ iOS 的取向：**hover 必须克制**（只做轻微加深/提亮，**不做位
 | --------- | ---------------------------- | ------------------------------------------------------------------------- |
 | **hover** | 中性面加深；危险/警告用语义 token         | `hover:bg-[var(--gosslan-hover)]`、`hover:bg-[var(--gosslan-danger-soft)]` |
 | **press** | 全局统一压暗/提亮，不需要逐个写             | `src/style.css` 的 `button:active` / `[role=button]:active` 全局规则           |
-| **focus** | 只用键盘时出现焦点环（`:focus-visible`） | 全局规则 + `--gosslan-focus-ring`                                             |
+| **focus** | 见 §2.4：**非文本控件**用键盘焦点环；**文本输入类**用边线变色 | 全局规则 + `--gosslan-focus-ring`                                             |
+
+### 2.4 焦点提示：文本输入类不许画外圈方框
+
+用户 2026-09-16 反馈：「整个应用的输入框在焦点态会默认有个主题色的方框，很难看」。
+根因是全局焦点环的选择器里含 `input` / `textarea` / `select` / `[contenteditable]` ——
+浏览器对**文本类控件**一律把 `:focus-visible` 判成"永远成立"（**点一下就成立**，不需要键盘
+Tab），于是每次点击输入框都会冒出一个 2px 的外圈方框。消息输入框尤其难看：它的矩形只是
+卡片里一块**透明的编辑区**（不是整张卡片），框出来像卡片内部浮着一个方框。
+
+规则（两条分开，判据由 `designGuards.checkTextFieldFocusRing` 守着）：
+
+| 控件 | 焦点提示 | 实现 |
+|---|---|---|
+| `button` / `a` / `[tabindex]`（非文本控件） | 键盘焦点环（`:focus-visible`） | `:where(button, a, [tabindex]):focus-visible { outline: … }` |
+| `input` / `textarea` / `select` | **边线变主题色** | `input:focus, textarea:focus, select:focus { border-color: … }` |
+| 消息输入框（`div[contenteditable]`） | **卡片边框**变主题色 | `.gosslan-composer:focus-within { border-color: … }` |
+
+- 文本输入类**不得**出现在全局 `:focus-visible` 选择器里（含 `:where()` 的写法也算）。
+- 焦点提示一律画在**边线**上，与既有的 `.gosslan-select:focus`、`focus:border-[var(--gosslan-primary)]` 同一套观感。
+- **本来没有边框**的字段（弹窗输入框、过滤条那种自带底色的）自己补一个**常驻的**
+  `border border-transparent`，就能吃到上面那条全局规则 ——
+  不要等聚焦时才加边框（会改尺寸、文字跳一下），也不要再画外圈方框。
+- **去掉外圈方框 ≠ 可以没有焦点提示**：WCAG 2.4.7 要求可见焦点，别顺手把替代提示一起删了。
+  这条由 `designGuards.checkTextFieldFocusRing` 守着（改坏即报）。
 
 ### 2.1 允许的 hover 取值（白名单）
 
@@ -244,6 +268,19 @@ Tailwind `.transition` 系列的曲线由本文件统一覆盖。
 
 > 这条同时满足 iOS 的"窗口/面板边缘由系统或容器统一负责"取向，也避免了 §1.3 的同心外翻问题。
 
+**独立窗口（设置 / 日志）的位置与尺寸：跟随主窗口，且必须用物理像素。**
+
+- **参照物是主窗口，不是屏幕**：子窗口装不下就按主窗口缩（两侧留 24 逻辑像素），位置在主窗口
+  外框内居中。主窗口是可缩放的 —— 按屏幕算会让子窗口比主窗口还大、还离它很远。
+- **禁止把几何交给 `WebviewWindowBuilder::position/inner_size`**：它们只有**逻辑**坐标，`tao`
+  创建窗口时会按"逐个显示器试算"换算，多屏不同缩放时会**选错屏**（`tao` 的
+  `available_monitors().find_map(..)`，一个都没命中就退回主屏 `CW_USEDEFAULT`）。
+  正确做法：`.visible(false)` 创建 → `build()` 之后用 `set_size` / `set_position` 下发物理值 → 再 `show()`。
+- 常驻窗口（关闭即隐藏）每次打开要**重新居中**，否则主窗口被拖到另一块屏后，它留在原地。
+
+实现与护栏：`src-tauri/src/commands.rs` 的 `aux_window_geometry` / `apply_aux_geometry`，
+以及 `lib.rs` 的 `aux_window_open_is_singleton_serialized_and_resident`。
+
 ---
 
 ## 6. 自查清单（提交前逐条打勾）
@@ -252,6 +289,7 @@ Tailwind `.transition` 系列的曲线由本文件统一覆盖。
 - [ ] 嵌套面按 §1.3 公式取内圆角（内 < 外）
 - [ ] hover 只用 §2.1 白名单里的值；没有硬编码十六进制
 - [ ] 交互元素有 press 反馈（全局规则已覆盖，确认没有被 `filter`/背景覆盖掉）
+- [ ] **焦点提示按 §2.4**：文本输入类用**边线变色**（不画外圈方框），非文本控件保留键盘焦点环
 - [ ] 新增的可点元素要么是 `<button>`，要么带 `cursor-pointer`（否则按下去没反应）
 - [ ] 关键动作按 §2.3 给了对应触觉，且**没有每个点击都给**
 - [ ] 触屏上小于 44px 的独立小按钮加了 `tap-safe`
@@ -399,6 +437,23 @@ Tailwind `.transition` 系列的曲线由本文件统一覆盖。
 
 **合规现状（本次审计）**：字重只有 medium/semibold 两级 ✓；未使用 tracking 负值 ✓；
 `--gosslan-msg-size` 被设置页覆盖属于**有意例外**（用户的阅读偏好优先于标尺）。
+
+### 8.1 提示行（系统消息 / 已撤回）
+
+时间线里有一类**不是消息**的条目：消息撤回、文件被下载、群成员变更（加入 / 移出 / 退群 /
+群主转让）。微信式的形态是**居中一行小灰字**，与"一条普通消息"必须一眼可分：
+
+| 性质 | 值 | 为什么 |
+|---|---|---|
+| 字号 / 颜色 | `text-xs`(12) + `--gosslan-text-2` | 状态行不是内容，不能和正文抢注意力 |
+| 宽度 | **通栏**（`px-4 text-center`） | 放进消息行会被 `max-w-[72%]` 挤偏，"居中"看着还是像消息 |
+| 头像 / 气泡 / 昵称行 | **都没有** | 有头像就成了一条消息；有气泡会让人以为能点开/复制 |
+| 交互 | 无右键 / 无长按 / 无表情回应 | 没有可操作内容 |
+
+**判定只有一个来源**：`src/utils/messageKinds.ts` 的 `TIP_KINDS` / `isTipKind()`。
+`MessageItem.vue`（渲染）与 `messageHeight.ts`（虚拟列表估高）都必须读它 ——
+两边各写一份 `kind === "system"` 就会漏掉 `recalled`，估高与渲染差一行即互相遮挡。
+守护测试：`src/utils/messageKinds.test.ts`「提示行的判定只有一个来源」。
 
 ---
 

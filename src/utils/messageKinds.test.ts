@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { CARD_KINDS, SILENT_KINDS, isSilentKind, kindClass } from "./messageKinds.ts";
+import { CARD_KINDS, SILENT_KINDS, TIP_KINDS, isSilentKind, isTipKind, kindClass } from "./messageKinds.ts";
+import { TODO_STATUSES } from "./todos.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const protocolRs = readFileSync(join(here, "../../src-tauri/src/protocol.rs"), "utf8");
@@ -51,4 +52,52 @@ test("跨语言契约：kind 分类与 protocol.rs 的 WIRE_KINDS 一致", () =>
     const expected = cls === "Silent" ? "silent" : cls === "Card" ? "card" : "bubble";
     assert.equal(kindClass(kind), expected, `${kind} 的分类两侧不一致`);
   }
+});
+
+/**
+ * **跨语言契约**：任务状态取值表两侧必须一致。
+ *
+ * 状态用字符串在线上传（`TodoPayload.status`），后端还会用它做命令层校验
+ * （`todo_status_is_valid`）。两侧漂移的后果是**静默**的：前端给一个后端不认的值时，
+ * 用户会看到"改状态失败"，而代码里两边看起来都写对了 —— 所以直接读源码比对。
+ */
+test("跨语言契约：任务状态表与 protocol.rs 的 TODO_STATUSES 一致", () => {
+  const table = protocolRs.slice(
+    protocolRs.indexOf("pub const TODO_STATUSES"),
+    protocolRs.indexOf("];", protocolRs.indexOf("pub const TODO_STATUSES")),
+  );
+  const rust = [...table.matchAll(/"([a-z_]+)"/g)].map((m) => m[1]);
+  assert.ok(rust.length >= 4, `解析出的状态太少（${rust.length}），表格式可能变了`);
+  assert.deepEqual([...TODO_STATUSES], rust, "TS 与 Rust 的任务状态表必须一致");
+});
+
+/**
+ * 提示行（微信式居中灰字）的判定**只能有一个来源**。
+ *
+ * 为什么必须守：`isTipKind` 直接决定两件事 —— 渲染分支（有没有头像/气泡）与
+ * **高度估算**（`messageHeight` 还要据此决定要不要留昵称行）。两边各写一份
+ * `kind === "system"` 时，`recalled` 就被漏掉：群聊里一条"对方撤回"会多估 18px，
+ * 虚拟列表把下面那条推偏、两条消息互相遮挡 —— 而这只在群里、有对方撤回时现形。
+ */
+test("提示行的判定只有一个来源（MessageItem 与 messageHeight 都走 isTipKind）", () => {
+  const read = (p: string) => readFileSync(join(here, p), "utf8");
+  const messageItem = read("../../src/components/MessageItem.vue");
+  const messageHeight = read("./messageHeight.ts");
+
+  assert.ok(TIP_KINDS.includes("system") && TIP_KINDS.includes("recalled"), "系统消息与撤回都算提示行");
+  assert.ok(isTipKind("system") && isTipKind("recalled") && !isTipKind("text"));
+
+  for (const [name, src] of [["MessageItem.vue", messageItem], ["messageHeight.ts", messageHeight]] as const) {
+    assert.match(src, /isTipKind\(/, `${name} 必须用 isTipKind 判定提示行（不要自己比 kind 字面量）`);
+    assert.ok(
+      !/kind === "system"/.test(src),
+      `${name} 不得再自己写 kind === "system" —— 那样会漏掉 recalled（两边漂移即高度估算出错）`,
+    );
+  }
+  // 提示行没有昵称行 ⇒ 高度估算必须跟着排除（渲染侧整支都在头像行之外）
+  assert.match(
+    messageHeight,
+    /showNickname =[\s\S]{0,120}isTipKind\(m\.kind\)/,
+    "提示行不计昵称行 —— 不排除就与渲染对不上",
+  );
 });

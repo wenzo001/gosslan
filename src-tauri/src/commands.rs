@@ -409,13 +409,27 @@ pub fn focus_window(_app: tauri::AppHandle) -> Result<(), String> {
 ///
 /// 走 crate::notifications（能返回真实错误），并**再判一次总开关**（前端已判，这里是
 /// 第二道闸门：后端也能独立触发通知，不能只依赖前端状态）。返回 false 表示用户关了通知。
+///
+/// `conv_id` = 这条通知属于哪个会话：用户**点通知**时（Windows 上由 notify-rust 的
+/// handle 捕获）后端唤起主窗口并把这个 id 发给前端，前端据此直接定位过去。
+/// 没有它就只能"唤起窗口但停在原来的会话上"——用户报的正是这个。
 #[tauri::command(async)]
 pub fn notify_desktop(
+    app: tauri::AppHandle,
     state: State<'_, Arc<AppState>>,
     title: String,
     body: String,
+    conv_id: String,
 ) -> Result<bool, String> {
-    crate::notifications::show_if_enabled(state.inner(), &title, &body)
+    let s = state.inner().clone();
+    let click_app = app.clone();
+    crate::notifications::show_click_if_enabled(
+        &s,
+        &title,
+        &body,
+        std::collections::HashMap::new(),
+        move || crate::notifications::on_notification_clicked(&click_app, "chat", Some(conv_id)),
+    )
 }
 
 /// 设置页「发送测试通知」：忽略总开关（用户显式要试），但**如实返回失败原因**。
@@ -1212,22 +1226,34 @@ const LANGUAGES: [&str; 3] = ["system", "zh-CN", "en-US"];
 /// relay_policy 的合法取值（与 `mesh::relay_policy::RelayPolicy::as_str` 一一对应）。
 const RELAY_POLICIES: [&str; 4] = ["off", "friends", "allowlist", "all"];
 
-/// 把前端**解析后**的界面语言推给后端，用于重建 macOS 菜单栏（见 `menu.rs` 顶部注释）。
+/// 把前端**解析后**的界面语言推给后端。
 ///
-/// 为什么要这条命令：macOS 的菜单栏是原生控件，文案不归 WebView 管；而"跟随系统"
-/// 的解析规则只在前端有一份。前端在启动完成与每次切换语言时各推一次。
+/// 两个用途：
+/// 1. 重建 macOS 菜单栏 —— 原生控件的文案不归 WebView 管；
+/// 2. **后端自己生成的文案**（群成员变更 / 文件下载 / 托盘提示 / 窗口标题）按它选语言
+///    （见 `AppState::is_zh`）。「跟随系统」的解析规则只在前端有一份，后端的兜底判断在
+///    Windows 上恒为「否」—— 用户 2026-09-16 实测的「加群提示是英文」就是这个缺口。
 ///
-/// 非 macOS 平台下这个模块整体不编译，所以这里必须 cfg 掉函数体（保留命令本身，
+/// 前端在**启动完成**与每次切换语言时各推一次（启动那次在 `app.init()` 里，不能被
+/// `if (has("language"))` 挡住：从没改过语言的用户库里根本没这个键）。
+///
+/// 非 macOS 平台下菜单模块整体不编译，所以这里必须 cfg 掉那部分（保留命令本身，
 /// 让前端调用在其它平台也能拿到 Ok —— 前端不需要按平台分支）。
 #[tauri::command(async)]
-pub fn set_ui_language(app: tauri::AppHandle, lang: String) -> Result<(), String> {
+pub fn set_ui_language(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<AppState>>,
+    lang: String,
+) -> Result<(), String> {
+    // 先记下解析结果：它同时是 macOS 菜单与后端文案的语言依据。
+    state.set_ui_language_hint(&lang);
     #[cfg(target_os = "macos")]
     {
         crate::menu::apply(&app, crate::menu::UiLang::parse(&lang)).map_err(|e| e.to_string())?;
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (&app, &lang);
+        let _ = &lang;
     }
     // ⚠️ 这里**刻意不发** `settings-changed`。
     //
@@ -1235,7 +1261,7 @@ pub fn set_ui_language(app: tauri::AppHandle, lang: String) -> Result<(), String
     // `applySettingsSnapshot` 结尾无条件 `pushUiLanguage()` → 又调回这条命令 → 再发一次
     // ⇒ 两个窗口互相触发，高频 IPC 环（"界面响应速度高于一切"最怕这个）。
     // 语言变更的**事实来源**是 `save_settings`（前端每次切语言都会调它，patch 里带
-    // language 的值），所以这条命令只负责重建 macOS 原生菜单栏。
+    // language 的值），所以这条命令不负责广播，只做上面两件事。
     let _ = &app;
     Ok(())
 }
@@ -1923,6 +1949,13 @@ pub async fn send_message(
 ) -> Result<MessageRecord, String> {
     let s = state.inner();
 
+    // 「和自己聊天」分流：target 是自己时走**纯本地路径**（见 `insert_self_message`）。
+    // 放在最前面是有意的 —— 下面每一步（好友校验 / 公钥查找 / 加密 / outbox / gossip）
+    // 对自己都不成立。
+    if friend_id == s.device_id {
+        return insert_self_message(s, &kind, content);
+    }
+
     let msg_kind = match kind.as_str() {
         "text" => MsgKind::Text,
         "code" => MsgKind::Code,
@@ -2082,6 +2115,61 @@ pub async fn send_message(
     Ok(rec)
 }
 
+/// 给自己发一条消息（「和自己聊天」）—— **纯本地，消息不出本机**。
+///
+/// 为什么必须是独立路径，而不是"把自己当好友"复用下面的发送流程：
+///
+/// 1. **没有传输**：收发双方都是本机 ⇒ 没有链路可发、没有对端公钥可用。
+///    E2EE 保护的是**传输**（"E2EE 恒开"说的是网络路径）；本地落盘与其它会话一样是
+///    SQLite 明文，所以这里不加密**不是**"加密失败就退明文"那种兜底。
+/// 2. **绝不能进 outbox**：outbox 的唯一出队条件是收到对端 Ack，给自己发包永远不会有 Ack
+///    ⇒ 那一行会永远留在库里、被每次心跳/建链的 `flush_outbox` 重发，
+///    把"outbox 必然排空"这条不变量破掉。
+/// 3. **绝不能广播**：`target = 自己` 的 gossip 信封对别人是解不开的噪声，
+///    本机自己也会在 `handle_gossip` 的 `sender == 自己` 早退里丢掉 —— 纯浪费带宽与 TTL。
+///
+/// 状态直接给 `"read"`：本机既是发送方也是接收方，不存在"在途"阶段；
+/// 前端也不会给自聊消息挂回执（见 `src/utils/selfChat.ts`）。
+fn insert_self_message(s: &AppState, kind: &str, content: String) -> Result<MessageRecord, String> {
+    // 只支持文本 / 代码：用户 2026-09-16 明确「先只支持文本」。图片与文件要落盘、要文件卡片，
+    // 走的是另一条链路（`send_file`），自聊里前端也不会给附件入口 —— 真调到了就明确报错，
+    // 不要静默吞掉。
+    if kind != "text" && kind != "code" {
+        return Err("和自己聊天暂不支持图片或文件".to_string());
+    }
+    let content = check_message_content(content)?;
+    let ts = db::now_ms();
+    let me = s.device_id.clone();
+    // ⚠️ 名字/头像都在**拿 db 锁之前**取好：`self_display_name`/`self_avatar` 各自还要锁
+    // 昵称与头像（`is_zh` 里还会再锁一次 db），持锁期间再回头锁它们就是在赌锁顺序
+    // （本文件里"不能在持有 db 锁时调用 resolve_nickname"那条注释说的是同一件事）。
+    let name = s.self_display_name();
+    let avatar = s.self_avatar();
+    let preview = preview(kind, &content);
+    let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+    let seq = db::next_clock(&dbc, &me).map_err(|e| format!("逻辑时钟推进失败：{e}"))?;
+    let rec = MessageRecord {
+        id: 0,
+        // 前缀 `self-` 让它一眼可辨（日志/排障时不会与网络消息的哈希 id 混淆）
+        msg_id: format!("self-{}", Uuid::new_v4()),
+        conv_id: me.clone(),
+        sender_id: me.clone(),
+        receiver_id: me.clone(),
+        kind: kind.to_string(),
+        content,
+        ts,
+        seq,
+        status: "read".to_string(),
+    };
+    // ⚠️ `insert_message`（只落库）—— **不是** `insert_message_and_outbox`：
+    // 自聊消息没有收件人，进 outbox 就永远排不掉（见上面的第 2 条）。
+    db::insert_message(&dbc, &rec).map_err(|e| format!("消息写入失败：{e}"))?;
+    // unread_inc = 0：自己发的消息不该让自己"有未读"（与 `send_message` 同口径）
+    db::touch_conversation(&dbc, &me, "single", &name, avatar.as_deref(), &preview, 0)
+        .map_err(|e| format!("会话写入失败：{e}"))?;
+    Ok(rec)
+}
+
 /// 读取会话的「当前链路」。前端聊天窗口据此显示连接图标（LAN / 桥接 / 蓝牙 + 节点数）。
 ///
 /// **有直连时以此刻实际选路为准（hop=0）**，而不是返回"上一条消息"的快照 ——
@@ -2141,10 +2229,17 @@ pub fn ensure_conversation(
     friend_id: String,
 ) -> Result<Conversation, String> {
     let s = state.inner();
-    let name = resolve_nickname(s, &friend_id);
-    let avatar = {
-        let peers = s.peers.lock().unwrap_or_else(|e| e.into_inner());
-        peers.get(&friend_id).and_then(|p| p.avatar.clone())
+    // 「和自己聊天」：名字/头像取**本机**的，否则 `resolve_nickname` 会回落到 device_id 原文，
+    // 会话列表里就成了一串 gosslan-xxxx。
+    let (name, avatar) = if friend_id == s.device_id {
+        (s.self_display_name(), s.self_avatar())
+    } else {
+        let name = resolve_nickname(s, &friend_id);
+        let avatar = {
+            let peers = s.peers.lock().unwrap_or_else(|e| e.into_inner());
+            peers.get(&friend_id).and_then(|p| p.avatar.clone())
+        };
+        (name, avatar)
     };
     {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -2188,6 +2283,12 @@ pub async fn mark_read(state: State<'_, Arc<AppState>>, conv_id: String) -> Resu
         db::mark_read(&dbc, &conv_id).map_err(|e| e.to_string())?;
     }
     if !conv_id.starts_with("group:") {
+        // 自聊（会话 id == 自己）：本机既是发送方也是接收方，没有"对方"可收回执。
+        // 真发出去只会在 `pending_reads` 里留一条永远排不掉的记录（`flush_pending_reads`
+        // 每次建链/心跳都会重试一次）。未读清空已经在上面做完了，这里直接返回。
+        if conv_id == s.device_id {
+            return Ok(());
+        }
         // 通知对方：我已读到「对方最近一条消息」为止。
         // 这里不能取全会话最大 ts：一是可能取到自己发的消息，二是对方消息在本机
         // 落库时被时钟钳制过，直接回传 ts 会让对方用自己的原始时间戳匹配不上。
@@ -2667,6 +2768,15 @@ pub async fn transfer_group_creator(
         };
         let _ = try_send(s, m, &msg).await;
     }
+    // 群内提示：其余成员各自在 `handle_group_creator_changed` 里插一条，发起方（原群主）
+    // 走的是 `from == 自己 ⇒ 直接 return` 那条早退，所以必须在这里补上，否则只有发起方
+    // 看不到这次转让 —— 与「踢人」的 ③ 是同一个坑。
+    let name = resolve_nickname(s, &new_creator);
+    crate::network::transport::insert_group_system_message(
+        s,
+        &group_id,
+        &crate::network::transport::group_creator_changed_text(s, &name),
+    );
     let _ = s.app.emit("groups-updated", &group_id);
     Ok(())
 }
@@ -2941,16 +3051,14 @@ const MAX_POLL_OPTIONS: usize = 10;
 
 /// 创建一条群任务（任意成员）。
 ///
-/// `todo_id` 取**创建事件自身的 msg_id** —— 由调用方先构造载荷再回填，
-/// 这里用一次占位发送不行（msg_id 依赖 payload）。改为：先生成随机 id 作为
-/// `todo_id`（与后续所有 todo_done 的引用键一致），msg_id 仍是事件的哈希。
+/// `todo_id` 用随机 id（`todo-<uuid>`）而不是"创建事件的 msg_id"：后续每一次改状态/改标题
+/// 都是**重新发一份定义**，它们必须引用同一个键，而 msg_id 每次都会变。
 #[tauri::command(async)]
 pub async fn send_group_todo(
     state: State<'_, Arc<AppState>>,
     group_id: String,
     title: String,
     assignees: Vec<String>,
-    due_ts: i64,
 ) -> Result<MessageRecord, String> {
     let s = state.inner();
     let title = title.trim().to_string();
@@ -2960,11 +3068,12 @@ pub async fn send_group_todo(
     if title.chars().count() > MAX_TODO_TITLE_LEN {
         return Err(format!("任务标题不能超过 {MAX_TODO_TITLE_LEN} 字"));
     }
+    check_todo_assignees(s, &group_id, &assignees)?;
     let payload = crate::protocol::TodoPayload {
         todo_id: format!("todo-{}", Uuid::new_v4()),
         title,
         assignees,
-        due_ts,
+        status: crate::protocol::default_todo_status(),
         creator: s.device_id.clone(),
         deleted: false,
     };
@@ -2972,21 +3081,153 @@ pub async fn send_group_todo(
     send_group_payload(s, &group_id, "todo", content).await
 }
 
-/// 勾选 / 取消勾选一条群任务（任意成员；每人只写自己那一格）。
+/// 被指派人必须**至少一个且都是群成员**（用户 2026-09-16：「每个任务可以给一个或多个人」）。
+///
+/// 为什么在命令层拦：指派人同时是**改状态的鉴权依据**（见 `may_update_todo`）——
+/// 放进一个非成员会让这条任务对谁都"改不了状态"（谁都不是被指派人），而群里也没人认识它。
+fn check_todo_assignees(
+    s: &AppState,
+    group_id: &str,
+    assignees: &[String],
+) -> Result<(), String> {
+    if assignees.is_empty() {
+        return Err("请至少指派一名成员".to_string());
+    }
+    let members = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::get_group(&dbc, group_id)
+            .map(|g| g.members)
+            .ok_or_else(|| "群不存在".to_string())?
+    };
+    // ⚠️ `resolve_nickname` 内部会再锁一次 db，必须在放锁之后调用（见文件里那条同名注释）
+    if let Some(bad) = assignees.iter().find(|a| !members.contains(a)) {
+        return Err(format!("{} 不是群成员", resolve_nickname(s, bad)));
+    }
+    Ok(())
+}
+
+/// 取某个任务在**本机消息库**里的最新定义（LWW：`(seq desc, msg_id desc)`）。
+///
+/// 为什么后端也要做这一步：命令层要判权就得知道这条任务的 `creator` 与 `assignees`，
+/// 而它们只存在于事件日志里（这些特性没有专表，见 ADR-0018）。这里只取"最新一条定义"
+/// 这一件事、不做完整折叠；**LWW 规则必须与前端 `src/utils/todos.ts` 的 `newer()` 一致**
+/// （`(seq, msg_id)` 元组比较，同 seq 时按 msg_id 字符串比）。
+///
+/// 已删除（墓碑）的定义照样返回：改/删的鉴权同样需要它的 creator。
+fn latest_todo_def(
+    conn: &rusqlite::Connection,
+    conv_id: &str,
+    todo_id: &str,
+) -> Option<crate::protocol::TodoPayload> {
+    let mut stmt = conn
+        .prepare(
+            // 两种 kind 都要看：创建是 `todo`、后续每次改动是 `todo_update`，
+            // 它们同属一条 LWW 序列（载荷同构）。
+            "SELECT content FROM messages WHERE conv_id = ?1 AND kind IN ('todo', 'todo_update') \
+             ORDER BY seq DESC, msg_id DESC",
+        )
+        .ok()?;
+    let rows = stmt
+        .query_map(rusqlite::params![conv_id], |r| r.get::<_, String>(0))
+        .ok()?;
+    for row in rows.flatten() {
+        if let Ok(p) = serde_json::from_str::<crate::protocol::TodoPayload>(&row) {
+            if p.todo_id == todo_id {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
+/// 谁能改一条任务 —— **纯函数**，便于单测。
+///
+/// | 改动 | 允许谁 |
+/// |---|---|
+/// | 只改状态 | 创建者 **或** 被指派人 |
+/// | 改标题 / 指派人 / 删除（`structural`） | 创建者 **或** 群主 |
+///
+/// 为什么分两档：状态是执行者每天在动的东西（谁被指派谁就能推进），
+/// 而标题/指派人/删除是**任务的归属**，只有创建者或群主能动。
+fn may_update_todo(
+    def: &crate::protocol::TodoPayload,
+    actor: &str,
+    group_creator: &str,
+    structural: bool,
+) -> bool {
+    if def.creator == actor {
+        return true;
+    }
+    if structural {
+        group_creator == actor
+    } else {
+        def.assignees.iter().any(|a| a == actor)
+    }
+}
+
+/// 更新一条群任务：改状态 / 改标题与指派人 / 删除。
+///
+/// 为什么三件事合成一个命令：它们都是"重新发一份定义"（LWW per `todo_id`），
+/// 构造与校验几乎相同，只有鉴权口径不同（见 [`may_update_todo`]）——
+/// 拆成三个命令就是三份重复的构造/校验代码。
+///
+/// ⚠️ `creator` **不从参数来**：由服务端从库里最新定义回填。否则任何人传一个别人的
+/// creator 就能改别人的任务（而 creator 正是鉴权依据）。
 #[tauri::command(async)]
-pub async fn set_group_todo_done(
+pub async fn update_group_todo(
     state: State<'_, Arc<AppState>>,
     group_id: String,
     todo_id: String,
-    done: bool,
+    title: String,
+    assignees: Vec<String>,
+    status: String,
+    deleted: bool,
 ) -> Result<MessageRecord, String> {
     let s = state.inner();
-    if todo_id.is_empty() {
-        return Err("缺少任务标识".to_string());
+    let title = title.trim().to_string();
+    if !deleted {
+        if title.is_empty() {
+            return Err("任务标题不能为空".to_string());
+        }
+        if title.chars().count() > MAX_TODO_TITLE_LEN {
+            return Err(format!("任务标题不能超过 {MAX_TODO_TITLE_LEN} 字"));
+        }
+        if !crate::protocol::todo_status_is_valid(&status) {
+            return Err("任务状态不合法".to_string());
+        }
+        check_todo_assignees(s, &group_id, &assignees)?;
     }
-    let content = serde_json::to_string(&crate::protocol::TodoDonePayload { todo_id, done })
-        .map_err(|e| e.to_string())?;
-    send_group_payload(s, &group_id, "todo_done", content).await
+    let (def, group_creator) = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        let def = latest_todo_def(&dbc, &format!("group:{group_id}"), &todo_id)
+            .ok_or_else(|| "任务不存在".to_string())?;
+        let creator = db::get_group(&dbc, &group_id)
+            .map(|g| g.creator)
+            .ok_or_else(|| "群不存在".to_string())?;
+        (def, creator)
+    };
+    // "结构改动"：删、换标题、换指派人。只改状态时不算（那是被指派人的日常动作）。
+    let structural = deleted || title != def.title || assignees != def.assignees;
+    if !may_update_todo(&def, &s.device_id, &group_creator, structural) {
+        return Err(if structural {
+            "只有任务创建者或群主可以修改任务".to_string()
+        } else {
+            "只有创建者或被指派人可以修改任务状态".to_string()
+        });
+    }
+    let payload = crate::protocol::TodoPayload {
+        todo_id,
+        title,
+        assignees,
+        status,
+        creator: def.creator,
+        deleted,
+    };
+    let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
+    // ⚠️ 发 `todo_update`（Silent）而不是 `todo`（Card）：改状态/改标题/删除是**状态微调**，
+    // 不该给全群记未读、弹通知（创建才该）。两者载荷同构、折叠也是同一条 LWW 规则，
+    // 区别只在通知口径 —— 详见 `protocol.rs` 的 `WIRE_KINDS` 注释。
+    send_group_payload(s, &group_id, "todo_update", content).await
 }
 
 /// 发起投票（任意成员）。
@@ -4110,6 +4351,11 @@ pub async fn send_file(
     path: String,
 ) -> Result<String, String> {
     let s = state.inner();
+    // 「和自己聊天」暂不支持附件（用户 2026-09-16：先只支持文本）。这里给明确原因，
+    // 而不是让用户看到下面那句"对方不是好友"——那与自聊场景完全对不上。
+    if friend_id == s.device_id {
+        return Err("和自己聊天暂不支持图片或文件".to_string());
+    }
     // 好友关系检查
     {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -4958,6 +5204,10 @@ pub fn search_chat_history(
 
 /// 会话的显示名 / 类型 / 头像（群聊与单聊各取一处，与其它列表口径一致）。
 fn conversation_meta(s: &AppState, conv_id: &str) -> (String, String, Option<String>) {
+    // 「和自己聊天」的会话 id 就是本机 device_id（见 `insert_self_message`）
+    if conv_id == s.device_id {
+        return (s.self_display_name(), "single".to_string(), s.self_avatar());
+    }
     let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(group_id) = conv_id.strip_prefix("group:") {
         if let Some(g) = db::get_group(&dbc, group_id) {
@@ -5162,9 +5412,21 @@ static AUX_WINDOW_CREATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 ///
 /// 这就是"它已经打开了，我再点一下，还是它，不会开出第二个"：
 /// 命令层与按钮层都不再需要自己去记"开没开过"。
+///
+/// `geo` 非空时会**重新把它摆到主窗口正中**（只动位置，不动尺寸）：窗口是常驻的，而主窗口
+/// 可以被拖到另一块屏幕上 —— 摆着不动的话，第二次打开它就留在**上一块屏**上
+/// （用户 2026-09-16 多屏反馈的"弹到另一个屏幕上"有一半来自这里）。尺寸不重设，
+/// 是为了留住用户自己拉过的大小。
 #[cfg(desktop)]
-fn show_existing_aux_window(app: &tauri::AppHandle, label: &str) -> bool {
+fn show_existing_aux_window(
+    app: &tauri::AppHandle,
+    label: &str,
+    geo: Option<AuxWindowGeometry>,
+) -> bool {
     if let Some(win) = app.get_webview_window(label) {
+        if let Some(g) = geo {
+            recenter_aux_window(&win, &g);
+        }
         // `unminimize`：窗口被最小化过的话，只 show 不会把它拉回前台。
         let _ = win.unminimize();
         let _ = win.show();
@@ -5190,20 +5452,28 @@ fn install_hide_on_close(win: &tauri::WebviewWindow) {
 ///
 /// 所有独立窗口都走这里，别在各自的命令里各写一遍 —— 单例与并发安全是"每个窗口都要有"的
 /// 性质，散着写就一定会漏（这正是用户 2026-09-12 报的"连点会出怪事"的来源）。
+///
+/// `geo` 是**按主窗口**算好的几何（见 [`aux_window_geometry`]）：创建时用它摆尺寸与位置，
+/// 已存在时用它把窗口重新摆回主窗口那块屏（见 [`show_existing_aux_window`]）。
 #[cfg(desktop)]
-fn ensure_aux_window<F>(app: &tauri::AppHandle, label: &str, build: F) -> Result<(), String>
+fn ensure_aux_window<F>(
+    app: &tauri::AppHandle,
+    label: &str,
+    geo: Option<AuxWindowGeometry>,
+    build: F,
+) -> Result<(), String>
 where
     F: FnOnce() -> Result<tauri::WebviewWindow, tauri::Error>,
 {
     // 快路径：已经建过（包括"上次关掉只是隐藏了"）⇒ 显示 + 聚焦。
-    if show_existing_aux_window(app, label) {
+    if show_existing_aux_window(app, label, geo) {
         return Ok(());
     }
     // 慢路径：同一时刻只允许一个创建者。等锁期间别人可能已经建好了 ⇒ 拿到锁后**再查一次**。
     let _guard = AUX_WINDOW_CREATE_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    if show_existing_aux_window(app, label) {
+    if show_existing_aux_window(app, label, geo) {
         return Ok(());
     }
     let win = build().map_err(|e| format!("创建 {label} 窗口失败: {e}"))?;
@@ -5213,6 +5483,138 @@ where
     let _ = win.show();
     let _ = win.set_focus();
     Ok(())
+}
+
+/// 独立窗口衬在主窗口里的留边（**逻辑**像素）：子窗口与主窗口边缘至少隔开这么多。
+#[cfg(desktop)]
+const AUX_WINDOW_MARGIN: f64 = 24.0;
+
+/// 独立窗口的几何 —— **全部是物理像素**（理由见 [`fit_aux_window`]）。
+#[cfg(desktop)]
+#[derive(Clone, Copy)]
+struct AuxWindowGeometry {
+    /// 主窗口外框尺寸 / 左上角（物理像素，虚拟桌面坐标）：子窗口要在它里面居中。
+    main_size: (u32, u32),
+    main_pos: (i32, i32),
+    /// 子窗口内尺寸（物理像素）。
+    size: (u32, u32),
+    /// 子窗口最小内尺寸（物理像素）。必须 ≤ `size`，否则系统会把窗口顶回最小值。
+    min: (u32, u32),
+}
+
+#[cfg(desktop)]
+impl AuxWindowGeometry {
+    /// 居中位置：子窗口**外框**在主窗口外框内居中（物理像素）。
+    ///
+    /// 用外框而不是内尺寸：子窗口带系统标题栏（`tao` 的 WM_DPICHANGED 与创建路径都会按
+    /// 缩放重新算边框厚度），按内尺寸居中会带上半个标题栏的偏差 —— 换到不同缩放的屏上更明显。
+    fn centered_pos(&self, aux_outer: (u32, u32)) -> (i32, i32) {
+        (
+            self.main_pos.0 + ((self.main_size.0 as i64 - aux_outer.0 as i64) / 2) as i32,
+            self.main_pos.1 + ((self.main_size.1 as i64 - aux_outer.1 as i64) / 2) as i32,
+        )
+    }
+}
+
+/// 按**主窗口**算独立窗口的尺寸：装得下就用设计尺寸，装不下按主窗口缩到装得下；
+/// 位置在主窗口内居中（见 [`AuxWindowGeometry::centered_pos`]）。
+///
+/// ## 为什么参照物是主窗口
+///
+/// 用户 2026-09-16 反馈「新窗口打开时没有居中，而且比主窗口还大很多」：主窗口是**可缩放**的，
+/// 用户把它拉小之后，一块按屏幕算出来的子窗口就会比它大、而且落在屏幕正中 —— 离它该贴着的
+/// 那个窗口很远。子窗口的参照物只能是它**从哪来**。
+///
+/// ## 为什么全程物理像素
+///
+/// 用户 2026-09-16 多屏反馈「子窗口弹到另一个屏幕上、位置也没居中」：
+/// `WebviewWindowBuilder::position/inner_size` 只收**逻辑**坐标，而 `tao` 在创建窗口时会把
+/// 逻辑坐标**逐个显示器**地按该显示器的缩放换回物理，取第一个"换算结果落在自己范围内"的显示器
+/// （`tao/src/platform_impl/windows/window.rs` 的 `available_monitors().find_map(..)`）；
+/// 一个都没命中就退回 `CW_USEDEFAULT`（主屏层叠位置）：
+///
+/// - 主窗口在 150% 的副屏、另一块屏 100% 时：按副屏缩放算出的逻辑坐标，再按 100% 换算回来，
+///   正好落进那块屏 ⇒ **子窗口跑到另一块屏幕上**；
+/// - 尺寸也走同一条换算（按"选中显示器"的缩放）⇒ 大小同样不对。
+///
+/// 物理坐标没有这一步换算。所以尺寸/位置都不走 builder，而是 `build()` **之后**用物理值落地
+/// （`apply_aux_geometry`）—— 窗口以 `visible(false)` 创建，摆好再 `show()`，用户看不到跳变。
+///
+/// `None` = 拿不到主窗口（还没建出来 / 平台查询失败），此时保持 builder 的设计尺寸 + 系统默认摆位。
+#[cfg(desktop)]
+fn aux_window_geometry(
+    app: &tauri::AppHandle,
+    ideal: (f64, f64),
+    min: (f64, f64),
+) -> Option<AuxWindowGeometry> {
+    let main = app.get_webview_window(crate::WINDOW_MAIN)?;
+    // 主窗口所在显示器的缩放：子窗口要跟主窗口"看起来"一样大，就用它的缩放把设计尺寸换成物理。
+    let scale = main.scale_factor().ok()?;
+    let outer = main.outer_size().ok()?; // 物理像素：外框（主窗口无边框，外框≈内尺寸）
+    let origin = main.outer_position().ok()?; // 物理像素：虚拟桌面坐标（副屏可能是负的/上千）
+    if outer.width == 0 || outer.height == 0 {
+        return None;
+    }
+    Some(fit_aux_window(
+        (outer.width, outer.height),
+        (origin.x, origin.y),
+        scale,
+        ideal,
+        min,
+    ))
+}
+
+/// [`aux_window_geometry`] 的**纯计算**部分（拿不到主窗口尺寸的那些查询不在里面）。
+///
+/// 抽出来的理由只有一个：能在 `cargo test` 里直接验"永远不比主窗口大 + 居中"这两条 ——
+/// 它们都是**几何不变式**，靠真机肉眼是量不准的（用户报的就是"没居中、还比主窗口大"）。
+#[cfg(desktop)]
+fn fit_aux_window(
+    main_size: (u32, u32),
+    main_pos: (i32, i32),
+    scale: f64,
+    ideal: (f64, f64),
+    min: (f64, f64),
+) -> AuxWindowGeometry {
+    // 逻辑 → 物理（用主窗口所在显示器的缩放）
+    let px = |v: f64| (v * scale).round().max(1.0) as u32;
+    let margin = px(AUX_WINDOW_MARGIN);
+    // 目标是主窗口内"两侧各留 margin"的那块区域；设计尺寸装不下就缩到刚好装下。
+    let fit = |want: u32, avail: u32| want.min(avail.saturating_sub(2 * margin).max(1));
+    let (w, h) = (fit(px(ideal.0), main_size.0), fit(px(ideal.1), main_size.1));
+    AuxWindowGeometry {
+        main_size,
+        main_pos,
+        size: (w, h),
+        // 最小尺寸不能大于实际尺寸：否则系统会把窗口顶回最小值，"缩小"等于白做。
+        // 顺带一提，这里的最小尺寸也必须用**物理**值下发：builder 上的 `min_inner_size`
+        // 是逻辑值，会在另一块缩放的屏上被换算成别的物理下限。
+        min: (px(min.0).min(w), px(min.1).min(h)),
+    }
+}
+
+/// 把几何**落地到新窗口**上（物理像素）。必须在 `show()` 之前调用，且窗口要隐藏着建。
+#[cfg(desktop)]
+fn apply_aux_geometry(win: &tauri::WebviewWindow, geo: AuxWindowGeometry) {
+    use tauri::{PhysicalSize, Size};
+    let _ = win.set_min_size(Some(Size::Physical(PhysicalSize::new(geo.min.0, geo.min.1))));
+    let _ = win.set_size(Size::Physical(PhysicalSize::new(geo.size.0, geo.size.1)));
+    recenter_aux_window(win, &geo);
+}
+
+/// 把窗口摆到主窗口正中（**只动位置，不动尺寸**）。
+///
+/// 位置按**真实外框**算：外框含标题栏与边框，而这两样在不同缩放的屏上厚度不同，
+/// 事先估算不出来（所以要在尺寸确定之后再问窗口自己）。尺寸不动，是为了留住用户自己拉过的大小。
+#[cfg(desktop)]
+fn recenter_aux_window(win: &tauri::WebviewWindow, geo: &AuxWindowGeometry) {
+    use tauri::{PhysicalPosition, Position};
+    let outer = match win.outer_size() {
+        Ok(s) => (s.width, s.height),
+        Err(_) => geo.size, // 拿不到就按内尺寸居中（差半个标题栏，无伤）
+    };
+    let (x, y) = geo.centered_pos(outer);
+    let _ = win.set_position(Position::Physical(PhysicalPosition::new(x, y)));
 }
 
 /// 桌面端：打开独立的「运行日志」窗口（已存在则聚焦）。
@@ -5236,20 +5638,33 @@ pub fn open_log_window(
     // 克隆一份给闭包：`ensure_aux_window` 同时借用 `app` 做存在性检查，
     // 闭包再 move 走同一个 handle 会借不过（且闭包必须 `'static` 才能交给 Tauri 创建）。
     let build_app = app.clone();
-    ensure_aux_window(&app, crate::WINDOW_LOGS, move || {
-        WebviewWindowBuilder::new(
+    // 尺寸与位置按主窗口算（见 aux_window_geometry 的说明）；只在**创建**时算一次 ——
+    // 常驻窗口之后都是 show/focus，反复挪动用户已经摆好的窗口反而更烦。
+    let geo = aux_window_geometry(&app, (760.0, 560.0), (420.0, 320.0));
+    ensure_aux_window(&app, crate::WINDOW_LOGS, geo, move || {
+        let win = WebviewWindowBuilder::new(
             &build_app,
             crate::WINDOW_LOGS,
             WebviewUrl::App("logs.html".into()),
         )
         .title(title)
+        // 设计尺寸只作**初值**（拿不到主窗口时它就是最终值）：真正的几何在 build 之后用
+        // 物理像素落地 —— builder 的 `position` / `inner_size` 只有逻辑坐标，多屏不同缩放时
+        // 会被 tao 按"逐个显示器试算"选错屏（详见 aux_window_geometry）。
         .inner_size(760.0, 560.0)
         .min_inner_size(420.0, 320.0)
         // 背景色跟随主题：窗口的静态背景色只能是浅/深之一，暗色主题下不先设对就会"闪一下白"
         // （与主窗口冷启动白闪同源）。放在 builder 上（而不是 build 之后再 set），
         // 少一帧错色。
         .background_color(bg)
-        .build()
+        // 隐藏创建：`ensure_aux_window` 随后就会 `show()`，中间这段正好用来摆位置与尺寸，
+        // 用户不会看到窗口先在默认位置上闪一下、再跳到正确的位置。
+        .visible(false)
+        .build()?;
+        if let Some(g) = geo {
+            apply_aux_geometry(&win, g);
+        }
+        Ok(win)
     })
 }
 
@@ -5276,17 +5691,25 @@ pub fn open_settings_window(
     let bg = aux_window_background(&state);
     let title = state.display_name(); // 同 open_log_window：占位标题，文档加载后被接管
     let build_app = app.clone(); // 同 open_log_window：闭包要 `'static`，不能再借 `app`
-    ensure_aux_window(&app, crate::WINDOW_SETTINGS, move || {
-        WebviewWindowBuilder::new(
+    // 尺寸与位置按主窗口算，理由见 aux_window_geometry。
+    let geo = aux_window_geometry(&app, (780.0, 600.0), (560.0, 420.0));
+    ensure_aux_window(&app, crate::WINDOW_SETTINGS, geo, move || {
+        let win = WebviewWindowBuilder::new(
             &build_app,
             crate::WINDOW_SETTINGS,
             WebviewUrl::App("settings.html".into()),
         )
         .title(title)
+        // 同 open_log_window：设计尺寸只作初值，几何在 build 之后按物理像素落地。
         .inner_size(780.0, 600.0)
         .min_inner_size(560.0, 420.0)
         .background_color(bg)
-        .build()
+        .visible(false)
+        .build()?;
+        if let Some(g) = geo {
+            apply_aux_geometry(&win, g);
+        }
+        Ok(win)
     })
 }
 
@@ -5359,6 +5782,72 @@ pub fn close_log_window(_app: tauri::AppHandle) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{friend_is_online, FRIEND_ONLINE_GRACE_MS};
+
+    /// 独立窗口的几何不变式：**永远不比主窗口大**、在主窗口内**居中**、
+    /// 且最小尺寸不会把窗口顶回比目标更大。
+    ///
+    /// 为什么必须钉住：用户 2026-09-16 报的正是这个（「新窗口没居中，而且比主窗口还大很多」），
+    /// 而这几条都是**几何量**—— 肉眼量不准，也只能靠算。
+    #[cfg(desktop)]
+    #[test]
+    fn aux_window_fits_inside_the_main_window_and_is_centered() {
+        use super::{fit_aux_window, AUX_WINDOW_MARGIN};
+        // 两组真实参数：设置 780×600（最小 560×420）、日志 760×560（最小 420×320）。
+        let cases = [((780.0, 600.0), (560.0, 420.0)), ((760.0, 560.0), (420.0, 320.0))];
+        // 主窗口尺寸（物理像素）：默认 1000×680@100%、拉小、很小、放大、以及 125%/150% 缩放。
+        let mains = [
+            ((1000u32, 680u32), 1.0),
+            ((900, 700), 1.0),
+            ((700, 500), 1.0),
+            ((400, 300), 1.0),
+            ((1600, 1000), 1.0),
+            ((1500, 1020), 1.25),
+            ((1700, 1200), 1.5),
+        ];
+        // 主窗口左上角：主屏 (0,0)、右侧副屏 (1920,0)、**左侧**副屏（负坐标）——多屏必须都对。
+        let origins = [(0i32, 0i32), (1920, 0), (-1920, 100), (100, 50)];
+        for (ideal, min) in cases {
+            for (size, scale) in mains {
+                for main_pos in origins {
+                    let g = fit_aux_window(size, main_pos, scale, ideal, min);
+                    assert!(
+                        g.size.0 <= size.0 && g.size.1 <= size.1,
+                        "子窗口 {:?} 不能比主窗口 {:?} 大（ideal={ideal:?} scale={scale}）",
+                        g.size,
+                        size
+                    );
+                    assert!(
+                        g.min.0 <= g.size.0 && g.min.1 <= g.size.1,
+                        "最小尺寸 {:?} 不能大于实际尺寸 {:?} —— 否则系统会把窗口顶回去，缩小等于白做",
+                        g.min,
+                        g.size
+                    );
+                    // 居中：按真实外框算，左右/上下留边相等，且整体在主窗口内
+                    let outer = (g.size.0 + 16, g.size.1 + 39); // 假装有 16/39 的边框与标题栏
+                    let (x, y) = g.centered_pos(outer);
+                    let left = x - main_pos.0;
+                    let right = main_pos.0 + size.0 as i32 - (x + outer.0 as i32);
+                    assert!((left - right).abs() <= 1, "水平未居中：左 {left} 右 {right}");
+                    let top = y - main_pos.1;
+                    let bottom = main_pos.1 + size.1 as i32 - (y + outer.1 as i32);
+                    assert!((top - bottom).abs() <= 1, "垂直未居中：上 {top} 下 {bottom}");
+                    let (ex, ey) = g.centered_pos(g.size);
+                    assert!(ex >= main_pos.0 && ey >= main_pos.1, "不能跑到主窗口左上角之外");
+                }
+            }
+        }
+        // 装得下时必须**保持设计尺寸 × 主窗口缩放**（不能因为主窗口大就无限放大）
+        let g = fit_aux_window((1600, 1000), (0, 0), 1.0, (780.0, 600.0), (560.0, 420.0));
+        assert_eq!(g.size, (780, 600), "主窗口够大时应保持设计尺寸");
+        let g = fit_aux_window((3000, 2000), (0, 0), 1.5, (780.0, 600.0), (560.0, 420.0));
+        assert_eq!(g.size, (1170, 900), "150% 屏上 780×600 逻辑 = 1170×900 物理");
+        assert_eq!(g.min, (840, 630), "最小尺寸也要按同一缩放换成物理值");
+        // 装不下时把边距留够（24 逻辑像素 × 缩放）
+        let g = fit_aux_window((700, 500), (0, 0), 1.0, (780.0, 600.0), (560.0, 420.0));
+        assert_eq!(g.size, (700 - 2 * AUX_WINDOW_MARGIN as u32, 500 - 2 * AUX_WINDOW_MARGIN as u32));
+        let g = fit_aux_window((800, 600), (0, 0), 2.0, (780.0, 600.0), (560.0, 420.0));
+        assert_eq!(g.size, (800 - 2 * (AUX_WINDOW_MARGIN * 2.0) as u32, 600 - 2 * (AUX_WINDOW_MARGIN * 2.0) as u32));
+    }
 
     /// `generate_handler!` 里列出的命令在**移动端也必须存在**。
     ///
@@ -5855,5 +6344,79 @@ mod tests {
         // ⑥ 时钟回拨 / 毫秒溢出：不允许 panic，也不允许负等待
         let p = bt_switch_plan(false, true, Some(true), 10_000, 5_000, CD);
         assert!(p.apply && p.wait_ms == CD, "时钟回拨时按满冷却等待：{p:?}");
+    }
+
+    /// `latest_todo_def`：从消息日志里取"最新一条定义"，规则必须与前端 `newer()` 一致。
+    ///
+    /// 为什么这条必须有：它是**服务端鉴权的唯一依据**（谁创建、指派了谁）——
+    /// 取错一条（例如按随机 id 排序而没按 `seq`）就会让"谁能改"判错，
+    /// 而这类错误在界面上完全看不出来（只是某些人少了几个按钮、或多了不该有的权限）。
+    #[test]
+    fn latest_todo_def_follows_the_same_lww_rule_as_the_frontend() {
+        use crate::protocol::TodoPayload;
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(crate::db::SCHEMA).unwrap();
+        let conv = "group:g1";
+        let payload = |title: &str| TodoPayload {
+            todo_id: "todo-1".into(),
+            title: title.into(),
+            assignees: vec!["alice".into()],
+            status: "todo".into(),
+            creator: "alice".into(),
+            deleted: false,
+        };
+        let insert = |msg_id: &str, seq: i64, p: &TodoPayload| {
+            conn.execute(
+                "INSERT INTO messages (msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status) \
+                 VALUES (?1, ?2, 'alice', 'bob', 'todo', ?3, 0, ?4, 'sent')",
+                rusqlite::params![msg_id, conv, serde_json::to_string(p).unwrap(), seq],
+            )
+            .unwrap();
+        };
+        insert("m1", 5, &payload("旧标题"));
+        insert("m2", 6, &payload("新标题"));
+        insert("m3", 6, &payload("同 seq 但 msg_id 更大"));
+        assert_eq!(
+            super::latest_todo_def(&conn, conv, "todo-1").unwrap().title,
+            "同 seq 但 msg_id 更大",
+            "同 seq 时必须按 msg_id 取更大者（与前端 newer() 同规则）"
+        );
+        assert!(
+            super::latest_todo_def(&conn, conv, "todo-2").is_none(),
+            "别的 todo_id 不许串台"
+        );
+        assert!(
+            super::latest_todo_def(&conn, "group:g2", "todo-1").is_none(),
+            "别的群不许串台"
+        );
+    }
+
+    /// 任务改动的鉴权判据（用户口径：**被指派人勾选 + 创建者可改**）。
+    #[test]
+    fn todo_update_permission_matrix() {
+        use crate::protocol::TodoPayload;
+        let def = TodoPayload {
+            todo_id: "t".into(),
+            title: "x".into(),
+            assignees: vec!["alice".into(), "bob".into()],
+            status: "todo".into(),
+            creator: "alice".into(),
+            deleted: false,
+        };
+        // 创建者：改状态、改结构都可以
+        assert!(super::may_update_todo(&def, "alice", "owner", false));
+        assert!(super::may_update_todo(&def, "alice", "owner", true));
+        // 被指派人：只能改状态，不能改标题/指派人/删除
+        assert!(super::may_update_todo(&def, "bob", "owner", false));
+        assert!(
+            !super::may_update_todo(&def, "bob", "owner", true),
+            "被指派人不得改标题 / 换指派人 / 删除任务"
+        );
+        // 群主：能改结构；但"改状态"不是他的特权（除非他同时是创建者或被指派人）
+        assert!(super::may_update_todo(&def, "owner", "owner", true));
+        assert!(!super::may_update_todo(&def, "owner", "owner", false));
+        // 无关成员：什么都不行
+        assert!(!super::may_update_todo(&def, "carol", "owner", false));
+        assert!(!super::may_update_todo(&def, "carol", "owner", true));
     }
 }

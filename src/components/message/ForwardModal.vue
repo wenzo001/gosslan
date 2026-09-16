@@ -45,7 +45,7 @@ const KIND_LABELS: Record<MsgKind, string> = {
   announcement: t("group.announce"),
   announcement_delete: t("group.announce"),
   todo: t("todo.title"),
-  todo_done: t("todo.title"),
+  todo_update: t("todo.title"),
   poll: t("poll.title"),
   poll_vote: t("poll.title"),
 };
@@ -69,7 +69,7 @@ const kindLabel = computed(() => KIND_LABELS[props.kind] ?? t("msg.message"));
         autocapitalize="off"
         spellcheck="false"
         :placeholder="t('msg.searchConversation')"
-        class="w-full rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-transparent px-3 py-2 text-[13px] outline-none placeholder:text-[var(--gosslan-text-2)] focus:border-[var(--gosslan-primary)]"
+        class="w-full rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-transparent px-3 py-2 text-[13px] outline-none placeholder:text-[var(--gosslan-text-2)] focus:border-transparent"
       />
 
       <div class="max-h-64 select-none overflow-y-auto">
