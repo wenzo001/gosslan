@@ -9,8 +9,22 @@
 //! - **智能分流**：双通道同时开启时按流量特征分流——大负载走局域网高带宽通道，
 //!   轻量心跳 / 控制信令优先走蓝牙。
 
+pub mod ble_framing;
 pub mod bluetooth;
+// BLE 外设（GATT server）角色：只有 macOS + `--features bluetooth` 才编译。
+#[cfg(all(feature = "bluetooth", target_os = "macos"))]
+pub mod bluetooth_peripheral;
+// Android 外设角色的 Rust 侧（JNI 桥，见该文件注释与 ADR-0015 §7.7）。
+#[cfg(all(feature = "bluetooth", target_os = "android"))]
+pub mod ble_android;
+// Windows 外设角色的 Rust 侧（WinRT `GattServiceProvider`，见该文件注释与 ADR-0015 §7.9）。
+// 与 macOS/Android 是**第三套平台实现**，但对外接口逐字同形 ⇒ `network/ble.rs` 三边共用一份。
+// 没有它，Windows 从不广播 ⇒ 手机永远发现不了 Windows（真机 2026-09-13，
+// 见 docs/notes/windows-ble-diagnosis-2026-09-13.md）。
+#[cfg(all(feature = "bluetooth", target_os = "windows"))]
+pub mod bluetooth_peripheral_windows;
 pub mod lan;
+pub mod tcp;
 
 use std::sync::Arc;
 
@@ -63,6 +77,12 @@ pub struct ChannelStatus {
     pub available: bool,
     pub running: bool,
     pub peers: usize,
+    /// **持久化的用户偏好**（“用户选过什么”），与 running（“此刻是否在跑”）分开。
+    ///
+    /// 为什么必须分成两个字段：快照里 enabled 表示“运行时是否在跑”，应用刚启动时必然是
+    /// false ⇒ 前端无法区分“用户明确关掉了”与“还没启动”，自动拉起（ensureBluetoothOn）
+    /// 就会把用户的关闭选择覆盖掉。真机 2026-09-14：电脑端关掉蓝牙，退出重进又被打开。
+    pub preferred: bool,
 }
 
 /// 双通道聚合管理器：通道开关、分流决策、状态汇总。
@@ -75,12 +95,10 @@ pub struct TransportManager {
 
 impl TransportManager {
     pub fn new(state: Arc<AppState>) -> Self {
-        // 从本地设置恢复蓝牙通道开关状态
+        // 从本地设置恢复蓝牙通道开关状态（缺省值由平台决定：手机默认开，见 `db::get_bt_enabled`）
         let bt_enabled = {
             let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-            crate::db::get_setting(&dbc, "bt_enabled")
-                .map(|v| v == "1")
-                .unwrap_or(false)
+            crate::db::get_bt_enabled(&dbc)
         };
         Self {
             lan: lan::LanTransport::new(state),
@@ -97,6 +115,11 @@ impl TransportManager {
     }
 
     /// 切换蓝牙通道开关。
+    ///
+    /// ⚠️ 开了 `bluetooth` feature 时**不用它**：那时真正的运行时是 `network::ble`
+    /// （扫描/连接/握手/链路登记），命令层直接调它的 `start/stop`；
+    /// 本方法只服务"未编译 BLE 后端"的默认构建（保留它才能给出明确错误）。
+    #[cfg_attr(feature = "bluetooth", allow(dead_code))]
     pub async fn set_bluetooth_enabled(&mut self, on: bool) -> Result<(), String> {
         if on == self.bt_enabled {
             return Ok(());
@@ -120,6 +143,8 @@ impl TransportManager {
                 available: self.lan.available(),
                 running: lan_running,
                 peers: self.lan.peer_count(),
+                // 局域网偏好由 build_runtime_snapshot 从 lan_enabled 覆盖（这里没有 db 句柄）。
+                preferred: lan_running,
             },
             ChannelStatus {
                 channel: "bluetooth",
@@ -127,6 +152,7 @@ impl TransportManager {
                 available: self.bluetooth.available(),
                 running: self.bluetooth.running(),
                 peers: self.bluetooth.peer_count(),
+                preferred: self.bt_enabled,
             },
         ]
     }

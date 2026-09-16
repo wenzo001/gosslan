@@ -30,3 +30,20 @@ export const isMac =
   typeof navigator !== "undefined" && typeof navigator.userAgent === "string"
     ? isMacUA(navigator.userAgent)
     : false;
+
+/**
+ * 判断一段 UA 是否来自 Android（纯函数，便于单测）。
+ *
+ * 用途：移动端文件交互与桌面不同 —— Android 上系统经常没有能"打开"某类文件的应用
+ * （用户实测：除图片外基本都报错），所以点文件应改为"另存为"（系统 SAF 保存对话框）。
+ * 必须按 UA 判平台，不能按屏幕宽度（窄桌面窗口也会命中 isMobile）。
+ */
+export function isAndroidUA(ua: string): boolean {
+  return /Android/i.test(ua);
+}
+
+/** 运行时平台判定（Android）。与 isMac 同一套 navigator 守卫。 */
+export const isAndroid =
+  typeof navigator !== "undefined" && typeof navigator.userAgent === "string"
+    ? isAndroidUA(navigator.userAgent)
+    : false;

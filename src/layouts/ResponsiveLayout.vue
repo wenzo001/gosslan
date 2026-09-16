@@ -1,22 +1,27 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
-import { ref, onMounted, onUnmounted, watch } from "vue";
+import { ref, onMounted, onUnmounted, watch, watchEffect } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
-import { APP_ACTION, bindMenuEvents } from "@/api";
+import { api, APP_ACTION, bindMenuEvents } from "@/api";
+import { launchAuxWindow, useWindowOpening } from "@/composables/useWindowLauncher";
 import { useShortcuts } from "@/composables/useShortcuts";
+import { useBackLayer } from "@/composables/useBackLayer";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import NavRail from "@/components/NavRail.vue";
 import TitleBar from "@/components/TitleBar.vue";
 import ConversationList from "@/components/ConversationList.vue";
 import ChatWindow from "@/components/ChatWindow.vue";
+import UnreadBadge from "@/components/UnreadBadge.vue";
 import FriendProfile from "@/components/FriendProfile.vue";
 import FriendRequestList from "@/components/conversation/FriendRequestList.vue";
 import SettingsPanel from "@/components/SettingsPanel.vue";
 import AddFriendModal from "@/components/AddFriendModal.vue";
+import ChatSearchDialog from "@/components/search/ChatSearchDialog.vue";
 import GroupCreateModal from "@/components/GroupCreateModal.vue";
 import ShareDirectory from "@/components/ShareDirectory.vue";
-import { CheckCircle2, Info, MessageCircle, Settings, Users, XCircle } from "lucide-vue-next";
+import LogViewer from "@/components/LogViewer.vue";
+import { CheckCircle2, Info, MessageCircle, ScrollText, Settings, Users, XCircle } from "lucide-vue-next";
 import type { Friend, PendingRequest } from "@/types";
 
 const app = useAppStore();
@@ -29,10 +34,66 @@ const settingsOpen = ref(false);
 const addFriendOpen = ref(false);
 const groupOpen = ref(false);
 const shareOpen = ref(false);
+const logsOpen = ref(false);
 
+/**
+ * 打开设置。
+ * 桌面端：**独立窗口**（用户 2026-09-12 反馈：「PC 端的设置页面可以按照这种布局，
+ * 弹一个单独的窗口」——参考图是左侧窄导航 + 右侧内容的设置窗口，不是盖在聊天上的弹窗）。
+ * 移动端：整页设置（`SettingsPanel` 的全屏分支，iOS 标准）。
+ * 独立窗口不可用时**回退到应用内弹窗**，保证「设置」在任何环境下都打得开。
+ */
 function openSettings() {
-  settingsOpen.value = true;
-  if (app.isMobile) app.mobileView = "list";
+  if (app.isMobile) {
+    // ⚠️ **不要**在这里改 `app.mobileView`：设置是整页浮层，盖在当前页面之上；
+    // 一旦改成 "list"，用户从「聊天」里打开设置、返回时就会落到会话列表，
+    // 而不是回到进入前的页面（用户 2026-09-12 晚 #1：「点击返回的话，
+    // 就是返回到进入之前的上一个页面」）。保持底层视图不动，返回即还原。
+    settingsOpen.value = true;
+    return;
+  }
+  // 独立窗口：单飞 + 连点防抖（`useWindowLauncher`）。窗口实例唯一性由后端保证。
+  void launchAuxWindow("settings", () => api.openSettingsWindow()).catch(() => {
+    // 独立窗口开不出来（能力缺失 / 创建失败）时回退到应用内设置页：
+    // 「设置」在任何环境下都必须打得开，宁可退化成弹窗也不能点了没反应。
+    settingsOpen.value = true;
+  });
+}
+
+/** 打开运行日志：桌面端开独立窗口，移动端跳全屏页面（带返回）。 */
+function openLogs() {
+  if (app.isMobile) {
+    logsOpen.value = true;
+    return;
+  }
+  void launchAuxWindow("logs", () => api.openLogWindow()).catch((e) =>
+    app.toastError(e, t("common.operationFail")),
+  );
+}
+
+/** 按钮 pending 反馈：正在打开时按钮显示忙碌态（冷启动那一下用户能立刻看到"点到了"）。 */
+const settingsOpening = useWindowOpening("settings");
+const logsOpening = useWindowOpening("logs");
+
+/** 搜索聊天记录结果页的开关与初始关键词（由会话列表搜索框回车触发）。 */
+const searchOpen = ref(false);
+const searchSeed = ref("");
+
+function openSearchHistory(keyword: string) {
+  searchSeed.value = keyword;
+  searchOpen.value = true;
+}
+
+/**
+ * 从结果页「进入聊天」：打开该会话并**跳到命中那一条**。
+ * 跳转复用 `locateMessageInConv`（它会翻页直到找到那条消息），失败时提示而不是静默
+ * —— 用户点"进入聊天"就是想看那条，没跳到会以为功能坏了。
+ */
+async function onOpenSearchHit(payload: { convId: string; msgId: string }) {
+  searchOpen.value = false;
+  if (app.isMobile) app.mobileView = "chat";
+  const r = await chat.locateMessageInConv(payload.convId, payload.msgId);
+  if (r !== "found") app.toast(t("search.locateFail"), "error");
 }
 
 function openFriendProfile(f: Friend) {
@@ -47,6 +108,10 @@ const showRequests = ref(false);
 function openRequests() {
   showRequests.value = true;
   profileFriend.value = null;
+  // ⚠️ 移动端：申请页渲染在**右侧主面板**里，而移动端靠 `mobileView` 平移切换面板 ——
+  // 不切过去的话用户还停在会话列表上，表现就是「点了『新的朋友』没反应」
+  // （用户 2026-09-12 安卓实测）。与 `openFriendProfile` / `openSearchHistory` 同一处理。
+  if (app.isMobile) app.mobileView = "chat";
 }
 
 /** 收起「新的朋友」页：有会话在聊时切回「聊天」tab，
@@ -54,6 +119,8 @@ function openRequests() {
 function closeRequests() {
   showRequests.value = false;
   if (chat.activeConv) view.value = "chats";
+  // 移动端返回会话列表（iOS push/pop 语义：申请页是从列表推进去的一层）
+  if (app.isMobile) app.mobileView = "list";
 }
 
 async function acceptRequest(r: PendingRequest) {
@@ -140,12 +207,39 @@ function onAddFriendAction() {
 }
 useShortcuts();
 
+/**
+ * 移动端「聊天页」是一层：系统返回键 → 回到会话列表（而不是退出应用）。
+ * 只在移动端且当前在聊天页时压历史条目；`inert` 那条平移面板同样是状态驱动的，
+ * 两者一起保证"返回"和"侧滑"语义一致。
+ */
+useBackLayer(
+  () => app.isMobile && app.mobileView === "chat",
+  () => {
+    app.mobileView = "list";
+  },
+);
+
 let unlistenMenu: UnlistenFn[] | null = null;
+
+// 这些"整页内容"里的任何一个盖上来，聊天就不再可见 ⇒ 同步给 store（判已读/发回执要用）。
+// 为什么放在这里、且必须是 watchEffect：它立即执行一次，所以**必须**在所有浮层 ref 声明之后
+// （放在前面会撞上 const 的 TDZ）。只有布局层知道这些浮层开没开，store 只保留一个布尔。
+watchEffect(() => {
+  app.setMobileChatObscured(
+    app.isMobile &&
+      (settingsOpen.value ||
+        logsOpen.value ||
+        showRequests.value ||
+        profileFriend.value !== null ||
+        shareOpen.value),
+  );
+});
 
 onMounted(() => {
   window.addEventListener("navigate-to-contacts", onNavigateToContacts);
   window.addEventListener(APP_ACTION.openSettings, openSettings);
   window.addEventListener(APP_ACTION.addFriend, onAddFriendAction);
+  window.addEventListener(APP_ACTION.openLogs, openLogs);
   // 原生菜单（仅 macOS）；非 macOS 平台该 Promise 仍会 resolve，只是收不到事件
   void bindMenuEvents().then((fns) => (unlistenMenu = fns));
 });
@@ -153,6 +247,7 @@ onUnmounted(() => {
   window.removeEventListener("navigate-to-contacts", onNavigateToContacts);
   window.removeEventListener(APP_ACTION.openSettings, openSettings);
   window.removeEventListener(APP_ACTION.addFriend, onAddFriendAction);
+  window.removeEventListener(APP_ACTION.openLogs, openLogs);
   unlistenMenu?.forEach((fn) => fn());
 });
 
@@ -166,6 +261,8 @@ const listW = ref(
 let resizing = false;
 
 function onResizeStart(e: PointerEvent) {
+  // 只认鼠标左键：中键/右键拖拽不该改变列表宽度（右键还会弹系统菜单）
+  if (e.button !== 0) return;
   resizing = true;
   (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
   document.body.style.cursor = "col-resize";
@@ -175,6 +272,11 @@ function onResizeMove(e: PointerEvent) {
   if (!resizing) return;
   listW.value = Math.min(LIST_W_MAX, Math.max(LIST_W_MIN, e.clientX - RAIL_W));
 }
+/**
+ * 结束拖拽。除了正常抬手，还要覆盖：指针被系统抢走（`lostpointercapture`）、
+ * 指针移出窗口后在其他窗口抬起（收不到 pointerup）——那样 `body` 会残留
+ * `col-resize` 与全局 `user-select: none`，用户会以为"界面卡住/选不中字了"。
+ */
 function onResizeEnd() {
   if (!resizing) return;
   resizing = false;
@@ -205,13 +307,20 @@ function onResizeEnd() {
     <!-- 桌面：rail（左）| 列表（中）| 聊天（右）三列；移动端按 mobileView 抽屉切换 -->
     <div class="relative flex min-h-0 flex-1 overflow-hidden">
     <!-- 左侧导航栏：顶格到 caption 之下，浅灰与 caption 一体 -->
-    <NavRail :view="view" @update:view="view = $event" @open-settings="openSettings" />
+    <NavRail
+      :view="view"
+      :settings-opening="settingsOpening"
+      :logs-opening="logsOpening"
+      @update:view="view = $event"
+      @open-settings="openSettings"
+      @open-logs="openLogs"
+    />
 
     <!-- 会话列表：桌面宽度可拖拽调（默认250px，持久化）；移动端整屏抽屉，靠 translate 滑动切换 -->
     <aside
       class="h-full shrink-0 overflow-hidden rounded-tl-[var(--gosslan-radius-lg)] bg-[var(--gosslan-list)]"
       :class="app.isMobile
-        ? 'absolute inset-y-0 left-0 z-20 w-full transition-transform duration-300 ease-out ' +
+        ? 'absolute inset-y-0 left-0 z-20 w-full transition-transform duration-300 ' +
           (app.mobileView === 'list' ? 'translate-x-0' : '-translate-x-full')
         : ''"
       :style="app.isMobile ? undefined : { width: `${listW}px` }"
@@ -225,6 +334,7 @@ function onResizeEnd() {
         @open-group="groupOpen = true"
         @open-friend="openFriendProfile"
         @open-requests="openRequests"
+        @search-history="openSearchHistory"
       />
     </aside>
 
@@ -238,18 +348,28 @@ function onResizeEnd() {
       @pointermove="onResizeMove"
       @pointerup="onResizeEnd"
       @pointercancel="onResizeEnd"
+      @lostpointercapture="onResizeEnd"
     ></div>
 
     <!-- 右侧聊天区：白色面板，左上角圆角与列表相交（微信式），面板色差替代分割线 -->
+    <!-- 移动端：聊天区与列表**一起**平移（iOS push/pop 观感）。
+         ⚠️ 不要改回 `v-if`/`hidden` 切换：那样列表滑出的 300ms 里右侧露出的是根节点底色
+         （一片灰），而且滑动是单边的，看起来"像网页换页"。
+         离屏时用 `inert` 摘掉焦点与交互（键盘用户 Tab 不进不可见面板）。 -->
     <main
       class="flex h-full min-w-0 flex-1 flex-col rounded-tl-[var(--gosslan-radius-lg)] bg-[var(--gosslan-chat)]"
-      :class="app.isMobile && app.mobileView === 'list' ? 'hidden' : ''"
+      :class="app.isMobile
+        ? 'absolute inset-y-0 left-0 z-10 w-full transition-transform duration-300 ' +
+          (app.mobileView === 'list' ? 'translate-x-full' : 'translate-x-0')
+        : ''"
+      :inert="app.isMobile && app.mobileView === 'list'"
     >
       <div
         class="min-h-0 flex-1 md:pb-0"
-        :class="app.isMobile
-          ? (app.keyboardOpen ? 'pb-2' : 'pb-[calc(4rem+env(safe-area-inset-bottom))]')
-          : ''"
+        :class="app.isMobile && !app.keyboardOpen ? 'pb-[calc(4rem+env(safe-area-inset-bottom))]' : ''"
+        :style="app.isMobile && app.keyboardInset > 0
+          ? { paddingBottom: `${app.keyboardInset + 8}px` }
+          : undefined"
       >
         <!-- 新的朋友页：右侧展示好友申请列表（微信式） -->
         <div v-if="showRequests" class="flex h-full flex-col">
@@ -284,14 +404,29 @@ function onResizeEnd() {
           <div class="text-base">{{ t("layout.selectConversation") }}</div>
           <div class="text-xs opacity-70">{{ t("layout.tagline") }}</div>
           <!-- 空态要给**下一步**，不只陈述状态（HIG：empty state should guide）。
-               新用户最常卡在"怎么加人"，这里直接给入口，省得去找左上角的加号。 -->
+               用户 2026-09-12 晚 #13：「聊天界面如果没有聊天信息的话，这一块左右两边有点割裂。
+               他们的样式能不能统一一点？主要的功能是：1. 如果你有好友，就有一个『发起聊天』；
+               2. 如果你没有好友列表，就只有一个『添加好友』的按钮。这个按钮在会话框页面和
+               聊天列表页面，你可以做一个文字说明兜底，或者在样式上做一个空状态就行了。」
+               ⇒ 与左侧会话列表**同一口径**：有好友 → 发起聊天（跳通讯录选人）；
+                 无好友 → 添加好友；两种情况都配同一句说明文字。 -->
           <button
-            class="mt-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-4 py-2 text-sm font-medium text-white transition hover:bg-[var(--gosslan-primary-hover)]"
+            v-if="chat.friends.length"
+            class="tap-safe mt-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-4 py-2 text-sm font-medium text-white transition hover:bg-[var(--gosslan-primary-hover)]"
+            @click="view = 'contacts'"
+          >
+            {{ t("conv.startChat") }}
+          </button>
+          <button
+            v-else
+            class="tap-safe mt-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-4 py-2 text-sm font-medium text-white transition hover:bg-[var(--gosslan-primary-hover)]"
             @click="addFriendOpen = true"
           >
             {{ t("common.addFriend") }}
           </button>
-          <div class="text-xs opacity-70">{{ t("layout.autoDiscover") }}</div>
+          <div class="text-xs opacity-70">
+            {{ chat.friends.length ? t("conv.emptyHintHasFriends") : t("conv.emptyHintNoFriends") }}
+          </div>
         </div>
       </div>
     </main>
@@ -309,12 +444,11 @@ function onResizeEnd() {
       >
         <span class="relative">
           <MessageCircle class="h-5 w-5" />
-          <span
+          <UnreadBadge
             v-if="chat.totalUnread > 0"
-            class="absolute -right-2.5 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--gosslan-danger)] px-1 text-[11px] font-medium text-white"
-          >
-            {{ chat.totalUnread > 99 ? "99+" : chat.totalUnread }}
-          </span>
+            :count="chat.totalUnread"
+            class="absolute -right-2.5 -top-1"
+          />
         </span>
         <span class="text-[11px]">{{ t("nav.chats") }}</span>
       </button>
@@ -325,29 +459,50 @@ function onResizeEnd() {
       >
         <span class="relative">
           <Users class="h-5 w-5" />
-          <span
+          <UnreadBadge
             v-if="chat.pendingRequests.length"
-            class="absolute -right-2.5 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--gosslan-danger)] px-1 text-[11px] font-medium text-white"
-          >
-            {{ chat.pendingRequests.length > 99 ? "99+" : chat.pendingRequests.length }}
-          </span>
+            :count="chat.pendingRequests.length"
+            class="absolute -right-2.5 -top-1"
+          />
         </span>
         <span class="text-[11px]">{{ t("nav.contacts") }}</span>
       </button>
       <button
-        class="flex flex-1 flex-col items-center gap-0.5 py-2.5 text-[var(--gosslan-text-2)]"
+        class="flex flex-1 flex-col items-center gap-0.5 py-2.5 text-[var(--gosslan-text-2)] transition-opacity"
+        :class="settingsOpening ? 'opacity-50' : ''"
+        :aria-busy="settingsOpening"
         @click="openSettings"
       >
         <Settings class="h-5 w-5" />
         <span class="text-[11px]">{{ t("nav.settings") }}</span>
       </button>
+      <button
+        class="flex flex-1 flex-col items-center gap-0.5 py-2.5 text-[var(--gosslan-text-2)] transition-opacity"
+        :class="logsOpening ? 'opacity-50' : ''"
+        :aria-busy="logsOpening"
+        @click="openLogs"
+      >
+        <ScrollText class="h-5 w-5" />
+        <span class="text-[11px]">{{ t("nav.logs") }}</span>
+      </button>
     </nav>
 
     <!-- 弹窗 -->
     <SettingsPanel :open="settingsOpen" @close="settingsOpen = false" />
+    <!-- 搜索聊天记录结果页（会话列表搜索框回车打开） -->
+    <ChatSearchDialog
+      :open="searchOpen"
+      :initial-keyword="searchSeed"
+      @close="searchOpen = false"
+      @open-conversation="onOpenSearchHit"
+    />
+
     <AddFriendModal :open="addFriendOpen" @close="addFriendOpen = false" />
     <GroupCreateModal :open="groupOpen" @close="groupOpen = false" />
     <ShareDirectory :open="shareOpen" @close="shareOpen = false" />
+
+    <!-- 移动端运行日志页：全屏覆盖、带返回（桌面端走独立窗口，见 open_log_window） -->
+    <LogViewer v-if="app.isMobile && logsOpen" @back="logsOpen = false" />
 
     <!-- Toast：统一中性 HUD 底 + 白字（微信式，与主题色解耦；错误红保留语义）。
          底色走 --gosslan-hud：亮色是深灰、暗色抬亮一档，两套主题下都是"浮在界面之上"的一层。
@@ -358,7 +513,8 @@ function onResizeEnd() {
     <div
       role="status"
       aria-live="polite"
-      class="pointer-events-none fixed left-1/2 top-4 z-[60] flex -translate-x-1/2 flex-col items-center gap-2"
+      class="pointer-events-none fixed left-1/2 z-[90] flex -translate-x-1/2 flex-col items-center gap-2"
+      :style="{ top: 'calc(env(safe-area-inset-top, 0px) + 1rem)' }"
     >
       <div
         v-for="t in app.toasts"

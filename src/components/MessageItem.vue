@@ -9,6 +9,10 @@ import { useMessageDisplay } from "@/composables/useMessageDisplay";
 import { useMessageFile } from "@/composables/useMessageFile";
 import { useMemberProfile } from "@/composables/useMemberProfile";
 import { textNeedsClamp } from "@/utils/previewMetrics";
+import { stripQuoteMsgId } from "@/utils/quote";
+import { isDialogCancelled, saveDestinationOf } from "@/utils/saveDestination";
+import { haptic } from "@/utils/haptics";
+import { shouldStartLongPress, shouldSwallowLongPressRelease } from "@/utils/longPress";
 import { t } from "@/i18n";
 import MessageAvatar from "@/components/message/MessageAvatar.vue";
 import MessageTextBubble from "@/components/message/MessageTextBubble.vue";
@@ -16,10 +20,13 @@ import MessageCodeBubble from "@/components/message/MessageCodeBubble.vue";
 import MessageFileBubble from "@/components/message/MessageFileBubble.vue";
 import MessageImageBubble from "@/components/message/MessageImageBubble.vue";
 import MessageReceipt from "@/components/message/MessageReceipt.vue";
+import BaseModal from "@/components/BaseModal.vue";
+import MessageReactionBar from "@/components/message/MessageReactionBar.vue";
+import type { ReactionChip } from "@/utils/reactions";
 import MessageContentModal from "@/components/message/MessageContentModal.vue";
 import MessageContextMenu from "@/components/message/MessageContextMenu.vue";
 import ActionSheet from "@/components/ActionSheet.vue";
-import { Copy, CornerUpLeft, Save, Share2, ImageOff } from "lucide-vue-next";
+import { Copy, CornerUpLeft, Save, Share2, ImageOff, TextSelect , Undo2, Pin } from "lucide-vue-next";
 import type { MessageRecord, MsgKind } from "@/types";
 
 const props = withDefaults(
@@ -39,6 +46,10 @@ const props = withDefaults(
     highlightId?: string | number | null;
     /** 群成员名列表：文本气泡据此高亮 @提及（单聊不传） */
     mentionNames?: string[];
+    /** 已折叠的表情回应（由会话层算好传入，避免每条消息各自 O(n) 重算）。 */
+    reactions?: ReactionChip[];
+    /** 该消息当前是否被置顶（决定菜单显示「置顶」还是「取消置顶」） */
+    pinned?: boolean;
   }>(),
   {
     prev: null,
@@ -52,6 +63,43 @@ const props = withDefaults(
 );
 
 const app = useAppStore();
+
+/** 快捷回应表情：与 EmojiPicker 同一套「[名字]」token（后端按同一形态校验）。 */
+const QUICK_REACTIONS = ["[赞]", "[微笑]", "[捂脸]", "[流泪]"];
+
+/**
+ * 「点击重取」：文件/图片没拿到（未完成 / 已被清理）时，请对端按 cid 再发一份。
+ * 对方无需确认（拥有即授权）；对方版本不支持时给出明确提示，而不是静默。
+ */
+async function refetchContent() {
+  const myId = app.device?.device_id;
+  const peer =
+    props.message.sender_id === myId ? props.message.receiver_id : props.message.sender_id;
+  if (!peer) return;
+  try {
+    const ok = await invoke<boolean>("request_content", {
+      peerId: peer,
+      msgId: props.message.msg_id,
+    });
+    app.toast(t(ok ? "msg.refetchRequested" : "msg.refetchUnsupported"), ok ? "info" : "error");
+  } catch (e) {
+    app.toastError(e, t("msg.refetchFail"));
+  }
+}
+
+/** 这条内容在统一状态里是否「未完成 / 校验失败」⇒ 文件卡片给「重新获取」。 */
+const retryableContent = computed(() => {
+  if (props.message.kind !== "file" && props.message.kind !== "image") return null;
+  try {
+    const sha = (JSON.parse(props.message.content) as { sha256?: string }).sha256;
+    if (!sha) return null;
+    const rec = chat.contentTransfers.find((c) => c.cid === sha);
+    if (!rec) return null;
+    return rec.status === "incomplete" || rec.status === "rejected" ? rec : null;
+  } catch {
+    return null;
+  }
+});
 const chat = useChatStore();
 const { memberProfile } = useMemberProfile();
 
@@ -99,6 +147,7 @@ const {
   streamCodeClamped,
   fileMeta,
   fileReady,
+  fileTappable,
   fileProgress,
   fileStatusText,
   attachmentUrl,
@@ -108,6 +157,27 @@ const {
   saveAs,
 } = useMessageFile(() => props.message, () => sendState.value);
 const { copiedKey, copyContent } = useClipboard();
+
+/**
+ * 复制文本并**给出反馈**（右键菜单与移动端操作面板用）。
+ * 这两处点完菜单立刻关闭，气泡上的"已复制"勾不会渲染（它只在长文本操作条里），
+ * 所以必须用 toast 告知结果 —— 否则用户以为没复制上，会反复长按。
+ * 气泡内联的复制按钮仍只靠自身勾选反馈（就在指尖，无需 toast 打扰）。
+ */
+async function copyTextWithToast(key: string, text: string) {
+  const ok = await copyContent(key, copyOut(text));
+  app.toast(ok ? t("common.copied") : t("msg.copyFail"), ok ? "success" : "error");
+}
+
+/**
+ * 复制出去的文本（右键菜单 / 操作面板 / 气泡按钮 / 全文弹窗四条路径共用）。
+ * 引用头里的 `|msg_id` 是内部路由信息，不该混进用户复制的内容 ——
+ * 用户看到的是「引用 张三：…」，复制出来却是 `…|msg_ab12」`。
+ * ⚠️ 只在复制路径上剥：转发要原样保留，接收方靠它跳到被引用的那条消息。
+ */
+function copyOut(content: string): string {
+  return stripQuoteMsgId(content);
+}
 
 /** 头像取色名：必须与列表/回执/弹层同源（昵称），否则同一人两处颜色分叉。
  *  群聊由父组件传 nicknameOf 结果；单聊在此兜一把，防止退化成按设备 ID 哈希。 */
@@ -165,6 +235,11 @@ watch(ctxMenuPopup.isActive, (mine) => {
 
 function openContextMenu(e: MouseEvent) {
   if (props.message.kind === "system") return;
+  // 移动端没有右键：长按走底部 ActionSheet。部分 WebView 在长按之后仍会补发
+  // `contextmenu`（也会在长按选中文字时弹系统菜单），若这里再弹一次，就会出现
+  // 「右键菜单 + ActionSheet」同时挂在屏幕上，而两者 claim 的是**同一个**互斥 key
+  // （`menu:${msg_id}`）⇒ 谁也无法通过互斥关掉对方。
+  if (app.isMobile) return;
   ctxMenu.value = { x: e.clientX, y: e.clientY };
   ctxMenuPopup.claim();
 }
@@ -177,7 +252,33 @@ function closeContextMenu() {
 // ---------------- 移动端长按 → 底部 Action Sheet（HIG：触屏用长按唤出上下文操作） ----------------
 // 桌面端走右键菜单（MessageContextMenu），移动端没有右键，用长按唤出底部操作面板。
 const sheetOpen = ref(false);
+/**
+ * 移动端「选择文字」模式（用户 2026-09-13）。
+ *
+ * 触屏下气泡**默认不可选**，长按一律弹消息菜单；"部分选字"是菜单里的一个二级入口
+ * —— 这是微信 / Telegram / WhatsApp / iMessage 的通行模型，也是唯一能同时要"长按必出菜单"
+ * 和"能选字"的做法（见 `style.css` 里 `@media (pointer: coarse)` 那段注释）。
+ */
+const textSelecting = ref(false);
 let longPressTimer: ReturnType<typeof setTimeout> | null = null;
+/** 长按起点：用来做"手指抖动容差"（见 `onTouchMove`）。 */
+let longPressOrigin: { x: number; y: number } | null = null;
+/**
+ * 长按那根手指是否还按着（面板就是这次按压弹出来的）。
+ *
+ * 用途只有一个：**吞掉抬手指那一下**（见 `swallowLongPressRelease`）。
+ * 放在 `touchstart` 置位、在 `touchend`/`touchcancel` 的**窗口捕获**处理里复位。
+ */
+let longPressHeld = false;
+/** 长按判定时长：与 iOS/微信一致（500ms 是 HIG 的常用值）。 */
+const LONG_PRESS_MS = 500;
+/**
+ * 手指抖动容差（px）。用户 2026-09-13：「长按触发的效果感觉不太灵」。
+ * 旧实现把 `@touchmove` 直接接到 `cancelLongPress` —— **手指动 1px 就取消**，
+ * 真机上几乎不可能"完全不动地按住 500ms"，于是长按十次九次不触发。
+ * 现在只有移动超过容差（或明显是滑动/滚动）才取消。
+ */
+const LONG_PRESS_MOVE_TOLERANCE = 12;
 
 function openActionSheet() {
   if (props.message.kind === "system") return;
@@ -190,12 +291,97 @@ function closeActionSheet() {
   sheetOpen.value = false;
 }
 
-function onTouchStart() {
-  if (!app.isMobile || props.message.kind === "system") return;
+/**
+ * 吞掉"弹面板那一下"的抬手事件。
+ *
+ * 根因（用户 2026-09-13 Android 实测「弹出 sheet 之后一放手立马就缩回去了」）：
+ * 面板是 HeadlessUI `Dialog`，它的 `useOutsideClick` 在 **document 捕获阶段** 挂了 `touchend`，
+ * 判据是"`touchend` 的 target 在不在对话框容器里" —— 而 touch 事件的 target 在
+ * **`touchstart` 那一刻就固定**成那条消息了，所以抬手必被判成"点了外面" ⇒ 立刻 `@close`。
+ *
+ * ⚠️ 监听**必须挂在 `window` 的捕获阶段**：HeadlessUI 挂的是 `document` 捕获，两者同阶段时
+ * 按注册顺序执行（它先注册，我们一定排在后面）；而捕获路径是 `window → document → … → target`，
+ * 只有挂 `window` 才抢得到它前面。它内部有 `if (e.defaultPrevented) return`，`preventDefault` 就够。
+ * 顺带也杀掉了这次 tap 的合成 `click`（不会误触气泡里的链接）。
+ */
+function swallowLongPressRelease(e: TouchEvent) {
+  if (!shouldSwallowLongPressRelease({ openedByHeldPress: longPressHeld, sheetOpen: sheetOpen.value })) {
+    longPressHeld = false;
+    return;
+  }
+  longPressHeld = false;
+  e.preventDefault();
+}
+
+/** 面板展开期间才需要拦（平时一次监听都不挂，避免影响滚动/其它手势）。 */
+watch(sheetOpen, (open) => {
+  if (open) {
+    window.addEventListener("touchend", swallowLongPressRelease, { capture: true, passive: false });
+    window.addEventListener("touchcancel", swallowLongPressRelease, { capture: true });
+  } else {
+    window.removeEventListener("touchend", swallowLongPressRelease, { capture: true });
+    window.removeEventListener("touchcancel", swallowLongPressRelease, { capture: true });
+    longPressHeld = false;
+  }
+});
+
+/** 进「选择文字」：关掉菜单 → 本条气泡开放原生选字（`MessageTextBubble` 会自动全选）。 */
+function enterTextSelect() {
+  closeActionSheet();
+  textSelecting.value = true;
+}
+
+/**
+ * 选区一消失就退出选择模式（用户点了别处、收起了系统手柄）。
+ * 不退出的后果：这条气泡一直"可选择"，下次长按又弹不出菜单（典型的状态残留）。
+ */
+function onSelectingChanged() {
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed || sel.toString().length === 0) textSelecting.value = false;
+}
+watch(textSelecting, (on) => {
+  if (on) document.addEventListener("selectionchange", onSelectingChanged);
+  else document.removeEventListener("selectionchange", onSelectingChanged);
+});
+
+function onTouchStart(e: TouchEvent) {
+  cancelLongPress();
+  const el = e.target as HTMLElement | null;
+  // 判据全部收在 `utils/longPress.ts`（纯函数、有真值表单测）：
+  // 桌面走右键 / 系统消息没有菜单 / 「选择文字」模式让给系统手柄 /
+  // ⚠️ 触屏下**正文气泡里**的 `.gosslan-selectable` 不再让路 —— 它已经被
+  // `@media (pointer: coarse)` 关掉选中，而那个类还在 DOM 上，之前因此导致
+  // "按在文字上长按不弹、按到内边距才弹"（用户 2026-09-13 实测）。
+  const canStart = shouldStartLongPress({
+    isMobile: app.isMobile,
+    isSystem: props.message.kind === "system",
+    selectMode: textSelecting.value,
+    hitSelectable: !!el?.closest(".gosslan-selectable"),
+    insideTextBubble: !!el?.closest(".gosslan-bubble-text"),
+  });
+  if (!canStart) return;
+  const t0 = e.touches[0];
+  if (!t0) return;
+  longPressHeld = true;
+  longPressOrigin = { x: t0.clientX, y: t0.clientY };
   longPressTimer = setTimeout(() => {
     longPressTimer = null;
+    longPressOrigin = null;
+    // 触觉反馈：长按"到点了"必须有一下明确的反馈，否则用户会以为没生效而反复长按
+    // （`heavy` 的语义就是"长按菜单弹出"，见 utils/haptics.ts）
+    haptic("heavy");
     openActionSheet();
-  }, 500);
+  }, LONG_PRESS_MS);
+}
+
+/** 手指移动超过容差才取消长按（旧实现是"一动就取消"，真机上等于长按失灵）。 */
+function onTouchMove(e: TouchEvent) {
+  if (!longPressTimer || !longPressOrigin) return;
+  const t0 = e.touches[0];
+  if (!t0) return;
+  const dx = t0.clientX - longPressOrigin.x;
+  const dy = t0.clientY - longPressOrigin.y;
+  if (Math.hypot(dx, dy) > LONG_PRESS_MOVE_TOLERANCE) cancelLongPress();
 }
 
 function cancelLongPress() {
@@ -203,9 +389,20 @@ function cancelLongPress() {
     clearTimeout(longPressTimer);
     longPressTimer = null;
   }
+  longPressOrigin = null;
 }
 
-onBeforeUnmount(() => cancelLongPress());
+onBeforeUnmount(() => {
+  cancelLongPress();
+  // 窗口级监听不随组件卸载自动消失（它挂在 window 上），必须自己摘
+  window.removeEventListener("touchend", swallowLongPressRelease, { capture: true });
+  window.removeEventListener("touchcancel", swallowLongPressRelease, { capture: true });
+  // ⚠️ `selectionchange` 挂在 **document** 上，由 `watch(textSelecting)` 增删 ——
+  // 那条 watch 只在开关时才跑，组件若**在选择模式下**被卸载（滚出虚拟列表就回收），
+  // 它永远等不到 else 分支，监听会一直留在 document 上。每进入一次漏一个，
+  // 之后在输入框/搜索框里选字，每个 selectionchange 都要白跑 N 次 getSelection()。
+  document.removeEventListener("selectionchange", onSelectingChanged);
+});
 
 /** 转发支持：与 MessageContextMenu 同一判据。 */
 function forwardable(k: MsgKind) {
@@ -257,7 +454,8 @@ async function saveImage() {
   try {
     const { save } = await import("@tauri-apps/plugin-dialog");
     const { invoke } = await import("@tauri-apps/api/core");
-    const destination = await save({ defaultPath: `${t("common.image")}-${Date.now()}.png` });
+    const picked: unknown = await save({ defaultPath: `${t("common.image")}-${Date.now()}.png` });
+    const destination = saveDestinationOf(picked);
     if (!destination) return; // 用户取消
     const buf = new Uint8Array(await (await fetch(url)).arrayBuffer());
     let binary = "";
@@ -268,6 +466,7 @@ async function saveImage() {
     await invoke("save_data_file", { base64Data: btoa(binary), destination });
     app.toast(t("msg.imageSaved"), "success");
   } catch (e) {
+    if (isDialogCancelled(e)) return; // Android 取消是 reject，不是返回 null
     app.toastError(e, t("msg.saveImageFail"));
   }
 }
@@ -285,10 +484,55 @@ const emit = defineEmits<{
   (e: "quote", payload: { sender: string; snippet: string; msgId: string | number }): void;
   (e: "forward", payload: { kind: MsgKind; content: string; snippet: string; filePath?: string }): void;
   (e: "locate", msgId: string): void;
+  /** 点了某个表情 chip（已点过则是取消） */
+  (e: "react", emoji: string): void;
+  /** 切换置顶（群聊） */
+  (e: "pin"): void;
   (e: "open-image", msgId: string): void;
 }>();
 
+/**
+ * 能否撤回：**只有自己发的、且未被撤回的**消息才给入口。
+ *
+ * 后端也只在 `sender_id == 自己` 时才接受撤回 —— 前端隐藏入口不是为了安全
+ * （安全由签名保证），而是不让用户白点一次再收到报错。
+ */
+// ⚠️ 必须判 isGroup：单聊没有撤回（后端只实现了群撤回），
+// 否则入口可见、点了确认后 `confirmRecall` 里静默 return —— 用户看到的是"什么都没发生"。
+// ⚠️ `mine` 是从 composable 解构出来的 **ComputedRef**（本文件其它地方都写 `mine.value`）。
+// 在模板里 Vue 自动解包，但在 script 的 computed 内部**不会** —— 裸写 `mine` 是个对象、
+// 恒为真值，于是群聊里对**任何人的消息**都会显示「撤回」（用户真机反馈的那个 bug）。
+const canRecall = computed(
+  () => !!props.isGroup && mine.value && props.message.kind !== "recalled",
+);
+
+/** 撤回前的二次确认：破坏性且不可逆（对方看到的是「消息已撤回」，收不回来）。 */
+const confirmingRecall = ref(false);
+
+function doRecall() {
+  closeContextMenu();
+  closeActionSheet();
+  confirmingRecall.value = true;
+}
+
+async function confirmRecall() {
+  confirmingRecall.value = false;
+  const convId = props.message.conv_id;
+  if (!convId.startsWith("group:")) return;
+  try {
+    await chat.recallMessage(convId.slice(6), props.message.msg_id);
+    app.toast(t("msg.recallDone"), "success");
+  } catch (e) {
+    app.toastError(e, t("msg.recallFail"));
+  }
+}
+
 function doQuote() {
+  // ⚠️ 必须收起**底部面板**（不只是桌面右键菜单）：用户 2026-09-13 安卓实测
+  // 「点『引用』之后那个 sheet 还挂在那儿」。引用会跳到输入框去操作，浮层留着就是挡路。
+  // `ActionSheet` 面板层已经统一做了"点任何一项即收起"，这里是**第二道保险**：
+  // 这两个动作是"跳到别处去操作"，即使以后面板的通用规则改了，也不该让 sheet 留在新界面上面。
+  closeActionSheet();
   closeContextMenu();
   const msg = props.message;
   emit("quote", {
@@ -307,6 +551,8 @@ function doForward() {
     // 文件转发按本地路径重走传输链路（内容里的 JSON 只是元信息）
     filePath: msg.kind === "file" ? (fileMeta.value?.path ?? "") : undefined,
   };
+  // 同上：转发会打开转发弹窗（跳转到界面内去操作），底部面板必须先收掉
+  closeActionSheet();
   closeContextMenu();
   emit("forward", payload);
 }
@@ -354,7 +600,9 @@ async function copyFileToClipboard() {
 </script>
 
 <template>
-  <div class="py-1.5" :class="highlighted ? 'rounded-[var(--gosslan-radius-md)] bg-primary/5 ring-1 ring-primary/25' : ''">
+  <!-- group/msg：表情回应条是"消息行"的**兄弟节点**，不在 group/row 的作用域内 ——
+       悬停揭示必须挂在这一层，否则 group-hover/msg 永远不触发（那个组名以前根本不存在）。 -->
+  <div class="group/msg py-1.5" :class="highlighted ? 'rounded-[var(--gosslan-radius-md)] bg-primary/5 ring-1 ring-primary/25' : ''">
     <!-- 时间分割线（间隔 ≥ 5 分钟）：居中浅灰小字 -->
     <div v-if="showTimeDivider" class="py-2 text-center text-[11px] text-[var(--gosslan-text-2)]">
       {{ timeDividerText }}
@@ -386,12 +634,14 @@ async function copyFileToClipboard() {
           {{ senderName || chat.nicknameOf(message.sender_id) }}
         </div>
 
-        <!-- 系统消息 -->
+        <!-- 系统消息 / 已撤回：同一形态（居中灰条，无气泡、无头像）。
+             「已撤回」刻意**不显示撤回者头像与气泡** —— 它与系统提示同为状态行，
+             给气泡会让人误以为还能点开/复制。 -->
         <div
-          v-if="message.kind === 'system'"
+          v-if="message.kind === 'system' || message.kind === 'recalled'"
           class="w-full text-center text-xs text-[var(--gosslan-text-2)]"
         >
-          {{ message.content }}
+          {{ message.kind === "recalled" ? t("msg.recalled") : message.content }}
         </div>
 
         <!-- 消息行：气泡 + 侧挂回执（mine 时回执在气泡左侧）；右键（桌面）/长按（移动端）弹消息菜单 -->
@@ -403,7 +653,7 @@ async function copyFileToClipboard() {
           @contextmenu.prevent="openContextMenu"
           @touchstart="onTouchStart"
           @touchend="cancelLongPress"
-          @touchmove="cancelLongPress"
+          @touchmove="onTouchMove"
           @touchcancel="cancelLongPress"
         >
           <MessageReceipt
@@ -425,8 +675,9 @@ async function copyFileToClipboard() {
             :copied="copiedKey === 'text'"
             :mine="mine"
             :mention-names="mentionNames"
+            :select-mode="textSelecting"
             @expand="openFullModal('text', $event)"
-            @copy="copyContent('text', $event)"
+            @copy="copyContent('text', copyOut($event))"
             @locate="emit('locate', $event)"
           />
 
@@ -439,7 +690,7 @@ async function copyFileToClipboard() {
             :dark="app.dark"
             :mine="mine"
             @expand="openFullModal('code', $event)"
-            @copy="copyContent('code', $event)"
+            @copy="copyContent('code', copyOut($event))"
           />
 
           <!-- 图片：已被存储清理时给出明确占位，而不是一个永远转圈/裂开的图片框。
@@ -448,20 +699,23 @@ async function copyFileToClipboard() {
                使这条新链末尾的 <div v-else> 变成"对所有 text / code 消息都成立的兜底"——
                于是每条文本消息都被渲染两遍（MessageTextBubble 一遍 + 原始文字一遍，
                表现为表情显示成 [摊手] 原文、普通消息整条重复）。历史缺陷见 fd02f62。 -->
-          <div
+          <button
             v-else-if="message.kind === 'image' && attachmentMissing"
-            class="flex h-32 w-52 flex-col items-center justify-center gap-1 rounded-[var(--gosslan-bubble-radius)] bg-black/5 text-[11px] text-[var(--gosslan-text-2)] dark:bg-white/5"
+            type="button"
+            class="flex h-32 w-52 cursor-pointer flex-col items-center justify-center gap-1 rounded-[var(--gosslan-bubble-radius)] bg-black/5 text-[11px] text-[var(--gosslan-text-2)] transition hover:bg-black/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary dark:bg-white/5 dark:hover:bg-white/10"
+            @click="refetchContent"
           >
             <ImageOff class="h-6 w-6 opacity-50" />
             <span>{{ t("msg.imageCleaned") }}</span>
             <span class="opacity-70">{{ t("msg.imageReRequest") }}</span>
-          </div>
+          </button>
 
           <!-- 图片 -->
           <MessageImageBubble
             v-else-if="message.kind === 'image'"
             :src="imageDataUrl"
             @open="openImageLightbox"
+            @refetch="refetchContent"
           />
 
           <!-- 附件图片预览（file + subtype:image，接收完成后显示本地图片） -->
@@ -469,6 +723,7 @@ async function copyFileToClipboard() {
             v-else-if="message.kind === 'file' && attachmentUrl"
             :src="attachmentUrl"
             @open="openImageLightbox"
+            @refetch="refetchContent"
           />
 
           <!-- 文件 -->
@@ -484,18 +739,54 @@ async function copyFileToClipboard() {
             :delivery="isGroupFile ? deliverySummary : null"
             :mine="mine"
             :ready="fileReady"
+            :tappable="fileTappable"
+            :content-retry="!!retryableContent"
             @open="openFile"
             @save="saveAs"
             @download="onFileDownload"
+            @refetch="refetchContent"
           />
 
-          <div v-else class="px-3 py-2 text-sm" :style="bubbleStyle">
+          <!-- 未知 kind 的兜底气泡：排版必须与 MessageTextBubble 一致（py-1.5 / leading-normal），
+               否则虚拟列表按 `previewMetrics.TEXT_BUBBLE_PADDING` 估的高度会对不上。 -->
+          <div v-else class="select-text px-3 py-1.5 text-sm leading-normal" :style="bubbleStyle">
             {{ message.content }}
           </div>
         </div>
       </div>
     </div>
   </div>
+
+  <!-- 表情回应条：挂在消息行**下方**（飞书/微信同款位置），与气泡同侧对齐。
+       放在行内会被 `flex items-end` 摆到气泡右侧，语义不对。 -->
+  <MessageReactionBar
+    v-if="message.kind !== 'system'"
+    :chips="reactions ?? []"
+    :mine="mine"
+    :interactive="!!isGroup"
+    :quick="QUICK_REACTIONS"
+    :class="mine ? 'self-end pr-1' : 'self-start pl-1'"
+    @toggle="emit('react', $event)"
+  />
+
+  <!-- 撤回二次确认：破坏性且不可逆，必须显式确认（各端一致，移动端同样弹这个） -->
+  <BaseModal :open="confirmingRecall" :title="t('msg.recall')" @close="confirmingRecall = false">
+    <p class="text-sm leading-relaxed text-[var(--gosslan-text)]">{{ t("msg.recallConfirm") }}</p>
+    <div class="mt-5 flex justify-end gap-2">
+      <button
+        class="tap-safe rounded-[var(--gosslan-radius-md)] px-4 py-2 text-sm text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+        @click="confirmingRecall = false"
+      >
+        {{ t("common.cancel") }}
+      </button>
+      <button
+        class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-2 text-sm text-white transition hover:opacity-90"
+        @click="confirmRecall"
+      >
+        {{ t("common.confirm") }}
+      </button>
+    </div>
+  </BaseModal>
 
   <MessageContentModal
     :open="fullModalOpen"
@@ -504,7 +795,7 @@ async function copyFileToClipboard() {
     :mention-names="mentionNames"
     :copied="copiedKey === 'full'"
     @close="fullModalOpen = false"
-    @copy="copyContent('full', $event)"
+    @copy="copyContent('full', copyOut($event))"
   />
 
   <!-- 消息右键菜单 -->
@@ -514,12 +805,17 @@ async function copyFileToClipboard() {
     :y="ctxMenu.y"
     :kind="message.kind"
     @close="closeContextMenu()"
-    @copy-text="closeContextMenu(); copyContent(message.kind === 'code' ? 'code' : 'text', message.content)"
+    @copy-text="closeContextMenu(); copyTextWithToast(message.kind === 'code' ? 'code' : 'text', message.content)"
     @copy-image="copyImage"
     @save-image="saveImage"
     @save-file="saveFileTo"
     @copy-file="copyFileToClipboard"
     @quote="doQuote"
+    :can-recall="canRecall"
+    :can-pin="isGroup && message.kind !== 'recalled'"
+    :pinned="!!pinned"
+    @pin="emit('pin')"
+    @recall="doRecall"
     @forward="doForward"
   />
 
@@ -529,10 +825,23 @@ async function copyFileToClipboard() {
       <button
         v-if="message.kind === 'text' || message.kind === 'code'"
         class="flex items-center gap-3 px-4 py-3 text-left text-[15px] text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
-        @click="closeActionSheet(); copyContent(message.kind === 'code' ? 'code' : 'text', message.content)"
+        @click="closeActionSheet(); copyTextWithToast(message.kind === 'code' ? 'code' : 'text', message.content)"
       >
         <Copy class="h-5 w-5 text-[var(--gosslan-text-2)]" />
         {{ t("common.copy") }}
+      </button>
+      <!-- 「选择文字」：触屏下部分选字的**唯一入口**（长按已被消息菜单占用）。
+           Telegram 的 Select Text / iMessage 的再长按是同一个模型；微信则在菜单里直接"复制整条"。
+           进入后本条气泡开放原生选字并自动全选，系统工具条随即出现。
+           ⚠️ 只对 **text** 开放：代码气泡的可选元素在 `CodeBlock` 里，本轮没给它接选择模式，
+           给个点了没反应的入口比不给更糟。 -->
+      <button
+        v-if="message.kind === 'text'"
+        class="flex items-center gap-3 px-4 py-3 text-left text-[15px] text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
+        @click="enterTextSelect"
+      >
+        <TextSelect class="h-5 w-5 text-[var(--gosslan-text-2)]" />
+        {{ t("common.selectText") }}
       </button>
       <template v-if="message.kind === 'image'">
         <button
@@ -572,6 +881,28 @@ async function copyFileToClipboard() {
       >
         <CornerUpLeft class="h-5 w-5 text-[var(--gosslan-text-2)]" />
         {{ t("common.quote") }}
+      </button>
+
+      <!-- 置顶：任意群成员都能置（可逆、低风险），与撤回不同 -->
+      <button
+        v-if="isGroup && message.kind !== 'recalled'"
+        class="flex items-center gap-3 px-4 py-3 text-left text-[15px] text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
+        @click="closeActionSheet(); emit('pin')"
+      >
+        <Pin class="h-5 w-5 text-[var(--gosslan-text-2)]" />
+        {{ pinned ? t("msg.unpin") : t("msg.pin") }}
+      </button>
+
+      <!-- 撤回：与桌面右键菜单**共用同一个判定**（`canRecall`）——
+           此前这里是内联条件且漏了 isGroup，导致单聊长按也出现「撤回」，
+           而后端只实现了群撤回 ⇒ 点了确认后什么都不发生。 -->
+      <button
+        v-if="canRecall"
+        class="flex items-center gap-3 px-4 py-3 text-left text-[15px] text-[var(--gosslan-danger-ink)] transition active:bg-[var(--gosslan-hover)]"
+        @click="doRecall"
+      >
+        <Undo2 class="h-5 w-5" />
+        {{ t("msg.recall") }}
       </button>
       <button
         v-if="forwardable(message.kind)"

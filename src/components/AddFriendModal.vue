@@ -1,11 +1,16 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
+import { addressText, linkLabelKey, linkLabelParams } from "@/utils/peerConnectionInfo";
 import { computed, ref, watch } from "vue";
+import { useDeferredRef } from "@/composables/useDeferredRef";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
+import type { ChannelStatus, Peer } from "@/types";
+import { api } from "@/api";
+import SettingsToggle from "@/components/settings/SettingsToggle.vue";
 import BaseModal from "@/components/BaseModal.vue";
-import { avatarInitial, nameToColor } from "@/utils/color";
-import { Check, UserPlus } from "lucide-vue-next";
+import { avatarInitial, avatarInitialLen, nameToColor } from "@/utils/color";
+import { Check, UserPlus, X } from "lucide-vue-next";
 
 const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<{ (e: "close"): void }>();
@@ -14,6 +19,12 @@ const app = useAppStore();
 const chat = useChatStore();
 const loading = ref(false);
 const keyword = ref("");
+/**
+ * 延迟镜像：过滤用。
+ * 连发粘贴时关键词每秒变十几次，而每次变化都要重算并重渲染候选列表 ⇒
+ * 输入框自己的 caret 会掉帧。原值即时、列表延迟，输入就始终跟手。
+ */
+const query = useDeferredRef(keyword);
 
 // 大规模局域网（设计规模 500–1000 节点）下最多渲染多少行。
 //
@@ -25,8 +36,44 @@ const MAX_RENDER = 1000;
 
 const friendIds = computed(() => new Set(chat.friends.map((f) => f.device_id)));
 
+/**
+ * 「对方已经先申请加我」的 device_id 集合（用户需求 2026-09-12 第 18 条）。
+ *
+ * 用户原话：「当你在添加好友的时候，就是别人刚好先添加你为好友了。你在添加好友的那个界面，
+ * 那个人的名字后面应该就直接变成『同意』或者『拒绝』……你不用再关掉『添加好友』再去
+ * 『新朋友』里添加他，而是在『添加好友』界面，别人向你申请的那条搜到好友的记录，
+ * 就直接变成了可以直接通过或拒绝。你通过之后，如果加好友成功的话，那这一行就变成
+ * 已经加过好友的那种列表状态了。如果你拒绝的话，那对方也会收到拒绝信息，
+ * 这条就变成你可以再去添加。」
+ */
+const pendingFromIds = computed(() => new Set(chat.pendingRequests.map((r) => r.from)));
+
+/** 正在处理中的 device_id（防连点，避免同一申请被提交两次）。 */
+const responding = ref<Record<string, boolean>>({});
+
+async function respond(peerId: string, accept: boolean) {
+  if (responding.value[peerId]) return;
+  responding.value = { ...responding.value, [peerId]: true };
+  try {
+    await chat.respondRequest(peerId, accept);
+    // 同意 → 好友表刷新后本行自动变「已加好友」（friendIds 重算）；
+    // 拒绝 → 申请从 pendingRequests 移除后本行自动变回「加好友」可再次添加。
+    // 两者都不需要额外的本地状态。
+    app.toast(
+      accept ? t("friend.add.toast.accepted") : t("friend.add.toast.rejected"),
+      "success",
+    );
+  } catch (e) {
+    app.toastError(e, t("common.operationFail"));
+  } finally {
+    const next = { ...responding.value };
+    delete next[peerId];
+    responding.value = next;
+  }
+}
+
 const filteredPeers = computed(() => {
-  const k = keyword.value.trim().toLowerCase();
+  const k = query.value.trim().toLowerCase();
   const pool = k
     ? chat.peers.filter(
         (p) =>
@@ -38,14 +85,122 @@ const filteredPeers = computed(() => {
   return { total: pool.length, list: pool.slice(0, MAX_RENDER) };
 });
 
+/**
+ * 通道快捷开关（移动端"未发现节点"时最有用）。
+ *
+ * 用户实测：手机端进「添加好友」什么都没发现 —— 因为**局域网/蓝牙通道默认是关的**，
+ * 而且蓝牙通道在 Android 上还会因为缺运行时权限打不开。原来用户得先退出去、
+ * 进设置 → 网络与连接 才能开，很不直观。这里把两个开关**放到发现失败的现场**，
+ * 并写清"为什么没发现"，让用户就地解决。
+ */
+// 通道状态来自 store（与设置页**同一份**，两处不可能再不一致）
+/**
+ * 对端那一行显示的地址/链路文案。
+ *
+ * 规则（用户 2026-09-12 实测反馈"Tailscale 同网段的设备也被标成蓝牙直连"）：
+ * · 后端说这条链路是 **bluetooth** ⇒ 才显示「蓝牙直连」；
+ * · 否则有 IP 就显示 IP（LAN / 跨网段都真实可核对）；
+ * · 跨网段（routed）且没有 IP 时显示「跨网段/VPN」；
+ * · 只是"发现过、还没建链"就显示「已发现（未建链）」——不许猜。
+ */
+/**
+ * 列表里的"怎么连上他"：**与资料页共用同一份判据**（`utils/peerConnectionInfo.ts`），
+ * 差别只是这里为了行宽只显示 IP、不带端口。
+ */
+function peerAddress(p: Peer): string {
+  const info = {
+    link: p.link ?? null,
+    ip: p.ip ?? null,
+    tcp_port: p.tcp_port ?? null,
+    hop: 0,
+    online: false,
+  };
+  const label = t(linkLabelKey(info), linkLabelParams(info));
+  const addr = addressText(info);
+  return addr ? `${label} · ${addr.split(":")[0]}` : label;
+}
+
+const channels = computed(() => app.channels ?? []);
+const channelBusy = ref<string | null>(null);
+
+/**
+ * 开关某条通道。
+ *
+ * ⚠️ 乐观更新（用户 2026-09-13）：开关**不再等**这个 `await` 回来才动 ——
+ * store 先按用户意图切状态（蓝牙启停要 2~3s，等它就会"点了半天没反应"），
+ * 成功用后端权威快照收尾、失败回退。这里只负责 toast / 权限重试 / 重扫。
+ * `channelBusy` 只用来**挡住重复请求**，不再用来 `disabled` 开关本体
+ * （那样开关会一直停在旧值上，等于把"乐观"又抹掉了）。
+ */
+async function toggleChannel(ch: ChannelStatus, next: boolean) {
+  if (channelBusy.value) return;
+  channelBusy.value = ch.channel;
+  try {
+    // 用开关给出的**目标值**，不要用 `!ch.enabled` 自己取反：状态可能是上一轮的快照，
+    // 取反会与用户意图相反（同一个开关在设置页被改过时尤其明显）。
+    await app.setChannelEnabled(ch.channel, next);
+  } catch (e) {
+    // 打开失败：先申请权限（Android「附近的设备」）再重试一次
+    let ok = false;
+    if (next) {
+      try {
+        await api.requestBlePermissions();
+        await app.setChannelEnabled(ch.channel, true);
+        ok = true;
+      } catch {
+        /* 下面统一提示 */
+      }
+    }
+    if (!ok) app.toastError(e, t("friend.add.channelFailed", { err: "" }));
+  } finally {
+    channelBusy.value = null;
+    // 打开通道后自动重扫一次 —— 否则用户还得再点一下「重新扫描」
+    if (app.channels.some((c) => c.enabled)) void scan();
+  }
+}
+
+/**
+ * 「为什么什么都没发现」的一句话诊断（用户 2026-09-12 安卓实测：
+ * 打开「添加好友」一片空白，无从判断是通道没开、蓝牙没授权、还是附近真没有设备）。
+ * 只说**已知事实**：通道在不在跑 + 哪条通道可能还有希望，不猜。
+ */
+const emptyReason = computed(() => {
+  const lan = channels.value.find((c) => c.channel === "lan");
+  const bt = channels.value.find((c) => c.channel === "bluetooth");
+  if (!lan?.enabled && !bt?.enabled) return t("friend.add.empty.noChannel");
+  if (bt?.enabled) return t("friend.add.empty.bleScanning");
+  return t("friend.add.empty.lanNoPeer");
+});
+
+async function scan() {
+  loading.value = true;
+  try {
+    await chat.searchNearbyPeers(); // 按需 who_has 群发探测
+  } catch (e) {
+    app.toastError(e, t("friend.add.scanFail"));
+  } finally {
+    loading.value = false;
+  }
+}
+
 watch(
   () => props.open,
   async (v) => {
     if (v) {
       keyword.value = "";
+      void app.refreshRuntime(); // 与扫描并发，别让开关状态拖慢"正在扫描"
+      // 手机端：打开本页时才按需拉起蓝牙通道（启动路径不碰 BLE，见 useAppStore.ensureBluetoothOn）
+      void app.ensureBluetoothOn();
       loading.value = true;
-      await chat.searchNearbyPeers(); // 按需 who_has 群发探测
-      loading.value = false;
+      try {
+        await chat.searchNearbyPeers(); // 按需 who_has 群发探测
+      } catch (e) {
+        // 不接住的话：loading 永远停在 true（弹窗卡在「正在扫描…」），
+        // 并且变成一个 unhandled rejection。
+        app.toastError(e, t("friend.add.scanFail"));
+      } finally {
+        loading.value = false;
+      }
     }
   },
 );
@@ -85,14 +240,64 @@ async function add(peerId: string) {
       {{ t("friend.add.scanning") }}
     </div>
 
-    <div v-else-if="chat.peers.length === 0" class="py-8 text-center text-sm text-[var(--gosslan-text-2)]">
-      {{ t("friend.add.noPeers") }}
+    <div v-else-if="chat.peers.length === 0" class="py-4">
+      <div class="text-center text-sm text-[var(--gosslan-text)]">{{ t("friend.add.noPeers") }}</div>
+      <p class="mx-auto mt-1.5 max-w-[42ch] text-center text-xs leading-relaxed text-[var(--gosslan-text-2)]">
+        {{ emptyReason }}
+      </p>
+      <p class="mx-auto mt-1 max-w-[42ch] text-center text-xs leading-relaxed text-[var(--gosslan-text-2)] opacity-70">
+        {{ t("friend.add.noPeers.hint") }}
+      </p>
+
+      <!-- 就地开关：把"发现不到节点"的**头号原因**（通道没开）直接摆在失败现场 -->
+      <div class="mt-3 space-y-2">
+        <div
+          v-for="ch in channels"
+          :key="ch.channel"
+          class="flex items-center justify-between gap-3 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] px-3 py-2"
+        >
+          <div class="min-w-0">
+            <div class="text-sm text-[var(--gosslan-text)]">
+              {{ ch.channel === "lan" ? t("friend.add.channel.lan") : t("friend.add.channel.bluetooth") }}
+            </div>
+            <div class="text-xs text-[var(--gosslan-text-2)]">
+              {{ ch.available
+                ? (ch.running ? t("friend.add.channel.running")
+                  : ch.enabled ? t("friend.add.channel.on") : t("friend.add.channel.off"))
+                : t("friend.add.channel.unavailable") }}
+            </div>
+          </div>
+          <!-- 手机端蓝牙通道默认常开、不给开关（与设置页同一口径，见 NetworkSection 的说明） -->
+          <SettingsToggle
+            v-if="!(app.isMobile && ch.channel === 'bluetooth')"
+            :model-value="ch.enabled"
+            :pending="channelBusy === ch.channel || app.isChannelPending(ch.channel)"
+            :disabled="!ch.available"
+            :label="ch.channel === 'lan' ? t('friend.add.channel.lan') : t('friend.add.channel.bluetooth')"
+            @update:model-value="(v: boolean) => toggleChannel(ch, v)"
+          />
+        </div>
+      </div>
+
+      <button
+        type="button"
+        class="tap-safe mt-3 w-full rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] py-2 text-sm text-[var(--gosslan-text)] transition"
+        :disabled="loading"
+        @click="scan"
+      >
+        {{ t("friend.add.rescan") }}
+      </button>
     </div>
 
     <template v-else>
       <input
         v-model="keyword"
-        class="mb-2 w-full rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none"
+        maxlength="100"
+        autocomplete="off"
+        autocorrect="off"
+        autocapitalize="off"
+        spellcheck="false"
+        class="mb-2 w-full rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] px-3 py-2 text-sm"
         :placeholder="t('friend.add.searchPlaceholder')"
       />
       <div class="max-h-72 overflow-y-auto">
@@ -102,15 +307,20 @@ async function add(peerId: string) {
           class="flex items-center gap-3 border-b border-[var(--gosslan-border)] px-1 py-2 last:border-0 [contain-intrinsic-size:auto_53px] [content-visibility:auto]"
         >
           <div
-            class="flex h-9 w-9 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
+            class="gosslan-avatar-box flex h-9 w-9 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
             :style="{ backgroundColor: nameToColor(p.nickname) }"
           >
             <img alt="" v-if="p.avatar" :src="p.avatar" class="h-full w-full object-cover" />
-            <span v-else class="text-sm font-semibold">{{ initials(p.nickname) }}</span>
+            <span v-else class="gosslan-avatar-initial text-sm font-semibold" :data-len="avatarInitialLen(p.nickname)">{{ initials(p.nickname) }}</span>
           </div>
           <div class="min-w-0 flex-1">
-            <div class="truncate text-sm">{{ p.nickname }}</div>
-            <div class="text-xs text-[var(--gosslan-text-2)]">{{ p.ip }}</div>
+            <div class="truncate text-sm" :title="p.nickname">{{ p.nickname }}</div>
+            <!-- 链路类型**必须由后端给**（`peer.link`）：以前用 `p.ip || 蓝牙直连` 反推，
+                 于是同一 Tailscale 网段（Routed）的设备也被标成"蓝牙直连"（用户 2026-09-12
+                 实测反馈）。现在只有后端确认是 BLE 链路（`link === "bluetooth"`）才这么写。 -->
+            <div class="text-xs text-[var(--gosslan-text-2)]">
+              {{ peerAddress(p) }}
+            </div>
           </div>
           <span
             v-if="friendIds.has(p.device_id)"
@@ -118,6 +328,25 @@ async function add(peerId: string) {
           >
             <Check class="h-3.5 w-3.5" />
             {{ t("friend.add.alreadyFriend") }}
+          </span>
+          <!-- 对方已先申请加我 → 直接同意/拒绝（与「新朋友」页同一套动作） -->
+          <span v-else-if="pendingFromIds.has(p.device_id)" class="flex shrink-0 items-center gap-1.5">
+            <button
+              class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--gosslan-avatar-radius)] bg-primary text-white transition hover:bg-primary-hover disabled:opacity-50"
+              :title="t('common.agree')" :aria-label="t('common.agree')"
+              :disabled="responding[p.device_id]"
+              @click="respond(p.device_id, true)"
+            >
+              <Check class="h-4 w-4" />
+            </button>
+            <button
+              class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-[var(--gosslan-border)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-50"
+              :title="t('common.reject')" :aria-label="t('common.reject')"
+              :disabled="responding[p.device_id]"
+              @click="respond(p.device_id, false)"
+            >
+              <X class="h-4 w-4" />
+            </button>
           </span>
           <button
             v-else-if="inCooldown(p.device_id)"
@@ -129,7 +358,7 @@ async function add(peerId: string) {
           </button>
           <button
             v-else
-            class="flex items-center gap-1 rounded-[var(--gosslan-radius-md)] bg-primary px-3 py-1.5 text-xs font-medium text-white transition hover:bg-primary-hover"
+            class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] bg-primary px-3 py-1.5 text-xs font-medium text-white transition hover:bg-primary-hover"
             @click="add(p.device_id)"
           >
             <UserPlus class="h-3.5 w-3.5" />

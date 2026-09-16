@@ -1,15 +1,19 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
-import { useConversationSearch } from "@/composables/useConversationSearch";
+import { useSearchKeyword } from "@/composables/useSearchKeyword";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
+import { useImeEnterGuard } from "@/composables/useImeEnterGuard";
 import ConversationListItem from "@/components/conversation/ConversationListItem.vue";
 import FriendListItem from "@/components/conversation/FriendListItem.vue";
 import FriendContextMenu from "@/components/conversation/FriendContextMenu.vue";
+import ConversationContextMenu from "@/components/conversation/ConversationContextMenu.vue";
 import BaseModal from "@/components/BaseModal.vue";
+import UnreadBadge from "@/components/UnreadBadge.vue";
 import { APP_ACTION } from "@/api";
+import { groupByInitial } from "@/utils/nameGroup";
 import { Plus, Search, UserPlus, UsersRound } from "lucide-vue-next";
 import type { Conversation, Friend } from "@/types";
 
@@ -26,20 +30,44 @@ const emit = defineEmits<{
   (e: "open-group"): void;
   (e: "open-friend", f: Friend): void;
   (e: "open-requests"): void;
+  /** 在搜索框里按回车 → 打开「搜索聊天记录」结果页（微信式分工：输入即过滤，回车进结果页） */
+  (e: "search-history", keyword: string): void;
 }>();
 
 const app = useAppStore();
 const chat = useChatStore();
+/** 回车打开搜索页之前的输入法守卫（见 composable 注释） */
+const ime = useImeEnterGuard();
 
-const { keyword, results, filtered, snippet, hitMsgId } = useConversationSearch(
-  computed(() => chat.conversations),
-);
+// 输入框只当"搜索入口"：打字**不改列表**、不查消息（用户 2026-09-12 明确要求），
+// 回车才打开「搜索聊天记录」弹窗。`query` 是延迟镜像，给联系人页做姓名过滤用。
+const { keyword, query } = useSearchKeyword();
+/**
+ * 会话列表**恒为全量**（不再随输入变化）。
+ *
+ * 这一行就是用户那条要求本身：「在上面输入，列表就不要有变化了」——
+ * 把它抽成命名 computed 而不是内联，是为了让护栏能一眼钉住"这里没有过滤"。
+ */
+const listConversations = computed(() => chat.conversations);
 
 const filteredFriends = computed(() => {
-  const kw = keyword.value.trim().toLowerCase();
+  const kw = query.value.trim().toLowerCase();
   if (!kw) return chat.friends;
   return chat.friends.filter((f) => f.nickname.toLowerCase().includes(kw));
 });
+
+/**
+ * 通讯录按首字母分组（用户需求 2026-09-12 第 17 条）：
+ * 「以他们的这个字母名字母的首字母，和用一套规则首字母或用户的拼音的首字母去排列
+ *  顺序然后去分组，然后这个头像可以小一些……离线、在线的这个还是要有的。
+ *  就是它跟那个消息列表可以区别一下。」
+ *
+ * 首字母来源见 `utils/nameGroup`（内置生成表，跨端一致，不依赖平台 ICU）。
+ * 搜索时不做分组：此时用户在找**某个人**，分组只会把结果切碎。
+ */
+const friendGroups = computed(() =>
+  query.value.trim() ? [] : groupByInitial(filteredFriends.value, (f) => f.nickname),
+);
 
 /**
  * 加号下拉菜单展开态：点击外部自动收起；并参与全局浮层互斥
@@ -60,12 +88,53 @@ function togglePlus() {
   }
   plusOpen.value = true;
   plusPopup.claim();
+  // 打开即把焦点移进第一条，键盘可以接着 ↑/↓ 或 Enter
+  void nextTick(() => {
+    plusMenuRef.value?.querySelector<HTMLElement>(".gosslan-menu-item:not([disabled])")?.focus();
+  });
 }
 
 function closePlus() {
   plusPopup.release();
   plusOpen.value = false;
+  // 关闭后把焦点还给「+」按钮（HIG：浮层关闭焦点不丢）。只在这两种情况下还：
+  // 焦点还在菜单里，或已经掉到 body —— 否则会抢走鼠标刚点到的行/输入框。
+  const active = document.activeElement;
+  const stuck = active === document.body || (!!plusMenuRef.value && plusMenuRef.value.contains(active));
+  if (stuck) void nextTick(() => plusBtn.value?.focus());
 }
+
+/**
+ * 「+」下拉的键盘可达（HIG *Full Keyboard Access*）：打开即聚焦第一条，
+ * ↑/↓ 循环、Esc 关闭。与右键菜单（`ContextMenu.vue`）同一套交互约定。
+ */
+function onPlusMenuKey(e: KeyboardEvent) {
+  if (e.key === "Escape") {
+    e.preventDefault();
+    closePlus();
+    return;
+  }
+  const list = Array.from(
+    plusMenuRef.value?.querySelectorAll<HTMLElement>(".gosslan-menu-item:not([disabled])") ?? [],
+  );
+  if (!list.length) return;
+  const idx = list.indexOf(document.activeElement as HTMLElement);
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    const delta = e.key === "ArrowDown" ? 1 : -1;
+    const next = idx < 0 ? (delta > 0 ? 0 : list.length - 1) : (idx + delta + list.length) % list.length;
+    list[next]?.focus();
+  } else if (e.key === "Home") {
+    e.preventDefault();
+    list[0]?.focus();
+  } else if (e.key === "End") {
+    e.preventDefault();
+    list[list.length - 1]?.focus();
+  }
+}
+
+const plusBtn = ref<HTMLButtonElement | null>(null);
+const plusMenuRef = ref<HTMLElement | null>(null);
 
 function onDocClickForPlus() {
   closePlus();
@@ -79,6 +148,20 @@ function focusSearch() {
   searchInput.value?.focus();
   searchInput.value?.select();
 }
+/**
+ * 回车：用当前关键词打开「搜索聊天记录」结果页。
+ * 关键词为空时不动作（没有可搜的内容，弹一个空结果页只会让人困惑）。
+ */
+function onSearchEnter(e: KeyboardEvent) {
+  // ⚠️ 先让输入法走：拼音/日文候选里按回车是"选字"，不是"搜索"
+  // （macOS WKWebView 上 compositionend 先于 keydown，只看 isComposing 会误判）
+  if (ime.isIme(e)) return;
+  // 只在「消息」页生效：通讯录页的搜索是为了找人，回车弹"聊天记录"结果页会让人困惑
+  if (props.view !== "chats") return;
+  const kw = keyword.value.trim();
+  if (kw) emit("search-history", kw);
+}
+
 onMounted(() => window.addEventListener(APP_ACTION.focusSearch, focusSearch));
 onUnmounted(() => window.removeEventListener(APP_ACTION.focusSearch, focusSearch));
 
@@ -89,24 +172,33 @@ function isOnline(id: string): boolean | null {
 }
 
 /**
- * 打开会话。若会话列表正处于**搜索结果**态，且命中里有具体消息 → 直接跳到那一条。
- * 只把用户丢进会话、让他自己翻，搜索就只完成了一半（HIG：搜索的价值是"降低定位成本"）。
- * 定位失败时按**原因**分别告知，不静默、也不说错原因。
+ * 打开会话。
+ *
+ * 列表里已不存在"列表自身的搜索结果态"（搜索全在「搜索聊天记录」弹窗里做，
+ * 见 `useSearchKeyword` 注释）——所以这里就是纯粹地打开会话；
+ * 从搜索结果跳转那一步由弹窗自己带着 msgId 调 `chat.locateMessageInConv`。
  */
 async function openConv(conv: Conversation) {
   if (app.isMobile) app.mobileView = "chat";
-  const hit = hitMsgId(conv.id);
-  if (hit) {
-    const outcome = await chat.locateMessageInConv(conv.id, hit);
-    if (outcome === "not-found") app.toast(t("conv.toast.locateNotFound"), "info");
-    else if (outcome === "error") app.toast(t("conv.toast.locateError"), "error");
-    return;
-  }
   chat.openConversation(conv.id);
 }
 /** 通讯录点击好友 → 打开资料页（发消息由资料页按钮触发，不再直接开会话） */
 function openFriend(f: Friend) {
   emit("open-friend", f);
+  if (app.isMobile) app.mobileView = "chat";
+}
+
+/**
+ * 联系人右键菜单的「发起聊天」（用户需求 2026-09-12 晚 #12）。
+ * 直接打开与该好友的会话并切到会话视图 —— 与微信「发消息」一致：
+ * 不要求先有历史会话（`openConversation` 会以 device_id 为会话 id 打开/新建）。
+ */
+function startChatWithFriend() {
+  const f = friendMenu.value?.friend;
+  closeFriendMenu();
+  if (!f) return;
+  void chat.openConversation(f.device_id);
+  emit("update:view", "chats");
   if (app.isMobile) app.mobileView = "chat";
 }
 
@@ -160,9 +252,48 @@ async function confirmDeleteFriend() {
 // ---------------- 删除聊天记录（仅本地，二次确认） ----------------
 const pendingDelete = ref<Conversation | null>(null);
 
-function onAskDeleteConv(conv: Conversation, e: MouseEvent) {
-  e.stopPropagation();
-  pendingDelete.value = conv;
+/**
+ * 会话行右键 / 长按 → 弹统一菜单（用户 2026-09-12 晚 #3：
+ * 「取消叉叉，改为统一的右键删除操作」）。菜单里再点「删除」才进入二次确认 ——
+ * 与微信一致：右键只是入口，破坏性动作仍要确认。
+ */
+const convMenuPopup = useExclusivePopup("conv-menu");
+const convMenu = ref<{ x: number; y: number; conv: Conversation } | null>(null);
+
+watch(convMenuPopup.isActive, (mine) => {
+  if (!mine && convMenu.value) convMenu.value = null;
+});
+
+function onConvContext(conv: Conversation, x: number, y: number) {
+  pendingDelete.value = null;
+  convMenu.value = { x, y, conv };
+  convMenuPopup.claim();
+}
+
+function closeConvMenu() {
+  convMenuPopup.release();
+  convMenu.value = null;
+}
+
+/** 菜单里的「删除」：关菜单 → 进二次确认（确认文案沿用既有弹窗）。 */
+function onAskDeleteConvFromMenu() {
+  const c = convMenu.value?.conv;
+  closeConvMenu();
+  if (!c) return;
+  pendingDelete.value = c;
+}
+
+/** 菜单里的「置顶/取消置顶」：可直接执行（可逆、非破坏性，无需二次确认）。 */
+async function onTogglePinConv() {
+  const c = convMenu.value?.conv;
+  closeConvMenu();
+  if (!c) return;
+  const next = !c.pinned;
+  try {
+    await chat.setConversationPinned(c.id, next);
+  } catch (e) {
+    app.toastError(e, next ? t("conv.pinFail") : t("conv.unpinFail"));
+  }
 }
 
 async function confirmDeleteConv() {
@@ -190,8 +321,10 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
     <!-- 列表头：搜索框（白底+细边，在浅灰栏上清晰）+ 操作按钮。
          高度必须与右栏 ChatHeader 同源（--gosslan-header-h）并同样画下边框：
          两栏从同一个 y 起算，只有高度与底边线都一致，那条分隔线才是**一条连续的线**。
-         之前这里是 px-3 py-2 + h-9 搜索框 = 52px（比右栏 56px 矮 4px）且无底边线，
-         于是左右永远差 4px、右栏那条线在左栏没有对应物。改高度/内边距时留意这条约束。 -->
+         之前这里是 px-3 py-2 + h-9 搜索框 = 52px（比当时右栏的 56px 矮 4px）且无底边线，
+         于是左右永远差 4px、右栏那条线在左栏没有对应物。改高度/内边距时留意这条约束。
+         2026-09-12：整条头部按用户反馈收紧（token 56→52、搜索框 h-9→h-8），
+         两栏仍**同源同一 token**，所以分隔线依旧是一条连续的线。 -->
     <div
       class="flex shrink-0 items-center gap-1.5 border-b border-[var(--gosslan-divider)] px-3"
       :style="{ height: 'var(--gosslan-header-h)' }"
@@ -200,72 +333,108 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
            暗色下 panel(#1e293b) 与本栏 list(#1e293b) 是同一个值，输入框会"消失"；
            field 在两套主题里都与所在栏拉开一档。 -->
       <div
-        class="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-field)] px-2.5 transition focus-within:border-[var(--gosslan-primary)]"
+        class="flex h-[30px] min-w-0 flex-1 items-center gap-2 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-field)] px-2.5 transition focus-within:border-[var(--gosslan-primary)]"
       >
         <Search class="h-4 w-4 shrink-0 text-[var(--gosslan-text-2)]" />
         <input
           ref="searchInput"
           v-model="keyword"
           maxlength="100"
-          class="w-full bg-transparent text-[13px] outline-none placeholder:text-[var(--gosslan-text-2)]"
+          enterkeyhint="search"
+          autocomplete="off"
+          autocorrect="off"
+          autocapitalize="off"
+          spellcheck="false"
+          class="w-full bg-transparent text-[13px] placeholder:text-[var(--gosslan-text-2)]"
           :placeholder="view === 'chats' ? t('common.search') : t('common.searchContacts')"
+          @keydown.enter.prevent="onSearchEnter"
+          @compositionstart="ime.onStart"
+          @compositionend="ime.onEnd"
         />
       </div>
       <div class="relative flex shrink-0 items-center">
         <!-- 微信式：单个加号，点开下拉（添加好友 / 创建群聊） -->
         <button
+          ref="plusBtn"
           class="tap-safe flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-list-hover)]"
           :title="t('conv.addTitle')" :aria-label="t('conv.addTitle')"
+          :aria-expanded="plusOpen"
+          aria-haspopup="menu"
           @click.stop="togglePlus"
         >
           <Plus class="h-[18px] w-[18px]" />
         </button>
+        <!-- 右上角「+」下拉（用户 2026-09-12 晚 #9：「消息页右上角加号的弹出的下拉弹窗，
+             参考微信这边只是暗色模式；亮色就是配色的话，按现有的配色，但是样式参考微信」）
+             ⇒ 结构与外观统一走 `.gosslan-menu*`（与右键菜单同一套），
+             条目带图标、32px 行高、6px 面板内边距 —— 微信式。 -->
         <div
           v-if="plusOpen"
-          class="frost absolute right-0 top-8 z-30 w-36 overflow-hidden rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] py-1 shadow-lg"
+          ref="plusMenuRef"
+          class="frost gosslan-menu absolute right-0 top-8 z-30"
+          role="menu"
+          aria-orientation="vertical"
+          @keydown="onPlusMenuKey"
         >
-          <button
-            class="flex w-full items-center gap-2 px-3 py-2 text-[13px] text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
-            @click.stop="closePlus(); emit('open-add-friend')"
-          >
-            <UserPlus class="h-4 w-4 text-[var(--gosslan-text-2)]" />
+          <button role="menuitem" class="gosslan-menu-item" @click.stop="closePlus(); emit('open-add-friend')">
+            <UserPlus />
             {{ t("common.addFriend") }}
           </button>
-          <button
-            class="flex w-full items-center gap-2 px-3 py-2 text-[13px] text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
-            @click.stop="closePlus(); emit('open-group')"
-          >
-            <UsersRound class="h-4 w-4 text-[var(--gosslan-text-2)]" />
+          <button role="menuitem" class="gosslan-menu-item" @click.stop="closePlus(); emit('open-group')">
+            <UsersRound />
             {{ t("common.createGroup") }}
           </button>
         </div>
       </div>
     </div>
 
-    <div class="flex-1 select-none overflow-y-auto">
+    <!-- 底部内边距：移动端底部导航是 `fixed bottom-0`，不给列表留位就会永久盖住最后一行，
+         而且滚到底也露不出来（聊天区早有同样的补偿，这里此前漏了）。
+         键盘弹出时导航收起，补偿随之换成键盘补量（由外层容器负责）。 -->
+    <div
+      class="flex-1 select-none overflow-y-auto"
+      :class="app.isMobile && !app.keyboardOpen ? 'pb-[calc(4rem+env(safe-area-inset-bottom))]' : ''"
+    >
       <template v-if="view === 'chats'">
         <ConversationListItem
-          v-for="c in filtered"
+          v-for="c in listConversations"
           :key="c.id"
-          v-memo="[c.last_ts, c.last_msg, c.unread, c.avatar, c.name, chat.activeConv === c.id, isOnline(c.id), keyword, results.length, chat.friends.length, chat.groups.length]"
+          v-memo="[c.last_ts, c.last_msg, c.unread, c.avatar, c.name, chat.activeConv === c.id, isOnline(c.id), chat.friends.length, chat.groups.length]"
           :conv="c"
           :active="chat.activeConv === c.id"
           :online="isOnline(c.id)"
-          :snippet="snippet(c.id)"
-          :keyword="keyword"
           @open="openConv"
-          @ask-delete="onAskDeleteConv"
+          @context="onConvContext"
         />
-        <div v-if="filtered.length === 0" class="mt-16 flex flex-col items-center gap-3 text-center text-sm text-[var(--gosslan-text-2)]">
-          <span>{{ keyword.trim() ? t("conv.noMatchConv") : t("conv.noConversation") }}</span>
-          <!-- 空态给下一步：新用户在这里直接能去加人（搜索无结果时不给，那是"换个词"的场景） -->
-          <button
-            v-if="!keyword.trim()"
-            class="rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3 py-1.5 text-xs text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
-            @click="emit('open-add-friend')"
-          >
-            {{ t("common.addFriend") }}
-          </button>
+        <!-- 空态（用户需求 #7）：「兜底的界面，也不一定是要加好友。如果有好友的情况下，
+             就会有一个『发起聊天』，然后去选好友。如果一个好友都没有的话，就是发现好友。」
+             ⇒ 有好友时主行动 = 发起聊天（切到通讯录选人），另有次行动 = 发现好友；
+                一个好友都没有时主行动 = 发现好友（去搜索添加）。
+             搜索无结果时不给这些（那是"换个词"的场景，不是"没人"）。 -->
+        <div v-if="listConversations.length === 0" class="mt-16 flex flex-col items-center gap-3 text-center text-sm text-[var(--gosslan-text-2)]">
+          <span>{{ t("conv.noConversation") }}</span>
+          <!-- 空态下一步（用户 2026-09-12 晚）：**有好友 → 发起聊天**；**一个好友都没有 →
+               只有「添加好友」**（原先还并列一个「发现好友」，与本条冲突，已去掉）。
+               两个入口都带一句说明文字：空态只陈述"没有会话"会让人不知所措。 -->
+          <template v-if="!query.trim()">
+            <button
+              v-if="chat.friends.length"
+              class="tap-safe rounded-[var(--gosslan-radius-md)] bg-primary px-3.5 py-1.5 text-xs font-medium text-white transition hover:bg-primary-hover"
+              @click="emit('update:view', 'contacts')"
+            >
+              {{ t("conv.startChat") }}
+            </button>
+            <button
+              v-else
+              class="tap-safe rounded-[var(--gosslan-radius-md)] bg-primary px-3.5 py-1.5 text-xs font-medium text-white transition hover:bg-primary-hover"
+              @click="emit('open-add-friend')"
+            >
+              {{ t("common.addFriend") }}
+            </button>
+            <span class="max-w-[220px] text-[11px] leading-relaxed">
+              {{ chat.friends.length ? t("conv.emptyHintHasFriends") : t("conv.emptyHintNoFriends") }}
+            </span>
+          </template>
         </div>
       </template>
 
@@ -280,34 +449,57 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
             <span class="flex h-10 w-10 items-center justify-center rounded-[var(--gosslan-avatar-radius)] brand-surface text-white">
               <UserPlus class="h-5 w-5" />
             </span>
-            <span
+            <UnreadBadge
               v-if="chat.pendingRequests.length"
-              class="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--gosslan-danger)] px-1 text-[11px] font-medium leading-none text-white"
-            >
-              {{ chat.pendingRequests.length > 99 ? "99+" : chat.pendingRequests.length }}
-            </span>
+              :count="chat.pendingRequests.length"
+              class="absolute -right-1 -top-1"
+            />
           </span>
           <span class="min-w-0 flex-1 text-left">
-            <span class="block truncate text-[13px] leading-5 text-[var(--gosslan-text)]">{{ t("conv.newFriends") }}</span>
-            <span class="block truncate text-[12px] leading-5 text-[var(--gosslan-text-2)]">
+            <span class="block truncate text-[13px] leading-5 text-[var(--gosslan-text)]" :title="t('conv.newFriends')">{{ t("conv.newFriends") }}</span>
+            <span class="block truncate text-[12px] leading-5 text-[var(--gosslan-text-2)]" :title="chat.pendingRequests.length ? t('conv.pendingRequests', { n: chat.pendingRequests.length }) : t('friend.request.empty')">
               {{ chat.pendingRequests.length ? t("conv.pendingRequests", { n: chat.pendingRequests.length }) : t("friend.request.empty") }}
             </span>
           </span>
         </button>
-        <FriendListItem
-          v-for="f in filteredFriends"
-          :key="f.device_id"
-          v-memo="[f.nickname, f.avatar, f.online, props.activeFriendId === f.device_id]"
-          :friend="f"
-          :active="props.activeFriendId === f.device_id"
-          @open="openFriend"
-          @context="onFriendContext"
-        />
+        <!-- 搜索：平铺（用户正在找某个人，分组会把结果切碎） -->
+        <template v-if="query.trim()">
+          <FriendListItem
+            v-for="f in filteredFriends"
+            :key="f.device_id"
+            v-memo="[f.nickname, f.avatar, f.online, props.activeFriendId === f.device_id]"
+            :friend="f"
+            :active="props.activeFriendId === f.device_id"
+            compact
+            @open="openFriend"
+            @context="onFriendContext"
+          />
+        </template>
+        <!-- 浏览：按首字母分组，组头 + 小头像行 -->
+        <template v-else>
+          <template v-for="g in friendGroups" :key="g.letter">
+            <div
+              class="sticky top-0 z-10 bg-[var(--gosslan-list)] px-3 py-1 text-[11px] font-medium text-[var(--gosslan-text-2)]"
+            >
+              {{ g.letter }}
+            </div>
+            <FriendListItem
+              v-for="f in g.items"
+              :key="f.device_id"
+              v-memo="[f.nickname, f.avatar, f.online, props.activeFriendId === f.device_id]"
+              :friend="f"
+              :active="props.activeFriendId === f.device_id"
+              compact
+              @open="openFriend"
+              @context="onFriendContext"
+            />
+          </template>
+        </template>
         <div v-if="filteredFriends.length === 0" class="mt-16 flex flex-col items-center gap-3 text-center text-sm text-[var(--gosslan-text-2)]">
-          <span>{{ keyword.trim() ? t("conv.noMatchContact") : t("conv.noFriends") }}</span>
+          <span>{{ query.trim() ? t("conv.noMatchContact") : t("conv.noFriends") }}</span>
           <button
-            v-if="!keyword.trim()"
-            class="rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3 py-1.5 text-xs text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
+            v-if="!query.trim()"
+            class="tap-safe rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3 py-1.5 text-xs text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
             @click="emit('open-add-friend')"
           >
             {{ t("common.addFriend") }}
@@ -316,10 +508,21 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
       </template>
     </div>
 
+    <ConversationContextMenu
+      v-if="convMenu"
+      :x="convMenu.x"
+      :y="convMenu.y"
+      :pinned="convMenu.conv.pinned"
+      @close="closeConvMenu"
+      @toggle-pin="onTogglePinConv"
+      @delete="onAskDeleteConvFromMenu"
+    />
+
     <FriendContextMenu
       v-if="friendMenu"
       :x="friendMenu.x"
       :y="friendMenu.y"
+      @chat="startChatWithFriend"
       @close="closeFriendMenu"
       @confirm="onAskDeleteFriend"
     />

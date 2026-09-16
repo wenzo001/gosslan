@@ -14,6 +14,22 @@ val tauriProperties = Properties().apply {
 }
 
 android {
+    // GOSSLAN_BTLEPLUG_JAVA_BEGIN
+    // btleplug 的 Android Java 实现（只被 native 代码按类名调用，必须编译进 App）
+    // 两个包都在仓库里：com/nonpolynomial/** 与 io/github/gedgygedgy/**
+    //（crates.io 的 btleplug 包里没有后者，见 scripts/android/btleplug-java/README.md）
+    sourceSets["main"].java.srcDirs("/Users/wendongfu/Documents/code/gosslan/scripts/android/btleplug-java")
+    // GOSSLAN_BTLEPLUG_JAVA_END
+    // GOSSLAN_SIGNING_BEGIN
+    signingConfigs {
+        create("release") {
+            storeFile = file("release.keystore")
+            storePassword = "gosslan-local"
+            keyAlias = "gosslan"
+            keyPassword = "gosslan-local"
+        }
+    }
+    // GOSSLAN_SIGNING_END
     compileSdk = 36
     namespace = "com.gosslan.app"
     defaultConfig {
@@ -37,6 +53,7 @@ android {
             }
         }
         getByName("release") {
+            signingConfig = signingConfigs.getByName("release")
             isMinifyEnabled = true
             proguardFiles(
                 *fileTree(".") { include("**/*.pro") }

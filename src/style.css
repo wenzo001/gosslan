@@ -122,8 +122,19 @@
   /* 版式尺寸：64px 侧栏（图标有呼吸感）+ 250px 列表栏 + 56px 头部 */
   --gosslan-rail-w: 64px;
   --gosslan-list-w: 250px;
-  --gosslan-header-h: 56px;
+  /* 两栏（会话列表 / 聊天头部）共用的头部高度。
+     2026-09-12 按用户反馈「信息列表上面的搜索框和聊天内容区上面的信息框，占的位置太大了，
+     太高了……比较紧凑、精致一点」由 56px 收紧到 52px；当晚二次反馈「顶部的高度紧凑感
+     参考微信」→ 再收到 48px（微信 macOS 版头部就是这个量级）。
+     ⚠️ 改这个值必须同步 `index.html` 的首屏骨架 `.boot-head`（桌面）与
+     `.boot-logs-toolbar`（日志窗口），否则首屏会跳高 4px —— 这是本项目的既有约定。 */
+  --gosslan-header-h: 48px;
   /* 顶部窗口拖拽条高度：caption 容纳右上三枚窗口按钮 */
+  /* 自绘标题栏高度。Windows / Linux 用它承载自绘三键（与系统 caption 高度接近）。
+     macOS 走下面 `.platform-mac` 的覆盖值 —— 那边要与**原生标题栏 28px** 对齐，
+     否则自绘红绿灯所在的横条比系统的高一截，并排时"按钮大小"看着就不一样
+     （用户 2026-09-12 反馈：「mac 自己写的三个关闭按钮，和原生的关闭按钮的样式好像
+     不太一样，还有大小」）。 */
   --gosslan-title-h: 38px;
   /* ---------------- 圆角梯度（对齐 iOS HIG / WWDC25「Shape & Concentricity」） ----------------
      选形状看"密度与层级"，不要到处都圆：
@@ -269,12 +280,95 @@ body {
 .overflow-auto {
   overscroll-behavior: contain;
 }
+/* 搜索/筛选小胶囊（「发送人」「日期」这类开关）。
+   与 `.gosslan-menu` 同族取值：圆角用统一 token、颜色全部走语义变量 —— 不写死微信色值。 */
+.gosslan-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 36px;
+  padding: 0 12px;
+  border-radius: var(--gosslan-radius-md);
+  border: 1px solid var(--gosslan-border);
+  background: transparent;
+  color: var(--gosslan-text-2);
+  font-size: 13px;
+  transition: background-color var(--gosslan-duration-fast) var(--gosslan-ease);
+}
+.gosslan-filter-chip:hover {
+  background: var(--gosslan-hover);
+  color: var(--gosslan-text);
+}
+/* 已筛选：主色描边 + 主色文字（不用实心块，避免与发送键抢视觉） */
+.gosslan-filter-chip--on {
+  border-color: var(--gosslan-primary);
+  color: var(--gosslan-accent-ink);
+}
+
+/* 可选文本标记：正文气泡 / 代码块用。
+   两处用途：① 显式允许选字（与下面"控件不选中"的规则区分开）；
+   ② 消息行长按菜单靠它让路 —— 命中可选文本时不弹操作面板，把长按还给原生选字。
+   `-webkit-touch-callout: default`（用户 2026-09-13：「选中文本之后没有弹出复制等选项」）：
+   上面 `button,[role=button]` 那条把 callout 关了，这里必须**显式打开** ——
+   否则 iOS/Android 上选中文字后不会弹系统那条「复制/全选」工具条。 */
+.gosslan-selectable {
+  -webkit-user-select: text;
+  user-select: text;
+  -webkit-touch-callout: default;
+}
+
+/* ── 触屏：气泡默认**不可选**，长按归"消息菜单"；只有进入「选择文字」模式才可选 ──
+ *
+ * 用户 2026-09-13：「长按气泡时，没选文字和弹菜单有点冲突」。
+ * 这是**成熟产品的通行做法**（微信 / Telegram / WhatsApp / iMessage 都是这个模型）：
+ *   · 长按消息 = 弹上下文菜单（复制整条 / 引用 / 转发 / 删除…）——菜单永远是主行为；
+ *   · "部分选字"是**二级模式**：Telegram 的 Select Text、iMessage 的再长按/双击进入；
+ *   微信/WhatsApp 干脆不提供自由选字（"复制"就是整条）。
+ * 反过来做（长按=自由选字、菜单让路）必然两边都不灵：手指不可能"按住 500ms 又完全不动"，
+ * 而且一有选区，系统就会抢走长按去弹自己的工具条。
+ *
+ * 桌面（鼠标）没有长按冲突 ⇒ 保持默认可拖选（见上面 `.gosslan-selectable`）。
+ * ⚠️ 只写 `pointer: coarse`，不要再加 `position` 之类会与工具类打架的声明
+ *   （见 style.css 末尾的级联护栏）。 */
+@media (pointer: coarse) {
+  .gosslan-bubble-text,
+  .gosslan-bubble-text .gosslan-selectable {
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  /* 「选择文字」模式：这一条气泡重新开放原生选择 + 系统复制工具条 */
+  .gosslan-bubble-text.gosslan-selecting,
+  .gosslan-bubble-text.gosslan-selecting .gosslan-selectable {
+    -webkit-user-select: text;
+    user-select: text;
+    -webkit-touch-callout: default;
+  }
+}
+
 /* 控件不长按选中、不弹系统菜单；正文消息区不在此列——那里要能选字复制 */
 button,
 [role="button"] {
   -webkit-user-select: none;
   user-select: none;
   -webkit-touch-callout: none;
+}
+
+/* 引用块要能被框进选区。
+ * 它是个 `<button>`（要能点着跳原消息），会吃到上面那条 `user-select: none` ——
+ * 于是「选择文字」全选复制拿到的是纯正文，而操作条的「复制」给的是带引用头的完整原文，
+ * 同一个气泡两条复制路径结果不一致。这里把引用块拉回可选中。
+ * 触屏下仍与正文**同进退**：默认不可选（长按归消息菜单），只在「选择文字」模式放开，
+ * 否则在引用块上长按会变成拉原生选区、弹不出菜单。 */
+.quote-block {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+@media (pointer: coarse) {
+  .gosslan-bubble-text:not(.gosslan-selecting) .quote-block {
+    -webkit-user-select: none;
+    user-select: none;
+  }
 }
 
 /* 交互态基线（hover / press / focus） ----------------
@@ -305,7 +399,10 @@ button:not(:disabled):active,
   filter: brightness(1.15);
 }
 /* 键盘焦点环：只对 :focus-visible 生效（鼠标点击不出现焦点环） */
-:where(button, a, input, textarea, select, [tabindex]):focus-visible {
+/* ⚠️ 必须包含 `[contenteditable]`：消息输入框是 `div[contenteditable]`（不是 textarea），
+   它的类里有 `outline-none` ⇒ 不在这里列出来，键盘用户**看不到焦点在哪**
+   （输入框是最高频的控件，这条属 WCAG 2.4.7 可见焦点）。 */
+:where(button, a, input, textarea, select, [tabindex], [contenteditable]):focus-visible {
   outline: 2px solid var(--gosslan-focus-ring);
   outline-offset: 1px;
 }
@@ -325,14 +422,49 @@ button:not(:disabled):active,
    （严格说连垂直也可能与上下相邻元素重叠，所以只给确实独立的小按钮加）。
    用法：给小于 44px 的独立小按钮加 class="tap-safe"。 */
 @media (pointer: coarse) {
-  .tap-safe {
+  /* ⚠️ `:where()` 把特异性压到 **0**：`.tap-safe` 只负责"把命中区扩到 44px"，
+     绝不能覆盖组件自己声明的定位。
+     真实缺陷（用户 2026-09-12 安卓实测）：「回到最新」按钮写的是
+     `tap-safe absolute bottom-4 right-5`，而 `.tap-safe { position: relative }` 与
+     Tailwind 的 `.absolute` 都是**单类选择器**、本文件又在 `@tailwind utilities` **之后**
+     ⇒ 触屏设备上 position 被改成 relative，按钮掉回文档流、不再贴在右下角。
+     桌面 `pointer: fine` 不走这条媒体查询，所以只有安卓/触屏复现。
+     用 `:where()` 之后，任何定位工具类（absolute / fixed / sticky）都能正常生效。 */
+  :where(.tap-safe) {
     position: relative;
   }
-  .tap-safe::after {
+  :where(.tap-safe)::after {
     content: "";
     position: absolute;
     inset: -8px 0;
   }
+}
+
+/* iOS 会在聚焦 **font-size < 16px 的表单控件**时自动放大整页，而且不会自动还原 ——
+   是"这不像原生应用"最典型的一处。只能把控件字号提到 16px 来规避：
+   不能用 `maximum-scale=1` / `user-scalable=no` 兜（那会禁掉用户缩放，违反无障碍要求）。
+   · 只针对表单控件：`contenteditable` 不在 iOS 的放大启发式里，且聊天字号是用户设置
+     （`--gosslan-msg-size`，可到 13px），不能被这里覆盖；
+   · `!important` 是为了压过组件上的 `text-[13px]` 等 Tailwind 工具类（同优先级下
+     工具类在 @tailwind utilities 里，本文件在其之后本可胜出，但 `text-sm` 等类
+     特异性更高，必须显式提升）。 */
+@media (pointer: coarse) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="color"]),
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+}
+
+/* macOS 自绘红绿灯：视觉直径 12px 与原生一致，但原生判定区比 12px 大。
+   只加不可见的命中扩展，不改视觉（点错关闭/最小化在桌面上很烦人）。 */
+.traffic-hit {
+  position: relative;
+}
+.traffic-hit::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
 }
 
 /* 尊重"减弱动态效果"（Apple 无障碍要求）：关掉过渡与动画 */
@@ -426,6 +558,36 @@ button:not(:disabled):active,
   color: var(--gosslan-text);
 }
 
+/* 默认头像取字（用户 2026-09-13 的取字规则见 `utils/color.ts::avatarInitial`）。
+   1~2 个字沿用各调用点自己的 `text-*` 字号（零视觉变化）；3~4 个字（如英文名的
+   `ZHOU`）必须**随头像框宽度缩小**，否则会撑破圆形。这里用容器查询的 `cqw`
+   —— 字号 = 头像框宽度的百分比，因此 16px 的已读小头像与 64px 的资料页大头像
+   都自动合适，不需要在 12 个调用点各写一份字号。
+   `container-type: inline-size` 只做行内尺寸containment（不冻结高度），
+   对 `h-* w-*` 固定尺寸的框没有副作用；不支持容器查询的旧 WebView 直接跳过
+   这段 `@supports`，回落到调用点自身的字号（顶多略挤，不会看不见）。 */
+.gosslan-avatar-box {
+  container-type: inline-size;
+  /* 头像不参与文本选择（用户 2026-09-13：「头像部分应该是不能选择的。将来可能会有点击事件，
+     但依然不能选择」）。放在这里而不是 13 个调用点：所有默认头像都带这个类，
+     一处生效；`button,[role=button]` 那条只管得住按钮形态的头像。 */
+  -webkit-user-select: none;
+  user-select: none;
+}
+.gosslan-avatar-initial {
+  line-height: 1;
+}
+@supports (container-type: inline-size) {
+  .gosslan-avatar-initial[data-len="3"] {
+    font-size: 44cqw;
+    letter-spacing: -0.03em;
+  }
+  .gosslan-avatar-initial[data-len="4"] {
+    font-size: 33cqw;
+    letter-spacing: -0.04em;
+  }
+}
+
 /* 细滚动条 */
 ::-webkit-scrollbar {
   width: 6px;
@@ -445,6 +607,13 @@ button:not(:disabled):active,
 /* macOS：恢复系统 overlay 滚动条（滚动时才浮出、不占布局宽度，符合 HIG）。
    Windows/Android 保留上面的 6px 细滚动条（自绘标题栏/触屏语境下常显更明确）。
    ⚠️ 必须写在上面全局滚动条样式**之后**：同优先级"后定义者胜"，写前面会被覆盖。 */
+/* macOS：标题栏高度对齐系统（28px）。自绘红绿灯的圆心位置、与窗口顶边的距离
+   因此与原生窗口一致；配合 TitleBar 里的 12px 直径 / 8px 间距 / 13px 左边距，
+   整组与系统视觉等价。 */
+.platform-mac {
+  --gosslan-title-h: 28px;
+}
+
 .platform-mac ::-webkit-scrollbar {
   width: auto;
   height: auto;
@@ -477,6 +646,41 @@ button:not(:disabled):active,
   border-color: transparent var(--bubble-bg) transparent transparent;
 }
 
+/* ── 长链接的「中间省略」（用户 2026-09-16） ────────────────────────────────
+ * 缺陷：正文里的超长链接原先把 `displayUrl()` 截断后的字符串当 DOM 文本渲染，
+ * 于是选中复制拿到的是残缺 URL（复制走选区文本）。修法是 DOM 里保留完整字符序列，
+ * 省略只由 CSS 表达 —— 下面两条就是那套 CSS，用错了就又会复制出残缺链接。
+ *
+ * `.gosslan-url-mid` 是中段原文，必须留在 DOM（`splitUrl` 的 head/mid/tail 拼回原文）。
+ * ⚠️ 只能用 font-size:0 藏：它仍参与选区、仍会被复制。换成 display:none / visibility:hidden
+ * 会把文字从选区里剔除，缺陷原样复现。
+ * ⚠️ 也不能改成 color:transparent —— 那样文字仍然占宽度，"省略"的视觉就没有了。 */
+.gosslan-url-mid {
+  font-size: 0;
+}
+
+/* 省略号本体：**完全不含文本**，用 radial-gradient 画三个点。
+ * 刻意不写 "…"：任何可见字符都会被一起复制进 URL（选区复制不看 user-select，
+ * 程序化全选 range.selectNodeContents 更是必然包含）。画成背景图就没有这个风险。
+ * 几何值是按真实 "…" 量出来的（14px 下宽 11.8px、点径约 0.11em、点距 0.28em），
+ * 全部用 em 表达，随 `--gosslan-msg-size` 一起缩放：
+ *   · padding 0 0.42em → 空行内盒没有内容宽度，靠它撑出 0.84em ≈ 一个 "…" 的宽度；
+ *   · background-size 0.28em → 0.84 / 0.28 恰好 3 个点（除不尽会把第三个点裁掉，
+ *     历史上就是这里少了一个点、看着像条虚线）；
+ *   · vertical-align -0.34em → 空行内盒的内容区居中点约在基线上方 0.34em，
+ *     减掉才让三个点落回基线，与相邻文字同一水平线。 */
+.gosslan-url-dots {
+  /* 必须 inline：装饰线会传播到行内后代、但**不会**进入 inline-block 盒子，
+     换成 inline-block 下划线就会在省略号处断开一截。 */
+  display: inline;
+  padding: 0 0.42em;
+  vertical-align: -0.34em;
+  background-image: radial-gradient(circle, currentColor 0.055em, transparent 0.075em);
+  background-size: 0.28em 100%;
+  background-position: center;
+  background-repeat: repeat-x;
+}
+
 /* 群聊 @ 提及高亮（微信/钉钉式：淡色块 + 强调字）。
    文字色由 mentionHighlightColor 派生（inline color），背景走 inline background（主题色淡块）；
    此处的 background 仅作兜底，实际渲染时被 inline 覆盖。
@@ -493,12 +697,49 @@ button:not(:disabled):active,
   box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 35%, transparent);
 }
 
-/* contenteditable 输入框的 placeholder（textarea 才有原生 placeholder）：
-   :empty 时显示 data-placeholder；normalizeEmpty 会把空壳规范化成真·空。 */
-[contenteditable][data-placeholder]:empty::before {
-  content: attr(data-placeholder);
-  color: var(--gosslan-text-2);
+/* 统一的下拉选择器（跨平台一致性）。
+   用户 2026-09-12 反馈：「下拉选择框的高度在 Mac、Windows 和安卓端也不够一致」。
+   根因是原生 `<select>` 各平台渲染差异很大（macOS 是原生 popup button，高度/内边距
+   与 Windows、Android 都不同），只靠 Tailwind 的 py-1.5 无法收敛。
+   做法：`appearance: none` 去掉原生外观 + **固定高度** + 自绘箭头（border 三角，
+   跟随 currentColor，明暗主题都自适应，且不引任何图片资源）。
+   用法：`<span class="gosslan-select-wrap"><select class="gosslan-select">…`。
+   ⚠️ 箭头由 ::after 画在外壳上，所以外层必须是 position:relative 的那个 span。 */
+.gosslan-select-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.gosslan-select-wrap::after {
+  content: "";
+  position: absolute;
+  right: 10px;
+  width: 0;
+  height: 0;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid currentColor;
+  opacity: 0.55;
   pointer-events: none;
+}
+
+.gosslan-select {
+  appearance: none;
+  -webkit-appearance: none;
+  height: 32px;
+  padding: 0 26px 0 10px;
+  border: 1px solid var(--gosslan-border);
+  border-radius: var(--gosslan-radius-md);
+  background: var(--gosslan-bg);
+  color: var(--gosslan-text);
+  font-size: 13px;
+  line-height: 30px;
+  outline: none;
+}
+
+.gosslan-select:focus {
+  border-color: var(--gosslan-primary);
 }
 
 /* 内联图片表情（抖音表情）：正方形副格子 + object-contain 保持原图比例，
@@ -521,6 +762,11 @@ button:not(:disabled):active,
   margin: 0 1px;
   /* 防止行高被撑大：图片盒不再参与行内盒的额外高度计算 */
   line-height: 0;
+  /* 表情是图片，浏览器默认允许"拖图" —— 在气泡里拖选文字时划过表情会改成拖图片，
+    选区随之中断（用户 2026-09-13：「鼠标一划，刚选中立马就取消选中了」）。
+    ⚠️ 只禁拖拽，不要加 user-select:none —— 那会让"复制选区"时丢掉表情
+    （`<img alt="[名字]">` 的 alt 是用户可见文本的一部分）。 */
+  -webkit-user-drag: none;
 }
 
 /* ================================================================================
@@ -533,6 +779,81 @@ button:not(:disabled):active,
 /* 1) 降低透明度：模糊会让浮层上的文字失去可读性 → 退回不透明实底。
    Apple 2026 HIG 要求 Liquid Glass 适配该设置，用户开了它就应自动降级，
    而不是要求用户自己去关掉毛玻璃。 */
+/* ---------------- 统一菜单外观（用户需求 2026-09-12 晚 #4「全局的右键菜单样式尽量保持统一」）----------------
+
+   背景：会话列表、联系人、聊天气泡、右上角「+」原本各写一份面板/条目样式，四处的内边距、
+   圆角、悬停底色、危险色都不完全一致 —— 用户逐条指出「样式参考微信」。
+   这里定义**一套类**，所有菜单（含弹出下拉）都用它，从机制上保证一致：
+     .gosslan-menu            面板（毛玻璃 + 细边 + 大圆角 + 阴影）
+     .gosslan-menu-item       条目（图标 + 文案，微信式 32px 行高 / 14px 圆角）
+     .gosslan-menu-item--danger  危险条目（删除）
+     .gosslan-menu-sep        分组分隔线
+     .gosslan-menu-hint       条目下方的说明小字（如"只删除本机记录"）
+   尺寸参照微信 macOS：面板内边距 6px、条目高 32px、图标 16px、条目字号 13px。 */
+.gosslan-menu {
+  min-width: 168px;
+  padding: 6px;
+  border: 1px solid var(--gosslan-border);
+  border-radius: var(--gosslan-radius-md);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
+}
+
+.gosslan-menu-item {
+  display: flex;
+  width: 100%;
+  height: 32px;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px;
+  border-radius: var(--gosslan-radius-xs);
+  font-size: 13px;
+  color: var(--gosslan-text);
+  text-align: left;
+  transition: background-color 0.12s ease-out;
+}
+
+.gosslan-menu-item:hover {
+  background: var(--gosslan-hover);
+}
+
+.gosslan-menu-item:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.gosslan-menu-item--danger {
+  color: var(--gosslan-danger-ink);
+}
+
+.gosslan-menu-item--danger:hover {
+  background: var(--gosslan-danger-soft);
+}
+
+/* 图标统一为 16px 且不参与压缩（与 13px 文案基线对齐） */
+.gosslan-menu-item > svg {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  color: var(--gosslan-text-2);
+}
+
+.gosslan-menu-item--danger > svg {
+  color: currentColor;
+}
+
+.gosslan-menu-sep {
+  height: 1px;
+  margin: 5px 6px;
+  background: var(--gosslan-divider);
+}
+
+.gosslan-menu-hint {
+  padding: 2px 8px 4px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--gosslan-text-2);
+}
+
 @media (prefers-reduced-transparency: reduce) {
   .frost {
     background: var(--gosslan-panel);

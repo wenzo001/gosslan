@@ -1,9 +1,46 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- 触觉反馈：WebView 里的 navigator.vibrate 需要此权限；缺失时 utils/haptics 会静默 no-op。
          只用于按钮/长按等交互反馈，不做任何后台震动。 -->
     <uses-permission android:name="android.permission.VIBRATE" />
+
+    <!-- ============ 蓝牙（P3 / Phase 7 BLE Transport 的前置声明）============
+         · Android 12+（API 31+）：BLUETOOTH_SCAN / BLUETOOTH_CONNECT 是**运行时**权限，
+           代码没申请前不会弹窗（声明本身不影响现有功能）。
+         · `neverForLocation` 是关键：不加这个标志，系统会因为"扫描结果可用于推断位置"
+           而要求定位权限 —— 那会让用户看到「允许访问位置」这种对聊天应用极其可疑的弹窗，
+           而我们的 BLE 只用来发现**本应用**的对端，不做任何位置推断。
+         · Android 11 及以下只认安装期权限 BLUETOOTH / BLUETOOTH_ADMIN，且**扫 BLE 设备
+           必须有定位权限**（系统限制）⇒ 带 `maxSdkVersion="30"` 限定，新系统上不会多要。
+         三端一致的目标见 docs/adr/0015-ble-transport.md。 -->
+    <uses-permission android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation"
+        tools:targetApi="s" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <!-- 外设角色（手机被电脑连）需要**广播**权限：Android 12+ 把它拆成了独立运行时权限
+         `BLUETOOTH_ADVERTISE`，只有 SCAN/CONNECT 时 `startAdvertising` 会直接抛
+         SecurityException（现象：手机能扫别人、别人永远发现不了手机）。
+         与 SCAN/CONNECT 一样由 Kotlin 侧在用户打开「蓝牙通道」时申请。 -->
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="30" />
+
+    <!-- 局域网发现用到**组播**（239.255.42.99）与广播（255.255.255.255）。
+         ⚠️ Android 的 WiFi 驱动默认**过滤组播帧**，必须持有 `WifiManager.MulticastLock`
+         才能稳定收到（这是"两台设备在同一 WiFi 却互相搜不到"最常见的原因，
+         而且它不是用户能在权限列表里点开的开关 —— 得由应用自己申请并持有）。
+         Android 13+ 另需 NEARBY_WIFI_DEVICES（带 neverForLocation，不做位置推断）。 -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES"
+        android:usesPermissionFlags="neverForLocation"
+        tools:targetApi="tiramisu" />
+
+    <!-- BLE 只是"可选增强"：设备没有蓝牙（或用户拒绝授权）时应用必须照常走局域网/中继。
+         声明 required=false，避免 Play 商店把无蓝牙设备过滤掉。 -->
+    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
 
     <!-- AndroidTV support -->
     <uses-feature android:name="android.software.leanback" android:required="false" />
@@ -14,6 +51,7 @@
         android:theme="@style/Theme.gosslan"
         android:usesCleartextTraffic="${usesCleartextTraffic}">
         <activity
+            android:screenOrientation="portrait"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode"
             android:launchMode="singleTask"
             android:label="@string/main_activity_title"

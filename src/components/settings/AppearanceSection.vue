@@ -63,12 +63,12 @@ const appearanceOptions: { value: AppearanceMode; label: string }[] = [
       :label="t('settings.appearance.themeColor')"
       :description="t('settings.appearance.themeColor.desc')"
     >
-      <div class="flex items-center gap-1.5">
+      <div class="flex items-center gap-2">
         <!-- aria-label：色板格子只有颜色没有文字，读屏下必须靠 label 才知道它是什么 -->
         <button
           v-for="c in presets"
           :key="c"
-          class="h-6 w-6 rounded-full transition hover:scale-110"
+          class="tap-safe h-6 w-6 rounded-full transition hover:scale-110"
           :style="{ background: c, outline: app.themeColor === c ? '2px solid var(--gosslan-text)' : 'none', outlineOffset: '1px' }"
           :aria-label="t('settings.appearance.themeColor.aria', { color: c })"
           :aria-pressed="app.themeColor === c"
@@ -77,23 +77,26 @@ const appearanceOptions: { value: AppearanceMode; label: string }[] = [
         <input
           type="color"
           :value="app.themeColor"
-          class="h-6 w-7 cursor-pointer rounded-[var(--gosslan-radius-xs)] border-0 bg-transparent p-0"
+          class="tap-safe h-6 w-7 cursor-pointer rounded-[var(--gosslan-radius-xs)] border-0 bg-transparent p-0"
           :title="t('settings.appearance.customColor')"
           :aria-label="t('settings.appearance.customColor.aria')"
-          @input="(e) => app.setThemeColor((e.target as HTMLInputElement).value)"
+          @input="(e) => app.setThemeColor((e.target as HTMLInputElement).value, true)"
         />
       </div>
     </SettingsRow>
 
     <SettingsRow :label="t('settings.appearance.font')" last>
-      <select
-        :aria-label="t('settings.appearance.font.aria')"
-        class="max-w-[180px] rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] px-3 py-1.5 text-sm outline-none"
-        :value="app.fontFamily"
-        @change="(e) => app.setFontFamily((e.target as HTMLSelectElement).value)"
-      >
-        <option v-for="f in fonts" :key="f.value" :value="f.value">{{ t(f.label) }}</option>
-      </select>
+      <!-- 外壳 + `.gosslan-select`：跨平台高度与箭头一致（见 style.css 说明） -->
+      <span class="gosslan-select-wrap max-w-[180px]">
+        <select
+          :aria-label="t('settings.appearance.font.aria')"
+          class="gosslan-select max-w-[180px]"
+          :value="app.fontFamily"
+          @change="(e) => app.setFontFamily((e.target as HTMLSelectElement).value)"
+        >
+          <option v-for="f in fonts" :key="f.value" :value="f.value">{{ t(f.label) }}</option>
+        </select>
+      </span>
     </SettingsRow>
   </SettingsGroup>
 </template>

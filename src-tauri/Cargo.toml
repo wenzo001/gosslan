@@ -1,6 +1,6 @@
 [package]
 name = "gosslan"
-version = "2.1.2"
+version = "4.18.10"
 description = "Gosslan — 无服务器 P2P 局域网即时通讯"
 authors = ["wd.f"]
 edition = "2021"
@@ -15,6 +15,17 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+# BLE GATT 后端（**可选**，见 [features] bluetooth 与 ADR-0015）。
+# 放在主 [dependencies] 而不是某个 target 段：它跨平台（CoreBluetooth / WinRT / BlueZ / Android），
+# 且因为是 optional，默认构建既不会下载也不会编译它。
+#
+# 这里保持**上游语义**（`version = "0.13"`）；打补丁的副本用文件末尾的
+# `[patch.crates-io]` 覆盖过去 —— 这样版本约束仍然表达"我要 0.13 这条线"。
+btleplug = { version = "0.13", optional = true }
+# 消费 BLE 的通知流需要 `StreamExt`（btleplug 只把它作为内部依赖，不 re-export）。
+# 同样 optional：默认构建不引入。
+futures = { version = "0.3", optional = true }
+
 # tray-icon：系统托盘（关闭主窗口仅隐藏到托盘，退出走托盘菜单）
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-notification = "2"
@@ -29,6 +40,7 @@ async-trait = "0.1"
 socket2 = { version = "0.5", features = ["all"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 tokio = { version = "1", features = ["full"] }
+url = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
 sha2 = "0.10"
 hostname = "0.3"
@@ -40,6 +52,12 @@ ed25519-dalek = { version = "2", features = ["rand_core"] }
 chacha20poly1305 = "0.10"
 rand_core = { version = "0.6", features = ["getrandom"] }
 
+# 桌面系统通知：直接用 notify-rust（与 tauri-plugin-notification 用的是同一个底层库，
+# 版本也保持一致）。原因见 src/notifications.rs 头注释：插件的 show() 把真正的错误
+# spawn 掉丢了，用户报"收不到通知"时无法定位。
+[target.'cfg(any(target_os = "macos", windows, target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd"))'.dependencies]
+notify-rust = "4.11"
+
 # machine-uid 0.5 上游不支持 Android/iOS（`machine_id` 模块仅对 linux/macos/windows 等定义），
 # 在 aarch64-linux-android 目标上会编译失败。因此仅对非移动目标引入；
 # 移动端由上层回退为持久化 UUID / 主机名指纹（见 state.rs / device.rs）。
@@ -50,6 +68,27 @@ machine-uid = "0.5"
 # 可在资源管理器粘贴、也可直接粘贴回聊天框发送（微信式）。
 [target.'cfg(target_os = "windows")'.dependencies]
 clipboard-win = "5"
+# Windows 的 BLE **外设（GATT server）** 角色：btleplug 只做 central（ADR-0015 §3.1），
+# 而 Windows 要能被手机/其它电脑发现与连入，就必须自己广播并提供 GATT 服务。
+# 原生做法是 WinRT 的 `GattServiceProvider`，feature 列表**照抄 btleplug 的 winrtble 后端**
+# （已证明这套 feature 足够完成「广播 + 服务/特征 + 通知 + 写请求」）。
+#
+# ⚠️ **没有引入任何新的第三方 crate**：`windows` 早就在依赖树里（btleplug 的 Windows 后端
+# 依赖它），这里只是我们自己也要用它。optional ⇒ 只有 `--features bluetooth` 的 Windows
+# 构建才引入（默认构建零新增依赖，与 ADR-0015 §2 的硬性约定一致）。
+windows = { version = "0.62", optional = true, features = [
+    "Devices_Bluetooth",
+    "Devices_Bluetooth_GenericAttributeProfile",
+    "Foundation",
+    "Foundation_Collections",
+    "Storage_Streams",
+] }
+# WinRT 的 async 操作（`IAsyncOperation`）是"**先 `.into_future()`、再 `.join()`/`.await`**"两步：
+# `into_future()` 由 `std::future::IntoFuture` 提供，而阻塞式 `join()` 在 `windows_future::Async`
+# trait 上 —— `windows` crate 只 re-export **类型**、不 re-export 这个 trait，
+# 所以要用 `join()` 就得自己依赖它。同样是 optional + 只在 Windows 目标上。
+# （版本必须与 `windows` 0.62 内部使用的一致，否则 `IAsyncOperation` 会是两个不同的类型。）
+windows-future = { version = "0.3", optional = true }
 
 # macOS 打开文件：App Sandbox 禁止 fork /usr/bin/open（tauri-plugin-opener 在 macOS 走的正是
 # 这条路径），改用 NSWorkspace.openURL —— 纯 Foundation API，沙盒应用允许调用。
@@ -58,17 +97,85 @@ clipboard-win = "5"
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSWorkspace", "NSWindow", "NSView", "objc2-quartz-core"] }
-objc2-foundation = { version = "0.3", features = ["NSString", "NSURL"] }
+# NSData/NSArray/NSError 是 security-scoped bookmark（共享目录跨重启保活）的必需 feature：
+# objc2-foundation 的 feature 就是类名，书签 API 的 cfg 门要求它们同时打开。
+objc2-foundation = { version = "0.3", features = ["NSString", "NSURL", "NSData", "NSArray", "NSError"] }
 objc2-quartz-core = { version = "0.3", features = ["CALayer"] }
+# macOS 的 BLE **peripheral（GATT server）** 角色：btleplug 只做 central（见 ADR-0015 §3.1），
+# 而「手机与电脑不连同一个 Wi-Fi」要能互连，就必须有一侧当外设。
+# optional ⇒ 只有 `--features bluetooth` 的 macOS 构建才引入（默认构建零新增依赖，与今天一致）。
+objc2-core-bluetooth = { version = "0.3", optional = true }
+
+# Android 的 BLE **外设角色**要用 JNI 调 Kotlin 侧实现（见 ADR-0015 §7.7）；
+# 「用系统里的其它应用打开收到的文件」也走 JNI（见 src-tauri/src/android_open.rs）。
+# btleplug 的 droidplug 后端本身已经依赖 `jni = "0.22"`（Android 目标、非 optional），
+# 所以这里**没有引入任何新的第三方 crate**，只是让我们自己也能用它。
+#
+# ⚠️ **不能 optional**：打开文件与蓝牙无关 —— 若把它挂在 `bluetooth` feature 上，
+# 没开该 feature 的构建就打不开文件（而 Android 上除了 JNI 没有别的办法把私有目录文件
+# 交给别的应用，见 OpenWith.kt）。非 Android 目标不会编译本依赖。
+[target.'cfg(target_os = "android")'.dependencies]
+jni = { version = "0.22" }
 
 [features]
 # 默认启用自定义协议；可扩展为自定义 deep-link 唤醒
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
+# BLE 传输（P3 / Phase 7）：**默认关闭** —— 不开 feature 时依赖不下载、代码不编译，
+# 产物与行为与今天逐字节一致（ADR-0015 §2 的硬性约定）。
+# 引入前必须先读 docs/adr/0015-ble-transport.md（项目规矩：新依赖必须 ADR）。
+bluetooth = ["dep:btleplug", "dep:futures", "dep:objc2-core-bluetooth", "dep:windows", "dep:windows-future"]
 
 [profile.release]
+# 安卓上必须是 `panic = "abort"`：Tauri 的 `mobile_entry_point` 宏用 `stop_unwind` 包住入口，
+# 换成 unwind 会直接编译失败（实测 E0593: required by this bound in `stop_unwind`）。
+# 因此"别让 panic 杀掉应用"不能靠 unwind，只能靠**不在启动路径上 panic**：
+#   · panic hook 在 abort 之前仍会被调用 ⇒ panic 位置与消息会落进「运行日志」文件（重启后仍在，
+#     用户可以直接把那条 `channel="panic"` 发给我们）；
+#   · 蓝牙运行时的自动启动**从"应用启动时"改成"用户打开相关界面时"**（见 useAppStore.ensureBluetoothOn），
+#     这样即使 BLE 启动路径里还有 panic，也不会表现为"打开应用就闪退"。
 panic = "abort"
 codegen-units = 1
 lto = true
 opt-level = "s"
 strip = true
+
+[lints.rust]
+# MSVC 链接器在 `release`（LTO + codegen-units=1 + cdylib）下会往 stdout 打一行
+# 「正在创建库 …gosslan_lib.dll.lib 和对象 …dll.exp」——这是 cdylib 生成导入库的**正常**
+# 提示，Rust 1.98 起被 `linker_messages` lint 转成 `warning: linker stdout: …`。
+# 本项目"警告零容忍"，但这行**不是缺陷、也无法通过改代码消除**（换链接参数只会换个说法），
+# 所以在 rustc lint 层收掉它。**只收这一条**：其余 lint 全部保持 rustc 默认可见性。
+linker_messages = "allow"
+
+[patch.crates-io]
+# ⚠️ **打过补丁的 btleplug 副本**（Gosslan 2026-09-13）。
+#
+# 为什么必须打补丁：上游 WinRT 后端在**连接**时用
+# `BluetoothLEDevice::FromBluetoothAddressAsync(address)` —— **丢掉了扫描时已经采集到的
+# 地址类型**（`args.BluetoothAddressType()` → `shared.address_type`）。
+# 对**随机地址（Random）**的 BLE 外设（安卓 `BluetoothLeAdvertiser` 默认就是随机地址）
+# 这会拿到一个"连不上"的设备对象：之后每次 GATT 操作都以 `Unreachable` 失败，
+# 被翻成 `Not connected`，且**没有任何被拒的迹象**。
+# 真机现象就是"能扫到、永远连不上"（Windows ↔ 安卓，关掉局域网只留蓝牙）。
+# WinRT 其实有带地址类型的重载 `FromBluetoothAddressWithBluetoothAddressTypeAsync`。
+#
+# 补丁只有两处（约 30 行，都在 winrtble 里，`grep -rn "本地补丁" vendor/btleplug`）：
+#   1. `ble/device.rs` 的 `BLEDevice::new` 多一个 `address_type` 参数；
+#      **只有 `Random`** 才走带地址类型的重载，Public / 取不到时完全走上游原路径；
+#   2. `peripheral.rs` 把 `self.shared.address_type` 映射成 WinRT 的
+#      `BluetoothAddressType` 传进去。
+# 对 macOS / Android / Linux 后端**零影响**（补丁只在 winrtble 内）。
+#
+# 用 `[patch.crates-io]`（而不是把主依赖写成 `path =`）的理由：
+# 主依赖处仍保留 `version = "0.13"` 的**语义**（"我要 0.13 这条线"），
+# 补丁只是把这一条线的来源换成工作区内的副本；将来升级上游时改主依赖的版本号即可，
+# 不必在一堆注释里找那行 path。
+#
+# ⚠️ **升级 btleplug 时**：先看上游是否已修（搜 `BluetoothAddressType`），
+# 修了就直接删掉本节；没修就把这两处补丁重放到新版本上。
+#
+# ⚠️ **构建缓存**：换成 patch 会让 `btleplug` 的 fingerprint 变化 ⇒ **首次构建会整包重编**
+# （实测 Windows 上 `cargo check --features bluetooth` 约 3~13 分钟，之后恢复正常）。
+# CI 上表现为"某一次突然变慢"，属预期、不是回归。
+btleplug = { path = "vendor/btleplug" }

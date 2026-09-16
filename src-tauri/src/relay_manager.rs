@@ -35,6 +35,10 @@ pub struct Reassembly {
     pub total_chunks: u32,
     pub expected_size: u64,
     pub chunks: HashMap<u32, Vec<u8>>,
+    /// 开始重组的时刻。**必须有**：本表按 transfer_id 索引，而对端可以持续发新
+    /// RelayFileOffer 却永不发分片 —— 没有时间戳就无法回收（见 `sweep_stale_relay`）。
+    /// 注意 `name` 也由对端控制且长度可达单帧上限，同样是内存放大的来源。
+    pub created_at: i64,
 }
 
 impl Reassembly {
@@ -163,15 +167,17 @@ impl RelayManager {
         total_chunks: u32,
         expected_size: u64,
     ) {
-        self.reassemblies.insert(
-            transfer_id.to_string(),
-            Reassembly {
+        // 幂等：中继路径下同一份 RelayFileOffer 可能从多条邻居各来一份（泛洪），
+        // 覆盖式 insert 会把已经组好的切片清空 ⇒ 文件永远缺片。已存在就保留。
+        self.reassemblies
+            .entry(transfer_id.to_string())
+            .or_insert_with(|| Reassembly {
                 name: name.to_string(),
                 total_chunks,
                 expected_size,
                 chunks: HashMap::new(),
-            },
-        );
+                created_at: crate::db::now_ms(),
+            });
     }
 
     /// 写入一个切片；返回 `Some((name, 完整字节))` 表示重组完成（乱序安全）。
@@ -217,6 +223,16 @@ impl RelayManager {
     pub fn active_sends(&self) -> usize {
         self.senders.values().filter(|v| !v.is_empty()).count()
     }
+
+    /// 回收在 `cutoff` 之前开始、且仍未完成的重组。返回清掉的条目数。
+    ///
+    /// 只按时间回收：一个 1 小时都没组完的传输，其后续分片即便到达也无处安放
+    /// （发送端早已重试或放弃）。正在活跃传输的条目时间戳很新，不会被误清。
+    pub fn sweep_stale_reassemblies(&mut self, cutoff: i64) -> usize {
+        let before = self.reassemblies.len();
+        self.reassemblies.retain(|_, r| r.created_at > cutoff);
+        before - self.reassemblies.len()
+    }
 }
 
 #[cfg(test)]
@@ -238,6 +254,39 @@ mod tests {
         assert_eq!(name, "f.bin");
         assert_eq!(size, data.len() as u64);
         assert_eq!(out, data);
+    }
+
+    /// 回收过期的重组态：只清超时的，正在进行的必须原样保留。
+    /// 没有这条回收，对端持续发 RelayFileOffer 却永不发分片就能让内存单调增长到 OOM。
+    #[test]
+    fn sweep_stale_reassemblies_keeps_active_and_drops_expired() {
+        let mut m = RelayManager::new();
+        m.begin_reassemble("fresh", "a.bin", 2, 4);
+        m.begin_reassemble("stale", "b.bin", 2, 4);
+
+        // 把 stale 的时间戳推到很久以前，fresh 保持"刚插入"
+        if let Some(r) = m.reassemblies.get_mut("stale") {
+            r.created_at = 1_000;
+        }
+        let cutoff = 2_000; // only "stale" (1_000) is below it
+
+        assert_eq!(m.sweep_stale_reassemblies(cutoff), 1, "应只清掉过期的那一条");
+        assert!(m.reassemblies.contains_key("fresh"), "进行中的重组不得被清");
+        assert!(!m.reassemblies.contains_key("stale"));
+
+        // 再清一次：已无可清项（幂等）
+        assert_eq!(m.sweep_stale_reassemblies(cutoff), 0);
+    }
+
+    /// 重复的 RelayFileOffer（多邻居泛洪）不得清空已收到的切片。
+    #[test]
+    fn begin_reassemble_is_idempotent() {
+        let mut m = RelayManager::new();
+        m.begin_reassemble("t1", "f.bin", 2, 4);
+        assert!(m.add_chunk("t1", 0, vec![1, 2]).is_none());
+        m.begin_reassemble("t1", "f.bin", 2, 4); // 重复的 offer
+        let done = m.add_chunk("t1", 1, vec![3, 4]);
+        assert!(done.is_some(), "重复 begin_reassemble 不能丢已收到的切片");
     }
 
     #[test]

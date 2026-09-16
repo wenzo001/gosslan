@@ -8,10 +8,13 @@ import { QUOTE_BORDER, QUOTE_BG, QUOTE_TEXT_STYLE } from "@/utils/quoteStyle";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
 import { haptic } from "@/utils/haptics";
 import { mentionHighlightColor, resolveChatColors } from "@/utils/chatStyle";
-import { avatarInitial, nameToColor } from "@/utils/color";
+import { avatarInitial, avatarInitialLen, nameToColor } from "@/utils/color";
 import { classifyPaste } from "@/utils/clipboard";
-import { Code2, FilePlus, Smile, X } from "lucide-vue-next";
+import { isImeKey } from "@/utils/ime";
+import { Folder, Smile, SquareCode, Users, X } from "lucide-vue-next";
 import type { MsgKind } from "@/types";
+import { MENTION_ALL_TOKEN } from "@/utils/messages";
+import { isMentionLead } from "@/utils/linkify";
 
 const props = defineProps<{
   /** 会话切换时聚焦输入框（切换会话 = 新会话，重置草稿由父组件卸载/挂载决定）。 */
@@ -32,9 +35,25 @@ const emit = defineEmits<{
 const app = useAppStore();
 const codeMode = ref(false);
 
-/** 输入框单条消息的字符硬上限：超过即截断。粘贴与发送两处都会兜底，
- *  防止粘贴超大文本时 contenteditable 塞进几十万字符、把界面卡死。 */
+/** 草稿**总量**的字符硬上限。三处兜底：粘贴按剩余容量截断、发送前再截一次。
+ *  为什么要按总量（而不是"单次粘贴量"）：按住 Ctrl+V 连发时每次都会成功插入一份，
+ *  草稿无界增长 ⇒ contenteditable 的布局/绘制成本随字符数线性上升，越粘越卡。 */
 const MAX_INPUT_LENGTH = 50_000;
+
+/**
+ * 草稿总长度上限提示的节流窗口（ms）。
+ * 按住 Ctrl+V 连发时每次粘贴都会撞上限，提示必须节流，否则刷屏。
+ */
+const FULL_WARN_INTERVAL_MS = 3000;
+let lastFullWarnAt = 0;
+
+/** 草稿已满时提示一次（3 秒内不重复）。 */
+function warnDraftFull() {
+  const now = Date.now();
+  if (now - lastFullWarnAt < FULL_WARN_INTERVAL_MS) return;
+  lastFullWarnAt = now;
+  app.toast(t("chat.composer.tooLong", { max: MAX_INPUT_LENGTH }), "error");
+}
 // ---------------- contenteditable 输入框（DOM 为源，uncontrolled） ----------------
 // textarea 画不了局部颜色、overlay mirror 又会排版错位（已踩坑回退），改用
 // contenteditable：@提及 是真正的内联原子 token（contenteditable=false 的 span，
@@ -127,7 +146,37 @@ function send(kind?: MsgKind, content?: string) {
   emit("send", { content: text, kind: k });
 }
 
+/**
+ * 输入法组合态（拼音/日文等）。
+ *
+ * ⚠️ 不能只依赖 `KeyboardEvent.isComposing`：macOS WKWebView 上用 Enter 提交候选时，
+ * 事件顺序是 `compositionend` → `keydown`，keydown 那一刻 `isComposing` 已是 false
+ * ⇒ 会把"选字"当成"发送"，把半成品中文直接发出去（用户 2026-09-12 反馈的正是这个）。
+ * 所以自己跟踪组合态，并保留一个"提交后短窗口"兜底；判定逻辑抽在
+ * `utils/ime.ts`（纯函数，有单测钉死）。
+ */
+const composing = ref(false);
+let compositionEndedAt = 0;
+
+function onCompositionStart() {
+  composing.value = true;
+}
+function onCompositionEnd() {
+  composing.value = false;
+  compositionEndedAt = Date.now();
+}
+
+/** 这次按键是否属于输入法组合（必须放行给 IME / 内容）。 */
+function imeKey(e: KeyboardEvent): boolean {
+  return isImeKey(e, composing.value, compositionEndedAt, Date.now());
+}
+
 function onKeydown(e: KeyboardEvent) {
+  // 输入法组合中的按键**一律不拦截**：
+  //   · Enter 交给 IME 提交字母（用户要的"把拼音字母落下来"）；
+  //   · 若该 Enter 其实是给内容的，则走浏览器默认行为插入换行
+  //     （用户要的"回车应该响应聊天内容的回车"）—— 两种情形都不该由我们发送。
+  if (imeKey(e)) return;
   // 微信式 token 联删：caret 前是「token + 尾随 nbsp」时一次退格删掉两者
   // （token 本身是原子，浏览器默认已整删；只补 nbsp 这一格的差距）。
   if (e.key === "Backspace" && !e.isComposing && deleteMentionBeforeCaret()) {
@@ -158,14 +207,14 @@ function onKeydown(e: KeyboardEvent) {
       return;
     }
   }
-  // 中文 IME 确认候选的 Enter 也带 isComposing=true，必须放行，否则选字=发送
-  if (e.key === "Enter" && e.shiftKey && !e.isComposing) {
+  // 到这里的按键都已排除输入法组合（见上面的 `imeKey` 提前返回）
+  if (e.key === "Enter" && e.shiftKey) {
     // 统一换行为 <br>：浏览器默认 insertParagraph 会造嵌套 div，序列化不可控
     e.preventDefault();
     document.execCommand("insertLineBreak");
     return;
   }
-  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+  if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
     send();
   }
@@ -176,10 +225,24 @@ function onKeydown(e: KeyboardEvent) {
 const mention = ref<{ query: string; startIndex: number } | null>(null);
 const mentionActive = ref(0);
 
+/**
+ * 「所有人」是**虚拟成员**：本组件内用它做 key 与展示，发送出去的仍是纯文本 `@所有人`
+ * （见 `serializeDraft` 走 innerText 读回 token 文本）。因此它不需要 id 参与任何后端调用。
+ * 发送到正文里的字面量必须是固定中文 `MENTION_ALL_TOKEN`：它是一条**发给所有人的文本**，
+ * 接收端按字面匹配，不能随发送方的界面语言变化，否则英文界面发出去的 @所有人 没人能识别。
+ */
+const MENTION_ALL_ID = "__mention_all__";
+
+/** 候选 = 「所有人」+ 真实成员（不含自己）。所有人排首位，与微信一致。 */
+const mentionCandidates = computed(() => [
+  { id: MENTION_ALL_ID, name: MENTION_ALL_TOKEN },
+  ...(props.mentionMembers ?? []),
+]);
+
 const mentionFiltered = computed(() => {
   if (!mention.value) return [];
   const q = mention.value.query.toLowerCase();
-  const list = props.mentionMembers ?? [];
+  const list = mentionCandidates.value;
   return (q ? list.filter((m) => m.name.toLowerCase().includes(q)) : list).slice(0, 8);
 });
 
@@ -200,6 +263,25 @@ function caretContext(): { node: Text; offset: number } | null {
   return { node: node as Text, offset: sel.focusOffset };
 }
 
+/**
+ * @提及 查询串最长 20 字符（正则里就是 `{0,20}`），加 `@` 本身共 21 —— 所以只看
+ * caret 前 21 个字符就够判定。
+ *
+ * ⚠️ 不要改回「取整个文本节点再匹配」：粘贴长文本后节点可能有几十万字符，
+ * 每次输入/`selectionchange` 都要整段 slice + 正则扫描，连发粘贴时纯属白烧主线程
+ * （表现为"越粘越卡"）。从 caret 往前取固定窗口，成本与文本长度**无关**。
+ */
+const MENTION_LOOKBEHIND = 21;
+
+/** caret 前的 @查询（只看固定窗口，见 MENTION_LOOKBEHIND）。 */
+function mentionQueryAt(ctx: { node: Text; offset: number }): { query: string; startIndex: number } | null {
+  const from = Math.max(0, ctx.offset - MENTION_LOOKBEHIND);
+  const tail = (ctx.node.data ?? "").slice(from, ctx.offset);
+  const m = tail.match(/@([^\s@]{0,20})$/);
+  if (!m) return null;
+  return { query: m[1], startIndex: ctx.offset - m[0].length };
+}
+
 /** 由 caret 位置推导 @ 触发态（输入/点击/方向键挪 caret 时都会调用）。 */
 function updateMentionState() {
   if (!props.mentionMembers?.length) {
@@ -211,15 +293,26 @@ function updateMentionState() {
     mention.value = null;
     return;
   }
-  const m = (ctx.node.textContent ?? "").slice(0, ctx.offset).match(/@([^\s@]{0,20})$/);
-  if (m) {
-    const start = ctx.offset - m[0].length;
-    const sameAt = mention.value?.startIndex === start;
-    mention.value = { query: m[1], startIndex: start };
+  const q = mentionQueryAt(ctx);
+  if (q) {
+    const sameAt = mention.value?.startIndex === q.startIndex;
+    mention.value = q;
     if (!sameAt) mentionActive.value = 0;
   } else {
     mention.value = null;
   }
+}
+
+/** caret 之前那段内容里的最后一个字符（跨节点取）。
+ *  ⚠️ 不能只看 `ctx.node.data`：@提及 与表情都是 `contentEditable=false` 的独立 token span，
+ *  caret 前的字符往往落在它们身上（例如表情 token 的收尾 `]`）。 */
+function charBeforeCaret(node: Text, offset: number): string {
+  const el = editorRef.value;
+  if (!el) return "";
+  const r = document.createRange();
+  r.setStart(el, 0);
+  r.setEnd(node, offset);
+  return r.toString().slice(-1);
 }
 
 /** 选中成员：把「@query」替换为 mention token（原子 span）+ 尾随 nbsp，caret 落到 nbsp 后。 */
@@ -229,10 +322,19 @@ function applyMention(member: { id: string; name: string }) {
   if (!el || !sel || sel.rangeCount === 0) return;
   const ctx = caretContext();
   if (!ctx) return;
-  const m = (ctx.node.textContent ?? "").slice(0, ctx.offset).match(/@([^\s@]{0,20})$/);
-  if (!m) return;
+  const q = mentionQueryAt(ctx);
+  if (!q) return;
+  /**
+   * 前导边界：触发端刻意**不**要求 @ 前有空白（中文里「你好@张三」不敲空格是常态），
+   * 但接收端的判定要求边界（`isMentionLead`：行首/空白/表情 token 的 `]`）。
+   * 不在这里把边界补上，就会出现最坏的一种静默失效 ——
+   * 发送端看着是个蓝色 chip、以为点名成功了，接收端**既不通知也不高亮**。
+   * 用节点 API（span.before）而不是 range 插入：range 落在文本节点中间时
+   * `insertNode` 的行为按规范是插到整个文本节点之前，位置不直观。
+   */
+  const needLead = !isMentionLead(charBeforeCaret(ctx.node, q.startIndex));
   const range = document.createRange();
-  range.setStart(ctx.node, ctx.offset - m[0].length);
+  range.setStart(ctx.node, q.startIndex);
   range.setEnd(ctx.node, ctx.offset);
   range.deleteContents();
   // token：不可编辑原子 → 退格/选区删除天然整块处理；nbsp 保证 token 与后续文字不粘连
@@ -246,6 +348,7 @@ function applyMention(member: { id: string; name: string }) {
   span.textContent = `@${member.name}`;
   range.collapse(false);
   range.insertNode(span);
+  if (needLead) span.before(document.createTextNode("\u00A0"));
   const space = document.createTextNode("\u00A0");
   span.after(space);
   range.setStart(space, 1);
@@ -379,10 +482,15 @@ function insertEmoji(e: string) {
     range.collapse(true);
     sel.removeAllRanges();
     sel.addRange(range);
+    // 点表情按钮会让编辑器失焦（移动端软键盘随之收起）。这里把焦点还给编辑器，
+    // **不动已设好的 range** ⇒ 光标停在刚插入的表情之后，用户可以接着打字；
+    // 桌面上这条通常已是焦点态，focus() 是空操作。
+    if (document.activeElement !== el) el.focus();
   } else {
     el.appendChild(span);
     el.appendChild(document.createTextNode("\u00A0"));
-    if (!app.isMobile) focusEditor();
+    // 无选区（编辑器从未聚焦过）时内容追加到末尾，光标也放到末尾
+    focusEditor();
   }
   // 直接改 DOM 不会触发 input 事件 → 必须手动同步，否则「只有表情时发送键是灰的」
   syncDraftState();
@@ -438,9 +546,19 @@ async function onPaste(e: ClipboardEvent) {
   // 纯文本：contenteditable 默认粘贴会带外来 HTML 结构（污染 token/样式），
   // 统一拦掉按纯文本插入（execCommand 保 undo 栈；含 \n 时 Chromium 自行转 <br>）。
   const text = cd.getData("text/plain");
-  // 截断到硬上限：超长文本若完整塞进 contenteditable，插入 + 后续 innerText 读都会
-  // 触发大范围 reflow，几十万字符足以把界面卡死（"粘贴一大段就卡死"的根因）。
-  if (text) document.execCommand("insertText", false, text.slice(0, MAX_INPUT_LENGTH));
+  if (!text) return;
+  // ⚠️ 上限要按**草稿总量**算，不能只看这一次粘贴的文本：按住 Ctrl+V 连发时
+  // 每次都会成功插入一份，草稿无界增长 ⇒ contenteditable 的布局/绘制成本随字符数
+  // 线性上升，越粘越卡、最后卡死（用户实测的"一直按着 Ctrl+V 一顿一顿"）。
+  // 这里按剩余容量截断，满了就不再插入（并节流提示一次）。
+  const used = (editorRef.value?.textContent ?? "").length;
+  const room = MAX_INPUT_LENGTH - used;
+  if (room <= 0) {
+    warnDraftFull();
+    return;
+  }
+  if (text.length > room) warnDraftFull();
+  document.execCommand("insertText", false, text.slice(0, room));
 }
 
 function fileToDataUrl(f: File): Promise<string> {
@@ -455,8 +573,11 @@ function fileToDataUrl(f: File): Promise<string> {
 
 <template>
   <div class="flex flex-col gap-2">
-    <!-- 微信 4.0 输入卡：白底圆角带细边；文本域在上，图标行在卡内底部，发送键靠右下 -->
-    <div ref="composerCard" class="relative rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-3 pb-1.5 pt-2">
+    <!-- 微信 4.0 输入卡：白底圆角带细边；文本域在上，图标行在卡内底部，发送键靠右下。
+         `px-4`（不是 px-3）与工具栏的 `-mx-1` 成对：编辑器的文字左边缘与工具栏第一个
+         图标的**点击热区**左边缘取同一个 16px 起点（图标墨迹在其 28px 热区内再内缩 6px，
+         与文字字形的光学起点对齐）—— 这是用户反馈「左右两边视觉上不在同一条线上」的修法。 -->
+    <div ref="composerCard" class="relative rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-4 pb-2.5 pt-2">
       <!-- 群聊 @ 成员选择：输入 @ 后浮出，↑↓ 导航 / Enter 或点击选中 -->
       <div
         v-if="mention && mentionFiltered.length > 0"
@@ -466,16 +587,27 @@ function fileToDataUrl(f: File): Promise<string> {
         <button
           v-for="(m, i) in mentionFiltered"
           :key="m.id"
-          class="flex w-full items-center gap-2 rounded-[var(--gosslan-radius-sm)] px-2 py-1.5 text-left text-[13px] transition"
+          class="tap-safe flex w-full items-center gap-2 rounded-[var(--gosslan-radius-sm)] px-2 py-1.5 text-left text-[13px] transition"
           :class="i === mentionActive ? 'bg-[var(--gosslan-list-active)]' : 'hover:bg-[var(--gosslan-hover)]'"
           @mousedown.prevent
           @click="applyMention(m)"
         >
+          <!-- 「所有人」不是真人，用图标而非首字头像：避免与真成员的名字首字混淆 -->
           <span
-            class="flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-full text-[11px] text-white"
+            v-if="m.id === MENTION_ALL_ID"
+            class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[var(--gosslan-primary-light)] text-[var(--gosslan-primary)]"
+          >
+            <Users class="h-3.5 w-3.5" aria-hidden="true" />
+          </span>
+          <span
+            v-else
+            class="gosslan-avatar-box flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-full text-[11px] text-white"
             :style="{ backgroundColor: nameToColor(m.name) }"
-          >{{ avatarInitial(m.name) }}</span>
-          <span class="min-w-0 flex-1 truncate">{{ m.name }}</span>
+          ><span
+            class="gosslan-avatar-initial"
+            :data-len="avatarInitialLen(m.name)"
+          >{{ avatarInitial(m.name) }}</span></span>
+          <span class="min-w-0 flex-1 truncate" :title="m.name">{{ m.name }}</span>
         </button>
       </div>
       <!-- 引用预览条：右键"引用"后出现在输入框上方，可取消 -->
@@ -484,67 +616,101 @@ function fileToDataUrl(f: File): Promise<string> {
         class="mb-1.5 flex items-center gap-2 rounded-[var(--gosslan-radius-sm)] border-l-2 px-2 py-1 text-[12px]"
         :style="{ borderColor: QUOTE_BORDER, background: QUOTE_BG, color: 'var(--gosslan-text)' }"
       >
-        <span class="min-w-0 flex-1 truncate" :style="QUOTE_TEXT_STYLE">{{ t("common.quote") }} {{ quote.sender }}：{{ quote.snippet }}</span>
+        <span
+          class="min-w-0 flex-1 truncate"
+          :style="QUOTE_TEXT_STYLE"
+          :title="`${t('common.quote')} ${quote.sender}：${quote.snippet}`"
+        >{{ t("common.quote") }} {{ quote.sender }}：{{ quote.snippet }}</span>
         <button
-          class="flex h-5 w-5 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-xs)] transition hover:bg-[var(--gosslan-hover)]"
+          class="tap-safe flex h-5 w-5 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-xs)] transition hover:bg-[var(--gosslan-hover)]"
           :title="t('chat.composer.cancelQuote')" :aria-label="t('chat.composer.cancelQuote')"
           @click="emit('close-quote')"
         >
           <X class="h-3.5 w-3.5" />
         </button>
       </div>
-      <!-- contenteditable 编辑区：@提及 为内联原子 token（高亮+整删），placeholder 走 :empty::before -->
+      <!-- contenteditable 编辑区：@提及 为内联原子 token（高亮+整删）。
+           ⚠️ **不放 placeholder**：用户 2026-09-12 明确要求「输入框里也不用 placeholder」
+           （参考图是干净的输入区）。原先走 `:data-placeholder` + `:empty::before`，
+           现连同 style.css 里的那条规则与两个 i18n key 一起删除，避免留死代码。
+           `normalizeEmpty` 保留 —— 它现在只服务 `hasDraft`（空壳 div/br 会让"有草稿"误判）。 -->
       <div
         ref="editorRef"
         contenteditable="true"
         role="textbox"
         aria-multiline="true"
+        :aria-label="t('chat.composer.inputAria')"
         enterkeyhint="send"
         :spellcheck="!codeMode"
         :autocorrect="codeMode ? 'off' : 'on'"
         :autocapitalize="codeMode ? 'off' : 'sentences'"
-        class="min-h-12 w-full overflow-y-auto bg-transparent px-0.5 py-0.5 leading-relaxed outline-none whitespace-pre-wrap break-words"
+        class="min-h-10 w-full overflow-y-auto bg-transparent px-0.5 py-0.5 leading-normal whitespace-pre-wrap break-words"
         :class="codeMode ? 'font-mono text-[13px]' : ''"
         :style="{ fontSize: 'var(--gosslan-msg-size, 14px)', overflowWrap: 'anywhere', wordBreak: 'break-word' }"
-        :data-placeholder="codeMode ? t('chat.composer.codePlaceholder') : t('chat.composer.placeholder')"
         @keydown="onKeydown"
+        @compositionstart="onCompositionStart"
+        @compositionend="onCompositionEnd"
         @input="onInput"
         @click="updateMentionState"
         @paste="onPaste"
       ></div>
-      <div class="mt-1 flex items-center gap-1">
+      <!-- 工具栏行（2026-09-12 按用户反馈重做：对齐 + 统一规格 + 去掉"网页感"）。
+           三条硬性约定，改这一行时必须同时满足：
+           ① **对齐**：行用 `items-center`，左右两组**同高（h-7 = 28px）**。原先右侧发送键
+              是 `h-7 + px-4 + text-[13px]`，而左侧图标按钮 28px 见方、图标 18px ——
+              两者行盒不同（图标按钮的 flex 行盒 vs 文本基线），`items-center` 居中的
+              是两个不同高度的行盒 ⇒ 视觉上看不出在同一条中线上。
+           ② **两侧留白一致**：卡片是 `px-4`（16px），编辑器滚到左边缘 ⇒ 工具栏左右各加
+              `-mx-1`（4px）+ 按钮自身 4px 内缩 = 4px 光学内缩，左侧第一个图标与右侧发送键
+              的边距对称；`-mx-1` 同时让 28px 按钮的点击热区不越出卡片。
+           ③ **统一规格**（2026-09-12 晚按微信参考图二次校准）：
+              图标按钮 **32×32**（`h-8 w-8`）/ 图标 **20px**（`h-5 w-5`）/ 线宽 1.75 /
+              圆角 **radius-md(8px)** —— 圆角要与圆形字形"同心"，hover 底色块才像微信那样
+              是一个包住图标的圆角方块（用户原话：「它的 hover 和周围的圆角感觉也是同心圆」）；
+              按钮间距 8px、与文本间距 4px、卡片底距 10px。
+           发送键改为**实心主按钮**（有草稿才点亮）：微信 4.0 的观感，
+           无草稿时是低对比的占位态，不抢视觉。 -->
+      <div class="-mx-1 mt-1 flex h-8 items-center gap-2">
         <div class="relative">
           <button
-            class="flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] transition"
+            class="tap-safe flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-md)] transition"
             :class="emojiOpen ? 'text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
             :title="t('chat.composer.emoji')" :aria-label="t('chat.composer.emoji')"
             @click.stop="toggleEmoji"
           >
-            <Smile class="h-[18px] w-[18px]" />
+            <Smile class="h-5 w-5" :stroke-width="1.75" />
           </button>
           <EmojiPicker :open="emojiOpen" @select="insertEmoji" @close="closeEmoji" />
         </div>
         <!-- @mousedown.prevent 保持编辑器焦点：否则点击按钮后焦点落到按钮上，
              紧接着按 Enter 会激活按钮（把 codeMode 再切回去）而非走编辑器 keydown 发送。 -->
         <button
-          class="flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] transition"
+          class="tap-safe flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-md)] transition"
           :class="codeMode ? 'text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
           :title="t('chat.composer.code')" :aria-label="t('chat.composer.code')"
           @mousedown.prevent
           @click="codeMode = !codeMode"
         >
-          <Code2 class="h-[18px] w-[18px]" />
+          <!-- 代码模式图标（用户 2026-09-12 晚二次反馈：「找一个和代码相关的图标，
+               但是又和左右两边的图标是统一风格类型的。现在这个图标不像是发送代码」）。
+               上一版按参考图取了 `Box`（立体方块）—— 几何一致但**语义不对**（看不出是代码）。
+               现改为 `SquareCode`：方形描边外框 + 内部 `</>`，既是代码语义，
+               又与左 `Smile`（圆）、右 `Folder`（方）同属「几何外框 + 内部细节」一套；
+               尺寸 16px / 线宽 1.75 与两侧完全一致（见上方工具栏规格说明）。 -->
+          <SquareCode class="h-5 w-5" :stroke-width="1.75" />
         </button>
         <button
-          class="flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+          class="tap-safe flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
           :title="t('chat.composer.sendFile')" :aria-label="t('chat.composer.sendFile')"
           @click="emit('attach')"
         >
-          <FilePlus class="h-[18px] w-[18px]" />
+          <Folder class="h-5 w-5" :stroke-width="1.75" />
         </button>
         <button
-          class="ml-auto flex h-7 shrink-0 items-center rounded-[var(--gosslan-radius-sm)] bg-[var(--gosslan-hover)] px-4 text-[13px] transition"
-          :class="hasDraft ? 'text-[var(--gosslan-accent-ink)] hover:bg-[var(--gosslan-list-active)]' : 'cursor-default text-[var(--gosslan-text-2)]'"
+          class="tap-safe ml-auto flex h-8 shrink-0 items-center rounded-[6px] px-3.5 text-[13px] font-medium transition"
+          :class="hasDraft
+            ? 'bg-primary text-white hover:bg-primary-hover'
+            : 'cursor-default bg-[var(--gosslan-hover)] text-[var(--gosslan-text-2)]'"
           :disabled="!hasDraft"
           @mousedown.prevent
           @click="send()"

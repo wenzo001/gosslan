@@ -1,12 +1,12 @@
 import { t as $t } from "@/i18n";
 import { computed, ref, toValue, watch, type MaybeRefOrGetter } from "vue";
-import { save } from "@tauri-apps/plugin-dialog";
-import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { api } from "@/api";
 import { loadFilePreview } from "@/utils/filePreview";
+import { openLocalFile, saveLocalFile } from "@/utils/localFile";
 import { shouldProbePresence } from "@/utils/mediaAvailability";
+import { isAndroid } from "@/utils/platform";
 import { codeNeedsClamp } from "@/utils/previewMetrics";
 import type { FileMeta, MessageRecord } from "@/types";
 
@@ -129,6 +129,9 @@ export function useMessageFile(
         msg.value.msg_id,
         fileMeta.value?.path,
         fileMeta.value?.name,
+        // 传输状态：收到 Done 时（字节刚落盘）必须重读预览，否则在途时读到的
+        // "仍在接收"会把图片钉死在"加载失败/被清理"（真机 2026-09-14）。
+        transfer.value?.status,
       ] as const,
     () => void ensureAttachmentPreview(),
     { immediate: true },
@@ -151,16 +154,36 @@ export function useMessageFile(
    */
   const fileReady = computed(() => !!fileMeta.value?.path && !attachmentMissing.value);
 
+  /**
+   * 这条文件消息是否本机发出。
+   *
+   * Android 上「自己发的文件」点一下必须**没有任何响应**（用户明确要求）；
+   * 长按气泡弹出的菜单不受影响，仍可另存/复制。
+   */
+  const isMineFile = computed(
+    () => !!app.device?.device_id && msg.value.sender_id === app.device.device_id,
+  );
+  /**
+   * 文件卡片是否可点开。
+   *
+   * - Android：自己发的文件 ⇒ 不可点（点击无响应）；收到的文件 ⇒ 可点（弹另存为）。
+   * - 桌面端：保持原样（点开本地文件），不做这个限制。
+   * 与 fileReady 分开：fileReady 还管"下载按钮/已被清理"的显示，不能被这里连累。
+   */
+  const fileTappable = computed(() => !(isAndroid && isMineFile.value));
+
   async function openFile() {
+    // 点自己发的文件：静默返回（连 toast 都不给，避免"看起来有反应"）。
+    if (!fileTappable.value) return;
     const path = fileMeta.value?.path;
-    if (!path) {
+    const name = fileMeta.value?.name;
+    if (!path || !name) {
       app.toast($t("msg.filePathUnavailable"), "error");
       return;
     }
+    // 平台差异（Android 改走另存为）统一在 utils/localFile 里，与群文件面板同一条路径。
     try {
-      // 走原生 open_file_native：macOS 用 NSWorkspace（沙盒下 opener 的 /usr/bin/open 被拦），
-      // Windows/Linux 由后端回落 opener。文件不存在时后端返回明确错误。
-      await api.openFileNative(path);
+      await openLocalFile(path, name);
     } catch (e) {
       app.toastError(e, $t("msg.openFileFail"));
     }
@@ -174,10 +197,8 @@ export function useMessageFile(
       return;
     }
     try {
-      const destination = await save({ defaultPath: filename });
-      if (!destination) return; // 用户取消
-      await invoke("copy_file", { source, destination });
-      app.toast($t("msg.fileSaved"), "success");
+      const r = await saveLocalFile(source, filename);
+      if (r === "done") app.toast($t("msg.fileSaved"), "success");
     } catch (e) {
       app.toastError(e, $t("msg.saveFileFail"));
     }
@@ -187,6 +208,7 @@ export function useMessageFile(
     transfer,
     fileMeta,
     fileReady,
+    fileTappable,
     fileProgress,
     fileStatusText,
     attachmentUrl,

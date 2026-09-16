@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { linkify, displayUrl } from "./linkify.ts";
+import { linkify, splitUrl } from "./linkify.ts";
 
 test("linkify: 无 URL 时整段是 text", () => {
   const segs = linkify("hello world");
@@ -38,6 +38,55 @@ test("linkify: 剥尾随标点当文本", () => {
   ]);
 });
 
+test("linkify: 中文句读终止链接（不吞掉后半句）", () => {
+  // 用户场景：中文里最常见的「句子中间放链接」——句号/逗号后必须断开，
+  // 否则整句都进链接，点击打开的是 "https://a.com。然后呢" 这种不存在的地址。
+  assert.deepEqual(linkify("看 https://a.com。然后呢"), [
+    { kind: "text", value: "看 " },
+    { kind: "link", value: "https://a.com", href: "https://a.com" },
+    { kind: "text", value: "。然后呢" },
+  ]);
+  assert.deepEqual(linkify("结束 https://a.com，还有"), [
+    { kind: "text", value: "结束 " },
+    { kind: "link", value: "https://a.com", href: "https://a.com" },
+    { kind: "text", value: "，还有" },
+  ]);
+  // 全角括号同理：右括号不再被吞进 URL
+  assert.deepEqual(linkify("（https://a.com/x）"), [
+    { kind: "text", value: "（" },
+    { kind: "link", value: "https://a.com/x", href: "https://a.com/x" },
+    { kind: "text", value: "）" },
+  ]);
+  // 但汉字路径仍是链接的一部分（中文域名/路径是合法 URL）
+  assert.deepEqual(linkify("见 https://zh.wikipedia.org/wiki/中国 条目"), [
+    { kind: "text", value: "见 " },
+    { kind: "link", value: "https://zh.wikipedia.org/wiki/中国", href: "https://zh.wikipedia.org/wiki/中国" },
+    { kind: "text", value: " 条目" },
+  ]);
+});
+
+test("linkify: 括号按是否配对决定归 URL 还是句末标点", () => {
+  // 配对 → 属于 URL（维基/百科大量这种地址，曾被从中间切成 Foo_ + "(bar)")
+  const wiki = linkify("见 https://zh.wikipedia.org/wiki/Foo_(bar) 谢谢");
+  assert.deepEqual(wiki[1], {
+    kind: "link",
+    value: "https://zh.wikipedia.org/wiki/Foo_(bar)",
+    href: "https://zh.wikipedia.org/wiki/Foo_(bar)",
+  });
+  // 不配对 → 是句末收尾
+  assert.deepEqual(linkify("看 https://a.com/x) 呢")[1], {
+    kind: "link",
+    value: "https://a.com/x",
+    href: "https://a.com/x",
+  });
+  // 标点与不配对括号叠在一起时，要一直剥到干净
+  assert.deepEqual(linkify("https://a.com/x),")[0], {
+    kind: "link",
+    value: "https://a.com/x",
+    href: "https://a.com/x",
+  });
+});
+
 test("linkify: 多个 URL 交替穿插", () => {
   assert.deepEqual(linkify("a https://x.com b http://y.io c"), [
     { kind: "text", value: "a " },
@@ -68,17 +117,27 @@ test("linkify: 空字符串 / 非字符串", () => {
   assert.deepEqual(linkify(undefined as unknown as string), []);
 });
 
-test("displayUrl: 短于阈值原样返回", () => {
-  assert.equal(displayUrl("https://a.com"), "https://a.com");
+test("splitUrl: 短于阈值不切分（mid 为空）", () => {
+  assert.deepEqual(splitUrl("https://a.com"), { head: "https://a.com", mid: "", tail: "" });
 });
 
-test("displayUrl: 超长 URL 中间省略号", () => {
+test("splitUrl: 超长 URL 切三段，拼回去必须等于原串", () => {
   const long = "https://very-long-domain.example.com/very/long/path/segment/file.html";
-  const out = displayUrl(long, 32);
-  assert.ok(out.length <= 32, `长度 ${out.length} > 32`);
-  assert.ok(out.includes("…"), "应包含省略号");
-  assert.ok(out.startsWith("https://"), "保留协议头");
-  assert.ok(long.endsWith(out.slice(-3).replace("…", out.slice(-1))), "保留尾部");
+  const { head, mid, tail } = splitUrl(long, 32);
+  // 核心契约：head + mid + tail === 原 URL。选区复制取的就是这三段，
+  // 丢掉任何一段都会复制出残缺链接（用户 2026-09-16 报的缺陷）。
+  assert.equal(head + mid + tail, long);
+  assert.ok(mid.length > 0, "必须真的省略掉了一段");
+  assert.ok(head.startsWith("https://"), "保留协议头");
+  assert.equal(head.length, tail.length, "头尾等长");
+  assert.ok(head.length + tail.length <= 32, "可见部分不超过阈值");
+});
+
+test("splitUrl: maxLen 过小不错位切片", () => {
+  // half 为 0 时 `slice(-0)` 等于 `slice(0)`（整串），会切出 head/tail 重叠的错位结果
+  const url = "https://a-very-long-url.example.com/x";
+  assert.deepEqual(splitUrl(url, 2), { head: url, mid: "", tail: "" });
+  assert.deepEqual(splitUrl(url, 0), { head: url, mid: "", tail: "" });
 });
 
 // ---------------- @提及（群聊） ----------------
@@ -112,6 +171,18 @@ test("linkify: 名字后跟中文标点仍高亮，未知名字不高亮", () =>
     { kind: "mention", value: "@张三" },
     { kind: "text", value: "，收到请回复 @李四" },
   ]);
+});
+
+test("linkify: 表情 token 收尾的 ] 也算 @ 前导边界", () => {
+  // 与 messages.ts 的 messageMentionsName 共用 MENTION_BEFORE —— 这条一旦只改一边，
+  // 就会出现「气泡高亮了但不通知」。
+  assert.deepEqual(linkify("[微笑]@张三 快来", ["张三"]), [
+    { kind: "text", value: "[微笑]" },
+    { kind: "mention", value: "@张三" },
+    { kind: "text", value: " 快来" },
+  ]);
+  // 中文标点仍**不算**边界（既有口径：紧贴标点的 @ 不高亮，也就不该触发红点）
+  assert.equal(linkify("通知：@张三", ["张三"])[0].kind, "text");
 });
 
 test("linkify: mention 与 URL 混排", () => {

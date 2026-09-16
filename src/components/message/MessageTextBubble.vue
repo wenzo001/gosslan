@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
-import { computed, type CSSProperties } from "vue";
+import { computed, nextTick, ref, watch, type CSSProperties } from "vue";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useAppStore } from "@/stores/useAppStore";
 import { PREVIEW_LINES } from "@/utils/previewMetrics";
-import { linkify, displayUrl, type LinkSegment } from "@/utils/linkify";
+import { linkify, type LinkSegment } from "@/utils/linkify";
+import MessageLinkText from "@/components/message/MessageLinkText.vue";
 import { splitEmoji } from "@/utils/emoji";
 import { mentionHighlightColor } from "@/utils/chatStyle";
 import { QUOTE_BORDER, QUOTE_BG, QUOTE_TEXT_STYLE } from "@/utils/quoteStyle";
+import { parseQuote } from "@/utils/quote";
 import { Check, Copy } from "lucide-vue-next";
 
 const props = defineProps<{
@@ -20,12 +22,39 @@ const props = defineProps<{
   mine: boolean;
   /** 群成员名列表：正文里的 @name 按此高亮（不传不高亮）。 */
   mentionNames?: string[];
+  /**
+   * 移动端「选择文字」模式（用户 2026-09-13）：
+   * 触屏下气泡默认**不可选**（长按归消息菜单），只有进入这个模式才开放原生选字。
+   * 见 style.css 里 `@media (pointer: coarse)` 的说明。
+   */
+  selectMode?: boolean;
 }>();
 const emit = defineEmits<{
   (e: "expand", content: string): void;
   (e: "copy", content: string): void;
   (e: "locate", msgId: string): void;
 }>();
+
+/**
+ * 进入「选择文字」模式时**自动选中整条正文**：系统那条「复制/全选」工具条只有存在选区时
+ * 才会弹出来 —— 不自动选的话用户会以为"点了没反应"（他只看到气泡变了下样子）。
+ * 随后用户可以拖手柄调整范围（系统的选区手柄就是为此存在的）。
+ */
+const contentEl = ref<HTMLElement | null>(null);
+watch(
+  () => props.selectMode,
+  async (on) => {
+    if (!on) return;
+    await nextTick();
+    const el = contentEl.value;
+    const sel = window.getSelection();
+    if (!el || !sel) return;
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    sel.removeAllRanges();
+    sel.addRange(range);
+  },
+);
 
 const app = useAppStore();
 
@@ -46,25 +75,12 @@ const bubbleStyle = computed<CSSProperties>(() => ({
 }));
 
 // ---------------- 引用解析 ----------------
-// 引用消息的 content 首行为 `「引用 {sender}：{snippet}|{msg_id}」`（msg_id 可省略），
-// 其余为正文。渲染成引用块（左侧竖线 + 灰字），带 msg_id 时可点击跳转原消息；
-// 复制/转发仍是完整原文。
-const QUOTE_PREFIX = "「引用 ";
-
+// 引用消息渲染成引用块（左侧竖线 + 灰字），带 msg_id 时可点击跳转原消息。
+// 解析规则统一在 `utils/quote.ts` —— 截断判定、高度估算、复制路径都在用同一份，
+// 在这里再写一遍迟早会分叉（历史上「正文正好 5 行却多出展开条」就是这么来的）。
 const parsed = computed(() => {
-  if (!props.content.startsWith(QUOTE_PREFIX)) return { quote: "", body: props.content, msgId: "" };
-  const nl = props.content.indexOf("\n");
-  if (nl < 0 || !props.content.slice(0, nl).trimEnd().endsWith("」")) {
-    return { quote: "", body: props.content, msgId: "" };
-  }
-  let line = props.content.slice(0, nl).trimEnd();
-  let msgId = "";
-  const m = line.match(/\|([^\s|」]+)」$/);
-  if (m) {
-    msgId = m[1];
-    line = line.slice(0, m.index) + "」";
-  }
-  return { quote: line, body: props.content.slice(nl + 1), msgId };
+  const q = parseQuote(props.content);
+  return { quote: q.header, body: q.body, msgId: q.msgId };
 });
 
 /** 渲染段：text / link / mention / emoji，按段渲染（不拼 HTML，天然防 XSS）。 */
@@ -103,6 +119,13 @@ const mentionBg = computed(() => {
 
 /** 点击链接：调 Tauri opener 走系统默认浏览器；失败 toast 提示。 */
 async function openLink(href: string) {
+  /**
+   * 「选择文字」模式下点链接**不打开**：那一模式下手指落在正文上是在挪选区/定位，
+   * 而 `<a>` 的 click 照旧会合成 —— 拉系统浏览器等于把用户正在调的选区打断。
+   * （`swallowLongPressRelease` 只吞"弹面板那一次"抬手，管不到进入选择模式之后的 tap。）
+   * 这一下点击不白费：它会把选区收起来，于是自动退出选择模式，再点就是正常打开。
+   */
+  if (props.selectMode) return;
   try {
     await openUrl(href);
   } catch (e) {
@@ -112,52 +135,73 @@ async function openLink(href: string) {
 </script>
 
 <template>
+  <!-- 气泡排版（用户 2026-09-12 反馈：「气泡高度太高了，不如微信里和谐；字重又太细了，
+       一眼看上去不够清晰」）：
+       - 纵向内边距 py-1.5(12px 合计) 与 leading-normal(行高 1.5)：更紧凑、更接近微信；
+       - `font-medium`(500)：比默认 400 更清晰，又不至于到 600 显得"加粗标题"。
+       ⚠️ 这三个值都被 `utils/previewMetrics.ts` 的 `TEXT_LINE_RATIO` / `TEXT_BUBBLE_PADDING`
+       镜像用于虚拟列表高度估算 —— **改这里必须同步改那里**，否则相邻消息会互相遮挡
+       （该文件顶部写明了这条契约）。 -->
+  <!-- ⚠️ 气泡根也 `select-text`（用户 2026-09-13：「鼠标去划选不中，刚选中立马取消」）：
+       正文被 `px-3 py-1.5` 的内边距包着，从内边距或气泡边缘起拖时选区锚点落在
+       "不可选"区域上，WebKit 会立刻把选区收敛掉 —— 表现就是"刚选中就没了"。
+       刻意**不用** `.gosslan-selectable` 这个类：它同时是"移动端长按让路给原生选字"的
+       标记，标到气泡根上会让长按再也弹不出操作面板（气泡正是长按的主落点）。 -->
   <div
-    class="group relative min-w-0 px-3 py-2 leading-relaxed"
+    class="group gosslan-bubble-text select-text relative min-w-0 px-3 py-1.5 font-medium leading-normal"
+    :class="selectMode ? 'gosslan-selecting' : ''"
     :style="bubbleStyle"
   >
-    <!-- 引用块：首行「引用 发送者：片段」，带 msg_id 时可点击跳转原消息 -->
-    <button
-      v-if="parsed.quote && parsed.msgId"
-      class="quote-block mb-1.5 block w-full cursor-pointer rounded-[var(--gosslan-radius-sm)] border-l-2 px-2 py-1 text-left text-[12px] leading-4 transition hover:brightness-110"
-      :style="{ borderColor: QUOTE_BORDER, background: QUOTE_BG }"
-      :title="t('msg.locateOriginal', { id: parsed.msgId })"
-      @click="emit('locate', parsed.msgId)"
-    >
-      <span class="quote-text" :style="QUOTE_TEXT_STYLE">{{ parsed.quote }}</span>
-    </button>
-    <div
-      v-else-if="parsed.quote"
-      class="quote-block mb-1.5 rounded-[var(--gosslan-radius-sm)] border-l-2 px-2 py-1 text-[12px] leading-4"
-      :style="{ borderColor: QUOTE_BORDER, background: QUOTE_BG }"
-    >
-      <span class="quote-text" :style="QUOTE_TEXT_STYLE">{{ parsed.quote }}</span>
-    </div>
-    <div
-      class="whitespace-pre-wrap break-words"
-      :style="{ wordBreak: 'break-word', ...clampStyle }"
-    >
-      <template v-for="(seg, i) in segments" :key="i">
-        <a
-          v-if="seg.kind === 'link'"
-          class="cursor-pointer break-all underline decoration-1 underline-offset-2 transition hover:opacity-80"
-          :title="seg.href"
-          @click.stop.prevent="openLink(seg.href)"
-        >{{ displayUrl(seg.value) }}</a>
-        <img
-          v-else-if="seg.kind === 'emoji'"
-          :src="seg.url"
-          :alt="seg.value"
-          :title="seg.value"
-          class="emoji-img"
-        />
-        <span
-          v-else-if="seg.kind === 'mention'"
-          class="mention-token"
-          :style="{ color: mentionFg || undefined, background: mentionBg || undefined }"
-        >{{ seg.value }}</span>
-        <span v-else>{{ seg.value }}</span>
-      </template>
+    <!-- ⚠️ 这一层只为了框住「引用块 + 正文」，让「选择文字」的全选范围=
+         用户在这个气泡里看得见的内容。引用块与正文是兄弟节点，ref 挂在正文上时
+         选区会漏掉引用头 —— 于是划选复制拿到纯正文、而操作条的「复制」给的是
+         带引用头的完整原文，同一个气泡两条复制路径结果不一样。
+         ⚠️ 不挂在气泡根上：根里还有「展开/复制」操作条和尖角，全选会把按钮文字也框进去。 -->
+    <div ref="contentEl">
+      <!-- 引用块：首行「引用 发送者：片段」，带 msg_id 时可点击跳转原消息 -->
+      <button
+        v-if="parsed.quote && parsed.msgId"
+        class="quote-block mb-1.5 block w-full cursor-pointer rounded-[var(--gosslan-radius-sm)] border-l-2 px-2 py-1 text-left text-[12px] leading-4 transition hover:brightness-110"
+        :style="{ borderColor: QUOTE_BORDER, background: QUOTE_BG }"
+        :title="t('msg.locateOriginal', { id: parsed.msgId })"
+        @click="emit('locate', parsed.msgId)"
+      >
+        <span class="quote-text" :style="QUOTE_TEXT_STYLE">{{ parsed.quote }}</span>
+      </button>
+      <div
+        v-else-if="parsed.quote"
+        class="quote-block mb-1.5 rounded-[var(--gosslan-radius-sm)] border-l-2 px-2 py-1 text-[12px] leading-4"
+        :style="{ borderColor: QUOTE_BORDER, background: QUOTE_BG }"
+      >
+        <span class="quote-text" :style="QUOTE_TEXT_STYLE">{{ parsed.quote }}</span>
+      </div>
+      <div
+        class="gosslan-selectable whitespace-pre-wrap break-words"
+        :style="{ wordBreak: 'break-word', ...clampStyle }"
+      >
+        <template v-for="(seg, i) in segments" :key="i">
+          <MessageLinkText
+            v-if="seg.kind === 'link'"
+            :href="seg.href"
+            :label="seg.value"
+            @open="openLink"
+          />
+          <img
+            v-else-if="seg.kind === 'emoji'"
+            :src="seg.url"
+            :alt="seg.value"
+            :title="seg.value"
+            draggable="false"
+            class="emoji-img"
+          />
+          <span
+            v-else-if="seg.kind === 'mention'"
+            class="mention-token"
+            :style="{ color: mentionFg || undefined, background: mentionBg || undefined }"
+          >{{ seg.value }}</span>
+          <span v-else>{{ seg.value }}</span>
+        </template>
+      </div>
     </div>
     <!-- 长文本操作条：高度固定，展开走独立 Modal，消息 DOM 不再变化 -->
     <div
@@ -165,11 +209,11 @@ async function openLink(href: string) {
       class="mt-1.5 flex items-center gap-2 border-t pt-1.5"
       :style="{ borderColor: 'rgba(128,128,128,0.2)' }"
     >
-      <button class="text-xs opacity-70 transition hover:opacity-100" @click="emit('expand', content)">
+      <button class="tap-safe text-xs opacity-70 transition hover:opacity-100" @click="emit('expand', content)">
         {{ t("common.expand") }}
       </button>
       <button
-        class="flex items-center gap-1 whitespace-nowrap text-xs transition"
+        class="tap-safe flex items-center gap-1 whitespace-nowrap text-xs transition"
         :class="copied ? 'opacity-100' : 'opacity-70 hover:opacity-100'"
         @click="emit('copy', content)"
       >

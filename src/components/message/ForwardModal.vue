@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
 import { computed, ref } from "vue";
+import { useDeferredRef } from "@/composables/useDeferredRef";
 import { useChatStore } from "@/stores/useChatStore";
-import { avatarInitial, nameToColor } from "@/utils/color";
+import { avatarInitial, avatarInitialLen, nameToColor } from "@/utils/color";
 import BaseModal from "@/components/BaseModal.vue";
 import type { MsgKind } from "@/types";
 
@@ -17,16 +18,38 @@ const emit = defineEmits<{ (e: "close"): void; (e: "pick", convId: string): void
 
 const chat = useChatStore();
 const keyword = ref("");
+/** 延迟镜像：过滤会话列表用（连发粘贴时避免每个字符重渲染整列，见 useDeferredRef）。 */
+const query = useDeferredRef(keyword);
 
 const filtered = computed(() => {
-  const kw = keyword.value.trim().toLowerCase();
+  const kw = query.value.trim().toLowerCase();
   if (!kw) return chat.conversations;
   return chat.conversations.filter((c) => c.name.toLowerCase().includes(kw));
 });
 
-const kindLabel = computed(
-  () => ({ text: t("common.text"), code: t("common.code"), image: t("common.image"), file: t("common.file"), system: t("common.system") })[props.kind] ?? t("msg.message"),
-);
+// 穷举所有 MsgKind：新增 kind 时这里会编译报错，逼你决定它的展示文案 ——
+// 比运行期回落到「消息」两个字更容易发现遗漏。
+const KIND_LABELS: Record<MsgKind, string> = {
+  text: t("common.text"),
+  code: t("common.code"),
+  image: t("common.image"),
+  file: t("common.file"),
+  system: t("common.system"),
+  // 静默事件（表情回应）不该出现在转发列表里；给个中性文案兜底，
+  // 真正的拦截在转发入口（不在时间线上渲染，就没有转发菜单可点）。
+  reaction: t("msg.reactionMore"),
+  recall: t("msg.recall"),
+  recalled: t("msg.recalled"),
+  // 静默事件：不在时间线上渲染，就不会有转发入口。给中性文案兜底。
+  pin: t("msg.pin"),
+  announcement: t("group.announce"),
+  announcement_delete: t("group.announce"),
+  todo: t("todo.title"),
+  todo_done: t("todo.title"),
+  poll: t("poll.title"),
+  poll_vote: t("poll.title"),
+};
+const kindLabel = computed(() => KIND_LABELS[props.kind] ?? t("msg.message"));
 </script>
 
 <template>
@@ -41,6 +64,10 @@ const kindLabel = computed(
       <input
         v-model="keyword"
         maxlength="50"
+        autocomplete="off"
+        autocorrect="off"
+        autocapitalize="off"
+        spellcheck="false"
         :placeholder="t('msg.searchConversation')"
         class="w-full rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-transparent px-3 py-2 text-[13px] outline-none placeholder:text-[var(--gosslan-text-2)] focus:border-[var(--gosslan-primary)]"
       />
@@ -60,13 +87,13 @@ const kindLabel = computed(
           </span>
           <span
             v-else
-            class="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-sm text-white"
+            class="gosslan-avatar-box flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-sm text-white"
             :style="{ backgroundColor: nameToColor(c.name) }"
           >
             <img alt="" v-if="c.avatar" :src="c.avatar" class="h-full w-full object-cover" />
-            <span v-else>{{ avatarInitial(c.name) }}</span>
+            <span v-else class="gosslan-avatar-initial" :data-len="avatarInitialLen(c.name)">{{ avatarInitial(c.name) }}</span>
           </span>
-          <span class="min-w-0 flex-1 truncate text-[13px] text-[var(--gosslan-text)]">{{ c.name }}</span>
+          <span class="min-w-0 flex-1 truncate text-[13px] text-[var(--gosslan-text)]" :title="c.name">{{ c.name }}</span>
         </button>
         <div v-if="filtered.length === 0" class="py-8 text-center text-sm text-[var(--gosslan-text-2)]">{{ t("msg.noMatch") }}</div>
       </div>

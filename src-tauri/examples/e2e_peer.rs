@@ -168,6 +168,9 @@ async fn probe_instance_via_who_has(
         tcp_port: 0,
         x25519_pubkey: None,
         ed25519_pubkey: None,
+        // who_has 是"谁在线"的探测：不声明身份、不参与任何绑定，因此不签名
+        nonce: String::new(),
+        sig: String::new(),
     };
     let data = serde_json::to_vec(&who).map_err(|e| e.to_string())?;
     let deadline = tokio::time::Instant::now() + timeout;
@@ -439,6 +442,8 @@ async fn main() {
                 device_id: PEER_ID.into(),
                 nickname: "E2E-Peer".into(),
                 avatar: None,
+                device_type: "desktop".into(),
+                content_features: gosslan_lib::protocol::content_features(),
                 tcp_port: 0,
                 x25519_pubkey: xk,
                 ed25519_pubkey: ek,
@@ -555,6 +560,7 @@ async fn main() {
                         ts: now_ms(),
                         seq: 1,
                         encrypted: true,
+                        target: None,
                     };
                     env.compute_message_id();
                     env.sender_sig = identity.sign_b64(&env.signing_bytes());
@@ -611,6 +617,8 @@ async fn main() {
             size: content.len() as u64,
             sealed_file_key: sealed_file_key.clone(),
             file_sha256: file_sha256.clone(),
+            from_seq: 0,
+            from_bytes: 0,
         },
     )
     .await;
@@ -677,6 +685,7 @@ async fn main() {
                 device_id: PEER_ID.into(),
                 nickname: "E2E-Peer-Renamed".into(),
                 avatar: None,
+                device_type: "desktop".into(),
             },
         )
         .await;
@@ -744,6 +753,8 @@ async fn main() {
                 size: IMAGE_BYTES.len() as u64,
                 sealed_file_key: sealed_image_key,
                 file_sha256: image_sha256.clone(),
+                from_seq: 0,
+                from_bytes: 0,
             },
         )
         .await;
@@ -984,6 +995,8 @@ async fn main() {
                 transfer_id: DL_TRANSFER_ID.into(),
                 from: PEER_ID.into(),
                 path: SHARE_FILE.into(),
+                // e2e 走直连：不做中继，to 留空（与旧端/直连语义一致）。
+                to: None,
             },
         )
         .await;

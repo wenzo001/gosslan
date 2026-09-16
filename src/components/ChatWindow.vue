@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { api } from "@/api";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -8,14 +9,21 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import MessageItem from "@/components/MessageItem.vue";
 import VirtualList from "@/components/VirtualList.vue";
 import GroupMemberPanel from "@/components/GroupMemberPanel.vue";
+import GroupFilesPanel from "@/components/GroupFilesPanel.vue";
+import BaseModal from "@/components/BaseModal.vue";
 import ChatHeader from "@/components/chat/ChatHeader.vue";
 import MessageComposer from "@/components/chat/MessageComposer.vue";
 import RenameGroupModal from "@/components/chat/RenameGroupModal.vue";
 import ForwardModal from "@/components/message/ForwardModal.vue";
 import ImageLightbox from "@/components/message/ImageLightbox.vue";
 import { estimateMessageHeight } from "@/utils/messageHeight";
-import { ArrowDown } from "lucide-vue-next";
-import type { MessageRecord, MsgKind } from "@/types";
+import { MENTION_ALL_TOKEN } from "@/utils/messages";
+import { foldReactions, hasMyReaction, type ReactionChip } from "@/utils/reactions";
+import { foldPinned, isPinned } from "@/utils/pins";
+import { kindClass } from "@/utils/messageKinds";
+import { previewText } from "@/utils/messages";
+import { ArrowDown, Bluetooth, X, Pin } from "lucide-vue-next";
+import type { LinkState, MessageRecord, MsgKind } from "@/types";
 
 const emit = defineEmits<{ (e: "open-share"): void }>();
 
@@ -26,7 +34,20 @@ const listRef = ref<InstanceType<typeof VirtualList> | null>(null);
 
 const conv = computed(() => chat.activeConversation);
 const isGroup = computed(() => chat.activeConv?.startsWith("group:") ?? false);
-const messages = computed(() => chat.messages[chat.activeConv ?? ""] ?? []);
+/**
+ * 时间线上要渲染的消息。
+ *
+ * ⚠️ **静默类必须在这里被滤掉** —— 这是 `KindClass::Silent`（「不进时间线」）
+ * 契约**唯一真正的落地点**。漏掉它的后果是：回一次表情、置顶、撤回，时间线上就多一条
+ * `{"target":"...","emoji":"[赞]","add":true}` 的裸 JSON 气泡，而且与正确的聚合视图
+ * （气泡下方的 chip / 顶部置顶条）**同时出现**。
+ *
+ * 后端已经按同一张表分支（不计未读、不进预览），这里补齐渲染侧。
+ * `card`（公告）暂时一并过滤 —— 公告已有独立的常驻横幅，再进时间线会重复。
+ */
+const messages = computed(() =>
+  (chat.messages[chat.activeConv ?? ""] ?? []).filter((m) => kindClass(m.kind) === "bubble"),
+);
 
 /**
  * 消息是否还没加载完：`loadMessages` 完成前 `messages[convId]` 是 undefined。
@@ -40,6 +61,69 @@ const online = computed(() => {
   if (!conv.value || conv.value.kind !== "single") return false;
   return chat.friends.some((f) => f.device_id === conv.value!.id && f.online);
 });
+/** 单聊对方的设备类型（"desktop"/"mobile"，空串 = 未知）。群聊不显示。 */
+const deviceType = computed(() => {
+  if (!conv.value || conv.value.kind !== "single") return "";
+  return chat.friends.find((f) => f.device_id === conv.value!.id)?.device_type ?? "";
+});
+
+/** 会话当前链路（最近一条消息的链路 + 跳数）。单聊显示，群聊不显示。 */
+const linkState = ref<LinkState | null>(null);
+async function refreshLinkState() {
+  const id = chat.activeConv;
+  if (!id || id.startsWith("group:")) {
+    linkState.value = null;
+    return;
+  }
+  linkState.value = await api.getConvLink(id);
+}
+watch(
+  () => {
+    // 活跃对端的**实时链路**也要参与依赖：链路从蓝牙/中继切回局域网时，
+    // peers-updated 会带上新的 link，聊天头必须立刻改成「直连」，
+    // 而不是等用户再发一条消息。
+    const peerLink = chat.peers.find((p) => p.device_id === chat.activeConv)?.link ?? null;
+    return [chat.activeConv, messages.value.length, peerLink] as const;
+  },
+  refreshLinkState,
+  { immediate: true },
+);
+
+/**
+ * 当前单聊是否真的走在蓝牙链路上（用户 2026-09-13 要求：蓝牙聊天框要说明传输速度）。
+ *
+ * 判据取**在线节点表的实时链路**（`peer.link`，由后端 `fill_peer_links` 按真实链路填），
+ * 而不是上面的 `linkState` —— 后者是"最近一条消息走的路径"的快照，链路可能早就切了。
+ * 提示必须和"现在这条链路"一致，否则会在 Wi-Fi 链路上误导用户。
+ */
+const btLink = computed(() => {
+  if (!conv.value || conv.value.kind !== "single") return false;
+  return chat.peers.find((p) => p.device_id === conv.value!.id)?.link === "bluetooth";
+});
+/** 速度提示可关闭：按会话各记一次（切走再回来重新提示，因为换会话就是换链路场景）。 */
+const btHintDismissed = ref(false);
+watch(
+  () => chat.activeConv,
+  () => {
+    btHintDismissed.value = false;
+  },
+);
+/**
+ * 切会话：清掉"跟着输入框走的发送上下文"（引用 / 转发草稿）。
+ *
+ * 为什么必须显式清：这两项只在"发送成功"或"用户点取消"时才被清空，
+ * 切会话时留着就会出现 —— 在 B 会话看到 A 的引用条，发出去的消息还带着 A 的消息片段。
+ * 这是会把内容发错会话的缺陷，不是观感问题。
+ * 输入框里的**文字**由模板上的 `:key="chat.activeConv"` 让 MessageComposer 整体重建来清
+ * （编辑器是 contenteditable，DOM 是唯一真相，没有"清空"之外的复位路径）。
+ */
+watch(
+  () => chat.activeConv,
+  () => {
+    quote.value = null;
+    forward.value = null;
+  },
+);
 const isPeerFriend = computed(() => {
   if (!conv.value || conv.value.kind !== "single") return true;
   return chat.friends.some((f) => f.device_id === conv.value!.id);
@@ -58,9 +142,26 @@ function estimateHeight(m: MessageRecord, index?: number): number {
 // ---------------- 图片相册预览（点击图片 → 打开本会话全部图片，可左右切换） ----------------
 const lightboxOpen = ref(false);
 const lightboxIndex = ref(0);
-/** 会话内全部图片（kind=image 或 kind=file 且 subtype=image），按消息顺序排列。 */
-const lightboxImages = computed<{ msgId: string; name: string; dataSrc: string | null }[]>(() =>
-  messages.value
+/**
+ * 会话内图片列表（kind=image，或 kind=file 且 subtype=image），**打开预览时才构建**。
+ *
+ * ⚠️ 这里刻意**不用 computed**（用户 2026-09-12 要求「不要有任何阻断渲染的操作」）：
+ * 原先它是 computed，于是**每次消息变化都会重扫全部消息并对每条文件消息 JSON.parse**
+ * —— 而消息变化发生在每收一条、每改一次状态（送达/已读回执）时；单会话缓存上限是
+ * 10 页 × 100 条 = 1000 条，等于每条消息都要付一次 O(n) 扫描 + 解析。
+ * 而这份列表**只在打开图片预览时用得到**，且打开期间图片集合不会变
+ * （新图片到达时用户正在看图，让他下次打开再看到即可）。
+ * 因此改为**命令式快照**：只在 `openImageAt` 里构建一次并存入 ref，
+ * 热路径（消息流）不再有任何全表扫描。
+ */
+interface LightboxImage {
+  msgId: string;
+  name: string;
+  dataSrc: string | null;
+}
+
+function buildLightboxImages(): LightboxImage[] {
+  return messages.value
     .filter((m) => {
       if (m.kind === "image") return true;
       if (m.kind === "file") {
@@ -85,10 +186,14 @@ const lightboxImages = computed<{ msgId: string; name: string; dataSrc: string |
         }
       }
       return { msgId: m.msg_id, name, dataSrc };
-    }),
-);
+    });
+}
+
+/** 打开期间的图片快照（只在 openImageAt 里赋值）。 */
+const lightboxImages = ref<LightboxImage[]>([]);
 
 function openImageAt(msgId: string) {
+  lightboxImages.value = buildLightboxImages();
   const idx = lightboxImages.value.findIndex((x) => x.msgId === msgId);
   if (idx < 0) return;
   lightboxIndex.value = idx;
@@ -97,6 +202,7 @@ function openImageAt(msgId: string) {
 
 // ---------------- 群：成员面板 + 改名 ----------------
 const membersOpen = ref(false);
+const filesOpen = ref(false);
 const activeGroupId = computed(() =>
   isGroup.value && chat.activeConv ? chat.activeConv.slice(6) : null,
 );
@@ -114,6 +220,143 @@ const renameOpen = ref(false);
 const renameCurrent = computed(
   () => chat.groups.find((g) => g.id === activeGroupId.value)?.name ?? "",
 );
+
+/**
+ * 表情回应的折叠结果：**在会话层算一次**再按 msg_id 分发。
+ * 放到 MessageItem 里各自算会让每条消息都遍历整份消息列表（O(n²)）——
+ * 群聊一屏几十条时这是实打实的卡顿。
+ */
+const reactionMap = computed(() => {
+  const convId = chat.activeConv;
+  if (!convId) return new Map<string, ReactionChip[]>();
+  return foldReactions(chat.messages[convId] ?? [], app.device?.device_id ?? "");
+});
+
+/**
+ * 当前生效的群公告：按 **(seq, msg_id)** 取最大的那条发布事件。
+ *
+ * 不按墙上时间 —— 只有群主能发，而群主的 Lamport 时钟单调，自己两条公告不可能同 seq，
+ * tie-break 只是防御。`announcement_delete`（墓碑，静默类）指向的公告视为不存在。
+ * 折叠形状与 `foldPinned` 完全同构（那边有单测），故此处不再单开一份测试。
+ */
+const announcement = computed(() => {
+  const convId = chat.activeConv;
+  if (!convId?.startsWith("group:")) return null;
+  const list = chat.messages[convId] ?? [];
+  let best: { seq: number; msgId: string; text: string } | null = null;
+  const tombstones = new Set<string>();
+  for (const m of list) {
+    if (m.kind === "announcement_delete") {
+      try {
+        const id = (JSON.parse(m.content) as { ann_id?: string }).ann_id;
+        if (id) tombstones.add(id);
+      } catch {
+        /* 畸形载荷忽略 */
+      }
+      continue;
+    }
+    if (m.kind !== "announcement") continue;
+    const newer = !best || m.seq > best.seq || (m.seq === best.seq && m.msg_id > best.msgId);
+    if (!newer) continue;
+    try {
+      const text = (JSON.parse(m.content) as { text?: string }).text ?? "";
+      best = { seq: m.seq, msgId: m.msg_id, text };
+    } catch {
+      /* 畸形载荷忽略 */
+    }
+  }
+  if (!best || tombstones.has(best.msgId)) return null;
+  return best;
+});
+
+/** 只有群主能发布公告（后端同样校验；前端隐藏入口是为了不让用户白点一次）。 */
+const canPublishAnnouncement = computed(
+  () => !!activeGroupId.value && chat.groups.find((g) => g.id === activeGroupId.value)?.creator === app.device?.device_id,
+);
+const announceOpen = ref(false);
+const announceDraft = ref("");
+
+function openAnnounce() {
+  announceDraft.value = announcement.value?.text ?? "";
+  announceOpen.value = true;
+}
+
+async function publishAnnouncement() {
+  const gid = activeGroupId.value;
+  if (!gid) return;
+  const text = announceDraft.value.trim();
+  if (!text) return;
+  try {
+    await chat.publishAnnouncement(gid, text);
+    announceOpen.value = false;
+    app.toast(t("group.announceDone"), "success");
+  } catch (e) {
+    app.toastError(e, t("group.announceFail"));
+  }
+}
+
+/** 当前被置顶的消息 id（按置顶版本从新到旧）。与回应同理：会话层算一次。 */
+const pinnedIds = computed(() => {
+  const convId = chat.activeConv;
+  if (!convId) return [];
+  return foldPinned(chat.messages[convId] ?? []);
+});
+
+/** 置顶条要展示的条目：只保留还能在本机找到的消息（已被清空历史的就不列了）。 */
+const pinnedItems = computed(() => {
+  const convId = chat.activeConv;
+  if (!convId) return [];
+  const list = chat.messages[convId] ?? [];
+  return pinnedIds.value
+    .map((id) => list.find((m) => m.msg_id === id))
+    .filter((m): m is NonNullable<typeof m> => !!m)
+    .map((m) => ({ id: m.msg_id, text: previewText(m) }));
+});
+
+/**
+ * 一行里能显示几条置顶。**移动端只给 1 条** —— 一行放三个的话每个都被压成
+ * 省略号，等于三个都读不出来；桌面给 3 条。超出部分走 `+N` 展开。
+ */
+const visiblePinned = computed(() =>
+  app.isMobile ? pinnedItems.value.slice(0, 1) : pinnedItems.value.slice(0, 3),
+);
+/** 「+N」的就地展开态（切换会话时收起，避免把上一次的展开带过来）。 */
+const pinsExpanded = ref(false);
+watch(() => chat.activeConv, () => {
+  pinsExpanded.value = false;
+});
+
+/** 点置顶条：跳到那条消息（复用既有的定位机制）。 */
+function gotoPinned(msgId: string) {
+  const convId = chat.activeConv;
+  if (!convId) return;
+  void chat.locateMessageInConv(convId, msgId);
+}
+
+/** 切换置顶。菜单里的文案由 isPinned 决定。 */
+function togglePin(msgId: string) {
+  const convId = chat.activeConv;
+  if (!convId?.startsWith("group:")) return;
+  const next = !isPinned(chat.messages[convId] ?? [], msgId);
+  void chat.pinMessage(convId.slice(6), msgId, next).catch((e) => {
+    app.toastError(e, t("msg.pinFail"));
+  });
+}
+
+/** 点 chip：已点过则取消，否则添加。 */
+function toggleReaction(msgId: string, emoji: string) {
+  const convId = chat.activeConv;
+  if (!convId?.startsWith("group:")) return;
+  const mine = hasMyReaction(
+    chat.messages[convId] ?? [],
+    msgId,
+    emoji,
+    app.device?.device_id ?? "",
+  );
+  void chat.sendReaction(convId.slice(6), msgId, emoji, !mine).catch((e) => {
+    app.toastError(e, t("msg.reactionFail"));
+  });
+}
 
 // ---------------- 群聊 @ ----------------
 /** @ 选择选项（不含自己）：名字与消息流昵称同源（nicknameOf），插入的 @名字 必须能和渲染端对上。 */
@@ -136,7 +379,9 @@ const mentionNames = computed(() => {
   const myName = app.device?.nickname ?? "";
   // 其余成员保持原样（nicknameOf 查不到时回退设备指纹，与插入端行为一致）；
   // 只有"自己"这一项必须换成昵称，否则 @我 永远匹配不上。
-  return g.members.map((id) => (id === me ? myName || id : chat.nicknameOf(id)));
+  // 「所有人」补进名单，让 @所有人 与 @成员 高亮样式一致（buildMentionRe 会去重，
+  // 真有成员叫这个名字也不会生成重复分支）。
+  return [...g.members.map((id) => (id === me ? myName || id : chat.nicknameOf(id))), MENTION_ALL_TOKEN];
 });
 async function confirmRename(name: string) {
   renameOpen.value = false;
@@ -322,7 +567,10 @@ async function attachFile() {
   if (!isGroup.value && !isPeerFriend.value) return;
   const picked = await openDialog({ multiple: false });
   if (typeof picked !== "string") return;
-  await sendOneFile(convId, picked);
+  // ⚠️ 必须先"落地"：Android 的选择器给的是 `content://` URI，直接丢给后端发送必然失败
+  //（`std::fs` 打不开 URI）—— 这个命令在安卓上把它复制进缓存并返回真实路径，桌面端原样返回。
+  const local = await api.importPickedFile(picked);
+  await sendOneFile(convId, local);
 }
 
 // ---------------- 拖拽文件发送 ----------------
@@ -404,14 +652,120 @@ function onLoadMore() {
       :conv="conv"
       :is-group="isGroup"
       :online="online"
+      :device-type="deviceType"
+      :link-state="linkState"
       :member-count="memberCount"
       :can-rename="canRename"
       :show-back="app.isMobile"
       @back="app.mobileView = 'list'"
       @open-members="membersOpen = true"
+      @open-files="filesOpen = true"
       @rename="renameOpen = true"
       @open-share="emit('open-share')"
     />
+
+    <!-- 群公告条：常驻在头部下方（公告是发给全群的权威信息，必须一眼可见）。
+         点击展开全文（长公告在条里会截断）。群主额外有「发布/修改」入口。 -->
+    <div
+      v-if="isGroup && (announcement || canPublishAnnouncement)"
+      class="flex shrink-0 items-start gap-2 border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-chat)] px-4 py-1.5"
+    >
+      <Megaphone class="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--gosslan-warning-ink)]" aria-hidden="true" />
+      <button
+        v-if="announcement"
+        class="tap-safe min-w-0 flex-1 truncate rounded-[var(--gosslan-radius-sm)] px-1.5 py-0.5 text-left text-[12px] text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
+        :title="announcement.text"
+        @click="app.toast(announcement.text, 'info')"
+      >
+        {{ announcement.text }}
+      </button>
+      <span v-else class="min-w-0 flex-1 px-1.5 py-0.5 text-[12px] text-[var(--gosslan-text-2)]">
+        {{ t("group.announceEmpty") }}
+      </span>
+      <button
+        v-if="canPublishAnnouncement"
+        class="tap-safe shrink-0 rounded-[var(--gosslan-radius-sm)] px-1.5 py-0.5 text-[11px] text-[var(--gosslan-primary)] transition hover:bg-[var(--gosslan-hover)]"
+        @click="openAnnounce"
+      >
+        {{ announcement ? t("group.announceEdit") : t("group.announcePublish") }}
+      </button>
+    </div>
+
+    <!-- 置顶条：钉钉/飞书同款位置（头部下方）。
+         条数的**边界按端给**：移动端一行放不下三个（每个都会被压成省略号），只显示最近 1 条；
+         桌面最多 3 条。超出部分用 `+N` 就地展开成纵向列表（带滚动上限），
+         而不是挤在同一行 —— 否则置顶一多，置顶条自己就把消息区吃掉了。 -->
+    <div
+      v-if="isGroup && pinnedItems.length"
+      class="flex shrink-0 flex-col border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-chat)]"
+    >
+      <div class="flex items-center gap-2 px-4 py-1.5">
+        <Pin class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-text-2)]" aria-hidden="true" />
+        <button
+          v-for="p in visiblePinned"
+          :key="p.id"
+          class="tap-safe group/pin flex min-w-0 flex-1 items-center gap-1 rounded-[var(--gosslan-radius-sm)] px-1.5 py-0.5 text-left text-[12px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]"
+          :title="p.text"
+          @click="gotoPinned(p.id)"
+        >
+          <span class="min-w-0 flex-1 truncate" :title="p.text">{{ p.text }}</span>
+          <!-- 就地取消置顶：不必先跳到原消息再右键（用户明确要求） -->
+          <span
+            class="hover-reveal-op flex h-4 w-4 shrink-0 items-center justify-center rounded-full opacity-0 transition group-hover/pin:opacity-100"
+            role="button"
+            :title="t('msg.unpin')"
+            :aria-label="t('msg.unpin')"
+            @click.stop="togglePin(p.id)"
+          >
+            <X class="h-3 w-3" />
+          </span>
+        </button>
+        <button
+          v-if="pinnedItems.length > visiblePinned.length"
+          class="tap-safe shrink-0 rounded-[var(--gosslan-radius-sm)] px-1.5 py-0.5 text-[11px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]"
+          @click="pinsExpanded = !pinsExpanded"
+        >
+          {{ pinsExpanded ? t("msg.pinCollapse") : `+${pinnedItems.length - visiblePinned.length}` }}
+        </button>
+      </div>
+      <!-- 展开态：纵向列出全部置顶，带高度上限（置顶再多也不会吃掉消息区） -->
+      <div v-if="pinsExpanded" class="max-h-32 overflow-y-auto px-4 pb-1.5">
+        <button
+          v-for="p in pinnedItems"
+          :key="`all-${p.id}`"
+          class="tap-safe flex w-full items-center gap-2 rounded-[var(--gosslan-radius-sm)] px-1.5 py-1 text-left text-[12px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]"
+          :title="p.text"
+          @click="gotoPinned(p.id)"
+        >
+          <span class="min-w-0 flex-1 truncate" :title="p.text">{{ p.text }}</span>
+          <X
+            class="h-3 w-3 shrink-0"
+            role="button"
+            :aria-label="t('msg.unpin')"
+            @click.stop="togglePin(p.id)"
+          />
+        </button>
+      </div>
+    </div>
+
+    <!-- 蓝牙链路速度提示（用户 2026-09-13 要求）：蓝牙分片载荷受 20 字节 MTU 限制，
+         实测吞吐约 1 KB/s，一张 500 KB 的图片要几分钟。让用户在大文件开始**之前**
+         就有预期，而不是看着进度条一直不动以为卡死。可关闭，切换会话后重新提示。 -->
+    <div
+      v-if="btLink && !btHintDismissed"
+      class="flex shrink-0 items-center gap-2 border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-warning-soft)] px-4 py-1.5 text-[12px] leading-[18px] text-[var(--gosslan-warning-ink)]"
+    >
+      <Bluetooth class="h-3.5 w-3.5 shrink-0" />
+      <span class="min-w-0 flex-1">{{ t("chat.bt.slowHint") }}</span>
+      <button
+        class="tap-safe shrink-0 rounded-[var(--gosslan-radius-sm)] px-1.5 py-0.5 transition hover:bg-black/5 dark:hover:bg-white/10"
+        :title="t('chat.bt.dismiss')"
+        :aria-label="t('chat.bt.dismiss')"
+        @click="btHintDismissed = true"
+      >
+        <X class="h-3.5 w-3.5" />
+      </button>
+    </div>
 
     <!-- 消息区（虚拟滚动，仅纵向）：与头部同底色，无缝衔接 -->
     <div ref="chatAreaRef" class="relative min-h-0 flex-1 overflow-hidden bg-[var(--gosslan-chat)]">
@@ -455,6 +809,7 @@ function onLoadMore() {
         v-else
         ref="listRef"
         :items="messages"
+        live
         :auto-scroll-on-swap="!(chat.unreadJump && chat.unreadJump.convId === chat.activeConv)"
         :estimate-height="estimateHeight"
         @load-more="onLoadMore"
@@ -470,7 +825,11 @@ function onLoadMore() {
             :show-unread-divider="index === unreadIndex"
             :highlight-id="highlightId"
             :mention-names="mentionNames"
+            :reactions="reactionMap.get(item.msg_id) ?? []"
+            :pinned="pinnedIds.includes(item.msg_id)"
             @quote="quote = $event"
+            @react="toggleReaction(item.msg_id, $event)"
+            @pin="togglePin(item.msg_id)"
             @forward="forward = $event"
             @locate="locateMessage"
             @open-image="openImageAt"
@@ -481,7 +840,7 @@ function onLoadMore() {
       <!-- 回到最新（离开底部时出现） -->
       <button
         v-if="!nearBottom"
-        class="absolute bottom-4 right-5 z-10 flex items-center gap-1.5 rounded-full border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-3 py-1.5 text-xs text-[var(--gosslan-text)] shadow-lg transition hover:bg-[var(--gosslan-hover)]"
+        class="tap-safe absolute bottom-4 right-5 z-10 flex items-center gap-1.5 rounded-full border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-3 py-1.5 text-xs text-[var(--gosslan-text)] shadow-lg transition hover:bg-[var(--gosslan-hover)]"
         @click="nearBottom = true; listRef?.scrollToBottom()"
       >
         <ArrowDown class="h-3.5 w-3.5" />
@@ -493,6 +852,7 @@ function onLoadMore() {
     <div class="shrink-0 bg-[var(--gosslan-chat)] px-4 pb-3 pt-2">
       <MessageComposer
         v-if="isGroup || isPeerFriend"
+        :key="chat.activeConv ?? 'none'"
         :conv-id="chat.activeConv"
         :quote="quote"
         :mention-members="mentionMembers"
@@ -512,6 +872,34 @@ function onLoadMore() {
 
     <!-- 群成员面板 -->
     <GroupMemberPanel :open="membersOpen" :group-id="activeGroupId" @close="membersOpen = false" />
+
+    <!-- 发布群公告（仅群主可见入口） -->
+    <BaseModal :open="announceOpen" :title="t('group.announce')" @close="announceOpen = false">
+      <textarea
+        v-model="announceDraft"
+        class="h-28 w-full resize-none rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-3 py-2 text-sm text-[var(--gosslan-text)] outline-none focus:border-[var(--gosslan-primary)]"
+        :placeholder="t('group.announcePlaceholder')"
+        :maxlength="500"
+      ></textarea>
+      <div class="mt-4 flex justify-end gap-2">
+        <button
+          class="tap-safe rounded-[var(--gosslan-radius-md)] px-4 py-2 text-sm text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+          @click="announceOpen = false"
+        >
+          {{ t("common.cancel") }}
+        </button>
+        <button
+          class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-4 py-2 text-sm text-white transition hover:opacity-90 disabled:opacity-50"
+          :disabled="!announceDraft.trim()"
+          @click="publishAnnouncement"
+        >
+          {{ t("group.announcePublish") }}
+        </button>
+      </div>
+    </BaseModal>
+
+    <!-- 群文件列表 -->
+    <GroupFilesPanel :open="filesOpen" :group-id="activeGroupId" @close="filesOpen = false" />
 
     <!-- 转发弹窗 -->
     <ForwardModal

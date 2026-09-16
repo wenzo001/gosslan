@@ -7,6 +7,9 @@
 //!   即可支撑“服务端中转连接电脑与移动端”的场景。
 
 pub mod discovery;
+/// BLE 传输的运行时接线（feature = "bluetooth"；默认关闭，见 ADR-0015）。
+#[cfg(feature = "bluetooth")]
+pub mod ble;
 pub mod file;
 pub mod transport;
 
@@ -61,6 +64,8 @@ pub async fn start(state: Arc<AppState>, bind_ip: String) -> Result<(), String> 
     // Discovery 实际绑定的是真实 LAN IP（auto 模式下），需要让诊断面板展示它。
     let actual_bound_ip = state.diag.lock().unwrap_or_else(|e| e.into_inner()).bound_ip.clone();
     *state.probe.lock().unwrap_or_else(|e| e.into_inner()) = Some(probe_tx);
+    // 进入新世代：此后旧世代（上一次 start 的 accept 任务）不得再登记链路。
+    state.bump_network_generation();
     *state.network.lock().unwrap_or_else(|e| e.into_inner()) = Some(NetworkHandle {
         shutdown: shutdown_tx,
         bound_ip: bind_ip,
@@ -73,6 +78,9 @@ pub async fn start(state: Arc<AppState>, bind_ip: String) -> Result<(), String> 
 
 /// 停止网络：发送关闭信号，**等待后台任务真正退出**，再清理连接与在线表。
 pub async fn stop(state: &AppState) {
+    // 先进入新世代：让"握手还没完成的上一个世代的任务"在登记前就自我否决
+    // （见 `AppState::network_generation` 的注释）。
+    state.bump_network_generation();
     // 先取出句柄再 await：`std::sync::MutexGuard` 不能跨 await，否则 stop() 的
     // future 不是 Send，无法放进 `tauri::async_runtime::spawn`。
     let handle = state.network.lock().unwrap_or_else(|e| e.into_inner()).take();
@@ -85,7 +93,6 @@ pub async fn stop(state: &AppState) {
     }
     *state.probe.lock().unwrap_or_else(|e| e.into_inner()) = None;
     state.links.lock().await.clear();
-    state.priority_links.lock().await.clear();
     state.peers.lock().unwrap_or_else(|e| e.into_inner()).clear();
     state.emit_peers();
 }
@@ -162,7 +169,7 @@ pub async fn start_from_prefs(state: Arc<AppState>) -> Result<(), String> {
     match start(state.clone(), bind_ip.clone()).await {
         Ok(()) => Ok(()),
         Err(e) if bind_ip != AUTO_BIND_IP => {
-            eprintln!("[lan] 绑定 {bind_ip} 失败（{e}），回落到自动选择网卡");
+            state.logger.warn("lan", format!("绑定 {bind_ip} 失败（{e}），回落到自动选择网卡"));
             start(state, AUTO_BIND_IP.to_string()).await
         }
         Err(e) => Err(e),
