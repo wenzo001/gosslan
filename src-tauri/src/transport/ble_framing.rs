@@ -56,9 +56,20 @@
 //! 由 `scripts/check-ble-constants.mjs` 守门：本领域内这些量必须**唯一具名定义点**。
 //!
 //! ⚠️ 本模块**早已接线**（macOS / Windows / Android 三个外设 + central driver +
-//! `network/ble.rs` 都在调它）。历史上这里挂过一个 `#![allow(dead_code)]` 并注明
-//! "接入前没有生产调用点"，那条注释与它静音的警告在接线之后就过期了 —— 2026-09-16
-//! 删掉。过期静音的危险在于：它同时掩盖了"哪些项真的没人用"。
+//! `network/ble.rs` 都在调它）。历史上这里挂过一个**无条件**的 `#![allow(dead_code)]`
+//! 并注明"接入前没有生产调用点" —— 那条注释与它静音的警告在接线之后就过期了，
+//! 2026-09-16 删掉。
+//!
+//! 但**关掉 `bluetooth` feature 时**，本模块的所有生产调用点都不编译（它们都在
+//! `#[cfg(feature = "bluetooth")]` 之下）⇒ 整个模块变成死代码、`cargo check` 会刷出
+//! 一屏 `never used`。这与 ADR-0015 §2「不开时依赖不下载、代码不编译」是同一口径，
+//! 所以下面按 feature **条件化**地静音：
+//!
+//! ```text
+//! feature 关：整模块惰性 ⇒ allow(dead_code)   （不静音就全是噪声）
+//! feature 开：**不**允许死代码           （这才抓得到"以为接线了其实没接"）
+//! ```
+#![cfg_attr(not(feature = "bluetooth"), allow(dead_code))]
 
 use std::collections::HashMap;
 
@@ -244,7 +255,13 @@ impl BleReassembler {
         Self::default()
     }
 
-    /// 当前进行中的不完整消息数（诊断/测试用）。
+    /// 当前进行中的不完整消息数。
+    ///
+    /// 只被本模块的测试使用（生产路径没有调用点）⇒ 标 `#[cfg(test)]`。
+    /// 2026-09-16 之前它靠模块级的无条件 `allow(dead_code)` 蒙混过去 —— 那条 allow 一删，
+    /// Android 的 `cargo check` 立刻报 `never used`（`check-mobile.sh` 只跑 `cargo check`、
+    /// 不跑测试，所以它比 `cargo test` 更容易看见这类"只在测试里活着的项"）。
+    #[cfg(test)]
     pub fn in_flight(&self) -> usize {
         self.partials.len()
     }

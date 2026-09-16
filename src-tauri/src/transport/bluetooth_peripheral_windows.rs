@@ -527,6 +527,18 @@ impl PeripheralWriter {
     ///
     /// 取 `GattSubscribedClient::MaxNotificationSize()`（一次通知能装的字节数，
     /// **已含 ATT 头**）并交给与 central 侧共用的换算 —— 两边不会各说各话。
+    ///
+    /// ⚠️ **三个平台的输入语义并不相同**，不要以为可以互换：
+    ///
+    /// | 平台 | 来源 | 含 ATT 头？ | 用哪个换算 |
+    /// |---|---|---|---|
+    /// | macOS | `maximumUpdateValueLength` | **不含**（Apple 文档明确：就是载荷） | `notify_payload_budget` |
+    /// | Windows | `MaxNotificationSize` | **含**（本文件所据） | `att_payload_budget` |
+    /// | Android | Kotlin `payloadMtu` | **不含**（与 macOS 同口径） | `notify_payload_budget` |
+    ///
+    /// ⚠️ Windows 那一格（"含 ATT 头"）**尚未在真机验证**：若实际不含，我们每片会少发
+    /// 3 字节 —— 那是**偏保守**的方向（吞吐略降），不会像 Android 2026-09-16 修掉的那个
+    /// 缺陷那样"直接发不出去"。要动它请先真机确认 `MaxNotificationSize` 的语义。
     pub fn payload_mtu(&self, central: &str) -> usize {
         let max = {
             let subs = SUBSCRIBERS.lock().unwrap_or_else(|e| e.into_inner());

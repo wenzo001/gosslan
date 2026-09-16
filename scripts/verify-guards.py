@@ -1754,6 +1754,28 @@ CASES: list[Case] = [
         expect_fail_hint="必须原样返回",
         tags=["rust", "ble", "new-guards"],
     ),
+    Case(
+        name="BLE 常量只有一个家：外设平台自己算一遍必须报出来（Android 2026-09-16 的形态）",
+        why="判据 A/B 都只盯「定义」，而真实漏掉的那处是**把换算内联进平台实现**："
+        "Android 的 `payload_mtu` 自己写 `if (1..=512).contains(&v) { v } else { 20 }` —— "
+        "既没重新定义常量（逃过 B），也不是「重新实现具名函数」（逃过 A）。"
+        "它还有真 bug：`1..=6` 这类**装不下分片头**的值被放行 ⇒ `fragment` 拒绝一切 ⇒ "
+        "整条链路发不出消息，而日志只说「帧无法分片」。这条注入就是把它改回原样。"
+        "发现它的正是 Phase 4 引入的 Android `cargo check` —— 它不跑测试，"
+        "所以比 `cargo test` 更容易看见「只在某一平台编译的重复」。",
+        file=TAURI / "src" / "transport" / "ble_android.rs",
+        injections=[(
+            "        let raw = call_static_int(\"payloadMtu\", central).unwrap_or(0);\n"
+            "        ble_framing::notify_payload_budget(usize::try_from(raw).unwrap_or(0))",
+            "        call_static_int(\"payloadMtu\", central)\n"
+            "            .map(|v| if (1..=512).contains(&v) { v as usize } else { 20 })\n"
+            "            .unwrap_or(20)",
+        )],
+        cmd=["node", "scripts/check-ble-constants.mjs"],
+        cwd=ROOT,
+        expect_fail_hint="找不到对规范换算的调用",
+        tags=["ble", "android", "new-guards"],
+    ),
 ]
 
 

@@ -42,10 +42,19 @@
  *        子串匹配一样会误伤。
  *      · 不 grep 全文件的裸数字（`512 * 1024` 是合法的消息上限，不是这个概念的重复）。
  *
+ * **C. 三个外设平台必须委托给规范换算** —— macOS / Windows / Android 三个外设文件里
+ *    必须出现对 `att_payload_budget(` 或 `notify_payload_budget(` 的调用（注释里提到不算）。
+ *
+ *    为什么单列：A/B 都只盯"定义"，而 2026-09-16 真实漏掉的那处是**把换算内联进平台实现**
+ *    （Android 的 `payload_mtu` 自己写 `if (1..=512).contains(&v) { v } else { 20 }`）——
+ *    它既没重新定义常量（逃过 B），也不是"重新实现具名函数"（逃过 A）。
+ *    只有"这个文件必须出现规范调用"这一层能拦住它。发现它的正是 Phase 4 引入的
+ *    Android `cargo check`（它比 `cargo test` 更容易看见这类只在某一平台编译的重复）。
+ *
  * ## 本脚本**不**保证的（诚实边界）
  *
- * 它拦不住"把换算内联写成表达式"（例如别处写 `mtu - 3`）。那类只能靠 review；
- * 硬扫会误伤到不能用。这条边界是有意留下的，不是漏掉。
+ * 它拦不住"把换算内联成表达式"（例如别处写 `mtu - 3`、或 C 判据之外的普通函数里写区间判断）。
+ * 那类只能靠 review；硬扫会误伤到不能用。这条边界是有意留下的，不是漏掉。
  *
  * ## 用法
  *
@@ -200,6 +209,47 @@ for (const rel of BLE_DOMAIN_FILES) {
 if (bFindings === 0) {
   console.log(`  ✓ BLE 领域的 ${BLE_DOMAIN_FILES.length} 个文件里没有匿名重述`);
 }
+
+// ---------------- 判据 C：三个外设平台必须委托给规范换算 ----------------
+//
+// 为什么单列一条：判据 A/B 都只盯"定义"，而 2026-09-16 真实漏掉的那处是
+// **把换算内联进一个平台的实现里**（Android 的 `payload_mtu` 自己写
+// `if (1..=512).contains(&v) { v } else { 20 }`）—— 它既没有重新定义常量（逃过判据 B），
+// 也没有重复实现具名函数（逃过判据 A）。只能在"这个文件必须出现规范调用"这一层拦。
+console.log("\n判据 C：三个外设平台必须委托给规范换算（不许自己算一遍）");
+const PERIPHERALS = [
+  "transport/bluetooth_peripheral.rs",
+  "transport/bluetooth_peripheral_windows.rs",
+  "transport/ble_android.rs",
+];
+const CANONICAL_CALLS = ["att_payload_budget(", "notify_payload_budget("];
+let cFindings = 0;
+for (const rel of PERIPHERALS) {
+  const f = byRel.get(rel);
+  if (!f) {
+    ok = false;
+    console.error(`  ✗ 清单里的文件不存在：${rel}（被改名/删除了？请同步本脚本）`);
+    continue;
+  }
+  const lines = readFileSync(f.abs, "utf8").split("\n");
+  const hit = lines.some(
+    (ln) => !ln.trim().startsWith("//") && CANONICAL_CALLS.some((c) => ln.includes(c)),
+  );
+  if (hit) {
+    console.log(`  ✓ ${rel} —— 已委托给规范换算`);
+  } else {
+    cFindings++;
+    ok = false;
+    console.error(
+      `  ✗ ${rel} 里找不到对规范换算的调用（${CANONICAL_CALLS.join(" 或 ")}）\n` +
+        `      外设侧必须调 ble_framing 的换算，不许自己写区间/if 判断 ——\n` +
+        `      2026-09-16 Android 侧就是这么漏掉的：它自己写 if (1..=512) { v } else { 20 }，\n` +
+        `      硬编码 512/20（既逃过判据 B，也不算"重新实现具名函数"而逃过判据 A），\n` +
+        `      并且放行了 1..=6 这类**装不下分片头**的值 ⇒ fragment 拒绝一切、整条链路发不出消息。`,
+    );
+  }
+}
+if (cFindings === 0) console.log(`  ✓ ${PERIPHERALS.length} 个外设平台都已委托`);
 
 // ---------------- 汇总 ----------------
 if (ok) {

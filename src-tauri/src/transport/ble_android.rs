@@ -212,11 +212,21 @@ pub fn start() -> Result<PeripheralStart, String> {
 }
 
 impl PeripheralWriter {
-    /// 该对端一次通知能收多少字节（未知 ⇒ 20，与 macOS 侧同口径）。
+    /// 该对端一次通知能收多少字节（未知 ⇒ 默认载荷预算 20）。
+    ///
+    /// 换算交给 [`ble_framing::notify_payload_budget`] —— **三个外设平台（macOS / Windows /
+    /// Android）共用同一份**。此处只负责把 Kotlin 返回的 `i32` 安全地转成 `usize`。
+    ///
+    /// ⚠️ 2026-09-16 修正：本函数此前**自己算一遍**（`if (1..=512).contains(&v) { v } else { 20 }`，
+    /// 并硬编码 `512` / `20`），注释还写着「与 macOS 侧同口径」—— 那句话不成立，而且它
+    /// 的有效性判据 `1..=512` 是**错的**：`payloadMtu = 3` 会被原样接受 ⇒
+    /// `fragment(payload, 3, _)` 因「装不下 6 字节分片头」直接返回 `None` ⇒
+    /// **整条链路什么都发不出去**，而日志只说"帧无法分片"。规范函数要求 ≥ 分片头+1（7），
+    /// 否则退回默认 20 —— 所以这条路是「返回过小值让 `fragment` 拒绝一切」的活样本。
+    /// 由 `scripts/check-ble-constants.mjs` 守门。
     pub fn payload_mtu(&self, central: &str) -> usize {
-        call_static_int("payloadMtu", central)
-            .map(|v| if (1..=512).contains(&v) { v as usize } else { 20 })
-            .unwrap_or(20)
+        let raw = call_static_int("payloadMtu", central).unwrap_or(0);
+        ble_framing::notify_payload_budget(usize::try_from(raw).unwrap_or(0))
     }
 
     /// 对端是否还连着。
