@@ -147,8 +147,32 @@ fn resolve_bind_ip(
             find_lan().ok_or("auto mode: no eligible LAN interface found".to_string())?;
         Ok((lan_ip, Some(bc)))
     } else {
-        Ok((ip, None))
+        // ⚠️ **手动选网卡时也必须算出子网广播地址**。
+        //
+        // 此前这里直接返回 `None`，于是 `broadcast()` 只发 limited broadcast
+        // （255.255.255.255）—— 而它在 macOS 上会失败（socket 绑定到具体网卡 IP 时
+        // 返回 EHOSTUNREACH）。真机日志：每轮 `broadcast_error: No route to host`，
+        // 且**从未出现子网广播**（因为根本没算）⇒ 本机在局域网上发不出声，
+        // 对端只能靠蓝牙找过来。表现是「局域网只通一半」：我收得到别人，别人找不到我。
+        Ok((ip, broadcast_for_ip(ip)))
     }
+}
+
+/// 取指定本机 IP 所在网卡的**子网广播地址**（如 `192.168.31.255`）。
+///
+/// macOS 上这是唯一能用的广播目标：socket 绑定到具体网卡 IP 时，
+/// 向 limited broadcast（255.255.255.255）发送会返回 EHOSTUNREACH。
+/// 找不到匹配网卡时返回 None，调用方回落到 limited broadcast（Windows 需要它）。
+fn broadcast_for_ip(ip: Ipv4Addr) -> Option<Ipv4Addr> {
+    let ifs = if_addrs::get_if_addrs().ok()?;
+    for i in &ifs {
+        if let if_addrs::IfAddr::V4(v4) = &i.addr {
+            if v4.ip == ip {
+                return v4.broadcast;
+            }
+        }
+    }
+    None
 }
 
 fn now_ms() -> i64 {

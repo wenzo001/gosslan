@@ -4405,6 +4405,16 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
             if env.target.as_deref() == Some(state.device_id.as_str()) {
                 let from = env.sender_id.clone();
                 let name = resolve_nickname(state, &from);
+                // 幂等判据：**这一次是否真的"从不是好友变成好友"**。
+                //
+                // FriendAccept 没有 ACK 机制，发送方会持续补发（见 `补发好友同意回执`）——
+                // 而本分支原先没有任何去重：`add_friend` 是幂等的，但**通知与留痕每次都会执行**
+                // ⇒ 用户被"好友申请已通过"反复刷屏（真机日志里同一秒内三次）。
+                // 同时它也是"单方面成功"的观感来源：一方在无限重发，另一方被反复打扰。
+                let was_friend = {
+                    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                    db::get_friend(&dbc, &from).is_some()
+                };
                 {
                     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                     db::add_friend(&dbc, &from, &name, None).ok();
@@ -4421,14 +4431,22 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                     }
                 }
                 forget_pending_request(state, &from);
+                // emit 每次都发：前端 store 只是据此重拉好友列表（幂等），
+                // 而漏发会让「首次那个 emit 恰好没被界面收到」时界面永远不刷新。
                 let _ = state.app.emit("friend-accepted", &from);
-                // 留痕：跨跳好友同意是落库（friends 表）+ 内存态，日志便于 headless 观测。
-                state.logger.info("friend", format!("收到跨跳好友同意 peer={from}"));
-                let _ = crate::notifications::show_if_enabled(
-                    state,
-                    "好友申请已通过",
-                    &format!("{name} 已成为你的好友"),
-                );
+                if was_friend {
+                    // 重复投递：只留一行便于排查的痕迹，**不通知**。
+                    state
+                        .logger
+                        .info("friend", format!("重复的好友同意（已忽略）peer={from}"));
+                } else {
+                    state.logger.info("friend", format!("收到跨跳好友同意 peer={from}"));
+                    let _ = crate::notifications::show_if_enabled(
+                        state,
+                        "好友申请已通过",
+                        &format!("{name} 已成为你的好友"),
+                    );
+                }
             }
         }
         GossipKind::ChatAck => {
