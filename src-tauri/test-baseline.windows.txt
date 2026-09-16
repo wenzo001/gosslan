@@ -176,13 +176,6 @@ logging::tests::format_utc_epoch_and_known_dates
 logging::tests::logger_clear_empties_memory
 logging::tests::logger_memory_ring_buffer_is_bounded
 logging::tests::logger_persists_to_file_and_rotates
-macos_bookmark::tests::bookmark_to_a_deleted_directory_fails_cleanly
-macos_bookmark::tests::create_then_resolve_returns_the_same_directory
-macos_bookmark::tests::garbage_bookmark_is_an_error_not_a_panic
-macos_bookmark::tests::plain_bookmark_really_round_trips
-menu::tests::every_label_is_present_in_both_languages
-menu::tests::initial_lang_uses_only_explicit_preference
-menu::tests::parse_maps_locale_tags
 mesh::connection::tests::health_failure_threshold
 mesh::connection::tests::health_marks_seen_and_resets_failures
 mesh::connection::tests::health_timeout_threshold_is_inclusive
@@ -388,6 +381,7 @@ network::transport::tests::should_dial_smaller_id_waits_within_threshold
 network::transport::tests::stale_generation_is_rejected
 network::transport::tests::start_stop_start_accept_loop_keeps_serving
 network::transport::tests::successful_flush_clears_pending
+network::transport::tests::windows_abortive_close_allows_immediate_rebind
 network::transport::tests::writer_failure_preserves_pending_for_read_receipt
 nickname::tests::base36_is_zero_padded_and_uppercase
 nickname::tests::default_nickname_is_deterministic_and_looks_right
@@ -494,7 +488,6 @@ user_dirs::tests::bookmark_wins_over_the_stored_path
 user_dirs::tests::broken_bookmark_falls_back_to_the_stored_path
 user_dirs::tests::corrupted_bookmark_is_cleared_and_path_still_used
 user_dirs::tests::empty_resolved_path_is_not_accepted
-user_dirs::tests::moved_directory_is_followed_through_the_bookmark
 user_dirs::tests::nothing_configured_stays_none
 user_dirs::tests::store_then_load_returns_the_same_directory_in_both_modes
 user_dirs::tests::the_two_user_directories_do_not_interfere

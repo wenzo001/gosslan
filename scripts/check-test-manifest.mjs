@@ -230,6 +230,18 @@ function checkRust() {
     console.warn("  跑 `node scripts/check-test-manifest.mjs --update` 把它们纳入。");
   }
 
+  // 「缺名」与「多名」同时出现，最常见的成因是**换了平台**（平台门控的 #[cfg] 变了）：
+  // 一部分用例在本平台不编译、另一部分只在平台编译。这时直接给出可照做的结论，
+  // 免得再猜一轮 —— 2026-09-16 引导 Windows 基线时就是这么来回跑了两轮 CI 的。
+  if (missing.length > 0 && added.length > 0) {
+    console.error("");
+    console.error(
+      `  ⇒ 若这是**平台差异**（而不是漏跑）：本平台基线 = 当前基线 ` +
+        `去掉上面 ${missing.length} 条、加上上面 ${added.length} 条 ⇒ ` +
+        `${baseline.length - missing.length + added.length} 条。`,
+    );
+  }
+
   if (ok) {
     console.log(
       `✓ Rust 测试清单：基线 ${baseline.length} 条全部在跑` +
