@@ -329,7 +329,21 @@ pub async fn broadcast_gossip(state: &AppState, envelope: GossipEnvelope) {
         // await，`handle_gossip` 又由 reader_loop 调用 ⇒ **另一个对端的读循环被卡住**，
         // 它后续的帧（含心跳）全部排队，最终被判不健康而拆链。
         // 即"一条拥塞链路伪造出全网链路故障"。口径与 `send_over_order` 一致。
-        let _ = tokio::time::timeout(SEND_QUEUE_FULL_TIMEOUT, tx.send(msg.clone())).await;
+        // 超时即丢弃该 peer 的这条 gossip（其 outbox 会在下次心跳/Hello 时补发）。
+        // **必须留痕**：这条路径原先完全静默，真机排查「发出去但对方收不到」时不可观测。
+        // 限频（每 30s 一条）避免拥塞时刷屏。
+        if tokio::time::timeout(SEND_QUEUE_FULL_TIMEOUT, tx.send(msg.clone()))
+            .await
+            .is_err()
+        {
+            if log_throttled("gossip_drop", 30_000) {
+                state.logger.warn(
+                    "transport",
+                    "gossip 扇出队列满，丢弃本条（对方 outbox 会补发；持续出现说明该链路拥塞）"
+                        .to_string(),
+                );
+            }
+        }
     }
 }
 
@@ -1804,7 +1818,36 @@ fn note_direct_link(state: &AppState, peer_id: &str, path_kind: PathKind) {
 /// Phase 2 建立的「任一 Connection 健康 ⇒ Online」才有真实连接数据支撑。
 /// 公钥在此刻可能尚未学到（拨号侧），留空即可 —— 收到 Hello / announce 后由
 /// `PeerIdentity::merge_missing` 补齐（只补空、不覆盖）。
+/// 日志限频：同一个 key 每 `min_interval_ms` 最多放行一次。
+///
+/// 用**模块级静态**而不是 `AppState` 字段：它只服务日志，不值得为一个诊断辅助
+/// 引入新的、需要清理的可增长状态。key 全是编译期字面量 ⇒ 表的规模天然有界。
+fn log_throttled(key: &'static str, min_interval_ms: i64) -> bool {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static LAST: OnceLock<Mutex<HashMap<&'static str, i64>>> = OnceLock::new();
+    let now = crate::db::now_ms();
+    let mut m = LAST
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    match m.get(key) {
+        Some(&t) if now - t < min_interval_ms => false,
+        _ => {
+            m.insert(key, now);
+            true
+        }
+    }
+}
+
 pub(crate) fn register_connection(state: &AppState, peer_id: &str, endpoint: MeshEndpoint, path_kind: PathKind) {
+    // 建链成功：排查真机连接问题（"什么时候连上的、走的哪条通道"）的第一手信息。
+    // 在此之前网络层**完全没有**建链日志 —— 用户报「一会儿在线一会儿不在线」时，
+    // 无从判断是哪条通道在反复建立/断开。
+    state.logger.info(
+        "link",
+        format!("建链 peer={peer_id} path={} ep={endpoint:?}", path_kind.as_str()),
+    );
     let identity = {
         let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
         peers
@@ -6376,6 +6419,11 @@ pub async fn touch_peer(state: &AppState, device_id: &str) {
 /// "在线"不再靠"在不在节点表里"判定 —— 见 `commands::friend_is_online`
 /// （那条 presence 判据正是 2026-09-12 复核抓到的"连过又掉线 ⇒ 永久在线"的 High 缺陷来源）。
 pub(crate) async fn mark_peer_offline(state: &Arc<AppState>, device_id: &str) {
+    // 掉线：与「建链」配对，是判断「真离线」还是「被误清」的关键。
+    // 注意它与 sweep_peers 的超时清理是**两条不同的路径**，只有日志能区分。
+    state
+        .logger
+        .info("link", format!("掉线 peer={device_id}（链路断开）"));
     // 链路快照必须立刻失效：`conv_link` 记的是"当前可达路径"，链路没了路径就没了。
     // 不清掉的话，聊天头部的链路徽标会在离线后继续显示（用户 2026-09-12 反馈的
     // 「离线却显示『桥接 1』」）。

@@ -645,6 +645,15 @@ fn sweep_peers(state: &AppState) {
     // 节点已不在 peers 表 ⇒ 该路径失效）。否则聊天头部的链路徽标会在节点早已被清扫后
     // 继续显示历史路径（用户 2026-09-12 反馈的「离线却显示『桥接 1』」）。
     let changed = !removed.is_empty();
+    // 超时清理：与「掉线」（mark_peer_offline）是**两条不同路径**，只有日志能区分。
+    // 45s 超时清掉的节点在界面上同样表现为"离线"，但原因完全不同
+    // （前者是链路断了，后者是我们没再收到它的 announce/Presence）。
+    if !removed.is_empty() {
+        state.logger.info(
+            "link",
+            format!("超时清理 {} 个节点：{}", removed.len(), removed.join(",")),
+        );
+    }
     for id in removed {
         crate::network::transport::clear_conv_link(state, &id);
         // 连带清掉按 device_id 索引的内存表：它们原先只在「删好友」时清，
