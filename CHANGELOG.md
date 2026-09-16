@@ -10,6 +10,103 @@
 
 ## [Unreleased]
 
+## [4.18.9] - 2026-09-16
+
+### Fixed (BLE 每片 514 字节 > AOSP 硬上限 512 ⇒ 多分片帧永远发不出去)
+
+**查证过程（按用户要求：不猜，先查源码再改）**。
+
+前两次都是猜的，第二次方向对但**幅度不够**，而且**改错了地方**（只改了日志变量，
+`-3` 从未作用于真正的分片）。这次直接读 AOSP 源码
+`android-35/.../bluetooth/BluetoothGatt.java`：
+
+```java
+private static final int GATT_MAX_ATTR_LEN = 512;      // L101
+public int writeCharacteristic(BluetoothGattCharacteristic c, byte[] value, int writeType) {
+    if (value.length > GATT_MAX_ATTR_LEN) {            // L1562
+        throw new IllegalArgumentException(
+            "value should not be longer than max length of an attribute value");
+```
+
+**这个上限是硬编码常量，与协商 MTU 完全无关。**
+
+而本项目的分片预算是 `att_payload_budget(peripheral.mtu())` = `mtu - 3`。
+**btleplug 在 Android 上 `Peripheral::mtu()` 返回的是请求值 517**（不是协商结果）
+⇒ `517 - 3 = 514 > 512` ⇒ 每片 514 字节**必被框架抛异常**。
+
+对照真机日志，症状完全吻合：
+
+| 帧 | 分片 | 每片字节 | 对比 512 | 结果 |
+|---|---|---|---|---|
+| 聊天 272B | 1 片 | 272 | ≤ 512 | ✅ 正常 |
+| 好友申请 738B | 2 片 | **514** | **> 512** | ❌ 永远失败 → 重试 4 次 → 拆链重连 |
+
+**修法**：在**唯一的换算点** `att_payload_budget()` 里封顶到 512
+（外设侧原本就已有 `(1..=512)` 的封顶，所以 Mac 侧一直正常 —— 这也解释了为什么
+只有安卓→Mac 方向失败）。
+
+**同时撤掉上一版加在日志变量上的 `-3`** —— 它只让日志显示 511、分片实际仍是 514，
+属于"让日志说谎"的改动。
+
+护栏：`att_payload_budget(517) == 512`、`(1024) == 512`、`(515) == 512`
+（既有断言 23→20 / 185→182 / 4→1 均低于上限，不受影响）。
+
+验证：cargo test --lib 480 passed · scripts/e2e-dev.sh 30 passed / 0 failed。
+
+## [4.18.8] - 2026-09-16
+
+### Fixed (BLE 写入失败日志补上帧长 —— 上一版修复生效但不够，先让它可精确诊断)
+
+**4.18.7 的 `payload_mtu() - 3` 已确认生效**：真机日志里两侧的分片预算从 514/512 降到
+**511/509**。**但写入仍然失败**：安卓（central）侧 `FriendRequest`（738B / 2 片）依然报
+`value should not be longer than max length of an attribute value`。
+
+也就是说 `MTU - 3` 仍不是真正的上限。而现有日志只写「写失败」+ 错误串，**看不出
+"到底写了多少字节"**，无法判断是分片仍偏大、还是别的原因（例如对端特征的声明长度）。
+
+本次只做一件事：**在写失败日志里补上帧长**（`帧长={ bytes.len() }`）。纯诊断、零行为改动。
+下一次真机日志就能直接给出「写了多少字节失败」，从而精确定位差多少 ——
+而不是再猜一次数字。
+
+**为什么不再猜一次**：本次 BLE 问题我已经猜错两次（先怀疑广播地址、再怀疑分片尺寸），
+第二次虽然方向对（确实少了 ATT 头）但幅度不够。继续盲调数字既不可靠，
+也可能把已经能用的单分片路径弄坏 —— 先把度量补上，再按数据改。
+
+验证：cargo test --lib 480 passed。
+
+## [4.18.7] - 2026-09-16
+
+### Fixed (BLE 分片预算没减 ATT 头 ⇒ 多分片帧写不出去，"好友申请永远发不出")
+
+**用户真机症状**：蓝牙连着、加好友对方也同意了，但发起方列表里始终没有对方；
+打开局域网后**立刻**就加上了；随后关掉局域网，蓝牙**又能聊天**（只是慢）。
+
+**日志给出了决定性对比**：
+
+| 帧 | 大小 | 分片 | 结果 |
+|---|---|---|---|
+| `FriendRequest` / `FriendAccept` | 738 B | **2 片** | ❌ 发不出去 |
+| `chat_message` | 272–284 B | **1 片** | ✅ 正常 |
+
+「关掉局域网后蓝牙还能聊」正是这条对比的另一半：**不是蓝牙不能聊，是超过一片的帧写不进去**。
+
+**根因**：`mtu_budget = writer.payload_mtu()`。btleplug 在 Android 上返回的是
+**协商到的 ATT MTU 本身**（日志里 514），而 GATT 单次写入的真实上限是 `MTU - 3`
+（3 字节 ATT 头 = 511）。代码自己的注释早就写着「每片有效载荷 = MTU-3-6」，
+**但实现里没减那 3**。
+
+于是每片写 514B > 511B 上限 → `value should not be longer than max length of an
+attribute value` → 重试 4 次 → 拆链重连（这正是那个反复拆链循环的来源）。
+单分片帧只有 278B，**远低于上限，所以一直正常** —— 掩盖了问题，直到有超过一片的帧。
+
+**修法**：`payload_mtu().saturating_sub(3)`（central 与外设侧两处，同口径）。
+macOS 上 `payload_mtu()` 已是正确值，再减 3 只会让分片略小（无害）。
+
+**这一条同时解释了之前所有症状**：好友申请发不出、单方面成功、反复拆链重连、
+蓝牙下"能聊但慢"（慢是因为大帧全部重试失败）。
+
+验证：cargo test --lib 480 passed · scripts/e2e-dev.sh 30 passed / 0 failed。
+
 ## [4.18.6] - 2026-09-16
 
 ### Fixed (好友申请无限重发 —— 登记只在「收到回执」时解除，而回执可能永远送不到)

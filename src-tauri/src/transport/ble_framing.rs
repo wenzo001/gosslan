@@ -70,12 +70,30 @@ pub fn att_payload_budget(negotiated: u16) -> usize {
     /// ATT 头：1 字节 opcode + 2 字节句柄。
     const ATT_HEADER_LEN: usize = 3;
 
+    /// AOSP `BluetoothGatt.GATT_MAX_ATTR_LEN`：`writeCharacteristic` 对 **value 长度**
+    /// 的硬上限，**与协商 MTU 无关**。
+    ///
+    /// 源码依据（android-35 `android/bluetooth/BluetoothGatt.java`）：
+    /// ```java
+    /// private static final int GATT_MAX_ATTR_LEN = 512;      // L101
+    /// public int writeCharacteristic(BluetoothGattCharacteristic c, byte[] value, int writeType) {
+    ///     if (value.length > GATT_MAX_ATTR_LEN) {            // L1562
+    ///         throw new IllegalArgumentException(
+    ///             "value should not be longer than max length of an attribute value");
+    /// ```
+    ///
+    /// 为什么必须在这里封顶：btleplug 在 Android 上 `Peripheral::mtu()` 返回的是
+    /// **请求值（517）**而不是协商结果 ⇒ `517 - 3 = 514 > 512` ⇒ 每片 514 字节的写入
+    /// 直接被框架抛异常。表现是**单分片帧（如 272B 聊天）正常、多分片帧（如 738B
+    /// 好友申请）永远发不出去**，并触发重试 4 次后拆链重连。
+    const GATT_MAX_ATTR_LEN: usize = 512;
+
     let mtu = if (negotiated as usize) <= ATT_HEADER_LEN {
         BLE_DEFAULT_MTU
     } else {
         negotiated
     };
-    mtu as usize - ATT_HEADER_LEN
+    (mtu as usize - ATT_HEADER_LEN).min(GATT_MAX_ATTR_LEN)
 }
 
 /// 单条 BLE 消息的字节上限。
