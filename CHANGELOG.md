@@ -10,6 +10,35 @@
 
 ## [Unreleased]
 
+### Fixed (CI 首次跑测试就红：一条广播测试在 runner 上必然失败 —— 2026-09-16)
+
+**这是本项目第一次在 CI 里跑 `cargo test`，结果是 502 通过 / 1 失败。**
+红的那条与门禁本身无关，是它**在 CI 环境里本来就不可能通过**：
+
+```text
+test network::discovery::tests::discovery_recv_socket_actually_receives_broadcast ... FAILED
+    panicked at src/network/discovery.rs:985
+test result: FAILED. 502 passed; 1 failed
+```
+
+它是 2026-09-12 真机事故（「Mac 与手机同 Wi‑Fi 却互相搜不到」）的回归护栏，做一次
+**真实的 UDP 广播收发**。原先的通吃条件是"没有可用 LAN 接口就跳过（纯 CI/容器）"——
+但 GitHub 的 macOS runner **有** LAN 接口（`find_lan_interface()` 返回 `Some`），
+却收不到自己发的 `255.255.255.255`，于是没跳过、直接 panic。
+
+**修法**：把跳过条件从"有没有接口"升级为"这个环境能不能做本机广播"，用**证据**判定 ——
+新增 `loopback_broadcast_works()`，收端**硬编码绑 `0.0.0.0`**（不是
+`discovery_recv_bind_ip()`）。这个解耦是刻意的：探测必须与"被测代码的绑定选择"无关，
+否则它区分不了"环境不支持广播"与"我们把绑定写错了"；拿已知正确的绑定去问环境，
+失败就只可能是环境问题，**绝不会掩盖真正的回归**。
+
+没有采用"检测到 `CI` 环境变量就跳过"：那会把碰巧跑在 CI 上的真机也一起漏掉。
+
+**非空转验证**（按项目纪律）：把 `discovery_recv_bind_ip()` 改成 `Ipv4Addr::LOCALHOST`
+（模拟事故原形态）⇒ 测试立刻红，并打出原始提示
+「接收 socket（bind=127.0.0.1）收不到 255.255.255.255 广播」；恢复即绿。
+本地（能广播）该测试**真的执行断言**（`--nocapture` 下无跳过信息），不是被探测误跳过。
+
 ### Changed (门禁：分支推送也触发 CI，按分支名去重 —— 2026-09-16)
 
 原先 `verify.yml` 只挂 `pull_request` + `push: [main]`，于是**推一条分支上去什么都不会跑** ——

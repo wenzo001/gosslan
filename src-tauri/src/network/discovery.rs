@@ -954,6 +954,43 @@ mod tests {
         assert!(lan_bc.is_none());
     }
 
+    /// 探测「本机能不能完成一次 `255.255.255.255` 的本机广播收发」。
+    ///
+    /// ⚠️ 收端**硬编码绑 `0.0.0.0`**，而不是 `discovery_recv_bind_ip()` —— 这是刻意的：
+    /// 探测必须与「被测代码的绑定选择」**解耦**，否则它区分不了"环境不支持广播"与
+    /// "我们把绑定写错了"。拿 `0.0.0.0` 这个**已知正确**的绑定去问环境，答案才可信；
+    /// 于是它失败只可能是环境问题，绝不会掩盖真正的回归。
+    fn loopback_broadcast_works(lan_ip: Ipv4Addr) -> bool {
+        use std::net::UdpSocket as StdUdpSocket;
+
+        let Ok(recv) = StdUdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)) else {
+            return false;
+        };
+        let Ok(port) = recv.local_addr().map(|a| a.port()) else {
+            return false;
+        };
+        if recv
+            .set_read_timeout(Some(std::time::Duration::from_millis(1500)))
+            .is_err()
+        {
+            return false;
+        }
+        let Ok(send) = StdUdpSocket::bind((lan_ip, 0)) else {
+            return false;
+        };
+        if send.set_broadcast(true).is_err() {
+            return false;
+        }
+        if send
+            .send_to(b"gosslan-discovery-probe", (Ipv4Addr::BROADCAST, port))
+            .is_err()
+        {
+            return false;
+        }
+        let mut buf = [0u8; 64];
+        matches!(recv.recv_from(&mut buf), Ok((n, _)) if &buf[..n] == b"gosslan-discovery-probe")
+    }
+
     /// **真机根因的回归护栏**：接收 socket 必须真的收得到 `255.255.255.255` 广播。
     ///
     /// 2026-09-12 用户真机：「Mac 和手机同一个 Wi‑Fi、都开了局域网，却互相搜不到；
@@ -965,7 +1002,11 @@ mod tests {
     /// 发送方绑本机 LAN IP 并往 `255.255.255.255` 发。把接收绑定改回具体 IP，
     /// 它在 macOS 上会立刻红 —— 也就是这次事故会当场被拦下。
     ///
-    /// 没有可用 LAN 接口时（纯 CI/容器）直接跳过：这种环境里本来也测不了广播。
+    /// 两类环境下跳过（都测不了，不该误报）：① 没有可用 LAN 接口（纯容器）；
+    /// ② **有接口但本机收不到自己的广播** —— GitHub 的 macOS runner 就是这种
+    /// （2026-09-16 本项目第一次在 CI 跑测试，502 通过 / 1 失败、红的正是这条）。
+    /// 跳过条件由 [`loopback_broadcast_works`] 用证据判定，而不是看 `CI` 环境变量 ——
+    /// 后者会把"碰巧跑在 CI 上的真机"也一起漏掉。
     #[test]
     fn discovery_recv_socket_actually_receives_broadcast() {
         use std::net::UdpSocket as StdUdpSocket;
@@ -973,6 +1014,16 @@ mod tests {
         let Some((lan_ip, _)) = find_lan_interface() else {
             return;
         };
+
+        if !loopback_broadcast_works(lan_ip) {
+            eprintln!(
+                "跳过 discovery_recv_socket_actually_receives_broadcast：\
+                 本环境有 LAN 接口但收不到本机 255.255.255.255 广播（CI 容器常见），\
+                 无法验证接收绑定。这条护栏的有效场景是真机与本地开发。"
+            );
+            return;
+        }
+
         let recv = StdUdpSocket::bind((discovery_recv_bind_ip(), 0))
             .expect("绑定接收 socket 失败");
         let port = recv.local_addr().expect("取接收端口失败").port();
