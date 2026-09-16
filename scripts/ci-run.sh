@@ -56,9 +56,12 @@ fi
   df -h . 2>/dev/null | tail -1
   echo "---- 关键行（test result / error / failures / panic / 信号 / 本仓库脚本的失败标记）----"
   grep -E 'test result:|^error|^failures:|^---- |FAILED|panicked|SIGKILL|signal|Caused by|No space|✗|❌' \
-    "${log}" | tail -20
-  echo "---- 输出最后 5 行 ----"
-  tail -n 5 "${log}"
+    "${log}" | tail -10
+  # ⚠️ 结尾**逐字**保留 25 行：脚本类失败（清单守卫、护栏）的诊断**常常是"标题行 + 缩进列表"**，
+  #    只靠上面的 grep 会只剩标题、把列表整段丢掉 —— 2026-09-16 引导 Windows 基线时踩到：
+  #    拿到「基线里的 8 条用例没有跑」，但那 8 个名字一个都没看到，白跑一轮 CI。
+  echo "---- 输出最后 25 行（逐字，脚本类失败的列表在这里）----"
+  tail -n 25 "${log}"
 } > "${log}.diag" 2>/dev/null
 
 cat "${log}.diag"
