@@ -527,11 +527,21 @@ CASES: list[Case] = [
     ),
     Case(
         name="焦点可见（outline-none 必须有自己的焦点指示）",
-        why="全局焦点环写在 `:where()` 里（特异性 0），会被 `.outline-none` 静默覆盖",
-        file=ROOT / "src" / "components" / "chat" / "MessageComposer.vue",
+        why="全局焦点环写在 `:where()` 里（特异性 0），会被 `.outline-none`（特异性 0,1,0）"
+        "静默覆盖 —— 7 处输入框（含最高频的消息输入框）因此完全没有焦点指示，"
+        "而代码看起来「有全局规则在管」（真实缺陷 2026-09-12）。"
+        "⚠️ 2026-09-16 换了注入点：原先注入 `MessageComposer.vue`，而该文件后来因用户要求"
+        "（消息输入框不画焦点环）加了**文件级** `focus-ring-ok` 逃生阀 ⇒ 整个文件被跳过、"
+        "本用例退化成空转（改坏也不报，2026-09-16 由 verify-guards 全量跑发现）。"
+        "改注入 `TitleBar.vue` 的关闭按钮：未被豁免，且它是**键盘可聚焦的 button** —— "
+        "正是这条护栏真正要保护的场景（键盘用户看不到焦点在哪）。"
+        "MessageComposer.vue 整文件失去本条覆盖的问题，另行按元素级逃生阀处理。",
+        file=ROOT / "src" / "components" / "TitleBar.vue",
         injections=[(
-            "leading-normal whitespace-pre-wrap",
-            "leading-normal outline-none whitespace-pre-wrap",
+            "flex w-11 items-center justify-center text-[var(--gosslan-rail-text)] "
+            "transition hover:bg-[var(--gosslan-danger)] hover:text-white",
+            "flex w-11 items-center justify-center text-[var(--gosslan-rail-text)] "
+            "transition hover:bg-[var(--gosslan-danger)] hover:text-white outline-none",
         )],
         cmd=npm("test"),
         cwd=ROOT,
@@ -1510,10 +1520,14 @@ CASES: list[Case] = [
         name="CHANGELOG 结构（[Unreleased] 锚点缺失/顺序错乱必须报出）",
         why="发布脚本按行首 `## [Unreleased]` 插入新小节。真实事故：它以前用 includes+replace "
         "找锚点，正文里出现同样文字就被误命中 ⇒ 4.1.1~4.1.11 全被插进 4.1.0 小节的半句话里、"
-        "真正的锚点被吞掉（不报错、不影响功能，只有结构检查能拦住）",
+        "真正的锚点被吞掉（不报错、不影响功能，只有结构检查能拦住）。"
+        "⚠️ 2026-09-16 修正：本用例原先拿 `npm run version:check` 当命令，而那条命令的 ①②"
+        "（版本必须 ≥ 未发布提交要求的、每个提交要有自洽的 Version-Bump 声明）在**攒提交期间"
+        "本来就该是红的** ⇒ 本用例永远进不了『恢复即 PASS』、被判成护栏失效。"
+        "改成只跑结构检查的 `version:changelog`：结构是结构、记账是记账。",
         file=ROOT / "CHANGELOG.md",
         injections=[("## [Unreleased]\n", "## [unreleased]\n")],
-        cmd=npm("run", "version:check"),
+        cmd=npm("run", "version:changelog"),
         cwd=ROOT,
         expect_fail_hint="[Unreleased]",
         tags=["frontend", "version", "docs"],

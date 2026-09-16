@@ -33,6 +33,7 @@
     "multi:run": "powershell -ExecutionPolicy Bypass -File scripts/run-multi-instance.ps1",
     "android:build:test": "bash scripts/build-android-releases.sh --debug",
     "version:check": "node scripts/semver.mjs check",
+    "version:changelog": "node scripts/semver.mjs changelog",
     "version:classify": "node scripts/semver.mjs classify",
     "version:ledger": "node scripts/semver.mjs ledger --since main > docs/version-ledger.md",
     "version:release": "node scripts/semver.mjs release",
