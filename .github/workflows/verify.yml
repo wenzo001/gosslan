@@ -100,6 +100,21 @@ jobs:
       - name: 不变量例外守卫
         run: node scripts/check-invariant-exceptions.mjs
 
+      # 结构检查（唯一行首 `## [Unreleased]` 锚点 / 标题格式 / 新在前降序）。
+      # 注意用的是 `version:changelog` 而不是 `version:check`：后者的版本记账部分
+      # 在攒提交期间本来就该是红的，把它拉进来会让这一步周期性误报。
+      - name: CHANGELOG 结构
+        run: npm run version:changelog
+
+      # 护栏非空转验证的前端子集（约 1.5 分钟）。
+      #
+      # ⚠️ 这一步是**最该进 CI** 的：2026-09-16 发现「焦点可见」那条护栏因为
+      # MessageComposer.vue 加了文件级逃生阀而**退化成空转**（改坏也不报）——
+      # 护栏失效时不会有任何信号，只有把它跑起来才知道。此前的 92 条护栏全靠人工记得跑。
+      # 全量护栏（含 Rust 用例，要重编译，10 分钟以上）留给发布前手动跑 `npm run verify -- --full`。
+      - name: 护栏非空转（前端子集）
+        run: python3 scripts/verify-guards.py --only frontend
+
       # 不只是"为 Rust job 准备 dist"：前端构建本身失败也应当拦住这次 PR。
       - name: 前端构建
         run: npm run build
