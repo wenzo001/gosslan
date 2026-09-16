@@ -775,8 +775,11 @@ export const useChatStore = defineStore("chat", () => {
 
   /** 置顶/取消置顶一条群消息（任意成员；静默事件，由置顶条体现）。 */
   async function pinMessage(groupId: string, msgId: string, pinned: boolean) {
+    // ⚠️ **必须 enqueue 进 store**：置顶在界面上的呈现（顶部的置顶条）
+    // 是 `foldPinned(该会话的全部消息)` 折叠出来的 —— 事件不进 store，
+    // 折叠就看不到它，界面要等下次重新拉全量（= 重进会话）才刷新。
     const rec = await api.pinGroupMessage(groupId, msgId, pinned);
-    void rec;
+    enqueueMessage(rec);
   }
 
   /**

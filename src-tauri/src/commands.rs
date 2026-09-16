@@ -3090,7 +3090,7 @@ pub async fn pin_group_message(
     group_id: String,
     target: String,
     pinned: bool,
-) -> Result<(), String> {
+) -> Result<MessageRecord, String> {
     if target.is_empty() {
         return Err("缺少目标消息".to_string());
     }
@@ -3099,8 +3099,11 @@ pub async fn pin_group_message(
         pinned,
     };
     let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
-    send_group_payload(state.inner(), &group_id, "pin", content).await?;
-    Ok(())
+    // ⚠️ **必须把事件记录返回给前端**（与 `send_group_reaction` 同口径）。
+    // 置顶在界面上的呈现是 `foldPinned(该会话全部消息)` 折叠出来的 ——
+    // 事件不进前端 store，折叠就看不到它，界面要等重进会话重新拉全量才刷新。
+    // 此前这里返回 `()`，前端拿到了也无从 enqueue。
+    send_group_payload(state.inner(), &group_id, "pin", content).await
 }
 
 /// 撤回窗口：超过它就不再允许撤回。

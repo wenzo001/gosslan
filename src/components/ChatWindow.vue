@@ -313,6 +313,19 @@ const pinnedItems = computed(() => {
     .map((m) => ({ id: m.msg_id, text: previewText(m) }));
 });
 
+/**
+ * 一行里能显示几条置顶。**移动端只给 1 条** —— 一行放三个的话每个都被压成
+ * 省略号，等于三个都读不出来；桌面给 3 条。超出部分走 `+N` 展开。
+ */
+const visiblePinned = computed(() =>
+  app.isMobile ? pinnedItems.value.slice(0, 1) : pinnedItems.value.slice(0, 3),
+);
+/** 「+N」的就地展开态（切换会话时收起，避免把上一次的展开带过来）。 */
+const pinsExpanded = ref(false);
+watch(() => chat.activeConv, () => {
+  pinsExpanded.value = false;
+});
+
 /** 点置顶条：跳到那条消息（复用既有的定位机制）。 */
 function gotoPinned(msgId: string) {
   const convId = chat.activeConv;
@@ -678,25 +691,61 @@ function onLoadMore() {
       </button>
     </div>
 
-    <!-- 置顶条：钉钉/飞书同款位置（头部下方），点击跳到那条消息。
-         只显示**还能在本机找到的**置顶消息 —— 已被清空历史的不列，避免点了没反应。 -->
+    <!-- 置顶条：钉钉/飞书同款位置（头部下方）。
+         条数的**边界按端给**：移动端一行放不下三个（每个都会被压成省略号），只显示最近 1 条；
+         桌面最多 3 条。超出部分用 `+N` 就地展开成纵向列表（带滚动上限），
+         而不是挤在同一行 —— 否则置顶一多，置顶条自己就把消息区吃掉了。 -->
     <div
       v-if="isGroup && pinnedItems.length"
-      class="flex shrink-0 items-center gap-2 border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-chat)] px-4 py-1.5"
+      class="flex shrink-0 flex-col border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-chat)]"
     >
-      <Pin class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-text-2)]" aria-hidden="true" />
-      <button
-        v-for="p in pinnedItems.slice(0, 3)"
-        :key="p.id"
-        class="tap-safe min-w-0 flex-1 truncate rounded-[var(--gosslan-radius-sm)] px-1.5 py-0.5 text-left text-[12px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-        :title="p.text"
-        @click="gotoPinned(p.id)"
-      >
-        {{ p.text }}
-      </button>
-      <span v-if="pinnedItems.length > 3" class="shrink-0 text-[11px] text-[var(--gosslan-text-2)]">
-        +{{ pinnedItems.length - 3 }}
-      </span>
+      <div class="flex items-center gap-2 px-4 py-1.5">
+        <Pin class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-text-2)]" aria-hidden="true" />
+        <button
+          v-for="p in visiblePinned"
+          :key="p.id"
+          class="tap-safe group/pin flex min-w-0 flex-1 items-center gap-1 rounded-[var(--gosslan-radius-sm)] px-1.5 py-0.5 text-left text-[12px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]"
+          :title="p.text"
+          @click="gotoPinned(p.id)"
+        >
+          <span class="min-w-0 flex-1 truncate" :title="p.text">{{ p.text }}</span>
+          <!-- 就地取消置顶：不必先跳到原消息再右键（用户明确要求） -->
+          <span
+            class="hover-reveal-op flex h-4 w-4 shrink-0 items-center justify-center rounded-full opacity-0 transition group-hover/pin:opacity-100"
+            role="button"
+            :title="t('msg.unpin')"
+            :aria-label="t('msg.unpin')"
+            @click.stop="togglePin(p.id)"
+          >
+            <X class="h-3 w-3" />
+          </span>
+        </button>
+        <button
+          v-if="pinnedItems.length > visiblePinned.length"
+          class="tap-safe shrink-0 rounded-[var(--gosslan-radius-sm)] px-1.5 py-0.5 text-[11px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]"
+          @click="pinsExpanded = !pinsExpanded"
+        >
+          {{ pinsExpanded ? t("msg.pinCollapse") : `+${pinnedItems.length - visiblePinned.length}` }}
+        </button>
+      </div>
+      <!-- 展开态：纵向列出全部置顶，带高度上限（置顶再多也不会吃掉消息区） -->
+      <div v-if="pinsExpanded" class="max-h-32 overflow-y-auto px-4 pb-1.5">
+        <button
+          v-for="p in pinnedItems"
+          :key="`all-${p.id}`"
+          class="tap-safe flex w-full items-center gap-2 rounded-[var(--gosslan-radius-sm)] px-1.5 py-1 text-left text-[12px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]"
+          :title="p.text"
+          @click="gotoPinned(p.id)"
+        >
+          <span class="min-w-0 flex-1 truncate" :title="p.text">{{ p.text }}</span>
+          <X
+            class="h-3 w-3 shrink-0"
+            role="button"
+            :aria-label="t('msg.unpin')"
+            @click.stop="togglePin(p.id)"
+          />
+        </button>
+      </div>
     </div>
 
     <!-- 蓝牙链路速度提示（用户 2026-09-13 要求）：蓝牙分片载荷受 20 字节 MTU 限制，
