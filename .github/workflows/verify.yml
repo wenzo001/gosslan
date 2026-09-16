@@ -116,6 +116,13 @@ jobs:
       - name: 不变量例外守卫
         run: node scripts/check-invariant-exceptions.mjs
 
+      # 守的是「BLE 载荷预算的常量与换算只有一份」。病史很长：CHANGELOG 4.18.7→4.18.10
+      # **连着四个版本**修同一个分片预算问题，根因就是同名概念多处各算一遍，
+      # 且数值恰好一致 ⇒ 不报错、只在真机上表现为「某台设备收不到消息」。
+      # 纯静态扫描，不需要编译。
+      - name: BLE 常量单一事实来源
+        run: node scripts/check-ble-constants.mjs
+
       # 结构检查（唯一行首 `## [Unreleased]` 锚点 / 标题格式 / 新在前降序）。
       # 注意用的是 `version:changelog` 而不是 `version:check`：后者的版本记账部分
       # 在攒提交期间本来就该是红的，把它拉进来会让这一步周期性误报。

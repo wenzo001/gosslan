@@ -109,6 +109,13 @@ const steps = [
     args: ["scripts/check-invariant-exceptions.mjs"],
   },
   {
+    name: "BLE 常量单一事实来源",
+    why: "挡住「同一个概念多处各算一遍」——CHANGELOG 4.18.7→4.18.10 连着四版修的就是它",
+    cwd: ROOT,
+    cmd: process.execPath,
+    args: ["scripts/check-ble-constants.mjs"],
+  },
+  {
     name: "CHANGELOG 结构",
     why: "发布脚本按行首 `## [Unreleased]` 插小节；锚点被吞/顺序错乱不报错，只有结构检查能拦",
     cwd: ROOT,

@@ -10,6 +10,68 @@
 
 ## [Unreleased]
 
+### Changed (BLE 单一事实来源：常量与换算收敛到一处 —— 2026-09-16)
+
+**问题**：「一片能装多少字节」这件事，常量与换算此前有**多份**：
+
+| 位置 | 内容 | 状态 |
+|---|---|---|
+| `transport/ble_framing.rs` | `att_payload_budget` + 函数内匿名 `BLE_DEFAULT_MTU=23` / `ATT_HEADER_LEN=3` / `GATT_MAX_ATTR_LEN=512` | 正典（但常量是函数局部的） |
+| `transport/bluetooth.rs:110,112` | `pub const BLE_DEFAULT_MTU` / `ATT_HEADER_LEN` | **重复** |
+| `transport/bluetooth_peripheral.rs`（macOS 外设） | `const DEFAULT = 20` / `const MAX = 512`，**自己实现一遍** | **第二份实现** |
+| `transport/bluetooth_peripheral_windows.rs` | 调共享函数 | ✅ |
+
+于是 `transport/bluetooth.rs` 里那句文档断言「**外设侧用的是同一个函数**」
+**只对 Windows 成立** —— macOS 是另一份实现，数值恰好一致所以从未发作。
+
+病史：CHANGELOG `4.18.7 → 4.18.10` **连着四个版本**修同一个分片预算问题
+（4.18.7 没减 ATT 头 → 4.18.8「上一版修复生效但不够」→ 4.18.9 每片 514 > 512）。
+根因不是某一行写错，而是同一个概念多处各算一遍。
+
+**做法**：
+
+- 常量提升为 `ble_framing.rs` 的 `pub const`（`BLE_DEFAULT_MTU` / `ATT_HEADER_LEN` /
+  `GATT_MAX_ATTR_LEN` / `DEFAULT_PAYLOAD_BUDGET`），并**只在那儿定义一处**。
+- 新增外设侧入口 `notify_payload_budget`（与 `att_payload_budget` 并列、语义不同：
+  输入本身已是载荷、**不再减 ATT 头**），让 macOS 也能共用而不是自己算。
+- `bluetooth_peripheral.rs::central_payload_mtu` 改为**纯转发**到共享函数（删掉两个匿名常量）。
+- `bluetooth.rs` 删掉重复常量；那句只在 Windows 成立的文档断言**改正**。
+- 删掉 `ble_framing.rs` 上过期的 `#![allow(dead_code)]`（模块早已接线：macOS/Windows/Android
+  三个外设 + central driver + `network/ble.rs` 都在调它；那条注释与它静音的警告在接线后就过期了）。
+- 新增 `docs/protocol-invariants.md` §23 `INV-P23 — One Budget, One Place`，并把
+  「两侧必须推出同一个数」写进必测矩阵。
+
+**新增守门** `scripts/check-ble-constants.mjs` + 3 条非空转用例。判据刻意避开"扫裸数字"：
+
+- 判据 A：六个规范名字（4 常量 + 2 换算函数）在整个 crate 里**各有且仅有一处定义**。
+- 判据 B：BLE 领域内 `const/static` **同时**满足「名字按 `_` 分词命中 `MTU/ATT/GATT/PAYLOAD/
+  NOTIFY/CHUNK` 或本身是 `DEFAULT`/`MAX` 这类语义空名」**且**「值恰好是受保护字面量」⇒ FAIL。
+  这条规则改了两版才定：只看值会误伤 `const CONNECT_ATTEMPTS = 3`（重试次数）、
+  只看名字会漏掉真正的目标（`DEFAULT`/`MAX` 名字里没有概念词）。
+
+**新增两条测试**（此前 macOS 侧**没有**任何两侧一致性校验，而那正是唯一没走共享换算的一侧）：
+
+- `both_sides_agree_on_the_same_link_budget` —— `notify_payload_budget(att_payload_budget(m)) ==
+  att_payload_budget(m)`；注入「外设侧也减一次 ATT 头」（4.18.7 的形态）即红。
+- `notify_payload_budget_clamps_and_never_returns_zero` —— 边界与"绝不返回 0"。
+
+**顺带修好 3 条失活的护栏用例**（`verify-guards.py --only ble` 此前是红的）：
+
+1. `BLE 分片 MTU 异常值绝不返回 0` —— 锚点就在我删掉的 macOS 实现里（**本轮我自己造成的**）。
+   重新指向 `ble_framing.rs` 并**去掉平台限制**（该模块无平台门控，现在三平台都有效）。
+2. `蓝牙启动不得阻塞在 CoreBluetooth 状态回执上` —— 锚点的 cfg 仍是旧的两平台列表，
+   而源码后来加入了 `target_os = "windows"` ⇒ 锚点 0 次命中。**既有腐烂**。
+3. `BLE 拨号退避必须 1 分钟内恢复` —— 实现已被有意重设计（改为「前 3 次不退避，之后
+   5s→10s→20s 封顶」），值、测试名都变了。**既有腐烂**。修的时候发现原注入方式本身是
+   **空转**的：单改 `MAX_MS` 到 600_000 根本到不了分钟级（`step.min(2)` 已把增长压到 3 档），
+   改为注入「去掉封顶」。这三条都属于"护栏静默腐烂、只有跑起来才知道"。
+
+**基线更新**：macOS `503 → 505`（+2 条新测试）、Windows `493 → 495`。
+
+**验证**：`npm run verify` **9 步全绿**（362s）；`cargo test --features bluetooth` **505 全绿**、
+**零警告**；`python3 scripts/verify-guards.py --only ble` **23/23** 非空转通过；
+护栏总数 **93 → 96**。
+
 ### Added (Windows 测试通道：让 Windows 专属的 BLE 外设代码被真正编译与执行 —— 2026-09-16)
 
 **问题**：一部分代码是 **Windows 专属**的 ——

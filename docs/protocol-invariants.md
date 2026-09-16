@@ -660,7 +660,75 @@ AI 不得直接修改。
 
 ---
 
-# 23. Required Test Matrix
+## 23. BLE Fragmentation Budget
+
+### INV-P23 — One Budget, One Place
+
+BLE 上「一片能装多少字节」这件事，三个平台有三种输入：
+
+```text
+central 侧       btleplug 协商出的 ATT MTU          → 要减 ATT 头（3）
+外设侧 macOS     CoreBluetooth maximumUpdateValueLength
+外设侧 Windows   WinRT MaxNotificationSize          → 本身已是载荷，不减
+外设侧 Android   等价协商结果
+```
+
+**输入语义可以不同，但常量与换算必须只有一份**：唯一定义点在
+`transport/ble_framing.rs`，由 `scripts/check-ble-constants.mjs` 守门（判据 A：六个规范名字
+各有且仅有一处定义；判据 B：BLE 领域内不许用匿名常量重述受保护字面量）。
+
+约束：
+
+```text
+每片载荷 = min(该链路的载荷预算, GATT_MAX_ATTR_LEN = 512)
+    central 侧：  载荷预算 = 协商 MTU − ATT_HEADER_LEN(3)
+    peripheral 侧：载荷预算 = 对端声明的通知长度（**不再减** ATT 头）
+非法/过小输入（装不下 6 字节分片头）→ 退回 DEFAULT_PAYLOAD_BUDGET(20)，**绝不返回 0**
+
+单条消息         ≤ MAX_BLE_MESSAGE_BYTES (512 KiB)
+单条消息的分片数 ≤ MAX_BLE_CHUNKS_PER_MESSAGE (8192)
+同时进行的未完成消息 ≤ MAX_INFLIGHT_MESSAGES (8)
+未完成消息 TTL    = PARTIAL_TTL_MS (30s)
+```
+
+**两侧必须能互相推回去**（`both_sides_agree_on_the_same_link_budget`）：
+
+```text
+协商 MTU m --att_payload_budget--> 载荷 b --告知对端--> notify_payload_budget(b) == b
+```
+
+末尾那个 `== b` 成立**正是因为外设侧不再减 ATT 头**。若有人给外设侧也减一次，
+这条立刻红 —— 而真机症状只是「某台设备收不到消息」，没有这条测试极难定位。
+
+### 为什么单列成一条不变量
+
+CHANGELOG `4.18.7 → 4.18.10` **连着四个版本**修同一个分片预算问题：
+
+| 版本 | 标题 |
+|---|---|
+| 4.18.7 | 分片预算没减 ATT 头 ⇒ 多分片帧写不出去（好友申请永远发不出） |
+| 4.18.8 | 写入失败日志补上帧长（**上一版修复生效但不够**） |
+| 4.18.9 | 每片 514 字节 > AOSP 硬上限 512 ⇒ 多分片帧永远发不出去 |
+| 4.18.10 | 外设启动失败的原因被丢掉 |
+
+根因不是某一行写错，而是**同一个概念在多个地方各算一遍**，且**数值恰好一致所以不报错**。
+2026-09-16 收敛之前，macOS 外设侧自己留着 `const DEFAULT = 20` / `const MAX = 512`
+（匿名、靠注释解释语义），Windows 侧走共享函数 —— 于是 `transport/bluetooth.rs` 里那句
+「**外设侧用的是同一个函数**」只对 Windows 成立。
+
+禁止：
+
+```text
+在 ble_framing.rs 之外重新定义 GATT_MAX_ATTR_LEN / ATT_HEADER_LEN /
+    BLE_DEFAULT_MTU / DEFAULT_PAYLOAD_BUDGET
+在 ble_framing.rs 之外重新实现 att_payload_budget / notify_payload_budget
+给外设侧再减一次 ATT 头（会与 central 侧推出两个不同的数）
+让任一换算返回 0
+```
+
+---
+
+# 24. Required Test Matrix
 
 核心消息功能至少覆盖：
 
@@ -683,3 +751,4 @@ AI 不得直接修改。
 | File chunk order | Chunk N before Done |
 | Group clear boundary | seq <= boundary blocked |
 | Clock skew | Ordering/read state unaffected |
+| BLE chunk budget（两侧） | `peripheral` 与 `central` 推出同一个数（INV-P23） |

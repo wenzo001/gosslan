@@ -106,17 +106,20 @@ pub mod driver {
     /// 整条 `connect()` 的尝试次数（含第一次）。
     pub const CONNECT_ATTEMPTS: u32 = 3;
 
-    /// BLE 未协商时的默认 ATT MTU（蓝牙规范最小值）。
-    pub const BLE_DEFAULT_MTU: u16 = 23;
-    /// ATT 头长度（1 字节 opcode + 2 字节句柄）：MTU 减去它才是应用可用载荷。
-    pub const ATT_HEADER_LEN: usize = 3;
-
-    /// 把协商到的 MTU 换算成**分片有效载荷上限**。
+    /// 把协商到的 MTU 换算成**分片有效载荷上限**（central 侧）。
     ///
-    /// 换算本体在 [`crate::transport::ble_framing::att_payload_budget`] ——
-    /// **外设侧（macOS 的 `maximumUpdateValueLength` / Windows 的 `MaxNotificationSize`）
-    /// 用的是同一个函数**，这样"两边对一条链路能发多大一片"永远不会各说各话
-    /// （那类漂移的症状是"某台设备就是收不到消息"，极难定位）。
+    /// 常量与换算本体都在 [`crate::transport::ble_framing`] —— **central 与外设两侧
+    /// 用的是同一组常量、两个换算入口**：
+    ///
+    /// | 侧 | 入口 | 输入语义 |
+    /// |---|---|---|
+    /// | central（本函数） | `att_payload_budget` | 协商出的 **ATT MTU**（要减 ATT 头） |
+    /// | peripheral | `notify_payload_budget` | 对端声明的**通知载荷上限**（本身已是载荷，不减） |
+    ///
+    /// ⚠️ 2026-09-16 修正：本模块此前自己定义了一份 `BLE_DEFAULT_MTU = 23` /
+    /// `ATT_HEADER_LEN = 3`，是 `ble_framing` 那份的**重复**；而旧文档还写着
+    /// 「**外设侧用的是同一个函数**」—— **那句只对 Windows 成立**（macOS 当时另有一份
+    /// `central_payload_mtu` 实现）。两处都已收敛，由 `scripts/check-ble-constants.mjs` 守门。
     pub fn payload_mtu(negotiated: u16) -> usize {
         crate::transport::ble_framing::att_payload_budget(negotiated)
     }
@@ -544,7 +547,7 @@ pub mod driver {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use crate::transport::ble_framing::BleReassembler;
+        use crate::transport::ble_framing::{BleReassembler, BLE_DEFAULT_MTU};
 
         /// MTU 换算：正常值直接用；异常值退回默认（**绝不能返回 0**，否则什么都发不出去）。
         #[test]

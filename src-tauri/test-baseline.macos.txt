@@ -466,10 +466,12 @@ tests::runtime_state_has_a_single_source
 tests::scan_results_are_not_filtered_by_unconnected_services
 tests::self_chat_stays_local
 tests::window_pattern_matcher_is_not_vacuous
+transport::ble_framing::tests::both_sides_agree_on_the_same_link_budget
 transport::ble_framing::tests::duplicate_and_partial_do_not_complete
 transport::ble_framing::tests::inflight_cap_blocks_state_flood
 transport::ble_framing::tests::interleaved_messages_are_independent
 transport::ble_framing::tests::malicious_headers_are_rejected_before_allocating
+transport::ble_framing::tests::notify_payload_budget_clamps_and_never_returns_zero
 transport::ble_framing::tests::out_of_order_chunks_still_complete
 transport::ble_framing::tests::rejects_invalid_inputs
 transport::ble_framing::tests::roundtrip_across_sizes_and_mtus

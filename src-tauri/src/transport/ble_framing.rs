@@ -32,68 +32,118 @@
 //! ① 单条消息不超过 [`MAX_BLE_MESSAGE_BYTES`]；② 总分片数不超过
 //! [`MAX_BLE_CHUNKS_PER_MESSAGE`]；③ 同时进行的不完整消息不超过 [`MAX_INFLIGHT_MESSAGES`]。
 //! 另外不完整消息有 TTL（[`PARTIAL_TTL_MS`]），断连后残留的分片会被回收。
-
-// 旁路阶段：本模块是 BLE 的**字节层编解码**，驱动（btleplug）接入前没有任何生产调用点。
-// 与 `transport/tcp.rs` 顶部同样的处理：先让编译保持 0 warning，接线后删除这一行
-// （项目里"pub 项不报 dead_code"不是理由 —— 这条 allow 就是明说"还没接线"）。
-// 接线点见 ADR-0015：`BluetoothTransport` 的 start/send/broadcast 改为走真实 GATT。
-#![allow(dead_code)]
+//!
+//! ## 常量只有一个家（2026-09-16 收敛）
+//!
+//! BLE 的「一片能装多少字节」在三个平台上有三个名字：central 侧是协商出的 ATT MTU、
+//! 外设侧是 CoreBluetooth 的 `maximumUpdateValueLength` / WinRT 的 `MaxNotificationSize`。
+//! 名字不同没关系，**但常量与换算只能各有一份** —— 一旦各处自己写 `512` / `23` / `- 3`，
+//! 症状就是「有的平台发得出去、有的发不出去」，而对外只表现为"某台设备收不到消息"。
+//!
+//! 本项目为此付过学费：CHANGELOG `4.18.7 → 4.18.10` **连着四个版本**修同一个分片预算
+//! 问题（先是"分片预算没减 ATT 头"、再是"每片 514 字节 > AOSP 硬上限 512"，
+//! 4.18.8 的标题自己写着"上一版修复生效但不够"）。所以：
+//!
+//! ```text
+//! 常量（BLE_DEFAULT_MTU / ATT_HEADER_LEN / GATT_MAX_ATTR_LEN / DEFAULT_PAYLOAD_BUDGET）
+//!     ↓  只在本文件定义一处
+//! 换算（att_payload_budget = central 侧 / notify_payload_budget = 外设侧）
+//!     ↓  只在本文件实现一处
+//! 调用方（bluetooth.rs / bluetooth_peripheral*.rs / ble_android.rs / network/ble.rs）
+//!     ↓  只引用，不重算
+//! ```
+//!
+//! 由 `scripts/check-ble-constants.mjs` 守门：本领域内这些量必须**唯一具名定义点**。
+//!
+//! ⚠️ 本模块**早已接线**（macOS / Windows / Android 三个外设 + central driver +
+//! `network/ble.rs` 都在调它）。历史上这里挂过一个 `#![allow(dead_code)]` 并注明
+//! "接入前没有生产调用点"，那条注释与它静音的警告在接线之后就过期了 —— 2026-09-16
+//! 删掉。过期静音的危险在于：它同时掩盖了"哪些项真的没人用"。
 
 use std::collections::HashMap;
 
 /// 分片头长度（字节）。
 pub const BLE_CHUNK_HEADER_LEN: usize = 6;
 
-/// 一次 GATT 操作**应用层可用**的字节数上限（分片有效载荷），两端共用这一条换算。
+/// 蓝牙规范的最小 ATT MTU（未协商 / 协商值非法时的默认值）。
 ///
-/// ## 为什么必须两边共用（真机 2026-09-13，Windows 外设）
+/// ⚠️ **唯一具名定义点**：本领域内不许在别处再写一遍 `23`。
+/// 由 `scripts/check-ble-constants.mjs` 守门（见模块头「常量只有一个家」）。
+pub const BLE_DEFAULT_MTU: u16 = 23;
+
+/// ATT 头长度：1 字节 opcode + 2 字节句柄。MTU 减去它才是应用可用载荷。
 ///
-/// 同一个概念在三个地方有三个名字：**central** 侧是 btleplug 协商出的 ATT MTU、
-/// **peripheral** 侧是 CoreBluetooth 的 `maximumUpdateValueLength`（macOS）/
-/// `MaxNotificationSize`（Windows WinRT）；而 ATT 的 3 字节头
-/// （1 opcode + 2 handle）在**两边都要扣掉**，最后剩下的才是 [`fragment`] 能用的载荷。
+/// ⚠️ **唯一具名定义点**：别处不许再写 `3` 或 `- 3`。
+pub const ATT_HEADER_LEN: usize = 3;
+
+/// AOSP `BluetoothGatt.GATT_MAX_ATTR_LEN`：`writeCharacteristic` 对 **value 长度**
+/// 的硬上限，**与协商 MTU 无关**。
 ///
-/// 这三处写法一旦漂移，症状是「有的平台发得出去、有的平台发不出去」——
-/// 而对外表现只是"某台设备收不到消息"，极难定位。所以换算只留这一份。
+/// 源码依据（android-35 `android/bluetooth/BluetoothGatt.java`）：
+/// ```java
+/// private static final int GATT_MAX_ATTR_LEN = 512;      // L101
+/// public int writeCharacteristic(BluetoothGattCharacteristic c, byte[] value, int writeType) {
+///     if (value.length > GATT_MAX_ATTR_LEN) {            // L1562
+///         throw new IllegalArgumentException(
+///             "value should not be longer than max length of an attribute value");
+/// ```
 ///
-/// `negotiated` 是**对方那条链路上的**属性：central 传协商 MTU，
-/// peripheral 传"这条订阅允许的最大通知长度"。非法值（0 / 装不下 ATT 头）一律退回
-/// 默认 MTU 23 ⇒ 20 字节 —— **绝不返回 0**（返回 0 会让 `fragment` 拒绝一切，
-/// 表现为"蓝牙永远发不出去且没有明显错误"）。
+/// 为什么必须封顶：btleplug 在 Android 上 `Peripheral::mtu()` 返回的是**请求值（517）**
+/// 而不是协商结果 ⇒ `517 - 3 = 514 > 512` ⇒ 每片 514 字节的写入直接被框架抛异常。
+/// 表现是**单分片帧（如 272B 聊天）正常、多分片帧（如 738B 好友申请）永远发不出去**，
+/// 并触发重试 4 次后拆链重连（4.18.9 的真机缺陷）。
+///
+/// ⚠️ **唯一具名定义点**。
+pub const GATT_MAX_ATTR_LEN: usize = 512;
+
+/// 未协商 / 值非法时的**默认载荷预算** = `BLE_DEFAULT_MTU - ATT_HEADER_LEN` = 20。
+///
+/// 两个换算函数在遇到非法输入时都必须退回它，**绝不返回 0** ——
+/// 返回 0 会让 [`fragment`] 拒绝一切，表现为"蓝牙永远发不出去且没有明显错误"。
+pub const DEFAULT_PAYLOAD_BUDGET: usize = BLE_DEFAULT_MTU as usize - ATT_HEADER_LEN;
+
+/// **central 侧**换算：协商到的 ATT MTU ⇒ 一次 GATT 操作应用层可用的字节数。
+///
+/// `negotiated` 是**那条链路上**协商出来的 ATT MTU。非法值（0 / 装不下 ATT 头）
+/// 退回 [`DEFAULT_PAYLOAD_BUDGET`]。
 ///
 /// 注意本函数**只管换算**，不做"保证 `fragment` 能用"的美化：`att_payload_budget(4) == 1`
 /// 是合法的（4 - 3），至于 1 字节装不下 6 字节分片头那是 [`fragment`] 自己拒绝的事
 /// （真实链路上 MTU 至少 23 ⇒ 20 字节，够用）。
+///
+/// 外设侧请用 [`notify_payload_budget`] —— 两者的输入语义不同（见该函数）。
 pub fn att_payload_budget(negotiated: u16) -> usize {
-    /// 蓝牙规范的最小 ATT MTU。
-    const BLE_DEFAULT_MTU: u16 = 23;
-    /// ATT 头：1 字节 opcode + 2 字节句柄。
-    const ATT_HEADER_LEN: usize = 3;
+    if (negotiated as usize) <= ATT_HEADER_LEN {
+        return DEFAULT_PAYLOAD_BUDGET;
+    }
+    (negotiated as usize - ATT_HEADER_LEN).min(GATT_MAX_ATTR_LEN)
+}
 
-    /// AOSP `BluetoothGatt.GATT_MAX_ATTR_LEN`：`writeCharacteristic` 对 **value 长度**
-    /// 的硬上限，**与协商 MTU 无关**。
-    ///
-    /// 源码依据（android-35 `android/bluetooth/BluetoothGatt.java`）：
-    /// ```java
-    /// private static final int GATT_MAX_ATTR_LEN = 512;      // L101
-    /// public int writeCharacteristic(BluetoothGattCharacteristic c, byte[] value, int writeType) {
-    ///     if (value.length > GATT_MAX_ATTR_LEN) {            // L1562
-    ///         throw new IllegalArgumentException(
-    ///             "value should not be longer than max length of an attribute value");
-    /// ```
-    ///
-    /// 为什么必须在这里封顶：btleplug 在 Android 上 `Peripheral::mtu()` 返回的是
-    /// **请求值（517）**而不是协商结果 ⇒ `517 - 3 = 514 > 512` ⇒ 每片 514 字节的写入
-    /// 直接被框架抛异常。表现是**单分片帧（如 272B 聊天）正常、多分片帧（如 738B
-    /// 好友申请）永远发不出去**，并触发重试 4 次后拆链重连。
-    const GATT_MAX_ATTR_LEN: usize = 512;
-
-    let mtu = if (negotiated as usize) <= ATT_HEADER_LEN {
-        BLE_DEFAULT_MTU
+/// **外设侧**换算：对端 central 声明的「一次通知能收多少字节」⇒ 我们能塞多少字节。
+///
+/// 三个平台三个名字：macOS CoreBluetooth 是 `maximumUpdateValueLength`、
+/// Windows WinRT 是 `MaxNotificationSize`、Android 是等价的协商结果。
+///
+/// ⚠️ 最容易搞错的一点：**这个值本身已经是 ATT 有效载荷**，所以**不再减 ATT 头**
+/// （减 3 的是 MTU 换算，见 [`att_payload_budget`]）。Apple 文档明确写着
+/// "maximumUpdateValueLength 就是一次通知/指示里 central 能收的最大字节数"。
+///
+/// 非法值（0 / 装不下分片头）一律退回 [`DEFAULT_PAYLOAD_BUDGET`]。
+///
+/// ## 为什么它必须和 central 侧住在一起（2026-09-16）
+///
+/// 2026-09-13 引入 `att_payload_budget` 时，本函数的 macOS 版本**没有**一起收敛：
+/// `transport/bluetooth_peripheral.rs` 自己留着 `const DEFAULT: usize = 20` 与
+/// `const MAX: usize = 512`（匿名、靠注释解释语义），而 Windows 那一侧走了共享函数。
+/// 于是「外设侧用的是同一个函数」这句文档**只对 Windows 成立**，macOS 是第二份实现 ——
+/// 数值恰好一致所以没发作，但任一处改动就会复发 4.18.7→4.18.10 那类缺陷。
+pub fn notify_payload_budget(max_update_value_length: usize) -> usize {
+    let min = BLE_CHUNK_HEADER_LEN + 1; // 至少装得下"分片头 + 1 字节"
+    if max_update_value_length < min {
+        DEFAULT_PAYLOAD_BUDGET
     } else {
-        negotiated
-    };
-    (mtu as usize - ATT_HEADER_LEN).min(GATT_MAX_ATTR_LEN)
+        max_update_value_length.min(GATT_MAX_ATTR_LEN)
+    }
 }
 
 /// 单条 BLE 消息的字节上限。
@@ -282,7 +332,11 @@ impl BleReassembler {
 mod tests {
     use super::*;
 
-    const MTU: usize = 20; // GATT 默认 MTU 23 - 3 字节 ATT 头
+    /// 未协商时的**载荷预算**（= 默认 MTU 减 ATT 头 = 20）。
+    ///
+    /// ⚠️ 值**必须**来自规范常量：这里是「载荷」不是「MTU」，
+    /// 手写 `20` 就是第二份事实来源（4.18.x 那类 off-by-ATT-header 混淆正是这么来的）。
+    const DEFAULT_PAYLOAD: usize = DEFAULT_PAYLOAD_BUDGET;
 
     fn reassemble(chunks: &[Vec<u8>]) -> Option<Vec<u8>> {
         let mut r = BleReassembler::new();
@@ -313,17 +367,74 @@ mod tests {
 
     #[test]
     fn rejects_invalid_inputs() {
-        assert!(fragment(&[], MTU, 1).is_none(), "空 payload 没有意义");
+        assert!(fragment(&[], DEFAULT_PAYLOAD, 1).is_none(), "空 payload 没有意义");
         assert!(fragment(&[1, 2, 3], BLE_CHUNK_HEADER_LEN, 1).is_none(), "MTU 放不下头+1");
         assert!(fragment(&[1, 2, 3], 0, 1).is_none());
         let too_big = vec![0u8; MAX_BLE_MESSAGE_BYTES + 1];
-        assert!(fragment(&too_big, MTU, 1).is_none(), "超过单条上限应拒绝");
+        assert!(fragment(&too_big, DEFAULT_PAYLOAD, 1).is_none(), "超过单条上限应拒绝");
+    }
+
+    // ---------------- 两侧载荷预算：常量与换算的唯一事实来源（2026-09-16 收敛） ----------------
+
+    /// **两侧必须对「同一条链路上能发多大一片」得出同一个数。**
+    ///
+    /// 这正是 `4.18.7 → 4.18.10` 那四个版本真正在修的东西。central 侧与外设侧的
+    /// **输入语义不同**（前者是 ATT MTU、要减 ATT 头；后者本身已是载荷、不减），
+    /// 但两者必须能互相推回去：
+    ///
+    /// ```text
+    /// 协商 MTU m  --att_payload_budget-->  载荷 b  --告诉对端-->  notify_payload_budget(b) == b
+    /// ```
+    ///
+    /// 末尾那个 `== b` 成立**正是因为外设侧不再减 3**。若有人"顺手"给外设侧也减一次
+    /// ATT 头，这条立刻红 —— 而真机症状只是"某台设备收不到消息"，没有这条测试极难定位。
+    ///
+    /// （此前这条交叉校验只存在于 **Windows 专属**的
+    /// `peripheral_and_central_agree_on_payload_budget`；macOS 侧没有任何等价校验，
+    /// 而 macOS 恰恰是当时唯一没走共享换算的那一侧。）
+    #[test]
+    fn both_sides_agree_on_the_same_link_budget() {
+        for mtu in [BLE_DEFAULT_MTU, 185, 517, 1024] {
+            let b = att_payload_budget(mtu);
+            assert_eq!(
+                notify_payload_budget(b),
+                b,
+                "MTU={mtu} ⇒ 载荷 {b}；外设侧拿到 {b} 必须原样返回（它已是载荷，不再减 ATT 头）"
+            );
+        }
+    }
+
+    /// 外设侧换算的边界：正常值原样、超上限收敛到 AOSP 上限、异常值退回默认、**绝不返回 0**。
+    #[test]
+    fn notify_payload_budget_clamps_and_never_returns_zero() {
+        assert_eq!(notify_payload_budget(20), 20, "默认载荷");
+        assert_eq!(notify_payload_budget(182), 182, "常见协商值");
+        assert_eq!(notify_payload_budget(GATT_MAX_ATTR_LEN), 512, "上限本身");
+        assert_eq!(
+            notify_payload_budget(4096),
+            GATT_MAX_ATTR_LEN,
+            "超上限必须收敛到 AOSP 上限"
+        );
+        // 装不下分片头（< 6+1）的一律退回默认 —— 返回 0 会让 `fragment` 拒绝一切，
+        // 表现为"蓝牙永远发不出去且没有明显错误"。
+        for bogus in [0usize, 1, BLE_CHUNK_HEADER_LEN] {
+            assert_eq!(
+                notify_payload_budget(bogus),
+                DEFAULT_PAYLOAD_BUDGET,
+                "值 {bogus} 装不下分片头，应退回默认而不是返回 0"
+            );
+        }
+        assert_eq!(
+            notify_payload_budget(BLE_CHUNK_HEADER_LEN + 1),
+            BLE_CHUNK_HEADER_LEN + 1,
+            "刚好装下「头 + 1 字节」也算合法"
+        );
     }
 
     #[test]
     fn out_of_order_chunks_still_complete() {
         let payload: Vec<u8> = (0..100).map(|i| i as u8).collect();
-        let chunks = fragment(&payload, MTU, 3).unwrap();
+        let chunks = fragment(&payload, DEFAULT_PAYLOAD, 3).unwrap();
         let mut shuffled = chunks.clone();
         shuffled.reverse();
         assert_eq!(reassemble(&shuffled).as_deref(), Some(payload.as_slice()));
@@ -332,7 +443,7 @@ mod tests {
     #[test]
     fn duplicate_and_partial_do_not_complete() {
         let payload: Vec<u8> = (0..100).map(|i| i as u8).collect();
-        let chunks = fragment(&payload, MTU, 5).unwrap();
+        let chunks = fragment(&payload, DEFAULT_PAYLOAD, 5).unwrap();
         let mut r = BleReassembler::new();
         // 重复投递第一片：第二次必须被判为重复，且不影响进度
         assert_eq!(r.push(&chunks[0], 0), PushOutcome::Incomplete);
@@ -348,8 +459,8 @@ mod tests {
     fn interleaved_messages_are_independent() {
         let a: Vec<u8> = vec![0xAA; 50];
         let b: Vec<u8> = vec![0xBB; 50];
-        let ca = fragment(&a, MTU, 1).unwrap();
-        let cb = fragment(&b, MTU, 2).unwrap();
+        let ca = fragment(&a, DEFAULT_PAYLOAD, 1).unwrap();
+        let cb = fragment(&b, DEFAULT_PAYLOAD, 2).unwrap();
         let mut r = BleReassembler::new();
         let mut done: Vec<Vec<u8>> = Vec::new();
         for i in 0..ca.len().max(cb.len()) {
@@ -385,7 +496,7 @@ mod tests {
         );
         assert_eq!(r.in_flight(), 0, "被拒的分片不得留下状态");
         // 同一条消息前后 count 不一致 ⇒ 整条丢弃
-        let c1 = fragment(&[1u8; 40], MTU, 9).unwrap();
+        let c1 = fragment(&[1u8; 40], DEFAULT_PAYLOAD, 9).unwrap();
         assert_eq!(r.push(&c1[0], 0), PushOutcome::Incomplete);
         let mut bogus = c1[1].clone();
         bogus[4] = 0;
@@ -399,19 +510,19 @@ mod tests {
         let mut r = BleReassembler::new();
         // 造 MAX_INFLIGHT_MESSAGES 条各缺一片的消息（每条 2 片）
         for id in 0..MAX_INFLIGHT_MESSAGES as u16 {
-            let chunks = fragment(&[7u8; 40], MTU, id).unwrap();
+            let chunks = fragment(&[7u8; 40], DEFAULT_PAYLOAD, id).unwrap();
             assert_eq!(r.push(&chunks[0], 0), PushOutcome::Incomplete);
         }
         assert_eq!(r.in_flight(), MAX_INFLIGHT_MESSAGES);
         // 再来一条新的 ⇒ 直接拒（不再分配）
-        let extra = fragment(&[7u8; 40], MTU, 9999).unwrap();
+        let extra = fragment(&[7u8; 40], DEFAULT_PAYLOAD, 9999).unwrap();
         assert_eq!(r.push(&extra[0], 0), PushOutcome::Dropped("在途消息过多"));
         assert_eq!(r.in_flight(), MAX_INFLIGHT_MESSAGES);
     }
 
     #[test]
     fn stale_partials_are_collected() {
-        let chunks = fragment(&[1u8; 40], MTU, 11).unwrap();
+        let chunks = fragment(&[1u8; 40], DEFAULT_PAYLOAD, 11).unwrap();
         let mut r = BleReassembler::new();
         assert_eq!(r.push(&chunks[0], 1_000), PushOutcome::Incomplete);
         assert_eq!(r.gc(1_000 + PARTIAL_TTL_MS - 1), 0, "未到期不回收");

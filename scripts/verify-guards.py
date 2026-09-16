@@ -346,21 +346,25 @@ CASES: list[Case] = [
         expect_fail_hint="bookmark_wins_over_the_stored_path",
         tags=["rust", "macos"],
     ),
-    # ---------------- Rust：BLE 外设（需要 feature） ----------------
+    # ---------------- Rust：BLE 载荷预算（常量与换算的唯一事实来源） ----------------
     Case(
-        name="BLE 分片 MTU 异常值绝不返回 0",
-        why="返回 0 ⇒ 分片全部失败、链路静默假死（真机上表现为「连上了但发不出消息」）",
-        file=TAURI / "src" / "transport" / "bluetooth_peripheral.rs",
+        name="BLE 分片载荷预算异常值绝不返回 0（否则链路静默假死）",
+        why="返回 0 ⇒ `fragment` 拒绝一切、链路静默假死（真机上表现为「连上了但发不出消息」）。"
+        "⚠️ 2026-09-16 换了注入点与命令：原先注入 `bluetooth_peripheral.rs` 的 "
+        "`central_payload_mtu`，而那份实现已收敛进 `ble_framing::notify_payload_budget`，"
+        "旧锚点随之消失 ⇒ 本用例当时退化成「锚点出现 0 次」的报错。"
+        "改注入规范位置后**平台限制也一并去掉**：`ble_framing` 不做平台门控，"
+        "所以这条现在在 macOS / Windows / Linux 上都有效，且不再需要 `--features bluetooth`"
+        "（`ble_framing` 是 `transport/mod.rs` 里无条件编译的模块）。",
+        file=TAURI / "src" / "transport" / "ble_framing.rs",
         injections=[(
-            'let min = ble_framing::BLE_CHUNK_HEADER_LEN + 1; // 至少装得下"分片头 + 1 字节"',
-            "let min = 1;",
+            '    let min = BLE_CHUNK_HEADER_LEN + 1; // 至少装得下"分片头 + 1 字节"',
+            "    let min = 0;",
         )],
-        cmd=cargo("test", "--lib", "--features", "bluetooth", "bluetooth_peripheral"),
+        cmd=cargo("test", "--lib", "notify_payload_budget_clamps_and_never_returns_zero"),
         cwd=TAURI,
-        expect_fail_hint="central_mtu_clamps",
+        expect_fail_hint="应退回默认而不是返回 0",
         tags=["rust", "ble"],
-        # 目标文件整个是 `#![cfg(all(feature = "bluetooth", target_os = "macos"))]`
-        platforms=("darwin",),
     ),
     Case(
         name="BLE 读循环必须回灌读活性（否则健康链路 45s 自拆）",
@@ -430,12 +434,15 @@ CASES: list[Case] = [
         "而 `ble::start` 就在 `set_channel_enabled` 的关键路径上 ⇒ 一旦 await 它，"
         "用户点蓝牙开关就要干等 3 秒（用户 2026-09-13 Mac 实测「点了一下，"
         "过了好一会儿才会开」）。外设角色本来就是独立失败的，必须丢后台任务；"
-        "同时句柄要先写进 state.ble，否则「刚开就关」时 stop() 拿不到 handle、发不出停机信号",
+        "同时句柄要先写进 state.ble，否则「刚开就关」时 stop() 拿不到 handle、发不出停机信号。"
+        "⚠️ 2026-09-16 更新锚点：该 cfg 后来加入了 `target_os = \"windows\"`（Windows 外设角色"
+        "落地），而锚点仍写着旧的两平台列表 ⇒ 本用例此前是「锚点出现 0 次」的报错状态。"
+        "这正是「护栏会静默腐烂、只有跑起来才知道」的又一例。",
         file=TAURI / "src" / "network" / "ble.rs",
         injections=[(
-            "#[cfg(any(target_os = \"macos\", target_os = \"android\"))]\n"
+            "#[cfg(any(target_os = \"macos\", target_os = \"windows\", target_os = \"android\"))]\n"
             "    let _ = tokio::spawn(start_peripheral(state.clone(), shutdown_tx.subscribe()));",
-            "#[cfg(any(target_os = \"macos\", target_os = \"android\"))]\n"
+            "#[cfg(any(target_os = \"macos\", target_os = \"windows\", target_os = \"android\"))]\n"
             "    start_peripheral(state.clone(), shutdown_tx.subscribe()).await;",
         )],
         cmd=cargo(
@@ -1407,16 +1414,23 @@ CASES: list[Case] = [
         tags=["rust", "presence", "network"],
     ),
     Case(
-        name="BLE 拨号退避必须 1 分钟内恢复（旧上限 10 分钟 = 好友申请等几分钟）",
-        why="真机 2026-09-13：好友申请等了 5～6 分钟才到。根因之一就是退避上限 600s："
+        name="BLE 拨号退避绝不指数增长到分钟级（否则好友申请等几分钟）",
+        why="真机 2026-09-13：好友申请等了 5～6 分钟才到。根因之一是退避被锁到分钟级："
         "BLE 上「连过去被拒」是常态，每次失败把一个**稳定地址**推进下一档，而"
-        "「小 id 只接受」又让只有一侧会拨 ⇒ 唯一的拨号通道被锁死到分钟级。"
-        "这条护栏把 5s→10s→20s→40s→60s 封顶钉死",
+        "「小 id 只接受」又让只有一侧会拨 ⇒ 唯一的拨号通道被锁死。"
+        "现在的实现是「前 3 次不退避，之后 5s→10s→20s 封顶」。"
+        "⚠️ 2026-09-16 两处更新：① 命令指向新测试名（旧测试已随「缓增 + 封顶」重设计改名）；"
+        "② 注入改为**去掉封顶**而不是改 `MAX_MS` 的值 —— 实现里 `step.min(2)` 已经把增长压到"
+        "3 档，单改 `MAX_MS` 到 600_000 也到不了分钟级，那样的注入是**空转**的"
+        "（改坏了测试照样通过）。这条用例的前一版正因为锚点写死在旧值 60_000 而失效。",
         file=TAURI / "src" / "network" / "ble.rs",
-        injections=[("    const MAX_MS: i64 = 60_000;", "    const MAX_MS: i64 = 600_000;")],
-        cmd=cargo("test", "--lib", "--features", "bluetooth", "dial_backoff_recovers_within_a_minute"),
+        injections=[(
+            "    (BASE_MS << step.min(2)).min(MAX_MS)",
+            "    BASE_MS << step",
+        )],
+        cmd=cargo("test", "--lib", "--features", "bluetooth", "dial_backoff_does_not_starve_retries"),
         cwd=TAURI,
-        expect_fail_hint="上限必须 60s",
+        expect_fail_hint="必须封顶",
         tags=["rust", "ble", "backoff"],
     ),
     Case(
@@ -1669,6 +1683,76 @@ CASES: list[Case] = [
         cwd=ROOT,
         expect_fail_hint="文档未定义",
         tags=["invariant", "new-guards"],
+    ),
+    # ---------------- BLE 常量/换算的单一事实来源 ----------------
+    # 守的是 `scripts/check-ble-constants.mjs`。背景：CHANGELOG 4.18.7→4.18.10
+    # **连着四个版本**修同一个分片预算问题 —— 根因不是某一行写错，而是同一个概念
+    # 在多个地方各算一遍（macOS 外设侧自己留了 `const DEFAULT = 20` / `const MAX = 512`）。
+    Case(
+        name="BLE 常量只有一个家：重复定义必须报出来",
+        why="4.18.7→4.18.10 那四个版本的病根是「同一个概念多处各算一遍」。"
+        "2026-09-16 把常量与换算收敛到 `transport/ble_framing.rs` 一处；"
+        "本用例把 `BLE_DEFAULT_MTU` 重新定义回 `bluetooth.rs`，必须被报出来 —— "
+        "否则下一次漂移会以完全相同的方式发生（数值恰好一致 ⇒ 不报错、只在真机上表现为"
+        "「某台设备收不到消息」）。",
+        file=TAURI / "src" / "transport" / "bluetooth.rs",
+        injections=[(
+            "    /// 把协商到的 MTU 换算成**分片有效载荷上限**（central 侧）。",
+            "    /// BLE 未协商时的默认 ATT MTU。\n"
+            "    pub const BLE_DEFAULT_MTU: u16 = 23;\n\n"
+            "    /// 把协商到的 MTU 换算成**分片有效载荷上限**（central 侧）。",
+        )],
+        cmd=["node", "scripts/check-ble-constants.mjs"],
+        cwd=ROOT,
+        expect_fail_hint="有 2 处定义",
+        tags=["ble", "new-guards"],
+    ),
+    Case(
+        name="BLE 常量只有一个家：匿名常量重述必须报出来（4.18.x 的原始形态）",
+        why="这条注入的就是 2026-09-13 真实埋下的那两行：`const DEFAULT: usize = 20` 与 "
+        "`const MAX: usize = 512` —— 名字没有信息量、靠注释解释语义。它们让 macOS 外设侧"
+        "成了 `ble_framing` 那份换算的**第二份实现**（当时 Windows 走共享函数、macOS 不走，"
+        "于是文档里那句「外设侧用的是同一个函数」只对 Windows 成立）。"
+        "判据刻意**不扫裸数字**：`const CONNECT_ATTEMPTS = 3` 这类无关常量不许被误伤，"
+        "所以规则是「名字按 `_` 分词命中概念词或语义空名」**且**「值恰好是受保护字面量」。",
+        file=TAURI / "src" / "transport" / "bluetooth_peripheral.rs",
+        injections=[(
+            "pub fn central_payload_mtu(max_update_value_length: usize) -> usize {\n"
+            "    ble_framing::notify_payload_budget(max_update_value_length)\n"
+            "}",
+            "pub fn central_payload_mtu(max_update_value_length: usize) -> usize {\n"
+            "    const DEFAULT: usize = 20;\n"
+            "    const MAX: usize = 512;\n"
+            "    let min = ble_framing::BLE_CHUNK_HEADER_LEN + 1;\n"
+            "    if max_update_value_length < min {\n"
+            "        DEFAULT\n"
+            "    } else {\n"
+            "        max_update_value_length.min(MAX)\n"
+            "    }\n"
+            "}",
+        )],
+        cmd=["node", "scripts/check-ble-constants.mjs"],
+        cwd=ROOT,
+        expect_fail_hint="第二份事实来源",
+        tags=["ble", "new-guards"],
+    ),
+    Case(
+        name="BLE 两侧载荷预算必须能互相推回去（外设侧不再减 ATT 头）",
+        why="常量收敛只保证「只有一份」，不保证「这一份是对的」。本用例注入 central 侧的正确"
+        "换算被外设侧**又减了一次 ATT 头**（4.18.7 的形态），"
+        "`both_sides_agree_on_the_same_link_budget` 必须红。"
+        "这条交叉校验此前**只存在于 Windows 专属**的 "
+        "`peripheral_and_central_agree_on_payload_budget`，而 macOS 恰恰是当时唯一没走共享"
+        "换算的一侧，所以缺口一直没被发现。现在两侧共用同一个测试。",
+        file=TAURI / "src" / "transport" / "ble_framing.rs",
+        injections=[(
+            "        max_update_value_length.min(GATT_MAX_ATTR_LEN)\n    }",
+            "        (max_update_value_length - ATT_HEADER_LEN).min(GATT_MAX_ATTR_LEN)\n    }",
+        )],
+        cmd=cargo("test", "--lib", "both_sides_agree_on_the_same_link_budget"),
+        cwd=TAURI,
+        expect_fail_hint="必须原样返回",
+        tags=["rust", "ble", "new-guards"],
     ),
 ]
 
