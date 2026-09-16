@@ -10,6 +10,40 @@
 
 ## [Unreleased]
 
+### Added (Windows 测试通道：让 Windows 专属的 BLE 外设代码被真正编译与执行 —— 2026-09-16)
+
+**问题**：一部分代码是 **Windows 专属**的 ——
+`transport/mod.rs:24` 的 `#[cfg(all(feature = "bluetooth", target_os = "windows"))]`
+即 `bluetooth_peripheral_windows.rs`（Windows BLE **外设**角色 / WinRT `GattServiceProvider`，
+**2 条用例**）。macOS 上它**不编译**，那 2 条一条都不跑，而 CI 照样全绿。
+
+这不是假想的风险：`transport/bluetooth.rs` 里写着「外设侧用的是同一个函数」，
+而实测**只有 Windows** 走了共享的 `att_payload_budget` —— macOS 那一侧自己抄了一份
+`central_payload_mtu`（硬编码 `20` / `512`）。**这类跨平台漂移只有在两侧都被编译时才看得见。**
+（Windows 那 2 条里恰好有一条就是 `peripheral_and_central_agree_on_payload_budget`。）
+
+**做法**：
+
+- `rust` job 改成 **matrix**：`os: [macos-latest, windows-latest]`，一个定义两条腿，
+  `fail-fast: false`（两条都跑完，一次就能看到两个平台的情况）。
+- **每个平台一个基线**：`test-baseline.macos.txt`（503）/ `test-baseline.windows.txt`（500）。
+  基线必须按平台分 —— 两侧是互斥的 `#[cfg]`，拿 macOS 的基线去比 Windows 会把 5 条
+  平台门控用例误判成「静默跳过」（纯误报）。
+- `check-test-manifest.mjs` 增加**引导模式**：本平台基线缺失时，打印与其它平台基线的
+  **差集**（新平台没法在别的机器上生成自己的基线）。差集通常只有几条，小到能塞进
+  一条 CI 注解 —— 首次引导 Windows 基线正是这么做的。
+- 新增 `scripts/ci-run.sh`：把「tee + 失败时合成一条多行 check 注解」抽成可复用脚本，
+  Rust 腿与清单守卫共用（原先内联在 workflow 里，两份会漂）。
+
+**⚠️ 坦白一处**：`test-baseline.windows.txt` 的 500 条是**按平台互斥的 `cfg` 推导出来的**
+（= macOS 基线 − 5 条 macOS 专属 + 2 条 Windows 专属），**不是**在 Windows 上跑出来的。
+Windows 腿第一次跑就会验证这个推导：对得上则绿；对不上则清单守卫会打出真实差集
+（缺名 FAIL / 多名 WARN）。这是刻意选的路径 —— 推导错了不会静默通过。
+
+**本地验证**：`npm run verify` 8 步全绿；`bash scripts/ci-run.sh` 成功/失败两条路径都实跑过
+（成功不透传注解、失败以原退出码退出并合成单条多行注解）；引导模式的差集报告用一个
+伪造的 `test-baseline.windows.txt` 演练过（正确报出 `+5` / `-2`）。
+
 ### Fixed (CI 首次跑测试就红：一条广播测试在 runner 上必然失败 —— 2026-09-16)
 
 **这是本项目第一次在 CI 里跑 `cargo test`，结果是 502 通过 / 1 失败。**

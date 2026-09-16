@@ -166,10 +166,44 @@ function checkRust() {
   if (!existsSync(BASELINE)) {
     // ⚠️ 这里**故意不自动创建**：若在缺失时静默生成基线，等于"没有基线也算通过"，
     // 正是本脚本要消灭的那类空转（新平台第一次跑会假绿）。
+    //
+    // 但新平台（如 Windows 首次接入 CI）没法在别的机器上生成自己的基线 ——
+    // 于是这里把与**已有基线**的差集打出来：差集通常只有几条（平台互斥的 #[cfg]），
+    // 小到能塞进一条 CI 注解，照着它就能手工构造出本平台的基线。
     console.error(`✗ 本平台（${RUST_OS}）没有基线文件：${path.relative(ROOT, BASELINE)}`);
     console.error("  基线必须按平台分开（macOS 外设 / Windows 外设是互斥的 #[cfg]）——");
     console.error("  拿别的平台的基线来比会把平台门控的用例误判成「静默跳过」。");
-    console.error("  首次建立本平台基线：node scripts/check-test-manifest.mjs --update");
+    console.error("");
+    console.error(`  引导：本次实际名单共 ${actual.length} 条。与已有基线的差集如下 ——`);
+    const others = readdirSync(TAURI)
+      .filter((f) => /^test-baseline\..+\.txt$/.test(f))
+      .map((f) => ({
+        file: f,
+        names: readFileSync(path.join(TAURI, f), "utf8")
+          .split("\n")
+          .map((s) => s.trim())
+          .filter(Boolean),
+      }));
+    if (others.length === 0) {
+      console.error("  （没有任何已有基线可参照，直接跑 --update 生成）");
+    }
+    const actualSet2 = new Set(actual);
+    for (const o of others) {
+      const oSet = new Set(o.names);
+      const onlyHere = actual.filter((n) => !oSet.has(n));
+      const onlyThere = o.names.filter((n) => !actualSet2.has(n));
+      console.error("");
+      console.error(`  vs ${o.file}（${o.names.length} 条）：`);
+      console.error(`    + 只在本平台实际名单里（${onlyHere.length}）—— 本平台专属用例：`);
+      for (const n of onlyHere) console.error(`        ${n}`);
+      console.error(`    - 只在对方基线里（${onlyThere.length}）—— 对方平台专属用例：`);
+      for (const n of onlyThere) console.error(`        ${n}`);
+      console.error(`    ⇒ 本平台基线 = 对方基线 ${onlyThere.length ? `去掉上面 ${onlyThere.length} 条` : ""}` +
+        `${onlyThere.length && onlyHere.length ? "、" : ""}${onlyHere.length ? `加上上面 ${onlyHere.length} 条` : ""}` +
+        `${!onlyThere.length && !onlyHere.length ? "（两者完全相同）" : ""}`);
+    }
+    console.error("");
+    console.error("  构造好之后跑 `node scripts/check-test-manifest.mjs --only rust` 复核。");
     return false;
   }
 

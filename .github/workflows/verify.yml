@@ -36,8 +36,9 @@ name: Verify
 #      src-tauri/src/transport/mod.rs:24   #[cfg(all(feature = "bluetooth", target_os = "windows"))]
 #
 #  在 ubuntu 上这两块**都不编译**，对应的用例一条都不跑，而 CI 照样全绿。
-#  macos-latest 是主平台（Mac 当 BLE 外设的那一半只在这里），所以先锁它。
-#  Windows 那半边留给后续的跨平台 job（见 docs/ENGINEERING_HARDENING_ROADMAP.md 的 Phase 2）。
+#  macos-latest 是主平台（Mac 当 BLE 外设的那一半只在这里）。
+#  另一半（Windows 外设）由 `rust` job 的 **windows-latest 那条腿**覆盖 ——
+#  两条腿各用各的基线，因为两侧是互斥的 #[cfg]（见该 job 的注释）。
 #
 #  ## ⚠️ 为什么这里**故意没有** cargo fmt / clippy
 #
@@ -135,12 +136,30 @@ jobs:
         run: npm run build
 
   # ---------------------------------------------------------------------------
-  #  Rust：单测 + 清单守卫
+  #  Rust：单测 + 清单守卫（macOS + Windows 两条腿）
+  #
+  #  ⚠️ 为什么必须有 Windows 这条腿（2026-09-16）：一部分代码是 **Windows 专属** 的：
+  #
+  #      src-tauri/src/transport/mod.rs:24    #[cfg(all(feature = "bluetooth", target_os = "windows"))]
+  #
+  #  即 `bluetooth_peripheral_windows.rs`（Windows BLE **外设**角色 / WinRT GattServiceProvider，
+  #  2 条用例）。在 macOS 上它**不编译**，那 2 条用例一条都不跑，而 CI 照样全绿。
+  #
+  #  这不是假想的风险：`transport/bluetooth.rs` 里写着「外设侧用的是同一个函数」，
+  #  而实测只有 Windows 走了共享的 `att_payload_budget` —— macOS 那一侧自己抄了一份
+  #  `central_payload_mtu`（硬编码 20 / 512）。这类跨平台漂移**只有在两侧都被编译时才看得见**。
+  #
+  #  每条腿用**自己的**基线（`test-baseline.<平台>.txt`）：macOS 外设与 Windows 外设是
+  #  互斥的 `#[cfg]`，拿 macOS 的基线去比 Windows 会把 5 条平台门控用例误判成「静默跳过」。
   # ---------------------------------------------------------------------------
   rust:
-    name: Rust 单测 / 清单
-    runs-on: macos-latest
-    timeout-minutes: 45
+    name: Rust 单测 / 清单（${{ matrix.os }}）
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -165,38 +184,20 @@ jobs:
       # 漏掉它 BLE 模块根本不编译 ⇒ 那批用例连同被测代码一起消失，而 cargo test 全绿。
       # 这一点由下一步的清单守卫兜底（会比对基线名单）。
       #
-      # ⚠️ 失败时把诊断信息提升为 **check 注解**：注解是**公开可读**的（匿名 API 可取），
-      # 而 job 日志**即使公开仓库也要登录**才能看（"Sign in to view logs"），
-      # 且 actions/jobs/{id}/logs 端点需要仓库权限（匿名 403）。
-      # 本项目 2026-09-16 第一次在 CI 跑测试就撞上这一点：只拿到 "exit code 101"，看不到原因。
+      # 失败诊断走 `scripts/ci-run.sh`：它把关键行合成**一条多行 check 注解**。
+      # 为什么必须这么做 —— CI 红了之后三条渠道只有一条能用：
+      #   · `actions/jobs/{id}/logs` API → 匿名 403；
+      #   · 浏览器日志页 → "Sign in to view logs"（**公开仓库也要登录**）；
+      #   · check 注解 → ✅ 可匿名读 `/repos/O/R/check-runs/{job_id}/annotations`。
       #
-      # 两个细节：
-      # · **只挑关键行**，不整段照搬 —— GitHub 每个 step 只保留约 10 条注解，照搬 30 行会被截断
-      #   （踩过：拿到的全是 `... ok`，真正的错误在截断之外）。
-      # · 合并成**一条多行注解**（换行编码为 `%0A`），进一步避开那个数量上限。
+      # ⚠️ Windows 上必须显式 `shell: bash`（用 Git Bash）——脚本依赖 tee/grep/tail/node。
       - name: Rust 单测
+        shell: bash
         working-directory: src-tauri
-        run: |
-          set +e
-          cargo test --features bluetooth 2>&1 | tee /tmp/cargo-test.log
-          status=${PIPESTATUS[0]}
-          if [ "$status" -ne 0 ]; then
-            {
-              # ⚠️ 变量一律写成 ${var}：紧跟中文全角括号时裸写 $var 会被多字节字符带偏
-              #（本地实测 `$status（` 输出成乱码，braces 可界定变量名边界）。
-              echo "cargo test 退出码 ${status}（日志共 $(wc -l < /tmp/cargo-test.log) 行）"
-              df -h / | tail -1
-              echo "---- 关键行（test result / error / failures / panic / 信号）----"
-              grep -E 'test result:|^error|^failures:|^---- |FAILED|panicked|SIGKILL|signal|Caused by|No space' \
-                /tmp/cargo-test.log | tail -20
-              echo "---- 日志最后 5 行 ----"
-              tail -n 5 /tmp/cargo-test.log
-            } > /tmp/diag.txt
-            cat /tmp/diag.txt
-            node -e 'const m=require("fs").readFileSync("/tmp/diag.txt","utf8");process.stdout.write("::error::"+m.replace(/%/g,"%%").replace(/\r/g,"").replace(/\n+$/,"").replace(/\n/g,"%0A")+"\n")'
-            exit "$status"
-          fi
+        run: bash ../scripts/ci-run.sh "Rust 单测（${{ matrix.os }}）" cargo test --features bluetooth
 
       # 比对「基线名单 ⋈ 实际 --list」：缺名即红，专门拦"测试静默消失"。
+      # 本平台没有基线时会打印与其它平台基线的**差集**（新平台引导用，见脚本注释）。
       - name: 测试清单守卫（Rust）
-        run: node scripts/check-test-manifest.mjs --only rust
+        shell: bash
+        run: bash scripts/ci-run.sh "测试清单守卫（${{ matrix.os }}）" node scripts/check-test-manifest.mjs --only rust
