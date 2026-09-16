@@ -10,6 +10,20 @@
 
 ## [Unreleased]
 
+### Changed (门禁：分支推送也触发 CI，按分支名去重 —— 2026-09-16)
+
+原先 `verify.yml` 只挂 `pull_request` + `push: [main]`，于是**推一条分支上去什么都不会跑** ——
+必须先开 PR 才有结果（2026-09-16 实测：推了 `chore/eng-hardening` 后 API 里一个 run 都没有）。
+
+改成 `push: branches: ["**"]` + `pull_request` 两个都挂，并把 concurrency 的组键从
+`github.ref` 换成 `github.head_ref || github.ref_name`：push 事件取到 `ref_name`、
+PR 事件取到 `head_ref`，两者都是**分支名** ⇒ 「推分支」与「开/更新 PR」落进同一个组，
+后启动的取消先启动的，**不会双跑**（原先 `refs/heads/X` 与 `refs/pull/N/merge` 会被分成两组）。
+
+本仓库是 public ⇒ Actions 分钟数（含 macOS）免费，所以"每次推送都跑"没有成本顾虑。
+⚠️ 已写进 workflow 注释：将来若启用 branch protection，建议改回只挂 `pull_request` ——
+去重是"后者取消前者"的竞态，被取消的那次在 PR 上会显示 cancelled，branch protection 会判不通过。
+
 ### Added (统一验证入口 + 把护栏真正跑起来 —— 2026-09-16)
 
 **背景**：上一条给 CI 装了门禁（PR 上跑测试），但验证手段仍然散在四处：CI 记一份、

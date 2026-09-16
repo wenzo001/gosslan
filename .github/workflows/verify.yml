@@ -6,16 +6,27 @@ name: Verify
 #  ## 为什么要有这个 workflow
 #
 #  本仓库此前**三个 workflow 全是打包**（build / build-macos / build-android），
-#  没有任何一个跑测试。也就是说：455 条前端断言 + 503 条 Rust 用例 + 87 条非空转
+#  没有任何一个跑测试。也就是说：457 条前端断言 + 503 条 Rust 用例 + 93 条非空转
 #  护栏，全部依赖**人工记得跑**。纪律很强，但没有门禁 —— 一次漏跑就能把回归合进 main。
 #
 #  真实案例（CHANGELOG 4.18.7 → 4.18.10）：BLE 分片问题连着四个版本边修边冒，
 #  每一版都是人工验证过的。有这条门禁，4.18.7 的修复会当场被 4.18.9 的用例拦住。
 #
-#  ## 触发条件（`pull_request` 是重点）
+#  ## 触发条件：两个都挂
 #
-#  只挂 `push: [main]` 等于**合并之后**才检查，太晚。必须挂 `pull_request`，
-#  让检查发生在合并之前。
+#  `push`（任意分支）+ `pull_request`。
+#
+#  · 只挂 `push: [main]` 等于**合并之后**才检查，太晚；
+#  · 只挂 `pull_request` 则"推上去"拿不到结果，必须先开 PR 才跑
+#    （2026-09-16 实测：推了一条分支上去，API 里一个 run 都没有）；
+#  · 两个都挂会让同一个分支**同时**触发两次（push 事件 + PR synchronize 事件），
+#    靠下面的 concurrency 按**分支名**去重，不会真的跑两遍。
+#
+#  本仓库是 public ⇒ Actions 分钟数（含 macOS）免费，所以"每次推送都跑"没有成本顾虑。
+#
+#  ⚠️ 将来若启用 branch protection（要求 PR 上的检查通过），建议改回**只挂
+#  `pull_request`**：去重是"后者取消前者"的竞态，被取消的那次在 PR 上会显示 cancelled，
+#  branch protection 会因此判不通过。
 #
 #  ## ⚠️ 为什么是 macos-latest，而不是 ubuntu-latest
 #
@@ -32,7 +43,7 @@ name: Verify
 #
 #  第一版门禁必须**全绿**。当前 `cargo fmt --check` 有 517 处差异、`clippy` 尚未安装 ——
 #  现在加进来会让每次 PR 立刻全红，结果是所有人开始用 `--no-verify` 绕过，
-#  门禁一旦被绕过一次就永久失效。这两项作为**独立的技术债**单独还（Phase 0.5）。
+#  门禁一旦被绕过一次就永久失效。这两项作为**独立的技术债**单独还。
 #
 #  ## ⚠️ 为什么 Rust job 必须先 `npm run build`
 #
@@ -54,14 +65,18 @@ name: Verify
 # =============================================================================
 
 on:
-  pull_request:
+  # 任意分支推送都跑：推上去就能拿到结果，不必先开 PR（见文件头「触发条件」）。
   push:
-    branches: [main]
+    branches: ["**"]
+  # PR 上仍跑（合并前的关卡）。与上面的 push 事件可能同时触发，由 concurrency 去重。
+  pull_request:
   workflow_dispatch:
 
-# 同一分支连推多次时，取消掉过时的运行，省 runner 时间。
+# 同一分支去重：push 事件用 `ref_name`、PR 事件用 `head_ref`，两者都取到**分支名**，
+# 所以「推分支」与「开/更新 PR」会落进同一个并发组 —— 后启动的取消先启动的，不会双跑。
+# （原先用 `github.ref`：push 是 `refs/heads/X`、PR 是 `refs/pull/N/merge`，会被分成两组。）
 concurrency:
-  group: verify-${{ github.ref }}
+  group: verify-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 permissions:
