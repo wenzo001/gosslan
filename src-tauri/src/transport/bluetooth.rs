@@ -551,7 +551,15 @@ pub mod driver {
         fn payload_mtu_handles_normal_and_bogus_values() {
             assert_eq!(payload_mtu(23), 20, "默认 MTU 23 ⇒ 20 字节载荷");
             assert_eq!(payload_mtu(185), 182, "常见协商值");
-            assert_eq!(payload_mtu(517), 514, "5.0 常见大 MTU");
+            // ⚠️ 大 MTU 必须封顶到 AOSP 的 `GATT_MAX_ATTR_LEN = 512`（**与协商 MTU 无关**）。
+            // 安卓上 btleplug 的 `mtu()` 返回的是**请求值 517**，517-3=514 > 512 会让
+            // `writeCharacteristic` 直接抛 IllegalArgumentException ⇒
+            // 单分片帧正常、**多分片帧永远发不出去**（4.18.8 的真机缺陷，4.18.9 才修）。
+            // 这条断言把边界钉死，避免有人"顺手"把封顶去掉。
+            assert_eq!(payload_mtu(517), 512, "5.0 大 MTU 封顶到 AOSP 上限");
+            assert_eq!(payload_mtu(515), 512, "恰好落在上限上");
+            assert_eq!(payload_mtu(514), 511, "上限之下一字节不封顶");
+            assert_eq!(payload_mtu(513), 510, "上限之下不封顶");
             // 异常：0 / 1 / 2 / 3 都装不下 ATT 头 ⇒ 退回默认
             for bogus in [0u16, 1, 2, 3] {
                 assert_eq!(payload_mtu(bogus), 20, "MTU={bogus} 应退回默认而不是返回 0");

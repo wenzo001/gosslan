@@ -1926,7 +1926,13 @@ pub(crate) fn register_connection(state: &AppState, peer_id: &str, endpoint: Mes
 /// 连接断开后：从 mesh 层移除**这一条** Connection（同一 peer 的其他连接保留）。
 pub(crate) fn unregister_connection(state: &AppState, peer_id: &str, endpoint: &MeshEndpoint) {
     let mut pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
-    pm.remove_connection(peer_id, endpoint);
+    // ⚠️ `remove_connection` 会告诉我们**是否真的移除了**，不能不看就记日志。
+    // 同一条链路有两条拆除路径都会走到这里（BLE 侧的 `teardown_link` 与传输层的统一拆除），
+    // 无条件记日志就会打出两条一模一样的 `-conn … conns=0`，读起来像"同时断了两条链路"
+    // —— 真机日志里出现过（用户 2026-09-16 的记录），排查掉线时会直接把人带偏。
+    if !pm.remove_connection(peer_id, endpoint) {
+        return;
+    }
     state.logger.info(
         "mesh",
         format!(
