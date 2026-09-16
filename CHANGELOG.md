@@ -10,6 +10,47 @@
 
 ## [Unreleased]
 
+### Fixed (BLE 每片 514 字节 > AOSP 硬上限 512 ⇒ 多分片帧永远发不出去)
+
+**查证过程（按用户要求：不猜，先查源码再改）**。
+
+前两次都是猜的，第二次方向对但**幅度不够**，而且**改错了地方**（只改了日志变量，
+`-3` 从未作用于真正的分片）。这次直接读 AOSP 源码
+`android-35/.../bluetooth/BluetoothGatt.java`：
+
+```java
+private static final int GATT_MAX_ATTR_LEN = 512;      // L101
+public int writeCharacteristic(BluetoothGattCharacteristic c, byte[] value, int writeType) {
+    if (value.length > GATT_MAX_ATTR_LEN) {            // L1562
+        throw new IllegalArgumentException(
+            "value should not be longer than max length of an attribute value");
+```
+
+**这个上限是硬编码常量，与协商 MTU 完全无关。**
+
+而本项目的分片预算是 `att_payload_budget(peripheral.mtu())` = `mtu - 3`。
+**btleplug 在 Android 上 `Peripheral::mtu()` 返回的是请求值 517**（不是协商结果）
+⇒ `517 - 3 = 514 > 512` ⇒ 每片 514 字节**必被框架抛异常**。
+
+对照真机日志，症状完全吻合：
+
+| 帧 | 分片 | 每片字节 | 对比 512 | 结果 |
+|---|---|---|---|---|
+| 聊天 272B | 1 片 | 272 | ≤ 512 | ✅ 正常 |
+| 好友申请 738B | 2 片 | **514** | **> 512** | ❌ 永远失败 → 重试 4 次 → 拆链重连 |
+
+**修法**：在**唯一的换算点** `att_payload_budget()` 里封顶到 512
+（外设侧原本就已有 `(1..=512)` 的封顶，所以 Mac 侧一直正常 —— 这也解释了为什么
+只有安卓→Mac 方向失败）。
+
+**同时撤掉上一版加在日志变量上的 `-3`** —— 它只让日志显示 511、分片实际仍是 514，
+属于"让日志说谎"的改动。
+
+护栏：`att_payload_budget(517) == 512`、`(1024) == 512`、`(515) == 512`
+（既有断言 23→20 / 185→182 / 4→1 均低于上限，不受影响）。
+
+验证：cargo test --lib 480 passed · scripts/e2e-dev.sh 30 passed / 0 failed。
+
 ## [4.18.8] - 2026-09-16
 
 ### Fixed (BLE 写入失败日志补上帧长 —— 上一版修复生效但不够，先让它可精确诊断)

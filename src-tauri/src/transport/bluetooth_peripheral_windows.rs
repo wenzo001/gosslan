@@ -669,6 +669,19 @@ mod tests {
         }
         // 边界：刚刚装得下 ATT 头（4-3=1）是**合法换算**，fragment 自己会拒绝这种迷你值
         assert_eq!(ble_framing::att_payload_budget(4), 1);
+
+        // **AOSP 硬上限 512**（`BluetoothGatt.GATT_MAX_ATTR_LEN`，见 ble_framing 的注释）：
+        // `writeCharacteristic` 对 value 长度是 `> 512` 直接抛 IllegalArgumentException，
+        // 与协商 MTU 无关。btleplug 在 Android 上 `Peripheral::mtu()` 返回**请求值 517**
+        // ⇒ 517-3=514 > 512 ⇒ 每片 514 字节必被拒。
+        // 真机症状：单分片帧（272B 聊天）正常、多分片帧（738B 好友申请）永远发不出去。
+        assert_eq!(
+            ble_framing::att_payload_budget(517),
+            512,
+            "协商值超过 AOSP 上限时必须封顶到 512，否则多分片帧永远写不出去"
+        );
+        assert_eq!(ble_framing::att_payload_budget(1024), 512);
+        assert_eq!(ble_framing::att_payload_budget(515), 512);
     }
 
     /// 分片 → 重组必须往返一致（Windows 外设侧与另两端共用同一份 `ble_framing`）。
