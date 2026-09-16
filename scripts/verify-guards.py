@@ -1580,6 +1580,61 @@ CASES: list[Case] = [
         expect_fail_hint="未登记",
         tags=["manifest", "frontend"],
     ),
+    # ---------------- 不变量例外登记（挡住「照文档误修」） ----------------
+    # 守的是 `scripts/check-invariant-exceptions.mjs`：代码侧的 `INV-EXCEPTION:` 标记
+    # 与 `docs/protocol-invariants.md` §22 登记区必须**双向**一致。
+    Case(
+        name="不变量例外：代码标了但文档没登记必须报出来（否则会被照文档误修）",
+        why="AI 的必读清单（AI_ENGINEERING_INDEX.md）只指向 protocol-invariants.md 与本文件。"
+            "一段**正当**的例外若只写在实现旁边、没写进那份文档，读文档的人就会把它当 bug 修掉 ——"
+            "「和自己聊天」正是这种：它不进 outbox，「修」成进 outbox 会让那行永远等不到 Ack、"
+            "被 flush_outbox 每次心跳重发，把「outbox 必然排空」真的破掉。",
+        file=TAURI / "src" / "commands.rs",
+        injections=[(
+            "// INV-EXCEPTION: INV-P03, INV-P04 — 自聊收发双方都是本机",
+            "// INV-EXCEPTION: INV-P03, INV-P04, INV-P20 — 自聊收发双方都是本机",
+        )],
+        cmd=["node", "scripts/check-invariant-exceptions.mjs"],
+        cwd=ROOT,
+        expect_fail_hint="没登记进不变量文档",
+        tags=["invariant", "new-guards"],
+    ),
+    Case(
+        name="不变量例外：文档登记了但代码标记没了必须报出来（否则文档在说谎）",
+        why="登记的例外如果代码里已无人声明，要么这段代码的例外成了隐藏事实，"
+            "要么例外早已不存在而登记忘了撤 —— 两种都会让文档变得不可信，"
+            "而「文档不可信」比「没有文档」更糟：它会让所有不变量一起失效。",
+        file=TAURI / "src" / "commands.rs",
+        injections=[(
+            "// INV-EXCEPTION: INV-P03, INV-P04 — 自聊收发双方都是本机，没有对端可等 Ack：",
+            "// （标记被删）",
+        )],
+        cmd=["node", "scripts/check-invariant-exceptions.mjs"],
+        cwd=ROOT,
+        expect_fail_hint="找不到对应标记",
+        tags=["invariant", "new-guards"],
+    ),
+    Case(
+        name="不变量例外：登记里出现文档未定义的 id（笔误会登记出一条不存在的例外）",
+        why="例外表里的 id 打错一个数字，就等于凭空登记了一条不存在的例外。"
+            "这类笔误不会自己冒出来，只会在某次「照文档排查」时把人带沟里。",
+        file=TAURI / "src" / "commands.rs",
+        injections=[(
+            "// INV-EXCEPTION: INV-P03, INV-P04 — 自聊收发双方都是本机",
+            "// INV-EXCEPTION: INV-P03, INV-P04, INV-P99 — 自聊收发双方都是本机",
+        )],
+        # 同时改文档：把这个不存在的 id 也写进登记区，才能把「笔误」单独隔离出来
+        # （否则会先以「代码标了没登记」失败，证明不了笔误这条判据本身有效）。
+        extra_injections=[(
+            ROOT / "docs" / "protocol-invariants.md",
+            "<!-- END EXCEPTION REGISTRY -->",
+            "| INV-P99 | 探针 | 无 | 探针 |\n\n<!-- END EXCEPTION REGISTRY -->",
+        )],
+        cmd=["node", "scripts/check-invariant-exceptions.mjs"],
+        cwd=ROOT,
+        expect_fail_hint="文档未定义",
+        tags=["invariant", "new-guards"],
+    ),
 ]
 
 

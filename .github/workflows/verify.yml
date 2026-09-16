@@ -94,6 +94,12 @@ jobs:
       - name: 测试清单守卫（前端）
         run: node scripts/check-test-manifest.mjs --only frontend
 
+      # 守的是「不变量有了例外，但只写在实现旁边、没写进 protocol-invariants.md」——
+      # 那份文档是 AI 的必读清单里唯一的不变量来源，没登记的例外会被照文档误修。
+      # 纯静态扫描，不需要编译，所以放在这个（快的）job 里。
+      - name: 不变量例外守卫
+        run: node scripts/check-invariant-exceptions.mjs
+
       # 不只是"为 Rust job 准备 dist"：前端构建本身失败也应当拦住这次 PR。
       - name: 前端构建
         run: npm run build

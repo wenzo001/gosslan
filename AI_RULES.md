@@ -341,6 +341,25 @@ If documentation and implementation disagree:
 
 These invariants are mandatory.
 
+## Exceptions Must Be Registered
+
+If a code path **must** deviate from an invariant, both of the following are required:
+
+1. A marker at the code site: `// INV-EXCEPTION: INV-PXX — <why this exception is necessary>`
+2. An entry in `docs/protocol-invariants.md` §22 (`INV-P22`): id + reason + origin
+
+`scripts/check-invariant-exceptions.mjs` verifies both directions; either side missing fails CI.
+
+An **unregistered exception is a bug** — not because the exception itself is wrong, but because
+it is invisible to whoever reads the docs. The required-reading list points at
+`protocol-invariants.md`, so a reader will see `insert_self_message` skipping the outbox and
+"fix" it back — which would genuinely break the invariant that the exception was protecting
+(the outbox row can never be acked, so `flush_outbox` would resend it on every heartbeat).
+
+Exceptions are not a licence to break invariants freely. Each one must answer
+"why is there no other way", and only invariants that are **actually** deviated from get
+registered — padding the registry with invariants that were never violated defeats its purpose.
+
 ## INV-001 — Stable Message ID
 
 Every logical message must have a stable `msg_id`.

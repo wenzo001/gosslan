@@ -10,6 +10,53 @@
 
 ## [Unreleased]
 
+### Added (不变量例外登记：让「照文档误修」不再可能 —— 2026-09-16)
+
+**问题（这是活的，不是假设）**：「和自己聊天」（`7c03341`）给两条核心不变量开了**正当**的例外 ——
+落库即终态 `read`（跳过 INV-P03 的 `queued → sending → waiting_ack → delivered`），
+且不写 outbox（INV-P04）。理由充分、注释也写得很清楚，落在三处：`commands.rs` 的
+`insert_self_message` 文档注释、`verify-guards.py` 的「自聊消息必须留在本地」用例、
+`src/utils/selfChat.ts` 的文件头。
+
+但这三处**都不在 AI 的必读清单里**。`docs/AI_ENGINEERING_INDEX.md` 只指向
+`protocol-invariants.md` 与 `AI_RULES.md`，而这两份当时**一个字都没提**这个例外。于是：
+
+```text
+AI 读 INV-P04「发送可靠消息 → insert message + insert outbox」
+        ↓
+看到 insert_self_message 只 insert_message、没有 outbox
+        ↓
+按文档判定这是 bug 并「修」它
+        ↓
+自聊消息进入 outbox ⇒ 永远等不到对端 Ack ⇒ flush_outbox 每次心跳重发
+        ↓
+「outbox 必然排空」被真的破掉 —— 而这次回归是「照文档修」造成的
+```
+
+**结论：局部注释不能替代规范文档。** 同一条知识写在实现旁边，对读实现的人有用、
+对读不变量的人没用；而 AI 读的是不变量。
+
+**做法**：
+
+- `docs/protocol-invariants.md` 新增 §22 `INV-P22 — Exceptions Must Be Registered`，
+  含一张**机器可解析**的例外登记表（用 `<!-- BEGIN/END EXCEPTION REGISTRY -->` 划边界 ——
+  那份文档正文本来就到处是 `INV-Pxx`，不划边界就分不清「正文提到」与「登记为例外」）。
+- `commands.rs` 的 `insert_self_message` 上方加 `// INV-EXCEPTION: INV-P03, INV-P04 — …` 标记。
+- 新增 `scripts/check-invariant-exceptions.mjs`，**双向**校验：代码标了文档没登记 ⇒ FAIL
+  （下一个人会被文档误导）；文档登记了代码没标 ⇒ FAIL（文档在说谎）；登记了文档未定义的 id
+  ⇒ FAIL（笔误凭空造出一条不存在的例外）。
+- `AI_RULES.md` §8 增「Exceptions Must Be Registered」，把规矩放进必读文件本身。
+- `scripts/verify-guards.py` 补三条非空转用例（`--only invariant`）；新守卫接入
+  `.github/workflows/verify.yml` 的前端 job（纯静态扫描，不需要编译）。
+
+**顺带修正了我自己的一处判断**：最初以为自聊也破了 INV-P07（Gossip）与 INV-P10（E2EE）。
+精读原文后**不是** —— INV-P07 只要求 TTL/去重/扇出有界、并不要求广播；INV-P10 管的是
+「解密失败不得静默退明文」，而自聊压根没有密文。所以登记表**只登记 INV-P03 与 INV-P04**。
+刻意不把未被违反的不变量塞进登记表 —— 那会让「例外」这个机制失去信号价值。
+
+**验证**：`npm test` **455 全绿**；`cargo test --features bluetooth` **503 全绿**；
+三条新护栏全部通过非空转验证（改坏即 FAIL、恢复即 PASS）；护栏总数 **87 → 92**。
+
 ### Added (工程门禁：让「测试静默不跑」不再可能 —— 2026-09-16)
 
 **背景**：本仓库此前三个 workflow（`build` / `build-macos` / `build-android`）**全是打包**，
