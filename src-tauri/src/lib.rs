@@ -265,6 +265,12 @@ pub fn run() {
                             st.logger
                                 .info("file", format!("清理过期 .part：{removed} 个"));
                         }
+                        // 同一趟里清扫内存态的中继表（见 sweep_stale_relay 的说明）。
+                        let swept = crate::network::transport::sweep_stale_relay(&st);
+                        if swept > 0 {
+                            st.logger
+                                .info("relay", format!("清理过期中继态：{swept} 项"));
+                        }
                         tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
                     }
                 });
@@ -299,6 +305,7 @@ pub fn run() {
             commands::reset_settings,
             commands::broadcast_chat_style,
             commands::get_friends,
+            commands::get_safety_number,
             commands::remove_friend,
             commands::get_pending_requests,
             commands::send_friend_request,
@@ -309,6 +316,7 @@ pub fn run() {
             commands::get_message_count,
             commands::get_conversations,
             commands::ensure_conversation,
+            commands::set_conversation_pinned,
             commands::mark_read,
             commands::delete_conversation,
             commands::create_group,
@@ -326,8 +334,17 @@ pub fn run() {
             commands::window_toggle_fullscreen,
             commands::window_close,
             commands::send_group_message,
+            commands::send_group_reaction,
+            commands::recall_group_message,
+            commands::pin_group_message,
+            commands::send_group_announcement,
+            commands::send_group_todo,
+            commands::set_group_todo_done,
+            commands::send_group_poll,
+            commands::cast_group_poll_vote,
             commands::send_group_file,
             commands::get_group_file_delivery_summary,
+            commands::list_group_files,
             commands::send_file,
             commands::request_content,
             commands::get_content_transfers,
@@ -1647,6 +1664,28 @@ mod tests {
             file.contains("pub fn sweep_stale_parts("),
             "必须有 .part 定期清扫（可恢复失败会保留前缀，不能让它们无限堆积）"
         );
+    }
+
+    /// 不得「先绑定 `links` 守卫、再在循环里 await 发送」。
+    ///
+    /// `links` 是 `tokio::sync::Mutex`，跨 await 持锁**编译器不拦**，而发送目标都是有界队列
+    /// （1024）：对端僵死（半开 TCP / 休眠 / 写缓冲满）时 `send().await` 会一直挂起却握着
+    /// 全局 links 锁 ⇒ try_send、心跳、get_peers、mark_peer_offline、teardown_link 以及
+    /// 看门狗全部阻塞。看门狗恰恰是唯一能发 cancel 拆掉那条卡死连接、让队列排空的机制，
+    /// 它被同一把锁挡住就是自锁死循环，只能靠用户手动重开局域网。
+    /// 正确写法：锁内只 `clone` 发送端快照，发送放到锁外（与心跳发送同一纪律）。
+    #[test]
+    fn never_awaits_while_holding_the_links_lock() {
+        let cmds = include_str!("commands.rs");
+        for f in ["pub async fn update_profile(", "pub async fn broadcast_chat_style("] {
+            let body = rust_fn_body(cmds, f);
+            assert!(
+                !body.contains("for link in links"),
+                "{f} 又回到「持有 links 守卫时 await 发送」的写法：\
+                 队列有界，对端僵死会让 send().await 永久挂起并握着全局 links 锁，\
+                 连看门狗都拿不到锁 ⇒ 网络层自锁死。必须先 collect 发送端快照、再在锁外发送。"
+            );
+        }
     }
 
     /// **内容拉取必须走能力协商**（ADR-0019 Phase 3）：旧端不发新帧、新端才拉；

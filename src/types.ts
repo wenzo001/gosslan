@@ -43,7 +43,32 @@ export interface PendingRequest {
   ts: number;
 }
 
-export type MsgKind = "text" | "code" | "image" | "file" | "system";
+export type MsgKind =
+  | "text"
+  | "code"
+  | "image"
+  | "file"
+  | "system"
+  | "reaction"
+  | "recall"
+  | "recalled"
+  | "pin"
+  | "announcement"
+  | "announcement_delete"
+  | "todo"
+  | "todo_done"
+  | "poll"
+  | "poll_vote";
+
+/** 表情回应的事件载荷（kind = "reaction" 时 content 的 JSON 形态）。 */
+export interface ReactionPayload {
+  /** 被回应的消息 msg_id */
+  target: string;
+  /** 表情 token，如 "[赞]" */
+  emoji: string;
+  /** true = 添加，false = 取消 */
+  add: boolean;
+}
 
 export interface MessageRecord {
   id: number;
@@ -67,6 +92,24 @@ export interface Conversation {
   last_msg: string | null;
   last_ts: number | null;
   unread: number;
+  /** 本机置顶（纯本地偏好，不广播不同步）。列表排序时优先于 last_ts。 */
+  pinned: boolean;
+}
+
+/** 群文件列表项（「群文件」面板）。本机持有状态与群投递进度是两回事。 */
+export interface GroupFileEntry {
+  transfer_id: string;
+  name: string;
+  size: number;
+  sender_id: string;
+  created_at: number;
+  /** local = 本机可打开；receiving = 传输中；remote = 未取到；failed = 取失败可重试 */
+  local_state: "local" | "receiving" | "remote" | "failed";
+  /** 仅 local_state === "local" 时给出的本机真实路径 */
+  local_path: string | null;
+  /** 该文件对全群的投递进度（已完成成员数 / 成员总数） */
+  delivered: number;
+  total: number;
 }
 
 /** 会话的「当前链路」快照：最近一条消息走的链路 + 中间节点数。 */

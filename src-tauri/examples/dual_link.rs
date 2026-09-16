@@ -112,6 +112,7 @@ async fn connect_and_hello(
         nickname: "dual-link".to_string(),
         avatar: None,
         device_type: "desktop".to_string(),
+        content_features: gosslan_lib::protocol::content_features(),
         tcp_port: 0,
         x25519_pubkey: x25519,
         ed25519_pubkey: ed25519,

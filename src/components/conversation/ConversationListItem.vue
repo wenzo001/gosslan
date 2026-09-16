@@ -7,6 +7,7 @@ import { useChatStore } from "@/stores/useChatStore";
 import { useMemberProfile } from "@/composables/useMemberProfile";
 import { haptic } from "@/utils/haptics";
 import UnreadBadge from "@/components/UnreadBadge.vue";
+import { Pin } from "lucide-vue-next";
 import type { Conversation } from "@/types";
 
 const props = defineProps<{
@@ -201,7 +202,13 @@ const gridTiles = computed(() => {
           :class="active ? 'font-medium text-[var(--gosslan-list-active-text)]' : 'text-[var(--gosslan-text)]'"
           :title="conv.name"
         >
-          {{ conv.name }}
+          <!-- 置顶标识（微信同款位置：名字左侧）。纯本地偏好，对方不可见。 -->
+          <Pin
+            v-if="conv.pinned"
+            class="mr-1 inline-block h-3 w-3 shrink-0 -rotate-45 align-[-1px]"
+            :class="active ? 'opacity-90' : 'text-[var(--gosslan-text-2)]'"
+            aria-hidden="true"
+          />{{ conv.name }}
         </span>
         <span
           class="shrink-0 whitespace-nowrap text-[11px]"

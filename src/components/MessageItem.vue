@@ -19,10 +19,13 @@ import MessageCodeBubble from "@/components/message/MessageCodeBubble.vue";
 import MessageFileBubble from "@/components/message/MessageFileBubble.vue";
 import MessageImageBubble from "@/components/message/MessageImageBubble.vue";
 import MessageReceipt from "@/components/message/MessageReceipt.vue";
+import BaseModal from "@/components/BaseModal.vue";
+import MessageReactionBar from "@/components/message/MessageReactionBar.vue";
+import type { ReactionChip } from "@/utils/reactions";
 import MessageContentModal from "@/components/message/MessageContentModal.vue";
 import MessageContextMenu from "@/components/message/MessageContextMenu.vue";
 import ActionSheet from "@/components/ActionSheet.vue";
-import { Copy, CornerUpLeft, Save, Share2, ImageOff, TextSelect } from "lucide-vue-next";
+import { Copy, CornerUpLeft, Save, Share2, ImageOff, TextSelect , Undo2, Pin } from "lucide-vue-next";
 import type { MessageRecord, MsgKind } from "@/types";
 
 const props = withDefaults(
@@ -42,6 +45,10 @@ const props = withDefaults(
     highlightId?: string | number | null;
     /** 群成员名列表：文本气泡据此高亮 @提及（单聊不传） */
     mentionNames?: string[];
+    /** 已折叠的表情回应（由会话层算好传入，避免每条消息各自 O(n) 重算）。 */
+    reactions?: ReactionChip[];
+    /** 该消息当前是否被置顶（决定菜单显示「置顶」还是「取消置顶」） */
+    pinned?: boolean;
   }>(),
   {
     prev: null,
@@ -55,6 +62,9 @@ const props = withDefaults(
 );
 
 const app = useAppStore();
+
+/** 快捷回应表情：与 EmojiPicker 同一套「[名字]」token（后端按同一形态校验）。 */
+const QUICK_REACTIONS = ["[赞]", "[微笑]", "[捂脸]", "[流泪]"];
 
 /**
  * 「点击重取」：文件/图片没拿到（未完成 / 已被清理）时，请对端按 cid 再发一份。
@@ -458,8 +468,48 @@ const emit = defineEmits<{
   (e: "quote", payload: { sender: string; snippet: string; msgId: string | number }): void;
   (e: "forward", payload: { kind: MsgKind; content: string; snippet: string; filePath?: string }): void;
   (e: "locate", msgId: string): void;
+  /** 点了某个表情 chip（已点过则是取消） */
+  (e: "react", emoji: string): void;
+  /** 切换置顶（群聊） */
+  (e: "pin"): void;
   (e: "open-image", msgId: string): void;
 }>();
+
+/**
+ * 能否撤回：**只有自己发的、且未被撤回的**消息才给入口。
+ *
+ * 后端也只在 `sender_id == 自己` 时才接受撤回 —— 前端隐藏入口不是为了安全
+ * （安全由签名保证），而是不让用户白点一次再收到报错。
+ */
+// ⚠️ 必须判 isGroup：单聊没有撤回（后端只实现了群撤回），
+// 否则入口可见、点了确认后 `confirmRecall` 里静默 return —— 用户看到的是"什么都没发生"。
+// ⚠️ `mine` 是从 composable 解构出来的 **ComputedRef**（本文件其它地方都写 `mine.value`）。
+// 在模板里 Vue 自动解包，但在 script 的 computed 内部**不会** —— 裸写 `mine` 是个对象、
+// 恒为真值，于是群聊里对**任何人的消息**都会显示「撤回」（用户真机反馈的那个 bug）。
+const canRecall = computed(
+  () => !!props.isGroup && mine.value && props.message.kind !== "recalled",
+);
+
+/** 撤回前的二次确认：破坏性且不可逆（对方看到的是「消息已撤回」，收不回来）。 */
+const confirmingRecall = ref(false);
+
+function doRecall() {
+  closeContextMenu();
+  closeActionSheet();
+  confirmingRecall.value = true;
+}
+
+async function confirmRecall() {
+  confirmingRecall.value = false;
+  const convId = props.message.conv_id;
+  if (!convId.startsWith("group:")) return;
+  try {
+    await chat.recallMessage(convId.slice(6), props.message.msg_id);
+    app.toast(t("msg.recallDone"), "success");
+  } catch (e) {
+    app.toastError(e, t("msg.recallFail"));
+  }
+}
 
 function doQuote() {
   // ⚠️ 必须收起**底部面板**（不只是桌面右键菜单）：用户 2026-09-13 安卓实测
@@ -534,7 +584,9 @@ async function copyFileToClipboard() {
 </script>
 
 <template>
-  <div class="py-1.5" :class="highlighted ? 'rounded-[var(--gosslan-radius-md)] bg-primary/5 ring-1 ring-primary/25' : ''">
+  <!-- group/msg：表情回应条是"消息行"的**兄弟节点**，不在 group/row 的作用域内 ——
+       悬停揭示必须挂在这一层，否则 group-hover/msg 永远不触发（那个组名以前根本不存在）。 -->
+  <div class="group/msg py-1.5" :class="highlighted ? 'rounded-[var(--gosslan-radius-md)] bg-primary/5 ring-1 ring-primary/25' : ''">
     <!-- 时间分割线（间隔 ≥ 5 分钟）：居中浅灰小字 -->
     <div v-if="showTimeDivider" class="py-2 text-center text-[11px] text-[var(--gosslan-text-2)]">
       {{ timeDividerText }}
@@ -566,12 +618,14 @@ async function copyFileToClipboard() {
           {{ senderName || chat.nicknameOf(message.sender_id) }}
         </div>
 
-        <!-- 系统消息 -->
+        <!-- 系统消息 / 已撤回：同一形态（居中灰条，无气泡、无头像）。
+             「已撤回」刻意**不显示撤回者头像与气泡** —— 它与系统提示同为状态行，
+             给气泡会让人误以为还能点开/复制。 -->
         <div
-          v-if="message.kind === 'system'"
+          v-if="message.kind === 'system' || message.kind === 'recalled'"
           class="w-full text-center text-xs text-[var(--gosslan-text-2)]"
         >
-          {{ message.content }}
+          {{ message.kind === "recalled" ? t("msg.recalled") : message.content }}
         </div>
 
         <!-- 消息行：气泡 + 侧挂回执（mine 时回执在气泡左侧）；右键（桌面）/长按（移动端）弹消息菜单 -->
@@ -687,6 +741,37 @@ async function copyFileToClipboard() {
     </div>
   </div>
 
+  <!-- 表情回应条：挂在消息行**下方**（飞书/微信同款位置），与气泡同侧对齐。
+       放在行内会被 `flex items-end` 摆到气泡右侧，语义不对。 -->
+  <MessageReactionBar
+    v-if="message.kind !== 'system'"
+    :chips="reactions ?? []"
+    :mine="mine"
+    :interactive="!!isGroup"
+    :quick="QUICK_REACTIONS"
+    :class="mine ? 'self-end pr-1' : 'self-start pl-1'"
+    @toggle="emit('react', $event)"
+  />
+
+  <!-- 撤回二次确认：破坏性且不可逆，必须显式确认（各端一致，移动端同样弹这个） -->
+  <BaseModal :open="confirmingRecall" :title="t('msg.recall')" @close="confirmingRecall = false">
+    <p class="text-sm leading-relaxed text-[var(--gosslan-text)]">{{ t("msg.recallConfirm") }}</p>
+    <div class="mt-5 flex justify-end gap-2">
+      <button
+        class="tap-safe rounded-[var(--gosslan-radius-md)] px-4 py-2 text-sm text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+        @click="confirmingRecall = false"
+      >
+        {{ t("common.cancel") }}
+      </button>
+      <button
+        class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-2 text-sm text-white transition hover:opacity-90"
+        @click="confirmRecall"
+      >
+        {{ t("common.confirm") }}
+      </button>
+    </div>
+  </BaseModal>
+
   <MessageContentModal
     :open="fullModalOpen"
     :kind="fullModalKind"
@@ -710,6 +795,11 @@ async function copyFileToClipboard() {
     @save-file="saveFileTo"
     @copy-file="copyFileToClipboard"
     @quote="doQuote"
+    :can-recall="canRecall"
+    :can-pin="isGroup && message.kind !== 'recalled'"
+    :pinned="!!pinned"
+    @pin="emit('pin')"
+    @recall="doRecall"
     @forward="doForward"
   />
 
@@ -775,6 +865,28 @@ async function copyFileToClipboard() {
       >
         <CornerUpLeft class="h-5 w-5 text-[var(--gosslan-text-2)]" />
         {{ t("common.quote") }}
+      </button>
+
+      <!-- 置顶：任意群成员都能置（可逆、低风险），与撤回不同 -->
+      <button
+        v-if="isGroup && message.kind !== 'recalled'"
+        class="flex items-center gap-3 px-4 py-3 text-left text-[15px] text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
+        @click="closeActionSheet(); emit('pin')"
+      >
+        <Pin class="h-5 w-5 text-[var(--gosslan-text-2)]" />
+        {{ pinned ? t("msg.unpin") : t("msg.pin") }}
+      </button>
+
+      <!-- 撤回：与桌面右键菜单**共用同一个判定**（`canRecall`）——
+           此前这里是内联条件且漏了 isGroup，导致单聊长按也出现「撤回」，
+           而后端只实现了群撤回 ⇒ 点了确认后什么都不发生。 -->
+      <button
+        v-if="canRecall"
+        class="flex items-center gap-3 px-4 py-3 text-left text-[15px] text-[var(--gosslan-danger-ink)] transition active:bg-[var(--gosslan-hover)]"
+        @click="doRecall"
+      >
+        <Undo2 class="h-5 w-5" />
+        {{ t("msg.recall") }}
       </button>
       <button
         v-if="forwardable(message.kind)"

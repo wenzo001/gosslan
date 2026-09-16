@@ -97,6 +97,247 @@ impl MsgKind {
     }
 }
 
+/// 一种 wire kind 在**接收侧**的语义分类。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum KindClass {
+    /// 时间线内容：计未读、进会话预览、弹通知、可搜索。渲染成气泡或卡片。
+    Bubble,
+    /// 静默状态事件（表情回应、撤回、置顶 …）：**不进时间线** ——
+    /// 不计未读、不改会话预览、不弹通知。前端按它驱动聚合视图
+    /// （回应显示为气泡下方的 chip，而不是时间线上的一条）。
+    Silent,
+    /// 群级沉淀物（群公告）：**进时间线**（是一条发布事件，该计未读、该通知），
+    /// 但**不属于"聊天历史"** —— 清空聊天记录时不得被删、清空边界也不得拦它。
+    /// 这两点正是它与 Bubble 的全部差别（见 `delete_conversation` 与
+    /// `group_message_blocked_by_boundary`）。
+    Card,
+}
+
+/// kind 语义的**唯一判定点**。
+///
+/// 为什么必须收敛到一处：接收路径、会话预览、未读、通知、搜索、已读水位、
+/// 清空边界、导出 —— 全都要问「这个 kind 算不算内容」。此前这个知识散在多处、
+/// 各写一串 match；每加一个新 kind 就要同时改所有地方，漏一处就是静默的行为不一致
+/// （最典型的症状：回个表情把会话顶到列表最前、还弹一条系统通知）。
+pub const WIRE_KINDS: &[(&str, KindClass)] = &[
+    ("text", KindClass::Bubble),
+    ("code", KindClass::Bubble),
+    ("image", KindClass::Bubble),
+    ("file", KindClass::Bubble),
+    ("system", KindClass::Bubble),
+    // 阶段 1：表情回应 / 撤回
+    ("reaction", KindClass::Silent),
+    ("recall", KindClass::Silent),
+    // 撤回后的消息本体：仍在时间线上占位（居中灰条「消息已撤回」），故是 Bubble。
+    // 它的 content 已被清空 —— 搜索、导出、已读水位因此自动正确，无需各自过滤。
+    ("recalled", KindClass::Bubble),
+    // 消息置顶：与表情回应同构的静默状态事件（不进时间线，只在置顶条里体现）
+    ("pin", KindClass::Silent),
+    // 阶段 2：群公告
+    ("announcement", KindClass::Card),
+    ("announcement_delete", KindClass::Silent),
+    // 阶段 3：群任务 / 投票
+    ("todo", KindClass::Card),
+    ("todo_done", KindClass::Silent),
+    ("poll", KindClass::Card),
+    ("poll_vote", KindClass::Silent),
+];
+
+/// 未知 kind 一律按 `Bubble` 处理 —— 与 `MsgKind::from_str` 回退到 `Text` 同语义：
+/// 宁可多显示一条，也不要把不认识的内容**静默吞掉**（对端版本更新时不丢消息）。
+pub fn kind_class(kind: &str) -> KindClass {
+    WIRE_KINDS
+        .iter()
+        .find(|(k, _)| *k == kind)
+        .map(|(_, c)| *c)
+        .unwrap_or(KindClass::Bubble)
+}
+
+/// 「进时间线，但**不打扰**」—— 不计未读、不改会话预览、不弹通知。
+///
+/// 与 `Silent` 的区别：静默事件**根本不进时间线**（表情回应/撤回是状态，不是内容），
+/// 而 `system` 要在时间线上占一行（居中灰条）。但两者都不该把会话顶起来或弹通知：
+/// 此前系统消息只由 `insert_system_message` 在**本机**插入（它不碰未读与预览），
+/// 所以"不打扰"是既有事实；现在加人通知要经消息管道广播给全体成员，
+/// 必须把这条口径显式化，否则「X 加入了群聊」会给每个人推一条通知。
+pub fn is_non_notifying_kind(kind: &str) -> bool {
+    is_silent_kind(kind) || kind == "system"
+}
+
+pub fn is_silent_kind(kind: &str) -> bool {
+    kind_class(kind) == KindClass::Silent
+}
+
+/// 生成 `kind NOT IN (...)` 用的 SQL 字面量列表（**从 `WIRE_KINDS` 派生**）。
+///
+/// 不允许在 SQL 里手写这份清单：加了新 kind 而忘了同步 SQL，就是一条静默漏判 ——
+/// 而它偏偏只在下一次有人用那个功能时才暴露。
+pub fn sql_kind_list(extra: &[&str], pick: impl Fn(KindClass) -> bool) -> String {
+    let mut names: Vec<String> = WIRE_KINDS
+        .iter()
+        .filter(|(_, c)| pick(*c))
+        .map(|(k, _)| format!("'{k}'"))
+        .collect();
+    names.extend(extra.iter().map(|k| format!("'{k}'")));
+    names.join(",")
+}
+
+/// 表情回应的事件载荷（`kind = "reaction"`）。
+///
+/// 建模成**一串独立消息**而不是「给消息加一个可变字段」：`message_id` 是
+/// `SHA-256(sender_id + nonce + payload)`，同一条业务消息不可能带不同 content 重发
+/// （`gossip_engine` 的回归测试钉死了这一点）。所以「状态变化」只能是一串新事件，
+/// 「当前值」由接收端按 `(seq, msg_id)` 折叠出来。
+///
+/// 收敛性：每个 `(target, actor, emoji)` 三元组是一个 LWW 寄存器、值为 bool。
+/// 每个用户只写自己那一格 ⇒ 不存在丢更新；`(seq, msg_id)` 是全序 ⇒ 任意到达顺序收敛。
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ReactionPayload {
+    /// 被回应的消息 msg_id
+    pub target: String,
+    /// 表情 token（如 `[赞]`），与正文里的表情语法同源
+    pub emoji: String,
+    /// true = 添加，false = 取消
+    pub add: bool,
+}
+
+/// 校验一个表情 token 的**形态**（`[名字]`），拒掉空串、超长与控制字符。
+///
+/// 注意这里**不校验表情是否真的存在** —— 表情目录的唯一来源是前端的
+/// `data/emojis.ts`（`EmojiPicker` 与正文渲染都从那里取）。在后端再维护一份名单
+/// 就是第二个真相源，加一个表情要改两处、漏一处就出现「能选但发不出去」。
+/// 后端只负责挡住畸形与超长输入，语义有效性交给前端。
+pub fn is_valid_emoji_token(s: &str) -> bool {
+    if !s.starts_with('[') || !s.ends_with(']') {
+        return false;
+    }
+    if s.len() < 3 || s.len() > 32 {
+        return false;
+    }
+    let inner = &s[1..s.len() - 1];
+    // 内层不得再出现方括号（否则 `[[x]` 这类畸形会被当成合法 token）
+    !inner.is_empty() && !inner.contains(['[', ']']) && !s.contains(char::is_control)
+}
+
+/// 群任务的**定义**层（`kind = "todo"`）。
+///
+/// ⚠️ 任务必须**分解成两层**，不能是单个寄存器：
+/// 朴素做法（一个 `{todo_id, title, assignees, done_by[], rev}`）有经典**丢更新** bug ——
+/// A 和 B 同时勾完成，后到的整体覆盖前者，B 的勾被吞掉。
+///
+/// | 层 | 载荷 | 合并规则 | 谁写 |
+/// |---|---|---|---|
+/// | 定义 | 本结构 | LWW per `todo_id`，版本 `(seq, msg_id)` | 任意成员创建；改/删限创建者或群主 |
+/// | 完成 | [`TodoDonePayload`] | **LWW per `(todo_id, actor)`** | 每人只写自己那一格 |
+///
+/// 每人一格 ⇒ 不存在丢更新；`done: false`（取消勾选）天然支持。
+/// `todo_id` 取**创建事件自身的 msg_id**，不需要额外的生成器。
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct TodoPayload {
+    pub todo_id: String,
+    pub title: String,
+    /// 指派的成员 device_id（空 = 不指派，谁都能认领）
+    #[serde(default)]
+    pub assignees: Vec<String>,
+    /// 截止时间（毫秒，0 = 无）
+    #[serde(default)]
+    pub due_ts: i64,
+    /// 创建者（改/删的授权判据）
+    #[serde(default)]
+    pub creator: String,
+    /// 删除标记（墓碑）：定义层的 LWW 值为它
+    #[serde(default)]
+    pub deleted: bool,
+}
+
+/// 群任务的**完成**层（`kind = "todo_done"`）：每人只写自己那一格。
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct TodoDonePayload {
+    pub todo_id: String,
+    pub done: bool,
+}
+
+/// 投票的**定义**层（`kind = "poll"`）。结构与任务同构。
+///
+/// ⚠️ **`options` 一旦创建不可变**：否则选项下标会错位，`poll_vote` 的 choices
+/// 会指向错误的选项。要改选项就新建一个投票。
+///
+/// **不做匿名投票**：群密钥全员共享 + 选票必然带签名身份，"匿名"只能是界面隐藏，
+/// 无权可验 —— 那比不做更糟（给人虚假的安全感）。
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PollPayload {
+    pub poll_id: String,
+    pub question: String,
+    pub options: Vec<String>,
+    /// 是否多选
+    #[serde(default)]
+    pub multi: bool,
+    /// 是否已关闭（关闭后拒绝新票）
+    #[serde(default)]
+    pub closed: bool,
+    #[serde(default)]
+    pub creator: String,
+}
+
+/// 投票的**选票**层（`kind = "poll_vote"`）：每人只写自己那一格。
+/// **撤票 = `choices: []` 的普通更新**，不是单独的删除事件。
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PollVotePayload {
+    pub poll_id: String,
+    /// 选中的选项下标（空 = 撤票）
+    pub choices: Vec<u32>,
+}
+
+/// 群公告的载荷（`kind = "announcement"`）。
+///
+/// 「当前公告」= 按 `(seq, msg_id)` 取最大的那条（**不是**墙上时间）——
+/// 只有群主能发，而群主的 Lamport 时钟单调，自己两条公告不可能同 seq，
+/// tie-break 只是防御。`ann_id` 取发布事件自身的 msg_id，不需要额外的生成器。
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct AnnouncementPayload {
+    pub text: String,
+}
+
+/// 公告删除（`kind = "announcement_delete"`）：墓碑，携带被删公告的 ann_id。
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct AnnouncementDeletePayload {
+    pub ann_id: String,
+}
+
+/// 消息置顶的事件载荷（`kind = "pin"`）。
+///
+/// 与撤回/回应同构：一串独立事件，每个 `target` 是一个按 `(seq, msg_id)` 定序的
+/// LWW 寄存器（值 = 是否置顶）。任意成员都能置顶/取消（可逆、低风险），
+/// 与「仅群主可改名」那类不可逆操作不同。
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PinPayload {
+    /// 被置顶的消息 msg_id
+    pub target: String,
+    /// true = 置顶，false = 取消置顶
+    pub pinned: bool,
+}
+
+/// 撤回的事件载荷（`kind = "recall"`）。
+///
+/// 与表情回应同构：撤回也是**一串独立事件**而非"改一个字段"，
+/// 因为 `message_id` 绑定了 payload，同一条消息不可能带不同 content 重发。
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct RecallPayload {
+    /// 被撤回的消息 msg_id
+    pub target: String,
+}
+
+/// 撤回后消息本体的 `kind`。`content` 被清空、`sender_id`/`ts`/`seq`/`msg_id` 保留 ——
+/// 这样搜索、导出、已读水位**一行都不用改就自动正确**（没有正文可命中、可导出）。
+pub const KIND_RECALLED: &str = "recalled";
+
+/// 群公告发布 / 删除的 `kind`（接收侧授权判定要用）。
+pub const KIND_ANNOUNCEMENT: &str = "announcement";
+pub const KIND_ANNOUNCEMENT_DELETE: &str = "announcement_delete";
+
+/// 撤回事件本身的 `kind`。
+pub const KIND_RECALL: &str = "recall";
+
 /// 共享目录条目
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ShareEntry {
@@ -632,6 +873,29 @@ pub fn hello_signing_bytes(
     .unwrap_or_default()
 }
 
+/// announce 的签名材料。
+///
+/// **只覆盖安全相关字段**：device_id / tcp_port / 两把公钥 / nonce。
+/// 刻意**不含 nickname**：它随用户改名变化、且纯属展示信息，纳入签名会让
+/// 「改个昵称 → 旧签名全部失效」；也不含 `kind`，由调用方保证是 announce。
+pub fn announce_signing_bytes(
+    device_id: &str,
+    tcp_port: u16,
+    nonce: &str,
+    x25519_pubkey: &str,
+    ed25519_pubkey: &str,
+) -> Vec<u8> {
+    serde_json::to_vec(&(
+        "gosslan-announce-v1",
+        device_id,
+        tcp_port,
+        nonce,
+        x25519_pubkey,
+        ed25519_pubkey,
+    ))
+    .unwrap_or_default()
+}
+
 /// UDP 广播/回复包
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct UdpPacket {
@@ -644,10 +908,240 @@ pub struct UdpPacket {
     pub x25519_pubkey: Option<String>,
     /// Ed25519 公钥（base64，用于验签）
     pub ed25519_pubkey: Option<String>,
+    /// 每次广播新生成的随机串（base64），参与签名 —— 防重放。
+    /// 旧端不发送（`serde(default)`），判定见 `verify_announce`。
+    #[serde(default)]
+    pub nonce: String,
+    /// Ed25519 签名（base64），覆盖 `announce_signing_bytes()` 的全部字段。
+    ///
+    /// 历史背景：本字段缺失时，`announce` 是一条**完全无认证**的信道 ——
+    /// 包里的 device_id 与公钥都是明文，任何人都能伪造。曾经的后果是
+    /// 「未签名的广播绑定了身份，且写进持久化的 friends 表」（见 CHANGELOG 4.9.1）。
+    /// 现在补上签名后，**能**做到的：防篡改、防重放、让每条广播可归因到某个密钥持有者。
+    /// **仍做不到**的：阻止攻击者用自己的密钥签一个「自称是某人」的包 ——
+    /// 那是首次接触（TOFU）的固有限制，要靠带外指纹核对（见 `Peer.keys_verified` 的说明）。
+    #[serde(default)]
+    pub sig: String,
+}
+
+/// `announce` 的认证判定结果。
+#[derive(Debug, PartialEq, Eq)]
+pub enum AnnounceAuth {
+    /// 签名有效：广播者持有其所声明 Ed25519 公钥的私钥。
+    /// **注意这仍不等于「他就是那个 device_id」** —— 见 `UdpPacket::sig` 的说明。
+    Verified,
+    /// 无签名（旧端）。**仍然接受用于发现**：它只驱动「拨号」，
+    /// 而真正的身份绑定由 Hello 验签决定（announce 来的公钥一律 `keys_verified = false`）。
+    /// 硬拒会让旧端在局域网内彻底不可见 —— 代价大于收益。
+    Legacy,
+    /// 带签名但验不过：包被篡改或伪造，必须丢弃。
+    Invalid(String),
+}
+
+/// 校验一条 `announce`/`who_has` 包的自签名。**纯函数**，便于单测。
+pub fn verify_announce(pkt: &UdpPacket) -> AnnounceAuth {
+    let (Some(x), Some(e)) = (
+        pkt.x25519_pubkey.as_deref().filter(|s| !s.is_empty()),
+        pkt.ed25519_pubkey.as_deref().filter(|s| !s.is_empty()),
+    ) else {
+        // who_has 不带公钥也不带签名，属正常形态
+        return if pkt.sig.is_empty() {
+            AnnounceAuth::Legacy
+        } else {
+            AnnounceAuth::Invalid("带签名但缺少公钥".to_string())
+        };
+    };
+    if pkt.sig.is_empty() {
+        return AnnounceAuth::Legacy;
+    }
+    if pkt.nonce.is_empty() {
+        return AnnounceAuth::Invalid("带签名但缺少 nonce（无法防重放）".to_string());
+    }
+    let data = announce_signing_bytes(&pkt.device_id, pkt.tcp_port, &pkt.nonce, x, e);
+    if crate::crypto::verify_signature(e, &data, &pkt.sig) {
+        AnnounceAuth::Verified
+    } else {
+        AnnounceAuth::Invalid("签名校验失败".to_string())
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::crypto::Identity;
+
+    // ---------------- announce 自签名 ----------------
+
+    /// 按线上形态构造一条自签名 announce。
+    fn signed_announce(
+        id: &Identity,
+        device_id: &str,
+        port: u16,
+        nonce: &str,
+    ) -> super::UdpPacket {
+        let x = id.x25519_public_b64();
+        let e = id.ed25519_public_b64();
+        let sig = id.sign_b64(&super::announce_signing_bytes(device_id, port, nonce, &x, &e));
+        super::UdpPacket {
+            kind: "announce".to_string(),
+            device_id: device_id.to_string(),
+            nickname: "nick".to_string(),
+            tcp_port: port,
+            x25519_pubkey: Some(x),
+            ed25519_pubkey: Some(e),
+            nonce: nonce.to_string(),
+            sig,
+        }
+    }
+
+    #[test]
+    fn announce_verified_when_self_signed() {
+        let id = Identity::generate();
+        let pkt = signed_announce(&id, "dev-a", 59992, "n1");
+        assert_eq!(super::verify_announce(&pkt), super::AnnounceAuth::Verified);
+    }
+
+    /// 篡改任何**被签名覆盖**的字段都必须失败 —— 这是「防篡改」的全部内容。
+    #[test]
+    fn announce_rejects_tampering_on_every_signed_field() {
+        let id = Identity::generate();
+        let base = signed_announce(&id, "dev-a", 59992, "n1");
+
+        let mut p = base.clone();
+        p.device_id = "victim".to_string();
+        assert!(matches!(super::verify_announce(&p), super::AnnounceAuth::Invalid(_)), "改 device_id");
+
+        let mut p = base.clone();
+        p.tcp_port = 1;
+        assert!(matches!(super::verify_announce(&p), super::AnnounceAuth::Invalid(_)), "改 tcp_port");
+
+        let mut p = base.clone();
+        p.nonce = "n2".to_string();
+        assert!(matches!(super::verify_announce(&p), super::AnnounceAuth::Invalid(_)), "改 nonce");
+
+        // 换成攻击者自己的公钥（想把绑定指向自己的密钥）
+        let attacker = Identity::generate();
+        let mut p = base.clone();
+        p.ed25519_pubkey = Some(attacker.ed25519_public_b64());
+        p.x25519_pubkey = Some(attacker.x25519_public_b64());
+        assert!(matches!(super::verify_announce(&p), super::AnnounceAuth::Invalid(_)), "换公钥");
+
+        // nickname **不在**签名范围内（改名不该让签名失效），故意不测它
+        let mut p = base.clone();
+        p.nickname = "换个昵称".to_string();
+        assert_eq!(super::verify_announce(&p), super::AnnounceAuth::Verified, "nickname 不参与签名");
+    }
+
+    /// 用别人的公钥声称自己是对方：签名一定对不上（攻击者没有对方私钥）。
+    #[test]
+    fn announce_rejects_forged_signature_with_victim_pubkey() {
+        let attacker = Identity::generate();
+        let victim = Identity::generate();
+        let vk = victim.ed25519_public_b64();
+        let vx = victim.x25519_public_b64();
+        // 攻击者用**自己的**私钥签，却声明受害者的公钥
+        let sig = attacker.sign_b64(&super::announce_signing_bytes("victim", 59992, "n1", &vx, &vk));
+        let pkt = super::UdpPacket {
+            kind: "announce".to_string(),
+            device_id: "victim".to_string(),
+            nickname: String::new(),
+            tcp_port: 59992,
+            x25519_pubkey: Some(vx),
+            ed25519_pubkey: Some(vk),
+            nonce: "n1".to_string(),
+            sig,
+        };
+        assert!(matches!(super::verify_announce(&pkt), super::AnnounceAuth::Invalid(_)));
+    }
+
+    /// 旧端不签名 → 放行（Legacy）。硬拒会让旧端在局域网内彻底不可见，
+    /// 而 announce 本就不能用于身份绑定（公钥恒为 keys_verified=false），放行的风险可控。
+    #[test]
+    fn announce_without_signature_is_legacy_not_rejected() {
+        let id = Identity::generate();
+        let mut pkt = signed_announce(&id, "dev-a", 59992, "n1");
+        pkt.sig = String::new();
+        assert_eq!(super::verify_announce(&pkt), super::AnnounceAuth::Legacy);
+
+        // who_has：不带公钥也不带签名，是正常形态
+        let probe = super::UdpPacket {
+            kind: "who_has".to_string(),
+            device_id: "dev-a".to_string(),
+            nickname: String::new(),
+            tcp_port: 59992,
+            x25519_pubkey: None,
+            ed25519_pubkey: None,
+            nonce: String::new(),
+            sig: String::new(),
+        };
+        assert_eq!(super::verify_announce(&probe), super::AnnounceAuth::Legacy);
+    }
+
+    /// 带签名却缺 nonce / 缺公钥 → 无法防重放或无法验签，必须拒。
+    #[test]
+    fn announce_rejects_signed_but_incomplete_packets() {
+        let id = Identity::generate();
+
+        let mut p = signed_announce(&id, "dev-a", 59992, "n1");
+        p.nonce = String::new();
+        assert!(matches!(super::verify_announce(&p), super::AnnounceAuth::Invalid(_)));
+
+        let mut p = signed_announce(&id, "dev-a", 59992, "n1");
+        p.x25519_pubkey = None;
+        assert!(matches!(super::verify_announce(&p), super::AnnounceAuth::Invalid(_)));
+
+        let mut p = signed_announce(&id, "dev-a", 59992, "n1");
+        p.ed25519_pubkey = Some(String::new());
+        assert!(matches!(super::verify_announce(&p), super::AnnounceAuth::Invalid(_)));
+    }
+
+    /// 签名材料对每个字段敏感（防止将来有人漏字段导致"改了也能过"）。
+    #[test]
+    fn announce_signing_bytes_sensitive_to_every_field() {
+        let base = super::announce_signing_bytes("a", 1, "n", "x", "e");
+        assert_ne!(base, super::announce_signing_bytes("b", 1, "n", "x", "e"));
+        assert_ne!(base, super::announce_signing_bytes("a", 2, "n", "x", "e"));
+        assert_ne!(base, super::announce_signing_bytes("a", 1, "m", "x", "e"));
+        assert_ne!(base, super::announce_signing_bytes("a", 1, "n", "y", "e"));
+        assert_ne!(base, super::announce_signing_bytes("a", 1, "n", "x", "f"));
+        // 与 Hello 的材料必须不同域（前缀不同），否则一个协议的签名能拿到另一个用
+        assert_ne!(
+            base,
+            super::hello_signing_bytes("a", 1, "n", "x", "e"),
+            "announce 与 Hello 的签名材料必须域分离"
+        );
+    }
+
+    /// 表情 token 的**形态**校验：挡畸形与超长，但**不判断表情是否存在**
+    /// （目录的唯一来源是前端，后端再存一份就是第二个真相源）。
+    #[test]
+    fn emoji_token_shape_is_validated_but_not_the_catalogue() {
+        assert!(super::is_valid_emoji_token("[赞]"));
+        assert!(super::is_valid_emoji_token("[微笑]"));
+        // 后端不认识的名字也必须放行 —— 前端加了新表情不该需要同时改后端
+        assert!(super::is_valid_emoji_token("[后端不认识的表情]"));
+        for bad in ["", "[", "]", "[]", "赞", "[赞", "赞]", "[[赞]]", "[赞][踩]", "[a\nb]"] {
+            assert!(!super::is_valid_emoji_token(bad), "{bad:?} 应被拒");
+        }
+        assert!(!super::is_valid_emoji_token(&format!("[{}]", "很".repeat(20))), "超长应被拒");
+    }
+
+    /// 回应载荷的线上往返（发送端序列化 → 接收端反序列化）。
+    #[test]
+    fn reaction_payload_roundtrips() {
+        let p = super::ReactionPayload {
+            target: "msg-1".to_string(),
+            emoji: "[赞]".to_string(),
+            add: true,
+        };
+        let wire = serde_json::to_string(&p).unwrap();
+        let back: super::ReactionPayload = serde_json::from_str(&wire).unwrap();
+        assert_eq!(back.target, "msg-1");
+        assert_eq!(back.emoji, "[赞]");
+        assert!(back.add);
+        // 与群消息 payload 同形（{"kind","content"} 里的 content 就是它）
+        assert!(wire.contains("\"add\":true"));
+    }
+
     /// Phase 8（ADR-0017）：不透明外部帧的边界校验 —— **畸形/超限只丢该帧，不断链**。
     #[test]
     fn opaque_external_validation_bounds() {

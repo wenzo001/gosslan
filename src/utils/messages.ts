@@ -1,5 +1,6 @@
 import type { Conversation, MessageRecord } from "@/types";
 import { MENTION_AFTER, escapeRe } from "./linkify.ts";
+import { isSilentKind } from "./messageKinds.ts";
 
 /**
  * 合并去重并排序消息列表 —— Gossip 密集广播防重复的核心纯函数。
@@ -128,6 +129,32 @@ export function messageMentionsName(rec: MessageRecord, name: string): boolean {
 }
 
 /**
+ * 「@所有人」在正文里的字面形式。
+ *
+ * 恒为中文三个字，**不随发送方界面语言变化**：它是一条落到消息正文里、要靠字面匹配
+ * 才认得出的文本，而不是本地化文案。若按界面语言发成 `@All`，中文界面的成员就认不出来，
+ * 红点与高亮会一起失效。
+ */
+export const MENTION_ALL_TOKEN = "所有人";
+
+/**
+ * 预编译的 @所有人 判定正则。模板是常量，没有理由每收到一条群消息就重新编译一次
+ * （消息摄入是热路径）。无 `g` 标志 ⇒ `.test()` 不带 lastIndex 状态，可安全复用。
+ */
+const MENTION_ALL_RE = new RegExp(`(^|\\s)@${MENTION_ALL_TOKEN}${MENTION_AFTER}`);
+
+/**
+ * 该消息是否 @ 了所有人。
+ *
+ * 与 `messageMentionsName` 同源：边界规则完全一致（@ 前须行首/空白，后须空白/标点/行尾），
+ * 所以 `@所有人甲乙` 不会误命中。仅文本消息参与判断，与既有 @提及 口径一致。
+ */
+export function messageMentionsAll(rec: MessageRecord): boolean {
+  if (rec.kind !== "text") return false;
+  return MENTION_ALL_RE.test(rec.content);
+}
+
+/**
  * 计算「消息缓存该保留哪些会话」：活跃会话必留，其余按 LRU 保留最近使用的至多 `maxConvs` 个。
  *
  * 纯函数，供 useChatStore 的消息缓存上界使用；调用方负责删除未保留的键。
@@ -145,8 +172,21 @@ export function selectCachedConversations(
 }
 
 /**
- * 将一批新消息应用到会话列表：更新 last_msg/last_ts、累计未读（活跃会话不计）、
- * 按 last_ts 降序重排。纯函数，便于测试与复用。
+ * 会话列表排序：**置顶优先，其次按最后消息时间倒序**。
+ *
+ * 这是全应用唯一的会话排序口径 —— 列表渲染、新消息合入、切换置顶都必须走它。
+ * 分散成多处 `sort` 会让「置顶了但被新消息挤下去」这类不一致在不同路径上分别出现。
+ */
+export function sortConversations(list: Conversation[]): Conversation[] {
+  return [...list].sort((a, b) => {
+    if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+    return (b.last_ts ?? 0) - (a.last_ts ?? 0);
+  });
+}
+
+/**
+ * 将一批新消息应用到会话列表：更新 last_msg/last_ts、累计未读（活跃会话不计），
+ * 再按 `sortConversations` 重排。纯函数，便于测试与复用。
  */
 export function applyIncomingToConversations(
   conversations: Conversation[],
@@ -154,7 +194,12 @@ export function applyIncomingToConversations(
   incomingByConv: Map<string, MessageRecord[]>,
 ): Conversation[] {
   const next: Conversation[] = conversations.map((c) => ({ ...c }));
-  for (const [convId, msgs] of incomingByConv) {
+  for (const [convId, rawMsgs] of incomingByConv) {
+    // ⚠️ 静默类不参与未读与预览 —— 与后端 `is_non_notifying_kind` 同一口径。
+    // 漏掉它的后果：别人回个表情，你的会话列表未读 +1、预览变成一段 JSON、
+    // 会话还被顶到最前（后端 DB 里未读是 0，两边从此不一致）。
+    const msgs = rawMsgs.filter((m) => !isSilentKind(m.kind));
+    if (msgs.length === 0) continue;
     const last = msgs[msgs.length - 1];
     const conv = next.find((c) => c.id === convId);
     if (!conv) continue;
@@ -162,6 +207,5 @@ export function applyIncomingToConversations(
     conv.last_ts = last.ts;
     if (convId !== activeConvId) conv.unread += msgs.length;
   }
-  next.sort((a, b) => (b.last_ts ?? 0) - (a.last_ts ?? 0));
-  return next;
+  return sortConversations(next);
 }

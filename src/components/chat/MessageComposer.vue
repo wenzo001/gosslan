@@ -11,8 +11,9 @@ import { mentionHighlightColor, resolveChatColors } from "@/utils/chatStyle";
 import { avatarInitial, avatarInitialLen, nameToColor } from "@/utils/color";
 import { classifyPaste } from "@/utils/clipboard";
 import { isImeKey } from "@/utils/ime";
-import { Folder, Smile, SquareCode, X } from "lucide-vue-next";
+import { Folder, Smile, SquareCode, Users, X } from "lucide-vue-next";
 import type { MsgKind } from "@/types";
+import { MENTION_ALL_TOKEN } from "@/utils/messages";
 
 const props = defineProps<{
   /** 会话切换时聚焦输入框（切换会话 = 新会话，重置草稿由父组件卸载/挂载决定）。 */
@@ -223,10 +224,24 @@ function onKeydown(e: KeyboardEvent) {
 const mention = ref<{ query: string; startIndex: number } | null>(null);
 const mentionActive = ref(0);
 
+/**
+ * 「所有人」是**虚拟成员**：本组件内用它做 key 与展示，发送出去的仍是纯文本 `@所有人`
+ * （见 `serializeDraft` 走 innerText 读回 token 文本）。因此它不需要 id 参与任何后端调用。
+ * 发送到正文里的字面量必须是固定中文 `MENTION_ALL_TOKEN`：它是一条**发给所有人的文本**，
+ * 接收端按字面匹配，不能随发送方的界面语言变化，否则英文界面发出去的 @所有人 没人能识别。
+ */
+const MENTION_ALL_ID = "__mention_all__";
+
+/** 候选 = 「所有人」+ 真实成员（不含自己）。所有人排首位，与微信一致。 */
+const mentionCandidates = computed(() => [
+  { id: MENTION_ALL_ID, name: MENTION_ALL_TOKEN },
+  ...(props.mentionMembers ?? []),
+]);
+
 const mentionFiltered = computed(() => {
   if (!mention.value) return [];
   const q = mention.value.query.toLowerCase();
-  const list = props.mentionMembers ?? [];
+  const list = mentionCandidates.value;
   return (q ? list.filter((m) => m.name.toLowerCase().includes(q)) : list).slice(0, 8);
 });
 
@@ -554,7 +569,15 @@ function fileToDataUrl(f: File): Promise<string> {
           @mousedown.prevent
           @click="applyMention(m)"
         >
+          <!-- 「所有人」不是真人，用图标而非首字头像：避免与真成员的名字首字混淆 -->
           <span
+            v-if="m.id === MENTION_ALL_ID"
+            class="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[var(--gosslan-primary-light)] text-[var(--gosslan-primary)]"
+          >
+            <Users class="h-3.5 w-3.5" aria-hidden="true" />
+          </span>
+          <span
+            v-else
             class="gosslan-avatar-box flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-full text-[11px] text-white"
             :style="{ backgroundColor: nameToColor(m.name) }"
           ><span

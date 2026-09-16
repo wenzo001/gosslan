@@ -1,22 +1,11 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
-import { computed, type Component, type CSSProperties } from "vue";
+import { computed, type CSSProperties } from "vue";
 import type { FileMeta } from "@/types";
 import { humanSize, rgba } from "@/utils/color";
+import { FILE_KIND_COLORS, FILE_KIND_ICONS, fileExt, fileKindOf } from "@/utils/fileKind";
 import { useAppStore } from "@/stores/useAppStore";
-import {
-  Download,
-  FileArchive,
-  FileAudio,
-  FileCode,
-  FileImage,
-  FileSpreadsheet,
-  FileText,
-  FileVideo,
-  Loader2,
-  RotateCw,
-  X,
-} from "lucide-vue-next";
+import { Download, Loader2, RotateCw, X } from "lucide-vue-next";
 
 const props = defineProps<{
   meta: FileMeta;
@@ -51,108 +40,12 @@ const emit = defineEmits<{
 }>();
 const app = useAppStore();
 
-type FileKind = "sheet" | "image" | "archive" | "video" | "audio" | "code" | "pdf" | "doc";
-
-/** 文件类型配色：亮色取压得住白卡片的深调，暗色取能在深色卡片上跳出来的亮调。
- *  图标属图形而非文字，与卡片底色对比 ≥ 3 即达标（实测 3.9~5.2）。 */
-const KIND_COLORS: Record<FileKind, { light: string; dark: string }> = {
-  sheet: { light: "#16a34a", dark: "#4ade80" },
-  image: { light: "#a855f7", dark: "#c084fc" },
-  archive: { light: "#d97706", dark: "#fbbf24" },
-  video: { light: "#db2777", dark: "#f472b6" },
-  audio: { light: "#0891b2", dark: "#22d3ee" },
-  code: { light: "#2563eb", dark: "#60a5fa" },
-  pdf: { light: "#dc2626", dark: "#f87171" },
-  doc: { light: "#475569", dark: "#94a3b8" },
-};
-const KIND_ICONS: Record<FileKind, Component> = {
-  sheet: FileSpreadsheet,
-  image: FileImage,
-  archive: FileArchive,
-  video: FileVideo,
-  audio: FileAudio,
-  code: FileCode,
-  pdf: FileText,
-  doc: FileText,
-};
-
-/** 文件类型：一眼看出是什么文件，不再所有附件都套同一个通用文档图标。 */
-const ext = computed(() => (props.meta.name.split(".").pop() ?? "").toLowerCase());
-const kind = computed<FileKind>(() => {
-  switch (ext.value) {
-    case "xls":
-    case "xlsx":
-    case "csv":
-    case "numbers":
-      return "sheet";
-    case "png":
-    case "jpg":
-    case "jpeg":
-    case "gif":
-    case "webp":
-    case "bmp":
-    case "svg":
-    case "avif":
-    case "heic":
-      return "image";
-    case "zip":
-    case "rar":
-    case "7z":
-    case "tar":
-    case "gz":
-    case "bz2":
-    case "xz":
-    case "dmg":
-    case "iso":
-      return "archive";
-    case "mp4":
-    case "mov":
-    case "avi":
-    case "mkv":
-    case "webm":
-    case "flv":
-    case "wmv":
-      return "video";
-    case "mp3":
-    case "wav":
-    case "flac":
-    case "m4a":
-    case "ogg":
-    case "aac":
-      return "audio";
-    case "ts":
-    case "tsx":
-    case "js":
-    case "jsx":
-    case "rs":
-    case "py":
-    case "go":
-    case "java":
-    case "c":
-    case "h":
-    case "cpp":
-    case "json":
-    case "html":
-    case "css":
-    case "scss":
-    case "vue":
-    case "sh":
-    case "bash":
-    case "toml":
-    case "yml":
-    case "yaml":
-    case "xml":
-      return "code";
-    case "pdf":
-      return "pdf";
-    default:
-      return "doc";
-  }
-});
-const icon = computed(() => KIND_ICONS[kind.value]);
+const ext = computed(() => fileExt(props.meta.name));
+const kind = computed(() => fileKindOf(props.meta.name));
+const icon = computed(() => FILE_KIND_ICONS[kind.value]);
 /** 强调色：失败态统一走红，其余按类型取明/暗档。 */
 const accent = computed(() => {
-  const c = props.failed ? KIND_COLORS.pdf : KIND_COLORS[kind.value];
+  const c = props.failed ? FILE_KIND_COLORS.pdf : FILE_KIND_COLORS[kind.value];
   return app.dark ? c.dark : c.light;
 });
 /** 图标井：底色＝强调色 12% 的超淡调，图标＝强调色实色（lucide 取 currentColor）。 */

@@ -324,8 +324,60 @@ pub async fn broadcast_gossip(state: &AppState, envelope: GossipEnvelope) {
     };
 
     for tx in &targets {
-        let _ = tx.send(msg.clone()).await;
+        // ⚠️ **必须有界等待**：这是有界队列（1024），对端僵死（BLE 低带宽 / 半开 TCP）
+        // 时无超时的 `send().await` 会让本函数永久挂起 —— 而它被 `handle_gossip` 内联
+        // await，`handle_gossip` 又由 reader_loop 调用 ⇒ **另一个对端的读循环被卡住**，
+        // 它后续的帧（含心跳）全部排队，最终被判不健康而拆链。
+        // 即"一条拥塞链路伪造出全网链路故障"。口径与 `send_over_order` 一致。
+        // 超时即丢弃该 peer 的这条 gossip（其 outbox 会在下次心跳/Hello 时补发）。
+        // **必须留痕**：这条路径原先完全静默，真机排查「发出去但对方收不到」时不可观测。
+        // 限频（每 30s 一条）避免拥塞时刷屏。
+        if tokio::time::timeout(SEND_QUEUE_FULL_TIMEOUT, tx.send(msg.clone()))
+            .await
+            .is_err()
+        {
+            if log_throttled("gossip_drop", 30_000) {
+                state.logger.warn(
+                    "transport",
+                    "gossip 扇出队列满，丢弃本条（对方 outbox 会补发；持续出现说明该链路拥塞）"
+                        .to_string(),
+                );
+            }
+        }
     }
+}
+
+/// 中继态的内存 TTL：超过它且仍未完成重组的条目一律回收。
+///
+/// 为什么必须有：`relay_file_keys` 与 `RelayManager::reassemblies` 都以**对端可控**的
+/// `transfer_id` 为键，插入点在收到 `RelayFileOffer` 时，而清除点只在「重组完成/失败」。
+/// 对端（只需是好友）持续发 `RelayFileOffer{ 每次新 id, total_chunks: 1 }` 却永不发分片，
+/// 两张表就只增不减 —— 进程内存单调增长直至 OOM，且没有任何回收路径。
+/// 1 小时与 `.part` 的 24h 口径同源（可恢复失败的保留思路），但内存态更敏感故更短。
+const RELAY_STATE_TTL_MS: i64 = 60 * 60 * 1000;
+
+/// 清扫过期的中继态（`relay_file_keys` + `reassemblies`），返回清掉的条目数。
+/// 与 `sweep_stale_parts` 同一趟定时任务里跑。
+pub fn sweep_stale_relay(state: &AppState) -> usize {
+    let cutoff = db::now_ms() - RELAY_STATE_TTL_MS;
+    let mut n = 0;
+    state
+        .relay_file_keys
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .retain(|_, v| {
+            let keep = v.created_at > cutoff;
+            if !keep {
+                n += 1;
+            }
+            keep
+        });
+    n += state
+        .relay
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .sweep_stale_reassemblies(cutoff);
+    n
 }
 
 /// 广播一次 Presence：携带自身昵称/头像，靠 Gossip fan-out 跨跳传播。
@@ -787,21 +839,20 @@ pub(crate) fn verify_hello(
     if nonce.is_empty() || sig_b64.is_empty() {
         return Err(format!("Hello 缺少 nonce/sig（device_id={device_id}）"));
     }
-    if !state.accept_hello_nonce(nonce) {
-        return Err(format!("Hello nonce 重放（device_id={device_id}）"));
-    }
-    // 已绑定身份：好友表优先（持久），在线节点表回落（对方可能尚未成为好友但已在发现阶段绑定）
+    // 已绑定身份：**好友表（持久，权威）优先**；在线节点表只作回落，
+    // 且**回落项必须是已验签的**（`keys_verified`）。
+    //
+    // ⚠️ 为什么回落必须过滤：`peers` 里的公钥可能来自**未签名**的 UDP announce。
+    // 若把广播来的公钥当成绑定，攻击者只要抢先广播（真实节点 5s 才播一次，他 100ms 一次，
+    // 必赢这个竞态）就能让真实好友的 Hello 被判「公钥与已绑定身份不符」而永远连不上，
+    // 同时攻击者自己的 Hello（用他自报的那把公钥验签）却能顺利通过 —— 完成身份冒充。
     let bound = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::get_friend_ed25519(&dbc, device_id)
     }
     .or_else(|| {
-        state
-            .peers
-            .lock()
-            .unwrap()
-            .get(device_id)
-            .and_then(|p| p.ed25519_pubkey.clone())
+        let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
+        bound_ed25519_from_peer(peers.get(device_id))
     });
     hello_auth_decision(
         bound.as_deref(),
@@ -811,7 +862,60 @@ pub(crate) fn verify_hello(
         x25519_pubkey,
         ed25519_pubkey,
         sig_b64,
-    )
+    )?;
+    // ⚠️ nonce 的消费必须放在**验签通过之后**。
+    //
+    // 它是一条有界 FIFO（512 条）：先消费等于给任何**未通过验签**的连接发了一张
+    // 污染缓存的入场券 —— 洪泛者可以持续占用/挤出槽位，把合法对端的 nonce 顶掉，
+    // 或在窗口内让合法 Hello 被误判成「重放」而拒掉（表现为"好友时连时断"）。
+    // 顺序调换不改变任何安全性质：重放的 Hello 签名本来就有效，
+    // 依旧会被下面这一判拦下 —— 只是它不再有机会占用槽位。
+    if !state.accept_hello_nonce(nonce) {
+        return Err(format!("Hello nonce 重放（device_id={device_id}）"));
+    }
+    Ok(())
+}
+
+/// 在线节点表里的公钥**能否作为 Hello 的身份绑定** —— 唯一判定点。
+///
+/// 只有 `keys_verified`（Hello 验签通过后由 `mark_peer_keys_verified` 置位）的条目才算数。
+/// 未验签的条目只可能来自**未签名**的 UDP announce：任何人拿到 device_id（announce 里
+/// 明文广播）就能以它广播自己的公钥。若这种公钥被当成绑定，攻击者只需抢先广播
+/// （真实节点 5s 播一次、他 100ms 一次，必赢竞态），就能：
+///   ① 让真实好友的 Hello 被判「公钥与已绑定身份不符」而永远连不上；
+///   ② 用自己的私钥签 Hello 冒充该好友 —— 绑定值就是他自己的公钥，验签必然通过。
+/// 抽成独立函数是为了让这条规则有名字、有单测，而不是散在 `or_else` 闭包里。
+fn bound_ed25519_from_peer(peer: Option<&Peer>) -> Option<String> {
+    peer.filter(|p| p.keys_verified)
+        .and_then(|p| p.ed25519_pubkey.clone())
+}
+
+/// 把某节点的公钥标记为**已验证**（Hello 验签通过后调用）。
+///
+/// 为什么必须有这个显式升级点：`peers` 表由两条信任级别完全不同的路径共同维护 ——
+/// 未签名的 UDP announce（可伪造）与验签通过的 Hello（可信）。只靠「表里有值」无法区分
+/// 二者，于是未验证的公钥会被当成身份绑定用（详见 `verify_hello` 与 `upsert_peer` 的注释）。
+/// 这里用一对公钥的**实际值**再核对一次：只有与 Hello 自报值一致时才升级，
+/// 避免在验签与本次写入之间被另一条 announce 插空改动。
+fn mark_peer_keys_verified(state: &AppState, device_id: &str, x25519: &str, ed25519: &str) {
+    let mut peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
+    // ⚠️ **只给已存在的记录打标，绝不凭空造记录**。
+    //
+    // 曾经的写法是「Hello 早于 announce ⇒ 先插一条占位记录」，那是错的：
+    // `peers` 的条目还要承载 **ip / tcp_port / nickname**（「添加好友」列表直接读它、
+    // 拨号也用它），凭空造出来的条目这些字段全是空的 —— 表现为「搜得到这个节点、
+    // 但加不上好友」，而且会被当成"在线"参与 UI 判定。
+    //
+    // 对端若还没 announce，这里就什么都不做：`bound` 回落为空 ⇒ 走 TOFU 分支
+    // （与本次改动之前的行为完全一致），下一条 announce 会把它正常登记进来。
+    let Some(p) = peers.get_mut(device_id) else {
+        return;
+    };
+    if p.x25519_pubkey.as_deref() != Some(x25519) || p.ed25519_pubkey.as_deref() != Some(ed25519)
+    {
+        return; // 与自报值不一致：不动（交由既有 key_conflict 路径处理）
+    }
+    p.keys_verified = true;
 }
 
 /// 同意好友之后**忘掉这条申请**（内存态 `pending_requests` 里的那一行）。
@@ -886,6 +990,31 @@ pub async fn flush_pending_friend_request(state: &Arc<AppState>, peer_id: &str) 
         .unwrap_or_else(|e| e.into_inner())
         .contains(peer_id);
     if !pending {
+        return;
+    }
+    // ⚠️ **已经是好友就不再补发**。
+    //
+    // 这条登记原本只由 `forget_pending_request` 在「收到对方的同意/拒绝」时清除。
+    // 但同意回执本身是**没有 ACK 的定向帧**，可能一直送不到（真机日志：
+    // Mac 侧持续 `补发好友申请` 而全程没有 `收到跨跳好友同意`）——
+    // 于是登记永不解除，链路每建立一次就重发一次，**无限循环**。
+    //
+    // 判据用「本地好友表里有没有他」而不是「有没有收到那个回执」：
+    // 无论友谊是通过哪条路径建立的（对方同意、我方同意、自动同意），
+    // 只要已经是好友，这条待发申请就失去了意义。
+    let already_friend = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        crate::db::get_friend(&dbc, peer_id).is_some()
+    };
+    if already_friend {
+        state
+            .pending_out_requests
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(peer_id);
+        state
+            .logger
+            .info("friend", format!("已是好友，停止补发申请 peer={peer_id}"));
         return;
     }
     // 复用同一条发送路径（含目标定向 + 重签），失败也不清登记 —— 下次建链再试
@@ -1145,6 +1274,11 @@ async fn handle_incoming(
                 );
                 return;
             }
+            // 验签通过 ⇒ 这对公钥**已被证明**由该 device_id 的持有者使用
+            // （Hello 的 sig 覆盖 device_id|tcp_port|nonce|x25519|ed25519，且用该 ed25519 验签）。
+            // 到此才允许它们参与身份绑定与持久化 —— 这是「已验证」与「只是广播来的」
+            // 之间唯一的升级点。
+            mark_peer_keys_verified(&state, device_id, x25519_pubkey, ed25519_pubkey);
             device_id.clone()
         }
         _ => return, // 首帧必须是 Hello
@@ -1508,7 +1642,7 @@ async fn reader_loop(
         let group_ids: Vec<String> = state
             .group_file_receivers
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .iter()
             .filter(|(_, r)| r.peer_id == peer_id)
             .map(|(id, _)| id.clone())
@@ -1709,7 +1843,36 @@ fn note_direct_link(state: &AppState, peer_id: &str, path_kind: PathKind) {
 /// Phase 2 建立的「任一 Connection 健康 ⇒ Online」才有真实连接数据支撑。
 /// 公钥在此刻可能尚未学到（拨号侧），留空即可 —— 收到 Hello / announce 后由
 /// `PeerIdentity::merge_missing` 补齐（只补空、不覆盖）。
+/// 日志限频：同一个 key 每 `min_interval_ms` 最多放行一次。
+///
+/// 用**模块级静态**而不是 `AppState` 字段：它只服务日志，不值得为一个诊断辅助
+/// 引入新的、需要清理的可增长状态。key 全是编译期字面量 ⇒ 表的规模天然有界。
+fn log_throttled(key: &'static str, min_interval_ms: i64) -> bool {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static LAST: OnceLock<Mutex<HashMap<&'static str, i64>>> = OnceLock::new();
+    let now = crate::db::now_ms();
+    let mut m = LAST
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    match m.get(key) {
+        Some(&t) if now - t < min_interval_ms => false,
+        _ => {
+            m.insert(key, now);
+            true
+        }
+    }
+}
+
 pub(crate) fn register_connection(state: &AppState, peer_id: &str, endpoint: MeshEndpoint, path_kind: PathKind) {
+    // 建链成功：排查真机连接问题（"什么时候连上的、走的哪条通道"）的第一手信息。
+    // 在此之前网络层**完全没有**建链日志 —— 用户报「一会儿在线一会儿不在线」时，
+    // 无从判断是哪条通道在反复建立/断开。
+    state.logger.info(
+        "link",
+        format!("建链 peer={peer_id} path={} ep={endpoint:?}", path_kind.as_str()),
+    );
     let identity = {
         let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
         peers
@@ -2921,8 +3084,14 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 };
                 let inserted = db::insert_message_if_new(&dbc, &rec);
                 if announced_on(&inserted) {
-                    db::touch_conversation(&dbc, &from, "single", &name, None, &preview, 1).ok();
+                    // 与群聊分支同一套口径：时钟照常推进，静默类不计未读/不改预览。
                     db::observe_clock(&dbc, &from, seq).ok();
+                    if crate::protocol::is_non_notifying_kind(&kind_str) {
+                        db::ensure_conversation(&dbc, &from, "single", &name, None).ok();
+                    } else {
+                        db::touch_conversation(&dbc, &from, "single", &name, None, &preview, 1)
+                            .ok();
+                    }
                 }
                 (rec, inserted)
             };
@@ -4261,6 +4430,16 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
             if env.target.as_deref() == Some(state.device_id.as_str()) {
                 let from = env.sender_id.clone();
                 let name = resolve_nickname(state, &from);
+                // 幂等判据：**这一次是否真的"从不是好友变成好友"**。
+                //
+                // FriendAccept 没有 ACK 机制，发送方会持续补发（见 `补发好友同意回执`）——
+                // 而本分支原先没有任何去重：`add_friend` 是幂等的，但**通知与留痕每次都会执行**
+                // ⇒ 用户被"好友申请已通过"反复刷屏（真机日志里同一秒内三次）。
+                // 同时它也是"单方面成功"的观感来源：一方在无限重发，另一方被反复打扰。
+                let was_friend = {
+                    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                    db::get_friend(&dbc, &from).is_some()
+                };
                 {
                     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                     db::add_friend(&dbc, &from, &name, None).ok();
@@ -4277,14 +4456,22 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                     }
                 }
                 forget_pending_request(state, &from);
+                // emit 每次都发：前端 store 只是据此重拉好友列表（幂等），
+                // 而漏发会让「首次那个 emit 恰好没被界面收到」时界面永远不刷新。
                 let _ = state.app.emit("friend-accepted", &from);
-                // 留痕：跨跳好友同意是落库（friends 表）+ 内存态，日志便于 headless 观测。
-                state.logger.info("friend", format!("收到跨跳好友同意 peer={from}"));
-                let _ = crate::notifications::show_if_enabled(
-                    state,
-                    "好友申请已通过",
-                    &format!("{name} 已成为你的好友"),
-                );
+                if was_friend {
+                    // 重复投递：只留一行便于排查的痕迹，**不通知**。
+                    state
+                        .logger
+                        .info("friend", format!("重复的好友同意（已忽略）peer={from}"));
+                } else {
+                    state.logger.info("friend", format!("收到跨跳好友同意 peer={from}"));
+                    let _ = crate::notifications::show_if_enabled(
+                        state,
+                        "好友申请已通过",
+                        &format!("{name} 已成为你的好友"),
+                    );
+                }
             }
         }
         GossipKind::ChatAck => {
@@ -4429,7 +4616,8 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                 if env.kind == GossipKind::Group {
                     let gid = env.group_id.clone().unwrap_or_default();
                     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                    let blocked = db::group_message_blocked_by_boundary(&dbc, &gid, env.seq);
+                    let blocked =
+                        db::group_message_blocked_by_boundary(&dbc, &gid, env.seq, &kind);
                     drop(dbc);
                     if blocked {
                         return;
@@ -4444,19 +4632,102 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                         env.group_creator.clone(),
                         !env.group_members.is_empty(),
                     ) {
-                        let display_name = env.group_name.clone().unwrap_or_else(|| name.clone());
+                        // ⚠️ **信封里的群名只有群主本人能生效**。
+                        //
+                        // `group_name` / `group_creator` 都是发送方自报的字段，任何持群密钥的
+                        // 成员都能填任意文本。但「改名」已经有专用帧 `GroupRename` 且严格要求
+                        // 群主 —— 若这里无条件采信，同一个效果就有了两条路径、一条有检查一条
+                        // 没有，成员即可绕过授权改掉所有人的群名（伪造成"系统通知"做社工）。
+                        //
+                        // 两层判断缺一不可：
+                        //   ① 发送者必须**自称**群主（否则填别人的 id 就能对上 creator）；
+                        //   ② 该自称还要与本地已存的 creator 一致（由 `db::upsert_group` 兜底），
+                        //      挡住「自称是群主、但本地记录里群主另有其人」。
+                        // 本地无该群时（首次接触，无从校验）按 TOFU 采信信封，与建链口径一致。
                         let mut all = env.group_members.clone();
                         if !all.contains(&state.device_id) {
                             all.push(state.device_id.clone());
                         }
-                        {
-                            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                            db::upsert_group(&dbc, &gid, &display_name, &creator, &all).ok();
-                        }
+                        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                        let known = db::get_group(&dbc, &gid);
+                        let is_self_declared_creator = env.sender_id == creator;
+                        let display_name = match &known {
+                            // 已有该群：只有群主自称时才更新名字，否则沿用本地名字
+                            Some(g) => {
+                                if is_self_declared_creator {
+                                    env.group_name.clone().unwrap_or_else(|| g.name.clone())
+                                } else {
+                                    g.name.clone()
+                                }
+                            }
+                            None => env.group_name.clone().unwrap_or_else(|| name.clone()),
+                        };
+                        // 群名长度与建群/改名一致封顶，避免这条路径塞进超长字符串
+                        let display_name: String =
+                            display_name.chars().take(MAX_GROUP_NAME_LEN).collect();
+                        db::upsert_group(&dbc, &gid, &display_name, &creator, &all).ok();
+                        drop(dbc);
                         let _ = state.app.emit("groups-updated", &gid);
                     }
                 }
                 let preview = preview_content(&kind, &content);
+                // 撤回事件：把「已撤回」物化到被撤回的那条消息上（幂等）。
+                // 只认**作者本人**的撤回 —— 信封被 Ed25519 签名，sender_id 不可伪造；
+                // 接收端不校验时间窗（无法验证发送方的墙上时钟，那是产品规则不是安全边界）。
+                let group_id_for_check = conv_id
+                    .strip_prefix("group:")
+                    .unwrap_or_default()
+                    .to_string();
+                if kind == crate::protocol::KIND_RECALL {
+                    if let Ok(p) = serde_json::from_str::<crate::protocol::RecallPayload>(&content)
+                    {
+                        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                        // ⚠️ **目标消息可能还没落库**（撤回事件先到）。此时不能因为
+                        // "查不到作者"就把整条撤回丢掉 —— 那恰好把权威集合存在的意义
+                        // （解决先撤后到）封死了：随后消息带着完整正文落库，撤回永久失效。
+                        // 目标不存在时以「发送者是本群成员」为准 —— 他能解开群消息就说明
+                        // 持有群密钥、是成员；而 msg_id 是信封哈希，本就随 gossip 公开。
+                        let target_exists = db::get_message_preview_source(&dbc, &p.target).is_some();
+                        let allowed = if target_exists {
+                            db::get_message_preview_source(&dbc, &p.target)
+                                .map(|(sid, _)| sid == env.sender_id)
+                                .unwrap_or(false)
+                        } else {
+                            db::get_group(&dbc, &group_id_for_check)
+                                .map(|g| g.members.contains(&env.sender_id))
+                                .unwrap_or(false)
+                        };
+                        if allowed {
+                            db::insert_recall(&dbc, &conv_id, &p.target, &env.sender_id, env.seq)
+                                .ok();
+                            db::materialize_recall(&dbc, &p.target).ok();
+                            drop(dbc);
+                            let _ = state.app.emit("message-recalled", &p.target);
+                        }
+                    }
+                }
+                // 群公告：**仅群主可发布/删除**。发送侧已校验（send_group_announcement），
+                // 但接收侧原先没有任何检查 —— 任何持群密钥的成员构造一条
+                // kind="announcement" 的群消息就能改掉所有人的公告横幅，
+                // 与「公告是发给全群的权威信息」相悖，也与群名那处（同一批修的）口径不一致。
+                if kind == crate::protocol::KIND_ANNOUNCEMENT
+                    || kind == crate::protocol::KIND_ANNOUNCEMENT_DELETE
+                {
+                    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                    let is_creator = db::get_group(&dbc, &group_id_for_check)
+                        .map(|g| g.creator == env.sender_id)
+                        .unwrap_or(false);
+                    if !is_creator {
+                        state.logger.warn(
+                            "group",
+                            format!(
+                                "丢弃非群主发布的公告：sender={} group={group_id_for_check}",
+                                env.sender_id
+                            ),
+                        );
+                        return;
+                    }
+                }
                 // 持锁块只做落库；await（fanout 转发已在前面）之后无持锁操作
                 // 业务幂等裁决：Direct（含 outbox 补发）可能已经把同一 msg_id 落库，此时
                 // 不得再计未读、再发 message-received，否则未读数与系统通知都会重复。
@@ -4479,11 +4750,30 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                         seq,
                         status: "delivered".to_string(),
                     };
+                    // **先撤后到**：撤回事件可能早于被撤回的消息到达（Gossip 泛洪与
+                    // outbox 直发是两条无顺序保证的路径）。命中权威集合就直接以
+                    // 「已撤回」形态入库 —— 否则消息会带着完整正文落地，撤回失效。
+                    let mut rec = rec;
+                    if db::is_recalled(&dbc, &rec.msg_id) {
+                        rec.kind = crate::protocol::KIND_RECALLED.to_string();
+                        rec.content = String::new();
+                    }
                     let inserted = db::insert_message_if_new(&dbc, &rec);
                     if announced_on(&inserted) {
-                        db::touch_conversation(&dbc, &conv_id, conv_kind, &name, None, &preview, 1)
-                            .ok();
+                        // 时钟推进与静默**无关**，必须照常：漏掉它本机后续 seq 会落后，
+                        // 之后自己发的消息会排到历史前面。
                         db::observe_clock(&dbc, &conv_id, seq).ok();
+                        if crate::protocol::is_non_notifying_kind(&kind) {
+                            // 静默事件（表情回应/撤回）与系统提示都不计未读、不改会话预览 ——
+                            // 否则「回个表情」或「X 加入了群聊」会把会话顶到列表最前并弹通知。
+                            // 但会话行必须存在，前端要靠它把事件归属到正确的会话。
+                            db::ensure_conversation(&dbc, &conv_id, conv_kind, &name, None).ok();
+                        } else {
+                            db::touch_conversation(
+                                &dbc, &conv_id, conv_kind, &name, None, &preview, 1,
+                            )
+                            .ok();
+                        }
                     }
                     (rec, inserted)
                 };
@@ -4633,6 +4923,7 @@ async fn handle_relay_file_offer(
                 use sha2::Digest as _;
                 sha2::Sha256::new()
             },
+            created_at: db::now_ms(),
         });
     state
         .relay
@@ -5868,6 +6159,11 @@ pub async fn upsert_peer(
                         rtt_ms,
                         x25519_pubkey: x25519.clone(),
                         ed25519_pubkey: ed25519.clone(),
+                        // 本函数由 announce（未签名 UDP）与 Hello 后的同步共同调用。
+                        // 这里一律先标未验证；只有验签通过的路径可以把它改成 true
+                        // （见 `mark_peer_keys_verified`）。宁可保守：未验证的公钥
+                        // 只配用于发现，不配用于身份绑定。
+                        keys_verified: false,
                         first_seen: Some(ts),
                         // 事件推送里的 peer 不带链路类型（同步上下文拿不到 links 锁）；
                         // 界面读的是命令返回的那份（那里会填），见 `Peer::link` 注释。
@@ -5920,8 +6216,18 @@ pub async fn upsert_peer(
         return;
     }
 
-    // 仅在公钥首次学到/变化时才落库（避免每条 announce 都写库）
-    if key_changed {
+    // 仅在公钥首次学到/变化时才落库（避免每条 announce 都写库）。
+    //
+    // ⚠️ **必须同时要求 `keys_verified`**：本函数同时服务两条来源完全不同的路径 ——
+    // 未签名的 UDP announce（任何人可伪造 device_id + 公钥）与验签通过的 Hello。
+    // 若不加这道闸，局域网内一个伪造 announce 就能把攻击者的公钥写进持久化的 friends 表，
+    // 覆盖好友的真实公钥：此后我发给该好友的消息都用攻击者公钥加密，而消息是广播给
+    // 所有已连接节点的 ⇒ 攻击者用自己的私钥即可解开（E2EE 被击穿，且重启不恢复）。
+    let verified = {
+        let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
+        peers.get(device_id).map(|p| p.keys_verified).unwrap_or(false)
+    };
+    if key_changed && verified {
         let (x, e) = {
             let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
             peers
@@ -6156,6 +6462,11 @@ pub async fn touch_peer(state: &AppState, device_id: &str) {
 /// "在线"不再靠"在不在节点表里"判定 —— 见 `commands::friend_is_online`
 /// （那条 presence 判据正是 2026-09-12 复核抓到的"连过又掉线 ⇒ 永久在线"的 High 缺陷来源）。
 pub(crate) async fn mark_peer_offline(state: &Arc<AppState>, device_id: &str) {
+    // 掉线：与「建链」配对，是判断「真离线」还是「被误清」的关键。
+    // 注意它与 sweep_peers 的超时清理是**两条不同的路径**，只有日志能区分。
+    state
+        .logger
+        .info("link", format!("掉线 peer={device_id}（链路断开）"));
     // 链路快照必须立刻失效：`conv_link` 记的是"当前可达路径"，链路没了路径就没了。
     // 不清掉的话，聊天头部的链路徽标会在离线后继续显示（用户 2026-09-12 反馈的
     // 「离线却显示『桥接 1』」）。
@@ -6259,6 +6570,17 @@ pub fn member_removed_action(
 /// 群的 conv_id 约定是 `group:{group_id}` —— 这个约定只有一处实现，避免各处手拼前缀。
 pub fn insert_group_system_message(state: &AppState, group_id: &str, text: &str) {
     crate::commands::insert_system_message(state, &format!("group:{group_id}"), text);
+}
+
+/// 加人通知的文案。此前**加人完全没有通知**（只靠 GroupKey 重发 + 群消息自愈），
+/// 群里其他人根本不知道多了一个成员 —— 而踢人/退群都是有系统消息的，
+/// 同一类事件两种待遇。语言跟随本机设置，与既有两条同口径。
+pub fn group_member_added_text(state: &AppState, name: &str) -> String {
+    if state.is_zh() {
+        format!("「{name}」加入了群聊")
+    } else {
+        format!("\"{name}\" joined the group")
+    }
 }
 
 pub fn group_member_removed_text(state: &AppState, name: &str) -> String {
@@ -7194,6 +7516,75 @@ mod tests {
         let other = crypto::Identity::generate();
         let (oxk, oek, _) = signed_hello(&other, "new-node", 59992, "n1");
         assert!(hello_auth_decision(None, "new-node", 59992, "n1", &oxk, &oek, &sig).is_err());
+    }
+
+    fn peer_with(ed25519: &str, keys_verified: bool) -> Peer {
+        Peer {
+            device_id: "victim-device".to_string(),
+            nickname: String::new(),
+            avatar: None,
+            device_type: String::new(),
+            ip: String::new(),
+            tcp_port: 0,
+            last_seen: 0,
+            rtt_ms: None,
+            x25519_pubkey: Some("xk".to_string()),
+            ed25519_pubkey: Some(ed25519.to_string()),
+            keys_verified,
+            first_seen: None,
+            link: None,
+        }
+    }
+
+    /// 未验签（只来自 UDP announce）的公钥**不得**作为身份绑定。
+    /// 这条是「一个伪造广播就能冒充好友」的闸门。
+    #[test]
+    fn hello_binding_ignores_unverified_announced_keys() {
+        let attacker = crypto::Identity::generate();
+        let ek = attacker.ed25519_public_b64();
+
+        assert_eq!(
+            bound_ed25519_from_peer(Some(&peer_with(&ek, false))),
+            None,
+            "announce 广播来的公钥不能被当成身份绑定"
+        );
+        assert_eq!(
+            bound_ed25519_from_peer(Some(&peer_with(&ek, true))),
+            Some(ek),
+            "验签过的公钥才可以作绑定"
+        );
+        assert_eq!(bound_ed25519_from_peer(None), None);
+    }
+
+    /// 完整攻击链的回归：攻击者伪造 announce 抢先把公钥塞进 peers，再用它签 Hello
+    /// 冒充受害者 device_id。
+    /// 修复前：bound 取自 peers → 就是攻击者自己的公钥 → 验签通过（冒充成功）。
+    /// 修复后：未验签 ⇒ bound 为空 ⇒ 落入 TOFU 分支，但**不能**再挤掉已绑定身份；
+    /// 若受害者已是我方好友，bound 直接取好友表的真实公钥 ⇒ 攻击者被拒。
+    #[test]
+    fn announced_attacker_key_cannot_bind_and_impersonate() {
+        let attacker = crypto::Identity::generate();
+        let victim = crypto::Identity::generate();
+        let (axk, aek, asig) = signed_hello(&attacker, "victim-device", 59992, "n1");
+
+        // ① 修复后的 bound 解析：announce 塞进来的条目未验签 → 不构成绑定
+        assert_eq!(bound_ed25519_from_peer(Some(&peer_with(&aek, false))), None);
+
+        // ② 好友表里存着受害者真实公钥时，攻击者的 Hello 必须被拒
+        let victim_ek = victim.ed25519_public_b64();
+        assert!(
+            hello_auth_decision(Some(&victim_ek), "victim-device", 59992, "n1", &axk, &aek, &asig)
+                .is_err(),
+            "用自报公钥冒充已绑定好友必须被拒"
+        );
+
+        // ③ 反证：若 bound 误取自 announce（即修复前的行为），攻击者会通过 ——
+        //    这条断言锁住「为什么必须过滤」，防止有人把 filter 当成多余代码删掉。
+        assert!(
+            hello_auth_decision(Some(&aek), "victim-device", 59992, "n1", &axk, &aek, &asig)
+                .is_ok(),
+            "（反证）把攻击者公钥当绑定就会放行 —— 这正是修复要拦掉的场景"
+        );
     }
 
     #[tokio::test]

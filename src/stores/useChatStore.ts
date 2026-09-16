@@ -6,15 +6,18 @@ import {
   applyReplacements,
   furthestStatus,
   mergeMessages,
+  messageMentionsAll,
   messageMentionsName,
   preserveDeliveryStatus,
   previewText,
   selectCachedConversations,
+  sortConversations,
   syncProfileFromPeers,
 } from "@/utils/messages";
 import { useAppStore } from "@/stores/useAppStore";
 import { actionableRequests } from "@/utils/friendRequests";
 import { notificationBody } from "@/utils/notifications";
+import { isSilentKind } from "@/utils/messageKinds";
 import { invalidateFilePreview } from "@/utils/filePreview";
 import { t } from "@/i18n";
 import { shouldRunThrottled } from "@/utils/defer";
@@ -185,6 +188,9 @@ export const useChatStore = defineStore("chat", () => {
 
   function maybeNotify(rec: MessageRecord) {
     if (!app.notifyEnabled) return;
+    // 静默事件（表情回应/撤回）不弹通知：它们不是"内容"，
+    // 提醒它们正是这个功能要消除的噪音（"收到""👍"刷屏）。
+    if (isSilentKind(rec.kind)) return;
     const myId = app.device?.device_id;
     if (!myId || rec.sender_id === myId) return;
     // 应用在前台且正查看该会话 → 不通知（不进队列）。
@@ -268,15 +274,16 @@ export const useChatStore = defineStore("chat", () => {
     }
     // 被 @ 检测（微信式 [有人@我]）：仅群聊、非自己发的、且当前没开着这个会话。
     // 与未读同源（本地真正新增的消息），重复投递不会反复触发。
+    // 「@所有人」对每个成员都等同于被点名，与点名走同一条判定入口。
     const myName = app.device?.nickname ?? "";
-    if (myName) {
-      for (const [cid, fresh] of newByConv) {
-        if (cid === activeConv.value || !cid.startsWith("group:")) continue;
-        for (const rec of fresh) {
-          if (rec.sender_id !== myDeviceId.value && messageMentionsName(rec, myName)) {
-            mentionedConvs.value.add(cid);
-            break;
-          }
+    for (const [cid, fresh] of newByConv) {
+      if (cid === activeConv.value || !cid.startsWith("group:")) continue;
+      for (const rec of fresh) {
+        if (rec.sender_id === myDeviceId.value) continue;
+        const named = myName ? messageMentionsName(rec, myName) : false;
+        if (named || messageMentionsAll(rec)) {
+          mentionedConvs.value.add(cid);
+          break;
         }
       }
     }
@@ -480,7 +487,7 @@ export const useChatStore = defineStore("chat", () => {
           .ensureConversation(id)
           .then((conv) => {
             if (!conversations.value.some((c) => c.id === id)) {
-              conversations.value = [conv, ...conversations.value];
+              conversations.value = sortConversations([conv, ...conversations.value]);
             }
           })
           .catch(() => {
@@ -732,6 +739,62 @@ export const useChatStore = defineStore("chat", () => {
       unreadJump.value = null;
     }
   }
+
+  /**
+   * 置顶/取消置顶会话（纯本地偏好，不广播不同步）。
+   * 乐观更新 + 失败回滚：置顶是高频轻操作，等一次 IPC 往返才动列表会明显发顿。
+   */
+  async function setConversationPinned(convId: string, pinned: boolean) {
+    const prevConvs = conversations.value;
+    conversations.value = sortConversations(
+      conversations.value.map((c) => (c.id === convId ? { ...c, pinned } : c)),
+    );
+    try {
+      await api.setConversationPinned(convId, pinned);
+    } catch (e) {
+      conversations.value = prevConvs;
+      throw e;
+    }
+  }
+
+  /**
+   * 撤回自己发的一条群消息（仅原作者，窗口 2 分钟）。
+   *
+   * 不做乐观更新：先在服务端成功（事件已发出）才改本地 —— 顺序反了会出现
+   * 「本地显示已撤回、对端根本没收到」。事件回来会走 `onMessageRecalled` 统一改本地形态。
+   */
+  async function recallMessage(groupId: string, msgId: string) {
+    await api.recallGroupMessage(groupId, msgId);
+  }
+
+  /** 发布群公告（仅群主）。正常入时间线（计未读、可通知），只是不随清空历史消失。 */
+  async function publishAnnouncement(groupId: string, text: string) {
+    const rec = await api.sendGroupAnnouncement(groupId, text);
+    enqueueMessage(rec);
+  }
+
+  /** 置顶/取消置顶一条群消息（任意成员；静默事件，由置顶条体现）。 */
+  async function pinMessage(groupId: string, msgId: string, pinned: boolean) {
+    // ⚠️ **必须 enqueue 进 store**：置顶在界面上的呈现（顶部的置顶条）
+    // 是 `foldPinned(该会话的全部消息)` 折叠出来的 —— 事件不进 store，
+    // 折叠就看不到它，界面要等下次重新拉全量（= 重进会话）才刷新。
+    const rec = await api.pinGroupMessage(groupId, msgId, pinned);
+    enqueueMessage(rec);
+  }
+
+  /**
+   * 发一条表情回应（群聊）。
+   *
+   * 走与普通消息**完全相同**的可靠管道（E2EE + outbox + GroupAck + 去重 + 离线补发），
+   * 只是接收端会按 kind 归类为静默事件。本地**不做乐观上屏**：回应是幂等的状态事件，
+   * 折叠逻辑已经能正确处理重复，等服务端回执再合并反而更简单、也不会出现
+   * "点了没反应但本地已高亮"的错觉。
+   */
+  async function sendReaction(groupId: string, target: string, emoji: string, add: boolean) {
+    const rec = await api.sendGroupReaction(groupId, target, emoji, add);
+    enqueueMessage(rec);
+  }
+
   async function createGroup(name: string, members: string[]) {
     const g = await api.createGroup(name, members);
     await api.distributeGroupKey(g.id);
@@ -984,6 +1047,34 @@ export const useChatStore = defineStore("chat", () => {
     app.toast(`${t("send.fileFail")}：${d.reason}`, "error");
   }
 
+  /**
+   * 收到撤回事件：把本地那一行改成「已撤回」形态。
+   *
+   * 与后端的物化视图保持一致：`kind` 改 `recalled`、`content` 清空 ——
+   * 这样搜索、预览、复制等所有读 content 的地方**一处都不用改**就自动正确。
+   */
+  function onMessageRecalled(msgId: string) {
+    for (const [convId, list] of Object.entries(messages.value)) {
+      const idx = list.findIndex((m) => m.msg_id === msgId);
+      if (idx < 0) continue;
+      if (list[idx].kind === "recalled") return; // 幂等：重复事件不再改动
+      const next = [...list];
+      next[idx] = { ...next[idx], kind: "recalled", content: "" };
+      messages.value = { ...messages.value, [convId]: next };
+      // 会话列表的预览若正是这条，也要跟着清掉（否则左侧仍显示已被撤回的正文）
+      const conv = conversations.value.find((c) => c.id === convId);
+      if (conv && conv.last_msg && list[idx].content) {
+        const preview = previewText(list[idx]);
+        if (conv.last_msg === preview || conv.last_msg === preview.slice(0, 30)) {
+          conversations.value = conversations.value.map((c) =>
+            c.id === convId ? { ...c, last_msg: t("msg.recalled") } : c,
+          );
+        }
+      }
+      return;
+    }
+  }
+
   function onGroupRead(p: GroupReadInfo) {
     const readers = groupReads.value[p.group_id] ?? {};
     const current = readers[p.reader_id] ?? 0;
@@ -1111,6 +1202,7 @@ export const useChatStore = defineStore("chat", () => {
         }
       },
       onGroupRead,
+      onMessageRecalled,
       onFileProgress: (p) => {
         // 进度由事件载荷直接更新，不再全量刷新传输列表（避免大文件 IPC 风暴卡死界面）
         updateTransferProgress(p);
@@ -1252,6 +1344,11 @@ export const useChatStore = defineStore("chat", () => {
     respondRequest,
     removeFriend,
     deleteConversation,
+    setConversationPinned,
+    sendReaction,
+    recallMessage,
+    pinMessage,
+    publishAnnouncement,
     createGroup,
     renameGroup,
     addGroupMember,

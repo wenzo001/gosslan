@@ -283,6 +283,19 @@ function onAskDeleteConvFromMenu() {
   pendingDelete.value = c;
 }
 
+/** 菜单里的「置顶/取消置顶」：可直接执行（可逆、非破坏性，无需二次确认）。 */
+async function onTogglePinConv() {
+  const c = convMenu.value?.conv;
+  closeConvMenu();
+  if (!c) return;
+  const next = !c.pinned;
+  try {
+    await chat.setConversationPinned(c.id, next);
+  } catch (e) {
+    app.toastError(e, next ? t("conv.pinFail") : t("conv.unpinFail"));
+  }
+}
+
 async function confirmDeleteConv() {
   const c = pendingDelete.value;
   pendingDelete.value = null;
@@ -499,7 +512,9 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
       v-if="convMenu"
       :x="convMenu.x"
       :y="convMenu.y"
+      :pinned="convMenu.conv.pinned"
       @close="closeConvMenu"
+      @toggle-pin="onTogglePinConv"
       @delete="onAskDeleteConvFromMenu"
     />
 

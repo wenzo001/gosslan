@@ -9,7 +9,7 @@
 //! - 中继路径：中继节点只透传密文切片，不持有会话密钥、无法解密。
 
 use std::collections::HashMap;
-use std::io::Read;
+use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -211,7 +211,7 @@ pub async fn send_file_from_path_at(
         state
             .pending_file_accept
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .insert(transfer_id.to_string(), tx);
         let offer = Message::FileOffer {
             transfer_id: transfer_id.to_string(),
@@ -227,7 +227,7 @@ pub async fn send_file_from_path_at(
             state
                 .pending_file_accept
                 .lock()
-                .unwrap()
+                .unwrap_or_else(|e| e.into_inner())
                 .remove(transfer_id);
             return Err(SendFileError::retryable(format!("建立文件传输失败：{e}")));
         }
@@ -251,7 +251,7 @@ pub async fn send_file_from_path_at(
                 state
                     .pending_file_accept
                     .lock()
-                    .unwrap()
+                    .unwrap_or_else(|e| e.into_inner())
                     .remove(transfer_id);
                 return Err(SendFileError::retryable("对方未接受文件"));
             }
@@ -290,11 +290,13 @@ pub async fn send_file_via_relay(
         .ok_or_else(|| "密钥交换失败".to_string())?;
     let sealed_key_b64 =
         STANDARD.encode(crypto::seal(&shared, &file_key).ok_or_else(|| "加密失败".to_string())?);
-    let bytes = std::fs::read(&path).map_err(|e| format!("读取文件失败：{e}"))?;
-    // 64KiB/片：base64 后约 88KB，BLE 单帧也装得下；中继以 LAN 为主。
+    // ⚠️ **逐片读盘，不整读进内存**。这里原先 `std::fs::read(&path)` 把整个文件读进来再切片：
+    // 中继发送的是共享目录里的文件（可能很大），整读后逐片 base64（×1.33）会让内存峰值
+    // 超过文件大小本身。改成按需 seek + read_exact，峰值只剩一个分片。
     let chunk_size = crate::relay_manager::MIN_CHUNK_SIZE;
-    let total = bytes.len();
+    let total = size as usize;
     let chunk_count = total.div_ceil(chunk_size).max(1) as u32;
+    let mut src = std::fs::File::open(&path).map_err(|e| format!("读取文件失败：{e}"))?;
 
     {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -318,10 +320,14 @@ pub async fn send_file_via_relay(
 
     let mut last_report = std::time::Instant::now() - Duration::from_secs(1);
     for seq in 0..chunk_count {
-        let start = ((seq as usize) * chunk_size).min(total);
+        let start = (seq as usize * chunk_size).min(total);
         let end = (start + chunk_size).min(total);
-        let plain = &bytes[start..end];
-        let sealed = crypto::seal_symmetric(&file_key, plain)
+        let mut plain = vec![0u8; end - start];
+        src.seek(std::io::SeekFrom::Start(start as u64))
+            .map_err(|e| format!("定位文件失败：{e}"))?;
+        src.read_exact(&mut plain)
+            .map_err(|e| format!("读取文件分片失败：{e}"))?;
+        let sealed = crypto::seal_symmetric(&file_key, &plain)
             .ok_or_else(|| "文件分片加密失败".to_string())?;
         let data = STANDARD.encode(&sealed);
         let msg = Message::RelayChunk {
@@ -479,7 +485,7 @@ async fn stream_file(
     state
         .pending_file_complete
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .insert(transfer_id.to_string(), tx);
     try_send(
         state,
@@ -493,7 +499,7 @@ async fn stream_file(
     state
         .pending_file_complete
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .remove(transfer_id);
     // 进展记录用完即清（成功/失败都清），避免这张表随历史传输无限增长。
     clear_file_wire_progress(state, transfer_id);
@@ -629,6 +635,10 @@ pub fn resume_receive(
 ) -> Result<PathBuf, String> {
     const TTL_MS: i64 = 24 * 60 * 60 * 1000;
     let safe_name = safe_file_name(name).ok_or("文件名非法")?;
+    // 续传同样要落 `{id}.part`，消毒口径必须与 make_receiver 完全一致 ——
+    // 否则「首次收被拦、续传绕过」就会留下一条可用的攻击路径。
+    let transfer_id = safe_transfer_id(transfer_id).ok_or("传输标识非法")?;
+    let transfer_id = transfer_id.as_str();
     let dl = state
         .downloads_dir
         .lock()
@@ -648,11 +658,34 @@ pub fn resume_receive(
             }
         }
     }
-    let prefix = std::fs::read(&tmp_path).map_err(|e| e.to_string())?;
+    // ⚠️ **分块喂哈希器，不整读进内存**。这曾经是 `std::fs::read(&tmp_path)`：
+    // `.part` 前缀最长就等于整个文件，于是「几个 GB 的文件传到 90% 断链、对端续传」
+    // 会让本进程瞬间占用 ≈ 文件大小的内存 —— 而续传恰恰是为了处理这种大文件场景。
     let hasher = {
         use sha2::Digest as _;
         let mut h = sha2::Sha256::new();
-        h.update(&prefix);
+        let mut src = std::fs::File::open(&tmp_path).map_err(|e| e.to_string())?;
+        let mut buf = vec![0u8; FILE_CHUNK];
+        let mut counted: u64 = 0;
+        loop {
+            let n = src.read(&mut buf).map_err(|e| e.to_string())?;
+            if n == 0 {
+                break;
+            }
+            h.update(&buf[..n]);
+            counted += n as u64;
+        }
+        // 只记录、不改行为：`received` 仍以 from_bytes 为准（发送端的分片编号是据此推出来的，
+        // 这里单方面改会让两端的 seq 对不上）。不一致说明该 .part 已被外部改动，
+        // 后续 SHA-256 整体校验会拦下，此处先留下可诊断的痕迹。
+        if counted != from_bytes {
+            state.logger.warn(
+                "file",
+                format!(
+                    "续传前缀长度与声明不符：磁盘 {counted} 字节 / 声明 {from_bytes} 字节（transfer={transfer_id}）"
+                ),
+            );
+        }
         h
     };
     let f = std::fs::OpenOptions::new()
@@ -749,6 +782,9 @@ fn make_receiver(
     receivers: &std::sync::Mutex<HashMap<String, FileReceiver>>,
 ) -> Result<PathBuf, String> {
     let safe_name = safe_file_name(name).ok_or("文件名非法")?;
+    // transfer_id 会成为 `{id}.part` 的文件名，必须与文件名同级消毒（见 safe_transfer_id）
+    let transfer_id = safe_transfer_id(transfer_id).ok_or("传输标识非法")?;
+    let transfer_id = transfer_id.as_str();
     if size > i64::MAX as u64 {
         return Err("文件过大，无法安全保存".to_string());
     }
@@ -1055,7 +1091,7 @@ pub fn fail_receives_for_peer(state: &AppState, peer_id: &str) {
     let ids: Vec<String> = state
         .file_receivers
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .iter()
         .filter(|(_, r)| r.peer_id == peer_id)
         .map(|(id, _)| id.clone())
@@ -1311,6 +1347,26 @@ pub(crate) fn safe_file_name(name: &str) -> Option<String> {
     Some(name.to_string())
 }
 
+/// `transfer_id` 同样来自远端协议，而且**会被直接拼进落盘路径**（`{transfer_id}.part`）——
+/// 必须和 `safe_file_name` 同级校验，否则一个 `../../../../Users/me/Documents/x` 就能逃出
+/// 下载目录，而 `File::create` 会**创建或截断**目标文件（内容由对端控制，
+/// `Path::join` 遇到绝对路径还会整体替换前缀）。失败收尾路径同样会 `remove_file` 它。
+///
+/// 白名单而非黑名单：只接受 UUID / 测试用的连字符短 id 形态（`[A-Za-z0-9_-]{1,64}`）。
+/// 生产端的 transfer_id 一律是 `Uuid::new_v4().to_string()`。
+pub(crate) fn safe_transfer_id(id: &str) -> Option<String> {
+    if id.is_empty() || id.len() > 64 {
+        return None;
+    }
+    if !id
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return None;
+    }
+    Some(id.to_string())
+}
+
 /// 人类可读的文件大小。
 #[allow(dead_code)]
 pub fn human_size(bytes: u64) -> String {
@@ -1327,7 +1383,8 @@ pub fn human_size(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        chunk_seq_decision, classify_file_subtype, safe_file_name, unique_path, ChunkSeq,
+        chunk_seq_decision, classify_file_subtype, safe_file_name, safe_transfer_id, unique_path,
+        ChunkSeq,
     };
 
     /// **收到分片的判定规则**（2026-09-13 审计的真缺陷，必须钉住）。
@@ -1400,6 +1457,45 @@ mod tests {
             assert!(safe_file_name(name).is_none(), "{name} must be rejected");
         }
         assert_eq!(safe_file_name("report.txt").as_deref(), Some("report.txt"));
+    }
+
+    /// `transfer_id` 会被拼成 `{id}.part` 落盘，必须与文件名同级消毒。
+    /// 未校验时一个 `../../../../Users/me/Documents/x` 就能让 `File::create`
+    /// 在下载目录之外创建/截断文件（内容由对端控制）。
+    #[test]
+    fn rejects_path_traversal_transfer_ids() {
+        for id in [
+            "../../../../Users/me/Documents/report",
+            "..\\..\\windows\\system32\\x",
+            "/etc/passwd",
+            "a/b",
+            "a\\b",
+            "..",
+            ".",
+            "",
+            "with space",
+            "null\0byte",
+            "中文 id",
+        ] {
+            assert!(safe_transfer_id(id).is_none(), "{id:?} 必须被拒");
+        }
+        // 长度上限：超长 id 会成为超长文件名
+        assert!(safe_transfer_id(&"a".repeat(65)).is_none());
+        assert!(safe_transfer_id(&"a".repeat(64)).is_some());
+    }
+
+    /// 生产端用 UUID、E2E 用连字符短 id —— 合法形态一个都不能被误杀。
+    #[test]
+    fn accepts_real_world_transfer_ids() {
+        for id in [
+            "3f2504e0-4f89-11d3-9a0c-0305e82c3301", // Uuid::new_v4()
+            "e2e-file-001",
+            "e2e-group-image-001",
+            "e2e-dl-001",
+            "ABCdef123_-",
+        ] {
+            assert_eq!(safe_transfer_id(id).as_deref(), Some(id), "{id} 不应被拒");
+        }
     }
 
     /// `unique_path` 在任何分支下都不得返回已存在的路径。
@@ -1811,6 +1907,7 @@ mod tests {
                 use sha2::Digest as _;
                 sha2::Sha256::new()
             },
+            created_at: crate::db::now_ms(),
         };
 
         let mut assembled: Vec<u8> = Vec::new();

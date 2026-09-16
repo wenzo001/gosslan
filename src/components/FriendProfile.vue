@@ -5,8 +5,8 @@
  * 微信 macOS 的资料页结构：顶部头像 + 昵称（+ 状态徽标），紧跟着几行**小字段**
  * （微信号 / 地区这类）；下面按分组罗列（朋友资料 / 更多信息），
  * 最底部是**图标在上、文字在下**的动作按钮（发消息 / 语音聊天 / 视频聊天）。
- * 这里照这个结构重排，但**字段沿用本应用现有的**（设备 ID / 指纹 / IP / 端口 / E2EE）——
- * 通信工具的身份核对面是设备指纹与公钥，不是微信号，凭空照搬反而误导。
+ * 这里照这个结构重排，但**字段沿用本应用现有的**（设备 ID / 安全码 / IP / 端口 / E2EE）——
+ * 通信工具的身份核对面是公钥派生的安全码，不是微信号，凭空照搬反而误导。
  */
 import { api } from "@/api";
 import type { LinkState } from "@/types";
@@ -20,7 +20,8 @@ import {
 import { computed, ref, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
-import { ArrowLeft, MessageCircle, UserMinus } from "lucide-vue-next";
+import { useClipboard } from "@/composables/useClipboard";
+import { ArrowLeft, Copy, MessageCircle, UserMinus } from "lucide-vue-next";
 import BaseModal from "@/components/BaseModal.vue";
 import { avatarInitial, avatarInitialLen, nameToColor } from "@/utils/color";
 import type { Friend } from "@/types";
@@ -36,8 +37,47 @@ const chat = useChatStore();
 /** 在线节点信息（IP / 端口 / 公钥），离线好友为 undefined */
 const peer = computed(() => chat.peers.find((p) => p.device_id === props.friend.device_id));
 const initial = computed(() => avatarInitial(props.friend.nickname));
-/** 设备指纹尾码：用于当面核对身份（完整 ID 过长，不便口头比对） */
-const shortId = computed(() => props.friend.device_id.slice(-8).toUpperCase());
+/**
+ * **安全码**：本机与这位好友之间那串双方一致的数字，供带外核对。
+ *
+ * 这里**刻意不再用「device_id 尾 8 位」**当核对码。尾码只反映对方**自称**的 ID，
+ * 而 ID 在广播里是明文 —— 冒充者伪造同一个 device_id 就能得出同样的尾码，
+ * 看着"对得上"却毫无防护作用，比不给还危险。
+ * 安全码由双方的公钥派生，冒充者手里的密钥不同，算出来必然不同。
+ *
+ * `null` = 还缺对方公钥（尚未通过 Hello/announce 学到）：如实显示"暂时算不出"，
+ * **不拿 device_id 凑一个**，凑出来的码在真正的攻击下会误导用户。
+ */
+const safetyNumber = ref<string | null>(null);
+const safetyFailed = ref(false);
+
+watch(
+  () => props.friend.device_id,
+  async (id) => {
+    safetyNumber.value = null;
+    safetyFailed.value = false;
+    try {
+      safetyNumber.value = await api.getSafetyNumber(id);
+    } catch {
+      safetyFailed.value = true;
+    }
+  },
+  { immediate: true },
+);
+
+/** 首段（用于头部的快速一瞥）：完整 6 段太长，不适合放在小字段里。 */
+const safetyFirstGroup = computed(() => safetyNumber.value?.split(" ")[0] ?? null);
+
+const { copyContent } = useClipboard();
+
+async function copySafetyNumber() {
+  if (!safetyNumber.value) return;
+  const ok = await copyContent("safety", safetyNumber.value);
+  app.toast(
+    ok ? t("friend.profile.safetyCopied") : t("friend.profile.safetyFail"),
+    ok ? "success" : "error",
+  );
+}
 /** 中继跳数：与聊天头部那颗链路徽标**同一来源**（`get_conv_link`），不另造一份。 */
 const convLink = ref<LinkState | null>(null);
 watch(
@@ -117,9 +157,13 @@ const confirmRemove = ref(false);
                 {{ friend.online ? t("common.online") : t("common.offline") }}
               </span>
             </div>
-            <!-- 小字段：（微信这里是 微信号/地区；我们对应 设备指纹尾码/连接地址） -->
+            <!-- 小字段：（微信这里是 微信号/地区；我们对应 安全码首段/连接地址） -->
             <div class="mt-2 space-y-0.5 text-[12px] leading-relaxed text-[var(--gosslan-text-2)]">
-              <div>{{ t("friend.profile.fingerprint") }}：<span class="font-mono">{{ shortId }}</span></div>
+              <div>
+                {{ t("friend.profile.safetyFirst") }}：
+                <span class="font-mono">{{ safetyFirstGroup ?? t("common.notSet") }}</span>
+                <span v-if="safetyFirstGroup" class="opacity-60">…</span>
+              </div>
               <div class="truncate" :title="address">{{ t("peer.link.label") }}：<span class="font-mono">{{ address }}</span></div>
             </div>
           </div>
@@ -158,11 +202,43 @@ const confirmRemove = ref(false);
           </div>
         </section>
 
-        <!-- 分组二：更多信息（身份核对相关 —— 本应用的"微信号"就是设备 ID 与指纹） -->
+        <!-- 分组二：更多信息（身份核对相关 —— 本应用的"微信号"就是设备 ID 与安全码） -->
         <section class="mt-6">
           <h3 class="mb-2 px-1 text-xs font-medium tracking-wide text-[var(--gosslan-text-2)]">
             {{ t("friend.profile.more") }}
           </h3>
+
+          <!-- 安全码：**防中间人的唯一手段**。单独成块（不塞进下面的字段卡）——
+               它需要一段解释才能被正确使用，而字段卡里放不下解释。 -->
+          <div
+            class="mb-2 rounded-[var(--gosslan-radius-lg)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-4 py-3"
+          >
+            <div class="flex items-center justify-between gap-3">
+              <span class="text-sm text-[var(--gosslan-text-2)]">{{ t("friend.profile.safety") }}</span>
+              <button
+                v-if="safetyNumber"
+                class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+                :title="t('friend.profile.safetyCopy')" :aria-label="t('friend.profile.safetyCopy')"
+                @click="copySafetyNumber"
+              >
+                <Copy class="h-3.5 w-3.5" />
+              </button>
+            </div>
+            <!-- 六段等宽显示：段与段之间留空，便于两人一段一段念着核对 -->
+            <div
+              v-if="safetyNumber"
+              class="mt-1 font-mono text-[15px] tracking-wide text-[var(--gosslan-text)]"
+              :title="safetyNumber"
+            >
+              {{ safetyNumber }}
+            </div>
+            <div v-else class="mt-1 text-[12px] text-[var(--gosslan-text-2)]">
+              {{ safetyFailed ? t("friend.profile.safetyFail") : t("friend.profile.safetyUnavailable") }}
+            </div>
+            <p class="mt-2 text-[11px] leading-relaxed text-[var(--gosslan-text-2)]">
+              {{ t("friend.profile.safetyHint") }}
+            </p>
+          </div>
           <div class="overflow-hidden rounded-[var(--gosslan-radius-lg)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)]">
             <div class="flex items-start justify-between gap-4 px-4 py-3 text-sm">
               <span class="shrink-0 text-[var(--gosslan-text-2)]">{{ t("friend.profile.deviceId") }}</span>

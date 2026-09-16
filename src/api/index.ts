@@ -2,7 +2,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppSettings, CacheInfo, ChatSearchGroup, CleanupReport, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, FileDoneInfo, FileFailedInfo, FileProgress, Friend, Group, GroupReadInfo, InterfaceCandidate, InterfaceInfo, LinkState, LogEntry, MessageRecord, Peer, PeerReadInfo, PendingRequest, RoutedEndpoint, RuntimeSnapshot, SearchResult, ShareEntry, TopologyInfo, TransferInfo } from "@/types";
+import type { AppSettings, CacheInfo, ChatSearchGroup, CleanupReport, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, FileDoneInfo, FileFailedInfo, FileProgress, Friend, Group, GroupFileEntry, GroupReadInfo, InterfaceCandidate, InterfaceInfo, LinkState, LogEntry, MessageRecord, Peer, PeerReadInfo, PendingRequest, RoutedEndpoint, RuntimeSnapshot, SearchResult, ShareEntry, TopologyInfo, TransferInfo } from "@/types";
 
 export const api = {
   /**
@@ -51,6 +51,9 @@ export const api = {
   /** 设置页「发送测试通知」：成功返回平台说明，失败返回真实原因（供排障）。 */
   sendTestNotification: () => invoke<string>("send_test_notification"),
   getFriends: () => invoke<Friend[]>("get_friends"),
+  /** 与指定对端的**安全码**（双方一致，供带外核对）。null = 还缺对方公钥，算不出来。 */
+  getSafetyNumber: (peerId: string) =>
+    invoke<string | null>("get_safety_number", { peerId }),
   removeFriend: (peerId: string) => invoke<void>("remove_friend", { peerId }),
   getPendingRequests: () => invoke<PendingRequest[]>("get_pending_requests"),
   sendFriendRequest: (peerId: string) => invoke<void>("send_friend_request", { peerId }),
@@ -70,6 +73,8 @@ export const api = {
   ensureConversation: (friendId: string) =>
     invoke<Conversation>("ensure_conversation", { friendId }),
   markRead: (convId: string) => invoke<void>("mark_read", { convId }),
+  setConversationPinned: (convId: string, pinned: boolean) =>
+    invoke<void>("set_conversation_pinned", { convId, pinned }),
   deleteConversation: (convId: string) =>
     invoke<void>("delete_conversation", { convId }),
 
@@ -88,6 +93,20 @@ export const api = {
   getGroupReads: (groupId: string) => invoke<GroupReadInfo[]>("get_group_reads", { groupId }),
   sendGroupMessage: (groupId: string, content: string, kind: string) =>
     invoke<MessageRecord>("send_group_message", { groupId, content, kind }),
+  listGroupFiles: (groupId: string) =>
+    invoke<GroupFileEntry[]>("list_group_files", { groupId }),
+  /** 发布群公告（仅群主；上限 500 字）。 */
+  sendGroupAnnouncement: (groupId: string, text: string) =>
+    invoke<MessageRecord>("send_group_announcement", { groupId, text }),
+  /** 置顶/取消置顶一条群消息（任意群成员；静默事件，不进时间线）。 */
+  pinGroupMessage: (groupId: string, target: string, pinned: boolean) =>
+    invoke<MessageRecord>("pin_group_message", { groupId, target, pinned }),
+  /** 撤回自己发的一条群消息（仅原作者；窗口 2 分钟，只在发送端强制）。 */
+  recallGroupMessage: (groupId: string, target: string) =>
+    invoke<void>("recall_group_message", { groupId, target }),
+  /** 表情回应：一条**静默事件**（不计未读、不改预览、不弹通知）。 */
+  sendGroupReaction: (groupId: string, target: string, emoji: string, add: boolean) =>
+    invoke<MessageRecord>("send_group_reaction", { groupId, target, emoji, add }),
 
   // 自绘标题栏：窗口控制
   windowMinimize: () => invoke<void>("window_minimize"),
@@ -251,6 +270,8 @@ export type EventHandlers = {
   onMessageAcked: (msgId: string) => void;
   onPeerRead: (p: PeerReadInfo) => void;
   onGroupRead: (p: GroupReadInfo) => void;
+  /** 某条消息被撤回（msg_id）。本地据此把该行改成「已撤回」形态。 */
+  onMessageRecalled: (msgId: string) => void;
   onFileProgress: (p: FileProgress) => void;
   onFileDone: (d: FileDoneInfo) => void;
   onFileFailed: (d: FileFailedInfo) => void;
@@ -279,6 +300,7 @@ export async function bindEvents(h: EventHandlers): Promise<UnlistenFn[]> {
     listen<{ msg_id: string }>("group-message-acked", (e) => h.onMessageAcked(e.payload.msg_id)),
     listen<PeerReadInfo>("peer-read", (e) => h.onPeerRead(e.payload)),
     listen<GroupReadInfo>("group-read", (e) => h.onGroupRead(e.payload)),
+    listen<string>("message-recalled", (e) => h.onMessageRecalled(e.payload)),
     listen<FileProgress>("file-progress", (e) => h.onFileProgress(e.payload)),
     listen<FileDoneInfo>("file-done", (e) => h.onFileDone(e.payload)),
     listen<FileFailedInfo>("file-failed", (e) => h.onFileFailed(e.payload)),

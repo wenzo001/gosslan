@@ -27,9 +27,29 @@ const filtered = computed(() => {
   return chat.conversations.filter((c) => c.name.toLowerCase().includes(kw));
 });
 
-const kindLabel = computed(
-  () => ({ text: t("common.text"), code: t("common.code"), image: t("common.image"), file: t("common.file"), system: t("common.system") })[props.kind] ?? t("msg.message"),
-);
+// 穷举所有 MsgKind：新增 kind 时这里会编译报错，逼你决定它的展示文案 ——
+// 比运行期回落到「消息」两个字更容易发现遗漏。
+const KIND_LABELS: Record<MsgKind, string> = {
+  text: t("common.text"),
+  code: t("common.code"),
+  image: t("common.image"),
+  file: t("common.file"),
+  system: t("common.system"),
+  // 静默事件（表情回应）不该出现在转发列表里；给个中性文案兜底，
+  // 真正的拦截在转发入口（不在时间线上渲染，就没有转发菜单可点）。
+  reaction: t("msg.reactionMore"),
+  recall: t("msg.recall"),
+  recalled: t("msg.recalled"),
+  // 静默事件：不在时间线上渲染，就不会有转发入口。给中性文案兜底。
+  pin: t("msg.pin"),
+  announcement: t("group.announce"),
+  announcement_delete: t("group.announce"),
+  todo: t("todo.title"),
+  todo_done: t("todo.title"),
+  poll: t("poll.title"),
+  poll_vote: t("poll.title"),
+};
+const kindLabel = computed(() => KIND_LABELS[props.kind] ?? t("msg.message"));
 </script>
 
 <template>

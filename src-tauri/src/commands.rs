@@ -144,18 +144,32 @@ pub async fn update_profile(
         avatar,
         device_type: crate::protocol::current_device_type().to_string(),
     };
-    let links = s.links.lock().await;
-    for link in links.values().flatten() {
-        // 大头像资料帧走 bulk 通道：2MB 头像在 BLE 上要分上千片，绝不能堵住聊天/好友
-        // 请求的优先道；小头像仍走 priority（资料变更要立刻可见）。
-        let tx = if bulk_profile_frame {
-            &link.bulk
-        } else {
-            &link.priority
-        };
+    // ⚠️ **锁内只做「取 + 克隆」，绝不 await**（与 `transport.rs` 心跳发送同一纪律）。
+    //
+    // 原先`let links = ...lock().await` 后就地 `tx.send().await`：这些都是**有界**队列
+    // （1024），对端僵死（半开 TCP / 休眠 / 写缓冲满）时 `send().await` 会一直挂起，
+    // 而它**握着全局 links 锁** ⇒ 所有 try_send、心跳、get_peers、mark_peer_offline、
+    // teardown_link 以及看门狗全部阻塞。看门狗恰恰是唯一能发 cancel 拆掉那条卡死连接、
+    // 让队列排空的机制 —— 它被同一把锁挡住，形成自锁死循环，只能靠用户手动重开局域网。
+    let targets = {
+        let links = s.links.lock().await;
+        links
+            .values()
+            .flatten()
+            // 大头像资料帧走 bulk 通道：2MB 头像在 BLE 上要分上千片，绝不能堵住聊天/好友
+            // 请求的优先道；小头像仍走 priority（资料变更要立刻可见）。
+            .map(|link| {
+                if bulk_profile_frame {
+                    link.bulk.clone()
+                } else {
+                    link.priority.clone()
+                }
+            })
+            .collect::<Vec<_>>()
+    };
+    for tx in &targets {
         let _ = tx.send(msg.clone()).await;
     }
-    drop(links);
 
     // 昵称/头像变更：另一个窗口的资料区要跟着刷新。
     // 这两个键不在 `Settings` 形状里（它们是"资料"），所以 patch 里不放值 ——
@@ -219,6 +233,7 @@ pub fn list_interfaces() -> Vec<InterfaceInfo> {
 
 // ---------------- 网络控制 ----------------
 
+
 #[tauri::command(async)]
 pub async fn start_network(
     state: State<'_, Arc<AppState>>,
@@ -260,7 +275,7 @@ pub async fn get_peers(state: State<'_, Arc<AppState>>) -> Result<Vec<Peer>, Str
         .inner()
         .peers
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .values()
         .cloned()
         .collect();
@@ -1398,9 +1413,18 @@ pub async fn broadcast_chat_style(
         to: None,
         style,
     };
-    let links = s.links.lock().await;
-    for link in links.values().flatten() {
-        let _ = link.priority.send(msg.clone()).await;
+    // 同 update_profile：锁内只克隆发送端，发送在锁外做 —— 否则一条拥塞链路
+    // 就能握着全局 links 锁把整个网络层（含自愈用的看门狗）拖死。
+    let targets = {
+        let links = s.links.lock().await;
+        links
+            .values()
+            .flatten()
+            .map(|link| link.priority.clone())
+            .collect::<Vec<_>>()
+    };
+    for tx in &targets {
+        let _ = tx.send(msg.clone()).await;
     }
     Ok(())
 }
@@ -1423,6 +1447,49 @@ fn friend_is_online(last_seen: i64, now: i64, has_active_link: bool) -> bool {
 }
 
 const FRIEND_ONLINE_GRACE_MS: i64 = 15_000;
+
+/// 安全码：本机与指定对端之间那串**双方一致**的核对码（见 `crypto::safety_number`）。
+///
+/// 返回 `None` 表示**还算不出来** —— 缺对方的公钥（尚未通过 Hello/announce 学到）。
+/// 这时**必须如实返回 None 而不是拿 device_id 凑一个**：凑出来的码在真正的中间人
+/// 攻击下与真实对端的码不同，用户核对后会以为"对得上"，比没有更糟。
+///
+/// 对端公钥取 peers 优先、friends 回落（与 `resolve_member_x25519` 同一口径）。
+#[tauri::command(async)]
+pub fn get_safety_number(
+    state: State<'_, Arc<AppState>>,
+    peer_id: String,
+) -> Option<String> {
+    let s = state.inner();
+    let (their_x, their_e) = {
+        let peers = s.peers.lock().unwrap_or_else(|e| e.into_inner());
+        let p = peers.get(&peer_id);
+        (
+            p.and_then(|p| p.x25519_pubkey.clone()),
+            p.and_then(|p| p.ed25519_pubkey.clone()),
+        )
+    };
+    let (their_x, their_e) = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        (
+            their_x.or_else(|| db::get_friend_x25519(&dbc, &peer_id)),
+            their_e.or_else(|| db::get_friend_ed25519(&dbc, &peer_id)),
+        )
+    };
+    let (their_x, their_e) = (their_x?, their_e?);
+    Some(crypto::safety_number(
+        &crypto::SafetyParty {
+            device_id: &s.device_id,
+            x25519_pubkey: &s.identity.x25519_public_b64(),
+            ed25519_pubkey: &s.identity.ed25519_public_b64(),
+        },
+        &crypto::SafetyParty {
+            device_id: &peer_id,
+            x25519_pubkey: &their_x,
+            ed25519_pubkey: &their_e,
+        },
+    ))
+}
 
 #[tauri::command(async)]
 pub fn get_friends(state: State<'_, Arc<AppState>>) -> Vec<Friend> {
@@ -1885,7 +1952,7 @@ pub async fn send_message(
         let from_peers = s
             .peers
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner())
             .get(&friend_id)
             .and_then(|p| p.x25519_pubkey.clone());
         match from_db.or(from_peers) {
@@ -1908,7 +1975,7 @@ pub async fn send_message(
                 let again_peers = s
                     .peers
                     .lock()
-                    .unwrap()
+                    .unwrap_or_else(|e| e.into_inner())
                     .get(&friend_id)
                     .and_then(|p| p.x25519_pubkey.clone());
                 again_db.or(again_peers)
@@ -2083,6 +2150,11 @@ pub fn ensure_conversation(
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         db::ensure_conversation(&dbc, &friend_id, "single", &name, avatar.as_deref())
             .map_err(|e| e.to_string())?;
+        // 回读已存在的行：会话可能早已建立且被置顶，凭空造一个 pinned=false
+        // 会让前端把它当成「未置顶」从而覆盖掉用户的置顶状态。
+        if let Some(conv) = db::get_conversation(&dbc, &friend_id) {
+            return Ok(conv);
+        }
     }
     Ok(Conversation {
         id: friend_id.clone(),
@@ -2092,7 +2164,19 @@ pub fn ensure_conversation(
         last_msg: None,
         last_ts: None,
         unread: 0,
+        pinned: false,
     })
+}
+
+/// 设置会话置顶（纯本地偏好，不广播、不同步）。
+#[tauri::command(async)]
+pub fn set_conversation_pinned(
+    state: State<'_, Arc<AppState>>,
+    conv_id: String,
+    pinned: bool,
+) -> Result<(), String> {
+    let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
+    db::set_conversation_pinned(&dbc, &conv_id, pinned).map_err(|e| e.to_string())
 }
 
 /// 标记会话已读；单聊时向对方发送已读回执（触发对方界面的「已读绿勾」）。
@@ -2463,6 +2547,16 @@ pub async fn group_add_member(
     };
     // 现有成员收到的是同一把密钥（幂等刷新），新成员借此首次拿到密钥
     resend_group_key_to(s, &group_id, &current, key).await;
+    // 加人通知：此前完全缺失（见 group_member_added_text 的说明）。
+    //
+    // ⚠️ 必须走 `send_group_payload`（群密钥加密 + gossip + 每个成员的 outbox），
+    // **不能**用 `insert_group_system_message` —— 那个只写本机，其他成员看不到，
+    // 就失去了"通知全体"的意义。踢人/退群之所以用本地插入，是因为它们本来就有
+    // 专用控制帧广播（GroupMemberRemoved / GroupMemberLeft）；而加人没有控制帧
+    // （靠 GroupKey 重发携带新成员表），所以直接借用消息管道。
+    let name = resolve_nickname(s, &device_id);
+    let text = crate::network::transport::group_member_added_text(s, &name);
+    send_group_payload(s, &group_id, "system", text).await?;
     let _ = s.app.emit("groups-updated", &group_id);
     Ok(())
 }
@@ -2700,19 +2794,18 @@ pub fn window_close(app: tauri::AppHandle) {
 }
 
 #[tauri::command(async)]
-pub async fn send_group_message(
-    state: State<'_, Arc<AppState>>,
-    group_id: String,
+/// 群消息发送的**唯一内核**：群密钥加密 → Gossip 信封 → 落库（消息 + 每个成员的 outbox）
+/// → 广播。文本、代码、表情回应等全部走这一条路。
+///
+/// 为什么必须只有一条：它们都要 E2EE、都要 outbox 兜底、都要 GroupAck、都要被四层幂等
+/// 去重覆盖。若各写一份，任何一处修 bug（历史上最典型的是「填完 group_creator/members
+/// 后忘了重算重签 → 群消息被静默丢弃」）都只会修到其中一条路径。
+async fn send_group_payload(
+    s: &Arc<AppState>,
+    group_id: &str,
+    kind: &str,
     content: String,
-    kind: String,
 ) -> Result<MessageRecord, String> {
-    let s = state.inner();
-    let kind_enum = match kind.as_str() {
-        "text" => MsgKind::Text,
-        "code" => MsgKind::Code,
-        _ => return Err("群聊不支持该消息类型".to_string()),
-    };
-    let content = check_message_content(content)?;
     let ts = db::now_ms();
     let conv_id = format!("group:{group_id}");
     let seq = {
@@ -2737,7 +2830,7 @@ pub async fn send_group_message(
 
     // 群密钥加密 + Gossip 信封（E2EE 恒开：载荷用群密钥 ChaCha20-Poly1305 加密）
     let plaintext =
-        serde_json::json!({ "kind": kind_enum.as_str(), "content": content }).to_string();
+        serde_json::json!({ "kind": kind, "content": content }).to_string();
     let sealed = crypto::seal_symmetric(&key, plaintext.as_bytes()).ok_or("加密失败")?;
     let payload_b64 = STANDARD.encode(&sealed);
     let env = {
@@ -2746,7 +2839,7 @@ pub async fn send_group_message(
             &s.identity,
             &s.device_id,
             GossipKind::Group,
-            Some(group_id.clone()),
+            Some(group_id.to_string()),
             Some(group_name.clone()),
             &payload_b64,
             ts,
@@ -2773,8 +2866,8 @@ pub async fn send_group_message(
         msg_id: env.message_id.clone(),
         conv_id: conv_id.clone(),
         sender_id: s.device_id.clone(),
-        receiver_id: group_id.clone(),
-        kind: kind_enum.as_str().to_string(),
+        receiver_id: group_id.to_string(),
+        kind: kind.to_string(),
         content: content.clone(),
         ts,
         seq,
@@ -2790,8 +2883,15 @@ pub async fn send_group_message(
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         let tx = dbc.unchecked_transaction().map_err(|e| e.to_string())?;
         db::insert_message(&tx, &rec).map_err(|e| format!("消息写入失败：{e}"))?;
-        db::touch_conversation(&tx, &conv_id, "group", &group_name, None, &preview, 0)
-            .map_err(|e| format!("会话写入失败：{e}"))?;
+        if crate::protocol::is_non_notifying_kind(kind) {
+            // 静默事件与系统提示不改会话预览 —— 否则「自己回了个表情」会把会话列表摘要
+            // 变成一段 JSON。会话行仍要确保存在。
+            db::ensure_conversation(&tx, &conv_id, "group", &group_name, None)
+                .map_err(|e| format!("会话写入失败：{e}"))?;
+        } else {
+            db::touch_conversation(&tx, &conv_id, "group", &group_name, None, &preview, 0)
+                .map_err(|e| format!("会话写入失败：{e}"))?;
+        }
         for member in &group_members {
             if member == &s.device_id {
                 continue;
@@ -2816,6 +2916,286 @@ pub async fn send_group_message(
 /// 存内存 → 对可达成员发送 GroupFileOffer（群密钥封装 file_key）→
 /// 流式读取文件、逐 256KB 分片 AEAD 加密后向全部可达 recipient 发送
 /// GroupFileChunk（seq 从 0 严格递增）。不可达成员保持 pending。
+
+/// 发群消息（文本 / 代码）。校验与长度限制留在这一层，内核只管发送。
+#[tauri::command(async)]
+pub async fn send_group_message(
+    state: State<'_, Arc<AppState>>,
+    group_id: String,
+    content: String,
+    kind: String,
+) -> Result<MessageRecord, String> {
+    let wire_kind = match kind.as_str() {
+        "text" => "text",
+        "code" => "code",
+        _ => return Err("群聊不支持该消息类型".to_string()),
+    };
+    let content = check_message_content(content)?;
+    send_group_payload(state.inner(), &group_id, wire_kind, content).await
+}
+
+/// 群任务标题上限：它是卡片上的一行标题，不是长文。
+const MAX_TODO_TITLE_LEN: usize = 200;
+/// 投票选项数上限（下标要能塞进 u32 且 UI 排得下）。
+const MAX_POLL_OPTIONS: usize = 10;
+
+/// 创建一条群任务（任意成员）。
+///
+/// `todo_id` 取**创建事件自身的 msg_id** —— 由调用方先构造载荷再回填，
+/// 这里用一次占位发送不行（msg_id 依赖 payload）。改为：先生成随机 id 作为
+/// `todo_id`（与后续所有 todo_done 的引用键一致），msg_id 仍是事件的哈希。
+#[tauri::command(async)]
+pub async fn send_group_todo(
+    state: State<'_, Arc<AppState>>,
+    group_id: String,
+    title: String,
+    assignees: Vec<String>,
+    due_ts: i64,
+) -> Result<MessageRecord, String> {
+    let s = state.inner();
+    let title = title.trim().to_string();
+    if title.is_empty() {
+        return Err("任务标题不能为空".to_string());
+    }
+    if title.chars().count() > MAX_TODO_TITLE_LEN {
+        return Err(format!("任务标题不能超过 {MAX_TODO_TITLE_LEN} 字"));
+    }
+    let payload = crate::protocol::TodoPayload {
+        todo_id: format!("todo-{}", Uuid::new_v4()),
+        title,
+        assignees,
+        due_ts,
+        creator: s.device_id.clone(),
+        deleted: false,
+    };
+    let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
+    send_group_payload(s, &group_id, "todo", content).await
+}
+
+/// 勾选 / 取消勾选一条群任务（任意成员；每人只写自己那一格）。
+#[tauri::command(async)]
+pub async fn set_group_todo_done(
+    state: State<'_, Arc<AppState>>,
+    group_id: String,
+    todo_id: String,
+    done: bool,
+) -> Result<MessageRecord, String> {
+    let s = state.inner();
+    if todo_id.is_empty() {
+        return Err("缺少任务标识".to_string());
+    }
+    let content = serde_json::to_string(&crate::protocol::TodoDonePayload { todo_id, done })
+        .map_err(|e| e.to_string())?;
+    send_group_payload(s, &group_id, "todo_done", content).await
+}
+
+/// 发起投票（任意成员）。
+#[tauri::command(async)]
+pub async fn send_group_poll(
+    state: State<'_, Arc<AppState>>,
+    group_id: String,
+    question: String,
+    options: Vec<String>,
+    multi: bool,
+) -> Result<MessageRecord, String> {
+    let s = state.inner();
+    let question = question.trim().to_string();
+    let options: Vec<String> = options
+        .into_iter()
+        .map(|o| o.trim().to_string())
+        .filter(|o| !o.is_empty())
+        .collect();
+    if question.is_empty() {
+        return Err("投票主题不能为空".to_string());
+    }
+    if options.len() < 2 {
+        return Err("至少需要两个选项".to_string());
+    }
+    if options.len() > MAX_POLL_OPTIONS {
+        return Err(format!("最多 {MAX_POLL_OPTIONS} 个选项"));
+    }
+    let payload = crate::protocol::PollPayload {
+        poll_id: format!("poll-{}", Uuid::new_v4()),
+        question,
+        options,
+        multi,
+        closed: false,
+        creator: s.device_id.clone(),
+    };
+    let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
+    send_group_payload(s, &group_id, "poll", content).await
+}
+
+/// 投票 / 改票 / 撤票（任意成员；每人只写自己那一格）。
+/// 撤票就是传空的 `choices`。
+#[tauri::command(async)]
+pub async fn cast_group_poll_vote(
+    state: State<'_, Arc<AppState>>,
+    group_id: String,
+    poll_id: String,
+    choices: Vec<u32>,
+) -> Result<MessageRecord, String> {
+    let s = state.inner();
+    if poll_id.is_empty() {
+        return Err("缺少投票标识".to_string());
+    }
+    let content =
+        serde_json::to_string(&crate::protocol::PollVotePayload { poll_id, choices })
+            .map_err(|e| e.to_string())?;
+    send_group_payload(s, &group_id, "poll_vote", content).await
+}
+
+/// 发布群公告（**仅群主**）。
+///
+/// 权限口径与 `handle_group_rename` 逐字同构（`group.creator == 我`）：
+/// 公告是发给全群的**权威信息**，人人可发就失去了"公告"的意义。
+/// 群主离线时发不了 —— 无中心即无中心授权，不做"降级为任何人可发"。
+#[tauri::command(async)]
+pub async fn send_group_announcement(
+    state: State<'_, Arc<AppState>>,
+    group_id: String,
+    text: String,
+) -> Result<MessageRecord, String> {
+    let s = state.inner();
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        return Err("公告内容不能为空".to_string());
+    }
+    if text.chars().count() > MAX_ANNOUNCEMENT_LEN {
+        return Err(format!("公告不能超过 {MAX_ANNOUNCEMENT_LEN} 字"));
+    }
+    {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        let g = db::get_group(&dbc, &group_id).ok_or("群不存在")?;
+        if g.creator != s.device_id {
+            return Err("只有群主可以发布公告".to_string());
+        }
+    }
+    let content = serde_json::to_string(&crate::protocol::AnnouncementPayload { text })
+        .map_err(|e| e.to_string())?;
+    send_group_payload(s, &group_id, "announcement", content).await
+}
+
+/// 公告长度上限：与群名（40）同档量级 —— 公告是置顶横幅里的一段短文本，
+/// 不是长文（长文该发消息）。同时也是对广播体积的限制。
+const MAX_ANNOUNCEMENT_LEN: usize = 500;
+
+/// 置顶 / 取消置顶一条群消息。
+///
+/// 权限：任意群成员（可逆、低风险）。与「仅群主可改名」那类不可逆操作不同 ——
+/// 置顶错了再取消即可，不必引入管理员角色。
+#[tauri::command(async)]
+pub async fn pin_group_message(
+    state: State<'_, Arc<AppState>>,
+    group_id: String,
+    target: String,
+    pinned: bool,
+) -> Result<MessageRecord, String> {
+    if target.is_empty() {
+        return Err("缺少目标消息".to_string());
+    }
+    let payload = crate::protocol::PinPayload {
+        target: target.clone(),
+        pinned,
+    };
+    let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
+    // ⚠️ **必须把事件记录返回给前端**（与 `send_group_reaction` 同口径）。
+    // 置顶在界面上的呈现是 `foldPinned(该会话全部消息)` 折叠出来的 ——
+    // 事件不进前端 store，折叠就看不到它，界面要等重进会话重新拉全量才刷新。
+    // 此前这里返回 `()`，前端拿到了也无从 enqueue。
+    send_group_payload(state.inner(), &group_id, "pin", content).await
+}
+
+/// 撤回窗口：超过它就不再允许撤回。
+///
+/// **只在发送端强制**。接收端无法验证发送方的墙上时钟（`env.ts` 不参与排序也不可信），
+/// 所以接收端接受任何来自作者本人的撤回 —— 这是产品规则，不是安全边界。
+/// 真正不可伪造的是**作者身份**：信封被 Ed25519 签名，只有原作者能撤回自己的消息。
+const RECALL_WINDOW_MS: i64 = 120_000;
+
+/// 撤回一条自己发的群消息。
+///
+/// 权限：**仅原作者**。不做"群主撤他人" —— 那需要引入管理员角色，
+/// 而没有中心权威就没有中心授权（本项目无服务器）。
+#[tauri::command(async)]
+pub async fn recall_group_message(
+    state: State<'_, Arc<AppState>>,
+    group_id: String,
+    target: String,
+) -> Result<(), String> {
+    let s = state.inner();
+    let conv_id = format!("group:{group_id}");
+    {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        let Some((sender_id, _)) = db::get_message_preview_source(&dbc, &target) else {
+            return Err("消息不存在".to_string());
+        };
+        if sender_id != s.device_id {
+            return Err("只能撤回自己发送的消息".to_string());
+        }
+        // 时间窗**只在发送端强制**（见 RECALL_WINDOW_MS 的说明：接收端无法验证对方的时钟）。
+        // 用本地记录的 ts 判断：这条消息是本机发出的，本地时钟对它有意义。
+        let ts: i64 = dbc
+            .query_row(
+                "SELECT ts FROM messages WHERE msg_id = ?1",
+                rusqlite::params![target],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        if ts > 0 && db::now_ms() - ts > RECALL_WINDOW_MS {
+            return Err("超过可撤回时间（2 分钟）".to_string());
+        }
+        if db::is_recalled(&dbc, &target) {
+            return Ok(()); // 幂等：已撤回过就直接成功
+        }
+    }
+    let payload = crate::protocol::RecallPayload {
+        target: target.clone(),
+    };
+    let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
+    // 先发事件（走与普通消息同一条可靠管道），成功后再物化本地 ——
+    // 顺序反了会出现「本地显示已撤回、但对端根本没收到」。
+    send_group_payload(s, &group_id, crate::protocol::KIND_RECALL, content).await?;
+    {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        let seq = db::get_clock(&dbc, &conv_id);
+        db::insert_recall(&dbc, &conv_id, &target, &s.device_id, seq).ok();
+        db::materialize_recall(&dbc, &target).ok();
+    }
+    let _ = s.app.emit("message-recalled", &target);
+    Ok(())
+}
+
+/// 表情回应：对某条群消息添加/取消一个表情。
+///
+/// 它是一条**静默事件**（`kind = "reaction"`）：走与普通群消息完全相同的可靠管道
+/// （E2EE + outbox + GroupAck + 幂等去重 + 离线补发），但接收端不计未读、不改预览、
+/// 不弹通知 —— 否则「回个表情」会和发一条消息一样吵闹，正是这个功能要消除的噪音。
+#[tauri::command(async)]
+pub async fn send_group_reaction(
+    state: State<'_, Arc<AppState>>,
+    group_id: String,
+    target: String,
+    emoji: String,
+    add: bool,
+) -> Result<MessageRecord, String> {
+    if target.is_empty() {
+        return Err("回应缺少目标消息".to_string());
+    }
+    // 只接受本应用已知的表情 token 形态（`[名字]`），避免把任意字符串当表情写进库里、
+    // 也避免超长内容进入广播。
+    if !crate::protocol::is_valid_emoji_token(&emoji) {
+        return Err("不认识的表情".to_string());
+    }
+    let payload = crate::protocol::ReactionPayload {
+        target,
+        emoji,
+        add,
+    };
+    let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
+    send_group_payload(state.inner(), &group_id, "reaction", content).await
+}
+
 #[tauri::command(async)]
 pub async fn send_group_file(
     state: State<'_, Arc<AppState>>,
@@ -2888,7 +3268,7 @@ pub async fn send_group_file(
     );
     s.group_file_keys
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .insert(transfer_id.clone(), file_key);
     // 密封 file_key 持久化（群密钥封装，非明文）：重启后离线 pending
     // 群文件的投递仍能恢复 file_key（群密钥 gk:% 本身保留）
@@ -3240,7 +3620,7 @@ pub fn ensure_group_file_key(
     state
         .group_file_keys
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .insert(transfer_id.to_string(), key);
     Some(key)
 }
@@ -3254,7 +3634,7 @@ pub async fn flush_pending_group_files(state: &Arc<AppState>, peer_id: &str) {
     if !state
         .group_file_sending
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .insert(peer_id.to_string())
     {
         return; // 该 peer 已有投递任务在执行
@@ -3373,9 +3753,26 @@ pub fn save_outgoing_image(
 }
 
 /// 删除本地文件（用于图片发送初始化失败后清理孤儿文件）。
+///
+/// ⚠️ **只允许删除下载目录内的文件**。读取侧早有这条边界（见 `resolve_media_path`：
+/// canonicalize 后必须落在 downloads 内，或该消息确由本机发出），删除侧原先却接受任意路径。
+/// 当前唯一调用方只清理 `save_outgoing_image` 刚写进 downloads 的孤儿图片，
+/// 所以这条限制不影响任何既有功能；但若哪天有 UI 把它接到消息里的 `path`
+/// （该字段由对端控制），没有它就会变成「对端点一下按钮删掉本机任意文件」。
+///
+/// 用 canonicalize 比对，避免 `../` 或符号链接绕过前缀匹配。
 #[tauri::command(async)]
-pub fn delete_file(path: String) -> Result<(), String> {
-    std::fs::remove_file(&path).map_err(|e| e.to_string())
+pub fn delete_file(state: State<'_, Arc<AppState>>, path: String) -> Result<(), String> {
+    let s = state.inner();
+    let file = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
+    let dl = s.downloads_dir.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let under_downloads = std::fs::canonicalize(&dl)
+        .map(|dir| file.starts_with(dir))
+        .unwrap_or(false);
+    if !under_downloads {
+        return Err("只能删除下载目录内的文件".to_string());
+    }
+    std::fs::remove_file(&file).map_err(|e| e.to_string())
 }
 
 /// 用系统默认应用打开本地文件。
@@ -3412,6 +3809,97 @@ pub fn get_group_file_delivery_summary(
     db::get_group_file_delivery_summary(&dbc, &transfer_id)
 }
 
+/// 群文件列表里的一项（前端「群文件」面板）。
+#[derive(serde::Serialize)]
+pub struct GroupFileEntry {
+    pub transfer_id: String,
+    pub name: String,
+    pub size: u64,
+    pub sender_id: String,
+    pub created_at: i64,
+    /// 本机视角的持有状态：`local`（在本机可打开）/ `receiving`（传输中）/
+    /// `remote`（未取到）/ `failed`（取失败，可重试）。
+    /// **不由群投递状态推导**：我发出去的文件对别人是否送达，与我本机能不能打开无关。
+    pub local_state: String,
+    /// 本机完整文件的真实路径（仅 `local_state == "local"` 时给出）。
+    pub local_path: Option<String>,
+    /// 该文件对全群的投递进度（已完成成员数 / 成员总数）。
+    pub delivered: i64,
+    pub total: i64,
+}
+
+/// 列出某群的全部群文件，附带「本机是否持有」与「对全群投递进度」。
+///
+/// 本机持有状态的判定必须**看磁盘**：路径在 DB 里存在不代表文件还在
+/// （缓存清理会删掉媒体文件，见 `clean_cache_now`）。只信 DB 会让面板列出
+/// 一堆点了打不开的条目。
+#[tauri::command(async)]
+pub fn list_group_files(
+    state: State<'_, Arc<AppState>>,
+    group_id: String,
+) -> Result<Vec<GroupFileEntry>, String> {
+    let s = state.inner();
+    let me = s.device_id.clone();
+    // 先把 DB 该给的都取出来，**随即释放 db 锁** —— 下面的磁盘 stat 是阻塞 I/O，
+    // 持着全局 db 锁做 N 次 stat 会把整条消息链路的落库一起堵住。
+    type Row = (crate::state::GroupFile, i64, i64, String, Option<String>);
+    let rows: Vec<Row> = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        let files = db::list_group_files(&dbc, &group_id).map_err(|e| e.to_string())?;
+        files
+            .into_iter()
+            .map(|f| {
+                let summary = db::get_group_file_delivery_summary(&dbc, &f.transfer_id);
+                let (delivered, total) = match summary {
+                    Some(x) => (x.completed, x.total),
+                    None => (0, 0),
+                };
+                let my_status =
+                    db::get_group_file_recipient_status(&dbc, &f.transfer_id, &me).unwrap_or_default();
+                let path = db::get_transfer_path(&dbc, &f.transfer_id);
+                (f, delivered, total, my_status, path)
+            })
+            .collect()
+    };
+    Ok(rows
+        .into_iter()
+        .map(|(f, delivered, total, my_status, path)| {
+            let (local_state, local_path) = if f.sender_id == me {
+                // 发送者不参与 recipients（见 send_group_file 的成员过滤），其 recipient 行
+                // 恒为空 —— 按 my_status 判定会让自己发的文件永远显示"未取到"。
+                // 本机是否还留着原件，只能看磁盘。
+                local_path_state(path)
+            } else {
+                match my_status.as_str() {
+                    "completed" => local_path_state(path),
+                    "sending" | "pending" => ("receiving".to_string(), None),
+                    "failed" => ("failed".to_string(), None),
+                    // 没有 recipient 行：该文件早于本机入群，尚未登记接收
+                    _ => ("remote".to_string(), None),
+                }
+            };
+            GroupFileEntry {
+                transfer_id: f.transfer_id,
+                name: f.name,
+                size: f.size,
+                sender_id: f.sender_id,
+                created_at: f.created_at,
+                local_state,
+                local_path,
+                delivered,
+                total,
+            }
+        })
+        .collect())
+}
+
+/// 路径 → 持有状态：路径存在且**文件仍在磁盘上**才算 `local`，否则回落到 `remote`。
+fn local_path_state(path: Option<String>) -> (String, Option<String>) {
+    match path {
+        Some(p) if std::path::Path::new(&p).is_file() => ("local".to_string(), Some(p)),
+        _ => ("remote".to_string(), None),
+    }
+}
 
 /// 构造一条本地文件/图片消息记录（发送方）。
 /// kind 由调用方根据 subtype 决定：image 子类型保持 kind="image"，其余为 "file"。
@@ -3754,7 +4242,7 @@ pub fn get_downloads_dir(state: State<'_, Arc<AppState>>) -> String {
         .inner()
         .downloads_dir
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .to_string_lossy()
         .to_string()
 }
@@ -3836,7 +4324,7 @@ pub async fn request_share_tree(
     let (tx, rx) = tokio::sync::oneshot::channel();
     s.pending_share_tree
         .lock()
-        .unwrap()
+        .unwrap_or_else(|e| e.into_inner())
         .insert(request_id.clone(), tx);
 
     let msg = Message::ShareTreeRequest {

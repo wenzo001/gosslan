@@ -5,10 +5,12 @@ import {
   applyReplacements,
   furthestStatus,
   mergeMessages,
+  messageMentionsAll,
   messageMentionsName,
   preserveDeliveryStatus,
   previewText,
   selectCachedConversations,
+  sortConversations,
   syncProfileFromPeers,
 } from "./messages.ts";
 import type { Conversation, MessageRecord } from "../types";
@@ -97,8 +99,8 @@ test("previewText：长文本截断 30 字符、短文本原样", () => {
 
 // ---------------- 会话更新（applyIncomingToConversations） ----------------
 
-function conv(id: string, lastTs: number | null = null, unread = 0): Conversation {
-  return { id, kind: "single", name: id, avatar: null, last_msg: null, last_ts: lastTs, unread };
+function conv(id: string, lastTs: number | null = null, unread = 0, pinned = false): Conversation {
+  return { id, kind: "single", name: id, avatar: null, last_msg: null, last_ts: lastTs, unread, pinned };
 }
 
 test("活跃会话收到消息不计未读，非活跃会话累计未读", () => {
@@ -137,6 +139,80 @@ test("不修改原 conversations 数组（无副作用）", () => {
   const snapshot = JSON.stringify(cs);
   applyIncomingToConversations(cs, null, new Map([["f1", [msg({ msg_id: "m1", conv_id: "f1", ts: 1 })]]]));
   assert.equal(JSON.stringify(cs), snapshot);
+});
+
+// ---------------- 静默类不参与未读/预览 ----------------
+
+test("静默事件不计未读、不改预览、不把会话顶到最前", () => {
+  // 这是「回个表情把会话顶到最前」的回归锁：后端已按 is_non_notifying_kind 过滤，
+  // 前端这条路径曾经漏了 —— 两边未读数从此不一致（DB 里是 0，界面上是 1）。
+  const cs = [conv("g1", 10), conv("g2", 20)];
+  const byConv = new Map([
+    ["g1", [msg({ msg_id: "r1", conv_id: "g1", kind: "reaction", ts: 999, seq: 99 })]],
+  ]);
+  const out = applyIncomingToConversations(cs, null, byConv);
+  const g1 = out.find((c) => c.id === "g1")!;
+  assert.equal(g1.unread, 0, "静默事件不得计未读");
+  assert.equal(g1.last_msg, null, "静默事件不得改预览");
+  assert.equal(g1.last_ts, 10, "静默事件不得改时间戳");
+  assert.equal(out[0].id, "g2", "不得把会话顶到最前");
+});
+
+test("同一批里静默与正文混在一起：只有正文生效", () => {
+  const cs = [conv("g1", 10)];
+  const byConv = new Map([
+    ["g1", [
+      msg({ msg_id: "r1", conv_id: "g1", kind: "pin", ts: 999 }),
+      msg({ msg_id: "t1", conv_id: "g1", kind: "text", content: "在吗", ts: 1000 }),
+    ]],
+  ]);
+  const g1 = applyIncomingToConversations(cs, null, byConv).find((c) => c.id === "g1")!;
+  assert.equal(g1.unread, 1, "只算正文那一条");
+  assert.equal(g1.last_msg, "在吗");
+  assert.equal(g1.last_ts, 1000);
+});
+
+test("整批都是静默事件时该会话完全不动", () => {
+  const cs = [conv("g1", 10)];
+  const byConv = new Map([["g1", [
+    msg({ msg_id: "a", conv_id: "g1", kind: "recall", ts: 1 }),
+    msg({ msg_id: "b", conv_id: "g1", kind: "todo_done", ts: 2 }),
+  ]]]);
+  const g1 = applyIncomingToConversations(cs, null, byConv).find((c) => c.id === "g1")!;
+  assert.equal(g1.unread, 0);
+  assert.equal(g1.last_msg, null);
+  assert.equal(g1.last_ts, 10);
+});
+
+// ---------------- 会话排序与置顶 ----------------
+
+test("sortConversations：置顶优先于 last_ts", () => {
+  const cs = [conv("new", 999), conv("old-pinned", 1, 0, true)];
+  assert.deepEqual(sortConversations(cs).map((c) => c.id), ["old-pinned", "new"]);
+});
+
+test("sortConversations：同为置顶时按 last_ts 倒序", () => {
+  const cs = [conv("p1", 10, 0, true), conv("p2", 20, 0, true), conv("n1", 99)];
+  assert.deepEqual(sortConversations(cs).map((c) => c.id), ["p2", "p1", "n1"]);
+});
+
+test("sortConversations：last_ts 为 null 视为 0，排在最后", () => {
+  const cs = [conv("empty", null), conv("has", 5)];
+  assert.deepEqual(sortConversations(cs).map((c) => c.id), ["has", "empty"]);
+});
+
+test("sortConversations：不修改原数组（无副作用）", () => {
+  const cs = [conv("a", 1), conv("b", 2)];
+  const snapshot = JSON.stringify(cs);
+  sortConversations(cs);
+  assert.equal(JSON.stringify(cs), snapshot);
+});
+
+test("置顶会话收到新消息不会被未置顶会话挤下去", () => {
+  const cs = [conv("pinned", 1, 0, true), conv("plain", 2)];
+  const byConv = new Map([["plain", [msg({ msg_id: "m1", conv_id: "plain", ts: 100 })]]]);
+  const out = applyIncomingToConversations(cs, null, byConv);
+  assert.deepEqual(out.map((c) => c.id), ["pinned", "plain"]);
 });
 
 // ---------------- 发送状态链（P0-1 / P0-2） ----------------
@@ -374,6 +450,52 @@ test("被 @ 检测：非文本消息与空名不参与判断", () => {
 test("被 @ 检测：昵称含正则特殊字符按字面匹配", () => {
   assert.equal(messageMentionsName(msg({ content: "@a.b(1) 看看" }), "a.b(1)"), true);
   assert.equal(messageMentionsName(msg({ content: "@aXbX1 看看" }), "a.b(1)"), false);
+});
+
+// ---------------- messageMentionsAll：@所有人 ----------------
+
+test("@所有人：行首、空白后、尾随标点均命中", () => {
+  assert.equal(messageMentionsAll(msg({ content: "@所有人 下午三点开会" })), true);
+  assert.equal(messageMentionsAll(msg({ content: "通知 @所有人" })), true);
+  assert.equal(messageMentionsAll(msg({ content: "@所有人，请注意" })), true);
+  assert.equal(messageMentionsAll(msg({ content: "通知：@所有人" })), false);
+});
+
+test("@所有人：@ 前必须是行首或空白（与 @成员 的既有口径完全一致）", () => {
+  // 这是 linkify 高亮与 [有人@我] 检测共用的边界约定：
+  // 紧贴中文标点的 @ 既不参与高亮，也就不该触发红点 —— 两边必须同进同退，
+  // 否则会出现「高亮没亮但红点了」的割裂体验。
+  assert.equal(messageMentionsAll(msg({ content: "通知：@所有人" })), false);
+  assert.equal(messageMentionsName(msg({ content: "通知：@周工" }), "周工"), false);
+});
+
+test("@所有人：边界与 @成员 同源，不误吞长词", () => {
+  // @ 前必须是行首/空白（邮箱形态不命中）
+  assert.equal(messageMentionsAll(msg({ content: "a@所有人.com" })), false);
+  // 名字后必须落在边界上：@所有人甲乙 不是 @所有人
+  assert.equal(messageMentionsAll(msg({ content: "@所有人甲乙 在吗" })), false);
+  // 名字前必须有 @
+  assert.equal(messageMentionsAll(msg({ content: "所有人注意" })), false);
+});
+
+test("@所有人：仅文本消息参与判断（与 @成员 口径一致）", () => {
+  assert.equal(messageMentionsAll(msg({ kind: "code", content: "@所有人" })), false);
+  assert.equal(messageMentionsAll(msg({ kind: "system", content: "@所有人" })), false);
+});
+
+test("@所有人：@所有人 不会顺带命中某个叫「所」的成员", () => {
+  assert.equal(messageMentionsName(msg({ content: "@所有人 开会" }), "所"), false);
+});
+
+test("@所有人：正则被复用，重复调用结果必须稳定", () => {
+  // 判定正则在模块级预编译并被反复复用（消息摄入是热路径）。若将来有人给它加上 `g`
+  // 标志，`.test()` 会带上 lastIndex 状态，第二次调用就可能漏判 —— 这条钉死它。
+  const hit = msg({ content: "@所有人 开会" });
+  const miss = msg({ content: "通知：@所有人" });
+  for (let i = 0; i < 5; i++) {
+    assert.equal(messageMentionsAll(hit), true, `第 ${i + 1} 次应命中`);
+    assert.equal(messageMentionsAll(miss), false, `第 ${i + 1} 次不应命中`);
+  }
 });
 
 // ---------------- 消息缓存上界（useChatStore 的 messages 淘汰判定） ----------------

@@ -168,6 +168,9 @@ async fn probe_instance_via_who_has(
         tcp_port: 0,
         x25519_pubkey: None,
         ed25519_pubkey: None,
+        // who_has 是"谁在线"的探测：不声明身份、不参与任何绑定，因此不签名
+        nonce: String::new(),
+        sig: String::new(),
     };
     let data = serde_json::to_vec(&who).map_err(|e| e.to_string())?;
     let deadline = tokio::time::Instant::now() + timeout;

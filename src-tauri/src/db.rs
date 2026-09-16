@@ -33,7 +33,9 @@ CREATE TABLE IF NOT EXISTS conversations (
     last_msg  TEXT,
     last_ts   INTEGER,
     unread    INTEGER NOT NULL DEFAULT 0,
-    updated_at INTEGER
+    updated_at INTEGER,
+    -- 本机置顶（纯本地偏好，不广播不同步）：列表排序时优先于 last_ts
+    pinned    INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -55,6 +57,18 @@ CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conv_id, ts);
 CREATE TABLE IF NOT EXISTS conversation_clocks (
     conv_id TEXT PRIMARY KEY,
     seq     INTEGER NOT NULL
+);
+
+-- 撤回的**权威集合**（G-Set，只增不减）。`messages` 行的 content 置空 / kind='recalled'
+-- 只是它的**物化视图** —— 两者都必需：撤回事件可能先于被撤回消息到达
+-- （Gossip 泛洪与 outbox 直发是两条无顺序保证的路径），只靠 UPDATE 会打到 0 行，
+-- 随后消息正常落库 ⇒ 撤回失效。落库前查这张表即可解决「先撤后到」。
+CREATE TABLE IF NOT EXISTS group_recalled_messages (
+    conv_id     TEXT NOT NULL,
+    msg_id      TEXT NOT NULL,
+    recaller_id TEXT NOT NULL,
+    seq         INTEGER NOT NULL,
+    PRIMARY KEY (conv_id, msg_id)
 );
 
 CREATE TABLE IF NOT EXISTS groups (
@@ -214,6 +228,20 @@ pub fn init(path: &Path) -> Result<Connection> {
             )?;
         }
     }
+    // 迁移：conversations 增加置顶列（旧库幂等补列）。纯本地偏好，默认不置顶。
+    {
+        let has_pinned: bool = conn
+            .prepare("SELECT COUNT(*) FROM pragma_table_info('conversations') WHERE name = 'pinned'")
+            .and_then(|mut s| s.query_row([], |r| r.get::<_, i64>(0)))
+            .map(|n| n > 0)
+            .unwrap_or(true);
+        if !has_pinned {
+            conn.execute(
+                "ALTER TABLE conversations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
+    }
     // 索引必须等 seq 列补齐后再建：旧库执行 SCHEMA 时 messages 表已存在，不会自动加列。
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_messages_conv_seq ON messages(conv_id, seq)",
@@ -328,7 +356,21 @@ pub fn set_clear_boundary(conn: &Connection, group_id: &str, seq: i64) -> Result
 
 /// 群消息落库前的边界判定：逻辑序号 <= 清除边界 → 视为旧历史，不得重新写入本机。
 /// 不再使用墙上时钟，也不猜测发送方时钟。
-pub fn group_message_blocked_by_boundary(conn: &Connection, group_id: &str, seq: i64) -> bool {
+/// 该消息是否被「清空聊天记录」的水位挡住（不该落库）。
+///
+/// ⚠️ **只对 `Bubble` 生效**。水位是**聊天历史**的水位，不该管群级沉淀物：
+/// 一个离线成员的公告（Card）如果 seq ≤ 本机 boundary 就被丢弃，
+/// 会导致**各成员看到的公告不一致** —— 而公告恰恰是要求"所有人都看到同一份"的东西。
+/// 静默事件同理：它们不进时间线，与"清空历史"无关。
+pub fn group_message_blocked_by_boundary(
+    conn: &Connection,
+    group_id: &str,
+    seq: i64,
+    kind: &str,
+) -> bool {
+    if crate::protocol::kind_class(kind) != crate::protocol::KindClass::Bubble {
+        return false;
+    }
     get_setting(conn, &clear_boundary_key(group_id))
         .and_then(|v| v.parse::<i64>().ok())
         .map(|boundary| seq <= boundary)
@@ -424,7 +466,18 @@ pub fn get_friend(conn: &Connection, device_id: &str) -> Option<(String, Option<
     .flatten()
 }
 
-/// 更新好友的 X25519 / Ed25519 公钥（从上线广播中学到后持久化）。
+/// 补齐好友**尚缺**的 X25519 / Ed25519 公钥（首次学到时持久化）。
+///
+/// ⚠️ **只填空位，绝不覆盖已有值**（`COALESCE(x25519_pubkey, ?2)` 而非反过来）。
+///
+/// 这是身份绑定不被劫持的最后一道闸：调用方来自多个信任级别不同的路径，
+/// 只要有一个环节漏判（或将来新增了一条），覆盖式写入就会让一次伪造广播**永久**
+/// 改掉好友的真实公钥 —— 此后发给该好友的消息改用攻击者公钥加密，而消息是广播给
+/// 所有已连接节点的，攻击者用自己的私钥即可解开；重启也不恢复（只有删好友才清）。
+/// 填充式写入把最坏后果从「E2EE 被击穿」降级为「公钥为空时被抢先填一次」。
+///
+/// 密钥**变更**（对方重装应用）不走这里：那需要用户明确确认，
+/// 现有路径是删好友后重新添加（`remove_friend` 会连带删除公钥列，重新添加即重新学习）。
 pub fn update_friend_pubkeys(
     conn: &Connection,
     device_id: &str,
@@ -432,8 +485,8 @@ pub fn update_friend_pubkeys(
     ed25519: Option<&str>,
 ) -> Result<()> {
     conn.execute(
-        "UPDATE friends SET x25519_pubkey = COALESCE(?2, x25519_pubkey),
-                            ed25519_pubkey = COALESCE(?3, ed25519_pubkey)
+        "UPDATE friends SET x25519_pubkey = COALESCE(x25519_pubkey, ?2),
+                            ed25519_pubkey = COALESCE(ed25519_pubkey, ?3)
          WHERE device_id = ?1",
         params![device_id, x25519, ed25519],
     )?;
@@ -529,6 +582,18 @@ pub fn list_groups(conn: &Connection) -> Result<Vec<Group>> {
 
 /// 成员端建立/更新本地群记录（收到 `GroupKey` / 群消息携带成员表时调用）。
 /// 已存在则刷新群名与成员（幂等）。
+///
+/// ⚠️ **群名只由群主改**（`groups.creator == 传入的 creator` 才更新 name）。
+///
+/// 本函数有一条来自**群 Gossip 消息**的调用路径：信封里的 `group_name` / `group_creator`
+/// 都是发送方自报的，任何持群密钥的成员都能填任意文本。若无条件覆盖群名，
+/// 「改名」就出现了两条路径 —— 专用的 `GroupRename` 帧严格要求群主，
+/// 而这条没有任何检查，等于把授权绕过去了（可伪造成"系统通知""群主"做社工）。
+/// 群成员表是 `INSERT OR IGNORE`（只增不减），creator 也只在 INSERT 时写入，故不受影响。
+///
+/// 注意：这只是**持久层的兜底**，调用点还应校验 `env.sender_id == creator` ——
+/// 否则成员只要把 `group_creator` 填成真群主的 id，creator 就对得上，闸门又会失效。
+/// 合法的改名走 `rename_group`（已由 `handle_group_rename` 限群主）。
 pub fn upsert_group(
     conn: &Connection,
     id: &str,
@@ -544,7 +609,10 @@ pub fn upsert_group(
     } else {
         conn.execute(
             "INSERT INTO groups(id, name, creator, created_at) VALUES(?1, ?2, ?3, ?4)
-             ON CONFLICT(id) DO UPDATE SET name = excluded.name",
+             ON CONFLICT(id) DO UPDATE SET name = CASE
+                 WHEN groups.creator = excluded.creator THEN excluded.name
+                 ELSE groups.name
+             END",
             params![id, name, creator, now_ms()],
         )?;
     }
@@ -896,18 +964,24 @@ pub fn search_history(
     limit: i64,
 ) -> Result<Vec<ChatSearchHit>> {
     let pattern = format!("%{}%", escape_like(keyword));
-    let mut stmt = conn.prepare(
+    // 清单从 WIRE_KINDS 派生（不手写）：system 是历史遗留的不可搜索项，
+    // 静默类（表情回应/撤回）没有可搜正文。
+    let unsearchable = crate::protocol::sql_kind_list(
+        &["system"],
+        |c| c == crate::protocol::KindClass::Silent,
+    );
+    let mut stmt = conn.prepare(&format!(
         "SELECT conv_id, msg_id, sender_id, kind, content, ts,
                 COUNT(*) OVER (PARTITION BY conv_id) AS total
          FROM messages
          WHERE content LIKE ?1 ESCAPE '\\'
-           AND kind <> 'system'
+           AND kind NOT IN ({unsearchable})
            AND (?2 IS NULL OR sender_id = ?2)
            AND (?3 IS NULL OR ts >= ?3)
            AND (?4 IS NULL OR ts <= ?4)
          ORDER BY ts DESC, id DESC
          LIMIT ?5",
-    )?;
+    ))?;
     let rows = stmt.query_map(
         params![pattern, sender_id, since_ms, until_ms, limit],
         |r| {
@@ -973,23 +1047,48 @@ pub fn ensure_conversation(
     Ok(())
 }
 
+/// 会话行 → Conversation 的唯一映射（list / get 共用，避免两处列序漂移）。
+fn row_to_conversation(r: &rusqlite::Row<'_>) -> rusqlite::Result<Conversation> {
+    Ok(Conversation {
+        id: r.get(0)?,
+        kind: r.get(1)?,
+        name: r.get(2)?,
+        avatar: r.get(3)?,
+        last_msg: r.get(4)?,
+        last_ts: r.get(5)?,
+        unread: r.get(6)?,
+        pinned: r.get::<_, i64>(7)? != 0,
+    })
+}
+
 pub fn list_conversations(conn: &Connection) -> Result<Vec<Conversation>> {
     let mut stmt = conn.prepare(
-        "SELECT id, kind, name, avatar, last_msg, last_ts, unread
-         FROM conversations ORDER BY COALESCE(last_ts, updated_at, 0) DESC",
+        "SELECT id, kind, name, avatar, last_msg, last_ts, unread, pinned
+         FROM conversations ORDER BY pinned DESC, COALESCE(last_ts, updated_at, 0) DESC",
     )?;
-    let rows = stmt.query_map([], |r| {
-        Ok(Conversation {
-            id: r.get(0)?,
-            kind: r.get(1)?,
-            name: r.get(2)?,
-            avatar: r.get(3)?,
-            last_msg: r.get(4)?,
-            last_ts: r.get(5)?,
-            unread: r.get(6)?,
-        })
-    })?;
+    let rows = stmt.query_map([], row_to_conversation)?;
     Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+pub fn get_conversation(conn: &Connection, id: &str) -> Option<Conversation> {
+    conn.query_row(
+        "SELECT id, kind, name, avatar, last_msg, last_ts, unread, pinned
+         FROM conversations WHERE id = ?1",
+        params![id],
+        row_to_conversation,
+    )
+    .optional()
+    .ok()
+    .flatten()
+}
+
+/// 设置会话置顶（纯本地偏好，不广播、不同步）。会话不存在时静默成功。
+pub fn set_conversation_pinned(conn: &Connection, conv_id: &str, pinned: bool) -> Result<()> {
+    conn.execute(
+        "UPDATE conversations SET pinned = ?2 WHERE id = ?1",
+        params![conv_id, if pinned { 1 } else { 0 }],
+    )?;
+    Ok(())
 }
 
 pub fn mark_read(conn: &Connection, conv_id: &str) -> Result<()> {
@@ -1024,10 +1123,16 @@ pub fn last_message_from_sender(
     conv_id: &str,
     sender_id: &str,
 ) -> Option<(String, i64)> {
+    let silent = crate::protocol::sql_kind_list(&[], |c| c == crate::protocol::KindClass::Silent);
     conn.query_row(
-        "SELECT msg_id, ts FROM messages
-         WHERE conv_id = ?1 AND sender_id = ?2
-         ORDER BY ts DESC, id DESC LIMIT 1",
+        // 排除静默类：否则别人（或我自己）回个表情，就把该发送者的群已读水位
+        // 顶到了"刚回应的那条"上，群里其余消息会被误判为已读。
+        &format!(
+            "SELECT msg_id, ts FROM messages
+             WHERE conv_id = ?1 AND sender_id = ?2
+               AND kind NOT IN ({silent})
+             ORDER BY ts DESC, id DESC LIMIT 1"
+        ),
         params![conv_id, sender_id],
         |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)),
     )
@@ -1040,7 +1145,17 @@ pub fn last_message_from_sender(
 /// 事务包裹，确保消息与会话行同步删除；不存在则视为成功（幂等）。
 pub fn delete_conversation(conn: &Connection, conv_id: &str) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
-    tx.execute("DELETE FROM messages WHERE conv_id = ?1", params![conv_id])?;
+    // ⚠️ 只删 Bubble。Card（群公告/待办）与 Silent（回应/撤回/置顶）**不属于"聊天历史"** ——
+    // 清空聊天记录顺手删掉群公告是错误语义（钉盘/群文件同理：那是群资产，不是聊天记录）。
+    // 清单从 `WIRE_KINDS` 派生，不手写：加了新 kind 而忘了同步这里就是静默的数据丢失。
+    let keep = crate::protocol::sql_kind_list(
+        &["system"],
+        |c| c != crate::protocol::KindClass::Bubble,
+    );
+    tx.execute(
+        &format!("DELETE FROM messages WHERE conv_id = ?1 AND kind NOT IN ({keep})"),
+        params![conv_id],
+    )?;
     tx.execute("DELETE FROM conversations WHERE id = ?1", params![conv_id])?;
     tx.commit()?;
     Ok(())
@@ -1307,27 +1422,42 @@ pub fn insert_group_file(conn: &Connection, f: &GroupFile) -> Result<()> {
 
 /// 取单个群文件。不存在返回 None。
 #[allow(dead_code)]
+/// group_files 行 → GroupFile 的唯一映射（get / list 共用，避免两处列序漂移）。
+fn row_to_group_file(r: &rusqlite::Row<'_>) -> rusqlite::Result<GroupFile> {
+    Ok(GroupFile {
+        transfer_id: r.get(0)?,
+        group_id: r.get(1)?,
+        sender_id: r.get(2)?,
+        name: r.get(3)?,
+        size: r.get::<_, i64>(4)? as u64,
+        sha256: r.get(5)?,
+        status: r.get(6)?,
+        created_at: r.get(7)?,
+    })
+}
+
 pub fn get_group_file(conn: &Connection, transfer_id: &str) -> Option<GroupFile> {
     conn.query_row(
         "SELECT transfer_id, group_id, sender_id, name, size, sha256, status, created_at
          FROM group_files WHERE transfer_id = ?1",
         params![transfer_id],
-        |r| {
-            Ok(GroupFile {
-                transfer_id: r.get(0)?,
-                group_id: r.get(1)?,
-                sender_id: r.get(2)?,
-                name: r.get(3)?,
-                size: r.get::<_, i64>(4)? as u64,
-                sha256: r.get(5)?,
-                status: r.get(6)?,
-                created_at: r.get(7)?,
-            })
-        },
+        row_to_group_file,
     )
     .optional()
     .ok()
     .flatten()
+}
+
+/// 列出某群的全部群文件（按创建时间倒序，最新在前）。
+/// 走 idx_group_files_group 索引。注意：这张表**不随「删除聊天记录」清空** ——
+/// 群文件是群级资产（同钉盘/群文件语义），清空聊天历史不应连带删掉文件记录。
+pub fn list_group_files(conn: &Connection, group_id: &str) -> Result<Vec<GroupFile>> {
+    let mut stmt = conn.prepare(
+        "SELECT transfer_id, group_id, sender_id, name, size, sha256, status, created_at
+         FROM group_files WHERE group_id = ?1 ORDER BY created_at DESC",
+    )?;
+    let rows = stmt.query_map(params![group_id], row_to_group_file)?;
+    rows.collect()
 }
 
 /// 离线投递定向查询：某 peer 的全部 pending 群文件（按 recipient 精确命中
@@ -1683,6 +1813,33 @@ mod tests {
         );
     }
 
+    /// 已绑定的好友公钥**不得被覆盖**（只填空位）。
+    /// 这是「一个伪造 announce 就能永久改掉好友公钥、击穿 E2EE」的最后一道闸。
+    #[test]
+    fn update_friend_pubkeys_never_overwrites_a_bound_key() {
+        let conn = mem();
+        add_friend(&conn, "f1", "张三", None).unwrap();
+        update_friend_pubkeys(&conn, "f1", Some("real-x"), Some("real-e")).unwrap();
+        assert_eq!(get_friend_x25519(&conn, "f1").as_deref(), Some("real-x"));
+
+        // 攻击者广播来的公钥：不得覆盖真实值
+        update_friend_pubkeys(&conn, "f1", Some("attacker-x"), Some("attacker-e")).unwrap();
+        assert_eq!(
+            get_friend_x25519(&conn, "f1").as_deref(),
+            Some("real-x"),
+            "已有公钥被覆盖 = 我发给好友的消息会改用攻击者公钥加密"
+        );
+        assert_eq!(get_friend_ed25519(&conn, "f1").as_deref(), Some("real-e"));
+
+        // 只补缺的那一列：X25519 已绑定，Ed25519 为空时应被填上
+        add_friend(&conn, "f2", "李四", None).unwrap();
+        conn.execute("UPDATE friends SET x25519_pubkey = 'x2' WHERE device_id = 'f2'", [])
+            .unwrap();
+        update_friend_pubkeys(&conn, "f2", Some("x2-fake"), Some("e2")).unwrap();
+        assert_eq!(get_friend_x25519(&conn, "f2").as_deref(), Some("x2"));
+        assert_eq!(get_friend_ed25519(&conn, "f2").as_deref(), Some("e2"));
+    }
+
     #[test]
     fn friend_remove_then_readd_flow() {
         // 删除好友后可重新添加（扫描 → 加好友流程）且历史会话/消息不受影响
@@ -1706,6 +1863,131 @@ mod tests {
         let friends = list_friends(&conn).unwrap();
         assert_eq!(friends.len(), 1);
         assert_eq!(friends[0].nickname, "张三回来了");
+    }
+
+    /// **群级沉淀物不随「清空聊天记录」消失**。
+    /// 清空顺手删掉群公告是错误语义 —— 公告/置顶是群资产，不是聊天历史。
+    #[test]
+    fn clearing_history_keeps_group_level_artifacts() {
+        let conn = mem();
+        insert_message(&conn, &rec_as("m1", "group:g1", "text", "普通消息")).unwrap();
+        insert_message(&conn, &rec_as("a1", "group:g1", "announcement", "{\"text\":\"本周五团建\"}")).unwrap();
+        insert_message(&conn, &rec_as("r1", "group:g1", "reaction", "{}")).unwrap();
+        insert_message(&conn, &rec_as("s1", "group:g1", "system", "「张三」加入了群聊")).unwrap();
+
+        delete_conversation(&conn, "group:g1").unwrap();
+
+        let left: Vec<String> = conn
+            .prepare("SELECT kind FROM messages WHERE conv_id = 'group:g1' ORDER BY kind")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert_eq!(left, vec!["announcement", "reaction", "system"],
+            "清空聊天记录只应删掉 Bubble（普通消息），公告/静默事件/系统提示必须留下");
+    }
+
+    /// **清空边界只挡 Bubble**：若它连公告一起挡，离线成员的公告会被丢弃，
+    /// 各成员看到的公告就不一致了 —— 而公告恰恰要求"所有人看到同一份"。
+    #[test]
+    fn clear_boundary_only_blocks_bubble_kinds() {
+        let conn = mem();
+        set_setting(&conn, &clear_boundary_key("g1"), "100").unwrap();
+        // 水位之下（seq=50 ≤ 100）的各类消息
+        assert!(group_message_blocked_by_boundary(&conn, "g1", 50, "text"), "普通消息该被挡");
+        assert!(!group_message_blocked_by_boundary(&conn, "g1", 50, "announcement"),
+            "公告不得被清空边界挡住（否则离线成员看不到它）");
+        assert!(!group_message_blocked_by_boundary(&conn, "g1", 50, "reaction"));
+        // 水位之上的普通消息照常放行
+        assert!(!group_message_blocked_by_boundary(&conn, "g1", 200, "text"));
+    }
+
+    /// 撤回：G-Set 幂等 + 物化视图让搜索/预览自动正确。
+    #[test]
+    fn recall_is_idempotent_and_materializes_content() {
+        let conn = mem();
+        insert_message(&conn, &rec_as("m1", "g1", "text", "这句要撤回")).unwrap();
+        assert!(!is_recalled(&conn, "m1"));
+
+        assert!(insert_recall(&conn, "g1", "m1", "a", 5).unwrap(), "首次应返回 true");
+        assert!(!insert_recall(&conn, "g1", "m1", "a", 5).unwrap(), "重复撤回必须幂等");
+        assert!(is_recalled(&conn, "m1"));
+
+        assert!(materialize_recall(&conn, "m1").unwrap());
+        // content 清空 ⇒ 搜索命中数为 0（**不用给 search_history 加任何过滤**）
+        assert_eq!(search_history(&conn, "撤回", None, None, None, 100).unwrap().len(), 0);
+        // 再物化一次不得改变任何东西（幂等）
+        assert!(!materialize_recall(&conn, "m1").unwrap(), "已物化过应返回 false");
+    }
+
+    /// **先撤后到**：撤回事件可能早于被撤回的消息抵达（Gossip 泛洪 vs outbox 直发
+    /// 是两条无顺序保证的路径）。权威集合必须在消息落库**之前**就能查到。
+    #[test]
+    fn recall_recorded_before_the_message_arrives_still_applies() {
+        let conn = mem();
+        // 撤回先到（消息还没落库）
+        insert_recall(&conn, "g1", "later", "a", 9).unwrap();
+        assert!(is_recalled(&conn, "later"), "权威集合独立于消息行存在");
+        // 消息随后到达：调用方据此以「已撤回」形态入库
+        insert_message(&conn, &rec_as("later", "g1", "text", "正文不该留下")).unwrap();
+        assert_eq!(search_history(&conn, "不该留下", None, None, None, 100).unwrap().len(), 1,
+            "本测试只验证权威集合可先于消息存在；入库形态由 transport 层负责");
+    }
+
+    /// 静默类（表情回应）不得进入历史检索，也不得顶起群已读水位。
+    ///
+    /// 这两条都必须**真正执行 SQL** 才算验证：SQL 里的 kind 清单是从 `WIRE_KINDS`
+    /// 拼出来的，拼错（比如占位符没被 `format!` 展开）编译期完全看不出来。
+    #[test]
+    fn silent_kinds_are_excluded_from_search_and_read_watermark() {
+        let conn = mem();
+        insert_message(&conn, &rec_as("m1", "g1", "text", "周报 已发")).unwrap();
+        // 同一条消息的表情回应：正文里也含"周报"，若不过滤就会被搜出来
+        let mut rx = rec_as("m2", "g1", "reaction", "{\"target\":\"m1\",\"emoji\":\"[赞]\",\"add\":true}");
+        rx.ts = 9_999_999; // 比正文晚：若不过滤，它会成为"最后一条"
+        insert_message(&conn, &rx).unwrap();
+
+        let hits = search_history(&conn, "周报", None, None, None, 100).unwrap();
+        assert_eq!(hits.len(), 1, "回应不该出现在搜索结果里");
+        assert_eq!(hits[0].msg_id, "m1");
+
+        // 已读水位：回应晚于正文，若不过滤会把水位顶到回应上
+        let (msg_id, _) = last_message_from_sender(&conn, "g1", "a").unwrap();
+        assert_eq!(msg_id, "m1", "静默类不得顶起已读水位");
+    }
+
+    /// kind 清单从 `WIRE_KINDS` 派生，不是手写的 —— 加新 kind 时不会被漏掉。
+    #[test]
+    fn kind_class_lists_are_derived_from_the_single_table() {
+        use crate::protocol::{is_silent_kind, kind_class, sql_kind_list, KindClass, WIRE_KINDS};
+        // 已登记的 kind 都要分类明确；未知 kind 回退 Bubble（宁可多显示、不静默吞）
+        for (k, _) in WIRE_KINDS {
+            assert_eq!(
+                kind_class(k) == KindClass::Silent,
+                is_silent_kind(k),
+                "{k} 的两个判定入口必须一致"
+            );
+        }
+        assert_eq!(kind_class("reaction"), KindClass::Silent);
+        assert_eq!(kind_class("text"), KindClass::Bubble);
+        assert_eq!(kind_class("未来才有的新类型"), KindClass::Bubble);
+        // 静默清单里必须含 reaction，且不含任何 Bubble 类
+        let silent = sql_kind_list(&[], |c| c == KindClass::Silent);
+        assert!(silent.contains("'reaction'"), "静默清单漏了 reaction：{silent}");
+        assert!(!silent.contains("'text'"), "静默清单混入了正文类型：{silent}");
+        // 检索排除清单 = 静默类 + 显式追加的 system
+        let unsearchable = sql_kind_list(&["system"], |c| c == KindClass::Silent);
+        assert!(unsearchable.contains("'system'") && unsearchable.contains("'reaction'"));
+
+        // 「进时间线但不打扰」：静默类 + system。system 此前只在本机插入（不碰未读与
+        // 预览），加人通知改走消息管道后必须显式归类，否则会给全体成员推通知。
+        use crate::protocol::is_non_notifying_kind;
+        assert!(is_non_notifying_kind("system"));
+        assert!(is_non_notifying_kind("reaction"));
+        assert!(is_non_notifying_kind("recall"));
+        assert!(!is_non_notifying_kind("text"));
+        assert!(!is_non_notifying_kind("recalled"), "已撤回要在时间线上、且它是别人主动撤回的结果，不该被静默");
     }
 
     /// 历史检索：发送人/时间过滤、每会话命中总数、排除系统消息。
@@ -2506,6 +2788,31 @@ mod tests {
         conn
     }
 
+    /// 群文件列表：按群过滤、按创建时间倒序，且不串到别的群。
+    #[test]
+    fn list_group_files_scoped_and_newest_first() {
+        let conn = group_file_fixture();
+        let mut older = group_file("gf-old");
+        older.created_at = 1_000;
+        let mut newer = group_file("gf-new");
+        newer.created_at = 2_000;
+        insert_group_file(&conn, &older).unwrap();
+        insert_group_file(&conn, &newer).unwrap();
+
+        // 另一个群的文件不得混入（insert_group_file 会校验群存在，故先建群）
+        create_group(&conn, "g2", "另一个群", "a", &["a".to_string()]).unwrap();
+        let mut other = group_file("gf-other");
+        other.group_id = "g2".to_string();
+        insert_group_file(&conn, &other).unwrap();
+
+        let listed = list_group_files(&conn, "g1").unwrap();
+        assert_eq!(
+            listed.iter().map(|f| f.transfer_id.as_str()).collect::<Vec<_>>(),
+            vec!["gf-new", "gf-old"]
+        );
+        assert!(list_group_files(&conn, "nonexistent").unwrap().is_empty());
+    }
+
     /// 1+2+3：建群文件 + 为 B/C/D 建 recipient state + 分别置 completed/sending/pending。
     #[test]
     fn group_file_recipient_states_persist() {
@@ -2715,6 +3022,39 @@ mod tests {
         upsert_group(&conn, "g1", "群改名", "a", &members).unwrap();
         assert_eq!(list_groups(&conn).unwrap().len(), 1);
         assert_eq!(list_conversations(&conn).unwrap().len(), 1);
+    }
+
+    /// 群名只能由群主改（持久层兜底）：creator 对不上就不许覆盖名字。
+    ///
+    /// 注意本测试**只覆盖持久层这一半**：`upsert_group` 看不到信封的 `sender_id`，
+    /// 所以「成员把 group_creator 填成真群主的 id」这种伪造它拦不住 ——
+    /// 那一半由调用点（`transport.rs` 群消息分支校验 `env.sender_id == creator`）负责。
+    /// 两层缺一不可，这里把边界钉清楚，避免有人误以为这一层够了。
+    #[test]
+    fn group_name_only_updates_for_the_recorded_creator() {
+        let conn = mem();
+        let members: Vec<String> = ["owner", "member"].iter().map(|s| s.to_string()).collect();
+        upsert_group(&conn, "g1", "产品组", "owner", &members).unwrap();
+        assert_eq!(get_group(&conn, "g1").unwrap().name, "产品组");
+
+        // 群主本人改（creator 一致）→ 生效
+        upsert_group(&conn, "g1", "产品组（改）", "owner", &members).unwrap();
+        assert_eq!(get_group(&conn, "g1").unwrap().name, "产品组（改）");
+
+        // 自称是另一个 creator → 名字不得被覆盖，creator 也不得被顶掉
+        upsert_group(&conn, "g1", "【系统通知】点此领取", "member", &members).unwrap();
+        let g = get_group(&conn, "g1").unwrap();
+        assert_eq!(g.name, "产品组（改）", "非群主不得覆盖群名");
+        assert_eq!(g.creator, "owner", "creator 不得被顶掉");
+
+        // 成员表只增不减（INSERT OR IGNORE）：新成员能加进来
+        upsert_group(&conn, "g1", "产品组（改）", "owner", &[
+            "owner".to_string(),
+            "member".to_string(),
+            "newbie".to_string(),
+        ])
+        .unwrap();
+        assert!(get_group(&conn, "g1").unwrap().members.contains(&"newbie".to_string()));
     }
 
     // ---------- GroupFileOffer / session-key 阶段 ----------
@@ -2977,16 +3317,16 @@ mod tests {
         set_clear_boundary(&conn, "g1", 100).unwrap();
 
         // 清除边界及更早序号 → 拦截
-        assert!(group_message_blocked_by_boundary(&conn, "g1", 99));
-        assert!(group_message_blocked_by_boundary(&conn, "g1", 100));
+        assert!(group_message_blocked_by_boundary(&conn, "g1", 99, "text"));
+        assert!(group_message_blocked_by_boundary(&conn, "g1", 100, "text"));
         // 清除后的新序号 → 放行
-        assert!(!group_message_blocked_by_boundary(&conn, "g1", 101));
+        assert!(!group_message_blocked_by_boundary(&conn, "g1", 101, "text"));
         // 未设置边界的群不拦截
-        assert!(!group_message_blocked_by_boundary(&conn, "g2", 1));
+        assert!(!group_message_blocked_by_boundary(&conn, "g2", 1, "text"));
         // 重复清除：边界覆盖为新值（新 boundary 之前的旧消息再次被拦截）
         set_clear_boundary(&conn, "g1", 200).unwrap();
-        assert!(group_message_blocked_by_boundary(&conn, "g1", 200));
-        assert!(!group_message_blocked_by_boundary(&conn, "g1", 201));
+        assert!(group_message_blocked_by_boundary(&conn, "g1", 200, "text"));
+        assert!(!group_message_blocked_by_boundary(&conn, "g1", 201, "text"));
     }
 
     /// 删除单个群会话同样写入边界（delete_conversation 群分支语义）。
@@ -2995,8 +3335,8 @@ mod tests {
         let conn = group_file_fixture();
         set_clear_boundary(&conn, "g1", 123456789).unwrap();
         // 边界及更早序号被拦截
-        assert!(group_message_blocked_by_boundary(&conn, "g1", 123456789));
-        assert!(!group_message_blocked_by_boundary(&conn, "g1", 123456790));
+        assert!(group_message_blocked_by_boundary(&conn, "g1", 123456789, "text"));
+        assert!(!group_message_blocked_by_boundary(&conn, "g1", 123456790, "text"));
     }
 
     // ---------- GroupFile 多 recipient 气泡状态聚合 ----------
@@ -3200,6 +3540,71 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
+    /// 旧库没有 pinned 列时，init 必须补列且**保留既有会话数据**。
+    /// 这是「老用户升级后会话列表直接打不开」的唯一防线：SCHEMA 走的是
+    /// CREATE TABLE IF NOT EXISTS，表已存在时不会自动加列。
+    #[test]
+    fn init_migrates_existing_db_without_pinned_column() {
+        let path = std::env::temp_dir().join(format!(
+            "gosslan-test-migrate-pinned-{}.db",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE conversations (
+                    id TEXT PRIMARY KEY,
+                    kind TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    avatar TEXT,
+                    last_msg TEXT,
+                    last_ts INTEGER,
+                    unread INTEGER NOT NULL DEFAULT 0,
+                    updated_at INTEGER
+                );",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO conversations(id, kind, name, unread) VALUES('f1', 'single', '张三', 3)",
+                [],
+            )
+            .unwrap();
+        }
+        let conn = init(&path).unwrap();
+        let convs = list_conversations(&conn).unwrap();
+        assert_eq!(convs.len(), 1, "迁移不得丢会话");
+        assert_eq!(convs[0].name, "张三");
+        assert_eq!(convs[0].unread, 3, "迁移不得重置未读");
+        assert!(!convs[0].pinned, "补列的默认值必须是未置顶");
+        drop(conn);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 置顶只影响本机排序：置顶的旧会话必须排在更新时间更晚的未置顶会话之前。
+    #[test]
+    fn pinned_conversations_sort_before_recency() {
+        let conn = mem();
+        ensure_conversation(&conn, "old", "single", "旧的", None).unwrap();
+        ensure_conversation(&conn, "new", "single", "新的", None).unwrap();
+        touch_conversation(&conn, "old", "single", "旧的", None, "早", 0).unwrap();
+        touch_conversation(&conn, "new", "single", "新的", None, "晚", 0).unwrap();
+        // 直接把 old 的时间戳压到更早，确保「新的」本来排在前面
+        conn.execute("UPDATE conversations SET last_ts = 1 WHERE id = 'old'", []).unwrap();
+        conn.execute("UPDATE conversations SET last_ts = 999 WHERE id = 'new'", []).unwrap();
+        assert_eq!(list_conversations(&conn).unwrap()[0].id, "new");
+
+        set_conversation_pinned(&conn, "old", true).unwrap();
+        assert_eq!(
+            list_conversations(&conn).unwrap()[0].id,
+            "old",
+            "置顶后必须排在更晚的会话之前"
+        );
+        // 取消置顶 → 回到按时间排序
+        set_conversation_pinned(&conn, "old", false).unwrap();
+        assert_eq!(list_conversations(&conn).unwrap()[0].id, "new");
+    }
+
     /// 会话逻辑时钟：next_clock 单调递增，observe_clock 只前进不回退。
     #[test]
     fn conversation_clock_is_monotonic() {
@@ -3229,3 +3634,46 @@ mod tests {
         assert_eq!(list_pending_group_reads(&conn, "c").unwrap().len(), 1);
     }
 }
+
+// ---------------- 撤回（G-Set + 物化视图） ----------------
+
+/// 记下一条撤回事件（幂等）。返回 true 表示本次是首次记录。
+pub fn insert_recall(
+    conn: &Connection,
+    conv_id: &str,
+    msg_id: &str,
+    recaller_id: &str,
+    seq: i64,
+) -> Result<bool> {
+    let n = conn.execute(
+        "INSERT OR IGNORE INTO group_recalled_messages(conv_id, msg_id, recaller_id, seq)
+         VALUES(?1, ?2, ?3, ?4)",
+        params![conv_id, msg_id, recaller_id, seq],
+    )?;
+    Ok(n > 0)
+}
+
+/// 该消息是否已被撤回（权威判定）。
+pub fn is_recalled(conn: &Connection, msg_id: &str) -> bool {
+    conn.query_row(
+        "SELECT 1 FROM group_recalled_messages WHERE msg_id = ?1",
+        params![msg_id],
+        |r| r.get::<_, i64>(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
+    .is_some()
+}
+
+/// 把撤回**物化**到消息行：清空正文、改 kind。
+/// `content` 清空后，搜索 / 导出 / 会话预览 / 已读水位**一行都不用改就自动正确**。
+/// 返回 true 表示确实改到了行（消息已在本机）。
+pub fn materialize_recall(conn: &Connection, msg_id: &str) -> Result<bool> {
+    let n = conn.execute(
+        "UPDATE messages SET kind = ?2, content = '' WHERE msg_id = ?1 AND kind != ?2",
+        params![msg_id, crate::protocol::KIND_RECALLED],
+    )?;
+    Ok(n > 0)
+}
+

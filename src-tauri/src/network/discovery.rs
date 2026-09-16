@@ -16,6 +16,8 @@ use tokio::time::{sleep_until, Duration, Instant};
 
 use rand_core::{OsRng, RngCore};
 
+use base64::{engine::general_purpose::STANDARD, Engine as _};
+
 use crate::commands::is_virtual_ip;
 use crate::network::transport::{ensure_link, upsert_peer};
 use crate::protocol::{
@@ -145,8 +147,32 @@ fn resolve_bind_ip(
             find_lan().ok_or("auto mode: no eligible LAN interface found".to_string())?;
         Ok((lan_ip, Some(bc)))
     } else {
-        Ok((ip, None))
+        // ⚠️ **手动选网卡时也必须算出子网广播地址**。
+        //
+        // 此前这里直接返回 `None`，于是 `broadcast()` 只发 limited broadcast
+        // （255.255.255.255）—— 而它在 macOS 上会失败（socket 绑定到具体网卡 IP 时
+        // 返回 EHOSTUNREACH）。真机日志：每轮 `broadcast_error: No route to host`，
+        // 且**从未出现子网广播**（因为根本没算）⇒ 本机在局域网上发不出声，
+        // 对端只能靠蓝牙找过来。表现是「局域网只通一半」：我收得到别人，别人找不到我。
+        Ok((ip, broadcast_for_ip(ip)))
     }
+}
+
+/// 取指定本机 IP 所在网卡的**子网广播地址**（如 `192.168.31.255`）。
+///
+/// macOS 上这是唯一能用的广播目标：socket 绑定到具体网卡 IP 时，
+/// 向 limited broadcast（255.255.255.255）发送会返回 EHOSTUNREACH。
+/// 找不到匹配网卡时返回 None，调用方回落到 limited broadcast（Windows 需要它）。
+fn broadcast_for_ip(ip: Ipv4Addr) -> Option<Ipv4Addr> {
+    let ifs = if_addrs::get_if_addrs().ok()?;
+    for i in &ifs {
+        if let if_addrs::IfAddr::V4(v4) = &i.addr {
+            if v4.ip == ip {
+                return v4.broadcast;
+            }
+        }
+    }
+    None
 }
 
 fn now_ms() -> i64 {
@@ -252,13 +278,29 @@ fn bind_udp_recv(port: u16) -> Result<UdpSocket, String> {
 fn announce_packet(state: &AppState, tcp_port: u16) -> UdpPacket {
     // 注意：announce 不携带 avatar——头像可能很大，塞进 UDP 广播会超报文上限
     // （EMSGSIZE "Message too long"）导致发现失效；头像改由 TCP 建链后的 UserInfo 同步。
+    let x = state.identity.x25519_public_b64();
+    let e = state.identity.ed25519_public_b64();
+    // 每次广播都换一个 nonce：签名因此**不可跨轮重放**（旧包即使被抓到，重发也会因为
+    // nonce 与签名绑定而只是"同一个旧 nonce"——配合接收端的诊断即可识别为异常重复）。
+    let nonce = STANDARD.encode(crate::crypto::random_key());
+    let sig = state
+        .identity
+        .sign_b64(&crate::protocol::announce_signing_bytes(
+            &state.device_id,
+            tcp_port,
+            &nonce,
+            &x,
+            &e,
+        ));
     UdpPacket {
         kind: "announce".to_string(),
         device_id: state.device_id.clone(),
         nickname: state.nickname.lock().unwrap_or_else(|e| e.into_inner()).clone(),
         tcp_port,
-        x25519_pubkey: Some(state.identity.x25519_public_b64()),
-        ed25519_pubkey: Some(state.identity.ed25519_public_b64()),
+        x25519_pubkey: Some(x),
+        ed25519_pubkey: Some(e),
+        nonce,
+        sig,
     }
 }
 
@@ -458,6 +500,23 @@ async fn handle_datagram(
     }
     match pkt.kind.as_str() {
         "announce" => {
+            // 自签名校验：带签名却验不过 = 篡改或伪造，**在它影响任何状态之前**丢掉。
+            // 无签名（旧端）放行 —— 它只能驱动拨号，身份绑定一律由 Hello 验签决定
+            // （announce 来的公钥恒为 keys_verified=false，见 upsert_peer）。
+            match crate::protocol::verify_announce(&pkt) {
+                crate::protocol::AnnounceAuth::Invalid(reason) => {
+                    state.push_diag_event(
+                        "announce_rejected",
+                        &format!("{reason}; from={} via={}", pkt.device_id, src.ip()),
+                    );
+                    return;
+                }
+                crate::protocol::AnnounceAuth::Verified => state.push_diag_event(
+                    "announce_verified",
+                    &format!("from={} via={}", pkt.device_id, src.ip()),
+                ),
+                crate::protocol::AnnounceAuth::Legacy => {}
+            }
             state.push_diag_event(
                 "announce_recv",
                 &format!("from={} via={}", pkt.device_id, src.ip()),
@@ -518,24 +577,51 @@ async fn broadcast(
     socket: &UdpSocket,
     state: &AppState,
     tcp_port: u16,
-    _lan_broadcast: Option<Ipv4Addr>,
+    lan_broadcast: Option<Ipv4Addr>,
 ) {
     let pkt = announce_packet(state, tcp_port);
     let Ok(data) = serde_json::to_vec(&pkt) else {
         return;
     };
-    // 广播使用 limited broadcast（255.255.255.255）：Windows 默认禁用 directed broadcast
-    // （DisableDirectedBroadcasts=1），精确子网地址会被内核静默丢弃。
-    // limited broadcast 发送到所有 IFF_BROADCAST 接口，不走默认路由，跨平台可靠。
+    // **两种广播都发**，各自覆盖对方的短板：
+    // · limited broadcast（255.255.255.255）：Windows 默认禁用 directed broadcast
+    //   （DisableDirectedBroadcasts=1），只有它能穿透；但它**在 macOS 上会失败**
+    //   （socket 绑定到具体网卡 IP 时内核返回 EHOSTUNREACH "No route to host"）——
+    //   用户真机日志里每一轮都是这个错误，导致 Mac **从不在局域网上出现**，
+    //   对端于是只能走蓝牙（并因此撞上蓝牙那条通道自身的问题）。
+    // · 子网广播（如 192.168.31.255）：`find_lan_interface` 早就算好了它并一路传到这里，
+    //   但本函数此前把它丢掉了（参数名是 `_lan_broadcast`）—— macOS 上真正能用的就是它。
+    //
+    // 两发一收不会重复：接收端按 `device_id` + 消息去重，多收到一份是幂等的。
+    // 子网广播用**独立的事件名** `bc_directed`：原先复用了 `broadcast_sent`，
+    // 而那个名字在 `push_diag_event` 的 DROPPED 名单里（高频心跳类）——
+    // 于是**成功时什么都不打**，真机上「子网广播到底发出去没有」完全不可见。
+    // 这正是排查"局域网只通一半"时最需要看到的一行。
+    let directed_ok = if let Some(bc) = lan_broadcast {
+        let directed = format!("{bc}:{UDP_PORT}");
+        let res = socket.send_to(&data, &directed).await;
+        let (kind, detail) = diag_event_from_send_result(&directed, "bc_directed", &res);
+        state.push_diag_event(kind, &detail);
+        res.is_ok()
+    } else {
+        false
+    };
     let bcast_target = format!("255.255.255.255:{UDP_PORT}");
     let bcast_res = socket.send_to(&data, &bcast_target).await;
-    let (kind, detail) = diag_event_from_send_result(&bcast_target, "broadcast_sent", &bcast_res);
-    state.push_diag_event(kind, &detail);
-
     let mcast_target = format!("{MULTICAST_GROUP}:{UDP_PORT}");
     let mcast_res = socket.send_to(&data, &mcast_target).await;
-    let (kind, detail) = diag_event_from_send_result(&mcast_target, "multicast_sent", &mcast_res);
-    state.push_diag_event(kind, &detail);
+    // 子网广播成功时，**不再**为 limited / multicast 的失败刷告警 ——
+    // macOS 上它们本来就发不出去（socket 绑具体网卡 IP 时 EHOSTUNREACH），
+    // 而我们已经有一条能用的广播路径了。每 5 秒两条 WARN 会把真正有用的信息淹掉。
+    // 只有在**三条路全失败**时才留痕：那才是"本机在局域网上发不出声"的真信号。
+    if !directed_ok {
+        let (kind, detail) =
+            diag_event_from_send_result(&bcast_target, "bc_limited", &bcast_res);
+        state.push_diag_event(kind, &detail);
+        let (kind, detail) =
+            diag_event_from_send_result(&mcast_target, "bc_multicast", &mcast_res);
+        state.push_diag_event(kind, &detail);
+    }
 }
 
 /// 按需探测：群发 `who_has` 请求周围节点单播回复其 `announce`，并同时广播一次自身 announce。
@@ -544,7 +630,7 @@ async fn broadcast_probe(
     socket: &UdpSocket,
     state: &AppState,
     tcp_port: u16,
-    _lan_broadcast: Option<Ipv4Addr>,
+    lan_broadcast: Option<Ipv4Addr>,
 ) {
     let who = UdpPacket {
         kind: "who_has".to_string(),
@@ -553,15 +639,27 @@ async fn broadcast_probe(
         tcp_port,
         x25519_pubkey: None,
         ed25519_pubkey: None,
+        // who_has 只是"谁在线"的探测：不声明身份、也不参与任何绑定，故不签名。
+        // 接收端按 AnnounceAuth::Legacy 处理（见 verify_announce）。
+        nonce: String::new(),
+        sig: String::new(),
     };
     if let Ok(data) = serde_json::to_vec(&who) {
+        // 与 announce 同一口径：子网广播 + limited 广播都发（见 broadcast 的说明）。
+        // 「打开添加好友」在 macOS 上能否发现对方，就取决于这条。
+        if let Some(bc) = lan_broadcast {
+            let directed = format!("{bc}:{UDP_PORT}");
+            let res = socket.send_to(&data, &directed).await;
+            let (kind, detail) = diag_event_from_send_result(&directed, "who_has_sent", &res);
+            state.push_diag_event(kind, &detail);
+        }
         let bcast_target = format!("255.255.255.255:{UDP_PORT}");
         let bcast_res = socket.send_to(&data, &bcast_target).await;
         let (kind, detail) = diag_event_from_send_result(&bcast_target, "who_has_sent", &bcast_res);
         state.push_diag_event(kind, &detail);
     }
     // 同时广播自身，让周围节点也能立刻发现我们
-    broadcast(socket, state, tcp_port, _lan_broadcast).await;
+    broadcast(socket, state, tcp_port, lan_broadcast).await;
 }
 
 /// 判定一个节点是否应保留在 peers 表（纯逻辑，便于单测 + 护栏非空转）。
@@ -606,8 +704,32 @@ fn sweep_peers(state: &AppState) {
     // 节点已不在 peers 表 ⇒ 该路径失效）。否则聊天头部的链路徽标会在节点早已被清扫后
     // 继续显示历史路径（用户 2026-09-12 反馈的「离线却显示『桥接 1』」）。
     let changed = !removed.is_empty();
+    // 超时清理：与「掉线」（mark_peer_offline）是**两条不同路径**，只有日志能区分。
+    // 45s 超时清掉的节点在界面上同样表现为"离线"，但原因完全不同
+    // （前者是链路断了，后者是我们没再收到它的 announce/Presence）。
+    if !removed.is_empty() {
+        state.logger.info(
+            "link",
+            format!("超时清理 {} 个节点：{}", removed.len(), removed.join(",")),
+        );
+    }
     for id in removed {
         crate::network::transport::clear_conv_link(state, &id);
+        // 连带清掉按 device_id 索引的内存表：它们原先只在「删好友」时清，
+        // 而节点进出（换网、换设备、临时上线）比删好友频繁得多 ——
+        // 长跑后 `peer_content_features` / `key_conflict_warned` 会无界增长。
+        // 与 `conv_link` 同一个回收点：节点已不在 peers 表，这些按它的 id 记的状态
+        // 也就失去了参照（它再上线会重新 Hello / 重新 announce，届时按需重建）。
+        state
+            .peer_content_features
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&id);
+        state
+            .key_conflict_warned
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&id);
     }
     if changed {
         state.emit_peers();
