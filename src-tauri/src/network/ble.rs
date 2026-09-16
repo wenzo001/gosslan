@@ -471,6 +471,27 @@ async fn scan_loop(
                     let st = state.clone();
                     let sd = shutdown.clone();
                     let dial_id = peripheral.id().to_string();
+                    // ⚠️ 「已建链」这一判定必须在**打「开始连接」之前**做。
+                    // 原先只有 `dial_and_register` 里那条静默跳过，于是日志每轮都写一句
+                    // 「候选可拨 ⇒ 开始连接（GATT central）」，后面却什么都没有 ——
+                    // 真机日志里连着 18 轮这么写，读起来像"应用在反复拨一个已经连上的对端"，
+                    // 而真相是这一轮**什么都没发生**（用户 2026-09-16 排查时被它带偏）。
+                    // 放在这里还顺带省掉了下面读广播属性的那次 await。
+                    if state
+                        .has_endpoint_addr(&MeshEndpoint::Ble(BleEndpoint::new(dial_id.clone())))
+                        .await
+                    {
+                        // ⚠️ 这里必须**补上**原来由 `dial_and_register` 的 `Ok(())` 分支
+                        // 顺带做掉的那件事：清掉该地址的拨号退避。否则"已建链"的地址会一直
+                        // 留着一条过期退避，等这条链路断掉、下一轮扫描要重拨时被它拖住
+                        // （最长 20s）—— 用户看到的是"刚断开却半天连不回来"。
+                        clear_ble_dial_failure(&state, &dial_id);
+                        state.logger.info(
+                            "ble",
+                            format!("[DISCOVERY] 跳过候选 id={dial_id} 原因=已建链（不重复拨号）"),
+                        );
+                        continue;
+                    }
                     // 把**广播里能拿到的事实**一起打出来（真机 2026-09-13 第二轮补）：
                     // 之前只打地址，于是"信号多强、是不是随机地址、对端有没有报名字、
                     // 它自报的服务列表是什么"这些一眼能定性的信息全丢了，
@@ -732,8 +753,15 @@ async fn dial_and_register(
         return Ok(());
     };
     let ep = MeshEndpoint::Ble(BleEndpoint::new(ble_id.clone()));
-    // 这个端点已经连着 ⇒ 跳过（`connect_to_peer` 的同款去重）
+    // 这个端点已经连着 ⇒ 跳过（`connect_to_peer` 的同款去重）。
+    // 常规路径上扫描侧已经拦掉了（那时的日志是「跳过候选 id=… 原因=已建链」），
+    // 这里兜的是"扫描判定完、任务真正跑起来之前"那一小段窗口 —— 概率低但确实会发生，
+    // 所以也得留痕，不能像原来那样静默 return（静默正是"日志说开始连接却没了下文"的成因）。
     if state.has_endpoint_addr(&ep).await {
+        state.logger.info(
+            "ble",
+            format!("[CONNECT] 跳过 {ble_id}：判定到拨号之间已建链（不重复拨号）"),
+        );
         return Ok(());
     }
     // 上一次失败可能留了一条**已经没人读**的连接：先断开再重连。
@@ -1493,11 +1521,43 @@ enum RouteCtl {
     },
 }
 
+/// 把外设事件队列里**已经入队**的 `Notice`/`Warning` 逐条落日志。
+///
+/// 为什么需要它：外设角色**为什么起不来**（权限缺失 / 蓝牙没开 / 本机不支持广播 /
+/// GATT server 打不开……）是 Kotlin / CoreBluetooth 侧经 `Notice`/`Warning` 事件上报的，
+/// 它们落在 `server.events` 这条队列里。而这条队列**唯一**的消费点是外设接收循环
+/// （`peripheral_accept_loop` 里的 `server.events.recv()`），启动失败时那个循环根本不会起来
+/// —— 直接 `stop()` 会把队列连同原因一起丢掉，用户最终只看到一句自指的
+/// 「Android BLE 外设未能启动（详见日志中的具体原因）」，而日志里并没有那个原因。
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
+fn drain_peripheral_events(server: &mut peripheral::PeripheralServer, state: &AppState) {
+    while let Ok(ev) = server.events.try_recv() {
+        match ev {
+            PeripheralEvent::Warning(text) => state.logger.warn("ble", text),
+            PeripheralEvent::Notice(text) => state.logger.info("ble", text),
+            // 启动都没成功，不可能有帧/断链事件；真出现也只说明状态机不对，不值得为它编文案
+            PeripheralEvent::Frame { .. } | PeripheralEvent::Unlinked { .. } => {}
+        }
+    }
+}
+
+/// 停外设并把队列排空落日志。
+///
+/// ⚠️ `stop()` **前后各排一次**，缺一不可：原因来自两处 ——
+/// 启动期间上报的 `Notice`/`Warning`（先入队），以及 `stop()` 自身失败时塞进来的
+/// Warning（见 `PeripheralServer::stop`：停不掉意味着可能还在广播，必须留痕）。
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
+fn stop_peripheral_and_drain(server: &mut peripheral::PeripheralServer, state: &AppState) {
+    drain_peripheral_events(server, state);
+    server.stop();
+    drain_peripheral_events(server, state);
+}
+
 /// 启动外设角色。失败只记日志：能扫别人但别人连不上我们，属于**降级**而不是故障，
 /// 不该把整个蓝牙开关判为不可用（LAN 更不受影响）。
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
 async fn start_peripheral(state: Arc<AppState>, shutdown: watch::Receiver<bool>) {
-    let startup = match peripheral::start() {
+    let mut startup = match peripheral::start() {
         Ok(startup) => startup,
         Err(e) => {
             state.logger.warn(
@@ -1517,14 +1577,14 @@ async fn start_peripheral(state: Arc<AppState>, shutdown: watch::Receiver<bool>)
             state
                 .logger
                 .warn("ble", format!("蓝牙外设角色不可用（central 角色不受影响）：{e}"));
-            startup.server.stop();
+            stop_peripheral_and_drain(&mut startup.server, &state);
             return;
         }
         Ok(Err(_)) => {
             state
                 .logger
                 .warn("ble", "蓝牙外设角色的状态回调通道被关闭，放弃启动");
-            startup.server.stop();
+            stop_peripheral_and_drain(&mut startup.server, &state);
             return;
         }
         Err(_) => state

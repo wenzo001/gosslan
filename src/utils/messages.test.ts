@@ -452,6 +452,26 @@ test("被 @ 检测：昵称含正则特殊字符按字面匹配", () => {
   assert.equal(messageMentionsName(msg({ content: "@aXbX1 看看" }), "a.b(1)"), false);
 });
 
+test("被 @ 检测：输入框补出来的前导边界也命中（用户 2026-09-16）", () => {
+  // 选择器插入 @ 时会补一个前导 nbsp（见 MessageComposer.applyMention）——
+  // 中文里「你好@张三」不敲空格是常态，触发端不设边界限制，插入端负责把边界补齐。
+  // 修改前这类消息发送端看着是蓝色 chip、接收端既不通知也不高亮（静默失效）。
+  assert.equal(messageMentionsName(msg({ content: "你好 @周工 记得" }), "周工"), true);
+  assert.equal(messageMentionsAll(msg({ content: "大家好 @所有人 开会" })), true);
+  // ⚠️ 检测端本身不因此放宽：**没有**前导边界的手打形态仍按既有口径不命中。
+  assert.equal(messageMentionsName(msg({ content: "你好@周工 记得" }), "周工"), false);
+});
+
+test("被 @ 检测：表情 token 收尾的 ] 也算前导边界（与气泡高亮同源）", () => {
+  // 气泡把正文按表情 token 切段、**逐段**跑 linkify，段首天然命中 `^`；
+  // 检测端对完整正文跑正则。两边不认同一套边界，就会出现
+  // 「气泡里 @名字 是蓝色高亮块、却没有红点也不发通知」。
+  assert.equal(messageMentionsName(msg({ content: "[微笑]@周工 快来" }), "周工"), true);
+  assert.equal(messageMentionsAll(msg({ content: "[微笑]@所有人 快来" })), true);
+  // 邮箱形态仍不误判：`a` 既不是空白也不是 `]`
+  assert.equal(messageMentionsName(msg({ content: "a@周工.com" }), "周工"), false);
+});
+
 // ---------------- messageMentionsAll：@所有人 ----------------
 
 test("@所有人：行首、空白后、尾随标点均命中", () => {

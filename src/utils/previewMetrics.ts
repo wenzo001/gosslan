@@ -7,6 +7,7 @@
 // 完整内容交给独立 Modal —— Modal 的 DOM 不在 VirtualList 内，不影响任何消息高度。
 
 import { fontPx, type FontSizeKey } from "@/utils/chatStyle";
+import { parseQuote, quoteBody } from "@/utils/quote";
 
 /** 消息流内预览行数上限（文本 / 代码 / 附件代码一致），超出部分只能在 Modal 里看。 */
 export const PREVIEW_LINES = 5;
@@ -68,18 +69,38 @@ function textColumns(fontSize: FontSizeKey): number {
   return Math.max(12, Math.round((COLUMNS_PER_LINE * BASE_FONT_PX) / fontPx(fontSize)));
 }
 
-/** 是否需要截断：渲染端与估算端共用它，保证「有没有第 6 行」两边判断一致。 */
+/** 是否需要截断：渲染端与估算端共用它，保证「有没有第 6 行」两边判断一致。
+ *  ⚠️ 只看**正文** —— 被 clamp 的就是正文那个 div，引用头不在其中。
+ *  把引用头当成一行正文算进来，正文正好 5 行的引用消息会凭空多出一条「展开」操作条，
+ *  点开弹出的全文和气泡里显示的一模一样。 */
 export function textNeedsClamp(content: string, fontSize: FontSizeKey): boolean {
-  return visualLineCount(content, textColumns(fontSize)) > PREVIEW_LINES;
+  return visualLineCount(quoteBody(content), textColumns(fontSize)) > PREVIEW_LINES;
 }
 
-/** 文本气泡高度（含截断态的操作条）；截断后恒为 5 行，不再随内容增高。 */
+/** 引用块排版：`text-[12px] leading-4`（行高 16px）+ `py-1`(8) + `mb-1.5`(6)。
+ *  ⚠️ 与 MessageTextBubble 引用块的类名成对，改一类必须改另一类。 */
+const QUOTE_LINE_HEIGHT = 16;
+const QUOTE_CHROME = 8 + 6;
+/** 引用头字号固定 12px，**不随正文字号档位变**，所以它单独一套列宽。 */
+const QUOTE_FONT_PX = 12;
+
+/** 引用块高度（无引用时为 0）。按 12px 的列宽折行，长片段会占多行。 */
+function quoteHeaderHeight(header: string): number {
+  if (!header) return 0;
+  // 引用块左右 px-2 比正文 px-3 各少 4px，可用宽度略宽；这里不额外补偿，
+  // 宁可多估一行（多估只是留白，少估会让相邻消息互相遮挡）。
+  const cols = Math.round((COLUMNS_PER_LINE * BASE_FONT_PX) / QUOTE_FONT_PX);
+  return visualLineCount(header, cols) * QUOTE_LINE_HEIGHT + QUOTE_CHROME;
+}
+
+/** 文本气泡高度（含引用块 + 截断态的操作条）；正文截断后恒为 5 行，不再随内容增高。 */
 export function textBubbleHeight(content: string, fontSize: FontSizeKey): number {
+  const { header, body } = parseQuote(content);
   const lineH = fontPx(fontSize) * TEXT_LINE_RATIO;
-  if (textNeedsClamp(content, fontSize)) {
-    return TEXT_BUBBLE_BORDER + TEXT_BUBBLE_PADDING + PREVIEW_LINES * lineH + TEXT_ACTION_BAR;
-  }
-  return TEXT_BUBBLE_BORDER + TEXT_BUBBLE_PADDING + visualLineCount(content, textColumns(fontSize)) * lineH;
+  const bodyH = textNeedsClamp(content, fontSize)
+    ? PREVIEW_LINES * lineH + TEXT_ACTION_BAR
+    : visualLineCount(body, textColumns(fontSize)) * lineH;
+  return TEXT_BUBBLE_BORDER + TEXT_BUBBLE_PADDING + quoteHeaderHeight(header) + bodyH;
 }
 
 // ---------------- 代码 ----------------

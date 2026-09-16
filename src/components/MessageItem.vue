@@ -9,6 +9,7 @@ import { useMessageDisplay } from "@/composables/useMessageDisplay";
 import { useMessageFile } from "@/composables/useMessageFile";
 import { useMemberProfile } from "@/composables/useMemberProfile";
 import { textNeedsClamp } from "@/utils/previewMetrics";
+import { stripQuoteMsgId } from "@/utils/quote";
 import { isDialogCancelled, saveDestinationOf } from "@/utils/saveDestination";
 import { haptic } from "@/utils/haptics";
 import { shouldStartLongPress, shouldSwallowLongPressRelease } from "@/utils/longPress";
@@ -164,8 +165,18 @@ const { copiedKey, copyContent } = useClipboard();
  * 气泡内联的复制按钮仍只靠自身勾选反馈（就在指尖，无需 toast 打扰）。
  */
 async function copyTextWithToast(key: string, text: string) {
-  const ok = await copyContent(key, text);
+  const ok = await copyContent(key, copyOut(text));
   app.toast(ok ? t("common.copied") : t("msg.copyFail"), ok ? "success" : "error");
+}
+
+/**
+ * 复制出去的文本（右键菜单 / 操作面板 / 气泡按钮 / 全文弹窗四条路径共用）。
+ * 引用头里的 `|msg_id` 是内部路由信息，不该混进用户复制的内容 ——
+ * 用户看到的是「引用 张三：…」，复制出来却是 `…|msg_ab12」`。
+ * ⚠️ 只在复制路径上剥：转发要原样保留，接收方靠它跳到被引用的那条消息。
+ */
+function copyOut(content: string): string {
+  return stripQuoteMsgId(content);
 }
 
 /** 头像取色名：必须与列表/回执/弹层同源（昵称），否则同一人两处颜色分叉。
@@ -386,6 +397,11 @@ onBeforeUnmount(() => {
   // 窗口级监听不随组件卸载自动消失（它挂在 window 上），必须自己摘
   window.removeEventListener("touchend", swallowLongPressRelease, { capture: true });
   window.removeEventListener("touchcancel", swallowLongPressRelease, { capture: true });
+  // ⚠️ `selectionchange` 挂在 **document** 上，由 `watch(textSelecting)` 增删 ——
+  // 那条 watch 只在开关时才跑，组件若**在选择模式下**被卸载（滚出虚拟列表就回收），
+  // 它永远等不到 else 分支，监听会一直留在 document 上。每进入一次漏一个，
+  // 之后在输入框/搜索框里选字，每个 selectionchange 都要白跑 N 次 getSelection()。
+  document.removeEventListener("selectionchange", onSelectingChanged);
 });
 
 /** 转发支持：与 MessageContextMenu 同一判据。 */
@@ -661,7 +677,7 @@ async function copyFileToClipboard() {
             :mention-names="mentionNames"
             :select-mode="textSelecting"
             @expand="openFullModal('text', $event)"
-            @copy="copyContent('text', $event)"
+            @copy="copyContent('text', copyOut($event))"
             @locate="emit('locate', $event)"
           />
 
@@ -674,7 +690,7 @@ async function copyFileToClipboard() {
             :dark="app.dark"
             :mine="mine"
             @expand="openFullModal('code', $event)"
-            @copy="copyContent('code', $event)"
+            @copy="copyContent('code', copyOut($event))"
           />
 
           <!-- 图片：已被存储清理时给出明确占位，而不是一个永远转圈/裂开的图片框。
@@ -779,7 +795,7 @@ async function copyFileToClipboard() {
     :mention-names="mentionNames"
     :copied="copiedKey === 'full'"
     @close="fullModalOpen = false"
-    @copy="copyContent('full', $event)"
+    @copy="copyContent('full', copyOut($event))"
   />
 
   <!-- 消息右键菜单 -->
