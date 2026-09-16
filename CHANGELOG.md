@@ -10,6 +10,77 @@
 
 ## [Unreleased]
 
+### Fixed (Android 外设的载荷预算自己算了一遍 —— 硬编码 512/20 且放行装不下分片头的值 —— 2026-09-16)
+
+**这是 Phase 3「BLE 单一事实来源」漏掉的第三处**，由 Phase 4 的 Android 编译门禁当场抓出。
+
+```rust
+// ble_android.rs::payload_mtu —— 改前
+/// 该对端一次通知能收多少字节（未知 ⇒ 20，与 macOS 侧同口径）。   ← 又一句不成立的"同口径"
+pub fn payload_mtu(&self, central: &str) -> usize {
+    call_static_int("payloadMtu", central)
+        .map(|v| if (1..=512).contains(&v) { v as usize } else { 20 })
+        .unwrap_or(20)
+}
+```
+
+两个问题：
+
+1. **第三份实现**：硬编码 `512` / `20`，并自己写区间判断 —— 既没重新定义常量（逃过
+   `check-ble-constants.mjs` 判据 B），也不是"重新实现具名函数"（逃过判据 A）。
+2. **真 bug**：有效性判据是 `1..=512`，于是 `payloadMtu = 1..6` 这类**装不下 6 字节分片头**
+   的值被原样接受 ⇒ `fragment(payload, 3, _)` 直接返回 `None` ⇒ **整条链路发不出任何消息**，
+   而日志只说"帧无法分片"。规范函数要求 ≥ 分片头 + 1（7），否则退回默认 20。
+
+改法：`payload_mtu` 只做 `i32 → usize` 的安全转换，换算交给
+`ble_framing::notify_payload_budget`（与 macOS 同一份）。
+
+**顺带**（也是 Phase 3 的遗留）：
+
+- `ble_framing.rs` 的 `in_flight` 只被本模块测试使用 ⇒ 标 `#[cfg(test)]`。
+  它此前靠模块级**无条件** `allow(dead_code)` 蒙混 —— 那条 allow 一删，Android 的
+  `cargo check` 立刻报 `never used`。**`cargo check` 比 `cargo test` 更容易看见
+  "只在测试里活着的项"**（测试构建里它们是被使用的），这正是 `check-mobile.sh` 的价值。
+- 关掉 `bluetooth` feature 时 `ble_framing` 整个模块都是死代码（所有调用点都在该 feature 之下），
+  `cargo check` 会刷 17 条 `never used`。改为按 feature **条件化**静音：
+  `#![cfg_attr(not(feature = "bluetooth"), allow(dead_code))]` ——
+  feature 关时整模块惰性（不静音就全是噪声）；**feature 开时不允许死代码**（这才抓得到
+  "以为接线了其实没接"）。
+
+**新增守门判据 C**（`scripts/check-ble-constants.mjs`）：三个外设平台
+（macOS / Windows / Android）必须**委托**给规范换算，不许自己算一遍。A/B 判据都只盯"定义"，
+而这处是"把换算内联进平台实现"，只有"这个文件必须出现规范调用"这一层能拦住。
+配套 `verify-guards.py` 非空转用例（把它改回原样 ⇒ 必须 FAIL）。
+
+**顺便标注一处未验证的语义**（不改行为）：Windows 的 `MaxNotificationSize` 按现有注释
+"**已含** ATT 头"因而用 `att_payload_budget`（减 3），而 macOS / Android 的来源本身已是载荷
+（不减）。该说法**尚未在真机确认**；若实际不含，我们每片会少发 3 字节 —— 属**偏保守**方向
+（吞吐略降），不会像 Android 这个缺陷那样"直接发不出去"。已写进该文件注释。
+
+### Added (Android 编译门禁接入 CI —— 2026-09-16)
+
+**问题**：`scripts/check-mobile.sh` 早就写好了（`cargo check --target aarch64-linux-android`
++ 0 warning 判定），注释里也记着真实事故（2026-09-12：Android 目标 **8 个 E0433**、
+整个安卓包打不出来）—— 但它**从未接进任何 CI**，纯手工门禁。于是 Android 专属代码
+（`ble_android.rs` 等）在 macOS / Windows 两条腿上都不编译，等于没人看。
+
+**做法**：
+
+- `verify.yml` 新增 `android` job（`ubuntu-latest`）：装 JDK 21 + Android SDK + NDK +
+  `aarch64-linux-android` target，跑 `check-mobile.sh --bluetooth`。
+  ⚠️ 沿用 `build-android.yml` 的那个坑：`setup-android` 的默认 `packages` 含 `tools`，
+  而 Google 已于 2026-09-15 把它下架 ⇒ 必须显式覆盖为 `'platform-tools'`。
+- `npm run verify` 增加第 10 步「移动端编译门禁（Android）」。本地缺 NDK / rust target 时
+  **显式跳过并打印原因**（记进汇总、不影响退出码）—— CI 上无条件跑，所以本地跳过不影响覆盖；
+  结尾会提示"别把本地的 ⏭ 当成通过"。
+- 失败诊断仍走 `ci-run.sh`（注解是唯一可匿名读取的渠道）。
+
+**引入当天就抓到一个真 bug**（即上一条 Fix）。这正是这条腿存在的意义。
+
+**验证**：`npm run verify` **10 步全绿**（169s）；`check-mobile.sh --bluetooth`
+两种 feature 配置各自 **PASS / 0 warning**；macOS 的 `cargo check`（默认与 `--features bluetooth`）
+均 **0 warning**；`cargo test --features bluetooth` **505 全绿**；护栏 **96 → 97**。
+
 ### Changed (BLE 单一事实来源：常量与换算收敛到一处 —— 2026-09-16)
 
 **问题**：「一片能装多少字节」这件事，常量与换算此前有**多份**：

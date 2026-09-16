@@ -208,3 +208,79 @@ jobs:
       - name: 测试清单守卫（Rust）
         shell: bash
         run: bash scripts/ci-run.sh "测试清单守卫（${{ matrix.os }}）" node scripts/check-test-manifest.mjs --only rust
+
+  # ---------------------------------------------------------------------------
+  #  Android 编译门禁（第三个平台）
+  #
+  #  ⚠️ 为什么要有这条腿：一部分代码是 **Android 专属**的：
+  #
+  #      transport/mod.rs:19   #[cfg(all(feature = "bluetooth", target_os = "android"))]
+  #      → transport/ble_android.rs（Android BLE 外设的 JNI 桥）
+  #
+  #  它只在 Android 目标上编译 —— macOS / Windows 那两条腿都看不见它。
+  #  真实事故（2026-09-12）：`generate_handler!` 无条件列出四个 `#[cfg(desktop)]` 命令，
+  #  包装宏跟着函数被裁掉 ⇒ Android 目标 **8 个 E0433**，整个安卓包打不出来，
+  #  而当时**没有任何守门**（`scripts/check-mobile.sh` 早就写好，但从未接进 CI，纯手工）。
+  #
+  #  这条腿只做 `cargo check` + 0 warning 判定（不起模拟器、不跑测试）——
+  #  `ble_android.rs` 是 JNI 桥、测试跑不了；能拦住的是"编不过"与"有 warning"，
+  #  而那正是历史上真实发生过的两种形态。
+  #
+  #  ⚠️ **引入当天就抓到一个真 bug**：`ble_android.rs` 的 `payload_mtu` 自己算了一遍
+  #  载荷预算（硬编码 512/20，且放行 `1..=6` 这类**装不下分片头**的值 ⇒ `fragment`
+  #  拒绝一切 ⇒ 整条链路发不出消息）。详见 `scripts/check-ble-constants.mjs` 的判据 C。
+  #  这条腿也顺手暴露了 `cargo test` 看不见的死代码（它不编测试、只看产品码）。
+  # ---------------------------------------------------------------------------
+  android:
+    name: Android 编译门禁（aarch64-linux-android）
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      # Tauri 的 build.rs 需要 dist/（见文件头说明），必须在 cargo 之前。
+      - name: 安装依赖并构建前端（cargo check 依赖 dist/）
+        run: |
+          npm ci
+          npm run build
+
+      # `sdkmanager` 是 Java 工具 ⇒ 必须先有 JDK。
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: android-actions/setup-android@v3
+        with:
+          # ⚠️ 必须显式覆盖：该 action 的默认值是 `'tools platform-tools'`，
+          # 而 Google 已于 2026-09-15 把 `tools` 包从 SDK 仓库下架 ⇒ sdkmanager 报
+          # "Failed to find package 'tools'" 后 exit 1。与 build-android.yml 同一坑。
+          packages: 'platform-tools'
+
+      # 只要 NDK：`cargo check` 不需要 platform / build-tools
+      #（那两样是出 APK 才要的，见 build-android.yml）。
+      - name: 安装 NDK
+        run: sdkmanager "ndk;27.1.12297006"
+
+      - name: 设置 NDK 环境（check-mobile.sh 会据此找 clang/ar）
+        run: |
+          echo "ANDROID_NDK_ROOT=${ANDROID_HOME}/ndk/27.1.12297006" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/27.1.12297006" >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # 失败诊断走 ci-run.sh：它把关键行合成**一条多行 check 注解**
+      #（注解是唯一可匿名读取的渠道，见该脚本头部）。
+      - name: 移动端编译门禁（默认 feature + --features bluetooth，各自 0 warning）
+        run: bash scripts/ci-run.sh "Android 编译门禁" bash scripts/check-mobile.sh --bluetooth

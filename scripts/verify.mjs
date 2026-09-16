@@ -6,12 +6,19 @@
  *
  * 这个仓库的验证手段散在很多地方，且此前**没有任何一个地方把它们串起来**：
  *
- *   · `npm test`                     前端断言（455）
- *   · `cargo test --features bluetooth`  Rust 用例（503）
- *   · `check-test-manifest`          挡住"测试静默不跑"
- *   · `check-invariant-exceptions`   挡住"照文档误修"
- *   · `verify-guards.py`             非空转验证（92 条护栏）
- *   · `npm run build`                前端构建
+ *   · `npm test`                        前端断言（457）
+ *   · `cargo test --features bluetooth` Rust 用例（505）
+ *   · `check-test-manifest`             挡住"测试静默不跑"
+ *   · `check-invariant-exceptions`      挡住"照文档误修"
+ *   · `check-ble-constants`             挡住"BLE 载荷预算多处各算一遍"
+ *   · `version:changelog`               CHANGELOG 结构（发布脚本的插入锚点）
+ *   · `verify-guards.py`                非空转验证（97 条护栏）
+ *   · `npm run build`                   前端构建
+ *   · `check-mobile.sh`                 Android 编译门禁（Android 专属代码只有它看得见）
+ *
+ * ⚠️ **Android 那一步在本地可能被跳过**（缺 NDK / 缺 rust target）：跳过会显式打印原因并
+ * 记进汇总，**不会**当成失败 —— 但 CI 上它是独立 job、无条件跑，所以本地跳过不影响覆盖。
+ * 别把本地的 ⏭ 当成通过。
  *
  * 后果是每个入口各记一部分：CI 里记一份、`build-windows-release.ps1` 里手串一份、
  * 开发者脑子里再记一份。**"验证"没有单一入口，就等于没有统一的验证标准** ——
@@ -124,7 +131,7 @@ const steps = [
   },
   {
     name: "前端测试（npm test）",
-    why: "455 条前端断言",
+    why: "457 条前端断言",
     cwd: ROOT,
     cmd: NPM,
     args: ["test"],
@@ -138,7 +145,7 @@ const steps = [
   },
   {
     name: "Rust 单测（--features bluetooth）",
-    why: "503 条用例。--features bluetooth 不能省：漏了会让 16 条 BLE 用例静默消失",
+    why: "505 条用例。--features bluetooth 不能省：漏了会让 16 条 BLE 用例静默消失",
     cwd: TAURI,
     cmd: "cargo",
     args: ["test", "--features", "bluetooth"],
@@ -156,7 +163,7 @@ if (!noGuards) {
   steps.push({
     name: full ? "护栏非空转（全量，慢）" : "护栏非空转（前端子集）",
     why: full
-      ? "92 条护栏全部「改坏必须 FAIL、恢复必须 PASS」；Rust 用例要重编译，10 分钟以上"
+      ? "97 条护栏全部「改坏必须 FAIL、恢复必须 PASS」；Rust 用例要重编译，10 分钟以上"
       : "前端子集十几秒；全量护栏请用 --full（发版前跑一次）",
     cwd: ROOT,
     cmd: python ?? "python3",
@@ -164,9 +171,44 @@ if (!noGuards) {
   });
 }
 
+// Android 编译门禁：**Android 专属代码只有这条腿看得见**（macOS/Windows 的构建都跳过它）。
+// CI 里是独立 job、无条件跑；本地缺 NDK / rust target 时**显式跳过并说明**，
+// 而不是失败 —— 但也不静默（跳过会记进汇总，且说清 CI 上仍然覆盖）。
+steps.push({
+  name: "移动端编译门禁（Android）",
+  why: "cargo check --target aarch64-linux-android（0 warning）—— 拦住「移动端整包编不出来」",
+  cwd: ROOT,
+  cmd: "bash",
+  args: ["scripts/check-mobile.sh", "--bluetooth"],
+  skipReason: mobileSkipReason(),
+});
+
+/** 本地跑不了 Android 门禁时给出原因（CI 上无条件跑，所以本地跳过不影响覆盖）。 */
+function mobileSkipReason() {
+  const target = "aarch64-linux-android";
+  const installed = spawnSync("rustup", ["target", "list", "--installed"], { encoding: "utf8" });
+  if (installed.status !== 0 || !installed.stdout?.includes(target)) {
+    return `未装 rust target ${target}（rustup target add ${target}）`;
+  }
+  const bases = [
+    process.env.ANDROID_NDK_ROOT,
+    process.env.ANDROID_HOME && path.join(process.env.ANDROID_HOME, "ndk"),
+    path.join(process.env.HOME ?? "", "Library", "Android", "sdk", "ndk"),
+  ].filter(Boolean);
+  if (!bases.some((b) => existsSync(b))) {
+    return "未找到 Android NDK（装 NDK 或设 ANDROID_NDK_ROOT）";
+  }
+  return null;
+}
+
 if (listOnly) {
   console.log("npm run verify 会按顺序跑：");
-  steps.forEach((s, i) => console.log(`  ${i + 1}. ${s.name} —— ${s.why}`));
+  steps.forEach((s, i) =>
+    console.log(
+      `  ${i + 1}. ${s.name} —— ${s.why}` +
+        (s.skipReason ? `\n      ⏭ 本机将跳过：${s.skipReason}` : ""),
+    ),
+  );
   process.exit(0);
 }
 
@@ -193,6 +235,13 @@ for (const [i, s] of steps.entries()) {
   console.log(`${label}`);
   console.log(`      ${s.why}`);
 
+  if (s.skipReason) {
+    // 显式跳过（不是静默）：原因会进汇总。CI 上这一步无条件跑，所以本地跳过不影响覆盖。
+    console.log(`      ⏭  跳过：${s.skipReason}\n`);
+    results.push({ name: s.name, ok: true, secs: "—", skipped: s.skipReason });
+    continue;
+  }
+
   const start = Date.now();
   const r = spawnSync(s.cmd, s.args, { cwd: s.cwd, stdio: "inherit" });
   const secs = ((Date.now() - start) / 1000).toFixed(1);
@@ -218,14 +267,22 @@ const notRun = steps.length - results.length;
 
 console.log("--- 汇总 ---");
 for (const r of results) {
-  console.log(`  ${r.ok ? "✅" : "❌"} ${r.name}  ${r.secs}s`);
+  const mark = r.skipped ? "⏭" : r.ok ? "✅" : "❌";
+  const tail = r.skipped ? `跳过（${r.skipped}）` : `${r.secs}s`;
+  console.log(`  ${mark} ${r.name}  ${tail}`);
 }
 for (const s of steps.slice(results.length)) {
   console.log(`  ⏭   ${s.name}（未跑）`);
 }
 
+const skipped = results.filter((r) => r.skipped).length;
+const ran = results.filter((r) => !r.skipped).length;
+
 if (failed.length === 0) {
-  console.log(`\n✅ 全部通过（${results.length} 步，共 ${total}s）`);
+  console.log(
+    `\n✅ 全部通过（${ran} 步${skipped ? `，跳过 ${skipped} 步` : ""}，共 ${total}s）`,
+  );
+  if (skipped) console.log("   ⚠️ 被跳过的步骤在 CI 上仍会跑 —— 别把本地的 ⏭ 当成通过。");
   process.exit(0);
 }
 console.error(`\n❌ 失败 ${failed.length} 步${notRun ? `，未跑 ${notRun} 步` : ""}（共 ${total}s）`);
