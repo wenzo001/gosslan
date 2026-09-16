@@ -5,7 +5,8 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { useAppStore } from "@/stores/useAppStore";
 import BaseModal from "@/components/BaseModal.vue";
 import CodeBlock from "@/components/CodeBlock.vue";
-import { linkify, displayUrl, type LinkSegment } from "@/utils/linkify";
+import { linkify, type LinkSegment } from "@/utils/linkify";
+import MessageLinkText from "@/components/message/MessageLinkText.vue";
 import { splitEmoji } from "@/utils/emoji";
 import { mentionHighlightColor } from "@/utils/chatStyle";
 import { Check, Copy } from "lucide-vue-next";
@@ -73,12 +74,13 @@ async function openLink(href: string) {
         :style="{ wordBreak: 'break-word' }"
       >
         <template v-for="(seg, i) in segments" :key="i">
-          <a
+          <MessageLinkText
             v-if="seg.kind === 'link'"
-            class="cursor-pointer break-all text-[var(--gosslan-accent-ink)] underline decoration-1 underline-offset-2 transition hover:opacity-80"
-            :title="seg.href"
-            @click.stop.prevent="openLink(seg.href)"
-          >{{ displayUrl(seg.value) }}</a>
+            class="text-[var(--gosslan-accent-ink)]"
+            :href="seg.href"
+            :label="seg.value"
+            @open="openLink"
+          />
           <img
             v-else-if="seg.kind === 'emoji'"
             :src="seg.url"

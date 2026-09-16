@@ -14,6 +14,7 @@ import { isImeKey } from "@/utils/ime";
 import { Folder, Smile, SquareCode, Users, X } from "lucide-vue-next";
 import type { MsgKind } from "@/types";
 import { MENTION_ALL_TOKEN } from "@/utils/messages";
+import { isMentionLead } from "@/utils/linkify";
 
 const props = defineProps<{
   /** 会话切换时聚焦输入框（切换会话 = 新会话，重置草稿由父组件卸载/挂载决定）。 */
@@ -302,6 +303,18 @@ function updateMentionState() {
   }
 }
 
+/** caret 之前那段内容里的最后一个字符（跨节点取）。
+ *  ⚠️ 不能只看 `ctx.node.data`：@提及 与表情都是 `contentEditable=false` 的独立 token span，
+ *  caret 前的字符往往落在它们身上（例如表情 token 的收尾 `]`）。 */
+function charBeforeCaret(node: Text, offset: number): string {
+  const el = editorRef.value;
+  if (!el) return "";
+  const r = document.createRange();
+  r.setStart(el, 0);
+  r.setEnd(node, offset);
+  return r.toString().slice(-1);
+}
+
 /** 选中成员：把「@query」替换为 mention token（原子 span）+ 尾随 nbsp，caret 落到 nbsp 后。 */
 function applyMention(member: { id: string; name: string }) {
   const el = editorRef.value;
@@ -311,6 +324,15 @@ function applyMention(member: { id: string; name: string }) {
   if (!ctx) return;
   const q = mentionQueryAt(ctx);
   if (!q) return;
+  /**
+   * 前导边界：触发端刻意**不**要求 @ 前有空白（中文里「你好@张三」不敲空格是常态），
+   * 但接收端的判定要求边界（`isMentionLead`：行首/空白/表情 token 的 `]`）。
+   * 不在这里把边界补上，就会出现最坏的一种静默失效 ——
+   * 发送端看着是个蓝色 chip、以为点名成功了，接收端**既不通知也不高亮**。
+   * 用节点 API（span.before）而不是 range 插入：range 落在文本节点中间时
+   * `insertNode` 的行为按规范是插到整个文本节点之前，位置不直观。
+   */
+  const needLead = !isMentionLead(charBeforeCaret(ctx.node, q.startIndex));
   const range = document.createRange();
   range.setStart(ctx.node, q.startIndex);
   range.setEnd(ctx.node, ctx.offset);
@@ -326,6 +348,7 @@ function applyMention(member: { id: string; name: string }) {
   span.textContent = `@${member.name}`;
   range.collapse(false);
   range.insertNode(span);
+  if (needLead) span.before(document.createTextNode("\u00A0"));
   const space = document.createTextNode("\u00A0");
   span.after(space);
   range.setStart(space, 1);

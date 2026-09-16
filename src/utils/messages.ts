@@ -1,5 +1,5 @@
 import type { Conversation, MessageRecord } from "@/types";
-import { MENTION_AFTER, escapeRe } from "./linkify.ts";
+import { MENTION_AFTER, MENTION_BEFORE, escapeRe } from "./linkify.ts";
 import { isSilentKind } from "./messageKinds.ts";
 
 /**
@@ -118,14 +118,15 @@ export function previewText(rec: MessageRecord): string {
 
 /**
  * 该消息是否 @ 了指定昵称（仅文本消息参与判断）。
- * 边界语义与 linkify 的 @提及高亮同源：@ 前须是行首/空白，名字后须是
- * 空白/常用标点/行尾——@张三 不会误吞 @张三丰，手打的 @名字 同样命中。
+ * 边界语义与 linkify 的 @提及高亮**共用** MENTION_BEFORE / MENTION_AFTER 两个常量，
+ * 不允许在这里另写一份：两套边界一旦分叉，表现就是「气泡里高亮成蓝块、却没有红点和通知」。
+ * 名字后的边界保证 @张三 不会误吞 @张三丰；前导边界见 MENTION_BEFORE（`]` 也算）。
  */
 export function messageMentionsName(rec: MessageRecord, name: string): boolean {
   if (rec.kind !== "text") return false;
   const n = name.trim();
   if (!n) return false;
-  return new RegExp(`(^|\\s)@${escapeRe(n)}${MENTION_AFTER}`).test(rec.content);
+  return new RegExp(`${MENTION_BEFORE}@${escapeRe(n)}${MENTION_AFTER}`).test(rec.content);
 }
 
 /**
@@ -141,7 +142,7 @@ export const MENTION_ALL_TOKEN = "所有人";
  * 预编译的 @所有人 判定正则。模板是常量，没有理由每收到一条群消息就重新编译一次
  * （消息摄入是热路径）。无 `g` 标志 ⇒ `.test()` 不带 lastIndex 状态，可安全复用。
  */
-const MENTION_ALL_RE = new RegExp(`(^|\\s)@${MENTION_ALL_TOKEN}${MENTION_AFTER}`);
+const MENTION_ALL_RE = new RegExp(`${MENTION_BEFORE}@${MENTION_ALL_TOKEN}${MENTION_AFTER}`);
 
 /**
  * 该消息是否 @ 了所有人。

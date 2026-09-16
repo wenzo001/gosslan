@@ -33,6 +33,18 @@ test("正则元字符按字面处理（关键词不会被当成模式）", () =>
   assert.doesNotThrow(() => highlightText("a(b", "("));
 });
 
+test("关键词命中 HTML 实体名时不破坏转义（用户 2026-09-16）", () => {
+  // 旧实现先 escHtml 再替换：`&` 已变成 `&amp;`，搜 `amp` 会连实体一起标记，
+  // 产出 `&<mark>amp</mark>;`，渲染出来是字面的 `&amp;`。
+  const out = highlightText("example & more", "amp");
+  assert.equal(out.match(/<mark/g)?.length, 1, "只该标记 example 里的 amp");
+  assert.ok(out.includes("&amp; more"), `实体必须保持完整：${out}`);
+  assert.ok(!out.includes("&<mark"), `不得在实体内部标记：${out}`);
+  // lt / gt / quot 同理
+  assert.ok(highlightText("a < b", "lt").includes("&lt;"));
+  assert.ok(highlightText('say "hi"', "quot").includes("&quot;"));
+});
+
 test("文本里的 HTML 先被转义，再标记 —— 不产生可执行标记", () => {
   const out = highlightText("<script>x</script>", "script");
   assert.ok(out.includes("<mark"), "关键词仍应被标记");

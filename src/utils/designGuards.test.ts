@@ -741,10 +741,14 @@ test("复现历史缺陷：气泡根不可选 / 表情可拖 → 报出", () => 
     avatar: `<img :src="avatar" class="h-full w-full object-cover" />`,
     messageItem: `<div @touchmove="cancelLongPress"></div>`,
     app: `window.addEventListener("contextmenu", (e) => e.preventDefault());`,
+    // 旧写法：把截断后的字符串当 DOM 文本渲染 ⇒ 选中复制拿到残缺 URL（用户 2026-09-16 报的缺陷）
+    linkText: `<a :href="href">{{ displayUrl(label) }}</a>`,
     css: `
 .gosslan-avatar-box { container-type: inline-size; }
 .emoji-img { display: inline-block; }
-.gosslan-selectable { user-select: text; }`,
+.gosslan-selectable { user-select: text; }
+.gosslan-url-mid { display: none; }
+.gosslan-url-dots { }`,
   };
   const issues = checkSelectionContract(buggy);
   const msgs = issues.map((i) => i.message).join("\n");
@@ -754,15 +758,94 @@ test("复现历史缺陷：气泡根不可选 / 表情可拖 → 报出", () => 
   assert.ok(msgs.includes("user-select: none"), msgs);
   assert.ok(msgs.includes("onTouchMove"), msgs);
   assert.ok(msgs.includes("contextmenu"), msgs);
+  assert.ok(msgs.includes("font-size: 0"), msgs);
+  assert.ok(msgs.includes("background-image"), msgs);
+  assert.ok(msgs.includes("MessageLinkText"), msgs);
+  assert.ok(msgs.includes("quote-block"), msgs);
 });
 
-test("修好之后通过（真实的 5 个源码文件）", () => {
+test("引用块可选性：漏掉任一半边 → 报出", () => {
+  const base = {
+    textBubble: `<div class="gosslan-bubble-text select-text"><div class="gosslan-selectable">
+      <img class="emoji-img" draggable="false" /></div></div>`,
+    avatar: `<img class="h-full w-full object-cover" draggable="false" />`,
+    messageItem: `<div @touchmove="onTouchMove"></div>`,
+    app: `const sel = window.getSelection();`,
+    linkText: `<a><span>{{ parts.head }}</span><span class="gosslan-url-mid">{{ parts.mid }}</span><span class="gosslan-url-dots"></span><span>{{ parts.tail }}</span></a>`,
+  };
+  const common = `
+.gosslan-avatar-box { user-select: none; }
+.emoji-img { -webkit-user-drag: none; }
+.gosslan-selectable { -webkit-touch-callout: default; }
+.gosslan-url-mid { font-size: 0; }
+.gosslan-url-dots { background-image: radial-gradient(circle, red, blue); }`;
+
+  // 半边 A：只有 .quote-block 可选中，触屏那条缺失 ⇒ 引用块在手机上永远可拖选
+  const noTouchGuard = checkSelectionContract({
+    ...base,
+    css: `${common}\n.quote-block { user-select: text; }`,
+  });
+  assert.match(noTouchGuard.map((i) => i.message).join("\n"), /弹不出消息菜单/);
+
+  // 半边 B：只有触屏禁用，没把 <button> 的 none 覆盖回来 ⇒ 全选复制丢引用头
+  const noSelectable = checkSelectionContract({
+    ...base,
+    css: `${common}\n.gosslan-bubble-text:not(.gosslan-selecting) .quote-block { user-select: none; }`,
+  });
+  assert.match(noSelectable.map((i) => i.message).join("\n"), /缺少 `user-select: text`/);
+});
+
+test("链接省略号的 DOM 顺序被打乱 / 夹了空白 → 报出", () => {
+  const base = {
+    textBubble: `<div class="gosslan-bubble-text select-text"><div class="gosslan-selectable">
+      <img class="emoji-img" draggable="false" /></div></div>`,
+    avatar: `<img class="h-full w-full object-cover" draggable="false" />`,
+    messageItem: `<div @touchmove="onTouchMove"></div>`,
+    app: `const sel = window.getSelection();`,
+    css: `
+.gosslan-avatar-box { user-select: none; }
+.emoji-img { -webkit-user-drag: none; }
+.gosslan-selectable { -webkit-touch-callout: default; }
+.gosslan-url-mid { font-size: 0; }
+.gosslan-url-dots { background-image: radial-gradient(circle, currentColor 1px, transparent 1px); }
+.quote-block { user-select: text; }
+.gosslan-bubble-text:not(.gosslan-selecting) .quote-block { user-select: none; }`,
+  };
+  // mid 跑到 tail 后面：拼回去就成了 head+tail+mid，URL 顺序错乱
+  const swapped = checkSelectionContract({
+    ...base,
+    linkText: `<a><span>{{ parts.head }}</span><span>{{ parts.tail }}</span><span class="gosslan-url-dots"></span><span class="gosslan-url-mid">{{ parts.mid }}</span></a>`,
+  });
+  assert.match(swapped.map((i) => i.message).join("\n"), /DOM 顺序被打乱/);
+
+  // span 之间夹了换行：空白文本节点会进选区，复制出的 URL 中间多空格
+  const spaced = checkSelectionContract({
+    ...base,
+    linkText: `<a>
+      <span>{{ parts.head }}</span>
+      <span class="gosslan-url-mid">{{ parts.mid }}</span>
+      <span class="gosslan-url-dots"></span>
+      <span>{{ parts.tail }}</span>
+    </a>`,
+  });
+  assert.match(spaced.map((i) => i.message).join("\n"), /夹了空白/);
+
+  // 省略号里写了文本
+  const dotted = checkSelectionContract({
+    ...base,
+    linkText: `<a><span>{{ parts.head }}</span><span class="gosslan-url-mid">{{ parts.mid }}</span><span class="gosslan-url-dots">…</span><span>{{ parts.tail }}</span></a>`,
+  });
+  assert.match(dotted.map((i) => i.message).join("\n"), /省略号 span 里带了文本/);
+});
+
+test("修好之后通过（真实的 6 个源码文件）", () => {
   const srcDir = join(import.meta.dirname, "..");
   const issues = checkSelectionContract({
     textBubble: readFileSync(join(srcDir, "components", "message", "MessageTextBubble.vue"), "utf8"),
     avatar: readFileSync(join(srcDir, "components", "message", "MessageAvatar.vue"), "utf8"),
     messageItem: readFileSync(join(srcDir, "components", "MessageItem.vue"), "utf8"),
     app: readFileSync(join(srcDir, "..", "src", "App.vue"), "utf8"),
+    linkText: readFileSync(join(srcDir, "components", "message", "MessageLinkText.vue"), "utf8"),
     css: readFileSync(join(srcDir, "style.css"), "utf8"),
   });
   assert.deepEqual(issues, [], issues.map((i) => `L${i.line} ${i.message}`).join("\n"));

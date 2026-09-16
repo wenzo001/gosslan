@@ -745,6 +745,8 @@ export interface SelectionContractSources {
   messageItem: string;
   /** `App.vue` */
   app: string;
+  /** `components/message/MessageLinkText.vue` */
+  linkText: string;
   /** `style.css` */
   css: string;
 }
@@ -859,6 +861,103 @@ export function checkSelectionContract(s: SelectionContractSources): GuardIssue[
       message:
         "App.vue：全局 `contextmenu` 没有检查选区 —— 有选中文字时仍然 preventDefault，" +
         "用户拿不到系统「复制」，Android 的选择工具条也会被吃掉。",
+    });
+  }
+
+  // ⑨ 超长链接的「中间省略」只准动样式，不许动 DOM 文本
+  //
+  // 用户 2026-09-16：「链接…复制的时候会复制不完整的，应该复制原始数据」——
+  // 原先把截断后的字符串当 DOM 文本渲染，而**选区复制取的就是选区文本**，于是复制到残缺 URL。
+  // 现行契约：`splitUrl` 切出的 head/mid/tail 三段**都在 DOM 里、顺序不变**，
+  // 视觉省略只由 CSS 表达。下面每条都是"改坏了不报错、只会静默复制出错"的静态事实。
+  const midCss = cssRuleBody(s.css, ".gosslan-url-mid");
+  if (!midCss || !/font-size:\s*0/.test(midCss)) {
+    out.push({
+      line: 0,
+      message:
+        "style.css：`.gosslan-url-mid` 缺少 `font-size: 0` —— 要么链接中段直接显示出来，" +
+        "要么（换成别的方式隐藏）中段被踢出选区，复制又得到残缺 URL。",
+    });
+  }
+  if (midCss && /display:\s*none|visibility:\s*hidden|user-select:\s*none/.test(midCss)) {
+    out.push({
+      line: 0,
+      message:
+        "style.css：`.gosslan-url-mid` 用 display:none / visibility:hidden / user-select:none 隐藏 —— " +
+        "这三种都会把中段文字从选区里剔除，选中复制又将拿到残缺链接。只能用 font-size: 0。",
+    });
+  }
+  const dotsCss = cssRuleBody(s.css, ".gosslan-url-dots");
+  if (!dotsCss || !/background-image/.test(dotsCss)) {
+    out.push({
+      line: 0,
+      message:
+        "style.css：`.gosslan-url-dots` 必须仍是 CSS 画的点（含 background-image）—— " +
+        '改成 "…" 文本的话，省略号本身会被一起复制进 URL。',
+    });
+  }
+
+  // 模板：三段齐全、DOM 顺序 head→mid→dots→tail（选区按 DOM 顺序拼接）
+  // ⚠️ 判据只扫 `<a>` 标签**内部**：组件注释里也会写到这些名字，扫全文会被注释带偏。
+  const anchorInner = /<a\b[^>]*>([\s\S]*?)<\/a>/.exec(s.linkText)?.[1] ?? "";
+  const linkOrder = ["parts.head", "parts.mid", "gosslan-url-dots", "parts.tail"].map((k) =>
+    anchorInner.indexOf(k),
+  );
+  if (linkOrder.some((i) => i < 0)) {
+    out.push({
+      line: 0,
+      message: "MessageLinkText：`<a>` 里缺少 head/mid/tail（或省略号 span）—— 复制拿不到完整 URL。",
+    });
+  } else if (!linkOrder.every((v, i) => i === 0 || linkOrder[i - 1] < v)) {
+    out.push({
+      line: 0,
+      message:
+        "MessageLinkText：head/mid/dots/tail 的 DOM 顺序被打乱 —— 选区复制按 DOM 顺序拼接，" +
+        "mid 必须夹在 head 与 tail 之间才能还原原始 URL。",
+    });
+  }
+  // 省略号 span 内不得有任何文本（含插值）
+  const dotsInner = /<span[^>]*gosslan-url-dots[^>]*>([\s\S]*?)<\/span>/.exec(anchorInner);
+  if (dotsInner && dotsInner[1].trim() !== "") {
+    out.push({
+      line: 0,
+      message: `MessageLinkText：省略号 span 里带了文本「${dotsInner[1].trim()}」—— 它会被原样复制进 URL。`,
+    });
+  }
+  // ⑩ 引用块必须能被框进选区，且触屏下默认仍不放开
+  //
+  // 「选择文字」的全选范围挂在「引用块 + 正文」的容器上，而引用块本身是个 `<button>`
+  // （要能点着跳原消息），会吃到全局的 `button { user-select: none }` ——
+  // 没有这条覆盖，全选复制拿到的是纯正文，而操作条的「复制」给的是带引用头的完整原文，
+  // 同一个气泡两条复制路径结果不一致。
+  // 反过来，触屏上**不能**无条件放开：那样在引用块上长按会变成拉原生选区、
+  // 弹不出消息菜单（移动端主行为被抢）。所以必须成对存在。
+  const quoteCss = cssRuleBody(s.css, ".quote-block");
+  if (!quoteCss || !/user-select:\s*text/.test(quoteCss)) {
+    out.push({
+      line: 0,
+      message:
+        "style.css：`.quote-block` 缺少 `user-select: text` —— 引用块的 `<button>` 会吃到全局的 " +
+        "`user-select: none`，全选复制拿不到引用头，与「复制」按钮给的完整原文不一致。",
+    });
+  }
+  const quoteTouchCss = cssRuleBody(s.css, ":not(.gosslan-selecting) .quote-block");
+  if (!quoteTouchCss || !/user-select:\s*none/.test(quoteTouchCss)) {
+    out.push({
+      line: 0,
+      message:
+        "style.css：触屏下 `.gosslan-bubble-text:not(.gosslan-selecting) .quote-block` 必须保持 " +
+        "`user-select: none` —— 否则在引用块上长按会拉原生选区、弹不出消息菜单。",
+    });
+  }
+
+  // `<a>` 内的 span 之间不得留空白：模板空白是真实文本节点，会进选区 ⇒ 复制出的 URL 里多空格
+  if (/>\s+</.test(anchorInner)) {
+    out.push({
+      line: 0,
+      message:
+        "MessageLinkText：`<a>` 里的 span 之间夹了空白（换行/缩进）—— 模板空白会成为文本节点、" +
+        "被选进选区，复制出来的 URL 中间会多出空格。写成一行。",
     });
   }
 
