@@ -331,6 +331,10 @@ pub struct RecallPayload {
 /// 这样搜索、导出、已读水位**一行都不用改就自动正确**（没有正文可命中、可导出）。
 pub const KIND_RECALLED: &str = "recalled";
 
+/// 群公告发布 / 删除的 `kind`（接收侧授权判定要用）。
+pub const KIND_ANNOUNCEMENT: &str = "announcement";
+pub const KIND_ANNOUNCEMENT_DELETE: &str = "announcement_delete";
+
 /// 撤回事件本身的 `kind`。
 pub const KIND_RECALL: &str = "recall";
 

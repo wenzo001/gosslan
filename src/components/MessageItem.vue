@@ -481,7 +481,11 @@ const emit = defineEmits<{
  * 后端也只在 `sender_id == 自己` 时才接受撤回 —— 前端隐藏入口不是为了安全
  * （安全由签名保证），而是不让用户白点一次再收到报错。
  */
-const canRecall = computed(() => mine && props.message.kind !== "recalled");
+// ⚠️ 必须判 isGroup：单聊没有撤回（后端只实现了群撤回），
+// 否则入口可见、点了确认后 `confirmRecall` 里静默 return —— 用户看到的是"什么都没发生"。
+const canRecall = computed(
+  () => !!props.isGroup && mine && props.message.kind !== "recalled",
+);
 
 /** 撤回前的二次确认：破坏性且不可逆（对方看到的是「消息已撤回」，收不回来）。 */
 const confirmingRecall = ref(false);

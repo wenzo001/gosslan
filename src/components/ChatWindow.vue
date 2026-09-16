@@ -20,6 +20,7 @@ import { estimateMessageHeight } from "@/utils/messageHeight";
 import { MENTION_ALL_TOKEN } from "@/utils/messages";
 import { foldReactions, hasMyReaction, type ReactionChip } from "@/utils/reactions";
 import { foldPinned, isPinned } from "@/utils/pins";
+import { kindClass } from "@/utils/messageKinds";
 import { previewText } from "@/utils/messages";
 import { ArrowDown, Bluetooth, X, Pin } from "lucide-vue-next";
 import type { LinkState, MessageRecord, MsgKind } from "@/types";
@@ -33,7 +34,20 @@ const listRef = ref<InstanceType<typeof VirtualList> | null>(null);
 
 const conv = computed(() => chat.activeConversation);
 const isGroup = computed(() => chat.activeConv?.startsWith("group:") ?? false);
-const messages = computed(() => chat.messages[chat.activeConv ?? ""] ?? []);
+/**
+ * 时间线上要渲染的消息。
+ *
+ * ⚠️ **静默类必须在这里被滤掉** —— 这是 `KindClass::Silent`（「不进时间线」）
+ * 契约**唯一真正的落地点**。漏掉它的后果是：回一次表情、置顶、撤回，时间线上就多一条
+ * `{"target":"...","emoji":"[赞]","add":true}` 的裸 JSON 气泡，而且与正确的聚合视图
+ * （气泡下方的 chip / 顶部置顶条）**同时出现**。
+ *
+ * 后端已经按同一张表分支（不计未读、不进预览），这里补齐渲染侧。
+ * `card`（公告）暂时一并过滤 —— 公告已有独立的常驻横幅，再进时间线会重复。
+ */
+const messages = computed(() =>
+  (chat.messages[chat.activeConv ?? ""] ?? []).filter((m) => kindClass(m.kind) === "bubble"),
+);
 
 /**
  * 消息是否还没加载完：`loadMessages` 完成前 `messages[convId]` 是 undefined。

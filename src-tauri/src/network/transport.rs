@@ -4588,20 +4588,58 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                 // 撤回事件：把「已撤回」物化到被撤回的那条消息上（幂等）。
                 // 只认**作者本人**的撤回 —— 信封被 Ed25519 签名，sender_id 不可伪造；
                 // 接收端不校验时间窗（无法验证发送方的墙上时钟，那是产品规则不是安全边界）。
+                let group_id_for_check = conv_id
+                    .strip_prefix("group:")
+                    .unwrap_or_default()
+                    .to_string();
                 if kind == crate::protocol::KIND_RECALL {
                     if let Ok(p) = serde_json::from_str::<crate::protocol::RecallPayload>(&content)
                     {
                         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                        let is_author = db::get_message_preview_source(&dbc, &p.target)
-                            .map(|(sid, _)| sid == env.sender_id)
-                            .unwrap_or(false);
-                        if is_author {
+                        // ⚠️ **目标消息可能还没落库**（撤回事件先到）。此时不能因为
+                        // "查不到作者"就把整条撤回丢掉 —— 那恰好把权威集合存在的意义
+                        // （解决先撤后到）封死了：随后消息带着完整正文落库，撤回永久失效。
+                        // 目标不存在时以「发送者是本群成员」为准 —— 他能解开群消息就说明
+                        // 持有群密钥、是成员；而 msg_id 是信封哈希，本就随 gossip 公开。
+                        let target_exists = db::get_message_preview_source(&dbc, &p.target).is_some();
+                        let allowed = if target_exists {
+                            db::get_message_preview_source(&dbc, &p.target)
+                                .map(|(sid, _)| sid == env.sender_id)
+                                .unwrap_or(false)
+                        } else {
+                            db::get_group(&dbc, &group_id_for_check)
+                                .map(|g| g.members.contains(&env.sender_id))
+                                .unwrap_or(false)
+                        };
+                        if allowed {
                             db::insert_recall(&dbc, &conv_id, &p.target, &env.sender_id, env.seq)
                                 .ok();
                             db::materialize_recall(&dbc, &p.target).ok();
                             drop(dbc);
                             let _ = state.app.emit("message-recalled", &p.target);
                         }
+                    }
+                }
+                // 群公告：**仅群主可发布/删除**。发送侧已校验（send_group_announcement），
+                // 但接收侧原先没有任何检查 —— 任何持群密钥的成员构造一条
+                // kind="announcement" 的群消息就能改掉所有人的公告横幅，
+                // 与「公告是发给全群的权威信息」相悖，也与群名那处（同一批修的）口径不一致。
+                if kind == crate::protocol::KIND_ANNOUNCEMENT
+                    || kind == crate::protocol::KIND_ANNOUNCEMENT_DELETE
+                {
+                    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                    let is_creator = db::get_group(&dbc, &group_id_for_check)
+                        .map(|g| g.creator == env.sender_id)
+                        .unwrap_or(false);
+                    if !is_creator {
+                        state.logger.warn(
+                            "group",
+                            format!(
+                                "丢弃非群主发布的公告：sender={} group={group_id_for_check}",
+                                env.sender_id
+                            ),
+                        );
+                        return;
                     }
                 }
                 // 持锁块只做落库；await（fanout 转发已在前面）之后无持锁操作

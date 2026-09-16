@@ -141,6 +141,49 @@ test("不修改原 conversations 数组（无副作用）", () => {
   assert.equal(JSON.stringify(cs), snapshot);
 });
 
+// ---------------- 静默类不参与未读/预览 ----------------
+
+test("静默事件不计未读、不改预览、不把会话顶到最前", () => {
+  // 这是「回个表情把会话顶到最前」的回归锁：后端已按 is_non_notifying_kind 过滤，
+  // 前端这条路径曾经漏了 —— 两边未读数从此不一致（DB 里是 0，界面上是 1）。
+  const cs = [conv("g1", 10), conv("g2", 20)];
+  const byConv = new Map([
+    ["g1", [msg({ msg_id: "r1", conv_id: "g1", kind: "reaction", ts: 999, seq: 99 })]],
+  ]);
+  const out = applyIncomingToConversations(cs, null, byConv);
+  const g1 = out.find((c) => c.id === "g1")!;
+  assert.equal(g1.unread, 0, "静默事件不得计未读");
+  assert.equal(g1.last_msg, null, "静默事件不得改预览");
+  assert.equal(g1.last_ts, 10, "静默事件不得改时间戳");
+  assert.equal(out[0].id, "g2", "不得把会话顶到最前");
+});
+
+test("同一批里静默与正文混在一起：只有正文生效", () => {
+  const cs = [conv("g1", 10)];
+  const byConv = new Map([
+    ["g1", [
+      msg({ msg_id: "r1", conv_id: "g1", kind: "pin", ts: 999 }),
+      msg({ msg_id: "t1", conv_id: "g1", kind: "text", content: "在吗", ts: 1000 }),
+    ]],
+  ]);
+  const g1 = applyIncomingToConversations(cs, null, byConv).find((c) => c.id === "g1")!;
+  assert.equal(g1.unread, 1, "只算正文那一条");
+  assert.equal(g1.last_msg, "在吗");
+  assert.equal(g1.last_ts, 1000);
+});
+
+test("整批都是静默事件时该会话完全不动", () => {
+  const cs = [conv("g1", 10)];
+  const byConv = new Map([["g1", [
+    msg({ msg_id: "a", conv_id: "g1", kind: "recall", ts: 1 }),
+    msg({ msg_id: "b", conv_id: "g1", kind: "todo_done", ts: 2 }),
+  ]]]);
+  const g1 = applyIncomingToConversations(cs, null, byConv).find((c) => c.id === "g1")!;
+  assert.equal(g1.unread, 0);
+  assert.equal(g1.last_msg, null);
+  assert.equal(g1.last_ts, 10);
+});
+
 // ---------------- 会话排序与置顶 ----------------
 
 test("sortConversations：置顶优先于 last_ts", () => {

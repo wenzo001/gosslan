@@ -1,5 +1,6 @@
 import type { Conversation, MessageRecord } from "@/types";
 import { MENTION_AFTER, escapeRe } from "./linkify.ts";
+import { isSilentKind } from "./messageKinds.ts";
 
 /**
  * 合并去重并排序消息列表 —— Gossip 密集广播防重复的核心纯函数。
@@ -193,7 +194,12 @@ export function applyIncomingToConversations(
   incomingByConv: Map<string, MessageRecord[]>,
 ): Conversation[] {
   const next: Conversation[] = conversations.map((c) => ({ ...c }));
-  for (const [convId, msgs] of incomingByConv) {
+  for (const [convId, rawMsgs] of incomingByConv) {
+    // ⚠️ 静默类不参与未读与预览 —— 与后端 `is_non_notifying_kind` 同一口径。
+    // 漏掉它的后果：别人回个表情，你的会话列表未读 +1、预览变成一段 JSON、
+    // 会话还被顶到最前（后端 DB 里未读是 0，两边从此不一致）。
+    const msgs = rawMsgs.filter((m) => !isSilentKind(m.kind));
+    if (msgs.length === 0) continue;
     const last = msgs[msgs.length - 1];
     const conv = next.find((c) => c.id === convId);
     if (!conv) continue;
