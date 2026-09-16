@@ -553,15 +553,28 @@ async fn broadcast(
     socket: &UdpSocket,
     state: &AppState,
     tcp_port: u16,
-    _lan_broadcast: Option<Ipv4Addr>,
+    lan_broadcast: Option<Ipv4Addr>,
 ) {
     let pkt = announce_packet(state, tcp_port);
     let Ok(data) = serde_json::to_vec(&pkt) else {
         return;
     };
-    // 广播使用 limited broadcast（255.255.255.255）：Windows 默认禁用 directed broadcast
-    // （DisableDirectedBroadcasts=1），精确子网地址会被内核静默丢弃。
-    // limited broadcast 发送到所有 IFF_BROADCAST 接口，不走默认路由，跨平台可靠。
+    // **两种广播都发**，各自覆盖对方的短板：
+    // · limited broadcast（255.255.255.255）：Windows 默认禁用 directed broadcast
+    //   （DisableDirectedBroadcasts=1），只有它能穿透；但它**在 macOS 上会失败**
+    //   （socket 绑定到具体网卡 IP 时内核返回 EHOSTUNREACH "No route to host"）——
+    //   用户真机日志里每一轮都是这个错误，导致 Mac **从不在局域网上出现**，
+    //   对端于是只能走蓝牙（并因此撞上蓝牙那条通道自身的问题）。
+    // · 子网广播（如 192.168.31.255）：`find_lan_interface` 早就算好了它并一路传到这里，
+    //   但本函数此前把它丢掉了（参数名是 `_lan_broadcast`）—— macOS 上真正能用的就是它。
+    //
+    // 两发一收不会重复：接收端按 `device_id` + 消息去重，多收到一份是幂等的。
+    if let Some(bc) = lan_broadcast {
+        let directed = format!("{bc}:{UDP_PORT}");
+        let res = socket.send_to(&data, &directed).await;
+        let (kind, detail) = diag_event_from_send_result(&directed, "broadcast_sent", &res);
+        state.push_diag_event(kind, &detail);
+    }
     let bcast_target = format!("255.255.255.255:{UDP_PORT}");
     let bcast_res = socket.send_to(&data, &bcast_target).await;
     let (kind, detail) = diag_event_from_send_result(&bcast_target, "broadcast_sent", &bcast_res);
@@ -579,7 +592,7 @@ async fn broadcast_probe(
     socket: &UdpSocket,
     state: &AppState,
     tcp_port: u16,
-    _lan_broadcast: Option<Ipv4Addr>,
+    lan_broadcast: Option<Ipv4Addr>,
 ) {
     let who = UdpPacket {
         kind: "who_has".to_string(),
@@ -594,13 +607,21 @@ async fn broadcast_probe(
         sig: String::new(),
     };
     if let Ok(data) = serde_json::to_vec(&who) {
+        // 与 announce 同一口径：子网广播 + limited 广播都发（见 broadcast 的说明）。
+        // 「打开添加好友」在 macOS 上能否发现对方，就取决于这条。
+        if let Some(bc) = lan_broadcast {
+            let directed = format!("{bc}:{UDP_PORT}");
+            let res = socket.send_to(&data, &directed).await;
+            let (kind, detail) = diag_event_from_send_result(&directed, "who_has_sent", &res);
+            state.push_diag_event(kind, &detail);
+        }
         let bcast_target = format!("255.255.255.255:{UDP_PORT}");
         let bcast_res = socket.send_to(&data, &bcast_target).await;
         let (kind, detail) = diag_event_from_send_result(&bcast_target, "who_has_sent", &bcast_res);
         state.push_diag_event(kind, &detail);
     }
     // 同时广播自身，让周围节点也能立刻发现我们
-    broadcast(socket, state, tcp_port, _lan_broadcast).await;
+    broadcast(socket, state, tcp_port, lan_broadcast).await;
 }
 
 /// 判定一个节点是否应保留在 peers 表（纯逻辑，便于单测 + 护栏非空转）。
