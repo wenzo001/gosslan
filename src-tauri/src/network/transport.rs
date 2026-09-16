@@ -992,6 +992,31 @@ pub async fn flush_pending_friend_request(state: &Arc<AppState>, peer_id: &str) 
     if !pending {
         return;
     }
+    // ⚠️ **已经是好友就不再补发**。
+    //
+    // 这条登记原本只由 `forget_pending_request` 在「收到对方的同意/拒绝」时清除。
+    // 但同意回执本身是**没有 ACK 的定向帧**，可能一直送不到（真机日志：
+    // Mac 侧持续 `补发好友申请` 而全程没有 `收到跨跳好友同意`）——
+    // 于是登记永不解除，链路每建立一次就重发一次，**无限循环**。
+    //
+    // 判据用「本地好友表里有没有他」而不是「有没有收到那个回执」：
+    // 无论友谊是通过哪条路径建立的（对方同意、我方同意、自动同意），
+    // 只要已经是好友，这条待发申请就失去了意义。
+    let already_friend = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        crate::db::get_friend(&dbc, peer_id).is_some()
+    };
+    if already_friend {
+        state
+            .pending_out_requests
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(peer_id);
+        state
+            .logger
+            .info("friend", format!("已是好友，停止补发申请 peer={peer_id}"));
+        return;
+    }
     // 复用同一条发送路径（含目标定向 + 重签），失败也不清登记 —— 下次建链再试
     if crate::commands::send_friend_request_via_link(state, peer_id).await.is_ok() {
         state
