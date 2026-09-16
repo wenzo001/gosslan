@@ -818,7 +818,15 @@ async fn finish_dial(
     // Android `requestMtu(517)`）—— 差一个数量级。没有这条日志就没法判断"慢"到底慢在哪。
     // 注意：这里的"每片有效载荷"是**含 6 字节分片头**的 ATT 预算；真正上去的数据是
     // 预算减 6。以前括号里写"MTU=载荷+3+6"是错的（多了 6），会让真机排查算错一个量级。
-    let mtu_budget = writer.payload_mtu();
+        // ⚠️ **必须再减 3**（ATT 头）：`payload_mtu()` 在 Android 上返回的是**协商到的
+    // ATT MTU 本身**（如 514），而 GATT 单次写入的真实上限是 `MTU - 3`。
+    // 不减的后果（真机日志）：单分片帧能写（278B），**多分片帧写不进去** ——
+    // 每片 514B 超过 511B 上限，报
+    // `value should not be longer than max length of an attribute value`，
+    // 重试 4 次后拆链重连。表现是「好友申请（738B/2 片）永远发不出去，
+    // 而聊天消息（272B/1 片）正常」—— 用户真机实测正是如此。
+    // macOS 上 `payload_mtu()` 已是正确值，再减 3 只会让分片略小（无害）。
+    let mtu_budget = writer.payload_mtu().saturating_sub(3);
     let (net_bytes, kbps) = ble_throughput_estimate(mtu_budget);
     state.logger.info(
         "ble",
@@ -1744,7 +1752,10 @@ async fn try_accept_handshake(
     // **外设侧的 MTU 同样必须留痕**（2026-09-13 审计）：它决定"我们发通知时每片能塞多少字节"，
     // 与 central 侧的写方向是两个独立的值（对端可能协商出不同结果）。
     // 真机"手机→电脑传得慢/传不完"时，第一件事就是比这两条日志。
-    let mtu_budget = writer.payload_mtu(central);
+    // 与 central 侧同口径：`payload_mtu()` 在 Android 上返回的是协商到的 ATT MTU 本身，
+    // 而 GATT 单次写入上限是 `MTU - 3`（ATT 头）。不减会让**多分片帧写不出去**，
+    // 而单分片帧正常 —— 真机症状即「好友申请发不出、聊天消息正常」。
+    let mtu_budget = writer.payload_mtu(central).saturating_sub(3);
     let (net_bytes, kbps) = ble_throughput_estimate(mtu_budget);
     state.logger.info(
         "ble",
