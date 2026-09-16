@@ -593,21 +593,35 @@ async fn broadcast(
     //   但本函数此前把它丢掉了（参数名是 `_lan_broadcast`）—— macOS 上真正能用的就是它。
     //
     // 两发一收不会重复：接收端按 `device_id` + 消息去重，多收到一份是幂等的。
-    if let Some(bc) = lan_broadcast {
+    // 子网广播用**独立的事件名** `bc_directed`：原先复用了 `broadcast_sent`，
+    // 而那个名字在 `push_diag_event` 的 DROPPED 名单里（高频心跳类）——
+    // 于是**成功时什么都不打**，真机上「子网广播到底发出去没有」完全不可见。
+    // 这正是排查"局域网只通一半"时最需要看到的一行。
+    let directed_ok = if let Some(bc) = lan_broadcast {
         let directed = format!("{bc}:{UDP_PORT}");
         let res = socket.send_to(&data, &directed).await;
-        let (kind, detail) = diag_event_from_send_result(&directed, "broadcast_sent", &res);
+        let (kind, detail) = diag_event_from_send_result(&directed, "bc_directed", &res);
         state.push_diag_event(kind, &detail);
-    }
+        res.is_ok()
+    } else {
+        false
+    };
     let bcast_target = format!("255.255.255.255:{UDP_PORT}");
     let bcast_res = socket.send_to(&data, &bcast_target).await;
-    let (kind, detail) = diag_event_from_send_result(&bcast_target, "broadcast_sent", &bcast_res);
-    state.push_diag_event(kind, &detail);
-
     let mcast_target = format!("{MULTICAST_GROUP}:{UDP_PORT}");
     let mcast_res = socket.send_to(&data, &mcast_target).await;
-    let (kind, detail) = diag_event_from_send_result(&mcast_target, "multicast_sent", &mcast_res);
-    state.push_diag_event(kind, &detail);
+    // 子网广播成功时，**不再**为 limited / multicast 的失败刷告警 ——
+    // macOS 上它们本来就发不出去（socket 绑具体网卡 IP 时 EHOSTUNREACH），
+    // 而我们已经有一条能用的广播路径了。每 5 秒两条 WARN 会把真正有用的信息淹掉。
+    // 只有在**三条路全失败**时才留痕：那才是"本机在局域网上发不出声"的真信号。
+    if !directed_ok {
+        let (kind, detail) =
+            diag_event_from_send_result(&bcast_target, "bc_limited", &bcast_res);
+        state.push_diag_event(kind, &detail);
+        let (kind, detail) =
+            diag_event_from_send_result(&mcast_target, "bc_multicast", &mcast_res);
+        state.push_diag_event(kind, &detail);
+    }
 }
 
 /// 按需探测：群发 `who_has` 请求周围节点单播回复其 `announce`，并同时广播一次自身 announce。

@@ -1346,7 +1346,10 @@ impl AppState {
             "hello_mismatch",
             "identity_key_conflict",
         ];
-        if DROPPED.contains(&kind) {
+        // 子网广播的**成功**必须留痕：真机排查「局域网只通一半」时，
+        // 「这条到底发出去没有」是区分"发不出去"与"发出去了但对方没收到"的唯一证据。
+        // 其余 `*_sent` 仍按高频丢弃（见 DROPPED）。
+        if kind != "bc_directed_sent" && DROPPED.contains(&kind) {
             return;
         }
         let message = format!("diag/{kind}: {detail}");

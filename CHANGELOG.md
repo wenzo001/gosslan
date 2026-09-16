@@ -10,6 +10,39 @@
 
 ## [Unreleased]
 
+### Fixed (子网广播的成功在日志里不可见 + 预期失败每轮刷告警)
+
+真机日志复核发现：**4.18.2 的子网广播修复其实是生效的**（两端都建起了 `path=lan`
+链路并互相收到 announce），但**日志无法证明这一点** ——
+
+```rust
+diag_event_from_send_result(&directed, "broadcast_sent", &res);
+```
+
+`broadcast_sent` 恰好在 `push_diag_event` 的 `DROPPED` 名单里（高频心跳类），
+**成功时什么都不打**，只有失败才留痕。于是「子网广播到底发出去没有」这条
+排查"局域网只通一半"最需要的证据，在日志里完全不可见。
+
+- 子网广播改用**独立事件名 `bc_directed`**，并在 `DROPPED` 判定里单独放行其成功 ——
+  它能区分「发不出去」与「发出去了但对方没收到」。
+- **子网广播成功时不再为 limited / multicast 的失败刷告警**：macOS 上它们本就发不出去
+  （socket 绑具体网卡 IP 时 EHOSTUNREACH），而已有一条能用的路径 ——
+  原先每 5 秒两条 WARN 持续数分钟，把真正有用的信息淹掉了。
+  只有**三条路全失败**时才留痕：那才是"本机在局域网上发不出声"的真信号。
+
+### 复核确认已生效的两处（真机日志）
+
+- **好友同意去重（4.18.2）**：`收到跨跳好友同意` 只在首次出现并发一次通知，
+  之后全部记为 `重复的好友同意（已忽略）`；`补发好友同意回执` 到第 3 次后
+  `窗口/次数用尽` 自动停止（有界，设计如此）。
+- **局域网连通**：两端均有 `建链 path=lan` + `conv=… path=lan hop=0` + `announce_verified`。
+
+验证：cargo test --lib 480 passed · scripts/e2e-dev.sh 30 passed / 0 failed。
+
+**仍未修（真机上仍可见）**：安卓 → Mac 的 BLE 写入失败
+（`value should not be longer than max length of an attribute value`，738B 帧）导致
+中央侧反复拆链重连；局域网已连通所以不影响使用，但持续耗电与刷日志。
+
 ## [4.18.4] - 2026-09-16
 
 ### Fixed (置顶条不刷新 + 无法就地取消 + 多条的样式边界)
