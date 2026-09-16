@@ -12,6 +12,8 @@ import type { ReactionChip } from "@/utils/reactions";
 
 defineProps<{
   chips: ReactionChip[];
+  /** 自己的消息：回应条靠右对齐（与气泡的朝向一致） */
+  mine: boolean;
   /** 是否允许我添加/取消（单聊暂不开放，且自己的消息也允许自嘲式回应） */
   interactive: boolean;
   /** 快捷表情：与 EmojiPicker 同一套目录，取前几个高频的 */
@@ -24,22 +26,29 @@ const emit = defineEmits<{
 
 <template>
   <!-- 没有任何回应且不可交互时整条不渲染，避免给每条消息都留一行空白 -->
-  <div v-if="chips.length > 0 || interactive" class="mt-1 flex flex-wrap items-center gap-1">
+  <!-- 与气泡**左/右对齐**：本组件是消息行的兄弟节点，默认会从「头像」那一列起排，
+       看起来像挂在头像下面而不是气泡下面。左右各让出「头像 40px + 行间距 8px」= 48px。
+       这是纯排版补偿，不改变任何行为。 -->
+  <div
+    v-if="chips.length > 0 || interactive"
+    class="mt-1 flex flex-wrap items-center gap-1.5"
+    :class="mine ? 'justify-end pr-12' : 'pl-12'"
+  >
     <button
       v-for="c in chips"
       :key="c.emoji"
-      class="tap-safe flex h-6 items-center gap-1 rounded-full border px-1.5 text-[11px] transition"
+      class="tap-safe flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-[12px] leading-none shadow-sm transition"
       :class="c.mine
         ? 'border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)] text-[var(--gosslan-primary)]'
-        : 'border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
+        : 'border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]'"
       :title="t('msg.reactionWho', { n: c.count })"
       :aria-label="t('msg.reactionToggle', { emoji: c.emoji })"
       :disabled="!interactive"
       @click="emit('toggle', c.emoji)"
     >
-      <img v-if="emojiUrl(c.emoji)" :src="emojiUrl(c.emoji) ?? undefined" alt="" class="h-3.5 w-3.5" />
-      <span v-else class="text-[11px]">{{ c.emoji }}</span>
-      <span class="tabular-nums">{{ c.count }}</span>
+      <img v-if="emojiUrl(c.emoji)" :src="emojiUrl(c.emoji) ?? undefined" alt="" class="h-4 w-4 shrink-0" />
+      <span v-else class="text-[13px] leading-none">{{ c.emoji }}</span>
+      <span class="tabular-nums font-medium">{{ c.count }}</span>
     </button>
 
     <!-- 快捷回应：桌面悬停/触屏常显的一排高频表情（`hover-reveal` 提供触屏兜底） -->
@@ -47,12 +56,12 @@ const emit = defineEmits<{
       <button
         v-for="e in quick"
         :key="`q-${e}`"
-        class="hover-reveal tap-safe hidden h-6 w-6 items-center justify-center rounded-full border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] transition hover:bg-[var(--gosslan-hover)] group-hover/msg:flex"
+        class="hover-reveal tap-safe hidden h-7 w-7 items-center justify-center rounded-full border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] shadow-sm transition hover:bg-[var(--gosslan-hover)] group-hover/msg:flex"
         :title="t('msg.reactionAdd', { emoji: e })"
         :aria-label="t('msg.reactionAdd', { emoji: e })"
         @click="emit('toggle', e)"
       >
-        <img v-if="emojiUrl(e)" :src="emojiUrl(e) ?? undefined" alt="" class="h-3.5 w-3.5" />
+        <img v-if="emojiUrl(e)" :src="emojiUrl(e) ?? undefined" alt="" class="h-4 w-4 shrink-0" />
         <span v-else class="text-[11px]">{{ e }}</span>
       </button>
     </template>

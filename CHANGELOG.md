@@ -10,6 +10,39 @@
 
 ## [Unreleased]
 
+### Fixed (撤回入口对所有人可见 —— `ComputedRef` 当真值用)
+
+**用户真机反馈**：群聊里右键**别人的**消息，菜单里也有「撤回」。
+
+根因是我 4.13.0 写的这一行：
+
+```js
+const canRecall = computed(() => !!props.isGroup && mine && props.message.kind !== "recalled");
+```
+
+`mine` 从 `useMessageDisplay` 解构而来，是 **`ComputedRef<boolean>`**（本文件其它三处都写
+`mine.value`）。在**模板**里 Vue 会自动解包，但在 **script 的 `computed` 内部不会** ——
+裸写 `mine` 是个对象，**恒为真值**。于是 `canRecall` 退化成了「是群聊 && 未撤回」，
+对任何人的消息都显示撤回入口。
+
+已改为 `mine.value`。
+
+**顺带修掉同一处的第二个实例**：移动端长按面板的撤回项用的是内联条件
+`v-if="mine && message.kind !== 'recalled'"` —— 漏了 `isGroup`，导致**单聊长按也显示撤回**，
+而后端只实现了群撤回 ⇒ 点了确认后什么都不发生（静默 return）。
+现在两个入口共用同一个 `canRecall`，不会再各自漂移。
+
+### Changed (表情回应条：尺寸与对齐)
+
+- **对齐**：回应条是消息行的**兄弟节点**，默认会从「头像」那一列起排，
+  看起来像挂在头像下面而不是气泡下面。左右各让出「头像 40px + 行间距 8px」= 48px，
+  与气泡对齐（纯排版补偿，不改行为）。
+- **尺寸**：chip 高度 24px → **28px**（达到可点面积），表情 14px → 16px，
+  计数加大并加粗；快捷表情按钮同步放大到 28px，与 chip 同高。
+- 自己的回应条靠右（与气泡朝向一致），并补了 hover 文字色与阴影，层次更清楚。
+
+验证：npm test 424 passed · npm run build 通过 · cargo test --lib 481 passed。
+
 ## [4.18.2] - 2026-09-16
 
 ### Fixed (好友同意重复通知 + 手动模式下无子网广播 —— 真机日志定位)

@@ -483,8 +483,11 @@ const emit = defineEmits<{
  */
 // ⚠️ 必须判 isGroup：单聊没有撤回（后端只实现了群撤回），
 // 否则入口可见、点了确认后 `confirmRecall` 里静默 return —— 用户看到的是"什么都没发生"。
+// ⚠️ `mine` 是从 composable 解构出来的 **ComputedRef**（本文件其它地方都写 `mine.value`）。
+// 在模板里 Vue 自动解包，但在 script 的 computed 内部**不会** —— 裸写 `mine` 是个对象、
+// 恒为真值，于是群聊里对**任何人的消息**都会显示「撤回」（用户真机反馈的那个 bug）。
 const canRecall = computed(
-  () => !!props.isGroup && mine && props.message.kind !== "recalled",
+  () => !!props.isGroup && mine.value && props.message.kind !== "recalled",
 );
 
 /** 撤回前的二次确认：破坏性且不可逆（对方看到的是「消息已撤回」，收不回来）。 */
@@ -743,6 +746,7 @@ async function copyFileToClipboard() {
   <MessageReactionBar
     v-if="message.kind !== 'system'"
     :chips="reactions ?? []"
+    :mine="mine"
     :interactive="!!isGroup"
     :quick="QUICK_REACTIONS"
     :class="mine ? 'self-end pr-1' : 'self-start pl-1'"
@@ -873,10 +877,11 @@ async function copyFileToClipboard() {
         {{ pinned ? t("msg.unpin") : t("msg.pin") }}
       </button>
 
-      <!-- 撤回：**仅自己发的**消息可见（其他人的消息连入口都不给 —— 后端也只接受
-           作者本人的撤回，前端隐藏入口是为了不让用户白点一次）。 -->
+      <!-- 撤回：与桌面右键菜单**共用同一个判定**（`canRecall`）——
+           此前这里是内联条件且漏了 isGroup，导致单聊长按也出现「撤回」，
+           而后端只实现了群撤回 ⇒ 点了确认后什么都不发生。 -->
       <button
-        v-if="mine && message.kind !== 'recalled'"
+        v-if="canRecall"
         class="flex items-center gap-3 px-4 py-3 text-left text-[15px] text-[var(--gosslan-danger-ink)] transition active:bg-[var(--gosslan-hover)]"
         @click="doRecall"
       >
