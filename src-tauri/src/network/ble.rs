@@ -1284,11 +1284,14 @@ async fn ble_writer_loop<S: FrameSink + 'static>(
                             if e.starts_with("帧无法分片") || attempt >= WRITE_RETRY_ATTEMPTS {
                                 break Err(e);
                             }
+                            // 帧长必须打出来：光看"写失败"无法判断是"分片太大"还是别的原因。
+                            // 真机排查时这一行能直接给出「写了多少字节」。
                             state.logger.warn(
                                 "ble",
                                 format!(
-                                    "[SEND] 写失败第 {attempt}/{WRITE_RETRY_ATTEMPTS} 次（{}ms 后重试）peer={peer_id} ep={ep} 原因={e}",
-                                    WRITE_RETRY_WAIT.as_millis()
+                                    "[SEND] 写失败第 {attempt}/{WRITE_RETRY_ATTEMPTS} 次（{}ms 后重试）peer={peer_id} ep={ep} 帧长={} 原因={e}",
+                                    WRITE_RETRY_WAIT.as_millis(),
+                                    bytes.len()
                                 ),
                             );
                             tokio::select! {
