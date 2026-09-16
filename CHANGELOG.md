@@ -24,11 +24,25 @@ PR 事件取到 `head_ref`，两者都是**分支名** ⇒ 「推分支」与「
 ⚠️ 已写进 workflow 注释：将来若启用 branch protection，建议改回只挂 `pull_request` ——
 去重是"后者取消前者"的竞态，被取消的那次在 PR 上会显示 cancelled，branch protection 会判不通过。
 
-**顺带解决一个真实的运维盲区**：Rust 单测步骤失败时，现在会把输出尾部（含磁盘余量）
-提升为 **check 注解**。起因是 2026-09-16 第一次真跑 CI 就红了，但 `actions/jobs/{id}/logs`
-需要仓库权限（匿名 403）、注解里只有一句 `exit code 101` —— **看不到任何原因**。
-注解是**公开可读**的（匿名 API 可取），日志不是，所以把失败尾部放进注解。
-打印 `df -h` 是因为冷编译 tauri 很占空间，runner 磁盘打满是 exit 101 的常见成因。
+**顺带解决一个真实的运维盲区**：Rust 单测步骤失败时，现在会把**诊断信息**提升为
+**check 注解**。起因是 2026-09-16 第一次真跑 CI 就红了，但三条路都拿不到原因：
+
+| 渠道 | 结果 |
+|---|---|
+| `actions/jobs/{id}/logs` API | 匿名 **403**（"Must have admin rights to Repository"） |
+| 浏览器打开 job 日志页 | **"Sign in to view logs"** —— 公开仓库也要登录 |
+| check-run 注解 | 只有一句 `Process completed with exit code 101` |
+
+结论：**注解是唯一的公开渠道**（匿名 API 可取 `.../check-runs/{id}/annotations`），
+所以把诊断放进注解。两个细节是踩出来的：
+
+- **只挑关键行**（`test result:` / `error` / `failures:` / `panicked` / 信号 / 磁盘），
+  不整段照搬 —— GitHub 每个 step 只保留约 **10 条**注解，照搬 30 行会被截断
+  （第一次就踩了：拿到的全是 `... ok`，真正的错误落在截断之外）；
+- **合并成一条多行注解**（换行编码为 `%0A`），进一步避开那个数量上限。
+
+顺带打印 `df -h /`：冷编译 tauri 很占空间，runner 磁盘打满是 exit 101 的常见成因
+（首次 CI 已用它排除了这个可能：余量 92Gi）。
 
 ### Added (统一验证入口 + 把护栏真正跑起来 —— 2026-09-16)
 
