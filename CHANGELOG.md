@@ -10,6 +10,65 @@
 
 ## [Unreleased]
 
+### Added (工程门禁：让「测试静默不跑」不再可能 —— 2026-09-16)
+
+**背景**：本仓库此前三个 workflow（`build` / `build-macos` / `build-android`）**全是打包**，
+没有任何一个跑测试；git 钩子只有 AI 追踪器、没有 pre-commit。也就是说 455 条前端断言 +
+503 条 Rust 用例 + 87 条非空转护栏，全部依赖**人工记得跑**。纪律很强，但没有门禁 ——
+一次漏跑就能把回归合进 main。
+
+**真实代价（实测数字）**：`bluetooth` 是**非默认** feature（`src-tauri/Cargo.toml` 的
+`[features]`）。漏掉 `--features bluetooth` 时用例数从 **503 掉到 487** —— **16 条静默消失**：
+
+| 模块 | 消失的用例数 |
+|---|---:|
+| `network::ble` | 8 |
+| `transport::bluetooth_peripheral` | 5 |
+| `transport::bluetooth::driver` | 2 |
+| `commands` | 1 |
+
+而 `cargo test` 依然**全绿、退出码 0**。这 16 条盯的正是 CHANGELOG `4.18.7 → 4.18.10`
+连着四个版本边修边冒的那个子系统 —— 最需要护栏的地方，恰恰是"忘了加 feature 就静默不测"的地方。
+
+**做法**：
+
+- 新增 `.github/workflows/verify.yml`：**PR 触发**（只挂 `push: [main]` 等于合并之后才查，太晚），
+  两个并行 job（前端 / Rust），跑 `npm test` + `cargo test --features bluetooth` + 前端构建 + 清单守卫。
+- 新增 `scripts/check-test-manifest.mjs` 与 `src-tauri/test-baseline.<平台>.txt`：比对
+  「基线名单 ⋈ 实际 `--list`」，**缺名即红**。刻意**比名字不比数量** —— 数量阈值（`>= 503`）
+  会催生"为凑数保留已无价值的测试"，而删除一个过时测试反而要去改阈值；名字比对没有这个问题。
+  判据方向刻意不对称：**缺名 FAIL**（那是静默跳过），**多名只 WARN**（新测试跑得好好的，不是故障）。
+- 前端那一半守的是另一处同类脆弱：`npm test` 的脚本里是**手工枚举**的 48 条路径，
+  新增 `.test.ts` 若忘了加进那串字符串，新文件不会跑而 `npm test` 依然全绿。
+- 基线**按平台分文件**（`test-baseline.macos.txt` / `.windows.txt`）：`transport/bluetooth_peripheral.rs`
+  与 `transport/bluetooth_peripheral_windows.rs` 是互斥的 `#[cfg]`，拿 macOS 的基线去比 Windows
+  会把 5 条平台门控用例误判成"静默跳过" —— 纯误报。`verify-guards.py` 的 `platforms` 字段
+  就是为同一个坑加的，其注释写着"不要留一堆假失败把真失败淹掉"。拿到本平台没有基线时**不猜、不退化**，
+  直接报错让用 `--update` 生成（缺失时静默生成等于"没有基线也算通过"，正是要消灭的空转）。
+- `scripts/verify-guards.py` 补两条非空转用例（`--only manifest`）：改坏即 FAIL、恢复即 PASS。
+
+**没做的（有意）**：`cargo fmt --check`（当前 517 处差异）与 `clippy`（未安装）**不进门禁**。
+第一版门禁必须**全绿** —— 现在加进来会让每次 PR 立刻全红，结果是所有人开始用 `--no-verify` 绕过，
+而门禁一旦被绕过一次就永久失效。这两项作为独立技术债单独还。
+
+**踩到的坑（实测，已写进 workflow 注释）**：`dist/` 在 `.gitignore` 里、不进版本库，
+而 Tauri 的 `build.rs` 要读它。全新 clone 上 `cargo test` **根本编不过**：
+
+```text
+error: proc macro panicked
+  --> src/lib.rs:387:16
+  = help: message: The `frontendDist` configuration is set to `"../dist"` but this path doesn't exist
+error: could not compile `gosslan` (lib test)
+```
+
+所以 Rust job 必须先 `npm run build` 再 `cargo test`，顺序不能调换。**顺带发现**：
+`scripts/build-windows-release.ps1` 的 Step 2（`cargo test --lib --features bluetooth`）
+在干净机器上会因此失败（Step 1 的 `npm test` 不产出 `dist/`）—— 记录在案，未在本轮修。
+
+**验证**：`npm test` **455 全绿**；`cargo test --features bluetooth` **503 全绿**；
+两个 job 的每一步都在本地按 CI 顺序实跑通过；清单守卫两个方向都做过非空转验证
+（基线注入假名 ⇒ FAIL；抽掉 `--features bluetooth` ⇒ 精确报出那 16 条 ⇒ FAIL；恢复即 PASS）。
+
 ### Added (群任务列表：指派 + 四态状态 —— 用户 2026-09-16)
 
 **需求**：「群里需要能够支持列一些任务列表，每个任务可以给一个或多个人，任务要能区分出

@@ -1,0 +1,137 @@
+name: Verify
+
+# =============================================================================
+#  测试门禁（test gate）
+#
+#  ## 为什么要有这个 workflow
+#
+#  本仓库此前**三个 workflow 全是打包**（build / build-macos / build-android），
+#  没有任何一个跑测试。也就是说：455 条前端断言 + 503 条 Rust 用例 + 87 条非空转
+#  护栏，全部依赖**人工记得跑**。纪律很强，但没有门禁 —— 一次漏跑就能把回归合进 main。
+#
+#  真实案例（CHANGELOG 4.18.7 → 4.18.10）：BLE 分片问题连着四个版本边修边冒，
+#  每一版都是人工验证过的。有这条门禁，4.18.7 的修复会当场被 4.18.9 的用例拦住。
+#
+#  ## 触发条件（`pull_request` 是重点）
+#
+#  只挂 `push: [main]` 等于**合并之后**才检查，太晚。必须挂 `pull_request`，
+#  让检查发生在合并之前。
+#
+#  ## ⚠️ 为什么是 macos-latest，而不是 ubuntu-latest
+#
+#  一部分代码与用例是**平台门控**的：
+#
+#      src-tauri/src/transport/mod.rs:15   #[cfg(all(feature = "bluetooth", target_os = "macos"))]
+#      src-tauri/src/transport/mod.rs:24   #[cfg(all(feature = "bluetooth", target_os = "windows"))]
+#
+#  在 ubuntu 上这两块**都不编译**，对应的用例一条都不跑，而 CI 照样全绿。
+#  macos-latest 是主平台（Mac 当 BLE 外设的那一半只在这里），所以先锁它。
+#  Windows 那半边留给后续的跨平台 job（见 docs/ENGINEERING_HARDENING_ROADMAP.md 的 Phase 2）。
+#
+#  ## ⚠️ 为什么这里**故意没有** cargo fmt / clippy
+#
+#  第一版门禁必须**全绿**。当前 `cargo fmt --check` 有 517 处差异、`clippy` 尚未安装 ——
+#  现在加进来会让每次 PR 立刻全红，结果是所有人开始用 `--no-verify` 绕过，
+#  门禁一旦被绕过一次就永久失效。这两项作为**独立的技术债**单独还（Phase 0.5）。
+#
+#  ## ⚠️ 为什么 Rust job 必须先 `npm run build`
+#
+#  `dist/` 在 .gitignore 里、不进版本库，而 Tauri 的 `build.rs` 要读它。全新 clone 上：
+#
+#      error: proc macro panicked
+#        --> src/lib.rs:387:16
+#        = help: message: The `frontendDist` configuration is set to `"../dist"`
+#                        but this path doesn't exist
+#      error: could not compile `gosslan` (lib test)
+#
+#  即 `cargo test` **根本编不过**。所以顺序必须是 build 前端 → 再 cargo test，
+#  不能调换、也不能省。
+#
+#  ## 两个 job 为什么各自跑一遍 npm
+#
+#  GitHub 的 job 之间**不共享文件系统**，所以 Rust job 必须自己产出 dist。
+#  拆成两个 job 是为了并行（macOS runner 上 cargo 编译是耗时大头）。
+# =============================================================================
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# 同一分支连推多次时，取消掉过时的运行，省 runner 时间。
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  #  前端：测试 + 清单守卫 + 构建
+  # ---------------------------------------------------------------------------
+  frontend:
+    name: 前端测试 / 清单 / 构建
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 前端测试
+        run: npm test
+
+      # 守的是「新增 .test.ts 但忘了登记进 package.json」——那类文件不会被执行，
+      # 而 `npm test` 依然全绿（退出码 0 的空转）。
+      - name: 测试清单守卫（前端）
+        run: node scripts/check-test-manifest.mjs --only frontend
+
+      # 不只是"为 Rust job 准备 dist"：前端构建本身失败也应当拦住这次 PR。
+      - name: 前端构建
+        run: npm run build
+
+  # ---------------------------------------------------------------------------
+  #  Rust：单测 + 清单守卫
+  # ---------------------------------------------------------------------------
+  rust:
+    name: Rust 单测 / 清单
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      # Tauri 的 build.rs 需要 dist/（见文件头说明），必须在 cargo 之前。
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: 安装依赖并构建前端（cargo test 依赖 dist/）
+        run: |
+          npm ci
+          npm run build
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # `--features bluetooth` 不能少：bluetooth 是**非默认** feature，
+      # 漏掉它 BLE 模块根本不编译 ⇒ 那批用例连同被测代码一起消失，而 cargo test 全绿。
+      # 这一点由下一步的清单守卫兜底（会比对基线名单）。
+      - name: Rust 单测
+        working-directory: src-tauri
+        run: cargo test --features bluetooth
+
+      # 比对「基线名单 ⋈ 实际 --list」：缺名即红，专门拦"测试静默消失"。
+      - name: 测试清单守卫（Rust）
+        run: node scripts/check-test-manifest.mjs --only rust

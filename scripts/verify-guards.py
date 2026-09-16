@@ -1541,6 +1541,45 @@ CASES: list[Case] = [
         expect_fail_hint="缺省必须是",
         tags=["rust", "android", "channel"],
     ),
+    # ---------------- 测试清单守卫（挡住「测试静默不跑」） ----------------
+    # 这两条守的是 `scripts/check-test-manifest.mjs`。它拦的是一类**没有信号**的故障：
+    # 测试明明写着，却根本没被执行，而所有命令都返回 0。
+    Case(
+        name="测试清单：基线里的用例没跑必须报出来（漏 --features 就靠它）",
+        why="`bluetooth` 是**非默认** feature（`src-tauri/Cargo.toml` 的 [features]）。漏掉 "
+            "`--features bluetooth` ⇒ BLE 模块根本不编译、那批用例连同被测代码一起消失，"
+            "而 `cargo test` **全绿**。本项目真实踩过：BLE 连续四个版本（4.18.7→4.18.10）"
+            "边走边修，而这个子系统恰恰是「忘了加 feature 就静默不测」的那个。"
+            "清单守卫比对「基线名单 ⋈ 实际 --list」，缺名即红。",
+        file=TAURI / "test-baseline.macos.txt",
+        injections=[(
+            "transport::bluetooth_peripheral::tests::central_mtu_clamps_and_never_returns_zero",
+            "transport::bluetooth_peripheral::tests::central_mtu_clamps_and_never_returns_zero\n"
+            "transport::bluetooth_peripheral::tests::a_test_that_no_longer_runs",
+        )],
+        cmd=["node", "scripts/check-test-manifest.mjs", "--only", "rust"],
+        cwd=ROOT,
+        expect_fail_hint="静默跳过",
+        tags=["manifest", "ble"],
+        # 基线按平台分文件（macOS 外设 / Windows 外设是互斥的 #[cfg]）。
+        # Phase 2 打通 Windows 测试通道后，这里补一条 test-baseline.windows.txt 的对应用例。
+        platforms=("darwin",),
+    ),
+    Case(
+        name="测试清单：磁盘上的测试文件没登记进 package.json 必须报出来",
+        why="`npm test` 的脚本里是**手工枚举**的 48 条路径。新增一个 .test.ts 时若忘了把它加进"
+            "那串字符串，新文件不会被执行，而 `npm test` 依然**全绿** —— 与「漏 --features」"
+            "是完全同类的东西：退出码 0 的空转。",
+        file=ROOT / "package.json",
+        injections=[(
+            "src/utils/selfChat.test.ts src/utils/todos.test.ts ",
+            "src/utils/selfChat.test.ts ",
+        )],
+        cmd=["node", "scripts/check-test-manifest.mjs", "--only", "frontend"],
+        cwd=ROOT,
+        expect_fail_hint="未登记",
+        tags=["manifest", "frontend"],
+    ),
 ]
 
 
