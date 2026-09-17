@@ -47,20 +47,63 @@ while [ $# -gt 0 ]; do
 done
 
 # =============================================================================
-# 前置护栏：统一入口 verify.mjs
+# 前置护栏（轻量版，平台无关）
 #
-# 串起 11 步守卫：静态检查（测试清单/不变量例外/BLE 常量/领域图/依赖方向/Change Budget）
-#                 + 前端测试 + 前端构建 + Rust 单测 --features bluetooth + verify-guards。
-# 比原来"完全没有护栏"好 —— 坏包比没有包更浪费时间。
+# 为什么不跑 `npm run verify`：
+#
+#   verify.mjs 包含 `cargo fmt` / `cargo clippy` / `cargo test`，这三步在 Linux
+#   host 上编 desktop target 时要拉 webkit2gtk → glib-sys，需要系统装 GTK dev 库
+#   （libwebkit2gtk-4.1-dev / libgtk-3-dev / libayatana-appindicator3-dev /
+#   librsvg2-dev）。Android runner（ubuntu-latest）只装了 JDK + Android NDK/SDK，
+#   没装 GTK — 为了跑一遍 clippy 去装一堆对 Android 打包完全无用的东西是舍本逐末。
+#
+#   macOS / Windows 的 clippy + test 由 verify.yml 的 rust job（两腿 matrix）覆盖；
+#   Android target 的 cargo check 由 verify.yml 的 android job（check-mobile.sh）覆盖；
+#   静态守卫 + 前端测试 + 前端构建由 verify.yml 的 frontend job 覆盖 ——
+#   这个脚本**不再重复守门**，只负责"如果当前 commit 本身有静态/前端问题，
+#   跑这里就能拦住"；如果要看完整的三端编译守门，请看 verify.yml 的运行结果。
 # =============================================================================
 echo "┌─────────────────────────────────────────────────────────────┐"
-echo "│ 前置护栏：npm run verify                                    │"
+echo "│ 前置护栏：静态守卫 + 前端测试 + 构建（平台无关）             │"
+echo "│ 完整三端守门见 verify.yml（rust/mac + rust/win + android）│"
 echo "└─────────────────────────────────────────────────────────────┘"
-if ! npm run verify; then
-  echo "❌ verify 未通过 —— 已中止 Android 打包。" >&2
-  echo "   确要跳过请加 --no-verify（不推荐；会打印警告）" >&2
+
+# 静态守卫（全 JS/TS，Linux 上也能跑）
+for guard in \
+  scripts/check-test-manifest.mjs \
+  scripts/check-invariant-exceptions.mjs \
+  scripts/check-ble-constants.mjs \
+  scripts/check-domain-map.mjs \
+  scripts/check-domain-deps.mjs \
+  scripts/check-change-budget.mjs \
+  ; do
+  echo "==> $guard"
+  if ! node "$guard"; then
+    echo "❌ 守卫失败：$guard" >&2
+    exit 1
+  fi
+done
+
+# 前端测试 + 构建（Linux 上也能跑）
+echo "==> npm test"
+if ! npm test; then
+  echo "❌ 前端测试失败" >&2
   exit 1
 fi
+echo "==> npm run build"
+if ! npm run build; then
+  echo "❌ 前端构建失败" >&2
+  exit 1
+fi
+
+# Android target 的 cargo check（不编 Linux desktop，Linux 上能跑）
+echo "==> bash scripts/check-mobile.sh --bluetooth"
+if ! bash scripts/check-mobile.sh --bluetooth; then
+  echo "❌ Android target 编译检查失败" >&2
+  exit 1
+fi
+
+echo "✅ 前置护栏全部通过（静态守卫 + 前端测试 + Android target check）"
 
 # ⚠️ **不要**放 `dist/`：安卓构建会先跑前端构建（`vite build`），而它会**清空 `dist/`** ——
 # 我第一版就踩了这个：`mkdir dist/android` 建好，紧接着被前端构建删掉，`cp` 于是报
