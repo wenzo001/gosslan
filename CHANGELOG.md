@@ -10,6 +10,40 @@
 
 ## [Unreleased]
 
+### Changed (修正 3 处过期的「未接线」声明，并收窄 2 处 allow(dead_code) —— 2026-09-16)
+
+Phase 5 的台账上报了「文档与代码冲突，不得静默择一」的两条，动手核对后又找到第三条。
+本轮**只改注释与 allow 的位置，不改任何行为**。
+
+**修掉的过期声明**：
+
+| 位置 | 原声明 | 实测 |
+|---|---|---|
+| `transport/bluetooth.rs:1-12` | 「当前实现提供了完整的 `Transport` 接口契约……**需要引入平台专用后端**」+ 一节「接入真实蓝牙后端的步骤」 | 那套步骤**早已做完**（`Cargo.toml` 已有 `bluetooth` feature、btleplug 已集成、driver 已实现并接线）。另有一节「接线时要做的（按顺序）」同样过期 —— 它列的扫描 → 候选 → 连接 → Hello → 登记 `state.links` **已在 `network/ble.rs` 完成**，只是没做在本模块内 |
+| `transport/bluetooth.rs:37` | 「## 状态：**已实现、尚未接线**（7-e 的一半）」 | `network/ble.rs` 有 **5 处**真实调用（`driver::adapter` / `scan_peers` / `connect` / `BleConnection` / `writer.send_frame`）⇒ **已接线** |
+| `transport/tcp.rs:11-14` | 「Phase 4 当前只落地 bytes 原语，**不改变任何现有收发路径**」+ 文件级 `#![allow(dead_code)] // 旁路阶段：待接线后移除` | 帧原语（`write_bytes` / `read_bytes` / `read_bytes_capped`）与 `TcpReceiver` / `TcpSender` 都**已接线**，且被 `network/transport.rs:57,62,69,1231,1232,1529,1613,2368,2369` 自述为"单一真相源（P-A03）"。未接线的只有 `TcpTransport` **一个结构体** |
+
+三处都换成了**接线状态表 + 调用点 file:line**，并写明"动这一带代码前请先核对调用点，别信注释"。
+
+**为什么顺手把 allow 收窄**：这三处声明都挂着 `#[allow(dead_code)]`，**把编译器本会给出的提示一起静音了** ——
+这正是它们能存活很久的原因。所以：
+
+- `transport/bluetooth.rs` 的 `driver`：模块级 `#[allow(dead_code)]` → 逐个标注
+- `transport/tcp.rs`：文件级 `#![allow(dead_code)]` → 只有 `TcpTransport` 与其 `impl` 带 allow
+
+**收窄后浮出 6 个真没用的项**（原先被文件级/模块级 allow 一起掩护着）：
+
+| 位置 | 项 | 处理 |
+|---|---|---|
+| `bluetooth.rs` driver | `BleConnection.next_msg_id` 字段 | 逐个标注。**⚠️ 顺带发现潜在真问题**：该字段从没被读过，而 `BleWriter::send_frame` 用的是它**自己**的 `next_msg_id` ⇒ 「连接内消息号」有**两份状态、一份是死的**。已注释要求接线下一半时二选一收敛 |
+| `bluetooth.rs` driver | `remote_id` / `is_connected` / `disconnect` | 逐个标注 + 说明"接线哪一处时会用上" |
+| `transport/tcp.rs` | `TcpSender::send_bytes` / `TcpReceiver::receive_bytes` | 逐个标注：生产走 `write_frame` / `read_frame`（经 `AsyncWrite` / `AsyncRead` 实现），这两个直接方法只有本文件测试在用 |
+
+**收益**：现在编译器重新能回答"这一层还有没有人在用" —— 若哪天 `network/ble.rs` 不再调
+`driver::scan_peers`，会立刻 warning，而不是继续静音。
+
+**验证**：`cargo check --lib`（默认与 `--features bluetooth`）均 0 warning。
+
 ### Added (领域图 + 迁移台账：先回答「这个关注点有几个家、哪个在跑数据」 —— 2026-09-16)
 
 **这是一次只读审计**（没有改任何业务代码），产出两份文件 + 一个守门脚本。
