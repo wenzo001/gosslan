@@ -28,7 +28,7 @@ import type { ReactionChip } from "@/utils/reactions";
 import MessageContentModal from "@/components/message/MessageContentModal.vue";
 import MessageContextMenu from "@/components/message/MessageContextMenu.vue";
 import ActionSheet from "@/components/ActionSheet.vue";
-import { Copy, CornerUpLeft, Save, Share2, ImageOff, TextSelect , Undo2, Pin } from "lucide-vue-next";
+import { Copy, CornerUpLeft, Save, Share2, ImageOff, TextSelect , Undo2, Pin, Star } from "lucide-vue-next";
 import type { MessageRecord, MsgKind } from "@/types";
 
 const props = withDefaults(
@@ -502,6 +502,8 @@ const emit = defineEmits<{
   (e: "react", emoji: string): void;
   /** 切换置顶（群聊） */
   (e: "pin"): void;
+  /** 收藏这条消息（微信式：独立存储，删会话/清缓存都不影响） */
+  (e: "favorite"): void;
   (e: "open-image", msgId: string): void;
 }>();
 
@@ -569,6 +571,20 @@ function doForward() {
   closeActionSheet();
   closeContextMenu();
   emit("forward", payload);
+}
+
+/**
+ * 收藏这条消息。
+ *
+ * 只上抛事件、这里不直接调 api：**两端（桌面右键 / 移动长按面板）都要走同一处**，
+ * 而 toast 与"已在收藏中"的提示逻辑在 `ChatWindow` 里 —— 与转发同一条路子
+ * （见 doForward），避免同一个动作在桌面和移动上出现两套提示。
+ * 同样必须先收掉浮层：收藏会弹 toast，浮层留着就是挡路。
+ */
+function doFavorite() {
+  closeActionSheet();
+  closeContextMenu();
+  emit("favorite");
 }
 
 async function retrySend() {
@@ -834,6 +850,7 @@ async function copyFileToClipboard() {
     @pin="emit('pin')"
     @recall="doRecall"
     @forward="doForward"
+    @favorite="doFavorite"
   />
 
   <!-- 移动端长按 → 底部操作面板（Action Sheet）。操作与右键菜单同源，只是展示形态不同。 -->
@@ -928,6 +945,17 @@ async function copyFileToClipboard() {
       >
         <Share2 class="h-5 w-5 text-[var(--gosslan-text-2)]" />
         {{ t("common.forward") }}
+      </button>
+      <!-- 收藏：与桌面右键菜单同一份 emit（`doFavorite`）。
+           ⚠️ 移动端入口必须在这里**再写一遍** —— 右键菜单与 ActionSheet 是两套独立模板，
+           只加一处的结果是"桌面能收藏、手机不能"（这类漂移在项目里已发生过多次）。 -->
+      <button
+        v-if="forwardable(message.kind)"
+        class="flex items-center gap-3 px-4 py-3 text-left text-[15px] text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
+        @click="doFavorite"
+      >
+        <Star class="h-5 w-5 text-[var(--gosslan-text-2)]" />
+        {{ t("favorite.add") }}
       </button>
     </div>
   </ActionSheet>

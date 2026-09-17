@@ -31,6 +31,7 @@ import type {
   FileDoneInfo,
   FileFailedInfo,
   FileProgress,
+  FavoriteEntry,
   Friend,
   Group,
   GroupReadInfo,
@@ -380,6 +381,9 @@ export const useChatStore = defineStore("chat", () => {
     groupReads.value = {};
     rawPendingRequests.value = [];
     transfers.value = [];
+    // 收藏也随「清除数据」一并清空（后端删了行与副本）：不清的话，面板开着时仍显示
+    // 已删条目，点开只会报"副本已不在本机"。
+    favorites.value = [];
     activeConv.value = null;
     pending = [];  // 后台滞留待冲刷的消息批次（`let pending`，见上）
     await Promise.all([
@@ -829,6 +833,35 @@ export const useChatStore = defineStore("chat", () => {
     // 折叠就看不到它，界面要等下次重新拉全量（= 重进会话）才刷新。
     const rec = await api.pinGroupMessage(groupId, msgId, pinned);
     enqueueMessage(rec);
+  }
+
+  // ---------------- 收藏 ----------------
+  // 为什么放 store 而不是收藏面板的本地 ref：收藏**跨会话、全局可见**（面板只是一个视图），
+  // 且"收藏 / 取消收藏"从消息菜单与面板两处发起 —— 状态藏在面板里，另一处就看不到变化。
+  const favorites = ref<FavoriteEntry[]>([]);
+
+  async function refreshFavorites() {
+    favorites.value = await api.listFavorites();
+  }
+
+  /**
+   * 收藏一条消息。返回 `true` = 这次是**新增**，`false` = 早就在收藏里了。
+   *
+   * 内容与媒体副本一律由后端决定（前端只给 msg_id/conv_id，详见 `add_favorite` 的命令说明）。
+   * 判断"是否新增"用**条目 id 是否已在列表里**而不是条数变化：列表可能压根还没加载过
+   * （length 为 0），拿长度比会把重复收藏误报成新增。
+   */
+  async function addFavorite(msgId: string, convId: string): Promise<boolean> {
+    const rec = await api.addFavorite(msgId, convId);
+    if (favorites.value.some((f) => f.id === rec.id)) return false;
+    favorites.value = [rec, ...favorites.value];
+    return true;
+  }
+
+  /** 取消收藏。幂等：已经不在了也不报错（可能另一个窗口刚删过）。 */
+  async function removeFavorite(id: string) {
+    await api.removeFavorite(id);
+    favorites.value = favorites.value.filter((f) => f.id !== id);
   }
 
   /**
@@ -1379,6 +1412,10 @@ export const useChatStore = defineStore("chat", () => {
     resetAfterDataCleared,
     refreshTransfers,
     refreshTopology,
+    favorites,
+    refreshFavorites,
+    addFavorite,
+    removeFavorite,
     openConversation,
     loadMessages,
     loadMoreMessages,

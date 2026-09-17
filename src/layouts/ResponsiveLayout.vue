@@ -21,7 +21,8 @@ import ChatSearchDialog from "@/components/search/ChatSearchDialog.vue";
 import GroupCreateModal from "@/components/GroupCreateModal.vue";
 import ShareDirectory from "@/components/ShareDirectory.vue";
 import LogViewer from "@/components/LogViewer.vue";
-import { CheckCircle2, Info, MessageCircle, ScrollText, Settings, Users, XCircle } from "lucide-vue-next";
+import FavoritePanel from "@/components/FavoritePanel.vue";
+import { CheckCircle2, Info, MessageCircle, ScrollText, Settings, Star, Users, XCircle } from "lucide-vue-next";
 import type { Friend, PendingRequest } from "@/types";
 
 const app = useAppStore();
@@ -35,6 +36,14 @@ const addFriendOpen = ref(false);
 const groupOpen = ref(false);
 const shareOpen = ref(false);
 const logsOpen = ref(false);
+/**
+ * 收藏面板。
+ *
+ * 刻意**不**把 `view` 扩成第三种取值（"chats" | "contacts" | "favorites"）：那会牵动
+ * `NavRail` 的 view 联合类型、列表/主面板的平移条件、以及一串以 view 为判据的 watch。
+ * 收藏是"盖在主面板之上的浮层"，用独立布尔表达最贴合它的语义（同 settings/logs）。
+ */
+const favoritesOpen = ref(false);
 
 /**
  * 打开设置。
@@ -231,6 +240,7 @@ watchEffect(() => {
         logsOpen.value ||
         showRequests.value ||
         profileFriend.value !== null ||
+        favoritesOpen.value ||
         shareOpen.value),
   );
 });
@@ -311,9 +321,11 @@ function onResizeEnd() {
       :view="view"
       :settings-opening="settingsOpening"
       :logs-opening="logsOpening"
+      :favorites-open="favoritesOpen"
       @update:view="view = $event"
       @open-settings="openSettings"
       @open-logs="openLogs"
+      @open-favorites="favoritesOpen = true"
     />
 
     <!-- 会话列表：桌面宽度可拖拽调（默认250px，持久化）；移动端整屏抽屉，靠 translate 滑动切换 -->
@@ -467,6 +479,16 @@ function onResizeEnd() {
         </span>
         <span class="text-[11px]">{{ t("nav.contacts") }}</span>
       </button>
+      <!-- 收藏：移动端 rail 是 `hidden md:flex`（看不到），所以底部导航必须单独有一项，
+           否则手机上根本没有收藏入口。 -->
+      <button
+        class="relative flex flex-1 flex-col items-center gap-0.5 py-2.5"
+        :class="favoritesOpen ? 'text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)]'"
+        @click="favoritesOpen = true"
+      >
+        <Star class="h-5 w-5" />
+        <span class="text-[11px]">{{ t("nav.favorites") }}</span>
+      </button>
       <button
         class="flex flex-1 flex-col items-center gap-0.5 py-2.5 text-[var(--gosslan-text-2)] transition-opacity"
         :class="settingsOpening ? 'opacity-50' : ''"
@@ -500,6 +522,7 @@ function onResizeEnd() {
     <AddFriendModal :open="addFriendOpen" @close="addFriendOpen = false" />
     <GroupCreateModal :open="groupOpen" @close="groupOpen = false" />
     <ShareDirectory :open="shareOpen" @close="shareOpen = false" />
+    <FavoritePanel :open="favoritesOpen" @close="favoritesOpen = false" />
 
     <!-- 移动端运行日志页：全屏覆盖、带返回（桌面端走独立窗口，见 open_log_window） -->
     <LogViewer v-if="app.isMobile && logsOpen" @back="logsOpen = false" />
