@@ -236,25 +236,7 @@ jobs:
         working-directory: src-tauri
         run: cargo fmt --check --all
 
-      - name: cargo clippy（debug 分支：exit 1 触发 annotations）
-        if: github.ref_name == 'debug/win-clippy'
-        shell: bash
-        working-directory: src-tauri
-        run: |
-          set -o pipefail
-          cargo clippy --features bluetooth 2>&1 | tee /tmp/clippy.out
-          CLIPPY_RC=${PIPESTATUS[0]}
-          # 即使 clippy 自己 exit 0（没带 -D），也手动 exit 1 让 GitHub Actions
-          # 把 stderr 里的 warning 行解析成 check-run annotations（API 能拿到）
-          WARN_COUNT=$(grep -cE '^warning:' /tmp/clippy.out || true)
-          echo "=== Clippy warnings (${{ matrix.os }}): ${WARN_COUNT} ==="
-          if [ "$WARN_COUNT" -gt 0 ]; then
-            exit 1
-          fi
-          exit $CLIPPY_RC
-
       - name: cargo clippy（-D warnings，--features bluetooth）
-        if: github.ref_name != 'debug/win-clippy'
         working-directory: src-tauri
         run: cargo clippy --features bluetooth -- -D warnings
 
