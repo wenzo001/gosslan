@@ -247,6 +247,15 @@ jobs:
           echo "=== count ==="
           grep -cE '^warning:' /tmp/clippy.out || true
 
+      # ---- debug 专用：上传 clippy 输出作为 artifact，方便本地拿完整 warning 列表 ----
+      - name: Upload clippy output artifact (debug)
+        if: github.ref_name == 'debug/win-clippy'
+        uses: actions/upload-artifact@v4
+        with:
+          name: clippy-out-${{ matrix.os }}
+          path: /tmp/clippy.out
+          if-no-files-found: ignore
+
       - name: Rust 单测
         shell: bash
         working-directory: src-tauri
