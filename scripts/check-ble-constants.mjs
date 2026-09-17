@@ -71,6 +71,17 @@ import { fileURLToPath } from "node:url";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SRC = path.join(ROOT, "src-tauri", "src");
 
+/**
+ * 路径统一成 posix 形式。
+ *
+ * ⚠️ 必须转：下面两张清单（`BLE_DOMAIN_FILES` / 判据 C 的平台清单）写的是
+ * `transport/bluetooth_peripheral.rs` 这种 posix 路径，而 Windows 上 `path.relative()`
+ * 给出的是 `transport\bluetooth_peripheral.rs` ⇒ 查表必然落空，脚本会报"清单里的文件不存在
+ * （被改名/删除了？）"—— 一个纯误报，且只在 Windows 上出现（CI 跑 macOS/Linux，所以看不见）。
+ * 2026-09-17 修。
+ */
+const posix = (p) => p.split(path.sep).join("/");
+
 /** 规范名字 → 它应该住在哪个文件（相对 src-tauri/src）。 */
 const CANONICAL = {
   BLE_DEFAULT_MTU: "transport/ble_framing.rs",
@@ -130,7 +141,7 @@ function walk(dir, acc = []) {
   return acc;
 }
 
-const files = walk(SRC).map((p) => ({ abs: p, rel: path.relative(SRC, p) }));
+const files = walk(SRC).map((p) => ({ abs: p, rel: posix(path.relative(SRC, p)) }));
 const byRel = new Map(files.map((f) => [f.rel, f]));
 
 let ok = true;

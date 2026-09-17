@@ -52,13 +52,22 @@ def read_source(path: Path) -> str:
 
     于是一轮护栏跑完就能把工作区的 LF 文件改成 CRLF（仓库明确要求 LF，见 `.gitattributes`），
     中文注释还可能被按错误编码往返一次。2026-09-16 在 Windows 上实测到了这个副作用。
+
+    ⚠️ 为什么要走 `path.open()` 而不是 `path.read_text(newline=…)`：`newline` 是
+    **Python 3.13** 才加进 `Path.read_text/write_text` 的参数，在 3.12 上直接
+    `TypeError: read_text() got an unexpected keyword argument 'newline'` ——
+    整份 verify-guards 会因此**一条都跑不了**（表现为 40 条全报"验证过程出错"；
+    2026-09-17 在 Windows + Python 3.12.10 上实测）。`Path.open()` 自 3.0 起就接受
+    `newline`，与原来的语义完全一致。
     """
-    return path.read_text(encoding="utf-8", newline="")
+    with path.open("r", encoding="utf-8", newline="") as f:
+        return f.read()
 
 
 def write_source(path: Path, text: str) -> None:
-    """写回源码文本（与 [`read_source`] 对称：不翻译行尾）。"""
-    path.write_text(text, encoding="utf-8", newline="")
+    """写回源码文本（与 [`read_source`] 对称：不翻译行尾，理由同上）。"""
+    with path.open("w", encoding="utf-8", newline="") as f:
+        f.write(text)
 
 
 #: 当前正在被注入的文件与它的原始内容 —— 被 Ctrl-C / kill 打断时也要能恢复。

@@ -279,7 +279,11 @@ for (const [i, s] of steps.entries()) {
   }
 
   const start = Date.now();
-  const r = spawnSync(s.cmd, s.args, { cwd: s.cwd, stdio: "inherit" });
+  // ⚠️ Windows 上必须 `shell: true`：自 Node 18.20 / 20.12 起，`spawnSync` **不能**直接
+  // 拉起 `.cmd`（npm 在 Windows 上就是 `npm.cmd`），否则报 `EINVAL` —— 本脚本的
+  // 第 7/8 步（`npm run version:changelog`、`npm test`、`npm run build`）会全部"未能执行"。
+  // 只对 Windows 打开：POSIX 上 npm 是普通可执行文件，多一层 shell 只会引入额外的引号语义。
+  const r = spawnSync(s.cmd, s.args, { cwd: s.cwd, stdio: "inherit", shell: WIN });
   const secs = ((Date.now() - start) / 1000).toFixed(1);
 
   // status 为 null 表示被信号杀掉（或命令没跑起来）。
