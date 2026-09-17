@@ -10,6 +10,44 @@
 
 ## [Unreleased]
 
+### Added (跨领域依赖守门 —— 把「每条 use 受 consumes 约束」机器化 —— 2026-09-17)
+
+Phase 5 只完成了"看得见"(领域图 + 迁移台账),没完成"守得住"—— `scripts/check-domain-map.mjs`
+只守图的形式(路径/不重叠/enforce 开关),不守图的依赖方向。本轮补足这块。
+
+**做了什么**：
+
+- **`docs/domains.data.mjs` 的 11 个领域新增 `consumes: [domainId]` 字段**，基于实测
+  `use crate::xxx`（排除 `#[cfg(test)] mod tests`）推导：`transport` consumes `identity /
+  persistence / files / messaging / routing / presence / platform` 七个 —— 多才正常，正是
+  台账里说的「`db::` 穿透传输层」「一个关注点三个家」在代码层的具体形态。
+- **`scripts/check-domain-deps.mjs`**（判据 G / H / I 三条）：
+  - **G**：每个领域 `paths` 下的 `.rs` 文件（生产代码），`use crate::xxx` 落到另一领域时
+    必须在那条 `consumes` 列表里（落地坐标 `file:line`，给"补 consumes 还是删 use"的修法）；
+  - **H**：`consumes` 不能引用不存在的领域（typo 第一天就该红）；
+  - **I**：`consumes` 不能引自己。
+- 与 `check-domain-map.mjs` **分工互补**：图的形式 vs 图的依赖方向，两套都过 = 自洽；
+  只过一套 = 要么补 `consumes` 要么删 `use`，绝不悄悄改写边界。
+- 接入 `scripts/verify.mjs`（步骤 5，"领域依赖方向守门"）与 `.github/workflows/verify.yml`
+  (frontend job 紧跟"领域图守门")，CI 无条件跑。
+- `scripts/verify-guards.py` 新增 **3 条非空转验证**（`--only domain-deps`）：
+  ① 故意加一条不在 consumes 的 use → FAIL；
+  ② 把 consumes 误删成空 → 用现有 use 立刻穿帮；
+  ③ 把 consumes 写成不存在的域 id → typo 当天拦下。
+
+**为什么有了它不等于可以打开 `enforce`**：`enforce: true` 与 `consumes` 是两套独立开关，
+前者管"图的形态对不对"（路径/重叠/enforce 与 secondHome 互斥），后者管"图的内核该怎么用
+才对"。`enforce` 仍保持全 false（边界收口完成一个打开一个，Phase 6 的事）；`consumes`
+是**随时打开的**——新增一条 use 立刻要 sign up，否则守门 FAIL。
+
+**没有做也不会做的事**：
+- 不扫 `#[cfg(test)] mod tests` 内的引用 —— 测试需要 mock / 接触内部状态，被圈进域约束
+  反而会让测试改写得难看（状态机在 `findTestModuleRanges`）。
+- 不扫前端 `src/*` —— `presentation` 域的边界另算（utils/api/composables 的相互 import
+  模式与后端 crate 不同），而且 `domains.data.mjs` 里已注明。
+- 不守 `activeHome` 是否属实 —— 那层是 `check-domain-map.mjs` 的边界，靠人诚实 + 台账
+  里的 `file:line` 证据。
+
 ### Changed (修正 3 处过期的「未接线」声明，并收窄 2 处 allow(dead_code) —— 2026-09-16)
 
 Phase 5 的台账上报了「文档与代码冲突，不得静默择一」的两条，动手核对后又找到第三条。

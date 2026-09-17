@@ -1833,6 +1833,67 @@ CASES: list[Case] = [
         expect_fail_hint="既没被领域认领",
         tags=["domain", "new-guards"],
     ),
+    # ---------------- 领域依赖方向（docs/domains.data.mjs + check-domain-deps.mjs） ----------------
+    # 跟上面三条互补：check-domain-map.mjs 守图的形式（路径/不重叠/enforce），
+    # check-domain-deps.mjs 守图的依赖方向（每条 use crate::xxx 是否落在 consumes 里）。
+    # 地图与依赖两套都过的领域,才算"自洽";只过一套⇒要么补 consumes 要么删 use。
+    # 教训（Phase 5b）：consumes 字段是该领域的**边界协议**,有了它"新增一条 use"不再是
+    # 静默演化,而是有闸门的扩展;不写 consumes 等于写"我不关心边界会怎样" —— 守门不让过。
+    Case(
+        name="领域依赖方向：跨域 use 不在 consumes 中 → FAIL（守住「依赖是声明出来的」）",
+        why="messaging 域的 gossip_engine.rs 当前 use 了 crypto::Identity 与 protocol::*,"
+        "对 platform 域毫无依赖。本用例临时给它塞一行 `use crate::menu;`（platform 域内"
+        "结构体）,守门必须报「不在 consumes 中」并定位到 file:line。否则「新增一条跨域"
+        "依赖」就是静默演化 —— 等再有人 PR 又删掉,守门仍全绿,边界已经被改写却没人知道。"
+        "修法：① 真有需求就把 platform 加进 messaging 的 consumes;② 删掉这条临时 use。",
+        file=ROOT / "src-tauri/src/gossip_engine.rs",
+        injections=[(
+            'use crate::crypto::Identity;\n'
+            'use crate::protocol::{GossipEnvelope, GossipKind};',
+            'use crate::crypto::Identity;\n'
+            'use crate::protocol::{GossipEnvelope, GossipKind};\n\n'
+            '// TEMP-NON-VACUUM-TEST(messaging→platform):必须被 check-domain-deps.mjs 拦下。\n'
+            'use crate::menu;',
+        )],
+        cmd=["node", "scripts/check-domain-deps.mjs"],
+        cwd=ROOT,
+        expect_fail_hint="想依赖「platform」域",
+        tags=["domain-deps", "new-guards"],
+    ),
+    Case(
+        name="领域依赖方向：consumes 被误删成空 → 已有 use 立刻穿帮",
+        why="messaging 域的 gossip_engine.rs 通过 `use crate::crypto::Identity;` 依赖 identity 域。"
+        "本用例把 messaging 的 consumes 从 `[\"identity\"]` 改成 `[]`,守门必须报"
+        "「messaging 想依赖 identity」 —— 因为「没声明」与「声明了不需要」是两回事,前者意味着"
+        "依赖边界被悄悄擦掉了。判定 `consumes: []` 跟 `enforce: false` 是两套独立的开关:enforce"
+        "控制图的形式,consumes 控制图的内容。",
+        file=ROOT / "docs" / "domains.data.mjs",
+        injections=[(
+            'consumes: ["identity"], // gossip_engine.rs 用 crypto::Identity（生产代码）',
+            'consumes: [], // TEMP-NON-VACUUM-TEST(messaging):该声明被误删,守门必须报',
+        )],
+        cmd=["node", "scripts/check-domain-deps.mjs"],
+        cwd=ROOT,
+        expect_fail_hint="想依赖「identity」域",
+        tags=["domain-deps", "new-guards"],
+    ),
+    Case(
+        name="领域依赖方向：consumes 引用了不存在的领域 → FAIL（typo 第一天就该红）",
+        why="`consumes: [\"identity\"]` 写错成 `[\"identtity\"]` 这类 typo,在守门放松对"
+        "consumes 字段自身合法性做检查时会**完全无害**地通过 —— 直到真正新增一条 use 触发"
+        "「不存在的域」才被察觉,届时已经离 typo 隔了 N 个 PR。本用例在 transport 的 consumes"
+        "中临时塞一个不存在的 id,直接验证判据 H 必红。修法:把不存在的 id 改回真名。",
+        file=ROOT / "docs" / "domains.data.mjs",
+        injections=[(
+            '        "platform", // transport/ble_android.rs 用 jni_method::kotlin_method\n',
+            '        "platform", // transport/ble_android.rs 用 jni_method::kotlin_method\n'
+            '        "identtity_typo_will_fail", // TEMP-NON-VACUUM-TEST(transport):错字,守门必报\n',
+        )],
+        cmd=["node", "scripts/check-domain-deps.mjs"],
+        cwd=ROOT,
+        expect_fail_hint="引用了不存在的领域",
+        tags=["domain-deps", "new-guards"],
+    ),
 ]
 
 

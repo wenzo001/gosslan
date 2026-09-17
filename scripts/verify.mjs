@@ -131,6 +131,13 @@ const steps = [
     args: ["scripts/check-domain-map.mjs"],
   },
   {
+    name: "领域依赖方向守门",
+    why: "挡住「跨域 use 不声不响」——每个域的 use crate::xxx 必须落在 self 或 consumes 里（生产代码，不扫测试块）",
+    cwd: ROOT,
+    cmd: process.execPath,
+    args: ["scripts/check-domain-deps.mjs"],
+  },
+  {
     name: "CHANGELOG 结构",
     why: "发布脚本按行首 `## [Unreleased]` 插小节；锚点被吞/顺序错乱不报错，只有结构检查能拦",
     cwd: ROOT,

@@ -130,6 +130,14 @@ jobs:
       - name: 领域图守门
         run: node scripts/check-domain-map.mjs
 
+      # 守的是「每个领域的跨域 use 必须声名」：对每个域 paths 下的 .rs 文件扫描
+      # 生产代码的 `use crate::xxx`（排除 #[cfg(test)] mod），落在另一个领域的引用
+      # 必须在那条 consumes 列表里。判据 H/I 顺带守"consumes 不能引不存在的域/不能自引"。
+      # 与上一条互补：check-domain-map 守图的形式,这条守图的依赖方向。
+      # 加在领域图守门之后 —— 任何新增领域一旦存在,这条立刻适用,无须人记得开。
+      - name: 领域依赖方向守门
+        run: node scripts/check-domain-deps.mjs
+
       # 结构检查（唯一行首 `## [Unreleased]` 锚点 / 标题格式 / 新在前降序）。
       # 注意用的是 `version:changelog` 而不是 `version:check`：后者的版本记账部分
       # 在攒提交期间本来就该是红的，把它拉进来会让这一步周期性误报。
