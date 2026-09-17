@@ -610,6 +610,13 @@ pub async fn spawn(
                         let pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
                         pm.health_timeout_ms().saturating_mul(3)
                     };
+                    // 把 health_timeout_ms 也带进日志 —— 这样用户能一眼看出
+                    // "为什么是 N 秒"（health × 3 = stale），不会在"健康阈值"和"总超时"
+                    // 之间来回猜。
+                    let health_ms = {
+                        let pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
+                        pm.health_timeout_ms()
+                    };
                     let reaped = {
                         let pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
                         let max_failures = pm.max_failures();
@@ -648,8 +655,9 @@ pub async fn spawn(
                         state.logger.warn(
                             "mesh",
                             format!(
-                                "-conn peer={peer} ep={ep} 读活性超过 {}s 无入站帧 ⇒ 拆除死链路并等待重拨",
-                                stale_ms / 1000
+                                "[WATCHDOG] peer={peer} ep={ep} 读活性超过 {}s 无入站帧（健康阈值={}s ×3 = stale）⇒ 拆除死链路并等待重拨",
+                                stale_ms / 1000,
+                                health_ms / 1000,
                             ),
                         );
                     }
