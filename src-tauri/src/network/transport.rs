@@ -354,7 +354,11 @@ pub async fn broadcast_gossip(state: &AppState, envelope: GossipEnvelope) {
                 let kinds: Vec<PathKind> = ls.iter().map(|l| l.path_kind).collect();
                 let best = crate::state::best_link_kind(&kinds)?;
                 let link = ls.iter().find(|l| l.path_kind == best)?;
-                Some((link.priority.clone(), peer_id.to_owned(), link.endpoint.clone()))
+                Some((
+                    link.priority.clone(),
+                    peer_id.to_owned(),
+                    link.endpoint.clone(),
+                ))
             })
             .collect()
     };
@@ -1635,11 +1639,13 @@ async fn writer_loop(
                     // 写成功只记**出站**活性（诊断口径）。M3-0b 起它**不**参与 is_healthy：
                     // 半开 TCP 上写会一直"成功"，那是本缺陷要被排除的伪证据。
                     mark_conn_write_seen(&state, &peer_id, &endpoint);
-                    // 写成功同时意味着 writer 恢复了消费 — 之前因 queue Full 标记的
-                    // 拥塞此刻应当解除。拥塞与 liveness 是独立维度，这里只负责恢复拥塞，
-                    // 绝不影响 healthy 的判定。
-                    mark_conn_congestion_recovered(&state, &peer_id, &endpoint);
-                    // 文件分块**真的写出去了**才叫进展（发送侧等 FileCompleteAck 的判据）。
+                    // Liveness 与 congestion 是独立维度：写成功一帧不等于
+                    // 两个 channel 已经排空。必须等 prio/bulk 都 empty 才清除拥塞 ——
+                    // 否则 writer 慢慢消费（TCP 窗口半开）会导致 flapping：
+                    // 写一帧 → recovered → Router 选回 → 又 Full → 又 congested。
+                    if prio_rx.is_empty() && bulk_rx.is_empty() {
+                        mark_conn_congestion_recovered(&state, &peer_id, &endpoint);
+                    }
                     mark_file_wire_progress(&state, &msg);
                     continue;
                 }
