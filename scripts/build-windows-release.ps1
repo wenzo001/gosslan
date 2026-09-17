@@ -1,4 +1,4 @@
-﻿# =============================================================================
+# =============================================================================
 #  构建 Windows 生产包（NSIS 安装包 .exe）——「每次提交测试都出一个能装的包」
 #
 #  与 CI（.github/workflows/build.yml）产出的东西**完全一致**：
@@ -74,22 +74,28 @@ if (Test-Path $vswhere) {
 }
 
 # ---------------------------------------------------------------------------
-# 1/5 护栏：前端测试 + Rust 单测（--SkipGuards 可跳）
+# 1/5 护栏：统一入口 verify.mjs（--SkipGuards 显式跳过）
+#
+# verify.mjs 串起 11 步守卫：check-test-manifest / check-invariant-exceptions /
+# check-ble-constants / check-domain-map / check-domain-deps / check-change-budget /
+# version:changelog / npm test / npm run build / cargo test --features bluetooth /
+# verify-guards（默认只跑前端子集）。
+# 比原来的"前端 + Rust --lib 手工串"覆盖更全 —— 原来漏了全量 cargo test、领域图、
+# BLE 常量单一来源、不变量例外登记等静态守卫。
+#
+# ⚠️ -SkipGuards 必须**显式传入理由字符串**（例如 -SkipGuards "临时跳过：先修 cargo fmt"）。
+#     不加理由 = 等同于未跳过，强制跑全量。理由会打印进日志，事后可以 grep 追溯。
 # ---------------------------------------------------------------------------
 if (-not $SkipGuards) {
-    Step "1/5" "前端测试（npm test）"
-    npm test
-    if ($LASTEXITCODE -ne 0) { Fail "前端测试未通过 —— 已中止打包（坏包比没有包更浪费时间）。确要跳过请加 -SkipGuards" }
-
-    Step "2/5" "Rust 单测（cargo test --lib --features bluetooth）"
-    Push-Location (Join-Path $root "src-tauri")
-    try {
-        cargo test --lib --features bluetooth --offline
-        if ($LASTEXITCODE -ne 0) { Fail "Rust 单测未通过 —— 已中止打包" }
-    } finally { Pop-Location }
+    Step "1/5" "统一验证入口（npm run verify）"
+    npm run verify
+    if ($LASTEXITCODE -ne 0) { Fail "verify 未通过 —— 已中止打包（坏包比没有包更浪费时间）。确要跳过请加 -SkipGuards <理由>" }
 } else {
-    Step "1/5" "护栏已跳过（-SkipGuards）"
-    Step "2/5" "护栏已跳过（-SkipGuards）"
+    if (-not ($SkipGuards -is [string]) -or ($SkipGuards -eq "")) {
+        Fail "-SkipGuards 必须带理由字符串（例如 -SkipGuards '临时跳过：先修 cargo fmt'）。空理由视同未跳过。"
+    }
+    Write-Host "⚠️  护栏已跳过（-SkipGuards）。理由：$SkipGuards" -ForegroundColor Yellow
+    Write-Host "    这次发布的产物质量**未经验证**，请在发布前补跑 npm run verify" -ForegroundColor Yellow
 }
 
 # ---------------------------------------------------------------------------
