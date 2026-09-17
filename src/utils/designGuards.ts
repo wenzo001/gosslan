@@ -324,18 +324,36 @@ const FOCUS_INDICATOR_RE = /(?:focus|focus-visible):(?:ring|border|outline|bg|sh
  *
  * 判据：开标签里有 `outline-none`，且同一标签里既没有 `focus:ring/border/outline/bg/shadow`
  * 也没有 `focus-visible:` 同款 → 报出。
- * 逃生阀：文件里带 `focus-ring-ok` 注释则整文件跳过
- * （用于"焦点在容器上但不该画环"的场合：菜单容器 `role="menu" tabindex="-1"`、
- *  全屏对话框容器 `role="dialog" tabindex="-1"` —— 它们的焦点由内部条目承担）。
+ *
+ * ## 两个逃生阀（粒度不同，按需选）
+ *
+ * ① **元素级**（推荐）：给该元素加 `data-focus-ring-ok` 属性 ⇒ **只豁免这一个元素**，
+ *    文件里其它元素照旧受保护。
+ * ② **文件级**：文件里带 `focus-ring-ok:file` 注释 ⇒ 整文件跳过。只适用于"整个组件只有
+ *    一个不该画环的容器"的场合（菜单容器 `role="menu" tabindex="-1"`、全屏对话框容器
+ *    `role="dialog" tabindex="-1"` —— 它们的焦点由内部条目承担）。
+ *
+ * ⚠️ **文件级令牌为什么带 `:file` 后缀**：元素级的 `data-focus-ring-ok` **含有**
+ * `focus-ring-ok` 这个子串，所以文件级判据若还写成 `src.includes("focus-ring-ok")`，
+ * 就会把"只豁免了一个元素"的文件当成"整文件豁免" ⇒ 元素级标记形同虚设、护栏静默失效。
+ * 两个令牌必须是互不为子串的。
+ *
+ * ⚠️ **为什么必须有元素级**（2026-09-16）：`MessageComposer.vue` 因为"消息输入框不画焦点环"
+ * 这个**元素级**需求，用了**文件级**逃生阀 ⇒ 整个文件（含其中的按钮等键盘可聚焦元素）
+ * 一起失去本条保护，且 `scripts/verify-guards.py` 里注入该文件的用例退化成**空转**
+ * （改坏也不报），而项目里没有任何东西自动跑 verify-guards，所以一直没人发现。
+ * 粒度给错，护栏就会在你看不见的地方悄悄失效。
  */
 export function findOutlineNoneWithoutFocusRing(src: string): GuardIssue[] {
-  if (src.includes("focus-ring-ok")) return [];
+  if (src.includes("focus-ring-ok:file")) return [];
   const out: GuardIssue[] = [];
   for (const m of src.matchAll(CLASS_ATTR_RE)) {
     const classes = m[1].split(/\s+/).filter(Boolean);
     if (!classes.includes("outline-none")) continue;
     const tag = enclosingTag(src, m.index ?? 0);
     if (FOCUS_INDICATOR_RE.test(tag)) continue;
+    // 元素级逃生阀：只豁免**这一个**元素（见函数上方"两个逃生阀"）
+    if (tag.includes("data-focus-ring-ok")) continue;
     out.push({
       line: lineAt(src, m.index ?? 0),
       message:
@@ -343,8 +361,9 @@ export function findOutlineNoneWithoutFocusRing(src: string): GuardIssue[] {
         "会被 `.outline-none`（特异性 0,1,0）**静默覆盖**，键盘用户看不到焦点在哪（WCAG 2.4.7）。" +
         "两种改法：① 直接删掉 `outline-none`（让全局环生效，文本框类控件推荐这个）；" +
         "② 自己给一个可见指示，如 `focus:ring-2 focus:ring-primary` / `focus:border-[…]`。" +
-        "确实不该画环的容器（`role=\"menu\"` / `role=\"dialog\"` + `tabindex=\"-1\"`，焦点由内部承担）" +
-        "可在文件里加 `focus-ring-ok` 注释整文件跳过。",
+        "确实不该画环时用逃生阀，**优先元素级**：给这个元素加 `data-focus-ring-ok`（只豁免它）；" +
+        "只有整个组件都该跳过时才用文件级的 `focus-ring-ok:file` 注释 —— 文件级会让同文件里" +
+        "其它键盘可聚焦元素一起失去保护。",
     });
   }
   return out.sort((a, b) => a.line - b.line);

@@ -33,9 +33,9 @@ use tokio::task::JoinHandle;
 use crate::mesh::{BleEndpoint, Endpoint as MeshEndpoint, PathKind};
 use crate::network::transport::{
     build_signed_hello, flush_group_outbox, flush_outbox, flush_pending_group_keys,
-    flush_pending_group_reads, flush_pending_reads, handle_message, link_snapshot,
-    mark_conn_seen, mark_file_wire_progress, mark_peer_offline, register_connection,
-    should_accept_inbound_public, unregister_connection,
+    flush_pending_group_reads, flush_pending_reads, handle_message, link_snapshot, mark_conn_seen,
+    mark_file_wire_progress, mark_peer_offline, register_connection, should_accept_inbound_public,
+    unregister_connection,
 };
 use crate::protocol::Message;
 use crate::state::{AppState, Link};
@@ -50,16 +50,16 @@ use crate::transport::bluetooth::SERVICE_UUID;
 // 真机 2026-09-13 的教训（`docs/notes/windows-ble-diagnosis-2026-09-13.md`）：
 // 「先只做 central、外设下一轮」**行不通** —— 不能广播的一方永远不被对端发现，
 // 而镜像护栏又让它（当 id 更小时）不主动拨 ⇒ 两侧都在等对方。外设角色是**必需**的。
-#[cfg(target_os = "macos")]
-use crate::transport::bluetooth_peripheral as peripheral;
 #[cfg(target_os = "android")]
 use crate::transport::ble_android as peripheral;
-#[cfg(target_os = "windows")]
-use crate::transport::bluetooth_peripheral_windows as peripheral;
-#[cfg(target_os = "macos")]
-use crate::transport::bluetooth_peripheral::{PeripheralEvent, PeripheralWriter};
 #[cfg(target_os = "android")]
 use crate::transport::ble_android::{PeripheralEvent, PeripheralWriter};
+#[cfg(target_os = "macos")]
+use crate::transport::bluetooth_peripheral as peripheral;
+#[cfg(target_os = "macos")]
+use crate::transport::bluetooth_peripheral::{PeripheralEvent, PeripheralWriter};
+#[cfg(target_os = "windows")]
+use crate::transport::bluetooth_peripheral_windows as peripheral;
 #[cfg(target_os = "windows")]
 use crate::transport::bluetooth_peripheral_windows::{PeripheralEvent, PeripheralWriter};
 
@@ -155,7 +155,11 @@ pub struct BleHandle {
 /// "蓝牙未运行"，用户点了开关也看不到任何变化（用户 2026-09-12 安卓实测的
 /// 「蓝牙通道打不开」里，有一部分就是这个假状态造成的误导）。
 pub async fn runtime_state(state: &Arc<AppState>) -> (bool, usize) {
-    let running = state.ble.lock().unwrap_or_else(|e| e.into_inner()).is_some();
+    let running = state
+        .ble
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .is_some();
     let peers = {
         let links = state.links.lock().await;
         links
@@ -197,10 +201,7 @@ pub async fn start(state: Arc<AppState>) -> Result<(), String> {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     // 「立刻扫一轮」的触发通道（与 LAN 的 `probe` 同范式，见 `AppState::ble_scan_now`）
     let (scan_now_tx, scan_now_rx) = watch::channel(0u64);
-    *state
-        .ble_scan_now
-        .lock()
-        .unwrap_or_else(|e| e.into_inner()) = Some(scan_now_tx);
+    *state.ble_scan_now.lock().unwrap_or_else(|e| e.into_inner()) = Some(scan_now_tx);
     let st = state.clone();
     let task = tokio::spawn(async move { scan_loop(st, adapter, shutdown_rx, scan_now_rx).await });
 
@@ -221,6 +222,7 @@ pub async fn start(state: Arc<AppState>) -> Result<(), String> {
     // 而 `start()` 在 `set_channel_enabled` 的关键路径上 ⇒ 命令要等满 3 秒才返回，
     // 开关就跟着卡 3 秒。外设角色既然"独立失败"，就没有任何理由阻塞"通道已启动"这个结论。
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
+    #[allow(clippy::let_underscore_future)] // JoinHandle 丢弃不影响 spawn 的任务
     let _ = tokio::spawn(start_peripheral(state.clone(), shutdown_tx.subscribe()));
 
     state.logger.info(
@@ -273,8 +275,13 @@ pub async fn stop(state: &Arc<AppState>) {
     let handle = state.ble.lock().unwrap_or_else(|e| e.into_inner()).take();
     if let Some(handle) = handle {
         let _ = handle.shutdown.send(true);
-        if tokio::time::timeout(STOP_TIMEOUT, handle.task).await.is_err() {
-            state.logger.warn("ble", "蓝牙后台任务未在 2s 内退出，继续收尾");
+        if tokio::time::timeout(STOP_TIMEOUT, handle.task)
+            .await
+            .is_err()
+        {
+            state
+                .logger
+                .warn("ble", "蓝牙后台任务未在 2s 内退出，继续收尾");
         }
     }
     detach_all_ble_links(state).await;
@@ -292,10 +299,7 @@ pub async fn stop(state: &Arc<AppState>) {
         .clear();
     // 触发通道也一起撤掉：通道没开时 trigger_scan_now 必须老实返回 false，
     // 而不是"发进一个没人听的通道、让调用方误以为扫了"。
-    *state
-        .ble_scan_now
-        .lock()
-        .unwrap_or_else(|e| e.into_inner()) = None;
+    *state.ble_scan_now.lock().unwrap_or_else(|e| e.into_inner()) = None;
     state.logger.info("ble", "蓝牙通道已停止");
 }
 
@@ -394,7 +398,11 @@ async fn scan_loop(
                     format!(
                         "BLE 扫描：收到 {total} 个广播，其中 {} 个是本应用服务{}",
                         peers.len(),
-                        if user_triggered { "（用户主动触发）" } else { "" }
+                        if user_triggered {
+                            "（用户主动触发）"
+                        } else {
+                            ""
+                        }
                     ),
                 );
                 // 记进诊断状态（面板要在不重新扫的情况下知道最近一轮看到了什么）
@@ -459,7 +467,11 @@ async fn scan_loop(
                                     format!(
                                         "[DISCOVERY] 跳过候选 id={} 原因=退避中 剩余={left}ms{}",
                                         peripheral.id(),
-                                        if user_triggered { "（已按用户触发打折）" } else { "" }
+                                        if user_triggered {
+                                            "（已按用户触发打折）"
+                                        } else {
+                                            ""
+                                        }
                                     ),
                                 );
                                 continue;
@@ -869,8 +881,14 @@ async fn finish_dial(
     //    旧行为直接放弃 ⇒ 双方各自重拨、互相打断，好友申请/消息全部过期。
     //    新行为：窗口内继续读，丢掉非 Hello 的前导帧（**不处理**——身份还没验签），
     //    读到 Hello 就正常握手；窗口耗尽仍只报错（并说明收到了什么）。
-    let first =
-        read_hello_frame(&mut reader, HANDSHAKE_TIMEOUT, &mut *shutdown, &state, &ble_id).await?;
+    let first = read_hello_frame(
+        &mut reader,
+        HANDSHAKE_TIMEOUT,
+        &mut *shutdown,
+        &state,
+        &ble_id,
+    )
+    .await?;
     let Message::Hello {
         device_id,
         nickname,
@@ -932,12 +950,7 @@ async fn finish_dial(
 
     // ---- 去重：与 TCP 入站**同一个判据**（不要在这里复制第二份"有没有同路径连接"）----
     let existing = link_snapshot(&state, &peer_id).await;
-    if !should_accept_inbound_public(
-        &state.device_id,
-        &peer_id,
-        PathKind::Bluetooth,
-        &existing,
-    ) {
+    if !should_accept_inbound_public(&state.device_id, &peer_id, PathKind::Bluetooth, &existing) {
         return Err("已有蓝牙链路（或该 peer 链路数已满），不重复建链".to_string());
     }
 
@@ -1060,7 +1073,9 @@ fn frame_trace(msg: &Message) -> String {
         Message::Gossip { envelope } => format!("type=gossip kind={:?}", envelope.kind),
         Message::FriendRequest { from, .. } => format!("type=friend_request from={from}"),
         Message::FriendAccept { from, .. } => format!("type=friend_accept from={from}"),
-        Message::FileChunk { transfer_id, seq, .. } => {
+        Message::FileChunk {
+            transfer_id, seq, ..
+        } => {
             format!("type=file_chunk transfer={transfer_id} seq={seq}")
         }
         other => format!("type={}", other.wire_kind()),
@@ -1106,7 +1121,9 @@ async fn read_hello_frame(
                 if dropped > 0 {
                     state.logger.info(
                         "ble",
-                        format!("[SESSION] 跳过 {dropped} 个握手前导帧后收到 Hello ep={ep_for_log}"),
+                        format!(
+                            "[SESSION] 跳过 {dropped} 个握手前导帧后收到 Hello ep={ep_for_log}"
+                        ),
                     );
                 }
                 return Ok(frame);
@@ -1252,6 +1269,7 @@ impl FrameSource for ChannelSource {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn ble_writer_loop<S: FrameSink + 'static>(
     state: Arc<AppState>,
     peer_id: String,
@@ -1329,7 +1347,10 @@ async fn ble_writer_loop<S: FrameSink + 'static>(
                 if let (Ok(n), Some(trace)) = (&res, trace.as_deref()) {
                     state.logger.info(
                         "ble",
-                        format!("[SEND] {trace} → peer={peer_id} ep={ep} bytes={} 分片={n}", bytes.len()),
+                        format!(
+                            "[SEND] {trace} → peer={peer_id} ep={ep} bytes={} 分片={n}",
+                            bytes.len()
+                        ),
                     );
                 }
                 // 文件分块**真的写出去了**才算进展（发送侧等 FileCompleteAck 的判据，
@@ -1378,7 +1399,6 @@ async fn ble_writer_loop<S: FrameSink + 'static>(
                     }
                     break;
                 }
-
             }
             None => {
                 if prio_rx.is_closed() {
@@ -1516,9 +1536,7 @@ enum RouteCtl {
     ///
     /// ⚠️ 只在失败时发：成功路径由 `Add` 清理；若成功也发，会与"刚起来的第二次握手"
     /// 抢同一个标记（把新握手的 `handshaking` 误清 ⇒ 同一 central 叠起多条握手）。
-    HandshakeFailed {
-        central: String,
-    },
+    HandshakeFailed { central: String },
 }
 
 /// 把外设事件队列里**已经入队**的 `Notice`/`Warning` 逐条落日志。
@@ -1570,13 +1588,15 @@ async fn start_peripheral(state: Arc<AppState>, shutdown: watch::Receiver<bool>)
     // 等 CoreBluetooth 上报状态：把"未授权 / 蓝牙关着 / 广播失败"变成一条**说得清**的错误。
     // 超时不致命（系统可能只是还没上报），此时按"已启动"继续。
     match tokio::time::timeout(peripheral::STATE_WAIT, startup.state).await {
-        Ok(Ok(Ok(()))) => state
-            .logger
-            .info("ble", "蓝牙外设角色已启动（广播服务 UUID，等待手机/PC 连入）"),
+        Ok(Ok(Ok(()))) => state.logger.info(
+            "ble",
+            "蓝牙外设角色已启动（广播服务 UUID，等待手机/PC 连入）",
+        ),
         Ok(Ok(Err(e))) => {
-            state
-                .logger
-                .warn("ble", format!("蓝牙外设角色不可用（central 角色不受影响）：{e}"));
+            state.logger.warn(
+                "ble",
+                format!("蓝牙外设角色不可用（central 角色不受影响）：{e}"),
+            );
             stop_peripheral_and_drain(&mut startup.server, &state);
             return;
         }
@@ -1587,9 +1607,10 @@ async fn start_peripheral(state: Arc<AppState>, shutdown: watch::Receiver<bool>)
             stop_peripheral_and_drain(&mut startup.server, &state);
             return;
         }
-        Err(_) => state
-            .logger
-            .info("ble", "蓝牙外设角色已启动（未在 3s 内收到状态回调，继续广播）"),
+        Err(_) => state.logger.info(
+            "ble",
+            "蓝牙外设角色已启动（未在 3s 内收到状态回调，继续广播）",
+        ),
     }
     tokio::spawn(peripheral_accept_loop(state, startup.server, shutdown));
 }
@@ -1635,7 +1656,8 @@ async fn peripheral_accept_loop(
                 // 同一个 central 地址的**重连**发来的 Hello 绝不能被投给旧链路的管道,
                 // 否则新连接永远收不到 Hello 回应（对端表现为"握手超时"/"首帧不是 Hello"）。
                 let has_route = routes.contains_key(&central);
-                let action = peripheral_route_action(has_route, has_route && frame_is_hello(&bytes));
+                let action =
+                    peripheral_route_action(has_route, has_route && frame_is_hello(&bytes));
                 let mut pending = Some(bytes);
                 if action == PeripheralRouteAction::ToHandshake && has_route {
                     routes.remove(&central);
@@ -1685,13 +1707,16 @@ async fn peripheral_accept_loop(
                     // 让 `async move` 直接捕获它会把它搬出循环（E0382）。
                     let sd = shutdown.clone();
                     tokio::spawn(async move {
-                        let ok = accept_handshake(st, wrt, central, bytes, ctl_tx.clone(), sd).await;
+                        let ok =
+                            accept_handshake(st, wrt, central, bytes, ctl_tx.clone(), sd).await;
                         // ⚠️ **只在失败时**解除"握手中"标记（成功路径由 `RouteCtl::Add` 解除）。
                         // 失败不解标记 ⇒ 这个 central 的真 Hello 永远被丢 ⇒ 设备再也加入不进来
                         // （macOS 外设没有断连回调，条目可能永久残留）。
                         if !ok {
                             let _ = ctl_tx
-                                .send(RouteCtl::HandshakeFailed { central: failed_central })
+                                .send(RouteCtl::HandshakeFailed {
+                                    central: failed_central,
+                                })
                                 .await;
                         }
                     });
@@ -1817,8 +1842,8 @@ async fn try_accept_handshake(
     );
 
     // ---- 1. 首帧必须是 Hello，且签名必须验过（BLE 地址不是身份）----
-    let first: Message = serde_json::from_slice(&first_bytes)
-        .map_err(|e| format!("对端首帧无法解析：{e}"))?;
+    let first: Message =
+        serde_json::from_slice(&first_bytes).map_err(|e| format!("对端首帧无法解析：{e}"))?;
     let Message::Hello {
         device_id,
         tcp_port,
@@ -1867,7 +1892,10 @@ async fn try_accept_handshake(
     {
         return Err("该 peer 链路数已满，不重复建链".to_string());
     }
-    if existing.iter().any(|(_, k, healthy)| *k == PathKind::Bluetooth && *healthy) {
+    if existing
+        .iter()
+        .any(|(_, k, healthy)| *k == PathKind::Bluetooth && *healthy)
+    {
         state.logger.info(
             "ble",
             format!("对端 {peer_id} 已有蓝牙链路，这条是镜像入站 —— 仍然完成握手，好让它自己退让"),
@@ -2099,7 +2127,10 @@ mod tests {
             preamble_action(MAX_HANDSHAKE_PREAMBLE_FRAMES, false),
             PreambleAction::GiveUp
         );
-        assert!(MAX_HANDSHAKE_PREAMBLE_FRAMES >= 8, "额度过小会让残留帧把链路打死");
+        assert!(
+            MAX_HANDSHAKE_PREAMBLE_FRAMES >= 8,
+            "额度过小会让残留帧把链路打死"
+        );
     }
 
     /// **重连判据**：同一个 central 地址的**新连接**发来的 Hello，绝不能被投给旧链路。

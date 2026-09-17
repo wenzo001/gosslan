@@ -204,7 +204,7 @@ CASES: list[Case] = [
         name="中继文件接收幂等（重复 offer 不清空已收切片）",
         why="多邻居泛洪会送来重复的 RelayFileOffer；覆盖式 insert 会清空已收到的切片 ⇒ "
             "文件永远缺片（完整性校验也必然失败）",
-        file=TAURI / "src" / "relay_manager.rs",
+        file=TAURI / "src" / "file_relay.rs",
         injections=[(
             "        self.reassemblies\n"
             "            .entry(transfer_id.to_string())\n"
@@ -346,21 +346,25 @@ CASES: list[Case] = [
         expect_fail_hint="bookmark_wins_over_the_stored_path",
         tags=["rust", "macos"],
     ),
-    # ---------------- Rust：BLE 外设（需要 feature） ----------------
+    # ---------------- Rust：BLE 载荷预算（常量与换算的唯一事实来源） ----------------
     Case(
-        name="BLE 分片 MTU 异常值绝不返回 0",
-        why="返回 0 ⇒ 分片全部失败、链路静默假死（真机上表现为「连上了但发不出消息」）",
-        file=TAURI / "src" / "transport" / "bluetooth_peripheral.rs",
+        name="BLE 分片载荷预算异常值绝不返回 0（否则链路静默假死）",
+        why="返回 0 ⇒ `fragment` 拒绝一切、链路静默假死（真机上表现为「连上了但发不出消息」）。"
+        "⚠️ 2026-09-16 换了注入点与命令：原先注入 `bluetooth_peripheral.rs` 的 "
+        "`central_payload_mtu`，而那份实现已收敛进 `ble_framing::notify_payload_budget`，"
+        "旧锚点随之消失 ⇒ 本用例当时退化成「锚点出现 0 次」的报错。"
+        "改注入规范位置后**平台限制也一并去掉**：`ble_framing` 不做平台门控，"
+        "所以这条现在在 macOS / Windows / Linux 上都有效，且不再需要 `--features bluetooth`"
+        "（`ble_framing` 是 `transport/mod.rs` 里无条件编译的模块）。",
+        file=TAURI / "src" / "transport" / "ble_framing.rs",
         injections=[(
-            'let min = ble_framing::BLE_CHUNK_HEADER_LEN + 1; // 至少装得下"分片头 + 1 字节"',
-            "let min = 1;",
+            '    let min = BLE_CHUNK_HEADER_LEN + 1; // 至少装得下"分片头 + 1 字节"',
+            "    let min = 0;",
         )],
-        cmd=cargo("test", "--lib", "--features", "bluetooth", "bluetooth_peripheral"),
+        cmd=cargo("test", "--lib", "notify_payload_budget_clamps_and_never_returns_zero"),
         cwd=TAURI,
-        expect_fail_hint="central_mtu_clamps",
+        expect_fail_hint="应退回默认而不是返回 0",
         tags=["rust", "ble"],
-        # 目标文件整个是 `#![cfg(all(feature = "bluetooth", target_os = "macos"))]`
-        platforms=("darwin",),
     ),
     Case(
         name="BLE 读循环必须回灌读活性（否则健康链路 45s 自拆）",
@@ -430,12 +434,15 @@ CASES: list[Case] = [
         "而 `ble::start` 就在 `set_channel_enabled` 的关键路径上 ⇒ 一旦 await 它，"
         "用户点蓝牙开关就要干等 3 秒（用户 2026-09-13 Mac 实测「点了一下，"
         "过了好一会儿才会开」）。外设角色本来就是独立失败的，必须丢后台任务；"
-        "同时句柄要先写进 state.ble，否则「刚开就关」时 stop() 拿不到 handle、发不出停机信号",
+        "同时句柄要先写进 state.ble，否则「刚开就关」时 stop() 拿不到 handle、发不出停机信号。"
+        "⚠️ 2026-09-16 更新锚点：该 cfg 后来加入了 `target_os = \"windows\"`（Windows 外设角色"
+        "落地），而锚点仍写着旧的两平台列表 ⇒ 本用例此前是「锚点出现 0 次」的报错状态。"
+        "这正是「护栏会静默腐烂、只有跑起来才知道」的又一例。",
         file=TAURI / "src" / "network" / "ble.rs",
         injections=[(
-            "#[cfg(any(target_os = \"macos\", target_os = \"android\"))]\n"
+            "#[cfg(any(target_os = \"macos\", target_os = \"windows\", target_os = \"android\"))]\n"
             "    let _ = tokio::spawn(start_peripheral(state.clone(), shutdown_tx.subscribe()));",
-            "#[cfg(any(target_os = \"macos\", target_os = \"android\"))]\n"
+            "#[cfg(any(target_os = \"macos\", target_os = \"windows\", target_os = \"android\"))]\n"
             "    start_peripheral(state.clone(), shutdown_tx.subscribe()).await;",
         )],
         cmd=cargo(
@@ -527,16 +534,47 @@ CASES: list[Case] = [
     ),
     Case(
         name="焦点可见（outline-none 必须有自己的焦点指示）",
-        why="全局焦点环写在 `:where()` 里（特异性 0），会被 `.outline-none` 静默覆盖",
-        file=ROOT / "src" / "components" / "chat" / "MessageComposer.vue",
+        why="全局焦点环写在 `:where()` 里（特异性 0），会被 `.outline-none`（特异性 0,1,0）"
+        "静默覆盖 —— 7 处输入框（含最高频的消息输入框）因此完全没有焦点指示，"
+        "而代码看起来「有全局规则在管」（真实缺陷 2026-09-12）。"
+        "⚠️ 2026-09-16 换了注入点：原先注入 `MessageComposer.vue`，而该文件后来因用户要求"
+        "（消息输入框不画焦点环）加了**文件级** `focus-ring-ok` 逃生阀 ⇒ 整个文件被跳过、"
+        "本用例退化成空转（改坏也不报，2026-09-16 由 verify-guards 全量跑发现）。"
+        "改注入 `TitleBar.vue` 的关闭按钮：未被豁免，且它是**键盘可聚焦的 button** —— "
+        "正是这条护栏真正要保护的场景（键盘用户看不到焦点在哪）。"
+        "MessageComposer.vue 整文件失去本条覆盖的问题，另行按元素级逃生阀处理。",
+        file=ROOT / "src" / "components" / "TitleBar.vue",
         injections=[(
-            "leading-normal whitespace-pre-wrap",
-            "leading-normal outline-none whitespace-pre-wrap",
+            "flex w-11 items-center justify-center text-[var(--gosslan-rail-text)] "
+            "transition hover:bg-[var(--gosslan-danger)] hover:text-white",
+            "flex w-11 items-center justify-center text-[var(--gosslan-rail-text)] "
+            "transition hover:bg-[var(--gosslan-danger)] hover:text-white outline-none",
         )],
         cmd=npm("test"),
         cwd=ROOT,
         expect_fail_hint="静默覆盖",
         tags=["frontend", "a11y"],
+    ),
+    Case(
+        name="焦点可见：MessageComposer 里未豁免的元素也必须被守到（豁免不得外溢）",
+        why="2026-09-16 发现：该文件为「消息输入框不画焦点环」这**一个元素**的需求用了**文件级**"
+        "逃生阀 ⇒ 整个文件（含「取消引用」按钮等键盘可聚焦元素）一起失去本条保护，"
+        "而注入该文件的旧用例因此退化成空转（改坏也不报）。改成元素级 `data-focus-ring-ok` 后，"
+        "本用例把**未**打标记的那个按钮改坏，必须报出来 —— 它同时钉住两个坑："
+        "① 元素级豁免不得外溢到同文件其它元素；② 文件级令牌不能是元素级令牌的子串"
+        "（`data-focus-ring-ok` 含有 `focus-ring-ok`，所以文件级必须写成 `focus-ring-ok:file`，"
+        "否则「只豁免一个元素」会被判成「整文件豁免」）。",
+        file=ROOT / "src" / "components" / "chat" / "MessageComposer.vue",
+        injections=[(
+            "flex h-5 w-5 shrink-0 items-center justify-center "
+            "rounded-[var(--gosslan-radius-xs)] transition hover:bg-[var(--gosslan-hover)]",
+            "flex h-5 w-5 shrink-0 items-center justify-center "
+            "rounded-[var(--gosslan-radius-xs)] transition hover:bg-[var(--gosslan-hover)] outline-none",
+        )],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="静默覆盖",
+        tags=["frontend", "a11y", "new-guards"],
     ),
     Case(
         name="触屏点按目标（小按钮必须有 tap-safe）",
@@ -1376,16 +1414,23 @@ CASES: list[Case] = [
         tags=["rust", "presence", "network"],
     ),
     Case(
-        name="BLE 拨号退避必须 1 分钟内恢复（旧上限 10 分钟 = 好友申请等几分钟）",
-        why="真机 2026-09-13：好友申请等了 5～6 分钟才到。根因之一就是退避上限 600s："
+        name="BLE 拨号退避绝不指数增长到分钟级（否则好友申请等几分钟）",
+        why="真机 2026-09-13：好友申请等了 5～6 分钟才到。根因之一是退避被锁到分钟级："
         "BLE 上「连过去被拒」是常态，每次失败把一个**稳定地址**推进下一档，而"
-        "「小 id 只接受」又让只有一侧会拨 ⇒ 唯一的拨号通道被锁死到分钟级。"
-        "这条护栏把 5s→10s→20s→40s→60s 封顶钉死",
+        "「小 id 只接受」又让只有一侧会拨 ⇒ 唯一的拨号通道被锁死。"
+        "现在的实现是「前 3 次不退避，之后 5s→10s→20s 封顶」。"
+        "⚠️ 2026-09-16 两处更新：① 命令指向新测试名（旧测试已随「缓增 + 封顶」重设计改名）；"
+        "② 注入改为**去掉封顶**而不是改 `MAX_MS` 的值 —— 实现里 `step.min(2)` 已经把增长压到"
+        "3 档，单改 `MAX_MS` 到 600_000 也到不了分钟级，那样的注入是**空转**的"
+        "（改坏了测试照样通过）。这条用例的前一版正因为锚点写死在旧值 60_000 而失效。",
         file=TAURI / "src" / "network" / "ble.rs",
-        injections=[("    const MAX_MS: i64 = 60_000;", "    const MAX_MS: i64 = 600_000;")],
-        cmd=cargo("test", "--lib", "--features", "bluetooth", "dial_backoff_recovers_within_a_minute"),
+        injections=[(
+            "    (BASE_MS << step.min(2)).min(MAX_MS)",
+            "    BASE_MS << step",
+        )],
+        cmd=cargo("test", "--lib", "--features", "bluetooth", "dial_backoff_does_not_starve_retries"),
         cwd=TAURI,
-        expect_fail_hint="上限必须 60s",
+        expect_fail_hint="必须封顶",
         tags=["rust", "ble", "backoff"],
     ),
     Case(
@@ -1510,10 +1555,14 @@ CASES: list[Case] = [
         name="CHANGELOG 结构（[Unreleased] 锚点缺失/顺序错乱必须报出）",
         why="发布脚本按行首 `## [Unreleased]` 插入新小节。真实事故：它以前用 includes+replace "
         "找锚点，正文里出现同样文字就被误命中 ⇒ 4.1.1~4.1.11 全被插进 4.1.0 小节的半句话里、"
-        "真正的锚点被吞掉（不报错、不影响功能，只有结构检查能拦住）",
+        "真正的锚点被吞掉（不报错、不影响功能，只有结构检查能拦住）。"
+        "⚠️ 2026-09-16 修正：本用例原先拿 `npm run version:check` 当命令，而那条命令的 ①②"
+        "（版本必须 ≥ 未发布提交要求的、每个提交要有自洽的 Version-Bump 声明）在**攒提交期间"
+        "本来就该是红的** ⇒ 本用例永远进不了『恢复即 PASS』、被判成护栏失效。"
+        "改成只跑结构检查的 `version:changelog`：结构是结构、记账是记账。",
         file=ROOT / "CHANGELOG.md",
         injections=[("## [Unreleased]\n", "## [unreleased]\n")],
-        cmd=npm("run", "version:check"),
+        cmd=npm("run", "version:changelog"),
         cwd=ROOT,
         expect_fail_hint="[Unreleased]",
         tags=["frontend", "version", "docs"],
@@ -1540,6 +1589,377 @@ CASES: list[Case] = [
         cwd=TAURI,
         expect_fail_hint="缺省必须是",
         tags=["rust", "android", "channel"],
+    ),
+    # ---------------- 测试清单守卫（挡住「测试静默不跑」） ----------------
+    # 这两条守的是 `scripts/check-test-manifest.mjs`。它拦的是一类**没有信号**的故障：
+    # 测试明明写着，却根本没被执行，而所有命令都返回 0。
+    Case(
+        name="测试清单：基线里的用例没跑必须报出来（漏 --features 就靠它）",
+        why="`bluetooth` 是**非默认** feature（`src-tauri/Cargo.toml` 的 [features]）。漏掉 "
+            "`--features bluetooth` ⇒ BLE 模块根本不编译、那批用例连同被测代码一起消失，"
+            "而 `cargo test` **全绿**。本项目真实踩过：BLE 连续四个版本（4.18.7→4.18.10）"
+            "边走边修，而这个子系统恰恰是「忘了加 feature 就静默不测」的那个。"
+            "清单守卫比对「基线名单 ⋈ 实际 --list」，缺名即红。",
+        file=TAURI / "test-baseline.macos.txt",
+        injections=[(
+            "transport::bluetooth_peripheral::tests::central_mtu_clamps_and_never_returns_zero",
+            "transport::bluetooth_peripheral::tests::central_mtu_clamps_and_never_returns_zero\n"
+            "transport::bluetooth_peripheral::tests::a_test_that_no_longer_runs",
+        )],
+        cmd=["node", "scripts/check-test-manifest.mjs", "--only", "rust"],
+        cwd=ROOT,
+        expect_fail_hint="静默跳过",
+        tags=["manifest", "ble"],
+        # 基线按平台分文件（macOS 外设 / Windows 外设是互斥的 #[cfg]）。
+        # Phase 2 打通 Windows 测试通道后，这里补一条 test-baseline.windows.txt 的对应用例。
+        platforms=("darwin",),
+    ),
+    Case(
+        name="测试清单：磁盘上的测试文件没登记进 package.json 必须报出来",
+        why="`npm test` 的脚本里是**手工枚举**的 48 条路径。新增一个 .test.ts 时若忘了把它加进"
+            "那串字符串，新文件不会被执行，而 `npm test` 依然**全绿** —— 与「漏 --features」"
+            "是完全同类的东西：退出码 0 的空转。",
+        file=ROOT / "package.json",
+        injections=[(
+            "src/utils/selfChat.test.ts src/utils/todos.test.ts ",
+            "src/utils/selfChat.test.ts ",
+        )],
+        cmd=["node", "scripts/check-test-manifest.mjs", "--only", "frontend"],
+        cwd=ROOT,
+        expect_fail_hint="未登记",
+        tags=["manifest", "frontend"],
+    ),
+    # ---------------- 不变量例外登记（挡住「照文档误修」） ----------------
+    # 守的是 `scripts/check-invariant-exceptions.mjs`：代码侧的 `INV-EXCEPTION:` 标记
+    # 与 `docs/protocol-invariants.md` §22 登记区必须**双向**一致。
+    Case(
+        name="不变量例外：代码标了但文档没登记必须报出来（否则会被照文档误修）",
+        why="AI 的必读清单（AI_ENGINEERING_INDEX.md）只指向 protocol-invariants.md 与本文件。"
+            "一段**正当**的例外若只写在实现旁边、没写进那份文档，读文档的人就会把它当 bug 修掉 ——"
+            "「和自己聊天」正是这种：它不进 outbox，「修」成进 outbox 会让那行永远等不到 Ack、"
+            "被 flush_outbox 每次心跳重发，把「outbox 必然排空」真的破掉。",
+        file=TAURI / "src" / "commands.rs",
+        injections=[(
+            "// INV-EXCEPTION: INV-P03, INV-P04 — 自聊收发双方都是本机",
+            "// INV-EXCEPTION: INV-P03, INV-P04, INV-P20 — 自聊收发双方都是本机",
+        )],
+        cmd=["node", "scripts/check-invariant-exceptions.mjs"],
+        cwd=ROOT,
+        expect_fail_hint="没登记进不变量文档",
+        tags=["invariant", "new-guards"],
+    ),
+    Case(
+        name="不变量例外：文档登记了但代码标记没了必须报出来（否则文档在说谎）",
+        why="登记的例外如果代码里已无人声明，要么这段代码的例外成了隐藏事实，"
+            "要么例外早已不存在而登记忘了撤 —— 两种都会让文档变得不可信，"
+            "而「文档不可信」比「没有文档」更糟：它会让所有不变量一起失效。",
+        file=TAURI / "src" / "commands.rs",
+        injections=[(
+            "// INV-EXCEPTION: INV-P03, INV-P04 — 自聊收发双方都是本机，没有对端可等 Ack：",
+            "// （标记被删）",
+        )],
+        cmd=["node", "scripts/check-invariant-exceptions.mjs"],
+        cwd=ROOT,
+        expect_fail_hint="找不到对应标记",
+        tags=["invariant", "new-guards"],
+    ),
+    Case(
+        name="不变量例外：登记里出现文档未定义的 id（笔误会登记出一条不存在的例外）",
+        why="例外表里的 id 打错一个数字，就等于凭空登记了一条不存在的例外。"
+            "这类笔误不会自己冒出来，只会在某次「照文档排查」时把人带沟里。",
+        file=TAURI / "src" / "commands.rs",
+        injections=[(
+            "// INV-EXCEPTION: INV-P03, INV-P04 — 自聊收发双方都是本机",
+            "// INV-EXCEPTION: INV-P03, INV-P04, INV-P99 — 自聊收发双方都是本机",
+        )],
+        # 同时改文档：把这个不存在的 id 也写进登记区，才能把「笔误」单独隔离出来
+        # （否则会先以「代码标了没登记」失败，证明不了笔误这条判据本身有效）。
+        extra_injections=[(
+            ROOT / "docs" / "protocol-invariants.md",
+            "<!-- END EXCEPTION REGISTRY -->",
+            "| INV-P99 | 探针 | 无 | 探针 |\n\n<!-- END EXCEPTION REGISTRY -->",
+        )],
+        cmd=["node", "scripts/check-invariant-exceptions.mjs"],
+        cwd=ROOT,
+        expect_fail_hint="文档未定义",
+        tags=["invariant", "new-guards"],
+    ),
+    # ---------------- BLE 常量/换算的单一事实来源 ----------------
+    # 守的是 `scripts/check-ble-constants.mjs`。背景：CHANGELOG 4.18.7→4.18.10
+    # **连着四个版本**修同一个分片预算问题 —— 根因不是某一行写错，而是同一个概念
+    # 在多个地方各算一遍（macOS 外设侧自己留了 `const DEFAULT = 20` / `const MAX = 512`）。
+    Case(
+        name="BLE 常量只有一个家：重复定义必须报出来",
+        why="4.18.7→4.18.10 那四个版本的病根是「同一个概念多处各算一遍」。"
+        "2026-09-16 把常量与换算收敛到 `transport/ble_framing.rs` 一处；"
+        "本用例把 `BLE_DEFAULT_MTU` 重新定义回 `bluetooth.rs`，必须被报出来 —— "
+        "否则下一次漂移会以完全相同的方式发生（数值恰好一致 ⇒ 不报错、只在真机上表现为"
+        "「某台设备收不到消息」）。",
+        file=TAURI / "src" / "transport" / "bluetooth.rs",
+        injections=[(
+            "    /// 把协商到的 MTU 换算成**分片有效载荷上限**（central 侧）。",
+            "    /// BLE 未协商时的默认 ATT MTU。\n"
+            "    pub const BLE_DEFAULT_MTU: u16 = 23;\n\n"
+            "    /// 把协商到的 MTU 换算成**分片有效载荷上限**（central 侧）。",
+        )],
+        cmd=["node", "scripts/check-ble-constants.mjs"],
+        cwd=ROOT,
+        expect_fail_hint="有 2 处定义",
+        tags=["ble", "new-guards"],
+    ),
+    Case(
+        name="BLE 常量只有一个家：匿名常量重述必须报出来（4.18.x 的原始形态）",
+        why="这条注入的就是 2026-09-13 真实埋下的那两行：`const DEFAULT: usize = 20` 与 "
+        "`const MAX: usize = 512` —— 名字没有信息量、靠注释解释语义。它们让 macOS 外设侧"
+        "成了 `ble_framing` 那份换算的**第二份实现**（当时 Windows 走共享函数、macOS 不走，"
+        "于是文档里那句「外设侧用的是同一个函数」只对 Windows 成立）。"
+        "判据刻意**不扫裸数字**：`const CONNECT_ATTEMPTS = 3` 这类无关常量不许被误伤，"
+        "所以规则是「名字按 `_` 分词命中概念词或语义空名」**且**「值恰好是受保护字面量」。",
+        file=TAURI / "src" / "transport" / "bluetooth_peripheral.rs",
+        injections=[(
+            "pub fn central_payload_mtu(max_update_value_length: usize) -> usize {\n"
+            "    ble_framing::notify_payload_budget(max_update_value_length)\n"
+            "}",
+            "pub fn central_payload_mtu(max_update_value_length: usize) -> usize {\n"
+            "    const DEFAULT: usize = 20;\n"
+            "    const MAX: usize = 512;\n"
+            "    let min = ble_framing::BLE_CHUNK_HEADER_LEN + 1;\n"
+            "    if max_update_value_length < min {\n"
+            "        DEFAULT\n"
+            "    } else {\n"
+            "        max_update_value_length.min(MAX)\n"
+            "    }\n"
+            "}",
+        )],
+        cmd=["node", "scripts/check-ble-constants.mjs"],
+        cwd=ROOT,
+        expect_fail_hint="第二份事实来源",
+        tags=["ble", "new-guards"],
+    ),
+    Case(
+        name="BLE 两侧载荷预算必须能互相推回去（外设侧不再减 ATT 头）",
+        why="常量收敛只保证「只有一份」，不保证「这一份是对的」。本用例注入 central 侧的正确"
+        "换算被外设侧**又减了一次 ATT 头**（4.18.7 的形态），"
+        "`both_sides_agree_on_the_same_link_budget` 必须红。"
+        "这条交叉校验此前**只存在于 Windows 专属**的 "
+        "`peripheral_and_central_agree_on_payload_budget`，而 macOS 恰恰是当时唯一没走共享"
+        "换算的一侧，所以缺口一直没被发现。现在两侧共用同一个测试。",
+        file=TAURI / "src" / "transport" / "ble_framing.rs",
+        injections=[(
+            "        max_update_value_length.min(GATT_MAX_ATTR_LEN)\n    }",
+            "        (max_update_value_length - ATT_HEADER_LEN).min(GATT_MAX_ATTR_LEN)\n    }",
+        )],
+        cmd=cargo("test", "--lib", "both_sides_agree_on_the_same_link_budget"),
+        cwd=TAURI,
+        expect_fail_hint="必须原样返回",
+        tags=["rust", "ble", "new-guards"],
+    ),
+    Case(
+        name="BLE 常量只有一个家：外设平台自己算一遍必须报出来（Android 2026-09-16 的形态）",
+        why="判据 A/B 都只盯「定义」，而真实漏掉的那处是**把换算内联进平台实现**："
+        "Android 的 `payload_mtu` 自己写 `if (1..=512).contains(&v) { v } else { 20 }` —— "
+        "既没重新定义常量（逃过 B），也不是「重新实现具名函数」（逃过 A）。"
+        "它还有真 bug：`1..=6` 这类**装不下分片头**的值被放行 ⇒ `fragment` 拒绝一切 ⇒ "
+        "整条链路发不出消息，而日志只说「帧无法分片」。这条注入就是把它改回原样。"
+        "发现它的正是 Phase 4 引入的 Android `cargo check` —— 它不跑测试，"
+        "所以比 `cargo test` 更容易看见「只在某一平台编译的重复」。",
+        file=TAURI / "src" / "transport" / "ble_android.rs",
+        injections=[(
+            "        let raw = call_static_int(\"payloadMtu\", central).unwrap_or(0);\n"
+            "        ble_framing::notify_payload_budget(usize::try_from(raw).unwrap_or(0))",
+            "        call_static_int(\"payloadMtu\", central)\n"
+            "            .map(|v| if (1..=512).contains(&v) { v as usize } else { 20 })\n"
+            "            .unwrap_or(20)",
+        )],
+        cmd=["node", "scripts/check-ble-constants.mjs"],
+        cwd=ROOT,
+        expect_fail_hint="找不到对规范换算的调用",
+        tags=["ble", "android", "new-guards"],
+    ),
+    # ---------------- 领域图（docs/domains.data.mjs + check-domain-map.mjs） ----------------
+    # 地图错了比没有地图更危险 —— 它会被当成事实执行。下面三条守的是"地图不许说谎"里
+    # **机器能守**的那部分（`activeHome` 是否属实只能靠人诚实 + 台账里的 file:line 证据）。
+    Case(
+        name="领域图：enforce 不能开在还有第二个家的领域（边界收口完成一个，打开一个）",
+        why="`enforce: true` 表示「该领域边界已是事实、可由机器守住」（例如禁止跨领域直接引用）。"
+        "若它还有第二个家（迁移中）就把闸门打开，第一天就会全红 —— 而红门禁会催生绕过，"
+        "门禁一旦被绕过一次就永久失效（本项目铁律：第一版门禁必须全绿）。"
+        "本用例把 presence 的 enforce 改成 true（它还有未接线的第二个家 discovery/），必须被拦下。"
+        "这条把「边界收口完成一个，打开一个」从口号变成机器判定 —— 也是 Phase 6 的前置。",
+        file=ROOT / "docs" / "domains.data.mjs",
+        injections=[(
+            '      secondHome: "src-tauri/src/discovery",\n'
+            '      secondHomeStatus: "未接线",\n'
+            '      enforce: false,',
+            '      secondHome: "src-tauri/src/discovery",\n'
+            '      secondHomeStatus: "未接线",\n'
+            '      enforce: true,',
+        )],
+        cmd=["node", "scripts/check-domain-map.mjs"],
+        cwd=ROOT,
+        expect_fail_hint="还有第二个家",
+        tags=["domain", "new-guards"],
+    ),
+    Case(
+        name="领域图：一个文件不许被两个领域认领",
+        why="一个文件被两个领域认领 ⇒ 改它时不知道该守谁的规则 ⇒ 规则的**适用范围**本身成了歧义。"
+        "本用例把 transport 的活路径文件塞进 presence 的 paths，必须被拦下。",
+        file=ROOT / "docs" / "domains.data.mjs",
+        injections=[(
+            '      paths: [\n'
+            '        "src-tauri/src/network/discovery.rs", // 旧家（活）\n'
+            '        "src-tauri/src/discovery", // 新家（未接线）\n'
+            "      ],\n",
+            '      paths: [\n'
+            '        "src-tauri/src/network/discovery.rs", // 旧家（活）\n'
+            '        "src-tauri/src/discovery", // 新家（未接线）\n'
+            '        "src-tauri/src/network/transport.rs", // 注入：该文件已被 transport 认领\n'
+            "      ],\n",
+        )],
+        cmd=["node", "scripts/check-domain-map.mjs"],
+        cwd=ROOT,
+        expect_fail_hint="被多个领域认领",
+        tags=["domain", "new-guards"],
+    ),
+    Case(
+        name="领域图：不许有文件既没归属也没列进 unmapped（无主之地最容易出跨界 bug）",
+        why="「没被提到」与「确认不属于任何领域」是两回事：前者是无主之地（谁改都不守规则），"
+        "后者是经过思考的豁免。本用例把 style.css 从 unmapped 里删掉（它不会被任何领域认领），"
+        "必须报出来 —— 强制那条豁免是**显式**的。",
+        file=ROOT / "docs" / "domains.data.mjs",
+        injections=[('    ["src/style.css", "全局样式（令牌化设计体系的落点）"],\n', "")],
+        cmd=["node", "scripts/check-domain-map.mjs"],
+        cwd=ROOT,
+        expect_fail_hint="既没被领域认领",
+        tags=["domain", "new-guards"],
+    ),
+    # ---------------- 领域依赖方向（docs/domains.data.mjs + check-domain-deps.mjs） ----------------
+    # 跟上面三条互补：check-domain-map.mjs 守图的形式（路径/不重叠/enforce），
+    # check-domain-deps.mjs 守图的依赖方向（每条 use crate::xxx 是否落在 consumes 里）。
+    # 地图与依赖两套都过的领域,才算"自洽";只过一套⇒要么补 consumes 要么删 use。
+    # 教训（Phase 5b）：consumes 字段是该领域的**边界协议**,有了它"新增一条 use"不再是
+    # 静默演化,而是有闸门的扩展;不写 consumes 等于写"我不关心边界会怎样" —— 守门不让过。
+    Case(
+        name="领域依赖方向：跨域 use 不在 consumes 中 → FAIL（守住「依赖是声明出来的」）",
+        why="messaging 域的 gossip_engine.rs 当前 use 了 crypto::Identity 与 protocol::*,"
+        "对 platform 域毫无依赖。本用例临时给它塞一行 `use crate::menu;`（platform 域内"
+        "结构体）,守门必须报「不在 consumes 中」并定位到 file:line。否则「新增一条跨域"
+        "依赖」就是静默演化 —— 等再有人 PR 又删掉,守门仍全绿,边界已经被改写却没人知道。"
+        "修法：① 真有需求就把 platform 加进 messaging 的 consumes;② 删掉这条临时 use。",
+        file=ROOT / "src-tauri/src/gossip_engine.rs",
+        injections=[(
+            'use crate::crypto::Identity;\n'
+            'use crate::protocol::{GossipEnvelope, GossipKind};',
+            'use crate::crypto::Identity;\n'
+            'use crate::protocol::{GossipEnvelope, GossipKind};\n\n'
+            '// TEMP-NON-VACUUM-TEST(messaging→platform):必须被 check-domain-deps.mjs 拦下。\n'
+            'use crate::menu;',
+        )],
+        cmd=["node", "scripts/check-domain-deps.mjs"],
+        cwd=ROOT,
+        expect_fail_hint="想依赖「platform」域",
+        tags=["domain-deps", "new-guards"],
+    ),
+    Case(
+        name="领域依赖方向：consumes 被误删成空 → 已有 use 立刻穿帮",
+        why="messaging 域的 gossip_engine.rs 通过 `use crate::crypto::Identity;` 依赖 identity 域。"
+        "本用例把 messaging 的 consumes 从 `[\"identity\"]` 改成 `[]`,守门必须报"
+        "「messaging 想依赖 identity」 —— 因为「没声明」与「声明了不需要」是两回事,前者意味着"
+        "依赖边界被悄悄擦掉了。判定 `consumes: []` 跟 `enforce: false` 是两套独立的开关:enforce"
+        "控制图的形式,consumes 控制图的内容。",
+        file=ROOT / "docs" / "domains.data.mjs",
+        injections=[(
+            'consumes: ["identity"], // gossip_engine.rs 用 crypto::Identity（生产代码）',
+            'consumes: [], // TEMP-NON-VACUUM-TEST(messaging):该声明被误删,守门必须报',
+        )],
+        cmd=["node", "scripts/check-domain-deps.mjs"],
+        cwd=ROOT,
+        expect_fail_hint="想依赖「identity」域",
+        tags=["domain-deps", "new-guards"],
+    ),
+    Case(
+        name="领域依赖方向：consumes 引用了不存在的领域 → FAIL（typo 第一天就该红）",
+        why="`consumes: [\"identity\"]` 写错成 `[\"identtity\"]` 这类 typo,在守门放松对"
+        "consumes 字段自身合法性做检查时会**完全无害**地通过 —— 直到真正新增一条 use 触发"
+        "「不存在的域」才被察觉,届时已经离 typo 隔了 N 个 PR。本用例在 transport 的 consumes"
+        "中临时塞一个不存在的 id,直接验证判据 H 必红。修法:把不存在的 id 改回真名。",
+        file=ROOT / "docs" / "domains.data.mjs",
+        injections=[(
+            '        "platform", // transport/ble_android.rs 用 jni_method::kotlin_method\n',
+            '        "platform", // transport/ble_android.rs 用 jni_method::kotlin_method\n'
+            '        "identtity_typo_will_fail", // TEMP-NON-VACUUM-TEST(transport):错字,守门必报\n',
+        )],
+        cmd=["node", "scripts/check-domain-deps.mjs"],
+        cwd=ROOT,
+        expect_fail_hint="引用了不存在的领域",
+        tags=["domain-deps", "new-guards"],
+    ),
+    # ---------------- Change Budget(check-change-budget.mjs + fixture) ----------------
+    # 守门读真实 git 历史,没法"改坏源文件"来验证 —— 所以脚本留了 --from-json 测试接缝,
+    # 用 fixture 喂数据。fixture 的默认状态是全 PASS(每条判定路径都走到),下面四条用例
+    # 各自破坏一个条件来验证对应判据会红。fixture 本身提交进仓库,是可以 review 的测试数据。
+    Case(
+        name="Change Budget:L2 改动丢了 [plan] 标记 → FAIL",
+        why="超 L1(≤5 文件)但 ≤L2(≤10 文件)的改动,要求 commit message 带 [plan] 说明改动计划 ——"
+        "『中改动必须被声明』是 Change Budget 的核心语义。fixture 里 a000002(8 文件/412 行)默认带"
+        " [plan: 拆成三步…];本用例把 [plan] 从 message 里删掉,守门必须报「没有 [plan] 标记」。",
+        file=ROOT / "scripts" / "fixtures" / "change-budget.json",
+        injections=[(
+            '"message": "feat(ui): 重构设置面板 [plan: 拆成三步 —— 先抽 store,再拆视图,最后迁 API]",',
+            '"message": "feat(ui): 重构设置面板",',
+        )],
+        cmd=["node", "scripts/check-change-budget.mjs", "--from-json", "scripts/fixtures/change-budget.json"],
+        cwd=ROOT,
+        expect_fail_hint="没有 [plan] 标记",
+        tags=["change-budget", "new-guards"],
+    ),
+    Case(
+        name="Change Budget:L3 改动(含敏感文件)丢了 [impact] 标记 → FAIL",
+        why="碰 protocol.rs / crypto.rs / schema.sql 的改动**无论多小**都是 L3(一错就是安全/全库数据问题),"
+        "必须有 Impact Report 的最小形态 [impact] 标记。fixture 里 a000003 只改 2 个文件,但因碰了"
+        " protocol.rs 直接 L3;本用例删掉 [impact],守门必须红 —— 证明『敏感文件不豁免于规模』。",
+        file=ROOT / "scripts" / "fixtures" / "change-budget.json",
+        injections=[(
+            '"message": "refactor(protocol): 线格式 v2 [impact: 见 docs/protocol-invariants.md 新增小节;两侧同步升级;505 用例全绿]",',
+            '"message": "refactor(protocol): 线格式 v2",',
+        )],
+        cmd=["node", "scripts/check-change-budget.mjs", "--from-json", "scripts/fixtures/change-budget.json"],
+        cwd=ROOT,
+        expect_fail_hint="没有 [impact] 标记",
+        tags=["change-budget", "new-guards"],
+    ),
+    Case(
+        name="Change Budget:同一领域连续 3 次 fix → FAIL(重复犯案检测器)",
+        why="4.18.7→4.18.10 连着四个版本修同一个 BLE 分片问题,每个补丁都很小但它们在互相修 ——"
+        "『改完这个冒出那个』的特征不是 diff 大,而是同一领域反复被打补丁。fixture 窗口里 transport"
+        " 已有 2 次 fix(阈值 3);本用例注入第 3 条 transport fix,守门必须报「出现了 3 次」并提示"
+        "先补不变量/收敛单一事实来源。",
+        file=ROOT / "scripts" / "fixtures" / "change-budget.json",
+        injections=[(
+            '"message": "fix(ble): 写入失败日志补帧长",\n      "files": [{ "path": "src-tauri/src/transport/bluetooth.rs", "add": 24, "del": 2 }]\n    }\n  ]',
+            '"message": "fix(ble): 写入失败日志补帧长",\n      "files": [{ "path": "src-tauri/src/transport/bluetooth.rs", "add": 24, "del": 2 }]\n    },\n'
+            '    {\n      "sha": "b000003",\n      "message": "fix(ble): 第三次打补丁",\n      "files": [{ "path": "src-tauri/src/transport/tcp.rs", "add": 5, "del": 1 }]\n    }\n  ]',
+        )],
+        cmd=["node", "scripts/check-change-budget.mjs", "--from-json", "scripts/fixtures/change-budget.json"],
+        cwd=ROOT,
+        expect_fail_hint="出现了 3 次",
+        tags=["change-budget", "new-guards"],
+    ),
+    Case(
+        name="Change Budget:chore(release) 换成普通类型 → 版本白名单失效 → FAIL",
+        why="每次发版固定动 5 个版本文件(package.json/Cargo.toml/Cargo.lock/tauri.conf.json/package-lock.json),"
+        "白名单只在 message 以 chore(release) 开头时生效。fixture 里 a000004(package-lock +250 行等)默认豁免;"
+        "本用例把 message 改成 feat(release) —— 白名单立即失效,347 行计入 ⇒ 超 L1 且无 [plan] ⇒ FAIL。"
+        "证明『豁免是声明出来的,不是永远免检』。",
+        file=ROOT / "scripts" / "fixtures" / "change-budget.json",
+        injections=[(
+            '"message": "chore(release): v4.19.0",',
+            '"message": "feat(release): v4.19.0",',
+        )],
+        cmd=["node", "scripts/check-change-budget.mjs", "--from-json", "scripts/fixtures/change-budget.json"],
+        cwd=ROOT,
+        expect_fail_hint="没有 [plan] 标记",
+        tags=["change-budget", "new-guards"],
     ),
 ]
 

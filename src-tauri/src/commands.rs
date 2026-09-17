@@ -57,8 +57,9 @@ use crate::network::transport::{
 use crate::network::{self, file};
 use crate::protocol::{GossipKind, Message, MsgKind, ShareEntry};
 use crate::state::{
-    AppState, BleRuntimeFacts, RuntimeSnapshot, Conversation, DeviceInfo, Friend, Group, GroupFile, InterfaceInfo, MessageRecord,
-    Peer, PendingRequest, TopologyInfo, TransferInfo,
+    AppState, BleRuntimeFacts, Conversation, DeviceInfo, Favorite, Friend, Group, GroupFile,
+    InterfaceInfo, MessageRecord, Peer, PendingRequest, RuntimeSnapshot, TopologyInfo,
+    TransferInfo,
 };
 use crate::storage::cache_cleaner::{self, CachePolicy, CleanupReport};
 use crate::transport::TransportManager;
@@ -96,7 +97,11 @@ pub fn get_device_info(state: State<'_, Arc<AppState>>) -> DeviceInfo {
         avatar: s.avatar.lock().unwrap_or_else(|e| e.into_inner()).clone(),
         device_type: crate::protocol::current_device_type().to_string(),
         tcp_port: s.tcp_port,
-        online: s.network.lock().unwrap_or_else(|e| e.into_inner()).is_some(),
+        online: s
+            .network
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some(),
         x25519_pubkey: s.identity.x25519_public_b64(),
         ed25519_pubkey: s.identity.ed25519_public_b64(),
     }
@@ -105,7 +110,10 @@ pub fn get_device_info(state: State<'_, Arc<AppState>>) -> DeviceInfo {
 /// 头像 data URL 解码后字节数；非法 base64 返回 usize::MAX（视为超限拒绝）。
 fn avatar_decoded_len(data_url: &str) -> usize {
     let payload = data_url.split_once(',').map(|(_, p)| p).unwrap_or(data_url);
-    STANDARD.decode(payload).map(|b| b.len()).unwrap_or(usize::MAX)
+    STANDARD
+        .decode(payload)
+        .map(|b| b.len())
+        .unwrap_or(usize::MAX)
 }
 
 #[tauri::command]
@@ -181,7 +189,11 @@ pub async fn update_profile(
         avatar: s.avatar.lock().unwrap_or_else(|e| e.into_inner()).clone(),
         device_type: crate::protocol::current_device_type().to_string(),
         tcp_port: s.tcp_port,
-        online: s.network.lock().unwrap_or_else(|e| e.into_inner()).is_some(),
+        online: s
+            .network
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some(),
         x25519_pubkey: s.identity.x25519_public_b64(),
         ed25519_pubkey: s.identity.ed25519_public_b64(),
     })
@@ -232,7 +244,6 @@ pub fn list_interfaces() -> Vec<InterfaceInfo> {
 }
 
 // ---------------- 网络控制 ----------------
-
 
 #[tauri::command(async)]
 pub async fn start_network(
@@ -334,7 +345,13 @@ pub async fn search_nearby_peers(state: State<'_, Arc<AppState>>) -> Result<Vec<
     if triggered || ble_triggered {
         tokio::time::sleep(Duration::from_millis(2000)).await;
     }
-    let mut peers: Vec<Peer> = s.peers.lock().unwrap_or_else(|e| e.into_inner()).values().cloned().collect();
+    let mut peers: Vec<Peer> = s
+        .peers
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .values()
+        .cloned()
+        .collect();
     peers.sort_by(|a, b| a.device_id.cmp(&b.device_id));
     fill_peer_links(s, &mut peers).await;
     Ok(peers)
@@ -363,7 +380,11 @@ pub fn set_app_active(state: State<'_, Arc<AppState>>, active: bool) {
             "ble",
             format!(
                 "[SCAN] 应用{} ⇒ 扫描节奏切换为 {}",
-                if active { "回到前台/聚焦" } else { "进入后台/失焦" },
+                if active {
+                    "回到前台/聚焦"
+                } else {
+                    "进入后台/失焦"
+                },
                 if active { "5s" } else { "30s" }
             ),
         );
@@ -384,7 +405,9 @@ pub fn focus_window(app: tauri::AppHandle, state: State<'_, Arc<AppState>>) -> R
     // 冷启动直接可用。
     let dark = {
         let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
-        db::get_setting(&dbc, "dark_mode").map(|v| v == "1").unwrap_or(false)
+        db::get_setting(&dbc, "dark_mode")
+            .map(|v| v == "1")
+            .unwrap_or(false)
     };
     let color = if dark {
         tauri::window::Color(11, 18, 32, 255) // #0b1220
@@ -468,8 +491,16 @@ pub fn get_topology(state: State<'_, Arc<AppState>>) -> TopologyInfo {
     } else {
         Some(rtts.iter().sum::<u64>() / rtts.len() as u64)
     };
-    let relay_count = s.relay.lock().unwrap_or_else(|e| e.into_inner()).active_sends();
-    let online = s.network.lock().unwrap_or_else(|e| e.into_inner()).is_some();
+    let relay_count = s
+        .relay
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .active_sends();
+    let online = s
+        .network
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .is_some();
     TopologyInfo {
         node_count,
         relay_count,
@@ -511,7 +542,10 @@ fn collect_ble_diag(s: &Arc<AppState>) -> crate::state::BleDiag {
             .map(|links| {
                 links
                     .values()
-                    .filter(|ls| ls.iter().any(|l| l.path_kind == crate::mesh::PathKind::Bluetooth))
+                    .filter(|ls| {
+                        ls.iter()
+                            .any(|l| l.path_kind == crate::mesh::PathKind::Bluetooth)
+                    })
                     .count()
             })
             .unwrap_or(d.peers);
@@ -519,7 +553,11 @@ fn collect_ble_diag(s: &Arc<AppState>) -> crate::state::BleDiag {
         // 与通道同口径：起不来就是关（用户在设置里点的开，其实就是"真的在跑"）。
         d.enabled = d.running;
         d.available = d.available || d.running;
-        d.no_dial = s.ble_no_dial.lock().unwrap_or_else(|e| e.into_inner()).len();
+        d.no_dial = s
+            .ble_no_dial
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len();
         let now = crate::db::now_ms();
         let mut backoff: Vec<crate::state::BleBackoff> = s
             .ble_dial_failures
@@ -532,10 +570,14 @@ fn collect_ble_diag(s: &Arc<AppState>) -> crate::state::BleDiag {
                 remaining_ms: (*next - now).max(0),
             })
             .collect();
-        backoff.sort_by(|a, b| b.remaining_ms.cmp(&a.remaining_ms));
+        backoff.sort_by_key(|a| std::cmp::Reverse(a.remaining_ms));
         d.backoff = backoff;
         let active = s.app_active.load(std::sync::atomic::Ordering::Relaxed);
-        d.activity = if active { "active".into() } else { "idle".into() };
+        d.activity = if active {
+            "active".into()
+        } else {
+            "idle".into()
+        };
         d.scan_window_ms = crate::network::ble::scan_window_ms();
         d.scan_interval_ms = crate::network::ble::scan_interval_ms(active);
         let stats = *s.ble_scan.lock().unwrap_or_else(|e| e.into_inner());
@@ -558,7 +600,11 @@ fn ble_candidate_detail(d: &crate::state::BleDiag) -> String {
             "不可用（无适配器或未授权）".into()
         };
     }
-    let cadence = if d.activity == "active" { "前台" } else { "后台" };
+    let cadence = if d.activity == "active" {
+        "前台"
+    } else {
+        "后台"
+    };
     format!(
         "运行中 · {}节奏（{}s 扫描 / {}s 间隔）· {} 个对端",
         cadence,
@@ -718,7 +764,9 @@ pub fn get_discovery_diag(state: State<'_, Arc<AppState>>) -> crate::state::Disc
 
 /// 获取候选链路列表（网卡 + 蓝牙，含评分）。
 #[tauri::command(async)]
-pub fn get_interface_candidates(state: State<'_, Arc<AppState>>) -> Vec<crate::state::InterfaceCandidate> {
+pub fn get_interface_candidates(
+    state: State<'_, Arc<AppState>>,
+) -> Vec<crate::state::InterfaceCandidate> {
     let bt = collect_ble_diag(state.inner());
     collect_candidates(&bt)
 }
@@ -862,10 +910,18 @@ pub(crate) fn bt_switch_plan(
     cooldown_ms: u64,
 ) -> BtSwitchPlan {
     if desired != Some(enabled) {
-        return BtSwitchPlan { wait_ms: 0, apply: false, reason: "已被更新的开关意图取代" };
+        return BtSwitchPlan {
+            wait_ms: 0,
+            apply: false,
+            reason: "已被更新的开关意图取代",
+        };
     }
     if running == enabled {
-        return BtSwitchPlan { wait_ms: 0, apply: false, reason: "运行状态已经是目标状态（幂等）" };
+        return BtSwitchPlan {
+            wait_ms: 0,
+            apply: false,
+            reason: "运行状态已经是目标状态（幂等）",
+        };
     }
     let wait_ms = if last_ms == 0 {
         0
@@ -875,7 +931,11 @@ pub(crate) fn bt_switch_plan(
     BtSwitchPlan {
         wait_ms,
         apply: true,
-        reason: if wait_ms > 0 { "冷却期内，排队等待" } else { "立刻启停" },
+        reason: if wait_ms > 0 {
+            "冷却期内，排队等待"
+        } else {
+            "立刻启停"
+        },
     }
 }
 
@@ -909,7 +969,10 @@ async fn apply_bluetooth_switch(s: &Arc<AppState>, enabled: bool) -> Result<(), 
         if !plan.apply {
             s.logger.info(
                 "ble",
-                format!("蓝牙通道开关：{}（运行中={running}，请求={enabled}）", plan.reason),
+                format!(
+                    "蓝牙通道开关：{}（运行中={running}，请求={enabled}）",
+                    plan.reason
+                ),
             );
             break;
         }
@@ -917,7 +980,10 @@ async fn apply_bluetooth_switch(s: &Arc<AppState>, enabled: bool) -> Result<(), 
             // **排队而不是丢弃**：用户"关了又马上开"时，最后那次意图一定会被执行到
             s.logger.info(
                 "ble",
-                format!("蓝牙通道开关进入冷却：等待 {}ms 后执行（合并抖动）", plan.wait_ms),
+                format!(
+                    "蓝牙通道开关进入冷却：等待 {}ms 后执行（合并抖动）",
+                    plan.wait_ms
+                ),
             );
             tokio::time::sleep(Duration::from_millis(plan.wait_ms)).await;
             continue; // 醒来重判：意图可能又被改过、运行状态也可能变过
@@ -1081,7 +1147,7 @@ pub fn clean_cache_now(state: State<'_, Arc<AppState>>) -> CleanupReport {
     let policy = load_policy(s);
     let dirs = media_dirs(s);
     let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-    cache_cleaner::clean(&dirs, policy, &*dbc)
+    cache_cleaner::clean(&dirs, policy, &dbc)
 }
 
 // ---------------- 应用偏好设置（本地持久化） ----------------
@@ -1168,13 +1234,18 @@ pub fn settings_patch_values(db: &rusqlite::Connection, changed: &[&str]) -> ser
                 );
             }
             "appearanceMode" => {
-                map.insert(key.to_string(), json!(db::get_setting(db, "appearance_mode")));
+                map.insert(
+                    key.to_string(),
+                    json!(db::get_setting(db, "appearance_mode")),
+                );
             }
             // 通知两项的缺省是**开**（与 `get_settings` 同口径），否则"没设置过"会被应用成关闭
             "notifyEnabled" => {
                 map.insert(
                     key.to_string(),
-                    json!(db::get_setting(db, "notify_enabled").map(|v| v != "0").unwrap_or(true)),
+                    json!(db::get_setting(db, "notify_enabled")
+                        .map(|v| v != "0")
+                        .unwrap_or(true)),
                 );
             }
             "notifyShowContent" => {
@@ -1195,13 +1266,19 @@ pub fn settings_patch_values(db: &rusqlite::Connection, changed: &[&str]) -> ser
                 map.insert(key.to_string(), json!(db::get_setting(db, "chat_style")));
             }
             "peerStyles" => {
-                map.insert(key.to_string(), json!(db::get_setting(db, "chat_peer_styles")));
+                map.insert(
+                    key.to_string(),
+                    json!(db::get_setting(db, "chat_peer_styles")),
+                );
             }
             "relayPolicy" => {
                 map.insert(key.to_string(), json!(db::get_setting(db, "relay_policy")));
             }
             "relayAllowlist" => {
-                map.insert(key.to_string(), json!(db::get_setting(db, "relay_allowlist")));
+                map.insert(
+                    key.to_string(),
+                    json!(db::get_setting(db, "relay_allowlist")),
+                );
             }
             "retentionDays" => {
                 map.insert(key.to_string(), json!(db::get_setting(db, RETENTION_KEY)));
@@ -1308,8 +1385,12 @@ pub fn get_settings(state: State<'_, Arc<AppState>>) -> Settings {
         dark_mode: db::get_setting(&dbc, "dark_mode").map(|v| v == "1"),
         appearance_mode: db::get_setting(&dbc, "appearance_mode"),
         // 通知默认开启、默认显示正文：缺省时按 `Some(true)`，旧记录与未设置都能有合理行为。
-        notify_enabled: db::get_setting(&dbc, "notify_enabled").map(|v| v != "0").or(Some(true)),
-        notify_show_content: db::get_setting(&dbc, "notify_show_content").map(|v| v != "0").or(Some(true)),
+        notify_enabled: db::get_setting(&dbc, "notify_enabled")
+            .map(|v| v != "0")
+            .or(Some(true)),
+        notify_show_content: db::get_setting(&dbc, "notify_show_content")
+            .map(|v| v != "0")
+            .or(Some(true)),
         language: db::get_setting(&dbc, "language"),
         relay_policy: db::get_setting(&dbc, "relay_policy"),
         relay_allowlist: db::get_setting(&dbc, "relay_allowlist"),
@@ -1347,11 +1428,13 @@ pub fn save_settings(
         }
     }
     if let Some(v) = settings.notify_enabled {
-        db::set_setting(&dbc, "notify_enabled", if v { "1" } else { "0" }).map_err(|e| e.to_string())?;
+        db::set_setting(&dbc, "notify_enabled", if v { "1" } else { "0" })
+            .map_err(|e| e.to_string())?;
         changed.push("notifyEnabled");
     }
     if let Some(v) = settings.notify_show_content {
-        db::set_setting(&dbc, "notify_show_content", if v { "1" } else { "0" }).map_err(|e| e.to_string())?;
+        db::set_setting(&dbc, "notify_show_content", if v { "1" } else { "0" })
+            .map_err(|e| e.to_string())?;
         changed.push("notifyShowContent");
     }
     if let Some(v) = settings.language {
@@ -1482,10 +1565,7 @@ const FRIEND_ONLINE_GRACE_MS: i64 = 15_000;
 ///
 /// 对端公钥取 peers 优先、friends 回落（与 `resolve_member_x25519` 同一口径）。
 #[tauri::command(async)]
-pub fn get_safety_number(
-    state: State<'_, Arc<AppState>>,
-    peer_id: String,
-) -> Option<String> {
+pub fn get_safety_number(state: State<'_, Arc<AppState>>, peer_id: String) -> Option<String> {
     let s = state.inner();
     let (their_x, their_e) = {
         let peers = s.peers.lock().unwrap_or_else(|e| e.into_inner());
@@ -1573,13 +1653,13 @@ pub async fn remove_friend(state: State<'_, Arc<AppState>>, peer_id: String) -> 
     Ok(())
 }
 
-/// 待处理的好友申请。
-///
-/// **规则（用户 2026-09-12 真机实测要求）**：已经在好友列表里的人，其申请不该再出现
-/// ——「如果该好友已在好友列表的话，列表里的那个好友申请就应该自动清除掉」。
-/// 主修在各条"同意"路径上清 `pending_requests`（见 `transport::forget_pending_request`），
-/// 这里按 friends 表再过滤一遍并**顺手把内存态收敛掉**：万一哪条路径漏了（或对方是走
-/// 别的消息把我加上的），「新朋友」里也不会留着一条永远处理不掉的过期申请。
+// 待处理的好友申请。
+//
+// **规则（用户 2026-09-12 真机实测要求）**：已经在好友列表里的人，其申请不该再出现
+// ——「如果该好友已在好友列表的话，列表里的那个好友申请就应该自动清除掉」。
+// 主修在各条"同意"路径上清 `pending_requests`（见 `transport::forget_pending_request`），
+// 这里按 friends 表再过滤一遍并**顺手把内存态收敛掉**：万一哪条路径漏了（或对方是走
+// 别的消息把我加上的），「新朋友」里也不会留着一条永远处理不掉的过期申请。
 // ---------------- 移动端文件选择：content:// 必须"落地"成真实文件 ----------------
 
 /// 从 `content://` URI 里尽力取出**真实文件名**（含扩展名）。
@@ -1601,7 +1681,11 @@ pub fn name_from_content_uri(uri: &str) -> Option<String> {
         .replace("%3a", ":")
         .replace("%20", " ");
     // `primary:Download/report.pdf` ⇒ 取最后一段
-    let candidate = decoded.rsplit(['/', ':']).next().unwrap_or(&decoded).to_string();
+    let candidate = decoded
+        .rsplit(['/', ':'])
+        .next()
+        .unwrap_or(&decoded)
+        .to_string();
     // 必须是"像文件名"的东西：有点、有扩展名、长度合理、不含危险字符
     let ok = candidate.len() > 3
         && candidate.len() <= 180
@@ -1705,7 +1789,11 @@ pub async fn import_picked_file(
     std::fs::rename(&tmp, &dest).map_err(|e| format!("落地所选文件失败：{e}"))?;
     state.logger.info(
         "file",
-        format!("已把所选文件落地到缓存：{}（{} 字节）", dest.display(), std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0)),
+        format!(
+            "已把所选文件落地到缓存：{}（{} 字节）",
+            dest.display(),
+            std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0)
+        ),
     );
     Ok(dest.to_string_lossy().to_string())
 }
@@ -1763,8 +1851,8 @@ pub(crate) async fn send_friend_request_via_link(
     // E2EE 加密好友申请内容（昵称/可选头像）；from/to 已在信封 sender_id / target 里。
     let payload =
         serde_json::json!({ "from_nickname": nickname, "from_avatar": avatar }).to_string();
-    let shared = crypto::shared_secret(&s.identity.x25519_secret, &target_pubkey)
-        .ok_or("密钥交换失败")?;
+    let shared =
+        crypto::shared_secret(&s.identity.x25519_secret, &target_pubkey).ok_or("密钥交换失败")?;
     let sealed = crypto::seal(&shared, payload.as_bytes()).ok_or("加密失败")?;
     let payload_b64 = STANDARD.encode(&sealed);
     let mut env = {
@@ -1850,8 +1938,8 @@ pub(crate) async fn send_friend_accept_via_link(
         );
         return Err("缺对端公钥".to_string());
     };
-    let shared = crypto::shared_secret(&s.identity.x25519_secret, &target_pubkey)
-        .ok_or("密钥交换失败")?;
+    let shared =
+        crypto::shared_secret(&s.identity.x25519_secret, &target_pubkey).ok_or("密钥交换失败")?;
     let sealed = crypto::seal(&shared, b"{}").ok_or("加密失败")?;
     let payload_b64 = STANDARD.encode(&sealed);
     let mut env = {
@@ -1877,21 +1965,18 @@ pub(crate) async fn send_friend_accept_via_link(
     Ok(())
 }
 
-pub(crate) async fn accept_friend_request(
-    s: &Arc<AppState>,
-    peer_id: &str,
-) -> Result<(), String> {
-    let name = resolve_nickname(s, &peer_id);
+pub(crate) async fn accept_friend_request(s: &Arc<AppState>, peer_id: &str) -> Result<(), String> {
+    let name = resolve_nickname(s, peer_id);
     {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::add_friend(&dbc, &peer_id, &name, None).ok();
-        db::ensure_conversation(&dbc, &peer_id, "single", &name, None).ok();
+        db::add_friend(&dbc, peer_id, &name, None).ok();
+        db::ensure_conversation(&dbc, peer_id, "single", &name, None).ok();
     }
     // 补写 peers 表已有的公钥到 friends 表：accept 路径此前不写公钥，
     // 而建链（Hello）早于加好友、公钥不变时 key_changed 不触发补写，
     // 导致 friends 公钥永久缺失 → 群密钥分发被静默跳过。
     // 与 transport.rs 中 FriendAccept 接收路径的补写行为一致。
-    maybe_update_friend(s, &peer_id, &name, None);
+    maybe_update_friend(s, peer_id, &name, None);
     // **先登记再发**（与好友申请同一条纪律）：同意回执没有回执，链路抖动时它会静默丢失，
     // 而发送方界面已显示"已同意" ⇒ 另一端永远停在"等待对方确认"（真机 2026-09-13）。
     {
@@ -1901,13 +1986,13 @@ pub(crate) async fn accept_friend_request(
             .unwrap_or_else(|e| e.into_inner())
             .insert(peer_id.to_string(), (now, 0, 0));
     }
-    if let Err(e) = send_friend_accept_via_link(s, &peer_id).await {
+    if let Err(e) = send_friend_accept_via_link(s, peer_id).await {
         s.logger.warn(
             "friend",
             format!("好友同意回执发送失败（已登记待补发）peer={peer_id}: {e}"),
         );
     }
-    crate::network::transport::forget_pending_request(s, &peer_id);
+    crate::network::transport::forget_pending_request(s, peer_id);
     let _ = s.app.emit("friend-accepted", &peer_id);
     Ok(())
 }
@@ -1919,7 +2004,12 @@ pub async fn respond_friend_request(
     accept: bool,
 ) -> Result<(), String> {
     let s = state.inner();
-    if !s.pending_requests.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&peer_id) {
+    if !s
+        .pending_requests
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains_key(&peer_id)
+    {
         return Err("好友申请不存在或已处理".to_string());
     }
     if accept {
@@ -1932,7 +2022,10 @@ pub async fn respond_friend_request(
             to: peer_id.clone(),
         };
         let _ = try_send(s, &peer_id, &msg).await;
-        s.pending_requests.lock().unwrap_or_else(|e| e.into_inner()).remove(&peer_id);
+        s.pending_requests
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&peer_id);
         let _ = s.app.emit("friend-rejected", &peer_id);
     }
     Ok(())
@@ -1991,13 +2084,14 @@ pub async fn send_message(
         match from_db.or(from_peers) {
             Some(k) => Some(k),
             None => {
-                let triggered = if let Some(tx) = s.probe.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
-                    let next = tx.borrow().saturating_add(1);
-                    let _ = tx.send(next);
-                    true
-                } else {
-                    false
-                };
+                let triggered =
+                    if let Some(tx) = s.probe.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+                        let next = tx.borrow().saturating_add(1);
+                        let _ = tx.send(next);
+                        true
+                    } else {
+                        false
+                    };
                 if triggered {
                     tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
                 }
@@ -2115,6 +2209,10 @@ pub async fn send_message(
     Ok(rec)
 }
 
+// INV-EXCEPTION: INV-P03, INV-P04 — 自聊收发双方都是本机，没有对端可等 Ack：
+// 落库即终态 `read`（跳过 queued→sending→waiting_ack→delivered），且**不写 outbox**
+// （那一行永远排不掉，反把「outbox 必然排空」破掉）。
+// 登记在 docs/protocol-invariants.md §22，由 scripts/check-invariant-exceptions.mjs 双向校验。
 /// 给自己发一条消息（「和自己聊天」）—— **纯本地，消息不出本机**。
 ///
 /// 为什么必须是独立路径，而不是"把自己当好友"复用下面的发送流程：
@@ -2435,7 +2533,10 @@ pub fn create_group(
         .map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
     }
-    s.group_keys.lock().unwrap_or_else(|e| e.into_inner()).insert(id.clone(), key);
+    s.group_keys
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(id.clone(), key);
 
     Ok(Group {
         id,
@@ -2489,11 +2590,14 @@ pub async fn distribute_group_key(
             members: members.clone(),
             clock,
         };
-        if let Err(_) = try_send(s, m, &msg).await {
+        if try_send(s, m, &msg).await.is_err() {
             // 目标成员尚无 TCP link（建群时 ensure_link 可能尚未执行）：
             // 不再静默丢弃，登记待发，由建链 / Hello / 心跳的
             // flush_pending_group_keys 补发（与 redistribute_group_keys 同一机制）。
-            let mut pending = s.pending_group_keys.lock().unwrap_or_else(|e| e.into_inner());
+            let mut pending = s
+                .pending_group_keys
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             mark_pending_group_key(&mut pending, m, &group_id);
         }
     }
@@ -2593,10 +2697,13 @@ async fn resend_group_key_to(s: &AppState, group_id: &str, members: &[String], k
             members: members.to_vec(),
             clock,
         };
-        if let Err(_) = try_send(s, m, &msg).await {
+        if try_send(s, m, &msg).await.is_err() {
             // 目标成员尚无 TCP link：登记待发，由建链 / Hello / 心跳的
             // flush_pending_group_keys 补发（与 redistribute_group_keys 同一机制）。
-            let mut pending = s.pending_group_keys.lock().unwrap_or_else(|e| e.into_inner());
+            let mut pending = s
+                .pending_group_keys
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             mark_pending_group_key(&mut pending, m, group_id);
         }
     }
@@ -2695,7 +2802,10 @@ pub async fn group_remove_member(
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         db::set_setting(&dbc, &format!("gk:{group_id}"), &STANDARD.encode(key)).ok();
     }
-    s.group_keys.lock().unwrap_or_else(|e| e.into_inner()).insert(group_id.clone(), key);
+    s.group_keys
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(group_id.clone(), key);
     let remaining = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         db::get_group(&dbc, &group_id)
@@ -2814,7 +2924,10 @@ pub async fn leave_group(state: State<'_, Arc<AppState>>, group_id: String) -> R
             rusqlite::params![format!("gk:{group_id}")],
         );
     }
-    s.group_keys.lock().unwrap_or_else(|e| e.into_inner()).remove(&group_id);
+    s.group_keys
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&group_id);
     let _ = s.app.emit("groups-updated", &group_id);
     Ok(())
 }
@@ -2926,7 +3039,7 @@ async fn send_group_payload(
     // 只凭这条群消息也能在本地正确建群（含成员表），成员面板因此不为空。
     let group_meta = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::get_group(&dbc, &group_id).map(|g| (g.name, g.creator, g.members))
+        db::get_group(&dbc, group_id).map(|g| (g.name, g.creator, g.members))
     };
     let (group_name, group_creator, group_members) = match group_meta {
         Some((n, c, m)) => (n, Some(c), m),
@@ -2935,12 +3048,11 @@ async fn send_group_payload(
     if !group_members.contains(&s.device_id) {
         return Err("你已不在该群中".to_string());
     }
-    let key = get_group_key(s, &group_id).await.ok_or("群密钥缺失")?;
-    let preview = preview(&kind, &content);
+    let key = get_group_key(s, group_id).await.ok_or("群密钥缺失")?;
+    let preview = preview(kind, &content);
 
     // 群密钥加密 + Gossip 信封（E2EE 恒开：载荷用群密钥 ChaCha20-Poly1305 加密）
-    let plaintext =
-        serde_json::json!({ "kind": kind, "content": content }).to_string();
+    let plaintext = serde_json::json!({ "kind": kind, "content": content }).to_string();
     let sealed = crypto::seal_symmetric(&key, plaintext.as_bytes()).ok_or("加密失败")?;
     let payload_b64 = STANDARD.encode(&sealed);
     let env = {
@@ -3006,7 +3118,7 @@ async fn send_group_payload(
             if member == &s.device_id {
                 continue;
             }
-            db::insert_group_outbox(&tx, &rec.msg_id, &group_id, member, &payload)
+            db::insert_group_outbox(&tx, &rec.msg_id, group_id, member, &payload)
                 .map_err(|e| format!("群消息入队失败：{e}"))?;
         }
         tx.commit().map_err(|e| format!("群消息写入失败：{e}"))?;
@@ -3019,13 +3131,13 @@ async fn send_group_payload(
 
 // ---------------- 群文件（Offer / session-key 阶段） ----------------
 
-/// 发起群文件（本阶段只建立 Offer 与 file session key，不含分片传输）。
-///
-/// 流程：校验发起者是群成员 → 实时读取当前成员快照 → 事务内创建
-/// group_files + 全部 recipient 行（避免半完成状态）→ 生成随机 file_key
-/// 存内存 → 对可达成员发送 GroupFileOffer（群密钥封装 file_key）→
-/// 流式读取文件、逐 256KB 分片 AEAD 加密后向全部可达 recipient 发送
-/// GroupFileChunk（seq 从 0 严格递增）。不可达成员保持 pending。
+// 发起群文件（本阶段只建立 Offer 与 file session key，不含分片传输）。
+//
+// 流程：校验发起者是群成员 → 实时读取当前成员快照 → 事务内创建
+// group_files + 全部 recipient 行（避免半完成状态）→ 生成随机 file_key
+// 存内存 → 对可达成员发送 GroupFileOffer（群密钥封装 file_key）→
+// 流式读取文件、逐 256KB 分片 AEAD 加密后向全部可达 recipient 发送
+// GroupFileChunk（seq 从 0 严格递增）。不可达成员保持 pending。
 
 /// 发群消息（文本 / 代码）。校验与长度限制留在这一层，内核只管发送。
 #[tauri::command(async)]
@@ -3085,11 +3197,7 @@ pub async fn send_group_todo(
 ///
 /// 为什么在命令层拦：指派人同时是**改状态的鉴权依据**（见 `may_update_todo`）——
 /// 放进一个非成员会让这条任务对谁都"改不了状态"（谁都不是被指派人），而群里也没人认识它。
-fn check_todo_assignees(
-    s: &AppState,
-    group_id: &str,
-    assignees: &[String],
-) -> Result<(), String> {
+fn check_todo_assignees(s: &AppState, group_id: &str, assignees: &[String]) -> Result<(), String> {
     if assignees.is_empty() {
         return Err("请至少指派一名成员".to_string());
     }
@@ -3280,9 +3388,8 @@ pub async fn cast_group_poll_vote(
     if poll_id.is_empty() {
         return Err("缺少投票标识".to_string());
     }
-    let content =
-        serde_json::to_string(&crate::protocol::PollVotePayload { poll_id, choices })
-            .map_err(|e| e.to_string())?;
+    let content = serde_json::to_string(&crate::protocol::PollVotePayload { poll_id, choices })
+        .map_err(|e| e.to_string())?;
     send_group_payload(s, &group_id, "poll_vote", content).await
 }
 
@@ -3428,11 +3535,7 @@ pub async fn send_group_reaction(
     if !crate::protocol::is_valid_emoji_token(&emoji) {
         return Err("不认识的表情".to_string());
     }
-    let payload = crate::protocol::ReactionPayload {
-        target,
-        emoji,
-        add,
-    };
+    let payload = crate::protocol::ReactionPayload { target, emoji, add };
     let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
     send_group_payload(state.inner(), &group_id, "reaction", content).await
 }
@@ -3470,7 +3573,11 @@ pub async fn send_group_file(
             return Err("你不是该群成员".to_string());
         }
         // 成员快照：创建时当前群成员（不含自己），作为 recipient 集合
-        group.members.into_iter().filter(|m| m != &s.device_id).collect()
+        group
+            .members
+            .into_iter()
+            .filter(|m| m != &s.device_id)
+            .collect()
     };
     if members.is_empty() {
         return Err("群内没有其他成员".to_string());
@@ -3504,9 +3611,8 @@ pub async fn send_group_file(
 
     // 随机 file session key：一个 transfer 只生成一次（CSPRNG，仅内存）
     let file_key = crypto::random_key();
-    let sealed_file_key = STANDARD.encode(
-        crypto::seal_symmetric(&group_key, &file_key).ok_or("封装文件密钥失败")?,
-    );
+    let sealed_file_key =
+        STANDARD.encode(crypto::seal_symmetric(&group_key, &file_key).ok_or("封装文件密钥失败")?);
     s.group_file_keys
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -3558,8 +3664,14 @@ pub async fn send_group_file(
             0.0,
         )
         .ok();
-        let group_name = db::get_group(&dbc, &group_id).map(|g| g.name).unwrap_or_default();
-        let preview = if kind == "image" { "[图片]".to_string() } else { format!("[群文件] {name}") };
+        let group_name = db::get_group(&dbc, &group_id)
+            .map(|g| g.name)
+            .unwrap_or_default();
+        let preview = if kind == "image" {
+            "[图片]".to_string()
+        } else {
+            format!("[群文件] {name}")
+        };
         db::touch_conversation(
             &dbc,
             &format!("group:{group_id}"),
@@ -3576,7 +3688,7 @@ pub async fn send_group_file(
     // 可达成员：有 TCP link 且 peers 信息完整；其余保持 pending，由上线事件自动投递。
     let mut reachable: Vec<String> = Vec::new();
     for m in &members {
-        if s.has_link(m).await && resolve_member_x25519(&s, m).is_some() {
+        if s.has_link(m).await && resolve_member_x25519(s, m).is_some() {
             reachable.push(m.clone());
         }
     }
@@ -3585,7 +3697,10 @@ pub async fn send_group_file(
     // 冻结在这里的理由：离线成员之后上线补发时**不得**回退进度条（用户明确要求），
     // 动态算分母会让他一上线就把进度条往回拉。
     {
-        let mut snap = s.group_file_online_targets.lock().unwrap_or_else(|e| e.into_inner());
+        let mut snap = s
+            .group_file_online_targets
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         snap.insert(transfer_id.clone(), reachable.iter().cloned().collect());
     }
 
@@ -3620,8 +3735,14 @@ pub async fn send_group_file(
         let src3 = src.clone();
         let m3 = m.clone();
         tokio::spawn(async move {
-            if let Err(e) = dispatch_group_file_to_peer(&s3, &tid3, &gid3, &m3, src3.to_string_lossy().as_ref()).await {
-                app_handle_log(&s3, &format!("group-file dispatch {tid3} -> {m3} failed: {e}"));
+            if let Err(e) =
+                dispatch_group_file_to_peer(&s3, &tid3, &gid3, &m3, src3.to_string_lossy().as_ref())
+                    .await
+            {
+                app_handle_log(
+                    &s3,
+                    &format!("group-file dispatch {tid3} -> {m3} failed: {e}"),
+                );
             }
         });
     }
@@ -3705,14 +3826,16 @@ async fn dispatch_group_file_to_peer(
     recipient: &str,
     source_path: &str,
 ) -> Result<(), String> {
-    let gf = db::get_group_file(&state.db.lock().unwrap_or_else(|e| e.into_inner()), transfer_id)
-        .ok_or("群文件记录不存在")?;
+    let gf = db::get_group_file(
+        &state.db.lock().unwrap_or_else(|e| e.into_inner()),
+        transfer_id,
+    )
+    .ok_or("群文件记录不存在")?;
     let group_key = get_group_key(state, group_id).await.ok_or("群密钥缺失")?;
     let file_key = ensure_group_file_key(state, transfer_id, group_id, &group_key)
         .ok_or("文件会话密钥缺失")?;
-    let sealed_file_key = STANDARD.encode(
-        crypto::seal_symmetric(&group_key, &file_key).ok_or("封装文件密钥失败")?,
-    );
+    let sealed_file_key =
+        STANDARD.encode(crypto::seal_symmetric(&group_key, &file_key).ok_or("封装文件密钥失败")?);
 
     // 源文件必须仍存在：不存在则该 recipient 置 failed（明确状态变化，
     // 不允许数据库停留在 pending 却永远无法投递）
@@ -3753,7 +3876,9 @@ async fn dispatch_group_file_to_peer(
     // 单聊路径早已用 `chunk_size_for_path` 修掉同一个坑（推导见 `network/file.rs`），这里补齐。
     let path_kind = crate::network::transport::inbound_path_kind(state, recipient).await;
     let chunk_size = file::chunk_size_for_path(&path_kind);
-    let mut f = tokio::fs::File::open(&src).await.map_err(|e| e.to_string())?;
+    let mut f = tokio::fs::File::open(&src)
+        .await
+        .map_err(|e| e.to_string())?;
     use tokio::io::AsyncReadExt;
     let mut buf = vec![0u8; chunk_size];
     let mut seq: u32 = 0;
@@ -3764,7 +3889,13 @@ async fn dispatch_group_file_to_peer(
         if n == 0 {
             break;
         }
-        let Some(key) = state.group_file_keys.lock().unwrap_or_else(|e| e.into_inner()).get(transfer_id).copied() else {
+        let Some(key) = state
+            .group_file_keys
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(transfer_id)
+            .copied()
+        else {
             return Err("文件会话密钥丢失".to_string());
         };
         let sealed = crypto::seal_symmetric(&key, &buf[..n]).ok_or("分片加密失败")?;
@@ -3797,13 +3928,8 @@ async fn dispatch_group_file_to_peer(
             // 字节进度，函数内部再与落库值取 max（同一 recipient 的进度单调不减）。
             let max_progress = group_file_online_progress(state, transfer_id, progress);
             let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-            let _ = db::update_group_file_recipient(
-                &dbc,
-                transfer_id,
-                recipient,
-                "sending",
-                progress,
-            );
+            let _ =
+                db::update_group_file_recipient(&dbc, transfer_id, recipient, "sending", progress);
             let _ = db::upsert_transfer(
                 &dbc,
                 transfer_id,
@@ -3849,7 +3975,12 @@ pub fn ensure_group_file_key(
     group_key: &[u8; 32],
 ) -> Option<[u8; 32]> {
     let _ = group_id; // 预留：未来按群隔离密钥命名空间
-    if let Some(k) = state.group_file_keys.lock().unwrap_or_else(|e| e.into_inner()).get(transfer_id) {
+    if let Some(k) = state
+        .group_file_keys
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(transfer_id)
+    {
         return Some(*k);
     }
     let sealed_b64 = {
@@ -3857,7 +3988,9 @@ pub fn ensure_group_file_key(
         db::get_setting(&dbc, &format!("gfk:{transfer_id}"))
     }?;
     let sealed = STANDARD.decode(sealed_b64).ok()?;
-    let key: [u8; 32] = crypto::open_symmetric(group_key, &sealed)?.try_into().ok()?;
+    let key: [u8; 32] = crypto::open_symmetric(group_key, &sealed)?
+        .try_into()
+        .ok()?;
     state
         .group_file_keys
         .lock()
@@ -3885,7 +4018,11 @@ pub async fn flush_pending_group_files(state: &Arc<AppState>, peer_id: &str) {
         db::list_pending_group_files_for_recipient(&dbc, peer_id).unwrap_or_default()
     };
     if pending.is_empty() {
-        state.group_file_sending.lock().unwrap_or_else(|e| e.into_inner()).remove(peer_id);
+        state
+            .group_file_sending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(peer_id);
         return;
     }
     let mut tasks: Vec<(String, String, String)> = Vec::new();
@@ -3907,7 +4044,11 @@ pub async fn flush_pending_group_files(state: &Arc<AppState>, peer_id: &str) {
         }
     }
     if tasks.is_empty() {
-        state.group_file_sending.lock().unwrap_or_else(|e| e.into_inner()).remove(peer_id);
+        state
+            .group_file_sending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(peer_id);
         return;
     }
     let s2 = state.clone();
@@ -3915,10 +4056,16 @@ pub async fn flush_pending_group_files(state: &Arc<AppState>, peer_id: &str) {
     tauri::async_runtime::spawn(async move {
         for (tid, gid, src) in tasks {
             if let Err(e) = dispatch_group_file_to_peer(&s2, &tid, &gid, &peer, &src).await {
-                app_handle_log(&s2, &format!("group-file dispatch {tid} -> {peer} failed: {e}"));
+                app_handle_log(
+                    &s2,
+                    &format!("group-file dispatch {tid} -> {peer} failed: {e}"),
+                );
             }
         }
-        s2.group_file_sending.lock().unwrap_or_else(|e| e.into_inner()).remove(&peer);
+        s2.group_file_sending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&peer);
     });
 }
 
@@ -3982,7 +4129,12 @@ pub fn save_outgoing_image(
 ) -> Result<serde_json::Value, String> {
     let (ext, bytes) = decode_outgoing_image(&data_url)?;
     let name = format!("image-{}.{ext}", Uuid::new_v4());
-    let dl = state.inner().downloads_dir.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let dl = state
+        .inner()
+        .downloads_dir
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     let path = dl.join(&name);
     std::fs::create_dir_all(&dl).map_err(|e| e.to_string())?;
     std::fs::write(&path, &bytes).map_err(|e| format!("图片保存失败：{e}"))?;
@@ -4006,7 +4158,11 @@ pub fn save_outgoing_image(
 pub fn delete_file(state: State<'_, Arc<AppState>>, path: String) -> Result<(), String> {
     let s = state.inner();
     let file = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
-    let dl = s.downloads_dir.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let dl = s
+        .downloads_dir
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     let under_downloads = std::fs::canonicalize(&dl)
         .map(|dir| file.starts_with(dir))
         .unwrap_or(false);
@@ -4027,10 +4183,7 @@ pub fn open_file_native(path: String) -> Result<(), String> {
 /// macOS 窗口圆角：WebView 加载完成后（前端 onMounted 触发）设背景色跟随主题 +
 /// contentView 圆角（setup 阶段设会被 wry 替换 contentView 丢失）。非 macOS 无操作。
 #[tauri::command]
-pub fn apply_macos_window_shape(
-    window: tauri::WebviewWindow,
-    dark: bool,
-) -> Result<(), String> {
+pub fn apply_macos_window_shape(window: tauri::WebviewWindow, dark: bool) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     return crate::macos_window::apply_rounded_corners(&window, dark);
     #[cfg(not(target_os = "macos"))]
@@ -4095,8 +4248,8 @@ pub fn list_group_files(
                     Some(x) => (x.completed, x.total),
                     None => (0, 0),
                 };
-                let my_status =
-                    db::get_group_file_recipient_status(&dbc, &f.transfer_id, &me).unwrap_or_default();
+                let my_status = db::get_group_file_recipient_status(&dbc, &f.transfer_id, &me)
+                    .unwrap_or_default();
                 let path = db::get_transfer_path(&dbc, &f.transfer_id);
                 (f, delivered, total, my_status, path)
             })
@@ -4144,6 +4297,7 @@ fn local_path_state(path: Option<String>) -> (String, Option<String>) {
 
 /// 构造一条本地文件/图片消息记录（发送方）。
 /// kind 由调用方根据 subtype 决定：image 子类型保持 kind="image"，其余为 "file"。
+#[allow(clippy::too_many_arguments)]
 fn build_file_message(
     state: &AppState,
     transfer_id: &str,
@@ -4206,12 +4360,21 @@ fn fail_file_job(state: &AppState, transfer_id: &str, reason: &str) {
 /// 尝试投递某 peer 的全部 pending 文件（同一 peer 串行，不同 peer 并行）。
 /// 触发点与 `flush_outbox` / `flush_group_outbox` 一致：建链 / Hello / 心跳。
 pub async fn flush_pending_files(state: &Arc<AppState>, peer_id: &str) {
-    if !state.file_sending.lock().unwrap_or_else(|e| e.into_inner()).insert(peer_id.to_string()) {
+    if !state
+        .file_sending
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(peer_id.to_string())
+    {
         return;
     }
     // 没有链路时不做无谓尝试，保持 pending，等下一次连接事件再触发。
     if !state.has_link(peer_id).await {
-        state.file_sending.lock().unwrap_or_else(|e| e.into_inner()).remove(peer_id);
+        state
+            .file_sending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(peer_id);
         return;
     }
     let pending = {
@@ -4219,7 +4382,11 @@ pub async fn flush_pending_files(state: &Arc<AppState>, peer_id: &str) {
         db::list_pending_file_outbox(&dbc, peer_id).unwrap_or_default()
     };
     if pending.is_empty() {
-        state.file_sending.lock().unwrap_or_else(|e| e.into_inner()).remove(peer_id);
+        state
+            .file_sending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(peer_id);
         return;
     }
     let st = state.clone();
@@ -4255,7 +4422,10 @@ pub async fn flush_pending_files(state: &Arc<AppState>, peer_id: &str) {
                 }
             }
         }
-        st.file_sending.lock().unwrap_or_else(|e| e.into_inner()).remove(&peer);
+        st.file_sending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&peer);
     });
 }
 
@@ -4375,7 +4545,16 @@ pub async fn send_file(
     let transfer_id = Uuid::new_v4().to_string();
     let subtype = file::classify_file_subtype(&name);
     let kind = if subtype == "image" { "image" } else { "file" };
-    let rec = build_file_message(s, &transfer_id, &friend_id, &path, &name, size, kind, subtype);
+    let rec = build_file_message(
+        s,
+        &transfer_id,
+        &friend_id,
+        &path,
+        &name,
+        size,
+        kind,
+        subtype,
+    );
     // 注意：不能在持有 db 锁时调用 resolve_nickname（其内部会再次锁 db）。
     let nm = resolve_nickname(s, &friend_id);
     let preview = if kind == "image" {
@@ -4387,16 +4566,8 @@ pub async fn send_file(
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         let tx = dbc.unchecked_transaction().map_err(|e| e.to_string())?;
         db::insert_message(&tx, &rec).map_err(|e| e.to_string())?;
-        db::touch_conversation(
-            &tx,
-            &friend_id,
-            "single",
-            &nm,
-            None,
-            &preview,
-            0,
-        )
-        .map_err(|e| e.to_string())?;
+        db::touch_conversation(&tx, &friend_id, "single", &nm, None, &preview, 0)
+            .map_err(|e| e.to_string())?;
         // 先建立 file_transfers 记录，前端刷新传输列表后能立刻拿到进度条载体。
         db::upsert_transfer(
             &tx,
@@ -4478,7 +4649,12 @@ pub fn set_share_dir(
 
 #[tauri::command(async)]
 pub fn get_share_dir(state: State<'_, Arc<AppState>>) -> Option<String> {
-    state.inner().share_dir.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    state
+        .inner()
+        .share_dir
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
 }
 
 /// 文件接收目录（接收的文件/图片落盘于此，可改、可在资源管理器打开）。
@@ -4518,7 +4694,12 @@ pub fn set_downloads_dir(
 /// 在系统资源管理器中打开文件接收目录。
 #[tauri::command(async)]
 pub fn open_downloads_dir(state: State<'_, Arc<AppState>>) -> Result<(), String> {
-    let p = state.inner().downloads_dir.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let p = state
+        .inner()
+        .downloads_dir
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     std::fs::create_dir_all(&p).map_err(|e| e.to_string())?;
     open_in_file_manager(&p)
 }
@@ -4582,7 +4763,10 @@ pub async fn request_share_tree(
     // 这是「即使在桥接状态下，共享目录也要能用」的入口（真机 2026-09-14 全 Windows 局域网）。
     if s.has_link(&friend_id).await {
         if let Err(e) = try_send(s, &friend_id, &msg).await {
-            s.pending_share_tree.lock().unwrap_or_else(|e| e.into_inner()).remove(&request_id);
+            s.pending_share_tree
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&request_id);
             return Err(e);
         }
     } else {
@@ -4592,7 +4776,10 @@ pub async fn request_share_tree(
     match tokio::time::timeout(Duration::from_secs(10), rx).await {
         Ok(Ok(entries)) => Ok(entries),
         _ => {
-            s.pending_share_tree.lock().unwrap_or_else(|e| e.into_inner()).remove(&request_id);
+            s.pending_share_tree
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&request_id);
             Err("获取共享目录超时".to_string())
         }
     }
@@ -4706,8 +4893,8 @@ pub fn read_clipboard_file_paths() -> Vec<String> {
     #[cfg(target_os = "windows")]
     {
         // 读不到（格式不符 / 被占用）一律按"无文件"处理，前端回退到图片粘贴分支。
-        let paths: Vec<String> = clipboard_win::get_clipboard(clipboard_win::formats::FileList)
-            .unwrap_or_default();
+        let paths: Vec<String> =
+            clipboard_win::get_clipboard(clipboard_win::formats::FileList).unwrap_or_default();
         paths
     }
     #[cfg(not(target_os = "windows"))]
@@ -4761,7 +4948,11 @@ fn resolve_media_path(s: &AppState, msg_id: &str) -> MediaPath {
     };
     let Some(path) = serde_json::from_str::<serde_json::Value>(&content)
         .ok()
-        .and_then(|v| v.get("path").and_then(|p| p.as_str()).map(|p| p.to_string()))
+        .and_then(|v| {
+            v.get("path")
+                .and_then(|p| p.as_str())
+                .map(|p| p.to_string())
+        })
     else {
         return MediaPath::Unknown("元数据缺少路径".to_string());
     };
@@ -4793,10 +4984,14 @@ fn resolve_media_path(s: &AppState, msg_id: &str) -> MediaPath {
             MediaPath::Gone
         };
     };
-    let under_downloads =
-        std::fs::canonicalize(s.downloads_dir.lock().unwrap_or_else(|e| e.into_inner()).as_path())
-            .map(|dir| file.starts_with(dir))
-            .unwrap_or(false);
+    let under_downloads = std::fs::canonicalize(
+        s.downloads_dir
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_path(),
+    )
+    .map(|dir| file.starts_with(dir))
+    .unwrap_or(false);
     if !under_downloads && sender_id != s.device_id {
         return MediaPath::Unknown("路径越权".to_string());
     }
@@ -4833,6 +5028,246 @@ pub fn read_file_preview(
     let s = state.inner();
     let max_bytes = max_bytes.min(15 * 1024 * 1024);
     let file = match resolve_media_path(s, &msg_id) {
+        MediaPath::Present(p) => *p,
+        MediaPath::Unknown(e) => return Err(e),
+        MediaPath::Gone => return Err("文件不存在".to_string()),
+    };
+    let meta = std::fs::metadata(&file).map_err(|e| e.to_string())?;
+    if meta.len() > max_bytes {
+        return Err("TOO_LARGE".to_string());
+    }
+    let bytes = std::fs::read(&file).map_err(|e| e.to_string())?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+// ---------------- 收藏 ----------------
+
+/// 校验并解析一条收藏的**媒体副本**路径。
+///
+/// 安全边界比原消息更严（对照 [`resolve_media_path`]）：收藏副本只允许落在收藏目录内，
+/// **没有"本机发出的消息"那种豁免** —— 副本是我们自己复制进去的，路径必须是我们给的。
+/// 库里若被塞进 `/etc/passwd` 这类路径，这里必须拒绝，否则就成了任意文件读取。
+fn resolve_favorite_media_path(s: &AppState, favorite_id: &str) -> MediaPath {
+    let stored = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::get_favorite(&dbc, favorite_id)
+    };
+    let Ok(Some(fav)) = stored else {
+        return MediaPath::Unknown("收藏不存在".to_string());
+    };
+    let Some(path) = fav.media_path else {
+        return MediaPath::Unknown("这条收藏没有本地副本".to_string());
+    };
+    let Ok(file) = std::fs::canonicalize(&path) else {
+        // 副本被人手删了（收藏目录不在存储清理范围内，走到这里只有这一种可能）。
+        return MediaPath::Gone;
+    };
+    let under_favorites = std::fs::canonicalize(&s.favorites_dir)
+        .map(|dir| file.starts_with(dir))
+        .unwrap_or(false);
+    if !under_favorites {
+        return MediaPath::Unknown("路径越权".to_string());
+    }
+    match std::fs::metadata(&file) {
+        Ok(meta) if meta.is_file() => MediaPath::Present(Box::new(file)),
+        Ok(_) => MediaPath::Unknown("非普通文件".to_string()),
+        Err(_) => MediaPath::Gone,
+    }
+}
+
+/// 副本文件名：`{收藏 id}.{安全扩展名}`。
+///
+/// 只用 id 做文件名（不用原名）：原名可能带路径分隔符、超长、重名或非 ASCII，
+/// 拿它拼路径是自找麻烦；界面上显示的名字从 `content.name` 来，与文件名无关。
+/// 扩展名保留是为了「用系统里的其它程序打开」时还能认出文件类型。
+fn favorite_copy_name(id: &str, content: &str, src: &std::path::Path) -> String {
+    let ext_of = |p: &str| {
+        std::path::Path::new(p)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_string())
+    };
+    let from_name = serde_json::from_str::<serde_json::Value>(content)
+        .ok()
+        .and_then(|v| {
+            v.get("name")
+                .and_then(|n| n.as_str())
+                .map(|n| n.to_string())
+        })
+        .and_then(|n| ext_of(&n));
+    let ext = ext_of(&src.to_string_lossy())
+        .or(from_name)
+        .unwrap_or_default();
+    // 只留 ASCII 字母数字并限长：扩展名会被拼进文件名，不能带 `.`/`/` 之类
+    let safe: String = ext
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .take(10)
+        .collect();
+    if safe.is_empty() {
+        id.to_string()
+    } else {
+        format!("{id}.{safe}")
+    }
+}
+
+/// 列出全部收藏（新的在前）。
+///
+/// `available` 在这里 stat 一次副本填好：前端据此把"副本不在了"渲染成「已清理」占位，
+/// 而不是让用户点开才发现打不开。纯文本/代码没有副本，按"可用"处理（它没有可丢的东西）。
+#[tauri::command(async)]
+pub fn list_favorites(state: State<'_, Arc<AppState>>) -> Result<Vec<Favorite>, String> {
+    let s = state.inner();
+    let mut rows = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::list_favorites(&dbc).map_err(|e| e.to_string())?
+    };
+    for f in &mut rows {
+        f.available = match f.media_path.as_deref() {
+            Some(p) => std::path::Path::new(p).is_file(),
+            None => true,
+        };
+    }
+    Ok(rows)
+}
+
+/// 收藏一条消息（幂等：同一条消息重复收藏不会产生第二条）。
+///
+/// 图片/文件会把源文件**复制**到收藏目录，并把副本路径改写进 `content.path`
+/// —— 前端整套渲染/打开/另存都只认 `content.path`，改写这一处就让收藏零改动复用它们。
+/// 副本是"独立存储"的物理保证：之后删除会话、清理缓存都不再影响这条收藏。
+#[tauri::command(async)]
+pub fn add_favorite(
+    state: State<'_, Arc<AppState>>,
+    msg_id: String,
+    conv_id: String,
+) -> Result<Favorite, String> {
+    let s = state.inner();
+    let (sender_id, kind, content, ts) = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::get_favorite_source(&dbc, &msg_id)
+    }
+    .ok_or_else(|| "要收藏的消息不在本机".to_string())?;
+
+    // 幂等：已收藏过就直接返回原条目 —— 不重复复制文件（那会给磁盘留下无人引用的垃圾）。
+    {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(existing) = db::get_favorite_by_msg(&dbc, &msg_id).map_err(|e| e.to_string())? {
+            return Ok(Favorite {
+                available: true,
+                ..existing
+            });
+        }
+    }
+
+    let id = Uuid::new_v4().to_string();
+    let mut final_content = content.clone();
+    let mut media_path: Option<String> = None;
+    let mut media_size: i64 = 0;
+
+    if kind == "image" || kind == "file" {
+        let src = match resolve_media_path(s, &msg_id) {
+            MediaPath::Present(p) => *p,
+            MediaPath::Gone => {
+                return Err("文件已不在本机（可能已被「存储清理」删除），无法收藏".to_string())
+            }
+            MediaPath::Unknown(e) => return Err(e),
+        };
+        let dst = s
+            .favorites_dir
+            .join(favorite_copy_name(&id, &content, &src));
+        std::fs::copy(&src, &dst).map_err(|e| format!("复制到收藏目录失败：{e}"))?;
+        media_size = std::fs::metadata(&dst).map(|m| m.len() as i64).unwrap_or(0);
+        let dst_str = dst.to_string_lossy().to_string();
+        final_content = db::favorite_content_with_path(&content, &dst_str);
+        media_path = Some(dst_str);
+    }
+
+    let row = Favorite {
+        id: id.clone(),
+        msg_id: msg_id.clone(),
+        conv_id,
+        sender_id,
+        kind,
+        content: final_content,
+        ts,
+        favorited_at: db::now_ms(),
+        media_path: media_path.clone(),
+        media_size,
+        available: true,
+    };
+    let inserted = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::insert_favorite(&dbc, &row).map_err(|e| e.to_string())?
+    };
+    if !inserted {
+        // 竞态：两次收藏请求交错，另一条先落库。把这次多复制出来的副本删掉再返回已有条目，
+        // 否则那份拷贝永远不会有人引用（收藏删的是另一条的 media_path）。
+        if let Some(p) = media_path {
+            let _ = std::fs::remove_file(p);
+        }
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        let existing = db::get_favorite_by_msg(&dbc, &msg_id)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "收藏写入失败".to_string())?;
+        return Ok(Favorite {
+            available: true,
+            ..existing
+        });
+    }
+    s.logger.info(
+        "favorite",
+        format!("已收藏消息 kind={} msg_id={msg_id}", row.kind),
+    );
+    Ok(row)
+}
+
+/// 取消收藏：先删记录、再删副本文件。
+///
+/// 顺序不能反：先删文件而删记录失败，会留下一条**打不开**的收藏（比"删了记录但文件没删掉"
+/// 差得多 —— 后者只占磁盘，用户看不见）。文件删除失败只记日志，不回滚记录。
+#[tauri::command(async)]
+pub fn remove_favorite(state: State<'_, Arc<AppState>>, id: String) -> Result<(), String> {
+    let s = state.inner();
+    let removed = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::delete_favorite(&dbc, &id).map_err(|e| e.to_string())?
+    };
+    let Some(fav) = removed else {
+        return Ok(()); // 已经不在收藏里了：幂等返回，不报错
+    };
+    if let Some(path) = fav.media_path {
+        let p = std::path::Path::new(&path);
+        // 只删收藏目录内的文件：同一套边界判断，防止脏行把删除操作引到库外
+        let under_favorites = std::fs::canonicalize(&s.favorites_dir)
+            .ok()
+            .zip(std::fs::canonicalize(p).ok())
+            .map(|(dir, f)| f.starts_with(dir))
+            .unwrap_or(false);
+        if under_favorites {
+            if let Err(e) = std::fs::remove_file(p) {
+                s.logger
+                    .warn("favorite", format!("删除收藏副本失败 {path}: {e}"));
+            }
+        } else {
+            s.logger
+                .warn("favorite", format!("跳过越权路径的副本删除：{path}"));
+        }
+    }
+    Ok(())
+}
+
+/// 读取收藏副本的预览字节（图片）。契约与 [`read_file_preview`] 一致：
+/// 超限返回 "TOO_LARGE"，副本不在返回 "文件不存在"。
+#[tauri::command(async)]
+pub fn read_favorite_preview(
+    state: State<'_, Arc<AppState>>,
+    id: String,
+    max_bytes: u64,
+) -> Result<tauri::ipc::Response, String> {
+    let s = state.inner();
+    let max_bytes = max_bytes.min(15 * 1024 * 1024);
+    let file = match resolve_favorite_media_path(s, &id) {
         MediaPath::Present(p) => *p,
         MediaPath::Unknown(e) => return Err(e),
         MediaPath::Gone => return Err("文件不存在".to_string()),
@@ -4899,7 +5334,10 @@ const CLEAR_BATCH_ROWS: usize = 2000;
 /// 删**一批**（同步核心，便于单测）：一批一个短事务，返回删除行数。
 ///
 /// 表名只来自本文件里的字面量列表，不存在注入面。
-fn clear_one_batch(db: &std::sync::Mutex<rusqlite::Connection>, table: &str) -> Result<u64, String> {
+fn clear_one_batch(
+    db: &std::sync::Mutex<rusqlite::Connection>,
+    table: &str,
+) -> Result<u64, String> {
     let dbc = db.lock().unwrap_or_else(|e| e.into_inner());
     let tx = dbc.unchecked_transaction().map_err(|e| e.to_string())?;
     let n = tx
@@ -4959,6 +5397,8 @@ pub async fn clear_all_data(
         "group_file_recipients",
         "group_members",
         "groups",
+        // 收藏也是"聊天数据"：用户点「清除数据」就是要清干净，留下记录只会变成打不开的条目。
+        "favorites",
     ] {
         cleared += clear_table_batched(s, table).await?;
     }
@@ -4979,22 +5419,58 @@ pub async fn clear_all_data(
     );
 
     // 2. Runtime state 清理：群密钥内存缓存一并清空（彻底退出群聊）。
-    s.pending_requests.lock().unwrap_or_else(|e| e.into_inner()).clear();
-    s.pending_reads.lock().unwrap_or_else(|e| e.into_inner()).clear();
-    s.pending_file_accept.lock().unwrap_or_else(|e| e.into_inner()).clear();
-    s.pending_file_complete.lock().unwrap_or_else(|e| e.into_inner()).clear();
-    s.pending_share_tree.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    s.pending_requests
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+    s.pending_reads
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+    s.pending_file_accept
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+    s.pending_file_complete
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+    s.pending_share_tree
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
     // 群文件/文件投递运行态与待发群密钥同属聊天数据运行态（不清会残留
     // 已删群的 file_key，且 pending 群密钥可能在重连时复活已删群记录）
-    s.group_file_receivers.lock().unwrap_or_else(|e| e.into_inner()).clear();
-    s.group_file_keys.lock().unwrap_or_else(|e| e.into_inner()).clear();
-    s.group_keys.lock().unwrap_or_else(|e| e.into_inner()).clear();
-    s.pending_group_keys.lock().unwrap_or_else(|e| e.into_inner()).clear();
-    s.group_file_sending.lock().unwrap_or_else(|e| e.into_inner()).clear();
-    s.file_sending.lock().unwrap_or_else(|e| e.into_inner()).clear();
-    *s.relay.lock().unwrap_or_else(|e| e.into_inner()) = crate::relay_manager::RelayManager::new();
+    s.group_file_receivers
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+    s.group_file_keys
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+    s.group_keys
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+    s.pending_group_keys
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+    s.group_file_sending
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+    s.file_sending
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+    *s.relay.lock().unwrap_or_else(|e| e.into_inner()) = crate::file_relay::RelayManager::new();
     // 先关闭未完成接收的文件句柄，再清理 downloads 目录中的 .part 临时文件。
-    s.file_receivers.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    s.file_receivers
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
 
     // 3. 文件系统清理（DB commit 成功后执行）
     //    收集错误而非立即返回，避免文件清理失败伪装成"整个操作失败"
@@ -5020,7 +5496,11 @@ pub async fn clear_all_data(
         }
     }
     // 清空 downloads_dir 内容（保留目录本身）
-    let dl = s.downloads_dir.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let dl = s
+        .downloads_dir
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     if dl.exists() {
         for entry in std::fs::read_dir(&dl)
             .map_err(|e| e.to_string())?
@@ -5036,6 +5516,27 @@ pub async fn clear_all_data(
             };
             if let Err(e) = result {
                 fs_errors.push(format!("downloads_dir: {} ({})", p.display(), e));
+            }
+        }
+    }
+    // 清空收藏副本目录（保留目录本身）。
+    // 收藏目录不在 media_dirs 里、也不受存储清理影响（那正是它存在的意义），
+    // 所以必须在这里**显式**清 —— 否则收藏记录删了、副本文件会永远留在磁盘上。
+    if s.favorites_dir.exists() {
+        for entry in std::fs::read_dir(&s.favorites_dir)
+            .map_err(|e| e.to_string())?
+            .filter_map(|e| e.ok())
+        {
+            let p = entry.path();
+            let result = if p.is_file() {
+                std::fs::remove_file(&p)
+            } else if p.is_dir() {
+                std::fs::remove_dir_all(&p)
+            } else {
+                Ok(())
+            };
+            if let Err(e) = result {
+                fs_errors.push(format!("favorites_dir: {} ({})", p.display(), e));
             }
         }
     }
@@ -5172,7 +5673,9 @@ pub fn search_chat_history(
 
     let mut out = Vec::new();
     for conv_id in order.into_iter().take(SEARCH_HISTORY_MAX_CONVS as usize) {
-        let Some(list) = grouped.remove(&conv_id) else { continue };
+        let Some(list) = grouped.remove(&conv_id) else {
+            continue;
+        };
         let total = list.first().map(|h| h.total).unwrap_or(0);
         let latest_ts = list.first().map(|h| h.ts).unwrap_or(0);
         // 会话名/头像/类型：群聊读 groups，单聊读好友（与其它列表同源）
@@ -5294,8 +5797,7 @@ fn normalize_routed_address(input: &str) -> Result<String, String> {
     };
     if addr.is_ipv6() {
         return Err(
-            "暂不支持 IPv6 地址（当前 TCP 监听仅 IPv4）。请填写 IPv4，例如 100.64.0.1"
-                .to_string(),
+            "暂不支持 IPv6 地址（当前 TCP 监听仅 IPv4）。请填写 IPv4，例如 100.64.0.1".to_string(),
         );
     }
     // 规范化后再存储：add / remove 比较的是同一个字符串，避免「加进去了却删不掉」
@@ -5332,7 +5834,8 @@ pub fn add_routed_endpoint(
     let candidate = RoutedEndpoint::new(device_id, address);
 
     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-    let mut list = parse_endpoints(&db::get_setting(&dbc, ROUTED_ENDPOINTS_KEY).unwrap_or_default());
+    let mut list =
+        parse_endpoints(&db::get_setting(&dbc, ROUTED_ENDPOINTS_KEY).unwrap_or_default());
     // 同一个**地址**不重复添加，无论是否带 device_id —— 一个地址只对应一个端点。
     if !list.iter().any(|e| e.address == candidate.address) {
         list.push(candidate);
@@ -5358,13 +5861,14 @@ pub fn remove_routed_endpoint(
 ) -> Result<Vec<RoutedEndpoint>, String> {
     let address = normalize_routed_address(&address)?;
     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-    let mut list = parse_endpoints(&db::get_setting(&dbc, ROUTED_ENDPOINTS_KEY).unwrap_or_default());
+    let mut list =
+        parse_endpoints(&db::get_setting(&dbc, ROUTED_ENDPOINTS_KEY).unwrap_or_default());
     let before = list.len();
     list.retain(|e| {
         // 库里的历史脏数据可能未归一化（裸 IP / 裸 IP 带非标准端口），按当前规则再过一遍
         // 归一化后比较。归一化失败的条目（语法错乱）保守地按字符串相等判，免得误删。
-        let stored_norm = normalize_routed_address(&e.address)
-            .unwrap_or_else(|_| e.address.clone());
+        let stored_norm =
+            normalize_routed_address(&e.address).unwrap_or_else(|_| e.address.clone());
         stored_norm != address
     });
     if list.len() != before {
@@ -5597,7 +6101,9 @@ fn fit_aux_window(
 #[cfg(desktop)]
 fn apply_aux_geometry(win: &tauri::WebviewWindow, geo: AuxWindowGeometry) {
     use tauri::{PhysicalSize, Size};
-    let _ = win.set_min_size(Some(Size::Physical(PhysicalSize::new(geo.min.0, geo.min.1))));
+    let _ = win.set_min_size(Some(Size::Physical(PhysicalSize::new(
+        geo.min.0, geo.min.1,
+    ))));
     let _ = win.set_size(Size::Physical(PhysicalSize::new(geo.size.0, geo.size.1)));
     recenter_aux_window(win, &geo);
 }
@@ -5691,7 +6197,7 @@ pub fn open_settings_window(
     let bg = aux_window_background(&state);
     let title = state.display_name(); // 同 open_log_window：占位标题，文档加载后被接管
     let build_app = app.clone(); // 同 open_log_window：闭包要 `'static`，不能再借 `app`
-    // 尺寸与位置按主窗口算，理由见 aux_window_geometry。
+                                 // 尺寸与位置按主窗口算，理由见 aux_window_geometry。
     let geo = aux_window_geometry(&app, (780.0, 600.0), (560.0, 420.0));
     ensure_aux_window(&app, crate::WINDOW_SETTINGS, geo, move || {
         let win = WebviewWindowBuilder::new(
@@ -5718,7 +6224,9 @@ pub fn open_settings_window(
 fn aux_window_background(state: &tauri::State<'_, Arc<AppState>>) -> tauri::window::Color {
     let dark = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::get_setting(&dbc, "dark_mode").map(|v| v == "1").unwrap_or(false)
+        db::get_setting(&dbc, "dark_mode")
+            .map(|v| v == "1")
+            .unwrap_or(false)
     };
     if dark {
         tauri::window::Color(11, 18, 32, 255) // #0b1220
@@ -5793,7 +6301,10 @@ mod tests {
     fn aux_window_fits_inside_the_main_window_and_is_centered() {
         use super::{fit_aux_window, AUX_WINDOW_MARGIN};
         // 两组真实参数：设置 780×600（最小 560×420）、日志 760×560（最小 420×320）。
-        let cases = [((780.0, 600.0), (560.0, 420.0)), ((760.0, 560.0), (420.0, 320.0))];
+        let cases = [
+            ((780.0, 600.0), (560.0, 420.0)),
+            ((760.0, 560.0), (420.0, 320.0)),
+        ];
         // 主窗口尺寸（物理像素）：默认 1000×680@100%、拉小、很小、放大、以及 125%/150% 缩放。
         let mains = [
             ((1000u32, 680u32), 1.0),
@@ -5827,12 +6338,21 @@ mod tests {
                     let (x, y) = g.centered_pos(outer);
                     let left = x - main_pos.0;
                     let right = main_pos.0 + size.0 as i32 - (x + outer.0 as i32);
-                    assert!((left - right).abs() <= 1, "水平未居中：左 {left} 右 {right}");
+                    assert!(
+                        (left - right).abs() <= 1,
+                        "水平未居中：左 {left} 右 {right}"
+                    );
                     let top = y - main_pos.1;
                     let bottom = main_pos.1 + size.1 as i32 - (y + outer.1 as i32);
-                    assert!((top - bottom).abs() <= 1, "垂直未居中：上 {top} 下 {bottom}");
+                    assert!(
+                        (top - bottom).abs() <= 1,
+                        "垂直未居中：上 {top} 下 {bottom}"
+                    );
                     let (ex, ey) = g.centered_pos(g.size);
-                    assert!(ex >= main_pos.0 && ey >= main_pos.1, "不能跑到主窗口左上角之外");
+                    assert!(
+                        ex >= main_pos.0 && ey >= main_pos.1,
+                        "不能跑到主窗口左上角之外"
+                    );
                 }
             }
         }
@@ -5840,13 +6360,29 @@ mod tests {
         let g = fit_aux_window((1600, 1000), (0, 0), 1.0, (780.0, 600.0), (560.0, 420.0));
         assert_eq!(g.size, (780, 600), "主窗口够大时应保持设计尺寸");
         let g = fit_aux_window((3000, 2000), (0, 0), 1.5, (780.0, 600.0), (560.0, 420.0));
-        assert_eq!(g.size, (1170, 900), "150% 屏上 780×600 逻辑 = 1170×900 物理");
+        assert_eq!(
+            g.size,
+            (1170, 900),
+            "150% 屏上 780×600 逻辑 = 1170×900 物理"
+        );
         assert_eq!(g.min, (840, 630), "最小尺寸也要按同一缩放换成物理值");
         // 装不下时把边距留够（24 逻辑像素 × 缩放）
         let g = fit_aux_window((700, 500), (0, 0), 1.0, (780.0, 600.0), (560.0, 420.0));
-        assert_eq!(g.size, (700 - 2 * AUX_WINDOW_MARGIN as u32, 500 - 2 * AUX_WINDOW_MARGIN as u32));
+        assert_eq!(
+            g.size,
+            (
+                700 - 2 * AUX_WINDOW_MARGIN as u32,
+                500 - 2 * AUX_WINDOW_MARGIN as u32
+            )
+        );
         let g = fit_aux_window((800, 600), (0, 0), 2.0, (780.0, 600.0), (560.0, 420.0));
-        assert_eq!(g.size, (800 - 2 * (AUX_WINDOW_MARGIN * 2.0) as u32, 600 - 2 * (AUX_WINDOW_MARGIN * 2.0) as u32));
+        assert_eq!(
+            g.size,
+            (
+                800 - 2 * (AUX_WINDOW_MARGIN * 2.0) as u32,
+                600 - 2 * (AUX_WINDOW_MARGIN * 2.0) as u32
+            )
+        );
     }
 
     /// `generate_handler!` 里列出的命令在**移动端也必须存在**。
@@ -5909,7 +6445,12 @@ mod tests {
     fn recipient(id: &str, progress: f64) -> GroupFileRecipient {
         GroupFileRecipient {
             recipient_id: id.to_string(),
-            status: if progress >= 1.0 { "completed" } else { "sending" }.to_string(),
+            status: if progress >= 1.0 {
+                "completed"
+            } else {
+                "sending"
+            }
+            .to_string(),
             progress,
             updated_at: 0,
         }
@@ -5932,7 +6473,11 @@ mod tests {
         // 15s 边界内 ⇒ 在线（announce 5s 一轮 + 抖动，容忍丢一两轮）
         assert!(friend_is_online(now - FRIEND_ONLINE_GRACE_MS, now, false));
         // 超过窗口且没有链路 ⇒ 离线（就是"连过又掉线"的那个场景）
-        assert!(!friend_is_online(now - FRIEND_ONLINE_GRACE_MS - 1, now, false));
+        assert!(!friend_is_online(
+            now - FRIEND_ONLINE_GRACE_MS - 1,
+            now,
+            false
+        ));
         assert!(!friend_is_online(0, now, false));
         // 有活链路 ⇒ 恒在线（哪怕很久没有 announce：跨子网中继场景）
         assert!(friend_is_online(0, now, true));
@@ -5943,29 +6488,51 @@ mod tests {
     /// 而不是被离线成员的 0 拖成 50%（这正是 `6e9b96e` 那轮用户反馈的「卡在 50%」）。
     #[test]
     fn group_file_progress_ignores_offline_members() {
-        let rs = vec![recipient("a", 1.0), recipient("b", 1.0), recipient("offline", 0.0)];
+        let rs = vec![
+            recipient("a", 1.0),
+            recipient("b", 1.0),
+            recipient("offline", 0.0),
+        ];
         let snap = online(&["a", "b"]);
         assert_eq!(group_file_progress_from(&rs, Some(&snap), 0.0), 1.0);
         // 对照组：不传快照（全体口径）时，同一组数据只有 2/3 —— 证明差异来自分母而非巧合。
         let all = group_file_progress_from(&rs, None, 0.0);
-        assert!((all - 2.0 / 3.0).abs() < 1e-9, "全体口径应为 2/3，实际 {all}");
+        assert!(
+            (all - 2.0 / 3.0).abs() < 1e-9,
+            "全体口径应为 2/3，实际 {all}"
+        );
     }
 
     /// 离线成员之后上线补发**不得回退**进度条：分母是冻结快照，与他的进度无关。
     #[test]
     fn late_online_member_does_not_regress_progress() {
         let snap = online(&["a", "b"]);
-        let done = vec![recipient("a", 1.0), recipient("b", 1.0), recipient("offline", 0.0)];
+        let done = vec![
+            recipient("a", 1.0),
+            recipient("b", 1.0),
+            recipient("offline", 0.0),
+        ];
         assert_eq!(group_file_progress_from(&done, Some(&snap), 0.0), 1.0);
         // 离线者开始补发（进度 0.5）——仍在快照外，不影响结果
-        let catching_up = vec![recipient("a", 1.0), recipient("b", 1.0), recipient("offline", 0.5)];
-        assert_eq!(group_file_progress_from(&catching_up, Some(&snap), 0.0), 1.0);
+        let catching_up = vec![
+            recipient("a", 1.0),
+            recipient("b", 1.0),
+            recipient("offline", 0.5),
+        ];
+        assert_eq!(
+            group_file_progress_from(&catching_up, Some(&snap), 0.0),
+            1.0
+        );
     }
 
     /// 在线成员未全部完成时，进度是在线成员的平均值（不是 max，也不是全体）。
     #[test]
     fn group_file_progress_averages_online_members() {
-        let rs = vec![recipient("a", 1.0), recipient("b", 0.0), recipient("offline", 1.0)];
+        let rs = vec![
+            recipient("a", 1.0),
+            recipient("b", 0.0),
+            recipient("offline", 1.0),
+        ];
         let snap = online(&["a", "b"]);
         assert_eq!(group_file_progress_from(&rs, Some(&snap), 0.0), 0.5);
     }
@@ -5986,9 +6553,21 @@ mod tests {
     fn group_file_progress_fallback_and_clamp() {
         let rs = vec![recipient("a", 0.5), recipient("b", 0.5)];
         assert_eq!(group_file_progress_from(&rs, None, 0.0), 0.5);
-        assert_eq!(group_file_progress_from(&[], None, 0.3), 0.3, "无 recipient 时用 fallback");
-        assert_eq!(group_file_progress_from(&rs, None, 2.0), 1.0, "fallback 超界要夹到 1");
-        assert_eq!(group_file_progress_from(&rs, None, -1.0), 0.5, "负 fallback 不得把进度拉成负");
+        assert_eq!(
+            group_file_progress_from(&[], None, 0.3),
+            0.3,
+            "无 recipient 时用 fallback"
+        );
+        assert_eq!(
+            group_file_progress_from(&rs, None, 2.0),
+            1.0,
+            "fallback 超界要夹到 1"
+        );
+        assert_eq!(
+            group_file_progress_from(&rs, None, -1.0),
+            0.5,
+            "负 fallback 不得把进度拉成负"
+        );
     }
 
     /// Routed 端点地址：`ip` 与 `ip:port` 两种写法都收（省略端口补标准 `TCP_PORT`），
@@ -6145,7 +6724,11 @@ mod tests {
         assert_eq!(obj.len(), 3, "只应包含被点名的键");
         assert_eq!(obj["themeColor"], serde_json::json!("#123456"));
         assert_eq!(obj["language"], serde_json::json!("en-US"));
-        assert_eq!(obj["darkMode"], serde_json::json!(true), "dark_mode 要转成布尔");
+        assert_eq!(
+            obj["darkMode"],
+            serde_json::json!(true),
+            "dark_mode 要转成布尔"
+        );
         assert!(obj.get("theme_color").is_none(), "键名必须是 camelCase");
         assert!(obj.get("fontFamily").is_none(), "没变的键不得出现");
 
@@ -6188,7 +6771,8 @@ mod tests {
         // ① 单次调用只允许删一批
         let first = super::clear_one_batch(&db, "messages").unwrap();
         assert_eq!(
-            first, super::CLEAR_BATCH_ROWS as u64,
+            first,
+            super::CLEAR_BATCH_ROWS as u64,
             "单次调用必须只删一批（一次 2000 行）；删更多说明事务又变大了"
         );
         let left_after_first: i64 = db
@@ -6221,7 +6805,6 @@ mod tests {
         assert_eq!(left, 0, "表必须清空");
     }
 
-
     #[test]
     fn decode_respects_exact_byte_limit() {
         let exact = vec![0u8; MAX_OUTGOING_IMAGE_BYTES as usize];
@@ -6242,8 +6825,10 @@ mod tests {
             Some("report.pdf")
         );
         assert_eq!(
-            super::name_from_content_uri("content://x/document/primary%3APictures%2FIMG%202024.jpg")
-                .as_deref(),
+            super::name_from_content_uri(
+                "content://x/document/primary%3APictures%2FIMG%202024.jpg"
+            )
+            .as_deref(),
             Some("IMG 2024.jpg")
         );
         // MediaStore（相册）只有数字 id ⇒ 取不到名字，交给内容嗅探
@@ -6252,8 +6837,14 @@ mod tests {
             None
         );
         // 危险/异常形状一律拒绝（不能让它决定落盘路径）
-        assert_eq!(super::name_from_content_uri("content://x/document/..%2F..%2Fetc%2Fpasswd"), None);
-        assert_eq!(super::name_from_content_uri("content://x/document/noext"), None);
+        assert_eq!(
+            super::name_from_content_uri("content://x/document/..%2F..%2Fetc%2Fpasswd"),
+            None
+        );
+        assert_eq!(
+            super::name_from_content_uri("content://x/document/noext"),
+            None
+        );
     }
 
     /// **按文件头嗅探媒体类型**：相册 URI 没有扩展名，靠内容才能把图片发成"图片"。
@@ -6262,7 +6853,10 @@ mod tests {
         assert_eq!(super::sniff_media_ext(&[0xFF, 0xD8, 0xFF, 0xE0]), "jpg");
         assert_eq!(super::sniff_media_ext(b"\x89PNG\r\n\x1a\n"), "png");
         assert_eq!(super::sniff_media_ext(b"GIF89a"), "gif");
-        assert_eq!(super::sniff_media_ext(b"RIFF\x00\x00\x00\x00WEBPVP8 "), "webp");
+        assert_eq!(
+            super::sniff_media_ext(b"RIFF\x00\x00\x00\x00WEBPVP8 "),
+            "webp"
+        );
         assert_eq!(super::sniff_media_ext(b"%PDF-1.7"), "pdf");
         assert_eq!(super::sniff_media_ext(b"PK\x03\x04"), "zip");
         // 未知内容 → bin（当成普通文件，绝不猜成图片）
@@ -6274,7 +6868,10 @@ mod tests {
     #[test]
     fn sanitize_file_name_blocks_path_traversal() {
         let escaped = super::sanitize_file_name("../../etc/passwd");
-        assert!(!escaped.contains('/') && !escaped.contains('\\'), "消毒后不能含路径分隔符：{escaped}");
+        assert!(
+            !escaped.contains('/') && !escaped.contains('\\'),
+            "消毒后不能含路径分隔符：{escaped}"
+        );
         assert_eq!(super::sanitize_file_name("a/b\\c.txt"), "a_b_c.txt");
         assert_eq!(super::sanitize_file_name("   "), "file.bin");
         assert_eq!(super::sanitize_file_name("...hidden"), "hidden");
@@ -6302,7 +6899,10 @@ mod tests {
         assert!(super::is_actionable_request(&pending("A"), &ids(&["B"])));
         // 已是好友 → 不显示（这正是用户报的"点了同意，对方那边申请还挂着"）
         assert!(!super::is_actionable_request(&pending("A"), &ids(&["A"])));
-        assert!(!super::is_actionable_request(&pending("A"), &ids(&["A", "B"])));
+        assert!(!super::is_actionable_request(
+            &pending("A"),
+            &ids(&["A", "B"])
+        ));
     }
 
     /// 蓝牙开关的决策规则：**最后一次意图胜出**，冷却只排队、不丢弃。

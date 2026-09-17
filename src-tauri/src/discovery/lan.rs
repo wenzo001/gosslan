@@ -66,10 +66,7 @@ mod tests {
     }
 
     fn tcp(a: u8, b: u8, c: u8, d: u8, port: u16) -> Endpoint {
-        Endpoint::Tcp(SocketAddr::new(
-            IpAddr::V4(Ipv4Addr::new(a, b, c, d)),
-            port,
-        ))
+        Endpoint::Tcp(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(a, b, c, d)), port))
     }
 
     /// 端点 = 来源 IP + 包内自报的 tcp_port（不是 UDP 源端口）。

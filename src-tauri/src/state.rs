@@ -14,13 +14,13 @@ use tokio::sync::{mpsc, watch, Notify};
 use crate::crypto::Identity;
 use crate::db;
 use crate::device::{hardware_fingerprint, hostname_fingerprint};
+use crate::file_relay::RelayManager;
 use crate::gossip_engine::GossipEngine;
 use crate::logging::Logger;
 use crate::mesh::manager::PeerManager;
 use crate::mesh::path::PathKind;
 use crate::mesh::router::MeshRouter;
 use crate::protocol::{Message, TCP_PORT};
-use crate::relay_manager::RelayManager;
 
 /// 系统语言是否为中文 —— **仅**「前端还没把解析结果推过来」时的兜底。
 ///
@@ -164,12 +164,9 @@ fn event_target_label(target: &tauri::EventTarget) -> Option<&str> {
 /// 链路类型只有后端知道（`Link::path_kind` 由**来路**决定，不能从 IP 段反推），所以在这里判。
 pub fn best_link_kind(kinds: &[crate::mesh::PathKind]) -> Option<crate::mesh::PathKind> {
     use crate::mesh::PathKind::*;
-    for want in [Lan, Routed, Bluetooth] {
-        if kinds.contains(&want) {
-            return Some(want);
-        }
-    }
-    None
+    [Lan, Routed, Bluetooth]
+        .into_iter()
+        .find(|&want| kinds.contains(&want))
 }
 
 /// 局域网在线节点（Peer Table 条目）
@@ -288,6 +285,31 @@ pub struct MessageRecord {
     /// 每会话逻辑序号（Lamport 风格），排序与清空边界都以此为准。
     pub seq: i64,
     pub status: String,
+}
+
+/// 一条收藏（与前端一致）。
+///
+/// `content` 是**收藏当时的快照**：图片/文件类收藏的 `content.path` 已被改写成收藏副本路径
+/// （而不是原消息里的下载目录路径），所以原消息被清理、会话被删之后这条记录仍然能打开。
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Favorite {
+    pub id: String,
+    pub msg_id: String,
+    pub conv_id: String,
+    pub sender_id: String,
+    pub kind: String, // text | code | image | file
+    pub content: String,
+    /// 原消息时间（列表里显示"这条内容是什么时候的"）
+    pub ts: i64,
+    /// 收藏时间（列表排序键）
+    pub favorited_at: i64,
+    /// 收藏副本的绝对路径（仅 image/file，其余为 None）
+    pub media_path: Option<String>,
+    pub media_size: i64,
+    /// 副本是否还在磁盘上。**由命令层填充**（db 层不碰文件系统）：列表里给前端渲染
+    /// 「已清理」占位用，避免用户点开才发现打不开。
+    #[serde(default)]
+    pub available: bool,
 }
 
 /// 会话摘要（会话列表）
@@ -417,7 +439,7 @@ pub struct BleDiag {
     pub last_scan_matched: u32,
     /// 正在退避中的候选（按剩余时间倒序）
     pub backoff: Vec<BleBackoff>,
-/// 「不要再拨」名单大小（对端是指定拨号方时登记）
+    /// 「不要再拨」名单大小（对端是指定拨号方时登记）
     pub no_dial: usize,
 }
 
@@ -748,6 +770,13 @@ pub struct AppState {
     pub downloads_dir: Mutex<PathBuf>,
     /// 缓存目录：图片 / 音频 / 文件等二进制落盘于此（SQLite 不存 BLOB）
     pub cache_dir: PathBuf,
+    /// 收藏媒体的**独立副本**目录（`app_data/favorites/media`）。
+    ///
+    /// 刻意与 `cache_dir` / `downloads_dir` 分开：那两个目录会被「存储清理」按配额与保留期
+    /// 删除（见 `storage/cache_cleaner.rs`），而收藏是"用户明确要留住的东西"
+    /// —— 微信的收藏也是独立存储，删聊天记录、清缓存都不该把它弄丢。
+    /// 所以它**不在** `media_dirs` 里，清理逻辑不会碰它；只有「清除数据」会显式清空。
+    pub favorites_dir: PathBuf,
     /// SQLite 数据库文件路径（存储页展示占用用；含 -wal/-shm 伴生文件）。
     pub db_path: PathBuf,
     /// 应用级运行日志（内存 ring buffer + 落盘文件），供「运行日志」页读取与排查。
@@ -813,8 +842,7 @@ pub struct AppState {
     /// 但 **Mac 端状态一直没同步** —— 因为 `accept_friend_request` 只发一次
     /// （直连 `try_send` 或广播兜底），而 BLE 链路正好在那一刻抖动/还没建好时，
     /// 这一帧**静默丢失**且永不重发 ⇒ 单边好友关系（我这儿有他、他那儿没我）。
-    pub pending_out_accepts:
-        Mutex<std::collections::HashMap<String, (i64, u32, i64)>>,
+    pub pending_out_accepts: Mutex<std::collections::HashMap<String, (i64, u32, i64)>>,
 
     /// 会话的「当前链路」快照：conv_id -> LinkState（最近一条消息的链路 + 跳数）。
     /// 收发单聊消息时更新，前端聊天窗口据此显示连接图标（LAN / 桥接 / 蓝牙）。
@@ -828,8 +856,7 @@ pub struct AppState {
     pub avatar: Mutex<Option<String>>,
 
     /// 等待对方接受的文件传输：transfer_id -> 接受信号
-    pub pending_file_accept:
-        Mutex<HashMap<String, tokio::sync::oneshot::Sender<Result<(), u64>>>>,
+    pub pending_file_accept: Mutex<HashMap<String, tokio::sync::oneshot::Sender<Result<(), u64>>>>,
     /// 等待接收方完成确认的直连文件传输：transfer_id -> 完成信号。
     /// 发送方在 FileDone 之后等待 FileCompleteAck，只有 success=true 才推进 delivered。
     pub pending_file_complete: Mutex<HashMap<String, tokio::sync::oneshot::Sender<bool>>>,
@@ -909,6 +936,9 @@ impl AppState {
         std::fs::create_dir_all(&default_downloads).ok();
         let cache_dir = app_data.join("cache");
         std::fs::create_dir_all(&cache_dir).ok();
+        // 收藏副本目录：独立于 cache/downloads，存储清理不碰（见字段注释）。
+        let favorites_dir = app_data.join("favorites").join("media");
+        std::fs::create_dir_all(&favorites_dir).ok();
 
         // 多开支持：`--instance N`（或环境变量 GOSSLAN_INSTANCE）→ 独立数据库 / 端口 / 设备指纹
         let instance = instance_id();
@@ -1063,6 +1093,7 @@ impl AppState {
             ui_lang: AtomicU8::new(UI_LANG_UNKNOWN),
             downloads_dir: Mutex::new(downloads_dir),
             cache_dir,
+            favorites_dir,
             db_path,
             logger,
             identity,
@@ -1170,7 +1201,11 @@ impl AppState {
 
     /// 记录前端**解析后**的界面语言（`set_ui_language` 命令调用；见 [`Self::is_zh`]）。
     pub fn set_ui_language_hint(&self, lang: &str) {
-        let v = if lang.starts_with("zh") { UI_LANG_ZH } else { UI_LANG_EN };
+        let v = if lang.starts_with("zh") {
+            UI_LANG_ZH
+        } else {
+            UI_LANG_EN
+        };
         self.ui_lang.store(v, Ordering::Relaxed);
     }
 
@@ -1202,7 +1237,11 @@ impl AppState {
     /// 为什么不能走 `resolve_nickname`：它只查好友表/在线节点表，自己两边都不在，
     /// 会回落到 `device_id` 原文 —— 会话列表里就会显示一串 `gosslan-xxxxxxxx`。
     pub fn self_display_name(&self) -> String {
-        let n = self.nickname.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let n = self
+            .nickname
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         if !n.trim().is_empty() {
             return n;
         }
@@ -1216,7 +1255,10 @@ impl AppState {
 
     /// 本机自己的头像（data URI，可能为空）。
     pub fn self_avatar(&self) -> Option<String> {
-        self.avatar.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.avatar
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// 记录一个 Hello nonce，返回 false 表示该 nonce 近期已出现过（重放）。
@@ -1225,7 +1267,10 @@ impl AppState {
     /// 不依赖墙上时钟，避免设备间时间偏差影响判定。
     pub fn accept_hello_nonce(&self, nonce: &str) -> bool {
         const HELLO_NONCE_CACHE: usize = 512;
-        let mut q = self.seen_hello_nonces.lock().unwrap_or_else(|e| e.into_inner());
+        let mut q = self
+            .seen_hello_nonces
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if q.iter().any(|n| n == nonce) {
             return false;
         }

@@ -10,6 +10,570 @@
 
 ## [Unreleased]
 
+### Added (Change Budget 守门:改动半径分级 + 重复犯案检测器 —— 2026-09-17)
+
+Phase 6。核心认识:**小 diff 不等于安全** —— `4.18.7→4.18.10` 连着四个版本修同一个 BLE
+分片问题,每版 2~4 文件 / +24~+136 行,全都"很小",每一个都在修上一个。所以判据有三个,
+不是一个:
+
+**`scripts/check-change-budget.mjs` 三判据**:
+
+| 判据 | 规则 | 依据 |
+|---|---|---|
+| 变更分级 | L1(≤5 文件/≤200 行/1 领域)放行;L2(≤10/≤500/≤2 领域)需 `[plan]`;L3 或碰敏感文件需 `[impact]` | 9/10 真实修复落在 L1 内 |
+| 敏感文件 | 碰 `protocol.rs` / `crypto.rs` / `schema.sql` **无论多小**直接 L3 | 一错就是安全/全库数据问题 |
+| 重复犯案 | 同领域在最近 5 个 `fix` 中出现 ≥3 次 → FAIL | `4.18.7→4.18.10` 是 4 次;第 3 次就拦 |
+
+- **豁免**:纯文档/工程文件(`*.md`/`*.txt`/`docs/`/`scripts/`/`.github/`)不计入预算;
+  `chore(release)` 的版本五件套(package.json / Cargo.toml / Cargo.lock / tauri.conf.json /
+  package-lock.json)豁免 —— 否则每次发版撞门。
+- **范围语义 = 门禁向前看**:CI 用 push event 的 `before..sha`,本地用"未推送 commit"
+  (`origin/<branch>..HEAD`)。**不重查已推送的历史** —— 那会把门禁变成对历史的审判。
+- **测试接缝**:守门读真实 git 历史,没法"改坏源文件"验证 ⇒ 留 `--from-json`,非空转用例喂
+  `scripts/fixtures/change-budget.json`(默认状态全 PASS,四条用例各破坏一个条件验证对应判据会红)。
+- 接入 `npm run verify`(步骤 6)与 verify.yml frontend job(checkout 加 `fetch-depth: 0`,
+  merge-base 与 push 范围探测需要)。
+- **实测校准**:对历史 commit 的判定与预期一致 —— `fix(ble) d6e5c82`(3 文件/55 行)→ L1;
+  `docs 240ccd8` → 豁免;`feat(chat) 7c03341`(42 文件/+2578/碰 protocol.rs)→ L3 无标记 FAIL,
+  与计划预言吻合。当前分支犯案窗口 transport 2 次 < 3,第一版全绿。
+
+**已知边界(诚实)**:管不了语义(+10 行能让整条链路发不出消息,那靠测试与不变量);
+拆 commit gaming 靠犯案判据兜底;把 fix 写成 feat 属于"门禁被绕过"的流程问题,review 兜底。
+
+### Changed (零风险债:消掉 `relay` 命名撞车 + 收敛一份双状态 —— 2026-09-17)
+
+两笔之前悬而未决的零风险债一起勾掉。
+
+**`relay_manager.rs` → `file_relay.rs`**：
+
+`gosslan` 一直有两组同名"relay"的文件切片中继（`relay_manager.rs`，BitTorrent 式分发）
+与 `mesh::router`（路由转发）—— 命名撞到一份 `lib.rs:19` 的注释化石上：
+> `mod relay_manager; // 文件切片中继（BitTorrent 式分发），与 mesh::router 无关`
+
+本轮 `git mv` + 改 4 处代码引用 + 删掉那条化石注释，模块名自带语义。
+更新面：
+- 代码 4 处（`lib.rs:19` / `state.rs:23` / `commands.rs:4999` / `network/file.rs:296`）
+- 测试基线 8 行（`test-baseline.macos.txt:422-425` + `test-baseline.windows.txt:416-419`）
+- `scripts/verify-guards.py:207` mock 文件路径
+- docs：`domains.data.mjs`(routing 域 paths + persistence notes)、`migration-ledger.md`(关注点 9
+  行 + 命名撞车表改"✅ 已消解" + 收口顺序前两项标 strike-through)、
+  `ARCHITECTURE-EXPLAINED.md` 2 处、`audit-2026-09-13-mesh-ble-efficiency.md`、
+  `README.md` 2 处、`AI_PROJECT_HANDOFF.md`。
+**零行为改动**：测试名从 `relay_manager::tests::*` 改为 `file_relay::tests::*`，但函数体不动。
+
+---
+
+### Added (跨领域依赖守门 —— 把「每条 use 受 consumes 约束」机器化 —— 2026-09-17)
+
+Phase 5 只完成了"看得见"(领域图 + 迁移台账),没完成"守得住"—— `scripts/check-domain-map.mjs`
+只守图的形式(路径/不重叠/enforce 开关),不守图的依赖方向。本轮补足这块。
+
+**做了什么**：
+
+- **`docs/domains.data.mjs` 的 11 个领域新增 `consumes: [domainId]` 字段**，基于实测
+  `use crate::xxx`（排除 `#[cfg(test)] mod tests`）推导：`transport` consumes `identity /
+  persistence / files / messaging / routing / presence / platform` 七个 —— 多才正常，正是
+  台账里说的「`db::` 穿透传输层」「一个关注点三个家」在代码层的具体形态。
+- **`scripts/check-domain-deps.mjs`**（判据 G / H / I 三条）：
+  - **G**：每个领域 `paths` 下的 `.rs` 文件（生产代码），`use crate::xxx` 落到另一领域时
+    必须在那条 `consumes` 列表里（落地坐标 `file:line`，给"补 consumes 还是删 use"的修法）；
+  - **H**：`consumes` 不能引用不存在的领域（typo 第一天就该红）；
+  - **I**：`consumes` 不能引自己。
+- 与 `check-domain-map.mjs` **分工互补**：图的形式 vs 图的依赖方向，两套都过 = 自洽；
+  只过一套 = 要么补 `consumes` 要么删 `use`，绝不悄悄改写边界。
+- 接入 `scripts/verify.mjs`（步骤 5，"领域依赖方向守门"）与 `.github/workflows/verify.yml`
+  (frontend job 紧跟"领域图守门")，CI 无条件跑。
+- `scripts/verify-guards.py` 新增 **3 条非空转验证**（`--only domain-deps`）：
+  ① 故意加一条不在 consumes 的 use → FAIL；
+  ② 把 consumes 误删成空 → 用现有 use 立刻穿帮；
+  ③ 把 consumes 写成不存在的域 id → typo 当天拦下。
+
+**为什么有了它不等于可以打开 `enforce`**：`enforce: true` 与 `consumes` 是两套独立开关，
+前者管"图的形态对不对"（路径/重叠/enforce 与 secondHome 互斥），后者管"图的内核该怎么用
+才对"。`enforce` 仍保持全 false（边界收口完成一个打开一个，Phase 6 的事）；`consumes`
+是**随时打开的**——新增一条 use 立刻要 sign up，否则守门 FAIL。
+
+**没有做也不会做的事**：
+- 不扫 `#[cfg(test)] mod tests` 内的引用 —— 测试需要 mock / 接触内部状态，被圈进域约束
+  反而会让测试改写得难看（状态机在 `findTestModuleRanges`）。
+- 不扫前端 `src/*` —— `presentation` 域的边界另算（utils/api/composables 的相互 import
+  模式与后端 crate 不同），而且 `domains.data.mjs` 里已注明。
+- 不守 `activeHome` 是否属实 —— 那层是 `check-domain-map.mjs` 的边界，靠人诚实 + 台账
+  里的 `file:line` 证据。
+
+### Changed (修正 3 处过期的「未接线」声明，并收窄 2 处 allow(dead_code) —— 2026-09-16)
+
+Phase 5 的台账上报了「文档与代码冲突，不得静默择一」的两条，动手核对后又找到第三条。
+本轮**只改注释与 allow 的位置，不改任何行为**。
+
+**修掉的过期声明**：
+
+| 位置 | 原声明 | 实测 |
+|---|---|---|
+| `transport/bluetooth.rs:1-12` | 「当前实现提供了完整的 `Transport` 接口契约……**需要引入平台专用后端**」+ 一节「接入真实蓝牙后端的步骤」 | 那套步骤**早已做完**（`Cargo.toml` 已有 `bluetooth` feature、btleplug 已集成、driver 已实现并接线）。另有一节「接线时要做的（按顺序）」同样过期 —— 它列的扫描 → 候选 → 连接 → Hello → 登记 `state.links` **已在 `network/ble.rs` 完成**，只是没做在本模块内 |
+| `transport/bluetooth.rs:37` | 「## 状态：**已实现、尚未接线**（7-e 的一半）」 | `network/ble.rs` 有 **5 处**真实调用（`driver::adapter` / `scan_peers` / `connect` / `BleConnection` / `writer.send_frame`）⇒ **已接线** |
+| `transport/tcp.rs:11-14` | 「Phase 4 当前只落地 bytes 原语，**不改变任何现有收发路径**」+ 文件级 `#![allow(dead_code)] // 旁路阶段：待接线后移除` | 帧原语（`write_bytes` / `read_bytes` / `read_bytes_capped`）与 `TcpReceiver` / `TcpSender` 都**已接线**，且被 `network/transport.rs:57,62,69,1231,1232,1529,1613,2368,2369` 自述为"单一真相源（P-A03）"。未接线的只有 `TcpTransport` **一个结构体** |
+
+三处都换成了**接线状态表 + 调用点 file:line**，并写明"动这一带代码前请先核对调用点，别信注释"。
+
+**为什么顺手把 allow 收窄**：这三处声明都挂着 `#[allow(dead_code)]`，**把编译器本会给出的提示一起静音了** ——
+这正是它们能存活很久的原因。所以：
+
+- `transport/bluetooth.rs` 的 `driver`：模块级 `#[allow(dead_code)]` → 逐个标注
+- `transport/tcp.rs`：文件级 `#![allow(dead_code)]` → 只有 `TcpTransport` 与其 `impl` 带 allow
+
+**收窄后浮出 6 个真没用的项**（原先被文件级/模块级 allow 一起掩护着）：
+
+| 位置 | 项 | 处理 |
+|---|---|---|
+| `bluetooth.rs` driver | `BleConnection.next_msg_id` 字段 | 逐个标注。**⚠️ 顺带发现潜在真问题**：该字段从没被读过，而 `BleWriter::send_frame` 用的是它**自己**的 `next_msg_id` ⇒ 「连接内消息号」有**两份状态、一份是死的**。已注释要求接线下一半时二选一收敛 |
+| `bluetooth.rs` driver | `remote_id` / `is_connected` / `disconnect` | 逐个标注 + 说明"接线哪一处时会用上" |
+| `transport/tcp.rs` | `TcpSender::send_bytes` / `TcpReceiver::receive_bytes` | 逐个标注：生产走 `write_frame` / `read_frame`（经 `AsyncWrite` / `AsyncRead` 实现），这两个直接方法只有本文件测试在用 |
+
+**收益**：现在编译器重新能回答"这一层还有没有人在用" —— 若哪天 `network/ble.rs` 不再调
+`driver::scan_peers`，会立刻 warning，而不是继续静音。
+
+**验证**：`cargo check --lib`（默认与 `--features bluetooth`）均 0 warning。
+
+### Added (领域图 + 迁移台账：先回答「这个关注点有几个家、哪个在跑数据」 —— 2026-09-16)
+
+**这是一次只读审计**（没有改任何业务代码），产出两份文件 + 一个守门脚本。
+
+**背景**：本仓库处在一次**半完成的 ADR 迁移**中（`network/` 老栈 → `transport/` +
+`discovery/` + `mesh/` 新栈）。此时「域 = 某个目录」是**错的地图** ——
+AI 会照着它去改那个"看起来更对但没在跑"的新家，而真跑数据的是老家，
+于是症状不变或换个形态，出现「改完这个 bug 又冒那个」。
+
+**产出**：
+
+- `docs/domains.data.mjs` —— 领域图（11 个领域：identity / presence / friendship /
+  messaging / routing / transport / files / persistence / platform / observability /
+  presentation）。每个领域强制带 `activeHome`（**哪个家在跑数据**）与 `enforce`。
+- `docs/migration-ledger.md` —— 迁移台账，逐条给出 `file:line` 证据。
+- `scripts/check-domain-map.mjs` —— 守门（见下）。
+- 两份文件挂进 `AI_ENGINEERING_INDEX.md` 的必读清单**第 4、5 位**（在 protocol-invariants 之前）——
+  否则它们又是孤儿文档。
+
+**⚠️ 为什么是 `.mjs` 而不是计划里的 `domains.yml`**：实测**工具链里没有 YAML 解析器**
+（Node 无 `yaml`/`js-yaml`、Python 无 `pyyaml`，只有 Ruby 有）。为一个守门脚本引入 Ruby 依赖
+不合适，而**在守门脚本里手写 YAML 子集解析器更糟** —— 解析错了会让守门静默失效，
+那比没有守门更危险。`.mjs` 零解析、支持注释，且 Phase 6 的 Change Budget 能直接 `import` 它拿 `tier`。
+
+**台账的核心结论**（11 个关注点）：
+
+| 状态 | 数量 | 明细 |
+|---|---:|---|
+| ✅ 已收口 / 单家 | 6 | TCP 帧原语、BLE 外设、BLE 载荷预算、mesh、content、storage |
+| ⚠️ **真双家未收口** | 1 | **局域网发现**：`network/discovery.rs`（**活**，`network/mod.rs:54` 起 spawn）vs `discovery/`（`DiscoveryManager`/`LanDiscovery` **无任何生产调用点**） |
+| ℹ️ 三家但属正常分层 | 1 | **BLE 中央**：`network/ble.rs`（策略）+ `transport/bluetooth.rs::driver`（字节级）—— 有 7 处真实调用，不要合并 |
+| ⚠️ 部分未接线 | 2 | 传输抽象（`route()` 分流）、文件切片中继（`ChunkData`/`RelayPlan`/`impl RelayManager`） |
+
+「传输」一个关注点今天有**三个家**：TCP 数据面走 `network/`、BLE 数据面走
+`transport/bluetooth.rs::driver` + 三个外设模块、控制面（开关/状态/分流）走 `transport/mod.rs`。
+
+**命名撞车 3 处**（未消解，且作者已不得不用注释区分）：
+两个 `transport.rs`（`network/` vs `transport/`）、两个 "relay"
+（`file_relay.rs` 是**文件切片**、`mesh::router` 是**路由**，命名撞车已于 2026-09-17 通过 git mv `relay_manager.rs → file_relay.rs` 处理）、
+两个 "discovery"（活的那个名字更难猜）。
+
+**上报 2 条过期的「未接线」声明**（按 `AI_ENGINEERING_INDEX` 的规矩：文档与代码冲突不得静默择一）：
+① `transport/bluetooth.rs:37`「已实现、**尚未接线**」——实测 `network/ble.rs` 有 7 处调用，**已接线**
+（未接线的只是同文件的 `BluetoothTransport` 占位实现与 `route()`）；
+② `transport/tcp.rs:14`「旁路阶段：待接线后移除」——实测 `network/transport.rs:40,57,62` 已用它的
+帧原语并自述为"单一真相源"。**本轮只上报、不改**（Phase 5 是只读审计）。
+这与 Phase 3 修掉的 `ble_framing.rs` 那句是同一个病：**"待接线"的注释在接线之后没人回头改**，
+而且都挂着 `#[allow(dead_code)]`，把编译器本来会给出的提示一起静音了。
+
+**新守门 `check-domain-map.mjs` 的 6 条判据**：A 结构（字段齐/id 唯一/tier 合法）·
+B 路径必须存在 · C 一个文件最多属一个领域 · D `coverageRoots` 下不许有无主文件（必须显式列进
+`unmapped`，不能靠"没提到"蒙混）· E `activeHome` 必须是自己的路径之一 ·
+**F `enforce: true` 只能开在已收口的单家领域** —— 这条把「边界收口完成一个，打开一个」
+从口号变成机器判定，也正是 Phase 6 的前置。
+
+**守门脚本立刻抓出了我自己地图里的 8 个问题**（1 个不存在的路径 + 5 个文件被两域认领 +
+2 个无主文件 + 1 个 `activeHome` 不在自己的 paths 里）—— 这就是「地图错了比没有地图更危险」
+的现场实例。其中"两域认领"暴露了我一个建模错误：`mesh/` 的文件被 presence 与 routing 同时认领，
+而正确的说法是 **presence 只是「消费」`PeerCandidate`，不认领 mesh 的文件** ⇒ 已改为 `consumes` 字段。
+
+**验证**：`npm run verify` **11 步全绿**（132s）；领域图守门 **219 个文件无重叠、无遗漏**；
+新增 3 条非空转用例（改坏即 FAIL、恢复即 PASS）；护栏 **97 → 100**。
+
+### Fixed (Android 外设的载荷预算自己算了一遍 —— 硬编码 512/20 且放行装不下分片头的值 —— 2026-09-16)
+
+**这是 Phase 3「BLE 单一事实来源」漏掉的第三处**，由 Phase 4 的 Android 编译门禁当场抓出。
+
+```rust
+// ble_android.rs::payload_mtu —— 改前
+/// 该对端一次通知能收多少字节（未知 ⇒ 20，与 macOS 侧同口径）。   ← 又一句不成立的"同口径"
+pub fn payload_mtu(&self, central: &str) -> usize {
+    call_static_int("payloadMtu", central)
+        .map(|v| if (1..=512).contains(&v) { v as usize } else { 20 })
+        .unwrap_or(20)
+}
+```
+
+两个问题：
+
+1. **第三份实现**：硬编码 `512` / `20`，并自己写区间判断 —— 既没重新定义常量（逃过
+   `check-ble-constants.mjs` 判据 B），也不是"重新实现具名函数"（逃过判据 A）。
+2. **真 bug**：有效性判据是 `1..=512`，于是 `payloadMtu = 1..6` 这类**装不下 6 字节分片头**
+   的值被原样接受 ⇒ `fragment(payload, 3, _)` 直接返回 `None` ⇒ **整条链路发不出任何消息**，
+   而日志只说"帧无法分片"。规范函数要求 ≥ 分片头 + 1（7），否则退回默认 20。
+
+改法：`payload_mtu` 只做 `i32 → usize` 的安全转换，换算交给
+`ble_framing::notify_payload_budget`（与 macOS 同一份）。
+
+**顺带**（也是 Phase 3 的遗留）：
+
+- `ble_framing.rs` 的 `in_flight` 只被本模块测试使用 ⇒ 标 `#[cfg(test)]`。
+  它此前靠模块级**无条件** `allow(dead_code)` 蒙混 —— 那条 allow 一删，Android 的
+  `cargo check` 立刻报 `never used`。**`cargo check` 比 `cargo test` 更容易看见
+  "只在测试里活着的项"**（测试构建里它们是被使用的），这正是 `check-mobile.sh` 的价值。
+- 关掉 `bluetooth` feature 时 `ble_framing` 整个模块都是死代码（所有调用点都在该 feature 之下），
+  `cargo check` 会刷 17 条 `never used`。改为按 feature **条件化**静音：
+  `#![cfg_attr(not(feature = "bluetooth"), allow(dead_code))]` ——
+  feature 关时整模块惰性（不静音就全是噪声）；**feature 开时不允许死代码**（这才抓得到
+  "以为接线了其实没接"）。
+
+**新增守门判据 C**（`scripts/check-ble-constants.mjs`）：三个外设平台
+（macOS / Windows / Android）必须**委托**给规范换算，不许自己算一遍。A/B 判据都只盯"定义"，
+而这处是"把换算内联进平台实现"，只有"这个文件必须出现规范调用"这一层能拦住。
+配套 `verify-guards.py` 非空转用例（把它改回原样 ⇒ 必须 FAIL）。
+
+**顺便标注一处未验证的语义**（不改行为）：Windows 的 `MaxNotificationSize` 按现有注释
+"**已含** ATT 头"因而用 `att_payload_budget`（减 3），而 macOS / Android 的来源本身已是载荷
+（不减）。该说法**尚未在真机确认**；若实际不含，我们每片会少发 3 字节 —— 属**偏保守**方向
+（吞吐略降），不会像 Android 这个缺陷那样"直接发不出去"。已写进该文件注释。
+
+### Added (Android 编译门禁接入 CI —— 2026-09-16)
+
+**问题**：`scripts/check-mobile.sh` 早就写好了（`cargo check --target aarch64-linux-android`
++ 0 warning 判定），注释里也记着真实事故（2026-09-12：Android 目标 **8 个 E0433**、
+整个安卓包打不出来）—— 但它**从未接进任何 CI**，纯手工门禁。于是 Android 专属代码
+（`ble_android.rs` 等）在 macOS / Windows 两条腿上都不编译，等于没人看。
+
+**做法**：
+
+- `verify.yml` 新增 `android` job（`ubuntu-latest`）：装 JDK 21 + Android SDK + NDK +
+  `aarch64-linux-android` target，跑 `check-mobile.sh --bluetooth`。
+  ⚠️ 沿用 `build-android.yml` 的那个坑：`setup-android` 的默认 `packages` 含 `tools`，
+  而 Google 已于 2026-09-15 把它下架 ⇒ 必须显式覆盖为 `'platform-tools'`。
+- `npm run verify` 增加第 10 步「移动端编译门禁（Android）」。本地缺 NDK / rust target 时
+  **显式跳过并打印原因**（记进汇总、不影响退出码）—— CI 上无条件跑，所以本地跳过不影响覆盖；
+  结尾会提示"别把本地的 ⏭ 当成通过"。
+- 失败诊断仍走 `ci-run.sh`（注解是唯一可匿名读取的渠道）。
+
+**引入当天就抓到一个真 bug**（即上一条 Fix）。这正是这条腿存在的意义。
+
+**验证**：`npm run verify` **10 步全绿**（169s）；`check-mobile.sh --bluetooth`
+两种 feature 配置各自 **PASS / 0 warning**；macOS 的 `cargo check`（默认与 `--features bluetooth`）
+均 **0 warning**；`cargo test --features bluetooth` **505 全绿**；护栏 **96 → 97**。
+
+### Changed (BLE 单一事实来源：常量与换算收敛到一处 —— 2026-09-16)
+
+**问题**：「一片能装多少字节」这件事，常量与换算此前有**多份**：
+
+| 位置 | 内容 | 状态 |
+|---|---|---|
+| `transport/ble_framing.rs` | `att_payload_budget` + 函数内匿名 `BLE_DEFAULT_MTU=23` / `ATT_HEADER_LEN=3` / `GATT_MAX_ATTR_LEN=512` | 正典（但常量是函数局部的） |
+| `transport/bluetooth.rs:110,112` | `pub const BLE_DEFAULT_MTU` / `ATT_HEADER_LEN` | **重复** |
+| `transport/bluetooth_peripheral.rs`（macOS 外设） | `const DEFAULT = 20` / `const MAX = 512`，**自己实现一遍** | **第二份实现** |
+| `transport/bluetooth_peripheral_windows.rs` | 调共享函数 | ✅ |
+
+于是 `transport/bluetooth.rs` 里那句文档断言「**外设侧用的是同一个函数**」
+**只对 Windows 成立** —— macOS 是另一份实现，数值恰好一致所以从未发作。
+
+病史：CHANGELOG `4.18.7 → 4.18.10` **连着四个版本**修同一个分片预算问题
+（4.18.7 没减 ATT 头 → 4.18.8「上一版修复生效但不够」→ 4.18.9 每片 514 > 512）。
+根因不是某一行写错，而是同一个概念多处各算一遍。
+
+**做法**：
+
+- 常量提升为 `ble_framing.rs` 的 `pub const`（`BLE_DEFAULT_MTU` / `ATT_HEADER_LEN` /
+  `GATT_MAX_ATTR_LEN` / `DEFAULT_PAYLOAD_BUDGET`），并**只在那儿定义一处**。
+- 新增外设侧入口 `notify_payload_budget`（与 `att_payload_budget` 并列、语义不同：
+  输入本身已是载荷、**不再减 ATT 头**），让 macOS 也能共用而不是自己算。
+- `bluetooth_peripheral.rs::central_payload_mtu` 改为**纯转发**到共享函数（删掉两个匿名常量）。
+- `bluetooth.rs` 删掉重复常量；那句只在 Windows 成立的文档断言**改正**。
+- 删掉 `ble_framing.rs` 上过期的 `#![allow(dead_code)]`（模块早已接线：macOS/Windows/Android
+  三个外设 + central driver + `network/ble.rs` 都在调它；那条注释与它静音的警告在接线后就过期了）。
+- 新增 `docs/protocol-invariants.md` §23 `INV-P23 — One Budget, One Place`，并把
+  「两侧必须推出同一个数」写进必测矩阵。
+
+**新增守门** `scripts/check-ble-constants.mjs` + 3 条非空转用例。判据刻意避开"扫裸数字"：
+
+- 判据 A：六个规范名字（4 常量 + 2 换算函数）在整个 crate 里**各有且仅有一处定义**。
+- 判据 B：BLE 领域内 `const/static` **同时**满足「名字按 `_` 分词命中 `MTU/ATT/GATT/PAYLOAD/
+  NOTIFY/CHUNK` 或本身是 `DEFAULT`/`MAX` 这类语义空名」**且**「值恰好是受保护字面量」⇒ FAIL。
+  这条规则改了两版才定：只看值会误伤 `const CONNECT_ATTEMPTS = 3`（重试次数）、
+  只看名字会漏掉真正的目标（`DEFAULT`/`MAX` 名字里没有概念词）。
+
+**新增两条测试**（此前 macOS 侧**没有**任何两侧一致性校验，而那正是唯一没走共享换算的一侧）：
+
+- `both_sides_agree_on_the_same_link_budget` —— `notify_payload_budget(att_payload_budget(m)) ==
+  att_payload_budget(m)`；注入「外设侧也减一次 ATT 头」（4.18.7 的形态）即红。
+- `notify_payload_budget_clamps_and_never_returns_zero` —— 边界与"绝不返回 0"。
+
+**顺带修好 3 条失活的护栏用例**（`verify-guards.py --only ble` 此前是红的）：
+
+1. `BLE 分片 MTU 异常值绝不返回 0` —— 锚点就在我删掉的 macOS 实现里（**本轮我自己造成的**）。
+   重新指向 `ble_framing.rs` 并**去掉平台限制**（该模块无平台门控，现在三平台都有效）。
+2. `蓝牙启动不得阻塞在 CoreBluetooth 状态回执上` —— 锚点的 cfg 仍是旧的两平台列表，
+   而源码后来加入了 `target_os = "windows"` ⇒ 锚点 0 次命中。**既有腐烂**。
+3. `BLE 拨号退避必须 1 分钟内恢复` —— 实现已被有意重设计（改为「前 3 次不退避，之后
+   5s→10s→20s 封顶」），值、测试名都变了。**既有腐烂**。修的时候发现原注入方式本身是
+   **空转**的：单改 `MAX_MS` 到 600_000 根本到不了分钟级（`step.min(2)` 已把增长压到 3 档），
+   改为注入「去掉封顶」。这三条都属于"护栏静默腐烂、只有跑起来才知道"。
+
+**基线更新**：macOS `503 → 505`（+2 条新测试）、Windows `493 → 495`。
+
+**验证**：`npm run verify` **9 步全绿**（362s）；`cargo test --features bluetooth` **505 全绿**、
+**零警告**；`python3 scripts/verify-guards.py --only ble` **23/23** 非空转通过；
+护栏总数 **93 → 96**。
+
+### Added (Windows 测试通道：让 Windows 专属的 BLE 外设代码被真正编译与执行 —— 2026-09-16)
+
+**问题**：一部分代码是 **Windows 专属**的 ——
+`transport/mod.rs:24` 的 `#[cfg(all(feature = "bluetooth", target_os = "windows"))]`
+即 `bluetooth_peripheral_windows.rs`（Windows BLE **外设**角色 / WinRT `GattServiceProvider`，
+**2 条用例**）。macOS 上它**不编译**，那 2 条一条都不跑，而 CI 照样全绿。
+
+这不是假想的风险：`transport/bluetooth.rs` 里写着「外设侧用的是同一个函数」，
+而实测**只有 Windows** 走了共享的 `att_payload_budget` —— macOS 那一侧自己抄了一份
+`central_payload_mtu`（硬编码 `20` / `512`）。**这类跨平台漂移只有在两侧都被编译时才看得见。**
+（Windows 那 2 条里恰好有一条就是 `peripheral_and_central_agree_on_payload_budget`。）
+
+**做法**：
+
+- `rust` job 改成 **matrix**：`os: [macos-latest, windows-latest]`，一个定义两条腿，
+  `fail-fast: false`（两条都跑完，一次就能看到两个平台的情况）。
+- **每个平台一个基线**：`test-baseline.macos.txt`（503）/ `test-baseline.windows.txt`（500）。
+  基线必须按平台分 —— 两侧是互斥的 `#[cfg]`，拿 macOS 的基线去比 Windows 会把 5 条
+  平台门控用例误判成「静默跳过」（纯误报）。
+- `check-test-manifest.mjs` 增加**引导模式**：本平台基线缺失时，打印与其它平台基线的
+  **差集**（新平台没法在别的机器上生成自己的基线）。差集通常只有几条，小到能塞进
+  一条 CI 注解 —— 首次引导 Windows 基线正是这么做的。
+- 新增 `scripts/ci-run.sh`：把「tee + 失败时合成一条多行 check 注解」抽成可复用脚本，
+  Rust 腿与清单守卫共用（原先内联在 workflow 里，两份会漂）。
+
+**⚠️ 坦白一处**：`test-baseline.windows.txt` 的 500 条是**按平台互斥的 `cfg` 推导出来的**
+（= macOS 基线 − 5 条 macOS 专属 + 2 条 Windows 专属），**不是**在 Windows 上跑出来的。
+Windows 腿第一次跑就会验证这个推导：对得上则绿；对不上则清单守卫会打出真实差集
+（缺名 FAIL / 多名 WARN）。这是刻意选的路径 —— 推导错了不会静默通过。
+
+**本地验证**：`npm run verify` 8 步全绿；`bash scripts/ci-run.sh` 成功/失败两条路径都实跑过
+（成功不透传注解、失败以原退出码退出并合成单条多行注解）；引导模式的差集报告用一个
+伪造的 `test-baseline.windows.txt` 演练过（正确报出 `+5` / `-2`）。
+
+### Fixed (CI 首次跑测试就红：一条广播测试在 runner 上必然失败 —— 2026-09-16)
+
+**这是本项目第一次在 CI 里跑 `cargo test`，结果是 502 通过 / 1 失败。**
+红的那条与门禁本身无关，是它**在 CI 环境里本来就不可能通过**：
+
+```text
+test network::discovery::tests::discovery_recv_socket_actually_receives_broadcast ... FAILED
+    panicked at src/network/discovery.rs:985
+test result: FAILED. 502 passed; 1 failed
+```
+
+它是 2026-09-12 真机事故（「Mac 与手机同 Wi‑Fi 却互相搜不到」）的回归护栏，做一次
+**真实的 UDP 广播收发**。原先的通吃条件是"没有可用 LAN 接口就跳过（纯 CI/容器）"——
+但 GitHub 的 macOS runner **有** LAN 接口（`find_lan_interface()` 返回 `Some`），
+却收不到自己发的 `255.255.255.255`，于是没跳过、直接 panic。
+
+**修法**：把跳过条件从"有没有接口"升级为"这个环境能不能做本机广播"，用**证据**判定 ——
+新增 `loopback_broadcast_works()`，收端**硬编码绑 `0.0.0.0`**（不是
+`discovery_recv_bind_ip()`）。这个解耦是刻意的：探测必须与"被测代码的绑定选择"无关，
+否则它区分不了"环境不支持广播"与"我们把绑定写错了"；拿已知正确的绑定去问环境，
+失败就只可能是环境问题，**绝不会掩盖真正的回归**。
+
+没有采用"检测到 `CI` 环境变量就跳过"：那会把碰巧跑在 CI 上的真机也一起漏掉。
+
+**非空转验证**（按项目纪律）：把 `discovery_recv_bind_ip()` 改成 `Ipv4Addr::LOCALHOST`
+（模拟事故原形态）⇒ 测试立刻红，并打出原始提示
+「接收 socket（bind=127.0.0.1）收不到 255.255.255.255 广播」；恢复即绿。
+本地（能广播）该测试**真的执行断言**（`--nocapture` 下无跳过信息），不是被探测误跳过。
+
+### Changed (门禁：分支推送也触发 CI，按分支名去重 —— 2026-09-16)
+
+原先 `verify.yml` 只挂 `pull_request` + `push: [main]`，于是**推一条分支上去什么都不会跑** ——
+必须先开 PR 才有结果（2026-09-16 实测：推了 `chore/eng-hardening` 后 API 里一个 run 都没有）。
+
+改成 `push: branches: ["**"]` + `pull_request` 两个都挂，并把 concurrency 的组键从
+`github.ref` 换成 `github.head_ref || github.ref_name`：push 事件取到 `ref_name`、
+PR 事件取到 `head_ref`，两者都是**分支名** ⇒ 「推分支」与「开/更新 PR」落进同一个组，
+后启动的取消先启动的，**不会双跑**（原先 `refs/heads/X` 与 `refs/pull/N/merge` 会被分成两组）。
+
+本仓库是 public ⇒ Actions 分钟数（含 macOS）免费，所以"每次推送都跑"没有成本顾虑。
+⚠️ 已写进 workflow 注释：将来若启用 branch protection，建议改回只挂 `pull_request` ——
+去重是"后者取消前者"的竞态，被取消的那次在 PR 上会显示 cancelled，branch protection 会判不通过。
+
+**顺带解决一个真实的运维盲区**：Rust 单测步骤失败时，现在会把**诊断信息**提升为
+**check 注解**。起因是 2026-09-16 第一次真跑 CI 就红了，但三条路都拿不到原因：
+
+| 渠道 | 结果 |
+|---|---|
+| `actions/jobs/{id}/logs` API | 匿名 **403**（"Must have admin rights to Repository"） |
+| 浏览器打开 job 日志页 | **"Sign in to view logs"** —— 公开仓库也要登录 |
+| check-run 注解 | 只有一句 `Process completed with exit code 101` |
+
+结论：**注解是唯一的公开渠道**（匿名 API 可取 `.../check-runs/{id}/annotations`），
+所以把诊断放进注解。两个细节是踩出来的：
+
+- **只挑关键行**（`test result:` / `error` / `failures:` / `panicked` / 信号 / 磁盘），
+  不整段照搬 —— GitHub 每个 step 只保留约 **10 条**注解，照搬 30 行会被截断
+  （第一次就踩了：拿到的全是 `... ok`，真正的错误落在截断之外）；
+- **合并成一条多行注解**（换行编码为 `%0A`），进一步避开那个数量上限。
+
+顺带打印 `df -h /`：冷编译 tauri 很占空间，runner 磁盘打满是 exit 101 的常见成因
+（首次 CI 已用它排除了这个可能：余量 92Gi）。
+
+### Added (统一验证入口 + 把护栏真正跑起来 —— 2026-09-16)
+
+**背景**：上一条给 CI 装了门禁（PR 上跑测试），但验证手段仍然散在四处：CI 记一份、
+`build-windows-release.ps1` 里手串一份、开发者脑子里再记一份。**没有单一入口，就没有
+统一的验证标准** —— 谁记得跑什么就跑什么。本轮把顺序固定下来，并让 CI / 发布脚本 /
+本地开发跑同一套。
+
+**做法**：
+
+- 新增 `scripts/verify.mjs` + `npm run verify`：按顺序跑
+  ① 测试清单守卫（前端）② 不变量例外守卫 ③ CHANGELOG 结构 ④ `npm test`
+  ⑤ `npm run build` ⑥ `cargo test --features bluetooth` ⑦ 测试清单守卫（Rust）
+  ⑧ 护栏非空转（前端子集）。顺序有硬依赖，不能随手调换 —— ⑤ 必须在 ⑥ 之前，
+  因为 `dist/` 不进版本库而 Tauri 的 `build.rs` 要读它（全新 clone 上顺序错了
+  `cargo test` 根本编不过）。失败即停（fail-fast），末尾给逐步耗时汇总。
+  另有 `--full`（加跑全量护栏）、`--no-guards`、`--list`。
+- **`.github/workflows/verify.yml` 加跑护栏前端子集**。这是本轮最该进 CI 的一步：
+  护栏失效时**不会有任何信号**（测试全绿、构建正常，只是它不再守任何东西），
+  只有把它跑起来才知道。此前 92 条护栏全靠人工记得跑。
+- 同时把「不变量例外守卫」与「CHANGELOG 结构」两个静态检查接进 CI。
+
+**顺手修掉两条「空转」的护栏**（各自一条提交）——它们不是代码坏了，而是护栏自己失效了：
+
+| 护栏 | 失效原因 | 修法 |
+|---|---|---|
+| 焦点可见 | 注入点所在的 `MessageComposer.vue` 被加了**文件级**逃生阀 ⇒ 整文件跳过，改坏也不报 | 注入点换到 `TitleBar.vue` 的关闭按钮（未被豁免、且是键盘可聚焦的 `button`）；再把逃生阀降到**元素级**（`data-focus-ring-ok`），让该文件其余元素恢复保护 |
+| CHANGELOG 结构 | 它拿 `npm run version:check` 当命令，而那条命令的版本记账部分在**攒提交期间本来就该是红的** ⇒ 永远进不了「恢复即 PASS」 | 拆出 `npm run version:changelog`（只跑本就独立导出的 `changelogProblems()`）：结构是结构、记账是记账 |
+
+**踩到的坑（写进代码注释与单测）**：元素级的 `data-focus-ring-ok` **含有** `focus-ring-ok`
+这个子串，所以文件级判据不能还写 `src.includes("focus-ring-ok")` —— 否则「只豁免一个元素」
+会被判成「整文件豁免」，元素级标记形同虚设。文件级令牌因此改为 `focus-ring-ok:file`，
+并加了一条单测同时钉住「豁免不外溢」与「令牌不为子串」两个坑。
+
+**有意没做**：`npm run version:check`（当前因两个历史提交缺 `Version-Bump:` 声明而红）、
+`cargo fmt --check`（517 处差异）、`clippy`（未安装）都**不进**统一入口 ——
+第一版入口必须全绿，否则大家会立刻开始绕过它。
+
+**验证**：`npm run verify` **8 步全绿（106.6s）**；`npm test` **457 全绿**；
+`cargo test --features bluetooth` **503 全绿**；前端护栏子集 **40/40** 通过非空转验证。
+
+### Added (不变量例外登记：让「照文档误修」不再可能 —— 2026-09-16)
+
+**问题（这是活的，不是假设）**：「和自己聊天」（`7c03341`）给两条核心不变量开了**正当**的例外 ——
+落库即终态 `read`（跳过 INV-P03 的 `queued → sending → waiting_ack → delivered`），
+且不写 outbox（INV-P04）。理由充分、注释也写得很清楚，落在三处：`commands.rs` 的
+`insert_self_message` 文档注释、`verify-guards.py` 的「自聊消息必须留在本地」用例、
+`src/utils/selfChat.ts` 的文件头。
+
+但这三处**都不在 AI 的必读清单里**。`docs/AI_ENGINEERING_INDEX.md` 只指向
+`protocol-invariants.md` 与 `AI_RULES.md`，而这两份当时**一个字都没提**这个例外。于是：
+
+```text
+AI 读 INV-P04「发送可靠消息 → insert message + insert outbox」
+        ↓
+看到 insert_self_message 只 insert_message、没有 outbox
+        ↓
+按文档判定这是 bug 并「修」它
+        ↓
+自聊消息进入 outbox ⇒ 永远等不到对端 Ack ⇒ flush_outbox 每次心跳重发
+        ↓
+「outbox 必然排空」被真的破掉 —— 而这次回归是「照文档修」造成的
+```
+
+**结论：局部注释不能替代规范文档。** 同一条知识写在实现旁边，对读实现的人有用、
+对读不变量的人没用；而 AI 读的是不变量。
+
+**做法**：
+
+- `docs/protocol-invariants.md` 新增 §22 `INV-P22 — Exceptions Must Be Registered`，
+  含一张**机器可解析**的例外登记表（用 `<!-- BEGIN/END EXCEPTION REGISTRY -->` 划边界 ——
+  那份文档正文本来就到处是 `INV-Pxx`，不划边界就分不清「正文提到」与「登记为例外」）。
+- `commands.rs` 的 `insert_self_message` 上方加 `// INV-EXCEPTION: INV-P03, INV-P04 — …` 标记。
+- 新增 `scripts/check-invariant-exceptions.mjs`，**双向**校验：代码标了文档没登记 ⇒ FAIL
+  （下一个人会被文档误导）；文档登记了代码没标 ⇒ FAIL（文档在说谎）；登记了文档未定义的 id
+  ⇒ FAIL（笔误凭空造出一条不存在的例外）。
+- `AI_RULES.md` §8 增「Exceptions Must Be Registered」，把规矩放进必读文件本身。
+- `scripts/verify-guards.py` 补三条非空转用例（`--only invariant`）；新守卫接入
+  `.github/workflows/verify.yml` 的前端 job（纯静态扫描，不需要编译）。
+
+**顺带修正了我自己的一处判断**：最初以为自聊也破了 INV-P07（Gossip）与 INV-P10（E2EE）。
+精读原文后**不是** —— INV-P07 只要求 TTL/去重/扇出有界、并不要求广播；INV-P10 管的是
+「解密失败不得静默退明文」，而自聊压根没有密文。所以登记表**只登记 INV-P03 与 INV-P04**。
+刻意不把未被违反的不变量塞进登记表 —— 那会让「例外」这个机制失去信号价值。
+
+**验证**：`npm test` **455 全绿**；`cargo test --features bluetooth` **503 全绿**；
+三条新护栏全部通过非空转验证（改坏即 FAIL、恢复即 PASS）；护栏总数 **87 → 92**。
+
+### Added (工程门禁：让「测试静默不跑」不再可能 —— 2026-09-16)
+
+**背景**：本仓库此前三个 workflow（`build` / `build-macos` / `build-android`）**全是打包**，
+没有任何一个跑测试；git 钩子只有 AI 追踪器、没有 pre-commit。也就是说 455 条前端断言 +
+503 条 Rust 用例 + 87 条非空转护栏，全部依赖**人工记得跑**。纪律很强，但没有门禁 ——
+一次漏跑就能把回归合进 main。
+
+**真实代价（实测数字）**：`bluetooth` 是**非默认** feature（`src-tauri/Cargo.toml` 的
+`[features]`）。漏掉 `--features bluetooth` 时用例数从 **503 掉到 487** —— **16 条静默消失**：
+
+| 模块 | 消失的用例数 |
+|---|---:|
+| `network::ble` | 8 |
+| `transport::bluetooth_peripheral` | 5 |
+| `transport::bluetooth::driver` | 2 |
+| `commands` | 1 |
+
+而 `cargo test` 依然**全绿、退出码 0**。这 16 条盯的正是 CHANGELOG `4.18.7 → 4.18.10`
+连着四个版本边修边冒的那个子系统 —— 最需要护栏的地方，恰恰是"忘了加 feature 就静默不测"的地方。
+
+**做法**：
+
+- 新增 `.github/workflows/verify.yml`：**PR 触发**（只挂 `push: [main]` 等于合并之后才查，太晚），
+  两个并行 job（前端 / Rust），跑 `npm test` + `cargo test --features bluetooth` + 前端构建 + 清单守卫。
+- 新增 `scripts/check-test-manifest.mjs` 与 `src-tauri/test-baseline.<平台>.txt`：比对
+  「基线名单 ⋈ 实际 `--list`」，**缺名即红**。刻意**比名字不比数量** —— 数量阈值（`>= 503`）
+  会催生"为凑数保留已无价值的测试"，而删除一个过时测试反而要去改阈值；名字比对没有这个问题。
+  判据方向刻意不对称：**缺名 FAIL**（那是静默跳过），**多名只 WARN**（新测试跑得好好的，不是故障）。
+- 前端那一半守的是另一处同类脆弱：`npm test` 的脚本里是**手工枚举**的 48 条路径，
+  新增 `.test.ts` 若忘了加进那串字符串，新文件不会跑而 `npm test` 依然全绿。
+- 基线**按平台分文件**（`test-baseline.macos.txt` / `.windows.txt`）：`transport/bluetooth_peripheral.rs`
+  与 `transport/bluetooth_peripheral_windows.rs` 是互斥的 `#[cfg]`，拿 macOS 的基线去比 Windows
+  会把 5 条平台门控用例误判成"静默跳过" —— 纯误报。`verify-guards.py` 的 `platforms` 字段
+  就是为同一个坑加的，其注释写着"不要留一堆假失败把真失败淹掉"。拿到本平台没有基线时**不猜、不退化**，
+  直接报错让用 `--update` 生成（缺失时静默生成等于"没有基线也算通过"，正是要消灭的空转）。
+- `scripts/verify-guards.py` 补两条非空转用例（`--only manifest`）：改坏即 FAIL、恢复即 PASS。
+
+**没做的（有意）**：`cargo fmt --check`（当前 517 处差异）与 `clippy`（未安装）**不进门禁**。
+第一版门禁必须**全绿** —— 现在加进来会让每次 PR 立刻全红，结果是所有人开始用 `--no-verify` 绕过，
+而门禁一旦被绕过一次就永久失效。这两项作为独立技术债单独还。
+
+**踩到的坑（实测，已写进 workflow 注释）**：`dist/` 在 `.gitignore` 里、不进版本库，
+而 Tauri 的 `build.rs` 要读它。全新 clone 上 `cargo test` **根本编不过**：
+
+```text
+error: proc macro panicked
+  --> src/lib.rs:387:16
+  = help: message: The `frontendDist` configuration is set to `"../dist"` but this path doesn't exist
+error: could not compile `gosslan` (lib test)
+```
+
+所以 Rust job 必须先 `npm run build` 再 `cargo test`，顺序不能调换。**顺带发现**：
+`scripts/build-windows-release.ps1` 的 Step 2（`cargo test --lib --features bluetooth`）
+在干净机器上会因此失败（Step 1 的 `npm test` 不产出 `dist/`）—— 记录在案，未在本轮修。
+
+**验证**：`npm test` **455 全绿**；`cargo test --features bluetooth` **503 全绿**；
+两个 job 的每一步都在本地按 CI 顺序实跑通过；清单守卫两个方向都做过非空转验证
+（基线注入假名 ⇒ FAIL；抽掉 `--features bluetooth` ⇒ 精确报出那 16 条 ⇒ FAIL；恢复即 PASS）。
+
 ### Added (群任务列表：指派 + 四态状态 —— 用户 2026-09-16)
 
 **需求**：「群里需要能够支持列一些任务列表，每个任务可以给一个或多个人，任务要能区分出

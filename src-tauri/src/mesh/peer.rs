@@ -71,10 +71,7 @@ impl Peer {
     /// 这是「LAN + Tailscale + BLE 三条端点汇成同一 Peer」的关键入口：
     /// 调用方保证 `conn.peer_id == self.device_id`（debug 构建下断言兜底）。
     pub fn upsert_connection(&mut self, conn: Connection) -> bool {
-        debug_assert_eq!(
-            conn.peer_id, self.device_id,
-            "connection 必须属于本 peer"
-        );
+        debug_assert_eq!(conn.peer_id, self.device_id, "connection 必须属于本 peer");
         if let Some(existing) = self
             .connections
             .iter_mut()
@@ -137,7 +134,11 @@ impl Peer {
         rtt_ms: Option<u64>,
         inbound: bool,
     ) -> bool {
-        match self.connections.iter_mut().find(|c| c.endpoint == *endpoint) {
+        match self
+            .connections
+            .iter_mut()
+            .find(|c| c.endpoint == *endpoint)
+        {
             Some(c) => {
                 if inbound {
                     c.health.mark_read_seen(now_ms, rtt_ms);
@@ -152,7 +153,11 @@ impl Peer {
 
     /// 建链时播种读活性（唯一允许在 reader_loop 之外写读活性的入口）。
     pub fn seed_connection_read_seen(&mut self, endpoint: &Endpoint, now_ms: i64) -> bool {
-        match self.connections.iter_mut().find(|c| c.endpoint == *endpoint) {
+        match self
+            .connections
+            .iter_mut()
+            .find(|c| c.endpoint == *endpoint)
+        {
             Some(c) => {
                 c.health.seed_read_seen(now_ms);
                 true
@@ -163,7 +168,11 @@ impl Peer {
 
     /// 标记某条 Connection 失败（返回是否命中）。
     pub fn mark_connection_failure(&mut self, endpoint: &Endpoint) -> bool {
-        match self.connections.iter_mut().find(|c| c.endpoint == *endpoint) {
+        match self
+            .connections
+            .iter_mut()
+            .find(|c| c.endpoint == *endpoint)
+        {
             Some(c) => {
                 c.health.mark_failure();
                 true
@@ -198,11 +207,7 @@ mod tests {
     fn one_device_three_connections() {
         let mut peer = Peer::new("ABC123", PeerIdentity::default());
 
-        assert!(peer.upsert_connection(Connection::new(
-            "ABC123",
-            lan_endpoint(),
-            PathKind::Lan
-        )));
+        assert!(peer.upsert_connection(Connection::new("ABC123", lan_endpoint(), PathKind::Lan)));
         assert!(peer.upsert_connection(Connection::new(
             "ABC123",
             routed_endpoint(),
@@ -234,17 +239,9 @@ mod tests {
     #[test]
     fn same_endpoint_upsert_is_idempotent() {
         let mut peer = Peer::new("ABC123", PeerIdentity::default());
-        assert!(peer.upsert_connection(Connection::new(
-            "ABC123",
-            lan_endpoint(),
-            PathKind::Lan
-        )));
+        assert!(peer.upsert_connection(Connection::new("ABC123", lan_endpoint(), PathKind::Lan)));
         // 同 endpoint 再次 upsert：不新增，只更新
-        assert!(!peer.upsert_connection(Connection::new(
-            "ABC123",
-            lan_endpoint(),
-            PathKind::Lan
-        )));
+        assert!(!peer.upsert_connection(Connection::new("ABC123", lan_endpoint(), PathKind::Lan)));
         assert_eq!(peer.connection_count(), 1);
     }
 
@@ -252,7 +249,11 @@ mod tests {
     fn remove_connection_by_endpoint() {
         let mut peer = Peer::new("ABC123", PeerIdentity::default());
         peer.upsert_connection(Connection::new("ABC123", lan_endpoint(), PathKind::Lan));
-        peer.upsert_connection(Connection::new("ABC123", ble_endpoint(), PathKind::Bluetooth));
+        peer.upsert_connection(Connection::new(
+            "ABC123",
+            ble_endpoint(),
+            PathKind::Bluetooth,
+        ));
         assert_eq!(peer.connection_count(), 2);
 
         assert!(peer.remove_connection(&lan_endpoint()));
@@ -277,7 +278,11 @@ mod tests {
     fn online_state_is_any_connection_healthy() {
         let mut peer = Peer::new("ABC123", PeerIdentity::default());
         peer.upsert_connection(Connection::new("ABC123", lan_endpoint(), PathKind::Lan));
-        peer.upsert_connection(Connection::new("ABC123", routed_endpoint(), PathKind::Routed));
+        peer.upsert_connection(Connection::new(
+            "ABC123",
+            routed_endpoint(),
+            PathKind::Routed,
+        ));
 
         // 初始：无健康记录 → Offline
         assert_eq!(peer.online_state(0, 10_000, 3), PeerOnlineState::Offline);
@@ -288,10 +293,16 @@ mod tests {
 
         // LAN 超时但 Routed 健康 → 仍 Online（一条断开不回退）
         assert!(peer.mark_connection_seen(&routed_endpoint(), 2000, Some(30), true));
-        assert_eq!(peer.online_state(12_000, 10_000, 3), PeerOnlineState::Online);
+        assert_eq!(
+            peer.online_state(12_000, 10_000, 3),
+            PeerOnlineState::Online
+        );
 
         // 两条都超时 → Offline
-        assert_eq!(peer.online_state(13_000, 10_000, 3), PeerOnlineState::Offline);
+        assert_eq!(
+            peer.online_state(13_000, 10_000, 3),
+            PeerOnlineState::Offline
+        );
     }
 
     #[test]
@@ -305,7 +316,11 @@ mod tests {
     fn consecutive_failures_break_only_that_connection() {
         let mut peer = Peer::new("ABC123", PeerIdentity::default());
         peer.upsert_connection(Connection::new("ABC123", lan_endpoint(), PathKind::Lan));
-        peer.upsert_connection(Connection::new("ABC123", routed_endpoint(), PathKind::Routed));
+        peer.upsert_connection(Connection::new(
+            "ABC123",
+            routed_endpoint(),
+            PathKind::Routed,
+        ));
 
         peer.mark_connection_seen(&lan_endpoint(), 1000, Some(5), true);
         peer.mark_connection_seen(&routed_endpoint(), 1000, Some(5), true);
@@ -365,6 +380,9 @@ mod tests {
         assert!(peer.seed_connection_read_seen(&lan_endpoint(), 1000));
         assert_eq!(peer.online_state(1000, 10_000, 3), PeerOnlineState::Online);
         // 播种不是永久豁免：超过阈值同样过期
-        assert_eq!(peer.online_state(12_000, 10_000, 3), PeerOnlineState::Offline);
+        assert_eq!(
+            peer.online_state(12_000, 10_000, 3),
+            PeerOnlineState::Offline
+        );
     }
 }

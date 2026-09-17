@@ -26,9 +26,9 @@ pub use connection::{Connection, ConnectionHealth};
 pub use endpoint::{BleEndpoint, Endpoint};
 pub use manager::{MergeOutcome, PeerManager};
 pub use path::PathKind;
-pub use relay_policy::{should_forward, RelayInput, RelayPolicy};
 pub use peer::{Peer, PeerIdentity, PeerOnlineState};
+pub use relay_policy::{should_forward, RelayInput, RelayPolicy};
 pub use router::{
-    ForwardDecision, MeshDestination, MeshFrame, MeshFrameKind, MeshRouter, DropReason,
+    DropReason, ForwardDecision, MeshDestination, MeshFrame, MeshFrameKind, MeshRouter,
 };
 pub use selection::pick_link;

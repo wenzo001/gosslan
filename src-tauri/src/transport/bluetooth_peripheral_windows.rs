@@ -138,7 +138,9 @@ impl PeripheralServer {
                 .shared
                 .warn(format!("停止 BLE 广播失败（可能仍在广播）：{e}"));
         }
-        self.writer.shared.notice("Windows 蓝牙外设已停止（广播已撤）");
+        self.writer
+            .shared
+            .notice("Windows 蓝牙外设已停止（广播已撤）");
     }
 }
 
@@ -345,7 +347,9 @@ fn session_id(client: &GattSubscribedClient) -> String {
 ///
 /// `BluetoothDeviceId` **没有 `Display`**（只有 `Id() -> HSTRING`），
 /// 所以不能直接 `to_string()` —— 这是一个只看类型名很容易写错的地方。
-fn device_id_of(session: Option<&windows::Devices::Bluetooth::GenericAttributeProfile::GattSession>) -> String {
+fn device_id_of(
+    session: Option<&windows::Devices::Bluetooth::GenericAttributeProfile::GattSession>,
+) -> String {
     session
         .and_then(|s| s.DeviceId().ok())
         .and_then(|id| id.Id().ok())
@@ -408,32 +412,33 @@ fn sync_subscribers(tx_char: &GattLocalCharacteristic, shared: &Arc<Shared>) {
 }
 
 /// 挂上"收到写请求"的处理：读值 → 喂重组器 → 完整帧投给网络层；**每个请求都要应答**。
-fn install_write_handler(rx_char: &GattLocalCharacteristic, shared: Arc<Shared>) -> Result<(), String> {
+fn install_write_handler(
+    rx_char: &GattLocalCharacteristic,
+    shared: Arc<Shared>,
+) -> Result<(), String> {
     let token = rx_char
         .WriteRequested(&TypedEventHandler::<
             GattLocalCharacteristic,
             windows::Devices::Bluetooth::GenericAttributeProfile::GattWriteRequestedEventArgs,
-        >::new(
-            move |_sender, args| {
-                let Ok(args) = args.ok() else { return Ok(()) };
-                // 对端标识取自 **args 的 session**，与订阅表用的是同一套取法 ——
-                // 两处键必须一致，否则"收到了分片却找不到订阅者回不了消息"。
-                let central = device_id_of(args.Session().ok().as_ref());
+        >::new(move |_sender, args| {
+            let Ok(args) = args.ok() else { return Ok(()) };
+            // 对端标识取自 **args 的 session**，与订阅表用的是同一套取法 ——
+            // 两处键必须一致，否则"收到了分片却找不到订阅者回不了消息"。
+            let central = device_id_of(args.Session().ok().as_ref());
 
-                // 请求对象要 await 才能拿到（WinRT 的 deferral 语义）。这里用
-                // `IAsyncOperation` 自带的**阻塞** `join()`（`GetRequestAsync` 很快返回），
-                // 在**回调线程**上完成 —— 不跨 await，也就不会把非 `Send` 的 WinRT
-                // 对象带进 tokio 任务。回调线程是一次性的（不做渲染），阻塞安全。
-                match args.GetRequestAsync() {
-                    Ok(op) => match op.join() {
-                        Ok(req) => handle_write_request(req, &central, &shared),
-                        Err(e) => shared.warn(format!("读取写请求失败：{e}")),
-                    },
-                    Err(e) => shared.warn(format!("取写请求失败：{e}")),
-                }
-                Ok(())
-            },
-        ))
+            // 请求对象要 await 才能拿到（WinRT 的 deferral 语义）。这里用
+            // `IAsyncOperation` 自带的**阻塞** `join()`（`GetRequestAsync` 很快返回），
+            // 在**回调线程**上完成 —— 不跨 await，也就不会把非 `Send` 的 WinRT
+            // 对象带进 tokio 任务。回调线程是一次性的（不做渲染），阻塞安全。
+            match args.GetRequestAsync() {
+                Ok(op) => match op.join() {
+                    Ok(req) => handle_write_request(req, &central, &shared),
+                    Err(e) => shared.warn(format!("读取写请求失败：{e}")),
+                },
+                Err(e) => shared.warn(format!("取写请求失败：{e}")),
+            }
+            Ok(())
+        }))
         .map_err(|e| format!("注册写请求回调失败：{e}"))?;
     let _ = token; // 回调随特征一起存活；显式保留便于将来解除
     Ok(())
@@ -527,6 +532,18 @@ impl PeripheralWriter {
     ///
     /// 取 `GattSubscribedClient::MaxNotificationSize()`（一次通知能装的字节数，
     /// **已含 ATT 头**）并交给与 central 侧共用的换算 —— 两边不会各说各话。
+    ///
+    /// ⚠️ **三个平台的输入语义并不相同**，不要以为可以互换：
+    ///
+    /// | 平台 | 来源 | 含 ATT 头？ | 用哪个换算 |
+    /// |---|---|---|---|
+    /// | macOS | `maximumUpdateValueLength` | **不含**（Apple 文档明确：就是载荷） | `notify_payload_budget` |
+    /// | Windows | `MaxNotificationSize` | **含**（本文件所据） | `att_payload_budget` |
+    /// | Android | Kotlin `payloadMtu` | **不含**（与 macOS 同口径） | `notify_payload_budget` |
+    ///
+    /// ⚠️ Windows 那一格（"含 ATT 头"）**尚未在真机验证**：若实际不含，我们每片会少发
+    /// 3 字节 —— 那是**偏保守**的方向（吞吐略降），不会像 Android 2026-09-16 修掉的那个
+    /// 缺陷那样"直接发不出去"。要动它请先真机确认 `MaxNotificationSize` 的语义。
     pub fn payload_mtu(&self, central: &str) -> usize {
         let max = {
             let subs = SUBSCRIBERS.lock().unwrap_or_else(|e| e.into_inner());

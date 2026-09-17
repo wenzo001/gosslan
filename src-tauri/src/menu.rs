@@ -23,7 +23,9 @@ use std::sync::Mutex;
 use tauri::{
     menu::{Menu, MenuBuilder, MenuItem, PredefinedMenuItem, SubmenuBuilder},
     // `Manager` 提供 `get_webview_window` / `webview_windows`（⌘W 要关"当前聚焦窗口"）
-    AppHandle, Emitter, Manager,
+    AppHandle,
+    Emitter,
+    Manager,
 };
 
 /// 菜单事件名（前端 `api/index.ts` 监听后转成 window 事件）。

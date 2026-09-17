@@ -54,7 +54,9 @@ pub fn can_transition(from: TransferStatus, to: TransferStatus) -> bool {
     match (from, to) {
         (Complete, _) | (Rejected, _) => false,
         (Queued, Active) | (Queued, Incomplete) | (Queued, Rejected) => true,
-        (Active, Verifying) | (Active, Complete) | (Active, Incomplete) | (Active, Rejected) => true,
+        (Active, Verifying) | (Active, Complete) | (Active, Incomplete) | (Active, Rejected) => {
+            true
+        }
         (Verifying, Complete) | (Verifying, Incomplete) | (Verifying, Rejected) => true,
         (Incomplete, Queued) | (Incomplete, Active) | (Incomplete, Rejected) => true,
         _ => false,
@@ -109,11 +111,26 @@ mod tests {
             assert!(!can_transition(TransferStatus::Complete, to));
             assert!(!can_transition(TransferStatus::Rejected, to));
         }
-        assert!(can_transition(TransferStatus::Complete, TransferStatus::Complete));
-        assert!(can_transition(TransferStatus::Rejected, TransferStatus::Rejected));
-        assert!(can_transition(TransferStatus::Incomplete, TransferStatus::Active));
-        assert!(can_transition(TransferStatus::Active, TransferStatus::Incomplete));
-        assert!(!can_transition(TransferStatus::Queued, TransferStatus::Verifying));
+        assert!(can_transition(
+            TransferStatus::Complete,
+            TransferStatus::Complete
+        ));
+        assert!(can_transition(
+            TransferStatus::Rejected,
+            TransferStatus::Rejected
+        ));
+        assert!(can_transition(
+            TransferStatus::Incomplete,
+            TransferStatus::Active
+        ));
+        assert!(can_transition(
+            TransferStatus::Active,
+            TransferStatus::Incomplete
+        ));
+        assert!(!can_transition(
+            TransferStatus::Queued,
+            TransferStatus::Verifying
+        ));
     }
 
     #[test]
@@ -122,7 +139,11 @@ mod tests {
         assert_eq!(resume_from_seq(256, 256), 1);
         assert_eq!(resume_from_seq(300, 256), 1, "尾部半片必须丢弃（向下取整）");
         assert_eq!(resume_from_seq(512, 256), 2);
-        assert_eq!(resume_from_seq(999, 0), 0, "非法分片大小回退到 0（整份重来）");
+        assert_eq!(
+            resume_from_seq(999, 0),
+            0,
+            "非法分片大小回退到 0（整份重来）"
+        );
     }
 
     #[test]
@@ -136,8 +157,20 @@ mod tests {
         let (s3, _, next_at3) = on_failure(0, FailReason::HashMismatch, 1_000);
         assert_eq!(s3, TransferStatus::Rejected);
         assert_eq!(next_at3, 0, "终态不应有下次重试时间");
-        assert!(should_retry_now(TransferStatus::Incomplete, next_at, next_at));
-        assert!(!should_retry_now(TransferStatus::Incomplete, next_at - 1, next_at));
-        assert!(!should_retry_now(TransferStatus::Active, next_at + 1, next_at));
+        assert!(should_retry_now(
+            TransferStatus::Incomplete,
+            next_at,
+            next_at
+        ));
+        assert!(!should_retry_now(
+            TransferStatus::Incomplete,
+            next_at - 1,
+            next_at
+        ));
+        assert!(!should_retry_now(
+            TransferStatus::Active,
+            next_at + 1,
+            next_at
+        ));
     }
 }

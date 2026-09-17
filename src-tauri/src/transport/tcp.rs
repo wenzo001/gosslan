@@ -1,17 +1,28 @@
 //! TCP 传输：只懂 bytes（P-A03）。
 //!
 //! 本模块把「分帧」从「业务协议」里剥离出来：
-//! - 帧格式 = **4 字节大端长度 + payload**，与现有 `network::transport::write_frame`
-//!   完全一致（字节级，有测试钉住）；
+//! - 帧格式 = **4 字节大端长度 + payload**，与既有 `network::transport::write_frame`
+//!   字节级一致（有测试钉住）；
 //! - 这里**不认识** `Message` / Gossip / ChatMessage / SQLite，只搬字节；
 //! - 业务序列化（serde_json）留在上层，Transport 不做任何领域假设。
 //!
-//! 因此新旧实现可以互通，协议语义不变（Phase 4 的硬约束）。
+//! ## 接线状态：**大部分已接线**（2026-09-16 逐项核对调用点，修正了此前的"旁路阶段"）
 //!
-//! Phase 4 当前只落地 bytes 原语，**不改变任何现有收发路径**；
-//! 由后续步骤用 Adapter 接入 Hello 验签、双队列与 Windows socket 修复。
-
-#![allow(dead_code)] // 旁路阶段：待接线后移除
+//! | 项 | 状态 |
+//! |---|---|
+//! | `write_bytes` / `read_bytes` / `read_bytes_capped` | ✅ **已接线**：`network/transport.rs:57,62,69`（`read_bytes_capped` 传 `MAX_PREAUTH_FRAME`）；那边注释自述「单一真相源见 `transport::tcp`（P-A03）」 |
+//! | `TcpReceiver` / `TcpSender` + 它们的 `AsyncRead` / `AsyncWrite` 实现 | ✅ **已接线**：`network/transport.rs:1231,1232,1529,1613,2368,2369` |
+//! | `TcpTransport`（组合结构体） | ⚠️ **未接线**：只在本文件测试里用（它是"先拆半再交给 writer_loop / reader_loop"的旧形态） |
+//!
+//! ⚠️ **历史（2026-09-16 修正）**：本文件此前挂着**文件级** `#![allow(dead_code)]`
+//! 并注明「旁路阶段：待接线后移除」—— 那句话只对 `TcpTransport` **一个结构体**成立，
+//! 而文件里的帧原语**早已在跑**。文件级 allow 的坏处正是"把已经接线的事实也一起静音"
+//! （同类问题已在 `ble_framing.rs`（Phase 3）与 `transport/bluetooth.rs`（Phase 5）各发现一次）。
+//! 现改为**逐个标注**：只有 `TcpTransport` 及其 `impl` 带 `#[allow(dead_code)]`，其余交给编译器守。
+//!
+//! `TcpTransport` 之所以留着：把 `writer_loop` / `reader_loop` 换成端点类型时要用它
+//! （只换类型、分帧逻辑不动 ⇒ 行为等价，见本文件测试
+//! `split_halves_work_with_legacy_frame_helpers`）。
 
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -30,8 +41,7 @@ pub async fn write_bytes<W: AsyncWrite + Unpin>(w: &mut W, payload: &[u8]) -> st
             "非法载荷长度",
         ));
     }
-    w.write_all(&(payload.len() as u32).to_be_bytes())
-        .await?;
+    w.write_all(&(payload.len() as u32).to_be_bytes()).await?;
     w.write_all(payload).await?;
     Ok(())
 }
@@ -64,11 +74,19 @@ pub async fn read_bytes_capped<R: AsyncRead + Unpin>(
 }
 
 /// 一条 TCP 连接的 bytes 通道（读写半分离，便于与既有 writer/reader_loop 对齐）。
+///
+/// ⚠️ **当前无生产调用点**：`network/transport.rs` 用的是下面拆开的
+/// [`TcpReceiver`] / [`TcpSender`]（它先拆半再交给两个并发任务，与
+/// `writer_loop` / `reader_loop` 的形态一致）。本类型是"不拆半"的便捷形态，
+/// 留作把那两个循环换成端点类型时使用 —— **只有它的 `impl` 需要 allow**，
+/// 帧原语与端点类型都在跑（见模块头的接线状态表）。
+#[allow(dead_code)]
 pub struct TcpTransport {
     write: OwnedWriteHalf,
     read: OwnedReadHalf,
 }
 
+#[allow(dead_code)]
 impl TcpTransport {
     /// 接管一条已建立的 TCP 连接。
     pub fn new(stream: TcpStream) -> Self {
@@ -111,6 +129,12 @@ impl TcpSender {
         Self { write }
     }
 
+    /// 直接把 bytes 写出去（`write_bytes` 的便捷包装）。
+    ///
+    /// ⚠️ 当前**只有本文件测试**在用：生产路径（`network/transport.rs`）走的是
+    /// `write_frame(&mut sender, …)` —— 即通过 `TcpSender: AsyncWrite` 的实现，
+    /// 而不是这个直接方法。留它是为了不经过业务序列化时也能写裸字节。
+    #[allow(dead_code)]
     pub async fn send_bytes(&mut self, bytes: &[u8]) -> std::io::Result<()> {
         write_bytes(&mut self.write, bytes).await
     }
@@ -146,6 +170,11 @@ impl TcpReceiver {
         Self { read }
     }
 
+    /// 直接读出一帧 bytes（`read_bytes` 的便捷包装）。
+    ///
+    /// ⚠️ 同 `TcpSender::send_bytes`：当前只有本文件测试在用，
+    /// 生产路径走 `read_frame(&mut receiver, …)`。
+    #[allow(dead_code)]
     pub async fn receive_bytes(&mut self) -> std::io::Result<Vec<u8>> {
         read_bytes(&mut self.read).await
     }
@@ -195,7 +224,10 @@ mod tests {
         let mut buf = Vec::new();
         write_bytes(&mut buf, &payload).await.unwrap();
         let mut reader = &buf[..];
-        assert_eq!(read_bytes_capped(&mut reader, cap).await.unwrap().len(), cap);
+        assert_eq!(
+            read_bytes_capped(&mut reader, cap).await.unwrap().len(),
+            cap
+        );
 
         // 比上限多 1 字节：拒绝（边界是闭区间上限，与项目其它长度判据一致）
         let payload = vec![1u8; cap + 1];
@@ -302,7 +334,9 @@ mod tests {
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let (mut rx, mut tx) = TcpTransport::new(stream).into_split();
-            let got = crate::network::transport::read_frame(&mut rx).await.unwrap();
+            let got = crate::network::transport::read_frame(&mut rx)
+                .await
+                .unwrap();
             crate::network::transport::write_frame(
                 &mut tx,
                 &Message::Heartbeat {
@@ -324,7 +358,9 @@ mod tests {
         )
         .await
         .unwrap();
-        let reply = crate::network::transport::read_frame(&mut rx).await.unwrap();
+        let reply = crate::network::transport::read_frame(&mut rx)
+            .await
+            .unwrap();
 
         assert!(
             matches!(reply, Message::Heartbeat { ref device_id } if device_id == "srv"),

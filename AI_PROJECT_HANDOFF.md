@@ -178,7 +178,7 @@ gosslan/
     ├── crypto.rs            # ★ E2EE 原语：Identity / shared_secret / seal / open / 签名验签
     ├── protocol.rs          # 线格式：UDP 包 / TCP 帧 / Message 枚举 / GossipEnvelope
     ├── gossip_engine.rs     # Bloom+LRU 去重 / fanout / 信封构建与验签
-    ├── relay_manager.rs     # 大文件切片 + 并行分发 + 乱序重组
+    ├── file_relay.rs     # 大文件切片 + 并行分发 + 乱序重组
     ├── schema.sql           # 建表脚本（与 db.rs SCHEMA 保持一致，文档用）
     ├── tray.rs              # 桌面托盘（#[cfg(desktop)] 门控；CloseRequested→隐藏）
     ├── network/

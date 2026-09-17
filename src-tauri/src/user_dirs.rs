@@ -150,7 +150,10 @@ mod tests {
             pick(Some("/stored".to_string()), err()),
             Some("/stored".to_string())
         );
-        assert_eq!(pick(Some("/stored".to_string()), None), Some("/stored".to_string()));
+        assert_eq!(
+            pick(Some("/stored".to_string()), None),
+            Some("/stored".to_string())
+        );
     }
 
     /// 书签解析出空路径等同于失败（不能把空串当目录）。
@@ -186,7 +189,10 @@ mod tests {
             Some(dir.as_str()),
             "路径必须无条件落库（书签只是附加信息）"
         );
-        assert!(same_dir(load(&conn, SHARE), &dir), "load 必须拿回同一个目录");
+        assert!(
+            same_dir(load(&conn, SHARE), &dir),
+            "load 必须拿回同一个目录"
+        );
     }
 
     /// 两个目录（共享 / 接收）必须**各存各的**：键写串了会让"改接收目录"
@@ -202,7 +208,10 @@ mod tests {
         store(&conn, SHARE, &a).unwrap();
         store(&conn, RECEIVE, &b).unwrap();
 
-        assert!(same_dir(load(&conn, SHARE), &a), "共享目录不能被接收目录覆盖");
+        assert!(
+            same_dir(load(&conn, SHARE), &a),
+            "共享目录不能被接收目录覆盖"
+        );
         assert!(same_dir(load(&conn, RECEIVE), &b), "接收目录必须各自独立");
         assert_ne!(SHARE.path, RECEIVE.path, "两处路径键必须不同");
         assert_ne!(SHARE.bookmark, RECEIVE.bookmark, "两处书签键必须不同");
@@ -235,7 +244,10 @@ mod tests {
         if let Ok(bookmark) = crate::macos_bookmark::create(&dir) {
             db::set_setting(&conn, SHARE.path, "/somewhere/else").unwrap();
             db::set_setting(&conn, SHARE.bookmark, &bookmark).unwrap();
-            assert!(same_dir(load(&conn, SHARE), &dir), "书签指向的目录才是真目录");
+            assert!(
+                same_dir(load(&conn, SHARE), &dir),
+                "书签指向的目录才是真目录"
+            );
         }
     }
 }

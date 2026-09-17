@@ -105,7 +105,9 @@ async fn connect_and_hello(
     let nonce = format!("nonce-{}", now_ms());
     let x25519 = id.x25519_public_b64();
     let ed25519 = id.ed25519_public_b64();
-    let sig = id.sign_b64(&hello_signing_bytes(device_id, 0, &nonce, &x25519, &ed25519));
+    let sig = id.sign_b64(&hello_signing_bytes(
+        device_id, 0, &nonce, &x25519, &ed25519,
+    ));
 
     let hello = Message::Hello {
         device_id: device_id.to_string(),
@@ -227,7 +229,11 @@ async fn main() -> Result<(), String> {
     // 没有这一步，「收到回复」证明不了"定向"：若实例把回复播发到所有链路，
     // 那么「切断被选中那条、另一条仍收到」就毫无意义（本来就都收得到）。
     println!("[3/5] 对照：另一条链路在 2s 内**不得**收到定向帧…");
-    let other = if selected == 0 { r2.as_mut().unwrap() } else { r1.as_mut().unwrap() };
+    let other = if selected == 0 {
+        r2.as_mut().unwrap()
+    } else {
+        r1.as_mut().unwrap()
+    };
     match wait_blocked(other, 2).await {
         Ok(false) => println!("      ✓ 对照成立：未被选中的那条没有收到定向帧（确实是定向投递）"),
         Ok(true) => {
@@ -270,11 +276,9 @@ async fn main() -> Result<(), String> {
             println!("`route_order_*` 单测覆盖 —— 本示例两条链路都是 LAN。");
             Ok(())
         }
-        Ok(false) => Err(
-            "FAIL | 切断被选中链路后，幸存链路上 10s 内没有收到定向回复\
+        Ok(false) => Err("FAIL | 切断被选中链路后，幸存链路上 10s 内没有收到定向回复\
              ⇒ 实例没有把定向发送切到存活链路（这正是 M3-b 要解决的问题）"
-                .to_string(),
-        ),
+            .to_string()),
         Err(e) => Err(format!("INCONCLUSIVE | 幸存链路读帧出错: {e}")),
     }
 }

@@ -554,8 +554,25 @@ async function doForward(convId: string) {
   }
 }
 
-/** 统一发送文件：自动路由（直连优先，弱网/无直连自动中继），无需用户选择。
- *  群聊会话走群文件链路（send_group_file：Offer → Chunk → Done → CompleteAck）。 */
+/**
+ * 收藏一条消息。
+ *
+ * 页面只负责"提示"，内容与媒体副本全在后端决定（见 `add_favorite`）：
+ * 前端连 content 都不传，避免收藏夹里存进一份与消息记录不一致的副本。
+ * 返回值区分"新收藏"与"早就收过" —— 重复点收藏不该静默无反应，用户会以为没生效。
+ */
+async function doFavorite(msgId: string) {
+  const convId = chat.activeConv;
+  if (!convId) return;
+  try {
+    const added = await chat.addFavorite(msgId, convId);
+    app.toast(t(added ? "favorite.added" : "favorite.already"), added ? "success" : "info");
+  } catch (e) {
+    app.toastError(e, t("favorite.addFail"));
+  }
+}
+
+/** 统一发送文件：自动路由（直连优先，弱网/无直连自动中继），无需用户选择。 *  群聊会话走群文件链路（send_group_file：Offer → Chunk → Done → CompleteAck）。 */
 async function sendOneFile(convId: string, picked: string) {
   if (isGroup.value) {
     const gid = activeGroupId.value;
@@ -837,6 +854,7 @@ function onLoadMore() {
             @react="toggleReaction(item.msg_id, $event)"
             @pin="togglePin(item.msg_id)"
             @forward="forward = $event"
+            @favorite="doFavorite(item.msg_id)"
             @locate="locateMessage"
             @open-image="openImageAt"
           />

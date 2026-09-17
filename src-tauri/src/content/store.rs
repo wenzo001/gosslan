@@ -41,7 +41,10 @@ pub fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
         .map(|n| n > 0)
         .unwrap_or(true);
     if !has_tid {
-        let _ = conn.execute("ALTER TABLE content_transfers ADD COLUMN transfer_id TEXT", []);
+        let _ = conn.execute(
+            "ALTER TABLE content_transfers ADD COLUMN transfer_id TEXT",
+            [],
+        );
     }
     Ok(())
 }
@@ -122,9 +125,8 @@ pub fn get(
 }
 
 pub fn list(conn: &Connection, limit: usize) -> rusqlite::Result<Vec<TransferRecord>> {
-    let mut stmt = conn.prepare(
-        "SELECT * FROM content_transfers ORDER BY updated_at DESC LIMIT ?1",
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT * FROM content_transfers ORDER BY updated_at DESC LIMIT ?1")?;
     let rows = stmt.query_map(params![limit as i64], row_to_record)?;
     rows.collect()
 }
@@ -296,14 +298,18 @@ mod tests {
     fn upsert_round_trips_and_keeps_max_received() {
         let conn = mem();
         upsert(&conn, &rec("c1", TransferStatus::Active, 40)).unwrap();
-        let got = get(&conn, "c1", "peer-a", Direction::Receive).unwrap().unwrap();
+        let got = get(&conn, "c1", "peer-a", Direction::Receive)
+            .unwrap()
+            .unwrap();
         assert_eq!(got.received, 40);
         assert_eq!(got.status, TransferStatus::Active);
         // 进度回退（旧的 40 → 新的 10）不允许把 received 变回去
         let mut older = rec("c1", TransferStatus::Active, 10);
         older.path = Some("/tmp/a.png".into());
         upsert(&conn, &older).unwrap();
-        let got2 = get(&conn, "c1", "peer-a", Direction::Receive).unwrap().unwrap();
+        let got2 = get(&conn, "c1", "peer-a", Direction::Receive)
+            .unwrap()
+            .unwrap();
         assert_eq!(got2.received, 40, "received 只能前进");
         assert_eq!(got2.path.as_deref(), Some("/tmp/a.png"));
     }
@@ -312,9 +318,16 @@ mod tests {
     fn failure_persists_resumable_or_terminal() {
         let conn = mem();
         upsert(&conn, &rec("c2", TransferStatus::Active, 0)).unwrap();
-        let r = record_failure(&conn, "c2", "peer-a", Direction::Receive, FailReason::Timeout, 1_000)
-            .unwrap()
-            .unwrap();
+        let r = record_failure(
+            &conn,
+            "c2",
+            "peer-a",
+            Direction::Receive,
+            FailReason::Timeout,
+            1_000,
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(r.status, TransferStatus::Incomplete);
         assert_eq!(r.attempts, 1);
         assert!(r.next_attempt_at > 1_000);
@@ -322,9 +335,16 @@ mod tests {
         let list = list_resumable_for_peer(&conn, "peer-a").unwrap();
         assert_eq!(list.len(), 1, "可恢复记录必须能被建链时捞出来");
         // 终态
-        let r2 = record_failure(&conn, "c2", "peer-a", Direction::Receive, FailReason::HashMismatch, 2_000)
-            .unwrap()
-            .unwrap();
+        let r2 = record_failure(
+            &conn,
+            "c2",
+            "peer-a",
+            Direction::Receive,
+            FailReason::HashMismatch,
+            2_000,
+        )
+        .unwrap()
+        .unwrap();
         assert_eq!(r2.status, TransferStatus::Rejected);
         assert!(list_resumable_for_peer(&conn, "peer-a").unwrap().is_empty());
     }

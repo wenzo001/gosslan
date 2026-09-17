@@ -37,7 +37,9 @@ pub fn disable_shadow(window: &tauri::WebviewWindow) {
     use objc2_app_kit::NSWindow;
 
     let Ok(raw) = window.ns_window() else { return };
-    if raw.is_null() { return; }
+    if raw.is_null() {
+        return;
+    }
     let ns_window: &NSWindow = unsafe { &*(raw as *mut NSWindow) };
     // 系统阴影画在窗口外、是矩形，与圆角冲突；在 setup 阶段即可关（NSWindow 级，不被 wry 替换）。
     ns_window.setHasShadow(false);

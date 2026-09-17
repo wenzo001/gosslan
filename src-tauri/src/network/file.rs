@@ -152,7 +152,7 @@ pub async fn send_file_from_path_at(
 
     // ---- E2EE：本 transfer 独立的随机文件会话密钥（CSPRNG），仅存内存 ----
     let file_key = crypto::random_key();
-    let file_sha256 = sha256_file_hex(&path).map_err(|e| SendFileError::permanent(e))?;
+    let file_sha256 = sha256_file_hex(&path).map_err(SendFileError::permanent)?;
     let receiver_pubkey = resolve_member_x25519(state, peer_id);
     let sealed_key_b64 = (|| {
         let pubkey = receiver_pubkey.as_deref()?;
@@ -234,10 +234,18 @@ pub async fn send_file_from_path_at(
         match tokio::time::timeout(Duration::from_secs(15), rx).await {
             Ok(Ok(Ok(()))) => {
                 return stream_file(
-                    state, peer_id, transfer_id, path, name, size, file_key, 0, resume_from,
+                    state,
+                    peer_id,
+                    transfer_id,
+                    path,
+                    name,
+                    size,
+                    file_key,
+                    0,
+                    resume_from,
                 )
                 .await
-                .map_err(|e| SendFileError::retryable(e));
+                .map_err(SendFileError::retryable);
             }
             Ok(Ok(Err(n))) if n > resume_from => {
                 state.logger.info(
@@ -293,7 +301,7 @@ pub async fn send_file_via_relay(
     // ⚠️ **逐片读盘，不整读进内存**。这里原先 `std::fs::read(&path)` 把整个文件读进来再切片：
     // 中继发送的是共享目录里的文件（可能很大），整读后逐片 base64（×1.33）会让内存峰值
     // 超过文件大小本身。改成按需 seek + read_exact，峰值只剩一个分片。
-    let chunk_size = crate::relay_manager::MIN_CHUNK_SIZE;
+    let chunk_size = crate::file_relay::MIN_CHUNK_SIZE;
     let total = size as usize;
     let chunk_count = total.div_ceil(chunk_size).max(1) as u32;
     let mut src = std::fs::File::open(&path).map_err(|e| format!("读取文件失败：{e}"))?;
@@ -301,7 +309,15 @@ pub async fn send_file_via_relay(
     {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::upsert_transfer(
-            &dbc, transfer_id, peer_id, &name, size, "send", "active", None, 0.0,
+            &dbc,
+            transfer_id,
+            peer_id,
+            &name,
+            size,
+            "send",
+            "active",
+            None,
+            0.0,
         )
         .ok();
     }
@@ -342,11 +358,23 @@ pub async fn send_file_via_relay(
         let sent = end as u64;
         if last_report.elapsed() >= Duration::from_millis(250) {
             last_report = std::time::Instant::now();
-            let progress = if size == 0 { 1.0 } else { sent as f64 / size as f64 };
+            let progress = if size == 0 {
+                1.0
+            } else {
+                sent as f64 / size as f64
+            };
             {
                 let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                 db::upsert_transfer(
-                    &dbc, transfer_id, peer_id, &name, size, "send", "active", None, progress,
+                    &dbc,
+                    transfer_id,
+                    peer_id,
+                    &name,
+                    size,
+                    "send",
+                    "active",
+                    None,
+                    progress,
                 )
                 .ok();
             }
@@ -378,7 +406,7 @@ pub async fn send_file_via_relay(
     Ok(())
 }
 
-
+#[allow(clippy::too_many_arguments)]
 async fn stream_file(
     state: &Arc<AppState>,
     peer_id: &str,
@@ -623,6 +651,7 @@ pub fn sweep_stale_parts(state: &AppState) -> usize {
 /// 与 begin_receive 的区别：**不再 truncate**，而是读入已有前缀播种 hasher，
 /// received 从 from_bytes 接上；next_seq 归零（发送端从 from_seq=0 重编，只对本段排序）。
 /// 任何不一致都返回 Err ⇒ 上层回 FileReject ⇒ 发送端整份重传（安全兜底）。
+#[allow(clippy::too_many_arguments)]
 pub fn resume_receive(
     state: &AppState,
     transfer_id: &str,
@@ -771,6 +800,7 @@ pub fn has_receiver(state: &AppState, transfer_id: &str) -> bool {
 }
 
 /// 一对一与群文件共用；差异只在写入哪个接收 map 与是否记录 file_transfers。
+#[allow(clippy::too_many_arguments)]
 fn make_receiver(
     state: &AppState,
     transfer_id: &str,
@@ -801,7 +831,11 @@ fn make_receiver(
     {
         let _ = std::fs::remove_file(&old.tmp_path);
     }
-    let dl = state.downloads_dir.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let dl = state
+        .downloads_dir
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     std::fs::create_dir_all(&dl).ok();
     let final_path = unique_path(&dl, &safe_name);
     // ⚠️ 临时文件必须按 **transfer_id** 命名，不能从 final_path 派生：
@@ -901,7 +935,12 @@ pub fn begin_group_receive(
 
 /// 群文件接收失败：删除 `.part` 并移除接收状态（不 rename、不标 done）。
 pub fn fail_group_receive(state: &AppState, transfer_id: &str) {
-    if let Some(r) = state.group_file_receivers.lock().unwrap_or_else(|e| e.into_inner()).remove(transfer_id) {
+    if let Some(r) = state
+        .group_file_receivers
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(transfer_id)
+    {
         // **保留 .part**（不删）：断点续传的前缀（群友从种子拉取时也走 resume_receive）。
         let _ = &r.tmp_path;
         // 统一状态：群文件中途失败/断链 ⇒ Incomplete（可恢复）⇒ 建链时按退避自动重取。
@@ -999,7 +1038,10 @@ pub fn write_chunk(
     // 锁作用域：先算完，把要落库的进度取出来，**释放 file_receivers 锁之后**再动 db
     // （避免 file_receivers -> db 的嵌套锁顺序）。
     let (received, cid, owner, report) = {
-        let mut recv = state.file_receivers.lock().unwrap_or_else(|e| e.into_inner());
+        let mut recv = state
+            .file_receivers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let r = recv.get_mut(transfer_id).ok_or("未知传输")?;
         if r.peer_id != peer_id {
             return Err("文件传输来源不匹配".to_string());
@@ -1029,7 +1071,12 @@ pub fn write_chunk(
         if report {
             r.last_report_ms = now;
         }
-        (r.received, r.expected_sha256.clone(), r.peer_id.clone(), report)
+        (
+            r.received,
+            r.expected_sha256.clone(),
+            r.peer_id.clone(),
+            report,
+        )
     };
     if report {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -1046,7 +1093,10 @@ pub fn write_chunk(
 
 /// 终止损坏或超时的接收，删除临时文件，避免留下永远占空间的 `.part` 文件。
 pub fn fail_receive(state: &AppState, transfer_id: &str, peer_id: &str, reason: &str) -> bool {
-    let mut recv = state.file_receivers.lock().unwrap_or_else(|e| e.into_inner());
+    let mut recv = state
+        .file_receivers
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let Some(r) = recv.remove(transfer_id) else {
         return false;
     };
@@ -1107,7 +1157,10 @@ pub fn finish_receive(
     transfer_id: &str,
     peer_id: &str,
 ) -> Result<Option<(String, u64, PathBuf, String)>, String> {
-    let mut recv = state.file_receivers.lock().unwrap_or_else(|e| e.into_inner());
+    let mut recv = state
+        .file_receivers
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let r = match recv.remove(transfer_id) {
         Some(r) => r,
         None => return Ok(None),
@@ -1416,8 +1469,8 @@ mod tests {
     fn code_extensions() {
         for n in [
             "a.rs", "a.ts", "a.tsx", "a.js", "a.jsx", "a.vue", "a.py", "a.go", "a.java", "a.c",
-            "a.cpp", "a.h", "a.hpp", "a.json", "a.yaml", "a.yml", "a.html", "a.css",
-            "a.sql", "a.sh",
+            "a.cpp", "a.h", "a.hpp", "a.json", "a.yaml", "a.yml", "a.html", "a.css", "a.sql",
+            "a.sh",
         ] {
             assert_eq!(classify_file_subtype(n), "code", "{n}");
         }
@@ -1534,8 +1587,8 @@ mod tests {
     // ---------- 文件传输 E2EE（协议层模拟，不依赖 AppState） ----------
 
     use super::super::super::crypto;
-    use super::{sha256_file_hex, valid_sha256_hex};
     use super::chunk_size_for_path;
+    use super::{sha256_file_hex, valid_sha256_hex};
     use crate::protocol::FILE_CHUNK;
 
     /// **分块大小必须能真的被 BLE 分片层发出去**（真机 2026-09-13：大图两边都显示成功、
@@ -1575,10 +1628,8 @@ mod tests {
 
     /// 在系统临时目录创建唯一的 .part 文件（测试接收端用），返回句柄与路径。
     fn temp_part(tag: &str) -> (std::fs::File, std::path::PathBuf) {
-        let path = std::env::temp_dir().join(format!(
-            "gosslan-test-{tag}-{}.part",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("gosslan-test-{tag}-{}.part", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let f = std::fs::File::create(&path).unwrap();
         (f, path)
@@ -1692,8 +1743,8 @@ mod tests {
         let file_key = crypto::random_key();
 
         // 发送端：封装会话密钥 + 加密 chunk
-        let shared = crypto::shared_secret(&sender.x25519_secret, &receiver.x25519_public_b64())
-            .unwrap();
+        let shared =
+            crypto::shared_secret(&sender.x25519_secret, &receiver.x25519_public_b64()).unwrap();
         let sealed_key_b64 = base64::engine::general_purpose::STANDARD
             .encode(crypto::seal(&shared, &file_key).unwrap());
         let plaintext = b"chunk travels through relay nodes";
@@ -1704,8 +1755,8 @@ mod tests {
         let forwarded = ciphertext_b64.clone();
 
         // 接收端：解封密钥 → 解密转发的密文
-        let shared_rx = crypto::shared_secret(&receiver.x25519_secret, &sender.x25519_public_b64())
-            .unwrap();
+        let shared_rx =
+            crypto::shared_secret(&receiver.x25519_secret, &sender.x25519_public_b64()).unwrap();
         let opened_key: [u8; 32] = crypto::open(
             &shared_rx,
             &base64::engine::general_purpose::STANDARD
@@ -1717,7 +1768,9 @@ mod tests {
         .unwrap();
         let decrypted = crypto::open_symmetric(
             &opened_key,
-            &base64::engine::general_purpose::STANDARD.decode(&forwarded).unwrap(),
+            &base64::engine::general_purpose::STANDARD
+                .decode(&forwarded)
+                .unwrap(),
         )
         .expect("中继转发后的密文必须仍可解密");
         assert_eq!(decrypted, plaintext);
@@ -1739,8 +1792,8 @@ mod tests {
 
         // 发送端生命周期：random_key → 封装 → 逐片加密
         let file_key = crypto::random_key();
-        let shared = crypto::shared_secret(&sender.x25519_secret, &receiver.x25519_public_b64())
-            .unwrap();
+        let shared =
+            crypto::shared_secret(&sender.x25519_secret, &receiver.x25519_public_b64()).unwrap();
         let sealed_key_b64 = base64::engine::general_purpose::STANDARD
             .encode(crypto::seal(&shared, &file_key).unwrap());
         let wire_chunks: Vec<Vec<u8>> = chunks
@@ -1749,8 +1802,8 @@ mod tests {
             .collect();
 
         // 接收端生命周期：解封密钥 → 逐片解密重组 → 大小校验
-        let shared_rx = crypto::shared_secret(&receiver.x25519_secret, &sender.x25519_public_b64())
-            .unwrap();
+        let shared_rx =
+            crypto::shared_secret(&receiver.x25519_secret, &sender.x25519_public_b64()).unwrap();
         let restored_key: [u8; 32] = crypto::open(
             &shared_rx,
             &base64::engine::general_purpose::STANDARD
@@ -1777,7 +1830,8 @@ mod tests {
     /// sha256_file_hex：流式分块结果必须与一次性内存计算一致（发送端正确性）。
     #[test]
     fn sha256_file_hex_matches_in_memory_hash() {
-        let path = std::env::temp_dir().join(format!("gosslan-test-sha-{}.bin", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("gosslan-test-sha-{}.bin", std::process::id()));
         std::fs::write(&path, b"gosslan sha-256 streaming test body").unwrap();
         let got = sha256_file_hex(&path).unwrap();
         let want = hex_of(b"gosslan sha-256 streaming test body");
@@ -1790,24 +1844,30 @@ mod tests {
     #[test]
     fn invalid_sha256_format_is_rejected() {
         assert!(valid_sha256_hex(&hex_of(b"ok")));
-        assert!(valid_sha256_hex(&hex_of(b"ok").to_uppercase()), "大写 hex 也合法");
+        assert!(
+            valid_sha256_hex(&hex_of(b"ok").to_uppercase()),
+            "大写 hex 也合法"
+        );
         assert!(!valid_sha256_hex(""), "空串");
         assert!(!valid_sha256_hex("abc"), "长度不足");
         assert!(!valid_sha256_hex(&"a".repeat(63)), "63 位");
         assert!(!valid_sha256_hex(&"a".repeat(65)), "65 位");
-        assert!(!valid_sha256_hex(&format!("{}g", "a".repeat(63))), "非 hex 字符");
+        assert!(
+            !valid_sha256_hex(&format!("{}g", "a".repeat(63))),
+            "非 hex 字符"
+        );
     }
 
     /// 空文件边界：SHA-256 已知值 + sha256_file_hex 对 0 字节文件正确。
     #[test]
     fn empty_file_sha256_matches_known_value() {
-        let path = std::env::temp_dir().join(format!("gosslan-test-empty-{}.bin", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("gosslan-test-empty-{}.bin", std::process::id()));
         std::fs::write(&path, b"").unwrap();
         let got = sha256_file_hex(&path).unwrap();
         let _ = std::fs::remove_file(&path);
         assert_eq!(
-            got,
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            got, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
             "空文件 SHA-256 必须是标准已知值"
         );
     }
@@ -2010,7 +2070,10 @@ mod tests {
             data: "bm9uY2UrY2lwaGVydGV4dA==".into(),
         };
         let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains("\"group_file_chunk\""), "serde tag 必须是 group_file_chunk");
+        assert!(
+            json.contains("\"group_file_chunk\""),
+            "serde tag 必须是 group_file_chunk"
+        );
         assert!(json.contains("\"transfer_id\":\"gf-1\""));
         assert!(json.contains("\"group_id\":\"g-1\""));
         assert!(json.contains("\"sender_id\":\"dev-a\""));
@@ -2178,7 +2241,10 @@ mod tests {
             sender_id: "dev-a".into(),
         };
         let json = serde_json::to_string(&msg).unwrap();
-        assert!(json.contains("\"group_file_done\""), "serde tag 必须是 group_file_done");
+        assert!(
+            json.contains("\"group_file_done\""),
+            "serde tag 必须是 group_file_done"
+        );
         assert!(json.contains("\"transfer_id\":\"gf-1\""));
         assert!(json.contains("\"group_id\":\"g-1\""));
         assert!(json.contains("\"sender_id\":\"dev-a\""));
@@ -2199,9 +2265,7 @@ mod tests {
 
     /// 模拟 handle_group_file_done 的最终校验与落盘序列：
     /// size → SHA-256 → sync_all → drop(file) → rename（与生产代码同序）。
-    fn finalize_group_receive(
-        r: crate::state::FileReceiver,
-    ) -> Result<std::path::PathBuf, String> {
+    fn finalize_group_receive(r: crate::state::FileReceiver) -> Result<std::path::PathBuf, String> {
         if r.received != r.size {
             let _ = std::fs::remove_file(&r.tmp_path);
             return Err("文件传输未完成".to_string());
@@ -2225,11 +2289,10 @@ mod tests {
             e.to_string()
         })?;
         drop(r.file);
-        std::fs::rename(&r.tmp_path, &r.final_path)
-            .map_err(|e| {
-                let _ = std::fs::remove_file(&r.tmp_path);
-                e.to_string()
-            })?;
+        std::fs::rename(&r.tmp_path, &r.final_path).map_err(|e| {
+            let _ = std::fs::remove_file(&r.tmp_path);
+            e.to_string()
+        })?;
         Ok(r.final_path)
     }
 
@@ -2239,12 +2302,21 @@ mod tests {
     fn group_done_success_renames_part() {
         let original: Vec<u8> = (0..2048).map(|i| (i % 173) as u8).collect();
         let file_key = crypto::random_key();
-        let mut r = group_receiver("done-ok", original.len() as u64, hex_of(&original), file_key);
+        let mut r = group_receiver(
+            "done-ok",
+            original.len() as u64,
+            hex_of(&original),
+            file_key,
+        );
         for (seq, chunk) in original.chunks(700).enumerate() {
             let sealed = crypto::seal_symmetric(&file_key, chunk).unwrap();
             receive_group_chunk(&mut r, seq as u32, &sealed).unwrap();
         }
-        assert_eq!(r.received as f64 / r.size as f64, 1.0, "progress 必须为 1.0");
+        assert_eq!(
+            r.received as f64 / r.size as f64,
+            1.0,
+            "progress 必须为 1.0"
+        );
 
         let final_path = finalize_group_receive(r).expect("最终校验应通过");
         assert!(!final_path.as_os_str().is_empty());

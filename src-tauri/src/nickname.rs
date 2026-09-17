@@ -80,7 +80,11 @@ mod tests {
         assert_eq!(parts[2].len(), SUFFIX_LEN, "{a}");
         assert!(parts[2].chars().all(|c| c.is_ascii_alphanumeric()), "{a}");
         assert!(a.is_ascii(), "默认名必须是纯 ASCII 英文（{a}）");
-        assert!(a.len() <= 17, "太长会在列表里被截断：{a}（{} 字符）", a.len());
+        assert!(
+            a.len() <= 17,
+            "太长会在列表里被截断：{a}（{} 字符）",
+            a.len()
+        );
 
         // 词表本身也不能有长词（保证上面那条长度断言不是碰巧成立）
         assert!(ADJECTIVES.iter().all(|w| w.len() <= 6));
@@ -91,8 +95,10 @@ mod tests {
     fn different_devices_get_different_suffixes() {
         let ids = ["a", "b", "c", "dev-1", "dev-2", "9f8e7d6c", "phone-1"];
         let names: Vec<String> = ids.iter().map(|i| default_nickname(i)).collect();
-        let suffixes: std::collections::HashSet<&str> =
-            names.iter().map(|n| n.rsplit(' ').next().unwrap()).collect();
+        let suffixes: std::collections::HashSet<&str> = names
+            .iter()
+            .map(|n| n.rsplit(' ').next().unwrap())
+            .collect();
         assert!(
             suffixes.len() >= ids.len() - 1,
             "不同设备的短码应当基本都不同：{names:?}"

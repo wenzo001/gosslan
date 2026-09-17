@@ -188,9 +188,7 @@ impl RelayManager {
         data: Vec<u8>,
     ) -> Option<(String, u64, Vec<u8>)> {
         let done = {
-            let Some(r) = self.reassemblies.get_mut(transfer_id) else {
-                return None;
-            };
+            let r = self.reassemblies.get_mut(transfer_id)?;
             if seq >= r.total_chunks || r.chunks.contains_key(&seq) {
                 return None;
             }
@@ -270,7 +268,11 @@ mod tests {
         }
         let cutoff = 2_000; // only "stale" (1_000) is below it
 
-        assert_eq!(m.sweep_stale_reassemblies(cutoff), 1, "应只清掉过期的那一条");
+        assert_eq!(
+            m.sweep_stale_reassemblies(cutoff),
+            1,
+            "应只清掉过期的那一条"
+        );
         assert!(m.reassemblies.contains_key("fresh"), "进行中的重组不得被清");
         assert!(!m.reassemblies.contains_key("stale"));
 

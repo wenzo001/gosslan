@@ -20,9 +20,7 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 
 use crate::commands::is_virtual_ip;
 use crate::network::transport::{ensure_link, upsert_peer};
-use crate::protocol::{
-    UdpPacket, ANNOUNCE_INTERVAL_SECS, RELAY_PEER_TIMEOUT_SECS, UDP_PORT,
-};
+use crate::protocol::{UdpPacket, ANNOUNCE_INTERVAL_SECS, RELAY_PEER_TIMEOUT_SECS, UDP_PORT};
 use crate::state::AppState;
 
 /// 组播地址（与广播并行，覆盖被隔离广播域的场景）
@@ -121,7 +119,7 @@ fn find_lan_interface() -> Option<(Ipv4Addr, Ipv4Addr)> {
             let non_virtual = !is_virtual_interface_name(&i.name);
             let better = best.as_ref().map_or(true, |(_, _, s, nv, name)| {
                 score > *s
-                    || (score == *s && non_virtual > *nv)
+                    || (score == *s && non_virtual & !*nv)
                     || (score == *s && non_virtual == *nv && i.name < *name)
             });
             if better {
@@ -203,7 +201,8 @@ fn bind_udp_reusable(ip: Ipv4Addr, port: u16) -> Result<UdpSocket, String> {
     // 缺了它，同一台机器的第二个实例 network::start 会报 "Address already in use"，
     // 单机多实例互发现直接失效。
     #[cfg(unix)]
-    sock.set_reuse_port(true).map_err(|e| format!("SO_REUSEPORT: {e}"))?;
+    sock.set_reuse_port(true)
+        .map_err(|e| format!("SO_REUSEPORT: {e}"))?;
     sock.set_broadcast(true)
         .map_err(|e| format!("SO_BROADCAST: {e}"))?;
     // 设置组播出口接口：必须与 bind IP 一致，失败直接报错。
@@ -295,7 +294,11 @@ fn announce_packet(state: &AppState, tcp_port: u16) -> UdpPacket {
     UdpPacket {
         kind: "announce".to_string(),
         device_id: state.device_id.clone(),
-        nickname: state.nickname.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+        nickname: state
+            .nickname
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone(),
         tcp_port,
         x25519_pubkey: Some(x),
         ed25519_pubkey: Some(e),
@@ -330,16 +333,14 @@ pub async fn spawn(
     // 只读一个就会漏包。
     let send_socket = bind_udp_reusable(udp_bind_ip, UDP_PORT)
         .map_err(|e| format!("UDP discovery bind failed: {e}"))?;
-    let recv_socket = bind_udp_recv(UDP_PORT)
-        .map_err(|e| format!("UDP discovery recv bind failed: {e}"))?;
+    let recv_socket =
+        bind_udp_recv(UDP_PORT).map_err(|e| format!("UDP discovery recv bind failed: {e}"))?;
     // 加入组播组：必须与 bind IP 使用同一接口；失败直接让启动失败。
     // 发送侧那个 socket 也要加（Linux 上它一直是真正收组播的那个，别退化）。
     for sock in [&send_socket, &recv_socket] {
         sock.join_multicast_v4(MULTICAST_GROUP, multicast_iface)
             .map_err(|e| {
-                format!(
-                    "join multicast {MULTICAST_GROUP} on {multicast_iface} failed: {e}"
-                )
+                format!("join multicast {MULTICAST_GROUP} on {multicast_iface} failed: {e}")
             })?;
     }
     let send_socket = Arc::new(send_socket);
@@ -415,7 +416,6 @@ pub async fn spawn(
     let broadcast_task = {
         let socket = send_socket.clone();
         let state = state.clone();
-        let lan_broadcast = lan_broadcast;
         let mut shutdown = shutdown.clone();
         tokio::spawn(async move {
             // 首次立刻广播
@@ -615,11 +615,9 @@ async fn broadcast(
     // 而我们已经有一条能用的广播路径了。每 5 秒两条 WARN 会把真正有用的信息淹掉。
     // 只有在**三条路全失败**时才留痕：那才是"本机在局域网上发不出声"的真信号。
     if !directed_ok {
-        let (kind, detail) =
-            diag_event_from_send_result(&bcast_target, "bc_limited", &bcast_res);
+        let (kind, detail) = diag_event_from_send_result(&bcast_target, "bc_limited", &bcast_res);
         state.push_diag_event(kind, &detail);
-        let (kind, detail) =
-            diag_event_from_send_result(&mcast_target, "bc_multicast", &mcast_res);
+        let (kind, detail) = diag_event_from_send_result(&mcast_target, "bc_multicast", &mcast_res);
         state.push_diag_event(kind, &detail);
     }
 }
@@ -698,7 +696,10 @@ fn sweep_peers(state: &AppState) {
         let before: Vec<String> = peers.keys().cloned().collect();
         peers.retain(|id, p| should_keep_peer(p.last_seen, now, active_links.contains(id)));
         let after: std::collections::HashSet<&String> = peers.keys().collect();
-        before.into_iter().filter(|id| !after.contains(id)).collect()
+        before
+            .into_iter()
+            .filter(|id| !after.contains(id))
+            .collect()
     };
     // 被清扫掉的节点：连带清掉它的链路快照（`conv_link` 是"当前可达路径"，
     // 节点已不在 peers 表 ⇒ 该路径失效）。否则聊天头部的链路徽标会在节点早已被清扫后
@@ -954,6 +955,43 @@ mod tests {
         assert!(lan_bc.is_none());
     }
 
+    /// 探测「本机能不能完成一次 `255.255.255.255` 的本机广播收发」。
+    ///
+    /// ⚠️ 收端**硬编码绑 `0.0.0.0`**，而不是 `discovery_recv_bind_ip()` —— 这是刻意的：
+    /// 探测必须与「被测代码的绑定选择」**解耦**，否则它区分不了"环境不支持广播"与
+    /// "我们把绑定写错了"。拿 `0.0.0.0` 这个**已知正确**的绑定去问环境，答案才可信；
+    /// 于是它失败只可能是环境问题，绝不会掩盖真正的回归。
+    fn loopback_broadcast_works(lan_ip: Ipv4Addr) -> bool {
+        use std::net::UdpSocket as StdUdpSocket;
+
+        let Ok(recv) = StdUdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)) else {
+            return false;
+        };
+        let Ok(port) = recv.local_addr().map(|a| a.port()) else {
+            return false;
+        };
+        if recv
+            .set_read_timeout(Some(std::time::Duration::from_millis(1500)))
+            .is_err()
+        {
+            return false;
+        }
+        let Ok(send) = StdUdpSocket::bind((lan_ip, 0)) else {
+            return false;
+        };
+        if send.set_broadcast(true).is_err() {
+            return false;
+        }
+        if send
+            .send_to(b"gosslan-discovery-probe", (Ipv4Addr::BROADCAST, port))
+            .is_err()
+        {
+            return false;
+        }
+        let mut buf = [0u8; 64];
+        matches!(recv.recv_from(&mut buf), Ok((n, _)) if &buf[..n] == b"gosslan-discovery-probe")
+    }
+
     /// **真机根因的回归护栏**：接收 socket 必须真的收得到 `255.255.255.255` 广播。
     ///
     /// 2026-09-12 用户真机：「Mac 和手机同一个 Wi‑Fi、都开了局域网，却互相搜不到；
@@ -965,7 +1003,11 @@ mod tests {
     /// 发送方绑本机 LAN IP 并往 `255.255.255.255` 发。把接收绑定改回具体 IP，
     /// 它在 macOS 上会立刻红 —— 也就是这次事故会当场被拦下。
     ///
-    /// 没有可用 LAN 接口时（纯 CI/容器）直接跳过：这种环境里本来也测不了广播。
+    /// 两类环境下跳过（都测不了，不该误报）：① 没有可用 LAN 接口（纯容器）；
+    /// ② **有接口但本机收不到自己的广播** —— GitHub 的 macOS runner 就是这种
+    /// （2026-09-16 本项目第一次在 CI 跑测试，502 通过 / 1 失败、红的正是这条）。
+    /// 跳过条件由 [`loopback_broadcast_works`] 用证据判定，而不是看 `CI` 环境变量 ——
+    /// 后者会把"碰巧跑在 CI 上的真机"也一起漏掉。
     #[test]
     fn discovery_recv_socket_actually_receives_broadcast() {
         use std::net::UdpSocket as StdUdpSocket;
@@ -973,8 +1015,17 @@ mod tests {
         let Some((lan_ip, _)) = find_lan_interface() else {
             return;
         };
-        let recv = StdUdpSocket::bind((discovery_recv_bind_ip(), 0))
-            .expect("绑定接收 socket 失败");
+
+        if !loopback_broadcast_works(lan_ip) {
+            eprintln!(
+                "跳过 discovery_recv_socket_actually_receives_broadcast：\
+                 本环境有 LAN 接口但收不到本机 255.255.255.255 广播（CI 容器常见），\
+                 无法验证接收绑定。这条护栏的有效场景是真机与本地开发。"
+            );
+            return;
+        }
+
+        let recv = StdUdpSocket::bind((discovery_recv_bind_ip(), 0)).expect("绑定接收 socket 失败");
         let port = recv.local_addr().expect("取接收端口失败").port();
         recv.set_read_timeout(Some(std::time::Duration::from_millis(1500)))
             .expect("设置读超时失败");
@@ -1017,11 +1068,7 @@ mod tests {
         // vgate0 + 真实 LAN：真实 LAN 必须胜出
         let mixed = vec![
             ("10.20.30.40".parse().unwrap(), "vgate0".to_string(), true),
-            (
-                "192.168.1.100".parse().unwrap(),
-                "以太网".to_string(),
-                true,
-            ),
+            ("192.168.1.100".parse().unwrap(), "以太网".to_string(), true),
         ];
         let best = pick_best_for_test(&mixed).unwrap();
         assert_eq!(best.0, "192.168.1.100".parse::<Ipv4Addr>().unwrap());
@@ -1068,7 +1115,8 @@ mod tests {
         assert!(err_detail.contains("error=mock fail"), "{err_detail}");
 
         // 组播事件同理，只是 kind 不同
-        let (m_ok_kind, _) = diag_event_from_send_result("239.255.42.99:59991", "multicast_sent", &ok);
+        let (m_ok_kind, _) =
+            diag_event_from_send_result("239.255.42.99:59991", "multicast_sent", &ok);
         assert_eq!(m_ok_kind, "multicast_sent");
     }
 

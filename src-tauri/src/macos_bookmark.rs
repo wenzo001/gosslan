@@ -30,7 +30,7 @@
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use objc2::runtime::Bool;
 use objc2_foundation::{
-    NSData, NSString, NSURL, NSURLBookmarkCreationOptions, NSURLBookmarkResolutionOptions,
+    NSData, NSString, NSURLBookmarkCreationOptions, NSURLBookmarkResolutionOptions, NSURL,
 };
 
 /// 解析结果。
@@ -64,7 +64,12 @@ fn create_with(url: &NSURL, scoped: bool) -> Result<String, String> {
         options, None, None,
     )
     .map(|data| STANDARD.encode(data.to_vec()))
-    .map_err(|e| format!("创建{}书签失败：{e}", if scoped { "安全作用域" } else { "普通" }))
+    .map_err(|e| {
+        format!(
+            "创建{}书签失败：{e}",
+            if scoped { "安全作用域" } else { "普通" }
+        )
+    })
 }
 
 /// 解析书签（**解析即开始访问**，见模块头注释）。
@@ -172,7 +177,10 @@ mod tests {
     /// 坏输入必须是干净的 `Err`，**绝不能 panic**（它是从数据库读出来的、可能被外部改坏）。
     #[test]
     fn garbage_bookmark_is_an_error_not_a_panic() {
-        assert!(resolve("这显然不是 base64!!").is_err(), "非法 base64 应报错");
+        assert!(
+            resolve("这显然不是 base64!!").is_err(),
+            "非法 base64 应报错"
+        );
         // 合法 base64 但内容不是书签
         assert!(
             resolve(&b64(b"just some random bytes, not a bookmark")).is_err(),

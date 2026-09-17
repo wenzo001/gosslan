@@ -327,7 +327,12 @@ mod tests {
         let mut id2 = PeerIdentity::default();
         id2.x25519_public_key = Some("x1-different".into());
         id2.ed25519_public_key = Some("e2".into());
-        m.merge(PeerCandidate::new("ABC123", id2, routed(), PathKind::Routed));
+        m.merge(PeerCandidate::new(
+            "ABC123",
+            id2,
+            routed(),
+            PathKind::Routed,
+        ));
 
         let peer = m.get("ABC123").unwrap();
         assert_eq!(peer.identity.x25519_public_key.as_deref(), Some("x1"));
@@ -348,13 +353,23 @@ mod tests {
         id.ed25519_public_key = Some("e1".into());
         m.merge(PeerCandidate::new("ABC123", id, lan(), PathKind::Lan));
 
-        assert_eq!(m.get("ABC123").unwrap().connections().len(), 1, "前置：已有一条连接");
+        assert_eq!(
+            m.get("ABC123").unwrap().connections().len(),
+            1,
+            "前置：已有一条连接"
+        );
 
         m.forget_identity("ABC123");
 
         let peer = m.get("ABC123").expect("peer 本身不该被删掉");
-        assert!(peer.identity.x25519_public_key.is_none(), "x25519 绑定必须清掉");
-        assert!(peer.identity.ed25519_public_key.is_none(), "ed25519 绑定必须清掉");
+        assert!(
+            peer.identity.x25519_public_key.is_none(),
+            "x25519 绑定必须清掉"
+        );
+        assert!(
+            peer.identity.ed25519_public_key.is_none(),
+            "ed25519 绑定必须清掉"
+        );
         assert_eq!(
             m.get("ABC123").unwrap().connections().len(),
             1,
@@ -364,7 +379,14 @@ mod tests {
         let mut id2 = PeerIdentity::default();
         id2.ed25519_public_key = Some("e2".into());
         m.merge(PeerCandidate::new("ABC123", id2, lan(), PathKind::Lan));
-        assert_eq!(m.get("ABC123").unwrap().identity.ed25519_public_key.as_deref(), Some("e2"));
+        assert_eq!(
+            m.get("ABC123")
+                .unwrap()
+                .identity
+                .ed25519_public_key
+                .as_deref(),
+            Some("e2")
+        );
         // 未知 device_id 不 panic
         m.forget_identity("NEVER-SEEN");
     }
@@ -382,7 +404,12 @@ mod tests {
         let timeout = 15_000i64;
         let max_failures = 3u32;
         let mut m = PeerManager::new(timeout, max_failures);
-        m.merge(PeerCandidate::new("ABC123", PeerIdentity::default(), lan(), PathKind::Lan));
+        m.merge(PeerCandidate::new(
+            "ABC123",
+            PeerIdentity::default(),
+            lan(),
+            PathKind::Lan,
+        ));
 
         // 建链播种读活性（register_connection 的行为）→ t=0 时健康，不进候选
         m.seed_connection_read_seen("ABC123", &lan(), 0);
@@ -407,7 +434,8 @@ mod tests {
         while reads <= 120_000 {
             m.mark_connection_seen("ABC123", &lan(), reads, None, true);
             assert!(
-                m.stale_connections(reads, timeout * 3, max_failures).is_empty(),
+                m.stale_connections(reads, timeout * 3, max_failures)
+                    .is_empty(),
                 "持续有入站帧的链路永远不该被拆"
             );
             reads += 5_000;

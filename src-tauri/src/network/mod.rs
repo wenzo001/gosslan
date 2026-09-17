@@ -6,10 +6,10 @@
 //!   “分帧写入/读取 + 建立连接”两个原语，`try_send` 与消息分发逻辑无需改动，
 //!   即可支撑“服务端中转连接电脑与移动端”的场景。
 
-pub mod discovery;
 /// BLE 传输的运行时接线（feature = "bluetooth"；默认关闭，见 ADR-0015）。
 #[cfg(feature = "bluetooth")]
 pub mod ble;
+pub mod discovery;
 pub mod file;
 pub mod transport;
 
@@ -62,7 +62,12 @@ pub async fn start(state: Arc<AppState>, bind_ip: String) -> Result<(), String> 
     .await?;
 
     // Discovery 实际绑定的是真实 LAN IP（auto 模式下），需要让诊断面板展示它。
-    let actual_bound_ip = state.diag.lock().unwrap_or_else(|e| e.into_inner()).bound_ip.clone();
+    let actual_bound_ip = state
+        .diag
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .bound_ip
+        .clone();
     *state.probe.lock().unwrap_or_else(|e| e.into_inner()) = Some(probe_tx);
     // 进入新世代：此后旧世代（上一次 start 的 accept 任务）不得再登记链路。
     state.bump_network_generation();
@@ -83,7 +88,11 @@ pub async fn stop(state: &AppState) {
     state.bump_network_generation();
     // 先取出句柄再 await：`std::sync::MutexGuard` 不能跨 await，否则 stop() 的
     // future 不是 Send，无法放进 `tauri::async_runtime::spawn`。
-    let handle = state.network.lock().unwrap_or_else(|e| e.into_inner()).take();
+    let handle = state
+        .network
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take();
     if let Some(handle) = handle {
         let _ = handle.shutdown.send(true);
         // 必须等：旧的 TCP listener 只有 accept 任务退出后才真正释放。
@@ -93,13 +102,18 @@ pub async fn stop(state: &AppState) {
     }
     *state.probe.lock().unwrap_or_else(|e| e.into_inner()) = None;
     state.links.lock().await.clear();
-    state.peers.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    state
+        .peers
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
     state.emit_peers();
 }
 
 /// 子系统的启动 future（`transport::spawn` / `discovery::spawn`）。
-type SpawnFut =
-    std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<tokio::task::JoinHandle<()>>, String>> + Send>>;
+type SpawnFut = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<Vec<tokio::task::JoinHandle<()>>, String>> + Send>,
+>;
 
 /// 启动编排：**只有 TCP 监听成功，才启动 UDP 发现**。
 ///
@@ -145,7 +159,10 @@ async fn await_tasks(tasks: Vec<tokio::task::JoinHandle<()>>) {
             let _ = t.await;
         }
     };
-    if tokio::time::timeout(STOP_TASK_TIMEOUT, joined).await.is_err() {
+    if tokio::time::timeout(STOP_TASK_TIMEOUT, joined)
+        .await
+        .is_err()
+    {
         eprintln!(
             "[lan] 等待网络后台任务退出超时（{}s），强制继续",
             STOP_TASK_TIMEOUT.as_secs()
@@ -169,7 +186,10 @@ pub async fn start_from_prefs(state: Arc<AppState>) -> Result<(), String> {
     match start(state.clone(), bind_ip.clone()).await {
         Ok(()) => Ok(()),
         Err(e) if bind_ip != AUTO_BIND_IP => {
-            state.logger.warn("lan", format!("绑定 {bind_ip} 失败（{e}），回落到自动选择网卡"));
+            state.logger.warn(
+                "lan",
+                format!("绑定 {bind_ip} 失败（{e}），回落到自动选择网卡"),
+            );
             start(state, AUTO_BIND_IP.to_string()).await
         }
         Err(e) => Err(e),
@@ -194,8 +214,9 @@ mod tests {
         let discovery_polled = StdArc::new(AtomicBool::new(false));
         let flag = discovery_polled.clone();
 
-        let transport: SpawnFut =
-            Box::pin(async { Err("TCP 绑定 0.0.0.0:59992 失败：端口被占用".to_string()) });
+        let transport: SpawnFut = Box::pin(async {
+            Err("TCP 绑定 0.0.0.0:59992 失败：端口被占用".to_string())
+        });
         let discovery: SpawnFut = Box::pin(async move {
             flag.store(true, Ordering::SeqCst);
             Ok(vec![])

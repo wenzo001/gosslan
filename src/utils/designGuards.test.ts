@@ -419,12 +419,42 @@ test("删掉 outline-none（改用全局焦点环）就通过", () => {
   assert.deepEqual(findOutlineNoneWithoutFocusRing(ok), []);
 });
 
-test("focus-ring-ok 逃生阀：菜单/对话框容器整文件跳过", () => {
-  const withEscape = `<!-- focus-ring-ok -->
+test("文件级逃生阀（`focus-ring-ok:file`）：菜单/对话框容器整文件跳过", () => {
+  const withEscape = `<!-- focus-ring-ok:file -->
 <template>
   <div role="menu" tabindex="-1" class="frost outline-none">…</div>
 </template>`;
   assert.deepEqual(findOutlineNoneWithoutFocusRing(withEscape), []);
+});
+
+// ---------------- 元素级逃生阀（2026-09-16） ----------------
+//
+// 真实教训：`MessageComposer.vue` 因为「消息输入框不画焦点环」这**一个元素**的需求，
+// 用了**文件级**逃生阀 ⇒ 整个文件（含其中的按钮等键盘可聚焦元素）一起失去本条保护；
+// 更糟的是 `scripts/verify-guards.py` 里注入该文件的非空转用例退化成**空转**
+// （改坏也不报），而项目里没有任何东西自动跑 verify-guards，所以一直没人发现。
+// ⇒ 粒度必须能到元素，且元素级的豁免**绝不能**外溢到同文件的其它元素。
+
+test("元素级逃生阀（`data-focus-ring-ok`）：豁免它自己那一个元素", () => {
+  const src = `<template>
+  <div data-focus-ring-ok class="frost outline-none">输入区</div>
+</template>`;
+  assert.deepEqual(findOutlineNoneWithoutFocusRing(src), []);
+});
+
+test("⚠️ 元素级逃生阀不得豁免同文件里的其它元素（粒度错的回归）", () => {
+  // 这条同时钉住两个坑：
+  //  ① 豁免不能外溢 —— 旁边的按钮没有被标记，必须照旧报出来；
+  //  ② 令牌互不为子串 —— `data-focus-ring-ok` **含有** `focus-ring-ok` 子串，
+  //     所以文件级判据不能还写成 `src.includes("focus-ring-ok")`，
+  //     否则"只豁免一个元素"会被当成"整文件豁免"，这条断言会直接失败。
+  const src = `<template>
+  <div data-focus-ring-ok class="frost outline-none">输入区</div>
+  <button class="h-8 w-8 outline-none"><X /></button>
+</template>`;
+  const issues = findOutlineNoneWithoutFocusRing(src);
+  assert.equal(issues.length, 1, "被标记的那个元素豁免了，但旁边未标记的按钮必须报出来");
+  assert.match(issues[0].message, /静默覆盖/);
 });
 
 test("注释里提到 outline-none 不算（只看真实 class 属性）", () => {

@@ -135,13 +135,12 @@ fn send_event(ev: PeripheralEvent) {
 }
 
 /// 在 JVM 上执行一段 JNI 调用（自动 attach/detach 当前线程）。
-fn with_env<T>(
-    f: impl FnOnce(&mut Env) -> jni::errors::Result<T>,
-) -> Result<T, String> {
+fn with_env<T>(f: impl FnOnce(&mut Env) -> jni::errors::Result<T>) -> Result<T, String> {
     let vm = JAVA_VM.get().ok_or_else(|| {
         "Android BLE 外设尚未初始化（MainActivity 未调用 BlePeripheral.bootstrap）".to_string()
     })?;
-    vm.attach_current_thread(f).map_err(|e| format!("JNI 调用失败：{e}"))
+    vm.attach_current_thread(f)
+        .map_err(|e| format!("JNI 调用失败：{e}"))
 }
 
 /// btleplug 的 Android 后端是否已成功初始化。
@@ -182,8 +181,10 @@ fn call_static_bool(name: &str, args: &[JValue]) -> Result<bool, String> {
 /// 启动外设角色（同步，不阻塞）。失败原因会说明"是权限、还是没 bootstrap"。
 pub fn start() -> Result<PeripheralStart, String> {
     if KOTLIN_CLASS.get().is_none() {
-        return Err("Android BLE 外设尚未初始化（MainActivity 应先调用 BlePeripheral.bootstrap）"
-            .to_string());
+        return Err(
+            "Android BLE 外设尚未初始化（MainActivity 应先调用 BlePeripheral.bootstrap）"
+                .to_string(),
+        );
     }
     let (tx, rx) = mpsc::unbounded_channel();
     *EVENTS.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
@@ -212,11 +213,21 @@ pub fn start() -> Result<PeripheralStart, String> {
 }
 
 impl PeripheralWriter {
-    /// 该对端一次通知能收多少字节（未知 ⇒ 20，与 macOS 侧同口径）。
+    /// 该对端一次通知能收多少字节（未知 ⇒ 默认载荷预算 20）。
+    ///
+    /// 换算交给 [`ble_framing::notify_payload_budget`] —— **三个外设平台（macOS / Windows /
+    /// Android）共用同一份**。此处只负责把 Kotlin 返回的 `i32` 安全地转成 `usize`。
+    ///
+    /// ⚠️ 2026-09-16 修正：本函数此前**自己算一遍**（`if (1..=512).contains(&v) { v } else { 20 }`，
+    /// 并硬编码 `512` / `20`），注释还写着「与 macOS 侧同口径」—— 那句话不成立，而且它
+    /// 的有效性判据 `1..=512` 是**错的**：`payloadMtu = 3` 会被原样接受 ⇒
+    /// `fragment(payload, 3, _)` 因「装不下 6 字节分片头」直接返回 `None` ⇒
+    /// **整条链路什么都发不出去**，而日志只说"帧无法分片"。规范函数要求 ≥ 分片头+1（7），
+    /// 否则退回默认 20 —— 所以这条路是「返回过小值让 `fragment` 拒绝一切」的活样本。
+    /// 由 `scripts/check-ble-constants.mjs` 守门。
     pub fn payload_mtu(&self, central: &str) -> usize {
-        call_static_int("payloadMtu", central)
-            .map(|v| if (1..=512).contains(&v) { v as usize } else { 20 })
-            .unwrap_or(20)
+        let raw = call_static_int("payloadMtu", central).unwrap_or(0);
+        ble_framing::notify_payload_budget(usize::try_from(raw).unwrap_or(0))
     }
 
     /// 对端是否还连着。
@@ -227,8 +238,12 @@ impl PeripheralWriter {
     /// 发一条完整帧：按 MTU 分片，逐片调 Kotlin 的 `send`；对端还没订阅就等一等再试。
     pub async fn send_frame(&self, central: &str, payload: &[u8]) -> Result<usize, String> {
         let mtu = self.payload_mtu(central);
-        let chunks = ble_framing::fragment(payload, mtu, next_msg_id())
-            .ok_or_else(|| format!("帧无法分片（过大或 MTU 非法：len={} mtu={mtu}）", payload.len()))?;
+        let chunks = ble_framing::fragment(payload, mtu, next_msg_id()).ok_or_else(|| {
+            format!(
+                "帧无法分片（过大或 MTU 非法：len={} mtu={mtu}）",
+                payload.len()
+            )
+        })?;
         let deadline = tokio::time::Instant::now() + WRITE_DEADLINE;
         let total = chunks.len();
         for (idx, chunk) in chunks.iter().enumerate() {

@@ -212,6 +212,29 @@ export function changelogProblems(path = "CHANGELOG.md") {
 
 function main() {
   const [cmd = "check", ...flags] = process.argv.slice(2);
+
+  // `changelog`：**只**查 `CHANGELOG.md` 的结构（唯一行首锚点 / 标题格式 / 新在前降序），
+  // 不碰版本记账。
+  //
+  // ## 为什么必须能单独跑
+  //
+  // 这条检查原先只作为 `check` 的 ③ 存在，而 `check` 的 ① ②（当前版本必须 ≥ 未发布提交
+  // 要求的版本、每个提交都要有自洽的 `Version-Bump:` 声明）在**攒提交期间本来就该是红的** ——
+  // 发版前就是那个状态。于是「CHANGELOG 结构」被迫跟着一起红。
+  //
+  // 真实后果：`scripts/verify-guards.py` 的「CHANGELOG 结构」用例拿 `check` 当命令，
+  // 于是它永远无法进入"恢复即 PASS"，被判成护栏失效（2026-09-16 发现）。
+  // **结构是结构、记账是记账** —— 拆成两个命令，各自说各自的话，不互相拖累。
+  if (cmd === "changelog") {
+    const problems = changelogProblems();
+    if (problems.length) {
+      console.error(`CHANGELOG 结构检查未通过：\n- ${problems.join("\n- ")}`);
+      process.exit(1);
+    }
+    console.log("CHANGELOG 结构检查通过（唯一行首 `## [Unreleased]` 锚点 + 标题格式 + 新在前降序）");
+    return;
+  }
+
   const sinceFlag = flags.indexOf("--since");
   const since = sinceFlag >= 0 ? flags[sinceFlag + 1] : lastVersionBump();
   const cur = currentVersion();

@@ -560,6 +560,86 @@ friends / peers 中已绑定该 device_id 的 Ed25519 公钥？
 
 ---
 
+## 22. Invariant Exceptions
+
+### INV-P22 — Exceptions Must Be Registered
+
+上面 21 节的不变量默认是**无条件**的。若某条代码路径**必须**偏离它，必须**同时**做两件事：
+
+```text
+① 在代码处留标记：  // INV-EXCEPTION: INV-PXX — <为什么必须破例>
+② 在本节登记：      不变量 id + 理由 + 引入出处
+```
+
+两件事缺一不可，由 `scripts/check-invariant-exceptions.mjs` **双向**校验：
+代码标了而本节没登记 ⇒ FAIL；本节登记了而代码没标 ⇒ FAIL。
+
+### 为什么必须有这一节（2026-09-16）
+
+「和自己聊天」（提交 `7c03341`）是一处正当的例外：收发双方都是本机，所以它不进 outbox、
+不广播、不做 E2EE。**这些决定都是对的，理由也写得很清楚** —— 落在三个地方：
+
+| 落点 | 性质 |
+|---|---|
+| `src-tauri/src/commands.rs` 里 `insert_self_message` 的文档注释 | 局部注释 |
+| `scripts/verify-guards.py` 的「自聊消息必须留在本地」用例 | 护栏 |
+| `src/utils/selfChat.ts` 的文件头 | 局部注释 |
+
+而 AI 的必读清单（`docs/AI_ENGINEERING_INDEX.md`）只指向**本文件**与 `AI_RULES.md` ——
+**这两份都没提这个例外**。于是产生一条非常具体的误修路径：
+
+```text
+AI 读到 INV-P04「发送可靠消息 → insert message + insert outbox」
+        ↓
+看到 insert_self_message 只调了 insert_message、没有 outbox
+        ↓
+按文档判定这是 bug，并按文档「修」它
+        ↓
+自聊消息进入 outbox ⇒ 永远等不到对端 Ack ⇒ flush_outbox 每次心跳都重发
+        ↓
+「outbox 必然排空」被真的破掉 —— 而这次回归是「照文档修」造成的
+```
+
+**结论：局部注释不能替代规范文档。** 同一条知识，写在实现旁边对读实现的人有用、
+对读不变量的人没用；而 AI 读的是不变量。
+
+同理，**例外不是"不变量可以随便破"的借口**：每条例外都必须能回答「为什么没有别的做法」。
+本节只登记**确实偏离了**的不变量 —— 例如自聊不广播、不做 E2EE 就**不是**例外，
+因为 INV-P07 只要求 TTL/去重/扇出有界、INV-P10 只管"解密失败不得静默退明文"，
+两者都没被违反，硬登记进来反而是把例外机制用坏。
+
+<!-- BEGIN EXCEPTION REGISTRY -->
+
+| 不变量 | 例外 | 理由 | 引入 |
+|---|---|---|---|
+| INV-P03 | 自聊不经过 `queued → sending → waiting_ack → delivered`，落库即终态 `read` | 本机既是发送方也是接收方，不存在"在途"阶段，没有可等待的 ACK | `7c03341`（2026-09-16） |
+| INV-P04 | `insert_self_message` 走 `db::insert_message`，**不**写 outbox | outbox 的唯一出队条件是收到对端 Ack。自聊没有收件人、永远等不到 Ack ⇒ 那一行永远留在库里，被每次心跳/建链的 `flush_outbox` 反复重发，反而把「outbox 必然排空」破掉 | `7c03341`（2026-09-16） |
+
+<!-- END EXCEPTION REGISTRY -->
+
+### 自聊的完整边界（一处理由，多处套用）
+
+```text
+msg_id     前缀 self-（日志/排障时一眼与网络消息的哈希 id 区分）
+conv_id    = sender_id = receiver_id = 本机 device_id
+status     落库即 read（见上表 INV-P03 例外）
+outbox     不写（见上表 INV-P04 例外）
+gossip     不发（非例外：INV-P07 不要求广播；且 sender == 自己 会在 handle_gossip 早退）
+E2EE       不做（非例外：INV-P10 管的是"解密失败不得退明文"；自聊没有密文）
+内容类型   仅 text / code（用户 2026-09-16 明确「先只支持文本」）
+unread_inc 0（自己发的不该让自己有未读）
+```
+
+禁止：
+
+```text
+新增一条偏离不变量的代码路径而不登记例外
+用「这是特例」代替理由 —— 每条例外都要能说出为什么没有别的做法
+把没被违反的不变量也登记进来充数（会让例外机制失去意义）
+```
+
+---
+
 # 22. Invariant Change Procedure
 
 如果一个新需求必须违反现有 invariant：
@@ -580,7 +660,75 @@ AI 不得直接修改。
 
 ---
 
-# 23. Required Test Matrix
+## 23. BLE Fragmentation Budget
+
+### INV-P23 — One Budget, One Place
+
+BLE 上「一片能装多少字节」这件事，三个平台有三种输入：
+
+```text
+central 侧       btleplug 协商出的 ATT MTU          → 要减 ATT 头（3）
+外设侧 macOS     CoreBluetooth maximumUpdateValueLength
+外设侧 Windows   WinRT MaxNotificationSize          → 本身已是载荷，不减
+外设侧 Android   等价协商结果
+```
+
+**输入语义可以不同，但常量与换算必须只有一份**：唯一定义点在
+`transport/ble_framing.rs`，由 `scripts/check-ble-constants.mjs` 守门（判据 A：六个规范名字
+各有且仅有一处定义；判据 B：BLE 领域内不许用匿名常量重述受保护字面量）。
+
+约束：
+
+```text
+每片载荷 = min(该链路的载荷预算, GATT_MAX_ATTR_LEN = 512)
+    central 侧：  载荷预算 = 协商 MTU − ATT_HEADER_LEN(3)
+    peripheral 侧：载荷预算 = 对端声明的通知长度（**不再减** ATT 头）
+非法/过小输入（装不下 6 字节分片头）→ 退回 DEFAULT_PAYLOAD_BUDGET(20)，**绝不返回 0**
+
+单条消息         ≤ MAX_BLE_MESSAGE_BYTES (512 KiB)
+单条消息的分片数 ≤ MAX_BLE_CHUNKS_PER_MESSAGE (8192)
+同时进行的未完成消息 ≤ MAX_INFLIGHT_MESSAGES (8)
+未完成消息 TTL    = PARTIAL_TTL_MS (30s)
+```
+
+**两侧必须能互相推回去**（`both_sides_agree_on_the_same_link_budget`）：
+
+```text
+协商 MTU m --att_payload_budget--> 载荷 b --告知对端--> notify_payload_budget(b) == b
+```
+
+末尾那个 `== b` 成立**正是因为外设侧不再减 ATT 头**。若有人给外设侧也减一次，
+这条立刻红 —— 而真机症状只是「某台设备收不到消息」，没有这条测试极难定位。
+
+### 为什么单列成一条不变量
+
+CHANGELOG `4.18.7 → 4.18.10` **连着四个版本**修同一个分片预算问题：
+
+| 版本 | 标题 |
+|---|---|
+| 4.18.7 | 分片预算没减 ATT 头 ⇒ 多分片帧写不出去（好友申请永远发不出） |
+| 4.18.8 | 写入失败日志补上帧长（**上一版修复生效但不够**） |
+| 4.18.9 | 每片 514 字节 > AOSP 硬上限 512 ⇒ 多分片帧永远发不出去 |
+| 4.18.10 | 外设启动失败的原因被丢掉 |
+
+根因不是某一行写错，而是**同一个概念在多个地方各算一遍**，且**数值恰好一致所以不报错**。
+2026-09-16 收敛之前，macOS 外设侧自己留着 `const DEFAULT = 20` / `const MAX = 512`
+（匿名、靠注释解释语义），Windows 侧走共享函数 —— 于是 `transport/bluetooth.rs` 里那句
+「**外设侧用的是同一个函数**」只对 Windows 成立。
+
+禁止：
+
+```text
+在 ble_framing.rs 之外重新定义 GATT_MAX_ATTR_LEN / ATT_HEADER_LEN /
+    BLE_DEFAULT_MTU / DEFAULT_PAYLOAD_BUDGET
+在 ble_framing.rs 之外重新实现 att_payload_budget / notify_payload_budget
+给外设侧再减一次 ATT 头（会与 central 侧推出两个不同的数）
+让任一换算返回 0
+```
+
+---
+
+# 24. Required Test Matrix
 
 核心消息功能至少覆盖：
 
@@ -603,3 +751,4 @@ AI 不得直接修改。
 | File chunk order | Chunk N before Done |
 | Group clear boundary | seq <= boundary blocked |
 | Clock skew | Ordering/read state unaffected |
+| BLE chunk budget（两侧） | `peripheral` 与 `central` 推出同一个数（INV-P23） |

@@ -29,7 +29,8 @@ const IMAGE_MAX_BYTES = 15 * 1024 * 1024;
 const cache = new Map<string, PreviewResult>();
 const inflight = new Map<string, Promise<PreviewResult>>();
 
-function imageMime(name: string): string {
+/** 扩展名 → MIME。导出给收藏预览复用：两处各写一份的话，新增支持一种图片格式时必然漏一处。 */
+export function imageMime(name: string): string {
   const ext = (name.split(".").pop() || "").toLowerCase();
   switch (ext) {
     case "png":

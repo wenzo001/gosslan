@@ -103,10 +103,12 @@ fn build_tray<R: tauri::Runtime>(
                 let app = app.clone();
                 tauri::async_runtime::spawn(async move {
                     let state = app.state::<std::sync::Arc<crate::state::AppState>>();
-                    let stopped =
-                        tokio::time::timeout(std::time::Duration::from_millis(800), crate::network::stop(&state))
-                            .await
-                            .is_ok();
+                    let stopped = tokio::time::timeout(
+                        std::time::Duration::from_millis(800),
+                        crate::network::stop(&state),
+                    )
+                    .await
+                    .is_ok();
                     state
                         .logger
                         .info("app", format!("网络已停止（{stopped}），正在退出"));

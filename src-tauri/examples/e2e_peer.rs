@@ -427,32 +427,26 @@ async fn main() {
     };
     let identity = Identity::generate();
 
-    if let Err(e) = send_frame(
-        &mut w,
-        &{
-            // Hello 必须带 Ed25519 签名：实例侧在建立链路前会验证
-            // 「该 TCP 对端确实持有 PEER_ID 绑定的私钥」，否则拒绝连接。
-            let (xk, ek) = (
-                identity.x25519_public_b64(),
-                identity.ed25519_public_b64(),
-            );
-            let nonce = STANDARD.encode(crypto::random_key());
-            let sig = identity.sign_b64(&hello_signing_bytes(PEER_ID, 0, &nonce, &xk, &ek));
-            Message::Hello {
-                device_id: PEER_ID.into(),
-                nickname: "E2E-Peer".into(),
-                avatar: None,
-                device_type: "desktop".into(),
-                content_features: gosslan_lib::protocol::content_features(),
-                tcp_port: 0,
-                x25519_pubkey: xk,
-                ed25519_pubkey: ek,
-                conv_clock: 0,
-                nonce,
-                sig,
-            }
-        },
-    )
+    if let Err(e) = send_frame(&mut w, &{
+        // Hello 必须带 Ed25519 签名：实例侧在建立链路前会验证
+        // 「该 TCP 对端确实持有 PEER_ID 绑定的私钥」，否则拒绝连接。
+        let (xk, ek) = (identity.x25519_public_b64(), identity.ed25519_public_b64());
+        let nonce = STANDARD.encode(crypto::random_key());
+        let sig = identity.sign_b64(&hello_signing_bytes(PEER_ID, 0, &nonce, &xk, &ek));
+        Message::Hello {
+            device_id: PEER_ID.into(),
+            nickname: "E2E-Peer".into(),
+            avatar: None,
+            device_type: "desktop".into(),
+            content_features: gosslan_lib::protocol::content_features(),
+            tcp_port: 0,
+            x25519_pubkey: xk,
+            ed25519_pubkey: ek,
+            conv_clock: 0,
+            nonce,
+            sig,
+        }
+    })
     .await
     {
         report.add("TCP 建链 + Hello 握手", false, e);
@@ -605,9 +599,8 @@ async fn main() {
     let file_sha256 = sha256_hex(&content);
     let file_shared = crypto::shared_secret(&identity.x25519_secret, &app_x25519)
         .expect("app receiver key valid");
-    let sealed_file_key = STANDARD.encode(
-        crypto::seal(&file_shared, &file_key).expect("file key seal succeeds"),
-    );
+    let sealed_file_key =
+        STANDARD.encode(crypto::seal(&file_shared, &file_key).expect("file key seal succeeds"));
     let _ = send_frame(
         &mut w,
         &Message::FileOffer {
@@ -741,9 +734,8 @@ async fn main() {
         let image_sha256 = sha256_hex(IMAGE_BYTES);
         let image_shared = crypto::shared_secret(&identity.x25519_secret, &app_x25519)
             .expect("app receiver key valid");
-        let sealed_image_key = STANDARD.encode(
-            crypto::seal(&image_shared, &image_key).expect("image key seal succeeds"),
-        );
+        let sealed_image_key = STANDARD
+            .encode(crypto::seal(&image_shared, &image_key).expect("image key seal succeeds"));
         let _ = send_frame(
             &mut w,
             &Message::FileOffer {
@@ -1195,9 +1187,9 @@ async fn main() {
         // ---- --full 落库校验 ----
         if full {
             // 代码 / 大文本消息落库
-            for (label, msg_id, expect) in [
-                ("代码消息落库（kind=code）", CODE_MSG_ID, CODE_CONTENT),
-            ] {
+            for (label, msg_id, expect) in
+                [("代码消息落库（kind=code）", CODE_MSG_ID, CODE_CONTENT)]
+            {
                 let c: Option<String> = conn
                     .query_row(
                         "SELECT content FROM messages WHERE msg_id = ?1",
@@ -1221,12 +1213,16 @@ async fn main() {
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .ok();
-            let image_ok = image_row.as_ref().map(|(kind, content)| {
-                let parsed: serde_json::Value = serde_json::from_str(content).unwrap_or_default();
-                kind == "image"
-                    && parsed.get("subtype").and_then(|v| v.as_str()) == Some("image")
-                    && parsed.get("name").and_then(|v| v.as_str()) == Some(IMAGE_NAME)
-            }).unwrap_or(false);
+            let image_ok = image_row
+                .as_ref()
+                .map(|(kind, content)| {
+                    let parsed: serde_json::Value =
+                        serde_json::from_str(content).unwrap_or_default();
+                    kind == "image"
+                        && parsed.get("subtype").and_then(|v| v.as_str()) == Some("image")
+                        && parsed.get("name").and_then(|v| v.as_str()) == Some(IMAGE_NAME)
+                })
+                .unwrap_or(false);
             report.add(
                 "图片消息落库（kind=image，JSON 元数据）",
                 image_ok,
@@ -1241,12 +1237,16 @@ async fn main() {
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .ok();
-            let group_image_ok = group_image_row.as_ref().map(|(kind, content)| {
-                let parsed: serde_json::Value = serde_json::from_str(content).unwrap_or_default();
-                kind == "image"
-                    && parsed.get("subtype").and_then(|v| v.as_str()) == Some("image")
-                    && parsed.get("name").and_then(|v| v.as_str()) == Some(GROUP_IMAGE_NAME)
-            }).unwrap_or(false);
+            let group_image_ok = group_image_row
+                .as_ref()
+                .map(|(kind, content)| {
+                    let parsed: serde_json::Value =
+                        serde_json::from_str(content).unwrap_or_default();
+                    kind == "image"
+                        && parsed.get("subtype").and_then(|v| v.as_str()) == Some("image")
+                        && parsed.get("name").and_then(|v| v.as_str()) == Some(GROUP_IMAGE_NAME)
+                })
+                .unwrap_or(false);
             report.add(
                 "群图片消息落库（kind=image，JSON 元数据）",
                 group_image_ok,

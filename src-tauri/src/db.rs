@@ -6,7 +6,8 @@ use std::path::Path;
 use rusqlite::{params, Connection, OptionalExtension, Result};
 
 use crate::state::{
-    Conversation, Friend, Group, GroupFile, GroupFileRecipient, MessageRecord, TransferInfo,
+    Conversation, Favorite, Friend, Group, GroupFile, GroupFileRecipient, MessageRecord,
+    TransferInfo,
 };
 
 /// 建表脚本（与 `schema.sql` 保持一致）
@@ -186,6 +187,29 @@ CREATE TABLE IF NOT EXISTS pending_group_reads (
     PRIMARY KEY (group_id, peer_id)
 );
 CREATE INDEX IF NOT EXISTS idx_pending_group_reads_peer ON pending_group_reads(peer_id);
+
+-- 收藏（微信式）：**独立本地存储**，不随会话删除、不随消息清理消失。
+--
+-- 为什么是独立表而不是像置顶/待办那样发一条 kind='pin' 的静默消息：那些是"消息的派生状态"，
+-- 随消息生命周期走；收藏是"用户对某条内容的**独立副本**"——原消息被删、会话被删、
+-- 本机存储清理之后，收藏仍要能打开。所以这里存 content 快照，并把媒体**复制**一份到
+-- 收藏专用目录（`media_path`），副本路径已改写进 `content.path`。
+--
+-- UNIQUE(msg_id)：同一条消息重复收藏是幂等的（INSERT OR IGNORE），不会攒出两条。
+CREATE TABLE IF NOT EXISTS favorites (
+    id           TEXT PRIMARY KEY,              -- uuid：删除/预览都按它定位
+    msg_id       TEXT NOT NULL,
+    conv_id      TEXT NOT NULL,
+    sender_id    TEXT NOT NULL,
+    kind         TEXT NOT NULL,                 -- text | code | image | file
+    content      TEXT NOT NULL,                 -- 收藏时的快照（媒体已改写成副本路径）
+    ts           INTEGER NOT NULL,              -- 原消息时间
+    favorited_at INTEGER NOT NULL,              -- 收藏时间（列表排序键）
+    media_path   TEXT,                          -- 收藏副本绝对路径（仅 image/file）
+    media_size   INTEGER NOT NULL DEFAULT 0
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_favorites_msg  ON favorites(msg_id);
+CREATE INDEX        IF NOT EXISTS idx_favorites_time ON favorites(favorited_at DESC);
 "#;
 
 /// 打开（或创建）数据库并执行迁移。
@@ -216,7 +240,10 @@ pub fn init(path: &Path) -> Result<Connection> {
             .map(|n| n > 0)
             .unwrap_or(true);
         if !has_seq {
-            conn.execute("ALTER TABLE messages ADD COLUMN seq INTEGER NOT NULL DEFAULT 0", [])?;
+            conn.execute(
+                "ALTER TABLE messages ADD COLUMN seq INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
             conn.execute(
                 "UPDATE messages SET seq = (
                      SELECT COUNT(*) FROM messages m2
@@ -231,7 +258,9 @@ pub fn init(path: &Path) -> Result<Connection> {
     // 迁移：conversations 增加置顶列（旧库幂等补列）。纯本地偏好，默认不置顶。
     {
         let has_pinned: bool = conn
-            .prepare("SELECT COUNT(*) FROM pragma_table_info('conversations') WHERE name = 'pinned'")
+            .prepare(
+                "SELECT COUNT(*) FROM pragma_table_info('conversations') WHERE name = 'pinned'",
+            )
             .and_then(|mut s| s.query_row([], |r| r.get::<_, i64>(0)))
             .map(|n| n > 0)
             .unwrap_or(true);
@@ -864,6 +893,24 @@ pub fn get_message_preview_source(conn: &Connection, msg_id: &str) -> Option<(St
     .flatten()
 }
 
+/// 收藏取源：按 msg_id 返回 `(sender_id, kind, content, ts)`。
+///
+/// 收藏的**内容一律以库里的消息为准**（前端只传 msg_id）：如果让前端把 content 传上来，
+/// 收藏夹里就可能存进一份与消息记录不一致的副本，而"收藏"最不该做的事就是记录失真。
+pub fn get_favorite_source(
+    conn: &Connection,
+    msg_id: &str,
+) -> Option<(String, String, String, i64)> {
+    conn.query_row(
+        "SELECT sender_id, kind, content, ts FROM messages WHERE msg_id = ?1",
+        params![msg_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+    )
+    .optional()
+    .ok()
+    .flatten()
+}
+
 /// 更新单条消息状态。**只前进不回退**：`read` 由对方已读回执写入，而同一 msg_id 的
 /// Ack 可能因 outbox 补发晚一步到达，无条件覆盖会把已读退回「对方未读」。
 pub fn set_message_status(conn: &Connection, msg_id: &str, status: &str) -> Result<()> {
@@ -878,7 +925,12 @@ pub fn set_message_status(conn: &Connection, msg_id: &str, status: &str) -> Resu
 /// 状态同时前进到 delivered。与 `set_message_status` 不同，这里会改写 content——
 /// `read_file_preview` 按 msg_id 反查 content 定位本地文件，群文件 Offer 阶段先落库
 /// 无 path 的内容，Done 时必须显式回填，否则接收方图片/代码预览因缺 path 失败。
-pub fn update_message_content(conn: &Connection, msg_id: &str, content: &str, status: &str) -> Result<()> {
+pub fn update_message_content(
+    conn: &Connection,
+    msg_id: &str,
+    content: &str,
+    status: &str,
+) -> Result<()> {
     conn.execute(
         "UPDATE messages SET content = ?2, status = ?3 WHERE msg_id = ?1",
         params![msg_id, content, status],
@@ -966,10 +1018,8 @@ pub fn search_history(
     let pattern = format!("%{}%", escape_like(keyword));
     // 清单从 WIRE_KINDS 派生（不手写）：system 是历史遗留的不可搜索项，
     // 静默类（表情回应/撤回）没有可搜正文。
-    let unsearchable = crate::protocol::sql_kind_list(
-        &["system"],
-        |c| c == crate::protocol::KindClass::Silent,
-    );
+    let unsearchable =
+        crate::protocol::sql_kind_list(&["system"], |c| c == crate::protocol::KindClass::Silent);
     let mut stmt = conn.prepare(&format!(
         "SELECT conv_id, msg_id, sender_id, kind, content, ts,
                 COUNT(*) OVER (PARTITION BY conv_id) AS total
@@ -1148,10 +1198,8 @@ pub fn delete_conversation(conn: &Connection, conv_id: &str) -> Result<()> {
     // ⚠️ 只删 Bubble。Card（群公告/待办）与 Silent（回应/撤回/置顶）**不属于"聊天历史"** ——
     // 清空聊天记录顺手删掉群公告是错误语义（钉盘/群文件同理：那是群资产，不是聊天记录）。
     // 清单从 `WIRE_KINDS` 派生，不手写：加了新 kind 而忘了同步这里就是静默的数据丢失。
-    let keep = crate::protocol::sql_kind_list(
-        &["system"],
-        |c| c != crate::protocol::KindClass::Bubble,
-    );
+    let keep =
+        crate::protocol::sql_kind_list(&["system"], |c| c != crate::protocol::KindClass::Bubble);
     tx.execute(
         &format!("DELETE FROM messages WHERE conv_id = ?1 AND kind NOT IN ({keep})"),
         params![conv_id],
@@ -1205,9 +1253,8 @@ pub fn insert_group_outbox(
 
 /// 取某成员的全部待补发群消息（按插入顺序）。
 pub fn list_group_outbox(conn: &Connection, peer_id: &str) -> Result<Vec<(i64, String)>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, payload FROM group_outbox WHERE peer_id = ?1 ORDER BY id",
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT id, payload FROM group_outbox WHERE peer_id = ?1 ORDER BY id")?;
     let rows = stmt.query_map(params![peer_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
@@ -1245,6 +1292,7 @@ pub fn delete_group_outbox_for_peer_in_group(
 
 // ---------------- 文件传输记录 ----------------
 
+#[allow(clippy::too_many_arguments)]
 pub fn upsert_transfer(
     conn: &Connection,
     id: &str,
@@ -1277,7 +1325,8 @@ pub fn get_transfer_path(conn: &Connection, id: &str) -> Option<String> {
     .flatten()
 }
 
-pub fn list_transfers(conn: &Connection) -> Result<Vec<TransferInfo>> {    let mut stmt = conn.prepare(
+pub fn list_transfers(conn: &Connection) -> Result<Vec<TransferInfo>> {
+    let mut stmt = conn.prepare(
         "SELECT id, peer_id, name, size, direction, status, path, progress FROM file_transfers ORDER BY created_at DESC",
     )?;
     let rows = stmt.query_map([], |r| {
@@ -1330,7 +1379,11 @@ pub fn list_pending_file_outbox(conn: &Connection, peer_id: &str) -> Result<Vec<
 }
 
 /// 投递开始：pending → sending，并累计一次尝试。
-pub fn mark_file_outbox_sending(conn: &Connection, transfer_id: &str, backoff_ms: i64) -> Result<()> {
+pub fn mark_file_outbox_sending(
+    conn: &Connection,
+    transfer_id: &str,
+    backoff_ms: i64,
+) -> Result<()> {
     conn.execute(
         "UPDATE file_outbox SET status = 'sending', attempts = attempts + 1, next_attempt_at = ?2 WHERE transfer_id = ?1",
         params![transfer_id, now_ms().saturating_add(backoff_ms)],
@@ -1339,7 +1392,11 @@ pub fn mark_file_outbox_sending(conn: &Connection, transfer_id: &str, backoff_ms
 }
 
 /// 投递失败但可重试：回到 pending，等待下次连接/心跳触发。
-pub fn mark_file_outbox_pending(conn: &Connection, transfer_id: &str, backoff_ms: i64) -> Result<()> {
+pub fn mark_file_outbox_pending(
+    conn: &Connection,
+    transfer_id: &str,
+    backoff_ms: i64,
+) -> Result<()> {
     conn.execute(
         "UPDATE file_outbox SET status = 'pending', next_attempt_at = ?2 WHERE transfer_id = ?1",
         params![transfer_id, now_ms().saturating_add(backoff_ms)],
@@ -1349,7 +1406,10 @@ pub fn mark_file_outbox_pending(conn: &Connection, transfer_id: &str, backoff_ms
 
 /// 投递成功：删除队列行。
 pub fn delete_file_outbox(conn: &Connection, transfer_id: &str) -> Result<()> {
-    conn.execute("DELETE FROM file_outbox WHERE transfer_id = ?1", params![transfer_id])?;
+    conn.execute(
+        "DELETE FROM file_outbox WHERE transfer_id = ?1",
+        params![transfer_id],
+    )?;
     Ok(())
 }
 
@@ -1624,7 +1684,11 @@ pub fn get_group_file_recipient_status(
 /// 用于重启后（内存 file_key 丢失）离线补发重建——group_file / recipient 记录已存在时
 /// 不报错、不覆盖已完成（completed）状态，只把未完成的中断态复位回 sending。
 /// 权限（群存在 + sender 是成员）已由调用方 `handle_group_file_offer` 校验。
-pub fn upsert_group_file_receive(conn: &Connection, f: &GroupFile, recipient_id: &str) -> Result<()> {
+pub fn upsert_group_file_receive(
+    conn: &Connection,
+    f: &GroupFile,
+    recipient_id: &str,
+) -> Result<()> {
     conn.execute(
         "INSERT OR IGNORE INTO group_files(transfer_id, group_id, sender_id, name, size, sha256, status, created_at)
          VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -1702,10 +1766,11 @@ pub fn upsert_pending_group_read(
 
 /// 取某 peer 的全部待发群已读回执。
 pub fn list_pending_group_reads(conn: &Connection, peer_id: &str) -> Result<Vec<(String, i64)>> {
-    let mut stmt = conn.prepare(
-        "SELECT group_id, last_read_ts FROM pending_group_reads WHERE peer_id = ?1",
-    )?;
-    let rows = stmt.query_map(params![peer_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+    let mut stmt =
+        conn.prepare("SELECT group_id, last_read_ts FROM pending_group_reads WHERE peer_id = ?1")?;
+    let rows = stmt.query_map(params![peer_id], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+    })?;
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
@@ -1724,6 +1789,121 @@ pub fn now_ms() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+// ---------------- 收藏 ----------------
+
+/// 收藏表的列清单（读与写共用，避免两处列顺序漂移）。
+const FAVORITE_COLS: &str =
+    "id, msg_id, conv_id, sender_id, kind, content, ts, favorited_at, media_path, media_size";
+
+fn favorite_from_row(r: &rusqlite::Row<'_>) -> Result<Favorite> {
+    Ok(Favorite {
+        id: r.get(0)?,
+        msg_id: r.get(1)?,
+        conv_id: r.get(2)?,
+        sender_id: r.get(3)?,
+        kind: r.get(4)?,
+        content: r.get(5)?,
+        ts: r.get(6)?,
+        favorited_at: r.get(7)?,
+        media_path: r.get(8)?,
+        media_size: r.get(9)?,
+        // 文件系统的事归命令层：db 层只负责"这条记录在不在"，不 stat 磁盘。
+        available: false,
+    })
+}
+
+/// 写入一条收藏。返回 `true` = 这次真的插入了；`false` = **同一条消息早就收藏过**。
+///
+/// 幂等靠 `UNIQUE(msg_id)` + `INSERT OR IGNORE`：重复收藏不报错也不产生第二行。
+/// 调用方据此决定要不要提示"已在收藏中"，以及**要不要删掉刚复制出来的副本文件**
+/// （幂等命中时那份复制是多余的，留着就是磁盘垃圾）。
+pub fn insert_favorite(conn: &Connection, f: &Favorite) -> Result<bool> {
+    let n = conn.execute(
+        "INSERT OR IGNORE INTO favorites
+           (id, msg_id, conv_id, sender_id, kind, content, ts, favorited_at, media_path, media_size)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        params![
+            f.id,
+            f.msg_id,
+            f.conv_id,
+            f.sender_id,
+            f.kind,
+            f.content,
+            f.ts,
+            f.favorited_at,
+            f.media_path,
+            f.media_size
+        ],
+    )?;
+    Ok(n > 0)
+}
+
+pub fn get_favorite_by_msg(conn: &Connection, msg_id: &str) -> Result<Option<Favorite>> {
+    conn.query_row(
+        &format!("SELECT {FAVORITE_COLS} FROM favorites WHERE msg_id = ?1"),
+        params![msg_id],
+        favorite_from_row,
+    )
+    .optional()
+}
+
+/// 按收藏 id 取一行（预览/删除前的路径解析用）。
+pub fn get_favorite(conn: &Connection, id: &str) -> Result<Option<Favorite>> {
+    conn.query_row(
+        &format!("SELECT {FAVORITE_COLS} FROM favorites WHERE id = ?1"),
+        params![id],
+        favorite_from_row,
+    )
+    .optional()
+}
+
+/// 全部收藏，**新的在前**（`favorited_at DESC`）。
+pub fn list_favorites(conn: &Connection) -> Result<Vec<Favorite>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {FAVORITE_COLS} FROM favorites ORDER BY favorited_at DESC, id DESC"
+    ))?;
+    let rows = stmt.query_map([], favorite_from_row)?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// 删除一条收藏，返回被删的那一行（调用方要据此删掉副本文件）。
+pub fn delete_favorite(conn: &Connection, id: &str) -> Result<Option<Favorite>> {
+    let row = conn
+        .query_row(
+            &format!("SELECT {FAVORITE_COLS} FROM favorites WHERE id = ?1"),
+            params![id],
+            favorite_from_row,
+        )
+        .optional()?;
+    if row.is_some() {
+        conn.execute("DELETE FROM favorites WHERE id = ?1", params![id])?;
+    }
+    Ok(row)
+}
+
+/// 把消息 content 里的本地路径换成收藏副本路径（其余字段原样保留）。
+///
+/// 为什么要改写而不是另存一个字段：前端的渲染与打开/另存全都只认 `content.path`
+/// （见 `utils/localFile.ts` 的路径入参），改写这一处就让收藏**零改动复用**整套渲染。
+///
+/// 解析失败时**原样返回**：宁可让这条收藏指向旧路径（打不开，界面上显示「已清理」），
+/// 也不能因为一段畸形 JSON 让"收藏"这个动作整个失败。
+pub fn favorite_content_with_path(content: &str, new_path: &str) -> String {
+    match serde_json::from_str::<serde_json::Value>(content) {
+        Ok(mut v) => {
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert(
+                    "path".to_string(),
+                    serde_json::Value::String(new_path.to_string()),
+                );
+                return v.to_string();
+            }
+            content.to_string()
+        }
+        Err(_) => content.to_string(),
+    }
 }
 
 #[cfg(test)]
@@ -1777,6 +1957,80 @@ mod tests {
         assert_eq!(list_friends(&conn).unwrap().len(), 2);
         remove_friend(&conn, "f1").unwrap();
         assert_eq!(list_friends(&conn).unwrap().len(), 1);
+    }
+
+    fn fav(id: &str, msg_id: &str, favorited_at: i64) -> Favorite {
+        Favorite {
+            id: id.into(),
+            msg_id: msg_id.into(),
+            conv_id: "c1".into(),
+            sender_id: "peer".into(),
+            kind: "text".into(),
+            content: "你好".into(),
+            ts: 100,
+            favorited_at,
+            media_path: None,
+            media_size: 0,
+            available: false,
+        }
+    }
+
+    /// 收藏三件套：写入 → 列出（新的在前）→ 删除。
+    ///
+    /// **幂等是行为约定**，不是实现细节：消息菜单里的「收藏」可以被重复点（用户忘了收没收过），
+    /// 重复点必须不产生第二条 —— 否则收藏夹里会出现两份一模一样的条目，
+    /// 而两份指向同一个副本文件，删掉其中一条还会把另一条的文件连带删掉。
+    #[test]
+    fn favorite_insert_list_delete_and_idempotency() {
+        let conn = mem();
+        assert!(
+            insert_favorite(&conn, &fav("f1", "m1", 1000)).unwrap(),
+            "首次收藏应写入"
+        );
+        assert!(
+            !insert_favorite(&conn, &fav("f2", "m1", 2000)).unwrap(),
+            "同一条消息再次收藏必须是幂等命中（返回 false，供调用方提示「已在收藏中」并删掉多余副本）"
+        );
+        assert!(insert_favorite(&conn, &fav("f3", "m2", 3000)).unwrap());
+
+        let all = list_favorites(&conn).unwrap();
+        assert_eq!(all.len(), 2, "幂等命中不该产生第二行");
+        assert_eq!(all[0].id, "f3", "应按收藏时间倒序（新的在前）");
+
+        assert_eq!(get_favorite_by_msg(&conn, "m1").unwrap().unwrap().id, "f1");
+        assert!(get_favorite_by_msg(&conn, "missing").unwrap().is_none());
+
+        let removed = delete_favorite(&conn, "f1")
+            .unwrap()
+            .expect("应返回被删的那一行");
+        assert_eq!(removed.msg_id, "m1", "返回值要带副本路径，调用方才能删文件");
+        assert_eq!(list_favorites(&conn).unwrap().len(), 1);
+        assert!(
+            delete_favorite(&conn, "f1").unwrap().is_none(),
+            "再删同一条应返回 None"
+        );
+    }
+
+    /// content 路径改写：**只动 path**，name/size/sha256/subtype 必须原样保留 ——
+    /// 前端的文件卡片、图片 MIME 推断全靠这几个字段，改动它们等于把收藏变成另一个文件。
+    #[test]
+    fn favorite_content_rewrites_only_the_path() {
+        let src = r#"{"name":"a.png","path":"/downloads/a.png","size":12,"sha256":"ab","subtype":"image"}"#;
+        let out = favorite_content_with_path(src, "/fav/media/f1.png");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["path"], "/fav/media/f1.png");
+        assert_eq!(v["name"], "a.png");
+        assert_eq!(v["size"], 12);
+        assert_eq!(v["sha256"], "ab");
+        assert_eq!(v["subtype"], "image");
+    }
+
+    /// 畸形 content 不能让"收藏"这个动作失败：原样返回。
+    /// （界面上会显示「已清理」占位，这比"点了没反应"好得多。）
+    #[test]
+    fn favorite_content_keeps_malformed_input_untouched() {
+        assert_eq!(favorite_content_with_path("not json", "/x"), "not json");
+        assert_eq!(favorite_content_with_path("[1,2]", "/x"), "[1,2]");
     }
 
     /// Gossip 路径携带的 sender_pubkey 必须能补充到 friends 表（COALESCE 行为），
@@ -1833,8 +2087,11 @@ mod tests {
 
         // 只补缺的那一列：X25519 已绑定，Ed25519 为空时应被填上
         add_friend(&conn, "f2", "李四", None).unwrap();
-        conn.execute("UPDATE friends SET x25519_pubkey = 'x2' WHERE device_id = 'f2'", [])
-            .unwrap();
+        conn.execute(
+            "UPDATE friends SET x25519_pubkey = 'x2' WHERE device_id = 'f2'",
+            [],
+        )
+        .unwrap();
         update_friend_pubkeys(&conn, "f2", Some("x2-fake"), Some("e2")).unwrap();
         assert_eq!(get_friend_x25519(&conn, "f2").as_deref(), Some("x2"));
         assert_eq!(get_friend_ed25519(&conn, "f2").as_deref(), Some("e2"));
@@ -1871,9 +2128,22 @@ mod tests {
     fn clearing_history_keeps_group_level_artifacts() {
         let conn = mem();
         insert_message(&conn, &rec_as("m1", "group:g1", "text", "普通消息")).unwrap();
-        insert_message(&conn, &rec_as("a1", "group:g1", "announcement", "{\"text\":\"本周五团建\"}")).unwrap();
+        insert_message(
+            &conn,
+            &rec_as(
+                "a1",
+                "group:g1",
+                "announcement",
+                "{\"text\":\"本周五团建\"}",
+            ),
+        )
+        .unwrap();
         insert_message(&conn, &rec_as("r1", "group:g1", "reaction", "{}")).unwrap();
-        insert_message(&conn, &rec_as("s1", "group:g1", "system", "「张三」加入了群聊")).unwrap();
+        insert_message(
+            &conn,
+            &rec_as("s1", "group:g1", "system", "「张三」加入了群聊"),
+        )
+        .unwrap();
 
         delete_conversation(&conn, "group:g1").unwrap();
 
@@ -1884,8 +2154,11 @@ mod tests {
             .unwrap()
             .filter_map(|r| r.ok())
             .collect();
-        assert_eq!(left, vec!["announcement", "reaction", "system"],
-            "清空聊天记录只应删掉 Bubble（普通消息），公告/静默事件/系统提示必须留下");
+        assert_eq!(
+            left,
+            vec!["announcement", "reaction", "system"],
+            "清空聊天记录只应删掉 Bubble（普通消息），公告/静默事件/系统提示必须留下"
+        );
     }
 
     /// **清空边界只挡 Bubble**：若它连公告一起挡，离线成员的公告会被丢弃，
@@ -1895,10 +2168,17 @@ mod tests {
         let conn = mem();
         set_setting(&conn, &clear_boundary_key("g1"), "100").unwrap();
         // 水位之下（seq=50 ≤ 100）的各类消息
-        assert!(group_message_blocked_by_boundary(&conn, "g1", 50, "text"), "普通消息该被挡");
-        assert!(!group_message_blocked_by_boundary(&conn, "g1", 50, "announcement"),
-            "公告不得被清空边界挡住（否则离线成员看不到它）");
-        assert!(!group_message_blocked_by_boundary(&conn, "g1", 50, "reaction"));
+        assert!(
+            group_message_blocked_by_boundary(&conn, "g1", 50, "text"),
+            "普通消息该被挡"
+        );
+        assert!(
+            !group_message_blocked_by_boundary(&conn, "g1", 50, "announcement"),
+            "公告不得被清空边界挡住（否则离线成员看不到它）"
+        );
+        assert!(!group_message_blocked_by_boundary(
+            &conn, "g1", 50, "reaction"
+        ));
         // 水位之上的普通消息照常放行
         assert!(!group_message_blocked_by_boundary(&conn, "g1", 200, "text"));
     }
@@ -1910,15 +2190,29 @@ mod tests {
         insert_message(&conn, &rec_as("m1", "g1", "text", "这句要撤回")).unwrap();
         assert!(!is_recalled(&conn, "m1"));
 
-        assert!(insert_recall(&conn, "g1", "m1", "a", 5).unwrap(), "首次应返回 true");
-        assert!(!insert_recall(&conn, "g1", "m1", "a", 5).unwrap(), "重复撤回必须幂等");
+        assert!(
+            insert_recall(&conn, "g1", "m1", "a", 5).unwrap(),
+            "首次应返回 true"
+        );
+        assert!(
+            !insert_recall(&conn, "g1", "m1", "a", 5).unwrap(),
+            "重复撤回必须幂等"
+        );
         assert!(is_recalled(&conn, "m1"));
 
         assert!(materialize_recall(&conn, "m1").unwrap());
         // content 清空 ⇒ 搜索命中数为 0（**不用给 search_history 加任何过滤**）
-        assert_eq!(search_history(&conn, "撤回", None, None, None, 100).unwrap().len(), 0);
+        assert_eq!(
+            search_history(&conn, "撤回", None, None, None, 100)
+                .unwrap()
+                .len(),
+            0
+        );
         // 再物化一次不得改变任何东西（幂等）
-        assert!(!materialize_recall(&conn, "m1").unwrap(), "已物化过应返回 false");
+        assert!(
+            !materialize_recall(&conn, "m1").unwrap(),
+            "已物化过应返回 false"
+        );
     }
 
     /// **先撤后到**：撤回事件可能早于被撤回的消息抵达（Gossip 泛洪 vs outbox 直发
@@ -1931,8 +2225,13 @@ mod tests {
         assert!(is_recalled(&conn, "later"), "权威集合独立于消息行存在");
         // 消息随后到达：调用方据此以「已撤回」形态入库
         insert_message(&conn, &rec_as("later", "g1", "text", "正文不该留下")).unwrap();
-        assert_eq!(search_history(&conn, "不该留下", None, None, None, 100).unwrap().len(), 1,
-            "本测试只验证权威集合可先于消息存在；入库形态由 transport 层负责");
+        assert_eq!(
+            search_history(&conn, "不该留下", None, None, None, 100)
+                .unwrap()
+                .len(),
+            1,
+            "本测试只验证权威集合可先于消息存在；入库形态由 transport 层负责"
+        );
     }
 
     /// 静默类（表情回应）不得进入历史检索，也不得顶起群已读水位。
@@ -1944,7 +2243,12 @@ mod tests {
         let conn = mem();
         insert_message(&conn, &rec_as("m1", "g1", "text", "周报 已发")).unwrap();
         // 同一条消息的表情回应：正文里也含"周报"，若不过滤就会被搜出来
-        let mut rx = rec_as("m2", "g1", "reaction", "{\"target\":\"m1\",\"emoji\":\"[赞]\",\"add\":true}");
+        let mut rx = rec_as(
+            "m2",
+            "g1",
+            "reaction",
+            "{\"target\":\"m1\",\"emoji\":\"[赞]\",\"add\":true}",
+        );
         rx.ts = 9_999_999; // 比正文晚：若不过滤，它会成为"最后一条"
         insert_message(&conn, &rx).unwrap();
 
@@ -1974,8 +2278,14 @@ mod tests {
         assert_eq!(kind_class("未来才有的新类型"), KindClass::Bubble);
         // 静默清单里必须含 reaction，且不含任何 Bubble 类
         let silent = sql_kind_list(&[], |c| c == KindClass::Silent);
-        assert!(silent.contains("'reaction'"), "静默清单漏了 reaction：{silent}");
-        assert!(!silent.contains("'text'"), "静默清单混入了正文类型：{silent}");
+        assert!(
+            silent.contains("'reaction'"),
+            "静默清单漏了 reaction：{silent}"
+        );
+        assert!(
+            !silent.contains("'text'"),
+            "静默清单混入了正文类型：{silent}"
+        );
         // 检索排除清单 = 静默类 + 显式追加的 system
         let unsearchable = sql_kind_list(&["system"], |c| c == KindClass::Silent);
         assert!(unsearchable.contains("'system'") && unsearchable.contains("'reaction'"));
@@ -1987,7 +2297,10 @@ mod tests {
         assert!(is_non_notifying_kind("reaction"));
         assert!(is_non_notifying_kind("recall"));
         assert!(!is_non_notifying_kind("text"));
-        assert!(!is_non_notifying_kind("recalled"), "已撤回要在时间线上、且它是别人主动撤回的结果，不该被静默");
+        assert!(
+            !is_non_notifying_kind("recalled"),
+            "已撤回要在时间线上、且它是别人主动撤回的结果，不该被静默"
+        );
     }
 
     /// 历史检索：发送人/时间过滤、每会话命中总数、排除系统消息。
@@ -2209,7 +2522,12 @@ mod tests {
         // Offer 阶段先落库无 path 的内容（模拟 handle_group_file_offer）
         insert_message(
             &conn,
-            &rec_as("gfile-1", "group:g1", "image", r#"{"name":"a.png","size":3,"subtype":"image"}"#),
+            &rec_as(
+                "gfile-1",
+                "group:g1",
+                "image",
+                r#"{"name":"a.png","size":3,"subtype":"image"}"#,
+            ),
         )
         .unwrap();
         // Done 阶段回填 path（模拟 handle_group_file_done）
@@ -2221,7 +2539,10 @@ mod tests {
         )
         .unwrap();
         let (_, content) = get_message_preview_source(&conn, "gfile-1").unwrap();
-        assert!(content.contains("\"path\""), "Done 后 content 必须回填 path");
+        assert!(
+            content.contains("\"path\""),
+            "Done 后 content 必须回填 path"
+        );
         assert!(content.contains("/tmp/a.png"), "path 必须指向本地文件");
     }
 
@@ -2470,7 +2791,10 @@ mod tests {
     #[test]
     fn bt_enabled_defaults_on_and_keeps_explicit_value() {
         let conn = mem();
-        assert!(get_bt_enabled(&conn), "缺省必须是**开**（用户规则：有蓝牙就默认开）");
+        assert!(
+            get_bt_enabled(&conn),
+            "缺省必须是**开**（用户规则：有蓝牙就默认开）"
+        );
         assert_eq!(get_setting(&conn, "bt_enabled").as_deref(), Some("1"));
 
         set_bt_enabled(&conn, true).unwrap();
@@ -2767,8 +3091,7 @@ mod tests {
             sender_id: "a".to_string(),
             name: "report.pdf".to_string(),
             size: 1024,
-            sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-                .to_string(),
+            sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string(),
             status: "pending".to_string(),
             created_at: now_ms(),
         }
@@ -2782,7 +3105,12 @@ mod tests {
             "g1",
             "测试群",
             "a",
-            &["a".to_string(), "b".to_string(), "c".to_string(), "d".to_string()],
+            &[
+                "a".to_string(),
+                "b".to_string(),
+                "c".to_string(),
+                "d".to_string(),
+            ],
         )
         .unwrap();
         conn
@@ -2807,7 +3135,10 @@ mod tests {
 
         let listed = list_group_files(&conn, "g1").unwrap();
         assert_eq!(
-            listed.iter().map(|f| f.transfer_id.as_str()).collect::<Vec<_>>(),
+            listed
+                .iter()
+                .map(|f| f.transfer_id.as_str())
+                .collect::<Vec<_>>(),
             vec!["gf-new", "gf-old"]
         );
         assert!(list_group_files(&conn, "nonexistent").unwrap().is_empty());
@@ -2881,12 +3212,11 @@ mod tests {
 
         update_group_file_recipient(&conn, "gf-1", "c", "completed", 1.0).unwrap();
 
-        let by_id: std::collections::HashMap<_, _> =
-            list_group_file_recipients(&conn, "gf-1")
-                .unwrap()
-                .into_iter()
-                .map(|r| (r.recipient_id, r.status))
-                .collect();
+        let by_id: std::collections::HashMap<_, _> = list_group_file_recipients(&conn, "gf-1")
+            .unwrap()
+            .into_iter()
+            .map(|r| (r.recipient_id, r.status))
+            .collect();
         assert_eq!(by_id.get("b").map(String::as_str), Some("completed"));
         assert_eq!(by_id.get("c").map(String::as_str), Some("completed"));
         assert_eq!(by_id.get("d").map(String::as_str), Some("pending"));
@@ -2935,7 +3265,9 @@ mod tests {
         delete_group(&conn, "g1").unwrap();
 
         assert!(get_group_file(&conn, "gf-1").is_none());
-        assert!(list_group_file_recipients(&conn, "gf-1").unwrap().is_empty());
+        assert!(list_group_file_recipients(&conn, "gf-1")
+            .unwrap()
+            .is_empty());
     }
 
     /// get_group_file 不存在的 transfer 返回 None。
@@ -3048,13 +3380,22 @@ mod tests {
         assert_eq!(g.creator, "owner", "creator 不得被顶掉");
 
         // 成员表只增不减（INSERT OR IGNORE）：新成员能加进来
-        upsert_group(&conn, "g1", "产品组（改）", "owner", &[
-            "owner".to_string(),
-            "member".to_string(),
-            "newbie".to_string(),
-        ])
+        upsert_group(
+            &conn,
+            "g1",
+            "产品组（改）",
+            "owner",
+            &[
+                "owner".to_string(),
+                "member".to_string(),
+                "newbie".to_string(),
+            ],
+        )
         .unwrap();
-        assert!(get_group(&conn, "g1").unwrap().members.contains(&"newbie".to_string()));
+        assert!(get_group(&conn, "g1")
+            .unwrap()
+            .members
+            .contains(&"newbie".to_string()));
     }
 
     // ---------- GroupFileOffer / session-key 阶段 ----------
@@ -3125,7 +3466,9 @@ mod tests {
 
         // 半完成状态不存在：group_files 与 recipients 均未落库
         assert!(get_group_file(&conn, "gf-1").is_none());
-        assert!(list_group_file_recipients(&conn, "gf-1").unwrap().is_empty());
+        assert!(list_group_file_recipients(&conn, "gf-1")
+            .unwrap()
+            .is_empty());
     }
 
     /// sender 自己不进入 recipient state（快照只含其他成员）。
@@ -3141,7 +3484,10 @@ mod tests {
             .into_iter()
             .map(|r| r.recipient_id)
             .collect();
-        assert!(!ids.contains(&"a".to_string()), "sender 不应有 recipient state");
+        assert!(
+            !ids.contains(&"a".to_string()),
+            "sender 不应有 recipient state"
+        );
         assert_eq!(ids.len(), 3);
     }
 
@@ -3220,9 +3566,7 @@ mod tests {
         let conn = group_file_fixture();
         insert_group_file(&conn, &group_file("gf-1")).unwrap();
         insert_group_file_recipient(&conn, "gf-1", "b").unwrap();
-        assert!(
-            update_group_file_recipient(&conn, "gf-1", "outsider", "completed", 1.0).is_err()
-        );
+        assert!(update_group_file_recipient(&conn, "gf-1", "outsider", "completed", 1.0).is_err());
     }
 
     /// 重复 ACK 幂等：连续相同更新不报错、状态稳定、无副作用。
@@ -3335,8 +3679,12 @@ mod tests {
         let conn = group_file_fixture();
         set_clear_boundary(&conn, "g1", 123456789).unwrap();
         // 边界及更早序号被拦截
-        assert!(group_message_blocked_by_boundary(&conn, "g1", 123456789, "text"));
-        assert!(!group_message_blocked_by_boundary(&conn, "g1", 123456790, "text"));
+        assert!(group_message_blocked_by_boundary(
+            &conn, "g1", 123456789, "text"
+        ));
+        assert!(!group_message_blocked_by_boundary(
+            &conn, "g1", 123456790, "text"
+        ));
     }
 
     // ---------- GroupFile 多 recipient 气泡状态聚合 ----------
@@ -3367,9 +3715,8 @@ mod tests {
         for rid in ["b", "c"] {
             insert_group_file_recipient(&conn, "gf-1", rid).unwrap();
         }
-        let states = || -> Vec<GroupFileRecipient> {
-            list_group_file_recipients(&conn, "gf-1").unwrap()
-        };
+        let states =
+            || -> Vec<GroupFileRecipient> { list_group_file_recipients(&conn, "gf-1").unwrap() };
 
         // mixed：B completed / C failed → delivered（有人收到即算）
         update_group_file_recipient(&conn, "gf-1", "b", "completed", 1.0).unwrap();
@@ -3496,10 +3843,8 @@ mod tests {
     /// 旧库没有 seq 列时，init 必须先补列再建索引，不能在建索引时崩掉。
     #[test]
     fn init_migrates_existing_db_without_seq_column() {
-        let path = std::env::temp_dir().join(format!(
-            "gosslan-test-migrate-{}.db",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("gosslan-test-migrate-{}.db", std::process::id()));
         let _ = std::fs::remove_file(&path);
         {
             let conn = Connection::open(&path).unwrap();
@@ -3590,8 +3935,13 @@ mod tests {
         touch_conversation(&conn, "old", "single", "旧的", None, "早", 0).unwrap();
         touch_conversation(&conn, "new", "single", "新的", None, "晚", 0).unwrap();
         // 直接把 old 的时间戳压到更早，确保「新的」本来排在前面
-        conn.execute("UPDATE conversations SET last_ts = 1 WHERE id = 'old'", []).unwrap();
-        conn.execute("UPDATE conversations SET last_ts = 999 WHERE id = 'new'", []).unwrap();
+        conn.execute("UPDATE conversations SET last_ts = 1 WHERE id = 'old'", [])
+            .unwrap();
+        conn.execute(
+            "UPDATE conversations SET last_ts = 999 WHERE id = 'new'",
+            [],
+        )
+        .unwrap();
         assert_eq!(list_conversations(&conn).unwrap()[0].id, "new");
 
         set_conversation_pinned(&conn, "old", true).unwrap();
@@ -3676,4 +4026,3 @@ pub fn materialize_recall(conn: &Connection, msg_id: &str) -> Result<bool> {
     )?;
     Ok(n > 0)
 }
-
