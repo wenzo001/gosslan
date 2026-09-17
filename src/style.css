@@ -70,12 +70,14 @@
   --gosslan-list-hover: rgba(15, 23, 42, 0.04);
   --gosslan-list-active: #dbe3ed;
   --gosslan-list-active-text: var(--gosslan-text);
-  --gosslan-chat: #fafafa;
+  --gosslan-chat: #f5f7fa;
   --gosslan-panel: #ffffff;
   --gosslan-bg: #f1f5f9;
   /* 输入类控件底色（搜索框 / 输入卡）：必须与所在面板拉开一档，
-     否则输入框"没有边界"（暗色下 panel 与 list 同色时最容易踩）。 */
-  --gosslan-field: #ffffff;
+     否则输入框"没有边界"（暗色下 panel 与 list 同色时最容易踩）。
+     亮色下故意不取白（和 panel 同值），取稍深一档 #f3f5f8 ——
+     搜索框套在白 panel 里时就能自己立住，不需要靠 border 才有边界感。 */
+  --gosslan-field: #f3f5f8;
   /* 中性卡片气泡底（文件 / 代码 / 无类型兜底）：不跟随主题色的那类气泡。
      必须与聊天画布差一档，否则气泡等于没有（见 utils/previewMetrics.ts 的历史坑）。 */
   --gosslan-card: #eeeef0;
