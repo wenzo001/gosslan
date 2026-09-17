@@ -27,6 +27,15 @@ const IMAGE_BUBBLE = 288;
 const FILE_CARD = 92;
 /** 提示行（系统消息 / 已撤回）：text-xs 行盒 16 + ROW_PADDING 12。 */
 const SYSTEM_ROW = 28;
+/**
+ * 合并转发卡片：固定高度（标题 1 行 + 最多 3 行预览 + 页脚 1 行 + 内外边距）。
+ *
+ * 卡片**刻意做成定高**：它的内容（N 条摘要）随条数变化，若高度随之变化，
+ * 虚拟列表的估算就得跟着算一遍"3 行里每行会不会换行"，而卡片本来就有"最多 3 行预览"
+ * 的截断设计 —— 让渲染与估算都锚在这个常量上最省事也最稳。
+ * 改卡片内边距/行数时必须同步这里（`MergeCard.vue` 里有注释指向本常量）。
+ */
+const MERGE_CARD = 96;
 
 export interface EstimateContext {
   messages: MessageRecord[];
@@ -94,6 +103,9 @@ function computeBubbleHeight(m: MessageRecord, fontSize: FontSizeKey): number {
     // 按空文本气泡估 35px，比实际渲染的 28px 高 7px，虚拟列表就会把它下面那条推偏。
     case "recalled":
       return SYSTEM_ROW;
+    // 合并转发卡片：定高（见 MERGE_CARD 的说明）
+    case "merge":
+      return MERGE_CARD;
     default:
       return textBubbleHeight(m.content, fontSize);
   }

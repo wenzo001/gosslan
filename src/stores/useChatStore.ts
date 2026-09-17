@@ -905,6 +905,59 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   /**
+   * 批量收藏（多选 → 收藏）。逐条调后端，最后刷一次列表。
+   *
+   * 为什么串行而不是 `Promise.all`：图片/文件类收藏每条都要把媒体**复制一份**到收藏目录，
+   * 并发 100 个文件拷贝只会把磁盘和 db 锁打满；串行慢一点但稳，且每条的结果可数。
+   * 单条失败**不中断整批**（已成功的不该被回滚），但失败条数如实返回给调用方报出来。
+   */
+  async function addFavorites(
+    msgIds: string[],
+    convId: string,
+  ): Promise<{ added: number; already: number; failed: number }> {
+    let added = 0;
+    let already = 0;
+    let failed = 0;
+    for (const id of msgIds) {
+      try {
+        if (await addFavorite(id, convId)) added += 1;
+        else already += 1;
+      } catch {
+        failed += 1;
+      }
+    }
+    await refreshFavorites();
+    return { added, already, failed };
+  }
+
+  /**
+   * 本地删除若干条消息（多选 → 删除）。
+   *
+   * 乐观移除 + 失败回滚：删除必须"立刻见效"，等 IPC 回来才更新列表会有明显停顿；
+   * 而失败时（例如后端按 kind 拒掉了非聊天内容）要把列表恢复原状 —— 不能让界面停在
+   * "看起来删掉了、一刷新又回来"的状态。
+   *
+   * 会话摘要与未读由**后端重算**（`delete_messages`），这里删完拉一次会话列表即可：
+   * 前端再实现一套"重算摘要"就是把同一口径复制到第二个地方。
+   */
+  async function deleteMessages(convId: string, msgIds: string[]): Promise<number> {
+    if (msgIds.length === 0) return 0;
+    const prevMsgs = messages.value[convId] ?? [];
+    const prevConvs = conversations.value;
+    const set = new Set(msgIds);
+    messages.value = { ...messages.value, [convId]: prevMsgs.filter((m) => !set.has(m.msg_id)) };
+    try {
+      const n = await api.deleteMessages(msgIds);
+      await refreshConversations();
+      return n;
+    } catch (e) {
+      messages.value = { ...messages.value, [convId]: prevMsgs };
+      conversations.value = prevConvs;
+      throw e;
+    }
+  }
+
+  /**
    * 发一条表情回应（群聊）。
    *
    * 走与普通消息**完全相同**的可靠管道（E2EE + outbox + GroupAck + 去重 + 离线补发），
@@ -1479,7 +1532,9 @@ export const useChatStore = defineStore("chat", () => {
     favorites,
     refreshFavorites,
     addFavorite,
+    addFavorites,
     removeFavorite,
+    deleteMessages,
     openConversation,
     loadMessages,
     loadMoreMessages,

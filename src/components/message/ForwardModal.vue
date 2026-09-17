@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { useDeferredRef } from "@/composables/useDeferredRef";
 import { useChatStore } from "@/stores/useChatStore";
 import { avatarInitial, avatarInitialLen, nameToColor } from "@/utils/color";
@@ -13,8 +13,33 @@ const props = defineProps<{
   kind: MsgKind;
   /** 预览片段（截断后）。 */
   snippet: string;
+  /**
+   * 待转发的条数。`> 1` 即"多选批量转发"：
+   * 会话列表点击只**选中目标**，底部再出现「逐条转发 / 合并转发」两个按钮（微信同款）。
+   */
+  count?: number;
 }>();
-const emit = defineEmits<{ (e: "close"): void; (e: "pick", convId: string): void }>();
+const emit = defineEmits<{
+  (e: "close"): void;
+  (e: "pick", convId: string, mode: "per-message" | "merged"): void;
+}>();
+
+/** 是否多选批量转发。 */
+const multi = computed(() => (props.count ?? 0) > 1);
+/** 多选时选中的目标会话（未选中时底部两个按钮不可点）。 */
+const picked = ref<string | null>(null);
+// 每次打开都清空选择：上一轮的选中态留到下一轮会让"点了转发直接发出去"。
+watch(
+  () => props.open,
+  (v) => {
+    if (v) picked.value = null;
+  },
+);
+
+function onPickConversation(id: string) {
+  if (multi.value) picked.value = id;
+  else emit("pick", id, "per-message");
+}
 
 const chat = useChatStore();
 const keyword = ref("");
@@ -48,6 +73,7 @@ const KIND_LABELS: Record<MsgKind, string> = {
   todo_update: t("todo.title"),
   poll: t("poll.title"),
   poll_vote: t("poll.title"),
+  merge: t("merge.title"),
 };
 const kindLabel = computed(() => KIND_LABELS[props.kind] ?? t("msg.message"));
 </script>
@@ -55,10 +81,15 @@ const kindLabel = computed(() => KIND_LABELS[props.kind] ?? t("msg.message"));
 <template>
   <BaseModal :open="open" :title="t('msg.forwardTo')" @close="emit('close')">
     <div class="space-y-3">
-      <!-- 引用预览 -->
+      <!-- 引用预览：多选时换成"已选 N 条"（逐条内容不适合塞进一行预览） -->
       <div class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-hover)] px-3 py-2 text-xs text-[var(--gosslan-text-2)]">
-        <span class="mr-1 rounded-[var(--gosslan-radius-xs)] bg-[var(--gosslan-panel)] px-1.5 py-0.5 text-[11px] text-[var(--gosslan-text)]">{{ kindLabel }}</span>
-        <span class="align-middle">{{ snippet }}</span>
+        <template v-if="multi">
+          <span class="align-middle">{{ t("multi.forwardPreview", { n: props.count ?? 0 }) }}</span>
+        </template>
+        <template v-else>
+          <span class="mr-1 rounded-[var(--gosslan-radius-xs)] bg-[var(--gosslan-panel)] px-1.5 py-0.5 text-[11px] text-[var(--gosslan-text)]">{{ kindLabel }}</span>
+          <span class="align-middle">{{ snippet }}</span>
+        </template>
       </div>
 
       <input
@@ -76,8 +107,13 @@ const kindLabel = computed(() => KIND_LABELS[props.kind] ?? t("msg.message"));
         <button
           v-for="c in filtered"
           :key="c.id"
-          class="flex h-[52px] w-full items-center gap-3 rounded-[var(--gosslan-radius-md)] px-2 text-left transition hover:bg-[var(--gosslan-hover)]"
-          @click="emit('pick', c.id)"
+          class="flex h-[52px] w-full items-center gap-3 rounded-[var(--gosslan-radius-md)] px-2 text-left transition"
+          :class="[
+            picked === c.id ? 'bg-[var(--gosslan-hover)] ring-1 ring-[var(--gosslan-accent)]' : 'hover:bg-[var(--gosslan-hover)]',
+            // 多选时点会话只是**选中目标**（模式在底部两个按钮上选），不再立即转发
+            multi ? 'cursor-pointer' : '',
+          ]"
+          @click="onPickConversation(c.id)"
         >
           <span
             v-if="c.kind === 'group'"
@@ -96,6 +132,25 @@ const kindLabel = computed(() => KIND_LABELS[props.kind] ?? t("msg.message"));
           <span class="min-w-0 flex-1 truncate text-[13px] text-[var(--gosslan-text)]" :title="c.name">{{ c.name }}</span>
         </button>
         <div v-if="filtered.length === 0" class="py-8 text-center text-sm text-[var(--gosslan-text-2)]">{{ t("msg.noMatch") }}</div>
+      </div>
+
+      <!-- 多选：先选会话，再选转发方式（微信同款：逐条转发 / 合并转发）。
+           单条消息不出现这两个按钮 —— 点会话就直接转发，少一步。 -->
+      <div v-if="multi" class="flex justify-end gap-2">
+        <button
+          class="tap-safe rounded-[var(--gosslan-radius-md)] px-4 py-2 text-sm text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-40"
+          :disabled="!picked"
+          @click="picked && emit('pick', picked, 'per-message')"
+        >
+          {{ t("multi.forwardPerMessage") }}
+        </button>
+        <button
+          class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-accent)] px-4 py-2 text-sm text-white transition hover:opacity-90 disabled:opacity-40"
+          :disabled="!picked"
+          @click="picked && emit('pick', picked, 'merged')"
+        >
+          {{ t("multi.forwardMerged") }}
+        </button>
       </div>
     </div>
   </BaseModal>

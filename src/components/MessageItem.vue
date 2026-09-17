@@ -19,7 +19,7 @@ import { t } from "@/i18n";
 import MessageAvatar from "@/components/message/MessageAvatar.vue";
 import MessageTextBubble from "@/components/message/MessageTextBubble.vue";
 import MessageCodeBubble from "@/components/message/MessageCodeBubble.vue";
-import MessageFileBubble from "@/components/message/MessageFileBubble.vue";
+import MergeCard from "@/components/message/MergeCard.vue";import MessageFileBubble from "@/components/message/MessageFileBubble.vue";
 import MessageImageBubble from "@/components/message/MessageImageBubble.vue";
 import MessageReceipt from "@/components/message/MessageReceipt.vue";
 import BaseModal from "@/components/BaseModal.vue";
@@ -28,7 +28,7 @@ import type { ReactionChip } from "@/utils/reactions";
 import MessageContentModal from "@/components/message/MessageContentModal.vue";
 import MessageContextMenu from "@/components/message/MessageContextMenu.vue";
 import ActionSheet from "@/components/ActionSheet.vue";
-import { Copy, CornerUpLeft, Save, Share2, ImageOff, TextSelect , Undo2, Pin, Star } from "lucide-vue-next";
+import { Check, Copy, CornerUpLeft, ImageOff, ListChecks, Pin, Save, Share2, Star, TextSelect, Undo2 } from "lucide-vue-next";
 import type { MessageRecord, MsgKind } from "@/types";
 
 const props = withDefaults(
@@ -52,6 +52,13 @@ const props = withDefaults(
     reactions?: ReactionChip[];
     /** 该消息当前是否被置顶（决定菜单显示「置顶」还是「取消置顶」） */
     pinned?: boolean;
+    /**
+     * 多选模式（**会话级**状态，由 ChatWindow 持有）：点击本行 = 勾选/取消勾选，
+     * 长按不弹菜单，气泡内的链接/图片/引用一律让路（用透明覆盖层吃掉点击）。
+     */
+    selectMode?: boolean;
+    /** 多选模式下本行是否已选中（决定勾选框的实心态）。 */
+    selected?: boolean;
   }>(),
   {
     prev: null,
@@ -61,6 +68,8 @@ const props = withDefaults(
     groupReaderIds: () => [],
     highlightId: null,
     mentionNames: () => [],
+    selectMode: false,
+    selected: false,
   },
 );
 
@@ -296,6 +305,9 @@ const LONG_PRESS_MOVE_TOLERANCE = 12;
 
 function openActionSheet() {
   if (isTip.value) return;
+  // 多选态下不弹操作面板：这一点是"勾选/取消"，弹面板会让用户分不清选上没有
+  // （与 `shouldStartLongPress` 的 multiSelect 判据同一条口径，这里是第二道闸门）。
+  if (props.selectMode) return;
   sheetOpen.value = true;
   ctxMenuPopup.claim();
 }
@@ -370,6 +382,7 @@ function onTouchStart(e: TouchEvent) {
     isMobile: app.isMobile,
     isSystem: isTip.value,
     selectMode: textSelecting.value,
+    multiSelect: props.selectMode,
     hitSelectable: !!el?.closest(".gosslan-selectable"),
     insideTextBubble: !!el?.closest(".gosslan-bubble-text"),
   });
@@ -420,7 +433,8 @@ onBeforeUnmount(() => {
 
 /** 转发支持：与 MessageContextMenu 同一判据。 */
 function forwardable(k: MsgKind) {
-  return k === "text" || k === "code" || k === "image" || k === "file";
+  // 合并转发卡片本身也可以再转（微信允许"转发聊天记录"），它是自包含的内容。
+  return k === "text" || k === "code" || k === "image" || k === "file" || k === "merge";
 }
 
 /** 图片可预览 URL：新格式走 objectURL（JSON 元数据），旧格式兼容 content=dataURL。 */
@@ -490,6 +504,8 @@ function quoteSnippet(kind: MsgKind, content: string): string {
   if (kind === "image") return t("msg.image");
   if (kind === "code") return t("msg.code");
   if (kind === "file") return t("msg.file");
+  // 合并转发：引用它是"引用一张聊天记录卡片"，正文是 JSON，不能截进引用块
+  if (kind === "merge") return t("merge.title");
   const oneLine = content.replace(/\s+/g, " ").trim();
   return oneLine.length > 40 ? `${oneLine.slice(0, 40)}…` : oneLine;
 }
@@ -505,6 +521,12 @@ const emit = defineEmits<{
   /** 收藏这条消息（微信式：独立存储，删会话/清缓存都不影响） */
   (e: "favorite"): void;
   (e: "open-image", msgId: string): void;
+  /** 点开合并转发卡片（上抛载荷 JSON，由 ChatWindow 统一渲染详情弹窗） */
+  (e: "open-merge", content: string): void;
+  /** 进入多选模式（微信式批量操作） */
+  (e: "multi-select"): void;
+  /** 多选模式下切换本行的勾选态（由覆盖层点击触发） */
+  (e: "toggle-select"): void;
 }>();
 
 /**
@@ -617,6 +639,18 @@ function doFavorite() {
   emit("favorite");
 }
 
+/**
+ * 进入多选模式（微信式批量操作）。
+ *
+ * 与转发/收藏同一条路子：只上抛事件，状态与批量动作都归 `ChatWindow` 管 ——
+ * 桌面右键菜单与移动端底部面板是两套独立模板，两处各存一份"进入多选"的状态必然漂移。
+ */
+function doMultiSelect() {
+  closeActionSheet();
+  closeContextMenu();
+  emit("multi-select");
+}
+
 async function retrySend() {
   const msg = props.message;
   if (msg.status !== "failed" || msg.kind === "file") return;
@@ -662,7 +696,35 @@ async function copyFileToClipboard() {
 <template>
   <!-- group/msg：表情回应条是"消息行"的**兄弟节点**，不在 group/row 的作用域内 ——
        悬停揭示必须挂在这一层，否则 group-hover/msg 永远不触发（那个组名以前根本不存在）。 -->
-  <div class="group/msg py-1.5" :class="highlighted ? 'rounded-[var(--gosslan-radius-md)] bg-primary/5 ring-1 ring-primary/25' : ''">
+  <div
+    class="group/msg relative py-1.5"
+    :class="[
+      highlighted ? 'rounded-[var(--gosslan-radius-md)] bg-primary/5 ring-1 ring-primary/25' : '',
+      selectMode && selected ? 'rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-hover)]' : '',
+    ]"
+  >
+    <!-- 多选态：透明覆盖层 + 左侧勾选框，两者都**绝对定位**，不进 flex 流。
+         为什么必须这样：气泡宽度是 `max-w-[72%]`，勾选框若作为 flex 兄弟插进来会挤窄气泡、
+         正文折行变多，而虚拟列表按 `previewMetrics.COLUMNS_PER_LINE` 估的高度不会跟着变
+         ⇒ 相邻消息互相遮挡（`messageHeight` 文件头专门写过这个坑）。
+         覆盖层的第二个作用：多选时气泡里的链接/图片/引用点击都不该响应，它一并吃掉。
+         提示行（系统消息/已撤回）不可选，所以 `!isTip`。 -->
+    <template v-if="selectMode && !isTip">
+      <button
+        class="absolute inset-0 z-10"
+        :aria-label="selected ? t('multi.deselect') : t('multi.select')"
+        :aria-pressed="selected"
+        @click="emit('toggle-select')"
+      ></button>
+      <span
+        class="pointer-events-none absolute left-0 top-1/2 z-20 flex h-[18px] w-[18px] -translate-y-1/2 items-center justify-center rounded-full border-2"
+        :class="selected
+          ? 'border-[var(--gosslan-accent)] bg-[var(--gosslan-accent)]'
+          : 'border-[var(--gosslan-border)] bg-[var(--gosslan-panel)]'"
+      >
+        <Check v-if="selected" class="h-3 w-3 text-white" aria-hidden="true" />
+      </span>
+    </template>
     <!-- 时间分割线（间隔 ≥ 5 分钟）：居中浅灰小字 -->
     <div v-if="showTimeDivider" class="py-2 text-center text-[11px] text-[var(--gosslan-text-2)]">
       {{ timeDividerText }}
@@ -810,6 +872,14 @@ async function copyFileToClipboard() {
             @refetch="refetchContent"
           />
 
+          <!-- 合并转发的聊天记录（微信式卡片）：定高 96px，与 `messageHeight.MERGE_CARD`
+               的估算对齐（改卡片尺寸必须同时改那里，否则虚拟列表会遮挡相邻消息）。 -->
+          <MergeCard
+            v-else-if="message.kind === 'merge'"
+            :content="message.content"
+            @open="emit('open-merge', message.content)"
+          />
+
           <!-- 未知 kind 的兜底气泡：排版必须与 MessageTextBubble 一致（py-1.5 / leading-normal），
                否则虚拟列表按 `previewMetrics.TEXT_BUBBLE_PADDING` 估的高度会对不上。 -->
           <div v-else class="select-text px-3 py-1.5 text-sm leading-normal" :style="bubbleStyle">
@@ -883,6 +953,7 @@ async function copyFileToClipboard() {
     @cancel-send="doCancelSend"
     @forward="doForward"
     @favorite="doFavorite"
+    @multi-select="doMultiSelect"
   />
 
   <!-- 移动端长按 → 底部操作面板（Action Sheet）。操作与右键菜单同源，只是展示形态不同。 -->
@@ -988,6 +1059,14 @@ async function copyFileToClipboard() {
       >
         <Star class="h-5 w-5 text-[var(--gosslan-text-2)]" />
         {{ t("favorite.add") }}
+      </button>
+      <!-- 多选：移动端同样要有入口（桌面右键菜单是另一套模板） -->
+      <button
+        class="flex items-center gap-3 border-t border-[var(--gosslan-divider)] px-4 py-3 text-left text-[15px] text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
+        @click="doMultiSelect"
+      >
+        <ListChecks class="h-5 w-5 text-[var(--gosslan-text-2)]" />
+        {{ t("multi.enter") }}
       </button>
     </div>
   </ActionSheet>

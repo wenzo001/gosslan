@@ -16,14 +16,16 @@ import ChatHeader from "@/components/chat/ChatHeader.vue";
 import MessageComposer from "@/components/chat/MessageComposer.vue";
 import RenameGroupModal from "@/components/chat/RenameGroupModal.vue";
 import ForwardModal from "@/components/message/ForwardModal.vue";
+import MergeCardModal from "@/components/message/MergeCardModal.vue";
 import ImageLightbox from "@/components/message/ImageLightbox.vue";
 import { estimateMessageHeight } from "@/utils/messageHeight";
 import { MENTION_ALL_TOKEN } from "@/utils/messages";
+import { MAX_MERGE_ITEMS, buildMergePayload } from "@/utils/mergeCard";
 import { foldReactions, hasMyReaction, type ReactionChip } from "@/utils/reactions";
 import { foldPinned, isPinned } from "@/utils/pins";
 import { kindClass } from "@/utils/messageKinds";
 import { previewText } from "@/utils/messages";
-import { ArrowDown, Bluetooth, X, Pin } from "lucide-vue-next";
+import { ArrowDown, Bluetooth, Pin, Share2, Star, Trash2, X } from "lucide-vue-next";
 import type { LinkState, MessageRecord, MsgKind } from "@/types";
 
 const emit = defineEmits<{ (e: "open-share"): void }>();
@@ -125,6 +127,9 @@ watch(
   () => {
     quote.value = null;
     forward.value = null;
+    // 切会话必须退出多选：已选集合里是对**上一个会话**的消息，留着会让"已选 N 条"
+    // 与实际可见内容对不上（批量删除/转发会作用到看不见的消息上）。
+    exitMultiSelect();
   },
 );
 const isPeerFriend = computed(() => {
@@ -555,6 +560,18 @@ async function doForward(convId: string) {
 }
 
 /**
+ * 转发弹窗的落地入口：**单条**走原有路径，**多选**按用户选的模式走批量。
+ *
+ * 为什么用一个入口而不是两个 `@pick`：弹窗只有一个，来源却有两处（单条转发 / 多选转发），
+ * 各绑一个 handler 就得在模板里写 `forward ? a : b` 这种判据 —— 而判据一旦写错，
+ * 表现是"多选转发只发了第一条"（`forward` 恰好也非空时）。这里只判一次。
+ */
+function onForwardPick(convId: string, mode: "per-message" | "merged") {
+  if (forwardSelection.value) return doBatchForward(convId, mode);
+  return doForward(convId);
+}
+
+/**
  * 收藏一条消息。
  *
  * 页面只负责"提示"，内容与媒体副本全在后端决定（见 `add_favorite`）：
@@ -569,6 +586,145 @@ async function doFavorite(msgId: string) {
     app.toast(t(added ? "favorite.added" : "favorite.already"), added ? "success" : "info");
   } catch (e) {
     app.toastError(e, t("favorite.addFail"));
+  }
+}
+
+// ---------------- 多选（微信式批量操作：转发 / 收藏 / 删除） ----------------
+/**
+ * 多选态与已选集合放在**会话层**（这里是唯一持有整条消息列表的地方）。
+ *
+ * 为什么不放在 `MessageItem` 里：VirtualList 会回收滚出视口的行，每条消息各自的 `ref`
+ * 一旦被回收，勾选态就丢了；而"已选 N 条"的计数、底部操作条、批量动作也都需要同一份状态。
+ */
+const multiSelect = ref(false);
+const selectedIds = ref<Set<string>>(new Set());
+const selectedCount = computed(() => selectedIds.value.size);
+/** 多选转发：已选内容先存下来，选完会话再决定逐条还是合并。 */
+const forwardSelection = ref<MessageRecord[] | null>(null);
+/** 合并转发详情弹窗的载荷（null = 未打开）。 */
+const openMerge = ref<string | null>(null);
+/** 批量删除的二次确认（本地删除不可逆）。 */
+const confirmBatchDelete = ref(false);
+
+function enterMultiSelect(msgId: string) {
+  // 微信：从某条消息进入多选时**那一条默认已选中**（否则用户还得再点一下）
+  multiSelect.value = true;
+  selectedIds.value = new Set([msgId]);
+  quote.value = null; // 多选与"引用草稿"是两种意图，不要叠在一起
+  app.setMultiSelectActive(true); // 移动端据此隐藏底部 Tab 栏
+}
+
+function exitMultiSelect() {
+  multiSelect.value = false;
+  selectedIds.value = new Set();
+  forwardSelection.value = null;
+  confirmBatchDelete.value = false;
+  app.setMultiSelectActive(false);
+}
+
+function toggleSelect(msgId: string) {
+  const next = new Set(selectedIds.value);
+  if (next.has(msgId)) next.delete(msgId);
+  else next.add(msgId);
+  selectedIds.value = next;
+}
+
+/** 已选消息，**按会话内顺序**（勾选顺序不该影响合并卡片里的先后）。 */
+const selectedMessages = computed(() => messages.value.filter((m) => selectedIds.value.has(m.msg_id)));
+
+/** 合并转发卡片里"谁说的"：自己用本机昵称，别人用好友/群成员昵称。 */
+function senderOf(rec: MessageRecord): string {
+  const myId = app.device?.device_id;
+  if (myId && rec.sender_id === myId) return app.device?.nickname || t("common.me");
+  return chat.nicknameOf(rec.sender_id);
+}
+
+/** 文件消息的本地路径（内容 JSON 里的 `path`；乐观消息可能还没有）。 */
+function filePathOf(rec: MessageRecord): string {
+  try {
+    return (JSON.parse(rec.content) as { path?: string }).path ?? "";
+  } catch {
+    return "";
+  }
+}
+
+/** 逐条转发一条：文件按本地路径重走传输链路，其余按内容重发。 */
+async function forwardOne(convId: string, m: MessageRecord) {
+  if (m.kind === "file") {
+    const path = filePathOf(m);
+    if (!path) {
+      app.toast(t("chat.toast.fileNotForward"), "info");
+      return;
+    }
+    if (convId.startsWith("group:")) await chat.sendGroupFileTo(convId.slice(6), path);
+    else await chat.sendFileTo(convId, path);
+    return;
+  }
+  await chat.send(convId, m.content, m.kind);
+}
+
+function startBatchForward() {
+  if (!selectedCount.value) return;
+  forwardSelection.value = selectedMessages.value;
+}
+
+/**
+ * 多选转发：`per-message` = 逐条（媒体会真的重发）；`merged` = 合并成一张聊天记录卡片
+ * （媒体只带元信息，见 `buildMergePayload` 的说明）。
+ */
+async function doBatchForward(convId: string, mode: "per-message" | "merged") {
+  const items = forwardSelection.value ?? [];
+  forwardSelection.value = null;
+  if (!items.length) return;
+  if (mode === "merged" && items.length > MAX_MERGE_ITEMS) {
+    app.toast(t("multi.tooMany", { n: MAX_MERGE_ITEMS }), "error");
+    return;
+  }
+  try {
+    if (mode === "merged") {
+      const title = isGroup.value
+        ? t("merge.titleGroup")
+        : t("merge.titleSingle", { name: chat.activeConversation?.name ?? "" });
+      await chat.send(convId, buildMergePayload(items, title, senderOf), "merge");
+    } else {
+      for (const m of items) await forwardOne(convId, m);
+    }
+    app.toast(t("chat.toast.forwarded"), "success");
+    exitMultiSelect();
+  } catch (e) {
+    app.toastError(e, t("chat.toast.forwardFail"));
+  }
+}
+
+/** 批量收藏：逐条落库（后端幂等），结果按"新增 / 已在收藏 / 失败"分别报出来。 */
+async function batchFavorite() {
+  const convId = chat.activeConv;
+  if (!convId || !selectedCount.value) return;
+  const ids = selectedMessages.value.map((m) => m.msg_id);
+  try {
+    const r = await chat.addFavorites(ids, convId);
+    const parts = [t("multi.favoriteDone", { n: r.added })];
+    if (r.already) parts.push(t("multi.favoriteAlready", { n: r.already }));
+    if (r.failed) parts.push(t("multi.favoriteFailed", { n: r.failed }));
+    app.toast(parts.join("，"), r.failed ? "error" : "success");
+    exitMultiSelect();
+  } catch (e) {
+    app.toastError(e, t("favorite.addFail"));
+  }
+}
+
+/** 批量删除（本地删除，微信语义：对方那边照常保留）。 */
+async function doBatchDelete() {
+  confirmBatchDelete.value = false;
+  const convId = chat.activeConv;
+  if (!convId || !selectedCount.value) return;
+  const ids = selectedMessages.value.map((m) => m.msg_id);
+  try {
+    const n = await chat.deleteMessages(convId, ids);
+    app.toast(t("multi.deleted", { n }), "success");
+    exitMultiSelect();
+  } catch (e) {
+    app.toastError(e, t("multi.deleteFail"));
   }
 }
 
@@ -850,11 +1006,16 @@ function onLoadMore() {
             :mention-names="mentionNames"
             :reactions="reactionMap.get(item.msg_id) ?? []"
             :pinned="pinnedIds.includes(item.msg_id)"
+            :select-mode="multiSelect"
+            :selected="selectedIds.has(item.msg_id)"
             @quote="quote = $event"
             @react="toggleReaction(item.msg_id, $event)"
             @pin="togglePin(item.msg_id)"
             @forward="forward = $event"
             @favorite="doFavorite(item.msg_id)"
+            @multi-select="enterMultiSelect(item.msg_id)"
+            @toggle-select="toggleSelect(item.msg_id)"
+            @open-merge="openMerge = $event"
             @locate="locateMessage"
             @open-image="openImageAt"
           />
@@ -874,8 +1035,51 @@ function onLoadMore() {
 
     <!-- 输入区：浅灰底上放一个白底圆角卡片，无顶部分割线 -->
     <div class="shrink-0 bg-[var(--gosslan-chat)] px-4 pb-3 pt-2">
+      <!-- 多选态：输入区被操作条**替换**（微信同款）。
+           高度固定 4rem，与 Composer 的最小高度一致 —— 否则进出多选时消息区高度跳变，
+           虚拟列表会跟着滚一下。 -->
+      <div
+        v-if="multiSelect"
+        class="flex h-16 items-center justify-between gap-2 rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-panel)] px-3"
+      >
+        <button
+          class="tap-safe rounded-[var(--gosslan-radius-md)] px-3 py-1.5 text-[13px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+          @click="exitMultiSelect"
+        >
+          {{ t("common.cancel") }}
+        </button>
+        <span class="text-[13px] text-[var(--gosslan-text-2)]">
+          {{ t("multi.selected", { n: selectedCount }) }}
+        </span>
+        <div class="flex items-center gap-1">
+          <button
+            class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] px-2.5 py-1.5 text-[13px] text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-40"
+            :disabled="!selectedCount"
+            @click="startBatchForward"
+          >
+            <Share2 class="h-4 w-4" aria-hidden="true" />
+            {{ t("multi.forward") }}
+          </button>
+          <button
+            class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] px-2.5 py-1.5 text-[13px] text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-40"
+            :disabled="!selectedCount"
+            @click="batchFavorite"
+          >
+            <Star class="h-4 w-4" aria-hidden="true" />
+            {{ t("multi.favorite") }}
+          </button>
+          <button
+            class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] px-2.5 py-1.5 text-[13px] text-[var(--gosslan-danger-ink)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-40"
+            :disabled="!selectedCount"
+            @click="confirmBatchDelete = true"
+          >
+            <Trash2 class="h-4 w-4" aria-hidden="true" />
+            {{ t("multi.delete") }}
+          </button>
+        </div>
+      </div>
       <MessageComposer
-        v-if="isGroup || isPeerFriend || isSelfChat"
+        v-else-if="isGroup || isPeerFriend || isSelfChat"
         :key="chat.activeConv ?? 'none'"
         :conv-id="chat.activeConv"
         :quote="quote"
@@ -935,13 +1139,38 @@ function onLoadMore() {
 
     <!-- 转发弹窗 -->
     <ForwardModal
-      v-if="forward"
+      v-if="forward || forwardSelection"
       :open="true"
-      :kind="forward.kind"
-      :snippet="forward.snippet"
-      @close="forward = null"
-      @pick="doForward"
+      :kind="forward?.kind ?? 'text'"
+      :snippet="forward?.snippet ?? ''"
+      :count="forwardSelection?.length ?? 0"
+      @close="forward = null; forwardSelection = null"
+      @pick="onForwardPick"
     />
+
+    <!-- 合并转发卡片详情 -->
+    <MergeCardModal :open="!!openMerge" :content="openMerge ?? ''" @close="openMerge = null" />
+
+    <!-- 批量删除的二次确认：本地删除不可逆（微信也是"删除后无法恢复"） -->
+    <BaseModal :open="confirmBatchDelete" :title="t('multi.delete')" @close="confirmBatchDelete = false">
+      <p class="text-sm leading-relaxed text-[var(--gosslan-text)]">
+        {{ t("multi.deleteConfirm", { n: selectedCount }) }}
+      </p>
+      <div class="mt-5 flex justify-end gap-2">
+        <button
+          class="tap-safe rounded-[var(--gosslan-radius-md)] px-4 py-2 text-sm text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+          @click="confirmBatchDelete = false"
+        >
+          {{ t("common.cancel") }}
+        </button>
+        <button
+          class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-2 text-sm text-white transition hover:opacity-90"
+          @click="doBatchDelete"
+        >
+          {{ t("common.delete") }}
+        </button>
+      </div>
+    </BaseModal>
 
     <!-- 修改群名称（仅群主可见入口） -->
     <RenameGroupModal

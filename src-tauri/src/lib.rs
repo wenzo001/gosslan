@@ -301,6 +301,7 @@ pub fn run() {
             commands::add_favorite,
             commands::remove_favorite,
             commands::read_favorite_preview,
+            commands::delete_messages,
             commands::notify_desktop,
             commands::send_test_notification,
             commands::get_topology,

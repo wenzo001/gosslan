@@ -205,6 +205,14 @@ export const api = {
   readFavoritePreview: (id: string, maxBytes: number) =>
     invoke<ArrayBuffer | number[]>("read_favorite_preview", { id, maxBytes }),
 
+  /**
+   * 本地删除若干条消息（微信语义：**只删本机**，对方那边照常保留），返回实际删除条数。
+   *
+   * 一次 IPC 一整批：后端在一个事务里删消息 + 清待发队列 + 重算会话摘要，
+   * 前端循环调单条会让同一会话的摘要被重算 N 次。
+   */
+  deleteMessages: (msgIds: string[]) => invoke<number>("delete_messages", { msgIds }),
+
   setShareDir: (path: string) => invoke<void>("set_share_dir", { path }),
   getShareDir: () => invoke<string | null>("get_share_dir"),
   getDownloadsDir: () => invoke<string>("get_downloads_dir"),

@@ -58,7 +58,9 @@ export type MsgKind =
   | "todo"
   | "todo_update"
   | "poll"
-  | "poll_vote";
+  | "poll_vote"
+  /** 合并转发的聊天记录（微信式卡片）。Bubble 类：进时间线、计未读、可搜索。 */
+  | "merge";
 
 /** 表情回应的事件载荷（kind = "reaction" 时 content 的 JSON 形态）。 */
 export interface ReactionPayload {
