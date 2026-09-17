@@ -2,7 +2,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppSettings, CacheInfo, ChatSearchGroup, CleanupReport, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, FileDoneInfo, FileFailedInfo, FileProgress, Friend, Group, GroupFileEntry, GroupReadInfo, InterfaceCandidate, InterfaceInfo, LinkState, LogEntry, MessageRecord, Peer, PeerReadInfo, PendingRequest, RoutedEndpoint, RuntimeSnapshot, SearchResult, ShareEntry, TopologyInfo, TransferInfo } from "@/types";
+import type { AppSettings, CacheInfo, ChatSearchGroup, CleanupReport, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, FileDoneInfo, FileFailedInfo, FileProgress, FavoriteEntry, Friend, Group, GroupFileEntry, GroupReadInfo, InterfaceCandidate, InterfaceInfo, LinkState, LogEntry, MessageRecord, Peer, PeerReadInfo, PendingRequest, RoutedEndpoint, RuntimeSnapshot, SearchResult, ShareEntry, TopologyInfo, TransferInfo } from "@/types";
 
 export const api = {
   /**
@@ -174,6 +174,20 @@ export const api = {
   /** 媒体是否仍在本机（未被「存储清理」删除）。仅"确定已删除"时返回 false，
    *  查不到消息（在途的乐观消息）返回 true——不能把在途消息误标成已清理。 */
   mediaPresent: (msgId: string) => invoke<boolean>("media_present", { msgId }),
+
+  /**
+   * 收藏（微信式）：**独立本地存储** —— 原消息/会话被删、缓存被清理都不影响。
+   *
+   * `addFavorite` 只传 `msgId` / `convId`：内容一律以后端库里的消息为准。
+   * 让前端把 content 传上去的话，收藏夹里就可能存进一份与消息记录不一致的副本。
+   */
+  listFavorites: () => invoke<FavoriteEntry[]>("list_favorites"),
+  addFavorite: (msgId: string, convId: string) =>
+    invoke<FavoriteEntry>("add_favorite", { msgId, convId }),
+  removeFavorite: (id: string) => invoke<void>("remove_favorite", { id }),
+  /** 收藏**副本**的预览字节（图片）。契约同 `readFilePreview`，但按收藏 id 而不是 msg_id 定位。 */
+  readFavoritePreview: (id: string, maxBytes: number) =>
+    invoke<ArrayBuffer | number[]>("read_favorite_preview", { id, maxBytes }),
 
   setShareDir: (path: string) => invoke<void>("set_share_dir", { path }),
   getShareDir: () => invoke<string | null>("get_share_dir"),

@@ -287,6 +287,31 @@ pub struct MessageRecord {
     pub status: String,
 }
 
+/// 一条收藏（与前端一致）。
+///
+/// `content` 是**收藏当时的快照**：图片/文件类收藏的 `content.path` 已被改写成收藏副本路径
+/// （而不是原消息里的下载目录路径），所以原消息被清理、会话被删之后这条记录仍然能打开。
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Favorite {
+    pub id: String,
+    pub msg_id: String,
+    pub conv_id: String,
+    pub sender_id: String,
+    pub kind: String, // text | code | image | file
+    pub content: String,
+    /// 原消息时间（列表里显示"这条内容是什么时候的"）
+    pub ts: i64,
+    /// 收藏时间（列表排序键）
+    pub favorited_at: i64,
+    /// 收藏副本的绝对路径（仅 image/file，其余为 None）
+    pub media_path: Option<String>,
+    pub media_size: i64,
+    /// 副本是否还在磁盘上。**由命令层填充**（db 层不碰文件系统）：列表里给前端渲染
+    /// 「已清理」占位用，避免用户点开才发现打不开。
+    #[serde(default)]
+    pub available: bool,
+}
+
 /// 会话摘要（会话列表）
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Conversation {
@@ -745,6 +770,13 @@ pub struct AppState {
     pub downloads_dir: Mutex<PathBuf>,
     /// 缓存目录：图片 / 音频 / 文件等二进制落盘于此（SQLite 不存 BLOB）
     pub cache_dir: PathBuf,
+    /// 收藏媒体的**独立副本**目录（`app_data/favorites/media`）。
+    ///
+    /// 刻意与 `cache_dir` / `downloads_dir` 分开：那两个目录会被「存储清理」按配额与保留期
+    /// 删除（见 `storage/cache_cleaner.rs`），而收藏是"用户明确要留住的东西"
+    /// —— 微信的收藏也是独立存储，删聊天记录、清缓存都不该把它弄丢。
+    /// 所以它**不在** `media_dirs` 里，清理逻辑不会碰它；只有「清除数据」会显式清空。
+    pub favorites_dir: PathBuf,
     /// SQLite 数据库文件路径（存储页展示占用用；含 -wal/-shm 伴生文件）。
     pub db_path: PathBuf,
     /// 应用级运行日志（内存 ring buffer + 落盘文件），供「运行日志」页读取与排查。
@@ -904,6 +936,9 @@ impl AppState {
         std::fs::create_dir_all(&default_downloads).ok();
         let cache_dir = app_data.join("cache");
         std::fs::create_dir_all(&cache_dir).ok();
+        // 收藏副本目录：独立于 cache/downloads，存储清理不碰（见字段注释）。
+        let favorites_dir = app_data.join("favorites").join("media");
+        std::fs::create_dir_all(&favorites_dir).ok();
 
         // 多开支持：`--instance N`（或环境变量 GOSSLAN_INSTANCE）→ 独立数据库 / 端口 / 设备指纹
         let instance = instance_id();
@@ -1058,6 +1093,7 @@ impl AppState {
             ui_lang: AtomicU8::new(UI_LANG_UNKNOWN),
             downloads_dir: Mutex::new(downloads_dir),
             cache_dir,
+            favorites_dir,
             db_path,
             logger,
             identity,

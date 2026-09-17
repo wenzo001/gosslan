@@ -6,7 +6,8 @@ use std::path::Path;
 use rusqlite::{params, Connection, OptionalExtension, Result};
 
 use crate::state::{
-    Conversation, Friend, Group, GroupFile, GroupFileRecipient, MessageRecord, TransferInfo,
+    Conversation, Favorite, Friend, Group, GroupFile, GroupFileRecipient, MessageRecord,
+    TransferInfo,
 };
 
 /// 建表脚本（与 `schema.sql` 保持一致）
@@ -186,6 +187,29 @@ CREATE TABLE IF NOT EXISTS pending_group_reads (
     PRIMARY KEY (group_id, peer_id)
 );
 CREATE INDEX IF NOT EXISTS idx_pending_group_reads_peer ON pending_group_reads(peer_id);
+
+-- 收藏（微信式）：**独立本地存储**，不随会话删除、不随消息清理消失。
+--
+-- 为什么是独立表而不是像置顶/待办那样发一条 kind='pin' 的静默消息：那些是"消息的派生状态"，
+-- 随消息生命周期走；收藏是"用户对某条内容的**独立副本**"——原消息被删、会话被删、
+-- 本机存储清理之后，收藏仍要能打开。所以这里存 content 快照，并把媒体**复制**一份到
+-- 收藏专用目录（`media_path`），副本路径已改写进 `content.path`。
+--
+-- UNIQUE(msg_id)：同一条消息重复收藏是幂等的（INSERT OR IGNORE），不会攒出两条。
+CREATE TABLE IF NOT EXISTS favorites (
+    id           TEXT PRIMARY KEY,              -- uuid：删除/预览都按它定位
+    msg_id       TEXT NOT NULL,
+    conv_id      TEXT NOT NULL,
+    sender_id    TEXT NOT NULL,
+    kind         TEXT NOT NULL,                 -- text | code | image | file
+    content      TEXT NOT NULL,                 -- 收藏时的快照（媒体已改写成副本路径）
+    ts           INTEGER NOT NULL,              -- 原消息时间
+    favorited_at INTEGER NOT NULL,              -- 收藏时间（列表排序键）
+    media_path   TEXT,                          -- 收藏副本绝对路径（仅 image/file）
+    media_size   INTEGER NOT NULL DEFAULT 0
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_favorites_msg  ON favorites(msg_id);
+CREATE INDEX        IF NOT EXISTS idx_favorites_time ON favorites(favorited_at DESC);
 "#;
 
 /// 打开（或创建）数据库并执行迁移。
@@ -863,6 +887,24 @@ pub fn get_message_preview_source(conn: &Connection, msg_id: &str) -> Option<(St
         "SELECT sender_id, content FROM messages WHERE msg_id = ?1",
         params![msg_id],
         |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .optional()
+    .ok()
+    .flatten()
+}
+
+/// 收藏取源：按 msg_id 返回 `(sender_id, kind, content, ts)`。
+///
+/// 收藏的**内容一律以库里的消息为准**（前端只传 msg_id）：如果让前端把 content 传上来，
+/// 收藏夹里就可能存进一份与消息记录不一致的副本，而"收藏"最不该做的事就是记录失真。
+pub fn get_favorite_source(
+    conn: &Connection,
+    msg_id: &str,
+) -> Option<(String, String, String, i64)> {
+    conn.query_row(
+        "SELECT sender_id, kind, content, ts FROM messages WHERE msg_id = ?1",
+        params![msg_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
     )
     .optional()
     .ok()
@@ -1749,6 +1791,121 @@ pub fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+// ---------------- 收藏 ----------------
+
+/// 收藏表的列清单（读与写共用，避免两处列顺序漂移）。
+const FAVORITE_COLS: &str =
+    "id, msg_id, conv_id, sender_id, kind, content, ts, favorited_at, media_path, media_size";
+
+fn favorite_from_row(r: &rusqlite::Row<'_>) -> Result<Favorite> {
+    Ok(Favorite {
+        id: r.get(0)?,
+        msg_id: r.get(1)?,
+        conv_id: r.get(2)?,
+        sender_id: r.get(3)?,
+        kind: r.get(4)?,
+        content: r.get(5)?,
+        ts: r.get(6)?,
+        favorited_at: r.get(7)?,
+        media_path: r.get(8)?,
+        media_size: r.get(9)?,
+        // 文件系统的事归命令层：db 层只负责"这条记录在不在"，不 stat 磁盘。
+        available: false,
+    })
+}
+
+/// 写入一条收藏。返回 `true` = 这次真的插入了；`false` = **同一条消息早就收藏过**。
+///
+/// 幂等靠 `UNIQUE(msg_id)` + `INSERT OR IGNORE`：重复收藏不报错也不产生第二行。
+/// 调用方据此决定要不要提示"已在收藏中"，以及**要不要删掉刚复制出来的副本文件**
+/// （幂等命中时那份复制是多余的，留着就是磁盘垃圾）。
+pub fn insert_favorite(conn: &Connection, f: &Favorite) -> Result<bool> {
+    let n = conn.execute(
+        "INSERT OR IGNORE INTO favorites
+           (id, msg_id, conv_id, sender_id, kind, content, ts, favorited_at, media_path, media_size)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        params![
+            f.id,
+            f.msg_id,
+            f.conv_id,
+            f.sender_id,
+            f.kind,
+            f.content,
+            f.ts,
+            f.favorited_at,
+            f.media_path,
+            f.media_size
+        ],
+    )?;
+    Ok(n > 0)
+}
+
+pub fn get_favorite_by_msg(conn: &Connection, msg_id: &str) -> Result<Option<Favorite>> {
+    conn.query_row(
+        &format!("SELECT {FAVORITE_COLS} FROM favorites WHERE msg_id = ?1"),
+        params![msg_id],
+        favorite_from_row,
+    )
+    .optional()
+}
+
+/// 按收藏 id 取一行（预览/删除前的路径解析用）。
+pub fn get_favorite(conn: &Connection, id: &str) -> Result<Option<Favorite>> {
+    conn.query_row(
+        &format!("SELECT {FAVORITE_COLS} FROM favorites WHERE id = ?1"),
+        params![id],
+        favorite_from_row,
+    )
+    .optional()
+}
+
+/// 全部收藏，**新的在前**（`favorited_at DESC`）。
+pub fn list_favorites(conn: &Connection) -> Result<Vec<Favorite>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {FAVORITE_COLS} FROM favorites ORDER BY favorited_at DESC, id DESC"
+    ))?;
+    let rows = stmt.query_map([], favorite_from_row)?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// 删除一条收藏，返回被删的那一行（调用方要据此删掉副本文件）。
+pub fn delete_favorite(conn: &Connection, id: &str) -> Result<Option<Favorite>> {
+    let row = conn
+        .query_row(
+            &format!("SELECT {FAVORITE_COLS} FROM favorites WHERE id = ?1"),
+            params![id],
+            favorite_from_row,
+        )
+        .optional()?;
+    if row.is_some() {
+        conn.execute("DELETE FROM favorites WHERE id = ?1", params![id])?;
+    }
+    Ok(row)
+}
+
+/// 把消息 content 里的本地路径换成收藏副本路径（其余字段原样保留）。
+///
+/// 为什么要改写而不是另存一个字段：前端的渲染与打开/另存全都只认 `content.path`
+/// （见 `utils/localFile.ts` 的路径入参），改写这一处就让收藏**零改动复用**整套渲染。
+///
+/// 解析失败时**原样返回**：宁可让这条收藏指向旧路径（打不开，界面上显示「已清理」），
+/// 也不能因为一段畸形 JSON 让"收藏"这个动作整个失败。
+pub fn favorite_content_with_path(content: &str, new_path: &str) -> String {
+    match serde_json::from_str::<serde_json::Value>(content) {
+        Ok(mut v) => {
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert(
+                    "path".to_string(),
+                    serde_json::Value::String(new_path.to_string()),
+                );
+                return v.to_string();
+            }
+            content.to_string()
+        }
+        Err(_) => content.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1800,6 +1957,80 @@ mod tests {
         assert_eq!(list_friends(&conn).unwrap().len(), 2);
         remove_friend(&conn, "f1").unwrap();
         assert_eq!(list_friends(&conn).unwrap().len(), 1);
+    }
+
+    fn fav(id: &str, msg_id: &str, favorited_at: i64) -> Favorite {
+        Favorite {
+            id: id.into(),
+            msg_id: msg_id.into(),
+            conv_id: "c1".into(),
+            sender_id: "peer".into(),
+            kind: "text".into(),
+            content: "你好".into(),
+            ts: 100,
+            favorited_at,
+            media_path: None,
+            media_size: 0,
+            available: false,
+        }
+    }
+
+    /// 收藏三件套：写入 → 列出（新的在前）→ 删除。
+    ///
+    /// **幂等是行为约定**，不是实现细节：消息菜单里的「收藏」可以被重复点（用户忘了收没收过），
+    /// 重复点必须不产生第二条 —— 否则收藏夹里会出现两份一模一样的条目，
+    /// 而两份指向同一个副本文件，删掉其中一条还会把另一条的文件连带删掉。
+    #[test]
+    fn favorite_insert_list_delete_and_idempotency() {
+        let conn = mem();
+        assert!(
+            insert_favorite(&conn, &fav("f1", "m1", 1000)).unwrap(),
+            "首次收藏应写入"
+        );
+        assert!(
+            !insert_favorite(&conn, &fav("f2", "m1", 2000)).unwrap(),
+            "同一条消息再次收藏必须是幂等命中（返回 false，供调用方提示「已在收藏中」并删掉多余副本）"
+        );
+        assert!(insert_favorite(&conn, &fav("f3", "m2", 3000)).unwrap());
+
+        let all = list_favorites(&conn).unwrap();
+        assert_eq!(all.len(), 2, "幂等命中不该产生第二行");
+        assert_eq!(all[0].id, "f3", "应按收藏时间倒序（新的在前）");
+
+        assert_eq!(get_favorite_by_msg(&conn, "m1").unwrap().unwrap().id, "f1");
+        assert!(get_favorite_by_msg(&conn, "missing").unwrap().is_none());
+
+        let removed = delete_favorite(&conn, "f1")
+            .unwrap()
+            .expect("应返回被删的那一行");
+        assert_eq!(removed.msg_id, "m1", "返回值要带副本路径，调用方才能删文件");
+        assert_eq!(list_favorites(&conn).unwrap().len(), 1);
+        assert!(
+            delete_favorite(&conn, "f1").unwrap().is_none(),
+            "再删同一条应返回 None"
+        );
+    }
+
+    /// content 路径改写：**只动 path**，name/size/sha256/subtype 必须原样保留 ——
+    /// 前端的文件卡片、图片 MIME 推断全靠这几个字段，改动它们等于把收藏变成另一个文件。
+    #[test]
+    fn favorite_content_rewrites_only_the_path() {
+        let src = r#"{"name":"a.png","path":"/downloads/a.png","size":12,"sha256":"ab","subtype":"image"}"#;
+        let out = favorite_content_with_path(src, "/fav/media/f1.png");
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["path"], "/fav/media/f1.png");
+        assert_eq!(v["name"], "a.png");
+        assert_eq!(v["size"], 12);
+        assert_eq!(v["sha256"], "ab");
+        assert_eq!(v["subtype"], "image");
+    }
+
+    /// 畸形 content 不能让"收藏"这个动作失败：原样返回。
+    /// （界面上会显示「已清理」占位，这比"点了没反应"好得多。）
+    #[test]
+    fn favorite_content_keeps_malformed_input_untouched() {
+        assert_eq!(favorite_content_with_path("not json", "/x"), "not json");
+        assert_eq!(favorite_content_with_path("[1,2]", "/x"), "[1,2]");
     }
 
     /// Gossip 路径携带的 sender_pubkey 必须能补充到 friends 表（COALESCE 行为），

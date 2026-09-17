@@ -84,6 +84,30 @@ export interface MessageRecord {
   status: string;
 }
 
+/**
+ * 一条收藏（微信式）。
+ *
+ * **独立于消息存储**：`content` 是收藏当时的快照，图片/文件的 `content.path` 已指向
+ * 收藏副本（不是原消息所在的下载目录）—— 所以删会话、清缓存之后这条收藏仍然打得开。
+ */
+export interface FavoriteEntry {
+  id: string;
+  msg_id: string;
+  conv_id: string;
+  sender_id: string;
+  kind: MsgKind;
+  content: string;
+  /** 原消息时间（列表里显示"这条内容是什么时候的"） */
+  ts: number;
+  /** 收藏时间（列表排序键，新的在前） */
+  favorited_at: number;
+  /** 收藏副本的绝对路径（仅 image/file，纯文本为 null） */
+  media_path: string | null;
+  media_size: number;
+  /** 副本是否还在磁盘上（后端在列表查询时填）；false ⇒ 渲染「已清理」占位 */
+  available: boolean;
+}
+
 export interface Conversation {
   id: string;
   kind: "single" | "group";
@@ -146,8 +170,7 @@ export interface FileMeta {
   subtype: string;
 }
 
-/** 统一内容传输状态（ADR-0019）：前端气泡据此显示发送中/等待/重试/完成。 */
-export interface ContentTransfer {
+/** 统一内容传输状态（ADR-0019）：前端气泡据此显示发送中/等待/重试/完成。 */export interface ContentTransfer {
   cid: string;
   peerId: string;
   groupId: string | null;

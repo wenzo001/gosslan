@@ -12,11 +12,19 @@ defineProps<{
   /** 正在打开独立窗口时的忙碌态（单飞/防抖状态在 `useWindowLauncher` 里，见该文件）。 */
   settingsOpening?: boolean;
   logsOpening?: boolean;
+  /**
+   * 收藏面板是否展开。
+   *
+   * 收藏**不是**一个 view（它打开的是浮层，主面板仍停在聊天/通讯录上），
+   * 所以它没有"选中态底色"，只有图标填充跟着面板开关走。
+   */
+  favoritesOpen?: boolean;
 }>();
 const emit = defineEmits<{
   (e: "update:view", v: "chats" | "contacts"): void;
   (e: "open-settings"): void;
   (e: "open-logs"): void;
+  (e: "open-favorites"): void;
 }>();
 
 const app = useAppStore();
@@ -126,6 +134,29 @@ const initials = computed(() => avatarInitial(app.device?.nickname));
           :count="chat.pendingRequests.length"
           class="absolute -right-0.5 -top-0.5"
         />
+      </button>
+      <!-- 收藏（微信最左侧栏就是这个位置）。
+           自绘五角星而不是 lucide 的 Star：本栏的选中态靠"填充成实心"表达，
+           而 lucide 的线性图标填充后会变成墨团（见上面「聊天/通讯录」的说明）。 -->
+      <button
+        class="relative flex h-11 w-11 items-center justify-center rounded-[var(--gosslan-radius-lg)] transition"
+        :class="favoritesOpen
+          ? 'text-[var(--gosslan-rail-text-active)]'
+          : 'text-[var(--gosslan-rail-text)] hover:bg-[var(--gosslan-rail-hover)]'"
+        :title="t('nav.favorites')"
+        :aria-label="t('nav.favorites')"
+        @click="emit('open-favorites')"
+      >
+        <svg
+          viewBox="0 0 24 24"
+          class="h-[22px] w-[22px]"
+          :fill="favoritesOpen ? 'currentColor' : 'none'"
+          stroke="currentColor"
+          stroke-width="1.9"
+          stroke-linejoin="round"
+        >
+          <path d="M12 3.6l2.6 5.3 5.8.8-4.2 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.2-4.1 5.8-.8z" />
+        </svg>
       </button>
     </div>
 
