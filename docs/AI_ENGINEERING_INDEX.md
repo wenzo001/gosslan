@@ -5,11 +5,24 @@
 1. `AI_RULES.md`
 2. `docs/acceptance/1.0-release.md` — current goal and acceptance bar
 3. `AI_PROJECT_HANDOFF.md`
-4. `docs/protocol-invariants.md` — when touching protocol / network / crypto / DB
-5. `docs/design-guidelines.md` — when touching UI (圆角 / hover / 配色 / 窗口边界)
-6. Relevant ADR
-7. Relevant tests
-8. `CHANGELOG.md` history when touching a previously-fixed area
+4. `docs/domains.data.mjs` — **领域图**：先确认「我改的是哪个领域、它的边界在哪」
+5. `docs/migration-ledger.md` — **迁移台账**：这个关注点**有几个家、哪个在跑数据**
+6. `docs/protocol-invariants.md` — when touching protocol / network / crypto / DB
+7. `docs/design-guidelines.md` — when touching UI (圆角 / hover / 配色 / 窗口边界)
+8. Relevant ADR
+9. Relevant tests
+10. `CHANGELOG.md` history when touching a previously-fixed area
+
+> ⚠️ **第 4、5 条为什么必须排这么前**（2026-09-16 加入）：本仓库处在一次**半完成的 ADR
+> 迁移**中，同一个关注点常常有**两个家**（老的还在跑数据、新的部分接线）。不先确认
+> 「哪个家在跑数据」就直接 grep 改代码，会改到那个**看起来更对但没在跑**的新家上 ——
+> 症状不变或换个形态，于是出现「改完这个 bug 又冒那个」。
+>
+> 历史代价：`4.18.7→4.18.10` 连着四版修同一个 BLE 分片预算问题（三份实现）；
+> macOS 与 Android 各自藏着一份独立实现，分别到 Phase 3 / Phase 4 才被发现。
+>
+> 由 `scripts/check-domain-map.mjs` 守门（路径存在、一文件不属两域、无文件漏归属、
+> `enforce` 只能开在已收口的单家领域）。
 
 ## Templates
 

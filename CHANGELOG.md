@@ -10,6 +10,69 @@
 
 ## [Unreleased]
 
+### Added (领域图 + 迁移台账：先回答「这个关注点有几个家、哪个在跑数据」 —— 2026-09-16)
+
+**这是一次只读审计**（没有改任何业务代码），产出两份文件 + 一个守门脚本。
+
+**背景**：本仓库处在一次**半完成的 ADR 迁移**中（`network/` 老栈 → `transport/` +
+`discovery/` + `mesh/` 新栈）。此时「域 = 某个目录」是**错的地图** ——
+AI 会照着它去改那个"看起来更对但没在跑"的新家，而真跑数据的是老家，
+于是症状不变或换个形态，出现「改完这个 bug 又冒那个」。
+
+**产出**：
+
+- `docs/domains.data.mjs` —— 领域图（11 个领域：identity / presence / friendship /
+  messaging / routing / transport / files / persistence / platform / observability /
+  presentation）。每个领域强制带 `activeHome`（**哪个家在跑数据**）与 `enforce`。
+- `docs/migration-ledger.md` —— 迁移台账，逐条给出 `file:line` 证据。
+- `scripts/check-domain-map.mjs` —— 守门（见下）。
+- 两份文件挂进 `AI_ENGINEERING_INDEX.md` 的必读清单**第 4、5 位**（在 protocol-invariants 之前）——
+  否则它们又是孤儿文档。
+
+**⚠️ 为什么是 `.mjs` 而不是计划里的 `domains.yml`**：实测**工具链里没有 YAML 解析器**
+（Node 无 `yaml`/`js-yaml`、Python 无 `pyyaml`，只有 Ruby 有）。为一个守门脚本引入 Ruby 依赖
+不合适，而**在守门脚本里手写 YAML 子集解析器更糟** —— 解析错了会让守门静默失效，
+那比没有守门更危险。`.mjs` 零解析、支持注释，且 Phase 6 的 Change Budget 能直接 `import` 它拿 `tier`。
+
+**台账的核心结论**（11 个关注点）：
+
+| 状态 | 数量 | 明细 |
+|---|---:|---|
+| ✅ 已收口 / 单家 | 6 | TCP 帧原语、BLE 外设、BLE 载荷预算、mesh、content、storage |
+| ⚠️ **真双家未收口** | 1 | **局域网发现**：`network/discovery.rs`（**活**，`network/mod.rs:54` 起 spawn）vs `discovery/`（`DiscoveryManager`/`LanDiscovery` **无任何生产调用点**） |
+| ℹ️ 三家但属正常分层 | 1 | **BLE 中央**：`network/ble.rs`（策略）+ `transport/bluetooth.rs::driver`（字节级）—— 有 7 处真实调用，不要合并 |
+| ⚠️ 部分未接线 | 2 | 传输抽象（`route()` 分流）、文件切片中继（`ChunkData`/`RelayPlan`/`impl RelayManager`） |
+
+「传输」一个关注点今天有**三个家**：TCP 数据面走 `network/`、BLE 数据面走
+`transport/bluetooth.rs::driver` + 三个外设模块、控制面（开关/状态/分流）走 `transport/mod.rs`。
+
+**命名撞车 3 处**（未消解，且作者已不得不用注释区分）：
+两个 `transport.rs`（`network/` vs `transport/`）、两个 "relay"
+（`relay_manager.rs` 是**文件切片**、`mesh::router` 是**路由**，`lib.rs:19` 那句"无关"注释就是化石）、
+两个 "discovery"（活的那个名字更难猜）。
+
+**上报 2 条过期的「未接线」声明**（按 `AI_ENGINEERING_INDEX` 的规矩：文档与代码冲突不得静默择一）：
+① `transport/bluetooth.rs:37`「已实现、**尚未接线**」——实测 `network/ble.rs` 有 7 处调用，**已接线**
+（未接线的只是同文件的 `BluetoothTransport` 占位实现与 `route()`）；
+② `transport/tcp.rs:14`「旁路阶段：待接线后移除」——实测 `network/transport.rs:40,57,62` 已用它的
+帧原语并自述为"单一真相源"。**本轮只上报、不改**（Phase 5 是只读审计）。
+这与 Phase 3 修掉的 `ble_framing.rs` 那句是同一个病：**"待接线"的注释在接线之后没人回头改**，
+而且都挂着 `#[allow(dead_code)]`，把编译器本来会给出的提示一起静音了。
+
+**新守门 `check-domain-map.mjs` 的 6 条判据**：A 结构（字段齐/id 唯一/tier 合法）·
+B 路径必须存在 · C 一个文件最多属一个领域 · D `coverageRoots` 下不许有无主文件（必须显式列进
+`unmapped`，不能靠"没提到"蒙混）· E `activeHome` 必须是自己的路径之一 ·
+**F `enforce: true` 只能开在已收口的单家领域** —— 这条把「边界收口完成一个，打开一个」
+从口号变成机器判定，也正是 Phase 6 的前置。
+
+**守门脚本立刻抓出了我自己地图里的 8 个问题**（1 个不存在的路径 + 5 个文件被两域认领 +
+2 个无主文件 + 1 个 `activeHome` 不在自己的 paths 里）—— 这就是「地图错了比没有地图更危险」
+的现场实例。其中"两域认领"暴露了我一个建模错误：`mesh/` 的文件被 presence 与 routing 同时认领，
+而正确的说法是 **presence 只是「消费」`PeerCandidate`，不认领 mesh 的文件** ⇒ 已改为 `consumes` 字段。
+
+**验证**：`npm run verify` **11 步全绿**（132s）；领域图守门 **219 个文件无重叠、无遗漏**；
+新增 3 条非空转用例（改坏即 FAIL、恢复即 PASS）；护栏 **97 → 100**。
+
 ### Fixed (Android 外设的载荷预算自己算了一遍 —— 硬编码 512/20 且放行装不下分片头的值 —— 2026-09-16)
 
 **这是 Phase 3「BLE 单一事实来源」漏掉的第三处**，由 Phase 4 的 Android 编译门禁当场抓出。

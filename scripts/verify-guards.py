@@ -1776,6 +1776,63 @@ CASES: list[Case] = [
         expect_fail_hint="找不到对规范换算的调用",
         tags=["ble", "android", "new-guards"],
     ),
+    # ---------------- 领域图（docs/domains.data.mjs + check-domain-map.mjs） ----------------
+    # 地图错了比没有地图更危险 —— 它会被当成事实执行。下面三条守的是"地图不许说谎"里
+    # **机器能守**的那部分（`activeHome` 是否属实只能靠人诚实 + 台账里的 file:line 证据）。
+    Case(
+        name="领域图：enforce 不能开在还有第二个家的领域（边界收口完成一个，打开一个）",
+        why="`enforce: true` 表示「该领域边界已是事实、可由机器守住」（例如禁止跨领域直接引用）。"
+        "若它还有第二个家（迁移中）就把闸门打开，第一天就会全红 —— 而红门禁会催生绕过，"
+        "门禁一旦被绕过一次就永久失效（本项目铁律：第一版门禁必须全绿）。"
+        "本用例把 presence 的 enforce 改成 true（它还有未接线的第二个家 discovery/），必须被拦下。"
+        "这条把「边界收口完成一个，打开一个」从口号变成机器判定 —— 也是 Phase 6 的前置。",
+        file=ROOT / "docs" / "domains.data.mjs",
+        injections=[(
+            '      secondHome: "src-tauri/src/discovery",\n'
+            '      secondHomeStatus: "未接线",\n'
+            '      enforce: false,',
+            '      secondHome: "src-tauri/src/discovery",\n'
+            '      secondHomeStatus: "未接线",\n'
+            '      enforce: true,',
+        )],
+        cmd=["node", "scripts/check-domain-map.mjs"],
+        cwd=ROOT,
+        expect_fail_hint="还有第二个家",
+        tags=["domain", "new-guards"],
+    ),
+    Case(
+        name="领域图：一个文件不许被两个领域认领",
+        why="一个文件被两个领域认领 ⇒ 改它时不知道该守谁的规则 ⇒ 规则的**适用范围**本身成了歧义。"
+        "本用例把 transport 的活路径文件塞进 presence 的 paths，必须被拦下。",
+        file=ROOT / "docs" / "domains.data.mjs",
+        injections=[(
+            '      paths: [\n'
+            '        "src-tauri/src/network/discovery.rs", // 旧家（活）\n'
+            '        "src-tauri/src/discovery", // 新家（未接线）\n'
+            "      ],\n",
+            '      paths: [\n'
+            '        "src-tauri/src/network/discovery.rs", // 旧家（活）\n'
+            '        "src-tauri/src/discovery", // 新家（未接线）\n'
+            '        "src-tauri/src/network/transport.rs", // 注入：该文件已被 transport 认领\n'
+            "      ],\n",
+        )],
+        cmd=["node", "scripts/check-domain-map.mjs"],
+        cwd=ROOT,
+        expect_fail_hint="被多个领域认领",
+        tags=["domain", "new-guards"],
+    ),
+    Case(
+        name="领域图：不许有文件既没归属也没列进 unmapped（无主之地最容易出跨界 bug）",
+        why="「没被提到」与「确认不属于任何领域」是两回事：前者是无主之地（谁改都不守规则），"
+        "后者是经过思考的豁免。本用例把 style.css 从 unmapped 里删掉（它不会被任何领域认领），"
+        "必须报出来 —— 强制那条豁免是**显式**的。",
+        file=ROOT / "docs" / "domains.data.mjs",
+        injections=[('    ["src/style.css", "全局样式（令牌化设计体系的落点）"],\n', "")],
+        cmd=["node", "scripts/check-domain-map.mjs"],
+        cwd=ROOT,
+        expect_fail_hint="既没被领域认领",
+        tags=["domain", "new-guards"],
+    ),
 ]
 
 

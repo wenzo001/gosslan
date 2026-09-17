@@ -11,8 +11,9 @@
  *   · `check-test-manifest`             挡住"测试静默不跑"
  *   · `check-invariant-exceptions`      挡住"照文档误修"
  *   · `check-ble-constants`             挡住"BLE 载荷预算多处各算一遍"
+ *   · `check-domain-map`                挡住"领域图变成虚构"
  *   · `version:changelog`               CHANGELOG 结构（发布脚本的插入锚点）
- *   · `verify-guards.py`                非空转验证（97 条护栏）
+ *   · `verify-guards.py`                非空转验证（100 条护栏）
  *   · `npm run build`                   前端构建
  *   · `check-mobile.sh`                 Android 编译门禁（Android 专属代码只有它看得见）
  *
@@ -121,6 +122,13 @@ const steps = [
     cwd: ROOT,
     cmd: process.execPath,
     args: ["scripts/check-ble-constants.mjs"],
+  },
+  {
+    name: "领域图守门",
+    why: "挡住「地图变成虚构」——路径存在 / 一文件不属两域 / 无文件漏归属 / enforce 只能开在单家",
+    cwd: ROOT,
+    cmd: process.execPath,
+    args: ["scripts/check-domain-map.mjs"],
   },
   {
     name: "CHANGELOG 结构",

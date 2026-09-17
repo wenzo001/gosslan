@@ -123,6 +123,13 @@ jobs:
       - name: BLE 常量单一事实来源
         run: node scripts/check-ble-constants.mjs
 
+      # 守的是「领域图不许变成虚构」：路径必须存在、一个文件不许被两个领域认领、
+      # 不许有文件既没归属也没显式列进 unmapped、且 `enforce` 只能开在**已收口的单家领域**
+      #（把「边界收口完成一个，打开一个」从口号变成机器判定）。
+      # 为什么重要：本仓库处在半完成迁移中，"域 = 某个目录"是错的地图，而地图错了比没有更危险。
+      - name: 领域图守门
+        run: node scripts/check-domain-map.mjs
+
       # 结构检查（唯一行首 `## [Unreleased]` 锚点 / 标题格式 / 新在前降序）。
       # 注意用的是 `version:changelog` 而不是 `version:check`：后者的版本记账部分
       # 在攒提交期间本来就该是红的，把它拉进来会让这一步周期性误报。
