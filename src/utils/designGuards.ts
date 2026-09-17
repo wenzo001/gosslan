@@ -963,3 +963,83 @@ export function checkSelectionContract(s: SelectionContractSources): GuardIssue[
 
   return out;
 }
+
+// ---------------- ⑨ 文本输入类的焦点提示：不许画外圈方框 ----------------
+
+/**
+ * 文本输入类的焦点提示必须画在**边线**上，不能画成外圈方框。
+ *
+ * 真实反馈（用户 2026-09-16）：「整个应用的输入框在焦点态会默认有个主题色的方框，很难看」。
+ * 根因是全局焦点环的选择器里含 `input` / `textarea` / `select` / `[contenteditable]` ——
+ * 浏览器对文本类控件一律把 `:focus-visible` 判成"永远成立"（**点一下就成立**，不需要键盘
+ * Tab），于是每次点击输入框都会冒出一个 2px 外圈方框。消息输入框尤其突兀：它的矩形只是
+ * 卡片里一块**透明的编辑区**，框出来像卡片内部浮着一个方框。
+ *
+ * 三条判据（缺一不可）：
+ * 1. 全局 `:focus-visible` 的选择器里**不得**出现文本输入类；
+ * 2. 必须有规则把 `input` / `textarea` / `select` 的焦点提示画在**边线**上（与应用既有的
+ *    `.gosslan-select:focus`、`focus:border-[var(--gosslan-primary)]` 同一套观感）；
+ * 3. 消息输入框的卡片必须带上 `gosslan-composer` 钩子（`:focus-within` 变边框色）——
+ *    编辑区自己不能画框，少了这条消息输入框就完全没有焦点提示。
+ */
+export function checkTextFieldFocusRing(css: string, composer: string): GuardIssue[] {
+  const out: GuardIssue[] = [];
+  const textControls = ["input", "textarea", "select", "contenteditable"];
+
+  // ⚠️ 先**按原长度**把注释抹掉（换行保留 ⇒ 行号与下标不变）：说明这条规则的那段注释里
+  // 天然会提到 `input` / `textarea` / `[contenteditable]`，不抹掉就会"被自己的说明误伤"
+  // （本项目踩过这种假阳性）。
+  const code = css.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "));
+
+  // ① 全局 :focus-visible 规则的选择器里不许有文本输入类
+  let scanned = 0;
+  for (const m of code.matchAll(/([^{}]*:focus-visible[^{}]*)\{/g)) {
+    scanned += 1;
+    const selector = m[1];
+    const offenders = textControls.filter((t) => selector.includes(t));
+    if (offenders.length > 0) {
+      // 行号要落在**选择器**那一行（匹配段会带上选择器前面的换行/缩进）
+      const at = (m.index ?? 0) + Math.max(0, selector.search(/\S/));
+      out.push({
+        line: lineAt(css, at),
+        message:
+          "全局 :focus-visible 的选择器里不该有文本输入类（" +
+          offenders.join(" / ") +
+          "）：浏览器对它们恒判 :focus-visible ⇒ **点一下**输入框就冒出一个外圈方框" +
+          "（用户 2026-09-16 反馈）。文本输入类的焦点提示请画在边线上。",
+      });
+    }
+  }
+  if (scanned === 0) {
+    out.push({ line: 0, message: "style.css 里找不到任何 :focus-visible 规则（键盘焦点环被删了？）" });
+  }
+
+  // ② 文本输入类必须有一条"边线级"的焦点提示
+  if (!/input:focus[\s\S]{0,160}?textarea:focus[\s\S]{0,160}?select:focus/.test(code)) {
+    out.push({
+      line: 0,
+      message:
+        "找不到文本输入类的焦点提示规则（形如 `input:focus, textarea:focus, select:focus { … }`）：" +
+        "去掉外圈方框之后，本来就没有边框的输入框会完全没有焦点提示（WCAG 2.4.7）。",
+    });
+  }
+
+  // ③ 消息输入框的卡片钩子
+  if (!/\.gosslan-composer\s*:focus-within/.test(code)) {
+    out.push({
+      line: 0,
+      message:
+        "style.css 缺少 `.gosslan-composer:focus-within` 规则：消息输入框的编辑区不能画外框，" +
+        "焦点提示必须挂在卡片边框上。",
+    });
+  }
+  if (!composer.includes("gosslan-composer")) {
+    out.push({
+      line: 0,
+      message:
+        "MessageComposer 的卡片必须带 `gosslan-composer` 类（style.css 的焦点钩子），" +
+        "否则消息输入框没有焦点提示。",
+    });
+  }
+  return out;
+}

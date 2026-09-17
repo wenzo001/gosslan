@@ -3,6 +3,7 @@ import {
   ArrowLeft,
   Bluetooth,
   FolderOpen,
+  ListChecks,
   Monitor,
   Network,
   Pencil,
@@ -32,6 +33,7 @@ const emit = defineEmits<{
   (e: "back"): void;
   (e: "open-members"): void;
   (e: "open-files"): void;
+  (e: "open-tasks"): void;
   (e: "rename"): void;
   (e: "open-share"): void;
 }>();
@@ -116,6 +118,15 @@ function linkIcon(path: string, hop: number): { icon: string; label: string } {
         @click="emit('open-files')"
       >
         <FolderOpen class="h-[18px] w-[18px]" />
+      </button>
+      <!-- 群任务：该群的任务清单（按状态分组）。任意成员都能看，能改什么由面板按权限决定 -->
+      <button
+        v-if="isGroup"
+        class="tap-safe flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+        :title="t('chat.header.tasks')" :aria-label="t('chat.header.tasks')"
+        @click="emit('open-tasks')"
+      >
+        <ListChecks class="h-[18px] w-[18px]" />
       </button>
       <button
         v-if="isGroup && canRename"

@@ -35,7 +35,9 @@ export const SILENT_KINDS: readonly string[] = [
   "recall",
   "pin",
   "announcement_delete",
-  "todo_done",
+  // 任务的**改动**（改状态/改标题/删除）是状态微调：不记未读、不弹通知。
+  // 任务的**创建**（`todo`）反过来是 Card —— 被指派的人得知道自己被派了活。
+  "todo_update",
   "poll_vote",
 ];
 
@@ -44,3 +46,17 @@ export const SILENT_KINDS: readonly string[] = [
  * 清空聊天记录不得删、清空边界不得拦。这两点是它与 bubble 的全部差别。
  */
 export const CARD_KINDS: readonly string[] = ["announcement", "todo", "poll"];
+
+/**
+ * 提示行（微信式居中灰字）：**进时间线**，但**不是一条消息** —— 没有头像、没有气泡，
+ * 不可右键/长按/复制/回应。这是它与 bubble 的全部差别。
+ *
+ * 为什么单独一个判定点：这条性质横跨三处渲染逻辑（`MessageItem` 的模板分支、
+ * `messageHeight` 的高度估算、以及"要不要有昵称行"），三处各写一份 `kind === "system"`
+ * 就一定会漂移 —— 高度估多估少会让虚拟列表的行互相遮挡。
+ */
+export const TIP_KINDS: readonly string[] = ["system", "recalled"];
+
+export function isTipKind(kind: string): boolean {
+  return TIP_KINDS.includes(kind);
+}

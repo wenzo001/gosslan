@@ -42,6 +42,25 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 TAURI = ROOT / "src-tauri"
 
+
+def read_source(path: Path) -> str:
+    """读源码文本 —— **逐字节保真**（`newline=""` + 显式 UTF-8）。
+
+    为什么不能直接用 `read_text()`：
+    · 默认的通用换行会把 CRLF 收成 LF，写回去时又按 `os.linesep` 变成 CRLF；
+    · 默认编码是**系统 locale**（中文 Windows 上是 GBK）。
+
+    于是一轮护栏跑完就能把工作区的 LF 文件改成 CRLF（仓库明确要求 LF，见 `.gitattributes`），
+    中文注释还可能被按错误编码往返一次。2026-09-16 在 Windows 上实测到了这个副作用。
+    """
+    return path.read_text(encoding="utf-8", newline="")
+
+
+def write_source(path: Path, text: str) -> None:
+    """写回源码文本（与 [`read_source`] 对称：不翻译行尾）。"""
+    path.write_text(text, encoding="utf-8", newline="")
+
+
 #: 当前正在被注入的文件与它的原始内容 —— 被 Ctrl-C / kill 打断时也要能恢复。
 #: 有的护栏要同时改坏**两个**文件（例如"事实来源 + 注入副本"必须一致），所以这里是列表。
 _CURRENT: list[tuple[Path, str]] = []
@@ -51,7 +70,7 @@ def restore_now() -> None:
     """把"当前注入现场"恢复回原始内容（幂等）。"""
     global _CURRENT
     for path, original in _CURRENT:
-        path.write_text(original)
+        write_source(path, original)
     _CURRENT = []
 
 
@@ -236,7 +255,7 @@ CASES: list[Case] = [
             "现在统一 api.notifyDesktop（失败可返回/记录），并修复隐藏窗口下 hasFocus 仍为 true 的漏通知。",
         file=ROOT / "src" / "stores" / "useChatStore.ts",
         injections=[(
-            "void api.notifyDesktop(title, body).catch(() => {",
+            "void api.notifyDesktop(title, body, convId).catch(() => {",
             "void Promise.resolve().catch(() => {",
         )],
         cmd=["node", "--test", "--experimental-strip-types", "--disable-warning=ExperimentalWarning",
@@ -1092,15 +1111,32 @@ CASES: list[Case] = [
         tags=["rust", "window"],
     ),
     Case(
+        name="自聊消息必须留在本地（不进 outbox / 不发 gossip）",
+        why="「和自己聊天」的消息收发双方都是本机：一旦写进 outbox，那一行**永远等不到 Ack**"
+        "（没有对端），会被每次心跳/建链的 flush_outbox 重发 ⇒ 「outbox 必然排空」这条不变量失效。"
+        "而这在界面上完全看不出来（消息照样显示、列表照样刷新），只有库里悄悄长出一条永不消失的行。",
+        file=TAURI / "src" / "commands.rs",
+        injections=[
+            (
+                '    db::insert_message(&dbc, &rec).map_err(|e| format!("消息写入失败：{e}"))?;',
+                '    db::insert_message_and_outbox(&dbc, &rec, &me, "x").map_err(|e| format!("消息写入失败：{e}"))?;',
+            )
+        ],
+        cmd=cargo("test", "--lib", "self_chat_stays_local"),
+        cwd=TAURI,
+        expect_fail_hint="不得出现",
+        tags=["rust", "new-guards"],
+    ),
+    Case(
         name="窗口单例（打开命令不得自己查窗口存在性）",
         why="连点两下会开出第二个窗口：`build()` 的重复 label 检查在 prepare 阶段，而窗口登记进 manager "
         "是主线程创建完成之后 —— 并发调用会双双通过。必须统一走 ensure_aux_window（单例 + 串行）",
         file=TAURI / "src" / "commands.rs",
         injections=[
             (
-                "    ensure_aux_window(&app, crate::WINDOW_SETTINGS, move || {",
+                "    ensure_aux_window(&app, crate::WINDOW_SETTINGS, geo, move || {",
                 "    let _ = app.get_webview_window(crate::WINDOW_SETTINGS);\n"
-                "    ensure_aux_window(&app, crate::WINDOW_SETTINGS, move || {",
+                "    ensure_aux_window(&app, crate::WINDOW_SETTINGS, geo, move || {",
             )
         ],
         cmd=cargo("test", "--lib", "aux_window_open_is_singleton_serialized_and_resident"),
@@ -1559,11 +1595,11 @@ def verify(case: Case) -> tuple[bool, str]:
     #: [(文件, [(原文, 替换), …])] —— 主文件 + 需要"同时改坏"的其它文件
     targets: list[tuple[Path, list[tuple[str, str]]]] = [(case.file, case.injections)]
     targets += [(p, [(old, new)]) for (p, old, new) in case.extra_injections]
-    originals = [(path, path.read_text()) for path, _ in targets]
+    originals = [(path, read_source(path)) for path, _ in targets]
     detail = ""
     try:
         for path, injections in targets:
-            text = path.read_text()
+            text = read_source(path)
             for old, new in injections:
                 assert text.count(old) == 1, (
                     f"注入锚点在 {path.name} 里出现 {text.count(old)} 次（要求恰好 1 次）："
@@ -1572,7 +1608,7 @@ def verify(case: Case) -> tuple[bool, str]:
                 # ⚠️ 必须在**上一次替换的结果**上继续改（逐条累积），否则一条用例里写多个
                 # 注入时只有最后一条生效 —— 这条旧实现的坑在这里一并修掉。
                 text = text.replace(old, new, 1)
-            path.write_text(text)
+            write_source(path, text)
         _CURRENT = list(originals)  # 登记现场：被信号打断时可恢复
 
         code, out = run(case.cmd, case.cwd)
@@ -1582,7 +1618,7 @@ def verify(case: Case) -> tuple[bool, str]:
             detail = f"（失败输出里没看到 `{case.expect_fail_hint}`，请确认是这条判据报的）"
 
         for path, original in originals:  # 先恢复，再验证恢复后确实通过
-            path.write_text(original)
+            write_source(path, original)
         _CURRENT = []
         code2, out2 = run(case.cmd, case.cwd)
         if code2 != 0:
@@ -1591,8 +1627,8 @@ def verify(case: Case) -> tuple[bool, str]:
     finally:
         # 无论上面发生什么（断言失败/超时/异常），内容级恢复现场
         for path, original in originals:
-            if path.read_text() != original:
-                path.write_text(original)
+            if read_source(path) != original:
+                write_source(path, original)
         _CURRENT = []
 
 

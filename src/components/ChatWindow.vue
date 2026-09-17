@@ -10,6 +10,7 @@ import MessageItem from "@/components/MessageItem.vue";
 import VirtualList from "@/components/VirtualList.vue";
 import GroupMemberPanel from "@/components/GroupMemberPanel.vue";
 import GroupFilesPanel from "@/components/GroupFilesPanel.vue";
+import GroupTasksPanel from "@/components/GroupTasksPanel.vue";
 import BaseModal from "@/components/BaseModal.vue";
 import ChatHeader from "@/components/chat/ChatHeader.vue";
 import MessageComposer from "@/components/chat/MessageComposer.vue";
@@ -34,6 +35,8 @@ const listRef = ref<InstanceType<typeof VirtualList> | null>(null);
 
 const conv = computed(() => chat.activeConversation);
 const isGroup = computed(() => chat.activeConv?.startsWith("group:") ?? false);
+/** 自聊：会话 id 就是本机 device_id（后端 `send_message` 自聊分流写入 `conv_id = me`）。 */
+const isSelfChat = computed(() => chat.activeConv === app.device?.device_id);
 /**
  * 时间线上要渲染的消息。
  *
@@ -126,6 +129,7 @@ watch(
 );
 const isPeerFriend = computed(() => {
   if (!conv.value || conv.value.kind !== "single") return true;
+  if (conv.value.id === app.device?.device_id) return true; // 自聊：自己就是「好友」
   return chat.friends.some((f) => f.device_id === conv.value!.id);
 });
 
@@ -203,6 +207,7 @@ function openImageAt(msgId: string) {
 // ---------------- 群：成员面板 + 改名 ----------------
 const membersOpen = ref(false);
 const filesOpen = ref(false);
+const tasksOpen = ref(false);
 const activeGroupId = computed(() =>
   isGroup.value && chat.activeConv ? chat.activeConv.slice(6) : null,
 );
@@ -469,7 +474,7 @@ watch(
 // ---------------- 发送 ----------------
 async function onSend({ content, kind }: { content: string; kind: MsgKind }) {
   const convId = chat.activeConv;
-  if (!convId || !isPeerFriend.value) return;
+  if (!convId || (!isPeerFriend.value && !isSelfChat.value)) return;
   try {
     await chat.send(convId, content, kind);
   } catch (e) {
@@ -660,6 +665,7 @@ function onLoadMore() {
       @back="app.mobileView = 'list'"
       @open-members="membersOpen = true"
       @open-files="filesOpen = true"
+      @open-tasks="tasksOpen = true"
       @rename="renameOpen = true"
       @open-share="emit('open-share')"
     />
@@ -851,7 +857,7 @@ function onLoadMore() {
     <!-- 输入区：浅灰底上放一个白底圆角卡片，无顶部分割线 -->
     <div class="shrink-0 bg-[var(--gosslan-chat)] px-4 pb-3 pt-2">
       <MessageComposer
-        v-if="isGroup || isPeerFriend"
+        v-if="isGroup || isPeerFriend || isSelfChat"
         :key="chat.activeConv ?? 'none'"
         :conv-id="chat.activeConv"
         :quote="quote"
@@ -871,13 +877,18 @@ function onLoadMore() {
     </div>
 
     <!-- 群成员面板 -->
-    <GroupMemberPanel :open="membersOpen" :group-id="activeGroupId" @close="membersOpen = false" />
+    <GroupMemberPanel
+      :open="membersOpen"
+      :group-id="activeGroupId"
+      @close="membersOpen = false"
+      @open-tasks="membersOpen = false; tasksOpen = true"
+    />
 
     <!-- 发布群公告（仅群主可见入口） -->
     <BaseModal :open="announceOpen" :title="t('group.announce')" @close="announceOpen = false">
       <textarea
         v-model="announceDraft"
-        class="h-28 w-full resize-none rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-3 py-2 text-sm text-[var(--gosslan-text)] outline-none focus:border-[var(--gosslan-primary)]"
+        class="h-28 w-full resize-none rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-3 py-2 text-sm text-[var(--gosslan-text)] outline-none focus:border-transparent"
         :placeholder="t('group.announcePlaceholder')"
         :maxlength="500"
       ></textarea>
@@ -900,6 +911,9 @@ function onLoadMore() {
 
     <!-- 群文件列表 -->
     <GroupFilesPanel :open="filesOpen" :group-id="activeGroupId" @close="filesOpen = false" />
+
+    <!-- 群任务（Card kind：不进时间线，只在这个面板里折叠展示） -->
+    <GroupTasksPanel :open="tasksOpen" :group-id="activeGroupId" @close="tasksOpen = false" />
 
     <!-- 转发弹窗 -->
     <ForwardModal

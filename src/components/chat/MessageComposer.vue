@@ -15,6 +15,7 @@ import { Folder, Smile, SquareCode, Users, X } from "lucide-vue-next";
 import type { MsgKind } from "@/types";
 import { MENTION_ALL_TOKEN } from "@/utils/messages";
 import { isMentionLead } from "@/utils/linkify";
+import { isSelfConversation } from "@/utils/selfChat";
 
 const props = defineProps<{
   /** 会话切换时聚焦输入框（切换会话 = 新会话，重置草稿由父组件卸载/挂载决定）。 */
@@ -33,6 +34,15 @@ const emit = defineEmits<{
 }>();
 
 const app = useAppStore();
+
+/**
+ * 当前会话是不是「和自己聊天」。自聊只支持文本（用户 2026-09-16），
+ * 所以这里要拿掉附件入口、并把粘贴文件拦成一条明确提示
+ * （拦不住的入口（粘贴/拖入）宁可明确报错，也不要让消息静默消失）。
+ */
+const isSelfChat = computed(() =>
+  isSelfConversation({ id: props.convId ?? "" }, app.device?.device_id),
+);
 const codeMode = ref(false);
 
 /** 草稿**总量**的字符硬上限。三处兜底：粘贴按剩余容量截断、发送前再截一次。
@@ -523,6 +533,10 @@ async function onPaste(e: ClipboardEvent) {
   // 图片优先：截图位图即使同时带 "Files"（Win11 临时文件引用），也按图片发送，
   // 避免去发那个可能已被清理的临时路径。
   if (imageFile) {
+    if (isSelfChat.value) {
+      app.toast(t("chat.selfChatTextOnly"), "error");
+      return;
+    }
     emit("send-image", await fileToDataUrl(imageFile));
     return;
   }
@@ -539,6 +553,11 @@ async function onPaste(e: ClipboardEvent) {
 
   const action = classifyPaste(types, items, files, filePaths.length > 0);
   if (action.kind === "files") {
+    // 自聊只支持文本（用户 2026-09-16）——粘贴文件时给明确提示，不要静默吞掉
+    if (isSelfChat.value) {
+      app.toast(t("chat.selfChatTextOnly"), "error");
+      return;
+    }
     emit("paste-files", filePaths);
     return;
   }
@@ -573,11 +592,15 @@ function fileToDataUrl(f: File): Promise<string> {
 
 <template>
   <div class="flex flex-col gap-2">
-    <!-- 微信 4.0 输入卡：白底圆角带细边；文本域在上，图标行在卡内底部，发送键靠右下。
+    <!-- 微信 4.0 输入卡：白底圆角；文本域在上，图标行在卡内底部，发送键靠右下。
          `px-4`（不是 px-3）与工具栏的 `-mx-1` 成对：编辑器的文字左边缘与工具栏第一个
          图标的**点击热区**左边缘取同一个 16px 起点（图标墨迹在其 28px 热区内再内缩 6px，
          与文字字形的光学起点对齐）—— 这是用户反馈「左右两边视觉上不在同一条线上」的修法。 -->
-    <div ref="composerCard" class="relative rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-4 pb-2.5 pt-2">
+    <!-- `gosslan-composer` 只是个钩子：焦点提示由 style.css 的 `.gosslan-composer:focus-within`
+         挂在**这张卡片自己的边框**上。编辑区（下面那个 contenteditable div）是卡片里一块
+         透明矩形，不能给它画外框 —— 那会在卡片内部套一个方框（用户 2026-09-16 报的
+         「输入框焦点态有个主题色方框」在消息输入框上就是这个形态）。 -->
+    <div ref="composerCard" class="gosslan-composer relative rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-panel)] px-4 pb-2.5 pt-2">
       <!-- 群聊 @ 成员选择：输入 @ 后浮出，↑↓ 导航 / Enter 或点击选中 -->
       <div
         v-if="mention && mentionFiltered.length > 0"
@@ -630,6 +653,8 @@ function fileToDataUrl(f: File): Promise<string> {
         </button>
       </div>
       <!-- contenteditable 编辑区：@提及 为内联原子 token（高亮+整删）。
+           focus-ring-ok：用户 2026-09-16 明确要求消息输入框不画任何焦点环（不要主题色/黑框），
+           透明即「无替代焦点指示」是用户显式选择。
            ⚠️ **不放 placeholder**：用户 2026-09-12 明确要求「输入框里也不用 placeholder」
            （参考图是干净的输入区）。原先走 `:data-placeholder` + `:empty::before`，
            现连同 style.css 里的那条规则与两个 i18n key 一起删除，避免留死代码。
@@ -644,7 +669,7 @@ function fileToDataUrl(f: File): Promise<string> {
         :spellcheck="!codeMode"
         :autocorrect="codeMode ? 'off' : 'on'"
         :autocapitalize="codeMode ? 'off' : 'sentences'"
-        class="min-h-10 w-full overflow-y-auto bg-transparent px-0.5 py-0.5 leading-normal whitespace-pre-wrap break-words"
+        class="min-h-10 w-full overflow-y-auto bg-transparent px-0.5 py-0.5 leading-normal whitespace-pre-wrap break-words outline-none"
         :class="codeMode ? 'font-mono text-[13px]' : ''"
         :style="{ fontSize: 'var(--gosslan-msg-size, 14px)', overflowWrap: 'anywhere', wordBreak: 'break-word' }"
         @keydown="onKeydown"
@@ -699,7 +724,9 @@ function fileToDataUrl(f: File): Promise<string> {
                尺寸 16px / 线宽 1.75 与两侧完全一致（见上方工具栏规格说明）。 -->
           <SquareCode class="h-5 w-5" :stroke-width="1.75" />
         </button>
+        <!-- 自聊只支持文本：不给附件入口（用户 2026-09-16）。粘贴/拖入文件时另给提示。 -->
         <button
+          v-if="!isSelfChat"
           class="tap-safe flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
           :title="t('chat.composer.sendFile')" :aria-label="t('chat.composer.sendFile')"
           @click="emit('attach')"

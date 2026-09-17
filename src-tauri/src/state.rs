@@ -2,7 +2,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -22,14 +22,14 @@ use crate::mesh::router::MeshRouter;
 use crate::protocol::{Message, TCP_PORT};
 use crate::relay_manager::RelayManager;
 
-/// 系统语言是否为中文（供「跟随系统」语言偏好时判断应用显示名）。
+/// 系统语言是否为中文 —— **仅**「前端还没把解析结果推过来」时的兜底。
 ///
 /// 后端不引入系统 locale 库，用 POSIX 环境变量 `LANG` / `LC_ALL` / `LC_MESSAGES`
 /// 兜底：macOS/Linux 的 `LANG` 通常是 `zh_CN.UTF-8` / `en_US.UTF-8`，能正确判断。
-/// **Windows 边界**：Windows 一般无 `LANG`，这里会回落「英文」——中文 Windows 用户若
-/// 未在设置里显式选中文，后端自行生成的次要文案（托盘提示 / 日志窗口标题）会显示英文。
-/// 影响有限：主界面由前端 `navigator.language` 正确判断；如需彻底对齐，后续可加
-/// Windows API（GetUserDefaultUILanguage）判断系统 UI 语言。
+///
+/// **⚠️ Windows 上这里恒为「否」**（Windows 没有 `LANG` 这类变量；macOS 从 Finder 启动的
+/// GUI 进程通常也没有）。所以它只能兜住"进程刚起来、前端还没推语言"的那一小段 ——
+/// 正常路径以 [`AppState::is_zh`] 的优先级为准（前端推来的解析结果优先）。
 fn system_lang_is_zh() -> bool {
     ["LANG", "LC_ALL", "LC_MESSAGES"].iter().any(|k| {
         std::env::var(k)
@@ -37,6 +37,29 @@ fn system_lang_is_zh() -> bool {
             .unwrap_or(false)
     })
 }
+
+/// 「跟随系统」时到底是不是中文 —— 纯函数，便于单测。
+///
+/// 优先级：**显式偏好 > 前端推来的解析结果 > 环境变量兜底**。
+///
+/// 为什么中间那一层必不可少（用户 2026-09-16 实测「加群的提示怎么是英文？」）：
+/// 「跟随系统」的解析规则（`navigator.language`）**只在前端有一份**，而后端的兜底在
+/// Windows 上恒为「否」—— 于是中文用户在**默认设置**下，后端生成的所有文案
+/// （群成员变更 / 文件下载 / 托盘提示 / 窗口标题）全变英文，而界面本身是中文。
+/// 前端启动时与每次切换语言都会把结果推过来（`set_ui_language` 命令），这里只负责取舍。
+fn resolve_is_zh(preference: Option<&str>, ui_hint: Option<bool>, system: bool) -> bool {
+    match preference {
+        Some("zh-CN") => true,
+        Some("en-US") => false,
+        // 其它值（含 "system" 与历史脏值）一律按「跟随系统」处理
+        _ => ui_hint.unwrap_or(system),
+    }
+}
+
+/// 前端推来的「界面实际语言」三态（0 = 还没推过）。
+const UI_LANG_UNKNOWN: u8 = 0;
+const UI_LANG_ZH: u8 = 1;
+const UI_LANG_EN: u8 = 2;
 
 /// **运行状态的唯一快照**（用户要求的第 ② 项）。
 ///
@@ -626,6 +649,11 @@ pub struct AppState {
     pub db: Mutex<Connection>,
     pub device_id: String,
     pub tcp_port: u16,
+    /// 前端推来的「界面实际用的是哪种语言」（三态，见 [`Self::is_zh`] 与 `set_ui_language`）。
+    ///
+    /// 只存内存、**不落库**：它是前端解析结果的缓存，每次启动前端都会重新推一次；
+    /// 落库反而会多出一份可能与 `settings.language`（那是**偏好**，不是结果）不一致的状态。
+    ui_lang: AtomicU8,
     /// **在途拨号**集合（D6）：正在 connect/握手的拨号键（peer_id 或端点字符串）。
     ///
     /// 为什么需要：`connect_to_peer` 的"已连接？"检查与"登记链路"之间隔着 connect +
@@ -1031,6 +1059,8 @@ impl AppState {
             db: Mutex::new(conn),
             device_id,
             tcp_port,
+            // 「前端还没推语言」的初值；前端 `app.init()` 随后就会推一次真实值。
+            ui_lang: AtomicU8::new(UI_LANG_UNKNOWN),
             downloads_dir: Mutex::new(downloads_dir),
             cache_dir,
             db_path,
@@ -1127,17 +1157,29 @@ impl AppState {
         *self.relay_policy.lock().unwrap_or_else(|e| e.into_inner()) = cfg;
     }
 
-    /// 当前界面语言是否为中文。语言偏好存 settings.language（三态 system / zh-CN /
-    /// en-US，由前端维护）；「跟随系统」时用 `system_lang_is_zh()` 判系统语言。
+    /// 当前界面语言是否为中文。偏好存 settings.language（三态 system / zh-CN /
+    /// en-US，由前端维护）；「跟随系统」时**先看前端推来的解析结果**，最后才用
+    /// 环境变量兜底（判定规则与理由见 [`resolve_is_zh`]）。
     pub fn is_zh(&self) -> bool {
-        let lang = {
+        let pref = {
             let dbc = self.db.lock().unwrap_or_else(|e| e.into_inner());
-            db::get_setting(&dbc, "language").unwrap_or_else(|| "system".to_string())
+            db::get_setting(&dbc, "language")
         };
-        match lang.as_str() {
-            "zh-CN" => true,
-            "en-US" => false,
-            _ => system_lang_is_zh(),
+        resolve_is_zh(pref.as_deref(), self.ui_lang_hint(), system_lang_is_zh())
+    }
+
+    /// 记录前端**解析后**的界面语言（`set_ui_language` 命令调用；见 [`Self::is_zh`]）。
+    pub fn set_ui_language_hint(&self, lang: &str) {
+        let v = if lang.starts_with("zh") { UI_LANG_ZH } else { UI_LANG_EN };
+        self.ui_lang.store(v, Ordering::Relaxed);
+    }
+
+    /// 前端推来的解析结果；`None` = 还没推过（用环境变量兜底）。
+    fn ui_lang_hint(&self) -> Option<bool> {
+        match self.ui_lang.load(Ordering::Relaxed) {
+            UI_LANG_ZH => Some(true),
+            UI_LANG_EN => Some(false),
+            _ => None,
         }
     }
 
@@ -1153,6 +1195,28 @@ impl AppState {
         } else {
             "Gosslan".to_string()
         }
+    }
+
+    /// **本机自己的显示名**（「和自己聊天」里那个会话的名字，也用于把自己当发送者时的文案）。
+    ///
+    /// 为什么不能走 `resolve_nickname`：它只查好友表/在线节点表，自己两边都不在，
+    /// 会回落到 `device_id` 原文 —— 会话列表里就会显示一串 `gosslan-xxxxxxxx`。
+    pub fn self_display_name(&self) -> String {
+        let n = self.nickname.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if !n.trim().is_empty() {
+            return n;
+        }
+        // 昵称还没写进内存（极早期）时才用的兜底：与其它后端文案同口径（`is_zh`）。
+        if self.is_zh() {
+            "我".to_string()
+        } else {
+            "Me".to_string()
+        }
+    }
+
+    /// 本机自己的头像（data URI，可能为空）。
+    pub fn self_avatar(&self) -> Option<String> {
+        self.avatar.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     /// 记录一个 Hello nonce，返回 false 表示该 nonce 近期已出现过（重放）。
@@ -1392,4 +1456,39 @@ fn instance_id() -> u32 {
         .ok()
         .and_then(|s| s.parse::<u32>().ok())
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{resolve_is_zh, UI_LANG_EN, UI_LANG_UNKNOWN, UI_LANG_ZH};
+
+    /// 界面语言判定的优先级：**显式偏好 > 前端推来的解析结果 > 环境变量兜底**。
+    ///
+    /// 为什么必须钉住（用户 2026-09-16 实测「加群的提示怎么是英文？」）：
+    /// 「跟随系统」的解析规则（`navigator.language`）只在前端有一份，而后端的兜底在
+    /// Windows 上恒为「否」—— 少了中间那一层，中文用户在默认设置下会看到英文的系统消息
+    /// （群成员变更 / 文件下载 / 托盘提示 / 窗口标题），而界面本身是中文。
+    #[test]
+    fn ui_language_prefers_preference_then_frontend_hint_then_env() {
+        // ① 显式偏好最高：不受前端与系统影响
+        assert!(resolve_is_zh(Some("zh-CN"), Some(false), false));
+        assert!(!resolve_is_zh(Some("en-US"), Some(true), true));
+        // ② 「跟随系统」：前端推来的结果说了算（环境兜底在 Windows 上是错的，不能盖过它）
+        assert!(resolve_is_zh(Some("system"), Some(true), false));
+        assert!(!resolve_is_zh(Some("system"), Some(false), true));
+        // ③ 前端还没推过：才用环境变量兜底
+        assert!(resolve_is_zh(None, None, true));
+        assert!(!resolve_is_zh(None, None, false));
+        // ④ 历史脏值一律按「跟随系统」处理（与前端 isLanguagePreference 同口径）
+        assert!(resolve_is_zh(Some("fr-FR"), Some(true), false));
+        assert!(!resolve_is_zh(Some(""), None, false));
+    }
+
+    /// 三态编码不许撞车（0 是"还没推过"的哨兵，不能被当成某种语言）。
+    #[test]
+    fn ui_language_hint_states_are_distinct() {
+        assert_ne!(UI_LANG_UNKNOWN, UI_LANG_ZH);
+        assert_ne!(UI_LANG_UNKNOWN, UI_LANG_EN);
+        assert_ne!(UI_LANG_ZH, UI_LANG_EN);
+    }
 }

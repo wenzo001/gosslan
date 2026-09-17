@@ -6,16 +6,30 @@ import { useChatStore } from "@/stores/useChatStore";
 import BaseModal from "@/components/BaseModal.vue";
 import { useMemberProfile } from "@/composables/useMemberProfile";
 import { avatarInitial, avatarInitialLen, nameToColor } from "@/utils/color";
-import { ArrowRightLeft, Crown, LogOut, Plus, UserMinus, X } from "lucide-vue-next";
+import { TODO_STATUSES, TODO_STATUS_CLASS, TODO_STATUS_LABEL_KEY, foldTodos } from "@/utils/todos";
+import { ArrowRightLeft, Crown, ListChecks, LogOut, Plus, UserMinus, X } from "lucide-vue-next";
 import type { Friend } from "@/types";
 
 const props = defineProps<{ open: boolean; groupId: string | null }>();
-const emit = defineEmits<{ (e: "close"): void }>();
+const emit = defineEmits<{ (e: "close"): void; (e: "open-tasks"): void }>();
 
 const app = useAppStore();
 const chat = useChatStore();
 const { memberProfile, myId } = useMemberProfile();
 const group = computed(() => chat.groups.find((g) => g.id === props.groupId) ?? null);
+
+/**
+ * 任务分区的一行摘要：各状态计数 + 完成数。
+ *
+ * 折叠口径与群任务面板完全一致（同一个 `foldTodos`，同一份会话消息）——
+ * 只是这里只用来显示"有几项、什么状态"，完整列表在 `GroupTasksPanel` 里。
+ */
+const todoSummary = computed(() => {
+  const items = props.groupId ? foldTodos(chat.messages[`group:${props.groupId}`] ?? []) : [];
+  const byStatus: Record<string, number> = {};
+  for (const it of items) byStatus[it.status] = (byStatus[it.status] ?? 0) + 1;
+  return { total: items.length, done: byStatus.done ?? 0, byStatus };
+});
 /** 当前用户是否为群主（可见「添加/移除成员」操作） */
 const isOwner = computed(() => !!group.value && group.value.creator === myId.value);
 /** 展示「添加成员」面板 */
@@ -166,6 +180,37 @@ async function confirmAction() {
         <div v-if="group.members.length === 0" class="py-6 text-center text-sm text-[var(--gosslan-text-2)]">
           {{ t("group.noMembers") }}
         </div>
+      </div>
+
+      <!-- 群任务分区：只给"有几项、各什么状态"+入口，完整列表在 GroupTasksPanel
+           （成员面板已经装了成员列表 + 添加成员，再塞一张任务清单会把两个用途挤在一起） -->
+      <div class="rounded-[var(--gosslan-radius-lg)] border border-[var(--gosslan-border)] p-2.5">
+        <div class="flex items-center justify-between gap-2">
+          <div class="flex min-w-0 items-center gap-1.5 text-[13px] font-medium">
+            <ListChecks class="h-4 w-4 shrink-0 text-[var(--gosslan-text-2)]" aria-hidden="true" />
+            <span class="truncate" :title="t('todo.title')">{{ t("todo.title") }}</span>
+            <span v-if="todoSummary.total" class="shrink-0 text-[11px] font-normal text-[var(--gosslan-text-2)]">
+              {{ t("todo.doneCount", { n: todoSummary.done, total: todoSummary.total }) }}
+            </span>
+          </div>
+          <button
+            class="tap-safe shrink-0 rounded-[var(--gosslan-radius-md)] px-2 py-1 text-[12px] text-[var(--gosslan-primary)] transition hover:bg-[var(--gosslan-hover)]"
+            @click="emit('open-tasks')"
+          >
+            {{ todoSummary.total ? t("todo.viewAll") : t("todo.create") }}
+          </button>
+        </div>
+        <div v-if="todoSummary.total" class="mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[11px]">
+          <span
+            v-for="s in TODO_STATUSES"
+            v-show="todoSummary.byStatus[s]"
+            :key="s"
+            :class="TODO_STATUS_CLASS[s]"
+          >
+            {{ t(TODO_STATUS_LABEL_KEY[s]) }} {{ todoSummary.byStatus[s] }}
+          </span>
+        </div>
+        <div v-else class="mt-1.5 text-[11px] text-[var(--gosslan-text-2)]">{{ t("todo.empty") }}</div>
       </div>
 
       <!-- 添加成员（仅群主）：切换出一列可选好友 -->

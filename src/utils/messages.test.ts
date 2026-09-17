@@ -176,7 +176,7 @@ test("整批都是静默事件时该会话完全不动", () => {
   const cs = [conv("g1", 10)];
   const byConv = new Map([["g1", [
     msg({ msg_id: "a", conv_id: "g1", kind: "recall", ts: 1 }),
-    msg({ msg_id: "b", conv_id: "g1", kind: "todo_done", ts: 2 }),
+    msg({ msg_id: "b", conv_id: "g1", kind: "pin", ts: 2 }),
   ]]]);
   const g1 = applyIncomingToConversations(cs, null, byConv).find((c) => c.id === "g1")!;
   assert.equal(g1.unread, 0);

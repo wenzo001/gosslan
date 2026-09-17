@@ -12,9 +12,10 @@ import FriendContextMenu from "@/components/conversation/FriendContextMenu.vue";
 import ConversationContextMenu from "@/components/conversation/ConversationContextMenu.vue";
 import BaseModal from "@/components/BaseModal.vue";
 import UnreadBadge from "@/components/UnreadBadge.vue";
-import { APP_ACTION } from "@/api";
+import { APP_ACTION, api } from "@/api";
 import { groupByInitial } from "@/utils/nameGroup";
-import { Plus, Search, UserPlus, UsersRound } from "lucide-vue-next";
+import { isSelfConversation } from "@/utils/selfChat";
+import { MessageSquareText, Plus, Search, UserPlus, UsersRound } from "lucide-vue-next";
 import type { Conversation, Friend } from "@/types";
 
 const props = defineProps<{
@@ -94,6 +95,25 @@ function togglePlus() {
   });
 }
 
+/**
+ * 「和自己聊天」：确保自聊会话行存在，然后打开它。
+ *
+ * 会话 id 就是本机 device_id（后端 `insert_self_message` 的约定）；`ensureConversation`
+ * 会建好行并**用本机昵称/头像**命名（后端 `ensure_conversation` 里有 self 分支，
+ * 否则列表里会显示成一串 gosslan-xxxx）。行一旦建好就一直留在列表里 —— 这是用户选的
+ * "点过就有"（严格"发过才有"会让空会话没有名字可显示）。
+ */
+async function openSelfChat() {
+  const id = app.device?.device_id;
+  if (!id) return;
+  try {
+    await api.ensureConversation(id);
+    await chat.openConversation(id);
+  } catch (e) {
+    app.toastError(e, t("common.operationFail"));
+  }
+}
+
 function closePlus() {
   plusPopup.release();
   plusOpen.value = false;
@@ -168,6 +188,9 @@ onUnmounted(() => window.removeEventListener(APP_ACTION.focusSearch, focusSearch
 /** 对端在线状态：群聊返回 null（无在线概念）；单聊查好友表。 */
 function isOnline(id: string): boolean | null {
   if (id.startsWith("group:")) return null;
+  // 「和自己聊天」：自己不是一个"在线/离线"的对端 —— 传 null 才不显示状态点、
+  // 也不会把头像按离线灰掉（`ConversationListItem` 把 null 定义为"不显示状态点"）。
+  if (isSelfConversation({ id }, app.device?.device_id)) return null;
   return chat.friends.find((f) => f.device_id === id)?.online ?? false;
 }
 
@@ -333,7 +356,7 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
            暗色下 panel(#1e293b) 与本栏 list(#1e293b) 是同一个值，输入框会"消失"；
            field 在两套主题里都与所在栏拉开一档。 -->
       <div
-        class="flex h-[30px] min-w-0 flex-1 items-center gap-2 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-field)] px-2.5 transition focus-within:border-[var(--gosslan-primary)]"
+        class="flex h-[30px] min-w-0 flex-1 items-center gap-2 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-field)] px-2.5 transition focus-within:border-transparent"
       >
         <Search class="h-4 w-4 shrink-0 text-[var(--gosslan-text-2)]" />
         <input
@@ -345,7 +368,7 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
           autocorrect="off"
           autocapitalize="off"
           spellcheck="false"
-          class="w-full bg-transparent text-[13px] placeholder:text-[var(--gosslan-text-2)]"
+          class="w-full bg-transparent text-[13px] placeholder:text-[var(--gosslan-text-2)] outline-none focus:border-transparent"
           :placeholder="view === 'chats' ? t('common.search') : t('common.searchContacts')"
           @keydown.enter.prevent="onSearchEnter"
           @compositionstart="ime.onStart"
@@ -383,6 +406,12 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
           <button role="menuitem" class="gosslan-menu-item" @click.stop="closePlus(); emit('open-group')">
             <UsersRound />
             {{ t("common.createGroup") }}
+          </button>
+          <!-- 「和自己聊天」：进去之后列表里才会有这一行（用户 2026-09-16 选的入口方式）。
+               它是一条**本地会话**（id = 自己的 device_id），消息只落本机、不走网络。 -->
+          <button role="menuitem" class="gosslan-menu-item" @click.stop="closePlus(); openSelfChat()">
+            <MessageSquareText />
+            {{ t("chat.selfChat") }}
           </button>
         </div>
       </div>
