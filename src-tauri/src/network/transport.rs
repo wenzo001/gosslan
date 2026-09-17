@@ -348,15 +348,13 @@ pub async fn broadcast_gossip(state: &AppState, envelope: GossipEnvelope) {
         if tokio::time::timeout(SEND_QUEUE_FULL_TIMEOUT, tx.send(msg.clone()))
             .await
             .is_err()
-        {
-            if log_throttled("gossip_drop", 30_000) {
+            && log_throttled("gossip_drop", 30_000) {
                 state.logger.warn(
                     "transport",
                     "gossip 扇出队列满，丢弃本条（对方 outbox 会补发；持续出现说明该链路拥塞）"
                         .to_string(),
                 );
             }
-        }
     }
 }
 
@@ -1930,7 +1928,7 @@ pub(crate) fn register_connection(
     // 路径类型来自调用方（见 `Link::path_kind` 注释：从 IP 反推会把用户配置的
     // 私有段 Routed 端点误判成 LAN）
     let path = path_kind;
-    let candidate = PeerCandidate::new(peer_id, identity, endpoint.clone(), path.clone());
+    let candidate = PeerCandidate::new(peer_id, identity, endpoint.clone(), path);
     let mut pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
     let (_, outcome) = pm.merge(candidate);
     // 建链即算一次「成功收发」—— 否则「已建立但还没收发」的连接会被健康判据算作不健康
@@ -4123,7 +4121,7 @@ fn announced_on(inserted: &Result<bool, rusqlite::Error>) -> bool {
 /// 是否允许向发送方回 Ack。重复（`Ok(false)`）允许——消息确已在库；
 /// 真数据库错误（`Err`）不允许——否则 outbox 被删，消息永久丢失。
 fn may_ack(inserted: &Result<bool, rusqlite::Error>) -> bool {
-    !matches!(inserted, Err(_))
+    !inserted.is_err()
 }
 
 // ---------------- Gossip 处理 ----------------
@@ -4955,7 +4953,7 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                 if conv_kind == "single" && announced_on(&inserted) {
                     let hop = {
                         let gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
-                        gossip.ttl.saturating_sub(env.ttl) as u8
+                        gossip.ttl.saturating_sub(env.ttl)
                     };
                     let path = inbound_path_kind(state, peer_id).await;
                     update_conv_link(state, &conv_id, &path, hop);
@@ -4963,7 +4961,7 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                 // 群消息现在有 outbox 兜底：只要消息确实已持久化（无论本次是否新建），
                 // 就回 GroupAck 让发送方删除对应 (msg_id, peer_id) 的待发记录。
                 // 数据库 Err 时不回 Ack，发送方保留 outbox 继续补发。
-                if conv_kind == "group" && !matches!(&inserted, Err(_)) {
+                if conv_kind == "group" && !inserted.is_err() {
                     let ack = Message::GroupAck {
                         group_id: env.group_id.clone().unwrap_or_default(),
                         msg_id: env.message_id.clone(),
@@ -4975,7 +4973,7 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                 // Gossip ChatAck；有直连时也走 Gossip，让「已送达」立即出现，不必等
                 // 心跳触发 outbox 直发补 Ack。接收端按 outbox(msg_id, sender) 命中才接受，
                 // 防伪造送达。
-                if conv_kind == "single" && !matches!(&inserted, Err(_)) {
+                if conv_kind == "single" && !inserted.is_err() {
                     let payload = serde_json::json!({ "msg_id": env.message_id }).to_string();
                     let payload_b64 = STANDARD.encode(payload.as_bytes());
                     let mut ack_env = {
@@ -5816,7 +5814,7 @@ async fn handle_group_file_done(
             .clone();
         r.final_path = file::unique_path(&dl, &r.name);
     }
-    if let Err(_) = std::fs::rename(&r.tmp_path, &r.final_path) {
+    if std::fs::rename(&r.tmp_path, &r.final_path).is_err() {
         let _ = std::fs::remove_file(&r.tmp_path);
         set_gfile_bubble_status(state, &transfer_id, "failed");
         state
@@ -6014,7 +6012,7 @@ async fn handle_group_file_complete_ack(
     let bubble;
     {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        let _ = db::update_group_file_recipient(&dbc, &transfer_id, &peer_id, status, progress);
+        let _ = db::update_group_file_recipient(&dbc, &transfer_id, peer_id, status, progress);
         if success {
             bubble = "delivered";
         } else {
@@ -6138,7 +6136,7 @@ async fn handle_group_file_chunk(
         .unwrap_or_else(|e| e.into_inner())
         .contains_key(&transfer_id)
     {
-        if let Err(_) = file::begin_group_receive(
+        if file::begin_group_receive(
             state,
             &transfer_id,
             &sender_id,
@@ -6146,7 +6144,7 @@ async fn handle_group_file_chunk(
             gf.size,
             file_key,
             gf.sha256.clone(),
-        ) {
+        ).is_err() {
             return;
         }
     }

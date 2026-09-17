@@ -164,12 +164,7 @@ fn event_target_label(target: &tauri::EventTarget) -> Option<&str> {
 /// 链路类型只有后端知道（`Link::path_kind` 由**来路**决定，不能从 IP 段反推），所以在这里判。
 pub fn best_link_kind(kinds: &[crate::mesh::PathKind]) -> Option<crate::mesh::PathKind> {
     use crate::mesh::PathKind::*;
-    for want in [Lan, Routed, Bluetooth] {
-        if kinds.contains(&want) {
-            return Some(want);
-        }
-    }
-    None
+    [Lan, Routed, Bluetooth].into_iter().find(|&want| kinds.contains(&want))
 }
 
 /// 局域网在线节点（Peer Table 条目）

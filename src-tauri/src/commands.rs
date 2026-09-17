@@ -1146,7 +1146,7 @@ pub fn clean_cache_now(state: State<'_, Arc<AppState>>) -> CleanupReport {
     let policy = load_policy(s);
     let dirs = media_dirs(s);
     let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-    cache_cleaner::clean(&dirs, policy, &*dbc)
+    cache_cleaner::clean(&dirs, policy, &dbc)
 }
 
 // ---------------- 应用偏好设置（本地持久化） ----------------
@@ -1965,17 +1965,17 @@ pub(crate) async fn send_friend_accept_via_link(
 }
 
 pub(crate) async fn accept_friend_request(s: &Arc<AppState>, peer_id: &str) -> Result<(), String> {
-    let name = resolve_nickname(s, &peer_id);
+    let name = resolve_nickname(s, peer_id);
     {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::add_friend(&dbc, &peer_id, &name, None).ok();
-        db::ensure_conversation(&dbc, &peer_id, "single", &name, None).ok();
+        db::add_friend(&dbc, peer_id, &name, None).ok();
+        db::ensure_conversation(&dbc, peer_id, "single", &name, None).ok();
     }
     // 补写 peers 表已有的公钥到 friends 表：accept 路径此前不写公钥，
     // 而建链（Hello）早于加好友、公钥不变时 key_changed 不触发补写，
     // 导致 friends 公钥永久缺失 → 群密钥分发被静默跳过。
     // 与 transport.rs 中 FriendAccept 接收路径的补写行为一致。
-    maybe_update_friend(s, &peer_id, &name, None);
+    maybe_update_friend(s, peer_id, &name, None);
     // **先登记再发**（与好友申请同一条纪律）：同意回执没有回执，链路抖动时它会静默丢失，
     // 而发送方界面已显示"已同意" ⇒ 另一端永远停在"等待对方确认"（真机 2026-09-13）。
     {
@@ -1985,13 +1985,13 @@ pub(crate) async fn accept_friend_request(s: &Arc<AppState>, peer_id: &str) -> R
             .unwrap_or_else(|e| e.into_inner())
             .insert(peer_id.to_string(), (now, 0, 0));
     }
-    if let Err(e) = send_friend_accept_via_link(s, &peer_id).await {
+    if let Err(e) = send_friend_accept_via_link(s, peer_id).await {
         s.logger.warn(
             "friend",
             format!("好友同意回执发送失败（已登记待补发）peer={peer_id}: {e}"),
         );
     }
-    crate::network::transport::forget_pending_request(s, &peer_id);
+    crate::network::transport::forget_pending_request(s, peer_id);
     let _ = s.app.emit("friend-accepted", &peer_id);
     Ok(())
 }
@@ -3038,7 +3038,7 @@ async fn send_group_payload(
     // 只凭这条群消息也能在本地正确建群（含成员表），成员面板因此不为空。
     let group_meta = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::get_group(&dbc, &group_id).map(|g| (g.name, g.creator, g.members))
+        db::get_group(&dbc, group_id).map(|g| (g.name, g.creator, g.members))
     };
     let (group_name, group_creator, group_members) = match group_meta {
         Some((n, c, m)) => (n, Some(c), m),
@@ -3047,8 +3047,8 @@ async fn send_group_payload(
     if !group_members.contains(&s.device_id) {
         return Err("你已不在该群中".to_string());
     }
-    let key = get_group_key(s, &group_id).await.ok_or("群密钥缺失")?;
-    let preview = preview(&kind, &content);
+    let key = get_group_key(s, group_id).await.ok_or("群密钥缺失")?;
+    let preview = preview(kind, &content);
 
     // 群密钥加密 + Gossip 信封（E2EE 恒开：载荷用群密钥 ChaCha20-Poly1305 加密）
     let plaintext = serde_json::json!({ "kind": kind, "content": content }).to_string();
@@ -3117,7 +3117,7 @@ async fn send_group_payload(
             if member == &s.device_id {
                 continue;
             }
-            db::insert_group_outbox(&tx, &rec.msg_id, &group_id, member, &payload)
+            db::insert_group_outbox(&tx, &rec.msg_id, group_id, member, &payload)
                 .map_err(|e| format!("群消息入队失败：{e}"))?;
         }
         tx.commit().map_err(|e| format!("群消息写入失败：{e}"))?;
@@ -3687,7 +3687,7 @@ pub async fn send_group_file(
     // 可达成员：有 TCP link 且 peers 信息完整；其余保持 pending，由上线事件自动投递。
     let mut reachable: Vec<String> = Vec::new();
     for m in &members {
-        if s.has_link(m).await && resolve_member_x25519(&s, m).is_some() {
+        if s.has_link(m).await && resolve_member_x25519(s, m).is_some() {
             reachable.push(m.clone());
         }
     }

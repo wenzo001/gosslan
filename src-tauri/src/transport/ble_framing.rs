@@ -235,8 +235,10 @@ pub struct BleReassembler {
 
 /// 一次 `push` 的结果。
 #[derive(Debug, PartialEq, Eq)]
+#[derive(Default)]
 pub enum PushOutcome {
     /// 收下了，但消息还没齐。
+    #[default]
     Incomplete,
     /// 消息已收齐（返回完整 payload）。
     Complete(Vec<u8>),
@@ -244,11 +246,6 @@ pub enum PushOutcome {
     Dropped(&'static str),
 }
 
-impl Default for PushOutcome {
-    fn default() -> Self {
-        PushOutcome::Incomplete
-    }
-}
 
 impl BleReassembler {
     pub fn new() -> Self {

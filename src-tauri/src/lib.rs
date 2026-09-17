@@ -1444,17 +1444,17 @@ mod tests {
     #[test]
     fn every_friend_accept_path_forgets_the_pending_request() {
         let transport = include_str!("network/transport.rs");
+        let transport_f = code_flat(transport);
         assert_eq!(
-            transport.matches("forget_pending_request(state, &from)").count(),
+            transport_f.matches("forget_pending_request(state,&from)").count(),
             2,
             "两条 FriendAccept 路径（直连 `Message::FriendAccept` + 跨跳 `GossipKind::FriendAccept`）\
              都必须清掉 pending —— 少一条就会让「已经是好友了，申请还挂着」复现"
         );
         let commands = include_str!("commands.rs");
+        let commands_f = code_flat(commands);
         assert_eq!(
-            commands
-                .matches("forget_pending_request(s, &peer_id)")
-                .count(),
+            commands_f.matches("forget_pending_request(s,peer_id)").count(),
             1,
             "`respond_friend_request` 的同意路径也要走同一个助手（别各写一遍）"
         );

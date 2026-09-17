@@ -627,15 +627,11 @@ pub mod driver {
 
 /// 蓝牙通道。接口占位：`available` 取决于是否编译了 BLE 后端（feature `bluetooth`），
 /// 驱动实现前 `start()` 一律返回明确错误，上层据此继续走局域网。
+#[derive(Default)]
 pub struct BluetoothTransport {
     running: bool,
 }
 
-impl Default for BluetoothTransport {
-    fn default() -> Self {
-        Self { running: false }
-    }
-}
 
 #[async_trait]
 impl Transport for BluetoothTransport {

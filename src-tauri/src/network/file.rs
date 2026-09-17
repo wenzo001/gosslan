@@ -152,7 +152,7 @@ pub async fn send_file_from_path_at(
 
     // ---- E2EE：本 transfer 独立的随机文件会话密钥（CSPRNG），仅存内存 ----
     let file_key = crypto::random_key();
-    let file_sha256 = sha256_file_hex(&path).map_err(|e| SendFileError::permanent(e))?;
+    let file_sha256 = sha256_file_hex(&path).map_err(SendFileError::permanent)?;
     let receiver_pubkey = resolve_member_x25519(state, peer_id);
     let sealed_key_b64 = (|| {
         let pubkey = receiver_pubkey.as_deref()?;
@@ -245,7 +245,7 @@ pub async fn send_file_from_path_at(
                     resume_from,
                 )
                 .await
-                .map_err(|e| SendFileError::retryable(e));
+                .map_err(SendFileError::retryable);
             }
             Ok(Ok(Err(n))) if n > resume_from => {
                 state.logger.info(

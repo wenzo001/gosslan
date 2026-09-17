@@ -33,7 +33,7 @@ impl BloomFilter {
         let num_bits = num_bits.max(64);
         let num_hashes = num_hashes.clamp(2, 16);
         Self {
-            bits: vec![0u64; (num_bits + 63) / 64],
+            bits: vec![0u64; num_bits.div_ceil(64)],
             num_bits,
             num_hashes,
             capacity,
@@ -51,9 +51,7 @@ impl BloomFilter {
 
     pub fn insert(&mut self, data: &str) {
         if self.count >= self.capacity {
-            for word in &mut self.bits {
-                *word = 0;
-            }
+            &mut self.bits.fill(0);
             self.count = 0;
         }
         for p in self.positions(data) {

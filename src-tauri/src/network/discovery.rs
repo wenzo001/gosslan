@@ -119,7 +119,7 @@ fn find_lan_interface() -> Option<(Ipv4Addr, Ipv4Addr)> {
             let non_virtual = !is_virtual_interface_name(&i.name);
             let better = best.as_ref().map_or(true, |(_, _, s, nv, name)| {
                 score > *s
-                    || (score == *s && non_virtual > *nv)
+                    || (score == *s && non_virtual & !*nv)
                     || (score == *s && non_virtual == *nv && i.name < *name)
             });
             if better {
