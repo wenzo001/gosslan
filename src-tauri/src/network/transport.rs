@@ -329,7 +329,7 @@ pub async fn broadcast_gossip(state: &AppState, envelope: GossipEnvelope) {
 
     // 与 `try_send` 同理：锁内只做决策 + 克隆 Sender，发送一律在锁外。
     // 原来在持有 `links` 锁时 `send().await`，一条拥塞链路会锁死整张连接表。
-    let targets: Vec<mpsc::Sender<Message>> = {
+    let targets: Vec<(mpsc::Sender<Message>, String, MeshEndpoint)> = {
         let links = state.links.lock().await;
         // 出站目标经 MeshRouter 裁决（§18 source exclusion）。
         //
@@ -344,21 +344,22 @@ pub async fn broadcast_gossip(state: &AppState, envelope: GossipEnvelope) {
         // M3-d（2026-09-14 全 Windows 局域网真机）：按**路径优先级**选一条发送链路，
         // 而不是 v.first()（插入顺序）。旧写法在同一 peer 同时有 LAN 与 BLE 链路时，
         // Gossip/控制帧可能走 BLE——表现为「同局域网却走了蓝牙/中继」。
-        // best_link_kind 给出 LAN > Routed > Bluetooth，再取该链路；只克隆 Sender。
+        // best_link_kind 给出 LAN > Routed > Bluetooth，再取该链路；同时保留 peer_id + endpoint
+        // 以便 timeout 时能定位到具体 Connection 并标记 congestion。
         picked
             .iter()
             .filter_map(|peer| {
-                let ls = links.get(*peer)?;
+                let peer_id: &str = peer;
+                let ls = links.get(peer_id)?;
                 let kinds: Vec<PathKind> = ls.iter().map(|l| l.path_kind).collect();
                 let best = crate::state::best_link_kind(&kinds)?;
-                ls.iter()
-                    .find(|l| l.path_kind == best)
-                    .map(|l| l.priority.clone())
+                let link = ls.iter().find(|l| l.path_kind == best)?;
+                Some((link.priority.clone(), peer_id.to_owned(), link.endpoint.clone()))
             })
             .collect()
     };
 
-    for tx in &targets {
+    for (tx, peer_id, endpoint) in &targets {
         // ⚠️ **必须有界等待**：这是有界队列（1024），对端僵死（BLE 低带宽 / 半开 TCP）
         // 时无超时的 `send().await` 会让本函数永久挂起 —— 而它被 `handle_gossip` 内联
         // await，`handle_gossip` 又由 reader_loop 调用 ⇒ **另一个对端的读循环被卡住**，
@@ -370,13 +371,17 @@ pub async fn broadcast_gossip(state: &AppState, envelope: GossipEnvelope) {
         if tokio::time::timeout(SEND_QUEUE_FULL_TIMEOUT, tx.send(msg.clone()))
             .await
             .is_err()
-            && log_throttled("gossip_drop", 30_000)
         {
-            state.logger.warn(
-                "transport",
-                "gossip 扇出队列满，丢弃本条（对方 outbox 会补发；持续出现说明该链路拥塞）"
-                    .to_string(),
-            );
+            // M3-d：gossip 扇出队列满 / writer 消费不过来 — 明确的发送侧拥塞信号。
+            // 这条路径之前只 log 不标 congestion，导致 pick_link 看不到 gossip 层的拥塞。
+            mark_conn_congested(state, peer_id, endpoint);
+            if log_throttled("gossip_drop", 30_000) {
+                state.logger.warn(
+                    "transport",
+                    "gossip 扇出队列满，丢弃本条（对方 outbox 会补发；持续出现说明该链路拥塞）"
+                        .to_string(),
+                );
+            }
         }
     }
 }
