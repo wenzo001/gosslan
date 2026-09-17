@@ -32,6 +32,11 @@ const logs = ref<LogEntry[]>([]);
 const displayLogs = computed(() => [...logs.value].reverse());
 const autoRefresh = ref(true);
 const copied = ref(false);
+
+/** 时间窗口过滤：null = 全部；30 / 60 / 120 = 近 N 秒。 */
+const timeWindow = ref<number | null>(null);
+/** 合并连续完全相同的行（默认开启：BLE 扫描、announce 等每 3s 刷一轮的信息噪音巨大）。 */
+const mergeDup = ref(true);
 /** 清空两段式确认：第一次点击进入待确认态，再次点击才真正清空。 */
 const confirmClear = ref(false);
 
@@ -84,12 +89,33 @@ const rows = computed(() =>
   })),
 );
 
+/** 合并连续**完全相同**的行。判据只看原始字符串（不看 v-html 高亮标记），
+ *  所以相同内容即使被高亮也会折叠。关掉 mergeDup 时直接透传 rows。 */
+const mergedRows = computed(() => {
+  if (!mergeDup.value) return rows.value.map((r) => ({ ...r, count: 1 }));
+  const out: (typeof rows.value[number] & { count: number })[] = [];
+  for (const r of rows.value) {
+    const last = out[out.length - 1];
+    if (
+      last &&
+      last.level === r.level &&
+      last.target.replace(/<[^>]+>/g, "") === r.target.replace(/<[^>]+>/g, "") &&
+      last.message.replace(/<[^>]+>/g, "") === r.message.replace(/<[^>]+>/g, "")
+    ) {
+      last.count += 1;
+    } else {
+      out.push({ ...r, count: 1 });
+    }
+  }
+  return out;
+});
+
 async function load() {
   // 窗口被隐藏/最小化时不必每 2s 拉一次：`get_logs` 会快照整份日志（几千条时是可观的
   // 克隆 + 序列化开销），而用户根本看不到。重新可见时下面的 visibilitychange 会立刻补一次。
   if (typeof document !== "undefined" && document.hidden) return;
   try {
-    logs.value = await api.getLogs();
+    logs.value = await api.getLogs(timeWindow.value);
   } catch {
     /* 后端暂不可用（如 logs 窗口创建瞬间 state 未就绪）→ 保持现状，下次轮询重试 */
   }
@@ -250,6 +276,41 @@ const levelClass = (lv: string) =>
       </div>
     </div>
 
+    <!-- 时间窗口过滤：最近 N 秒 / 全部。
+         一排小按钮，移动端也能点。切换后自动触发 load。 -->
+    <div
+      class="flex shrink-0 items-center gap-1 border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-caption)] px-3 py-1"
+    >
+      <span class="shrink-0 text-[11px] text-[var(--gosslan-text-2)]">窗口</span>
+      <button
+        class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-[11px] transition"
+        :class="timeWindow === null ? 'bg-[var(--gosslan-accent)] text-white' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
+        @click="timeWindow = null; void load()"
+      >全部</button>
+      <button
+        class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-[11px] transition"
+        :class="timeWindow === 30 ? 'bg-[var(--gosslan-accent)] text-white' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
+        @click="timeWindow = 30; void load()"
+      >30s</button>
+      <button
+        class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-[11px] transition"
+        :class="timeWindow === 60 ? 'bg-[var(--gosslan-accent)] text-white' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
+        @click="timeWindow = 60; void load()"
+      >1 分钟</button>
+      <button
+        class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-[11px] transition"
+        :class="timeWindow === 120 ? 'bg-[var(--gosslan-accent)] text-white' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
+        @click="timeWindow = 120; void load()"
+      >2 分钟</button>
+      <span class="mx-1 h-3 w-px shrink-0 bg-[var(--gosslan-divider)]"></span>
+      <button
+        class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-[11px] transition"
+        :class="mergeDup ? 'bg-[var(--gosslan-accent)] text-white' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
+        :title="mergeDup ? '展开相同日志' : '合并相同日志'"
+        @click="mergeDup = !mergeDup"
+      >合并重复</button>
+    </div>
+
     <!-- 过滤条：字面包含匹配，命中处高亮。
          单独一行而不是塞进工具栏 —— 工具栏已有 4 个按钮，移动端会被挤爆。 -->
     <div class="flex shrink-0 items-center gap-2 border-b border-[var(--gosslan-divider)] px-3 py-1.5">
@@ -267,7 +328,7 @@ const levelClass = (lv: string) =>
         :aria-label="t('logs.filter')"
       />
       <span v-if="trimmedFilter" class="shrink-0 text-xs text-[var(--gosslan-text-2)]">
-        {{ t("logs.filterCount", { n: rows.length, total: logs.length }) }}
+        {{ t("logs.filterCount", { n: mergedRows.length, total: logs.length }) }}
       </span>
       <button
         v-if="trimmedFilter"
@@ -285,7 +346,7 @@ const levelClass = (lv: string) =>
       <div v-if="logs.length === 0" class="mt-16 text-center text-sm text-[var(--gosslan-text-2)]">
         {{ t("logs.empty") }}
       </div>
-      <div v-else-if="rows.length === 0" class="mt-16 text-center text-sm text-[var(--gosslan-text-2)]">
+      <div v-else-if="mergedRows.length === 0" class="mt-16 text-center text-sm text-[var(--gosslan-text-2)]">
         {{ t("logs.filterEmpty") }}
       </div>
       <div v-else>
@@ -295,16 +356,23 @@ const levelClass = (lv: string) =>
              ② 日志每 2 秒轮询刷新时，未变动的行也不重新写 innerHTML。
              改这一行时注意：**新增任何渲染字段都要加进依赖数组**，否则该字段不刷新。 -->
         <div
-          v-for="r in rows"
+          v-for="r in mergedRows"
           :key="r.key"
-          v-memo="[r.time, r.levelText, r.target, r.message, r.level]"
+          v-memo="[r.time, r.levelText, r.target, r.message, r.level, r.count]"
           class="flex gap-2 rounded px-1 py-0.5 hover:bg-[var(--gosslan-hover)]"
         >
           <span class="shrink-0 select-none text-[var(--gosslan-text-2)]" v-html="r.time"></span>
           <span class="w-12 shrink-0 select-none font-semibold" :class="levelClass(r.level)" v-html="r.levelText"></span>
-          <span class="min-w-0 break-all">
+          <span class="min-w-0 flex-1 break-all">
             <span class="text-[var(--gosslan-text-2)]" v-html="r.target"></span>
             <span v-html="r.message"></span>
+          </span>
+          <span
+            v-if="r.count > 1"
+            class="shrink-0 rounded-full bg-[var(--gosslan-accent)] px-1.5 text-[11px] font-semibold leading-tight text-white"
+            :title="`已合并 ${r.count} 条相同日志`"
+          >
+            ×{{ r.count }}
           </span>
         </div>
       </div>

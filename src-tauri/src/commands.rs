@@ -5944,10 +5944,16 @@ pub fn remove_routed_endpoint(
 
 // ---------------- 运行日志 ----------------
 
-/// 读取内存中的全部运行日志（时间正序：旧 → 新）。
+/// 读取内存中的运行日志（时间正序：旧 → 新）。
+///
+/// `since_secs = Some(N)` 只返回最近 N 秒内的日志；None / 0 = 返回全部。
+/// 例：since_secs = Some(30) → 近 30 秒；Some(60) → 近 1 分钟。
 #[tauri::command(async)]
-pub fn get_logs(state: tauri::State<'_, Arc<AppState>>) -> Vec<LogEntry> {
-    state.logger.snapshot()
+pub fn get_logs(state: tauri::State<'_, Arc<AppState>>, since_secs: Option<i64>) -> Vec<LogEntry> {
+    let since_ms = since_secs
+        .filter(|&s| s > 0)
+        .map(|s| crate::db::now_ms() - s * 1000);
+    state.logger.snapshot(since_ms)
 }
 
 /// 清空运行日志（内存 + 落盘文件）。

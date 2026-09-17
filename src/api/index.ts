@@ -278,7 +278,7 @@ export const api = {
       sinceMs: p.sinceMs ?? null,
       untilMs: p.untilMs ?? null,
     }),
-  getLogs: () => invoke<LogEntry[]>("get_logs"),
+  getLogs: (sinceSecs?: number | null) => invoke<LogEntry[]>("get_logs", { sinceSecs: sinceSecs ?? null }),
   clearLogs: () => invoke<void>("clear_logs"),
   /** 桌面端：打开独立日志窗口；移动端不要调用（用页面跳转）。 */
   openLogWindow: () => invoke<void>("open_log_window"),

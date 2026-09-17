@@ -255,10 +255,16 @@ impl Logger {
         self.append_file(ts, level, target, &message);
     }
 
-    /// UI 快照：按时间正序（旧 → 新）返回全部内存日志。
-    pub fn snapshot(&self) -> Vec<LogEntry> {
+    /// UI 快照：按时间正序（旧 → 新）返回内存日志。
+    ///
+    /// `since_ms = Some(epoch_ms)` 只返回 >= 该时间戳的行；None = 返回全部。
+    /// 内存 ring buffer 本身有界（500 条），过滤只是切片，没有额外开销。
+    pub fn snapshot(&self, since_ms: Option<i64>) -> Vec<LogEntry> {
         let q = self.entries.lock().unwrap_or_else(|e| e.into_inner());
-        q.iter().cloned().collect()
+        match since_ms {
+            None => q.iter().cloned().collect(),
+            Some(since) => q.iter().filter(|e| e.ts >= since).cloned().collect(),
+        }
     }
 
     /// 清空内存与落盘文件。
@@ -365,7 +371,7 @@ mod tests {
         for i in 0..(MAX_MEM_LOGS as i64 + 100) {
             logger.info("test", format!("msg {i}"));
         }
-        let snap = logger.snapshot();
+        let snap = logger.snapshot(None);
         assert_eq!(snap.len(), MAX_MEM_LOGS);
         // 最旧的 100 条已被丢弃，第一条是 msg 100
         assert!(snap[0].message == "msg 100");
@@ -378,9 +384,9 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("gosslan-log-clr-{}", std::process::id()));
         let logger = Logger::new(dir.clone(), "t", "[dev:test]".to_string());
         logger.error("test", "boom");
-        assert_eq!(logger.snapshot().len(), 1);
+        assert_eq!(logger.snapshot(None).len(), 1);
         logger.clear();
-        assert!(logger.snapshot().is_empty());
+        assert!(logger.snapshot(None).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
