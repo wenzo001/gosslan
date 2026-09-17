@@ -32,7 +32,7 @@
 #![cfg(all(feature = "bluetooth", target_os = "windows"))]
 
 use std::collections::HashMap;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot};
@@ -363,10 +363,13 @@ const UNKNOWN_CENTRAL: &str = "unknown-central";
 
 /// 当前订阅者（central 标识 → 订阅句柄）。**进程级**一份：一台机器只有一个 GATT server。
 ///
-/// 用 `LazyLock` 而不是 `Mutex::new(HashMap::new())`：后者不是 const fn，
-/// 静态初始化里用不了（E0015）。
-static SUBSCRIBERS: LazyLock<Mutex<HashMap<String, GattSubscribedClient>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
+/// 用 `OnceLock` 而不是 `Mutex::new(HashMap::new())`：后者不是 const fn，
+/// 静态初始化里用不了（E0015）。`LazyLock` 需要 Rust 1.80，而 MSRV 是 1.77。
+static SUBSCRIBERS: OnceLock<Mutex<HashMap<String, GattSubscribedClient>>> = OnceLock::new();
+
+fn subscribers() -> &'static Mutex<HashMap<String, GattSubscribedClient>> {
+    SUBSCRIBERS.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 /// 当前时间（毫秒）—— 重组器的分片 TTL 要用（与 macOS/Android 侧同一套回收语义）。
 fn now_ms() -> i64 {
@@ -389,7 +392,7 @@ fn sync_subscribers(tx_char: &GattLocalCharacteristic, shared: &Arc<Shared>) {
         }
     };
     let ids: Vec<String> = current.iter().map(session_id).collect();
-    let mut known = SUBSCRIBERS.lock().unwrap_or_else(|e| e.into_inner());
+    let mut known = subscribers().lock().unwrap_or_else(|e| e.into_inner());
 
     // 1) 消失的人 ⇒ Unlinked，并作废他那份半截消息（否则残留分片一直占内存）
     let before: Vec<String> = known.keys().cloned().collect();
@@ -546,7 +549,7 @@ impl PeripheralWriter {
     /// 缺陷那样"直接发不出去"。要动它请先真机确认 `MaxNotificationSize` 的语义。
     pub fn payload_mtu(&self, central: &str) -> usize {
         let max = {
-            let subs = SUBSCRIBERS.lock().unwrap_or_else(|e| e.into_inner());
+            let subs = subscribers().lock().unwrap_or_else(|e| e.into_inner());
             subs.get(central)
                 .and_then(|c| c.MaxNotificationSize().ok())
                 .unwrap_or(0)
@@ -556,7 +559,7 @@ impl PeripheralWriter {
 
     /// 对端是否还订阅着（断开/取消订阅都为 false）。
     pub fn is_subscribed(&self, central: &str) -> bool {
-        SUBSCRIBERS
+        subscribers()
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .contains_key(central)
@@ -601,7 +604,7 @@ impl PeripheralWriter {
                     return Err(format!("对端未订阅通知（central={central}）"));
                 }
                 let client = {
-                    let subs = SUBSCRIBERS.lock().unwrap_or_else(|e| e.into_inner());
+                    let subs = subscribers().lock().unwrap_or_else(|e| e.into_inner());
                     subs.get(central).cloned()
                 };
                 let Some(client) = client else {

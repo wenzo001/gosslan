@@ -148,6 +148,7 @@ pub fn att_payload_budget(negotiated: u16) -> usize {
 /// `const MAX: usize = 512`（匿名、靠注释解释语义），而 Windows 那一侧走了共享函数。
 /// 于是「外设侧用的是同一个函数」这句文档**只对 Windows 成立**，macOS 是第二份实现 ——
 /// 数值恰好一致所以没发作，但任一处改动就会复发 4.18.7→4.18.10 那类缺陷。
+#[allow(dead_code)] // Windows 用 att_payload_budget（含 ATT 头），macOS/Android 外设用本函数
 pub fn notify_payload_budget(max_update_value_length: usize) -> usize {
     let min = BLE_CHUNK_HEADER_LEN + 1; // 至少装得下"分片头 + 1 字节"
     if max_update_value_length < min {
