@@ -234,8 +234,7 @@ pub struct BleReassembler {
 }
 
 /// 一次 `push` 的结果。
-#[derive(Debug, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, PartialEq, Eq, Default)]
 pub enum PushOutcome {
     /// 收下了，但消息还没齐。
     #[default]
@@ -245,7 +244,6 @@ pub enum PushOutcome {
     /// 这一片被丢弃（重复 / 越界 / 参数非法 / 超出上限），消息不受影响。
     Dropped(&'static str),
 }
-
 
 impl BleReassembler {
     pub fn new() -> Self {

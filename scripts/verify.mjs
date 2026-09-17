@@ -166,6 +166,20 @@ const steps = [
     args: ["run", "build"],
   },
   {
+    name: "cargo fmt --check --all",
+    why: "格式统一。2026-09-17 一次性全量重排后零差异，作为门禁防漂移",
+    cwd: TAURI,
+    cmd: "cargo",
+    args: ["fmt", "--check", "--all"],
+  },
+  {
+    name: "cargo clippy（-D warnings，--features bluetooth）",
+    why: "2026-09-17 清理 26 条 warning 后零红。--features bluetooth 不能省，否则 BLE 模块不编译",
+    cwd: TAURI,
+    cmd: "cargo",
+    args: ["clippy", "--features", "bluetooth", "--", "-D", "warnings"],
+  },
+  {
     name: "Rust 单测（--features bluetooth）",
     why: "505 条用例。--features bluetooth 不能省：漏了会让 16 条 BLE 用例静默消失",
     cwd: TAURI,

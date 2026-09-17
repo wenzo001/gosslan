@@ -632,7 +632,6 @@ pub struct BluetoothTransport {
     running: bool,
 }
 
-
 #[async_trait]
 impl Transport for BluetoothTransport {
     fn name(&self) -> &'static str {

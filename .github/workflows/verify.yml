@@ -40,11 +40,11 @@ name: Verify
 #  另一半（Windows 外设）由 `rust` job 的 **windows-latest 那条腿**覆盖 ——
 #  两条腿各用各的基线，因为两侧是互斥的 #[cfg]（见该 job 的注释）。
 #
-#  ## ⚠️ 为什么这里**故意没有** cargo fmt / clippy
+#  ## cargo fmt / clippy 已纳入门禁（2026-09-17）
 #
-#  第一版门禁必须**全绿**。当前 `cargo fmt --check` 有 517 处差异、`clippy` 尚未安装 ——
-#  现在加进来会让每次 PR 立刻全红，结果是所有人开始用 `--no-verify` 绕过，
-#  门禁一旦被绕过一次就永久失效。这两项作为**独立的技术债**单独还。
+#  初始版本故意不加（`cargo fmt --check` 有 517 处差异、clippy 未安装）。
+#  2026-09-17 统一 fmt 全量重排 + 清理 26 条 clippy warning 后，两项均零红，
+#  已纳入 rust job 的前置检查（fmt → clippy → test → manifest guard）。
 #
 #  ## ⚠️ 为什么 Rust job 必须先 `npm run build`
 #
@@ -210,6 +210,8 @@ jobs:
           npm run build
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -226,6 +228,18 @@ jobs:
       #   · check 注解 → ✅ 可匿名读 `/repos/O/R/check-runs/{job_id}/annotations`。
       #
       # ⚠️ Windows 上必须显式 `shell: bash`（用 Git Bash）——脚本依赖 tee/grep/tail/node。
+
+      # ---- fmt + clippy ----
+      # 2026-09-17 一次性 fmt 全量重排 + 清理 26 条 clippy warning 后，两项均零红。
+      # 放在 test 之前：格式/风格问题不该等测试跑完才发现。
+      - name: cargo fmt --check
+        working-directory: src-tauri
+        run: cargo fmt --check --all
+
+      - name: cargo clippy（-D warnings，--features bluetooth）
+        working-directory: src-tauri
+        run: cargo clippy --features bluetooth -- -D warnings
+
       - name: Rust 单测
         shell: bash
         working-directory: src-tauri

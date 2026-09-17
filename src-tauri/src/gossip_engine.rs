@@ -154,7 +154,7 @@ impl GossipEngine {
     }
 
     /// 构造一个单聊 / 群聊 Gossip 信封（加密 payload 由调用方传入）。
-#[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn build_envelope(
         &self,
         identity: &Identity,

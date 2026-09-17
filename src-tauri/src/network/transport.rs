@@ -348,13 +348,14 @@ pub async fn broadcast_gossip(state: &AppState, envelope: GossipEnvelope) {
         if tokio::time::timeout(SEND_QUEUE_FULL_TIMEOUT, tx.send(msg.clone()))
             .await
             .is_err()
-            && log_throttled("gossip_drop", 30_000) {
-                state.logger.warn(
-                    "transport",
-                    "gossip 扇出队列满，丢弃本条（对方 outbox 会补发；持续出现说明该链路拥塞）"
-                        .to_string(),
-                );
-            }
+            && log_throttled("gossip_drop", 30_000)
+        {
+            state.logger.warn(
+                "transport",
+                "gossip 扇出队列满，丢弃本条（对方 outbox 会补发；持续出现说明该链路拥塞）"
+                    .to_string(),
+            );
+        }
     }
 }
 

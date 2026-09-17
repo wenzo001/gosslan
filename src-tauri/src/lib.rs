@@ -1454,7 +1454,9 @@ mod tests {
         let commands = include_str!("commands.rs");
         let commands_f = code_flat(commands);
         assert_eq!(
-            commands_f.matches("forget_pending_request(s,peer_id)").count(),
+            commands_f
+                .matches("forget_pending_request(s,peer_id)")
+                .count(),
             1,
             "`respond_friend_request` 的同意路径也要走同一个助手（别各写一遍）"
         );
