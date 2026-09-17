@@ -93,6 +93,11 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Change Budget 守门需要 git 历史:CI push event 的 before..sha 探测、
+          # 重复犯案窗口的 merge-base(HEAD, origin/main)..HEAD。默认 fetch-depth=1
+          # 连 HEAD~1 都没有,必须拉全历史(仓库很小,秒级)。
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -137,6 +142,14 @@ jobs:
       # 加在领域图守门之后 —— 任何新增领域一旦存在,这条立刻适用,无须人记得开。
       - name: 领域依赖方向守门
         run: node scripts/check-domain-deps.mjs
+
+      # 守的是「改动半径与重复犯案」:每个 commit 按规模分级(L1 ≤5 文件/≤200 行/1 领域放行;
+      # L2 需 [plan];L3 或碰 protocol/crypto/schema 敏感文件需 [impact]),且同一领域在
+      # 最近 5 个 fix 里出现 ≥3 次 → FAIL(4.18.7→4.18.10 连修四版的教训:小 diff 不等于安全)。
+      # 范围自动用 push event 的 before..sha(本地 = 未推送 commit);纯文档/工程 commit 豁免,
+      # chore(release) 的版本白名单豁免。
+      - name: Change Budget 守门
+        run: node scripts/check-change-budget.mjs
 
       # 结构检查（唯一行首 `## [Unreleased]` 锚点 / 标题格式 / 新在前降序）。
       # 注意用的是 `version:changelog` 而不是 `version:check`：后者的版本记账部分

@@ -1894,6 +1894,73 @@ CASES: list[Case] = [
         expect_fail_hint="引用了不存在的领域",
         tags=["domain-deps", "new-guards"],
     ),
+    # ---------------- Change Budget(check-change-budget.mjs + fixture) ----------------
+    # 守门读真实 git 历史,没法"改坏源文件"来验证 —— 所以脚本留了 --from-json 测试接缝,
+    # 用 fixture 喂数据。fixture 的默认状态是全 PASS(每条判定路径都走到),下面四条用例
+    # 各自破坏一个条件来验证对应判据会红。fixture 本身提交进仓库,是可以 review 的测试数据。
+    Case(
+        name="Change Budget:L2 改动丢了 [plan] 标记 → FAIL",
+        why="超 L1(≤5 文件)但 ≤L2(≤10 文件)的改动,要求 commit message 带 [plan] 说明改动计划 ——"
+        "『中改动必须被声明』是 Change Budget 的核心语义。fixture 里 a000002(8 文件/412 行)默认带"
+        " [plan: 拆成三步…];本用例把 [plan] 从 message 里删掉,守门必须报「没有 [plan] 标记」。",
+        file=ROOT / "scripts" / "fixtures" / "change-budget.json",
+        injections=[(
+            '"message": "feat(ui): 重构设置面板 [plan: 拆成三步 —— 先抽 store,再拆视图,最后迁 API]",',
+            '"message": "feat(ui): 重构设置面板",',
+        )],
+        cmd=["node", "scripts/check-change-budget.mjs", "--from-json", "scripts/fixtures/change-budget.json"],
+        cwd=ROOT,
+        expect_fail_hint="没有 [plan] 标记",
+        tags=["change-budget", "new-guards"],
+    ),
+    Case(
+        name="Change Budget:L3 改动(含敏感文件)丢了 [impact] 标记 → FAIL",
+        why="碰 protocol.rs / crypto.rs / schema.sql 的改动**无论多小**都是 L3(一错就是安全/全库数据问题),"
+        "必须有 Impact Report 的最小形态 [impact] 标记。fixture 里 a000003 只改 2 个文件,但因碰了"
+        " protocol.rs 直接 L3;本用例删掉 [impact],守门必须红 —— 证明『敏感文件不豁免于规模』。",
+        file=ROOT / "scripts" / "fixtures" / "change-budget.json",
+        injections=[(
+            '"message": "refactor(protocol): 线格式 v2 [impact: 见 docs/protocol-invariants.md 新增小节;两侧同步升级;505 用例全绿]",',
+            '"message": "refactor(protocol): 线格式 v2",',
+        )],
+        cmd=["node", "scripts/check-change-budget.mjs", "--from-json", "scripts/fixtures/change-budget.json"],
+        cwd=ROOT,
+        expect_fail_hint="没有 [impact] 标记",
+        tags=["change-budget", "new-guards"],
+    ),
+    Case(
+        name="Change Budget:同一领域连续 3 次 fix → FAIL(重复犯案检测器)",
+        why="4.18.7→4.18.10 连着四个版本修同一个 BLE 分片问题,每个补丁都很小但它们在互相修 ——"
+        "『改完这个冒出那个』的特征不是 diff 大,而是同一领域反复被打补丁。fixture 窗口里 transport"
+        " 已有 2 次 fix(阈值 3);本用例注入第 3 条 transport fix,守门必须报「出现了 3 次」并提示"
+        "先补不变量/收敛单一事实来源。",
+        file=ROOT / "scripts" / "fixtures" / "change-budget.json",
+        injections=[(
+            '"message": "fix(ble): 写入失败日志补帧长",\n      "files": [{ "path": "src-tauri/src/transport/bluetooth.rs", "add": 24, "del": 2 }]\n    }\n  ]',
+            '"message": "fix(ble): 写入失败日志补帧长",\n      "files": [{ "path": "src-tauri/src/transport/bluetooth.rs", "add": 24, "del": 2 }]\n    },\n'
+            '    {\n      "sha": "b000003",\n      "message": "fix(ble): 第三次打补丁",\n      "files": [{ "path": "src-tauri/src/transport/tcp.rs", "add": 5, "del": 1 }]\n    }\n  ]',
+        )],
+        cmd=["node", "scripts/check-change-budget.mjs", "--from-json", "scripts/fixtures/change-budget.json"],
+        cwd=ROOT,
+        expect_fail_hint="出现了 3 次",
+        tags=["change-budget", "new-guards"],
+    ),
+    Case(
+        name="Change Budget:chore(release) 换成普通类型 → 版本白名单失效 → FAIL",
+        why="每次发版固定动 5 个版本文件(package.json/Cargo.toml/Cargo.lock/tauri.conf.json/package-lock.json),"
+        "白名单只在 message 以 chore(release) 开头时生效。fixture 里 a000004(package-lock +250 行等)默认豁免;"
+        "本用例把 message 改成 feat(release) —— 白名单立即失效,347 行计入 ⇒ 超 L1 且无 [plan] ⇒ FAIL。"
+        "证明『豁免是声明出来的,不是永远免检』。",
+        file=ROOT / "scripts" / "fixtures" / "change-budget.json",
+        injections=[(
+            '"message": "chore(release): v4.19.0",',
+            '"message": "feat(release): v4.19.0",',
+        )],
+        cmd=["node", "scripts/check-change-budget.mjs", "--from-json", "scripts/fixtures/change-budget.json"],
+        cwd=ROOT,
+        expect_fail_hint="没有 [plan] 标记",
+        tags=["change-budget", "new-guards"],
+    ),
 ]
 
 

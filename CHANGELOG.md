@@ -10,6 +10,36 @@
 
 ## [Unreleased]
 
+### Added (Change Budget 守门:改动半径分级 + 重复犯案检测器 —— 2026-09-17)
+
+Phase 6。核心认识:**小 diff 不等于安全** —— `4.18.7→4.18.10` 连着四个版本修同一个 BLE
+分片问题,每版 2~4 文件 / +24~+136 行,全都"很小",每一个都在修上一个。所以判据有三个,
+不是一个:
+
+**`scripts/check-change-budget.mjs` 三判据**:
+
+| 判据 | 规则 | 依据 |
+|---|---|---|
+| 变更分级 | L1(≤5 文件/≤200 行/1 领域)放行;L2(≤10/≤500/≤2 领域)需 `[plan]`;L3 或碰敏感文件需 `[impact]` | 9/10 真实修复落在 L1 内 |
+| 敏感文件 | 碰 `protocol.rs` / `crypto.rs` / `schema.sql` **无论多小**直接 L3 | 一错就是安全/全库数据问题 |
+| 重复犯案 | 同领域在最近 5 个 `fix` 中出现 ≥3 次 → FAIL | `4.18.7→4.18.10` 是 4 次;第 3 次就拦 |
+
+- **豁免**:纯文档/工程文件(`*.md`/`*.txt`/`docs/`/`scripts/`/`.github/`)不计入预算;
+  `chore(release)` 的版本五件套(package.json / Cargo.toml / Cargo.lock / tauri.conf.json /
+  package-lock.json)豁免 —— 否则每次发版撞门。
+- **范围语义 = 门禁向前看**:CI 用 push event 的 `before..sha`,本地用"未推送 commit"
+  (`origin/<branch>..HEAD`)。**不重查已推送的历史** —— 那会把门禁变成对历史的审判。
+- **测试接缝**:守门读真实 git 历史,没法"改坏源文件"验证 ⇒ 留 `--from-json`,非空转用例喂
+  `scripts/fixtures/change-budget.json`(默认状态全 PASS,四条用例各破坏一个条件验证对应判据会红)。
+- 接入 `npm run verify`(步骤 6)与 verify.yml frontend job(checkout 加 `fetch-depth: 0`,
+  merge-base 与 push 范围探测需要)。
+- **实测校准**:对历史 commit 的判定与预期一致 —— `fix(ble) d6e5c82`(3 文件/55 行)→ L1;
+  `docs 240ccd8` → 豁免;`feat(chat) 7c03341`(42 文件/+2578/碰 protocol.rs)→ L3 无标记 FAIL,
+  与计划预言吻合。当前分支犯案窗口 transport 2 次 < 3,第一版全绿。
+
+**已知边界(诚实)**:管不了语义(+10 行能让整条链路发不出消息,那靠测试与不变量);
+拆 commit gaming 靠犯案判据兜底;把 fix 写成 feat 属于"门禁被绕过"的流程问题,review 兜底。
+
 ### Changed (零风险债:消掉 `relay` 命名撞车 + 收敛一份双状态 —— 2026-09-17)
 
 两笔之前悬而未决的零风险债一起勾掉。

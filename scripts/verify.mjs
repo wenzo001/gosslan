@@ -138,6 +138,13 @@ const steps = [
     args: ["scripts/check-domain-deps.mjs"],
   },
   {
+    name: "Change Budget 守门",
+    why: "挡住「改动半径不声明 + 同领域反复打补丁」——L2 需 [plan]、L3/敏感文件需 [impact]、同领域 3 次 fix 即红",
+    cwd: ROOT,
+    cmd: process.execPath,
+    args: ["scripts/check-change-budget.mjs"],
+  },
+  {
     name: "CHANGELOG 结构",
     why: "发布脚本按行首 `## [Unreleased]` 插小节；锚点被吞/顺序错乱不报错，只有结构检查能拦",
     cwd: ROOT,
