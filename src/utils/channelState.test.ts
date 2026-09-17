@@ -279,6 +279,81 @@ test("桌面通知必须走后端 notify_desktop（不再依赖被插件替换�
 });
 
 /**
+ * 新消息提请注意（Windows 闪任务栏 / macOS 弹跳 Dock）。
+ *
+ * 为什么要静态钉住**调用位置**：它和系统通知是"同一件事的两种表达"——
+ * 放在 `maybeNotify`（收到消息就调）会让"通知被 1.5s 去抖合并掉""用户正看着该会话被跳过"
+ * 这些情况下**照样闪**，表现就是"没弹任何通知，任务栏却在闪"。
+ * 只有放在 `flushNotifications` 的发送循环之后才与通知同进同出。
+ */
+test("提请注意必须与实际发出的通知同进同出（放 flushNotifications，不放 maybeNotify）", () => {
+  const store = read("stores/useChatStore.ts");
+  const flushAt = store.indexOf("function flushNotifications");
+  const notifyAt = store.indexOf("function maybeNotify");
+  const callAt = store.indexOf("api.requestAttention()");
+  assert.ok(flushAt > 0 && notifyAt > 0 && callAt > 0, "store 里这三处都应能找到（函数被改名了？）");
+  assert.ok(
+    flushAt < callAt && callAt < notifyAt,
+    "api.requestAttention() 必须写在 flushNotifications 里（且在 maybeNotify 之前），否则会脱离通知单独闪烁",
+  );
+  assert.match(
+    store,
+    /if \(anyReminded && !app\.isMobile\)/,
+    "只在真的发出了通知时才闪，且移动端不调（没有任务栏可闪）",
+  );
+  assert.match(read("api/index.ts"), /requestAttention:/, "api 层要暴露 request_attention");
+  // 后端：命令必须注册进 generate_handler!，否则前端调用返回 "Command not found"
+  // （Android 侧的桩由 src-tauri 的 every_handler_command_exists_for_mobile 守卫）。
+  const libRs = readFileSync(join(srcDir, "..", "src-tauri", "src", "lib.rs"), "utf8");
+  assert.match(libRs, /commands::request_attention,/, "后端命令必须注册进 generate_handler!");
+});
+
+/**
+ * 未读外显（托盘红点 / Windows 任务栏按钮角标 / macOS Dock 数字）。
+ *
+ * 为什么钉住"跟 `totalUnread` 走 + 去抖"：
+ * - 跟**消息事件**走 ⇒ 标记已读、切会话、删会话时角标不更新，出现"红点清了、Dock 上还挂着 3"；
+ * - 不去抖 ⇒ 消息洪水或"一键已读"会连续换托盘图标，Windows 上每次都是**肉眼可见的一下**。
+ */
+test("未读角标必须跟未读总数走、去抖后再推给后端（不是跟消息事件走）", () => {
+  const store = read("stores/useChatStore.ts");
+  assert.match(store, /watch\(totalUnread,/, "必须 watch totalUnread，而不是在收消息时改角标");
+  assert.match(store, /api\.setUnreadBadge\(n\)/, "必须把**未读总数**推给后端");
+  assert.match(store, /BADGE_DEBOUNCE_MS/, "必须有去抖（连续变化只推最后一次）");
+  assert.match(store, /if \(app\.isMobile\) return;/, "移动端不走这条链路（没有托盘可改）");
+  assert.match(read("api/index.ts"), /setUnreadBadge:/, "api 层要暴露 set_unread_badge");
+  const libRs = readFileSync(join(srcDir, "..", "src-tauri", "src", "lib.rs"), "utf8");
+  assert.match(libRs, /commands::set_unread_badge,/, "后端命令必须注册进 generate_handler!");
+});
+
+/**
+ * 托盘红点必须**整块**挂在 `#[cfg(not(target_os = "macos"))]` 之下。
+ *
+ * 为什么这条值得占一个守卫位：红点在 macOS 上不参与渲染（那边走 Dock 数字角标），
+ * 所以这份实现（色常量 / 几何常量 / 逐像素绘制 / 抗锯齿混合）在 macOS 上是**死代码** ——
+ * 而 CI 的 macOS 腿跑 `cargo clippy -- -D warnings`，死代码直接判失败。
+ *
+ * 这个坑 2026-09-17 真踩过：Windows 上 clippy 干净、`cargo test` 全绿，只有 macOS 腿红
+ * （PR #18 首轮 CI 就是这样）。修法是把它们整个收进带 cfg 的 `mod dot` ——
+ * 分散地给每个 const/fn 各挂一次 cfg 迟早会漏一个，所以守卫钉的是"整块"。
+ */
+test("托盘红点的实现必须整块 cfg 到非 macOS（否则 macOS 腿 clippy 判死代码）", () => {
+  const tray = readFileSync(join(srcDir, "..", "src-tauri", "src", "tray.rs"), "utf8");
+  assert.match(
+    tray,
+    /#\[cfg\(not\(target_os = "macos"\)\)\]\nmod dot \{/,
+    '红点实现必须整块收进 #[cfg(not(target_os = "macos"))] mod dot（见该模块的文档注释）',
+  );
+  const modStart = tray.indexOf("mod dot {");
+  for (const name of ["const UNREAD_RED", "const DOT_R_RATIO", "fn with_unread_dot"]) {
+    assert.ok(
+      tray.indexOf(name) > modStart,
+      `${name} 必须写在 mod dot 内（散在模块外 = macOS 上的死代码 ⇒ clippy 红）`,
+    );
+  }
+});
+
+/**
  * 链路徽标与在线状态必须**实时**（用户 2026-09-14：两边全在局域网，却显示「已桥接」，
  * 且好友在线状态不实时）。
  *
