@@ -89,12 +89,19 @@ if (only && only !== "frontend" && only !== "rust") {
 const runFrontend = !only || only === "frontend";
 const runRust = !only || only === "rust";
 
+/** 路径统一成 posix 形式：本仓库的清单与基线一律用正斜杠（CI 在 macOS/Linux 上跑）。 */
+const posix = (p) => p.split(path.sep).join("/");
+
 /** 递归收集 `src` 下所有 `.test.ts`。 */
 function collectFrontendTests(dir, acc = []) {
   for (const e of readdirSync(dir, { withFileTypes: true })) {
     const p = path.join(dir, e.name);
     if (e.isDirectory()) collectFrontendTests(p, acc);
-    else if (e.name.endsWith(".test.ts")) acc.push(path.relative(ROOT, p));
+    // ⚠️ 必须转成正斜杠再比：`package.json` 里登记的是 `src/utils/x.test.ts` 这种 posix 路径，
+    // 而 Windows 上 `path.relative()` 给出的是 `src\utils\x.test.ts` ⇒ 直接比对会把**每一个**
+    // 文件都判成"未登记"（现象：本机 `npm run verify` 第一步就红，而 CI 的 macOS 腿是绿的，
+    // 因为那里的分隔符恰好一致）。2026-09-17 修。
+    else if (e.name.endsWith(".test.ts")) acc.push(posix(path.relative(ROOT, p)));
   }
   return acc;
 }

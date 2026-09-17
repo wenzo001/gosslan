@@ -47,10 +47,25 @@ test("detectSystemLocale：zh* → 中文，en* → 英文，非中英 → 英�
 
 // ---------------- t() 翻译与插值 ----------------
 
-test("默认跟随系统（node 环境无 navigator → 英文）", () => {
-  applyPreference("system");
-  assert.equal(currentPreference(), "system");
-  assert.equal(t("nav.chats"), "Chats");
+test("默认跟随系统：没有 navigator 时回落英文", () => {
+  // ⚠️ 必须**真的**构造出"没有 navigator"的环境（用户 2026-09-17）：
+  //   · Node ≥21 **自带全局 `navigator`**（本机 language === "zh-CN"），所以原测试名里
+  //     "node 环境无 navigator" 这个前提早已不成立 —— 它只是**恰好**在 en-US 的机器
+  //     （含 CI runner）上通过，而中文开发者本地必红。假绿把这条契约缺陷藏了很久。
+  //   · 另：`applyPreference("system")` 并**不**重解析系统语言（重解析在
+  //     `refreshSystemLocale`）。原测试靠"模块加载那一刻恰好没有 navigator"间接成立，
+  //     这里显式重解析一次，才是在测它声称要测的东西。
+  const saved = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  Object.defineProperty(globalThis, "navigator", { value: undefined, configurable: true });
+  try {
+    applyPreference("system");
+    refreshSystemLocale();
+    assert.equal(currentPreference(), "system");
+    assert.equal(t("nav.chats"), "Chats");
+  } finally {
+    if (saved) Object.defineProperty(globalThis, "navigator", saved);
+    refreshSystemLocale(); // 别把"无 navigator"的环境泄漏给后面的用例
+  }
 });
 
 test("显式中文翻译", () => {

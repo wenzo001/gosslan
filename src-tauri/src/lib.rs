@@ -295,6 +295,8 @@ pub fn run() {
             commands::get_peers,
             commands::search_nearby_peers,
             commands::focus_window,
+            commands::request_attention,
+            commands::set_unread_badge,
             commands::list_favorites,
             commands::add_favorite,
             commands::remove_favorite,

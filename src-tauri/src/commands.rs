@@ -428,6 +428,70 @@ pub fn focus_window(_app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// 新消息到达时提请用户注意：Windows 闪任务栏按钮、macOS 弹跳 Dock 图标，**直到应用获得焦点**。
+///
+/// 为什么是 `Critical` 而不是 `Informational`（tao 0.35 的实现差异）：
+///   · Windows：`FLASHW_ALL | FLASHW_TIMERNOFG`，闪窗口边框 + 任务栏按钮，`uCount = u32::MAX`
+///     ⇒ 一直闪到窗口回到前台；`Informational` 是 `FLASHW_TRAY` + 4 次，一闪而过。
+///   · macOS：`NSApp.requestUserAttention(CriticalRequest)` ⇒ Dock 图标**持续弹跳**；
+///     `Informational` 只弹一下。
+/// 微信就是"闪到你看为止"，所以这里用 `Critical`。
+///
+/// **不提供"停止闪烁"接口**：撤销由系统负责（窗口获得焦点即停），前端多此一举反而会出现
+/// "通知已关但还在闪"的状态不一致。
+///
+/// **为什么值得存在**：系统通知（toast）会被用户的「通知总开关 / 专注助手」静默丢弃
+/// ——2026-09-17 本机实测就是 `ToastEnabled = 0`，应用侧发送成功但用户什么都看不到。
+/// 闪烁与 Dock 弹跳不经过通知中心，不受该开关影响，是目前唯一"关不掉"的提醒途径。
+///
+/// **必须是同步命令**：macOS 分支在 tao 内部直接 `NSApp(mtm).requestUserAttention(..)`，
+/// 只能从主线程调用；同步命令由 wry 的 IPC 回调在主线程内联执行（Windows 分支自己会
+/// 把 `FlashWindowEx` 投递到窗口线程，两边都安全）。函数体不含任何重资源访问，
+/// 不会触发 `blocking_commands_run_off_the_main_thread` 守卫。
+#[cfg(desktop)]
+#[tauri::command]
+pub fn request_attention(app: tauri::AppHandle) -> Result<(), String> {
+    let Some(win) = app.get_webview_window("main") else {
+        return Err("主窗口不存在".to_string());
+    };
+    // 失败不致命：个别 Linux 桌面环境 / 远程会话不支持，忽略即可（前端也不关心结果）。
+    let _ = win.request_user_attention(Some(tauri::UserAttentionType::Critical));
+    Ok(())
+}
+
+/// 移动端没有任务栏可闪；系统通知本身就是强提醒，静默降级。
+#[cfg(mobile)]
+#[tauri::command]
+pub fn request_attention(_app: tauri::AppHandle) -> Result<(), String> {
+    Ok(())
+}
+
+/// 更新未读提醒：托盘红点 + tooltip 条数 + Windows 任务栏按钮角标 / macOS Dock 数字。
+///
+/// 为什么整件事放后端：前端要改的是**托盘图标、任务栏覆盖图标、Dock 标签**三种平台原生物，
+/// 在 WebView 里做等于把平台判断搬进前端（还要判 isMobile）。前端只说"未读是 N 条"，
+/// 后端一处决定怎么表达。
+///
+/// 幂等：前端按未读总数去抖后推送，重复用同一个值调用没有副作用。失败静默 ——
+/// 角标是锦上添花，不该因为某个桌面环境不支持就影响聊天。
+#[cfg(desktop)]
+#[tauri::command]
+pub fn set_unread_badge(app: tauri::AppHandle, count: u32) -> Result<(), String> {
+    crate::tray::set_unread_badge(&app, count);
+    Ok(())
+}
+
+/// 移动端桩：启动器角标（Android/iOS）由系统通知通道负责，没有托盘图标可改。
+///
+/// ⚠️ 参数必须叫 `count`（不能写成 `_count`）：Tauri 按**参数名**匹配前端传来的 JSON key
+/// （宏里是 `ident.unraw().to_string()` 后转 camelCase），改名就等于换了 key。
+#[cfg(mobile)]
+#[tauri::command]
+pub fn set_unread_badge(_app: tauri::AppHandle, count: u32) -> Result<(), String> {
+    let _ = count;
+    Ok(())
+}
+
 /// 桌面消息通知：前端在"应用在后台 / 正在看别的会话"时调用。
 ///
 /// 走 crate::notifications（能返回真实错误），并**再判一次总开关**（前端已判，这里是

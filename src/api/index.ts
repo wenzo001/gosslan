@@ -46,6 +46,20 @@ export const api = {
   searchNearbyPeers: () => invoke<Peer[]>("search_nearby_peers"),
   focusWindow: () => invoke<void>("focus_window"),
   /**
+   * 提请用户注意：Windows 闪任务栏按钮、macOS 弹跳 Dock 图标，直到窗口回到前台。
+   *
+   * 只在**确实发出了通知**时调用（见 `useChatStore.flushNotifications`）——它和系统通知
+   * 是"同一件事的两种表达"，通知被合并/被跳过时也不该闪。撤销由系统负责，无需配对停止调用。
+   * 移动端是空实现（无任务栏可闪），前端不必再判平台，但仍不必对移动端调用。
+   */
+  requestAttention: () => invoke<void>("request_attention"),
+  /**
+   * 未读提醒外显：托盘图标红点 + tooltip 条数、Windows 任务栏按钮角标、macOS Dock 数字。
+   *
+   * 传**未读总数**（不是增量）；`0` 表示清除。平台差异全在后端（前端一句 if 都不该有）。
+   */
+  setUnreadBadge: (count: number) => invoke<void>("set_unread_badge", { count }),
+  /**
    * 桌面系统通知（原生；返回 false 表示用户关了通知）。移动端仍走 plugin 通知。
    *
    * `convId` 必须传：**点通知要定位到会话**就得让后端知道这条通知属于谁 ——

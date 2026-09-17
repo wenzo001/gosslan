@@ -358,6 +358,11 @@ cd src-tauri && cargo test
   <img src="https://contrib.rocks/image?repo=fwd001/gosslan&max=10" alt="贡献者头像" />
 </a>
 
+特别感谢以下外部 PR 贡献者：
+
+- [**Ha1fice**](https://github.com/Ha1fice) — PR #17 · **收藏功能**（微信式独立存储）
+- [**yann9**](https://github.com/yann9) — PR #15 · **UI 优化**
+
 想参与贡献？欢迎提交 [Issue](https://github.com/fwd001/gosslan/issues) 或 [Pull Request](https://github.com/fwd001/gosslan/pulls)。
 
 ---

@@ -260,12 +260,27 @@ function parseCommits(raw) {
 }
 
 /** 取重复犯案窗口:`merge-base(HEAD, origin/main)..HEAD` 的最近 N 个 fix 提交。 */
-function buildOffenderWindow() {
+/**
+ * 重复犯案的观察窗口 = **本次受检范围内**的 `fix` 提交（= "本分支独有"，与文件头声明的语义一致）。
+ *
+ * ⚠️ 为什么不用 `merge-base(HEAD, origin/main)..HEAD`：在 fork + rebase 的工作流下，
+ * merge-base 之后的提交里**包含 main 自己**的 fix ⇒ 只要某领域最近被 main 修过，
+ * 任何人再提交一条**独立的新**修复都会被算成"第 3 次"而失败 —— 等于把该领域锁死。
+ *
+ * 2026-09-17 实测到这一点：`transport` 在窗口里已经有上游的 2 次（eca44cf、d6e5c82），
+ * 我们再补一条**与那些缺陷毫无关系**的 Windows clippy 告警修复（`notify_payload_budget`
+ * 在 Windows 上没有调用点）就凑满 3 次 ⇒ 被要求"停下来补不变量"。这与文件头那句
+ * 「窗口**只看本分支独有**的提交 —— main 上历史上已经有 BLE 连修的旧案，向前看，不审判历史」
+ * 正好相反：实现审判了历史。
+ *
+ * 改成按受检范围取窗口后，语义变成："**这一批提交里**同一领域反复修 ⇒ 说明该收敛了"，
+ * 既能拦住 4.18.7→4.18.10 那种"一个分支里连打四个补丁"，又不会因为 main 的历史而误伤。
+ */
+function buildOffenderWindow(range) {
   try {
-    const mb = git("merge-base", "HEAD", "origin/main").trim();
     const fixLog = git(
       "log",
-      `${mb}..HEAD`,
+      range,
       "--grep=^fix",
       "-n",
       String(OFFENDER_WINDOW),
@@ -274,10 +289,10 @@ function buildOffenderWindow() {
       "--format=%H%x00%s",
     );
     const fixes = parseCommits(fixLog);
-    console.log(`重复犯案窗口:merge-base..HEAD 的最近 ${fixes.length} 个 fix(${mb.slice(0, 7)}..HEAD)`);
+    console.log(`重复犯案窗口:${range} 内最近 ${fixes.length} 个 fix`);
     return fixes;
   } catch (e) {
-    console.log(`⚠️ 找不到与 origin/main 的 merge-base,跳过重复犯案检查(理由:${e.message.split("\n")[0]})`);
+    console.log(`⚠️ 取得重复犯案窗口失败,跳过该检查(理由:${e.message.split("\n")[0]})`);
     return null;
   }
 }
@@ -330,7 +345,7 @@ if (fromJson) {
   data = { commits: parseCommits(commitsRaw) };
 
   // 重复犯案窗口:merge-base(HEAD, origin/main)..HEAD 的最近 N 个 fix
-  data.recentFixes = buildOffenderWindow();
+  data.recentFixes = buildOffenderWindow(range);
 }
 
 // ---------------- 判据 1/2:逐 commit 分级 ----------------

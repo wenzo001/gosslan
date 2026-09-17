@@ -1,5 +1,5 @@
 import { acceptHMRUpdate, defineStore } from "pinia";
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { api, bindEvents } from "@/api";
 import {
   applyIncomingToConversations,
@@ -138,12 +138,18 @@ export const useChatStore = defineStore("chat", () => {
     if (!app.notifyEnabled || entries.length === 0) return;
     void app.ensureNotifyPermission().then((granted) => {
       if (!granted) return;
+      // 只要这一批里真的弹出了通知，就顺手提请注意（Windows 闪任务栏 / macOS 弹跳 Dock）。
+      // 放在这里而不是 maybeNotify：闪烁必须与**实际发出的通知**同进同出 —— 通知被去抖
+      // 合并、被"正在看该会话"跳过时，用户不该被闪。循环后统一触发一次，
+      // 同一批多个会话也只闪一次（逐条调用是同一次视觉事件的重复请求）。
+      let anyReminded = false;
       for (const { count, last } of entries) {
         // 窗口期间用户已切到该会话且**可见**前台 → 该会话跳过通知
         if (!document.hidden && document.hasFocus() && activeConv.value === last.conv_id) continue;
         const title = nicknameOf(last.sender_id);
         const body = notifyBody(count, last);
         const convId = last.conv_id;
+        anyReminded = true;
         if (app.isMobile) {
           // 移动端：plugin 通知（Android 有 actionPerformed 点击事件桥）
           const id = notifSeq++;
@@ -171,8 +177,42 @@ export const useChatStore = defineStore("chat", () => {
           });
         }
       }
+      if (anyReminded && !app.isMobile) {
+        void api.requestAttention().catch(() => {
+          /* 个别 Linux 桌面环境不支持闪烁，忽略即可（通知本身已经发出） */
+        });
+      }
     });
   }
+
+  // ---------------- 未读外显（托盘红点 / 任务栏角标 / Dock 数字） ----------------
+  // 为什么不跟通知一起做：通知回答"刚来了一条新消息"，角标回答"还有多少条没读"。
+  // 标记已读、切会话、删会话都会改未读数，却不该弹任何通知 —— 所以这条链路跟着
+  // `totalUnread` 走，而不跟着消息走。
+  //
+  // 去抖 300ms：消息洪水、或"一键已读"会让 totalUnread 连续跳好几次，而 Windows 上换
+  // 托盘图标是**肉眼可见的一下**（图标被重建）；只推最后一次就够了。
+  const BADGE_DEBOUNCE_MS = 300;
+  let badgeTimer: number | null = null;
+  let lastBadgeCount = -1;
+
+  function pushUnreadBadge() {
+    if (app.isMobile) return; // 移动端没有托盘可改（命令本身也是空实现，省一次 IPC）
+    const n = totalUnread.value;
+    if (n === lastBadgeCount) return; // 值没变就不去动系统图标
+    lastBadgeCount = n;
+    void api.setUnreadBadge(n).catch(() => {
+      /* 角标失败不影响聊天（个别 Linux 桌面环境不支持） */
+    });
+  }
+
+  watch(totalUnread, () => {
+    if (badgeTimer !== null) window.clearTimeout(badgeTimer);
+    badgeTimer = window.setTimeout(() => {
+      badgeTimer = null;
+      pushUnreadBadge();
+    }, BADGE_DEBOUNCE_MS);
+  });
 
   /**
    * 通知正文：按「显示消息内容」隐私开关决定是否带正文。
