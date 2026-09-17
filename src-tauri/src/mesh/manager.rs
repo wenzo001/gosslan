@@ -142,6 +142,30 @@ impl PeerManager {
             .is_some_and(|p| p.mark_connection_failure(endpoint))
     }
 
+    /// 标记某 peer 的某条 Connection 发送侧拥塞。
+    /// 只写时间戳，**不影响 liveness/healthy** — 拥塞是独立维度。
+    pub fn mark_connection_congested(
+        &mut self,
+        device_id: &str,
+        endpoint: &Endpoint,
+        now_ms: i64,
+    ) -> bool {
+        self.peers
+            .get_mut(device_id)
+            .is_some_and(|p| p.mark_connection_congested(endpoint, now_ms))
+    }
+
+    /// 标记某 peer 的某条 Connection 拥塞已解除。
+    pub fn mark_connection_congestion_recovered(
+        &mut self,
+        device_id: &str,
+        endpoint: &Endpoint,
+    ) -> bool {
+        self.peers
+            .get_mut(device_id)
+            .is_some_and(|p| p.mark_connection_congestion_recovered(endpoint))
+    }
+
     /// 列出**健康判据认为已死**的连接（`(device_id, endpoint)`）。
     ///
     /// 供 M3#6 的「死链路拆除」使用：半开 TCP 上读循环永久阻塞、链路却一直留在表里，

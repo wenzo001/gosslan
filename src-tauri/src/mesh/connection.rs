@@ -31,6 +31,13 @@ pub struct ConnectionHealth {
     pub last_read_seen_ms: Option<i64>,
     /// 连续失败次数（成功后清零）。
     pub consecutive_failures: u32,
+    /// 最近一次**发送侧拥塞**被观察到的时间戳（Unix 毫秒）。
+    ///
+    /// 拥塞与 liveness 是**独立维度**：一条连接可以同时
+    /// `healthy = true`（心跳还在入站）且 `congested = true`（队列 Full、
+    /// writer 被 TCP 窗口 0 卡住）。正是这种"半健康半不可用"的组合
+    /// 让 Router 永远选中它、消息永远卡住。
+    pub last_congestion_ms: Option<i64>,
 }
 
 impl ConnectionHealth {
@@ -80,6 +87,34 @@ impl ConnectionHealth {
             .last_read_seen_ms
             .is_some_and(|t| now_ms.saturating_sub(t) <= timeout_ms);
         read_recently && self.consecutive_failures <= max_failures
+    }
+
+    /// 记录一次**发送侧拥塞**被观察到（queue Full / writer 阻塞等）。
+    ///
+    /// 只写时间戳，**不影响 `is_healthy`** —— 拥塞与 liveness 是独立维度。
+    /// 允许：`healthy = true` 且 `congested = true`。
+    pub fn mark_congested(&mut self, now_ms: i64) {
+        self.last_congestion_ms = Some(now_ms);
+    }
+
+    /// 拥塞已解除（writer 恢复消费 / TCP 窗口恢复）。
+    /// 下次成功写出时自动调用。
+    pub fn mark_congestion_recovered(&mut self) {
+        self.last_congestion_ms = None;
+    }
+
+    /// 是否判定为"当前拥塞"。
+    ///
+    /// 用**时间窗**而不是永久标记：`last_congestion_ms` 在最近 `window_ms` 内
+    /// 才判 congested。拥塞解除时间窗后自动降级，避免一次瞬时 Full 永久污染
+    /// 选路决策。
+    ///
+    /// ```text
+    /// Ready → queue Full → Congested → writer 恢复 → Ready
+    /// ```
+    pub fn is_congested(&self, now_ms: i64, window_ms: i64) -> bool {
+        self.last_congestion_ms
+            .is_some_and(|t| now_ms.saturating_sub(t) <= window_ms)
     }
 }
 
@@ -195,5 +230,116 @@ mod tests {
         h.mark_failure();
         // 连续失败 > 阈值 → 不健康
         assert!(!h.is_healthy(1000, 10_000, 3));
+    }
+
+    // ===== Congestion 新维度测试 =====
+
+    /// Test 1: 默认状态 → healthy 由 read_seen 决定，congested=false
+    #[test]
+    fn default_connection_is_not_congested() {
+        let h = ConnectionHealth::default();
+        // 从未 read → 不健康
+        assert!(!h.is_healthy(1000, 10_000, 3));
+        // 从未拥塞 → 不拥塞
+        assert!(!h.is_congested(1000, 5_000));
+    }
+
+    /// Test 1b: 正常 connection → healthy=true, congested=false
+    #[test]
+    fn healthy_connection_is_not_congested() {
+        let mut h = ConnectionHealth::default();
+        h.mark_read_seen(1000, None);
+        assert!(h.is_healthy(1000, 10_000, 3));
+        assert!(!h.is_congested(1000, 5_000));
+    }
+
+    /// Test 2: mark_congested → congested=true，同时 healthy 仍 true
+    /// 这是"healthy 但不可及时发送"的核心状态
+    #[test]
+    fn congestion_is_independent_of_healthy() {
+        let mut h = ConnectionHealth::default();
+        h.mark_read_seen(1000, None);
+        assert!(h.is_healthy(1000, 10_000, 3), "先建立 healthy 基线");
+
+        h.mark_congested(2000);
+        assert!(
+            h.is_congested(2000, 5_000),
+            "mark_congested 后应为 congested"
+        );
+        assert!(
+            h.is_healthy(2000, 10_000, 3),
+            "拥塞不应该破坏 healthy —— 两个维度必须独立"
+        );
+    }
+
+    /// Test 3: 拥塞恢复 → 再判不拥塞
+    #[test]
+    fn congestion_can_be_recovered() {
+        let mut h = ConnectionHealth::default();
+        h.mark_congested(1000);
+        assert!(h.is_congested(1000, 5_000));
+
+        h.mark_congestion_recovered();
+        assert!(!h.is_congested(2000, 5_000), "恢复后不应再判拥塞");
+    }
+
+    /// Test 3b: 时间窗过期 → 自动降级为不拥塞（不需要显式恢复）
+    #[test]
+    fn congestion_expires_after_window() {
+        let mut h = ConnectionHealth::default();
+        h.mark_congested(1000);
+        assert!(
+            h.is_congested(6_000, 5_000),
+            "窗口内（边界 inclusive）仍拥塞"
+        );
+        assert!(!h.is_congested(6_001, 5_000), "窗口过期自动不拥塞");
+    }
+
+    /// Test 4: is_healthy 现有语义绝对不能被 congestion 破坏
+    /// 即使 congested=true，只要 read_seen 正常 → is_healthy 必须仍为 true
+    #[test]
+    fn congestion_does_not_affect_is_healthy_at_all() {
+        let mut h = ConnectionHealth::default();
+        h.mark_read_seen(1000, None);
+        h.mark_congested(5000);
+
+        // read_seen 过期前 → healthy，congestion 还在窗口内 → 两者同时成立
+        assert!(h.is_healthy(5_000, 10_000, 3));
+        assert!(h.is_congested(5_000, 5_000));
+
+        // read_seen 过期后 → unhealthy（这是 read_seen 自己过期的结果）
+        // 此时 congestion 窗口还没过期（5000+5000=10000 < 11001 其实也过期了...）
+        // 换一组数字让 congestion 还在：mark_congested 在 read_seen 过期前刚发生
+        let mut h2 = ConnectionHealth::default();
+        h2.mark_read_seen(1000, None);
+        h2.mark_congested(9_900); // 离 read_seen 9s，离 is_healthy timeout 还有 100ms
+        assert!(
+            h2.is_healthy(10_050, 10_000, 3),
+            "read_seen 还没过期 → healthy"
+        );
+        assert!(h2.is_congested(10_050, 5_000), "congestion 窗口还没过期");
+        // 两者同时成立 — 这就是 Router 下阶段要识别的 "healthy 但 congested"
+    }
+
+    /// 综合场景：模拟完整周期
+    #[test]
+    fn congestion_lifecycle_ready_congested_recover() {
+        let mut h = ConnectionHealth::default();
+        // Ready: 正常收发
+        h.mark_read_seen(1000, None);
+        h.mark_write_seen(1010);
+        assert!(h.is_healthy(1010, 10_000, 3));
+        assert!(!h.is_congested(1010, 5_000));
+
+        // queue Full → Congested
+        h.mark_congested(1020);
+        assert!(h.is_congested(1020, 5_000));
+        assert!(h.is_healthy(1020, 10_000, 3), "拥塞不影响健康");
+
+        // writer 恢复消费 → 新的 write_seen 同时恢复拥塞
+        h.mark_write_seen(1030);
+        h.mark_congestion_recovered();
+        assert!(!h.is_congested(1030, 5_000));
+        assert!(h.is_healthy(1030, 10_000, 3));
     }
 }

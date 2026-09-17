@@ -214,20 +214,22 @@ async fn send_over_order(
     order: &[usize],
     msg: &Message,
     bulk: bool,
-) -> Result<(), String> {
+) -> (Result<(), String>, Vec<usize>) {
     let mut last_err = "未建立连接".to_string();
     let mut first_full: Option<&mpsc::Sender<Message>> = None;
+    let mut full_indices: Vec<usize> = Vec::new();
     for &i in order {
         let Some((bulk_tx, prio_tx)) = senders.get(i) else {
             continue;
         };
         let tx = if bulk { bulk_tx } else { prio_tx };
         match tx.try_send(msg.clone()) {
-            Ok(()) => return Ok(()),
+            Ok(()) => return (Ok(()), full_indices),
             Err(mpsc::error::TrySendError::Closed(_)) => {
                 last_err = "连接已关闭".to_string();
             }
             Err(mpsc::error::TrySendError::Full(_)) => {
+                full_indices.push(i);
                 if first_full.is_none() {
                     first_full = Some(tx);
                 }
@@ -236,12 +238,15 @@ async fn send_over_order(
     }
     if let Some(tx) = first_full {
         return match tokio::time::timeout(SEND_QUEUE_FULL_TIMEOUT, tx.send(msg.clone())).await {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(e)) => Err(e.to_string()),
-            Err(_) => Err("发送队列已满（对端消费不过来）".to_string()),
+            Ok(Ok(())) => (Ok(()), full_indices),
+            Ok(Err(e)) => (Err(e.to_string()), full_indices),
+            Err(_) => (
+                Err("发送队列已满（对端消费不过来）".to_string()),
+                full_indices,
+            ),
         };
     }
-    Err(last_err)
+    (Err(last_err), full_indices)
 }
 
 /// 尝试通过已建立连接发送消息；无连接则返回 Err。
@@ -281,7 +286,17 @@ pub async fn try_send(state: &AppState, peer_id: &str, msg: &Message) -> Result<
         .iter()
         .map(|l| (l.bulk.clone(), l.priority.clone()))
         .collect();
-    send_over_order(&senders, &order, msg, is_bulk_message(msg)).await
+    let (result, full_indices) = send_over_order(&senders, &order, msg, is_bulk_message(msg)).await;
+
+    // ⑤ 把 queue Full 事件喂给 mesh 层 — 拥塞是独立于 liveness 的发送侧信号。
+    // Router 下阶段才能用它做"LAN 拥塞让位给 BLE/Routed"，本轮只记录事实。
+    for idx in full_indices {
+        if let Some(link) = links.get(idx) {
+            mark_conn_congested(state, peer_id, &link.endpoint);
+        }
+    }
+
+    result
 }
 
 /// 无直连时，把一条**定向**帧借一跳中继发给 to（共享目录 / 中继文件在无直连时用）。
@@ -1534,6 +1549,21 @@ fn mark_conn_failure(state: &AppState, peer_id: &str, endpoint: &MeshEndpoint) {
     pm.mark_connection_failure(peer_id, endpoint);
 }
 
+/// 把「某条连接发送侧拥塞」喂给 mesh 层。
+/// queue Full / writer 被 TCP 窗口 0 卡住时调用。
+/// 只标记时间戳，**不影响 liveness/healthy** — 拥塞是独立维度。
+fn mark_conn_congested(state: &AppState, peer_id: &str, endpoint: &MeshEndpoint) {
+    let mut pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
+    pm.mark_connection_congested(peer_id, endpoint, db::now_ms());
+}
+
+/// 把「某条连接拥塞已解除」喂给 mesh 层。
+/// writer 恢复正常消费（TCP 窗口恢复 / backpressure 解除）时调用。
+fn mark_conn_congestion_recovered(state: &AppState, peer_id: &str, endpoint: &MeshEndpoint) {
+    let mut pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
+    pm.mark_connection_congestion_recovered(peer_id, endpoint);
+}
+
 /// 单次写出的结果（D8-4）。把"主动放弃"与"写失败"分开：
 /// 前者是我们在停机/拆链路，不该记成链路故障（否则选路会把正在关闭的链路算成失败）。
 enum WriteOutcome {
@@ -1593,6 +1623,10 @@ async fn writer_loop(
                     // 写成功只记**出站**活性（诊断口径）。M3-0b 起它**不**参与 is_healthy：
                     // 半开 TCP 上写会一直"成功"，那是本缺陷要被排除的伪证据。
                     mark_conn_write_seen(&state, &peer_id, &endpoint);
+                    // 写成功同时意味着 writer 恢复了消费 — 之前因 queue Full 标记的
+                    // 拥塞此刻应当解除。拥塞与 liveness 是独立维度，这里只负责恢复拥塞，
+                    // 绝不影响 healthy 的判定。
+                    mark_conn_congestion_recovered(&state, &peer_id, &endpoint);
                     // 文件分块**真的写出去了**才叫进展（发送侧等 FileCompleteAck 的判据）。
                     mark_file_wire_progress(&state, &msg);
                     continue;
@@ -7876,7 +7910,7 @@ mod tests {
         let (senders, mut rx) = channels(2, &[0]); // 下标 0（被选中）已断
                                                    // 顺序模拟选路结果：先试 0（断），再试 1（活）
         let order = vec![0usize, 1];
-        let r = send_over_order(&senders, &order, &msg("m1"), false).await;
+        let r = send_over_order(&senders, &order, &msg("m1"), false).await.0;
         assert!(r.is_ok(), "断一条后必须换下一条送达，实得 {r:?}");
         let got = rx[1]
             .as_mut()
@@ -7893,6 +7927,7 @@ mod tests {
         let order = vec![1usize, 0]; // 选路把下标 1 排前面
         assert!(send_over_order(&senders, &order, &msg("m2"), false)
             .await
+            .0
             .is_ok());
         assert!(
             rx[1].as_mut().unwrap().try_recv().is_ok(),
@@ -7909,7 +7944,7 @@ mod tests {
     async fn all_links_closed_returns_err() {
         let (senders, _rx) = channels(2, &[0, 1]);
         let r = send_over_order(&senders, &[0, 1], &msg("m3"), false).await;
-        assert!(r.is_err(), "全断必须报错（Err 由 outbox 兜底补发）");
+        assert!(r.0.is_err(), "全断必须报错（Err 由 outbox 兜底补发）");
     }
 
     /// 与选路联动的**端到端单元判据**：LAN 不健康 → 顺序把 Routed 排前面
@@ -7930,6 +7965,7 @@ mod tests {
         let (senders, mut rx) = channels(2, &[0]);
         assert!(send_over_order(&senders, &order, &msg("m4"), false)
             .await
+            .0
             .is_ok());
         assert!(
             rx[1].as_mut().unwrap().try_recv().is_ok(),
