@@ -204,7 +204,7 @@ CASES: list[Case] = [
         name="中继文件接收幂等（重复 offer 不清空已收切片）",
         why="多邻居泛洪会送来重复的 RelayFileOffer；覆盖式 insert 会清空已收到的切片 ⇒ "
             "文件永远缺片（完整性校验也必然失败）",
-        file=TAURI / "src" / "relay_manager.rs",
+        file=TAURI / "src" / "file_relay.rs",
         injections=[(
             "        self.reassemblies\n"
             "            .entry(transfer_id.to_string())\n"

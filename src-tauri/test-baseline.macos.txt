@@ -419,10 +419,10 @@ protocol::tests::opaque_external_validation_bounds
 protocol::tests::reaction_payload_roundtrips
 protocol::tests::unknown_message_type_is_a_hard_parse_error
 protocol::tests::wire_kind_matches_the_serde_tag
-relay_manager::tests::begin_reassemble_is_idempotent
-relay_manager::tests::reassemble_out_of_order
-relay_manager::tests::rejects_out_of_range_chunks
-relay_manager::tests::sweep_stale_reassemblies_keeps_active_and_drops_expired
+file_relay::tests::begin_reassemble_is_idempotent
+file_relay::tests::reassemble_out_of_order
+file_relay::tests::rejects_out_of_range_chunks
+file_relay::tests::sweep_stale_reassemblies_keeps_active_and_drops_expired
 state::tests::ui_language_hint_states_are_distinct
 state::tests::ui_language_prefers_preference_then_frontend_hint_then_env
 storage::cache_cleaner::tests::no_policy_removes_nothing

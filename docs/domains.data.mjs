@@ -193,8 +193,7 @@ export default {
       tier: "L3",
       paths: [
         "src-tauri/src/mesh",
-        // ⚠️ 名字里的 relay 与 mesh::router **无关**（lib.rs:19 已注明）
-        "src-tauri/src/relay_manager.rs",
+        "src-tauri/src/file_relay.rs", // 原 relay_manager.rs 重命名 —— `lib.rs:19` 那句「与 mesh::router 无关」注释随之消失,命名撞车处理了一处
       ],
       invariants: ["INV-P20"],
       activeHome: "src-tauri/src/mesh",
@@ -277,7 +276,7 @@ export default {
       enforce: false,
       consumes: [], // 叶子域：db.rs / export.rs / schema.sql 在生产代码内只被装配层 use(state/commands),对其他领域无生产代码引用；tests 内 use protocol 已被 check-domain-deps.mjs 排除
       notes:
-        "⚠️ **耦合热点**：`db::` 被 13 个文件引用，横跨 network/、transport/、mesh/、content/、relay_manager、notifications、export、commands、state —— 即**传输层直接写库**。架构上最值得收口的一处（Phase 7）。",
+        "⚠️ **耦合热点**：`db::` 被 13 个文件引用，横跨 network/、transport/、mesh/、content/、file_relay、notifications、export、commands、state —— 即**传输层直接写库**。架构上最值得收口的一处（Phase 7）。",
     },
 
     // -------------------------------------------------------------------------

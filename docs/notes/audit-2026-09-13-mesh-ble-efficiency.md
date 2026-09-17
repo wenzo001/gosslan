@@ -160,7 +160,7 @@ macOS 外设走 `updateValue` 队列+连接间隔（`bluetooth_peripheral.rs:225
 | 8 | 心跳 5s 固定、BLE 上开销占比不低 | `transport.rs:1589` | 弱链路可拉长 |
 | 9 | 外设侧坏片**完全静默**（central 已有日志） | `bluetooth_peripheral.rs:651`、`ble_android.rs:427` | 你报过的"分片错误"那一半路径无证据 |
 | 10 | 局域网侧：深 OFFSET 分页 + 每条消息 O(n)/O(n log n) 前端合并 | `db.rs:765`、`utils/messages.ts:22`、`useChatStore.ts:250-268` | 大会话开窗与高频收消息变慢 |
-| 11 | `relay_manager.rs`（BitTorrent 式并行分发）是**死代码** | `#[allow(dead_code)]`，仅构造/重置 | 文档若宣称"并行中继"是失实的 |
+| 11 | `file_relay.rs`（BitTorrent 式并行分发）是**死代码**（原 `relay_manager.rs`，2026-09-17 改名） | `#[allow(dead_code)]`，仅构造/重置 | 文档若宣称"并行中继"是失实的 |
 | 12 | 文件中继也是死代码：`send_file_relay` 退化为直发 | `commands.rs:3444-3450` | 跨跳文件只能一跳、无兜底 |
 
 ---

@@ -4996,7 +4996,7 @@ pub async fn clear_all_data(
     s.pending_group_keys.lock().unwrap_or_else(|e| e.into_inner()).clear();
     s.group_file_sending.lock().unwrap_or_else(|e| e.into_inner()).clear();
     s.file_sending.lock().unwrap_or_else(|e| e.into_inner()).clear();
-    *s.relay.lock().unwrap_or_else(|e| e.into_inner()) = crate::relay_manager::RelayManager::new();
+    *s.relay.lock().unwrap_or_else(|e| e.into_inner()) = crate::file_relay::RelayManager::new();
     // 先关闭未完成接收的文件句柄，再清理 downloads 目录中的 .part 临时文件。
     s.file_receivers.lock().unwrap_or_else(|e| e.into_inner()).clear();
 

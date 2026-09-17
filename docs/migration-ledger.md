@@ -46,7 +46,7 @@ AI（或人）改「传输 / 在线状态 / 发现」时 grep 命中 2 处
 | 6 | **BLE 外设角色（GATT server）** | — | `transport/bluetooth_peripheral.rs`(macOS) / `_windows.rs` / `ble_android.rs` | **B（新家，三家平台实现）** | `network/ble.rs:54-64` 按 `target_os` 分别 `use`；`transport/mod.rs:15,19,24` 的 `cfg(target_os)` 门控 | ✅ 已收口；Phase 4 给 Android 加了编译门禁 |
 | 7 | **BLE 载荷预算 / 分片** | 曾有三份：`ble_framing.rs` 函数内匿名常量、`bluetooth.rs:110,112` 重复常量、macOS `central_payload_mtu` 自算一份、Android `payload_mtu` 自算一份 | `transport/ble_framing.rs`（唯一） | **B（新家，已收敛）** | Phase 3：`4.18.7→4.18.10` 连着四版修同一问题；Phase 4：Android 那份还有真 bug（`1..=512` 放行装不下分片头的值 ⇒ 整条链路发不出消息） | ✅ 已收口（`INV-P23` + `scripts/check-ble-constants.mjs` 三条判据） |
 | 8 | **Mesh 路由 / 选路 / 中继策略** | — | `mesh/`（10 文件 2432 行） | **单家（活）** | 被 9 个外部文件引用：`network/{ble,transport,file}.rs`、`discovery/{trait,lan,manager,routed}.rs`、`commands.rs`、`state.rs` | ✅ **本仓库最成型的领域模块**（有 ADR-0013/0014 背书）。是"领域该长什么样"的参照 |
-| 9 | **文件切片中继（BitTorrent 式分发）** | — | `relay_manager.rs`（299 行） | **部分未接线** | 活：`network/file.rs:296` 用 `MIN_CHUNK_SIZE`、`commands.rs:4999` 用 `RelayManager::new()`、`state.rs:23` 导入类型；未接线：`ChunkData`(17) / `RelayPlan`(25) / `impl RelayManager`(67) 都带 `#[allow(dead_code)]` | 低频，可缓；但**命名撞车**要处理（见 §2） |
+| 9 | **文件切片中继（BitTorrent 式分发）** | — | `file_relay.rs`（299 行；原 `relay_manager.rs`，2026-09-17 重命名以消"relay"命名撞车） | **部分未接线** | 活：`network/file.rs:296` 用 `MIN_CHUNK_SIZE`、`commands.rs:4999` 用 `RelayManager::new()`、`state.rs:23` 导入类型；未接线：`ChunkData`(17) / `RelayPlan`(25) / `impl RelayManager`(67) 都带 `#[allow(dead_code)]` | 低频，可缓。命名撞车已处理（见 §2） |
 | 10 | **内容生命周期（文本/文件/图片统一）** | — | `content/`（4 文件 725 行） | **单家（活）** | `network/{transport,file}.rs`、`db.rs`、`commands.rs` 引用 | ✅ 已收口 |
 | 11 | **二进制落盘 + 缓存清理** | — | `storage/`（2 文件 212 行） | **单家（活）** | `commands.rs:63` 用 `cache_cleaner::{CachePolicy, CleanupReport}` | ✅ 已收口 |
 
@@ -60,13 +60,11 @@ AI（或人）改「传输 / 在线状态 / 发现」时 grep 命中 2 处
 | 撞车 | 两处 | 现状 |
 |---|---|---|
 | 两个 `transport.rs` | `network/transport.rs`（8836 行，活）vs `transport/{mod,tcp}.rs`（新栈） | ⚠️ **未消解**。搜索 `transport` 会同时命中两个栈 |
-| 两个 "relay" | `relay_manager.rs`（**文件切片中继**）vs `mesh::router`（**路由转发**） | ⚠️ **未消解**。`lib.rs:19` 不得不写注释：「文件切片中继（BitTorrent 式分发），**与 `mesh::router` 无关**」 |
+| 两个 "relay" | `file_relay.rs`（**文件切片中继**；原 `relay_manager.rs`，2026-09-17 改名）vs `mesh::router`（**路由转发**） | ✅ **已消解**。模块名自带语义，不再需要 `lib.rs:19` 那句"无关"注释 |
 | 两个 "discovery" | `network/discovery.rs`（活）vs `discovery/`（未接线） | ⚠️ **未消解**，且**活的那个名字更难猜** |
 | 两个 payload budget | 已收敛（Phase 3/4） | ✅ 已消解 |
 
-**建议**（Phase 6/7 的最小动作，不需要重构）：
-- `relay_manager.rs` → 改名 `file_relay.rs`（一行 `git mv` + 更新 3 处引用），
-  删掉 `lib.rs:19` 那句"无关"注释 —— 改名比注释便宜。
+**剩余建议**（Phase 6/7 的最小动作，不需要重构）：
 - 两个 `transport.rs` 的消解必须等迁移收口，**现在不要动**（改名会让"哪个是活的"更难判断）。
 
 ---
@@ -98,8 +96,8 @@ AI（或人）改「传输 / 在线状态 / 发现」时 grep 命中 2 处
 
 | 序 | 关注点 | 为什么排这个位置 | 前置条件 |
 |---|---|---|---|
-| 1 | 修正 §3 的第 1、2 条过期声明 | 零风险（只改注释），且**不修就会继续误导**下一次判断 | 无 |
-| 2 | `relay_manager.rs` 改名 | 一行 `git mv` + 3 处引用，消掉一处命名撞车 | 无 |
+| 1 | ~~修正 §3 的第 1、2 条过期声明~~ | ~~零风险（只改注释），且**不修就会继续误导**下一次判断~~ | 无 |
+| 2 | ~~`relay_manager.rs` 改名 ~~ | ~~一行 `git mv` + 3 处引用，消掉一处命名撞车~~ | 无 |
 | 3 | **发现**（唯一真正的双家） | 有非空转护栏（Presence 那条）、新旧边界清晰（`discovery/trait.rs` 已就位） | 需要真机验证广播行为（类似 `loopback_broadcast_works` 的做法） |
 | 4 | 打开 `domains.yml` 里第一个 `enforce` | 上面某条收口完成后，才能"开一个" | 该领域边界成为事实 |
 | 5 | TCP 数据面拆分（`network/transport.rs` 8836 行） | **最后**：最大、最活、改动风险最高 | 先回答"有几个独立变化原因"（行数不是判据） |

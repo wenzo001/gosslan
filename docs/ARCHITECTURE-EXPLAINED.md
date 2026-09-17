@@ -229,7 +229,7 @@ flowchart TD
 2. **`BluetoothTransport` 是占位**（`start()` 永远返回错误）——真正在跑的是 `network/ble.rs`。
 3. **广播选路还没接**：`broadcast_gossip` 仍取每个 peer 的"第一条连接"，
    而定向消息已经走 `pick_link` 优先级（代码注释明写"留到 M3-d"）。
-4. **文件中继的发送侧是备件**：`relay_manager.rs` 的分片/发送函数没人调用，
+4. **文件中继的发送侧是备件**：`file_relay.rs` 的分片/发送函数没人调用，
    只有"接收侧重组"接了线。
 
 ### 3.1 三端差异：同一套代码，三份"平台特供"
@@ -451,7 +451,7 @@ flowchart LR
 |---|---|---|
 | `BluetoothTransport`（`start()` 恒返回 Err） | `transport/bluetooth.rs` | 无害：真正在跑的是 `network/ble.rs` |
 | Phase 3 整套发现层（trait / manager / lan / routed 结构体） | `discovery/` | 老路径还能用；这是"将来换引擎"的准备 |
-| `relay_manager.rs` 的**发送侧**（分片/登记/取片/ACK） | `relay_manager.rs` | 接收侧重组已接线；发送侧目前没人调用 |
+| `file_relay.rs` 的**发送侧**（分片/登记/取片/ACK） | `file_relay.rs` | 接收侧重组已接线；发送侧目前没人调用 |
 | `broadcast_gossip` 未用 `pick_link` | `network/transport.rs` | 广播仍取每个 peer 的第一条连接（注释明写待 M3-d） |
 
 ### 7.4 文档与代码的漂移（接手前必看）

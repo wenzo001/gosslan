@@ -16,7 +16,7 @@ pub mod mesh;
 mod network;
 mod notifications;
 pub mod protocol;
-mod relay_manager; // 文件切片中继（BitTorrent 式分发），与 `mesh::router` 无关
+mod file_relay;
 mod user_dirs;
 mod state;
 mod storage;

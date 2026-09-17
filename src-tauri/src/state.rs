@@ -20,7 +20,7 @@ use crate::mesh::manager::PeerManager;
 use crate::mesh::path::PathKind;
 use crate::mesh::router::MeshRouter;
 use crate::protocol::{Message, TCP_PORT};
-use crate::relay_manager::RelayManager;
+use crate::file_relay::RelayManager;
 
 /// 系统语言是否为中文 —— **仅**「前端还没把解析结果推过来」时的兜底。
 ///

@@ -243,15 +243,6 @@ pub mod driver {
         /// 两次调用之间丢消息（流是带缓冲的接收端）。
         notifications: std::pin::Pin<Box<dyn Stream<Item = ValueNotification> + Send>>,
         reassembler: BleReassembler,
-        /// 连接内递增的消息号（分片头用；回绕即可，同一时刻在途的消息很少）。
-        ///
-        /// ⚠️ **本字段当前没有任何读者**（2026-09-16 实测）：真正自增并使用它的是
-        /// `BleWriter::send_frame` 里 `BleWriter` **自己的** `next_msg_id`。
-        /// 也就是「连接内的消息号」现在有两份状态、而这一份是死的 ——
-        /// 接线下一半（`send`/`broadcast`）时应当**二选一收敛到一处**，别再留两份
-        /// （这正是 `INV-P23` 那类"同一概念多处各算一遍"的同型风险，只是这次是状态不是常量）。
-        #[allow(dead_code)]
-        next_msg_id: u16,
     }
 
     /// 连上并发现特征。对方不是 Gosslan 端时返回 Err（上层静默跳过即可）。
@@ -392,7 +383,6 @@ pub mod driver {
             tx,
             notifications,
             reassembler: BleReassembler::new(),
-            next_msg_id: 1,
         })
     }
 
@@ -405,6 +395,12 @@ pub mod driver {
         peripheral: Peripheral,
         rx: Characteristic,
         /// 连接内递增的消息号（分片头用；回绕即可）。
+        ///
+        /// ⚠️ **这是当前唯一一份**"连接内消息号"状态（2026-09-17 收敛）：
+        /// `BleConnection` 上曾经并列另一份 `next_msg_id` 字段,但没有任何读者,
+        /// 而且 `BleConnection::into_split` 拆分时把它**丢了**(新 BleWriter 永远从 1 重启)——
+        /// 也就是"两份状态、一份死"的同型风险,与 `INV-P23` 同一类。
+        /// 现在只剩这里,新增/拆分/接线时**不要再让对端也存一份**。
         next_msg_id: u16,
     }
 

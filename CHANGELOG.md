@@ -10,6 +10,29 @@
 
 ## [Unreleased]
 
+### Changed (零风险债:消掉 `relay` 命名撞车 + 收敛一份双状态 —— 2026-09-17)
+
+两笔之前悬而未决的零风险债一起勾掉。
+
+**`relay_manager.rs` → `file_relay.rs`**：
+
+`gosslan` 一直有两组同名"relay"的文件切片中继（`relay_manager.rs`，BitTorrent 式分发）
+与 `mesh::router`（路由转发）—— 命名撞到一份 `lib.rs:19` 的注释化石上：
+> `mod relay_manager; // 文件切片中继（BitTorrent 式分发），与 mesh::router 无关`
+
+本轮 `git mv` + 改 4 处代码引用 + 删掉那条化石注释，模块名自带语义。
+更新面：
+- 代码 4 处（`lib.rs:19` / `state.rs:23` / `commands.rs:4999` / `network/file.rs:296`）
+- 测试基线 8 行（`test-baseline.macos.txt:422-425` + `test-baseline.windows.txt:416-419`）
+- `scripts/verify-guards.py:207` mock 文件路径
+- docs：`domains.data.mjs`(routing 域 paths + persistence notes)、`migration-ledger.md`(关注点 9
+  行 + 命名撞车表改"✅ 已消解" + 收口顺序前两项标 strike-through)、
+  `ARCHITECTURE-EXPLAINED.md` 2 处、`audit-2026-09-13-mesh-ble-efficiency.md`、
+  `README.md` 2 处、`AI_PROJECT_HANDOFF.md`。
+**零行为改动**：测试名从 `relay_manager::tests::*` 改为 `file_relay::tests::*`，但函数体不动。
+
+---
+
 ### Added (跨领域依赖守门 —— 把「每条 use 受 consumes 约束」机器化 —— 2026-09-17)
 
 Phase 5 只完成了"看得见"(领域图 + 迁移台账),没完成"守得住"—— `scripts/check-domain-map.mjs`
@@ -120,7 +143,7 @@ AI 会照着它去改那个"看起来更对但没在跑"的新家，而真跑数
 
 **命名撞车 3 处**（未消解，且作者已不得不用注释区分）：
 两个 `transport.rs`（`network/` vs `transport/`）、两个 "relay"
-（`relay_manager.rs` 是**文件切片**、`mesh::router` 是**路由**，`lib.rs:19` 那句"无关"注释就是化石）、
+（`file_relay.rs` 是**文件切片**、`mesh::router` 是**路由**，命名撞车已于 2026-09-17 通过 git mv `relay_manager.rs → file_relay.rs` 处理）、
 两个 "discovery"（活的那个名字更难猜）。
 
 **上报 2 条过期的「未接线」声明**（按 `AI_ENGINEERING_INDEX` 的规矩：文档与代码冲突不得静默择一）：
