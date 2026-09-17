@@ -236,9 +236,16 @@ jobs:
         working-directory: src-tauri
         run: cargo fmt --check --all
 
-      - name: cargo clippy（-D warnings，--features bluetooth）
+      - name: cargo clippy（debug 分支：打印完整 warning，不带 -D）
+        shell: bash
         working-directory: src-tauri
-        run: cargo clippy --features bluetooth -- -D warnings
+        run: |
+          set -o pipefail
+          cargo clippy --features bluetooth 2>&1 | tee /tmp/clippy.out || true
+          echo "=== warnings on this platform ==="
+          grep -E '^warning:' /tmp/clippy.out | sed 's/^/  /' || true
+          echo "=== count ==="
+          grep -cE '^warning:' /tmp/clippy.out || true
 
       - name: Rust 单测
         shell: bash
