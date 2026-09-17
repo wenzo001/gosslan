@@ -236,25 +236,36 @@ jobs:
         working-directory: src-tauri
         run: cargo fmt --check --all
 
-      - name: cargo clippy（debug 分支：打印完整 warning，不带 -D）
+      - name: cargo clippy（debug 分支：写 step summary，不带 -D）
+        if: github.ref_name == 'debug/win-clippy'
         shell: bash
         working-directory: src-tauri
         run: |
           set -o pipefail
           cargo clippy --features bluetooth 2>&1 | tee /tmp/clippy.out || true
-          echo "=== warnings on this platform ==="
-          grep -E '^warning:' /tmp/clippy.out | sed 's/^/  /' || true
-          echo "=== count ==="
-          grep -cE '^warning:' /tmp/clippy.out || true
+          # 写 Job Summary —— check-run API 能拿到 output，比 raw log 权限低
+          {
+            echo "# Clippy warnings (${{ matrix.os }})"
+            echo
+            COUNT=$(grep -cE '^warning:' /tmp/clippy.out || echo 0)
+            echo "Total warnings: **$COUNT**"
+            echo
+            echo '```'
+            grep -E '^warning:' /tmp/clippy.out || echo "(none)"
+            echo '```'
+            echo
+            echo '---'
+            echo 'Full clippy output (last 200 lines):'
+            echo
+            echo '```'
+            tail -200 /tmp/clippy.out
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
-      # ---- debug 专用：上传 clippy 输出作为 artifact，方便本地拿完整 warning 列表 ----
-      - name: Upload clippy output artifact (debug)
-        if: github.ref_name == 'debug/win-clippy'
-        uses: actions/upload-artifact@v4
-        with:
-          name: clippy-out-${{ matrix.os }}
-          path: /tmp/clippy.out
-          if-no-files-found: ignore
+      - name: cargo clippy（-D warnings，--features bluetooth）
+        if: github.ref_name != 'debug/win-clippy'
+        working-directory: src-tauri
+        run: cargo clippy --features bluetooth -- -D warnings
 
       - name: Rust 单测
         shell: bash
