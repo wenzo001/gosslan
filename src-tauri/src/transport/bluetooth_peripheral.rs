@@ -81,19 +81,19 @@ pub fn advertisement_payload_bytes(service_uuids: usize, local_name: Option<&str
 
 /// 对端 central 的 `maximumUpdateValueLength` ⇒ 我们一次通知能塞多少字节。
 ///
-/// Apple 文档：该值就是"一次通知/指示里 central 能收的最大字节数"（即 ATT 有效载荷），
-/// 所以**不再减 3**（减 3 的是 MTU 换算，见 `transport::bluetooth::driver::payload_mtu`）。
-/// 异常值（0 / 装不下分片头 / 超出我们对端的接收上限）一律退回默认 20 字节 ——
-/// **绝不能返回 0**，否则什么都发不出去，链路会静默假死。
+/// 换算本体在 [`ble_framing::notify_payload_budget`] —— **三个外设平台（macOS /
+/// Windows / Android）用的是同一个函数**，这样"一条链路能发多大一片"永远不会各说各话。
+///
+/// ⚠️ 这里**只做转发，不再自己定义常量**（2026-09-16 收敛）：此前本函数自己留着
+/// `const DEFAULT: usize = 20` / `const MAX: usize = 512`（匿名、靠注释解释语义），
+/// 是 `ble_framing` 那份换算的**第二份实现** —— 数值恰好一致所以没发作，但任一处
+/// 改动就会复发 `4.18.7 → 4.18.10` 那类"有的平台发不出去"的缺陷。由
+/// `scripts/check-ble-constants.mjs` 守门。
+///
+/// 名字保留 `central_payload_mtu`：它说的是"**对端是 central**，所以这个预算来自它的
+/// 订阅能力"，在调用点（`payload_mtu(central)`）比 `notify_payload_budget` 更直白。
 pub fn central_payload_mtu(max_update_value_length: usize) -> usize {
-    const DEFAULT: usize = 20; // ATT 默认 MTU 23 - 3
-    const MAX: usize = 512; // 与 central 侧的大 MTU 同量级
-    let min = ble_framing::BLE_CHUNK_HEADER_LEN + 1; // 至少装得下"分片头 + 1 字节"
-    if max_update_value_length < min {
-        DEFAULT
-    } else {
-        max_update_value_length.min(MAX)
-    }
+    ble_framing::notify_payload_budget(max_update_value_length)
 }
 
 /// 蓝牙状态的中文说明。

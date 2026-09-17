@@ -293,7 +293,7 @@ pub async fn send_file_via_relay(
     // ⚠️ **逐片读盘，不整读进内存**。这里原先 `std::fs::read(&path)` 把整个文件读进来再切片：
     // 中继发送的是共享目录里的文件（可能很大），整读后逐片 base64（×1.33）会让内存峰值
     // 超过文件大小本身。改成按需 seek + read_exact，峰值只剩一个分片。
-    let chunk_size = crate::relay_manager::MIN_CHUNK_SIZE;
+    let chunk_size = crate::file_relay::MIN_CHUNK_SIZE;
     let total = size as usize;
     let chunk_count = total.div_ceil(chunk_size).max(1) as u32;
     let mut src = std::fs::File::open(&path).map_err(|e| format!("读取文件失败：{e}"))?;

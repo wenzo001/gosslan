@@ -1,0 +1,61 @@
+{
+  "_comment": "check-change-budget.mjs 的非空转测试 fixture(verify-guards.py --from-json 喂入)。默认状态必须全 PASS:① a000001 是 L1(计入文件 ≤5 且 1 领域);② a000002 是 L2(8 文件超 L1)但带 [plan];③ a000003 碰敏感文件 protocol.rs 是 L3 但带 [impact];④ a000004 是 chore(release),白名单文件全部豁免;recentFixes 只有 2 条 transport(犯案阈值 3)。verify-guards.py 的用例通过注入破坏其中一个条件来验证守门会红。",
+  "commits": [
+    {
+      "sha": "a000001",
+      "message": "fix(chat): 复制长链接",
+      "files": [
+        { "path": "src/stores/useChatStore.ts", "add": 30, "del": 5 },
+        { "path": "src/utils/clipboard.ts", "add": 20, "del": 2 },
+        { "path": "CHANGELOG.md", "add": 10, "del": 1 }
+      ]
+    },
+    {
+      "sha": "a000002",
+      "message": "feat(ui): 重构设置面板 [plan: 拆成三步 —— 先抽 store,再拆视图,最后迁 API]",
+      "files": [
+        { "path": "src/stores/useSettingsStore.ts", "add": 120, "del": 40 },
+        { "path": "src/components/SettingsPanel.vue", "add": 90, "del": 30 },
+        { "path": "src/components/SettingsAdvanced.vue", "add": 60, "del": 10 },
+        { "path": "src/api/settings.ts", "add": 30, "del": 10 },
+        { "path": "src/stores/useChatStore.ts", "add": 5, "del": 5 },
+        { "path": "src/App.vue", "add": 3, "del": 3 },
+        { "path": "src/components/MainWindow.vue", "add": 2, "del": 2 },
+        { "path": "src/utils/designGuards.ts", "add": 1, "del": 1 }
+      ]
+    },
+    {
+      "sha": "a000003",
+      "message": "refactor(protocol): 线格式 v2 [impact: 见 docs/protocol-invariants.md 新增小节;两侧同步升级;505 用例全绿]",
+      "files": [
+        { "path": "src-tauri/src/protocol.rs", "add": 400, "del": 100 },
+        { "path": "src-tauri/src/db.rs", "add": 200, "del": 50 },
+        { "path": "CHANGELOG.md", "add": 20, "del": 0 }
+      ]
+    },
+    {
+      "sha": "a000004",
+      "message": "chore(release): v4.19.0",
+      "files": [
+        { "path": "package.json", "add": 1, "del": 1 },
+        { "path": "package-lock.json", "add": 250, "del": 50 },
+        { "path": "src-tauri/Cargo.toml", "add": 1, "del": 1 },
+        { "path": "src-tauri/Cargo.lock", "add": 30, "del": 10 },
+        { "path": "src-tauri/tauri.conf.json", "add": 1, "del": 1 },
+        { "path": "CHANGELOG.md", "add": 8, "del": 0 }
+      ]
+    }
+  ],
+  "recentFixes": [
+    {
+      "sha": "b000001",
+      "message": "fix(ble): 分片预算没减 ATT 头",
+      "files": [{ "path": "src-tauri/src/transport/ble_framing.rs", "add": 44, "del": 2 }]
+    },
+    {
+      "sha": "b000002",
+      "message": "fix(ble): 写入失败日志补帧长",
+      "files": [{ "path": "src-tauri/src/transport/bluetooth.rs", "add": 24, "del": 2 }]
+    }
+  ]
+}

@@ -103,7 +103,7 @@ gosslan/
         ├── device.rs         # 设备指纹（gosslan- 前缀；桌面 machine-uid）
         ├── crypto.rs         # E2EE：X25519 + Ed25519 + ChaCha20-Poly1305
         ├── gossip_engine.rs  # Gossip 广播 + Bloom/LRU 去重 + 扇出
-        ├── relay_manager.rs  # 大文件切片 + 并行分发 + 重组
+        ├── file_relay.rs  # 大文件切片 + 并行分发 + 重组
         ├── db.rs             # SQLite 存储层 + Schema
         ├── protocol.rs       # 线格式（UDP 包 / TCP 帧 / 消息枚举 / Gossip 信封）
         ├── state.rs          # AppState 全局状态
@@ -301,7 +301,7 @@ cd src-tauri && cargo test
 - 信封 `message_id` = SHA-256(sender_id + ts + payload)；**Bloom Filter**（概率去重）+ **LRU**（精确去重）。
 - 接收新消息后向随机选取的 `fanout` 个邻居转发（TTL 衰减），实现全网覆盖。
 
-### 大文件中继（relay_manager.rs）
+### 大文件中继（file_relay.rs）
 
 - `RelayFileOffer → RelayChunk(seq, ttl) → 重组`。发送方把文件切片按轮询分配给接收方 + 空闲中继节点，
   中继节点二次转发，接收方按 `seq` 乱序重组落盘。

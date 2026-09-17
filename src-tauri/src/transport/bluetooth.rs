@@ -1,15 +1,27 @@
-//! 蓝牙传输通道实现（BLE / RFCOMM）。
+//! 蓝牙传输通道实现（BLE GATT）。
 //!
-//! 说明：跨平台蓝牙 I/O 依赖各操作系统栈（Windows 的 WinRT BLE、macOS 的 CoreBluetooth、
-//! Linux 的 BlueZ），需要引入平台专用后端。当前实现提供了完整的 [`Transport`] 接口契约与
-//! 生命周期管理，`available()` 默认返回 `false`（未编译蓝牙后端），上层会优雅降级为纯局域网。
+//! ## 本模块的三块，接线状态**各不相同**（2026-09-16 逐项核对调用点）
 //!
-//! ## 接入真实蓝牙后端的步骤
-//! 1. 在 `Cargo.toml` 增加 `[features] bluetooth = ["dep:btleplug"]`，引入 `btleplug`（BLE）或
-//!    平台 RFCOMM 实现（Windows 可用 `btleplug` 的 GATT 传输，RFCOMM 可用 Windows 蓝牙套接字）。
-//! 2. 在本模块 `#[cfg(feature = "bluetooth")]` 分支中实现扫描、配对、建立虚拟连接与收发。
-//! 3. 将 `available()` 改为探测系统蓝牙适配器是否存在，`start()` 执行扫描 / 监听，
-//!    `send` / `broadcast` 走蓝牙连接。上层协议无需任何改动。
+//! | 块 | 内容 | 状态 |
+//! |---|---|---|
+//! | `driver`（`pub mod`，仅 `feature = "bluetooth"`） | btleplug 封装：扫描 / 连接 / 分片收发 | ✅ **已接线** —— `network/ble.rs` 有 7 处调用（`adapter` / `scan_peers` / `connect` / `BleConnection` / `BleWriter::send_frame`） |
+//! | `BluetoothTransport`（本文件底部） | `Transport` trait 实现 | ⚠️ **占位**：只服务 `TransportManager::status()` 的展示（`running` 恒 `false`、`peer_count` 恒 0），未接管真实收发 |
+//! | `TransportManager::route()`（在 `transport/mod.rs`） | 按负载大小分流 LAN / BLE | ⚠️ **未接线**（带 `#[allow(dead_code)]` 与"待蓝牙后端接入后…调用以真正分流"） |
+//!
+//! 一句话：**BLE 的字节级收发早已在跑** —— `network/ble.rs` 是策略侧（扫描循环、握手验签、
+//! 链路登记、去重、退避），本模块 `driver` 是字节侧。没接的是"把 BLE 也挂到
+//! `Transport` 抽象与分流决策上"，**不是**"BLE 还没实现"。
+//!
+//! ⚠️ **历史（2026-09-16 修正）**：本文件此前写着「当前实现提供了完整的 `Transport` 接口契约……
+//! **需要引入平台专用后端**」外加一节「接入真实蓝牙后端的步骤」——那套步骤**早已做完**
+//! （`Cargo.toml` 已有 `bluetooth` feature、btleplug 已集成、`driver` 已实现并接线）。
+//! 那节"接线时要做的（按顺序）"清单同样过期：它列的扫描 → 候选 → 连接 → Hello → 登记
+//! `state.links` **已经在 `network/ble.rs` 里做完了**，只是没做在本模块内。
+//!
+//! **通病提醒**：`"待接线"的注释在接线之后没人回头改`。同类问题已在
+//! `ble_framing.rs`（Phase 3）、`transport/tcp.rs`（Phase 5 上报）各发现一次。
+//! 这些注释大多还挂着 `#[allow(dead_code)]`，把编译器本会给出的提示一起静音了 ——
+//! 所以它们能存活很久。**动这一带代码前请先核对调用点，别信注释。**
 
 use async_trait::async_trait;
 
@@ -34,29 +46,32 @@ pub const CHAR_TX_UUID: &str = "6b1a7e60-3f4c-4d8a-9c2b-1e5f7a9d0c33";
 /// 只做 **packet transport**：扫描 / 连接 / 分片收发 / 断连。不解密、不写库、
 /// 不建用户、不做 BitChat 的 channel；业务层（Gossip / E2EE / Outbox）完全复用。
 ///
-/// ## 状态：**已实现、尚未接线**（7-e 的一半）
-/// 本模块的 API 已按 btleplug 0.13 的**实际源码**写就并**编译通过**
-/// （`cargo build --lib --features bluetooth` 在本机 macOS 上验证）。
-/// 还没做的是"把它接到 `BluetoothTransport::start/send/broadcast` 与 `state.links`"
-/// —— 那一步需要三平台真机（macOS → Windows → Android）才能验证射频行为，
-/// 而射频行为**无法在没有设备的机器上验证**，所以刻意分两步：
-/// 先让这一层"写对且能编译"，再接线上真机调。
+/// ## 状态：**已接线**（2026-09-16 核对调用点后修正此前的"尚未接线"）
 ///
-/// 接线时要做的（按顺序）：
-/// 1. `start()`：`driver::adapter()` 探测适配器；没有（或未授权）就返回 Err ——
-///    **绝不能影响局域网**（上层只在 start 成功后把蓝牙标为 running）。
-/// 2. 后台任务：`driver::scan_peers()` 周期扫描 → 产出 `PeerCandidate`（发现 ≠ 建连）；
-///    对候选调 `driver::connect()`，握手（双向 Hello 验签）通过后把 `Link` 登记进
-///    `state.links`（端点 `Endpoint::Ble`、路径 `PathKind::Bluetooth`），
-///    并把 `next_frame()` 收到的整帧喂给 `handle_message()`。
-/// 3. `send`/`broadcast`：按 `Endpoint::Ble` 找到对应 `BleConnection`，调 `send_frame()`。
+/// 调用点全在 `network/ble.rs` —— 那是本模块的**策略侧**：
 ///
-/// ## 与 `BleFramer` 的分工
+/// ```text
+/// :179  driver::adapter()        探测适配器（没有 / 未授权 ⇒ Err，绝不影响局域网）
+/// :386  driver::scan_peers()     周期扫描 ⇒ PeerCandidate（发现 ≠ 建连）
+/// :785  driver::connect()        连上并发现特征
+/// :835  driver::BleConnection    连接对象（next_frame 收到的整帧喂给 handle_message）
+/// :863  writer.send_frame()      整帧 ⇒ 分片 ⇒ 写特征
+/// ```
+///
+/// 握手验签、链路登记进 `state.links`（`Endpoint::Ble` / `PathKind::Bluetooth`）、
+/// 去重与退避**都在 `network/ble.rs`**，不在本模块。此前本节列的「接线时要做的（按顺序）」
+/// 清单确实已经做完 —— 只是做在那边，所以本节已经过期。
+///
+/// ## 与 `ble_framing` 的分工
 /// 这一层只负责"把字节搬过 GATT"：整帧 →（`transport::ble_framing::fragment`）→ 若干
 /// 特征写入；notify 收到的分片 → `BleReassembler` → 整帧交回上层。
-/// GATT 的 ATT 有效载荷 = MTU - 3（默认 MTU 23 ⇒ 20 字节）。
-// 7-e 接线前这些 API 没有生产调用点（与 `transport/tcp.rs` 同一处理的 allow）。
-#[allow(dead_code)]
+/// ATT 有效载荷的换算**只有一处**（`ble_framing::att_payload_budget`，见 INV-P23）——
+/// 本模块的 `payload_mtu()` 只做转发，**不要再在这里写 `MTU - 3`**。
+///
+/// ## 仍未接线的 4 项（逐个标注，而不是给整个模块挂 allow）
+/// 下面这些是为「把 BLE 挂上 `Transport` 抽象 / 断连」预备的 API，当前无生产调用点。
+/// 2026-09-16 把**模块级** `#[allow(dead_code)]` 收成逐个标注：模块级 allow 会把
+/// "本层是否还在被调用"这个信息一起静音。实测收掉后只剩这 4 项 ⇒ 其余全在跑。
 #[cfg(feature = "bluetooth")]
 pub mod driver {
     use std::time::Duration;
@@ -106,17 +121,20 @@ pub mod driver {
     /// 整条 `connect()` 的尝试次数（含第一次）。
     pub const CONNECT_ATTEMPTS: u32 = 3;
 
-    /// BLE 未协商时的默认 ATT MTU（蓝牙规范最小值）。
-    pub const BLE_DEFAULT_MTU: u16 = 23;
-    /// ATT 头长度（1 字节 opcode + 2 字节句柄）：MTU 减去它才是应用可用载荷。
-    pub const ATT_HEADER_LEN: usize = 3;
-
-    /// 把协商到的 MTU 换算成**分片有效载荷上限**。
+    /// 把协商到的 MTU 换算成**分片有效载荷上限**（central 侧）。
     ///
-    /// 换算本体在 [`crate::transport::ble_framing::att_payload_budget`] ——
-    /// **外设侧（macOS 的 `maximumUpdateValueLength` / Windows 的 `MaxNotificationSize`）
-    /// 用的是同一个函数**，这样"两边对一条链路能发多大一片"永远不会各说各话
-    /// （那类漂移的症状是"某台设备就是收不到消息"，极难定位）。
+    /// 常量与换算本体都在 [`crate::transport::ble_framing`] —— **central 与外设两侧
+    /// 用的是同一组常量、两个换算入口**：
+    ///
+    /// | 侧 | 入口 | 输入语义 |
+    /// |---|---|---|
+    /// | central（本函数） | `att_payload_budget` | 协商出的 **ATT MTU**（要减 ATT 头） |
+    /// | peripheral | `notify_payload_budget` | 对端声明的**通知载荷上限**（本身已是载荷，不减） |
+    ///
+    /// ⚠️ 2026-09-16 修正：本模块此前自己定义了一份 `BLE_DEFAULT_MTU = 23` /
+    /// `ATT_HEADER_LEN = 3`，是 `ble_framing` 那份的**重复**；而旧文档还写着
+    /// 「**外设侧用的是同一个函数**」—— **那句只对 Windows 成立**（macOS 当时另有一份
+    /// `central_payload_mtu` 实现）。两处都已收敛，由 `scripts/check-ble-constants.mjs` 守门。
     pub fn payload_mtu(negotiated: u16) -> usize {
         crate::transport::ble_framing::att_payload_budget(negotiated)
     }
@@ -225,8 +243,6 @@ pub mod driver {
         /// 两次调用之间丢消息（流是带缓冲的接收端）。
         notifications: std::pin::Pin<Box<dyn Stream<Item = ValueNotification> + Send>>,
         reassembler: BleReassembler,
-        /// 连接内递增的消息号（分片头用；回绕即可，同一时刻在途的消息很少）。
-        next_msg_id: u16,
     }
 
     /// 连上并发现特征。对方不是 Gosslan 端时返回 Err（上层静默跳过即可）。
@@ -367,7 +383,6 @@ pub mod driver {
             tx,
             notifications,
             reassembler: BleReassembler::new(),
-            next_msg_id: 1,
         })
     }
 
@@ -380,6 +395,12 @@ pub mod driver {
         peripheral: Peripheral,
         rx: Characteristic,
         /// 连接内递增的消息号（分片头用；回绕即可）。
+        ///
+        /// ⚠️ **这是当前唯一一份**"连接内消息号"状态（2026-09-17 收敛）：
+        /// `BleConnection` 上曾经并列另一份 `next_msg_id` 字段,但没有任何读者,
+        /// 而且 `BleConnection::into_split` 拆分时把它**丢了**(新 BleWriter 永远从 1 重启)——
+        /// 也就是"两份状态、一份死"的同型风险,与 `INV-P23` 同一类。
+        /// 现在只剩这里,新增/拆分/接线时**不要再让对端也存一份**。
         next_msg_id: u16,
     }
 
@@ -430,6 +451,10 @@ pub mod driver {
         }
 
         /// 对端标识（日志/诊断用；**不是身份** —— 身份由 Hello 验签建立）。
+        ///
+        /// ⚠️ 当前无生产调用点（日志里用的是 `Endpoint::Ble` 的字符串形式）。
+        /// 保留是因为排查"哪条链路在动"时它是第一手信息，接线日志时应当用上。
+        #[allow(dead_code)]
         pub fn remote_id(&self) -> String {
             self.peripheral.id().to_string()
         }
@@ -441,6 +466,9 @@ pub mod driver {
             payload_mtu(self.peripheral.mtu())
         }
 
+        /// ⚠️ 当前无生产调用点：重连/健康检查目前由 `network/ble.rs` 的链路状态
+        /// 与 `mesh::connection` 的健康判据承担；接线 `Transport::running` 时应当用上。
+        #[allow(dead_code)]
         pub async fn is_connected(&self) -> bool {
             matches!(self.peripheral.is_connected().await, Ok(true))
         }
@@ -480,6 +508,9 @@ pub mod driver {
             Ok(n)
         }
 
+        /// ⚠️ 当前无生产调用点：主动断连目前由上层 drop 连接对象完成。
+        /// 接线 `Transport::stop` / 换路重连时应当用上（显式断连比等 drop 更可控）。
+        #[allow(dead_code)]
         pub async fn disconnect(&self) -> Result<(), String> {
             self.peripheral
                 .disconnect()
@@ -544,7 +575,7 @@ pub mod driver {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use crate::transport::ble_framing::BleReassembler;
+        use crate::transport::ble_framing::{BleReassembler, BLE_DEFAULT_MTU};
 
         /// MTU 换算：正常值直接用；异常值退回默认（**绝不能返回 0**，否则什么都发不出去）。
         #[test]

@@ -2115,6 +2115,10 @@ pub async fn send_message(
     Ok(rec)
 }
 
+// INV-EXCEPTION: INV-P03, INV-P04 — 自聊收发双方都是本机，没有对端可等 Ack：
+// 落库即终态 `read`（跳过 queued→sending→waiting_ack→delivered），且**不写 outbox**
+// （那一行永远排不掉，反把「outbox 必然排空」破掉）。
+// 登记在 docs/protocol-invariants.md §22，由 scripts/check-invariant-exceptions.mjs 双向校验。
 /// 给自己发一条消息（「和自己聊天」）—— **纯本地，消息不出本机**。
 ///
 /// 为什么必须是独立路径，而不是"把自己当好友"复用下面的发送流程：
@@ -4992,7 +4996,7 @@ pub async fn clear_all_data(
     s.pending_group_keys.lock().unwrap_or_else(|e| e.into_inner()).clear();
     s.group_file_sending.lock().unwrap_or_else(|e| e.into_inner()).clear();
     s.file_sending.lock().unwrap_or_else(|e| e.into_inner()).clear();
-    *s.relay.lock().unwrap_or_else(|e| e.into_inner()) = crate::relay_manager::RelayManager::new();
+    *s.relay.lock().unwrap_or_else(|e| e.into_inner()) = crate::file_relay::RelayManager::new();
     // 先关闭未完成接收的文件句柄，再清理 downloads 目录中的 .part 临时文件。
     s.file_receivers.lock().unwrap_or_else(|e| e.into_inner()).clear();
 
