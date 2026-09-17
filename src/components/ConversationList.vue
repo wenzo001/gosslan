@@ -12,10 +12,10 @@ import FriendContextMenu from "@/components/conversation/FriendContextMenu.vue";
 import ConversationContextMenu from "@/components/conversation/ConversationContextMenu.vue";
 import BaseModal from "@/components/BaseModal.vue";
 import UnreadBadge from "@/components/UnreadBadge.vue";
-import { APP_ACTION, api } from "@/api";
+import { APP_ACTION } from "@/api";
 import { groupByInitial } from "@/utils/nameGroup";
 import { isSelfConversation } from "@/utils/selfChat";
-import { MessageSquareText, Plus, Search, UserPlus, UsersRound } from "lucide-vue-next";
+import { Plus, Search, UserPlus, UsersRound } from "lucide-vue-next";
 import type { Conversation, Friend } from "@/types";
 
 const props = defineProps<{
@@ -51,10 +51,29 @@ const { keyword, query } = useSearchKeyword();
  */
 const listConversations = computed(() => chat.conversations);
 
+/**
+ * 通讯录里的「自己」（用户 2026-09-17）：与好友**同一条渲染路径** —— 进同一个首字母分组
+ * （一起排序，不再"钉在最上面混在通讯录里"）、可被搜索、点击看**自己的资料页**（与好友一致，
+ * 发消息由资料页按钮触发）。此前是钉在「新的朋友」下面的一行特殊入口，既不排序、
+ * 又像永远选中，还有一份独立的"点开直接聊"逻辑。
+ */
+const selfFriend = computed<Friend | null>(() => {
+  const d = app.device;
+  if (!d?.device_id) return null;
+  return {
+    device_id: d.device_id,
+    nickname: d.nickname,
+    avatar: d.avatar ?? null,
+    device_type: d.device_type ?? "",
+    online: app.present,
+  };
+});
+
 const filteredFriends = computed(() => {
+  const all = selfFriend.value ? [selfFriend.value, ...chat.friends] : chat.friends;
   const kw = query.value.trim().toLowerCase();
-  if (!kw) return chat.friends;
-  return chat.friends.filter((f) => f.nickname.toLowerCase().includes(kw));
+  if (!kw) return all;
+  return all.filter((f) => f.nickname.toLowerCase().includes(kw));
 });
 
 /**
@@ -93,25 +112,6 @@ function togglePlus() {
   void nextTick(() => {
     plusMenuRef.value?.querySelector<HTMLElement>(".gosslan-menu-item:not([disabled])")?.focus();
   });
-}
-
-/**
- * 「和自己聊天」：确保自聊会话行存在，然后打开它。
- *
- * 会话 id 就是本机 device_id（后端 `insert_self_message` 的约定）；`ensureConversation`
- * 会建好行并**用本机昵称/头像**命名（后端 `ensure_conversation` 里有 self 分支，
- * 否则列表里会显示成一串 gosslan-xxxx）。行一旦建好就一直留在列表里 —— 这是用户选的
- * "点过就有"（严格"发过才有"会让空会话没有名字可显示）。
- */
-async function openSelfChat() {
-  const id = app.device?.device_id;
-  if (!id) return;
-  try {
-    await api.ensureConversation(id);
-    await chat.openConversation(id);
-  } catch (e) {
-    app.toastError(e, t("common.operationFail"));
-  }
 }
 
 function closePlus() {
@@ -237,6 +237,9 @@ watch(friendMenuPopup.isActive, (mine) => {
 
 /** 右键（桌面）/ 长按（移动端）触发：菜单定位贴近屏幕边缘时向内收，避免溢出。 */
 function onFriendContext(f: Friend, x: number, y: number) {
+  // 「自己」不弹好友右键菜单：那些动作（删除好友/改备注）对自己无意义；
+  // 看资料 = 直接点这一行（与好友一致）。
+  if (f.device_id && f.device_id === app.device?.device_id) return;
   const mw = 150;
   const mh = 90;
   friendMenu.value = {
@@ -356,7 +359,7 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
            暗色下 panel(#1e293b) 与本栏 list(#1e293b) 是同一个值，输入框会"消失"；
            field 在两套主题里都与所在栏拉开一档。 -->
       <div
-        class="flex h-[30px] min-w-0 flex-1 items-center gap-2 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-field)] px-2.5 transition focus-within:border-transparent"
+        class="flex h-[30px] min-w-0 flex-1 items-center gap-2 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-field)] px-2.5 transition"
       >
         <Search class="h-4 w-4 shrink-0 text-[var(--gosslan-text-2)]" />
         <input
@@ -407,12 +410,8 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
             <UsersRound />
             {{ t("common.createGroup") }}
           </button>
-          <!-- 「和自己聊天」：进去之后列表里才会有这一行（用户 2026-09-16 选的入口方式）。
-               它是一条**本地会话**（id = 自己的 device_id），消息只落本机、不走网络。 -->
-          <button role="menuitem" class="gosslan-menu-item" @click.stop="closePlus(); openSelfChat()">
-            <MessageSquareText />
-            {{ t("chat.selfChat") }}
-          </button>
+          <!-- 「和自己聊天」入口已从 + 菜单移除（用户 2026-09-17）：通讯录里已有「自己」
+               （与好友同一条渲染路径、点击看自己的资料页），两个入口重复了。 -->
         </div>
       </div>
     </div>
@@ -491,6 +490,9 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
             </span>
           </span>
         </button>
+        <!-- 自己（用户 2026-09-17）：不再做成钉在「新的朋友」下面的特殊行 ——
+             它作为一条**伪好友**进 `filteredFriends` / `friendGroups`，与好友同一套
+             渲染/排序/搜索/点击看资料的路径（见脚本里的 `selfFriend`）。 -->
         <!-- 搜索：平铺（用户正在找某个人，分组会把结果切碎） -->
         <template v-if="query.trim()">
           <FriendListItem

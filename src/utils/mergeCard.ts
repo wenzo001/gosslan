@@ -8,6 +8,7 @@
 // 两侧各自的测试钉住（Rust 那边校验并拒绝畸形/超限，这边负责渲染与构建）。
 
 import type { MessageRecord, MsgKind } from "@/types";
+import { parseTodo } from "./todos.ts";
 
 /** 卡片里的一条（快照，不是 msg_id 引用 —— 原消息删了卡片也要能展开）。 */
 export interface MergedItem {
@@ -92,6 +93,13 @@ export function mergeItemLine(item: MergedItem): string {
       return "[代码]";
     case "merge":
       return "[聊天记录]";
+    case "todo": {
+      // 任务卡片进合并转发时，载荷是 JSON 而非可读文本 —— 直接塞进摘要行会显示成
+      // 一坨原始 JSON（用户反馈「转发卡片内容有问题」）。复用 canonical 解析器取标题，
+      // 与聊天里 TodoCardBubble 显示同一份标题，避免两处各写一套解析而分叉。
+      const title = parseTodo({ kind: "todo", content: item.content } as MessageRecord)?.title.trim();
+      return title ? `[任务] ${title}` : "[任务]";
+    }
     default: {
       const one = item.content.replace(/\s+/g, " ").trim();
       return one.length > 40 ? `${one.slice(0, 40)}…` : one;

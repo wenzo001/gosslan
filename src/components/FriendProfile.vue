@@ -36,6 +36,8 @@ const app = useAppStore();
 const chat = useChatStore();
 /** 在线节点信息（IP / 端口 / 公钥），离线好友为 undefined */
 const peer = computed(() => chat.peers.find((p) => p.device_id === props.friend.device_id));
+/** 这条资料是「我自己」（通讯录里的「自己」走同一渲染路径）：安全码/连接地址/删除好友都不适用。 */
+const isSelf = computed(() => props.friend.device_id === app.device?.device_id);
 const initial = computed(() => avatarInitial(props.friend.nickname));
 /**
  * **安全码**：本机与这位好友之间那串双方一致的数字，供带外核对。
@@ -56,6 +58,7 @@ watch(
   async (id) => {
     safetyNumber.value = null;
     safetyFailed.value = false;
+    if (id === app.device?.device_id) return; // 自己没有"双方安全码"这回事
     try {
       safetyNumber.value = await api.getSafetyNumber(id);
     } catch {
@@ -167,11 +170,10 @@ const confirmRemove = ref(false);
               </button>
             </div>
             <!-- 次行：连接方式 + 安全码首段（一行，不再两行） -->
-            <div class="mt-1 flex items-center gap-3 truncate text-[12px] leading-relaxed text-[var(--gosslan-text-2)]" :title="safetyFirstGroup ? `${address} · ${safetyFirstGroup}` : address">
+            <div v-if="!isSelf" class="mt-1 flex items-center gap-3 truncate text-[12px] leading-relaxed text-[var(--gosslan-text-2)]" :title="safetyFirstGroup ? `${address} · ${safetyFirstGroup}` : address">
               <span class="truncate" :title="address">{{ t("peer.link.label") }}：<span class="font-mono">{{ address }}</span></span>
               <span class="h-3 w-px shrink-0 bg-[var(--gosslan-divider)]"></span>
-              <span>{{ t("friend.profile.safetyFirst") }}：<span class="font-mono">{{ safetyFirstGroup ?? t("common.notSet") }}</span><span v-if="safetyFirstGroup" class="opacity-60">…</span></span>
-            </div>
+              <span>{{ t("friend.profile.safetyFirst") }}：<span class="font-mono">{{ safetyFirstGroup ?? t("common.notSet") }}</span><span v-if="safetyFirstGroup" class="opacity-60">…</span></span>            </div>
           </div>
         </div>
 
@@ -179,9 +181,9 @@ const confirmRemove = ref(false);
              重要性排序：连接方式 → 设备 → 端口/IP → 安全码 → device_id → E2EE。
              原来两张卡（朋友资料 + 更多信息）共 5 行标题 + 4 条分割线 + mt-7 + mt-6，
              现在一张卡，总高度砍半。 -->
-        <section class="mt-4">
-          <div class="overflow-hidden rounded-[var(--gosslan-radius-lg)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)]">
-            <!-- 安全码（防中间人核心，放在最上面让它显眼，但不再占两大块） -->
+        <section class="mt-4">          <div class="overflow-hidden rounded-[var(--gosslan-radius-lg)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)]">
+            <!-- 安全码（防中间人核心，放在最上面让它显眼，但不再占两大块）。「自己」不适用 -->
+            <template v-if="!isSelf">
             <div class="flex items-start justify-between gap-3 px-4 py-2.5">
               <div class="min-w-0 flex-1">
                 <div class="flex items-center gap-2">
@@ -207,6 +209,7 @@ const confirmRemove = ref(false);
                 </div>
               </div>
             </div>
+            </template>
             <div class="h-px bg-[var(--gosslan-divider)]"></div>
             <div class="flex items-center justify-between gap-4 px-4 py-2.5 text-sm">
               <span class="shrink-0 text-[var(--gosslan-text-2)]">{{ t("friend.profile.deviceType") }}</span>
@@ -228,8 +231,7 @@ const confirmRemove = ref(false);
             </template>
             <div class="h-px bg-[var(--gosslan-divider)]"></div>
             <div class="flex items-start justify-between gap-4 px-4 py-2.5 text-sm">
-              <span class="shrink-0 pt-0.5 text-[var(--gosslan-text-2)]">{{ t("friend.profile.deviceId") }}</span>
-              <span class="break-all text-right font-mono text-xs">{{ friend.device_id }}</span>
+              <span class="shrink-0 pt-0.5 text-[var(--gosslan-text-2)]">{{ t("friend.profile.deviceId") }}</span>              <span class="break-all text-right font-mono text-xs">{{ friend.device_id }}</span>
             </div>
             <div class="h-px bg-[var(--gosslan-divider)]"></div>
             <div class="flex items-center justify-between gap-4 px-4 py-2.5 text-sm">
@@ -242,12 +244,12 @@ const confirmRemove = ref(false);
         <!-- 底部只留"删除好友"——发消息按钮已经在头部。用紧凑横排而不是图标在上的大按钮。 -->
         <div class="mt-4 flex justify-center pb-4">
           <button
+            v-if="!isSelf"
             class="tap-safe inline-flex items-center gap-1.5 rounded-full border border-[var(--gosslan-border)] px-4 py-1.5 text-[12px] text-[var(--gosslan-danger-ink)] transition hover:bg-[var(--gosslan-danger-soft)]"
             @click="confirmRemove = true"
           >
             <UserMinus class="h-3.5 w-3.5" />
-            {{ t("common.deleteFriend") }}
-          </button>
+            {{ t("common.deleteFriend") }}          </button>
         </div>
       </div>
     </div>

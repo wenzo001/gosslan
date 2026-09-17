@@ -115,7 +115,50 @@ export function previewText(rec: MessageRecord): string {
     // 合并转发：卡片是 JSON，截前 30 字符会得到 '{"title":"群聊的聊天记录"' 这种东西。
     case "merge":
       return mergeSummary(rec.content);
-    default:
+    case "todo":
+    case "todo_update": {
+      // 待办载荷是 JSON，直接吐出来就是「聊天列表/通知显示了一串 JSON」的毛病（用户 2026-09-17）。
+      // 这里只取标题，回落到「[任务]」，让列表与通知都干净。
+      try {
+        const p = JSON.parse(rec.content) as { title?: unknown };
+        if (typeof p.title === "string" && p.title) return `[任务] ${p.title}`;
+      } catch {
+        /* 落到回落值 */
+      }
+      return "[任务]";
+    }
+    case "poll":
+    case "poll_vote": {
+      // 投票载荷是 JSON：取问题，回落「[投票]」。
+      try {
+        const p = JSON.parse(rec.content) as { question?: unknown };
+        if (typeof p.question === "string" && p.question) return `[投票] ${p.question}`;
+      } catch {
+        /* 落到回落值 */
+      }
+      return "[投票]";
+    }
+    case "announcement": {
+      // 公告正文本身就是给用户看的 ⇒ 取正文；删公告是墓碑事件，只显示「[公告]」。
+      try {
+        const p = JSON.parse(rec.content) as { text?: unknown };
+        if (typeof p.text === "string" && p.text) return `[公告] ${p.text}`;
+      } catch {
+        /* 落到回落值 */
+      }
+      return "[公告]";
+    }
+    case "announcement_delete":
+      return "[公告]";
+    // 以下都是**静默类**，照理到不了预览（两侧都按 non-notifying 过滤）；这里兜一层，
+    // 防"某一侧的过滤条件日后变了"再把 JSON 露出去。与 Rust `protocol::preview_text` 一致。
+    case "reaction":
+      return "[回应]";
+    case "recall":
+    case "recalled":
+      return "[撤回]";
+    case "pin":
+      return "[置顶]";    default:
       return rec.content.slice(0, 30);
   }
 }

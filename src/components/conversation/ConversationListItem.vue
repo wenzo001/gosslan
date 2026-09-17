@@ -7,7 +7,7 @@ import { useChatStore } from "@/stores/useChatStore";
 import { useMemberProfile } from "@/composables/useMemberProfile";
 import { haptic } from "@/utils/haptics";
 import UnreadBadge from "@/components/UnreadBadge.vue";
-import { Pin } from "lucide-vue-next";
+import { Megaphone, Pin } from "lucide-vue-next";
 import type { Conversation } from "@/types";
 
 const props = defineProps<{
@@ -31,6 +31,14 @@ const emit = defineEmits<{
 
 const chat = useChatStore();
 const { memberProfile } = useMemberProfile();
+
+/** 该群当前是否有生效的公告（数据源：`list_active_group_announcements` 的全量折叠，
+ *  store 缓存成 map —— 不能从 `chat.messages` 折叠，那是 ~4 个会话的 LRU）。 */
+const hasAnnouncement = computed(() =>
+  props.conv.id.startsWith("group:")
+    ? chat.activeAnnouncements.has(props.conv.id.slice("group:".length))
+    : false,
+);
 
 /**
  * 打开会话：先给一下「选择」触觉（切会话属于离散选择变化，对应 iOS 的
@@ -208,6 +216,11 @@ const gridTiles = computed(() => {
             class="mr-1 inline-block h-3 w-3 shrink-0 -rotate-45 align-[-1px]"
             :class="active ? 'opacity-90' : 'text-[var(--gosslan-text-2)]'"
             aria-hidden="true"
+          /><!-- 群公告标识：该群有当前生效的公告（用户 2026-09-17：会话列表上提醒一下） -->
+          <Megaphone
+            v-if="hasAnnouncement"
+            class="mr-1 inline-block h-3 w-3 shrink-0 align-[-1px] text-[var(--gosslan-warning-ink)]"
+            :aria-label="t('conv.announceBadge')"
           />{{ conv.name }}
         </span>
         <span

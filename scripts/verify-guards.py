@@ -154,18 +154,19 @@ CASES: list[Case] = [
     # ---------------- 本地新增护栏（2026-09-14）----------------
 
     Case(
-        name="TitleBar 图标都有 import（删掉它 Windows 最大化按钮整颗消失）",
-        why="0e07dd4 删了 Maximize2/Minimize2 的 import，而 Windows/Linux 分支仍在用 ⇒ "
-            "按钮渲染为空；这类退化不报错、不影响构建，只有这条守卫能拦住",
+        name="Win11 窗口字形都在（删掉它最大化按钮渲染为空）",
+        why="2026-09-17 起窗口按钮按 Win11 细线造型自绘（data-win-glyph 标记）；"
+            "此前 0e07dd4 删过图标 import 而 Windows 分支仍在用 ⇒ 按钮渲染为空。"
+            "这类退化不报错、不影响构建，只有这条守卫能拦住",
         file=ROOT / "src" / "components" / "TitleBar.vue",
         injections=[(
-            'import { Maximize2, Minus, Minimize2, X } from "lucide-vue-next";',
-            'import { Minus, X } from "lucide-vue-next";',
+            'data-win-glyph="maximize"',
+            'data-win-glyph="maximize-x"',
         )],
         cmd=["node", "--test", "--experimental-strip-types", "--disable-warning=ExperimentalWarning",
              "src/utils/titleBarIcons.test.ts"],
         cwd=ROOT,
-        expect_fail_hint="必须 import",
+        expect_fail_hint="字形",
         tags=["frontend", "new-guards"],
     ),
     Case(
@@ -322,7 +323,10 @@ CASES: list[Case] = [
         name="capability 覆盖每个窗口（漏一个窗口 ACL 会静默拒绝）",
         why="设置窗口曾经不在 capability 的 windows 里，表现为「选目录/订阅事件静默失败」",
         file=TAURI / "capabilities" / "default.json",
-        injections=[('"windows": ["main", "settings", "logs"]', '"windows": ["main", "logs"]')],
+        # 2026-09-17：windows 数组新增了 `todo-*`（群任务窗口是动态 label），锚点随之更新。
+        injections=[
+            ('"windows": ["main", "settings", "logs", "todo-*"]', '"windows": ["main", "logs", "todo-*"]')
+        ],
         cmd=cargo("test", "--lib", "capability_covers_every_window_label"),
         cwd=TAURI,
         expect_fail_hint="settings",
@@ -450,8 +454,10 @@ CASES: list[Case] = [
         file=TAURI / "src" / "network" / "ble.rs",
         injections=[(
             "#[cfg(any(target_os = \"macos\", target_os = \"windows\", target_os = \"android\"))]\n"
+            "    #[allow(clippy::let_underscore_future)] // JoinHandle 丢弃不影响 spawn 的任务\n"
             "    let _ = tokio::spawn(start_peripheral(state.clone(), shutdown_tx.subscribe()));",
             "#[cfg(any(target_os = \"macos\", target_os = \"windows\", target_os = \"android\"))]\n"
+            "    #[allow(clippy::let_underscore_future)] // JoinHandle 丢弃不影响 spawn 的任务\n"
             "    start_peripheral(state.clone(), shutdown_tx.subscribe()).await;",
         )],
         cmd=cargo(
@@ -473,13 +479,13 @@ CASES: list[Case] = [
         "这类退化**不会让任何行为测试失败**，只能靠结构护栏盯住",
         file=TAURI / "src" / "network" / "transport.rs",
         injections=[(
-            "    let group_consumable =\n",
+            "    let group_consumable = group_envelope_consumable(\n",
             "    if matches!(env.kind, GossipKind::Group) && !env.group_members.is_empty() {\n"
             "        if !env.group_members.iter().any(|m| m == &state.device_id) {\n"
             "            return;\n"
             "        }\n"
             "    }\n"
-            "    let group_consumable =\n",
+            "    let group_consumable = group_envelope_consumable(\n",
         )],
         cmd=cargo(
             "test",
@@ -1151,7 +1157,10 @@ CASES: list[Case] = [
         why="用户实测：「第二次打开设置，窗口先刷成主聊天窗口、又立马变成设置界面」「点一下要等很久」"
         "—— 根因就是设置/日志窗口加载的是主窗口的 index.html，前端再把聊天三栏挂起来换成设置页",
         file=TAURI / "src" / "commands.rs",
-        injections=[('WebviewUrl::App("settings.html".into())', 'WebviewUrl::App("index.html".into())')],
+        injections=[
+            ('WebviewUrl::App("settings.html".into())', 'WebviewUrl::App("index.html".into())'),
+            ('WebviewUrl::App("todos.html".into())', 'WebviewUrl::App("index.html".into())'),
+        ],
         cmd=cargo("test", "--lib", "aux_windows_open_their_own_document"),
         cwd=TAURI,
         expect_fail_hint="index.html",
@@ -1181,9 +1190,9 @@ CASES: list[Case] = [
         file=TAURI / "src" / "commands.rs",
         injections=[
             (
-                "    ensure_aux_window(&app, crate::WINDOW_SETTINGS, geo, move || {",
+                "    let _ = ensure_aux_window(&app, crate::WINDOW_SETTINGS, geo, AUX_WINDOWS_RESIDENT, move || {",
                 "    let _ = app.get_webview_window(crate::WINDOW_SETTINGS);\n"
-                "    ensure_aux_window(&app, crate::WINDOW_SETTINGS, geo, move || {",
+                "    let _ = ensure_aux_window(&app, crate::WINDOW_SETTINGS, geo, AUX_WINDOWS_RESIDENT, move || {",
             )
         ],
         cmd=cargo("test", "--lib", "aux_window_open_is_singleton_serialized_and_resident"),
@@ -1234,6 +1243,104 @@ CASES: list[Case] = [
         cmd=npm("test"),
         cwd=ROOT,
         expect_fail_hint="onFocusChanged",
+        tags=["frontend", "window"],
+    ),
+    Case(
+        name="窗口骨架（群任务窗口必须带自己的骨架类）",
+        why="三个窗口共用一份骨架 CSS，靠 `<html class=\"boot-todos\">` 决定显示哪一套；"
+        "类名漏了那个窗口就只剩白屏骨架（功能正常、但启动那一下很难看）",
+        file=ROOT / "todos.html",
+        injections=[('<html lang="zh-CN" class="boot-todos" ', '<html lang="zh-CN" ')],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="boot-todos",
+        tags=["frontend", "window"],
+    ),
+    Case(
+        name="外链窗口隔离（远端页面不得拿到任何 capability）",
+        why="外链窗口加载的是**远端页面**；一旦被 capability 覆盖，第三方内容就能调用本应用的"
+        "dialog/opener/event 等命令面 —— 等于把本机能力交给用户随手配置的网址",
+        file=TAURI / "capabilities" / "default.json",
+        injections=[('"todo-*"', '"todo-*", "link"')],
+        cmd=cargo("test", "--lib", "link_window_is_not_capability_covered"),
+        cwd=TAURI,
+        expect_fail_hint="link",
+        tags=["rust", "window", "new-guards"],
+    ),
+    Case(
+        name="外链 URL 协议白名单（只放行 http/https）",
+        why="`javascript:` / `data:` / `file:` / `tauri:` 一旦漏过，等于把『在应用 WebView 里执行脚本 / "
+        "读本机文件』的能力交给一段用户粘贴的字符串",
+        file=TAURI / "src" / "commands.rs",
+        injections=[('!matches!(parsed.scheme(), "http" | "https")', "false")],
+        cmd=cargo("test", "--lib", "external_link_rejects_non_http_schemes"),
+        cwd=TAURI,
+        expect_fail_hint="必须拒绝",
+        tags=["rust", "new-guards"],
+    ),
+    Case(
+        name="外链窗口用 WebviewUrl::External 加载远端 URL",
+        why="外链窗口是唯一不走本地 App 文档的窗口；退回 App(\"index.html\") 会把聊天三栏挂起来"
+        "（回到一窗一入口之前的老问题），且根本加载不了外部网址",
+        file=TAURI / "src" / "commands.rs",
+        injections=[
+            (
+                "            WebviewUrl::External(build_url),",
+                '            WebviewUrl::App("index.html".into()),',
+            )
+        ],
+        cmd=cargo("test", "--lib", "aux_windows_open_their_own_document"),
+        cwd=TAURI,
+        # 注入后失败的是"不得再共用 index.html"那条判据（它先于 External 断言触发）。
+        expect_fail_hint="index.html",
+        tags=["rust", "window"],
+    ),
+    Case(
+        name="群任务窗口绑定单一群（label 由 groupId 派生）",
+        why="窗口靠**自己的 label** 找回是哪个群，所以前缀必须由常量拼出（写字面量会与前端漂移）；"
+        "groupId 会拼进 label，必须先做字符集/非空校验",
+        file=TAURI / "src" / "commands.rs",
+        injections=[
+            (
+                'let label = format!("{}{group_id}", crate::WINDOW_GROUP_TODOS_PREFIX);',
+                'let label = "todo".to_string();',
+            )
+        ],
+        cmd=cargo("test", "--lib", "group_todos_window_label_derives_from_group_id"),
+        cwd=TAURI,
+        expect_fail_hint="WINDOW_GROUP_TODOS_PREFIX",
+        tags=["rust", "window", "new-guards"],
+    ),
+    Case(
+        name="群任务窗口不得初始化聊天事件（否则重复通知/未读/回执）",
+        why="独立窗口跑聊天 store 的 init 会注册第二套后端事件监听 —— 与主窗口重复，用户会收到"
+        "重复通知、未读数翻倍、群已读回执重复发（见 src/App.vue 顶部说明）",
+        file=ROOT / "src" / "entries" / "todos.ts",
+        injections=[
+            (
+                "  const chat = useChatStore();",
+                "  const chat = useChatStore();\n  void chat.init();",
+            )
+        ],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="chat.init",
+        tags=["frontend", "window"],
+    ),
+    Case(
+        name="外链开窗必须走单飞入口（不得裸 invoke）",
+        why="与设置/日志同一条：绕过 `launchAuxWindow` 就退化成『连点发多次 IPC』，"
+        "而后端是单例复用 —— 第二次点击会把已打开的窗口 navigate 到同一网址，用户看到闪一下",
+        file=ROOT / "src" / "layouts" / "ResponsiveLayout.vue",
+        injections=[
+            (
+                'launchAuxWindow("link", () => api.openLinkWindow(link.url, link.name))',
+                "api.openLinkWindow(link.url, link.name)",
+            )
+        ],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="launchAuxWindow",
         tags=["frontend", "window"],
     ),
     # ---------------- 安卓实测缺陷（2026-09-12）：触屏定位 / 通道同步 / 新的朋友 / 蓝牙默认开 ----------------

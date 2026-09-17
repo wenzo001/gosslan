@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
-import { ref, onMounted, onUnmounted, watch, watchEffect } from "vue";
+import { computed, ref, onMounted, onUnmounted, watch, watchEffect } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { api, APP_ACTION, bindMenuEvents } from "@/api";
@@ -22,13 +22,19 @@ import GroupCreateModal from "@/components/GroupCreateModal.vue";
 import ShareDirectory from "@/components/ShareDirectory.vue";
 import LogViewer from "@/components/LogViewer.vue";
 import FavoritePanel from "@/components/FavoritePanel.vue";
-import { CheckCircle2, Info, MessageCircle, ScrollText, Settings, Star, Users, XCircle } from "lucide-vue-next";
-import type { Friend, PendingRequest } from "@/types";
-
+import ToastHud from "@/components/ToastHud.vue";
+import LinksList from "@/components/LinksList.vue";
+import { Compass, MessageCircle, ScrollText, Settings, Star, Users } from "lucide-vue-next";
+import type { ExternalLink, Friend, PendingRequest } from "@/types";
 const app = useAppStore();
 const chat = useChatStore();
 
-const view = ref<"chats" | "contacts">("chats");
+const view = ref<"chats" | "contacts" | "links">("chats");
+/**
+ * 喂给 `ConversationList` 的视图：它只认 chats / contacts。`links` 视图时左列换成
+ * `LinksList`，但 `ConversationList` 仍按 `chats` 挂着（不卸载 = 保留滚动位置与搜索框状态）。
+ */
+const listView = computed<"chats" | "contacts">(() => (view.value === "links" ? "chats" : view.value));
 /** 正在查看资料的好友（通讯录点击好友 → 展示资料页，而非直接开会话） */
 const profileFriend = ref<Friend | null>(null);
 const settingsOpen = ref(false);
@@ -80,9 +86,23 @@ function openLogs() {
   );
 }
 
+/**
+ * 在独立窗口里打开一条外部链接（桌面端）。
+ *
+ * ⚠️ 链接窗口加载的是**远端页面**、且刻意不在 capabilities 里（远端拿不到任何命令权限，
+ * 见 Rust `open_link_window`/`link_window_is_not_capability_covered`）。这里只负责触发；
+ * 同一窗口再次打开会 `navigate` 到新网址（不会越开越多）。
+ */
+function openLink(link: ExternalLink) {
+  void launchAuxWindow("link", () => api.openLinkWindow(link.url, link.name)).catch((e) =>
+    app.toastError(e, t("links.openFail")),
+  );
+}
+
 /** 按钮 pending 反馈：正在打开时按钮显示忙碌态（冷启动那一下用户能立刻看到"点到了"）。 */
 const settingsOpening = useWindowOpening("settings");
 const logsOpening = useWindowOpening("logs");
+const linksOpening = useWindowOpening("link");
 
 /** 搜索聊天记录结果页的开关与初始关键词（由会话列表搜索框回车触发）。 */
 const searchOpen = ref(false);
@@ -153,6 +173,9 @@ async function rejectRequest(r: PendingRequest) {
 async function sendMessageTo(id: string) {
   profileFriend.value = null;
   view.value = "chats";
+  // 「自己」的会话行可能还不存在：先 ensure（后端有 self 分支，会用本机昵称/头像命名），
+  // 否则列表里会显示成一串 gosslan-xxxx。
+  if (id === app.device?.device_id) await api.ensureConversation(id);
   await chat.openConversation(id);
   if (app.isMobile) app.mobileView = "chat";
 }
@@ -312,7 +335,7 @@ function onResizeEnd() {
     <div v-if="app.isMobile" class="safe-top shrink-0"></div>
 
     <!-- 顶部 caption：横贯整个窗口（盖在 rail + list + chat 三列之上），微信 4.0 顶部是整条浅灰拖拽条 -->
-    <TitleBar />
+    <TitleBar :is-mobile="app.isMobile" />
 
     <!-- 桌面：rail（左）| 列表（中）| 聊天（右）三列；移动端按 mobileView 抽屉切换 -->
     <div class="relative flex min-h-0 flex-1 overflow-hidden">
@@ -337,8 +360,11 @@ function onResizeEnd() {
         : ''"
       :style="app.isMobile ? undefined : { width: `${listW}px` }"
     >
+      <!-- 「链接」视图（仅桌面 rail 能切到）：整列换成链接列表；其余视图仍是会话列表。 -->
+      <LinksList v-if="!app.isMobile && view === 'links'" :opening="linksOpening" @open="openLink" />
       <ConversationList
-        :view="view"
+        v-else
+        :view="listView"
         :active-friend-id="profileFriend?.device_id ?? null"
         :requests-active="showRequests"
         @update:view="view = $event"
@@ -383,6 +409,19 @@ function onResizeEnd() {
           ? { paddingBottom: `${app.keyboardInset + 8}px` }
           : undefined"
       >
+        <!-- 「链接」视图：右侧**不再保留会话**（用户 2026-09-17：切到链接后右边还挂着聊天，
+             视觉上像没切过去）。给一个引导态（与打开好友资料页一样会卸载聊天区，属既有模式）。 -->
+        <div
+          v-if="!app.isMobile && view === 'links'"
+          class="flex h-full select-none flex-col items-center justify-center gap-3 text-[var(--gosslan-text-2)]"
+        >
+          <Compass class="h-16 w-16 opacity-25" />
+          <div class="text-base">{{ t("layout.linksTitle") }}</div>
+          <div class="max-w-[280px] text-center text-xs leading-relaxed opacity-70">
+            {{ t("layout.linksHint") }}
+          </div>
+        </div>
+        <template v-else>
         <!-- 新的朋友页：右侧展示好友申请列表（微信式） -->
         <div v-if="showRequests" class="flex h-full flex-col">
           <div class="flex shrink-0 items-center border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-chat)] px-4" :style="{ height: 'var(--gosslan-header-h)' }">
@@ -440,6 +479,7 @@ function onResizeEnd() {
             {{ chat.friends.length ? t("conv.emptyHintHasFriends") : t("conv.emptyHintNoFriends") }}
           </div>
         </div>
+        </template>
       </div>
     </main>
     </div>
@@ -451,7 +491,7 @@ function onResizeEnd() {
     >
       <button
         class="relative flex flex-1 flex-col items-center gap-0.5 py-2.5"
-        :class="view === 'chats' && app.mobileView === 'list' ? 'text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)]'"
+        :class="view === 'chats' && app.mobileView === 'list' ? 'text-[var(--gosslan-primary)]' : 'text-[var(--gosslan-text-2)]'"
         @click="app.mobileView = 'list'; view = 'chats'"
       >
         <span class="relative">
@@ -466,7 +506,7 @@ function onResizeEnd() {
       </button>
       <button
         class="relative flex flex-1 flex-col items-center gap-0.5 py-2.5"
-        :class="view === 'contacts' && app.mobileView === 'list' ? 'text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)]'"
+        :class="view === 'contacts' && app.mobileView === 'list' ? 'text-[var(--gosslan-primary)]' : 'text-[var(--gosslan-text-2)]'"
         @click="app.mobileView = 'list'; view = 'contacts'"
       >
         <span class="relative">
@@ -527,30 +567,7 @@ function onResizeEnd() {
     <!-- 移动端运行日志页：全屏覆盖、带返回（桌面端走独立窗口，见 open_log_window） -->
     <LogViewer v-if="app.isMobile && logsOpen" @back="logsOpen = false" />
 
-    <!-- Toast：统一中性 HUD 底 + 白字（微信式，与主题色解耦；错误红保留语义）。
-         底色走 --gosslan-hud：亮色是深灰、暗色抬亮一档，两套主题下都是"浮在界面之上"的一层。
-         ♿ role="status" + aria-live：toast 是**唯一的失败反馈通道**（发送失败/删除失败都靠它），
-         没有 live region 时读屏用户完全收不到 —— 等于失败被静默。polite 而非 assertive，
-         避免连续失败时打断朗读；每条 aria-atomic 让整句被完整播报而不是只读增量。
-         图标纯装饰，标 aria-hidden，否则读屏会念出图形名。 -->
-    <div
-      role="status"
-      aria-live="polite"
-      class="pointer-events-none fixed left-1/2 z-[90] flex -translate-x-1/2 flex-col items-center gap-2"
-      :style="{ top: 'calc(env(safe-area-inset-top, 0px) + 1rem)' }"
-    >
-      <div
-        v-for="t in app.toasts"
-        :key="t.id"
-        aria-atomic="true"
-        class="flex items-center gap-2 rounded-[var(--gosslan-radius-md)] px-4 py-2 text-sm text-white shadow-lg backdrop-blur-sm"
-        :class="t.type === 'error' ? 'bg-[var(--gosslan-danger)]' : 'bg-[var(--gosslan-hud)]'"
-      >
-        <CheckCircle2 v-if="t.type === 'success'" class="h-4 w-4 shrink-0" aria-hidden="true" />
-        <XCircle v-else-if="t.type === 'error'" class="h-4 w-4 shrink-0" aria-hidden="true" />
-        <Info v-else class="h-4 w-4 shrink-0" aria-hidden="true" />
-        {{ t.text }}
-      </div>
-    </div>
+    <!-- Toast：主窗口与独立窗口共用的 HUD（见 `ToastHud.vue` 的说明）。 -->
+    <ToastHud />
   </div>
 </template>

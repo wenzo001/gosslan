@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { ArrowLeft, Copy, RefreshCw, Search, Trash2, X } from "lucide-vue-next";
+import TitleBar from "@/components/TitleBar.vue";
 import { api } from "@/api";
 import { t } from "@/i18n";
 import { highlightText } from "@/utils/highlight";
@@ -11,15 +12,19 @@ import type { LogEntry } from "@/types";
 
 /**
  * 运行日志查看页。两种形态：
- * - `standalone`（桌面独立窗口）：由 App.vue 按窗口 label 直接渲染，关闭按钮走 close_log_window。
+ * - `standalone`（桌面独立窗口）：自己的文档 + 入口，外壳是共用的自绘标题栏
+ *   （`TitleBar`，功能名 = 运行日志），关闭走 close_log_window。
  * - 移动端页面：作为全屏覆盖层渲染，返回按钮 emit('back')。
+ *
+ * 不用 `AuxWindowShell` 的原因：同一个组件要兼两种形态，动态根 class + `TitleBar` 比
+ * 套壳再改一遍结构更稳（工具栏里的筛选/刷新/清空等操作两边共用）。
  */
 const props = defineProps<{ standalone?: boolean }>();
 const emit = defineEmits<{ (e: "back"): void }>();
 
 /**
  * 移动端全屏日志页参与分层返回：系统返回键回上一步，而不是退出应用。
- * `standalone`（桌面独立日志窗口）不参与 —— 那个窗口有自己的系统标题栏与关闭语义。
+ * `standalone`（桌面独立日志窗口）不参与 —— 那个窗口由标题栏的关闭键承担关闭语义。
  */
 useBackLayer(
   () => !props.standalone,
@@ -182,12 +187,12 @@ function onClear() {
   void api.clearLogs().then(load).catch(() => {});
 }
 
-async function close() {
-  if (props.standalone) {
-    await api.closeLogWindow().catch(() => {});
-  } else {
-    emit("back");
-  }
+/**
+ * 返回（**仅移动端整页形态**）。
+ * 桌面独立窗口的关闭由共用标题栏的关闭键承担（→ `window_close` → 该窗口 `close()`）。
+ */
+function close() {
+  emit("back");
 }
 
 const levelClass = (lv: string) =>
@@ -202,25 +207,37 @@ const levelClass = (lv: string) =>
   <!-- 整页浮层在移动端会盖住外层那条 `.safe-top` 占位 ⇒ 自己补顶部安全区，
        否则返回键/标题顶到刘海与状态栏下面（点不到、看不全）。 -->
   <div
-    class="fixed inset-0 z-[70] flex flex-col bg-[var(--gosslan-app-bg)] pt-[env(safe-area-inset-top)] font-gosslan text-[var(--gosslan-text)]"
+    :class="standalone
+      ? 'flex h-screen flex-col overflow-hidden bg-[var(--gosslan-app-bg)] font-gosslan text-[var(--gosslan-text)] ring-1 ring-inset ring-[var(--gosslan-window-ring)]'
+      : 'fixed inset-0 z-[70] flex flex-col bg-[var(--gosslan-app-bg)] pt-[env(safe-area-inset-top)] font-gosslan text-[var(--gosslan-text)]'"
   >
-    <!-- 顶部工具栏 -->
+    <!-- 桌面独立窗口：与主窗口/设置窗口共用同一套自绘标题栏（功能名 + 最小化/关闭；不给最大化）。
+         移动端整页形态不画它（系统状态栏 + 返回键）。 -->
+    <TitleBar
+      v-if="standalone"
+      :title="t('logs.title')"
+      :show-maximize="false"
+      :close-to-tray="false"
+    />
+
+    <!-- 顶部工具栏：过滤/刷新/清空等操作。standalone 时不再重复标题与关闭键（标题栏已经有了）。 -->
     <div
-      class="flex shrink-0 items-center gap-2 border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-caption)] px-3"
+      class="flex shrink-0 items-center gap-2 border-b border-[var(--gosslan-divider)] px-3"
+      :class="standalone ? 'bg-[var(--gosslan-app-bg)]' : 'bg-[var(--gosslan-caption)]'"
       :style="{ height: 'var(--gosslan-header-h)' }"
     >
       <button
+        v-if="!standalone"
         class="tap-safe flex h-8 w-8 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-        :title="standalone ? t('logs.close') : t('logs.back')"
-        :aria-label="standalone ? t('logs.close') : t('logs.back')"
+        :title="t('logs.back')"
+        :aria-label="t('logs.back')"
         @click="close"
       >
-        <X v-if="standalone" class="h-4 w-4" />
-        <ArrowLeft v-else class="h-5 w-5" />
+        <ArrowLeft class="h-5 w-5" />
       </button>
 
       <div class="flex min-w-0 items-baseline gap-2">
-        <span class="truncate text-[15px] font-medium" :title="t('logs.title')">{{ t("logs.title") }}</span>
+        <span v-if="!standalone" class="truncate text-[15px] font-medium" :title="t('logs.title')">{{ t("logs.title") }}</span>
         <span class="shrink-0 text-xs text-[var(--gosslan-text-2)]">
           {{ t("logs.count", { n: logs.length }) }}
         </span>
@@ -230,7 +247,7 @@ const levelClass = (lv: string) =>
         <!-- 自动刷新开关 -->
         <button
           class="tap-safe flex h-8 items-center gap-1.5 rounded-[var(--gosslan-radius-sm)] px-2 text-xs transition hover:bg-[var(--gosslan-hover)]"
-          :class="autoRefresh ? 'text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)]'"
+          :class="autoRefresh ? 'text-[var(--gosslan-primary)]' : 'text-[var(--gosslan-text-2)]'"
           :title="t('logs.autoRefresh')"
           :aria-label="t('logs.autoRefresh')"
           :aria-pressed="autoRefresh"

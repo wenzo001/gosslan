@@ -204,7 +204,7 @@ function showSender(group: ChatSearchGroup): boolean {
     <!-- 搜索框 + 筛选 -->
     <div class="flex shrink-0 items-center gap-2">
       <div
-        class="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-field)] px-3 transition focus-within:border-transparent"
+        class="flex h-9 min-w-0 flex-1 items-center gap-2 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-field)] px-3 transition"
       >
         <Search class="h-4 w-4 shrink-0 text-[var(--gosslan-text-2)]" />
         <input

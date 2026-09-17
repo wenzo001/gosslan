@@ -11,6 +11,7 @@
  */
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import AuxWindowShell from "@/components/window/AuxWindowShell.vue";
 import DevDiagPanel from "@/components/DevDiagPanel.vue";
 import ProfileSection from "@/components/settings/ProfileSection.vue";
 import AppearanceSection from "@/components/settings/AppearanceSection.vue";
@@ -68,7 +69,7 @@ const navItems = computed<{ key: SectionKey; label: string; icon: unknown }[]>((
 
 /**
  * Esc 关闭设置窗口（桌面惯例）。
- * 窗口本身有系统标题栏的关闭按钮，但设置页是一个"看两眼就走"的页面，
+ * 标题栏上有关闭键（自绘 chrome），但设置页是一个"看两眼就走"的页面，
  * Esc 是用户预期存在的最短路径。失败（非 Tauri 环境）时静默忽略。
  */
 function onKeydown(e: KeyboardEvent) {
@@ -82,7 +83,10 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
 </script>
 
 <template>
-  <div class="flex h-screen overflow-hidden bg-[var(--gosslan-bg)] text-[var(--gosslan-text)]">
+  <!-- 自绘标题栏 + 内容（`AuxWindowShell` 与群任务窗口共用，标题栏与主窗口同一套：
+       `decorations:false` 之后顶部 caption 与内容同底色，不再有系统标题栏那条接缝）。 -->
+  <AuxWindowShell :title="t('settings.title')">
+  <div class="flex min-h-0 flex-1 overflow-hidden bg-[var(--gosslan-bg)]">
     <!-- 左：窄导航。
          间距刻意**左右对称**（`px-2` + 项内 `px-2.5`）：用户 2026-09-12 反馈
          「右边的箭头两边都不够对称」——参考图里那一列的对齐问题就出在
@@ -127,8 +131,9 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
         <AboutSection @dev-open="devDiagOpen = true" />
       </div>
     </div>
-
-    <!-- 开发者诊断面板（隐藏入口：连续点击设备指纹 7 次） -->
-    <DevDiagPanel :open="devDiagOpen" @close="devDiagOpen = false" />
   </div>
+
+  <!-- 开发者诊断面板（隐藏入口：连续点击设备指纹 7 次） -->
+  <DevDiagPanel :open="devDiagOpen" @close="devDiagOpen = false" />
+  </AuxWindowShell>
 </template>

@@ -53,6 +53,68 @@ watch(
   },
 );
 
+// ---------------- 群名称（用户 2026-09-17：改名并入本弹窗，一个弹窗管两件事） ----------------
+
+/** 编辑中的群名（打开面板时预填当前名）。 */
+const nameDraft = ref("");
+const renaming = ref(false);
+
+watch(
+  () => [props.open, group.value?.name] as const,
+  ([open, name]) => {
+    if (open) nameDraft.value = name ?? "";
+  },
+  { immediate: true },
+);
+
+async function saveName() {
+  const gid = props.groupId;
+  const name = nameDraft.value.trim();
+  if (!gid || !name || name === group.value?.name) return;
+  renaming.value = true;
+  try {
+    await chat.renameGroup(gid, name);
+    app.toast(t("chat.toast.groupRenamed"), "success");
+  } catch (e) {
+    app.toastError(e, t("chat.toast.renameFail"));
+  } finally {
+    renaming.value = false;
+  }
+}
+
+// ---------------- 群公告（用户 2026-09-17：发布/修改并入本弹窗） ----------------
+// 横幅只在**有公告**时出现；没有公告时聊天区不再常驻一条空横幅，发布入口收进这里。
+
+const announceDraft = ref("");
+const publishing = ref(false);
+/** 当前生效的公告（后端全量折叠，store 缓存成 map）。 */
+const currentAnnouncement = computed(() =>
+  props.groupId ? (chat.activeAnnouncements.get(props.groupId) ?? null) : null,
+);
+
+watch(
+  () => [props.open, currentAnnouncement.value?.text] as const,
+  ([open, text]) => {
+    if (open) announceDraft.value = text ?? "";
+  },
+  { immediate: true },
+);
+
+async function publishAnnouncement() {
+  const gid = props.groupId;
+  const text = announceDraft.value.trim();
+  if (!gid || !text) return;
+  publishing.value = true;
+  try {
+    await chat.publishAnnouncement(gid, text);
+    app.toast(t("group.announceDone"), "success");
+  } catch (e) {
+    app.toastError(e, t("group.announceFail"));
+  } finally {
+    publishing.value = false;
+  }
+}
+
 function initials(n: string) {
   return avatarInitial(n);
 }
@@ -126,8 +188,57 @@ async function confirmAction() {
 </script>
 
 <template>
-  <BaseModal :open="open" :title="group ? t('group.membersCount', { n: group.members.length }) : t('group.members')" @close="emit('close')">
+  <!-- 群管理面板比一般弹窗内容多（群名/公告/成员/添加/转让），用更宽的一档：
+       默认 max-w-md 会挤成"瘦高"一条（用户 2026-09-17）。 -->
+  <BaseModal :open="open" width="max-w-lg" :title="group ? t('group.membersCount', { n: group.members.length }) : t('group.members')" @close="emit('close')">
     <div v-if="group" class="space-y-3">
+      <!-- 群名称：群主可改（用户 2026-09-17：改名并入本弹窗）。
+           非群主**只读文本** —— 没权限就不给一个灰掉的输入框（改不了还长得像能改）。 -->
+      <div>
+        <div class="mb-1.5 text-xs text-[var(--gosslan-text-2)]">{{ t("group.rename.title") }}</div>
+        <div v-if="isOwner" class="flex items-center gap-2">
+          <input
+            v-model="nameDraft"
+            maxlength="40"
+            class="w-full rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none transition focus:border-transparent"
+            :placeholder="t('group.namePlaceholder')"
+            @keydown.enter.prevent="saveName"
+          />
+          <button
+            type="button"
+            class="tap-safe shrink-0 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-3 py-2 text-[13px] text-white transition hover:opacity-90 disabled:opacity-50"
+            :disabled="renaming || !nameDraft.trim() || nameDraft.trim() === group.name"
+            @click="saveName"
+          >
+            {{ t("common.save") }}
+          </button>
+        </div>
+        <p v-else class="px-3 py-2 text-sm text-[var(--gosslan-text)]">{{ group.name }}</p>
+      </div>
+
+      <!-- 群公告：发布/修改入口（仅群主）。聊天区的横幅只在**有公告**时出现 ——
+           没有公告时不常驻空横幅，发布入口收进这里（用户 2026-09-17）。 -->
+      <div v-if="isOwner">
+        <div class="mb-1.5 text-xs text-[var(--gosslan-text-2)]">{{ t("group.announce") }}</div>
+        <textarea
+          v-model="announceDraft"
+          maxlength="500"
+          rows="3"
+          class="w-full resize-none rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none transition focus:border-transparent"
+          :placeholder="t('group.announcePlaceholder')"
+        ></textarea>
+        <div class="mt-2 flex justify-end">
+          <button
+            type="button"
+            class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-3 py-1.5 text-[13px] text-white transition hover:opacity-90 disabled:opacity-50"
+            :disabled="publishing || !announceDraft.trim()"
+            @click="publishAnnouncement"
+          >
+            {{ currentAnnouncement ? t("group.announceEdit") : t("group.announcePublish") }}
+          </button>
+        </div>
+      </div>
+
       <!-- 当前成员 -->
       <div class="max-h-56 overflow-y-auto">
         <div

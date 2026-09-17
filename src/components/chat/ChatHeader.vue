@@ -7,10 +7,10 @@ import {
   Monitor,
   Network,
   Pencil,
+  Router,
   Share2,
   Smartphone,
   Users,
-  Wifi,
 } from "lucide-vue-next";
 import type { Conversation, LinkState } from "@/types";
 import { t } from "@/i18n";
@@ -28,6 +28,8 @@ defineProps<{
   canRename: boolean;
   /** 移动端：显示返回列表的箭头。 */
   showBack?: boolean;
+  /** 群任务窗口正在打开（按钮 pending 反馈；桌面端开独立窗口时才可能为真）。 */
+  tasksOpening?: boolean;
 }>();
 const emit = defineEmits<{
   (e: "back"): void;
@@ -96,7 +98,9 @@ function linkIcon(path: string, hop: number): { icon: string; label: string } {
         <Share2 v-if="linkIcon(linkState.path, linkState.hop).icon === 'relay'" class="h-4 w-4" />
         <Bluetooth v-else-if="linkIcon(linkState.path, linkState.hop).icon === 'bluetooth'" class="h-4 w-4" />
         <Network v-else-if="linkIcon(linkState.path, linkState.hop).icon === 'routed'" class="h-4 w-4" />
-        <Wifi v-else class="h-4 w-4" />
+        <!-- 局域网直连：用「路由器」而不是 WiFi 扇形（用户 2026-09-17：WiFi 图标会让人
+             以为走的是无线上网，而这里表达的是"同一局域网内直连"）。 -->
+        <Router v-else class="h-4 w-4" />
         <span v-if="linkState.hop > 0" class="text-[11px] font-medium leading-none">{{ linkState.hop }}</span>
       </span>
     </div>
@@ -119,10 +123,13 @@ function linkIcon(path: string, hop: number): { icon: string; label: string } {
       >
         <FolderOpen class="h-[18px] w-[18px]" />
       </button>
-      <!-- 群任务：该群的任务清单（按状态分组）。任意成员都能看，能改什么由面板按权限决定 -->
+      <!-- 群任务：桌面端开独立窗口（每群一个），移动端开应用内面板。任意成员都能看，
+           能改什么由面板按权限决定。 -->
       <button
         v-if="isGroup"
         class="tap-safe flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+        :class="tasksOpening ? 'opacity-60' : ''"
+        :aria-busy="tasksOpening"
         :title="t('chat.header.tasks')" :aria-label="t('chat.header.tasks')"
         @click="emit('open-tasks')"
       >

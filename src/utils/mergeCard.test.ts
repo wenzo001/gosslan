@@ -82,6 +82,23 @@ test("媒体行带上文件名（卡片看不到图时，名字是唯一的信�
   assert.equal(mergeItemLine({ sender: "a", kind: "image", content: JSON.stringify({ name: 42 }), ts: 1 }), "[图片]");
 });
 
+test("每行摘要：任务卡片显示标题而非原始 JSON", () => {
+  // 用户反馈「待办合并转发时转发卡片内容有问题」：todo 进合并转发后，载荷是 JSON，
+  // 摘要行直接塞会显示成一坨原始 JSON。应复用 canonical 解析取标题，与聊天里的
+  // TodoCardBubble 同一份标题，且不泄漏内部字段（todo_id / done_at 等）。
+  const todo = JSON.stringify({
+    todo_id: "t1",
+    title: "买菜",
+    status: "todo",
+    creator: "a",
+    done_at: null,
+  });
+  assert.equal(mergeItemLine({ sender: "a", kind: "todo", content: todo, ts: 1 }), "[任务] 买菜");
+  assert.ok(!mergeItemLine({ sender: "a", kind: "todo", content: todo, ts: 1 }).includes("todo_id"), "不得泄漏内部字段");
+  // 标题缺失时退回中性占位，不能把裸 JSON 顶上来
+  assert.equal(mergeItemLine({ sender: "a", kind: "todo", content: "{}", ts: 1 }), "[任务]");
+});
+
 test("条数上限与 Rust 侧一致（100）", () => {
   assert.equal(MAX_MERGE_ITEMS, 100);
 });

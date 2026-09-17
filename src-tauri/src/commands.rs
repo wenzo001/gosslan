@@ -1561,6 +1561,8 @@ pub fn reset_settings(
         &"chat_peer_styles",
         &"nickname",
         &"avatar",
+        // 左栏「外部链接」也属于用户配置：恢复默认一并清掉。
+        &EXTERNAL_LINKS_KEY,
     ]) {
         db::delete_setting(&dbc, key).map_err(|e| e.to_string())?;
     }
@@ -3002,14 +3004,15 @@ pub async fn leave_group(state: State<'_, Arc<AppState>>, group_id: String) -> R
 }
 
 // ---------------- 自绘标题栏：窗口控制 ----------------
+// ⚠️ 这些命令作用于**调用它们的那个窗口**（Tauri 把发起 IPC 的窗口注入 `WebviewWindow` 参数）。
+// 主窗口与各辅助窗口共用同一份自绘标题栏（`src/components/TitleBar.vue`），所以**不能写死 "main"**
+// —— 否则辅助窗口的最小化/关闭会作用到主窗口上（用户 2026-09-17：辅助窗口要脱离系统标题栏）。
 
-/// 最小化主窗口。
+/// 最小化**当前窗口**。
 #[cfg(desktop)]
 #[tauri::command]
-pub fn window_minimize(app: tauri::AppHandle) {
-    if let Some(w) = app.get_webview_window("main") {
-        let _ = w.minimize();
-    }
+pub fn window_minimize(window: tauri::WebviewWindow) {
+    let _ = window.minimize();
 }
 
 /// 移动端没有独立窗口概念，最小化由系统接管。
@@ -3017,20 +3020,23 @@ pub fn window_minimize(app: tauri::AppHandle) {
 #[tauri::command]
 pub fn window_minimize(_app: tauri::AppHandle) {}
 
-/// 切换窗口最大化，返回切换后的状态。
+/// 切换**当前窗口**最大化，返回切换后的状态。
+///
+/// 先判 `is_maximizable`：设置/日志/群任务窗口在 builder 上设了 `.maximizable(false)`
+/// （小窗口不给最大化），这里再兜一道，免得 UI 层的按钮判断漏了。
 #[cfg(desktop)]
 #[tauri::command]
-pub fn window_toggle_maximize(app: tauri::AppHandle) -> bool {
-    let Some(w) = app.get_webview_window("main") else {
+pub fn window_toggle_maximize(window: tauri::WebviewWindow) -> bool {
+    if !window.is_maximizable().unwrap_or(true) {
         return false;
-    };
-    match w.is_maximized() {
+    }
+    match window.is_maximized() {
         Ok(true) => {
-            let _ = w.unmaximize();
+            let _ = window.unmaximize();
             false
         }
         _ => {
-            let _ = w.maximize();
+            let _ = window.maximize();
             true
         }
     }
@@ -3043,29 +3049,32 @@ pub fn window_toggle_maximize(_app: tauri::AppHandle) -> bool {
     false
 }
 
-/// 返回窗口当前是否最大化。
+/// 返回**当前窗口**是否最大化。
+#[cfg(desktop)]
 #[tauri::command]
-pub fn window_is_maximized(app: tauri::AppHandle) -> bool {
-    app.get_webview_window("main")
-        .and_then(|w| w.is_maximized().ok())
-        .unwrap_or(false)
+pub fn window_is_maximized(window: tauri::WebviewWindow) -> bool {
+    window.is_maximized().unwrap_or(false)
 }
 
-/// 切换窗口全屏，返回切换后的状态。
+/// 移动端没有"最大化"概念。
+#[cfg(mobile)]
+#[tauri::command]
+pub fn window_is_maximized(_app: tauri::AppHandle) -> bool {
+    false
+}
+
+/// 切换**当前窗口**全屏，返回切换后的状态。
 /// 用于 macOS 绿灯的 option-click（HIG：缩放按钮按住 Option 即进入/退出全屏）。
 #[cfg(desktop)]
 #[tauri::command]
-pub fn window_toggle_fullscreen(app: tauri::AppHandle) -> bool {
-    let Some(w) = app.get_webview_window("main") else {
-        return false;
-    };
-    match w.is_fullscreen() {
+pub fn window_toggle_fullscreen(window: tauri::WebviewWindow) -> bool {
+    match window.is_fullscreen() {
         Ok(true) => {
-            let _ = w.set_fullscreen(false);
+            let _ = window.set_fullscreen(false);
             false
         }
         _ => {
-            let _ = w.set_fullscreen(true);
+            let _ = window.set_fullscreen(true);
             true
         }
     }
@@ -3078,9 +3087,26 @@ pub fn window_toggle_fullscreen(_app: tauri::AppHandle) -> bool {
     false
 }
 
+/// 关闭**当前窗口**。
+///
+/// **主窗口 = 隐藏**（托盘语义：关掉窗口 ≠ 退出应用，与 `tray.rs` 的 CloseRequested 一致）；
+/// **辅助窗口 = `close()`** —— 外链窗口（常驻）由 `install_hide_on_close` 转成隐藏，
+/// 其余（设置/日志/群任务，均不常驻）直接销毁。写死 "main" 会让辅助窗口的关闭键把**主窗口**藏起来。
+#[cfg(desktop)]
+#[tauri::command]
+pub fn window_close(window: tauri::WebviewWindow) {
+    if window.label() == crate::WINDOW_MAIN {
+        let _ = window.hide();
+    } else {
+        let _ = window.close();
+    }
+}
+
+/// 移动端：保持既有行为（隐藏主窗口）。
+#[cfg(mobile)]
 #[tauri::command]
 pub fn window_close(app: tauri::AppHandle) {
-    if let Some(w) = app.get_webview_window("main") {
+    if let Some(w) = app.get_webview_window(crate::WINDOW_MAIN) {
         let _ = w.hide();
     }
 }
@@ -3232,6 +3258,8 @@ pub async fn send_group_message(
 
 /// 群任务标题上限：它是卡片上的一行标题，不是长文。
 const MAX_TODO_TITLE_LEN: usize = 200;
+/// 群任务描述上限：长文本说明，但仍要受控（避免单条任务撑爆事件日志）。
+const MAX_TODO_DESC_LEN: usize = 4000;
 /// 投票选项数上限（下标要能塞进 u32 且 UI 排得下）。
 const MAX_POLL_OPTIONS: usize = 10;
 
@@ -3245,6 +3273,8 @@ pub async fn send_group_todo(
     group_id: String,
     title: String,
     assignees: Vec<String>,
+    description: Option<String>,
+    images: Option<Vec<crate::protocol::TodoImage>>,
 ) -> Result<MessageRecord, String> {
     let s = state.inner();
     let title = title.trim().to_string();
@@ -3254,6 +3284,11 @@ pub async fn send_group_todo(
     if title.chars().count() > MAX_TODO_TITLE_LEN {
         return Err(format!("任务标题不能超过 {MAX_TODO_TITLE_LEN} 字"));
     }
+    let description = description.unwrap_or_default().trim().to_string();
+    if description.chars().count() > MAX_TODO_DESC_LEN {
+        return Err(format!("任务描述不能超过 {MAX_TODO_DESC_LEN} 字"));
+    }
+    let images = images.unwrap_or_default();
     check_todo_assignees(s, &group_id, &assignees)?;
     let payload = crate::protocol::TodoPayload {
         todo_id: format!("todo-{}", Uuid::new_v4()),
@@ -3262,6 +3297,10 @@ pub async fn send_group_todo(
         status: crate::protocol::default_todo_status(),
         creator: s.device_id.clone(),
         deleted: false,
+        description,
+        images,
+        archived: false,
+        done_at: None,
     };
     let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
     send_group_payload(s, &group_id, "todo", content).await
@@ -3326,35 +3365,74 @@ fn latest_todo_def(
 ///
 /// | 改动 | 允许谁 |
 /// |---|---|
-/// | 只改状态 | 创建者 **或** 被指派人 |
-/// | 改标题 / 指派人 / 删除（`structural`） | 创建者 **或** 群主 |
+/// | 改标题 / 删除（结构） | 创建者 **或** 群主 |
+/// | 改指派人 | 创建者 **或** 群主 **或** 当前被指派人 |
+/// | 只改状态（含完成/归档） | 创建者 **或** 被指派人 |
 ///
-/// 为什么分两档：状态是执行者每天在动的东西（谁被指派谁就能推进），
-/// 而标题/指派人/删除是**任务的归属**，只有创建者或群主能动。
+/// **顺序很重要**：`edits_structure` 先判（最严），否则「被指派人改指派人」这一步
+/// 若排在前面，会被指派人在「同时改标题+指派人」时一并放行标题改动。
+/// 为什么指派人能改指派人（用户 2026-09-17）：被 @ 的人也该能把自己手上的活转派/加人，
+/// 否则「创建者请假了、指派的人干不了」就成了死结。但标题/删除是**任务归属**，
+/// 仍只归创建者或群主。状态则是最轻量、被指派人每天在动的动作。
 fn may_update_todo(
     def: &crate::protocol::TodoPayload,
     actor: &str,
     group_creator: &str,
-    structural: bool,
+    edits_assignees: bool,
+    edits_structure: bool,
 ) -> bool {
     if def.creator == actor {
         return true;
     }
-    if structural {
+    if edits_structure {
+        // 改标题 / 删除：仅创建者或群主（最严，先判）
         group_creator == actor
+    } else if edits_assignees {
+        // 改指派人：创建者 / 群主 / 当前被指派人
+        group_creator == actor || def.assignees.iter().any(|a| a == actor)
     } else {
+        // 只改状态（含完成/归档）：创建者或被指派人
         def.assignees.iter().any(|a| a == actor)
     }
 }
 
-/// 更新一条群任务：改状态 / 改标题与指派人 / 删除。
+/// 完成态与归档字段的**权威推导**（纯函数，便于单测）。
 ///
-/// 为什么三件事合成一个命令：它们都是"重新发一份定义"（LWW per `todo_id`），
+/// 口径（用户 2026-09-17：「完成以后手动归档」）：
+/// - **非完成态** ⇒ 一律 `(archived=false, done_at=None)` —— "重新打开"就等于把它从归档里拿回来；
+/// - **完成态** ⇒ `done_at` **沿用原值**（只在首次完成时记 `now`），否则用户改个标题就把
+///   7 天自动归档的计时重置了；`archived` 只由**显式请求**决定（`None` = 保留原值）。
+///
+/// 两处都刻意**不接受客户端自报 `done_at`** ⇒ 无法伪造"完成时间"骗过自动归档；
+/// 也刻意不允许"非完成却归档" ⇒ 否则一条进行中的任务会从活动列表里消失。
+fn resolve_done_archive(
+    is_done: bool,
+    requested_archived: Option<bool>,
+    prev_archived: bool,
+    prev_done_at: Option<i64>,
+    now: i64,
+) -> (bool, Option<i64>) {
+    if !is_done {
+        return (false, None);
+    }
+    (
+        requested_archived.unwrap_or(prev_archived),
+        prev_done_at.or(Some(now)),
+    )
+}
+
+/// 更新一条群任务：改状态 / 改标题与指派人 / 改描述与图片 / 归档 / 删除。
+///
+/// 为什么多件事合成一个命令：它们都是"重新发一份定义"（LWW per `todo_id`），
 /// 构造与校验几乎相同，只有鉴权口径不同（见 [`may_update_todo`]）——
-/// 拆成三个命令就是三份重复的构造/校验代码。
+/// 拆成多个命令就是多份重复的构造/校验代码。
 ///
 /// ⚠️ `creator` **不从参数来**：由服务端从库里最新定义回填。否则任何人传一个别人的
 /// creator 就能改别人的任务（而 creator 正是鉴权依据）。
+/// ⚠️ `done_at` **不从参数来**：`status=="done"` 时由服务端在**首次**完成时记权威时间戳
+/// （重复保存沿用原值，免得改个标题就把 7 天计时重置）；否则客户端伪造「完成时间」就能骗过自动归档。
+/// `archived` 是**显式意图**（`Some(true)` = 手动归档）：完成不再自动归档（用户 2026-09-17）。
+#[allow(clippy::too_many_arguments)]
 #[tauri::command(async)]
 pub async fn update_group_todo(
     state: State<'_, Arc<AppState>>,
@@ -3364,6 +3442,9 @@ pub async fn update_group_todo(
     assignees: Vec<String>,
     status: String,
     deleted: bool,
+    description: Option<String>,
+    images: Option<Vec<crate::protocol::TodoImage>>,
+    archived: Option<bool>,
 ) -> Result<MessageRecord, String> {
     let s = state.inner();
     let title = title.trim().to_string();
@@ -3388,15 +3469,47 @@ pub async fn update_group_todo(
             .ok_or_else(|| "群不存在".to_string())?;
         (def, creator)
     };
-    // "结构改动"：删、换标题、换指派人。只改状态时不算（那是被指派人的日常动作）。
-    let structural = deleted || title != def.title || assignees != def.assignees;
-    if !may_update_todo(&def, &s.device_id, &group_creator, structural) {
-        return Err(if structural {
+    // `None` ⇒ 保留库里原值（不让"只改状态"的请求把描述/图片清空）；
+    // `Some(x)` ⇒ 用传来的（显式传空串即表示清空）。
+    let description = match description {
+        Some(d) => d.trim().to_string(),
+        None => def.description.clone(),
+    };
+    let images = match images {
+        Some(imgs) => imgs,
+        None => def.images.clone(),
+    };
+    if !deleted && description.chars().count() > MAX_TODO_DESC_LEN {
+        return Err(format!("任务描述不能超过 {MAX_TODO_DESC_LEN} 字"));
+    }
+    // 把改动拆成三档分别判权（见 `may_update_todo`）：
+    //   · 改指派人：创建者 / 群主 / 当前被指派人
+    //   · 改标题 / 删除：仅创建者或群主
+    //   · 其余（状态、描述、图片、归档）走"只改状态"档（创建者或被指派人）
+    let edits_assignees = assignees != def.assignees;
+    let edits_structure = deleted || title != def.title;
+    if !may_update_todo(
+        &def,
+        &s.device_id,
+        &group_creator,
+        edits_assignees,
+        edits_structure,
+    ) {
+        return Err(if edits_assignees {
+            "只有任务创建者、群主或被指派人可以修改指派人".to_string()
+        } else if edits_structure {
             "只有任务创建者或群主可以修改任务".to_string()
         } else {
             "只有创建者或被指派人可以修改任务状态".to_string()
         });
     }
+    let (archived, done_at) = resolve_done_archive(
+        status == "done",
+        archived,
+        def.archived,
+        def.done_at,
+        crate::db::now_ms(),
+    );
     let payload = crate::protocol::TodoPayload {
         todo_id,
         title,
@@ -3404,6 +3517,10 @@ pub async fn update_group_todo(
         status,
         creator: def.creator,
         deleted,
+        description,
+        images,
+        archived,
+        done_at,
     };
     let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
     // ⚠️ 发 `todo_update`（Silent）而不是 `todo`（Card）：改状态/改标题/删除是**状态微调**，
@@ -3496,6 +3613,100 @@ pub async fn send_group_announcement(
     let content = serde_json::to_string(&crate::protocol::AnnouncementPayload { text })
         .map_err(|e| e.to_string())?;
     send_group_payload(s, &group_id, "announcement", content).await
+}
+
+/// 删除一条群公告（仅群主）：发 `announcement_delete` **墓碑**（Silent），全端据此把横幅折掉。
+///
+/// 为什么是墓碑而不是删行：公告与其它群消息同走一条 LWW/折叠管线 —— 接收端
+/// （`transport.rs` 对该 kind 强制 owner-only）按 `ann_id == 公告的 msg_id` 折叠，
+/// 与 `ChatWindow.vue` 的折叠规则一致；本端由前端自己的折叠逻辑收敛。
+#[tauri::command(async)]
+pub async fn delete_group_announcement(
+    state: State<'_, Arc<AppState>>,
+    group_id: String,
+    ann_id: String,
+) -> Result<MessageRecord, String> {
+    let s = state.inner();
+    let ann_id = ann_id.trim().to_string();
+    if ann_id.is_empty() {
+        return Err("公告标识缺失".to_string());
+    }
+    {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        let g = db::get_group(&dbc, &group_id).ok_or("群不存在")?;
+        if g.creator != s.device_id {
+            return Err("只有群主可以删除公告".to_string());
+        }
+    }
+    let content = serde_json::to_string(&crate::protocol::AnnouncementDeletePayload { ann_id })
+        .map_err(|e| e.to_string())?;
+    send_group_payload(s, &group_id, "announcement_delete", content).await
+}
+
+/// 当前生效的群公告（每群一条）：会话列表 📢 标记的数据源。
+///
+/// 前端不能从 `chat.messages` 折叠 —— 那是 ~4 个会话的 LRU 缓存，列表要覆盖**全部**群。
+/// 这里一条 SQL 捞出全部公告与墓碑，按到达序折叠出每群当前生效的一条
+/// （墓碑按 `ann_id == 公告的 msg_id` 命中，与 `ChatWindow.vue` 的折叠规则一致）。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActiveAnnouncement {
+    pub group_id: String,
+    /// 当前生效公告的 msg_id（= 删除时的 ann_id）。
+    pub msg_id: String,
+    pub text: String,
+}
+
+#[tauri::command(async)]
+pub fn list_active_group_announcements(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<ActiveAnnouncement>, String> {
+    use std::collections::{HashMap, HashSet};
+    let s = state.inner();
+    let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+    let mut stmt = dbc
+        .prepare(
+            "SELECT conv_id, msg_id, seq, content FROM messages \
+             WHERE kind IN ('announcement', 'announcement_delete') AND conv_id LIKE 'group:%' \
+             ORDER BY seq ASC, msg_id ASC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+    // 按到达序处理：每群保留最后一条公告（= (seq, msg_id) 最大），墓碑进集合。
+    let mut best: HashMap<String, (i64, String, String)> = HashMap::new();
+    let mut tombstones: HashSet<(String, String)> = HashSet::new();
+    for row in rows.flatten() {
+        let (conv_id, msg_id, seq, content) = row;
+        let group_id = conv_id.trim_start_matches("group:").to_string();
+        if let Ok(p) = serde_json::from_str::<crate::protocol::AnnouncementPayload>(&content) {
+            best.insert(group_id.clone(), (seq, msg_id, p.text));
+        } else if let Ok(p) =
+            serde_json::from_str::<crate::protocol::AnnouncementDeletePayload>(&content)
+        {
+            tombstones.insert((group_id, p.ann_id));
+        }
+    }
+    let mut out: Vec<ActiveAnnouncement> = Vec::new();
+    for (group_id, (_seq, msg_id, text)) in best {
+        if tombstones.contains(&(group_id.clone(), msg_id.clone())) {
+            continue;
+        }
+        out.push(ActiveAnnouncement {
+            group_id,
+            msg_id,
+            text,
+        });
+    }
+    Ok(out)
 }
 
 /// 公告长度上限：与群名（40）同档量级 —— 公告是置顶横幅里的一段短文本，
@@ -3619,8 +3830,14 @@ pub async fn send_group_file(
     state: State<'_, Arc<AppState>>,
     group_id: String,
     path: String,
+    scope: Option<String>,
+    todo_id: Option<String>,
 ) -> Result<String, String> {
     let s = state.inner();
+    // `scope == "todo"` 表示这是待办描述图片：复用群文件传输管线把字节投递给全员，
+    // 但不进聊天时间线、不弹气泡（见下方气泡块的条件跳过）。缺省为普通群文件。
+    let scope = scope.unwrap_or_else(|| "chat".to_string());
+    let todo_id = todo_id.unwrap_or_default();
 
     // 文件校验：存在 + 普通文件；size/name 取自本地 metadata，不进入协议
     let p = std::path::PathBuf::from(&path);
@@ -3654,6 +3871,24 @@ pub async fn send_group_file(
             .collect()
     };
     if members.is_empty() {
+        // 待办描述图片：群里只有自己时**没有要投递的人**，但这不是错误 —— 本机的字节已经
+        // 在原路径上，把内容登记进 content store（缩略图按 sha256 找回）就够了。
+        // 普通群文件维持报错（用户发文件本来就是为了给别人）。
+        if scope == "todo" {
+            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+            let _ = crate::content::store::record_local(
+                &dbc,
+                &sha256,
+                &s.device_id,
+                Some(&group_id),
+                &name,
+                size,
+                crate::content::model::Direction::Send,
+                &path,
+                db::now_ms(),
+            );
+            return Ok(Uuid::new_v4().to_string());
+        }
         return Err("群内没有其他成员".to_string());
     }
 
@@ -3671,6 +3906,8 @@ pub async fn send_group_file(
             sha256: sha256.clone(),
             status: "pending".to_string(),
             created_at: db::now_ms(),
+            scope: scope.clone(),
+            todo_id: todo_id.clone(),
         };
         let tx = dbc.unchecked_transaction().map_err(|e| e.to_string())?;
         db::insert_group_file(&tx, &gf).map_err(|e| e.to_string())?;
@@ -3678,6 +3915,22 @@ pub async fn send_group_file(
             db::insert_group_file_recipient(&tx, &transfer_id, m).map_err(|e| e.to_string())?;
         }
         tx.commit().map_err(|e| e.to_string())?;
+        // 待办图片：发送方把自己也登记为内容种子（peer_id = 自己 + **原文件路径**），
+        // 这样本机按 sha256 就能解析到原文件渲染缩略图（与接收方口径一致），
+        // `read_content_preview` 也据此放行“自己的内容”。仅 todo —— 不改动普通群文件既有行为。
+        if scope == "todo" {
+            let _ = crate::content::store::record_local(
+                &dbc,
+                &sha256,
+                &s.device_id,
+                Some(&group_id),
+                &name,
+                size,
+                crate::content::model::Direction::Send,
+                &path,
+                db::now_ms(),
+            );
+        }
     }
 
     // 群密钥获取与 file_key 封装先于运行态写入：任何失败都不残留内存状态
@@ -3701,63 +3954,66 @@ pub async fn send_group_file(
     // 发送者本地气泡先落库：无论成员当前是否在线，用户看到的都是「发送中/待投递」，
     // 而不是一个报错后又偷偷排队的隐藏任务。
     // 图片文件保持 kind="image"，预览摘要为 [图片]，其余走 kind="file"。
-    let subtype = file::classify_file_subtype(&name);
-    let kind = if subtype == "image" { "image" } else { "file" };
-    let content =
+    // `scope == "todo"` 时跳过：待办图片是任务的一部分，不该在聊天时间线里另起一条文件消息。
+    if scope != "todo" {
+        let subtype = file::classify_file_subtype(&name);
+        let kind = if subtype == "image" { "image" } else { "file" };
+        let content =
         serde_json::json!({ "name": name, "path": path, "size": size, "sha256": sha256, "subtype": subtype })
             .to_string();
-    let conv_id = format!("group:{group_id}");
-    let seq = {
-        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::next_clock(&dbc, &conv_id).unwrap_or(1)
-    };
-    let rec = MessageRecord {
-        id: 0,
-        msg_id: format!("gfile-{transfer_id}"),
-        conv_id,
-        sender_id: s.device_id.clone(),
-        receiver_id: group_id.clone(),
-        kind: kind.to_string(),
-        content,
-        ts: db::now_ms(),
-        seq,
-        status: "sending".to_string(),
-    };
-    {
-        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::insert_message(&dbc, &rec).ok();
-        db::upsert_transfer(
-            &dbc,
-            &transfer_id,
-            &group_id,
-            &name,
-            size,
-            "send",
-            "active",
-            Some(p.to_string_lossy().as_ref()),
-            0.0,
-        )
-        .ok();
-        let group_name = db::get_group(&dbc, &group_id)
-            .map(|g| g.name)
-            .unwrap_or_default();
-        let preview = if kind == "image" {
-            "[图片]".to_string()
-        } else {
-            format!("[群文件] {name}")
+        let conv_id = format!("group:{group_id}");
+        let seq = {
+            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+            db::next_clock(&dbc, &conv_id).unwrap_or(1)
         };
-        db::touch_conversation(
-            &dbc,
-            &format!("group:{group_id}"),
-            "group",
-            &group_name,
-            None,
-            &preview,
-            0,
-        )
-        .ok();
+        let rec = MessageRecord {
+            id: 0,
+            msg_id: format!("gfile-{transfer_id}"),
+            conv_id,
+            sender_id: s.device_id.clone(),
+            receiver_id: group_id.clone(),
+            kind: kind.to_string(),
+            content,
+            ts: db::now_ms(),
+            seq,
+            status: "sending".to_string(),
+        };
+        {
+            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+            db::insert_message(&dbc, &rec).ok();
+            db::upsert_transfer(
+                &dbc,
+                &transfer_id,
+                &group_id,
+                &name,
+                size,
+                "send",
+                "active",
+                Some(p.to_string_lossy().as_ref()),
+                0.0,
+            )
+            .ok();
+            let group_name = db::get_group(&dbc, &group_id)
+                .map(|g| g.name)
+                .unwrap_or_default();
+            let preview = if kind == "image" {
+                "[图片]".to_string()
+            } else {
+                format!("[群文件] {name}")
+            };
+            db::touch_conversation(
+                &dbc,
+                &format!("group:{group_id}"),
+                "group",
+                &group_name,
+                None,
+                &preview,
+                0,
+            )
+            .ok();
+        }
+        let _ = s.app.emit("message-received", &rec);
     }
-    let _ = s.app.emit("message-received", &rec);
 
     // 可达成员：有 TCP link 且 peers 信息完整；其余保持 pending，由上线事件自动投递。
     let mut reachable: Vec<String> = Vec::new();
@@ -3788,6 +4044,8 @@ pub async fn send_group_file(
             size,
             sha256: sha256.clone(),
             sealed_file_key: sealed_file_key.clone(),
+            scope: scope.clone(),
+            todo_id: todo_id.clone(),
         };
         if try_send(s, m, &msg).await.is_ok() {
             let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -3822,6 +4080,102 @@ pub async fn send_group_file(
     }
 
     Ok(transfer_id)
+}
+
+/// 发送一张**待办描述图片**：复用群文件传输管线把字节投递给全体群成员，
+/// 但 `scope="todo"` ⇒ 不进聊天时间线、不弹气泡、不改会话预览（见 `send_group_file`）。
+///
+/// 真实字节落盘到本机下载目录并经 content store 按 `sha256` 登记；待办载荷只带图片**元数据**
+/// （`TodoImage{id=sha256, name, size, sha256, subtype}`），渲染时按 `sha256` 解析本地路径，
+/// 缺失则成员上线后自动补取。这样既全端同步、又不让描述图片污染聊天流。
+#[tauri::command(async)]
+pub async fn send_todo_image(
+    state: State<'_, Arc<AppState>>,
+    group_id: String,
+    todo_id: String,
+    path: String,
+) -> Result<String, String> {
+    send_group_file(
+        state,
+        group_id,
+        path,
+        Some("todo".to_string()),
+        Some(todo_id),
+    )
+    .await
+}
+
+/// 读一张待办图片的**元数据**（不投递字节）：选图后先拿 `TodoImage` 写进任务定义，
+/// 字节随后经 `send_todo_image` 投递。`id = sha256` 与投递时 content store 的 cid 同源
+/// （同一份文件字节算出的 sha256 必然一致），缩略图才能按 cid 找回。
+#[tauri::command(async)]
+pub fn todo_image_meta(path: String) -> Result<crate::protocol::TodoImage, String> {
+    let p = std::path::Path::new(&path);
+    let meta = std::fs::metadata(p).map_err(|e| format!("读取文件失败：{e}"))?;
+    if !meta.is_file() {
+        return Err("不是文件".to_string());
+    }
+    let sha256 = file::sha256_file_hex(p)?;
+    let name = p
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let subtype = p
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    Ok(crate::protocol::TodoImage {
+        id: sha256.clone(),
+        name,
+        size: meta.len(),
+        sha256,
+        subtype,
+    })
+}
+
+/// 保存一张**粘贴**进任务表单的图片（截图 / 复制的位图没有本地路径）。
+///
+/// 前端把图片字节走 **raw IPC** 直传（`invoke("save_todo_image_bytes", new Uint8Array(buf))`），
+/// 这里按内容嗅探扩展名、以 sha256 命名落盘到 `cache_dir/todo-paste/` 并返回路径 ——
+/// 之后与选图同一条路：`todo_image_meta`（元数据进任务定义）+ `send_todo_image`（字节走群文件管线）。
+///
+/// 为什么按 sha256 命名：同一张图反复粘贴天然幂等（同名覆盖），不会在缓存目录里膨胀。
+#[tauri::command(async)]
+pub async fn save_todo_image_bytes(
+    state: State<'_, Arc<AppState>>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<String, String> {
+    const MAX_PASTE_BYTES: usize = 25 * 1024 * 1024;
+    let bytes: Vec<u8> = match request.body() {
+        tauri::ipc::InvokeBody::Raw(b) => b.clone(),
+        _ => return Err("图片数据格式不正确".to_string()),
+    };
+    if bytes.is_empty() {
+        return Err("图片数据为空".to_string());
+    }
+    if bytes.len() > MAX_PASTE_BYTES {
+        return Err("图片过大".to_string());
+    }
+    let ext = sniff_media_ext(&bytes[..bytes.len().min(16)]);
+    if !matches!(ext, "jpg" | "png" | "gif" | "webp" | "bmp") {
+        return Err("只支持粘贴图片".to_string());
+    }
+    let s = state.inner();
+    let dir = s.cache_dir.join("todo-paste");
+    // 写盘放阻塞线程池（几 MB 的截图不卡 async runtime）。
+    let save = tokio::task::spawn_blocking(move || -> Result<String, String> {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(&bytes);
+        let sha256: String = h.finalize().iter().map(|b| format!("{b:02x}")).collect();
+        std::fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败：{e}"))?;
+        let path = dir.join(format!("{sha256}.{ext}"));
+        std::fs::write(&path, &bytes).map_err(|e| format!("写入图片失败：{e}"))?;
+        Ok(path.to_string_lossy().to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    Ok(save)
 }
 
 /// 群文件「已投递到几个成员」的进度聚合 —— **只按发送时在线的成员平均**。
@@ -3936,6 +4290,8 @@ async fn dispatch_group_file_to_peer(
         size,
         sha256: gf.sha256.clone(),
         sealed_file_key,
+        scope: gf.scope.clone(),
+        todo_id: gf.todo_id.clone(),
     };
     try_send(state, recipient, &offer)
         .await
@@ -4760,39 +5116,6 @@ pub async fn request_content_by_cid(
     }
 }
 
-/// 按 **cid** 读取本机已有的内容字节（卡片图片预览的读侧）。
-///
-/// 与 [`read_file_preview`] 的差别：不经过消息行 —— 卡片是快照，对端没有原始消息行。
-/// 路径一律取自 `content_transfers`（由本传输层自己写入，[`store::find_local_path`]），
-/// **不接受任何外部传入路径** —— 与 [`resolve_media_path`] 的安全边界等价：
-/// 只有"确实经我们传输落盘 / 本机发出"的字节才可能被读到。
-#[tauri::command(async)]
-pub fn read_content_preview(
-    state: State<'_, Arc<AppState>>,
-    cid: String,
-    max_bytes: u64,
-) -> Result<tauri::ipc::Response, String> {
-    let s = state.inner();
-    let max_bytes = max_bytes.min(15 * 1024 * 1024);
-    let path = {
-        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        crate::content::store::find_local_path(&dbc, &cid)
-    };
-    let Some(path) = path else {
-        return Err("本机没有这份内容".to_string());
-    };
-    let file = std::path::PathBuf::from(&path);
-    let meta = std::fs::metadata(&file).map_err(|_| "文件不存在".to_string())?;
-    if !meta.is_file() {
-        return Err("文件不存在".to_string());
-    }
-    if meta.len() > max_bytes {
-        return Err("TOO_LARGE".to_string());
-    }
-    let bytes = std::fs::read(&file).map_err(|e| e.to_string())?;
-    Ok(tauri::ipc::Response::new(bytes))
-}
-
 /// 统一的内容传输状态（ADR-0019 Phase 1）：前端据此在气泡上显示
 /// 发送中 / 等待对方在线 / 网络不佳 / 未完成·点击重试 / 完成。
 #[tauri::command(async)]
@@ -5604,6 +5927,61 @@ pub fn delete_messages(
     Ok(removed)
 }
 
+/**
+ * 按 content store 的 cid 读取已落盘内容的字节（合并转发卡片图片 / 待办描述图片共用）。
+ *
+ * cid 即 sha256（content store 主键）。两条取回路径：① `find_local_path` —— 已登记的
+ * 本机副本（接收到的群文件/待办图片、本机快照）；② 回落 `find_source` + 安全校验
+ * （downloads 下或本机自发内容）—— 覆盖“发送侧待办图片还在用户原始路径”的场景。
+ * 安全边界与 `read_file_preview`/`resolve_media_path` 同口径。
+ */
+#[tauri::command(async)]
+pub fn read_content_preview(
+    state: State<'_, Arc<AppState>>,
+    cid: String,
+    max_bytes: u64,
+) -> Result<tauri::ipc::Response, String> {
+    let s = state.inner();
+    let max_bytes = max_bytes.min(15 * 1024 * 1024);
+    let file = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        match crate::content::store::find_local_path(&dbc, &cid) {
+            Some(p) => std::path::PathBuf::from(p),
+            None => {
+                let (path, owner) = match crate::content::store::find_source(&dbc, &cid) {
+                    Ok(Some((peer, _group, p))) => (p, peer),
+                    Ok(None) => return Err("内容不存在".to_string()),
+                    Err(e) => return Err(e.to_string()),
+                };
+                let f = std::fs::canonicalize(&path).map_err(|_| "文件不存在".to_string())?;
+                let under_downloads = std::fs::canonicalize(
+                    s.downloads_dir
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .as_path(),
+                )
+                .map(|dir| f.starts_with(dir))
+                .unwrap_or(false);
+                // 只允许读 downloads 下的文件（接收侧），或本机自己发出的内容（发送侧
+                // 待办图片是用户自选的原始路径）—— 与 resolve_media_path 同一口径。
+                if !under_downloads && owner != s.device_id {
+                    return Err("路径越权".to_string());
+                }
+                f
+            }
+        }
+    };
+    let meta = std::fs::metadata(&file).map_err(|e| e.to_string())?;
+    if !meta.is_file() {
+        return Err("文件不存在".to_string());
+    }
+    if meta.len() > max_bytes {
+        return Err("TOO_LARGE".to_string());
+    }
+    let bytes = std::fs::read(&file).map_err(|e| e.to_string())?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
 /// 导出全部聊天文字到用户指定文件（Markdown 单文件）。
 ///
 /// 定位：磁盘满 / 换机时的**自救手段**——存储清理只删媒体、不动文字，但一旦库损坏
@@ -6080,10 +6458,6 @@ pub struct SearchResult {
     /// 用户点进去还要自己在会话里翻，搜索就只完成了一半）。
     match_msg_id: String,
 }
-
-// 会话预览文案（kind → 人话）已收敛到 `crate::protocol::preview_text`：
-// 它还要被"删消息后重算末条摘要"（db.rs）复用，两处各写一份 match 迟早漂移。
-
 // ---------------- 跨子网（Routed）端点配置 ----------------
 
 /// 校验并**规范化**手动配置的 Routed 端点地址，返回 `ip:port`。
@@ -6188,6 +6562,159 @@ pub fn remove_routed_endpoint(
     Ok(list)
 }
 
+// ---------------- 外部链接（左栏「链接」视图 → 点开在独立窗口加载） ----------------
+
+/// 一条用户配置的外部链接。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalLink {
+    /// 稳定主键：改名字/改网址都按它匹配，不会跟丢。
+    pub id: String,
+    pub name: String,
+    pub url: String,
+}
+
+const EXTERNAL_LINKS_KEY: &str = "external_links";
+/// 数量上限（防呆：这是一排给人点的入口，不是书签管理器）。
+const MAX_EXTERNAL_LINKS: usize = 20;
+/// 显示名长度上限（字符数）。
+const MAX_LINK_NAME_CHARS: usize = 32;
+
+/// 校验并规范化一个外部网址 —— **只允许 http/https 且 host 非空**。
+///
+/// 为什么必须做协议白名单：这个网址会被 [`open_link_window`] 交给 `WebviewUrl::External`
+/// 直接加载，`javascript:`/`data:`/`file:`/`tauri:` 之类要么能执行脚本、要么能读本机文件 ——
+/// 等于把一条本机攻击面交给用户随手粘贴的字符串。与 `utils/linkify.ts` 只认 `https?://`
+/// 是同一条口径（消息里的链接也受同一限制）。
+pub fn validate_external_url(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("网址不能为空".to_string());
+    }
+    let parsed = url::Url::parse(trimmed).map_err(|_| "网址格式不正确".to_string())?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("网址必须以 http:// 或 https:// 开头".to_string());
+    }
+    if parsed.host_str().map(str::is_empty).unwrap_or(true) {
+        return Err("网址缺少主机名".to_string());
+    }
+    Ok(parsed.to_string())
+}
+
+/// 容错解析：逐条跳过坏数据，绝不因一条脏数据让整张表消失（与 `parse_endpoints` 同口径）。
+fn parse_external_links(raw: &str) -> Vec<ExternalLink> {
+    serde_json::from_str::<Vec<ExternalLink>>(raw)
+        .map(|list| {
+            list.into_iter()
+                .filter(|l| {
+                    !l.id.is_empty() && !l.name.is_empty() && validate_external_url(&l.url).is_ok()
+                })
+                .take(MAX_EXTERNAL_LINKS)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn encode_external_links(list: &[ExternalLink]) -> String {
+    serde_json::to_string(list).unwrap_or_else(|_| "[]".to_string())
+}
+
+/// 规范化编辑输入并做重复校验（`except_id` = 编辑时排除自己那条）。
+fn normalize_link_input(
+    list: &[ExternalLink],
+    name: &str,
+    url: &str,
+    except_id: Option<&str>,
+) -> Result<(String, String), String> {
+    let name = name.trim().to_string();
+    if name.is_empty() {
+        return Err("请填写名称".to_string());
+    }
+    if name.chars().count() > MAX_LINK_NAME_CHARS {
+        return Err(format!("名称最长 {MAX_LINK_NAME_CHARS} 个字符"));
+    }
+    let url = validate_external_url(url)?;
+    if list
+        .iter()
+        .any(|l| l.url == url && Some(l.id.as_str()) != except_id)
+    {
+        return Err("该网址已存在".to_string());
+    }
+    Ok((name, url))
+}
+
+/// 列出全部外部链接。
+#[tauri::command(async)]
+pub fn list_external_links(state: tauri::State<'_, Arc<AppState>>) -> Vec<ExternalLink> {
+    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+    parse_external_links(&db::get_setting(&dbc, EXTERNAL_LINKS_KEY).unwrap_or_default())
+}
+
+/// 添加一条外部链接，返回更新后的完整列表。
+#[tauri::command(async)]
+pub fn add_external_link(
+    state: tauri::State<'_, Arc<AppState>>,
+    name: String,
+    url: String,
+) -> Result<Vec<ExternalLink>, String> {
+    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+    let mut list =
+        parse_external_links(&db::get_setting(&dbc, EXTERNAL_LINKS_KEY).unwrap_or_default());
+    if list.len() >= MAX_EXTERNAL_LINKS {
+        return Err(format!("最多只能添加 {MAX_EXTERNAL_LINKS} 个链接"));
+    }
+    let (name, url) = normalize_link_input(&list, &name, &url, None)?;
+    list.push(ExternalLink {
+        id: Uuid::new_v4().to_string(),
+        name,
+        url,
+    });
+    db::set_setting(&dbc, EXTERNAL_LINKS_KEY, &encode_external_links(&list))
+        .map_err(|e| format!("保存失败: {e}"))?;
+    Ok(list)
+}
+
+/// 修改一条外部链接（按 `id` 匹配），返回更新后的完整列表。
+#[tauri::command(async)]
+pub fn update_external_link(
+    state: tauri::State<'_, Arc<AppState>>,
+    id: String,
+    name: String,
+    url: String,
+) -> Result<Vec<ExternalLink>, String> {
+    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+    let mut list =
+        parse_external_links(&db::get_setting(&dbc, EXTERNAL_LINKS_KEY).unwrap_or_default());
+    // 先算规范化值（不可变借用），再取可变引用落值 —— 否则 `list` 同时被借两次。
+    let (name, url) = normalize_link_input(&list, &name, &url, Some(&id))?;
+    let Some(target) = list.iter_mut().find(|l| l.id == id) else {
+        return Err("链接不存在".to_string());
+    };
+    target.name = name;
+    target.url = url;
+    db::set_setting(&dbc, EXTERNAL_LINKS_KEY, &encode_external_links(&list))
+        .map_err(|e| format!("保存失败: {e}"))?;
+    Ok(list)
+}
+
+/// 删除一条外部链接（按 `id` 匹配），返回更新后的完整列表。
+#[tauri::command(async)]
+pub fn remove_external_link(
+    state: tauri::State<'_, Arc<AppState>>,
+    id: String,
+) -> Result<Vec<ExternalLink>, String> {
+    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+    let mut list =
+        parse_external_links(&db::get_setting(&dbc, EXTERNAL_LINKS_KEY).unwrap_or_default());
+    let before = list.len();
+    list.retain(|l| l.id != id);
+    if list.len() != before {
+        db::set_setting(&dbc, EXTERNAL_LINKS_KEY, &encode_external_links(&list))
+            .map_err(|e| format!("保存失败: {e}"))?;
+    }
+    Ok(list)
+}
+
 // ---------------- 运行日志 ----------------
 
 /// 读取内存中的运行日志（时间正序：旧 → 新）。
@@ -6209,14 +6736,40 @@ pub fn clear_logs(state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> 
     Ok(())
 }
 
-/// 独立窗口（设置 / 日志）关闭时**隐藏而不是销毁**。
+/// 独立窗口（设置 / 日志）关闭时**销毁**（用户 2026-09-17：侧边栏的设置/日志收进二级菜单，
+/// 窗口不再常驻 —— 用完即关，内存不常驻；重开冷启动一次，由窗口状态插件**之外**的
+/// `aux_window_geometry` 统一摆位）。
 ///
-/// 为什么：`WebviewWindow` 的创建 + 前端加载 + `app.init()` 是"点一下要等很久"的全部成本；
-/// 销毁后每次打开都要重付一遍。改成常驻之后，第二次起是 `show()` —— 用户要的"点一下立马就开"。
-/// 代价是两个窗口的后台内存常驻。要换回"关闭即销毁"，把这里改成 `false` 即可
-/// （`install_hide_on_close` 会跳过 prevent_close，关闭仍走系统默认销毁）。
+/// ⚠️ 因此 `tauri_plugin_window_state` 对这两个 label 在 `lib.rs` 里做了**拒绝列表**：
+/// 否则插件会按 label 恢复"上次的最大化/位置"，与 `apply_aux_geometry` 的居中逻辑打架。
+///
+/// 外链窗口（`WINDOW_LINK`）是**唯一例外**：它加载远端页面、复用同一个窗口导航，
+/// 保持常驻（见 [`AUX_LINK_RESIDENT`]）。
 #[cfg(desktop)]
-const AUX_WINDOWS_RESIDENT: bool = true;
+const AUX_WINDOWS_RESIDENT: bool = false;
+
+/// 外链窗口**关闭即隐藏**（常驻）：复用同一个窗口导航到新网址是它的核心交互，
+/// 销毁重建会让"再点一条链接"变成一次冷启动。
+#[cfg(desktop)]
+const AUX_LINK_RESIDENT: bool = true;
+
+/// 独立窗口的开发者工具开关：**调试构建开、正式构建关**（用户 2026-09-17：
+/// 「debug 要能调出开发者工具」——调试时要在独立窗口里排查问题）。
+///
+/// 背景：Tauri 调试构建默认全开；正式构建没开 `devtools` feature，`devtools(true)`
+/// 也不会生效 ⇒ 这一条等价于"只跟构建类型走"，显式写出是为了把意图钉住。
+/// 外链窗口加载远端页面，发布前若想彻底关掉检查器，把这里改成 `false` 即可。
+#[cfg(desktop)]
+const AUX_DEVTOOLS: bool = cfg!(debug_assertions);
+
+/// 群任务窗口**关闭即销毁**（不常驻）。
+///
+/// 为什么与设置/日志不同：群任务窗口是**每群一个**（label = `todo-<groupId>`），常驻的话
+/// "打开过 N 个群"就留下 N 个隐藏 WebView，无界增长。而且它每次打开都该是**新数据**
+/// （成员可能刚改过任务），销毁重建顺带保证了这一点。代价是重开要冷启动一次
+/// （约等于设置窗口第一次打开的成本，小面板可接受）。
+#[cfg(desktop)]
+const AUX_GROUP_TODOS_RESIDENT: bool = false;
 
 /// 串行化"创建独立窗口"这一步 —— 并发打开同一个窗口是有真实竞态的。
 ///
@@ -6228,7 +6781,7 @@ const AUX_WINDOWS_RESIDENT: bool = true;
 #[cfg(desktop)]
 static AUX_WINDOW_CREATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// 已存在就显示并聚焦（`true` = 处理完了，不需要新建）。
+/// 已存在就显示并聚焦（返回该窗口 = 处理完了，不需要新建）。
 ///
 /// 这就是"它已经打开了，我再点一下，还是它，不会开出第二个"：
 /// 命令层与按钮层都不再需要自己去记"开没开过"。
@@ -6237,23 +6790,24 @@ static AUX_WINDOW_CREATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// 可以被拖到另一块屏幕上 —— 摆着不动的话，第二次打开它就留在**上一块屏**上
 /// （用户 2026-09-16 多屏反馈的"弹到另一个屏幕上"有一半来自这里）。尺寸不重设，
 /// 是为了留住用户自己拉过的大小。
+///
+/// 返回 `Option<WebviewWindow>`（而不是 `bool`）：外链窗口需要在"已存在"这条路径上
+/// `navigate()` 到新网址 —— 调用方得拿到窗口句柄。
 #[cfg(desktop)]
 fn show_existing_aux_window(
     app: &tauri::AppHandle,
     label: &str,
     geo: Option<AuxWindowGeometry>,
-) -> bool {
-    if let Some(win) = app.get_webview_window(label) {
-        if let Some(g) = geo {
-            recenter_aux_window(&win, &g);
-        }
-        // `unminimize`：窗口被最小化过的话，只 show 不会把它拉回前台。
-        let _ = win.unminimize();
-        let _ = win.show();
-        let _ = win.set_focus();
-        return true;
+) -> Option<tauri::WebviewWindow> {
+    let win = app.get_webview_window(label)?;
+    if let Some(g) = geo {
+        recenter_aux_window(&win, &g);
     }
-    false
+    // `unminimize`：窗口被最小化过的话，只 show 不会把它拉回前台。
+    let _ = win.unminimize();
+    let _ = win.show();
+    let _ = win.set_focus();
+    Some(win)
 }
 
 /// 关闭 → 隐藏（配合 [`AUX_WINDOWS_RESIDENT`]），让下一次打开是瞬时的。
@@ -6268,6 +6822,25 @@ fn install_hide_on_close(win: &tauri::WebviewWindow) {
     });
 }
 
+/// 无边框辅助窗口（`.decorations(false)`）的 macOS 配套处理。
+///
+/// 与主窗口（`lib.rs` 里对 `WINDOW_MAIN` 的那两行）同一套：
+/// - `set_closable(true)`：`decorations:false` 让 tao 建出的 NSWindow 是 Borderless，**没有 Closable 位**，
+///   于是 ⌘W（`menu.rs` 的自定义项走 `.close()`）会失效；
+/// - `disable_shadow`：系统阴影是**矩形**，与窗口自身的圆角冲突（会露出四个直角）。
+///
+/// ⚠️ **不要**对外链窗口（`WINDOW_LINK`）调用：它保留系统标题栏，去掉阴影会是可见的退化。
+#[cfg(desktop)]
+fn decorate_aux_window(win: &tauri::WebviewWindow) {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = win.set_closable(true);
+        crate::macos_window::disable_shadow(win);
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = win;
+}
+
 /// 打开（或聚焦）一个独立窗口：**单例 + 串行创建**。
 ///
 /// 所有独立窗口都走这里，别在各自的命令里各写一遍 —— 单例与并发安全是"每个窗口都要有"的
@@ -6275,34 +6848,40 @@ fn install_hide_on_close(win: &tauri::WebviewWindow) {
 ///
 /// `geo` 是**按主窗口**算好的几何（见 [`aux_window_geometry`]）：创建时用它摆尺寸与位置，
 /// 已存在时用它把窗口重新摆回主窗口那块屏（见 [`show_existing_aux_window`]）。
+///
+/// `resident`：关闭时"隐藏（常驻）"还是"销毁"。外链窗口传
+/// [`AUX_LINK_RESIDENT`]（复用同一窗口导航）；设置/日志/群任务均销毁（每次开窗拿新数据）。
+///
+/// 返回 `(窗口, 是否本次新建)`：外链窗口需要在"已存在"这条路径上 `navigate()` 到新网址。
 #[cfg(desktop)]
 fn ensure_aux_window<F>(
     app: &tauri::AppHandle,
     label: &str,
     geo: Option<AuxWindowGeometry>,
+    resident: bool,
     build: F,
-) -> Result<(), String>
+) -> Result<(tauri::WebviewWindow, bool), String>
 where
     F: FnOnce() -> Result<tauri::WebviewWindow, tauri::Error>,
 {
     // 快路径：已经建过（包括"上次关掉只是隐藏了"）⇒ 显示 + 聚焦。
-    if show_existing_aux_window(app, label, geo) {
-        return Ok(());
+    if let Some(win) = show_existing_aux_window(app, label, geo) {
+        return Ok((win, false));
     }
     // 慢路径：同一时刻只允许一个创建者。等锁期间别人可能已经建好了 ⇒ 拿到锁后**再查一次**。
     let _guard = AUX_WINDOW_CREATE_LOCK
         .lock()
         .unwrap_or_else(|e| e.into_inner());
-    if show_existing_aux_window(app, label, geo) {
-        return Ok(());
+    if let Some(win) = show_existing_aux_window(app, label, geo) {
+        return Ok((win, false));
     }
     let win = build().map_err(|e| format!("创建 {label} 窗口失败: {e}"))?;
-    if AUX_WINDOWS_RESIDENT {
+    if resident {
         install_hide_on_close(&win);
     }
     let _ = win.show();
     let _ = win.set_focus();
-    Ok(())
+    Ok((win, true))
 }
 
 /// 独立窗口衬在主窗口里的留边（**逻辑**像素）：子窗口与主窗口边缘至少隔开这么多。
@@ -6326,8 +6905,10 @@ struct AuxWindowGeometry {
 impl AuxWindowGeometry {
     /// 居中位置：子窗口**外框**在主窗口外框内居中（物理像素）。
     ///
-    /// 用外框而不是内尺寸：子窗口带系统标题栏（`tao` 的 WM_DPICHANGED 与创建路径都会按
-    /// 缩放重新算边框厚度），按内尺寸居中会带上半个标题栏的偏差 —— 换到不同缩放的屏上更明显。
+    /// 用外框而不是内尺寸：`tao` 的 WM_DPICHANGED 与创建路径都会按缩放重新算边框厚度，
+    /// 按内尺寸居中会带上半个边框的偏差 —— 换到不同缩放的屏上更明显。
+    /// （应用窗口现在都是 `decorations(false)`，外框≈内尺寸；但外链窗口仍有系统标题栏，
+    /// 而且保留 `outer_size()` 一视同仁更省心。）
     fn centered_pos(&self, aux_outer: (u32, u32)) -> (i32, i32) {
         (
             self.main_pos.0 + ((self.main_size.0 as i64 - aux_outer.0 as i64) / 2) as i32,
@@ -6422,6 +7003,11 @@ fn apply_aux_geometry(win: &tauri::WebviewWindow, geo: AuxWindowGeometry) {
     ))));
     let _ = win.set_size(Size::Physical(PhysicalSize::new(geo.size.0, geo.size.1)));
     recenter_aux_window(win, &geo);
+    // 窗口状态插件（`tauri_plugin_window_state`，flags 含 MAXIMIZED/FULLSCREEN）会按 label 记住
+    // 最大化/全屏状态，而辅助窗口的 label 是固定的 ⇒ 用户最大化过一次，之后**每次打开都会恢复成
+    // 最大化**，直接破坏"小窗口不给最大化"。这里在显示前强制拉回窗口态。
+    let _ = win.unmaximize();
+    let _ = win.set_fullscreen(false);
 }
 
 /// 把窗口摆到主窗口正中（**只动位置，不动尺寸**）。
@@ -6442,8 +7028,9 @@ fn recenter_aux_window(win: &tauri::WebviewWindow, geo: &AuxWindowGeometry) {
 /// 桌面端：打开独立的「运行日志」窗口（已存在则聚焦）。
 ///
 /// 窗口加载 `logs.html`（它自己的文档与入口，见 `src/entries/logs.ts`）—— 只加载日志页
-/// 需要的代码，不会把聊天界面挂起来再换掉。窗口用系统标题栏（含关闭按钮）；关闭默认
-/// **隐藏**而非销毁（见 [`AUX_WINDOWS_RESIDENT`]），所以再次打开是瞬时的。
+/// 需要的代码，不会把聊天界面挂起来再换掉。窗口**无系统标题栏**（`decorations(false)`），
+/// 顶部由前端自绘（`TitleBar`，功能名 = 运行日志）；关闭即**销毁**
+/// （用户 2026-09-17：侧边栏收进二级菜单后，这两个窗口改"用完即关"），每次打开都是新数据。
 /// 窗口标题由 `logs.html` 的 `data-title-*` + 前端按语言设置 `document.title`
 /// （Tauri 会把 document title 同步到窗口标题），Rust 侧不再维护第二份标题文案。
 #[cfg(desktop)]
@@ -6456,38 +7043,54 @@ pub fn open_log_window(
     let bg = aux_window_background(&state);
     // 初始标题：文档标题（`logs.html` 的 data-title-* + 前端按语言）加载完成后会被 Tauri
     // 自动同步过去，所以这里只需要一个"还没加载完时不至于空着"的占位。
-    let title = state.display_name();
+    let title = aux_window_title(&state, "运行日志", "Runtime Logs", None);
     // 克隆一份给闭包：`ensure_aux_window` 同时借用 `app` 做存在性检查，
     // 闭包再 move 走同一个 handle 会借不过（且闭包必须 `'static` 才能交给 Tauri 创建）。
     let build_app = app.clone();
-    // 尺寸与位置按主窗口算（见 aux_window_geometry 的说明）；只在**创建**时算一次 ——
-    // 常驻窗口之后都是 show/focus，反复挪动用户已经摆好的窗口反而更烦。
+    // 尺寸与位置按主窗口算（见 aux_window_geometry 的说明）；窗口是**关闭即销毁**的，
+    // 每次打开都新建 ⇒ 每次都按主窗口重新居中（不存在"用户摆好的窗口"）。
     let geo = aux_window_geometry(&app, (760.0, 560.0), (420.0, 320.0));
-    ensure_aux_window(&app, crate::WINDOW_LOGS, geo, move || {
-        let win = WebviewWindowBuilder::new(
-            &build_app,
-            crate::WINDOW_LOGS,
-            WebviewUrl::App("logs.html".into()),
-        )
-        .title(title)
-        // 设计尺寸只作**初值**（拿不到主窗口时它就是最终值）：真正的几何在 build 之后用
-        // 物理像素落地 —— builder 的 `position` / `inner_size` 只有逻辑坐标，多屏不同缩放时
-        // 会被 tao 按"逐个显示器试算"选错屏（详见 aux_window_geometry）。
-        .inner_size(760.0, 560.0)
-        .min_inner_size(420.0, 320.0)
-        // 背景色跟随主题：窗口的静态背景色只能是浅/深之一，暗色主题下不先设对就会"闪一下白"
-        // （与主窗口冷启动白闪同源）。放在 builder 上（而不是 build 之后再 set），
-        // 少一帧错色。
-        .background_color(bg)
-        // 隐藏创建：`ensure_aux_window` 随后就会 `show()`，中间这段正好用来摆位置与尺寸，
-        // 用户不会看到窗口先在默认位置上闪一下、再跳到正确的位置。
-        .visible(false)
-        .build()?;
-        if let Some(g) = geo {
-            apply_aux_geometry(&win, g);
-        }
-        Ok(win)
-    })
+    let _ = ensure_aux_window(
+        &app,
+        crate::WINDOW_LOGS,
+        geo,
+        AUX_WINDOWS_RESIDENT,
+        move || {
+            let win = WebviewWindowBuilder::new(
+                &build_app,
+                crate::WINDOW_LOGS,
+                WebviewUrl::App("logs.html".into()),
+            )
+            .title(title)
+            .devtools(AUX_DEVTOOLS)
+            // 设计尺寸只作**初值**（拿不到主窗口时它就是最终值）：真正的几何在 build 之后用
+            // 物理像素落地 —— builder 的 `position` / `inner_size` 只有逻辑坐标，多屏不同缩放时
+            // 会被 tao 按"逐个显示器试算"选错屏（详见 aux_window_geometry）。
+            .inner_size(760.0, 560.0)
+            .min_inner_size(420.0, 320.0)
+            // 背景色跟随主题：窗口的静态背景色只能是浅/深之一，暗色主题下不先设对就会"闪一下白"
+            // （与主窗口冷启动白闪同源）。放在 builder 上（而不是 build 之后再 set），
+            // 少一帧错色。
+            .background_color(bg)
+            // 隐藏创建：`ensure_aux_window` 随后就会 `show()`，中间这段正好用来摆位置与尺寸，
+            // 用户不会看到窗口先在默认位置上闪一下、再跳到正确的位置。
+            .visible(false)
+            // 无系统标题栏 + 小窗口不给最大化（用户 2026-09-17）：改用与主窗口同一套自绘标题栏
+            // （`TitleBar.vue`），否则顶部那条**系统**标题栏的底色与内容撞色、出现明显接缝。
+            .decorations(false)
+            .resizable(true)
+            .maximizable(false)
+            .minimizable(true)
+            .closable(true)
+            .build()?;
+            decorate_aux_window(&win);
+            if let Some(g) = geo {
+                apply_aux_geometry(&win, g);
+            }
+            Ok(win)
+        },
+    );
+    Ok(())
 }
 
 /// 移动端桩：移动端的日志是**整页**（`LogViewer` 的全屏分支），没有独立窗口。
@@ -6511,28 +7114,191 @@ pub fn open_settings_window(
 ) -> Result<(), String> {
     use tauri::{WebviewUrl, WebviewWindowBuilder};
     let bg = aux_window_background(&state);
-    let title = state.display_name(); // 同 open_log_window：占位标题，文档加载后被接管
+    let title = aux_window_title(&state, "设置", "Settings", None); // 同 open_log_window：文档加载后由前端接管
     let build_app = app.clone(); // 同 open_log_window：闭包要 `'static`，不能再借 `app`
                                  // 尺寸与位置按主窗口算，理由见 aux_window_geometry。
     let geo = aux_window_geometry(&app, (780.0, 600.0), (560.0, 420.0));
-    ensure_aux_window(&app, crate::WINDOW_SETTINGS, geo, move || {
+    let _ = ensure_aux_window(
+        &app,
+        crate::WINDOW_SETTINGS,
+        geo,
+        AUX_WINDOWS_RESIDENT,
+        move || {
+            let win = WebviewWindowBuilder::new(
+                &build_app,
+                crate::WINDOW_SETTINGS,
+                WebviewUrl::App("settings.html".into()),
+            )
+            .title(title)
+            .devtools(AUX_DEVTOOLS)
+            // 同 open_log_window：设计尺寸只作初值，几何在 build 之后按物理像素落地。
+            .inner_size(780.0, 600.0)
+            .min_inner_size(560.0, 420.0)
+            .background_color(bg)
+            .visible(false)
+            // 同 open_log_window：无系统标题栏（共用自绘标题栏）+ 小窗口不给最大化。
+            .decorations(false)
+            .resizable(true)
+            .maximizable(false)
+            .minimizable(true)
+            .closable(true)
+            .build()?;
+            decorate_aux_window(&win);
+            if let Some(g) = geo {
+                apply_aux_geometry(&win, g);
+            }
+            Ok(win)
+        },
+    );
+    Ok(())
+}
+
+/// 桌面端：打开独立「群任务」窗口（已存在则聚焦）。**每个群一个窗口**（label = `todo-<groupId>`）。
+///
+/// 与设置/日志同一范式（同一个 [`ensure_aux_window`]），但**关闭即销毁**（见
+/// [`AUX_GROUP_TODOS_RESIDENT`]）：每群一个窗口，常驻会无界增长，且每次打开都该拿新数据。
+/// 窗口加载 `todos.html`（自己的文档与入口），并从**自己的 label** 解析群 ID
+/// （见 `src/utils/auxWindowLabels.ts`）—— 所以不做"窗口内切群"，一个窗口只服务一个群。
+#[cfg(desktop)]
+#[tauri::command(async)]
+pub fn open_group_todos_window(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+    group_id: String,
+) -> Result<(), String> {
+    use tauri::{WebviewUrl, WebviewWindowBuilder};
+    // groupId 会被拼进窗口 label ⇒ 严格校验字符集（非法字符会让 label 失效，也可能撞上别的窗口）。
+    if group_id.is_empty()
+        || group_id.len() > 40
+        || !group_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err("群 ID 非法".to_string());
+    }
+    let label = format!("{}{group_id}", crate::WINDOW_GROUP_TODOS_PREFIX);
+    let bg = aux_window_background(&state);
+    // 系统标题带上群名（每群一个窗口，任务栏里得能分清）；文档加载后由前端按同样口径接管。
+    let group_name = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::get_group(&dbc, &group_id)
+            .map(|g| g.name)
+            .unwrap_or_default()
+    };
+    let title = aux_window_title(&state, "群任务", "Group Tasks", Some(&group_name));
+    let build_app = app.clone();
+    let build_label = label.clone();
+    let geo = aux_window_geometry(&app, (560.0, 620.0), (360.0, 420.0));
+    let _ = ensure_aux_window(&app, &label, geo, AUX_GROUP_TODOS_RESIDENT, move || {
         let win = WebviewWindowBuilder::new(
             &build_app,
-            crate::WINDOW_SETTINGS,
-            WebviewUrl::App("settings.html".into()),
+            build_label.as_str(),
+            WebviewUrl::App("todos.html".into()),
         )
         .title(title)
+        .devtools(AUX_DEVTOOLS)
         // 同 open_log_window：设计尺寸只作初值，几何在 build 之后按物理像素落地。
-        .inner_size(780.0, 600.0)
-        .min_inner_size(560.0, 420.0)
+        .inner_size(560.0, 620.0)
+        .min_inner_size(360.0, 420.0)
         .background_color(bg)
         .visible(false)
+        // 同 open_log_window：无系统标题栏（共用自绘标题栏）+ 小窗口不给最大化。
+        .decorations(false)
+        .resizable(true)
+        .maximizable(false)
+        .minimizable(true)
+        .closable(true)
         .build()?;
+        decorate_aux_window(&win);
         if let Some(g) = geo {
             apply_aux_geometry(&win, g);
         }
         Ok(win)
-    })
+    });
+    Ok(())
+}
+
+/// 移动端桩：独立群任务窗口是桌面概念（移动端用应用内弹窗 `GroupTasksPanel`）。
+#[cfg(mobile)]
+#[tauri::command]
+pub fn open_group_todos_window(_app: tauri::AppHandle, _group_id: String) -> Result<(), String> {
+    Err("移动端没有独立群任务窗口（任务面板是应用内弹窗）".to_string())
+}
+
+/// 桌面端：打开（或复用）独立的「外部链接」窗口，在窗口内加载该网址。
+///
+/// **安全边界**（本仓库唯一一处在本机渲染第三方网页，三道锁）：
+/// 1. `url` 先过 [`validate_external_url`]（只允许 http/https 且 host 非空）；
+/// 2. 窗口 label [`crate::WINDOW_LINK`] **刻意不在 capabilities 里**（也不在 `WINDOW_LABELS`）
+///    ⇒ 远端页面调不动本应用的任何命令；
+/// 3. `on_navigation` 只放行 http/https ⇒ 远端页面跳不进 `file://` / `tauri://`。
+///
+/// 复用同一个窗口：已在打开状态时**导航到新网址**而不是再开一个（避免无界增长远端 WebView）。
+///
+/// **唯一保留系统标题栏的窗口**（其余应用窗口都是 `decorations(false)` + 自绘）：它加载的是
+/// 远端页面，我们自己的文档不在这里，套自绘标题栏只能改用 iframe 包一层 —— 而大量站点有
+/// `X-Frame-Options`，会直接白屏。关闭即隐藏（常驻），再点是瞬时的。
+#[cfg(desktop)]
+#[tauri::command(async)]
+pub fn open_link_window(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, Arc<AppState>>,
+    url: String,
+    name: String,
+) -> Result<(), String> {
+    use tauri::{WebviewUrl, WebviewWindowBuilder};
+    let url = validate_external_url(&url)?;
+    let parsed = url::Url::parse(&url).map_err(|_| "网址格式不正确".to_string())?;
+    let bg = aux_window_background(&state);
+    let trimmed = name.trim().to_string();
+    let title = if trimmed.is_empty() {
+        state.display_name()
+    } else {
+        trimmed
+    };
+    let build_app = app.clone();
+    let build_title = title.clone();
+    let build_url = parsed.clone();
+    let geo = aux_window_geometry(&app, (1000.0, 720.0), (420.0, 320.0));
+    let (win, created) = ensure_aux_window(
+        &app,
+        crate::WINDOW_LINK,
+        geo,
+        AUX_LINK_RESIDENT,
+        move || {
+            let win = WebviewWindowBuilder::new(
+                &build_app,
+                crate::WINDOW_LINK,
+                WebviewUrl::External(build_url),
+            )
+            .title(build_title)
+            .devtools(AUX_DEVTOOLS)
+            // 只放行 http/https 的后续导航：远端页面若想跳到 file:// / tauri:// 一律拒绝。
+            .on_navigation(|u| matches!(u.scheme(), "http" | "https"))
+            .inner_size(1000.0, 720.0)
+            .min_inner_size(420.0, 320.0)
+            .background_color(bg)
+            .visible(false)
+            .build()?;
+            if let Some(g) = geo {
+                apply_aux_geometry(&win, g);
+            }
+            Ok(win)
+        },
+    )?;
+    // 复用已有窗口：导航到新网址并更新标题。新建时它已加载该网址，无需再 navigate。
+    if !created {
+        let _ = win.navigate(parsed);
+        let _ = win.set_title(&title);
+    }
+    Ok(())
+}
+
+/// 移动端桩：窗口内加载外部网页是桌面概念。
+#[cfg(mobile)]
+#[tauri::command]
+pub fn open_link_window(_app: tauri::AppHandle, _url: String, _name: String) -> Result<(), String> {
+    Err("移动端没有链接窗口".to_string())
 }
 
 /// 独立窗口的初始背景色：跟随当前亮暗主题（暗色下打开时不"闪一下白"）。
@@ -6551,6 +7317,30 @@ fn aux_window_background(state: &tauri::State<'_, Arc<AppState>>) -> tauri::wind
     }
 }
 
+/// 独立窗口的**系统标题**（任务栏 / Alt–Tab / 系统窗口列表显示的名字）。
+///
+/// 为什么不能只靠文档标题接管：`document.title` 的同步要等页面加载完成，在那之前
+/// （以及同步失败时）任务栏里所有窗口都只叫应用名，分不清哪个是哪个
+/// （用户 2026-09-17：「独立窗口在系统里显示的窗口名字不对，没给系统设置名字」）。
+/// 所以创建时就给功能名；**不带应用名前缀**（用户同日反馈，任务栏本身已按应用分组）。
+/// 前端加载后仍会按语言把 `document.title` 设成同样的格式，两边口径一致。
+fn aux_window_title(
+    state: &tauri::State<'_, Arc<AppState>>,
+    feature_zh: &str,
+    feature_en: &str,
+    extra: Option<&str>,
+) -> String {
+    let feature = if state.is_zh() {
+        feature_zh
+    } else {
+        feature_en
+    };
+    match extra {
+        Some(x) if !x.is_empty() => format!("{feature} · {x}"),
+        _ => feature.to_string(),
+    }
+}
+
 /// 移动端桩：独立的设置窗口是**桌面**概念（`decorations:false` 自绘标题栏 + 多窗口），
 /// 移动端用的是整页设置页（`SettingsPanel` 的全屏分支）。
 ///
@@ -6566,9 +7356,8 @@ pub fn open_settings_window(_app: tauri::AppHandle) -> Result<(), String> {
 
 /// 桌面端：关闭独立的「设置」窗口。
 ///
-/// 常驻模式下 `close()` 会被 `install_hide_on_close` 拦成"隐藏"（与系统标题栏的 × 同一条路），
-/// 这样设置窗口的状态在下一次打开时还在、打开也是瞬时的；真要销毁，把
-/// [`AUX_WINDOWS_RESIDENT`] 改成 `false` 即可，这里不用动。
+/// 设置窗口是**关闭即销毁**（[`AUX_WINDOWS_RESIDENT`] = false），`close()` 直接销毁 ——
+/// 标题栏关闭键走的是同一条路（`window_close` → `close()`）。
 #[cfg(desktop)]
 #[tauri::command]
 pub fn close_settings_window(app: tauri::AppHandle) -> Result<(), String> {
@@ -6586,7 +7375,7 @@ pub fn close_settings_window(_app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// 桌面端：关闭独立的「运行日志」窗口（常驻模式下同样是"隐藏"，见 `close_settings_window`）。
+/// 桌面端：关闭独立的「运行日志」窗口（与设置窗口一致：关闭即销毁）。
 #[cfg(desktop)]
 #[tauri::command]
 pub fn close_log_window(app: tauri::AppHandle) -> Result<(), String> {
@@ -6616,10 +7405,13 @@ mod tests {
     #[test]
     fn aux_window_fits_inside_the_main_window_and_is_centered() {
         use super::{fit_aux_window, AUX_WINDOW_MARGIN};
-        // 两组真实参数：设置 780×600（最小 560×420）、日志 760×560（最小 420×320）。
+        // 四组真实参数：设置 780×600（最小 560×420）、日志 760×560（最小 420×320）、
+        // 群任务 560×620（最小 360×420）、外链 1000×720（最小 420×320）。
         let cases = [
             ((780.0, 600.0), (560.0, 420.0)),
             ((760.0, 560.0), (420.0, 320.0)),
+            ((560.0, 620.0), (360.0, 420.0)),
+            ((1000.0, 720.0), (420.0, 320.0)),
         ];
         // 主窗口尺寸（物理像素）：默认 1000×680@100%、拉小、很小、放大、以及 125%/150% 缩放。
         let mains = [
@@ -7280,6 +8072,10 @@ mod tests {
             status: "todo".into(),
             creator: "alice".into(),
             deleted: false,
+            description: String::new(),
+            images: vec![],
+            archived: false,
+            done_at: None,
         };
         let insert = |msg_id: &str, seq: i64, p: &TodoPayload| {
             conn.execute(
@@ -7307,7 +8103,8 @@ mod tests {
         );
     }
 
-    /// 任务改动的鉴权判据（用户口径：**被指派人勾选 + 创建者可改**）。
+    /// 任务改动的鉴权判据（用户 2026-09-17 口径）：
+    /// 创建者/群主/被指派人可改指派人；创建者/群主可改标题/删除；创建者/被指派人可改状态。
     #[test]
     fn todo_update_permission_matrix() {
         use crate::protocol::TodoPayload;
@@ -7318,21 +8115,80 @@ mod tests {
             status: "todo".into(),
             creator: "alice".into(),
             deleted: false,
+            description: String::new(),
+            images: vec![],
+            archived: false,
+            done_at: None,
         };
-        // 创建者：改状态、改结构都可以
-        assert!(super::may_update_todo(&def, "alice", "owner", false));
-        assert!(super::may_update_todo(&def, "alice", "owner", true));
-        // 被指派人：只能改状态，不能改标题/指派人/删除
-        assert!(super::may_update_todo(&def, "bob", "owner", false));
+        // 参数顺序：(def, actor, group_creator, edits_assignees, edits_structure)
+        // 创建者 alice：改状态 / 改指派人 / 改结构 全可以
+        assert!(super::may_update_todo(&def, "alice", "owner", false, false));
+        assert!(super::may_update_todo(&def, "alice", "owner", true, false));
+        assert!(super::may_update_todo(&def, "alice", "owner", false, true));
+        assert!(super::may_update_todo(&def, "alice", "owner", true, true));
+        // 被指派人 bob：能改状态、能改指派人；不能改标题/删除（结构）
+        assert!(super::may_update_todo(&def, "bob", "owner", false, false));
+        assert!(super::may_update_todo(&def, "bob", "owner", true, false));
         assert!(
-            !super::may_update_todo(&def, "bob", "owner", true),
-            "被指派人不得改标题 / 换指派人 / 删除任务"
+            !super::may_update_todo(&def, "bob", "owner", false, true),
+            "被指派人不得改标题 / 删除任务"
         );
-        // 群主：能改结构；但"改状态"不是他的特权（除非他同时是创建者或被指派人）
-        assert!(super::may_update_todo(&def, "owner", "owner", true));
-        assert!(!super::may_update_todo(&def, "owner", "owner", false));
-        // 无关成员：什么都不行
-        assert!(!super::may_update_todo(&def, "carol", "owner", false));
-        assert!(!super::may_update_todo(&def, "carol", "owner", true));
+        // bob 同时改「指派人 + 标题」：结构部分被拒
+        assert!(!super::may_update_todo(&def, "bob", "owner", true, true));
+        // 群主 owner：能改结构、能改指派人；但「仅改状态」不是他的特权
+        assert!(super::may_update_todo(&def, "owner", "owner", false, true));
+        assert!(super::may_update_todo(&def, "owner", "owner", true, false));
+        assert!(
+            !super::may_update_todo(&def, "owner", "owner", false, false),
+            "群主不得仅改状态（除非同时是被指派/创建者）"
+        );
+        // 无关成员 carol：什么都不行
+        assert!(!super::may_update_todo(
+            &def, "carol", "owner", false, false
+        ));
+        assert!(!super::may_update_todo(&def, "carol", "owner", true, false));
+        assert!(!super::may_update_todo(&def, "carol", "owner", false, true));
+        assert!(!super::may_update_todo(&def, "carol", "owner", true, true));
+    }
+
+    /// 完成 / 归档字段的权威推导（用户 2026-09-17：「完成以后手动归档」）。
+    ///
+    /// 为什么必须钉死：这两条都**只体现在行为里**，看代码很容易漏 ——
+    /// ① 完成不再自动归档（否则用户刚点完成，任务就从列表里消失了）；
+    /// ② 重复保存不改 `done_at`（否则改个标题就把 7 天自动归档的计时重置了）。
+    #[test]
+    fn todo_done_and_archive_are_resolved_server_side() {
+        let now = 1_800_000_000_000;
+        // 首次完成：不归档（要手动），记完成时间
+        assert_eq!(
+            super::resolve_done_archive(true, None, false, None, now),
+            (false, Some(now))
+        );
+        // 完成态重复保存（改标题/描述）：沿用原完成时间，不重置计时；归档状态不动
+        assert_eq!(
+            super::resolve_done_archive(true, None, false, Some(now - 1234), now),
+            (false, Some(now - 1234)),
+            "重复保存不得把 7 天计时重置"
+        );
+        // 手动归档：显式请求才归档
+        assert_eq!(
+            super::resolve_done_archive(true, Some(true), false, Some(now - 1234), now),
+            (true, Some(now - 1234))
+        );
+        // 取消归档（已归档的完成任务被取消）
+        assert_eq!(
+            super::resolve_done_archive(true, Some(false), true, Some(now - 1234), now),
+            (false, Some(now - 1234))
+        );
+        // 非完成态（进行中 / 重新打开）：一律取消归档 + 清空完成时间
+        assert_eq!(
+            super::resolve_done_archive(false, None, true, Some(now - 1234), now),
+            (false, None)
+        );
+        assert_eq!(
+            super::resolve_done_archive(false, Some(true), true, Some(now - 1234), now),
+            (false, None),
+            "非完成态不得被归档（否则进行中的任务会从活动列表消失）"
+        );
     }
 }
