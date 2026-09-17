@@ -222,6 +222,7 @@ pub async fn start(state: Arc<AppState>) -> Result<(), String> {
     // 而 `start()` 在 `set_channel_enabled` 的关键路径上 ⇒ 命令要等满 3 秒才返回，
     // 开关就跟着卡 3 秒。外设角色既然"独立失败"，就没有任何理由阻塞"通道已启动"这个结论。
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
+    #[allow(clippy::let_underscore_future)] // JoinHandle 丢弃不影响 spawn 的任务
     let _ = tokio::spawn(start_peripheral(state.clone(), shutdown_tx.subscribe()));
 
     state.logger.info(
@@ -1268,6 +1269,7 @@ impl FrameSource for ChannelSource {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn ble_writer_loop<S: FrameSink + 'static>(
     state: Arc<AppState>,
     peer_id: String,

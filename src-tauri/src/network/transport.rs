@@ -1541,6 +1541,7 @@ enum WriteOutcome {
     Stopped,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn writer_loop(
     state: Arc<AppState>,
     peer_id: String,
@@ -1724,14 +1725,14 @@ async fn reader_loop(
 
 // ---------------- 传输层 ↔ mesh 层 同步（6b-3） ----------------
 
-/// 依据端点地址判断路径类型。
-///
-/// 私有 / 环回 / 链路本地地址视为 LAN；其余（含 Tailscale 的 100.64/10 CGNAT 段，
-/// 它**不是** RFC1918 私有地址）视为 Routed —— 正好符合「跨子网走 Routed」的预期。
-///
-/// 注意 IPv6 的 ULA（`fc00::/7`，含 Tailscale 的 `fd7a:115c:a1e0::/48`）**故意**留在
-/// Routed：它虽然叫「唯一本地地址」，但实践中主要出现在跨子网隧道里。判定只依赖
-/// 地址属性，不针对任何具体软件（§36：不要把 Clash / Tailscale 写死进网络核心）。
+// 依据端点地址判断路径类型。
+//
+// 私有 / 环回 / 链路本地地址视为 LAN；其余（含 Tailscale 的 100.64/10 CGNAT 段，
+// 它**不是** RFC1918 私有地址）视为 Routed —— 正好符合「跨子网走 Routed」的预期。
+//
+// 注意 IPv6 的 ULA（`fc00::/7`，含 Tailscale 的 `fd7a:115c:a1e0::/48`）**故意**留在
+// Routed：它虽然叫「唯一本地地址」，但实践中主要出现在跨子网隧道里。判定只依赖
+// 地址属性，不针对任何具体软件（§36：不要把 Clash / Tailscale 写死进网络核心）。
 
 /// 某 peer 当前第一条连接（入站视角）的路径类型字符串。
 ///
@@ -4186,7 +4187,7 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                         && (p
                             .x25519_pubkey
                             .as_deref()
-                            .is_none_or(|key| key == env.sender_pubkey)
+                            .map_or(true, |key| key == env.sender_pubkey)
                             || (direct_peer && p.x25519_pubkey.is_none()))
                 }
                 // 未认识：仅 Presence（节点通告）允许 TOFU —— 它存在的目的就是
@@ -5475,6 +5476,7 @@ async fn handle_group_key(
 
 /// 处理群文件发起（Offer → 验证 → file_key 解封 → 保存会话状态）。
 /// 本阶段不写文件、不创建 `.part`、不自动 FileAccept——分片传输在下一阶段。
+#[allow(clippy::too_many_arguments)]
 async fn handle_group_file_offer(
     state: &Arc<AppState>,
     peer_id: &str,
@@ -5958,6 +5960,7 @@ async fn send_group_file_complete_ack(
 /// 3. transfer 对应的 group_file.sender_id == 本机（只有本机发起的群文件
 ///    的 ACK 才会被处理，B 发给 A 的 transfer 的 ACK 到 C 手上会被拒绝）；
 /// 4. ACK 发送者必须是该 transfer 的 recipient（update 不命中即拒绝）。
+///
 /// 幂等：重复 ACK 重复 UPDATE 同状态，无副作用、不报错。
 async fn handle_group_file_complete_ack(
     state: &Arc<AppState>,
@@ -6135,8 +6138,7 @@ async fn handle_group_file_chunk(
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .contains_key(&transfer_id)
-    {
-        if file::begin_group_receive(
+        && file::begin_group_receive(
             state,
             &transfer_id,
             &sender_id,
@@ -6144,9 +6146,10 @@ async fn handle_group_file_chunk(
             gf.size,
             file_key,
             gf.sha256.clone(),
-        ).is_err() {
-            return;
-        }
+        )
+        .is_err()
+    {
+        return;
     }
 
     // 解密（AEAD 失败 → 失败收尾：删 `.part`、置 failed，不写错误明文）
@@ -6422,6 +6425,7 @@ fn warn_key_conflict_once(state: &AppState, device_id: &str) {
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn upsert_peer(
     state: &AppState,
     device_id: &str,
@@ -6556,12 +6560,12 @@ pub async fn upsert_peer(
         redistribute_group_keys(state, device_id).await;
         // 重发本机聊天样式：对方离线期间错过 broadcastChatStyle 广播，
         // 且样式广播无离线补偿——对方上线后必须补发，否则永远看不到配色
-        resend_chat_style(state, device_id);
+        resend_chat_style(state, device_id).await;
     }
 }
 
 /// 向指定 peer 重发本机聊天样式（复用既有 ChatStyle 消息，无新协议）。
-fn resend_chat_style(state: &AppState, peer_id: &str) {
+async fn resend_chat_style(state: &AppState, peer_id: &str) {
     let style = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::get_setting(&dbc, "chat_style")
@@ -6577,7 +6581,7 @@ fn resend_chat_style(state: &AppState, peer_id: &str) {
         to: Some(peer_id.to_string()),
         style,
     };
-    let _ = try_send(state, peer_id, &msg);
+    let _ = try_send(state, peer_id, &msg).await;
 }
 
 /// 群密钥发送失败的原因。仅 `NoLink` 可重试（登记 pending 等建链后 flush）。

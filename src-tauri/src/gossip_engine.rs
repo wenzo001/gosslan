@@ -51,7 +51,7 @@ impl BloomFilter {
 
     pub fn insert(&mut self, data: &str) {
         if self.count >= self.capacity {
-            &mut self.bits.fill(0);
+            self.bits.fill(0);
             self.count = 0;
         }
         for p in self.positions(data) {
@@ -154,6 +154,7 @@ impl GossipEngine {
     }
 
     /// 构造一个单聊 / 群聊 Gossip 信封（加密 payload 由调用方传入）。
+#[allow(clippy::too_many_arguments)]
     pub fn build_envelope(
         &self,
         identity: &Identity,

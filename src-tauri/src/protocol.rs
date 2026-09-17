@@ -86,7 +86,7 @@ impl MsgKind {
         }
     }
 
-    pub fn from_str(s: &str) -> MsgKind {
+    pub fn from_wire_str(s: &str) -> MsgKind {
         match s {
             "code" => MsgKind::Code,
             "image" => MsgKind::Image,
@@ -151,7 +151,7 @@ pub const WIRE_KINDS: &[(&str, KindClass)] = &[
     ("poll_vote", KindClass::Silent),
 ];
 
-/// 未知 kind 一律按 `Bubble` 处理 —— 与 `MsgKind::from_str` 回退到 `Text` 同语义：
+/// 未知 kind 一律按 `Bubble` 处理 —— 与 `MsgKind::from_wire_str` 回退到 `Text` 同语义：
 /// 宁可多显示一条，也不要把不认识的内容**静默吞掉**（对端版本更新时不丢消息）。
 pub fn kind_class(kind: &str) -> KindClass {
     WIRE_KINDS
@@ -1455,8 +1455,8 @@ mod tests {
 
     #[test]
     fn msg_kind_mapping() {
-        assert_eq!(MsgKind::from_str("code"), MsgKind::Code);
-        assert_eq!(MsgKind::from_str("unknown"), MsgKind::Text);
+        assert_eq!(MsgKind::from_wire_str("code"), MsgKind::Code);
+        assert_eq!(MsgKind::from_wire_str("unknown"), MsgKind::Text);
         assert_eq!(MsgKind::Code.as_str(), "code");
     }
 

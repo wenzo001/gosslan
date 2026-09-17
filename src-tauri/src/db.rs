@@ -1250,6 +1250,7 @@ pub fn delete_group_outbox_for_peer_in_group(
 
 // ---------------- 文件传输记录 ----------------
 
+#[allow(clippy::too_many_arguments)]
 pub fn upsert_transfer(
     conn: &Connection,
     id: &str,

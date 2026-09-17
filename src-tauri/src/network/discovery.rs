@@ -416,7 +416,6 @@ pub async fn spawn(
     let broadcast_task = {
         let socket = send_socket.clone();
         let state = state.clone();
-        let lan_broadcast = lan_broadcast;
         let mut shutdown = shutdown.clone();
         tokio::spawn(async move {
             // 首次立刻广播

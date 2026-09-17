@@ -569,7 +569,7 @@ fn collect_ble_diag(s: &Arc<AppState>) -> crate::state::BleDiag {
                 remaining_ms: (*next - now).max(0),
             })
             .collect();
-        backoff.sort_by(|a, b| b.remaining_ms.cmp(&a.remaining_ms));
+        backoff.sort_by_key(|a| std::cmp::Reverse(a.remaining_ms));
         d.backoff = backoff;
         let active = s.app_active.load(std::sync::atomic::Ordering::Relaxed);
         d.activity = if active {
@@ -1652,13 +1652,13 @@ pub async fn remove_friend(state: State<'_, Arc<AppState>>, peer_id: String) -> 
     Ok(())
 }
 
-/// 待处理的好友申请。
-///
-/// **规则（用户 2026-09-12 真机实测要求）**：已经在好友列表里的人，其申请不该再出现
-/// ——「如果该好友已在好友列表的话，列表里的那个好友申请就应该自动清除掉」。
-/// 主修在各条"同意"路径上清 `pending_requests`（见 `transport::forget_pending_request`），
-/// 这里按 friends 表再过滤一遍并**顺手把内存态收敛掉**：万一哪条路径漏了（或对方是走
-/// 别的消息把我加上的），「新朋友」里也不会留着一条永远处理不掉的过期申请。
+// 待处理的好友申请。
+//
+// **规则（用户 2026-09-12 真机实测要求）**：已经在好友列表里的人，其申请不该再出现
+// ——「如果该好友已在好友列表的话，列表里的那个好友申请就应该自动清除掉」。
+// 主修在各条"同意"路径上清 `pending_requests`（见 `transport::forget_pending_request`），
+// 这里按 friends 表再过滤一遍并**顺手把内存态收敛掉**：万一哪条路径漏了（或对方是走
+// 别的消息把我加上的），「新朋友」里也不会留着一条永远处理不掉的过期申请。
 // ---------------- 移动端文件选择：content:// 必须"落地"成真实文件 ----------------
 
 /// 从 `content://` URI 里尽力取出**真实文件名**（含扩展名）。
@@ -2589,7 +2589,7 @@ pub async fn distribute_group_key(
             members: members.clone(),
             clock,
         };
-        if let Err(_) = try_send(s, m, &msg).await {
+        if try_send(s, m, &msg).await.is_err() {
             // 目标成员尚无 TCP link（建群时 ensure_link 可能尚未执行）：
             // 不再静默丢弃，登记待发，由建链 / Hello / 心跳的
             // flush_pending_group_keys 补发（与 redistribute_group_keys 同一机制）。
@@ -2696,7 +2696,7 @@ async fn resend_group_key_to(s: &AppState, group_id: &str, members: &[String], k
             members: members.to_vec(),
             clock,
         };
-        if let Err(_) = try_send(s, m, &msg).await {
+        if try_send(s, m, &msg).await.is_err() {
             // 目标成员尚无 TCP link：登记待发，由建链 / Hello / 心跳的
             // flush_pending_group_keys 补发（与 redistribute_group_keys 同一机制）。
             let mut pending = s
@@ -3130,13 +3130,13 @@ async fn send_group_payload(
 
 // ---------------- 群文件（Offer / session-key 阶段） ----------------
 
-/// 发起群文件（本阶段只建立 Offer 与 file session key，不含分片传输）。
-///
-/// 流程：校验发起者是群成员 → 实时读取当前成员快照 → 事务内创建
-/// group_files + 全部 recipient 行（避免半完成状态）→ 生成随机 file_key
-/// 存内存 → 对可达成员发送 GroupFileOffer（群密钥封装 file_key）→
-/// 流式读取文件、逐 256KB 分片 AEAD 加密后向全部可达 recipient 发送
-/// GroupFileChunk（seq 从 0 严格递增）。不可达成员保持 pending。
+// 发起群文件（本阶段只建立 Offer 与 file session key，不含分片传输）。
+//
+// 流程：校验发起者是群成员 → 实时读取当前成员快照 → 事务内创建
+// group_files + 全部 recipient 行（避免半完成状态）→ 生成随机 file_key
+// 存内存 → 对可达成员发送 GroupFileOffer（群密钥封装 file_key）→
+// 流式读取文件、逐 256KB 分片 AEAD 加密后向全部可达 recipient 发送
+// GroupFileChunk（seq 从 0 严格递增）。不可达成员保持 pending。
 
 /// 发群消息（文本 / 代码）。校验与长度限制留在这一层，内核只管发送。
 #[tauri::command(async)]
@@ -4296,6 +4296,7 @@ fn local_path_state(path: Option<String>) -> (String, Option<String>) {
 
 /// 构造一条本地文件/图片消息记录（发送方）。
 /// kind 由调用方根据 subtype 决定：image 子类型保持 kind="image"，其余为 "file"。
+#[allow(clippy::too_many_arguments)]
 fn build_file_message(
     state: &AppState,
     transfer_id: &str,

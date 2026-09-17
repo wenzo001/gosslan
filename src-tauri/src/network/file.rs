@@ -406,6 +406,7 @@ pub async fn send_file_via_relay(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn stream_file(
     state: &Arc<AppState>,
     peer_id: &str,
@@ -650,6 +651,7 @@ pub fn sweep_stale_parts(state: &AppState) -> usize {
 /// 与 begin_receive 的区别：**不再 truncate**，而是读入已有前缀播种 hasher，
 /// received 从 from_bytes 接上；next_seq 归零（发送端从 from_seq=0 重编，只对本段排序）。
 /// 任何不一致都返回 Err ⇒ 上层回 FileReject ⇒ 发送端整份重传（安全兜底）。
+#[allow(clippy::too_many_arguments)]
 pub fn resume_receive(
     state: &AppState,
     transfer_id: &str,
@@ -798,6 +800,7 @@ pub fn has_receiver(state: &AppState, transfer_id: &str) -> bool {
 }
 
 /// 一对一与群文件共用；差异只在写入哪个接收 map 与是否记录 file_transfers。
+#[allow(clippy::too_many_arguments)]
 fn make_receiver(
     state: &AppState,
     transfer_id: &str,

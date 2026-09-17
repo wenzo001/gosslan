@@ -188,9 +188,7 @@ impl RelayManager {
         data: Vec<u8>,
     ) -> Option<(String, u64, Vec<u8>)> {
         let done = {
-            let Some(r) = self.reassemblies.get_mut(transfer_id) else {
-                return None;
-            };
+            let r = self.reassemblies.get_mut(transfer_id)?;
             if seq >= r.total_chunks || r.chunks.contains_key(&seq) {
                 return None;
             }
