@@ -44,6 +44,8 @@ function readStoredPreference(): LanguagePreference {
  * @param langs 可选的语言列表（测试注入用）；缺省读 `navigator.languages`。
  */
 export function detectSystemLocale(langs?: readonly (string | null | undefined)[]): Locale {
+  // 调用方是否**显式注入**了列表（测试注入 / 明确指定）。
+  const injected = langs !== undefined;
   let list = langs;
   if (!list) {
     try {
@@ -59,12 +61,20 @@ export function detectSystemLocale(langs?: readonly (string | null | undefined)[
       if (tag.startsWith("en")) return "en-US";
     }
   }
-  // 兜底：再试一次 navigator.language（有些 WebView 只暴露 language 不含 languages）
-  try {
-    const tag = (navigator?.language || "").toLowerCase();
-    if (tag.startsWith("zh")) return "zh-CN";
-  } catch {
-    /* ignore */
+  // 兜底：再试一次 navigator.language（有些 WebView 只暴露 language 不含 languages）。
+  //
+  // ⚠️ **只在调用方没注入列表时**才用它。注入列表的契约是"就按这个列表判定"，
+  // 再回看 navigator 会让结果取决于跑测试的机器：Node ≥21 自带全局 `navigator`
+  // （中文机器上 language === "zh-CN"），于是 `detectSystemLocale(["ja-JP"])` 会返回
+  // zh-CN 而不是契约要求的 en-US（2026-09-17 修；这也让 `npm test` 在中文机器上必红，
+  // 而 en-US 的 CI runner 是绿的 —— 假绿把这个契约缺陷藏了很久）。
+  if (!injected) {
+    try {
+      const tag = (navigator?.language || "").toLowerCase();
+      if (tag.startsWith("zh")) return "zh-CN";
+    } catch {
+      /* ignore */
+    }
   }
   return "en-US";
 }
