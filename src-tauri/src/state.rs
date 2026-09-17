@@ -956,7 +956,23 @@ impl AppState {
         } else {
             "gosslan".to_string()
         };
-        let logger = Logger::new(app_data.join("logs"), &log_stem);
+        // 设备短指纹：平台 tag + hostname 前 6 字符。
+        // 让多台设备的日志能一眼区分 — 用户贴多段日志时 AI 自动归类。
+        let dev_fingerprint = {
+            let plat = match std::env::consts::OS {
+                "windows" => "Win",
+                "android" => "And",
+                "macos" => "Mac",
+                "ios" => "iOS",
+                "linux" => "Lin",
+                _ => "Oth",
+            };
+            let host = hostname::get()
+                .map(|h| h.to_string_lossy().chars().take(6).collect::<String>())
+                .unwrap_or_else(|_| "unknown".to_string());
+            format!("[dev:{plat}-{host}]")
+        };
+        let logger = Logger::new(app_data.join("logs"), &log_stem, dev_fingerprint);
 
         // 文件接收目录：默认 app_data/downloads，允许用户在设置里改（持久化到 settings）。
         // 与共享目录同理：用户自选的目录在沙盒里重启后会失访，必须靠书签把权限带回来，

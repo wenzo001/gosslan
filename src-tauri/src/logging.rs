@@ -163,14 +163,18 @@ pub struct Logger {
     dir: PathBuf,
     /// 日志文件主名（`gosslan` 或 `gosslan-1` 等，多实例隔离）。
     stem: String,
+    /// 设备短指纹 — 每台机器自动生成（hostname 前 6 字符 + 平台 tag），
+    /// 让多设备日志能一眼区分来源。格式：`[dev:Win-7f3a]` / `[dev:And-b2c1]` / `[dev:Mac-9e4d]`。
+    fingerprint: String,
 }
 
 impl Logger {
-    pub fn new(dir: PathBuf, stem: &str) -> Logger {
+    pub fn new(dir: PathBuf, stem: &str, fingerprint: String) -> Logger {
         Logger {
             entries: Mutex::new(VecDeque::with_capacity(MAX_MEM_LOGS)),
             dir,
             stem: stem.to_string(),
+            fingerprint,
         }
     }
 
@@ -204,7 +208,13 @@ impl Logger {
 
         // 2) debug 构建仍打到 stderr，保留开发期控制台可观测（release 无控制台，跳过）。
         #[cfg(debug_assertions)]
-        eprintln!("[{}] [{}] {}", level.as_str(), target, message);
+        eprintln!(
+            "{} [{}] [{}] {}",
+            self.fingerprint,
+            level.as_str(),
+            target,
+            message
+        );
 
         // 2b) **Android：同时写 logcat**（用户实测"闪退、拿不到日志"的唯一可行动诊断路径）。
         //     release 包既不能 `run-as`（不可调试），Rust 的 stdout/stderr 也不进 logcat，
@@ -231,7 +241,13 @@ impl Logger {
             let want =
                 matches!(level, Level::Warn | Level::Error) || target == "boot" || target == "ble";
             if want {
-                logcat::push(format!("[{}] [{}] {}", level.as_str(), target, message));
+                logcat::push(format!(
+                    "{} [{}] [{}] {}",
+                    self.fingerprint,
+                    level.as_str(),
+                    target,
+                    message
+                ));
             }
         }
 
@@ -281,7 +297,8 @@ impl Logger {
             .open(&path)
         {
             let line = format!(
-                "{} {} [{}] {}",
+                "{} {} {} [{}] {}",
+                self.fingerprint,
                 format_utc(ts),
                 level.as_str(),
                 target,
@@ -343,7 +360,7 @@ mod tests {
     #[test]
     fn logger_memory_ring_buffer_is_bounded() {
         let dir = std::env::temp_dir().join(format!("gosslan-log-test-{}", std::process::id()));
-        let logger = Logger::new(dir.clone(), "t");
+        let logger = Logger::new(dir.clone(), "t", "[dev:test]".to_string());
         // 写超过上限：只保留最后 MAX_MEM_LOGS 条
         for i in 0..(MAX_MEM_LOGS as i64 + 100) {
             logger.info("test", format!("msg {i}"));
@@ -359,7 +376,7 @@ mod tests {
     #[test]
     fn logger_clear_empties_memory() {
         let dir = std::env::temp_dir().join(format!("gosslan-log-clr-{}", std::process::id()));
-        let logger = Logger::new(dir.clone(), "t");
+        let logger = Logger::new(dir.clone(), "t", "[dev:test]".to_string());
         logger.error("test", "boom");
         assert_eq!(logger.snapshot().len(), 1);
         logger.clear();
@@ -370,7 +387,7 @@ mod tests {
     #[test]
     fn logger_persists_to_file_and_rotates() {
         let dir = std::env::temp_dir().join(format!("gosslan-log-rot-{}", std::process::id()));
-        let logger = Logger::new(dir.clone(), "t");
+        let logger = Logger::new(dir.clone(), "t", "[dev:test]".to_string());
         // 写一条，确认落盘
         logger.info("test", "hello file");
         let cur = dir.join("t.log");
