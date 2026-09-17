@@ -64,10 +64,7 @@ pub fn ready() -> bool {
 /// `OpenWith.bootstrap()`：缓存 VM 与类引用。
 ///
 /// static 方法拿到的第二个参数就是**类引用本身**（`JClass`），不需要 `get_object_class`。
-fn native_attach<'local>(
-    env: &mut Env<'local>,
-    class: JClass<'local>,
-) -> jni::errors::Result<()> {
+fn native_attach<'local>(env: &mut Env<'local>, class: JClass<'local>) -> jni::errors::Result<()> {
     if JAVA_VM.get().is_none() {
         if let Ok(vm) = env.get_java_vm() {
             let _ = JAVA_VM.set(vm);
@@ -84,34 +81,34 @@ fn native_attach<'local>(
 /// `Err(原因)` = 给用户看的中文原因（Kotlin 侧把异常翻译好了）。
 pub fn open_path(path: &str, mime: &str) -> Result<(), String> {
     if !ready() {
-        return Err("打开文件的能力还没准备好（MainActivity 未调用 OpenWith.bootstrap）".to_string());
+        return Err(
+            "打开文件的能力还没准备好（MainActivity 未调用 OpenWith.bootstrap）".to_string(),
+        );
     }
     let class = KOTLIN_CLASS.get().expect("ready() 已确认类引用存在");
     let vm = JAVA_VM.get().expect("ready() 已确认 JavaVM 存在");
 
-    let outcome = vm.attach_current_thread(
-        |env| -> jni::errors::Result<Result<(), String>> {
-            let jpath = env.new_string(path)?;
-            let jmime = env.new_string(mime)?;
-            let (name, sig) = kotlin_method!(
-                "openWith",
-                "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;"
-            );
-            let value = env.call_static_method(
-                class,
-                name,
-                sig,
-                &[JValue::Object(&jpath), JValue::Object(&jmime)],
-            )?;
-            let obj = value.l()?;
-            // Kotlin 侧约定：null = 已交给系统；否则就是给用户看的原因
-            if obj.as_raw().is_null() {
-                return Ok(Ok(()));
-            }
-            let message = env.cast_local::<JString>(obj)?.try_to_string(env)?;
-            Ok(Err(message))
-        },
-    );
+    let outcome = vm.attach_current_thread(|env| -> jni::errors::Result<Result<(), String>> {
+        let jpath = env.new_string(path)?;
+        let jmime = env.new_string(mime)?;
+        let (name, sig) = kotlin_method!(
+            "openWith",
+            "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;"
+        );
+        let value = env.call_static_method(
+            class,
+            name,
+            sig,
+            &[JValue::Object(&jpath), JValue::Object(&jmime)],
+        )?;
+        let obj = value.l()?;
+        // Kotlin 侧约定：null = 已交给系统；否则就是给用户看的原因
+        if obj.as_raw().is_null() {
+            return Ok(Ok(()));
+        }
+        let message = env.cast_local::<JString>(obj)?.try_to_string(env)?;
+        Ok(Err(message))
+    });
 
     match outcome {
         Ok(Ok(())) => Ok(()),
@@ -127,33 +124,33 @@ pub fn open_path(path: &str, mime: &str) -> Result<(), String> {
 /// 不能用 std::fs 写；必须经 ContentResolver。
 pub fn save_path(path: &str, uri: &str) -> Result<(), String> {
     if !ready() {
-        return Err("保存文件的能力还没准备好（MainActivity 未调用 OpenWith.bootstrap）".to_string());
+        return Err(
+            "保存文件的能力还没准备好（MainActivity 未调用 OpenWith.bootstrap）".to_string(),
+        );
     }
     let class = KOTLIN_CLASS.get().expect("ready() 已确认类引用存在");
     let vm = JAVA_VM.get().expect("ready() 已确认 JavaVM 存在");
 
-    let outcome = vm.attach_current_thread(
-        |env| -> jni::errors::Result<Result<(), String>> {
-            let jpath = env.new_string(path)?;
-            let juri = env.new_string(uri)?;
-            let (name, sig) = kotlin_method!(
-                "saveWith",
-                "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;"
-            );
-            let value = env.call_static_method(
-                class,
-                name,
-                sig,
-                &[JValue::Object(&jpath), JValue::Object(&juri)],
-            )?;
-            let obj = value.l()?;
-            if obj.as_raw().is_null() {
-                return Ok(Ok(()));
-            }
-            let message = env.cast_local::<JString>(obj)?.try_to_string(env)?;
-            Ok(Err(message))
-        },
-    );
+    let outcome = vm.attach_current_thread(|env| -> jni::errors::Result<Result<(), String>> {
+        let jpath = env.new_string(path)?;
+        let juri = env.new_string(uri)?;
+        let (name, sig) = kotlin_method!(
+            "saveWith",
+            "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;"
+        );
+        let value = env.call_static_method(
+            class,
+            name,
+            sig,
+            &[JValue::Object(&jpath), JValue::Object(&juri)],
+        )?;
+        let obj = value.l()?;
+        if obj.as_raw().is_null() {
+            return Ok(Ok(()));
+        }
+        let message = env.cast_local::<JString>(obj)?.try_to_string(env)?;
+        Ok(Err(message))
+    });
 
     match outcome {
         Ok(Ok(())) => Ok(()),
@@ -167,33 +164,31 @@ pub fn save_path(path: &str, uri: &str) -> Result<(), String> {
 /// 图片保存走 base64 数据而不是文件路径，所以需要单独的 byte[] 通道。
 pub fn save_bytes(bytes: &[u8], uri: &str) -> Result<(), String> {
     if !ready() {
-        return Err("保存文件的能力还没准备好（MainActivity 未调用 OpenWith.bootstrap）".to_string());
+        return Err(
+            "保存文件的能力还没准备好（MainActivity 未调用 OpenWith.bootstrap）".to_string(),
+        );
     }
     let class = KOTLIN_CLASS.get().expect("ready() 已确认类引用存在");
     let vm = JAVA_VM.get().expect("ready() 已确认 JavaVM 存在");
 
-    let outcome = vm.attach_current_thread(
-        |env| -> jni::errors::Result<Result<(), String>> {
-            let jbytes = env.byte_array_from_slice(bytes)?;
-            let juri = env.new_string(uri)?;
-            let (name, sig) = kotlin_method!(
-                "writeBytesWith",
-                "([BLjava/lang/String;)Ljava/lang/String;"
-            );
-            let value = env.call_static_method(
-                class,
-                name,
-                sig,
-                &[JValue::Object(&jbytes), JValue::Object(&juri)],
-            )?;
-            let obj = value.l()?;
-            if obj.as_raw().is_null() {
-                return Ok(Ok(()));
-            }
-            let message = env.cast_local::<JString>(obj)?.try_to_string(env)?;
-            Ok(Err(message))
-        },
-    );
+    let outcome = vm.attach_current_thread(|env| -> jni::errors::Result<Result<(), String>> {
+        let jbytes = env.byte_array_from_slice(bytes)?;
+        let juri = env.new_string(uri)?;
+        let (name, sig) =
+            kotlin_method!("writeBytesWith", "([BLjava/lang/String;)Ljava/lang/String;");
+        let value = env.call_static_method(
+            class,
+            name,
+            sig,
+            &[JValue::Object(&jbytes), JValue::Object(&juri)],
+        )?;
+        let obj = value.l()?;
+        if obj.as_raw().is_null() {
+            return Ok(Ok(()));
+        }
+        let message = env.cast_local::<JString>(obj)?.try_to_string(env)?;
+        Ok(Err(message))
+    });
 
     match outcome {
         Ok(Ok(())) => Ok(()),

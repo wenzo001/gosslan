@@ -159,11 +159,9 @@ pub mod driver {
         // `panic = "abort"`（整进程消失，用户实测的闪退）。这里提前返回 Err，UI 顶多显示"蓝牙不可用"。
         #[cfg(target_os = "android")]
         if !crate::transport::ble_android::droidplug_ready() {
-            return Err(
-                "Android 蓝牙后端尚未就绪（btleplug droidplug 未初始化）—— \
+            return Err("Android 蓝牙后端尚未就绪（btleplug droidplug 未初始化）—— \
                  若是 release 包，检查 proguard 是否保留了 com.nonpolynomial.btleplug.**"
-                    .to_string(),
-            );
+                .to_string());
         }
         let manager = Manager::new()
             .await
@@ -282,8 +280,9 @@ pub mod driver {
                         return finish_connect(peripheral).await;
                     }
                     Err(e) => {
-                        last_err =
-                            format!("发现 GATT 服务失败（第 {attempt}/{LINK_READY_ATTEMPTS} 次）：{e}");
+                        last_err = format!(
+                            "发现 GATT 服务失败（第 {attempt}/{LINK_READY_ATTEMPTS} 次）：{e}"
+                        );
                         if attempt < LINK_READY_ATTEMPTS {
                             tokio::time::sleep(LINK_READY_WAIT).await;
                         }
@@ -361,7 +360,9 @@ pub mod driver {
             .cloned()
             .ok_or_else(|| "对端没有 Gosslan 的通知特征".to_string())?;
         if !rx.properties.contains(CharPropFlags::WRITE)
-            && !rx.properties.contains(CharPropFlags::WRITE_WITHOUT_RESPONSE)
+            && !rx
+                .properties
+                .contains(CharPropFlags::WRITE_WITHOUT_RESPONSE)
         {
             return Err("接收特征不可写".to_string());
         }
@@ -480,7 +481,10 @@ pub mod driver {
             self.next_msg_id = self.next_msg_id.wrapping_add(1).max(1);
             let mtu = self.payload_mtu();
             let chunks = fragment(payload, mtu, msg_id).ok_or_else(|| {
-                format!("帧无法分片（过大或 MTU 非法：len={} mtu={mtu}）", payload.len())
+                format!(
+                    "帧无法分片（过大或 MTU 非法：len={} mtu={mtu}）",
+                    payload.len()
+                )
             })?;
             let n = chunks.len();
             for chunk in chunks {
@@ -538,7 +542,10 @@ pub mod driver {
                 }
                 self.seen_notifications += 1;
                 self.seen_bytes += notification.value.len();
-                match self.reassembler.push(&notification.value, crate::db::now_ms()) {
+                match self
+                    .reassembler
+                    .push(&notification.value, crate::db::now_ms())
+                {
                     PushOutcome::Complete(payload) => return Ok(Some(payload)),
                     PushOutcome::Incomplete => continue,
                     // 坏片：记下来（原因留给上层读循环打日志），继续等下一片 ——

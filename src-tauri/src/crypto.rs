@@ -150,7 +150,11 @@ pub fn safety_number(a: &SafetyParty<'_>, b: &SafetyParty<'_>) -> String {
     let mut h = Sha256::new();
     h.update(b"gosslan-safety-v1");
     // 规范序：字典序小的排前面，保证双方算出同一个码
-    let (first, second) = if a.device_id <= b.device_id { (a, b) } else { (b, a) };
+    let (first, second) = if a.device_id <= b.device_id {
+        (a, b)
+    } else {
+        (b, a)
+    };
     for p in [first, second] {
         for field in [p.device_id, p.x25519_pubkey, p.ed25519_pubkey] {
             h.update(field.as_bytes());
@@ -239,7 +243,11 @@ mod tests {
         let pa = party(&a, "d1");
         let pb = party(&b, "d2");
         let n = safety_number(&as_party(&pa), &as_party(&pb));
-        assert_eq!(n, safety_number(&as_party(&pa), &as_party(&pb)), "同输入同输出");
+        assert_eq!(
+            n,
+            safety_number(&as_party(&pa), &as_party(&pb)),
+            "同输入同输出"
+        );
 
         let groups: Vec<&str> = n.split(' ').collect();
         assert_eq!(groups.len(), 6, "6 组");
@@ -262,22 +270,38 @@ mod tests {
         // 换对方的 device_id（冒充者最省事的伪装：只改 id 不改密钥）
         let mut t = base_b.clone();
         t.0 = "d-b-impersonated".to_string();
-        assert_ne!(base, safety_number(&as_party(&base_a), &as_party(&t)), "换 device_id");
+        assert_ne!(
+            base,
+            safety_number(&as_party(&base_a), &as_party(&t)),
+            "换 device_id"
+        );
 
         // 换对方的加密公钥（真正的中间人攻击：把 ECDH 目标换成攻击者）
         let mut t = base_b.clone();
         t.1 = Identity::generate().x25519_public_b64();
-        assert_ne!(base, safety_number(&as_party(&base_a), &as_party(&t)), "换 X25519");
+        assert_ne!(
+            base,
+            safety_number(&as_party(&base_a), &as_party(&t)),
+            "换 X25519"
+        );
 
         // 换对方的签名公钥
         let mut t = base_b.clone();
         t.2 = Identity::generate().ed25519_public_b64();
-        assert_ne!(base, safety_number(&as_party(&base_a), &as_party(&t)), "换 Ed25519");
+        assert_ne!(
+            base,
+            safety_number(&as_party(&base_a), &as_party(&t)),
+            "换 Ed25519"
+        );
 
         // 换我自己的字段同样要变（否则「只有对方变了才报警」会漏掉另一半）
         let mut t = base_a.clone();
         t.1 = Identity::generate().x25519_public_b64();
-        assert_ne!(base, safety_number(&as_party(&t), &as_party(&base_b)), "换我自己的 X25519");
+        assert_ne!(
+            base,
+            safety_number(&as_party(&t), &as_party(&base_b)),
+            "换我自己的 X25519"
+        );
     }
 
     /// 字段分隔：`("ab","c")` 与 `("a","bc")` 不得撞成同一个码。

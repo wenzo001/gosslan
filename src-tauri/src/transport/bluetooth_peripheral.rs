@@ -37,9 +37,10 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{define_class, AllocAnyThread, DefinedClass, Message};
 use objc2_core_bluetooth::{
-    CBAdvertisementDataServiceUUIDsKey, CBATTError, CBATTRequest, CBAttributePermissions,
-    CBCharacteristic, CBCharacteristicProperties, CBCentral, CBMutableCharacteristic,
-    CBMutableService, CBManagerState, CBPeripheralManager, CBPeripheralManagerDelegate, CBUUID,
+    CBATTError, CBATTRequest, CBAdvertisementDataServiceUUIDsKey, CBAttributePermissions,
+    CBCentral, CBCharacteristic, CBCharacteristicProperties, CBManagerState,
+    CBMutableCharacteristic, CBMutableService, CBPeripheralManager, CBPeripheralManagerDelegate,
+    CBUUID,
 };
 use objc2_foundation::{NSArray, NSDictionary, NSObject, NSObjectProtocol, NSString};
 use tokio::sync::{mpsc, oneshot, watch};
@@ -219,8 +220,12 @@ impl PeripheralWriter {
         let mut signal = self.signal.clone();
         let mtu = self.payload_mtu(central);
         let msg_id = self.msg_id.fetch_add(1, Ordering::Relaxed);
-        let chunks = ble_framing::fragment(payload, mtu, msg_id)
-            .ok_or_else(|| format!("帧无法分片（过大或 MTU 非法：len={} mtu={mtu}）", payload.len()))?;
+        let chunks = ble_framing::fragment(payload, mtu, msg_id).ok_or_else(|| {
+            format!(
+                "帧无法分片（过大或 MTU 非法：len={} mtu={mtu}）",
+                payload.len()
+            )
+        })?;
 
         let deadline = tokio::time::Instant::now() + WRITE_DEADLINE;
         for chunk in &chunks {
@@ -240,9 +245,11 @@ impl PeripheralWriter {
                     // SAFETY: 特征对象在 `PeripheralServer` 生命周期内一直有效；
                     // `centrals=None` = 通知所有已订阅该特征的 central。
                     unsafe {
-                        self.manager.0.updateValue_forCharacteristic_onSubscribedCentrals(
-                            &data, &self.tx.0, None,
-                        )
+                        self.manager
+                            .0
+                            .updateValue_forCharacteristic_onSubscribedCentrals(
+                                &data, &self.tx.0, None,
+                            )
                     }
                 };
                 if ok {
@@ -427,8 +434,16 @@ define_class!(
                 // CoreBluetooth 在离开 PoweredOn 时会清空本地 GATT 数据库，
                 // 重新打开蓝牙后不重新发布就永远不会再有人能连上我们。
                 self.add_service_and_advertise(peripheral);
-                self.notice(format!("蓝牙{}，本机已在广播（等待对端连入）", state_label(state)));
-                if let Some(tx) = self.ivars().init_state.lock().unwrap_or_else(|e| e.into_inner()).take()
+                self.notice(format!(
+                    "蓝牙{}，本机已在广播（等待对端连入）",
+                    state_label(state)
+                ));
+                if let Some(tx) = self
+                    .ivars()
+                    .init_state
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take()
                 {
                     let _ = tx.send(Ok(()));
                 }
@@ -460,7 +475,12 @@ define_class!(
                 state_label(state),
                 victims.len()
             ));
-            if let Some(tx) = self.ivars().init_state.lock().unwrap_or_else(|e| e.into_inner()).take()
+            if let Some(tx) = self
+                .ivars()
+                .init_state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take()
             {
                 let _ = tx.send(Err(format!(
                     "蓝牙不可用（{}）：请确认已开启蓝牙并在系统设置里允许本应用使用蓝牙",
@@ -547,8 +567,7 @@ define_class!(
                     }
                     // 读请求（我们没开 Read 权限）：明确拒绝，别让对端挂在那儿
                     None => unsafe {
-                        peripheral
-                            .respondToRequest_withResult(&req, CBATTError::ReadNotPermitted)
+                        peripheral.respondToRequest_withResult(&req, CBATTError::ReadNotPermitted)
                     },
                 }
             }
@@ -605,9 +624,7 @@ impl Delegate {
             let value: Retained<AnyObject> = unsafe { Retained::cast_unchecked(uuids) };
             // SAFETY: `CBAdvertisementDataServiceUUIDsKey` 是框架提供的常量（非空、生命周期 'static）；
             // key/value 两个切片长度相同（各 1 个）。
-            unsafe {
-                NSDictionary::from_slices(&[CBAdvertisementDataServiceUUIDsKey], &[&*value])
-            }
+            unsafe { NSDictionary::from_slices(&[CBAdvertisementDataServiceUUIDsKey], &[&*value]) }
         };
         // SAFETY: 已确认状态为 PoweredOn（调用点保证）；`service`/`adv` 都是本对象持有的有效对象。
         unsafe {
@@ -726,8 +743,14 @@ mod tests {
             unauthorized.contains("系统设置"),
             "未授权必须给出处理建议（去系统设置），实际：{unauthorized}"
         );
-        assert_eq!(state_label(CBManagerState::Unsupported), "本机不支持低功耗蓝牙");
-        assert_eq!(state_label(CBManagerState::Resetting), "系统蓝牙服务正在重置");
+        assert_eq!(
+            state_label(CBManagerState::Unsupported),
+            "本机不支持低功耗蓝牙"
+        );
+        assert_eq!(
+            state_label(CBManagerState::Resetting),
+            "系统蓝牙服务正在重置"
+        );
         assert_eq!(state_label(CBManagerState::Unknown), "状态未知");
     }
 

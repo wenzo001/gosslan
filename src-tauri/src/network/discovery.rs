@@ -20,9 +20,7 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 
 use crate::commands::is_virtual_ip;
 use crate::network::transport::{ensure_link, upsert_peer};
-use crate::protocol::{
-    UdpPacket, ANNOUNCE_INTERVAL_SECS, RELAY_PEER_TIMEOUT_SECS, UDP_PORT,
-};
+use crate::protocol::{UdpPacket, ANNOUNCE_INTERVAL_SECS, RELAY_PEER_TIMEOUT_SECS, UDP_PORT};
 use crate::state::AppState;
 
 /// 组播地址（与广播并行，覆盖被隔离广播域的场景）
@@ -203,7 +201,8 @@ fn bind_udp_reusable(ip: Ipv4Addr, port: u16) -> Result<UdpSocket, String> {
     // 缺了它，同一台机器的第二个实例 network::start 会报 "Address already in use"，
     // 单机多实例互发现直接失效。
     #[cfg(unix)]
-    sock.set_reuse_port(true).map_err(|e| format!("SO_REUSEPORT: {e}"))?;
+    sock.set_reuse_port(true)
+        .map_err(|e| format!("SO_REUSEPORT: {e}"))?;
     sock.set_broadcast(true)
         .map_err(|e| format!("SO_BROADCAST: {e}"))?;
     // 设置组播出口接口：必须与 bind IP 一致，失败直接报错。
@@ -295,7 +294,11 @@ fn announce_packet(state: &AppState, tcp_port: u16) -> UdpPacket {
     UdpPacket {
         kind: "announce".to_string(),
         device_id: state.device_id.clone(),
-        nickname: state.nickname.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+        nickname: state
+            .nickname
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone(),
         tcp_port,
         x25519_pubkey: Some(x),
         ed25519_pubkey: Some(e),
@@ -330,16 +333,14 @@ pub async fn spawn(
     // 只读一个就会漏包。
     let send_socket = bind_udp_reusable(udp_bind_ip, UDP_PORT)
         .map_err(|e| format!("UDP discovery bind failed: {e}"))?;
-    let recv_socket = bind_udp_recv(UDP_PORT)
-        .map_err(|e| format!("UDP discovery recv bind failed: {e}"))?;
+    let recv_socket =
+        bind_udp_recv(UDP_PORT).map_err(|e| format!("UDP discovery recv bind failed: {e}"))?;
     // 加入组播组：必须与 bind IP 使用同一接口；失败直接让启动失败。
     // 发送侧那个 socket 也要加（Linux 上它一直是真正收组播的那个，别退化）。
     for sock in [&send_socket, &recv_socket] {
         sock.join_multicast_v4(MULTICAST_GROUP, multicast_iface)
             .map_err(|e| {
-                format!(
-                    "join multicast {MULTICAST_GROUP} on {multicast_iface} failed: {e}"
-                )
+                format!("join multicast {MULTICAST_GROUP} on {multicast_iface} failed: {e}")
             })?;
     }
     let send_socket = Arc::new(send_socket);
@@ -615,11 +616,9 @@ async fn broadcast(
     // 而我们已经有一条能用的广播路径了。每 5 秒两条 WARN 会把真正有用的信息淹掉。
     // 只有在**三条路全失败**时才留痕：那才是"本机在局域网上发不出声"的真信号。
     if !directed_ok {
-        let (kind, detail) =
-            diag_event_from_send_result(&bcast_target, "bc_limited", &bcast_res);
+        let (kind, detail) = diag_event_from_send_result(&bcast_target, "bc_limited", &bcast_res);
         state.push_diag_event(kind, &detail);
-        let (kind, detail) =
-            diag_event_from_send_result(&mcast_target, "bc_multicast", &mcast_res);
+        let (kind, detail) = diag_event_from_send_result(&mcast_target, "bc_multicast", &mcast_res);
         state.push_diag_event(kind, &detail);
     }
 }
@@ -698,7 +697,10 @@ fn sweep_peers(state: &AppState) {
         let before: Vec<String> = peers.keys().cloned().collect();
         peers.retain(|id, p| should_keep_peer(p.last_seen, now, active_links.contains(id)));
         let after: std::collections::HashSet<&String> = peers.keys().collect();
-        before.into_iter().filter(|id| !after.contains(id)).collect()
+        before
+            .into_iter()
+            .filter(|id| !after.contains(id))
+            .collect()
     };
     // 被清扫掉的节点：连带清掉它的链路快照（`conv_link` 是"当前可达路径"，
     // 节点已不在 peers 表 ⇒ 该路径失效）。否则聊天头部的链路徽标会在节点早已被清扫后
@@ -1024,8 +1026,7 @@ mod tests {
             return;
         }
 
-        let recv = StdUdpSocket::bind((discovery_recv_bind_ip(), 0))
-            .expect("绑定接收 socket 失败");
+        let recv = StdUdpSocket::bind((discovery_recv_bind_ip(), 0)).expect("绑定接收 socket 失败");
         let port = recv.local_addr().expect("取接收端口失败").port();
         recv.set_read_timeout(Some(std::time::Duration::from_millis(1500)))
             .expect("设置读超时失败");
@@ -1068,11 +1069,7 @@ mod tests {
         // vgate0 + 真实 LAN：真实 LAN 必须胜出
         let mixed = vec![
             ("10.20.30.40".parse().unwrap(), "vgate0".to_string(), true),
-            (
-                "192.168.1.100".parse().unwrap(),
-                "以太网".to_string(),
-                true,
-            ),
+            ("192.168.1.100".parse().unwrap(), "以太网".to_string(), true),
         ];
         let best = pick_best_for_test(&mixed).unwrap();
         assert_eq!(best.0, "192.168.1.100".parse::<Ipv4Addr>().unwrap());
@@ -1119,7 +1116,8 @@ mod tests {
         assert!(err_detail.contains("error=mock fail"), "{err_detail}");
 
         // 组播事件同理，只是 kind 不同
-        let (m_ok_kind, _) = diag_event_from_send_result("239.255.42.99:59991", "multicast_sent", &ok);
+        let (m_ok_kind, _) =
+            diag_event_from_send_result("239.255.42.99:59991", "multicast_sent", &ok);
         assert_eq!(m_ok_kind, "multicast_sent");
     }
 

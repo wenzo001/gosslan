@@ -184,7 +184,10 @@ mod tests {
             TransferStatus::Rejected,
         ] {
             assert_eq!(TransferStatus::parse(s.as_str()), Some(s));
-            assert_eq!(serde_json::to_string(&s).unwrap(), format!("\"{}\"", s.as_str()));
+            assert_eq!(
+                serde_json::to_string(&s).unwrap(),
+                format!("\"{}\"", s.as_str())
+            );
         }
         assert!(TransferStatus::Complete.is_terminal());
         assert!(TransferStatus::Rejected.is_terminal());
@@ -195,10 +198,19 @@ mod tests {
 
     #[test]
     fn fail_reason_separates_retryable_from_terminal() {
-        for r in [FailReason::LinkDown, FailReason::Timeout, FailReason::Partial, FailReason::Local] {
+        for r in [
+            FailReason::LinkDown,
+            FailReason::Timeout,
+            FailReason::Partial,
+            FailReason::Local,
+        ] {
             assert!(r.retryable(), "{r:?} 应可恢复");
         }
-        for r in [FailReason::HashMismatch, FailReason::SourceGone, FailReason::Unsupported] {
+        for r in [
+            FailReason::HashMismatch,
+            FailReason::SourceGone,
+            FailReason::Unsupported,
+        ] {
             assert!(!r.retryable(), "{r:?} 应是终态");
         }
         assert!(!FailReason::HashMismatch.message().is_empty());

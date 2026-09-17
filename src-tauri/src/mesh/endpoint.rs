@@ -107,8 +107,14 @@ mod tests {
     #[test]
     fn display_keeps_tcp_format_and_marks_ble() {
         // TCP 的日志文本必须与改造前逐字一致（既有日志检索/排查习惯依赖它）
-        assert_eq!(Endpoint::Tcp(SocketAddr::from(([10, 0, 0, 5], 60001))).to_string(), "10.0.0.5:60001");
-        assert_eq!(Endpoint::Ble(BleEndpoint::new("node-1")).to_string(), "ble:node-1");
+        assert_eq!(
+            Endpoint::Tcp(SocketAddr::from(([10, 0, 0, 5], 60001))).to_string(),
+            "10.0.0.5:60001"
+        );
+        assert_eq!(
+            Endpoint::Ble(BleEndpoint::new("node-1")).to_string(),
+            "ble:node-1"
+        );
         assert_eq!(
             Endpoint::Tcp(SocketAddr::from(([10, 0, 0, 5], 60001))).as_tcp(),
             Some(SocketAddr::from(([10, 0, 0, 5], 60001)))

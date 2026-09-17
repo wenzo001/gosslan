@@ -33,7 +33,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 // 注意：lib 名是 `gosslan_lib`（Cargo.toml `[lib] name`），不是 `gosslan`。
 use gosslan_lib::crypto::Identity;
-use gosslan_lib::protocol::{announce_signing_bytes, hello_signing_bytes, Message, UdpPacket, UDP_PORT};
+use gosslan_lib::protocol::{
+    announce_signing_bytes, hello_signing_bytes, Message, UdpPacket, UDP_PORT,
+};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 

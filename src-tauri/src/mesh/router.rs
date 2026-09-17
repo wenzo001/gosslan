@@ -345,10 +345,7 @@ mod tests {
     #[test]
     fn directed_frame_for_other_node_is_relayed() {
         let mut r = router();
-        let d = r.on_receive(
-            frame("f1", "A", MeshDestination::Node("C".into()), 5),
-            "me",
-        );
+        let d = r.on_receive(frame("f1", "A", MeshDestination::Node("C".into()), 5), "me");
 
         match d {
             ForwardDecision::Forward {
@@ -377,10 +374,7 @@ mod tests {
     #[test]
     fn directed_frame_for_other_with_exhausted_ttl_is_dropped() {
         let mut r = router();
-        let d = r.on_receive(
-            frame("f1", "A", MeshDestination::Node("C".into()), 1),
-            "me",
-        );
+        let d = r.on_receive(frame("f1", "A", MeshDestination::Node("C".into()), 1), "me");
         assert_eq!(d, ForwardDecision::Drop(DropReason::TtlExhausted));
     }
 
@@ -445,16 +439,8 @@ mod tests {
 
         let id = crate::crypto::Identity::generate();
         let engine = GossipEngine::new(100, 10, 4, 6);
-        let mut env = engine.build_envelope(
-            &id,
-            "dev-a",
-            GossipKind::Chat,
-            None,
-            None,
-            "cipher",
-            42,
-            1,
-        );
+        let mut env =
+            engine.build_envelope(&id, "dev-a", GossipKind::Chat, None, None, "cipher", 42, 1);
         assert!(engine.verify_envelope(&env));
         let message_id_before = env.message_id.clone();
 

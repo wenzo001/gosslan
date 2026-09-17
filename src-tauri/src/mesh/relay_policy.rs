@@ -183,7 +183,13 @@ pub fn decide_forward(
 mod tests {
     use super::*;
 
-    fn input(is_target: bool, ttl: u8, sender_is_me: bool, is_friend: bool, in_allow: bool) -> RelayInput {
+    fn input(
+        is_target: bool,
+        ttl: u8,
+        sender_is_me: bool,
+        is_friend: bool,
+        in_allow: bool,
+    ) -> RelayInput {
         RelayInput {
             is_target,
             ttl,
@@ -201,16 +207,32 @@ mod tests {
             RelayPolicy::Allowlist,
             RelayPolicy::All,
         ] {
-            assert_eq!(RelayPolicy::parse(Some(p.as_str())), p, "as_str/parse 必须可往返");
+            assert_eq!(
+                RelayPolicy::parse(Some(p.as_str())),
+                p,
+                "as_str/parse 必须可往返"
+            );
         }
         // 缺失与脏值都落到 All（保持今天的行为，不静默断链）
         assert_eq!(RelayPolicy::parse(None), RelayPolicy::All);
         assert_eq!(RelayPolicy::parse(Some("")), RelayPolicy::All);
         assert_eq!(RelayPolicy::parse(Some("  ")), RelayPolicy::All);
-        assert_eq!(RelayPolicy::parse(Some("OFF")), RelayPolicy::All, "大小写不敏感不做：脏值一律回落");
+        assert_eq!(
+            RelayPolicy::parse(Some("OFF")),
+            RelayPolicy::All,
+            "大小写不敏感不做：脏值一律回落"
+        );
         assert_eq!(RelayPolicy::parse(Some("nonsense")), RelayPolicy::All);
-        assert_eq!(RelayPolicy::default(), RelayPolicy::All, "默认必须等于今天的行为");
-        assert_eq!(RelayPolicy::parse(Some(" off ")), RelayPolicy::Off, "允许前后空白");
+        assert_eq!(
+            RelayPolicy::default(),
+            RelayPolicy::All,
+            "默认必须等于今天的行为"
+        );
+        assert_eq!(
+            RelayPolicy::parse(Some(" off ")),
+            RelayPolicy::Off,
+            "允许前后空白"
+        );
     }
 
     /// 授权策略的**完整真值表**（4 策略 × 好友 × 白名单）。
@@ -309,7 +331,10 @@ mod tests {
     fn config_parse_tolerates_dirty_allowlist() {
         let c = RelayConfig::parse(Some("friends"), Some("not json"));
         assert_eq!(c.policy, RelayPolicy::Friends);
-        assert!(c.allowlist.is_empty(), "脏值当空表，不能 panic、不能影响策略解析");
+        assert!(
+            c.allowlist.is_empty(),
+            "脏值当空表，不能 panic、不能影响策略解析"
+        );
 
         let c = RelayConfig::parse(Some("allowlist"), Some(r#"["dev-1","dev-2"]"#));
         assert_eq!(c.policy, RelayPolicy::Allowlist);
@@ -337,20 +362,37 @@ mod tests {
             // Off/All 不依赖它 ⇒ 传空表也必须得到同样结论
             let _ = &mut allow_queries;
         }
-        assert_eq!(friend_queries, 0, "All/Off 策略下不得查好友表（热路径零开销）");
+        assert_eq!(
+            friend_queries, 0,
+            "All/Off 策略下不得查好友表（热路径零开销）"
+        );
     }
 
     #[test]
     fn friends_policy_queries_exactly_once_and_respects_result() {
         let mut queries = 0;
-        let yes = decide_forward(&cfg(RelayPolicy::Friends, &[]), false, 6, false, "p", || {
-            queries += 1;
-            true
-        });
+        let yes = decide_forward(
+            &cfg(RelayPolicy::Friends, &[]),
+            false,
+            6,
+            false,
+            "p",
+            || {
+                queries += 1;
+                true
+            },
+        );
         assert!(yes, "好友的信封要转发");
         assert_eq!(queries, 1, "只查一次");
 
-        let no = decide_forward(&cfg(RelayPolicy::Friends, &[]), false, 6, false, "p", || false);
+        let no = decide_forward(
+            &cfg(RelayPolicy::Friends, &[]),
+            false,
+            6,
+            false,
+            "p",
+            || false,
+        );
         assert!(!no, "非好友的信封不转发");
     }
 
@@ -371,15 +413,31 @@ mod tests {
         assert!(yes, "白名单命中即转发，与是否好友无关");
         assert_eq!(friend_queries, 0, "白名单模式不该去查好友表");
 
-        let no = decide_forward(&cfg(RelayPolicy::Allowlist, &["dev-1"]), false, 6, false, "dev-9", || true);
+        let no = decide_forward(
+            &cfg(RelayPolicy::Allowlist, &["dev-1"]),
+            false,
+            6,
+            false,
+            "dev-9",
+            || true,
+        );
         assert!(!no, "白名单未命中不转发");
     }
 
     #[test]
     fn decide_forward_keeps_target_and_ttl_and_own_envelope_rules() {
         let c = cfg(RelayPolicy::Off, &[]);
-        assert!(!decide_forward(&c, true, 6, false, "p", || true), "target 不转发");
-        assert!(!decide_forward(&c, false, 1, false, "p", || true), "TTL 耗尽不转发");
-        assert!(decide_forward(&c, false, 6, true, "p", || true), "自己发的信封即使 off 也转发");
+        assert!(
+            !decide_forward(&c, true, 6, false, "p", || true),
+            "target 不转发"
+        );
+        assert!(
+            !decide_forward(&c, false, 1, false, "p", || true),
+            "TTL 耗尽不转发"
+        );
+        assert!(
+            decide_forward(&c, false, 6, true, "p", || true),
+            "自己发的信封即使 off 也转发"
+        );
     }
 }

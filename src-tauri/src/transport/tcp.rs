@@ -41,8 +41,7 @@ pub async fn write_bytes<W: AsyncWrite + Unpin>(w: &mut W, payload: &[u8]) -> st
             "非法载荷长度",
         ));
     }
-    w.write_all(&(payload.len() as u32).to_be_bytes())
-        .await?;
+    w.write_all(&(payload.len() as u32).to_be_bytes()).await?;
     w.write_all(payload).await?;
     Ok(())
 }
@@ -225,7 +224,10 @@ mod tests {
         let mut buf = Vec::new();
         write_bytes(&mut buf, &payload).await.unwrap();
         let mut reader = &buf[..];
-        assert_eq!(read_bytes_capped(&mut reader, cap).await.unwrap().len(), cap);
+        assert_eq!(
+            read_bytes_capped(&mut reader, cap).await.unwrap().len(),
+            cap
+        );
 
         // 比上限多 1 字节：拒绝（边界是闭区间上限，与项目其它长度判据一致）
         let payload = vec![1u8; cap + 1];
@@ -332,7 +334,9 @@ mod tests {
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let (mut rx, mut tx) = TcpTransport::new(stream).into_split();
-            let got = crate::network::transport::read_frame(&mut rx).await.unwrap();
+            let got = crate::network::transport::read_frame(&mut rx)
+                .await
+                .unwrap();
             crate::network::transport::write_frame(
                 &mut tx,
                 &Message::Heartbeat {
@@ -354,7 +358,9 @@ mod tests {
         )
         .await
         .unwrap();
-        let reply = crate::network::transport::read_frame(&mut rx).await.unwrap();
+        let reply = crate::network::transport::read_frame(&mut rx)
+            .await
+            .unwrap();
 
         assert!(
             matches!(reply, Message::Heartbeat { ref device_id } if device_id == "srv"),

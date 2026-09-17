@@ -270,7 +270,11 @@ mod tests {
         }
         let cutoff = 2_000; // only "stale" (1_000) is below it
 
-        assert_eq!(m.sweep_stale_reassemblies(cutoff), 1, "应只清掉过期的那一条");
+        assert_eq!(
+            m.sweep_stale_reassemblies(cutoff),
+            1,
+            "应只清掉过期的那一条"
+        );
         assert!(m.reassemblies.contains_key("fresh"), "进行中的重组不得被清");
         assert!(!m.reassemblies.contains_key("stale"));
 

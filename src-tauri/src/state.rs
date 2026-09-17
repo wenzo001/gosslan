@@ -14,13 +14,13 @@ use tokio::sync::{mpsc, watch, Notify};
 use crate::crypto::Identity;
 use crate::db;
 use crate::device::{hardware_fingerprint, hostname_fingerprint};
+use crate::file_relay::RelayManager;
 use crate::gossip_engine::GossipEngine;
 use crate::logging::Logger;
 use crate::mesh::manager::PeerManager;
 use crate::mesh::path::PathKind;
 use crate::mesh::router::MeshRouter;
 use crate::protocol::{Message, TCP_PORT};
-use crate::file_relay::RelayManager;
 
 /// 系统语言是否为中文 —— **仅**「前端还没把解析结果推过来」时的兜底。
 ///
@@ -417,7 +417,7 @@ pub struct BleDiag {
     pub last_scan_matched: u32,
     /// 正在退避中的候选（按剩余时间倒序）
     pub backoff: Vec<BleBackoff>,
-/// 「不要再拨」名单大小（对端是指定拨号方时登记）
+    /// 「不要再拨」名单大小（对端是指定拨号方时登记）
     pub no_dial: usize,
 }
 
@@ -813,8 +813,7 @@ pub struct AppState {
     /// 但 **Mac 端状态一直没同步** —— 因为 `accept_friend_request` 只发一次
     /// （直连 `try_send` 或广播兜底），而 BLE 链路正好在那一刻抖动/还没建好时，
     /// 这一帧**静默丢失**且永不重发 ⇒ 单边好友关系（我这儿有他、他那儿没我）。
-    pub pending_out_accepts:
-        Mutex<std::collections::HashMap<String, (i64, u32, i64)>>,
+    pub pending_out_accepts: Mutex<std::collections::HashMap<String, (i64, u32, i64)>>,
 
     /// 会话的「当前链路」快照：conv_id -> LinkState（最近一条消息的链路 + 跳数）。
     /// 收发单聊消息时更新，前端聊天窗口据此显示连接图标（LAN / 桥接 / 蓝牙）。
@@ -828,8 +827,7 @@ pub struct AppState {
     pub avatar: Mutex<Option<String>>,
 
     /// 等待对方接受的文件传输：transfer_id -> 接受信号
-    pub pending_file_accept:
-        Mutex<HashMap<String, tokio::sync::oneshot::Sender<Result<(), u64>>>>,
+    pub pending_file_accept: Mutex<HashMap<String, tokio::sync::oneshot::Sender<Result<(), u64>>>>,
     /// 等待接收方完成确认的直连文件传输：transfer_id -> 完成信号。
     /// 发送方在 FileDone 之后等待 FileCompleteAck，只有 success=true 才推进 delivered。
     pub pending_file_complete: Mutex<HashMap<String, tokio::sync::oneshot::Sender<bool>>>,
@@ -1170,7 +1168,11 @@ impl AppState {
 
     /// 记录前端**解析后**的界面语言（`set_ui_language` 命令调用；见 [`Self::is_zh`]）。
     pub fn set_ui_language_hint(&self, lang: &str) {
-        let v = if lang.starts_with("zh") { UI_LANG_ZH } else { UI_LANG_EN };
+        let v = if lang.starts_with("zh") {
+            UI_LANG_ZH
+        } else {
+            UI_LANG_EN
+        };
         self.ui_lang.store(v, Ordering::Relaxed);
     }
 
@@ -1202,7 +1204,11 @@ impl AppState {
     /// 为什么不能走 `resolve_nickname`：它只查好友表/在线节点表，自己两边都不在，
     /// 会回落到 `device_id` 原文 —— 会话列表里就会显示一串 `gosslan-xxxxxxxx`。
     pub fn self_display_name(&self) -> String {
-        let n = self.nickname.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let n = self
+            .nickname
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         if !n.trim().is_empty() {
             return n;
         }
@@ -1216,7 +1222,10 @@ impl AppState {
 
     /// 本机自己的头像（data URI，可能为空）。
     pub fn self_avatar(&self) -> Option<String> {
-        self.avatar.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        self.avatar
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// 记录一个 Hello nonce，返回 false 表示该 nonce 近期已出现过（重放）。
@@ -1225,7 +1234,10 @@ impl AppState {
     /// 不依赖墙上时钟，避免设备间时间偏差影响判定。
     pub fn accept_hello_nonce(&self, nonce: &str) -> bool {
         const HELLO_NONCE_CACHE: usize = 512;
-        let mut q = self.seen_hello_nonces.lock().unwrap_or_else(|e| e.into_inner());
+        let mut q = self
+            .seen_hello_nonces
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if q.iter().any(|n| n == nonce) {
             return false;
         }

@@ -377,18 +377,31 @@ mod tests {
                     assert!(c.len() <= mtu, "分片不能超过 MTU");
                     assert!(c.len() > BLE_CHUNK_HEADER_LEN);
                 }
-                assert_eq!(reassemble(&chunks).as_deref(), Some(payload.as_slice()), "len={len} mtu={mtu}");
+                assert_eq!(
+                    reassemble(&chunks).as_deref(),
+                    Some(payload.as_slice()),
+                    "len={len} mtu={mtu}"
+                );
             }
         }
     }
 
     #[test]
     fn rejects_invalid_inputs() {
-        assert!(fragment(&[], DEFAULT_PAYLOAD, 1).is_none(), "空 payload 没有意义");
-        assert!(fragment(&[1, 2, 3], BLE_CHUNK_HEADER_LEN, 1).is_none(), "MTU 放不下头+1");
+        assert!(
+            fragment(&[], DEFAULT_PAYLOAD, 1).is_none(),
+            "空 payload 没有意义"
+        );
+        assert!(
+            fragment(&[1, 2, 3], BLE_CHUNK_HEADER_LEN, 1).is_none(),
+            "MTU 放不下头+1"
+        );
         assert!(fragment(&[1, 2, 3], 0, 1).is_none());
         let too_big = vec![0u8; MAX_BLE_MESSAGE_BYTES + 1];
-        assert!(fragment(&too_big, DEFAULT_PAYLOAD, 1).is_none(), "超过单条上限应拒绝");
+        assert!(
+            fragment(&too_big, DEFAULT_PAYLOAD, 1).is_none(),
+            "超过单条上限应拒绝"
+        );
     }
 
     // ---------------- 两侧载荷预算：常量与换算的唯一事实来源（2026-09-16 收敛） ----------------
@@ -500,11 +513,20 @@ mod tests {
     fn malicious_headers_are_rejected_before_allocating() {
         let mut r = BleReassembler::new();
         // 只有头没有数据
-        assert_eq!(r.push(&[0, 1, 0, 0, 0, 1], 0), PushOutcome::Dropped("分片无数据"));
+        assert_eq!(
+            r.push(&[0, 1, 0, 0, 0, 1], 0),
+            PushOutcome::Dropped("分片无数据")
+        );
         // count = 0
-        assert_eq!(r.push(&[0, 1, 0, 0, 0, 0, 9], 0), PushOutcome::Dropped("分片数非法"));
+        assert_eq!(
+            r.push(&[0, 1, 0, 0, 0, 0, 9], 0),
+            PushOutcome::Dropped("分片数非法")
+        );
         // index >= count
-        assert_eq!(r.push(&[0, 1, 0, 5, 0, 2, 9], 0), PushOutcome::Dropped("分片序号越界"));
+        assert_eq!(
+            r.push(&[0, 1, 0, 5, 0, 2, 9], 0),
+            PushOutcome::Dropped("分片序号越界")
+        );
         // count 撒谎成超过上限 ⇒ 不分配、直接拒
         let huge = (MAX_BLE_CHUNKS_PER_MESSAGE as u16 + 1).to_be_bytes();
         assert_eq!(
@@ -543,7 +565,11 @@ mod tests {
         let mut r = BleReassembler::new();
         assert_eq!(r.push(&chunks[0], 1_000), PushOutcome::Incomplete);
         assert_eq!(r.gc(1_000 + PARTIAL_TTL_MS - 1), 0, "未到期不回收");
-        assert_eq!(r.gc(1_000 + PARTIAL_TTL_MS), 1, "到期即回收（断连后不残留）");
+        assert_eq!(
+            r.gc(1_000 + PARTIAL_TTL_MS),
+            1,
+            "到期即回收（断连后不残留）"
+        );
         assert_eq!(r.in_flight(), 0);
     }
 }

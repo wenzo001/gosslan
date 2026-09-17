@@ -992,15 +992,12 @@ mod tests {
     // ---------------- announce 自签名 ----------------
 
     /// 按线上形态构造一条自签名 announce。
-    fn signed_announce(
-        id: &Identity,
-        device_id: &str,
-        port: u16,
-        nonce: &str,
-    ) -> super::UdpPacket {
+    fn signed_announce(id: &Identity, device_id: &str, port: u16, nonce: &str) -> super::UdpPacket {
         let x = id.x25519_public_b64();
         let e = id.ed25519_public_b64();
-        let sig = id.sign_b64(&super::announce_signing_bytes(device_id, port, nonce, &x, &e));
+        let sig = id.sign_b64(&super::announce_signing_bytes(
+            device_id, port, nonce, &x, &e,
+        ));
         super::UdpPacket {
             kind: "announce".to_string(),
             device_id: device_id.to_string(),
@@ -1028,27 +1025,43 @@ mod tests {
 
         let mut p = base.clone();
         p.device_id = "victim".to_string();
-        assert!(matches!(super::verify_announce(&p), super::AnnounceAuth::Invalid(_)), "改 device_id");
+        assert!(
+            matches!(super::verify_announce(&p), super::AnnounceAuth::Invalid(_)),
+            "改 device_id"
+        );
 
         let mut p = base.clone();
         p.tcp_port = 1;
-        assert!(matches!(super::verify_announce(&p), super::AnnounceAuth::Invalid(_)), "改 tcp_port");
+        assert!(
+            matches!(super::verify_announce(&p), super::AnnounceAuth::Invalid(_)),
+            "改 tcp_port"
+        );
 
         let mut p = base.clone();
         p.nonce = "n2".to_string();
-        assert!(matches!(super::verify_announce(&p), super::AnnounceAuth::Invalid(_)), "改 nonce");
+        assert!(
+            matches!(super::verify_announce(&p), super::AnnounceAuth::Invalid(_)),
+            "改 nonce"
+        );
 
         // 换成攻击者自己的公钥（想把绑定指向自己的密钥）
         let attacker = Identity::generate();
         let mut p = base.clone();
         p.ed25519_pubkey = Some(attacker.ed25519_public_b64());
         p.x25519_pubkey = Some(attacker.x25519_public_b64());
-        assert!(matches!(super::verify_announce(&p), super::AnnounceAuth::Invalid(_)), "换公钥");
+        assert!(
+            matches!(super::verify_announce(&p), super::AnnounceAuth::Invalid(_)),
+            "换公钥"
+        );
 
         // nickname **不在**签名范围内（改名不该让签名失效），故意不测它
         let mut p = base.clone();
         p.nickname = "换个昵称".to_string();
-        assert_eq!(super::verify_announce(&p), super::AnnounceAuth::Verified, "nickname 不参与签名");
+        assert_eq!(
+            super::verify_announce(&p),
+            super::AnnounceAuth::Verified,
+            "nickname 不参与签名"
+        );
     }
 
     /// 用别人的公钥声称自己是对方：签名一定对不上（攻击者没有对方私钥）。
@@ -1059,7 +1072,9 @@ mod tests {
         let vk = victim.ed25519_public_b64();
         let vx = victim.x25519_public_b64();
         // 攻击者用**自己的**私钥签，却声明受害者的公钥
-        let sig = attacker.sign_b64(&super::announce_signing_bytes("victim", 59992, "n1", &vx, &vk));
+        let sig = attacker.sign_b64(&super::announce_signing_bytes(
+            "victim", 59992, "n1", &vx, &vk,
+        ));
         let pkt = super::UdpPacket {
             kind: "announce".to_string(),
             device_id: "victim".to_string(),
@@ -1070,7 +1085,10 @@ mod tests {
             nonce: "n1".to_string(),
             sig,
         };
-        assert!(matches!(super::verify_announce(&pkt), super::AnnounceAuth::Invalid(_)));
+        assert!(matches!(
+            super::verify_announce(&pkt),
+            super::AnnounceAuth::Invalid(_)
+        ));
     }
 
     /// 旧端不签名 → 放行（Legacy）。硬拒会让旧端在局域网内彻底不可见，
@@ -1103,15 +1121,24 @@ mod tests {
 
         let mut p = signed_announce(&id, "dev-a", 59992, "n1");
         p.nonce = String::new();
-        assert!(matches!(super::verify_announce(&p), super::AnnounceAuth::Invalid(_)));
+        assert!(matches!(
+            super::verify_announce(&p),
+            super::AnnounceAuth::Invalid(_)
+        ));
 
         let mut p = signed_announce(&id, "dev-a", 59992, "n1");
         p.x25519_pubkey = None;
-        assert!(matches!(super::verify_announce(&p), super::AnnounceAuth::Invalid(_)));
+        assert!(matches!(
+            super::verify_announce(&p),
+            super::AnnounceAuth::Invalid(_)
+        ));
 
         let mut p = signed_announce(&id, "dev-a", 59992, "n1");
         p.ed25519_pubkey = Some(String::new());
-        assert!(matches!(super::verify_announce(&p), super::AnnounceAuth::Invalid(_)));
+        assert!(matches!(
+            super::verify_announce(&p),
+            super::AnnounceAuth::Invalid(_)
+        ));
     }
 
     /// 签名材料对每个字段敏感（防止将来有人漏字段导致"改了也能过"）。
@@ -1139,10 +1166,24 @@ mod tests {
         assert!(super::is_valid_emoji_token("[微笑]"));
         // 后端不认识的名字也必须放行 —— 前端加了新表情不该需要同时改后端
         assert!(super::is_valid_emoji_token("[后端不认识的表情]"));
-        for bad in ["", "[", "]", "[]", "赞", "[赞", "赞]", "[[赞]]", "[赞][踩]", "[a\nb]"] {
+        for bad in [
+            "",
+            "[",
+            "]",
+            "[]",
+            "赞",
+            "[赞",
+            "赞]",
+            "[[赞]]",
+            "[赞][踩]",
+            "[a\nb]",
+        ] {
             assert!(!super::is_valid_emoji_token(bad), "{bad:?} 应被拒");
         }
-        assert!(!super::is_valid_emoji_token(&format!("[{}]", "很".repeat(20))), "超长应被拒");
+        assert!(
+            !super::is_valid_emoji_token(&format!("[{}]", "很".repeat(20))),
+            "超长应被拒"
+        );
     }
 
     /// 回应载荷的线上往返（发送端序列化 → 接收端反序列化）。
@@ -1174,7 +1215,9 @@ mod tests {
         assert!(super::validate_opaque_external("pkt-1", 0, &ok).is_err());
         assert!(super::validate_opaque_external("pkt-1", super::MAX_OPAQUE_TTL + 1, &ok).is_err());
         assert!(super::validate_opaque_external("", 3, &ok).is_err());
-        assert!(super::validate_opaque_external(&"x".repeat(super::MAX_OPAQUE_ID + 1), 3, &ok).is_err());
+        assert!(
+            super::validate_opaque_external(&"x".repeat(super::MAX_OPAQUE_ID + 1), 3, &ok).is_err()
+        );
         assert!(super::validate_opaque_external("bad id!", 3, &ok).is_err());
         assert!(super::validate_opaque_external("pkt-1", 3, "not base64!!").is_err());
         assert!(super::validate_opaque_external("pkt-1", 3, "").is_err());
@@ -1195,7 +1238,11 @@ mod tests {
         let json = serde_json::to_vec(&msg).unwrap();
         let back: super::Message = serde_json::from_slice(&json).unwrap();
         match back {
-            super::Message::OpaqueExternal { id, ttl, payload: p } => {
+            super::Message::OpaqueExternal {
+                id,
+                ttl,
+                payload: p,
+            } => {
                 assert_eq!(id, "pkt-9");
                 assert_eq!(ttl, 5);
                 assert_eq!(p, payload);
@@ -1231,9 +1278,9 @@ mod tests {
     /// 好友申请（定向）信封：加密、签名、验签、解密、target 完整性。
     #[test]
     fn friend_request_envelope_encrypt_sign_decrypt_and_target_integrity() {
-        use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
         use crate::crypto::Identity;
         use crate::gossip_engine::GossipEngine;
+        use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 
         let a = Identity::generate();
         let c = Identity::generate();
@@ -1241,8 +1288,8 @@ mod tests {
 
         // A 构造 FriendRequest（target=C，用 C 的 X25519 公钥加密内容）
         let payload = r#"{"from_nickname":"Alice","from_avatar":null}"#;
-        let shared = crate::crypto::shared_secret(&a.x25519_secret, &c.x25519_public_b64())
-            .unwrap();
+        let shared =
+            crate::crypto::shared_secret(&a.x25519_secret, &c.x25519_public_b64()).unwrap();
         let sealed = crate::crypto::seal(&shared, payload.as_bytes()).unwrap();
         let payload_b64 = B64.encode(&sealed);
         let mut env = engine.build_envelope(
@@ -1277,7 +1324,10 @@ mod tests {
             ..env.clone()
         })
         .unwrap();
-        assert!(!json_none.contains("target"), "None 不应写 target 键: {json_none}");
+        assert!(
+            !json_none.contains("target"),
+            "None 不应写 target 键: {json_none}"
+        );
         let json_some = serde_json::to_string(&env).unwrap();
         assert!(json_some.contains("dev-c"), "Some 应写 target: {json_some}");
     }
@@ -1285,9 +1335,9 @@ mod tests {
     /// ChatAck / ChatReadReceipt（定向、明文）信封：签名、验签、target 完整性、明文往返。
     #[test]
     fn chat_ack_and_read_receipt_plaintext_directed_envelope_integrity() {
-        use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
         use crate::crypto::Identity;
         use crate::gossip_engine::GossipEngine;
+        use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 
         let c = Identity::generate();
         let engine = GossipEngine::new(100, 10, 4, 6);
@@ -1563,7 +1613,10 @@ mod tests {
         let json = serde_json::to_string(&changed).unwrap();
         match serde_json::from_str::<Message>(&json).unwrap() {
             Message::GroupCreatorChanged { group_id, from, to } => {
-                assert_eq!((group_id.as_str(), from.as_str(), to.as_str()), ("g1", "old", "new"));
+                assert_eq!(
+                    (group_id.as_str(), from.as_str(), to.as_str()),
+                    ("g1", "old", "new")
+                );
             }
             _ => panic!("expect group_creator_changed"),
         }

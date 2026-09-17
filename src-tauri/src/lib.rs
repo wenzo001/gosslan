@@ -1,5 +1,8 @@
 //! Gosslan 应用入口（库目标，供 Tauri 加载）。
 
+/// Android 的「打开文件」JNI 桥（FileProvider：私有目录文件必须以 content:// 交出去）。
+#[cfg(target_os = "android")]
+mod android_open;
 mod commands;
 /// 内容传输**逻辑层**（统一生命周期 + 状态机 + 重试策略）；见 content/mod.rs 的分层说明。
 pub mod content;
@@ -10,41 +13,38 @@ mod device;
 pub mod discovery;
 /// 聊天记录导出（纯文字单文件）：磁盘满 / 换机时的自救手段。
 pub mod export;
+mod file_relay;
 mod gossip_engine;
+/// JNI 方法登记宏（Android 的两条桥共用，见该文件注释）。
+#[cfg(target_os = "android")]
+mod jni_method;
 mod logging;
+/// macOS App Sandbox 的安全作用域书签（共享目录重启后不失访，见该文件注释）。
+#[cfg(target_os = "macos")]
+mod macos_bookmark;
+/// macOS 窗口外观：运行时加 squircle 圆角 + 关掉与圆角不兼容的系统阴影。
+/// 见 macos_window.rs 注释（与自绘标题栏的取舍）。
+#[cfg(target_os = "macos")]
+mod macos_window;
+/// macOS 原生菜单栏（自绘标题栏 + `decorations: false` 导致系统菜单栏缺失，需补回）。
+/// 只在 macOS 建：Windows / Linux 用自绘标题栏，加系统菜单条会顶在标题栏之上破坏布局。
+#[cfg(target_os = "macos")]
+mod menu;
 pub mod mesh;
 mod network;
+mod nickname;
 mod notifications;
+/// 打开本地文件的平台实现：macOS 用 NSWorkspace（沙盒下 /usr/bin/open 被拦）、
+/// Android 用 FileProvider + ACTION_VIEW（opener 只发 file:// 会被系统拒绝）、
+/// Windows/Linux 走 opener。
+mod open_path;
 pub mod protocol;
-mod file_relay;
-mod user_dirs;
 mod state;
 mod storage;
 mod transport;
 #[cfg(desktop)]
 mod tray;
-/// macOS 原生菜单栏（自绘标题栏 + `decorations: false` 导致系统菜单栏缺失，需补回）。
-/// 只在 macOS 建：Windows / Linux 用自绘标题栏，加系统菜单条会顶在标题栏之上破坏布局。
-#[cfg(target_os = "macos")]
-mod menu;
-/// 打开本地文件的平台实现：macOS 用 NSWorkspace（沙盒下 /usr/bin/open 被拦）、
-/// Android 用 FileProvider + ACTION_VIEW（opener 只发 file:// 会被系统拒绝）、
-/// Windows/Linux 走 opener。
-mod open_path;
-/// Android 的「打开文件」JNI 桥（FileProvider：私有目录文件必须以 content:// 交出去）。
-#[cfg(target_os = "android")]
-mod android_open;
-/// JNI 方法登记宏（Android 的两条桥共用，见该文件注释）。
-#[cfg(target_os = "android")]
-mod jni_method;
-/// macOS 窗口外观：运行时加 squircle 圆角 + 关掉与圆角不兼容的系统阴影。
-/// 见 macos_window.rs 注释（与自绘标题栏的取舍）。
-#[cfg(target_os = "macos")]
-mod macos_window;
-/// macOS App Sandbox 的安全作用域书签（共享目录重启后不失访，见该文件注释）。
-#[cfg(target_os = "macos")]
-mod macos_bookmark;
-mod nickname;
+mod user_dirs;
 
 use tauri::Manager;
 
@@ -156,7 +156,9 @@ pub fn run() {
         .setup(|app| {
             state_mark("boot", "AppState::init 之前");
             let state = state::AppState::init(app.handle().clone())?;
-            state.logger.info("boot", "AppState::init 完成（设置/目录/局域网就绪）");
+            state
+                .logger
+                .info("boot", "AppState::init 完成（设置/目录/局域网就绪）");
             // 拿到 AppHandle 之后**重装** panic hook：这次的 hook 会把 panic 同时写进
             // 「运行日志」页（安卓上这是唯一能拿到的诊断路径，见 `install_panic_hook`）。
             install_panic_hook(Some(app.handle().clone()));
@@ -184,7 +186,9 @@ pub fn run() {
                 };
                 let lang = menu::initial_lang(persisted.as_deref());
                 if let Err(e) = menu::setup(app.handle(), lang) {
-                    state.logger.warn("menu", format!("菜单栏初始化失败（不影响启动）：{e}"));
+                    state
+                        .logger
+                        .warn("menu", format!("菜单栏初始化失败（不影响启动）：{e}"));
                 }
             }
             // macOS：`decorations: false` 使 tao 以 `Borderless`（不含 `Closable` 位）样式
@@ -195,7 +199,9 @@ pub fn run() {
             #[cfg(all(desktop, target_os = "macos"))]
             if let Some(win) = app.handle().get_webview_window(tray::MAIN_WINDOW_LABEL) {
                 if let Err(e) = win.set_closable(true) {
-                    state.logger.warn("window", format!("恢复 macOS Cmd+W 关闭能力失败: {e}"));
+                    state
+                        .logger
+                        .warn("window", format!("恢复 macOS Cmd+W 关闭能力失败: {e}"));
                 }
                 // 关系统阴影（与圆角冲突；NSWindow 级、不被 wry 替换 contentView 影响）。
                 // 圆角本身在 WebView 加载完成后由前端调 `apply_macos_window_shape` 命令设置
@@ -250,7 +256,9 @@ pub fn run() {
                             network::start_from_prefs(st).await
                         };
                         if let Err(e) = started {
-                            st_log.logger.error("lan", format!("自动开启局域网通道失败: {e}"));
+                            st_log
+                                .logger
+                                .error("lan", format!("自动开启局域网通道失败: {e}"));
                         }
                     }
                 });
@@ -403,7 +411,6 @@ pub fn run() {
     });
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -447,11 +454,7 @@ mod tests {
             .and_then(|v| v.as_array())
             .expect("capabilities/default.json 缺少 windows 数组")
             .iter()
-            .map(|v| {
-                v.as_str()
-                    .expect("windows 数组项必须是字符串")
-                    .to_string()
-            })
+            .map(|v| v.as_str().expect("windows 数组项必须是字符串").to_string())
             .collect();
         for label in WINDOW_LABELS {
             assert!(
@@ -551,8 +554,7 @@ mod tests {
                 .chars()
                 .take_while(|c| c.is_alphanumeric() || *c == '_')
                 .collect();
-            let is_async =
-                attr_async || src[attr_end..fn_pos].contains("async");
+            let is_async = attr_async || src[attr_end..fn_pos].contains("async");
             // 花括号配对取函数体（跳过字符串/字符/注释）
             let mut depth = 0i32;
             let mut j = fn_pos;
@@ -622,11 +624,13 @@ mod tests {
     /// 并检查每个 `extern fn`（native 回调）在 Kotlin 里确有同名 `external fun`。
     #[test]
     fn android_jni_signatures_match_kotlin() {
-        let kotlin = include_str!("../gen/android/app/src/main/java/com/gosslan/app/BlePeripheral.kt");
+        let kotlin =
+            include_str!("../gen/android/app/src/main/java/com/gosslan/app/BlePeripheral.kt");
         let rust = include_str!("transport/ble_android.rs");
         // 第二条 JNI 桥：「用系统里的其它应用打开文件」（FileProvider）。同一个坑，
         // 所以必须同一条护栏盯着 —— 新桥单独立一份检查只会漂移。
-        let kotlin_open = include_str!("../gen/android/app/src/main/java/com/gosslan/app/OpenWith.kt");
+        let kotlin_open =
+            include_str!("../gen/android/app/src/main/java/com/gosslan/app/OpenWith.kt");
         let rust_open = include_str!("android_open.rs");
 
         let kotlin_fns = parse_kotlin_funs(kotlin);
@@ -759,7 +763,8 @@ mod tests {
     /// 对照：`BlePeripheral` 的 `nativeBootstrap()` 在 object 内 ⇒ 实例 ⇒ 宏不加 `static`。
     #[test]
     fn jni_static_matches_kotlin_toplevel() {
-        let ble_kt = include_str!("../gen/android/app/src/main/java/com/gosslan/app/BlePeripheral.kt");
+        let ble_kt =
+            include_str!("../gen/android/app/src/main/java/com/gosslan/app/BlePeripheral.kt");
         let open_kt = include_str!("../gen/android/app/src/main/java/com/gosslan/app/OpenWith.kt");
         let cases = [
             (include_str!("transport/ble_android.rs"), ble_kt),
@@ -912,8 +917,9 @@ mod tests {
     #[test]
     fn ble_handshake_skips_leading_frames_without_processing_them() {
         let ble = include_str!("network/ble.rs");
+        let ble_f = code_flat(ble);
         assert!(
-            ble.contains("read_hello_frame(&mut reader, HANDSHAKE_TIMEOUT"),
+            ble_f.contains("read_hello_frame(&mutreader,HANDSHAKE_TIMEOUT"),
             "central 侧必须用 read_hello_frame（容忍前导帧），不能退回裸 read_one + 首帧断言"
         );
         let helper = rust_fn_body(ble, "async fn read_hello_frame(");
@@ -987,7 +993,10 @@ mod tests {
             android.contains("const NOTIFY_CHUNK_INTERVAL: Duration"),
             "必须显式定义通知间隔常量（可调、可测），而不是散落的 magic number"
         );
-        let send = rust_fn_body(android, "    pub async fn send_frame(&self, central: &str, payload: &[u8])");
+        let send = rust_fn_body(
+            android,
+            "    pub async fn send_frame(&self, central: &str, payload: &[u8])",
+        );
         assert!(
             send.contains("sleep(NOTIFY_CHUNK_INTERVAL).await"),
             "逐片发送的循环里必须真的 sleep 这个间隔 —— 否则连发丢片会重现"
@@ -1149,7 +1158,8 @@ mod tests {
             "在线判据必须是独立纯函数（可单测、可护栏）"
         );
         assert!(
-            commands.contains("friend_is_online(last_seen, now, active_links.contains(&f.device_id))"),
+            commands
+                .contains("friend_is_online(last_seen, now, active_links.contains(&f.device_id))"),
             "get_friends 必须走 friend_is_online：**只看「在不在节点表里」会让刚掉线的节点\
              保持在线的假象**（就是那个 High 缺陷）"
         );
@@ -1196,7 +1206,9 @@ mod tests {
         // 两条桥放在一起查，避免"新加的桥忘了写 keep 规则"这种只在 release 真机上现形的漏。
         let registered: Vec<(String, String)> = registered
             .into_iter()
-            .chain(parse_kotlin_method_registrations(include_str!("android_open.rs")))
+            .chain(parse_kotlin_method_registrations(include_str!(
+                "android_open.rs"
+            )))
             .collect();
         assert!(
             registered.iter().any(|(n, _)| n == "openWith"),
@@ -1280,7 +1292,9 @@ mod tests {
             if trimmed.starts_with("//") || trimmed.starts_with('*') {
                 continue;
             }
-            let Some(pos) = line.find("fun ") else { continue };
+            let Some(pos) = line.find("fun ") else {
+                continue;
+            };
             let after = &line[pos + 4..];
             let name: String = after
                 .chars()
@@ -1438,7 +1452,9 @@ mod tests {
         );
         let commands = include_str!("commands.rs");
         assert_eq!(
-            commands.matches("forget_pending_request(s, &peer_id)").count(),
+            commands
+                .matches("forget_pending_request(s, &peer_id)")
+                .count(),
             1,
             "`respond_friend_request` 的同意路径也要走同一个助手（别各写一遍）"
         );
@@ -1465,7 +1481,9 @@ mod tests {
             helper.contains("db::get_friend") && helper.contains("accept_friend_request"),
             "自动同意必须：① 真的判『他是不是已经是我的好友』；② 走**同一个** accept 实现（别各写一遍）"
         );
-        let calls = transport.matches("auto_accept_if_already_friend(state, ").count();
+        let calls = transport
+            .matches("auto_accept_if_already_friend(state, ")
+            .count();
         assert_eq!(
             calls, 2,
             "两条 FriendRequest 路径（直连 `Message::FriendRequest` + 跨跳 `GossipKind::FriendRequest`）\
@@ -1473,7 +1491,9 @@ mod tests {
         );
         let commands = include_str!("commands.rs");
         assert_eq!(
-            commands.matches("pub(crate) async fn accept_friend_request(").count(),
+            commands
+                .matches("pub(crate) async fn accept_friend_request(")
+                .count(),
             1,
             "『同意好友』只能有一份实现：两套路径不一致正是『单边好友关系』这类缺陷的温床"
         );
@@ -1677,7 +1697,10 @@ mod tests {
     #[test]
     fn never_awaits_while_holding_the_links_lock() {
         let cmds = include_str!("commands.rs");
-        for f in ["pub async fn update_profile(", "pub async fn broadcast_chat_style("] {
+        for f in [
+            "pub async fn update_profile(",
+            "pub async fn broadcast_chat_style(",
+        ] {
             let body = rust_fn_body(cmds, f);
             assert!(
                 !body.contains("for link in links"),
@@ -1706,7 +1729,10 @@ mod tests {
             "拉取必须按对端能力位协商，旧端不发新帧"
         );
         let transport = include_str!("network/transport.rs");
-        assert!(transport.contains("find_source"), "服务端必须按 cid 找本地内容");
+        assert!(
+            transport.contains("find_source"),
+            "服务端必须按 cid 找本地内容"
+        );
         assert!(
             transport.contains("db::get_group"),
             "群成员也应能作为拉取请求方（A→B 成功后，C 可从已收完的 B 拉）"
@@ -1943,7 +1969,10 @@ mod tests {
     #[test]
     fn runtime_state_has_a_single_source() {
         let commands = include_str!("commands.rs");
-        for gone in ["pub async fn get_channel_status(", "pub fn get_network_status("] {
+        for gone in [
+            "pub async fn get_channel_status(",
+            "pub fn get_network_status(",
+        ] {
             assert!(
                 !commands.contains(gone),
                 "`{gone}` 应当已经被 `get_runtime_snapshot` + `build_runtime_snapshot` 取代 —— \
@@ -2000,8 +2029,20 @@ mod tests {
         match normalized {
             // 借用原文时可以直接切原文（偏移一致）
             std::borrow::Cow::Borrowed(_) => std::borrow::Cow::Borrowed(&src[start..start + end]),
-            std::borrow::Cow::Owned(s) => std::borrow::Cow::Owned(s[start..start + end].to_string()),
+            std::borrow::Cow::Owned(s) => {
+                std::borrow::Cow::Owned(s[start..start + end].to_string())
+            }
         }
+    }
+
+    /// 把源码字符串里的**所有空白**（空格 / 换行 / 制表 / CR）都去掉。
+    ///
+    /// 护栏用 `include_str!` 读源码然后 `.contains()` 搜特定调用格式；
+    /// `cargo fmt` 会把单行调用拆成多行（`fn(a, b, c)` → 每行一个参数），
+    /// 带空格的 `.contains("fn(a, b")` 就会误报。
+    /// 先 flatten 再搜，让 fmt 怎么拆都不怕。
+    fn code_flat(src: &str) -> String {
+        src.chars().filter(|c| !c.is_whitespace()).collect()
     }
 
     /// **独立窗口必须各自一个前端文档与入口**，不许再共用主窗口的 `index.html`。
@@ -2039,7 +2080,10 @@ mod tests {
             ("settings.html", "src/entries/settings.ts"),
             ("logs.html", "src/entries/logs.ts"),
         ] {
-            assert!(urls.iter().any(|u| u == url), "Rust 侧应当打开 {url}：{urls:?}");
+            assert!(
+                urls.iter().any(|u| u == url),
+                "Rust 侧应当打开 {url}：{urls:?}"
+            );
             let html = match url {
                 "settings.html" => include_str!("../../settings.html").to_string(),
                 _ => include_str!("../../logs.html").to_string(),
@@ -2073,10 +2117,7 @@ mod tests {
     fn aux_window_open_is_singleton_serialized_and_resident() {
         let commands = include_str!("commands.rs");
 
-        for signature in [
-            "pub fn open_settings_window(",
-            "pub fn open_log_window(",
-        ] {
+        for signature in ["pub fn open_settings_window(", "pub fn open_log_window("] {
             let body = rust_fn_body(commands, signature);
             assert!(
                 body.contains("ensure_aux_window("),
@@ -2096,7 +2137,10 @@ mod tests {
         assert!(
             // 签名在 2026-09-16 多了一个 `geo`（创建时摆尺寸/位置，已存在时重新摆回主窗口那块屏），
             // 判据本身没变：**拿锁前后各查一次**，少一次就会在并发下开出第二个窗口。
-            helper.matches("show_existing_aux_window(app, label, geo)").count() >= 2,
+            helper
+                .matches("show_existing_aux_window(app, label, geo)")
+                .count()
+                >= 2,
             "`ensure_aux_window` 必须做双重检查（拿锁前后各查一次），实际只有一次"
         );
         assert!(
@@ -2145,7 +2189,10 @@ mod tests {
     fn self_chat_stays_local() {
         let commands = include_str!("commands.rs");
         let body = rust_fn_body(commands, "fn insert_self_message(");
-        assert!(!body.is_empty(), "找不到 insert_self_message（这条护栏会变成空转）");
+        assert!(
+            !body.is_empty(),
+            "找不到 insert_self_message（这条护栏会变成空转）"
+        );
         // 先查"不该有的"：注入成 `insert_message_and_outbox(` 时下面那条 contains 也会失败，
         // 但真正该说的是"你接回了网络路径"——所以把这条放在前面报。
         for forbidden in [

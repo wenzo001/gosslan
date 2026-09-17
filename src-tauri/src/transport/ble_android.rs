@@ -135,13 +135,12 @@ fn send_event(ev: PeripheralEvent) {
 }
 
 /// 在 JVM 上执行一段 JNI 调用（自动 attach/detach 当前线程）。
-fn with_env<T>(
-    f: impl FnOnce(&mut Env) -> jni::errors::Result<T>,
-) -> Result<T, String> {
+fn with_env<T>(f: impl FnOnce(&mut Env) -> jni::errors::Result<T>) -> Result<T, String> {
     let vm = JAVA_VM.get().ok_or_else(|| {
         "Android BLE 外设尚未初始化（MainActivity 未调用 BlePeripheral.bootstrap）".to_string()
     })?;
-    vm.attach_current_thread(f).map_err(|e| format!("JNI 调用失败：{e}"))
+    vm.attach_current_thread(f)
+        .map_err(|e| format!("JNI 调用失败：{e}"))
 }
 
 /// btleplug 的 Android 后端是否已成功初始化。
@@ -182,8 +181,10 @@ fn call_static_bool(name: &str, args: &[JValue]) -> Result<bool, String> {
 /// 启动外设角色（同步，不阻塞）。失败原因会说明"是权限、还是没 bootstrap"。
 pub fn start() -> Result<PeripheralStart, String> {
     if KOTLIN_CLASS.get().is_none() {
-        return Err("Android BLE 外设尚未初始化（MainActivity 应先调用 BlePeripheral.bootstrap）"
-            .to_string());
+        return Err(
+            "Android BLE 外设尚未初始化（MainActivity 应先调用 BlePeripheral.bootstrap）"
+                .to_string(),
+        );
     }
     let (tx, rx) = mpsc::unbounded_channel();
     *EVENTS.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
@@ -237,8 +238,12 @@ impl PeripheralWriter {
     /// 发一条完整帧：按 MTU 分片，逐片调 Kotlin 的 `send`；对端还没订阅就等一等再试。
     pub async fn send_frame(&self, central: &str, payload: &[u8]) -> Result<usize, String> {
         let mtu = self.payload_mtu(central);
-        let chunks = ble_framing::fragment(payload, mtu, next_msg_id())
-            .ok_or_else(|| format!("帧无法分片（过大或 MTU 非法：len={} mtu={mtu}）", payload.len()))?;
+        let chunks = ble_framing::fragment(payload, mtu, next_msg_id()).ok_or_else(|| {
+            format!(
+                "帧无法分片（过大或 MTU 非法：len={} mtu={mtu}）",
+                payload.len()
+            )
+        })?;
         let deadline = tokio::time::Instant::now() + WRITE_DEADLINE;
         let total = chunks.len();
         for (idx, chunk) in chunks.iter().enumerate() {

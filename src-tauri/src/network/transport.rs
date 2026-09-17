@@ -28,15 +28,17 @@ use x25519_dalek::StaticSecret;
 use crate::commands::{is_virtual_ip, MAX_GROUP_NAME_LEN};
 use crate::crypto;
 use crate::db;
+use crate::discovery::routed::{parse_endpoints, ROUTED_ENDPOINTS_KEY};
+use crate::mesh::router::{ForwardDecision, MeshDestination, MeshFrame, MeshFrameKind};
+use crate::mesh::{
+    Endpoint as MeshEndpoint, PathKind, PeerCandidate, PeerIdentity, PeerOnlineState,
+};
 use crate::network::file;
 use crate::protocol::{hello_signing_bytes, GossipEnvelope, GossipKind, Message, MsgKind};
 use crate::state::{
     AppState, FileDoneInfo, FileFailedInfo, FileProgress, Link, LinkState, MessageRecord, Peer,
     PendingRequest,
 };
-use crate::mesh::router::{ForwardDecision, MeshDestination, MeshFrame, MeshFrameKind};
-use crate::discovery::routed::{parse_endpoints, ROUTED_ENDPOINTS_KEY};
-use crate::mesh::{Endpoint as MeshEndpoint, PathKind, PeerCandidate, PeerIdentity, PeerOnlineState};
 use crate::transport::tcp::{TcpReceiver, TcpSender};
 
 /// 字符串 IP 是否为虚拟地址（用于 peers 表中已存储的 IP 字符串判断）。
@@ -66,7 +68,8 @@ pub async fn read_frame<R: AsyncRead + Unpin>(r: &mut R) -> std::io::Result<Mess
 
 /// 预认证阶段读首帧：上限收紧到 `MAX_PREAUTH_FRAME`（未验签的连接不得要求大缓冲）。
 async fn read_frame_preauth<R: AsyncRead + Unpin>(r: &mut R) -> std::io::Result<Message> {
-    let buf = crate::transport::tcp::read_bytes_capped(r, crate::protocol::MAX_PREAUTH_FRAME).await?;
+    let buf =
+        crate::transport::tcp::read_bytes_capped(r, crate::protocol::MAX_PREAUTH_FRAME).await?;
     serde_json::from_slice(&buf)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
@@ -130,7 +133,6 @@ fn route_order(
     health_timeout_ms: i64,
     max_failures: u32,
 ) -> Vec<usize> {
-
     // 与 `links` 同序的候选：能按端点命中就用真实健康信息，否则合成「刚播种」候选。
     let candidates: Vec<crate::mesh::Connection> = links
         .iter()
@@ -216,7 +218,9 @@ async fn send_over_order(
     let mut last_err = "未建立连接".to_string();
     let mut first_full: Option<&mpsc::Sender<Message>> = None;
     for &i in order {
-        let Some((bulk_tx, prio_tx)) = senders.get(i) else { continue };
+        let Some((bulk_tx, prio_tx)) = senders.get(i) else {
+            continue;
+        };
         let tx = if bulk { bulk_tx } else { prio_tx };
         match tx.try_send(msg.clone()) {
             Ok(()) => return Ok(()),
@@ -258,14 +262,25 @@ pub async fn try_send(state: &AppState, peer_id: &str, msg: &Message) -> Result<
     };
     let conns: Vec<crate::mesh::Connection> = {
         let pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
-        pm.get(peer_id).map(|p| p.connections().to_vec()).unwrap_or_default()
+        pm.get(peer_id)
+            .map(|p| p.connections().to_vec())
+            .unwrap_or_default()
     };
     // ③ 选路（M3-b）：按**端点**对齐两套链路表后交给 `pick_link`，返回发送顺序。
-    let order = route_order(&links, peer_id, &conns, db::now_ms(), health_timeout_ms, max_failures);
+    let order = route_order(
+        &links,
+        peer_id,
+        &conns,
+        db::now_ms(),
+        health_timeout_ms,
+        max_failures,
+    );
 
     // ④ 按选路顺序投递（两轮策略见 `send_over_order`）。
-    let senders: Vec<(mpsc::Sender<Message>, mpsc::Sender<Message>)> =
-        links.iter().map(|l| (l.bulk.clone(), l.priority.clone())).collect();
+    let senders: Vec<(mpsc::Sender<Message>, mpsc::Sender<Message>)> = links
+        .iter()
+        .map(|l| (l.bulk.clone(), l.priority.clone()))
+        .collect();
     send_over_order(&senders, &order, msg, is_bulk_message(msg)).await
 }
 
@@ -275,9 +290,7 @@ pub async fn try_send(state: &AppState, peer_id: &str, msg: &Message) -> Result<
 /// 按 to 直接投递（见 handle_message 顶部的定向中继分支）。邻居若与 to 没有直连就丢弃
 /// —— 与既有 RelayChunk 的单跳限制一致；不泛洪，因此不存在环路。
 pub(crate) async fn relay_send_to_neighbors(state: &AppState, to: &str, msg: &Message) {
-    let peers: Vec<String> = {
-        state.links.lock().await.keys().cloned().collect()
-    };
+    let peers: Vec<String> = { state.links.lock().await.keys().cloned().collect() };
     for p in peers {
         if p == to {
             continue;
@@ -725,7 +738,12 @@ pub async fn spawn(
         }
     });
 
-    Ok(vec![accept_task, heartbeat_task, routed_task, presence_task])
+    Ok(vec![
+        accept_task,
+        heartbeat_task,
+        routed_task,
+        presence_task,
+    ])
 }
 
 /// 绑定监听端口，仅在 `AddrInUse` 时做有限退避重试。
@@ -911,8 +929,7 @@ fn mark_peer_keys_verified(state: &AppState, device_id: &str, x25519: &str, ed25
     let Some(p) = peers.get_mut(device_id) else {
         return;
     };
-    if p.x25519_pubkey.as_deref() != Some(x25519) || p.ed25519_pubkey.as_deref() != Some(ed25519)
-    {
+    if p.x25519_pubkey.as_deref() != Some(x25519) || p.ed25519_pubkey.as_deref() != Some(ed25519) {
         return; // 与自报值不一致：不动（交由既有 key_conflict 路径处理）
     }
     p.keys_verified = true;
@@ -1018,10 +1035,14 @@ pub async fn flush_pending_friend_request(state: &Arc<AppState>, peer_id: &str) 
         return;
     }
     // 复用同一条发送路径（含目标定向 + 重签），失败也不清登记 —— 下次建链再试
-    if crate::commands::send_friend_request_via_link(state, peer_id).await.is_ok() {
-        state
-            .logger
-            .info("friend", format!("补发好友申请 peer={peer_id}（此前链路抖动丢过）"));
+    if crate::commands::send_friend_request_via_link(state, peer_id)
+        .await
+        .is_ok()
+    {
+        state.logger.info(
+            "friend",
+            format!("补发好友申请 peer={peer_id}（此前链路抖动丢过）"),
+        );
     }
 }
 
@@ -1164,7 +1185,11 @@ pub fn build_signed_hello(state: &AppState, conv_clock: i64) -> Message {
     let ed25519_pubkey = state.identity.ed25519_public_b64();
     // ⚠️ 头像**必须先过尺寸闸门**再进握手帧（见 `HELLO_AVATAR_MAX_BYTES` 的说明）：
     // 一张 base64 头像能把 Hello 撑到几百 KB，BLE 上直接导致握手超时或"帧无法分片"。
-    let raw_avatar = state.avatar.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let raw_avatar = state
+        .avatar
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     let avatar = hello_avatar_for_wire(raw_avatar.as_deref()).map(str::to_string);
     if avatar.is_none() && raw_avatar.as_deref().is_some_and(|a| !a.is_empty()) {
         state.logger.warn(
@@ -1186,7 +1211,11 @@ pub fn build_signed_hello(state: &AppState, conv_clock: i64) -> Message {
     ));
     Message::Hello {
         device_id,
-        nickname: state.nickname.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+        nickname: state
+            .nickname
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone(),
         avatar,
         device_type: crate::protocol::current_device_type().to_string(),
         content_features: crate::protocol::content_features(),
@@ -1208,8 +1237,16 @@ pub fn build_signed_hello(state: &AppState, conv_clock: i64) -> Message {
 pub async fn send_user_info_to(state: &Arc<AppState>, peer_id: &str) {
     let msg = Message::UserInfo {
         device_id: state.device_id.clone(),
-        nickname: state.nickname.lock().unwrap_or_else(|e| e.into_inner()).clone(),
-        avatar: state.avatar.lock().unwrap_or_else(|e| e.into_inner()).clone(),
+        nickname: state
+            .nickname
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone(),
+        avatar: state
+            .avatar
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone(),
         device_type: crate::protocol::current_device_type().to_string(),
     };
     let _ = try_send(state, peer_id, &msg).await;
@@ -1268,10 +1305,9 @@ async fn handle_incoming(
                 sig,
             ) {
                 state.push_diag_event("hello_rejected", &format!("{reason}; from={peer_addr}"));
-                state.logger.warn(
-                    "transport",
-                    format!("拒绝未通过身份认证的 Hello: {reason}"),
-                );
+                state
+                    .logger
+                    .warn("transport", format!("拒绝未通过身份认证的 Hello: {reason}"));
                 return;
             }
             // 验签通过 ⇒ 这对公钥**已被证明**由该 device_id 的持有者使用
@@ -1438,13 +1474,7 @@ async fn handle_incoming(
 /// `pub(crate)` 就是为了让 `network/ble.rs` 也能调。
 pub(crate) fn mark_conn_seen(state: &AppState, peer_id: &str, endpoint: &MeshEndpoint) {
     let mut pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
-    pm.mark_connection_seen(
-        peer_id,
-        endpoint,
-        db::now_ms(),
-        None,
-        true,
-    );
+    pm.mark_connection_seen(peer_id, endpoint, db::now_ms(), None, true);
 }
 
 /// 记录一次**写出成功**（M3-0b：只刷出站活性，**不**参与 `is_healthy`）。
@@ -1453,13 +1483,7 @@ pub(crate) fn mark_conn_seen(state: &AppState, peer_id: &str, endpoint: &MeshEnd
 /// 否则死链路会永久被判健康，选路一直选中它（ADR-0014 §7）。
 fn mark_conn_write_seen(state: &AppState, peer_id: &str, endpoint: &MeshEndpoint) {
     let mut pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
-    pm.mark_connection_seen(
-        peer_id,
-        endpoint,
-        db::now_ms(),
-        None,
-        false,
-    );
+    pm.mark_connection_seen(peer_id, endpoint, db::now_ms(), None, false);
 }
 
 /// 记录「某个文件传输又有一帧**真的离开了链路**」。
@@ -1503,7 +1527,6 @@ pub(crate) fn clear_file_wire_progress(state: &AppState, transfer_id: &str) {
         .unwrap_or_else(|e| e.into_inner())
         .remove(transfer_id);
 }
-
 
 /// 把「某条连接失败」喂给 mesh 层（写失败）。读循环退出时链路会被 `unregister_connection`
 /// 整条摘掉，无需再记失败。
@@ -1583,7 +1606,10 @@ async fn writer_loop(
                     // 此处不恢复就永久丢失。将 timestamp 重新放回 pending_reads，
                     // 下一次建链 / Hello / Heartbeat 会再次 flush 重发。
                     if let Message::ReadReceipt { last_read_ts, .. } = &msg {
-                        let mut pending = state.pending_reads.lock().unwrap_or_else(|e| e.into_inner());
+                        let mut pending = state
+                            .pending_reads
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner());
                         let cur = pending.entry(peer_id.clone()).or_insert(*last_read_ts);
                         *cur = (*cur).max(*last_read_ts);
                     }
@@ -1732,7 +1758,14 @@ pub(crate) async fn inbound_path_kind(state: &AppState, peer_id: &str) -> String
             .map(|p| p.connections().to_vec())
             .unwrap_or_default()
     };
-    let order = route_order(&links, peer_id, &conns, db::now_ms(), health_timeout_ms, max_failures);
+    let order = route_order(
+        &links,
+        peer_id,
+        &conns,
+        db::now_ms(),
+        health_timeout_ms,
+        max_failures,
+    );
     // ③ 徽标显示「实际会走的那条」= 选路结果的第一条（见 `badge_path_kind`）。
     //
     // 为什么不能用 `first()`（旧实现）：一个 peer 可能同时有 LAN + Routed(+BLE) 多条连接，
@@ -1771,7 +1804,9 @@ pub(crate) fn update_conv_link(state: &AppState, conv_id: &str, path: &str, hop:
                 hop,
             },
         );
-        state.logger.info("link", format!("conv={conv_id} path={path} hop={hop}"));
+        state
+            .logger
+            .info("link", format!("conv={conv_id} path={path} hop={hop}"));
     }
 }
 
@@ -1865,13 +1900,21 @@ fn log_throttled(key: &'static str, min_interval_ms: i64) -> bool {
     }
 }
 
-pub(crate) fn register_connection(state: &AppState, peer_id: &str, endpoint: MeshEndpoint, path_kind: PathKind) {
+pub(crate) fn register_connection(
+    state: &AppState,
+    peer_id: &str,
+    endpoint: MeshEndpoint,
+    path_kind: PathKind,
+) {
     // 建链成功：排查真机连接问题（"什么时候连上的、走的哪条通道"）的第一手信息。
     // 在此之前网络层**完全没有**建链日志 —— 用户报「一会儿在线一会儿不在线」时，
     // 无从判断是哪条通道在反复建立/断开。
     state.logger.info(
         "link",
-        format!("建链 peer={peer_id} path={} ep={endpoint:?}", path_kind.as_str()),
+        format!(
+            "建链 peer={peer_id} path={} ep={endpoint:?}",
+            path_kind.as_str()
+        ),
     );
     let identity = {
         let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
@@ -1955,15 +1998,16 @@ mod mesh_sync_tests {
         std::net::SocketAddr::new(s.parse::<IpAddr>().unwrap(), 59992)
     }
 
-
-
     /// 地址构造不依赖「拼字符串再解析」，因此 IPv6 **不需要方括号**。
     ///
     /// 旧实现 `format!("{ip}:{port}").parse()` 在 IPv6 上会得到 `fd7a::1:59992`
     /// 这种非法地址 → 解析失败 → 静默丢掉连接。这正是「IPv6 端点配了却不拨号」的根因。
     #[test]
     fn socket_addr_from_accepts_v4_and_bare_v6() {
-        assert_eq!(socket_addr_from("192.168.1.20", 59992), Some(sa(192, 168, 1, 20)));
+        assert_eq!(
+            socket_addr_from("192.168.1.20", 59992),
+            Some(sa(192, 168, 1, 20))
+        );
         assert_eq!(
             socket_addr_from("fd7a:115c:a1e0::1", 59992),
             Some(sa6("fd7a:115c:a1e0::1"))
@@ -2011,7 +2055,9 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 /// **把一条合法配置静默丢掉**（曾真实发生：IPv6 端点「配了却永远不拨号」）。
 /// 分开解析 IP 与端口，v4 / v6 都成立，也不需要方括号。
 fn socket_addr_from(ip: &str, port: u16) -> Option<SocketAddr> {
-    ip.parse::<IpAddr>().ok().map(|ip| SocketAddr::new(ip, port))
+    ip.parse::<IpAddr>()
+        .ok()
+        .map(|ip| SocketAddr::new(ip, port))
 }
 
 /// 拨号结果。
@@ -2190,7 +2236,14 @@ fn should_dial_for_peer(
     // 判据是**同路径（LAN）已连通**，不是「有任意连接」：后者会让先经 Routed 连上的
     // 对等关系永远拿不到 LAN 链路（D5）。
     let has_lan_link = has_endpoint || has_lan_path(existing);
-    should_dial(my_id, peer_id, has_endpoint, has_lan_link, first_seen, now_ms)
+    should_dial(
+        my_id,
+        peer_id,
+        has_endpoint,
+        has_lan_link,
+        first_seen,
+        now_ms,
+    )
 }
 
 /// 是否该主动拨这个端点（纯函数，便于单测 + 护栏非空转）。
@@ -2237,7 +2290,9 @@ pub async fn ensure_link(
     shutdown: watch::Receiver<bool>,
 ) {
     // 端点解析失败则放弃本轮（下一轮 announce 会再试）。
-    let Some(endpoint) = socket_addr_from(ip, tcp_port) else { return };
+    let Some(endpoint) = socket_addr_from(ip, tcp_port) else {
+        return;
+    };
     // 虚拟/隧道源地址（Clash fake-ip、Tailscale/CGNAT、link-local）不当作 LAN 直连去拨：
     // 真机 2026-09-14 全 Windows 局域网——announce 的源地址未经过滤，若来自 TUN，会拨出
     // 一条假的「LAN」链路并让 has_lan_path 永真，反而堵死真实 LAN 直连。真实 LAN 的
@@ -2266,7 +2321,11 @@ pub async fn ensure_link(
         let links = state.links.lock().await;
         links
             .get(peer_id)
-            .map(|v| v.iter().map(|l| (l.endpoint.clone(), l.path_kind)).collect())
+            .map(|v| {
+                v.iter()
+                    .map(|l| (l.endpoint.clone(), l.path_kind))
+                    .collect()
+            })
             .unwrap_or_default()
     };
     // 首次建链：大 ID 立即拨号，小 ID 等大 ID 拨；小 ID 在「对端在线却迟迟连不上」时兜底。
@@ -2424,9 +2483,8 @@ async fn connect_to_peer(
     // 不匹配就断开并留日志 —— 既堵住冒充，也让「配置写错」不再表现为静默黑洞。
     if let Some(expected) = known_id {
         if device_id != expected {
-            let reason = format!(
-                "握手身份不符：预期 {expected}，对端自称 {device_id}（端点 {endpoint}）"
-            );
+            let reason =
+                format!("握手身份不符：预期 {expected}，对端自称 {device_id}（端点 {endpoint}）");
             state.push_diag_event("hello_mismatch", &reason);
             state.logger.warn("transport", reason.clone());
             return DialOutcome::Failed(reason);
@@ -2442,7 +2500,10 @@ async fn connect_to_peer(
         sig,
     ) {
         state.push_diag_event("hello_rejected", &format!("{reason}; from={endpoint}"));
-        state.logger.warn("transport", format!("握手验签失败：{reason}（端点 {endpoint}）"));
+        state.logger.warn(
+            "transport",
+            format!("握手验签失败：{reason}（端点 {endpoint}）"),
+        );
         return DialOutcome::Failed(format!("握手失败: {reason}"));
     }
     let peer_id: String = device_id.clone();
@@ -2499,7 +2560,8 @@ async fn connect_to_peer(
         peer_id.clone(),
         ep.clone(),
         bulk_tx,
-        shutdown, cancel_rx,
+        shutdown,
+        cancel_rx,
     ));
     flush_outbox(state, &peer_id).await;
     flush_group_outbox(state, &peer_id).await;
@@ -2560,7 +2622,9 @@ async fn retry_incomplete_content(state: &Arc<AppState>, peer_id: &str) {
             crate::content::model::TransferStatus::Incomplete => {
                 crate::content::policy::should_retry_now(rec.status, now, rec.next_attempt_at)
             }
-            crate::content::model::TransferStatus::Active => now.saturating_sub(rec.updated_at) > 60_000,
+            crate::content::model::TransferStatus::Active => {
+                now.saturating_sub(rec.updated_at) > 60_000
+            }
             _ => false,
         };
         if !due {
@@ -2610,12 +2674,15 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             }
             let source = {
                 let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                crate::content::store::find_source(&dbc, &cid).ok().flatten()
+                crate::content::store::find_source(&dbc, &cid)
+                    .ok()
+                    .flatten()
             };
             let Some((_owner, group_id, path)) = source else {
-                state
-                    .logger
-                    .info("content", format!("ContentRequest：本机没有该内容 cid={cid}"));
+                state.logger.info(
+                    "content",
+                    format!("ContentRequest：本机没有该内容 cid={cid}"),
+                );
                 return;
             };
             // 授权：是好友，**或** 是该内容所属群的成员 —— 群聊里 A→B 成功后，
@@ -2768,9 +2835,10 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             };
             let ForwardDecision::Forward { frame, .. } = decision else {
                 // 重复帧或 TTL 耗尽 —— 这正是"去得掉重"的落点
-                state
-                    .logger
-                    .info("mesh", format!("不透明外部帧未转发（重复或 TTL 耗尽）id={id}"));
+                state.logger.info(
+                    "mesh",
+                    format!("不透明外部帧未转发（重复或 TTL 耗尽）id={id}"),
+                );
                 return;
             };
             // 转发用路由器给出的 ttl（**已经递减**），fan-out 选邻居并排除来源节点
@@ -2966,7 +3034,11 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             if to != state.device_id {
                 return;
             }
-            state.pending_requests.lock().unwrap_or_else(|e| e.into_inner()).remove(&from);
+            state
+                .pending_requests
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&from);
             let _ = state.app.emit("friend-rejected", &from);
         }
         Message::FriendRemove { from, to } => {
@@ -3035,9 +3107,10 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             if exists {
                 // 重复投递也要回 Ack（否则一次丢 ACK = 发送方永远"发送中"）：
                 // 留痕区分"没收到"与"收到了但 ACK 丢了"。
-                state
-                    .logger
-                    .info("ble", format!("[ACK] 重复消息仍回执 msg_id={msg_id} ← peer={peer_id}"));
+                state.logger.info(
+                    "ble",
+                    format!("[ACK] 重复消息仍回执 msg_id={msg_id} ← peer={peer_id}"),
+                );
                 let _ = try_send(state, peer_id, &Message::Ack { msg_id }).await;
                 return;
             }
@@ -3296,12 +3369,28 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 db::get_friend(&dbc, &from).is_some()
             };
             if !is_friend {
-                let _ = try_send(state, peer_id, &Message::FileReject { transfer_id, received: 0 }).await;
+                let _ = try_send(
+                    state,
+                    peer_id,
+                    &Message::FileReject {
+                        transfer_id,
+                        received: 0,
+                    },
+                )
+                .await;
                 return;
             }
             // SHA-256 元数据格式校验：非法即拒绝（文件级完整性无法验证）
             if !file::valid_sha256_hex(&file_sha256) {
-                let _ = try_send(state, peer_id, &Message::FileReject { transfer_id, received: 0 }).await;
+                let _ = try_send(
+                    state,
+                    peer_id,
+                    &Message::FileReject {
+                        transfer_id,
+                        received: 0,
+                    },
+                )
+                .await;
                 return;
             }
             // E2EE：解封文件会话密钥（发送方用我方公钥封装，只有我能解开）。
@@ -3313,7 +3402,15 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 crypto::open(&shared, &sealed).and_then(|k| k.try_into().ok())
             })();
             let Some(file_key) = file_key else {
-                let _ = try_send(state, peer_id, &Message::FileReject { transfer_id, received: 0 }).await;
+                let _ = try_send(
+                    state,
+                    peer_id,
+                    &Message::FileReject {
+                        transfer_id,
+                        received: 0,
+                    },
+                )
+                .await;
                 return;
             };
             // 断点续传统一入口（接收端是"我有什么"的唯一权威）：本地已保留 .part 且发送端的
@@ -3427,8 +3524,18 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                     );
                 }
                 Err(e) => {
-                    let _ = try_send(state, peer_id, &Message::FileReject { transfer_id, received: 0 }).await;
-                    state.logger.error("file", format!("接收文件初始化失败: {e}"));
+                    let _ = try_send(
+                        state,
+                        peer_id,
+                        &Message::FileReject {
+                            transfer_id,
+                            received: 0,
+                        },
+                    )
+                    .await;
+                    state
+                        .logger
+                        .error("file", format!("接收文件初始化失败: {e}"));
                 }
             }
         }
@@ -3495,7 +3602,10 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 Ok(received) => {
                     // 节流：每 250ms 至多上报一次进度，避免大文件 IPC 事件风暴
                     let (total, should_emit) = {
-                        let mut recv = state.file_receivers.lock().unwrap_or_else(|e| e.into_inner());
+                        let mut recv = state
+                            .file_receivers
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner());
                         match recv.get_mut(&transfer_id) {
                             Some(r) => {
                                 let now = db::now_ms();
@@ -3593,17 +3703,13 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                         };
                         db::insert_message(&dbc, &rec).ok();
                         let nm = resolve_nickname(state, &sender_id);
-                        let preview = if kind == "image" { "[图片]".to_string() } else { format!("[文件] {name}") };
-                        db::touch_conversation(
-                            &dbc,
-                            &sender_id,
-                            "single",
-                            &nm,
-                            None,
-                            &preview,
-                            1,
-                        )
-                        .ok();
+                        let preview = if kind == "image" {
+                            "[图片]".to_string()
+                        } else {
+                            format!("[文件] {name}")
+                        };
+                        db::touch_conversation(&dbc, &sender_id, "single", &nm, None, &preview, 1)
+                            .ok();
                         rec
                     };
                     let _ = state.app.emit("message-received", &rec);
@@ -3645,7 +3751,11 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 return;
             }
             let entries = {
-                let share = state.share_dir.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                let share = state
+                    .share_dir
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
                 match share {
                     Some(dir) => file::walk_share_dir(Path::new(&dir)),
                     None => Vec::new(),
@@ -3669,7 +3779,12 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             entries,
             ..
         } => {
-            if let Some(tx) = state.pending_share_tree.lock().unwrap_or_else(|e| e.into_inner()).remove(&request_id) {
+            if let Some(tx) = state
+                .pending_share_tree
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&request_id)
+            {
                 let _ = tx.send(entries);
             }
         }
@@ -3690,7 +3805,11 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             if !is_friend {
                 return;
             }
-            let share = state.share_dir.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let share = state
+                .share_dir
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
             let Some(root) = share else { return };
             let root = PathBuf::from(root);
             let canon_root = root.canonicalize().unwrap_or_else(|_| root.clone());
@@ -3723,7 +3842,13 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                     file::send_file_via_relay(&st, &from, &transfer_id, canon_full).await
                 };
                 if let Err(reason) = result {
-                    let _ = st.app.emit("file-failed", &FileFailedInfo { transfer_id, reason });
+                    let _ = st.app.emit(
+                        "file-failed",
+                        &FileFailedInfo {
+                            transfer_id,
+                            reason,
+                        },
+                    );
                 }
             });
         }
@@ -3854,8 +3979,15 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             sender_id,
             success,
         } => {
-            handle_group_file_complete_ack(state, peer_id, transfer_id, group_id, sender_id, success)
-                .await;
+            handle_group_file_complete_ack(
+                state,
+                peer_id,
+                transfer_id,
+                group_id,
+                sender_id,
+                success,
+            )
+            .await;
         }
     }
 }
@@ -4062,9 +4194,9 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                 // 未认识：仅 Presence（节点通告）允许 TOFU —— 它存在的目的就是
                 // 让「不认识」的节点被全网看到。其余消息仍拒，避免陌生人直接投递。
                 None => match env.kind {
-                    GossipKind::Presence
-                    | GossipKind::FriendRequest
-                    | GossipKind::FriendAccept => true,
+                    GossipKind::Presence | GossipKind::FriendRequest | GossipKind::FriendAccept => {
+                        true
+                    }
                     // 回执/确认不能 TOFU：发送方必须是「已绑定身份」的好友。
                     // peers 是内存态，进程重启后为空，此处回退到 friends 表
                     // （持久化的 ed25519 公钥）完成身份绑定，避免重启后跨跳
@@ -4210,8 +4342,12 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
     //
     // ⚠️ 这里**只记判据、不 return**（2026-09-13 审计）：非成员也要继续走第 4 步的转发，
     // 否则 BLE-only 三点中继里的群聊永远不通（细节见 `group_envelope_consumable` 的注释）。
-    let group_consumable =
-        group_envelope_consumable(&env.kind, &env.group_members, &state.device_id, &env.sender_id);
+    let group_consumable = group_envelope_consumable(
+        &env.kind,
+        &env.group_members,
+        &state.device_id,
+        &env.sender_id,
+    );
 
     // 4. 转发（fan-out，TTL 衰减）— 先过**中继授权**（P2 / M4），再选人转发。
     //
@@ -4351,7 +4487,12 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                         // （ensure_link 只由 UDP announce 驱动）⇒ 同网段也只能一直走中继。
                         // 主动喊一轮 who_has：同网段的节点会用**单播**把 announce 回给我们，
                         // 我们随即建立直连；不在同网段的节点收不到单播、不受影响。
-                        if let Some(tx) = state.probe.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+                        if let Some(tx) = state
+                            .probe
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .as_ref()
+                        {
                             let next = tx.borrow().saturating_add(1);
                             let _ = tx.send(next);
                         }
@@ -4489,7 +4630,9 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                         .logger
                         .info("friend", format!("重复的好友同意（已忽略）peer={from}"));
                 } else {
-                    state.logger.info("friend", format!("收到跨跳好友同意 peer={from}"));
+                    state
+                        .logger
+                        .info("friend", format!("收到跨跳好友同意 peer={from}"));
                     let _ = crate::notifications::show_if_enabled(
                         state,
                         "好友申请已通过",
@@ -4533,7 +4676,8 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                 if let Some(pt) = plaintext {
                     if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&pt) {
                         let from = env.sender_id.clone();
-                        let last_read_ts = v.get("last_read_ts").and_then(|t| t.as_i64()).unwrap_or(0);
+                        let last_read_ts =
+                            v.get("last_read_ts").and_then(|t| t.as_i64()).unwrap_or(0);
                         let last_read_msg_id = v
                             .get("last_read_msg_id")
                             .and_then(|m| m.as_str())
@@ -4640,8 +4784,7 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                 if env.kind == GossipKind::Group {
                     let gid = env.group_id.clone().unwrap_or_default();
                     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                    let blocked =
-                        db::group_message_blocked_by_boundary(&dbc, &gid, env.seq, &kind);
+                    let blocked = db::group_message_blocked_by_boundary(&dbc, &gid, env.seq, &kind);
                     drop(dbc);
                     if blocked {
                         return;
@@ -4711,7 +4854,8 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                         // （解决先撤后到）封死了：随后消息带着完整正文落库，撤回永久失效。
                         // 目标不存在时以「发送者是本群成员」为准 —— 他能解开群消息就说明
                         // 持有群密钥、是成员；而 msg_id 是信封哈希，本就随 gossip 公开。
-                        let target_exists = db::get_message_preview_source(&dbc, &p.target).is_some();
+                        let target_exists =
+                            db::get_message_preview_source(&dbc, &p.target).is_some();
                         let allowed = if target_exists {
                             db::get_message_preview_source(&dbc, &p.target)
                                 .map(|(sid, _)| sid == env.sender_id)
@@ -4990,7 +5134,10 @@ async fn handle_relay_chunk(
 ) {
     if to == state.device_id {
         // 最终接收方：先解密（E2EE，密文不落盘），再增量哈希、重组
-        let mut keys = state.relay_file_keys.lock().unwrap_or_else(|e| e.into_inner());
+        let mut keys = state
+            .relay_file_keys
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let Some(rs) = keys.get_mut(&transfer_id) else {
             return;
         };
@@ -5009,7 +5156,11 @@ async fn handle_relay_chunk(
         };
         if let Some((name, expected_size, full)) = completed {
             // 重组结束（无论成败）：移除会话状态，取哈希做完整性校验
-            let rs = state.relay_file_keys.lock().unwrap_or_else(|e| e.into_inner()).remove(&transfer_id);
+            let rs = state
+                .relay_file_keys
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&transfer_id);
             if full.len() as u64 != expected_size {
                 let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                 db::upsert_transfer(
@@ -5201,7 +5352,11 @@ async fn handle_relay_chunk(
 }
 
 fn save_received_bytes(state: &AppState, name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
-    let dir = state.downloads_dir.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let dir = state
+        .downloads_dir
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let safe_name = file::safe_file_name(name).ok_or("文件名非法")?;
     let base = dir.join(safe_name);
@@ -5259,7 +5414,10 @@ async fn handle_group_key(
     if !members.iter().any(|m| m == &from) || !members.iter().any(|m| m == &to) {
         return;
     }
-    if let Some(group) = db::get_group(&state.db.lock().unwrap_or_else(|e| e.into_inner()), &group_id) {
+    if let Some(group) = db::get_group(
+        &state.db.lock().unwrap_or_else(|e| e.into_inner()),
+        &group_id,
+    ) {
         if group.creator != from {
             return;
         }
@@ -5283,7 +5441,11 @@ async fn handle_group_key(
     }
     let mut k = [0u8; 32];
     k.copy_from_slice(&raw);
-    state.group_keys.lock().unwrap_or_else(|e| e.into_inner()).insert(group_id.clone(), k);
+    state
+        .group_keys
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(group_id.clone(), k);
     {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::set_setting(&dbc, &format!("gk:{group_id}"), &STANDARD.encode(k)).ok();
@@ -5333,7 +5495,12 @@ async fn handle_group_file_offer(
     // 幂等：会话已激活（内存有 file_key）→ 重复 Offer 忽略。
     // 注意不能因为「group_files 里有记录」就跳过：重启后内存 key 丢失但记录还在，
     // 跳过会让离线补发永远无法重建会话（接收卡死）。改为下方「已完成则跳过」+「幂等重建」。
-    if state.group_file_keys.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&transfer_id) {
+    if state
+        .group_file_keys
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains_key(&transfer_id)
+    {
         return;
     }
     // 权限：本地群存在，且 sender ∈ group_members（防群外 peer 伪造 Offer）
@@ -5354,7 +5521,8 @@ async fn handle_group_file_offer(
     let Ok(sealed) = STANDARD.decode(&sealed_file_key) else {
         return;
     };
-    let Some(file_key) = crypto::open_symmetric(&group_key, &sealed).and_then(|k| k.try_into().ok())
+    let Some(file_key) =
+        crypto::open_symmetric(&group_key, &sealed).and_then(|k| k.try_into().ok())
     else {
         return;
     };
@@ -5362,8 +5530,7 @@ async fn handle_group_file_offer(
     // 已完成的 transfer → 忽略（避免重复接收 / 重复 emit）
     let already_done = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::get_group_file_recipient_status(&dbc, &transfer_id, &state.device_id)
-            .as_deref()
+        db::get_group_file_recipient_status(&dbc, &transfer_id, &state.device_id).as_deref()
             == Some("completed")
     };
     if already_done {
@@ -5404,7 +5571,9 @@ async fn handle_group_file_offer(
         sender_id: sender_id.clone(),
         receiver_id: state.device_id.clone(),
         kind: kind.to_string(),
-        content: serde_json::json!({ "name": name, "size": size, "sha256": sha256, "subtype": subtype }).to_string(),
+        content:
+            serde_json::json!({ "name": name, "size": size, "sha256": sha256, "subtype": subtype })
+                .to_string(),
         ts: db::now_ms(),
         seq,
         status: "sending".to_string(),
@@ -5437,7 +5606,11 @@ async fn handle_group_file_offer(
 fn fail_group_file_chunk(state: &Arc<AppState>, transfer_id: &str) {
     file::fail_group_receive(state, transfer_id);
     set_gfile_bubble_status(state, transfer_id, "failed");
-    state.group_file_keys.lock().unwrap_or_else(|e| e.into_inner()).remove(transfer_id);
+    state
+        .group_file_keys
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(transfer_id);
     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
     let _ = db::update_group_file_recipient(&dbc, transfer_id, &state.device_id, "failed", 0.0);
 }
@@ -5462,7 +5635,12 @@ async fn handle_group_file_done(
         return;
     }
     // 幂等 / 无 session：已完成或从未建立 Offer session → 安全忽略
-    if !state.group_file_keys.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&transfer_id) {
+    if !state
+        .group_file_keys
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains_key(&transfer_id)
+    {
         return;
     }
     // 权限：群存在 && sender 是群成员
@@ -5476,12 +5654,20 @@ async fn handle_group_file_done(
     if !group_exists || !sender_is_member {
         return;
     }
-    let Some(gf) = db::get_group_file(&state.db.lock().unwrap_or_else(|e| e.into_inner()), &transfer_id) else {
+    let Some(gf) = db::get_group_file(
+        &state.db.lock().unwrap_or_else(|e| e.into_inner()),
+        &transfer_id,
+    ) else {
         return;
     };
 
     // 空文件：无 Chunk 阶段，Done 时才建立接收状态（0 字节 .part）
-    if !state.group_file_receivers.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&transfer_id) {
+    if !state
+        .group_file_receivers
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains_key(&transfer_id)
+    {
         if gf.size == 0 {
             if file::begin_group_receive(
                 state,
@@ -5504,7 +5690,12 @@ async fn handle_group_file_done(
     }
 
     // 从接收表移除（取得所有权），做最终校验与落盘
-    let mut r = match state.group_file_receivers.lock().unwrap_or_else(|e| e.into_inner()).remove(&transfer_id) {
+    let mut r = match state
+        .group_file_receivers
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&transfer_id)
+    {
         Some(r) => r,
         None => return,
     };
@@ -5513,11 +5704,20 @@ async fn handle_group_file_done(
     if r.received != r.size {
         let _ = std::fs::remove_file(&r.tmp_path);
         set_gfile_bubble_status(state, &transfer_id, "failed");
-        state.group_file_keys.lock().unwrap_or_else(|e| e.into_inner()).remove(&transfer_id);
+        state
+            .group_file_keys
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&transfer_id);
         {
             let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-            let _ =
-                db::update_group_file_recipient(&dbc, &transfer_id, &state.device_id, "failed", 0.0);
+            let _ = db::update_group_file_recipient(
+                &dbc,
+                &transfer_id,
+                &state.device_id,
+                "failed",
+                0.0,
+            );
             // 接收 transfer 同步 failed
             db::upsert_transfer(
                 &dbc,
@@ -5548,7 +5748,11 @@ async fn handle_group_file_done(
         if !actual_hex.eq_ignore_ascii_case(&r.expected_sha256) {
             let _ = std::fs::remove_file(&r.tmp_path);
             set_gfile_bubble_status(state, &transfer_id, "failed");
-            state.group_file_keys.lock().unwrap_or_else(|e| e.into_inner()).remove(&transfer_id);
+            state
+                .group_file_keys
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&transfer_id);
             {
                 let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                 let _ = db::update_group_file_recipient(
@@ -5568,11 +5772,20 @@ async fn handle_group_file_done(
         let _ = e.to_string();
         let _ = std::fs::remove_file(&r.tmp_path);
         set_gfile_bubble_status(state, &transfer_id, "failed");
-        state.group_file_keys.lock().unwrap_or_else(|e| e.into_inner()).remove(&transfer_id);
+        state
+            .group_file_keys
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&transfer_id);
         {
             let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-            let _ =
-                db::update_group_file_recipient(&dbc, &transfer_id, &state.device_id, "failed", 0.0);
+            let _ = db::update_group_file_recipient(
+                &dbc,
+                &transfer_id,
+                &state.device_id,
+                "failed",
+                0.0,
+            );
             // 接收 transfer 同步 failed
             db::upsert_transfer(
                 &dbc,
@@ -5596,17 +5809,30 @@ async fn handle_group_file_done(
     // → 两条同名传输可能选中同一个名字。这里在真正落盘前再确认一次：被占走就换名。
     // （单聊路径本来就是在写盘时才定名，所以没有这个竞态——这也是"群聊出问题、单聊正常"的原因。）
     if r.final_path.exists() {
-        let dl = state.downloads_dir.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let dl = state
+            .downloads_dir
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         r.final_path = file::unique_path(&dl, &r.name);
     }
     if let Err(_) = std::fs::rename(&r.tmp_path, &r.final_path) {
         let _ = std::fs::remove_file(&r.tmp_path);
         set_gfile_bubble_status(state, &transfer_id, "failed");
-        state.group_file_keys.lock().unwrap_or_else(|e| e.into_inner()).remove(&transfer_id);
+        state
+            .group_file_keys
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&transfer_id);
         {
             let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-            let _ =
-                db::update_group_file_recipient(&dbc, &transfer_id, &state.device_id, "failed", 0.0);
+            let _ = db::update_group_file_recipient(
+                &dbc,
+                &transfer_id,
+                &state.device_id,
+                "failed",
+                0.0,
+            );
             // 接收 transfer 同步 failed
             db::upsert_transfer(
                 &dbc,
@@ -5627,7 +5853,8 @@ async fn handle_group_file_done(
     // 全部成功：正式文件已落盘 → completed / progress 1.0 → 气泡转 delivered → 清理
     {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        let _ = db::update_group_file_recipient(&dbc, &transfer_id, &state.device_id, "completed", 1.0);
+        let _ =
+            db::update_group_file_recipient(&dbc, &transfer_id, &state.device_id, "completed", 1.0);
         // 群文件本地路径持久化到 transfer 记录：打开/另存/历史加载经
         // transfer_id（gfile-{tid}）关联到该真实本地路径（重启后仍有效）
         db::upsert_transfer(
@@ -5655,7 +5882,11 @@ async fn handle_group_file_done(
             db::now_ms(),
         );
     }
-    state.group_file_keys.lock().unwrap_or_else(|e| e.into_inner()).remove(&transfer_id);
+    state
+        .group_file_keys
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&transfer_id);
     // 重发带本地路径的记录（applyIncoming 按 msg_id 合并更新，未读不重复）：
     // 前端气泡 content.path 就绪 → 打开/另存/图片代码预览立即可用
     let msg_id = format!("gfile-{transfer_id}");
@@ -5694,7 +5925,8 @@ async fn handle_group_file_done(
     // 内容（文件尚未下载），Done 时必须显式更新，否则接收方图片/代码预览因缺 path 失败。
     {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::update_message_content(&dbc, &done_rec.msg_id, &done_rec.content, &done_rec.status).ok();
+        db::update_message_content(&dbc, &done_rec.msg_id, &done_rec.content, &done_rec.status)
+            .ok();
     }
     let _ = state.app.emit("message-received", &done_rec);
     // 完成确认：无论 ACK 发送成败，file_key 已清理不再保留（ACK 丢失由后续阶段处理）
@@ -5742,7 +5974,10 @@ async fn handle_group_file_complete_ack(
         return;
     }
     // 3. transfer 必须是本机发出的群文件，且 group_id 一致
-    let Some(gf) = db::get_group_file(&state.db.lock().unwrap_or_else(|e| e.into_inner()), &transfer_id) else {
+    let Some(gf) = db::get_group_file(
+        &state.db.lock().unwrap_or_else(|e| e.into_inner()),
+        &transfer_id,
+    ) else {
         return;
     };
     if gf.sender_id != state.device_id || gf.group_id != group_id {
@@ -5783,8 +6018,7 @@ async fn handle_group_file_complete_ack(
         if success {
             bubble = "delivered";
         } else {
-            let recipients =
-                db::list_group_file_recipients(&dbc, &transfer_id).unwrap_or_default();
+            let recipients = db::list_group_file_recipients(&dbc, &transfer_id).unwrap_or_default();
             let all_terminal = recipients
                 .iter()
                 .all(|r| r.status == "completed" || r.status == "failed");
@@ -5805,7 +6039,11 @@ async fn handle_group_file_complete_ack(
         // 与用户口径（离线不计入分母，在线全到才算完）相冲突。
         // ⚠️ `group_file_online_progress` 内部取 db 锁：必须先 drop 本段持有的锁，
         // 否则 std Mutex 同锁重入即死锁。
-        let tf_status = if bubble == "delivered" { "done" } else { "failed" };
+        let tf_status = if bubble == "delivered" {
+            "done"
+        } else {
+            "failed"
+        };
         let path = db::list_transfers(&dbc)
             .unwrap_or_default()
             .into_iter()
@@ -5838,7 +6076,9 @@ async fn handle_group_file_complete_ack(
         }
     }
     if bubble == "delivered" {
-        let _ = state.app.emit("message-acked", &format!("gfile-{transfer_id}"));
+        let _ = state
+            .app
+            .emit("message-acked", &format!("gfile-{transfer_id}"));
     }
 }
 
@@ -5868,11 +6108,20 @@ async fn handle_group_file_chunk(
         return;
     }
     // 会话必须已经由合法 GroupFileOffer 建立；无 key 直接丢弃（不尝试其他密钥）
-    let Some(file_key) = state.group_file_keys.lock().unwrap_or_else(|e| e.into_inner()).get(&transfer_id).copied() else {
+    let Some(file_key) = state
+        .group_file_keys
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&transfer_id)
+        .copied()
+    else {
         return;
     };
     // 本地群文件记录（Offer 阶段建立）提供 name/size/sha256
-    let Some(gf) = db::get_group_file(&state.db.lock().unwrap_or_else(|e| e.into_inner()), &transfer_id) else {
+    let Some(gf) = db::get_group_file(
+        &state.db.lock().unwrap_or_else(|e| e.into_inner()),
+        &transfer_id,
+    ) else {
         return;
     };
     // 只有该 transfer 的原始 sender 发来的 chunk 才合法。
@@ -5883,7 +6132,12 @@ async fn handle_group_file_chunk(
     }
 
     // 首个合法 chunk 到达时才创建 `.part`（安全路径，downloads 目录内）
-    if !state.group_file_receivers.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&transfer_id) {
+    if !state
+        .group_file_receivers
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains_key(&transfer_id)
+    {
         if let Err(_) = file::begin_group_receive(
             state,
             &transfer_id,
@@ -5910,7 +6164,10 @@ async fn handle_group_file_chunk(
     // seq / size 校验与写盘（复用一对一 FileReceiver 的严格语义）
     {
         use std::io::Write;
-        let mut recv = state.group_file_receivers.lock().unwrap_or_else(|e| e.into_inner());
+        let mut recv = state
+            .group_file_receivers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let Some(r) = recv.get_mut(&transfer_id) else {
             return;
         };
@@ -6011,7 +6268,11 @@ async fn handle_group_member_removed(
                     params![format!("gk:{group_id}")],
                 );
             }
-            state.group_keys.lock().unwrap_or_else(|e| e.into_inner()).remove(&group_id);
+            state
+                .group_keys
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&group_id);
             let _ = state.app.emit("group-member-removed", &group_id);
             let _ = state.app.emit("groups-updated", &group_id);
             return;
@@ -6097,7 +6358,12 @@ async fn handle_group_member_left(state: &Arc<AppState>, group_id: String, from:
 }
 
 pub async fn get_group_key(state: &AppState, group_id: &str) -> Option<[u8; 32]> {
-    if let Some(k) = state.group_keys.lock().unwrap_or_else(|e| e.into_inner()).get(group_id) {
+    if let Some(k) = state
+        .group_keys
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(group_id)
+    {
         return Some(*k);
     }
     let key_b64 = {
@@ -6126,7 +6392,10 @@ pub async fn get_group_key(state: &AppState, group_id: &str) -> Option<[u8; 32]>
 /// 因此最坏情况只是对方真的重装后我方需要重新建立信任，而不会把消息发给冒充者的密钥。
 fn warn_key_conflict_once(state: &AppState, device_id: &str) {
     {
-        let mut warned = state.key_conflict_warned.lock().unwrap_or_else(|e| e.into_inner());
+        let mut warned = state
+            .key_conflict_warned
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if !warned.insert(device_id.to_string()) {
             return;
         }
@@ -6253,7 +6522,10 @@ pub async fn upsert_peer(
     // 所有已连接节点的 ⇒ 攻击者用自己的私钥即可解开（E2EE 被击穿，且重启不恢复）。
     let verified = {
         let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
-        peers.get(device_id).map(|p| p.keys_verified).unwrap_or(false)
+        peers
+            .get(device_id)
+            .map(|p| p.keys_verified)
+            .unwrap_or(false)
     };
     if key_changed && verified {
         let (x, e) = {
@@ -6333,10 +6605,7 @@ pub(crate) fn mark_pending_group_key(
 }
 
 /// 取指定 peer 的待发 group_id 快照（无登记项时为空）。
-fn pending_group_key_ids(
-    pending: &HashMap<String, HashSet<String>>,
-    peer_id: &str,
-) -> Vec<String> {
+fn pending_group_key_ids(pending: &HashMap<String, HashSet<String>>, peer_id: &str) -> Vec<String> {
     match pending.get(peer_id) {
         Some(set) => set.iter().cloned().collect(),
         None => Vec::new(),
@@ -6437,7 +6706,10 @@ async fn redistribute_group_keys(state: &AppState, peer_id: &str) {
                 // announce 先于 ensure_link 执行时 link 尚未建立，此前会静默丢弃
                 // 且后续 is_new/key_changed 不再触发 → 成员永久拿不到群密钥。
                 // 登记待发，由建链 / Hello / 心跳的 flush_pending_group_keys 重试。
-                let mut pending = state.pending_group_keys.lock().unwrap_or_else(|e| e.into_inner());
+                let mut pending = state
+                    .pending_group_keys
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
                 mark_pending_group_key(&mut pending, peer_id, &g.id);
             }
             // 缺公钥 / 非成员 / 无密钥：重试无意义，不登记
@@ -6450,7 +6722,10 @@ async fn redistribute_group_keys(state: &AppState, peer_id: &str) {
 /// link 仍不可用则保留，等下一次 flush（Hello / 心跳 / 建链）重试。
 pub async fn flush_pending_group_keys(state: &AppState, peer_id: &str) {
     let group_ids: Vec<String> = {
-        let pending = state.pending_group_keys.lock().unwrap_or_else(|e| e.into_inner());
+        let pending = state
+            .pending_group_keys
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         pending_group_key_ids(&pending, peer_id)
     };
     for gid in group_ids {
@@ -6459,14 +6734,22 @@ pub async fn flush_pending_group_keys(state: &AppState, peer_id: &str) {
             // 仍无链路：保留登记项，等待下一次 flush（Hello / 心跳 / 建链）
             continue;
         }
-        let mut pending = state.pending_group_keys.lock().unwrap_or_else(|e| e.into_inner());
+        let mut pending = state
+            .pending_group_keys
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         clear_pending_group_key(&mut pending, peer_id, &gid);
     }
 }
 
 pub async fn touch_peer(state: &AppState, device_id: &str) {
     let ts = db::now_ms();
-    if let Some(p) = state.peers.lock().unwrap_or_else(|e| e.into_inner()).get_mut(device_id) {
+    if let Some(p) = state
+        .peers
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_mut(device_id)
+    {
         p.last_seen = ts;
     }
     state.emit_peers();
@@ -6647,12 +6930,22 @@ pub fn resolve_nickname(state: &AppState, id: &str) -> String {
     if id == state.device_id {
         return state.self_display_name();
     }
-    if let Some(p) = state.peers.lock().unwrap_or_else(|e| e.into_inner()).get(id) {
+    if let Some(p) = state
+        .peers
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(id)
+    {
         if !p.nickname.is_empty() {
             return p.nickname.clone();
         }
     }
-    if let Some(r) = state.pending_requests.lock().unwrap_or_else(|e| e.into_inner()).get(id) {
+    if let Some(r) = state
+        .pending_requests
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(id)
+    {
         return r.from_nickname.clone();
     }
     if let Some((n, _)) = db::get_friend(&state.db.lock().unwrap_or_else(|e| e.into_inner()), id) {
@@ -6779,7 +7072,12 @@ pub async fn send_read_receipt_route(
 /// 同时清除两者；失败时内存已由 remove 清除但会重新写入，DB 保留不动
 /// （由 `mark_read` 写入，下次 flush 重试）。
 pub async fn flush_pending_reads(state: &AppState, peer_id: &str) {
-    let Some(_last_read_ts) = state.pending_reads.lock().unwrap_or_else(|e| e.into_inner()).remove(peer_id) else {
+    let Some(_last_read_ts) = state
+        .pending_reads
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(peer_id)
+    else {
         return;
     };
     // 补发时重新取「对方最近一条消息」的 msg_id + ts，而不是使用之前内存里的 ts。
@@ -6796,7 +7094,10 @@ pub async fn flush_pending_reads(state: &AppState, peer_id: &str) {
     };
     if !send_read_receipt_route(state, peer_id, Some(msg_id), last_read_ts).await {
         // 直连发送失败：内存重新放入 pending，DB 保留（已由 mark_read 写入）
-        let mut pending = state.pending_reads.lock().unwrap_or_else(|e| e.into_inner());
+        let mut pending = state
+            .pending_reads
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let cur = pending.entry(peer_id.to_string()).or_insert(last_read_ts);
         *cur = (*cur).max(last_read_ts);
     } else {
@@ -6878,7 +7179,10 @@ mod tests {
             .expect("必须还有 build_signed_hello（本护栏锚点）");
         // 注意：源码里有大量中文，**不能**按"起始 + 2000 字节"硬切（会切在多字节字符中间 panic）；
         // 用"顶层函数结尾的 `\n}\n`"作终点（与 lib.rs 的 `rust_fn_body` 同一判据）。
-        let end = src[at..].find("\n}\n").map(|i| at + i + 3).unwrap_or(src.len());
+        let end = src[at..]
+            .find("\n}\n")
+            .map(|i| at + i + 3)
+            .unwrap_or(src.len());
         let body = &src[at..end];
         assert!(
             body.contains("hello_avatar_for_wire"),
@@ -6896,7 +7200,10 @@ mod tests {
         let at = src
             .find("async fn broadcast_presence")
             .expect("必须还有 broadcast_presence（本护栏锚点）");
-        let end = src[at..].find("\n}\n").map(|i| at + i + 3).unwrap_or(src.len());
+        let end = src[at..]
+            .find("\n}\n")
+            .map(|i| at + i + 3)
+            .unwrap_or(src.len());
         let body = &src[at..end];
         assert!(
             body.contains("hello_avatar_for_wire"),
@@ -6917,16 +7224,46 @@ mod tests {
         let other = "other";
 
         // 是群成员、且发送者也在成员表里 ⇒ 可以消费
-        assert!(group_envelope_consumable(&GossipKind::Group, &group, me, other));
+        assert!(group_envelope_consumable(
+            &GossipKind::Group,
+            &group,
+            me,
+            other
+        ));
         // 我不是成员 ⇒ 不消费（但**不影响转发** —— 见 group_envelope_consumable 的注释）
-        assert!(!group_envelope_consumable(&GossipKind::Group, &group, "stranger", other));
+        assert!(!group_envelope_consumable(
+            &GossipKind::Group,
+            &group,
+            "stranger",
+            other
+        ));
         // 发送者自称不在成员表里（伪造者想把群消息广播给别人）⇒ 不消费
-        assert!(!group_envelope_consumable(&GossipKind::Group, &group, me, "outsider"));
+        assert!(!group_envelope_consumable(
+            &GossipKind::Group,
+            &group,
+            me,
+            "outsider"
+        ));
         // 成员表为空 = 旧端发的群信封 ⇒ 保持兼容，允许消费
-        assert!(group_envelope_consumable(&GossipKind::Group, &[], me, other));
+        assert!(group_envelope_consumable(
+            &GossipKind::Group,
+            &[],
+            me,
+            other
+        ));
         // 非群种类一律不受这条判据影响
-        assert!(group_envelope_consumable(&GossipKind::Presence, &group, "stranger", other));
-        assert!(group_envelope_consumable(&GossipKind::ChatAck, &group, "stranger", other));
+        assert!(group_envelope_consumable(
+            &GossipKind::Presence,
+            &group,
+            "stranger",
+            other
+        ));
+        assert!(group_envelope_consumable(
+            &GossipKind::ChatAck,
+            &group,
+            "stranger",
+            other
+        ));
     }
 
     /// **非成员中继必须转发群消息**（结构护栏）：`handle_gossip` 里那句早期 `return` 一旦
@@ -6935,7 +7272,9 @@ mod tests {
     #[test]
     fn handle_gossip_does_not_bail_out_for_non_members() {
         let src = include_str!("transport.rs");
-        let start = src.find("async fn handle_gossip").expect("必须还有 handle_gossip");
+        let start = src
+            .find("async fn handle_gossip")
+            .expect("必须还有 handle_gossip");
         let body = &src[start..];
         let end = body.find("\n}\n").unwrap_or(body.len());
         let body = &body[..end];
@@ -6944,7 +7283,9 @@ mod tests {
             "handle_gossip 必须用 group_envelope_consumable 判据"
         );
         assert!(
-            !body.contains("if matches!(env.kind, GossipKind::Group) && !env.group_members.is_empty()"),
+            !body.contains(
+                "if matches!(env.kind, GossipKind::Group) && !env.group_members.is_empty()"
+            ),
             "不能恢复『非成员直接 return』的旧写法 —— 那会让非成员中继不再转发群消息，\
              多跳（BLE-only 手机↔电脑↔手机）群聊永远不通"
         );
@@ -6973,22 +7314,46 @@ mod tests {
         );
         // 刚发过（距上次不足间隔）⇒ 等下一次心跳，不打扰
         assert_eq!(
-            friend_accept_flush_decision(Some((now - 10_000, 1, now - 1_000)), now, max, interval, window),
+            friend_accept_flush_decision(
+                Some((now - 10_000, 1, now - 1_000)),
+                now,
+                max,
+                interval,
+                window
+            ),
             FriendAcceptFlush::Nothing
         );
         // 距上次够了 ⇒ 继续补发（第 2 次）
         assert_eq!(
-            friend_accept_flush_decision(Some((now - 10_000, 1, now - 5_000)), now, max, interval, window),
+            friend_accept_flush_decision(
+                Some((now - 10_000, 1, now - 5_000)),
+                now,
+                max,
+                interval,
+                window
+            ),
             FriendAcceptFlush::Flush(2)
         );
         // 次数用尽 ⇒ 收尾
         assert_eq!(
-            friend_accept_flush_decision(Some((now - 10_000, 3, now - 60_000)), now, max, interval, window),
+            friend_accept_flush_decision(
+                Some((now - 10_000, 3, now - 60_000)),
+                now,
+                max,
+                interval,
+                window
+            ),
             FriendAcceptFlush::GiveUp
         );
         // 窗口用尽（哪怕一次都没发出去）⇒ 收尾，并让调用方留一条 warn
         assert_eq!(
-            friend_accept_flush_decision(Some((now - 121_000, 1, now - 60_000)), now, max, interval, window),
+            friend_accept_flush_decision(
+                Some((now - 121_000, 1, now - 60_000)),
+                now,
+                max,
+                interval,
+                window
+            ),
             FriendAcceptFlush::GiveUp
         );
     }
@@ -7074,8 +7439,14 @@ mod tests {
     /// 这条测试会在把判据回退成「任意连接」时 FAIL —— 因为它明确区分了两种端点。
     #[test]
     fn only_routed_connection_still_dials_lan_path() {
-        let lan: MeshEndpoint = "192.168.1.20:59992".parse::<std::net::SocketAddr>().unwrap().into();
-        let routed: MeshEndpoint = "100.70.10.20:59992".parse::<std::net::SocketAddr>().unwrap().into();
+        let lan: MeshEndpoint = "192.168.1.20:59992"
+            .parse::<std::net::SocketAddr>()
+            .unwrap()
+            .into();
+        let routed: MeshEndpoint = "100.70.10.20:59992"
+            .parse::<std::net::SocketAddr>()
+            .unwrap()
+            .into();
 
         // 纯函数内核：只有 Routed 端点 ⇒ 不算 LAN 已连通（⇒ 大 ID 会去补一条 LAN）
         // （`Endpoint` 不是 Copy，测试里 clone 保持可读性）
@@ -7090,8 +7461,10 @@ mod tests {
         // 此前路径类型是从 IP 段反推的（`path_kind_for`），这条必然被判成 LAN ⇒
         // ① `ensure_link` 以为 LAN 已连通、不再补真正的 LAN 链路（D5 的修复被绕过去）；
         // ② 选路时按最高优先级当成 LAN。把判据改回"按 IP 反推"这条断言立刻 FAIL。
-        let private_but_routed: MeshEndpoint =
-            "192.168.1.77:59992".parse::<std::net::SocketAddr>().unwrap().into();
+        let private_but_routed: MeshEndpoint = "192.168.1.77:59992"
+            .parse::<std::net::SocketAddr>()
+            .unwrap()
+            .into();
         assert!(
             !has_lan_path(&[(private_but_routed.clone(), PathKind::Routed)]),
             "用户配置的私有段 Routed 端点不得被当成 LAN"
@@ -7106,15 +7479,50 @@ mod tests {
             (routed.clone(), PathKind::Routed),
             (lan.clone(), PathKind::Lan),
         ];
-        assert!(should_dial_for_peer("b", "a", false, &routed_only, Some(now - 60_000), now));
+        assert!(should_dial_for_peer(
+            "b",
+            "a",
+            false,
+            &routed_only,
+            Some(now - 60_000),
+            now
+        ));
         // 已有 LAN 连接 ⇒ 不重复拨（避免镜像重复连接，P1-2）。
-        assert!(!should_dial_for_peer("b", "a", false, &lan_only, Some(now - 60_000), now));
+        assert!(!should_dial_for_peer(
+            "b",
+            "a",
+            false,
+            &lan_only,
+            Some(now - 60_000),
+            now
+        ));
         // 已有 LAN（含还有一条 Routed 的多路径场景）⇒ 也不拨。
-        assert!(!should_dial_for_peer("b", "a", false, &both, Some(now - 60_000), now));
+        assert!(!should_dial_for_peer(
+            "b",
+            "a",
+            false,
+            &both,
+            Some(now - 60_000),
+            now
+        ));
         // 完全没有连接 ⇒ 拨（原语义不变）。
-        assert!(should_dial_for_peer("b", "a", false, &[], Some(now - 60_000), now));
+        assert!(should_dial_for_peer(
+            "b",
+            "a",
+            false,
+            &[],
+            Some(now - 60_000),
+            now
+        ));
         // 小 ID 兜底：只有 Routed 且超过阈值 ⇒ 也去补 LAN。
-        assert!(should_dial_for_peer("a", "b", false, &routed_only, Some(now - 60_000), now));
+        assert!(should_dial_for_peer(
+            "a",
+            "b",
+            false,
+            &routed_only,
+            Some(now - 60_000),
+            now
+        ));
         // 私有段地址 + Routed 来路 ⇒ 仍应补 LAN（与上面的关键回归同一件事，走决策层）
         assert!(should_dial_for_peer(
             "b",
@@ -7131,7 +7539,11 @@ mod tests {
     fn make_link(
         addr: &str,
         kind: PathKind,
-    ) -> (crate::state::Link, mpsc::Receiver<Message>, mpsc::Receiver<Message>) {
+    ) -> (
+        crate::state::Link,
+        mpsc::Receiver<Message>,
+        mpsc::Receiver<Message>,
+    ) {
         let (b_tx, b_rx) = mpsc::channel(4);
         let (p_tx, p_rx) = mpsc::channel(4);
         let (cancel, _cancel_rx) = watch::channel(false);
@@ -7152,7 +7564,11 @@ mod tests {
     fn make_link_endpoint(
         endpoint: MeshEndpoint,
         kind: PathKind,
-    ) -> (crate::state::Link, mpsc::Receiver<Message>, mpsc::Receiver<Message>) {
+    ) -> (
+        crate::state::Link,
+        mpsc::Receiver<Message>,
+        mpsc::Receiver<Message>,
+    ) {
         let (b_tx, b_rx) = mpsc::channel(4);
         let (p_tx, p_rx) = mpsc::channel(4);
         let (cancel, _cancel_rx) = watch::channel(false);
@@ -7205,7 +7621,12 @@ mod tests {
     fn route_order_single_link_is_unchanged() {
         let (l0, _b0, _p0) = make_link("192.168.1.20:59992", PathKind::Lan);
         let links = vec![l0];
-        let conns = vec![mesh_conn("peer", "192.168.1.20:59992", Some(1000), PathKind::Lan)];
+        let conns = vec![mesh_conn(
+            "peer",
+            "192.168.1.20:59992",
+            Some(1000),
+            PathKind::Lan,
+        )];
         let order = route_order(&links, "peer", &conns, 1000, 15_000, 3);
         assert_eq!(order, vec![0]);
     }
@@ -7256,7 +7677,14 @@ mod tests {
         assert!(!has_lan_path(&[(ble.clone(), PathKind::Bluetooth)]));
         let now = 1_000_000;
         assert!(
-            should_dial_for_peer("b", "a", false, &[(ble, PathKind::Bluetooth)], Some(now - 60_000), now),
+            should_dial_for_peer(
+                "b",
+                "a",
+                false,
+                &[(ble, PathKind::Bluetooth)],
+                Some(now - 60_000),
+                now
+            ),
             "只有 BLE 连接时仍应补 LAN"
         );
     }
@@ -7265,7 +7693,10 @@ mod tests {
     #[test]
     fn stale_generation_is_rejected() {
         assert!(generation_is_current(3, 3), "同一世代允许登记");
-        assert!(!generation_is_current(3, 4), "stop/start 之后的旧世代不得登记");
+        assert!(
+            !generation_is_current(3, 4),
+            "stop/start 之后的旧世代不得登记"
+        );
         // 世代只增不减，但"捕获值比当前大"同样视为无效（防御性：不做大小比较）
         assert!(!generation_is_current(4, 3));
     }
@@ -7294,7 +7725,12 @@ mod tests {
         // ②b 已有同路径但**已不健康**（半开待拆）⇒ 必须接受对端的新鲜连接，
         //     否则双方要干等 watchdog（最长 45s）才能恢复
         let with_dead_lan = [(lan_ep.clone(), PathKind::Lan, false)];
-        assert!(should_accept_inbound("b", "a", PathKind::Lan, &with_dead_lan));
+        assert!(should_accept_inbound(
+            "b",
+            "a",
+            PathKind::Lan,
+            &with_dead_lan
+        ));
 
         // ③ 小 ID 方（my_id < peer_id）：**始终接受** —— 否则双方互拒，谁也连不上
         assert!(should_accept_inbound("a", "b", PathKind::Lan, &with_lan));
@@ -7303,8 +7739,15 @@ mod tests {
         let full: Vec<(MeshEndpoint, PathKind, bool)> = (0..MAX_LINKS_PER_PEER)
             .map(|i| {
                 (
-                    format!("10.0.0.{i}:59992").parse::<std::net::SocketAddr>().unwrap().into(),
-                    if i % 2 == 0 { PathKind::Lan } else { PathKind::Routed },
+                    format!("10.0.0.{i}:59992")
+                        .parse::<std::net::SocketAddr>()
+                        .unwrap()
+                        .into(),
+                    if i % 2 == 0 {
+                        PathKind::Lan
+                    } else {
+                        PathKind::Routed
+                    },
                     true,
                 )
             })
@@ -7312,7 +7755,12 @@ mod tests {
         assert!(!should_accept_inbound("a", "b", PathKind::Bluetooth, &full));
         // 未到上限但已有 Routed ⇒ 接受（③ 的小 ID 方不受 ② 限制）
         let one_routed = [(routed_ep, PathKind::Routed, true)];
-        assert!(should_accept_inbound("a", "b", PathKind::Routed, &one_routed));
+        assert!(should_accept_inbound(
+            "a",
+            "b",
+            PathKind::Routed,
+            &one_routed
+        ));
     }
 
     /// 徽标必须反映**实际选中的那条**，而不是插入顺序的第一条。
@@ -7376,13 +7824,19 @@ mod tests {
             mesh_conn("peer", "100.70.10.20:59992", Some(0), PathKind::Routed),
         ];
         let order = route_order(&links, "peer", &conns, 60_000, 15_000, 3);
-        assert_eq!(order.len(), 2, "全不健康也要把链路交出去（可用性优先于择优）");
+        assert_eq!(
+            order.len(),
+            2,
+            "全不健康也要把链路交出去（可用性优先于择优）"
+        );
     }
 
     // ---- M3-b：真实信道上的 failover（ADR-0014 §8「切断被选中那条 → 消息仍送达」的单元版）----
 
     fn msg(id: &str) -> Message {
-        Message::Heartbeat { device_id: id.to_string() }
+        Message::Heartbeat {
+            device_id: id.to_string(),
+        }
     }
 
     /// 造 n 对信道，返回 senders + 各接收端（`None` 表示该条"已断"：接收端被丢弃）。
@@ -7417,11 +7871,15 @@ mod tests {
     #[tokio::test]
     async fn failover_delivers_on_next_link_when_selected_is_closed() {
         let (senders, mut rx) = channels(2, &[0]); // 下标 0（被选中）已断
-        // 顺序模拟选路结果：先试 0（断），再试 1（活）
+                                                   // 顺序模拟选路结果：先试 0（断），再试 1（活）
         let order = vec![0usize, 1];
         let r = send_over_order(&senders, &order, &msg("m1"), false).await;
         assert!(r.is_ok(), "断一条后必须换下一条送达，实得 {r:?}");
-        let got = rx[1].as_mut().expect("链路 1 应存活").try_recv().expect("应在链路 1 上收到");
+        let got = rx[1]
+            .as_mut()
+            .expect("链路 1 应存活")
+            .try_recv()
+            .expect("应在链路 1 上收到");
         assert!(matches!(got, Message::Heartbeat { .. }));
     }
 
@@ -7430,8 +7888,13 @@ mod tests {
     async fn sends_only_on_first_healthy_link_in_order() {
         let (senders, mut rx) = channels(2, &[]);
         let order = vec![1usize, 0]; // 选路把下标 1 排前面
-        assert!(send_over_order(&senders, &order, &msg("m2"), false).await.is_ok());
-        assert!(rx[1].as_mut().unwrap().try_recv().is_ok(), "应落在顺序第一的那条");
+        assert!(send_over_order(&senders, &order, &msg("m2"), false)
+            .await
+            .is_ok());
+        assert!(
+            rx[1].as_mut().unwrap().try_recv().is_ok(),
+            "应落在顺序第一的那条"
+        );
         assert!(
             rx[0].as_mut().unwrap().try_recv().is_err(),
             "不得同时投到第二条（否则会重复投递）"
@@ -7454,7 +7917,7 @@ mod tests {
         let (routed, _b1, _p1) = make_link("100.70.10.20:59992", PathKind::Routed);
         let links = vec![lan, routed];
         let conns = vec![
-            mesh_conn("peer", "192.168.1.20:59992", Some(0), PathKind::Lan),      // LAN 读活性过期
+            mesh_conn("peer", "192.168.1.20:59992", Some(0), PathKind::Lan), // LAN 读活性过期
             mesh_conn("peer", "100.70.10.20:59992", Some(60_000), PathKind::Routed), // Routed 健康
         ];
         let order = route_order(&links, "peer", &conns, 60_000, 15_000, 3);
@@ -7462,7 +7925,9 @@ mod tests {
 
         // 用真实信道复现：LAN 那条已断，Routed 那条活着
         let (senders, mut rx) = channels(2, &[0]);
-        assert!(send_over_order(&senders, &order, &msg("m4"), false).await.is_ok());
+        assert!(send_over_order(&senders, &order, &msg("m4"), false)
+            .await
+            .is_ok());
         assert!(
             rx[1].as_mut().unwrap().try_recv().is_ok(),
             "LAN 降级后消息必须从 Routed 送出"
@@ -7506,8 +7971,10 @@ mod tests {
         let victim = crypto::Identity::generate();
         let (xk, ek, sig) = signed_hello(&attacker, "victim-device", 59992, "n1");
         let bound = victim.ed25519_public_b64();
-        assert!(hello_auth_decision(Some(&bound), "victim-device", 59992, "n1", &xk, &ek, &sig)
-            .is_err());
+        assert!(
+            hello_auth_decision(Some(&bound), "victim-device", 59992, "n1", &xk, &ek, &sig)
+                .is_err()
+        );
     }
 
     #[test]
@@ -7619,8 +8086,16 @@ mod tests {
         // ② 好友表里存着受害者真实公钥时，攻击者的 Hello 必须被拒
         let victim_ek = victim.ed25519_public_b64();
         assert!(
-            hello_auth_decision(Some(&victim_ek), "victim-device", 59992, "n1", &axk, &aek, &asig)
-                .is_err(),
+            hello_auth_decision(
+                Some(&victim_ek),
+                "victim-device",
+                59992,
+                "n1",
+                &axk,
+                &aek,
+                &asig
+            )
+            .is_err(),
             "用自报公钥冒充已绑定好友必须被拒"
         );
 
@@ -7664,14 +8139,22 @@ mod tests {
             from: "a".into(),
             to: me.into(),
         };
-        assert_eq!(directed_relay_target(&tree_to_me, me), None, "给本机的帧不转发");
+        assert_eq!(
+            directed_relay_target(&tree_to_me, me),
+            None,
+            "给本机的帧不转发"
+        );
         let resp_legacy = Message::ShareTreeResponse {
             request_id: "r".into(),
             from: "a".into(),
             to: None,
             entries: vec![],
         };
-        assert_eq!(directed_relay_target(&resp_legacy, me), None, "旧端无 to：按直连处理");
+        assert_eq!(
+            directed_relay_target(&resp_legacy, me),
+            None,
+            "旧端无 to：按直连处理"
+        );
         let resp_relay = Message::ShareTreeResponse {
             request_id: "r".into(),
             from: "a".into(),
@@ -7697,7 +8180,9 @@ mod tests {
             file_sha256: "h".into(),
         };
         assert_eq!(directed_relay_target(&offer, me), Some("b"));
-        let normal = Message::Heartbeat { device_id: "a".into() };
+        let normal = Message::Heartbeat {
+            device_id: "a".into(),
+        };
         assert_eq!(directed_relay_target(&normal, me), None);
     }
 
@@ -7838,7 +8323,16 @@ mod tests {
 
         // 构造并签名信封
         let engine = GossipEngine::new(100, 10, 4, 6);
-        let env = engine.build_envelope(&a, "dev-a", GossipKind::Chat, None, None, &payload_b64, 1, 1);
+        let env = engine.build_envelope(
+            &a,
+            "dev-a",
+            GossipKind::Chat,
+            None,
+            None,
+            &payload_b64,
+            1,
+            1,
+        );
 
         // B 验签 + 解密
         assert!(engine.verify_envelope(&env));
@@ -8549,7 +9043,10 @@ mod tests {
         assert!(pending_group_key_ids(&pending, "peer-b").is_empty());
         assert!(!pending.contains_key("peer-b"));
         // peer-c 不受影响
-        assert_eq!(pending_group_key_ids(&pending, "peer-c"), vec!["g-1".to_string()]);
+        assert_eq!(
+            pending_group_key_ids(&pending, "peer-c"),
+            vec!["g-1".to_string()]
+        );
     }
 
     /// 链路仍未就绪（NoLink）或非可重试原因（Fatal）的判定：
@@ -8557,9 +9054,13 @@ mod tests {
     #[test]
     fn flush_failure_retains_or_clears_pending_correctly() {
         // 仍无链路 → 保留
-        assert!(should_retain_pending_group_key(&Err(GroupKeySendErr::NoLink)));
+        assert!(should_retain_pending_group_key(&Err(
+            GroupKeySendErr::NoLink
+        )));
         // 非可重试 → 清除
-        assert!(!should_retain_pending_group_key(&Err(GroupKeySendErr::Fatal)));
+        assert!(!should_retain_pending_group_key(&Err(
+            GroupKeySendErr::Fatal
+        )));
         assert!(!should_retain_pending_group_key(&Ok(())));
 
         // 验证 flush 逻辑：NoLink 分支不调用 clear，pending 保持
@@ -8571,7 +9072,10 @@ mod tests {
         } else {
             clear_pending_group_key(&mut pending, "peer-b", "g-1");
         }
-        assert_eq!(pending_group_key_ids(&pending, "peer-b"), vec!["g-1".to_string()]);
+        assert_eq!(
+            pending_group_key_ids(&pending, "peer-b"),
+            vec!["g-1".to_string()]
+        );
 
         // 下一轮 flush：Fatal 分支必须清除（重试无意义：缺公钥 / 非成员 / 无密钥）
         clear_pending_group_key(&mut pending, "peer-b", "g-1");

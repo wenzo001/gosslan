@@ -39,11 +39,19 @@ impl Transport for LanTransport {
     }
 
     fn running(&self) -> bool {
-        self.state.network.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+        self.state
+            .network
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_some()
     }
 
     fn peer_count(&self) -> usize {
-        self.state.peers.lock().unwrap_or_else(|e| e.into_inner()).len()
+        self.state
+            .peers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len()
     }
 
     async fn start(&mut self) -> Result<(), String> {

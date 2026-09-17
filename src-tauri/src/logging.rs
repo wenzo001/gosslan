@@ -228,9 +228,8 @@ impl Logger {
         //     一条多行消息发出（`adb logcat` 里依然逐行可见）。
         #[cfg(target_os = "android")]
         {
-            let want = matches!(level, Level::Warn | Level::Error)
-                || target == "boot"
-                || target == "ble";
+            let want =
+                matches!(level, Level::Warn | Level::Error) || target == "boot" || target == "ble";
             if want {
                 logcat::push(format!("[{}] [{}] {}", level.as_str(), target, message));
             }
@@ -248,7 +247,10 @@ impl Logger {
 
     /// 清空内存与落盘文件。
     pub fn clear(&self) {
-        self.entries.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        self.entries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
         let _ = std::fs::remove_file(self.current_path());
         let _ = std::fs::remove_file(self.old_path());
     }
@@ -273,8 +275,18 @@ impl Logger {
         }
 
         use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
-            let line = format!("{} {} [{}] {}", format_utc(ts), level.as_str(), target, message);
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
+            let line = format!(
+                "{} {} [{}] {}",
+                format_utc(ts),
+                level.as_str(),
+                target,
+                message
+            );
             let _ = writeln!(f, "{line}");
         }
     }

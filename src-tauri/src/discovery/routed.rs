@@ -263,9 +263,18 @@ mod tests {
             Some(sa("100.64.0.1:60002"))
         );
         // 非法输入
-        assert_eq!(RoutedEndpoint::new(Some("a".into()), "garbage").socket_addr(), None);
-        assert_eq!(RoutedEndpoint::new(Some("a".into()), "").socket_addr(), None);
-        assert_eq!(RoutedEndpoint::new(Some("a".into()), "100.64.0.1:").socket_addr(), None);
+        assert_eq!(
+            RoutedEndpoint::new(Some("a".into()), "garbage").socket_addr(),
+            None
+        );
+        assert_eq!(
+            RoutedEndpoint::new(Some("a".into()), "").socket_addr(),
+            None
+        );
+        assert_eq!(
+            RoutedEndpoint::new(Some("a".into()), "100.64.0.1:").socket_addr(),
+            None
+        );
     }
 
     fn sa(s: &str) -> SocketAddr {
@@ -295,7 +304,8 @@ mod tests {
     fn device_id_is_optional_and_backward_compatible() {
         // 旧格式（历史配置）继续可解析、语义不变
         let legacy: Vec<RoutedEndpoint> =
-            serde_json::from_str(r#"[{"device_id":"dev-a","address":"100.64.0.1:59992"}]"#).unwrap();
+            serde_json::from_str(r#"[{"device_id":"dev-a","address":"100.64.0.1:59992"}]"#)
+                .unwrap();
         assert_eq!(legacy[0].device_id.as_deref(), Some("dev-a"));
         assert_eq!(legacy[0].display_id(), "dev-a");
 
@@ -308,7 +318,10 @@ mod tests {
 
         // 序列化时 None 不写该键（配置保持干净），且往返一致
         let encoded = encode_endpoints(&minimal);
-        assert!(!encoded.contains("device_id"), "未指定时不应写出该键: {encoded}");
+        assert!(
+            !encoded.contains("device_id"),
+            "未指定时不应写出该键: {encoded}"
+        );
         assert_eq!(parse_endpoints(&encoded), minimal);
     }
 }

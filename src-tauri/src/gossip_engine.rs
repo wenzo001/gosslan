@@ -244,7 +244,8 @@ mod tests {
         let id = Identity::generate();
         let engine = GossipEngine::new(100, 10, 4, 6);
 
-        let env = engine.build_envelope(&id, "dev-a", GossipKind::Chat, None, None, "cipher", 42, 1);
+        let env =
+            engine.build_envelope(&id, "dev-a", GossipKind::Chat, None, None, "cipher", 42, 1);
         assert!(engine.verify_envelope(&env));
 
         // 篡改 payload 后签名校验应失败
@@ -276,7 +277,8 @@ mod tests {
     fn envelope_ttl_is_preserved() {
         let id = crate::crypto::Identity::generate();
         let engine = GossipEngine::new(100, 10, 4, 6);
-        let env = engine.build_envelope(&id, "dev-a", GossipKind::Chat, None, None, "cipher", 42, 1);
+        let env =
+            engine.build_envelope(&id, "dev-a", GossipKind::Chat, None, None, "cipher", 42, 1);
         assert_eq!(env.ttl, 6);
     }
 

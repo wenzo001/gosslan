@@ -131,7 +131,10 @@ fn build(app: &tauri::AppHandle, title: &str, body: &str) -> notify_rust::Notifi
     target_os = "netbsd"
 ))]
 pub fn show(app: &tauri::AppHandle, title: &str, body: &str) -> Result<(), String> {
-    build(app, title, body).show().map(|_| ()).map_err(|e| e.to_string())
+    build(app, title, body)
+        .show()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 /// 通知 + 点击回调（Windows 实现）—— **平台差异的唯一切口**，对外只有一个入口
@@ -286,7 +289,11 @@ pub fn show_click_if_enabled(
     if !enabled(state) {
         return Ok(false);
     }
-    log_result(state, title, show_click_impl(&state.app, title, body, extra, on_click))
+    log_result(
+        state,
+        title,
+        show_click_impl(&state.app, title, body, extra, on_click),
+    )
 }
 
 /// 「用户点了系统通知」的事件名：主窗口收到后把对应会话（或「新的朋友」）拉到前台。
@@ -307,7 +314,11 @@ pub struct NotificationClick {
 ///
 /// 顺序是先唤起、后发事件：窗口此时可能正藏在托盘里（点 × 只隐藏不退出），
 /// 前端收到事件要立刻切会话 —— 窗口还没出来就切会在浮出时看到一次跳变。
-pub fn on_notification_clicked(app: &tauri::AppHandle, kind: &'static str, conv_id: Option<String>) {
+pub fn on_notification_clicked(
+    app: &tauri::AppHandle,
+    kind: &'static str,
+    conv_id: Option<String>,
+) {
     // 托盘是桌面概念（`mod tray` 本身是 `#[cfg(desktop)]`）；移动端的系统通知自带
     // "点开就回到前台"的行为，不需要也无法从后端唤起窗口。
     #[cfg(desktop)]
@@ -332,7 +343,10 @@ mod tests {
     #[test]
     fn notify_enabled_defaults_on_and_uses_the_same_key_as_the_frontend() {
         let conn = mem();
-        assert!(notifications_enabled(&conn), "缺省必须是开（与前端 notifyEnabled 一致）");
+        assert!(
+            notifications_enabled(&conn),
+            "缺省必须是开（与前端 notifyEnabled 一致）"
+        );
         crate::db::set_setting(&conn, "notify_enabled", "0").unwrap();
         assert!(!notifications_enabled(&conn), "显式关掉必须生效");
         crate::db::set_setting(&conn, "notify_enabled", "1").unwrap();
@@ -367,7 +381,10 @@ mod tests {
                 );
             }
         }
-        assert!(checked >= 2, "预期至少两处 ends_with(format!(（Windows dev 路径判定）");
+        assert!(
+            checked >= 2,
+            "预期至少两处 ends_with(format!(（Windows dev 路径判定）"
+        );
     }
 
     #[test]
