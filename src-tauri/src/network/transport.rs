@@ -132,6 +132,7 @@ fn route_order(
     now_ms: i64,
     health_timeout_ms: i64,
     max_failures: u32,
+    congestion_window_ms: i64,
 ) -> Vec<usize> {
     // 与 `links` 同序的候选：能按端点命中就用真实健康信息，否则合成「刚播种」候选。
     let candidates: Vec<crate::mesh::Connection> = links
@@ -148,8 +149,13 @@ fn route_order(
         })
         .collect();
 
-    let Some(best) = crate::mesh::pick_link(&candidates, now_ms, health_timeout_ms, max_failures)
-    else {
+    let Some(best) = crate::mesh::pick_link(
+        &candidates,
+        now_ms,
+        health_timeout_ms,
+        max_failures,
+        congestion_window_ms,
+    ) else {
         return Vec::new();
     };
     // 选中的排最前，其余保持插入序做 failover。
@@ -279,6 +285,7 @@ pub async fn try_send(state: &AppState, peer_id: &str, msg: &Message) -> Result<
         db::now_ms(),
         health_timeout_ms,
         max_failures,
+        crate::mesh::CONGESTION_WINDOW_MS,
     );
 
     // ④ 按选路顺序投递（两轮策略见 `send_over_order`）。
@@ -1799,6 +1806,7 @@ pub(crate) async fn inbound_path_kind(state: &AppState, peer_id: &str) -> String
         db::now_ms(),
         health_timeout_ms,
         max_failures,
+        crate::mesh::CONGESTION_WINDOW_MS,
     );
     // ③ 徽标显示「实际会走的那条」= 选路结果的第一条（见 `badge_path_kind`）。
     //
@@ -7664,7 +7672,15 @@ mod tests {
             Some(1000),
             PathKind::Lan,
         )];
-        let order = route_order(&links, "peer", &conns, 1000, 15_000, 3);
+        let order = route_order(
+            &links,
+            "peer",
+            &conns,
+            1000,
+            15_000,
+            3,
+            crate::mesh::CONGESTION_WINDOW_MS,
+        );
         assert_eq!(order, vec![0]);
     }
 
@@ -7679,7 +7695,15 @@ mod tests {
             mesh_conn("peer", "100.70.10.20:59992", Some(1000), PathKind::Routed),
             mesh_conn("peer", "192.168.1.20:59992", Some(1000), PathKind::Lan),
         ];
-        let order = route_order(&links, "peer", &conns, 1000, 15_000, 3);
+        let order = route_order(
+            &links,
+            "peer",
+            &conns,
+            1000,
+            15_000,
+            3,
+            crate::mesh::CONGESTION_WINDOW_MS,
+        );
         assert_eq!(order[0], 1, "应优先 LAN（下标 1），而不是插入在前的 Routed");
         // 不变量：其余链路仍排在后面做 failover，**一条都不能丢**
         assert_eq!(order.len(), 2);
@@ -7706,7 +7730,15 @@ mod tests {
             mesh_conn_endpoint("peer", ble.clone(), Some(1000), PathKind::Bluetooth),
             mesh_conn_endpoint("peer", lan.clone(), Some(1000), PathKind::Lan),
         ];
-        let order = route_order(&links, "peer", &conns, 1000, 15_000, 3);
+        let order = route_order(
+            &links,
+            "peer",
+            &conns,
+            1000,
+            15_000,
+            3,
+            crate::mesh::CONGESTION_WINDOW_MS,
+        );
         assert_eq!(order.len(), 2, "BLE 链路同样是 failover 候选，不能丢");
         assert_eq!(order[0], 1, "LAN 必须优先于 BLE");
 
@@ -7814,7 +7846,15 @@ mod tests {
             mesh_conn("peer", "100.70.10.20:59992", Some(1000), PathKind::Routed),
             mesh_conn("peer", "192.168.1.20:59992", Some(1000), PathKind::Lan),
         ];
-        let order = route_order(&links, "peer", &conns, 1000, 15_000, 3);
+        let order = route_order(
+            &links,
+            "peer",
+            &conns,
+            1000,
+            15_000,
+            3,
+            crate::mesh::CONGESTION_WINDOW_MS,
+        );
         assert_eq!(
             badge_path_kind(&links, &order),
             PathKind::Lan,
@@ -7836,7 +7876,15 @@ mod tests {
             // Routed：刚刚读到过帧
             mesh_conn("peer", "100.70.10.20:59992", Some(60_000), PathKind::Routed),
         ];
-        let order = route_order(&links, "peer", &conns, 60_000, 15_000, 3);
+        let order = route_order(
+            &links,
+            "peer",
+            &conns,
+            60_000,
+            15_000,
+            3,
+            crate::mesh::CONGESTION_WINDOW_MS,
+        );
         assert_eq!(order[0], 1, "LAN 不健康时必须降级到 Routed（真 failover）");
         assert_eq!(order.len(), 2, "不健康链路仍保留在后面（可作最后手段）");
     }
@@ -7846,7 +7894,15 @@ mod tests {
     fn route_order_tolerates_missing_mesh_candidate() {
         let (only, _b0, _p0) = make_link("192.168.1.20:59992", PathKind::Lan);
         let links = vec![only];
-        let order = route_order(&links, "peer", &[], 1000, 15_000, 3);
+        let order = route_order(
+            &links,
+            "peer",
+            &[],
+            1000,
+            15_000,
+            3,
+            crate::mesh::CONGESTION_WINDOW_MS,
+        );
         assert_eq!(order, vec![0], "缺候选时不得丢链路（登记窗口是常态）");
     }
 
@@ -7860,7 +7916,15 @@ mod tests {
             mesh_conn("peer", "192.168.1.20:59992", Some(0), PathKind::Lan),
             mesh_conn("peer", "100.70.10.20:59992", Some(0), PathKind::Routed),
         ];
-        let order = route_order(&links, "peer", &conns, 60_000, 15_000, 3);
+        let order = route_order(
+            &links,
+            "peer",
+            &conns,
+            60_000,
+            15_000,
+            3,
+            crate::mesh::CONGESTION_WINDOW_MS,
+        );
         assert_eq!(
             order.len(),
             2,
@@ -7958,7 +8022,15 @@ mod tests {
             mesh_conn("peer", "192.168.1.20:59992", Some(0), PathKind::Lan), // LAN 读活性过期
             mesh_conn("peer", "100.70.10.20:59992", Some(60_000), PathKind::Routed), // Routed 健康
         ];
-        let order = route_order(&links, "peer", &conns, 60_000, 15_000, 3);
+        let order = route_order(
+            &links,
+            "peer",
+            &conns,
+            60_000,
+            15_000,
+            3,
+            crate::mesh::CONGESTION_WINDOW_MS,
+        );
         assert_eq!(order[0], 1, "应先试健康的 Routed");
 
         // 用真实信道复现：LAN 那条已断，Routed 那条活着
@@ -7976,7 +8048,16 @@ mod tests {
     /// 空链路表 → 空顺序（调用方据此返回「未建立连接」）。
     #[test]
     fn route_order_empty_when_no_links() {
-        assert!(route_order(&[], "peer", &[], 1000, 15_000, 3).is_empty());
+        assert!(route_order(
+            &[],
+            "peer",
+            &[],
+            1000,
+            15_000,
+            3,
+            crate::mesh::CONGESTION_WINDOW_MS
+        )
+        .is_empty());
     }
 
     // ---- Hello 握手身份认证（P0 安全修复回归）----
