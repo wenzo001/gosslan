@@ -459,12 +459,24 @@ pub mod driver {
         pub fn remote_id(&self) -> String {
             self.peripheral.id().to_string()
         }
+
+        /// 这条连接**当前**的协商 MTU（字节）。每次调用都从 btleplug 内部 AtomicU16
+        /// 读一次，所以能反映 WinRT `MaxPduSizeChanged` 等异步事件带来的更新。
+        pub fn mtu(&self) -> u16 {
+            self.peripheral.mtu()
+        }
     }
 
     impl BleWriter {
         /// 本连接的分片有效载荷上限（从协商到的 MTU 换算）。
         pub fn payload_mtu(&self) -> usize {
             payload_mtu(self.peripheral.mtu())
+        }
+
+        /// 这条连接**当前**的协商 MTU（字节）。
+        #[allow(dead_code)]
+        pub fn mtu(&self) -> u16 {
+            self.peripheral.mtu()
         }
 
         /// ⚠️ 当前无生产调用点：重连/健康检查目前由 `network/ble.rs` 的链路状态

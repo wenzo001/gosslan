@@ -180,6 +180,37 @@ impl Peer {
             None => false,
         }
     }
+
+    /// 标记某条 Connection 发送侧拥塞（queue Full / writer 阻塞）。
+    /// 只写时间戳，**不影响 liveness/healthy** — 拥塞是独立维度。
+    pub fn mark_connection_congested(&mut self, endpoint: &Endpoint, now_ms: i64) -> bool {
+        match self
+            .connections
+            .iter_mut()
+            .find(|c| c.endpoint == *endpoint)
+        {
+            Some(c) => {
+                c.health.mark_congested(now_ms);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 标记某条 Connection 拥塞已解除（writer 恢复消费）。
+    pub fn mark_connection_congestion_recovered(&mut self, endpoint: &Endpoint) -> bool {
+        match self
+            .connections
+            .iter_mut()
+            .find(|c| c.endpoint == *endpoint)
+        {
+            Some(c) => {
+                c.health.mark_congestion_recovered();
+                true
+            }
+            None => false,
+        }
+    }
 }
 
 #[cfg(test)]

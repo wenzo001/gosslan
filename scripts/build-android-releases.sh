@@ -68,9 +68,13 @@ echo "│ 前置护栏：静态守卫 + 前端测试 + 构建（平台无关） 
 echo "│ 完整三端守门见 verify.yml（rust/mac + rust/win + android）│"
 echo "└─────────────────────────────────────────────────────────────┘"
 
-# 静态守卫（全 JS/TS，Linux 上也能跑）
+# 静态守卫（全 JS/TS，纯文本扫描或文件系统检查，不触发 cargo 编译）
+#
+# ⚠️ 故意不跑 check-test-manifest.mjs：它内部隐式调
+# `cargo test --features bluetooth --lib -- --list`，为了拿 Rust 测试名
+# 单会在 Linux host target 上编整个 crate → wry → glib-sys，需要 GTK dev
+# 库。Rust 测试清单比对由 verify.yml 的 rust job（macOS/Windows）覆盖。
 for guard in \
-  scripts/check-test-manifest.mjs \
   scripts/check-invariant-exceptions.mjs \
   scripts/check-ble-constants.mjs \
   scripts/check-domain-map.mjs \

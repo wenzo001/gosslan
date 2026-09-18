@@ -83,6 +83,29 @@ pub fn valid_sha256_hex(s: &str) -> bool {
     s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+/// 文件发送 deadline：Offer → chunk loop → FileDone → wait_complete_ack 的**整体墙钟上限**。
+///
+/// 之前 send_file_from_path 内部 chunk 循环 + wait_complete_ack 各自有局部超时，但没有
+/// 整体墙钟上限。BLE 上每断一次链会走 outbox 重试 → FileReject 往返 → 续发 → 又断链
+/// 的循环，整体 6+ 分钟都"发送中"。超过这个时间直接 return retryable 让 outbox 重排；
+/// outbox 再用自己的 attempts 上限决定最终置 failed。
+///
+/// 取值 10 分钟：40MB 文件 / BLE（≈ 14KB/s）= 理论 47 分钟，10 分钟不可能完整送达；
+/// 但**如果 10 分钟里连续发续到哪里都没取得进展**，基本就是链路反复通一下又断，
+/// 继续等没有收益。LAN 上 10 分钟能传 ~600MB（2MB/s），完全够。
+pub const FILE_SEND_DEADLINE: Duration = Duration::from_secs(10 * 60);
+
+/// 中继文件发送 deadline（send_file_via_relay）。比直传短：
+/// - relay 没有 FileAccept 握手和 FileCompleteAck，只是 RelayFileOffer + RelayChunk 盲发
+/// - 单跳中继理论上比 BLE 快很多，5min 能发几十 MB
+/// - relay 链路一旦断了（中继掉线），重试也没意义（relay 不进 outbox）
+pub const RELAY_FILE_SEND_DEADLINE: Duration = Duration::from_secs(5 * 60);
+
+/// outbox 重试上限：同一文件连续尝试超过这个次数仍失败（retryable），
+/// 就标记永久失败 —— 避免 BLE 反复断链导致无限循环 "sending" 永远挂着。
+/// 每次尝试之间有 5s backoff；5 次 = 最多 25s 的 backoff 等待 + 每次尝试的耗时。
+pub const MAX_FILE_OUTBOX_RETRIES: i64 = 5;
+
 /// 文件发送失败分类：`retryable = true` 表示链路/超时等可恢复错误，
 /// 应保留在 `file_outbox` 等待重试；`false` 表示文件缺失、非好友、缺公钥等永久错误。
 #[derive(Debug, Clone)]
@@ -202,70 +225,109 @@ pub async fn send_file_from_path_at(
     }
 
     let _ = from_seq;
-    // 发送 Offer → 等接受。接收端若回 FileReject.received = N（它已有 N 字节），
-    // 就从该偏移续发 —— 这正是"outbox 全量重试"与"接收端续传"撞车的正解：
-    // 发送端永远以接收端的真实进度为准，绝不重头覆盖。
-    let mut resume_from = from_bytes;
-    for _attempt in 0..3 {
-        let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), u64>>();
+    // ---- 用户取消注册表（L3 fix: 提前到 deadline 外层注册，覆盖 E2E） ----
+    let transfer_id_owned = transfer_id.to_string();
+    let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel::<()>();
+    state
+        .file_send_cancels
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(transfer_id_owned.clone(), cancel_tx);
+    let cancel_cleanup = || {
         state
-            .pending_file_accept
+            .file_send_cancels
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(transfer_id.to_string(), tx);
-        let offer = Message::FileOffer {
-            transfer_id: transfer_id.to_string(),
-            from: state.device_id.clone(),
-            name: name.clone(),
-            size,
-            sealed_file_key: sealed_key_b64.clone(),
-            file_sha256: file_sha256.clone(),
-            from_seq: 0,
-            from_bytes: resume_from,
-        };
-        if let Err(e) = try_send(state, peer_id, &offer).await {
+            .remove(&transfer_id_owned);
+    };
+
+    // ---- 整体 deadline（L3 fix: 从 Offer 循环入口开始计时，覆盖 E2E） ----
+    // 之前 FILE_SEND_DEADLINE 只包住 stream_file（Offer 接受后），
+    // 但如果 BLE 断链在 Offer 阶段反复续发（FileReject.received = N → continue），
+    // 总耗时会超过 10min 但 deadline 不会触发 —— 因为每次都是新的 accept 周期。
+    //
+    // 现在 timeout 包住 Offer 循环全部（3 次 attempt + 每次 accept 后的 stream_file），
+    // 从第一次发 Offer 开始计时，确保 E2E 有硬上限。
+    let result = tokio::time::timeout(FILE_SEND_DEADLINE, async {
+        // 发送 Offer → 等接受。接收端若回 FileReject.received = N（它已有 N 字节），
+        // 就从该偏移续发 —— 发送端永远以接收端的真实进度为准，绝不重头覆盖。
+        let mut resume_from = from_bytes;
+        for _attempt in 0..3 {
+            let (tx, rx) = tokio::sync::oneshot::channel::<Result<(), u64>>();
             state
                 .pending_file_accept
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .remove(transfer_id);
-            return Err(SendFileError::retryable(format!("建立文件传输失败：{e}")));
-        }
-        match tokio::time::timeout(Duration::from_secs(15), rx).await {
-            Ok(Ok(Ok(()))) => {
-                return stream_file(
-                    state,
-                    peer_id,
-                    transfer_id,
-                    path,
-                    name,
-                    size,
-                    file_key,
-                    0,
-                    resume_from,
-                )
-                .await
-                .map_err(SendFileError::retryable);
-            }
-            Ok(Ok(Err(n))) if n > resume_from => {
-                state.logger.info(
-                    "file",
-                    format!("接收端已有 {n} 字节，从断点续发 transfer={transfer_id}"),
-                );
-                resume_from = n;
-                continue;
-            }
-            _ => {
+                .insert(transfer_id.to_string(), tx);
+            let offer = Message::FileOffer {
+                transfer_id: transfer_id.to_string(),
+                from: state.device_id.clone(),
+                name: name.clone(),
+                size,
+                sealed_file_key: sealed_key_b64.clone(),
+                file_sha256: file_sha256.clone(),
+                from_seq: 0,
+                from_bytes: resume_from,
+            };
+            if let Err(e) = try_send(state, peer_id, &offer).await {
                 state
                     .pending_file_accept
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .remove(transfer_id);
-                return Err(SendFileError::retryable("对方未接受文件"));
+                return Err(SendFileError::retryable(format!("建立文件传输失败：{e}")));
+            }
+            match tokio::time::timeout(Duration::from_secs(15), rx).await {
+                Ok(Ok(Ok(()))) => {
+                    // H1 fix: stream_file 现在直接返回 SendFileError，外层不再需要
+                    // 字符串 contains 手动判定 retryable/permanent。
+                    return stream_file(
+                        state,
+                        peer_id,
+                        transfer_id,
+                        path,
+                        name,
+                        size,
+                        file_key,
+                        0,
+                        resume_from,
+                        &mut cancel_rx,
+                    )
+                    .await;
+                }
+                Ok(Ok(Err(n))) if n > resume_from => {
+                    state.logger.info(
+                        "file",
+                        format!("接收端已有 {n} 字节，从断点续发 transfer={transfer_id}"),
+                    );
+                    resume_from = n;
+                    continue;
+                }
+                _ => {
+                    state
+                        .pending_file_accept
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .remove(transfer_id);
+                    return Err(SendFileError::retryable("对方未接受文件"));
+                }
             }
         }
+        Err(SendFileError::retryable("对方始终未接受文件"))
+    })
+    .await;
+
+    // 无论成功、失败还是 timeout，都从 state 里移除 cancel sender。
+    // timeout 时内部 stream_file/Offer 循环被 drop，但 sender 已注册 —— 必须显式清理。
+    cancel_cleanup();
+
+    match result {
+        Ok(inner) => inner,
+        Err(_elapsed) => Err(SendFileError::retryable(format!(
+            "文件发送超时（单次尝试超过 {}s，链路长时间未恢复）",
+            FILE_SEND_DEADLINE.as_secs()
+        ))),
     }
-    Err(SendFileError::retryable("对方始终未接受文件"))
 }
 /// 无直连时，借**一跳中继**把文件发给 peer_id（接收方是请求下载的共享目录主人）。
 ///
@@ -332,78 +394,112 @@ pub async fn send_file_via_relay(
         sealed_file_key: sealed_key_b64,
         file_sha256,
     };
-    crate::network::transport::relay_send_to_neighbors(state, peer_id, &offer).await;
 
-    let mut last_report = std::time::Instant::now() - Duration::from_secs(1);
-    for seq in 0..chunk_count {
-        let start = (seq as usize * chunk_size).min(total);
-        let end = (start + chunk_size).min(total);
-        let mut plain = vec![0u8; end - start];
-        src.seek(std::io::SeekFrom::Start(start as u64))
-            .map_err(|e| format!("定位文件失败：{e}"))?;
-        src.read_exact(&mut plain)
-            .map_err(|e| format!("读取文件分片失败：{e}"))?;
-        let sealed = crypto::seal_symmetric(&file_key, &plain)
-            .ok_or_else(|| "文件分片加密失败".to_string())?;
-        let data = STANDARD.encode(&sealed);
-        let msg = Message::RelayChunk {
-            transfer_id: transfer_id.to_string(),
-            seq,
-            data,
-            from: state.device_id.clone(),
-            to: peer_id.to_string(),
-            ttl: 3,
-        };
-        crate::network::transport::relay_send_to_neighbors(state, peer_id, &msg).await;
-        let sent = end as u64;
-        if last_report.elapsed() >= Duration::from_millis(250) {
-            last_report = std::time::Instant::now();
-            let progress = if size == 0 {
-                1.0
-            } else {
-                sent as f64 / size as f64
-            };
-            {
-                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                db::upsert_transfer(
-                    &dbc,
-                    transfer_id,
-                    peer_id,
-                    &name,
-                    size,
-                    "send",
-                    "active",
-                    None,
-                    progress,
-                )
-                .ok();
+    // ---- cancel + timeout 注册 ----
+    let transfer_id_owned = transfer_id.to_string();
+    let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel::<()>();
+    state
+        .file_send_cancels
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(transfer_id_owned.clone(), cancel_tx);
+    let cancel_cleanup = || {
+        state
+            .file_send_cancels
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&transfer_id_owned);
+    };
+
+    let result = tokio::time::timeout(RELAY_FILE_SEND_DEADLINE, async {
+        crate::network::transport::relay_send_to_neighbors(state, peer_id, &offer).await;
+
+        let mut last_report = std::time::Instant::now() - Duration::from_secs(1);
+        for seq in 0..chunk_count {
+            // 每片开始前先查 cancel —— 用户点了就立刻停，不浪费下一片 I/O
+            if cancel_rx.try_recv().is_ok() {
+                return Err("用户取消发送".to_string());
             }
-            let _ = state.app.emit(
-                "file-progress",
-                &crate::state::FileProgress {
-                    transfer_id: transfer_id.to_string(),
-                    received: sent,
-                    total: size,
-                },
-            );
+            let start = (seq as usize * chunk_size).min(total);
+            let end = (start + chunk_size).min(total);
+            let mut plain = vec![0u8; end - start];
+            src.seek(std::io::SeekFrom::Start(start as u64))
+                .map_err(|e| format!("定位文件失败：{e}"))?;
+            src.read_exact(&mut plain)
+                .map_err(|e| format!("读取文件分片失败：{e}"))?;
+            let sealed = crypto::seal_symmetric(&file_key, &plain)
+                .ok_or_else(|| "文件分片加密失败".to_string())?;
+            let data = STANDARD.encode(&sealed);
+            let msg = Message::RelayChunk {
+                transfer_id: transfer_id.to_string(),
+                seq,
+                data,
+                from: state.device_id.clone(),
+                to: peer_id.to_string(),
+                ttl: 3,
+            };
+            crate::network::transport::relay_send_to_neighbors(state, peer_id, &msg).await;
+            let sent = end as u64;
+            if last_report.elapsed() >= Duration::from_millis(250) {
+                last_report = std::time::Instant::now();
+                let progress = if size == 0 {
+                    1.0
+                } else {
+                    sent as f64 / size as f64
+                };
+                {
+                    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                    db::upsert_transfer(
+                        &dbc,
+                        transfer_id,
+                        peer_id,
+                        &name,
+                        size,
+                        "send",
+                        "active",
+                        None,
+                        progress,
+                    )
+                    .ok();
+                }
+                let _ = state.app.emit(
+                    "file-progress",
+                    &crate::state::FileProgress {
+                        transfer_id: transfer_id.to_string(),
+                        received: sent,
+                        total: size,
+                    },
+                );
+            }
         }
+        {
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+            db::upsert_transfer(
+                &dbc,
+                transfer_id,
+                peer_id,
+                &name,
+                size,
+                "send",
+                "done",
+                Some(path.to_string_lossy().as_ref()),
+                1.0,
+            )
+            .ok();
+        }
+        Ok(())
+    })
+    .await;
+
+    cancel_cleanup();
+
+    match result {
+        Ok(inner) => inner,
+        Err(_) => Err(format!(
+            "中继文件发送超时（超过 {}s）",
+            RELAY_FILE_SEND_DEADLINE.as_secs()
+        )),
     }
-    {
-        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::upsert_transfer(
-            &dbc,
-            transfer_id,
-            peer_id,
-            &name,
-            size,
-            "send",
-            "done",
-            Some(path.to_string_lossy().as_ref()),
-            1.0,
-        )
-        .ok();
-    }
-    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -417,12 +513,13 @@ async fn stream_file(
     file_key: [u8; 32],
     from_seq: u32,
     from_bytes: u64,
-) -> Result<(), String> {
+    cancel_rx: &mut tokio::sync::oneshot::Receiver<()>,
+) -> Result<(), SendFileError> {
     use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
     let mut f = tokio::fs::File::open(&path)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| SendFileError::permanent(format!("打开文件失败：{e}")))?;
     // 分块大小按**当前链路的实际选路结果**决定（BLE 上必须小，见 `chunk_size_for_path`）。
     let path_kind = crate::network::transport::inbound_path_kind(state, peer_id).await;
     let chunk_size = chunk_size_for_path(&path_kind);
@@ -431,7 +528,7 @@ async fn stream_file(
     if from_bytes > 0 {
         f.seek(std::io::SeekFrom::Start(from_bytes))
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| SendFileError::permanent(format!("定位文件失败：{e}")))?;
     }
     let mut seq = from_seq;
     let mut sent = from_bytes;
@@ -455,21 +552,29 @@ async fn stream_file(
     }
 
     loop {
-        let n = f.read(&mut buf).await.map_err(|e| e.to_string())?;
+        // 每片开始前先检查 cancel —— 用户点了"取消发送"就立刻停，不浪费那片 I/O。
+        // biased: cancel 优先，避免与文件读公平竞争导致取消延迟。
+        let n = tokio::select! {
+            biased;
+            _ = &mut *cancel_rx => return Err(SendFileError::permanent("用户取消发送")),
+            n = f.read(&mut buf) => n.map_err(|e| SendFileError::permanent(format!("读取文件失败：{e}")))?,
+        };
         if n == 0 {
             break;
         }
         // E2EE：每片独立随机 nonce 的 AEAD 密文（crypto::seal = nonce || ct），
         // 同一密钥不同片 nonce 必不相同，无 nonce 重用。
         let sealed = crypto::seal_symmetric(&file_key, &buf[..n])
-            .ok_or_else(|| "文件分片加密失败".to_string())?;
+            .ok_or_else(|| SendFileError::permanent("文件分片加密失败"))?;
         let data = STANDARD.encode(&sealed);
         let chunk = Message::FileChunk {
             transfer_id: transfer_id.to_string(),
             seq,
             data,
         };
-        try_send(state, peer_id, &chunk).await?;
+        try_send(state, peer_id, &chunk)
+            .await
+            .map_err(SendFileError::retryable)?;
         seq += 1;
         sent += n as u64;
 
@@ -522,8 +627,14 @@ async fn stream_file(
             transfer_id: transfer_id.to_string(),
         },
     )
-    .await?;
-    let completed = wait_complete_ack(state, transfer_id, rx).await;
+    .await
+    .map_err(SendFileError::retryable)?;
+    // wait_complete_ack 也支持 cancel —— ack 窗口最长 ~90s，用户不想等就该立刻释放。
+    let completed = tokio::select! {
+        biased;
+        _ = &mut *cancel_rx => return Err(SendFileError::permanent("用户取消发送")),
+        done = wait_complete_ack(state, transfer_id, rx) => done,
+    };
     state
         .pending_file_complete
         .lock()
@@ -532,7 +643,7 @@ async fn stream_file(
     // 进展记录用完即清（成功/失败都清），避免这张表随历史传输无限增长。
     clear_file_wire_progress(state, transfer_id);
     if !completed {
-        return Err("接收方未确认文件完成".to_string());
+        return Err(SendFileError::retryable("接收方未确认文件完成"));
     }
 
     {

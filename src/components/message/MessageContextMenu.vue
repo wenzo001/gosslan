@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
-import { Pin, PinOff, Undo2 } from "lucide-vue-next";
+import { Pin, PinOff, StopCircle, Undo2 } from "lucide-vue-next";
 import { Copy, CornerUpLeft, Save, Share2, Star } from "lucide-vue-next";
 import type { MsgKind } from "@/types";
 import ContextMenu from "@/components/ContextMenu.vue";
@@ -12,6 +12,8 @@ defineProps<{
   canPin?: boolean;
   /** 当前是否已置顶（决定文案） */
   pinned?: boolean;
+  /** 文件消息正在发送中 —— 显示"取消发送"菜单项 */
+  canCancelSend?: boolean;
   x: number;
   y: number;
   kind: MsgKind;
@@ -28,6 +30,7 @@ const emit = defineEmits<{
   (e: "pin"): void;
   (e: "forward"): void;
   (e: "favorite"): void;
+  (e: "cancel-send"): void;
 }>();
 
 /** 转发支持：文本 / 代码 / 图片 / 文件（文件按本地路径重走传输链路；系统消息不提供）。 */
@@ -74,6 +77,17 @@ const favoritable = forwardable;
     </template>
 
     <div class="gosslan-menu-sep" role="separator"></div>
+
+    <!-- 取消发送：文件消息正在发时才出现，danger 样式 -->
+    <button
+      v-if="canCancelSend"
+      role="menuitem"
+      class="gosslan-menu-item gosslan-menu-item--danger"
+      @click="emit('cancel-send')"
+    >
+      <StopCircle />
+      {{ t("msg.cancelSend") }}
+    </button>
 
     <button v-if="canPin" role="menuitem" class="gosslan-menu-item" @click="emit('pin')">
       <component :is="pinned ? PinOff : Pin" />

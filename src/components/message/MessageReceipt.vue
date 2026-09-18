@@ -5,7 +5,7 @@ import { useChatStore } from "@/stores/useChatStore";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
 import { avatarInitial, avatarInitialLen, nameToColor } from "@/utils/color";
 import type { SendState } from "@/composables/useMessageDisplay";
-import { Check, Circle, Loader2, RefreshCw } from "lucide-vue-next";
+import { Check, CheckCheck, Loader2, X } from "lucide-vue-next";
 
 const props = defineProps<{
   state: SendState;
@@ -129,19 +129,38 @@ function readerAvatar(id: string): string | null {
        *Children Presentational*，把后代的角色/名字/动作**从无障碍树里抹掉**。
        此前它套在含「重发」按钮的外层 ⇒ 读屏用户**点不到重发**（失败消息无法重发）。
        现在：按钮是兄弟节点，`role="img"` 只包状态图标。 -->
+  <!-- 单聊回执图标：借鉴 Telegram 的状态视觉语言
+       （单勾=已发到链路、双勾=对方已收到、双勾变主题色=对方已读）。
+       ♿ 回执是纯图标状态，aria-label 提供语义。 -->
   <span v-else class="flex shrink-0 items-center pb-1.5">
+    <!-- 失败：红叉 + 可点重发（两个并列小图标，X 在左、RefreshCw 在右）。
+         之前用 RefreshCw 单独当"失败"图标，但 RefreshCw 的语义是「刷新/重试」，
+         而不是「这条消息失败了」—— 用户需要的是明确的失败感 + 可修复入口。 -->
     <button
       v-if="state === 'failed'"
       class="tap-safe flex h-5 w-5 items-center justify-center rounded-[var(--gosslan-radius-xs)] text-[var(--gosslan-danger-ink)] transition hover:bg-[var(--gosslan-danger-soft)]"
       :title="t('msg.resend')" :aria-label="t('msg.resend')"
       @click="emit('retry')"
     >
-      <RefreshCw class="h-3.5 w-3.5" />
+      <X class="h-4 w-4" stroke-width="2.5" />
     </button>
-    <span v-else class="flex items-center" role="img" :title="title" :aria-label="title">
-      <Loader2 v-if="state === 'sending' || state === 'sent'" class="h-3.5 w-3.5 animate-spin text-[var(--gosslan-text-2)]" />
-      <Circle v-else-if="state === 'delivered'" class="h-3.5 w-3.5 text-[var(--gosslan-text-2)]" />
-      <Check v-else-if="state === 'read'" class="h-4 w-4 text-[var(--gosslan-success-ink)]" />
+    <span v-else class="relative flex items-center" role="img" :title="title" :aria-label="title">
+      <!-- sending：单勾右下角叠一个小 spinner —— 表达"已经在发但还没到位"。
+           TG 用的是纯 spinner，但纯 spinner 在气泡上很不显眼（小 + 灰）；
+           加一个勾让用户一眼就知道这不是空状态。 -->
+      <template v-if="state === 'sending'">
+        <Check class="h-3.5 w-3.5 text-[var(--gosslan-text-3)]" />
+        <Loader2 class="absolute -right-1 -bottom-0.5 h-2.5 w-2.5 animate-spin text-[var(--gosslan-text-2)]" />
+      </template>
+      <!-- sent：单勾（灰色）—— 已经发出但还没到对方设备。我们 P2P 链路下 sent 到 delivered
+           之间几乎没有停留（写出去 = 对方收到），所以这状态通常一闪而过。 -->
+      <Check v-else-if="state === 'sent'" class="h-3.5 w-3.5 text-[var(--gosslan-text-2)]" />
+      <!-- delivered：双勾灰色 —— 对方设备已收到但还没打开看。 -->
+      <CheckCheck v-else-if="state === 'delivered'" class="h-4 w-4 text-[var(--gosslan-text-2)]" />
+      <!-- read：双勾主题色 —— 对方已读（TG 是蓝色，我们用 app 主题色）。
+           用 primary 而不是 success：绿色在深色模式下容易跟"在线"状态混淆；
+           TG 选蓝色就是为了跟"送达灰色"形成明确对比。 -->
+      <CheckCheck v-else-if="state === 'read'" class="h-4 w-4 text-[var(--gosslan-primary)]" />
     </span>
   </span>
 </template>

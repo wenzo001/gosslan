@@ -130,10 +130,12 @@ const confirmRemove = ref(false);
 
     <div class="flex-1 overflow-y-auto px-6 py-6">
       <div class="mx-auto w-full max-w-[560px]">
-        <!-- 头部：头像 + 昵称 + 状态徽标，右侧跟随几行小字段（微信式） -->
+        <!-- 头部（紧凑版）：头像 + 昵称行（含在线状态 + 发消息按钮一行内）
+             信息密度翻倍：原来 mt-7 才到分组卡，现在 mt-3 就到了。
+             发消息按钮放到头像右侧，一进来就能点，不用滑。 -->
         <div class="flex items-start gap-4">
           <div
-            class="gosslan-avatar-box flex h-16 w-16 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-2xl font-medium text-white"
+            class="gosslan-avatar-box flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-xl font-medium text-white"
             :class="!friend.online ? 'grayscale opacity-70' : ''"
             :style="{ backgroundColor: nameToColor(friend.nickname) }"
           >
@@ -142,8 +144,7 @@ const confirmRemove = ref(false);
           </div>
           <div class="min-w-0 flex-1">
             <div class="flex items-center gap-2">
-              <span class="truncate text-xl font-semibold" :title="friend.nickname">{{ friend.nickname }}</span>
-              <!-- 在线状态用一个小圆点 + 文案，位置与微信的"状态徽标"一致 -->
+              <span class="truncate text-lg font-semibold" :title="friend.nickname">{{ friend.nickname }}</span>
               <span
                 class="inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[11px]"
                 :class="friend.online
@@ -156,123 +157,96 @@ const confirmRemove = ref(false);
                 ></span>
                 {{ friend.online ? t("common.online") : t("common.offline") }}
               </span>
+              <!-- 发消息按钮：primary，跟在昵称后面，一抬头就能点 -->
+              <button
+                class="tap-safe ml-auto inline-flex h-7 items-center gap-1 rounded-full bg-primary px-3 text-[12px] font-medium text-white transition hover:bg-primary-hover"
+                @click="emit('send-message', friend.device_id)"
+              >
+                <MessageCircle class="h-3.5 w-3.5" />
+                {{ t("common.sendMessage") }}
+              </button>
             </div>
-            <!-- 小字段：（微信这里是 微信号/地区；我们对应 安全码首段/连接地址） -->
-            <div class="mt-2 space-y-0.5 text-[12px] leading-relaxed text-[var(--gosslan-text-2)]">
-              <div>
-                {{ t("friend.profile.safetyFirst") }}：
-                <span class="font-mono">{{ safetyFirstGroup ?? t("common.notSet") }}</span>
-                <span v-if="safetyFirstGroup" class="opacity-60">…</span>
-              </div>
-              <div class="truncate" :title="address">{{ t("peer.link.label") }}：<span class="font-mono">{{ address }}</span></div>
+            <!-- 次行：连接方式 + 安全码首段（一行，不再两行） -->
+            <div class="mt-1 flex items-center gap-3 truncate text-[12px] leading-relaxed text-[var(--gosslan-text-2)]" :title="safetyFirstGroup ? `${address} · ${safetyFirstGroup}` : address">
+              <span class="truncate" :title="address">{{ t("peer.link.label") }}：<span class="font-mono">{{ address }}</span></span>
+              <span class="h-3 w-px shrink-0 bg-[var(--gosslan-divider)]"></span>
+              <span>{{ t("friend.profile.safetyFirst") }}：<span class="font-mono">{{ safetyFirstGroup ?? t("common.notSet") }}</span><span v-if="safetyFirstGroup" class="opacity-60">…</span></span>
             </div>
           </div>
         </div>
 
-        <!-- 分组一：朋友资料（沿用现有字段，微信式的"标题 + 卡片行"） -->
-        <section class="mt-7">
-          <h3 class="mb-2 px-1 text-xs font-medium tracking-wide text-[var(--gosslan-text-2)]">
-            {{ t("friend.profile.title") }}
-          </h3>
+        <!-- 单张合并卡：去掉两个 section 标题 + 收紧 py-3 → py-2.5。
+             重要性排序：连接方式 → 设备 → 端口/IP → 安全码 → device_id → E2EE。
+             原来两张卡（朋友资料 + 更多信息）共 5 行标题 + 4 条分割线 + mt-7 + mt-6，
+             现在一张卡，总高度砍半。 -->
+        <section class="mt-4">
           <div class="overflow-hidden rounded-[var(--gosslan-radius-lg)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)]">
-            <div class="flex items-center justify-between gap-4 px-4 py-3 text-sm">
-              <span class="shrink-0 text-[var(--gosslan-text-2)]">{{ t("friend.profile.nickname") }}</span>
-              <span class="truncate font-medium" :title="friend.nickname">{{ friend.nickname }}</span>
+            <!-- 安全码（防中间人核心，放在最上面让它显眼，但不再占两大块） -->
+            <div class="flex items-start justify-between gap-3 px-4 py-2.5">
+              <div class="min-w-0 flex-1">
+                <div class="flex items-center gap-2">
+                  <span class="text-sm text-[var(--gosslan-text-2)]">{{ t("friend.profile.safety") }}</span>
+                  <button
+                    v-if="safetyNumber"
+                    class="tap-safe flex h-6 w-6 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+                    :title="t('friend.profile.safetyCopy')" :aria-label="t('friend.profile.safetyCopy')"
+                    @click="copySafetyNumber"
+                  >
+                    <Copy class="h-3 w-3" />
+                  </button>
+                </div>
+                <div
+                  v-if="safetyNumber"
+                  class="mt-0.5 font-mono text-[14px] tracking-wide text-[var(--gosslan-text)]"
+                  :title="safetyNumber"
+                >
+                  {{ safetyNumber }}
+                </div>
+                <div v-else class="mt-0.5 text-[12px] text-[var(--gosslan-text-2)]">
+                  {{ safetyFailed ? t("friend.profile.safetyFail") : t("friend.profile.safetyUnavailable") }}
+                </div>
+              </div>
             </div>
             <div class="h-px bg-[var(--gosslan-divider)]"></div>
-            <div class="flex items-center justify-between gap-4 px-4 py-3 text-sm">
+            <div class="flex items-center justify-between gap-4 px-4 py-2.5 text-sm">
               <span class="shrink-0 text-[var(--gosslan-text-2)]">{{ t("friend.profile.deviceType") }}</span>
-              <!-- 后端只给 desktop/mobile；这里翻成"电脑/手机"，不认识就说"未知设备" -->
               <span>{{ t(deviceTypeKey(friend.device_type)) }}</span>
             </div>
-            <div class="h-px bg-[var(--gosslan-divider)]"></div>
-            <!-- 地址行：**蓝牙与中继不显示**（蓝牙上没有 IP，中继没有直连地址）—— 见 peerConnectionInfo -->
             <template v-if="addressLine">
-              <div class="flex items-center justify-between gap-4 px-4 py-3 text-sm">
+              <div class="h-px bg-[var(--gosslan-divider)]"></div>
+              <div class="flex items-center justify-between gap-4 px-4 py-2.5 text-sm">
                 <span class="shrink-0 text-[var(--gosslan-text-2)]">{{ t("friend.profile.ip") }}</span>
                 <span class="truncate font-mono text-xs" :title="addressLine">{{ addressLine }}</span>
               </div>
+            </template>
+            <template v-if="peer?.tcp_port">
               <div class="h-px bg-[var(--gosslan-divider)]"></div>
+              <div class="flex items-center justify-between gap-4 px-4 py-2.5 text-sm">
+                <span class="shrink-0 text-[var(--gosslan-text-2)]">{{ t("friend.profile.port") }}</span>
+                <span class="font-mono text-xs">{{ peer.tcp_port }}</span>
+              </div>
             </template>
             <div class="h-px bg-[var(--gosslan-divider)]"></div>
-            <div class="flex items-center justify-between gap-4 px-4 py-3 text-sm">
-              <span class="shrink-0 text-[var(--gosslan-text-2)]">{{ t("friend.profile.port") }}</span>
-              <span class="font-mono text-xs">{{ peer?.tcp_port || "—" }}</span>
-            </div>
-          </div>
-        </section>
-
-        <!-- 分组二：更多信息（身份核对相关 —— 本应用的"微信号"就是设备 ID 与安全码） -->
-        <section class="mt-6">
-          <h3 class="mb-2 px-1 text-xs font-medium tracking-wide text-[var(--gosslan-text-2)]">
-            {{ t("friend.profile.more") }}
-          </h3>
-
-          <!-- 安全码：**防中间人的唯一手段**。单独成块（不塞进下面的字段卡）——
-               它需要一段解释才能被正确使用，而字段卡里放不下解释。 -->
-          <div
-            class="mb-2 rounded-[var(--gosslan-radius-lg)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-4 py-3"
-          >
-            <div class="flex items-center justify-between gap-3">
-              <span class="text-sm text-[var(--gosslan-text-2)]">{{ t("friend.profile.safety") }}</span>
-              <button
-                v-if="safetyNumber"
-                class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-                :title="t('friend.profile.safetyCopy')" :aria-label="t('friend.profile.safetyCopy')"
-                @click="copySafetyNumber"
-              >
-                <Copy class="h-3.5 w-3.5" />
-              </button>
-            </div>
-            <!-- 六段等宽显示：段与段之间留空，便于两人一段一段念着核对 -->
-            <div
-              v-if="safetyNumber"
-              class="mt-1 font-mono text-[15px] tracking-wide text-[var(--gosslan-text)]"
-              :title="safetyNumber"
-            >
-              {{ safetyNumber }}
-            </div>
-            <div v-else class="mt-1 text-[12px] text-[var(--gosslan-text-2)]">
-              {{ safetyFailed ? t("friend.profile.safetyFail") : t("friend.profile.safetyUnavailable") }}
-            </div>
-            <p class="mt-2 text-[11px] leading-relaxed text-[var(--gosslan-text-2)]">
-              {{ t("friend.profile.safetyHint") }}
-            </p>
-          </div>
-          <div class="overflow-hidden rounded-[var(--gosslan-radius-lg)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)]">
-            <div class="flex items-start justify-between gap-4 px-4 py-3 text-sm">
-              <span class="shrink-0 text-[var(--gosslan-text-2)]">{{ t("friend.profile.deviceId") }}</span>
+            <div class="flex items-start justify-between gap-4 px-4 py-2.5 text-sm">
+              <span class="shrink-0 pt-0.5 text-[var(--gosslan-text-2)]">{{ t("friend.profile.deviceId") }}</span>
               <span class="break-all text-right font-mono text-xs">{{ friend.device_id }}</span>
             </div>
             <div class="h-px bg-[var(--gosslan-divider)]"></div>
-            <div class="flex items-center justify-between gap-4 px-4 py-3 text-sm">
+            <div class="flex items-center justify-between gap-4 px-4 py-2.5 text-sm">
               <span class="shrink-0 text-[var(--gosslan-text-2)]">{{ t("friend.profile.e2ee") }}</span>
               <span class="text-right text-xs text-[var(--gosslan-success-ink)]">{{ t("friend.profile.e2eeOn") }}</span>
             </div>
           </div>
         </section>
 
-        <p class="mt-3 px-1 text-xs leading-relaxed text-[var(--gosslan-text-2)]">
-          {{ t("friend.profile.note") }}
-        </p>
-
-        <!-- 底部动作：微信式「图标在上、文字在下」居中排列 -->
-        <div class="mt-8 flex items-start justify-center gap-12 pb-4">
-          <button class="group flex flex-col items-center gap-2" @click="emit('send-message', friend.device_id)">
-            <span
-              class="grid h-11 w-11 place-items-center rounded-full bg-primary text-white transition group-hover:bg-primary-hover"
-            >
-              <MessageCircle class="h-5 w-5" />
-            </span>
-            <span class="text-[11px] text-[var(--gosslan-text-2)]">{{ t("common.sendMessage") }}</span>
-          </button>
-          <button class="group flex flex-col items-center gap-2" @click="confirmRemove = true">
-            <span
-              class="grid h-11 w-11 place-items-center rounded-full border border-[var(--gosslan-border)] text-[var(--gosslan-danger-ink)] transition group-hover:bg-[var(--gosslan-danger-soft)]"
-            >
-              <UserMinus class="h-5 w-5" />
-            </span>
-            <span class="text-[11px] text-[var(--gosslan-text-2)]">{{ t("common.deleteFriend") }}</span>
+        <!-- 底部只留"删除好友"——发消息按钮已经在头部。用紧凑横排而不是图标在上的大按钮。 -->
+        <div class="mt-4 flex justify-center pb-4">
+          <button
+            class="tap-safe inline-flex items-center gap-1.5 rounded-full border border-[var(--gosslan-border)] px-4 py-1.5 text-[12px] text-[var(--gosslan-danger-ink)] transition hover:bg-[var(--gosslan-danger-soft)]"
+            @click="confirmRemove = true"
+          >
+            <UserMinus class="h-3.5 w-3.5" />
+            {{ t("common.deleteFriend") }}
           </button>
         </div>
       </div>

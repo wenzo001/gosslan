@@ -160,6 +160,8 @@ export const api = {
   windowClose: () => invoke<void>("window_close"),
 
   sendFile: (friendId: string, path: string) => invoke<string>("send_file", { friendId, path }),
+  cancelFileTransfer: (transferId: string) =>
+    invoke<boolean>("cancel_file_transfer", { transferId }),
   sendFileAuto: (friendId: string, path: string) =>
     invoke<string>("send_file_auto", { friendId, path }),
   sendFileRelay: (friendId: string, path: string) =>
@@ -278,7 +280,7 @@ export const api = {
       sinceMs: p.sinceMs ?? null,
       untilMs: p.untilMs ?? null,
     }),
-  getLogs: () => invoke<LogEntry[]>("get_logs"),
+  getLogs: (sinceSecs?: number | null) => invoke<LogEntry[]>("get_logs", { sinceSecs: sinceSecs ?? null }),
   clearLogs: () => invoke<void>("clear_logs"),
   /** 桌面端：打开独立日志窗口；移动端不要调用（用页面跳转）。 */
   openLogWindow: () => invoke<void>("open_log_window"),
@@ -341,6 +343,10 @@ export type EventHandlers = {
   onFileProgress: (p: FileProgress) => void;
   onFileDone: (d: FileDoneInfo) => void;
   onFileFailed: (d: FileFailedInfo) => void;
+  /** 用户手动取消了一条正在发送的文件（transfer_id）。前端据此 mark failed + toast。 */
+  onFileCancelled: (transferId: string) => void;
+  /** 某条消息状态变更（msg_id: file-{tid} / gfile-{tid} 等）。前端据此刷新气泡状态。 */
+  onMessageStatusChanged: (msgId: string) => void;
   onPeerStyle: (p: PeerStyleUpdate) => void;
   /** 群信息变更（群密钥建群 / 群改名 / 成员变更） */
   onGroupsUpdated: (groupId: string) => void;
@@ -375,6 +381,8 @@ export async function bindEvents(h: EventHandlers): Promise<UnlistenFn[]> {
     listen<FileProgress>("file-progress", (e) => h.onFileProgress(e.payload)),
     listen<FileDoneInfo>("file-done", (e) => h.onFileDone(e.payload)),
     listen<FileFailedInfo>("file-failed", (e) => h.onFileFailed(e.payload)),
+    listen<string>("file-cancelled", (e) => h.onFileCancelled(e.payload)),
+    listen<string>("message-status-changed", (e) => h.onMessageStatusChanged(e.payload)),
     listen<PeerStyleUpdate>("peer-style-updated", (e) => h.onPeerStyle(e.payload)),
     listen<string>("groups-updated", (e) => h.onGroupsUpdated(e.payload)),
     listen<string>("group-member-removed", (e) => h.onGroupMemberRemoved(e.payload)),

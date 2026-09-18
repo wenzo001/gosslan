@@ -522,6 +522,36 @@ const canRecall = computed(
   () => !!props.isGroup && mine.value && props.message.kind !== "recalled",
 );
 
+/** 文件消息正在发送中 —— 显示"取消发送"菜单项。
+ * 条件：自己发的 + 文件类 + status 是 sending。
+ * 群文件（gfile-）也支持取消 —— 后端 cancel_file_transfer 统一处理。 */
+const canCancelSend = computed(() => {
+  if (!isSelfMsg.value) return false;
+  const mid = props.message.msg_id;
+  const isFileMsg = mid.startsWith("file-") || mid.startsWith("gfile-");
+  if (!isFileMsg) return false;
+  return props.message.status === "sending";
+});
+
+function doCancelSend() {
+  closeContextMenu();
+  closeActionSheet();
+  const mid = props.message.msg_id;
+  let transferId = "";
+  if (mid.startsWith("file-")) transferId = mid.slice(5);
+  else if (mid.startsWith("gfile-")) transferId = mid.slice(6);
+  if (!transferId) return;
+  invoke<boolean>("cancel_file_transfer", { transferId }).then(
+    (signalled) => {
+      app.toast(
+        signalled ? "已请求取消发送" : "标记为已取消（传输可能已结束）",
+        "info",
+      );
+    },
+    (e: unknown) => app.toastError(e, "取消发送失败"),
+  );
+}
+
 /** 撤回前的二次确认：破坏性且不可逆（对方看到的是「消息已撤回」，收不回来）。 */
 const confirmingRecall = ref(false);
 
@@ -847,8 +877,10 @@ async function copyFileToClipboard() {
     :can-recall="canRecall"
     :can-pin="isGroup && message.kind !== 'recalled'"
     :pinned="!!pinned"
+    :can-cancel-send="canCancelSend"
     @pin="emit('pin')"
     @recall="doRecall"
+    @cancel-send="doCancelSend"
     @forward="doForward"
     @favorite="doFavorite"
   />

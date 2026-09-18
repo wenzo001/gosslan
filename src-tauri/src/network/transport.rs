@@ -132,6 +132,7 @@ fn route_order(
     now_ms: i64,
     health_timeout_ms: i64,
     max_failures: u32,
+    congestion_window_ms: i64,
 ) -> Vec<usize> {
     // 与 `links` 同序的候选：能按端点命中就用真实健康信息，否则合成「刚播种」候选。
     let candidates: Vec<crate::mesh::Connection> = links
@@ -148,8 +149,13 @@ fn route_order(
         })
         .collect();
 
-    let Some(best) = crate::mesh::pick_link(&candidates, now_ms, health_timeout_ms, max_failures)
-    else {
+    let Some(best) = crate::mesh::pick_link(
+        &candidates,
+        now_ms,
+        health_timeout_ms,
+        max_failures,
+        congestion_window_ms,
+    ) else {
         return Vec::new();
     };
     // 选中的排最前，其余保持插入序做 failover。
@@ -214,20 +220,22 @@ async fn send_over_order(
     order: &[usize],
     msg: &Message,
     bulk: bool,
-) -> Result<(), String> {
+) -> (Result<(), String>, Vec<usize>) {
     let mut last_err = "未建立连接".to_string();
     let mut first_full: Option<&mpsc::Sender<Message>> = None;
+    let mut full_indices: Vec<usize> = Vec::new();
     for &i in order {
         let Some((bulk_tx, prio_tx)) = senders.get(i) else {
             continue;
         };
         let tx = if bulk { bulk_tx } else { prio_tx };
         match tx.try_send(msg.clone()) {
-            Ok(()) => return Ok(()),
+            Ok(()) => return (Ok(()), full_indices),
             Err(mpsc::error::TrySendError::Closed(_)) => {
                 last_err = "连接已关闭".to_string();
             }
             Err(mpsc::error::TrySendError::Full(_)) => {
+                full_indices.push(i);
                 if first_full.is_none() {
                     first_full = Some(tx);
                 }
@@ -236,12 +244,15 @@ async fn send_over_order(
     }
     if let Some(tx) = first_full {
         return match tokio::time::timeout(SEND_QUEUE_FULL_TIMEOUT, tx.send(msg.clone())).await {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(e)) => Err(e.to_string()),
-            Err(_) => Err("发送队列已满（对端消费不过来）".to_string()),
+            Ok(Ok(())) => (Ok(()), full_indices),
+            Ok(Err(e)) => (Err(e.to_string()), full_indices),
+            Err(_) => (
+                Err("发送队列已满（对端消费不过来）".to_string()),
+                full_indices,
+            ),
         };
     }
-    Err(last_err)
+    (Err(last_err), full_indices)
 }
 
 /// 尝试通过已建立连接发送消息；无连接则返回 Err。
@@ -274,6 +285,7 @@ pub async fn try_send(state: &AppState, peer_id: &str, msg: &Message) -> Result<
         db::now_ms(),
         health_timeout_ms,
         max_failures,
+        crate::mesh::CONGESTION_WINDOW_MS,
     );
 
     // ④ 按选路顺序投递（两轮策略见 `send_over_order`）。
@@ -281,7 +293,17 @@ pub async fn try_send(state: &AppState, peer_id: &str, msg: &Message) -> Result<
         .iter()
         .map(|l| (l.bulk.clone(), l.priority.clone()))
         .collect();
-    send_over_order(&senders, &order, msg, is_bulk_message(msg)).await
+    let (result, full_indices) = send_over_order(&senders, &order, msg, is_bulk_message(msg)).await;
+
+    // ⑤ 把 queue Full 事件喂给 mesh 层 — 拥塞是独立于 liveness 的发送侧信号。
+    // Router 下阶段才能用它做"LAN 拥塞让位给 BLE/Routed"，本轮只记录事实。
+    for idx in full_indices {
+        if let Some(link) = links.get(idx) {
+            mark_conn_congested(state, peer_id, &link.endpoint);
+        }
+    }
+
+    result
 }
 
 /// 无直连时，把一条**定向**帧借一跳中继发给 to（共享目录 / 中继文件在无直连时用）。
@@ -307,7 +329,7 @@ pub async fn broadcast_gossip(state: &AppState, envelope: GossipEnvelope) {
 
     // 与 `try_send` 同理：锁内只做决策 + 克隆 Sender，发送一律在锁外。
     // 原来在持有 `links` 锁时 `send().await`，一条拥塞链路会锁死整张连接表。
-    let targets: Vec<mpsc::Sender<Message>> = {
+    let targets: Vec<(mpsc::Sender<Message>, String, MeshEndpoint)> = {
         let links = state.links.lock().await;
         // 出站目标经 MeshRouter 裁决（§18 source exclusion）。
         //
@@ -322,21 +344,26 @@ pub async fn broadcast_gossip(state: &AppState, envelope: GossipEnvelope) {
         // M3-d（2026-09-14 全 Windows 局域网真机）：按**路径优先级**选一条发送链路，
         // 而不是 v.first()（插入顺序）。旧写法在同一 peer 同时有 LAN 与 BLE 链路时，
         // Gossip/控制帧可能走 BLE——表现为「同局域网却走了蓝牙/中继」。
-        // best_link_kind 给出 LAN > Routed > Bluetooth，再取该链路；只克隆 Sender。
+        // best_link_kind 给出 LAN > Routed > Bluetooth，再取该链路；同时保留 peer_id + endpoint
+        // 以便 timeout 时能定位到具体 Connection 并标记 congestion。
         picked
             .iter()
             .filter_map(|peer| {
-                let ls = links.get(*peer)?;
+                let peer_id: &str = peer;
+                let ls = links.get(peer_id)?;
                 let kinds: Vec<PathKind> = ls.iter().map(|l| l.path_kind).collect();
                 let best = crate::state::best_link_kind(&kinds)?;
-                ls.iter()
-                    .find(|l| l.path_kind == best)
-                    .map(|l| l.priority.clone())
+                let link = ls.iter().find(|l| l.path_kind == best)?;
+                Some((
+                    link.priority.clone(),
+                    peer_id.to_owned(),
+                    link.endpoint.clone(),
+                ))
             })
             .collect()
     };
 
-    for tx in &targets {
+    for (tx, peer_id, endpoint) in &targets {
         // ⚠️ **必须有界等待**：这是有界队列（1024），对端僵死（BLE 低带宽 / 半开 TCP）
         // 时无超时的 `send().await` 会让本函数永久挂起 —— 而它被 `handle_gossip` 内联
         // await，`handle_gossip` 又由 reader_loop 调用 ⇒ **另一个对端的读循环被卡住**，
@@ -348,13 +375,17 @@ pub async fn broadcast_gossip(state: &AppState, envelope: GossipEnvelope) {
         if tokio::time::timeout(SEND_QUEUE_FULL_TIMEOUT, tx.send(msg.clone()))
             .await
             .is_err()
-            && log_throttled("gossip_drop", 30_000)
         {
-            state.logger.warn(
-                "transport",
-                "gossip 扇出队列满，丢弃本条（对方 outbox 会补发；持续出现说明该链路拥塞）"
-                    .to_string(),
-            );
+            // M3-d：gossip 扇出队列满 / writer 消费不过来 — 明确的发送侧拥塞信号。
+            // 这条路径之前只 log 不标 congestion，导致 pick_link 看不到 gossip 层的拥塞。
+            mark_conn_congested(state, peer_id, endpoint);
+            if log_throttled("gossip_drop", 30_000) {
+                state.logger.warn(
+                    "transport",
+                    "gossip 扇出队列满，丢弃本条（对方 outbox 会补发；持续出现说明该链路拥塞）"
+                        .to_string(),
+                );
+            }
         }
     }
 }
@@ -579,6 +610,13 @@ pub async fn spawn(
                         let pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
                         pm.health_timeout_ms().saturating_mul(3)
                     };
+                    // 把 health_timeout_ms 也带进日志 —— 这样用户能一眼看出
+                    // "为什么是 N 秒"（health × 3 = stale），不会在"健康阈值"和"总超时"
+                    // 之间来回猜。
+                    let health_ms = {
+                        let pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
+                        pm.health_timeout_ms()
+                    };
                     let reaped = {
                         let pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
                         let max_failures = pm.max_failures();
@@ -617,8 +655,9 @@ pub async fn spawn(
                         state.logger.warn(
                             "mesh",
                             format!(
-                                "-conn peer={peer} ep={ep} 读活性超过 {}s 无入站帧 ⇒ 拆除死链路并等待重拨",
-                                stale_ms / 1000
+                                "[WATCHDOG] peer={peer} ep={ep} 读活性超过 {}s 无入站帧（健康阈值={}s ×3 = stale）⇒ 拆除死链路并等待重拨",
+                                stale_ms / 1000,
+                                health_ms / 1000,
                             ),
                         );
                     }
@@ -1534,6 +1573,21 @@ fn mark_conn_failure(state: &AppState, peer_id: &str, endpoint: &MeshEndpoint) {
     pm.mark_connection_failure(peer_id, endpoint);
 }
 
+/// 把「某条连接发送侧拥塞」喂给 mesh 层。
+/// queue Full / writer 被 TCP 窗口 0 卡住时调用。
+/// 只标记时间戳，**不影响 liveness/healthy** — 拥塞是独立维度。
+fn mark_conn_congested(state: &AppState, peer_id: &str, endpoint: &MeshEndpoint) {
+    let mut pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
+    pm.mark_connection_congested(peer_id, endpoint, db::now_ms());
+}
+
+/// 把「某条连接拥塞已解除」喂给 mesh 层。
+/// writer 恢复正常消费（TCP 窗口恢复 / backpressure 解除）时调用。
+fn mark_conn_congestion_recovered(state: &AppState, peer_id: &str, endpoint: &MeshEndpoint) {
+    let mut pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
+    pm.mark_connection_congestion_recovered(peer_id, endpoint);
+}
+
 /// 单次写出的结果（D8-4）。把"主动放弃"与"写失败"分开：
 /// 前者是我们在停机/拆链路，不该记成链路故障（否则选路会把正在关闭的链路算成失败）。
 enum WriteOutcome {
@@ -1593,7 +1647,13 @@ async fn writer_loop(
                     // 写成功只记**出站**活性（诊断口径）。M3-0b 起它**不**参与 is_healthy：
                     // 半开 TCP 上写会一直"成功"，那是本缺陷要被排除的伪证据。
                     mark_conn_write_seen(&state, &peer_id, &endpoint);
-                    // 文件分块**真的写出去了**才叫进展（发送侧等 FileCompleteAck 的判据）。
+                    // Liveness 与 congestion 是独立维度：写成功一帧不等于
+                    // 两个 channel 已经排空。必须等 prio/bulk 都 empty 才清除拥塞 ——
+                    // 否则 writer 慢慢消费（TCP 窗口半开）会导致 flapping：
+                    // 写一帧 → recovered → Router 选回 → 又 Full → 又 congested。
+                    if prio_rx.is_empty() && bulk_rx.is_empty() {
+                        mark_conn_congestion_recovered(&state, &peer_id, &endpoint);
+                    }
                     mark_file_wire_progress(&state, &msg);
                     continue;
                 }
@@ -1765,6 +1825,7 @@ pub(crate) async fn inbound_path_kind(state: &AppState, peer_id: &str) -> String
         db::now_ms(),
         health_timeout_ms,
         max_failures,
+        crate::mesh::CONGESTION_WINDOW_MS,
     );
     // ③ 徽标显示「实际会走的那条」= 选路结果的第一条（见 `badge_path_kind`）。
     //
@@ -7630,7 +7691,15 @@ mod tests {
             Some(1000),
             PathKind::Lan,
         )];
-        let order = route_order(&links, "peer", &conns, 1000, 15_000, 3);
+        let order = route_order(
+            &links,
+            "peer",
+            &conns,
+            1000,
+            15_000,
+            3,
+            crate::mesh::CONGESTION_WINDOW_MS,
+        );
         assert_eq!(order, vec![0]);
     }
 
@@ -7645,7 +7714,15 @@ mod tests {
             mesh_conn("peer", "100.70.10.20:59992", Some(1000), PathKind::Routed),
             mesh_conn("peer", "192.168.1.20:59992", Some(1000), PathKind::Lan),
         ];
-        let order = route_order(&links, "peer", &conns, 1000, 15_000, 3);
+        let order = route_order(
+            &links,
+            "peer",
+            &conns,
+            1000,
+            15_000,
+            3,
+            crate::mesh::CONGESTION_WINDOW_MS,
+        );
         assert_eq!(order[0], 1, "应优先 LAN（下标 1），而不是插入在前的 Routed");
         // 不变量：其余链路仍排在后面做 failover，**一条都不能丢**
         assert_eq!(order.len(), 2);
@@ -7672,7 +7749,15 @@ mod tests {
             mesh_conn_endpoint("peer", ble.clone(), Some(1000), PathKind::Bluetooth),
             mesh_conn_endpoint("peer", lan.clone(), Some(1000), PathKind::Lan),
         ];
-        let order = route_order(&links, "peer", &conns, 1000, 15_000, 3);
+        let order = route_order(
+            &links,
+            "peer",
+            &conns,
+            1000,
+            15_000,
+            3,
+            crate::mesh::CONGESTION_WINDOW_MS,
+        );
         assert_eq!(order.len(), 2, "BLE 链路同样是 failover 候选，不能丢");
         assert_eq!(order[0], 1, "LAN 必须优先于 BLE");
 
@@ -7780,7 +7865,15 @@ mod tests {
             mesh_conn("peer", "100.70.10.20:59992", Some(1000), PathKind::Routed),
             mesh_conn("peer", "192.168.1.20:59992", Some(1000), PathKind::Lan),
         ];
-        let order = route_order(&links, "peer", &conns, 1000, 15_000, 3);
+        let order = route_order(
+            &links,
+            "peer",
+            &conns,
+            1000,
+            15_000,
+            3,
+            crate::mesh::CONGESTION_WINDOW_MS,
+        );
         assert_eq!(
             badge_path_kind(&links, &order),
             PathKind::Lan,
@@ -7802,7 +7895,15 @@ mod tests {
             // Routed：刚刚读到过帧
             mesh_conn("peer", "100.70.10.20:59992", Some(60_000), PathKind::Routed),
         ];
-        let order = route_order(&links, "peer", &conns, 60_000, 15_000, 3);
+        let order = route_order(
+            &links,
+            "peer",
+            &conns,
+            60_000,
+            15_000,
+            3,
+            crate::mesh::CONGESTION_WINDOW_MS,
+        );
         assert_eq!(order[0], 1, "LAN 不健康时必须降级到 Routed（真 failover）");
         assert_eq!(order.len(), 2, "不健康链路仍保留在后面（可作最后手段）");
     }
@@ -7812,7 +7913,15 @@ mod tests {
     fn route_order_tolerates_missing_mesh_candidate() {
         let (only, _b0, _p0) = make_link("192.168.1.20:59992", PathKind::Lan);
         let links = vec![only];
-        let order = route_order(&links, "peer", &[], 1000, 15_000, 3);
+        let order = route_order(
+            &links,
+            "peer",
+            &[],
+            1000,
+            15_000,
+            3,
+            crate::mesh::CONGESTION_WINDOW_MS,
+        );
         assert_eq!(order, vec![0], "缺候选时不得丢链路（登记窗口是常态）");
     }
 
@@ -7826,7 +7935,15 @@ mod tests {
             mesh_conn("peer", "192.168.1.20:59992", Some(0), PathKind::Lan),
             mesh_conn("peer", "100.70.10.20:59992", Some(0), PathKind::Routed),
         ];
-        let order = route_order(&links, "peer", &conns, 60_000, 15_000, 3);
+        let order = route_order(
+            &links,
+            "peer",
+            &conns,
+            60_000,
+            15_000,
+            3,
+            crate::mesh::CONGESTION_WINDOW_MS,
+        );
         assert_eq!(
             order.len(),
             2,
@@ -7876,7 +7993,7 @@ mod tests {
         let (senders, mut rx) = channels(2, &[0]); // 下标 0（被选中）已断
                                                    // 顺序模拟选路结果：先试 0（断），再试 1（活）
         let order = vec![0usize, 1];
-        let r = send_over_order(&senders, &order, &msg("m1"), false).await;
+        let r = send_over_order(&senders, &order, &msg("m1"), false).await.0;
         assert!(r.is_ok(), "断一条后必须换下一条送达，实得 {r:?}");
         let got = rx[1]
             .as_mut()
@@ -7893,6 +8010,7 @@ mod tests {
         let order = vec![1usize, 0]; // 选路把下标 1 排前面
         assert!(send_over_order(&senders, &order, &msg("m2"), false)
             .await
+            .0
             .is_ok());
         assert!(
             rx[1].as_mut().unwrap().try_recv().is_ok(),
@@ -7909,7 +8027,7 @@ mod tests {
     async fn all_links_closed_returns_err() {
         let (senders, _rx) = channels(2, &[0, 1]);
         let r = send_over_order(&senders, &[0, 1], &msg("m3"), false).await;
-        assert!(r.is_err(), "全断必须报错（Err 由 outbox 兜底补发）");
+        assert!(r.0.is_err(), "全断必须报错（Err 由 outbox 兜底补发）");
     }
 
     /// 与选路联动的**端到端单元判据**：LAN 不健康 → 顺序把 Routed 排前面
@@ -7923,13 +8041,22 @@ mod tests {
             mesh_conn("peer", "192.168.1.20:59992", Some(0), PathKind::Lan), // LAN 读活性过期
             mesh_conn("peer", "100.70.10.20:59992", Some(60_000), PathKind::Routed), // Routed 健康
         ];
-        let order = route_order(&links, "peer", &conns, 60_000, 15_000, 3);
+        let order = route_order(
+            &links,
+            "peer",
+            &conns,
+            60_000,
+            15_000,
+            3,
+            crate::mesh::CONGESTION_WINDOW_MS,
+        );
         assert_eq!(order[0], 1, "应先试健康的 Routed");
 
         // 用真实信道复现：LAN 那条已断，Routed 那条活着
         let (senders, mut rx) = channels(2, &[0]);
         assert!(send_over_order(&senders, &order, &msg("m4"), false)
             .await
+            .0
             .is_ok());
         assert!(
             rx[1].as_mut().unwrap().try_recv().is_ok(),
@@ -7940,7 +8067,16 @@ mod tests {
     /// 空链路表 → 空顺序（调用方据此返回「未建立连接」）。
     #[test]
     fn route_order_empty_when_no_links() {
-        assert!(route_order(&[], "peer", &[], 1000, 15_000, 3).is_empty());
+        assert!(route_order(
+            &[],
+            "peer",
+            &[],
+            1000,
+            15_000,
+            3,
+            crate::mesh::CONGESTION_WINDOW_MS
+        )
+        .is_empty());
     }
 
     // ---- Hello 握手身份认证（P0 安全修复回归）----

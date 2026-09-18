@@ -360,6 +360,7 @@ pub fn run() {
             commands::get_group_file_delivery_summary,
             commands::list_group_files,
             commands::send_file,
+            commands::cancel_file_transfer,
             commands::request_content,
             commands::get_content_transfers,
             commands::send_file_auto,

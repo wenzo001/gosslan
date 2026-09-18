@@ -25,8 +25,9 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use btleplug::api::Peripheral as _; // `Peripheral::id()` 来自 trait，必须引入
+use btleplug::api::{Central as _, CentralEvent, Peripheral as _};
 use btleplug::platform::Adapter;
+use futures::StreamExt;
 use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 
@@ -202,8 +203,61 @@ pub async fn start(state: Arc<AppState>) -> Result<(), String> {
     // 「立刻扫一轮」的触发通道（与 LAN 的 `probe` 同范式，见 `AppState::ble_scan_now`）
     let (scan_now_tx, scan_now_rx) = watch::channel(0u64);
     *state.ble_scan_now.lock().unwrap_or_else(|e| e.into_inner()) = Some(scan_now_tx);
+
+    // clone adapter/shutdown —— 两个后台任务（scan_loop + events）都要一份
+    let adapter_for_events = adapter.clone();
+    let mut shutdown_for_events = shutdown_rx.clone();
+
     let st = state.clone();
     let task = tokio::spawn(async move { scan_loop(st, adapter, shutdown_rx, scan_now_rx).await });
+
+    // ==== P0：订阅 btleplug 的 CentralEvent 事件流 ====
+    // 之前全树零调用 adapter.events() —— btleplug 的被动断链、被动连接、被动状态变化
+    // 全被吞掉了。DeviceDisconnected 是区分"我们主动拆（写失败/看门狗）"与"系统掐断"
+    // 的唯一锚点。这一层只打日志，不做任何业务动作（现有 teardown_link 已经够统一）。
+    let state_for_events = state.clone();
+    let _events_task = tokio::spawn(async move {
+        match adapter_for_events.events().await {
+            Ok(mut stream) => {
+                state_for_events
+                    .logger
+                    .info("ble", "已订阅 btleplug adapter 事件流");
+                while let Some(ev) = tokio::select! {
+                    biased;
+                    _ = shutdown_for_events.changed() => None,
+                    ev = stream.next() => ev,
+                } {
+                    match ev {
+                        CentralEvent::DeviceDisconnected(id) => {
+                            state_for_events.logger.info(
+                                "ble",
+                                format!("[EVENT] btleplug DeviceDisconnected id={id}"),
+                            );
+                        }
+                        CentralEvent::DeviceConnected(id) => {
+                            state_for_events
+                                .logger
+                                .info("ble", format!("[EVENT] btleplug DeviceConnected id={id}"));
+                        }
+                        // 扫描相关事件（DeviceDiscovered / DeviceUpdated / ServicesAdvertisement /
+                        // ManufacturerDataAdvertisement / ServiceDataAdvertisement / RssiUpdate）
+                        // 已经被 scan_loop 的扫描逻辑覆盖，不重复打日志。
+                        CentralEvent::StateUpdate(_) => {}
+                        CentralEvent::DeviceServicesModified(_) => {}
+                        _ => {}
+                    }
+                }
+            }
+            Err(e) => {
+                state_for_events.logger.warn(
+                    "ble",
+                    format!(
+                        "无法订阅 btleplug adapter events（{e}）—— 被动断链将无法通过事件流观测"
+                    ),
+                );
+            }
+        }
+    });
 
     // ⚠️ **先把句柄放进去，再 spawn 外设**（顺序不能反）：`stop()` 靠这个句柄发停机信号，
     // 句柄晚一步写入就会出现"刚开就关"时 `stop()` 拿不到 handle ⇒ 外设任务永远活着。
@@ -318,7 +372,7 @@ async fn detach_all_ble_links(state: &Arc<AppState>) {
             .collect()
     };
     for (peer, ep) in victims {
-        teardown_link(state, &peer, &ep).await;
+        teardown_link(state, &peer, &ep, "shutdown").await;
     }
 }
 
@@ -327,7 +381,25 @@ async fn detach_all_ble_links(state: &Arc<AppState>) {
 ///
 /// 与 TCP 的 `reader_loop` 收尾同口径（"断一条 ≠ peer 下线"）：
 /// 同一 peer 可能同时有 LAN 与 BLE 两条链路。
-async fn teardown_link(state: &Arc<AppState>, peer_id: &str, ep: &MeshEndpoint) {
+///
+/// `reason`：谁/为什么在拆这条链路 —— 枚举值见所有调用点（"write_failure" /
+/// "watchdog_stale" / "shutdown" / "peripheral_unlinked" / "new_connection_displace" /
+/// "reader_error" / "peer_disconnect" / "passive_bt_stack_disconnect"）。
+/// 拆链是 P0 可观测性的核心：这条日志是区分"我们主动拆的"与"系统把链路掐断了"
+/// 的唯一锚点。
+async fn teardown_link(
+    state: &Arc<AppState>,
+    peer_id: &str,
+    ep: &MeshEndpoint,
+    reason: &'static str,
+) {
+    // **入口必须打**：teardown 是所有 BLE 断链的汇聚点，从 adapter events、
+    // watchdog、写失败、peripheral unlinked、拨号侧 cancel 都会走到这里。
+    // 没有这条日志，断链原因永远是"不知道"。
+    state.logger.info(
+        "ble",
+        format!("[TEARDOWN] 开始拆链 peer={peer_id} ep={ep} reason={reason}"),
+    );
     let cancel = {
         let links = state.links.lock().await;
         links
@@ -828,6 +900,17 @@ async fn dial_and_register(
     state.logger.info(
         "ble",
         format!("[GATT] 已就绪 ep={ble_id}（连接 + 服务发现 + 通知订阅都成功）"),
+    );
+    // **每次建链必须打 MTU** —— 排查 BLE 大文件卡死的最关键观测点。
+    // WinRT 上 MTU 是异步协商的（connect 返回时可能还是默认 23），
+    // 但先记一次 baseline；后续 adapter events / 写循环失败时再交叉验证。
+    let mtu = conn.mtu();
+    state.logger.info(
+        "ble",
+        format!(
+            "[MTU] ep={ble_id} 协商 MTU={mtu}B （ATT 有效载荷 ≈ {}B）",
+            driver::payload_mtu(mtu)
+        ),
     );
     // 从这里开始，任何失败都必须**显式断开** —— drop 一个 btleplug `Peripheral`
     // 不会断开 CoreBluetooth 连接，残留会累积成"幽灵连接"（真机症状见上面的注释）。
@@ -1424,11 +1507,16 @@ async fn ble_reader_loop<S: FrameSource + 'static>(
     let mut last_frag_n: u64 = 0;
     let mut last_frag_other: u64 = 0;
     let mut last_drop_n: u64 = 0;
+    // 退出原因：P0 可观测性 —— 每条链路拆的时候都必须知道是"停机"、"cancel 信号"
+    // 还是"读循环错误"，因为 cancel 信号本身可能来自三条不同路径
+    // （写失败 / 看门狗 stale / adapter events 被动断链）。
+    #[allow(unused_assignments)]
+    let mut exit_reason: &'static str = "unknown";
     loop {
         let frame = tokio::select! {
             biased;
-            _ = shutdown.changed() => break,
-            _ = cancel.changed() => break,
+            _ = shutdown.changed() => { exit_reason = "shutdown"; break },
+            _ = cancel.changed() => { exit_reason = "link_canceled"; break },
             res = reader.next_frame(READ_IDLE) => res,
         };
         match frame {
@@ -1500,12 +1588,13 @@ async fn ble_reader_loop<S: FrameSource + 'static>(
                 state
                     .logger
                     .info("ble", format!("BLE 读结束 peer={peer_id} ep={ep}: {e}"));
+                exit_reason = "reader_error";
                 break;
             }
         }
     }
     // 收尾：只拆这一条（同一 peer 可能还有 LAN 链路）
-    teardown_link(&state, &peer_id, &ep).await;
+    teardown_link(&state, &peer_id, &ep, exit_reason).await;
 }
 
 // ===========================================================================
@@ -1765,7 +1854,7 @@ async fn peripheral_accept_loop(
                     .logger
                     .info("ble", format!("外设侧已登记链路断开 central={central}"));
                 let ep = MeshEndpoint::Ble(BleEndpoint::new(central));
-                detach_by_endpoint(&state, &ep).await;
+                detach_by_endpoint(&state, &ep, "peripheral_unlinked").await;
             }
             // 驱动侧的诊断/告警：**必须**记进日志 —— 蓝牙在真机上出问题时，
             // 这是用户唯一能贴给我们的线索（"开着蓝牙却没人能发现我们"就是这类）。
@@ -1780,7 +1869,7 @@ async fn peripheral_accept_loop(
 
 /// 按 BLE 端点摘链路（外设侧只知道 central 标识，peer_id 要反查）。
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
-async fn detach_by_endpoint(state: &Arc<AppState>, ep: &MeshEndpoint) {
+async fn detach_by_endpoint(state: &Arc<AppState>, ep: &MeshEndpoint, reason: &'static str) {
     let peer = {
         let links = state.links.lock().await;
         links
@@ -1789,7 +1878,7 @@ async fn detach_by_endpoint(state: &Arc<AppState>, ep: &MeshEndpoint) {
             .map(|(p, _)| p.clone())
     };
     if let Some(peer) = peer {
-        teardown_link(state, &peer, ep).await;
+        teardown_link(state, &peer, ep, reason).await;
     }
 }
 
@@ -1874,7 +1963,7 @@ async fn try_accept_handshake(
     // CoreBluetooth 的外设角色**没有**"central 断开"回调（只有取消订阅），
     // 所以旧链路可能早就死了而我们还留着它；对端重新连上来时必须由新链路取代，
     // 否则这个 central 会永远撞在 `should_accept_inbound_public` 上、彻底连不进来。
-    detach_by_endpoint(state, &ep).await;
+    detach_by_endpoint(state, &ep, "new_connection_displace").await;
 
     // ---- 3. 链路数上限仍然要守（防无界增长），但**同路径的镜像链路要放行** ----
     //

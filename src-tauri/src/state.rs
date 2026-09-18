@@ -883,6 +883,11 @@ pub struct AppState {
     pub group_file_online_targets: Mutex<HashMap<String, std::collections::HashSet<String>>>,
     /// 一对一文件离线投递进行中标记：同一 peer 同时最多一个投递任务。
     pub file_sending: Mutex<std::collections::HashSet<String>>,
+    /// 文件发送取消信号注册表：transfer_id -> oneshot Sender。
+    /// 用户点"取消发送"时我们 send(())，send_file_from_path_deadline_inner 的 chunk loop
+    /// 里 select! 这个信号，cleanup + 返回 retryable 让 outbox 走超限失败。
+    /// （取消不会直接 mark failed —— 让它走正常 outbox 路径，cancel 只是"让这次尝试立刻返回"。）
+    pub file_send_cancels: Mutex<HashMap<String, tokio::sync::oneshot::Sender<()>>>,
     /// 群文件接收端 `.part` 状态：transfer_id -> 接收状态。
     /// 与一对一 `file_receivers` 生命周期独立；复用 FileReceiver 结构
     /// （file_key/next_seq/hasher 语义相同），不写 file_transfers 表。
@@ -956,7 +961,23 @@ impl AppState {
         } else {
             "gosslan".to_string()
         };
-        let logger = Logger::new(app_data.join("logs"), &log_stem);
+        // 设备短指纹：平台 tag + hostname 前 6 字符。
+        // 让多台设备的日志能一眼区分 — 用户贴多段日志时 AI 自动归类。
+        let dev_fingerprint = {
+            let plat = match std::env::consts::OS {
+                "windows" => "Win",
+                "android" => "And",
+                "macos" => "Mac",
+                "ios" => "iOS",
+                "linux" => "Lin",
+                _ => "Oth",
+            };
+            let host = hostname::get()
+                .map(|h| h.to_string_lossy().chars().take(6).collect::<String>())
+                .unwrap_or_else(|_| "unknown".to_string());
+            format!("[dev:{plat}-{host}]")
+        };
+        let logger = Logger::new(app_data.join("logs"), &log_stem, dev_fingerprint);
 
         // 文件接收目录：默认 app_data/downloads，允许用户在设置里改（持久化到 settings）。
         // 与共享目录同理：用户自选的目录在沙盒里重启后会失访，必须靠书签把权限带回来，
@@ -1144,6 +1165,7 @@ impl AppState {
             group_file_sending: Mutex::new(std::collections::HashSet::new()),
             group_file_online_targets: Mutex::new(HashMap::new()),
             file_sending: Mutex::new(std::collections::HashSet::new()),
+            file_send_cancels: Mutex::new(HashMap::new()),
             file_receivers: Mutex::new(HashMap::new()),
             file_wire_progress: Mutex::new(HashMap::new()),
             pending_share_tree: Mutex::new(HashMap::new()),
