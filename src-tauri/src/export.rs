@@ -62,6 +62,37 @@ pub fn message_body(kind: &str, content: &str) -> String {
                 (None, _) => "[文件]".to_string(),
             }
         }
+        // 合并转发：把卡片**展开成缩进的文字记录**（导出的是可读记录，不是一份 JSON）。
+        // ⚠️ 逐项只走 item_body（不递归 message_body）：合成项里若再嵌一层 merge，
+        // 递归下去就是一条能撑爆栈的路径，而这是客户端可控的输入。
+        "merge" => match crate::protocol::parse_merge_payload(content) {
+            Ok(p) => {
+                let mut out = format!("[聊天记录] {} 条", p.items.len());
+                for it in &p.items {
+                    out.push_str(&format!(
+                        "\n    {}：{}",
+                        it.sender,
+                        item_body(&it.kind, &it.content)
+                    ));
+                }
+                out
+            }
+            Err(_) => "[聊天记录]".to_string(),
+        },
+        other => format!("[{other}]"),
+    }
+}
+
+/// 合并转发卡片里**单个条目**的正文 —— 只认叶子类型，不做递归。
+///
+/// 与 [`message_body`] 分开的理由是"不许递归"：条目内容来自对端可控的消息载荷，
+/// 若条目的 kind 又是 `merge` 就继续往里走，构造一段深嵌套就能把导出过程撑爆。
+/// 这里对未知/嵌套类型一律给 `[kind]` 占位。
+fn item_body(kind: &str, content: &str) -> String {
+    match kind {
+        "text" | "code" => content.to_string(),
+        "image" => "[图片]".to_string(),
+        "file" => "[文件]".to_string(),
         other => format!("[{other}]"),
     }
 }

@@ -446,7 +446,7 @@ function onResizeEnd() {
 
     <!-- 移动端底部导航（软键盘弹出时收起，避免浮在键盘上方遮挡输入） -->
     <nav
-      v-if="app.isMobile && !app.keyboardOpen"
+      v-if="app.isMobile && !app.keyboardOpen && !app.multiSelectActive"
       class="safe-bottom fixed bottom-0 left-0 right-0 z-40 flex items-center justify-around border-t border-[var(--gosslan-border)] bg-[var(--gosslan-panel)]"
     >
       <button

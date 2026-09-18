@@ -216,6 +216,18 @@ export const useAppStore = defineStore("app", () => {
   function setMobileChatObscured(v: boolean) {
     mobileChatObscured.value = v;
   }
+
+  /**
+   * 是否处于**多选模式**（聊天页的批量操作）。
+   *
+   * 为什么放 store：移动端底部 Tab 栏要据此隐藏（微信多选时也不显示 Tab 栏 ——
+   * 否则操作条会叠在 4rem 的 Tab 栏之上，两个条挤在一起），而 Tab 栏在
+   * `ResponsiveLayout` 里、多选态在 `ChatWindow` 里，两边只能靠 store 沟通。
+   */
+  const multiSelectActive = ref(false);
+  function setMultiSelectActive(v: boolean) {
+    multiSelectActive.value = v;
+  }
   /**
    * **聊天视图此刻是否真的可见** —— 判已读/发已读回执的唯一判据。
    *
@@ -892,6 +904,8 @@ export const useAppStore = defineStore("app", () => {
     mobileView,
     mobileChatObscured,
     setMobileChatObscured,
+    multiSelectActive,
+    setMultiSelectActive,
     chatVisible,
     keyboardOpen,
     keyboardInset,

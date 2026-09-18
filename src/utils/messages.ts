@@ -1,6 +1,7 @@
 import type { Conversation, MessageRecord } from "@/types";
 import { MENTION_AFTER, MENTION_BEFORE, escapeRe } from "./linkify.ts";
 import { isSilentKind } from "./messageKinds.ts";
+import { mergeSummary } from "./mergeCard.ts";
 
 /**
  * 合并去重并排序消息列表 —— Gossip 密集广播防重复的核心纯函数。
@@ -111,6 +112,9 @@ export function previewText(rec: MessageRecord): string {
       return "[图片]";
     case "code":
       return "[代码]";
+    // 合并转发：卡片是 JSON，截前 30 字符会得到 '{"title":"群聊的聊天记录"' 这种东西。
+    case "merge":
+      return mergeSummary(rec.content);
     default:
       return rec.content.slice(0, 30);
   }

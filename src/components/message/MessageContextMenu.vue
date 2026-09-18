@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
 import { Pin, PinOff, StopCircle, Undo2 } from "lucide-vue-next";
-import { Copy, CornerUpLeft, Save, Share2, Star } from "lucide-vue-next";
+import { Copy, CornerUpLeft, ListChecks, Save, Share2, Star } from "lucide-vue-next";
 import type { MsgKind } from "@/types";
 import ContextMenu from "@/components/ContextMenu.vue";
 
@@ -31,12 +31,15 @@ const emit = defineEmits<{
   (e: "forward"): void;
   (e: "favorite"): void;
   (e: "cancel-send"): void;
+  /** 进入多选模式（微信式批量操作：转发/收藏/删除） */
+  (e: "multi-select"): void;
 }>();
 
-/** 转发支持：文本 / 代码 / 图片 / 文件（文件按本地路径重走传输链路；系统消息不提供）。 */
-const forwardable = (k: MsgKind) => k === "text" || k === "code" || k === "image" || k === "file";
+/** 转发支持：文本 / 代码 / 图片 / 文件 / 合并转发卡片（都可重发；系统消息不提供）。 */
+const forwardable = (k: MsgKind) =>
+  k === "text" || k === "code" || k === "image" || k === "file" || k === "merge";
 
-/** 收藏支持的类型与转发一致：这四类都是"有内容可留存"的消息（见 utils/messages）。 */
+/** 收藏支持的类型与转发一致：这几类都是"有内容可留存"的消息（见 utils/messages）。 */
 const favoritable = forwardable;
 
 // 定位 / 点外部关闭 / Esc 全部交给统一外壳 `ContextMenu`（#4 全局统一样式）。
@@ -46,8 +49,8 @@ const favoritable = forwardable;
   <!-- 聊天气泡右键菜单（用户 2026-09-12 晚 #11：「聊天气泡的右键菜单也参考微信样式」）。
        外观与分组统一走 `.gosslan-menu*`：先「内容操作」（复制 / 保存），
        再分隔线，后「转发 / 引用 / 收藏」—— 与微信把"内容操作"和"消息流转"分组的习惯一致。
-       本应用没有 翻译 / 搜一搜 / 多选 / 提醒 这些能力，就不放空条目。 -->
-  <ContextMenu :x="x" :y="y" :estimated-height="292" @close="emit('close')">
+       本应用没有 翻译 / 搜一搜 / 提醒 这些能力，就不放空条目。 -->
+  <ContextMenu :x="x" :y="y" :estimated-height="330" @close="emit('close')">
     <template v-if="kind === 'text' || kind === 'code'">
       <button role="menuitem" class="gosslan-menu-item" @click="emit('copy-text')">
         <Copy />
@@ -114,6 +117,12 @@ const favoritable = forwardable;
     <button v-if="favoritable(kind)" class="gosslan-menu-item" @click="emit('favorite')">
       <Star />
       {{ t("favorite.add") }}
+    </button>
+    <div class="gosslan-menu-sep" role="separator"></div>
+    <!-- 多选：微信放在菜单末尾（进入后是可批量转发/收藏/删除的模式） -->
+    <button class="gosslan-menu-item" @click="emit('multi-select')">
+      <ListChecks />
+      {{ t("multi.enter") }}
     </button>
   </ContextMenu>
 </template>

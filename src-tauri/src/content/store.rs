@@ -166,6 +166,23 @@ pub fn find_source(
     .optional()
 }
 
+/// 本机是否持有该内容的完整字节：有就返回本地路径（读侧用：预览 / 另存为）。
+///
+/// 判据与 [`find_source`] 相同（path 非空即认为可用），只是读侧不关心 owner/group。
+/// 合并转发卡片的图片预览按它取字节 —— 卡片是快照，对端机器上没有原始消息行，
+/// 只有卡片载荷里的 cid 可用。
+pub fn find_local_path(conn: &Connection, cid: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT path FROM content_transfers
+         WHERE cid=?1 AND path IS NOT NULL
+         ORDER BY updated_at DESC LIMIT 1",
+        params![cid],
+        |r| r.get::<_, Option<String>>(0),
+    )
+    .ok()
+    .flatten()
+}
+
 /// 传输过程中**节流**更新 received（只前进）。断点续传的起点就是它。
 pub fn touch_received(
     conn: &Connection,
@@ -371,5 +388,37 @@ mod tests {
         assert_eq!(group.as_deref(), Some("g1"));
         assert_eq!(path, "/tmp/a.png");
         assert!(find_source(&conn, "nope").unwrap().is_none());
+    }
+
+    /// 卡片图片预览的读侧：按 cid 取**本地路径**。与 find_source 同判据
+    /// （path 非空 = 本机持有完整字节），在途/失败记录（path 为空）不能算持有。
+    #[test]
+    fn find_local_path_only_returns_records_with_path() {
+        let conn = mem();
+        // 在途：path 为 None（begin_receive 的初始形态）⇒ 不算持有
+        upsert(&conn, &rec("cid-2", TransferStatus::Active, 0)).unwrap();
+        assert_eq!(
+            find_local_path(&conn, "cid-2"),
+            None,
+            "path 为空不能当作持有"
+        );
+        // 落盘后：按 cid 能取回路径
+        record_local(
+            &conn,
+            "cid-2",
+            "peer-a",
+            None,
+            "a.png",
+            10,
+            Direction::Receive,
+            "/downloads/a.png",
+            6,
+        )
+        .unwrap();
+        assert_eq!(
+            find_local_path(&conn, "cid-2").as_deref(),
+            Some("/downloads/a.png")
+        );
+        assert_eq!(find_local_path(&conn, "nope"), None);
     }
 }
