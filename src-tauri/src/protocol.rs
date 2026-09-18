@@ -263,30 +263,86 @@ pub fn merge_summary(content: &str) -> String {
     }
 }
 
-/// 消息在**会话列表预览**里的文案（`kind` → 人话）。
+// 消息在**会话列表预览**里的文案（`kind` → 人话）。
+//
+// 收敛到 protocol.rs 的 reason：它要同时被两处用 —— 发送路径（`commands.rs` 写会话摘要）
+// 与**删消息后的重算**（`db.rs` 要把末条重建成预览文案）。这两处各写一份 match 时，
+// 加一个 kind 只改一处，结果是"删掉末条后列表预览与发送时的口径不一致"。
+//
+// 文本类截前 30 字符：会话列表只显示一行，超出部分给省略号（**不是**截断内容本身）。
+// ---------------- 会话/通知的预览文案（唯一事实源） ----------------
+//
+// 会话列表摘要与系统通知的正文都来自这里（Rust 侧 `protocol::preview_text` / `transport::preview_content`、
+// 前端 `utils/messages.ts` 的 `previewText`）。JSON 载荷的 kind 若不给**人话**，就会把
+// 「会话列表/通知显示一段 JSON」暴露给用户（用户 2026-09-17）。
+//
+// ⚠️ 前端 `previewText` 与本函数必须**逐项一致**（哪些 kind 给什么文案）——它没有跨语言
+// 契约测试，改动时两处一起改。
+
+/// 截断到 30 字符（与前端 `previewText` 的 default 分支同口径）。
+fn truncate_preview(content: &str) -> String {
+    let count = content.chars().count();
+    let c: String = content.chars().take(30).collect();
+    if count > 30 {
+        format!("{c}…")
+    } else {
+        c
+    }
+}
+
+/// 从 JSON 载荷里取一个字符串字段（缺失/类型不对 → `None`）。
+fn json_str_field(content: &str, field: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(content)
+        .ok()?
+        .get(field)?
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// 待办预览：取标题，失败回落「[任务]」。
+pub fn todo_preview(content: &str) -> String {
+    match json_str_field(content, "title") {
+        Some(t) => format!("[任务] {t}"),
+        None => "[任务]".to_string(),
+    }
+}
+
+/// 投票预览：取问题，失败回落「[投票]」。
+fn poll_preview(content: &str) -> String {
+    match json_str_field(content, "question") {
+        Some(q) => format!("[投票] {q}"),
+        None => "[投票]".to_string(),
+    }
+}
+
+/// 公告预览：取正文，失败回落「[公告]」。
+fn announcement_preview(content: &str) -> String {
+    match json_str_field(content, "text") {
+        Some(t) => format!("[公告] {t}"),
+        None => "[公告]".to_string(),
+    }
+}
+
+/// 会话列表摘要 / 通知正文的预览文案。
 ///
-/// 收敛到 protocol.rs 的 reason：它要同时被两处用 —— 发送路径（`commands.rs` 写会话摘要）
-/// 与**删消息后的重算**（`db.rs` 要把末条重建成预览文案）。这两处各写一份 match 时，
-/// 加一个 kind 只改一处，结果是"删掉末条后列表预览与发送时的口径不一致"。
-///
-/// 文本类截前 30 字符：会话列表只显示一行，超出部分给省略号（**不是**截断内容本身）。
+/// 静默类（reaction/recall/pin/poll_vote/announcement_delete/todo_update）照理到不了预览
+/// （两侧都按 `is_non_notifying_kind` 过滤），这里仍兜一层——防"某一侧的过滤条件日后变了"
+/// 再把 JSON 露出去。
 pub fn preview_text(kind: &str, content: &str) -> String {
     match kind {
         "file" => "[文件]".to_string(),
         "image" => "[图片]".to_string(),
         "code" => "[代码]".to_string(),
-        // 合并转发：卡片是 JSON，直接截前 30 字符会得到 '{"title":"群聊的聊天记录","item'
-        // 这种东西 —— 会话列表里必须显示人话（且要容忍畸形 JSON）。
         "merge" => merge_summary(content),
-        _ => {
-            let count = content.chars().count();
-            let c: String = content.chars().take(30).collect();
-            if count > 30 {
-                format!("{c}…")
-            } else {
-                c
-            }
-        }
+        "todo" | "todo_update" => todo_preview(content),
+        "poll" | "poll_vote" => poll_preview(content),
+        "announcement" => announcement_preview(content),
+        "announcement_delete" => "[公告]".to_string(),
+        "reaction" => "[回应]".to_string(),
+        "recall" | "recalled" => "[撤回]".to_string(),
+        "pin" => "[置顶]".to_string(),
+        _ => truncate_preview(content),
     }
 }
 
@@ -339,6 +395,30 @@ pub fn is_valid_emoji_token(s: &str) -> bool {
 /// ⚠️ 状态是**任务级**的（一条任务一个状态），不是"每人各自一格"。用户 2026-09-16 定了四态
 /// 且**手动选**（不做截止时间）：代价是并发改状态时按 LWW 收敛，后写者胜 ——
 /// 对"一条任务当前处于什么阶段"这种单值语义，LWW 就是期望行为（看板类工具都这样）。
+/// 待办描述里附带的图片（**仅元数据**，真实字节走群文件管线投递，见 `commands.rs`）。
+///
+/// 与消息图片同源：用 `sha256`（= cid）作为跨端去重与本地落盘的文件名，
+/// 接收方按 `sha256` 在本地 `todo_images/` 目录解析；缺失则触发补取。
+/// 所有字段 `#[serde(default)]` ⇒ 旧版只发 `todo_id/title/...` 的载荷也能解析（向后兼容）。
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct TodoImage {
+    /// 跨端唯一 id（= 文件 sha256 / cid），落盘文件名与去重键
+    #[serde(default)]
+    pub id: String,
+    /// 原始文件名（展示用）
+    #[serde(default)]
+    pub name: String,
+    /// 字节大小
+    #[serde(default)]
+    pub size: u64,
+    /// 文件 sha256（与 `id` 同值，落盘/校验用）
+    #[serde(default)]
+    pub sha256: String,
+    /// 子类型（image / 其它），决定聊天卡片里是缩略图还是文件块
+    #[serde(default)]
+    pub subtype: String,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct TodoPayload {
     pub todo_id: String,
@@ -356,6 +436,20 @@ pub struct TodoPayload {
     /// 删除标记（墓碑）：定义层的 LWW 值为它
     #[serde(default)]
     pub deleted: bool,
+    /// 长文本描述（用户 2026-09-17 优化：待办要能写详细说明）。缺省空串 ⇒ 旧载荷兼容。
+    #[serde(default)]
+    pub description: String,
+    /// 描述里附带的图片（仅元数据；真实字节走群文件管线）。缺省空 ⇒ 旧载荷兼容。
+    #[serde(default)]
+    pub images: Vec<TodoImage>,
+    /// 是否已归档（用户 2026-09-17：完成/过期/不用的任务可归档）。缺省 false。
+    #[serde(default)]
+    pub archived: bool,
+    /// 状态变为「完成」的**权威**时间戳（ms）。由 `send_group_payload` 在 `status=="done"`
+    /// 时填 `db::now_ms()`，不接受客户端自报 ⇒ 7 天自动归档的计时起点可信。
+    /// `None` = 从未完成过（或旧载荷）。
+    #[serde(default)]
+    pub done_at: Option<i64>,
 }
 
 /// 任务状态的**唯一取值表**（用户 2026-09-16 定的四态）。
@@ -830,6 +924,15 @@ pub enum Message {
         size: u64,
         sha256: String,
         sealed_file_key: String,
+        /// 归属场景：`chat` = 普通群文件（进聊天时间线）；`todo` = 待办描述图片
+        /// （只走传输管线把字节投递给全员，不进时间线、不弹气泡）。
+        /// ⚠️ `default`：**未升级端发出的 offer 没有这两个键** —— 缺了会反序列化失败
+        /// （升级后的端拒收旧端的群文件）。缺省 "" 走普通文件分支，与旧端语义一致。
+        #[serde(default)]
+        scope: String,
+        /// `scope == "todo"` 时关联的 `todo_id`；其余场景为空。
+        #[serde(default)]
+        todo_id: String,
     },
     /// 群文件分片。`data` = Base64(nonce || AEAD(file_key, plaintext))，
     /// file_key 仅存在于收发双方内存（AppState.group_file_keys），

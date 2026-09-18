@@ -80,3 +80,32 @@ test("两个窗口的 pending 状态接到了按钮上（冷启动那一下用�
   assert.match(rail, /:aria-busy="settingsOpening"/, "设置按钮要有 aria-busy 反馈");
   assert.match(rail, /:aria-busy="logsOpening"/, "日志按钮要有 aria-busy 反馈");
 });
+
+test("外部链接与群任务窗口也必须走 launchAuxWindow（不得在按钮里裸 invoke）", () => {
+  const layout = readFileSync(join(srcDir, "layouts", "ResponsiveLayout.vue"), "utf8");
+  const chatWindow = readFileSync(join(srcDir, "components", "ChatWindow.vue"), "utf8");
+
+  // 外链窗口：label 固定 "link"（复用同一窗口，第二次打开是 navigate）。
+  assert.match(
+    layout,
+    /launchAuxWindow\("link",\s*\(\)\s*=>\s*api\.openLinkWindow\(/,
+    `ResponsiveLayout 打开外链窗口必须走 launchAuxWindow("link", …)`,
+  );
+  // 群任务窗口：label 是动态的 `todo-<groupId>`（每群一个），由 `groupTodosLabel` 构造。
+  assert.match(
+    chatWindow,
+    /launchAuxWindow\(groupTodosLabel\([^)]*\),\s*\(\)\s*=>\s*api\.openGroupTodosWindow\(/,
+    `ChatWindow 打开群任务窗口必须走 launchAuxWindow(groupTodosLabel(…), …)`,
+  );
+
+  // 反向：不得有绕过 launcher 的裸调用（每条命令只应出现一次，且在 launcher 参数里）。
+  const rawLink = layout.match(/api\.openLinkWindow\(/g) ?? [];
+  assert.equal(rawLink.length, 1, `api.openLinkWindow 裸调用应恰好 1 处（在 launcher 里），实际 ${rawLink.length}`);
+  const rawTodos = chatWindow.match(/api\.openGroupTodosWindow\(/g) ?? [];
+  assert.equal(rawTodos.length, 1, `api.openGroupTodosWindow 裸调用应恰好 1 处（在 launcher 里），实际 ${rawTodos.length}`);
+
+  // pending 状态：外链视图的按钮要能看到"正在打开"。
+  assert.match(layout, /useWindowOpening\("link"\)/, "ResponsiveLayout 要订阅 link 的打开状态");
+  assert.match(layout, /:opening="linksOpening"/, "链接列表要拿到 link 的 pending 状态");
+  assert.match(chatWindow, /:tasks-opening="tasksOpening"/, "聊天头要拿到群任务窗口的 pending 状态");
+});

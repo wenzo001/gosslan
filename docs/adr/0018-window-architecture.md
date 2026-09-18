@@ -61,16 +61,22 @@ Gosslan 有两个以上窗口：主窗口、独立「设置」窗口、独立「
 护栏：`runtime_state_has_a_single_source`（Rust）、事件契约测试里的
 `运行状态只能有一个快照 + 一个带载荷的事件`（前端）。
 
-### 2.3 常驻单例窗口（resident singleton windows）
+### 2.3 单例窗口（singleton windows）
 
-设置/日志窗口**懒创建、只隐藏不销毁**（`ensure_aux_window` + `AUX_WINDOWS_RESIDENT` +
-`install_hide_on_close`）。关闭 = 隐藏；再次打开 = `show + set_focus`，因此没有重载闪屏。
+窗口标签是**单例键**：同一标签重复打开只是聚焦（`ensure_aux_window` 的 `show + set_focus`），
+不会出现第二个窗口。
 
-代价：窗口不会重新加载 ⇒ **常驻窗口必须自己刷新会变的数据**。约定：
-- 偏好类数据由 `settings-changed` 事件同步（见 2.4）；
-- 环境类数据（设备信息 / 网卡 / 目录 / 运行状态）在窗口**重新获得焦点**时由
-  `refreshEnvironment()` 一次性并行拉取（四项互不依赖，用 `allSettled`，任一项失败不影响其它）。
-- 窗口标签是**单例键**：同一标签重复打开只是聚焦，不会出现两个设置窗口。
+**生命周期（用户 2026-09-17 调整）**：
+- **设置 / 日志 / 群任务窗口 = 关闭即销毁**（`AUX_WINDOWS_RESIDENT = false` /
+  `AUX_GROUP_TODOS_RESIDENT = false`）—— 用完即关，内存不常驻；每次打开都是新数据。
+  ⚠️ 窗口状态插件对这些 label 在 `lib.rs` 做了拒绝列表（避免销毁重建与"恢复旧几何/最大化"打架）。
+- **外链窗口 = 常驻**（`AUX_LINK_RESIDENT = true`）：它的核心交互是"复用同一窗口导航到新网址"，
+  销毁重建会让"再点一条链接"变成冷启动。
+- 设置窗口**保留** `onFocusChanged → refreshEnvironment()`（无碍，且兼容历史行为）。
+
+历史备注：2026-09-17 之前设置/日志是常驻（关闭=隐藏）以换取"点一下立马就开"；
+侧边栏把两者收进二级菜单、且用户偏好"用完即关"后改为销毁。`settings-changed` 事件同步（见 2.4）
+与"环境数据在获得焦点时拉取"的约定保留。
 
 ### 2.4 事件带载荷 + 定向发送（payload + targeted）
 

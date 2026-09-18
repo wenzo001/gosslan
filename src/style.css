@@ -63,7 +63,9 @@
   --gosslan-caption: #e2e8f0;
   --gosslan-rail: #e2e8f0;
   --gosslan-rail-text: #64748b;
-  --gosslan-rail-text-active: var(--gosslan-accent-ink);
+  /* 选中态用**纯主题色**：rail 上是图标不是正文 —— accent-ink 是给文字用的加深档
+     （primary 混黑），用户 2026-09-17：「选中颜色比主题色深」。 */
+  --gosslan-rail-text-active: var(--gosslan-primary);
   --gosslan-rail-hover: rgba(15, 23, 42, 0.06);
   --gosslan-rail-active: #cbd5e1;
   --gosslan-list: #f1f5f9;
@@ -187,7 +189,8 @@
   --gosslan-caption: #16202f;
   --gosslan-rail: #16202f;
   --gosslan-rail-text: #94a3b8;
-  --gosslan-rail-text-active: var(--gosslan-accent-ink);
+  /* 同亮色口径：图标选中态用纯主题色（accent-ink 在暗色下是 primary 混白，也不合图标用） */
+  --gosslan-rail-text-active: var(--gosslan-primary);
   --gosslan-rail-hover: rgba(248, 250, 252, 0.07);
   --gosslan-rail-active: #253246;
   --gosslan-list: #1e293b;
@@ -425,6 +428,18 @@ select:focus {
 /* 消息输入框：编辑区是卡片里一块透明矩形。聚焦时**卡片边框同样不变色**
    （与上面文本字段同一口径：用户不要聚焦色）。 */
 .gosslan-composer:focus-within {
+}
+
+/* 所有可输入区域的**插入符（光标）**跟随主题色（用户 2026-09-17：光标要跟主题走）。
+   说明：Chromium 只开放 `caret-color`，没有控制光标**宽度**的 CSS 属性 ——
+   所以"更粗"做不了，能做的是让它从默认的浅灰变成主题色（深浅两套主题下对比都更强）。
+   `contenteditable` 覆盖聊天的编辑区与搜索框等富文本输入。 */
+input,
+textarea,
+select,
+[contenteditable="true"],
+[contenteditable=""] {
+  caret-color: var(--gosslan-primary);
 }
 
 /* 统一过渡曲线：覆盖 Tailwind 的 .transition 系列（同优先级、本文件在 @tailwind 之后 → 后者胜） */

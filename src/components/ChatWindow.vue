@@ -14,18 +14,19 @@ import GroupTasksPanel from "@/components/GroupTasksPanel.vue";
 import BaseModal from "@/components/BaseModal.vue";
 import ChatHeader from "@/components/chat/ChatHeader.vue";
 import MessageComposer from "@/components/chat/MessageComposer.vue";
-import RenameGroupModal from "@/components/chat/RenameGroupModal.vue";
 import ForwardModal from "@/components/message/ForwardModal.vue";
 import MergeCardModal from "@/components/message/MergeCardModal.vue";
 import ImageLightbox from "@/components/message/ImageLightbox.vue";
 import { estimateMessageHeight } from "@/utils/messageHeight";
+import { launchAuxWindow, isWindowOpening } from "@/composables/useWindowLauncher";
+import { groupTodosLabel } from "@/utils/auxWindowLabels";
 import { MENTION_ALL_TOKEN } from "@/utils/messages";
 import { MAX_MERGE_ITEMS, buildMergePayload } from "@/utils/mergeCard";
 import { foldReactions, hasMyReaction, type ReactionChip } from "@/utils/reactions";
 import { foldPinned, isPinned } from "@/utils/pins";
 import { kindClass } from "@/utils/messageKinds";
 import { previewText } from "@/utils/messages";
-import { ArrowDown, Bluetooth, Pin, Share2, Star, Trash2, X } from "lucide-vue-next";
+import { ArrowDown, Bluetooth, X, Pin, Megaphone, Trash2, Share2, Star } from "lucide-vue-next";
 import type { LinkState, MessageRecord, MsgKind } from "@/types";
 
 const emit = defineEmits<{ (e: "open-share"): void }>();
@@ -48,10 +49,16 @@ const isSelfChat = computed(() => chat.activeConv === app.device?.device_id);
  * （气泡下方的 chip / 顶部置顶条）**同时出现**。
  *
  * 后端已经按同一张表分支（不计未读、不进预览），这里补齐渲染侧。
- * `card`（公告）暂时一并过滤 —— 公告已有独立的常驻横幅，再进时间线会重复。
+ * `card`（公告 / 投票）一并过滤 —— 公告已有独立的常驻横幅，再进时间线会重复。
+ *
+ * **例外：`todo`**（2026-09-17 用户要求）—— 任务消息本属 Card，但要在时间线上以
+ * 卡片形式展示（不再落到"未知 kind 兜底"里显示原始 JSON）。它进时间线、计未读、弹通知
+ * （Card 口径），且卡片里有「查看任务」直接开面板，不会与面板重复。
  */
 const messages = computed(() =>
-  (chat.messages[chat.activeConv ?? ""] ?? []).filter((m) => kindClass(m.kind) === "bubble"),
+  (chat.messages[chat.activeConv ?? ""] ?? []).filter(
+    (m) => kindClass(m.kind) === "bubble" || m.kind === "todo",
+  ),
 );
 
 /**
@@ -216,6 +223,25 @@ const tasksOpen = ref(false);
 const activeGroupId = computed(() =>
   isGroup.value && chat.activeConv ? chat.activeConv.slice(6) : null,
 );
+/** 当前群的任务窗口是否正在打开（按钮 pending 反馈）。 */
+const tasksOpening = computed(() => isWindowOpening(groupTodosLabel(activeGroupId.value ?? "")));
+
+/**
+ * 打开群任务：桌面端开**独立窗口**（每群一个），移动端/窗口创建失败回退到应用内弹窗。
+ * 与设置/日志同一套单飞 + 防抖（`launchAuxWindow`），窗口实例唯一性由后端 `ensure_aux_window` 保证。
+ */
+function openTasks() {
+  const gid = activeGroupId.value;
+  if (!gid) return;
+  if (app.isMobile) {
+    tasksOpen.value = true;
+    return;
+  }
+  void launchAuxWindow(groupTodosLabel(gid), () => api.openGroupTodosWindow(gid)).catch((e) => {
+    app.toastError(e, t("common.operationFail"));
+    tasksOpen.value = true; // 独立窗口开不出来 → 回退到应用内弹窗
+  });
+}
 const memberCount = computed(() => {
   const gid = activeGroupId.value;
   if (!gid) return 0;
@@ -226,10 +252,6 @@ const canRename = computed(() => {
   if (!gid) return false;
   return chat.groups.find((g) => g.id === gid)?.creator === app.device?.device_id;
 });
-const renameOpen = ref(false);
-const renameCurrent = computed(
-  () => chat.groups.find((g) => g.id === activeGroupId.value)?.name ?? "",
-);
 
 /**
  * 表情回应的折叠结果：**在会话层算一次**再按 msg_id 分发。
@@ -279,29 +301,31 @@ const announcement = computed(() => {
   return best;
 });
 
-/** 只有群主能发布公告（后端同样校验；前端隐藏入口是为了不让用户白点一次）。 */
+/** 只有群主能发布/删除公告（后端同样校验；前端隐藏入口是为了不让用户白点一次）。
+ *  发布/修改入口在「成员管理」弹窗（用户 2026-09-17：公告与群名/成员一起管）。 */
 const canPublishAnnouncement = computed(
   () => !!activeGroupId.value && chat.groups.find((g) => g.id === activeGroupId.value)?.creator === app.device?.device_id,
 );
-const announceOpen = ref(false);
-const announceDraft = ref("");
 
-function openAnnounce() {
-  announceDraft.value = announcement.value?.text ?? "";
-  announceOpen.value = true;
-}
+// ---------------- 公告全文查看 + 删除（用户 2026-09-17） ----------------
 
-async function publishAnnouncement() {
+/** 点横幅正文 = 打开**全文弹窗**（此前是 toast —— 长公告截断后 toast 也看不全）。 */
+const announceViewOpen = ref(false);
+
+/** 删除两段式确认：第一次点进入待确认态，再次点击才真正删（会同步到全群、不可恢复）。 */
+const announceDeleteArmed = ref(false);
+
+async function deleteAnnouncement() {
   const gid = activeGroupId.value;
-  if (!gid) return;
-  const text = announceDraft.value.trim();
-  if (!text) return;
+  const ann = announcement.value;
+  if (!gid || !ann) return;
   try {
-    await chat.publishAnnouncement(gid, text);
-    announceOpen.value = false;
-    app.toast(t("group.announceDone"), "success");
+    await chat.deleteAnnouncement(gid, ann.msgId);
+    announceDeleteArmed.value = false;
+    announceViewOpen.value = false;
+    app.toast(t("group.announceDeleted"), "success");
   } catch (e) {
-    app.toastError(e, t("group.announceFail"));
+    app.toastError(e, t("group.announceDeleteFail"));
   }
 }
 
@@ -393,17 +417,6 @@ const mentionNames = computed(() => {
   // 真有成员叫这个名字也不会生成重复分支）。
   return [...g.members.map((id) => (id === me ? myName || id : chat.nicknameOf(id))), MENTION_ALL_TOKEN];
 });
-async function confirmRename(name: string) {
-  renameOpen.value = false;
-  const gid = activeGroupId.value;
-  if (!gid || !name) return;
-  try {
-    await chat.renameGroup(gid, name);
-    app.toast(t("chat.toast.groupRenamed"), "success");
-  } catch (e) {
-    app.toastError(e, t("chat.toast.renameFail"));
-  }
-}
 
 /** 当前会话的第一条未读索引（后端 markRead 前已记录，随历史 prepend 偏移）。 */
 const unreadIndex = computed(() => {
@@ -782,9 +795,10 @@ function isOverChatArea(pos: { x: number; y: number }) {
   return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
 }
 
-/** 准入条件与附件按钮一致：好友单聊 / 群聊才允许拖进来发。 */
+/** 准入条件与附件按钮一致：好友单聊 / 群聊才允许拖进来发；且群任务表单没在接拖放。 */
 function canDropInto() {
-  return !!chat.activeConv && (isGroup.value || isPeerFriend.value);
+  // 群任务表单的图片投放区命中时，拖放归它（否则同一份文件既进任务又被当聊天附件发出去）
+  return !!chat.activeConv && (isGroup.value || isPeerFriend.value) && !app.boardDropActive;
 }
 
 onMounted(() => {
@@ -850,35 +864,25 @@ function onLoadMore() {
       @back="app.mobileView = 'list'"
       @open-members="membersOpen = true"
       @open-files="filesOpen = true"
-      @open-tasks="tasksOpen = true"
-      @rename="renameOpen = true"
+      :tasks-opening="tasksOpening"
+      @open-tasks="openTasks"
+      @rename="membersOpen = true"
       @open-share="emit('open-share')"
     />
 
-    <!-- 群公告条：常驻在头部下方（公告是发给全群的权威信息，必须一眼可见）。
-         点击展开全文（长公告在条里会截断）。群主额外有「发布/修改」入口。 -->
+    <!-- 群公告条：**有公告才出现**（用户 2026-09-17：没有公告不该常驻一条空横幅；
+         发布/修改入口在「成员管理」弹窗里）。浅警告底 + 描边 + 圆角，点正文开全文弹窗。 -->
     <div
-      v-if="isGroup && (announcement || canPublishAnnouncement)"
-      class="flex shrink-0 items-start gap-2 border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-chat)] px-4 py-1.5"
+      v-if="isGroup && announcement"
+      class="mx-2 mt-1 flex shrink-0 items-start gap-2 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-warning-soft)] bg-[color-mix(in_srgb,var(--gosslan-warning)_8%,transparent)] px-3 py-2"
     >
       <Megaphone class="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--gosslan-warning-ink)]" aria-hidden="true" />
       <button
-        v-if="announcement"
         class="tap-safe min-w-0 flex-1 truncate rounded-[var(--gosslan-radius-sm)] px-1.5 py-0.5 text-left text-[12px] text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
         :title="announcement.text"
-        @click="app.toast(announcement.text, 'info')"
+        @click="announceViewOpen = true"
       >
         {{ announcement.text }}
-      </button>
-      <span v-else class="min-w-0 flex-1 px-1.5 py-0.5 text-[12px] text-[var(--gosslan-text-2)]">
-        {{ t("group.announceEmpty") }}
-      </span>
-      <button
-        v-if="canPublishAnnouncement"
-        class="tap-safe shrink-0 rounded-[var(--gosslan-radius-sm)] px-1.5 py-0.5 text-[11px] text-[var(--gosslan-primary)] transition hover:bg-[var(--gosslan-hover)]"
-        @click="openAnnounce"
-      >
-        {{ announcement ? t("group.announceEdit") : t("group.announcePublish") }}
       </button>
     </div>
 
@@ -1030,6 +1034,7 @@ function onLoadMore() {
             @open-merge="openMerge = $event"
             @locate="locateMessage"
             @open-image="openImageAt"
+            @open-tasks="openTasks"
           />
         </template>
       </VirtualList>
@@ -1115,32 +1120,49 @@ function onLoadMore() {
       :open="membersOpen"
       :group-id="activeGroupId"
       @close="membersOpen = false"
-      @open-tasks="membersOpen = false; tasksOpen = true"
+      @open-tasks="membersOpen = false; openTasks()"
     />
 
-    <!-- 发布群公告（仅群主可见入口） -->
-    <BaseModal :open="announceOpen" :title="t('group.announce')" @close="announceOpen = false">
-      <textarea
-        v-model="announceDraft"
-        class="h-28 w-full resize-none rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-3 py-2 text-sm text-[var(--gosslan-text)] outline-none focus:border-transparent"
-        :placeholder="t('group.announcePlaceholder')"
-        :maxlength="500"
-      ></textarea>
-      <div class="mt-4 flex justify-end gap-2">
-        <button
-          class="tap-safe rounded-[var(--gosslan-radius-md)] px-4 py-2 text-sm text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-          @click="announceOpen = false"
-        >
-          {{ t("common.cancel") }}
-        </button>
-        <button
-          class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-4 py-2 text-sm text-white transition hover:opacity-90 disabled:opacity-50"
-          :disabled="!announceDraft.trim()"
-          @click="publishAnnouncement"
-        >
-          {{ t("group.announcePublish") }}
-        </button>
-      </div>
+    <!-- 发布/修改群公告已并入「成员管理」弹窗（用户 2026-09-17：公告与群名/成员一起管）；
+         这里只保留公告**全文查看 + 删除**（点横幅正文打开）。 -->
+
+    <!-- 公告全文：点横幅正文打开（此前是 toast，长公告看不全） -->
+    <BaseModal
+      :open="announceViewOpen && !!announcement"
+      :title="t('group.announce')"
+      @close="announceViewOpen = false"
+    >
+      <template v-if="announcement">
+        <p class="whitespace-pre-wrap break-words text-sm leading-relaxed text-[var(--gosslan-text)]">
+          {{ announcement.text }}
+        </p>
+        <!-- 群主：删除（两段式确认，渲染在弹窗内 ⇒ 不会被遮罩挡住） -->
+        <div v-if="canPublishAnnouncement" class="mt-5 flex items-center justify-end gap-2 border-t border-[var(--gosslan-divider)] pt-3">
+          <button
+            v-if="!announceDeleteArmed"
+            class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] px-3 py-1.5 text-[13px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-danger-soft)] hover:text-[var(--gosslan-danger-ink)]"
+            @click="announceDeleteArmed = true"
+          >
+            <Trash2 class="h-3.5 w-3.5" />
+            {{ t("group.announceDeleteTitle") }}
+          </button>
+          <template v-else>
+            <span class="mr-auto text-[12px] text-[var(--gosslan-danger-ink)]">{{ t("group.announceDeleteBody") }}</span>
+            <button
+              class="tap-safe rounded-[var(--gosslan-radius-md)] px-3 py-1.5 text-[13px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+              @click="announceDeleteArmed = false"
+            >
+              {{ t("common.cancel") }}
+            </button>
+            <button
+              class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-3 py-1.5 text-[13px] text-white transition hover:opacity-90"
+              @click="deleteAnnouncement"
+            >
+              {{ t("common.delete") }}
+            </button>
+          </template>
+        </div>
+      </template>
     </BaseModal>
 
     <!-- 群文件列表 -->
@@ -1189,13 +1211,6 @@ function onLoadMore() {
       </div>
     </BaseModal>
 
-    <!-- 修改群名称（仅群主可见入口） -->
-    <RenameGroupModal
-      :open="renameOpen"
-      :current-name="renameCurrent"
-      @close="renameOpen = false"
-      @confirm="confirmRename"
-    />
 
     <!-- 图片相册预览（会话内全部图片，左右箭头 / 键盘 ←→ 切换） -->
     <ImageLightbox

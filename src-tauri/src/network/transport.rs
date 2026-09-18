@@ -4003,6 +4003,8 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             size,
             sha256,
             sealed_file_key,
+            scope,
+            todo_id,
         } => {
             handle_group_file_offer(
                 state,
@@ -4014,6 +4016,8 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 size,
                 sha256,
                 sealed_file_key,
+                scope,
+                todo_id,
             )
             .await;
         }
@@ -5549,6 +5553,8 @@ async fn handle_group_file_offer(
     size: u64,
     sha256: String,
     sealed_file_key: String,
+    scope: String,
+    todo_id: String,
 ) {
     // 链路上报的 sender 必须与 Offer 声明一致，且不能是自己
     if sender_id != peer_id || sender_id == state.device_id {
@@ -5611,22 +5617,27 @@ async fn handle_group_file_offer(
             sha256: sha256.clone(),
             status: "sending".to_string(),
             created_at: db::now_ms(),
+            scope: scope.clone(),
+            todo_id: todo_id.clone(),
         };
         if db::upsert_group_file_receive(&dbc, &gf, &state.device_id).is_err() {
             return;
         }
     }
-    // 接收气泡：与发送端同一 msg_id（gfile-{transfer_id}），前端据 file-progress
-    // 之外的状态事件推进。此处 status=sending，Done 校验通过后转 delivered。
-    // 图片文件保持 kind="image"，业务语义不降级。
-    let subtype = file::classify_file_subtype(&name);
-    let kind = if subtype == "image" { "image" } else { "file" };
-    let conv_id = format!("group:{group_id}");
-    let seq = {
-        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::next_clock(&dbc, &conv_id).unwrap_or(1)
-    };
-    let rec = crate::state::MessageRecord {
+    // `scope == "todo"`：待办描述图片，仅走传输管线把字节投递给全员，
+    // 不进聊天时间线、不弹气泡、不改会话预览（与发送端对称）。
+    if scope != "todo" {
+        // 接收气泡：与发送端同一 msg_id（gfile-{transfer_id}），前端据 file-progress
+        // 之外的状态事件推进。此处 status=sending，Done 校验通过后转 delivered。
+        // 图片文件保持 kind="image"，业务语义不降级。
+        let subtype = file::classify_file_subtype(&name);
+        let kind = if subtype == "image" { "image" } else { "file" };
+        let conv_id = format!("group:{group_id}");
+        let seq = {
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+            db::next_clock(&dbc, &conv_id).unwrap_or(1)
+        };
+        let rec = crate::state::MessageRecord {
         id: 0,
         msg_id: format!("gfile-{transfer_id}"),
         conv_id: conv_id.clone(),
@@ -5640,21 +5651,22 @@ async fn handle_group_file_offer(
         seq,
         status: "sending".to_string(),
     };
-    {
-        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::insert_message(&dbc, &rec).ok();
-        db::touch_conversation(
-            &dbc,
-            &format!("group:{group_id}"),
-            "group",
-            &name,
-            None,
-            &format!("[群文件] {name}"),
-            1,
-        )
-        .ok();
+        {
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+            db::insert_message(&dbc, &rec).ok();
+            db::touch_conversation(
+                &dbc,
+                &format!("group:{group_id}"),
+                "group",
+                &name,
+                None,
+                &format!("[群文件] {name}"),
+                1,
+            )
+            .ok();
+        }
+        let _ = state.app.emit("message-received", &rec);
     }
-    let _ = state.app.emit("message-received", &rec);
     // 会话密钥仅存内存，供下一阶段解密 GroupFileChunk
     state
         .group_file_keys
@@ -5949,48 +5961,57 @@ async fn handle_group_file_done(
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .remove(&transfer_id);
-    // 重发带本地路径的记录（applyIncoming 按 msg_id 合并更新，未读不重复）：
-    // 前端气泡 content.path 就绪 → 打开/另存/图片代码预览立即可用
-    let msg_id = format!("gfile-{transfer_id}");
-    let seq = {
-        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        dbc.query_row(
-            "SELECT seq FROM messages WHERE msg_id = ?1",
-            params![msg_id],
-            |r| r.get::<_, i64>(0),
-        )
-        .unwrap_or(1)
-    };
-    let subtype = file::classify_file_subtype(&gf.name);
-    let kind = if subtype == "image" { "image" } else { "file" };
-    let done_rec = crate::state::MessageRecord {
-        id: 0,
-        msg_id,
-        conv_id: format!("group:{group_id}"),
-        sender_id: sender_id.clone(),
-        receiver_id: state.device_id.clone(),
-        kind: kind.to_string(),
-        content: serde_json::json!({
-            "name": gf.name,
-            "path": r.final_path.to_string_lossy(),
-            "size": gf.size,
-            "sha256": gf.sha256,
-            "subtype": subtype,
-        })
-        .to_string(),
-        ts: db::now_ms(),
-        seq,
-        status: "delivered".to_string(),
-    };
-    // 回填本地 path 到 messages 表：read_file_preview 按 msg_id 反查 content 定位文件。
-    // 单聊 FileDone 走 insert_message 直接落库带 path 的内容；群聊 Offer 先落库无 path 的
-    // 内容（文件尚未下载），Done 时必须显式更新，否则接收方图片/代码预览因缺 path 失败。
-    {
-        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::update_message_content(&dbc, &done_rec.msg_id, &done_rec.content, &done_rec.status)
-            .ok();
+    state
+        .group_file_keys
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&transfer_id);
+    // `scope == "todo"`：待办描述图片只走传输管线，不回填聊天气泡、不 emit message-received
+    // （文件已按 sha256 经 content store 登记，待办卡片按 sha256 即可解析本地路径）。
+    if gf.scope != "todo" {
+        // 重发带本地路径的记录（applyIncoming 按 msg_id 合并更新，未读不重复）：
+        // 前端气泡 content.path 就绪 → 打开/另存/图片代码预览立即可用
+        let msg_id = format!("gfile-{transfer_id}");
+        let seq = {
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+            dbc.query_row(
+                "SELECT seq FROM messages WHERE msg_id = ?1",
+                params![msg_id],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap_or(1)
+        };
+        let subtype = file::classify_file_subtype(&gf.name);
+        let kind = if subtype == "image" { "image" } else { "file" };
+        let done_rec = crate::state::MessageRecord {
+            id: 0,
+            msg_id,
+            conv_id: format!("group:{group_id}"),
+            sender_id: sender_id.clone(),
+            receiver_id: state.device_id.clone(),
+            kind: kind.to_string(),
+            content: serde_json::json!({
+                "name": gf.name,
+                "path": r.final_path.to_string_lossy(),
+                "size": gf.size,
+                "sha256": gf.sha256,
+                "subtype": subtype,
+            })
+            .to_string(),
+            ts: db::now_ms(),
+            seq,
+            status: "delivered".to_string(),
+        };
+        // 回填本地 path 到 messages 表：read_file_preview 按 msg_id 反查 content 定位文件。
+        // 单聊 FileDone 走 insert_message 直接落库带 path 的内容；群聊 Offer 先落库无 path 的
+        // 内容（文件尚未下载），Done 时必须显式更新，否则接收方图片/代码预览因缺 path 失败。
+        {
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+            db::update_message_content(&dbc, &done_rec.msg_id, &done_rec.content, &done_rec.status)
+                .ok();
+        }
+        let _ = state.app.emit("message-received", &done_rec);
     }
-    let _ = state.app.emit("message-received", &done_rec);
     // 完成确认：无论 ACK 发送成败，file_key 已清理不再保留（ACK 丢失由后续阶段处理）
     send_group_file_complete_ack(state, &transfer_id, &group_id, &sender_id, true).await;
 }
@@ -7029,19 +7050,9 @@ fn resolve_group_name(state: &AppState, group_id: &str) -> String {
 }
 
 fn preview_content(kind: &str, content: &str) -> String {
-    match kind {
-        "file" => "[文件]".to_string(),
-        "image" => "[图片]".to_string(),
-        _ => {
-            let count = content.chars().count();
-            let c: String = content.chars().take(30).collect();
-            if count > 30 {
-                format!("{c}…")
-            } else {
-                c
-            }
-        }
-    }
+    // 预览文案的唯一事实源在 `protocol::preview_text`（会话摘要 + 通知正文共用；
+    // 前端 `utils/messages.ts` 的 `previewText` 与之逐项一致）。
+    crate::protocol::preview_text(kind, content)
 }
 
 /// 补发离线队列中的所有消息。

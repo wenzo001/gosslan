@@ -704,7 +704,7 @@ function fileToDataUrl(f: File): Promise<string> {
         <div class="relative">
           <button
             class="tap-safe flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-md)] transition"
-            :class="emojiOpen ? 'text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
+            :class="emojiOpen ? 'text-[var(--gosslan-primary)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
             :title="t('chat.composer.emoji')" :aria-label="t('chat.composer.emoji')"
             @click.stop="toggleEmoji"
           >
@@ -716,7 +716,7 @@ function fileToDataUrl(f: File): Promise<string> {
              紧接着按 Enter 会激活按钮（把 codeMode 再切回去）而非走编辑器 keydown 发送。 -->
         <button
           class="tap-safe flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-md)] transition"
-          :class="codeMode ? 'text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
+          :class="codeMode ? 'text-[var(--gosslan-primary)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
           :title="t('chat.composer.code')" :aria-label="t('chat.composer.code')"
           @mousedown.prevent
           @click="codeMode = !codeMode"

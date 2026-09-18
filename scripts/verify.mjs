@@ -66,6 +66,8 @@
  */
 
 import { spawnSync } from "node:child_process";
+// Windows 的 `shell:true` 会按空格截断命令：可执行路径必须自己带引号（Program Files）。
+const NODE_EXE = '"' + process.execPath + '"';
 import { existsSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
@@ -106,42 +108,42 @@ const steps = [
     name: "测试清单守卫（前端）",
     why: "挡住「新增 .test.ts 忘了登记进 package.json」这类静默不跑",
     cwd: ROOT,
-    cmd: process.execPath,
+    cmd: NODE_EXE,
     args: ["scripts/check-test-manifest.mjs", "--only", "frontend"],
   },
   {
     name: "不变量例外守卫",
     why: "挡住「例外只写在实现旁边、没写进 protocol-invariants.md」导致的照文档误修",
     cwd: ROOT,
-    cmd: process.execPath,
+    cmd: NODE_EXE,
     args: ["scripts/check-invariant-exceptions.mjs"],
   },
   {
     name: "BLE 常量单一事实来源",
     why: "挡住「同一个概念多处各算一遍」——CHANGELOG 4.18.7→4.18.10 连着四版修的就是它",
     cwd: ROOT,
-    cmd: process.execPath,
+    cmd: NODE_EXE,
     args: ["scripts/check-ble-constants.mjs"],
   },
   {
     name: "领域图守门",
     why: "挡住「地图变成虚构」——路径存在 / 一文件不属两域 / 无文件漏归属 / enforce 只能开在单家",
     cwd: ROOT,
-    cmd: process.execPath,
+    cmd: NODE_EXE,
     args: ["scripts/check-domain-map.mjs"],
   },
   {
     name: "领域依赖方向守门",
     why: "挡住「跨域 use 不声不响」——每个域的 use crate::xxx 必须落在 self 或 consumes 里（生产代码，不扫测试块）",
     cwd: ROOT,
-    cmd: process.execPath,
+    cmd: NODE_EXE,
     args: ["scripts/check-domain-deps.mjs"],
   },
   {
     name: "Change Budget 守门",
     why: "挡住「改动半径不声明 + 同领域反复打补丁」——L2 需 [plan]、L3/敏感文件需 [impact]、同领域 3 次 fix 即红",
     cwd: ROOT,
-    cmd: process.execPath,
+    cmd: NODE_EXE,
     args: ["scripts/check-change-budget.mjs"],
   },
   {
@@ -190,7 +192,7 @@ const steps = [
     name: "测试清单守卫（Rust）",
     why: "比对基线名单与实际 --list，缺名即红（正是上一步那个风险的兜底）",
     cwd: ROOT,
-    cmd: process.execPath,
+    cmd: NODE_EXE,
     args: ["scripts/check-test-manifest.mjs", "--only", "rust"],
   },
 ];

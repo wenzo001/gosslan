@@ -36,7 +36,12 @@ const SYSTEM_ROW = 28;
  * 改卡片内边距/行数时必须同步这里（`MergeCard.vue` 里有注释指向本常量）。
  */
 const MERGE_CARD = 96;
-
+/** 群任务卡片（TodoCardBubble）：头部(30) + 指派人行(24) + 底部按钮(38) + 余量。 */
+const TODO_CARD_BASE = 96;
+/** 任务卡片有描述时追加（描述最多 ~2.6 行 ≈ 50，留余量）。 */
+const TODO_CARD_DESC = 58;
+/** 任务卡片有图片时追加（一行 80px 缩略图 + 间距，留余量）。 */
+const TODO_CARD_IMAGES = 88;
 export interface EstimateContext {
   messages: MessageRecord[];
   isGroup: boolean;
@@ -106,7 +111,19 @@ function computeBubbleHeight(m: MessageRecord, fontSize: FontSizeKey): number {
     // 合并转发卡片：定高（见 MERGE_CARD 的说明）
     case "merge":
       return MERGE_CARD;
-    default:
+    case "todo": {
+      // 卡片高度随描述/图片存在与否变化；宁可多估留白，也不让相邻消息互相遮挡。
+      let desc = false;
+      let imgs = false;
+      try {
+        const o = JSON.parse(m.content) as { description?: string; images?: unknown[] };
+        desc = typeof o?.description === "string" && o.description.length > 0;
+        imgs = Array.isArray(o?.images) && o.images.length > 0;
+      } catch {
+        /* 异常内容按最小卡片估 */
+      }
+      return TODO_CARD_BASE + (desc ? TODO_CARD_DESC : 0) + (imgs ? TODO_CARD_IMAGES : 0);
+    }    default:
       return textBubbleHeight(m.content, fontSize);
   }
 }

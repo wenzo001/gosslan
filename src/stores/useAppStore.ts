@@ -84,6 +84,16 @@ export const useAppStore = defineStore("app", () => {
   /** 对端样式表（device_id -> 样式 JSON）：按「发送者自己的偏好」渲染其消息气泡。 */
   const peerStyles = ref<Record<string, string>>({});
 
+  /**
+   * 拖放正落在「群任务」表单的图片投放区上（用户 2026-09-17）。
+   *
+   * 为什么要在 store 里：Tauri 的 `onDragDropEvent` 是 **webview 级**事件 ——
+   * 主窗口的 ChatWindow 也在监听拖放（往聊天里发文件）。群任务表单打开时它的
+   * 投放区命中了拖放，就必须让 ChatWindow 的监听让位，否则同一份文件既进任务
+   * 又被当聊天附件发出去。ChatWindow 的 `canDropInto` 读这个标志让位。
+   */
+  const boardDropActive = ref(false);
+
   // ---------------- 通知偏好 ----------------
   /** 桌面通知开关（后端持久化；默认开）。 */
   const notifyEnabled = ref<boolean>(true);
@@ -899,6 +909,7 @@ export const useAppStore = defineStore("app", () => {
     themeColor,
     fontFamily,
     chatStyle,
+    boardDropActive,
     peerStyles,
     isMobile,
     mobileView,

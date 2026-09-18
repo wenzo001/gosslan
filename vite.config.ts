@@ -80,13 +80,15 @@ export default defineConfig(async () => ({
     minify: isDebugBuild ? false : "esbuild",
     sourcemap: isDebugBuild,
     rollupOptions: {
-      // 三个窗口 = 三个 HTML 入口（Rust 侧用 WebviewUrl::App("<name>.html") 打开）。
-      // 各自的入口只 import 自己需要的代码，所以设置/日志窗口不会加载聊天那一大坨
+      // 窗口 = HTML 入口（Rust 侧用 WebviewUrl::App("<name>.html") 打开）。
+      // 各自的入口只 import 自己需要的代码，所以设置/日志/群任务窗口不会加载聊天那一大坨
       // —— 这是"点设置要等很久、还会先闪一下聊天界面"的主要修法之一。
+      // （外链窗口不走这里：它用 WebviewUrl::External 直接加载远端 URL，没有本地文档。）
       input: {
         main: resolve(here, "index.html"),
         settings: resolve(here, "settings.html"),
         logs: resolve(here, "logs.html"),
+        todos: resolve(here, "todos.html"),
       },
       output: {
         manualChunks(id) {

@@ -65,6 +65,16 @@ pub const WINDOW_MAIN: &str = "main";
 pub const WINDOW_SETTINGS: &str = "settings";
 /// 独立的「运行日志」窗口（`open_log_window`）。
 pub const WINDOW_LOGS: &str = "logs";
+/// 群任务窗口的 label **前缀**（实际 label = `todo-<groupId>`，见 `open_group_todos_window`）。
+///
+/// 它是**动态** label（每群一个窗口），所以不进 [`WINDOW_LABELS`]（那份清单只列固定 label）；
+/// capability 里用 `todo-*` 通配覆盖。前缀字符串必须与前端 `src/utils/auxWindowLabels.ts`
+/// 的 `GROUP_TODOS_LABEL_PREFIX` 完全一致（有 Rust 守卫做交叉核对）。
+pub const WINDOW_GROUP_TODOS_PREFIX: &str = "todo-";
+/// 独立的「外部链接」窗口（`open_link_window`）。**刻意不进 [`WINDOW_LABELS`]、也不进
+/// capabilities**：它加载的是**远端页面**，不给它任何 capability 才能保证远端内容
+/// 调不动本应用的任何命令（`link_window_is_not_capability_covered` 测试锁死这一点）。
+pub const WINDOW_LINK: &str = "link";
 /// 主窗口在 `tray::MAIN_WINDOW_LABEL` 也有一份（那里是 `#[cfg(desktop)]`），
 /// 测试里断言两者一致，避免漂移。
 pub const WINDOW_LABELS: &[&str] = &[WINDOW_MAIN, WINDOW_SETTINGS, WINDOW_LOGS];
@@ -148,6 +158,12 @@ pub fn run() {
                         | tauri_plugin_window_state::StateFlags::MAXIMIZED
                         | tauri_plugin_window_state::StateFlags::FULLSCREEN,
                 )
+                // 设置/日志窗口是**关闭即销毁**（每次开窗由 `aux_window_geometry` 重新摆位），
+                // 不让插件按 label 恢复旧几何/最大化 —— 否则会与重新居中打架
+                // （用户 2026-09-17：这两个窗口改为"关闭即销毁"，见 commands.rs 的
+                // `AUX_WINDOWS_RESIDENT`）。群任务窗口 label 是动态的 `todo-*`，
+                // 已由 `apply_aux_geometry` 里的 `unmaximize()` 兜底。
+                .with_denylist(&[WINDOW_SETTINGS, WINDOW_LOGS])
                 .build(),
         );
     }
@@ -358,6 +374,8 @@ pub fn run() {
             commands::send_group_poll,
             commands::cast_group_poll_vote,
             commands::send_group_file,
+            commands::send_todo_image,
+            commands::todo_image_meta,
             commands::get_group_file_delivery_summary,
             commands::list_group_files,
             commands::send_file,
@@ -401,6 +419,15 @@ pub fn run() {
             commands::close_log_window,
             commands::open_settings_window,
             commands::close_settings_window,
+            commands::open_group_todos_window,
+            commands::open_link_window,
+            commands::list_external_links,
+            commands::add_external_link,
+            commands::update_external_link,
+            commands::remove_external_link,
+            commands::save_todo_image_bytes,
+            commands::delete_group_announcement,
+            commands::list_active_group_announcements,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -466,12 +493,54 @@ mod tests {
             .iter()
             .map(|v| v.as_str().expect("windows 数组项必须是字符串").to_string())
             .collect();
-        for label in WINDOW_LABELS {
+        // 防"清单被删空 ⇒ 循环空转"：固定窗口至少这三个。
+        assert!(
+            WINDOW_LABELS.len() >= 3,
+            "WINDOW_LABELS 至少要有 main/settings/logs 三个"
+        );
+        // 群任务窗口是**动态** label（`todo-<groupId>`），这里用一个代表性 label 校验通配覆盖。
+        let dynamic_todo =
+            format!("{WINDOW_GROUP_TODOS_PREFIX}g-00000000-0000-0000-0000-000000000000");
+        for label in WINDOW_LABELS
+            .iter()
+            .copied()
+            .chain(std::iter::once(dynamic_todo.as_str()))
+        {
             assert!(
                 patterns.iter().any(|p| window_pattern_matches(p, label)),
                 "窗口 `{label}` 没有被任何 capability 覆盖（windows = {patterns:?}）"
             );
         }
+    }
+
+    /// **反向**守卫：外链窗口**必须不被**任何 capability 覆盖。
+    ///
+    /// 它加载的是远端页面；一旦被 capability 覆盖，第三方内容就能调用本应用的
+    /// `plugin:*` / `core:*`（对话框、打开器、事件……）—— 等于把命令面交出去。
+    /// 与上一条互为镜像：上一条保证"该覆盖的都被覆盖"，这条保证"不该覆盖的没被覆盖"。
+    #[test]
+    fn link_window_is_not_capability_covered() {
+        let raw = include_str!("../capabilities/default.json");
+        let caps: serde_json::Value =
+            serde_json::from_str(raw).expect("capabilities/default.json 必须是合法 JSON");
+        let patterns: Vec<String> = caps
+            .get("windows")
+            .and_then(|v| v.as_array())
+            .expect("capabilities/default.json 缺少 windows 数组")
+            .iter()
+            .map(|v| v.as_str().expect("windows 数组项必须是字符串").to_string())
+            .collect();
+        assert!(
+            !patterns
+                .iter()
+                .any(|p| window_pattern_matches(p, WINDOW_LINK)),
+            "外链窗口 `{WINDOW_LINK}` 不得被任何 capability 覆盖（远端页面会因此拿到命令面）：{patterns:?}"
+        );
+        // 同时确认它没被误加进固定窗口清单。
+        assert!(
+            !WINDOW_LABELS.contains(&WINDOW_LINK),
+            "WINDOW_LINK 不该进 WINDOW_LABELS（那份清单是 capability 覆盖的正向清单）"
+        );
     }
 
     /// **规则式**守卫：任何会碰重资源（数据库 / 文件系统 / 日志 / 剪贴板 / 网卡枚举 / 阻塞睡眠）
@@ -1825,9 +1894,10 @@ mod tests {
     /// **⌘W 必须由我们自己的菜单项处理**（用户 2026-09-13 真机：主窗口 ⌘W 只会"滴滴滴"）。
     ///
     /// 系统预定义项 `PredefinedMenuItem::close_window` 的动作是 `performClose:`，AppKit 按
-    /// 窗口的 `Closable` 样式位校验可用性；而本项目 `decorations: false` ⇒ Borderless ⇒
-    /// 该项被判不可用 ⇒ 只有系统提示音，且**没有任何日志**（设置/日志窗口是有边框的，
-    /// 所以它们正常，更容易让人以为是"主窗口特有的 bug"）。
+    /// 窗口的 `Closable` 样式位校验可用性；而本项目**所有应用窗口**都是 `decorations: false`
+    /// ⇒ Borderless ⇒ 该项被判不可用 ⇒ 只有系统提示音，且**没有任何日志**。
+    /// （2026-09-17 之前只有主窗口是无边框的、辅助窗口靠系统标题栏所以"正常"，更容易让人以为
+    /// 是"主窗口特有的 bug"；现在辅助窗口也由 `decorate_aux_window` 补回 `Closable` 位。）
     ///
     /// 判据：窗口菜单不得再用预定义关闭项；必须有一个带 `CmdOrCtrl+W` 的自定义项，
     /// 且菜单事件处理里真的关掉"当前聚焦窗口"（回落到主窗口）。
@@ -2084,13 +2154,18 @@ mod tests {
             urls.push(rest[..end].to_string());
         }
         assert!(
-            urls.len() >= 2,
-            "应当能找到设置与日志两个窗口的 URL，实际 {}",
+            urls.len() >= 3,
+            "应当能找到设置 / 日志 / 群任务三个窗口的 URL，实际 {}",
             urls.len()
         );
         assert!(
             !urls.iter().any(|u| u == "index.html"),
             "独立窗口不得再共用主窗口的 index.html（那会让它先把聊天三栏挂起来）：{urls:?}"
+        );
+        // 外链窗口是唯一**不走 App 文档**的窗口（它加载远端 URL），必须真的是 External。
+        assert!(
+            commands.contains("WebviewUrl::External("),
+            "外链窗口必须用 `WebviewUrl::External` 加载远端 URL"
         );
 
         // 每个 URL 都必须真的存在，且它引用的入口也必须存在 —— 这是"改了文件名忘改另一处"
@@ -2098,6 +2173,7 @@ mod tests {
         for (url, entry) in [
             ("settings.html", "src/entries/settings.ts"),
             ("logs.html", "src/entries/logs.ts"),
+            ("todos.html", "src/entries/todos.ts"),
         ] {
             assert!(
                 urls.iter().any(|u| u == url),
@@ -2105,7 +2181,8 @@ mod tests {
             );
             let html = match url {
                 "settings.html" => include_str!("../../settings.html").to_string(),
-                _ => include_str!("../../logs.html").to_string(),
+                "logs.html" => include_str!("../../logs.html").to_string(),
+                _ => include_str!("../../todos.html").to_string(),
             };
             assert!(
                 html.contains(&format!("/{entry}")),
@@ -2116,8 +2193,11 @@ mod tests {
                 "src/entries/settings.ts" => {
                     let _ = include_str!("../../src/entries/settings.ts");
                 }
-                _ => {
+                "src/entries/logs.ts" => {
                     let _ = include_str!("../../src/entries/logs.ts");
+                }
+                _ => {
+                    let _ = include_str!("../../src/entries/todos.ts");
                 }
             }
         }
@@ -2136,7 +2216,12 @@ mod tests {
     fn aux_window_open_is_singleton_serialized_and_resident() {
         let commands = include_str!("commands.rs");
 
-        for signature in ["pub fn open_settings_window(", "pub fn open_log_window("] {
+        for signature in [
+            "pub fn open_settings_window(",
+            "pub fn open_log_window(",
+            "pub fn open_group_todos_window(",
+            "pub fn open_link_window(",
+        ] {
             let body = rust_fn_body(commands, signature);
             assert!(
                 body.contains("ensure_aux_window("),
@@ -2149,6 +2234,11 @@ mod tests {
         }
 
         let helper = rust_fn_body(commands, "fn ensure_aux_window<F>(");
+        // 防"锚点过期 ⇒ 拿到空/残段 ⇒ 下面的断言空转"。
+        assert!(
+            !helper.is_empty(),
+            "找不到 `ensure_aux_window` 的函数体（这条护栏会变成空转）"
+        );
         assert!(
             helper.contains("AUX_WINDOW_CREATE_LOCK"),
             "`ensure_aux_window` 必须用创建锁串行化（否则并发会开出第二个窗口）"
@@ -2163,8 +2253,14 @@ mod tests {
             "`ensure_aux_window` 必须做双重检查（拿锁前后各查一次），实际只有一次"
         );
         assert!(
-            helper.contains("AUX_WINDOWS_RESIDENT") && helper.contains("install_hide_on_close(&win)"),
-            "`ensure_aux_window` 里必须接上「关闭即隐藏」（常驻）——              否则每次打开都要重新加载 WebView + 前端，用户要等（`AUX_WINDOWS_RESIDENT` 只是开关）"
+            // 2026-09-17：`resident` 改成参数（设置/日志常驻；群任务窗口每群一个 ⇒ 关闭即销毁）。
+            // 判据是"常驻开关接上了 hide-on-close"，不再要求 helper 里出现某个具体常量。
+            helper.contains("resident: bool") && helper.contains("install_hide_on_close(&win)"),
+            "`ensure_aux_window` 里必须接上「关闭即隐藏」（常驻）——              否则每次打开都要重新加载 WebView + 前端，用户要等（`resident` 是开关）"
+        );
+        assert!(
+            commands.contains("const AUX_GROUP_TODOS_RESIDENT: bool = false"),
+            "群任务窗口必须「关闭即销毁」（每群一个窗口，常驻会无界增长）"
         );
         let hide = rust_fn_body(commands, "fn install_hide_on_close(");
         assert!(
@@ -2176,7 +2272,12 @@ mod tests {
         // `tao` 创建窗口时会把逻辑坐标**逐个显示器**按各自缩放换回物理、取第一个命中的显示器
         // （见 commands.rs 的 `fit_aux_window`），所以多屏不同缩放时子窗口会跑到另一块屏上
         // —— 用户 2026-09-16 实测报的正是这个，且它在单屏上完全看不出来。
-        for signature in ["pub fn open_settings_window(", "pub fn open_log_window("] {
+        for signature in [
+            "pub fn open_settings_window(",
+            "pub fn open_log_window(",
+            "pub fn open_group_todos_window(",
+            "pub fn open_link_window(",
+        ] {
             let body = rust_fn_body(commands, signature);
             assert!(
                 body.contains("apply_aux_geometry("),
@@ -2193,6 +2294,70 @@ mod tests {
                  中间这段用来摆位置/尺寸，否则窗口会先在默认位置闪一下再跳过去"
             );
         }
+    }
+
+    /// 外链 URL 的**协议白名单**（用户配置的网址会被 `WebviewUrl::External` 直接加载）。
+    ///
+    /// 为什么必须表驱动钉死：`javascript:` / `data:` / `file:` / `tauri:` 一旦漏过，
+    /// 等于把"在应用 WebView 里执行脚本 / 读本机文件"的能力交给一段用户随手粘贴的字符串。
+    #[test]
+    fn external_link_rejects_non_http_schemes() {
+        use crate::commands::validate_external_url;
+        for ok in [
+            "http://example.com",
+            "https://example.com/a?b=c",
+            "  https://a.b.c  ",
+        ] {
+            assert!(validate_external_url(ok).is_ok(), "应当放行：{ok}");
+        }
+        for bad in [
+            "",
+            "   ",
+            "example.com",
+            "javascript:alert(1)",
+            "data:text/html,<script>alert(1)</script>",
+            "file:///etc/passwd",
+            "tauri://localhost",
+            "https://",
+        ] {
+            assert!(
+                validate_external_url(bad).is_err(),
+                "必须拒绝非 http/https 或缺少主机名的输入：{bad}"
+            );
+        }
+    }
+
+    /// 群任务窗口 label 由 groupId 派生（`todo-<groupId>`），且前缀必须与前端一致。
+    ///
+    /// 窗口靠**自己的 label** 找回是哪个群，所以"前缀两边一致"是功能成立的前提；
+    /// 而 Rust 与 TS 各写一份字面量必然漂移 —— 这条护栏做交叉核对。
+    #[cfg(desktop)]
+    #[test]
+    fn group_todos_window_label_derives_from_group_id() {
+        let commands = include_str!("commands.rs");
+        let body = rust_fn_body(commands, "pub fn open_group_todos_window(");
+        assert!(
+            !body.is_empty(),
+            "找不到 open_group_todos_window（护栏会空转）"
+        );
+        assert!(
+            body.contains("WINDOW_GROUP_TODOS_PREFIX"),
+            "label 必须由 `WINDOW_GROUP_TODOS_PREFIX` 前缀拼出（别写字面量）"
+        );
+        assert!(
+            body.contains("is_ascii_alphanumeric()") && body.contains("is_empty()"),
+            "groupId 会被拼进窗口 label，必须先做字符集/非空校验"
+        );
+        // 与前端 `auxWindowLabels.ts` 的前缀交叉核对（两份字面量必须一致）。
+        let ts = include_str!("../../src/utils/auxWindowLabels.ts");
+        let expected = format!(
+            "export const GROUP_TODOS_LABEL_PREFIX = \"{}\"",
+            WINDOW_GROUP_TODOS_PREFIX
+        );
+        assert!(
+            ts.contains(&expected),
+            "前端 GROUP_TODOS_LABEL_PREFIX 必须与 Rust WINDOW_GROUP_TODOS_PREFIX 一致（期望 `{expected}`）"
+        );
     }
 
     /// 「和自己聊天」必须是**纯本地**路径（用户 2026-09-16 的功能）。

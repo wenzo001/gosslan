@@ -10,8 +10,203 @@
 
 ## [Unreleased]
 
-## [4.20.0] - 2026-09-17
+### Changed (群任务/群管理/窗口外观/公告 —— 用户 2026-09-17 第二轮)
 
+**群任务**：
+- 表单图片区支持**粘贴与拖入**（此前只有文件选择器）：虚线投放区 + 提示文案「点击添加，或直接粘贴 / 拖入图片」；
+  粘贴的位图没有本地路径 ⇒ 新增 Rust 命令 `save_todo_image_bytes`（raw IPC 收字节 → 按 sha256 落盘
+  `cache_dir/todo-paste/` → 返回路径，之后与选图同一条路）；拖放用 webview 级 `onDragDropEvent` 命中投放区，
+  并通过 `app.boardDropActive` 让 ChatWindow 的聊天拖放**让位**（否则同一份文件既进任务又被当聊天附件发出）。
+- **列表行内直接切状态**：有权限的行，状态胶囊点开小菜单即可切换（同一时间只开一个），与详情共用
+  同一份 `foldTodos` 数据源 ⇒ 两处状态天然同步。
+- **创建/完成时间回显**：详情新增「创建于 {time}」；`TodoItem.createdAt` 由 `foldTodos` 从
+  **创建那条记录**（`kind === "todo"` 的 ts）单独收集（LWW 折叠保留的是最新定义，两者是不同的记录）。
+
+**群管理**：群名称修改并入「成员管理」弹窗（群主可改、非群主只读），独立的 `RenameGroupModal` 删除。
+
+**窗口外观**：
+- Windows/Linux 窗口按钮按 **Win11 Fluent 细线造型自绘**（lucide 的双箭头/短横线与系统明显不像）；
+  `titleBarIcons.test.ts` 与 verify-guards 锚点随之重定位到 `data-win-glyph` 标记。
+- **聊天输入框加 1px 描边**（此前只靠底色区分，与聊天背景糊在一起）。
+- 侧边栏「链接」图标改**指南针**造型。
+
+**侧边栏与窗口生命周期**：设置/日志收进底部「更多」二级菜单（互斥弹层 + 键盘可达），
+且这两个窗口改**关闭即销毁**（`AUX_WINDOWS_RESIDENT = false`；外链窗口保持常驻并独立成
+`AUX_LINK_RESIDENT`）；窗口状态插件对 settings/logs 加拒绝列表，避免销毁重建与"恢复旧几何"打架；
+ADR-0018 §2.3 同步改写。
+
+**群公告**：
+- 横幅样式优化（浅警告底 + 描边 + 圆角，从"贴着背景的一条线"变成有承载面的横幅）；
+  点正文打开**全文弹窗**（替代 toast）。
+- 支持**删除公告**（仅群主）：新增 Rust 命令 `delete_group_announcement`（发 `announcement_delete` 墓碑，
+  接收端 owner-only 校验已有）；前端两段式确认。
+- **会话列表提醒**：有生效公告的群在列表行显示 📢 标记 —— 新增 Rust 查询
+  `list_active_group_announcements`（一条 SQL 全量折叠公告+墓碑；不能从 `chat.messages` 折叠，
+  那是 ~4 个会话的 LRU），store 缓存成 map 并在发布/删除/收到公告事件时刷新。
+
+### Fixed (日志主题色 / 预览 JSON / 群任务图片 / 通讯录「自己」 —— 用户 2026-09-17)
+
+- **日志窗口不跟随主题色**：日志入口此前完全不初始化 app store，`theme-boot.js` 只在首帧按
+  localStorage 设一次主色 —— 之后在设置里改主题色，常驻的日志窗口收不到（没订阅 `settings-changed`），
+  操作按钮一直用旧色。现在入口跑 `app.init()`（与设置窗口同口径：只读 + 订阅）。
+- **会话列表/通知显示一段 JSON**：`poll` / `announcement` 是非静默 kind，Rust 的 `preview` /
+  `preview_content` 与前端的 `previewText` 都没处理 ⇒ 直接把载荷吐出去。预览文案现在**唯一事实源**
+  收进 `protocol::preview_text`（投票取问题、公告取正文、回应/撤回/置顶/删公告全部给人话），
+  Rust 两侧委托它，前端 `previewText` 同口径。
+- **群任务图片大概率打不开**：三处叠加 —— ① 只有一个人的群里发图直接报错（"群内没有其他成员"），
+  图片元数据已进定义、字节却没有；② 缩略图首次读取失败（字节还没落地）被按 cid **缓存**，永不重试；
+  ③ 字节后到没有任何重读触发。现在：solo 群发待办图片只登记本机内容、不报错；
+  `loadContentPreview` **失败不缓存**；缩略图带退避重试（1.5s → 30s）追回后到的字节。
+- **通讯录新增「自己」**：与「新的朋友」同款行（本机头像 + 昵称 + 「和自己聊天」副标），
+  点开直接进入与自己聊天（复用 `openSelfChat`）。
+
+### Changed (辅助窗口统一自绘标题栏 + 群任务列表重做 —— 用户 2026-09-17)
+
+**用户症状**：①「新窗口（设置/日志）好像用的是系统的样式？标题栏和整体窗口的背景颜色有明显的界限，
+没有融合」；②「有的窗口应该不支持最大化、最小化吧」；③「群任务的样式还是太丑，至少参考飞书/微信/钉钉」。
+
+**窗口外壳抽象成一份**：
+
+- **所有应用窗口一律 `decorations(false)`**（此前辅助窗口没设，于是留着系统标题栏，那条底色由系统决定、
+  应用改不了 —— 接缝就是这么来的）。设置 / 日志 / 群任务窗口现在与主窗口**共用** `TitleBar.vue`
+  （它加了 `title` / `showMaximize` / `showMinimize` / `closeToTray` / `isMobile` 几个 props，
+  并去掉了对 app store 的依赖，辅助窗口入口才能 import 它），顶部 caption 与内容同属一套配色。
+- 新增 `window/AuxWindowShell.vue`：`decorations:false` 的两条后果（caption 底色 + 1px inset ring）
+  只在**这一处**表达，主窗口与辅助窗口不再各写一遍。
+- **窗口按钮作用于调用窗口**：`window_minimize` / `window_toggle_maximize` / `window_is_maximized` /
+  `window_toggle_fullscreen` / `window_close` 此前全写死 `main`（辅助窗口点最小化会把**主窗口**最小化）。
+  现在接收 `tauri::WebviewWindow`；`window_close` 主窗口=隐藏（托盘语义）、辅助窗口=`close()`
+  （常驻的转隐藏、群任务的销毁）。顺带修掉"外链窗口若能调到 close 会藏起主窗口"的隐患。
+- **按窗口区分能力**：设置/日志/群任务 = 可调整大小 + 可最小化 + 可关闭、**不可最大化**
+  （builder `.maximizable(false)` + caption `:show-maximize="false"`，macOS 绿灯也不画）；
+  外链窗口保留最小/最大化。另在 `apply_aux_geometry` 里 `unmaximize()`，防止 `tauri_plugin_window_state`
+  按 label 把辅助窗口恢复成最大化。
+- macOS：新增 `decorate_aux_window`（`set_closable(true)` 让 ⌘W 仍可用 + `disable_shadow` 去掉与圆角冲突的
+  矩形阴影），三个 builder 调用；`AuxWindowShell` 在 `onMounted` 调 `apply_macos_window_shape`
+  补圆角/主题背景（该命令本来就作用于调用窗口，此前只有主窗口调）。
+- **外链窗口是唯一例外**（保留系统标题栏）：它加载第三方网页，我们的文档不在那个窗口里，
+  套自绘栏只能改用 iframe，而大量站点有 `X-Frame-Options` 会白屏；且它下方是网页本身，不存在撞色问题。
+
+**群任务列表改「微信式极简」**：
+
+- 无卡片无边框，纯列表行 + 分组小标题（状态图标 + 名称 + 计数）+ 分割线；行内只留
+  **序号 + 标题 + 元信息 + 状态胶囊 + 快捷「完成」**（行高统一，不再"行高参差、满屏 pill"）。
+- **描述与图片、以及状态切换/编辑/删除/归档/恢复全部收进新增的 `TodoDetailDialog`**，点行打开。
+- 筛选从自创圆胶囊改成**分段控件**（与应用设置页同一套配方），仍带计数。
+- **列表有了自己的承载面**（用户 2026-09-17：「背景和任务条目颜色混在一起」）：此前行是**透明**的、
+  直接坐在窗口底色上，只有 hover 才有底色 ⇒ 条目与背景同色。现在整份列表包进一张卡片
+  （`rounded-lg` + `border` + `bg-[var(--gosslan-panel)]`，与设置页分组卡片同配方），
+  分组小标题改成**带底色的条**（`bg-[var(--gosslan-bg)]`），分组之间一眼分得开。
+- **状态切换改成显式两步**（用户 2026-09-17：「一不小心就把状态改了」）：详情里此前是一排 4 个
+  分段按钮、**一点即写库**，而且与看板顶部的**筛选**分段控件长得一样，用户当成"切视图"就顺手点了。
+  现在当前状态是一个胶囊（看清现状），改动要点开 `.gosslan-menu` 菜单再选，**当前项置灰不可点**；
+  状态一变（完成 / 菜单切状态 / 归档 / 恢复）就**关掉详情**回到列表看它的新分组 —— 口径一致
+  （用户 2026-09-17：「改『完成』也关闭弹窗保持一致」）。
+- **新建/编辑改成表单弹窗**（用户 2026-09-17：「新建任务怎么还能操作列表筛选？」+「新建和详情样式统一」）：
+  表单从列表内联块挪进 `BaseModal`（与详情同一套分区/字段/操作行样式），列表不再被表单推来推去，
+  表单打开时看板被遮罩挡住 ⇒ 筛选自然不可操作；**编辑**表单里补上状态分段控件
+  （表单内的改动到「保存」才写库，没有误触问题；新建恒为「待办」，不显示该行）；筛选的计数改成小圆片。
+- **状态配色收敛成单一事实源**：`utils/todos.ts` 新增 `TODO_STATUS_PILL`，并把
+  `TODO_STATUS_CLASS.overdue` 从 `danger-ink`（红）改成 `warning-ink`（橙）—— 同一个「延期」此前在看板里是橙、
+  在成员面板里是红；看板与任务卡气泡不再各抄一份，并加单测锁死"延期不得再用 danger"。
+
+**验证**：`cargo test --lib` **484 全绿**；`npm test` 除 2 条 zh-CN 环境既有失败外全绿（470 项）；
+`npx vue-tsc --noEmit` 零错误、`npm run build` ✅。真机需人工确认见下（macOS 圆角/⌘W、Windows 边缘缩放、
+嵌套弹窗层级）。
+
+### Added (群任务独立窗口 + 左栏「外部链接」视图 —— 用户 2026-09-17)
+
+**需求**：① 把群待办做成独立窗口；② 左边栏加一个可配置外部链接的地方，点开在独立窗口里渲染。
+
+**群任务独立窗口**：
+
+- **每群一个窗口**（label = `todo-<groupId>`，`WINDOW_GROUP_TODOS_PREFIX` + `src/utils/auxWindowLabels.ts`），
+  窗口从**自己的 label** 解析群 ID —— 一个窗口只服务一个群，不做窗口内切群。桌面端用它替代应用内弹窗；
+  移动端仍是弹窗（独立窗口是桌面能力），桌面创建失败也回退到弹窗。
+- **关闭即销毁**（`AUX_GROUP_TODOS_RESIDENT = false`）：每群一个窗口，常驻会无界增长；销毁重建顺带保证
+  每次打开都是新数据。设置/日志仍是常驻（`ensure_aux_window` 新增 `resident` 参数）。
+- 看板抽成 `GroupTasksBoard.vue`（无壳），弹窗（`GroupTasksPanel`）与窗口（`GroupTodosWindow`）共用；
+  `ToastHud.vue` 从 `ResponsiveLayout` 抽出，独立窗口也有 toast（否则窗口里的失败是静默的）。
+- **列表观感对齐应用**（用户 2026-09-17 反馈"样式有点丑"）：任务行改成与群文件/群成员列表同一套
+  扁平行（`hover:bg-[var(--gosslan-hover)]` + `text-[11px]` 的「·」分隔元信息），去掉厚重的卡片边框；
+  每行加**序号**（按当前显示顺序 1..N，切筛选/切分组后重排）。
+- **新增筛选胶囊**（用户 2026-09-17）：「全部 / 给我的 / 我创建的 / 已归档」+ 计数。
+  「归档」从"列表底部一段容易错过的区块"改成**一眼可见的筛选**（用户反馈"归档在哪里"）；
+  已归档视图带说明「完成之后可手动归档；完成后满 7 天自动归档」+ 逐条「恢复」。
+- **归档改为「完成之后手动归档」**（用户 2026-09-17）：完成只记 `done_at`（**首次**完成才记，
+  重复保存不改 —— 否则改个标题就把 7 天计时重置），**不再自动归档**；完成的任务留在活动列表的
+  「完成」分组里，行内多一个「归档」按钮；未手动归档的满 7 天仍会由前端按 `done_at` 自动归档。
+  后端 `update_group_todo` 新增显式 `archived: Option<bool>` 参数（`None` = 保留原值），
+  推导逻辑抽成纯函数 `resolve_done_archive` + 单测（非完成态一律取消归档，杜绝"进行中却被归档"）。
+- **绝不跑聊天 store 的初始化入口**：窗口用新增的 `chat.loadGroupTodos(groupId)`（只读一个群，不发
+  群已读回执、不写共享 localStorage）与 `watchGroupTodos`（只订阅本会话的 `message-received`）。
+  守门测试把「aux 入口不得 `chat.init(`/`bindEvents(`」从"禁 useChatStore"这一弱代理，改成**直接**禁这条。
+
+**左栏「外部链接」**：
+
+- 图标栏新增「链接」视图（`NavRail` → `LinksList`）：列表 + 增/改/删；点某条在独立窗口里加载它。
+- 数据走**独立命令**（`list/add/update/remove_external_link`，镜像 `RoutedEndpoint`）而不是 `Settings`：
+  后端能返回**真实校验错误**（`save_settings` 对脏值是静默忽略，用户会"以为保存了"）。
+- **URL 协议白名单**（只放行 http/https 且 host 非空）：这个网址会被 `WebviewUrl::External` 直接加载，
+  `javascript:`/`data:`/`file:`/`tauri:` 会带来本机攻击面；前后端各有一份同口径校验 + 两条表驱动用例。
+- 链接窗口 label `link`：**刻意不进 `WINDOW_LABELS`、也不进 capabilities**（远端页面拿不到任何命令权限），
+  并有 `link_window_is_not_capability_covered` 反向锁死；`on_navigation` 只放行 http/https；
+  复用同一窗口（第二次打开是 `navigate` + 改标题，不会越开越多）。这是本仓库唯一一处在本机渲染第三方网页。
+
+**守卫/架构**：新增窗口照 ADR-0018 补齐（HTML/入口/vite 输入/骨架 CSS/`dismissBoot`/capabilities/`WINDOW_LABELS`）；
+Rust 侧 `aux_windows_open_their_own_document`、`aux_window_open_is_singleton_serialized_and_resident`、
+`capability_covers_every_window_label`、几何用例均扩展到新窗口，并新增
+`link_window_is_not_capability_covered`、`external_link_rejects_non_http_schemes`、
+`group_todos_window_label_derives_from_group_id`（含与前端前缀的交叉核对）；`scripts/verify-guards.py`
+更新了窗口单例注入锚点并新增 7 条非空转用例。
+
+**验证**：`cargo test --lib` **483 全绿**；`npm test` 除 2 条 zh-CN 环境既有失败外全绿（469 项）；
+`npx vue-tsc --noEmit` 零错误、`npm run build` ✅。真机需人工确认：桌面开某群任务窗口（标题带群名、
+关闭即销毁、重开数据新鲜）、移动端仍是弹窗、链接增删改 + 窗口内加载。
+
+### Changed (群任务优化：创建者 / 完整描述 / 图片 / 归档 / 滚动约束 —— 用户 2026-09-17)
+
+**需求（7 条）**：① 标出任务发起人，创建者与 @ 到的人都能改指派人；② 约束面板内部滚动
+（此前会越过内层窗口）；③ 归档（完成即归档 + 满 7 天自动归档 + 可恢复）；④ 指派成员时在群里
+显式 @ 提醒；⑤ 完整长描述可看、可加图片（跨端同步）；⑥ 任务消息在聊天列表 / 通知里不再显示
+原始 JSON；⑦ 搜索框**外框**（上一条"去掉输入框焦点方框"改动的回退）。
+
+**协议 / 后端**：
+
+- `TodoPayload` 增 `description` / `images[{id,name,size,sha256,subtype}]` / `archived` / `done_at`。
+- `update_group_todo` 拆三档判权（**结构 > 指派人 > 状态**，顺序不能反），描述/图片传 `None`
+  时**保留库中原值**（不让"只改状态"的请求把它们清空）。
+- `may_update_todo`：改指派人 = 创建者 / 群主 / 当前被指派人（用户口径："被 @ 的人也能转派"）；
+  改标题/删除仍是创建者或群主；改状态是创建者或被指派人。
+- 完成（`status=="done"`）⇒ 后端记权威 `done_at`（**首次**完成才记，重复保存不改，不接受客户端自报）；
+  `archived` 只由显式请求决定 —— **完成之后手动归档**，未手动归档的满 7 天自动归档（见下方 2026-09-17 追记）。
+- 描述图片复用群文件管线：`send_todo_image`（`scope="todo"` ⇒ 不进时间线、不弹气泡，字节按
+  `sha256` 登记 content store）；新增 `todo_image_meta`（选图只取元数据，不投递字节）、
+  `read_content_preview`（按 cid 读回字节渲染缩略图，安全边界同 `read_file_preview`）。
+
+**前端**：
+
+- `utils/todos.ts`：解析新字段 + `isEffectivelyArchived`（显式归档 **或** 完成满 7 天）+
+  `canEditAssignees` + `todoMentionsMe`（被指派 = 被 @，按 device id）。
+- `GroupTasksPanel`：标创建者、展示完整描述（超长内部滚动）、图片缩略图、归档区 +
+  「完成」即归档 + 「恢复」、内部滚动约束 `max-h-[60vh]`；表单新增描述与图片（选图 → 元数据随
+  定义同步 + 字节走管线投递）。
+- 时间线：`todo` 以新增的 `TodoCardBubble` 卡片渲染（此前落到"未知 kind 兜底"吐出原始 JSON），
+  卡片含「查看任务」直接开面板；`messageHeight` 同步 `todo` 高度估算。
+- 会话列表 / 通知：`previewText` 取标题（`[任务] 标题`）；指派给我时通知前缀「[任务@你]」，
+  并点亮会话列表的「有人@我」红点。
+- **任务被完成时给创建人提示**（用户追加）：识别「`creator` == 我 && `status` == done」的
+  `todo_update`（本是静默事件），弹系统通知；正看着该会话时系统通知会被抑制，改用应用内 toast；
+  按 `msg_id` 去重，避免重复投递反复提示。
+- 聊天头部「局域网直连」徽标从 WiFi 扇形改为 `Router` 图标（用户追加：WiFi 图标让人以为是无线上网，
+  而这里表达的是"同一局域网内直连"）。
+- 修复 `ConversationList` / `ChatSearchDialog`：上一条焦点改动里的 `focus-within:border-transparent`
+  会让**整个搜索外框**在聚焦时消失（只该去掉内部输入框的黑框，不该动外框）。
+
+**验证**：`cargo test --lib` **480 全绿**；`npm test` 除 2 条 zh-CN 环境既有失败外全绿
+（新增 `todos` 用例覆盖新字段 / 归档判定 / 改指派人权限 / 任务提及）；
+`npx vue-tsc --noEmit` 零错误、`npm run build` ✅。
+## [4.20.0] - 2026-09-17
 ## [4.19.0] - 2026-09-17
 
 ### Added (收藏 · 外部 PR by Ha1fice —— 2026-09-17)
@@ -594,7 +789,6 @@ error: could not compile `gosslan` (lib test)
 **验证**：`npm test` **455 全绿**；`cargo test --features bluetooth` **503 全绿**；
 两个 job 的每一步都在本地按 CI 顺序实跑通过；清单守卫两个方向都做过非空转验证
 （基线注入假名 ⇒ FAIL；抽掉 `--features bluetooth` ⇒ 精确报出那 16 条 ⇒ FAIL；恢复即 PASS）。
-
 ### Added (群任务列表：指派 + 四态状态 —— 用户 2026-09-16)
 
 **需求**：「群里需要能够支持列一些任务列表，每个任务可以给一个或多个人，任务要能区分出
