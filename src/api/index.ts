@@ -160,6 +160,8 @@ export const api = {
   windowClose: () => invoke<void>("window_close"),
 
   sendFile: (friendId: string, path: string) => invoke<string>("send_file", { friendId, path }),
+  cancelFileTransfer: (transferId: string) =>
+    invoke<boolean>("cancel_file_transfer", { transferId }),
   sendFileAuto: (friendId: string, path: string) =>
     invoke<string>("send_file_auto", { friendId, path }),
   sendFileRelay: (friendId: string, path: string) =>

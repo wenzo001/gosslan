@@ -421,6 +421,7 @@ export const zhCN: MessageDict = {
   "msg.recallConfirm": "撤回这条消息？对方会看到「消息已撤回」，且无法恢复。",
   "msg.recallDone": "已撤回",
   "msg.recallFail": "撤回失败",
+  "msg.cancelSend": "取消发送",
   "msg.reactionAdd": "回应 {emoji}",
   "msg.reactionToggle": "切换回应 {emoji}",
   "msg.reactionWho": "{n} 人回应",

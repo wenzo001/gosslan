@@ -883,6 +883,11 @@ pub struct AppState {
     pub group_file_online_targets: Mutex<HashMap<String, std::collections::HashSet<String>>>,
     /// 一对一文件离线投递进行中标记：同一 peer 同时最多一个投递任务。
     pub file_sending: Mutex<std::collections::HashSet<String>>,
+    /// 文件发送取消信号注册表：transfer_id -> oneshot Sender。
+    /// 用户点"取消发送"时我们 send(())，send_file_from_path_deadline_inner 的 chunk loop
+    /// 里 select! 这个信号，cleanup + 返回 retryable 让 outbox 走超限失败。
+    /// （取消不会直接 mark failed —— 让它走正常 outbox 路径，cancel 只是"让这次尝试立刻返回"。）
+    pub file_send_cancels: Mutex<HashMap<String, tokio::sync::oneshot::Sender<()>>>,
     /// 群文件接收端 `.part` 状态：transfer_id -> 接收状态。
     /// 与一对一 `file_receivers` 生命周期独立；复用 FileReceiver 结构
     /// （file_key/next_seq/hasher 语义相同），不写 file_transfers 表。
@@ -1160,6 +1165,7 @@ impl AppState {
             group_file_sending: Mutex::new(std::collections::HashSet::new()),
             group_file_online_targets: Mutex::new(HashMap::new()),
             file_sending: Mutex::new(std::collections::HashSet::new()),
+            file_send_cancels: Mutex::new(HashMap::new()),
             file_receivers: Mutex::new(HashMap::new()),
             file_wire_progress: Mutex::new(HashMap::new()),
             pending_share_tree: Mutex::new(HashMap::new()),
