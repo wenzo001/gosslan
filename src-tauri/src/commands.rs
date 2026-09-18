@@ -2117,6 +2117,11 @@ pub async fn send_message(
         "text" => MsgKind::Text,
         "code" => MsgKind::Code,
         "file" => MsgKind::File,
+        // 合并转发：载荷先过校验（能解析、条数合法），别等到对方那边才炸。
+        "merge" => {
+            crate::protocol::parse_merge_payload(&content)?;
+            MsgKind::Merge
+        }
         _ => return Err("不支持的消息类型".to_string()),
     };
 
@@ -2185,7 +2190,7 @@ pub async fn send_message(
         db::next_clock(&dbc, &friend_id).map_err(|e| format!("逻辑时钟推进失败：{e}"))?
     };
     let name = resolve_nickname(s, &friend_id);
-    let preview = preview(&kind, &content);
+    let preview = crate::protocol::preview_text(&kind, &content);
 
     // E2EE 加密 + Gossip 信封（先于本地落库：msg_id 三处统一用 Gossip 信封 ID）
     let plaintext = serde_json::json!({ "kind": kind, "content": content }).to_string();
@@ -2307,7 +2312,7 @@ fn insert_self_message(s: &AppState, kind: &str, content: String) -> Result<Mess
     // （本文件里"不能在持有 db 锁时调用 resolve_nickname"那条注释说的是同一件事）。
     let name = s.self_display_name();
     let avatar = s.self_avatar();
-    let preview = preview(kind, &content);
+    let preview = crate::protocol::preview_text(kind, &content);
     let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
     let seq = db::next_clock(&dbc, &me).map_err(|e| format!("逻辑时钟推进失败：{e}"))?;
     let rec = MessageRecord {
@@ -3113,7 +3118,7 @@ async fn send_group_payload(
         return Err("你已不在该群中".to_string());
     }
     let key = get_group_key(s, group_id).await.ok_or("群密钥缺失")?;
-    let preview = preview(kind, &content);
+    let preview = crate::protocol::preview_text(kind, &content);
 
     // 群密钥加密 + Gossip 信封（E2EE 恒开：载荷用群密钥 ChaCha20-Poly1305 加密）
     let plaintext = serde_json::json!({ "kind": kind, "content": content }).to_string();
@@ -3214,6 +3219,11 @@ pub async fn send_group_message(
     let wire_kind = match kind.as_str() {
         "text" => "text",
         "code" => "code",
+        // 群聊里的合并转发（与单聊同一套载荷与校验）
+        "merge" => {
+            crate::protocol::parse_merge_payload(&content)?;
+            "merge"
+        }
         _ => return Err("群聊不支持该消息类型".to_string()),
     };
     let content = check_message_content(content)?;
@@ -4688,6 +4698,101 @@ pub async fn request_content(
     }
 }
 
+/// 按**裸 cid** 请求内容 —— 合并转发卡片的读侧配套（ADR-0019 Phase 3）。
+///
+/// [`request_content`] 从**本机消息行**反查 cid；而卡片是快照（sender/kind/content/ts），
+/// 对端机器上没有原始消息行，cid 与元信息只能来自卡片载荷本身。
+/// 网络行为与 [`request_content`] 完全一致：服务端（`handle_message` 的
+/// ContentRequest 分支）本来就只认 cid（`find_source`），授权规则也不变 ——
+/// 好友、或该内容所属群的成员，拥有即授权。
+/// 对端不具备拉取能力（旧版本）返回 Ok(false)，不打扰、不报错。
+#[tauri::command(async)]
+pub async fn request_content_by_cid(
+    state: State<'_, Arc<AppState>>,
+    peer_id: String,
+    cid: String,
+    name: String,
+    size: u64,
+) -> Result<bool, String> {
+    let s = state.inner();
+    if cid.is_empty() {
+        return Err("这条内容没有内容指纹，无法重新获取".to_string());
+    }
+    // 能力协商：与 request_content 同一条规则 —— 对端没声明拉取能力就不发新帧。
+    let supports = s
+        .peer_content_features
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&peer_id)
+        .copied()
+        .unwrap_or(0)
+        & crate::protocol::CONTENT_FEATURE_PULL
+        != 0;
+    if !supports {
+        return Ok(false);
+    }
+    // 续传：已有 receive 记录就沿用 transfer_id / 已收字节（与 request_content 同口径）。
+    let (transfer_id, from_bytes) = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        crate::content::store::get(
+            &dbc,
+            &cid,
+            &peer_id,
+            crate::content::model::Direction::Receive,
+        )
+        .ok()
+        .flatten()
+        .map(|r| (r.transfer_id.unwrap_or_default(), r.received))
+        .unwrap_or_default()
+    };
+    let msg = Message::ContentRequest {
+        from: s.device_id.clone(),
+        cid,
+        transfer_id,
+        from_seq: 0,
+        from_bytes,
+        name,
+        size,
+    };
+    match try_send(s, &peer_id, &msg).await {
+        Ok(()) => Ok(true),
+        Err(e) => Err(format!("无法联系对方：{e}")),
+    }
+}
+
+/// 按 **cid** 读取本机已有的内容字节（卡片图片预览的读侧）。
+///
+/// 与 [`read_file_preview`] 的差别：不经过消息行 —— 卡片是快照，对端没有原始消息行。
+/// 路径一律取自 `content_transfers`（由本传输层自己写入，[`store::find_local_path`]），
+/// **不接受任何外部传入路径** —— 与 [`resolve_media_path`] 的安全边界等价：
+/// 只有"确实经我们传输落盘 / 本机发出"的字节才可能被读到。
+#[tauri::command(async)]
+pub fn read_content_preview(
+    state: State<'_, Arc<AppState>>,
+    cid: String,
+    max_bytes: u64,
+) -> Result<tauri::ipc::Response, String> {
+    let s = state.inner();
+    let max_bytes = max_bytes.min(15 * 1024 * 1024);
+    let path = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        crate::content::store::find_local_path(&dbc, &cid)
+    };
+    let Some(path) = path else {
+        return Err("本机没有这份内容".to_string());
+    };
+    let file = std::path::PathBuf::from(&path);
+    let meta = std::fs::metadata(&file).map_err(|_| "文件不存在".to_string())?;
+    if !meta.is_file() {
+        return Err("文件不存在".to_string());
+    }
+    if meta.len() > max_bytes {
+        return Err("TOO_LARGE".to_string());
+    }
+    let bytes = std::fs::read(&file).map_err(|e| e.to_string())?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
 /// 统一的内容传输状态（ADR-0019 Phase 1）：前端据此在气泡上显示
 /// 发送中 / 等待对方在线 / 网络不佳 / 未完成·点击重试 / 完成。
 #[tauri::command(async)]
@@ -5464,6 +5569,41 @@ pub fn read_favorite_preview(
     Ok(tauri::ipc::Response::new(bytes))
 }
 
+/// 一次批量删除的条数上限。
+///
+/// 为什么要有：整批在**一个事务**里删（见 `db::delete_messages`），条数过大就会把
+/// `db` 互斥锁握住很久，而界面上的会话列表/搜索等读命令都在等这把锁。UI 侧的多选
+/// 本来也不会一次选上千条。
+const MAX_DELETE_BATCH: usize = 500;
+
+/// 本地删除若干条消息（微信语义：**只删本机**，对方那边照常保留）。返回实际删除条数。
+///
+/// 为什么不复用"逐条删"的接口（假设前端循环调）：删 N 条要重算 N 次会话摘要、
+/// 开 N 个事务；批量接口在一个事务里按会话去重算一次就够。
+#[tauri::command(async)]
+pub fn delete_messages(
+    state: State<'_, Arc<AppState>>,
+    msg_ids: Vec<String>,
+) -> Result<usize, String> {
+    let s = state.inner();
+    if msg_ids.len() > MAX_DELETE_BATCH {
+        return Err(format!(
+            "一次最多删除 {MAX_DELETE_BATCH} 条，当前 {} 条",
+            msg_ids.len()
+        ));
+    }
+    if msg_ids.is_empty() {
+        return Ok(0);
+    }
+    let removed = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::delete_messages(&dbc, &msg_ids).map_err(|e| e.to_string())?
+    };
+    s.logger
+        .info("chat", format!("本地删除消息 {removed} 条（不影响对方）"));
+    Ok(removed)
+}
+
 /// 导出全部聊天文字到用户指定文件（Markdown 单文件）。
 ///
 /// 定位：磁盘满 / 换机时的**自救手段**——存储清理只删媒体、不动文字，但一旦库损坏
@@ -5941,22 +6081,8 @@ pub struct SearchResult {
     match_msg_id: String,
 }
 
-fn preview(kind: &str, content: &str) -> String {
-    match kind {
-        "file" => "[文件]".to_string(),
-        "image" => "[图片]".to_string(),
-        "code" => "[代码]".to_string(),
-        _ => {
-            let count = content.chars().count();
-            let c: String = content.chars().take(30).collect();
-            if count > 30 {
-                format!("{c}…")
-            } else {
-                c
-            }
-        }
-    }
-}
+// 会话预览文案（kind → 人话）已收敛到 `crate::protocol::preview_text`：
+// 它还要被"删消息后重算末条摘要"（db.rs）复用，两处各写一份 match 迟早漂移。
 
 // ---------------- 跨子网（Routed）端点配置 ----------------
 

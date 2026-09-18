@@ -73,6 +73,12 @@ pub enum MsgKind {
     Image,
     File,
     System,
+    /// 合并转发的聊天记录（微信式：多条消息合成一张卡片）。
+    ///
+    /// ⚠️ 必须在这里也列一份（而不是只加 `WIRE_KINDS`）：**单聊直连**帧的 kind 是编成
+    /// 这个枚举传的（`ChatMessage.kind`），接收侧用 `from_wire_str` 还原 —— 漏了就会回退
+    /// 成 `Text`，结果是"合并转发的卡片在对方那边变成一坨裸 JSON 正文"。
+    Merge,
 }
 
 impl MsgKind {
@@ -83,6 +89,7 @@ impl MsgKind {
             MsgKind::Image => "image",
             MsgKind::File => "file",
             MsgKind::System => "system",
+            MsgKind::Merge => "merge",
         }
     }
 
@@ -92,6 +99,7 @@ impl MsgKind {
             "image" => MsgKind::Image,
             "file" => MsgKind::File,
             "system" => MsgKind::System,
+            "merge" => MsgKind::Merge,
             _ => MsgKind::Text,
         }
     }
@@ -149,6 +157,10 @@ pub const WIRE_KINDS: &[(&str, KindClass)] = &[
     ("todo_update", KindClass::Silent),
     ("poll", KindClass::Card),
     ("poll_vote", KindClass::Silent),
+    // 合并转发的聊天记录（微信式）：一张卡片，但它是**一条聊天内容** ——
+    // 该计未读、该弹通知、该进搜索、清空聊天记录时该被删、也应受清空边界约束，
+    // 所以是 Bubble 而不是 Card（Card 是"群级沉淀物"，清空边界不拦它，见 KindClass）。
+    ("merge", KindClass::Bubble),
 ];
 
 /// 未知 kind 一律按 `Bubble` 处理 —— 与 `MsgKind::from_wire_str` 回退到 `Text` 同语义：
@@ -188,6 +200,94 @@ pub fn sql_kind_list(extra: &[&str], pick: impl Fn(KindClass) -> bool) -> String
         .collect();
     names.extend(extra.iter().map(|k| format!("'{k}'")));
     names.join(",")
+}
+
+/// 合并转发卡片里的一条内容（`kind = "merge"` 的载荷元素）。
+///
+/// ## 为什么把每条消息**整份快照**进来，而不是存 msg_id 引用
+///
+/// 合并转发是**独立内容**：原消息被删、会话被清空之后，卡片展开仍要能看到当时的内容
+/// （与收藏同一套理由）。存引用的话，接收方一清空会话，卡片就变成一串"消息不存在"。
+///
+/// ## 媒体只带元信息
+///
+/// `kind` 为 `image`/`file` 时，`content` 仍是那条消息原本的元信息 JSON
+/// （`name/size/subtype/sha256`），**不复制文件本体** —— 卡片里以 `[图片] 名字` 这样的
+/// 占位行展示。真要把媒体也带过去，需要"一条消息携带 N 个附件 + 逐条回源"的内容传输，
+/// 是另一个量级；在那之前，**逐条转发**（会真的重发文件）就是它的补充路径。
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct MergedItem {
+    /// 发送者显示名。发送侧拼好（卡片要写"谁说的"，而接收方未必解析得出对方的好友昵称）。
+    pub sender: String,
+    pub kind: String,
+    pub content: String,
+    pub ts: i64,
+}
+
+/// 合并转发的载荷（微信式"聊天记录"卡片）。
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct MergePayload {
+    /// 卡片标题（如「群聊的聊天记录」），由发送侧按会话类型拼。
+    pub title: String,
+    pub items: Vec<MergedItem>,
+}
+
+/// 合并转发的条数上限。取 100 与微信一致 —— 再多既超出卡片的信息承载，也容易撞
+/// [`crate::commands`] 的单条消息长度上限（5 万字符）。
+pub const MAX_MERGE_ITEMS: usize = 100;
+
+/// 解析并校验合并转发载荷。
+///
+/// 畸形/超限**一律报错**，不做静默截断（AI_RULES INV-005）：条数被悄悄砍掉，
+/// 用户看到的是"我明明选了 12 条，对方只收到 8 条"，而没有任何提示。
+pub fn parse_merge_payload(content: &str) -> Result<MergePayload, String> {
+    let p: MergePayload =
+        serde_json::from_str(content).map_err(|_| "合并转发的载荷不是合法 JSON".to_string())?;
+    if p.items.is_empty() {
+        return Err("合并转发至少要包含 1 条消息".to_string());
+    }
+    if p.items.len() > MAX_MERGE_ITEMS {
+        return Err(format!(
+            "合并转发最多 {MAX_MERGE_ITEMS} 条，当前 {} 条",
+            p.items.len()
+        ));
+    }
+    Ok(p)
+}
+
+/// 合并转发在**会话预览**里的摘要文案（解析失败也要给一句人话，不能把裸 JSON 顶到列表上）。
+pub fn merge_summary(content: &str) -> String {
+    match parse_merge_payload(content) {
+        Ok(p) => format!("[聊天记录] {} 条", p.items.len()),
+        Err(_) => "[聊天记录]".to_string(),
+    }
+}
+
+/// 消息在**会话列表预览**里的文案（`kind` → 人话）。
+///
+/// 收敛到 protocol.rs 的 reason：它要同时被两处用 —— 发送路径（`commands.rs` 写会话摘要）
+/// 与**删消息后的重算**（`db.rs` 要把末条重建成预览文案）。这两处各写一份 match 时，
+/// 加一个 kind 只改一处，结果是"删掉末条后列表预览与发送时的口径不一致"。
+///
+/// 文本类截前 30 字符：会话列表只显示一行，超出部分给省略号（**不是**截断内容本身）。
+pub fn preview_text(kind: &str, content: &str) -> String {
+    match kind {
+        "file" => "[文件]".to_string(),
+        "image" => "[图片]".to_string(),
+        "code" => "[代码]".to_string(),
+        // 合并转发：卡片是 JSON，直接截前 30 字符会得到 '{"title":"群聊的聊天记录","item'
+        // 这种东西 —— 会话列表里必须显示人话（且要容忍畸形 JSON）。
+        "merge" => merge_summary(content),
+        _ => {
+            let count = content.chars().count();
+            let c: String = content.chars().take(30).collect();
+            if count > 30 {
+                format!("{c}…")
+            } else {
+                c
+            }
+        }
+    }
 }
 
 /// 表情回应的事件载荷（`kind = "reaction"`）。

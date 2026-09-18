@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use rusqlite::{params, Connection, OptionalExtension, Result};
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Result};
 
 use crate::state::{
     Conversation, Favorite, Friend, Group, GroupFile, GroupFileRecipient, MessageRecord,
@@ -1209,6 +1209,110 @@ pub fn delete_conversation(conn: &Connection, conv_id: &str) -> Result<()> {
     Ok(())
 }
 
+// ---------------- 单条/多条消息的本地删除 ----------------
+
+/// 本地删除若干条消息（微信语义：**只删本机**，对方那边照常保留）。返回实际删除条数。
+///
+/// ## 为什么只删 Bubble
+/// `system` / `recalled` 也是 Bubble（时间线上占一行），可以删；而 Silent（回应/撤回/置顶）
+/// 与 Card（公告/任务/投票）**不在可删范围内** —— 它们不是"聊天内容"，删掉会让聚合视图
+/// （置顶条、投票结果、任务面板）凭空缺一块。UI 侧本来也只允许勾选时间线上的消息，
+/// 这里是第二道闸门。
+///
+/// ## 连带处理（少一样都会留下用户看得见的错状态）
+/// · `outbox` / `group_outbox`：队列里若还留着这些 msg_id，删完消息后它们仍会被补发 ——
+///   用户会看到"我删掉的消息又冒出来了"；
+/// · 会话摘要 `last_msg` / `last_ts`：删掉的正好是末条时，列表会停在一条已不存在的消息上；
+/// · 未读计数：只做"不超过剩余条数"的收敛（本地没有单聊已读水位，精确重算无从谈起，
+///   但至少不会出现"删光了还挂着 5 条未读"）。
+///
+/// 媒体文件**不删**（磁盘清理由存储策略负责）；收藏**不受影响**（那是独立副本，
+/// 见 `favorites` 表的设计说明）；已读水位（`pending_reads` / `group_reads`）也不动 ——
+/// 它们是"读到哪个时间点"，不指向具体消息。
+pub fn delete_messages(conn: &Connection, msg_ids: &[String]) -> Result<usize> {
+    if msg_ids.is_empty() {
+        return Ok(0);
+    }
+    let bubble = crate::protocol::sql_kind_list(&[], |c| c == crate::protocol::KindClass::Bubble);
+    let ph = vec!["?"; msg_ids.len()].join(",");
+    let tx = conn.unchecked_transaction()?;
+
+    // 受影响会话必须在**删除前**取（删完就查不到它属于谁了）
+    let convs: Vec<String> = {
+        let sql = format!(
+            "SELECT DISTINCT conv_id FROM messages WHERE msg_id IN ({ph}) AND kind IN ({bubble})"
+        );
+        let mut stmt = tx.prepare(&sql)?;
+        let rows = stmt.query_map(params_from_iter(msg_ids.iter()), |r| r.get::<_, String>(0))?;
+        rows.filter_map(|r| r.ok()).collect()
+    };
+
+    let deleted = tx.execute(
+        &format!("DELETE FROM messages WHERE msg_id IN ({ph}) AND kind IN ({bubble})"),
+        params_from_iter(msg_ids.iter()),
+    )?;
+    tx.execute(
+        &format!("DELETE FROM outbox WHERE msg_id IN ({ph})"),
+        params_from_iter(msg_ids.iter()),
+    )?;
+    tx.execute(
+        &format!("DELETE FROM group_outbox WHERE msg_id IN ({ph})"),
+        params_from_iter(msg_ids.iter()),
+    )?;
+
+    for conv_id in &convs {
+        refresh_conversation_summary(&tx, conv_id)?;
+    }
+    tx.commit()?;
+    Ok(deleted)
+}
+
+/// 重算会话的末条摘要与未读（删消息后调用）。
+///
+/// 预览文案走 `protocol::preview_text` —— 与发送时的口径**同一份实现**，
+/// 否则会出现"删掉末条后列表里显示的摘要格式与平时不一样"这种漂移。
+fn refresh_conversation_summary(conn: &Connection, conv_id: &str) -> Result<()> {
+    let bubble = crate::protocol::sql_kind_list(&[], |c| c == crate::protocol::KindClass::Bubble);
+    let last: Option<(String, String, i64)> = conn
+        .query_row(
+            &format!(
+                "SELECT kind, content, ts FROM messages
+                 WHERE conv_id = ?1 AND kind IN ({bubble})
+                 ORDER BY ts DESC, id DESC LIMIT 1"
+            ),
+            params![conv_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    let remaining: i64 = conn.query_row(
+        &format!("SELECT COUNT(*) FROM messages WHERE conv_id = ?1 AND kind IN ({bubble})"),
+        params![conv_id],
+        |r| r.get(0),
+    )?;
+    match last {
+        Some((kind, content, ts)) => {
+            conn.execute(
+                "UPDATE conversations SET last_msg = ?2, last_ts = ?3, unread = MIN(unread, ?4)
+                 WHERE id = ?1",
+                params![
+                    conv_id,
+                    crate::protocol::preview_text(&kind, &content),
+                    ts,
+                    remaining
+                ],
+            )?;
+        }
+        // 全删光了：摘要与未读一起清空（否则列表上会留一条指向空会话的行）
+        None => {
+            conn.execute(
+                "UPDATE conversations SET last_msg = NULL, last_ts = NULL, unread = 0 WHERE id = ?1",
+                params![conv_id],
+            )?;
+        }
+    }
+    Ok(())
+}
+
 // ---------------- 离线补发队列 ----------------
 
 #[allow(dead_code)]
@@ -1956,6 +2060,108 @@ mod tests {
             seq: 1,
             status: "sent".into(),
         }
+    }
+
+    /// 删消息必须连带处理三件事：待发队列、会话摘要、未读收敛。
+    ///
+    /// 这三条都是"删完看起来没事、下次刷新才现形"的类型：
+    /// · 队列不清 ⇒ 补发把删掉的消息又推回来；
+    /// · 摘要不重算 ⇒ 列表停在一条已不存在的消息上（摘要对不上任何一条）；
+    /// · 未读不收敛 ⇒ 全删光了还挂着 N 条未读。
+    #[test]
+    fn delete_messages_clears_outbox_and_recomputes_summary() {
+        let conn = mem();
+        ensure_conversation(&conn, "f1", "single", "张三", None).unwrap();
+        for (id, ts, text) in [
+            ("m1", 10i64, "第一条"),
+            ("m2", 20, "第二条"),
+            ("m3", 30, "第三条"),
+        ] {
+            let mut m = rec_as(id, "f1", "text", text);
+            m.ts = ts;
+            insert_message(&conn, &m).unwrap();
+        }
+        touch_conversation(&conn, "f1", "single", "张三", None, "第三条", 3).unwrap();
+        insert_outbox(&conn, "m3", "f1", "payload").unwrap();
+
+        let n = delete_messages(&conn, &["m3".to_string()]).unwrap();
+        assert_eq!(n, 1);
+        let convs = list_conversations(&conn).unwrap();
+        let c = convs.iter().find(|c| c.id == "f1").unwrap();
+        assert_eq!(
+            c.last_msg.as_deref(),
+            Some("第二条"),
+            "末条被删后必须重算摘要"
+        );
+        assert_eq!(
+            c.last_ts,
+            Some(20),
+            "重算后的时间取**消息自身的时间**（列表要显示上一条的时间）"
+        );
+        assert_eq!(c.unread, 2, "未读要收敛到剩余条数");
+        assert!(
+            list_outbox(&conn, "f1").unwrap().is_empty(),
+            "待发队列里的同一条必须一起删 —— 否则补发会把删掉的消息推回来"
+        );
+
+        // 再删光：摘要与未读一起清空（否则列表上会留一行指向空会话）
+        delete_messages(&conn, &["m1".to_string(), "m2".to_string()]).unwrap();
+        let convs = list_conversations(&conn).unwrap();
+        let c = convs.iter().find(|c| c.id == "f1").unwrap();
+        assert!(c.last_msg.is_none() && c.last_ts.is_none());
+        assert_eq!(c.unread, 0);
+    }
+
+    /// 静默事件与群级沉淀物**不在**可删范围：删掉投票/公告会让聚合视图缺一块，
+    /// 那是数据损坏，不是"清理聊天记录"（UI 也只允许勾选时间线上的消息，这是第二道闸门）。
+    #[test]
+    fn delete_messages_refuses_non_bubble_kinds() {
+        let conn = mem();
+        ensure_conversation(&conn, "group:g1", "group", "群", None).unwrap();
+        insert_message(&conn, &rec_as("a1", "group:g1", "announcement", "公告")).unwrap();
+        insert_message(&conn, &rec_as("r1", "group:g1", "reaction", "{}")).unwrap();
+        insert_message(&conn, &rec_as("t1", "group:g1", "text", "普通")).unwrap();
+
+        let n = delete_messages(&conn, &["a1".into(), "r1".into(), "t1".into()]).unwrap();
+        assert_eq!(n, 1, "只有 Bubble 那条会被删");
+        assert!(
+            get_message_preview_source(&conn, "a1").is_some(),
+            "群公告必须还在"
+        );
+        assert!(
+            get_message_preview_source(&conn, "r1").is_some(),
+            "静默事件必须还在"
+        );
+    }
+
+    /// 空输入是幂等空操作（UI 可能传来空集合）。
+    #[test]
+    fn delete_messages_with_empty_input_is_noop() {
+        let conn = mem();
+        assert_eq!(delete_messages(&conn, &[]).unwrap(), 0);
+    }
+
+    /// 合并转发：载荷解析与摘要（畸形/超限必须报错，不许静默截断）。
+    #[test]
+    fn merge_payload_validation_and_summary() {
+        let ok = r#"{"title":"群聊的聊天记录","items":[
+            {"sender":"张三","kind":"text","content":"你好","ts":1},
+            {"sender":"我","kind":"image","content":"{}","ts":2}]}"#;
+        assert_eq!(crate::protocol::merge_summary(ok), "[聊天记录] 2 条");
+        assert!(crate::protocol::parse_merge_payload(ok).is_ok());
+
+        // 空 items：合并转发没有意义，直接拒
+        let empty = r#"{"title":"t","items":[]}"#;
+        assert!(crate::protocol::parse_merge_payload(empty).is_err());
+        // 超限：报错而不是砍掉后面几条（砍掉的话用户看到的是"我明明选了 N 条"）
+        let many: Vec<String> = (0..=crate::protocol::MAX_MERGE_ITEMS)
+            .map(|i| format!(r#"{{"sender":"a","kind":"text","content":"{i}","ts":1}}"#))
+            .collect();
+        let over = format!(r#"{{"title":"t","items":[{}]}}"#, many.join(","));
+        let err = crate::protocol::parse_merge_payload(&over).unwrap_err();
+        assert!(err.contains("最多"), "错误文案要说清上限，实际：{err}");
+        // 畸形 JSON：摘要回落到人话，不能把裸 JSON 顶到会话列表上
+        assert_eq!(crate::protocol::merge_summary("not json"), "[聊天记录]");
     }
 
     #[test]

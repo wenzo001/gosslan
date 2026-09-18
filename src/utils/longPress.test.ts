@@ -27,6 +27,7 @@ const base = {
   isMobile: true,
   isSystem: false,
   selectMode: false,
+  multiSelect: false,
   hitSelectable: false,
   insideTextBubble: false,
 };
@@ -58,6 +59,14 @@ test("长按判据：桌面端走右键、系统消息没有菜单、选择文�
     shouldStartLongPress({ ...base, selectMode: true }),
     false,
     "「选择文字」模式下长按要交给系统选区手柄，否则选不了字",
+  );
+});
+
+test("长按判据：多选模式下长按不弹菜单（那一点是勾选，不是弹菜单）", () => {
+  assert.equal(
+    shouldStartLongPress({ ...base, multiSelect: true }),
+    false,
+    "多选态下手指长按如果弹出菜单，用户会分不清这一下到底选中了没有；微信也不给",
   );
 });
 
@@ -105,7 +114,7 @@ test("操作面板：点任何一项都必须收起（引用/转发会跳到别�
 test("MessageItem：长按判据必须走 utils/longPress 的纯函数，并传全语境", () => {
   const item = read("components/MessageItem.vue");
   assert.match(item, /shouldStartLongPress\(\{/, "长按判据必须调用纯函数（别在组件里再写一份 if）");
-  for (const field of ["isMobile", "isSystem", "selectMode", "hitSelectable", "insideTextBubble"]) {
+  for (const field of ["isMobile", "isSystem", "selectMode", "multiSelect", "hitSelectable", "insideTextBubble"]) {
     assert.match(
       item,
       new RegExp(`${field}:`),

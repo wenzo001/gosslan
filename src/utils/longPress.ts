@@ -21,6 +21,14 @@ export interface LongPressContext {
   isSystem: boolean;
   /** 已进入「选择文字」模式：这时长按要交给系统的选区手柄，不能再抢。 */
   selectMode: boolean;
+  /**
+   * 已进入**多选模式**：长按让路。
+   *
+   * 多选里"点一下"就是勾选/取消勾选，此时再弹出一个菜单会让人分不清"这一下到底选上没有"；
+   * 微信在多选态同样不给长按菜单。它不是"让给系统手柄"（那是 `selectMode`），
+   * 而是"这一步没有菜单可弹"。
+   */
+  multiSelect: boolean;
   /** 手指落点命中了 `.gosslan-selectable`（"可选文本"标记）。 */
   hitSelectable: boolean;
   /**
@@ -44,6 +52,7 @@ export function shouldStartLongPress(c: LongPressContext): boolean {
   if (!c.isMobile) return false; // 桌面端走右键菜单
   if (c.isSystem) return false; // 系统消息没有菜单
   if (c.selectMode) return false; // 「选择文字」模式：长按归系统选区手柄
+  if (c.multiSelect) return false; // 多选模式：这一点是勾选，不弹菜单（见字段说明）
   // 只给"**当前真的还能选字**的可选区域"让路（例如代码块）：正文气泡在触屏下已不可选
   if (c.hitSelectable && !c.insideTextBubble) return false;
   return true;

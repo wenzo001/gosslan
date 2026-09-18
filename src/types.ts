@@ -58,7 +58,9 @@ export type MsgKind =
   | "todo"
   | "todo_update"
   | "poll"
-  | "poll_vote";
+  | "poll_vote"
+  /** 合并转发的聊天记录（微信式卡片）。Bubble 类：进时间线、计未读、可搜索。 */
+  | "merge";
 
 /** 表情回应的事件载荷（kind = "reaction" 时 content 的 JSON 形态）。 */
 export interface ReactionPayload {
@@ -168,6 +170,8 @@ export interface FileMeta {
   size: number;
   /** 后端按扩展名分类的附件子类型；历史消息缺省按 file 处理。 */
   subtype: string;
+  /** 内容指纹（= cid，明文 sha256，ADR-0019）。合并转发卡片按它按需拉取；旧版本消息可能没有。 */
+  sha256?: string;
 }
 
 /** 统一内容传输状态（ADR-0019）：前端气泡据此显示发送中/等待/重试/完成。 */export interface ContentTransfer {
