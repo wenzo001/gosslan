@@ -2,25 +2,162 @@
 /**
  * 合并转发的详情（点卡片打开）：把卡片里的 N 条按「发送者 + 内容」列出来。
  *
- * ## 为什么媒体只显示占位
- * 卡片载荷里图片/文件**只带了元信息**（名字/大小），没复制文件本体 —— 真要带媒体，
- * 需要"一条消息携带 N 个附件 + 逐条回源"的内容传输，那是另一个量级。所以这里对媒体
- * 显示 `[图片] name` 这样的占位，并**在顶部说明**，避免用户以为"点开什么都没有"。
- * 需要真拿到文件时，用**逐条转发**（会重发文件本体）。
+ * ## 图片的两种形态
+ * 卡片载荷里的图片只带元信息（`{name,size,subtype,sha256}`），其中 `sha256` = cid（内容指纹）。
+ * 打开详情时先按 cid 读**本机**字节（`read_content_preview`）：可能已经经传输落盘、或本机
+ * 本来就是原始发送方 —— 有就直接显示大图。没有则给一个「拉取」按钮，按 cid 向**卡片发送者**
+ * 请求（`request_content_by_cid`，ADR-0019 Phase 3，拥有即授权）。图片本体因此**不随卡片
+ * 一帧发过去**（帧大小不变），只在需要时按需回源。
+ *
+ * ## 为什么媒体默认仍是占位
+ * 不带 cid 的旧载荷 / 文件（非图片）没有回源钥匙，只能显示 `[图片] 名字` / `[文件] 名字`。
  */
-import { computed } from "vue";
+import { computed, onBeforeUnmount, reactive, ref, watch } from "vue";
+import { Loader2 } from "lucide-vue-next";
 import { t } from "@/i18n";
 import BaseModal from "@/components/BaseModal.vue";
+import ImageLightbox from "@/components/message/ImageLightbox.vue";
+import { api } from "@/api";
+import { imageMime } from "@/utils/filePreview";
 import { fmtConversationTime } from "@/utils/time";
-import { mergeItemLine, parseMergePayload } from "@/utils/mergeCard.ts";
+import { mediaCid, mediaName, mergeItemLine, parseMergePayload, type MergedItem } from "@/utils/mergeCard";
 
-const props = defineProps<{ open: boolean; content: string }>();
+const props = defineProps<{
+  open: boolean;
+  content: string;
+  /** 卡片发送者（按需拉取的对端）。 */
+  senderId?: string;
+}>();
 const emit = defineEmits<{ (e: "close"): void }>();
 
 const parsed = computed(() => parseMergePayload(props.content));
 const items = computed(() => parsed.value?.items ?? []);
-/** 载荷里含媒体时才提示"媒体不随卡片传输"（纯文本卡片不用吓唬用户）。 */
-const hasMedia = computed(() => items.value.some((i) => i.kind === "image" || i.kind === "file"));
+/** 只对**带 cid** 的图片提示媒体不随卡片传输（不带 cid 的老卡片才需要解释占位）。 */
+const hasMediaWithoutCid = computed(() =>
+  items.value.some((i) => (i.kind === "image" || i.kind === "file") && !mediaCid(i)),
+);
+
+const IMAGE_MAX_BYTES = 15 * 1024 * 1024;
+
+type ImagePhase = "loading" | "ready" | "absent" | "pulling" | "failed";
+interface ImageSlot {
+  phase: ImagePhase;
+  url?: string;
+  note?: string;
+}
+const imageSlots = reactive<Record<number, ImageSlot>>({});
+
+/** 已就绪的图片 → 大图相册（复用 ImageLightbox，dataSrc 直接塞 objectURL）。 */
+interface GalleryItem {
+  msgId: string;
+  name: string;
+  dataSrc: string | null;
+}
+const gallery = computed<GalleryItem[]>(() => {
+  const out: GalleryItem[] = [];
+  items.value.forEach((it, i) => {
+    if (it.kind !== "image") return;
+    const slot = imageSlots[i];
+    if (slot?.phase === "ready" && slot.url) {
+      out.push({ msgId: `merge-${i}`, name: mediaName(it), dataSrc: slot.url });
+    }
+  });
+  return out;
+});
+const lightboxIndex = ref<number | null>(null);
+
+function openLightbox(i: number) {
+  const gi = gallery.value.findIndex((g) => g.msgId === `merge-${i}`);
+  if (gi >= 0) lightboxIndex.value = gi;
+}
+
+let objectUrls: string[] = [];
+let closed = false;
+
+function releaseUrl(url?: string) {
+  if (url) URL.revokeObjectURL(url);
+}
+
+async function probe(i: number, item: MergedItem) {
+  const cid = mediaCid(item);
+  if (!cid) return;
+  imageSlots[i] = { phase: "loading" };
+  try {
+    const raw = await api.readContentPreview(cid, IMAGE_MAX_BYTES);
+    const bytes = new Uint8Array(raw);
+    const url = URL.createObjectURL(new Blob([bytes], { type: imageMime(mediaName(item)) }));
+    objectUrls.push(url);
+    if (closed || items.value[i] !== item) {
+      releaseUrl(url);
+      return;
+    }
+    imageSlots[i] = { phase: "ready", url };
+  } catch (e) {
+    const msg = String(e);
+    imageSlots[i] = {
+      phase: msg.includes("TOO_LARGE") ? "failed" : "absent",
+      note: msg.includes("TOO_LARGE") ? t("merge.tooLarge") : undefined,
+    };
+  }
+}
+
+function sleep(ms: number) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+async function pull(i: number, item: MergedItem) {
+  const cid = mediaCid(item);
+  if (!props.senderId || !cid) return;
+  imageSlots[i] = { phase: "pulling" };
+  try {
+    const ok = await api.requestContentByCid(props.senderId, cid, mediaName(item), 0);
+    if (!ok) {
+      imageSlots[i] = { phase: "failed", note: t("merge.pullUnsupported") };
+      return;
+    }
+  } catch {
+    imageSlots[i] = { phase: "failed", note: t("merge.pullFail") };
+    return;
+  }
+  // 字节落盘是异步的（offer→分片→done），轮询读侧直到成功或超时。
+  for (let k = 0; k < 40; k++) {
+    await sleep(1500);
+    if (imageSlots[i]?.phase !== "pulling" || closed) return;
+    try {
+      const raw = await api.readContentPreview(cid, IMAGE_MAX_BYTES);
+      const bytes = new Uint8Array(raw);
+      const url = URL.createObjectURL(new Blob([bytes], { type: imageMime(mediaName(item)) }));
+      objectUrls.push(url);
+      imageSlots[i] = { phase: "ready", url };
+      return;
+    } catch {
+      /* 还没落盘，继续等 */
+    }
+  }
+  imageSlots[i] = { phase: "failed", note: t("merge.pullFail") };
+}
+
+watch(
+  [() => props.open, () => props.content],
+  () => {
+    objectUrls.forEach(releaseUrl);
+    objectUrls = [];
+    for (const k of Object.keys(imageSlots)) delete imageSlots[Number(k)];
+    closed = false;
+    if (props.open) {
+      items.value.forEach((it, i) => {
+        if (it.kind === "image" && mediaCid(it)) void probe(i, it);
+      });
+    }
+  },
+  { immediate: true },
+);
+
+onBeforeUnmount(() => {
+  closed = true;
+  objectUrls.forEach(releaseUrl);
+  objectUrls = [];
+});
 </script>
 
 <template>
@@ -35,7 +172,7 @@ const hasMedia = computed(() => items.value.some((i) => i.kind === "image" || i.
         {{ t("merge.count", { n: items.length }) }}
       </div>
       <div
-        v-if="hasMedia"
+        v-if="hasMediaWithoutCid"
         class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-hover)] px-3 py-2 text-xs leading-relaxed text-[var(--gosslan-text-2)]"
       >
         {{ t("merge.mediaNotIncluded") }}
@@ -47,13 +184,70 @@ const hasMedia = computed(() => items.value.some((i) => i.kind === "image" || i.
             <span class="truncate font-medium" :title="it.sender">{{ it.sender }}</span>
             <span v-if="it.ts" class="shrink-0">{{ fmtConversationTime(it.ts) }}</span>
           </div>
-          <div class="break-words whitespace-pre-wrap text-[13px] text-[var(--gosslan-text)]">
-            <!-- 文本/代码给**全文**（详情页再截断就没有意义了）；媒体走占位行 -->
-            <template v-if="it.kind === 'text' || it.kind === 'code'">{{ it.content }}</template>
-            <template v-else>{{ mergeItemLine(it) }}</template>
-          </div>
+
+          <!-- 图片：有 cid 就按需回源渲染大图；没有就退回占位行 -->
+          <template v-if="it.kind === 'image' && mediaCid(it)">
+            <button
+              v-if="imageSlots[i]?.phase === 'ready' && imageSlots[i]?.url"
+              type="button"
+              class="block w-full rounded-[var(--gosslan-radius-md)]"
+              :aria-label="t('merge.viewImage')"
+              @click="openLightbox(i)"
+            >
+              <img
+                :src="imageSlots[i]?.url"
+                class="max-h-64 w-full rounded-[var(--gosslan-radius-md)] object-contain"
+                :alt="mediaName(it)"
+              />
+            </button>
+            <div
+              v-else-if="imageSlots[i]?.phase === 'loading'"
+              class="flex h-16 items-center justify-center rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-hover)] text-[var(--gosslan-text-2)]"
+            >
+              <Loader2 class="h-4 w-4 animate-spin" aria-hidden="true" />
+            </div>
+            <div
+              v-else
+              class="flex items-center justify-between gap-2 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-hover)] px-3 py-2"
+            >
+              <span class="min-w-0 flex-1 truncate text-[13px] text-[var(--gosslan-text)]" :title="mediaName(it)">
+                {{ mergeItemLine(it) }}
+              </span>
+              <button
+                v-if="imageSlots[i]?.phase !== 'pulling'"
+                class="tap-safe shrink-0 rounded-[var(--gosslan-radius-sm)] px-2 py-1 text-xs text-[var(--gosslan-accent-ink)] transition hover:bg-[var(--gosslan-hover)]"
+                @click="pull(i, it)"
+              >
+                {{ imageSlots[i]?.phase === 'failed' ? t("merge.retry") : t("merge.pull") }}
+              </button>
+              <span v-else class="flex shrink-0 items-center gap-1 text-xs text-[var(--gosslan-text-2)]">
+                <Loader2 class="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                {{ t("merge.pulling") }}
+              </span>
+            </div>
+            <div v-if="imageSlots[i]?.note" class="text-[11px] text-[var(--gosslan-danger-ink)]">
+              {{ imageSlots[i]?.note }}
+            </div>
+          </template>
+
+          <!-- 文本/代码给**全文**（详情页再截断就没有意义了）；媒体走占位行 -->
+          <template v-else-if="it.kind === 'text' || it.kind === 'code'">
+            <div class="break-words whitespace-pre-wrap text-[13px] text-[var(--gosslan-text)]">{{ it.content }}</div>
+          </template>
+          <template v-else>
+            <div class="break-words whitespace-pre-wrap text-[13px] text-[var(--gosslan-text)]">{{ mergeItemLine(it) }}</div>
+          </template>
         </div>
       </div>
     </div>
   </BaseModal>
+
+  <!-- 大图预览：复用 ImageLightbox（Teleport 到 body，压在详情弹窗之上） -->
+  <ImageLightbox
+    :images="gallery"
+    :index="lightboxIndex ?? 0"
+    :open="lightboxIndex !== null"
+    @close="lightboxIndex = null"
+    @update:index="lightboxIndex = $event"
+  />
 </template>

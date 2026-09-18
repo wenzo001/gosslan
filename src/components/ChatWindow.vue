@@ -602,7 +602,10 @@ const selectedCount = computed(() => selectedIds.value.size);
 /** 多选转发：已选内容先存下来，选完会话再决定逐条还是合并。 */
 const forwardSelection = ref<MessageRecord[] | null>(null);
 /** 合并转发详情弹窗的载荷（null = 未打开）。 */
-const openMerge = ref<string | null>(null);
+/** 打开的合并转发卡片详情：content 是快照载荷；senderId 是**卡片发送者**，
+ *  卡片里的图片按需拉取（ADR-0019 Phase 3）就以他为对端 —— 多数情况他就是字节持有者
+ *  （自己转发的图自己有）。不做全网广播式查找（会把"拥有即授权"变成对全在线节点扫描）。 */
+const openMerge = ref<{ content: string; senderId: string } | null>(null);
 /** 批量删除的二次确认（本地删除不可逆）。 */
 const confirmBatchDelete = ref(false);
 
@@ -648,12 +651,21 @@ function filePathOf(rec: MessageRecord): string {
   }
 }
 
-/** 逐条转发一条：文件按本地路径重走传输链路，其余按内容重发。 */
+/**
+ * 逐条转发一条：**媒体（图片 / 文件）按本地路径重走传输链路**，其余按内容重发。
+ *
+ * 图片必须和文件走同一条路子，不能只做 `file` 分支：两者的 `content` 都只是**元信息**
+ * （`{name,size,subtype,path,…}`），其中的 `path` 是**本机**落盘路径。把 content 原样
+ * 复制进新消息，接收方拿到的就是一条指向别人磁盘的路径 —— 后端 `resolve_media_path`
+ * 的安全校验必然判 Gone，图片于是显示成「已被清理」/空白（用户 2026-09-17 报的
+ * "图片多选的预览有问题"）。重走传输链路则由后端重建元信息：
+ * `classify_file_subtype(name)` 判回 `kind="image"`，path 换成**接收方自己的**落盘路径。
+ */
 async function forwardOne(convId: string, m: MessageRecord) {
-  if (m.kind === "file") {
+  if (m.kind === "file" || m.kind === "image") {
     const path = filePathOf(m);
     if (!path) {
-      app.toast(t("chat.toast.fileNotForward"), "info");
+      app.toast(t(m.kind === "image" ? "chat.toast.imageNotForward" : "chat.toast.fileNotForward"), "info");
       return;
     }
     if (convId.startsWith("group:")) await chat.sendGroupFileTo(convId.slice(6), path);
@@ -1149,7 +1161,12 @@ function onLoadMore() {
     />
 
     <!-- 合并转发卡片详情 -->
-    <MergeCardModal :open="!!openMerge" :content="openMerge ?? ''" @close="openMerge = null" />
+    <MergeCardModal
+      :open="!!openMerge"
+      :content="openMerge?.content ?? ''"
+      :sender-id="openMerge?.senderId ?? ''"
+      @close="openMerge = null"
+    />
 
     <!-- 批量删除的二次确认：本地删除不可逆（微信也是"删除后无法恢复"） -->
     <BaseModal :open="confirmBatchDelete" :title="t('multi.delete')" @close="confirmBatchDelete = false">

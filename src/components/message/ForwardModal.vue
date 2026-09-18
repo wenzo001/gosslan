@@ -104,12 +104,16 @@ const kindLabel = computed(() => KIND_LABELS[props.kind] ?? t("msg.message"));
       />
 
       <div class="max-h-64 select-none overflow-y-auto">
+        <!-- 选中态用**内缩**环（ring-inset）：Tailwind 的 ring 默认画在元素**外面**，
+             而本行在 `overflow-y-auto` 的滚动容器里 —— 外扩的 1px 会被容器裁掉左右两边
+             （`overflow-y: auto` 会把 `overflow-x` 一并算成 auto），上下则压到相邻的 52px 行上，
+             看着就是"描边串行"（用户 2026-09-17 报的选中态 UI bug）。 -->
         <button
           v-for="c in filtered"
           :key="c.id"
           class="flex h-[52px] w-full items-center gap-3 rounded-[var(--gosslan-radius-md)] px-2 text-left transition"
           :class="[
-            picked === c.id ? 'bg-[var(--gosslan-hover)] ring-1 ring-[var(--gosslan-accent)]' : 'hover:bg-[var(--gosslan-hover)]',
+            picked === c.id ? 'bg-[var(--gosslan-hover)] ring-1 ring-inset ring-primary' : 'hover:bg-[var(--gosslan-hover)]',
             // 多选时点会话只是**选中目标**（模式在底部两个按钮上选），不再立即转发
             multi ? 'cursor-pointer' : '',
           ]"
@@ -145,7 +149,7 @@ const kindLabel = computed(() => KIND_LABELS[props.kind] ?? t("msg.message"));
           {{ t("multi.forwardPerMessage") }}
         </button>
         <button
-          class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-accent)] px-4 py-2 text-sm text-white transition hover:opacity-90 disabled:opacity-40"
+          class="tap-safe rounded-[var(--gosslan-radius-md)] bg-primary px-4 py-2 text-sm text-white transition hover:bg-primary-hover disabled:opacity-40"
           :disabled="!picked"
           @click="picked && emit('pick', picked, 'merged')"
         >

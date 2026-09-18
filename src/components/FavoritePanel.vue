@@ -40,6 +40,9 @@ import {
   Code,
   Copy,
   CornerUpLeft,
+  Download,
+  FolderOpen,
+  Image as ImageIcon,
   Loader2,
   MoreHorizontal,
   ScrollText,
@@ -423,7 +426,7 @@ async function confirmDelete() {
             :key="f.key"
             class="tap-safe rounded-full px-2.5 py-1 text-xs transition"
             :class="filterKind === f.key
-              ? 'bg-[var(--gosslan-accent)] text-white'
+              ? 'bg-primary text-white'
               : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
             @click="filterKind = f.key"
           >
@@ -486,104 +489,119 @@ async function confirmDelete() {
           </div>
         </div>
 
-        <!-- 右侧详情：全文 / 大图 / 文件卡片 + 一排操作（PC 微信的收藏详情同样如此） -->
-        <div v-if="active" class="min-h-0 flex-1 overflow-y-auto">
-          <button
-            v-if="app.isMobile"
-            class="tap-safe mb-2 text-[13px] text-[var(--gosslan-accent-ink)]"
-            @click="active = null"
-          >
-            ← {{ t("common.back") }}
-          </button>
+        <!-- 右侧详情：全文 / 大图 / 文件卡片 + 底部操作条（PC 微信的收藏详情同样如此）。
+             操作条**钉在详情底部**而不是跟在正文后面：正文长短不一，跟排会忽上忽下；
+             且旧版内联按钮排一半带图标一半不带，flex-wrap 一换行就参差不齐
+             （用户 2026-09-17："这个操作的样式不行"）。 -->
+        <div v-if="active" class="flex min-h-0 flex-1 flex-col">
+          <div class="min-h-0 flex-1 overflow-y-auto">
+            <button
+              v-if="app.isMobile"
+              class="tap-safe mb-2 text-[13px] text-[var(--gosslan-accent-ink)]"
+              @click="active = null"
+            >
+              ← {{ t("common.back") }}
+            </button>
 
-          <div class="mb-2 flex items-center gap-2 text-[11px] text-[var(--gosslan-text-2)]">
-            <span class="truncate" :title="senderName(active)">{{ senderName(active) }}</span>
-            <span>·</span>
-            <span>{{ t("favorite.from", { time: fmtConversationTime(active.favorited_at) }) }}</span>
-          </div>
+            <div class="mb-2 flex items-center gap-2 text-[11px] text-[var(--gosslan-text-2)]">
+              <span class="truncate" :title="senderName(active)">{{ senderName(active) }}</span>
+              <span>·</span>
+              <span>{{ t("favorite.from", { time: fmtConversationTime(active.favorited_at) }) }}</span>
+            </div>
 
-          <div
-            v-if="active.kind === 'text' || active.kind === 'code'"
-            class="gosslan-selectable break-words whitespace-pre-wrap rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-panel)] p-3 text-[13px] text-[var(--gosslan-text)]"
-          >
-            {{ active.content }}
-          </div>
+            <div
+              v-if="active.kind === 'text' || active.kind === 'code'"
+              class="gosslan-selectable break-words whitespace-pre-wrap rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-panel)] p-3 text-[13px] text-[var(--gosslan-text)]"
+            >
+              {{ active.content }}
+            </div>
 
-          <img
-            v-else-if="active.kind === 'image'"
-            :src="thumbs[active.id] ?? ''"
-            class="max-h-72 w-full rounded-[var(--gosslan-radius-md)] object-contain"
-            :alt="displayName(active)"
-          />
+            <img
+              v-else-if="active.kind === 'image'"
+              :src="thumbs[active.id] ?? ''"
+              class="max-h-72 w-full rounded-[var(--gosslan-radius-md)] object-contain"
+              :alt="displayName(active)"
+            />
 
-          <div v-else-if="active.kind === 'merge'" class="space-y-2">
-            <div class="text-xs text-[var(--gosslan-text-2)]">{{ mergeSummary(active.content) }}</div>
-            <div class="space-y-1.5">
-              <div v-for="(it, i) in activeMergeItems" :key="i" class="space-y-0.5">
-                <div class="text-[11px] text-[var(--gosslan-text-2)]">{{ it.sender }}</div>
-                <div class="break-words whitespace-pre-wrap text-[13px] text-[var(--gosslan-text)]">
-                  <template v-if="it.kind === 'text' || it.kind === 'code'">{{ it.content }}</template>
-                  <template v-else>{{ mergeItemLine(it) }}</template>
+            <div v-else-if="active.kind === 'merge'" class="space-y-2">
+              <div class="text-xs text-[var(--gosslan-text-2)]">{{ mergeSummary(active.content) }}</div>
+              <div class="space-y-1.5">
+                <div v-for="(it, i) in activeMergeItems" :key="i" class="space-y-0.5">
+                  <div class="text-[11px] text-[var(--gosslan-text-2)]">{{ it.sender }}</div>
+                  <div class="break-words whitespace-pre-wrap text-[13px] text-[var(--gosslan-text)]">
+                    <template v-if="it.kind === 'text' || it.kind === 'code'">{{ it.content }}</template>
+                    <template v-else>{{ mergeItemLine(it) }}</template>
+                  </div>
                 </div>
+              </div>
+            </div>
+
+            <div v-else class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-panel)] p-3">
+              <div class="truncate text-[13px] font-medium text-[var(--gosslan-text)]" :title="displayName(active)">
+                {{ displayName(active) }}
+              </div>
+              <div class="mt-1 text-[11px] text-[var(--gosslan-text-2)]">
+                {{ fileExt(displayName(active)).toUpperCase() }} ·
+                {{ humanSize(metaOf(active)?.size ?? active.media_size) }}
               </div>
             </div>
           </div>
 
-          <div v-else class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-panel)] p-3">
-            <div class="truncate text-[13px] font-medium text-[var(--gosslan-text)]" :title="displayName(active)">
-              {{ displayName(active) }}
-            </div>
-            <div class="mt-1 text-[11px] text-[var(--gosslan-text-2)]">
-              {{ fileExt(displayName(active)).toUpperCase() }} ·
-              {{ humanSize(metaOf(active)?.size ?? active.media_size) }}
-            </div>
-          </div>
-
-          <div class="mt-3 flex flex-wrap items-center gap-1">
+          <!-- 底部操作条：图标在上、11px 字在下、等宽分布（微信 PC 收藏详情同款）。
+               每项**必带图标** —— 旧版"查看图片/另存为"是裸文字，跟带图标项混排就是参差感的主因。
+               min-w-14 保证字不挤压截断；真放不下时横向滚动兜底，绝不折行。 -->
+          <div class="mt-2 flex shrink-0 items-stretch gap-0.5 overflow-x-auto border-t border-[var(--gosslan-divider)] pt-1">
             <button
-              class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] px-2.5 py-1.5 text-[13px] text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
+              class="tap-safe flex min-w-14 flex-1 flex-col items-center gap-0.5 rounded-[var(--gosslan-radius-sm)] py-1.5 text-[11px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
               @click="copyItem(active)"
             >
-              <Copy class="h-4 w-4" aria-hidden="true" />{{ t("favorite.copy") }}
+              <Copy class="h-4 w-4" aria-hidden="true" />
+              <span class="whitespace-nowrap">{{ t("favorite.copy") }}</span>
             </button>
             <button
-              class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] px-2.5 py-1.5 text-[13px] text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
+              class="tap-safe flex min-w-14 flex-1 flex-col items-center gap-0.5 rounded-[var(--gosslan-radius-sm)] py-1.5 text-[11px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
               @click="startForward(active)"
             >
-              <Share2 class="h-4 w-4" aria-hidden="true" />{{ t("favorite.forward") }}
+              <Share2 class="h-4 w-4" aria-hidden="true" />
+              <span class="whitespace-nowrap">{{ t("favorite.forward") }}</span>
             </button>
             <button
               v-if="active.kind === 'image'"
-              class="tap-safe rounded-[var(--gosslan-radius-md)] px-2.5 py-1.5 text-[13px] text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
+              class="tap-safe flex min-w-14 flex-1 flex-col items-center gap-0.5 rounded-[var(--gosslan-radius-sm)] py-1.5 text-[11px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
               @click="previewImage(active)"
             >
-              {{ t("favorite.viewImage") }}
+              <ImageIcon class="h-4 w-4" aria-hidden="true" />
+              <span class="whitespace-nowrap">{{ t("favorite.viewImage") }}</span>
             </button>
             <button
               v-if="active.kind === 'file'"
-              class="tap-safe rounded-[var(--gosslan-radius-md)] px-2.5 py-1.5 text-[13px] text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
+              class="tap-safe flex min-w-14 flex-1 flex-col items-center gap-0.5 rounded-[var(--gosslan-radius-sm)] py-1.5 text-[11px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
               @click="openItem(active)"
             >
-              {{ t("favorite.open") }}
+              <FolderOpen class="h-4 w-4" aria-hidden="true" />
+              <span class="whitespace-nowrap">{{ t("favorite.open") }}</span>
             </button>
             <button
               v-if="active.kind === 'image' || active.kind === 'file'"
-              class="tap-safe rounded-[var(--gosslan-radius-md)] px-2.5 py-1.5 text-[13px] text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
+              class="tap-safe flex min-w-14 flex-1 flex-col items-center gap-0.5 rounded-[var(--gosslan-radius-sm)] py-1.5 text-[11px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
               @click="saveItem(active)"
             >
-              {{ t("favorite.saveAs") }}
+              <Download class="h-4 w-4" aria-hidden="true" />
+              <span class="whitespace-nowrap">{{ t("favorite.saveAs") }}</span>
             </button>
             <button
-              class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] px-2.5 py-1.5 text-[13px] text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
+              class="tap-safe flex min-w-14 flex-1 flex-col items-center gap-0.5 rounded-[var(--gosslan-radius-sm)] py-1.5 text-[11px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
               @click="locate(active)"
             >
-              <CornerUpLeft class="h-4 w-4" aria-hidden="true" />{{ t("favorite.locate") }}
+              <CornerUpLeft class="h-4 w-4" aria-hidden="true" />
+              <span class="whitespace-nowrap">{{ t("favorite.locate") }}</span>
             </button>
             <button
-              class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] px-2.5 py-1.5 text-[13px] text-[var(--gosslan-danger-ink)] transition hover:bg-[var(--gosslan-hover)]"
+              class="tap-safe flex min-w-14 flex-1 flex-col items-center gap-0.5 rounded-[var(--gosslan-radius-sm)] py-1.5 text-[11px] text-[var(--gosslan-danger-ink)] transition hover:bg-[var(--gosslan-danger-soft)]"
               @click="askDelete(active)"
             >
-              <Trash2 class="h-4 w-4" aria-hidden="true" />{{ t("favorite.delete") }}
+              <Trash2 class="h-4 w-4" aria-hidden="true" />
+              <span class="whitespace-nowrap">{{ t("favorite.delete") }}</span>
             </button>
           </div>
         </div>

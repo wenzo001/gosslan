@@ -4698,6 +4698,101 @@ pub async fn request_content(
     }
 }
 
+/// 按**裸 cid** 请求内容 —— 合并转发卡片的读侧配套（ADR-0019 Phase 3）。
+///
+/// [`request_content`] 从**本机消息行**反查 cid；而卡片是快照（sender/kind/content/ts），
+/// 对端机器上没有原始消息行，cid 与元信息只能来自卡片载荷本身。
+/// 网络行为与 [`request_content`] 完全一致：服务端（`handle_message` 的
+/// ContentRequest 分支）本来就只认 cid（`find_source`），授权规则也不变 ——
+/// 好友、或该内容所属群的成员，拥有即授权。
+/// 对端不具备拉取能力（旧版本）返回 Ok(false)，不打扰、不报错。
+#[tauri::command(async)]
+pub async fn request_content_by_cid(
+    state: State<'_, Arc<AppState>>,
+    peer_id: String,
+    cid: String,
+    name: String,
+    size: u64,
+) -> Result<bool, String> {
+    let s = state.inner();
+    if cid.is_empty() {
+        return Err("这条内容没有内容指纹，无法重新获取".to_string());
+    }
+    // 能力协商：与 request_content 同一条规则 —— 对端没声明拉取能力就不发新帧。
+    let supports = s
+        .peer_content_features
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&peer_id)
+        .copied()
+        .unwrap_or(0)
+        & crate::protocol::CONTENT_FEATURE_PULL
+        != 0;
+    if !supports {
+        return Ok(false);
+    }
+    // 续传：已有 receive 记录就沿用 transfer_id / 已收字节（与 request_content 同口径）。
+    let (transfer_id, from_bytes) = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        crate::content::store::get(
+            &dbc,
+            &cid,
+            &peer_id,
+            crate::content::model::Direction::Receive,
+        )
+        .ok()
+        .flatten()
+        .map(|r| (r.transfer_id.unwrap_or_default(), r.received))
+        .unwrap_or_default()
+    };
+    let msg = Message::ContentRequest {
+        from: s.device_id.clone(),
+        cid,
+        transfer_id,
+        from_seq: 0,
+        from_bytes,
+        name,
+        size,
+    };
+    match try_send(s, &peer_id, &msg).await {
+        Ok(()) => Ok(true),
+        Err(e) => Err(format!("无法联系对方：{e}")),
+    }
+}
+
+/// 按 **cid** 读取本机已有的内容字节（卡片图片预览的读侧）。
+///
+/// 与 [`read_file_preview`] 的差别：不经过消息行 —— 卡片是快照，对端没有原始消息行。
+/// 路径一律取自 `content_transfers`（由本传输层自己写入，[`store::find_local_path`]），
+/// **不接受任何外部传入路径** —— 与 [`resolve_media_path`] 的安全边界等价：
+/// 只有"确实经我们传输落盘 / 本机发出"的字节才可能被读到。
+#[tauri::command(async)]
+pub fn read_content_preview(
+    state: State<'_, Arc<AppState>>,
+    cid: String,
+    max_bytes: u64,
+) -> Result<tauri::ipc::Response, String> {
+    let s = state.inner();
+    let max_bytes = max_bytes.min(15 * 1024 * 1024);
+    let path = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        crate::content::store::find_local_path(&dbc, &cid)
+    };
+    let Some(path) = path else {
+        return Err("本机没有这份内容".to_string());
+    };
+    let file = std::path::PathBuf::from(&path);
+    let meta = std::fs::metadata(&file).map_err(|_| "文件不存在".to_string())?;
+    if !meta.is_file() {
+        return Err("文件不存在".to_string());
+    }
+    if meta.len() > max_bytes {
+        return Err("TOO_LARGE".to_string());
+    }
+    let bytes = std::fs::read(&file).map_err(|e| e.to_string())?;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
 /// 统一的内容传输状态（ADR-0019 Phase 1）：前端据此在气泡上显示
 /// 发送中 / 等待对方在线 / 网络不佳 / 未完成·点击重试 / 完成。
 #[tauri::command(async)]

@@ -63,13 +63,31 @@ export function mergeSummary(content: string): string {
   return p ? `[聊天记录] ${p.items.length} 条` : "[聊天记录]";
 }
 
-/** 卡片里单行的摘要文本（与消息气泡同一套口径：图片/文件只写类型，文本原样截断）。 */
+/**
+ * 媒体行的文件名：`[图片] 照片.png`。
+ *
+ * 卡片不携带媒体本体，**文件名就是这条记录在"看不到图"时唯一有信息量的东西** ——
+ * 微信的聊天记录卡片同样把名字带出来。载荷里的媒体 content 是 `{name,size,subtype}`
+ * （发送方打包时已剥掉本机路径，见 `mediaSafeContent`），所以这里读名字是安全的；
+ * 解析不出名字（畸形载荷 / 老版本载荷 / 旧格式 dataURL）就退回纯类型。
+ */
+function mediaLine(prefix: string, content: string): string {
+  try {
+    const name = (JSON.parse(content) as { name?: unknown }).name;
+    if (typeof name === "string" && name.trim()) return `${prefix} ${name.trim()}`;
+  } catch {
+    /* 解析不出就只给类型 */
+  }
+  return prefix;
+}
+
+/** 卡片里单行的摘要文本（与消息气泡同一套口径：图片/文件写类型 + 文件名，文本原样截断）。 */
 export function mergeItemLine(item: MergedItem): string {
   switch (item.kind) {
     case "image":
-      return "[图片]";
+      return mediaLine("[图片]", item.content);
     case "file":
-      return "[文件]";
+      return mediaLine("[文件]", item.content);
     case "code":
       return "[代码]";
     case "merge":
@@ -78,6 +96,48 @@ export function mergeItemLine(item: MergedItem): string {
       const one = item.content.replace(/\s+/g, " ").trim();
       return one.length > 40 ? `${one.slice(0, 40)}…` : one;
     }
+  }
+}
+
+/**
+ * 卡片里的媒体条目只保留**不含本机路径**的元信息。
+ *
+ * 图片/文件的 `content` 是 `{name,size,subtype,path,sha256}`，其中 `path` 是**发送方本机**的
+ * 落盘路径。卡片本身不渲染媒体路径，把 path 带过去只是把发送方的目录结构泄露给对端；
+ * 而旧格式图片的 `content` 干脆是一整段 dataURL —— 原样打包会把上兆的 base64 塞进
+ * 一条合并转发消息里（帧大小直接爆掉）。
+ * `sha256`（= cid，内容寻址指纹）**必须保留**：这是接收方按需拉取图片的唯一钥匙
+ * （ADR-0019 Phase 3）。去掉这两样不影响其它渲染路径：`mergeItemLine` 对媒体只输出
+ * `[图片] 名字`。
+ */
+function mediaSafeContent(m: MessageRecord): string {
+  if (m.kind !== "image" && m.kind !== "file") return m.content;
+  try {
+    const meta = JSON.parse(m.content) as { name?: string; size?: number; subtype?: string; sha256?: string };
+    return JSON.stringify({ name: meta.name, size: meta.size, subtype: meta.subtype, sha256: meta.sha256 });
+  } catch {
+    // 旧格式（content 直接是 dataURL）等一切解析不出的形态：什么都不带。
+    return "{}";
+  }
+}
+
+/** 媒体条目的文件名（卡片详情用它给出可读行；拉取时也要带给对端）。 */
+export function mediaName(item: MergedItem): string {
+  try {
+    const name = (JSON.parse(item.content) as { name?: unknown }).name;
+    return typeof name === "string" ? name : "";
+  } catch {
+    return "";
+  }
+}
+
+/** 媒体条目的内容指纹（= cid）。读侧按它取本机字节 / 向卡片发送者发起拉取；旧载荷没有则返回空。 */
+export function mediaCid(item: MergedItem): string {
+  try {
+    const v = JSON.parse(item.content) as { sha256?: unknown };
+    return typeof v.sha256 === "string" ? v.sha256 : "";
+  } catch {
+    return "";
   }
 }
 
@@ -97,7 +157,7 @@ export function buildMergePayload(
     items: items.map((m) => ({
       sender: senderOf(m),
       kind: m.kind,
-      content: m.content,
+      content: mediaSafeContent(m),
       ts: m.ts,
     })),
   };

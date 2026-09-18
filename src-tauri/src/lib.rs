@@ -363,6 +363,7 @@ pub fn run() {
             commands::send_file,
             commands::cancel_file_transfer,
             commands::request_content,
+            commands::request_content_by_cid,
             commands::get_content_transfers,
             commands::send_file_auto,
             commands::send_file_relay,
@@ -383,6 +384,7 @@ pub fn run() {
             commands::open_file_native,
             commands::apply_macos_window_shape,
             commands::read_file_preview,
+            commands::read_content_preview,
             commands::media_present,
             commands::export_chat_text,
             commands::search_messages,
@@ -1737,6 +1739,13 @@ mod tests {
         assert!(
             body.contains("CONTENT_FEATURE_PULL"),
             "拉取必须按对端能力位协商，旧端不发新帧"
+        );
+        // 按裸 cid 的变体（合并转发卡片的读侧）同样必须协商 —— 卡片载荷里的 cid
+        // 来自对端声明，不协商就发帧会让旧端收到理解不了的帧。
+        let body_by_cid = rust_fn_body(cmds, "pub async fn request_content_by_cid(");
+        assert!(
+            body_by_cid.contains("CONTENT_FEATURE_PULL"),
+            "request_content_by_cid 也必须按对端能力位协商"
         );
         let transport = include_str!("network/transport.rs");
         assert!(

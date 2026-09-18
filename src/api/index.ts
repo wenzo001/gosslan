@@ -187,6 +187,18 @@ export const api = {
   readFilePreview: (msgId: string, maxBytes: number) =>
     invoke<ArrayBuffer | number[]>("read_file_preview", { msgId, maxBytes }),
 
+  /** **按裸 cid** 读本机已有的内容字节（合并转发卡片图片预览）。
+   *  与 readFilePreview 的差别：不经过消息行 —— 卡片是快照，对端没有原始消息行。
+   *  路径由后端从 content_transfers 解析，不接受外部路径（安全边界等价 resolve_media_path）。 */
+  readContentPreview: (cid: string, maxBytes: number) =>
+    invoke<ArrayBuffer | number[]>("read_content_preview", { cid, maxBytes }),
+
+  /** **按裸 cid** 向对方拉取内容（合并转发卡片图片的"点击拉取"）。
+   *  服务端授权规则与 request_content 一致（好友/群成员 + 拥有即授权）；
+   *  对端不支持（旧版本）返回 false。 */
+  requestContentByCid: (peerId: string, cid: string, name: string, size: number) =>
+    invoke<boolean>("request_content_by_cid", { peerId, cid, name, size }),
+
   /** 媒体是否仍在本机（未被「存储清理」删除）。仅"确定已删除"时返回 false，
    *  查不到消息（在途的乐观消息）返回 true——不能把在途消息误标成已清理。 */
   mediaPresent: (msgId: string) => invoke<boolean>("media_present", { msgId }),

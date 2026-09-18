@@ -659,6 +659,7 @@ export const zhCN: MessageDict = {
   "chat.toast.renameFail": "重命名失败",
   "chat.toast.originalEarlier": "原消息更早，已不在可加载范围内",
   "chat.toast.fileNotForward": "文件尚未同步到本机，无法转发",
+  "chat.toast.imageNotForward": "图片尚未同步到本机，无法转发",
   "chat.toast.forwarded": "转发成功",
   "chat.toast.forwardFail": "转发失败",
   "chat.dropToGroup": "松手发送到群聊",
@@ -788,6 +789,13 @@ export const zhCN: MessageDict = {
   "merge.viewCount": "查看 {n} 条转发消息",
   "merge.count": "共 {n} 条",
   "merge.mediaNotIncluded": "合并转发只带文字与文件名；图片、文件本体需要「逐条转发」才会一并发送。",
+  "merge.pull": "拉取图片",
+  "merge.pulling": "正在拉取…",
+  "merge.pullFail": "没拉到：对方没有这份内容，或暂时不在线",
+  "merge.pullUnsupported": "对方版本较旧，不支持按需拉取",
+  "merge.tooLarge": "图片过大，无法在卡片内预览",
+  "merge.retry": "重试",
+  "merge.viewImage": "查看大图",
 
   // ---- 多选批量操作（微信式：多选 → 逐条/合并转发、收藏、删除） ----
   "multi.enter": "多选",
@@ -1459,6 +1467,7 @@ export const enUS: MessageDict = {
   "chat.toast.renameFail": "Failed to rename",
   "chat.toast.originalEarlier": "The original message is older and no longer in the loaded range",
   "chat.toast.fileNotForward": "File not synced to this device, can't forward",
+  "chat.toast.imageNotForward": "Image not synced to this device, can't forward",
   "chat.toast.forwarded": "Forwarded",
   "chat.toast.forwardFail": "Failed to forward",
   "chat.dropToGroup": "Drop to send to group",
@@ -1586,6 +1595,13 @@ export const enUS: MessageDict = {
   "merge.viewCount": "View {n} forwarded messages",
   "merge.count": "{n} messages",
   "merge.mediaNotIncluded": "Merged forward carries text and file names only; images and files need per-message forwarding.",
+  "merge.pull": "Fetch photo",
+  "merge.pulling": "Fetching…",
+  "merge.pullFail": "Couldn't fetch: the sender doesn't have it, or is offline",
+  "merge.pullUnsupported": "The sender runs an older version without on-demand fetch",
+  "merge.tooLarge": "Image too large to preview in the card",
+  "merge.retry": "Retry",
+  "merge.viewImage": "View full size",
 
   // ---- Multi-select batch actions (WeChat-style) ----
   "multi.enter": "Select",

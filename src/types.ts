@@ -170,6 +170,8 @@ export interface FileMeta {
   size: number;
   /** 后端按扩展名分类的附件子类型；历史消息缺省按 file 处理。 */
   subtype: string;
+  /** 内容指纹（= cid，明文 sha256，ADR-0019）。合并转发卡片按它按需拉取；旧版本消息可能没有。 */
+  sha256?: string;
 }
 
 /** 统一内容传输状态（ADR-0019）：前端气泡据此显示发送中/等待/重试/完成。 */export interface ContentTransfer {
