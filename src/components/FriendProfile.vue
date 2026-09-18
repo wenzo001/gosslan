@@ -167,7 +167,7 @@ const confirmRemove = ref(false);
               </button>
             </div>
             <!-- 次行：连接方式 + 安全码首段（一行，不再两行） -->
-            <div class="mt-1 flex items-center gap-3 truncate text-[12px] leading-relaxed text-[var(--gosslan-text-2)]">
+            <div class="mt-1 flex items-center gap-3 truncate text-[12px] leading-relaxed text-[var(--gosslan-text-2)]" :title="safetyFirstGroup ? `${address} · ${safetyFirstGroup}` : address">
               <span class="truncate" :title="address">{{ t("peer.link.label") }}：<span class="font-mono">{{ address }}</span></span>
               <span class="h-3 w-px shrink-0 bg-[var(--gosslan-divider)]"></span>
               <span>{{ t("friend.profile.safetyFirst") }}：<span class="font-mono">{{ safetyFirstGroup ?? t("common.notSet") }}</span><span v-if="safetyFirstGroup" class="opacity-60">…</span></span>

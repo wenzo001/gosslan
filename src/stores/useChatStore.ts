@@ -1337,6 +1337,30 @@ export const useChatStore = defineStore("chat", () => {
         onFileFailed(d);
         void refreshTransfers();
       },
+      onFileCancelled: (transferId) => {
+        // 后端 cancel_file_transfer emit 的：用户手动取消了一条文件发送
+        // 前端把这条消息标记 failed（如果还在发送中）+ 刷新列表
+        for (const [, msgs] of Object.entries(messages.value)) {
+          const msg = msgs.find(m =>
+            m.msg_id === `file-${transferId}` || m.msg_id === `gfile-${transferId}`
+          );
+          if (msg) {
+            msg.status = "failed";
+            app.toast(t("msg.canceled"), "info");
+          }
+        }
+        void refreshTransfers();
+      },
+      onMessageStatusChanged: (msgId) => {
+        // 后端 emit 的状态变更事件 —— 我们直接从数据库拉最新状态覆盖本地
+        // 目前只在 cancel_file_transfer 里发（cancel 后 mark failed，前端同步一下）
+        const convId = Object.keys(messages.value).find(cid =>
+          messages.value[cid]?.some(m => m.msg_id === msgId)
+        );
+        if (convId) {
+          void loadMessages(convId);
+        }
+      },
       onPeerStyle: (p) => {
         app.applyPeerStyle(p.device_id, p.style);
       },
