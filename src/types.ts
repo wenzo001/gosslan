@@ -282,6 +282,14 @@ export interface RoutedEndpoint {
   address: string;
 }
 
+/** 用户配置的外部链接（左栏「链接」视图 → 点开在独立窗口加载；后端 `ExternalLink` 序列化而来）。 */
+export interface ExternalLink {
+  /** 稳定主键（改名字/改网址都按它匹配）。 */
+  id: string;
+  name: string;
+  url: string;
+}
+
 /** 应用偏好设置（外观 / 网卡选择 / 聊天样式，持久化到本地 SQLite）。
  *  E2EE 自 v0.11.0 起恒开且不可关闭，不再作为设置项。 */
 export interface AppSettings {

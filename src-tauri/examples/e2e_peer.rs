@@ -832,6 +832,9 @@ async fn main() {
                 size: IMAGE_BYTES.len() as u64,
                 sha256: group_image_sha256.clone(),
                 sealed_file_key: sealed_group_image_key,
+                // 普通群文件（进聊天时间线）；todo_id 仅 scope == "todo" 时使用
+                scope: "chat".into(),
+                todo_id: String::new(),
             },
         )
         .await;

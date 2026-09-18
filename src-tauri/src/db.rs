@@ -154,7 +154,9 @@ CREATE TABLE IF NOT EXISTS group_files (
     size        INTEGER NOT NULL,
     sha256      TEXT NOT NULL,
     status      TEXT NOT NULL DEFAULT 'pending',  -- 'pending' | 'sending' | 'completed' | 'failed'
-    created_at  INTEGER NOT NULL
+    created_at  INTEGER NOT NULL,
+    scope       TEXT NOT NULL DEFAULT 'chat',      -- 'chat' | 'todo'
+    todo_id     TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_group_files_group ON group_files(group_id);
 
@@ -269,6 +271,24 @@ pub fn init(path: &Path) -> Result<Connection> {
                 "ALTER TABLE conversations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0",
                 [],
             )?;
+        }
+    }
+    // 迁移：group_files 增加 scope / todo_id 列（旧库幂等补列；待办图片复用群文件管线）。
+    for col in [("scope", "'chat'"), ("todo_id", "''")] {
+        let exists: bool = conn
+            .prepare("SELECT COUNT(*) FROM pragma_table_info('group_files') WHERE name = ?1")
+            .and_then(|mut s| s.query_row([col.0], |r| r.get::<_, i64>(0)))
+            .map(|n| n > 0)
+            .unwrap_or(true);
+        if !exists {
+            let _ = conn.execute(
+                &format!(
+                    "ALTER TABLE group_files ADD COLUMN {col} TEXT NOT NULL DEFAULT {default}",
+                    col = col.0,
+                    default = col.1
+                ),
+                [],
+            );
         }
     }
     // 索引必须等 seq 列补齐后再建：旧库执行 SCHEMA 时 messages 表已存在，不会自动加列。
@@ -1591,8 +1611,8 @@ pub fn insert_group_file(conn: &Connection, f: &GroupFile) -> Result<()> {
         )));
     }
     conn.execute(
-        "INSERT INTO group_files(transfer_id, group_id, sender_id, name, size, sha256, status, created_at)
-         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO group_files(transfer_id, group_id, sender_id, name, size, sha256, status, created_at, scope, todo_id)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             f.transfer_id,
             f.group_id,
@@ -1601,7 +1621,9 @@ pub fn insert_group_file(conn: &Connection, f: &GroupFile) -> Result<()> {
             f.size as i64,
             f.sha256,
             f.status,
-            f.created_at
+            f.created_at,
+            f.scope,
+            f.todo_id
         ],
     )?;
     Ok(())
@@ -1620,12 +1642,14 @@ fn row_to_group_file(r: &rusqlite::Row<'_>) -> rusqlite::Result<GroupFile> {
         sha256: r.get(5)?,
         status: r.get(6)?,
         created_at: r.get(7)?,
+        scope: r.get(8)?,
+        todo_id: r.get(9)?,
     })
 }
 
 pub fn get_group_file(conn: &Connection, transfer_id: &str) -> Option<GroupFile> {
     conn.query_row(
-        "SELECT transfer_id, group_id, sender_id, name, size, sha256, status, created_at
+        "SELECT transfer_id, group_id, sender_id, name, size, sha256, status, created_at, scope, todo_id
          FROM group_files WHERE transfer_id = ?1",
         params![transfer_id],
         row_to_group_file,
@@ -1640,7 +1664,7 @@ pub fn get_group_file(conn: &Connection, transfer_id: &str) -> Option<GroupFile>
 /// 群文件是群级资产（同钉盘/群文件语义），清空聊天历史不应连带删掉文件记录。
 pub fn list_group_files(conn: &Connection, group_id: &str) -> Result<Vec<GroupFile>> {
     let mut stmt = conn.prepare(
-        "SELECT transfer_id, group_id, sender_id, name, size, sha256, status, created_at
+        "SELECT transfer_id, group_id, sender_id, name, size, sha256, status, created_at, scope, todo_id
          FROM group_files WHERE group_id = ?1 ORDER BY created_at DESC",
     )?;
     let rows = stmt.query_map(params![group_id], row_to_group_file)?;
@@ -1817,8 +1841,8 @@ pub fn upsert_group_file_receive(
     recipient_id: &str,
 ) -> Result<()> {
     conn.execute(
-        "INSERT OR IGNORE INTO group_files(transfer_id, group_id, sender_id, name, size, sha256, status, created_at)
-         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT OR IGNORE INTO group_files(transfer_id, group_id, sender_id, name, size, sha256, status, created_at, scope, todo_id)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             f.transfer_id,
             f.group_id,
@@ -1827,7 +1851,9 @@ pub fn upsert_group_file_receive(
             f.size as i64,
             f.sha256,
             f.status,
-            f.created_at
+            f.created_at,
+            f.scope,
+            f.todo_id
         ],
     )?;
     // 未完成的遗留记录复位回 sending（completed 不动）
@@ -3323,6 +3349,8 @@ mod tests {
             sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string(),
             status: "pending".to_string(),
             created_at: now_ms(),
+            scope: "chat".to_string(),
+            todo_id: "".to_string(),
         }
     }
 

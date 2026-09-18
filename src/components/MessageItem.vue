@@ -26,6 +26,7 @@ import BaseModal from "@/components/BaseModal.vue";
 import MessageReactionBar from "@/components/message/MessageReactionBar.vue";
 import type { ReactionChip } from "@/utils/reactions";
 import MessageContentModal from "@/components/message/MessageContentModal.vue";
+import TodoCardBubble from "@/components/TodoCardBubble.vue";
 import MessageContextMenu from "@/components/message/MessageContextMenu.vue";
 import ActionSheet from "@/components/ActionSheet.vue";
 import { Check, Copy, CornerUpLeft, ImageOff, ListChecks, Pin, Save, Share2, Star, TextSelect, Undo2 } from "lucide-vue-next";
@@ -527,6 +528,8 @@ const emit = defineEmits<{
   (e: "multi-select"): void;
   /** 多选模式下切换本行的勾选态（由覆盖层点击触发） */
   (e: "toggle-select"): void;
+  /** 点了任务卡片里的「查看任务」：打开群任务面板（由 ChatWindow 接住）。 */
+  (e: "open-tasks"): void;
 }>();
 
 /**
@@ -896,7 +899,16 @@ async function copyFileToClipboard() {
           <MergeCard
             v-else-if="message.kind === 'merge'"
             :content="message.content"
+            :mine="mine"
             @open="emit('open-merge', { content: message.content, senderId: message.sender_id })"
+          />
+
+          <!-- 群任务卡片（`todo` = Card kind）：把 JSON 载荷渲染成可读卡片，替代原始 JSON 兜底 -->
+          <TodoCardBubble
+            v-else-if="message.kind === 'todo'"
+            :message="message"
+            :mine="mine"
+            @open="emit('open-tasks')"
           />
 
           <!-- 未知 kind 的兜底气泡：排版必须与 MessageTextBubble 一致（py-1.5 / leading-normal），

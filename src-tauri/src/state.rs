@@ -550,6 +550,10 @@ pub struct GroupFile {
     /// 'pending' | 'sending' | 'completed' | 'failed'
     pub status: String,
     pub created_at: i64,
+    /// 归属场景：`chat` = 普通群文件；`todo` = 待办描述图片（不进时间线）
+    pub scope: String,
+    /// `scope == "todo"` 时关联的 todo_id
+    pub todo_id: String,
 }
 
 /// 群文件单个成员的投递状态（DB 表 group_file_recipients）。

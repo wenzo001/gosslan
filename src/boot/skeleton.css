@@ -450,6 +450,98 @@
         background: var(--boot-line);
         animation: boot-breathe 1.5s ease-in-out infinite;
       }
+      #boot-todos {
+        display: none;
+      }
+      html.boot-todos #boot {
+        display: none;
+      }
+      html.boot-todos #boot-todos {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        display: flex;
+        flex-direction: column;
+        background: var(--boot-app-bg);
+      }
+      #boot-todos.boot-hide {
+        opacity: 0;
+        transition: opacity 0.18s ease-out;
+      }
+      .boot-todos-toolbar {
+        height: 48px;
+        flex: none;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 0 12px;
+        background: var(--boot-caption);
+        border-bottom: 1px solid var(--boot-line);
+      }
+      .boot-todos-title {
+        width: 110px;
+        height: 14px;
+        border-radius: 4px;
+      }
+      .boot-todos-spacer {
+        flex: 1;
+      }
+      .boot-todos-chip {
+        width: 56px;
+        height: 28px;
+        border-radius: 6px;
+      }
+      .boot-todos-chip.primary {
+        background: var(--boot-primary);
+        opacity: 0.85;
+      }
+      .boot-todos-body {
+        flex: 1;
+        padding: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .boot-todo-card {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 12px;
+        border-radius: 10px;
+        background: var(--boot-caption);
+        border: 1px solid var(--boot-line);
+      }
+      .boot-todo-card i {
+        display: block;
+        height: 12px;
+        border-radius: 4px;
+      }
+      .boot-todo-card .t {
+        flex: 1;
+      }
+      .boot-todo-card .s {
+        width: 46px;
+        height: 18px;
+        flex: none;
+        border-radius: 9px;
+      }
+      .boot-todo-card .m {
+        flex: none;
+      }
+      .boot-todo-card .m.w60 {
+        width: 60%;
+        flex: 1;
+      }
+      .boot-todo-card .m.w40 {
+        width: 40%;
+        flex: 1;
+      }
+      .boot-todos-title,
+      .boot-todos-chip,
+      .boot-todo-card i {
+        background: var(--boot-line);
+        animation: boot-breathe 1.5s ease-in-out infinite;
+      }
       @media (prefers-reduced-motion: reduce) {
         .boot-ava,
         .boot-ico,
@@ -465,7 +557,10 @@
         .boot-logs-back,
         .boot-logs-title,
         .boot-logs-chip,
-        .boot-log-line i {
+        .boot-log-line i,
+        .boot-todos-title,
+        .boot-todos-chip,
+        .boot-todo-card i {
           animation: none;
           opacity: 0.75;
         }

@@ -1,0 +1,43 @@
+<!doctype html>
+<!-- 独立「群任务」窗口（桌面端，label=`todo-<groupId>`，每群一个）。与设置/日志同理：
+     自己的文档 + 自己的入口，只加载任务看板需要的代码。
+     窗口从**自己的 label** 解析群 ID（见 src/utils/auxWindowLabels.ts）。 -->
+<html lang="zh-CN" class="boot-todos" data-title-zh="小院儿 · 群任务" data-title-en="Gosslan · Tasks">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Tasks</title>
+    <!-- 主题首帧 + 骨架样式：与主窗口共用同一份（见 index.html 的说明与 vite 插件）。 -->
+    <!-- GOSSLAN_THEME_BOOT -->
+    <!-- GOSSLAN_SKELETON_CSS -->
+  </head>
+  <body>
+    <!-- 群任务窗口骨架：结构照抄任务看板（顶部「群名 + 新建」栏 + 任务卡片行）。
+         由 src/entries/todos.ts 在首帧数据到位后撤掉。 -->
+    <div id="boot-todos" aria-hidden="true">
+      <div class="boot-todos-toolbar">
+        <span class="boot-todos-title"></span>
+        <span class="boot-todos-spacer"></span>
+        <span class="boot-todos-chip primary"></span>
+      </div>
+      <div class="boot-todos-body">
+        <div class="boot-todo-card">
+          <i class="t"></i>
+          <i class="s"></i>
+        </div>
+        <div class="boot-todo-card">
+          <i class="t"></i>
+          <i class="s"></i>
+          <i class="m w60"></i>
+        </div>
+        <div class="boot-todo-card">
+          <i class="t"></i>
+          <i class="s"></i>
+          <i class="m w40"></i>
+        </div>
+      </div>
+    </div>
+    <div id="app"></div>
+    <script type="module" src="/src/entries/todos.ts"></script>
+  </body>
+</html>

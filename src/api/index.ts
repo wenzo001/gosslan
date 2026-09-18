@@ -2,8 +2,8 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppSettings, CacheInfo, ChatSearchGroup, CleanupReport, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, FileDoneInfo, FileFailedInfo, FileProgress, FavoriteEntry, Friend, Group, GroupFileEntry, GroupReadInfo, InterfaceCandidate, InterfaceInfo, LinkState, LogEntry, MessageRecord, Peer, PeerReadInfo, PendingRequest, RoutedEndpoint, RuntimeSnapshot, SearchResult, ShareEntry, TopologyInfo, TransferInfo } from "@/types";
-
+import type { AppSettings, CacheInfo, ChatSearchGroup, CleanupReport, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, Friend, Group, GroupFileEntry, GroupReadInfo, InterfaceCandidate, InterfaceInfo, LinkState, LogEntry, MessageRecord, Peer, PeerReadInfo, PendingRequest, RoutedEndpoint, RuntimeSnapshot, SearchResult, ShareEntry, TopologyInfo, TransferInfo } from "@/types";
+import type { TodoImage } from "@/utils/todos";
 export const api = {
   /**
    * 监听"**另一个窗口**改了设置"（外观 / 语言 / 资料 / 目录 / 缓存策略）。
@@ -31,6 +31,14 @@ export const api = {
    * 清除只发生在设置窗口的 store 里，主窗口是另一个 WebView，它的会话列表一条都没变。
    */
   onDataCleared: (cb: () => void) => listen("data-cleared", () => cb()),
+  /**
+   * 只订阅 `message-received`（**窄**封装）。
+   *
+   * 给独立窗口用：群任务窗口只关心"我这个会话来了新消息"，不能跑 `bindEvents`（那是主窗口
+   * 的全套监听，重复注册会导致重复通知/未读/回执，见 `src/App.vue` 的说明）。返回取消函数。
+   */
+  onMessageReceived: (cb: (rec: MessageRecord) => void) =>
+    listen<MessageRecord>("message-received", (e) => cb(e.payload)),
   getDeviceInfo: () => invoke<DeviceInfo>("get_device_info"),
   updateProfile: (nickname: string, avatar: string | null) =>
     invoke<DeviceInfo>("update_profile", { nickname, avatar }),
@@ -87,6 +95,12 @@ export const api = {
   /** 请对端按 cid 再发一份内容（图片/文件「点击重取」）。false = 对方版本不支持。 */
   requestContent: (peerId: string, msgId: string) =>
     invoke<boolean>("request_content", { peerId, msgId }),
+  /**
+   * 合并转发卡片里引用的图片按 cid 重取：服务端授权规则与 `request_content` 一致
+   * （好友/群成员 + 拥有即授权）；`name`/`size` 仅用于授权与续传判定。
+   */
+  requestContentByCid: (peerId: string, cid: string, name: string, size: number) =>
+    invoke<boolean>("request_content_by_cid", { peerId, cid, name, size }),
   getMessageCount: (convId: string) => invoke<number>("get_message_count", { convId }),
   getConversations: () => invoke<Conversation[]>("get_conversations"),
   ensureConversation: (friendId: string) =>
@@ -121,18 +135,39 @@ export const api = {
    * 新建群任务（任意成员）。`assignees` 至少一人且都得是群成员（后端校验）。
    * 任务状态初始为「待办」，四态取值见 `utils/todos.ts` 的 `TODO_STATUSES`。
    */
-  sendGroupTodo: (groupId: string, title: string, assignees: string[]) =>
-    invoke<MessageRecord>("send_group_todo", { groupId, title, assignees }),
+  sendGroupTodo: (
+    groupId: string,
+    title: string,
+    assignees: string[],
+    description?: string,
+    images?: TodoImage[],
+  ) =>
+    invoke<MessageRecord>("send_group_todo", {
+      groupId,
+      title,
+      assignees,
+      description: description ?? null,
+      images: images ?? null,
+    }),
   /**
-   * 更新群任务：改状态 / 改标题与指派人 / 删除（`deleted: true`）。
+   * 更新群任务：改状态 / 改标题与指派人 / 改描述与图片 / 删除（`deleted: true`）。
    *
-   * 后端会按"只改状态"与"改结构"分别判权限（被指派人 or 创建者 → 创建者 or 群主），
-   * 并把 `creator` 用库里的原值回填（不接受客户端自报）。
+   * 后端会按"只改状态""改指派人""改结构"分别判权限，并把 `creator` 用库里的原值回填
+   * （不接受客户端自报）；`done_at` / `archived` 由后端在「完成」时按权威时间填。
    */
   updateGroupTodo: (
     groupId: string,
     todoId: string,
-    patch: { title: string; assignees: string[]; status: string; deleted: boolean },
+    patch: {
+      title: string;
+      assignees: string[];
+      status: string;
+      deleted: boolean;
+      description?: string;
+      images?: TodoImage[];
+      /** 显式归档意图：`true` = 手动归档；`undefined` = 不改（保留库中原值）。 */
+      archived?: boolean;
+    },
   ) =>
     invoke<MessageRecord>("update_group_todo", {
       groupId,
@@ -141,6 +176,9 @@ export const api = {
       assignees: patch.assignees,
       status: patch.status,
       deleted: patch.deleted,
+      description: patch.description ?? null,
+      images: patch.images ?? null,
+      archived: patch.archived ?? null,
     }),
   /** 置顶/取消置顶一条群消息（任意群成员；静默事件，不进时间线）。 */
   pinGroupMessage: (groupId: string, target: string, pinned: boolean) =>
@@ -187,18 +225,10 @@ export const api = {
   readFilePreview: (msgId: string, maxBytes: number) =>
     invoke<ArrayBuffer | number[]>("read_file_preview", { msgId, maxBytes }),
 
-  /** **按裸 cid** 读本机已有的内容字节（合并转发卡片图片预览）。
-   *  与 readFilePreview 的差别：不经过消息行 —— 卡片是快照，对端没有原始消息行。
-   *  路径由后端从 content_transfers 解析，不接受外部路径（安全边界等价 resolve_media_path）。 */
+  /** 按 content store 的 cid 读取已落盘内容字节（合并转发卡片图片预览 + 待办描述图片缩略图共用）。
+   *  cid 即 sha256；两条取回路径见后端 `read_content_preview`（store 直取 → find_source + 安全校验）。 */
   readContentPreview: (cid: string, maxBytes: number) =>
     invoke<ArrayBuffer | number[]>("read_content_preview", { cid, maxBytes }),
-
-  /** **按裸 cid** 向对方拉取内容（合并转发卡片图片的"点击拉取"）。
-   *  服务端授权规则与 request_content 一致（好友/群成员 + 拥有即授权）；
-   *  对端不支持（旧版本）返回 false。 */
-  requestContentByCid: (peerId: string, cid: string, name: string, size: number) =>
-    invoke<boolean>("request_content_by_cid", { peerId, cid, name, size }),
-
   /** 媒体是否仍在本机（未被「存储清理」删除）。仅"确定已删除"时返回 false，
    *  查不到消息（在途的乐观消息）返回 true——不能把在途消息误标成已清理。 */
   mediaPresent: (msgId: string) => invoke<boolean>("media_present", { msgId }),
@@ -216,6 +246,9 @@ export const api = {
   /** 收藏**副本**的预览字节（图片）。契约同 `readFilePreview`，但按收藏 id 而不是 msg_id 定位。 */
   readFavoritePreview: (id: string, maxBytes: number) =>
     invoke<ArrayBuffer | number[]>("read_favorite_preview", { id, maxBytes }),
+  /** 发送一张待办描述图片（复用群文件管线，scope="todo"：不进时间线、不弹气泡）。 */
+  sendTodoImage: (groupId: string, todoId: string, path: string) =>
+    invoke<string>("send_todo_image", { groupId, todoId, path }),
 
   /**
    * 本地删除若干条消息（微信语义：**只删本机**，对方那边照常保留），返回实际删除条数。
@@ -225,7 +258,8 @@ export const api = {
    */
   deleteMessages: (msgIds: string[]) => invoke<number>("delete_messages", { msgIds }),
 
-  setShareDir: (path: string) => invoke<void>("set_share_dir", { path }),
+  /** 读一张待办图片的元数据（name/size/sha256/subtype），不投递字节。 */
+  todoImageMeta: (path: string) => invoke<TodoImage>("todo_image_meta", { path }),  setShareDir: (path: string) => invoke<void>("set_share_dir", { path }),
   getShareDir: () => invoke<string | null>("get_share_dir"),
   getDownloadsDir: () => invoke<string>("get_downloads_dir"),
   setDownloadsDir: (path: string) => invoke<void>("set_downloads_dir", { path }),
@@ -317,6 +351,33 @@ export const api = {
     invoke<string>("import_picked_file", { path, suggestedName: suggestedName ?? null }),
   openSettingsWindow: () => invoke<void>("open_settings_window"),
   closeSettingsWindow: () => invoke<void>("close_settings_window"),
+
+  /** 打开**指定群**的独立任务窗口（桌面端；每群一个窗口，label = `todo-<groupId>`）。 */
+  openGroupTodosWindow: (groupId: string) => invoke<void>("open_group_todos_window", { groupId }),
+
+  /** 在独立窗口里加载一个外部网址（桌面端；窗口隔离，不授予远端页面任何命令权限）。 */
+  openLinkWindow: (url: string, name: string) => invoke<void>("open_link_window", { url, name }),
+
+  // ---------------- 外部链接（左栏「链接」视图） ----------------
+  listExternalLinks: () => invoke<ExternalLink[]>("list_external_links"),
+  addExternalLink: (name: string, url: string) =>
+    invoke<ExternalLink[]>("add_external_link", { name, url }),
+  updateExternalLink: (id: string, name: string, url: string) =>
+    invoke<ExternalLink[]>("update_external_link", { id, name, url }),
+  removeExternalLink: (id: string) => invoke<ExternalLink[]>("remove_external_link", { id }),
+
+  /** 保存一张**粘贴**进任务表单的图片（raw IPC 直传字节），返回落盘路径。
+   *  之后与选图同一条路：`todoImageMeta(path)` → 元数据进定义，`sendTodoImage(path)` → 字节投递。 */
+  saveTodoImageBytes: (bytes: Uint8Array) =>
+    invoke<string>("save_todo_image_bytes", bytes),
+
+  /** 删除一条群公告（仅群主；发 `announcement_delete` 墓碑，全端折掉横幅）。 */
+  deleteGroupAnnouncement: (groupId: string, annId: string) =>
+    invoke<MessageRecord>("delete_group_announcement", { groupId, annId }),
+
+  /** 当前生效的群公告（每群一条）：会话列表 📢 标记的数据源。 */
+  listActiveGroupAnnouncements: () =>
+    invoke<{ groupId: string; msgId: string; text: string }[]>("list_active_group_announcements"),
 };
 
 // ---------------- 事件监听 ----------------

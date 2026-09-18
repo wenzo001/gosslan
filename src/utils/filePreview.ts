@@ -94,3 +94,39 @@ export function loadFilePreview(
   inflight.set(msgId, p);
   return p;
 }
+
+/** 按内容指纹（sha256）加载待办描述图片的预览。
+ *
+ * ⚠️ **失败不缓存**：待办图片的字节是「任务定义先到、文件后到」——
+ * 看板在定义一到就渲染缩略图，此刻字节往往还没落地（读不到 → 报「内容不存在」）。
+ * 若把这次失败按 cid 缓存，文件落盘后也不会重读（与聊天图片同源的坑，见 `loadFilePreview`）。
+ * 每次调用都重新读；`TodoImageThumb` 负责用退避重试把"后到"的字节追回来。
+ */
+export function loadContentPreview(cid: string, name: string): Promise<PreviewResult> {
+  const hit = cache.get(cid);
+  if (hit) return Promise.resolve(hit);
+  const fly = inflight.get(cid);
+  if (fly) return fly;
+
+  const p = (async (): Promise<PreviewResult> => {
+    try {
+      const raw = await api.readContentPreview(cid, IMAGE_MAX_BYTES);
+      const bytes = new Uint8Array(raw);
+      const url = URL.createObjectURL(new Blob([bytes], { type: imageMime(name) }));
+      const r: PreviewResult = { url };
+      cache.set(cid, r);
+      return r;
+    } catch (e) {
+      const msg = String(e);
+      console.error(`[filePreview] content preview failed (cid=${cid}, name=${name}): ${msg}`);
+      // 确定性失败（文件过大）可以缓存；「内容不存在/路径越权」是暂时态，不缓存。
+      if (msg.includes("文件过大")) return { note: "文件过大，无法预览" };
+      return {};
+    } finally {
+      inflight.delete(cid);
+    }
+  })();
+
+  inflight.set(cid, p);
+  return p;
+}

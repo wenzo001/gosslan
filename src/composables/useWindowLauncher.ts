@@ -12,9 +12,15 @@
  */
 import { computed, reactive, type ComputedRef } from "vue";
 import { shouldLaunchWindow } from "@/utils/windowLaunch";
+import { GROUP_TODOS_LABEL_PREFIX } from "@/utils/auxWindowLabels";
 
-/** 桌面独立窗口的 label（与 Rust 的 `WINDOW_SETTINGS` / `WINDOW_LOGS` 一致）。 */
-export type AuxWindowLabel = "settings" | "logs";
+/**
+ * 桌面独立窗口的 label。
+ *
+ * `settings` / `logs` / `link` 与 Rust 的 `WINDOW_SETTINGS` / `WINDOW_LOGS` / `WINDOW_LINK` 一致；
+ * 群任务窗口是**动态** label（每群一个，`todo-<groupId>`，见 `utils/auxWindowLabels`）。
+ */
+export type AuxWindowLabel = "settings" | "logs" | "link" | `${typeof GROUP_TODOS_LABEL_PREFIX}${string}`;
 
 /** 正在打开的窗口 label（响应式，供按钮显示 pending 状态）。 */
 const opening = reactive(new Set<AuxWindowLabel>());
@@ -24,6 +30,16 @@ const lastLaunchAt = new Map<AuxWindowLabel, number>();
 /** 该窗口此刻是否正在打开（给按钮做 pending 反馈）。 */
 export function useWindowOpening(label: AuxWindowLabel): ComputedRef<boolean> {
   return computed(() => opening.has(label));
+}
+
+/**
+ * 该窗口此刻是否正在打开（**普通函数**，可在 `computed` 内部使用）。
+ *
+ * 与 [`useWindowOpening`] 的区别：那个是 composable（只能在 setup 顶层调用），
+ * 这个给"label 由 props/状态算出来"的场景（如群任务窗口的 `todo-<当前群>`）。
+ */
+export function isWindowOpening(label: AuxWindowLabel): boolean {
+  return opening.has(label);
 }
 
 /**

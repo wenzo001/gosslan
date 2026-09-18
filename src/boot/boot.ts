@@ -1,5 +1,5 @@
 /**
- * 三个窗口（主 / 设置 / 日志）**共用**的首屏运行时。
+ * 各窗口（主 / 设置 / 日志 / 群任务）**共用**的首屏运行时。
  *
  * ## 为什么要有这个文件
  * 以前三个窗口共用 `index.html` + 一个 Vue 应用，由 `App.vue` 按窗口 label 决定渲染哪一屏。
@@ -95,7 +95,7 @@ export function dismissBoot() {
   bootDismissed = true;
   // 每个窗口只会有其中一个骨架（各自的 HTML 只写自己的那一份），
   // 这里统一处理，缺失的自然跳过。
-  for (const id of ["boot", "boot-logs", "boot-settings"]) {
+  for (const id of ["boot", "boot-logs", "boot-settings", "boot-todos"]) {
     const el = document.getElementById(id);
     if (!el) continue;
     el.classList.add("boot-hide");

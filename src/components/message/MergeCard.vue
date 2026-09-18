@@ -17,7 +17,8 @@ import { ScrollText } from "lucide-vue-next";
 import { t } from "@/i18n";
 import { mergeItemLine, parseMergePayload } from "@/utils/mergeCard.ts";
 
-const props = defineProps<{ content: string }>();
+const props = defineProps<{ content: string; /** 自己发的卡片：尖角朝右指向右侧头像。 */
+mine?: boolean }>();
 const emit = defineEmits<{ (e: "open"): void }>();
 
 const parsed = computed(() => parseMergePayload(props.content));
@@ -33,7 +34,8 @@ const previewLines = computed(() =>
 
 <template>
   <button
-    class="flex h-24 w-60 flex-col gap-1 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-divider)] bg-[var(--gosslan-panel)] px-3 py-2 text-left transition hover:bg-[var(--gosslan-hover)]"
+    class="relative flex h-24 w-60 flex-col gap-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-panel)] px-3 py-2 text-left transition hover:bg-[var(--gosslan-hover)]"
+    :style="{ '--bubble-bg': 'var(--gosslan-panel)' }"
     :aria-label="t('merge.open')"
     @click="emit('open')"
   >
@@ -56,5 +58,8 @@ const previewLines = computed(() =>
     <div class="shrink-0 text-[11px] leading-[15px] text-[var(--gosslan-text-2)]">
       {{ t("merge.viewCount", { n: count }) }}
     </div>
+    <!-- 指向发送者头像的小尖角（与文本/代码气泡同款 .bubble-tail）：卡片无描边，
+         直接用标准 -5px 偏移即可贴合，尖角色取 --bubble-bg（= panel 底色）。 -->
+    <span aria-hidden="true" class="bubble-tail" :class="mine ? 'tail-mine' : 'tail-other'"></span>
   </button>
 </template>

@@ -19,7 +19,7 @@ import { test } from "node:test";
 const root = join(import.meta.dirname, "..", "..");
 const read = (p: string) => readFileSync(join(root, p), "utf8");
 
-/** 三个窗口：HTML 文件 ↔ 入口模块 ↔ 自己的骨架 id ↔ `<html>` 上的骨架类。 */
+/** 四个窗口：HTML 文件 ↔ 入口模块 ↔ 自己的骨架 id ↔ `<html>` 上的骨架类。 */
 const WINDOWS = [
   { html: "index.html", entry: "src/entries/main.ts", skeleton: "boot", htmlClass: null },
   {
@@ -29,6 +29,12 @@ const WINDOWS = [
     htmlClass: "boot-settings",
   },
   { html: "logs.html", entry: "src/entries/logs.ts", skeleton: "boot-logs", htmlClass: "boot-logs" },
+  {
+    html: "todos.html",
+    entry: "src/entries/todos.ts",
+    skeleton: "boot-todos",
+    htmlClass: "boot-todos",
+  },
 ] as const;
 
 test("每个窗口都有自己的 HTML 与入口（不再共用一个 index.html）", () => {
@@ -98,10 +104,25 @@ test("每个窗口都声明自己的标题（按语言切换，不再由 Rust �
 });
 
 test("辅助窗口的入口不得把聊天那一套拉进来（这是「设置窗口先闪成聊天界面」的根因）", () => {
-  const forbidden = ["ResponsiveLayout", "App.vue", "useChatStore", "ChatWindow", "ConversationList"];
-  for (const entry of ["src/entries/settings.ts", "src/entries/logs.ts"]) {
+  // 通用红线：**任何**辅助窗口都不得注册聊天事件（第二次 bindEvents/init 会重复通知、
+  // 重复计未读、重复发群已读回执 —— 见 src/App.vue 顶部的说明）。
+  for (const entry of ["src/entries/settings.ts", "src/entries/logs.ts", "src/entries/todos.ts"]) {
     const code = read(entry);
-    for (const bad of forbidden) {
+    for (const bad of ["chat.init(", "bindEvents("]) {
+      assert.ok(!code.includes(bad), `${entry} 不得调用 ${bad}（独立窗口注册第二套事件监听会重复通知/未读/回执）`);
+    }
+  }
+  // 聊天组件树：设置/日志窗口完全不该碰；群任务窗口**需要**聊天数据层（它要折叠任务、
+  // 建/改任务），但仍不得挂聊天组件树（ResponsiveLayout/ChatWindow/ConversationList）。
+  const commonForbidden = ["ResponsiveLayout", "App.vue", "ChatWindow", "ConversationList"];
+  const perEntry: Record<string, string[]> = {
+    "src/entries/settings.ts": ["useChatStore"],
+    "src/entries/logs.ts": ["useChatStore"],
+    "src/entries/todos.ts": [],
+  };
+  for (const [entry, extra] of Object.entries(perEntry)) {
+    const code = read(entry);
+    for (const bad of [...commonForbidden, ...extra]) {
       assert.ok(
         !code.includes(bad),
         `${entry} 不该引用 ${bad} —— 独立窗口只加载自己需要的代码，` +
@@ -112,6 +133,8 @@ test("辅助窗口的入口不得把聊天那一套拉进来（这是「设置�
   // 反向：主窗口入口当然要挂聊天布局（否则这个守卫可能只是"全都空了"而通过）
   assert.match(read("src/entries/main.ts"), /App\.vue/, "主窗口入口要挂 App.vue");
   assert.match(read("src/App.vue"), /ResponsiveLayout/, "主窗口根组件要渲染聊天布局");
+  // 群任务窗口入口确实用了共享辅助窗口挂载路径（防"入口被清空也通过"）
+  assert.match(read("src/entries/todos.ts"), /mountAuxWindow\(/, "群任务窗口入口要走 mountAuxWindow");
 });
 
 test("常驻的设置窗口必须在重新获得焦点时刷新环境数据（否则关了再开会看到旧快照）", () => {

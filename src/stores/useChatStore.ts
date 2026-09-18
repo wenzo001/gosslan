@@ -18,6 +18,7 @@ import { useAppStore } from "@/stores/useAppStore";
 import { actionableRequests } from "@/utils/friendRequests";
 import { notificationBody } from "@/utils/notifications";
 import { isSilentKind } from "@/utils/messageKinds";
+import { todoCompletedForCreator, todoMentionsMe, type TodoImage } from "@/utils/todos";
 import { invalidateFilePreview } from "@/utils/filePreview";
 import { t } from "@/i18n";
 import { shouldRunThrottled } from "@/utils/defer";
@@ -220,21 +221,62 @@ export const useChatStore = defineStore("chat", () => {
    * 拼装逻辑在 utils/notifications.ts（纯函数、有单测），这里只喂入实时数据。
    */
   function notifyBody(count: number, last: MessageRecord): string {
+    let preview = previewText(last);
+    const doneTitle = todoCompletedForCreator(last, myDeviceId.value);
+    if (doneTitle !== null) {
+      // 我创建的任务被完成：通知里明确说「已完成」，而不是笼统的「[任务] 标题」。
+      preview = doneTitle
+        ? t("todo.completedNotice", { title: doneTitle })
+        : t("todo.completedNoticeNoTitle");
+    } else if ((last.kind === "todo" || last.kind === "todo_update") && todoMentionsMe(last, myDeviceId.value)) {
+      // 任务 @ 我：预览前缀「@你」，让锁屏/通知中心一眼看出是点名我
+      // （与「有人@我」徽标同口径：被指派人 = 被 @）。
+      preview = `${t("todo.mentionYou")} ${preview}`;
+    }
     return notificationBody({
       showContent: app.notifyShowContent,
       count,
       sender: nicknameOf(last.sender_id),
-      preview: previewText(last),
+      preview,
     });
   }
 
+  /** 已提示过的「任务完成」msg_id：同一事件经多条投递路径反复 emit 时不重复提示创建人。 */
+  const notifiedTodoDone = new Set<string>();
+  const NOTIFIED_TODO_DONE_MAX = 500;
+
   function maybeNotify(rec: MessageRecord) {
-    if (!app.notifyEnabled) return;
-    // 静默事件（表情回应/撤回）不弹通知：它们不是"内容"，
-    // 提醒它们正是这个功能要消除的噪音（"收到""👍"刷屏）。
-    if (isSilentKind(rec.kind)) return;
     const myId = app.device?.device_id;
     if (!myId || rec.sender_id === myId) return;
+
+    // 任务被完成 → 给**创建人**提示。`todo_update` 本是静默事件（不打扰全群），
+    // 但"我派的活被干完了"对创建人是个该知道的变化，单独放行；其余静默事件照旧不弹。
+    // 按 msg_id 去重：同一事件经多条投递路径反复 emit 时不重复提示创建人。
+    const doneTitle = todoCompletedForCreator(rec, myId);
+    if (doneTitle !== null && !notifiedTodoDone.has(rec.msg_id)) {
+      notifiedTodoDone.add(rec.msg_id);
+      while (notifiedTodoDone.size > NOTIFIED_TODO_DONE_MAX) {
+        const oldest = notifiedTodoDone.values().next().value;
+        if (oldest === undefined) break;
+        notifiedTodoDone.delete(oldest);
+      }
+      // 正看着该会话：系统通知会被抑制，改用应用内 toast —— 否则创建人"什么都看不到"。
+      if (!document.hidden && document.hasFocus() && activeConv.value === rec.conv_id) {
+        app.toast(
+          doneTitle ? t("todo.completedNotice", { title: doneTitle }) : t("todo.completedNoticeNoTitle"),
+          "info",
+        );
+        return;
+      }
+      if (!app.notifyEnabled) return;
+      queueNotification(rec);
+      return;
+    }
+
+    // 静默事件（表情回应/撤回）不弹通知：它们不是"内容"，
+    // 提醒它们正是这个功能要消除的噪音（"收到""👍"刷屏）。
+    if (!app.notifyEnabled) return;
+    if (isSilentKind(rec.kind)) return;
     // 应用在前台且正查看该会话 → 不通知（不进队列）。
     // 必须同时判 !document.hidden：窗口被隐藏/最小化到托盘时，WebView 的
     // document.hasFocus() 仍可能是 true，只看它会漏掉真正该提醒的消息。
@@ -334,12 +376,15 @@ export const useChatStore = defineStore("chat", () => {
     // 与未读同源（本地真正新增的消息），重复投递不会反复触发。
     // 「@所有人」对每个成员都等同于被点名，与点名走同一条判定入口。
     const myName = app.device?.nickname ?? "";
+    const myId = myDeviceId.value;
     for (const [cid, fresh] of newByConv) {
       if (cid === activeConv.value || !cid.startsWith("group:")) continue;
       for (const rec of fresh) {
-        if (rec.sender_id === myDeviceId.value) continue;
+        if (rec.sender_id === myId) continue;
         const named = myName ? messageMentionsName(rec, myName) : false;
-        if (named || messageMentionsAll(rec)) {
+        // 任务被指派给我 ═ 被 @：显式 @ 指派的人（与 item 4 同口径），
+        // 走微信式 [有人@我] 红点，且不会被重复投递反复触发（与上面同源 fresh）。
+        if (named || messageMentionsAll(rec) || todoMentionsMe(rec, myId)) {
           mentionedConvs.value.add(cid);
           break;
         }
@@ -679,6 +724,55 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
+  // ---------------- 独立「群任务」窗口用的读路径 ----------------
+  // ⚠️ 这两个函数是给**独立窗口**（`todos.html`）用的：那个窗口有自己的 store 实例，
+  // 只服务一个群。绝不能在那里调 `init()`（会注册第二套事件监听 → 重复通知/未读/回执）
+  // 或 `openConversation()`（会发群已读回执、写与主窗口共享的 localStorage）。
+
+  /**
+   * 群任务窗口的读路径：加载**一个群**的消息 + 解析成员名要用的数据。
+   *
+   * ⚠️ 不变量：调用方（群任务窗口）的 store 实例**只服务这一个会话**，所以这里
+   * 把 `activeConv` 设成它（`loadMessages` 有 `activeConv === convId` 守卫）。
+   */
+  async function loadGroupTodos(groupId: string): Promise<void> {
+    const convId = `group:${groupId}`;
+    // 成员名/群名/头像来自 groups + friends + peers；conversations 让窗口内的
+    // `enqueueMessage`（创建/更新任务后本地合并）不必再补一次拉取。
+    await Promise.all([refreshGroups(), refreshFriends(), refreshPeers(), refreshConversations()]);
+    activeConv.value = convId;
+    await loadMessages(convId);
+  }
+
+  let groupTodosUnlisten: (() => void) | null = null;
+  let groupTodosTimer: number | null = null;
+
+  /**
+   * 只订阅**本会话**的 `message-received`，让窗口里的任务随远端改动实时刷新
+   * （突发消息合并到 150ms 一次重拉）。返回取消函数。
+   */
+  async function watchGroupTodos(groupId: string): Promise<() => void> {
+    const convId = `group:${groupId}`;
+    groupTodosUnlisten?.();
+    const unlisten = await api.onMessageReceived((rec) => {
+      if (rec.conv_id !== convId) return;
+      if (groupTodosTimer !== null) window.clearTimeout(groupTodosTimer);
+      groupTodosTimer = window.setTimeout(() => {
+        groupTodosTimer = null;
+        void loadMessages(convId);
+      }, 150);
+    });
+    groupTodosUnlisten = unlisten;
+    return () => {
+      if (groupTodosTimer !== null) {
+        window.clearTimeout(groupTodosTimer);
+        groupTodosTimer = null;
+      }
+      unlisten();
+      groupTodosUnlisten = null;
+    };
+  }
+
   /** 统一发送（单聊/群聊）。乐观上屏：先显示 sending，invoke 成功后替换为真实记录。 */
   async function send(convId: string, content: string, kind: string): Promise<MessageRecord> {
     const myId = app.device?.device_id ?? "";
@@ -832,6 +926,34 @@ export const useChatStore = defineStore("chat", () => {
   async function publishAnnouncement(groupId: string, text: string) {
     const rec = await api.sendGroupAnnouncement(groupId, text);
     enqueueMessage(rec);
+    await refreshAnnouncements();
+  }
+
+  // ---------------- 群公告（会话列表 📢 标记的数据源） ----------------
+  // 为什么走一条专门的查询：会话列表要覆盖**全部**群，而 `chat.messages` 是 ~4 个会话的
+  // LRU 缓存 —— 从它折叠公告覆盖不了大多数群。后端 `list_active_group_announcements`
+  // 一条 SQL 全量折叠（公告 + 墓碑），前端缓存成 map。
+
+  /** 当前生效的群公告：key = group_id。 */
+  const activeAnnouncements = ref(new Map<string, { text: string; msgId: string }>());
+
+  /** 全量刷新（一条 SQL，代价低）。 */
+  async function refreshAnnouncements() {
+    try {
+      const list = await api.listActiveGroupAnnouncements();
+      const next = new Map<string, { text: string; msgId: string }>();
+      for (const a of list) next.set(a.groupId, { text: a.text, msgId: a.msgId });
+      activeAnnouncements.value = next;
+    } catch {
+      /* 拉取失败保持旧值（下一条公告事件会再触发刷新） */
+    }
+  }
+
+  /** 删除群公告（仅群主）：发墓碑 → 入 store（本端横幅即刻消失）→ 刷新标记。 */
+  async function deleteAnnouncement(groupId: string, annId: string) {
+    const rec = await api.deleteGroupAnnouncement(groupId, annId);
+    enqueueMessage(rec);
+    await refreshAnnouncements();
   }
 
   // ---------------- 群任务（Card kind，不在时间线上渲染，只在任务面板里折叠展示） ----------------
@@ -839,10 +961,17 @@ export const useChatStore = defineStore("chat", () => {
   // 事件不进 store 就折不出来 —— 界面要等下次重新拉全量（= 重进会话）才刷新
   // （与置顶/公告同一条理由）。
 
-  /** 新建一条群任务（任意成员）。 */
-  async function createTodo(groupId: string, title: string, assignees: string[]) {
-    const rec = await api.sendGroupTodo(groupId, title, assignees);
+  /** 新建一条群任务（任意成员）。description / images 可选。返回新建的消息记录（含 todo_id）。 */
+  async function createTodo(
+    groupId: string,
+    title: string,
+    assignees: string[],
+    description?: string,
+    images?: TodoImage[],
+  ): Promise<MessageRecord> {
+    const rec = await api.sendGroupTodo(groupId, title, assignees, description, images);
     enqueueMessage(rec);
+    return rec;
   }
 
   /**
@@ -854,14 +983,26 @@ export const useChatStore = defineStore("chat", () => {
    */
   async function updateTodo(
     groupId: string,
-    item: { todoId: string; title: string; assignees: string[]; status: string },
-    patch: Partial<{ title: string; assignees: string[]; status: string; deleted: boolean }> = {},
+    item: { todoId: string; title: string; assignees: string[]; status: string; description?: string; images?: TodoImage[] },
+    patch: Partial<{
+      title: string;
+      assignees: string[];
+      status: string;
+      deleted: boolean;
+      description: string;
+      images: TodoImage[];
+      /** 显式归档：`true` = 手动归档（完成之后）。不传 = 保留库中原值。 */
+      archived: boolean;
+    }> = {},
   ) {
     const rec = await api.updateGroupTodo(groupId, item.todoId, {
       title: patch.title ?? item.title,
       assignees: patch.assignees ?? item.assignees,
       status: patch.status ?? item.status,
       deleted: patch.deleted ?? false,
+      description: patch.description ?? item.description,
+      images: patch.images ?? item.images,
+      archived: patch.archived,
     });
     enqueueMessage(rec);
   }
@@ -1269,6 +1410,7 @@ export const useChatStore = defineStore("chat", () => {
       refreshTransfers(),
       refreshPeers(),
       refreshTopology(),
+      refreshAnnouncements(),
     ]);
     // 恢复上次打开的会话（若仍存在）。HIG State Restoration：重启后回到上次离开的地方。
     // 用 void 触发：不阻塞 init，也避免其异步失败拖垮启动。
@@ -1335,6 +1477,10 @@ export const useChatStore = defineStore("chat", () => {
       onMessage: (rec) => {
         enqueueMessage(rec);
         maybeNotify(rec);
+        // 公告发布/删除：刷新「会话列表 📢 标记」的数据源（一条 SQL 全量折叠，代价低）。
+        if (rec.kind === "announcement" || rec.kind === "announcement_delete") {
+          void refreshAnnouncements();
+        }
         if (rec.kind === "file" || rec.kind === "image") void refreshTransfers();
         // 正在看这个会话且窗口可见 → 自动已读并回执
         if (rec.sender_id !== myDeviceId.value && rec.conv_id === activeConv.value) {
@@ -1538,6 +1684,8 @@ export const useChatStore = defineStore("chat", () => {
     openConversation,
     loadMessages,
     loadMoreMessages,
+    loadGroupTodos,
+    watchGroupTodos,
     send,
     sendFriendRequest,
     respondRequest,
@@ -1548,6 +1696,9 @@ export const useChatStore = defineStore("chat", () => {
     recallMessage,
     pinMessage,
     publishAnnouncement,
+    deleteAnnouncement,
+    refreshAnnouncements,
+    activeAnnouncements,
     createTodo,
     updateTodo,
     createGroup,
