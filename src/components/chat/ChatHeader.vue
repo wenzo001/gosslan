@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import {
-  ArrowLeft,
+  ArrowUpCircle,
   Bluetooth,
   FolderOpen,
   ListChecks,
@@ -12,6 +12,7 @@ import {
   Smartphone,
   Users,
 } from "lucide-vue-next";
+import BackArrow from "@/components/ui/BackArrow.vue";
 import type { Conversation, LinkState } from "@/types";
 import { t } from "@/i18n";
 
@@ -22,6 +23,13 @@ defineProps<{
   memberCount: number;
   /** 单聊对方的设备类型（"desktop" / "mobile"，空串 = 未知/不显示）。 */
   deviceType?: string;
+  /**
+   * 对方 Gosslan 的线格式版本比本机高（INV-P24 的"可解释状态"）。
+   *
+   * 判定**不在这里做**：结论由后端 `protocol::peer_protocol_is_newer` 算好随好友记录带下来。
+   * 头部只放一个不抢戏的标记（说明在联系人详情里整句写），对方没报版本时一定是 false。
+   */
+  peerVersionNewer?: boolean;
   /** 会话当前链路（最近一条消息的链路 + 跳数）。单聊显示。 */
   linkState?: LinkState | null;
   /** 仅群主可改名。 */
@@ -71,7 +79,7 @@ function linkIcon(path: string, hop: number): { icon: string; label: string } {
         :title="t('chat.header.back')" :aria-label="t('chat.header.back')"
         @click="emit('back')"
       >
-        <ArrowLeft class="h-5 w-5" />
+        <BackArrow />
       </button>
       <span class="truncate text-[15px] font-medium leading-6" :title="conv?.name || t('chat.header.conversation')">{{ conv?.name || t("chat.header.conversation") }}<template v-if="isGroup && memberCount > 0"> ({{ memberCount }})</template></span>
       <span
@@ -82,6 +90,16 @@ function linkIcon(path: string, hop: number): { icon: string; label: string } {
       >
         <Smartphone v-if="deviceType === 'mobile'" class="h-4 w-4" />
         <Monitor v-else class="h-4 w-4" />
+      </span>
+      <!-- 对方版本比本机新：头部只给一个标记（完整说明在联系人详情），
+           真正看不懂的那条消息由 `UnsupportedKindBubble` 就地解释 —— 三处口径一致。 -->
+      <span
+        v-if="!isGroup && peerVersionNewer"
+        class="inline-flex shrink-0 items-center text-[var(--gosslan-warning-ink)]"
+        :title="t('peer.newerShort')"
+        :aria-label="t('peer.newerShort')"
+      >
+        <ArrowUpCircle class="h-4 w-4" />
       </span>
       <!-- 链路徽标只在**对方在线**时显示。
            用户 2026-09-12 反馈：「现在这个用户是离线的，但是聊天框后面居然有一个『桥接 1』

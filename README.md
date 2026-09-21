@@ -18,16 +18,16 @@
 ## 🤖 AI 开发必读（约束文档索引）
 
 > **任何 AI 编程助手在修改本项目代码前，必须先阅读以下文档。**
-> **当前目标：把 Gosslan 做成稳定、简单、可继续扩展的 LAN Chat（v1.0）。**
+> **当前目标：把 Gosslan 做成稳定、可达、可解释的去中心化 mesh 聊天与协作工具（v1.0）。**
 
 | 优先级 | 文档 | 内容 |
 |---|---|---|
-| **★★★ 必读** | [AI_RULES.md](AI_RULES.md) | **AI 工程宪法**（41 章）：核心不变量 INV-001~008、任务复杂度分级 L1/L2/L3、既有代码优先、协议/DB 规则、状态机、Bug 修复流程、冻结功能清单、Definition of Done |
-| **★★★ 必读** | [docs/acceptance/1.0-release.md](docs/acceptance/1.0-release.md) | **v1.0 验收标准**：P0/P1 验收清单、开发策略、必须运行的验证命令 |
+| **★★★ 必读** | [AI_RULES.md](AI_RULES.md) | **AI 工程宪法**：核心不变量 INV-001~008、任务复杂度分级 L1/L2/L3、既有代码优先、协议/DB 规则、**跨版本兼容（§12）**、状态机、Bug 修复流程、范围边界（§3 当前不做）、Definition of Done |
+| **★★★ 必读** | [docs/acceptance/1.0-release.md](docs/acceptance/1.0-release.md) | **v1.0 验收标准**：P0 地基 + mesh 本体清单（含跨版本降级）、禁止事项、必须运行的验证命令 |
 | **★★★ 必读** | [AI_PROJECT_HANDOFF.md](AI_PROJECT_HANDOFF.md) | **项目全景**：完整功能清单、架构与代码导读、E2EE 状态机、工程约定、测试口径 |
-| **★★ 参考** | [docs/protocol-invariants.md](docs/protocol-invariants.md) | **协议不变量明细**（INV-P01~P18）+ 必须覆盖的测试矩阵：改协议/网络核心前必读 |
+| **★★ 参考** | [docs/protocol-invariants.md](docs/protocol-invariants.md) | **协议不变量明细**（INV-P01~P24，含 INV-P24 跨版本优雅降级）+ 必须覆盖的测试矩阵：改协议/网络核心前必读 |
 | **★★ 参考** | [docs/AI_ENGINEERING_INDEX.md](docs/AI_ENGINEERING_INDEX.md) | 约束文档导航索引 + 文档与代码冲突时的处理规则 |
-| **★★ 参考** | [docs/adr/](docs/adr/) | **架构决策记录**：协议版本化、状态机边界、Rust/TS 契约、故障注入测试 |
+| **★★ 参考** | [docs/adr/](docs/adr/) | **架构决策记录**：协议版本化（ADR-0007，2026-09-20 Accepted）、状态机边界、Rust/TS 契约、多路径选路、BLE、中继授权、故障注入测试 |
 | **★★ 参考** | [CHANGELOG.md](CHANGELOG.md) | **版本历史**：每个版本改了什么、为什么改（含所有已修 bug 的根因） |
 | **★ 按需** | [docs/templates/BUG_FIX.md](docs/templates/BUG_FIX.md) | Bug 修复报告模板（复现 / 根因 / 影响 / 修复 / 回归） |
 | **★ 按需** | [docs/templates/ADR.md](docs/templates/ADR.md) | 新增架构决策记录模板 |
@@ -248,19 +248,33 @@ git push origin main && git push origin v1.0.1
 
 ## 🧪 测试
 
+### 统一验证入口（先看这个）
+
+```bash
+npm run verify        # 快速层：结构门禁 + 前端断言 + vue-tsc 类型检查，不碰 cargo（秒级）
+npm run verify:full   # 重门禁层：cargo fmt/clippy/test、Rust 清单、护栏非空转、Android 交叉编译
+```
+
+**默认跑快速层就够日常用**，但它**不等于"编得过"** —— 结束时脚本会列出没跑哪几项。
+改过 Rust 代码 / `Cargo.*` / 构建配置，提交前必须 `npm run verify:full`；
+发版或出包前再加 `-- --full`（123 条护栏逐条改坏验证）。
+CI（`verify.yml`）在任意分支每次 push 全跑，是这套分层的兜底。判据细节见 `AI_RULES.md` §37.1。
+
 ### 前端（node 内置测试运行器，零额外依赖，需 Node ≥ 22）
 
 ```bash
 npm test
 ```
 
-覆盖核心纯函数（共 22 个用例）：Gossip 消息去重合并、会话未读统计与排序、主题色派生、文件大小格式化、类名合成。
+覆盖核心纯函数与源码守卫（用例数会涨，以命令输出为准）：Gossip 消息去重合并、会话未读统计与排序、主题色派生、文件大小格式化、类名合成。
 
 ### 后端（Rust）
 
 ```bash
-cd src-tauri && cargo test
+cd src-tauri && cargo test --features bluetooth
 ```
+
+`--features bluetooth` **不能省**：漏了会有十余条 BLE 用例连同被测代码一起不编译，而测试仍然全绿。
 
 覆盖：E2EE 加解密（X25519 密钥交换 / Ed25519 签名 / ChaCha20-Poly1305）、Gossip 去重与信封签名校验、文件切片乱序重组、SQLite 存储层（好友/消息/离线队列/群组/**删除会话**）、协议 JSON 往返与 TCP 分帧。
 
@@ -327,16 +341,22 @@ cd src-tauri && cargo test
 
 ## 🧭 后续路线图（v1.0 之后规划，勿主动实现）
 
-> 以下方向**在 v1.0 正式版之后另行规划**（见 [AI_RULES.md](AI_RULES.md) 冻结功能清单与
-> [docs/acceptance/1.0-release.md](docs/acceptance/1.0-release.md)）。
+> 以下方向**在 v1.0 正式版之后另行规划**（范围边界见 [AI_RULES.md](AI_RULES.md) §3、
+> 验收口径见 [docs/acceptance/1.0-release.md](docs/acceptance/1.0-release.md)）。
 > 仅作为已评估过的扩展点记录，**不要因为看到这一节就去实现**。
+> 注意：蓝牙 / 跨网段 / 中继 / 群协作 **已经不在此列**（2026-09-20 更正，它们已是 v1.0 本体）；
+> 好友指纹安全码校验也从"冻结"改为已排期（见 `AI_RULES.md` §3 与 D 组队列），
+> 本节保留的是真正要往后放的东西。
 
 - **前向保密**：静态 X25519 派生长期密钥 → 升级 Noise XX 会话（`snow`），建链握手派生会话密钥
-- **好友指纹安全码 / QR 校验**：添加好友完成页当面核对指纹，防中间人
+- **好友指纹安全码 / QR 校验**：添加好友完成页当面核对指纹，防中间人 —— 已从"冻结"改为
+  **已排期**（安全加固队列），不属于本节意义上的远期项
 - **mDNS 第三发现通道**：覆盖跨子网 / 隔离广播域
-- **蓝牙无配对通道**：`transport/bluetooth.rs` 接口契约已就位（btleplug），需通用分片协议
+- ~~蓝牙无配对通道~~ —— **已实现**（ADR-0015：`transport/bluetooth.rs` + `ble_framing` 通用分片，
+  三端已发布），留在路线图会误导 AI 以为还要"补分片协议"
 - **QUIC 切换**：`transport.rs` 的"分帧读写 + 建链"两原语可替换为 `quinn`，消息分发逻辑无需改动
-- **服务端中转**：JSON 帧协议天然可跑在 WebSocket 上，起一个轻量中继服务即可打通跨网段
+- **服务端中转**：⚠️ 与产品定位冲突（无服务器、无账号）。跨网段已由**节点互相中继**解决
+  （ADR-0016 中继授权）；本节仅记录"技术上 JSON 帧可跑 WebSocket"这一事实，不构成计划
 - **登录 / 账号体系（远期）**：当前用设备指纹识别用户，未来可在 `device_id` 之上叠加账号绑定，多设备同步
 
 ---

@@ -209,6 +209,22 @@ pub struct Peer {
     pub link: Option<String>,
 }
 
+/// 对端在 Hello 里声明的版本（`device_id -> 声明`）。
+///
+/// 只记录**声明值**，不做任何推断：老端不发这两个字段 ⇒ 两项都是 `None`，
+/// 面板上如实显示"未声明"（而不是替它猜一个版本）。
+///
+/// 为什么单独一张表而不是挂到 `Peer` 上：`Peer` 会被 UDP announce 反复重建，
+/// 而 announce 不带版本 —— 挂上去就会在每次广播后丢掉真值。
+/// 这张表只在**验签通过的 Hello** 里写入，回收点与 `peer_content_features` 同一个。
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct PeerVersion {
+    /// 对端线格式版本（`None` = 老端未声明 ⇒ 按最低版本处理）
+    pub protocol_version: Option<u32>,
+    /// 对端应用版本串，**只给人看**（不参与兼容判断）
+    pub app_version: Option<String>,
+}
+
 /// 一条已建立的 TCP 连接。
 ///
 /// `endpoint` 让连接可以按**端点**去重（同一 peer 的 LAN 与 Tailscale 是两条不同连接），
@@ -227,10 +243,14 @@ pub struct Link {
     /// LAN 路径（把 D5 的修复绕过去了）；② 选路时按最高优先级当成 LAN。
     /// 而 BLE 端点根本没有 IP，更无解。⇒ 路径类型必须由**来路**决定。
     pub path_kind: PathKind,
-    /// bulk 通道：大文件分片等，避免挤占聊天。
-    pub bulk: mpsc::Sender<Message>,
-    /// priority 通道：聊天 / 控制 / 心跳，避免被大文件分片饿死（INV-P20）。
-    pub priority: mpsc::Sender<Message>,
+    /// 三级发送通道：High（控制帧，必须立即）、Normal（聊天/FileOffer）、Low（bulk 文件分片/大头像）。
+    ///
+    /// 替代旧的 bulk + priority 两级。BLE writer_loop 在 Low bulk 写入过程中会周期性
+    /// yield 检查 High/Normal，避免 4KB FileChunk（273 片 MTU × 15ms = 4s）期间
+    /// 控制帧 / 聊天消息排队等待。
+    pub high: mpsc::Sender<Message>,
+    pub normal: mpsc::Sender<Message>,
+    pub low: mpsc::Sender<Message>,
     /// **本连接**的取消信号（M3#6 死链路拆除用）。
     ///
     /// 为什么需要它：全局 `shutdown` 只能整体停网，无法单独断开一条僵尸连接。
@@ -336,6 +356,16 @@ pub struct Friend {
     /// 设备类型（"desktop" / "mobile"，空串 = 未知）。从 peers 表现场读取。
     #[serde(default)]
     pub device_type: String,
+    /// 对端 Gosslan 的**应用版本**（如 `"4.22.34"`）。`None` = 还没连过，或对方是
+    /// 不报版本的老版本 —— 两者都不猜（见 `PeerVersion`）。只用于给人看。
+    #[serde(default)]
+    pub peer_app_version: Option<String>,
+    /// 对端**线格式版本比本机高** ⇒ 界面给一句可解释提示（INV-P24）。
+    ///
+    /// 判定只有一处：`protocol::peer_protocol_is_newer`。前端**不再自己比数字** ——
+    /// 那会把 `PROTOCOL_VERSION` 变成第二份真相源（本项目反复出事的形状）。
+    #[serde(default)]
+    pub peer_version_newer: bool,
     pub online: bool,
 }
 
@@ -491,6 +521,25 @@ pub struct DiscoveryDiag {
     pub candidates: Vec<InterfaceCandidate>,
     /// 蓝牙通道事实（独立于局域网，纯蓝牙用户也看得见自己的状态）
     pub bluetooth: BleDiag,
+    /// 本机线格式版本（与 `peer_versions` 同一屏对齐，跨版本排查先看这一行）
+    pub protocol_version: u32,
+    /// 本机应用版本（只给人看，不参与任何兼容判断）
+    pub app_version: String,
+    /// 各对端在 Hello 里声明的版本（按 device_id 排序）
+    pub peer_versions: Vec<PeerVersionDiag>,
+}
+
+/// 诊断面板的一行「对端声明了什么版本」。
+///
+/// 昵称在这里补而不是存进 `peer_versions`：那张表只记 Hello 那一次的声明，
+/// 而昵称会随 UserInfo 变 —— 面板要说的是"现在这是谁"。
+#[derive(Serialize, Clone, Debug)]
+pub struct PeerVersionDiag {
+    pub device_id: String,
+    pub nickname: String,
+    /// `None` = 对端是没报版本的老版本（面板显示"未声明"，不当成版本 0 也不当成版本 1）
+    pub protocol_version: Option<u32>,
+    pub app_version: Option<String>,
 }
 
 /// 网络拓扑摘要（供拓扑状态栏展示）
@@ -517,6 +566,18 @@ pub struct FileDoneInfo {
     pub name: String,
     pub size: u64,
     pub path: String,
+}
+
+/// 链路停滞状态变化（只在**状态翻转**时发一次，不是每 tick 都发）。
+///
+/// 为什么需要它：`send_on_link` 在对端不收时会一直挂在背压上 —— 既不再发进度也不报错，
+/// 界面就冻在同一个百分比最长到 deadline（1h）。用户需要知道"卡在网络上"而不是"软件死了"。
+/// `idle_ms` = 距最近一次真正写出分片的毫秒数（以 writer 实发为准，不是投进队列）。
+#[derive(Serialize, Clone, Debug)]
+pub struct FileStalledInfo {
+    pub transfer_id: String,
+    pub stalled: bool,
+    pub idle_ms: i64,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -566,6 +627,19 @@ pub struct GroupFileRecipient {
     /// 0.0 ~ 1.0，与 file_transfers.progress 同一表示
     pub progress: f64,
     pub updated_at: i64,
+}
+
+/// `file_wire_progress` 的值：**分块真的离开链路**的时刻与累计数。
+///
+/// 两个字段同一个写入点（`transport::mark_file_wire_progress`，TCP 与 BLE 的 writer
+/// 都在 `write_frame` 成功之后调它），所以"安静多久"与"路上走了几片"不会各说各话：
+/// `at_ms` 供停滞判定与 `FileCompleteAck` 等待使用，`chunks` 供发送进度换算。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FileWireProgress {
+    /// 最近一次有分块写出的时刻（ms）。0 = 从未写出过。
+    pub at_ms: i64,
+    /// 累计已写出的分块数（本次 transfer 计数，收尾时随记录一起清掉）。
+    pub chunks: u64,
 }
 
 /// 正在接收的文件状态
@@ -898,12 +972,15 @@ pub struct AppState {
     pub group_file_receivers: Mutex<HashMap<String, FileReceiver>>,
     /// 正在接收的文件：transfer_id -> FileReceiver
     pub file_receivers: Mutex<HashMap<String, FileReceiver>>,
-    /// **文件发送的"真的写出去了"进展**：transfer_id -> 最近一次有分块离开链路的时刻（ms）。
+    /// **文件发送的"真的写出去了"进展**：transfer_id -> `FileWireProgress`。
     ///
-    /// 用途：把 `FileCompleteAck` 的等待从"固定 30s 墙钟"改成"**安静** 30s 才算失败"
-    /// （见 `network/file.rs::wait_complete_ack`）。判据必须落在**写出**而不是"入队"上 ——
-    /// 队列能装 1024 帧，1MB 文件会在 1 秒内全部入队，而链路上要跑几分钟。
-    pub file_wire_progress: Mutex<HashMap<String, i64>>,
+    /// 两个用途，判据都必须落在**写出**而不是"入队"上 —— 队列能装 1024 帧，1MB 文件会在
+    /// 1 秒内全部入队，而链路上要跑几分钟：
+    ///   ① 把 `FileCompleteAck` 的等待从"固定 30s 墙钟"改成"**安静** 30s 才算失败"
+    ///      （见 `network/file.rs::wait_complete_ack`）；
+    ///   ② 发送进度本身（v4.22.37）：进度条按已写出的分块数换算。旧口径直接拿"入队字节"
+    ///      当进度，于是 LAN 上最多 262MB 还在队列里时，界面已经显示 100%。
+    pub file_wire_progress: Mutex<HashMap<String, FileWireProgress>>,
     /// 等待共享目录树响应：request_id -> 应答通道
     pub pending_share_tree:
         Mutex<HashMap<String, tokio::sync::oneshot::Sender<Vec<crate::protocol::ShareEntry>>>>,
@@ -923,6 +1000,9 @@ pub struct AppState {
     /// 各对端在 Hello 里声明的内容能力位图（device_id -> bits）。**不参与签名**，
     /// 仅用于"能不能对它发 ContentRequest"；旧端不声明 ⇒ 默认 0 ⇒ 不发新帧（向后兼容）。
     pub peer_content_features: Mutex<HashMap<String, u32>>,
+    /// 各对端在 Hello 里声明的版本（device_id -> 声明）。**不参与签名**，当前只被诊断面板
+    /// 与"忽略未知帧"的降级日志读（INV-P24：对端版本更高必须可解释）。
+    pub peer_versions: Mutex<HashMap<String, PeerVersion>>,
     /// 按需探测触发：值递增 → 发现任务立即群发一次 `who_has`（好友搜索用）
     pub probe: Mutex<Option<watch::Sender<u64>>>,
 
@@ -958,6 +1038,18 @@ impl AppState {
         };
         let db_path = app_data.join(db_name);
         let conn = db::init(&db_path)?;
+
+        // 🟦 崩溃恢复：把所有 sending 状态的 file_outbox 重置回 pending。
+        // 进程可能在 mark sending 后、delete 前崩溃 —— 这些条目会永远卡在 sending，
+        // list_pending_file_outbox 只捞 pending 的，它们就被彻底遗忘了。
+        // 重置后下次 Hello 触发 flush_pending_files 会重新捞出来重试；
+        // 重复传输由对端的幂等 FileOffer 处理。
+        match crate::db::reset_sending_to_pending(&conn) {
+            Ok(n) if n > 0 => {
+                eprintln!("[gosslan] 崩溃恢复：{n} 条文件 outbox 从 sending 重置为 pending");
+            }
+            _ => {}
+        }
 
         // 运行日志：多开实例用独立文件（gosslan-1.log），避免测试实例互相覆盖。
         let log_stem = if instance > 0 {
@@ -1177,6 +1269,7 @@ impl AppState {
             network_generation: AtomicU64::new(0),
             peers_notify: Arc::new(Notify::new()),
             peer_content_features: Mutex::new(HashMap::new()),
+            peer_versions: Mutex::new(HashMap::new()),
             probe: Mutex::new(None),
             diag: Mutex::new(DiscoveryDiag::default()),
             app_active: AtomicBool::new(true),

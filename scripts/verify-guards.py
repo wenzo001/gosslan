@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import atexit
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -62,6 +63,65 @@ def read_source(path: Path) -> str:
     """
     with path.open("r", encoding="utf-8", newline="") as f:
         return f.read()
+
+
+def _list_includes(root_file: Path) -> list[Path]:
+    """递归解析根文件里的 `include!("...");` 指令，返回所有被包含的子模块路径。
+
+    物理拆分后 commands.rs / db.rs 只剩 include! 指令，但锚点可能藏在任何一层
+    子模块里（子模块里还可以 include 别的子模块 — Rust 的 include! 是递归的）。
+    本函数模拟 Rust 的解析行为，帮助定位锚点真正在的文件。
+    """
+    result: list[Path] = []
+    root_dir = root_file.parent
+
+    def _walk(p: Path) -> None:
+        src = read_source(p)
+        for m in re.finditer(r'include!\("([^"]+)"\);', src):
+            child = (p.parent / m.group(1)).resolve()
+            if child not in result:
+                result.append(child)
+                _walk(child)
+
+    _walk(root_file)
+    return result
+
+
+def _resolve_anchor_file(root_file: Path, anchor: str) -> Path:
+    """在根文件及其 include! 子模块树里，找到真正包含 anchor 的那个文件。
+
+    返回的是**应该被写回**的文件（不是根文件）。如果根文件本身有锚点就返回根文件；
+    否则遍历 include! 子模块。要求 anchor 在恰好一个文件里出现恰好一次。
+    """
+    # 先看根文件自己
+    root_text = read_source(root_file)
+    if anchor in root_text:
+        return root_file
+
+    # 再搜所有 include! 子模块
+    candidates = _list_includes(root_file)
+    hits: list[tuple[Path, int]] = []
+    for child in candidates:
+        try:
+            text = read_source(child)
+        except OSError:
+            continue
+        count = text.count(anchor)
+        if count > 0:
+            hits.append((child, count))
+
+    if not hits:
+        raise AssertionError(
+            f"注入锚点在 {root_file.name} 及其 {len(candidates)} 个 include! 子模块里"
+            f"**都找不到**：{anchor[:80]!r}"
+        )
+    if len(hits) > 1:
+        detail = ", ".join(f"{p.relative_to(root_file.parent.parent)}({c})" for p, c in hits)
+        raise AssertionError(
+            f"注入锚点在多个文件里都出现了：{detail} —— 请明确指定 file="
+            f"或加更长的锚点"
+        )
+    return hits[0][0]
 
 
 def write_source(path: Path, text: str) -> None:
@@ -151,6 +211,189 @@ CASES: list[Case] = [
         expect_fail_hint="get_settings",
         tags=["rust", "perf"],
     ),
+    Case(
+        name="开窗命令必须留在工作线程（Windows 同步建 WebView2 = 永久卡死）",
+        why="v4.22.2 为修 macOS 的 AppKit 线程问题，把 open_*_window 改成同步命令 —— "
+        "Win 端点「设置」立刻整个界面无响应、只能杀进程（用户 2026-09-20 真机）。"
+        "机制：同步命令在 wry 的 IPC 回调里**内联跑主线程**，而 Windows 建 WebView2 会在"
+        "调用线程里泵消息（tauri-runtime-wry：must be called from a separate thread,"
+        " otherwise the channel will introduce a deadlock）⇒ 与正在处理的 IPC 重入 ⇒ "
+        "AUX_WINDOW_CREATE_LOCK 同线程二次 lock（std Mutex 不可重入）= 永久自锁。"
+        "这条用例证明「把开窗命令改回同步」一定会被护栏拦下",
+        file=TAURI / "src" / "commands" / "logs.rs",
+        injections=[(
+            "#[tauri::command(async)]\npub fn open_settings_window(",
+            "#[tauri::command]\npub fn open_settings_window(",
+        )],
+        cmd=cargo("test", "--lib", "blocking_commands_run_off_the_main_thread"),
+        cwd=TAURI,
+        expect_fail_hint="创建窗口",
+        tags=["rust", "window", "deadlock"],
+    ),
+    # ---------------- 启动期：数据比本机新（v4.22.36）----------------
+    Case(
+        name="降级拒绝必须早于任何写操作（「数据未被修改」不许是谎话）",
+        why="拒绝降级这件事本身是对的，但判定曾经写在 run_migrations 里 = execute_batch(SCHEMA) "
+        "之后：那次 batch 虽是 CREATE TABLE IF NOT EXISTS，却确实写文件 ⇒ 弹窗里"
+        "「你的聊天记录没有被修改（迁移在写入任何数据之前就已中止）」成了假话，"
+        "而用户正是凭这句话判断「可以放心去装新版本」",
+        file=TAURI / "src" / "db.rs",
+        injections=[(
+            "        return Err(err);\n"
+            "    }\n"
+            "    conn.execute_batch(SCHEMA)?;",
+            "        conn.execute_batch(SCHEMA)?;\n"
+            "        return Err(err);\n"
+            "    }\n"
+            "    conn.execute_batch(SCHEMA)?;",
+        )],
+        cmd=cargo("test", "--lib", "downgrade_refusal_writes_nothing"),
+        cwd=TAURI,
+        expect_fail_hint="不许建任何表",
+        tags=["rust", "boot"],
+    ),
+    Case(
+        name="开机降级弹窗必须非阻塞（blocking_show 在主线程自锁）",
+        why="插件桌面实现是 app_handle.run_on_main_thread(...)（desktop.rs:222），而 setup "
+        "就跑在主线程上 ⇒ blocking_show 的 rx.recv() 钉住主线程、弹窗任务永远排不到 = "
+        "开机白屏死锁，与 v4.22.30 的 Windows 开窗卡死同一个形状。写错不会编译失败，"
+        "只会永远看不见那句提示，所以只能机器拦",
+        file=TAURI / "src" / "lib.rs",
+        injections=[(
+            "                            handle\n"
+            "                                .dialog()\n"
+            "                                .message(msg)\n"
+            "                                .title(\"Gosslan\")\n"
+            "                                .show(move |_| {\n"
+            "                                    // 用户点掉提示之后才退出（exit 走事件循环代理，跨线程安全）\n"
+            "                                    handle.exit(1);\n"
+            "                                });",
+            "                            if handle\n"
+            "                                .dialog()\n"
+            "                                .message(msg)\n"
+            "                                .title(\"Gosslan\")\n"
+            "                                .blocking_show()\n"
+            "                            {\n"
+            "                                std::process::exit(1);\n"
+            "                            }",
+        )],
+        cmd=cargo(
+            "test", "--lib", "boot_downgrade_refusal_is_typed_precedes_writes_and_non_blocking"
+        ),
+        cwd=TAURI,
+        expect_fail_hint="blocking_show",
+        tags=["rust", "boot", "deadlock"],
+    ),
+    Case(
+        name="发送进度不得退回按入队计数（262MB 还在队列里就 100%）",
+        why="send_on_link 返回成功只代表帧进了那条链路的 1024 槽 mpsc 队列，LAN 一片 256KB ⇒ "
+        "最多 262MB 还在排队时界面已经显示 100%（真机 600MB 就是这条）。v4.22.37 起进度按 "
+        "writer 记账的已写出片数换算；这条用例证明「把 file-progress 改回直接发入队量」一定被抓"
+        ,
+        file=TAURI / "src" / "network" / "file.rs",
+        injections=[(
+            "                    received: on_wire,",
+            "                    received: sent,",
+        )],
+        cmd=cargo("test", "--lib", "file_send_progress_counts_wire_not_queue"),
+        cwd=TAURI,
+        expect_fail_hint="file-progress",
+        tags=["rust", "file", "progress"],
+    ),
+    Case(
+        name="发送尝试必须装写出记账的回收守卫（否则失败重试退回入队口径）",
+        why="v4.22.37 的进度按 writer 记的 chunks 换算，而 stream_file 有十来处提前 return，"
+        "旧写法只在成功路径清一次 ⇒ 失败重试时读到上一轮残留的 chunks，进度又变回按入队算，"
+        "而且只在「发失败再重试」时才出现。v4.22.38 改成 WireLedger 的 Drop 统一回收。"
+        "单测只能证明 Drop 本身对，删掉这行装守卫的代码它照样绿 —— 所以必须机器钉接线",
+        file=TAURI / "src" / "network" / "file.rs",
+        injections=[(
+            "    let _wire_ledger = WireLedger {\n"
+            "        table: &state.file_wire_progress,\n"
+            "        transfer_id: transfer_id.to_string(),\n"
+            "    };",
+            "    let _ = &state.file_wire_progress;",
+        )],
+        cmd=cargo("test", "--lib", "file_send_progress_counts_wire_not_queue"),
+        cwd=TAURI,
+        expect_fail_hint="回收守卫",
+        tags=["rust", "file", "lifecycle"],
+    ),
+    # ---------------- INV-P24 第 4 条：发送侧门控 ----------------
+    Case(
+        name="1:1 发送路径必须真的问门控判据（不门控不许发）",
+        why="门控判据函数写得再对，发送点不调用它就等于没有门控 —— 而这条不是假想需求：\n"
+        "     MsgKind::Merge 是 V1 期间（9b26006）才加的，v4.8.2/v4.18.10/v4.20.0 三个已发布版本\n"
+        "     的 ChatMessage.kind 仍是枚举，收到 kind:merge 会**整帧丢掉**（v4.22.34 只修了我们\n"
+        "     这一侧），发送方 outbox 反复重投最后显示「发送失败」。这条用例证明「把发送点那行\n"
+        "     门控删掉」一定会被抓 —— 注入方式就是删掉那次调用（不是改成 if false，那仍然算调用）",
+        file=TAURI / "src" / "commands" / "chat.rs",
+        injections=[(
+            "        if !crate::protocol::kind_allowed_by_features(&kind, peer_features) {\n"
+            "            return Err(crate::protocol::kind_unsupported_hint(&kind));\n"
+            "        }",
+            "        let _ = (&kind, peer_features);",
+        )],
+        cmd=cargo("test", "--lib", "new_message_kinds_are_gated_at_the_send_path"),
+        cwd=TAURI,
+        expect_fail_hint="必须问门控判据",
+        tags=["rust", "protocol", "gating"],
+    ),
+    Case(
+        name="门控表里的能力位必须本机自己声明（否则功能把自己锁死）",
+        why="新增 kind 时登记了「对方需要什么能力」却忘了在 Hello 里声明同一个位 ⇒\n"
+        "     所有对端看起来都不支持 ⇒ 这个功能我们自己永远发不出去，而且是静默的。\n"
+        "     注入方式：把 CONTENT_FEATURE_MERGE 从本机广播的位图里摘掉",
+        file=TAURI / "src" / "protocol.rs",
+        injections=[(
+            "pub fn content_features() -> u32 {\n    CONTENT_FEATURE_PULL | CONTENT_FEATURE_MERGE\n}",
+            "pub fn content_features() -> u32 {\n    CONTENT_FEATURE_PULL\n}",
+        )],
+        cmd=cargo("test", "--lib", "every_gated_kind_is_advertised_by_us"),
+        cwd=TAURI,
+        expect_fail_hint="没声明",
+        tags=["rust", "protocol", "gating"],
+    ),
+    # ---------------- 门禁自己的分层自检 ----------------
+    Case(
+        name="门禁分层的自证不是装饰（漏归重门禁层必须当场红）",
+        why="verify.mjs 的快速层靠 `isHeavyStep` 按**名字/命令**判断哪一步会碰工具链，"
+        "旁边另有一条自证 `mayTouchToolchain`。两者判据不同正是重点：将来有人加一条 "
+        "`{cmd:\"bash\", name:\"某项检查\"}` 而名字没带关键词 ⇒ 它**悄悄落进快速层**，"
+        "表现是「快速层怎么突然三分钟」，没人会去查 —— 会让人想绕过的门禁等于没有门禁。\n"
+        "     ⚠️ 这条用例是补 v4.22.31 欠下的账：当时我用「注入一条 cmd:cargo 的步骤」"
+        "自证，那是**错的** —— cargo 步骤本来就被 isHeavyStep 归走，永远不会漏，"
+        "所以那次『通过』什么也没证明。真正的注入必须造出"
+        "「会碰工具链却没归层」的组合，也就是把一条 bash 步骤改名去掉关键词。\n"
+        "     跑的是 `--list`：自证在 listOnly 分支**之前**执行，所以既不编译也不跑测试，"
+        "秒级出结论，可以留在日常子集里",
+        file=ROOT / "scripts" / "verify.mjs",
+        injections=[(
+            '  name: "移动端编译门禁（Android）",',
+            '  name: "移动端检查（Android）",',
+        )],
+        cmd=["node", "scripts/verify.mjs", "--list"],
+        cwd=ROOT,
+        expect_fail_hint="分层自检失败",
+        tags=["gates", "frontend", "new-guards"],
+    ),
+    Case(
+        name="每个门禁步骤都必须声明 CI 归属（漏声明 = 这条门禁 CI 永远不跑）",
+        why="「跑哪些检查」以前在 verify.mjs 的步骤表与 verify.yml 的 run: 列表里**各写一份**，\n"
+        "     于是必然腐烂（verify.yml 头部那句「457 条前端断言 / 503 条 Rust 用例 / 93 条护栏」\n"
+        "     早就对不上实际）。单源化后 CI 只说跑哪个组，所以每个步骤必须声明 group；\n"
+        "     漏声明的静默后果比写错更糟：本地照跑、CI 从不跑，两边看都是绿的。\n"
+        "     注入：摘掉某一条的 group ⇒ --list 必须退出码 1",
+        file=ROOT / "scripts" / "verify.mjs",
+        injections=[(
+            '    group: "frontend",\n    name: "不变量例外守卫",',
+            '    name: "不变量例外守卫",',
+        )],
+        cmd=["node", "scripts/verify.mjs", "--list"],
+        cwd=ROOT,
+        expect_fail_hint="没声明 CI 归属",
+        tags=["gates", "frontend", "new-guards"],
+    ),
     # ---------------- 本地新增护栏（2026-09-14）----------------
 
     Case(
@@ -184,12 +427,14 @@ CASES: list[Case] = [
         tags=["rust", "new-guards"],
     ),
     Case(
-        name="大头像资料帧必须降到 bulk 通道（否则堵住优先通道）",
-        why="UserInfo 带大 avatar 时若不降级，会占满优先通道，聊天/好友请求几分钟才到",
-        file=TAURI / "src" / "network" / "transport.rs",
+        name="大头像资料帧必须降到 Low 队列（否则堵住优先通道）",
+        why="UserInfo 带大 avatar 时若不降级，会占满优先通道，聊天/好友请求几分钟才到。"
+            "分类表已从 is_bulk_message 收进 dispatch::message_priority（单一事实来源），"
+            "锚点随之搬到 dispatch.rs",
+        file=TAURI / "src" / "network" / "dispatch.rs",
         injections=[(
-            "Message::UserInfo { avatar: Some(a), .. } if a.len() > CONTROL_AVATAR_MAX_BYTES => true,",
-            "Message::UserInfo { .. } => false,",
+            "Message::UserInfo { avatar: Some(a), .. } if a.len() > CONTROL_AVATAR_MAX_BYTES => {\n            MessagePriority::Low\n        }",
+            "Message::UserInfo { avatar: Some(a), .. } if a.len() > CONTROL_AVATAR_MAX_BYTES => {\n            MessagePriority::Normal\n        }",
         )],
         cmd=cargo("test", "--lib", "bulk_messages_are_only_large_chunks"),
         cwd=TAURI,
@@ -477,7 +722,7 @@ CASES: list[Case] = [
         why="旧实现把『我不是群成员』直接 return 掉，位置在转发之前 ⇒ 非成员中继不转发群消息 ⇒ "
         "BLE-only 三点中继（手机—电脑—手机）里群聊永远不通，而同链路单聊正常。"
         "这类退化**不会让任何行为测试失败**，只能靠结构护栏盯住",
-        file=TAURI / "src" / "network" / "transport.rs",
+        file=TAURI / "src" / "network" / "transport" / "gossip.rs",
         injections=[(
             "    let group_consumable = group_envelope_consumable(\n",
             "    if matches!(env.kind, GossipKind::Group) && !env.group_members.is_empty() {\n"
@@ -518,6 +763,168 @@ CASES: list[Case] = [
         cwd=TAURI,
         expect_fail_hint="chunk_seq_rule",
         tags=["rust", "file"],
+    ),
+    Case(
+        name="文件分片流必须钉在单条链路上投递",
+        why="真机多文件并发：600MB 跑到 100% 报「文件分片顺序错误」。逐条 try_send 在队列满时"
+        "会 failover 到另一条独立 TCP 连接 ⇒ 同一串 seq 跨连接乱序，接收端追加写不 seek ⇒ 判死。"
+        "把分片改回 try_send 是「看起来更智能（会换路）」的退化，只有源码守卫拦得住",
+        file=TAURI / "src" / "network" / "file.rs",
+        injections=[(
+            "r = send_on_link(&link, &done) => {",
+            "r = try_send(state, peer_id, &done) => {",
+        )],
+        cmd=cargo(
+            "test",
+            "--lib",
+            "--features",
+            "bluetooth",
+            "ble_file_transfer_respects_link_limits",
+        ),
+        cwd=TAURI,
+        expect_fail_hint="FileDone 必须排在",
+        tags=["rust", "file", "transport"],
+    ),
+    Case(
+        name="分片等待期间必须做停滞检查",
+        why="对端不收时 send_on_link 一直挂在背压上，写在它之后的任何检查都得不到执行 ⇒ "
+        "界面冻在同一个百分比最长到 deadline（1h），用户只能猜是不是软件死了。"
+        "摘掉检查是**无声**的：功能测试全绿、进度条照走",
+        file=TAURI / "src" / "network" / "file.rs",
+        injections=[(
+            "|| stall_tick(state, transfer_id, stream_started_ms, &mut stalled_shown),",
+            "|| crate::network::transport::Tick::Wait,",
+        )],
+        cmd=cargo(
+            "test",
+            "--lib",
+            "--features",
+            "bluetooth",
+            "ble_file_transfer_respects_link_limits",
+        ),
+        cwd=TAURI,
+        expect_fail_hint="分片必须投到钉住的那条链路",
+        tags=["rust", "file", "reliability"],
+    ),
+    Case(
+        name="群文件 Offer 必须与分片同链路",
+        why="Offer=Normal、Chunk=Low，各自逐条选路。Normal 满时 failover 到另一条连接 ⇒ "
+        "分片先到（接收端还没密钥，静默丢弃）、Offer 后到 ⇒ 首个 seq 对不上 ⇒ 整条判死。"
+        "只钉分片不钉 Offer 比不钉更危险：分裂点是新造出来的",
+        file=TAURI / "src" / "commands" / "group_file_dispatch.rs",
+        injections=[(
+            "crate::network::transport::send_on_link(&link, &offer)",
+            "crate::network::transport::try_send(state, recipient, &offer)",
+        )],
+        cmd=cargo(
+            "test",
+            "--lib",
+            "--features",
+            "bluetooth",
+            "ble_file_transfer_respects_link_limits",
+        ),
+        cwd=TAURI,
+        expect_fail_hint="群文件的 Offer 与分片必须走同一条钉住的链路",
+        tags=["rust", "file", "transport"],
+    ),
+    Case(
+        name="文件气泡前不得做整文件扫描",
+        why="真机（Mac 发送端）点大文件后要「卡一会儿」才出现发送中气泡：建发送记录时整读文件"
+        "算 sha256。这类代码是「顺手把 cid 提前准备好」写回去的，代价挂在用户点击之后 ⇒ 必须钉死",
+        file=TAURI / "src" / "commands" / "files.rs",
+        injections=[(
+            '"sha256": "",',
+            '"sha256": file::sha256_file_hex(std::path::Path::new(path)).unwrap_or_default(),',
+        )],
+        cmd=cargo(
+            "test",
+            "--lib",
+            "--features",
+            "bluetooth",
+            "no_whole_file_scan_before_the_file_bubble",
+        ),
+        cwd=TAURI,
+        expect_fail_hint="建发送记录前不得整读文件",
+        tags=["rust", "file", "perf"],
+    ),
+    Case(
+        name="未知帧类型必须降级而不是拆链",
+        why="Message 是 #[serde(tag=\"type\")] 的内部枚举：不认识的 type 直接反序列化失败 ⇒ "
+        "io::Error ⇒ reader 退出 ⇒ 拆链。新版本只要上线一种新帧，老设备就不是「少收一条」而是"
+        "「跟这台设备连不上」。这条的行为是**什么都没发生**，没有任何测试会因为缺少它而失败",
+        file=TAURI / "src" / "network" / "transport" / "outbound.rs",
+        injections=[(
+            "decode_frame(&buf).map_err(",
+            "serde_json::from_slice(&buf).map_err(",
+        )],
+        cmd=cargo(
+            "test",
+            "--lib",
+            "--features",
+            "bluetooth",
+            "unknown_wire_frame_is_tolerated_after_auth",
+        ),
+        cwd=TAURI,
+        expect_fail_hint="数据面 read_frame 必须走 decode_frame",
+        tags=["rust", "protocol", "compat"],
+    ),
+    Case(
+        name="Hello 必须声明本机版本，且版本不得进签名材料",
+        why="「加两个可选字段」的全部价值就是让「谁版本高」可查：不声明 ⇒ INV-P24 的降级日志"
+        "和诊断面板永远只能写「未声明」，跨版本故障重新变回猜。反过来一旦这两个字段进了"
+        "Hello 签名材料，老端验签就会失败 ⇒「报版本」这件事自身变成破坏性变更。"
+        "两头都是「缺了没人报错」的行为，只能钉源码",
+        file=TAURI / "src" / "network" / "transport.rs",
+        injections=[(
+            "protocol_version: Some(crate::protocol::PROTOCOL_VERSION),",
+            "protocol_version: None,",
+        )],
+        cmd=cargo("test", "--lib", "peer_version_is_declared_not_signed_and_reclaimed"),
+        cwd=TAURI,
+        expect_fail_hint="本机 Hello 必须声明 PROTOCOL_VERSION",
+        tags=["rust", "protocol", "compat"],
+    ),
+    Case(
+        name="群文件取消登记必须按收件人分键",
+        why="群发是「每个成员一个投递任务、共用同一个 transfer_id」。单键时后注册的 insert "
+        "挤掉前一个任务的 Sender ⇒ 对方 oneshot 立刻 Err(RecvError)，被取消分支当成"
+        "「用户取消发送」⇒ N 个成员里只有最后一个发得完（真机三成员群必现，且报错原因是假的）",
+        file=TAURI / "src" / "commands" / "group_file_dispatch.rs",
+        injections=[(
+            "let cancel_key = file::file_cancel_key(transfer_id, recipient);",
+            "let cancel_key = transfer_id.to_string();",
+        )],
+        cmd=cargo(
+            "test",
+            "--lib",
+            "--features",
+            "bluetooth",
+            "group_file_cancel_registry_is_scoped_per_recipient",
+        ),
+        cwd=TAURI,
+        expect_fail_hint="群投递的取消登记必须带 recipient",
+        tags=["rust", "file", "group"],
+    ),
+    Case(
+        name="接收端分片判死必须回否定确认",
+        why="旧行为是「abort 了但谁也不告诉」⇒ 发送端把剩下的整份文件继续灌进一条已死的传输，"
+        "FileDone 无人应答 → 干等一个 FILE_ACK_IDLE → 判可重试 → 再整发 5 次。"
+        "真机形状：600MB 跑到 100% 两边都失败，中间几十分钟界面一直「发送中」",
+        file=TAURI / "src" / "network" / "transport.rs",
+        injections=[(
+            "if file::fail_receive(state, &transfer_id, peer_id, &e) {",
+            "if false {\n                        let _ = file::fail_receive(state, &transfer_id, peer_id, &e);",
+        )],
+        cmd=cargo(
+            "test",
+            "--lib",
+            "--features",
+            "bluetooth",
+            "receiver_abort_notifies_the_sender_inside_the_loop",
+        ),
+        cwd=TAURI,
+        expect_fail_hint="分片判死必须回 FileCompleteAck",
+        tags=["rust", "file", "reliability"],
     ),
     Case(
         name="BLE 离开 PoweredOn 必须摘掉全部订阅",
@@ -1186,13 +1593,13 @@ CASES: list[Case] = [
     Case(
         name="窗口单例（打开命令不得自己查窗口存在性）",
         why="连点两下会开出第二个窗口：`build()` 的重复 label 检查在 prepare 阶段，而窗口登记进 manager "
-        "是主线程创建完成之后 —— 并发调用会双双通过。必须统一走 ensure_aux_window（单例 + 串行）",
-        file=TAURI / "src" / "commands.rs",
+        "是主线程创建完成之后 —— 并发调用会双双通过。必须统一走 ensure_aux_window（单例 + 串行）。"
+        "2026-09-19 随 4.22.2 的 async→同步改造，锚点从 commands.rs 搬到 commands/logs.rs",
+        file=TAURI / "src" / "commands" / "logs.rs",
         injections=[
             (
-                "    let _ = ensure_aux_window(&app, crate::WINDOW_SETTINGS, geo, AUX_WINDOWS_RESIDENT, move || {",
-                "    let _ = app.get_webview_window(crate::WINDOW_SETTINGS);\n"
-                "    let _ = ensure_aux_window(&app, crate::WINDOW_SETTINGS, geo, AUX_WINDOWS_RESIDENT, move || {",
+                "    ensure_aux_window(\n        &app,\n        crate::WINDOW_SETTINGS,",
+                "    if app.get_webview_window(crate::WINDOW_SETTINGS).is_some() {\n        return Ok(());\n    }\n    ensure_aux_window(\n        &app,\n        crate::WINDOW_SETTINGS,",
             )
         ],
         cmd=cargo("test", "--lib", "aux_window_open_is_singleton_serialized_and_resident"),
@@ -2131,6 +2538,30 @@ def verify(case: Case) -> tuple[bool, str]:
     #: [(文件, [(原文, 替换), …])] —— 主文件 + 需要"同时改坏"的其它文件
     targets: list[tuple[Path, list[tuple[str, str]]]] = [(case.file, case.injections)]
     targets += [(p, [(old, new)]) for (p, old, new) in case.extra_injections]
+
+    # --- 注入前预处理：把每条 injection 解析到真正包含锚点的文件 ---
+    # 物理拆分后 commands.rs / db.rs 只剩 include! 指令，锚点可能在任何子模块里。
+    # 这里做一次"锚点→目标文件"的解析，后续所有操作都在正确的子模块上进行。
+    resolved_targets: list[tuple[Path, list[tuple[str, str]]]] = []
+    for root_path, injections in targets:
+        if not injections:
+            resolved_targets.append((root_path, injections))
+            continue
+        # 如果所有锚点都在同一个文件（根文件自己或某个子模块），保持原行为
+        all_same: Path | None = None
+        per_file: dict[Path, list[tuple[str, str]]] = {}
+        for old, new in injections:
+            try:
+                target = _resolve_anchor_file(root_path, old)
+            except AssertionError:
+                # 兼容：如果不是 commands.rs/db.rs 这类 include! 根，就当作普通文件
+                target = root_path
+            if target not in per_file:
+                per_file[target] = []
+            per_file[target].append((old, new))
+        resolved_targets.extend(per_file.items())
+    targets = resolved_targets
+
     originals = [(path, read_source(path)) for path, _ in targets]
     detail = ""
     try:

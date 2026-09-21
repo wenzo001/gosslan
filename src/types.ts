@@ -33,6 +33,17 @@ export interface Friend {
   nickname: string;
   avatar: string | null;
   device_type: string;
+  /**
+   * 对端 Gosslan 的应用版本（如 `"4.22.34"`）。缺省/`null` = 还没连过，**或对方是不报版本的
+   * 老版本** —— 两者都不猜（INV-P24）。只用于给人看，不参与兼容判断。
+   */
+  peer_app_version?: string | null;
+  /**
+   * 对端**线格式**版本比本机高 ⇒ 界面给一句可解释提示。
+   * 判定只在后端一处（`protocol::peer_protocol_is_newer`）；前端不许自己比数字，
+   * 否则 `PROTOCOL_VERSION` 就有了第二份真相源。未声明版本的老老实例一定是 false。
+   */
+  peer_version_newer?: boolean;
   online: boolean;
 }
 
@@ -206,6 +217,14 @@ export interface FileProgress {
   transfer_id: string;
   received: number;
   total: number;
+}
+
+/** 链路停滞状态翻转（与 Rust `state::FileStalledInfo` 同形）。
+ *  `idle_ms` 是距最近一次**真正写出**分片的毫秒数，不是投进队列的时间。 */
+export interface FileStalledInfo {
+  transfer_id: string;
+  stalled: boolean;
+  idle_ms: number;
 }
 
 export interface FileDoneInfo {
@@ -449,6 +468,21 @@ export interface DiscoveryDiag {
   last_announce_recv: number;
   candidates: InterfaceCandidate[];
   bluetooth: BleDiag;
+  /** 本机线格式版本（跨版本排查的基准行） */
+  protocol_version: number;
+  /** 本机应用版本，只给人看 */
+  app_version: string;
+  /** 各对端在 Hello 里声明的版本 */
+  peer_versions: PeerVersionDiag[];
+}
+
+/** 诊断面板的一行「对端声明了什么版本」（ADR-0007 决策 1）。 */
+export interface PeerVersionDiag {
+  device_id: string;
+  nickname: string;
+  /** null = 对端是没报版本的老版本，不当成 0 也不当成 1 */
+  protocol_version: number | null;
+  app_version: string | null;
 }
 
 // ---------------- 运行日志（「运行日志」页用） ----------------

@@ -1,6 +1,6 @@
 import type { Conversation, MessageRecord } from "@/types";
 import { MENTION_AFTER, MENTION_BEFORE, escapeRe } from "./linkify.ts";
-import { isSilentKind } from "./messageKinds.ts";
+import { isKnownKind, isSilentKind, UNSUPPORTED_KIND_LABEL } from "./messageKinds.ts";
 import { mergeSummary } from "./mergeCard.ts";
 
 /**
@@ -33,20 +33,52 @@ export function furthestStatus(status: string, ahead: string): string {
   return DELIVERY_ORDER.indexOf(ahead) > DELIVERY_ORDER.indexOf(status) ? ahead : status;
 }
 
+/** 媒体消息 `content` 里的本地落盘路径；解析失败按「无路径」处理。 */
+function mediaPathOf(content: string): string {
+  try {
+    const v = JSON.parse(content) as { path?: unknown };
+    return typeof v.path === "string" ? v.path : "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * 同一条媒体消息的两份记录，该以谁的 `content` 为准 —— **带 path 的那份优先**。
+ *
+ * 为什么不能一律"取新的"：群文件的 `path` 是**收完才回填**的（Offer 阶段先落库无 path
+ * 的内容，Done 时再 emit/UPDATE 一次带 path 的记录）。两条后到的记录都可能是"回填之前"
+ * 的形态：`loadMessages` 的 DB 快照、以及任何比它更早取数的 emit。一律取新 ⇒ 已回填的
+ * path 被冲掉，而 `useMessageFile` 在 `path` 为空时**根本不去请求预览** ⇒ 空白气泡。
+ * 真机形状：群里连发 9-10 张总有 1-2 张预览不出，单独发同一张必成功。
+ */
+export function pickMediaContent(
+  prev: MessageRecord | undefined,
+  incoming: MessageRecord,
+): string {
+  if (!prev) return incoming.content;
+  if (incoming.kind !== "file" && incoming.kind !== "image") return incoming.content;
+  if (mediaPathOf(incoming.content)) return incoming.content;
+  return mediaPathOf(prev.content) ? prev.content : incoming.content;
+}
+
 /**
  * 会话重查（getMessages）的快照可能取自「对方已读 / Ack 落库之前」，直接覆盖会把
  * 界面上已推进的状态退回「发送中」→ 合并时保留两者中更靠后的状态。
+ * 媒体行的 `path` 同理：回填后的记录不能被回填前的快照擦掉（见 `pickMediaContent`）。
  */
 export function preserveDeliveryStatus(
   fresh: MessageRecord[],
   local: MessageRecord[],
 ): MessageRecord[] {
   if (local.length === 0) return fresh;
-  const known = new Map(local.map((m) => [m.msg_id, m.status]));
+  const known = new Map(local.map((m) => [m.msg_id, m]));
   return fresh.map((m) => {
     const prev = known.get(m.msg_id);
-    const best = prev ? furthestStatus(m.status, prev) : m.status;
-    return best === m.status ? m : { ...m, status: best };
+    const best = prev ? furthestStatus(m.status, prev.status) : m.status;
+    const content = pickMediaContent(prev, m);
+    if (best === m.status && content === m.content) return m;
+    return { ...m, status: best, content };
   });
 }
 
@@ -158,7 +190,12 @@ export function previewText(rec: MessageRecord): string {
     case "recalled":
       return "[撤回]";
     case "pin":
-      return "[置顶]";    default:
+      return "[置顶]";
+    default:
+      // ⚠️ 表里**没有**的 kind（对端版本比本机新）绝不能原样截断 —— 那是"界面上出现一串
+      // JSON 字符串"的最后一环（INV-P24 第 2 条）。判据与文案都与 Rust `preview_text` 同源，
+      // 由 `messageKinds.test.ts` 机器比对。已知但无专门文案的（text / system）照旧截断。
+      if (!isKnownKind(rec.kind)) return UNSUPPORTED_KIND_LABEL;
       return rec.content.slice(0, 30);
   }
 }

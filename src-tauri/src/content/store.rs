@@ -34,7 +34,8 @@ pub fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
          CREATE INDEX IF NOT EXISTS idx_content_transfers_status
             ON content_transfers(status);",
     )?;
-    // 迁移：早期 content_transfers 没有 transfer_id（断点续传要按它找 <tid>.part）。
+    // 防御性迁移：早期 content_transfers 可能没有 transfer_id 列
+    // （断点续传要按它找 <tid>.part）。CREATE TABLE IF NOT EXISTS 不会自动补列。
     let has_tid: bool = conn
         .prepare("SELECT COUNT(*) FROM pragma_table_info('content_transfers') WHERE name = 'transfer_id'")
         .and_then(|mut s| s.query_row([], |r| r.get::<_, i64>(0)))
@@ -84,7 +85,10 @@ pub fn upsert(conn: &Connection, rec: &TransferRecord) -> rusqlite::Result<()> {
             size = excluded.size,
             status = excluded.status,
             received = MAX(content_transfers.received, excluded.received),
-            attempts = excluded.attempts,
+            -- 自审必改#1（4.22.1 接线不完整）：receive 起点的 upsert 一律带 attempts=0，
+            -- 直接覆盖会把已累计的重试次数**压回 0** —— 封顶永不触发。计数语义是
+            -- 「这条内容对这个 peer 试过几次」，只增不减；新传输要清计数请删行重建。
+            attempts = MAX(content_transfers.attempts, excluded.attempts),
             next_attempt_at = excluded.next_attempt_at,
             last_error = excluded.last_error,
             path = COALESCE(excluded.path, content_transfers.path),
@@ -289,6 +293,62 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         ensure_schema(&conn).unwrap();
         conn
+    }
+
+    /// 自审必改#1 回归：起点 upsert 带 attempts=0 **不得**抹掉已累计的重试次数。
+    #[test]
+    fn upsert_never_walks_attempts_backwards() {
+        let conn = mem();
+        let mut r = rec("c1", TransferStatus::Incomplete, 0);
+        r.attempts = 5;
+        upsert(&conn, &r).unwrap();
+        r.attempts = 0; // receive 起点的常规写法
+        r.status = TransferStatus::Active;
+        upsert(&conn, &r).unwrap();
+        assert_eq!(
+            get(&conn, "c1", "peer-a", Direction::Receive)
+                .unwrap()
+                .unwrap()
+                .attempts,
+            5
+        );
+    }
+
+    /// 无人应答的重试链必须封顶：8 次 record_failure 后收口 Rejected，
+    /// 并从「可恢复列表」里消失（对端重装/文件已删不再无限重发）。
+    #[test]
+    fn unanswered_retries_reach_cap_and_stop() {
+        let conn = mem();
+        let r = rec("c2", TransferStatus::Incomplete, 0);
+        upsert(&conn, &r).unwrap();
+        let mut now = 1_000i64;
+        for i in 0..policy::MAX_CONTENT_RETRIES {
+            let updated = record_failure(
+                &conn,
+                "c2",
+                "peer-a",
+                Direction::Receive,
+                FailReason::Timeout,
+                now,
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(updated.attempts, i + 1);
+            now += 120_000;
+        }
+        let final_rec = get(&conn, "c2", "peer-a", Direction::Receive)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            final_rec.status,
+            TransferStatus::Rejected,
+            "到封顶必须收口终态"
+        );
+        let resumable = list_resumable_for_peer(&conn, "peer-a").unwrap();
+        assert!(
+            resumable.iter().all(|x| x.cid != "c2"),
+            "Rejected 行不得再被建链重试捞出（旧缺陷：计数被起点 upsert 压回 0 ⇒ 永远打不到封顶）"
+        );
     }
 
     fn rec(cid: &str, status: TransferStatus, received: u64) -> TransferRecord {

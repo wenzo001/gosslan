@@ -10,6 +10,1401 @@
 
 ## [Unreleased]
 
+## [4.22.41] - 2026-09-21
+
+### Changed (门禁"跑哪些检查"收成一份：步骤表加 CI 归属，CI 只需说跑哪一组)
+
+`verify.mjs` 头部第 28 行一直写着"这个脚本让 **CI、发布脚本、本地开发跑同一套**"——
+这句是**愿望被当成事实**：CI 用的是 `.github/workflows/verify.yml` 里另一份手写的 `run:`
+列表，两边各自维护。腐烂已经发生并且看得见：verify.yml 头部那句
+「457 条前端断言 + 503 条 Rust 用例 + 93 条非空转护栏」早就不对了（Rust 用例现在 596 条），
+而 `verify.mjs` 自己也有一份同类数字（"505 条用例"、"457 条前端断言"）。
+两个清单 + 两份腐烂的计数，就是 #33① 说的"漂过两次"。
+
+**这一步（A）只做本地侧，CI 一行不动**（CI 是其余所有工作的安全网，不能顺手改）：
+
+- 每个步骤多一列 `group: "frontend" | "rust" | "android"` —— 就是 CI 那个 job 的名字。
+  它是**步骤对象上的一列**，不是第二份清单，所以没有"两处不同步"这件事可言。
+- `group` 刻意**不从名字派生**：归属表达"哪台机器、带什么工具链跑"，与"快不快/要不要编译"
+  是两条正交的轴 —— 现成反例就在步骤表里：「护栏非空转（前端子集）」按分层是**重门禁层**
+  （全量子集要重编译 Rust 用例），但 CI 把它放在 **frontend job**。合成一个字段两头都判错。
+- 强制声明：漏写 `group` 时 `--list` 当场退出码 1。理由不是格式洁癖，而是漏声明的后果是
+  **这条门禁本地照跑、CI 永不跑，两边看都是绿的** —— 比写错更难发现。
+- `--group <名字>` 跑该组全部步骤，并且结束时**点名"不属于本组"的每一项**（组模式同样不许
+  用一片绿暗示"全套过了"）；组模式下跳过分层自检（那把尺子量的是快速层，量组模式会假红）。
+- 顺手把最终成功文案改成 mode-aware：`--group frontend` 跑完不再谎称"快速层门禁通过"。
+- 干掉 `verify.mjs` 里 4 处写死的条数（护栏/前端断言/Rust 用例/--full 说明），改成
+  "条数交给该步自己打印"。仓库里早有这句注释，只是没照做。
+
+**下一步（B，等你点头）**：把 verify.yml 的三个 job 换成
+`node scripts/verify.mjs --group frontend|rust|android`，环境准备（checkout `fetch-depth: 0`、
+`npm ci`、rust-toolchain/rust-cache、JDK+NDK、ci-run.sh 注解）全部留在 YAML —— 那些是
+"怎么准备机器"，不是"跑哪些检查"。这一步会动 CI 执行形态，而本机没法验证 Windows/Android
+两条腿，所以单独一个提交、单独一次确认。
+
+### 验证
+
+- 三组里两组**真跑过**（不只是 `--list`）：`--group frontend` 10 步 ✅ / 99.9s（正是 CI
+  frontend job 将来执行的命令）；`--group rust` 4 步 ✅ / 98.5s（fmt → clippy → 单测 → 清单守卫）。
+  android 组只核过选择正确（本机跑一次交叉编译要一分多钟，收益不抵时间）。
+- 默认路径没被改动碰坏：`npm run verify` 快速层 9 步 ✅ / 6.8s / EXIT=0。
+- 新护栏非空转实测：「每个步骤都必须声明 CI 归属」——摘掉某条的 `group` ⇒ `--list` 退出码 1，
+  恢复 ⇒ 0。
+- 组模式输出诚实：跑完点名"不属于本组"的每一项（frontend 组列 5 项、rust 组列 11 项），
+  并显示 `--group rust 那一组通过` 而不是"快速层门禁通过"。
+- **本轮 CI 一行未动**，所以不存在"改坏安全网"的风险；但也要说清：收益要到 B 落地才成立，
+  现在 `verify.yml` 那份 `run:` 列表已经是**多余的第二份**，只是这次多了强制声明做兜底。
+
+## [4.22.40] - 2026-09-21
+
+### Fixed (门禁分层的自证补上非空转验证 —— 顺便修正一次"证明过了"的假证据)
+
+v4.22.31 给 `verify` 分了两层，并在旁边加了一条自证：*快速层里不许出现"会碰 Rust 工具链、
+却没被归进重门禁层"的步骤*。当时我报告"这条自证验过非空转"，**那个证明是无效的**：
+注入方式是往步骤表里加一条 `cmd:"cargo"` 的步骤，而 `cargo` 步骤本来就会被 `isHeavyStep`
+归进重门禁层 ⇒ 它永远不可能"漏"，所以那次跑出来的"通过"什么也没证明。
+（当时的备用方案 —— 注入一条 bash 步骤 —— 被权限策略拦下，于是这件事就一直欠着。）
+
+真正能触发它的组合必须是"**会碰工具链** 且 **没被归层**"。所以注入改成：把
+`移动端编译门禁（Android）` 这条 `cmd:"bash"` 步骤**改名去掉关键词** —— 名字不再命中
+`isHeavyStep` 的关键词，而 `mayTouchToolchain` 仍认它是 bash ⇒ 它落进快速层，
+`npm run verify` 必须当场以退出码 1 红掉。已登记为 `verify-guards.py` 用例
+「门禁分层的自证不是装饰」，实测「改坏即 FAIL、恢复即 PASS」。
+
+顺手做的两个小选择，都是为了让它留在**日常**子集而不是发版前才跑：
+命令用 `node scripts/verify.mjs --list`（自证在 `listOnly` 分支**之前**执行，
+所以既不编译也不跑测试，秒级出结论），标签打 `["gates","frontend","new-guards"]`
+（`frontend` 让全量层的日常子集就覆盖到它）。
+
+同时改掉 `verify.mjs` 里那段说"本条自证尚未做过非空转验证"的注释 —— 它现在做过了，
+而一条写着"没验证"的注释会让人重新怀疑一个已经守住了的门禁；注释里也把那次无效注入
+记了下来，免得下次有人再用同一种假证自骗。
+
+**为什么这条值得单独一个版本**：它不影响功能，但它管的是"会不会有一天 `npm run verify`
+悄悄变成三分钟、于是大家开始绕过它"。本项目反复得到的教训是：**会让人想绕过的门禁
+等于没有门禁**，而"我以为它守住了"比"它没守住"更危险。
+
+### 验证
+
+- 新用例单独跑：`verify-guards.py --only "分层"` → 「改坏即 FAIL、恢复即 PASS」。
+- 日常子集整体跑：`verify-guards.py --only frontend` → **44 条全过**，新用例排在 `[1/44]`，
+  GUARDS_EXIT=0；跑完核对 `verify.mjs:263` 的步骤名已还原（护栏会改写源文件，
+  不核对就是把实验现场提交进仓库）。
+- `npm run verify` 快速层 9 步 ✅ / 6.8s / EXIT=0；`scripts/verify.mjs` 改的是注释，
+  分层判定逻辑未动 —— 而它正是被上面那条注入用例覆盖的对象。
+- **本轮没跑 `verify:full`**，理由是 §37.1 的口径：一行 Rust 都没改，重门禁层的
+  兜底是 CI（每次 push 全跑）。这是"按规则跳过"，不是"忘了跑"。
+- 基线仍 596（无新增 Rust 用例）。`Cargo.lock` 已同步到 4.22.40 ——
+  `version:patch` 不刷 lock 这个老坑今天照样要手动 `cargo check` 补一次。
+
+## [4.22.39] - 2026-09-21
+
+### Added (INV-P24 第 4 条「不门控不许发」落地 —— 而且它第一件事是修一个现存 bug)
+
+协议不变量里最后开着的第 4 条要求"第一个新帧上线前必须先补门控"。听起来是给假想需求
+修基础设施，但 RCA 一查发现**它已经欠了一个真实现场**：
+
+`MsgKind::Merge`（合并转发卡片）是 V1 期间才加的（`9b26006`，最早随 v4.22.30 这条线发布），
+而 **v4.8.2 / v4.18.10 / v4.20.0 三个已发布版本里没有这个变体**。那些实例的
+`ChatMessage.kind` 仍是嵌套枚举 ⇒ 收到 `kind:"merge"` 时整帧解析失败被丢掉 ——
+v4.22.34 修的是**我们这一侧**的容忍，老版本里那个 bug 还在。用户侧的形状：
+发一份合并转发给老设备，对方毫无反应，我方 outbox 反复重投，最后显示"发送失败"，
+两边都不知道为什么。ADR-0007 说"网里同时存在 4.18 的手机和 4.22 的 Mac 是当前现实"，
+说的就是这个。
+
+顺带得到一个必须记住的结论：**V1 内部并不单调**。`protocol_version` 是"破坏兼容才 +1"的
+兼容性判据，而 kind 是在 V1 里悄悄加的 ⇒ 版本号没变、能力却变了。所以门控**不能**用
+protocol_version 判，只能用能力位 —— 这也是"绝不用 app version 做兼容判断"那条规则
+唯一的例外补偿：能力由对端自己声明，不从版本号倒推。
+
+**改法（沿用仓库里已经跑通的那套 capability 协商，不造第二套）**：
+
+- `CONTENT_FEATURE_MERGE = 1 << 1`，本机 Hello 开始声明它。老端不看这个字段、
+  新端据此决定能不能对它发这类帧 —— 与 `CONTENT_FEATURE_PULL` 同一条通路，不进签名。
+- `kind_required_feature(kind)`：「哪个 kind 需要对端哪一点能力」**唯一映射表**。
+- `kind_allowed_by_features(kind, peer_features)`：**唯一判据**。对端从没交换过 Hello
+  或已离线 ⇒ 位图按 `0` 处理，即"不知道就当不支持"（宁可少发一条，也不要静默丢帧）。
+- 判据落在 `commands/chat.rs::send_message` 一处，位置在**公钥查找之前**：这条根本不会
+  发出去，不该再触发一次 who_has 探测白等 1.2 秒；自发消息（`insert_self_message`）分支
+  在门控**之前**返回，给自己发不会被判"对方版本不支持"。
+- 被挡下的文案由 `kind_unsupported_hint` 出（跟规则放一起），说清"对方版本较旧、
+  已停止发送、让对方升级后再发"。刻意**不写具体版本号**：能力位才是事实来源，
+  "多少版以上"写死就会腐烂；要看对方版本，联系人详情的「对方版本」那行有。
+
+**测试与护栏**：
+- `gated_kind_needs_the_peers_own_declaration`：`text` 对 0 位图放行 / `merge` 对 0 位图
+  拒绝 / 有对应位放行 / **只有别的位不算**（防"位图非零就放行"这种糊法）。
+- `every_gated_kind_is_advertised_by_us`：扫 `WIRE_KINDS`，凡登记了门控要求的 kind，
+  本机广播的能力位必须包含它 —— 防"加了门控忘了声明能力"把自己永久锁死（静默）。
+- 源守卫 `new_message_kinds_are_gated_at_the_send_path`：判据与映射表各只许一处、
+  `merge` 必须在表里、发送路径必须真的调用判据，且顺序满足"自发分支在前、公钥探测在后"。
+  接线断言是必需的：判据函数写得再对，发送点不调用 = 没有门控。
+- 两条 `verify-guards` 用例分别注入「删掉发送点那次调用」（**不是**改成 `if false`，
+  那仍然算调用，抓不出来）和「从本机能力位图里摘掉 MERGE」。
+
+**残留（已开 #37，不偷偷留口径）**：群聊发送口没门控（gossip fire-and-forget，老成员只是
+自己看不见，且离线成员能力未知，"全成员都支持才发"现在无法判定）；离线/未知对端按
+"不支持"处理的代价是发不出去，更好的形状是入队、等对方 Hello 到货在 flush outbox 时再判
+（那时才第一次真知道），但那要求 outbox 载荷可重建 —— 那条链路刚修过 P0，得独立取证再动。
+
+### 验证
+
+- `npm run verify:full` **15 步全绿 / EXIT=0 / 485.6s**（clippy `-D warnings` 0 告警、
+  Rust 单测含 examples、Android aarch64 0 warning、护栏前端子集全过）。
+- 两条新护栏非空转（`--only gating`，GUARDS_EXIT=0）：删掉发送点那次门控调用 ⇒ 守卫 FAIL、
+  恢复 ⇒ PASS；把 MERGE 位从本机广播里摘掉 ⇒ `every_gated_kind_is_advertised_by_us` FAIL、
+  恢复 ⇒ PASS。注入语料特意做成"**不是** `if false`"—— 后者仍然算一次调用，抓不出来。
+- 跑完逐字核对 `chat.rs` / `protocol.rs` 无注入残留（护栏工具会改写源文件再还原，
+  不核对就等于把别人的实验现场提交进仓库）。
+- macos 基线 593 → **596**（+3：判据两行为一条、"门控表与广播能力一致"一条、发送侧接线守卫一条）。
+- **真机才能验的一项**：手里还留着 v4.20.0 及更早安装包/ APK 的话，装一台当对端，
+  从新版本给它发合并转发 —— 期望从"对方静默收不到 + 我方发送失败"变成
+  我方立刻弹一句"对方的 Gosslan 版本较旧，不支持「merge」…"且不发出去。
+  这一条**没有做**：本机 `examples/e2e_peer.rs` 那个假对端广播的是本机自己的
+  `content_features()`，拿它当"老实例"是自证循环，不作证据。
+- 能力位从 Hello 落进 `peer_content_features` 这一段是**复用**既有通路（拉取能力今天
+  就走它），不是新代码；所以本单位没有为它另写测试，但也别当成"已验证过的老代码"——
+  它验证过的只是"能读到并缓存一个 u32"。
+
+## [4.22.38] - 2026-09-21
+
+### Fixed (写出记账随发送尝试一起回收 —— 上一轮进度修复的漏掉的那半)
+
+v4.22.37 把发送进度改成按 writer 记的 `chunks` 换算，但那张表的清理只写在
+`stream_file` 的**成功路径**末尾一处。而 `stream_file` 有十来处提前 `return Err(...)`
+（用户取消 / 链路已关闭 / 加密失败 / `?`），一条都没覆盖。
+
+后果不是内存，是**口径**：一次失败的发送会在 `file_wire_progress` 里留下上一次的 `chunks`，
+下一次重试同一文件（新 transfer_id 也一样会撞上"这张表从不回收"）时读到的计数比真实
+写出量大，于是进度又退回"按入队算"—— 正好把上一轮那条修复抹掉，而且现场只在
+"传失败 → 再重发"时才出现，最容易漏测。
+
+**改法**：`WireLedger` 一个持有表引用 + transfer_id 的 RAII 守卫，`Drop` 里删。
+`stream_file` 开头装一次，函数末尾那处手写清理删掉 —— 成功、取消、`?`、panic 展开
+走的是同一条回收路径，"什么时候删"这件事全仓只剩一处。
+
+顺手把 `clear_file_wire_progress(state, id)` 换成 `clear_file_wire_progress_in(table, id)`：
+守卫持有的是表而不是 `AppState`，这样回收语义可以脱离 `AppState` 单测（见下）。
+
+### Tests
+
+- `wire_ledger_is_reclaimed_on_every_exit_path`：本地造一张表，跑两次"发送尝试"，
+  一次正常返回、一次**提前 return**，两次都断言表已空。
+- 源守卫 `file_send_progress_counts_wire_not_queue` 加了两条断言：`stream_file` 里必须
+  装 `WireLedger {`，且**不许再出现第二处** `clear_file_wire_progress`。
+  这两条是必须的 —— 只测 Drop 本身的话，把 `stream_file` 里装守卫那行删掉，Drop 测试
+  照样全绿（它测的是辅助类型，不是接线）。为此另登记一条 `verify-guards` 用例，
+  注入方式就是"删掉装守卫那行"。
+
+### 边界（说清没做什么，已并入 #35）
+
+群发路径**没有**一起改。原因不是省事：`commands/group_file_dispatch.rs:66-71` 写明群发是
+"每个成员各 spawn 一个任务、**共用同一个 transfer_id**"（cancel 键为此专门带了 recipient），
+所以这张只按 transfer_id 记的表里的 `chunks` 是 N 个成员的**总和** —— 既不能拿来算单个成员
+的进度，也不能由任何一个成员先结束时清理。而且不能简单换成"按 writer 所在连接的 peer_id 记"：
+Routed 链路上 writer 的 peer 是中继而非目的地，两个走同一中继的成员还是会撞。
+要修得先定一个能从发送任务传到 writer 再传回的稳定身份（帧里带 per-recipient attempt id），
+那属于协议面，按 INV-P24 的加字段路子走。中继发文件（`RelayChunk`）同理且更远 ——
+它是多邻居 fire-and-forget，"写给了谁"不唯一，进度口径要由邻居确认来定义。
+
+### 验证
+
+- `npm run verify:full` **15 步全绿 / EXIT=0 / 207.7s**（clippy `-D warnings` 0 告警、
+  Rust 单测含 examples、Android aarch64 0 warning）。
+- 非空转：`verify-guards.py --only "发送"` → 3 条（本轮新增的"装守卫那行被删掉"注入、
+  上一轮的"进度改回入队"注入，外加一条同名匹配的旧用例）全部
+  「改坏即 FAIL、恢复即 PASS」，GUARDS_EXIT=0；跑完确认 `file.rs` 已还原、无注入残留。
+- macos 基线 592 → **593**（新增 `wire_ledger_is_reclaimed_on_every_exit_path`）。
+- 真机证据：本轮**没有新增需要界面的验证** —— 修的是失败重试路径的内存表回收，
+  外部不可见。要现场看的话需要"发一个大文件 → 中途取消 → 重发同一个文件"，
+  观察点应是第二次的进度从一开始就按链路爬，而不是直接跳到接近完成。
+
+## [4.22.37] - 2026-09-21
+
+### Fixed (发送进度不再按"入队"计数 —— 262MB 还在队列里就显示 100% 的假象)
+
+用户报的形态是"文件跑到 100% 卡住/报失败"。根因不是进度条画错，是**进度这个数字量的
+不是同一件事**：`stream_file` 每灌完一片就 `sent += n`，而 `send_on_link` 返回成功只代表
+这一帧**进了那条链路的 mpsc 队列**（容量 1024，`transport.rs:1072`），不代表它写到了 socket 上。
+LAN 一片 256KB ⇒ 队列最多能囤 **1024 × 256KB ≈ 262MB**：文件比这大时，界面早就 100%，
+链路上其实还在跑几分钟。
+
+讽刺的是这件事我们早就知道 —— R7 为了把 `FileCompleteAck` 从"固定 30s 墙钟"改成"安静 30s
+才算失败"，专门加了 `file_wire_progress` 这张"真的写出去了"的表，注释里逐字写着
+「判据必须落在**写出**而不是"入队"上 —— 队列能装 1024 帧」。只是那份证据**只给了等确认用，
+没给进度用**。同一份事实两处口径不同，就是这一条。
+
+**改法（不加新机制，接在已有证据点上）**：
+
+- `file_wire_progress` 的值从裸 `i64` 时间戳变成 `FileWireProgress { at_ms, chunks }`；
+  唯一的写入点 `mark_file_wire_progress`（TCP 的 `writer_loop` 与 BLE 的写循环都在
+  `write_frame` 成功之后调它）在刷新时刻的同时**累加片数**。`file_wire_progress_at()`
+  语义不变，新增 `file_wire_chunks_at()`。
+- `stream_file` 的进度与 `file-progress` 事件改成读 `wire_progress_bytes(...)`：
+  `已写出片数 × 该片大小 + 续传前缀`，并**两处钳制** —— 不超过本机已入队量（计数器按
+  transfer_id 记，残留值不该把进度推超过实际读出来的字节），不超过 `size`（最后一片是
+  短片，按整片折算会算出 >100%）。
+- 终点没动：`progress = 1.0` 仍然只在收到对端 `FileCompleteAck` 之后写。所以现在的形状是
+  "进度条按链路爬 → 对端确认完成 → 才 100%"，而不是"早就 100% → 干等 → 可能报失败"。
+
+**没顺手改的（说清边界）**：中继发文件（`RelayChunk` 那条路径，`file.rs` 里另一处
+`received: sent`）仍是入队口径。它的"完成"由邻居的 ack 决定、且是 fire-and-forget 多邻居泛洪，
+把它一起改需要另设一次证据点 —— 不在这条修复的范围里，另开待办而不是顺手糊上去。
+群文件（`GroupFileChunk`）现在也共用同一个计数写入点，但其发送路径的进度还没换算，同样待后续。
+
+**测试**：`progress_counts_written_chunks_not_enqueued_bytes` 用纯函数覆盖 5 个形状
+（全队列入队但只写出 1 片、一片没写出、断点续传前缀、短片越界、计数器残留）。
+源守卫 `file_send_progress_counts_wire_not_queue` 钉三处必须同时成立（writer 累加、
+状态结构带 `chunks`、`stream_file` 用换算值且不得再出现 `received: sent`）；
+判据取**函数体**而非全文，因为 `received: sent` 在中继那条路径里是合法的，全文扫会误伤。
+
+**为什么不做成"读队列占用量倒推"**：`Sender::capacity()` 能给出队列里剩几帧，看起来更省事，
+但 Low 队列是 `FileChunk` / `GroupFileChunk` / `FileDone` / 大头像**共用**的 —— 用帧数推字节
+在多文件并发时必然算错（而这正是本条要修的场景）。计数必须由 writer 按 transfer_id 记。
+
+## 验证
+
+- `npm run verify:full` **15 步全绿 / EXIT=0 / 168.6s**（clippy `-D warnings` 0 告警、
+  Rust 单测含 examples、Android aarch64 54.9s 0 warning）。
+- 新护栏非空转：`verify-guards.py --only "发送进度"` → 「改坏即 FAIL、恢复即 PASS」通过。
+- macos 基线 590 → **592**（纯函数换算 1 条 + 源守卫 1 条）。
+- 换算本身是纯函数测试覆盖的（5 个形状含主症状"1024 片入队 / 1 片写出 ⇒ 262144 而不是
+  268MB"），所以"数字对不对"有机器证据。
+- **没有真机证据**：进度条按链路爬这个观感需要"大文件 + 慢链路"（BLE 或拥塞的 600MB）
+  才看得出来，本机自环复现不出队列积压。留给下次真机互传时顺带确认：现象应当是
+  "进度到不了 100% 直到对端确认完成"，而不是过去的"早就 100% 然后卡住"。
+
+## 顺带发现（不在本次修复里，已并入待办 #35）
+
+`file_wire_progress` 全仓**只有一个清理点**（`file.rs:937`，stream_file 成功路径）。于是
+群文件发送每片都写表却从不回收 ⇒ 每个群传输永久留一条记录（记时间戳时就有这个泄漏，
+现在多带一个 `chunks`）；`stream_file` 的 cancel / 链路失败等提前 return 同样不清。
+后者恰好是本次 `min(enqueued)` 钳制兜住的那种脏数据，所以**不影响正确性**，但表会一直长。
+
+## [4.22.36] - 2026-09-20
+
+### Fixed (数据比本机新时，"拒绝启动"终于说得清发生了什么 — AI_RULES §13 的落地补齐)
+
+用户诉求里那句「版本不支持应该提醒，而不是报错」在**本地数据**这一侧一直没做到：
+`db::init` 遇到 `user_version > DB_VERSION` 的行为是对的（拒绝降级、不删数据），
+但用户看到的效果是"窗口闪一下就没了"。三层叠加：
+
+1. 文案是英文技术串（`refusing to open (downgrade detected, ...)`），而且为了传出去
+   被硬塞进 `rusqlite::Error::InvalidParameterName` —— 一个语义完全不相干的变体；
+2. 这个错误从 `AppState::init` 冒到 Tauri 的 `setup`，`setup` 返回 Err 会被框架变成
+   `panic!("Failed to setup app: ...")`（tauri-2.11.5/src/app.rs:1424）；
+3. Windows 发布版是 `windows_subsystem = "windows"`（无控制台）⇒ panic 的 stderr 无处可去。
+
+于是"正确地拒绝"在用户端等于"无声崩溃"。AI_RULES §13 早就写了"拒绝必须给用户可读解释，
+不能只是一个错误"——规则在场，实现没跟上。
+
+**顺带修掉一个更隐蔽的问题**：降级判定原本在 `run_migrations` 里，而 `run_migrations`
+是在 `conn.execute_batch(SCHEMA)` **之后**才跑的。那句是 `CREATE TABLE IF NOT EXISTS`，
+对已有表无害，但它确实写文件 —— 也就是说旧代码一边宣称"你的数据没有被改动"，一边
+已经把本机这套 schema 的缺失表建进了一个**比本机更新**的库里。现在判定挪到
+`Connection::open` 之后的第一件事，并在 `migration_tests.rs` 里用
+「拒绝之后库里仍然一张表都没有」钉住位置（`downgrade_refusal_writes_nothing`）。
+
+**改法**：
+
+- `db::init` 的失败改成带类型的 `enum InitError { Downgrade { current }, Sqlite(..) }`
+  （`Display` 给单行技术描述写日志，`downgrade_message(current)` 给人看的那句话：两个版本号
+  都在场、承诺数据未被修改、说清该升级而不是删库）。**按类型分支而不是错误字符串**是刻意的 ——
+  协议层已经因为"按 `unknown variant` 前缀分类"吞过一整条消息（INV-P24 第 2 条，v4.22.34
+  才修掉），同一类判断不许再犯第二次。
+- `lib.rs` 的 `setup` 在启动失败处分类型识别降级，弹**原生非阻塞**对话框，用户点掉后
+  `exit(1)`；其余错误仍按原路返回。
+- 弹窗**只能是 `show`，不能是 `blocking_show`**：插件的桌面实现是
+  `run_on_main_thread(...)`（tauri-plugin-dialog-2.7.3/src/desktop.rs:222），而 `setup`
+  正跑在主线程上 ⇒ 阻塞版的 `rx.recv()` 会把主线程钉住，排在队列后面的弹窗任务永远
+  执行不到 —— 与 v4.22.30 刚修掉的 Windows 开窗卡死是**同一个形状**。所以提前
+  `return Ok(())` 让主线程回到事件循环，代价是不再 `manage(state)`（前端命令全部拿到
+  "state not found" 的 IPC 错误、界面停在空白）：比"半死的界面"诚实，且弹窗盖在上面。
+- 弹窗文案中英各一句不是敷衍：此刻数据库没打开，读不到用户的 `language` 偏好，
+  而这个弹窗必须在 webview 之外显示 —— 两种语言都给，而不是猜一种。
+
+**测试**（`db/migration_tests.rs`）：`migration_refuses_downgrade` 从 "is_err" 收紧成必须是
+`InitError::Downgrade { current: 99 }`；新增 `downgrade_refusal_writes_nothing`（上面那条
+位置红线）、`downgrade_message_says_who_is_old_and_what_to_do`（两个版本号 + "没有被修改" +
+"升级"必须在场，老英文串与 `InvalidParameterName` 必须不在场）。
+护栏源守卫 `boot_downgrade_refusal_is_typed_precedes_writes_and_non_blocking`
+判 ①唯一一处 ②按类型分支 ③非阻塞，两条 `verify-guards.py` 用例分别注入
+"判定挪到写入之后"和"改用 blocking_show"验证非空转。
+
+**自查后删掉的两处**（都是我自己多写的东西，记下来是因为"删测试"必须留痕）：
+
+1. `#[cfg(not(desktop))] { let _ = msg; return Err(e); }` 是**死分支** —— 桌面块不参与编译时
+   本来就落到外层 `return Err(e)`。移动端行为不变，少 5 行。
+2. 原本给 `InitError` 写了 `user_message(&self)`，带一条 `Sqlite` 分支返回"无法打开本地数据库"，
+   并配了一条测试断言"非降级错误不许套降级文案"。但那条分支在生产里**永远不会被显示**
+   （只有降级走弹窗）—— 为一段不会执行的路径写文案再写测试禁止误用，是绕了一圈的过度设计。
+   改成 `downgrade_message(current)` 只服务降级那一种，于是"把降级文案套到文件损坏上"
+   在类型上直接不成立。**随之删掉 `sqlite_errors_are_not_reported_as_downgrade` 这一条测试**
+   （它保护的对象已经不存在，不是改断言迁就实现），用例总数 591 → 590。
+
+**自己写出来才发现的两个坑**（都记在这里，因为它们是同两类反复出事的形状）：
+
+1. 守卫第一次跑就把自己判红了 —— 它在 `lib.rs` 里，而注释里写了 `blocking_show()`
+   这个 API 名。修法不是改注释措辞（那样散文一动守卫就瞎），而是判据只看代码行
+   （剥掉 `//` 开头行）**并且**只取 `#[cfg(test)]` 之前那段：否则正判据
+   （`.show(move |_|`）会先命中守卫自己的源码，变成"永远为真"的空转守卫 ——
+   这比判据太松更危险，因为它看起来是绿的。
+2. 移动端刻意**不**走弹窗（`#[cfg(desktop)]` 才弹）：那个时点原生对话框在 Android 上
+   显不显示，我在这里没有实测手段；而"提前 `return Ok(())` 但弹窗没出现"的后果是
+   永久白屏，比现在的"崩溃 + logcat 一行"更糟。所以移动端保持原行为，
+   由 `check-mobile.sh` 证明 `#[cfg(not(desktop))]` 那条分支编得过。
+
+## 验证
+
+- `npm run verify:full` **15 步全绿 / EXIT=0 / 376.7s**（这一轮跑了两遍：审查改动后的
+  最终代码重跑一遍才算数）：clippy `-D warnings` 0 告警、
+  `cargo test --features bluetooth`（examples 一并编）、Android aarch64 编译门禁 76.6s
+  通过（就是上面那条移动端分支的编译证据）。
+- 两条新护栏的**非空转**证据：`python3 -u scripts/verify-guards.py --only boot`
+  → 两条都是「改坏即 FAIL、恢复即 PASS」，EXIT=0。
+- macos 基线 587 → **590**：新增 3 条（`downgrade_refusal_writes_nothing` +
+  `downgrade_message_says_who_is_old_and_what_to_do` + 源守卫那 1 条），
+  另有 1 条老测试 `migration_refuses_downgrade` 从 "is_err" 收紧成判类型；
+  以及**删掉 1 条**（`sqlite_errors_are_not_reported_as_downgrade`，见上"自查后删掉的两处"）——
+  587 + 3 = 590 对得上，删的那条不是为了让谁变绿。
+- **真机确认（用户 2026-09-20 亲眼）**：起隔离实例 `gosslan-1.db`（`PRAGMA user_version = 99`，
+  不碰真实 `gosslan.db`）跑 release 二进制 ⇒ 屏幕上出现原生弹窗「本机 Gosslan 比这份数据旧，
+  无法打开…（中英各一段）」，点 OK 后进程干净退出；日志侧同时留下
+  `[gosslan-db] FATAL: DB user_version=99 > app DB_VERSION=8: …（未执行任何迁移）`。
+  这条路径**不再是"只能靠单元测试相信"的**。
+  边界要说清：**以上是 macOS**。Windows 走的是同一条 `#[cfg(desktop)]` 分支，但
+  Windows 的 WebView2/TaskDialog 行为差异已经坑过我们一次（v4.22.30 的开窗卡死），
+  所以"Windows 上这个弹窗也正常"**还没有证据** —— 下次在 Win 机上出包时顺手验一次
+  （同样用 `GOSSLAN_INSTANCE=1` + 一个 `user_version=99` 的 `gosslan-1.db`，不碰真库）。
+  移动端则是**刻意没做**（见上），保持今天的行为：崩溃 + logcat 一行。
+- ⚠️ 顺带记一个"看着像证据其实不是"的坑：插件桌面实现里 `ok=true` **同时**是
+  "用户点了 OK" 和 "弹窗根本没显示、结果被 default 掉了"两种情况（`desktop.rs:219`
+  把 `MessageDialogResult` 直接喂给回调，失败路径也走同一个值）。我一度根据"回调 2~6 秒就返回了"
+  判成弹窗没显示 —— 实际是人在键盘上点的。**回调返回不是显示证据，人眼才是**。
+  以后要机器判"弹窗到底有没有出现"，得换个可观测的面（窗口存在性/截图），别拿回调当证据。
+- 我这台 shell 的两条观测通道都被权限堵死，记下来免得下次再试：`screencapture` 报
+  `could not create image from display`（无屏幕录制权限），`System Events` 报
+  `-25211`（无辅助访问权限）—— 所以"截个图看弹窗"这种验证在这里做不了，只能请人看。
+- 顺带一个门禁自身的观测：上一版全量层 1067.3s 里"护栏非空转（前端子集）"占 594.2s，
+  本轮同一步只有 68.7s —— 差在**并行的 `tauri build` 抢 cargo 构建锁**。
+  期间一条用例还因为 `Command ... timed out after 900 seconds` 被判"不符合预期"，
+  而它其实什么都没做错。结论：护栏扫描的 900s 超时在"有人正在打包"时会误报，
+  这是门禁鲁棒性问题（已并入待办 #25/#33 一起处理，不在本轮偷偷改）。
+
+## [4.22.35] - 2026-09-20
+
+### Added (「对方版本较新」从诊断面板里的一条数据，变成用户看得见的状态 — INV-P24 第 2 条收尾)
+
+前两轮把机器侧的降级做完了（未知帧不拆链 → 版本互相上报 → 未知 kind 不显示裸 JSON），
+但**人看不到任何解释**：如果对方是 Gosslan 5.0，本机只会对每条新类型消息默默显示
+`[不支持的消息]` 占位 —— 用户既不知道该干什么，也不知道该催谁升级。
+V2 把版本数据收进了内存，这一轮才把它接到界面上。
+
+**改法**：判定收敛成**一个函数**，结论随好友记录下发。
+
+- `protocol::peer_protocol_is_newer(declared: Option<u32>) -> bool` 是全仓唯一的兼容判定处。
+  前端**不许自己比数字** —— 那样 `PROTOCOL_VERSION` 就有第二份真相源（TS 里那份常量迟早和
+  Rust 漂移，而本项目已经在这类"两处各写一份"的形状上反复出过事）。
+- `Friend` 多两个读时富化字段：`peer_app_version`（给人看的字符串）、
+  `peer_version_newer`（算好的结论）。`db/friends.rs` 给空值，`get_friends` 在锁外先快照
+  `peer_versions` 再填 —— 与 `device_type` 同一套「DB 存身份、内存存现场」的口径。
+- UI 两处：单聊头部一个不抢戏的向上箭头（整句说明在联系人详情），联系人详情一行
+  「对方版本 4.22.99 / 对方的 Gosslan 比本机新，部分新类型消息需升级本机后才能查看」。
+  三处口径一致：头部说"对方较新"、详情说"升级本机才能查看"、真正看不懂那条消息由
+  `UnsupportedKindBubble` 就地解释同一件事。
+
+**`None` 不猜**：老版本不声明 `protocol_version`，判 false。把"未知"当"更高"会在每个老实例
+好友上刷一排"对方版本较新"的假告警（而老实例才是现网常态）；当"更低"又会藏掉真实差异。
+所以老实例就是什么都不显示 —— 与诊断面板把老端如实显示成"未声明"、不替它猜版本号是同一个原则。
+同理，联系人详情的版本行只在"至少知道一件事"时才出现，两个字段都空就整行不显示，不糊一面"未知"。
+
+**测试**：`peer_protocol_newer_only_when_declared_higher` 覆盖 `None` / `Some(0)` /
+`Some(PROTOCOL_VERSION)` / `Some(+1)` 四种输入。其中 `Some(PROTOCOL_VERSION)` → false 是
+**防空转的关键一条**：判定若误写成 `>=`，其余三条照样全绿，而现网会变成满屏误报。
+本轮**没有加前端行为测试** —— 该判定的逻辑全在那个已被直接测过的 Rust 函数里，
+组件只是把布尔值渲染成一个标记；给组件加测试只能测到"mock 里我写的值渲染出来了"。
+
+验证：`npm run verify:full` **15 步全绿 / EXIT=0 / 1067.3s**（clippy 0 告警、Rust 单测
+含 examples、护栏非空转子集、Android 0 warning）；新用例已登记进 macos 基线
+（586→587，删除 0 条）。UI 侧**只做了类型与静态检查**（`npm run build` 通过），
+没有真机截图确认 —— 现网还没有比本机新的 Gosslan，那个箭头标记当前**无法在真机上被触发**，
+要等第一个 `PROTOCOL_VERSION` 提升的版本铺开才有端到端证据。
+
+## [4.22.34] - 2026-09-20
+
+### Fixed (对端发来的未知消息类型不再被整帧丢弃 — INV-P24 第 2 条的另一半)
+
+上一轮建好了"未知内容显示成占位"的兜底，但**单聊根本走不到那个兜底**：
+`ChatMessage.kind` 是 `MsgKind` 枚举，对端发 `kind:"sticker"` 时 serde 报
+`unknown variant` —— 而 `decode_frame` 只能看错误字符串的前缀，**分不清"未知帧类型"和
+"未知嵌套枚举值"**，于是整条 `chat_message` 被降级成 `Message::Unknown` 丢弃。
+后果不是"少一个占位"，而是**消息根本进不了库**：接收方什么都不知道（连"看不懂"都看不见），
+发送方拿不到 Ack ⇒ outbox 一直重投 ⇒ 最后显示「发送失败」。
+也就是说 V1 那条"未知帧不拆链"的降级，顺手把"未知 kind"也一起吃掉了。
+
+**改法**：`ChatMessage.kind` 在**线格式上**改成 `String`（JSON 完全不变，对端无感），
+接收侧原样入库，交给上一轮的 `isKnownKind` 兜底显示。
+
+- 发送侧词表不变：`commands::send_message` 仍先归一化成 `MsgKind` 再 `as_str()` 发出，
+  所以"本机不会发出乱码 kind"这条性质保留。
+- `open_direct_content` 不再 `kind.as_str()`，改为**原样透传**（此前它就是把枚举转回字符串，
+  现在少一次有损往返）。
+- 重发路径同样受益：`MsgKind::from_wire_str` 那种"不认识就当 text"的回落不再是正确性的前提
+  ——以前若真有一条未知 kind 的消息被重发，它会以 `text` 身份把 JSON 正文发给对方
+  （正是用户禁止的那个形态），现在这条路径不存在了。
+- 消息身份不受影响：`msg_id` 由发送方给出、kind **不参与**任何哈希（已逐处核实），
+  去重/Ack/排序口径不变。
+
+**判据测试**（`unknown_message_kind_still_decodes_as_a_chat_message`）：同一个未知值
+放在 `kind` 上必须还能解析（且原样保留、不回落 text），放在 `type` 上仍然必须是硬解析错误
+（那才是该降级成 Unknown 的场景）。第二条是对照，防整条测试空转。
+
+顺带修掉两处**会说谎的注释**：`MsgKind::Merge` 上方写着"帧的 kind 是编成这个枚举传的，
+漏了就回退成 text ⇒ 对方看到裸 JSON"——事实已变（漏登记的代价从"对方看到 JSON"
+降级为"本机发不出这种消息"）；`previewText`/`preview_text` 的跨语言契约说明同步。
+
+**INV-P24 第 2 条到此闭合**：单聊与群聊两条路径现在都会把未知 kind 送到
+`UnsupportedKindBubble`（上一轮只有群聊能走到）。
+
+验证：`npm run verify:full` **15 步全绿 / 367.8s / EXIT=0**（clippy 0 告警、
+`cargo test --features bluetooth` 含 examples、护栏非空转子集、Android 0 warning）；
+新用例已登记进 macos 基线（585→586，删除 0 条）。
+仍**没有真机证据**：现网还没有比本机新的 Gosslan，验证方式是单元测试 + 契约测试；
+端到端确认要等第一个新 kind 上线（可用 `examples/e2e_peer.rs` 发一条未知 kind）。
+
+## [4.22.33] - 2026-09-20
+
+### Fixed (本机不认识的消息类型不再显示成裸 JSON — INV-P24 第 2 条落地)
+
+用户诉求原话：「老设备和新设备聊天…不应该出现 json 字符串，要优雅降级」。V1/V2 解决了
+"连不上"和"谁知道对方是什么版本"，这一轮解决**看得懂的东西不许以 JSON 形式露出来**。
+
+**判据只有一个来源**：`protocol::is_known_kind()` / `utils/messageKinds.isKnownKind()`，
+即"查 `WIRE_KINDS` 表"。不能拿 `kind_class` / `kindClass` 代替 —— 它们对未知 kind **回落到
+Bubble**（那是故意的：宁可多显示一条，也不静默吞掉对端的新内容），用它判"认识不认识"会永远
+判成认识、兜底分支永不触发，而症状只是"少了一句占位"，没人会当 bug 报。这条区别由
+`messageKinds.test.ts` 反向对照钉住。
+
+覆盖到的每一层（缺一个就会在某个角落重新冒出 JSON）：
+
+| 站点 | 之前 | 现在 |
+|---|---|---|
+| 会话列表 / 系统通知（Rust `preview_text`） | `_ =>` 无条件截断正文 ⇒ JSON | 未知 kind ⇒「[不支持的消息]」；`text`/`system` 照旧透传 |
+| 同一件事的前端侧（`previewText`） | `default:` 截 30 字符 ⇒ JSON | 同一判据同一文案 |
+| 时间线气泡（`MessageItem` 的 `v-else`） | `{{ message.content }}` 原样上屏 | 新 `UnsupportedKindBubble`：可解释说明 + **主动展开**才给原文（附 `type:` 供诊断） |
+| 引用片段（`quoteSnippet`） | 落到"取前 40 字" | 占位文案 |
+| 搜索命中行（`ChatSearchDialog`） | `m.content` 直接 `v-html` | `cellText()` 判未知 |
+| 收藏列表（`rowTitle`/`rowSubtitle`） | 兜底成「文件」——给不认识的东西编身份 | 占位文案 + 空摘要 |
+| 虚拟列表高度（`messageHeight`） | 按载荷长度估 ⇒ 占位气泡下面一大片空白 | 未知 kind 走固定 `UNSUPPORTED_BUBBLE` |
+
+顺带修掉一条**现存的**错误：`preview_text` 以前不看 `display_kind`，于是 4.22.1 之前写坏的
+历史行（`kind="video"`）在会话列表里显示成载荷 JSON 前 30 字符。现在 Rust 侧先归一化再判，
+`video` → `[文件]`（既不是 JSON，也不是"不支持"）。
+
+补了一条**欠账很久的契约**：`protocol.rs` 里原本写着"前端 `previewText` 与本函数没有跨语言
+契约测试，改动时两处一起改" —— 靠自觉的两处一致迟早漂。现在 `messageKinds.test.ts` 直接读
+`protocol.rs` 比对 `WIRE_KINDS` 的 Bubble 清单与 `UNSUPPORTED_PREVIEW_LABEL` 字面量。
+
+**诚实的覆盖边界**：今天真正会走进这个兜底的只有**群聊**（gossip 载荷的 kind 本来就是 String，
+未知值能进库）与历史坏行；**单聊**的未知 kind 会在帧层就被 V1 的 Unknown 降级**整帧丢掉**
+（`ChatMessage.kind` 是嵌套枚举 ⇒ serde 报 unknown variant ⇒ 与"未知帧类型"无法区分），
+所以"单聊收到新类型消息显示占位"要等下一轮（任务 #27：kind 改回 String）。本轮先落兜底再放开
+入口，顺序不能反 —— 反过来做会让那条 JSON 立刻出现在会话列表里。
+
+测试：Rust `preview_text_hides_payload_for_unknown_kind`（含 text/system 透传与 video→[文件]
+两个**防空转对照**）、`only_is_known_kind_can_tell_unrecognized_apart`；前端
+`previewText：本机不认识的 kind 给占位而不是载荷`、契约测试两条新断言（Bubble 清单 + 占位文案
+字面量 + 表外必判未知）。`npm test` 491 全绿。
+
+## [4.22.32] - 2026-09-20
+
+### Fixed (上一轮门禁分层埋的一条静默空转 + 两处假数字 — code review 抓出)
+
+双轴自查（标准轴 / 规格轴）最近 5 个提交，查出 1 条真缺陷、3 处过时文案，全在门禁层：
+
+- **[真缺陷] `npm run verify -- --full` 会一条护栏都不跑还全绿。** 上一轮把护栏扫描归进重门禁层，
+  但 `--full` 只控制护栏**范围**、不拉起该层 ⇒ 沿用旧写法（`.github/workflows/verify.yml` 注释里
+  就还留着）的人实际只跑快速层 9 步，输出仍是一片绿。这正是本项目最忌讳的"没守却当作守到了"，
+  比慢严重得多。修法：`--full` **自动蕴含** `--full-gate`；CI 注释同步改成 `npm run verify:full -- --full`。
+  实测：`--full --list` = 15 步、默认 `--list` = 9 步。
+- **[假数字] 护栏步骤的 `why` 同时写着"97 条"和"前端子集十几秒"**：实际 123 条、135.7～168.4s。
+  改成不腐烂的措辞，条数与耗时交给 `verify-guards.py` 自己打印的 `[n/m]` 进度。
+- **[自证] 加了一条分层自检**：快速层里出现"会被识别为碰工具链（cargo / rustup / bash / python* /
+  args 含 `cargo*`）却没归进重门禁层"的步骤 ⇒ 当场退出码 1 并给出修法。
+  ⚠️ **诚实标注两处**：① 盲区是经 npm/npx 间接拉起工具链的步骤（文本判据看不见），那类漏判的后果
+  是"快速层变慢"（可见）而非"门禁被跳过"（安全方向）；② **本条自证还没做过非空转验证**——
+  想注入一条 bash 步骤证明它会红时，临时探针文件被权限策略拦下。第一次尝试也设计错了
+  （注入 `cmd:"cargo"` 的步骤会被 `isHeavyStep` 自己认出并过滤，测不出泄漏）。
+  后续按 `verify-guards.py` 的规矩登记成 CASES 用例补上（已进任务清单）。
+- **[规格轴记录，不改] 用户提的"并行"没有实现**，理由是 `clippy` 与 `cargo test` 抢同一个 target
+  锁、`cargo` 自身已吃满多核（实测 401% CPU），并行收益远小于"根本不编译"；分层已把 412s → 7.4s。
+- **[规格轴遗留，已排期] CI 的步骤清单仍是手抄一份**，且已与本文件漂移（它写护栏子集"约 1.5 分钟"，
+  实测 2.3 分钟）。收敛成"CI 调 `npm run verify`"是任务 E 既有条目，不该塞进这一轮。
+
+验证：`node --check` + 两种 `--list`（15 / 9 步符合预期）+ 快速层实跑 **9 步 7.2s ✅ EXIT=0**
+（自检在现存 15 步上不误伤）。本提交纯门禁/文案，不碰被测代码。
+
+## [4.22.31] - 2026-09-20
+
+### Chores (验证入口拆成两层：日常 7.4s，编译攒着跑或交给 CI)
+
+用户提的："一直在跑 verify 卡很久，能不能并行快点，又不影响稳定性"。**先量再改**，拆分后
+的账很清楚——慢的从来不是"检查"，是"编译"：
+
+| 一次全量 verify = 412s | 实测 |
+|---|---|
+| 真的在执行测试 | **5.1s**（583 条 Rust + 489 条前端） |
+| 冷编译测试产物（lib test + examples + bin） | 177s |
+| clippy 按 check profile 把同一个 crate **再编一遍** | 43s |
+| 护栏非空转扫描（每条改坏→跑→还原） | 168s |
+| 其余结构门禁 + 前端构建 | ~19s |
+
+**新契约**：
+
+- `npm run verify` = **快速层**（9 步，实测 **7.4s**）：6 个结构门禁（清单/不变量例外/BLE 常量/
+  领域图/领域依赖/Change Budget）+ CHANGELOG 结构 + `npm test` + `npm run build`
+  （vue-tsc 是前端**唯一**的类型门禁，且它不碰 cargo，所以留在快速层）。
+- `npm run verify:full` = 重门禁层（15 步，热缓存实测 **82s**）：再加 `cargo fmt`/clippy/
+  `cargo test --features bluetooth`/Rust 清单/护栏扫描/Android 交叉编译；`-- --full` 再把护栏
+  从前端子集扩到 123 条全量。
+- **默认语义变了，所以安全网写死在输出里**：快速层结束时逐条列出"本次未跑"的重门禁，并指向
+  `verify:full` 与 CI；结束行从"全部通过"改成"**快速层门禁**通过"。绝不让绿色被读成"编得过"。
+- 分层成立的前提（实测过，不是假设）：`verify.yml` 在**任意分支每次 push** 跑全套
+  （前端 job + Rust job × mac/win 矩阵 + Android job）。判据写进 `AI_RULES.md` §37.1：
+  文档/前端改动的日常 = 快速层；**改过 Rust/`Cargo.*`/构建配置 = 提交前必须 `verify:full`**；
+  发版/出包 = 再加 `-- --full`。
+
+**顺带修掉两个会在分层时咬人的细节**：
+- 快速层不再 `findPython()`，且"找不到 python 就硬失败"的判据收紧成**只在护栏真要跑时**才成立
+  —— 否则没装 python 的机器会因为一个跟护栏无关的快速检查直接红。
+- `dist/` 缺失的提示语原来写死"第 4 步会先构建前端"，分层后步序变了就是假信息；改成指步骤名。
+
+**刻意没做的两件事**（避免为了快换一个会漏判的门禁）：
+- 没按 diff 缩范围（"改了什么就只跑对应门禁"）：那需要一张"哪些改动必须跑哪些门禁"的判定表，
+  漏一格就是**静默少检查** —— 正是本项目反复出事故的那类形状。分层已经把 412s 降到 7.4s，
+  不值得再换一个会漏判的门禁。
+- 没改 `verify-guards.py` 的 mtime 还原（改坏→还原只回内容不回 mtime ⇒ 下一轮 cargo 白编译）：
+  收益真实但小，而它要动的是**信号安全的现场恢复路径**（`try/finally` + `atexit` + SIGINT），
+  写坏了会留下一个"被改坏"的工作区 —— 属于拿稳定性换秒数。留作后续单独一轮，动它必须连
+  "被打断后工作区仍然干净"一起验。
+
+验证：`node --check` + `npm run verify -- --list`（两层归属与"未跑清单"符合预期）+
+快速层实跑 **9 步 7.4s 全绿** + 重门禁层实跑 **14 步 82s 全绿**（含 Android 48.4s、
+clippy `-D warnings` 0 告警、`cargo test --features bluetooth` 含 examples）+
+最后一次带护栏全链路 `npm run verify:full` 复跑。文档同步 `AI_RULES.md` §37.1 与 README 测试章
+（README 里"共 22 个用例"这类会腐烂的数字换成"以命令输出为准"，并补上 `--features bluetooth`
+不可省的提醒）。
+
+## [4.22.30] - 2026-09-20
+
+### Fixed (Win 端点「设置」整个界面卡死、只能杀进程 — 开窗命令回到工作线程)
+
+**现象**（用户 2026-09-20 真机）：Windows 上点「设置」→ 整个窗口无响应，一直不恢复，只能杀进程。
+
+**根因**：`v4.22.2` 为修 macOS 的 `EXC_BAD_ACCESS`（AppKit 必须在主线程）把 4 个开窗命令从
+`async` 改成了**同步**。而同步命令在 Tauri 里是**在 wry 的 IPC 回调里内联跑主线程**的；
+Windows 上建 WebView2 会在**调用线程里泵消息**（`tauri-runtime-wry` 源码原话：
+"must be called from a separate thread, otherwise the channel will introduce a deadlock"）
+⇒ 主线程一边建窗一边泵消息 ⇒ 重入正在处理的 IPC ⇒ 第二次进 `ensure_aux_window` 时
+`AUX_WINDOW_CREATE_LOCK`（`std::sync::Mutex`，**不可重入**）由同一线程二次 `lock()` ⇒
+**永久自锁**，界面整体无响应。macOS 建窗不泵消息，所以只有 Windows 中招 —— 这也解释了
+为什么当初那个改法在 macOS 上"验证通过"却埋了雷。
+
+**改动**（回到工作线程 + 只把 AppKit 那几行投回主线程，两个平台的约束同时满足）：
+- 4 个 `open_*_window` 命令恢复 `#[tauri::command(async)]`：`build()` 只把创建**入队**到事件循环
+  并立刻返回（`proxy.send_event`），主线程不在任何 IPC 回调里 ⇒ 没有可重入的现场。
+- 新增 `decorate_aux_window(win, app)`：macOS 的 `set_closable` / `disable_shadow` 改由
+  `app.run_on_main_thread(...)` **只入队不等待**投回主线程；窗口创建（`CreateWindow`）与它同队列
+  且先入队 ⇒ AppKit 调用一定发生在窗口建出来之后。
+- 修掉那条**把 bug 引进来的注释**：原文写"`WebviewWindowBuilder::build()` 内部会把创建分派到
+  主线程、同步等返回，所以 async/同步对耗时没影响"—— 源码里 `send_user_message` 在工作线程上
+  是 `proxy.send_event`（**投完就返回，不等待**），"同步等返回"只发生在 **getter**
+  （`rx.recv()`）。注释已改成实测事实 + 后果，免得下一个人再照它改回去。
+- 护栏收口：`blocking_commands_run_off_the_main_thread` 的 4 条 `ALLOWED` 例外**全部撤掉**，
+  并新增一条独立判据「函数体里出现 `ensure_aux_window(` / `WebviewWindowBuilder::new(` 的命令
+  必须是 async」—— 光靠原有重资源标记抓不到它（开窗命令体里没有 `db::` 这类字样，db 访问都在
+  已 `try_lock` 的辅助函数里），而它恰恰最不能同步。`verify-guards.py` 新用例
+  「开窗命令必须留在工作线程」实跑：改回同步即 FAIL（提示"创建窗口"）、恢复即 PASS。
+
+**验证**：`blocking_commands_run_off_the_main_thread` 通过；`npm run verify` 全 15 步见下；
+macOS 侧需要用户本机冒烟一次（`open_log_window` / `open_settings_window` 各点一次，
+确认窗口正常出现、无阴影、⌘W 能关）—— 本环境跑不了 GUI（见 `AI_RULES` 的真机验证约定）。
+
+## [4.22.29] - 2026-09-20
+
+### Chores (Rust 用例基线补齐 78 条 — 门禁从"只盯老名字"变成真兜底)
+
+`check-test-manifest.mjs` 第 13 步拿 `src-tauri/test-baseline.macos.txt` 与实际
+`cargo test --features bluetooth --lib -- --list` 比对：**基线里的名字没跑就红**（防"模块没挂进
+mod.rs / 漏 `--features bluetooth` / `#[cfg]` 不满足"这类静默跳过）。它只盯"少了"，所以新增用例
+只会打印一条 `⚠ 待纳入` 就放过 —— 最近这一串修复攒下 **78 条**新用例，全都没进基线。
+
+- `--update` 后 macos 基线 505 → **583 条**，逐条核对：**删除 0 条**（`git diff` 里那 4 行 `-`
+  只是重新排序后的位移，`comm -23` 证实集合无缩减）。
+- 为什么值得单独一个提交：这 78 条现在才真正进入保护。它们没进基线期间，任何一条被悄悄改名、
+  被 `#[cfg]` 挡掉不再执行，第 13 步都不会报 —— 而它恰恰是本项目"门禁空转过"那类事故的解药。
+- windows 基线**没动**：基线按平台分开（`test-baseline.<os>.txt`），平台门控的用例集本来就不一样，
+  在 macos 上跑 `--update` 只会污染 windows 腿。windows 那 78 条要在 windows 上补齐
+  （或按 CI 的提示逐条核对），这不在本轮范围内，已记为待办。
+
+## [4.22.28] - 2026-09-20
+
+### Added (节点之间终于知道对方是什么版本 — ADR-0007 落地①后半)
+
+上一轮让老设备"看得懂新帧看不懂就跳过"，这一轮给它一个能解释"谁老"的依据：`Hello` 增加两个
+**可选**字段 `protocol_version` / `app_version`（`PROTOCOL_VERSION = 1`，本机应用版本取
+`CARGO_PKG_VERSION`）。老设备不发这两个字段 ⇒ 解成 `None`；新设备收到老设备**没听说过**的字段
+照样忽略 ⇒ **这一步不断现有互通**（这正是 ADR-0007 决策 1 与决策 3 的区别：决策 3 会断，所以
+必须等 ① 铺开）。
+
+- **不进签名材料**：`hello_signing_bytes` 一个字节都不变。进了签名材料就是"报版本"这件事本身
+  变成破坏性变更 —— 老端验签失败 ⇒ 连不上，比不报版本严重得多。
+- 两个字段分开用：`protocol_version` 是**兼容性判据**，`app_version` **只给人看**。绝不用应用
+  版本做兼容判断（`4.22.10` 与 `4.22.9` 线格式相同，字符串比较会凭空排出高低）。
+- 记录点只有一个：验签通过后 `handle_message` 的 `Hello` 分支写 `AppState::peer_versions`
+  —— TCP 与 BLE 建链后都把首帧交回这里，所以两条 transport 天然同一份事实，没有第二处写入。
+  不挂到 `Peer` 上：`Peer` 会被不带版本的 UDP announce 反复重建，挂上去每次广播后丢真值。
+  回收点与 `peer_content_features` 同一个（`sweep_peers`），否则长跑无界增长。
+- 立刻有消费者，不是"先存着"：**①** 未知帧降级日志从"倒推对方更新"变成写清
+  「对端声明（协议=? 应用=?）／本机协议=?」；**②** 隐藏诊断面板新增「版本互通」格
+  （本机版本 + 每个已知对端的声明，昵称现查 `peers`；老端如实显示"未声明"，不替它猜版本号；
+  对端协议比本机高时标红）。数据仍走 `get_discovery_diag` 一个命令 —— 面板"一次拿全、
+  不出现两份数据对不上"的既有纪律。
+- 刻意**没做**的：`MIN_PROTOCOL_VERSION`、版本区间协商、capability 位图。今天没有任何一条按版本
+  门控的消息，那些机制零调用点；它们该跟第一个需要门控的新帧一起出现。
+- 测试/守卫：`hello_version_fields_roundtrip_and_old_peer_declares_nothing`（新端往返 +
+  老格式 Hello 必须解析成 `None` + **未知字段必须被忽略**这条"不许 deny_unknown_fields"的哨兵）；
+  守卫 `peer_version_is_declared_not_signed_and_reclaimed`（签名材料不含版本字段 /
+  本机必须声明 / Hello 必须记录 / 面板必须读取 / 离线必须回收，5 条）；
+  `verify-guards.py` 新用例「Hello 必须声明本机版本」实跑改坏即 FAIL、恢复即 PASS。
+- 三个外部对端模拟器（`examples/{dual_link,mirror_dial,e2e_peer}.rs`）一并补上这两个字段，
+  并且**刻意留成 `None`**：它们模拟的就是网里现存的老实例，于是每次跑模拟器都在验证
+  "对端不声明版本"的降级路径。改这里的过程也暴露一个自查口径错误 —— 我只跑了
+  `cargo test --lib`，而 verify 第 12 步是不带 `--lib` 的 `cargo test`，**examples 只有后者看得见**，
+  所以第一次本地"全绿"是假的（三个 example 编译失败）。以后加协议字段一律用
+  `cargo check --all-targets` 或 `npm run verify` 兜底。
+- 文档：INV-P24 补「落地进度」块（哪几条已做、哪几条没做，别让下一个 AI 拿旧事实当现状），
+  测试矩阵补"老端 Hello 不带版本字段"一行；ADR-0007 记 ① 已完成 + 刻意不做的清单。
+
+## [4.22.27] - 2026-09-20
+
+### Fixed (未知帧类型降级为"忽略"，不再是"断链" — INV-P24 落地①)
+
+上一轮把跨版本降级写成约束（INV-P24 / ADR-0007 Accepted），这一轮落实它的第 ① 步，
+也是唯一一条"不做就会伤现有互通"的：
+
+`Message` 是 `#[serde(tag = "type")]` 的内部标签枚举，遇到不认识的 `type` 直接反序列化失败
+⇒ `read_frame` 返回 `io::Error(InvalidData)` ⇒ `reader_loop` 当连接错误处理 ⇒ **拆链**
+⇒ 重连后同一帧再拆。也就是说在新版本上线任何一种新帧之前，老设备的表现不是"少收一条消息"，
+而是**跟新设备连不上**。本项目无服务器、无强制升级通道，这个后果不能靠"整批升级"解决。
+
+- `transport/outbound.rs` 新增 `decode_frame(buf)`：未知 `type` ⇒ `Message::Unknown{wire_type}`
+  （只由解码产生，发送侧永不构造）；**已知 `type` 但字段畸形仍然报错** —— 那是我们自己的
+  bug，静默吞掉等于藏起协议错误（INV-005）。判定用 serde 自己的措辞（`unknown variant ...`），
+  **不维护第二份类型清单**（清单会漂移，本项目已有多次影子常量/影子表的教训）。
+- `handle_message` 加 `Message::Unknown` 分支：忽略 + `log_throttled("unknown_frame", 10s)` 的
+  警告日志（写明"本机版本低于对端，升级后可识别；链路保持"）。
+- **握手首帧刻意不降级**：`read_frame_preauth` 保持严格 —— 未认证的连接没有"看不懂就放过"的
+  理由；降级只给已建链的数据面用。
+- 测试 4 条：未知 type 降级 / 已知类型畸形仍报错（并断言报错原因不是 unknown variant，防止
+  降级判定吞太宽）/ 非帧字节仍报错 / 走真实 `read_frame` 的端到端降级（tokio duplex）。
+  另把 `protocol.rs` 里那条"未知 type 是硬解析错误"的旧测试**注释改正**：它过去把
+  "混版本会断链、必须整批升级"当契约钉，如今 serde 层事实不变（降级正是靠它判别），
+  但立场已指向 INV-P24；对照用例（已知变体必须能解析）保留，防空转。
+- 守卫 `unknown_wire_frame_is_tolerated_after_auth`（5 条断言，含"preauth 不得走 decode_frame"
+  这条反向断言）+ verify-guards 的"改坏必须 FAIL、恢复必须 PASS"用例（实跑通过）。
+- `ADR-0017` 里"不必再保证未知 type 不被断链"那句**标注为已被取代**并指向 INV-P24/ADR-0007：
+  不改掉它，下一个 AI 会拿它当依据把降级又删回去。
+
+验证：`cargo test --features bluetooth --lib` 581 全绿、clippy `-D warnings` 0 warning、
+Android aarch64 0 warning、新守卫用例非空转通过。
+覆盖边界：跨版本真机（老包收新帧）需要两个不同安装版本互发，属用户真机验收项。
+
+## [4.22.26] - 2026-09-20
+
+### Docs (跨版本兼容成为约束：INV-P24 + ADR-0007 落定 + 三节按现实重写)
+
+用户 2026-09-20 提出"版本不支持要提醒、不许报错、不许显示 JSON 字符串，全部功能都要优雅
+降级"，并把三项协议决策与产品边界文档的写作一并授权。落笔前先核实了四个事实：
+
+- 全仓 **没有任何** `protocol_version` / `app_version` 字段（只有本地 SQLite `user_version`）
+  ⇒ 节点之间无法知道对方是什么版本；
+- `Message` 是 `#[serde(tag = "type")]` 且**没有** `#[serde(other)]`；`read_frame` 把反序列化
+  失败转成 `io::Error(InvalidData)` ⇒ reader 当连接错误处理 ⇒ **拆链 + 重连再拆的死循环**。
+  也就是说今天上线一种新帧，老设备不是"看不懂这条"，而是**跟新设备连不上**；
+- `AI_RULES.md` §12 的前提"尚未发布、没有历史客户端需兼容"被仓库自身证伪：Releases 上有
+  `v4.8.2`(09-14) → `v4.20.0`(09-18) 带安装包与 sha256 的正式发布，且无强制升级通道；
+- `docs/adr/0007-protocol-versioning.md` 早已写好七条规则，但因上面那个假前提一直停在
+  Proposed —— 这是它没被实现的唯一原因。
+
+改动：
+
+- `docs/protocol-invariants.md` 新增 **INV-P24「版本不同必须降级，不许炸也不许装」**：
+  未知帧不得成为连接错误 / 未知内容不得成为裸 JSON / 新字段必须可缺省 / 新能力必须先协商
+  再用，外加"灰度顺序不可颠倒"与"对端更高 ⇒ 可解释状态、过低 ⇒ 明确拒绝并指出谁要升级"；
+  测试矩阵补三行。原 §24 测试矩阵顺延为 §25。
+- `ADR-0007` → **Accepted**，写进三项决策：① 上 `protocol_version`（兼容判据）+
+  `app_version`（只给人看，绝不用于兼容判断）——**加可选字段这一步不断老版本互通**；
+  ② 群文件半途重投**不加 epoch**，改为"部分完成的 transfer 不被重投复用"（重发产生新 id），
+  将来做群文件续传时再作为 capability 门控上线；③ HKDF 域分离/nonce **做，但按对端版本
+  分派、不硬切**，并强制每个 legacy 分支在 ADR 里写明退出条件。附落地顺序。
+- `AI_RULES.md`：§12 前提更正 + 规则从"不要写兼容层"改成"兼容性靠加法与门控获得"；
+  §12.1 变成三条硬门槛；§11 检查清单补两条（老版本看到什么 / 要不要 bump）；
+  §13 从"未发布所以随便改"改成"已发布包装着真实数据 ⇒ 能升不能毁、读侧对历史形态容错"；
+  §1/§2.2/§3 按 mesh 定位重写（旧 §3 把蓝牙/跨网段/中继/mesh 列为冻结，而代码早已发布它们
+  —— 约束与代码相反时每个新会话第一课就是"别做你正在做的事"，那是无效约束）。
+- 索引三处同步（README 文档表 + 路线图、`docs/AI_ENGINEERING_INDEX.md` 的 ADR 清单与
+  INV 范围）：顺手修掉路线图里两处会误导 AI 的过期条目（"蓝牙无配对通道待实现"其实已完成、
+  "服务端中转"与无服务器定位冲突）。
+
+不改代码 —— 本轮只把约束与决策定下来；实现（INV-P24 的 Unknown 兜底 + Hello 版本字段 +
+前端渲染兜底）按 ADR-0007 的顺序另起 commit。
+
+## [4.22.25] - 2026-09-20
+
+### Changed (transport.rs 分册第 2 步：Gossip 处理搬出主文件)
+
+`gossip.rs` 分册 903 行：`group_envelope_consumable`（只管消费不管转发的判据）、
+`gossip_trust_for_unpeer_sender`（信任判定，friends 锚）、`handle_gossip`（去重 / 消费 / 扇出）、
+`parse_gossip_payload`。同 `include!` 机制，运行时零差异。
+
+搬的时候暴露两个真问题，都当场修掉：
+
+1. **一段被错接的文档**：`transport.rs` 里 `group_envelope_consumable` 头上挂着 11 行
+   描述"多跳转发：把 MeshFrame 载荷还原成 GossipEnvelope"的文档 —— 那个函数早已不在这里，
+   文档留下来会让下一个人以为这个判据负责转发（恰恰是它**不管**的那件事）。随分册删除。
+2. **守卫的自匹配陷阱**（这是分册真正教回来的东西）：`handle_gossip_does_not_bail_out_for_non_members`
+   用 `src.find("async fn handle_gossip")` 取函数体，而**聚合文本里本测试自己那句字面量也算一次
+   命中**。以前主文件里"定义在前、测试在后"所以侥幸正确；分册后主文件排在分册前面，
+   `find` 先命中测试里那一串，body 于是包含下面那条 forbidden 字面量 ⇒ 守卫自证其罪地理应失败。
+   锚点改成"行首 + 带左括号"（`\nasync fn handle_gossip(`）才真正稳。
+   同形陷阱在另外两个守卫（`build_signed_hello` / `broadcast_presence`）上目前还不会触发
+   （定义在测试之前），等第 3 步搬握手时会撞上，届时同法处理。
+3. verify-guards 的那条锚点随函数搬到 `transport/gossip.rs`（改坏必须 FAIL 已重跑通过）；
+   领域图认领新文件（判据 D 又一次当场拦住）；`transport_src_for_guards()` 登记第三册。
+
+验证：`cargo test --features bluetooth --lib` 576 全绿、clippy `-D warnings` 无输出、
+领域图一致、被搬走的那条守卫非空转重跑通过。
+
+## [4.22.24] - 2026-09-20
+
+### Fixed (链路停滞成为可见状态 + 发送期限上限 2h→1h)
+
+钉链路 + 满则背压之后，剩下的诚实问题是：**对端活着但不收了**（安卓被挂后台、接收端
+磁盘/主线程卡住），`send_on_link` 会一直挂在 `tx.send()` 上 —— 既不再发进度也不报错，
+界面冻在同一个百分比，最长到 deadline（原来 2h）。用户只能猜"是不是软件死了"。
+这条是上一轮 review 指出、用户拍板的口径：保留不换路（换路必然乱序），但要**看得见**，
+并且别等到 2 小时。
+
+- 新增纯函数 `file::stall_verdict(idle_ms)` + 两个阈值：
+  `FILE_STALL_WARN_MS = 15s`（提醒）／`FILE_STALL_ABORT_MS = 60s`（放弃本次尝试）。
+  `idle_ms` 以 **writer 实发**为准（`mark_file_wire_progress` 那条既有链路），不是投进队列。
+  调用方负责用"本次尝试起点"做下界 —— 否则上一轮 attempt 留下的旧时间戳会让第一个 tick
+  就误判停滞（这个坑写在函数注释里，并用 `max(started_ms)` 兜住）。
+- `transport::send_on_link_with_tick`：等待期间每 5s 醒一次跑检查。摘掉它=无声退化，
+  所以守卫与 verify-guards 都钉住；单聊与群发共用同一个 `file::stall_tick`。
+  ⚠️ 这个写法的安全性是**实测**出来的，不是猜的：`timed_out_send_leaves_nothing_behind`
+  证明 `tx.send()` 的 future 被丢弃不会把消息留在队列里 ⇒ 超时后重发同一条不会造出
+  重复分片（重复分片在群接收端是致命的：严格 `seq != next_seq` 判死）。
+- 新事件 `file-stalled {transfer_id, stalled, idle_ms}`，**只在状态翻转时发**一次；
+  前端 `stalledTransfers` 单独存（不放 `transfers[]` 行上 —— `refreshTransfers()` 会整体
+  替换那个数组，行上的临时标记会被无声冲掉），气泡文案切到「网络停滞，等待恢复…」，
+  进度条保留不动。done/failed 一律收回提示。
+- 放弃时错误原因是 retryable 的「链路停滞」⇒ outbox 5s 后按对端真实已收字节续传，
+  最多 `MAX_FILE_OUTBOX_RETRIES` 次才置失败。进度条不再"自己走完"，停在真实位置。
+- `send_deadline_for` 上限 2h → **1h**（停滞判定接管了"对端不收"这件事，
+  deadline 只需要负责"整件事最多占多久资源"）。
+- 守卫更新：`ble_file_transfer_respects_link_limits` 的断言改用 `code_flat`
+  （裸子串会被 rustfmt 拆行后静默空转 —— review 指出、上一轮我自己也撞过），
+  并新增两条 verify-guards 用例（分片+Done 同链路、等待期间必须有停滞检查）。
+
+测试：`stall_verdict_boundaries`（三档边界 + "提醒必须早于放弃"+"放弃必须早于最短
+deadline"）、`timed_out_send_leaves_nothing_behind`（send future 的取消安全实测）。
+
+## [4.22.23] - 2026-09-20
+
+### Fixed (进度 upsert 不再把 file_transfers.path 擦成 NULL)
+
+`upsert_transfer` 的冲突分支写的是 `path = excluded.path`，**没有 COALESCE**；
+而发送路径每 250ms 的进度落库一律传 `path = None`（只有建行与完成时传 Some）。
+后果：建行时写进去的本地路径，被第一次进度 tick 抹成 NULL。
+
+这本身是潜伏缺陷，但它正好落在群图片预览的救援路径上 —— 前端
+`useMessageFile` 取 `path` 是 `meta.path ?? transfers[].path`，DB content 缺 path 的
+一段时间里唯一能用的就是这个兜底源。上一轮修 stale 快照竞态（4.22.17）时，review 顺手
+指出这个兜底随时会被擦掉，本条把源头堵住，与 `content_transfers` 的
+`path = COALESCE(excluded.path, ...)` 同口径。
+
+- 测试 `transfer_progress_upsert_never_erases_the_known_path`：传 None 保旧值、
+  progress 等其他字段照常更新（不能为了保 path 把进度冻住）、真知道新路径时正常覆盖。
+
+## [4.22.22] - 2026-09-20
+
+### Fixed (cid 回填后必须通知前端 — 修 v4.22.16 引入的合并卡片丢钥匙)
+
+v4.22.16 把整文件哈希从"建发送记录之前"挪到投递任务里算完再回填，气泡不再等 O(体积)
+扫描 —— 但回填**只写库、不 emit**，于是内存里那条记录一直是 `sha256:""` 的版本，直到下次
+重查会话才从 DB 拿回来。后果是具体的一条功能回归：
+
+用户在同一会话里把刚发出去的文件勾选转成合并卡片时，卡片载荷由**内存里的记录**经
+`mediaSafeContent` 生成（`ChatWindow.vue` 的 forwardSelection → `buildMergePayload`），
+`mediaCid` 取到空串 ⇒ 卡片只渲染成一行占位文字，且 `requestContentByCid` 永远不会发出
+⇒ **对端再也拉不回这份内容**。更早的窗口：文件排着等一个离线好友时，投递任务根本没跑，
+cid 会**无限期**为空（不只是"算哈希那几秒"）。
+
+- `db::fill_message_sha256` 改为返回 `Result<bool>`（这次到底改没改行），四种情形分别可测：
+  真改了 / 同值幂等 / 空值跳过 / 缺行不动。
+- 投递任务在真的回填后取回该行并 `emit("message-received", &rec)`，让 store 走既有的
+  upsert 路径把 cid 补进内存。自记录不会打扰用户：`maybeNotify` 对 `sender_id == 自己`
+  直接 return；`applyIncoming` 的状态仍是"只前进不回退"。
+- 守卫 `no_whole_file_scan_before_the_file_bubble` 加一条断言：回填改了库就必须通知前端。
+
+## [4.22.21] - 2026-09-20
+
+### Fixed (接收端分片判死立刻回否定确认 — 不再把整份文件灌进已死的传输)
+
+真机形状：600MB 跑到 100%、两边都显示失败，中间几十分钟界面上一直"发送中"。
+
+接收端对某一片判死时（`write_chunk` 返回 Err）只 `fail_receive` 把本地接收器摘掉，
+**谁也不告诉**。发送端于是把剩下的整份文件继续灌进一条已经死掉的传输；等 `FileDone`
+到达时接收端已无该 transfer → 走"重复 FileDone"分支、`already_done` 为假 → **一个 ack
+都不发** → 发送端在 `wait_complete_ack` 里干等满一个 `FILE_ACK_IDLE`，再以
+"接收方未确认文件完成"判**可重试** → outbox 连着再整发 5 次。
+
+三段一起修（缺任何一段都不成立）：
+
+- 接收端：`fail_receive` 返回 `true`（真的中止了一个在途接收器）时回
+  `FileCompleteAck{success:false}`。返回 `false` 表示早已中止/未知传输/来源不符，
+  不重复回。这是**已有的帧、已有的处理逻辑**，不需要新协议。
+- 发送端注册点前移：`pending_file_complete` 原本在分片循环**之后**才登记 —— 那时到达的
+  否定确认因为找不到 rx 被直接丢掉，回帧等于白回。现在提前到循环之前登记。
+- 发送端在分片循环的 `select!` 里盯它：一收到否定确认当场以可重试失败退出，
+  并按对端真实已收字节续传（`FileOffer.from_bytes` + `FileReject.received` 那条既有路径），
+  不再把剩余字节灌完。
+
+守卫：`receiver_abort_notifies_the_sender_inside_the_loop` 三条断言（回帧、不得退回旧的
+"静默 abort"写法、循环里必须有 ack 分支且 `pending_file_complete` 不得被重复注册）；
+verify-guards 登记"改坏必须 FAIL、恢复必须 PASS"用例（实跑通过）。
+覆盖边界：回帧→停手是跨进程双端行为，仓库没有双实例 harness，按"源码守卫 + 真机待验"交付。
+
+**未修（记录在案）**：两条 cancel 分支 `_ = &mut *cancel_rx => return ...` 提前 return 时
+不摘 `pending_file_complete`，用户取消后那条表项会留在表里（体量极小，且下次同 id 注册会覆盖）。
+
+## [4.22.20] - 2026-09-20
+
+### Fixed (群文件的 Offer 也钉在分片那条链路上 — 补 v4.22.14 留下的分裂)
+
+上一轮把分片流与 `FileDone` 钉到了单条链路，但**群路径的 `GroupFileOffer` 还留在
+`try_send` 上**，这比不改更危险：
+
+`Offer` 是 Normal 优先级、`Chunk` 是 Low，两者走各自的选路。burst 里两个成员各一条流时
+Normal 通道也可能满，`send_over_order` 就会把这一条 Offer failover 到**另一条连接** ——
+于是分片落在链路 A、Offer 落在链路 B。而接收端在「没有该 transfer 的会话密钥」时对分片是
+**静默 return**（`transport.rs` 的 group chunk 分支既不报错也不回执），这批先到的分片
+就被永久丢弃，等 Offer 到了、密钥有了，首个 seq 也对不上 ⇒ 整条传输判死。
+真机形状仍然是那条：群里连发 9-10 张总有 1-2 张收不全，单独发同一张必成功。
+
+修法：在发 Offer 之前就 `resolve_stream_link` 一次，Offer / 全部 Chunk / Done 三类帧
+一律走 `send_on_link(&link, ..)`；分块大小也从这条已钉住的链路读 `path_kind`。
+单聊的 Offer 刻意不动 —— 它后面紧跟一个 `FileAccept` 等待，分片不可能在密钥之前出发，
+没有这条分裂（原因写进守卫注释，避免下一个人"顺手统一"）。
+
+守卫：`ble_file_transfer_respects_link_limits` 增加群路径三条断言（Offer 与 Chunk 必须
+`send_on_link(&link,..)`、且整个 dispatch 文件里不得再出现 `try_send(state, recipient,`），
+配套 verify-guards 的"改坏必须 FAIL"用例。
+
+## [4.22.19] - 2026-09-20
+
+### Fixed (群文件取消登记按收件人分键 — 三成员以上只有一个人收得到)
+
+上一轮提交前的独立 review 抓出的 BLOCKER，代码逐行核实成立（不是 review 误判）：
+
+`group_announcements.rs` 对每个可达成员各 `tokio::spawn` 一个投递任务，**共用同一个
+`transfer_id`**，而 `group_file_dispatch.rs` 用 `file_send_cancels.insert(transfer_id, tx)`
+登记取消句柄 —— `HashMap::insert` 会把前一个任务的 `Sender` 挤掉，oneshot 的 `Receiver`
+在 `Sender` 被 drop 时立刻以 `Err(RecvError)` 完成，而投递循环里的
+`_ = &mut cancel_rx => return Err("用户取消发送")` **分不清「用户真点了取消」和
+「登记被顶替」** ⇒ N 个成员里只有最后注册那个能发完，其余当场以「用户取消发送」这个
+**假原因**中断。
+
+这条是既有缺陷，但被 v4.22.14 显著放大：我把 cancel 分支挪到了分片发送周围（任务在那里
+停留整段传输时间），原本要卡进"文件读取那一微秒"才可能触发的顶替，现在几乎必现。
+
+- 新增 `file::file_cancel_key(transfer_id, recipient)` 与 `file_cancel_prefix`，三处登记点
+  （单聊直传、中继、群投递）全部带上收件人；用 NUL 作分隔符，因为 `transfer_id`(uuid) 与
+  `device_id` 都不会含它 —— 前缀匹配不会误伤「id 恰好同前缀」的兄弟传输。
+- `cancel_file_transfer` 改为按前缀**批量**发信号：一条群文件本来就有 N 条在途流，
+  只拿一条等于"取消只停住最后一个成员"。
+- 群投递错误出口补终态：`dispatch_group_file_to_peer` 一进来就把该成员置 `sending`，
+  而离线补发只捞 `status='pending'`（`db/group_files.rs:107`）—— 出错后留在 sending
+  就是「永远在发、重启也不会重试」，群文件面板上那条永远转圈。现在按原因落
+  `cancelled`（用户主动）或 `failed`（其余）。
+
+测试：`file_cancel_keys_are_scoped_per_recipient`（含"前缀不得误伤 t11"这条真陷阱）；
+源码守卫 `group_file_cancel_registry_is_scoped_per_recipient`（用 `code_flat` 做空白归一，
+避免被 rustfmt 拆行后空转）+ verify-guards 登记该守卫的"改坏必须 FAIL"用例。
+覆盖边界：登记顶替→误取消的端到端行为需要真实 `AppState` 与两个并发投递任务才能驱动，
+本仓库没有那套 harness，故按「纯函数键 + 源码守卫 + 真机待验」交付。
+
+## [4.22.18] - 2026-09-20
+
+### Changed (transport.rs 分册第 1 步：出站投递与链路选路搬出主文件)
+
+`network/transport.rs` 已经 1 万行，任何一次评审都要在同一屏里同时看选路、握手、
+gossip、文件、群文件、中继六件事 —— 这是"改一处顺手碰坏另一处"的结构性温床。
+按 `commands.rs` 的既有先例用 `include!` 分册：**同一模块、零 `use` 改动、运行时零差异**，
+只是把单文件切到可评审的粒度（分 5-6 步做，每步只搬一段连续代码）。
+
+本步搬「出站投递 + 链路选路」418 行 → `network/transport/outbound.rs`
+（帧编码 `write_frame`/`read_frame`、`route_order`、`send_over_order`、`try_send`、
+上一轮新增的 `resolve_stream_link`/`send_on_link`、`relay_send_to_neighbors`、
+`broadcast_gossip`、`reachable_neighbors`）。
+
+配套改动（这一步真正的风险所在）：源码守卫是用 `include_str!` 读**文件文本**的，
+只读主文件会让搬进分册的代码 0 命中 ⇒ 守卫**假红**，而下一个人会以为红的是代码不是锚点。
+新增 `network::transport_src_for_guards()`（cfg(test)）把主文件与全部分册拼成全集，
+11 处 transport 守卫一律改读它；今后新增分册必须在那个函数里同步登记一行。
+
+验证：`cargo test --features bluetooth --lib` 570 全绿（含全部源码守卫）；
+`check-domain-deps` 按模块路径判定，`network::transport` 域归属不变。
+
+## [4.22.17] - 2026-09-20
+
+### Fixed (群图片预览的 stale 快照竞态 + 「发送中 0% 而对端已读」)
+
+真机两条残留：① 群里连发 9-10 张图总有 1-2 张预览不出（单独发同一张必成功）；
+② 文件对方已收已读（双对勾），本机仍钉在「发送中 0%」。
+
+**① 是快照竞态，不是 4.22.13 修的 dedupe**：群文件消息在 Offer 阶段落库的内容**不带
+本地 path**，收完才回填。而 `loadMessages` 的 DB 快照经 `preserveDeliveryStatus` 合并时
+**只保 status、content 一律取 DB** ⇒ 一次在回填前取数的重查后到，就把内存里已回填的 path
+擦回无 path 形态；`useMessageFile` 在 path 为空时根本不发预览请求 → 空白气泡。
+单聊不受影响，因为单聊 Done 是**直接 insert 一条带 path 的记录**（这就是"群聊坏、单聊好"
+一直找不到根因的形状差）。
+
+- 新增纯函数 `pickMediaContent(prev, incoming)`：媒体行只在「先前有 path、新的没有」时
+  保住旧 content，其余一律以新载荷为准（DB 是真相这条原则没被放宽）；
+  `preserveDeliveryStatus` 与 `applyIncoming` 两条覆盖路径同时接上。测试 ×2。
+- `handle_group_file_done` 补 emit `file-done`：单聊、中继、群**发送方**都发，唯独群
+  **接收端**漏了。漏掉的后果不是少个事件 —— 接收端在字节落盘前读预览会得到「已被清理」，
+  而那种确定性失败判定是被**永久缓存**的（`utils/filePreview.ts` 只缓存确定性失败），
+  清缓存的唯一入口就是 `onFileDone` 的 `invalidateFilePreview`。不触发 ⇒ 文件早好好躺在
+  磁盘上、气泡却永远空白，重启前不会自己好回来。
+
+**② 是进度事件被静默丢弃**：`updateTransferProgress` 在 `transfers` 里找不到该 id 时直接
+no-op 且无重放，而多选发送是"每个文件各自 `void refreshTransfers()`"的并发 IPC ——
+后发先至的**旧快照**里没有刚建的那条 transfer，覆盖回来后所有进度事件都落空，
+进度条就永久停在 0%（此前怀疑的 FileCompleteAck 丢失是错的假设，已推翻）。
+
+- `refreshTransfers` 加请求序号，旧快照不得覆盖新状态；两次 IPC 改 `Promise.all`。
+- 进度/done 事件找不到行时不再静默丢弃，改为防抖一次补拉（400ms，不放大 IPC）。
+
+验证：npm test 489 全绿（新增 2 条）、cargo test --features bluetooth 570 全绿、
+vite build + vue-tsc 通过。
+
+## [4.22.16] - 2026-09-20
+
+### Fixed (点完大文件不再"卡一会儿" — 气泡前不做整文件扫描；导入复制不再占住 async worker)
+
+真机（Mac 发送端）：点一个大文件后聊天框里要过一会儿才出现「发送中」气泡。这与用户的产品
+设计直接冲突 —— 任何操作点击后必须立刻乐观响应。
+
+链路上挂在气泡前面的是两次 O(体积) 整读：
+- `commands/files.rs::build_file_message` 在建发送记录时整读文件算 sha256；
+  而**投递任务待会儿还会为 FileOffer 再整读一遍**（`network/file.rs` 里本来就是它算校验值）。
+  现在建记录时 `sha256` 先留空，投递任务算完用 `db::fill_message_sha256` 回填同一份值
+  （幂等：同值不再写；缺行静默通过 —— 内容补发复用同一个投递函数，那条路径没有 `file-*` 行）。
+  少一次整读只是顺带的好处，真正的点是**气泡不再等任何 O(体积) 的活**。
+- `import_picked_file`（Android `content://` → 缓存目录）用同步 `std::io::copy` 在 async
+  命令里整复制，600MB 会占住一个 tokio worker，连带拖住同进程其它传输的进度事件与 DB 访问。
+  改 `spawn_blocking` + `sync_all`。
+
+顺带修掉一个同源并发缺陷：导入落盘名用 `gosslan-<毫秒>.<ext>` 兜底，而多选是并发的
+（前端 CONCURRENCY=2），两个 URI 解不出名字的文件会在同一毫秒撞上同一个 `dest` ——
+`rename` 到已存在路径是**静默覆盖**，此时第一份字节可能正在被哈希/分片发送。
+改用 `file::unique_path` 保证目标名不存在（真机形状：一次发 9-10 张总有 1-2 张预览不出，
+单独发同一张必成功）。
+
+测试：`fill_message_sha256_backfills_once_and_keeps_other_fields`（用 AFTER UPDATE 触发器
+数真实写入次数：同值必须 no-op、空值与缺行不得产生写入、只补一个字段不得丢其余键）；
+源码守卫 `no_whole_file_scan_before_the_file_bubble`（钉住"建记录前不得整读文件"这条
+很容易顺手写回去的不变量）。
+
+## [4.22.15] - 2026-09-20
+
+### Fixed (verify.mjs 在 macOS/Linux 上从第 1 步就 ENOENT — 后面 14 步从未跑过)
+
+`NODE_EXE` 无条件把 `process.execPath` 包在双引号里（Windows 的 `shell:true` 需要，
+因为 Program Files 有空格），而 macOS/Linux 走 `shell:false` ⇒ **引号成为文件名的
+一部分** ⇒ 第 1 步 `spawnSync ENOENT`，fail-fast 之下后面 14 步（含 clippy -D warnings、
+Rust 单测、护栏非空转、Android 编译门禁）在 unix 上从来没执行过。CI 自己重列步骤，
+所以这条空转只在本地可见 —— 正是审计结论「CI 与 verify.mjs 双份清单必然漂移」的实例。
+改为只在 Windows 加引号。
+
+## [4.22.14] - 2026-09-20
+
+### Fixed (文件分片流钉死单条链路 — 修多文件并发时大文件必失败)
+
+真机（用户 2026-09-19）：单聊一次多选里 500-600MB 的文件跑到 100% 报
+「文件分片顺序错误 / 接收失败」、发送端同步判失败；群里连发 9-10 张图总有 1-2 张收不全。
+**单独发同一个文件/同一张图必定成功** —— 典型的"只在并发下才成立"的形状。
+
+根因是文件分片用了普通消息的投递路径 `try_send`，而它是**逐条**重算选路的：
+一个 peer 可以同时持有 LAN + Routed(+BLE) 多条独立 TCP 连接，第一轮全用非阻塞
+`try_send`，**队列满就算这条链路"现在不行"并 failover 到下一条**（这是 M3-b 给普通
+消息设计的正确行为）。文件分片是有序字节流：接收端 `write_chunk` 要求 seq 严格递增、
+追加写且不 seek，一片跨了连接就永久失序 ⇒ `ChunkSeq::Gap` 判死整条传输。
+空闲时队列不满、永远走第一条链路，所以单发看不出问题；两个流共用一条 1024 槽的
+Low 队列（每连接一套），满了才第一次真正触发 failover。
+
+- 新增 `transport::resolve_stream_link` + `send_on_link`：一条分片流在开始时**钉住
+  一条链路**，队列满时原地等背压而不是换链路；不设局部超时（链路真死时 writer 循环
+  退出会 drop Receiver，`send` 立刻 Err；短超时放弃反而会留下在途旧分片，与续传尝试
+  的 seq 从 0 重数混进同一条追加写的流）。整体上限由 4.22.13 的体积自适应 deadline 兜。
+- **FileDone 一并钉住**（单聊与群聊）：它与分片同为 Low 优先级，走 `try_send` 时
+  会在队列满的那一刻被路由到空闲连接，于是完成帧**超过仍在路上的最多 1024 片
+  （≈262MB）**先到，接收端判「文件传输未完成」打死传输 —— 这正是"跑到 100% 才失败"。
+- 分块大小改为读**钉住那条链路**的 `path_kind`（原来读 `inbound_path_kind` 的另一次
+  选路结果，两者在多条连接时可能不是同一条）。
+- 群发路径补齐 4.22.13 漏做的一处：群文件仍用固定 10min 窗口，500-600MB 必被误判超时。
+- 测试：新增 3 条（满队列原地背压不乱序、链路关闭立刻 Err、三级通道不被绕过）；
+  源码守卫 `ble_file_transfer_respects_link_limits` 升级为同时钉住"分片与 Done 同链路
+  + 不得逐片 try_send"两条不变量。
+
+## [4.22.13] - 2026-09-19
+
+### Fixed (文件消息体验链：群图片预览、视频退化成 JSON、大文件超时误判)
+
+真机反馈的四联问题（群照片预览不了 / MP4 显示成 JSON / 几百 MB 大文件必失败），
+根因是**同一条链的四个断点**：
+
+- **接收端按文件名重新猜 kind**（单聊 FileOffer / 群 offer / 完成回填三处）：
+  4.22.1 只收口了发送端，接收端仍把 mp4 写成 `kind="video"`——前端渲染链只认
+  text/code/image/file/…，视频消息整个退化成一段裸 JSON。三处统一为 `image|file`，
+  细分留在 `content.subtype`。
+- **历史行兼容（不回写数据）**：`protocol::display_kind` 在 DB 读出口把 legacy
+  `video/audio` 归一为 `file`（已入库的旧消息不再显示 JSON）；`code` 有歧义
+  （真代码块同为 kind=code）刻意不映射。测试 ×1。
+- **群图片预览打不开的真根因**：群文件完成时后端会**重发带本地 path 的消息记录**
+  （applyIncoming 注释也这么宣称），但 store 的合成循环对已有 msg_id 一律丢弃——
+  path 回填永远到不了 UI，气泡停在无 path 形态。`applyIncoming` 改为 upsert：
+  同 msg_id 以 DB 记录刷新内容、送达状态仍只前进（重复投递的正常路径行为不变）。
+- **大文件固定 10min 期限必败**：600MB 在 Wi-Fi/中继链路跑不完固定窗口 ⇒ 判超时、
+  重试又从头开始。`send_deadline_for(size)` 按 512KiB/s 保守吞吐伸缩（下限 10min、
+  上限 2h，再大交给断点续传），超时报案文案同步动态值并明说「将从断点自动续传」。
+  测试 ×1。
+- **已知未闭环（需要真机日志）**：「对方已收到甚至已读、我方仍显示发送中 0%」——
+  发送侧 delivered 推进链本身是齐的（file.rs 完成段 set status + emit），最可疑的是
+  **FileCompleteAck 在拥塞链路上丢失/迟到**（ack 走一次 `try_send` 不重试）。
+  请复现一次并抓 `[FILE]` 前缀日志（4.22.2 起 logcat 已放行），下一轮据此收口。
+
+## [4.22.12] - 2026-09-19
+
+### Fixed (存储：自动缓存清理真正接线 + 递归扫描 + favorites 纳入配额)
+
+README 承诺的「自动缓存清理（3/7/30 天/永久 + 磁盘配额）」此前**只有设置页手动按钮**：
+
+- 新增 6h 周期自动清理任务（启动 6h 后第一轮，spawn_blocking 里跑，不占 tokio worker、
+  不跨 await 持 db 锁）；**只有真删了文件才 VACUUM** —— 旧实现每次手动清理都无条件
+  持全局 db 锁 VACUUM，大库时整个应用冻住（评审 P1 同源）。
+- `walk_files` 递归扫描：图片/文件按子目录分层落盘（todo-paste/ 等），旧的单层
+  read_dir 让整棵子树**既不占配额也永不回收**——配额判断用的是一半的真实数。
+- `favorites_dir`（收藏的独立媒体副本）纳入媒体目录：此前收藏越多越接近无限增长。
+- 手动「立即清理」行为不变（仍 VACUUM，用户主动等待可接受）。
+
+## [4.22.11] - 2026-09-19
+
+### Fixed (内容重试链真正封顶 + 共享目录帧双好友校验)
+
+code review 第三批（评审必改#1 + 安全 P1）：
+
+- **`MAX_CONTENT_RETRIES` 此前实际永不触发**（4.22.1 只接了判定，链路是断的）：
+  ① receive 起点的 upsert 每次带 `attempts: 0`，SQL 无条件覆盖 → 计数被压回；
+  ② 要修的「对端重装/文件已删」场景里 ContentRequest **无人应答**，那条路径上
+  根本没有 record_failure 调用点 → 计数停在 0，每次 Hello 无限重发。
+  现在：`attempts = MAX(旧, 新)`（计数语义「这条内容对这个 peer 试过几次」只增不减），
+  且每次到期重发本身就记一次失败（Timeout/LinkDown）→ 8 次窗口后收口 Rejected、
+  退出可恢复列表。回归测试 ×2。
+- **共享目录 ShareTreeRequest / ShareFileRequest 补双好友判定**：`from` 是自报字段，
+  旧校验单查它 ⇒ 一个好友可冒用另一好友的 id 浏览/下载别人的共享目录。
+  不收紧成 `from == peer_id` 的原因：借一跳中继的合法帧到达时链路的对端是转投邻居。
+  残余风险（中继好友可代转他人请求）在注释中显式登记——两跳均须在信任圈内，
+  且 4.22.9 已让转发本身吃上中继授权。
+
+## [4.22.10] - 2026-09-19
+
+### Fixed (sweeper 三条队列统一离线保留 + 队列选择回归分类表单一来源 + v8 索引)
+
+code review 第二批（评审 agent 与自查共同命中，5e/6/4 三条建议）：
+
+- **群 outbox 补上离线保留**（4.21.2 只修了单聊，群是同型缺陷）：行级返回后按成员
+  分类——某成员离线 ⇒ 他的行保留到 7 天窗口（上线补发），**所有行都该放弃**整条消息
+  才置 failed。旧行为：一个成员离线 2 分钟，群消息对所有人一起被判死。
+- **文件 outbox 同样接入离线判据**：离线接收方的文件此前 30 分钟一律判 failed
+  （「关机一晚回来收不到大文件」与单聊被修的 P0#2 同型）。判定收进通用纯函数
+  `should_fail_expired(reachable, age, deadline, hold)`，三条队列一个判据。
+- **队列选择旁路收口**：心跳循环与握手回发 Hello 曾恒走 Normal（分类表判 High）、
+  `broadcast_gossip`/`update_profile`/`broadcast_chat_style` 各自手写降级判据——
+  现在四处全部现场调用 `message_priority`，「单一事实来源」从口号变成真（评审建议#6）。
+- **sweeper 锁开销**：每 tick 一次 links 键集快照复用（旧写法每个候选行抢一次
+  links 锁，500 离线行=500 次/tick）；配套 **v8 迁移**给 outbox/group_outbox/file_outbox
+  建 `created_at` 索引（离线 7 天保留窗会让行数上来了，扫描成本必须跟着），
+  SCHEMA/schema.sql 同步，软失败风格。
+
+## [4.22.9] - 2026-09-19
+
+### Fixed (P0：数据面转发接上中继授权 —— 设置开关从此管到文件与外部帧)
+
+- **控制面/数据面两套真相收口**：中继授权（ADR-0016）此前只管 gossip；
+  `handle_message` 的定向借道（共享目录三件套 + RelayFileOffer）、`RelayChunk`
+  转投、`OpaqueExternal` 转投三个数据面路径**完全不吃策略** —— 用户把中继设为
+  「关闭/仅好友」，陌生邻居照样能借本机一跳一跳地跑文件流量（带宽与隐私双重失信）。
+  新增 `relay_policy::decide_relay_from_peer`（真值表与 gossip 同源；授权主体取
+  **经 Hello 验签的链路对端**，不用可自报伪造的帧内 `from` 字段），三处全部接入。
+  默认策略 `All` 行为逐字节不变，属安全开关真正生效。
+- **静默丢片留痕**：三处 `let _ = try_send()` 全部改为 `Err → log_throttled warn`
+  （relay_drop/relay_deny，10s 限频）—— 分片丢弃以前在本机日志里不可见，
+  「文件传一半失败重来」无从归因（INV-005）。
+- 测试：`peer_relay_respects_policy_matrix` 真值表（含 All/Off 零查库断言）；
+  源码护栏 `relay_data_plane_respects_policy`（三个转发点少接一处即红）。
+
+## [4.22.8] - 2026-09-19
+
+### Fixed (code review 修正：v7 迁移口径数据事故 + upsert_peer 热路径)
+
+- **v7 孤儿清理的 DELETE 口径是错的（自审必改#2）**：消息/墓碑两条用了
+  `conv_id NOT IN conversations` 单锚，而「用户删掉群会话」是合法操作且 groups 行还在
+  —— 按旧口径升级会把**整段在册群历史不可逆清空**，与自家注释承诺的「只清 groups 表
+  没有的」直接矛盾。改为**双锚**（groups 与 conversations 都不在册才算孤儿），
+  并在 `migration_v7_purges...` 加陷阱用例（群在册+会话被删 ⇒ 一条不清）。
+- **v7 风格对齐 v3-v5**：清理语句逐条 eprintln 容错，不再用 `?` 上抛 ——
+  一条 DELETE 失败（BUSY/磁盘满）不该让 `db::init` 变 Err 把应用锁死在启动页。
+- **`upsert_peer` 的 friends 锚查询挪到「条目确实不存在」时**（自审必改#3）：
+  4.21.5 的实现只要 announce 带公钥就抢全局 db 锁跑 SELECT，
+  5s×N 节点在千节点规模 ≈ 200 次/秒与所有写路径争锁；peers 已存在的条目纯白读。
+  预检 `contains_key` 与插入之间的竞态无害（Some 分支同样有冲突判定）。
+
+## [4.22.7] - 2026-09-19
+
+### Fixed (P0：删除级联收口——删会话/退群不再留「幽灵数据」)
+
+审计坐实的三处漏口一次收口（schema 无 FK，级联全靠手写，此前只覆盖了单条消息删除）：
+
+- **`delete_conversation` 不清投递队列**：被删会话的 `outbox`/`group_outbox`/
+  `file_outbox` 行留在库里 → 下次建链/心跳把**已删除的消息**补发回去（「删了又冒出来」），
+  还会给不存在的会话发 FileOffer。现在同事务清空在途队列与撤回墓碑；
+  Card/Silent（公告、待办、置顶）维持既有的「不属于聊天历史」保护不动。
+- **`delete_group`/退群不删消息与回执**：退群后整段历史成为孤儿——仍命中全局搜索、
+  点又点不开、挤占「共 N 条」。现在单事务级联清理 messages/group_outbox/file_outbox/
+  group_reads/pending_group_reads/撤回墓碑/clear_boundary 键。
+  **刻意保留** `conversation_clocks`（逻辑序号只增不减，删了会撞历史序号）；
+  `content_transfers` 按 cid 跨会话共享、需引用计数，登记为已知限制未动。
+- **`search_history` 只搜在册会话**（`conv_id IN conversations`）：兜住存量孤儿与
+  未来任何漏网路径。
+- **DB v6→v7 迁移**：一次性清掉收口之前入库的孤儿群消息/投递/水位行
+  （保守口径：只清 groups/conversations 双不在册的数据）。
+  降级拒绝机制不变（v7 库在旧版 App 上开不了，属设计行为）。
+- 测试：`db::cascade_tests` 4 条（队列清空/Card 保留/时钟保留/搜索孤儿/迁移边界）；
+  既有 4 条搜索/撤回测试补 conversations fixture——它们此前隐式依赖「孤儿可搜」，
+  正是本次收口的对象。
+
+## [4.22.6] - 2026-09-19
+
+### Fixed (P0：gossip 转发候选从「知识集」换成「可达集」，跨网段中继不再是空转)
+
+- **`choose_fanout` 的三个转发调用点（gossip 广播分支 / 定向帧洪泛兜底 /
+  OpaqueExternal）此前都拿 `peers.keys()` 当候选**：`peers` 是知识集——Presence/announce
+  跨跳登记，异网段节点在里面但**没有 TCP 链路**。跨网段场景下扇出全部拨向不可达节点，
+  `try_send` 失败又被 `let _ =` 静默吞掉——「节点互相帮转发」这条产品核心承诺恰好在
+  最需要它的场景空转，且界面上零异常（本地收发全正常），只有跨网段压测才暴露。
+  现在统一收进 `reachable_neighbors`（`links` 中非空链路的邻居），与源发侧
+  `broadcast_gossip` 一直使用的口径一致。BLE 链路同表登记 ⇒ mesh 桥接路径一并生效。
+- 新增源码护栏 `gossip_fanout_targets_reachable_links`（candidates 再退回 peers 即红；
+  写护栏当天就抓到一处漏网调用点）。
+
+## [4.22.5] - 2026-09-19
+
+### Fixed (移动端体验批量收口：多选并发 / 预览返回栈 / TabBar 恢复 / 输入区细节)
+
+- **一次选多个文件发送**（用户 2026-09-19：「只能一个一个发」）：`attachFile` 改
+  `multiple: true`，string|string[] 统一成数组；**并发上限 2**（Android ART heap
+  256MB，一个文件 import+sha256+send 峰值 ~40MB，5 张并发真机 FATAL OOM——
+  WhatsApp 国内版同款保守值）；单个失败不阻塞其余（走 sendFileTo 的 failed 态）。
+- **图片预览返回栈**：`ImageLightbox` 自己注册 `useBackLayer` —— 此前 Android
+  侧滑返回先把 ChatWindow 层弹掉、预览还挂着（「预览页还在但背后聊天回到列表」）；
+  注册顺序天然正确（子组件后 mount → 先弹出）。新增 scale≠1 时的「还原缩放」按钮。
+- **收藏页 TabBar 消失修复**：`closeFavorites` 不再改 `mobileView`（改回 'list'
+  会触发 useBackLayer #1 的 release、多退一次历史条目）；可见性只由
+  favoritesOpen 的 translate 条件表达。
+- 输入区 safe-bottom 6px→8px + Composer 垂直 padding 对齐 Material 3 基线；
+  FriendProfile「发消息」按钮 `shrink-0 whitespace-nowrap`（长昵称窄屏挤压换行）；
+  未知 kind 兜底气泡加 `break-all`（超长无空格 token 撑破气泡宽度）。
+
+## [4.22.4] - 2026-09-19
+
+## [4.22.3] - 2026-09-19
+
+### Added (Android 媒体兼容：HEIC/HEVC/动态照片进聊天)
+
+**症状**：一加 15（Android 15）拍的图/视频进 Gosslan 后，桌面端黑屏或裂图——
+iPhone 系 HEIC/HEVC 在 Windows/macOS 浏览器渲染链上都不支持；此前移动端选图
+按扩展名猜 MIME，`content://` URI 没有扩展名可猜。
+
+- **发送端自动转码**（`OpenWith.kt` + `android_open.rs` 三座桥）：
+  `convertHeicToJpeg`（ImageDecoder→JPEG 85）、`isHevcVideo`（MediaExtractor 探
+  hevc 轨）、`isMotionPhoto`（Google Motion Photo 容器检测）；API 31+ 视频走
+  **系统级自动转码**：新增 `res/xml/media_capabilities.xml` 声明本 App
+  「不支持 HEVC/HDR10/HDR10Plus」，Android 12+ 经 ContentResolver 读取时系统直接
+  给 H.264（骁龙硬件转码，1 分钟视频约 5s、零 CPU 占用）。
+  **已知限制（注释如实登记）**：API<31 老设备无视频兜底转码，HEVC 仍会原样发出；
+  HEIC 图片转码失败时保留原文件发送（可当文件下载，不静默丢）。
+  Motion Photo 主动降级为静态封面（与微信/QQ 同口径——跨端动效需端到端重构，不做）。
+- **JNI 桥修根**：`native_attach` 收到的 class 参数是 `OpenWithKt`（顶层函数类），
+  而所有业务方法在 `object OpenWith`（@JvmStatic）——旧代码把前者当类缓存，
+  方法查找恒失败；改为 find_class 钉住 object 类。Kotlin 方法登记护栏同步
+  （3 → 6 个方法，漏登记即红）。
+- **`sniff_media_ext` 魔数嗅探补齐**（日志查看器的媒体内嵌预览复用同一条判定）：
+  HEIC 家族（ftyp heic/heix/mif1/msf1/hevc）、MP4/MOV/3gp（各 ftyp 变体）、
+  WebM（EBML）、AVI（RIFF…AVI 且校验第二槽）、FLV；27 条新用例覆盖全部盒子变体。
+  前端 `filePreview.ts` 保留 heic/avif/bmp 的 MIME 兜底映射并注释「渲染不可靠，
+  发送端已转码」的真实语义。
+- **proguard**：OpenWith 三方法 + companion 的 keep 规则同步（release 包 JNI 反射入口）。
+
+## [4.22.2] - 2026-09-19
+
+### Fixed (macOS 辅助窗口 EXC_BAD_ACCESS + logcat 诊断链路)
+
+- **辅助窗口命令必须回主线程**：`open_log_window`/`open_settings_window`/
+  `open_group_todos_window`/`open_link_window` 此前是 async 命令（跑在 Tokio worker），
+  而 macOS 的 AppKit 调用（`ns_window().setHasShadow` 等）**必须在主线程** ⇒ 真机
+  EXC_BAD_ACCESS。改为同步命令（Tauri 在 wry 主线程 IPC 回调内联执行）；
+  async/同步对窗口创建耗时**没有差别**（`build()` 本身就同步等主线程返回），
+  真正的阻塞风险是 db 锁——窗口路径内所有 `db.lock()` 改 `try_lock` + 安全降级
+  （背景色兜底浅色/群名空串），`blocking_commands_run_off_the_main_thread` 护栏
+  登记 4 条例外并注明理由（源码扫描天然会把它们报出来，例外必须交代理由）。
+- **Android logcat 诊断白名单**：info 级放行 `boot/ble/dispatch/file/content/transport`
+  六类 target（release 包只有 logcat 可查，这几条是消息「卡在哪」的唯一观测面）；
+  warn/error 行为不变。
+- `send_message` 投递决策三态日志（has_link / try_send 结果 / NO-LINK→broadcast），
+  排障「消息发出去了但对端没影」时不再靠猜。
+
+## [4.22.1] - 2026-09-19
+
+### Fixed (文件与内容可靠性：崩溃恢复 / 重试封顶 / 进度收尾 / 会话名与 kind)
+
+- **file_outbox 崩溃卡死**：`flush_pending_files` 先标 `sending` 再发送，进程若在
+  发送中途被杀（真机：80 张图并发 OOM/ANR），这些行永远卡在 `sending`——
+  `list_pending_file_outbox` 只捞 `pending`，它们被彻底遗忘（「发了一半的图重启后再也没到」）。
+  现在 AppState 初始化时 `reset_sending_to_pending` 全部重置回 pending，下次 Hello 触发
+  flush 重投；重复传输由对端幂等 FileOffer 吸收。
+- **content 自动重试无封顶**：`MAX_CONTENT_RETRIES=8` 定义了却没接进 `on_failure`——
+  取不到的内容（对端重装/文件已删）会以 60s 周期无限重试。现在到达上限即收口
+  Rejected（`retry_cap_turns_resumable_failure_terminal`）。
+- **群文件/中继文件进度收尾**：最后一片可能因 250ms 节流不发 progress，前端卡
+  「发送中 0%」；两条路径完成时补发 100% progress + file-done 事件。
+- **会话名被文件名覆盖**：`touch_conversation` 的 INSERT 分支不查真实群名，
+  群文件消息会把会话名写成文件名。group 类型 INSERT 前先从 groups 表取真名
+  （UPDATE 分支早有 CASE WHEN 保护，补齐 INSERT）。
+- **文件消息 kind 收敛**：`send_file`/`send_group_file` 此前把 subtype（video/audio/…）
+  直接写进 kind，前端渲染链只认 image/file——非图片一律归 `file`，细分留在 content.subtype。
+
+## [4.22.0] - 2026-09-19
+
+### Changed (三级通道调度收口：分类单一来源 + BLE writer 忙轮询修复)
+
+**收编并补完前几轮散在多处的工作（high/normal/low 三级发送通道）**：
+
+- `Link` 的 bulk/priority 双队列升级为 **High/Normal/Low 三队列**；分类表收进新模块
+  `network/dispatch.rs::message_priority`（唯一事实来源），`try_send`/`send_over_order`
+  按分类选道。旧 `is_bulk_message` 删除，其真值表测试原样迁移
+  （`bulk_messages_are_only_large_chunks` 名字不变，verify-guards 锚点同步搬到 dispatch.rs）。
+- **同名常量两份不同值消除**（INV-P23）：dispatch 曾自带 `CONTROL_AVATAR_MAX_BYTES=256KiB` /
+  `BULK_GOSSIP_PAYLOAD_MAX_BYTES=4KiB`，与 transport 真机验证值（2KiB / 16KiB）漂移——
+  现在 dispatch 直接 `use` transport 的常量，单一来源、行为不变。
+- **`FileCompleteAck`/`GroupFileCompleteAck` 归位 Normal**：曾被划进 Low，
+  完成回执会排到 ≤1024 个分片后面（整文件重传或 30min 误判 failed 的入口）；
+  它与本机上行分片流无顺序耦合，维持旧 priority 语义。
+- **BLE writer 忙轮询修复（P0）**：`ble_writer_loop` 的 `high_open` 漏 `mut` 且 None 分支
+  从不判 `high_rx.is_closed()`——链路被摘后该 select 臂每轮空转命中，100% CPU 且永不退出。
+  feature 门控代码，clippy 静默；已在 `--features bluetooth` 构建下修正三臂关闭判定。
+- **注释诚实化**：dispatch/BLE writer 曾宣称「fragment 级 yield」——实现只存在于测试
+  模拟器；真实抢占粒度是**帧**（biased select，High 最坏等待 = 单条 Low 帧分片时长）。
+  文档改为如实声明，片间 yield 需要四个平台 FrameSink 同步改造，列为后续工作。
+- 删除无消费者的影子定义：`DispatchState`、`RETRY_BACKOFF_SECS`（与 `content::policy`
+  真退避表冲突）、`FILE_OFFER_TIMEOUT_SECS`（transport 内联 15s 才是执行值）。
+
+## [4.21.5] - 2026-09-19
+
+### Security (P0：Gossip 信任链锚定到 friends 表，堵死「冒充缺席好友」)
+
+- **两处缺口同源**：`peers` 是内存态（重启后为空、好友离线时缺席），而
+  `handle_gossip` 的信任判定和 `upsert_peer` 的新建条目都只看 `peers`——
+  「不在 peers」被当成了「陌生节点」。攻击者因此可以：
+  ① 用自签信封发 `Presence`/`FriendRequest`/`FriendAccept`（unknown-sender 的 TOFU
+  白名单），抢先把好友 id 的公钥绑成自己的；② 之后自己的 `Chat` 信封通过
+  「已认识」校验，**伪造任意内容冒充好友**，`update_friend_pubkeys` 的 COALESCE
+  还会把攻击者公钥写穿 friends 表的 NULL 位。
+- **修复（对齐 ADR-0011 / INV-P11 / INV-P21）**：
+  `gossip_trust_for_unpeer_sender`——friends 在册且绑过键的 id 一律只认绑定值，
+  任何 kind 不再 TOFU；`new_peer_conflicts_with_friend`——`upsert_peer` 新建条目前
+  先对 friends 锚做冲突检查，冲突走与既有 `key_conflict` 同一出口（不落库 + 诊断事件 +
+  「可能被人冒名顶替」系统消息）。真正的陌生节点与加好友流程不受影响（与 ADR-0011
+  的 TOFU 边界一致）；键列为 NULL 的旧好友行维持原宽容。
+  回归测试 ×2（`gossip_trust_for_known_friend_never_tofus`、
+  `new_peer_entry_respects_friend_key_anchor`）。
+- **已知边界（登记在案，下一轮）**：`FriendAccept` 消费分支仍无「本机发过申请」
+  前置校验（陌生 id 的伪造同意仍能加陌生人好友）；Gossip `Chat` 消费解密用信封自带
+  `sender_pubkey` 而非绑定值，建议改为消费前与 peers/friends 锚核对。
+
+## [4.21.4] - 2026-09-19
+
+### Changed (工程：修 main 上既有的 CI 红 —— fmt 漏跑)
+
+- **`cargo fmt --check` 自 `5e31ebe` 起在 main 上持续失败**：`db.rs` 与 `db/migration_tests.rs`
+  入库时漏了格式化，把 Rust job 的 fmt 门禁整段挡红（macOS/Windows 两条腿同挂，
+  后续所有 push 连带变红）。本次对这两个文件补跑 `cargo fmt --all`，不改任何行为。
+  测试基线：`cargo test --lib --features bluetooth` 540/540。
+
+## [4.21.3] - 2026-09-19
+
+### Fixed (P0：message-failed 等状态事件前端无人接，气泡永久「发送中」)
+
+- **后端在发、前端没听**（违反 INV-006「UI 必须反映真实状态」）：outbox sweeper 判 failed /
+  用户取消 / 用户重发三条路径分别 emit `message-failed` / `message-cancelled` /
+  `message-resending`，但 `bindEvents` 没有消费者——DB 已是 failed，界面气泡却永远停在
+  sending/delivered，只有重开会话才纠正。现在三个事件统一接到 `onMessageStatusChanged`
+  （从 DB 重查该会话，状态的唯一真相源是 `messages.status`，不再维护第二套内存状态机）。
+- **例外清单失修**：`file-failed`/`file-cancelled` 早已监听，白名单仍挂「待接」谎报。
+  本次清掉 5 条入账条目，并给 `events.test.ts` 加反向检查：**已监听的事件不得留在
+  例外清单**，防止白名单再次说谎。
+
+## [4.21.2] - 2026-09-19
+
+### Fixed (P0：outbox sweeper 把「对端离线」当「发送失败」，离线补发承诺被击穿)
+
+- **好友关机 2 分钟，消息就永久判 failed**：`spawn_outbox_sweeper` 对所有超过
+  `OUTBOX_FAIL_DEADLINE_MS`（120s）的行一律删 outbox + 置 failed，不区分
+  「发出去没收到 Ack」和「对端根本不在网上」——后者正是 README/INV-P04 承诺的
+  「离线暂存、上线自动补发」场景。现在：候选行带回 `peer_id`/`created_at`，判定收进
+  纯函数 `db::should_fail_expired_outbox`——有链路（可达）仍 120s 放弃；无链路按
+  `OUTBOX_OFFLINE_HOLD_MS`（7 天）保留，到期才当僵尸行清理。补 2 个单测
+  （判定语义 + 行数据完整性）。**已知边界**：群 outbox 维持原 120s 语义（判定按
+  msg_id 粒度、删除整组行，需要单独设计，登记在案）。
+
+## [4.21.1] - 2026-09-19
+
+### Fixed (P0：单聊重发把明文推上线，重发实际是 no-op)
+
+- **`resend_message` 重建 outbox 时直接用了库内明文**（`messages` 表存明文是设计如此，见
+  send_message「本地落库（明文）」），没有 `enc1:` 前缀 ⇒ 接收端 `open_direct_content`
+  一律拒收（不落库、不 Ack），2 分钟后又被 sweeper 判 failed —— 用户症状是「点重发没反应」；
+  同时 `seq: 0` 若真被收进会排到会话最前（排序按 seq，INV-P09），两端顺序分裂。
+  现在：重发路径与 send_message 同口径——查对端当前公钥（friends → peers）、`crypto::seal`
+  重封后再入队，沿用原 `ts`/`seq`；拿不到公钥时回滚状态并明确报错，不再写一条接收端
+  永远拒收的明文行；补「只能重发自己发出的消息」校验。新增源码护栏 `resend_reseals_before_enqueue`。
+
+## [4.21.0] - 2026-09-19
+
 ### Changed (群任务/群管理/窗口外观/公告 —— 用户 2026-09-17 第二轮)
 
 **群任务**：

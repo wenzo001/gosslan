@@ -1,5 +1,14 @@
 //! Gosslan 应用入口（库目标，供 Tauri 加载）。
 
+// ⚠️ 注意：不要在这里加 crate-level 的 clippy lint（`#![warn(...)]`）。
+// CI 的 clippy 用 `-D warnings`，会把所有 warn 升级成 error，
+// 而 transport.rs / state.rs / lib.rs::run() 等**未重构的旧代码**里
+// 已经存在 25+ 个 `too_many_lines` / `cognitive_complexity` 命中，
+// 一启用就秒挂。
+//
+// 膨胀守卫放在**已经物理拆分的模块**里（commands.rs / db.rs / 子模块），
+// 那些文件已控制在 700 行以内，不会误伤。
+
 /// Android 的「打开文件」JNI 桥（FileProvider：私有目录文件必须以 content:// 交出去）。
 #[cfg(target_os = "android")]
 mod android_open;
@@ -171,7 +180,58 @@ pub fn run() {
     let app = builder
         .setup(|app| {
             state_mark("boot", "AppState::init 之前");
-            let state = state::AppState::init(app.handle().clone())?;
+            let state = match state::AppState::init(app.handle().clone()) {
+                Ok(state) => state,
+                Err(e) => {
+                    // 数据来自**更新**的版本 ⇒ 拒绝打开（"能升不能毁"红线），但"拒绝"
+                    // 必须是用户看得懂、知道该干什么的一句话，而不是一个悄悄消失的窗口：
+                    // setup 返回 Err 会被 Tauri 变成 panic，而 Windows 发布版是
+                    // `windows_subsystem = "windows"`（无控制台）⇒ stderr 无处可去 = 用户
+                    // 看到窗口闪一下就没了，什么提示都没有。
+                    //
+                    // 按**类型**分支而不是错误字符串：协议层已经因为"按前缀分类"吞过一整条
+                    // 消息（INV-P24 第 2 条，v4.22.34 才修掉）。
+                    if let Some(db::InitError::Downgrade { current }) =
+                        e.downcast_ref::<db::InitError>()
+                    {
+                        let msg = db::InitError::downgrade_message(*current);
+                        state_mark("boot", "数据库版本比本机程序新，拒绝启动");
+                        eprintln!("[gosslan]{msg}");
+                        // 弹窗**只在桌面端**做。移动端不是"顺手也弹一下"：那个时点原生对话框
+                        // 到底能不能显示，我在这里没有任何实测手段，而"弹出来了但没有 state"
+                        // 与"压根没弹"在 Android 上的分别是**崩溃 vs 永久白屏** —— 后者更糟。
+                        // 宁可让移动端保持现状（panic + logcat 一行），也不把未验证的行为写进
+                        // 移动端启动路径。
+                        #[cfg(desktop)]
+                        {
+                            use tauri_plugin_dialog::DialogExt as _;
+                            let handle = app.handle().clone();
+                            // ⚠️ **只能非阻塞 `show` + 提前 `return Ok(())`**。
+                            // 插件的桌面实现是 `run_on_main_thread(...)`
+                            // （tauri-plugin-dialog-2.7.3/src/desktop.rs:222），而 setup 正跑在
+                            // 主线程上 ⇒ 阻塞版 API 的 `rx.recv()` 会钉住主线程，排在队列
+                            // 里的弹窗任务永远执行不到 = 开机自锁（与 v4.22.30 修掉的 Windows
+                            // 开窗卡死同一个形状）。让主线程回到事件循环，弹窗才会出现。
+                            handle
+                                .dialog()
+                                .message(msg)
+                                .title("Gosslan")
+                                .show(move |_| {
+                                    // 用户点掉提示之后才退出（exit 走事件循环代理，跨线程安全）
+                                    handle.exit(1);
+                                });
+                            // 提前返回 ⇒ 不 `manage(state)`、不建托盘：前端所有命令都会拿到
+                            // "state not found" 的 IPC 错误（不 panic），界面停在空白 ——
+                            // 这比"半死的界面"诚实，而且原生弹窗盖在上面。
+                            return Ok(());
+                        }
+                    }
+                    // 非降级的启动错误、以及移动端（上面那段 cfg(desktop) 不参与编译）
+                    // 都走原路：Err → 框架 panic → 退出。文案已经进 stderr，
+                    // 安卓上 `state_mark` 还会把它送进 logcat。
+                    return Err(e);
+                }
+            };
             state
                 .logger
                 .info("boot", "AppState::init 完成（设置/目录/局域网就绪）");
@@ -252,7 +312,8 @@ pub fn run() {
             // 用户在设置页关闭后持久化为关闭，重启不再联网。「恢复默认」清除该键 ⇒ 回到默认开启。
             // GOSSLAN_AUTOSTART=1 强制以 0.0.0.0 开启（headless 多实例互测，
             // examples/e2e_peer.rs 依赖此行为），且不改动已持久化的偏好。
-            #[cfg(desktop)]
+            // ⚠️ 不在 cfg(desktop) 里：移动端同样需要读 lan_enabled 设置并自动启动 ——
+            // 用户在设置里打开后、杀掉 App 再进来，LAN 应该恢复上次的状态。
             {
                 let st = state.clone();
                 tauri::async_runtime::spawn(async move {
@@ -342,6 +403,9 @@ pub fn run() {
             commands::send_friend_request,
             commands::respond_friend_request,
             commands::send_message,
+            commands::cancel_send,
+            commands::resend_message,
+            commands::recall_message,
             commands::get_messages,
             commands::get_conv_link,
             commands::get_message_count,
@@ -451,6 +515,101 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 把 commands.rs 头部 + 所有子模块文件拼接成一份完整源码。
+    ///
+    /// `include!` 只做编译期拼接，`include_str!` 看不到展开后的结果。
+    /// 这条辅助让源码守卫测试拿到"等于原始单文件"的视图。
+    fn all_commands_src() -> &'static str {
+        concat!(
+            include_str!("commands.rs"),
+            "\n",
+            include_str!("commands/system.rs"),
+            "\n",
+            include_str!("commands/network.rs"),
+            "\n",
+            include_str!("commands/dev_diag.rs"),
+            "\n",
+            include_str!("commands/channel.rs"),
+            "\n",
+            include_str!("commands/settings.rs"),
+            "\n",
+            include_str!("commands/friends.rs"),
+            "\n",
+            include_str!("commands/mobile_picker.rs"),
+            "\n",
+            include_str!("commands/chat.rs"),
+            "\n",
+            include_str!("commands/groups.rs"),
+            "\n",
+            include_str!("commands/window.rs"),
+            "\n",
+            include_str!("commands/group_files.rs"),
+            "\n",
+            include_str!("commands/files.rs"),
+            "\n",
+            include_str!("commands/share.rs"),
+            "\n",
+            include_str!("commands/helpers.rs"),
+            "\n",
+            include_str!("commands/favorites.rs"),
+            "\n",
+            include_str!("commands/routed.rs"),
+            "\n",
+            include_str!("commands/external_links.rs"),
+            "\n",
+            include_str!("commands/logs.rs"),
+            "\n",
+            include_str!("commands/chat_search.rs"),
+            "\n",
+            include_str!("commands/group_announcements.rs"),
+            "\n",
+            include_str!("commands/group_todo_media.rs"),
+            "\n",
+            include_str!("commands/group_file_dispatch.rs"),
+            "\n",
+            include_str!("commands/group_file_keys.rs"),
+        )
+    }
+
+    /// 把 db.rs 头部 + 所有子模块文件拼接成一份完整源码。
+    fn all_db_src() -> &'static str {
+        concat!(
+            include_str!("db.rs"),
+            "\n",
+            include_str!("db/settings.rs"),
+            "\n",
+            include_str!("db/clocks.rs"),
+            "\n",
+            include_str!("db/group_delete_boundary.rs"),
+            "\n",
+            include_str!("db/friends.rs"),
+            "\n",
+            include_str!("db/groups.rs"),
+            "\n",
+            include_str!("db/messages.rs"),
+            "\n",
+            include_str!("db/conversations.rs"),
+            "\n",
+            include_str!("db/message_delete.rs"),
+            "\n",
+            include_str!("db/offline_queue.rs"),
+            "\n",
+            include_str!("db/group_offline_queue.rs"),
+            "\n",
+            include_str!("db/file_transfer.rs"),
+            "\n",
+            include_str!("db/file_offline.rs"),
+            "\n",
+            include_str!("db/group_files.rs"),
+            "\n",
+            include_str!("db/read_receipts.rs"),
+            "\n",
+            include_str!("db/favorites.rs"),
+            "\n",
+            include_str!("db/recalls.rs"),
+        )
+    }
 
     /// capability 的 `windows` 模式匹配。Tauri 内部用 glob；本项目只需要支持
     /// 全匹配 / `前缀*` / `*后缀` 三种写法（够用且不引入新依赖）。
@@ -564,9 +723,13 @@ mod tests {
     /// 规则式守卫能覆盖"以后新加的命令"，名字清单不能。
     #[test]
     fn blocking_commands_run_off_the_main_thread() {
-        let src = include_str!("commands.rs");
-        // 例外必须写在这里并交代理由（当前为空：纯窗口操作天然不含下列标记）
-        const ALLOWED: [&str; 0] = [];
+        let src = all_commands_src();
+        // ⚠️ 例外清单已清空（2026-09-20）：v4.22.2 曾把 4 个开窗命令登记成例外（理由是
+        // "macOS 必须主线程调 AppKit"），结果在 Windows 上换来了更严重的故障 ——
+        // 同步命令在 IPC 回调里内联跑主线程，而 Windows 建 WebView2 会在调用线程里泵消息
+        // ⇒ 与 IPC 重入 ⇒ 持锁自锁 ⇒ 整个界面永久无响应。macOS 的约束改由
+        // `commands::logs::decorate_aux_window` 把 AppKit 调用单独投回主线程解决，
+        // 不再需要任何例外。
 
         // 重资源标记 → 人类可读的原因
         let markers: [(&str, &str); 9] = [
@@ -581,9 +744,13 @@ mod tests {
             ("block_on", "阻塞等待异步任务"),
         ];
 
+        // 建窗命令单独判：`open_*_window` 的函数体里没有上面那些重资源标记（db 访问都在
+        // 已 try_lock 的辅助函数里），光靠 markers 抓不到它 —— 而它恰恰是最不能同步的一条。
+        let window_markers = ["ensure_aux_window(", "WebviewWindowBuilder::new("];
+
         let mut offenders: Vec<String> = Vec::new();
         for (name, is_async, body) in command_bodies(src) {
-            if is_async || ALLOWED.contains(&name.as_str()) {
+            if is_async {
                 continue;
             }
             let hit: Vec<&str> = markers
@@ -593,6 +760,12 @@ mod tests {
                 .collect();
             if !hit.is_empty() {
                 offenders.push(format!("  {name}: {}", hit.join("、")));
+            }
+            if window_markers.iter().any(|m| body.contains(m)) {
+                offenders.push(format!(
+                    "  {name}: 创建窗口 —— Windows 上主线程内联建 WebView2 会泵消息、\
+                     与 IPC 回调重入 ⇒ 永久挂死（见 commands/logs.rs 的 ensure_aux_window）"
+                ));
             }
         }
         assert!(
@@ -731,12 +904,15 @@ mod tests {
                 "没在 BlePeripheral.kt 里解析到 `{expected}` —— Kotlin 写法变了就要同步更新本护栏"
             );
         }
-        // 打开/保存文件的桥：Rust 调 openWith / saveWith / writeBytesWith，
-        // Kotlin 调 nativeAttachOpenWith
+        // 打开/保存文件的桥：Rust 调 openWith / saveWith / writeBytesWith / convertHeicToJpeg
+        // / isHevcVideo / isMotionPhoto，Kotlin 调 nativeAttachOpenWith
         for (file, fns, expected) in [
             ("OpenWith.kt", &open_fns, "openWith"),
             ("OpenWith.kt", &open_fns, "saveWith"),
             ("OpenWith.kt", &open_fns, "writeBytesWith"),
+            ("OpenWith.kt", &open_fns, "convertHeicToJpeg"),
+            ("OpenWith.kt", &open_fns, "isHevcVideo"),
+            ("OpenWith.kt", &open_fns, "isMotionPhoto"),
             ("OpenWith.kt", &open_fns, "nativeAttachOpenWith"),
         ] {
             assert!(
@@ -755,8 +931,8 @@ mod tests {
         let open_registered = parse_kotlin_method_registrations(rust_open);
         assert_eq!(
             open_registered.len(),
-            3,
-            "android_open.rs 应恰好登记 3 个 Kotlin 方法（openWith + saveWith + writeBytesWith），实际 {} —— \
+            6,
+            "android_open.rs 应恰好登记 6 个 Kotlin 方法（openWith + saveWith + writeBytesWith + convertHeicToJpeg + isHevcVideo + isMotionPhoto），实际 {} —— \
              解析器失效或有人漏登记",
             open_registered.len()
         );
@@ -912,7 +1088,7 @@ mod tests {
     /// 收到同意或拒绝（`forget_pending_request`）后清除 —— 所以不会无限重发。
     #[test]
     fn friend_request_survives_a_dropped_link() {
-        let commands = include_str!("commands.rs");
+        let commands = all_commands_src();
         let i = commands
             .find("pub async fn send_friend_request(")
             .expect("send_friend_request 必须在");
@@ -925,7 +1101,7 @@ mod tests {
             body.contains("send_friend_request_via_link"),
             "发送逻辑要复用同一个实现（补发走的是同一条路径）"
         );
-        let transport = include_str!("network/transport.rs");
+        let transport = crate::network::transport_src_for_guards();
         assert!(
             transport.contains("pub async fn flush_pending_friend_request("),
             "必须有补发入口"
@@ -934,7 +1110,7 @@ mod tests {
             transport.contains("flush_pending_friend_request(state, &device_id).await;"),
             "建链/Hello 补全时必须调用补发（所有传输的建链都会走到那里）"
         );
-        let forget = rust_fn_body(transport, "pub fn forget_pending_request(");
+        let forget = rust_fn_body(&transport, "pub fn forget_pending_request(");
         assert!(
             forget.contains("pending_out_requests"),
             "收到同意/拒绝后必须清掉登记，否则会一直补发"
@@ -1111,8 +1287,28 @@ mod tests {
             "文件分块大小必须按链路能力决定（BLE 上 256 KiB 分不出片）"
         );
         assert!(
-            stream.contains("inbound_path_kind("),
+            stream.contains("resolve_stream_link("),
             "分块大小必须取自**实际选路结果**，不能按平台写死"
+        );
+        // 保序不变量：一条分片流只能待在同一条连接上（真机：多文件并发时 600MB
+        // 大文件跑到 100% 报"文件分片顺序错误"，单发同一文件必成功）。
+        // 一律用 code_flat：裸子串会被 rustfmt 拆行而静默空转。
+        let stream_f = code_flat(&stream);
+        assert!(
+            stream_f.contains("send_on_link_with_tick(&link,&chunk,FILE_STALL_TICK,")
+                && stream_f
+                    .contains("stall_tick(state,transfer_id,stream_started_ms,&mutstalled_shown)"),
+            "分片必须投到钉住的那条链路，且等待期间必须做停滞检查 —— 对端不收时发送就挂在\
+             背压上，这里是唯一的观测点（摘掉检查 = 界面冻在同一个百分比直到 deadline）"
+        );
+        assert!(
+            stream_f.contains("send_on_link(&link,&done)"),
+            "FileDone 必须排在**自己那串分片之后**走同一条链路：走 try_send 时队列满会换到\
+             空闲连接，完成帧超过在途分片先到 ⇒ 接收端判「文件传输未完成」"
+        );
+        assert!(
+            !stream_f.contains("try_send(state,peer_id,&chunk)"),
+            "文件分片不得逐条选路（跨连接乱序）"
         );
 
         let ble = include_str!("network/ble.rs");
@@ -1121,10 +1317,159 @@ mod tests {
             "「帧无法分片」只该丢这一帧：拆链路会让同连接上其它传输一起失败"
         );
 
-        let transport = include_str!("network/transport.rs");
+        let transport = crate::network::transport_src_for_guards();
         assert!(
             transport.contains("file::has_receiver(state, &transfer_id)"),
             "重复的 FileOffer 必须幂等回 accept（旧行为 reject ⇒ 对端停止重试、文件永远收不到）"
+        );
+
+        // 群路径同理：Offer / Chunk / Done 三类帧必须全在同一条链路上。
+        // 只钉分片不钉 Offer 会造出更隐蔽的分裂：Offer 是 Normal、分片是 Low，Normal 满掉
+        // 时 failover 到另一条连接 ⇒ 分片先到、密钥后到，而接收端没有该 transfer 的密钥时
+        // 是**静默 return**（不报错、不回执），这批分片就永久丢了。
+        let g = code_flat(include_str!("commands/group_file_dispatch.rs"));
+        assert!(
+            g.contains("send_on_link(&link,&offer)")
+                && g.contains("send_on_link_with_tick(&link,&chunk,file::FILE_STALL_TICK,"),
+            "群文件的 Offer 与分片必须走同一条钉住的链路（分片还要带停滞检查）"
+        );
+        assert!(
+            !g.contains("try_send(state,recipient,"),
+            "群文件三类帧都不得再走逐条选路的 try_send（跨连接乱序）"
+        );
+    }
+
+    /// **气泡前不得做 O(体积) 的整文件扫描**（真机 Mac 发 600MB：点完"卡一会儿"才出现
+    /// 发送中气泡 —— 建发送记录时先整读一遍文件算 sha256，而投递任务待会儿还要再读一遍）。
+    ///
+    /// 这条不变量很容易"顺手写回去"：它看起来只是"提前把 cid 准备好"，代价却挂在用户
+    /// 点下发送按钮之后。cid 的正确来源是投递任务（它本来就要算，用于 FileOffer 校验值），
+    /// 算完回填发送行。
+    #[test]
+    fn no_whole_file_scan_before_the_file_bubble() {
+        let files = include_str!("commands/files.rs");
+        let build = rust_fn_body(files, "fn build_file_message(");
+        assert!(
+            !build.contains("sha256_file_hex("),
+            "建发送记录前不得整读文件算哈希：那会把气泡挡在一次 O(体积) 扫描之后"
+        );
+        assert!(
+            build.contains("\"sha256\": \"\""),
+            "cid 必须以空串占位（载荷形状不能变，前端按 sha256 键取值）"
+        );
+
+        let file = include_str!("network/file.rs");
+        let body = rust_fn_body(file, "pub async fn send_file_from_path_at(");
+        assert!(
+            body.contains("spawn_blocking"),
+            "整文件哈希必须在阻塞线程池：占住 async worker 会连带拖慢其它传输"
+        );
+        assert!(
+            body.contains("fill_message_sha256"),
+            "投递任务算出的 cid 必须回填发送行，否则本地合并卡片按 cid 找不回字节"
+        );
+        assert!(
+            body.contains("backfilled") && body.contains("emit(\"message-received\", &rec)"),
+            "回填改了库就必须通知前端：只写库时内存里那条记录仍是 cid 空的版本，\
+             同一会话把刚发的文件转成合并卡片会丢掉对端的拉取钥匙（v4.22.16 的回归）"
+        );
+    }
+
+    /// **接收端判死必须把否定确认送回，而且发送端要能在分片循环里立刻看到**。
+    ///
+    /// 旧行为是"判死但谁也不告诉"：发送端把剩下的整份文件继续灌进一条已经死掉的传输，
+    /// FileDone 无人应答 → 干等一个 `FILE_ACK_IDLE` → 判"可重试" → 再整发 5 次。
+    /// 真机形状：600MB 跑到 100% 两边都显示失败，中间几十分钟界面一直"发送中"。
+    /// 这条链有**三个环节**（回帧、早注册、循环里盯），断掉任意一个都看不出差别，
+    /// 所以三个点一起钉。
+    #[test]
+    fn receiver_abort_notifies_the_sender_inside_the_loop() {
+        let tr = code_flat(&crate::network::transport_src_for_guards());
+        assert!(
+            tr.contains("iffile::fail_receive(state,&transfer_id,peer_id,&e){")
+                && tr.contains(
+                    "Message::FileCompleteAck{transfer_id:transfer_id.clone(),success:false,}"
+                ),
+            "分片判死必须回 FileCompleteAck{{success:false}}（fail_receive 返回 false 表示没有活的\
+             接收器，不重复回）"
+        );
+        assert!(
+            !tr.contains("let _=file::fail_receive(state,&transfer_id,peer_id,&e);"),
+            "不得退回「abort 了但不告诉发送端」的旧写法"
+        );
+        let f = code_flat(include_str!("network/file.rs"));
+        assert!(
+            f.contains("_=&mutack_rx=>"),
+            "分片循环必须盯着否定确认，才能当场停手而不是把剩余字节灌完"
+        );
+        assert_eq!(
+            f.matches(".insert(transfer_id.to_string(),tx)").count(),
+            2,
+            "pending_file_accept 与 pending_file_complete 各登记一次；出现第三次说明有人\
+             又把 complete 注册挪回了循环之后（那样循环里的 ack_rx 就成了死代码）"
+        );
+    }
+
+    /// **群文件投递的取消登记必须按 (transfer_id, recipient) 分键**（真机：三成员以上
+    /// 的群文件只有一个人收得到）。
+    ///
+    /// 群发是「每个可达成员各 `tokio::spawn` 一个任务、共用同一个 `transfer_id`」。
+    /// 单键时后注册的 `HashMap::insert` 会挤掉前一个任务的 `Sender`，对方的 oneshot 立刻
+    /// 以 `Err(RecvError)` 完成，而投递循环的取消分支分不清「用户真点了取消」和
+    /// 「登记被顶替」⇒ N-1 个成员以「用户取消发送」这个假原因当场中断。
+    /// 只能钉源码：这是语言级细节，行为测试要先构造出"顶替"才看得到。
+    #[test]
+    fn group_file_cancel_registry_is_scoped_per_recipient() {
+        let dispatch = code_flat(include_str!("commands/group_file_dispatch.rs"));
+        let fanout = code_flat(include_str!("commands/group_announcements.rs"));
+        assert!(
+            dispatch.contains("file_cancel_key(transfer_id,recipient)"),
+            "群投递的取消登记必须带 recipient（否则同 transfer_id 的任务互相挤掉登记）"
+        );
+        assert!(
+            !dispatch.contains(".insert(transfer_id.to_string(),cancel_tx)"),
+            "不得回退成 transfer_id 单键"
+        );
+        assert!(
+            fanout.contains("update_group_file_recipient(&dbc,&tid3,&m3,status,0.0)"),
+            "群投递出错必须给成员落终态：离线补发只捞 status='pending'，留在 sending \
+             就是「永远在发、重启也不重试」"
+        );
+    }
+
+    /// **INV-P24 第 1 条：未知帧类型必须降级，不得成为连接错误**（ADR-0007 落地①）。
+    ///
+    /// 为什么只能钉源码：这条的行为是"什么都没发生"—— 没有测试会因为**缺少**它而失败，
+    /// 而它的缺失后果极重：新版本上线任何一种新帧，老设备不是少收一条消息，
+    /// 而是**跟新设备连不上**（反序列化失败 → io::Error → reader 退出 → 重连再失败）。
+    /// 同时**握手首帧不许降级**：未认证的连接没有"看不懂就放过"的理由。
+    #[test]
+    fn unknown_wire_frame_is_tolerated_after_auth() {
+        let out = code_flat(include_str!("network/transport/outbound.rs"));
+        assert!(
+            out.contains("Err(e)ife.to_string().starts_with(\"unknownvariant\")"),
+            "未知变体必须由 serde 自己的措辞识别（不维护第二份类型清单，清单会漂移）"
+        );
+        assert!(
+            out.contains("Ok(Message::Unknown{wire_type:tag})"),
+            "未知 type 必须降级成 Message::Unknown"
+        );
+        assert!(
+            out.contains("fnread_frame") && out.contains("decode_frame(&buf)"),
+            "数据面 read_frame 必须走 decode_frame，否则降级形同不存在"
+        );
+        let preauth = rust_fn_body(
+            include_str!("network/transport/outbound.rs"),
+            "async fn read_frame_preauth",
+        );
+        assert!(
+            !preauth.contains("decode_frame"),
+            "握手首帧不得降级：非 Hello / 看不懂的帧在认证前就该拒掉"
+        );
+        let agg = code_flat(&crate::network::transport_src_for_guards());
+        assert!(
+            agg.contains("Message::Unknown{wire_type}=>{"),
+            "handle_message 必须有 Unknown 分支（忽略 + 节流日志），否则会退化成 panic 或误判"
         );
     }
 
@@ -1219,8 +1564,8 @@ mod tests {
     /// **在线看 last_seen 新鲜度**（`friend_is_online`）。
     #[test]
     fn offline_peer_stays_listed_but_is_not_online() {
-        let transport = include_str!("network/transport.rs");
-        let body = rust_fn_body(transport, "pub(crate) async fn mark_peer_offline(");
+        let transport = crate::network::transport_src_for_guards();
+        let body = rust_fn_body(&transport, "pub(crate) async fn mark_peer_offline(");
         assert!(
             !body.contains("remove(device_id)"),
             "链路断了**不能**立刻删节点条目：BLE 上「连上→退让→断开」是常态，\
@@ -1231,7 +1576,7 @@ mod tests {
             "链路快照必须立刻清掉 —— 否则聊天头部会一直显示「桥接 N」（用户实测过）"
         );
 
-        let commands = include_str!("commands.rs");
+        let commands = all_commands_src();
         assert!(
             commands.contains("fn friend_is_online("),
             "在线判据必须是独立纯函数（可单测、可护栏）"
@@ -1522,15 +1867,15 @@ mod tests {
     /// 表现成"有时候会清、有时候不清"。这里把"两条路径都要清"钉死。
     #[test]
     fn every_friend_accept_path_forgets_the_pending_request() {
-        let transport = include_str!("network/transport.rs");
-        let transport_f = code_flat(transport);
+        let transport = crate::network::transport_src_for_guards();
+        let transport_f = code_flat(&transport);
         assert_eq!(
             transport_f.matches("forget_pending_request(state,&from)").count(),
             2,
             "两条 FriendAccept 路径（直连 `Message::FriendAccept` + 跨跳 `GossipKind::FriendAccept`）\
              都必须清掉 pending —— 少一条就会让「已经是好友了，申请还挂着」复现"
         );
-        let commands = include_str!("commands.rs");
+        let commands = all_commands_src();
         let commands_f = code_flat(commands);
         assert_eq!(
             commands_f
@@ -1539,7 +1884,7 @@ mod tests {
             1,
             "`respond_friend_request` 的同意路径也要走同一个助手（别各写一遍）"
         );
-        let helper = rust_fn_body(transport, "pub fn forget_pending_request(");
+        let helper = rust_fn_body(&transport, "pub fn forget_pending_request(");
         assert!(
             helper.contains("remove(peer_id)"),
             "助手必须真的把内存态的 pending 删掉"
@@ -1556,8 +1901,8 @@ mod tests {
     /// 用户给的规则：既然 B 那边已经把 A 当好友，就等于 B 已经同意了 —— 直接走完整的同意路径。
     #[test]
     fn friend_request_from_existing_friend_auto_accepts() {
-        let transport = include_str!("network/transport.rs");
-        let helper = rust_fn_body(transport, "async fn auto_accept_if_already_friend(");
+        let transport = crate::network::transport_src_for_guards();
+        let helper = rust_fn_body(&transport, "async fn auto_accept_if_already_friend(");
         assert!(
             helper.contains("db::get_friend") && helper.contains("accept_friend_request"),
             "自动同意必须：① 真的判『他是不是已经是我的好友』；② 走**同一个** accept 实现（别各写一遍）"
@@ -1570,7 +1915,7 @@ mod tests {
             "两条 FriendRequest 路径（直连 `Message::FriendRequest` + 跨跳 `GossipKind::FriendRequest`）\
              都必须先做自动同意 —— 只修一条就会『同一件事两种行为』（这正是上一条缺陷的成因）"
         );
-        let commands = include_str!("commands.rs");
+        let commands = all_commands_src();
         assert_eq!(
             commands
                 .matches("pub(crate) async fn accept_friend_request(")
@@ -1583,7 +1928,7 @@ mod tests {
     /// **`get_pending_requests` 必须按好友关系过滤**（用户明确要求的兜底规则）。
     #[test]
     fn pending_requests_exclude_existing_friends() {
-        let commands = include_str!("commands.rs");
+        let commands = all_commands_src();
         let body = rust_fn_body(commands, "pub fn get_pending_requests(");
         assert!(
             body.contains("is_actionable_request"),
@@ -1603,7 +1948,7 @@ mod tests {
     /// `外设角色已启动 → 已停止广播` 循环，会把蓝牙栈和 CPU 打满、整个应用顿卡）。
     #[test]
     fn bt_defaults_on_everywhere() {
-        let db = include_str!("db.rs");
+        let db = all_db_src();
         let body = rust_fn_body(db, "pub fn get_bt_enabled(");
         assert!(
             body.contains("let default_on = true;"),
@@ -1633,7 +1978,7 @@ mod tests {
             tm.contains("pub preferred: bool"),
             "ChannelStatus 必须有独立的 preferred 字段（与 running 分开），否则前端只能拿运行状态猜偏好"
         );
-        let cmds = include_str!("commands.rs");
+        let cmds = all_commands_src();
         let body = rust_fn_body(cmds, "pub async fn build_runtime_snapshot(");
         assert!(
             body.contains("get_lan_enabled") && body.contains("get_bt_enabled"),
@@ -1655,7 +2000,7 @@ mod tests {
     ///    永远只能靠猜。
     #[test]
     fn notifications_are_observable_and_respect_the_switch() {
-        let transport = include_str!("network/transport.rs");
+        let transport = crate::network::transport_src_for_guards();
         assert!(
             !transport.contains("tauri_plugin_notification::NotificationExt"),
             "network 层不得再直接用插件的 show()（它把错误 spawn 掉丢了）—— 统一走 crate::notifications"
@@ -1674,7 +2019,7 @@ mod tests {
             notif.contains("map_err(|e| e.to_string())"),
             "notify-rust 的错误必须返回出来，不能吞"
         );
-        let commands = include_str!("commands.rs");
+        let commands = all_commands_src();
         assert!(
             commands.contains("pub fn send_test_notification("),
             "必须有设置页可调用的测试通知命令"
@@ -1690,7 +2035,7 @@ mod tests {
     ///    的节点也算在线（与后端 friend_is_online 同口径）。
     #[test]
     fn link_badge_and_presence_are_live() {
-        let commands = include_str!("commands.rs");
+        let commands = all_commands_src();
         let body = rust_fn_body(commands, "pub async fn get_conv_link(");
         assert!(
             body.contains("has_link") && body.contains("hop: 0"),
@@ -1710,7 +2055,7 @@ mod tests {
     /// resolve_media_path 直接报 Gone，前端会把"正在接收"的图片标成「已被清理」并缓存。
     #[test]
     fn in_flight_media_is_not_reported_as_deleted() {
-        let commands = include_str!("commands.rs");
+        let commands = all_commands_src();
         let body = rust_fn_body(commands, "fn resolve_media_path(");
         assert!(
             body.contains("file_receivers")
@@ -1723,7 +2068,7 @@ mod tests {
     /// **未完成的内容要能自动重试，且同样受能力协商约束**（ADR-0019 Phase 1）。
     #[test]
     fn incomplete_content_is_auto_retried_behind_capability_gate() {
-        let transport = include_str!("network/transport.rs");
+        let transport = crate::network::transport_src_for_guards();
         assert!(
             transport.contains("async fn retry_incomplete_content("),
             "必须实现建链自动重试"
@@ -1732,7 +2077,7 @@ mod tests {
             transport.contains("CONTENT_FEATURE_PULL"),
             "自动重试也必须走能力协商（旧端不发新帧）"
         );
-        let cmds = include_str!("commands.rs");
+        let cmds = all_commands_src();
         assert!(
             cmds.contains("pub fn get_content_transfers("),
             "必须有统一状态查询命令（前端气泡据此显示）"
@@ -1777,7 +2122,7 @@ mod tests {
     /// 正确写法：锁内只 `clone` 发送端快照，发送放到锁外（与心跳发送同一纪律）。
     #[test]
     fn never_awaits_while_holding_the_links_lock() {
-        let cmds = include_str!("commands.rs");
+        let cmds = all_commands_src();
         for f in [
             "pub async fn update_profile(",
             "pub async fn broadcast_chat_style(",
@@ -1803,7 +2148,7 @@ mod tests {
             !sig.contains("content_features"),
             "content_features 不得进入签名材料（否则老端验签失败）"
         );
-        let cmds = include_str!("commands.rs");
+        let cmds = all_commands_src();
         let body = rust_fn_body(cmds, "pub async fn request_content(");
         assert!(
             body.contains("CONTENT_FEATURE_PULL"),
@@ -1816,7 +2161,7 @@ mod tests {
             body_by_cid.contains("CONTENT_FEATURE_PULL"),
             "request_content_by_cid 也必须按对端能力位协商"
         );
-        let transport = include_str!("network/transport.rs");
+        let transport = crate::network::transport_src_for_guards();
         assert!(
             transport.contains("find_source"),
             "服务端必须按 cid 找本地内容"
@@ -1824,6 +2169,214 @@ mod tests {
         assert!(
             transport.contains("db::get_group"),
             "群成员也应能作为拉取请求方（A→B 成功后，C 可从已收完的 B 拉）"
+        );
+    }
+
+    /// **对端版本必须「声明但不签名、记录但会回收」**（ADR-0007 决策 1 / INV-P24）。
+    ///
+    /// 为什么只能钉源码：这三个环节各自的行为都是"什么都没发生"，
+    /// 没有哪个测试会因为**漏了**其中一条而失败，而每条漏掉的后果都不轻：
+    /// - 进了签名材料 ⇒ 老端验签失败 ⇒ "报版本"本身变成破坏性变更（老设备直接连不上）；
+    /// - 不记录 ⇒ 未知帧日志与诊断面板都无从解释"到底谁版本高"；
+    /// - 不回收 ⇒ 节点进出比删好友频繁得多，长跑后这张表无界增长。
+    #[test]
+    fn peer_version_is_declared_not_signed_and_reclaimed() {
+        let proto = include_str!("protocol.rs");
+        let sig = rust_fn_body(proto, "pub fn hello_signing_bytes(");
+        for f in ["protocol_version", "app_version"] {
+            assert!(
+                !sig.contains(f),
+                "{f} 不得进入 Hello 签名材料（否则老端验签失败，加字段=断兼容）"
+            );
+        }
+        let transport = crate::network::transport_src_for_guards();
+        let built = rust_fn_body(&transport, "pub fn build_signed_hello(");
+        assert!(
+            code_flat(&built).contains("protocol_version:Some(crate::protocol::PROTOCOL_VERSION)"),
+            "本机 Hello 必须声明 PROTOCOL_VERSION，否则对端永远看不到我们的版本"
+        );
+        assert!(
+            code_flat(&built).contains("app_version:Some(crate::protocol::current_app_version("),
+            "本机 Hello 必须声明 app_version（只给人看，但诊断面板要靠它认人）"
+        );
+        let hello_arm = rust_fn_body(&transport, "pub async fn handle_message(");
+        assert!(
+            hello_arm.contains("peer_versions"),
+            "Hello 到达时必须记录对端声明的版本（TCP 与 BLE 共用这一个写入点）"
+        );
+        let cmds = all_commands_src();
+        assert!(
+            cmds.contains("result.peer_versions = collect_peer_versions("),
+            "诊断面板必须真的把对端版本取出来 —— 只存不读等于没有"
+        );
+        let disc = include_str!("network/discovery.rs");
+        assert!(
+            disc.contains("peer_versions"),
+            "sweep_peers 必须回收 peer_versions（与 peer_content_features 同一回收点）"
+        );
+    }
+
+    /// 启动期"数据比本机新 ⇒ 拒绝打开"这条路径的三个形状都必须钉住（AI_RULES §13）。
+    ///
+    /// ① **判定早于任何写操作**：`execute_batch(SCHEMA)` 是 `CREATE TABLE IF NOT EXISTS`，
+    ///    看着无害，但它确实写文件；先写再判，`downgrade_message()` 里"数据没有被修改"就成了
+    ///    谎话，而用户正是凭这句话决定"可以放心装新版本"。（回归过的位置：v4.22.36 之前
+    ///    判定在 `run_migrations` 里 = SCHEMA 之后。）
+    /// ② **调用方按类型分支**，不许 `to_string().contains("user_version")` —— 协议层已经
+    ///    因为按错误字符串分类吞过一整条消息（INV-P24 第 2 条，v4.22.34）。
+    /// ③ **弹窗只能非阻塞**：`blocking_show()` 的桌面实现是 `run_on_main_thread`
+    ///    （tauri-plugin-dialog-2.7.3/src/desktop.rs:222），而 `setup` 正跑在主线程上 ⇒
+    ///    排在队列里的弹窗永远执行不到 = 开机自锁，与 v4.22.30 修掉的 Windows 开窗卡死
+    ///    同一个形状。写错成 blocking 版本不会报错，只会**永远白屏**，所以必须机器拦。
+    #[test]
+    fn boot_downgrade_refusal_is_typed_precedes_writes_and_non_blocking() {
+        /// 只留**代码行**：这条守卫判的是"有没有真的调用"，注释里提到 API 名字是
+        /// 常事（本条第一次跑就被自己的注释判红了），所以先把行注释剥掉 ——
+        /// 既不让散文误伤守卫，也不让散文冒充成实现。
+        fn code_only(src: &str) -> String {
+            src.lines()
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+        let db = code_only(include_str!("db.rs"));
+        // ⚠️ 只取**测试模块之前**那段代码：守卫自己就在 lib.rs 里，全文一起扫的话
+        // 下面这几个字面串会先命中守卫自己的源码 —— 正判据永远为真、负判据永远为假，
+        // 这条守卫会变成看着严密实际空转的那种。
+        let lib = code_only(
+            include_str!("lib.rs")
+                .split("#[cfg(test)]")
+                .next()
+                .unwrap_or_default(),
+        );
+
+        let check = "if current > DB_VERSION";
+        let write = "conn.execute_batch(SCHEMA)";
+        assert_eq!(
+            db.matches(check).count(),
+            1,
+            "降级判定全仓只许一处（第二处迟早与第一处口径不同）"
+        );
+        assert_eq!(
+            db.matches(write).count(),
+            1,
+            "本机 schema 只许在一处写入，否则这条顺序断言无法判定位置"
+        );
+        assert!(
+            db.find(check).unwrap() < db.find(write).unwrap(),
+            "降级判定必须早于 execute_batch(SCHEMA)：先写再判 = 「数据未被修改」是谎话"
+        );
+
+        assert!(
+            lib.contains("downcast_ref::<db::InitError>()"),
+            "启动期必须按 db::InitError 类型分支，而不是按错误字符串猜"
+        );
+        assert!(
+            !lib.contains("blocking_show"),
+            "主线程上 blocking_show() 会自锁（弹窗任务排在被钉住的主线程队列里）"
+        );
+        assert!(
+            lib.contains(".show(move |_|"),
+            "降级提示必须非阻塞排队 + 提前 return，让主线程回到事件循环"
+        );
+    }
+
+    /// INV-P24 第 4 条的**接线**：门控判据存在、唯一，而且 1:1 发送路径真的问它。
+    ///
+    /// 为什么不能只测判据函数：判据写得再对，发送点不调用 = 没有门控。这条守卫
+    /// 就是为了让"忘了接"这件事变成编译期之后立刻能看到的红。
+    /// 背景（本轮 RCA 查出来的真实现场，不是假想需求）：`MsgKind::Merge` 是 V1 期间
+    /// （`9b26006`）才加的，v4.8.2 / v4.18.10 / v4.20.0 三个已发布版本里没有这个变体 ——
+    /// 它们的 `ChatMessage.kind` 仍是枚举，收到 `kind:"merge"` 会整帧丢掉。
+    #[test]
+    fn new_message_kinds_are_gated_at_the_send_path() {
+        let proto = include_str!("protocol.rs");
+        for f in [
+            "pub fn kind_required_feature(",
+            "pub fn kind_allowed_by_features(",
+        ] {
+            assert_eq!(
+                proto.matches(f).count(),
+                1,
+                "{f} 全仓只许一处，第二处迟早口径不同"
+            );
+        }
+        let table = rust_fn_body(proto, "pub fn kind_required_feature(");
+        assert!(
+            table.contains("\"merge\""),
+            "merge 必须仍在门控表里：v4.20.0 及更早的 MsgKind 没有这个变体"
+        );
+
+        let chat = include_str!("commands/chat.rs");
+        let body = rust_fn_body(chat, "pub async fn send_message(");
+        let gate = body
+            .find("kind_allowed_by_features(")
+            .expect("1:1 发送路径必须问门控判据，否则老对端会静默丢帧");
+        // 给自己发的那条分支在前 —— 自聊不经过网络，不该被判"对方版本不支持"。
+        let self_branch = body
+            .find("insert_self_message(")
+            .expect("自发消息分支不见了，顺序判据失去锚点");
+        assert!(
+            self_branch < gate,
+            "门控必须排在自发消息分支之后，否则给自己发合并转发也会被挡"
+        );
+        // 挡在公钥查找之前：这条根本不会发出去，不该再触发 who_has 探测白等 1.2s。
+        let probe = body
+            .find("let pubkey = {")
+            .expect("公钥查找块不见了，顺序判据失去锚点");
+        assert!(
+            gate < probe,
+            "门控要早于公钥探测，白探测一次会卡用户 1.2 秒"
+        );
+    }
+
+    /// 发送进度必须落在"已写出链路"上，不许回到"已入队"（v4.22.37 的用户可见症状）。
+    ///
+    /// 三处同时成立才有意义，所以一起钉：
+    ///   ① writer 那唯一的证据点必须**累加片数**（只记时刻的话进度算不出来）；
+    ///   ② 状态表的值必须是带 `chunks` 的结构，而不是裸时间戳；
+    ///   ③ `stream_file` 的进度与 `file-progress` 事件必须用换算后的 `on_wire` ——
+    ///      旧写法 `received: sent` 就是那个"262MB 还在队列里就 100%"的假象。
+    /// 判据都取**函数体**而不是全文：`received: sent` 在中继发文件那条路径里是合法的
+    /// （另一套语义），全文一扫会误伤。
+    #[test]
+    fn file_send_progress_counts_wire_not_queue() {
+        let file = include_str!("network/file.rs");
+        let body = rust_fn_body(file, "async fn stream_file(");
+        assert!(
+            body.contains("wire_progress_bytes("),
+            "stream_file 的进度必须经 wire_progress_bytes 换算"
+        );
+        assert!(
+            body.contains("file_wire_chunks_at("),
+            "换算必须读 writer 记的已写出片数，否则等于没换"
+        );
+        assert!(
+            !body.contains("received: sent"),
+            "file-progress 不许再直接发入队量（那就是 100% 假象）"
+        );
+        // ④ 记账的生命周期：装了回收守卫，且**没有第二处手写清理**。
+        //    只测 `WireLedger` 的 Drop 语义不够 —— 把 stream_file 里那行装守卫的代码删掉，
+        //    Drop 测试照样全绿（它测的是辅助类型，不是接线）。
+        assert!(
+            body.contains("WireLedger {"),
+            "stream_file 必须装写出记账的回收守卫，否则失败路径的残留会让重试退回入队口径"
+        );
+        assert!(
+            !body.contains("clear_file_wire_progress"),
+            "清理只许有 WireLedger::drop 一处，第二处迟早与它口径不同"
+        );
+
+        let transport = crate::network::transport_src_for_guards();
+        let mark = rust_fn_body(&transport, "pub(crate) fn mark_file_wire_progress(");
+        assert!(
+            code_flat(&mark).contains("p.chunks=p.chunks.saturating_add(1)"),
+            "writer 的写出证据点必须累加片数"
+        );
+        let state = include_str!("state.rs");
+        assert!(
+            state.contains("Mutex<HashMap<String, FileWireProgress>>"),
+            "进展表的值必须是 {{at_ms, chunks}} 结构，时间戳单独一个字段撑不起进度口径"
         );
     }
 
@@ -1946,14 +2499,14 @@ mod tests {
     /// （否则用户只能自己猜，或者干脆重启）。
     #[test]
     fn removing_a_friend_also_drops_the_in_memory_identity_binding() {
-        let cmd = include_str!("commands.rs");
+        let cmd = all_commands_src();
         let body = rust_fn_body(cmd, "pub async fn remove_friend(");
         assert!(
             body.contains("forget_peer_identity"),
             "`remove_friend` 必须调 `forget_peer_identity` —— 只删 friends 表那一行，\
              内存里的旧公钥会继续当信任根用（症状：删了好友重新加也没用，必须重启）"
         );
-        let tr = include_str!("network/transport.rs");
+        let tr = crate::network::transport_src_for_guards();
         // 对方解除关系那条路径（Message::FriendRemove）同样要清
         let start = tr
             .find("Message::FriendRemove {")
@@ -2038,7 +2591,7 @@ mod tests {
     /// 有一部分就是这个假状态造成的误导）。
     #[test]
     fn runtime_snapshot_reports_real_bluetooth_runtime() {
-        let commands = include_str!("commands.rs");
+        let commands = all_commands_src();
         let body = rust_fn_body(commands, "pub async fn build_runtime_snapshot(");
         assert!(
             body.contains("runtime_state"),
@@ -2057,7 +2610,7 @@ mod tests {
     /// 现在旧的"半份状态"命令必须**不存在**，且事件必须**带载荷**（`RuntimeSnapshot`）。
     #[test]
     fn runtime_state_has_a_single_source() {
-        let commands = include_str!("commands.rs");
+        let commands = all_commands_src();
         for gone in [
             "pub async fn get_channel_status(",
             "pub fn get_network_status(",
@@ -2143,7 +2696,7 @@ mod tests {
     #[cfg(desktop)]
     #[test]
     fn aux_windows_open_their_own_document() {
-        let commands = include_str!("commands.rs");
+        let commands = all_commands_src();
 
         let mut urls: Vec<String> = Vec::new();
         for part in commands.split("WebviewUrl::App(").skip(1) {
@@ -2214,7 +2767,7 @@ mod tests {
     #[cfg(desktop)]
     #[test]
     fn aux_window_open_is_singleton_serialized_and_resident() {
-        let commands = include_str!("commands.rs");
+        let commands = all_commands_src();
 
         for signature in [
             "pub fn open_settings_window(",
@@ -2334,7 +2887,7 @@ mod tests {
     #[cfg(desktop)]
     #[test]
     fn group_todos_window_label_derives_from_group_id() {
-        let commands = include_str!("commands.rs");
+        let commands = all_commands_src();
         let body = rust_fn_body(commands, "pub fn open_group_todos_window(");
         assert!(
             !body.is_empty(),
@@ -2371,7 +2924,7 @@ mod tests {
     /// 永不消失的 outbox 行 —— 属于只能靠护栏拦的那类退化。
     #[test]
     fn self_chat_stays_local() {
-        let commands = include_str!("commands.rs");
+        let commands = all_commands_src();
         let body = rust_fn_body(commands, "fn insert_self_message(");
         assert!(
             !body.is_empty(),
@@ -2394,6 +2947,79 @@ mod tests {
         assert!(
             body.contains("db::insert_message("),
             "自聊消息必须只落本地库（`db::insert_message`）"
+        );
+    }
+
+    /// 单聊重发必须先重新密封再入队（2026-09-19 P0 回归护栏）。
+    ///
+    /// 为什么必须守：`messages` 表存的是**明文**（见 send_message 的「本地落库（明文）」），
+    /// resend 若直接把 `rec.content` 当线上内容，就没有 `enc1:` 前缀 ⇒
+    /// 接收端 `open_direct_content` 拒收（不落库、不 Ack）⇒ 重发实际是 no-op，
+    /// 那一行 outbox 还会被 sweeper 再次判 failed —— 用户看到的是「点重发没反应」。
+    /// 同理 `seq: 0` 会让接收端把重发消息排到会话最前（排序按 seq，INV-P09），两端顺序分裂。
+    /// 两侧都能「正常加密」，普通单测测不出来，只能源码护栏钉死。
+    #[test]
+    fn resend_reseals_before_enqueue() {
+        let commands = all_commands_src();
+        let body = rust_fn_body(commands, "async fn resend_message(");
+        assert!(
+            !body.is_empty(),
+            "找不到 resend_message（这条护栏会变成空转）"
+        );
+        assert!(
+            !body.contains("content: rec.content.clone()"),
+            "重发不得把库内明文直接上线：没有 enc1: 前缀接收端会拒收"
+        );
+        assert!(
+            !body.contains("seq: 0"),
+            "重发必须沿用原逻辑 seq：seq=0 会让接收端排到会话最前（INV-P09）"
+        );
+        assert!(
+            body.contains("crypto::seal") && body.contains("enc1:"),
+            "重发必须用对端当前公钥重新密封（crypto::seal + enc1: 前缀），与 send_message 同口径"
+        );
+    }
+
+    /// gossip / 不透明帧的转发候选必须来自**可达链路集**（2026-09-19 审计 P0#7）。
+    ///
+    /// 为什么必须守：`peers` 是知识集（Presence/announce 跨跳登记，异网段节点在里面
+    /// 却没有链路）。历史版本 `choose_fanout` 的三个调用点都拿 `peers.keys()` 当候选，
+    /// 跨网段时扇出全部拨向不可达节点、又被 `let _ =` 静默吞掉 —— 「节点互相帮转发」
+    /// 在最需要它的场景无声失效。界面上**看不出任何异常**（本地收发一切正常），
+    /// 只有跨网段压测才暴露，正是只能靠护栏钉死的那类退化。
+    #[test]
+    fn gossip_fanout_targets_reachable_links() {
+        let transport = crate::network::transport_src_for_guards();
+        assert!(
+            !transport.contains("choose_fanout(&peers"),
+            "转发候选不得再来自 peers（知识集）—— 用 reachable_neighbors（links 中有非空链路的邻居）"
+        );
+        // 定义 1 处 + 调用 3 处（gossip 广播分支 / 定向洪泛兜底 / OpaqueExternal）
+        let uses = transport.matches("reachable_neighbors(").count();
+        assert!(
+            uses >= 4,
+            "reachable_neighbors 应有定义+3 个转发调用点，实际 {uses} 处 —— 有新转发点没走可达集？"
+        );
+    }
+
+    /// 数据面转发必须吃中继策略（2026-09-19 审计 P0#5 回归护栏）。
+    ///
+    /// 为什么必须守：控制面（gossip）从 ADR-0016 起就走 `decide_forward`，而数据面
+    /// （定向借道 / RelayChunk / OpaqueExternal）曾长期裸奔 —— 用户把中继设成
+    /// 「关闭」，文件分片照样借他的带宽一跳一跳地跑，**设置项只有一半是真的**。
+    /// 这类"开关只管一条路径"的分裂在 UI 上完全看不出来，只能源码钉死。
+    #[test]
+    fn relay_data_plane_respects_policy() {
+        let transport = crate::network::transport_src_for_guards();
+        let wired = transport.matches("decide_relay_from_peer(").count();
+        assert!(
+            wired >= 3,
+            "数据面三个转发点（定向借道 / RelayChunk / OpaqueExternal）都要过授权闸，实际 {wired} 处"
+        );
+        // gossip 控制面原有闸不得被拆掉
+        assert!(
+            transport.contains("decide_forward("),
+            "gossip 转发的 relay 授权闸（decide_forward）被删了？"
         );
     }
 }

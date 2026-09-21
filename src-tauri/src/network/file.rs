@@ -20,7 +20,8 @@ use tokio::time::Duration;
 use crate::crypto;
 use crate::db;
 use crate::network::transport::{
-    clear_file_wire_progress, file_wire_progress_at, resolve_member_x25519, try_send,
+    clear_file_wire_progress_in, file_wire_chunks_at, file_wire_progress_at, resolve_member_x25519,
+    send_on_link, try_send,
 };
 use crate::protocol::{Message, ShareEntry, FILE_CHUNK};
 use crate::state::{AppState, FileDoneInfo, FileFailedInfo, FileReceiver};
@@ -78,6 +79,27 @@ pub fn chunk_size_for_path(path: &str) -> usize {
     }
 }
 
+/// `AppState::file_send_cancels` 的键：`transfer_id` + 收件人，用 NUL 连接。
+///
+/// 为什么不能只用 `transfer_id`（真机：三成员以上群文件只有一人收得到）：
+/// 群文件是**每个成员一个投递任务、共用同一个 `transfer_id`**
+/// （`group_announcements.rs` 对每个可达成员 `tokio::spawn`）。单键时后注册的
+/// `HashMap::insert` 会把前一个任务的 `Sender` 直接挤掉，而 oneshot 的 `Receiver`
+/// 在 `Sender` 被 drop 时立刻以 `Err(RecvError)` 完成 —— 投递循环里
+/// `_ = &mut cancel_rx => ...` 这条分支分不清「用户真点了取消」和「登记被顶替」，
+/// 于是 N-1 个成员以「用户取消发送」这个**假原因**当场中断，而且永远停在 sending。
+///
+/// 为什么用 NUL 不用 `:`：`transfer_id`（uuid）与 `device_id` 都不会含 NUL，
+/// 前缀匹配因此不可能误伤「id 恰好以另一个 id 开头」的兄弟条目。
+pub fn file_cancel_key(transfer_id: &str, recipient: &str) -> String {
+    format!("{transfer_id}\u{0}{recipient}")
+}
+
+/// 取消入口用的前缀：同一 `transfer_id` 下所有收件人的键都以它开头。
+pub fn file_cancel_prefix(transfer_id: &str) -> String {
+    format!("{transfer_id}\u{0}")
+}
+
 /// SHA-256 hex 表示校验（64 位 hex，大小写均可；比较时统一小写）。
 pub fn valid_sha256_hex(s: &str) -> bool {
     s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
@@ -94,6 +116,55 @@ pub fn valid_sha256_hex(s: &str) -> bool {
 /// 但**如果 10 分钟里连续发续到哪里都没取得进展**，基本就是链路反复通一下又断，
 /// 继续等没有收益。LAN 上 10 分钟能传 ~600MB（2MB/s），完全够。
 pub const FILE_SEND_DEADLINE: Duration = Duration::from_secs(10 * 60);
+
+/// 按体积自适应的整体发送期限（2026-09-19 真机：一次多选里 500-600MB 的视频
+/// 在普通 Wi-Fi/中继链路上跑不完 10 分钟固定窗口 ⇒ 必被判超时、界面卡死成失败）。
+/// 保守吞吐 512 KiB/s 估算，下限 10min、上限 **1h**（512 KiB/s 下 1h ≈ 1.8GB，
+/// 再大的文件也该由断点续传的 `.part` + outbox 重试兜底，而不是无限挂着发送任务）。
+///
+/// 为什么原来敢给 2h、现在敢压到 1h：真正该管"对端不收"的是下面的**停滞判定**
+/// （`stall_verdict`，以 writer 实发为准），它 60s 就退出。deadline 只负责
+/// "整件事最多占多久资源"，不再兼任停滞兜底。
+pub fn send_deadline_for(size: u64) -> Duration {
+    const MIN: Duration = FILE_SEND_DEADLINE;
+    const CAP: Duration = Duration::from_secs(60 * 60);
+    const BYTES_PER_SEC: u64 = 512 * 1024;
+    let est = Duration::from_secs(size / BYTES_PER_SEC + 60);
+    est.clamp(MIN, CAP)
+}
+
+/// 连续这么久没有再**写出**任何一片 ⇒ 界面上把这条传输标成「网络停滞」。
+/// 取 15s：LAN 上一条 256KiB 片的间隔是毫秒级，15s 静默已经不是抖动而是对端读不动。
+pub const FILE_STALL_WARN_MS: i64 = 15_000;
+
+/// 连续停滞超过这个时长 ⇒ 放弃本次尝试（可重试）：outbox 会按对端真实已收字节续传，
+/// 比让发送任务在背压里干等到 deadline（最长 1h）诚实得多。
+pub const FILE_STALL_ABORT_MS: i64 = 60_000;
+
+/// 停滞判定的档位（**纯函数**输出，副作用留给调用方：发事件 / 退出）。
+#[derive(Debug, PartialEq, Eq)]
+pub enum StallVerdict {
+    /// 链路上还在实发，一切正常。
+    Healthy,
+    /// 已经静默到该提醒用户的程度，但还在等。
+    Warn,
+    /// 静默太久 ⇒ 本次尝试该放弃了。
+    Abort,
+}
+
+/// 只判"停滞到哪个档"。
+///
+/// `idle_ms` 必须是**距最近一次成功写出该 transfer 分片**的毫秒数（调用方负责
+/// 用本次尝试的起始时间做下限，否则上一轮 attempt 留下的旧时间戳会让第一轮就 Abort）。
+pub fn stall_verdict(idle_ms: i64) -> StallVerdict {
+    if idle_ms >= FILE_STALL_ABORT_MS {
+        StallVerdict::Abort
+    } else if idle_ms >= FILE_STALL_WARN_MS {
+        StallVerdict::Warn
+    } else {
+        StallVerdict::Healthy
+    }
+}
 
 /// 中继文件发送 deadline（send_file_via_relay）。比直传短：
 /// - relay 没有 FileAccept 握手和 FileCompleteAck，只是 RelayFileOffer + RelayChunk 盲发
@@ -172,10 +243,43 @@ pub async fn send_file_from_path_at(
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "unnamed".to_string());
+    // 📄 关键日志：文件发送入口
+    state.logger.info(
+        "file",
+        format!(
+            "[FILE] offer-sending peer={peer_id} tid={transfer_id} name={name} size={size} resume_from={from_bytes}"
+        ),
+    );
 
     // ---- E2EE：本 transfer 独立的随机文件会话密钥（CSPRNG），仅存内存 ----
     let file_key = crypto::random_key();
-    let file_sha256 = sha256_file_hex(&path).map_err(SendFileError::permanent)?;
+    // 整文件哈希放阻塞线程池（群路径 group_announcements.rs 早就是这么做的）：这是 async
+    // 任务，600MB 的同步整读会把一个 tokio worker 占满，连带别的路径一起卡。
+    let hash_path = path.clone();
+    let file_sha256 = tokio::task::spawn_blocking(move || sha256_file_hex(&hash_path))
+        .await
+        .map_err(|e| SendFileError::permanent(format!("哈希任务失败：{e}")))?
+        .map_err(SendFileError::permanent)?;
+    // 发送行的 sha256 在建记录时是空的（不能让气泡等一次 O(体积) 扫描），这里用真正用于
+    // 校验的那份补上 —— 同一值、幂等，重试的后续尝试进来也是 no-op。
+    let msg_id = format!("file-{transfer_id}");
+    let backfilled = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::fill_message_sha256(&dbc, &msg_id, &file_sha256).unwrap_or(false)
+    };
+    if backfilled {
+        // 改了库还必须让前端也看到：只写库时内存里那条记录仍是 cid 空的版本，
+        // 用户在同一会话里把刚发出去的文件转成合并卡片时，卡片按 `sha256`(=cid) 带出去，
+        // 对端就再也拉不回这份内容（v4.22.16 引入的回归）。
+        // 自记录不会触发通知（`maybeNotify` 对 sender_id==自己直接 return）。
+        let rec = {
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+            db::get_message_record(&dbc, &msg_id)
+        };
+        if let Some(rec) = rec {
+            let _ = state.app.emit("message-received", &rec);
+        }
+    }
     let receiver_pubkey = resolve_member_x25519(state, peer_id);
     let sealed_key_b64 = (|| {
         let pubkey = receiver_pubkey.as_deref()?;
@@ -226,19 +330,20 @@ pub async fn send_file_from_path_at(
 
     let _ = from_seq;
     // ---- 用户取消注册表（L3 fix: 提前到 deadline 外层注册，覆盖 E2E） ----
-    let transfer_id_owned = transfer_id.to_string();
+    // 键含收件人：见 `file_cancel_key`（单键会让同 transfer_id 的并发投递互相挤掉登记）。
+    let cancel_key = file_cancel_key(transfer_id, peer_id);
     let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel::<()>();
     state
         .file_send_cancels
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .insert(transfer_id_owned.clone(), cancel_tx);
+        .insert(cancel_key.clone(), cancel_tx);
     let cancel_cleanup = || {
         state
             .file_send_cancels
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .remove(&transfer_id_owned);
+            .remove(&cancel_key);
     };
 
     // ---- 整体 deadline（L3 fix: 从 Offer 循环入口开始计时，覆盖 E2E） ----
@@ -248,7 +353,8 @@ pub async fn send_file_from_path_at(
     //
     // 现在 timeout 包住 Offer 循环全部（3 次 attempt + 每次 accept 后的 stream_file），
     // 从第一次发 Offer 开始计时，确保 E2E 有硬上限。
-    let result = tokio::time::timeout(FILE_SEND_DEADLINE, async {
+    let send_deadline = send_deadline_for(size);
+    let result = tokio::time::timeout(send_deadline, async {
         // 发送 Offer → 等接受。接收端若回 FileReject.received = N（它已有 N 字节），
         // 就从该偏移续发 —— 发送端永远以接收端的真实进度为准，绝不重头覆盖。
         let mut resume_from = from_bytes;
@@ -275,10 +381,28 @@ pub async fn send_file_from_path_at(
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .remove(transfer_id);
+                state.logger.error(
+                    "file",
+                    format!(
+                        "[FILE] offer SEND FAILED peer={peer_id} tid={transfer_id} err={e}"
+                    ),
+                );
                 return Err(SendFileError::retryable(format!("建立文件传输失败：{e}")));
             }
+            state.logger.info(
+                "file",
+                format!(
+                    "[FILE] offer SENT peer={peer_id} tid={transfer_id} waiting FileAccept (15s)"
+                ),
+            );
             match tokio::time::timeout(Duration::from_secs(15), rx).await {
                 Ok(Ok(Ok(()))) => {
+                    state.logger.info(
+                        "file",
+                        format!(
+                            "[FILE] accept RECEIVED peer={peer_id} tid={transfer_id} → start streaming"
+                        ),
+                    );
                     // H1 fix: stream_file 现在直接返回 SendFileError，外层不再需要
                     // 字符串 contains 手动判定 retryable/permanent。
                     return stream_file(
@@ -309,6 +433,12 @@ pub async fn send_file_from_path_at(
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
                         .remove(transfer_id);
+                    state.logger.warn(
+                        "file",
+                        format!(
+                            "[FILE] offer TIMEOUT/REJECTED peer={peer_id} tid={transfer_id} → abort"
+                        ),
+                    );
                     return Err(SendFileError::retryable("对方未接受文件"));
                 }
             }
@@ -322,11 +452,29 @@ pub async fn send_file_from_path_at(
     cancel_cleanup();
 
     match result {
-        Ok(inner) => inner,
-        Err(_elapsed) => Err(SendFileError::retryable(format!(
-            "文件发送超时（单次尝试超过 {}s，链路长时间未恢复）",
-            FILE_SEND_DEADLINE.as_secs()
-        ))),
+        Ok(inner) => {
+            state.logger.info(
+                "file",
+                format!(
+                    "[FILE] COMPLETED peer={peer_id} tid={transfer_id} ok={}",
+                    inner.is_ok()
+                ),
+            );
+            inner
+        }
+        Err(_elapsed) => {
+            state.logger.warn(
+                "file",
+                format!(
+                    "[FILE] DEADLINE peer={peer_id} tid={transfer_id} elapsed > {}s → abort",
+                    send_deadline.as_secs()
+                ),
+            );
+            Err(SendFileError::retryable(format!(
+                "文件发送超时（本次尝试超过 {}s 链路未恢复，将从断点自动续传）",
+                send_deadline.as_secs()
+            )))
+        }
     }
 }
 /// 无直连时，借**一跳中继**把文件发给 peer_id（接收方是请求下载的共享目录主人）。
@@ -396,19 +544,20 @@ pub async fn send_file_via_relay(
     };
 
     // ---- cancel + timeout 注册 ----
-    let transfer_id_owned = transfer_id.to_string();
+    // 键含收件人（与直传同口径，见 `file_cancel_key`）。
+    let cancel_key = file_cancel_key(transfer_id, peer_id);
     let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel::<()>();
     state
         .file_send_cancels
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .insert(transfer_id_owned.clone(), cancel_tx);
+        .insert(cancel_key.clone(), cancel_tx);
     let cancel_cleanup = || {
         state
             .file_send_cancels
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .remove(&transfer_id_owned);
+            .remove(&cancel_key);
     };
 
     let result = tokio::time::timeout(RELAY_FILE_SEND_DEADLINE, async {
@@ -487,6 +636,25 @@ pub async fn send_file_via_relay(
             )
             .ok();
         }
+        // 最后一片可能因节流(250ms)跳过了 emit，收尾必须发完整进度 100% + done 事件，
+        // 否则前端可能卡在 "发送中 0%"（DB 已 done 但前端没收到事件推进）。
+        let _ = state.app.emit(
+            "file-progress",
+            &crate::state::FileProgress {
+                transfer_id: transfer_id.to_string(),
+                received: size,
+                total: size,
+            },
+        );
+        let _ = state.app.emit(
+            "file-done",
+            &crate::state::FileDoneInfo {
+                transfer_id: transfer_id.to_string(),
+                name: name.clone(),
+                size,
+                path: path.to_string_lossy().to_string(),
+            },
+        );
         Ok(())
     })
     .await;
@@ -500,6 +668,89 @@ pub async fn send_file_via_relay(
             RELAY_FILE_SEND_DEADLINE.as_secs()
         )),
     }
+}
+
+/// 停滞检查的醒来间隔：对端不收时最长 5s 才反映到界面，够用且不制造事件噪声。
+pub const FILE_STALL_TICK: Duration = Duration::from_secs(5);
+
+/// 把"发事件"和"要不要放弃"这两件副作用集中在一处（单聊与群发共用）。
+///
+/// `started_ms` 必须是**本次尝试**的起点：上一轮 attempt 留下的 writer 时间戳会让
+/// 第一个 tick 就被判成停滞（`max` 兜住这个下界）。
+pub(crate) fn stall_tick(
+    state: &AppState,
+    transfer_id: &str,
+    started_ms: i64,
+    shown: &mut bool,
+) -> crate::network::transport::Tick {
+    let idle = db::now_ms() - file_wire_progress_at(state, transfer_id).max(started_ms);
+    let abort = stall_verdict(idle) == StallVerdict::Abort;
+    if abort {
+        state.logger.warn(
+            "file",
+            format!(
+                "[STALL] transfer={transfer_id} 已静默 {idle}ms ⇒ 放弃本次尝试，交 outbox 续传"
+            ),
+        );
+    }
+    let should_show = !abort && stall_verdict(idle) == StallVerdict::Warn;
+    if should_show != *shown {
+        *shown = should_show;
+        let _ = state.app.emit(
+            "file-stalled",
+            &crate::state::FileStalledInfo {
+                transfer_id: transfer_id.to_string(),
+                stalled: should_show,
+                idle_ms: idle,
+            },
+        );
+    }
+    if abort {
+        crate::network::transport::Tick::Abort
+    } else {
+        crate::network::transport::Tick::Wait
+    }
+}
+
+/// 一次发送尝试的"写出记账"，离开作用域就回收（v4.22.38）。
+///
+/// 为什么用 `Drop` 而不是在函数末尾调一次清理：`stream_file` 有十来处提前
+/// `return Err(...)`（用户取消 / 链路已关闭 / 加密失败 / 没建上连接 / `?`），
+/// 手写清理注定漏掉几个。漏掉的后果不是内存问题那么大，而是**口径**问题：
+/// 重试时读到上一次尝试残留的 `chunks`，进度会悄悄退回"按入队算"（v4.22.37 那条
+/// 修复等于白做，而且现场只在"发失败又重试"时才出现）。`Drop` 覆盖 `?`、提前
+/// return 与 panic 展开，只此一处，所以也不会有第二份"什么时候删"。
+struct WireLedger<'a> {
+    table: &'a std::sync::Mutex<std::collections::HashMap<String, crate::state::FileWireProgress>>,
+    transfer_id: String,
+}
+
+impl Drop for WireLedger<'_> {
+    fn drop(&mut self) {
+        clear_file_wire_progress_in(self.table, &self.transfer_id);
+    }
+}
+
+/// 发送进度换算：**已真的写出链路的分块**折算成明文字节，而不是"已入队"的字节。
+///
+/// 为什么要单独一个函数（v4.22.37）：`send_on_link` 返回成功只代表这一帧进了那条链路的
+/// mpsc 队列（容量 1024，见 `transport.rs::writer_loop`）。LAN 一片 256KB ⇒ 最多
+/// **262MB** 可以"界面已经 100%、实际还在排队"，用户据此以为传完了。真实写出量由 writer
+/// 在 `write_frame` 成功后记账（`mark_file_wire_progress`），TCP 与 BLE 同一个证据点。
+///
+/// 两处钳制各有各的原因，都不是防御性装饰：
+///   · `min(enqueued)`：计数器按 transfer_id 记，万一残留着上一次尝试的更大值，
+///     进度也绝不能超过本机已经读出来的字节；
+///   · `min(size)`：最后一片是短片，按整片折算会越过文件总大小（进度 >100%）。
+fn wire_progress_bytes(
+    from_bytes: u64,
+    chunk_size: usize,
+    enqueued: u64,
+    flushed_chunks: u64,
+    size: u64,
+) -> u64 {
+    let on_wire = from_bytes.saturating_add(flushed_chunks.saturating_mul(chunk_size as u64));
+    enqueued.min(on_wire).min(size)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -517,12 +768,22 @@ async fn stream_file(
 ) -> Result<(), SendFileError> {
     use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
+    // 本次尝试的写出记账，离开作用域（含所有提前 return）自动回收。见 `WireLedger`。
+    let _wire_ledger = WireLedger {
+        table: &state.file_wire_progress,
+        transfer_id: transfer_id.to_string(),
+    };
+
     let mut f = tokio::fs::File::open(&path)
         .await
         .map_err(|e| SendFileError::permanent(format!("打开文件失败：{e}")))?;
-    // 分块大小按**当前链路的实际选路结果**决定（BLE 上必须小，见 `chunk_size_for_path`）。
-    let path_kind = crate::network::transport::inbound_path_kind(state, peer_id).await;
-    let chunk_size = chunk_size_for_path(&path_kind);
+    // 整条分片流**钉死在一条链路**上（保序），分块大小也按这条链路决定
+    // （BLE 上必须小，见 `chunk_size_for_path`）。为什么不能逐片 `try_send`：
+    // 见 `transport::resolve_stream_link`。
+    let link = crate::network::transport::resolve_stream_link(state, peer_id)
+        .await
+        .ok_or_else(|| SendFileError::retryable("未建立连接"))?;
+    let chunk_size = chunk_size_for_path(link.path_kind.as_str());
     let mut buf = vec![0u8; chunk_size];
     // 断点续传：从接收端已持有的前缀之后开始读（分片序号也从 from_seq 接着数）。
     if from_bytes > 0 {
@@ -532,8 +793,21 @@ async fn stream_file(
     }
     let mut seq = from_seq;
     let mut sent = from_bytes;
+    // 本次尝试的起点（停滞判定的下界，见 `stall_tick`）+ 「停滞」提示的当前状态。
+    let stream_started_ms = db::now_ms();
+    let mut stalled_shown = false;
     // 进度节流：避免每片一次 SQLite 写 + IPC 事件（大文件会形成事件风暴卡死界面）
     let mut last_report = std::time::Instant::now() - Duration::from_secs(1);
+
+    // 完成/否定确认的登记**提前到分片循环之前**：接收端一旦对某一片判死就能立刻把
+    // `FileCompleteAck{success:false}` 送回来。放在循环之后注册的话，这条否定确认会因为
+    // 找不到 rx 而被丢掉，发送端只能把剩下的字节全部灌完、再干等 `FILE_ACK_IDLE` 才发现失败。
+    let (tx, mut ack_rx) = tokio::sync::oneshot::channel::<bool>();
+    state
+        .pending_file_complete
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(transfer_id.to_string(), tx);
 
     {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -557,6 +831,19 @@ async fn stream_file(
         let n = tokio::select! {
             biased;
             _ = &mut *cancel_rx => return Err(SendFileError::permanent("用户取消发送")),
+            _ = &mut ack_rx => {
+                // 接收端已对某一片判死并回了否定确认 ⇒ 立刻停手，别再把剩余字节灌进一条
+                // 已经死掉的传输。旧行为：整份发完 → FileDone 无人应答 → 干等一个
+                // FILE_ACK_IDLE → 判"可重试" → 再整发 5 次（真机：两边都显示失败）。
+                state
+                    .pending_file_complete
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(transfer_id);
+                return Err(SendFileError::retryable(
+                    "接收端提前终止该传输（分片校验失败/超出声明大小），下次按对端已收字节续传",
+                ));
+            }
             n = f.read(&mut buf) => n.map_err(|e| SendFileError::permanent(format!("读取文件失败：{e}")))?,
         };
         if n == 0 {
@@ -572,18 +859,38 @@ async fn stream_file(
             seq,
             data,
         };
-        try_send(state, peer_id, &chunk)
-            .await
-            .map_err(SendFileError::retryable)?;
+        // 投递到**这条**链路：队列满时原地等背压，绝不换链路（换路 = 分片失序 = 整条传输判死）。
+        // 等待期间每 `FILE_STALL_TICK` 醒一次做停滞检查 —— 对端不收时这里就是唯一的观测点。
+        tokio::select! {
+            biased;
+            _ = &mut *cancel_rx => return Err(SendFileError::permanent("用户取消发送")),
+            r = crate::network::transport::send_on_link_with_tick(
+                &link,
+                &chunk,
+                FILE_STALL_TICK,
+                || stall_tick(state, transfer_id, stream_started_ms, &mut stalled_shown),
+            ) => {
+                r.map_err(SendFileError::retryable)?;
+            }
+        }
         seq += 1;
         sent += n as u64;
 
         if last_report.elapsed() >= Duration::from_millis(250) {
             last_report = std::time::Instant::now();
+            // 进度按**已写出链路**的分块算，不按入队算：入队最多能领先一整条队列
+            // （1024 片 ≈ 262MB），旧口径下用户看到 100% 时其实还有大半文件没上链路。
+            let on_wire = wire_progress_bytes(
+                from_bytes,
+                chunk_size,
+                sent,
+                file_wire_chunks_at(state, transfer_id),
+                size,
+            );
             let progress = if size == 0 {
                 1.0
             } else {
-                sent as f64 / size as f64
+                on_wire as f64 / size as f64
             };
             {
                 let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -604,44 +911,54 @@ async fn stream_file(
                 "file-progress",
                 &crate::state::FileProgress {
                     transfer_id: transfer_id.to_string(),
-                    received: sent,
+                    received: on_wire,
                     total: size,
                 },
             );
         }
     }
 
+    // 分片全部投完 ⇒ 收回停滞提示（接下来是 FileDone + ack 等待，那是另一段语义）。
+    if stalled_shown {
+        let _ = state.app.emit(
+            "file-stalled",
+            &crate::state::FileStalledInfo {
+                transfer_id: transfer_id.to_string(),
+                stalled: false,
+                idle_ms: 0,
+            },
+        );
+    }
+
     // 发送方在 FileDone 之后必须等待接收方 FileCompleteAck：
     // TCP write 成功不代表文件已成功持久化，只有接收方 size/SHA-256 校验通过并落盘，
-    // 才允许把本地消息推进到 delivered。
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    state
-        .pending_file_complete
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(transfer_id.to_string(), tx);
-    try_send(
-        state,
-        peer_id,
-        &Message::FileDone {
-            transfer_id: transfer_id.to_string(),
-        },
-    )
-    .await
-    .map_err(SendFileError::retryable)?;
+    // 才允许把本地消息推进到 delivered。（登记在分片循环之前，见上面 `ack_rx` 的注释。）
+    // FileDone 必须排在**自己那串分片之后**：它和分片同为 Low 优先级，若走 `try_send`
+    // 逐条选路，队列满时会 failover 到另一条空闲连接 —— 于是完成帧超过仍在路上的分片
+    // （最多 1024 片 ≈ 262MB）先到，接收端判 "文件传输未完成" 直接把传输打死。
+    // 真机症状：多文件并发时 600MB 的大文件跑到 100% 报分片/接收失败，单发同一文件必成功。
+    let done = Message::FileDone {
+        transfer_id: transfer_id.to_string(),
+    };
+    tokio::select! {
+        biased;
+        _ = &mut *cancel_rx => return Err(SendFileError::permanent("用户取消发送")),
+        r = send_on_link(&link, &done) => {
+            r.map_err(SendFileError::retryable)?;
+        }
+    }
     // wait_complete_ack 也支持 cancel —— ack 窗口最长 ~90s，用户不想等就该立刻释放。
     let completed = tokio::select! {
         biased;
         _ = &mut *cancel_rx => return Err(SendFileError::permanent("用户取消发送")),
-        done = wait_complete_ack(state, transfer_id, rx) => done,
+        done = wait_complete_ack(state, transfer_id, ack_rx) => done,
     };
     state
         .pending_file_complete
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .remove(transfer_id);
-    // 进展记录用完即清（成功/失败都清），避免这张表随历史传输无限增长。
-    clear_file_wire_progress(state, transfer_id);
+    // 进展记录由 `_wire_ledger` 在离开作用域时回收（成功与所有失败路径同一处）。
     if !completed {
         return Err(SendFileError::retryable("接收方未确认文件完成"));
     }
@@ -1434,6 +1751,44 @@ fn walk(dir: &Path, rel: &str, out: &mut Vec<ShareEntry>, depth: usize) {
 /// 这是纯函数，**仅依赖 basename**：FileOffer 已把 `name` 带到接收端，两端各自调用
 /// 同一实现 → 分类结果天然一致，无需给文件传输协议增加字段。
 ///
+/// 从路径提取最可靠的文件名。
+///
+/// Tauri Android file picker 有时把 content:// URI 转存到临时文件，
+/// `Path::file_name()` 返回无扩展名的 `xxx`（比如 `478812312`），
+/// 但原始路径字符串里可能仍保留着正确的扩展名。
+/// 这个函数做三级 fallback：
+/// 1. Path::file_name() 正常返回且有扩展名 → 直接用
+/// 2. Path::file_name() 没扩展名 → 从完整 path 字符串找最后一个 `.xxx` 模式补上
+/// 3. 都没有 → 返回 file_name() 的原值
+pub(crate) fn derive_file_name(raw_path: &str) -> String {
+    let p = Path::new(raw_path);
+    let name = p
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "unnamed".to_string());
+
+    // Case 1: file_name 已经有扩展名 → 直接返回
+    if p.extension().is_some() {
+        return name;
+    }
+
+    // Case 2: file_name 没扩展名，但完整路径字符串末尾有类似 .mp4 / .jpg 的后缀
+    let last_dot = raw_path.rfind('.');
+    let last_slash = raw_path.rfind('/').unwrap_or(0);
+    if let Some(dot) = last_dot {
+        if dot > last_slash && dot + 1 < raw_path.len() {
+            let ext_candidate = &raw_path[dot + 1..];
+            if (1..=10).contains(&ext_candidate.len())
+                && ext_candidate.chars().all(|c| c.is_ascii_alphanumeric())
+            {
+                return format!("{name}.{ext_candidate}");
+            }
+        }
+    }
+
+    name
+}
+
 /// 未用 MIME 魔数嗅探的原因：那要么需要给 FileOffer/RelayFileOffer 加 kind 字段
 /// （违反「不修改文件传输协议」），要么两端各自读字节嗅探（引入 sender/receiver 分歧）。
 /// 任务给出的图片/代码清单本身即扩展名，扩展名判定已足够保守且确定。
@@ -1447,9 +1802,18 @@ pub fn classify_file_subtype(name: &str) -> &'static str {
         .map(|e| e.to_string_lossy().to_lowercase())
         .unwrap_or_default();
     match ext.as_str() {
-        "png" | "jpg" | "jpeg" | "gif" | "webp" => "image",
-        "rs" | "ts" | "tsx" | "js" | "jsx" | "vue" | "py" | "go" | "java" | "c" | "cpp" | "h"
-        | "hpp" | "json" | "yaml" | "yml" | "html" | "css" | "sql" | "sh" => "code",
+        // 图片：所有主流格式（含移动端 iPhone 默认 HEIC/HEIF、Android 各种、无损 BMP/TIFF/AVIF）
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "heic" | "heif" | "bmp" | "tiff" | "tif"
+        | "avif" | "apng" | "svg" | "ico" | "raw" | "dng" => "image",
+        // 视频：移动端最常见（MP4/MOV/3GP/AVI/MKV/WebM）
+        "mp4" | "mov" | "m4v" | "3gp" | "3gpp" | "avi" | "mkv" | "webm" | "flv" | "wmv" => "video",
+        // 音频
+        "mp3" | "wav" | "flac" | "aac" | "ogg" | "m4a" | "wma" | "opus" => "audio",
+        // 代码/文本（刻意排除 md/txt/log/Makefile — 用户明确反馈 md 文件发送应保持文件卡片）
+        "rs" | "ts" | "tsx" | "js" | "jsx" | "vue" | "py" | "go" | "java" | "kt" | "c" | "cpp"
+        | "cc" | "h" | "hpp" | "cs" | "rb" | "php" | "swift" | "scala" | "r" | "pl" | "sh"
+        | "bash" | "zsh" | "fish" | "ps1" | "bat" | "toml" | "json" | "yaml" | "yml" | "xml"
+        | "html" | "htm" | "css" | "scss" | "less" | "sql" | "ini" | "cfg" | "conf" => "code",
         _ => "file",
     }
 }
@@ -1547,9 +1911,84 @@ pub fn human_size(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        chunk_seq_decision, classify_file_subtype, safe_file_name, safe_transfer_id, unique_path,
-        ChunkSeq,
+        chunk_seq_decision, classify_file_subtype, derive_file_name, safe_file_name,
+        safe_transfer_id, unique_path, wire_progress_bytes, ChunkSeq, WireLedger,
     };
+
+    /// 写出记账必须**随发送尝试一起回收**（v4.22.38）。
+    ///
+    /// 重点是"提前 return 那条路"：`stream_file` 有十来处早退（取消/链路关闭/加密失败/`?`），
+    /// 旧写法只在成功路径清一次 ⇒ 失败后重试会读到上一次的 `chunks`，进度悄悄退回
+    /// "按入队算"，也就是把 v4.22.37 那条修复抹掉。这里用本地表复现同一个 Drop 语义
+    /// （造不出也不需要造 AppState —— 要验的就是"离开作用域就没残留"）。
+    #[test]
+    fn wire_ledger_is_reclaimed_on_every_exit_path() {
+        use crate::state::FileWireProgress;
+        use std::collections::HashMap;
+        use std::sync::Mutex;
+
+        let table: Mutex<HashMap<String, FileWireProgress>> = Mutex::new(HashMap::new());
+        let attempt = |early: bool| -> Result<(), ()> {
+            let _ledger = WireLedger {
+                table: &table,
+                transfer_id: "t1".to_string(),
+            };
+            // 模拟 writer 记账：这一片真的写出去了
+            table.lock().unwrap().insert(
+                "t1".to_string(),
+                FileWireProgress {
+                    at_ms: 1,
+                    chunks: 9,
+                },
+            );
+            if early {
+                return Err(());
+            }
+            Ok(())
+        };
+
+        assert!(attempt(false).is_ok());
+        assert!(table.lock().unwrap().is_empty(), "正常结束必须回收这条记账");
+        assert!(attempt(true).is_err());
+        assert!(
+            table.lock().unwrap().is_empty(),
+            "提前 return 也必须回收 —— 旧写法漏的就是这一条"
+        );
+    }
+
+    /// 发送进度必须按"**已写出链路**"算，不按入队算（v4.22.37）。
+    ///
+    /// 症状（真机 600MB）：`send_on_link` 成功只代表进了那条链路的 1024 槽队列，
+    /// LAN 一片 256KB ⇒ 最多 262MB 还在排队时界面已经 100%。①⑤ 就是这条主症状；
+    /// ②③④ 各钉一个换算边界（续传前缀、短片、计数器残留）。
+    #[test]
+    fn progress_counts_written_chunks_not_enqueued_bytes() {
+        let chunk = 256 * 1024usize;
+        let enqueued = 1024 * chunk as u64; // 一整条队列都灌满了
+                                            // ① 主症状：1024 片全入队、链路只走了 1 片 ⇒ 进度就是 1 片
+        assert_eq!(
+            wire_progress_bytes(0, chunk, enqueued, 1, enqueued * 2),
+            chunk as u64
+        );
+        // ⑤ 一片都没写出 ⇒ 0（旧口径这里已经是 262MB）
+        assert_eq!(wire_progress_bytes(0, chunk, enqueued, 0, enqueued * 2), 0);
+        // ② 断点续传：from_bytes 是对端已持有的前缀，天然算"已上路"，必须计入
+        assert_eq!(
+            wire_progress_bytes(
+                1_000_000,
+                chunk,
+                1_000_000 + 5 * chunk as u64,
+                3,
+                10_000_000
+            ),
+            1_000_000 + 3 * chunk as u64
+        );
+        // ③ 最后一片是短片：按整片折算会越过文件总大小 ⇒ 钳到 size
+        let size = 3 * chunk as u64 + 10;
+        assert_eq!(wire_progress_bytes(0, chunk, size, 4, size), size);
+        // ④ 计数器残留得比本机读出来的还多 ⇒ 绝不能超过已入队量
+        assert_eq!(wire_progress_bytes(0, chunk, 7, 999, 10_000), 7);
+    }
 
     /// **收到分片的判定规则**（2026-09-13 审计的真缺陷，必须钉住）。
     ///
@@ -1621,6 +2060,39 @@ mod tests {
             assert!(safe_file_name(name).is_none(), "{name} must be rejected");
         }
         assert_eq!(safe_file_name("report.txt").as_deref(), Some("report.txt"));
+    }
+
+    #[test]
+    fn derive_file_name_normal() {
+        // 正常路径有扩展名 → 直接取
+        assert_eq!(
+            derive_file_name("/storage/emulated/0/DCIM/Camera/VID_001.mp4"),
+            "VID_001.mp4"
+        );
+        assert_eq!(
+            derive_file_name("/home/user/Downloads/report.pdf"),
+            "report.pdf"
+        );
+    }
+
+    #[test]
+    fn derive_file_name_temporal_file_missing_ext() {
+        // Tauri Android 临时文件：file_name() 没扩展名，但完整路径末尾有 .mp4
+        assert_eq!(
+            derive_file_name("content://media/external/video/media/123456/VID_20250918.mp4"),
+            "VID_20250918.mp4"
+        );
+        assert_eq!(
+            derive_file_name("/data/data/com.gosslan.app/cache/478812312.jpg"),
+            "478812312.jpg"
+        );
+    }
+
+    #[test]
+    fn derive_file_name_no_ext_anywhere() {
+        // 真的没有扩展名 → 原样返回
+        assert_eq!(derive_file_name("/tmp/README"), "README");
+        assert_eq!(derive_file_name("/tmp/478812312"), "478812312");
     }
 
     /// `transfer_id` 会被拼成 `{id}.part` 落盘，必须与文件名同级消毒。
@@ -1699,8 +2171,12 @@ mod tests {
 
     use super::super::super::crypto;
     use super::chunk_size_for_path;
-    use super::{sha256_file_hex, valid_sha256_hex};
+    use super::{
+        send_deadline_for, sha256_file_hex, stall_verdict, valid_sha256_hex, StallVerdict,
+        FILE_SEND_DEADLINE, FILE_STALL_ABORT_MS, FILE_STALL_WARN_MS,
+    };
     use crate::protocol::FILE_CHUNK;
+    use std::time::Duration;
 
     /// **分块大小必须能真的被 BLE 分片层发出去**（真机 2026-09-13：大图两边都显示成功、
     /// 对方列表里却没有）。这条测试是**行为级**的：直接把两种分块大小喂给真正的
@@ -1938,6 +2414,51 @@ mod tests {
 
     // ---------- 文件级 SHA-256 完整性校验 ----------
 
+    /// 大文件的发送期限必须随体积伸缩（600MB 固定 10min 窗口 = 真机必失败的根因）。
+    #[test]
+    fn send_deadline_scales_with_size() {
+        assert_eq!(
+            send_deadline_for(1024),
+            FILE_SEND_DEADLINE,
+            "小文件保持 10min 下限"
+        );
+        assert!(send_deadline_for(600 * 1024 * 1024) > Duration::from_secs(15 * 60));
+        assert!(send_deadline_for(600 * 1024 * 1024) < Duration::from_secs(25 * 60));
+        assert_eq!(
+            send_deadline_for(u64::MAX),
+            Duration::from_secs(60 * 60),
+            "再大也封顶 1h，超出交给断点续传重试而不是吊死任务"
+        );
+    }
+
+    /// 停滞判定的三档边界。钉的是"什么时候该提醒、什么时候该放弃"，
+    /// 阈值本身写死在常量里，改常量必须同时改这里（防止有人顺手把 abort 调成 warn）。
+    #[test]
+    fn stall_verdict_boundaries() {
+        assert_eq!(stall_verdict(0), StallVerdict::Healthy);
+        assert_eq!(
+            stall_verdict(FILE_STALL_WARN_MS - 1),
+            StallVerdict::Healthy,
+            "还没到提醒线不得提前吓用户"
+        );
+        assert_eq!(stall_verdict(FILE_STALL_WARN_MS), StallVerdict::Warn);
+        assert_eq!(
+            stall_verdict(FILE_STALL_ABORT_MS - 1),
+            StallVerdict::Warn,
+            "提醒与放弃之间只有 Warn"
+        );
+        assert_eq!(stall_verdict(FILE_STALL_ABORT_MS), StallVerdict::Abort);
+        assert_eq!(stall_verdict(i64::MAX), StallVerdict::Abort);
+        assert!(
+            FILE_STALL_WARN_MS < FILE_STALL_ABORT_MS,
+            "提醒必须早于放弃，否则用户只看到突然失败"
+        );
+        assert!(
+            FILE_STALL_ABORT_MS < FILE_SEND_DEADLINE.as_millis() as i64,
+            "停滞放弃要早于最短 deadline，否则 deadline 才是唯一出口（界面会冻住十分钟）"
+        );
+    }
+
     /// sha256_file_hex：流式分块结果必须与一次性内存计算一致（发送端正确性）。
     #[test]
     fn sha256_file_hex_matches_in_memory_hash() {
@@ -1980,6 +2501,32 @@ mod tests {
         assert_eq!(
             got, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
             "空文件 SHA-256 必须是标准已知值"
+        );
+    }
+
+    /// 取消登记必须**按收件人分键**（真机：三成员以上群文件只有一人收得到）。
+    ///
+    /// 钉的判据：单键时后注册的 `insert` 挤掉前一个任务的 `Sender`，对方的 oneshot
+    /// 立刻 `Err(RecvError)` 完成，而投递循环的取消分支分不清"被取消"与"登记被顶替"
+    /// ⇒ N-1 个成员以「用户取消发送」这个假原因当场中断。
+    #[test]
+    fn file_cancel_keys_are_scoped_per_recipient() {
+        let a = super::file_cancel_key("t1", "peer-a");
+        let b = super::file_cancel_key("t1", "peer-b");
+        assert_ne!(a, b, "同一 transfer_id 的不同收件人必须各自成键");
+        let prefix = super::file_cancel_prefix("t1");
+        assert!(
+            a.starts_with(prefix.as_str()) && b.starts_with(prefix.as_str()),
+            "取消入口要能按前缀一次命中该 transfer 的全部在途流"
+        );
+        assert!(
+            !super::file_cancel_key("t11", "peer-a").starts_with(prefix.as_str()),
+            "前缀匹配不得误伤 id 恰好同前缀的兄弟传输"
+        );
+        assert_eq!(
+            a.split('\u{0}').count(),
+            2,
+            "键必须恰好 transfer_id + recipient 两段"
         );
     }
 

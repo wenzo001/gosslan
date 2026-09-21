@@ -34,361 +34,17 @@ use crate::mesh::{
     Endpoint as MeshEndpoint, PathKind, PeerCandidate, PeerIdentity, PeerOnlineState,
 };
 use crate::network::file;
-use crate::protocol::{hello_signing_bytes, GossipEnvelope, GossipKind, Message, MsgKind};
+use crate::protocol::{hello_signing_bytes, GossipEnvelope, GossipKind, Message};
 use crate::state::{
     AppState, FileDoneInfo, FileFailedInfo, FileProgress, Link, LinkState, MessageRecord, Peer,
     PendingRequest,
 };
 use crate::transport::tcp::{TcpReceiver, TcpSender};
 
-/// 字符串 IP 是否为虚拟地址（用于 peers 表中已存储的 IP 字符串判断）。
-fn is_virtual_ip_str(ip_str: &str) -> bool {
-    ip_str
-        .parse::<Ipv4Addr>()
-        .map(|ip| is_virtual_ip(&ip))
-        .unwrap_or(false)
-}
-
-// ---------------- 分帧 ----------------
-
-pub async fn write_frame<W: AsyncWrite + Unpin>(w: &mut W, msg: &Message) -> std::io::Result<()> {
-    let json = serde_json::to_vec(msg)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    // 分帧（4 字节大端长度 + payload）与长度校验统一交给 bytes 层，
-    // 业务侧只负责序列化 —— 单一真相源见 `transport::tcp`（P-A03）。
-    crate::transport::tcp::write_bytes(w, &json).await
-}
-
-pub async fn read_frame<R: AsyncRead + Unpin>(r: &mut R) -> std::io::Result<Message> {
-    // 同上：解帧与长度校验由 bytes 层负责，这里只做业务反序列化。
-    let buf = crate::transport::tcp::read_bytes(r).await?;
-    serde_json::from_slice(&buf)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
-}
-
-/// 预认证阶段读首帧：上限收紧到 `MAX_PREAUTH_FRAME`（未验签的连接不得要求大缓冲）。
-async fn read_frame_preauth<R: AsyncRead + Unpin>(r: &mut R) -> std::io::Result<Message> {
-    let buf =
-        crate::transport::tcp::read_bytes_capped(r, crate::protocol::MAX_PREAUTH_FRAME).await?;
-    serde_json::from_slice(&buf)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
-}
-
-// ---------------- 出站发送 ----------------
-
-/// 资料/控制帧内联头像的上限（与 Hello 同一判据）。
-///
-/// 超过它就**不再占优先通道**：聊天与好友请求必须永远排在大头像前面。
-/// 与 HELLO_AVATAR_MAX_BYTES 恒等，避免两个数字漂移出两套行为。
-pub const CONTROL_AVATAR_MAX_BYTES: usize = HELLO_AVATAR_MAX_BYTES;
-
-/// 内联载荷超过这个大小的 Gossip 也降级到 bulk 通道。
-///
-/// 正常聊天/好友帧远小于它；只有「内联大图的通告」才会触到。16KiB 是保守值：
-/// 单帧在 BLE 上按 508B/片算也只有约 32 片（约 0.4s），不会把优先队列拖住。
-const BULK_GOSSIP_PAYLOAD_MAX_BYTES: usize = 16 * 1024;
-
-/// 大数据分片走普通通道；聊天/控制/小控制帧走高优先级通道，避免被大文件饿死。
-///
-/// 除文件分片外，还包含两类**大而可晚到**的帧：大头像的 UserInfo、内联大载荷的
-/// Gossip。它们此前都挤在优先道上，一张 400KB 头像能把聊天与好友请求堵上几分钟。
-fn is_bulk_message(msg: &Message) -> bool {
-    match msg {
-        Message::FileChunk { .. }
-        | Message::RelayChunk { .. }
-        | Message::GroupFileChunk { .. }
-        // 终止帧必须和分片同队列，保证「分片 → Done」的协议顺序不被优先级通道打乱。
-        | Message::FileDone { .. }
-        | Message::GroupFileDone { .. } => true,
-        // 大头像资料帧：内容大、可晚到，走 bulk，绝不占聊天/好友请求的优先道。
-        Message::UserInfo { avatar: Some(a), .. } if a.len() > CONTROL_AVATAR_MAX_BYTES => true,
-        // 任何大载荷 Gossip（含内联大图的 Presence/自定义通告）同样降级。
-        Message::Gossip { envelope } if envelope.payload.len() > BULK_GOSSIP_PAYLOAD_MAX_BYTES => {
-            true
-        }
-        _ => false,
-    }
-}
-
-/// 计算一次发送要按什么顺序尝试各条链路（纯函数，便于单测 + 护栏非空转）。
-///
-/// ## 为什么需要「按端点对齐」这一层
-/// mesh 层（`Connection`）与传输层（`Link`）是**两套**链路表，且**不保证 1:1 同序**：
-/// `handle_incoming` 追加 `Link` 时**不做端点去重**，而 `upsert_connection` 按端点去重；
-/// 两者还有各自的登记/清理窗口。所以 `pick_link` 返回的**下标绝不能直接拿去索引 `Link`**
-/// —— 必须用端点把 mesh 连接映射回传输链路。这正是复核里点名的坑。
-///
-/// ## 缺候选时怎么办（登记窗口）
-/// 传输链路存在、mesh 侧还没登记（或刚被清理）时**合成一条「刚播种」的候选**，
-/// 当作健康处理：它是一条**我们刚接受/建立的真实 TCP 连接**，不能因为登记窗口而
-/// 被判不可用。反过来 mesh 侧多出来的连接（传输已清理）不参与排序。
-///
-/// 返回：`links` 的下标序列，按「优先尝试」排序。全部不健康时 `pick_link` 会退回
-/// 首条（保持可用），其余链路仍然排在后面做 failover。
-fn route_order(
-    links: &[crate::state::Link],
-    peer_id: &str,
-    conns: &[crate::mesh::Connection],
-    now_ms: i64,
-    health_timeout_ms: i64,
-    max_failures: u32,
-    congestion_window_ms: i64,
-) -> Vec<usize> {
-    // 与 `links` 同序的候选：能按端点命中就用真实健康信息，否则合成「刚播种」候选。
-    let candidates: Vec<crate::mesh::Connection> = links
-        .iter()
-        .map(|l| {
-            let ep = l.endpoint.clone();
-            if let Some(c) = conns.iter().find(|c| c.endpoint == ep) {
-                c.clone()
-            } else {
-                let mut fresh = crate::mesh::Connection::new(peer_id, ep, l.path_kind);
-                fresh.health.seed_read_seen(now_ms);
-                fresh
-            }
-        })
-        .collect();
-
-    let Some(best) = crate::mesh::pick_link(
-        &candidates,
-        now_ms,
-        health_timeout_ms,
-        max_failures,
-        congestion_window_ms,
-    ) else {
-        return Vec::new();
-    };
-    // 选中的排最前，其余保持插入序做 failover。
-    let mut order: Vec<usize> = Vec::with_capacity(candidates.len());
-    order.push(best);
-    for i in 0..candidates.len() {
-        if i != best {
-            order.push(i);
-        }
-    }
-    order
-}
-
-/// `try_send` 第一轮全部遇到「信道满」时的**有界**补试时长。
-///
-/// 之所以不是直接 `Err`：信道满只说明对端这一拍消费不过来（writer 正在写 TCP），
-/// 短暂等待通常能成功，直接失败会让上层误判「发送失败」。
-/// 之所以有界：无界等待会在对端僵死时**永久挂起**调用方（复核确认的真实缺陷）。
-const SEND_QUEUE_FULL_TIMEOUT: Duration = Duration::from_millis(500);
-
-/// 尝试通过已建立连接发送消息；无连接则返回 Err。
-///
-/// 一个 peer 可能有多条连接（LAN + Tailscale + BLE）：**依次尝试**。
-/// 某条连接已断（channel 关闭 → send 失败）就自动换下一条 —— 这是连接级 failover。
-/// 任一连接成功即返回，所以消息仍然只发出一次（单连接场景下与改造前等价）。
-///
-/// ## 顺序由选路决定（M3-b）
-/// 自 M3-b 起，尝试顺序不再等于插入顺序，而是 `route_order` 给出的顺序：
-/// **活性过滤 + 路径优先级 LAN > Routed > Bluetooth + 稳定序打破平局**（ADR-0014 §3.2，
-/// `mesh::selection::pick_link`）。单链路时顺序无变化（行为零变化）。
-///
-/// ## 为什么先快照 Sender 再发送（而不是持锁发送）
-///
-/// `state.links` 是**全局**连接表：建链登记、读循环清理、`has_link`/`ensure_link`、
-/// 心跳、所有 peer 的发送都要拿它。原先这里在**持锁**状态下 `tx.send(..).await` ——
-/// mpsc 容量有限（1024），一条拥塞/僵死的链路会让 `send` **挂起**（而不是返回 Err），
-/// 于是：① 整张连接表被锁住，别人的建链/清理/发送全部阻塞；② 本函数的「换下一条」
-/// 永远走不到（只有 channel **关闭**才返回 Err）。
-/// 快照只克隆 `mpsc::Sender`（廉价、可 clone），锁在 await 之前就释放。
-///
-/// ## 两轮发送（复核确认的 High 缺陷的修法）
-///
-/// 第一轮**全部用非阻塞 `try_send`**：`Closed` / `Full` 都只意味着「这一条现在不行」，
-/// 立刻换下一条。这样「信道满」也能触发 failover —— 原实现只有 `Closed` 才换。
-/// 若所有链路都满（对端普遍消费不过来），才对**第一条满的**做一次有界补试
-/// （`SEND_QUEUE_FULL_TIMEOUT`），超时即返回 Err，**绝不无限挂起**。
-/// 注意：`Err` 不代表消息丢了 —— 单聊消息在 `send_message` 里已先入 outbox，
-/// 由 Hello/心跳触发 `flush_outbox` 补发（这是既有契约）。
-/// 按给定顺序尝试把消息投进各连接的 mpsc；任一成功即返回。
-///
-/// 抽成独立函数的唯一目的是**可测**：failover（「被选中那条断了 → 下一条仍送达」）
-/// 是 M3-b 的核心承诺，但它埋在 `try_send` 里、要先构造 `AppState` 才能验证。
-/// 这里只依赖「若干对 Sender + 一个顺序」，于是可以用真实 mpsc 信道直接钉死：
-/// 关掉被选中那条的接收端、断言消息落到了下一条。
-///
-/// 两轮策略（复核确认的 High 缺陷的修法）：
-/// ① 第一轮全用**非阻塞** `try_send`：`Closed` / `Full` 都只说明「这一条现在不行」，
-///    立刻换下一条 —— 原实现只有 `Closed` 才换，信道满会**挂起**（并锁死调用方）；
-/// ② 全部为 `Full` 时才对该条做**有界**补试（`SEND_QUEUE_FULL_TIMEOUT`），超时即 `Err`。
-async fn send_over_order(
-    senders: &[(mpsc::Sender<Message>, mpsc::Sender<Message>)],
-    order: &[usize],
-    msg: &Message,
-    bulk: bool,
-) -> (Result<(), String>, Vec<usize>) {
-    let mut last_err = "未建立连接".to_string();
-    let mut first_full: Option<&mpsc::Sender<Message>> = None;
-    let mut full_indices: Vec<usize> = Vec::new();
-    for &i in order {
-        let Some((bulk_tx, prio_tx)) = senders.get(i) else {
-            continue;
-        };
-        let tx = if bulk { bulk_tx } else { prio_tx };
-        match tx.try_send(msg.clone()) {
-            Ok(()) => return (Ok(()), full_indices),
-            Err(mpsc::error::TrySendError::Closed(_)) => {
-                last_err = "连接已关闭".to_string();
-            }
-            Err(mpsc::error::TrySendError::Full(_)) => {
-                full_indices.push(i);
-                if first_full.is_none() {
-                    first_full = Some(tx);
-                }
-            }
-        }
-    }
-    if let Some(tx) = first_full {
-        return match tokio::time::timeout(SEND_QUEUE_FULL_TIMEOUT, tx.send(msg.clone())).await {
-            Ok(Ok(())) => (Ok(()), full_indices),
-            Ok(Err(e)) => (Err(e.to_string()), full_indices),
-            Err(_) => (
-                Err("发送队列已满（对端消费不过来）".to_string()),
-                full_indices,
-            ),
-        };
-    }
-    (Err(last_err), full_indices)
-}
-
-/// 尝试通过已建立连接发送消息；无连接则返回 Err。
-pub async fn try_send(state: &AppState, peer_id: &str, msg: &Message) -> Result<(), String> {
-    // ① 锁作用域内只做「取 + 克隆」，不 await（锁跨 await 会让一条拥塞链路锁死全表）。
-    let links: Vec<crate::state::Link> = {
-        let g = state.links.lock().await;
-        match g.get(peer_id) {
-            Some(l) if !l.is_empty() => l.clone(),
-            _ => return Err("未建立连接".to_string()),
-        }
-    };
-
-    // ② 取健康阈值与 mesh 连接（两把锁分别取，不嵌套）。
-    let (health_timeout_ms, max_failures) = {
-        let pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
-        (pm.health_timeout_ms(), pm.max_failures())
-    };
-    let conns: Vec<crate::mesh::Connection> = {
-        let pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
-        pm.get(peer_id)
-            .map(|p| p.connections().to_vec())
-            .unwrap_or_default()
-    };
-    // ③ 选路（M3-b）：按**端点**对齐两套链路表后交给 `pick_link`，返回发送顺序。
-    let order = route_order(
-        &links,
-        peer_id,
-        &conns,
-        db::now_ms(),
-        health_timeout_ms,
-        max_failures,
-        crate::mesh::CONGESTION_WINDOW_MS,
-    );
-
-    // ④ 按选路顺序投递（两轮策略见 `send_over_order`）。
-    let senders: Vec<(mpsc::Sender<Message>, mpsc::Sender<Message>)> = links
-        .iter()
-        .map(|l| (l.bulk.clone(), l.priority.clone()))
-        .collect();
-    let (result, full_indices) = send_over_order(&senders, &order, msg, is_bulk_message(msg)).await;
-
-    // ⑤ 把 queue Full 事件喂给 mesh 层 — 拥塞是独立于 liveness 的发送侧信号。
-    // Router 下阶段才能用它做"LAN 拥塞让位给 BLE/Routed"，本轮只记录事实。
-    for idx in full_indices {
-        if let Some(link) = links.get(idx) {
-            mark_conn_congested(state, peer_id, &link.endpoint);
-        }
-    }
-
-    result
-}
-
-/// 无直连时，把一条**定向**帧借一跳中继发给 to（共享目录 / 中继文件在无直连时用）。
-///
-/// 只做「借邻居的直连」这一跳：给所有有直连的邻居各发一份（帧自带 to），邻居收到后
-/// 按 to 直接投递（见 handle_message 顶部的定向中继分支）。邻居若与 to 没有直连就丢弃
-/// —— 与既有 RelayChunk 的单跳限制一致；不泛洪，因此不存在环路。
-pub(crate) async fn relay_send_to_neighbors(state: &AppState, to: &str, msg: &Message) {
-    let peers: Vec<String> = { state.links.lock().await.keys().cloned().collect() };
-    for p in peers {
-        if p == to {
-            continue;
-        }
-        let _ = try_send(state, &p, msg).await;
-    }
-}
-
-/// 向所有已连接节点广播一条 Gossip 消息。
-pub async fn broadcast_gossip(state: &AppState, envelope: GossipEnvelope) {
-    let msg = Message::Gossip {
-        envelope: envelope.clone(),
-    };
-
-    // 与 `try_send` 同理：锁内只做决策 + 克隆 Sender，发送一律在锁外。
-    // 原来在持有 `links` 锁时 `send().await`，一条拥塞链路会锁死整张连接表。
-    let targets: Vec<(mpsc::Sender<Message>, String, MeshEndpoint)> = {
-        let links = state.links.lock().await;
-        // 出站目标经 MeshRouter 裁决（§18 source exclusion）。
-        //
-        // 这里刻意用 `exclude_source` 而**不是** `select_outgoing`：后者带 fanout 截断，
-        // 只适用于**转发**（§20 控制风暴）。源发必须覆盖所有直连节点，一旦截断，
-        // 连接数超过 fanout 的节点就会收不到 —— 群消息静默漏发。
-        let candidates: Vec<String> = links.keys().cloned().collect();
-        let picked = {
-            let router = state.mesh_router.lock().unwrap_or_else(|e| e.into_inner());
-            router.exclude_source(&candidates, &envelope.sender_id)
-        };
-        // M3-d（2026-09-14 全 Windows 局域网真机）：按**路径优先级**选一条发送链路，
-        // 而不是 v.first()（插入顺序）。旧写法在同一 peer 同时有 LAN 与 BLE 链路时，
-        // Gossip/控制帧可能走 BLE——表现为「同局域网却走了蓝牙/中继」。
-        // best_link_kind 给出 LAN > Routed > Bluetooth，再取该链路；同时保留 peer_id + endpoint
-        // 以便 timeout 时能定位到具体 Connection 并标记 congestion。
-        picked
-            .iter()
-            .filter_map(|peer| {
-                let peer_id: &str = peer;
-                let ls = links.get(peer_id)?;
-                let kinds: Vec<PathKind> = ls.iter().map(|l| l.path_kind).collect();
-                let best = crate::state::best_link_kind(&kinds)?;
-                let link = ls.iter().find(|l| l.path_kind == best)?;
-                Some((
-                    link.priority.clone(),
-                    peer_id.to_owned(),
-                    link.endpoint.clone(),
-                ))
-            })
-            .collect()
-    };
-
-    for (tx, peer_id, endpoint) in &targets {
-        // ⚠️ **必须有界等待**：这是有界队列（1024），对端僵死（BLE 低带宽 / 半开 TCP）
-        // 时无超时的 `send().await` 会让本函数永久挂起 —— 而它被 `handle_gossip` 内联
-        // await，`handle_gossip` 又由 reader_loop 调用 ⇒ **另一个对端的读循环被卡住**，
-        // 它后续的帧（含心跳）全部排队，最终被判不健康而拆链。
-        // 即"一条拥塞链路伪造出全网链路故障"。口径与 `send_over_order` 一致。
-        // 超时即丢弃该 peer 的这条 gossip（其 outbox 会在下次心跳/Hello 时补发）。
-        // **必须留痕**：这条路径原先完全静默，真机排查「发出去但对方收不到」时不可观测。
-        // 限频（每 30s 一条）避免拥塞时刷屏。
-        if tokio::time::timeout(SEND_QUEUE_FULL_TIMEOUT, tx.send(msg.clone()))
-            .await
-            .is_err()
-        {
-            // M3-d：gossip 扇出队列满 / writer 消费不过来 — 明确的发送侧拥塞信号。
-            // 这条路径之前只 log 不标 congestion，导致 pick_link 看不到 gossip 层的拥塞。
-            mark_conn_congested(state, peer_id, endpoint);
-            if log_throttled("gossip_drop", 30_000) {
-                state.logger.warn(
-                    "transport",
-                    "gossip 扇出队列满，丢弃本条（对方 outbox 会补发；持续出现说明该链路拥塞）"
-                        .to_string(),
-                );
-            }
-        }
-    }
-}
+// ---- 出站投递与链路选路（帧编码 / route_order / try_send / 分片流钉链路 / gossip 扇出）----
+// 按 `commands.rs` 的既有先例用 `include!` 分册：同一模块、零 `use` 改动，
+// 只是把 9800 行的单文件切到可评审的粒度。
+include!("transport/outbound.rs");
 
 /// 中继态的内存 TTL：超过它且仍未完成重组的条目一律回收。
 ///
@@ -570,7 +226,7 @@ pub async fn spawn(
                     // 锁内只克隆 Sender。
                     let txs: Vec<mpsc::Sender<Message>> = {
                         let links = state.links.lock().await;
-                        links.values().flatten().map(|l| l.priority.clone()).collect()
+                        links.values().flatten().map(|l| l.high.clone()).collect()
                     };
                     let hb = Message::Heartbeat { device_id: state.device_id.clone() };
                     let mut congested = 0usize;
@@ -635,7 +291,7 @@ pub async fn spawn(
                             links
                                 .get(&peer)
                                 .and_then(|v| v.iter().find(|l| l.endpoint == ep))
-                                .map(|l| (l.bulk.clone(), l.cancel.clone()))
+                                .map(|l| (l.low.clone(), l.cancel.clone()))
                         };
                         let Some((bulk, cancel)) = bulk else { continue };
                         // ① 精确取消这一条连接的读写任务（半开的读只有它能打断）。
@@ -644,7 +300,7 @@ pub async fn spawn(
                         {
                             let mut links = state.links.lock().await;
                             if let Some(v) = links.get_mut(&peer) {
-                                v.retain(|l| !l.bulk.same_channel(&bulk));
+                                v.retain(|l| !l.low.same_channel(&bulk));
                                 if v.is_empty() {
                                     links.remove(&peer);
                                 }
@@ -1257,6 +913,8 @@ pub fn build_signed_hello(state: &AppState, conv_clock: i64) -> Message {
         avatar,
         device_type: crate::protocol::current_device_type().to_string(),
         content_features: crate::protocol::content_features(),
+        protocol_version: Some(crate::protocol::PROTOCOL_VERSION),
+        app_version: Some(crate::protocol::current_app_version().to_string()),
         tcp_port,
         x25519_pubkey,
         ed25519_pubkey,
@@ -1270,7 +928,7 @@ pub fn build_signed_hello(state: &AppState, conv_clock: i64) -> Message {
 ///
 /// 为什么需要它：Hello 只带不超过 2KiB 的头像、Presence 已不再内联大头像，所以
 /// 「大头像」只剩这一条正式路径 —— 链路建好后同步**一次**。超过
-/// CONTROL_AVATAR_MAX_BYTES 的帧会被 is_bulk_message 降到 bulk 通道，
+/// CONTROL_AVATAR_MAX_BYTES 的帧会被通道分类降到 Low 队列，
 /// 不再和聊天/好友请求抢优先道。
 pub async fn send_user_info_to(state: &Arc<AppState>, peer_id: &str) {
     let msg = Message::UserInfo {
@@ -1411,8 +1069,9 @@ async fn handle_incoming(
         );
         return;
     }
-    let (bulk_tx, bulk_rx) = mpsc::channel(1024);
-    let (prio_tx, prio_rx) = mpsc::channel(1024);
+    let (high_tx, high_rx) = mpsc::channel(1024);
+    let (normal_tx, normal_rx) = mpsc::channel(1024);
+    let (low_tx, low_rx) = mpsc::channel(1024);
     // 本连接独立的取消信号（M3#6）：健康 watchdog 判定僵尸链路时精确断开这一条。
     let (cancel_tx, cancel_rx) = watch::channel(false);
     // 追加到该 peer 的连接列表（而非覆盖）—— 多连接支持的基础。
@@ -1434,9 +1093,9 @@ async fn handle_incoming(
         .push(Link {
             endpoint: MeshEndpoint::Tcp(peer_addr),
             path_kind: inbound_kind,
-            bulk: bulk_tx.clone(),
-            // priority 留一个 sender 在作用域内：首帧验签后要回发 Hello（见下）。
-            priority: prio_tx.clone(),
+            high: high_tx.clone(),
+            normal: normal_tx.clone(),
+            low: low_tx.clone(),
             cancel: cancel_tx,
         });
     // 同步到 mesh 层：让 Peer/Connection 模型知道这条连接存在
@@ -1446,8 +1105,9 @@ async fn handle_incoming(
         peer_id.clone(),
         MeshEndpoint::Tcp(peer_addr),
         w,
-        bulk_rx,
-        prio_rx,
+        high_rx,
+        normal_rx,
+        low_rx,
         shutdown.clone(),
         cancel_rx.clone(),
     ));
@@ -1465,7 +1125,7 @@ async fn handle_incoming(
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::get_clock(&dbc, &peer_id)
     };
-    let _ = prio_tx.send(build_signed_hello(&state, conv_clock)).await;
+    let _ = high_tx.send(build_signed_hello(&state, conv_clock)).await;
     state.logger.info(
         "transport",
         format!("握手补全：已向对端回发本节点 Hello（peer={peer_id}）"),
@@ -1492,7 +1152,7 @@ async fn handle_incoming(
         r,
         peer_id,
         MeshEndpoint::Tcp(peer_addr),
-        bulk_tx,
+        low_tx,
         shutdown,
         cancel_rx,
     )
@@ -1524,11 +1184,14 @@ fn mark_conn_write_seen(state: &AppState, peer_id: &str, endpoint: &MeshEndpoint
     pm.mark_connection_seen(peer_id, endpoint, db::now_ms(), None, false);
 }
 
-/// 记录「某个文件传输又有一帧**真的离开了链路**」。
+/// 记录「某个文件传输又有一帧**真的离开了链路**」：刷新时刻 **并**累加一片。
 ///
 /// 为什么必须落在"写出"而不是"入队"：发送侧 mpsc 容量 1024，1MB 文件的分块会在
-/// **1 秒内**全部入队，而链路上要跑几分钟（BLE 上更久）。`FileCompleteAck` 的等待窗口
-/// 正是靠这张表从"固定 30s 墙钟"改成"安静 30s 才算失败"（`file.rs::wait_complete_ack`）。
+/// **1 秒内**全部入队，而链路上要跑几分钟（BLE 上更久）。两个消费方共用这一个证据点：
+///   · `FileCompleteAck` 的等待窗口靠 `at_ms` 从"固定 30s 墙钟"改成"安静 30s 才算失败"
+///     （`file.rs::wait_complete_ack`）；
+///   · 发送进度靠 `chunks` 换算成字节（v4.22.37，`file.rs::wire_progress_bytes`）——
+///     在此之前进度条读的是入队量，于是 LAN 上最多 262MB 还堵在队列里时界面就 100% 了。
 /// 放在 writer_loop 里是唯一正确的位置 —— 它是"字节真的走了"的唯一证据点。
 ///
 /// TCP 与 BLE 两条写循环都要调（BLE 见 `network/ble.rs`）。
@@ -1539,11 +1202,22 @@ pub(crate) fn mark_file_wire_progress(state: &AppState, msg: &Message) {
         Message::GroupFileChunk { transfer_id, .. } => transfer_id,
         _ => return,
     };
+    let now = db::now_ms();
     state
         .file_wire_progress
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .insert(transfer_id.clone(), db::now_ms());
+        .entry(transfer_id.clone())
+        .and_modify(|p| {
+            p.at_ms = now;
+            // 饱和加：这张表只增不减到收尾，理论上碰不到上界，但进度换算依赖它，
+            // 宁可停在 u64::MAX 也不要溢出一个负数把进度算成 0。
+            p.chunks = p.chunks.saturating_add(1);
+        })
+        .or_insert(crate::state::FileWireProgress {
+            at_ms: now,
+            chunks: 1,
+        });
 }
 
 /// 读「该 transfer 最近一次真的写出字节」的时刻（0 = 从未写出过）。
@@ -1553,14 +1227,30 @@ pub(crate) fn file_wire_progress_at(state: &AppState, transfer_id: &str) -> i64 
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .get(transfer_id)
-        .copied()
+        .map(|p| p.at_ms)
         .unwrap_or(0)
 }
 
-/// 传输收尾时清掉进展记录（成功/失败都清），避免这张表随历史传输无限增长。
-pub(crate) fn clear_file_wire_progress(state: &AppState, transfer_id: &str) {
+/// 读「该 transfer 已经真的写出多少片」（无记录 = 0）。发送进度的唯一真实来源。
+pub(crate) fn file_wire_chunks_at(state: &AppState, transfer_id: &str) -> u64 {
     state
         .file_wire_progress
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(transfer_id)
+        .map(|p| p.chunks)
+        .unwrap_or(0)
+}
+
+/// 传输收尾时清掉进展记录，避免这张表随历史传输无限增长。
+///
+/// 收在 `file.rs::WireLedger` 的 `Drop` 里（成功、取消、链路失败、panic 展开都走同一处）；
+/// 这里只留"怎么删"，不留第二套"什么时候删"。
+pub(crate) fn clear_file_wire_progress_in(
+    table: &std::sync::Mutex<HashMap<String, crate::state::FileWireProgress>>,
+    transfer_id: &str,
+) {
+    table
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .remove(transfer_id);
@@ -1571,21 +1261,6 @@ pub(crate) fn clear_file_wire_progress(state: &AppState, transfer_id: &str) {
 fn mark_conn_failure(state: &AppState, peer_id: &str, endpoint: &MeshEndpoint) {
     let mut pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
     pm.mark_connection_failure(peer_id, endpoint);
-}
-
-/// 把「某条连接发送侧拥塞」喂给 mesh 层。
-/// queue Full / writer 被 TCP 窗口 0 卡住时调用。
-/// 只标记时间戳，**不影响 liveness/healthy** — 拥塞是独立维度。
-fn mark_conn_congested(state: &AppState, peer_id: &str, endpoint: &MeshEndpoint) {
-    let mut pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
-    pm.mark_connection_congested(peer_id, endpoint, db::now_ms());
-}
-
-/// 把「某条连接拥塞已解除」喂给 mesh 层。
-/// writer 恢复正常消费（TCP 窗口恢复 / backpressure 解除）时调用。
-fn mark_conn_congestion_recovered(state: &AppState, peer_id: &str, endpoint: &MeshEndpoint) {
-    let mut pm = state.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
-    pm.mark_connection_congestion_recovered(peer_id, endpoint);
 }
 
 /// 单次写出的结果（D8-4）。把"主动放弃"与"写失败"分开：
@@ -1604,16 +1279,18 @@ async fn writer_loop(
     // 类型是 transport 无关的 `Endpoint`（BLE 也需要它）。
     endpoint: MeshEndpoint,
     mut w: TcpSender,
-    mut bulk_rx: mpsc::Receiver<Message>,
-    mut prio_rx: mpsc::Receiver<Message>,
+    mut high_rx: mpsc::Receiver<Message>,
+    mut normal_rx: mpsc::Receiver<Message>,
+    mut low_rx: mpsc::Receiver<Message>,
     mut shutdown: watch::Receiver<bool>,
     // 本连接的取消信号（M3#6）：由健康 watchdog 在半开链路上触发。
     mut cancel: watch::Receiver<bool>,
 ) {
-    let mut bulk_open = true;
-    let mut prio_open = true;
+    let mut high_open = true;
+    let mut normal_open = true;
+    let mut low_open = true;
     loop {
-        if !bulk_open && !prio_open {
+        if !high_open && !normal_open && !low_open {
             break;
         }
         let msg = tokio::select! {
@@ -1623,8 +1300,9 @@ async fn writer_loop(
             _ = shutdown.changed() => break,
             // 本连接被判死（读活性长期过期）→ 与全局停机同样立即收尾。
             _ = cancel.changed() => break,
-            maybe = prio_rx.recv(), if prio_open => maybe,
-            maybe = bulk_rx.recv(), if bulk_open => maybe,
+            maybe = high_rx.recv(), if high_open => maybe,
+            maybe = normal_rx.recv(), if normal_open => maybe,
+            maybe = low_rx.recv(), if low_open => maybe,
         };
         match msg {
             Some(msg) => {
@@ -1647,13 +1325,6 @@ async fn writer_loop(
                     // 写成功只记**出站**活性（诊断口径）。M3-0b 起它**不**参与 is_healthy：
                     // 半开 TCP 上写会一直"成功"，那是本缺陷要被排除的伪证据。
                     mark_conn_write_seen(&state, &peer_id, &endpoint);
-                    // Liveness 与 congestion 是独立维度：写成功一帧不等于
-                    // 两个 channel 已经排空。必须等 prio/bulk 都 empty 才清除拥塞 ——
-                    // 否则 writer 慢慢消费（TCP 窗口半开）会导致 flapping：
-                    // 写一帧 → recovered → Router 选回 → 又 Full → 又 congested。
-                    if prio_rx.is_empty() && bulk_rx.is_empty() {
-                        mark_conn_congestion_recovered(&state, &peer_id, &endpoint);
-                    }
                     mark_file_wire_progress(&state, &msg);
                     continue;
                 }
@@ -1679,14 +1350,17 @@ async fn writer_loop(
                 }
             }
             None => {
-                // select 无法直接区分是哪个分支关闭，用两个 recv 的 is_closed 兜底。
-                if prio_rx.is_closed() {
-                    prio_open = false;
+                // select 无法直接区分是哪个分支关闭，用三个 recv 的 is_closed 兜底。
+                if high_rx.is_closed() {
+                    high_open = false;
                 }
-                if bulk_rx.is_closed() {
-                    bulk_open = false;
+                if normal_rx.is_closed() {
+                    normal_open = false;
                 }
-                if !bulk_open && !prio_open {
+                if low_rx.is_closed() {
+                    low_open = false;
+                }
+                if !high_open && !normal_open && !low_open {
                     break;
                 }
             }
@@ -1746,14 +1420,14 @@ async fn reader_loop(
             let links = state.links.lock().await;
             links
                 .get(&peer_id)
-                .and_then(|list| list.iter().find(|l| l.bulk.same_channel(&link_tx)))
+                .and_then(|list| list.iter().find(|l| l.low.same_channel(&link_tx)))
                 .map(|l| l.endpoint.clone())
         };
         let mut links = state.links.lock().await;
         let removed = match links.get_mut(&peer_id) {
             Some(list) => {
                 let before = list.len();
-                list.retain(|l| !l.bulk.same_channel(&link_tx));
+                list.retain(|l| !l.low.same_channel(&link_tx));
                 list.len() != before
             }
             None => false,
@@ -1825,7 +1499,6 @@ pub(crate) async fn inbound_path_kind(state: &AppState, peer_id: &str) -> String
         db::now_ms(),
         health_timeout_ms,
         max_failures,
-        crate::mesh::CONGESTION_WINDOW_MS,
     );
     // ③ 徽标显示「实际会走的那条」= 选路结果的第一条（见 `badge_path_kind`）。
     //
@@ -2570,8 +2243,9 @@ async fn connect_to_peer(
     let peer_id: String = device_id.clone();
     let learned_hello: Option<Message> = Some(first);
 
-    let (bulk_tx, bulk_rx) = mpsc::channel(1024);
-    let (prio_tx, prio_rx) = mpsc::channel(1024);
+    let (high_tx, high_rx) = mpsc::channel(1024);
+    let (normal_tx, normal_rx) = mpsc::channel(1024);
+    let (low_tx, low_rx) = mpsc::channel(1024);
     // 本连接独立的取消信号（M3#6），语义同 `handle_incoming`。
     let (cancel_tx, cancel_rx) = watch::channel(false);
     state
@@ -2583,8 +2257,9 @@ async fn connect_to_peer(
         .push(Link {
             endpoint: MeshEndpoint::Tcp(endpoint),
             path_kind,
-            bulk: bulk_tx.clone(),
-            priority: prio_tx.clone(),
+            high: high_tx.clone(),
+            normal: normal_tx.clone(),
+            low: low_tx.clone(),
             cancel: cancel_tx,
         });
     // 同步到 mesh 层（拨号侧同样登记，路径类型由调用方携带）
@@ -2594,8 +2269,9 @@ async fn connect_to_peer(
         peer_id.clone(),
         ep.clone(),
         w,
-        bulk_rx,
-        prio_rx,
+        high_rx,
+        normal_rx,
+        low_rx,
         shutdown.clone(),
         cancel_rx.clone(),
     ));
@@ -2620,7 +2296,7 @@ async fn connect_to_peer(
         r,
         peer_id.clone(),
         ep.clone(),
-        bulk_tx,
+        low_tx,
         shutdown,
         cancel_rx,
     ));
@@ -2700,7 +2376,29 @@ async fn retry_incomplete_content(state: &Arc<AppState>, peer_id: &str) {
             name: rec.name.clone(),
             size: rec.size,
         };
-        if try_send(state, peer_id, &msg).await.is_ok() {
+        let sent = try_send(state, peer_id, &msg).await.is_ok();
+        {
+            // 自审必改#1：这一轮到期重发本身就是「上一轮无人应答」的事实 ——
+            // 不记一次失败，attempts 永远不涨，MAX_CONTENT_RETRIES 封顶形同虚设
+            // （对端重装/文件已删时无应答路径上没有任何 record_failure 调用点）。
+            // 记完之后 status 由退避门控制下一次；到封顶收口 Rejected，
+            // list_resumable 不再捞它 —— 无限重发链在此闭合。
+            let reason = if sent {
+                crate::content::model::FailReason::Timeout
+            } else {
+                crate::content::model::FailReason::LinkDown
+            };
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+            let _ = crate::content::store::record_failure(
+                &dbc,
+                &rec.cid,
+                peer_id,
+                rec.direction,
+                reason,
+                db::now_ms(),
+            );
+        }
+        if sent {
             state.logger.info(
                 "content",
                 format!("建链自动重试未完成内容 cid={} peer={peer_id}", rec.cid),
@@ -2715,10 +2413,69 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
     // 只在「我确实有到 to 的直连」时投递；没有就丢弃（单跳中继限制，见
     // relay_send_to_neighbors 的说明）。
     if let Some(to) = directed_relay_target(&msg, &state.device_id) {
-        let _ = try_send(state, to, &msg).await;
+        // 授权闸（2026-09-19 P0#5）：定向借道此前**不经任何策略** —— 设置里关掉
+        // 中继也照转，等于「开放文件中继/目录中继」。判据与 gossip 同一张真值表，
+        // 授权主体是经 Hello 验签的链路对端（帧内 from 可自报伪造，不作依据）。
+        let cfg = state.relay_policy_config();
+        let allowed = crate::mesh::relay_policy::decide_relay_from_peer(&cfg, peer_id, || {
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+            db::get_friend(&dbc, peer_id).is_some()
+        });
+        if !allowed {
+            if log_throttled("relay_deny", 10_000) {
+                state.logger.warn(
+                    "mesh",
+                    format!("按中继策略拒绝对端 {peer_id} 的定向借道请求（to={to}）"),
+                );
+            }
+            return;
+        }
+        if let Err(e) = try_send(state, to, &msg).await {
+            // 丢帧必须留痕（INV-005 不得静默丢）：共享目录/中继文件上层有幂等重试，
+            // 但「一直失败」以前在本机日志里完全不可见。
+            if log_throttled("relay_drop", 10_000) {
+                state.logger.warn(
+                    "mesh",
+                    format!("定向借道转投失败 to={to}：{e}（上层会重试）"),
+                );
+            }
+        }
         return;
     }
     match msg {
+        // 跨版本降级（INV-P24 第 1 条）：看不懂的新帧 ⇒ 忽略这一条 + 节流日志，**绝不拆链**。
+        // 不这么做的话，新版本一旦上线任何新帧类型，老设备的表现就不是"少收到一条消息"，
+        // 而是"跟这台设备彻底连不上"（反序列化失败 → io::Error → reader 退出 → 重连再失败）。
+        Message::Unknown { wire_type } => {
+            if log_throttled("unknown_frame", 10_000) {
+                // 把对端**声明**的版本一起写进日志：以前这句"本机版本低于对端"是从
+                // "看不懂这一帧"倒推的，现在真机能直接看到是谁的哪个版本，
+                // 老端没声明时如实写"未声明"而不是假装它报了 1。
+                let declared = state
+                    .peer_versions
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get(peer_id)
+                    .map(|v| {
+                        format!(
+                            "协议={} 应用={}",
+                            v.protocol_version
+                                .map(|p| p.to_string())
+                                .unwrap_or_else(|| "未声明".into()),
+                            v.app_version.as_deref().unwrap_or("未声明"),
+                        )
+                    })
+                    .unwrap_or_else(|| "未声明".into());
+                state.logger.warn(
+                    "proto",
+                    format!(
+                        "忽略未知帧类型 type={wire_type} peer={peer_id}：对端声明（{declared}），\
+                         本机协议={} —— 本机版本低于对端，升级后即可识别；链路保持",
+                        crate::protocol::PROTOCOL_VERSION,
+                    ),
+                );
+            }
+        }
         // ADR-0019 Phase 3：按 cid 拉取。**拥有即授权**，无需人工确认 —— 但只服务
         // "确实是我的好友、且 from 就是这条链路的对端（防冒名）"。回发复用既有
         // FileOffer→Chunk→Done→CompleteAck 流程（send_file_from_path）。
@@ -2799,6 +2556,8 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             avatar,
             device_type,
             content_features,
+            protocol_version,
+            app_version,
             tcp_port,
             x25519_pubkey,
             ed25519_pubkey,
@@ -2814,6 +2573,19 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .insert(device_id.clone(), content_features);
+            // 记录对端声明的版本（同样不签名）。TCP 与 BLE 都走这一个写入点：
+            // 两条 transport 建链后都会把这个已验签的 Hello 交回 `handle_message`。
+            state
+                .peer_versions
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(
+                    device_id.clone(),
+                    crate::state::PeerVersion {
+                        protocol_version,
+                        app_version,
+                    },
+                );
             let ip = state
                 .peers
                 .lock()
@@ -2908,16 +2680,25 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                 ttl: frame.ttl,
                 payload,
             };
+            // 数据面授权闸（P0#5）：外部帧同样必须吃中继策略，默认 All 行为不变
+            let cfg = state.relay_policy_config();
+            let allowed = crate::mesh::relay_policy::decide_relay_from_peer(&cfg, peer_id, || {
+                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                db::get_friend(&dbc, peer_id).is_some()
+            });
+            if !allowed {
+                if log_throttled("relay_deny", 10_000) {
+                    state.logger.warn(
+                        "mesh",
+                        format!("按中继策略拒绝对端 {peer_id} 的外部帧转投 id={id}"),
+                    );
+                }
+                return;
+            }
             let targets: Vec<String> = {
-                let peers: Vec<String> = state
-                    .peers
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .keys()
-                    .cloned()
-                    .collect();
+                let neighbors = reachable_neighbors(state, peer_id).await;
                 let gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
-                gossip.choose_fanout(&peers, peer_id)
+                gossip.choose_fanout(&neighbors, peer_id)
             };
             if targets.is_empty() {
                 return;
@@ -2927,7 +2708,14 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             let msg = fwd;
             tokio::spawn(async move {
                 for t in targets {
-                    let _ = try_send(&st, &t, &msg).await;
+                    if let Err(e) = try_send(&st, &t, &msg).await {
+                        if log_throttled("relay_drop", 10_000) {
+                            st.logger.warn(
+                                "mesh",
+                                format!("外部帧转投失败 to={t}：{e}（其余邻居不受影响）"),
+                            );
+                        }
+                    }
                 }
             });
         }
@@ -3691,7 +3479,22 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                     }
                 }
                 Err(e) => {
-                    let _ = file::fail_receive(state, &transfer_id, peer_id, &e);
+                    // true = 本次真的中止了一个在途接收器（false = 早已中止/未知传输/来源不符，
+                    // 再发通知只会重复）。**必须回否定确认**：旧行为是"判死但谁也不告诉"，
+                    // 发送端于是把剩下的整份文件继续灌进一条已经死掉的传输，最后 FileDone
+                    // 无人应答、干等一个 FILE_ACK_IDLE，再按"可重试"整发 5 次 —— 真机上
+                    // 表现为两边都显示失败，而中间几十分钟界面上一直"发送中"。
+                    if file::fail_receive(state, &transfer_id, peer_id, &e) {
+                        let _ = try_send(
+                            state,
+                            peer_id,
+                            &Message::FileCompleteAck {
+                                transfer_id: transfer_id.clone(),
+                                success: false,
+                            },
+                        )
+                        .await;
+                    }
                 }
             }
         }
@@ -3741,6 +3544,10 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
                     let rec = {
                         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                         let subtype = file::classify_file_subtype(&name);
+                        // 与发送端同口径（commands::send_file 4.22.1）：kind 只区分
+                        // image|file，细分留 content.subtype —— 接收端不再按文件名
+                        // 重新猜一遍（旧写法把 mp4 标成 kind="video"，前端渲染链
+                        // 不认，气泡整个退化成 JSON；真机 2026-09-19）。
                         let kind = if subtype == "image" { "image" } else { "file" };
                         let content = serde_json::json!({
                             "name": name,
@@ -3804,11 +3611,16 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             if from == state.device_id {
                 return;
             }
-            let is_friend = {
+            // 双好友判定（2026-09-19 自审 P1#4）：`from` 是**自报字段** —— 单查它，
+            // 一个好友可以冒用另一个好友的 id 浏览别人的共享目录。也不能简单收紧成
+            // from==peer_id：借一跳中继的合法帧到达时 peer 是转投邻居而非原 requester。
+            // 残余风险（接受并记录）：中继好友 M 可以转发 from=他人 的请求，
+            // 但 M 本身已通过 4.22.9 的中继授权闸，且处于 LAN 信任模型内。
+            let allowed = {
                 let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                db::get_friend(&dbc, &from).is_some()
+                db::get_friend(&dbc, &from).is_some() && db::get_friend(&dbc, peer_id).is_some()
             };
-            if !is_friend {
+            if !allowed {
                 return;
             }
             let entries = {
@@ -3859,11 +3671,14 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             if from == state.device_id {
                 return;
             }
-            let is_friend = {
+            // 双好友判定，同 ShareTreeRequest（自审 P1#4）：`from` 自报可伪造，
+            // 下载别人共享目录的文件必须「声称的 requester 是我的好友」**且**
+            // 「提出这条链路的对端也是我的好友」（中继链两跳都在信任圈内）。
+            let allowed = {
                 let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                db::get_friend(&dbc, &from).is_some()
+                db::get_friend(&dbc, &from).is_some() && db::get_friend(&dbc, peer_id).is_some()
             };
-            if !is_friend {
+            if !allowed {
                 return;
             }
             let share = state
@@ -3950,7 +3765,7 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
             to,
             ttl,
         } => {
-            handle_relay_chunk(state, transfer_id, seq, data, from, to, ttl).await;
+            handle_relay_chunk(state, peer_id, transfer_id, seq, data, from, to, ttl).await;
         }
         // ---- 群密钥分发 ----
         Message::GroupKey {
@@ -4085,14 +3900,16 @@ fn open_direct_content(
     my_x25519_secret: &StaticSecret,
     sender_pubkey: Option<&str>,
     wire: &str,
-    kind: MsgKind,
+    kind: String,
 ) -> Option<(String, String)> {
     let b64 = wire.strip_prefix("enc1:")?;
     let pubkey = sender_pubkey?;
     let shared = crypto::shared_secret(my_x25519_secret, pubkey)?;
     let bytes = STANDARD.decode(b64).ok()?;
     let plain = crypto::open(&shared, &bytes)?;
-    Some((String::from_utf8(plain).ok()?, kind.as_str().to_string()))
+    // kind **原样透传**（不做 `from_wire_str` 那样的回落）：本机不认识的 kind 也要带着真值
+    // 入库，前端才会显示「不支持的消息类型」而不是把它当成 text 渲染出一坨裸 JSON。
+    Some((String::from_utf8(plain).ok()?, kind))
 }
 
 /// 用接收方当前公钥重新密封待发内容（`msg_id` 由调用方保持不变）。
@@ -4191,907 +4008,9 @@ fn may_ack(inserted: &Result<bool, rusqlite::Error>) -> bool {
     !inserted.is_err()
 }
 
-// ---------------- Gossip 处理 ----------------
-
-/// 多跳转发：把 MeshFrame 载荷还原成 GossipEnvelope，发给选中的下一跳。
-///
-/// **不新增协议**：转发出去的仍是 `Message::Gossip`，下一跳按现有逻辑处理，
-/// 因此 wire 格式不变、新旧客户端仍然互通（避免触发 INV-P13 的协议变更流程）。
-///
-/// 排除两类目标：
-/// ① 原始源节点（§18 source exclusion，由 `select_outgoing` 完成）；
-/// ② 该帧的入站 peer —— 发回去只是浪费，下一跳的 dedup 也会把它丢弃。
-///
-/// 转发是**尽力而为**：失败可忽略。Gossip 的可靠性由 outbox / dedup 保证，
-/// 不依赖中继成功。
-/// 群信封能否被**本机消费**（= 是否允许进入第 5 步的本地处理）。
-///
-/// ⚠️ 这条判据**只管"消费"，不管"转发"**（2026-09-13 审计的真缺陷）。
-///
-/// 旧实现在这里直接 `return`，于是**非成员中继根本不会转发群消息**：
-/// 三个 BLE-only 设备串成 A—B—C 时，只要 B 不在群里，A 发的群消息到 B 就没了
-/// —— 而同一条链路上单聊是通的（单聊走定向 target 分支）。
-/// 表现就是"BLE mesh 上群聊永远不通、私聊却正常"。
-///
-/// 语义边界（为什么"非成员转发"是安全的）：
-/// - 群消息正文用**群密钥**对称加密，非成员没有密钥 ⇒ 解不开（`plaintext = None`），
-///   转发它只是搬密文，不泄露任何内容；
-/// - 是否愿意替别人转发，由**中继授权（M4）**决定（`decide_forward`），不靠这条判据；
-/// - `sender` 必须在成员表里：签名只证明"是谁发的"，不证明"发送者有权把人拉进群"，
-///   所以伪造者发的群信封即使广播过来，本机也不消费它。
-pub(crate) fn group_envelope_consumable(
-    kind: &GossipKind,
-    members: &[String],
-    me: &str,
-    sender: &str,
-) -> bool {
-    if !matches!(kind, GossipKind::Group) {
-        return true;
-    }
-    // 成员表为空 = 旧端 / 早期实现发的群信封，保持兼容（与旧代码同口径）
-    if members.is_empty() {
-        return true;
-    }
-    members.iter().any(|m| m == me) && members.iter().any(|m| m == sender)
-}
-
-async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope) {
-    // Gossip 可经第三方转发，不能仅凭信封内自报的 Ed25519 公钥建立身份。
-    // 公钥必须先由 Discovery/Hello 绑定到同一个 device_id；若已知 X25519
-    // 公钥也发生变化，同样拒绝，避免冒充好友或污染 E2EE 密钥缓存。
-    let sender_trusted = {
-        if env.sender_id == state.device_id {
-            false
-        } else {
-            let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
-            match peers.get(&env.sender_id) {
-                // 已认识：公钥必须匹配（无论是直连还是跨跳转发），防冒充。
-                Some(p) => {
-                    let direct_peer = peer_id == env.sender_id;
-                    (p.ed25519_pubkey.as_deref() == Some(env.sender_ed25519.as_str())
-                        || (direct_peer && p.ed25519_pubkey.is_none()))
-                        && (p
-                            .x25519_pubkey
-                            .as_deref()
-                            .map_or(true, |key| key == env.sender_pubkey)
-                            || (direct_peer && p.x25519_pubkey.is_none()))
-                }
-                // 未认识：仅 Presence（节点通告）允许 TOFU —— 它存在的目的就是
-                // 让「不认识」的节点被全网看到。其余消息仍拒，避免陌生人直接投递。
-                None => match env.kind {
-                    GossipKind::Presence | GossipKind::FriendRequest | GossipKind::FriendAccept => {
-                        true
-                    }
-                    // 回执/确认不能 TOFU：发送方必须是「已绑定身份」的好友。
-                    // peers 是内存态，进程重启后为空，此处回退到 friends 表
-                    // （持久化的 ed25519 公钥）完成身份绑定，避免重启后跨跳
-                    // 回执被误拒。
-                    GossipKind::ChatAck | GossipKind::ChatReadReceipt => {
-                        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                        db::get_friend_ed25519(&dbc, &env.sender_id).as_deref()
-                            == Some(env.sender_ed25519.as_str())
-                    }
-                    _ => false,
-                },
-            }
-        }
-    };
-    if !sender_trusted {
-        return;
-    }
-    // 直连 TCP 对端在 Hello 中没有携带公钥时，首次合法 Gossip 可完成 TOFU
-    // 绑定；之后所有经中继或直连的信封都必须匹配这组键。
-    if peer_id == env.sender_id {
-        let mut peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(p) = peers.get_mut(&env.sender_id) {
-            if p.ed25519_pubkey.is_none() {
-                p.ed25519_pubkey = Some(env.sender_ed25519.clone());
-            }
-            if p.x25519_pubkey.is_none() {
-                p.x25519_pubkey = Some(env.sender_pubkey.clone());
-            }
-        }
-    }
-    // 1. 先验签，再进入去重缓存。否则攻击者可以用伪造的唯一 message_id
-    // 污染 Bloom/LRU，甚至抢先占用真实消息的 id 造成合法消息被丢弃。
-    {
-        let gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
-        if !gossip.verify_envelope(&env) {
-            return;
-        }
-        drop(gossip);
-        // Mesh 层：**全局去重 + TTL 判定**（§15 / §16 / §17）。
-        //
-        // 必须在**验签之后**才登记去重表，否则攻击者可用伪造的 frame_id 污染
-        // Bloom，抢先占用真实帧的 id 造成合法消息被丢弃 —— 与上面 GossipEngine
-        // 的防护同理。
-        //
-        // ⚠️ 这里**只判定不转发**：真正的多跳转发在下面第 4 步（`decide_forward` +
-        // `choose_fanout`）。历史上这里还有一条由 `MeshRouter::relay_enabled` 门控的
-        // 转发路径（默认关闭、生产从不调用），2026-09-12 已删除 ——
-        // **中继授权的唯一真相是 `settings.relay_policy`**（ADR-0016），
-        // 接 BLE 时不要再复制第二份转发记账。
-        {
-            let mut router = state.mesh_router.lock().unwrap_or_else(|e| e.into_inner());
-            let frame = MeshFrame {
-                frame_id: env.message_id.clone(),
-                source_node_id: env.sender_id.clone(),
-                destination: MeshDestination::Broadcast,
-                ttl: env.ttl,
-                kind: MeshFrameKind::Gosslan,
-                // 转发在别处做，这里只需要元数据（MeshRouter 不解析载荷，P-A03）
-                payload: Vec::new(),
-            };
-            if let ForwardDecision::Drop(_) = router.on_receive(frame, &state.device_id) {
-                return;
-            }
-        }
-        // 业务层去重（Mesh 之后的第二道防线）
-        let mut gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
-        if !gossip.is_new(&env.message_id) {
-            return;
-        }
-    }
-    // 2. 同步发送方公钥：GossipEnvelope 已携带 x25519_pubkey 用于解密，
-    //    但此前未写入 peers/friends，导致后续 outbox 重发的直发 ChatMessage
-    //    在 open_direct_content() 中因缺 pubkey 被丢弃。此处仅更新已有 peer
-    //    条目（不做 insert，避免为未通过 Discovery 的节点创建残缺记录），
-    //    同时用 COALESCE 安全地补充 friends 表的 NULL pubkey。
-    if env.encrypted && matches!(env.kind, GossipKind::Chat) {
-        let mut peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(p) = peers.get_mut(&env.sender_id) {
-            if p.x25519_pubkey.is_none() {
-                p.x25519_pubkey = Some(env.sender_pubkey.clone());
-                p.last_seen = db::now_ms();
-                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                db::update_friend_pubkeys(&dbc, &env.sender_id, Some(&env.sender_pubkey), None)
-                    .ok();
-            }
-        }
-    }
-    // 3. 解包：E2EE 关闭时载荷为明文 JSON；开启时按单聊 ECDH / 群密钥解密
-    let plaintext = if !env.encrypted {
-        // FriendMessageBlocked 等明文 Gossip：payload 是 base64 编码的 JSON
-        STANDARD.decode(&env.payload).ok()
-    } else {
-        match &env.kind {
-            GossipKind::Chat => {
-                let shared =
-                    crypto::shared_secret(&state.identity.x25519_secret, &env.sender_pubkey);
-                shared.and_then(|s| {
-                    STANDARD
-                        .decode(&env.payload)
-                        .ok()
-                        .and_then(|d| crypto::open(&s, &d))
-                })
-            }
-            GossipKind::Group => {
-                let gid = env.group_id.clone().unwrap_or_default();
-                let key = get_group_key(state, &gid).await;
-                key.and_then(|k| {
-                    STANDARD
-                        .decode(&env.payload)
-                        .ok()
-                        .and_then(|d| crypto::open_symmetric(&k, &d))
-                })
-            }
-            GossipKind::FriendMessageBlocked => {
-                // 已在 encrypted=false 分支处理，这里不应进入
-                return;
-            }
-            GossipKind::Presence => {
-                // Presence 必然是明文；收到 encrypted=true 的是异常，丢弃。
-                return;
-            }
-            GossipKind::FriendRequest | GossipKind::FriendAccept => {
-                // 定向好友控制消息：发送方用 target 的 X25519 公钥加密，只有 target
-                // 能用自己的私钥解开；中间节点解不开（plaintext=None），无害。
-                let shared =
-                    crypto::shared_secret(&state.identity.x25519_secret, &env.sender_pubkey);
-                shared.and_then(|s| {
-                    STANDARD
-                        .decode(&env.payload)
-                        .ok()
-                        .and_then(|d| crypto::open(&s, &d))
-                })
-            }
-            GossipKind::ChatAck | GossipKind::ChatReadReceipt => {
-                // 回执/确认必然是明文；收到 encrypted=true 的是异常，丢弃。
-                return;
-            }
-        }
-    };
-
-    // 群信封即使签名正确，也只能被群成员**消费**；签名证明“是谁发的”，
-    // 不代表发送者有权把任意节点加入一个群。
-    //
-    // ⚠️ 这里**只记判据、不 return**（2026-09-13 审计）：非成员也要继续走第 4 步的转发，
-    // 否则 BLE-only 三点中继里的群聊永远不通（细节见 `group_envelope_consumable` 的注释）。
-    let group_consumable = group_envelope_consumable(
-        &env.kind,
-        &env.group_members,
-        &state.device_id,
-        &env.sender_id,
-    );
-
-    // 4. 转发（fan-out，TTL 衰减）— 先过**中继授权**（P2 / M4），再选人转发。
-    //
-    // 三条判据全部收在 `mesh::relay_policy::decide_forward` 里（真值表有单测），
-    // 这里只负责喂事实，避免把传播语义散落成 if：
-    //   ① 定向帧到达目标后**停止转发**（本机就是 target，只消费）：否则目标会把定向帧
-    //      再洪泛给其他邻居，邻居又按 target 定向转发回来，形成冗余中转与回环。真机反馈
-    //      「同网段好友申请一直中转、清掉还冒出来」正是这个回环造成的；
-    //   ② TTL 耗尽不再转发；
-    //   ③ 替**别人**转发要过授权策略（自己发的信封不受策略限制）。
-    //
-    // ⚠️ 默认策略是 `all`（与今天逐字节一致）；好友/白名单查询是**按需**的 ——
-    // `all`/`off` 下一次库都不查，转发热路径零额外开销。
-    let is_target = env.target.as_deref() == Some(state.device_id.as_str());
-    let sender_is_me = env.sender_id == state.device_id;
-    let relay_cfg = state.relay_policy_config();
-    let may_forward = crate::mesh::relay_policy::decide_forward(
-        &relay_cfg,
-        is_target,
-        env.ttl,
-        sender_is_me,
-        &env.sender_id,
-        || {
-            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-            db::get_friend(&dbc, &env.sender_id).is_some()
-        },
-    );
-    if may_forward {
-        // 定向帧（FriendRequest/FriendAccept/ChatAck/ChatReadReceipt）优先精确定向：
-        // target 是本机直连就只发它；无直连路径时洪泛兜底（第一版无路由表）。广播帧保持 fan-out。
-        let targets: Vec<String> = match env.target.as_deref() {
-            Some(t) => {
-                // ⚠️ 必须判「有**非空**链路」（等价于 `has_link`），不能用 `contains_key`：
-                // 后者会把残留的空 Vec 当成「直连」→ 走只发 target 的分支 →
-                // `try_send` 返回「未建立连接」，而**洪泛兜底不会执行** ⇒
-                // 跨跳的好友申请 / 送达回执 / 已读回执可能永久丢失（复核抓到的缺陷）。
-                let direct = {
-                    let links = state.links.lock().await;
-                    links.get(t).is_some_and(|v| !v.is_empty())
-                };
-                if direct {
-                    vec![t.to_string()]
-                } else {
-                    let peers: Vec<String> = state
-                        .peers
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .keys()
-                        .cloned()
-                        .collect();
-                    let gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
-                    gossip.choose_fanout(&peers, &env.sender_id)
-                }
-            }
-            None => {
-                let peers: Vec<String> = state
-                    .peers
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .keys()
-                    .cloned()
-                    .collect();
-                let gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
-                gossip.choose_fanout(&peers, &env.sender_id)
-            }
-        };
-        let mut fwd = env.clone();
-        fwd.ttl -= 1;
-        let fwd_msg = Message::Gossip { envelope: fwd };
-        // ⚠️ 转发**不阻塞本连接的读循环**：`try_send` 在信道满时有界补试 500ms，
-        // 逐条 await 最坏 4 × 500ms = 2s —— 期间这条连接的后续帧（含心跳）都要排队，
-        // shutdown/取消也要等。顺序在这里无关紧要（接收侧按 msg_id 去重，而且这些
-        // 只是同一条消息发给**不同**邻居）。用一个任务串行发完：并发度不变、任务数可控。
-        let st = state.clone();
-        tokio::spawn(async move {
-            for t in targets {
-                let _ = try_send(&st, &t, &fwd_msg).await;
-            }
-        });
-    }
-
-    // 5. 按 GossipKind 处理
-    //
-    // 非成员**跳过本地消费**（上面的转发已经做完了）：群密钥不在手上，本来也解不开，
-    // 但绝不能因为"我不是这个群的成员"就把整条消息丢掉 —— 那样多跳群聊永远不通。
-    if !group_consumable {
-        return;
-    }
-    match env.kind {
-        GossipKind::FriendMessageBlocked => {
-            // 控制消息：检查本机是否为原始发送方
-            if let Some(pt) = plaintext {
-                if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&pt) {
-                    if let Some(original) = v.get("original_sender").and_then(|s| s.as_str()) {
-                        if original == state.device_id {
-                            // 本机就是原始发送方 → 通知前端
-                            let _ = state.app.emit("friend-message-blocked", &env.sender_id);
-                        }
-                        // 非本机 → 已在上面 fan-out 转发，不做任何 UI/DB 操作
-                    }
-                }
-            }
-        }
-        GossipKind::Presence => {
-            // TOFU 记录远端节点：跨跳转发的 Presence，sender 可能不在 peers 里。
-            // 「去中心化发现」的落地 —— A 经 B 转发看到 C，C 进入 peers 表，
-            // 前端「添加好友」列表即出现 C（即使 A 与 C 无直连）。
-            if let Some(pt) = plaintext {
-                if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&pt) {
-                    let nickname = v
-                        .get("nickname")
-                        .and_then(|n| n.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let avatar = v
-                        .get("avatar")
-                        .and_then(|a| a.as_str())
-                        .map(|s| s.to_string());
-                    let device_type = v
-                        .get("device_type")
-                        .and_then(|d| d.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    // 首次学到才留痕：peers 是内存结构、不落库，这行日志是唯一可观测
-                    // 「跨跳发现了谁」的手段（与 [mesh] ±conn、握手学到身份同理）。
-                    let is_new = {
-                        let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
-                        !peers.contains_key(&env.sender_id)
-                    };
-                    if is_new {
-                        state.logger.info(
-                            "presence",
-                            format!("学到远端节点 peer={} nickname={}", env.sender_id, nickname),
-                        );
-                        // 🎯 同局域网却走桥接的直接修复（真机 2026-09-14 全 Windows 局域网）：
-                        // 新学到的**跨跳**节点只有 ip="" 的 Presence，永远不会触发 LAN 拨号
-                        // （ensure_link 只由 UDP announce 驱动）⇒ 同网段也只能一直走中继。
-                        // 主动喊一轮 who_has：同网段的节点会用**单播**把 announce 回给我们，
-                        // 我们随即建立直连；不在同网段的节点收不到单播、不受影响。
-                        if let Some(tx) = state
-                            .probe
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .as_ref()
-                        {
-                            let next = tx.borrow().saturating_add(1);
-                            let _ = tx.send(next);
-                        }
-                    }
-                    // ip 空、tcp_port 0：跨跳转发不知道对端真实地址，仅记录身份
-                    // （可被「看到」，但不可直连）。
-                    upsert_peer(
-                        state,
-                        &env.sender_id,
-                        &nickname,
-                        avatar,
-                        &device_type,
-                        "",
-                        0,
-                        Some(env.sender_pubkey.clone()),
-                        Some(env.sender_ed25519.clone()),
-                        None,
-                    )
-                    .await;
-                }
-            }
-        }
-        GossipKind::FriendRequest => {
-            // 定向好友申请：只有 target == 本机才处理（中间节点已转发，不消费）。
-            if env.target.as_deref() == Some(state.device_id.as_str()) {
-                if let Some(pt) = plaintext {
-                    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&pt) {
-                        let from_nickname = v
-                            .get("from_nickname")
-                            .and_then(|n| n.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        let from_avatar = v
-                            .get("from_avatar")
-                            .and_then(|a| a.as_str())
-                            .map(|s| s.to_string());
-                        // 同步记录申请方身份与公钥：这样「同意」时才有对方 X25519 公钥
-                        // 可加密回发的 FriendAccept（跨跳场景下 Presense 可能还没到）。
-                        upsert_peer(
-                            state,
-                            &env.sender_id,
-                            &from_nickname,
-                            from_avatar.clone(),
-                            "",
-                            "",
-                            0,
-                            Some(env.sender_pubkey.clone()),
-                            Some(env.sender_ed25519.clone()),
-                            None,
-                        )
-                        .await;
-                        // 他已经是我的好友 ⇒ 直接同意（公钥刚从信封里记下，回执发得出去）
-                        if auto_accept_if_already_friend(state, &env.sender_id).await {
-                            return;
-                        }
-                        let req = PendingRequest {
-                            from: env.sender_id.clone(),
-                            from_nickname,
-                            from_avatar,
-                            ts: env.ts,
-                        };
-                        state
-                            .pending_requests
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .insert(env.sender_id.clone(), req.clone());
-                        let _ = state.app.emit("friend-request", &req);
-                        // 留痕：跨跳好友申请是内存态（pending_requests），日志是唯一
-                        // 可观测「谁申请了我」的手段（headless 测试与真机排障都靠它）。
-                        state.logger.info(
-                            "friend",
-                            format!(
-                                "收到跨跳好友申请 peer={} nickname={}",
-                                env.sender_id, req.from_nickname
-                            ),
-                        );
-                        let mut extra = std::collections::HashMap::new();
-                        extra.insert("type".to_string(), "friend_request".to_string());
-                        // 与直连那条路径同口径：点击唤起窗口 + 跳到「新的朋友」。
-                        let click_app = state.app.clone();
-                        let _ = crate::notifications::show_click_if_enabled(
-                            state,
-                            "好友申请",
-                            &format!("{} 请求添加你为好友", req.from_nickname),
-                            extra,
-                            move || {
-                                crate::notifications::on_notification_clicked(
-                                    &click_app,
-                                    "friend_request",
-                                    None,
-                                )
-                            },
-                        );
-                    }
-                }
-            }
-        }
-        GossipKind::FriendAccept => {
-            // 定向好友同意：只有 target == 本机才处理（即「我发的申请被对方同意」）。
-            if env.target.as_deref() == Some(state.device_id.as_str()) {
-                let from = env.sender_id.clone();
-                let name = resolve_nickname(state, &from);
-                // 幂等判据：**这一次是否真的"从不是好友变成好友"**。
-                //
-                // FriendAccept 没有 ACK 机制，发送方会持续补发（见 `补发好友同意回执`）——
-                // 而本分支原先没有任何去重：`add_friend` 是幂等的，但**通知与留痕每次都会执行**
-                // ⇒ 用户被"好友申请已通过"反复刷屏（真机日志里同一秒内三次）。
-                // 同时它也是"单方面成功"的观感来源：一方在无限重发，另一方被反复打扰。
-                let was_friend = {
-                    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                    db::get_friend(&dbc, &from).is_some()
-                };
-                {
-                    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                    db::add_friend(&dbc, &from, &name, None).ok();
-                    // 同步公钥（否则首次加密发送会失败）—— 与 Message::FriendAccept 路径一致。
-                    let (x, e) = {
-                        let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
-                        peers
-                            .get(&from)
-                            .map(|p| (p.x25519_pubkey.clone(), p.ed25519_pubkey.clone()))
-                            .unwrap_or((None, None))
-                    };
-                    if x.is_some() || e.is_some() {
-                        db::update_friend_pubkeys(&dbc, &from, x.as_deref(), e.as_deref()).ok();
-                    }
-                }
-                forget_pending_request(state, &from);
-                // emit 每次都发：前端 store 只是据此重拉好友列表（幂等），
-                // 而漏发会让「首次那个 emit 恰好没被界面收到」时界面永远不刷新。
-                let _ = state.app.emit("friend-accepted", &from);
-                if was_friend {
-                    // 重复投递：只留一行便于排查的痕迹，**不通知**。
-                    state
-                        .logger
-                        .info("friend", format!("重复的好友同意（已忽略）peer={from}"));
-                } else {
-                    state
-                        .logger
-                        .info("friend", format!("收到跨跳好友同意 peer={from}"));
-                    let _ = crate::notifications::show_if_enabled(
-                        state,
-                        "好友申请已通过",
-                        &format!("{name} 已成为你的好友"),
-                    );
-                }
-            }
-        }
-        GossipKind::ChatAck => {
-            // 定向送达确认：只有 target == 本机才处理（即「我发的消息被对方收到」）。
-            if env.target.as_deref() == Some(state.device_id.as_str()) {
-                if let Some(pt) = plaintext {
-                    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&pt) {
-                        if let Some(msg_id) = v.get("msg_id").and_then(|m| m.as_str()) {
-                            // 只有「我发给 sender、且仍在 outbox」的 msg_id 才接受：
-                            // msg_id 随机不可预测 + 必须命中 outbox 目标，双重防伪造送达。
-                            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                            let is_expected = dbc
-                                .query_row(
-                                    "SELECT 1 FROM outbox WHERE msg_id = ?1 AND peer_id = ?2",
-                                    params![msg_id, env.sender_id],
-                                    |_| Ok(()),
-                                )
-                                .is_ok();
-                            if !is_expected {
-                                return;
-                            }
-                            db::set_message_status(&dbc, msg_id, "delivered").ok();
-                            dbc.execute("DELETE FROM outbox WHERE msg_id = ?1", params![msg_id])
-                                .ok();
-                            drop(dbc);
-                            let _ = state.app.emit("message-acked", msg_id);
-                        }
-                    }
-                }
-            }
-        }
-        GossipKind::ChatReadReceipt => {
-            // 定向已读回执：只有 target == 本机才处理。
-            if env.target.as_deref() == Some(state.device_id.as_str()) {
-                if let Some(pt) = plaintext {
-                    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&pt) {
-                        let from = env.sender_id.clone();
-                        let last_read_ts =
-                            v.get("last_read_ts").and_then(|t| t.as_i64()).unwrap_or(0);
-                        let last_read_msg_id = v
-                            .get("last_read_msg_id")
-                            .and_then(|m| m.as_str())
-                            .map(|s| s.to_string());
-                        // 与 Message::ReadReceipt 分支同构：用 msg_id 换算回本机时间戳。
-                        let effective_ts = {
-                            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                            last_read_msg_id
-                                .as_deref()
-                                .and_then(|msg_id| {
-                                    dbc.query_row(
-                                        "SELECT ts FROM messages WHERE msg_id = ?1 AND sender_id = ?2 AND conv_id = ?3",
-                                        params![msg_id, state.device_id, from],
-                                        |r| r.get::<_, i64>(0),
-                                    )
-                                    .ok()
-                                })
-                                .unwrap_or(last_read_ts)
-                        };
-                        {
-                            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                            let _ = dbc.execute(
-                                "UPDATE messages SET status = 'read'
-                                 WHERE conv_id = ?1 AND sender_id = ?2 AND status != 'read' AND ts <= ?3",
-                                params![from, state.device_id, effective_ts],
-                            );
-                        }
-                        let _ = state.app.emit(
-                            "peer-read",
-                            &serde_json::json!({ "peer_id": from, "last_read_ts": effective_ts }),
-                        );
-                    }
-                }
-            }
-        }
-        GossipKind::Chat | GossipKind::Group => {
-            // 单聊定向：target 存在且不是本机 → 中间节点只转发不消费。即便不判断，
-            // 中间节点也会因 ECDH 解不开而 plaintext=None（不会落库），但明确判断
-            // 语义更清晰、也避免无谓的好友关系检查。群聊无 target，走原广播消费逻辑。
-            if env.kind == GossipKind::Chat
-                && env
-                    .target
-                    .as_deref()
-                    .is_some_and(|t| t != state.device_id.as_str())
-            {
-                return;
-            }
-            if let Some(pt) = plaintext {
-                let (kind, content) = parse_gossip_payload(&pt);
-                // GossipKind::Chat：好友关系检查（非好友不落库、不通知、通知发送方）
-                if env.kind == GossipKind::Chat {
-                    let is_friend = {
-                        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                        db::get_friend(&dbc, &env.sender_id).is_some()
-                    };
-                    if !is_friend {
-                        // 通过 Gossip 广播拒绝通知（多跳场景下也能回到原始发送方）
-                        let mut blocked_env = {
-                            let gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
-                            let payload =
-                                serde_json::json!({ "original_sender": env.sender_id }).to_string();
-                            let payload_b64 = STANDARD.encode(payload.as_bytes());
-                            gossip.build_envelope(
-                                &state.identity,
-                                &state.device_id,
-                                GossipKind::FriendMessageBlocked,
-                                None,
-                                None,
-                                &payload_b64,
-                                db::now_ms(),
-                                0,
-                            )
-                        };
-                        // 这是拒绝通知控制载荷，不是用户聊天内容；显式标记为明文，
-                        // 同时不再为用户 Chat/Group 提供明文兼容路径。
-                        blocked_env.encrypted = false;
-                        blocked_env.sender_sig =
-                            state.identity.sign_b64(&blocked_env.signing_bytes());
-                        broadcast_gossip(state, blocked_env).await;
-                        return;
-                    }
-                }
-                let conv_id = match &env.kind {
-                    GossipKind::Chat => env.sender_id.clone(),
-                    GossipKind::Group => {
-                        format!("group:{}", env.group_id.clone().unwrap_or_default())
-                    }
-                    _ => return,
-                };
-                let conv_kind = match &env.kind {
-                    GossipKind::Chat => "single",
-                    GossipKind::Group => "group",
-                    _ => return,
-                };
-                let name = match &env.kind {
-                    GossipKind::Chat => resolve_nickname(state, &env.sender_id),
-                    GossipKind::Group => {
-                        resolve_group_name(state, env.group_id.as_deref().unwrap_or(""))
-                    }
-                    _ => return,
-                };
-                // 群聊删除边界：本机清除过该群（seq ≤ boundary）的旧历史不得回灌。
-                // 逻辑序号不依赖墙上时钟，也不猜测发送方时钟。
-                if env.kind == GossipKind::Group {
-                    let gid = env.group_id.clone().unwrap_or_default();
-                    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                    let blocked = db::group_message_blocked_by_boundary(&dbc, &gid, env.seq, &kind);
-                    drop(dbc);
-                    if blocked {
-                        return;
-                    }
-                }
-                // 群消息顺带建群：成员端可能从未收到 GroupKey（本地无 groups 行），
-                // 但这条群消息携带了完整成员表 → 据此 upsert 建群，成员面板才能显示。
-                // 已有则只刷新（成员随踢人/加人变化时也能及时同步）。
-                if env.kind == GossipKind::Group {
-                    if let (Some(gid), Some(creator), true) = (
-                        env.group_id.clone(),
-                        env.group_creator.clone(),
-                        !env.group_members.is_empty(),
-                    ) {
-                        // ⚠️ **信封里的群名只有群主本人能生效**。
-                        //
-                        // `group_name` / `group_creator` 都是发送方自报的字段，任何持群密钥的
-                        // 成员都能填任意文本。但「改名」已经有专用帧 `GroupRename` 且严格要求
-                        // 群主 —— 若这里无条件采信，同一个效果就有了两条路径、一条有检查一条
-                        // 没有，成员即可绕过授权改掉所有人的群名（伪造成"系统通知"做社工）。
-                        //
-                        // 两层判断缺一不可：
-                        //   ① 发送者必须**自称**群主（否则填别人的 id 就能对上 creator）；
-                        //   ② 该自称还要与本地已存的 creator 一致（由 `db::upsert_group` 兜底），
-                        //      挡住「自称是群主、但本地记录里群主另有其人」。
-                        // 本地无该群时（首次接触，无从校验）按 TOFU 采信信封，与建链口径一致。
-                        let mut all = env.group_members.clone();
-                        if !all.contains(&state.device_id) {
-                            all.push(state.device_id.clone());
-                        }
-                        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                        let known = db::get_group(&dbc, &gid);
-                        let is_self_declared_creator = env.sender_id == creator;
-                        let display_name = match &known {
-                            // 已有该群：只有群主自称时才更新名字，否则沿用本地名字
-                            Some(g) => {
-                                if is_self_declared_creator {
-                                    env.group_name.clone().unwrap_or_else(|| g.name.clone())
-                                } else {
-                                    g.name.clone()
-                                }
-                            }
-                            None => env.group_name.clone().unwrap_or_else(|| name.clone()),
-                        };
-                        // 群名长度与建群/改名一致封顶，避免这条路径塞进超长字符串
-                        let display_name: String =
-                            display_name.chars().take(MAX_GROUP_NAME_LEN).collect();
-                        db::upsert_group(&dbc, &gid, &display_name, &creator, &all).ok();
-                        drop(dbc);
-                        let _ = state.app.emit("groups-updated", &gid);
-                    }
-                }
-                let preview = preview_content(&kind, &content);
-                // 撤回事件：把「已撤回」物化到被撤回的那条消息上（幂等）。
-                // 只认**作者本人**的撤回 —— 信封被 Ed25519 签名，sender_id 不可伪造；
-                // 接收端不校验时间窗（无法验证发送方的墙上时钟，那是产品规则不是安全边界）。
-                let group_id_for_check = conv_id
-                    .strip_prefix("group:")
-                    .unwrap_or_default()
-                    .to_string();
-                if kind == crate::protocol::KIND_RECALL {
-                    if let Ok(p) = serde_json::from_str::<crate::protocol::RecallPayload>(&content)
-                    {
-                        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                        // ⚠️ **目标消息可能还没落库**（撤回事件先到）。此时不能因为
-                        // "查不到作者"就把整条撤回丢掉 —— 那恰好把权威集合存在的意义
-                        // （解决先撤后到）封死了：随后消息带着完整正文落库，撤回永久失效。
-                        // 目标不存在时以「发送者是本群成员」为准 —— 他能解开群消息就说明
-                        // 持有群密钥、是成员；而 msg_id 是信封哈希，本就随 gossip 公开。
-                        let target_exists =
-                            db::get_message_preview_source(&dbc, &p.target).is_some();
-                        let allowed = if target_exists {
-                            db::get_message_preview_source(&dbc, &p.target)
-                                .map(|(sid, _)| sid == env.sender_id)
-                                .unwrap_or(false)
-                        } else {
-                            db::get_group(&dbc, &group_id_for_check)
-                                .map(|g| g.members.contains(&env.sender_id))
-                                .unwrap_or(false)
-                        };
-                        if allowed {
-                            db::insert_recall(&dbc, &conv_id, &p.target, &env.sender_id, env.seq)
-                                .ok();
-                            db::materialize_recall(&dbc, &p.target).ok();
-                            drop(dbc);
-                            let _ = state.app.emit("message-recalled", &p.target);
-                        }
-                    }
-                }
-                // 群公告：**仅群主可发布/删除**。发送侧已校验（send_group_announcement），
-                // 但接收侧原先没有任何检查 —— 任何持群密钥的成员构造一条
-                // kind="announcement" 的群消息就能改掉所有人的公告横幅，
-                // 与「公告是发给全群的权威信息」相悖，也与群名那处（同一批修的）口径不一致。
-                if kind == crate::protocol::KIND_ANNOUNCEMENT
-                    || kind == crate::protocol::KIND_ANNOUNCEMENT_DELETE
-                {
-                    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                    let is_creator = db::get_group(&dbc, &group_id_for_check)
-                        .map(|g| g.creator == env.sender_id)
-                        .unwrap_or(false);
-                    if !is_creator {
-                        state.logger.warn(
-                            "group",
-                            format!(
-                                "丢弃非群主发布的公告：sender={} group={group_id_for_check}",
-                                env.sender_id
-                            ),
-                        );
-                        return;
-                    }
-                }
-                // 持锁块只做落库；await（fanout 转发已在前面）之后无持锁操作
-                // 业务幂等裁决：Direct（含 outbox 补发）可能已经把同一 msg_id 落库，此时
-                // 不得再计未读、再发 message-received，否则未读数与系统通知都会重复。
-                // 与 Direct 分支共用 announced_on 裁决，两路径并发时只有一方拿到 Ok(true)。
-                // 单聊与群聊走同一块 ⇒ 两种 GossipKind 都被覆盖。
-                let (out_rec, inserted) = {
-                    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                    // 展示时间用本地接收时间；排序用信封携带的逻辑序号 seq。
-                    let ts = db::now_ms();
-                    let seq = env.seq.max(1);
-                    let rec = MessageRecord {
-                        id: 0,
-                        msg_id: env.message_id.clone(),
-                        conv_id: conv_id.clone(),
-                        sender_id: env.sender_id.clone(),
-                        receiver_id: state.device_id.clone(),
-                        kind: kind.clone(),
-                        content: content.clone(),
-                        ts,
-                        seq,
-                        status: "delivered".to_string(),
-                    };
-                    // **先撤后到**：撤回事件可能早于被撤回的消息到达（Gossip 泛洪与
-                    // outbox 直发是两条无顺序保证的路径）。命中权威集合就直接以
-                    // 「已撤回」形态入库 —— 否则消息会带着完整正文落地，撤回失效。
-                    let mut rec = rec;
-                    if db::is_recalled(&dbc, &rec.msg_id) {
-                        rec.kind = crate::protocol::KIND_RECALLED.to_string();
-                        rec.content = String::new();
-                    }
-                    let inserted = db::insert_message_if_new(&dbc, &rec);
-                    if announced_on(&inserted) {
-                        // 时钟推进与静默**无关**，必须照常：漏掉它本机后续 seq 会落后，
-                        // 之后自己发的消息会排到历史前面。
-                        db::observe_clock(&dbc, &conv_id, seq).ok();
-                        if crate::protocol::is_non_notifying_kind(&kind) {
-                            // 静默事件（表情回应/撤回）与系统提示都不计未读、不改会话预览 ——
-                            // 否则「回个表情」或「X 加入了群聊」会把会话顶到列表最前并弹通知。
-                            // 但会话行必须存在，前端要靠它把事件归属到正确的会话。
-                            db::ensure_conversation(&dbc, &conv_id, conv_kind, &name, None).ok();
-                        } else {
-                            db::touch_conversation(
-                                &dbc, &conv_id, conv_kind, &name, None, &preview, 1,
-                            )
-                            .ok();
-                        }
-                    }
-                    (rec, inserted)
-                };
-                // 重复投递与数据库失败都不产生本地副作用；Gossip 的转发已在上面完成。
-                if announced_on(&inserted) {
-                    let _ = state.app.emit("message-received", &out_rec);
-                }
-                // 更新会话「当前链路」：单聊消息的 hop 由 Gossip ttl 反推
-                // （初始 ttl - 收到 ttl），path 取入站连接的路径（直连准确，桥接为最后一段）。
-                // 仅首次落库（非重复投递）才更新，避免「走了不同路径的重复副本」干扰。
-                if conv_kind == "single" && announced_on(&inserted) {
-                    let hop = {
-                        let gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
-                        gossip.ttl.saturating_sub(env.ttl)
-                    };
-                    let path = inbound_path_kind(state, peer_id).await;
-                    update_conv_link(state, &conv_id, &path, hop);
-                }
-                // 群消息现在有 outbox 兜底：只要消息确实已持久化（无论本次是否新建），
-                // 就回 GroupAck 让发送方删除对应 (msg_id, peer_id) 的待发记录。
-                // 数据库 Err 时不回 Ack，发送方保留 outbox 继续补发。
-                if conv_kind == "group" && !inserted.is_err() {
-                    let ack = Message::GroupAck {
-                        group_id: env.group_id.clone().unwrap_or_default(),
-                        msg_id: env.message_id.clone(),
-                        from: state.device_id.clone(),
-                    };
-                    let _ = try_send(state, &env.sender_id, &ack).await;
-                }
-                // 单聊送达确认：跨跳（无直连）时直连 Ack 到不了原始发送方，改走定向
-                // Gossip ChatAck；有直连时也走 Gossip，让「已送达」立即出现，不必等
-                // 心跳触发 outbox 直发补 Ack。接收端按 outbox(msg_id, sender) 命中才接受，
-                // 防伪造送达。
-                if conv_kind == "single" && !inserted.is_err() {
-                    let payload = serde_json::json!({ "msg_id": env.message_id }).to_string();
-                    let payload_b64 = STANDARD.encode(payload.as_bytes());
-                    let mut ack_env = {
-                        let gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
-                        gossip.build_envelope(
-                            &state.identity,
-                            &state.device_id,
-                            GossipKind::ChatAck,
-                            None,
-                            None,
-                            &payload_b64,
-                            db::now_ms(),
-                            0,
-                        )
-                    };
-                    ack_env.encrypted = false;
-                    ack_env.target = Some(env.sender_id.clone());
-                    ack_env.sender_sig = state.identity.sign_b64(&ack_env.signing_bytes());
-                    if state.has_link(&env.sender_id).await {
-                        let _ = try_send(
-                            state,
-                            &env.sender_id,
-                            &Message::Gossip { envelope: ack_env },
-                        )
-                        .await;
-                    } else {
-                        broadcast_gossip(state, ack_env).await;
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn parse_gossip_payload(pt: &[u8]) -> (String, String) {
-    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(pt) {
-        let kind = v
-            .get("kind")
-            .and_then(|k| k.as_str())
-            .unwrap_or("text")
-            .to_string();
-        let content = v
-            .get("content")
-            .and_then(|c| c.as_str())
-            .unwrap_or("")
-            .to_string();
-        (kind, content)
-    } else {
-        ("text".to_string(), String::from_utf8_lossy(pt).to_string())
-    }
-}
+// ---------------- Gossip 处理：消费判据、handle_gossip 与载荷还原 ----------------
+// 分册登记见 `network::transport_src_for_guards`（源码守卫必须看全集）。
+include!("transport/gossip.rs");
 
 // ---------------- 中继文件传输 ----------------
 
@@ -5188,8 +4107,10 @@ async fn handle_relay_file_offer(
     );
 }
 
+#[allow(clippy::too_many_arguments)] // 入队即转发上下文全量传递，打包结构体反而更难读
 async fn handle_relay_chunk(
     state: &Arc<AppState>,
+    requester: &str,
     transfer_id: String,
     seq: u32,
     data: String,
@@ -5403,7 +4324,23 @@ async fn handle_relay_chunk(
         }
         // 重组中：进度可基于切片数上报，此处省略，完成时由 file-done 事件通知
     } else if ttl > 1 {
-        // 中继转发给最终接收方
+        // 中继转发给最终接收方 —— 授权闸同「定向借道」（2026-09-19 P0#5）：
+        // 替谁转发按**提出请求的链路对端**判（Hello 验签背书），策略 Off/Friends/
+        // Allowlist 必须真正拦得下文件分片，而不是只拦 gossip。
+        let cfg = state.relay_policy_config();
+        let allowed = crate::mesh::relay_policy::decide_relay_from_peer(&cfg, requester, || {
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+            db::get_friend(&dbc, requester).is_some()
+        });
+        if !allowed {
+            if log_throttled("relay_deny", 10_000) {
+                state.logger.warn(
+                    "mesh",
+                    format!("按中继策略拒绝对端 {requester} 的 RelayChunk 转投 tid={transfer_id}"),
+                );
+            }
+            return;
+        }
         let fwd = Message::RelayChunk {
             transfer_id,
             seq,
@@ -5412,7 +4349,16 @@ async fn handle_relay_chunk(
             to: to.clone(),
             ttl: ttl - 1,
         };
-        let _ = try_send(state, &to, &fwd).await;
+        if let Err(e) = try_send(state, &to, &fwd).await {
+            // 分片丢弃必须留痕：上一跳的发送队列满/半开时，整文件会因缺片校验失败重来，
+            // 以前这里 `let _ =` 连一行日志都没有（INV-005）。
+            if log_throttled("relay_drop", 10_000) {
+                state.logger.warn(
+                    "mesh",
+                    format!("RelayChunk 转投失败 to={to} seq={seq}：{e}（缺片将由整体重试收敛）"),
+                );
+            }
+        }
     }
 }
 
@@ -5631,6 +4577,7 @@ async fn handle_group_file_offer(
         // 之外的状态事件推进。此处 status=sending，Done 校验通过后转 delivered。
         // 图片文件保持 kind="image"，业务语义不降级。
         let subtype = file::classify_file_subtype(&name);
+        // 同口径收敛（见单聊 FileOffer 处的说明）
         let kind = if subtype == "image" { "image" } else { "file" };
         let conv_id = format!("group:{group_id}");
         let seq = {
@@ -5638,19 +4585,24 @@ async fn handle_group_file_offer(
             db::next_clock(&dbc, &conv_id).unwrap_or(1)
         };
         let rec = crate::state::MessageRecord {
-        id: 0,
-        msg_id: format!("gfile-{transfer_id}"),
-        conv_id: conv_id.clone(),
-        sender_id: sender_id.clone(),
-        receiver_id: state.device_id.clone(),
-        kind: kind.to_string(),
-        content:
-            serde_json::json!({ "name": name, "size": size, "sha256": sha256, "subtype": subtype })
-                .to_string(),
-        ts: db::now_ms(),
-        seq,
-        status: "sending".to_string(),
-    };
+            id: 0,
+            msg_id: format!("gfile-{transfer_id}"),
+            conv_id: conv_id.clone(),
+            sender_id: sender_id.clone(),
+            receiver_id: state.device_id.clone(),
+            kind: kind.to_string(),
+            content: serde_json::json!({
+                "name": name,
+                "size": size,
+                "sha256": sha256,
+                "subtype": subtype,
+                "progress": 0.0,
+            })
+            .to_string(),
+            ts: db::now_ms(),
+            seq,
+            status: "sending".to_string(),
+        };
         {
             let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
             db::insert_message(&dbc, &rec).ok();
@@ -5982,6 +4934,7 @@ async fn handle_group_file_done(
             .unwrap_or(1)
         };
         let subtype = file::classify_file_subtype(&gf.name);
+        // 同口径收敛（完成回填路径的气泡重发也不能再把 kind 打回 video/audio）
         let kind = if subtype == "image" { "image" } else { "file" };
         let done_rec = crate::state::MessageRecord {
             id: 0,
@@ -5996,6 +4949,7 @@ async fn handle_group_file_done(
                 "size": gf.size,
                 "sha256": gf.sha256,
                 "subtype": subtype,
+                "progress": 1.0,
             })
             .to_string(),
             ts: db::now_ms(),
@@ -6011,6 +4965,20 @@ async fn handle_group_file_done(
                 .ok();
         }
         let _ = state.app.emit("message-received", &done_rec);
+        // 群**接收**端也必须 emit `file-done`：单聊、中继、群发送方都发，唯独这里漏了。
+        // 漏掉不是"少一个事件"这么轻 —— 接收端在字节落盘前读预览会得到「已被清理」，
+        // 而那个确定性失败判定被**永久缓存**（utils/filePreview.ts 只缓存确定性失败），
+        // 清缓存的唯一入口就是 `onFileDone` 里的 invalidateFilePreview。不触发 ⇒
+        // 文件早就好好躺在磁盘上，气泡却永远空白；重启前都不会自己好回来。
+        let _ = state.app.emit(
+            "file-done",
+            &crate::state::FileDoneInfo {
+                transfer_id: transfer_id.to_string(),
+                name: gf.name.clone(),
+                size: gf.size,
+                path: r.final_path.to_string_lossy().to_string(),
+            },
+        );
     }
     // 完成确认：无论 ACK 发送成败，file_key 已清理不再保留（ACK 丢失由后续阶段处理）
     send_group_file_complete_ack(state, &transfer_id, &group_id, &sender_id, true).await;
@@ -6508,6 +5476,23 @@ fn warn_key_conflict_once(state: &AppState, device_id: &str) {
     );
 }
 
+/// 「将要新建的 peers 条目」与 friends 锚是否冲突。
+///
+/// 判据与 `upsert_peer` Some 分支的 key_conflict 完全同口径：锚列有值、自报也有值、
+/// 且不同才算冲突；好友行的 NULL 列（旧数据/键未同步）不构成冲突，维持既有的宽容。
+/// 抽成纯函数是为了让这条安全判定有名字、有单测（同 `hello_auth_decision` 的做法）。
+fn new_peer_conflicts_with_friend(
+    friend: Option<(Option<&str>, Option<&str>)>,
+    x25519: Option<&str>,
+    ed25519: Option<&str>,
+) -> bool {
+    let Some((fx, fe)) = friend else {
+        return false;
+    };
+    matches!((fx, x25519), (Some(o), Some(n)) if o != n)
+        || matches!((fe, ed25519), (Some(o), Some(n)) if o != n)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn upsert_peer(
     state: &AppState,
@@ -6522,11 +5507,40 @@ pub async fn upsert_peer(
     rtt_ms: Option<u64>,
 ) {
     let ts = db::now_ms();
+    // friends 锚冲突预判（2026-09-19 审计 P0#3）：重启后 peers 是空的，若「新建条目」
+    // 不看持久化的好友公钥，一条伪造 Presence/FriendRequest 就能抢先把好友 id 绑上
+    // 攻击者的键 —— 之后攻击者的 Chat 信封通过「已认识」校验，假消息直接冒充好友。
+    // 判据与 Some 分支的 key_conflict 完全同口径，走同一个告警出口。
+    // ⚠️ 只对「peers 里还没有的条目」查锚：announce 是 5s×N 节点的热路径，
+    // 每条都打一次 DB 读会在 500 节点下放大成明显热点（自查发现，评审补记）。
+    // 预检与真正的插入之间的竞态无害：条目恰好挤进来时走 Some 分支，同样有冲突判定。
+    let needs_anchor = {
+        let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
+        !peers.contains_key(device_id)
+    };
+    let friend_anchor = if needs_anchor && (x25519.is_some() || ed25519.is_some()) {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::get_friend_pubkeys(&dbc, device_id)
+    } else {
+        None
+    };
     // 判断是否「新节点」或「公钥首次学到/变化」，据此决定是否做昂贵的落库与群密钥补发。
     // 500-1000 节点下，若每条 announce 都写库 + 遍历群组，会形成明显热点。
     let (is_new, key_changed, key_conflict) = {
         let mut peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
         match peers.get_mut(device_id) {
+            None if friend_anchor.as_ref().is_some_and(|(fx, fe)| {
+                new_peer_conflicts_with_friend(
+                    Some((fx.as_deref(), fe.as_deref())),
+                    x25519.as_deref(),
+                    ed25519.as_deref(),
+                )
+            }) =>
+            {
+                // 不建立条目：这个 device_id 的公钥由 friends 表说了算。
+                // 走到下面与 key_conflict 同一出口（诊断事件 + 系统消息告警）。
+                (false, false, true)
+            }
             None => {
                 peers.insert(
                     device_id.to_string(),
@@ -7094,6 +6108,157 @@ pub async fn flush_group_outbox(state: &AppState, peer_id: &str) {
     }
 }
 
+// ---------------- Outbox 超时清扫 ----------------
+
+/// outbox 清扫间隔（毫秒）。
+/// 30s 跑一次，每次扫描 created_at < now - OUTBOX_FAIL_DEADLINE_MS 的条目。
+pub const OUTBOX_SWEEPER_INTERVAL_MS: u64 = 30_000;
+
+/// 启动 outbox 超时清扫后台任务。
+///
+/// 每 `OUTBOX_SWEEPER_INTERVAL_MS` 扫一次：单聊 outbox 和群 outbox 里
+/// created_at + OUTBOX_FAIL_DEADLINE < now 的条目 → 删 outbox 行 + 置
+/// messages.status = "failed" + emit("message-failed", msg_id) 通知前端。
+///
+/// 为什么必须有这个任务：
+/// - outbox 的 flush_outbox 只在「建链 / Hello / 心跳」时触发，完全无链路的 peer
+///   会让消息永远停在 outbox 里，前端永远看到 "sending"
+/// - 即使有链路，writer_loop 可能被 bulk backpressure 挂起，ChatMessage 虽然已入
+///   channel 但 writer_loop 还没写 → Ack 永远到不了 → outbox 永远不删
+/// - 这个任务打破"无限等待"：对端**可达**却等不到 Ack 的条目 120s 判 failed；
+///   对端**离线**的条目不是失败，保留到 `OUTBOX_OFFLINE_HOLD_MS`（上线补发承诺，
+///   见 `db::should_fail_expired_outbox`）
+pub fn spawn_outbox_sweeper(
+    state: Arc<AppState>,
+    mut shutdown: watch::Receiver<bool>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_millis(OUTBOX_SWEEPER_INTERVAL_MS));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                biased;
+                _ = shutdown.changed() => break,
+                _ = tick.tick() => {}
+            }
+
+            let now = db::now_ms();
+            let deadline_single = now - crate::db::OUTBOX_FAIL_DEADLINE_MS;
+            let deadline_group = now - crate::db::OUTBOX_FAIL_DEADLINE_MS;
+            let deadline_file = now - crate::db::FILE_OUTBOX_FAIL_DEADLINE_MS;
+            // 可达性快照：每 tick 取一次 links 键集，三条队列复用。
+            // 此前每个候选行各抢一次 links 锁（500 离线行 = 500 次/tick，自审建议#4）；
+            // 非空判定与 `has_link` 同口径（残留空 Vec 不算可达）。
+            let reachable: std::collections::HashSet<String> = {
+                let links = state.links.lock().await;
+                links
+                    .iter()
+                    .filter(|(_, v)| !v.is_empty())
+                    .map(|(k, _)| k.clone())
+                    .collect()
+            };
+            let is_reachable = |peer: &str| reachable.contains(peer);
+
+            // --- 单聊 outbox ---
+            // 候选行 = 过了 120s 仍未 Ack 的行；是否判 failed 由对端可达性决定：
+            // 对端**离线**不是失败理由 —— 产品承诺「对方离线暂存、上线后自动补发」
+            //（INV-P04），保留到 OUTBOX_OFFLINE_HOLD_MS 才当僵尸清理。
+            // 2026-09-19 P0：此前离线 2 分钟即删行置 failed，离线补发被 sweeper 自己击穿。
+            let candidates: Vec<(String, String, i64)> = {
+                let Ok(dbc) = state.db.lock() else { continue };
+                db::list_expired_outbox(&dbc, deadline_single)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(_, mid, peer, created)| (mid, peer, created))
+                    .collect()
+            };
+            for (msg_id, peer_id, created_at) in candidates {
+                if !db::should_fail_expired_outbox(is_reachable(&peer_id), now - created_at) {
+                    continue;
+                }
+                if let Ok(dbc) = state.db.lock() {
+                    // 先置 failed（set_message_status 的终态守卫会保证幂等）
+                    let _ = db::set_message_status(&dbc, &msg_id, "failed");
+                    // 再删 outbox（防止下次 flush_outbox 又捞起来重发）
+                    let _ = db::delete_outbox_by_msg_id(&dbc, &msg_id);
+                }
+                let _ = state.app.emit("message-failed", &msg_id);
+            }
+
+            // --- 群 outbox：行级分类 + msg 粒度放弃（2026-09-19 自审建议#5）---
+            // 一条群消息按成员各一行；某成员离线 ⇒ 他的行保留（上线补发），
+            // 只有**所有行都该放弃**时整条消息才置 failed。
+            let group_rows: Vec<(String, String, String, i64)> = {
+                let Ok(dbc) = state.db.lock() else { continue };
+                db::list_expired_group_outbox(&dbc, deadline_group).unwrap_or_default()
+            };
+            let mut per_msg: std::collections::HashMap<String, (String, Vec<(String, i64)>)> =
+                std::collections::HashMap::new();
+            for (msg_id, group_id, peer_id, created_at) in group_rows {
+                per_msg
+                    .entry(msg_id)
+                    .or_insert_with(|| (group_id, Vec::new()))
+                    .1
+                    .push((peer_id, created_at));
+            }
+            for (msg_id, (_group_id, rows)) in per_msg {
+                let all_give_up = rows.iter().all(|(peer, created)| {
+                    db::should_fail_expired(
+                        is_reachable(peer),
+                        now - created,
+                        crate::db::OUTBOX_FAIL_DEADLINE_MS,
+                        crate::db::OUTBOX_OFFLINE_HOLD_MS,
+                    )
+                });
+                if !all_give_up {
+                    continue;
+                }
+                if let Ok(dbc) = state.db.lock() {
+                    let _ = db::set_message_status(&dbc, &msg_id, "failed");
+                    let _ = db::delete_group_outbox_by_msg_id(&dbc, &msg_id);
+                }
+                let _ = state.app.emit("message-failed", &msg_id);
+            }
+
+            // --- 文件 outbox：与消息队列同一离线判据（窗口用文件自己的 30min）---
+            // 自审建议#5：离线接收方的文件此前 30min 一律判 failed ——
+            // 「关机一晚回来收不到大文件」与被修的 P0#2 同型。
+            let expired_files: Vec<(String, String, Option<String>, i64)> = {
+                let Ok(dbc) = state.db.lock() else { continue };
+                db::list_expired_file_outbox(&dbc, deadline_file).unwrap_or_default()
+            };
+            for (transfer_id, peer_id, _group_id, created_at) in expired_files {
+                if !db::should_fail_expired(
+                    is_reachable(&peer_id),
+                    now - created_at,
+                    crate::db::FILE_OUTBOX_FAIL_DEADLINE_MS,
+                    crate::db::OUTBOX_OFFLINE_HOLD_MS,
+                ) {
+                    continue;
+                }
+                if let Ok(dbc) = state.db.lock() {
+                    let _ = db::mark_file_outbox_failed(&dbc, &transfer_id);
+                    // 文件消息前缀：单聊 file-{transfer_id} / 群 gfile-{transfer_id}
+                    let _ = db::set_message_status(&dbc, &format!("file-{transfer_id}"), "failed");
+                    let _ = db::set_message_status(&dbc, &format!("gfile-{transfer_id}"), "failed");
+                    let _ = db::upsert_transfer(
+                        &dbc,
+                        &transfer_id,
+                        "",
+                        "",
+                        0,
+                        "send",
+                        "failed",
+                        None,
+                        0.0,
+                    );
+                }
+                let _ = state.app.emit("file-failed", &transfer_id);
+            }
+        }
+    })
+}
+
 /// 发送单聊已读回执：同网段有直连走 `Message::ReadReceipt`（可被 pending 重试），
 /// 跨跳（无直连）改走定向 Gossip `ChatReadReceipt`（广播靠中继按 target 转发）。
 ///
@@ -7248,7 +6413,7 @@ mod tests {
             "正好等于上限要放行"
         );
         // 源码断言：Hello 构造必须真的用这个闸门（否则上面测的只是「函数存在」）
-        let src = include_str!("transport.rs");
+        let src = crate::network::transport_src_for_guards();
         let at = src
             .find("pub fn build_signed_hello(state: &AppState")
             .expect("必须还有 build_signed_hello（本护栏锚点）");
@@ -7271,7 +6436,7 @@ mod tests {
     /// 一张 400KB 头像会把聊天与好友请求的优先队列堵住几分钟 —— 而单测不会失败。
     #[test]
     fn presence_caps_inline_avatar() {
-        let src = include_str!("transport.rs");
+        let src = crate::network::transport_src_for_guards();
         let at = src
             .find("async fn broadcast_presence")
             .expect("必须还有 broadcast_presence（本护栏锚点）");
@@ -7346,9 +6511,13 @@ mod tests {
     /// 只会让真机上的群聊静默不通。所以用源码断言把"只记判据、不 return"钉住。
     #[test]
     fn handle_gossip_does_not_bail_out_for_non_members() {
-        let src = include_str!("transport.rs");
+        let src = crate::network::transport_src_for_guards();
+        // 锚点必须"行首 + 带左括号"：聚合文本里本测试自己那句字面量 `"async fn handle_gossip("`
+        // 也算一次命中，不带行首锚点会先匹配到它，然后 body 里含下面那条 forbidden 字面量
+        // —— 守卫自证其罪（分册之后主文件排在前面，这个陷阱才暴露出来）。
         let start = src
-            .find("async fn handle_gossip")
+            .find("\nasync fn handle_gossip(")
+            .map(|i| i + 1)
             .expect("必须还有 handle_gossip");
         let body = &src[start..];
         let end = body.find("\n}\n").unwrap_or(body.len());
@@ -7626,8 +6795,9 @@ mod tests {
             crate::state::Link {
                 endpoint: MeshEndpoint::Tcp(addr.parse().unwrap()),
                 path_kind: kind,
-                bulk: b_tx,
-                priority: p_tx,
+                high: b_tx.clone(),
+                normal: p_tx,
+                low: b_tx,
                 cancel,
             },
             b_rx,
@@ -7651,8 +6821,9 @@ mod tests {
             crate::state::Link {
                 endpoint,
                 path_kind: kind,
-                bulk: b_tx,
-                priority: p_tx,
+                high: b_tx.clone(),
+                normal: p_tx,
+                low: b_tx,
                 cancel,
             },
             b_rx,
@@ -7702,15 +6873,7 @@ mod tests {
             Some(1000),
             PathKind::Lan,
         )];
-        let order = route_order(
-            &links,
-            "peer",
-            &conns,
-            1000,
-            15_000,
-            3,
-            crate::mesh::CONGESTION_WINDOW_MS,
-        );
+        let order = route_order(&links, "peer", &conns, 1000, 15_000, 3);
         assert_eq!(order, vec![0]);
     }
 
@@ -7725,15 +6888,7 @@ mod tests {
             mesh_conn("peer", "100.70.10.20:59992", Some(1000), PathKind::Routed),
             mesh_conn("peer", "192.168.1.20:59992", Some(1000), PathKind::Lan),
         ];
-        let order = route_order(
-            &links,
-            "peer",
-            &conns,
-            1000,
-            15_000,
-            3,
-            crate::mesh::CONGESTION_WINDOW_MS,
-        );
+        let order = route_order(&links, "peer", &conns, 1000, 15_000, 3);
         assert_eq!(order[0], 1, "应优先 LAN（下标 1），而不是插入在前的 Routed");
         // 不变量：其余链路仍排在后面做 failover，**一条都不能丢**
         assert_eq!(order.len(), 2);
@@ -7760,15 +6915,7 @@ mod tests {
             mesh_conn_endpoint("peer", ble.clone(), Some(1000), PathKind::Bluetooth),
             mesh_conn_endpoint("peer", lan.clone(), Some(1000), PathKind::Lan),
         ];
-        let order = route_order(
-            &links,
-            "peer",
-            &conns,
-            1000,
-            15_000,
-            3,
-            crate::mesh::CONGESTION_WINDOW_MS,
-        );
+        let order = route_order(&links, "peer", &conns, 1000, 15_000, 3);
         assert_eq!(order.len(), 2, "BLE 链路同样是 failover 候选，不能丢");
         assert_eq!(order[0], 1, "LAN 必须优先于 BLE");
 
@@ -7876,15 +7023,7 @@ mod tests {
             mesh_conn("peer", "100.70.10.20:59992", Some(1000), PathKind::Routed),
             mesh_conn("peer", "192.168.1.20:59992", Some(1000), PathKind::Lan),
         ];
-        let order = route_order(
-            &links,
-            "peer",
-            &conns,
-            1000,
-            15_000,
-            3,
-            crate::mesh::CONGESTION_WINDOW_MS,
-        );
+        let order = route_order(&links, "peer", &conns, 1000, 15_000, 3);
         assert_eq!(
             badge_path_kind(&links, &order),
             PathKind::Lan,
@@ -7906,15 +7045,7 @@ mod tests {
             // Routed：刚刚读到过帧
             mesh_conn("peer", "100.70.10.20:59992", Some(60_000), PathKind::Routed),
         ];
-        let order = route_order(
-            &links,
-            "peer",
-            &conns,
-            60_000,
-            15_000,
-            3,
-            crate::mesh::CONGESTION_WINDOW_MS,
-        );
+        let order = route_order(&links, "peer", &conns, 60_000, 15_000, 3);
         assert_eq!(order[0], 1, "LAN 不健康时必须降级到 Routed（真 failover）");
         assert_eq!(order.len(), 2, "不健康链路仍保留在后面（可作最后手段）");
     }
@@ -7924,15 +7055,7 @@ mod tests {
     fn route_order_tolerates_missing_mesh_candidate() {
         let (only, _b0, _p0) = make_link("192.168.1.20:59992", PathKind::Lan);
         let links = vec![only];
-        let order = route_order(
-            &links,
-            "peer",
-            &[],
-            1000,
-            15_000,
-            3,
-            crate::mesh::CONGESTION_WINDOW_MS,
-        );
+        let order = route_order(&links, "peer", &[], 1000, 15_000, 3);
         assert_eq!(order, vec![0], "缺候选时不得丢链路（登记窗口是常态）");
     }
 
@@ -7946,15 +7069,7 @@ mod tests {
             mesh_conn("peer", "192.168.1.20:59992", Some(0), PathKind::Lan),
             mesh_conn("peer", "100.70.10.20:59992", Some(0), PathKind::Routed),
         ];
-        let order = route_order(
-            &links,
-            "peer",
-            &conns,
-            60_000,
-            15_000,
-            3,
-            crate::mesh::CONGESTION_WINDOW_MS,
-        );
+        let order = route_order(&links, "peer", &conns, 60_000, 15_000, 3);
         assert_eq!(
             order.len(),
             2,
@@ -7970,29 +7085,36 @@ mod tests {
         }
     }
 
-    /// 造 n 对信道，返回 senders + 各接收端（`None` 表示该条"已断"：接收端被丢弃）。
+    /// 造 n 组信道（high/normal/low），返回 senders + 各接收端。
+    /// msg() 造的是 Heartbeat=High，所以 receivers 保留 high_rx。
     #[allow(clippy::type_complexity)]
     fn channels(
         n: usize,
         closed: &[usize],
     ) -> (
-        Vec<(mpsc::Sender<Message>, mpsc::Sender<Message>)>,
+        Vec<(
+            mpsc::Sender<Message>,
+            mpsc::Sender<Message>,
+            mpsc::Sender<Message>,
+        )>,
         Vec<Option<mpsc::Receiver<Message>>>,
     ) {
         let mut senders = Vec::new();
         let mut receivers = Vec::new();
-        for i in 0..n {
-            let (b_tx, b_rx) = mpsc::channel(4);
-            let (p_tx, p_rx) = mpsc::channel(4);
-            senders.push((b_tx, p_tx));
-            if closed.contains(&i) {
-                // 模拟"这条链路已断"：channel 关闭（`try_send` 会返回 Closed）
-                drop(b_rx);
-                drop(p_rx);
+        for _i in 0..n {
+            let (h_tx, h_rx) = mpsc::channel(4);
+            let (n_tx, n_rx) = mpsc::channel(4);
+            let (l_tx, l_rx) = mpsc::channel(4);
+            senders.push((h_tx, n_tx, l_tx));
+            if closed.contains(&_i) {
+                drop(h_rx);
+                drop(n_rx);
+                drop(l_rx);
                 receivers.push(None);
             } else {
-                receivers.push(Some(p_rx));
-                drop(b_rx); // 只关心 priority 通道
+                receivers.push(Some(h_rx)); // Heartbeat=High → 走 high
+                drop(n_rx);
+                drop(l_rx);
             }
         }
         (senders, receivers)
@@ -8004,7 +7126,13 @@ mod tests {
         let (senders, mut rx) = channels(2, &[0]); // 下标 0（被选中）已断
                                                    // 顺序模拟选路结果：先试 0（断），再试 1（活）
         let order = vec![0usize, 1];
-        let r = send_over_order(&senders, &order, &msg("m1"), false).await.0;
+        let r = send_over_order(
+            &senders,
+            &order,
+            &msg("m1"),
+            crate::network::dispatch::MessagePriority::High,
+        )
+        .await;
         assert!(r.is_ok(), "断一条后必须换下一条送达，实得 {r:?}");
         let got = rx[1]
             .as_mut()
@@ -8019,10 +7147,14 @@ mod tests {
     async fn sends_only_on_first_healthy_link_in_order() {
         let (senders, mut rx) = channels(2, &[]);
         let order = vec![1usize, 0]; // 选路把下标 1 排前面
-        assert!(send_over_order(&senders, &order, &msg("m2"), false)
-            .await
-            .0
-            .is_ok());
+        assert!(send_over_order(
+            &senders,
+            &order,
+            &msg("m2"),
+            crate::network::dispatch::MessagePriority::High
+        )
+        .await
+        .is_ok());
         assert!(
             rx[1].as_mut().unwrap().try_recv().is_ok(),
             "应落在顺序第一的那条"
@@ -8037,8 +7169,14 @@ mod tests {
     #[tokio::test]
     async fn all_links_closed_returns_err() {
         let (senders, _rx) = channels(2, &[0, 1]);
-        let r = send_over_order(&senders, &[0, 1], &msg("m3"), false).await;
-        assert!(r.0.is_err(), "全断必须报错（Err 由 outbox 兜底补发）");
+        let r = send_over_order(
+            &senders,
+            &[0, 1],
+            &msg("m3"),
+            crate::network::dispatch::MessagePriority::High,
+        )
+        .await;
+        assert!(r.is_err(), "全断必须报错（Err 由 outbox 兜底补发）");
     }
 
     /// 与选路联动的**端到端单元判据**：LAN 不健康 → 顺序把 Routed 排前面
@@ -8052,23 +7190,19 @@ mod tests {
             mesh_conn("peer", "192.168.1.20:59992", Some(0), PathKind::Lan), // LAN 读活性过期
             mesh_conn("peer", "100.70.10.20:59992", Some(60_000), PathKind::Routed), // Routed 健康
         ];
-        let order = route_order(
-            &links,
-            "peer",
-            &conns,
-            60_000,
-            15_000,
-            3,
-            crate::mesh::CONGESTION_WINDOW_MS,
-        );
+        let order = route_order(&links, "peer", &conns, 60_000, 15_000, 3);
         assert_eq!(order[0], 1, "应先试健康的 Routed");
 
         // 用真实信道复现：LAN 那条已断，Routed 那条活着
         let (senders, mut rx) = channels(2, &[0]);
-        assert!(send_over_order(&senders, &order, &msg("m4"), false)
-            .await
-            .0
-            .is_ok());
+        assert!(send_over_order(
+            &senders,
+            &order,
+            &msg("m4"),
+            crate::network::dispatch::MessagePriority::High
+        )
+        .await
+        .is_ok());
         assert!(
             rx[1].as_mut().unwrap().try_recv().is_ok(),
             "LAN 降级后消息必须从 Routed 送出"
@@ -8078,16 +7212,183 @@ mod tests {
     /// 空链路表 → 空顺序（调用方据此返回「未建立连接」）。
     #[test]
     fn route_order_empty_when_no_links() {
-        assert!(route_order(
-            &[],
-            "peer",
-            &[],
-            1000,
-            15_000,
-            3,
-            crate::mesh::CONGESTION_WINDOW_MS
+        assert!(route_order(&[], "peer", &[], 1000, 15_000, 3,).is_empty());
+    }
+
+    // ---- 文件分片流的"钉住一条链路"投递（真机多文件并发失序回归）----
+
+    /// 造一条三通道各自独立、容量可调的链路（`make_link` 把 high/low 合成一个通道，
+    /// 这里要分开才能断言分片走的是 Low）。
+    fn pinned_link(
+        cap: usize,
+    ) -> (
+        crate::state::Link,
+        mpsc::Receiver<Message>,
+        mpsc::Receiver<Message>,
+        mpsc::Receiver<Message>,
+    ) {
+        let (h_tx, h_rx) = mpsc::channel(cap);
+        let (n_tx, n_rx) = mpsc::channel(cap);
+        let (l_tx, l_rx) = mpsc::channel(cap);
+        let (cancel, _cancel_rx) = watch::channel(false);
+        (
+            crate::state::Link {
+                endpoint: MeshEndpoint::Tcp("192.168.1.20:59992".parse().unwrap()),
+                path_kind: PathKind::Lan,
+                high: h_tx,
+                normal: n_tx,
+                low: l_tx,
+                cancel,
+            },
+            h_rx,
+            n_rx,
+            l_rx,
         )
-        .is_empty());
+    }
+
+    fn chunk(seq: u32) -> Message {
+        Message::FileChunk {
+            transfer_id: "t1".to_string(),
+            seq,
+            data: "AA".to_string(),
+        }
+    }
+
+    /// **核心判据**：队列满时原地等待（背压），而不是返回 Err 让上层放弃这次尝试。
+    ///
+    /// 为什么这是判据而不是"顺手加个测试"：旧路径每片都走 `try_send`，满即 failover 到
+    /// 另一条独立 TCP 连接 —— 两条连接到达顺序互不保证，接收端严格递增 seq 的追加写
+    /// 立刻判死（"文件分片顺序错误"）。单发不满队列所以看不出，多文件并发必现。
+    #[tokio::test]
+    async fn send_on_link_backpressures_when_queue_full() {
+        let (link, _h, _n, mut low) = pinned_link(2);
+        assert!(send_on_link(&link, &chunk(0)).await.is_ok());
+        assert!(send_on_link(&link, &chunk(1)).await.is_ok());
+        // 队列已满：必须仍在等，而不是 Err（Err 会让上层中途放弃，留下在途旧分片）。
+        let r = tokio::time::timeout(
+            std::time::Duration::from_millis(80),
+            send_on_link(&link, &chunk(2)),
+        )
+        .await;
+        assert!(r.is_err(), "满队列应原地背压等待，实得 {r:?}");
+        // 消费端腾出槽位后仍能送达，且**顺序不乱** —— 保序是这条链路的唯一契约。
+        let first = low.recv().await.expect("应收到第 0 片");
+        assert!(send_on_link(&link, &chunk(2)).await.is_ok());
+        let mut seqs = vec![match first {
+            Message::FileChunk { seq, .. } => seq,
+            other => panic!("只应收到 FileChunk，实得 {other:?}"),
+        }];
+        for _ in 0..2 {
+            match low.recv().await.expect("应收到分片") {
+                Message::FileChunk { seq, .. } => seqs.push(seq),
+                other => panic!("只应收到 FileChunk，实得 {other:?}"),
+            }
+        }
+        assert_eq!(seqs, vec![0, 1, 2], "同一条链路上的分片必须按提交顺序到达");
+    }
+
+    /// 链路死亡（Receiver 被 drop）→ 立刻 Err，不无限挂起。
+    /// 这是"满则等"可以不带局部超时的前提：真正的僵死只会表现为通道关闭。
+    #[tokio::test]
+    async fn send_on_link_errs_immediately_when_closed() {
+        let (link, _h, _n, low) = pinned_link(4);
+        drop(low);
+        let r = send_on_link(&link, &chunk(0)).await;
+        assert!(r.is_err(), "通道已关必须报错，实得 {r:?}");
+    }
+
+    /// **决定停滞判定能不能写成"带超时的重发循环"**：`tx.send()` 的 future 被中途丢弃时，
+    /// 消息会不会已经留在队列里。会留 ⇒ 重试就是**重复片**，而群接收端是严格
+    /// `seq != next_seq` 判死 ⇒ 重复片直接打死传输。
+    ///
+    /// 结论钉在这里：tokio 1.x 的 `send` 取消安全 ⇒ 丢弃即"没发出去"，可以安全地
+    /// `timeout(stall_tick, send_on_link(..))` 循环等待并在超时里做停滞检查。
+    #[tokio::test]
+    async fn timed_out_send_leaves_nothing_behind() {
+        let (tx, mut rx) = mpsc::channel::<Message>(1);
+        tx.send(chunk(0)).await.unwrap(); // 先把容量占满，逼下一次 send 进入等待
+        let r = tokio::time::timeout(std::time::Duration::from_millis(20), tx.send(chunk(1))).await;
+        assert!(r.is_err(), "前置条件：队列满 ⇒ 这次 send 必须超时并被丢弃");
+        assert!(
+            matches!(rx.recv().await, Some(Message::FileChunk { seq: 0, .. })),
+            "第一片照常送达"
+        );
+        let leftover = tokio::time::timeout(std::time::Duration::from_millis(20), rx.recv()).await;
+        assert!(
+            leftover.is_err(),
+            "被丢弃的那条不得留在队列里 —— 否则按\"没发出去\"重发就成了重复片"
+        );
+    }
+
+    /// INV-P24 第 1 条：**未知帧类型必须降级，不得变成连接错误**。
+    ///
+    /// 旧行为：`Message` 是内部标签枚举，遇到不认识的 `type` 直接反序列化失败 ⇒
+    /// `io::Error` ⇒ reader 循环退出 ⇒ **拆链**。新版本只要上线一种新帧，老设备就从
+    /// "少收一条"变成"跟这台设备连不上"（还会重连-再拆的死循环）。
+    #[test]
+    fn unknown_wire_type_degrades_instead_of_erroring() {
+        let buf = serde_json::json!({ "type": "TimeTravelPing", "msg_id": "m1" }).to_string();
+        match decode_frame(buf.as_bytes()) {
+            Ok(Message::Unknown { wire_type }) => assert_eq!(wire_type, "TimeTravelPing"),
+            other => panic!("未知帧必须降级成 Message::Unknown（不报错），实得 {other:?}"),
+        }
+    }
+
+    /// 但降级**不能顺手把"已知类型 + 字段畸形"也吞掉** —— 那是我们自己的 bug，
+    /// 静默忽略就等于把真实协议错误藏起来（INV-005 不允许静默丢消息）。
+    #[test]
+    fn malformed_known_frame_still_errors() {
+        let buf = serde_json::json!({ "type": "heartbeat" }).to_string(); // 故意缺字段
+        let e = decode_frame(buf.as_bytes()).err();
+        assert!(
+            e.is_some(),
+            "已知类型缺字段必须报错，实得 Ok —— 说明降级判定吞太宽"
+        );
+        assert!(
+            !e.unwrap().to_string().starts_with("unknown variant"),
+            "报错原因必须是字段问题，不是变体未知"
+        );
+    }
+
+    /// 完全不是 Gosslan 帧的字节（没有 type / 不是 JSON）⇒ 仍然报错（交给调用方丢帧）。
+    #[test]
+    fn non_frame_bytes_still_error() {
+        assert!(
+            decode_frame(b"{\"a\":1}").is_err(),
+            "没有 type 字段的 JSON 不是我们的帧"
+        );
+        assert!(
+            decode_frame(b"not json at all").is_err(),
+            "非 JSON 字节必须报错"
+        );
+    }
+
+    /// 端到端：走**真实** read_frame 路径收到未知帧 ⇒ 解出 Unknown（不 Err ⇒ 链路不动）。
+    #[tokio::test]
+    async fn read_frame_tolerates_unknown_wire_type() {
+        let payload = serde_json::json!({ "type": "QuantumPing", "seq": 1 }).to_string();
+        let (a, b) = tokio::io::duplex(1024);
+        let (mut _ar, mut aw) = tokio::io::split(a);
+        let (mut br, mut _bw) = tokio::io::split(b);
+        let (wr, rd) = tokio::join!(
+            crate::transport::tcp::write_bytes(&mut aw, payload.as_bytes()),
+            read_frame(&mut br)
+        );
+        wr.unwrap();
+        match rd.expect("未知帧不得成为连接错误") {
+            Message::Unknown { wire_type } => assert_eq!(wire_type, "QuantumPing"),
+            other => panic!("read_frame 应把未知帧降级成 Unknown，实得 {other:?}"),
+        }
+    }
+
+    /// 分片走该链路的 Low 通道，控制帧走 High —— 钉链路不能绕过三级通道。
+    #[tokio::test]
+    async fn send_on_link_respects_priority_channels() {
+        let (link, mut high, _n, mut low) = pinned_link(4);
+        assert!(send_on_link(&link, &chunk(0)).await.is_ok());
+        assert!(send_on_link(&link, &msg("hb")).await.is_ok()); // Heartbeat = High
+        assert!(low.try_recv().is_ok(), "分片应落在 Low 通道");
+        assert!(matches!(high.try_recv(), Ok(Message::Heartbeat { .. })));
     }
 
     // ---- Hello 握手身份认证（P0 安全修复回归）----
@@ -8219,6 +7520,98 @@ mod tests {
         assert_eq!(bound_ed25519_from_peer(None), None);
     }
 
+    /// Gossip 侧信任锚回归（2026-09-19 审计 P0#3）：
+    /// peers 是内存态，重启后为空 —— 已在 friends 册的 id 不允许任何 kind 的 TOFU。
+    #[test]
+    fn gossip_trust_for_known_friend_never_tofus() {
+        let friend = crypto::Identity::generate();
+        let stored = friend.ed25519_public_b64();
+
+        // 好友的真实信封：三种 kind 全放行
+        for kind in [
+            GossipKind::Presence,
+            GossipKind::FriendRequest,
+            GossipKind::Chat,
+        ] {
+            assert!(
+                gossip_trust_for_unpeer_sender(&kind, Some(&stored), &stored),
+                "绑定值匹配的好友信封不应被 kind={kind:?} 拒绝"
+            );
+        }
+        // 攻击者自签信封冒充该好友：Presence/FriendRequest/FriendAccept 也必须拒
+        let attacker = crypto::Identity::generate();
+        let fake = attacker.ed25519_public_b64();
+        for kind in [
+            GossipKind::Presence,
+            GossipKind::FriendRequest,
+            GossipKind::FriendAccept,
+            GossipKind::Chat,
+        ] {
+            assert!(
+                !gossip_trust_for_unpeer_sender(&kind, Some(&stored), &fake),
+                "kind={kind:?} 不得给冒充好友的自签信封开 TOFU 后门"
+            );
+        }
+        // 真正陌生的 id：加好友流程与 Presence 仍可 TOFU；Chat/回执仍拒
+        assert!(gossip_trust_for_unpeer_sender(
+            &GossipKind::FriendAccept,
+            None,
+            &fake
+        ));
+        assert!(!gossip_trust_for_unpeer_sender(
+            &GossipKind::Chat,
+            None,
+            &fake
+        ));
+        assert!(!gossip_trust_for_unpeer_sender(
+            &GossipKind::ChatReadReceipt,
+            None,
+            &fake
+        ));
+        // 旧行键列 NULL（Some(None)）：与修复前同宽容（陌生 id 处理）
+        assert!(gossip_trust_for_unpeer_sender(
+            &GossipKind::Presence,
+            None,
+            &fake
+        ));
+    }
+
+    /// peers 新建条目的 friends 锚冲突判定（同审计 P0#3 的第二半）。
+    #[test]
+    fn new_peer_entry_respects_friend_key_anchor() {
+        let fx = "friend-x25519-key";
+        let fe = "friend-ed25519-key";
+        // 攻击者键冒充好友 ⇒ 两把键任一不符都算冲突，条目不得建立
+        assert!(new_peer_conflicts_with_friend(
+            Some((Some(fx), Some(fe))),
+            Some("attacker-x"),
+            Some(fe)
+        ));
+        assert!(new_peer_conflicts_with_friend(
+            Some((Some(fx), Some(fe))),
+            Some(fx),
+            Some("attacker-e")
+        ));
+        // 真实键一致 / 锚列为 NULL（旧行未同步）/ 非好友 ⇒ 不冲突
+        assert!(!new_peer_conflicts_with_friend(
+            Some((Some(fx), Some(fe))),
+            Some(fx),
+            Some(fe)
+        ));
+        assert!(!new_peer_conflicts_with_friend(
+            Some((None, None)),
+            Some("whoever"),
+            Some("whoever")
+        ));
+        assert!(!new_peer_conflicts_with_friend(None, Some("a"), Some("b")));
+        // 信封没带键的更新不构成冲突（无从比较）
+        assert!(!new_peer_conflicts_with_friend(
+            Some((Some(fx), Some(fe))),
+            None,
+            None
+        ));
+    }
+
     /// 完整攻击链的回归：攻击者伪造 announce 抢先把公钥塞进 peers，再用它签 Hello
     /// 冒充受害者 device_id。
     /// 修复前：bound 取自 peers → 就是攻击者自己的公钥 → 验签通过（冒充成功）。
@@ -8336,7 +7729,7 @@ mod tests {
         assert_eq!(directed_relay_target(&normal, me), None);
     }
 
-    /// 造一个只关心 payload 长度/类型的 Gossip 信封（其余字段对 is_bulk_message 无意义）。
+    /// 造一个只关心 payload 长度/类型的 Gossip 信封（其余字段对优先级分类无意义）。
     fn test_envelope(payload_len: usize, kind: GossipKind) -> GossipEnvelope {
         GossipEnvelope {
             message_id: "m".into(),
@@ -8361,22 +7754,26 @@ mod tests {
 
     #[test]
     fn bulk_messages_are_only_large_chunks() {
+        // 旧 is_bulk_message 的判据已迁移到 `dispatch::message_priority`（单一事实来源）。
+        // 本测试保住的是**同一张真值表**：bulk ⇔ Low，且边界值不变。
+        use crate::network::dispatch::{message_priority, MessagePriority};
+        let is_bulk = |m: &Message| message_priority(m) == MessagePriority::Low;
         let chat = Message::ChatMessage {
             msg_id: "m1".into(),
             from: "a".into(),
             to: "b".into(),
-            kind: MsgKind::Text,
+            kind: "text".into(),
             content: "hi".into(),
             ts: 1,
             seq: 1,
         };
-        assert!(!is_bulk_message(&chat));
+        assert!(!is_bulk(&chat));
         let file_chunk = Message::FileChunk {
             transfer_id: "t1".into(),
             seq: 0,
             data: "abc".into(),
         };
-        assert!(is_bulk_message(&file_chunk));
+        assert!(is_bulk(&file_chunk));
         let group_file_chunk = Message::GroupFileChunk {
             transfer_id: "t1".into(),
             group_id: "g1".into(),
@@ -8384,18 +7781,18 @@ mod tests {
             seq: 0,
             data: "abc".into(),
         };
-        assert!(is_bulk_message(&group_file_chunk));
+        assert!(is_bulk(&group_file_chunk));
         // 文件终止帧必须走 bulk，避免跑到未写完的分片前面。
         let file_done = Message::FileDone {
             transfer_id: "t1".into(),
         };
-        assert!(is_bulk_message(&file_done));
+        assert!(is_bulk(&file_done));
         let group_file_done = Message::GroupFileDone {
             transfer_id: "t1".into(),
             group_id: "g1".into(),
             sender_id: "a".into(),
         };
-        assert!(is_bulk_message(&group_file_done));
+        assert!(is_bulk(&group_file_done));
 
         // 小头像资料帧：资料变更要立刻可见 ⇒ 仍走优先道。
         let small_user_info = Message::UserInfo {
@@ -8404,10 +7801,7 @@ mod tests {
             avatar: Some("x".repeat(CONTROL_AVATAR_MAX_BYTES)),
             device_type: "desktop".into(),
         };
-        assert!(
-            !is_bulk_message(&small_user_info),
-            "恰好等于上限的头像仍应走优先道"
-        );
+        assert!(!is_bulk(&small_user_info), "恰好等于上限的头像仍应走优先道");
 
         // 大头像资料帧：内容大、可晚到 ⇒ 必须降级到 bulk，绝不占聊天/好友的优先道。
         let big_user_info = Message::UserInfo {
@@ -8417,7 +7811,7 @@ mod tests {
             device_type: "desktop".into(),
         };
         assert!(
-            is_bulk_message(&big_user_info),
+            is_bulk(&big_user_info),
             "超过上限的头像资料帧必须走 bulk（否则会堵住聊天与好友请求）"
         );
 
@@ -8425,11 +7819,11 @@ mod tests {
         let small_gossip = Message::Gossip {
             envelope: test_envelope(BULK_GOSSIP_PAYLOAD_MAX_BYTES, GossipKind::Presence),
         };
-        assert!(!is_bulk_message(&small_gossip));
+        assert!(!is_bulk(&small_gossip));
         let big_gossip = Message::Gossip {
             envelope: test_envelope(BULK_GOSSIP_PAYLOAD_MAX_BYTES + 1, GossipKind::Presence),
         };
-        assert!(is_bulk_message(&big_gossip));
+        assert!(is_bulk(&big_gossip));
     }
 
     #[tokio::test]
@@ -8513,7 +7907,7 @@ mod tests {
                 &b.x25519_secret,
                 Some(&a.x25519_public_b64()),
                 &wire,
-                MsgKind::Code
+                "code".to_string()
             ),
             Some(("你好 e2ee".to_string(), "code".to_string()))
         );
@@ -8527,7 +7921,7 @@ mod tests {
         let b = crate::crypto::Identity::generate();
         let wire = seal_direct(&a, &b.x25519_public_b64(), "pending key");
         assert_eq!(
-            open_direct_content(&b.x25519_secret, None, &wire, MsgKind::Text),
+            open_direct_content(&b.x25519_secret, None, &wire, "text".to_string()),
             None
         );
         assert_eq!(
@@ -8535,7 +7929,7 @@ mod tests {
                 &b.x25519_secret,
                 Some(&a.x25519_public_b64()),
                 &wire,
-                MsgKind::Text
+                "text".to_string()
             ),
             Some(("pending key".to_string(), "text".to_string()))
         );
@@ -8554,7 +7948,7 @@ mod tests {
                 &b.x25519_secret,
                 Some(&a_old.x25519_public_b64()),
                 &wire,
-                MsgKind::Text
+                "text".to_string()
             ),
             None
         );
@@ -8563,7 +7957,7 @@ mod tests {
                 &b.x25519_secret,
                 Some(&a_new.x25519_public_b64()),
                 &wire,
-                MsgKind::Text
+                "text".to_string()
             ),
             Some(("rotated sender".to_string(), "text".to_string()))
         );
@@ -8585,7 +7979,7 @@ mod tests {
                 &b_new.x25519_secret,
                 Some(&a.x25519_public_b64()),
                 &stale,
-                MsgKind::Text
+                "text".to_string()
             ),
             None
         );
@@ -8602,7 +7996,7 @@ mod tests {
                 &b_new.x25519_secret,
                 Some(&a.x25519_public_b64()),
                 &resealed,
-                MsgKind::Text
+                "text".to_string()
             ),
             Some(("stale seal".to_string(), "text".to_string()))
         );
@@ -8626,12 +8020,12 @@ mod tests {
                 &b.x25519_secret,
                 Some(&spk),
                 "enc1:!!not base64!!",
-                MsgKind::Text
+                "text".to_string()
             ),
             None
         );
         assert_eq!(
-            open_direct_content(&b.x25519_secret, Some(&spk), "enc1:", MsgKind::Text),
+            open_direct_content(&b.x25519_secret, Some(&spk), "enc1:", "text".to_string()),
             None
         );
         let wire = seal_direct(&a, &b.x25519_public_b64(), "intact");
@@ -8642,17 +8036,24 @@ mod tests {
         raw[last] ^= 0xFF; // 破坏 AEAD tag
         let tampered = format!("enc1:{}", STANDARD.encode(&raw));
         assert_eq!(
-            open_direct_content(&b.x25519_secret, Some(&spk), &tampered, MsgKind::Text),
+            open_direct_content(&b.x25519_secret, Some(&spk), &tampered, "text".to_string()),
             None
         );
-        assert!(open_direct_content(&b.x25519_secret, Some(&spk), &wire, MsgKind::Text).is_some());
+        assert!(
+            open_direct_content(&b.x25519_secret, Some(&spk), &wire, "text".to_string()).is_some()
+        );
     }
 
     #[test]
     fn plaintext_payload_is_rejected() {
         let me = crate::crypto::Identity::generate();
         assert_eq!(
-            open_direct_content(&me.x25519_secret, None, "plain old text", MsgKind::Text),
+            open_direct_content(
+                &me.x25519_secret,
+                None,
+                "plain old text",
+                "text".to_string()
+            ),
             None
         );
     }
@@ -8667,8 +8068,8 @@ mod tests {
         assert!(engine.is_new("m1"), "首次见到的信封必须进入处理与转发");
         assert!(!engine.is_new("m1"), "同一信封第二次到达在传播层判为重复");
         assert!(engine.is_new("m2"), "另一条消息不受前者影响");
-        let peers = vec!["b".to_string(), "c".to_string(), "d".to_string()];
-        let targets = engine.choose_fanout(&peers, "a");
+        let neighbors = vec!["b".to_string(), "c".to_string(), "d".to_string()];
+        let targets = engine.choose_fanout(&neighbors, "a");
         assert_eq!(targets.len(), 3, "fanout=4 时三个邻居都应被转发到");
         assert!(!targets.contains(&"a".to_string()), "不回发给信封的发送方");
     }

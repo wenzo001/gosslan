@@ -22,7 +22,7 @@ pub mod router;
 pub mod selection;
 
 pub use candidate::PeerCandidate;
-pub use connection::{Connection, ConnectionHealth};
+pub use connection::{ChannelKind, Connection, ConnectionHealth};
 pub use endpoint::{BleEndpoint, Endpoint};
 pub use manager::{MergeOutcome, PeerManager};
 pub use path::PathKind;
@@ -31,4 +31,4 @@ pub use relay_policy::{should_forward, RelayInput, RelayPolicy};
 pub use router::{
     DropReason, ForwardDecision, MeshDestination, MeshFrame, MeshFrameKind, MeshRouter,
 };
-pub use selection::{pick_link, CONGESTION_WINDOW_MS};
+pub use selection::pick_link;

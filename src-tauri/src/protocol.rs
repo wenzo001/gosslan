@@ -55,13 +55,91 @@ pub fn current_device_type() -> &'static str {
     "mobile"
 }
 
+/// 本机**线格式**版本（ADR-0007 决策 1）。
+///
+/// 只在**破坏兼容**的协议变更时 +1；加可选字段、加新帧类型都**不** bump
+/// （新帧由"对端声明的 `protocol_version` 够高才发"做 capability 门控，见 INV-P24）。
+/// 今天所有已发布版本（v4.8.2 起）都是 1。
+pub const PROTOCOL_VERSION: u32 = 1;
+
+/// 本机应用版本串（取自 `Cargo.toml`，与 `package.json` 由 `scripts/version.mjs` 同步）。
+///
+/// ⚠️ **只用于给人看**：诊断面板、日志、"对方版本较新"提示。
+/// 绝不用它做兼容判断 —— `4.22.10` 与 `4.22.9` 的线格式完全相同，
+/// 而字符串比较会把它们排出高低（这正是本 ADR "不把 app version 当 protocol version" 那条）。
+pub fn current_app_version() -> &'static str {
+    env!("CARGO_PKG_VERSION")
+}
+
+/// 对端**线格式版本是否比本机高**（INV-P24：对端更高必须成为可解释的状态）。
+///
+/// 这是全仓唯一的兼容判定处，结果直接以 `Friend::peer_version_newer` 发给前端 ——
+/// 前端不许自己比数字，否则 `PROTOCOL_VERSION` 就有了第二份真相源。
+///
+/// `None`（老版本没声明这个字段）判 **false**：没声明 ≠ 版本 0，也 ≠ 版本 1。
+/// 把"未知"当成"更高"会在满屏好友上刷出一排"对方版本较新"的错提示；当成"更低"
+/// 则会藏掉真实存在的差异。所以老实例就是**什么都不提示**，与"未声明"在诊断里
+/// 显示成"未声明"是同一个口径。
+pub fn peer_protocol_is_newer(declared: Option<u32>) -> bool {
+    declared.is_some_and(|v| v > PROTOCOL_VERSION)
+}
+
 /// 内容能力位：支持按 cid 拉取（ContentRequest / 拥有即授权服务）。
 pub const CONTENT_FEATURE_PULL: u32 = 1 << 0;
+
+/// 能力位：**能收 `kind:"merge"`（合并转发卡片）**。
+///
+/// 为什么需要单独一个位而不是"看 protocol_version"：`merge` 是在 V1 期间
+/// （`9b26006`，最早出现在 v4.22.30 这条线上）才加进 `MsgKind` 的，而
+/// v4.8.2 / v4.18.10 / v4.20.0 这些**已发布**的包里根本没有这个变体。它们的
+/// `ChatMessage.kind` 还是嵌套枚举 ⇒ 收到 `kind:"merge"` 时整帧解析失败被丢掉
+/// （INV-P24 第 2 条那个 bug 我们只修了自己这一侧，老版本里它仍然成立），
+/// 于是发送方 outbox 反复重投、最后显示"发送失败"，双方都不知道为什么。
+/// 这段历史也是"V1 内部并不单调"的证据：**别把 protocol_version 当能力清单用**。
+pub const CONTENT_FEATURE_MERGE: u32 = 1 << 1;
 
 /// 本机支持的内容能力位图。**不参与 Hello 签名**（见 hello_signing_bytes）：
 /// 老端忽略该字段、新端据此决定能不能对它发拉取帧。
 pub fn content_features() -> u32 {
-    CONTENT_FEATURE_PULL
+    CONTENT_FEATURE_PULL | CONTENT_FEATURE_MERGE
+}
+
+/// 「哪个 kind 需要对端具备哪一点能力」的**唯一**答案。`None` = V1 词表内、对所有对端安全。
+///
+/// 新增 kind 时如果它不是所有已发布版本都认得，**必须**在这里登记 ——
+/// `every_gated_kind_is_advertised_by_us` 会盯着"加了门控却忘了声明能力"这个组合。
+pub fn kind_required_feature(kind: &str) -> Option<u32> {
+    match kind {
+        "merge" => Some(CONTENT_FEATURE_MERGE),
+        _ => None,
+    }
+}
+
+/// INV-P24 第 4 条的判据本身：**不门控不许发**。
+///
+/// `peer_features` 是**对端声明过**的位图；从没交换过 Hello / 节点已离线时，调用方传 `0`
+/// —— 也就是"不知道就当不支持"。这个默认方向是刻意的：宁可少发一条新类型消息，
+/// 也不要让老对端整帧丢掉、发送方还以为是网络问题。
+/// （"离线时先入队、等 Hello 到货再决定"是更好的体验，但它要求 outbox 能改载荷，
+/// 那是另一件事，见待办里的 flush 期降级。）
+pub fn kind_allowed_by_features(kind: &str, peer_features: u32) -> bool {
+    match kind_required_feature(kind) {
+        None => true,
+        Some(bit) => peer_features & bit != 0,
+    }
+}
+
+/// 被门控挡下时给用户的那句话（与判据放在一起，免得文案与规则分两处腐烂）。
+///
+/// 刻意**不报具体版本号**：能力位才是事实来源，版本号只是它恰好对应的现象；
+/// 而且"多少版以上"这种话一旦写死就会腐烂。要查对方到底什么版本，
+/// 联系人详情页的「对方版本」那一行（v4.22.35）已经有。
+pub fn kind_unsupported_hint(kind: &str) -> String {
+    format!(
+        "对方的 Gosslan 版本较旧，不支持「{kind}」类型的消息，已停止发送。\
+         请让对方升级后再发 —— 硬发过去会被对方的程序整条丢掉，\
+         最后只会显示「发送失败」，两边都看不出原因。"
+    )
 }
 
 /// 消息内容类型
@@ -75,9 +153,11 @@ pub enum MsgKind {
     System,
     /// 合并转发的聊天记录（微信式：多条消息合成一张卡片）。
     ///
-    /// ⚠️ 必须在这里也列一份（而不是只加 `WIRE_KINDS`）：**单聊直连**帧的 kind 是编成
-    /// 这个枚举传的（`ChatMessage.kind`），接收侧用 `from_wire_str` 还原 —— 漏了就会回退
-    /// 成 `Text`，结果是"合并转发的卡片在对方那边变成一坨裸 JSON 正文"。
+    /// ⚠️ 必须在这里也列一份（而不是只加 `WIRE_KINDS`）：`MsgKind` 是**发送侧的词表**，
+    /// 漏在这里就发不出这个 kind（`as_str` 编译不过）。
+    /// 接收侧不再依赖它 —— `ChatMessage.kind` 从 v4.22.34 起是字符串，未知 kind 原样入库
+    /// 由前端按 `is_known_kind` 显示占位（INV-P24 第 2 条），所以"漏一个变体"的代价从
+    /// "对方看到一坨裸 JSON"降级成"我们发不出这种消息"。
     Merge,
 }
 
@@ -165,6 +245,21 @@ pub const WIRE_KINDS: &[(&str, KindClass)] = &[
 
 /// 未知 kind 一律按 `Bubble` 处理 —— 与 `MsgKind::from_wire_str` 回退到 `Text` 同语义：
 /// 宁可多显示一条，也不要把不认识的内容**静默吞掉**（对端版本更新时不丢消息）。
+/// 读出口的显示 kind 归一化（**不回写数据**，行里保留原样）。
+///
+/// 背景（真机 2026-09-19）：4.22.1 之前接收端把消息 kind 写成了文件分类
+/// （mp4 ⇒ kind="video"、m4a ⇒ kind="audio"），前端渲染链只认 text/code/image/
+/// file/system/merge —— 视频消息整个退化成一段裸 JSON。发送端已收口，历史行靠这层
+/// 兼容：video/audio 一律按 file 渲染（文件卡片 + subtype 图标），数据不动。
+/// code 有歧义（真代码块消息同为 kind="code"），故不映射 —— 旧「代码文件」卡片
+/// 的渲染退化可接受，误伤真代码块不可接受。
+pub fn display_kind(kind: &str) -> String {
+    match kind {
+        "video" | "audio" => "file".into(),
+        other => other.into(),
+    }
+}
+
 pub fn kind_class(kind: &str) -> KindClass {
     WIRE_KINDS
         .iter()
@@ -172,6 +267,22 @@ pub fn kind_class(kind: &str) -> KindClass {
         .map(|(_, c)| *c)
         .unwrap_or(KindClass::Bubble)
 }
+
+/// 这个 kind **在本机的词表里**吗。
+///
+/// 与 `kind_class` 的区别就是这条判据存在的理由：`kind_class` 对未知值**回落到 Bubble**
+/// （宁可多显示一条），于是"未知"这件事在类型上看不出来。而渲染层必须能区分
+/// "知道怎么显示但没专门分支" 与 "压根不认识"（INV-P24 第 2 条）⇒ 判据只能查这张表，
+/// **不允许再维护第二份 kind 清单**（清单会漂移，本项目已有多次教训）。
+pub fn is_known_kind(kind: &str) -> bool {
+    WIRE_KINDS.iter().any(|(k, _)| *k == kind)
+}
+
+/// 未知 kind 的预览/占位文案（INV-P24 第 2 条：绝不把载荷原样甩给用户）。
+///
+/// 前端有一份同样的字符串（`utils/messageKinds.ts`）—— 会话列表与通知说的必须是同一句话，
+/// 所以 `messageKinds.test.ts` 会直接读本常量逐项比对，防两侧漂成两个词。
+pub const UNSUPPORTED_PREVIEW_LABEL: &str = "[不支持的消息]";
 
 /// 「进时间线，但**不打扰**」—— 不计未读、不改会话预览、不弹通知。
 ///
@@ -276,8 +387,9 @@ pub fn merge_summary(content: &str) -> String {
 // 前端 `utils/messages.ts` 的 `previewText`）。JSON 载荷的 kind 若不给**人话**，就会把
 // 「会话列表/通知显示一段 JSON」暴露给用户（用户 2026-09-17）。
 //
-// ⚠️ 前端 `previewText` 与本函数必须**逐项一致**（哪些 kind 给什么文案）——它没有跨语言
-// 契约测试，改动时两处一起改。
+// ⚠️ 前端 `previewText` 与本函数必须**逐项一致**（哪些 kind 给什么文案）——
+// 由 `src/utils/messageKinds.test.ts` 读 `WIRE_KINDS` 与 `UNSUPPORTED_PREVIEW_LABEL` 机器比对
+// （2026-09-20 起，此前只靠注释提醒"两处一起改"，那是迟早会漂的）。
 
 /// 截断到 30 字符（与前端 `previewText` 的 default 分支同口径）。
 fn truncate_preview(content: &str) -> String {
@@ -329,8 +441,16 @@ fn announcement_preview(content: &str) -> String {
 /// 静默类（reaction/recall/pin/poll_vote/announcement_delete/todo_update）照理到不了预览
 /// （两侧都按 `is_non_notifying_kind` 过滤），这里仍兜一层——防"某一侧的过滤条件日后变了"
 /// 再把 JSON 露出去。
+///
+/// ⚠️ 默认分支**不再无条件透传正文**（INV-P24 第 2 条）：`text`/`system` 的正文本来就是给
+/// 人看的 ⇒ 照旧截断；**表里没有的 kind**（对端版本比本机新，或 4.22.1 之前写坏的形态）
+/// 载荷多半是解不开的 JSON ⇒ 原样截断就等于"界面上出现一串 JSON 字符串"（用户明确要求禁止）。
 pub fn preview_text(kind: &str, content: &str) -> String {
-    match kind {
+    // 先过一层显示归一化：库里存着 4.22.1 之前接收端写坏的 `kind="video"/"audio"` 历史行，
+    // 不归一化就会被当成"未知种类" ⇒ 一条真实视频消息在列表里显示成「[不支持的消息]」。
+    // `display_kind` 与气泡渲染共用同一个函数，两侧口径不会分叉。
+    let kind = display_kind(kind);
+    match kind.as_str() {
         "file" => "[文件]".to_string(),
         "image" => "[图片]".to_string(),
         "code" => "[代码]".to_string(),
@@ -342,7 +462,8 @@ pub fn preview_text(kind: &str, content: &str) -> String {
         "reaction" => "[回应]".to_string(),
         "recall" | "recalled" => "[撤回]".to_string(),
         "pin" => "[置顶]".to_string(),
-        _ => truncate_preview(content),
+        other if is_known_kind(other) => truncate_preview(content),
+        _ => UNSUPPORTED_PREVIEW_LABEL.to_string(),
     }
 }
 
@@ -691,6 +812,18 @@ pub enum Message {
         /// 内容能力位图（见 CONTENT_FEATURE_PULL）。**不参与签名**：老端忽略、新端可读。
         #[serde(default)]
         content_features: u32,
+        /// 对端**线格式**版本（`PROTOCOL_VERSION`，ADR-0007 决策 1）。
+        ///
+        /// `None` = 老端没发这个字段 ⇒ 按最低版本处理（能力门控一律当"不支持新帧"）。
+        /// **不参与签名**，与 `content_features` 同理：加字段不能弄坏老端验签，
+        /// 否则"报版本"这件事本身就成了一次破坏性变更。
+        #[serde(default)]
+        protocol_version: Option<u32>,
+        /// 对端应用版本串（如 `"4.22.27"`）。**只给人看**（诊断面板 / 日志 /
+        /// "对方版本较新"提示），绝不用它做兼容判断 —— 见 `current_app_version`。
+        /// 同样不参与签名、老端缺省为 `None`。
+        #[serde(default)]
+        app_version: Option<String>,
         tcp_port: u16,
         x25519_pubkey: String,
         ed25519_pubkey: String,
@@ -777,7 +910,18 @@ pub enum Message {
         msg_id: String,
         from: String,
         to: String,
-        kind: MsgKind,
+        /// **线格式是字符串，不是枚举**（INV-P24 第 2 条）。
+        ///
+        /// 曾经这里是 `MsgKind`：对端 Gosslan 比本机新、发来一个本机不认识的 kind 时，
+        /// serde 会报 `unknown variant` —— 而 `decode_frame` 无法区分"未知**帧**类型"与
+        /// "未知**嵌套枚举值**"，于是整条 `chat_message` 被降级成 `Message::Unknown` 丢弃。
+        /// 后果不是"少显示一个占位"，而是**消息根本进不了库**：接收方什么都不知道，
+        /// 发送方拿不到 Ack，最后显示「发送失败」。
+        ///
+        /// 改成字符串后未知 kind 原样入库，前端按 `isKnownKind` 显示可解释的占位
+        /// （见 `UnsupportedKindBubble`）。发送侧仍然只产出 `MsgKind` 的词表
+        /// （`commands::send_message` 会先归一化），所以"本机不会发出乱码 kind"不变。
+        kind: String,
         content: String,
         ts: i64,
         /// 会话逻辑序号（Lamport），接收方按此排序，而非发送方墙上时钟。
@@ -1018,6 +1162,17 @@ pub enum Message {
         /// 原样载荷（base64）
         payload: String,
     },
+    /// **跨版本兜底**（INV-P24）：本机不认识的 `type` 解析成这个变体，
+    /// 于是"收到未来版本的新帧"= 忽略这一条 + 记一条节流日志，
+    /// 而不是反序列化失败 ⇒ 连接错误 ⇒ **拆链**（旧行为，会让老设备跟新设备连不上）。
+    ///
+    /// 只由 `read_frame` 产生，**发送侧永远不会构造它**（所以不需要为它定义线格式语义）。
+    /// 已知 `type` 但字段畸形**不算**这里 —— 那是我们自己的 bug，必须继续报错，
+    /// 否则就是把真实的协议错误静默吞掉（违反 INV-005 的精神）。
+    Unknown {
+        /// 线格式里那个我们不认识的 `type` 值（仅用于日志与诊断面板）
+        wire_type: String,
+    },
 }
 
 impl Message {
@@ -1190,6 +1345,58 @@ pub fn verify_announce(pkt: &UdpPacket) -> AnnounceAuth {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// 历史 video/audio 行在**读出口**归一为文件卡片；其余 kind 原样（数据不回写）。
+    #[test]
+    fn display_kind_maps_legacy_media_to_file() {
+        assert_eq!(display_kind("video"), "file");
+        assert_eq!(display_kind("audio"), "file");
+        assert_eq!(display_kind("image"), "image");
+        assert_eq!(display_kind("file"), "file");
+        assert_eq!(display_kind("text"), "text");
+        // code 有歧义（真代码块同为 kind=code），刻意不映射
+        assert_eq!(display_kind("code"), "code");
+    }
+
+    /// **未知 kind 的预览必须是占位文案，绝不能是载荷**（INV-P24 第 2 条）。
+    ///
+    /// 为什么值得单独钉：`preview_text` 的默认分支过去**无条件透传正文**，于是对端版本比
+    /// 本机新时（或 4.22.1 之前写坏的 kind 形态），会话列表与系统通知会直接显示一串裸 JSON。
+    /// 而它的行为是"少显示点东西"，没有任何测试会因为缺少它而失败。
+    /// 三个对照分支同样重要：`text`/`system` 必须照旧透传（否则"全都塞进占位"也能让第一条
+    /// 断言通过 = 空转），历史 `video` 行必须归一成 `[文件]`（把真实消息判成"不支持"同样是错）。
+    #[test]
+    fn preview_text_hides_payload_for_unknown_kind() {
+        let payload = r#"{"question":"周五前交","options":["A","B"]}"#;
+        assert_eq!(preview_text("sticker", payload), UNSUPPORTED_PREVIEW_LABEL);
+        assert!(
+            !preview_text("sticker", payload).contains('周'),
+            "未知 kind 的预览不得外泄载荷内容"
+        );
+        // 对照 1：已知但没有专门分支的 kind ⇒ 正文本来就是给人看的，照旧截断
+        assert_eq!(preview_text("text", "hello"), "hello");
+        assert_eq!(preview_text("system", "X 加入了群聊"), "X 加入了群聊");
+        // 对照 2：4.22.1 之前写坏的历史行 ⇒ 归一化成 [文件]，不是"不支持"
+        assert_eq!(
+            preview_text("video", r#"{"name":"a.mp4","path":"/x/a.mp4","size":1}"#),
+            "[文件]"
+        );
+    }
+
+    /// `is_known_kind` 与 `kind_class` 的区别必须成立（前者能认出"未知"）。
+    ///
+    /// 只钉一条判据：`kind_class` 对未知值回落到 Bubble（设计上就看不出未知），
+    /// 所以渲染层判"未知"必须走 `is_known_kind` —— 这条测试挡住有人把两者混用一个。
+    #[test]
+    fn only_is_known_kind_can_tell_unrecognized_apart() {
+        assert!(!is_known_kind("sticker"), "表里没有的 kind 必须判为未知");
+        assert_eq!(kind_class("sticker"), KindClass::Bubble, "回落仍是 Bubble");
+        for (k, _) in WIRE_KINDS {
+            assert!(is_known_kind(k), "{k} 在表里却判成未知");
+        }
+    }
+
     use crate::crypto::Identity;
 
     // ---------------- announce 自签名 ----------------
@@ -1676,6 +1883,8 @@ mod tests {
             avatar: None,
             device_type: "desktop".into(),
             content_features: super::content_features(),
+            protocol_version: Some(super::PROTOCOL_VERSION),
+            app_version: Some(super::current_app_version().to_string()),
             tcp_port: 59992,
             x25519_pubkey: "xk".into(),
             ed25519_pubkey: "ek".into(),
@@ -1697,25 +1906,25 @@ mod tests {
         );
     }
 
-    /// **协议事实**（ADR-0017 §2）：`Message` 是 `#[serde(tag = "type")]` 枚举，
-    /// 旧端收到未知 `type` 时反序列化**失败** ⇒ `read_frame` 返回 `InvalidData`
-    /// ⇒ `reader_loop` 视为坏帧并**断开整条连接**（不是"忽略一个包"）。
+    /// **serde 事实**：`Message` 是 `#[serde(tag = "type")]` 枚举，未知 `type` 在
+    /// `from_slice` 这一层**就是硬错误**。
     ///
-    /// 这条测试把该事实钉住：将来做 BitChat 中继（Phase 8）新增线格式变体时，
-    /// **必须**能力门控（只在对方声明支持后才发），否则混版本拓扑会直接断链。
-    /// 改这条测试（比如让未知变体被容忍）就等于改变兼容性契约 —— 需要 ADR。
+    /// ⚠️ 立场已变（ADR-0007 Accepted 2026-09-20 + INV-P24 第 1 条）：这个错误**不允许**
+    /// 一路冒到 `reader_loop` —— 旧行为是 `read_frame` 返回 `InvalidData` ⇒ 断开整条连接，
+    /// 于是新版本只要上线一种新帧，老设备就不是"少收一条"而是"跟这台设备连不上"，
+    /// 还伴随重连-再拆的死循环。现在由 `network::transport::decode_frame` 在帧层降级成
+    /// `Message::Unknown`（忽略 + 节流日志，链路保持），并由守卫
+    /// `unknown_wire_frame_is_tolerated_after_auth` 钉住。
+    ///
+    /// 这条测试保留的理由：它钉的是 serde 层的既有事实（降级逻辑正是依赖
+    /// "未知变体报 unknown variant"这个措辞来判别），并带一条**防空转对照**
+    /// （已知变体必须能解析，否则"全都失败"也会让断言看起来通过）。
     #[test]
     fn unknown_message_type_is_a_hard_parse_error() {
-        // ⚠️ 这里原先用 `opaque_external` 当"未知类型"的例子（当时它还没实现）。
-        // Phase 8 落地后它**已经是已知变体**，例子必须换成一个真正不存在的类型，
-        // 否则这条断言会因为"帧能解析成功"而失败 —— 顺手也说明：
-        // ADR-0017 的决策更新（本版不做旧版兼容）改变的是"要不要容忍未知类型"的**立场**，
-        // 没有改变**行为**：未知 type 依旧是硬解析错误，于是混版本拓扑会断链
-        // ⇒ 升级说明里必须写"所有设备一起升级"。
         let unknown = br#"{"type":"some_future_kind","id":"x"}"#;
         assert!(
             serde_json::from_slice::<Message>(unknown).is_err(),
-            "未知 type 必须是硬错误（混版本会断链，所以升级必须整批进行）"
+            "serde 层必须仍然报未知 type —— decode_frame 靠这个错误把未知帧降级，而不是当畸形帧"
         );
         // 对照：已知变体必须能解析（否则上面那条断言会因为"全都解析失败"而变成空转）。
         // `Heartbeat` 需要 `device_id`，这里给全字段。
@@ -1752,6 +1961,8 @@ mod tests {
             avatar: None,
             device_type: "desktop".into(),
             content_features: super::content_features(),
+            protocol_version: None,
+            app_version: None,
             tcp_port: 59992,
             x25519_pubkey: "xk".into(),
             ed25519_pubkey: "ek".into(),
@@ -1786,6 +1997,8 @@ mod tests {
             avatar: None,
             device_type: "mobile".into(),
             content_features: super::content_features(),
+            protocol_version: None,
+            app_version: None,
             tcp_port: 1,
             x25519_pubkey: "x".into(),
             ed25519_pubkey: "e".into(),
@@ -1804,6 +2017,143 @@ mod tests {
             Message::Hello { device_type, .. } => assert!(device_type.is_empty()),
             _ => panic!("expect hello"),
         }
+    }
+
+    /// 版本声明（ADR-0007 决策 1）：新端往返保持，**老 Hello 缺省为 `None`**。
+    ///
+    /// 这一步的全部价值来自"加这两个字段不断老版本互通"，所以两个方向都要钉：
+    /// - 老→新：缺字段的 Hello 必须照样解析（报错就是老设备**连不上**，不是"少个信息"）；
+    /// - 新→老：我们多带的字段必须被忽略 —— 判据就是这里**没有** `deny_unknown_fields`，
+    ///   一旦有人加上，"给帧加字段"这件事本身会变成一次破坏性变更。
+    #[test]
+    fn hello_version_fields_roundtrip_and_old_peer_declares_nothing() {
+        let hello = Message::Hello {
+            device_id: "a".into(),
+            nickname: "A".into(),
+            avatar: None,
+            device_type: "desktop".into(),
+            content_features: super::content_features(),
+            protocol_version: Some(2),
+            app_version: Some("9.9.9".into()),
+            tcp_port: 1,
+            x25519_pubkey: "x".into(),
+            ed25519_pubkey: "e".into(),
+            conv_clock: 0,
+            nonce: "n".into(),
+            sig: "s".into(),
+        };
+        let json = serde_json::to_string(&hello).unwrap();
+        match serde_json::from_str::<Message>(&json).unwrap() {
+            Message::Hello {
+                protocol_version,
+                app_version,
+                ..
+            } => {
+                assert_eq!(protocol_version, Some(2));
+                assert_eq!(app_version.as_deref(), Some("9.9.9"));
+            }
+            _ => panic!("expect hello"),
+        }
+        // 老端（4.22.27 之前）的 Hello：没有这两个字段 ⇒ 必须是 `None`。
+        // 不能回落成 Some(1)：诊断面板要能区分"对方是没报版本的老版本"和"对方报了 1"。
+        let legacy = r#"{"type":"hello","device_id":"a","nickname":"A","avatar":null,"tcp_port":1,"x25519_pubkey":"x","ed25519_pubkey":"e","conv_clock":0}"#;
+        match serde_json::from_str::<Message>(legacy).unwrap() {
+            Message::Hello {
+                protocol_version,
+                app_version,
+                ..
+            } => {
+                assert_eq!(protocol_version, None);
+                assert_eq!(app_version, None);
+            }
+            _ => panic!("expect hello"),
+        }
+        // 新→老：未知**字段**必须被忽略（这条断言就是"不许 deny_unknown_fields"的哨兵）。
+        let newer = r#"{"type":"hello","device_id":"a","nickname":"A","avatar":null,"tcp_port":1,"x25519_pubkey":"x","ed25519_pubkey":"e","conv_clock":0,"protocol_version":9,"some_future_field":true}"#;
+        assert!(
+            serde_json::from_str::<Message>(newer).is_ok(),
+            "Hello 遇到未知字段必须照单收下，否则加字段就等于破坏性变更"
+        );
+    }
+
+    /// **未知 kind 不得把整条 `chat_message` 带崩**（INV-P24 第 2 条）。
+    ///
+    /// 这条钉的是"`ChatMessage.kind` 为什么是 String 而不是 `MsgKind`"：只要它是枚举，
+    /// `kind:"sticker"` 就会让 serde 报 `unknown variant`，而 `decode_frame` 分不清
+    /// "未知**帧**类型"与"未知**嵌套枚举值**" ⇒ 整帧被降级成 `Message::Unknown` 丢弃
+    /// ⇒ 消息根本进不了库，前端连「不支持的消息类型」都来不及显示，发送方永远等不到 Ack。
+    /// 所以正确的判据是：**同一个未知值放在 kind 上必须还能解析，放在 type 上才该降级**。
+    #[test]
+    fn unknown_message_kind_still_decodes_as_a_chat_message() {
+        let frame = br#"{"type":"chat_message","msg_id":"m1","from":"a","to":"b","kind":"sticker","content":"enc1:AAA","ts":1,"seq":1}"#;
+        match serde_json::from_slice::<Message>(frame)
+            .expect("未知 kind 必须仍能解析成 ChatMessage（否则整条消息会被静默丢弃）")
+        {
+            Message::ChatMessage { kind, msg_id, .. } => {
+                assert_eq!(kind, "sticker", "kind 必须原样保留，不能回落成 text");
+                assert_eq!(msg_id, "m1");
+            }
+            other => panic!("应还原为 ChatMessage，实得 {other:?}"),
+        }
+        // 对照（防空转）：未知值放在 **type** 上时仍是硬解析错误 —— 那才是
+        // `decode_frame` 该降级成 Unknown 的场景（见 unknown_message_type_is_a_hard_parse_error）。
+        assert!(serde_json::from_slice::<Message>(br#"{"type":"sticker"}"#).is_err());
+    }
+
+    /// 兼容判定的四种输入 —— `Some(PROTOCOL_VERSION)` 那条是**防空转的关键**：
+    /// 写成 `>=` 就会在每个同版本好友上刷"对方版本较新"，而真网里同版本才是常态。
+    #[test]
+    fn peer_protocol_newer_only_when_declared_higher() {
+        assert!(!peer_protocol_is_newer(None), "未声明 ≠ 更高（也 ≠ 更低）");
+        assert!(
+            !peer_protocol_is_newer(Some(PROTOCOL_VERSION)),
+            "同版本必须判不高 —— 写成 >= 就会满屏误报"
+        );
+        assert!(!peer_protocol_is_newer(Some(0)), "0 也不猜成更高");
+        assert!(peer_protocol_is_newer(Some(PROTOCOL_VERSION + 1)));
+    }
+
+    /// 发送侧门控的四种输入 —— 关键是 `0`（没交换过 Hello / 对端已离线）判**不许发**。
+    /// 方向选"不知道就当不支持"是刻意的：宁可少发一条新类型，也不要让老对端整帧丢掉、
+    /// 发送方还以为是网络问题。
+    #[test]
+    fn gated_kind_needs_the_peers_own_declaration() {
+        assert!(
+            kind_allowed_by_features("text", 0),
+            "V1 词表内的 kind 对所有对端都安全，不该被门控挡住"
+        );
+        assert!(
+            !kind_allowed_by_features("merge", 0),
+            "对端没声明能力 ⇒ 不许发 merge"
+        );
+        assert!(kind_allowed_by_features("merge", CONTENT_FEATURE_MERGE));
+        // 只认自己那一位：对方有别的 capability 不算数（防"位图非零就放行"这种糊法）
+        assert!(
+            !kind_allowed_by_features("merge", CONTENT_FEATURE_PULL),
+            "按位判定，不是按非零判定"
+        );
+    }
+
+    /// 加了门控却忘了在 Hello 里声明 ⇒ 这种消息永远发不出去，而且是静默的。
+    /// 这条测试盯的就是"门控表与广播的能力对不上"这个组合。
+    #[test]
+    fn every_gated_kind_is_advertised_by_us() {
+        let ours = content_features();
+        let mut gated = Vec::new();
+        for (kind, _) in WIRE_KINDS {
+            if let Some(bit) = kind_required_feature(kind) {
+                assert_ne!(
+                    ours & bit,
+                    0,
+                    "kind `{kind}` 要求能力位 {bit:#b}，但本机 Hello 没声明它 —— 门控会把我们自己的功能锁死"
+                );
+                gated.push(bit);
+            }
+        }
+        assert!(
+            gated.contains(&CONTENT_FEATURE_MERGE),
+            "merge 必须仍在被门控之列：v4.20.0 及更早的 MsgKind 里没有这个变体"
+        );
     }
 
     #[test]

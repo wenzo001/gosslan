@@ -2,7 +2,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppSettings, CacheInfo, ChatSearchGroup, CleanupReport, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, Friend, Group, GroupFileEntry, GroupReadInfo, InterfaceCandidate, InterfaceInfo, LinkState, LogEntry, MessageRecord, Peer, PeerReadInfo, PendingRequest, RoutedEndpoint, RuntimeSnapshot, SearchResult, ShareEntry, TopologyInfo, TransferInfo } from "@/types";
+import type { AppSettings, CacheInfo, ChatSearchGroup, CleanupReport, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, Group, GroupFileEntry, GroupReadInfo, InterfaceCandidate, InterfaceInfo, LinkState, LogEntry, MessageRecord, Peer, PeerReadInfo, PendingRequest, RoutedEndpoint, RuntimeSnapshot, SearchResult, ShareEntry, TopologyInfo, TransferInfo } from "@/types";
 import type { TodoImage } from "@/utils/todos";
 export const api = {
   /**
@@ -422,6 +422,7 @@ export type EventHandlers = {
   /** 某条消息被撤回（msg_id）。本地据此把该行改成「已撤回」形态。 */
   onMessageRecalled: (msgId: string) => void;
   onFileProgress: (p: FileProgress) => void;
+  onFileStalled: (p: FileStalledInfo) => void;
   onFileDone: (d: FileDoneInfo) => void;
   onFileFailed: (d: FileFailedInfo) => void;
   /** 用户手动取消了一条正在发送的文件（transfer_id）。前端据此 mark failed + toast。 */
@@ -460,10 +461,17 @@ export async function bindEvents(h: EventHandlers): Promise<UnlistenFn[]> {
     listen<GroupReadInfo>("group-read", (e) => h.onGroupRead(e.payload)),
     listen<string>("message-recalled", (e) => h.onMessageRecalled(e.payload)),
     listen<FileProgress>("file-progress", (e) => h.onFileProgress(e.payload)),
+    listen<FileStalledInfo>("file-stalled", (e) => h.onFileStalled(e.payload)),
     listen<FileDoneInfo>("file-done", (e) => h.onFileDone(e.payload)),
     listen<FileFailedInfo>("file-failed", (e) => h.onFileFailed(e.payload)),
     listen<string>("file-cancelled", (e) => h.onFileCancelled(e.payload)),
     listen<string>("message-status-changed", (e) => h.onMessageStatusChanged(e.payload)),
+    // 后端改了这些消息的状态就发对应事件（sweeper 判失败 / 用户取消 / 用户重发）。
+    // 前端一律走「从 DB 重查该会话」：状态的唯一真相源是 messages.status（INV-006/P15），
+    // 不在内存里再维护一套失败/取消状态机。
+    listen<string>("message-failed", (e) => h.onMessageStatusChanged(e.payload)),
+    listen<string>("message-cancelled", (e) => h.onMessageStatusChanged(e.payload)),
+    listen<string>("message-resending", (e) => h.onMessageStatusChanged(e.payload)),
     listen<PeerStyleUpdate>("peer-style-updated", (e) => h.onPeerStyle(e.payload)),
     listen<string>("groups-updated", (e) => h.onGroupsUpdated(e.payload)),
     listen<string>("group-member-removed", (e) => h.onGroupMemberRemoved(e.payload)),

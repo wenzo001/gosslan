@@ -33,7 +33,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 // 注意：lib 名是 `gosslan_lib`（Cargo.toml `[lib] name`），不是 `gosslan`。
 use gosslan_lib::crypto::Identity;
-use gosslan_lib::protocol::{hello_signing_bytes, Message, MsgKind};
+use gosslan_lib::protocol::{hello_signing_bytes, Message};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -115,6 +115,10 @@ async fn connect_and_hello(
         avatar: None,
         device_type: "desktop".to_string(),
         content_features: gosslan_lib::protocol::content_features(),
+        // 这两个字段是 v4.22.28 才加的：**留空 = 模拟网里现存的老实例**，
+        // 于是每次跑这个模拟器都顺带验证一遍"对端不声明版本"的降级路径（INV-P24）。
+        protocol_version: None,
+        app_version: None,
         tcp_port: 0,
         x25519_pubkey: x25519,
         ed25519_pubkey: ed25519,
@@ -147,7 +151,7 @@ async fn send_chat<W: AsyncWrite + Unpin>(
         msg_id: format!("dual-link-{}-{seq}", now_ms()),
         from: my_id.to_string(),
         to: app_id.to_string(),
-        kind: MsgKind::Text,
+        kind: "text".to_string(),
         content: "dual-link-probe".to_string(),
         ts: now_ms(),
         seq,

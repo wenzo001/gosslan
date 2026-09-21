@@ -8,6 +8,7 @@ import {
   mergeMessages,
   messageMentionsAll,
   messageMentionsName,
+  pickMediaContent,
   preserveDeliveryStatus,
   previewText,
   selectCachedConversations,
@@ -32,6 +33,7 @@ import type {
   FileDoneInfo,
   FileFailedInfo,
   FileProgress,
+  FileStalledInfo,
   FavoriteEntry,
   Friend,
   Group,
@@ -394,8 +396,30 @@ export const useChatStore = defineStore("chat", () => {
     const knownIds = new Set(conversations.value.map((c) => c.id));
     const missing = [...byConv.keys()].filter((id) => !knownIds.has(id));
     for (const [convId, incoming] of byConv) {
+      // ⚠️ 这里曾是「已有 msg_id 一律丢弃」——但后端对同一条消息存在**回填式重发**：
+      // 群文件 Done 之后会再 emit 一条带本地 path 的 gfile 记录（transport 完成回填段），
+      // 丢弃它等于气泡永远停在无 path 形态 → 群图片预览打不开（真机 2026-09-19）。
+      // 改成 upsert：同 msg_id 以本轮记录刷新内容（DB 是真相），送达状态仍只前进不回退。
       const existing = messages.value[convId] ?? [];
-      messages.value[convId] = mergeMessages(existing, incoming);
+      const indexOf = new Map(existing.map((m, i) => [m.msg_id, i] as const));
+      const next = [...existing];
+      for (const m of incoming) {
+        const i = indexOf.get(m.msg_id);
+        if (i === undefined) {
+          indexOf.set(m.msg_id, next.length);
+          next.push(m);
+        } else {
+          const prev = next[i];
+          // content 不能一律取新的：群文件的 path 是收完才回填的，回填前的后到记录
+          // 会把已回填的 path 擦掉 ⇒ 预览请求根本不发出去（空白气泡）。见 pickMediaContent。
+          next[i] = {
+            ...m,
+            content: pickMediaContent(prev, m),
+            status: furthestStatus(prev.status, m.status),
+          };
+        }
+      }
+      messages.value[convId] = mergeMessages([], next);
       touchCacheOrder(convId);
     }
     // 收完一批就收缩一次缓存（本轮可能让若干非活跃会话的缓存变冷）
@@ -487,10 +511,30 @@ export const useChatStore = defineStore("chat", () => {
       .filter(([readerId, lastReadTs]) => members.has(readerId) && readerId !== myId && lastReadTs >= messageTs)
       .map(([readerId]) => readerId);
   }
+  /** 进行中的 refreshTransfers 序号：并发触发时只让**最新那次**写回结果。 */
+  let transfersReqSeq = 0;
   async function refreshTransfers() {
-    transfers.value = await api.getTransfers();
+    const req = ++transfersReqSeq;
+    const [list, contents] = await Promise.all([
+      api.getTransfers(),
+      api.getContentTransfers().catch(() => []),
+    ]);
+    // 后发先至的旧快照必须丢掉：多选发送时每个文件都会 `void refreshTransfers()`，
+    // 旧快照里**没有**刚建的那条 transfer ⇒ 覆盖回来后，后续 file-progress 全部落空
+    // （见 updateTransferProgress），进度条永久钉在「发送中 0%」——而对端早就收完已读。
+    if (req !== transfersReqSeq) return;
+    transfers.value = list;
     // 顺带刷新统一内容状态：未完成 / 校验失败的气泡据此显示「点击重试」。
-    contentTransfers.value = await api.getContentTransfers().catch(() => []);
+    contentTransfers.value = contents;
+  }
+  /** 进度/done 事件早于 transfer 行进内存时的一次性补拉（防抖，不放大 IPC）。 */
+  let transfersRepairTimer: ReturnType<typeof setTimeout> | null = null;
+  function scheduleTransfersRepair() {
+    if (transfersRepairTimer) return;
+    transfersRepairTimer = setTimeout(() => {
+      transfersRepairTimer = null;
+      void refreshTransfers();
+    }, 400);
   }
   /** 上一次真正拉取拓扑的时间（`refreshTopologyThrottled` 用）。 */
   let lastTopologyAt = 0;
@@ -1331,16 +1375,46 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
+  /**
+   * 处于「网络停滞」的 transfer（按 writer 实发判定，后端只在状态翻转时发一次事件）。
+   *
+   * 为什么单独存而不下到 `transfers[]` 行上：`refreshTransfers()` 会用后端快照**整体替换**
+   * 那个数组，行上的临时标记会被无声冲掉；停滞是"这次尝试"的状态，必须活得比快照久。
+   */
+  const stalledTransfers = ref<Set<string>>(new Set());
+  function isTransferStalled(id: string) {
+    return stalledTransfers.value.has(id);
+  }
+  function setTransferStalled(id: string, stalled: boolean) {
+    if (stalledTransfers.value.has(id) === stalled) return;
+    const next = new Set(stalledTransfers.value);
+    if (stalled) next.add(id);
+    else next.delete(id);
+    stalledTransfers.value = next;
+  }
+  function onFileStalled(p: FileStalledInfo) {
+    setTransferStalled(p.transfer_id, p.stalled);
+  }
+
   function updateTransferProgress(p: FileProgress) {
     const t = transfers.value.find((x) => x.id === p.transfer_id);
-    if (t) t.progress = p.total > 0 ? p.received / p.total : 0;
+    if (t) {
+      t.progress = p.total > 0 ? p.received / p.total : 0;
+      return;
+    }
+    // 找不到行**不能静默丢**：进度是节流发的（250ms 一次），丢掉一次就可能再也没有下一次。
+    scheduleTransfersRepair();
   }
   function onFileDone(d: FileDoneInfo) {
+    // 终态一律收回「网络停滞」提示：后端只在翻转时发事件，漏一条就会让下次重试显示旧状态。
+    setTransferStalled(d.transfer_id, false);
     const t = transfers.value.find((x) => x.id === d.transfer_id);
     if (t) {
       t.status = "done";
       t.path = d.path;
       t.progress = 1;
+    } else {
+      scheduleTransfersRepair();
     }
     // 字节刚落盘：让这条消息的预览缓存失效 —— 收到图片时可能"消息先到、字节后到"，
     // 在途读预览会得到"仍在接收"；不失效就不会重读，图片只能靠重发才出来。
@@ -1348,6 +1422,7 @@ export const useChatStore = defineStore("chat", () => {
     invalidateFilePreview(`gfile-${d.transfer_id}`);
   }
   function onFileFailed(d: FileFailedInfo) {
+    setTransferStalled(d.transfer_id, false);
     const msgId = `file-${d.transfer_id}`;
     for (const [convId, list] of Object.entries(messages.value)) {
       const i = list.findIndex((m) => m.msg_id === msgId);
@@ -1528,6 +1603,9 @@ export const useChatStore = defineStore("chat", () => {
         // 进度由事件载荷直接更新，不再全量刷新传输列表（避免大文件 IPC 风暴卡死界面）
         updateTransferProgress(p);
       },
+      // 链路停滞（对端长时间没再收任何一片）：气泡文案要从「发送中 63%」变成
+      // 「网络停滞」，否则用户只会觉得软件卡死 —— 后端在背压里等，前端什么都不知道。
+      onFileStalled,
       onFileDone: (d) => {
         onFileDone(d);
         void refreshTransfers();
@@ -1674,6 +1752,8 @@ export const useChatStore = defineStore("chat", () => {
     refreshGroups,
     resetAfterDataCleared,
     refreshTransfers,
+    stalledTransfers,
+    isTransferStalled,
     refreshTopology,
     favorites,
     refreshFavorites,

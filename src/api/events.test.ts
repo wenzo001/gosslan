@@ -18,6 +18,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { readCommandsSrc } from "../../scripts/rustSrc.ts";
 
 const ROOT = join(import.meta.dirname, "..", "..");
 const RUST_SRC = join(ROOT, "src-tauri", "src");
@@ -116,6 +117,19 @@ test("前端监听的事件必须真的有人发（避免死监听/拼错事件�
   );
 });
 
+test("例外清单不得包含已被监听的事件（挂账说谎会让真漏接隐身）", () => {
+  // 真实教训（2026-09-19 审计）：`file-failed`/`file-cancelled` 早就在 bindEvents 里
+  // 接了，例外表却还挂着「待接」——白名单失修会让 review 的人对整张表失去信任，
+  // 真漏接混在里面也查不出来。接上消费者的那一刻必须同时把条目删掉。
+  const listened = frontendListenedEvents();
+  const stale = Object.keys(ALLOWED_EMIT_WITHOUT_LISTENER).filter((name) => listened.has(name));
+  assert.deepEqual(
+    stale,
+    [],
+    `以下事件已在 bindEvents 监听，却仍挂在例外清单里：${stale.join(", ")} —— 请删掉条目`,
+  );
+});
+
 test("设置变更必须带补丁 + 不回发给发起窗口（否则每窗口全量重拉 + 事件乒乓）", () => {
   const state = readFileSync(join(RUST_SRC, "state.rs"), "utf8");
   // ① 必须是"按窗口过滤"的发送：emit_filter 才能排除发起窗口
@@ -152,7 +166,7 @@ test("每个改设置的后端命令都必须传 origin（否则发起窗口收�
 });
 
 test("我的在线状态 = 任一通道在跑（两个都关才是离线，用户规则）", () => {
-  const commands = readFileSync(join(RUST_SRC, "commands.rs"), "utf8");
+  const commands = readCommandsSrc();
   assert.match(
     commands,
     /let present = list\.iter\(\)\.any\(\|c\| c\.running\)/,
@@ -190,7 +204,7 @@ test("运行状态只能有一个快照 + 一个带载荷的事件（②）", ()
     /snapshot: RuntimeSnapshot/,
     "事件必须**带快照**：无载荷的话接收方只能再全量重拉一遍（就是『两份状态』的温床）",
   );
-  const commands = readFileSync(join(RUST_SRC, "commands.rs"), "utf8");
+  const commands = readCommandsSrc();
   assert.ok(
     !commands.includes("pub async fn get_channel_status(") &&
       !commands.includes("pub fn get_network_status("),
@@ -211,7 +225,7 @@ test("运行状态只能有一个快照 + 一个带载荷的事件（②）", ()
 });
 
 test("清空数据必须广播（回归：设置里清了聊天记录，主界面毫无反应）", () => {
-  const src = readFileSync(join(RUST_SRC, "commands.rs"), "utf8");
+  const src = readCommandsSrc();
   const at = src.indexOf("pub async fn clear_all_data");
   assert.ok(at > 0, "找不到 clear_all_data");
   assert.match(

@@ -20,7 +20,10 @@ export const zhCN: MessageDict = {
   "nav.chats": "聊天",
   "nav.contacts": "通讯录",
   "nav.favorites": "收藏",
+  "nav.discover": "发现",
   "nav.settings": "设置",
+  "nav.profile": "资料",
+  "nav.me": "我的",
   "nav.lightMode": "浅色模式",
   "nav.darkMode": "深色模式",
   "nav.me.online": "我在线（局域网已连接）",
@@ -51,6 +54,22 @@ export const zhCN: MessageDict = {
 
   // ---- 设置页主框架 ----
   "settings.title": "设置",
+  "settings.group.general": "通用",
+  "settings.group.appearance": "外观与通知",
+  "settings.group.data": "数据与网络",
+  "settings.group.security": "安全",
+  "settings.group.about": "关于与重置",
+  "settings.item.profile": "个人资料",
+  "settings.item.general": "通用设置",
+  "settings.item.appearance": "外观",
+  "settings.item.chatStyle": "聊天气泡",
+  "settings.item.notification": "通知",
+  "settings.item.network": "网络",
+  "settings.item.files": "文件与共享",
+  "settings.item.storage": "存储",
+  "settings.item.security": "隐私与安全",
+  "settings.item.about": "关于",
+  "settings.item.reset": "还原与重置",
   // ---- 搜索聊天记录（结果页） ----
   "search.title": "搜索聊天记录",
   "search.placeholder": "搜索",
@@ -73,10 +92,8 @@ export const zhCN: MessageDict = {
   "search.enterChat": "进入聊天",
   "search.more": "本会话还有 {n} 条命中未显示，点「进入聊天」查看",
   "search.locateFail": "没能定位到那条消息",
-  "settings.group.general": "通用",
   "settings.group.language": "语言与地区",
   "settings.group.files": "文件与共享",
-  "settings.group.appearance": "外观",
   "settings.group.profile": "个人资料",
   "settings.group.chatStyle": "聊天显示",
   "settings.group.chatStyle.footer": "我的消息用所选配色；对方也会按我的配色看到我发的消息（自动同步到已连接设备）。",
@@ -84,8 +101,6 @@ export const zhCN: MessageDict = {
   "settings.group.network.footer": "选择网卡后即开启局域网通道并扫描节点；通道开启时可随时切换网卡。",
   "settings.group.storage": "存储",
   "settings.group.storage.footer": "本页只管「本机落盘的图片与文件」（聊天里收到的附件）和聊天数据库占用；聊天文字不会被自动清理。改动即时保存。保持「永久保存 + 无限制」即不做任何自动删除。",
-  "settings.group.security": "隐私与安全",
-  "settings.group.about": "关于",
   "settings.group.about.footer": "Gosslan v{version} · 无服务器 P2P · 端到端加密 · 数据仅存本机",
   "settings.group.notifications": "通知",
   "settings.group.notifications.footer": "应用在后台、或正在看别的会话时，用系统通知提醒新消息",
@@ -140,6 +155,7 @@ export const zhCN: MessageDict = {
   "settings.toast.shareSet": "共享目录已设置",
   "settings.toast.shareFail": "设置共享目录失败",
   "settings.toast.defaultsRestored": "已恢复默认设置",
+  "settings.toast.restoreFail": "恢复默认设置失败",
   "settings.toast.chatCleared": "聊天数据已清除",
   "settings.toast.clearFail": "清除失败",
 
@@ -167,9 +183,12 @@ export const zhCN: MessageDict = {
 
   // ---- 聊天显示（字号 / 气泡） ----
   "settings.chatStyle.fontSize": "字体大小",
+  "settings.chatStyle.fontSize.preview": "这是一段预览文字",
+  "settings.chatStyle.fontSize.xs": "最小",
   "settings.chatStyle.fontSize.sm": "小",
   "settings.chatStyle.fontSize.md": "标准",
   "settings.chatStyle.fontSize.lg": "大",
+  "settings.chatStyle.fontSize.xl": "最大",
   "settings.chatStyle.bubble": "气泡配色",
   "chatStyle.preset.theme": "跟随主题",
   "chatStyle.preset.classic": "经典蓝",
@@ -178,9 +197,11 @@ export const zhCN: MessageDict = {
   "chatStyle.preset.celadon": "青瓷",
   "chatStyle.preset.rose": "樱花粉",
   "chatStyle.preset.slate": "石墨灰",
+  "chatStyle.fontSize.xs": "最小",
   "chatStyle.fontSize.sm": "小",
   "chatStyle.fontSize.md": "标准",
   "chatStyle.fontSize.lg": "大",
+  "chatStyle.fontSize.xl": "最大",
 
   // ---- 存储 ----
   "settings.storage.retention": "图片与文件保留时长",
@@ -294,6 +315,7 @@ export const zhCN: MessageDict = {
 
   // ---- 关于 ----
   "settings.about.fingerprint": "设备指纹",
+  "settings.about.fingerprintCopy": "点击复制设备指纹",
 
   // ---- 窗口控制 ----
   "window.close": "关闭",
@@ -362,6 +384,7 @@ export const zhCN: MessageDict = {
   "common.text": "文本",
   "common.system": "系统",
   "common.closeEsc": "关闭 (Esc)",
+  "common.resetZoom": "还原缩放",
   "common.prev": "上一张 (←)",
   "common.next": "下一张 (→)",
   "common.lines": "{n} 行",
@@ -499,6 +522,7 @@ export const zhCN: MessageDict = {
   "todo.doneAt": "完成于 {time}",
   "todo.createdAt": "创建于 {time}",
   "todo.imageHint": "点击添加，或直接粘贴 / 拖入图片",
+  "todo.imageHintMobile": "点击添加图片",
   "todo.imageDropHere": "松开以添加图片",
   "todo.imagePasteFail": "保存粘贴的图片失败",
   "todo.openPanel": "查看任务",
@@ -634,6 +658,10 @@ export const zhCN: MessageDict = {
   "friend.profile.more": "更多信息",
   "friend.profile.nickname": "备注",
   "friend.profile.deviceType": "设备类型",
+  "friend.profile.version": "对方版本",
+  "friend.profile.versionUnknown": "未上报版本号",
+  "friend.profile.versionNewerHint": "对方的 Gosslan 比本机新，部分新类型消息需升级本机后才能查看",
+  "peer.newerShort": "对方版本较新（部分新消息可能需要升级后才能查看）",
   "friend.profile.deviceId": "设备 ID",
   "friend.profile.safety": "安全码",
   "friend.profile.safetyFirst": "安全码首段",
@@ -790,6 +818,13 @@ export const zhCN: MessageDict = {
   "diag.broadcast": "广播",
   "diag.privateNet": "私有网段",
   "diag.seconds": "{n}s",
+  // 版本互通（ADR-0007 决策 1）：本机与每个对端声明的协议/应用版本
+  "diag.versions": "版本互通",
+  "diag.localVersion": "本机 协议 {p} · 应用 {a}",
+  "diag.peerVersionsEmpty": "还没有对端声明版本（未建链，或对方是不报版本的老版本）",
+  "diag.peerNotDeclared": "未声明版本（老版本）",
+  "diag.peerVersionLine": "协议 {p} · 应用 {a}",
+  "diag.peerNewer": "对端协议更高",
 
   // ---- 发送 / 通知 / 文件操作 ----
   "send.fileFail": "文件发送失败",
@@ -798,7 +833,13 @@ export const zhCN: MessageDict = {
   "send.notFriend": "对方不是好友，请先扫描添加好友之后再继续聊天。",
   "send.sendingPct": "发送中 {pct}%",
   "send.receivingPct": "接收中 {pct}%",
+  // 对端长时间没再收任何一片（后端按 writer 实发判定）：进度条会冻住，必须说清是网络卡住
+  "send.stalled": "网络停滞，等待恢复…",
   "msg.cleaned": "已被清理",
+  // 认不出的消息类型（对端 Gosslan 比本机新）：可解释的占位，绝不显示载荷原文（INV-P24）
+  "msg.unsupportedKind": "对方发送了一种本机还不支持的消息，升级 Gosslan 后可查看",
+  "msg.showRawContent": "查看原始内容",
+  "msg.hideRawContent": "收起原始内容",
   "msg.filePathUnavailable": "文件路径不可用",
   "msg.openFileFail": "打开文件失败",
   "msg.fileSaved": "文件已保存",
@@ -891,7 +932,10 @@ export const enUS: MessageDict = {
   "nav.chats": "Chats",
   "nav.contacts": "Contacts",
   "nav.favorites": "Favorites",
+  "nav.discover": "Discover",
   "nav.settings": "Settings",
+  "nav.profile": "Profile",
+  "nav.me": "Me",
   "nav.lightMode": "Light Mode",
   "nav.darkMode": "Dark Mode",
   "nav.me.online": "Online (LAN connected)",
@@ -922,6 +966,22 @@ export const enUS: MessageDict = {
 
   // ---- Settings shell ----
   "settings.title": "Settings",
+  "settings.group.general": "General",
+  "settings.group.appearance": "Appearance & Notifications",
+  "settings.group.data": "Data & Network",
+  "settings.group.security": "Security",
+  "settings.group.about": "About & Reset",
+  "settings.item.profile": "Profile",
+  "settings.item.general": "General",
+  "settings.item.appearance": "Appearance",
+  "settings.item.chatStyle": "Chat Bubble",
+  "settings.item.notification": "Notifications",
+  "settings.item.network": "Network",
+  "settings.item.files": "Files & Sharing",
+  "settings.item.storage": "Storage",
+  "settings.item.security": "Privacy & Security",
+  "settings.item.about": "About",
+  "settings.item.reset": "Reset",
   // ---- Chat history search (results page) ----
   "search.title": "Search Chat History",
   "search.placeholder": "Search",
@@ -944,10 +1004,8 @@ export const enUS: MessageDict = {
   "search.enterChat": "Open chat",
   "search.more": "{n} more matches in this chat — open it to see them",
   "search.locateFail": "Couldn't locate that message",
-  "settings.group.general": "General",
   "settings.group.language": "Language & Region",
   "settings.group.files": "Files & Sharing",
-  "settings.group.appearance": "Appearance",
   "settings.group.profile": "Profile",
   "settings.group.chatStyle": "Chat Display",
   "settings.group.chatStyle.footer":
@@ -958,8 +1016,6 @@ export const enUS: MessageDict = {
   "settings.group.storage": "Storage",
   "settings.group.storage.footer":
     "Covers locally saved images and files (attachments received in chats) and the chat database. Chat text is never deleted automatically. Changes save instantly; choose \"Forever + Unlimited\" to disable auto-deletion.",
-  "settings.group.security": "Privacy & Security",
-  "settings.group.about": "About",
   "settings.group.about.footer": "Gosslan v{version} · Serverless P2P · End-to-End Encrypted · Data Stays on Device",
   "settings.group.notifications": "Notifications",
   "settings.group.notifications.footer":
@@ -1016,6 +1072,7 @@ export const enUS: MessageDict = {
   "settings.toast.shareSet": "Shared Folder Set",
   "settings.toast.shareFail": "Failed to Set Shared Folder",
   "settings.toast.defaultsRestored": "Default Settings Restored",
+  "settings.toast.restoreFail": "Failed to Restore Defaults",
   "settings.toast.chatCleared": "Chat Data Cleared",
   "settings.toast.clearFail": "Clear Failed",
 
@@ -1043,9 +1100,12 @@ export const enUS: MessageDict = {
 
   // ---- Chat Display (font size / bubbles) ----
   "settings.chatStyle.fontSize": "Font Size",
+  "settings.chatStyle.fontSize.preview": "This is a sample text",
+  "settings.chatStyle.fontSize.xs": "Tiny",
   "settings.chatStyle.fontSize.sm": "Small",
   "settings.chatStyle.fontSize.md": "Standard",
   "settings.chatStyle.fontSize.lg": "Large",
+  "settings.chatStyle.fontSize.xl": "Huge",
   "settings.chatStyle.bubble": "Bubble Colors",
   "chatStyle.preset.theme": "Follow Theme",
   "chatStyle.preset.classic": "Classic Blue",
@@ -1054,9 +1114,11 @@ export const enUS: MessageDict = {
   "chatStyle.preset.celadon": "Celadon",
   "chatStyle.preset.rose": "Rose",
   "chatStyle.preset.slate": "Slate",
+  "chatStyle.fontSize.xs": "Tiny",
   "chatStyle.fontSize.sm": "Small",
   "chatStyle.fontSize.md": "Standard",
   "chatStyle.fontSize.lg": "Large",
+  "chatStyle.fontSize.xl": "Huge",
 
   // ---- Storage ----
   "settings.storage.retention": "Retention Period",
@@ -1170,6 +1232,7 @@ export const enUS: MessageDict = {
 
   // ---- About ----
   "settings.about.fingerprint": "Device Fingerprint",
+  "settings.about.fingerprintCopy": "Click to copy the device ID",
 
   // ---- Window controls ----
   "window.close": "Close",
@@ -1234,6 +1297,7 @@ export const enUS: MessageDict = {
   "common.text": "Text",
   "common.system": "System",
   "common.closeEsc": "Close (Esc)",
+  "common.resetZoom": "Reset Zoom",
   "common.prev": "Previous (←)",
   "common.next": "Next (→)",
   "common.lines": "{n} lines",
@@ -1370,6 +1434,7 @@ export const enUS: MessageDict = {
   "todo.doneAt": "Completed {time}",
   "todo.createdAt": "Created {time}",
   "todo.imageHint": "Click to add, or paste / drop images here",
+  "todo.imageHintMobile": "Tap to add images",
   "todo.imageDropHere": "Drop to add image",
   "todo.imagePasteFail": "Failed to save the pasted image",
   "todo.openPanel": "View task",
@@ -1505,6 +1570,10 @@ export const enUS: MessageDict = {
   "friend.profile.more": "More info",
   "friend.profile.nickname": "Alias",
   "friend.profile.deviceType": "Device type",
+  "friend.profile.version": "Peer version",
+  "friend.profile.versionUnknown": "no version reported",
+  "friend.profile.versionNewerHint": "Their Gosslan is newer than this device — some message types need an update here to view",
+  "peer.newerShort": "The peer runs a newer version (some messages may need an update)",
   "friend.profile.deviceId": "Device ID",
   "friend.profile.safety": "Safety Number",
   "friend.profile.safetyFirst": "Safety number",
@@ -1658,6 +1727,12 @@ export const enUS: MessageDict = {
   "diag.broadcast": "bcast",
   "diag.privateNet": "private",
   "diag.seconds": "{n}s",
+  "diag.versions": "Versions",
+  "diag.localVersion": "This device: protocol {p} · app {a}",
+  "diag.peerVersionsEmpty": "No peer has declared a version yet (no link, or peers predate version reporting)",
+  "diag.peerNotDeclared": "no version declared (older build)",
+  "diag.peerVersionLine": "protocol {p} · app {a}",
+  "diag.peerNewer": "peer protocol is newer",
 
   // ---- Send / notification / file ops ----
   "send.fileFail": "Failed to send file",
@@ -1666,7 +1741,11 @@ export const enUS: MessageDict = {
   "send.notFriend": "Not friends yet. Scan to add them first.",
   "send.sendingPct": "Sending {pct}%",
   "send.receivingPct": "Receiving {pct}%",
+  "send.stalled": "Network stalled, waiting to recover…",
   "msg.cleaned": "Cleaned up",
+  "msg.unsupportedKind": "The sender used a message type this build can't display. Update Gosslan to view it.",
+  "msg.showRawContent": "Show raw content",
+  "msg.hideRawContent": "Hide raw content",
   "msg.filePathUnavailable": "File path unavailable",
   "msg.openFileFail": "Failed to open file",
   "msg.fileSaved": "File saved",

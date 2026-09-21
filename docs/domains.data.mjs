@@ -79,7 +79,14 @@ export default {
   unmapped: [
     ["src-tauri/src/main.rs", "6 行，只有 tauri::Builder 的入口调用"],
     ["src-tauri/src/lib.rs", "2168 行：模块注册 + 窗口管理 + 命令注册表（跨领域组装点，Phase 7）"],
-    ["src-tauri/src/commands.rs", "6422 行 / 26 个 tauri command：**前后端边界**，按领域拆是 Phase 7 的事"],
+    [
+      "src-tauri/src/commands.rs",
+      "142 行 + 25 个子模块 / 26 个 tauri command：**前后端边界**，按领域拆是 Phase 7 的事",
+    ],
+    [
+      "src-tauri/src/commands",
+      "commands.rs 的 25 个子模块（include! 物理拆分、逻辑仍属装配层）：",
+    ],
     ["src-tauri/src/state.rs", "1494 行 / 284 个 pub 项：跨领域共享状态（耦合热点）"],
     ["src/vite-env.d.ts", "类型声明"],
     ["src/types.ts", "跨领域共享类型"],
@@ -146,7 +153,7 @@ export default {
       paths: [],
       invariants: ["INV-P12"],
       activeHome: null,
-      activeHomeNote: "暂无独立文件：逻辑在 commands.rs 的 friend 命令与 db.rs 的 relationship 表",
+      activeHomeNote: "暂无独立文件：逻辑在 commands.rs 的 friend 命令与 db/friends.rs 的表 CRUD",
       enforce: false,
       consumes: [], // 暂无独立代码；待 Phase 7 提取后再补
       notes:
@@ -181,7 +188,7 @@ export default {
       enforce: false,
       consumes: ["identity"], // gossip_engine.rs 用 crypto::Identity（生产代码）
       notes:
-        "直发 + Gossip + 离线补发统一 msg_id 幂等去重；消息先落 outbox，ACK 到达才删。**已知例外**（protocol-invariants §22）：「和自己聊天」不进 outbox、不 gossip、不加密（INV-P03/P04 例外）。消息语义的**实际执行点**仍在 network/transport.rs（8836 行）—— 那是 Phase 7 的拆分目标。",
+        "直发 + Gossip + 离线补发统一 msg_id 幂等去重；消息先落 outbox，ACK 到达才删。**已知例外**（protocol-invariants §22）：「和自己聊天」不进 outbox、不 gossip、不加密（INV-P03/P04 例外）。消息语义的**实际执行点**仍在 network/transport.rs（约 9600 行，正按 include! 分册中）—— 那是 Phase 7 的拆分目标。",
     },
 
     // -------------------------------------------------------------------------
@@ -212,7 +219,10 @@ export default {
       tier: "L3",
       paths: [
         "src-tauri/src/network/ble.rs", // BLE 中央角色（活）
-        "src-tauri/src/network/transport.rs", // TCP 数据面（活，8836 行）
+        "src-tauri/src/network/transport.rs", // TCP 数据面（活，主文件；正按 include! 分册中）
+        "src-tauri/src/network/transport/outbound.rs", // 分册：出站投递 + 链路选路（同模块，非新领域）
+        "src-tauri/src/network/transport/gossip.rs", // 分册：Gossip 消费判据与 handle_gossip（同模块）
+        "src-tauri/src/network/dispatch.rs", // 三优先级调度 + BLE yield + 发送状态定义（新建，2026-09）
         "src-tauri/src/transport", // 新栈（部分接线）
       ],
       invariants: ["INV-P20", "INV-P22", "INV-P23"],
@@ -231,7 +241,7 @@ export default {
         "platform", // transport/ble_android.rs 用 jni_method::kotlin_method
       ],
       notes:
-        "⚠️ **两个同名 transport.rs**：network/transport.rs（8836 行，活）与 transport/{mod,tcp}.rs（新栈）。「传输」这一个关注点今天有**三个家**：TCP 数据面走 network/、BLE 数据面走 transport/bluetooth.rs::driver + 三个外设模块、控制面（开关/状态/分流）走 transport/mod.rs。这是「改完这个 bug 又冒那个」的结构性来源，逐条证据见 docs/migration-ledger.md。BLE 载荷预算已收敛为单一事实来源（INV-P23，Phase 3/4）。",
+        "⚠️ **两个同名 transport.rs**：network/transport.rs（活；主文件 + include! 分册合计约 1 万行）与 transport/{mod,tcp}.rs（新栈）。「传输」这一个关注点今天有**三个家**：TCP 数据面走 network/、BLE 数据面走 transport/bluetooth.rs::driver + 三个外设模块、控制面（开关/状态/分流）走 transport/mod.rs。这是「改完这个 bug 又冒那个」的结构性来源，逐条证据见 docs/migration-ledger.md。BLE 载荷预算已收敛为单一事实来源（INV-P23，Phase 3/4）。",
     },
 
     // -------------------------------------------------------------------------
@@ -267,12 +277,13 @@ export default {
       name: "持久化",
       tier: "L3",
       paths: [
-        "src-tauri/src/db.rs", // 3679 行 / 196 个函数，被 13 个文件引用
+        "src-tauri/src/db.rs", // 438 行 / Schema + 16 include!
+        "src-tauri/src/db", // 16 个子模块：settings / clocks / friends / messages / conversations / offline_queue / file_transfer / favorites(含 tests) / ...
         "src-tauri/src/schema.sql",
         "src-tauri/src/export.rs", // 聊天记录导出（磁盘满 / 迁机时的自救）
       ],
       invariants: ["INV-P05", "INV-P14", "INV-008"],
-      activeHome: "src-tauri/src/db.rs",
+      activeHome: "src-tauri/src/db", // 16 个子模块（include! 物理拆分）
       enforce: false,
       consumes: [], // 叶子域：db.rs / export.rs / schema.sql 在生产代码内只被装配层 use(state/commands),对其他领域无生产代码引用；tests 内 use protocol 已被 check-domain-deps.mjs 排除
       notes:

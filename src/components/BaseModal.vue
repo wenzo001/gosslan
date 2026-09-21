@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { Dialog, DialogPanel, DialogTitle, TransitionChild, TransitionRoot } from "@headlessui/vue";
+import { X } from "lucide-vue-next";
 import { useBackLayer } from "@/composables/useBackLayer";
+import BackArrow from "@/components/ui/BackArrow.vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { t } from "@/i18n";
 
@@ -45,9 +47,29 @@ useBackLayer(
 </script>
 
 <template>
+  <!-- ⚠️ z 序是本组件最容易改坏的一处：HeadlessUI 的 `Dialog` 会把自己挂到
+       **`<body>` 下的 `#headlessui-portal-root`**（不是留在调用者的子树里，实测确认）。
+       也就是说弹窗的 z-index 是在**文档根层级**上与别的浮层比大小 —— 而移动端的整页下钻页
+       （设置 / 日志 / 收藏 / 链接 / 资料）是 `MobilePageFrame` 的 `fixed inset-0 z-[60]`。
+       原先这里写 `z-50`：弹窗虽然挂进了 DOM，却被 z-[60] 的整页框架**盖在后面**，
+       用户看到的就是"点了没反应、连弹窗都没出来"（用户 2026-09-21，移动端设置 → 重置与数据）。
+       桌面端没有 z-[60] 的整页框架，所以只有移动端复现。
+
+       `z-[65]` 是重新选的位置。应用现有阶梯：
+         整页框架 `z-[60]` < **弹窗 `z-[65]`** < 右键菜单 `z-[70]`
+         < 操作面板 / 图片预览 `z-[80]` < Toast `z-[90]`
+       即：盖住一切页面（含移动端那些整页下钻页），但不挡右键菜单、弹层里的图片预览，
+       也不挡 toast（失败提示必须能盖在弹窗上）。改这个值前先看这条阶梯。
+
+       `font-gosslan` 同理：弹窗挂在 portal root（应用根节点**之外**），拿不到根节点上的字体，
+       用户选的字体对弹窗不生效 —— 带上这个类才与界面其余部分一致。
+       主题色/暗色不受影响（那是 `:root`/`.dark` 上的 CSS 变量，本来就能继承）。 -->
   <TransitionRoot :show="open" as="template">
-    <Dialog as="div" class="relative z-50" @close="emit('close')">
+    <Dialog as="div" class="relative z-[65] font-gosslan" @close="emit('close')">
+      <!-- 整页形态不画遮罩：整页面板本身不透明，遮罩只会在滑入的过程里
+           给「上一页」糊一层黑（观感成了 modal，而不是页面推进）。卡片形态才需要遮罩。 -->
       <TransitionChild
+        v-if="!fullscreen"
         as="template"
         enter="duration-200 ease-out"
         enter-from="opacity-0"
@@ -56,10 +78,10 @@ useBackLayer(
         leave-from="opacity-100"
         leave-to="opacity-0"
       >
-        <div class="glass fixed inset-0 bg-black/40" aria-hidden="true" />
+        <div class="glass fixed inset-0 bg-[var(--gosslan-overlay)]" aria-hidden="true" />
       </TransitionChild>
       <div
-        class="fixed inset-0 overflow-y-auto"
+        class="fixed inset-0 overflow-y-auto overflow-x-hidden"
         :style="app.isMobile && app.keyboardInset > 0
           ? { paddingBottom: `${app.keyboardInset + 12}px` }
           : undefined"
@@ -73,15 +95,22 @@ useBackLayer(
                卡片形态：保持原有的居中卡片。
                ⚠️ 这条注释**必须在 `<TransitionChild>` 之外**：dev 构建会保留 HTML 注释，
                而 `as="template"` 的插槽里多出一个注释节点就会让 Headless UI 抛
-               "Passing props on template!"（Vue 渲染直接炸 ⇒ 整个窗口卡死）。 -->
+               "Passing props on template!"（Vue 渲染直接炸 ⇒ 整个窗口卡死）。
+               —— 整页形态按「一页」处理：与设置/日志/收藏等详情页**同一套 page-slide**
+               （从右滑入 / 滑出），而不是卡片的淡入缩放。否则同样是整页下钻，
+               群任务 / 搜索页的转场却和别的详情页不一样（用户 2026-09-20「群任务的转场好像不对」）。 -->
           <TransitionChild
             as="template"
-            enter="duration-200 ease-out"
-            enter-from="opacity-0 scale-95"
-            enter-to="opacity-100 scale-100"
-            leave="duration-150 ease-in"
-            leave-from="opacity-100 scale-100"
-            leave-to="opacity-0 scale-95"
+            :enter="fullscreen
+              ? 'transition-[transform,opacity] duration-[var(--gosslan-duration)] ease-[var(--gosslan-ease)]'
+              : 'duration-200 ease-out'"
+            :enter-from="fullscreen ? 'translate-x-full opacity-40' : 'opacity-0 scale-95'"
+            :enter-to="fullscreen ? 'translate-x-0 opacity-100' : 'opacity-100 scale-100'"
+            :leave="fullscreen
+              ? 'transition-[transform,opacity] duration-[var(--gosslan-duration)] ease-[var(--gosslan-ease)]'
+              : 'duration-150 ease-in'"
+            :leave-from="fullscreen ? 'translate-x-0 opacity-100' : 'opacity-100 scale-100'"
+            :leave-to="fullscreen ? 'translate-x-full opacity-40' : 'opacity-0 scale-95'"
           >
             <DialogPanel
               v-if="fullscreen"
@@ -96,9 +125,7 @@ useBackLayer(
                   :title="t('common.back')" :aria-label="t('common.back')"
                   @click="emit('close')"
                 >
-                  <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="1.9">
-                    <path d="m15 18-6-6 6-6" />
-                  </svg>
+                  <BackArrow />
                 </button>
                 <DialogTitle v-if="title" as="h2" class="text-[15px] font-medium">{{ title }}</DialogTitle>
               </header>
@@ -111,9 +138,18 @@ useBackLayer(
               class="elevated w-full rounded-[var(--gosslan-radius-xl)] bg-[var(--gosslan-panel)] p-5 text-left align-middle text-[var(--gosslan-text)]"
               :class="width"
             >
-              <DialogTitle v-if="title" as="h3" class="text-base font-semibold mb-4">
-                {{ title }}
-              </DialogTitle>
+              <div v-if="title" class="mb-4 flex items-start justify-between gap-3">
+                <DialogTitle as="h3" class="text-base font-semibold leading-6">
+                  {{ title }}
+                </DialogTitle>
+                <button
+                  class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]"
+                  :title="t('common.close')" :aria-label="t('common.close')"
+                  @click="emit('close')"
+                >
+                  <X class="h-4 w-4" />
+                </button>
+              </div>
               <slot />
             </DialogPanel>
           </TransitionChild>

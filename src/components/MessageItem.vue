@@ -9,7 +9,7 @@ import { useMessageDisplay } from "@/composables/useMessageDisplay";
 import { useMessageFile } from "@/composables/useMessageFile";
 import { useMemberProfile } from "@/composables/useMemberProfile";
 import { textNeedsClamp } from "@/utils/previewMetrics";
-import { isTipKind } from "@/utils/messageKinds";
+import { isKnownKind, isMultiSelectable, isTipKind, UNSUPPORTED_KIND_LABEL } from "@/utils/messageKinds";
 import { isSelfMessage } from "@/utils/selfChat";
 import { stripQuoteMsgId } from "@/utils/quote";
 import { isDialogCancelled, saveDestinationOf } from "@/utils/saveDestination";
@@ -27,6 +27,7 @@ import MessageReactionBar from "@/components/message/MessageReactionBar.vue";
 import type { ReactionChip } from "@/utils/reactions";
 import MessageContentModal from "@/components/message/MessageContentModal.vue";
 import TodoCardBubble from "@/components/TodoCardBubble.vue";
+import UnsupportedKindBubble from "@/components/message/UnsupportedKindBubble.vue";
 import MessageContextMenu from "@/components/message/MessageContextMenu.vue";
 import ActionSheet from "@/components/ActionSheet.vue";
 import { Check, Copy, CornerUpLeft, ImageOff, ListChecks, Pin, Save, Share2, Star, TextSelect, Undo2 } from "lucide-vue-next";
@@ -507,6 +508,8 @@ function quoteSnippet(kind: MsgKind, content: string): string {
   if (kind === "file") return t("msg.file");
   // 合并转发：引用它是"引用一张聊天记录卡片"，正文是 JSON，不能截进引用块
   if (kind === "merge") return t("merge.title");
+  // 本机不认识的 kind（对端版本更新）：载荷通常是 JSON，截进引用块等于把 JSON 露出来
+  if (!isKnownKind(kind)) return UNSUPPORTED_KIND_LABEL;
   const oneLine = content.replace(/\s+/g, " ").trim();
   return oneLine.length > 40 ? `${oneLine.slice(0, 40)}…` : oneLine;
 }
@@ -701,10 +704,6 @@ async function copyFileToClipboard() {
        悬停揭示必须挂在这一层，否则 group-hover/msg 永远不触发（那个组名以前根本不存在）。 -->
   <div
     class="group/msg relative py-1.5"
-    :class="[
-      highlighted ? 'rounded-[var(--gosslan-radius-md)] bg-primary/5 ring-1 ring-primary/25' : '',
-      selectMode && selected ? 'rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-hover)]' : '',
-    ]"
   >
     <!-- 多选态：透明覆盖层 + 左侧勾选框，两者都**绝对定位**，不进 flex 流。
          为什么必须这样：气泡宽度是 `max-w-[72%]`，勾选框若作为 flex 兄弟插进来会挤窄气泡、
@@ -712,29 +711,29 @@ async function copyFileToClipboard() {
          ⇒ 相邻消息互相遮挡（`messageHeight` 文件头专门写过这个坑）。
          覆盖层的第二个作用：多选时气泡里的链接/图片/引用点击都不该响应，它一并吃掉。
          提示行（系统消息/已撤回）不可选，所以 `!isTip`。 -->
-    <template v-if="selectMode && !isTip">
+    <template v-if="selectMode && !isTip && isMultiSelectable(message.kind)">
       <button
         class="absolute inset-0 z-10"
         :aria-label="selected ? t('multi.deselect') : t('multi.select')"
         :aria-pressed="selected"
         @click="emit('toggle-select')"
       ></button>
-      <!-- 勾选框（微信款）：20px 圆、未选 1px 细边、选中实底 + 粗白勾。
-           刻意**不用** border-2：2px 的环在 18px 的圆里内孔只剩 14px，深色下是一圈
+      <!-- 勾选框（微信款）：18px 圆、未选 1px 细边、选中实底 + 细白勾。
+           为什么不用 border-2：2px 的环在 16-18px 的圆里内孔只剩 12-14px，深色下是一圈
            又重又闷的「O」（用户 2026-09-17 反馈"太丑"）。微信的勾选圈之所以轻，
            靠的就是 1px 边 + 选中瞬间整个圆变实底，而不是靠加粗描边。
-           填充色用 bg-primary（正牌 token）—— 之前写的 --gosslan-accent **并不存在**，
+           填充色用 bg-[var(--gosslan-primary)]（正牌 token）—— 之前写的 --gosslan-accent **并不存在**，
            var() 解析失败会让整条声明被丢弃（选中态变成无色圆 + 看不见的白勾）。
            位置**在左侧**（微信一比一：微信多选的勾选圈就在消息左侧的边槽里）。
            左边距 8px（`left-2`）：自己的消息那一行左边是空的，圈贴着面板边缘会显得局促。
-           别人的行则由右侧的行内边距把头像整排让开（见下面 `pl-10`），圈独占一条干净边槽。 -->
+           别人的行则由右侧的行内边距把头像整排让开（见下面 `pl-9`），圈独占一条干净边槽。 -->
       <span
-        class="pointer-events-none absolute left-2 top-1/2 z-20 flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded-full border transition"
+        class="pointer-events-none absolute left-2 top-1/2 z-20 flex h-[18px] w-[18px] -translate-y-1/2 items-center justify-center rounded-full border transition"
         :class="selected
-          ? 'border-primary bg-primary'
+          ? 'border-primary bg-[var(--gosslan-primary)]'
           : 'border-[var(--gosslan-border)] bg-[var(--gosslan-panel)]'"
       >
-        <Check v-if="selected" class="h-3 w-3 text-white" :stroke-width="3" aria-hidden="true" />
+        <Check v-if="selected" class="h-2.5 w-2.5 text-white" :stroke-width="2.5" aria-hidden="true" />
       </span>
     </template>
     <!-- 时间分割线（间隔 ≥ 5 分钟）：居中浅灰小字 -->
@@ -744,9 +743,9 @@ async function copyFileToClipboard() {
 
     <!-- 未读分割线（打开会话时定位的第一条未读上方） -->
     <div v-if="showUnreadDivider" class="my-1.5 flex items-center gap-2 px-3">
-      <div class="h-px flex-1 bg-primary/30"></div>
-      <span class="rounded-full bg-primary-light px-2 py-0.5 text-[11px] text-[var(--gosslan-accent-ink)]">{{ t("msg.unreadDivider") }}</span>
-      <div class="h-px flex-1 bg-primary/30"></div>
+      <div class="h-px flex-1 bg-[var(--gosslan-primary-soft)]"></div>
+      <span class="rounded-full bg-[var(--gosslan-primary-light)] px-2 py-0.5 text-[11px] text-[var(--gosslan-accent-ink)]">{{ t("msg.unreadDivider") }}</span>
+      <div class="h-px flex-1 bg-[var(--gosslan-primary-soft)]"></div>
     </div>
 
     <!-- 提示行（系统消息 / 已撤回）：微信式居中灰字，**通栏**、无头像、无气泡。
@@ -763,14 +762,33 @@ async function copyFileToClipboard() {
     <!-- 多选态给左侧勾选圈让出边槽：**只有"别人的"那一行**需要整排右移。
          自己的行头像在右侧、气泡是右对齐的，左移不动它 —— 加了这个内边距只会白白挤窄
          自己的气泡（多一圈折行），换不来任何观感收益。
-         别人的行 `pl-10`(40px) = 圈 left-2(8) + 圆 20 + 间隙 12，头像正好从圈右侧干净地起排。
+         别人的行 `pl-9`(36px) = 圈 left-2(8) + 圆 18 + 间隙 10，头像正好从圈右侧干净地起排。
          ⚠️ 这里只动横向内边距：高度估算用的 `COLUMNS_PER_LINE` 是**常量**、不随宽度变，
          所以不会破坏 VirtualList 的估算（横向挪动与"相邻消息互相遮挡"那个坑无关）。 -->
     <div
       v-else
-      class="flex gap-2 px-4"
-      :class="[mine ? 'flex-row-reverse' : '', selectMode && !mine ? 'pl-10' : '']"
+      class="relative flex gap-2 rounded-[var(--gosslan-radius-md)] px-4 transition"
+      :class="[
+        mine ? 'flex-row-reverse' : '',
+        selectMode && !mine ? 'pl-9' : '',
+        selectMode && selected ? 'bg-[var(--gosslan-hover)]' : '',
+      ]"
     >
+      <!-- 定位高亮（搜索命中 / 引用跳转）画在**左右内缩的装饰层**上，不参与布局。
+           用户 2026-09-21：「消息被选中的时候（消息定位）的选择框为啥左右没边距」——
+           直接把 bg/ring 画在这一行上，框就顶到面板的最左/最右（面板本身没有横向留白）；
+           而把 `px-4` 改成 `mx-2 px-2` 又会连带挪动头像/气泡，多选态那个 `pl-9`(36px)
+           还会额外叠加 8px 边距 ⇒ 头像位置跟着变。
+           所以用一层 `absolute inset-y-0 left-2 right-2` 的纯装饰层（`pointer-events-none`），
+           内容照旧排在它上面；气泡自带底色，露出来的正好是"带左右边距的框"。
+           层**常驻**并带 `transition`：淡入淡出靠它，不要改成 v-if（那样没有过渡）。 -->
+      <div
+        class="pointer-events-none absolute inset-y-0 left-2 right-2 rounded-[var(--gosslan-radius-md)] ring-1 transition"
+        :class="highlighted
+          ? 'bg-[var(--gosslan-primary-light)] ring-[var(--gosslan-primary-ring)]'
+          : 'bg-transparent ring-transparent'"
+        aria-hidden="true"
+      ></div>
       <!-- 头像：每条消息独立完整渲染 -->
       <MessageAvatar :name="avatarName" :avatar="avatarSrc" />
 
@@ -818,6 +836,7 @@ async function copyFileToClipboard() {
             v-if="message.kind === 'text'"
             :content="message.content"
             :bubble-style="bubbleStyle"
+            :card-style="cardStyle"
             :clamped="isLongText"
             :copied="copiedKey === 'text'"
             :mine="mine"
@@ -849,7 +868,7 @@ async function copyFileToClipboard() {
           <button
             v-else-if="message.kind === 'image' && attachmentMissing"
             type="button"
-            class="flex h-32 w-52 cursor-pointer flex-col items-center justify-center gap-1 rounded-[var(--gosslan-bubble-radius)] bg-black/5 text-[11px] text-[var(--gosslan-text-2)] transition hover:bg-black/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary dark:bg-white/5 dark:hover:bg-white/10"
+            class="flex h-32 w-52 cursor-pointer flex-col items-center justify-center gap-1 rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-hover)] text-[11px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-pressed)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary "
             @click="refetchContent"
           >
             <ImageOff class="h-6 w-6 opacity-50" />
@@ -899,6 +918,7 @@ async function copyFileToClipboard() {
           <MergeCard
             v-else-if="message.kind === 'merge'"
             :content="message.content"
+            :card-style="cardStyle"
             :mine="mine"
             @open="emit('open-merge', { content: message.content, senderId: message.sender_id })"
           />
@@ -907,13 +927,25 @@ async function copyFileToClipboard() {
           <TodoCardBubble
             v-else-if="message.kind === 'todo'"
             :message="message"
+            :card-style="cardStyle"
             :mine="mine"
             @open="emit('open-tasks')"
           />
 
-          <!-- 未知 kind 的兜底气泡：排版必须与 MessageTextBubble 一致（py-1.5 / leading-normal），
+          <!-- 本机不认识的 kind（= 对端 Gosslan 比本机新）：给可解释的占位，
+               绝不把载荷原文甩上屏（INV-P24 第 2 条）。判据只能走 isKnownKind ——
+               `kindClass` 对未知值也返回 bubble，用它判会永远不进这个分支。 -->
+          <UnsupportedKindBubble
+            v-else-if="!isKnownKind(message.kind)"
+            :kind="message.kind"
+            :content="message.content"
+            :bubble-style="bubbleStyle"
+          />
+
+          <!-- 已知但没有专门渲染分支的 kind：按纯文本兜底。
+               排版必须与 MessageTextBubble 一致（py-1.5 / leading-normal），
                否则虚拟列表按 `previewMetrics.TEXT_BUBBLE_PADDING` 估的高度会对不上。 -->
-          <div v-else class="select-text px-3 py-1.5 text-sm leading-normal" :style="bubbleStyle">
+          <div v-else class="select-text px-3 py-1.5 text-sm leading-normal break-all" :style="bubbleStyle">
             {{ message.content }}
           </div>
         </div>
@@ -944,7 +976,7 @@ async function copyFileToClipboard() {
         {{ t("common.cancel") }}
       </button>
       <button
-        class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-2 text-sm text-white transition hover:opacity-90"
+        class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-2 text-sm text-white transition hover:bg-[var(--gosslan-danger-hover)]"
         @click="confirmRecall"
       >
         {{ t("common.confirm") }}
@@ -1091,8 +1123,10 @@ async function copyFileToClipboard() {
         <Star class="h-5 w-5 text-[var(--gosslan-text-2)]" />
         {{ t("favorite.add") }}
       </button>
-      <!-- 多选：移动端同样要有入口（桌面右键菜单是另一套模板） -->
+      <!-- 多选：移动端同样要有入口（桌面右键菜单是另一套模板）。
+           待办卡片不给（见 isMultiSelectable）。 -->
       <button
+        v-if="isMultiSelectable(message.kind)"
         class="flex items-center gap-3 border-t border-[var(--gosslan-divider)] px-4 py-3 text-left text-[15px] text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
         @click="doMultiSelect"
       >

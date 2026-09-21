@@ -1,7 +1,9 @@
 <script setup lang="ts">
+import { computed } from "vue";
 import { useAppStore, type AppearanceMode } from "@/stores/useAppStore";
 import SettingsGroup from "@/components/settings/SettingsGroup.vue";
 import SettingsRow from "@/components/settings/SettingsRow.vue";
+import SegmentedControl from "@/components/ui/SegmentedControl.vue";
 import { t } from "@/i18n";
 
 const app = useAppStore();
@@ -24,39 +26,30 @@ const fonts = [
  * （见 2026-09-10 Apple HIG 审计 P0-2）。改为显式三选一，默认跟随系统。
  * 导航栏的太阳/月亮按钮仍保留为快捷开关（它总是切成显式的浅/深）。
  */
-const appearanceOptions: { value: AppearanceMode; label: string }[] = [
-  { value: "system", label: "settings.appearance.system" },
-  { value: "light", label: "settings.appearance.light" },
-  { value: "dark", label: "settings.appearance.dark" },
-];
+const appearanceOptions = computed(() => [
+  { value: "system", label: t("settings.appearance.system") },
+  { value: "light", label: t("settings.appearance.light") },
+  { value: "dark", label: t("settings.appearance.dark") },
+]);
 </script>
 
 <template>
-  <SettingsGroup :title="t('settings.group.appearance')">
+  <!-- 组标题用**条目名**「外观」而不是分组名「外观与通知」（`settings.group.appearance`）：
+       本分区只有外观（显示模式 / 主题色 / 字体），通知在另一个分区里（`NotificationSection`）。
+       桌面端导航项也读同一个键 ⇒ 「标签 = 内容」（settingsStructure 守卫钉住）。
+       用户 2026-09-21：「桌面版的外观和通知里只有外观啊，为啥叫外观和通知」。 -->
+  <SettingsGroup :title="t('settings.item.appearance')">
     <SettingsRow
       :label="t('settings.appearance.mode')"
       :description="t('settings.appearance.mode.desc')"
     >
-      <!-- 分段控件：外圆角 md(8) + p-0.5(2) → 内圆角取 sm(6)，符合同心公式（design-guidelines §1.3） -->
-      <div
-        role="radiogroup"
+      <SegmentedControl
+        :model-value="app.appearance"
+        :options="appearanceOptions"
+        size="sm"
         :aria-label="t('settings.appearance.mode.aria')"
-        class="flex items-center gap-0.5 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] p-0.5"
-      >
-        <button
-          v-for="m in appearanceOptions"
-          :key="m.value"
-          role="radio"
-          :aria-checked="app.appearance === m.value"
-          class="rounded-[var(--gosslan-radius-sm)] px-2.5 py-1 text-xs transition"
-          :class="app.appearance === m.value
-            ? 'bg-[var(--gosslan-panel)] font-medium text-[var(--gosslan-accent-ink)]'
-            : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
-          @click="app.setAppearance(m.value)"
-        >
-          {{ t(m.label) }}
-        </button>
-      </div>
+        @update:model-value="(v) => app.setAppearance(v as AppearanceMode)"
+      />
     </SettingsRow>
 
     <SettingsRow

@@ -21,8 +21,9 @@ import { computed, ref, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { useClipboard } from "@/composables/useClipboard";
-import { ArrowLeft, Copy, MessageCircle, UserMinus } from "lucide-vue-next";
+import { Copy, MessageCircle, UserMinus } from "lucide-vue-next";
 import BaseModal from "@/components/BaseModal.vue";
+import BackArrow from "@/components/ui/BackArrow.vue";
 import { avatarInitial, avatarInitialLen, nameToColor } from "@/utils/color";
 import type { Friend } from "@/types";
 
@@ -126,7 +127,7 @@ const confirmRemove = ref(false);
         :title="t('common.back')" :aria-label="t('common.back')"
         @click="app.mobileView = 'list'"
       >
-        <ArrowLeft class="h-5 w-5" />
+        <BackArrow />
       </button>
       <span class="truncate text-[15px] font-medium" :title="friend.nickname">{{ friend.nickname }}</span>
     </div>
@@ -160,9 +161,10 @@ const confirmRemove = ref(false);
                 ></span>
                 {{ friend.online ? t("common.online") : t("common.offline") }}
               </span>
-              <!-- 发消息按钮：primary，跟在昵称后面，一抬头就能点 -->
+              <!-- 发消息按钮：primary，跟在昵称后面，一抬头就能点；
+                   shrink-0 whitespace-nowrap：长昵称时不被挤得换行（移动端窄屏最容易撞此问题）。 -->
               <button
-                class="tap-safe ml-auto inline-flex h-7 items-center gap-1 rounded-full bg-primary px-3 text-[12px] font-medium text-white transition hover:bg-primary-hover"
+                class="tap-safe ml-auto inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-primary px-3 text-[12px] font-medium text-white transition hover:bg-primary-hover"
                 @click="emit('send-message', friend.device_id)"
               >
                 <MessageCircle class="h-3.5 w-3.5" />
@@ -215,6 +217,24 @@ const confirmRemove = ref(false);
               <span class="shrink-0 text-[var(--gosslan-text-2)]">{{ t("friend.profile.deviceType") }}</span>
               <span>{{ t(deviceTypeKey(friend.device_type)) }}</span>
             </div>
+            <!-- 版本行：只在"知道点什么"时出现。老实例（两个字段都没报）整行不显示 ——
+                 不猜版本、也不用"未知"占位糊一面墙。 -->
+            <template v-if="friend.peer_app_version || friend.peer_version_newer">
+              <div class="h-px bg-[var(--gosslan-divider)]"></div>
+              <div class="flex items-start justify-between gap-4 px-4 py-2.5 text-sm">
+                <span class="shrink-0 text-[var(--gosslan-text-2)]">{{ t("friend.profile.version") }}</span>
+                <span class="text-right">
+                  <span>{{ friend.peer_app_version || t("friend.profile.versionUnknown") }}</span>
+                  <!-- 这才是 INV-P24 要的"可解释状态"：说清差异、说清该升级哪一台 -->
+                  <span
+                    v-if="friend.peer_version_newer"
+                    class="mt-0.5 block text-xs text-[var(--gosslan-warning-ink)]"
+                  >
+                    {{ t("friend.profile.versionNewerHint") }}
+                  </span>
+                </span>
+              </div>
+            </template>
             <template v-if="addressLine">
               <div class="h-px bg-[var(--gosslan-divider)]"></div>
               <div class="flex items-center justify-between gap-4 px-4 py-2.5 text-sm">
@@ -270,7 +290,7 @@ const confirmRemove = ref(false);
             @click="confirmRemove = false"
           >{{ t("common.cancel") }}</button>
           <button
-            class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-1.5 text-sm text-white transition hover:bg-[var(--gosslan-danger)]"
+            class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-1.5 text-sm text-white transition hover:bg-[var(--gosslan-danger-hover)]"
             @click="confirmRemove = false; emit('remove', friend)"
           >{{ t("common.delete") }}</button>
         </div>
