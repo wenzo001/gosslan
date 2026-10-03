@@ -491,6 +491,13 @@ export const zhCN: MessageDict = {
   "msg.recallFail": "撤回失败",
   "msg.cancelSend": "取消发送",
   "msg.canceled": "已取消发送",
+  // 取消发送的三条结果提示。此前 MessageItem.vue 的 doCancelSend 把它们硬编码成中文，
+  // 英文界面下会看到中文 toast —— 而同一函数里 @cancel 的入口文案走了 t()，自相矛盾。
+  // 不复用 `msg.canceled`：那条是"已取消发送"（onFileCancelled 的事件提示），
+  // 而这三条讲的是"用户点了取消之后发生了什么"，语义不同、语气也不同。
+  "msg.cancelSend.requested": "已请求取消发送",
+  "msg.cancelSend.alreadyEnded": "标记为已取消（传输可能已结束）",
+  "msg.cancelSend.fail": "取消发送失败",
   "msg.reactionAdd": "回应 {emoji}",
   "msg.reactionToggle": "切换回应 {emoji}",
   "msg.reactionWho": "{n} 人回应",
@@ -1498,6 +1505,9 @@ export const enUS: MessageDict = {
   "msg.read": "Read",
   "msg.cancelSend": "Cancel send",
   "msg.canceled": "Send canceled",
+  "msg.cancelSend.requested": "Cancellation requested",
+  "msg.cancelSend.alreadyEnded": "Marked as canceled (the transfer may have already finished)",
+  "msg.cancelSend.fail": "Failed to cancel sending",
   "msg.openLinkFail": "Failed to open link",
   "msg.forwardTo": "Forward To",
   "msg.searchConversation": "Search conversations",

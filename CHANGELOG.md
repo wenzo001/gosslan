@@ -10,6 +10,51 @@
 
 ## [Unreleased]
 
+## [4.32.9] - 2026-10-03
+
+### fix(send): 重发不再产生第二条气泡 —— 旧 failed 气泡原地复用
+
+- **缺陷**：`MessageItem.vue::retrySend` 走 `chat.send(...)`，而 `send()` 每次都新建一条
+  `msg_id = tmp-${Date.now()}-…` 的乐观记录并 `enqueueMessage`。于是列表里同时留着
+  「发送失败的原文」与「重发中的原文」两条，而**失败那条永远不会被删**：
+  全库没有任何删除类函数（`messages.ts` 导出的 19 个里没有 remove/delete/purge），
+  且 `appendLocalOnly` 把 `tmp-*` 视为"只存在于内存"，每次 `loadMessages` 都会把它
+  **重新追加**到快照尾部 ⇒ 用户点一次「重发」看到两条一样的文字，切会话重开也一样。
+- **修法**：`send()` 新增可选 `retryOfMsgId`。传它就**不再新建乐观记录**，而是按
+  `msg_id` 找到那条 failed 气泡、原地转回 `sending`，成功后 `replaceMessage(convId,
+  retryOfMsgId, …)` 替换**同一条**；再失败则退回 `failed`。找不到那条（切了会话/
+  已被快照吞掉）时**退回新建** —— 宁可多一条也不静默丢消息。
+- ★ **为什么不能字面"复用同一 msg_id"**（INV-001 的另一半在本项目做不到）：
+  后端 msg_id = `SHA-256(sender_id + nonce + payload)`（`protocol.rs::compute_message_id`），
+  nonce 每条新消息都不同 ⇒ 重发**必然**是新 msg_id；且 `send_message` 的签名只有
+  `(friend_id, content, kind)`，**没有 msg_id 参数**可传。所以 INV-001 的"重试复用同一
+  msg_id"在本项目落在**接收侧幂等**（`message_exists` 按 msg_id 去重），前端这一侧
+  只能做成"旧气泡原地复用"—— 逻辑消息在界面上仍是同一条。
+- 顺带把单聊/群聊的 invoke 分流抽成 `sendToBackend`（重发与首次发送共用），
+  避免两条路径各写一份 `startsWith("group:")` 分流。
+- **撞上一条既有守卫并正面处理**：`storeContract.test.ts` 的 #82 形状守卫
+  （"返回 MessageRecord 的命令，调用点必须 enqueueMessage"）在 `sendToBackend` 上变红。
+  它不是漏 enqueue —— 记录去哪儿**由调用方决定**（新建 vs 重发两条路径不同），
+  转发层擅自 enqueue 反而会把重发路径那条旧气泡顶掉。为此给该守卫加了
+  **带理由的白名单**，并配两条自证：① 白名单里的函数必须**真的存在且仍在调**返回记录的
+  命令（否则函数改名后豁免会静默留着，"看起来有豁免、实际不豁免任何东西"）；
+  ② 白名单**上限 3 条**（膨胀到一半说明它被当成万能洞用，该问"能不能不抽这一层"）。
+  两条自证都做过非空转（指向不存在函数 / 塞满 4 条 ⇒ 都变红）。
+- 判据 `src/utils/retrySend.test.ts`（5 条，含形状断言与后端前提对账），
+  **两种非空转都验过**：把 `retrySend` 退回不传 msg_id ⇒ 红；整个重发分支删掉 ⇒ 3 条红。
+  其中一条钉住后端"msg_id 不可由客户端指定"这个前提 —— 哪天 `send_message` 加了可选
+  `msg_id`，前端就该改成真复用，本文件的推理与注释都要重写。
+
+### fix(i18n): 取消发送的三条结果提示不再硬编码中文
+
+- `MessageItem.vue::doCancelSend` 的三条用户可见文案（"已请求取消发送" /
+  "标记为已取消（传输可能已结束）" / 错误前缀）全是中文字面量 ⇒ 英文界面下显示中文 toast。
+  同一函数里 `@cancel` 的入口文案走了 `t()`，自相矛盾。
+- 补 `msg.cancelSend.requested` / `.alreadyEnded` / `.fail` 中英各一条。
+  **不复用**已有的 `msg.canceled`：那条是"已取消发送"（`onFileCancelled` 的事件提示），
+  而这三条讲的是"用户点了取消之后发生了什么"，语义与语气都不同。
+- 全仓复查：`app.toast(...)` / `toastError(...)` 已无硬编码中文。
+
 ## [4.32.8] - 2026-10-03
 
 ### refactor(store): 在线判定收成唯一一份实现（`utils/friendOnline.ts`）
