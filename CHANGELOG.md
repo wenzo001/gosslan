@@ -10,6 +10,43 @@
 
 ## [Unreleased]
 
+## [4.32.8] - 2026-10-03
+
+### refactor(store): 在线判定收成唯一一份实现（`utils/friendOnline.ts`）
+
+- `friends[].online` 的判定此前被抄成两份：`onPeers` 那条链带
+  「或持有活跃链路也算在线」，`searchNearbyPeers` 那份**漏了**。后者是"添加好友"弹窗
+  的探测路径（`commands/network.rs::search_nearby_peers`），漏了那层意味着一次
+  `who_has` 探测回来后，正在保持 TCP 链路的好友被判离线 ⇒ `ChatHeader` 的
+  `v-if="!isGroup && online && linkState"` 整块链路信息凭空消失。
+  同一份语义的两个家必然漂移（AI_RULES §32），现收进 `utils/friendOnline.ts`，
+  两个调用点共用。抽成纯函数而不是留在 store 私有函数里，是为了**能测** ——
+  藏在 store 里的口径护栏无从下手，这正是它漂了没人发现的原因。
+- 判据随实现一起搬家：`channelState.test.ts` 那条 2026-09-14 的用例（用户实测
+  "局域网都连上了，在线状态却不实时"）原先正则匹配 store 里那一行，代码搬走后会失效；
+  `scripts/verify-guards.py` 的**注入锚点**同步跟到新文件。
+  并加一条**调用点个数**断言（必须恰好 2 处调用）—— 否则将来任一路径改回自己算 online，
+  `linkedIds` 那层会被悄悄丢掉，而这正是本条判据当年钉住的缺陷。
+- ★ **顺带查清一件被误报的事**：`linkedIds` 那一层在当前后端数据形状下是**冗余**的。
+  `state.rs::emit_peers_now` 与 `commands/network.rs::fill_peer_links` 这两个填 `link`
+  的入口**都只给「已经在 peers 表里」的节点填**（都是先收 `peers`、再
+  `for p in peers.iter_mut()` 填），恒有 `linkedIds ⊆ onlineIds`，删掉行为不变。
+  审计报告的 F2（"`searchNearbyPeers` 漏 linkedIds ⇒ 好友被闪成离线"）**据此撤回**：
+  节点不在 peers 表里，后端根本不会给它 `link` 字段，前端拿到的 list 里不可能有它。
+  `state.rs:1770-1774` 那段注释描述的痛点是真的，但**不是前端能修的** ——
+  该修的是后端让 peers 表覆盖"有链路但广播没到"（或让 `fill_peer_links` 额外接受一组
+  待填 id），不在本次范围。**这一层仍然保留**：它无害，且后端哪天真的支持了表外节点带
+  link 就会自动生效；但推导过程写进了注释与新判据，避免下一个人误以为它在兜什么。
+- **非空转实测**（本仓铁律，两种都验过）：
+  ① 删掉 `|| linkedIds.has(...)` ⇒ `friendOnline.test.ts` 的形状断言与
+  `channelState.test.ts` 的用例**都**变红；
+  ② 把后端 `fill_peer_links` 改成不再只遍历 peers 表 ⇒ 钉着数据形状假设的那条判据变红。
+  ② 是必要的：它防的是"后端改了数据形状而前端注释/推导没跟上"。
+- 过程里踩了一次**判据自等于**并当场抓到：第一版新测试把设备同时放进了 list，
+  于是"看起来在测 linkedIds、实际 onlineIds 就够了"，删掉 linkedIds 层 6 条用例全绿。
+  改法是把那条改成**形状断言**并显式写明"删掉它行为不变，但它是 2026-09-14 那条判据
+  钉着的契约" —— 而不是留一条看起来在测、实际测不到东西的用例。
+
 ## [4.32.6] - 2026-10-03
 
 - ★ **「版本号同步几处」在文档里有三个不同的数，而实现是五处**（纯文档/注释口径修复，零应用码改动）：

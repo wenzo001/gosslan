@@ -44,6 +44,7 @@ import { invalidateFilePreview } from "@/utils/filePreview";
 import { t } from "@/i18n";
 import { shouldRunThrottled } from "@/utils/defer";
 import { mergePeerList } from "@/utils/peerMerge";
+import { markFriendsOnlineFrom } from "@/utils/friendOnline";
 import {
   onAction,
   registerActionTypes,
@@ -554,8 +555,7 @@ export const useChatStore = defineStore("chat", () => {
     if (!refreshGuard.isCurrent("peers", tok)) return peers.value;
     const merged = mergePeerList(peers.value, list);
     if (merged) peers.value = merged;
-    const onlineIds = new Set(list.map((x) => x.device_id));
-    friends.value.forEach((f) => (f.online = onlineIds.has(f.device_id)));
+    markFriendsOnlineFrom(friends.value, list);
     return peers.value;
   }
   async function refreshFriends() {
@@ -1933,14 +1933,7 @@ export const useChatStore = defineStore("chat", () => {
         // （消息行模板里的 nicknameOf 读的就是 peers）。没变就不写。
         const merged = mergePeerList(peers.value, p);
         if (merged) peers.value = merged;
-        const onlineIds = new Set(p.map((x) => x.device_id));
-        // 有活跃链路的节点即使在广播里缺席（局域网丢广播 / 刚被 sweep）也算在线，
-        // 与后端 get_friends 的 friend_is_online 口径一致 ——
-        // 否则会「局域网明明连上了，在线状态却不实时/显示离线」。
-        const linkedIds = new Set(p.filter((x) => x.link).map((x) => x.device_id));
-        friends.value.forEach(
-          (f) => (f.online = onlineIds.has(f.device_id) || linkedIds.has(f.device_id)),
-        );
+        markFriendsOnlineFrom(friends.value, p);
         // 同步好友/单聊会话的昵称/头像（对方改名后立即生效）
         syncProfileFromPeers(friends.value, conversations.value, p);
         // 拓扑（节点数/中继数/平均 RTT/在线）变化很慢，而 peers-updated 最多 3/s；
