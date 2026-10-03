@@ -10,6 +10,8 @@
 
 ## [Unreleased]
 
+## [4.32.6] - 2026-10-03
+
 - ★ **「版本号同步几处」在文档里有三个不同的数，而实现是五处**（纯文档/注释口径修复，零应用码改动）：
   `scripts/version.mjs` 头部注释写"三处"、`README.md` 与 `AI_PROJECT_HANDOFF.md` 各写"4 处"，而本文件开头的
   前言一直写的是五处 —— 第 4、5 步（`package-lock.json` / `Cargo.lock`）落地时只改了实现和本文件，
@@ -37,6 +39,61 @@
   里一个在讲"命令名断掉是响亮失败"、一个在记录往 VERSIONING 注入假脚本名的非空转实测），文档原文不改、
   也不给量具开白名单 —— 它本来就不是门禁步（#131 判过），而整份排除又会把它另外 15 个真引用的覆盖一起丢掉。
   契约图 `ARCHITECTURE-MAP.html` 一字未改：它的 130 与自数口径现读就是对的。
+
+### docs(ledger,tcp): 台账的失效引用与过期判定，注释的腐烂行号
+
+- `docs/migration-ledger.md` 5 处 `docs/domains.yml` → `docs/domains.data.mjs`、2 处 `active_home`
+  与 3 处 `second_home` → 驼峰 `activeHome`/`secondHome`。那个 `.yml` **从不存在**
+  （`.yml`→`.mjs` 是有意改名，工具链没有 YAML 解析器），而台账 §5「维护规则」是写给接手者的
+  **操作指令**：照着改会去打开一个不存在的文件、用错字段名，且 `check-domain-map.mjs` 读的是
+  `.data.mjs` ⇒ **门禁照亮绿灯**。
+- 9 条行数证据改成自指表述（`network/transport.rs` 声称 8836 实测 7086、`file_relay.rs` 声称 86
+  实测 504、`mesh/` 声称 10 文件 2432 行实测 11 文件 3276 行…）。行数在这份文件里是**论据**不是修辞：
+  §4 用"最大最活"把它排在收口顺序**最后一位**，这个优先级就建立在那个行数上；而 §1 又声明
+  "行数不是判据"，口径自相矛盾。统计段两处 `db::` 引用数（13 / 43）同样自相矛盾且都错（实测 12 / 56）。
+- §3「过期声明上报」第 1、2 条判定**作废**：源码 2026-09-16 就改成「已接线」了
+  （`transport/bluetooth.rs:44`、`transport/tcp.rs:12`），台账却一直挂着红牌，让下一个人重新调查
+  当天就解决完的事。
+- `src-tauri/src/transport/tcp.rs` 模块头两行「接线状态」表的 `file:line` 全部重钉到真符号：
+  帧原语在 `network/transport/outbound.rs:45,105`；`TcpReceiver`/`TcpSender` 在
+  `network/transport/relay.rs:392,393`。原写的 `network/transport.rs:57,62,69` 与
+  `:1231,1232,1529,1613,2368,2369` 逐个核对**全部指向无关代码**（`"transport"` / `format!(` /
+  `high_open` …）—— `network/transport.rs` 已目录化、数据面搬进了 `network/transport/*.rs`。
+  **之所以危险**：注释说"已接线"是对的、**行号是烂的**，这比"注释撒谎"更隐蔽 —— 顺行号核对的人会
+  看到无关代码，从而误判"注释在骗人"而把好的接线拆掉。这是本仓「待接线声明腐烂」族的第三次
+  （`ble_framing.rs` Phase 3、`transport/bluetooth.rs` Phase 5、此处），本次由 2026-09-16 那次核过、
+  到今天又烂掉亲自坐实。零行为变更（`src-tauri/` 侧 diff 过滤后为空）。
+- 验证：快速层 15 步全绿；`cargo fmt --check` exit 0；clippy 警告数 42，与改动前基线
+  （`git stash` 对比）逐条一致、零新增。
+
+### fix(i18n): 破坏性确认弹窗标题显示裸 key —— 补「t() 调用点必须命中词典」护栏
+
+- ★ **新护栏：`t()` 调用点引用的 key 必须在中英词典里命中**（`src/i18n/index.test.ts`）。
+  一次只读审计（2026-10-03）查出**破坏性确认弹窗的标题显示裸 key**：自动删除策略那个
+  `BaseModal` 写的是 `t('settings.storage.limit')`，而这个 key 中英两侧都不存在 ——
+  `t()` 的回落是 `dict.value[key] ?? key`（`i18n/index.ts:93`），于是用户点开"要永久删除历史
+  消息引用的图片/文件"的确认框，标题直接写着 `settings.storage.limit`。同文件正文用的
+  `settings.storage.confirm.body` 是存在的 ⇒ 漏了一条，不是有意为之。
+- **为什么已有两条字典护栏抓不到**：它们只查「中英 key 集合互相一致」和「值非空」，
+  对"调用点引用了不存在的 key"完全无感 ⇒ 假绿。新护栏扫全仓 `.vue`/`.ts` 的 `t("字面量")` 调用点。
+  两条设计取舍写进注释：① **只查字面量**（`t(\`prefix.${kind}\`)` 那类模板字符串由各自专项用例
+  钉住，如 relay.rs `as_str` ↔ TS 联合类型 ↔ 两种语言那条三向断言）；② **`.test.ts` 整个跳过**
+  （测试本来就要引用不存在的 key 来验回落，扫它们得到的红是假的 —— 假红会让人养成
+  "先加白名单再跑"的习惯，那比漏报更危险）。
+- 护栏上线当场抓到**另外两个真漏项**（都不是审计报告里列的，是护栏自己发现的）：
+  ① `BaseModal.vue:150` 用 `t('common.close')`（关闭按钮的 `title` + `aria-label`），词典里只有
+  `closeEsc` 没有 `close` ⇒ 关闭按钮的悬浮提示与**无障碍标签**两种语言下都是裸 key；
+  ② `utils/storeContract.test.ts:84` 期望真实代码用 `t('msg.fail')`，词典里也没有 ⇒ 错误提示显示裸 key。
+  三处都补齐（`common.close` 中英、`settings.storage.confirm.title` 中英），`common.close` 那条
+  顺带把"此前只写了 closeEsc"的原因记在旁边，免得下次又被当成多余条目删掉。
+- `settings.storage.limit` 改名为 `settings.storage.confirm.title`：调用点与词典一起改，跟同族
+  `settings.storage.confirm.body/.cap/.keepDays` 对齐 —— 原来的名字既不在词典里，也不跟任何兄弟条目同族。
+- **护栏的非空转实测**（本仓铁律：新护栏必须证明它不是空转）：删掉 `common.close` 的英文条目
+  ⇒ 两条判据同时变红；只删中文、保留英文 ⇒ 中英一致性那条与新护栏**都**变红且新护栏点名
+  `zh-CN 缺 common.close（src/components/BaseModal.vue）`。两种形态都验过，验证完已还原。
+  顺带确认了旧护栏的真实盲区：它抓"漏译"（一侧有一侧没有），抓不到"两侧都没有" ——
+  而后者才是这次事故的形状。
+- `scanned > 50` 自检：一条调用点都扫不到时判据直接失败（正则失配或目录搬迁会让护栏悄悄空转）。
 
 ## [4.32.0] - 2026-09-30
 
