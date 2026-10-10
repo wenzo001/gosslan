@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
 import { addressText, linkLabelKey, linkLabelParams } from "@/utils/peerConnectionInfo";
-import { computed, ref, watch } from "vue";
+import { computed, onUnmounted, ref, watch } from "vue";
 import { useDeferredRef } from "@/composables/useDeferredRef";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
@@ -9,7 +9,7 @@ import type { ChannelStatus, Peer } from "@/types";
 import { api } from "@/api";
 import SettingsToggle from "@/components/settings/SettingsToggle.vue";
 import BaseModal from "@/components/BaseModal.vue";
-import { avatarInitial, avatarInitialLen, nameToColor } from "@/utils/color";
+import { avatarSeedFor } from "@/utils/avatarSeed";
 import { Check, UserPlus, X } from "lucide-vue-next";
 
 const props = defineProps<{ open: boolean }>();
@@ -121,6 +121,15 @@ function peerAddress(p: Peer): string {
 }
 
 const channels = computed(() => app.channels ?? []);
+/**
+ * 跨网通道（VPN / 公网中转）状态：**不是发现通道**，开关与配置都在设置页。
+ * 这里只读后端快照里的可公开事实（端点数 / 中转开没开 / 通没通），用来在"什么都没发现"时
+ * 如实告诉用户"局域网/蓝牙之外还开着什么"，并说清它们只连通**已是好友**的人
+ * （公网首次加好友需经一位共同好友 —— 中转是哑管道，不为陌生人配对，见 ADR-0020 D4）。
+ */
+const routedCount = computed(() => app.runtime?.routedEndpoints ?? 0);
+const relay = computed(() => app.runtime?.relay ?? null);
+const hasCrossNet = computed(() => !!relay.value?.enabled || routedCount.value > 0);
 const channelBusy = ref<string | null>(null);
 
 /**
@@ -167,7 +176,13 @@ async function toggleChannel(ch: ChannelStatus, next: boolean) {
 const emptyReason = computed(() => {
   const lan = channels.value.find((c) => c.channel === "lan");
   const bt = channels.value.find((c) => c.channel === "bluetooth");
-  if (!lan?.enabled && !bt?.enabled) return t("friend.add.empty.noChannel");
+  if (!lan?.enabled && !bt?.enabled) {
+    // 两条**发现**通道都关了。若还有跨网通道在线，必须说清"它只连通已是好友的人"，
+    // 不能笼统说"通道都关了"——否则用户在中转场景下会以为"中转坏了搜不到人"（实为设计如此）。
+    return hasCrossNet.value
+      ? t("friend.add.empty.onlyCrossNet")
+      : t("friend.add.empty.noChannel");
+  }
   if (bt?.enabled) return t("friend.add.empty.bleScanning");
   return t("friend.add.empty.lanNoPeer");
 });
@@ -182,6 +197,14 @@ async function scan() {
     loading.value = false;
   }
 }
+
+// 模态框是 v-if 挂载的：关闭 = 卸载。不清这些定时器，"连点 20 个对端再关掉"就会留下
+// 20 个在飞的 3s 定时器往已销毁的 ref 上写（不是可见 bug，但这类"只登记不注销"
+// 正是审计阶段 4 · 4.2 数出来的那几个泄漏里最便宜的一类）。
+onUnmounted(() => {
+  for (const t of cooldownTimers.values()) window.clearTimeout(t);
+  cooldownTimers.clear();
+});
 
 watch(
   () => props.open,
@@ -205,10 +228,6 @@ watch(
   },
 );
 
-function initials(name: string) {
-  return avatarInitial(name);
-}
-
 /** 发送好友申请后的冷却期：同一节点 3 秒内置灰防连点（显示「完成」）。 */
 const SEND_COOLDOWN_MS = 3000;
 const cooldown = ref<Record<string, number>>({});
@@ -217,14 +236,22 @@ function inCooldown(peerId: string): boolean {
   return Date.now() - (cooldown.value[peerId] ?? 0) < SEND_COOLDOWN_MS;
 }
 
+/** 每个对端的冷却解除定时器：句柄必须存下来，卸载时统一清（见文件末尾）。 */
+const cooldownTimers = new Map<string, number>();
+
 async function add(peerId: string) {
   if (inCooldown(peerId)) return; // 防抖：3 秒内不重复发送
   cooldown.value = { ...cooldown.value, [peerId]: Date.now() };
-  setTimeout(() => {
-    const next = { ...cooldown.value };
-    delete next[peerId];
-    cooldown.value = next;
-  }, SEND_COOLDOWN_MS);
+  window.clearTimeout(cooldownTimers.get(peerId));
+  cooldownTimers.set(
+    peerId,
+    window.setTimeout(() => {
+      cooldownTimers.delete(peerId);
+      const next = { ...cooldown.value };
+      delete next[peerId];
+      cooldown.value = next;
+    }, SEND_COOLDOWN_MS),
+  );
   try {
     await chat.sendFriendRequest(peerId);
     app.toast(t("friend.add.toast.sent"), "success");
@@ -279,6 +306,32 @@ async function add(peerId: string) {
         </div>
       </div>
 
+      <!-- 跨网通道（VPN / 公网中转）：**不是发现通道**，开关与配置都在设置页。这里只如实告知
+           "局域网/蓝牙之外还开着什么"，并说清它们只连通**已是好友**的人 —— 避免用户在中转场景
+           误以为"中转能搜到陌生人"（哑管道不为陌生人配对，公网首次加好友需经共同好友）。 -->
+      <div class="mt-3 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] px-3 py-2">
+        <div class="text-xs font-medium text-[var(--gosslan-text-2)]">
+          {{ t("friend.add.crossNet.title") }}
+        </div>
+        <div class="mt-1.5 flex items-center justify-between gap-3">
+          <span class="text-sm text-[var(--gosslan-text)]">{{ t("friend.add.crossNet.routed") }}</span>
+          <span class="text-xs text-[var(--gosslan-text-2)]">
+            {{ routedCount > 0 ? t("friend.add.crossNet.routed.on", { n: routedCount }) : t("friend.add.crossNet.routed.off") }}
+          </span>
+        </div>
+        <div class="mt-1 flex items-center justify-between gap-3">
+          <span class="text-sm text-[var(--gosslan-text)]">{{ t("friend.add.crossNet.relay") }}</span>
+          <span class="text-xs text-[var(--gosslan-text-2)]">
+            {{ relay?.enabled
+              ? (relay.connected ? t("friend.add.crossNet.relay.connected") : t("friend.add.crossNet.relay.connecting"))
+              : t("friend.add.crossNet.relay.off") }}
+          </span>
+        </div>
+        <p class="mt-1.5 text-xs leading-relaxed text-[var(--gosslan-text-2)] opacity-80">
+          {{ t("friend.add.crossNet.hint") }}
+        </p>
+      </div>
+
       <button
         type="button"
         class="tap-safe mt-3 w-full rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] py-2 text-sm text-[var(--gosslan-text)] transition"
@@ -308,10 +361,10 @@ async function add(peerId: string) {
         >
           <div
             class="gosslan-avatar-box flex h-9 w-9 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
-            :style="{ backgroundColor: nameToColor(p.nickname) }"
+            :style="{ backgroundColor: avatarSeedFor(p.device_id)?.bg }"
           >
             <img alt="" v-if="p.avatar" :src="p.avatar" class="h-full w-full object-cover" />
-            <span v-else class="gosslan-avatar-initial text-sm font-semibold" :data-len="avatarInitialLen(p.nickname)">{{ initials(p.nickname) }}</span>
+            <span v-else class="gosslan-avatar-emoji" aria-hidden="true">{{ avatarSeedFor(p.device_id)?.emoji }}</span>
           </div>
           <div class="min-w-0 flex-1">
             <div class="truncate text-sm" :title="p.nickname">{{ p.nickname }}</div>

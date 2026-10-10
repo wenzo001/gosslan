@@ -8,14 +8,87 @@ import {
   checkStyleCascade,
   checkUnreadBadgeComponent,
   findHandWrittenBadges,
+  findMenuWithoutBackdrop,
+  findAvatarFaceWithoutAriaHidden,
+  findModifierClassWithoutStyle,
+  modifierClassesUsed,
+  findRetiredLetterAvatarUsage,
   findHoverRevealIssues,
   findOutlineNoneWithoutFocusRing,
   findSmallTapTargets,
   findTappableWithoutKeyboard,
+  countClickActionTags,
   findTruncationWithoutTitle,
   checkTextFieldFocusRing,
   checkSelectionContract,
+  findNestedThemeRuleIssues,
+  findFloatingLayerWithoutEscape,
+  findTopInsetWithoutBottomInset,
+  findMessageImageWithoutFetchHint,
+  findFreshEmptyArrayProp,
+  countListPropBindings,
+  checkImageBubbleHeightSources,
+  countClassAttrs,
+  findRawPlatformCheckInViewLayer,
+  countCommonLayerPlatformImports,
+  findImgTags,
+  teleportedRootClasses,
 } from "./designGuards.ts";
+
+// ---------------- ⓪ 选中态/原生控件颜色必须吃主题变量（#35-N7） ----------------
+// 判的是形状而不是像素：写死十六进制在换主题色时不会跟着走，等于把"跟随主题"又做回硬编码。
+test("⓪ ::selection 与 accent-color 必须吃主题变量（#35-N7）", () => {
+  const css = readFileSync(new URL("../style.css", import.meta.url), "utf8");
+  const sel =
+    /::selection\s*{[^}]*background:\s*color-mix\(\s*in srgb,\s*var\(--gosslan-primary\)/.exec(css);
+  assert.ok(sel, "style.css 里必须有 ::selection，且背景由 --gosslan-primary 现算（不许写死十六进制）");
+  assert.match(
+    css,
+    /accent-color:\s*var\(--gosslan-primary\)/,
+    "input/select/textarea/progress 的 accent-color 必须吃主题变量",
+  );
+});
+
+// ---------------- ㉚ 主题色规则必须在顶层（#35-N7 的真实缺陷） ----------------
+// 判"有没有写"挡不住这次这种"写了但匹配不到"：两条规则被写在 input{…} 的括号里，
+// 原生嵌套把它们编译成后代选择器（`input ::selection` / `[contenteditable=""] progress`），
+// 源码正则照过、产物里整条不生效。所以这里判的是**嵌套深度**，并且反向用例就是当时的真实写法。
+test("㉚ 真实 style.css：两条主题色规则都在顶层（0 条报红）", () => {
+  const css = readFileSync(new URL("../style.css", import.meta.url), "utf8");
+  assert.deepEqual(findNestedThemeRuleIssues(css), []);
+});
+
+test("㉚ 反向用例：写在 input{} 括号里 → 两条都报红（这就是 2026-10-09 之前的实际形状）", () => {
+  const nested = `input,textarea,select,[contenteditable="true"] {
+  caret-color: var(--gosslan-primary);
+  ::selection {
+    background: color-mix(in srgb, var(--gosslan-primary) 30%, transparent);
+    color: inherit;
+  }
+  input, select, textarea, progress {
+    accent-color: var(--gosslan-primary);
+  }
+}
+`;
+  const msgs = findNestedThemeRuleIssues(nested).map((i) => i.message);
+  assert.equal(msgs.length, 2, msgs.join("\n"));
+  assert.ok(msgs.some((m) => m.includes("::selection")), msgs.join("\n"));
+  assert.ok(msgs.some((m) => m.includes("accent-color")), msgs.join("\n"));
+});
+
+test("㉚ 两条都缺 → 也报红（判据不许因为「没写」而静默绿）", () => {
+  const msgs = findNestedThemeRuleIssues("a { color: red }").map((i) => i.message);
+  assert.equal(msgs.length, 2, msgs.join("\n"));
+});
+
+test("㉚ 媒体查询里写 ::selection 是合法形状，不许误伤", () => {
+  const ok = `@media (prefers-reduced-transparency: reduce) {
+  ::selection { background: color-mix(in srgb, var(--gosslan-primary) 30%, transparent); }
+}
+progress { accent-color: var(--gosslan-primary) }
+`;
+  assert.deepEqual(findNestedThemeRuleIssues(ok), []);
+});
 
 // ---------------- ① 悬停揭示必须有触屏兜底 ----------------
 //
@@ -86,9 +159,14 @@ const OK_CSS = `
 .glass { backdrop-filter: blur(6px); }
 .frost { backdrop-filter: blur(6px); }
 
+.kb-reveal { opacity: 0; pointer-events: none; }
+.kb-reveal:focus-visible,
+.kb-reveal-on { opacity: 1; pointer-events: auto; }
+
 @media (hover: none) {
   .hover-reveal { display: flex !important; }
   .hover-reveal-op { opacity: 1 !important; }
+  .kb-reveal { opacity: 1; pointer-events: auto; }
 }
 
 @media (prefers-reduced-transparency: reduce) {
@@ -335,18 +413,39 @@ test("role + tabindex + 回车/空格键处理之后通过", () => {
   assert.deepEqual(findTappableWithoutKeyboard(fixed), []);
 });
 
-test("三种补充写法任意一种即可（含 :role / :tabindex 绑定形式）", () => {
+test("补上焦点或键盘事件即可放行（含 :tabindex 绑定形式）", () => {
   for (const extra of [
-    'role="button"',
-    ':role="ready ? \'button\' : undefined"',
+    ':role="ready ? \'button\' : undefined"', // 动态 role 推断不出值 ⇒ 不报（报了就是假红）
     'tabindex="0"',
     ':tabindex="ready ? 0 : undefined"',
     '@keydown.enter="open()"',
     'v-on:keyup.enter="open()"',
+    'role="dialog" tabindex="-1"', // 容器角色：本就不该进 Tab 序
+    'role="textbox" contenteditable="true"', // contenteditable 自己就可聚焦
   ]) {
     const ok = `<template>\n  <div @click="open()" ${extra}>x</div>\n</template>`;
     assert.deepEqual(findTappableWithoutKeyboard(ok), [], `补 ${extra} 后不该再报`);
   }
+});
+
+test("⑥ 的洞（2026-10-10 补，roadmap N19）：静态 button 类 role 但没有 tabindex ⇒ 仍然要报", () => {
+  // 这条原来用 OR 判定，于是 role="button" 单独存在就放行 —— 而 role 只给"读屏念得出按钮"，
+  // **不给可聚焦性**，键盘照样 Tab 不到。真实形状就是置顶行那颗 `span role="button"`。
+  const hole = `<template>\n  <span role="button" @click.stop="togglePin(p.id)">✕</span>\n</template>`;
+  const issues = findTappableWithoutKeyboard(hole);
+  assert.equal(issues.length, 1, `该报一条，现数 ${issues.length}`);
+  assert.match(issues[0].message, /没有 `tabindex`/);
+  assert.equal(issues[0].line, 2);
+  // 同一条改成真按钮就不再报（这就是建议的修法）
+  assert.deepEqual(
+    findTappableWithoutKeyboard('<template>\n  <button type="button" @click.stop="f()">✕</button>\n</template>'),
+    [],
+  );
+  // 动态 role 不报（推断不出值）；容器角色不报
+  assert.deepEqual(
+    findTappableWithoutKeyboard('<template>\n  <span :role="k" @click="f()">x</span>\n</template>'),
+    [],
+  );
 });
 
 test("遮罩层（aria-hidden）不是按钮，不报", () => {
@@ -507,6 +606,23 @@ test("不可交互的小元素不报（纯装饰）", () => {
   assert.deepEqual(findSmallTapTargets(decorative), []);
 });
 
+test("复现真实缺陷：h-4 w-4 的 span[role=button] 没有 tap-safe → 报出（2026-10-09 之前这档根本扫不到）", () => {
+  const buggy = `<template>
+  <span class="flex h-4 w-4 items-center justify-center" role="button" @click.stop="unpin()">x</span>
+</template>`;
+  const issues = findSmallTapTargets(buggy);
+  assert.equal(issues.length, 1);
+  assert.equal(issues[0].line, 2);
+  assert.match(issues[0].message, /44×44pt/);
+});
+
+test("h-4 加了 tap-safe 就通过（口径放宽不等于把已有写法全判死）", () => {
+  const ok = `<template>
+  <span class="tap-safe flex h-4 w-4" role="button" @click.stop="unpin()">x</span>
+</template>`;
+  assert.deepEqual(findSmallTapTargets(ok), []);
+});
+
 test("带 @click 的非按钮小元素同样要 tap-safe", () => {
   const buggy = `<template>
   <div class="h-6 w-6 cursor-pointer" role="button" tabindex="0" @click="go()">x</div>
@@ -635,6 +751,41 @@ test("src 下所有小尺寸可交互元素都带 tap-safe", () => {
   assert.deepEqual(bad, [], `以下元素点按目标过小：\n${bad.join("\n")}`);
 });
 
+test("默认头像（emoji）的 aria-hidden：漏写就报，写了就放行（夹具）", () => {
+  const buggy = `<template><span class="gosslan-avatar-emoji text-sm" :data-len="3">KEEN</span></template>`;
+  const fixed = `<template><span class="gosslan-avatar-emoji text-sm" :data-len="3" aria-hidden="true">KEEN</span></template>`;
+  // 多行标签也要判得住（真实代码里一半是这种写法）
+  const multilineFixed = `<template><span
+  class="gosslan-avatar-emoji text-sm"
+  aria-hidden="true"
+>{{ x }}</span></template>`;
+  const multilineBuggy = `<template><span
+  class="gosslan-avatar-emoji text-sm"
+  :title="n"
+>{{ x }}</span></template>`;
+  assert.equal(findAvatarFaceWithoutAriaHidden(buggy).length, 1, "漏写 aria-hidden 必须报");
+  assert.deepEqual(findAvatarFaceWithoutAriaHidden(fixed), []);
+  assert.deepEqual(findAvatarFaceWithoutAriaHidden(multilineFixed), []);
+  assert.equal(findAvatarFaceWithoutAriaHidden(multilineBuggy).length, 1, "多行标签同样要判得住");
+});
+
+test("src 下所有默认头像都对读屏隐藏", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const files = collectVueFiles(srcDir);
+  const bad: string[] = [];
+  let seen = 0;
+  for (const f of files) {
+    const src = readFileSync(f, "utf8");
+    seen += (src.match(/gosslan-avatar-emoji/g) ?? []).length;
+    for (const issue of findAvatarFaceWithoutAriaHidden(src)) {
+      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+    }
+  }
+  // 判据不能空转：字母头像本来就有十几处，扫到 0 处说明扫描本身坏了
+  assert.ok(seen >= 10, `只扫到 ${seen} 处默认头像，扫描口径疑似失效`);
+  assert.deepEqual(bad, [], `以下默认头像会被读屏念出来：\n${bad.join("\n")}`);
+});
+
 test("src 下所有 as=template 的插槽都干净（无注释、单节点）", () => {
   const srcDir = join(import.meta.dirname, "..");
   const files = collectVueFiles(srcDir);
@@ -661,17 +812,36 @@ test("src 下所有 outline-none 都自带焦点指示", () => {
   assert.deepEqual(bad, [], `以下元素关掉了焦点指示却没有替代：\n${bad.join("\n")}`);
 });
 
-test("src 下所有可点击元素都能用键盘触发", () => {
+test("src 下所有可点击元素都能用键盘触发（含 ⑥ 补上的那一半：role 不给可聚焦性）", () => {
   const srcDir = join(import.meta.dirname, "..");
   const files = collectVueFiles(srcDir);
   assert.ok(files.length > 20, `应扫描到全部组件，实际 ${files.length} 个`);
   const bad: string[] = [];
+  let seen = 0;
   for (const f of files) {
-    for (const issue of findTappableWithoutKeyboard(readFileSync(f, "utf8"))) {
+    const src = readFileSync(f, "utf8");
+    seen += countClickActionTags(src);
+    for (const issue of findTappableWithoutKeyboard(src)) {
       bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
     }
   }
+  // 分母必须自己说话：一个"非交互标签 + 动作 @click"都看不见时，这条判据（尤其新加的那一半）就是空转。
+  assert.ok(seen >= 6, `全 src 只数到 ${seen} 个"非交互标签 + 动作 @click" ⇒ 判据大概已经看不见东西了`);
   assert.deepEqual(bad, [], `以下元素能点但键盘够不着：\n${bad.join("\n")}`);
+  console.log(`· N19 真实树分母：${files.length} 份 .vue / ${seen} 个可点击的非交互标签，键盘入口全都齐（含 role 无 tabindex 那一型）`);
+});
+
+test("N19：.kb-reveal 那一家缺任一份都要报（拿真实 style.css 做两处单点删改）", () => {
+  const css = readFileSync(join(import.meta.dirname, "..", "style.css"), "utf8");
+  assert.deepEqual(checkStyleCascade(css), [], "现树那份 style.css 必须两条都满足");
+  // ① 删掉触屏兜底那份 ⇒ 报（手机上那颗操作看不见也点不着）
+  const noTouch = css.replace(/\n\s*\/\* 上面那一家的触屏档[^]*?\*\/\n\s*\.kb-reveal \{\n\s*opacity: 1;\n\s*pointer-events: auto;\n\s*\}/, "");
+  assert.notEqual(noTouch, css, "反面用例的锚点没找到 ⇒ 这条用例本身是空转");
+  assert.match(checkStyleCascade(noTouch).map((i) => i.message).join("\n"), /没有\*\*兜底那份/);
+  // ② 只留块内那一份（把块外基础那条删掉）⇒ 基础那份落到块内 ⇒ 报"基础规则写在 (hover:none) 之内"
+  const baseAt = css.indexOf(".kb-reveal {");
+  const onlyInside = css.slice(0, baseAt) + css.slice(css.indexOf("}", baseAt) + 1);
+  assert.match(checkStyleCascade(onlyInside).map((i) => i.message).join("\n"), /基础\*\*规则写在 @media \(hover: none\) 之内/);
 });
 
 test("src 下所有 .vue 的悬停揭示都带了触屏兜底", () => {
@@ -1019,4 +1189,1440 @@ test("可选中导航项：图标必须有 :fill 的选中绑定（漏一个就�
     [],
     `NavRail 里出现了清单外的可选中 key：${unknown.join(", ")} —— 请同步上面的 selectable 清单`,
   );
+});
+
+// ---------------- ⑭ 预览 objectURL 归缓存所有：消费者不得 revoke ----------------
+//
+// 真实缺陷（用户 2026-09-21）：「任务详情里的图片大概率加载失败」。
+// 根因不在"读不到字节"，而在**生命周期**：`loadContentPreview` 把 objectURL 缓存在模块级
+// Map 里，同一个 cid 的 URL 是**大家共用的同一个字符串**（一张待办描述图会同时存在于
+// 聊天时间线的任务卡、看板表单、任务详情）。`TodoImageThumb` 当时在卸载/换图时
+// `revokeObjectURL`，于是"关掉一次详情弹窗""虚拟列表回收一行"都会把所有其它视图的图
+// 一起打回裂图；而缓存里那个 URL 已经死了却仍被命中 ⇒ 退避重试也救不回来（只能重启）。
+// 判据：拿预览缓存 URL 的消费组件**一律不许出现 revokeObjectURL**（自己造 URL 的组件
+// 如 MergeCardModal / ProfileSection 不在此列，它们的 URL 没进任何共享缓存）。
+test("预览缓存 URL 的消费者不得 revokeObjectURL（会把同一张图的其它视图一起打裂）", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const consumers = [
+    ["components", "TodoImageThumb.vue"],
+    ["components", "message", "MessageImageBubble.vue"],
+    ["components", "message", "ImageLightbox.vue"],
+    ["components", "FavoritePanel.vue"],
+  ];
+  for (const rel of consumers) {
+    const file = join(srcDir, ...rel);
+    const src = readFileSync(file, "utf8");
+    // 只认**调用**（`URL.revokeObjectURL(...)`）：注释里提到这个名字是允许的（本文件的说明就是要留痕）
+    assert.ok(
+      !/URL\.revokeObjectURL\s*\(/.test(src),
+      `${rel.join("/")} 里出现了 revokeObjectURL：预览 URL 归 filePreview/favoritePreview 的缓存所有，` +
+        `消费者 revoke 会连带杀掉同一 cid/msg_id 在别处的图，且缓存会一直返回那个死 URL`,
+    );
+  }
+});
+
+// ---------------- ⑮ 滚动落定的轮询定时器必须在卸载时清掉 ----------------
+//
+// 真实缺陷（PR #24 审查发现）：`scrollToIndex` 会开一个 1.5s 落定窗口，里面用 `setInterval`
+// 每 100ms 校正一次（`pollJump`）。窗口的**自动收口只发生在 `applyJump` 内部**，而它开头就是
+// `if (!j || !el) return;` —— `el` 是容器 ref，组件卸载后 Vue 会把它置 null，于是
+// "过窗就 clearInterval"那一支永远走不到 ⇒ 定时器以 10Hz 常驻在一个已经死掉的组件上。
+// 只要"关掉带列表的辅助窗口 / 切会话"正好落在落定窗口里就漏一条，且不会自愈。
+// 判据：`onBeforeUnmount` 里必须**显式**清 `jumpTimer`（将来把落定逻辑改成别的形态时，
+// 只要还留着一个跨窗口的定时器，这条就得跟着改，不能默默失效）。
+test("VirtualList：落定轮询定时器必须在 onBeforeUnmount 里清理", () => {
+  const src = readFileSync(join(import.meta.dirname, "..", "components", "VirtualList.vue"), "utf8");
+  const start = src.indexOf("onBeforeUnmount(() => {");
+  assert.notEqual(start, -1, "VirtualList 的卸载钩子不见了 ⇒ 这条判据失去锚点");
+  const end = src.indexOf("\n});", start);
+  assert.notEqual(end, -1, "VirtualList 的卸载钩子没有正常闭合");
+  const cleanup = src.slice(start, end);
+  assert.ok(
+    cleanup.includes("clearInterval(jumpTimer)"),
+    "onBeforeUnmount 没清 jumpTimer：组件在落定窗口内卸载后，100ms 轮询不会停" +
+      "（applyJump 在 `!el` 处就返回了，走不到过窗自清那一支）",
+  );
+});
+
+/**
+ * 图片预览必须**只有一个渲染点**（用户 2026-09-24 #40：看图是一个公共能力）。
+ *
+ * 原先 `ImageLightbox` 被四处各挂一份（会话 / 任务看板 / 任务详情 / 合并转发卡片），
+ * 每份自己持有 `images/index/open`。后果不是重复代码那么简单：
+ * - 同一件"看图"在不同入口的能力取决于那个面板有没有把数组传全（会话里能整屏左右循环、
+ *   任务里只有那一条的几张图，这本该是同一个契约）；
+ * - 加一个入口就得再抄一遍，而"合并卡片的图是 objectURL、组件一关就被回收"这份知识
+ *   锁在那个组件里 —— 预览搬到全局后正是靠**来源标记**才没把这条保证弄丢。
+ *
+ * 所以钉两件事：渲染点只有一个（在壳层），别的组件只能经 store 调用。
+ */
+test("图片预览只有一处渲染点，其余组件一律走 useImagePreviewStore", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const files = collectVueFiles(join(srcDir, "components")).concat(
+    collectVueFiles(join(srcDir, "layouts")),
+  );
+  const renderers: string[] = [];
+  const stateful: string[] = [];
+  for (const f of files) {
+    const src = readFileSync(f, "utf8");
+    const rel = f.replace(srcDir + "/", "");
+    // 只数**模板段里、去掉 HTML 注释之后**的元素。
+    // 为什么不是"看行首是不是 `<!--`"：注释常常是多行的，提到 `<ImageLightbox>`
+    // 的那一行本身不带 `<!--`（第一版就是这么写的，结果三处注释全被当成渲染点）。
+    // 模板里的注释不可能嵌套 ⇒ `<!--[\s\S]*?-->` 这个非贪婪匹配就是精确的。
+    const tplAt = src.indexOf("<template>");
+    if (tplAt > 0) {
+      const tpl = src.slice(tplAt).replace(/<!--[\s\S]*?-->/g, "");
+      for (const _m of tpl.matchAll(/<ImageLightbox[\s/>]/g)) {
+        // 只报文件不报行号：注释被剥掉之后偏移就变了，报出来的行号会是**错的**，
+        // 宁可少给一个信息也不要给假的（要定位在文件里搜 `<ImageLightbox` 即可）。
+        renderers.push(rel);
+      }
+    }
+    // 别人不许再自己攒一套 open/index 状态（那等于又长出第二个预览实例）
+    if (
+      rel !== "layouts/ResponsiveLayout.vue" &&
+      /const\s+\w*lightbox\w*\s*=\s*ref\(/i.test(src)
+    ) {
+      stateful.push(rel);
+    }
+  }
+  // 允许**两个文档各一个实例**：主窗口的覆盖层（移动端 + 不可跨文档时的退回路径）
+  // 与桌面端那个全局唯一的预览窗口。"全局只有一个预览"说的是**同一时刻用户看到的界面**，
+  // 而这两处不会同时亮：store 的 `inWindow` 为真时壳层那份就让位（ResponsiveLayout 的 :open）。
+  assert.deepEqual(
+    [...new Set(renderers)].sort(),
+    ["components/window/PreviewWindow.vue", "layouts/ResponsiveLayout.vue"],
+    `图片预览的渲染点不对：${renderers.join(", ")} —— 只许壳层覆盖层 + 预览窗口这两处`,
+  );
+  assert.deepEqual(stateful, [], `这些组件还自己持有预览开关状态：${stateful.join(", ")}`);
+  // store 侧：唯一那份实例绑在 store 上，不是本地 ref
+  const shell = readFileSync(join(srcDir, "layouts", "ResponsiveLayout.vue"), "utf8");
+  assert.match(shell, /const preview = useImagePreviewStore\(\)/, "壳层要挂 store");
+  assert.match(shell, /:images="preview\.images"/, "渲染点的数据来自 store");
+  // 左右切换写的也是 store 的 index（写成组件本地 ref 就等于把"当前看第几张"又搬回局部）
+  assert.match(shell, /v-model:index="preview\.index"/, "切换下标也写回 store");
+});
+
+/**
+ * 布局级断点必须叠加 `desktop:`（#27）。
+ *
+ * 安卓启动时系统权限弹框盖住 WebView 首次布局，那一刻视口宽度会读到兜底档（980px），
+ * 于是 JS 判"移动"而 CSS 判"桌面"：导航栏回来、底部安全区内边距被清零、抽屉按 980 铺满。
+ * 所以**决定结构**的那几个断点必须同时要求"本机不是移动布局"，而 `is-mobile` 这个类
+ * 只有 `useAppStore.applyIsMobile()` 一个写者（判据 = platform.ts 的 resolveMobileLayout）。
+ *
+ * 表里每条都是"少了它手机就当桌面用"的那一类；纯文字密度（`sm:inline` 的秒级时间戳等）
+ * 刻意不在这里 —— 那些在宽视口下多显示一点无害，钉进去只会让人下次不敢用断点。
+ */
+test("布局级断点必须叠加 desktop: 变体（移动端视口会说谎）", () => {
+  const cases: [string, string][] = [
+    ["../components/NavRail.vue", "md:flex"],
+    ["../layouts/ResponsiveLayout.vue", "md:block"],
+    ["../layouts/ResponsiveLayout.vue", "md:pb-0"],
+    ["../layouts/ResponsiveLayout.vue", "md:flex"],
+    ["../components/FavoritePanel.vue", "sm:flex-col"],
+    ["../components/FavoritePanel.vue", "sm:flex-none"],
+    ["../components/search/ChatSearchDialog.vue", "md:flex-row"],
+    ["../components/DevDiagPanel.vue", "sm:grid-cols-2"],
+  ];
+  const bare: string[] = [];
+  for (const [rel, util] of cases) {
+    const src = readFileSync(new URL(rel, import.meta.url), "utf8");
+    for (const line of src.split("\n")) {
+      if (!line.includes(util)) continue;
+      // 只查 class 里的那次出现：注释里提一句不算违反
+      const cls = /class="[^"]*"/.exec(line);
+      if (!cls) continue;
+      const idx = cls[0].indexOf(util);
+      if (idx < 0) continue;
+      const before = cls[0].slice(Math.max(0, idx - 9), idx);
+      if (!before.endsWith("desktop:")) bare.push(`${rel}  ${util}`);
+    }
+  }
+  assert.deepEqual(
+    bare,
+    [],
+    `这些结构级断点没叠 desktop:，移动布局下也会被视口宽度点亮：${bare.join(" · ")}`,
+  );
+});
+
+test("`desktop:` 变体必须在 tailwind 里注册（拼错的后缀会静默不生效）", () => {
+  const cfg = readFileSync(new URL("../../tailwind.config.js", import.meta.url), "utf8");
+  assert.ok(cfg.includes('addVariant("desktop"'), "tailwind.config.js 里没有 desktop 变体");
+  assert.ok(
+    cfg.includes("html:not(.is-mobile)"),
+    "变体的选择器必须是 html:not(.is-mobile) —— 与 useAppStore 写的那个类同名才对得上",
+  );
+});
+
+test("字母头像那三个标识符：写回来就必须报（夹具）", () => {
+  for (const src of [
+    `<script setup>import { avatarInitial } from "@/utils/color";</script>`,
+    `<script setup>const c = nameToColor(n);</script>`,
+    `<template><span class="gosslan-avatar-initial">KEEN</span></template>`,
+  ]) {
+    assert.ok(findRetiredLetterAvatarUsage(src).length >= 1, `这条复活没被抓到：${src}`);
+  }
+  assert.deepEqual(
+    findRetiredLetterAvatarUsage(`<template><span class="gosslan-avatar-emoji" aria-hidden="true">{{ seed?.emoji }}</span></template>`),
+    [], "emoji 头像那条不该被误报");
+});
+
+test("src 下没有任何一处还在走字母头像", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const files = collectVueFiles(srcDir);
+  const bad: string[] = [];
+  for (const f of files) {
+    for (const issue of findRetiredLetterAvatarUsage(readFileSync(f, "utf8"))) {
+      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+    }
+  }
+  assert.deepEqual(bad, [], `字母头像复活了：\n${bad.join("\n")}`);
+});
+
+test("模板里挂上的 BEM 修饰类必须在 CSS 里有定义（夹具）", () => {
+  const used = `<template><div class="mention-token" :class="{ 'mention-token--self': isMe }">x</div></template>`;
+  // ① 用了却没定义 ⇒ 报（这类缺陷的形态是"界面静默退化"，没有任何测试会红）
+  assert.equal(findModifierClassWithoutStyle(used, "").length, 1, "缺定义的修饰类必须报出来");
+  // ② 同文件 <style> 里定义了 ⇒ 放行
+  const withOwnStyle = used + `<style>.mention-token--self { font-weight: 600; }</style>`;
+  assert.deepEqual(findModifierClassWithoutStyle(withOwnStyle, ".x{}"), []);
+  // ③ 定义在全局 style.css 里也算
+  assert.deepEqual(
+    findModifierClassWithoutStyle(used, ".mention-token--self{color:red}"), [],
+    "定义在全局样式里也算数");
+  // ④ 多行 :class 对象写法同样要判得住（真实代码里就是这种）
+  const multiline = `<template><div :class="{
+      'a-mod--on': x,
+    }">y</div></template>`;
+  assert.equal(findModifierClassWithoutStyle(multiline, "").length, 1, "多行对象写法不能漏");
+  // ⑤ 只扫 class 属性：注释里写一句 `foo--bar` 不算使用（否则护栏会因为注释而红）
+  assert.deepEqual(
+    findModifierClassWithoutStyle(`<template><!-- foo--bar --><div class="ok">z</div></template>`, ""), []);
+  // ⑥ 三元字符串写法 —— 仓里真实存在（ChatSearchDialog 的筛选 chip），漏了它这枚类就没人守
+  assert.equal(
+    findModifierClassWithoutStyle(
+      `<template><div :class="on ? 'a-chip--on' : ''">y</div></template>`, "").length, 1,
+    "三元字符串写法不能漏");
+  // ⑦ 数组写法（多行，仓里有 14 处 :class="[")
+  assert.equal(
+    findModifierClassWithoutStyle(
+      `<template><div :class="[\n  'base',\n  'a-chip--on',\n]">y</div></template>`, "").length, 1,
+    "数组写法不能漏");
+  // ⑧ 反向：CSS 变量工具类里也含 `--`，不许被认成修饰类（否则全库几百处误报）
+  assert.deepEqual(
+    findModifierClassWithoutStyle(
+      `<template><div class="bg-[var(--gosslan-bg)] text-[color-mix(in_srgb,var(--gosslan-warning)_8%,transparent)] hover:bg-[var(--x)]">y</div></template>`,
+      ""),
+    [],
+    "Tailwind 的 CSS 变量工具类不是修饰类");
+});
+
+test("全库扫到的修饰类清单要非空转（同一个解析器，不靠第二条正则）", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const names = new Set<string>();
+  for (const f of collectVueFiles(srcDir)) {
+    for (const n of modifierClassesUsed(readFileSync(f, "utf8"))) names.add(n);
+  }
+  // 下限取自今天仓里的三枚（@你加重 / 筛选 chip 选中 / 菜单危险项）。
+  // 只许"变少即红"：解析器哪天退化到什么都认不出，这条会红而不是安静地绿着。
+  assert.ok(
+    names.size >= 3,
+    `只认出 ${names.size} 枚修饰类（${[...names].join(", ")}）⇒ 扫描口径疑似失效，这条判据在空转`);
+});
+
+test("src 下每个修饰类都能在样式里找到定义", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const files = collectVueFiles(srcDir);
+  const globalCss = readFileSync(join(srcDir, "style.css"), "utf8");
+  const bad: string[] = [];
+  for (const f of files) {
+    const src = readFileSync(f, "utf8");
+    for (const issue of findModifierClassWithoutStyle(src, globalCss)) {
+      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+    }
+  }
+  // "解析器今天到底认出了几枚"由上一条用例防空转（同一条口径，不留第二把尺子）
+  assert.deepEqual(bad, [], `这些修饰类挂上去了却没有样式定义：\n${bad.join("\n")}`);
+});
+
+/**
+ * 整屏图片覆盖层只许长在**统一渲染点**（§12：收藏里的图必须走统一图片预览）。
+ *
+ * 为什么上一那条判据不够：它数的是 `<ImageLightbox>` 标签与名字里带 `lightbox` 的本地 ref。
+ * 而"自己长一个查看层"这件事的**形状**根本不是这两条 —— 用户报的收藏页拿的是一个叫
+ * `viewer` 的本地 ref + 一句 `fixed inset-0` 的整屏按钮里包 `<img :src="viewer">`，
+ * 于是判据在、它抓不到 ⇒ 那是**半空转的判据**，比没有判据更坏（会让人以为这一格有人守着）。
+ *
+ * 这条按形状抓：模板里（剥掉 HTML 注释之后）凡是一个带 `fixed` 且带 `inset-0` 的元素**内部**
+ * 出现 `<img :src="X">`，而 X 是本组件 script 段里 `const X = ref(...)` 声明的 —— 就是第二个预览实例。
+ * 白名单只有那两个渲染点（壳层覆盖层 + 预览窗口）；缩略图不算（它不在整屏元素内部，
+ * 且绑的是数组/prop 而不是本地图像状态）。
+ *
+ * 反向自证（非空转）：把 FavoritePanel 接进统一预览之后这一条应当绿；
+ * 谁再写一个私有查看层 ⇒ 这一条点名报红，而上一那条不会。
+ */
+test("整屏图片覆盖层只许长在统一渲染点（私有 viewer 是第二个预览实例）", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const files = collectVueFiles(join(srcDir, "components")).concat(collectVueFiles(join(srcDir, "layouts")));
+  const ALLOWED = new Set(["layouts/ResponsiveLayout.vue", "components/window/PreviewWindow.vue"]);
+  const offenders: string[] = [];
+  for (const f of files) {
+    const rel = f.replace(srcDir + "/", "");
+    if (ALLOWED.has(rel)) continue;
+    const full = readFileSync(f, "utf8");
+    const tplAt = full.indexOf("<template>");
+    if (tplAt < 0) continue;
+    const script = full.slice(0, tplAt);
+    const tpl = full.slice(tplAt).replace(/<!--[\s\S]*?-->/g, "");
+    const localRefs = new Set<string>();
+    for (const m of script.matchAll(/const\s+([A-Za-z_$][\w$]*)\s*=\s*ref[<(]/g)) localRefs.add(m[1]);
+    if (!localRefs.size) continue;
+    // 逐个找"整屏元素"：class 里同时出现 fixed 与 inset-0 的开标签，往后取到它内部 900 字符
+    for (const m of tpl.matchAll(/<([a-zA-Z]+)[^>]*class="[^"]*\bfixed\b[^"]*\binset-0\b[^"]*"[^>]*>/g)) {
+      const inner = tpl.slice(m.index, m.index + 900);
+      const img = /<img\b[^>]*:src="([A-Za-z_$][\w$]*)"/.exec(inner);
+      if (img && localRefs.has(img[1])) offenders.push(`${rel}（整屏元素里直出本地 ref ${img[1]}）`);
+    }
+  }
+  assert.deepEqual(
+    [...new Set(offenders)],
+    [],
+    "这些组件自己长了一层整屏图片查看器 ⇒ 必须改走 useImagePreviewStore.openGallery()（统一渲染点只有壳层覆盖层与预览窗口）",
+  );
+});
+
+/**
+ * 每一个 `<TodoImageThumb>` 调用点都必须**同时**带 `clickable` 与 `@open=`（§12「要做就做完整」）。
+ *
+ * 为什么钉这一条而不是钉"文件名单"：`TodoImageThumb` 的 `clickable` 默认值是 **false**
+ * （`withDefaults(..., { clickable: false })`），于是"漏给一个 prop"这件事的形状是
+ * **代码看起来完全正常、图就是点不动** —— 编译过、类型过、单测过，只有真人去点才发现。
+ * 本仓真发生过两次：先是收藏（卡片图 + 详情 `<img>` 两处都没入口，已修 `a077850`），
+ * 修完那一轮**同一个开关在聊天时间线的任务卡上仍然漏着**（复审 §12 那一行当时写的原话
+ * 就包含「卡片图 clickable 默认 false」，说明这一类是被知道的，只是没被数完调用点）。
+ *
+ * 判据的输入由代码自己声明：扫组件目录数 `<TodoImageThumb` 的出现点，不手抄文件名单 ⇒
+ * 新增一个调用点而忘了给 `clickable`，这条当场点名。
+ */
+test("每个任务图片缩略图调用点都必须可点（clickable 默认 false 会静默吞掉预览入口）", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const files = collectVueFiles(join(srcDir, "components")).concat(
+    collectVueFiles(join(srcDir, "layouts")),
+  );
+  const offenders: string[] = [];
+  let sites = 0;
+  for (const f of files) {
+    const src = readFileSync(f, "utf8");
+    const tplAt = src.indexOf("<template>");
+    if (tplAt < 0) continue;
+    // 剥注释的理由与上面那条一样：写在注释里的标签不是调用点（`[^>]*` 这个字符类匹配换行，
+    // 所以多行属性写法的标签也能整段取到）。
+    const tpl = src.slice(tplAt).replace(/<!--[\s\S]*?-->/g, "");
+    for (const m of tpl.matchAll(/<TodoImageThumb\b[^>]*>/g)) {
+      sites += 1;
+      const tag = m[0];
+      if (!/\bclickable\b/.test(tag) || !/@open=/.test(tag)) {
+        offenders.push(f.replace(srcDir + "/", ""));
+      }
+    }
+  }
+  // 空转前置：一个调用点都没数到 ⇒ 组件改名/被搬走，这条判据就变成恒过
+  assert.ok(sites > 0, "一个 <TodoImageThumb> 调用点都没数到 —— 组件改名的话这条判据已经空转");
+  assert.deepEqual(
+    [...new Set(offenders)].sort(),
+    [],
+    `这些调用点漏了 clickable 或 @open ⇒ 缩略图渲染出来但点不动（默认值 clickable:false）：${offenders.join(", ")}`,
+  );
+});
+
+/**
+ * 任务描述里的 @ 必须走**同一份**渲染件（第二阶段 §9「统一的 @ 渲染覆盖聊天和任务」）。
+ *
+ * 语义早就单源在 `utils/linkify`（`mention` / `mention-self` 两个 kind，由调用方传 `self` 决定
+ * 显示成什么），缺的是**覆盖面**：聊天气泡与长文弹窗都渲染 @，而任务卡与任务详情里
+ * `{{ todo.description }}` / `{{ item.description }}` 是裸插值 ⇒ 描述里 @ 到我时既不高亮、
+ * 也不显示「@你」，与同一条消息在聊天里的表现不一致。
+ *
+ * 判据的输入由代码自己声明（§6① 的教训：同一个判断在两处各写一次迟早分叉）：
+ * "属于任务这一族"= 该文件引用 `TodoItem` 或 `parseTodo`，**不是**我手抄的文件名单；
+ * "在渲染描述"= 模板里（剥掉 HTML 注释之后）出现 `{{ X.description }}` 这种裸插值。
+ * 看板上那两处是**输入框**（`v-model="draft.description"`），本来就该是纯文本 ⇒ 不算渲染点。
+ */
+test("任务描述必须经统一渲染件出 @，不许再裸插值", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const files = collectVueFiles(join(srcDir, "components"));
+  const offenders: string[] = [];
+  let sites = 0;
+  for (const f of files) {
+    const src = readFileSync(f, "utf8");
+    // 归属由代码声明：引用任务这一族的类型/解析函数，才算"任务描述"的宿主
+    if (!/TodoItem|parseTodo/.test(src)) continue;
+    const tplAt = src.indexOf("<template>");
+    if (tplAt < 0) continue;
+    const tpl = src.slice(tplAt).replace(/<!--[\s\S]*?-->/g, "");
+    // 分母数的是"这一族里渲染描述的点"，**两种写法都算**（裸插值与 `:text="x.description"`）：
+    // 只数违规那种的话，全部迁完之后 sites=0，这条判据就分不清"迁完了"与"整族被摘掉了"。
+    const renders = tpl.match(/[\w$]+(?:\.[\w$]+)*\.description\b/g) ?? [];
+    sites += renders.length;
+    for (const m of tpl.matchAll(/\{\{\s*[\w$]+(?:\.[\w$]+)*\.description\s*\}\}/g)) {
+      offenders.push(`${f.replace(srcDir + "/", "")}（${m[0]}）`);
+    }
+  }
+  // 空转前置：一个渲染点都没数到 ⇒ 任务描述被整族摘掉或改名了，这条判据就恒过
+  assert.ok(sites > 0, "一个「任务描述」渲染点都没数到 —— 改名/搬走的话这条判据已经空转");
+  assert.deepEqual(
+    offenders,
+    [],
+    `这些任务描述是裸插值 ⇒ 描述里的 @ 不高亮、@到我也不显示「@你」，与聊天里的同一句话不一致：` +
+      offenders.join("、") + " —— 改法是换 <MentionText :text=... />（语义仍走 utils/linkify）",
+  );
+});
+
+/**
+ * 「@你」「[任务@你]」这类**查看者视角的文案**不许写进生产码（第二阶段 §8 与 §9 的交叉锁）。
+ *
+ * 为什么钉字面量而不是钉调用：这一类缺陷有两种相反的发生方向 —— ① 渲染端图省事直接把
+ * `@你` 写死（换语言/换视角就错）；② 更坏的一种是**在发送或落库侧替换文案**，那等于把
+ * "我自己的视角"烧进公共数据，对端与历史都会跟着错。方向②由群聊轮的跨进程判据钉
+ * （库里那串字节必须逐字等于原文），这条钉方向①：文案的唯一来源是 `src/i18n/locales.ts`，
+ * 生产码只能通过 `t("mention.self")` / `t("todo.mentionYou")` 取。
+ *
+ * 剥注释是因为这些字面量在注释里大量出现在（说明机制），**注释不是文案来源**；测试文件豁免
+ * （`linkify.test.ts` 拿它当断言输入，那是判据不是产品文案）。
+ */
+test("查看者视角的 @ 文案只许存在于 i18n 名单里，生产码不许写死", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const walk = (dir: string, out: string[] = []): string[] => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, e.name);
+      if (e.isDirectory()) walk(full, out);
+      else if (/\.(vue|ts)$/.test(e.name)) out.push(full);
+    }
+    return out;
+  };
+  const LITERALS = ["@你", "[任务@你]"];
+  /**
+   * 字典本体名单（豁免的**全集**，不是一个前缀规则）。
+   *
+   * 2026-10-07 字典按语言拆成两册后，这里从「一个字面路径」改成「点名三本」：
+   * 用 `startsWith("i18n/locales")` 也能过，但那样任何落在该目录下的新文件都会**静默豁免**，
+   * 而这条判据要的恰恰是「只有字典本体能带这些字面量」。新增一门语言的字典册要显式登记，
+   * 忘了登记会当场红 —— 那是想要的形状，不是需要绕过的障碍。
+   */
+  const DICT_FILES = new Set(["i18n/locales.ts", "i18n/locales/zh-cn.ts", "i18n/locales/en-us.ts"]);
+  const offenders: string[] = [];
+  let scanned = 0;
+  for (const f of walk(srcDir)) {
+    const rel = f.replace(srcDir + "/", "");
+    if (DICT_FILES.has(rel) || rel.endsWith(".test.ts")) continue;
+    scanned += 1;
+    const code = readFileSync(f, "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/<!--[\s\S]*?-->/g, "")
+      .replace(/^[ \t]*\/\/.*$/gm, "");
+    for (const lit of LITERALS) if (code.includes(lit)) offenders.push(`${rel}（含 ${lit}）`);
+  }
+  // 前置：真的扫到了东西，否则"零违规"只是因为路径写错
+  assert.ok(scanned > 50, `只扫到 ${scanned} 个文件 —— 目录口径不对，这条判据在空转`);
+  assert.deepEqual(offenders, [], `这些生产码把查看者视角的文案写死了：${offenders.join("、")}`);
+});
+
+
+/**
+ * 「与我相关未完成任务数」这枚蓝色徽标只许一处算、两处消费同一份（第二阶段 §23）。
+ *
+ * 现状是好的（本轮现算核实）：规则在 `utils/todos::openTodosForMe`，生产码唯一调用点是
+ * `useChatStore.ts` 里产 `openTodoByConv` 的那一处，组件里 `openTodosForMe(` 命中 **0**；
+ * 会话列表项与聊天头任务图标都读 `chat.openTodoByConv[...]`。但"只有一处"今天靠人自觉 ——
+ * 而"同一个数在两处各算一次"正是本仓出过的事故形状（#23 那次是弹窗标题 (9) 进去看到 6 条；
+ * 未读数也漂过一轮）。所以这里钉两条：
+ *  ① 组件/布局里不得出现 `openTodosForMe(`（徽标的尺子只许 store 拿）；
+ *  ② 那两个消费点必须真的在消费那份 map（防止有人把徽标改回本地现算，①就形同虚设）。
+ *
+ * ⚠️ 这里刻意**不**禁 `foldTodos(` 本身 —— 那是公共折叠尺子，谁都该用它。禁的是**喂给它的那份数据**：
+ * 看板 / 任务面板 / 成员面板原先折 `chat.messages[convId]`（有上界的消息缓存），而徽标走后端全表读
+ * ⇒ 同一句判据两个家。这条 judgement 在 2026-09-28 被现读推翻（`PAGE_SIZE × MAX_PAGES = 1000 条/会话`、
+ * `MAX_CACHED_CONVS = 8` 个会话整块逐出）⇒ 由那条新判据 ⑳ 钉住，本条只管"数不许自己算"。
+ */
+test("「与我相关」徽标只许 store 算一次，两处 UI 必须消费同一份 map", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const files = collectVueFiles(join(srcDir, "components")).concat(collectVueFiles(join(srcDir, "layouts")));
+  const recomputeRe = /\bopenTodosForMe\s*\(/g;
+  const offenders: string[] = [];
+  for (const f of files) {
+    const code = readFileSync(f, "utf8").replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+    if (recomputeRe.test(code)) offenders.push(f.replace(srcDir + "/", ""));
+    recomputeRe.lastIndex = 0;
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    "组件层自己算了一遍「与我相关任务数」⇒ 出现第二个真源。改法：读 store 的 `openTodoByConv`（判定见 utils/todos::openTodosForMe）",
+  );
+  // ② 两个消费点确实在消费那份 map（同源这件事本身也要有判据，不然下轮改回本地现算没人知道）
+  for (const [rel, needle] of [
+    ["components/ChatWindow.vue", "chat.openTodoByConv["],
+    ["components/conversation/ConversationListItem.vue", "chat.openTodoByConv["],
+  ] as [string, string][]) {
+    const code = readFileSync(join(srcDir, rel), "utf8");
+    assert.ok(code.includes(needle), `${rel} 的徽标数字不再来自 chat.openTodoByConv ⇒ 与"单一事实源"冲突`);
+  }
+  // 非空转：同一台解析器必须抓得到那个坏形状，且不误抓"只是注释里提一句"
+  assert.ok(recomputeRe.test(`const n = openTodosForMe(foldTodos(list), me).length;`), "夹具没被抓到 ⇒ 这条判据是空转的");
+  recomputeRe.lastIndex = 0;
+  assert.ok(!recomputeRe.test(`// 判定见 utils/todos::openTodosForMe\nconst n = chat.openTodoByConv[id] ?? 0;`), "注释里的名字被误抓");
+});
+
+
+// ---------------- ⑳ 群任务的取数口只有一份（#154-9） ----------------
+//
+// 徽标走 `api.getGroupTodoMessages`（后端全表），而看板 / 任务面板 / 成员面板折的是
+// `chat.messages[convId]` —— 那份消息缓存有**两道**上界（现读 `useChatStore.ts`：
+// `PAGE_SIZE × MAX_PAGES = 1000 条/会话`、`MAX_CACHED_CONVS = 8` 个会话整块逐出）。
+// 于是「徽标还亮着，看板里再也列不出这条任务」是可达状态：用户没法归档一个看不见的任务，
+// 而创建记录被逐出、更新记录还留着时还会折出一个没有创建时间的任务。
+// store 自己在 `refreshConversations` 的注释里就写着「用内存里已有的消息算不行」——
+// 那句话当时只应用在徽标那一半。现在三处消费者都读 `chat.groupTodoRows`（与徽标同一次读）。
+//
+// ⚠️ `ChatWindow.vue` 里那处 `foldTodos(chat.messages[...])` 是**合法的**，不许一起禁掉：
+// 它折的是「这一屏时间线上已经渲染出来的卡片」的状态索引，语义本来就是"屏上的这些"，
+// 不是"这个群的全部任务"。⇒ 分母要含合规写法，否则这条判据改完那一刻就空转。
+test("群任务三处界面的取数口只许是那份全表读，不许再折有上界的消息缓存", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const readers = [
+    "components/GroupTasksBoard.vue",
+    "components/GroupTasksPanel.vue",
+    "components/GroupMemberPanel.vue",
+  ];
+  for (const rel of readers) {
+    const code = readFileSync(join(srcDir, rel), "utf8");
+    assert.ok(
+      code.includes("chat.groupTodoRows["),
+      `${rel} 不再读那份全表任务行 ⇒ 与「徽标同源」冲突（#154-9）`,
+    );
+    // 判的是**喂给公共折叠尺子的那份数据**，不是写法：把行先 hoisting 成局部变量也算合规，
+    // 但整份文件都不许再碰那两道有上界的消息缓存。
+    assert.ok(
+      !code.includes("chat.messages["),
+      `${rel} 又折回那份有上界的消息缓存 ⇒ 任务会从看板消失而徽标常亮（#154-9）`,
+    );
+    assert.ok(
+      code.includes("chat.ensureGroupTodoRows("),
+      `${rel} 必须按需补读（冷启动只开任务窗时那份源还没读过），否则界面会空`,
+    );
+  }
+  // 合规写法必须在分母里：时间线那处折消息缓存是**对的**，这条判据不许把它判红
+  const timeline = readFileSync(join(srcDir, "components/ChatWindow.vue"), "utf8");
+  assert.ok(timeline.includes("foldTodos(chat.messages["), "夹具前提：时间线确实在折消息缓存（这条豁免要有对象）");
+  assert.ok(!timeline.includes("chat.groupTodoRows["), "时间线不该改成读那份全表源");
+  // 非空转：坏形状必须被同一台解析器抓到
+  const bad = `const todos = computed(() => foldTodos(chat.messages[convId.value] ?? []));`;
+  assert.ok(bad.includes("foldTodos(chat.messages["), "解析器抓不到坏形状 ⇒ 这条判据是空转的");
+});
+
+// ---------------- ⑲ 「有人@我」只许走那一个三态入口（第二阶段 §10／#103） ----------------
+//
+// 修掉的缺陷：文本消息「有没有 @ 到我」原先只按**昵称**判。昵称可变（改过名字之后，历史上
+// 那些 @ 就不再指向这个人）又不唯一（群里两个人可以同名 ⇒ 一个人被 @，两个人一起亮红点），
+// 所以它天生带错。现在链路里带了「@ 了谁」的设备 id 名单，判定改走 `messageMentionsMe`。
+//
+// 这条判据防的是**回归的路径**：昵称那条没删（旧版本对端不认识这个字段，删了它们就永远
+// 判不出 @ ⇒ 比原缺陷更糟），但它只许作为兜底待在 `messages.ts` 内部。任何调用点直接
+// `messageMentionsName(rec, myName)` 都等于把这条 bug 原地复活，而界面上一切照常 ——
+// 只有改名和同名这两种场景会静默判错，正是最难发现的那类。
+test("「有人@我」只许走 messageMentionsMe：昵称判定不许在调用点直接出现", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const walk = (dir: string, out: string[] = []): string[] => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, e.name);
+      if (e.isDirectory()) walk(full, out);
+      else if (/\.(ts|vue)$/.test(e.name)) out.push(full);
+    }
+    return out;
+  };
+  const BYPASS = ["messageMentionsName(", "messageMentionsAll("];
+  const offenders: string[] = [];
+  let scanned = 0;
+  for (const f of walk(srcDir)) {
+    const rel = f.replace(srcDir + "/", "");
+    // messages.ts 是三态那条兜底的**唯一**合法落点；测试里按名字判是夹具的一部分
+    if (rel === "utils/messages.ts" || rel.endsWith(".test.ts")) continue;
+    scanned += 1;
+    const code = readFileSync(f, "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/<!--[\s\S]*?-->/g, "")
+      .replace(/^[ \t]*\/\/.*$/gm, "");
+    for (const lit of BYPASS) if (code.includes(lit)) offenders.push(`${rel}（含 ${lit}）`);
+  }
+  // 前置：真的扫到了东西，否则"零违规"只是因为路径写错
+  assert.ok(scanned > 50, `只扫到 ${scanned} 个文件 —— 目录口径不对，这条判据在空转`);
+  assert.deepEqual(
+    offenders,
+    [],
+    "绕过三态入口直接按昵称判 @ ⇒ 改名与同名两种场景会静默判错。改法：调 `messageMentionsMe(rec, {id, name})`",
+  );
+  const messagesSrc = readFileSync(join(srcDir, "utils", "messages.ts"), "utf8");
+  // ① 唯一入口必须真的还在被消费者用着 —— 否则上面的"零违规"只是因为没人判 @ 了
+  const storeSrc = readFileSync(join(srcDir, "stores", "useChatStore.ts"), "utf8");
+  // 2026-09-28：这三条规则整体搬进 `messages.ts::freshMentionedConvs`（搬的目的就是能吃单测）。
+  // ⇒ 消费者侧现在认的是**那个入口的调用**，同时**入口自己**必须还在调 `messageMentionsMe`：
+  //   两头都钉，才同时排掉「搬成一个没人调的空壳」与「store 里再各判一遍」这两种复活。
+  assert.ok(
+    /\bfreshMentionedConvs\s*\(/.test(storeSrc),
+    "useChatStore 不再判「有人@我」⇒ 红点整条消失，而上面那条零违规是假的",
+  );
+  assert.ok(
+    /function freshMentionedConvs[\s\S]*?messageMentionsMe\s*\(/.test(messagesSrc),
+    "freshMentionedConvs 里没在调 messageMentionsMe ⇒ 三态入口成了没人走的死代码，红点改由别处判 = 第二个入口",
+  );
+  // ② 三态的 id 那条分支必须还在（不许把 messageMentionsMe 压回"只看昵称"）
+  assert.ok(
+    /Array\.isArray\(\s*ids\s*\)/.test(messagesSrc) && messagesSrc.includes("ids.includes(me.id)"),
+    "messageMentionsMe 里的 id 分支不见了 ⇒ 三态被压回两态，本次修的缺陷原样复活",
+  );
+  // ③ 兜底那条也必须还在：旧版本对端不带这个字段，删掉它 = 那些消息永远不亮
+  assert.ok(
+    /textMentionsName\(\s*rec\.content/.test(messagesSrc),
+    "昵称兜底被删 ⇒ 不认识 mentions 字段的旧对端发的 @ 再也判不出来（INV-P24 降级）",
+  );
+  // ④ 「用户此刻在不在看」这条口径只许有一个家，而且红点那条必须真的把它传进去：
+  //   "会话开着"不等于"看着"（桌面端启动会自动打开最近那个会话），只按开着就抑制红点，
+  //   同一个瞬间会出现「已读说没在看、红点说在看」两种相反答案 —— 两处各写一遍迟早只改一处。
+  assert.ok(
+    /activeVisible:\s*chatViewerLooking\(\)/.test(storeSrc),
+    "红点那条没把「在不在看」传进 freshMentionedConvs ⇒ 退回「开着就等于看着」，后台窗口里收到的 @ 会被静默咽掉",
+  );
+  const hiddenHits = storeSrc.split("!document.hidden && app.chatVisible").length - 1;
+  assert.equal(
+    hiddenHits,
+    1,
+    `「!document.hidden && app.chatVisible」这个组合在 store 里出现 ${hiddenHits} 次（应为 1 次，只在 chatViewerLooking 那一处）⇒ 这条口径又分出第二个家，两条规则迟早只改一处`,
+  );
+  const lookerUses = storeSrc.split("chatViewerLooking()").length - 1;
+  assert.ok(
+    lookerUses >= 2,
+    `chatViewerLooking() 只被引用 ${lookerUses} 次 ⇒ 已读与红点两条没有真的共用这份口径（定义那一处不计）`,
+  );
+  // 非空转：同一台解析器要抓得到那个坏形状，且不误抓"只是注释里提一句"
+  const bad = `const hit = myName ? messageMentionsName(rec, myName) : false;`;
+  assert.ok(BYPASS.some((lit) => bad.includes(lit)), "夹具没被抓到 ⇒ 这条判据是空转的");
+  const commentOnly = `// 兜底走 messageMentionsName(rec, myName)\nconst ok = chat.mentionedConvs.has(id);`;
+  const stripped = commentOnly.replace(/^[ \t]*\/\/.*$/gm, "");
+  assert.ok(!BYPASS.some((lit) => stripped.includes(lit)), "注释里的名字被误抓");
+});
+
+// ---------------- ⑳ 「@ 了谁」这条链的七段，断在哪一段就报哪一段 ----------------
+//
+// 为什么需要它：这条链**跨了两种语言、七个文件**，而且中间三段是"看不见就没事"的
+// （DOM 的 data-mention-id → IPC 参数 → 加密明文 → 解密 → emit 形状）。任何一段被改动
+// 都不会有编译错误，也不会有测试红 —— 表现是「@ 了我不亮红点」，而这正是本格原来
+// 判不到根的那条缺陷（#103）。护栏按形状扫这七处，缺哪一段就点名哪一段。
+//
+// ⚠️ 刻意只断"接缝在不在"，不断实现细节（不锁参数名顺序之外的东西）。真正的行为判据在
+//    protocol 层单测（三态编解码）、messages.test.ts（三态判定）、state.rs（emit 形状）。
+test("「有人@我」从输入框到对端、再到气泡的接缝必须齐全（跨语言链条断在中间是无声的）", () => {
+  const rootDir = join(import.meta.dirname, "..", "..");
+  const SEAMS: [string, string, string][] = [
+    ["src/components/chat/MessageComposer.vue", "emit(\"send\", { content: text, kind: k, mentionIds });", "① 输入框没把名单随 send 交出去"],
+    ["src/components/ChatWindow.vue", "await chat.send(convId, content, kind, mentionIds);", "② 会话窗口收下了名单却没往下传"],
+    ["src/stores/useChatStore.ts", "api.sendGroupMessage(convId.slice(6), content, kind, mentionIds)", "③ store 发送时丢了这一参"],
+    ["src/api/index.ts", "...(mentions ? { mentions } : {})", "④ 门面把『没带』和『空名单』压成了同一种（缺省必须不发这个键）"],
+    ["src-tauri/src/commands/group_files.rs", "mentions: Option<Vec<String>>,", "⑤ 命令入口不再收这个参数"],
+    ["src-tauri/src/commands/window.rs", "crate::protocol::gossip_plaintext_with_targets(", "⑥ 内核没把名单写进加密明文"],
+    ["src-tauri/src/network/transport/gossip.rs", "mention_ids: mentions.as_deref(),", "⑦ 接收端解出来了却没回送给界面"],
+    // ↓ #122 新增的三条腿：落点（哪一段算谁）从发送侧算出来、随事件送到界面、并被渲染件真的收下。
+    //   这三段每一段被改动都不会有编译错误 —— 断掉的形状是"同名两个人又一起亮"，跟 #103 当初同族。
+    ["src-tauri/src/commands/window.rs", "build_mention_targets(&content, ids,", "⑧ 发送侧不再算 @ 的落点（同名两人又分不开）"],
+    ["src-tauri/src/network/transport/gossip.rs", "mention_targets: mention_targets.as_deref(),", "⑨ 解出的落点没回送给界面"],
+    ["src/components/message/MessageTextBubble.vue", "props.mentionTargets ?? null,", "⑩ 气泡没收下落点 ⇒ 只能退回按昵称猜"],
+    // ↓ #122 第二段（落库）加的两条：落点从"只随本次投递"变成"跟着这一行进库"，
+    //   断掉的形状是"重启之后同名两个人又一起亮"——编译期什么都不会说。
+    ["src-tauri/src/commands/window.rs", "mention_targets: targets.clone(),", "⑪ 发送侧算出的落点没写进自己那一行（自己发的历史重启后失忆）"],
+    ["src-tauri/src/network/transport/gossip.rs", "mention_targets: mention_targets.clone(),", "⑫ 收到的落点没跟着落库 ⇒ 第二段白做"],
+  ];
+  const missing: string[] = [];
+  for (const [rel, needle, why] of SEAMS) {
+    const code = readFileSync(join(rootDir, rel), "utf8");
+    if (!code.includes(needle)) missing.push(`${rel} —— ${why}`);
+  }
+  assert.deepEqual(missing, [], "「@ 了谁」这条链断了：\n" + missing.join("\n"));
+  // 非空转：emit 那一腿最容易被顺手改成 `None`，这里当场演一遍"改坏必须报红"
+  const broken = SEAMS[6][1].replace("mentions.as_deref()", "None");
+  assert.ok(!SEAMS[6][1].includes(broken), "锚点写得太松 ⇒ 改坏了也抓不到");
+});
+
+// ---------------- ㉑ 乐观气泡的替换只许一个家（#160 群里发完显示两条） ----------------
+//
+// 形状：`send()` 先上 `tmp-*` 气泡 → 后端为跨窗口同步加的**自 emit** 把真实记录先落进同一个
+// 列表 → invoke 返回后那次"把乐观行换成真实记录"如果是**按位置裸 splice**，就会插进第二份
+// 同 `msg_id` 的记录。库里只有一行，所以切一次会话（`loadMessages` 整表重读）又变回一条
+// —— 用户看到的正是"发完两条、切一下就好"。
+// ⇒ 替换必须按 `msg_id` 认，并且这个判断只许住在 `utils/messages.ts::replaceOptimistic` 一处。
+test("乐观→真实的替换必须走那一个纯函数，store 里不许留第二份裸 splice", () => {
+  const root = join(import.meta.dirname, "..");
+  const store = readFileSync(join(root, "stores", "useChatStore.ts"), "utf8");
+  const utils = readFileSync(join(root, "utils", "messages.ts"), "utf8");
+
+  assert.ok(
+    store.includes("replaceOptimistic(list, msgId, next)"),
+    "store 的 replaceMessage 不再调用那个纯函数 ⇒ 时间线里同 msg_id 只许一条这件事没人守",
+  );
+  // 第二条腿：那份纯函数必须**按 msg_id** 认出"真实记录已经在列表里"并摘掉乐观行，
+  // 退化成按位置换就等于把 bug 放回去。
+  assert.ok(
+    utils.includes("m.msg_id === next.msg_id"),
+    "replaceOptimistic 里那条按 msg_id 的吸并分支不见了 ⇒ 自 emit 先到时会插出两条",
+  );
+  // 分母里必须包含"合规写法不许被抓"：这里用现在这份真源码当阳性对照的反面 ——
+  // 裸 splice 那个形状一旦回到 store 就必须被抓到。
+  const rawSplice = /= \[\.\.\.list\.slice\(0, i\), merged,/;
+  assert.ok(!rawSplice.test(store), "store 里又出现了按位置裸 splice 的替换（第二个家）");
+  assert.ok(
+    rawSplice.test("messages.value[convId] = [...list.slice(0, i), merged, ...list.slice(i + 1)];"),
+    "这台解析器连坏形状都抓不到 ⇒ 上面那句 !test 是空转",
+  );
+});
+
+// ---------------- ㉒ 对端已读推进的谓词只许一份口径（#161） ----------------
+//
+// 后端 `src-tauri/src/db/read_receipts.rs::mark_own_messages_read_upto` 是这句判据的家，
+// 它的注释就写着"三份副本里取到最弱的那一条就是缺陷"（failed 会被后面那条已读点亮成已读）。
+// 前端那份曾经正是只排除 `read` ⇒ 同一条规则两个家、其中一家缺条件。
+test("已读回执推进的排除清单在前端只许走那个纯函数，不许再内联一份弱谓词", () => {
+  const root = join(import.meta.dirname, "..");
+  const store = readFileSync(join(root, "stores", "useChatStore.ts"), "utf8");
+  const utils = readFileSync(join(root, "utils", "messages.ts"), "utf8");
+  assert.ok(store.includes("promoteOnPeerRead(list, myDeviceId.value"), "store 不再走那个家 ⇒ 谓词会分叉");
+  for (const k of ["read", "failed", "recalled"]) {
+    assert.ok(utils.includes(`"${k}"`), `排除清单里的 ${k} 不见了 ⇒ 后端家那条注释说的缺陷回来了`);
+  }
+  // 反空转：这条判据必须抓得住"退回内联弱谓词"那个坏形状
+  const weak = /m\.status !== "read" && m\.ts <= p\.last_read_ts/;
+  assert.ok(!weak.test(store), "store 里又出现内联的弱谓词（只排除 read）");
+  assert.ok(weak.test('if (m.sender_id === myDeviceId.value && m.status !== "read" && m.ts <= p.last_read_ts) {'), "这台解析器抓不到坏形状 ⇒ 上面那句 !test 是空转");
+});
+
+// 这两条判据都在**源文本**里找形状，而注释里出现被禁的字面量是好事（正是在解释为什么禁）
+// ⇒ 必须先剥注释再比（本文件 ⑳ 那处已有同样口径，这里只是把它抽出来给两条共用）。
+const stripShapeComments = (s: string): string =>
+  s
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^[ \t]*\/\/.*$/gm, "");
+// 对照样本必须三种注释各写一处被禁字面量，同时留一行真代码不许被剥掉：
+// 少了任何一种 ⇒ 这条判据会把解释性注释判成违规（假红），多了就变成空转。
+{
+  const stripped = stripShapeComments(
+    '// 原生 <select> 的弹层是系统画的\n/* 同理 <option> 也看不见 */\n<!-- 模板注释里再写一次 <option> -->\nconst keepMe = 1;\n',
+  );
+  assert.ok(!stripped.includes("<select>"), "行注释没被剥掉 ⇒ 判据会假红在解释上");
+  assert.ok(!stripped.includes("<option>"), "块注释或模板注释没被剥掉 ⇒ 判据会假红在解释上");
+  assert.ok(stripped.includes("const keepMe"), "剥注释把真代码也吃了 ⇒ 判据变成摆设");
+}
+
+// ---------------- ㉓ 详情弹窗的三选一字段只许走那一个共用组件（暗夜下的原生弹层是系统画的） ----------------
+//
+// 用户 2026-09-30 实测：暗夜模式里展开「类型」下拉，「任务」「缺陷」两行几乎看不见。
+// 根因不是配色错，是**渲染者不同**：原生 `<select>` 的弹层由系统画，而我们给控件写了
+// `bg-transparent` + 主题文字色 ⇒ 浅底上落近白字，只有当前项因系统反色才读得出来。
+// 同弹窗里「状态」早就是自绘菜单（`.gosslan-menu`），一处原生一处自绘才会只坏一半。
+test("详情弹窗的三选一字段只许走 TodoPickField，不许再出现原生 select", () => {
+  const root = join(import.meta.dirname, "..");
+  const dialog = stripShapeComments(readFileSync(join(root, "components", "TodoDetailDialog.vue"), "utf8"));
+  const field = stripShapeComments(readFileSync(join(root, "components", "TodoPickField.vue"), "utf8"));
+  // 三格（状态 / 优先级 / 类型）都在，且一个不少
+  assert.equal(
+    (dialog.match(/<TodoPickField\b/g) ?? []).length,
+    3,
+    "详情弹窗里三选一字段应当是 3 处 TodoPickField（状态 / 优先级 / 类型）",
+  );
+  for (const bad of ["<select", "<option"]) {
+    assert.ok(!dialog.includes(bad), `详情弹窗又出现了 ${bad} ⇒ 暗夜下那半截看不见的弹层会回来`);
+  }
+  // 共用组件必须吃主题（自绘菜单），且不许写死色值
+  assert.ok(field.includes("gosslan-menu"), "TodoPickField 不再走 .gosslan-menu ⇒ 观感分叉");
+  assert.ok(field.includes("update:modelValue"), "TodoPickField 不再往上抛值 ⇒ 三格点了没反应");
+  assert.ok(!/#[0-9a-fA-F]{3,8}\b/.test(field), "TodoPickField 里出现了写死的十六进制色 ⇒ 暗色档不会跟着变");
+  // 反空转：这台判据必须抓得住"退回原生下拉"那个坏形状
+  const native = /<select\b/;
+  assert.ok(
+    native.test('<select id="todo-category-pick" class="bg-transparent"><option>a</option></select>'),
+    "判据抓不到原生 select ⇒ 上面那句 includes 是空转",
+  );
+});
+
+// ---------------- ㉔ 看板行的类型角标三档一律画（「任务」不许再靠"不画"来降噪） ----------------
+//
+// 以前只有需求/缺陷画标签，理由是"每行都挂一个灰标签会把区分淹掉"。用户实测的结论相反：
+// **没有标签那一档才是最难认的**，扫一眼只能靠猜 ⇒ 三档一律画，「任务」用中性档。
+test("看板行的类型角标三档一律画，不许再用「任务不画」降噪", () => {
+  const root = join(import.meta.dirname, "..");
+  const board = stripShapeComments(readFileSync(join(root, "components", "GroupTasksBoard.vue"), "utf8"));
+  const todos = readFileSync(join(root, "utils", "todos.ts"), "utf8");
+  assert.ok(
+    !/category\s*!==\s*['"]task['"]/.test(board),
+    "看板又回到「只有需求/缺陷画角标」⇒ 用户那句「列表上没明显标识、不好区分」就还在",
+  );
+  assert.ok(board.includes("TODO_CATEGORY_PILL[x.category]"), "看板行的类型角标不再吃那张配色表");
+  for (const k of ["task", "requirement", "bug"]) {
+    assert.ok(new RegExp(`^\\s*(${k}|"${k}")\\s*:`, "m").test(todos), `配色表里少了 ${k} 那一档`);
+  }
+  // 反空转：坏形状必须被上面那条正则抓到
+  assert.ok(
+    /category\s*!==\s*['"]task['"]/.test('<span v-if="x.category !== \'task\'" :class="TODO_CATEGORY_PILL[x.category]">'),
+    "判据抓不到「任务不画」那个条件 ⇒ 上面那句 !test 是空转",
+  );
+});
+
+// ---------------- ㉕ 自绘标题栏压在**一切**内容浮层之上（只有 Toast 可以盖它） ----------------
+//
+// 真实缺陷（用户 2026-09-30 实测「图片预览独立窗口会遮住头部标题栏关闭最小化那块，应该只在
+// 下面内容区」+「所有独立窗口标题栏都不会被内容栏遮住，标题栏优先度最高」）：
+// ⑫ 那条只钉住**五个具名**浮层之间的先后，钉不住"第六个浮层随手写个更大的数就把 caption 压下去了"。
+// 而 `TitleBar` 原先根本没有 `position`/`z-index` ⇒ 按绘制顺序**任何**定位元素都高于它：
+// ✕/− 看不见也点不着，辅助窗那条 caption 还是整扇窗唯一的拖拽区（窗口连移都移不动）。
+// 所以这条判据的作用点是**全体 .vue**，不是清单：标题栏必须严格高于除 Toast 外的最大层级，
+// 且严格低于 Toast（Toast 是 `pointer-events-none` 的失败反馈，被压住等于没有反馈）。
+// 层级一律从源码现算，不在这里抄任何数字 ⇒ 新增浮层抬高自己时会当场红，而不是靠人记得阶梯。
+test("自绘标题栏高于一切内容浮层、只低于 Toast（层级从源码现算）", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  /** 剥注释后取该文件里**所有** z-[NN]（一个文件可能有多处浮层）。 */
+  const zsOf = (text: string) =>
+    ((stripShapeComments(text).match(/z-\[(\d+)\]/g) ?? []).map((s) => Number(s.slice(3, -1))));
+
+  const titlePath = join(srcDir, "components", "TitleBar.vue");
+  const toastPath = join(srcDir, "components", "ToastHud.vue");
+  const titleZ = Math.max(...zsOf(readFileSync(titlePath, "utf8")));
+  const toastZ = Math.max(...zsOf(readFileSync(toastPath, "utf8")));
+
+  const files = collectVueFiles(srcDir);
+  assert.ok(files.length > 20, `应扫描到全部组件，实际 ${files.length} 个`);
+  const content: { file: string; z: number }[] = [];
+  for (const f of files) {
+    if (f === titlePath || f === toastPath) continue;
+    for (const z of zsOf(readFileSync(f, "utf8"))) content.push({ file: f.replace(`${srcDir}/`, ""), z });
+  }
+  assert.ok(content.length > 0, `一个内容层级都没扫到（${files.length} 个 .vue）⇒ 这条判据在空转`);
+  const top = content.reduce((a, b) => (b.z > a.z ? b : a));
+  assert.ok(
+    titleZ > top.z,
+    `标题栏(z-${titleZ}) 被内容浮层压住了：${top.file} 写着 z-[${top.z}] ⇒ caption 的 ✕/− 与唯一拖拽区会看不见点不着`,
+  );
+  assert.ok(titleZ < toastZ, `Toast(z-${toastZ}) 压不到标题栏(z-${titleZ}) 之上 ⇒ 顶部那条失败提示会被 caption 挡住`);
+
+  // 反空转：① 抬高一档的内容浮层必须被上面那句抓到；② 注释里写的 z-[NN] 不许算数。
+  assert.ok(zsOf('<div class="glass fixed inset-0 z-[200]">').includes(200), "现算取不到内容层级 ⇒ 上面那条比较是摆设");
+  assert.deepEqual(
+    zsOf("<!-- 阶梯里写 z-[200] 只是解释 -->\n/* z-[300] */\n// z-[400]\nconst keep = 'z-[7]';"),
+    [7],
+    "剥注释没生效 ⇒ 任何一句解释文字都能把这条判据顶红（假红）",
+  );
+});
+
+// ---------------- ㉖ 群任务那串编号只许由 todoCode 出（字母不落库、短码不落库） ----------------
+//
+// 用户 2026-09-30 那八条里最容易改坏的是两件"看着无害"的事：
+// ① 某个界面自己拼一次 `#N`、或按当前顺序数一个 1..N —— 于是同一条任务在两处显示两个号
+//    （看板左列原本就是 ordinals，切一次筛选号就变，正是那条缺陷的形状）；
+// ② 把字母或"后四位"这种**显示态**写进载荷/库里 —— 那是第二个事实来源，跨端一旦不一致就再也对不上。
+// 所以这条钉的是：字母表 + 位数规则只在 `utils/todos.ts` 一处，三处界面都只许调用 `todoCode`，
+// 而线上载荷里根本没有"字母"这一格（规则 7）。
+test("群任务编号只有一个家：字母表与缩短规则在 todos.ts，界面只许调用", () => {
+  const root = join(import.meta.dirname, "..");
+  const todos = stripShapeComments(readFileSync(join(root, "utils", "todos.ts"), "utf8"));
+  const protocol = readFileSync(join(root, "..", "src-tauri", "src", "protocol.rs"), "utf8");
+
+  // ① 一个家：字母表、位数上限、算码的函数、会话层那张实时表都只在 utils/todos.ts
+  for (const shape of ["TODO_CATEGORY_LETTER", "TODO_CODE_DIGITS", "export function todoCode", "export function todoLiveMap"]) {
+    assert.ok(todos.includes(shape), `utils/todos.ts 里少了 ${shape} ⇒ 编号口径没有家了`);
+  }
+  for (const k of ["task", "requirement", "bug"]) {
+    assert.ok(
+      new RegExp(`^\\s*(${k}|"${k}")\\s*:`, "m").test(todos),
+      `字母表里少了 ${k} 那一档 ⇒ 该类型的新任务会整个不出码`,
+    );
+  }
+
+  // ② 三处界面（卡片 / 看板 / 详情）只许取用，不许各拼一份
+  for (const rel of ["components/TodoCardBubble.vue", "components/GroupTasksBoard.vue", "components/TodoDetailDialog.vue"]) {
+    const src = stripShapeComments(readFileSync(join(root, rel), "utf8"));
+    assert.ok(/todoCode\(/.test(src), `${rel} 不再通过 todoCode 取编号 ⇒ 显示口径出现第二份`);
+    assert.ok(!/#\$\{/.test(src), `${rel} 又手写了一次「# + 号」那种前缀`);
+    assert.ok(!/\bordinals\b/.test(src), `${rel} 把位置序号当编号用了 ⇒ 切一次筛选同一条任务就换号`);
+    assert.ok(!/TODO_CODE_DIGITS/.test(src), `${rel} 自己数了位数 ⇒ 缩短规则会有两份`);
+  }
+
+  // ③ 字母与短码都是**现推的显示态**：线上载荷里根本没有这一格
+  assert.ok(!/\bletter\b/.test(protocol), "群任务载荷里出现了 letter ⇒ 字母变成第二个事实来源");
+  assert.ok(/pub number: i64,/.test(protocol), "载荷里的 number 不再是那个完整数字 ⇒ 编号口径被动过");
+
+  // 反空转：三种坏形状必须被上面那几条抓到
+  assert.ok(/#\$\{/.test("const t = `#" + "${item.number} `;"), "抓不到手写前缀 ⇒ 那句 !test 是空转");
+  assert.ok(/\bordinals\b/.test("const ordinals = computed(() => new Map());"), "抓不到位置序号 ⇒ 那句 !test 是空转");
+  assert.ok(/\bletter\b/.test("pub letter: String,"), "抓不到载荷里的 letter ⇒ 那句 !test 是空转");
+});
+
+/**
+ * 本人头像只有**一个**渲染处（`SelfAvatar`），且那三处确实都在用它。
+ *
+ * 真实现场（2026-10-07 用户报）：同一个账号在三个地方三张脸 ——
+ * 桌面导航栏是 emoji 小动物、移动端「我的」页顶部是 lucide 的 `UserCircle`（"一个蓝色的图标"）、
+ * 资料页虽是 emoji 却被一层常显的红色相机蒙版整个盖住（"一个红色的卡片"）。
+ * 这类缺陷**编译过、门禁绿、只有肉眼看得出**，所以必须机器盯。
+ *
+ * 两条一起用：正向钉"三个消费点都在"，反向钉"图片那一支没有第二个家"。
+ * 只写正向会漏掉"新站点又手写一份"；只写反向会漏掉"某处被改成不渲染头像"。
+ */
+test("本人头像三处都走 SelfAvatar", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const surfaces = [
+    "components/NavRail.vue",
+    "layouts/ResponsiveLayout.vue",
+    "components/settings/ProfileSection.vue",
+  ];
+  for (const rel of surfaces) {
+    const src = readFileSync(join(srcDir, rel), "utf8");
+    assert.match(src, /import SelfAvatar from "@\/components\/SelfAvatar\.vue";/, `${rel} 必须 import SelfAvatar`);
+    assert.match(src, /<SelfAvatar\b/, `${rel} 必须用 <SelfAvatar> 渲染本人头像`);
+  }
+});
+
+test("SelfAvatar 的那个「唯一数据源」确实是 store，不是各自传进来的 prop", () => {
+  const src = readFileSync(join(import.meta.dirname, "..", "components", "SelfAvatar.vue"), "utf8");
+  // 图片与默认脸都从 useAppStore 的 device 现读 —— 这是"三处同一个数据源"这句话的落点。
+  assert.match(src, /const src = computed\(\(\) =>/, "图片要有唯一的取值口");
+  assert.match(src, /app\.device\?\.avatar/, "图片必须来自 app.device.avatar");
+  assert.match(src, /avatarSeedFor\(app\.device\?\.device_id \|\| app\.device\?\.nickname \|\| null\)/,
+    "默认脸的种子必须来自 store 的 device_id（不许用调用点手里那份未保存的昵称）");
+  // 反空转：这条判据读的是真文件；若 SelfAvatar 被改名/删掉，上面三条会一起红，
+  // 而不是"扫到 0 处所以恒真"。
+  assert.match(src, /class="gosslan-avatar-box/, "根节点要带 gosslan-avatar-box（emoji 字号靠它的容器查询）");
+});
+
+// ---------------- ㉗ 搜索结果行只许走那一份「kind → 人话」，不许铺载荷原文 ----------------
+//
+// 用户 2026-10-09：「搜索界面搜索列表显示的都是 json」。887477e 那次只堵了**本机不认识**的
+// kind，而 image / file / merge / todo / poll / announcement 这六种**认识**的 kind 载荷本来就是
+// JSON，检索页当时仍然直接铺 `content` ⇒ 六种里任何一种命中都是一屏花括号。
+// 判据钉的是"这一行有没有过 `previewBody`"，不是"有没有出现 m.content"——
+// 后者是取值口，永远要在（传给 previewBody 的就是它）。
+test("搜索结果行必须过 previewBody，不许直接铺载荷", () => {
+  const root = join(import.meta.dirname, "..");
+  const src = stripShapeComments(
+    readFileSync(join(root, "components", "search", "ChatSearchDialog.vue"), "utf8"),
+  );
+  assert.ok(
+    /previewBody\(\s*m\.kind,\s*m\.content/.test(src),
+    "检索行不再走 previewBody 那份唯一的「kind → 人话」⇒ 卡片 kind 的 JSON 会回到界面上",
+  );
+  // 三种"把载荷原样交出去"的写法一律禁止（返回、三元的一支、直接插值）
+  for (const bad of [/return\s+m\.content\s*[;\n]/, /\?\s*m\.content\s*:/, /\{\{\s*m\.content\s*\}\}/]) {
+    assert.ok(!bad.test(src), `检索行又把载荷原文直接交给了界面：${bad}`);
+  }
+  // 反空转：上面三条必须抓得住修复前那一行的真实形状
+  const before = "return isKnownKind(m.kind) ? m.content : UNSUPPORTED_KIND_LABEL;";
+  assert.ok(/\?\s*m\.content\s*:/.test(before), "判据抓不到修复前那一行 ⇒ 上面那句 !test 是空转");
+  assert.ok(!/previewBody\(/.test(before), "正向那条也一样，改回去要能红");
+});
+
+// ---------------- ㉘ 自绘菜单必须成对写 frost（.gosslan-menu 自己不带底） ----------------
+//
+// 同一句用户反馈的另一半：搜索面板那两个筛选下拉是透明的。全站六处 `.gosslan-menu` 里
+// 五处写了 `frost`、两处漏了 —— 这种"只少一个类"的缺陷没有任何机器信号，
+// 而它坏的方式是**文字叠在文字上**，比不居中严重。
+test("findMenuWithoutBackdrop 认容器、不认菜单项", () => {
+  const bad = findMenuWithoutBackdrop('<div class="gosslan-menu absolute right-0 top-9 z-20"></div>');
+  assert.equal(bad.length, 1, "缺底的容器必须报出来");
+  assert.equal(findMenuWithoutBackdrop('<div class="gosslan-menu frost fixed z-[70]"></div>').length, 0);
+  // 菜单项与提示行里也含 "gosslan-menu" 这七个字，按词匹配才不会把它们判成容器
+  assert.equal(
+    findMenuWithoutBackdrop(
+      '<button class="gosslan-menu-item"></button>\n<div class="gosslan-menu-hint px-2"></div>',
+    ).length,
+    0,
+    "按子串匹配会把菜单项当成容器 ⇒ 全站假红",
+  );
+});
+
+test("src 下所有自绘菜单都带了底", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const files = collectVueFiles(srcDir);
+  assert.ok(files.length > 20, `应扫描到全部组件，实际 ${files.length} 个`);
+  const bad: string[] = [];
+  for (const f of files) {
+    for (const issue of findMenuWithoutBackdrop(readFileSync(f, "utf8"))) {
+      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+    }
+  }
+  assert.deepEqual(bad, [], `发现透明得能看见底下一层的自绘菜单：\n${bad.join("\n")}`);
+});
+
+// ---------------- ㉙ 看板行首那两枚图标三档一律画（优先级与类型各一枚） ----------------
+//
+// 用户 2026-10-09：「任务列表的前面可以加一些小图标，显示出优先级 类型各种不同的区别」。
+// 落点之前是空的：优先级在看板上**完全不显示**（只有聊天气泡里那一行文字），
+// 类型只藏在编号首字母 T/R/B 里。两档都"缺省那一格不画"是最容易滑回去的写法 ——
+// 2026-09-30 在类型角标上已经为这件事被纠正过一次（㉔），所以这条与它同族、一起钉。
+test("看板行首的优先级与类型图标三档一律画，不许给缺省档留空", () => {
+  const root = join(import.meta.dirname, "..");
+  const board = stripShapeComments(readFileSync(join(root, "components", "GroupTasksBoard.vue"), "utf8"));
+  const todos = readFileSync(join(root, "utils", "todos.ts"), "utf8");
+  assert.ok(board.includes("PRIORITY_ICON[x.priority]"), "行首不再画优先级图标");
+  assert.ok(board.includes("CATEGORY_ICON[x.category]"), "行首不再画类型图标");
+  // ⚠️ 这里**不能**用"文件里不许出现 category === / priority !=="那种宽尺子：
+  //   `canClaim` 里那句 `x.category === "requirement"`（认领只开给需求）是正当条件，
+  //   第一版就是被它判成红的 —— 尺子宽到会咬合规写法，下一个人的处置是把它改松，
+  //   那条判据就没了。所以只圈这两枚图标**自己那一段**，看它有没有被 v-if / v-show 挡起来。
+  const iconRegion = (key: string): string => {
+    const at = board.indexOf(`:title="t(${key}[`);
+    assert.ok(at >= 0, `行首少了 ${key} 那一枚（连悬停词都不在了）`);
+    const start = board.lastIndexOf("<span", at);
+    const end = board.indexOf("</span>", at);
+    assert.ok(start >= 0 && end > start, `${key} 那一枚的元素形状读不出来`);
+    return board.slice(start, end);
+  };
+  for (const key of ["TODO_PRIORITY_LABEL_KEY", "TODO_CATEGORY_LABEL_KEY"]) {
+    assert.ok(
+      !/v-if|v-show/.test(iconRegion(key)),
+      `${key} 那一枚被条件化了 ⇒ 缺省档又变成"扫一眼靠猜"（㉔ 那次已经纠正过一回）`,
+    );
+  }
+  for (const map of ["TODO_PRIORITY_ICON_CLASS", "TODO_CATEGORY_ICON_CLASS"]) {
+    const at = todos.indexOf(`export const ${map}`);
+    assert.ok(at >= 0, `${map} 不在了`);
+    // 只取那张表的**字面量本身**（到第一个顶格 `};` 为止）。按固定长度切会吃进下一张表，
+    // 于是"这张表少一档、下一张表里有那一档"也能通过 —— 分母松了就等于没判。
+    const body = todos.slice(at, at + 1200).split("\n};")[0];
+    for (const k of map.includes("PRIORITY") ? ["high", "normal", "low"] : ["task", "requirement", "bug"]) {
+      assert.ok(
+        new RegExp(`^\\s*(${k}|"${k}")\\s*:`, "m").test(body),
+        `${map} 里少了 ${k} 那一档`,
+      );
+    }
+  }
+  // 反空转，两个方向都要：
+  // ① 坏形状（把某一枚挡起来）必须被抓到；② 别处的正当条件（`canClaim` 那句 category ===）
+  //    不许被抓到 —— 少了这半边，"把尺子改松"就是下一个人的出路。
+  const lie =
+    '<span v-if="x.priority !== \'high\'" :title="t(TODO_PRIORITY_LABEL_KEY[x.priority])"><component/></span>';
+  assert.ok(/v-if|v-show/.test(lie), "抓不到条件化写法 ⇒ 上面那两条 !test 是空转");
+  // `<component :is>` 会**绕过** componentImports 那条判据（它数的是模板里的 PascalCase 标签）。
+  // 于是映射表里写错一个图标名 = 那一格静默不渲染，界面上只是"少个小图标"，没有任何东西报错。
+  // 这里把两张表的取值逐个钉成"确实在 lucide 的 import 行里"。
+  const importLine = board.match(/import \{([^}]*)\} from "lucide-vue-next";/);
+  assert.ok(importLine, "lucide 的 import 行形状变了 ⇒ 下面那段读不到名单");
+  const imported = new Set(importLine[1].split(",").map((s) => s.trim()).filter(Boolean));
+  for (const mapName of ["PRIORITY_ICON", "CATEGORY_ICON"]) {
+    const at = board.indexOf(`const ${mapName}:`);
+    assert.ok(at >= 0, `${mapName} 不在了`);
+    const body = board.slice(at, at + 400).split("\n};")[0];
+    const used = [...body.matchAll(/:\s*([A-Z][A-Za-z0-9]*)\s*,/g)].map((m) => m[1]);
+    assert.ok(used.length === 3, `${mapName} 只数到 ${used.length} 个取值（应当是三档）`);
+    for (const name of used) {
+      assert.ok(imported.has(name), `${mapName} 用了 ${name}，但它不在 lucide 的 import 里 ⇒ 那一格静默不渲染`);
+    }
+  }
+  // 反空转：上面那条必须抓得住"名字没 import"这个坏形状
+  const lieVals = [..."x: NotImportedIcon,".matchAll(/:\s*([A-Z][A-Za-z0-9]*)\s*,/g)].map((m) => m[1]);
+  assert.ok(lieVals[0] === "NotImportedIcon" && !imported.has("NotImportedIcon"), "抓不到没 import 的名字 ⇒ 空转");
+  // 反空转的另一半：`canClaim` 那种正当条件不许被上面的图标判据抓到（它读的是图标那一段）
+  assert.ok(
+    !/v-if|v-show/.test('return x.category === "requirement" && !x.archived;'),
+    "宽尺子（把整个文件当分母）不许回来",
+  );
+});
+
+// ---------------- 浮层必须 escape 出裁切容器（用户 2026-10-07 那句「被内部 DOM overflow 裁掉」） ----------------
+
+test("复现历史缺陷：自己算坐标、根本没 Teleport → 报缺 Teleport 那一条", () => {
+  const buggy = `<script setup>
+import { useHoverCard } from "@/composables/useHoverCard";
+const { style, open } = useHoverCard({ maxWidth: 256 });
+</script>
+<template>
+  <div class="relative flex">
+    <div class="absolute z-[70] border p-1.5" :style="style">名单</div>
+  </div>
+</template>`;
+  const issues = findFloatingLayerWithoutEscape(buggy);
+  assert.equal(issues.length, 1, `没有 Teleport 时先报这一半，实报 ${issues.map((i) => i.message).join(" / ")}`);
+  assert.match(issues[0].message, /Teleport/);
+  assert.equal(issues[0].line, 3, "行号要指到那次 useHoverCard( 调用（import 那行没有括号，不该被算成分母）");
+});
+
+test("只缺 Teleport（已经 fixed 但还在容器里）→ 只报缺 Teleport 那一条", () => {
+  const half = `<script setup>
+const { style } = useHoverCard();
+</script>
+<template>
+  <div class="absolute z-[70] p-1"><div class="fixed border" :style="style">浮层</div></div>
+</template>`;
+  const issues = findFloatingLayerWithoutEscape(half);
+  assert.equal(issues.length, 1, `只该报缺 Teleport，实报 ${issues.length} 条`);
+  assert.match(issues[0].message, /Teleport/);
+});
+
+test("Teleport 到 body + fixed → 通过", () => {
+  const ok = `<script setup>
+const { style } = useHoverCard();
+</script>
+<template>
+  <Teleport to="body">
+    <div class="fixed z-[70] border p-1.5" :style="style">浮层</div>
+  </Teleport>
+</template>`;
+  assert.deepEqual(findFloatingLayerWithoutEscape(ok), []);
+});
+
+test("Teleport 了但根节点是 absolute → 必须报根节点那一半（旧写法会被别处的 fixed 蒙过去）", () => {
+  const sneaky = `<script setup>
+const { style } = useHoverCard();
+</script>
+<template>
+  <div class="fixed inset-0" />
+  <Teleport to="body">
+    <div class="absolute z-[70] border p-1.5" :style="style">浮层</div>
+  </Teleport>
+</template>`;
+  const issues = findFloatingLayerWithoutEscape(sneaky);
+  assert.equal(issues.length, 1, `同文件别处那枚 fixed 不许替浮层顶掉这一格，实报 ${issues.length} 条`);
+  assert.match(issues[0].message, /根节点要用 fixed/);
+  assert.equal(issues[0].line, 6, "行号要指到那个 Teleport");
+});
+
+test("根元素属性里带 >（v-if=list.length > 0）也要读得到 —— 解析器自己的阳性对照", () => {
+  const gt = `<script setup>
+const { style } = useHoverCard();
+</script>
+<template>
+  <Teleport to="body">
+    <div
+      v-if="chips.length > 0 && pos"
+      :ref="setEl"
+      class="fixed z-[70] border p-1.5"
+      :style="style"
+    >浮层</div>
+  </Teleport>
+</template>`;
+  assert.deepEqual(teleportedRootClasses(gt).map((r) => r.cls), ["fixed z-[70] border p-1.5"]);
+  assert.deepEqual(findFloatingLayerWithoutEscape(gt), []);
+});
+
+test("中间套一层 <Transition> 也要认（图片预览就是这个形状）", () => {
+  const wrapped = `<script setup>
+const { style } = useHoverCard();
+</script>
+<template>
+  <Teleport to="body">
+    <Transition enter-active-class="duration-150">
+      <div v-if="open" class="glass fixed inset-0 z-[80]">浮层</div>
+    </Transition>
+  </Teleport>
+</template>`;
+  assert.deepEqual(findFloatingLayerWithoutEscape(wrapped), []);
+});
+
+test("读不出 Teleport 里的根元素 → 报错而不是静默放行（夹具两种形状）", () => {
+  const empty = `<script setup>
+const { style } = useHoverCard();
+</script>
+<template>
+  <Teleport to="body"></Teleport>
+</template>`;
+  assert.deepEqual(teleportedRootClasses(empty).map((r) => r.cls), [null]);
+  assert.match(findFloatingLayerWithoutEscape(empty)[0].message, /读不出/);
+
+  const onlyComment = `<script setup>
+const { style } = useHoverCard();
+</script>
+<template>
+  <Teleport to="body"><!-- 注释也算读不出 --></Teleport>
+</template>`;
+  assert.deepEqual(teleportedRootClasses(onlyComment).map((r) => r.cls), [null]);
+});
+
+test("不自己算摆位的组件不归这条管（分母不能被放大）", () => {
+  const unrelated = `<template>
+  <div class="absolute inset-y-0 left-0 w-0.5 bg-black" />
+</template>`;
+  assert.deepEqual(findFloatingLayerWithoutEscape(unrelated), []);
+});
+
+test("src 下每个 Teleport 到 body 的根元素自己都是 fixed（不只那条 escape 判据的消费者）", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const files = collectVueFiles(srcDir);
+  const sites: string[] = [];
+  const bad: string[] = [];
+  for (const f of files) {
+    for (const r of teleportedRootClasses(readFileSync(f, "utf8"))) {
+      const rel = f.replace(srcDir + "/", "");
+      sites.push(`${rel}:${r.line}`);
+      if (r.cls === null) bad.push(`${rel}:${r.line} 读不出根元素（形状不认识 ⇒ 不许静默放行）`);
+      else if (!/\bfixed\b/.test(r.cls)) bad.push(`${rel}:${r.line} 根节点不是 fixed：${r.cls.slice(0, 40)}`);
+    }
+  }
+  sites.sort();
+  bad.sort();
+  assert.deepEqual(bad, [], `有 Teleport 出去的层用非 fixed 定位：\n${bad.join("\n")}`);
+  // 分母自己打印：数到 0 就是尺子坏了，要比"全绿"先响
+  assert.ok(sites.length >= 4, `现读的 Teleport 根元素只有 ${sites.length} 处，尺子大概失效了：\n${sites.join("\n")}`);
+});
+
+test("src 下每个自算坐标的浮层都 escape 到 body（分母现算）", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const files = collectVueFiles(srcDir);
+  const consumers = files.filter((f) => /\b(useHoverCard|popupLeft|popupPlacement)\s*\(/.test(readFileSync(f, "utf8")));
+  assert.ok(consumers.length >= 3, `这条判据的分母不能是空的，现数 ${consumers.length} 个消费者`);
+  const bad: string[] = [];
+  for (const f of consumers) {
+    for (const issue of findFloatingLayerWithoutEscape(readFileSync(f, "utf8"))) {
+      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+    }
+  }
+  bad.sort();
+  assert.deepEqual(bad, [], `有浮层被搬回裁切容器里了（消费者：\n${consumers.map((c) => c.replace(srcDir + "/", "")).join("\n")}）\n${bad.join("\n")}`);
+});
+
+// ---------------- ㉛ 整屏形态写了顶部安全区就必须也写底部（roadmap N16） ----------------
+
+test("N16 形状：只写 pt-[env(safe-area-inset-top)] 的整屏形态要报出来", () => {
+  const buggy = `<template>
+  <div class="fixed inset-0 z-[60] flex flex-col bg-x pt-[env(safe-area-inset-top)]">
+    <div class="min-h-0 flex-1 overflow-y-auto p-3"><slot /></div>
+  </div>
+</template>`;
+  const issues = findTopInsetWithoutBottomInset(buggy);
+  assert.equal(issues.length, 1, "只让开顶部的那一种形状必须报 1 条");
+  assert.match(issues[0].message, /Home Indicator/);
+});
+
+test("N16 合规写法两种都不报（分母要含合规形状，否则判据自己空转）", () => {
+  const withUtility = `<template><div class="fixed inset-0 pt-[env(safe-area-inset-top)]">
+  <div class="min-h-0 flex-1 overflow-y-auto safe-bottom"><slot /></div></div></template>`;
+  const withMax = `<template><div class="fixed inset-0 pt-[env(safe-area-inset-top)]">
+  <div class="p-4 pb-[max(env(safe-area-inset-bottom),1rem)]"><slot /></div></div></template>`;
+  assert.deepEqual(findTopInsetWithoutBottomInset(withUtility), [], ".safe-bottom 这条既有写法要算合规");
+  assert.deepEqual(findTopInsetWithoutBottomInset(withMax), [], "max() 这条既有写法要算合规（ActionSheet 早就在用）");
+});
+
+test("N16 的分母不收 :style 写法，也不收带 safe-area-ok 的文件", () => {
+  const styleForm = `<template><div :style="{ top: 'calc(env(safe-area-inset-top, 0px) + 1rem)' }" /></template>`;
+  assert.deepEqual(findTopInsetWithoutBottomInset(styleForm), [], "ToastHud 那种飘条只写顶部是**对的** ⇒ 不许误报");
+  const opted = `<template><div class="fixed inset-0 pt-[env(safe-area-inset-top)]" /></template> <!-- safe-area-ok -->`;
+  assert.deepEqual(findTopInsetWithoutBottomInset(opted), [], "逃生阀要走得通");
+});
+
+test("真实树：每个写了顶部安全区的 .vue 都也写了底部（分母现算并打印）", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const files = collectVueFiles(srcDir);
+  const sites: string[] = [];
+  const bad: string[] = [];
+  for (const f of files) {
+    const src = readFileSync(f, "utf8");
+    const rel = f.replace(srcDir + "/", "");
+    if (!/pt-\[env\(safe-area-inset-top/.test(src)) continue;
+    sites.push(rel);
+    for (const issue of findTopInsetWithoutBottomInset(src)) {
+      bad.push(`${rel}:${issue.line}  ${issue.message.slice(0, 40)}`);
+    }
+  }
+  sites.sort();
+  bad.sort();
+  // 分母自己打印：数到 0 就是尺子坏了（这三处 = MobilePageFrame / FavoritePanel / BaseModal）
+  assert.ok(sites.length >= 3, `现读只有 ${sites.length} 个文件写了整屏顶部安全区，尺子大概失效了：\n${sites.join("\n")}`);
+  assert.deepEqual(bad, [], `有整屏形态没让开底部安全区：\n${bad.join("\n")}\n消费者：${sites.join(", ")}`);
+});
+
+test("N22 形状：缺哪个报哪个（两个都缺报两个）", () => {
+  const both = findMessageImageWithoutFetchHint('<template>\n  <img alt="" src="a.png" />\n</template>');
+  assert.equal(both.length, 1);
+  assert.match(both[0].message, /loading="lazy"/);
+  assert.match(both[0].message, /decoding="async"/);
+  const half = findMessageImageWithoutFetchHint('<template>\n  <img loading="lazy" alt="" src="a.png" />\n</template>');
+  assert.equal(half.length, 1);
+  assert.match(half[0].message, /decoding="async"/);
+  assert.doesNotMatch(half[0].message, /loading="lazy" 和/);
+});
+
+test("N22 合规写法、注释里的 <img>、逃生阀都不报（分母不能被 prose 撑大）", () => {
+  const ok = '<template>\n  <img loading="lazy" decoding="async" alt="" src="a.png" />\n</template>';
+  assert.deepEqual(findMessageImageWithoutFetchHint(ok), []);
+  const prose = '<script>\n/** 此时 <img src> 直接报 error，所以换 :key */\n</script>\n<template>\n  <img loading="lazy" decoding="async" src="a.png" />\n</template>';
+  assert.deepEqual(findMessageImageWithoutFetchHint(prose), [], "文档注释里提一句 <img> 不该被数进分母");
+  const opted = '<template>\n  <!-- img-eager-ok -->\n  <img src="a.png" />\n</template>';
+  assert.deepEqual(findMessageImageWithoutFetchHint(opted), [], "逃生阀要走得通");
+});
+
+test("N22 属性值里的 > 不许截断标签（截断会把合规的报成缺）", () => {
+  const t = "<template>\n  <img :style='{ cursor: scale > 1 ? 2 : 1 }' loading='lazy' decoding='async' src='a.png' />\n</template>";
+  assert.deepEqual(findMessageImageWithoutFetchHint(t), []);
+  assert.equal(findImgTags(t).length, 1, "扫描器自己也只该数到 1 条");
+});
+
+test("真实树：src/components/message 下每条 <img> 都带两个 hint（分母现算并打印）", () => {
+  const dir = join(import.meta.dirname, "..", "components", "message");
+  const files = collectVueFiles(dir);
+  const sites: string[] = [];
+  const bad: string[] = [];
+  let exempt = 0;
+  for (const f of files) {
+    const src = readFileSync(f, "utf8");
+    const n = findImgTags(src).length;
+    if (n === 0) continue;
+    const rel = f.replace(dir + "/", "");
+    sites.push(`${rel}=${n}`);
+    if (src.includes("img-eager-ok")) { exempt += 1; continue; }
+    for (const issue of findMessageImageWithoutFetchHint(src)) {
+      bad.push(`${rel}:${issue.line} ${issue.message.slice(0, 46)}`);
+    }
+  }
+  sites.sort();
+  bad.sort();
+  assert.ok(sites.length >= 9, `message/ 下的 <img> 只数到 ${sites.length} 份，尺子大概失效了：\n${sites.join("\n")}`);
+  assert.deepEqual(bad, [], `有消息图缺 fetch hint：\n${bad.join("\n")}`);
+  assert.equal(exempt, 1, `显式豁免的那份应当只有 ImageLightbox 一支，现数 ${exempt}（${sites.join(", ")}）`);
+  console.log(`· 真实树 <img> 分母：${sites.length} 份文件 / 共 ${sites.reduce((a, s) => a + Number(s.split("=")[1]), 0)} 条标签，豁免 ${exempt} 份`);
+});
+
+test("N21 判据：列表型 prop 的绑定里出现空数组字面量必须报（正向）", () => {
+  const bad = [
+    '<template><MessageItem :reactions="map.get(id) ?? []" /></template>',
+    '<template><MessageItem :group-reader-ids="isGroup ? ids(g, ts) : []" /></template>',
+    '<template><MessageReactionBar :chips="reactions ?? []" /></template>',
+  ].join("\n");
+  const issues = findFreshEmptyArrayProp(bad);
+  assert.equal(issues.length, 3, `三处字面量该报三条，现数 ${issues.length}`);
+  assert.ok(issues.every((i) => i.line > 0), '每条都要带行号');
+});
+
+test("N21 判据：引共享常量 / 非名单 prop / 注释里的字面量都不报（反面三例）", () => {
+  assert.deepEqual(findFreshEmptyArrayProp('<template><MessageItem :reactions="map.get(id) ?? EMPTY_REACTION_CHIPS" /></template>'), []);
+  assert.deepEqual(findFreshEmptyArrayProp('<template><Foo :rows="[]"/></template>'), [], "rows 不在名单里 ⇒ 不误伤别处");
+  assert.deepEqual(findFreshEmptyArrayProp("<template>\n<!-- :reactions=\"x ?? []\" 说明文字 -->\n</template>"), []);
+});
+
+test("N21 真实树：消息行调用点上这些绑定一个都不许带空数组字面量（分母与阳性对照现数）", () => {
+  const rel = ["components/ChatWindow.vue", "components/MessageItem.vue"];
+  let bindings = 0;
+  const bad: string[] = [];
+  for (const r of rel) {
+    const src = readFileSync(join(import.meta.dirname, "..", r), "utf8");
+    const n = countListPropBindings(src);
+    bindings += n;
+    for (const issue of findFreshEmptyArrayProp(src)) bad.push(`${r}:${issue.line}`);
+  }
+  assert.ok(bindings >= 4, `两个文件里只数到 ${bindings} 个列表型 prop 绑定 ⇒ 属性大概被改名了，这条判据现在是瞎的`);
+  assert.deepEqual(bad, [], `消息行调用点又出现空数组字面量：\n${bad.join("\n")}`);
+  console.log(`· N21 真实树分母：${rel.length} 份文件 / ${bindings} 个列表型 prop 绑定，全部引共享常量`);
+});
+
+// ---------------- ㉞ 图片盒高度只从 previewMetrics 取（roadmap N22） ----------------
+
+test("㉞ 正向：图片盒写了高度工具类必须报，估算端自留一份也要报", () => {
+  const bubble = `<script setup lang="ts">
+import { IMAGE_BUBBLE_HEIGHT, IMAGE_PLACEHOLDER_HEIGHT } from "@/utils/previewMetrics";
+</script>
+<template>
+  <div class="relative w-52 max-w-full overflow-hidden">
+    <div v-if="state !== 'loaded'" class="flex h-32 w-full items-center bg-[var(--gosslan-hover)]" />
+    <img loading="lazy" decoding="async" class="block max-h-72 w-full object-contain" />
+  </div>
+</template>`;
+  const issues = checkImageBubbleHeightSources(bubble, "export const x = 1;");
+  assert.equal(issues.length, 2, `骨架与 <img> 各一条，现数 ${issues.length}`);
+  assert.ok(issues.every((i) => i.line > 0), "每条都要带行号");
+  assert.match(issues[0].message, /h-32/);
+  assert.match(issues[1].message, /max-h-72/);
+
+  const est = "const IMAGE_BUBBLE = 288;\nexport function f() { return IMAGE_BUBBLE; }";
+  const clean = '<template><div class="flex w-full items-center" /></template>\nimport { IMAGE_BUBBLE_HEIGHT } from "@/utils/previewMetrics";';
+  const withEst = checkImageBubbleHeightSources(clean, est);
+  assert.equal(withEst.length, 1, `估算端那份副本该报一条，现数 ${withEst.length}`);
+  assert.match(withEst[0].message, /估算端又定义了一份本地图片高度常量/);
+});
+
+test("㉞ 反面：从常量取高度 / 图标用 size-* / 注释里的写法 / 逃生阀 —— 都不许报", () => {
+  const ok = `<script setup lang="ts">
+import { IMAGE_BUBBLE_HEIGHT, IMAGE_PLACEHOLDER_HEIGHT } from "@/utils/previewMetrics";
+</script>
+<template>
+  <div class="relative w-52 max-w-full overflow-hidden">
+    <!-- 旧写法：class="h-32"，已改走常量 -->
+    <div v-if="state !== 'loaded'" class="flex w-full items-center" :style="{ height: '288px' }">
+      <ImageIcon class="size-6 animate-pulse opacity-40" />
+    </div>
+    <img loading="lazy" decoding="async" class="block w-full object-contain" />
+  </div>
+</template>`;
+  assert.deepEqual(checkImageBubbleHeightSources(ok, "export const a = 1;"), []);
+  const opted = "<!-- image-height-ok -->\n" + ok.replace('class="flex w-full items-center"', 'class="flex h-32 w-full items-center"');
+  assert.deepEqual(checkImageBubbleHeightSources(opted, "export const a = 1;").filter((i) => /高度工具类/.test(i.message)), [],
+    "注释里的字面量与逃生阀那条都不该算");
+});
+
+test("㉞ 真实树：MessageImageBubble 与 messageHeight 现在这一份必须合规（分母现数）", () => {
+  const root = join(import.meta.dirname, "..");
+  const bubble = readFileSync(join(root, "components/message/MessageImageBubble.vue"), "utf8");
+  const est = readFileSync(join(root, "utils/messageHeight.ts"), "utf8");
+  const metrics = readFileSync(join(root, "utils/previewMetrics.ts"), "utf8");
+  const attrs = countClassAttrs(bubble);
+  assert.ok(attrs >= 5, `图片盒那份组件只数到 ${attrs} 个 class 属性 ⇒ 模板大概被改名了，这条判据现在是瞎的`);
+  assert.deepEqual(checkImageBubbleHeightSources(bubble, est), []);
+  // 常量本身必须是"三者同一个数"：估算端与渲染端引的是同一个名字，值只有一个家。
+  assert.match(metrics, /export const IMAGE_BUBBLE_HEIGHT = 288;/);
+  assert.match(metrics, /export const IMAGE_PLACEHOLDER_HEIGHT = 128;/);
+  assert.match(est, /import\s*\{[^}]*IMAGE_BUBBLE_HEIGHT[^}]*\}\s*from "@\/utils\/previewMetrics"/);
+  console.log(`· N22 真实树分母：图片盒 ${attrs} 个 class 属性 / 0 处高度工具类；估算端无本地副本`);
+});
+
+// ---------------- ㉟ 视图层不许裸写平台/输入方式探测（roadmap N11） ----------------
+
+test("㉟ 正向：组件里裸写 matchMedia / UA 类 API 必须逐条报", () => {
+  const bad = `<script setup lang="ts">
+const a = window.matchMedia("(hover: hover)").matches;
+const b = navigator.userAgent.includes("Macintosh");
+const c = navigator.maxTouchPoints > 0;
+</script>
+<template><div /></template>`;
+  const issues = findRawPlatformCheckInViewLayer(bad);
+  assert.equal(issues.length, 3, `三处各报一条，现数 ${issues.length}`);
+  assert.ok(issues.every((i) => i.line > 0), "每条都要带行号");
+  assert.match(issues.map((i) => i.message).join("\n"), /utils\/platform/);
+});
+
+test("㉟ 反面：不是平台判定的 API、注释里的提及、逃生阀都不报", () => {
+  // clipboard / share 是能力 API，不是"这台是什么平台"—— 扫它们就是造假红
+  assert.deepEqual(findRawPlatformCheckInViewLayer(
+    '<script>await navigator.clipboard.write(items); await navigator.share(d)</script>'), []);
+  // 注释里解释"为什么不用 matchMedia("不能算作用点（㉝/㉜ 同一课）
+  assert.deepEqual(findRawPlatformCheckInViewLayer(
+    "<script setup>\n// 这里刻意不写 window.matchMedia( —— 走 utils/platform.ts\n</script>"), []);
+  assert.deepEqual(findRawPlatformCheckInViewLayer(
+    "<!-- platform-check-ok：这份组件确实要在渲染前自己问一次 -->\n<script>const q = window.matchMedia(s)</script>"), []);
+});
+
+test("㉟ 真实树：视图层一个裸写都没有，而正门确实在被用（分母现数）", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  // 只管**视图层**那两棵树：utils/stores 里做能力判定正是它该待的地方（那就是 common layer）。
+  const files = collectVueFiles(srcDir).filter(
+    (f) => f.includes("/components/") || f.includes("/views/"),
+  );
+  assert.ok(files.length >= 60, `视图层只数到 ${files.length} 份 .vue ⇒ 扫描目录大概错了`);
+  const bad: string[] = [];
+  let throughTheDoor = 0;
+  for (const f of files) {
+    const src = readFileSync(f, "utf8");
+    if (countCommonLayerPlatformImports(src) > 0) throughTheDoor += 1;
+    // 消息一起带上：注入档（guard_cases）的 fail-hint 要能在失败输出里匹配到判据自己那句话，
+    // 只推 "文件:行号" 会让红变成"定位到了但说不出守的是哪一格"。
+    for (const i of findRawPlatformCheckInViewLayer(src)) {
+      bad.push(`${f.replace(srcDir + "/", "")}:${i.line} ${i.message.slice(0, 52)}`);
+    }
+  }
+  assert.deepEqual(bad, [], `视图层又出现裸写的平台/能力探测：\n${bad.join("\n")}`);
+  // 阳性对照：正门没人走 ⇒ 这条判据的"请走 common layer"就是空话
+  assert.ok(throughTheDoor >= 5, `只有 ${throughTheDoor} 份组件走 common layer ⇒ 判据指向的那个家大概没人用，口径要重看`);
+  console.log(`· N11 真实树分母：视图层 ${files.length} 份 .vue，${throughTheDoor} 份走 common layer，裸写平台判定 0 处`);
 });

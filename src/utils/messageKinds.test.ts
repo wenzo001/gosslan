@@ -12,9 +12,17 @@ import {
   isKnownKind,
   isSilentKind,
   isTipKind,
+  isRenderedInTimeline,
   kindClass,
 } from "./messageKinds.ts";
-import { TODO_STATUSES } from "./todos.ts";
+import {
+  TODO_CATEGORIES,
+  TODO_CATEGORY_DEFAULT,
+  TODO_PRIORITIES,
+  TODO_PRIORITY_DEFAULT,
+  TODO_STATUSES,
+  TODO_STATUS_DEFAULT,
+} from "./todos.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const protocolRs = readFileSync(join(here, "../../src-tauri/src/protocol.rs"), "utf8");
@@ -114,6 +122,106 @@ test("跨语言契约：任务状态表与 protocol.rs 的 TODO_STATUSES 一致"
   assert.deepEqual([...TODO_STATUSES], rust, "TS 与 Rust 的任务状态表必须一致");
 });
 
+/** 从 Rust 源码里取一张 `pub const NAME: [&str; N] = ["a", "b"];` 的表。 */
+function rustTableOf(src: string, name: string): string[] {
+  const at = src.indexOf(`pub const ${name}`);
+  assert.ok(at > 0, `protocol.rs 里找不到 ${name} ⇒ 这张表搬家或改名，判据要跟着改`);
+  const end = src.indexOf("];", at);
+  assert.ok(end > at, `${name} 的表体没闭合 ⇒ 解析落点会一路读到文件末尾`);
+  return [...src.slice(at, end).matchAll(/"([a-z_]+)"/g)].map((m) => m[1]);
+}
+
+/** 取 `pub fn NAME() -> String { "x".to_string() }` 里那个字面量。 */
+function rustDefaultOf(src: string, fn: string): string {
+  const m = src.match(new RegExp(`pub fn ${fn}\\(\\) -> String \\{\\s*"([a-z_]+)"\\.to_string\\(\\)`));
+  assert.ok(m, `找不到 ${fn}() 的缺省字面量 ⇒ 回落值这条判据失去落点`);
+  return m[1];
+}
+
+/**
+ * 跨语言契约第二格：任务**优先级**（三档，2026-09-29 落地）。
+ *
+ * 与状态那条同一条理由：优先级是**字符串在线上传**的，后端命令层还会拿它做校验
+ * （`todo_priority_is_valid`）。两侧漂移的表现是静默的 —— 前端给出一个后端不认的值，
+ * 用户只看到"保存失败"，而两边代码各自看起来都对。
+ *
+ * 顺带钉**缺省值**：旧载荷没有 `priority` 时，后端解析成一份、前端 `foldTodos` 回落成另一份 ⇒
+ * 同一条任务在两侧显示成不同档位（那是比"表不一致"更难发现的一种飘）。
+ */
+test("跨语言契约：优先级表与缺省值两侧一致", () => {
+  const rust = rustTableOf(protocolRs, "TODO_PRIORITIES");
+  assert.ok(rust.length >= 3, `解析出的档位太少（${rust.length}），表格式可能变了`);
+  assert.deepEqual([...TODO_PRIORITIES], rust, "TS 与 Rust 的优先级表必须同序同值");
+  assert.equal(
+    TODO_PRIORITY_DEFAULT,
+    rustDefaultOf(protocolRs, "default_todo_priority"),
+    "缺省档位必须同一个",
+  );
+  assert.equal(
+    TODO_STATUS_DEFAULT,
+    rustDefaultOf(protocolRs, "default_todo_status"),
+    "缺省状态必须同一个",
+  );
+  // 缺省值必须真的落在自己那张表里（写成一个表外的字符串会"合法地"显示不出来）
+  assert.ok(rust.includes(TODO_PRIORITY_DEFAULT), "缺省档位不在表内 ⇒ 界面拿不到它的 label/class");
+});
+
+/**
+ * 跨语言契约第三格：任务**类型**（三档，2026-09-29 落地）。
+ *
+ * 同优先级那条的理由，但这一格的漂移面更大：类型既进命令层校验（`todo_category_is_valid`），
+ * 又决定前端那张 label/pill 两张表的键 —— 少一个值就是"存得进去、显示不出来"。
+ * ⚠️ 缺省值必须一起钉：旧载荷没有 `category` 时两侧各回落一份 ⇒ 同一条任务在两个成员界面上
+ * 一个显示「任务」角标、另一个显示空白。
+ */
+test("跨语言契约：任务类型表与缺省值两侧一致", () => {
+  const rust = rustTableOf(protocolRs, "TODO_CATEGORIES");
+  assert.ok(rust.length >= 3, `解析出的类型太少（${rust.length}），表格式可能变了`);
+  assert.deepEqual([...TODO_CATEGORIES], rust, "TS 与 Rust 的类型表必须同序同值");
+  assert.equal(
+    TODO_CATEGORY_DEFAULT,
+    rustDefaultOf(protocolRs, "default_todo_category"),
+    "缺省类型必须同一个",
+  );
+  assert.ok(rust.includes(TODO_CATEGORY_DEFAULT), "缺省类型不在表内 ⇒ 界面拿不到它的 label/pill");
+});
+
+/**
+ * 阳性对照（这几条判据不是恒过的证明）：把 Rust 那张表改一个值，比对必须变红。
+ *
+ * 为什么单独钉一条：跨语言比对最容易写成"两侧都从同一处读"从而永远相等；
+ * 这里喂给同一个解析器一份**手动漂移过**的源码，要求它看得见差异。
+ */
+test("对照：解析器看得见人为造的漂移（判据不空转）", () => {
+  const mutated = protocolRs.replace('["high", "normal", "low"]', '["high", "normal", "urgent"]');
+  assert.notEqual(mutated, protocolRs, "替换没生效 ⇒ 这条对照什么都没测");
+  assert.notDeepEqual(
+    rustTableOf(mutated, "TODO_PRIORITIES"),
+    [...TODO_PRIORITIES],
+    "改了 Rust 那侧的值，判据必须报不一致",
+  );
+  const defMutated = protocolRs.replace(
+    'pub fn default_todo_priority() -> String {\n    "normal"',
+    'pub fn default_todo_priority() -> String {\n    "low"',
+  );
+  assert.notEqual(defMutated, protocolRs, "缺省值那条替换没生效 ⇒ 对照空转");
+  assert.equal(rustDefaultOf(defMutated, "default_todo_priority"), "low");
+  // 类型那一格同理：只改 Rust 侧的值 / 只改 Rust 侧的缺省，比对都必须看得见
+  const catMutated = protocolRs.replace('["task", "requirement", "bug"]', '["task", "requirement", "defect"]');
+  assert.notEqual(catMutated, protocolRs, "类型表那条替换没生效 ⇒ 对照空转");
+  assert.notDeepEqual(
+    rustTableOf(catMutated, "TODO_CATEGORIES"),
+    [...TODO_CATEGORIES],
+    "改了 Rust 那侧的类型值，判据必须报不一致",
+  );
+  const catDefMutated = protocolRs.replace(
+    'pub fn default_todo_category() -> String {\n    "task"',
+    'pub fn default_todo_category() -> String {\n    "bug"',
+  );
+  assert.notEqual(catDefMutated, protocolRs, "缺省类型那条替换没生效 ⇒ 对照空转");
+  assert.equal(rustDefaultOf(catDefMutated, "default_todo_category"), "bug");
+});
+
 /**
  * 提示行（微信式居中灰字）的判定**只能有一个来源**。
  *
@@ -143,4 +251,64 @@ test("提示行的判定只有一个来源（MessageItem 与 messageHeight 都�
     /showNickname =[\s\S]{0,120}isTipKind\(m\.kind\)/,
     "提示行不计昵称行 —— 不排除就与渲染对不上",
   );
+});
+
+// ── §30 那条回归：「自己创建的群任务在聊天里看不见」（2026-09-26 用户实测报出，#82 已修）──
+// 根因不在渲染组件，而在**同一件事有两份口径**：`messageKinds.ts` 的注释当时写着"Card 不进时间线"，
+// 与 `isRenderedInTimeline("todo") === true` 相反 ⇒ "看不见"被当成设计如此，没人去查。
+// 所以这三条钉的不是"todo 恰好可见"这一个点，而是**逼着每一次改动都必须做一次决定**：
+// ① 逐项判决表要覆盖全部已知 kind（新增一种而这里没登记 ⇒ 当场红）；
+// ② 时间线过滤只有一个来源（ChatWindow 不许再写一份 kind 名单，否则未读分割线会画错消息）；
+// ③ 过滤出来了还得有人渲染它（摘掉专门卡片就退回原始 JSON，那是这条 bug 的另一半）。
+const VISIBLE_IN_TIMELINE = [
+  "text", "code", "image", "file", "system", "recalled", "merge", "todo",
+];
+const NOT_IN_TIMELINE = [...SILENT_KINDS, "announcement", "poll"];
+
+test("时间线可见性逐项判决表：新增一种 kind 必须在这里决定可不可见", () => {
+  assert.deepEqual(
+    [...new Set([...VISIBLE_IN_TIMELINE, ...NOT_IN_TIMELINE])].sort(),
+    [...new Set([...BUBBLE_KINDS, ...SILENT_KINDS, ...CARD_KINDS])].sort(),
+    "判决表与已知 kind 全集对不上 —— 新增长出来的那一种必须被显式判一次，不许默认不可见",
+  );
+  for (const k of VISIBLE_IN_TIMELINE) {
+    assert.equal(isRenderedInTimeline(k), true, `${k} 必须在时间线里可见`);
+  }
+  for (const k of NOT_IN_TIMELINE) {
+    assert.equal(isRenderedInTimeline(k), false, `${k} 不该出现在时间线里（各有各的去处）`);
+  }
+  // 未知 kind 走 bubble 兜底 ⇒ 默认可见：宁可多显示一条，也不静默吞掉对端的新内容
+  assert.equal(isRenderedInTimeline("a_kind_from_a_newer_version"), true);
+});
+
+test("「不进时间线」的那两种 Card 各自有具名去处，不是没人显示", () => {
+  const read = (p: string) => readFileSync(join(here, p), "utf8");
+  // announcement → 聊天窗顶部的公告条（与时间线是两条路，所以它不进过滤结果）
+  const chat = read("../../src/components/ChatWindow.vue");
+  assert.match(
+    chat,
+    /m\.kind !== "announcement"/,
+    "公告条的挑选判据变了 —— 那意味着 announcement 没有了具名去处，先补呈现再改这条",
+  );
+  // poll → **本客户端今天发不出投票**：api 层没有任何发投票的包装。
+  // 这条钉的是"发不出去"这个前提本身 —— 哪天真加上入口，它会红，逼着做一次决定，
+  // 而不是让新种出来的 poll 静默落在时间线之外（= 复现 #82 的形状）。
+  const api = read("../../src/api/index.ts");
+  assert.doesNotMatch(
+    api,
+    /invoke<[^>]*>\(\s*"send_group_poll"/,
+    "出现发投票的入口了 ⇒ 先决定 poll 到底在不在时间线渲染，再改 VISIBLE_IN_TIMELINE",
+  );
+});
+
+test("时间线过滤只有一份判据，且 todo 卡片真的在渲染链里", () => {
+  const read = (p: string) => readFileSync(join(here, p), "utf8");
+  const chat = read("../../src/components/ChatWindow.vue");
+  assert.match(
+    chat,
+    /filter\(\(m\) => isRenderedInTimeline\(m\.kind\)\)/,
+    "ChatWindow 的时间线过滤不再走 isRenderedInTimeline ⇒ 与 store 侧算未读分割线的那份会漂移",
+  );
+  const item = read("../../src/components/MessageItem.vue");
+  assert.match(item, /TodoCardBubble/, "todo 的专门卡片被摘掉了 —— 时间线里会退回原始 JSON");
 });

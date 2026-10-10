@@ -163,9 +163,7 @@ pub fn focus_window(app: tauri::AppHandle, state: State<'_, Arc<AppState>>) -> R
     // 冷启动直接可用。
     let dark = {
         let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
-        db::get_setting(&dbc, "dark_mode")
-            .map(|v| v == "1")
-            .unwrap_or(false)
+        db::get_config_bool(&dbc, "dark_mode", false)
     };
     let color = if dark {
         tauri::window::Color(11, 18, 32, 255) // #0b1220
@@ -206,22 +204,113 @@ pub fn focus_window(_app: tauri::AppHandle) -> Result<(), String> {
 /// 只能从主线程调用；同步命令由 wry 的 IPC 回调在主线程内联执行（Windows 分支自己会
 /// 把 `FlashWindowEx` 投递到窗口线程，两边都安全）。函数体不含任何重资源访问，
 /// 不会触发 `blocking_commands_run_off_the_main_thread` 守卫。
+/// 该端这次要不要请求系统级注意，以及要哪一种（`None` = 什么都不做）。
+///
+/// 为什么把平台分支收成一个不带 `#[cfg]` 的纯函数：三条腿里本机只编得到 macOS 那一支，
+/// "Windows 还闪不闪""Linux 维持原样吗"这类改动以前**编译不到、也就测不到**（本仓库
+/// 那条 cfg 盲区实踩过）。收成纯函数后，三条腿在 macOS 上一次 `cargo test` 全能判。
+///
+/// 用户 2026-09-29 需求汇总五的两句口径：
+/// - 「Mac 端收到普通消息**不要**跳动 Dock 图标；图标跳动仅用于非常紧急或超高优先级消息」
+///   ⇒ macOS 只在 `urgent` 时才请求（`Critical` 是**持续**弹跳，普通消息配不上它）；
+/// - 「Windows 端可以**继续**使用任务栏闪烁提醒」⇒ Windows 不分级（它闪的是任务栏按钮，
+///   窗口一回前台就自动停，成本与 Dock 弹跳不是一个量级）。
+#[cfg(desktop)]
+pub fn attention_request(
+    platform: AttentionPlatform,
+    urgent: bool,
+) -> Option<tauri::UserAttentionType> {
+    match platform {
+        AttentionPlatform::MacOS => urgent.then_some(tauri::UserAttentionType::Critical),
+        AttentionPlatform::Windows | AttentionPlatform::Other => {
+            Some(tauri::UserAttentionType::Critical)
+        }
+    }
+}
+
+/// 当前编译目标对应的那一条腿（命令层用它把平台"翻译"给纯函数）。
+#[cfg(desktop)]
+fn attention_platform() -> AttentionPlatform {
+    if cfg!(target_os = "macos") {
+        AttentionPlatform::MacOS
+    } else if cfg!(target_os = "windows") {
+        AttentionPlatform::Windows
+    } else {
+        AttentionPlatform::Other
+    }
+}
+
+/// 桌面三端（`attention_request` 的三条腿，纯函数那侧一次 `cargo test` 全判）。
+#[cfg(desktop)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AttentionPlatform {
+    MacOS,
+    Windows,
+    Other,
+}
+
+/// `urgent` 由前端算：这条命令只拿到标题与正文，**只有前端看得见消息内容**
+/// （判据在 `src/utils/notifyUrgency.ts`：群公告 / 紧急档群任务才算紧急）。
 #[cfg(desktop)]
 #[tauri::command]
-pub fn request_attention(app: tauri::AppHandle) -> Result<(), String> {
+pub fn request_attention(app: tauri::AppHandle, urgent: bool) -> Result<(), String> {
+    let Some(kind) = attention_request(attention_platform(), urgent) else {
+        return Ok(());
+    };
     let Some(win) = app.get_webview_window("main") else {
         return Err("主窗口不存在".to_string());
     };
     // 失败不致命：个别 Linux 桌面环境 / 远程会话不支持，忽略即可（前端也不关心结果）。
-    let _ = win.request_user_attention(Some(tauri::UserAttentionType::Critical));
+    let _ = win.request_user_attention(Some(kind));
     Ok(())
 }
 
 /// 移动端没有任务栏可闪；系统通知本身就是强提醒，静默降级。
+///
+/// ⚠️ 参数仍要接住（这里是 `_urgent`）：前端每次调用都会带这个字段，命令签名少了它
+/// 会直接 `invalid args` 报错，而不是"少一个参数也能跑"。
 #[cfg(mobile)]
 #[tauri::command]
-pub fn request_attention(_app: tauri::AppHandle) -> Result<(), String> {
+pub fn request_attention(_app: tauri::AppHandle, _urgent: bool) -> Result<(), String> {
     Ok(())
+}
+
+#[cfg(all(test, desktop))]
+mod attention_tests {
+    use super::{attention_request, AttentionPlatform};
+
+    /// macOS：普通消息**不**弹跳，紧急才弹（用户 2026-09-29 那句"不要跳动 Dock 图标"）。
+    #[test]
+    fn macos_bounces_only_when_urgent() {
+        assert!(
+            attention_request(AttentionPlatform::MacOS, false).is_none(),
+            "普通消息不该请求 Dock 弹跳"
+        );
+        assert!(matches!(
+            attention_request(AttentionPlatform::MacOS, true),
+            Some(tauri::UserAttentionType::Critical)
+        ));
+    }
+
+    /// Windows：两档都闪任务栏（用户同一句"可以继续使用任务栏闪烁提醒"）。
+    #[test]
+    fn windows_flashes_regardless_of_urgency() {
+        for urgent in [false, true] {
+            assert!(matches!(
+                attention_request(AttentionPlatform::Windows, urgent),
+                Some(tauri::UserAttentionType::Critical),
+            ));
+        }
+    }
+
+    /// 第三条腿（Linux 等）维持改动前的行为：以前它藏在 `#[cfg]` 里，本机根本编不到。
+    #[test]
+    fn other_desktops_keep_the_previous_behavior() {
+        assert!(matches!(
+            attention_request(AttentionPlatform::Other, false),
+            Some(tauri::UserAttentionType::Critical)
+        ));
+    }
 }
 
 /// 更新未读提醒：托盘红点 + tooltip 条数 + Windows 任务栏按钮角标 / macOS Dock 数字。
@@ -232,10 +321,16 @@ pub fn request_attention(_app: tauri::AppHandle) -> Result<(), String> {
 ///
 /// 幂等：前端按未读总数去抖后推送，重复用同一个值调用没有副作用。失败静默 ——
 /// 角标是锦上添花，不该因为某个桌面环境不支持就影响聊天。
+///
+/// ⚠️ 必须 async + spawn_blocking（审计 2.2j）：同步命令在 macOS 主线程 IPC 回调里
+/// 内联跑整张图标的逐像素混合 + set_icon（主线程同时驱动整个 UI 事件循环，未读
+/// 变化一次跑一次）。tray/badge 的平台调用在 muda/tao 内部自行派发回主线程，
+/// 这里只需要把纯 CPU 部分挪出主线程。
 #[cfg(desktop)]
-#[tauri::command]
-pub fn set_unread_badge(app: tauri::AppHandle, count: u32) -> Result<(), String> {
-    crate::tray::set_unread_badge(&app, count);
+#[tauri::command(async)]
+pub async fn set_unread_badge(app: tauri::AppHandle, count: u32) -> Result<(), String> {
+    let _ = tauri::async_runtime::spawn_blocking(move || crate::tray::set_unread_badge(&app, count))
+        .await;
     Ok(())
 }
 
@@ -313,11 +408,15 @@ pub fn get_topology(state: State<'_, Arc<AppState>>) -> TopologyInfo {
     } else {
         Some(rtts.iter().sum::<u64>() / rtts.len() as u64)
     };
-    let relay_count = s
-        .relay
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .active_sends();
+    // 「N 中继」= 当前有几条走公网中继的活跃链路。
+    // ⚠️ 这里以前取的是 `RelayManager::active_sends()`，而它的 `senders` 只有
+    // `register_send` 会写、`register_send` 零调用点 ⇒ **这个数永远是 0**（架构复审 0-A2）。
+    // 本命令是**同步**的而 `links` 是 tokio::Mutex ⇒ try_lock + 抢不到报 0（顶栏数字，
+    // 不值得为它阻塞工作线程）。判据与 `relay.connected` 同源。
+    let relay_count = match s.links.try_lock() {
+        Ok(links) => crate::state::relay_circuit_count(&links),
+        Err(_) => 0,
+    };
     let online = s
         .network
         .lock()

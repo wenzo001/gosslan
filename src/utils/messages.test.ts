@@ -1,18 +1,28 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  promoteOnPeerRead,
+  replaceOptimistic,
   applyIncomingToConversations,
+  freshMentionedConvs,
+  applyConversationSnapshot,
   applyReplacements,
+  appendLocalOnly,
+  pruneUnreadClears,
   furthestStatus,
   mergeMessages,
   messageMentionsAll,
+  messageMentionsMe,
   messageMentionsName,
   pickMediaContent,
   preserveDeliveryStatus,
+  previewBody,
   previewText,
   selectCachedConversations,
   sortConversations,
   syncProfileFromPeers,
+  textMentionsName,
+  unreadAnchorIndex,
 } from "./messages.ts";
 import type { Conversation, MessageRecord } from "../types";
 
@@ -119,6 +129,64 @@ test("previewText：本机不认识的 kind 给占位而不是载荷", () => {
   assert.equal(previewText(msg({ msg_id: "x", kind: "text", content: "hi" })), "hi");
 });
 
+/**
+ * 搜索结果页走的是同一份 `previewBody`，只是**不截断**（要在正文里定位关键词）。
+ *
+ * 用户 2026-10-09：「搜索列表显示的都是 json」。根因不是"未知 kind"那一档（887477e 已经堵了），
+ * 而是**本机认识的六种卡片载荷本来就是 JSON**，而检索页当时直接铺 `content`。
+ * 所以这里把六种一律点名：任何一条又回到原文，这一格就会红。
+ */
+test("previewBody：认识的卡片 kind 一律给人话，不许铺载荷原文", () => {
+  const cases: [string, string][] = [
+    ["image", '{"name":"a.png","path":"/x/a.png","size":1,"sha256":"ab"}'],
+    ["file", '{"name":"合同.pdf","size":2048,"subtype":"application/pdf"}'],
+    ["merge", '{"title":"群聊的聊天记录","messages":[{"content":"x"}]}'],
+    ["todo", '{"title":"情报状态","assignees":["d1"],"description":"周五前交"}'],
+    ["todo_update", '{"title":"情报状态","status":"doing"}'],
+    ["poll", '{"question":"周五团建去哪","options":["山","海"]}'],
+    ["announcement", '{"text":"下周三停网半天","pinned":true}'],
+  ];
+  for (const [kind, payload] of cases) {
+    const out = previewBody(kind, payload, 0);
+    assert.ok(!out.includes("{"), `${kind} 的预览里出现了载荷原文：${out}`);
+    assert.ok(!out.includes('"'), `${kind} 的预览里出现了 JSON 引号：${out}`);
+    assert.ok(out.startsWith("["), `${kind} 的预览应当以「[类型]」开头：${out}`);
+  }
+  // 卡片那一句人话确实被取出来了（不是统统退化成光秃秃的「[任务]」）
+  assert.equal(previewBody("todo", '{"title":"情报状态"}', 0), "[任务] 情报状态");
+  assert.equal(previewBody("poll", '{"question":"去哪"}', 0), "[投票] 去哪");
+});
+
+/**
+ * 截断只管"载荷本身就是正文"那一支，而且是**调用方决定**的：
+ * 会话列表截 30，搜索结果页不截。这条钉的是 `textLimit` 的语义边界 ——
+ * 传 0 还截，检索页就再也定位不到关键词；卡片也跟着被截，那是另一处退化。
+ */
+test("previewBody：textLimit=0 不截正文，卡片分支不受它影响", () => {
+  const long = "开".repeat(50);
+  assert.equal(previewBody("text", long, 0).length, 50, "检索页要的完整正文被截了");
+  assert.equal(previewBody("text", long).length, 30, "会话列表默认仍截 30");
+  const payload = `{"title":"${long}"}`;
+  assert.equal(
+    previewBody("todo", payload, 0),
+    `[任务] ${long}`,
+    "卡片那一句话不该因为调用方要了全长就被改形状",
+  );
+  assert.equal(previewBody("todo", payload), `[任务] ${long}`, "卡片在默认档下同样不截");
+});
+
+/** 摘要与检索行必须同源：`previewText` 只是 `previewBody` 的默认档包装。 */
+test("previewText 就是 previewBody 的默认档（不留第二份 kind→文案表）", () => {
+  for (const kind of ["text", "file", "image", "code", "merge", "todo", "poll", "announcement"]) {
+    const content = kind === "text" ? "hi" : '{"title":"甲","question":"甲","text":"甲"}';
+    assert.equal(
+      previewText(msg({ msg_id: "x", kind: kind as never, content })),
+      previewBody(kind, content),
+      `${kind} 两家的口径分叉了`,
+    );
+  }
+});
+
 // ---------------- 会话更新（applyIncomingToConversations） ----------------
 
 function conv(id: string, lastTs: number | null = null, unread = 0, pinned = false): Conversation {
@@ -138,6 +206,38 @@ test("活跃会话收到消息不计未读，非活跃会话累计未读", () =>
   assert.equal(f2.unread, 1); // 非活跃
   assert.equal(f1.last_msg, "hi");
   assert.equal(f2.last_ts, 20);
+});
+
+test("自己发的消息不给会话加未读，但预览与 last_ts 照更新（后端 touch_conversation 记的是 0）", () => {
+  // 场景是真的会走到的：主窗口在任务窗/公告那条链上会收到自己发的 `message-received`
+  // （`commands/group_announcements.rs` 早就在自 emit，补上群发送内核的自 emit 后每次群发都走这里）。
+  // 后端写库时未读传的是 0，所以前端若照加，会话列表就会与 DB 从此不一致。
+  const cs = [conv("g1", 0, 0)];
+  const byConv = new Map([
+    ["g1", [msg({ msg_id: "mine", conv_id: "g1", ts: 30, kind: "todo", content: "任务：交周报", sender_id: "dev-me" })]],
+  ]);
+  const out = applyIncomingToConversations(cs, null, byConv, "dev-me");
+  const g1 = out.find((c) => c.id === "g1")!;
+  assert.equal(g1.unread, 0, "自己发的不计未读：后端 touch_conversation 那一步写进 DB 的未读就是 0");
+  assert.ok(g1.last_ts === 30, "预览时间仍要前进，否则会话列表排序会停在旧消息上");
+  assert.ok(g1.last_msg && g1.last_msg.length > 0, "摘要仍要更新（自己发的消息当然也是这个会话的最后一条）");
+});
+
+test("同批里自己发的与别人发的混在一起：只有别人那部分计未读", () => {
+  const cs = [conv("g1", 0, 0)];
+  const byConv = new Map([
+    [
+      "g1",
+      [
+        msg({ msg_id: "mine", conv_id: "g1", ts: 30, sender_id: "dev-me", content: "我发的" }),
+        msg({ msg_id: "theirs", conv_id: "g1", ts: 31, sender_id: "dev-them", content: "TA 发的" }),
+      ],
+    ],
+  ]);
+  const out = applyIncomingToConversations(cs, null, byConv, "dev-me");
+  const g1 = out.find((c) => c.id === "g1")!;
+  assert.equal(g1.unread, 1);
+  assert.equal(g1.last_msg, "TA 发的"); // 预览取整批最后一条，含自己发的
 });
 
 test("会话按 last_ts 降序重排", () => {
@@ -204,6 +304,40 @@ test("整批都是静默事件时该会话完全不动", () => {
   assert.equal(g1.unread, 0);
   assert.equal(g1.last_msg, null);
   assert.equal(g1.last_ts, 10);
+});
+
+test("系统消息经广播抵达时不记账：未读不涨、预览不被顶掉", () => {
+  // 后端 `protocol.rs::is_non_notifying_kind` = `is_silent_kind || kind == "system"`，
+  // 且加人通知现在**经消息管道广播**给全体成员 ⇒ 这条路径真会走到这里。
+  // 前端原先只滤 isSilentKind ⇒ 未读 +1、预览变成"张三加入了群聊"，
+  // 而下一次从 DB 拉回来时数字又掉回去（审计 2026-09-23 · 4.2 复核发现的漂移）。
+  const cs = [conv("g1", 10)];
+  const byConv = new Map([
+    [
+      "g1",
+      [
+        msg({ msg_id: "s1", conv_id: "g1", kind: "system", content: "「张三」加入了群聊", ts: 999 }),
+        msg({ msg_id: "t1", conv_id: "g1", kind: "text", content: "在吗", ts: 1000 }),
+      ],
+    ],
+  ]);
+  const g1 = applyIncomingToConversations(cs, null, byConv).find((c) => c.id === "g1")!;
+  assert.equal(g1.unread, 1, "只有正文那条记账");
+  assert.equal(g1.last_msg, "在吗", "预览不能被系统消息顶掉");
+  assert.equal(g1.last_ts, 1000);
+});
+
+test("整批都是系统消息 ⇒ 该会话完全不动（不置顶、不改预览、不记未读）", () => {
+  const cs = [conv("g1", 10), conv("g2", 5)];
+  const byConv = new Map([
+    ["g1", [msg({ msg_id: "s1", conv_id: "g1", kind: "system", content: "「李四」加入了群聊", ts: 999 })]],
+  ]);
+  const out = applyIncomingToConversations(cs, null, byConv);
+  const g1 = out.find((c) => c.id === "g1")!;
+  assert.equal(g1.unread, 0);
+  assert.equal(g1.last_msg, null);
+  assert.equal(g1.last_ts, 10, "时间戳也不能动 —— 动了就等于把它顶到最前");
+  assert.deepEqual(out.map((c) => c.id), ["g1", "g2"], "顺序仍按原 last_ts");
 });
 
 // ---------------- 会话排序与置顶 ----------------
@@ -279,6 +413,57 @@ test("空本地缓存时原样返回重查结果", () => {
   assert.equal(preserveDeliveryStatus(fresh, []), fresh);
 });
 
+// ==================== 快照覆盖 vs 本地独有记录（审计 1.3） ====================
+
+test("loadMessages 快照覆盖不得吞掉在途乐观气泡（tmp-*）", () => {
+  // 发送在途期间发生一次 loadMessages：DB 快照里还没有这条消息
+  const fresh = [msg({ msg_id: "m1", seq: 1 })];
+  const local = [
+    msg({ msg_id: "m1", seq: 1 }),
+    msg({ msg_id: "tmp-1", seq: Number.MAX_SAFE_INTEGER, status: "sending" }),
+  ];
+  const out = appendLocalOnly(preserveDeliveryStatus(fresh, local), local);
+  assert.deepEqual(
+    out.map((m) => m.msg_id),
+    ["m1", "tmp-1"],
+    "乐观气泡被吞 → 用户以为发送失败而重发（重复消息）",
+  );
+  assert.equal(out[1].status, "sending");
+});
+
+test("快照覆盖不得吞掉文件失败占位（file-failed-*）", () => {
+  const fresh = [msg({ msg_id: "m1", seq: 1 })];
+  const local = [
+    msg({ msg_id: "file-failed-1", kind: "file", seq: Number.MAX_SAFE_INTEGER, status: "failed" }),
+  ];
+  const out = appendLocalOnly(preserveDeliveryStatus(fresh, local), local);
+  assert.deepEqual(out.map((m) => m.msg_id), ["m1", "file-failed-1"]);
+});
+
+test("已替换为真实记录的乐观气泡不得复活（tmp 已不在 local）", () => {
+  // 正常时序：invoke 返回 → replaceMessage 把 tmp-* 换成真实 msg_id
+  const fresh = [msg({ msg_id: "m1", seq: 1 })];
+  const local = [msg({ msg_id: "m1", seq: 1, status: "delivered" })];
+  const out = appendLocalOnly(preserveDeliveryStatus(fresh, local), local);
+  assert.deepEqual(out.map((m) => m.msg_id), ["m1"]);
+});
+
+test("已在快照里的消息不得被追加成重复行", () => {
+  const fresh = [msg({ msg_id: "m1", seq: 1 })];
+  const local = [msg({ msg_id: "m1", seq: 1, status: "read" })];
+  const out = appendLocalOnly(preserveDeliveryStatus(fresh, local), local);
+  assert.equal(out.length, 1, "fresh 里已有的 msg_id 不该从 local 再追加一份");
+});
+
+test("非本地独有记录不得借快照覆盖复活（例如已被删除的 DB 行）", () => {
+  // local 里有、fresh 里没有、且不是 tmp-*/file-failed-* 前缀：说明它已被
+  // 删除或本就不该保留 —— 不得追加回来（否则已删消息反复复活）。
+  const fresh = [msg({ msg_id: "m1", seq: 1 })];
+  const local = [msg({ msg_id: "m1", seq: 1 }), msg({ msg_id: "m-gone", seq: 2 })];
+  const out = appendLocalOnly(preserveDeliveryStatus(fresh, local), local);
+  assert.deepEqual(out.map((m) => m.msg_id), ["m1"]);
+});
+
 // ==================== 媒体 path 回填 vs stale 快照 ====================
 
 test("群图片：回填前的 DB 快照不得擦掉已回填的 path", () => {
@@ -332,6 +517,25 @@ test("送达状态只前进：sent→delivered→read，逆序不变", () => {
   assert.equal(furthestStatus("delivered", "read"), "read");
   assert.equal(furthestStatus("read", "delivered"), "read");
   assert.equal(furthestStatus("delivered", "sent"), "delivered");
+});
+
+// ==================== 失败态必须盖过 sending（2026-09-28 审计抓到）====================
+//
+// 症状：发送失败后气泡**永远转圈** —— 没有红色感叹号，也没有重发入口
+// （`MessageReceipt.vue` 的重发按钮判据是 `state === "failed"`）。
+// 机制：推进序表只收"送达进度"三态，`sending` 与 `failed` 都查不到 ⇒ 两个 indexOf
+// 都是 -1 ⇒ 判据认为"谁也不比谁更靠后" ⇒ `replaceMessage` 里那句
+// `{ ...next, status: furthestStatus(list[i].status, next.status) }` 把 failed 吃掉了。
+// 为什么以前没暴露：只有当乐观气泡**已经落地**（过了 rAF 那一批）时才走这条合并分支；
+// 错误若在一帧内返回就走 `pendingReplace` 那条不做提升的路径 ⇒ 同一个 bug 表现成抛硬币。
+test("furthestStatus: failed 盖过 sending，但翻不动对端已送达的证据", () => {
+  // 该红的这一条：发送中 + 本端失败 ⇒ 必须变成 failed
+  assert.equal(furthestStatus("sending", "failed"), "failed");
+  // 反向也要成立（不许把失败当终态压住真送达）：
+  assert.equal(furthestStatus("failed", "delivered"), "delivered");
+  assert.equal(furthestStatus("read", "failed"), "read");
+  // 既有推进序不许被这次改动带偏：
+  assert.equal(furthestStatus("sending", "sent"), "sent");
 });
 
 // ==================== P0-1 Ack 竞态测试（状态机模型） ====================
@@ -588,6 +792,102 @@ test("@所有人：正则被复用，重复调用结果必须稳定", () => {
   }
 });
 
+// ---------------- messageMentionsMe：这条文本到底点到「人」没有 ----------------
+// 被 @ 的判定输入从「昵称字符串」换成「人的身份（设备 id）」，昵称只剩兜底作用。
+// 三态必须分清，否则修一个 bug 会顺手造出另一个：
+//   数组 ⇒ 发送方明确回答了「我 @ 了这些人」（哪怕回答的是空集）→ 以 id 为准；
+//   缺失/非数组 ⇒ 发送方是**不认识这个字段的旧版本** → 退回昵称判定，不许变暗。
+
+test("@我（id 命中）：正文里没有我现在的昵称也算", () => {
+  // 这正是本次要修的缺陷：我改过昵称，而那条消息 @ 的是改名前的我。
+  // 按昵称判会漏；按 id 判才对。
+  const rec = msg({ content: "@老张 看下这个", mention_ids: ["dev-b"] });
+  assert.equal(messageMentionsMe(rec, { id: "dev-b", name: "周工" }), true);
+});
+
+test("@我（id 名单不含我）：正文里出现了我的昵称也不算 —— 同名成员的误亮就是这么来的", () => {
+  // 群里两个人都叫「周工」。发送方是从名单里**选中**了另一个人的 id，
+  // 继续按昵称判会把两个不相干的人都点亮。
+  const rec = msg({ content: "@周工 在吗", mention_ids: ["dev-c"] });
+  assert.equal(messageMentionsMe(rec, { id: "dev-b", name: "周工" }), false);
+});
+
+test("@我（字段缺失）= 旧版本发送方，退回昵称判定而不是判成『没 @ 人』", () => {
+  // INV-P24 的降级口径：新字段只能让新版本更准，不许让老对端的消息变暗。
+  assert.equal(messageMentionsMe(msg({ content: "@周工 在吗" }), { id: "dev-b", name: "周工" }), true);
+  assert.equal(messageMentionsMe(msg({ content: "随便聊聊" }), { id: "dev-b", name: "周工" }), false);
+  // 后端显式给 null（从库里读回来的历史行没有这一列）与缺失同义
+  assert.equal(
+    messageMentionsMe(msg({ content: "@周工 在吗", mention_ids: null }), { id: "dev-b", name: "周工" }),
+    true,
+  );
+});
+
+test("@我（空数组）是明确回答「没 @ 任何人」，不再退回昵称判定", () => {
+  // 与上一条的区别就是这一条要判的东西：数组 ⇒ 权威，即便为空。
+  assert.equal(messageMentionsMe(msg({ content: "@周工 在吗", mention_ids: [] }), {
+    id: "dev-b",
+    name: "周工",
+  }), false);
+});
+
+test("@我：@所有人 与 id 名单互不干扰，两条路各自都能点亮", () => {
+  // 「所有人」是正文里的固定中文字面量，发送方不会把它塞进 id 名单。
+  assert.equal(messageMentionsMe(msg({ content: "@所有人 开会", mention_ids: [] }), {
+    id: "dev-b",
+    name: "周工",
+  }), true);
+  assert.equal(messageMentionsMe(msg({ content: "@所有人 开会", mention_ids: ["dev-c"] }), {
+    id: "dev-b",
+    name: "周工",
+  }), true);
+});
+
+test("@我：只有文本消息参与判断（id 名单也一样）", () => {
+  assert.equal(messageMentionsMe(msg({ kind: "code", content: "@周工()", mention_ids: ["dev-b"] }), {
+    id: "dev-b",
+    name: "周工",
+  }), false);
+});
+
+test("@我：我自己没有设备 id 时不许靠空串匹配上任何名单", () => {
+  // 启动早期 / 身份未就绪：空 id 与名单里的空串相等会假亮一条红点。
+  assert.equal(messageMentionsMe(msg({ content: "@周工", mention_ids: [""] }), {
+    id: "",
+    name: "周工",
+  }), false);
+});
+
+test("textMentionsName 与 messageMentionsName 必须逐条同进同退（边界常量同源）", () => {
+  // 发送侧用 textMentionsName 把手打的「@名字」回解成 id，接收侧兜底用
+  // messageMentionsName。两者一旦只改一边，表现就是「发送方认为 @ 了、
+  // 接收方的名单里却没有」，或反过来 —— 同一套边界规则只许有一份。
+  const names = ["周工", "小王", "a.b(1)", "所有人"];
+  const texts = [
+    "@周工 你好",
+    "@周工",
+    "叫上 @周工 一起",
+    "@周工，来一下",
+    "邮件发我 a@周工.com",
+    "通知：@周工",
+    "@小王 吃饭 @小王丰",
+    "@a.b(1) 看看",
+    "@所有人 开会",
+    "[微笑]@周工 快来",
+    "你好 @周工 记得",
+    "你好@周工 记得",
+  ];
+  for (const n of names) {
+    for (const c of texts) {
+      assert.equal(
+        textMentionsName(c, n),
+        messageMentionsName(msg({ content: c }), n),
+        `边界规则分叉：content=${JSON.stringify(c)} name=${n}`,
+      );
+    }
+  }
+});
+
 // ---------------- 消息缓存上界（useChatStore 的 messages 淘汰判定） ----------------
 
 test("消息缓存上界：其余会话按 LRU 保留最近 N 个", () => {
@@ -611,4 +911,295 @@ test("消息缓存上界：上限大于已缓存数量时全保留；activeId �
   assert.deepEqual([...selectCachedConversations(["c1", "c2"], null, 1)], ["c2"]);
   assert.deepEqual([...selectCachedConversations(["c1"], undefined, 2)], ["c1"]);
   assert.deepEqual([...selectCachedConversations([], null, 2)], []);
+});
+
+// ---------------- 未读分割线锚点（审计阶段 4 · 4.1-1） ----------------
+
+test("未读锚点：全是 text 时就是「从末尾数第 N 条」", () => {
+  const list = [1, 2, 3, 4, 5].map((i) => msg({ msg_id: `m${i}` }));
+  assert.equal(unreadAnchorIndex(list, 2), 3);
+  assert.equal(unreadAnchorIndex(list, 1), 4);
+});
+
+test("未读锚点：system 占下标但不占未读 —— 不能被算进额度", () => {
+  // 后端 is_non_notifying_kind 把 system 排除在未读之外，而它会渲染进时间线。
+  // 若把它当一条未读消耗额度，分割线就会少盖住一条真正的未读（这里 2 vs 1 可区分）。
+  const list = [
+    msg({ msg_id: "m1" }),
+    msg({ msg_id: "m2" }),
+    msg({ msg_id: "s", kind: "system" }),
+    msg({ msg_id: "m3" }),
+  ];
+  assert.equal(unreadAnchorIndex(list, 2), 1, "倒数第 2 条**计未读**的是 m2（index 1）");
+});
+
+test("未读锚点：额度用不完时 clamp 到「最早的计未读行」，不是粗暴的 0", () => {
+  // 首行是 system（不计未读）⇒ 锚点必须是 m1（index 1）；返回 0 会把分割线画到
+  // 一条本来就已读的系统消息上面。
+  const list = [msg({ msg_id: "s", kind: "system" }), msg({ msg_id: "m1" })];
+  assert.equal(unreadAnchorIndex(list, 5), 1);
+});
+
+test("未读锚点：没有一行计未读 ⇒ -1（宁可不画，别画错）", () => {
+  const list = [msg({ msg_id: "s1", kind: "system" }), msg({ msg_id: "s2", kind: "system" })];
+  assert.equal(unreadAnchorIndex(list, 3), -1);
+});
+
+test("未读锚点：空列表与 unread<=0 都返回 -1", () => {
+  assert.equal(unreadAnchorIndex([], 3), -1);
+  assert.equal(unreadAnchorIndex([msg({ msg_id: "m1" })], 0), -1);
+  assert.equal(unreadAnchorIndex([msg({ msg_id: "m1" })], -2), -1);
+});
+
+test("未读锚点：静默行被误传进来也不消耗额度（判据只有一份）", () => {
+  // 调用方按理应已经用 isRenderedInTimeline 过滤过；这里钉的是"即便没过滤，
+  // 静默类也绝不参与未读换算"，这样两处判据漂移时最坏也只是画的位置保守。
+  const list = [
+    msg({ msg_id: "m1" }),
+    msg({ msg_id: "r", kind: "reaction" }),
+    msg({ msg_id: "m2" }),
+  ];
+  assert.equal(unreadAnchorIndex(list, 1), 2);
+});
+
+/** 会话快照落地 + 乐观清零的竞态（`applyConversationSnapshot`）。 */
+function convRow(id: string, over: Partial<import("../types.ts").Conversation> = {}) {
+  return {
+    id,
+    kind: "single",
+    name: id,
+    avatar: null,
+    last_msg: "旧",
+    last_ts: 100,
+    unread: 0,
+    pinned: false,
+    ...over,
+  } as import("../types.ts").Conversation;
+}
+
+test(
+  "会话快照不得把「已乐观清零的未读」点亮回来，但其余字段仍要按快照更新",
+  () => {
+    // 用户在 t=500 打开会话 c1 ⇒ 本地立刻清零并打上水位；
+    // 而这次快照是 t=400 发起的（后端当时还没收到已读），带着清零前的 unread=3。
+    const prev = [convRow("c1", { unread: 0 }), convRow("c2", { unread: 1 })];
+    const snapshot = [convRow("c1", { unread: 3, last_msg: "新消息", last_ts: 600 }), convRow("c2", { unread: 1 })];
+    const clearedAt = new Map([["c1", 500]]);
+    const out = applyConversationSnapshot(prev, snapshot, clearedAt, 400);
+    const c1 = out.find((c) => c.id === "c1")!;
+    assert.equal(c1.unread, 0, "本地清零晚于快照发起 ⇒ 快照里那个数是过期的，不许点亮红点");
+    assert.equal(c1.last_msg, "新消息", "只豁免未读这一个字段：内容/时间/排序仍按后端快照走");
+    assert.equal(out.find((c) => c.id === "c2")!.unread, 1, "没有被本地清过的会话原样采纳后端值");
+  },
+);
+
+test(
+  "反过来：快照晚于本地清零时必须采纳后端的未读（否则真未读会被永久压掉）",
+  () => {
+    const prev = [convRow("c1", { unread: 0 })];
+    const snapshot = [convRow("c1", { unread: 2, last_ts: 900 })];
+    const clearedAt = new Map([["c1", 300]]); // 清零发生在 300，快照 500 才发起 ⇒ 快照更新
+    const out = applyConversationSnapshot(prev, snapshot, clearedAt, 500);
+    assert.equal(out.find((c) => c.id === "c1")!.unread, 2, "清零之后又来了两条 ⇒ 后端说了算，红点必须回来");
+  },
+);
+
+test(
+  "水位只活到被更晚的快照超过为止：过期条目要能被丢弃，且不得让 Map 无界增长",
+  () => {
+    const clearedAt = new Map<string, number>([
+      ["old", 1],
+      ["new", 900],
+    ]);
+    pruneUnreadClears(clearedAt, 1000, 500); // 现在=1000，窗口=500 ⇒ 只剩 new
+    assert.deepEqual([...clearedAt.keys()], ["new"]);
+  },
+);
+
+// ---------------- 「有人@我」红点的摄入判定（从 useChatStore 里抽出来的纯函数） ----------------
+// 为什么值得单独钉：这条规则的"开着的那个会话不算被@"那一半，2026-09-28 在真界面上把我引偏过一次 ——
+// 拿无障碍树读到 `E2E-Group，5 条未读` 而没有 @ 那句，当时分不清"该亮没亮"与"正开着所以不算"。
+// 规则本来就是这么写的（群聊、非自己发的、当前没开着这个会话），但它只长在 store 里、没有单测，
+// 于是每次读到"没亮"都得重新去翻源码。这里把它钉住。
+const ME = { id: "dev-me", name: "我" };
+
+test("群聊里别人 @ 我 ⇒ 那个会话该点亮红点；同一会话多条也只回一次", () => {
+  const byConv = new Map<string, MessageRecord[]>([
+    ["group:g1", [
+      msg({ msg_id: "a1", conv_id: "group:g1", sender_id: "other", mention_ids: ["dev-me"], content: "@我 看一下" }),
+      msg({ msg_id: "a2", conv_id: "group:g1", sender_id: "other", mention_ids: ["dev-me"], content: "再来一条" }),
+    ]],
+  ]);
+  assert.deepEqual(freshMentionedConvs(byConv, null, ME), ["group:g1"]);
+});
+
+test("正开着的那个会话不算被@（红点与未读同源：看着就不该再提醒）", () => {
+  const byConv = new Map<string, MessageRecord[]>([
+    ["group:g1", [msg({ msg_id: "b1", conv_id: "group:g1", sender_id: "other", mention_ids: ["dev-me"] })]],
+  ]);
+  assert.deepEqual(freshMentionedConvs(byConv, "group:g1", ME), []);
+});
+
+// ★ 上面那条的**成立前提是"真的在看"**，而它自己的注释也是这么写的（"看着就不该再提醒"）。
+// 但实现只看 `activeConv` —— 桌面端有个刻意的行为：启动时会自动打开最近的那个会话
+// （`ResponsiveLayout.vue` 那条 watch，"对齐微信桌面版"），于是"开着"经常并不等于"看着"：
+// 窗口在后台 / 被别的整页浮层盖住时，@ 进来既不亮红点、又（正确地）不判已读
+// ⇒ 用户回来只看到「N 条未读」，看不出自己被 @ 过，要点开才知道。
+// 同一条"用户到底在不在看"的口径，`markRead` 那条路已经用了三个条件（会话是它 + 应用在前台 +
+// 聊天视图真可见）⇒ 红点这条不许只取第一个条件，否则两条规则对同一个瞬间会给出相反的答案
+// （一条判"没在看所以不判已读"，另一条判"开着所以不提醒"）。
+test("会话只是开着、用户其实没在看（窗口在后台或被浮层盖住）⇒ 仍要点亮「有人@我」", () => {
+  const byConv = new Map<string, MessageRecord[]>([
+    ["group:g1", [msg({ msg_id: "v1", conv_id: "group:g1", sender_id: "other", mention_ids: ["dev-me"] })]],
+  ]);
+  assert.deepEqual(
+    freshMentionedConvs(byConv, "group:g1", ME, { activeVisible: false }),
+    ["group:g1"],
+    "开着但没在看 ⇒ 抑制红点等于替用户把这条 @ 咽下去",
+  );
+});
+
+test("反向对照：同样的会话、用户真在看 ⇒ 仍然不点亮（新口径不许把这条一起放开）", () => {
+  const byConv = new Map<string, MessageRecord[]>([
+    ["group:g1", [msg({ msg_id: "v2", conv_id: "group:g1", sender_id: "other", mention_ids: ["dev-me"] })]],
+  ]);
+  assert.deepEqual(freshMentionedConvs(byConv, "group:g1", ME, { activeVisible: true }), []);
+});
+
+test("单聊不计红点（这条规则按设计只管群聊），自己的消息也不计", () => {
+  const byConv = new Map<string, MessageRecord[]>([
+    ["f1", [msg({ msg_id: "c1", conv_id: "f1", sender_id: "other", mention_ids: ["dev-me"] })]],
+    ["group:g1", [msg({ msg_id: "c2", conv_id: "group:g1", sender_id: "dev-me", mention_ids: ["dev-me"] })]],
+  ]);
+  assert.deepEqual(freshMentionedConvs(byConv, null, ME), []);
+});
+
+test("「@所有人」点亮；三态不许合并：缺 mention_ids 的旧消息退回昵称，名单为空是权威「谁都没@」", () => {
+  const allOf = new Map([["group:g1", [msg({
+    msg_id: "d1", conv_id: "group:g1", sender_id: "other", content: "@所有人 开会",
+  })]]]);
+  assert.deepEqual(freshMentionedConvs(allOf as Map<string, MessageRecord[]>, null, ME), ["group:g1"]);
+
+  const legacy = new Map([["group:g2", [msg({
+    msg_id: "d2", conv_id: "group:g2", sender_id: "other", content: "@我 看一下", mention_ids: undefined,
+  })]]]);
+  assert.deepEqual(freshMentionedConvs(legacy as Map<string, MessageRecord[]>, null, ME), ["group:g2"],
+    "旧对端没有这个字段 ⇒ 按昵称兜底（INV-P24：新字段只许让新版更准，不许让老消息变暗）");
+
+  const explicitNobody = new Map([["group:g3", [msg({
+    msg_id: "d3", conv_id: "group:g3", sender_id: "other", content: "@我 看一下", mention_ids: [],
+  })]]]);
+  assert.deepEqual(freshMentionedConvs(explicitNobody as Map<string, MessageRecord[]>, null, ME), [],
+    "空名单是「谁都没 @」这个肯定回答 ⇒ 正文里明明写着 @我，也不许亮（名单才是权威）");
+});
+
+test("指派给我的任务卡也算被@：走注入的那个谓词，判定不留在 store 里", () => {
+  const rec = msg({ msg_id: "e1", conv_id: "group:g1", sender_id: "other", kind: "todo" });
+  const byConv = new Map([["group:g1", [rec]]]);
+  assert.deepEqual(freshMentionedConvs(byConv as Map<string, MessageRecord[]>, null, ME,
+    { alsoMentionsMe: (r) => r.kind === "todo" && r.sender_id === "other" }), ["group:g1"]);
+  // 反向：没有注入谓词时，todo 那类消息不该亮（否则这条判据就不知道自己判的是哪一半）
+  assert.deepEqual(freshMentionedConvs(byConv as Map<string, MessageRecord[]>, null, ME), []);
+});
+
+test("我的 id 还没就绪时不许靠空串匹配到名单（身份未就绪 ≠ 被@）", () => {
+  const byConv = new Map([["group:g1", [msg({
+    msg_id: "f1", conv_id: "group:g1", sender_id: "other", mention_ids: [""],
+  })]]]);
+  assert.deepEqual(freshMentionedConvs(byConv as Map<string, MessageRecord[]>, null, { id: "", name: "我" }), []);
+});
+
+// ---- 乐观气泡 → 真实记录的替换（#160：群里发完出现两条自己发的消息）----
+// 形状：`send()` 先上一个 tmp-* 气泡，后端**自 emit**（2d4119f 为跨窗口同步加的）把真实
+// 记录先一步落进同一个列表，随后 invoke 返回再"就地替换" ⇒ 裸 splice 会插进第二份同 msg_id
+// 的记录。用户看到的正是两条一样的气泡，而切一次会话（从库里重读）就变回一条。
+const rec = (msg_id: string, over: Record<string, unknown> = {}): MessageRecord => ({
+  id: 1,
+  msg_id,
+  conv_id: "group:g1",
+  sender_id: "me",
+  receiver_id: "g1",
+  kind: "text",
+  content: "你好",
+  ts: 1000,
+  seq: 50,
+  status: "sent",
+  ...over,
+});
+
+test("replaceOptimistic：真实记录还没落地时，就地替换乐观行且只留一条", () => {
+  const tmp = rec("tmp-1", { status: "sending", seq: Number.MAX_SAFE_INTEGER });
+  const real = rec("R1", { status: "sent" });
+  const out = replaceOptimistic([rec("old"), tmp], "tmp-1", real);
+  assert.ok(out);
+  assert.deepEqual(out.map((m) => m.msg_id), ["old", "R1"]);
+});
+
+test("replaceOptimistic：自 emit 已把真实记录放进列表时，必须摘掉乐观行而不是再插一份", () => {
+  const tmp = rec("tmp-1", { status: "sending", seq: Number.MAX_SAFE_INTEGER });
+  const real = rec("R1", { status: "delivered" });
+  const out = replaceOptimistic([rec("old"), tmp, rec("x"), real], "tmp-1", { ...real, status: "sent" });
+  assert.ok(out);
+  assert.equal(out.filter((m) => m.msg_id === "R1").length, 1, "同 msg_id 在时间线里只许一条");
+  assert.ok(!out.some((m) => m.msg_id === "tmp-1"), "乐观行必须被摘掉");
+  assert.equal(out.find((m) => m.msg_id === "R1")?.status, "delivered", "送达状态只前进不回退");
+  assert.deepEqual(out.map((m) => m.msg_id), ["old", "x", "R1"], "其余行的相对顺序不许变");
+});
+
+test("replaceOptimistic：媒体行的本地 path 不能被无 path 的那份擦掉", () => {
+  const withPath = rec("R1", { kind: "file", content: JSON.stringify({ name: "a.png", path: "/tmp/a.png" }) });
+  const noPath = rec("R1", { kind: "file", content: JSON.stringify({ name: "a.png" }) });
+  const tmp = rec("tmp-1", { kind: "file", status: "sending", content: JSON.stringify({ name: "a.png" }) });
+  const out = replaceOptimistic([tmp, withPath], "tmp-1", noPath);
+  assert.ok(out);
+  assert.equal(out.length, 1);
+  assert.equal(JSON.parse(out[0].content).path, "/tmp/a.png");
+});
+
+test("replaceOptimistic：列表里没有那条乐观行 ⇒ 交回 null 让调用方挂起等落地", () => {
+  const out = replaceOptimistic([rec("old")], "tmp-missing", rec("R1"));
+  assert.equal(out, null);
+});
+
+// ---- 对端已读回执推进送达状态（#161：同一句判据三份副本里最弱的那一条）----
+// 后端 `db/read_receipts.rs::mark_own_messages_read_upto` 是这一句的家，它的注释就写着
+// "只排除 read 自己"就是缺陷：一条**本端根本没发出去**（failed）的话不可能被对方读过。
+// 前端那份原先正是只排除 read ⇒ 已失败的永久停在「已读」，而它带着 tmp-* id、
+// 每次重读都被 appendLocalOnly 追加回来，错了再也纠不回来。
+const dr = (msg_id: string, status: string, over: Partial<MessageRecord> = {}): MessageRecord => ({
+  id: 1,
+  msg_id,
+  conv_id: "p1",
+  sender_id: "me",
+  receiver_id: "p1",
+  kind: "text",
+  content: "x",
+  ts: 100,
+  seq: 10,
+  status: status as MessageRecord["status"],
+  ...over,
+});
+
+test("promoteOnPeerRead：把我自己发的、ts 在回执之内的消息推到 read", () => {
+  const out = promoteOnPeerRead([dr("a", "sending"), dr("b", "delivered")], "me", 200);
+  assert.deepEqual(out.map((m) => m.status), ["read", "read"]);
+});
+
+test("promoteOnPeerRead：failed 与 recalled 是硬终态，回执点不动它们", () => {
+  const out = promoteOnPeerRead([dr("f", "failed"), dr("r", "recalled")], "me", 999);
+  assert.equal(out.find((m) => m.msg_id === "f")?.status, "failed", "没发出去的话不许被点亮成已读");
+  assert.equal(out.find((m) => m.msg_id === "r")?.status, "recalled", "撤回不许被点亮成已读");
+});
+
+test("promoteOnPeerRead：别人发的与超出回执时间的都不动", () => {
+  const mine = dr("mine", "delivered", { ts: 500 });
+  const theirs = dr("theirs", "sent", { sender_id: "peer" });
+  const out = promoteOnPeerRead([theirs, mine], "me", 200);
+  assert.equal(out.find((m) => m.msg_id === "theirs")?.status, "sent");
+  assert.equal(out.find((m) => m.msg_id === "mine")?.status, "delivered", "ts 在回执之后 ⇒ 不算已读");
+});
+
+test("promoteOnPeerRead：没有可推进的项时返回同一个数组（不许白刷一次响应式）", () => {
+  const list = [dr("a", "read"), dr("b", "failed")];
+  assert.equal(promoteOnPeerRead(list, "me", 999), list);
 });

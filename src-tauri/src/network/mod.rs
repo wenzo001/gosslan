@@ -226,6 +226,97 @@ pub(crate) fn transport_src_for_guards() -> String {
     src.push_str(include_str!("transport/outbound.rs"));
     src.push('\n');
     src.push_str(include_str!("transport/gossip.rs"));
+    // `transport/relay.rs` 也是同一模块的分册（`transport.rs:50` 的 `include!`）。
+    // 2026-09-22 补登记：4.25.0 接线时只把它记进了 `docs/domains.data.mjs`，漏了这里 ⇒
+    // 所有以"transport 全集"为判据的守卫**看不见拨号器本身**（假绿，不是假红 —— 更危险的那种）。
+    src.push('\n');
+    src.push_str(include_str!("transport/relay.rs"));
+    // `transport/tests.rs` **刻意不并进视图**：视图是生产码全集，掺进测试字面量会让
+    // 以它为判据的守卫多看见一堆字符串常量（本文件上面 commands/db 那段注释写的同一条规矩）。
+    // 2026-10-06 实测：分册把 writer_loop / reader_loop 搬出主文件后，视图里先撞上
+    // tests.rs 中的 `"async fn reader_loop("` 字面量，窗口飘到测试文本上 ⇒ 4 条守卫假红。
+    // 2026-10-06 大文件拆分的头四册（`transport.rs` 里对应的四行 `include!`）。
+    // 必须登记在这里：所有以"transport 全集"为判据的守卫读的是这份视图，漏一册就是
+    // 守卫看不见那段生产码 —— 假绿，比假红危险（relay.rs 在 4.25.0 接线时漏登记过两次）。
+    src.push_str(include_str!("transport/pending_keys.rs"));
+    src.push_str(include_str!("transport/peer_state.rs"));
+    src.push_str(include_str!("transport/member_notices.rs"));
+    src.push_str(include_str!("transport/outbox_flush.rs"));
+    src.push_str(include_str!("transport/queue_policy.rs"));
+    src.push_str(include_str!("transport/link_state.rs"));
+    src.push_str(include_str!("transport/relay_file.rs"));
+    src.push_str(include_str!("transport/outbox_sweep.rs"));
+    src.push_str(include_str!("transport/read_receipt.rs"));
+    src.push_str(include_str!("transport/e2ee_payload.rs"));
+    src.push_str(include_str!("transport/group_file.rs"));
+    src.push_str(include_str!("transport/group_membership.rs"));
+    src.push_str(include_str!("transport/peer_registry.rs"));
+    src.push_str(include_str!("transport/handshake.rs"));
+    src.push_str(include_str!("transport/dial.rs"));
+    // `handle_file.rs`：handle_message 拆出的一族分支（2026-10-07）。**必须登记** ——
+    // 漏一册就是以「transport 全集」为判据的那些守卫看不见这段生产码（假绿，比假红危险）。
+    src.push_str(include_str!("transport/handle_file.rs"));
+    // `handle_share.rs`：handle_message 拆出的一族分支（2026-10-07）。**必须登记** ——
+    // 漏一册就是以「transport 全集」为判据的那些守卫看不见这段生产码（假绿，比假红危险）。
+    src.push_str(include_str!("transport/handle_share.rs"));
+    // `handle_group.rs`：handle_message 拆出的一族分支（2026-10-07）。**必须登记** ——
+    // 漏一册就是以「transport 全集」为判据的那些守卫看不见这段生产码（假绿，比假红危险）。
+    src.push_str(include_str!("transport/handle_group.rs"));
+    // `handle_identity.rs`：handle_message 拆出的一族分支（2026-10-07）。**必须登记** ——
+    // 漏一册就是以「transport 全集」为判据的那些守卫看不见这段生产码（假绿，比假红危险）。
+    src.push_str(include_str!("transport/handle_identity.rs"));
+    // `handle_messaging.rs`：handle_message 拆出的一族分支（2026-10-07）。**必须登记** ——
+    // 漏一册就是以「transport 全集」为判据的那些守卫看不见这段生产码（假绿，比假红危险）。
+    src.push_str(include_str!("transport/handle_messaging.rs"));
+    src
+}
+
+/// `file` 模块的**生产码全集视图**（与 `transport_src_for_guards()` 同一条规矩）。
+///
+/// 2026-10-07：`network/file.rs` 从 2,495 行按角色切成五册（发送 / 中继推文件 / 接收 /
+/// 群接收 / 共享目录与命名），`include!` 是文本粘贴 ⇒ 模块路径与测试全名一字不变，
+/// 但守卫用的 `include_str!` **看不见展开结果** ⇒ 必须在这里再登记一份清单。
+///
+/// ⚠️ 漏一册的后果不是报错而是**假绿**：以「file 全集」为判据的形状守卫看不见那段生产码。
+/// 这条不由人记着 —— `lib_source_view_tests.rs` 的登记对账守卫（第四个用例）每个视图都钉两侧，
+/// 少登记多登记都会红。
+/// `file_tests.rs` 刻意不进视图：它是测试文本，并进来会让生产模式扫描多看见一堆字符串常量。
+#[cfg(test)]
+pub(crate) fn file_src_for_guards() -> String {
+    let mut src = String::new();
+    src.push_str(include_str!("file.rs"));
+    src.push('\n');
+    src.push_str(include_str!("file/send.rs"));
+    src.push('\n');
+    src.push_str(include_str!("file/relay_push.rs"));
+    src.push('\n');
+    src.push_str(include_str!("file/receive.rs"));
+    src.push('\n');
+    src.push_str(include_str!("file/group_receive.rs"));
+    src.push('\n');
+    src.push_str(include_str!("file/share_walk.rs"));
+    src
+}
+
+/// `ble` 模块的**生产码全集视图**（与上面两份同一条规矩；`#[cfg(test)]` 是因为只有守卫读它）。
+///
+/// 2026-10-07：`network/ble.rs` 从 2,392 行按角色切成四册（central 扫描拨号 / 外设 accept /
+/// 帧读写抽象 / 读写循环）。`include_str!` 看不见 `include!` 的展开 ⇒ 形状守卫一律读这份视图，
+/// 登记对账由 `lib_source_view_tests.rs` 的第五个用例钉两侧。
+/// ⚠️ 本模块整体在 `#[cfg(feature = "bluetooth")]` 之后，但**视图不需要那个 feature**：
+/// `include_str!` 读的是文本，所以 `lib_ble_tests.rs` 在未开蓝牙的测试构建里也读得到分册内容。
+#[cfg(test)]
+pub(crate) fn ble_src_for_guards() -> String {
+    let mut src = String::new();
+    src.push_str(include_str!("ble.rs"));
+    src.push('\n');
+    src.push_str(include_str!("ble/central.rs"));
+    src.push('\n');
+    src.push_str(include_str!("ble/peripheral.rs"));
+    src.push('\n');
+    src.push_str(include_str!("ble/frame_io.rs"));
+    src.push('\n');
+    src.push_str(include_str!("ble/io_loops.rs"));
     src
 }
 

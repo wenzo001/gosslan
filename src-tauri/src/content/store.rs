@@ -32,20 +32,37 @@ pub fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
             PRIMARY KEY (cid, peer_id, direction)
          );
          CREATE INDEX IF NOT EXISTS idx_content_transfers_status
-            ON content_transfers(status);",
+            ON content_transfers(status);
+         -- 每次建链都要问一次「这个 peer 名下还有哪些可恢复的内容」：
+         -- WHERE peer_id + status IN(...) ORDER BY updated_at。原先只有 (status) 一条，
+         -- peer_id 不是任何索引的前缀 ⇒ 全表扫。第三列让排序也省掉。
+         -- 为什么不并进 idx_content_transfers_status：status 单独那条服务的是
+         -- 「按状态横切所有 peer」的查询，前缀不同、删不掉。
+         CREATE INDEX IF NOT EXISTS idx_content_transfers_peer
+            ON content_transfers(peer_id, status, updated_at);",
     )?;
     // 防御性迁移：早期 content_transfers 可能没有 transfer_id 列
     // （断点续传要按它找 <tid>.part）。CREATE TABLE IF NOT EXISTS 不会自动补列。
+    //
+    // ⚠️ 探测失败时按「没有该列」处理（审计 2.3q）：旧默认 true 在真缺列的老库上
+    // 会跳过补列 ⇒ row_to_record 的 r.get("transfer_id") 让**所有行**不可读。
+    // 按 false 处理最坏只是对已有列的库多跑一次幂等 ALTER（duplicate column 无害）。
     let has_tid: bool = conn
         .prepare("SELECT COUNT(*) FROM pragma_table_info('content_transfers') WHERE name = 'transfer_id'")
         .and_then(|mut s| s.query_row([], |r| r.get::<_, i64>(0)))
         .map(|n| n > 0)
-        .unwrap_or(true);
+        .unwrap_or(false);
     if !has_tid {
-        let _ = conn.execute(
+        // 幂等：列其实已存在时报 duplicate column，这种失败无害直接吞；
+        // 其它失败必须留痕 —— 静默 = 断点续传记录悄悄全表不可读、无从排查。
+        if let Err(e) = conn.execute(
             "ALTER TABLE content_transfers ADD COLUMN transfer_id TEXT",
             [],
-        );
+        ) {
+            if !e.to_string().to_lowercase().contains("duplicate column") {
+                eprintln!("[gosslan-db] content_transfers 补列 transfer_id 失败: {e}");
+            }
+        }
     }
     Ok(())
 }
@@ -200,25 +217,6 @@ pub fn touch_received(
             SET received = MAX(received, ?3), updated_at = ?4
           WHERE cid = ?1 AND peer_id = ?2 AND direction = 'receive'",
         params![cid, peer_id, received as i64, now_ms],
-    )?;
-    Ok(())
-}
-
-/// 把一条记录标记为完成（收/发皆可）。
-pub fn mark_complete(
-    conn: &Connection,
-    cid: &str,
-    peer_id: &str,
-    direction: Direction,
-    path: &str,
-    now_ms: i64,
-) -> rusqlite::Result<()> {
-    conn.execute(
-        "UPDATE content_transfers
-            SET status='complete', received=size, path=?4,
-                next_attempt_at=0, last_error=NULL, updated_at=?5
-          WHERE cid=?1 AND peer_id=?2 AND direction=?3",
-        params![cid, peer_id, direction.as_str(), path, now_ms],
     )?;
     Ok(())
 }

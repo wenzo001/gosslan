@@ -113,6 +113,13 @@ pub fn window_close(app: tauri::AppHandle) {
 /// 群消息发送的**唯一内核**：群密钥加密 → Gossip 信封 → 落库（消息 + 每个成员的 outbox）
 /// → 广播。文本、代码、表情回应等全部走这一条路。
 ///
+/// `mentions`（这条文本 @ 了谁）只在明文里多带一个键，**不落库**：
+/// 「有人@我」是摄入那一刻的一次性判定（重启即清空，见 useChatStore 的 mentionedConvs），
+/// 为它动迁移链换来的可观察行为是零，风险却是本仓最高的一类。
+/// ⚠️ 同一句话**不再适用于 `mention_targets`**（#122 第二段，迁移 v10→v11）：
+/// 落点是"正文里哪一段算谁"，属于那句话的历史事实 —— 不落库的代价是"重启后同一句话换了意思"，
+/// 那是**有**可观察行为的一类，所以它进库了。两者的分界写在类型上（见 `state::MessageRecord`）。
+///
 /// 为什么必须只有一条：它们都要 E2EE、都要 outbox 兜底、都要 GroupAck、都要被四层幂等
 /// 去重覆盖。若各写一份，任何一处修 bug（历史上最典型的是「填完 group_creator/members
 /// 后忘了重算重签 → 群消息被静默丢弃」）都只会修到其中一条路径。
@@ -121,6 +128,7 @@ async fn send_group_payload(
     group_id: &str,
     kind: &str,
     content: String,
+    mentions: Option<&[String]>,
 ) -> Result<MessageRecord, String> {
     let ts = db::now_ms();
     let conv_id = format!("group:{group_id}");
@@ -145,7 +153,26 @@ async fn send_group_payload(
     let preview = crate::protocol::preview_text(kind, &content);
 
     // 群密钥加密 + Gossip 信封（E2EE 恒开：载荷用群密钥 ChaCha20-Poly1305 加密）
-    let plaintext = serde_json::json!({ "kind": kind, "content": content }).to_string();
+    // `mentions` 只在文本消息上有值，且**三态有意义**（None=不发这个键=旧语义），
+    // 所以这里不能写成 `mentions.unwrap_or_default()`。形状与理由见 protocol 层。
+    // #122：新对端除了名单还要落点（哪一段文字算谁）。名字取**发送当时**通讯录里的那份昵称；
+    // 查不到昵称的 id 不分配落点（蒙一个位置比留空更容易让对端把"@第二个人"对到第一次出现上）。
+    let targets: Option<Vec<crate::protocol::MentionTarget>> = mentions.map(|ids| {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        // 昵称取通讯录里那份（`get_friend` 返 `(nickname, avatar)`）。
+        // ⚠️ 刻意**不为自己的 id 造落点**：自己 @ 自己这条在本仓没有入口，
+        // 而为它去猜"本机昵称存在哪"会多引一份状态源 —— 查不到昵称就是没有落点，
+        // 那种情况下呈现层退回按昵称判（与老对端同一兜底路径），不是蒙一个位置。
+        crate::protocol::build_mention_targets(&content, ids, |id| {
+            db::get_friend(&dbc, id).map(|f| f.0)
+        })
+    });
+    let plaintext = crate::protocol::gossip_plaintext_with_targets(
+        kind,
+        &content,
+        mentions,
+        targets.as_deref(),
+    );
     let sealed = crypto::seal_symmetric(&key, plaintext.as_bytes()).ok_or("加密失败")?;
     let payload_b64 = STANDARD.encode(&sealed);
     let env = {
@@ -187,6 +214,9 @@ async fn send_group_payload(
         ts,
         seq,
         status: "sent".to_string(),
+        // 自己这一行也带上落点：与刚发出去的那一份**是同一个事实**，不带就等于
+        // 让库里那一行比线上少一截（同一件事出现两个真源，正是本仓反复付学费的形状）。
+        mention_targets: targets.clone(),
     };
     // 群消息与单聊一样需要可靠投递：本地落库 + 每个成员的 outbox 在同一事务里完成，
     // 再由建链 / Hello / 心跳触发 flush_group_outbox 补发，收到 GroupAck 才删行。
@@ -217,7 +247,65 @@ async fn send_group_payload(
         tx.commit().map_err(|e| format!("群消息写入失败：{e}"))?;
     }
 
+    // 落库成功后，把这条消息回送给**本机所有窗口**。
+    //
+    // 为什么必须由后端做、而不是靠发起方乐观插入：群任务看板跑在独立窗口 `todos.html`
+    // 里，那份 `useChatStore` 是**另一个实例**，它 `enqueueMessage` 的记录主聊天窗完全看不见
+    // ⇒ 用户自己发的任务/投票/接龙在自己的时间线上不出现，要重进会话才看得见。
+    // 同形的群发送（群文件/公告 `group_announcements.rs`）早就在写库后自 emit，
+    // 缺的正是内核这一句 —— 补在这里，所有走内核的 kind 一起修好，不必每个入口挂一次。
+    //
+    // 位置两处都是硬约束：必须在上面的锁作用域**闭合之后**（持锁 emit 是既有不变量），
+    // 且 `tx.commit()` 成功之后（emit 一条没落库的消息会让前端显示一条刷新即消失的记录）。
+    // 重复渲染不用担心：前端 `applyIncoming` 按 `msg_id` upsert，自发的那条也不计未读。
+    let _ = s.app.emit("message-received", &rec);
+
+    // §29 可观测性：这一行是「发起方自己为什么看得见」唯一的**行为**证据 —— 双实例 harness
+    // 没有任何入口让应用自己执行一次动作（全仓只认 `GOSSLAN_INSTANCE`/`GOSSLAN_AUTOSTART`），
+    // 所以"A 库里那行"永远是 harness 自己写的、判了就是循环论证；而"本机回送确实发生过"
+    // 只有在这里留痕才判得了。位置硬约束同 emit：晚于 commit、在锁作用域之外。只记 id 与 kind。
+    s.logger.info(
+        "group",
+        format!("群消息已回送本机窗口 msg={} kind={}", rec.msg_id, kind),
+    );
+
     broadcast_gossip(s, env).await;
+
+    // INV-P24 的群侧：**只报事实，不拦发送**。这条 kind 若有成员**确知**渲染不了，
+    // 往前端发一句提示，消息照发。
+    //
+    // 为什么群不像 1:1 那样硬门控（本轮对 git 历史的考古结论，不是怕吵）：
+    //   · 群 kind 不在 `MsgKind` 枚举里，它在群密钥加密的 Gossip 载荷内，接收端
+    //     `parse_gossip_plaintext` 按**自由字符串**解析（同一份实现逐字存在于 v2.1.2 /
+    //     v4.3.9 / v4.8.2 / v4.20.0），DB 列 `kind TEXT` 也没有 CHECK ⇒ 老成员不丢帧、
+    //     不断链、不会假报"发送失败"，退化只发生在**渲染**（看成一段原始文本，
+    //     因为 V3b 那层兜底只修了我们这一侧）；
+    //   · 1:1 恰恰相反：老对端的 `ChatMessage.kind` 是枚举，不认识的 kind 整帧解析失败，
+    //     而它的读循环 `Err(_) => break` ⇒ 丢帧之外还断链 —— 那边才配"不门控不许发"。
+    // 接在**内核**而不是命令入口：文本/代码/合并/任务/投票/公告全走这里，将来新增受门控
+    // 的 kind 自动被覆盖，不必记得在第二个入口再挂一次。
+    let (missing_ids, unknown, gated) = {
+        let features = s
+            .peer_content_features
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        crate::protocol::kind_audience(kind, |id| features.get(id).copied(), &group_members, &s.device_id)
+    };
+    if gated {
+        // 显示名要在位图锁**外**解析：`resolve_nickname` 自己会去锁 peers 表。
+        let names: Vec<String> = missing_ids
+            .iter()
+            .map(|id| resolve_nickname(s, id))
+            .collect();
+        let hint = crate::protocol::kind_audience_hint(kind, &names, unknown);
+        if !hint.is_empty() {
+            // `let _ =`：提示送不出去不该影响已经发出去的消息（它只是解释，不是结果）。
+            let _ = s.app.emit(
+                "content-audience",
+                json!({ "conv_id": conv_id, "msg_id": rec.msg_id, "hint": hint }),
+            );
+        }
+    }
 
     Ok(rec)
 }

@@ -8,7 +8,6 @@ import { linkify, type LinkSegment } from "@/utils/linkify";
 import MessageLinkText from "@/components/message/MessageLinkText.vue";
 import { splitEmoji } from "@/utils/emoji";
 import { mentionHighlightColor } from "@/utils/chatStyle";
-import { QUOTE_BORDER, QUOTE_BG, QUOTE_TEXT_STYLE } from "@/utils/quoteStyle";
 import { parseQuote } from "@/utils/quote";
 import { Check, Copy } from "lucide-vue-next";
 
@@ -23,6 +22,15 @@ const props = defineProps<{
   mine: boolean;
   /** 群成员名列表：正文里的 @name 按此高亮（不传不高亮）。 */
   mentionNames?: string[];
+  /**
+   * 查看者自己是谁（本机昵称 + 本地化标签）。传了以后，正文里 @到我自己 的那一段
+   * 渲染成「@你」并加重（用户 2026-09-26）。刻意由调用方传而不是在这里读 store ——
+   * 本组件是纯展示件（与 `mine` 同理），且**同一份文本在两端渲染成不同标签**，
+   * 绝不能在发送/落库侧改文案（那会污染对端视图与历史）。
+   */
+  selfMention?: { name: string; label: string; id?: string } | null;
+  /** @ 的落点（#122）：传了才按身份判「这一段属于谁」，不传按昵称兜底。 */
+  mentionTargets?: { id: string; name: string; n: number }[] | null;
   /**
    * 移动端「选择文字」模式（用户 2026-09-13）：
    * 触屏下气泡默认**不可选**（长按归消息菜单），只有进入这个模式才开放原生选字。
@@ -96,7 +104,14 @@ const segments = computed<RenderSegment[]>(() => {
     if (s.kind === "emoji") {
       out.push({ kind: "emoji", value: s.value, name: s.name, url: s.url });
     } else {
-      out.push(...linkify(s.value, props.mentionNames ?? []));
+      out.push(
+        ...linkify(
+          s.value,
+          props.mentionNames ?? [],
+          props.selfMention ?? undefined,
+          props.mentionTargets ?? null,
+        ),
+      );
     }
   }
   return out;
@@ -126,7 +141,7 @@ function resolveBgColor(style: CSSProperties | undefined, el: HTMLElement | null
 }
 const mentionFg = computed(() => {
   const bg = resolveBgColor(props.clamped ? props.cardStyle : props.bubbleStyle, contentEl.value);
-  return mentionHighlightColor(app.themeColor, app.dark, bg || (app.dark ? "#1c2434" : "#eeeef0"));
+  return mentionHighlightColor(app.themeColor, app.dark, bg);
 });
 
 /** @提及 淡背景：取 mentionFg（主题色派生）的低透明度，做成互联网公司式的浅色块。 */
@@ -176,23 +191,6 @@ async function openLink(href: string) {
          带引用头的完整原文，同一个气泡两条复制路径结果不一样。
          ⚠️ 不挂在气泡根上：根里还有「展开/复制」操作条和尖角，全选会把按钮文字也框进去。 -->
     <div ref="contentEl">
-      <!-- 引用块：首行「引用 发送者：片段」，带 msg_id 时可点击跳转原消息 -->
-      <button
-        v-if="parsed.quote && parsed.msgId"
-        class="quote-block mb-1.5 block w-full cursor-pointer rounded-[var(--gosslan-radius-sm)] border-l-2 px-2 py-1 text-left text-[12px] leading-4 transition hover:brightness-110"
-        :style="{ borderColor: QUOTE_BORDER, background: QUOTE_BG }"
-        :title="t('msg.locateOriginal', { id: parsed.msgId })"
-        @click="emit('locate', parsed.msgId)"
-      >
-        <span class="quote-text" :style="QUOTE_TEXT_STYLE">{{ parsed.quote }}</span>
-      </button>
-      <div
-        v-else-if="parsed.quote"
-        class="quote-block mb-1.5 rounded-[var(--gosslan-radius-sm)] border-l-2 px-2 py-1 text-[12px] leading-4"
-        :style="{ borderColor: QUOTE_BORDER, background: QUOTE_BG }"
-      >
-        <span class="quote-text" :style="QUOTE_TEXT_STYLE">{{ parsed.quote }}</span>
-      </div>
       <div
         class="gosslan-selectable whitespace-pre-wrap break-words"
         :style="{ wordBreak: 'break-word', ...clampStyle }"
@@ -205,6 +203,7 @@ async function openLink(href: string) {
             @open="openLink"
           />
           <img
+            loading="lazy" decoding="async"
             v-else-if="seg.kind === 'emoji'"
             :src="seg.url"
             :alt="seg.value"
@@ -213,14 +212,17 @@ async function openLink(href: string) {
             class="emoji-img"
           />
           <span
-            v-else-if="seg.kind === 'mention'"
+            v-else-if="seg.kind === 'mention' || seg.kind === 'mention-self'"
             class="mention-token"
+            :class="{ 'mention-token--self': seg.kind === 'mention-self' }"
             :style="{ color: mentionFg || undefined, background: mentionBg || undefined }"
           >{{ seg.value }}</span>
           <span v-else>{{ seg.value }}</span>
         </template>
       </div>
     </div>
+    <!-- 引用块不再画在气泡里：按用户 2026-09-21 的微信口径，它挂在**气泡外的正文下方**
+         （见 MessageItem 的说明：点击=直接查看被引用内容，跳转在消息菜单里）。 -->
     <!-- 长文本操作条：高度固定，展开走独立 Modal，消息 DOM 不再变化 -->
     <div
       v-if="clamped"

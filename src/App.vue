@@ -7,6 +7,15 @@ import { isMac } from "@/utils/platform";
 import ResponsiveLayout from "@/layouts/ResponsiveLayout.vue";
 
 /**
+ * 首屏就绪之后再过这么久才去预热辅助窗口。
+ *
+ * 不是为了"好看"：app-ready 那一刻首帧正在渲染、网络与发现正在启动，这时候建 WebView
+ * 会把用户第一眼的那一下拖慢，正好与预热的目的相反。1.2s 是"首屏已经稳住、用户还没
+ * 点到第一张图"的那个窗口。
+ */
+const AUX_PREWARM_DELAY_MS = 1200;
+
+/**
  * 主窗口根组件。
  *
  * ⚠️ 这里**只**管主窗口。独立「设置」/「运行日志」窗口各有自己的 HTML 与入口
@@ -69,12 +78,33 @@ onMounted(async () => {
     // `app.init()`：只读偏好/设备/网卡（两个窗口都要）。
     // `chat.init()`：会话、好友、网络事件监听 —— **只在主窗口**跑，
     // 在独立窗口重复初始化会注册第二份监听并重复触发后端动作。
-    await app.init();
-    await chat.init();
+    //
+    // 两者各自兜底（2026-09-23 审计 1.6）：app.init 失败（如 settings IPC 抖动）
+    // 不得跳过 chat.init —— 那会让主窗口**永远收不到任何事件**（"活着但功能全死"，
+    // 需重启恢复）；chat.init 失败也要留痕而不是静默吞进 unhandled rejection。
+    try {
+      await app.init();
+    } catch (e) {
+      console.error("[app] app.init 失败（偏好/设备可能未加载，继续启动）", e);
+    }
+    try {
+      await chat.init();
+    } catch (e) {
+      console.error("[app] chat.init 失败", e);
+    }
   } finally {
     // 真实数据就绪 → 让首屏骨架淡出（index.html 内联骨架，由 src/boot/boot.ts 撤除）。
     // 放在 finally：init 失败也要撤，否则骨架会一直挡在界面上。
     window.dispatchEvent(new Event("gosslan:app-ready"));
+    // 桌面端**预热**那扇全局唯一的预览窗口（用户 2026-09-24："启动的时候后台异步把高频窗口
+    // 的 WebView 开销开好，用的时候秒开"）。放在 app-ready 之后并再延后一拍：首屏渲染与
+    // 网络启动正在抢 CPU/IO，这时去建 WebView 会把用户第一眼的那一下拖慢 —— 与本条目的
+    // 目的正好相反。失败不提示：最坏结果只是"第一次点图仍然慢一点"。
+    if (!app.isMobile) {
+      window.setTimeout(() => {
+        void api.prewarmAuxWindows().catch(() => {});
+      }, AUX_PREWARM_DELAY_MS);
+    }
   }
   // init 之后再报一次：此时 `app.isMobile` 才是真实值（移动端不判 focus/blur）
   reportActivity();

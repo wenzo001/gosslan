@@ -18,6 +18,10 @@ const props = defineProps<{
   copied: boolean;
   /** 群成员名列表：与气泡共用同一套 @ 高亮，避免"气泡里高亮、全文里是纯文本"。 */
   mentionNames?: string[];
+  /** 查看者自己是谁：@到自己 那一段渲染成「@你」并加重（与 MessageTextBubble 同一份判据）。 */
+  selfMention?: { name: string; label: string; id?: string } | null;
+  /** @ 的落点（#122）：传了才按身份判「这一段属于谁」，不传按昵称兜底。 */
+  mentionTargets?: { id: string; name: string; n: number }[] | null;
 }>();
 const emit = defineEmits<{
   (e: "close"): void;
@@ -31,7 +35,15 @@ const segments = computed<RenderSegment[]>(() => {
   const out: RenderSegment[] = [];
   for (const s of splitEmoji(props.content)) {
     if (s.kind === "emoji") out.push({ kind: "emoji", value: s.value, name: s.name, url: s.url });
-    else out.push(...linkify(s.value, props.mentionNames ?? []));
+    else
+      out.push(
+        ...linkify(
+          s.value,
+          props.mentionNames ?? [],
+          props.selfMention ?? undefined,
+          props.mentionTargets ?? null,
+        ),
+      );
   }
   return out;
 });
@@ -40,7 +52,7 @@ const segments = computed<RenderSegment[]>(() => {
  *  从 CSS 变量读真实面板色，避免将来改了主题 token 这里忘记同步。 */
 const mentionFg = computed(() => {
   const panel = getComputedStyle(document.documentElement).getPropertyValue("--gosslan-panel").trim();
-  return mentionHighlightColor(app.themeColor, app.dark, panel || (app.dark ? "#1e293b" : "#ffffff"));
+  return mentionHighlightColor(app.themeColor, app.dark, panel);
 });
 
 /** @提及 淡背景：与气泡同款取法（mentionFg 的 16%）。
@@ -84,6 +96,7 @@ async function openLink(href: string) {
             @open="openLink"
           />
           <img
+            loading="lazy" decoding="async"
             v-else-if="seg.kind === 'emoji'"
             :src="seg.url"
             :alt="seg.value"
@@ -91,8 +104,9 @@ async function openLink(href: string) {
             class="emoji-img"
           />
           <span
-            v-else-if="seg.kind === 'mention'"
+            v-else-if="seg.kind === 'mention' || seg.kind === 'mention-self'"
             class="mention-token"
+            :class="{ 'mention-token--self': seg.kind === 'mention-self' }"
             :style="{ color: mentionFg || undefined, background: mentionBg || undefined }"
           >{{ seg.value }}</span>
           <span v-else>{{ seg.value }}</span>

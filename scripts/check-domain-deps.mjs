@@ -64,6 +64,7 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 import domainMap from "../docs/domains.data.mjs";
+import { isAppCodePath } from "./semver.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -179,6 +180,42 @@ function isInTestRange(idx, ranges) {
 }
 
 /**
+ * 把一行 `use crate::…` 展开成若干 module path。
+ *
+ * 为什么要专门写这个（2026-10-07 复审 ⑥）：本文件的**内联**扫描（`scanInlineCrate`）把
+ * `^\s*(pub\s+)?use\s` 开头的行整行跳过，理由是"use 行由 `scanUseCrate` 负责"；
+ * 而 `scanUseCrate` 原先只认单条路径 `use crate::a::b;` —— 于是
+ * **花括号批量形式 `use crate::{notifications, utils::foo};` 两侧都不看**，
+ * 成了一条能绕过棘轮上限（`GOSSLAN_DOMAIN_INLINE_PAIR_MAX`）的写法：
+ * 新增一条跨域耦合，只要用花括号写 `use`，判据就永久看不见它。
+ * 现算今天这个形式是 **0 处**（`grep -rE '^\s*(pub(\([a-z]+\))?\s+)?use\s+crate::\{' src-tauri/src`），
+ * 所以补上是纯收紧、不动任何现有数字 —— 恒等判据：改前改后本脚本输出逐字节相同。
+ *
+ * 嵌套形式 `use crate::{a::{b, c}}` 削成模块前缀 `a`（域归属只看第一段模块，
+ * 精确到 `b`/`c` 对判据没意义）；`self::` / `super::` 不是 crate 根，不算。
+ *
+ * @returns {string[]} `crate::` 之后的 module path 列表（非 use crate 行返回空）
+ */
+function useCratePaths(line) {
+  const m = line.match(/^\s*(?:pub(?:\([a-z]+\))?\s+)?use\s+crate::\s*/);
+  if (!m) return [];
+  // 先去行内注释再剥分号：`use crate::{a::b}; // 说明` 里注释在 `}` 之后，
+  // 不先去注释就判不出"以 } 结尾"，整行会退化成看不见（第一版就是这么漏的 —— 注入实测 RC=0）
+  const noComment = line.slice(m[0].length).replace(/\/\/.*$/, "");
+  const tail = noComment.trim().replace(/;+\s*$/, "").trim();
+  const stripRename = (seg) => seg.trim().split(/\s+as\s+/)[0].trim();
+  if (tail.startsWith("{") && tail.endsWith("}")) {
+    return tail
+      .slice(1, -1)
+      .split(",")
+      .map((seg) => stripRename(seg).replace(/::\{[\s\S]*$/, "").replace(/::$/, ""))
+      .filter((seg) => /^[a-zA-Z_][a-zA-Z0-9_]*(?:::[a-zA-Z_][a-zA-Z0-9_]*)*$/.test(seg));
+  }
+  const p = tail.match(/^([a-zA-Z_][a-zA-Z0-9_]*(?:::[a-zA-Z_][a-zA-Z0-9_]*)*)/);
+  return p ? [p[1]] : [];
+}
+
+/**
  * 提取文件中**生产代码**的 `use crate::xxx` 引用的 module path。
  * 返回 `Array<{line, modulePath}>`，modulePath 是 `crate::` 之后的整段，
  * 如 `mesh::router`、`network::transport`。
@@ -190,13 +227,48 @@ function scanUseCrate(content) {
 
   for (let i = 0; i < lines.length; i++) {
     if (isInTestRange(i, testRanges)) continue;
-    const line = lines[i];
-    const m = line.match(/^\s*use\s+crate::([a-zA-Z_][a-zA-Z0-9_]*(?:::[a-zA-Z_][a-zA-Z0-9_]*)*)/);
-    if (!m) continue;
-    refs.push({ line: i + 1, modulePath: m[1] });
+    // 花括号批量形式与 `pub use` 也走这里（缺口与恒等判据见 useCratePaths 上方注释）
+    for (const modulePath of useCratePaths(lines[i])) refs.push({ line: i + 1, modulePath });
   }
   return refs;
 }
+
+/**
+ * ★ #133-A：**只报告、不判红**的那一半 —— 数本文件里"内联写法"的跨域引用。
+ *
+ * 为什么要数它：本守门原先只看 `use crate::xxx` 行，而 `db/messages.rs` 里那条
+ * **地图自己注释成"真生产依赖"**的耦合（`crate::protocol::MentionTarget` /
+ * `parse_mention_targets_column`，`docs/domains.data.mjs` 里 db 的 consumes 注释写着它）
+ * 一行 `use` 都没有 ⇒ 判据对着一条已声明的生产依赖完全看不见。
+ * 这条洞不是"理论上的绕法"，是实测到的。
+ *
+ * 为什么先不判红：把内联也纳入判据会把历史上按 `use` 口径建起来的 `consumes` 名单一次性判红，
+ * 而"补声明"还是"改代码"属于要人拍板的面 ⇒ 现在先把分母打印出来，让洞变成能看见的数。
+ *
+ * 计数是**上界**：注释与字符串里出现的 `crate::` 也会被数进去（不解析语法树）。
+ */
+const INLINE_RE = /crate::([a-zA-Z_][a-zA-Z0-9_]*(?:::[a-zA-Z_][a-zA-Z0-9_]*)*)/g;
+function scanInlineCrate(content) {
+  const lines = content.split("\n");
+  const testRanges = findTestModuleRanges(content);
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (isInTestRange(i, testRanges)) continue;
+    const line = lines[i];
+    if (/^\s*(pub\s+)?use\s/.test(line)) continue; // use 行由 scanUseCrate 负责
+    if (/^\s*(\/\/|\/\*)/.test(line)) continue; // 整行注释
+    let m;
+    INLINE_RE.lastIndex = 0;
+    while ((m = INLINE_RE.exec(line)) !== null) out.push({ line: i + 1, modulePath: m[1] });
+  }
+  return out;
+}
+
+/// #133 的两个计数器（由主循环填，最后一起打印）
+let skippedTestFiles = 0;
+let skippedTestRefs = 0;
+/** @type {Map<string, {count: number, sample: string}>} `源域→目标域` 的内联耦合（判据看不见的哪些） */
+const inlineOnlyPairs = new Map();
 
 /**
  * 建立 `rust module path → 领域 id` 的精确索引（基于所有领域的 `paths`）。
@@ -278,14 +350,67 @@ if (ok) console.log("  ✓ consumes 字段全部合法");
 
 // ---------------- G. 跨领域引用受 consumes 约束 ----------------
 console.log("\n判据 G：每个领域的 use crate::xxx 受 consumes 约束");
-for (const d of domainMap.domains) {
-  const allowed = new Set(d.consumes ?? []);
-  const files = [];
+
+/**
+ * 一个领域的生产码文件（`paths` 展开 + 按 `isAppCodePath` 排除独立测试文件）。
+ * 抽成一个家：下面"声明过的目标域"预扫与主循环必须走**同一份文件集合**，
+ * 两边各写一遍展开逻辑就是第二个家（会漂移的那种）。
+ */
+function domainFiles(d) {
+  const out = [];
   for (const entry of d.paths ?? []) {
     const expanded = expandPath(entry);
     if (!expanded) continue; // 路径不存在是 check-domain-map.mjs 的事
-    files.push(...expanded);
+    out.push(...expanded);
   }
+  return out;
+}
+
+/** 生产码那份（`isAppCodePath` 口径），预扫"已声明的目标域"用它。 */
+function domainProdFiles(d) {
+  return domainFiles(d).filter((f) => isAppCodePath(path.relative(ROOT, f).replaceAll("\\", "/")));
+}
+
+/**
+ * ★ 内联耦合" invisibility "的**判定单位必须是领域，不是物理文件**（2026-10-07 改准）。
+ *
+ * 起因：`network/file.rs`（2,495 行）按角色切成 `include!` 分册后，本脚本忽然报
+ * 出三对新对（`files→persistence` / `files→transport` / `files→messaging`）而棘轮上限 13 判红。
+ * 但代码文本逐字没动 —— 差别在：`use crate::db;` 这类**顶层 use 留在模块根文件**，
+ * 而 `crate::db::now_ms` 这种内联写法被搬进了分册。旧口径按"同一个文件里有没有对应的 use"
+ * 判可见 ⇒ 分册里没有 use ⇒ 同一条**领域级已声明的依赖**被算成"判据看不见"。
+ *
+ * 为什么这不是放松：`consumes` 本来就是**按领域**声明的（判据 G 拿 `d.consumes` 判 `use crate::X`），
+ * 所以"这条内联引用是不是已声明依赖的内联写法"也只能按领域问。include! 让
+ * "use 落在哪个物理文件"变成任意的 ⇒ 文件粒度在这个模块上根本不是一个可依赖的事实。
+ *
+ * 恒等判据（复跑见文件末）：**同一份新尺子**在拆分前与拆完两棵树上都报 30 处 / 6 对；
+ * 旧口径（按物理文件）在两棵树分别是 13 对 / 84 处与 16 对 / 102 处 —— 差的是归属假象，不是增长。
+ * 真新增一对（往没声明过那条依赖的领域里塞一句
+ * 内联 `crate::…`）时必须 +1 并被 13 的上限咬红。
+ */
+const declaredTargetsByDomain = new Map();
+for (const d of domainMap.domains) {
+  const set = new Set();
+  for (const f of domainProdFiles(d)) {
+    let content;
+    try {
+      content = readFileSync(f, "utf8");
+    } catch {
+      continue;
+    }
+    for (const ref of scanUseCrate(content)) {
+      const t = resolveDomain(ref.modulePath, index);
+      if (t !== d.id && t !== "assembly" && t !== "unmapped") set.add(t);
+    }
+  }
+  declaredTargetsByDomain.set(d.id, set);
+}
+
+for (const d of domainMap.domains) {
+  const allowed = new Set(d.consumes ?? []);
+  const declared = declaredTargetsByDomain.get(d.id) ?? new Set();
+  const files = domainFiles(d);
   if (files.length === 0) continue; // friendship 没文件
 
   for (const f of files) {
@@ -296,7 +421,27 @@ for (const d of domainMap.domains) {
     } catch {
       continue;
     }
+    // ★ #133-B：独立测试文件按仓里**已有那一份**口径处理 —— `semver.mjs` 的 `isAppCodePath`
+    //   已把 `src-tauri/src/**_tests.rs` 判成"不是应用码"（`check-change-budget.mjs` 也复用它），
+    //   而本脚本原先只跳过 `#[cfg(test)] mod` **块内** ⇒ 整份测试文件被当生产扫，
+    //   与本文件自己那句"提取**生产代码**的 use crate::"对不上。不复用就会长出第二个家。
+    if (!isAppCodePath(rel.replaceAll("\\", "/"))) {
+      skippedTestFiles += 1;
+      skippedTestRefs += scanUseCrate(content).length;
+      continue;
+    }
     const refs = scanUseCrate(content);
+    // ★ #133-A：把"只有内联写法、判据完全看不见"的跨域对数出来（只报告，不判红）。
+    //   "已声明"看的是**整个领域**的 use（`declared`），不是这一个物理文件的 use ——
+    //   理由与恒等判据见上面 `declaredTargetsByDomain` 那段（include! 分册让 use 的文件归属变成任意）。
+    for (const im of scanInlineCrate(content)) {
+      const t = resolveDomain(im.modulePath, index);
+      if (t === d.id || t === "assembly" || t === "unmapped" || declared.has(t)) continue;
+      const key = `${d.id}→${t}`;
+      const cur = inlineOnlyPairs.get(key);
+      if (cur) cur.count += 1;
+      else inlineOnlyPairs.set(key, { count: 1, sample: `${rel}:${im.line} crate::${im.modulePath}` });
+    }
     for (const ref of refs) {
       const target = resolveDomain(ref.modulePath, index);
       if (target === d.id) continue; // self —— 域内引用,不算跨域
@@ -331,7 +476,57 @@ if (violations.length === 0) {
 // ---------------- 汇总 ----------------
 if (ok) {
   console.log("\n✓ 领域依赖方向与 consumes 声明一致。");
-  console.log("  （已知边界：测试代码不扫 / 前端不扫 / activeHome 是否属实由 check-domain-map.mjs 守。）");
+  console.log("  （边界：独立测试文件不算生产耦合（下面打印忽略了多少）/ 前端不扫 / activeHome 由 check-domain-map.mjs 守。）");
+  // ★ #133 的两条分母，**每次跑都自己打印**，免得"已知边界"又变回一句没人核对的手抄话
+  console.log(
+    `  · 按 isAppCodePath 忽略独立测试文件 ${skippedTestFiles} 个（其中 use crate:: ${skippedTestRefs} 条）`,
+  );
+  const pairs = [...inlineOnlyPairs.entries()].sort((a, b) => b[1].count - a[1].count);
+  const inlineTotal = pairs.reduce((s, [, v]) => s + v.count, 0);
+  console.log(
+    `  · 判据看不见的内联跨域引用：**${inlineTotal} 处**（上界，含注释与字符串里的 crate::），`
+      + `去重后 ${pairs.length} 对 源域→目标域`,
+  );
+  for (const [k, v] of pairs.slice(0, 8)) {
+    console.log(`      ${k}  ${v.count} 处  首例 ${v.sample}`);
+  }
+  if (pairs.length > 8) console.log(`      …其余 ${pairs.length - 8} 对未列`);
+  console.log("      ⚠️ 这些**不判红**：把它们纳入判据会把按 use 口径建起来的 consumes 名单整片判红，"
+    + "\n         而「补声明还是改代码」是要人拍板的面（#133-A）。先让洞有数。");
+  // ★ 但"有数"不等于"随便涨"：这里上一把**只许变小**的棘轮 —— 冻的不是处数（那是上界，
+  //   会被注释里的 `crate::` 之类的噪声牵着抖），冻的是**去重后的源域→目标域对数**。
+  //   为什么这样收：内联耦合每多一对，就是又有一条形同"已声明的生产依赖"（db→messaging 那种）
+  //   走到判据看不见的地方去；存量不判红是要人拍板，**新增**没有这个理由。
+  //   反证入口（不用改文件就能证明它会红）：`GOSSLAN_DOMAIN_INLINE_PAIR_MAX=5 node scripts/check-domain-deps.mjs`
+  //   ⚠️ 这个数必须**比存量小**才红：上限从 13 收到 6 之后，旧注释里那条 `=12` 就成了空命令
+  //      （实测 RC=0）。写复跑命令要原样跑一遍再说它会红。
+  //   ⚠️ 上限必须钉成**存量数字**而不是"当天的条数" —— 取后者等于恒真，棘轮永远不会咬。
+  //      存量随口径重钉：**2026-09-28 按物理文件口径是 13 对；2026-10-07 改成按领域口径后现算 6 对**
+  //      （负责人当天点头"只处理确有内聚边界的"那一轮里做的口径修正，不是有人放宽 —— 数字变小是
+  //      同一条已声明依赖不再被重复数成"隐形"；上限跟着**收紧**到 6，比 13 严）。
+  //      调大等于把洞重新变沉默 ⇒ 要调必须先在这行注释里写下谁同意、为什么。
+  // ★ 2026-10-07 第一刀：**上限没动**，改的只是口径（可见性按领域判，不再按物理文件判）。
+  //   起因是 `network/file.rs` 切成 include! 分册后这里从 13 对跳到 16 并报红。
+  //   现量核对：`git worktree add --detach /tmp/x 567694b`，同一份新脚本在两棵树各跑一遍 ⇒
+  //   两边都是 **30 处 / 6 对**，而旧口径在两棵树分别是 13 对 / 16 对
+  //   ⇒ 红是"搬家让 use 与内联引用落在不同物理文件"造成的归属假象，不是新增长。
+  //   反证（口径没被改成瞎）：往 `files` 域塞一句该域任何文件都不曾 `use` 过的
+  //   内联 `crate::notifications::…` ⇒ 6 对变 7 对，且 `GOSSLAN_DOMAIN_INLINE_PAIR_MAX=6` 当场退 1
+  //   （实测打印 `✗ 内联跨域引用对数 7 超过棘轮上限 6`）。
+  //   ⚠️ 这个口径买不到的那一半，写明白：同一条已声明依赖在**另一个物理层**里被内联使用
+  //   （如某文件内联摸 db，而 db 的 use 只在该域别处的文件里）现在不会被单独报出来 ——
+  //   按领域问就只看领域。取舍理由：`consumes` 与判据 G 本来就是领域粒度的，
+  //   而 `include!` 让"use 落在哪个文件"成为任意事实，用任意事实做判据分母比少报一格更危险。
+  const pairMax = Number(process.env.GOSSLAN_DOMAIN_INLINE_PAIR_MAX ?? "6");
+  if (pairs.length > pairMax) {
+    console.error(
+      `  ✗ 内联跨域引用对数 ${pairs.length} 超过棘轮上限 ${pairMax}`
+        + "\n      ⇒ 判据看不见的耦合**又长了一对**。修法只有两条：① 把这次新增的那条改成 use 并加进 consumes"
+        + "\n         （让它回到判据看得见的地方）；② 别新增。"
+        + "\n      ⚠️ 不许直接把上限调大：那等于把洞又变成沉默的。",
+    );
+    process.exit(1);
+  }
   process.exit(0);
 }
 console.error("\n✗ 跨领域依赖与 consumes 声明不一致 —— 先决定是修 consumes 还是删 use,别打补丁。");

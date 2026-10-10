@@ -219,6 +219,114 @@ function enclosingTag(src: string, classIndex: number): string {
  * ⚠️ 与 ③ 同样的教训：只看**真实 class 属性**，不能用 `src.includes("truncate")` 扫全文 ——
  * 注释里提到 `truncate` 会让护栏「因为注释而通过」。
  */
+/**
+ * 默认头像（emoji 小动物，#32）必须对读屏隐藏（`aria-hidden="true"`）。
+ *
+ * 踩坑（2026-09-26 用系统无障碍控件树实测，当时还是字母头像）：那一段文字
+ * （`KEEN` / `BRIG` / `HAPP`）会作为 `AXStaticText` 出现在树里 ⇒ 读屏把**无意义的装饰**
+ * 念在人名前面。同一位置的上传头像是 `alt=""`（装饰性、人名由旁边的文本承载）。
+ * 头像换成 emoji 之后这条口径不变：**装饰性图形一律对辅助技术隐藏**，
+ * 所以判据跟着换类名，而不是删掉 —— 新站点漏写时它必须报红。
+ */
+export function findAvatarFaceWithoutAriaHidden(src: string): GuardIssue[] {
+  const out: GuardIssue[] = [];
+  for (const m of src.matchAll(CLASS_ATTR_RE)) {
+    if (!m[1].split(/\s+/).includes("gosslan-avatar-emoji")) continue;
+    const line = lineAt(src, m.index ?? 0);
+    const open = src.lastIndexOf("<", m.index ?? 0);
+    const close = src.indexOf(">", m.index ?? 0);
+    const tag = open >= 0 && close > open ? src.slice(open, close + 1) : "";
+    if (!tag.includes("aria-hidden")) {
+      out.push({
+        line,
+        message:
+          "默认头像的 emoji 没有 `aria-hidden` —— 读屏会把装饰性图形念出来。" +
+          "人名由旁边的文本承载，上传头像那支已是 `alt=\"\"`，两支必须同口径。",
+      });
+    }
+  }
+  return out.sort((a, b) => a.line - b.line);
+}
+
+/**
+ * 字母头像这条渲染路径必须**不存在**（#32 用 emoji 头像整体换掉了它）。
+ *
+ * 为什么值得单独一条：换掉它的两个理由都**不会自己守住** —— 昵称可改（改一次换一张脸）、
+ * 昵称也能撞（两个人同名就同脸），而"按名字截字"看起来仍然是个合理实现，
+ * 下一个人完全可能顺手写回来。所以判据盯住那三个标识符 + 那个类名：
+ * 任一复活即红。只扫 `.vue`（渲染路径的家）—— 本文件的夹具里就写着这些名字。
+ */
+export function findRetiredLetterAvatarUsage(src: string): GuardIssue[] {
+  const out: GuardIssue[] = [];
+  for (const m of src.matchAll(/\b(avatarInitialLen|avatarInitial|nameToColor)\b|gosslan-avatar-initial/g)) {
+    out.push({
+      line: lineAt(src, m.index ?? 0),
+      message:
+        `字母头像的标识符「${m[1] ?? m[0]}」复活了 —— 默认头像一律走 utils/avatarSeed.ts 的 emoji 头像` +
+        "（种子是设备 id / 群 id：昵称可改也会撞名，截字那条路两个理由都守不住）。",
+    });
+  }
+  return out.sort((a, b) => a.line - b.line);
+}
+
+/**
+ * 模板里挂上的 **BEM 修饰类**（含 `--` 的那一类）必须在某处样式里有定义。
+ *
+ * 为什么单独一条：这类缺陷的形态是**界面静默退化** —— `:class="{ 'x--on': c }"` 挂上去了，
+ * 而 `.x--on` 那条规则被删了/没写，页面照常渲染、测试照常绿、vue-tsc 也管不着（它不是类型）。
+ * 用户看到的后果是"高亮没了 / 危险色没了"，而 @ 到自己加重样式（#85）正是这种修饰类驱动的。
+ *
+ * 覆盖面 = 模板 class 属性上**写死的类名**三种形态：静态 `class="a b--c"`、对象
+ * `:class="{ 'b--c': x }"`、三元/数组 `:class="ok ? 'b--c' : ''"` 与 `:class="['b--c']"`。
+ * 不覆盖**在脚本里拼出来的类名**（`rowLevelBg(r.level)` 那类函数返回值）—— 那是运行时信息，
+ * 静态扫不出来；仓里今天的 3 枚修饰类全是字面量，一旦有人改成拼接，这格判据就少守一枚，
+ * 所以「认出了几枚」由 `designGuards.test.ts` 现算兜底（少于 3 即红）。
+ * 反之**不拿** `src.includes("x--y")` 扫全文：注释里提一句就让护栏"因为注释而通过/报红"，
+ * 是本仓点过名的族。定义可以来自全局 `style.css`（由调用方传进来），也可以是**同文件**的 `<style>` 块。
+ */
+const MODIFIER_NAME_RE = /^[A-Za-z][A-Za-z0-9-]*--[A-Za-z0-9-]+$/;
+
+/** 从模板的 class 属性里认出写死的 BEM 修饰类名（按出现顺序去重）。 */
+export function modifierClassesUsed(src: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const add = (t: string) => {
+    if (MODIFIER_NAME_RE.test(t) && !seen.has(t)) {
+      seen.add(t);
+      out.push(t);
+    }
+  };
+  // class 绑定的三种真实写法各覆盖一处：静态（裸 token）、对象键 / 三元 / 数组（单引号字面量）
+  for (const m of src.matchAll(/\bclass="([^"]*)"/g)) {
+    for (const t of m[1].split(/\s+/)) add(t);
+    for (const lit of m[1].matchAll(/'([^']*)'/g)) add(lit[1]);
+  }
+  return out;
+}
+
+export function findModifierClassWithoutStyle(src: string, cssText: string): GuardIssue[] {
+  const uses = new Map<string, number>();
+  for (const name of modifierClassesUsed(src)) {
+    const at = src.indexOf(name);
+    if (!uses.has(name)) uses.set(name, lineAt(src, at < 0 ? 0 : at));
+  }
+  // 同文件 <style> 块也算定义处（SFC 的 scoped 样式就是这个形态）
+  const ownStyles = [...src.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g)].map((m) => m[1] ?? "").join("\n");
+  const hay = `${cssText}\n${ownStyles}`;
+  const out: GuardIssue[] = [];
+  for (const [name, line] of uses) {
+    const defRe = new RegExp(`\\.${name}(?![\\w-])`);
+    if (!defRe.test(hay)) {
+      out.push({
+        line,
+        message: `修饰类「${name}」挂在了模板上，但全局 style.css 与本文件 <style> 里都没有它的定义 `
+          + "⇒ 界面会静默退化（高亮/危险色这类视觉提示消失而没有任何测试变红）。",
+      });
+    }
+  }
+  return out.sort((a, b) => a.line - b.line);
+}
+
 export function findTruncationWithoutTitle(src: string): GuardIssue[] {
   if (src.includes("truncate-title-ok")) return [];
   const out: GuardIssue[] = [];
@@ -241,6 +349,38 @@ export function findTruncationWithoutTitle(src: string): GuardIssue[] {
           "确属不会截断的短文案，可在文件内加 `truncate-title-ok` 注释整文件跳过。",
       });
     }
+  }
+  return out.sort((a, b) => a.line - b.line);
+}
+
+// ---------------- ⑤b 自绘菜单必须自带底（`.gosslan-menu` 只管形状，底在 `.frost`） ----------------
+
+/**
+ * `.gosslan-menu` 里**没有**背景：它只声明尺寸、内边距、描边、圆角与阴影，
+ * 底与毛玻璃在另一个类 `.frost` 上（见 style.css 那两条规则）。
+ *
+ * 真实缺陷（用户 2026-10-09：「筛选下拉都是透明的」）：搜索面板那两个筛选菜单只挂了
+ * `.gosslan-menu` ⇒ 半透过去，菜单文字和底下的结果行叠在一起。全站另外五处都是
+ * `gosslan-menu frost` 成对写的，唯独这两处漏了一半 —— 而这类缺陷**编译过、类型对、
+ * 功能全正常**，只有肉眼看得出，所以必须机器盯。
+ *
+ * 判据按**词**匹配而不是子串：`.gosslan-menu-item` / `.gosslan-menu-hint` 里也含
+ * "gosslan-menu" 这七个字，子串匹配会把菜单项判成容器（假红一片）。
+ * 确需无底的容器，可在文件内加 `menu-backdrop-ok` 注释整文件跳过。
+ */
+export function findMenuWithoutBackdrop(src: string): GuardIssue[] {
+  if (src.includes("menu-backdrop-ok")) return [];
+  const out: GuardIssue[] = [];
+  for (const m of src.matchAll(CLASS_ATTR_RE)) {
+    const classes = m[1].split(/\s+/).filter(Boolean);
+    if (!classes.includes("gosslan-menu")) continue;
+    if (classes.includes("frost") || classes.includes("glass")) continue;
+    out.push({
+      line: lineAt(src, m.index ?? 0),
+      message:
+        "自绘菜单只挂了 `.gosslan-menu`（形状）而没有 `.frost`（底）⇒ 弹层是透明的，" +
+        "菜单文字会与底下的内容叠在一起。补一个 `frost`，或改用带底的 `.gosslan-panel`。",
+    });
   }
   return out.sort((a, b) => a.line - b.line);
 }
@@ -278,9 +418,19 @@ function clickAction(tag: string): boolean {
  * 判据（能确定的才报）：
  *   —— 非交互标签 + 有真实动作的 `@click`；
  *   —— 同一开标签里既没有 `role`（含 `:role`），也没有 `tabindex`（含 `:tabindex`），
- *      也没有 `@keydown` / `@keyup`（含 `v-on:` 与 `:keydown` 简写）。
+ *      也没有 `@keydown` / `@keyup`（含 `v-on:` 与 `:keydown` 简写）→ 报「三样都没有」。
+ *   —— ★ 2026-10-10 补上另一半（roadmap N19，原本这里是**洞**）：上面那条用的是 OR，
+ *      于是 `role="button"` 单独存在就放行 —— 而 role 只给"读屏念得出按钮"，**不给可聚焦性**，
+ *      键盘照样 Tab 不到（真实形状：置顶行那颗 `<span role="button" @click.stop>`，
+ *      嵌在 `<button>` 里、没有 tabindex）。所以现在再加一条：
+ *      **静态 button 类 role + 有 @click，但既没有 tabindex、也没有键盘事件、也不是 contenteditable ⇒ 报**。
+ *      只认**静态** `role="…"`：动态 `:role="…"` 推断不出值，报了就是假红。
+ *      `contenteditable` 自己就可聚焦；`dialog` / `textbox` 这类**容器角色**不该被塞进 Tab 序
+ *      （`ImageLightbox` 的遮罩与输入框正是这两类，收紧时实测它们都不该报 —— 收进名单就是造两条假红）。
  * 逃生阀：文件里带 `tap-keyboard-ok` 注释则整文件跳过。
  */
+const BUTTONISH_ROLE_RE = /\b(button|link|menuitem|checkbox|radio|tab|switch)\b/;
+
 export function findTappableWithoutKeyboard(src: string): GuardIssue[] {
   if (src.includes("tap-keyboard-ok")) return [];
   const out: GuardIssue[] = [];
@@ -290,20 +440,44 @@ export function findTappableWithoutKeyboard(src: string): GuardIssue[] {
     const hasRole = /(?:^|\s)(?::|v-bind:)?role\s*=/.test(tag);
     const hasTabindex = /(?:^|\s)(?::|v-bind:)?tabindex\s*=/.test(tag);
     const hasKey = /(?:@|v-on:|:)key(?:down|up)/.test(tag);
-    if (hasRole || hasTabindex || hasKey) continue;
-    out.push({
-      line: lineAt(src, m.index ?? 0),
-      message:
-        "`" +
-        m[1] +
-        "` 上有 @click，但它没有原生按钮语义 —— 键盘用户 Tab 不到、按回车也没反应" +
-        "（读屏只会念成普通文本）。请改用 <button type=\"button\">，或补上 " +
-        "`role=\"button\"` + `tabindex=\"0\"` + `@keydown.enter`（空格键用 `@keydown.space.prevent`）。" +
-        "确实不该聚焦的元素（遮罩层等），加 `aria-hidden=\"true\"` 或用 `@click.stop` 表明它只是拦事件；" +
-        "整文件例外可加 `tap-keyboard-ok` 注释。",
-    });
+    const editable = /contenteditable\s*=/.test(tag);
+    const staticRole = tag.match(/(?:^|\s)role\s*=\s*"([^"]*)"/)?.[1] ?? null;
+    if (!hasRole && !hasTabindex && !hasKey) {
+      out.push({
+        line: lineAt(src, m.index ?? 0),
+        message:
+          "`" +
+          m[1] +
+          "` 上有 @click，但它没有原生按钮语义 —— 键盘用户 Tab 不到、按回车也没反应" +
+          "（读屏只会念成普通文本）。请改用 <button type=\"button\">，或补上 " +
+          "`role=\"button\"` + `tabindex=\"0\"` + `@keydown.enter`（空格键用 `@keydown.space.prevent`）。" +
+          "确实不该聚焦的元素（遮罩层等），加 `aria-hidden=\"true\"` 或用 `@click.stop` 表明它只是拦事件；" +
+          "整文件例外可加 `tap-keyboard-ok` 注释。",
+      });
+      continue;
+    }
+    if (staticRole !== null && BUTTONISH_ROLE_RE.test(staticRole) && !hasTabindex && !hasKey && !editable) {
+      out.push({
+        line: lineAt(src, m.index ?? 0),
+        message:
+          "`" +
+          m[1] +
+          "` 写了 `role=\"button\"` 但没有 `tabindex` —— role 只让读屏念出「这是按钮」，" +
+          "**不给可聚焦性** ⇒ 键盘用户仍然 Tab 不到（roadmap N19 那个洞）。" +
+          "请改用 <button type=\"button\">（自带语义、自带聚焦与回车），" +
+          "或补 `tabindex=\"0\"` + `@keydown.enter` / `@keydown.space.prevent`；" +
+          "它若嵌在另一个可聚焦元素里，那是结构问题 —— 拆成同级兄弟，别靠 role 伪装。",
+      });
+    }
   }
   return out.sort((a, b) => a.line - b.line);
+}
+
+/** ⑥ 这条尺子看得见多少个"非交互标签 + 真实动作 @click"？真实树那半用它做阳性对照。 */
+export function countClickActionTags(raw: string): number {
+  let n = 0;
+  for (const m of raw.matchAll(OPEN_TAG_RE)) if (clickAction(m[0])) n += 1;
+  return n;
 }
 
 // ---------------- ⑦ `outline-none` 必须自带焦点指示 ----------------
@@ -375,7 +549,7 @@ export function findOutlineNoneWithoutFocusRing(src: string): GuardIssue[] {
  * 小尺寸工具类：Tailwind 里 `h-8` = 32px、`h-7` = 28px、`h-6` = 24px、`h-5` = 20px，
  * 全部**小于 HIG 的 44pt 最小点按目标**。（`h-11` = 44px 才是达标尺寸。）
  */
-const SMALL_SIZE_RE = /\b(?:h-5|h-6|h-7|h-8|w-5|w-6|w-7|w-8)\b/;
+const SMALL_SIZE_RE = /\b(?:h-4|w-4|h-5|h-6|h-7|h-8)\b/;
 
 /** 参与点按判定的标签（`button`/`a`/`label`/`select`/`input` 天生可交互；其余看 `@click`）。 */
 const TAPPABLE_TAG_RE = /<(button|a|div|span|li|label|select|input)\b[^>]*>/gs;
@@ -408,7 +582,8 @@ export function findSmallTapTargets(src: string): GuardIssue[] {
         "小尺寸可交互元素没有 `tap-safe` —— iOS HIG 的最小点按目标是 44×44pt，" +
         "而 `h-8`=32px / `h-7`=28px / `h-6`=24px，手指容易点不中或误触相邻项。" +
         "加 `tap-safe`（`:pointer: coarse` 下热区垂直 +16px：h-6→40、h-7→44、h-8→48）；" +
-        "`h-5`（20px）即便加了也只有 36px，请改用 `h-7` 以上。" +
+        "`h-5`（20px）即便加了也只有 36px，请改用 `h-7` 以上；`h-4`（16px）加了也只有 32px，" +
+        "而 tap-safe 只撑垂直方向，横向热区仍等于可见盒 —— 行内挨着别的按钮时先想清楚会不会误触。" +
         "确属不需要触屏撑大的场合可加 `tap-target-ok` 注释整文件跳过。",
     });
   }
@@ -657,7 +832,10 @@ export function checkStyleCascade(css: string): GuardIssue[] {
   }
 
   // ②-2 .hover-reveal / .hover-reveal-op 必须定义在 @media (hover: none) 里
-  const hoverNoneAt = css.indexOf("@media (hover: none)");
+  // ⚠️ 定位那个**块**要按形状（选择器 + `{`），不能用 indexOf 找字面量：
+  // 2026-10-10 加 .kb-reveal 时踩到 —— style.css 里多了一句**注释**写到 `@media (hover: none)`，
+  // indexOf 便落在注释上，于是"块外的基础规则"被读成"块内的" ⇒ 真实文件当场假红。
+  const hoverNoneAt = css.search(/@media\s*\(\s*hover\s*:\s*none\s*\)\s*\{/);
   if (hoverNoneAt < 0) {
     out.push({ line: 0, message: "style.css 缺少 @media (hover: none) 触屏兜底块" });
   } else {
@@ -672,6 +850,33 @@ export function checkStyleCascade(css: string): GuardIssue[] {
         });
       }
     }
+  }
+
+  // ②-2b `.kb-reveal` 那一家（roadmap N19，键盘必须能到达悬停才现的操作）有两份，缺一不可：
+  //   基础那份在 (hover:none) **之外** —— 它管"有 hover 的设备上按悬停/聚焦才显形"；
+  //   兜底那份在 (hover:none) **之内** —— 触屏既没有 hover、也常常没有键盘，少了它那颗操作就是不存在。
+  // 只查其中一半都会漏：只看"在块内有一份"会把"基础那份也写进块里"放过去
+  //（那样桌面上既不藏也不随聚焦显形，等于把这条改动整体作废，而界面看起来"没问题"）。
+  const kbBase = css.indexOf(".kb-reveal {");
+  if (kbBase < 0) {
+    out.push({
+      line: 0,
+      message: "style.css 缺少 .kb-reveal 的定义（roadmap N19：hover 揭示的操作必须有键盘入口）",
+    });
+  } else if (kbBase > hoverNoneAt) {
+    out.push({
+      line: lineAt(css, kbBase),
+      message:
+        ".kb-reveal 的**基础**规则写在 @media (hover: none) 之内 ⇒ 有 hover 的设备上它既不藏起操作、" +
+        "也不随键盘聚焦显形（这一家的前提没了）。基础那份要在块外。",
+    });
+  } else if (css.indexOf(".kb-reveal {", hoverNoneAt) < 0) {
+    out.push({
+      line: lineAt(css, kbBase),
+      message:
+        ".kb-reveal 在 @media (hover: none) 里**没有**兜底那份 ⇒ 触屏上悬停与键盘聚焦都不会发生，" +
+        "那颗操作在手机上看不见也点不着（pointer-events 也要一起放开，光 opacity:1 只是看得见）。",
+    });
   }
 
   // ②-3 触屏命中扩展块里**不得直接声明 `position`**
@@ -1061,4 +1266,512 @@ export function checkTextFieldFocusRing(css: string, composer: string): GuardIss
     });
   }
   return out;
+}
+
+// ---------------- 浮层必须 escape 出裁切容器 ----------------
+
+/** 自己算视口坐标的那一套入口（通用家 + 老的那两处直接调用）。 */
+const FLOATING_PLACEMENT_RE = /\b(useHoverCard|popupLeft|popupPlacement)\s*\(/;
+
+/**
+ * 读出每个 `<Teleport to="body">` 里**真正被挂到 body 上的那个根元素**的定位形状。
+ *
+ * 为什么要单独读根元素：判据若只看"这个文件里出现过 fixed"，那同一文件别处的一枚
+ * `fixed` 就能替浮层顶掉这一格 —— 那是存在性断言的老毛病（半个守卫）。
+ * 允许中间套一层 `<Transition>`（图片预览就是那形状）；形状读不出来时**返回 null 而不是静默跳过**
+ * （静默跳过 = 新写法自动放行，正是这条判据最不该有的样子）。
+ */
+/**
+ * 读到一个开标签的结尾 `>`，**跳过引号里的那一个**。
+ * 必须跳过：模板里 `v-if="actors.length > 0"` 这种带 `>` 的属性值是真代码
+ * （实测第一版按 `[^>]*` 切，正是在这一行把根元素切丢、把两条合规的判成违规）。
+ */
+function endOfStartTag(src: string, from: number): number {
+  let quote = "";
+  for (let i = from; i < src.length; i++) {
+    const ch = src[i];
+    if (quote !== "") {
+      if (ch === quote) quote = "";
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (ch === ">") return i;
+  }
+  return -1;
+}
+
+export function teleportedRootClasses(src: string): { line: number; cls: string | null }[] {
+  const out: { line: number; cls: string | null }[] = [];
+  const re = /<Teleport\b/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(src)) !== null) {
+    const openEnd = endOfStartTag(src, m.index + 1);
+    if (openEnd < 0) continue;
+    const openTag = src.slice(m.index, openEnd + 1);
+    if (!/to="body"/.test(openTag)) continue;
+    const line = lineAt(src, m.index);
+    // 往后找第一个真元素：跳过一层 <Transition>（图片预览那形状）与中间的注释
+    let i = openEnd + 1;
+    for (let guard = 0; guard < 4; guard++) {
+      while (i < src.length && /\s/.test(src[i])) i++;
+      if (src.startsWith("<!--", i)) {
+        const close = src.indexOf("-->", i);
+        if (close < 0) break;
+        i = close + 3;
+        continue;
+      }
+      if (src.startsWith("<Transition", i) || src.startsWith("<transition", i)) {
+        const e = endOfStartTag(src, i + 1);
+        if (e < 0) break;
+        i = e + 1;
+        continue;
+      }
+      break;
+    }
+    const tag = /^<([A-Za-z][\w-]*)/.exec(src.slice(i));
+    if (!tag) {
+      out.push({ line, cls: null });
+      continue;
+    }
+    const tagEnd = endOfStartTag(src, i + 1);
+    if (tagEnd < 0) {
+      out.push({ line, cls: null });
+      continue;
+    }
+    const attrs = src.slice(i + tag[0].length, tagEnd);
+    const clsAttr = /(?:^|\s):?class="([^"]*)"/.exec(attrs);
+    out.push({ line, cls: clsAttr ? clsAttr[1] : "" });
+  }
+  return out;
+}
+
+/**
+ * 浮层 escape 判据：自己算视口坐标的浮层必须 ① Teleport 到 body、② **那个被挂出去的根元素自己**是 fixed。
+ *
+ * 为什么两半要一起钉（用户 2026-10-07：「这种悬浮窗被内部的 DOM 给 overflow hidden 裁掉」）：
+ * 挂在消息列表那种 `overflow-y: auto` 容器里的 absolute 层，**坐标算得再对也会被裁** ——
+ * 表情名单、已读列表、表情选择器、任务行内状态菜单四次现场全是这一条。
+ * 只钉 Teleport 会漏"Teleport 了但仍用 absolute"（包含块还是那个容器）；
+ * 只钉"文件里有 fixed"会漏"fixed 写在别处、浮层自己还是 absolute"。
+ *
+ * 分母是"用了这套摆位的 .vue"，不是"所有 .vue" ⇒ 不自己算坐标的组件不归这条管。
+ */
+export function findFloatingLayerWithoutEscape(src: string): GuardIssue[] {
+  const trig = FLOATING_PLACEMENT_RE.exec(src);
+  if (!trig) return [];
+  const line = lineAt(src, trig.index);
+  const out: GuardIssue[] = [];
+  const roots = teleportedRootClasses(src);
+  if (roots.length === 0) {
+    out.push({
+      line,
+      message:
+        "自己算视口坐标的浮层必须 Teleport 到 body：挂在滚动/裁切容器里时，" +
+        "坐标再对也会被那层 overflow 裁掉（表情名单那次的原缺陷就是这个形状）。",
+    });
+    return out;
+  }
+  for (const r of roots) {
+    if (r.cls === null) {
+      out.push({
+        line: r.line,
+        message: "读不出这个 Teleport 里的根元素（形状不认识 ⇒ 不许静默放行，要么写回能读的样式要么补解析）",
+      });
+      continue;
+    }
+    if (!/\bfixed\b/.test(r.cls)) {
+      out.push({
+        line: r.line,
+        message:
+          "浮层根节点要用 fixed 定位：absolute 的包含块仍是那个带 overflow 的祖先，" +
+          "Teleport 出去也照样被算错的那层管着。",
+      });
+    }
+  }
+  return out;
+}
+
+// ---------------- ㉛ 写了「整页顶部安全区」的文件必须也写底部 ----------------
+
+/**
+ * 判据只认**类名出现的位置**，也就是文件顶部那份共用的 `CLASS_ATTR_RE`（它同时吃 `class="…"`
+ * 与 `:class="…"`，后者里面的多行数组也能读到）。
+ * ⚠️ 不复用它、改成"整份文件当文本搜"的第一版被我自己的注释喂饱了：
+ * 我在 HTML 注释里写了 `.safe-bottom` 这个词 ⇒ 把底部内距真删掉，判据照样绿。
+ * 注释能喂饱的判据不是判据。
+ */
+const TOP_INSET_RE = /pt-\[env\(safe-area-inset-top[^\]]*\)\]/;
+const BOTTOM_INSET_RE = /\bsafe-bottom\b|pb-\[[^\]]*env\(safe-area-inset-bottom/;
+
+/**
+ * 检查"用 `pt-[env(safe-area-inset-top)]` 给自己让开状态栏/挖孔"的全屏形态有没有同时让开底部。
+ *
+ * 为什么这是判据而不是审美（roadmap N16）：iOS 的 Home Indicator 区域是 34px，Android 手势条同理，
+ * 而 `env()` 只有在 `viewport-fit=cover` 下才是真值 —— 现读 5 个 HTML 入口（`index/logs/preview/settings/todos`）
+ * **全都带 cover** ⇒ 顶部被让开了、底部没人读，最后一行就落在指示条底下（改了才发现原来三处都是这个形状）。
+ *
+ * ⚠️ 分母故意只收「类名里这一种写法」：`:style="{top:'calc(env(safe-area-inset-top,…))'}"`（`ToastHud`、
+ * `ImageLightbox`）不触发 —— 前者是顶部飘条本来就不需要底部，后者自己已经写了底部。
+ * ⚠️ 说清它买不到哪一半：本判据只看**类名里有没有人读底部内距**，不判它挂在哪一层、
+ * 也不判真机上到底让开了多少 px —— 挂错层（比如挂在不滚的外壳而不是滚动层里）它照样放行，
+ * 那一半只有带安全区的真机可证（Smoke-11）。
+ * 逃生阀：文件级注释 `safe-area-ok`（整份文件确实不需要底部时才用，例：只画顶部飘条的组件）。
+ */
+export function findTopInsetWithoutBottomInset(src: string): GuardIssue[] {
+  if (src.includes("safe-area-ok")) return [];
+  const hits = [...src.matchAll(CLASS_ATTR_RE)];
+  const classes = hits.map((m) => m[1]);
+  const hit = classes.findIndex((c) => TOP_INSET_RE.test(c));
+  if (hit === -1) return [];
+  if (classes.some((c) => BOTTOM_INSET_RE.test(c))) return [];
+  return [
+    {
+      line: lineAt(src, hits[hit].index),
+      message:
+        "写了 `pt-[env(safe-area-inset-top)]` 却没写底部安全区 —— 这是整屏形态（overlay 页 / fullscreen 弹窗），" +
+        "顶部让开了状态栏，底部那一层内容会落在 iOS Home Indicator（≈34px）或 Android 手势条底下，" +
+        "滚到最后一行正好看不见它。两种改法：① 给**滚动那一层**加现成工具类 `safe-bottom`；" +
+        "② 那一层本来有自己的 `pb`/`p-*` 时写 `pb-[max(env(safe-area-inset-bottom),1rem)]` " +
+        "（`max()` 保住原有的内距，桌面 `env()`=0 时视觉零变化）。" +
+        "⚠️ 判据只看类名里有没有人读底部内距（注释里提一个字不算 ⇒ 别指望写注释过关），" +
+        "也不判挂在哪一层 —— 那一半要真机看（Smoke-11）。" +
+        "确实只画顶部、不需要底部时在代码里加 `safe-area-ok` 注释整文件跳过。",
+    },
+  ];
+}
+
+// ---------------- ㉚ 主题色规则必须在顶层（#35-N7 的真实缺陷） ----------------
+/**
+ * 判的是**嵌套深度**，不是"这条规则写没写"。
+ *
+ * 为什么形状要这样：2026-10-09 实测发现 `::selection` 与 `accent-color` 两条被写在
+ * `input,textarea,select,[contenteditable]{…}` 的**括号里面**。原生 CSS 嵌套把 `::selection`
+ * 编译成 `input ::selection, textarea ::selection, …` 这种后代选择器 —— 输入框没有元素子节点
+ * ⇒ 整条**匹配不到任何东西**；`accent-color` 同样编译成 `[contenteditable=""] progress{}`
+ * 之类的后代形式 ⇒ 复选框 / radio / 进度条根本没吃到主题色。
+ * 那时源码里两条规则都在、扫源码的正则也照过 —— **「在源码里」不等于「在产物里生效」**。
+ *
+ * 顶层判据：`@media` / `@supports` / `@layer` 这类 at-rule 的括号**不计入深度**
+ * （把 `::selection` 写进媒体查询是合法写法，不该被这条误伤）。
+ */
+export function findNestedThemeRuleIssues(css: string): GuardIssue[] {
+  const out: GuardIssue[] = [];
+  // 注释里可能出现花括号：整段替换成等长空白，保持下标与行号不漂
+  const body = css.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "));
+  const lineAt = (i: number) => body.slice(0, i).split("\n").length;
+
+  // 栈里只记"这是不是一条样式规则"（true = 计入深度；false = at-rule 容器）
+  const stack: boolean[] = [];
+  let selStart = 0;
+  let selectionHeads = 0;
+  let accentDecls = 0;
+  for (let i = 0; i < body.length; i++) {
+    const c = body[i];
+    if (c === "{") {
+      const sel = body.slice(selStart, i).trim();
+      stack.push(!sel.startsWith("@"));
+      selStart = i + 1;
+      if (sel.endsWith("::selection")) {
+        selectionHeads++;
+        const depth = stack.filter(Boolean).length - 1; // 选择器本身所在深度
+        if (depth !== 0) {
+          out.push({
+            line: lineAt(selStart),
+            message:
+              "㉚ `::selection` 必须在顶层规则里（现在嵌在第 " + depth + " 层）—— 嵌套会让它被编译成" +
+              "后代选择器（`input ::selection`），输入框没有元素子节点 ⇒ 整条匹配不到任何东西，" +
+              "选中色静默回到浏览器默认蓝。",
+          });
+        }
+      }
+      continue;
+    }
+    if (c === "}") {
+      stack.pop();
+      selStart = i + 1;
+      continue;
+    }
+    if (c === ";" || c === "\n") selStart = c === ";" ? i + 1 : selStart;
+    if (body.startsWith("accent-color:", i)) {
+      accentDecls++;
+      const depth = stack.filter(Boolean).length;
+      if (depth !== 1) {
+        out.push({
+          line: lineAt(i),
+          message:
+            "㉚ `accent-color` 必须直接写在一个顶层规则里（现在所在深度 " + depth + "）—— " +
+            "写在别的规则括号里会被编译成后代选择器（如 `[contenteditable=" + "\u0022\u0022] progress`），" +
+            "复选框 / radio / 进度条根本吃不到主题色。",
+        });
+      }
+      i += "accent-color".length;
+    }
+  }
+
+  if (selectionHeads === 0) {
+    out.push({ line: 0, message: "㉚ style.css 里找不到顶层 `::selection` 规则（选中态没跟主题色）。" });
+  }
+  if (accentDecls === 0) {
+    out.push({ line: 0, message: "㉚ style.css 里找不到顶层 `accent-color` 声明（原生控件没跟主题色）。" });
+  }
+  return out;
+}
+
+// ---------------- ㉜ 消息图必须带 fetch hint（roadmap N22：解码不许占那一帧） ----------------
+const IMG_LOADING_RE = /\bloading\s*=\s*["']lazy["']/;
+const IMG_DECODING_RE = /\bdecoding\s*=\s*["']async["']/;
+
+/**
+ * 扫出源文件里**真实存在**的 `<img>` 标签（跳过块注释与 HTML 注释里提到的那种）。
+ *
+ * 为什么不是正则 `<img[^>]*>`：`ImageLightbox` 那支在 `:style` 里写了 `scale > 1`，
+ * 属性值里的 `>` 会把 `[^>]*` 截断 ⇒ 后半边的 `loading`/`decoding` 落在截断之外 ⇒ **把合规的报成缺**。
+ * 这里用引号状态机找闭合，并且先把注释整段替换成**等长空白**（保住下标 ⇒ 行号与 `src` 对齐）。
+ */
+export function findImgTags(src: string): Array<{ start: number; text: string }> {
+  const masked = src
+    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "))
+    .replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, " "));
+  const out: Array<{ start: number; text: string }> = [];
+  let i = 0;
+  for (;;) {
+    const j = masked.indexOf("<img", i);
+    if (j === -1) break;
+    const nxt = masked[j + 4];
+    if (nxt !== " " && nxt !== "\n" && nxt !== "\t" && nxt !== "\r" && nxt !== ">") {
+      i = j + 4;
+      continue;
+    }
+    let k = j + 4;
+    let q: string | null = null;
+    for (; k < masked.length; k++) {
+      const c = masked[k];
+      if (q) { if (c === q) q = null; }
+      else if (c === '"' || c === "'") q = c;
+      else if (c === ">") break;
+    }
+    out.push({ start: j, text: src.slice(j, k + 1) });
+    i = k < masked.length ? k + 1 : masked.length;
+  }
+  return out;
+}
+
+/**
+ * 判的是「这条 `<img>` 有没有同时写 `loading="lazy"` 与 `decoding="async"`」。
+ *
+ * 为什么这是判据而不是审美（roadmap N22）：消息行是被虚拟列表反复挂载的那一层，
+ * `<img>` 不带 hint 时浏览器**同步解码**，解码就落在滚动那一帧上；而这条退化不报错、
+ * 不影响构建、桌面跑一遍也看不出来。本仓 `src` 下没有任何 IntersectionObserver
+ * ⇒ 没有第二套懒加载机制会与此冲突（这也是为什么它必须由判据钉住，否则下一支 `<img>` 会悄悄漏掉）。
+ *
+ * ⚠️ 这条尺子买不到哪一半：它只看**源码里这两个属性在不在**，
+ * 不判懒加载在某个 WebView 版本上实际省了多少毫秒、也不判图片行的估算高度对不对
+ * —— 那两半都要真机/量具（N22 行的「收益未测量」与 N26 那格）。
+ * 逃生阀：文件级注释 `img-eager-ok`（例：`ImageLightbox` 那张用户主动点开、不在列表里的图）。
+ */
+export function findMessageImageWithoutFetchHint(src: string): GuardIssue[] {
+  if (src.includes("img-eager-ok")) return [];
+  const out: GuardIssue[] = [];
+  for (const t of findImgTags(src)) {
+    const noLoading = !IMG_LOADING_RE.test(t.text);
+    const noDecoding = !IMG_DECODING_RE.test(t.text);
+    if (!noLoading && !noDecoding) continue;
+    const miss = [noLoading ? 'loading="lazy"' : "", noDecoding ? 'decoding="async"' : ""]
+      .filter(Boolean)
+      .join(" 和 ");
+    out.push({
+      line: lineAt(src, t.start),
+      message:
+        `这条 <img> 没写 ${miss} —— 消息行会被虚拟列表反复挂载，缺 hint 时浏览器同步解码，` +
+        `解码成本就压在滚动那一帧上（roadmap N22）。` +
+        `⚠️ 判据只看这两个属性在不在，不判懒加载在真机上省了多少（那要量具与真机）。` +
+        `确实不该懒（用户主动点开、不在列表里的那一张）时在文件里写 img-eager-ok 整份跳过。`,
+    });
+  }
+  return out;
+}
+
+/**
+ * ㉝ 消息行那几条**列表型 prop** 的绑定里不许出现**空数组字面量**（roadmap N21）。
+ *
+ * 为什么这条值得钉住：`[] !== []` ⇒ Vue 对组件 props 的浅比较恒判「这条变了」⇒ 整棵子树重新 patch。
+ * 2026-10-10 现量（perf/README.md 量具一 `?row=`，n=3000、视口 22 行、headless Brave）：
+ * 真 MessageItem 行每帧 27.6 ms，把这两条数组换成 utils/emptyList.ts 的共享常量后 16.6 ms，
+ * 与不含真组件的合成行（16.7 ms）同档 ⇒ **一整帧的开销就是那两个字面量**。
+ * 这条判据没有它，那处收益可以被一次「顺手写回 `?? []`」静默退回，而构建与界面都不报错。
+ *
+ * 只看这四个**列表型**绑定名（消息行调用点上真实存在的那几条）：判的是字面量在不在，
+ * 不判别的优化 —— 名字不在名单里就不管，避免误伤别处合法的 `[]`。
+ */
+const LIST_PROP_BINDING_RE = /:(group-reader-ids|reactions|chips|mention-names)="([^"]*)"/g;
+
+export function findFreshEmptyArrayProp(raw: string): GuardIssue[] {
+  // 注释里的不算分母（同 ㉜ 那条 <img> 判据的教训）；用空格替掉注释正文而不是删掉，行号才不漂。
+  const src = raw.replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, " "));
+  const out: GuardIssue[] = [];
+  LIST_PROP_BINDING_RE.lastIndex = 0;
+  for (let m = LIST_PROP_BINDING_RE.exec(src); m; m = LIST_PROP_BINDING_RE.exec(src)) {
+    if (m[2].includes("[]")) {
+      out.push({
+        line: lineAt(src, m.index),
+        message:
+          `:${m[1]} 的绑定里写了空数组字面量 —— 每次渲染都是新对象 ⇒ 浅比较恒判「变了」⇒ 整棵子树重新 patch；` +
+          `空列表请引 utils/emptyList.ts 的共享常量（读数与代价见 roadmap N21）。`,
+      });
+    }
+  }
+  return out;
+}
+
+/** 这条判据**看得见**多少个绑定？真实树那半用它做阳性对照，名字被改掉时判据会瞎。 */
+export function countListPropBindings(raw: string): number {
+  const src = raw.replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, " "));
+  LIST_PROP_BINDING_RE.lastIndex = 0;
+  let n = 0;
+  for (let m = LIST_PROP_BINDING_RE.exec(src); m; m = LIST_PROP_BINDING_RE.exec(src)) n += 1;
+  return n;
+}
+
+
+/**
+ * ㉞ 图片盒的高度只能从 `previewMetrics` 的常量取，组件里不许再写高度工具类；
+ * 估算端也不许留一份自己的副本（roadmap N22）。
+ *
+ * 为什么这条值得钉住：图片消息的载荷里**没有原图尺寸**（`content` 的 JSON 只有
+ * name/path/size/sha256/subtype；补 w/h 要动消息协议，为视觉效果排除），而容器**定宽** 208px
+ * ⇒ 真实高度只能在解码后知道：`min(IMAGE_BUBBLE_HEIGHT, 208 × 原图高/原图宽)`。
+ * 既然只能猜，就必须把"猜的那个数"收成一份：估算端、加载骨架、`<img>` 的上限三者同一个常量
+ * （2026-10-10 已收成 `previewMetrics.IMAGE_BUBBLE_HEIGHT`）。这一格此前是估算 288 / 骨架 128
+ * 两个数各写一处 ⇒ 图片行挂载那一次先空出 160px、再被实测纠正，N10 那笔"整表前缀和重算"的账
+ * 每张图片都要付一遍。
+ *
+ * 写回字面量的后果不报错、构建也过：界面只是又开始跳。运行时探针 `--only=imgskel` 量的是
+ * **真渲染出来的矩形**（那一半能抓到"改了写法但 CSS 没生效"），这条抓的是"在 CI 里也要当场变红"
+ * 的那一半（探针不在 CI 跑）。两半各覆盖对方覆盖不到的一半。
+ *
+ * ⚠️ 这条尺子的工作范围 = 图片盒的那一份实现（`MessageImageBubble.vue`，与 ③ 未读徽标
+ * "唯一实现"同一家规矩）；别的组件里 `h-*` 是合法写法，不扫。
+ * 逃生阀：文件里写 `image-height-ok`（若哪天图片盒真的换实现）。
+ */
+export function checkImageBubbleHeightSources(
+  bubbleSrc: string,
+  estimatorSrc: string,
+): GuardIssue[] {
+  const out: GuardIssue[] = [];
+  // 注释里的写法不算（同 ㉝）：遮成空格而不是删掉，行号才不漂。
+  const src = bubbleSrc
+    .replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, " "))
+    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "));
+
+  if (!bubbleSrc.includes("image-height-ok")) {
+    for (const m of src.matchAll(CLASS_ATTR_RE)) {
+      // 逐条扫这份 class 列表里的高度工具类（`size-6` 那种同时给宽高的不算高度工具类）。
+      for (const tok of m[1].split(/\s+/)) {
+        if (!/^(?:max-)?h-[\d.]+$/.test(tok)) continue;
+        out.push({
+          line: lineAt(src, m.index ?? 0),
+          message:
+            `图片盒里写了高度工具类 \`${tok}\` —— 高度只能从 previewMetrics 取` +
+            `（骨架用 IMAGE_BUBBLE_HEIGHT / 终态占位用 IMAGE_PLACEHOLDER_HEIGHT），` +
+            `否则虚拟列表的估算、加载预留与 <img> 上限会各留一份数，图片行又开始跳（N22）。` +
+            `图标这类与图片盒无关的尺寸请写 size-*。`,
+        });
+      }
+    }
+    if (!/IMAGE_BUBBLE_HEIGHT/.test(bubbleSrc) || !/from "@\/utils\/previewMetrics"/.test(bubbleSrc)) {
+      out.push({
+        line: 0,
+        message:
+          "图片盒没从 previewMetrics 引 IMAGE_BUBBLE_HEIGHT ⇒ 估算端与渲染端断了同一份常量（N22）。",
+      });
+    }
+  }
+
+  // 估算端那一侧：不许再留一份自己的图片高度常量（那份就是当年漂开的那个家）。
+  if (/const\s+IMAGE_BUBBLE\s*=\s*\d+/.test(estimatorSrc)) {
+    out.push({
+      line: lineAt(estimatorSrc, estimatorSrc.search(/const\s+IMAGE_BUBBLE\s*=\s*\d+/)),
+      message:
+        "估算端又定义了一份本地图片高度常量 ⇒ 请改成 import previewMetrics.IMAGE_BUBBLE_HEIGHT，" +
+        "否则改一处只会改到一边（N22）。",
+    });
+  }
+  return out.sort((a, b) => a.line - b.line);
+}
+
+/** 这条尺子在这份组件里看得见多少个 class 属性（真实树那半的阳性对照：一个都看不见就是尺子瞎了）。 */
+export function countClassAttrs(raw: string): number {
+  const src = raw
+    .replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, " "))
+    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "));
+  let n = 0;
+  CLASS_ATTR_RE.lastIndex = 0;
+  for (let m = CLASS_ATTR_RE.exec(src); m; m = CLASS_ATTR_RE.exec(src)) n += 1;
+  return n;
+}
+
+/**
+ * ㉟ 视图层（组件）里不许**裸写**平台或输入方式探测 —— 这些判定只有一个家（roadmap N11）。
+ *
+ * 为什么这条值得由机器盯：本仓的原生体验口径是"通用层 + 各端薄壳"，散写的 `isMac` / UA
+ * 判断会一处一处地长成分支网（约束里明写"不要通过大量 isMac、isIOS 条件堆积难以维护的分支"）。
+ * 而"该走 common layer"这句话过去只写在注释与 roadmap 里，读代码看不出来谁越了界。
+ *
+ * 三个家（这条只管"视图层不许自己算"，不管"算得对不对"）：
+ *   —— 纯样式差异 ⇒ **CSS 自己表达**：`@media (hover: none)` / `env(safe-area-inset-*)` / `prefers-*`
+ *      （2026-10-10 现数 `src/style.css`：hover 1 处、pointer:coarse 4 处、reduced-motion /
+ *      reduced-transparency / contrast 各 1 处 —— 这一族本来就在 CSS 里，不许往组件里搬）；
+ *   —— 平台与输入能力（UA、有没有真 hover）⇒ `utils/platform.ts`；
+ *   —— 布局模式（要不要走移动那一套）⇒ `useAppStore` 的 `isMobile`
+ *      （那份是"平台优先、宽度兜底"，Android 首启事故换来的顺序，见 platform.ts:resolveMobileLayout）。
+ *
+ * 判的是**形状**：视图层里出现下列任一即报 ——
+ *   `matchMedia(` / `navigator.userAgent` / `navigator.platform` / `navigator.appVersion` /
+ *   `navigator.maxTouchPoints` / `@tauri-apps/plugin-os`。
+ * `navigator.clipboard`、`navigator.share` 这类**不是平台判定**的 API 不在名单里（扫它们就是造假红）。
+ * 作用点（不是预防性的）：本仓真实只有 1 处裸写 —— `MessageReactionBar` 里的
+ * `window.matchMedia("(hover: hover)")`，本轮把它收进 `platform.ts` 的 `canHover`（同一处
+ * 顺带是 `reactionRoster.test.ts` 那条**字面量**存在断言的家，已同步改成引 common layer）。
+ * 逃生阀：文件里写 `platform-check-ok`（例：某份组件确实要在渲染前自己问一次设备能力）。
+ */
+const RAW_PLATFORM_PATTERNS: ReadonlyArray<readonly [RegExp, string]> = [
+  [/\bmatchMedia\s*\(/, "window.matchMedia("],
+  [/\bnavigator\.userAgent\b/, "navigator.userAgent"],
+  [/\bnavigator\.platform\b/, "navigator.platform"],
+  [/\bnavigator\.appVersion\b/, "navigator.appVersion"],
+  [/\bnavigator\.maxTouchPoints\b/, "navigator.maxTouchPoints"],
+  [/@tauri-apps\/plugin-os/, "@tauri-apps/plugin-os"],
+];
+
+export function findRawPlatformCheckInViewLayer(raw: string): GuardIssue[] {
+  if (raw.includes("platform-check-ok")) return [];
+  // 注释里的不算（同 ㉝/㉜ 那条教训：prose 里提到 API 名字不能被当成"这里在用"）。
+  const src = raw
+    .replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, " "))
+    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "))
+    // 行注释也遮掉：这一族最容易在"解释为什么不走这条路"时被提到
+    .replace(/^[ \t]*\/\/.*$/gm, (m) => m.replace(/[^\n]/g, " "));
+  const out: GuardIssue[] = [];
+  for (const [re, name] of RAW_PLATFORM_PATTERNS) {
+    for (const m of src.matchAll(new RegExp(re.source, "g"))) {
+      out.push({
+        line: lineAt(src, m.index ?? 0),
+        message:
+          `视图层里裸写了 ${name} —— 平台与输入方式只有一个家：` +
+          `纯样式差异走 CSS（@media (hover: none) / env(safe-area-inset-*) / prefers-*），` +
+          `UA 与"有没有真 hover"走 utils/platform.ts，移动布局模式走 useAppStore 的 isMobile（roadmap N11）。`,
+      });
+    }
+  }
+  return out.sort((a, b) => a.line - b.line);
+}
+
+/** 这条尺子在一份组件里看得见多少个"走正门"的引用（真实树那半用它证明正门确实在被用）。 */
+export function countCommonLayerPlatformImports(raw: string): number {
+  const fromPlatform = (raw.match(/from "@\/utils\/platform"/g) ?? []).length;
+  const fromStore = (raw.match(/\buseAppStore\b/g) ?? []).length > 0 ? 1 : 0;
+  return fromPlatform + fromStore;
 }

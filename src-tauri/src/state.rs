@@ -13,7 +13,7 @@ use tokio::sync::{mpsc, watch, Notify};
 
 use crate::crypto::Identity;
 use crate::db;
-use crate::device::{hardware_fingerprint, hostname_fingerprint};
+use crate::device::{collect_device_attrs, generate_device_id};
 use crate::file_relay::RelayManager;
 use crate::gossip_engine::GossipEngine;
 use crate::logging::Logger;
@@ -61,6 +61,31 @@ const UI_LANG_UNKNOWN: u8 = 0;
 const UI_LANG_ZH: u8 = 1;
 const UI_LANG_EN: u8 = 2;
 
+/// 热路径设置 `settings.language` 的内存缓存（审计 2.1i）。
+/// is_zh() 在每段后端文案（托盘/日志/中继/群成员变更）上调用，逐次抢全局 db 锁
+/// 会在消息洪峰 + 托盘重建时加剧争用。与 ui_lang 同型：未加载时读库一次回填，
+/// 写入点（save_settings / reset_settings）同步更新。
+const LANG_PREF_UNSET: u8 = 0;
+const LANG_PREF_SYSTEM: u8 = 1;
+const LANG_PREF_ZH: u8 = 2;
+const LANG_PREF_EN: u8 = 3;
+/// 键不存在 / 历史脏值：resolve_is_zh 对它们本就与 None 同路（跟随系统）。
+const LANG_PREF_MISSING: u8 = 4;
+
+/// 热路径设置 `notify_enabled` 的内存缓存（同上；每条通知判一次总开关）。
+const NOTIFY_PREF_UNSET: u8 = 0;
+const NOTIFY_PREF_ON: u8 = 1;
+const NOTIFY_PREF_OFF: u8 = 2;
+
+fn lang_pref_str(code: u8) -> Option<&'static str> {
+    match code {
+        LANG_PREF_SYSTEM => Some("system"),
+        LANG_PREF_ZH => Some("zh-CN"),
+        LANG_PREF_EN => Some("en-US"),
+        _ => None,
+    }
+}
+
 /// **运行状态的唯一快照**（用户要求的第 ② 项）。
 ///
 /// 为什么必须合并：以前"局域网到底开着没有"在前端有**两份**表示 ——
@@ -92,6 +117,25 @@ pub struct RuntimeSnapshot {
     /// 用户也应该显示"在线"——用 `online` 会在这种场景下把用户标成离线。
     /// `online` 仍然保留（它是"局域网在跑"，界面里"局域网：N 个节点"那类 LAN 专属文案要用）。
     pub present: bool,
+    /// 已配置的「跨网段 / VPN」端点数（**不是发现通道**，配置在设置页；这里只给"有没有"，
+    /// 不给地址）。供「添加好友」页如实告知"还有哪些通道在线"。
+    pub routed_endpoints: usize,
+    /// 公网中转状态（同上：只给可公开的事实，**不含口令、不含服务器地址**）。
+    pub relay: RelayRuntimeStatus,
+}
+
+/// 公网中转的运行状态（`ChannelStatus` 那套发现通道装不下它，且**绝不能带口令/地址**）。
+///
+/// 为什么单独一个结构、且只放两个 bool：快照既作为命令返回值、又作为 `runtime-changed`
+/// 事件载荷发给所有窗口，还会被诊断读到 —— 口令与服务器地址属于"设置页才该出现"的敏感值
+/// （见守卫 `relay_token_never_reaches_logs_or_diagnostics`），这里只放"开没开 / 通没通"。
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelayRuntimeStatus {
+    /// 用户是否启用了公网中转（持久化偏好，不看是否真的连通）
+    pub enabled: bool,
+    /// 当前是否至少有一条中继电路（`path_kind == Relay` 的活跃链路）
+    pub connected: bool,
 }
 
 /// 蓝牙运行时事实（`ChannelStatus` 表达不了的部分）。
@@ -157,16 +201,42 @@ fn event_target_label(target: &tauri::EventTarget) -> Option<&str> {
     }
 }
 
-/// 对端当前"**实际会走**"的链路类型（与 `pick_link` 的优先级一致：LAN > Routed > Bluetooth）。
+/// 对端当前"**实际会走**"的链路类型（与 `pick_link` 的优先级一致：LAN > Routed > Relay > Bluetooth）。
 ///
 /// 为什么要它：界面上的「蓝牙直连」以前是**反推**出来的（`p.ip || 蓝牙直连`），
 /// 于是同一 Tailscale 网段（`Routed`）的设备也会被标成"蓝牙直连"（用户 2026-09-12 实测）。
 /// 链路类型只有后端知道（`Link::path_kind` 由**来路**决定，不能从 IP 段反推），所以在这里判。
+///
+/// ⚠️ 这是一份**手写优先级数组**，不是穷尽 `match` —— 往 `PathKind` 加新变体时编译器
+/// **不会**提醒这里，必须手动补（否则新变体永远选不上、静默退化成更低优先级）。
 pub fn best_link_kind(kinds: &[crate::mesh::PathKind]) -> Option<crate::mesh::PathKind> {
     use crate::mesh::PathKind::*;
-    [Lan, Routed, Bluetooth]
+    [Lan, Routed, Relay, Bluetooth]
         .into_iter()
         .find(|&want| kinds.contains(&want))
+}
+
+/// 一条链路是否算「公网中继电路」。**唯一判据**：`path_kind == Relay`
+/// （用枚举判，**不按服务器地址** —— 地址属于设置页，且换服务器不该让统计口径变）。
+///
+/// 为什么单独一个函数：这个判据有两处消费者 —— `get_runtime_snapshot` 的
+/// `relay.connected`（"有没有中继电路"）与 `get_topology` 的 `relay_count`（"几条"）。
+/// 各写一遍 `== Relay` 的话，将来加一种中转形态就会只改到一处。
+pub fn link_is_relay_circuit(link: &Link) -> bool {
+    link.path_kind == crate::mesh::PathKind::Relay
+}
+
+/// 当前有几条公网中继电路（**同步**版，给 `get_topology` 这类同步命令用）。
+///
+/// `links` 是 `tokio::Mutex`，同步上下文里不能 `await` ⇒ 调用方用 `try_lock`，
+/// 抢不到就报 0。这个数字只用于顶栏展示，为它阻塞一条工作线程、或让它失败，
+/// 都不值得（同「窗口路径上的装饰性读必须 try_lock + 安全降级」那条规矩）。
+pub fn relay_circuit_count(links: &HashMap<String, Vec<Link>>) -> usize {
+    links
+        .values()
+        .flatten()
+        .filter(|l| link_is_relay_circuit(l))
+        .count()
 }
 
 /// 局域网在线节点（Peer Table 条目）
@@ -305,6 +375,32 @@ pub struct MessageRecord {
     /// 每会话逻辑序号（Lamport 风格），排序与清空边界都以此为准。
     pub seq: i64,
     pub status: String,
+    /// @ 的落点（#122 第二段）。与 `mention_ids` **不同待遇**：那一份是"摄入那一刻有人 @ 我"
+    /// 的一次性判定，故意不落库；这一份是"正文里哪一段算谁"，是**这条消息自己的历史事实**，
+    /// 不落库就等于"重启之后同一句话换了意思"（同名两个人重新互相点亮）。
+    /// 三态照旧：`None` = 不知道（老行 / 老对端 / 库里那一列写坏了）⇒ 呈现层按昵称兜底。
+    #[serde(default)]
+    pub mention_targets: Option<Vec<crate::protocol::MentionTarget>>,
+}
+
+/// `message-received` 实际投递出去的形状 = 消息记录 + **只随本次投递、不落库**的 @ 名单。
+///
+/// 为什么不把 `mention_ids` 直接做进 `MessageRecord`：那个结构是"库里的一行"，
+/// 全仓 30 多处字面量构造它，而这一份信息**故意不落库**（「有人@我」是摄入时的一次性
+/// 判定，重启即清空 —— 重启后不该再亮一次红点）。做成字段就等于造出一个
+/// "有时有意义、从库里读回来永远没意义"的假字段 —— 那才是下一次误判的来源。
+/// ⚠️ 同一条理由**不再适用于** `mention_targets`（就在上面 `MessageRecord` 那段）：
+/// 落点是那句话的历史事实，所以它进了库。两份信息的边界因此是"一次性判定 vs 历史事实"，
+/// 不是"这两个字段长得像不像"。
+#[derive(Serialize, Debug)]
+pub struct IncomingMessage<'a> {
+    #[serde(flatten)]
+    pub record: &'a MessageRecord,
+    /// 三态：`None` = 发送方没带这个键（旧版本）；`Some(含空)` = 发送方的权威回答。
+    pub mention_ids: Option<&'a [String]>,
+    /// @ 的落点（#122：群里同名两个人要分得开）。与 `mention_ids` 同样三态：
+    /// `None` = 对端版本不认识这个字段 ⇒ 呈现层退回按昵称判（只能更准，不许变暗）。
+    pub mention_targets: Option<&'a [crate::protocol::MentionTarget]>,
 }
 
 /// 一条收藏（与前端一致）。
@@ -573,11 +669,18 @@ pub struct FileDoneInfo {
 /// 为什么需要它：`send_on_link` 在对端不收时会一直挂在背压上 —— 既不再发进度也不报错，
 /// 界面就冻在同一个百分比最长到 deadline（1h）。用户需要知道"卡在网络上"而不是"软件死了"。
 /// `idle_ms` = 距最近一次真正写出分片的毫秒数（以 writer 实发为准，不是投进队列）。
+///
+/// `reason`：**为什么停**（可空 = 就是普通的链路静默）。加它是为了不把"策略上暂时不发"
+/// 说成"网络卡住"——只有蓝牙链路时超过 `BLE_FILE_SIZE_LIMIT` 的文件会保持 pending 等 LAN
+/// 回来（2026-09-23 真机 600MB 复核），界面上必须能看出这是"在等更好的链路"而不是故障。
+/// 老前端忽略这个字段（serde 跳过 None），新前端有它就显示它、没有就回退既有的「网络停滞」。
 #[derive(Serialize, Clone, Debug)]
 pub struct FileStalledInfo {
     pub transfer_id: String,
     pub stalled: bool,
     pub idle_ms: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -650,11 +753,25 @@ pub struct FileReceiver {
     pub received: u64,
     /// 直连 TCP 虽然有序，但仍校验序号，避免错误/恶意帧把文件静默拼坏。
     pub next_seq: u32,
+    /// 当前这接收器属于**哪一轮**发送尝试（attempt epoch；0 = 未知/老端不带）。
+    /// 由 FileOffer 设定（Offer 是权威，见 `file::frame_is_current` 第 3 条），
+    /// 分片与完成帧用它过滤"上一轮还堵在链路队列里的残留"。
+    pub attempt: u32,
+    /// 已丢掉多少片"上一轮 attempt 的残留"。只用于诊断：没有这个计数，
+    /// 界面上"进度不动了"就完全没有可解释的痕迹（而它恰恰是 epoch 在起作用）。
+    pub stale_dropped: u32,
     pub tmp_path: PathBuf,
     pub final_path: PathBuf,
     pub peer_id: String,
     /// 上次进度上报时间（毫秒），用于节流 IPC 事件
     pub last_report_ms: i64,
+    /// 最近一次**被喂进一个合法分片**的时刻（ms）。创建时也算。
+    ///
+    /// 为什么必须有（P1）：`last_report_ms` 是 IPC 节流用的、且有一处初始化成 0，
+    /// 它不是"还在不在收"的证据；而协议里没有 cancel 帧，发送侧 abort 之后
+    /// **不会通知接收端** ⇒ 没有这个时钟，被放弃的接收器会永久钉住
+    /// 文件句柄与 `.part`（`sweep_stale_parts` 只删不在表里的）。
+    pub fed_at_ms: i64,
     /// 本 transfer 的文件会话密钥：FileOffer 中以我方公钥 E2EE 封装，
     /// 解封后仅存于内存；每个分片以此 AEAD 解密，密文绝不落盘。
     pub file_key: [u8; 32],
@@ -670,12 +787,22 @@ pub struct RelayFileReceive {
     pub file_key: [u8; 32],
     /// 发送方声明的原文件 SHA-256（hex）
     pub expected_sha256: String,
-    /// 明文增量哈希：逐片解密后 update，重组完成时 finalize 比对
-    pub hasher: sha2::Sha256,
     /// 收到 RelayFileOffer 的时刻。**必须有**：本表按 transfer_id 索引，
     /// 而对端可以一直发新 offer 却永不发分片 —— 没有时间戳就无法回收，
     /// 内存会随对端行为单调增长（见 `sweep_stale_relay`）。
+    ///
+    /// 注意：这里**没有**增量哈希。中继分片按到达顺序解密，可能重复（多邻居
+    /// 泛洪）、可能乱序（多中继路径时延不同）—— 任何"到达顺序增量喂哈希"的
+    /// 方案在去重/排序之前都是错的。完整性校验在重组完成后对按 seq 组装的
+    /// 明文一次性计算（2026-09-23 审计 1.8）。
     pub created_at: i64,
+    /// 上一次给前端推 `file-progress` 的时刻（**每秒最多一条**）。
+    ///
+    /// 为什么必须有：中继分片在 BLE 上只有 4 KiB，几百 KB 的文件就是上万片，
+    /// 而每条进度都要跨进程 + 过主线程消息循环 —— 逐片推会把"正在收文件"变成
+    /// "界面卡顿"。进度存在这张表里而不是另开一份：它与本行同生同灭，
+    /// 分两处存迟早有一边忘清（与 stalledTransfers 同一条教训）。
+    pub last_progress_at: i64,
 }
 
 /// 网络运行时句柄
@@ -744,6 +871,31 @@ impl Drop for DialGuard {
     }
 }
 
+/// 预览窗口里的一张图 —— 字段名与前端 `PreviewImage` 一一对应（camelCase 上线）。
+///
+/// ⚠️ 刻意**只带引用**（`msg_id` / `cid`）或自包含的 `data_src`：
+/// 主窗口里那些 `blob:` objectURL 跨文档一律取不到字节，传过去就是一片破图。
+/// 所以能不能走独立预览窗口，判据就是"每一条都可寻址"（见前端 `deliverableToWindow`）。
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewItem {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub msg_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_src: Option<String>,
+}
+
+/// 一次"看图"投递的完整内容（相册 + 起始下标）。
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewGallery {
+    pub items: Vec<PreviewItem>,
+    pub index: usize,
+}
+
 pub struct AppState {
     pub app: AppHandle,
     pub db: Mutex<Connection>,
@@ -754,6 +906,10 @@ pub struct AppState {
     /// 只存内存、**不落库**：它是前端解析结果的缓存，每次启动前端都会重新推一次；
     /// 落库反而会多出一份可能与 `settings.language`（那是**偏好**，不是结果）不一致的状态。
     ui_lang: AtomicU8,
+    /// `settings.language` 的内存缓存（热路径，见模块顶部常量注释；审计 2.1i）。
+    lang_pref: AtomicU8,
+    /// `notify_enabled` 的内存缓存（同上）。
+    notify_pref: AtomicU8,
     /// **在途拨号**集合（D6）：正在 connect/握手的拨号键（peer_id 或端点字符串）。
     ///
     /// 为什么需要：`connect_to_peer` 的"已连接？"检查与"登记链路"之间隔着 connect +
@@ -844,6 +1000,11 @@ pub struct AppState {
     /// 为什么缓存在内存：转发热路径上 gossip 可能每秒几十条，为了一个策略字段去锁
     /// SQLite 是纯浪费。启动时从 settings 读入，`save_settings` 时更新。
     pub relay_policy: Mutex<crate::mesh::relay_policy::RelayConfig>,
+    /// 替别人转发过的群信封（有界、进程内）—— 晚到成员下一次建链时从这里补递（#77）。
+    /// 为什么放内存不建表：转发热路径每秒可能几十条，为一份**注定会过期**的缓存去锁
+    /// SQLite 是纯浪费；代价是中间人重启后这段历史的补递窗口就没了（边界写进
+    /// `mesh/gossip_replay.rs` 与本文件的判据，不许读成"群消息最终一定一致"）。
+    pub gossip_relay: Mutex<crate::mesh::gossip_replay::GossipRelayCache>,
     /// 文件接收落盘目录（可变：设置页可改，改后新接收的文件落到新目录）。
     pub downloads_dir: Mutex<PathBuf>,
     /// 缓存目录：图片 / 音频 / 文件等二进制落盘于此（SQLite 不存 BLOB）
@@ -859,6 +1020,28 @@ pub struct AppState {
     pub db_path: PathBuf,
     /// 应用级运行日志（内存 ring buffer + 落盘文件），供「运行日志」页读取与排查。
     pub logger: Logger,
+    /// 「群任务窗口该展开哪一条任务」的一次性暂存（`groupId → todoId`，桌面端用）。
+    ///
+    /// 为什么要**暂存 + 定向事件两条路**（用户 2026-09-24 #39：点聊天里的任务卡片，
+    /// 窗口打开后要把那条任务展开）：建窗是异步的 —— 窗口**正在创建**时前端还没
+    /// `listen`，只发事件的表现就是"第一次点没反应、第二次才有"。
+    /// 所以每次 `open_group_todos_window` 都写这里（不带 todoId 时**清掉**，
+    /// 否则下次从标题栏按钮打开会莫名展开上次那条），窗口挂载时取走一次；
+    /// 只有"窗口本来就开着"（不会经历挂载）才走定向事件那条路。
+    pub todo_focus_request: Mutex<std::collections::HashMap<String, String>>,
+    /// 独立「图片预览」窗口当前该显示哪一份相册（用户 2026-09-24 #40）。
+    ///
+    /// 这是**当前值**而不是一次性请求：每次投递都整体覆盖，所以窗口不管是挂载后自己来取、
+    /// 还是被事件叫醒后来取，拿到的都是"用户最后一次点的那组图"。也正因如此 `get` 不清它 ——
+    /// 清了反而会在"事件先于监听器到达"那个窗口期把内容丢掉（批次 w 记过的同一个竞态）。
+    pub preview_gallery: Mutex<Option<PreviewGallery>>,
+    /// 「那扇群任务窗口现在显示的是哪个群」—— **当前值**，不是一次性请求。
+    ///
+    /// 群任务窗口的 label 是固定的 `tasks`（不再是每群一扇），所以"看哪个群"必须由这里给：
+    /// 预热时它是 `None`（窗口已经建好、还没有内容），第一次真正打开写入某个群 ⇒ 窗口
+    /// 要么在挂载时自己取到（新建/预热后首用），要么被定向事件叫醒后再取（已开着）。
+    /// 与 `preview_gallery` 同一套"当前值"语义 ⇒ 不存在"丢一次点击"。
+    pub task_window_group: Mutex<Option<String>>,
     /// 节点身份（X25519 + Ed25519）
     pub identity: Identity,
     /// Gossip 去重 + 扇出引擎
@@ -977,7 +1160,7 @@ pub struct AppState {
     /// 两个用途，判据都必须落在**写出**而不是"入队"上 —— 队列能装 1024 帧，1MB 文件会在
     /// 1 秒内全部入队，而链路上要跑几分钟：
     ///   ① 把 `FileCompleteAck` 的等待从"固定 30s 墙钟"改成"**安静** 30s 才算失败"
-    ///      （见 `network/file.rs::wait_complete_ack`）；
+    ///      （见 `network/file/send.rs::wait_complete_ack`）；
     ///   ② 发送进度本身（v4.22.37）：进度条按已写出的分块数换算。旧口径直接拿"入队字节"
     ///      当进度，于是 LAN 上最多 262MB 还在队列里时，界面已经显示 100%。
     pub file_wire_progress: Mutex<HashMap<String, FileWireProgress>>,
@@ -1084,37 +1267,36 @@ impl AppState {
             .unwrap_or(default_downloads);
         std::fs::create_dir_all(&downloads_dir).ok();
 
-        // 设备指纹：优先机器码，回退持久化 UUID
-        let base_device = if let Some(id) = hardware_fingerprint() {
-            id
-        } else if let Some(id) = db::get_setting(&conn, "device_id") {
-            // ⚠️ **历史值迁移**（2026-09-13 合并评审补）：那时候的兜底路径多套了一层前缀，
-            // 已装的安卓库里存的是 `dev-gosslan-…`。光改生成代码**治不了已经装上的设备** ——
-            // 它们的 id 还是"三端里恒最小、永远不主动拨号"的那个值，
-            // 除非用户清一次应用数据（丢聊天/好友）。所以这里把废弃前缀**就地剥掉**再写回。
-            match crate::device::strip_legacy_dev_prefix(&id) {
-                Some(migrated) => {
-                    db::set_setting(&conn, "device_id", migrated).ok();
-                    migrated.to_string()
+        // 设备 ID：**只认已持久化的值，没有才生成一次**（派生式身份为什么会撞，见 `device.rs` 头）。
+        //
+        // 这条改动对**已装设备是惰性的**，这是刻意的：旧代码每次启动都把派生值写回 settings，
+        // 所以已存的值就等于派生值 ⇒ 换优先级不会改变任何现存设备的 ID，也就不会打断任何已有
+        // 好友绑定。代价是**今天已经撞上号的两台，这段代码救不了它们** —— 救它们需要
+        // "检测到同 ID 不同密钥 ⇒ 提示换新 ID"那一条路，而它**还没实现**（ADR-0021 的切片 2；
+        // 换 ID 的口径用户 2026-09-22 已拍板：好友重加、旧会话只读、聊天记录不迁移）。
+        // 在那之前，已经撞上的两台只能靠下面那个 `dev-` 前缀迁移之外的手工路径（清应用数据）。
+        let base_device = match db::get_setting(&conn, "device_id") {
+            Some(stored) => {
+                // ⚠️ **历史值迁移**（2026-09-13 合并评审补）：那时的兜底路径多套了一层前缀，
+                // 已装的安卓库里存的是 `dev-gosslan-…`。光改生成代码治不了已装设备 —— 它们的
+                // id 还是"三端里恒最小、永远不主动拨号"的那个值，除非清一次应用数据（丢聊天与
+                // 好友）。所以这里把废弃前缀**就地剥掉**再写回。
+                match crate::device::strip_legacy_dev_prefix(&stored) {
+                    Some(migrated) => {
+                        db::set_setting(&conn, "device_id", migrated).ok();
+                        migrated.to_string()
+                    }
+                    None => stored,
                 }
-                None => id,
             }
-        } else {
-            // ⚠️ 这里**不能**再套一层前缀（真机 2026-09-13 第七轮发现）。
-            //
-            // 旧写法是 `format!("dev-{}", hostname_fingerprint())`，而
-            // `hostname_fingerprint()` 本身已经产出 `gosslan-xxxxxxxxxxxxxxxx`，
-            // 于是安卓的 device_id 变成 **`dev-gosslan-…`**，而桌面端（有机器码）是
-            // **`gosslan-…`**。两个后果都是真的：
-            //   ① **身份不一致**：同一个 `gosslan-` 命名约定被打断，日志/库/UI 里出现两种形状；
-            //   ② **永远是"较小 id"**：`'d' < 'g'` ⇒ 安卓在三端里恒为最小
-            //      ⇒ 按「大 id 拨、小 id 只接受」的镜像规则，**安卓永远不主动拨任何人**。
-            //      它只能等别人来连它，而"别人能不能连到它"取决于对方的扫描 —— 这正是
-            //      2026-09-13 那几轮"安卓搜不到 Windows"里最容易被忽略的一层。
-            // `hostname_fingerprint()` 已带前缀，这里直接用。
-            let id = hostname_fingerprint();
-            db::set_setting(&conn, "device_id", &id).ok();
-            id
+            None => {
+                // ⚠️ 生成函数自己带 `gosslan-` 前缀，这里**不能再套一层**：真机 2026-09-13 那轮
+                // 多套了个 `dev-`，于是 `'d' < 'g'` ⇒ 安卓在三端里恒为最小 id，而镜像规则是
+                // 「大 id 拨、小 id 只接受」⇒ 那台设备永远不主动拨任何人，只能等别人来连它。
+                let fresh = generate_device_id(&collect_device_attrs());
+                db::set_setting(&conn, "device_id", &fresh).ok();
+                fresh
+            }
         };
         // 多开时给不同实例不同 device_id，使其成为互相可发现的独立节点
         let device_id = if instance > 0 {
@@ -1208,6 +1390,8 @@ impl AppState {
             tcp_port,
             // 「前端还没推语言」的初值；前端 `app.init()` 随后就会推一次真实值。
             ui_lang: AtomicU8::new(UI_LANG_UNKNOWN),
+            lang_pref: AtomicU8::new(LANG_PREF_UNSET),
+            notify_pref: AtomicU8::new(NOTIFY_PREF_UNSET),
             downloads_dir: Mutex::new(downloads_dir),
             cache_dir,
             favorites_dir,
@@ -1227,6 +1411,7 @@ impl AppState {
             mesh_router: Mutex::new(MeshRouter::new(100_000, 10_000, 6, 4, 256)),
             relay: Mutex::new(RelayManager::new()),
             relay_policy: Mutex::new(relay_policy),
+            gossip_relay: Mutex::new(crate::mesh::gossip_replay::GossipRelayCache::default()),
             #[cfg(feature = "bluetooth")]
             ble: Mutex::new(None),
             #[cfg(feature = "bluetooth")]
@@ -1238,6 +1423,9 @@ impl AppState {
             #[cfg(feature = "bluetooth")]
             ble_dial_failures: Mutex::new(std::collections::HashMap::new()),
             dialing: Mutex::new(std::collections::HashSet::new()),
+            todo_focus_request: Mutex::new(std::collections::HashMap::new()),
+            preview_gallery: Mutex::new(None),
+            task_window_group: Mutex::new(None),
             dial_permits: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_DIALS)),
             inbound_permits: Arc::new(tokio::sync::Semaphore::new(MAX_INBOUND_CONNECTIONS)),
             pending_out_requests: Mutex::new(std::collections::HashSet::new()),
@@ -1310,12 +1498,76 @@ impl AppState {
     /// 当前界面语言是否为中文。偏好存 settings.language（三态 system / zh-CN /
     /// en-US，由前端维护）；「跟随系统」时**先看前端推来的解析结果**，最后才用
     /// 环境变量兜底（判定规则与理由见 [`resolve_is_zh`]）。
+    ///
+    /// 偏好走内存缓存（审计 2.1i）：未加载时读库一次回填，此后零锁 ——
+    /// 每段后端文案都调它，逐次抢全局 db 锁会在消息洪峰时加剧争用。
     pub fn is_zh(&self) -> bool {
-        let pref = {
-            let dbc = self.db.lock().unwrap_or_else(|e| e.into_inner());
-            db::get_setting(&dbc, "language")
+        let pref = self.cached_lang_pref();
+        resolve_is_zh(pref, self.ui_lang_hint(), system_lang_is_zh())
+    }
+
+    /// settings.language 的缓存值；未加载时读库一次回填（此后零锁）。
+    fn cached_lang_pref(&self) -> Option<&'static str> {
+        let code = self.lang_pref.load(Ordering::Acquire);
+        if code == LANG_PREF_UNSET {
+            let stored = {
+                let dbc = self.db.lock().unwrap_or_else(|e| e.into_inner());
+                db::get_setting(&dbc, "language")
+            };
+            let code = match stored.as_deref() {
+                Some("system") => LANG_PREF_SYSTEM,
+                Some("zh-CN") => LANG_PREF_ZH,
+                Some("en-US") => LANG_PREF_EN,
+                // 键不存在 / 历史脏值：resolve_is_zh 对它们本就按「跟随系统」处理
+                _ => LANG_PREF_MISSING,
+            };
+            self.lang_pref.store(code, Ordering::Release);
+            return lang_pref_str(code);
+        }
+        lang_pref_str(code)
+    }
+
+    /// save_settings 写入 language 后同步缓存（保持与库一致，见 [`Self::is_zh`]）。
+    pub fn cache_lang_pref(&self, v: &str) {
+        let code = match v {
+            "system" => LANG_PREF_SYSTEM,
+            "zh-CN" => LANG_PREF_ZH,
+            "en-US" => LANG_PREF_EN,
+            _ => LANG_PREF_MISSING,
         };
-        resolve_is_zh(pref.as_deref(), self.ui_lang_hint(), system_lang_is_zh())
+        self.lang_pref.store(code, Ordering::Release);
+    }
+
+    /// notify_enabled 的缓存读取；未加载时读库一次回填（每条通知判一次总开关，
+    /// 逐次抢锁同属审计 2.1i 的热路径）。
+    pub fn notify_enabled_cached(&self) -> bool {
+        match self.notify_pref.load(Ordering::Acquire) {
+            NOTIFY_PREF_ON => true,
+            NOTIFY_PREF_OFF => false,
+            _ => {
+                let on = {
+                    let dbc = self.db.lock().unwrap_or_else(|e| e.into_inner());
+                    crate::notifications::notifications_enabled(&dbc)
+                };
+                self.cache_notify_enabled(on);
+                on
+            }
+        }
+    }
+
+    /// save_settings 写入 notify_enabled 后同步缓存。
+    pub fn cache_notify_enabled(&self, on: bool) {
+        self.notify_pref.store(
+            if on { NOTIFY_PREF_ON } else { NOTIFY_PREF_OFF },
+            Ordering::Release,
+        );
+    }
+
+    /// reset_settings 删除全部偏好键后：两个热路径缓存回到未加载态
+    ///（下次读取从库回填默认值，而不是继续用被删掉的旧值）。
+    pub fn invalidate_hot_setting_cache(&self) {
+        self.lang_pref.store(LANG_PREF_UNSET, Ordering::Release);
+        self.notify_pref.store(NOTIFY_PREF_UNSET, Ordering::Release);
     }
 
     /// 记录前端**解析后**的界面语言（`set_ui_language` 命令调用；见 [`Self::is_zh`]）。
@@ -1654,5 +1906,56 @@ mod tests {
         assert_ne!(UI_LANG_UNKNOWN, UI_LANG_ZH);
         assert_ne!(UI_LANG_UNKNOWN, UI_LANG_EN);
         assert_ne!(UI_LANG_ZH, UI_LANG_EN);
+    }
+
+    /// `message-received` 实际投递出去的那份 JSON：**记录逐项都还在**（前端整条时间线靠它渲染，
+    /// flatten 写错会静默丢字段），并且多出一个 `mention_ids`。
+    ///
+    /// 为什么值得单独钉：这条形状只被 `network/transport/gossip.rs` 一处用到，前端又是按
+    /// 属性名读的 —— 名字漂了（`mention_ids` vs `mentions`）两侧都不会报错，表现是
+    /// 「@ 了我不亮」，正是本格修的那类"判不到根"的缺陷。
+    #[test]
+    fn incoming_message_flattens_the_record_and_carries_three_state_mentions() {
+        use super::{IncomingMessage, MessageRecord};
+        let rec = MessageRecord {
+            id: 7,
+            msg_id: "m1".to_string(),
+            conv_id: "group:g1".to_string(),
+            sender_id: "dev-a".to_string(),
+            receiver_id: "g1".to_string(),
+            kind: "text".to_string(),
+            content: "@周工 看下".to_string(),
+            ts: 10,
+            seq: 11,
+            status: "delivered".to_string(),
+            mention_targets: None,
+        };
+        let ids = vec!["dev-b".to_string()];
+        let with: serde_json::Value = serde_json::to_value(IncomingMessage {
+            record: &rec,
+            mention_ids: Some(&ids),
+            mention_targets: None,
+        })
+        .unwrap();
+        assert_eq!(with.get("msg_id").and_then(|v| v.as_str()), Some("m1"));
+        assert_eq!(with.get("seq").and_then(|v| v.as_i64()), Some(11));
+        assert_eq!(
+            with.get("status").and_then(|v| v.as_str()),
+            Some("delivered")
+        );
+        assert_eq!(with.get("mention_ids"), Some(&serde_json::json!(["dev-b"])));
+        // None ⇒ `null` 而不是把键省掉：前端两种都当"不知道"，但这条要写在类型上，
+        // 键在不在不该靠序列化器的默认行为猜。
+        let none: serde_json::Value = serde_json::to_value(IncomingMessage {
+            record: &rec,
+            mention_ids: None,
+            mention_targets: None,
+        })
+        .unwrap();
+        assert_eq!(none.get("mention_ids"), Some(&serde_json::Value::Null));
+        assert_eq!(
+            none.get("content").and_then(|v| v.as_str()),
+            Some("@周工 看下")
+        );
     }
 }

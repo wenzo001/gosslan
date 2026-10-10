@@ -1,11 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   TODO_AUTO_ARCHIVE_DAYS,
+  TODO_STATUS_BAR,
   TODO_STATUS_CLASS,
   TODO_STATUS_DEFAULT,
   TODO_STATUS_PILL,
   TODO_STATUSES,
+  canArchiveOrReopenTodo,
   canEditAssignees,
   canUpdateTodo,
   foldTodos,
@@ -13,7 +18,22 @@ import {
   parseTodo,
   todoCompletedForCreator,
   todoMentionsMe,
+  openTodosForMe,
+  putTodoRows,
+  TODO_PRIORITIES,
+  TODO_PRIORITY_DEFAULT,
+  resolveTodoNumbers,
+  TODO_CATEGORIES,
+  TODO_CATEGORY_DEFAULT,
+  TODO_CATEGORY_LETTER,
+  TODO_CODE_DIGITS,
+  todoCode,
+  todoLiveMap,
+  mergeIncomingTodoRows,
+  todoRowsFor,
+  isTodoRowsLoaded,
 } from "./todos.ts";
+import type { TodoItem } from "./todos.ts";
 import type { MessageRecord } from "../types";
 
 function rec(kind: string, msg_id: string, sender: string, content: unknown, seq: number): MessageRecord {
@@ -111,8 +131,203 @@ test("改标题 / 换指派人 / 删除都是同一层的 LWW", () => {
 
 test("排序：按创建版本从新到旧（此前按随机 todo_id 字符串，等于没排序）", () => {
   const out = foldTodos([def("t1", 1), def("t2", 7), def("t3", 3)]);
+  assert.deepEqual(out.map((t) => t.number), [0, 0, 0], "没带号的用例不该被凭空发号");
   assert.deepEqual(out.map((t) => t.todoId), ["t2", "t3", "t1"]);
 });
+
+/**
+ * 「线上**没带**这一格」与「就是这一格」在两版对端之间必须能区分开。
+ *
+ * 为什么这是真问题而不是洁癖：`4.31.14` 之前的 `TodoPayload` 里根本没有
+ * `priority` / `category` / `number` 三个键，而 `serde(default)` 把"没带"读成默认值 ⇒
+ * 混合版本群里**老对端改一次状态**，就把这三格抹平（类型回到「普通任务」、
+ * 优先级回到「常规」、详情里那枚认领按钮消失、固定编号变成没号）。
+ * mesh 没有服务器也没有强制升级 ⇒ 混合版本是常态。
+ *
+ * 规矩（与 Rust `commands::latest_todo_def` 同一条，两边各自实现、不许只改一边）：
+ * ① 没带的键**沿用这条任务已知的值**；显式带的键照常覆盖（所以正常改动一点都不受影响）。
+ * ② `number` 是创建那一刻定死的**绝对坐标** ⇒ 只认创建那一条显式带的号；
+ *    创建早于 4.31.14、本身没带号时，才退到最新一份显式带的号。
+ */
+test("老对端的更新不许把优先级与类型抹回默认（没带 ≠ 就是这个默认值）", () => {
+  const created = rec(
+    "todo",
+    "m-new",
+    "a",
+    {
+      todo_id: "t1", title: "旧", assignees: ["a"], status: "todo", creator: "a", deleted: false,
+      description: "", images: [], archived: false,
+      priority: "high", category: "requirement", number: 7,
+    },
+    1,
+  );
+  // 老版本载荷：这三个键**根本不存在**（不是 null，也不是默认值）
+  const legacy = rec(
+    "todo_update",
+    "m-old",
+    "b",
+    {
+      todo_id: "t1", title: "旧", assignees: ["a", "b"], status: "done", creator: "a", deleted: false,
+      description: "", images: [], archived: false, done_at: 100,
+    },
+    2,
+  );
+  const [t] = foldTodos([created, legacy]);
+  assert.equal(t.status, "done", "老对端确实改得动状态");
+  assert.deepEqual(t.assignees, ["a", "b"], "它显式带的键照常覆盖");
+  assert.equal(t.priority, "high", "没带的这一格不许被抹成「常规」");
+  assert.equal(t.category, "requirement", "没带的类型不许被抹成「普通任务」");
+  assert.equal(t.number, 7, "编号不许因为一份旧载荷而变成没号");
+});
+
+test("显式带的值仍然覆盖 —— 沿用只针对没带的那几格", () => {
+  const created = rec(
+    "todo",
+    "m1",
+    "a",
+    {
+      todo_id: "t1", title: "x", assignees: ["a"], status: "todo", creator: "a", deleted: false,
+      description: "", images: [], archived: false, priority: "normal", category: "task", number: 3,
+    },
+    1,
+  );
+  const explicit = rec(
+    "todo_update",
+    "m2",
+    "a",
+    {
+      todo_id: "t1", title: "x", assignees: ["a"], status: "doing", creator: "a", deleted: false,
+      description: "", images: [], archived: false, priority: "high", category: "bug",
+    },
+    2,
+  );
+  const [t] = foldTodos([created, explicit]);
+  assert.equal(t.priority, "high", "新版本用户显式改优先级必须生效");
+  assert.equal(t.category, "bug");
+  assert.equal(t.status, "doing");
+  assert.equal(t.number, 3, "这份更新没带号 ⇒ 用创建那一条的号");
+
+  // 另一面：present 但本端读不出合法值（未来新增的档位）也算"没说这一格"⇒ 沿用已知值，
+  // 而不是每来一份新对端载荷就抖回默认值。
+  const unknown = rec(
+    "todo_update",
+    "m3",
+    "a",
+    {
+      todo_id: "t1", title: "x", assignees: ["a"], status: "done", creator: "a", deleted: false,
+      description: "", images: [], archived: false, priority: "later_version_tier", category: "bug",
+    },
+    3,
+  );
+  const [u] = foldTodos([created, explicit, unknown]);
+  assert.equal(u.priority, "high", "认识不了的值不许把已知的优先级抹回默认");
+  assert.equal(u.category, "bug", "认得了的那格照常生效");
+  assert.equal(u.status, "done");
+});
+
+test("编号只认创建那一条；创建本身没号才退到最新一份带的号", () => {
+  const createdWithNumber = rec(
+    "todo",
+    "m1",
+    "a",
+    {
+      todo_id: "t1", title: "x", assignees: ["a"], status: "todo", creator: "a", deleted: false,
+      description: "", images: [], archived: false, number: 7,
+    },
+    1,
+  );
+  // 一份把号写成 0 的更新（老客户端从库里整份重建载荷时就会出现）
+  const zeroing = rec(
+    "todo_update",
+    "m2",
+    "a",
+    {
+      todo_id: "t1", title: "x", assignees: ["a"], status: "done", creator: "a", deleted: false,
+      description: "", images: [], archived: false, number: 0,
+    },
+    2,
+  );
+  assert.equal(foldTodos([createdWithNumber, zeroing])[0].number, 7, "创建有号 ⇒ 更新改不动它");
+
+  const legacyCreated = rec(
+    "todo",
+    "m3",
+    "a",
+    { todo_id: "t9", title: "x", assignees: ["a"], status: "todo", creator: "a", deleted: false },
+    1,
+  );
+  const newUpdate = rec(
+    "todo_update",
+    "m4",
+    "a",
+    {
+      todo_id: "t9", title: "x", assignees: ["a"], status: "doing", creator: "a", deleted: false, number: 12,
+    },
+    2,
+  );
+  assert.equal(
+    foldTodos([legacyCreated, newUpdate])[0].number,
+    12,
+    "创建早于 4.31.14（本身没号）⇒ 退到最新一份显式带的号，别让这条任务永远没号",
+  );
+  assert.equal(
+    foldTodos([legacyCreated])[0].number,
+    0,
+    "两个来源都没有 ⇒ 保持 0（不许在读取时凭空发号，那是第二个事实来源）",
+  );
+});
+
+test("没带类型的老载荷不许点亮认领按钮的判据（缺格沿用之后仍然读得到 requirement）", () => {
+  const created = rec(
+    "todo",
+    "m1",
+    "a",
+    {
+      todo_id: "t1", title: "x", assignees: ["a"], status: "todo", creator: "a", deleted: false,
+      category: "requirement",
+    },
+    1,
+  );
+  const legacy = rec(
+    "todo_update",
+    "m2",
+    "b",
+    { todo_id: "t1", title: "x", assignees: ["a"], status: "done", creator: "a", deleted: false },
+    2,
+  );
+  const [t] = foldTodos([created, legacy]);
+  assert.equal(t.category, "requirement", "抹平类型会连带让认领按钮消失，所以这一格单独钉一条");
+});
+
+/**
+ * 跨语言契约：后端取"最新一条定义"那一步也必须区分**"没带这一格"**与**"就是这一格"**。
+ *
+ * 为什么这条必须有：`latest_todo_def` 是服务端**判权的唯一输入**（三条窄道逐字比对类型与优先级）。
+ * 前端折出来沿用了、后端却拿 `serde(default)` 抹平后的值去比 ⇒ 同一句规矩两个家各说一份，
+ * 而表现只是"某些人少了几个按钮"，界面上查不出根因（本仓反复栽过的那一形状）。
+ *
+ * 这条只钉"后端那几步还在不在"；后端的行为由 Rust 用例
+ * `latest_todo_def_carries_fields_the_newest_payload_never_stated` 自己判。
+ */
+test("跨语言：后端也必须沿用没说的三格（与前端 carryAbsentTodoFields 同规矩）", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const src = readFileSync(join(here, "../../src-tauri/src/commands/group_files.rs"), "utf8");
+  const problems = (text: string): string[] => {
+    const out: string[] = [];
+    for (const key of ["priority", "category", "number"]) {
+      if (!text.includes(`.get("${key}")`)) out.push(`没按"键在不在"读 ${key} ⇒ serde(default) 会把没带抹成默认值`);
+      if (!text.includes(`carry_${key}`)) out.push(`没有把 ${key} 沿用下去的那一步`);
+    }
+    if (!text.includes("created_number")) out.push('没有"编号只认创建那一条"这一步');
+    return out;
+  };
+  assert.deepEqual(problems(src), [], "后端这几步必须都还在（两个家要一起改，别只改前端）");
+  // 阳性对照：各拿掉一步，判据都必须报出问题 —— 否则这条本身就是空转的
+  assert.ok(problems(src.replace('.get("category")', '.get("?")')).length > 0, "拿掉读键那步必须报");
+  assert.ok(problems(src.replaceAll("carry_priority", "xx")).length > 0, "拿掉沿用那步必须报");
+  assert.ok(problems(src.replaceAll("created_number", "xx")).length > 0, "拿掉创建号优先那步必须报");
+});
+
 
 test("多个任务互不干扰；非任务消息被忽略", () => {
   const out = foldTodos([def("t1", 1), def("t2", 2)]);
@@ -135,6 +350,7 @@ test("状态配色口径统一：延期用 warning，不得再出现 danger", ()
   const maps = [
     ["TODO_STATUS_CLASS", TODO_STATUS_CLASS],
     ["TODO_STATUS_PILL", TODO_STATUS_PILL],
+    ["TODO_STATUS_BAR", TODO_STATUS_BAR],
   ] as const;
   for (const [name, map] of maps) {
     assert.ok(map.overdue.includes("warning"), `${name}.overdue 必须是 warning 档，实际 ${map.overdue}`);
@@ -144,6 +360,17 @@ test("状态配色口径统一：延期用 warning，不得再出现 danger", ()
       [...TODO_STATUSES].sort(),
       `${name} 的状态集合必须与 TODO_STATUSES 一致`,
     );
+  }
+});
+
+/**
+ * 列表色条必须**只引用 token**（用户 2026-09-24 #37 的配色要求"美观合适"，
+ * 而这条是它能同时成立在深色模式下的唯一方式）：写死 `#xxxxxx` 的话，
+ * 浅色下好看的那支色在深色下会糊进面板底。
+ */
+test("状态色条只用 token，不写死色值", () => {
+  for (const [status, cls] of Object.entries(TODO_STATUS_BAR)) {
+    assert.match(cls, /^bg-\[var\(--gosslan-[a-z0-9-]+\)\]$/, `${status} 的色条必须是单个 token 背景`);
   }
 });
 
@@ -166,6 +393,35 @@ test("授权矩阵：创建者与群主全权 / 被指派人不能改结构 / �
   // 无关成员：什么都不行
   assert.equal(canUpdateTodo(item, "dave", "owner", false), false);
   assert.equal(canUpdateTodo(item, "dave", "owner", true), false);
+});
+
+/**
+ * 成员窄档（用户 2026-09-24 #37 + 同日追加：「归档和被归档的数据还原，任何人都可以操作，
+ * 其他权限不变」）—— **必须与 Rust `commands::may_change_todo` 的用例表逐项一致**
+ * （`todo_member_lanes_are_narrow_and_member_only`）。
+ *
+ * 界面按这份决定"给不给按钮"，真正的拦截在命令层；两边都收口意味着：
+ * 无关成员 **只**多得到归档与还原这两个动作，改状态 / 改标题 / 删除仍然一律被拒
+ * —— 所以这里同时断言"放宽没有外溢"。
+ */
+test("成员窄档：归档与还原对全体群成员开放，改状态/改结构仍然不行", () => {
+  const item = { creator: "alice", assignees: ["bob"] };
+  const members = ["alice", "bob", "carol", "dave"];
+  // 无关成员 dave：归档/还原可以（就是这条放宽），改状态/改结构仍然不行。
+  assert.ok(canArchiveOrReopenTodo(item, "dave", "owner", members));
+  assert.equal(canUpdateTodo(item, "dave", "owner", false), false, "放宽不得外溢到改状态");
+  assert.equal(canUpdateTodo(item, "dave", "owner", true), false, "放宽不得外溢到改结构");
+  // 不是本群成员的第三人：连归档都不给。
+  assert.equal(
+    canArchiveOrReopenTodo(item, "erin", "owner", members),
+    false,
+    "归档/还原是群内动作，不给外人",
+  );
+  // 群主与被指派人本来就在前两档里（放宽与它们不冲突）。
+  assert.ok(canArchiveOrReopenTodo(item, "owner", "owner", members));
+  assert.ok(canArchiveOrReopenTodo(item, "bob", "owner", members));
+  // device_id 还没拿到的那一帧（启动早期）不得误判成"是成员"。
+  assert.equal(canArchiveOrReopenTodo(item, "", "owner", members), false, "空 actor 不算群成员");
 });
 
 /**
@@ -277,4 +533,266 @@ test("todoCompletedForCreator：只认「我创建的任务被完成」", () => 
 
   // 没有本机 id → 不提示
   assert.equal(todoCompletedForCreator(done, ""), null);
+});
+
+// ---------------- 与我相关的未完成任务（蓝色徽标的唯一判据，用户 2026-09-26） ----------------
+// 口径原话："除了完成和归档的其他数据都统计成一个蓝色的数值" ⇒ 排除的只有**完成**与**归档**两态，
+// 其余状态（待办/进行中/延期）都要算进来。判据只写这一份，会话列表与任务图标共用。
+
+const todoFixture = (
+  over: Partial<TodoItem> & Pick<TodoItem, "todoId">,
+): TodoItem => ({
+  title: "",
+  assignees: [],
+  status: TODO_STATUS_DEFAULT,
+  creator: "other",
+  description: "",
+  images: [],
+  archived: false,
+  doneAt: null,
+  createdAt: null,
+  ...over,
+});
+
+test("徽标只数「与我相关且还活着」：完成与归档都排掉，待办/进行中/延期都算", () => {
+  const items: TodoItem[] = [
+    todoFixture({ todoId: "a", assignees: ["me"] }),
+    todoFixture({ todoId: "b", assignees: ["me"], status: "doing" }),
+    todoFixture({ todoId: "c", assignees: ["me"], status: "overdue" }),
+    todoFixture({ todoId: "d", assignees: ["me"], status: "done" }), // 完成 → 不计
+    todoFixture({ todoId: "e", assignees: ["me"], archived: true }), // 手动归档 → 不计
+    todoFixture({ todoId: "f", creator: "me" }), // 我创建的 → 算相关
+    todoFixture({ todoId: "g", assignees: ["x"], creator: "x" }), // 与我无关 → 不计
+  ];
+  assert.deepEqual(
+    openTodosForMe(items, "me").map((t) => t.todoId),
+    ["a", "b", "c", "f"],
+  );
+});
+
+test("归档优先于状态：未完成但已归档的任务也不进徽标（用户说的「除了归档」）", () => {
+  const items = [todoFixture({ todoId: "z", assignees: ["me"], status: "doing", archived: true })];
+  assert.deepEqual(openTodosForMe(items, "me"), []);
+});
+
+test("本机 id 还没拿到时返回空 —— 身份未就绪不许点亮一个假数字", () => {
+  const items = [todoFixture({ todoId: "a", assignees: [""], creator: "" })];
+  assert.deepEqual(openTodosForMe(items, ""), []);
+});
+
+
+// ---------------- 看板取数的那一份源（#154-9） ----------------
+//
+// 修掉的缺陷：徽标走后端全表读（`getGroupTodoMessages`），而看板 / 任务面板 / 成员面板折的是
+// `chat.messages[convId]` —— 那份消息缓存有**两道**上界（`PAGE_SIZE × MAX_PAGES = 1000 条/会话`、
+// `MAX_CACHED_CONVS = 8` 个会话），所以"任务还在徽标里、看板却再也列不出它"是可达状态
+// （store 自己在 refreshConversations 的注释里就写了"用内存里已有的消息算不行"）。
+// 这一组钉的是那份**全表源**的语义：谁覆盖谁、"没任务"与"没读过"必须分得开、乐观更新落在哪。
+
+test("putTodoRows：点到的每个会话都建档；后端没回的会话是空数组，不是「没读过」", () => {
+  const out = putTodoRows({}, ["group:g1", "group:g2"], [def("t1", 1)]);
+  assert.equal(isTodoRowsLoaded(out, "group:g1"), true);
+  assert.equal(isTodoRowsLoaded(out, "group:g2"), true, "这次读点到过它 ⇒ 必须能区分「确实没有任务」");
+  assert.deepEqual(out["group:g2"], []);
+  assert.equal(todoRowsFor(out, "group:g1").length, 1);
+  assert.equal(isTodoRowsLoaded(out, "group:g3"), false, "没读过的会话不许被顺手建成「已加载」");
+});
+
+test("putTodoRows：整表读覆盖旧值，重复行不许累加", () => {
+  const first = putTodoRows({}, ["group:g1"], [def("t1", 1)]);
+  const again = putTodoRows(first, ["group:g1"], [def("t1", 1)]);
+  assert.equal(todoRowsFor(again, "group:g1").length, 1, "同一份读重复落两次只有一份行");
+  const cleared = putTodoRows(again, ["group:g1"], []);
+  assert.deepEqual(todoRowsFor(cleared, "group:g1"), [], "后端说不存在 ⇒ 必须清空，不能留住旧行");
+});
+
+test("乐观更新落在同一份源上：只刷已加载的会话，未加载的不建键", () => {
+  const loaded = putTodoRows({}, ["group:g1"], [def("t1", 1)]);
+  // 回填式重发：同一条 msg_id 换内容 ⇒ 刷新那一份，不许折出两条
+  const refreshed = mergeIncomingTodoRows(loaded, [{ ...def("t1", 1, { status: "doing" }) }]);
+  const rowsAfter = todoRowsFor(refreshed, "group:g1");
+  assert.equal(rowsAfter.length, 1, "同 msg_id 是刷新不是追加");
+  assert.equal(foldTodos(rowsAfter)[0].status, "doing", "刷新必须真的换掉内容");
+  // 新一条定义（新 msg_id）⇒ 追加，看板立刻看得见
+  const created = mergeIncomingTodoRows(loaded, [def("t9", 7)]);
+  assert.equal(todoRowsFor(created, "group:g1").length, 2, "新任务落在已加载的会话里要立刻看得见");
+  const cold = mergeIncomingTodoRows({}, [def("t8", 1)]);
+  assert.equal(isTodoRowsLoaded(cold, "group:g1"), false, "未加载的会话建了键就等于拿局部快照冒充全量");
+});
+
+test("两份源不再等价：消息缓存里已经没有这个会话时，全表那份仍折得出任务（这就是本轮修的形状）", () => {
+  const rows = putTodoRows({}, ["group:g1"], [def("t1", 1), def("t2", 2)]);
+  const pageCache: Record<string, MessageRecord[]> = {}; // 翻过 8 个会话之后整块被逐出
+  assert.equal(foldTodos(pageCache["group:g1"] ?? []).length, 0, "旧取数口在这里折不出任务");
+  assert.equal(foldTodos(todoRowsFor(rows, "group:g1")).length, 2, "看板该走的这一份折得出");
+});
+
+// 排序键的现状锁（#154 第 10 条另一半）：以前注释写"按创建版本从新到旧"，实现按的是
+// **最新定义的 seq**。这条断言钉住真实语义 —— 一条老任务被改一次就会排到新任务前面。
+// 这不是"新行为"，是把已有行为写成可执行的说法（改注释的同时留下判据，否则下一次又会漂）。
+test("foldTodos 的排序键是最新定义的 seq，不是创建时间", () => {
+  const oldCreated = def("t-old", 1); // 先创建：创建那条 seq=1
+  const oldUpdated = rec(
+    "todo_update",
+    "m-old-update",
+    "a",
+    { todo_id: "t-old", title: "写周报", assignees: ["a"], status: "doing", creator: "a", deleted: false },
+    9,
+  ); // 后被改动：最新定义 seq=9
+  const newCreated = def("t-new", 5); // 后创建、没被改过：seq=5
+
+  const ids = foldTodos([oldCreated, newCreated, oldUpdated]).map((t) => t.todoId);
+  assert.deepEqual(
+    ids,
+    ["t-old", "t-new"],
+    "改动过的老任务必须排在新创建的任务前 —— 排序键是 seq（最近改动），不是创建顺序",
+  );
+});
+
+// ── 群任务固定编号（#N）───────────────────────────────────────────────
+// 夹具只填被读到的字段：`parseTodo` 只看 kind / content / seq / msg_id。
+function numRec(msgId: string, seq: number, content: string, kind = "todo") {
+  return { kind, msg_id: msgId, seq, content, conv_id: "group:g1", ts: 1, sender_id: "a" } as never as MessageRecord;
+}
+
+test("编号从载荷带进折叠结果：创建那条带几号就是几号", () => {
+  const rows = foldTodos([numRec("m1", 5, '{"todo_id":"t1","title":"甲","number":3}')]);
+  assert.equal(rows[0]?.number, 3);
+});
+
+test("旧版对端建的载荷没有 number ⇒ 折叠成 0（不显示编号，也不按顺序补一个）", () => {
+  const rows = foldTodos([numRec("m1", 5, '{"todo_id":"t1","title":"甲"}')]);
+  assert.equal(rows[0]?.number, 0);
+});
+
+/// 「编辑/归档不改号」的全部实现就是这一条：后续定义（todo_update）带的是同一个号，
+/// 折叠按 LWW 取最新那份 ⇒ 显示号仍是 3。要是谁把号改写成"按顺序数"，这条会红。
+test("改状态之后编号不变：最新定义带的是原号", () => {
+  const rows = foldTodos([
+    numRec("m1", 5, '{"todo_id":"t1","title":"甲","number":3}'),
+    numRec("m2", 9, '{"todo_id":"t1","title":"甲","number":3,"status":"done","archived":true}', "todo_update"),
+  ]);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0]?.number, 3);
+  assert.equal(rows[0]?.status, "done");
+});
+
+test("撞号时两端算出同一套号：todo_id 小的保住原号，其余顺延", () => {
+  const a = resolveTodoNumbers([{ todoId: "t-b", number: 1 }, { todoId: "t-a", number: 1 }, { todoId: "t-c", number: 2 }]);
+  // t-a < t-b ⇒ t-a=1、t-b=2；t-c 原号 2 已被占 ⇒ 顺延到 3（规则只动"撞上的那一条往后"）
+  assert.deepEqual([...a.entries()], [["t-a", 1], ["t-b", 2], ["t-c", 3]]);
+  // 纯函数 ⇒ 换一个成员拿到同一批定义（顺序不同）结果一致
+  const b = resolveTodoNumbers([{ todoId: "t-c", number: 2 }, { todoId: "t-a", number: 1 }, { todoId: "t-b", number: 1 }]);
+  assert.deepEqual([...b.entries()], [["t-a", 1], ["t-b", 2], ["t-c", 3]]);
+});
+
+// ── 编号的**显示口径**（字母 + 数字；用户 2026-09-30 那八条，全文见 INV-P29）──────
+test("三档类型各有一个字母，且字母表与取值表一一映射", () => {
+  assert.deepEqual(TODO_CATEGORY_LETTER, { requirement: "R", bug: "B", task: "T" });
+  // 一一映射（两个方向都不许撞）：加第四种类型时这张表必须补齐，否则两条断言之一会红
+  assert.equal(new Set(TODO_CATEGORIES.map((c) => TODO_CATEGORY_LETTER[c])).size, TODO_CATEGORIES.length);
+  assert.equal(new Set(Object.values(TODO_CATEGORY_LETTER)).size, TODO_CATEGORIES.length);
+  for (const c of TODO_CATEGORIES) assert.ok(TODO_CATEGORY_LETTER[c], `${c} 没有字母`);
+});
+
+test("编号 ≤4 位时原样显示，超过 4 位只留后四位并标出被缩短", () => {
+  const short = todoCode("bug", 12);
+  assert.deepEqual(short, { full: "B12", label: "B12", shortened: false }, "没超位时 label 必须与 full 逐字相同");
+  const edge = todoCode("requirement", 9_999);
+  assert.equal(edge?.shortened, false, "4 位是边界内，不许缩短");
+  const first = todoCode("requirement", 10_000);
+  assert.deepEqual(first, { full: "R10000", label: "R0000", shortened: true }, "刚好越界那一个数也要缩短");
+  const big = todoCode("bug", 12_345);
+  assert.deepEqual(big, { full: "B12345", label: "B2345", shortened: true });
+});
+
+test("没号（旧对端建的）与不认识的类型都不出码：宁可空白也不补一个会漂移的号", () => {
+  assert.equal(todoCode("task", 0), null);
+  assert.equal(todoCode("task", undefined), null);
+  assert.equal(todoCode("task", -3), null);
+  assert.equal(todoCode(undefined, 5), null);
+  assert.equal(todoCode("story" as never, 5), null, "载荷里来了本端不认识的类型 ⇒ 不猜字母");
+});
+
+test("改类型只换字母、数字一字不动（规则 3）", () => {
+  const rows = foldTodos([
+    numRec("m1", 5, '{"todo_id":"t1","title":"甲","number":12,"category":"requirement"}'),
+    numRec("m2", 9, '{"todo_id":"t1","number":12,"category":"bug"}', "todo_update"),
+  ]);
+  const code = todoCode(rows[0]?.category, rows[0]?.number);
+  assert.equal(code?.full, "B12", "字母跟着**当前**类型走");
+  assert.equal(rows[0]?.number, 12, "数字不许因为换类型被重新分配");
+});
+
+test("优先级怎么改都不进编号（规则 4）", () => {
+  const rows = foldTodos([
+    numRec("m1", 5, '{"todo_id":"t1","title":"甲","number":8,"priority":"normal"}'),
+    numRec("m2", 9, '{"todo_id":"t1","number":8,"priority":"high"}', "todo_update"),
+    numRec("m3", 12, '{"todo_id":"t1","number":8,"priority":"low"}', "todo_update"),
+  ]);
+  assert.equal(todoCode(rows[0]?.category, rows[0]?.number)?.full, "T8");
+});
+
+test("多人同时发起撞了号：折叠给的两套码互不相同，且顺序无关", () => {
+  const recs = [
+    numRec("m1", 3, '{"todo_id":"t-b","title":"乙","number":5,"category":"bug"}'),
+    numRec("m2", 4, '{"todo_id":"t-a","title":"甲","number":5,"category":"requirement"}'),
+  ];
+  const codes = (list: MessageRecord[]) => {
+    const rows = foldTodos(list);
+    return rows.map((x) => `${x.todoId}=${todoCode(x.category, x.number)?.full}`);
+  };
+  assert.deepEqual(codes(recs), ["t-a=R5", "t-b=B6"]);
+  // 另一个成员先看到哪一条不影响结果（纯函数 + 同一批定义 ⇒ 同一套号）
+  assert.deepEqual(codes([...recs].reverse()), codes(recs));
+  assert.equal(new Set(codes(recs)).size, 2, "码必须互不相同，否则口头引用还是会对不上");
+});
+
+// 会话层那张实时表：卡片的状态与字母**同源**，两个面不许只修一半（见 channelState 那条守卫）
+test("实时表给的是当前状态 + 当前类型算出的码，不是创建快照", () => {
+  const rows = foldTodos([
+    numRec("m1", 5, '{"todo_id":"t1","title":"甲","number":4,"category":"requirement","status":"todo"}'),
+    numRec("m2", 9, '{"todo_id":"t1","number":4,"category":"bug","status":"done"}', "todo_update"),
+  ]);
+  const live = todoLiveMap(rows);
+  assert.equal(live.get("t1")?.status, "done");
+  assert.equal(live.get("t1")?.code?.full, "B4", "字母要跟着当前类型；卡片不查这张表就会写着创建时的 R");
+  // 无号那条 ⇒ code 是 null（不是 undefined、也不是补出来的号），卡片据此退回自己的快照
+  const noNum = todoLiveMap(foldTodos([numRec("m3", 2, '{"todo_id":"t9","title":"丙"}')]));
+  assert.equal(noNum.get("t9")?.code, null);
+});
+
+test("没有撞号时恒等：已显示的号不会因为来了新任务而漂移", () => {
+  const m = resolveTodoNumbers([{ todoId: "t1", number: 1 }, { todoId: "t2", number: 2 }, { todoId: "t3", number: 7 }, { todoId: "old", number: 0 }]);
+  assert.equal(m.get("t1"), 1);
+  assert.equal(m.get("t2"), 2);
+  assert.equal(m.get("t3"), 7);
+  assert.equal(m.has("old"), false);
+});
+
+// ── 任务优先级（三档：紧急 / 常规 / 不急）───────────────────────────
+test("优先级从载荷带进折叠结果", () => {
+  const rows = foldTodos([numRec("m1", 5, '{"todo_id":"t1","title":"甲","priority":"high"}')]);
+  assert.equal(rows[0]?.priority, "high");
+});
+
+test("载荷缺 priority 或值不认识 ⇒ 回落「常规」（不是空白、也不是没优先级）", () => {
+  assert.equal(foldTodos([numRec("m1", 5, '{"todo_id":"t1","title":"甲"}')])[0]?.priority, "normal");
+  assert.equal(
+    foldTodos([numRec("m2", 5, '{"todo_id":"t2","title":"乙","priority":"urgent"}')])[0]?.priority,
+    "normal",
+  );
+});
+
+test("优先级表就是那三档、缺省在表内（改这张表要同时改 Rust 那张）", () => {
+  assert.deepEqual([...TODO_PRIORITIES], ["high", "normal", "low"]);
+  assert.ok((TODO_PRIORITIES as readonly string[]).includes(TODO_PRIORITY_DEFAULT));
+});
+
+test("改派别人之后，新被指派人也能改优先级（判权与「谁能改状态」同一档）", () => {
+  const rows = foldTodos([numRec("m1", 5, '{"todo_id":"t1","title":"甲","assignees":["b"],"priority":"low"}')]);
+  const it = rows[0]!;
+  assert.equal(it.priority, "low");
+  assert.equal(canUpdateTodo(it, "b", "g"), true); // 关联人
+  assert.equal(canUpdateTodo(it, "z", "g"), false); // 路人（既非发起人也不是群主）
 });

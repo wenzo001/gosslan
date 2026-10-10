@@ -17,6 +17,11 @@ import {
   requiredLevel,
   TYPE_LEVEL,
   BUMP_TRAILER,
+  declaresBump,
+  filterUnpushed,
+  isAppCodePath,
+  isReleaseCommit,
+  owedBumpLevel,
 } from "../../scripts/semver.mjs";
 
 test("解析 conventional commit（类型/范围/破坏性标记）", () => {
@@ -91,4 +96,105 @@ test("类型到级别的默认映射完整（新增类型必须显式表态）",
   }
   assert.equal(TYPE_LEVEL.feat, "minor");
   assert.equal(TYPE_LEVEL.fix, "patch");
+});
+
+test("声明门禁只看未推送提交（#123：历史 151 条不该天天响）", () => {
+  const rows = [{ short: "aaaa111" }, { short: "bbb2222" }, { short: "ccc3333" }];
+  // 已推送的那条要被排除
+  assert.deepEqual(
+    filterUnpushed(rows, new Set(["bbb2222"])).map((r) => r.short),
+    ["aaaa111", "ccc3333"],
+  );
+  // 没有 upstream（pushedSet 为空）⇒ 回退成全范围，不许把门禁静默变成"什么都不判"
+  assert.equal(filterUnpushed(rows, new Set()).length, 3);
+  assert.deepEqual(filterUnpushed([], new Set(["bbb2222"])), []);
+});
+
+test("零影响声明用现有 [plan] 标记，其余提交必须写 Version-Bump（#123）", () => {
+  // 文档/判据类提交：标题带 [plan] ⇒ 视为已声明"不动版本"
+  assert.equal(declaresBump({ subject: "docs(x): 改口 [plan]", message: "docs(x): 改口 [plan]", level: "patch" }), true);
+  // 代码类提交：必须写 trailer，且档位要和自己被定级的一致
+  assert.equal(
+    declaresBump({ subject: "fix(y): 修崩溃", message: "fix(y): 修崩溃\n\nVersion-Bump: patch", level: "patch" }),
+    true,
+  );
+  assert.equal(declaresBump({ subject: "fix(y): 修崩溃", message: "fix(y): 修崩溃", level: "patch" }), false);
+  assert.equal(
+    declaresBump({ subject: "feat(y): 新增", message: "feat(y): 新增\n\nVersion-Bump: patch", level: "minor" }),
+    false, // 被定级为 minor，声明 patch ⇒ 仍算没声明对
+  );
+});
+
+test("测试文件不算应用代码（src/*.test.ts 是给门禁跑的，不发出去）", () => {
+  // 口径：只有"会被打包发出去的应用码"才算 —— 前端测试与 Rust 测试都不算。
+  assert.equal(isAppCodePath("src/utils/buildConfig.test.ts"), false);
+  assert.equal(isAppCodePath("src/style.css"), true);
+  assert.equal(isAppCodePath("src-tauri/src/db/settings.rs"), true);
+  assert.equal(isAppCodePath("src-tauri/src/db/migration_tests.rs"), false);
+  assert.equal(isAppCodePath("docs/VERSIONING.md"), false);
+});
+
+test("[plan] 只能豁免**不动应用代码**的提交（否则声明门禁就是装饰）", () => {
+  // 不动 src/ 与 src-tauri/src/ ⇒ [plan] 视为零影响
+  assert.equal(
+    declaresBump({ subject: "docs(x): 改口 [plan]", message: "docs(x): 改口 [plan]", level: "patch", touchesCode: false }),
+    true,
+  );
+  // 动了应用代码 ⇒ 光写 [plan] 不算，必须有 Version-Bump 且档位自洽
+  assert.equal(
+    declaresBump({ subject: "fix(x): 修崩溃 [plan]", message: "fix(x): 修崩溃 [plan]", level: "patch", touchesCode: true }),
+    false,
+  );
+  assert.equal(
+    declaresBump({ subject: "fix(x): 修崩溃", message: "fix(x): 修崩溃\n\nVersion-Bump: patch", level: "patch", touchesCode: true }),
+    true,
+  );
+});
+
+test("真正欠的版本档位：零影响提交（[plan] 且不动应用码）不许逼出版本号（#123 的另外半条）", () => {
+  const docsOnly = { subject: "docs(x): 改口 [plan]", message: "docs(x): 改口 [plan]", level: "patch", touchesCode: false };
+  const harness = { subject: "test(e2e): 补反证 [plan]", message: "test(e2e): 补反证 [plan]", level: "patch", touchesCode: false };
+  const codeFix = { subject: "fix(y): 修崩溃", message: "fix(y): 修崩溃\n\nVersion-Bump: patch", level: "patch", touchesCode: true };
+  const codeFeat = { subject: "feat(z): 新能力", message: "feat(z): 新能力\n\nVersion-Bump: minor", level: "minor", touchesCode: true };
+  // 攒提交期间的常态：范围里只有零影响提交 ⇒ 不欠任何一档（旧形状在这里必报"版本落后"）
+  assert.equal(owedBumpLevel([docsOnly, harness]), null);
+  // 掺进一条真代码提交 ⇒ 取代码提交里的最高档，零影响那几条不稀释也不加重
+  assert.equal(owedBumpLevel([docsOnly, codeFix, harness]), "patch");
+  assert.equal(owedBumpLevel([docsOnly, codeFix, codeFeat]), "minor");
+  // ★ 反向对照：动了应用代码却只写 [plan] ⇒ 不算零影响（否则一条标记就能白吃豁免，与 declaresBump 同口径）
+  const smuggled = { subject: "fix(y): 修崩溃 [plan]", message: "fix(y): 修崩溃 [plan]", level: "patch", touchesCode: true };
+  assert.equal(owedBumpLevel([smuggled]), "patch");
+  // 空范围不欠档（非空转闸：上面四格任何一条解析失效都会撞红）
+  assert.equal(owedBumpLevel([]), null);
+});
+
+/**
+ * `chore(release)` 是**发布记账**，版本号在它之前那次 bump 就提完了 ⇒ 不欠档。
+ *
+ * 为什么单开一格（2026-10-03 实测踩到）：发完 4.33.0 那一刻，
+ * `version:check` 报「当前版本 4.33.0 落后于未发布提交要求的 4.33.1」——
+ * 而正确的动作是什么都不做。若按它说的跑 `version:release`，就是纯通胀
+ * （`docs/VERSIONING.md` §2 废弃的"逐提交累加"那条路正是这么撑坏版本号的）。
+ */
+test("chore(release) 是记账不是欠账：不逼出下一位版本号，且豁免声明", () => {
+  const rel = {
+    subject: "chore(release): 4.33.0 —— 发出去",
+    message: "chore(release): 4.33.0 —— 发出去",
+    level: "patch",
+    touchesCode: false,
+  };
+  assert.equal(owedBumpLevel([rel]), null, "发版提交本身不欠档");
+  assert.equal(declaresBump(rel), true, "它的声明就是 subject 里的版本号，不需要 trailer");
+  // 反向对照：release 提交**不该**把真正欠的档位吃掉
+  const feat = {
+    subject: "feat(z): 新能力",
+    message: "feat(z): 新能力\n\nVersion-Bump: minor",
+    level: "minor",
+    touchesCode: true,
+  };
+  assert.equal(owedBumpLevel([rel, feat]), "minor", "真正的代码提交仍按它自己的档位算");
+  // 边界：前缀必须精确到 `chore(release):`，`chore(release-whatever):` 不该被豁免
+  const lookalike = { subject: "chore(released): 顺手改个字", message: "x", level: "patch", touchesCode: false };
+  assert.equal(isReleaseCommit(lookalike), false, "相似前缀不得当成 release 提交");
+  assert.equal(isReleaseCommit(rel), true);
 });

@@ -169,15 +169,15 @@ flowchart TD
     end
 
     subgraph RUST["Rust 后端"]
-        S1["commands.rs 命令层 ✅<br/>~100 个 #[tauri::command]"]
+        S1["commands/ 命令层 ✅<br/>27 个文件按域拆 · 152 处 #[tauri::command]"]
         S2["state.rs AppState ✅<br/>全局状态与连接表"]
-        S3["db.rs SQLite ✅<br/>16 张表"]
+        S3["db.rs SQLite ✅<br/>全库 19 张表（db.rs 18 + 内容库 1）"]
         S4["crypto.rs ✅<br/>X25519 + Ed25519 + ChaCha20"]
     end
 
     subgraph NET["网络层"]
         N1["network/discovery.rs ✅<br/>UDP 广播+组播 :59991"]
-        N2["network/transport.rs ✅<br/>TCP :59992 主循环 7377 行"]
+        N2["network/transport.rs ✅<br/>TCP :59992 主循环 7070 行（四道 include! 分册的壳）"]
         N3["network/ble.rs ✅ feature=bluetooth<br/>蓝牙运行时"]
         N4["network/file.rs ✅<br/>文件收发/共享目录"]
     end
@@ -378,7 +378,7 @@ sequenceDiagram
 
 ---
 
-## 6. 图 E：数据放在哪（SQLite 16 张表）
+## 6. 图 E：数据放在哪（SQLite 19 张表）
 
 **没有云端，所有数据只在本机**。按用途分四组：
 
@@ -393,6 +393,7 @@ flowchart LR
         T4["messages<br/>msg_id 去重 + 每会话逻辑序号 seq"]
         T5["conversation_clocks<br/>逻辑时钟"]
         T6["groups / group_members / group_reads"]
+        T6b["group_recalled_messages<br/>撤回的唯一事实（G-Set 只增不减）"]
     end
     subgraph REL["可靠性（离线补发）"]
         T7["outbox<br/>单聊待发"]
@@ -403,11 +404,33 @@ flowchart LR
     subgraph FILE["文件"]
         T11["file_transfers"]
         T12["group_files / group_file_recipients"]
+        T13["favorites<br/>收藏＝内容的独立副本，不被级联删"]
+        T14["content_transfers<br/>内容生命周期层自己的表（ADR-0019）"]
     end
 ```
+> **2026-09-29 现读改口**：这里原来写着「16 张表 / transport.rs 7377 行 / 命令层 ~100 个」，三处都过期了。
+> 图上这几个数不抄自本文，各挂一条现算命令 —— 改代码的人跑一遍就知道文档有没有跟上：
 
-> ⚠️ **已知文档漂移**：`src-tauri/src/schema.sql` 自称"与 db.rs 保持一致"，
-> 但**缺 `group_files` 与 `group_file_recipients` 两张表**。运行时以 `db.rs` 为准。
+```bash
+# 全库表数（真源五处；*_tests.rs 里临时造的表不计）
+grep -hoE 'CREATE TABLE (IF NOT EXISTS )?[a-z_]+' src-tauri/src/db.rs \
+     src-tauri/src/db/settings.rs src-tauri/src/db/offline_queue.rs \
+     src-tauri/src/content/store.rs src-tauri/src/notifications.rs \
+  | sed -E 's/CREATE TABLE (IF NOT EXISTS )?//' | sort -u | wc -l   # 19
+# db.rs 自己那部分（另 1 张在 content/store.rs，所以写「db.rs 18 + 内容库 1」）
+grep -hoE 'CREATE TABLE (IF NOT EXISTS )?[a-z_]+' src-tauri/src/db.rs \
+  | sed -E 's/CREATE TABLE (IF NOT EXISTS )?//' | sort -u | wc -l   # 18
+# 命令层：按域拆的文件数 / 命令属性处数
+ls src-tauri/src/commands/*.rs | wc -l                        # 27
+grep -r '#\[tauri::command' src-tauri/src/commands | wc -l   # 152
+# transport.rs 壳的行数（四道 include! 分册不在这一行里）
+wc -l < src-tauri/src/network/transport.rs                    # 7070
+```
+
+> ✅ **这处文档漂移已消除（2026-09-26）**：那份手写的 `src-tauri/src/schema.sql` 已**退役删除**，
+> 表结构的唯一真源是 `db.rs` 的 `SCHEMA` 常量。原先的问题不是"少了几张表"本身，而是
+> **它自称与 `db.rs` 一致、却没有一行代码读它** —— 一致性完全靠人记得，于是"描述了漂移的那句文档
+> 自己也漂了"（这一度写着"缺两表"，实测是四张）。
 
 ---
 
@@ -460,7 +483,7 @@ flowchart LR
 |---|---|
 | `AI_PROJECT_HANDOFF.md` | 停在 **v1.0.0**（2026-09-08），完全没写 mesh / BLE / 中继 / 多路径选路 / 一窗一入口 |
 | `docs/acceptance/1.0-release.md` | 写着"不要实现蓝牙、跨子网、Mesh 优化"——**当时的结论已被后续需求推翻** |
-| `src-tauri/src/schema.sql` | 缺 `group_files`、`group_file_recipients` 两表（运行时以 `db.rs` 为准） |
+| ~~`src-tauri/src/schema.sql`~~ | **已退役删除（2026-09-26）**。表结构只看 `db.rs` 的 `SCHEMA` 一份 ⇒ 见 §12.8：真正的病灶不是"少几张表"，是**一份自称是事实源、却没有任何代码读它**的 DDL |
 | `docs/adr/0014`–`0017` 头部 | 标注仍是 Proposed/Accepted，与实际落地进度不同步 |
 | `P2-P3-开发计划.md` | **同一个文件内 Phase 7/8 前后矛盾**：§8.1 写"已授权可开工"，§12 写"已落地" |
 | `mesh-architecture-evolution.md` | M3 状态过期（一处写"进行中/M3-b 是下一步"，后文已写全部完成）；旧文"Gossip 是单跳"也已标注为过时 |

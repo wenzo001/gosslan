@@ -8,21 +8,52 @@ import { t } from "@/i18n";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { ChevronLeft, ChevronRight, RotateCcw, Save, X } from "lucide-vue-next";
 import { useAppStore } from "@/stores/useAppStore";
-import { loadFilePreview } from "@/utils/filePreview";
+import { loadContentPreview, loadFilePreview, type PreviewResult } from "@/utils/filePreview";
 import { isDialogCancelled, saveDestinationOf } from "@/utils/saveDestination";
+import { StaleGuard } from "@/utils/staleGuard";
+import { urlToBase64 } from "@/utils/imageBytes";
 import { useBackLayer } from "@/composables/useBackLayer";
+import { api } from "@/api";
 
-/** 相册里的一张图：新格式走 readFilePreview（msg_id → blob URL），旧格式 data URL 直接用。 */
+/**
+ * 相册里的一张图 —— 三种来源，按下面的优先级取字节：
+ *  ① `dataSrc`：已经拿到的 data URL / objectURL（合并转发卡片、旧格式消息）；
+ *  ② `cid`：待办描述图片（sha256 = content store cid，载荷里没有 msg_id）；
+ *  ③ `msgId`：聊天消息（走 readFilePreview）。
+ */
 interface GalleryImage {
-  msgId: string;
   name: string;
-  dataSrc: string | null;
+  dataSrc?: string | null;
+  msgId?: string;
+  cid?: string;
 }
 
 const props = defineProps<{
   images: GalleryImage[];
   index: number;
   open: boolean;
+  /**
+   * 覆盖层顶部要让出来的高度（一个 CSS 长度，默认 0 = 铺满整窗）。
+   *
+   * 为什么需要（用户 2026-09-24 要求"各个端都要能正常使用"）：独立预览窗口用的是
+   * `decorations:false` + 自绘标题栏，而**那条 caption 是整扇窗唯一的拖拽区**（`startDragging`
+   * 挂在它的 mousedown 上）与 ✕ 所在。本组件是 `fixed inset-0 z-[80]`，直接铺满就会把
+   * 标题栏连按钮一起盖住 —— 窗口打不开也移不动，等于"功能没实现"。传 `var(--gosslan-title-h)`
+   * 就把那一条让出来；主窗口与移动端不传，行为与以前逐字相同。
+   */
+  topInset?: string;
+  /**
+   * 隐藏组件内部那颗 ✕（用户 2026-09-29：「独立窗口调用图片预览时，隐藏预览组件内部的关闭按钮，
+   * 避免和窗口外部关闭按钮重复；同一窗口内调用时可以显示」）。
+   *
+   * 为什么用入参而不是"检测自己是不是在预览窗口里"：本组件同时服务两个宿主 ——
+   * 主窗口那份覆盖层（**唯一的关闭出口就是它**）和独立预览窗口（`AuxWindowShell` 的标题栏
+   * 已经有 ✕，两颗叉同屏就是用户说的那处重复）。宿主是谁只有调用点知道，所以由调用点说。
+   *
+   * ⚠️ 关掉这颗叉**不减少任何出口**：窗口那条路仍有标题栏 ✕、Esc、⌘W 三条
+   * （见 `PreviewWindow.vue` 把 `close-requested` 三条路都接上 `releaseAlbum` 的注释）。
+   */
+  hideClose?: boolean;
 }>();
 const emit = defineEmits<{
   (e: "close"): void;
@@ -49,22 +80,47 @@ useBackLayer(
 const src = ref<string>("");
 const note = ref<string | null>(null);
 
-/** 解析当前图片 src：旧格式直接用 dataSrc，新格式走 readFilePreview（带缓存，秒回）。 */
+function apply(r: PreviewResult) {
+  src.value = r.url ?? "";
+  note.value = r.note ?? null;
+}
+
+/**
+ * 预览解析的"只让最新一次落地"守卫（审计阶段 4 · 4.2）。
+ *
+ * `current` 一变就重解析，而 `loadContentPreview` / `loadFilePreview` 是异步的：
+ * 缓存命中时**同步**返回、未命中时要跨 IPC。连按方向键翻图时，"先发起但后回来"的那次
+ * 会把已经翻到的那张图覆盖成上一张（错图），或把它那张的空态覆盖掉（裂图/空图）。
+ * `filePreview` 的缓存/in-flight 恰恰让这种交错更容易发生 —— 后发起的经常先回来。
+ */
+const resolveGuard = new StaleGuard();
+
+/** 解析当前图片 src：dataSrc 直接用，否则按 cid（待办描述图）/ msg_id（聊天消息）读预览（带缓存，秒回）。 */
 async function resolveCurrent() {
+  const tok = resolveGuard.begin("current");
   const img = current.value;
+  // 过了 await 之后的每一步都要问一句"我还是最新的那次吗"，是则 apply、否则整个丢弃
+  const put = (r: PreviewResult) => {
+    if (resolveGuard.isCurrent("current", tok)) apply(r);
+  };
   if (!img) {
-    src.value = "";
-    note.value = null;
+    // 同步分支也一律走 put：被更新的一次抢走后，"清空"同样不该执行
+    put({});
     return;
   }
   if (img.dataSrc) {
-    src.value = img.dataSrc;
-    note.value = null;
+    put({ url: img.dataSrc });
     return;
   }
-  const r = await loadFilePreview(img.msgId, "image", img.name);
-  src.value = r.url ?? "";
-  note.value = r.note ?? null;
+  if (img.cid) {
+    put(await loadContentPreview(img.cid, img.name));
+    return;
+  }
+  if (img.msgId) {
+    put(await loadFilePreview(img.msgId, "image", img.name));
+    return;
+  }
+  put({});
 }
 
 watch(current, () => void resolveCurrent(), { immediate: true });
@@ -80,17 +136,12 @@ async function saveImage() {
   if (!src.value) return;
   try {
     const { save } = await import("@tauri-apps/plugin-dialog");
-    const { invoke } = await import("@tauri-apps/api/core");
     const picked: unknown = await save({ defaultPath: `${t("common.image")}-${Date.now()}.png` });
     const destination = saveDestinationOf(picked);
     if (!destination) return; // 用户取消
-    const buf = new Uint8Array(await (await fetch(src.value)).arrayBuffer());
-    let binary = "";
-    const chunk = 0x8000;
-    for (let i = 0; i < buf.length; i += chunk) {
-      binary += String.fromCharCode(...buf.subarray(i, i + chunk));
-    }
-    await invoke("save_data_file", { base64Data: btoa(binary), destination });
+    // 取字节 + base64 收在 utils/imageBytes（与 MessageItem 的「另存图片」共用一份）
+    const base64Data = await urlToBase64(src.value);
+    await api.saveDataFile(base64Data, destination);
     app.toast(t("msg.imageSaved"), "success");
   } catch (e) {
     if (isDialogCancelled(e)) return; // Android 取消是 reject，不是返回 null
@@ -267,7 +318,10 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
         ref="dialogRef"
         tabindex="-1"
         class="glass fixed inset-0 z-[80] flex items-center justify-center outline-none"
-        style="background: rgba(0, 0, 0, 0.45)"
+        :style="{
+          background: 'rgba(0, 0, 0, 0.45)',
+          ...(topInset ? { top: topInset } : {}),
+        }"
         role="dialog"
         aria-modal="true"
         :aria-label="t('common.image')"
@@ -304,6 +358,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
             <RotateCcw class="h-4 w-4" />
           </button>
           <button
+            v-if="!hideClose"
             class="tap-safe flex h-9 w-9 items-center justify-center rounded-full text-white/90 transition hover:bg-white/15"
             style="text-shadow: 0 1px 2px rgba(0,0,0,0.55); filter: drop-shadow(0 1px 2px rgba(0,0,0,0.35));"
             :title="t('common.closeEsc')" :aria-label="t('common.closeEsc')"
@@ -334,6 +389,8 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
         </button>
 
         <!-- 图片主体 -->
+        <!-- img-eager-ok：这一支是用户**主动点开**、占满屏幕中央的那一张，不在虚拟列表里 ⇒
+             懒加载只会让它更晚出现。designGuards ㉜ 靠这句标记整份跳过（例外写在该例外的旁边）。 -->
         <template v-if="src">
           <img :alt="current?.name || t('msg.imagePreview')"
             :src="src"

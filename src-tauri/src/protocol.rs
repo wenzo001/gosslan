@@ -98,10 +98,40 @@ pub const CONTENT_FEATURE_PULL: u32 = 1 << 0;
 /// 这段历史也是"V1 内部并不单调"的证据：**别把 protocol_version 当能力清单用**。
 pub const CONTENT_FEATURE_MERGE: u32 = 1 << 1;
 
+/// 能力位：**能收发带 `attempt` 的文件帧**（`FileOffer` / `FileChunk` / `FileDone`）。
+///
+/// 为什么必须门控（2026-09-23 真机 600MB 复核，用户拍板选 attempt epoch 根治）：
+/// 一轮发送超时后 outbox 会重投，而**上一轮已经塞进链路队列的分片不会被撤回**
+/// （Low 队列 1024 槽 ≈ 262MB）。新旧两轮的分片在接收端混在一起时，旧轮的高 `seq`
+/// 会被判成"跳号"⇒ 整单判死。有了 attempt，接收端能把非当前轮的片子安静丢掉而不是被打死。
+///
+/// 老端不认这个字段（serde 忽略未知字段），所以**只能对声明过这一位的对端带它**；
+/// 新端收到 `None` 时按旧语义走 ⇒ 双向天然兼容。这也是"别把 protocol_version 当能力清单"
+/// 的又一次应用：V1 内部并不单调。
+pub const CONTENT_FEATURE_FILE_EPOCH: u32 = 1 << 2;
+
+/**
+ * 能力位：**本机的 1:1 接收路径能吃下任意 wire kind**（`ChatMessage.kind` 是字符串，
+ * 不认识的 kind 原样入库 + 显示占位，而不是整帧丢掉）。
+ *
+ * 为什么 1:1 需要这一位而群不需要（见 commands/window.rs 里那段考古结论）：
+ *   · 群 kind 住在群密钥加密的 Gossip 载荷里，接收端按**自由字符串**解析
+ *     （同一份实现逐字存在于 v2.1.2 / v4.3.9 / v4.8.2 / v4.20.0）⇒ 老成员只是渲染退化，不丢帧；
+ *   · 1:1 在 v4.22.34 之前，`ChatMessage.kind` 是**枚举**，不认识的 kind 让整帧解析失败，
+ *     而老端的读循环 `Err(_) => break` ⇒ 丢帧之外还断链。
+ * 所以「能不能往这条 1:1 会话里塞一个新 kind」问的是**对端的解析方式**，与群那一侧不是同一个问题
+ * —— 这也是它不复用 `kind_required_feature` 的原因：把两件事并成一个字段，
+ * 群侧就会对每个还没升级的成员报一句「版本较旧」，而那些人在群里回应得好好的（假指控）。
+ */
+pub const CONTENT_FEATURE_FLEX_DM_KIND: u32 = 1 << 3;
+
 /// 本机支持的内容能力位图。**不参与 Hello 签名**（见 hello_signing_bytes）：
 /// 老端忽略该字段、新端据此决定能不能对它发拉取帧。
 pub fn content_features() -> u32 {
-    CONTENT_FEATURE_PULL | CONTENT_FEATURE_MERGE
+    CONTENT_FEATURE_PULL
+        | CONTENT_FEATURE_MERGE
+        | CONTENT_FEATURE_FILE_EPOCH
+        | CONTENT_FEATURE_FLEX_DM_KIND
 }
 
 /// 「哪个 kind 需要对端具备哪一点能力」的**唯一**答案。`None` = V1 词表内、对所有对端安全。
@@ -129,6 +159,45 @@ pub fn kind_allowed_by_features(kind: &str, peer_features: u32) -> bool {
     }
 }
 
+/** 老版 1:1 解析器认得的 kind（v4.22.34 之前那份枚举的词表）。 */
+pub const DM_LEGACY_KINDS: &[&str] = &["text", "code", "image", "file", "system"];
+
+/**
+ * 往 1:1 会话发这个 kind，需要对端具备哪些能力位（0 = 所有已发布版本都安全）。
+ *
+ * 这是 1:1 侧的**唯一**答案：合并转发的位（`kind_required_feature`）与"能不能塞新 kind"
+ * 在这里合成一个掩码，调用点不再各自拼条件（两处各写一遍子集 = 迟早只改对一边）。
+ * `DM_LEGACY_KINDS` 是**冻结**清单，永远不许往里加东西 —— 加一项就等于宣称
+ * "老端的枚举里有这个变体"，而它要是没有，代价是丢帧 + 断链。
+ */
+pub fn dm_required_features(kind: &str) -> u32 {
+    let mut bits = kind_required_feature(kind).unwrap_or(0);
+    if !DM_LEGACY_KINDS.contains(&kind) {
+        bits |= CONTENT_FEATURE_FLEX_DM_KIND;
+    }
+    bits
+}
+
+/**
+ * 1:1 门控方向与全局那条一致：**不知道就当不支持**（调用方缺条目时传 0）。
+ *
+ * 但 `CONTENT_FEATURE_MERGE` 这一位**蕴含** `CONTENT_FEATURE_FLEX_DM_KIND`：那个位的定义就是
+ * "能收发 kind=merge 的 1:1 帧"，而 merge 从来不是老版那份枚举里的变体 —— 声明得过它，
+ * 就说明它的 `ChatMessage.kind` 已经按字符串解析（v4.22.34 起的那次改动）。
+ * 不写这条推论的代价是**当场挡死今天能用的功能**：所有还没升级到本机这一版、但已经支持
+ * 合并转发的对端，会突然"不支持回应"，而它们的解析方式其实完全吃得下。
+ * 只承认这一条能证的事实：`CONTENT_FEATURE_PULL` / `FILE_EPOCH` 都推不出解析方式，
+ * 所以只带那两位的对端仍然挡下（宁可少发，也不要老端丢帧 + 断链）。
+ */
+pub fn dm_allowed_by_features(kind: &str, peer_features: u32) -> bool {
+    let implied = if peer_features & CONTENT_FEATURE_MERGE != 0 {
+        CONTENT_FEATURE_FLEX_DM_KIND
+    } else {
+        0
+    };
+    dm_required_features(kind) & !(peer_features | implied) == 0
+}
+
 /// 被门控挡下时给用户的那句话（与判据放在一起，免得文案与规则分两处腐烂）。
 ///
 /// 刻意**不报具体版本号**：能力位才是事实来源，版本号只是它恰好对应的现象；
@@ -140,6 +209,89 @@ pub fn kind_unsupported_hint(kind: &str) -> String {
          请让对方升级后再发 —— 硬发过去会被对方的程序整条丢掉，\
          最后只会显示「发送失败」，两边都看不出原因。"
     )
+}
+
+/// 1:1 门控挡下时的那句话：**确知不支持**与**能力未知**是两件事，别混成一句。
+///
+/// 挡下这个动作两种情况都一样（判据仍是 `kind_allowed_by_features`，未知按 0 处理），
+/// 只有解释不同。之前两种共用 `kind_unsupported_hint` ⇒ 对端只是不在线时，我们照样
+/// 断言它"版本较旧"：那是句假话，用户会照着去催对方升级，而真正要做的只是等对方上线。
+/// 依据是两张表（`peer_content_features` / `peer_versions`）都只在内存里、重启即空、
+/// 节点离线时被 `sweep_peers` 回收，而老端发的 Hello 缺省会落成 `Some(0)` ——
+/// 所以**有条目**才是"它自己声明过不支持"，**没条目**只是"我们不知道"。
+pub fn kind_blocked_hint(kind: &str, peer_features: Option<u32>) -> String {
+    match peer_features {
+        Some(_) => kind_unsupported_hint(kind),
+        None => format!(
+            "还不知道对方的 Gosslan 支持哪些内容类型，「{kind}」已停止发送。\
+             对方此刻不在线，或本机还没和它握过手 —— 这不代表它版本旧。\
+             等对方上线、消息恢复能收发之后，用那条失败消息上的「重新发送」再发一次就行。"
+        ),
+    }
+}
+
+/// 群里的受众分布：三态分开数，**不要复用** `kind_allowed_by_features`。
+///
+/// 那个函数为了"宁可少发也不让老对端整帧丢"，刻意把"不知道"并进"不支持"（调用方传 0）。
+/// 同样的口径搬到群聊提示上是错的：群成员**离线是常态**，而 `peer_content_features` 只在
+/// 内存里、重启即空 ⇒ "不知道"会占满全场，于是每次发合并转发都弹一句"有人可能看不到" ——
+/// 一条永远在响的提示等于没有提示，还会顺手把真正要紧的那部分（确知的旧版本成员）淹掉。
+///
+/// 所以这里：
+///   · `unsupported` = 该 kind 需要能力位，且这个成员的位图**确实**没有该位；
+///   · `unknown`     = 从没交换过 Hello / 已离线 ⇒ 不并进上面，只在文案里说"版本未知"。
+/// 自己不计（自己是发送方）。`gated == false` 时两个数都是 0（这个 kind 对所有版本都安全）。
+pub fn kind_audience(
+    kind: &str,
+    features_of: impl Fn(&str) -> Option<u32>,
+    member_ids: &[String],
+    self_id: &str,
+) -> (Vec<String>, usize, bool) {
+    let Some(bit) = kind_required_feature(kind) else {
+        return (Vec::new(), 0, false);
+    };
+    let mut unsupported = Vec::new();
+    let mut unknown = 0usize;
+    for id in member_ids {
+        if id == self_id {
+            continue;
+        }
+        match features_of(id) {
+            None => unknown += 1,
+            Some(features) if features & bit == 0 => unsupported.push(id.clone()),
+            Some(_) => {}
+        }
+    }
+    (unsupported, unknown, true)
+}
+
+/// 群受众的**那句话**（与 `kind_audience` 放同一处：文案和它的触发条件是同一件事）。
+///
+/// 措辞上刻意说清"不会丢消息"：群 kind 不在 `MsgKind` 里，接收端按自由字符串解析
+/// （本轮考古实测 v2.1.2 / v4.3.9 / v4.8.2 / v4.20.0 同一份实现），老成员看到的是**渲染退化**
+/// 成原始文本，而不是整帧丢掉 —— 这句提示的价值全在"只报渲染、不制造丢消息的恐慌"。
+pub fn kind_audience_hint(kind: &str, unsupported_names: &[String], unknown: usize) -> String {
+    if unsupported_names.is_empty() {
+        return String::new();
+    }
+    const SHOW_MAX: usize = 5;
+    let who = if unsupported_names.len() > SHOW_MAX {
+        format!(
+            "{} 等 {} 名成员",
+            unsupported_names[..SHOW_MAX].join("、"),
+            unsupported_names.len()
+        )
+    } else {
+        unsupported_names.join("、")
+    };
+    let mut hint = format!(
+        "{who}的 Gosslan 版本较旧，「{kind}」消息在这些人那里会显示成一段原始文本\
+         （消息本身不会丢，其他成员正常）。"
+    );
+    if unknown > 0 {
+        hint.push_str(&format!("另有 {unknown} 位成员当前不在线、版本未知。"));
+    }
+    hint
 }
 
 /// 消息内容类型
@@ -159,6 +311,9 @@ pub enum MsgKind {
     /// 由前端按 `is_known_kind` 显示占位（INV-P24 第 2 条），所以"漏一个变体"的代价从
     /// "对方看到一坨裸 JSON"降级成"我们发不出这种消息"。
     Merge,
+    /// 表情回应（静默状态事件）。1:1 也要能回应，所以它必须同时出现在这张发送侧词表里。
+    /// 发往 1:1 时受 `dm_required_features` 门控（见那个函数上那段"群/1:1 解析方式不同"的说明）。
+    Reaction,
 }
 
 impl MsgKind {
@@ -170,6 +325,7 @@ impl MsgKind {
             MsgKind::File => "file",
             MsgKind::System => "system",
             MsgKind::Merge => "merge",
+            MsgKind::Reaction => "reaction",
         }
     }
 
@@ -180,6 +336,7 @@ impl MsgKind {
             "file" => MsgKind::File,
             "system" => MsgKind::System,
             "merge" => MsgKind::Merge,
+            "reaction" => MsgKind::Reaction,
             _ => MsgKind::Text,
         }
     }
@@ -436,6 +593,212 @@ fn announcement_preview(content: &str) -> String {
     }
 }
 
+/// 单条消息 @ 名单允许携带的最大条数（超出直接截断，不报错）。
+pub const MAX_GOSSIP_MENTIONS: usize = 64;
+
+/// 一条 @ 在正文里的**落点**：谁（`id`）、当时显示成什么（`name`）、是该名字的第二次出现（`n`，1 起）。
+///
+/// 为什么是"第 n 次出现"而不是字符偏移：Rust 的 `String` 按字节、JS 按 UTF-16 码元，
+/// 一个 emoji 就能把两端的编号错开 —— 偏移跨语言传必错。而"`@张三` 在正文里第 n 次出现"
+/// 两端用同一份文本数出来是同一个东西（前端 `linkify.ts` 按同样的规则数，用例两边各钉一份）。
+/// 这一份信息的唯一用途是把呈现层从"按昵称猜"改成"按身份标"（#122：群里两人同名时
+/// @ 其中一个，另一个自己界面上不该亮）。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct MentionTarget {
+    pub id: String,
+    pub name: String,
+    pub n: u32,
+}
+
+/// 解密后的群 / 单聊消息明文（Gossip 载荷的 `kind` + `content` 那一层）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GossipPlaintext {
+    pub kind: String,
+    pub content: String,
+    /// 这条消息 @ 了谁（设备 id）。**三态**，见 `gossip_plaintext`。
+    pub mentions: Option<Vec<String>>,
+    /// 每条 @ 的落点（与 `mentions` 同条数、同顺序）。**同样三态**：
+    /// `None` = 发送方是不认识这个字段的版本 ⇒ 呈现层退回按昵称判（只能"更准"不能"变暗"）；
+    /// `Some([])` = 这条确实一个人都没 @。畸形/半截一律整份判成 `None`，不许收下一半。
+    pub mention_targets: Option<Vec<MentionTarget>>,
+}
+
+/// 组装群 / 单聊消息的加密前明文。
+///
+/// `mentions` 的三态是这条协议字段的全部意义，不许压成两态：
+///  - `None` ⇒ **不写这个键**。等于"发送方是不认识这个字段的版本"，
+///    接收端要退回按昵称判定（INV-P24 降级：新字段只能让新版更准，不能让老对端变暗）；
+///  - `Some(vec![])` ⇒ 发送方明确回答"这条没 @ 任何人"，接收端**不再**按昵称兜底。
+///
+/// 为什么要带 id 而不是靠昵称：昵称**可变**（改名后历史上那些 @ 就不再指向这个人）
+/// 又**不唯一**（群里可以两个人同名 ⇒ 一个人被 @，两个人同时亮红点）。
+pub fn gossip_plaintext(kind: &str, content: &str, mentions: Option<&[String]>) -> String {
+    gossip_plaintext_with_targets(kind, content, mentions, None)
+}
+
+/// 按 `mentions` 的顺序把每条 @ 落成正文里的第 n 次出现。
+///
+/// `name_of` 返回**发送当时**该 id 在群里显示的昵称（昵称是可变快照，这里要的就是当时那份）。
+/// 规则（前端 `linkify.ts` 必须同一条）：在正文里从左往右数 `@<name>` 的出现次数，
+/// 同一个 name 的第 k 条 mention 拿到 `n = k`；名字压根不在正文里的 id 不分配落点。
+pub fn build_mention_targets(
+    content: &str,
+    ids: &[String],
+    name_of: impl Fn(&str) -> Option<String>,
+) -> Vec<MentionTarget> {
+    let mut seen: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    let mut out: Vec<MentionTarget> = Vec::new();
+    for id in ids {
+        let Some(name) = name_of(id) else { continue };
+        if name.is_empty() {
+            continue;
+        }
+        let needle = format!("@{name}");
+        // 名字不出现就不分配：把 n=1 蒙到别段文字上，比"这一条没有落点"更坏
+        if !content.contains(&needle) {
+            continue;
+        }
+        let k = seen
+            .entry(name.clone())
+            .and_modify(|v| *v += 1)
+            .or_insert(1_u32);
+        if *k > MAX_GOSSIP_MENTIONS as u32 {
+            continue;
+        }
+        out.push(MentionTarget {
+            id: id.clone(),
+            name,
+            n: *k,
+        });
+    }
+    out
+}
+
+/// 带落点的版本：`targets` 是三态的（`None` = 不写这个键，见 `GossipPlaintext::mention_targets`）。
+pub fn gossip_plaintext_with_targets(
+    kind: &str,
+    content: &str,
+    mentions: Option<&[String]>,
+    targets: Option<&[MentionTarget]>,
+) -> String {
+    let mut v = serde_json::json!({ "kind": kind, "content": content });
+    if let Some(ids) = mentions {
+        // 出网前同样洗一遍：这条命令是 IPC 公开面，去重 + 丢空串 + 封顶，
+        // 免得某条路径把整份通讯录塞进每一条消息。
+        let mut clean: Vec<&str> = Vec::new();
+        for id in ids {
+            if id.is_empty() || clean.contains(&id.as_str()) {
+                continue;
+            }
+            clean.push(id.as_str());
+            if clean.len() >= MAX_GOSSIP_MENTIONS {
+                break;
+            }
+        }
+        v["mentions"] = serde_json::json!(clean);
+    }
+    if let Some(ts) = targets {
+        // 落点自己也要洗：空 id / 空 name / n=0 都是"半截"，留着比丢掉更容易让前端蒙错人
+        let clean: Vec<&MentionTarget> = ts
+            .iter()
+            .filter(|t| !t.id.is_empty() && !t.name.is_empty() && t.n >= 1)
+            .take(MAX_GOSSIP_MENTIONS)
+            .collect();
+        v["mention_targets"] = serde_json::json!(clean);
+    }
+    v.to_string()
+}
+
+/// 一份落点数组（已从 JSON 解析出来的 `Value`）⇒ **三态**结果。规则只此一家：
+/// 线上那一份与 `messages.mention_targets` 那一列必须给同一个答案，
+/// 否则"重启前后同一条消息换了意思"（#122 第二段加那一列要防的就是这个）。
+///
+/// 任何一条认不出来 ⇒ **整份**判成不知道：收下半截落点，前端就会把"第二个人"
+/// 对到第一次出现上 —— 那比按昵称猜更错。
+pub fn mention_targets_from_value(item: Option<&serde_json::Value>) -> Option<Vec<MentionTarget>> {
+    let items = match item {
+        // 缺失 / null / 非数组 ⇒ 不知道（老对端、老行、或那一列写坏了）
+        Some(serde_json::Value::Array(items)) => items,
+        _ => return None,
+    };
+    let mut acc: Vec<MentionTarget> = Vec::new();
+    for item in items {
+        let parsed = item.as_object().and_then(|o| {
+            let id = o.get("id")?.as_str()?.to_string();
+            let name = o.get("name")?.as_str()?.to_string();
+            let n = o.get("n")?.as_u64()? as u32;
+            if id.is_empty() || name.is_empty() || n < 1 {
+                return None;
+            }
+            Some(MentionTarget { id, name, n })
+        });
+        match parsed {
+            Some(t) if acc.len() < MAX_GOSSIP_MENTIONS && !acc.iter().any(|x| x.id == t.id) => {
+                acc.push(t)
+            }
+            _ => return None,
+        }
+    }
+    Some(acc)
+}
+
+/// 库里那一列（JSON 文本）⇒ 三态。解析不动 ⇒ 不知道，**不 panic、也不当成"没人被 @"**。
+pub fn parse_mention_targets_column(raw: &str) -> Option<Vec<MentionTarget>> {
+    mention_targets_from_value(serde_json::from_str::<serde_json::Value>(raw).ok().as_ref())
+}
+
+/// `gossip_plaintext` 的反向。**永不失败**：非 JSON 载荷按老行为退化成纯文本。
+///
+/// 单独放在 protocol 而不是留在 transport 里，是因为这两个函数必须**同一处**：
+/// 键名与形状写两份 ⇒ 一端改了另一端只会静默判成"没有 @"，红点无声消失。
+pub fn parse_gossip_plaintext(pt: &[u8]) -> GossipPlaintext {
+    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(pt) {
+        let kind = v
+            .get("kind")
+            .and_then(|k| k.as_str())
+            .unwrap_or("text")
+            .to_string();
+        let content = v
+            .get("content")
+            .and_then(|c| c.as_str())
+            .unwrap_or("")
+            .to_string();
+        let mentions = match v.get("mentions") {
+            Some(serde_json::Value::Array(items)) => {
+                let mut acc: Vec<String> = Vec::new();
+                for item in items {
+                    if let Some(s) = item.as_str() {
+                        // 空串不是设备 id：留着它，未就绪的本机（id 为空）会匹配上并假亮
+                        if !s.is_empty() && !acc.iter().any(|x| x == s) {
+                            acc.push(s.to_string());
+                            if acc.len() >= MAX_GOSSIP_MENTIONS {
+                                break;
+                            }
+                        }
+                    }
+                }
+                Some(acc)
+            }
+            // 缺失 / null / 非数组：全都判成"不知道" ⇒ 接收端兜底按昵称判
+            _ => None,
+        };
+        let mention_targets = mention_targets_from_value(v.get("mention_targets"));
+        GossipPlaintext {
+            kind,
+            content,
+            mentions,
+            mention_targets,
+        }
+    } else {
+        GossipPlaintext {
+            kind: "text".to_string(),
+            content: String::from_utf8_lossy(pt).to_string(),
+            mentions: None,
+            mention_targets: None,
+        }
+    }
+}
+
 /// 会话列表摘要 / 通知正文的预览文案。
 ///
 /// 静默类（reaction/recall/pin/poll_vote/announcement_delete/todo_update）照理到不了预览
@@ -484,6 +847,26 @@ pub struct ReactionPayload {
     pub emoji: String,
     /// true = 添加，false = 取消
     pub add: bool,
+}
+
+/**
+ * 校验一条回应载荷（1:1 发送入口用；群侧的 `send_group_reaction` 收的是分开的参数，
+ * 走的是同一套形态判据 `is_valid_emoji_token`）。
+ *
+ * 为什么要在发送侧挡：`target` 空 = 折叠时这条回应挂在谁身上都不知，接收端只会得到一条
+ * 永远折不出来的事件；载荷干脆不是 JSON 的话，前端 `parseReaction` 会静默返回 null ⇒
+ * 发送方看到一条"发出去了但什么都没有"的消息。发不出去要当场说清楚。
+ */
+pub fn parse_reaction_payload(content: &str) -> Result<ReactionPayload, String> {
+    let p: ReactionPayload =
+        serde_json::from_str(content).map_err(|e| format!("回应载荷解析失败：{e}"))?;
+    if p.target.trim().is_empty() {
+        return Err("回应缺少目标消息".to_string());
+    }
+    if !is_valid_emoji_token(&p.emoji) {
+        return Err("回应表情形态非法".to_string());
+    }
+    Ok(p)
 }
 
 /// 校验一个表情 token 的**形态**（`[名字]`），拒掉空串、超长与控制字符。
@@ -566,6 +949,33 @@ pub struct TodoPayload {
     /// 是否已归档（用户 2026-09-17：完成/过期/不用的任务可归档）。缺省 false。
     #[serde(default)]
     pub archived: bool,
+    /// 任务优先级（**三档**：`high` 紧急 / `normal` 常规 / `low` 不急）。
+    /// 缺省 = 常规 ⇒ 这一版之前建的历史任务、以及旧版本对端发来的载荷，读出来都是
+    /// "常规"，不是"没优先级"（把缺数据读成第三种状态会让界面要么空白要么瞎猜）。
+    /// 谁能改：创建者 / 群主 / 当前被指派人（命令层的宽档，见 `may_change_todo`）。
+    #[serde(default = "default_todo_priority")]
+    pub priority: String,
+    /// 任务**类型**（三档：`task` 普通任务 / `requirement` 需求 / `bug` 缺陷，
+    /// 取值见 [`TODO_CATEGORIES`]）。列表里三者同列，靠 tag 区分（用户 2026-09-29）。
+    ///
+    /// 字段名刻意**不叫 `kind`**：本仓的 `kind` 固定指线上消息类型（`WIRE_KINDS`），
+    /// 载荷里再来一个同名会在同一段代码里撞车。
+    ///
+    /// 缺省 = 普通任务 ⇒ 这一版之前的历史任务、以及旧版本对端发来的载荷，读出来是「普通任务」，
+    /// 不是「没类型」（与 `priority` 同一口径：把缺数据读成第三种状态会让界面空白或瞎猜）。
+    /// ⚠️ 与消息层的 `kind` 无关：这条任务的类型改动仍然走 `todo_update` 那条静默通道，
+    /// **不新增消息类型**（见 [`crate::protocol::WIRE_KINDS`] 的「不许扩散」约束）。
+    #[serde(default = "default_todo_category")]
+    pub category: String,
+    /// 群内**固定**任务编号（1 起递增、组内唯一、永不复用）。
+    ///
+    /// 分配只有一处（`db::next_todo_number`），**创建那一刻**定下来；之后每一次改状态 /
+    /// 改标题 / 归档 / 还原都从原定义里带过来（`send_group_todo_update` 读 `def.number`），
+    /// 所以它是这条任务的"绝对坐标"——「#7 完成了」在成员各自库里指的是同一条。
+    /// `#[serde(default)]` ⇒ 0 = 旧版本对端（或本改动之前的历史数据）建的无号任务，
+    /// 前端遇到 0 不显示编号（不猜、不补号，见 `src/utils/todos.ts` 的 `resolveTodoNumbers`）。
+    #[serde(default)]
+    pub number: i64,
     /// 状态变为「完成」的**权威**时间戳（ms）。由 `send_group_payload` 在 `status=="done"`
     /// 时填 `db::now_ms()`，不接受客户端自报 ⇒ 7 天自动归档的计时起点可信。
     /// `None` = 从未完成过（或旧载荷）。
@@ -590,6 +1000,41 @@ pub fn default_todo_status() -> String {
 /// 状态取值是否合法（命令层校验用；未知值一律拒收，避免脏状态流进群里）。
 pub fn todo_status_is_valid(s: &str) -> bool {
     TODO_STATUSES.contains(&s)
+}
+
+/// 任务优先级的**唯一取值表**（三档，用户 2026-09-29：只分三级、默认中等）。
+///
+/// 与前端 `src/utils/todos.ts` 的 `TODO_PRIORITIES` 必须一致，**已有跨语言守卫**
+/// （`src/utils/messageKinds.test.ts` 直接读本文件比对表体与缺省值，同 `TODO_STATUSES` 那一格）。
+/// 加一档 = 两张表各加一个值 + 前端那张 label/class 表补齐；只改一侧会在单测里当场红。
+pub const TODO_PRIORITIES: [&str; 3] = ["high", "normal", "low"];
+
+/// 缺省优先级 = 常规。也是载荷里 `priority` 缺失时的解析回落值。
+pub fn default_todo_priority() -> String {
+    "normal".to_string()
+}
+
+/// 优先级取值是否合法（命令层校验用；未知值一律拒收，与状态同口径）。
+pub fn todo_priority_is_valid(s: &str) -> bool {
+    TODO_PRIORITIES.contains(&s)
+}
+
+/// 任务**类型**的唯一取值表（三档，用户 2026-09-29：任务 / 需求 / 缺陷，同一张列表用 tag 区分）。
+///
+/// 与前端 `src/utils/todos.ts` 的 `TODO_CATEGORIES` 必须同序同值，由
+/// `src/utils/messageKinds.test.ts` 读本文件逐项比对（与 `TODO_PRIORITIES` 同一套跨语言契约，
+/// 含**缺省值**：旧载荷没有这一格时两侧必须回落成同一个类型）。
+/// 加第四种 = 两张表各加一个值 + 前端 label/class 两张表补齐；只改一侧当场红。
+pub const TODO_CATEGORIES: [&str; 3] = ["task", "requirement", "bug"];
+
+/// 缺省类型 = 普通任务。也是载荷里 `category` 缺失时的解析回落值。
+pub fn default_todo_category() -> String {
+    "task".to_string()
+}
+
+/// 类型取值是否合法（命令层校验用；未知值一律拒收，与状态/优先级同口径）。
+pub fn todo_category_is_valid(s: &str) -> bool {
+    TODO_CATEGORIES.contains(&s)
 }
 
 /// 投票的**定义**层（`kind = "poll"`）。结构与任务同构。
@@ -977,6 +1422,10 @@ pub enum Message {
         /// 断点续传：从第几字节开始发（接收端已持有的前缀字节数）。
         #[serde(default)]
         from_bytes: u64,
+        /// 第几次发送尝试（从 1 开始；`None` = 对端未声明 `CONTENT_FEATURE_FILE_EPOCH`）。
+        /// 见该常量的文档：它存在的唯一理由是"上一轮还堵在链路队列里的分片必须可识别"。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attempt: Option<u32>,
     },
     FileAccept {
         transfer_id: String,
@@ -993,9 +1442,16 @@ pub enum Message {
         transfer_id: String,
         seq: u32,
         data: String,
+        /// 与 `FileOffer.attempt` 同源：接收端据此把**上一轮**残留的分片安静丢掉。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attempt: Option<u32>,
     },
     FileDone {
         transfer_id: String,
+        /// 同上。完成帧也必须可被识别为陈旧 —— 否则上一轮的 FileDone 会在这一轮
+        /// 刚开头时到达，把一份只收了几个分片的文件判成"未完成"并打死。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attempt: Option<u32>,
     },
     /// 接收方对文件传输的最终确认（成功持久化并校验完成后才允许回 success=true）。
     /// 发送方只有收到 success=true 才能把本地文件消息推进到 delivered。
@@ -1144,6 +1600,17 @@ pub enum Message {
         name: String,
         size: u64,
         total_chunks: u32,
+        /// 发送方**实际使用**的分片尺寸（字节）。接收方按 `seq × chunk_size` 直接落盘，
+        /// 于是整份文件不必驻内存（见 `file_relay::Reassembly`）。
+        ///
+        /// ⚠️ 为什么不能省：`total_chunks = ceil(size / chunk_size)` 是**不可逆**的，
+        /// 从 `(size, total_chunks)` 反推会得到错的数（size=65537、chunk=65536 ⇒
+        /// total=2 ⇒ 反推 32769），偏移全部错位、哈希必然不符。
+        ///
+        /// `default = 0` 表示"对端没声明"= 4 个版本之前的老发送方 ⇒ 接收侧**拒收并说明**，
+        /// 不退回"整份进内存"那条 OOM 老路。老接收方会忽略这个字段，不受影响。
+        #[serde(default)]
+        chunk_size: u32,
         sealed_file_key: String,
         file_sha256: String,
     },
@@ -1343,885 +1810,4 @@ pub fn verify_announce(pkt: &UdpPacket) -> AnnounceAuth {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// 历史 video/audio 行在**读出口**归一为文件卡片；其余 kind 原样（数据不回写）。
-    #[test]
-    fn display_kind_maps_legacy_media_to_file() {
-        assert_eq!(display_kind("video"), "file");
-        assert_eq!(display_kind("audio"), "file");
-        assert_eq!(display_kind("image"), "image");
-        assert_eq!(display_kind("file"), "file");
-        assert_eq!(display_kind("text"), "text");
-        // code 有歧义（真代码块同为 kind=code），刻意不映射
-        assert_eq!(display_kind("code"), "code");
-    }
-
-    /// **未知 kind 的预览必须是占位文案，绝不能是载荷**（INV-P24 第 2 条）。
-    ///
-    /// 为什么值得单独钉：`preview_text` 的默认分支过去**无条件透传正文**，于是对端版本比
-    /// 本机新时（或 4.22.1 之前写坏的 kind 形态），会话列表与系统通知会直接显示一串裸 JSON。
-    /// 而它的行为是"少显示点东西"，没有任何测试会因为缺少它而失败。
-    /// 三个对照分支同样重要：`text`/`system` 必须照旧透传（否则"全都塞进占位"也能让第一条
-    /// 断言通过 = 空转），历史 `video` 行必须归一成 `[文件]`（把真实消息判成"不支持"同样是错）。
-    #[test]
-    fn preview_text_hides_payload_for_unknown_kind() {
-        let payload = r#"{"question":"周五前交","options":["A","B"]}"#;
-        assert_eq!(preview_text("sticker", payload), UNSUPPORTED_PREVIEW_LABEL);
-        assert!(
-            !preview_text("sticker", payload).contains('周'),
-            "未知 kind 的预览不得外泄载荷内容"
-        );
-        // 对照 1：已知但没有专门分支的 kind ⇒ 正文本来就是给人看的，照旧截断
-        assert_eq!(preview_text("text", "hello"), "hello");
-        assert_eq!(preview_text("system", "X 加入了群聊"), "X 加入了群聊");
-        // 对照 2：4.22.1 之前写坏的历史行 ⇒ 归一化成 [文件]，不是"不支持"
-        assert_eq!(
-            preview_text("video", r#"{"name":"a.mp4","path":"/x/a.mp4","size":1}"#),
-            "[文件]"
-        );
-    }
-
-    /// `is_known_kind` 与 `kind_class` 的区别必须成立（前者能认出"未知"）。
-    ///
-    /// 只钉一条判据：`kind_class` 对未知值回落到 Bubble（设计上就看不出未知），
-    /// 所以渲染层判"未知"必须走 `is_known_kind` —— 这条测试挡住有人把两者混用一个。
-    #[test]
-    fn only_is_known_kind_can_tell_unrecognized_apart() {
-        assert!(!is_known_kind("sticker"), "表里没有的 kind 必须判为未知");
-        assert_eq!(kind_class("sticker"), KindClass::Bubble, "回落仍是 Bubble");
-        for (k, _) in WIRE_KINDS {
-            assert!(is_known_kind(k), "{k} 在表里却判成未知");
-        }
-    }
-
-    use crate::crypto::Identity;
-
-    // ---------------- announce 自签名 ----------------
-
-    /// 按线上形态构造一条自签名 announce。
-    fn signed_announce(id: &Identity, device_id: &str, port: u16, nonce: &str) -> super::UdpPacket {
-        let x = id.x25519_public_b64();
-        let e = id.ed25519_public_b64();
-        let sig = id.sign_b64(&super::announce_signing_bytes(
-            device_id, port, nonce, &x, &e,
-        ));
-        super::UdpPacket {
-            kind: "announce".to_string(),
-            device_id: device_id.to_string(),
-            nickname: "nick".to_string(),
-            tcp_port: port,
-            x25519_pubkey: Some(x),
-            ed25519_pubkey: Some(e),
-            nonce: nonce.to_string(),
-            sig,
-        }
-    }
-
-    #[test]
-    fn announce_verified_when_self_signed() {
-        let id = Identity::generate();
-        let pkt = signed_announce(&id, "dev-a", 59992, "n1");
-        assert_eq!(super::verify_announce(&pkt), super::AnnounceAuth::Verified);
-    }
-
-    /// 篡改任何**被签名覆盖**的字段都必须失败 —— 这是「防篡改」的全部内容。
-    #[test]
-    fn announce_rejects_tampering_on_every_signed_field() {
-        let id = Identity::generate();
-        let base = signed_announce(&id, "dev-a", 59992, "n1");
-
-        let mut p = base.clone();
-        p.device_id = "victim".to_string();
-        assert!(
-            matches!(super::verify_announce(&p), super::AnnounceAuth::Invalid(_)),
-            "改 device_id"
-        );
-
-        let mut p = base.clone();
-        p.tcp_port = 1;
-        assert!(
-            matches!(super::verify_announce(&p), super::AnnounceAuth::Invalid(_)),
-            "改 tcp_port"
-        );
-
-        let mut p = base.clone();
-        p.nonce = "n2".to_string();
-        assert!(
-            matches!(super::verify_announce(&p), super::AnnounceAuth::Invalid(_)),
-            "改 nonce"
-        );
-
-        // 换成攻击者自己的公钥（想把绑定指向自己的密钥）
-        let attacker = Identity::generate();
-        let mut p = base.clone();
-        p.ed25519_pubkey = Some(attacker.ed25519_public_b64());
-        p.x25519_pubkey = Some(attacker.x25519_public_b64());
-        assert!(
-            matches!(super::verify_announce(&p), super::AnnounceAuth::Invalid(_)),
-            "换公钥"
-        );
-
-        // nickname **不在**签名范围内（改名不该让签名失效），故意不测它
-        let mut p = base.clone();
-        p.nickname = "换个昵称".to_string();
-        assert_eq!(
-            super::verify_announce(&p),
-            super::AnnounceAuth::Verified,
-            "nickname 不参与签名"
-        );
-    }
-
-    /// 用别人的公钥声称自己是对方：签名一定对不上（攻击者没有对方私钥）。
-    #[test]
-    fn announce_rejects_forged_signature_with_victim_pubkey() {
-        let attacker = Identity::generate();
-        let victim = Identity::generate();
-        let vk = victim.ed25519_public_b64();
-        let vx = victim.x25519_public_b64();
-        // 攻击者用**自己的**私钥签，却声明受害者的公钥
-        let sig = attacker.sign_b64(&super::announce_signing_bytes(
-            "victim", 59992, "n1", &vx, &vk,
-        ));
-        let pkt = super::UdpPacket {
-            kind: "announce".to_string(),
-            device_id: "victim".to_string(),
-            nickname: String::new(),
-            tcp_port: 59992,
-            x25519_pubkey: Some(vx),
-            ed25519_pubkey: Some(vk),
-            nonce: "n1".to_string(),
-            sig,
-        };
-        assert!(matches!(
-            super::verify_announce(&pkt),
-            super::AnnounceAuth::Invalid(_)
-        ));
-    }
-
-    /// 旧端不签名 → 放行（Legacy）。硬拒会让旧端在局域网内彻底不可见，
-    /// 而 announce 本就不能用于身份绑定（公钥恒为 keys_verified=false），放行的风险可控。
-    #[test]
-    fn announce_without_signature_is_legacy_not_rejected() {
-        let id = Identity::generate();
-        let mut pkt = signed_announce(&id, "dev-a", 59992, "n1");
-        pkt.sig = String::new();
-        assert_eq!(super::verify_announce(&pkt), super::AnnounceAuth::Legacy);
-
-        // who_has：不带公钥也不带签名，是正常形态
-        let probe = super::UdpPacket {
-            kind: "who_has".to_string(),
-            device_id: "dev-a".to_string(),
-            nickname: String::new(),
-            tcp_port: 59992,
-            x25519_pubkey: None,
-            ed25519_pubkey: None,
-            nonce: String::new(),
-            sig: String::new(),
-        };
-        assert_eq!(super::verify_announce(&probe), super::AnnounceAuth::Legacy);
-    }
-
-    /// 带签名却缺 nonce / 缺公钥 → 无法防重放或无法验签，必须拒。
-    #[test]
-    fn announce_rejects_signed_but_incomplete_packets() {
-        let id = Identity::generate();
-
-        let mut p = signed_announce(&id, "dev-a", 59992, "n1");
-        p.nonce = String::new();
-        assert!(matches!(
-            super::verify_announce(&p),
-            super::AnnounceAuth::Invalid(_)
-        ));
-
-        let mut p = signed_announce(&id, "dev-a", 59992, "n1");
-        p.x25519_pubkey = None;
-        assert!(matches!(
-            super::verify_announce(&p),
-            super::AnnounceAuth::Invalid(_)
-        ));
-
-        let mut p = signed_announce(&id, "dev-a", 59992, "n1");
-        p.ed25519_pubkey = Some(String::new());
-        assert!(matches!(
-            super::verify_announce(&p),
-            super::AnnounceAuth::Invalid(_)
-        ));
-    }
-
-    /// 签名材料对每个字段敏感（防止将来有人漏字段导致"改了也能过"）。
-    #[test]
-    fn announce_signing_bytes_sensitive_to_every_field() {
-        let base = super::announce_signing_bytes("a", 1, "n", "x", "e");
-        assert_ne!(base, super::announce_signing_bytes("b", 1, "n", "x", "e"));
-        assert_ne!(base, super::announce_signing_bytes("a", 2, "n", "x", "e"));
-        assert_ne!(base, super::announce_signing_bytes("a", 1, "m", "x", "e"));
-        assert_ne!(base, super::announce_signing_bytes("a", 1, "n", "y", "e"));
-        assert_ne!(base, super::announce_signing_bytes("a", 1, "n", "x", "f"));
-        // 与 Hello 的材料必须不同域（前缀不同），否则一个协议的签名能拿到另一个用
-        assert_ne!(
-            base,
-            super::hello_signing_bytes("a", 1, "n", "x", "e"),
-            "announce 与 Hello 的签名材料必须域分离"
-        );
-    }
-
-    /// 表情 token 的**形态**校验：挡畸形与超长，但**不判断表情是否存在**
-    /// （目录的唯一来源是前端，后端再存一份就是第二个真相源）。
-    #[test]
-    fn emoji_token_shape_is_validated_but_not_the_catalogue() {
-        assert!(super::is_valid_emoji_token("[赞]"));
-        assert!(super::is_valid_emoji_token("[微笑]"));
-        // 后端不认识的名字也必须放行 —— 前端加了新表情不该需要同时改后端
-        assert!(super::is_valid_emoji_token("[后端不认识的表情]"));
-        for bad in [
-            "",
-            "[",
-            "]",
-            "[]",
-            "赞",
-            "[赞",
-            "赞]",
-            "[[赞]]",
-            "[赞][踩]",
-            "[a\nb]",
-        ] {
-            assert!(!super::is_valid_emoji_token(bad), "{bad:?} 应被拒");
-        }
-        assert!(
-            !super::is_valid_emoji_token(&format!("[{}]", "很".repeat(20))),
-            "超长应被拒"
-        );
-    }
-
-    /// 回应载荷的线上往返（发送端序列化 → 接收端反序列化）。
-    #[test]
-    fn reaction_payload_roundtrips() {
-        let p = super::ReactionPayload {
-            target: "msg-1".to_string(),
-            emoji: "[赞]".to_string(),
-            add: true,
-        };
-        let wire = serde_json::to_string(&p).unwrap();
-        let back: super::ReactionPayload = serde_json::from_str(&wire).unwrap();
-        assert_eq!(back.target, "msg-1");
-        assert_eq!(back.emoji, "[赞]");
-        assert!(back.add);
-        // 与群消息 payload 同形（{"kind","content"} 里的 content 就是它）
-        assert!(wire.contains("\"add\":true"));
-    }
-
-    /// Phase 8（ADR-0017）：不透明外部帧的边界校验 —— **畸形/超限只丢该帧，不断链**。
-    #[test]
-    fn opaque_external_validation_bounds() {
-        use base64::{engine::general_purpose::STANDARD, Engine as _};
-        let ok = STANDARD.encode(b"bitchat-packet");
-        assert_eq!(
-            super::validate_opaque_external("pkt-1", 3, &ok).unwrap(),
-            b"bitchat-packet"
-        );
-        assert!(super::validate_opaque_external("pkt-1", 0, &ok).is_err());
-        assert!(super::validate_opaque_external("pkt-1", super::MAX_OPAQUE_TTL + 1, &ok).is_err());
-        assert!(super::validate_opaque_external("", 3, &ok).is_err());
-        assert!(
-            super::validate_opaque_external(&"x".repeat(super::MAX_OPAQUE_ID + 1), 3, &ok).is_err()
-        );
-        assert!(super::validate_opaque_external("bad id!", 3, &ok).is_err());
-        assert!(super::validate_opaque_external("pkt-1", 3, "not base64!!").is_err());
-        assert!(super::validate_opaque_external("pkt-1", 3, "").is_err());
-        let huge = STANDARD.encode(vec![0u8; super::MAX_OPAQUE_PAYLOAD + 1]);
-        assert!(super::validate_opaque_external("pkt-1", 3, &huge).is_err());
-    }
-
-    /// 线格式必须能原样往返（Gosslan 不解码载荷，只透传）。
-    #[test]
-    fn opaque_external_round_trips_through_wire_format() {
-        use base64::{engine::general_purpose::STANDARD, Engine as _};
-        let payload = STANDARD.encode(vec![0u8, 1, 2, 250, 255]);
-        let msg = super::Message::OpaqueExternal {
-            id: "pkt-9".to_string(),
-            ttl: 5,
-            payload: payload.clone(),
-        };
-        let json = serde_json::to_vec(&msg).unwrap();
-        let back: super::Message = serde_json::from_slice(&json).unwrap();
-        match back {
-            super::Message::OpaqueExternal {
-                id,
-                ttl,
-                payload: p,
-            } => {
-                assert_eq!(id, "pkt-9");
-                assert_eq!(ttl, 5);
-                assert_eq!(p, payload);
-            }
-            other => panic!("往返后类型变了：{other:?}"),
-        }
-    }
-
-    use super::*;
-
-    fn env() -> GossipEnvelope {
-        GossipEnvelope {
-            message_id: String::new(),
-            sender_id: "dev-a".into(),
-            nonce: "nonce-1".into(),
-            sender_pubkey: "xk".into(),
-            sender_ed25519: "ek".into(),
-            sender_sig: "sig".into(),
-            ttl: 6,
-            kind: GossipKind::Chat,
-            group_id: None,
-            group_name: None,
-            group_creator: None,
-            group_members: Vec::new(),
-            payload: "ciphertext".into(),
-            ts: 123456,
-            seq: 1,
-            encrypted: true,
-            target: None,
-        }
-    }
-
-    /// 好友申请（定向）信封：加密、签名、验签、解密、target 完整性。
-    #[test]
-    fn friend_request_envelope_encrypt_sign_decrypt_and_target_integrity() {
-        use crate::crypto::Identity;
-        use crate::gossip_engine::GossipEngine;
-        use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
-
-        let a = Identity::generate();
-        let c = Identity::generate();
-        let engine = GossipEngine::new(100, 10, 4, 6);
-
-        // A 构造 FriendRequest（target=C，用 C 的 X25519 公钥加密内容）
-        let payload = r#"{"from_nickname":"Alice","from_avatar":null}"#;
-        let shared =
-            crate::crypto::shared_secret(&a.x25519_secret, &c.x25519_public_b64()).unwrap();
-        let sealed = crate::crypto::seal(&shared, payload.as_bytes()).unwrap();
-        let payload_b64 = B64.encode(&sealed);
-        let mut env = engine.build_envelope(
-            &a,
-            "dev-a",
-            GossipKind::FriendRequest,
-            None,
-            None,
-            &payload_b64,
-            123456,
-            0,
-        );
-        env.target = Some("dev-c".into());
-        env.sender_sig = a.sign_b64(&env.signing_bytes());
-
-        // 验签通过（target 参与签名）
-        assert!(engine.verify_envelope(&env));
-
-        // C 用自己的私钥解开内容
-        let shared2 = crate::crypto::shared_secret(&c.x25519_secret, &env.sender_pubkey).unwrap();
-        let pt = crate::crypto::open(&shared2, &B64.decode(&env.payload).unwrap()).unwrap();
-        assert_eq!(String::from_utf8(pt).unwrap(), payload);
-
-        // 中间节点篡改 target → 验签失败（target 不可篡改）
-        let mut tampered = env.clone();
-        tampered.target = Some("dev-eve".into());
-        assert!(!engine.verify_envelope(&tampered));
-
-        // target 序列化：None 不写键，Some 写入
-        let json_none = serde_json::to_string(&GossipEnvelope {
-            target: None,
-            ..env.clone()
-        })
-        .unwrap();
-        assert!(
-            !json_none.contains("target"),
-            "None 不应写 target 键: {json_none}"
-        );
-        let json_some = serde_json::to_string(&env).unwrap();
-        assert!(json_some.contains("dev-c"), "Some 应写 target: {json_some}");
-    }
-
-    /// ChatAck / ChatReadReceipt（定向、明文）信封：签名、验签、target 完整性、明文往返。
-    #[test]
-    fn chat_ack_and_read_receipt_plaintext_directed_envelope_integrity() {
-        use crate::crypto::Identity;
-        use crate::gossip_engine::GossipEngine;
-        use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
-
-        let c = Identity::generate();
-        let engine = GossipEngine::new(100, 10, 4, 6);
-
-        // ChatAck：接收方 C 回给原始发送方 A，明文 { msg_id }
-        let ack_payload = r#"{"msg_id":"deadbeef"}"#;
-        let mut ack = engine.build_envelope(
-            &c,
-            "dev-c",
-            GossipKind::ChatAck,
-            None,
-            None,
-            &B64.encode(ack_payload.as_bytes()),
-            123456,
-            0,
-        );
-        ack.encrypted = false;
-        ack.target = Some("dev-a".into());
-        ack.sender_sig = c.sign_b64(&ack.signing_bytes());
-
-        // 验签通过（target 参与签名）
-        assert!(engine.verify_envelope(&ack));
-        // 明文：直接 base64 解码即可得到原始 JSON，无需解密
-        assert_eq!(B64.decode(&ack.payload).unwrap(), ack_payload.as_bytes());
-        // 篡改 target → 验签失败
-        let mut tampered = ack.clone();
-        tampered.target = Some("dev-eve".into());
-        assert!(!engine.verify_envelope(&tampered));
-
-        // ChatReadReceipt：定向明文，payload 含 last_read_ts / last_read_msg_id
-        let rr_payload = r#"{"last_read_ts":99,"last_read_msg_id":"m-1"}"#;
-        let mut rr = engine.build_envelope(
-            &c,
-            "dev-c",
-            GossipKind::ChatReadReceipt,
-            None,
-            None,
-            &B64.encode(rr_payload.as_bytes()),
-            123456,
-            0,
-        );
-        rr.encrypted = false;
-        rr.target = Some("dev-a".into());
-        rr.sender_sig = c.sign_b64(&rr.signing_bytes());
-        assert!(engine.verify_envelope(&rr));
-        assert_eq!(B64.decode(&rr.payload).unwrap(), rr_payload.as_bytes());
-    }
-
-    #[test]
-    fn envelope_encrypted_flag_roundtrip() {
-        // 显式 false 往返保持 false
-        let mut e = env();
-        e.encrypted = false;
-        e.compute_message_id();
-        let json = serde_json::to_string(&Message::Gossip {
-            envelope: e.clone(),
-        })
-        .unwrap();
-        let back: Message = serde_json::from_str(&json).unwrap();
-        match back {
-            Message::Gossip { envelope } => assert!(!envelope.encrypted),
-            _ => panic!("expect gossip"),
-        }
-
-        // 未声明加密标志的旧信封直接拒绝，不再兼容旧协议。
-        let legacy = r#"{"type":"gossip","envelope":{"message_id":"m","sender_id":"a","sender_pubkey":"x","sender_ed25519":"e","sender_sig":"s","ttl":6,"kind":"chat","group_id":null,"payload":"p","ts":1}}"#;
-        assert!(serde_json::from_str::<Message>(legacy).is_err());
-    }
-
-    #[test]
-    fn gossip_message_id_deterministic_and_sensitive_to_payload() {
-        let mut e1 = env();
-        e1.compute_message_id();
-        let id1 = e1.message_id.clone();
-        assert_eq!(id1.len(), 64); // SHA-256 hex
-
-        let mut e2 = e1.clone();
-        e2.compute_message_id();
-        assert_eq!(id1, e2.message_id); // 同内容同 id
-
-        e2.payload = "tampered".into();
-        e2.compute_message_id();
-        assert_ne!(id1, e2.message_id); // 篡改 payload → id 变化
-
-        // 时间戳不参与消息身份：改变 ts 不应改变 message_id。
-        let mut e3 = e1.clone();
-        e3.ts = 999_999;
-        e3.compute_message_id();
-        assert_eq!(id1, e3.message_id);
-
-        // nonce 参与消息身份：改变 nonce 必须改变 message_id。
-        let mut e4 = e1.clone();
-        e4.nonce = "nonce-2".into();
-        e4.compute_message_id();
-        assert_ne!(id1, e4.message_id);
-    }
-
-    #[test]
-    fn message_json_roundtrip() {
-        let mut e = env();
-        e.compute_message_id();
-        let msg = Message::Gossip {
-            envelope: e.clone(),
-        };
-        let json = serde_json::to_string(&msg).unwrap();
-        let back: Message = serde_json::from_str(&json).unwrap();
-        match back {
-            Message::Gossip { envelope } => {
-                assert_eq!(envelope.message_id, e.message_id);
-                assert_eq!(envelope.sender_id, "dev-a");
-            }
-            _ => panic!("应还原为 Gossip 消息"),
-        }
-    }
-
-    #[test]
-    fn msg_kind_mapping() {
-        assert_eq!(MsgKind::from_wire_str("code"), MsgKind::Code);
-        assert_eq!(MsgKind::from_wire_str("unknown"), MsgKind::Text);
-        assert_eq!(MsgKind::Code.as_str(), "code");
-    }
-
-    /// 诊断用的类型名必须与**线格式**一致（真机排查只认日志里这个词）。
-    ///
-    /// 为什么这条测试值得存在：BLE 握手失败时日志现在会写「对端首帧不是 Hello（收到 xxx）」，
-    /// `xxx` 就是 `wire_kind()` 的输出。若哪天有人把它改成手写 match 又漏了变体，
-    /// 这里会立刻红 —— 而不是等到真机上看着一个错误的类型名猜半天。
-    #[test]
-    fn wire_kind_matches_the_serde_tag() {
-        let hello = Message::Hello {
-            device_id: "dev-a".into(),
-            nickname: "A".into(),
-            avatar: None,
-            device_type: "desktop".into(),
-            content_features: super::content_features(),
-            protocol_version: Some(super::PROTOCOL_VERSION),
-            app_version: Some(super::current_app_version().to_string()),
-            tcp_port: 59992,
-            x25519_pubkey: "xk".into(),
-            ed25519_pubkey: "ek".into(),
-            conv_clock: 0,
-            nonce: "n1".into(),
-            sig: "sig".into(),
-        };
-        assert_eq!(hello.wire_kind(), "hello");
-        // 与真实序列化结果的 `type` 字段逐字一致（不是"看起来差不多"）
-        let v: serde_json::Value = serde_json::to_value(&hello).unwrap();
-        assert_eq!(v["type"], serde_json::json!("hello"));
-
-        assert_eq!(
-            Message::Heartbeat {
-                device_id: "dev-a".into()
-            }
-            .wire_kind(),
-            "heartbeat"
-        );
-    }
-
-    /// **serde 事实**：`Message` 是 `#[serde(tag = "type")]` 枚举，未知 `type` 在
-    /// `from_slice` 这一层**就是硬错误**。
-    ///
-    /// ⚠️ 立场已变（ADR-0007 Accepted 2026-09-20 + INV-P24 第 1 条）：这个错误**不允许**
-    /// 一路冒到 `reader_loop` —— 旧行为是 `read_frame` 返回 `InvalidData` ⇒ 断开整条连接，
-    /// 于是新版本只要上线一种新帧，老设备就不是"少收一条"而是"跟这台设备连不上"，
-    /// 还伴随重连-再拆的死循环。现在由 `network::transport::decode_frame` 在帧层降级成
-    /// `Message::Unknown`（忽略 + 节流日志，链路保持），并由守卫
-    /// `unknown_wire_frame_is_tolerated_after_auth` 钉住。
-    ///
-    /// 这条测试保留的理由：它钉的是 serde 层的既有事实（降级逻辑正是依赖
-    /// "未知变体报 unknown variant"这个措辞来判别），并带一条**防空转对照**
-    /// （已知变体必须能解析，否则"全都失败"也会让断言看起来通过）。
-    #[test]
-    fn unknown_message_type_is_a_hard_parse_error() {
-        let unknown = br#"{"type":"some_future_kind","id":"x"}"#;
-        assert!(
-            serde_json::from_slice::<Message>(unknown).is_err(),
-            "serde 层必须仍然报未知 type —— decode_frame 靠这个错误把未知帧降级，而不是当畸形帧"
-        );
-        // 对照：已知变体必须能解析（否则上面那条断言会因为"全都解析失败"而变成空转）。
-        // `Heartbeat` 需要 `device_id`，这里给全字段。
-        let known = br#"{"type":"heartbeat","device_id":"dev-a"}"#;
-        assert!(
-            serde_json::from_slice::<Message>(known).is_ok(),
-            "对照用例必须能解析，否则上面的断言是空转（全都失败也算通过）"
-        );
-    }
-
-    #[test]
-    fn hello_signing_bytes_sensitive_to_every_field() {
-        let base = hello_signing_bytes("dev-a", 59992, "n1", "xk", "ek");
-        // 相同输入必须产出相同字节（签名可复现）
-        assert_eq!(base, hello_signing_bytes("dev-a", 59992, "n1", "xk", "ek"));
-        // 任一字段变化都必须改变签名材料：否则攻击者可平移字段伪造身份
-        assert_ne!(base, hello_signing_bytes("dev-b", 59992, "n1", "xk", "ek"));
-        assert_ne!(base, hello_signing_bytes("dev-a", 1, "n1", "xk", "ek"));
-        assert_ne!(base, hello_signing_bytes("dev-a", 59992, "n2", "xk", "ek"));
-        assert_ne!(base, hello_signing_bytes("dev-a", 59992, "n1", "xk2", "ek"));
-        assert_ne!(base, hello_signing_bytes("dev-a", 59992, "n1", "xk", "ek2"));
-        // 拼接歧义防护：把不同字段切成另一种组合不应撞车
-        assert_ne!(
-            hello_signing_bytes("ab", 1, "c", "d", "e"),
-            hello_signing_bytes("a", 1, "bc", "d", "e")
-        );
-    }
-
-    #[test]
-    fn hello_carries_nonce_and_sig_roundtrip() {
-        let hello = Message::Hello {
-            device_id: "dev-a".into(),
-            nickname: "A".into(),
-            avatar: None,
-            device_type: "desktop".into(),
-            content_features: super::content_features(),
-            protocol_version: None,
-            app_version: None,
-            tcp_port: 59992,
-            x25519_pubkey: "xk".into(),
-            ed25519_pubkey: "ek".into(),
-            conv_clock: 7,
-            nonce: "n1".into(),
-            sig: "sig".into(),
-        };
-        let json = serde_json::to_string(&hello).unwrap();
-        match serde_json::from_str::<Message>(&json).unwrap() {
-            Message::Hello { nonce, sig, .. } => {
-                assert_eq!(nonce, "n1");
-                assert_eq!(sig, "sig");
-            }
-            _ => panic!("expect hello"),
-        }
-        // 不带 nonce/sig 的旧 Hello 仍可解析（serde default），但会在验证层被拒
-        let legacy = r#"{"type":"hello","device_id":"a","nickname":"A","avatar":null,"tcp_port":1,"x25519_pubkey":"x","ed25519_pubkey":"e","conv_clock":0}"#;
-        match serde_json::from_str::<Message>(legacy).unwrap() {
-            Message::Hello { nonce, sig, .. } => {
-                assert!(nonce.is_empty() && sig.is_empty());
-            }
-            _ => panic!("expect hello"),
-        }
-    }
-
-    /// device_type：序列化往返保持，旧 Hello 缺省为空串（旧端兼容，不参与签名）。
-    #[test]
-    fn hello_device_type_roundtrip_and_legacy_default() {
-        let hello = Message::Hello {
-            device_id: "a".into(),
-            nickname: "A".into(),
-            avatar: None,
-            device_type: "mobile".into(),
-            content_features: super::content_features(),
-            protocol_version: None,
-            app_version: None,
-            tcp_port: 1,
-            x25519_pubkey: "x".into(),
-            ed25519_pubkey: "e".into(),
-            conv_clock: 0,
-            nonce: "n".into(),
-            sig: "s".into(),
-        };
-        let json = serde_json::to_string(&hello).unwrap();
-        match serde_json::from_str::<Message>(&json).unwrap() {
-            Message::Hello { device_type, .. } => assert_eq!(device_type, "mobile"),
-            _ => panic!("expect hello"),
-        }
-        // 旧 Hello（无 device_type 字段）→ 缺省空串
-        let legacy = r#"{"type":"hello","device_id":"a","nickname":"A","avatar":null,"tcp_port":1,"x25519_pubkey":"x","ed25519_pubkey":"e","conv_clock":0}"#;
-        match serde_json::from_str::<Message>(legacy).unwrap() {
-            Message::Hello { device_type, .. } => assert!(device_type.is_empty()),
-            _ => panic!("expect hello"),
-        }
-    }
-
-    /// 版本声明（ADR-0007 决策 1）：新端往返保持，**老 Hello 缺省为 `None`**。
-    ///
-    /// 这一步的全部价值来自"加这两个字段不断老版本互通"，所以两个方向都要钉：
-    /// - 老→新：缺字段的 Hello 必须照样解析（报错就是老设备**连不上**，不是"少个信息"）；
-    /// - 新→老：我们多带的字段必须被忽略 —— 判据就是这里**没有** `deny_unknown_fields`，
-    ///   一旦有人加上，"给帧加字段"这件事本身会变成一次破坏性变更。
-    #[test]
-    fn hello_version_fields_roundtrip_and_old_peer_declares_nothing() {
-        let hello = Message::Hello {
-            device_id: "a".into(),
-            nickname: "A".into(),
-            avatar: None,
-            device_type: "desktop".into(),
-            content_features: super::content_features(),
-            protocol_version: Some(2),
-            app_version: Some("9.9.9".into()),
-            tcp_port: 1,
-            x25519_pubkey: "x".into(),
-            ed25519_pubkey: "e".into(),
-            conv_clock: 0,
-            nonce: "n".into(),
-            sig: "s".into(),
-        };
-        let json = serde_json::to_string(&hello).unwrap();
-        match serde_json::from_str::<Message>(&json).unwrap() {
-            Message::Hello {
-                protocol_version,
-                app_version,
-                ..
-            } => {
-                assert_eq!(protocol_version, Some(2));
-                assert_eq!(app_version.as_deref(), Some("9.9.9"));
-            }
-            _ => panic!("expect hello"),
-        }
-        // 老端（4.22.27 之前）的 Hello：没有这两个字段 ⇒ 必须是 `None`。
-        // 不能回落成 Some(1)：诊断面板要能区分"对方是没报版本的老版本"和"对方报了 1"。
-        let legacy = r#"{"type":"hello","device_id":"a","nickname":"A","avatar":null,"tcp_port":1,"x25519_pubkey":"x","ed25519_pubkey":"e","conv_clock":0}"#;
-        match serde_json::from_str::<Message>(legacy).unwrap() {
-            Message::Hello {
-                protocol_version,
-                app_version,
-                ..
-            } => {
-                assert_eq!(protocol_version, None);
-                assert_eq!(app_version, None);
-            }
-            _ => panic!("expect hello"),
-        }
-        // 新→老：未知**字段**必须被忽略（这条断言就是"不许 deny_unknown_fields"的哨兵）。
-        let newer = r#"{"type":"hello","device_id":"a","nickname":"A","avatar":null,"tcp_port":1,"x25519_pubkey":"x","ed25519_pubkey":"e","conv_clock":0,"protocol_version":9,"some_future_field":true}"#;
-        assert!(
-            serde_json::from_str::<Message>(newer).is_ok(),
-            "Hello 遇到未知字段必须照单收下，否则加字段就等于破坏性变更"
-        );
-    }
-
-    /// **未知 kind 不得把整条 `chat_message` 带崩**（INV-P24 第 2 条）。
-    ///
-    /// 这条钉的是"`ChatMessage.kind` 为什么是 String 而不是 `MsgKind`"：只要它是枚举，
-    /// `kind:"sticker"` 就会让 serde 报 `unknown variant`，而 `decode_frame` 分不清
-    /// "未知**帧**类型"与"未知**嵌套枚举值**" ⇒ 整帧被降级成 `Message::Unknown` 丢弃
-    /// ⇒ 消息根本进不了库，前端连「不支持的消息类型」都来不及显示，发送方永远等不到 Ack。
-    /// 所以正确的判据是：**同一个未知值放在 kind 上必须还能解析，放在 type 上才该降级**。
-    #[test]
-    fn unknown_message_kind_still_decodes_as_a_chat_message() {
-        let frame = br#"{"type":"chat_message","msg_id":"m1","from":"a","to":"b","kind":"sticker","content":"enc1:AAA","ts":1,"seq":1}"#;
-        match serde_json::from_slice::<Message>(frame)
-            .expect("未知 kind 必须仍能解析成 ChatMessage（否则整条消息会被静默丢弃）")
-        {
-            Message::ChatMessage { kind, msg_id, .. } => {
-                assert_eq!(kind, "sticker", "kind 必须原样保留，不能回落成 text");
-                assert_eq!(msg_id, "m1");
-            }
-            other => panic!("应还原为 ChatMessage，实得 {other:?}"),
-        }
-        // 对照（防空转）：未知值放在 **type** 上时仍是硬解析错误 —— 那才是
-        // `decode_frame` 该降级成 Unknown 的场景（见 unknown_message_type_is_a_hard_parse_error）。
-        assert!(serde_json::from_slice::<Message>(br#"{"type":"sticker"}"#).is_err());
-    }
-
-    /// 兼容判定的四种输入 —— `Some(PROTOCOL_VERSION)` 那条是**防空转的关键**：
-    /// 写成 `>=` 就会在每个同版本好友上刷"对方版本较新"，而真网里同版本才是常态。
-    #[test]
-    fn peer_protocol_newer_only_when_declared_higher() {
-        assert!(!peer_protocol_is_newer(None), "未声明 ≠ 更高（也 ≠ 更低）");
-        assert!(
-            !peer_protocol_is_newer(Some(PROTOCOL_VERSION)),
-            "同版本必须判不高 —— 写成 >= 就会满屏误报"
-        );
-        assert!(!peer_protocol_is_newer(Some(0)), "0 也不猜成更高");
-        assert!(peer_protocol_is_newer(Some(PROTOCOL_VERSION + 1)));
-    }
-
-    /// 发送侧门控的四种输入 —— 关键是 `0`（没交换过 Hello / 对端已离线）判**不许发**。
-    /// 方向选"不知道就当不支持"是刻意的：宁可少发一条新类型，也不要让老对端整帧丢掉、
-    /// 发送方还以为是网络问题。
-    #[test]
-    fn gated_kind_needs_the_peers_own_declaration() {
-        assert!(
-            kind_allowed_by_features("text", 0),
-            "V1 词表内的 kind 对所有对端都安全，不该被门控挡住"
-        );
-        assert!(
-            !kind_allowed_by_features("merge", 0),
-            "对端没声明能力 ⇒ 不许发 merge"
-        );
-        assert!(kind_allowed_by_features("merge", CONTENT_FEATURE_MERGE));
-        // 只认自己那一位：对方有别的 capability 不算数（防"位图非零就放行"这种糊法）
-        assert!(
-            !kind_allowed_by_features("merge", CONTENT_FEATURE_PULL),
-            "按位判定，不是按非零判定"
-        );
-    }
-
-    /// 加了门控却忘了在 Hello 里声明 ⇒ 这种消息永远发不出去，而且是静默的。
-    /// 这条测试盯的就是"门控表与广播的能力对不上"这个组合。
-    #[test]
-    fn every_gated_kind_is_advertised_by_us() {
-        let ours = content_features();
-        let mut gated = Vec::new();
-        for (kind, _) in WIRE_KINDS {
-            if let Some(bit) = kind_required_feature(kind) {
-                assert_ne!(
-                    ours & bit,
-                    0,
-                    "kind `{kind}` 要求能力位 {bit:#b}，但本机 Hello 没声明它 —— 门控会把我们自己的功能锁死"
-                );
-                gated.push(bit);
-            }
-        }
-        assert!(
-            gated.contains(&CONTENT_FEATURE_MERGE),
-            "merge 必须仍在被门控之列：v4.20.0 及更早的 MsgKind 里没有这个变体"
-        );
-    }
-
-    #[test]
-    fn group_lifecycle_messages_roundtrip() {
-        let changed = Message::GroupCreatorChanged {
-            group_id: "g1".into(),
-            from: "old".into(),
-            to: "new".into(),
-        };
-        let json = serde_json::to_string(&changed).unwrap();
-        match serde_json::from_str::<Message>(&json).unwrap() {
-            Message::GroupCreatorChanged { group_id, from, to } => {
-                assert_eq!(
-                    (group_id.as_str(), from.as_str(), to.as_str()),
-                    ("g1", "old", "new")
-                );
-            }
-            _ => panic!("expect group_creator_changed"),
-        }
-
-        let left = Message::GroupMemberLeft {
-            group_id: "g1".into(),
-            from: "dev-a".into(),
-        };
-        let json = serde_json::to_string(&left).unwrap();
-        match serde_json::from_str::<Message>(&json).unwrap() {
-            Message::GroupMemberLeft { group_id, from } => {
-                assert_eq!((group_id.as_str(), from.as_str()), ("g1", "dev-a"));
-            }
-            _ => panic!("expect group_member_left"),
-        }
-    }
-
-    #[test]
-    fn group_ack_and_file_complete_ack_roundtrip() {
-        let group_ack = Message::GroupAck {
-            group_id: "g1".into(),
-            msg_id: "m1".into(),
-            from: "dev-a".into(),
-        };
-        let json = serde_json::to_string(&group_ack).unwrap();
-        match serde_json::from_str::<Message>(&json).unwrap() {
-            Message::GroupAck {
-                group_id,
-                msg_id,
-                from,
-            } => {
-                assert_eq!(group_id, "g1");
-                assert_eq!(msg_id, "m1");
-                assert_eq!(from, "dev-a");
-            }
-            _ => panic!("expect group_ack"),
-        }
-
-        let file_ack = Message::FileCompleteAck {
-            transfer_id: "t1".into(),
-            success: true,
-        };
-        let json = serde_json::to_string(&file_ack).unwrap();
-        match serde_json::from_str::<Message>(&json).unwrap() {
-            Message::FileCompleteAck {
-                transfer_id,
-                success,
-            } => {
-                assert_eq!(transfer_id, "t1");
-                assert!(success);
-            }
-            _ => panic!("expect file_complete_ack"),
-        }
-    }
-}
+include!("protocol_tests.rs");

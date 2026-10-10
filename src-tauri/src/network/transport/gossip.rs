@@ -1,6 +1,73 @@
 // ---------------- Gossip 处理 ----------------
 
 // 本文件由 transport.rs 用 include! 展开进同一模块（见该文件末尾的分册登记）。
+/// 新链路建立时补递一次（#77）：把窗口内替别人转发过、而当时那条链路还不存在的群信封重递。
+///
+/// 为什么 spawn 而不是就地 await：四个调用点全在**建链热路径**上（入站 accept、
+/// 出站拨号、BLE 两条），而 `try_send` 在信道满时有界补试 500ms —— 同步等就是
+/// 把握手后的第一步拖住。补递失败不另加补救：对端下一次建链还会再试，窗口本来
+/// 就是有界的（这一条是"尽力补递"，不是"必达"）。
+pub(crate) fn replay_group_frames_to(
+    state: &std::sync::Arc<crate::state::AppState>,
+    peer_id: &str,
+) {
+    let st = state.clone();
+    let peer = peer_id.to_string();
+    tokio::spawn(async move {
+        let first = replay_group_frames_once(&st, &peer).await;
+        if first == 0 {
+            return; // 没递出去（多半是间隔门挡住了）⇒ 不占着一个 30s 的定时器
+        }
+        // 第二趟是**这条链路的判据本身**，不是保险丝：对端刚上线那几秒还不认识发送方
+        // （`peers` 是内存态、群消息不在 TOFU 白名单里），第一趟必然被静默丢掉。
+        // 2026-09-27 第一次跑 `--round=gossip-late` 就是这个形状 —— B 记了成功、C 库里 0 行。
+        // 不能改成"等下一个链路事件"：对端会拒绝重复入站（实测 C 每 10s 拒一次），
+        // 那等于把第二趟的触发权交给不一定会发生的时序。
+        tokio::time::sleep(std::time::Duration::from_millis(
+            crate::mesh::gossip_replay::REPLAY_MIN_INTERVAL_MS as u64,
+        ))
+        .await;
+        replay_group_frames_once(&st, &peer).await;
+    });
+}
+
+/// 一趟补递：取出这个 peer 此刻该补的信封、逐条发出去，返回发出去几条。
+async fn replay_group_frames_once(state: &std::sync::Arc<crate::state::AppState>, peer: &str) -> usize {
+    let frames = {
+        let mut cache = state
+            .gossip_relay
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // take_due 而不是 eligible：同一个 peer 两次补递之间要有最小间隔 ——
+        // 链路会在几十秒里反复登记，每次都重发一遍既没用也费电。
+        cache.take_due(peer, &state.device_id, crate::mesh::gossip_replay::now_ms())
+    };
+    if frames.is_empty() {
+        return 0;
+    }
+    let mut sent = 0usize;
+    for mut env in frames {
+        // `eligible` 已保证 ttl >= 2 ⇒ 这里 -= 不会下溢，递出去的副本对端还能再转
+        env.ttl -= 1;
+        if try_send(state, peer, &Message::Gossip { envelope: env })
+            .await
+            .is_ok()
+        {
+            sent += 1;
+        }
+    }
+    if sent > 0 {
+        state.logger.info(
+            "link",
+            format!(
+                "补递群消息 peer={peer} 条数={sent}（窗口 {}ms）",
+                crate::mesh::gossip_replay::RELAY_WINDOW_MS
+            ),
+        );
+    }
+    sent
+}
+
 /// 群信封能否被**本机消费**（= 是否允许进入第 5 步的本地处理）。
 ///
 /// ⚠️ 这条判据**只管"消费"，不管"转发"**（2026-09-13 审计的真缺陷）。
@@ -287,6 +354,19 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
         };
         let mut fwd = env.clone();
         fwd.ttl -= 1;
+        // 记下这条**准备转发出去的原样信封**（#77）：窗口内新建成链路的成员由
+        // `replay_group_frames_to` 补递一次。只记 Group + 成员表非空的（口径同
+        // `group_envelope_consumable`）。
+        // ⚠️ 记在这里、**在 `targets` 之后**是刻意的：这一刻邻居可能一个都没有
+        //（`targets` 为空 ⇒ 一次也发不出去），而"当时递不到、以后要递"恰恰是这一格的产品行为。
+        // 记在发送成功之后就等于什么都没记。
+        {
+            let mut cache = state
+                .gossip_relay
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            cache.remember(&fwd, crate::mesh::gossip_replay::now_ms());
+        }
         let fwd_msg = Message::Gossip { envelope: fwd };
         // ⚠️ 转发**不阻塞本连接的读循环**：`try_send` 在信道满时有界补试 500ms，
         // 逐条 await 最坏 4 × 500ms = 2s —— 期间这条连接的后续帧（含心跳）都要排队，
@@ -465,51 +545,10 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
             // 定向好友同意：只有 target == 本机才处理（即「我发的申请被对方同意」）。
             if env.target.as_deref() == Some(state.device_id.as_str()) {
                 let from = env.sender_id.clone();
-                let name = resolve_nickname(state, &from);
-                // 幂等判据：**这一次是否真的"从不是好友变成好友"**。
-                //
-                // FriendAccept 没有 ACK 机制，发送方会持续补发（见 `补发好友同意回执`）——
-                // 而本分支原先没有任何去重：`add_friend` 是幂等的，但**通知与留痕每次都会执行**
-                // ⇒ 用户被"好友申请已通过"反复刷屏（真机日志里同一秒内三次）。
-                // 同时它也是"单方面成功"的观感来源：一方在无限重发，另一方被反复打扰。
-                let was_friend = {
-                    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                    db::get_friend(&dbc, &from).is_some()
-                };
-                {
-                    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                    db::add_friend(&dbc, &from, &name, None).ok();
-                    // 同步公钥（否则首次加密发送会失败）—— 与 Message::FriendAccept 路径一致。
-                    let (x, e) = {
-                        let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
-                        peers
-                            .get(&from)
-                            .map(|p| (p.x25519_pubkey.clone(), p.ed25519_pubkey.clone()))
-                            .unwrap_or((None, None))
-                    };
-                    if x.is_some() || e.is_some() {
-                        db::update_friend_pubkeys(&dbc, &from, x.as_deref(), e.as_deref()).ok();
-                    }
-                }
-                forget_pending_request(state, &from);
-                // emit 每次都发：前端 store 只是据此重拉好友列表（幂等），
-                // 而漏发会让「首次那个 emit 恰好没被界面收到」时界面永远不刷新。
-                let _ = state.app.emit("friend-accepted", &from);
-                if was_friend {
-                    // 重复投递：只留一行便于排查的痕迹，**不通知**。
-                    state
-                        .logger
-                        .info("friend", format!("重复的好友同意（已忽略）peer={from}"));
-                } else {
-                    state
-                        .logger
-                        .info("friend", format!("收到跨跳好友同意 peer={from}"));
-                    let _ = crate::notifications::show_if_enabled(
-                        state,
-                        "好友申请已通过",
-                        &format!("{name} 已成为你的好友"),
-                    );
-                }
+                // 与直连同一家（`apply_friend_accept`，就在本模块里 —— 这个文件是被
+                // `include!` 进 transport.rs 的）。"重复投递不许刷屏"这条判据原先**只有这一份有**
+                // ⇒ 直连链路上"被『好友申请已通过』反复刷屏"照旧存在（2026-09-28 复审抓到）。
+                apply_friend_accept(state, &from, "收到跨跳好友同意");
             }
         }
         GossipKind::ChatAck => {
@@ -570,10 +609,14 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                         };
                         {
                             let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                            let _ = dbc.execute(
-                                "UPDATE messages SET status = 'read'
-                                 WHERE conv_id = ?1 AND sender_id = ?2 AND status != 'read' AND ts <= ?3",
-                                params![from, state.device_id, effective_ts],
+                            // 与直连回执同一个家（`db::mark_own_messages_read_upto`）：
+                            // 这两处原先各写一份只排除 `read` 的 UPDATE，
+                            // 会把本端发送失败的消息一起点亮成「已读」。
+                            let _ = db::mark_own_messages_read_upto(
+                                &dbc,
+                                &from,
+                                &state.device_id,
+                                effective_ts,
                             );
                         }
                         let _ = state.app.emit(
@@ -597,7 +640,28 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                 return;
             }
             if let Some(pt) = plaintext {
-                let (kind, content) = parse_gossip_payload(&pt);
+                let crate::protocol::GossipPlaintext {
+                    kind,
+                    content,
+                    mentions,
+                    mention_targets,
+                } = crate::protocol::parse_gossip_plaintext(&pt);
+                // §29 可观测性：这一行是「有人@我 为什么亮 / 为什么不亮」唯一能事后归因的留痕。
+                // 修之前判不到根的机制就在这儿 —— 链路里只有昵称、没有「@ 了谁」，日志也就
+                // 永远分不开「对端没带名单（旧版本，按昵称兜底）」和「对端明确说谁都没 @」。
+                // 只记条数，不记 id、不记正文（日志会进报告产物）。
+                if env.kind == GossipKind::Group {
+                    state.logger.info(
+                        "group",
+                        format!(
+                            "群消息@输入 msg={} mentions={} targets={}",
+                            env.message_id,
+                            mentions.as_ref().map_or("none".to_string(), |v| v.len().to_string()),
+                            // 只记条数：落点里带昵称，昵称不进日志（日志会进报告产物）
+                            mention_targets.as_ref().map_or("none".to_string(), |v| v.len().to_string())
+                        ),
+                    );
+                }
                 // GossipKind::Chat：好友关系检查（非好友不落库、不通知、通知发送方）
                 if env.kind == GossipKind::Chat {
                     let is_friend = {
@@ -794,6 +858,10 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                         ts,
                         seq,
                         status: "delivered".to_string(),
+                        // #122 第二段：解出来的落点跟着这一行进库。
+                        // 三态原样带过去：`None`（老对端/没带这个键）就写 NULL ⇒ 重启后仍按昵称兜底，
+                        // 不许在这里替对端补成空数组（那会把"不知道"写成"谁都没 @"）。
+                        mention_targets: mention_targets.clone(),
                     };
                     // **先撤后到**：撤回事件可能早于被撤回的消息到达（Gossip 泛洪与
                     // outbox 直发是两条无顺序保证的路径）。命中权威集合就直接以
@@ -824,7 +892,14 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                 };
                 // 重复投递与数据库失败都不产生本地副作用；Gossip 的转发已在上面完成。
                 if announced_on(&inserted) {
-                    let _ = state.app.emit("message-received", &out_rec);
+                    let _ = state.app.emit(
+                        "message-received",
+                        &crate::state::IncomingMessage {
+                            record: &out_rec,
+                            mention_ids: mentions.as_deref(),
+                            mention_targets: mention_targets.as_deref(),
+                        },
+                    );
                 }
                 // 更新会话「当前链路」：单聊消息的 hop 由 Gossip ttl 反推
                 // （初始 ttl - 收到 ttl），path 取入站连接的路径（直连准确，桥接为最后一段）。
@@ -887,20 +962,3 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
     }
 }
 
-fn parse_gossip_payload(pt: &[u8]) -> (String, String) {
-    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(pt) {
-        let kind = v
-            .get("kind")
-            .and_then(|k| k.as_str())
-            .unwrap_or("text")
-            .to_string();
-        let content = v
-            .get("content")
-            .and_then(|c| c.as_str())
-            .unwrap_or("")
-            .to_string();
-        (kind, content)
-    } else {
-        ("text".to_string(), String::from_utf8_lossy(pt).to_string())
-    }
-}

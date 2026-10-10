@@ -36,6 +36,29 @@ fn tray_tooltip(zh: bool, unread: u32) -> String {
     }
 }
 
+/// macOS **菜单栏（状态项）**上的未读数字（用户 2026-09-29 需求汇总五：
+/// 「Mac 端顶部状态栏 / 菜单栏有未读消息时，增加数字提醒」）。
+///
+/// 只有 macOS 用它：Windows 的托盘没有"标题"这个概念（`set_title` 在 Windows 不支持），
+/// 那边继续靠红点 + tooltip 条数；Linux 桌面环境大多也不显示标题。所以函数连同它的
+/// 测试都挂在 `#[cfg(target_os = "macos")]` 上 —— 否则 Windows/Linux 那两条 CI 腿会把
+/// 没人调用的它判成死代码，而 `clippy -- -D warnings` 直接失败（本文件 `dot` 模块
+/// 那段注释记的就是同一个坑）。
+///
+/// `0` 返回 `None` = **把标题清空**，不是留着上一次的数字（Dock 角标已经踩过一次
+/// "红点清了、数字还挂着"）。
+#[cfg(target_os = "macos")]
+fn tray_title(unread: u32) -> Option<String> {
+    // 上限只是**位数**：菜单栏宽度有限，"1284" 会把别的状态项挤掉。
+    // 超过就写 `99+` —— 宁可少说几位，也不许侵占别人的地盘。
+    const TRAY_TITLE_CAP: u32 = 99;
+    match unread {
+        0 => None,
+        n if n > TRAY_TITLE_CAP => Some(format!("{TRAY_TITLE_CAP}+")),
+        n => Some(n.to_string()),
+    }
+}
+
 /// 未读红点（**只有非 macOS 用得上**）。
 ///
 /// 为什么把它整个收进一个模块：这份东西在 macOS 上完全不参与渲染（那边走 Dock 数字角标），
@@ -45,17 +68,20 @@ fn tray_tooltip(zh: bool, unread: u32) -> String {
 /// 收成一个模块，出口就只有一处。
 #[cfg(not(target_os = "macos"))]
 mod dot {
-    /// 未读红点颜色 = `#FF3B30`。
+    /// 未读红点颜色 = `#D43D43`（与样式表里的 `--gosslan-danger` 同一个值）。
     ///
     /// 这个值是**故意**与两处对齐的：
-    /// - 本应用自己的未读徽标色 `--gosslan-danger`（`src/style.css:99`）—— 托盘的点和应用内的红点
-    ///   必须是同一个红，否则同屏对比就是两种红（用户 2026-09-17：「红点直接和微信靠拢」）；
-    /// - 微信的红点用的也正是 `#FF3B30`（iOS 系统红的经典值）。
+    /// - 本应用自己的未读徽标色 `--gosslan-danger` —— 托盘的点和应用内的红点必须是同一个红，
+    ///   否则同屏对比就是两种红（用户 2026-09-17：「红点直接和微信靠拢」）。
+    /// - 2026-09-26 那档 a11y（#86）把填充档压深到 `#d43d43` 以让白字达到 4.5:1，
+    ///   **而这一侧当时没跟着改** ⇒ Windows 托盘的红点与应用内的徽标从此是两种红，
+    ///   而这条测试只在**非 macOS** 编译（本地看不见），只有 CI 的 Windows 腿会红。
+    ///   现在跟着样式表走：应用的徽标优先于「微信那个经典值」——同屏一致性才是这条的判据。
     ///
     /// ⚠️ 这里写死十六进制而不是读 CSS 变量：托盘图标是 **Rust 侧**画的，拿不到样式表。
     /// 改 `--gosslan-danger` 时这里要一起改（`unread_dot_is_the_app_badge_red` 测试会在色值
     /// 与样式表不一致时报错）。
-    pub(super) const UNREAD_RED: (u8, u8, u8) = (0xFF, 0x3B, 0x30);
+    pub(super) const UNREAD_RED: (u8, u8, u8) = (0xD4, 0x3D, 0x43);
 
     /// 红点几何：半径 = 最小边的 8.5%，圆心在 (82%, 18%)。
     ///
@@ -143,13 +169,13 @@ mod dot {
         fn unread_dot_is_the_app_badge_red() {
             let css = include_str!("../../src/style.css");
             assert!(
-                css.contains("--gosslan-danger: #ff3b30"),
+                css.contains("--gosslan-danger: #d43d43"),
                 "样式表里的未读红改了？本测试与 UNREAD_RED 要一起更新"
             );
             assert_eq!(
                 UNREAD_RED,
-                (0xFF, 0x3B, 0x30),
-                "托盘红点必须等于 --gosslan-danger（#ff3b30）"
+                (0xD4, 0x3D, 0x43),
+                "托盘红点必须等于 --gosslan-danger（#d43d43）"
             );
         }
 
@@ -238,6 +264,11 @@ pub fn set_unread_badge<R: tauri::Runtime>(app: &tauri::AppHandle<R>, unread: u3
     let zh = app.state::<Arc<crate::state::AppState>>().is_zh();
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         let _ = tray.set_tooltip(Some(tray_tooltip(zh, unread)));
+        // macOS：菜单栏直接印数字（托盘图标本身保持原样，那侧的红点不符合平台习惯）。
+        #[cfg(target_os = "macos")]
+        {
+            let _ = tray.set_title(tray_title(unread).as_deref());
+        }
         #[cfg(not(target_os = "macos"))]
         {
             let icon = app.default_window_icon().map(|base| {
@@ -418,5 +449,17 @@ mod tests {
         assert!(tray_tooltip(true, 3).contains("3 条未读"));
         assert!(tray_tooltip(false, 3).contains("3 unread"));
         assert!(!tray_tooltip(true, 0).contains('0'));
+    }
+
+    /// 菜单栏数字：0 条必须**清空**（不能留着上一次的数字），超过 99 只写 `99+`。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn menu_bar_number_clears_at_zero_and_caps_at_99() {
+        use super::tray_title;
+        assert_eq!(tray_title(0), None, "没有未读时菜单栏上不许留数字");
+        assert_eq!(tray_title(1).as_deref(), Some("1"));
+        assert_eq!(tray_title(99).as_deref(), Some("99"));
+        assert_eq!(tray_title(100).as_deref(), Some("99+"));
+        assert_eq!(tray_title(u32::MAX).as_deref(), Some("99+"));
     }
 }

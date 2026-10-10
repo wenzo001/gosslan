@@ -12,7 +12,12 @@ use crate::state::{
 };
 
 /// 当前数据库版本。每次 schema 变更递增一次，并在 `MIGRATIONS` 数组末尾追加一个 step。
-pub const DB_VERSION: u32 = 8;
+///
+/// ⚠️ **只有"SCHEMA 表达不了的事"才配一个 step**（加列、回填、清孤儿行、**删**被取代的索引）。
+/// 建表 / 建索引不需要 step：`init()` 在版本分支**之前**跑 `execute_batch(SCHEMA)`，
+/// 而 SCHEMA 全是 `IF NOT EXISTS` ⇒ 新老库每次启动都会被补齐。
+/// 同一条索引同时写在 SCHEMA 与 MIGRATIONS 里 = 两个家（历史上有过，v8→v9 起收敛）。
+pub const DB_VERSION: u32 = 11;
 
 /// 迁移 step：(from_version, to_version, 迁移闭包)。
 struct Migration {
@@ -128,6 +133,67 @@ fn run_migrations(conn: &Connection, current: u32) -> Result<()> {
     Ok(())
 }
 
+/// **SCHEMA 表达不了、又必须每条启动路径都拿到**的形状，集中在这一个地方补。
+///
+/// 为什么存在：`init()` 里 `execute_batch(SCHEMA)` 跑在迁移**之前**，所以任何
+/// "建在只有迁移才会加的列上"的对象都进不了 SCHEMA —— 老库那一刻还没那一列，
+/// 写进去会让 `init()` 直接失败（`no such column: seq`，2026-09-25 真撞过一次，
+/// 判据是 `migration_tests::index_on_a_migration_added_column_must_not_live_in_schema`）。
+///
+/// 为什么**两条分支都要经过**：全新库走 `is_fresh` 不重放迁移，而会话内排序的
+/// 热查询（`db/messages.rs` 按 `(conv_id, seq)`）没有这条索引就是全表扫 ——
+/// 那比"少一条日志"严重得多。判据是恒等的：
+/// `migration_tests::fresh_schema_alone_has_exactly_the_migrated_shape`
+/// 逐条比对「SCHEMA + 这里」与「SCHEMA + 整条迁移链」的 `sqlite_master` 形状。
+///
+/// 加进来的每一条都必须是**幂等**的（`IF NOT EXISTS` / 先判存在），因为老库那条分支
+/// 已经由迁移建过一遍。
+fn ensure_post_schema_shape(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_messages_conv_seq ON messages(conv_id, seq);
+         -- 按 (会话, kind) 取某类消息（群任务徽标要用：只想要 todo/todo_update 那几十条）。
+         -- 没有它时 `WHERE conv_id=? AND kind IN (...)` 会退化成本会话的**全行扫**，
+         -- 而这个查询排在全局那一把 `Mutex<Connection>` 后面 —— 大群会冻住整个 UI。
+         -- 与上面那条同理由放在这里（幂等、每次开库确认一次），不再动版本号。
+         -- 它让 messages 长出第三个索引，因此 `hot_tables_carry_exactly_the_intended_indexes`
+         -- 的期望值跟着从 2 改 3，写放大的实测数字记在那条判据的注释里。
+         CREATE INDEX IF NOT EXISTS idx_messages_conv_kind ON messages(conv_id, kind);",
+    )?;
+    Ok(())
+}
+
+/// 群孤儿清理 —— **谓词只有这一份**，v7 与 v10 共用（两处各写一份就是本仓反复付学费的漂移形状）。
+///
+/// 双锚：群不在 `groups` **且** 会话不在 `conversations` 才算孤儿。单用
+/// `NOT IN conversations` 是数据事故 —— 用户删群会话是合法操作（`delete_conversation`），
+/// `groups` 行还在，那样会把一整段在册群的历史不可逆清空。
+///
+/// 谓词必须锚 `group_id` / `substr(conv_id, 7)`，不能锚 `id`：那几张表的 `id` 是自增行号
+/// （`group_reads` / `pending_group_reads` 干脆没有 `id` 列），两个域永不相交 ⇒ 锚 `id` 的
+/// 实际后果是"两条删在册群数据、两条报错被吞"（#60，判据
+/// `migration_tests::v7_orphan_cleanup_keeps_live_group_rows_and_drops_true_orphans`）。
+///
+/// 返回失败语句的错误而不自己吞：调用方决定日志口径（v7 与 v10 都是"尽力清理、不拦启动"）。
+fn sweep_group_orphans(conn: &Connection) -> Vec<String> {
+    let orphan_group = "group_id NOT IN (SELECT id FROM groups) \
+         AND ('group:' || group_id) NOT IN (SELECT id FROM conversations)";
+    let orphan_conv = "substr(conv_id, 7) NOT IN (SELECT id FROM groups) \
+         AND conv_id NOT IN (SELECT id FROM conversations)";
+    [
+        format!("DELETE FROM messages WHERE conv_id LIKE 'group:%' AND {orphan_conv}"),
+        format!("DELETE FROM group_outbox WHERE {orphan_group}"),
+        format!("DELETE FROM file_outbox WHERE group_id IS NOT NULL AND {orphan_group}"),
+        format!("DELETE FROM group_reads WHERE {orphan_group}"),
+        format!("DELETE FROM pending_group_reads WHERE {orphan_group}"),
+        format!(
+            "DELETE FROM group_recalled_messages WHERE conv_id LIKE 'group:%' AND {orphan_conv}"
+        ),
+    ]
+    .iter()
+    .filter_map(|sql| conn.execute(sql, []).err().map(|e| format!("{sql} ⇒ {e}")))
+    .collect()
+}
+
 const MIGRATIONS: &[Migration] = &[
     // v1 → v2：friends 加公钥列
     Migration {
@@ -160,7 +226,10 @@ const MIGRATIONS: &[Migration] = &[
             Ok(())
         },
     },
-    // v2 → v3：messages 加 seq + 回填 + 索引
+    // v2 → v3：messages 加 seq + 回填 + 索引。
+    // ⚠️ 索引必须留在这条迁移里（建列**之后**）：SCHEMA 跑在迁移之前，
+    //   把 `idx_messages_conv_seq` 写进 SCHEMA 会让没有 seq 列的老库直接开不起来。
+    //   判据测试：`migration_tests::index_on_a_migration_added_column_must_not_live_in_schema`。
     Migration {
         from: 2,
         to: 3,
@@ -268,30 +337,11 @@ const MIGRATIONS: &[Migration] = &[
         to: 7,
         description: "清理历史孤儿群消息与投递/回执残留",
         run: |conn| {
-            // ⚠️ 口径修正（自审 #2）：**双锚都要不在册**才算孤儿 ——
-            // `NOT IN conversations` 单独用是数据事故：用户删群会话是合法操作
-            // （commands::delete_conversation），groups 行还在，v7 升级会把
-            // 一整段在册群的历史不可逆清空。
-            // 与 v3-v5 同风格：尽力清理、eprintln 容错，绝不 `?` 上抛把
-            // db::init 变成 Err 让应用起不来（清不干净下次升级还会再来一遍）。
-            let orphan_group = "id NOT IN (SELECT id FROM groups) \
-                 AND ('group:' || id) NOT IN (SELECT id FROM conversations)";
-            let orphan_conv = "substr(conv_id, 7) NOT IN (SELECT id FROM groups) \
-                 AND conv_id NOT IN (SELECT id FROM conversations)";
-            let cleanup = |sql: &str| -> rusqlite::Result<()> { conn.execute(sql, []).map(|_| ()) };
-            for sql in [
-                &format!("DELETE FROM messages WHERE conv_id LIKE 'group:%' AND {orphan_conv}"),
-                &format!("DELETE FROM group_outbox WHERE {orphan_group}"),
-                &format!("DELETE FROM file_outbox WHERE group_id IS NOT NULL AND {orphan_group}"),
-                &format!("DELETE FROM group_reads WHERE {orphan_group}"),
-                &format!("DELETE FROM pending_group_reads WHERE {orphan_group}"),
-                &format!(
-                    "DELETE FROM group_recalled_messages WHERE conv_id LIKE 'group:%' AND {orphan_conv}"
-                ),
-            ] {
-                if let Err(e) = cleanup(sql) {
-                    eprintln!("[gosslan-db] v7 孤儿清理跳过一条语句（不影响启动）：{e}");
-                }
+            // 谓词见 `sweep_group_orphans`（双锚、必须锚 group_id，理由写在那里）。
+            // 与 v3-v5 同风格：尽力清理、eprintln 容错，绝不 `?` 上抛把 db::init 变成 Err
+            // 让应用起不来（清不干净下次升级还会再来一遍）。
+            for err in sweep_group_orphans(conn) {
+                eprintln!("[gosslan-db] v7 孤儿清理跳过一条语句（不影响启动）：{err}");
             }
             Ok(())
         },
@@ -316,9 +366,83 @@ const MIGRATIONS: &[Migration] = &[
             Ok(())
         },
     },
+    // v8 → v9：删掉两条**已被取代**的索引（0-B）。
+    //
+    // 为什么这必须是迁移而不是 SCHEMA：`CREATE INDEX IF NOT EXISTS` 只会建不会删，
+    // 而这两条留着就是热写路径上白付的写放大 ——
+    // ① `idx_outbox_msg_id`（v5→v6 建的唯一索引）与 `outbox.msg_id` 的**内联 UNIQUE**
+    //    是同一件事的两份。约束的权威是内联那个（`sqlite_autoindex` 一直在守），
+    //    这条测试会证明删掉索引后重复插入仍然被挡。
+    // ② `idx_file_outbox_peer(peer_id, status)` 是新的
+    //    `idx_file_outbox_peer_due(peer_id, status, next_attempt_at)` 的严格前缀。
+    // 软失败：删不动不拦启动（它们留着只是慢一点，不是错）。
+    Migration {
+        from: 8,
+        to: 9,
+        description: "删掉被取代的 idx_outbox_msg_id / idx_file_outbox_peer（写放大）",
+        run: |conn| {
+            for sql in [
+                "DROP INDEX IF EXISTS idx_outbox_msg_id",
+                "DROP INDEX IF EXISTS idx_file_outbox_peer",
+            ] {
+                if let Err(e) = conn.execute(sql, []) {
+                    eprintln!("[gosslan-db] v9 删冗余索引跳过一条（不影响启动）：{e}");
+                }
+            }
+            Ok(())
+        },
+    },
+    // v9 → v10：把 v7 那段孤儿清理**再跑一遍**（#61，用户 2026-09-26 拍板＝加一次清理）。
+    //
+    // 为什么需要重跑而不是"修好 v7 就完了"：迁移链按 `user_version` 前进，
+    // **已经跨过 v7 的老库永远不会重放它** —— 那批"群早就不在册、待发已读回执还活着"的行
+    // 就留在库里。用户可见后果：那个设备每次上线，本机都会给它发一条
+    // `GroupReadReceipt`（"我在一个我并不存在的群里读到了某时刻"），而对端只能照单收下。
+    //
+    // 谓词与 v7 同一份（`sweep_group_orphans`），双锚 ⇒ 重跑对已经干净的库是纯空操作，
+    // 对"群仍在册但会话被用户删掉"的库一个字节都不动（这条反向断言在判据里）。
+    // 同 v7 的容错口径：尽力清理、清不动只留痕，绝不把 `init` 变成 Err。
+    Migration {
+        from: 9,
+        to: 10,
+        description: "重跑群孤儿清理（补上坏版本 v7 漏掉的存量）",
+        run: |conn| {
+            for err in sweep_group_orphans(conn) {
+                eprintln!("[gosslan-db] v10 存量清理跳过一条语句（不影响启动）：{err}");
+            }
+            Ok(())
+        },
+    },
+    // #122 第二段：@ 的**落点**（`mention_targets`）以前只活在一次投递里 ⇒ 重启读历史又退回
+    // 按昵称判，群里同名两个人重新互相点亮。这一列是"SCHEMA 表达不了的事"里的那一类：
+    // 新库由 SCHEMA 直接带上，而**已经在用的库**那句 `CREATE TABLE IF NOT EXISTS` 根本不会执行，
+    // 所以只有迁移能给老库补上它（判据：`migration_tests::v10_to_v11_adds_mention_targets_column_without_touching_existing_rows`）。
+    // 可空、**不回填**：老行没有落点就是"不知道"，呈现层继续按昵称兜底 ——
+    // 回填成 `'[]'` 会把历史上每一条 @ 都判成"谁都没 @ 我"，那是把缺数据读成权威结论（INV-P24）。
+    Migration {
+        from: 10,
+        to: 11,
+        description: "messages 加 mention_targets 列（@ 的落点活过一次重启）",
+        run: |conn| {
+            // 先数一遍再决定加不加：`ALTER ... ADD COLUMN` 撞到已有列会直接 Err，
+            // 而迁移报错 = 启动被拒 = 用户打不开应用。代价不对称，这里宁可多四行。
+            let has: bool = conn.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = 'mention_targets'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )? > 0;
+            if !has {
+                conn.execute("ALTER TABLE messages ADD COLUMN mention_targets TEXT", [])?;
+            }
+            Ok(())
+        },
+    },
 ];
 
-/// 建表脚本（与 `schema.sql` 保持一致）
+/// 建表脚本 —— 表结构的**唯一真源**（另有一张 `content` 表由
+/// `content/store.rs::ensure_schema` 建）。曾经另有一份手写 `schema.sql` 自称"与本文件一致"，
+/// 实测两边表名集合不等而全仓没有一行代码读它 ⇒ 2026-09-26 退役。要再留一份"给人看的 DDL"，
+/// 先回答"谁机器核对它一致"。
 pub const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
@@ -357,9 +481,20 @@ CREATE TABLE IF NOT EXISTS messages (
     content     TEXT NOT NULL,
     ts          INTEGER NOT NULL,
     seq         INTEGER NOT NULL DEFAULT 0,
-    status      TEXT NOT NULL DEFAULT 'sent'
+    status      TEXT NOT NULL DEFAULT 'sent',
+    -- @ 的落点（JSON 数组 `[{id,name,n}]`，见 `protocol::MentionTarget`）。
+    -- **可空，NULL = 不知道**（老行 / 老对端 / 这一列写坏了）⇒ 呈现层按昵称兜底。
+    -- 不加索引：它只随行读回，从不按内容查（热查询仍走 `idx_messages_conv_seq`）。
+    mention_targets TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conv_id, ts);
+-- ⚠️ `idx_messages_conv_seq` **不在这里**，而且不能放进来：`seq` 是迁移 v2→v3 才加到
+-- `messages` 上的列，而 `execute_batch(SCHEMA)` 跑在迁移**之前** ⇒ 老库里这句会
+-- `no such column: seq` 直接让 `init()` 失败（用户打不开自己的库）。
+-- 它的家在 `ensure_post_schema_shape`（两条分支都经过：老库由 v2→v3 在建列之后建，
+-- 新库不重放迁移、由那个函数补）—— 顺序是语义，不是风格问题。
+-- 判据测试：`migration_tests::index_on_a_migration_added_column_must_not_live_in_schema`
+-- + `migration_tests::fresh_schema_alone_has_exactly_the_migrated_shape`。
 
 -- 每会话逻辑时钟（Lamport 风格，单调递增）。消息排序与群聊清空边界都以此为准，
 -- 不使用发送方或接收方的墙上时钟。
@@ -379,6 +514,9 @@ CREATE TABLE IF NOT EXISTS group_recalled_messages (
     seq         INTEGER NOT NULL,
     PRIMARY KEY (conv_id, msg_id)
 );
+-- 判定"这条消息是否已被撤回"只给 msg_id（`is_recalled`），PK 的前缀是 conv_id 用不上
+-- ⇒ 每次群收件都要全表扫这张**只增不减**的 G-Set。这条索引在收件热路径上。
+CREATE INDEX IF NOT EXISTS idx_group_recalled_msg ON group_recalled_messages(msg_id);
 
 CREATE TABLE IF NOT EXISTS groups (
     id         TEXT PRIMARY KEY,
@@ -432,11 +570,14 @@ CREATE TABLE IF NOT EXISTS file_transfers (
     name       TEXT NOT NULL,
     size       INTEGER NOT NULL,
     direction  TEXT NOT NULL,          -- 'send' | 'receive'
-    status     TEXT NOT NULL,          -- 'pending' | 'active' | 'done' | 'failed'
+    status     TEXT NOT NULL,          -- 'pending'|'active'|'done'|'failed'|'sent'（sent=send 侧已写出但无对端回执，终态）
     path       TEXT,
     progress   REAL NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL
 );
+-- 传输面板首屏是 `ORDER BY created_at DESC` 且**没有任何 WHERE** —— 零索引时
+-- 每次打开都要全表扫 + 临时 B-tree 排序，而行数是只增的（历史传输不删）。
+CREATE INDEX IF NOT EXISTS idx_file_transfers_created ON file_transfers(created_at DESC);
 
 -- 文件离线投递队列：断线后重启可恢复，重连后自动补发。
 CREATE TABLE IF NOT EXISTS file_outbox (
@@ -447,12 +588,17 @@ CREATE TABLE IF NOT EXISTS file_outbox (
     local_path      TEXT NOT NULL,
     name            TEXT NOT NULL,
     size            INTEGER NOT NULL,
-    status          TEXT NOT NULL DEFAULT 'pending',  -- 'pending' | 'sending' | 'failed'
+    status          TEXT NOT NULL DEFAULT 'pending',  -- 'pending' | 'sending' | 'failed' | 'cancelled'（后者=用户主动取消，见 INV-P26）
     attempts        INTEGER NOT NULL DEFAULT 0,
     next_attempt_at INTEGER NOT NULL,
     created_at      INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_file_outbox_peer ON file_outbox(peer_id, status);
+-- 取某 peer 待投递的文件是「每次建链 / 每次心跳」都跑一遍的读：判据是
+-- peer_id + status + `next_attempt_at <= now`。原先的 (peer_id, status) 只能定位到
+-- "这个 peer 的所有待发行"，时间窗还得逐行回表比 ⇒ 把 next_attempt_at 收进第三列。
+-- ⚠️ 被它取代的旧 `idx_file_outbox_peer` **不在这里**（SCHEMA 造不出"删"），
+-- 由迁移 v8→v9 一次性删掉；两处都写会变成每次启动"建了又删"。
+CREATE INDEX IF NOT EXISTS idx_file_outbox_peer_due ON file_outbox(peer_id, status, next_attempt_at);
 CREATE INDEX IF NOT EXISTS idx_file_outbox_created ON file_outbox(created_at);
 
 -- 群文件：一个 transfer_id 对应一个群文件。
@@ -545,10 +691,10 @@ pub fn init(path: &Path) -> std::result::Result<Connection, InitError> {
         eprintln!("[gosslan-db] FATAL: {err}");
         return Err(err);
     }
-    conn.execute_batch(SCHEMA)?;
-    // 内容传输逻辑层自己的表（schema 归它所有，保持分层）。
-    crate::content::store::ensure_schema(&conn)?;
-    // ★ 预读状态：区分真·新库 vs 遗留老库（`current` 已在降级判定处读过，不再读第二遍）
+    // ★ 数表必须发生在 `execute_batch(SCHEMA)` **之前**：SCHEMA 会建出全部 19 张表，
+    //   之后再数就区分不了"全新库"与"老库"—— 那正是本仓曾经的样子（`is_fresh` 恒为假，
+    //   于是全新库把整条迁移链重放一遍：9 行假的「running v1→v2…」日志、v7 两条
+    //   "孤儿清理跳过一条语句"的告警、以及先建 `idx_outbox_msg_id` 再在 v8→v9 删掉它）。
     let pre_table_count: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
@@ -556,6 +702,11 @@ pub fn init(path: &Path) -> std::result::Result<Connection, InitError> {
             |r| r.get(0),
         )
         .unwrap_or(0);
+    conn.execute_batch(SCHEMA)?;
+    // 内容传输逻辑层自己的表（schema 归它所有，保持分层）。
+    crate::content::store::ensure_schema(&conn)?;
+    // 判据：`user_version` 没写过 **且** 一张业务表都没有。只看前者会把
+    // "老库（v1/v2 时代根本不存在 user_version）"误判成新库 ⇒ 那条库的形状就永远补不回来。
     let is_fresh = current == 0 && pre_table_count == 0;
 
     if is_fresh {
@@ -563,6 +714,9 @@ pub fn init(path: &Path) -> std::result::Result<Connection, InitError> {
     } else {
         run_migrations(&conn, current)?;
     }
+    // **两条分支都要经过**这里：有形状是 SCHEMA 表达不了的（见 `ensure_post_schema_shape`），
+    // 而 fresh 分支不重放迁移 —— 这个函数就是那笔差额，缺了它新安装会少一条热查询索引。
+    ensure_post_schema_shape(&conn)?;
     // 每次启动都把会话时钟同步到「该会话已有最大逻辑序号」
     conn.execute(
         "INSERT INTO conversation_clocks(conv_id, seq)
@@ -614,3 +768,7 @@ include!("db/recalls.rs");
 mod cascade_tests;
 #[cfg(test)]
 mod migration_tests;
+#[cfg(test)]
+mod read_receipts_tests;
+#[cfg(test)]
+mod todo_reads_tests;

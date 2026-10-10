@@ -4,6 +4,7 @@ import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { api } from "@/api";
 import { loadFilePreview } from "@/utils/filePreview";
+import { parseFileMeta } from "@/utils/fileMeta";
 import { openLocalFile, saveLocalFile } from "@/utils/localFile";
 import { shouldProbePresence } from "@/utils/mediaAvailability";
 import { isAndroid } from "@/utils/platform";
@@ -38,18 +39,17 @@ export function useMessageFile(
   /** 乐观上屏的文件/图片气泡可能缺 size/path，用传输记录补齐。 */
   const fileMeta = computed<FileMeta | null>(() => {
     if (msg.value.kind !== "file" && msg.value.kind !== "image") return null;
-    try {
-      const meta = JSON.parse(msg.value.content) as Partial<FileMeta>;
-      const t = transfer.value;
-      return {
-        name: meta.name ?? t?.name ?? $t("common.file"),
-        path: meta.path ?? t?.path ?? "",
-        size: meta.size ?? t?.size ?? 0,
-        subtype: meta.subtype ?? (msg.value.kind === "image" ? "image" : "file"),
-      };
-    } catch {
-      return null;
-    }
+    // 载荷解析走**唯一一份** `utils/fileMeta`（引用块也用同一份，见那里的说明）
+    const raw = parseFileMeta(msg.value.content);
+    if (!raw) return null;
+    const t = transfer.value;
+    return {
+      name: raw.name || t?.name || $t("common.file"),
+      path: raw.path || t?.path || "",
+      size: raw.size || t?.size || 0,
+      subtype: raw.subtype || (msg.value.kind === "image" ? "image" : "file"),
+      sha256: raw.sha256,
+    };
   });
 
   /** 进度 0~1；无记录（历史消息）返回 null 表示不显示进度条。 */
@@ -63,7 +63,9 @@ export function useMessageFile(
     if (!t || t.status === "done") return null;
     // 链路停滞：后端按 writer **实发**判定（对端长时间没再收任何一片）。不显示出来的话，
     // 用户看到的是"进度条冻在 63%"，只能猜是软件死了 —— 而后端其实还在背压里等。
-    if (chat.isTransferStalled(t.id)) return $t("send.stalled");
+    // 停滞原因优先：「只有蓝牙链路、这个文件在等局域网」和「网络卡住了」是两件不同的事，
+    // 说错会把用户引去查网络（而网络没问题）。后端没给原因时回退既有的通用文案。
+    if (chat.isTransferStalled(t.id)) return chat.transferStallReason(t.id) ?? $t("send.stalled");
     const pct = Math.round((t.progress ?? 0) * 100);
     return t.direction === "send" ? $t("send.sendingPct", { pct }) : $t("send.receivingPct", { pct });
   });

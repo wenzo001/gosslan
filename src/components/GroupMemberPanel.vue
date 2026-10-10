@@ -5,12 +5,23 @@ import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import BaseModal from "@/components/BaseModal.vue";
 import { useMemberProfile } from "@/composables/useMemberProfile";
-import { avatarInitial, avatarInitialLen, nameToColor } from "@/utils/color";
-import { TODO_STATUSES, TODO_STATUS_CLASS, TODO_STATUS_LABEL_KEY, foldTodos } from "@/utils/todos";
-import { ArrowRightLeft, Crown, ListChecks, LogOut, Plus, UserMinus, X } from "lucide-vue-next";
+import { avatarSeedFor } from "@/utils/avatarSeed";
+import {
+  TODO_STATUSES,
+  TODO_STATUS_CLASS,
+  TODO_STATUS_LABEL_KEY,
+  foldTodos,
+  isEffectivelyArchived,
+} from "@/utils/todos";
+import { ArrowRightLeft, Crown, ListChecks, Loader2, LogOut, Plus, UserMinus, X } from "lucide-vue-next";
 import type { Friend } from "@/types";
 
-const props = defineProps<{ open: boolean; groupId: string | null }>();
+const props = defineProps<{
+  open: boolean;
+  groupId: string | null;
+  /** 群任务窗口正在打开（桌面端）：按钮要给出"这一下点到了"的反馈。 */
+  tasksOpening?: boolean;
+}>();
 const emit = defineEmits<{ (e: "close"): void; (e: "open-tasks"): void }>();
 
 const app = useAppStore();
@@ -21,11 +32,23 @@ const group = computed(() => chat.groups.find((g) => g.id === props.groupId) ?? 
 /**
  * 任务分区的一行摘要：各状态计数 + 完成数。
  *
- * 折叠口径与群任务面板完全一致（同一个 `foldTodos`，同一份会话消息）——
- * 只是这里只用来显示"有几项、什么状态"，完整列表在 `GroupTasksPanel` 里。
+ * 口径与看板**逐字相同**（用户 #23：三处消费者两种算法，弹窗标题写 (9) 而进去只看到 6 条）：
+ * 同一个 `foldTodos`，再按 `isEffectivelyArchived` 滤掉已归档 —— 这里显示的是
+ * "进去那一屏能看到的条数"，不是"这个群历史上发过多少条任务"。
+ * 所以 `total` 恒等于各状态之和（两边同一次过滤，不会一个含归档一个不含）。
  */
+// 打开时按需补读那份全表任务行（与看板、任务面板共用同一个取数口，见 store 的 groupTodoRows）
+watch(
+  () => [props.open, props.groupId] as const,
+  ([open, id]) => {
+    if (open && id) void chat.ensureGroupTodoRows(`group:${id}`);
+  },
+  { immediate: true },
+);
+
 const todoSummary = computed(() => {
-  const items = props.groupId ? foldTodos(chat.messages[`group:${props.groupId}`] ?? []) : [];
+  const rows = props.groupId ? chat.groupTodoRows[`group:${props.groupId}`] ?? [] : [];
+  const items = foldTodos(rows).filter((x) => !isEffectivelyArchived(x));
   const byStatus: Record<string, number> = {};
   for (const it of items) byStatus[it.status] = (byStatus[it.status] ?? 0) + 1;
   return { total: items.length, done: byStatus.done ?? 0, byStatus };
@@ -115,10 +138,6 @@ async function publishAnnouncement() {
   }
 }
 
-function initials(n: string) {
-  return avatarInitial(n);
-}
-
 /** 成员资料解析统一走 useMemberProfile（本机/好友表/在线节点），此处不再重复实现。 */
 
 /** 可用于加入该群的好友 = 好友 - 已是成员 - 自己 */
@@ -190,7 +209,7 @@ async function confirmAction() {
 <template>
   <!-- 群管理面板比一般弹窗内容多（群名/公告/成员/添加/转让），用更宽的一档：
        默认 max-w-md 会挤成"瘦高"一条（用户 2026-09-17）。 -->
-  <BaseModal :open="open" width="max-w-lg" :title="group ? t('group.membersCount', { n: group.members.length }) : t('group.members')" @close="emit('close')">
+  <BaseModal :open="open" width="max-w-lg" :title="group ? t('group.manageTitle', { n: group.members.length }) : t('group.members')" @close="emit('close')">
     <div v-if="group" class="space-y-3">
       <!-- 群名称：群主可改（用户 2026-09-17：改名并入本弹窗）。
            非群主**只读文本** —— 没权限就不给一个灰掉的输入框（改不了还长得像能改）。 -->
@@ -216,27 +235,37 @@ async function confirmAction() {
         <p v-else class="px-3 py-2 text-sm text-[var(--gosslan-text)]">{{ group.name }}</p>
       </div>
 
-      <!-- 群公告：发布/修改入口（仅群主）。聊天区的横幅只在**有公告**时出现 ——
-           没有公告时不常驻空横幅，发布入口收进这里（用户 2026-09-17）。 -->
-      <div v-if="isOwner">
+      <!-- 群公告：**群主看到编辑区，其他成员看到正文**（用户 2026-09-29 需求汇总八：
+           "群详情中可查看公告"）。以前整段挂在 `isOwner` 下 ⇒ 普通成员进这个面板
+           什么都看不到，只能顺着聊天记录往回翻那条公告消息。 -->
+      <div>
         <div class="mb-1.5 text-xs text-[var(--gosslan-text-2)]">{{ t("group.announce") }}</div>
-        <textarea
-          v-model="announceDraft"
-          maxlength="500"
-          rows="3"
-          class="w-full resize-none rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none transition focus:border-transparent"
-          :placeholder="t('group.announcePlaceholder')"
-        ></textarea>
-        <div class="mt-2 flex justify-end">
-          <button
-            type="button"
-            class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-3 py-1.5 text-[13px] text-white transition hover:bg-[var(--gosslan-primary-hover)] disabled:opacity-50"
-            :disabled="publishing || !announceDraft.trim()"
-            @click="publishAnnouncement"
-          >
-            {{ currentAnnouncement ? t("group.announceEdit") : t("group.announcePublish") }}
-          </button>
-        </div>
+        <template v-if="isOwner">
+          <textarea
+            v-model="announceDraft"
+            maxlength="500"
+            rows="3"
+            class="w-full resize-none rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none transition focus:border-transparent"
+            :placeholder="t('group.announcePlaceholder')"
+          ></textarea>
+          <div class="mt-2 flex justify-end">
+            <button
+              type="button"
+              class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-3 py-1.5 text-[13px] text-white transition hover:bg-[var(--gosslan-primary-hover)] disabled:opacity-50"
+              :disabled="publishing || !announceDraft.trim()"
+              @click="publishAnnouncement"
+            >
+              {{ currentAnnouncement ? t("group.announceEdit") : t("group.announcePublish") }}
+            </button>
+          </div>
+        </template>
+        <p
+          v-else-if="currentAnnouncement?.text"
+          class="whitespace-pre-wrap px-3 py-2 text-sm text-[var(--gosslan-text)]"
+        >
+          {{ currentAnnouncement.text }}
+        </p>
+        <p v-else class="px-3 py-2 text-sm text-[var(--gosslan-text-2)]">{{ t("group.announceEmpty") }}</p>
       </div>
 
       <!-- 当前成员 -->
@@ -250,10 +279,10 @@ async function confirmAction() {
             <div
               class="gosslan-avatar-box flex h-9 w-9 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
               :class="!memberProfile(id).online ? 'grayscale opacity-70' : ''"
-              :style="{ backgroundColor: nameToColor(memberProfile(id).name) }"
+              :style="{ backgroundColor: avatarSeedFor(id)?.bg }"
             >
               <img alt="" v-if="memberProfile(id).avatar" :src="memberProfile(id).avatar ?? undefined" class="h-full w-full object-cover" />
-              <span v-else class="gosslan-avatar-initial text-xs font-semibold" :data-len="avatarInitialLen(memberProfile(id).name)">{{ initials(memberProfile(id).name) }}</span>
+              <span v-else class="gosslan-avatar-emoji" aria-hidden="true">{{ avatarSeedFor(id)?.emoji }}</span>
             </div>
             <span
               class="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border-2 border-[var(--gosslan-panel)]"
@@ -305,9 +334,13 @@ async function confirmAction() {
             </span>
           </div>
           <button
-            class="tap-safe shrink-0 rounded-[var(--gosslan-radius-md)] px-2 py-1 text-[12px] text-[var(--gosslan-primary)] transition hover:bg-[var(--gosslan-hover)]"
+            class="tap-safe flex shrink-0 items-center gap-1 rounded-[var(--gosslan-radius-md)] px-2 py-1 text-[12px] text-[var(--gosslan-primary)] transition hover:bg-[var(--gosslan-hover)]"
+            :aria-busy="tasksOpening || undefined"
             @click="emit('open-tasks')"
           >
+            <!-- 与聊天头部那颗按钮同一份反馈：桌面端这一下是去开**独立窗口**，
+                 窗口建出来之前必须让人看见"点到了、在开"（见 `ChatHeader.vue` 的说明）。 -->
+            <Loader2 v-if="tasksOpening" class="h-3.5 w-3.5 animate-spin" />
             {{ todoSummary.total ? t("todo.viewAll") : t("todo.create") }}
           </button>
         </div>
@@ -356,10 +389,10 @@ async function confirmAction() {
             >
               <div
                 class="gosslan-avatar-box flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
-                :style="{ backgroundColor: nameToColor(f.nickname) }"
+                :style="{ backgroundColor: avatarSeedFor(f.device_id)?.bg }"
               >
                 <img alt="" v-if="f.avatar" :src="f.avatar" class="h-full w-full object-cover" />
-                <span v-else class="gosslan-avatar-initial text-[11px] font-semibold" :data-len="avatarInitialLen(f.nickname)">{{ initials(f.nickname) }}</span>
+                <span v-else class="gosslan-avatar-emoji" aria-hidden="true">{{ avatarSeedFor(f.device_id)?.emoji }}</span>
               </div>
               <span class="min-w-0 flex-1 truncate text-sm" :title="f.nickname">{{ f.nickname }}</span>
               <Plus class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-text-2)]" />

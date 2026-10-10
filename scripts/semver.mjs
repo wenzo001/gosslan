@@ -8,11 +8,12 @@
 //
 // 两个"累加"口径，两者都实现、用途不同：
 //   ① accumulate()：**逐提交累加**（字面执行"每次提交都进一位"）—— 只用于审计/台账；
-//   ② requiredLevel()+bumpVersion()：**一次发布取最高档**（SemVer 标准做法）—— 用于真正发版。
+//   ② owedBumpLevel()（= requiredLevel() 先排除零影响提交）+ bumpVersion()：**一次发布取最高档**
+//      （SemVer 标准做法）—— 用于真正发版，也是 `check` 那半条「版本落后」的取档口径。
 // 为什么不用 ① 定版本：184 个提交里有 23 个大功能，逐条累加会得到 25.1.2 这种数字，
 // 它既不表达"这次发布有多大"，也和后端/前端/安装包的版本语义脱节。
-import { execSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { execFileSync, execSync } from "node:child_process";
+import { readFileSync, writeFileSync } from "node:fs";
 
 export const LEVEL_RANK = { patch: 1, minor: 2, major: 3 };
 export const BUMP_TRAILER = "Version-Bump";
@@ -97,6 +98,95 @@ export function accumulate(version, levels) {
 }
 
 /** 提交信息里的 `Version-Bump: <level>` 声明（没有则返回 null）。 */
+/**
+ * 声明门禁的作用范围：**只看未推送的提交**（#123，用户 2026-09-27 拍板）。
+ *
+ * 为什么不看全范围：绝大多数缺声明的历史提交**已经推送**，改写它们要 rebase 已公开的历史；
+ * 而门禁天天报上百条噪音的真实代价是「新漏的那一条被淹掉」。已推送的不再算当前噪音，
+ * **新提交仍必须声明**（这条纪律不因静音而放松）。
+ *
+ * `pushedShorts` 为空 ⇒ 回退成全范围：拿不到远端引用时宁可继续严判，
+ * 也不许把「什么都没判」当成静音通过（那是最像成功的一种失败）。
+ */
+/**
+ * 这条路径是不是**会被打包发出去的应用码**。
+ * 口径：前端 `src/**` 与 Rust `src-tauri/src/**`，**但测试文件不算**
+ * （`*.test.ts` 与 Rust 侧的 `*_tests.rs` / `mod tests` 所在分册都是给门禁跑的，不进产物）。
+ * 判错这一条的代价不对称：把测试算成应用码 ⇒ 每次补用例都被迫提版本号（版本号会通胀）；
+ * 把应用码算成测试 ⇒ 才是真漏。所以两边都点名，用现算命令可核（见 VERSIONING.md）。
+ */
+export function isAppCodePath(p) {
+  if (/\.(test|spec)\.tsx?$/.test(p)) return false;
+  if (/^src-tauri\/src\/.+(_tests|tests)\.rs$/.test(p)) return false;
+  return /^src\//.test(p) || /^src-tauri\/src\//.test(p);
+}
+
+/** 这条提交是否**声明零影响**：标题带 `[plan]` 且不动应用代码。两处用同一份口径。 */
+export function isZeroImpact(row) {
+  // ★ 豁免只给**不动应用代码**的提交（`src/` 与 `src-tauri/src/` 之外的改动，如文档、门禁脚本）：
+  // 否则一条 `[plan]` 就能把任何代码提交免掉，这个门禁就是装饰。
+  return !row.touchesCode && /\[plan\]/.test(row.subject ?? "");
+}
+
+/**
+ * 这条提交**是否算已声明**：
+ * - 标题带 `[plan]`（本仓既有标记，Change Budget 也读它）⇒ 视为"零影响声明"，不动版本；
+ * - 标题是 `chore(release): …` ⇒ 豁免（见下）；
+ * - 否则必须有 `Version-Bump: <级别>`，且与自己被定级的那一档一致。
+ *
+ * ★ 2026-10-03 补上 `chore(release)` 豁免，理由是**它本来就该有、只是本文件漏了**：
+ * `docs/VERSIONING.md` §3 第 4 条与 `check-change-budget.mjs:67` 都写了
+ * 「`chore(release)` 例外：那条流的声明就在 subject 里」—— 也就是说
+ * **`chore(release): 4.33.0 …` 的版本号本身**就是它的声明，不需要再写一遍 trailer。
+ * 缺了这条豁免的后果是每次发版 `npm run version:check` 必红，而它偏偏又不是门禁步
+ * （§3 明说"这条没有进 CI"）⇒ 变成一条没人修、也没人敢关的红。
+ * 判据 4 那侧早就豁免了（`check-change-budget.mjs:626` 打印"chore(release) 豁免声明"），
+ * 两边不一致会让读代码的人以为其中一边是 bug —— 现在对齐到文档。
+ */
+export function declaresBump(row) {
+  if (isZeroImpact(row)) return true;
+  if (isReleaseCommit(row)) return true;
+  return parseBumpTrailer(row.message ?? "") === row.level;
+}
+
+/**
+ * `chore(release)` 提交（发布记账那种）。
+ *
+ * 它**不是**零影响声明（`isZeroImpact` 判的是"带 `[plan]` 且不动应用码"），但同样
+ * 不该参与"真欠的档位"：版本号在它之前那次 bump 就提完了。
+ */
+export function isReleaseCommit(row) {
+  return /^chore\(release\):/.test(row.subject ?? "");
+}
+
+/**
+ * 这批提交**真正欠**的版本档位 = 非零影响、非 release 提交里的最高档
+ * （零影响那条既不加也不稀释，release 那条是记账不是欠账）。
+ *
+ * 为什么不能直接用整个范围的最高档：`classifyCommit` 对**任何**提交都至少给 patch，
+ * 而 `since` 是"最后一次真改了版本号的提交" ⇒ 只要范围里还留着一条纯文档提交，
+ * 旧写法就会报「当前版本落后于未发布提交要求的 X」并让 `version:release` 去升一位号。
+ * 这既让"攒提交期间的 check 天天红"（红的门禁等于没有门禁），又与 `isAppCodePath` 那条
+ * 注释里写明的意图相反（"每次补用例都被迫提版本号 ⇒ 版本号会通胀"）。
+ *
+ * ⚠️ 这一条**不放松**任何纪律：动应用代码的提交只写 `[plan]` 仍被 `declaresBump` 判红，
+ * 于是它照样落进这里（见 `smuggled` 那格用例）。
+ *
+ * ★ 2026-10-03 把 `chore(release)` 一并排除（与 `declaresBump` 对齐）：
+ * 只改声明检查会让"版本落后"那条照红；只改这里则声明检查仍红。
+ * 两边口径不一致，读代码的人会以为其中一边是 bug。
+ */
+export function owedBumpLevel(rows) {
+  return requiredLevel(
+    rows.filter((r) => !isZeroImpact(r) && !isReleaseCommit(r)).map((r) => r.level),
+  );
+}
+
+export function filterUnpushed(rows, pushedShorts) {
+  if (!pushedShorts || pushedShorts.size === 0) return [...rows];
+  return rows.filter((r) => !pushedShorts.has(r.short));
+}
+
 export function parseBumpTrailer(message) {
   const m = new RegExp(`^${BUMP_TRAILER}:\\s*(patch|minor|major)\\s*$`, "m").exec(message);
   return m ? m[1] : null;
@@ -126,14 +216,17 @@ export function collectCommits(since) {
     .map((block) => {
       const [hash, short, date, subject, ...rest] = block.split("\x1f");
       const numstat = git(`show --numstat --format= ${hash}`);
-      let churn = 0, files = 0;
+      let churn = 0, files = 0, touchesCode = false;
       for (const line of numstat.split("\n")) {
         const parts = line.split("\t");
         if (parts.length < 3) continue;
         files += 1;
         churn += (Number(parts[0]) || 0) + (Number(parts[1]) || 0);
+        // 口径：只看**将要发出去的应用码**（前端 src/ 与 Rust src-tauri/src/）；
+        // 门禁脚本、文档、workflow 不算 ⇒ 它们仍可走 [plan] 零影响豁免。
+        if (isAppCodePath(parts[2] ?? "")) touchesCode = true;
       }
-      return { hash, short, date, subject, message: rest.join("\x1f"), churn, files };
+      return { hash, short, date, subject, message: rest.join("\x1f"), churn, files, touchesCode };
     });
 }
 
@@ -210,6 +303,153 @@ export function changelogProblems(path = "CHANGELOG.md") {
   return problems;
 }
 
+/**
+ * **本次发版那一节**的归属问题（空数组 = 这一节里没有挂着别版说明的条目）。
+ *
+ * ## 结构检查为什么看不见这件事
+ * `version.mjs` 把新节标题插在 `## [Unreleased]` 那一行的**下面**。于是"先跑提版脚本、
+ * 再把条目写在锚点与新标题之间"这个顺序会让新节**看着有内容**，而那条内容其实是
+ * **上一次**发版的说明 —— 2026-09-28 实测到：4.31.7/4.31.8/4.31.9 三节各挂着下一版的条目，
+ * 而托盘那一条浮在 `[Unreleased]` 里。形状全合规（锚点唯一、标题格式、降序），
+ * 只有归属判据拦得住，而读更新日志的人要的正是"哪一版改了什么"。
+ *
+ * ## 判据（只判能证的，判不了的显式打印）
+ * 本节里每条 `### ` 标题：找到把它写进来的那次提交 A。
+ * - A **自己就是提版提交**（A 的 `package.json` 版本 ≠ A 父提交的版本）⇒ 它只能待在**自己那一版**
+ *   的小节里；挂在别处即红（就是上面那个事故的形状）。
+ * - A 不提版（`[plan]` / 攒改动期间的提交）⇒ 不判：这类条目本来就归"下一次发版"。
+ * - A 找不到（标题太通用、字面行在历史里重复）⇒ 计入 `判不了`，只打印不判。
+ */
+export function changelogAttributionProblems(changelogPath = "CHANGELOG.md", pkgPath = "package.json") {
+  const problems = [];
+  let cur;
+  let lines;
+  try {
+    cur = JSON.parse(readFileSync(pkgPath, "utf8")).version;
+    lines = readFileSync(changelogPath, "utf8").split("\n");
+  } catch {
+    return [`读不到 ${changelogPath} 或 ${pkgPath}`];
+  }
+  const from = lines.findIndex((l) => l.startsWith(`## [${cur}]`));
+  if (from === -1) return [`${changelogPath} 里没有 \`## [${cur}]\` 这一节，而 ${pkgPath} 已是 ${cur}`];
+  const items = [];
+  for (let i = from + 1; i < lines.length && !/^## \[/.test(lines[i]); i += 1) {
+    if (/^### /.test(lines[i])) items.push(lines[i].trim());
+  }
+  if (items.length === 0) return [`${changelogPath}:${from + 1} \`## [${cur}]\` 是空的（本次发版没有更新说明）`];
+  // 谁把 package.json 提到 cur：该字面行最后一次"计数变化"的那次提交
+  let bump = "";
+  try {
+    bump = execFileSync("git", ["log", "-1", "--format=%H", "-S", `"version": "${cur}"`, "--", pkgPath], {
+      encoding: "utf8",
+    }).trim();
+  } catch {
+    return [];
+  }
+  if (!bump) return []; // 提版还没落成提交（还在攒改动），这一节归谁还无从判起
+  let undecided = 0;
+  for (const it of items) {
+    const ev = entryOwner(it, changelogPath, pkgPath);
+    if (!ev) {
+      undecided += 1;
+      continue;
+    }
+    if (ev.isBumpCommit && ev.version !== cur) {
+      problems.push(
+        `${changelogPath}:${from + 1} 小节 \`## [${cur}]\` 里挂着「${it.slice(4, 40)}」，` +
+          `而写它的那次提交 ${ev.writer.slice(0, 7)} 自己就是把版本提到 ${ev.version} 的那次 ⇒ 这条属于 ${ev.version}，不属于 ${cur}`,
+      );
+    }
+  }
+  if (undecided) {
+    console.log(
+      `（归属判据的量不到之处：本节 ${items.length} 条里有 ${undecided} 条的标题太通用、在历史里重复，字面行找不出唯一写入者 ⇒ 未判）`,
+    );
+  }
+  return problems;
+}
+
+/**
+ * 一条 `### ` 标题的**归属证据**：谁把它写进文件的，以及那次提交落笔时 `package.json` 是哪一版。
+ * 返回 `null` = 判不了（标题在历史里重复，pickaxe 找不出唯一写入者）。
+ * `isBumpCommit` = 那次提交自己把版本提了上去（自己的版本 ≠ 父提交的版本）⇒ 它说得出这条属于哪一版。
+ * 不提版的提交（`[plan]` 那类）写下的条目本来就归下一次发版 ⇒ 不判。
+ */
+export function entryOwner(titleLine, changelogPath = "CHANGELOG.md", pkgPath = "package.json") {
+  const cache = entryOwner._cache || (entryOwner._cache = new Map());
+  const key = `${changelogPath}\u0000${pkgPath}\u0000${titleLine}`;
+  if (cache.has(key)) return cache.get(key);
+  // ⚠️ 必须 argv 传参，**不能**把标题拼进 shell 命令串：条目标题里有反引号（"搬成 `include!` 分册"），
+  // 拼串会被 shell 当成命令替换真的执行一遍（本轮实测到 `/bin/sh: include!: command not found`）。
+  const run = (args) => {
+    try {
+      return execFileSync("git", args, { encoding: "utf8", maxBuffer: 64 << 20 }).trim();
+    } catch {
+      return "";
+    }
+  };
+  const writer = run(["log", "-1", "--format=%H", "-S", titleLine, "--", changelogPath]);
+  if (!writer) {
+    cache.set(key, null);
+    return null;
+  }
+  const verOf = (ref) => {
+    try {
+      return JSON.parse(run(["show", `${ref}:${pkgPath}`])).version;
+    } catch {
+      return null;
+    }
+  };
+  const parent = run(["log", "-1", "--format=%P", writer]).split(" ")[0];
+  const version = verOf(writer);
+  const ev = { writer, version, isBumpCommit: parent ? verOf(parent) !== version : true };
+  cache.set(key, ev);
+  return ev;
+}
+
+/**
+ * 全历史归属审计（**量具**，一次要跑几百次 git ⇒ 不入门禁层，口径同 `selfproof:check`）。
+ * 只统计"证据到得了"的那部分：写入者自己就是提版提交的条目。
+ */
+export function changelogAttributionAudit(changelogPath = "CHANGELOG.md", pkgPath = "package.json") {
+  const lines = readFileSync(changelogPath, "utf8").split("\n");
+  const secs = [];
+  lines.forEach((l, i) => {
+    const m = /^## \[(\d+\.\d+\.\d+)\]/.exec(l);
+    if (m) secs.push({ v: m[1], i });
+  });
+  const rows = [];
+  let judged = 0;
+  let undecided = 0;
+  let notBump = 0; // 写入者不提版的条目：本来就归"下一次发版"，判不了它挂在哪一节才对
+  let entries = 0;
+  for (const s of secs) {
+    let j = s.i + 1;
+    const items = [];
+    while (j < lines.length && !/^## \[/.test(lines[j])) {
+      if (/^### /.test(lines[j])) items.push(lines[j].trim());
+      j += 1;
+    }
+    for (const it of items) {
+      entries += 1;
+      const ev = entryOwner(it, changelogPath, pkgPath);
+      if (!ev) {
+        undecided += 1;
+        continue;
+      }
+      if (!ev.isBumpCommit) {
+        notBump += 1; // 攒改动期间写的 ⇒ 归下一次发版，不判
+        continue;
+      }
+      judged += 1;
+      if (ev.version !== s.v) {
+        rows.push(`  「${it.slice(4, 44)}」现挂 ${s.v} → 应归 ${ev.version}（写入者 ${ev.writer.slice(0, 7)} 就是那次提版）`);
+      }
+    }
+  }
+  return { sections: secs.length, entries, judged, notBump, misplaced: rows.length, undecided, rows };
+}
+
 function main() {
   const [cmd = "check", ...flags] = process.argv.slice(2);
 
@@ -221,17 +461,35 @@ function main() {
   // 这条检查原先只作为 `check` 的 ③ 存在，而 `check` 的 ① ②（当前版本必须 ≥ 未发布提交
   // 要求的版本、每个提交都要有自洽的 `Version-Bump:` 声明）在**攒提交期间本来就该是红的** ——
   // 发版前就是那个状态。于是「CHANGELOG 结构」被迫跟着一起红。
+  // ★ 2026-09-28 更新（#138 / #123）：那句"本来就该是红的"是**当时的状态**，今天已不成立 ——
+  // ②只看未推送提交，①只看 `owedBumpLevel()`（零影响提交不再逼版本号）⇒ `check` 在攒提交期间可绿。
+  // **但这条拆分仍然要**：结构检查不许被记账口径的另两半牵动（它判的是文件形状，不是账）。
   //
   // 真实后果：`scripts/verify-guards.py` 的「CHANGELOG 结构」用例拿 `check` 当命令，
   // 于是它永远无法进入"恢复即 PASS"，被判成护栏失效（2026-09-16 发现）。
   // **结构是结构、记账是记账** —— 拆成两个命令，各自说各自的话，不互相拖累。
   if (cmd === "changelog") {
-    const problems = changelogProblems();
+    const problems = [...changelogProblems(), ...changelogAttributionProblems()];
     if (problems.length) {
-      console.error(`CHANGELOG 结构检查未通过：\n- ${problems.join("\n- ")}`);
+      console.error(`CHANGELOG 检查未通过：\n- ${problems.join("\n- ")}`);
       process.exit(1);
     }
-    console.log("CHANGELOG 结构检查通过（唯一行首 `## [Unreleased]` 锚点 + 标题格式 + 新在前降序）");
+    console.log(
+      "CHANGELOG 检查通过（唯一行首 `## [Unreleased]` 锚点 + 标题格式 + 新在前降序 + 本次发版那一节的条目归属可证）",
+    );
+    return;
+  }
+
+  // `audit-attribution`：全历史归属审计（**量具** —— 一次要跑几百次 git，所以不入门禁层，
+  // 口径与 `selfproof:check` 那批一样：能复查，但不拦提交）。
+  if (cmd === "audit-attribution") {
+    const r = changelogAttributionAudit();
+    console.log(
+      `版本小节 ${r.sections} 个 · 条目总数 ${r.entries} 条 = 证据到得了 ${r.judged}` +
+        ` ＋ 写入者不提版所以不判 ${r.notBump} ＋ 找不到唯一写入者 ${r.undecided}` +
+        ` · 其中归属错位 ${r.misplaced} 条`,
+    );
+    for (const row of r.rows) console.log(row);
     return;
   }
 
@@ -241,60 +499,138 @@ function main() {
   const commits = collectCommits(since);
   const rows = commits.map((c) => ({ ...c, ...classifyCommit(c) }));
 
+  // 作用范围（#123）：已推送 = 不在 `HEAD --not --remotes=origin` 那个集合里。
+  // 没有任何远端引用时那个集合就是全部 ⇒ pushedShorts 为空 ⇒ 回退成全范围（见 filterUnpushed 文档）。
+  // ★ 用 upstream 的两点范围，**不要**写成 `rev-list --not --remotes=origin HEAD`：
+  // 那个写法会把 HEAD 也一起取反 ⇒ 输出空 ⇒ "未推送 0 个" ⇒ 声明检查静默变成什么都不判
+  // （本仓最禁的一种失败：今天实测它真的返回空）。没有 upstream ⇒ pushedShorts 留空 ⇒ 回退全范围。
+  let pushedShorts = new Set();
+  let unpushedCount = 0;
+  try {
+    const upstream = git("rev-parse --abbrev-ref --symbolic-full-name @{u}").trim();
+    if (upstream) {
+      const unpushedHashes = new Set(
+        git(`rev-list ${upstream}..HEAD`)
+          .split("\n")
+          .filter(Boolean),
+      );
+      unpushedCount = unpushedHashes.size;
+      pushedShorts = new Set(rows.filter((r) => !unpushedHashes.has(r.hash)).map((r) => r.short));
+    }
+  } catch {
+    // 没有 upstream（或远端引用还没取到）⇒ 走全范围，绝不静默放行
+  }
+  // 反空转闸：说"有 N 个未推送"却在本次范围里一个都没看到 ⇒ 判据自己坏了，当场报错而不是放行
+  if (unpushedCount > 0 && rows.length > 0 && rows.length - pushedShorts.size === 0) {
+    console.error(`声明检查的作用范围算空了（未推送 ${unpushedCount} 个，但都没落进本次范围）⇒ 拒绝放行，改判为全范围`);
+    pushedShorts = new Set();
+  }
+
   if (cmd === "ledger") {
-    console.log("| # | commit | 日期 | 类型 | 级别 | 累计版本 | 判据 | 标题 |");
-    console.log("|---|---|---|---|---|---|---|---|");
+    // ★ 两个洞一起堵（2026-09-28 我自己踩到：`npm run version:ledger` 把一份 271 行的账表
+    //   覆盖成只剩表头两行，而**退出码 0**，靠 `git restore` 才救回来）：
+    //   ① 旧 npm 脚本是 `… --since main > docs/version-ledger.md`，在 main 分支上 `main..HEAD`
+    //     恒为 0 条 ⇒ 每次都产出一张空表；
+    //   ② shell 的 `>` 在进程还没判之前就把文件截成 0 字节 ⇒ "拒绝写"必须由拿句柄的这一方做，
+    //     所以改成由本命令自己写（`--out`，默认就是原来那个路径）。
+    //   **不改范围语义**：默认仍是"上一次改版本号的提交之后"（`check`/`classify` 用的同一个窗口），
+    //   累计列也照旧是"从当前版本往后逐条累加"（台账用，别拿来发版 —— 见 accumulate 的注释）。
+    const outIdx = flags.findIndex((f) => f === "--out" || f.startsWith("--out="));
+    const out =
+      outIdx < 0
+        ? "docs/version-ledger.md"
+        : flags[outIdx] === "--out"
+          ? flags[outIdx + 1]
+          : flags[outIdx].slice("--out=".length);
+    if (!out) {
+      console.error("✗ `--out` 后面没有路径");
+      process.exit(1);
+    }
+    if (rows.length === 0) {
+      const msg = `范围（${since || "整个历史"}..HEAD）里没有新提交 ⇒ 没有要入账的东西，${out} 一字未动`;
+      if (sinceFlag >= 0) {
+        // 显式给了范围却一条都没有 ⇒ 十有八九是范围写错（`--since main` 在 main 上就是这种写法），
+        // 必须响亮地红；而不显式给范围时的"没有新提交"是正常状态，只如实打印。
+        console.error(`✗ ${msg} ⇒ 你给的 --since 框不住任何提交，别让它把账表覆盖成空表`);
+        process.exit(1);
+      }
+      console.log(`· ${msg}`);
+      return;
+    }
+    const lines = [
+      "| # | commit | 日期 | 类型 | 级别 | 累计版本 | 判据 | 标题 |",
+      "|---|---|---|---|---|---|---|---|",
+    ];
     let v = cur;
     rows.forEach((r, i) => {
       v = bumpVersion(v, r.level);
       const lvl = { patch: "小（patch）", minor: "中（minor）", major: "大（major）" }[r.level];
-      console.log(`| ${i + 1} | \`${r.short}\` | ${r.date} | ${r.type} | ${lvl} | ${v} | ${r.reason} | ${r.subject.replace(/\|/g, "\\|")} |`);
+      lines.push(`| ${i + 1} | \`${r.short}\` | ${r.date} | ${r.type} | ${lvl} | ${v} | ${r.reason} | ${r.subject.replace(/\|/g, "\\|")} |`);
     });
+    writeFileSync(out, lines.join("\n") + "\n");
+    console.log(`✓ 已写 ${out}：${rows.length} 条（末行累计版本 ${v}，范围 ${since}..HEAD）`);
     return;
   }
 
   const top = requiredLevel(rows.map((r) => r.level));
-  const target = top ? bumpVersion(cur, top) : cur;
+  // ★ "欠不欠一次版本号"看 `owed`（零影响提交不算），`top` 只是整个范围的字面最高档。
+  // 两者在正常节奏下相等（代码提交的标题不会带 [plan]），差集恰好就是"纯文档/判据那一类"。
+  const owed = owedBumpLevel(rows);
+  const owedTarget = owed ? bumpVersion(cur, owed) : cur;
 
   if (cmd === "level") {
-    console.log(top ?? "patch");
+    console.log(owed ?? "patch");
     return;
   }
   if (cmd === "release") {
-    if (!top) {
-      console.log("没有需要发布的提交（版本不变）");
+    if (!owed) {
+      console.log(
+        rows.length
+          ? `范围内 ${rows.length} 条提交全是零影响（标题 [plan] 且不动 src/ 与 src-tauri/src/）⇒ 版本不变（仍 ${cur}）`
+          : "没有需要发布的提交（版本不变）",
+      );
       return;
     }
-    console.log(`按最高档 ${top} 提升：${cur} -> ${target}`);
-    execSync(`node scripts/version.mjs ${top}`, { stdio: "inherit" });
+    console.log(`按最高档 ${owed} 提升：${cur} -> ${owedTarget}`);
+    execSync(`node scripts/version.mjs ${owed}`, { stdio: "inherit" });
     return;
   }
 
   if (cmd === "classify") {
     for (const r of rows) console.log(`${r.short}  ${r.level.padEnd(5)}  ${r.type.padEnd(8)}  ${r.subject}`);
-    console.log(`\n最高档: ${top ?? "（无提交）"} ⇒ 本次发布应提升到 ${target}`);
+    const zero = rows.filter(isZeroImpact);
+    console.log(`\n字面最高档: ${top ?? "（无提交）"}　**真欠的档位**: ${owed ?? "（无 —— 全是零影响提交）"}`);
+    console.log(`⇒ 本次发布应提升到 ${owedTarget}（排除 ${zero.length} 条零影响提交：${zero.map((r) => r.short).join(" ") || "无"}）`);
     return;
   }
 
-  // check：门禁。① 版本必须 ≥ 未发布提交要求的版本；② 每个提交都要声明 Version-Bump 并自洽。
+  // check：门禁。① 版本必须 ≥ **真欠**的那一档；② 每个提交都要声明 Version-Bump 并自洽。
   const problems = [];
-  if (top && compareVersion(cur, target) < 0) {
-    problems.push(`当前版本 ${cur} 落后于未发布提交要求的 ${target}（最高档 ${top}）⇒ 跑 \`npm run version:release\``);
+  if (owed && compareVersion(cur, owedTarget) < 0) {
+    problems.push(`当前版本 ${cur} 落后于未发布提交要求的 ${owedTarget}（最高档 ${owed}）⇒ 跑 \`npm run version:release\``);
   }
-  const wrong = rows.filter((r) => parseBumpTrailer(r.message) !== r.level);
+  // ★ 声明检查只看**未推送**的提交；`--all-commits` 显式扩回全范围（审计/自查用）。
+  const scoped = flags.includes("--all-commits") ? rows : filterUnpushed(rows, pushedShorts);
+  const wrong = scoped.filter((r) => !declaresBump(r));
   if (wrong.length) {
     problems.push(
-      `${wrong.length} 个提交缺少/写错了 \`${BUMP_TRAILER}:\` 声明（应为该提交的级别）：\n` +
+      `${wrong.length} 个**未推送**提交缺少/写错了 \`${BUMP_TRAILER}:\` 声明（应为该提交的级别；已推送的历史不算噪音，审计请加「--all-commits」）：\n` +
         wrong.slice(0, 8).map((r) => `  ${r.short} 期望 ${r.level} 实际 ${parseBumpTrailer(r.message) ?? "(无)"}  ${r.subject}`).join("\n"),
     );
   }
   // ③ CHANGELOG 结构（锚点存在 + 标题格式 + 新在前的降序）。
-  problems.push(...changelogProblems());
+  problems.push(...changelogProblems(), ...changelogAttributionProblems());
   if (problems.length) {
     console.error(`版本号规则检查未通过（自 ${since || "首个提交"}）：\n- ${problems.join("\n- ")}`);
     process.exit(1);
   }
-  console.log(`版本号规则检查通过：自 ${since || "首个提交"} 共 ${rows.length} 个提交，最高档 ${top ?? "无"}，当前版本 ${cur} ≥ ${target}`);
+  const zeroCount = rows.filter(isZeroImpact).length;
+  console.log(
+    `版本号规则检查通过：自 ${since || "首个提交"} 共 ${rows.length} 个提交` +
+      `（真欠的档位 ${owed ?? "无 —— 范围内全是零影响提交"}，字面最高档 ${top ?? "无"}，其中 ${zeroCount} 条按 [plan] 零影响豁免` +
+      `；动应用代码的提交写 [plan] 不算豁免），当前版本 ${cur} ≥ ${owedTarget}` +
+      `；声明检查只看未推送的 ${scoped.length} 个（已推送 ${rows.length - scoped.length} 个不再算噪音）`,
+  );
 }
 
 if (process.argv[1] && process.argv[1].endsWith("semver.mjs")) main();

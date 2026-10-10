@@ -12,11 +12,15 @@
  *   2. **敏感文件**:碰核心协议/密码学/DB schema 的改动无论多小都要显式声明;
  *   3. **重复犯案**:同一领域连续被打补丁 ⇒ 说明缺不变量或单一事实来源,
  *      4.18.7→4.18.10 就是标准样本(四个"小修复"互相修)。
+ *   4. **版本声明一致性**:`Version-Bump` 写了就必须真 bump 四个版本清单文件,反之亦然
+ *      —— trailer 不只是仪式:判据 3 拿它判"这次是不是修补"。
  *
  * ## 判据(对范围内每个 commit)
  *
  * 先算**计入文件** = 改动文件 − 豁免文件(见下)。计入文件为空 ⇒ 整个 commit
- * 是纯工程/文档 commit ⇒ PASS。
+ * 是纯工程/文档 commit ⇒ PASS。判据 4 **不看豁免**(版本清单文件本就在豁免之外),
+ * 但 git 模式下读不到完整 message 时判据 3/4 一律**停用并计一条失败** ——
+ * 停用与通过打印不同,不会悄悄变绿。
  *
  * | 级别 | 条件 | 要求 |
  * |---|---|---|
@@ -24,22 +28,47 @@
  * | L2 | ≤10 文件 && ≤500 LOC && ≤2 领域 && 不碰敏感文件 | commit message 必须含 `[plan]` |
  * | L3 | 其余,或碰了敏感文件 | commit message 必须含 `[impact]` |
  *
- * **敏感文件**(碰了直接 L3,与规模无关):`schema.sql`(全库数据)、
- * `protocol.rs`(线协议)、`crypto.rs`(E2EE)。这三个文件一错就是安全问题或
- * 全库数据问题,值得多一次显式声明。
+ * **敏感文件**(碰了直接 L3,与规模无关):`protocol.rs`(线协议)、`crypto.rs`(E2EE)。
+ * 这两个一错就是安全或全库数据问题,值得多一次显式声明。
+ * ⚠️ 这里**曾经还有第三个** `schema.sql`,2026-09-26 随该文件一起退役
+ * (表结构的唯一真源是 `db.rs` 的 SCHEMA 常量;那份手写 DDL 没有任何代码读它 ⇒
+ * 把它当"敏感真源"反而是在给一份没人核对的假事实源发牌照)。
+ * **别顺手把它加回来** —— 要防的是"手写第二份 DDL",不是"这个文件名"。
  *
  * **豁免文件**(不计入文件数/LOC):`*.md`、`*.txt`(含 test-baseline)、
  * `docs/**`、`.github/**`、`scripts/**`。理由:这些是工程仪式与文档,不是
  * 产品代码;不豁免的话,每加一个守门脚本/每写一次 CHANGELOG 都在吃预算。
  * 风险(在 docs 里藏坏内容)由 PR review 兜底。
  *
- * **版本白名单**(仅 `chore(release)` 生效):package.json / package-lock.json /
- * Cargo.toml / Cargo.lock / tauri.conf.json。每次发版固定动这 6 个文件,不豁免
- * 会每个版本撞门。
+ * **版本清单文件永不计入预算**（2026-09-28 起；此前是「仅 `chore(release)` 豁免」）:
+ * package.json / package-lock.json / Cargo.toml / Cargo.lock / tauri.conf.json。
+ * 为什么从"发版才豁免"改成"永远不算"：判据 4 **强制**每条动应用码的提交都同时改这四个
+ * 清单文件（`Version-Bump:` 写了就必须落地），于是判据 1 又把它们数进"改了几个文件"里
+ * ⇒ **同一道门禁的一条判据在制造另一条判据的红**。实测代价：近 12 条含产品码的提交里有
+ * 3 条是这样被顶到 L3（要求 `[impact]`）的，其中 `c58c425` 真实只动了 3 个产品文件，
+ * 计入的 11 个里有 5 个是版本清单、3 个是测试。
+ * ⚠️ 这只影响**规模**判据（判据 1/2）。判据 4 照旧读这批文件，一个都没少判。
  *
- * **重复犯案**:取 `<merge-base>..HEAD` 内最近 5 个 `fix` 提交,各自映射领域
+ * **重复犯案**:取 `<merge-base>..HEAD` 内最近 5 个「**修补形状**」提交,各自映射领域
  * (豁免文件不计);任一领域出现 ≥3 次 ⇒ FAIL。窗口**只看本分支独有**的提交
  * —— main 上历史上已经有 BLE 连修的旧案,向前看,不审判历史。
+ *
+ * 「修补形状」**不看前缀怎么写**:前缀是手打的、可以写成 `feat` 躲窗口(真实形状:
+ * `feat(ui): 主题色体系 + …… + 群任务编辑权限修复`)。改看 **`Version-Bump` 声明**:
+ * 声明 `patch` = 作者断言"这次没有新能力" ⇒ 无论前缀是 fix 还是 feat 都进窗口;
+ * 没有声明的旧提交退回按 `^fix` 前缀判(不缩小既有窗口)。
+ *
+ * **判据 4 —— 版本声明必须落地**(2026-09-21 加,PR #22/#23 的真实缺口):
+ * message 里写了 `Version-Bump: patch|minor|major`,提交里就必须**同时**动这四个版本
+ * 清单文件 —— `package.json`、`package-lock.json`、`src-tauri/Cargo.toml`、
+ * `src-tauri/tauri.conf.json`(`scripts/version.mjs` 一次写**五处**:这四个 + `Cargo.lock`;
+ * 判据只要这四个 —— 少的那一处由 version.mjs 自己断言,跟不上就 exit 1,不在这里重复一遍)。
+ * 反方向同样:四个都动了却没声明 ⇒ 红
+ * (`chore(release)` 例外:那条流的声明就在 subject 里)。
+ * 为什么两个方向都要:判据 3 现在**消费这个 trailer**,一个不成立的 trailer 就等于
+ * "窗口可以靠不写 trailer 躲开" —— 装饰性声明比没有声明更糟。
+ * 近 200 个提交实测:命中红线的只有 PR #22/#23 那两条(声明了 bump、四个文件一个没动,
+ * 版本最后是 v4.23.0 手工补账的),其余形状全部一致 ⇒ 不会误伤历史。
  *
  * ## 领域归属
  *
@@ -49,9 +78,33 @@
  *
  * ## 用法
  *
- *     node scripts/check-change-budget.mjs                     # 本地:检查 HEAD~1..HEAD
+ *     node scripts/check-change-budget.mjs                     # 本地:检查未推送范围
  *     node scripts/check-change-budget.mjs --range a1b2c3..HEAD
  *     node scripts/check-change-budget.mjs --from-json scripts/fixtures/change-budget.json
+ *     node scripts/check-change-budget.mjs --staged            # 量具:提交**之前**先量一次
+ *
+ * ### `--staged` 为什么存在（2026-09-28 加，量具、**不是门禁**）
+ *
+ * 本判据有一个结构性的时间差：它判的是**已经存在的 commit**（读 message 里的标记），
+ * 而标记必须在 commit **之前**就写进标题。等它报红时提交已经落地 —— 本地还能 amend，
+ * 但**推送之后就再也改不动了**（不改写历史是硬规矩），于是只能留一条红在 main 上。
+ * 真实代价：`c58c425` 就是这样在 CI 上红了三趟。
+ *
+ * `--staged` 把同一个 `classify()` 用在暂存区上，提交前就能读出"这次该带哪个标记"。
+ * ⚠️ 它**永远 exit 0**、也**不接进任何门禁**：它只回答"半径多大、该写什么标记"，
+ * 判定权仍在提交后的正式那一跑。不新增第二份口径 —— 分级只认 `classify()` 这一个家。
+ *
+ * ### 判据 3 的处置口径（2026-10-10 记账，不改算法）
+ *
+ * 它**没有豁免开关**（退出码只有 0/1/2），也不看语义 —— 一次攒多条未推提交时，
+ * "同一领域最近 5 个 patch 形状提交 ≥3"几乎必然命中：加一条护栏算一次 presentation
+ * （`src/utils/designGuards.*` 是 hub 文件），修另一格行为也算一次。
+ * ⇒ 给下一个自己的操作规矩：**未推区间里同领域已有 2 条 patch 形状提交时，就把手上的应用码
+ * 提交交回负责人推送**，别攒到第 3 条以后 —— 因为这条判据推上去就改不动了（不改写历史）。
+ * 已推上去的红怎么办：只有两条正路 —— ① 下一次推送的**新范围**里窗口自然清空（实测：
+ * `GOSSLAN_BUDGET_STRICT=1 GITHUB_EVENT_NAME=push node scripts/check-change-budget.mjs
+ * --range refs/remotes/origin/main..HEAD` 判"窗口 0 个 ⇒ 无重复犯案"）；② 负责人明确接受这条信号。
+ * **不许**为了消红去改领域映射或窗口大小。
  *
  * CI(push event)自动用 `github.event.before..github.sha`;拿不到或 force push
  * 时退化为 HEAD~1..HEAD —— 并**打印实际用的范围**,不静默。
@@ -65,10 +118,19 @@
  *   —— 那靠测试与不变量;
  * · **commit 切分 gaming**:把一个大改动拆成多个小 commit 就绕过了规模判据
  *   —— 但重复犯案判据仍会盯住"同一领域反复改";两道闸互为补充;
- * · **fix 前缀 gaming**:把 fix 写成 feat 就躲开犯案窗口 —— 这属于"门禁被绕过
- *   一次就永久失效"的流程问题,review 兜底。
+ * · **不写 trailer**:判据 4 管的是"写了就得真做",不管"该写却没写"。不声明
+ *   `Version-Bump` 的提交会退回按 `^fix` 前缀进犯案窗口 ⇒ 把一条真修复写成
+ *   `feat` 且**同时**删掉 trailer,仍能躲开窗口。这一步不做硬要求的原因:近 200 个提交里
+ *   「无 trailer 无版本文件」有 56 条(旧的"多 commit 攒一版"流),现在强令每 commit 必
+ *   bump 会把门禁变成对历史的审判。真发生了靠 review + `[plan]` 说明兜底。
  *
- * 退出码:0 = 全部通过;1 = 有 commit 超预算未声明,或重复犯案。
+ * 退出码:0 = 全部通过;1 = 有 commit 超预算未声明、版本声明未落地、重复犯案,
+ *         或（**仅当调用方声明了 `GOSSLAN_BUDGET_STRICT=1`**，目前只有 verify.yml）
+ *         CI push→main 的范围不是事件里的 before..sha ⇒ 门禁在空转;
+ *         2 = **零覆盖**(跑了但范围内没有 commit 可判,常见于本地"已 push 之后重跑")。
+ *         ⇒ 2 不是 0:`verify.mjs` 会把它单列成"未覆盖项",而不是 ✅;
+ *         ⇒ 出包脚本(build-android-releases.sh)把 2 当**警告**继续 —— 门禁判不到范围
+ *           不该打断出包,那是另一件事。
  */
 
 import { readFileSync, existsSync } from "node:fs";
@@ -78,6 +140,10 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import domainMap from "../docs/domains.data.mjs";
+// #139：领域归属必须认这条既有口径 —— 测试文件不算应用码（semver.mjs 里那条注释就是理由：
+// 「每次补用例都被迫提版本号 ⇒ 版本号会通胀」。Change Budget 的犯案窗口原先没读它，
+// 于是一条只动 `*.test.ts` 的提交也被算成「同一领域反复打补丁」的第 3 票（2026-09-28 实测）。
+import { isAppCodePath } from "./semver.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -91,7 +157,6 @@ const L2 = { files: 10, loc: 500, domains: 2 };
 
 /** 碰了直接升 L3 的文件(仓库相对路径)。一错就是安全/全库数据问题的三处。 */
 const SENSITIVE_FILES = new Set([
-  "src-tauri/src/schema.sql",
   "src-tauri/src/protocol.rs",
   "src-tauri/src/crypto.rs",
 ]);
@@ -100,19 +165,70 @@ const SENSITIVE_FILES = new Set([
 const EXEMPT_PREFIXES = [".github/", "scripts/", "docs/"];
 const EXEMPT_SUFFIXES = [".md", ".txt"];
 
-/** 版本白名单(仅 chore(release) 时豁免):一次发版固定动的五个文件。 */
-const RELEASE_WHITELIST = new Set([
-  "package.json",
-  "package-lock.json",
-  "src-tauri/Cargo.toml",
-  "src-tauri/Cargo.lock",
-  "src-tauri/tauri.conf.json",
-]);
-
-/** 重复犯案窗口:最近 N 个 fix 提交。 */
+/** 重复犯案窗口:最近 N 个修补形状提交。 */
 const OFFENDER_WINDOW = 5;
 /** 同一领域在窗口内出现 ≥ N 次 ⇒ FAIL。依据:4.18.7→4.18.10 是 4 次;第 3 次就拦。 */
 const OFFENDER_LIMIT = 3;
+
+/**
+ * 判据 4 对账用的四个版本清单文件。
+ * ⚠️ 这一格以前写的是"`scripts/version.mjs` 直接写这四个,`Cargo.lock` 由 cargo 构建时
+ * 同步、可以合法地晚一版" —— 那个**理由已经反了**:version.mjs 现在写**五处**(这四个 +
+ * `Cargo.lock`),且 lock 晚一版会被它自己 `exit 1` 拒掉(见 version.mjs 第 5 步)。
+ * 判据这边仍然只要这四个,但成立的理由换成"那一处已由 version.mjs 断言,不在这里重复数一遍",
+ * 不是"它可以不一致"。
+ */
+const VERSION_FILES = [
+  "package.json",
+  "package-lock.json",
+  "src-tauri/Cargo.toml",
+  "src-tauri/tauri.conf.json",
+];
+
+/**
+ * 规模判据（判据 1/2）**永远不数**的文件 = 上面那四个 + `Cargo.lock`。
+ * 与 `VERSION_FILES` 同源，不抄第二份清单；多出 `Cargo.lock` 是因为判据 4 不要求它，
+ * 而一次 bump 现在**必然**把它一起带上（`version.mjs` 第 5 步的机器改动，几百行）。
+ * 理由见文件头「版本清单文件永不计入预算」那一段。
+ */
+const VERSION_MANIFESTS = new Set([...VERSION_FILES, "src-tauri/Cargo.lock"]);
+
+/** `Version-Bump: patch|minor|major` trailer(整行,允许行首尾空白)。 */
+const BUMP_DECL = /^Version-Bump:[ \t]*(patch|minor|major)[ \t]*$/im;
+
+/** 取 commit 的完整 message(fixture 里就是 message 本身)。 */
+function fullMessage(commit) {
+  return commit.full ?? commit.message;
+}
+
+/** 声明的 bump 类型;没声明返回 null。 */
+function declaredBump(commit) {
+  const m = fullMessage(commit).match(BUMP_DECL);
+  return m ? m[1].toLowerCase() : null;
+}
+
+/** 四个版本清单文件里这个 commit 没动的那些。 */
+function missingVersionFiles(commit) {
+  const have = new Set(commit.files.map((f) => f.path.replaceAll("\\", "/")));
+  return VERSION_FILES.filter((p) => !have.has(p));
+}
+
+/** merge 提交不参与版本声明判定(bump 由被合并的那条 commit 或 release commit 承担)。 */
+function isMerge(commit) {
+  return /^Merge\b/.test(commit.message.split("\n")[0].trim());
+}
+
+/**
+ * 「修补形状」= 这次没有新能力,只是在补已有的东西。
+ * 判据优先看**声明**而不是前缀:前缀是手打的,`feat(ui): …… + 权限修复` 这种
+ * 把修复塞进 feat 的形状会躲开只看 `^fix` 的窗口(判据 3 的犯案窗口曾因此漏判)。
+ */
+function isPatchShaped(commit) {
+  if (isMerge(commit)) return false;
+  const bump = declaredBump(commit);
+  if (bump) return bump === "patch";
+  return /^fix/.test(commit.message.split("\n")[0].trim());
+}
 
 // ---------------- 参数 ----------------
 
@@ -169,15 +285,16 @@ function isExempt(relPath) {
  *            domains: string[], sensitive: string[], problem: string|null}}
  */
 function classify(commit) {
-  const release = /^chore\(release\)/.test(commit.message);
+  // 版本清单文件任何提交都不计入规模（理由见文件头）—— 不再区分是不是 chore(release)。
   const counted = commit.files.filter(
-    (f) =>
-      !isExempt(f.path) &&
-      !(release && RELEASE_WHITELIST.has(f.path.replaceAll("\\", "/"))),
+    (f) => !isExempt(f.path) && !VERSION_MANIFESTS.has(f.path.replaceAll("\\", "/")),
   );
   const countedFiles = counted.filter((f) => !SENSITIVE_FILES.has(f.path.replaceAll("\\", "/")));
   const loc = counted.reduce((s, f) => s + f.add + f.del, 0);
-  const domainSet = new Set(counted.map((f) => domainOf(f.path)).filter((x) => x !== "assembly" && x !== "unknown"));
+  // 领域只按**应用代码**归：测试文件跟着它测的那份码走，不单独算一票（规模/LOC 仍照算，见 files/loc）。
+  const domainSet = new Set(
+    counted.filter((f) => isAppCodePath(f.path)).map((f) => domainOf(f.path)).filter((x) => x !== "assembly" && x !== "unknown"),
+  );
   const domains = [...domainSet];
   const sensitive = counted.filter((f) => SENSITIVE_FILES.has(f.path.replaceAll("\\", "/"))).map((f) => f.path);
   const files = counted.length;
@@ -204,7 +321,7 @@ function classify(commit) {
           loc,
           domains,
           sensitive,
-          problem: `改动超出 L1(${files} 文件 / ${loc} 行 / ${domains.length} 领域)但 message 没有 [plan] 标记 —— 请在 commit message 里补 [plan] 并说明改动计划`,
+          problem: `改动超出 L1(${files} 文件 / ${loc} 行 / ${domains.length} 领域)但**标题行**没有 [plan] 标记 —— 补到 subject 末尾（本判据读的是 %s 标题行，正文里的 [plan] 看不见）并说明改动计划`,
         };
   }
 
@@ -236,6 +353,23 @@ function classify(commit) {
  *     sha2\0subject2   ← 下一个头**直接**跟随,块之间没有空行
  * 所以**不能按空行切块** —— 要逐行扫:含 \0 的行是新 commit 头,其余是它的 numstat。
  */
+/**
+ * 解析 `git … --numstat` 的**一行** → `{path, add, del}`；不是 numstat 行则返回 null。
+ *
+ * 单拎出来的理由：`--staged` 量具（见文件头）读的是 `git diff --cached --numstat`，
+ * 与本函数服务的那趟 `git log --numstat` 是**同一种行格式**。两处各写一份解析 =
+ * 两份口径会漂（rename 与二进制那两条规则尤其容易被漏掉一半），所以收成一个家。
+ */
+function parseNumstatLine(line) {
+  const m = line.match(/^(\d+|-)\t(\d+|-)\t(.+)$/);
+  if (!m) return null;
+  const [, add, del, file] = m;
+  if (add === "-" || del === "-") return null; // 二进制:无法按行计,跳过(改动可见于 review)
+  // rename(-M 开启)形如 `old => new` / `prefix{old => new}suffix`:取新路径
+  const renamed = file.includes(" => ") ? file.split(" => ")[1].replace(/[}]/g, "") : file;
+  return { path: renamed.replace(/^\{/, "").replace(/\}.*/, ""), add: Number(add), del: Number(del) };
+}
+
 function parseCommits(raw) {
   const commits = [];
   let current = null;
@@ -247,21 +381,14 @@ function parseCommits(raw) {
       continue;
     }
     if (!current) continue;
-    const m = line.match(/^(\d+|-)\t(\d+|-)\t(.+)$/);
-    if (!m) continue;
-    const [, add, del, file] = m;
-    if (add === "-" || del === "-") continue; // 二进制:无法按行计,跳过(改动可见于 review)
-    // rename(-M 开启)形如 `old => new` / `prefix{old => new}suffix`:取新路径
-    const renamed = file.includes(" => ") ? file.split(" => ")[1].replace(/[}]/g, "") : file;
-    const clean = renamed.replace(/^\{/, "").replace(/\}.*/, "");
-    current.files.push({ path: clean, add: Number(add), del: Number(del) });
+    const f = parseNumstatLine(line);
+    if (f) current.files.push(f);
   }
   return commits;
 }
 
-/** 取重复犯案窗口:`merge-base(HEAD, origin/main)..HEAD` 的最近 N 个 fix 提交。 */
 /**
- * 重复犯案的观察窗口 = **本次受检范围内**的 `fix` 提交（= "本分支独有"，与文件头声明的语义一致）。
+ * 重复犯案的观察窗口 = **本次受检范围内**的「修补形状」提交（= "本分支独有"，与文件头声明的语义一致）。
  *
  * ⚠️ 为什么不用 `merge-base(HEAD, origin/main)..HEAD`：在 fork + rebase 的工作流下，
  * merge-base 之后的提交里**包含 main 自己**的 fix ⇒ 只要某领域最近被 main 修过，
@@ -275,35 +402,94 @@ function parseCommits(raw) {
  *
  * 改成按受检范围取窗口后，语义变成："**这一批提交里**同一领域反复修 ⇒ 说明该收敛了"，
  * 既能拦住 4.18.7→4.18.10 那种"一个分支里连打四个补丁"，又不会因为 main 的历史而误伤。
+ *
+ * ⚠️ 2026-09-21：窗口不再自己跑一次 `git log --grep=^fix`，而是从**已经拿到的**受检提交里
+ * 用 `isPatchShaped` 选。两个原因：① 判据要靠 trailer，而 trailer 在 message 正文里，
+ * `--grep=^fix` 那种 subject 锚定的过滤根本看不见它；② 同一批数据两处各取一遍 = 两条
+ * 口径会漂移，而"窗口和受检范围不是同一批提交"正是上面那次误伤的成因。
  */
-function buildOffenderWindow(range) {
-  try {
-    const fixLog = git(
-      "log",
-      range,
-      "--grep=^fix",
-      "-n",
-      String(OFFENDER_WINDOW),
-      "--numstat",
-      "-M",
-      "--format=%H%x00%s",
-    );
-    const fixes = parseCommits(fixLog);
-    console.log(`重复犯案窗口:${range} 内最近 ${fixes.length} 个 fix`);
-    return fixes;
-  } catch (e) {
-    console.log(`⚠️ 取得重复犯案窗口失败,跳过该检查(理由:${e.message.split("\n")[0]})`);
-    return null;
+function buildOffenderWindow(candidates) {
+  // git log 输出新→旧，取前 N 个 = 最近 N 个（与旧的 `-n 5` 语义一致）
+  return candidates.filter(isPatchShaped).slice(0, OFFENDER_WINDOW);
+}
+
+/**
+ * 取范围内每个 commit 的**完整** message（判据 4 要读 trailer，trailer 在正文里）。
+ *
+ * 单独一趟 `git log`、用 \x01 收尾：`parseCommits` 是逐行状态机（见其注释），
+ * 把 %B 塞进同一趟输出会让正文里恰好长成 numstat 形状的行被误认成文件 —— 不为省一次
+ * git 调用去冒"门禁悄悄读错数据"的险。
+ */
+function fullMessagesInRange(range) {
+  const raw = git("log", range, "--format=%H%x00%B%x01");
+  const out = new Map();
+  for (const chunk of raw.split("\x01")) {
+    if (!chunk.includes("\0")) continue;
+    const [rawSha, ...msg] = chunk.split("\0");
+    // ⚠️ 必须 trim：git 在每条记录后补的换行会留在**下一块**的 sha 前面（实测 —— 不 trim
+    // 时只有第一条记录能对上 key，其余 commit 全被当成"没有 trailer"而误报）。
+    const sha = rawSha.trim();
+    if (sha.length < 7) continue;
+    out.set(sha.slice(0, 7), msg.join("\0").replace(/^\n+|\n+$/g, ""));
   }
+  return out;
 }
 
 /** @type {{commits: {sha: string, message: string, files: {path: string, add: number, del: number}[]}[], recentFixes: ?Array}} */
 let data;
 let usedRange = null;
+/** 完整 message 是否读到了（判据 4 与犯案窗口的前置；读不到 = 停用，不是通过）。 */
+let messagesReadable = true;
+/** 本次是否**一个 commit 都没判到**（零覆盖）。零覆盖必须以退出码 2 单独说话，不能算 ✅。 */
+let zeroCoverage = false;
+/** 范围是否真来自 CI push event 的 before..sha（push→main 时这是"门禁有没有在跑"的唯一凭据）。 */
+let rangeFromEventBefore = false;
+/** 实际用的范围是从哪儿来的（写进输出，也写进"CI 空转"那条失败信息）。 */
+let rangeSource = null;
+
+// ---------------- `--staged`：提交**之前**先量一次（量具，不是门禁；理由见文件头） ----------------
+
+if (argv.includes("--staged")) {
+  const staged = [];
+  for (const line of git("diff", "--cached", "--numstat", "-M").split("\n")) {
+    const f = parseNumstatLine(line);
+    if (f) staged.push(f);
+  }
+  if (staged.length === 0) {
+    console.log("暂存区是空的 —— 没什么可量（先 `git add`，再跑一次）。");
+    process.exit(0);
+  }
+  // message 传空串：标题此刻还不存在 ⇒ 这里只回答"该带哪个标记"，不判"带没带"。
+  // 分级走的是**同一个** classify()，不另写第二份口径。
+  const r = classify({ sha: "(staged)", message: "", files: staged });
+  const need = r.level === "L3" ? "[impact]" : r.level === "L2" ? "[plan]" : null;
+  console.log(
+    `暂存区改动半径：${r.level} —— 计入 ${r.counted} 文件 / ${r.loc} 行 / 领域[${r.domains.join(", ") || "无归属"}]` +
+      (r.sensitive.length ? ` / ⚠️ 碰敏感文件 ${r.sensitive.join(", ")}` : ""),
+  );
+  console.log(
+    need
+      ? `⇒ 提交标题必须带 ${need}（本判据只读标题行 %s，写在正文里看不见）。`
+      : "⇒ 这一档不要求标记（EXEMPT / L1）。",
+  );
+  // 判据 4 那一半也提前说：它是"提交之后才判得动"的另一条，同样只能在提交前提醒。
+  const appCode = staged.filter((f) => !isExempt(f.path) && isAppCodePath(f.path));
+  if (appCode.length > 0) {
+    console.log(
+      `⇒ 这次动了应用码（${appCode.length} 个文件）⇒ 同一条提交里要写 \`Version-Bump:\` 并真改那四个版本清单文件（判据 4 双向判）。`,
+    );
+  }
+  console.log("  不计入的：docs/ .github/ scripts/ *.md *.txt，以及那五个版本清单文件。");
+  console.log("  ⚠️ 量具：永远退 0、不接进任何门禁；判定权仍在提交后那次正式跑。");
+  process.exit(0);
+}
 
 if (fromJson) {
   data = JSON.parse(readFileSync(path.resolve(ROOT, fromJson), "utf8"));
   console.log(`数据源:fixture ${fromJson}(${data.commits.length} 个 commit)`);
+  // fixture 没有 git range 可取，窗口由 `recentFixes` 显式喂；**同一个谓词**照跑，
+  // 所以判据 3 的"看声明不看前缀"这条新口径在 fixture 模式下是真的被测到的。
+  data.recentFixes = buildOffenderWindow(data.recentFixes ?? []);
 } else {
   // 范围:显式 --range > CI push event(before..sha)> 未推送(origin/<branch>..HEAD)> HEAD~1..HEAD
   //
@@ -311,42 +497,92 @@ if (fromJson) {
   // 它一旦被 push 过,再跑本地 verify 就红,门禁变成了对历史的审判而不是对未来的闸。
   // "未推送"与 CI 的 before..after 语义一致:门禁向前看。
   let range = rangeArg;
+  rangeSource = rangeArg ? "--range 显式指定" : null;
   if (!range && process.env.GITHUB_EVENT_NAME === "push" && process.env.GITHUB_EVENT_BEFORE) {
     const before = process.env.GITHUB_EVENT_BEFORE;
     // force push / 新分支时 before 不在本仓库历史里,git 会报错 —— 用 try 探测
     try {
       execFileSync("git", ["cat-file", "-e", `${before}^{commit}`], { cwd: ROOT, stdio: "ignore" });
       range = `${before}..${process.env.GITHUB_SHA ?? "HEAD"}`;
+      rangeSource = "CI push event 的 before..sha";
+      rangeFromEventBefore = true;
     } catch {
       /* before 不可达,落到未推送范围 */
     }
   }
   if (!range) {
+    // 候选按序取**第一个非空**的范围：`origin/<本分支>..HEAD` 在"刚把分支推上去、CI 正在
+    // 跑"这种情形下是**空**的（远端 ref 已经指向 HEAD），这时退回与 main 的差集才判得到东西。
+    let branch = "HEAD";
     try {
-      const branch = git("rev-parse", "--abbrev-ref", "HEAD").trim();
-      git("cat-file", "-e", `origin/${branch}^{commit}`);
-      range = `origin/${branch}..HEAD`;
+      branch = git("rev-parse", "--abbrev-ref", "HEAD").trim();
     } catch {
-      range = "HEAD~1..HEAD";
+      /* 空仓库等极端情形,直接用 HEAD~1 */
+    }
+    const inCI = Boolean(process.env.GITHUB_EVENT_NAME);
+    const candidates = [
+      `origin/${branch}..HEAD`,
+      ...(branch === "main" ? [] : ["origin/main..HEAD"]),
+      // ⚠️ `HEAD~1..HEAD` 只在 CI 上兜底。本地正相反：全部已推送时它会把"最后一个已推送
+      // commit"再判一遍 —— 那是审判历史而不是把关未来（文件头讲过这个坑），本地宁可报
+      // **零覆盖**（退出码 2），也不要既误红又假装判过了。
+      ...(inCI ? ["HEAD~1..HEAD"] : []),
+    ];
+    for (const c of candidates) {
+      try {
+        git("cat-file", "-e", c.split("..")[0] + "^{commit}");
+        if (Number(git("rev-list", "--count", c).trim()) > 0) {
+          range = c;
+          rangeSource = `未推送范围（候选里第一个非空：${c}）`;
+          break;
+        }
+      } catch {
+        /* 该候选的端点不存在,试下一个 */
+      }
+    }
+    if (!range) {
+      range = candidates[0];
+      rangeSource = "所有候选范围都为空（没有新 commit 可判 ⇒ 零覆盖）";
     }
   }
   usedRange = range;
 
-  // 空范围(全部已推送)= 没有要检查的新 commit —— 显式说清(commits 为空自然通过)
+  // 空范围(全部已推送)= 没有要检查的新 commit —— **零覆盖,不是通过**（见文末退出码）
   let commitsRaw = "";
+  let rangeReadable = true;
   try {
     commitsRaw = git("log", range, "--numstat", "-M", "--format=%H%x00%s");
   } catch {
-    console.log(`检查范围:${range}(空或不可达)—— 没有未推送的新 commit,判据 1/2 自然通过`);
+    rangeReadable = false;
+    console.log(`检查范围:${range}(不可达)—— 判据 1/2/4 与窗口全部**未运行**`);
   }
-  console.log(`检查范围:${usedRange}`);
+  console.log(`检查范围:${usedRange}（来源：${rangeSource}）`);
 
   // 解析:逐行状态机(见 parseCommits 注释 —— 不能按空行切块)
   data = { commits: parseCommits(commitsRaw) };
 
-  // 重复犯案窗口:merge-base(HEAD, origin/main)..HEAD 的最近 N 个 fix
-  data.recentFixes = buildOffenderWindow(range);
+  // 判据 4 与犯案窗口都要读 message 正文里的 trailer ⇒ 补一趟完整 message。
+  // 拿不到就**显式失败并停用这两道**：静默退回"只有 subject"会让判据 4 把每一条真 bump
+  // 误报成"动了版本文件却没声明" —— 一条读错数据的门禁比没有门禁更糟。
+  if (rangeReadable && data.commits.length > 0) {
+    try {
+      const full = fullMessagesInRange(range);
+      for (const c of data.commits) c.full = full.get(c.sha) ?? c.message;
+    } catch (e) {
+      messagesReadable = false;
+      fail(
+        `  ✗ 读取 commit 完整 message 失败 ⇒ 判据 4 与犯案窗口都判不了（已停用，不是通过）：` +
+          `${e.message.split("\n")[0]}`,
+      );
+    }
+  }
+
+  // 重复犯案窗口:同一批受检提交里的最近 N 个「修补形状」
+  data.recentFixes = rangeReadable && messagesReadable ? buildOffenderWindow(data.commits) : null;
 }
+
+// 零覆盖 = 一个 commit 都没判到（范围空 / 不可达 / fixture 空）。**不是通过**。
+zeroCoverage = data.commits.length === 0;
 
 // ---------------- 判据 1/2:逐 commit 分级 ----------------
 
@@ -365,17 +601,64 @@ for (const commit of data.commits) {
   );
   if (verdict.problem) fail(`      ${verdict.problem}`);
 }
-if (ok) console.log("  ✓ 全部 commit 在预算内或已声明");
+if (zeroCoverage) {
+  console.log("  ⚠️ 零覆盖：受检范围里一个 commit 都没有 ⇒ 三道判据都没看过任何代码（**不等于通过**）");
+} else if (ok) console.log("  ✓ 全部 commit 在预算内或已声明");
+
+// ---------------- 判据 4:版本声明必须落地 ----------------
+// trailer 现在是有消费者的（判据 3 拿它判"这次是不是修补"）。一个可以随便写、也可以
+// 随便不写的声明 = 门禁的输入是装饰 ⇒ 两个方向一起判。
+console.log("\n判据 4:版本声明与版本清单文件必须一致");
+if (!messagesReadable) {
+  console.log("  (完整 message 没读到 ⇒ 本判据**未运行**；上面已计一条失败)");
+} else {
+  let checked = 0;
+  for (const commit of data.commits) {
+    if (isMerge(commit)) continue;
+    const bump = declaredBump(commit);
+    const missing = missingVersionFiles(commit);
+    const allPresent = missing.length === 0;
+    const releaseSubject = /^chore\(release\)/.test(commit.message.split("\n")[0].trim());
+    checked += 1;
+    if (bump && !allPresent) {
+      fail(
+        `  ✗ ${commit.sha} 声明了 \`Version-Bump: ${bump}\`，但 ${missing.length}/${VERSION_FILES.length} ` +
+          `个版本清单文件没动：${missing.join(", ")} —— 声明没落地就是没 bump。` +
+          `跑 \`npm run version:${bump}\` 把这四个文件一起提上来；删掉 trailer 不是解法 —— ` +
+          `真 bump 缺声明同样判红，而且犯案窗口会看不见这一版。`,
+      );
+    } else if (!bump && allPresent && !releaseSubject) {
+      fail(
+        `  ✗ ${commit.sha} 动了全部 ${VERSION_FILES.length} 个版本清单文件（一次真 bump）` +
+          `却没声明 \`Version-Bump: patch|minor|major\` —— 缺声明 ⇒ 犯案窗口无法判断这次是不是修补。`,
+      );
+    } else {
+      console.log(
+        `  ✓ ${commit.sha} ${bump ? `Version-Bump: ${bump}` : "无声明"}${allPresent ? " / 版本文件 4/4" : ""}` +
+          `${!bump && allPresent && releaseSubject ? "（chore(release) 豁免声明）" : ""}`,
+      );
+    }
+  }
+  if (checked === 0) console.log("  (范围内没有需要判定的 commit)");
+}
 
 // ---------------- 判据 3:重复犯案 ----------------
 
 if (data.recentFixes) {
-  console.log(`\n判据 3:重复犯案(窗口内最近 ${data.recentFixes.length} 个 fix,同领域 ≥${OFFENDER_LIMIT} 次即红)`);
+  console.log(
+    `\n判据 3:重复犯案(受检范围内的修补形状提交最近 ${OFFENDER_WINDOW} 个里,同领域 ≥${OFFENDER_LIMIT} 次即红)` +
+      `—— 本次窗口 ${data.recentFixes.length} 个`,
+  );
+  if (data.recentFixes.length === 0) console.log("  (窗口里一个修补形状提交都没有 —— 无可判定的重复)");
   /** @type {Map<string, string[]>} 领域 → [sha...] */
   const byDomain = new Map();
   for (const fix of data.recentFixes) {
     const domains = new Set(
-      fix.files.filter((f) => !isExempt(f.path)).map((f) => domainOf(f.path)).filter((x) => x !== "assembly" && x !== "unknown"),
+      // 与 classify 同一条口径（#139）：只数应用代码的领域，测试文件不凑票。
+      fix.files
+        .filter((f) => !isExempt(f.path) && isAppCodePath(f.path))
+        .map((f) => domainOf(f.path))
+        .filter((x) => x !== "assembly" && x !== "unknown"),
     );
     for (const d of domains) {
       if (!byDomain.has(d)) byDomain.set(d, []);
@@ -388,10 +671,10 @@ if (data.recentFixes) {
     console.log(`  ${mark} ${d}: ${shas.length} 次(${shas.join(", ")})`);
     if (shas.length >= OFFENDER_LIMIT && !offender) offender = { d, shas };
   }
-  if (byDomain.size === 0) console.log("  (窗口内 fix 都只动豁免文件,无领域归属)");
+  if (byDomain.size === 0) console.log("  (窗口里的修补都没落在有归属的领域上,无领域可计)");
   if (offender) {
     fail(
-      `  ✗ 「${offender.d}」领域在最近 ${OFFENDER_WINDOW} 个 fix 里出现了 ${offender.shas.length} 次 —— ` +
+      `  ✗ 「${offender.d}」领域在最近 ${OFFENDER_WINDOW} 个修补形状提交里出现了 ${offender.shas.length} 次 —— ` +
         `这是 4.18.7→4.18.10 的标准犯案形态(每个补丁都很小,但它们在互相修)。\n` +
         `      请停下来:① 该领域的不变量补了吗(docs/protocol-invariants.md)?\n` +
         `      ② 单一事实来源收敛了吗(docs/migration-ledger.md 的台账行)?\n` +
@@ -404,9 +687,76 @@ if (data.recentFixes) {
 
 // ---------------- 汇总 ----------------
 
+const ciPushMain =
+  process.env.GITHUB_EVENT_NAME === "push" && process.env.GITHUB_REF_NAME === "main";
+// 硬失败只对**门禁自己的 workflow** 开（verify.yml 显式声明 GOSSLAN_BUDGET_STRICT=1）。
+// 其它消费方（build-android-releases.sh 的守卫清单、发布脚本）只是顺带跑一下这道门禁，
+// 让它们因为"拿不到范围"而打断出包 = 将门禁的作用域扩到它管不着的地方。
+const strict = process.env.GOSSLAN_BUDGET_STRICT === "1";
+
+// ⚠️ `!fromJson`：fixture 接缝**本来就没有** git 范围（数据是喂进去的），拿"没拿到 before..sha"
+// 去判它空转是范畴错误。2026-09-28 实测代价：verify.yml 带着 GOSSLAN_BUDGET_STRICT=1，于是护栏
+// 非空转用例里每一条 `--from-json` 的"恢复后即 PASS"半边都被这里判成 exit 1 —— 本地没有这个
+// env 所以从来不红，而它藏了 7 天（从 d056422 起），因为 Change Budget 在护栏之前一步、
+// fail-fast 把护栏那步吞成了"未跑"。
+// ★ 2026-10-03 补一个**合法例外**：`before` 喂进来了但对象不可达 = force push
+//   （`docs/VERSIONING.md` §3 明确允许改写已推送历史，那条流程的第一步就是 amend + force push）。
+//   GitHub 此时给的 `event.before` 是**被改写掉的那个提交**，它不在任何 ref 上，
+//   而 CI 是从 GitHub 全新克隆（`fetch-depth: 0` 只拉 ref 上的对象）
+//   ⇒ `git cat-file -e <before>^{commit}` 必然失败 ⇒ 探测拿不到 before..sha。
+//   **实测（run 37106836002）**：脚本退到 `HEAD~1..HEAD`、**真的判到了 1 个 commit
+//   并把三条判据全跑完**，却仅因为"来源不是 before..sha"被判 exit 1 —— 门禁自己
+//   兜住了范围，又自己判这个兜底无效。这是自相矛盾，不是它该拦的东西。
+//   真的空转（"看起来判了、其实一个 commit 都没看"）由下面 `zeroCoverage` 那条兜：
+//   候选全空时退出码 2，且那句文案写明"没有新 commit 可判"。
+//
+//   ⚠️ 别把它放松成"before 拿不到就当绿"：那样 `GITHUB_EVENT_BEFORE` 整个没喂进来时
+//   也会静默过 —— 而那正是本条判据 2026-09-28 立起来要拦的洞（见上面那段注释）。
+//   所以分三种情形，且**只有"env 压根没喂"才硬失败**。
+const beforeGivenButUnreachable =
+  Boolean(process.env.GITHUB_EVENT_BEFORE) && !rangeFromEventBefore && !fromJson;
+
+if (ok && strict && ciPushMain && !fromJson && !rangeFromEventBefore) {
+  if (beforeGivenButUnreachable) {
+    // force push：范围由 `HEAD~1..HEAD` 等候选兜住，判据确实跑了。
+    // ⚠️ 但**不要把它说成"全部都判到了"** —— 实测（run 37106836002）那次 force push
+    //   引入 3 个提交，而 `HEAD~1..HEAD` 只判到最后一个：固定深度猜不出这次改写动了几个
+    //   （`HEAD~2`/`HEAD~3` 能覆盖，但下一次可能是 5 个）。所以只如实说判到了哪些。
+    const judged = Number(git("rev-list", "--count", usedRange).trim());
+    console.warn(
+      `\n⚠️ 本次是**改写历史的推送**（force push / amend 后重推）：` +
+        `事件里的 before=${process.env.GITHUB_EVENT_BEFORE} 在 CI 克隆里不可达` +
+        `（它是刚被改写掉的那个提交，不在任何 ref 上），因此改用 ${usedRange} 判。\n` +
+        `  ⇒ 已判 ${judged} 个提交（${usedRange} 内）。**判不到的**：若这次改写一次动了多个\n` +
+        `    提交，只有最后一个落在 ${usedRange} 内 —— 本门禁无法从事件里知道被改写的范围有多大。\n` +
+        `    需要全覆盖请在本地跑：node scripts/check-change-budget.mjs --range <推送前>..HEAD`,
+    );
+  } else {
+    // 真的空转：env 没映射 / 候选全空。必须红，且要红得能被 `ci-run.sh` 转成注解
+    // （匿名可读渠道）—— 否则"CI 全绿"会被当成"Change Budget 判过这次推送"。
+    console.error(
+      `\n✗ CI push→main 的受检范围不是事件里的 before..sha` +
+        `（范围 ${usedRange}，来源：${rangeSource ?? "未知"}）⇒ 门禁看的不是本次推送（空转）。\n` +
+        `  先查 verify.yml 顶部那段 env：GITHUB_EVENT_BEFORE: \${{ github.event.before }}`,
+    );
+    process.exit(1);
+  }
+}
+
+if (ok && zeroCoverage) {
+  console.log(`  受检范围：${usedRange ?? "（fixture）"} ｜ 判到的 commit：0`);
+  console.log("\n⚠️ Change Budget **零覆盖** —— 跑了，但没有任何 commit 可判（退出码 2 ≠ 通过 0）。");
+  console.log("  本地最常见的成因：这条提交已经 push 过（origin/main..HEAD 为空）。");
+  console.log("  想真判一批：`node scripts/check-change-budget.mjs --range a1b2c3..HEAD`。");
+  process.exit(2);
+}
+
 if (ok) {
   console.log("\n✓ Change Budget 通过。");
-  console.log("  (已知边界:管不了语义(+10 行能让链路发不出消息,靠测试)/拆 commit gaming 靠犯案判据兜底。)");
+  console.log(
+    "  (已知边界:管不了语义(+10 行能让链路发不出消息,靠测试)/拆 commit gaming 靠犯案判据兜底/" +
+      "不写 Version-Bump trailer 且不动版本文件的提交,犯案窗口看不见。)",
+  );
   process.exit(0);
 }
 console.error("\n✗ Change Budget 未通过 —— 请补声明([plan]/[impact])或收敛改动,别绕过。");

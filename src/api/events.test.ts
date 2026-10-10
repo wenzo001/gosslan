@@ -18,7 +18,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { readCommandsSrc } from "../../scripts/rustSrc.ts";
+import { readCommandsSrc, stripRustComments } from "../../scripts/rustSrc.ts";
 
 const ROOT = join(import.meta.dirname, "..", "..");
 const RUST_SRC = join(ROOT, "src-tauri", "src");
@@ -38,6 +38,18 @@ const ALLOWED_EMIT_WITHOUT_LISTENER: Record<string, string> = {
 /** 只发给特定窗口、由该窗口自己监听的事件不算漏接（这里是菜单事件，前端已监听）。 */
 const IGNORED_PREFIXES = ["menu://"];
 
+
+/** 从一份 Rust 源码里取出「后端真的在发」的事件名（纯函数 ⇒ 能被 fixtures 直接喂）。 */
+function emittedNamesFrom(src: string, consts: Map<string, string>): Set<string> {
+  const out = new Set<string>();
+  // emit("name"            / emit(CONST
+  for (const m of stripRustComments(src).matchAll(/\bemit\w*\(\s*(?:"([^"]+)"|([A-Z][A-Z0-9_]*))/g)) {
+    const name = m[1] ?? consts.get(m[2] ?? "");
+    if (name) out.add(name);
+  }
+  return out;
+}
+
 function collectRustFiles(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = join(dir, entry.name);
@@ -51,7 +63,7 @@ function collectRustFiles(dir: string, out: string[] = []): string[] {
 function collectStringConsts(files: string[]): Map<string, string> {
   const map = new Map<string, string>();
   for (const f of files) {
-    const src = readFileSync(f, "utf8");
+    const src = stripRustComments(readFileSync(f, "utf8"));
     for (const m of src.matchAll(/const\s+([A-Z][A-Z0-9_]*)\s*:\s*&str\s*=\s*"([^"]+)"/g)) {
       map.set(m[1], m[2]);
     }
@@ -65,12 +77,7 @@ function rustEmittedEvents(): Set<string> {
   const consts = collectStringConsts(files);
   const out = new Set<string>();
   for (const f of files) {
-    const src = readFileSync(f, "utf8");
-    // emit("name"            / emit(CONST
-    for (const m of src.matchAll(/\bemit\w*\(\s*(?:"([^"]+)"|([A-Z][A-Z0-9_]*))/g)) {
-      const name = m[1] ?? consts.get(m[2] ?? "");
-      if (name) out.add(name);
-    }
+    for (const name of emittedNamesFrom(readFileSync(f, "utf8"), consts)) out.add(name);
   }
   return out;
 }
@@ -82,6 +89,62 @@ function frontendListenedEvents(): Set<string> {
   for (const m of src.matchAll(/listen(?:<[^>]*>)?\(\s*"([^"]+)"/g)) out.add(m[1]);
   return out;
 }
+
+/// 扫描器的"水分判据"：一份喂料同时含真发送与各种注释里的假形态，
+/// 结果必须**只**有真的那几个 —— 单向断言（只查"注释不算"）会被"整段都被抹掉"
+/// 这种过度剥离糊过去，所以正反两面都钉在这里。
+test("事件扫描器不被注释骗，也不误伤代码（含串内 // 与生命周期、嵌套块注释）", () => {
+  const sample = [
+    'app.emit("real-line", &p); // 行尾注释里写 emit("phantom-trailing") 也不算',
+    '// emit("phantom-line") —— 解释"为什么不能把那三个字符连左括号写全"的那条注释',
+    '/// 文档里提 emit("phantom-doc") 一样不是发送',
+    '/* emit("phantom-block") */',
+    '/* 外层 /* 内层 emit("phantom-nested") */ 还在注释里 */',
+    'let s = "字符串里的 // 不是注释"; app.emit("real-after-string", &p);',
+    'let r = r#"原始串里的 // 和 " 都不算注释"#; app.emit("real-after-raw", &p);',
+    // 原始串里引号数**为奇数**：不认识 `r#"` 的扫描器会从第一个 `"` 起两两配对配错相位，
+    // 于是串里那个 `//` 落到"代码"里，把整行（含真 emit）当行注释吃掉 ⇒ **少报真事件**。
+    // ⚠️ 这条的变异点在 `skipString` 里那一句 `const raw = /^r#*"/`，**不在**外层那段：
+    // 外层 `/^r#*"/.test(...)` 与 `skipString` 内部的 raw 识别是**冗余的两处**，
+    // 单独改坏外层那处它会被 `skipString` 的回落救回来（实测整组仍绿）——
+    // 所以"改了外层会不会红"这种直觉在这里是错的，别拿它当护栏存在与否的证据。
+    'let q = r#"引号 " 和斜杠 // 都在原始串里"#; app.emit("real-after-raw-odd-quote", &p);',
+    "fn probe<'a>(x: &'a str) { app.emit(\"real-with-lifetime\", x) }",
+  ].join("\n");
+  const found = [...emittedNamesFrom(sample, new Map())].sort();
+  assert.deepEqual(found, [
+    "real-after-raw",
+    "real-after-raw-odd-quote",
+    "real-after-string",
+    "real-line",
+    "real-with-lifetime",
+  ]);
+  // ⚠️ 这条顺带钉住扫描器的**已知边界**：只认"事件名是第一个实参"的形态
+  // （`emit("x")` / `emit_filter("x")`）。本仓 `emit_to` 用了 0 次 ⇒ 不为此扩正则。
+  // 注意：**下面那条 `[]` 断言自己不会响**（它断言的就是"扫不到"）—— 会响的是紧随其后的绊线。
+  assert.deepEqual([...emittedNamesFrom('app.emit_to(w, "not-scanned", p);', new Map())], []);
+  // 绊线：把"边界只写在注释里"换成"边界会红"。哪天 Rust 侧真的开始用 emit_to(target, "x")，
+  // 扫描器会**静默少报**事件 ⇒ 契约测试把真实事件当成"前端独有的监听"放过。
+  // 这条断言存在的意义就是让那种改动必须显式处理（扩正则 + 同步改上面那条 `[]` 夹具）。
+  const emitToSites = collectRustFiles(RUST_SRC).filter((f) =>
+    /\bemit_to\s*\(/.test(stripRustComments(readFileSync(f, "utf8"))),
+  );
+  assert.deepEqual(
+    emitToSites,
+    [],
+    "Rust 侧出现了 emit_to(...)：扫描器只认「事件名是第一个实参」，会静默少报。" +
+      "要么扩 `emittedNamesFrom` 的正则并同步改上面那条 `[]` 夹具，要么改回 `emit`",
+  );
+  // 反向对照：样例里必须**仍然含有**假形态 —— 否则哪天有人把 `stripRustComments` 的调用删掉，
+  // 这条测试也不会红（"证明有效的夹具退化成不证明"是本项目反复付过钱的形状）。
+  const raw = [
+    ...sample.matchAll(/\bemit\w*\(\s*(?:"([^"]+)"|([A-Z][A-Z0-9_]*))/g),
+  ].map((m) => m[1]);
+  assert.ok(
+    raw.some((x) => x !== undefined && x.startsWith("phantom-")),
+    "夹具失效：不剥注释时扫不到任何 phantom-* ⇒ 样例里的假形态该补回来了",
+  );
+});
 
 test("每个 Rust 事件都必须有前端消费者，或写在例外清单里并说明理由", () => {
   const emitted = rustEmittedEvents();
@@ -257,4 +320,100 @@ test("设置变更事件两端都在（回归：改语言/主题后另一个窗�
     "后端必须广播 settings-changed（否则设置窗口改完，主窗口不会变）",
   );
   assert.ok(listened.has("settings-changed"), "前端必须监听 settings-changed");
+});
+
+// ---------------- 0-A3：IPC 面的两条收口判据 ----------------
+
+/** 递归收集前端源文件（.ts / .vue），跳过测试文件。 */
+function frontendFiles(dir: string, out: string[] = []): string[] {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) frontendFiles(full, out);
+    else if (/\.(ts|vue)$/.test(entry.name) && !/\.test\.ts$/.test(entry.name)) out.push(full);
+  }
+  return out;
+}
+
+/** 前端 `invoke("cmd"` 里出现过的命令名（覆盖带泛型与动态 `await import` 两种写法）。 */
+function invokedCommands(): Set<string> {
+  const out = new Set<string>();
+  for (const f of frontendFiles(join(ROOT, "src"))) {
+    const src = readFileSync(f, "utf8");
+    for (const m of src.matchAll(/\binvoke(?:<[^()]*>)?\(\s*"([a-z_0-9]+)"/g)) out.add(m[1]);
+  }
+  return out;
+}
+
+/** `lib.rs` 的 `generate_handler![...]` 注册表（编译器实际暴露的命令面）。 */
+function registeredCommands(): string[] {
+  const src = readFileSync(join(RUST_SRC, "lib.rs"), "utf8");
+  const start = src.indexOf("generate_handler![");
+  assert.ok(start > 0, "lib.rs 里找不到 generate_handler! —— 这条判据会空转");
+  let depth = 0;
+  let i = start + "generate_handler!".length;
+  for (; i < src.length; i++) {
+    if (src[i] === "[") depth++;
+    else if (src[i] === "]") {
+      depth--;
+      if (depth === 0) break;
+    }
+  }
+  const block = src.slice(start, i);
+  return [...block.matchAll(/\b([a-z_0-9]+)\s*,/g)].map((m) => m[1]).filter((n) => n !== "generate_handler");
+}
+
+/**
+ * 注册了、但前端一次都不调的命令 —— **逐条写明理由**。
+ *
+ * **今天这张表是空的，而且必须一直是空的**：0-A3 曾挂过 5 条
+ * （`recall_message` · `resend_message` · `cancel_send` · `send_group_poll` ·
+ * `cast_group_poll_vote`），用户 2026-09-25 拍板删除 ⇒ 现在"注册但不接界面"零容忍，
+ * 新增一条没接界面的命令直接红。
+ *
+ * 真要留一条隐形接口，就得在这里写清"为什么不能接界面"，并想清楚谁为它负责。
+ */
+const DEAD_COMMANDS: Record<string, string> = {};
+
+test("IPC 只能从 src/api 门面走（回归：组件里裸 invoke，其中 6 条命令在 api 上根本没有包装）", () => {
+  const gate = join(ROOT, "src", "api", "index.ts");
+  const offenders: string[] = [];
+  for (const f of frontendFiles(join(ROOT, "src"))) {
+    if (f === gate) continue;
+    const src = readFileSync(f, "utf8");
+    // 静态 import 与动态 import 都算：`await import("@tauri-apps/api/core")` 同样绕过了门面
+    if (src.includes("@tauri-apps/api/core")) offenders.push(f.replace(ROOT + "/", ""));
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    `以下文件绕过了 src/api 门面直接 invoke（契约面只能从一个地方读）：${offenders.join(", ")}`,
+  );
+  // 反向自检：门面本身必须真的在用 invoke，否则这条判据会因为"门面也空了"而假绿
+  assert.ok(readFileSync(gate, "utf8").includes("invoke<"), "api/index.ts 里没有任何 invoke ⇒ 判据空转");
+});
+
+test("注册表与前端调用面必须逐条对账（新增不接界面的命令要红）", () => {
+  const registered = registeredCommands();
+  const invoked = invokedCommands();
+  assert.ok(registered.length > 100, `注册表只解析出 ${registered.length} 条 —— 解析器坏了，判据空转`);
+  assert.ok(invoked.size > 100, `前端只扫出 ${invoked.size} 条调用 —— 扫描器坏了，判据空转`);
+
+  const dead = registered.filter((n) => !invoked.has(n)).sort();
+  const expected = Object.keys(DEAD_COMMANDS).sort();
+  const newDead = dead.filter((n) => !expected.includes(n));
+  const resurrected = expected.filter((n) => !dead.includes(n));
+  assert.deepEqual(
+    newDead,
+    [],
+    `新增了注册但前端从不调用的命令：${newDead.join(", ")} —— 要么接上界面，要么删掉；` +
+      "确实要留成隐形接口才把它加进 DEAD_COMMANDS 并写清理由",
+  );
+  assert.deepEqual(
+    resurrected,
+    [],
+    `DEAD_COMMANDS 里这些条目已经被调用了：${resurrected.join(", ")} —— 挂账过期会让真漏接隐身，请删条目`,
+  );
+  // 前端调用了一定要注册：漏注册是运行期才炸的错
+  const unregistered = [...invoked].filter((n) => !registered.includes(n)).sort();
+  assert.deepEqual(unregistered, [], `前端调用了但没注册的命令：${unregistered.join(", ")}`);
 });

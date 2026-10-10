@@ -2,27 +2,50 @@ import { acceptHMRUpdate, defineStore } from "pinia";
 import { computed, ref, watch } from "vue";
 import { api, bindEvents } from "@/api";
 import {
+  applyConversationSnapshot,
   applyIncomingToConversations,
   applyReplacements,
+  appendLocalOnly,
   furthestStatus,
   mergeMessages,
-  messageMentionsAll,
-  messageMentionsName,
+  freshMentionedConvs,
   pickMediaContent,
   preserveDeliveryStatus,
+  replaceOptimistic,
+  promoteOnPeerRead,
   previewText,
+  pruneUnreadClears,
   selectCachedConversations,
   sortConversations,
   syncProfileFromPeers,
+  unreadAnchorIndex,
 } from "@/utils/messages";
 import { useAppStore } from "@/stores/useAppStore";
+import { trimOldest } from "@/utils/bounded";
+import { createInitScope, type InitScope } from "@/utils/initScope";
+import { StaleGuard } from "@/utils/staleGuard";
+import { EMPTY_STRING_LIST } from "@/utils/emptyList";
 import { actionableRequests } from "@/utils/friendRequests";
-import { notificationBody } from "@/utils/notifications";
-import { isSilentKind } from "@/utils/messageKinds";
-import { todoCompletedForCreator, todoMentionsMe, type TodoImage } from "@/utils/todos";
+import { mergeNoticesInto, notificationBody, type QueuedNotice } from "@/utils/notifications";
+import { batchIsUrgent } from "@/utils/notifyUrgency";
+import { buildReactionPayload } from "@/utils/reactions";
+import { isRenderedInTimeline, countsTowardUnread } from "@/utils/messageKinds";
+import {
+  foldTodos,
+  isTodoRowsLoaded,
+  mergeIncomingTodoRows,
+  openTodosForMe,
+  putTodoRows,
+  type TodoRowsByConv,
+  todoCompletedForCreator,
+  todoMentionsMe,
+  type TodoImage,
+} from "@/utils/todos";
 import { invalidateFilePreview } from "@/utils/filePreview";
 import { t } from "@/i18n";
 import { shouldRunThrottled } from "@/utils/defer";
+import { mergePeerList } from "@/utils/peerMerge";
+import { markFriendsOnlineFrom } from "@/utils/friendOnline";
 import {
   onAction,
   registerActionTypes,
@@ -48,6 +71,17 @@ import type {
 
 /** 上次打开的会话（重启后恢复，纯前端 UI 状态，各端统一）。 */
 const LAST_CONV_KEY = "gosslan.lastConv";
+
+/**
+ * 上一轮 `init()` 的注册容器。
+ *
+ * 必须是**模块作用域**而不是 store 状态：`acceptHMRUpdate` 会换一个全新的 store
+ * 实例（新实例的 `setup` 里没有任何旧实例注册的痕迹），而旧实例的 `listen()`
+ * 仍挂在 Tauri 事件总线上 —— 只有模块级变量能让"新一轮 init"找到并拆掉"上一轮"。
+ * 不拆的后果不是内存泄漏那么温和：每个事件回调会跑**两遍**（消息重复入账、
+ * 通知翻倍、markRead 双发），且第一遍的闭包绑的是已被丢弃的 state。
+ */
+let chatInitScope: InitScope | null = null;
 
 export const useChatStore = defineStore("chat", () => {
   const peers = ref<Peer[]>([]);
@@ -99,9 +133,16 @@ export const useChatStore = defineStore("chat", () => {
   // ---------------- 系统通知（后台 / 非当前会话才触发） ----------------
   const app = useAppStore();
   let notifSeq = 1;
+  // ⚠️ 只加不删（审计阶段 4 · 4.2 顺带发现）：删除点只有"通知被点击"和"动作按钮命中"两处，
+  // 用户直接把通知划掉时条目永久留着，而 `notifSeq` 单调递增 ⇒ 每条通知必进一份。
+  // 比 pendingAcks 更确定性地增长，所以同样上闸；上限 128 远大于一屏可见的通知数。
   const notifMap = new Map<number, string>();
+  const NOTIF_MAP_MAX = 128;
 
   function nicknameOf(id: string): string {
+    // 自己这一支必须在最前面：`friends` / `peers` 都不含本机，缺这一支时"谁加了这条回应"
+    // 会退化成裸设备 id（表情回应条上印出 `gosslan-xxxx` 就是这个形状）。
+    if (id && id === app.device?.device_id) return app.device?.nickname || id;
     const f = friends.value.find((x) => x.device_id === id);
     if (f) return f.nickname;
     const p = peers.value.find((x) => x.device_id === id);
@@ -116,7 +157,7 @@ export const useChatStore = defineStore("chat", () => {
   // 合并：首条消息开 1.5s 窗口，窗口内同会话只累积；窗口结束按会话各发一条
   // （count > 1 显示「…等 N 条新消息」）。窗口结束前用户已切到该会话 → 跳过。
   const NOTIFY_DEBOUNCE_MS = 1500;
-  const notifyQueue = new Map<string, { count: number; last: MessageRecord }>();
+  const notifyQueue = new Map<string, QueuedNotice>();
   let notifyTimer: number | null = null;
 
   function queueNotification(rec: MessageRecord) {
@@ -154,9 +195,13 @@ export const useChatStore = defineStore("chat", () => {
         const convId = last.conv_id;
         anyReminded = true;
         if (app.isMobile) {
-          // 移动端：plugin 通知（Android 有 actionPerformed 点击事件桥）
+          // 移动端：plugin 通知（Android 有 actionPerformed 点击事件桥）。
+          // 注意 `sendNotification` 是 fire-and-forget（返回 void，不是 Promise）⇒ 这里
+          // 没有可 catch 的失败信号，清单 4.2 说的"无 catch 丢批"其实不成立；真正会 reject
+          // 的是上面那次权限查询，它的 catch 在本函数末尾。
           const id = notifSeq++;
           notifMap.set(id, convId);
+          trimOldest(notifMap, NOTIF_MAP_MAX);
           void sendNotification({
             id,
             title,
@@ -181,10 +226,21 @@ export const useChatStore = defineStore("chat", () => {
         }
       }
       if (anyReminded && !app.isMobile) {
-        void api.requestAttention().catch(() => {
+        // 紧急程度按**这批真正发出去的通知**判（`entries` 就是去抖合并后的那批，
+        // 每个会话取其最后一条），不是按整个未读列表 —— 否则一条三天前的紧急任务
+        // 会让每次新消息都弹跳 Dock。
+        const urgent = batchIsUrgent(entries.map((e) => e.last));
+        void api.requestAttention(urgent).catch(() => {
           /* 个别 Linux 桌面环境不支持闪烁，忽略即可（通知本身已经发出） */
         });
       }
+    }).catch((e) => {
+      // ⚠️ 本批修的正是这里：`flushNotifications` **先 `clear()` 再 await 权限**，
+      // 而这条链原先没有 catch ⇒ `isPermissionGranted()` / `requestPermission()` 任一 IPC
+      // reject，这批通知就彻底消失（用户少收一条，毫无线索，还附赠一条 unhandled rejection）。
+      // 放回队列是安全的：失败点在**任何一条通知发出之前**，不会重复提醒。
+      console.warn("[notify] 权限查询失败，这批通知退回队列", e);
+      mergeNoticesInto(notifyQueue, entries);
     });
   }
 
@@ -275,10 +331,13 @@ export const useChatStore = defineStore("chat", () => {
       return;
     }
 
-    // 静默事件（表情回应/撤回）不弹通知：它们不是"内容"，
-    // 提醒它们正是这个功能要消除的噪音（"收到""👍"刷屏）。
+    // 「不打扰」一族（表情回应/撤回 = 静默事件，`system` = 经广播来的成员变更与下载请求）
+    // 一律不弹通知：它们不是"内容"。判据与后端 `is_non_notifying_kind` 同一份
+    // （`utils/messageKinds::countsTowardUnread`），与未读记账那处（`utils/messages.ts`）也同一份。
+    // 系统消息漏这一条的真实后果："X 加入了群聊"给群里每个人推一条系统通知，
+    // 而后端明写它不打扰（`protocol.rs::is_non_notifying_kind` 就是这个理由）。
     if (!app.notifyEnabled) return;
-    if (isSilentKind(rec.kind)) return;
+    if (!countsTowardUnread(rec.kind)) return;
     // 应用在前台且正查看该会话 → 不通知（不进队列）。
     // 必须同时判 !document.hidden：窗口被隐藏/最小化到托盘时，WebView 的
     // document.hasFocus() 仍可能是 true，只看它会漏掉真正该提醒的消息。
@@ -288,8 +347,12 @@ export const useChatStore = defineStore("chat", () => {
 
   async function handleNotificationClick(convId: string) {
     await api.focusWindow();
-    await openConversation(convId);
+    // 翻页排在加载之前（用户 2026-09-24 #29）：`focusWindow` 必须先行（窗口还在托盘里时
+    // 切，用户会在浮出瞬间看到一次跳变），但 `openConversation` 不能等 —— 它内部是
+    // 同步写下 `activeConv` + 骨架 + 两轮 IPC 拉消息，await 它等于让移动端
+    // 「点通知」白等一次读库才翻页。
     if (app.isMobile) app.mobileView = "chat";
+    await openConversation(convId);
   }
 
   /**
@@ -321,24 +384,39 @@ export const useChatStore = defineStore("chat", () => {
   // 乐观记录还在队列里未落地时到达的「真实记录」：tmp msg_id → 后端记录
   const pendingReplace = new Map<string, MessageRecord>();
   // Ack 先于乐观→真实替换到达：msg_id 已知但 store 里还没有该条目。
+  // ⚠️ 必须有容量上限（审计阶段 4 · 4.2）：`found` 只扫 `messages.value`（LRU 保留 4 个会话），
+  // 所以「会话被淘汰 / 文件回执 / outbox 补投」这三类 Ack 永远命中不了消费点，条目
+  // 只会加不会删 ⇒ 跟着运行时长单调增长。这里用 FIFO 兜住最坏情况；真正的删除
+  // 仍由 `send()` 消费时做（下面 `pendingAcks.delete`），淘汰只清那些本来就没人要的。
   const pendingAcks = new Set<string>();
+  const PENDING_ACKS_MAX = 512;
 
   function scheduleFlush() {
     if (flushScheduled) return;
     flushScheduled = true;
-    const flush = () => {
-      flushScheduled = false;
-      const batch = pending;
-      pending = [];
-      void applyIncoming(batch);
-    };
     // 后台/遮挡窗口的 requestAnimationFrame 会被浏览器暂停，导致消息滞留不渲染；
     // 窗口不可见时退回 setTimeout，保证任何状态下都能入列渲染。
     if (!document.hidden && typeof requestAnimationFrame === "function") {
-      requestAnimationFrame(flush);
+      requestAnimationFrame(flushNow);
+      // 安全网（2026-09-23 审计 1.7）：rAF 回调可能在个别平台行为下丢失（既不投递
+      // 也不报错），flushScheduled 一旦卡在 true，后续所有 enqueueMessage 都被
+      // 开头的守卫挡回 —— 消息永久不渲染且无恢复手段、pending 无上限堆积。
+      // 1s 后仍未落地就强制冲刷；rAF 正常时这里是幂等 no-op（flag 已被置回）。
+      setTimeout(() => {
+        if (flushScheduled) flushNow();
+      }, 1000);
     } else {
-      setTimeout(flush, 0);
+      setTimeout(flushNow, 0);
     }
+  }
+
+  /** 立即冲刷批量队列（幂等：无挂起项时只复位 flag）。 */
+  function flushNow() {
+    flushScheduled = false;
+    if (pending.length === 0) return;
+    const batch = pending;
+    pending = [];
+    void applyIncoming(batch);
   }
 
   async function applyIncoming(raw: MessageRecord[]) {
@@ -374,23 +452,19 @@ export const useChatStore = defineStore("chat", () => {
       }
       if (fresh.length) newByConv.set(cid, fresh);
     }
-    // 被 @ 检测（微信式 [有人@我]）：仅群聊、非自己发的、且当前没开着这个会话。
-    // 与未读同源（本地真正新增的消息），重复投递不会反复触发。
-    // 「@所有人」对每个成员都等同于被点名，与点名走同一条判定入口。
+    // 任务行同时落进看板那一份源（同一个家）：只写已加载的会话，同 msg_id 是刷新 ——
+    // 见 utils/todos::mergeIncomingTodoRows。
+    const mergedRows = mergeIncomingTodoRows(groupTodoRows.value, batch);
+    if (mergedRows !== groupTodoRows.value) groupTodoRows.value = mergedRows;
+    // 被 @ 检测（微信式 [有人@我]）的规则整体搬进 `messages.ts::freshMentionedConvs` ——
+    // 三条规则（只群聊 / 非自己发的 / 当前没开着这个会话）与"与未读同源、重复投递不反复触发"都在那里，
+    // 并且**有单测**（`messages.test.ts` 那 7 条）。搬走而不是再判一遍：这段原先长在 store 里，
+    // 判不到也测不到，2026-09-28 拿真无障碍树读数时因此分不清"该亮没亮"与"正开着所以不算"。
     const myName = app.device?.nickname ?? "";
     const myId = myDeviceId.value;
-    for (const [cid, fresh] of newByConv) {
-      if (cid === activeConv.value || !cid.startsWith("group:")) continue;
-      for (const rec of fresh) {
-        if (rec.sender_id === myId) continue;
-        const named = myName ? messageMentionsName(rec, myName) : false;
-        // 任务被指派给我 ═ 被 @：显式 @ 指派的人（与 item 4 同口径），
-        // 走微信式 [有人@我] 红点，且不会被重复投递反复触发（与上面同源 fresh）。
-        if (named || messageMentionsAll(rec) || todoMentionsMe(rec, myId)) {
-          mentionedConvs.value.add(cid);
-          break;
-        }
-      }
+    for (const cid of freshMentionedConvs(newByConv, activeConv.value, { id: myId, name: myName },
+      { alsoMentionsMe: (rec) => todoMentionsMe(rec, myId), activeVisible: chatViewerLooking() })) {
+      mentionedConvs.value.add(cid);
     }
     // 会话列表中不存在的会话（新好友 / 后端新创建）：本地合并不了，直接从后端拉取
     const knownIds = new Set(conversations.value.map((c) => c.id));
@@ -432,44 +506,197 @@ export const useChatStore = defineStore("chat", () => {
         conversations.value,
         activeConv.value,
         newByConv,
+        myDeviceId.value,
       );
     }
+    // 这批里出现了任务行 ⇒ 徽标要跟着动。这一条同时覆盖了三种来源：
+    // 收到别人的任务、自己创建/改任务（`createTodo` 走 `enqueueMessage` → 这里）、
+    // 以及 #82 之后本端收到的自己那份 emit。
+    if (batch.some((m) => m.kind === "todo" || m.kind === "todo_update")) void refreshOpenTodos();
   }
 
   function enqueueMessage(rec: MessageRecord) {
     pending.push(rec);
+    // 批量队列软上限（审计 1.7）：正常情况下 rAF 一帧内就会清空；堆积到这个量级
+    // 说明 flush 调度已经失灵（或事件风暴），必须留痕 —— 无告警时它只是安静地吃内存。
+    if (pending.length === 5000) {
+      console.error("[chat] 消息批量队列堆积 5000 条：flush 调度疑似失灵", {
+        flushScheduled,
+        hidden: document.hidden,
+      });
+    }
     scheduleFlush();
   }
 
   // ---------------- 刷新 ----------------
+  /**
+   * 后发先至守卫（审计阶段 4 · 4.2）。下面这些 `refresh*` 全是 `x.value = await api.foo()`，
+   * 而调用点大量是 `void refreshX()`（群操作成对调两个、好友申请通过、gossip 更新…），
+   * IPC 又没有顺序保证 ⇒ 旧快照完全可能后回来，把未读、排序、在线状态整体回退。
+   * 同文件的 `refreshTransfers` 已经为这个坑单独修过一次（那次是"进度条永久钉在 0%"），
+   * 这里把同一个不变量收成一份实现，并按**被写的状态**分 key —— 不按函数分：
+   * `refreshPeers` 与 `searchNearbyPeers` 写的是同一个 `peers`，必须互相作废。
+   */
+  const refreshGuard = new StaleGuard();
+
   async function refreshPeers() {
-    peers.value = await api.getPeers();
+    const tok = refreshGuard.begin("peers");
+    const list = await api.getPeers();
+    if (!refreshGuard.isCurrent("peers", tok)) return;
+    // 整表直写会换掉数组与里面每个对象 ⇒ 凡读过 peers 的渲染全部失效（见 utils/peerMerge）。
+    const merged = mergePeerList(peers.value, list);
+    if (merged) peers.value = merged;
   }
   /** 按需探测：群发一次 who_has 后返回周围在线节点（添加好友时调用）。 */
   async function searchNearbyPeers() {
-    peers.value = await api.searchNearbyPeers();
-    const onlineIds = new Set(peers.value.map((x) => x.device_id));
-    friends.value.forEach((f) => (f.online = onlineIds.has(f.device_id)));
+    const tok = refreshGuard.begin("peers");
+    const list = await api.searchNearbyPeers();
+    // 被更新的一次探测抢走时：不写 peers、也不标注 online（online 是本结果的派生值，
+    // 用旧探测结果标会把更新的状态盖回去），但**照常返回**给调用方它要的那份列表。
+    if (!refreshGuard.isCurrent("peers", tok)) return peers.value;
+    const merged = mergePeerList(peers.value, list);
+    if (merged) peers.value = merged;
+    markFriendsOnlineFrom(friends.value, list);
     return peers.value;
   }
   async function refreshFriends() {
-    friends.value = await api.getFriends();
+    const tok = refreshGuard.begin("friends");
+    const list = await api.getFriends();
+    if (!refreshGuard.isCurrent("friends", tok)) return;
+    friends.value = list;
   }
   async function refreshPending() {
-    rawPendingRequests.value = await api.getPendingRequests();
+    const tok = refreshGuard.begin("pending");
+    const list = await api.getPendingRequests();
+    if (!refreshGuard.isCurrent("pending", tok)) return;
+    rawPendingRequests.value = list;
   }
+  /**
+   * 「这条会话我在本地已经判过已读」的水位（convId → 时刻）。
+   *
+   * 存在的理由见 `utils/messages.ts::applyConversationSnapshot`：`StaleGuard` 只挡
+   * "后发先至"，挡不住"同一份请求、数据本身是旧的" —— 乐观清零之后再落一份清零前的
+   * 快照，红点就会自己亮回来。
+   */
+  const unreadClearedAt = new Map<string, number>();
+  /** 水位窗：超过这个年纪的水位一定不会再被任何在飞快照引用，丢掉以免 Map 无界增长。 */
+  const UNREAD_CLEAR_TTL_MS = 30_000;
+
+  /**
+   * **全 store 唯一的"本地把未读清零"入口**：改内存 + 打水位两件事必须同时发生，
+   * 所以不许在别处再写一遍 `conv.unread = 0`（判据：`windowEntries` 之外的
+   * `storeContract` 结构守卫 —— 见该文件里那条 "只有一个家"）。
+   */
+  function clearUnreadLocally(convId: string) {
+    const conv = conversations.value.find((c) => c.id === convId);
+    if (conv && conv.unread !== 0) conv.unread = 0;
+    // 水位打在**发起前**的这一刻：晚于快照发起 ⇒ 那份快照里的数字是旧的，不许点亮红点
+    unreadClearedAt.set(convId, Date.now());
+  }
+
+  /**
+   * 「用户此刻真的在看聊天」—— 判据只在这一个家里，两条规则共用：
+   *  - 已读（`debounceMarkRead`）：不在看就不许判已读（用户 2026-09-12 实测报告：
+   *    移动端整页浮层盖着时判已读＝替用户撒谎、还会把回执发回去）；
+   *  - 「有人@我」红点（`freshMentionedConvs` 的 `activeVisible`）：**"会话开着"不等于"在看"** ——
+   *    桌面端启动会自动打开最近那个会话（`ResponsiveLayout.vue` 那条 watch），窗口也常在后台。
+   *
+   * ⚠️ 两条不许各取一半：只按"开着"就抑制红点，同一个瞬间会出现"已读说没在看、红点说在看"，
+   * 后果是用户回来只看到「N 条未读」、看不出自己被 @ 过，要点开才知道。
+   */
+  function chatViewerLooking(): boolean {
+    return !document.hidden && app.chatVisible;
+  }
+
+  /** 每个群「与我相关且未完成未归档」的任务数 —— 蓝色徽标的唯一数据源（用户 2026-09-26）。
+   *  两处 UI（会话列表条目、聊天头的任务图标）都从这里取，**不在界面里各数一遍**。 */
+  const openTodoByConv = ref<Record<string, number>>({});
+  /** 每个群「任务相关的消息行」（后端全表读）—— 看板 / 任务面板 / 成员面板的**唯一取数口**。
+   *
+   *  为什么必须有它，而不能再折 `chat.messages`：徽标早就走全表读，而三处界面折的是那份
+   *  **有上界的消息缓存**（`PAGE_SIZE × MAX_PAGES = 1000 条/会话`、`MAX_CACHED_CONVS = 8` 个会话整块逐出）
+   *  ⇒ 「徽标还亮着、看板里却再也列不出这条任务」是可达状态，用户没法归档一个看不见的任务。
+   *  `refreshConversations` 的注释里那句「用内存里已有的消息算不行」当时只应用在徽标那一半，
+   *  于是同一句判据两个家（#154-9）。两者现在来自**同一次读**。
+   *  键存在 = 读到过（空数组 = 确实没有任务）；语义见 `utils/todos::putTodoRows`。 */
+  const groupTodoRows = ref<TodoRowsByConv>({});
+  /** 单调序号：只有最后一次发起的结果能落地（任务连着变时会话刷新会挨个追上来）。 */
+  let openTodoSeq = 0;
+  async function refreshOpenTodos() {
+    const myId = myDeviceId.value;
+    // 身份还没就绪 ⇒ 什么都不做（既不清空也不点亮）：清成 0 会让徽标闪一下消失；
+    // 拿空串去比对又会把 `creator: ""` 那类畸形载荷算成"与我相关"。
+    if (!myId) return;
+    const ids = conversations.value.filter((c) => c.kind === "group").map((c) => c.id);
+    if (ids.length === 0) {
+      openTodoByConv.value = {};
+      return;
+    }
+    const mine = ++openTodoSeq;
+    const rows = await api.getGroupTodoMessages(ids);
+    if (mine !== openTodoSeq) return;
+    // 同一次读同时喂徽标与那三处界面（见 groupTodoRows 的注释）
+    groupTodoRows.value = putTodoRows(groupTodoRows.value, ids, rows);
+    const byConv = new Map<string, MessageRecord[]>();
+    for (const r of rows) {
+      const list = byConv.get(r.conv_id) ?? [];
+      list.push(r);
+      byConv.set(r.conv_id, list);
+    }
+    const next: Record<string, number> = {};
+    // 折叠只有一份：`foldTodos` 出当前定义，`openTodosForMe` 出"还活着且与我相关"。
+    for (const [cid, list] of byConv) {
+      const n = openTodosForMe(foldTodos(list), myId).length;
+      if (n > 0) next[cid] = n;
+    }
+    openTodoByConv.value = next;
+  }
+
+  /** 按需补读某个群的任务行：冷启动只开任务窗、或身份未就绪时 bulk 读没跑成的情况。
+   *  已读到过就直接返回 ⇒ 不会每次打开面板都打一次 IPC（"读过没有"就看键在不在）。 */
+  async function ensureGroupTodoRows(convId: string) {
+    if (!convId || isTodoRowsLoaded(groupTodoRows.value, convId)) return;
+    const tok = refreshGuard.begin(`todoRows:${convId}`);
+    const rows = await api.getGroupTodoMessages([convId]);
+    if (!refreshGuard.isCurrent(`todoRows:${convId}`, tok)) return;
+    groupTodoRows.value = putTodoRows(groupTodoRows.value, [convId], rows);
+  }
+
   async function refreshConversations() {
-    conversations.value = await api.getConversations();
+    const tok = refreshGuard.begin("conversations");
+    // 发起时刻：这是"快照里的数据至少有多新"的下界（单连接单锁 ⇒ 读一定发生在发起之后）
+    const issuedAt = Date.now();
+    const list = await api.getConversations();
+    // ⚠️ 这条最不是理论问题：`openConversation` 会**乐观清零**未读，而旧快照带着清零前的
+    // `unread` ⇒ 红点自己亮回来、列表顺序也跟着回退（用户看到的"我没点它怎么又红了"）。
+    if (!refreshGuard.isCurrent("conversations", tok)) return;
+    conversations.value = applyConversationSnapshot(
+      conversations.value,
+      list,
+      unreadClearedAt,
+      issuedAt,
+    );
+    pruneUnreadClears(unreadClearedAt, Date.now(), UNREAD_CLEAR_TTL_MS);
+    // 徽标跟着会话一起刷：冷启动与"切回会话列表"都走这里。
+    // ⚠️ 用内存里已有的消息算不行 —— 消息缓存有上限，冷会话根本不在内存里，
+    // 那样算出来的是"没缓存的群没有数字"这种假状态。
+    void refreshOpenTodos();
   }
   async function refreshGroups() {
-    groups.value = await api.getGroups();
+    const tok = refreshGuard.begin("groups");
+    const list = await api.getGroups();
+    if (!refreshGuard.isCurrent("groups", tok)) return;
+    groups.value = list;
     const entries = await Promise.all(
-      groups.value.map(async (group) => [group.id, await api.getGroupReads(group.id).catch(() => [])] as const),
+      list.map(async (group) => [group.id, await api.getGroupReads(group.id).catch(() => [])] as const),
     );
     const next: Record<string, Record<string, number>> = {};
     for (const [groupId, reads] of entries) {
       next[groupId] = Object.fromEntries(reads.map((read) => [read.reader_id, read.last_read_ts]));
     }
+    // 读名单是**第二次 await** 之后才写的，必须再过一次闸：把已退群成员的绿勾写回来，
+    // 比群列表旧一帧难看得多。
+    if (!refreshGuard.isCurrent("groups", tok)) return;
     groupReads.value = next;
   }
 
@@ -495,6 +722,11 @@ export const useChatStore = defineStore("chat", () => {
     favorites.value = [];
     activeConv.value = null;
     pending = [];  // 后台滞留待冲刷的消息批次（`let pending`，见上）
+    // 这三张表存的都是"内存里的过渡态"：库已经清了，留着它们会让后续 flush 给已经不存在的
+    // 记录重建条目（审计阶段 4 · 4.3）。`clearAllData` 走的是另一条路径，两边必须同口径。
+    pendingReplace.clear();
+    pendingAcks.clear();
+    notifMap.clear();
     await Promise.all([
       refreshConversations(),
       refreshGroups(),
@@ -507,14 +739,16 @@ export const useChatStore = defineStore("chat", () => {
   function groupReaderIds(groupId: string, messageTs: number): string[] {
     const myId = app.device?.device_id;
     const members = new Set(groups.value.find((group) => group.id === groupId)?.members ?? []);
-    return Object.entries(groupReads.value[groupId] ?? {})
+    const ids = Object.entries(groupReads.value[groupId] ?? {})
       .filter(([readerId, lastReadTs]) => members.has(readerId) && readerId !== myId && lastReadTs >= messageTs)
       .map(([readerId]) => readerId);
+    // 没有已读者时返回**同一个空数组**：调用点在虚拟列表的每行模板里，`[] !== []` 会让
+    // Vue 每次都判「这条 prop 变了」⇒ 整棵子树重新 patch（读数见 utils/emptyList.ts）。
+    return ids.length > 0 ? ids : EMPTY_STRING_LIST;
   }
-  /** 进行中的 refreshTransfers 序号：并发触发时只让**最新那次**写回结果。 */
-  let transfersReqSeq = 0;
+  /** 并发触发时只让**最新那次**写回结果（迁入 `refreshGuard`，与上面几个共用同一份实现）。 */
   async function refreshTransfers() {
-    const req = ++transfersReqSeq;
+    const req = refreshGuard.begin("transfers");
     const [list, contents] = await Promise.all([
       api.getTransfers(),
       api.getContentTransfers().catch(() => []),
@@ -522,7 +756,7 @@ export const useChatStore = defineStore("chat", () => {
     // 后发先至的旧快照必须丢掉：多选发送时每个文件都会 `void refreshTransfers()`，
     // 旧快照里**没有**刚建的那条 transfer ⇒ 覆盖回来后，后续 file-progress 全部落空
     // （见 updateTransferProgress），进度条永久钉在「发送中 0%」——而对端早就收完已读。
-    if (req !== transfersReqSeq) return;
+    if (!refreshGuard.isCurrent("transfers", req)) return;
     transfers.value = list;
     // 顺带刷新统一内容状态：未完成 / 校验失败的气泡据此显示「点击重试」。
     contentTransfers.value = contents;
@@ -548,10 +782,21 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   async function refreshTopology() {
-    topology.value = await api.getTopology();
+    const tok = refreshGuard.begin("topology");
+    const list = await api.getTopology();
+    if (!refreshGuard.isCurrent("topology", tok)) return;
+    topology.value = list;
   }
 
-  /** 打开会话时的未读定位：记录第一条未读消息索引（-1 = 无未读，贴底显示）。 */
+  /**
+   * 打开会话时的未读定位：第一条未读在**已渲染时间线**里的下标
+   * （-1 = 有未读但还没算出来，交给贴底兜底）。
+   *
+   * ⚠️ 坐标系是 `ChatWindow.messages`（过滤后的列表），不是 `messages[convId]` 原始列表 ——
+   * 分割线和 `scrollToIndex` 都在那个列表里消费这个数。换算收在
+   * `utils/messages.ts:unreadAnchorIndex()`，过滤判据与 ChatWindow 共用
+   * `isRenderedInTimeline`，不留第二份真相源（审计阶段 4 · 4.1-1）。
+   */
   const unreadJump = ref<{ convId: string; index: number } | null>(null);
 
   /**
@@ -622,11 +867,7 @@ export const useChatStore = defineStore("chat", () => {
     unreadJump.value = unreadBefore > 0 ? { convId: id, index: -1 } : null;
     // 未读清零走**乐观更新**（用户 2026-09-12 要求「所有异步操作尽量乐观更新」）：
     // 打开会话即视为已读，本地立刻清零，别让红点在 await 期间继续显示。
-    const optimisticClearUnread = (convId: string) => {
-      const conv = conversations.value.find((c) => c.id === convId);
-      if (conv && conv.unread !== 0) conv.unread = 0;
-    };
-    optimisticClearUnread(id);
+    clearUnreadLocally(id);
     // 会话行不存在（如新加好友还没发过消息）→ 后端补建，保证左侧列表有对应可高亮的项。
     // ⚠️ **不阻塞消息加载**：补建会话行与 loadMessages 互不依赖，串行 await 会让
     // 「切到一个全新会话」白等一次 IPC（骨架已经渲染，但内容迟迟不来）。
@@ -651,14 +892,14 @@ export const useChatStore = defineStore("chat", () => {
     await Promise.all([loadMessages(id), ensureConv]);
     await readReceipt;
     if (unreadBefore > 0) {
-      const list = messages.value[id] ?? [];
-      const idx = list.length - Math.min(unreadBefore, list.length);
-      if (idx >= 0 && idx < list.length) {
-        unreadJump.value = { convId: id, index: idx };
-      } else {
-        // 无可定位的未读（空列表等异常）→ 不跳，交给贴底兜底
-        unreadJump.value = null;
-      }
+      // ⚠️ 换算必须发生在**过滤后的列表**里：`unread` 是后端计数，而分割线落在
+      // ChatWindow 渲染出来的那些行上（判据两边共用 `isRenderedInTimeline`，
+      // 见 utils/messageKinds）。旧写法在原始列表里取下标、到过滤后列表里用，
+      // 而"占下标不占未读"（静默/`system`）与"占未读不占下标"（`announcement`/`poll`）
+      // 两个方向的偏差同时存在 ⇒ 分割线画错消息、`scrollToIndex` 跳错位置。
+      const rendered = (messages.value[id] ?? []).filter((m) => isRenderedInTimeline(m.kind));
+      const idx = unreadAnchorIndex(rendered, unreadBefore);
+      unreadJump.value = idx >= 0 ? { convId: id, index: idx } : null;
     }
     // 未读已在上面乐观清零；这里只做一次兜底（若期间又来了新消息把 unread 加回去，
     // 说明是"打开之后"到达的，此时不该再清）。
@@ -670,8 +911,23 @@ export const useChatStore = defineStore("chat", () => {
   const PAGE_SIZE = 100;
   const MAX_PAGES = 10;
   const pagesLoaded = new Map<string, number>();
-  // 加载竞态守卫：快速切换会话时丢弃过期响应
-  let loadSeq = 0;
+  /**
+   * 正在翻历史页的会话 → 那一次的 Promise。同一会话同时只允许一个在飞，
+   * 但**后来者必须并入这一次**（见 `loadMoreMessages` 的 ⚠️）而不是被直接弹回。
+   */
+  const loadingMore = new Map<string, Promise<void>>();
+  /**
+   * 已知"这个会话已翻到最早一页"的会话：不再为它付任何翻页 IPC。
+   * ⚠️ 必须在每次 `loadMessages` 重新加载该会话时作废 —— 重新打开只取最新一页，
+   * 若沿用旧标记，500 条的会话就再也翻不到第 101 条以前（"翻不动历史"就是这么来的）。
+   */
+  const historyTops = new Set<string>();
+  // 加载竞态守卫：快速切换会话时丢弃过期响应。**按会话分桶**：
+  // 全局单计数会让「非活跃会话的重查」把此刻飞行中的活跃会话加载/翻页
+  // 一并判为过期（onMessageStatusChanged 会对任意含该 msg_id 的会话触发
+  // loadMessages）→ 活跃会话 messages[convId] 永远 undefined，骨架永久转圈
+  // （2026-09-23 审计 1.4）。会话淘汰时一并清理（见 enforceMessageCacheBound）。
+  const loadSeqs = new Map<string, number>();
 
   // ---------------- 消息缓存上界：限制「同时缓存多少个会话」 ----------------
   //
@@ -682,13 +938,26 @@ export const useChatStore = defineStore("chat", () => {
   // 消息列表），其它会话的缓存纯粹是内存副本，切回时由 loadMessages 从 SQLite 重新
   // 加载最新一页，因此丢弃不影响任何展示。
   //
+  // 为什么从 4 提到 8（用户 2026-09-24 #29「切换会话要瞬间响应」）：这条上界直接决定
+  // 「切过去是**当场有内容**还是**先看到骨架**」—— 骨架的判据就是
+  // `messages[convId] === undefined`。命中缓存 = 立刻有上一轮的内容可画（后台照样重查一页
+  // 把发送状态/撤回对齐，只是那期间不空白）；被淘汰 = 冷加载**只能等那一轮 IPC**
+  // （`get_latest_messages`，一次拿完，仍要排队过后端那把全局 `Mutex<Connection>`）。
+  // 4 个槽位意味着常聊 5 个人时按 A→B→C→D→E→A 转一圈，
+  // **回到 A 的那一下必然**是冷的 —— 淘汰是纯 LRU 计数、与"多久没打开"无关，
+  // 所以这个退化是确定会发生，不是偶发。
+  // 代价核过账：每会话上界 = MAX_PAGES × PAGE_SIZE = 1000 条，一条记录（msg_id/conv_id/
+  // kind/content/sender/ts/link/status 等十余字段，正文通常几十字）量级 0.5–1 KB
+  // ⇒ 8 个会话最坏 4–8 MB 的二级内存副本；渲染侧仍只有活跃会话那一列（VirtualList
+  // 只画视口内的行），所以放大的是内存不是帧开销。
+  //
   // 去重不受影响：后端 insert_message_if_new 只在「真的新建一行」时 emit
   // message-received（见 db.rs 注释），跨批次去重以它为权威；前端这份缓存只是二级保险。
   //
   // 仍未覆盖（已知遗留）：单个会话的实时新消息仍会不断追加，条数没有硬上界。
   // 未做是因为裁剪头部会改变 VirtualList 的滚动锚定（用户正向上翻阅时内容会跳动），
   // 需要与滚动状态联动，收益（每会话几 MB）不值这个回退风险。
-  const MAX_CACHED_CONVS = 4;
+  const MAX_CACHED_CONVS = 8;
   /** 会话缓存的 LRU 顺序（最近使用的在末尾） */
   const cacheOrder: string[] = [];
 
@@ -708,6 +977,11 @@ export const useChatStore = defineStore("chat", () => {
       delete messages.value[cid];
       // 分页簿记一并清掉：切回该会话时 loadMessages 会重新从 DB 取最新一页
       pagesLoaded.delete(cid);
+      loadSeqs.delete(cid);
+      // 同一本账：不清"到顶"结论的话，该会话重开后翻不动历史。
+      // **不**跟着删 loadingMore —— 那条 Promise 自己会落地并摘除；在这里删会
+      // 让"淘汰后新发起的一次"与仍在飞的旧的一次并行拉页，制造新的重复请求。
+      historyTops.delete(cid);
     }
     // 同步收缩 LRU，避免它自身无限增长
     for (let i = cacheOrder.length - 1; i >= 0; i--) {
@@ -725,46 +999,106 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   async function loadMessages(convId: string) {
-    const seq = ++loadSeq;
+    const seq = (loadSeqs.get(convId) ?? 0) + 1;
+    loadSeqs.set(convId, seq);
     touchCacheOrder(convId);
+    // ⚠️ 必须在**函数开头**作废"已翻到顶"这个结论，不能只在成功路径末尾清：
+    // IPC 失败会走 catch 提前 return、seq 被后来者抢走也会提前 return —— 那些路径下
+    // 内存列表同样是"只有最新一页"，若 historyTops 还留着 true，`loadMoreMessages`
+    // 就被永久挡死，而它正是这种空列表下唯一的自愈通道（2026-09-23 评审抓出）。
+    historyTops.delete(convId);
     // 打开会话应先加载「最新一页」，而不是最旧一页；否则底部会停在第 100 条历史，
     // 最新消息与文件都要靠后续滚动才出现。
     let list: MessageRecord[];
     try {
-      const total = await api.getMessageCount(convId);
-      const offset = Math.max(0, total - PAGE_SIZE);
-      list = await api.getMessages(convId, PAGE_SIZE, offset);
+      // 一次 IPC 拿最新一页（后端返回正序，前端整表覆盖不必再倒一遍）。
+      // 原先是「先 `COUNT(*)` 算 offset、再按 offset 取页」两轮**串行** —— 每轮都要排队过
+      // 全局那把 db 锁，而 count 这一轮在冷加载里除了算 offset 没有别的用处。
+      // 判据：`storeContract` 钉住"冷加载只发一次消息页 IPC"，Rust 侧钉住
+      // 「一次取尾 == 两轮按 offset 取，逐行同序」。
+      list = await api.getLatestMessages(convId, PAGE_SIZE);
     } catch {
       // 读库失败也要把该会话标记为「已加载」：留 undefined 会让 ChatWindow 的加载骨架
       // 永远停在那里（UI 先行就得保证"必有终态"）。给空列表 = 回到"暂无消息"的正常态。
       if (messages.value[convId] === undefined) messages.value[convId] = [];
       return;
     }
-    if (seq !== loadSeq || activeConv.value !== convId) return;
+    if (seq !== (loadSeqs.get(convId) ?? 0) || activeConv.value !== convId) return;
     // 快照可能取自 Ack / peer-read 落库之前：与查询期间已推进的内存状态合并，
     // 否则刚亮的绿勾会被这份旧快照退回「发送中」。
     const prev = messages.value[convId];
-    messages.value[convId] = prev ? preserveDeliveryStatus(list, prev) : list;
+    // 乐观气泡（tmp-*）/ 文件失败占位（file-failed-*）只存在于内存：快照整表
+    // 覆盖会把它们吞掉 → 已发出的消息"凭空消失"，用户以为失败而重发（审计 1.3）。
+    messages.value[convId] = prev
+      ? appendLocalOnly(preserveDeliveryStatus(list, prev), prev)
+      : list;
     pagesLoaded.set(convId, 1);
   }
 
   /** 向上翻页加载更早的历史消息（VirtualList 触顶时调用）。 */
-  async function loadMoreMessages(convId: string) {
+  async function loadMoreMessages(convId: string): Promise<void> {
+    // 两道闸门都必须有（审计阶段 4 · 4.1-2）：`VirtualList` 在"停在距顶 60px 内"期间
+    // 每一次重测都会 emit `loadMore`（滚动 / resize / applyJump 轮询 / scrollToIndex /
+    // items 变化 / 总高变化共 6 个入口），所以本函数会被**每帧**调用。
+    //   · loadingMore：没有它，并发的两次调用都过得了下面的页数判据、各自 `getMessages`
+    //     拉一页，却把 `pagesLoaded` 写成同一个值 ⇒ "前进一页、拉了两页数据"。
+    //   · historyTops：没有它，已经翻到最早一页的会话（绝大多数会话都不满 MAX_PAGES）
+    //     每帧都要白付一次 `getMessageCount` IPC。
+    // 刻意**不做**边沿触发式的一次性开关：那样用户停在顶部时只会翻出一页，必须"往下滚
+    // 一点再滚回来"才能继续翻 —— 那是拿一个真实可用的行为去换一个噪声，不划算。
+    if (historyTops.has(convId)) return;
+    // ⚠️ 单飞必须是**并入在飞的那一次**，不是"看见有人在飞就直接返回"。
+    // `locateMessage` / `locateMessageInConv` 的循环写的是 `await loadMoreMessages()`
+    // 然后"长度没变 ⇒ 没有更早历史了"；直接返回会让它们把"别人正在翻"误判成"翻到头了"，
+    // 表现就是点引用/搜索命中时误报「原消息在更早的历史里」并拒绝定位（2026-09-23 评审
+    // 抓出的回归 —— 加闸门时只想了防重复拉页，没想await方的语义）。
+    const running = loadingMore.get(convId);
+    if (running) return running;
     const pages = pagesLoaded.get(convId) ?? 1;
     if (pages >= MAX_PAGES) return;
-    const seq = loadSeq;
+    const page = loadMorePage(convId, pages);
+    loadingMore.set(convId, page);
+    // 挂在链上而不是原 promise 上：这样 `page` 始终有处理器，reject 时不会变成
+    // unhandled rejection，而**所有** await 方仍各自拿到同一次结果。
+    return page.finally(() => {
+      loadingMore.delete(convId);
+    });
+  }
+
+  /** 真正拉一页。单飞与容量闸都在 `loadMoreMessages` 那一层，这里只管一次 IPC。 */
+  async function loadMorePage(convId: string, pages: number): Promise<void> {
+    const seq = loadSeqs.get(convId) ?? 0;
     const total = await api.getMessageCount(convId);
-    if (pages * PAGE_SIZE >= total) return;
+    if (seq !== (loadSeqs.get(convId) ?? 0)) return;
+    if (pages * PAGE_SIZE >= total) {
+      historyTops.add(convId);
+      return;
+    }
     // 当前已加载最新 pages 页，继续向更早方向取一页。
     const offset = Math.max(0, total - (pages + 1) * PAGE_SIZE);
     const older = await api.getMessages(convId, PAGE_SIZE, offset);
-    if (seq !== loadSeq || older.length === 0) return;
+    if (seq !== (loadSeqs.get(convId) ?? 0) || older.length === 0) return;
     const existing = messages.value[convId] ?? [];
     messages.value[convId] = mergeMessages(existing, older);
     pagesLoaded.set(convId, pages + 1);
-    // prepend 历史后，「第一条未读」的索引整体后移（index=-1 占位态不参与）
+    // 拿不满一页就是到头了，不必再问一次 `getMessageCount`
+    if (older.length < PAGE_SIZE) historyTops.add(convId);
+    // prepend 历史后，「第一条未读」的下标整体后移。位移量既不是 `older.length`（原实现，
+    // 把不渲染的静默行也算进去 ⇒ 每翻一页再累积一次误差，审计 4.1-1 的第二处实例），
+    // 也不是"这一页里会渲染的条数"（2026-09-23 评审抓出）—— `mergeMessages` 会按 msg_id
+    // 去重，而重叠是常态：会话总数落在 101~199 之间时第二页请求的 offset 仍是 0，
+    // 返回的整页与内存里的最新一页大面积重叠；翻页期间来了新消息同样重叠。
+    // 只有"真正新插进列表的那些**会渲染**的行"才是该平移的量。
+    // index=-1 是"还在加载"的占位态，不参与位移。
     if (unreadJump.value?.convId === convId && unreadJump.value.index >= 0) {
-      unreadJump.value = { ...unreadJump.value, index: unreadJump.value.index + older.length };
+      const known = new Set(existing.map((m) => m.msg_id));
+      let shift = 0;
+      for (const m of older) {
+        if (!known.has(m.msg_id) && isRenderedInTimeline(m.kind)) shift += 1;
+      }
+      if (shift > 0) {
+        unreadJump.value = { ...unreadJump.value, index: unreadJump.value.index + shift };
+      }
     }
   }
 
@@ -774,6 +1108,26 @@ export const useChatStore = defineStore("chat", () => {
   // 或 `openConversation()`（会发群已读回执、写与主窗口共享的 localStorage）。
 
   /**
+   * 「这个群的任务首屏取完了没有」—— 看板该转圈还是该显示内容的唯一依据。
+   *
+   * 为什么必须有（用户 2026-09-24：「点查看任务，弹窗弹出很慢，还以为没点上」）：群任务窗口
+   * 原先把 `loadGroupTodos` 排在**挂载之前**，那段时间整扇窗是一块骨架灰屏（看不出在加载什么），
+   * 而连点又被启动器的单飞/防抖吃掉 ⇒ 表现就是"点了没反应，过一会才蹦出来"。
+   * 改成先挂载、数据后台取之后，没有这个标记的话首帧会理直气壮地显示「暂无任务」——
+   * 那不是快了一点，那是**假空态**，比慢更糟。
+   *
+   * ⚠️ 语义是"这一次取数**结束了**"（成功或失败），不是"成功过"：失败也置位，否则
+   * 一次 DB 出错就把窗口永久留在转圈上，而那是一个连点都救不回来的状态。
+   * 失败由调用方 toast 出来（`src/entries/todos.ts`），本标记只负责"别一直转"。
+   */
+  const groupTodosSettled = ref<Record<string, true>>({});
+
+  /** 该群的任务首屏是否已取完（未开始与进行中都返回 false ⇒ 看板显示加载态）。 */
+  function todosLoadedOnce(groupId: string): boolean {
+    return groupTodosSettled.value[groupId] === true;
+  }
+
+  /**
    * 群任务窗口的读路径：加载**一个群**的消息 + 解析成员名要用的数据。
    *
    * ⚠️ 不变量：调用方（群任务窗口）的 store 实例**只服务这一个会话**，所以这里
@@ -781,11 +1135,15 @@ export const useChatStore = defineStore("chat", () => {
    */
   async function loadGroupTodos(groupId: string): Promise<void> {
     const convId = `group:${groupId}`;
-    // 成员名/群名/头像来自 groups + friends + peers；conversations 让窗口内的
-    // `enqueueMessage`（创建/更新任务后本地合并）不必再补一次拉取。
-    await Promise.all([refreshGroups(), refreshFriends(), refreshPeers(), refreshConversations()]);
-    activeConv.value = convId;
-    await loadMessages(convId);
+    try {
+      // 成员名/群名/头像来自 groups + friends + peers；conversations 让窗口内的
+      // `enqueueMessage`（创建/更新任务后本地合并）不必再补一次拉取。
+      await Promise.all([refreshGroups(), refreshFriends(), refreshPeers(), refreshConversations()]);
+      activeConv.value = convId;
+      await loadMessages(convId);
+    } finally {
+      groupTodosSettled.value[groupId] = true;
+    }
   }
 
   let groupTodosUnlisten: (() => void) | null = null;
@@ -817,9 +1175,60 @@ export const useChatStore = defineStore("chat", () => {
     };
   }
 
-  /** 统一发送（单聊/群聊）。乐观上屏：先显示 sending，invoke 成功后替换为真实记录。 */
-  async function send(convId: string, content: string, kind: string): Promise<MessageRecord> {
+  /**
+   * 统一发送（单聊/群聊）。乐观上屏：先显示 sending，invoke 成功后替换为真实记录。
+   *
+   * `mentionIds` 只有群文本消息有用：**这条消息 @ 的是哪些人（设备 id）**。
+   * 传 `undefined`（非选择器输入的发送路径都这样）= 随老格式发出去，
+   * 接收端按昵称兜底判 —— 新字段只让"带上了 id 的那些"更准，不会让别的入口变暗。
+   *
+   * `retryOfMsgId` = **重发**时那条 failed 气泡的 `msg_id`（见 `retrySend`）。
+   * 传它就**不再新建乐观气泡**，而是把那条 failed 原地转回 sending ——
+   * 否则列表里会同时留着"发送失败的原文"和"重发中的原文"两条，而 failed 那条
+   * **永远不会被删**（全库无删除路径，且 `appendLocalOnly` 每次重开会话都会把
+   * `tmp-*` 重新追加到快照尾部）。
+   *
+   * ⚠️ 为什么不能字面复用同一 msg_id（INV-001 在本项目做不到"客户端指定"那一半）：
+   * 后端 msg_id = `SHA-256(sender_id + nonce + payload)`（`protocol.rs::compute_message_id`），
+   * nonce 每条新消息都不同 ⇒ 重发**必然**是新 msg_id；且 `send_message` 只有
+   * `(friend_id, content, kind)` 三个参数，压根没有 msg_id 可传。所以 INV-001 的
+   * "重试复用同一 msg_id"在本项目落在**接收侧幂等**（`message_exists` 按 msg_id 去重），
+   * 前端这一侧改成"**旧气泡原地复用**"—— 逻辑消息在界面上仍是同一条。
+   */
+  async function send(
+    convId: string,
+    content: string,
+    kind: string,
+    mentionIds?: string[],
+    retryOfMsgId?: string,
+  ): Promise<MessageRecord> {
     const myId = app.device?.device_id ?? "";
+
+    // ---- 重发：把那条 failed 气泡原地转回 sending，不再新建乐观记录 ----
+    // 找不到（切了会话 / 已被快照吞掉）就退回新建 —— 宁可多一条也不静默丢消息。
+    if (retryOfMsgId) {
+      const list = messages.value[convId];
+      const i = list?.findIndex((m) => m.msg_id === retryOfMsgId) ?? -1;
+      if (list && i >= 0) {
+        const reverted = { ...list[i], status: "sending" as const };
+        messages.value[convId] = [...list.slice(0, i), reverted, ...list.slice(i + 1)];
+        try {
+          const rec = await sendToBackend(convId, content, kind, mentionIds);
+          // Ack 可能已在 await 期间到达 ⇒ 直接提升到 delivered（与下面新建路径同一处理）
+          const acked = pendingAcks.delete(rec.msg_id);
+          replaceMessage(
+            convId,
+            retryOfMsgId,
+            acked ? { ...rec, status: furthestStatus(rec.status, "delivered") } : rec,
+          );
+          return rec;
+        } catch (e) {
+          replaceMessage(convId, retryOfMsgId, { ...reverted, status: "failed" });
+          throw e;
+        }
+      }
+    }
+
     // 乐观消息先占一个很大的逻辑序号，保证它出现在会话底部；后端返回真实记录后会替换为权威 seq。
     const optimistic: MessageRecord = {
       id: -1,
@@ -835,12 +1244,7 @@ export const useChatStore = defineStore("chat", () => {
     };
     enqueueMessage(optimistic);
     try {
-      let rec: MessageRecord;
-      if (convId.startsWith("group:")) {
-        rec = await api.sendGroupMessage(convId.slice(6), content, kind);
-      } else {
-        rec = await api.sendMessage(convId, content, kind);
-      }
+      const rec = await sendToBackend(convId, content, kind, mentionIds);
       // 如果 Ack 已在 await 期间到达：直接把 real record 提升到 delivered，
       // 然后一次性替换 optimistic → real（不再二次 replaceMessage）。
       const acked = pendingAcks.delete(rec.msg_id);
@@ -856,16 +1260,33 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
-  /** 替换会话内指定 msg_id 的消息（乐观记录 → 真实记录 / 状态变更）。 */
+  /** 单聊/群聊的 invoke 分流（重发与首次发送共用，避免两份实现漂移）。 */
+  async function sendToBackend(
+    convId: string,
+    content: string,
+    kind: string,
+    mentionIds?: string[],
+  ): Promise<MessageRecord> {
+    if (convId.startsWith("group:")) {
+      return api.sendGroupMessage(convId.slice(6), content, kind, mentionIds);
+    }
+    return api.sendMessage(convId, content, kind);
+  }
+
+  /**
+   * 替换会话内指定 msg_id 的消息（乐观记录 → 真实记录 / 状态变更）。
+   *
+   * ⚠️ 必须走 `replaceOptimistic`（按 `msg_id` 认，不按位置换）：群发送的真实记录有**两条**
+   * 到达路径 —— 后端为跨窗口同步加的自 emit（`commands/window.rs::send_group_payload`）
+   * 与 `invoke` 的返回值。自 emit 先到时列表里已经有那一条，再 splice 一次就是
+   * "同一条消息显示两条"（而切一次会话从库里重读又变回一条 —— 用户 2026-09-28 报的正是这个）。
+   */
   function replaceMessage(convId: string, msgId: string, next: MessageRecord) {
     const list = messages.value[convId];
     if (list) {
-      const i = list.findIndex((m) => m.msg_id === msgId);
-      if (i >= 0) {
-        // 取两者中更靠后的状态：pendingAcks 消费或 pendingReplace 批量替换
-        // 不应把已达 read 的记录退回 delivered（Ack 晚到 / peer-read 竞态）。
-        const merged = { ...next, status: furthestStatus(list[i].status, next.status) };
-        messages.value[convId] = [...list.slice(0, i), merged, ...list.slice(i + 1)];
+      const replaced = replaceOptimistic(list, msgId, next);
+      if (replaced) {
+        messages.value[convId] = replaced;
         return;
       }
     }
@@ -1000,10 +1421,15 @@ export const useChatStore = defineStore("chat", () => {
     await refreshAnnouncements();
   }
 
-  // ---------------- 群任务（Card kind，不在时间线上渲染，只在任务面板里折叠展示） ----------------
+  // ---------------- 群任务（Card kind：**时间线上也渲染**，同时折进任务面板） ----------------
+  // ⚠️ 这行注释此前写的是"不在时间线上渲染"，与 `utils/messageKinds.ts` 的
+  // `CARD_KINDS` / `isRenderedInTimeline("todo") === true` 相反 —— 就是这句假话让
+  // "自己发的任务在主聊天窗看不见"被当成设计如此（2026-09-26 用户实测报出）。
   // 为什么都要 `enqueueMessage(rec)`：面板里的列表是 `foldTodos(该会话的消息)` 折出来的，
   // 事件不进 store 就折不出来 —— 界面要等下次重新拉全量（= 重进会话）才刷新
-  // （与置顶/公告同一条理由）。
+  // （与置顶/公告同一条理由）。⚠️ 但那只覆盖"发起方与接收方在同一个窗口"的情况：
+  // 任务看板跑在独立窗口、另有一份 store，所以本端回送必须由后端 emit（见
+  // `commands/window.rs::send_group_payload` 的自 emit 与 lib.rs 的同名形状守卫）。
 
   /** 新建一条群任务（任意成员）。description / images 可选。返回新建的消息记录（含 todo_id）。 */
   async function createTodo(
@@ -1037,6 +1463,10 @@ export const useChatStore = defineStore("chat", () => {
       images: TodoImage[];
       /** 显式归档：`true` = 手动归档（完成之后）。不传 = 保留库中原值。 */
       archived: boolean;
+      /** 优先级（三档）。不传 = 保留库中原值 ⇒ 改状态/改描述都不会顺手把档位重置。 */
+      priority: string;
+      /** 类型（三档）。同 priority 那一格：不传就保留库里的，别让它被"改个状态"顺手刷成普通任务。 */
+      category: string;
     }> = {},
   ) {
     const rec = await api.updateGroupTodo(groupId, item.todoId, {
@@ -1047,6 +1477,11 @@ export const useChatStore = defineStore("chat", () => {
       description: patch.description ?? item.description,
       images: patch.images ?? item.images,
       archived: patch.archived,
+      priority: patch.priority,
+      // category 曾被**漏在这一行之外**：patch 类型里声明了它、api 也收它、后端也存它，
+      // 但这里没转发 ⇒ 选完类型弹「已更新」而库里一字未动，类型检查与全量层都拦不住。
+      // 键集合的对账由 src/utils/storeContract.test.ts 那条判据负责，别再靠人眼数。
+      category: patch.category,
     });
     enqueueMessage(rec);
   }
@@ -1066,7 +1501,12 @@ export const useChatStore = defineStore("chat", () => {
   const favorites = ref<FavoriteEntry[]>([]);
 
   async function refreshFavorites() {
-    favorites.value = await api.listFavorites();
+    // 「收藏 / 取消收藏」从消息菜单与面板两处发起 ⇒ 不加闸的话，先发起的后回来会把
+    // 刚收藏的那条从面板里抹掉（用户看到"点了星号又没了"）。
+    const tok = refreshGuard.begin("favorites");
+    const list = await api.listFavorites();
+    if (!refreshGuard.isCurrent("favorites", tok)) return;
+    favorites.value = list;
   }
 
   /**
@@ -1152,6 +1592,24 @@ export const useChatStore = defineStore("chat", () => {
    */
   async function sendReaction(groupId: string, target: string, emoji: string, add: boolean) {
     const rec = await api.sendGroupReaction(groupId, target, emoji, add);
+    enqueueMessage(rec);
+  }
+
+  /**
+   * 1:1 里的表情回应：走普通 `send_message`，kind = "reaction"。
+   *
+   * 为什么不新开一条后端命令：回应是**状态事件**，而 `send_message` 已经是"把一条带 kind 的
+   * 消息可靠投递给一个好友"的唯一通路（outbox / E2EE / ack 全在那条上）。再加一条命令就是第二个家，
+   * 而它管的那一半（可靠投递）会先腐烂。
+   * 后端挡三件事：载荷畸形、对端版本吃不下这个 kind（INV-P24：老端会整帧丢 + 断链），
+   * 以及"静默 kind 不许刷会话预览"。前两者是 Err ⇒ 这里必须让调用点报错，不能吞。
+   */
+  async function sendDmReaction(friendId: string, target: string, emoji: string, add: boolean) {
+    const rec = await api.sendMessage(
+      friendId,
+      buildReactionPayload(target, emoji, add),
+      "reaction",
+    );
     enqueueMessage(rec);
   }
 
@@ -1321,10 +1779,6 @@ export const useChatStore = defineStore("chat", () => {
       return null;
     }
   }
-  async function sendFileRelayTo(convId: string, path: string) {
-    if (convId.startsWith("group:")) return null;
-    return api.sendFileRelay(convId, path);
-  }
 
   /** 清除聊天数据：后端清库（含群聊删除边界）后重置本 store 全部会话状态。
    *  activeConv 必须置 null——否则左侧无选中而右侧仍显示失效 ChatWindow。 */
@@ -1336,7 +1790,12 @@ export const useChatStore = defineStore("chat", () => {
     groupReads.value = {};
     activeConv.value = null;
     mentionedConvs.value = new Set();
+    // 与 `resetAfterDataCleared` **同一组**（那边清的是同三张表）：后端把库清了，
+    // 这些"等落地/等点击"的过渡态再留着就是给已不存在的记录重建条目。
+    // 少清任何一张，两条清除路径就会走出两种不同的残留表现。
     pendingAcks.clear();
+    pendingReplace.clear();
+    notifMap.clear();
     void refreshTransfers();
   }
 
@@ -1376,24 +1835,35 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   /**
-   * 处于「网络停滞」的 transfer（按 writer 实发判定，后端只在状态翻转时发一次事件）。
+   * 处于「停滞/等待」的 transfer → 原因文案（按 writer 实发判定，后端只在状态翻转时发一次事件）。
    *
    * 为什么单独存而不下到 `transfers[]` 行上：`refreshTransfers()` 会用后端快照**整体替换**
    * 那个数组，行上的临时标记会被无声冲掉；停滞是"这次尝试"的状态，必须活得比快照久。
+   *
+   * 值就是原因（`undefined` = 普通的链路静默，界面回退到既有的「网络停滞」文案）。
+   * 用 Map 而不是 Set：只有蓝牙链路时大文件会"保持 pending 等 LAN"（后端
+   * `refuse_reason_for_best_link`），那句原因必须落在同一个集合里 —— 分两处存就一定会有
+   * 一边忘了清（表现为"停滞"标签一直挂着）。
    */
-  const stalledTransfers = ref<Set<string>>(new Set());
+  const stalledTransfers = ref<Map<string, string | undefined>>(new Map());
   function isTransferStalled(id: string) {
     return stalledTransfers.value.has(id);
   }
-  function setTransferStalled(id: string, stalled: boolean) {
-    if (stalledTransfers.value.has(id) === stalled) return;
-    const next = new Set(stalledTransfers.value);
-    if (stalled) next.add(id);
-    else next.delete(id);
-    stalledTransfers.value = next;
+  function transferStallReason(id: string): string | undefined {
+    return stalledTransfers.value.get(id);
+  }
+  function setTransferStalled(id: string, stalled: boolean, reason?: string) {
+    const next = reason ?? undefined;
+    // 幂等：后端在每次心跳 flush 都会重发这条（"只有蓝牙"是持续状态），值没变就不触发响应式
+    if (stalledTransfers.value.has(id) === stalled && (!stalled || stalledTransfers.value.get(id) === next))
+      return;
+    const m = new Map(stalledTransfers.value);
+    if (stalled) m.set(id, next);
+    else m.delete(id);
+    stalledTransfers.value = m;
   }
   function onFileStalled(p: FileStalledInfo) {
-    setTransferStalled(p.transfer_id, p.stalled);
+    setTransferStalled(p.transfer_id, p.stalled, p.reason ?? undefined);
   }
 
   function updateTransferProgress(p: FileProgress) {
@@ -1477,26 +1947,19 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   async function init() {
-    await Promise.all([
-      refreshFriends(),
-      refreshConversations(),
-      refreshPending(),
-      refreshGroups(),
-      refreshTransfers(),
-      refreshPeers(),
-      refreshTopology(),
-      refreshAnnouncements(),
-    ]);
-    // 恢复上次打开的会话（若仍存在）。HIG State Restoration：重启后回到上次离开的地方。
-    // 用 void 触发：不阻塞 init，也避免其异步失败拖垮启动。
-    try {
-      const last = localStorage.getItem(LAST_CONV_KEY);
-      if (last && conversations.value.some((c) => c.id === last)) {
-        void openConversation(last);
-      }
-    } catch {
-      /* localStorage 不可用则跳过恢复 */
-    }
+    // 重复初始化守卫：先拆掉上一轮注册的资源，再注册这一轮的。
+    // 触发场景是 HMR（App.vue 热替换 → onMounted 再跑一次 init）与任何将来的
+    // 二次调用；生产冷启动只有一轮，拆的是 `null`。
+    chatInitScope?.dispose();
+    const scope = createInitScope();
+    chatInitScope = scope;
+    // ⚠️ 事件绑定必须先于一切初始刷新（2026-09-23 审计 1.5）：Tauri `listen`
+    // 不回放历史事件 —— 排在刷新之后绑定，启动窗口期（"打开就收消息"是局域网
+    // 高频场景）emit 的系统通知/新消息/在线状态会**永久丢失**，且无任何纠正路径。
+    // bindEvents 内部是并行 listen，调用瞬间 IPC 即发出，不等往返即可开始拉数据。
+    //
+    // 事件绑定自身也要兜底（审计 1.6）：不 catch 的话它 reject 会拖着 init 一起
+    // reject —— 界面看起来正常，却永远收不到任何事件（"活着但功能全死"）。
     // 会话打开期间收到新消息：去抖标记已读（同时把已读回执发给对方 → 对方绿勾）
     let markReadTimer: ReturnType<typeof setTimeout> | null = null;
     const debounceMarkRead = (convId: string) => {
@@ -1506,24 +1969,23 @@ export const useChatStore = defineStore("chat", () => {
         // ⚠️ 三个条件缺一不可：得是这个会话、应用在前台、**而且聊天视图真的可见**
         // （移动端可能正盖着设置/新的朋友等整页浮层 —— 那时用户根本没看到这条消息，
         //  判已读等于替用户撒谎、还会把回执发回去。用户 2026-09-12 实测报告）。
-        if (activeConv.value !== convId || document.hidden || !app.chatVisible) return;
-        void api.markRead(convId).then(() => {
-          const conv = conversations.value.find((c) => c.id === convId);
-          if (conv) conv.unread = 0;
-        });
+        // 这份口径的家是 `chatViewerLooking()` —— 「有人@我」那条也读它，不许在这里再手写一遍。
+        if (activeConv.value !== convId || !chatViewerLooking()) return;
+        void api.markRead(convId).then(() => clearUnreadLocally(convId));
       }, 300);
     };
-    await bindEvents({
+    // 去抖里还排着一次 markRead：拆掉它，否则一个绑在废弃实例上的已读回执会在
+    // 300ms 后发出去（用户已经切走，等于替他判了已读）。
+    scope.onDispose(() => {
+      if (markReadTimer) clearTimeout(markReadTimer);
+    });
+    bindEvents({
       onPeers: (p) => {
-        peers.value = p;
-        const onlineIds = new Set(p.map((x) => x.device_id));
-        // 有活跃链路的节点即使在广播里缺席（局域网丢广播 / 刚被 sweep）也算在线，
-        // 与后端 get_friends 的 friend_is_online 口径一致 ——
-        // 否则会「局域网明明连上了，在线状态却不实时/显示离线」。
-        const linkedIds = new Set(p.filter((x) => x.link).map((x) => x.device_id));
-        friends.value.forEach(
-          (f) => (f.online = onlineIds.has(f.device_id) || linkedIds.has(f.device_id)),
-        );
+        // 这个事件最多每秒 3 次：不比对就直接换表，等于每 333ms 把整屏消息行重画一遍
+        // （消息行模板里的 nicknameOf 读的就是 peers）。没变就不写。
+        const merged = mergePeerList(peers.value, p);
+        if (merged) peers.value = merged;
+        markFriendsOnlineFrom(friends.value, p);
         // 同步好友/单聊会话的昵称/头像（对方改名后立即生效）
         syncProfileFromPeers(friends.value, conversations.value, p);
         // 拓扑（节点数/中继数/平均 RTT/在线）变化很慢，而 peers-updated 最多 3/s；
@@ -1580,21 +2042,19 @@ export const useChatStore = defineStore("chat", () => {
         }
         // Ack 先于乐观→真实替换到达（store 里找不到 real msg_id）：
         // 暂存 Ack，send() 拿到真实记录后立即消费。
-        if (!found) pendingAcks.add(msgId);
+        if (!found) {
+          pendingAcks.add(msgId);
+          trimOldest(pendingAcks, PENDING_ACKS_MAX);
+        }
       },
       onPeerRead: (p) => {
-        // 对方已读到 last_read_ts：我发出的、ts ≤ 该值的消息 → read（绿勾）
+        // 对方已读到 last_read_ts：我发出的、ts ≤ 该值的消息 → read（绿勾）。
+        // 谓词在 utils/messages.ts::promoteOnPeerRead —— 那一句的家在后端
+        // `db/read_receipts.rs::mark_own_messages_read_upto`，两份不许分叉（failed/recalled 点不动）。
         for (const [convId, list] of Object.entries(messages.value)) {
           if (convId !== p.peer_id) continue;
-          let changed = false;
-          const next = list.map((m) => {
-            if (m.sender_id === myDeviceId.value && m.status !== "read" && m.ts <= p.last_read_ts) {
-              changed = true;
-              return { ...m, status: "read" as const };
-            }
-            return m;
-          });
-          if (changed) messages.value[convId] = next;
+          const next = promoteOnPeerRead(list, myDeviceId.value, p.last_read_ts);
+          if (next !== list) messages.value[convId] = next;
         }
       },
       onGroupRead,
@@ -1631,10 +2091,12 @@ export const useChatStore = defineStore("chat", () => {
       onMessageStatusChanged: (msgId) => {
         // 后端 emit 的状态变更事件 —— 我们直接从数据库拉最新状态覆盖本地
         // 目前只在 cancel_file_transfer 里发（cancel 后 mark failed，前端同步一下）
-        const convId = Object.keys(messages.value).find(cid =>
-          messages.value[cid]?.some(m => m.msg_id === msgId)
-        );
-        if (convId) {
+        // 只处理**活跃**会话：loadMessages 的结果对非活跃会话必被 activeConv
+        // 守卫丢弃（两次 IPC 纯浪费），而且切换回来时 openConversation 会重查。
+        // （修复前它还会顺带把全局 loadSeq +1，取消活跃会话飞行中的加载 →
+        //   骨架永久转圈，见 2026-09-23 审计 1.4。）
+        const convId = activeConv.value;
+        if (convId && messages.value[convId]?.some((m) => m.msg_id === msgId)) {
           void loadMessages(convId);
         }
       },
@@ -1650,6 +2112,11 @@ export const useChatStore = defineStore("chat", () => {
         // 被移出群：后端已删本地群，前端关闭会话 + 刷新
         void handleSelfRemovedFromGroup(groupId);
       },
+      onContentAudience: (p) => {
+        // 消息已经发出去了，这里只是解释「群里有成员版本较旧，会把这条看成一段原始文本」。
+        // 整句由后端拼（判据与文案在同一处），所以这里不再走 i18n、也不再自己组句子。
+        app.toast(p.hint, "info");
+      },
       onDataCleared: () => {
         void resetAfterDataCleared();
       },
@@ -1657,7 +2124,54 @@ export const useChatStore = defineStore("chat", () => {
       onNotificationClicked: (p) => {
         routeNotificationClick(p.type, p.conv_id);
       },
+    }).then((fns) => {
+      for (const f of fns) scope.onDispose(f);
+    }).catch((e) => {
+      // 见 init 开头的说明：不兜底的话 init 会 reject，而骨架照常撤除 ——
+      // 用户看到一个"正常"的界面，却永远收不到任何事件。必须留痕 + 可感知。
+      console.error("[chat] bindEvents 失败：实时事件不可用", e);
+      app.toast(t("chat.eventBindFail"), "error");
     });
+
+    // 初始刷新：每个独立兜底（2026-09-23 审计 1.6）—— 任一失败只影响该数据源
+    // （对应事件/下次刷新会补上），不得阻断其他刷新，更不得阻断已注册的监听。
+    const names = [
+      "refreshFriends",
+      "refreshConversations",
+      "refreshPending",
+      "refreshGroups",
+      "refreshTransfers",
+      "refreshPeers",
+      "refreshTopology",
+      "refreshAnnouncements",
+    ] as const;
+    const results = await Promise.allSettled([
+      refreshFriends(),
+      refreshConversations(),
+      refreshPending(),
+      refreshGroups(),
+      refreshTransfers(),
+      refreshPeers(),
+      refreshTopology(),
+      refreshAnnouncements(),
+    ]);
+    results.forEach((r, i) => {
+      if (r.status === "rejected") {
+        console.error(`[chat] 初始刷新 ${names[i]} 失败`, r.reason);
+      }
+    });
+
+    // 恢复上次打开的会话（若仍存在）。HIG State Restoration：重启后回到上次离开的地方。
+    // 用 void 触发：不阻塞 init，也避免其异步失败拖垮启动。
+    try {
+      const last = localStorage.getItem(LAST_CONV_KEY);
+      if (last && conversations.value.some((c) => c.id === last)) {
+        void openConversation(last);
+      }
+    } catch {
+      /* localStorage 不可用则跳过恢复 */
+    }
+
     // 移动端注册通知动作类别（「标记已读」按钮）。桌面端无此能力（Web Notification 不支持按钮），
     // 命令也不存在，故只对移动端调用。语言切换后按钮文案不随动（原生注册一次），可接受。
     if (app.isMobile) {
@@ -1671,7 +2185,7 @@ export const useChatStore = defineStore("chat", () => {
       });
     }
     // 注册系统通知点击回调：点击通知 → 唤起窗口 + 定位到发送者会话
-    void onAction((n) => {
+    onAction((n) => {
       // 兼容不同平台回调形状：对象 { id, actionId, extra } 或裸 id（number/string）
       const raw = (typeof n === "object" && n !== null
         ? n
@@ -1689,10 +2203,7 @@ export const useChatStore = defineStore("chat", () => {
         if (!convId && raw.extra?.conv_id) convId = String(raw.extra.conv_id);
         if (id != null) notifMap.delete(id);
         if (convId) {
-          void api.markRead(convId).then(() => {
-            const conv = conversations.value.find((c) => c.id === convId);
-            if (conv) conv.unread = 0;
-          });
+          void api.markRead(convId).then(() => clearUnreadLocally(convId));
         }
         return;
       }
@@ -1705,21 +2216,50 @@ export const useChatStore = defineStore("chat", () => {
       if (!convId && raw.extra?.conv_id) convId = String(raw.extra.conv_id);
       if (id != null) notifMap.delete(id);
       routeNotificationClick(extraType, convId);
+    }).then((listener) => {
+      // `onAction` 返回的是 PluginListener 对象（要显式 `unregister()`），
+      // 之前那句 `void onAction(...)` 把返回值直接丢了 —— 回调永久挂在插件上。
+      scope.onDispose(() => {
+        listener.unregister().catch(() => {
+          /* 插件 IPC 抖动，不牵连其它卸载器 */
+        });
+      });
+    }).catch((e) => {
+      // 注册失败只影响"点通知跳转"，不影响其余事件；留痕而不是静默吞掉。
+      console.error("[chat] 通知点击回调注册失败：点系统通知不会定位到会话", e);
     });
     // 定时刷新拓扑
-    setInterval(() => void refreshTopology(), 5000);
+    const topoTimer = setInterval(() => void refreshTopology(), 5000);
+    scope.onDispose(() => clearInterval(topoTimer));
     // 窗口重新可见：补发当前会话已读回执 + 冲刷后台期间滞留的消息批次
-    document.addEventListener("visibilitychange", () => {
+    // （具名函数 + 成对 removeEventListener：匿名 handler 摘不掉，重复 init 会叠加）
+    const onVisibility = () => {
       if (document.hidden) return;
-      if (pending.length) scheduleFlush();
+      // 强制冲刷而不是 scheduleFlush()（2026-09-23 审计 1.7）：后者会被
+      // `if (flushScheduled) return` 挡回 —— rAF 在后台被暂停/丢失时 flag 卡在
+      // true，兜底就永远是死代码。flushNow 幂等且立即生效。
+      if (pending.length) flushNow();
+      // **自愈**：会话表与传输表是"事件只带 id、前端就地改内存"那一类事件的真相源
+      //（`message-acked` / `message-failed` / `peer-read` / `file-*` / `file-cancelled`）。
+      // 事件在后台丢了、或者窗口隐藏期间根本没投递到 ⇒ 不重拉就永久错下去：
+      // 未读数、"已送达"勾、传输进度都可能停在一个从来没发生过的状态上。
+      // 两件各自独立兜底（审计 1.6 同一条理由）：一边失败不影响另一边。
+      void refreshConversations().catch((e) => {
+        console.error("[chat] 回到前台重拉会话失败（未读数可能停留）", e);
+      });
+      void refreshTransfers().catch((e) => {
+        console.error("[chat] 回到前台重拉传输表失败（进度可能停留）", e);
+      });
       // 同 `debounceMarkRead`：回到前台也要确认"聊天视图真的可见"才补发已读回执
       if (activeConv.value && app.chatVisible) {
-        void api.markRead(activeConv.value).then(() => {
-          const conv = conversations.value.find((c) => c.id === activeConv.value);
-          if (conv) conv.unread = 0;
-        });
+        // 刻意先把 id 取进局部变量：await 期间用户可能已经切走，回调里再读
+        // `activeConv.value` 会把**新**会话的红点清掉而根本没给它发已读。
+        const convId = activeConv.value;
+        void api.markRead(convId).then(() => clearUnreadLocally(convId));
       }
-    });
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    scope.onDispose(() => document.removeEventListener("visibilitychange", onVisibility));
   }
 
   return {
@@ -1749,11 +2289,16 @@ export const useChatStore = defineStore("chat", () => {
     refreshFriends,
     refreshPending,
     refreshConversations,
+    /** 群 → 「与我相关的未完成任务」数（蓝色徽标的数据源，判定见 `utils/todos::openTodosForMe`） */
+    openTodoByConv,
+    groupTodoRows,
+    ensureGroupTodoRows,
     refreshGroups,
     resetAfterDataCleared,
     refreshTransfers,
     stalledTransfers,
     isTransferStalled,
+    transferStallReason,
     refreshTopology,
     favorites,
     refreshFavorites,
@@ -1765,6 +2310,7 @@ export const useChatStore = defineStore("chat", () => {
     loadMessages,
     loadMoreMessages,
     loadGroupTodos,
+    todosLoadedOnce,
     watchGroupTodos,
     send,
     sendFriendRequest,
@@ -1773,6 +2319,7 @@ export const useChatStore = defineStore("chat", () => {
     deleteConversation,
     setConversationPinned,
     sendReaction,
+    sendDmReaction,
     recallMessage,
     pinMessage,
     publishAnnouncement,
@@ -1789,7 +2336,6 @@ export const useChatStore = defineStore("chat", () => {
     leaveGroup,
     handleSelfRemovedFromGroup,
     sendFileTo,
-    sendFileRelayTo,
     sendGroupFileTo,
     sendImage,
     clearAllData,

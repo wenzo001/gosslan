@@ -1,6 +1,10 @@
 // 职责边界：
 // - 一对一聊天（send_message、会话查询、已读）
-// - 消息删除、撤回、合并转发
+// - 消息删除、合并转发
+// ⚠️ **撤回与重发不在这里**（2026-09-25 删掉了 `recall_message` / `resend_message` /
+// `cancel_send` —— 前端一次都没调过）：撤回只有群聊版（`group_announcements.rs`），
+// 界面上的「重发」是 `chat.send` 重发一条**新消息**。
+// 重做「按原 msg_id 重投」前必读 docs/protocol-invariants.md §6 那两条事故规则。
 // ---------------- 单聊（Gossip + E2EE） ----------------
 
 #[tauri::command(async)]
@@ -28,6 +32,12 @@ pub async fn send_message(
             crate::protocol::parse_merge_payload(&content)?;
             MsgKind::Merge
         }
+        // 表情回应：和 merge 同构的"载荷先在这里过一遍"，畸形载荷不该变成
+        // 对端一条折不出来的事件（见 protocol::parse_reaction_payload）。
+        "reaction" => {
+            crate::protocol::parse_reaction_payload(&content)?;
+            MsgKind::Reaction
+        }
         _ => return Err("不支持的消息类型".to_string()),
     };
 
@@ -45,19 +55,22 @@ pub async fn send_message(
     // INV-P24 第 4 条：**不门控不许发**。老对端（v4.20.0 及更早）的 `ChatMessage.kind`
     // 还是嵌套枚举，收到不认识的 kind 会**整帧丢掉** —— v4.22.34 只修了我们这一侧的容忍，
     // 那边没有，所以只能由发送侧挡下来，并给用户一句能照着做的话。
-    // 判据只有 `protocol::kind_allowed_by_features` 一处；对端从没交换过 Hello 或已离线
+    // 判据只有 `protocol::dm_required_features` / `dm_allowed_by_features` 一处（1:1 侧它还额外
+    // 要求对端具备"能吃任意 wire kind"的声明位，见那两个函数的说明）；对端从没交换过 Hello 或已离线
     // ⇒ 位图按 0 处理 = "不知道就当不支持"（宁可少发一条，也不要静默丢帧）。
+    // 但"不知道"与"它自己声明过不支持"要分开说：这张表是内存态、离线就被 sweep 回收，
+    // 所以缺条目绝大多数时候只意味着对方此刻不在线，把两种情况混成一句"版本较旧"是假指控
+    // （文案本身仍只住在 `protocol.rs`，这里只做选择）。
     // 放在公钥探测**之前**：这条本来就不会发出去，不该再触发一次 who_has 探测白等 1.2s。
-    if crate::protocol::kind_required_feature(&kind).is_some() {
+    if crate::protocol::dm_required_features(&kind) != 0 {
         let peer_features = s
             .peer_content_features
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(&friend_id)
-            .copied()
-            .unwrap_or(0);
-        if !crate::protocol::kind_allowed_by_features(&kind, peer_features) {
-            return Err(crate::protocol::kind_unsupported_hint(&kind));
+            .copied();
+        if !crate::protocol::dm_allowed_by_features(&kind, peer_features.unwrap_or(0)) {
+            return Err(crate::protocol::kind_blocked_hint(&kind, peer_features));
         }
     }
 
@@ -118,7 +131,9 @@ pub async fn send_message(
     let preview = crate::protocol::preview_text(&kind, &content);
 
     // E2EE 加密 + Gossip 信封（先于本地落库：msg_id 三处统一用 Gossip 信封 ID）
-    let plaintext = serde_json::json!({ "kind": kind, "content": content }).to_string();
+    // 1:1 没有 @，恒传 None —— 但走**同一个**编码器：明文形状两处各写一份，
+    // 迟早只改对一边（接收端是同一只函数解的）。
+    let plaintext = crate::protocol::gossip_plaintext(&kind, &content, None);
     let shared = crypto::shared_secret(&s.identity.x25519_secret, &pubkey).ok_or("密钥交换失败")?;
     // Gossip 载荷与直发内容都走 ChaCha20-Poly1305（直发内容加 "enc1:" 前缀标识）
     let sealed = crypto::seal(&shared, plaintext.as_bytes()).ok_or("加密失败")?;
@@ -163,6 +178,7 @@ pub async fn send_message(
         ts,
         seq,
         status: "sending".to_string(),
+        mention_targets: None,
     };
     // 一律写离线队列兜底（INSERT OR IGNORE 按 msg_id 幂等）：直连链路存在但已失效
     // （半开 TCP）时 broadcast 会静默丢包，此前只在「无链路」时入队导致消息永久丢失。
@@ -183,8 +199,17 @@ pub async fn send_message(
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         db::insert_message_and_outbox(&dbc, &rec, &friend_id, &payload)
             .map_err(|e| format!("消息写入失败：{e}"))?;
-        db::touch_conversation(&dbc, &friend_id, "single", &name, None, &preview, 0)
-            .map_err(|e| format!("会话写入失败：{e}"))?;
+        if crate::protocol::is_non_notifying_kind(&kind) {
+            // 静默事件（表情回应…）不改预览、不顶会话 —— 与群内核同一条例
+            // （commands/window.rs 里那条）。漏掉它的症状不是报错，是"回个表情把这条会话
+            // 顶到列表最前、摘要变成一段 JSON"，所以必须在这里分叉而不是在前端过滤。
+            // 会话行仍要确保存在：本机可能从没在这条会话里发过内容（例如先回应对端最后一条）。
+            db::ensure_conversation(&dbc, &friend_id, "single", &name, None)
+                .map_err(|e| format!("会话写入失败：{e}"))?;
+        } else {
+            db::touch_conversation(&dbc, &friend_id, "single", &name, None, &preview, 0)
+                .map_err(|e| format!("会话写入失败：{e}"))?;
+        }
     }
 
     // 先入队再投递（INV-003）：此前 broadcast 在插队之前，若心跳的 flush_outbox 正好
@@ -225,9 +250,10 @@ pub async fn send_message(
         true // 广播视为乐观已发出
     };
     if try_ok {
-        if let Ok(dbc) = s.db.lock() {
-            let _ = db::set_message_status(&dbc, &msg_id, "sent");
-        }
+        // poison-tolerant（全仓纪律）：锁中毒时静默跳过 = 状态停在 sending，
+        // 与 resend 的卡死同形（审计 2.3m）；中毒也要前进到 sent。
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = db::set_message_status(&dbc, &msg_id, "sent");
     }
     // 更新会话「当前链路」（发送方视角）：有直连则 hop=0 + 出站路径；无直连
     // （经中继广播）则乐观记 hop=1（实际跳数发送方不可知，等对端回执侧视角校正）。
@@ -289,6 +315,7 @@ fn insert_self_message(s: &AppState, kind: &str, content: String) -> Result<Mess
         ts,
         seq,
         status: "read".to_string(),
+        mention_targets: None,
     };
     // ⚠️ `insert_message`（只落库）—— **不是** `insert_message_and_outbox`：
     // 自聊消息没有收件人，进 outbox 就永远排不掉（见上面的第 2 条）。
@@ -338,10 +365,46 @@ pub fn get_messages(
     db::get_messages(&dbc, &conv_id, safe_limit, safe_offset).unwrap_or_default()
 }
 
+/// 一次拿到**所有群会话**的任务行，供前端折叠出「与我相关的未完成任务」蓝色徽标。
+///
+/// 为什么需要它而不是让前端用内存里已有的消息：会话消息缓存有上限
+/// （`enforceMessageCacheBound` 会挤掉冷会话），用内存数据算徽标就等于"没缓存的群没有数字"
+/// —— 那是**假状态**，比不显示更糟。这一条只把 `kind IN ('todo','todo_update')` 的原始行取回来，
+/// 折叠与判定仍然只有前端 `utils/todos.ts::foldTodos` 那一份（理由见 `db::get_todo_messages_for_conns`）。
+#[tauri::command(async)]
+pub fn get_group_todo_messages(
+    state: State<'_, Arc<AppState>>,
+    conv_ids: Vec<String>,
+) -> Vec<MessageRecord> {
+    let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
+    // 群数量上限是个护栏而不是功能：调用方是会话列表，正常量级是几十；
+    // 截断方向是"少算几个群的徽标"，不会算错已经算出来的那些。
+    const MAX_CONVS: usize = 400;
+    db::get_todo_messages_for_conns(&dbc, &conv_ids[..conv_ids.len().min(MAX_CONVS)])
+        .unwrap_or_default()
+}
+
 #[tauri::command(async)]
 pub fn get_message_count(state: State<'_, Arc<AppState>>, conv_id: String) -> i64 {
     let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
     db::count_messages(&dbc, &conv_id)
+}
+
+/// 一次拿到会话的**最新一页**（打开聊天时的冷加载）。
+///
+/// 与 `get_messages` + `get_message_count` 的关系：这条只服务"取尾部一页"这一个场景，
+/// 把那两轮串行 IPC 压成一轮；翻页仍然按 offset 走 `get_messages`（那里 total 是
+/// 判"还有没有更早历史"的依据，不是顺手拿来算 offset 的）。
+/// 返回正序，前端整表覆盖时不需要再倒一遍。
+#[tauri::command(async)]
+pub fn get_latest_messages(
+    state: State<'_, Arc<AppState>>,
+    conv_id: String,
+    limit: Option<i64>,
+) -> Vec<MessageRecord> {
+    let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
+    let safe_limit = limit.unwrap_or(100).clamp(1, 500);
+    db::get_latest_messages(&dbc, &conv_id, safe_limit).unwrap_or_default()
 }
 
 #[tauri::command(async)]
@@ -452,18 +515,24 @@ pub async fn mark_read(state: State<'_, Arc<AppState>>, conv_id: String) -> Resu
             db::get_group(&dbc, group_id)
         };
         if let Some(group) = group {
-            for member in group.members {
-                if member == s.device_id {
-                    continue;
-                }
-                // 群回执同样按「该成员最近一条消息」发送，避免跨设备时钟偏差。
-                let last = {
-                    let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-                    db::last_message_from_sender(&dbc, &conv_id, &member)
-                };
-                let Some((msg_id, last_read_ts)) = last else {
-                    continue;
-                };
+            // 单次锁内查齐全部成员的最近消息（审计 2.1h）：旧形状每成员 2 次抢锁，
+            // 200 人群打开/滚动一次 = 400 次锁往返；查询本身是索引点查，一次锁持有
+            // 内批查即可。发送（await）绝不持锁（全仓纪律），回执持久化再合并成一次锁。
+            let lasts = {
+                let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+                group
+                    .members
+                    .iter()
+                    .filter(|m| **m != s.device_id)
+                    .filter_map(|member| {
+                        // 群回执同样按「该成员最近一条消息」发送，避免跨设备时钟偏差。
+                        db::last_message_from_sender(&dbc, &conv_id, member)
+                            .map(|last| (member.clone(), last))
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let mut to_persist: Vec<(String, i64)> = Vec::new();
+            for (member, (msg_id, last_read_ts)) in lasts {
                 let msg = Message::GroupReadReceipt {
                     from: s.device_id.clone(),
                     group_id: group_id.to_string(),
@@ -471,10 +540,15 @@ pub async fn mark_read(state: State<'_, Arc<AppState>>, conv_id: String) -> Resu
                     last_read_msg_id: Some(msg_id),
                 };
                 let _ = crate::network::transport::try_send(s, &member, &msg).await;
-                // 无论即时发送是否成功都持久化待发记录，由建链/Hello/心跳补发；
-                // 接收端按 (group_id, reader_id) 单调去重，重复送达无副作用。
+                to_persist.push((member, last_read_ts));
+            }
+            // 无论即时发送是否成功都持久化待发记录，由建链/Hello/心跳补发；
+            // 接收端按 (group_id, reader_id) 单调去重，重复送达无副作用。
+            if !to_persist.is_empty() {
                 let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-                db::upsert_pending_group_read(&dbc, group_id, &member, last_read_ts).ok();
+                for (member, ts) in &to_persist {
+                    db::upsert_pending_group_read(&dbc, group_id, member, *ts).ok();
+                }
             }
         }
     }
@@ -498,273 +572,3 @@ pub fn delete_conversation(state: State<'_, Arc<AppState>>, conv_id: String) -> 
     db::delete_conversation(&dbc, &conv_id).map_err(|e| e.to_string())
 }
 
-/// 用户主动取消发送中的消息。
-///
-/// 语义：**这条消息还没送达对端（outbox 还在），用户不想继续发了**。
-/// 撤回是另一个操作（消息已送达后让对方删），不要混成一个 API。
-///
-/// 处理：
-/// 1. 查消息 → 终态（delivered/read/recalled）不能取消
-/// 2. 删单聊 outbox + 群 outbox（所有可能的发送队列）
-/// 3. set_message_status("cancelled")（终态守卫保证幂等）
-/// 4. emit("message-cancelled", msg_id) 通知前端刷新气泡状态
-#[tauri::command(async)]
-pub async fn cancel_send(
-    state: State<'_, Arc<AppState>>,
-    msg_id: String,
-) -> Result<(), String> {
-    let s = state.inner();
-
-    // 0. 如果是文件消息（file-xxx 或 gfile-xxx），转调 cancel_file_transfer
-    //    — 那里会触发 file_send_cancels oneshot 打断实际 chunk 循环
-    if let Some(transfer_id) = msg_id.strip_prefix("file-").or_else(|| msg_id.strip_prefix("gfile-")) {
-        return cancel_file_transfer(
-            state,
-            transfer_id.to_string(),
-        )
-        .await
-        .map(|_| ());
-    }
-
-    // 1. 查消息状态：终态（delivered/read/recalled）不能取消
-    let rec = {
-        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::get_message_record(&dbc, &msg_id)
-            .ok_or_else(|| format!("消息不存在：{msg_id}"))?
-    };
-
-    match rec.status.as_str() {
-        "delivered" | "read" | "recalled" => {
-            return Err(format!(
-                "消息已{}，不能取消发送（请用撤回功能）",
-                rec.status
-            ));
-        }
-        "cancelled" => {
-            return Ok(()); // 幂等：已取消过就直接成功
-        }
-        _ => {} // sending / sent / failed → 可以取消
-    }
-
-    // 删所有 outbox 队列（单聊 + 群）
-    {
-        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        let _ = db::delete_outbox_by_msg_id(&dbc, &msg_id);
-        let _ = db::delete_group_outbox_by_msg_id(&dbc, &msg_id);
-        // 置 cancelled
-        let _ = db::set_message_status(&dbc, &msg_id, "cancelled");
-    }
-
-    let _ = s.app.emit("message-cancelled", &msg_id);
-    Ok(())
-}
-
-/// 重发失败的消息。
-///
-/// 语义：消息之前因超时/网络错误被判 failed 或被用户取消，用户点击"重发"。
-///
-/// 状态流转：failed/cancelled → sending → 有链路则 sent → 等 Ack → delivered
-#[tauri::command(async)]
-pub async fn resend_message(
-    state: State<'_, Arc<AppState>>,
-    msg_id: String,
-) -> Result<(), String> {
-    let s = state.inner();
-
-    // 1. 查消息存在性 + 当前状态
-    let rec = {
-        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::get_message_record(&dbc, &msg_id)
-            .ok_or_else(|| format!("消息不存在：{msg_id}"))?
-    };
-
-    // 终态不可重发
-    match rec.status.as_str() {
-        "delivered" | "read" => {
-            return Err("消息已送达，无需重发".to_string());
-        }
-        "sending" | "sent" => {
-            return Err("消息正在发送中".to_string());
-        }
-        _ => {} // failed / cancelled → 可以重发
-    }
-
-    // 2. 重置状态为 sending
-    {
-        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        let _ = db::set_message_status(&dbc, &msg_id, "sending");
-    }
-
-    // 3. 判断是单聊还是群聊
-    if rec.conv_id.strip_prefix("group:").is_some() {
-        // 群消息简化：通知前端重新发
-        Err("群消息重发请删除后重新发送".to_string())
-    } else {
-        // 单聊：重建 outbox（sweeper 判 failed 时已删），再 try_send。
-        // 必须先用对端当前公钥重新密封（与 send_message 同一套 seal 逻辑）：
-        // messages 表存的是明文，直接把 rec.content 上线没有 `enc1:` 前缀 ⇒
-        // 接收端 open_direct_content 拒收（不落库不 Ack），重发静默变成 no-op，
-        // 稍后再被判 failed —— 用户看到「重发没反应」就是这么来的。
-        // ts/seq 同理必须沿用原记录：seq=0 会让接收端把重发消息排到会话最前
-        //（排序按 seq，INV-P09），两端顺序分裂。
-        if rec.sender_id != s.device_id {
-            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-            let _ = db::set_message_status(&dbc, &msg_id, &rec.status);
-            return Err("只能重发自己发出的消息".to_string());
-        }
-        let msg_kind = crate::protocol::MsgKind::from_wire_str(&rec.kind);
-        let pubkey = {
-            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-            db::get_friend_x25519(&dbc, &rec.receiver_id)
-        }
-        .or_else(|| {
-            s.peers
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .get(&rec.receiver_id)
-                .and_then(|p| p.x25519_pubkey.clone())
-        });
-        let Some(pubkey) = pubkey else {
-            // 没有公钥就发不出去加密消息：回滚状态并明确报错，
-            // 而不是写一条接收端永远拒收的明文 outbox 行。
-            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-            let _ = db::set_message_status(&dbc, &msg_id, &rec.status);
-            return Err(format!(
-                "尚未获取 {} 的公钥，无法重发：对方可能离线或处于不同子网",
-                rec.receiver_id
-            ));
-        };
-        let shared = crypto::shared_secret(&s.identity.x25519_secret, &pubkey)
-            .ok_or("密钥交换失败")?;
-        let sealed = crypto::seal(&shared, rec.content.as_bytes()).ok_or("加密失败")?;
-        let queued = Message::ChatMessage {
-            msg_id: rec.msg_id.clone(),
-            from: s.device_id.clone(),
-            to: rec.receiver_id.clone(),
-            kind: msg_kind.as_str().to_string(),
-            content: format!("enc1:{}", STANDARD.encode(&sealed)),
-            ts: rec.ts,
-            seq: rec.seq,
-        };
-        let payload = serde_json::to_string(&queued).map_err(|e| e.to_string())?;
-
-        // 先写 outbox（INSERT OR IGNORE 幂等）— 确保下次建链 flush_outbox 能捞到
-        {
-            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-            let _ = db::insert_outbox(&dbc, &msg_id, &rec.receiver_id, &payload);
-        }
-
-        // 有链路则立即 try_send
-        if s.has_link(&rec.receiver_id).await {
-            let _ = crate::network::transport::try_send(s, &rec.receiver_id, &queued).await;
-            // try_send 成功 → 前进到 sent
-            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-            let _ = db::set_message_status(&dbc, &msg_id, "sent");
-        }
-        // 无链路 → 保持 sending，等 flush_outbox 下次建链/心跳时捞 outbox 重发（已重建）
-
-        let _ = s.app.emit("message-resending", &msg_id);
-        Ok(())
-    }
-}
-
-/// 撤回一条自己发的**单聊**消息。
-///
-/// 与群撤回（`recall_group_message`）共享同一套协议语义 —
-/// `kind = KIND_RECALL` 的 Gossip envelope，payload = RecallPayload JSON。
-/// 接收端在 handle_message 的 Gossip 分支里识别并处理（作者校验 + materialize_recall）。
-///
-/// 发送侧做：
-/// 1. 作者校验 + 5min 时间窗（本地 ts 为准）
-/// 2. 构建定向 Gossip envelope（target = friend_id，让中继按 target 定向转发）
-/// 3. try_send 直连 + broadcast_gossip 跨跳
-/// 4. 本地 insert_recall + materialize_recall（先发送、后物化，顺序不能反）
-/// 5. emit("message-recalled", msg_id) 前端刷新
-#[tauri::command(async)]
-pub async fn recall_message(
-    state: State<'_, Arc<AppState>>,
-    friend_id: String,
-    msg_id: String,
-) -> Result<(), String> {
-    let s = state.inner();
-
-    // 1. 查消息 + 权限 + 时间窗
-    let rec = {
-        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::get_message_record(&dbc, &msg_id)
-            .ok_or_else(|| format!("消息不存在：{msg_id}"))?
-    };
-    if rec.sender_id != s.device_id {
-        return Err("只能撤回自己发送的消息".to_string());
-    }
-    if rec.status == "recalled" {
-        return Ok(()); // 幂等：已撤回过就直接成功
-    }
-    let now = db::now_ms();
-    if rec.ts > 0 && now - rec.ts > crate::commands::RECALL_WINDOW_MS {
-        return Err("超过可撤回时间（5 分钟）".to_string());
-    }
-    // 已 cancelled/failed 的消息没必要撤回 — 撤回是让对方删，对方可能根本没收到。
-    // 但用户仍可撤回（只是本地标 recalled），打一条 warn 提示开发者这种边缘路径被走了。
-    if matches!(rec.status.as_str(), "cancelled" | "failed") {
-        eprintln!(
-            "[gosslan][recall] warn: 撤回的 msg_id={msg_id} 当前 status={} — \
-             撤回是让对方删，对方可能根本没收到；仍按用户请求执行本地 recalled",
-            rec.status
-        );
-    }
-
-    // 2. 构建 RecallPayload + Gossip envelope（定向到 friend_id）
-    let ts = now;
-    let conv_id = friend_id.clone();
-    let seq = {
-        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::next_clock(&dbc, &conv_id).map_err(|e| format!("逻辑时钟推进失败：{e}"))?
-    };
-    let payload = crate::protocol::RecallPayload {
-        target: msg_id.clone(),
-    };
-    let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
-    let plaintext = serde_json::json!({
-        "kind": crate::protocol::KIND_RECALL,
-        "content": content,
-    })
-    .to_string();
-    let payload_b64 = STANDARD.encode(plaintext.as_bytes());
-
-    let mut env = {
-        let gossip = s.gossip.lock().unwrap_or_else(|e| e.into_inner());
-        let mut env = gossip.build_envelope(
-            &s.identity,
-            &s.device_id,
-            GossipKind::Chat,
-            None,
-            None,
-            &payload_b64,
-            ts,
-            seq,
-        );
-        // 定向到 friend_id（让中继按 target 转发，跨跳也能到达）
-        env.target = Some(friend_id.clone());
-        env.sender_sig = s.identity.sign_b64(&env.signing_bytes());
-        env
-    };
-    // 撤回事件**不需要 E2EE**（只有 target 一个人能收到，加密反而让本地需要解密才能识别 kind）
-    env.encrypted = false;
-
-    // 3. 先发协议（直连 + 广播），不进 outbox — 撤回尽力而为
-    if s.has_link(&friend_id).await {
-        let _ = try_send(s, &friend_id, &Message::Gossip { envelope: env.clone() }).await;
-    } else {
-        broadcast_gossip(s, env.clone()).await;
-    }
-
-    // 4. 本地物化撤回（在发送之后 — 顺序反了会出现"本地已撤回但对端永远没机会收到"）
-    {
-        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        let _ = db::insert_recall(&dbc, &conv_id, &msg_id, &s.device_id, seq);
-        let _ = db::materialize_recall(&dbc, &msg_id);
-    }
-    let _ = s.app.emit("message-recalled", &msg_id);
-    Ok(())
-}

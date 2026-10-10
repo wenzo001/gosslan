@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useChatStore } from "@/stores/useChatStore";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
-import { avatarInitial, avatarInitialLen, nameToColor } from "@/utils/color";
+import { useHoverCard } from "@/composables/useHoverCard";
+import { avatarSeedFor } from "@/utils/avatarSeed";
 import type { SendState } from "@/composables/useMessageDisplay";
 import { Check, CheckCheck, Loader2, X } from "lucide-vue-next";
 
@@ -24,9 +25,6 @@ const readerIds = computed(() => props.readerIds ?? []);
 const visibleReaders = computed(() => readerIds.value.slice(0, 3));
 const extraReaders = computed(() => readerIds.value.slice(3));
 
-/** 弹层向上还是向下：消息靠近消息区顶部时改为向下弹出，避免被裁剪。 */
-const openUp = ref(true);
-
 /**
  * 「已读成员」弹层：接入全局浮层互斥（同一时刻只允许一个弹层展开）。
  * 点另一条消息的已读头像会自动收起上一条，虚拟列表回收行时也不会残留；
@@ -39,29 +37,58 @@ const {
   release: releaseReaders,
 } = useExclusivePopup(`readers:${props.msgKey ?? ""}`);
 
-function toggleReaders(e: MouseEvent) {
+/**
+ * 弹层摆位与收起：**Teleport 到 body + fixed 坐标**，走通用那一套
+ * （`composables/useHoverCard` → `utils/hoverCard.placeCard`），与表情名单同一个家。
+ *
+ * 原来它挂在消息行里（`absolute right-0`），而消息列表是 `overflow-y: auto` 的滚动容器
+ * ⇒ 横向一并被裁（2026-09-24 真机：长文字消息旁"已读列表靠右被裁掉一半"）。
+ *
+ * ⚠️ 共用之后横向**不再写死"永远右对齐"**：入口在视口左半时改成往右长，
+ * 只有真贴右缘才向左长 —— 这正是 placeCard 存在的理由（名单那一处先撞出来的）。
+ */
+const {
+  pos: readersPos,
+  style: readersStyle,
+  setEl: setReadersEl,
+  open: openReadersCard,
+  close: closeReadersCard,
+} = useHoverCard({ maxWidth: 208 });
+/** 入口按钮：摆位要从它的矩形现算。 */
+const readersBtnRef = ref<HTMLElement | null>(null);
+
+/** 关闭时坐标与展开权一起还掉：`v-if` 关掉后 Teleport 的那层要跟着消失。 */
+function closeReaders() {
+  releaseReaders();
+  closeReadersCard();
+}
+
+function toggleReaders() {
   if (readersOpen.value) {
     closeReaders();
     return;
   }
-  const btn = e.currentTarget as HTMLElement | null;
-  const scroller = btn?.closest(".overflow-y-auto") as HTMLElement | null;
-  if (btn && scroller) {
-    const br = btn.getBoundingClientRect();
-    const cr = scroller.getBoundingClientRect();
-    // 弹层最大高 240px + 间距余量；上方放不下且下方更宽敞时向下弹
-    openUp.value = br.top - cr.top > 264 || cr.bottom - br.bottom < 264;
-  } else {
-    openUp.value = true;
-  }
+  const btn = readersBtnRef.value;
+  if (btn) openReadersCard(btn);
   claimReaders();
 }
 
-function closeReaders() {
-  releaseReaders();
+function onDocClick() {
+  closeReaders();
 }
-onMounted(() => document.addEventListener("click", closeReaders));
-onUnmounted(() => document.removeEventListener("click", closeReaders));
+onMounted(() => document.addEventListener("click", onDocClick));
+onUnmounted(() => document.removeEventListener("click", onDocClick));
+
+// 两条 watch 各管一个方向，合起来才等价于"看不见 ⇔ 不持有展开权"：
+// · 滚动 / 改窗口只清得掉**坐标**（收起住在 useHoverCard 里）⇒ 坐标一空就把展开权还掉；
+// · 别的浮层抢走展开权、或虚拟列表回收这一行，只改得了 **isActive** ⇒ 反过来把坐标清掉。
+// 只留一条就会有一种"两个浮层并存"或"占着展开权却什么都看不见"的形态。
+watch(readersPos, (p) => {
+  if (!p) closeReaders();
+});
+watch(readersOpen, (mine) => {
+  if (!mine) closeReadersCard();
+});
 
 function readerName(id: string) {
   return chat.nicknameOf(id);
@@ -78,6 +105,7 @@ function readerAvatar(id: string): string | null {
   <div v-if="isGroup" class="relative shrink-0 pb-1.5">
     <button
       v-if="readerIds.length > 0"
+      ref="readersBtnRef"
       class="tap-safe -space-x-1 flex items-center rounded-full p-0.5 transition hover:bg-[var(--gosslan-hover)]"
       :title="t('msg.readBy', { n: readerIds.length })"
       :aria-label="t('msg.readByView', { n: readerIds.length })"
@@ -87,10 +115,10 @@ function readerAvatar(id: string): string | null {
         v-for="id in visibleReaders"
         :key="id"
         class="gosslan-avatar-box flex h-4 w-4 items-center justify-center overflow-hidden rounded-full border border-[var(--gosslan-panel)] text-[11px] text-white"
-        :style="{ backgroundColor: nameToColor(readerName(id)) }"
+        :style="{ backgroundColor: avatarSeedFor(id)?.bg }"
       >
-        <img alt="" v-if="readerAvatar(id)" :src="readerAvatar(id) ?? undefined" class="h-full w-full object-cover" />
-        <span v-else class="gosslan-avatar-initial" :data-len="avatarInitialLen(readerName(id))">{{ avatarInitial(readerName(id)) }}</span>
+        <img loading="lazy" decoding="async" alt="" v-if="readerAvatar(id)" :src="readerAvatar(id) ?? undefined" class="h-full w-full object-cover" />
+        <span v-else class="gosslan-avatar-emoji" aria-hidden="true">{{ avatarSeedFor(id)?.emoji }}</span>
       </span>
       <span
         v-if="extraReaders.length > 0"
@@ -99,12 +127,18 @@ function readerAvatar(id: string): string | null {
         +{{ extraReaders.length }}
       </span>
     </button>
-    <div
-      v-if="readersOpen && readerIds.length > 0"
-      class="frost absolute right-0 z-20 max-h-60 min-w-36 overflow-y-auto rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] p-1.5 text-xs shadow-lg"
-      :class="openUp ? 'bottom-7' : 'top-7'"
-      @click.stop
-    >
+    <!-- Teleport 到 body + fixed 坐标：挂在消息行里会被列表的 `overflow-y: auto`
+         连横向一起裁掉（真机：「已读列表靠右被裁一半」）。坐标由上面的 `useHoverCard`
+         在点开那一刻从入口按钮的矩形现算，摆位规则见 `utils/hoverCard.placeCard`。 -->
+    <Teleport to="body">
+      <div
+        v-if="readersOpen && readerIds.length > 0 && readersPos"
+        :ref="setReadersEl"
+        data-readers-popover
+        class="frost fixed z-[70] max-h-60 overflow-y-auto rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] p-1.5 text-xs shadow-lg"
+        :style="readersStyle"
+        @click.stop
+      >
       <div class="px-2 py-1 text-[var(--gosslan-text-2)]">{{ t("msg.readMembers", { n: readerIds.length }) }}</div>
       <div
         v-for="id in readerIds"
@@ -113,14 +147,15 @@ function readerAvatar(id: string): string | null {
       >
         <span
           class="gosslan-avatar-box flex h-5 w-5 items-center justify-center overflow-hidden rounded-full text-[11px] text-white"
-          :style="{ backgroundColor: nameToColor(readerName(id)) }"
+          :style="{ backgroundColor: avatarSeedFor(id)?.bg }"
         >
-          <img alt="" v-if="readerAvatar(id)" :src="readerAvatar(id) ?? undefined" class="h-full w-full object-cover" />
-          <span v-else class="gosslan-avatar-initial" :data-len="avatarInitialLen(readerName(id))">{{ avatarInitial(readerName(id)) }}</span>
+          <img loading="lazy" decoding="async" alt="" v-if="readerAvatar(id)" :src="readerAvatar(id) ?? undefined" class="h-full w-full object-cover" />
+          <span v-else class="gosslan-avatar-emoji" aria-hidden="true">{{ avatarSeedFor(id)?.emoji }}</span>
         </span>
         <span class="max-w-28 truncate" :title="readerName(id)">{{ readerName(id) }}</span>
       </div>
-    </div>
+      </div>
+    </Teleport>
   </div>
   <!-- 单聊：回执图标固定在气泡左侧（视觉上贴近对话人头像方向）。
        ♿ 回执是**纯图标**状态（转圈/空心圆/绿勾/红叉），读屏下原本什么也读不到 ——

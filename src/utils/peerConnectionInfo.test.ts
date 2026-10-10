@@ -15,6 +15,7 @@ import assert from "node:assert/strict";
 import {
   addressText,
   deviceTypeKey,
+  linkIconName,
   linkLabelKey,
   shouldShowAddress,
 } from "./peerConnectionInfo.ts";
@@ -55,6 +56,18 @@ test("中继链路：说「经 N 跳中继」，且不显示直连地址（没�
   assert.equal(addressText(relay), null);
 });
 
+test("公网中转电路（link=relay, hop=0）：说「公网中转」，且**不显示服务器地址**", () => {
+  // 与上一条「经 N 跳 mesh 转发」是两回事：这是经自备中转服务器的**直连密封电路**。
+  const relayServer = { link: "relay", ip: "1.2.3.4", tcp_port: 59992, hop: 0, online: true };
+  assert.equal(linkLabelKey(relayServer), "peer.link.relayServer");
+  assert.equal(
+    shouldShowAddress(relayServer),
+    false,
+    "中转电路的 endpoint 是**服务器地址**，把它当对端 IP 显示就是骗人",
+  );
+  assert.equal(addressText(relayServer), null);
+});
+
 test("只有发现、还没建链：说「已发现（未建链）」，不显示地址", () => {
   const discovered = { link: null, ip: "192.168.31.32", tcp_port: 59992, online: false };
   assert.equal(linkLabelKey(discovered), "peer.link.discovered");
@@ -67,4 +80,17 @@ test("设备类型：desktop/mobile → 可读标签，其余一律「未知设�
   assert.equal(deviceTypeKey(""), "peer.device.unknown");
   assert.equal(deviceTypeKey(null), "peer.device.unknown");
   assert.equal(deviceTypeKey("tablet"), "peer.device.unknown", "不认识的值不许原样透给用户");
+});
+
+test("连接图标名与文案同源：五种真实链路各一个图标，无链路=discovered（调用方不画）", () => {
+  assert.equal(linkIconName({ link: "lan" }), "lan");
+  assert.equal(linkIconName({ link: "routed" }), "routed");
+  assert.equal(linkIconName({ link: "relay" }), "relayServer", "公网中转直连电路 → Globe");
+  assert.equal(linkIconName({ link: "bluetooth" }), "bluetooth");
+  // 经 N 跳 mesh 转发与"公网中转服务器直连"是两回事：前者 Share2、后者 Globe，绝不能混
+  assert.equal(linkIconName({ link: "lan", hop: 2 }), "relay", "hop>0 → 桥接图标（与中转服务器区分）");
+  assert.equal(linkIconName({ link: null }), "discovered", "无链路：调用方据此不画图标");
+  // 图标判据必须与文案判据**同序**：同一输入下两者指向同一种链路
+  assert.equal(linkLabelKey({ link: "relay" }), "peer.link.relayServer");
+  assert.equal(linkLabelKey({ link: "lan", hop: 2 }), "peer.link.relay");
 });

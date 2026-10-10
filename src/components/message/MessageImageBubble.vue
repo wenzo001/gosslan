@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
-import { computed, onUnmounted, ref, watch } from "vue";
+import { onUnmounted, ref, watch } from "vue";
 import { ImageOff, ImageIcon } from "lucide-vue-next";
+import { IMAGE_BUBBLE_HEIGHT, IMAGE_PLACEHOLDER_HEIGHT } from "@/utils/previewMetrics";
 
 const props = defineProps<{ src: string }>();
 const emit = defineEmits<{ (e: "open", src: string): void; (e: "refetch"): void }>();
@@ -58,18 +59,26 @@ function retry() {
   loadKey.value += 1;
 }
 
+/**
+ * "强制重新请求"换代计数。
+ *
+ * ⚠️ 它**绝不能**被拼成 URL 查询串（审计阶段 4 · 4.2 的原 bug）：这里的 `src` 只有
+ * `blob:`（`filePreview` 的 objectURL）和 `data:` 两种形态，两类都不接受 query ——
+ * 给 `blob:` 加 `?r=1` 直接是个无效地址，给 `data:` 加则是把 base64 载荷改坏。
+ * 于是"失败后退避重试 5 次"每次都打在结构性无效的地址上 ⇒ **即使文件早就在本机、
+ * 也必然停在「图片加载失败」**，手动同理。换 `<img>` 的 `:key` 才是与 URL 形态无关的
+ * 强制重取（Vue 会重建元素，浏览器重新发起加载）。
+ */
 const loadKey = ref(0);
-const effectiveSrc = computed(() => {
-  if (loadKey.value === 0) return props.src;
-  const sep = props.src.includes("?") ? "&" : "?";
-  return `${props.src}${sep}r=${loadKey.value}`;
-});
 
 watch(
   () => props.src,
   () => {
     clearTimer();
     attempt.value = 0;
+    // src 换了（重新解析出一份新的 objectURL）⇒ 换代计数归零：上一代的失败与这一张无关。
+    // 原实现只重置 attempt/state，loadKey 会一直挂着，把 ?r=N 一路带上新图。
+    loadKey.value = 0;
     state.value = "loading";
   },
 );
@@ -87,6 +96,7 @@ onUnmounted(clearTimer);
        代价（已知并接受）：竖长图会在 13rem 的框内左右留白，换来「发出后尺寸恒定」。 -->
   <div
     class="relative w-52 max-w-full cursor-pointer overflow-hidden rounded-[var(--gosslan-bubble-radius)]"
+    :data-img-state="state"
     :role="state === 'loaded' ? 'button' : undefined"
     :tabindex="state === 'loaded' ? 0 : undefined"
     :aria-label="state === 'loaded' ? t('msg.clickToOpen') : undefined"
@@ -94,21 +104,35 @@ onUnmounted(clearTimer);
     @keydown.enter.prevent="state === 'loaded' && emit('open', src)"
     @keydown.space.prevent="state === 'loaded' && emit('open', src)"
   >
-    <!-- 骨架：加载中占位，尺寸与常见截图相近，加载完成后被图片替换。
-         与容器同宽，加载前后不跳变。 -->
+    <!-- 骨架：加载中按**估算端那个同一个数**（previewMetrics.IMAGE_BUBBLE_HEIGHT）整块预留。
+         为什么预留要用上限而不是"常见截图的高度"：载荷里没有原图尺寸（content 的 JSON 只有
+         name/path/size/sha256/subtype，补 w/h 要动消息协议 ⇒ 为视觉效果排除），
+         而图片容器定宽 208px ⇒ 真实高 = min(288, 208 × 原图高/原图宽) 只能在解码后知道。
+         预留 == 估算 ⇒ 这一行挂载那一次不再被实测纠正（少一整次整表前缀和重算，见 N10 那笔账），
+         并且顶到上限的那一档（竖长图/手机截图）**加载完成零跳变**；代价是横幅图（16:9 真高≈117px）
+         完成时收缩约 171px —— 原来是先空出 160px 再长出 189px。这一取舍由用户 2026-10-10 拍板（N22）。
+         终态（失败）退回紧凑的 IMAGE_PLACEHOLDER_HEIGHT：后面不会再有图进来，为一张永远等不来的图
+         撑 288px 灰块是最差的选项；此时估算偏高 ⇒ 只留白、不遮挡。
+         ⚠️ 高度只从 previewMetrics 取，别再写回 h-* / max-h-* 字面量
+         （由 designGuards ㉞ 与运行时探针 --only=imgskel 两段一起盯着）。 -->
     <div
       v-if="state !== 'loaded'"
-      class="flex h-32 w-full items-center justify-center bg-[var(--gosslan-hover)]"
+      data-img-skeleton
+      class="flex w-full items-center justify-center bg-[var(--gosslan-hover)]"
+      :style="{ height: `${state === 'failed' ? IMAGE_PLACEHOLDER_HEIGHT : IMAGE_BUBBLE_HEIGHT}px` }"
     >
-      <ImageOff v-if="state === 'failed'" class="h-6 w-6 opacity-50" />
-      <ImageIcon v-else class="h-6 w-6 animate-pulse opacity-40" />
+      <ImageOff v-if="state === 'failed'" class="size-6 opacity-50" />
+      <ImageIcon v-else class="size-6 animate-pulse opacity-40" />
     </div>
     <span v-if="state === 'failed'" class="absolute inset-x-0 bottom-1 text-center text-[11px] opacity-70">
       {{ t("msg.imageLoadFailed") }}
     </span>
-    <img :alt="t('msg.imageMessage')"
-      :src="effectiveSrc"
-      class="block max-h-72 w-full rounded-[var(--gosslan-bubble-radius)] object-contain"
+    <img loading="lazy" decoding="async" :alt="t('msg.imageMessage')"
+      data-img-el
+      :key="loadKey"
+      :src="props.src"
+      class="block w-full rounded-[var(--gosslan-bubble-radius)] object-contain"
+      :style="{ maxHeight: `${IMAGE_BUBBLE_HEIGHT}px` }"
       :class="state === 'loaded' ? '' : 'hidden'"
       @load="clearTimer(); state = 'loaded'"
       @error="onError()"

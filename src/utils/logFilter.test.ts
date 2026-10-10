@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { LOG_LEVEL_TEXT, filterLogLines, logLineText, matchesLogQuery } from "./logFilter.ts";
+import { LOG_LEVEL_TEXT, filterLogLines, logLineText, matchesLogQuery, mergeLogRows } from "./logFilter.ts";
 
 const L = (time: string, level: string, target: string, message: string) => ({
   time,
@@ -15,6 +15,88 @@ const SAMPLE = [
   L("00:01:04", "warn", "routed", "拨号未成功：连接超时（5s 内未建立）"),
   L("00:01:05", "info", "presence", "学到远端节点 peer=gosslan-718562a258f7cf55"),
 ];
+
+// ---------------- 合并重复（mergeLogRows） ----------------
+// 用户可见承诺：开着「合并重复」时，同一件事刷了 N 次要收成一条 + ×N。
+// 2026-09-26 实测：这个承诺已经**几乎不再成立** —— 旧判据要求"连续相邻且逐字相同"，
+// 而日志文案里带着每次都变的量（`剩余=1200ms`、`分片=3`、`msg_id=`、`seq=`），
+// 于是永远不相等。下面这几条就是钉这个承诺的，先对着旧算法红一遍再改。
+
+const R = (time: string, level: string, target: string, message: string) => ({ time, level, target, message });
+
+test("带变化量的相邻同类行要折叠（这是旧算法今天漏掉的主场景）", () => {
+  const out = mergeLogRows([
+    R("00:01:01", "warn", "ble", "跳过候选 id=7 原因=退避中 剩余=1200ms"),
+    R("00:01:02", "warn", "ble", "跳过候选 id=7 原因=退避中 剩余=900ms"),
+    R("00:01:03", "warn", "ble", "跳过候选 id=7 原因=退避中 剩余=600ms"),
+  ]);
+  assert.equal(out.length, 1, "同一件退避不该按毫秒数拆成三行");
+  assert.equal(out[0].count, 3);
+});
+
+test("被别的 target 打断的同类行也要折叠（相邻这个前提在日志变多后不成立）", () => {
+  const out = mergeLogRows([
+    R("00:01:01", "info", "ble", "[SEND] bytes=1024 分片=1"),
+    R("00:01:01", "info", "transport", "另一次心跳"),
+    R("00:01:02", "info", "ble", "[SEND] bytes=1024 分片=2"),
+  ]);
+  assert.equal(out.length, 2);
+  assert.equal(out[0].count, 2, "ble 那两行中间插了别的 target，也要算同一类");
+  assert.equal(out[1].target, "transport");
+});
+
+/**
+ * 「不同 target 不许误合并」这条反例（第二阶段 §11 逐条核出来的缺口）。
+ *
+ * 上面那条"被别的 target 打断仍要折叠"判的是**该合的合**，方向相反 ⇒ 今天若把分组键里的
+ * `target` 摘掉（只按 级别+归一化文本 分组），那 14 条里**一条都不会红**。
+ * 而这不是假想风险：`ble` 与 `transport` 会打出逐字相同的 `[SEND] bytes=...`，合并后 ×2 会
+ * 让人以为同一件事重复了两次，实际是两个子系统各来一次 —— 排查方向直接被带偏。
+ *
+ * 这条是**锁**不是 bug 修复：现算法键里本来就有 target（`logMergeKey` = 级别|target|文本），
+ * 非空转由"把键里的 target 摘掉 ⇒ 这条必须报红"证（同轮跑过，见 CHANGELOG 那条）。
+ */
+test("target 不同的逐字相同行绝不合并（该合的合、不该合的别硬合）", () => {
+  const out = mergeLogRows([
+    R("00:01:01", "info", "ble", "[SEND] bytes=2048"),
+    R("00:01:02", "info", "transport", "[SEND] bytes=2048"),
+  ]);
+  assert.equal(out.length, 2, "两个子系统各发一次不是同一件事，合成一条会把次数谎报成重复");
+  assert.deepEqual(
+    out.map((g) => [g.target, g.count]),
+    [
+      ["ble", 1],
+      ["transport", 1],
+    ],
+  );
+});
+
+test("超出时间窗的同类行必须另起一组（不许把 60 秒前那次并进来说谎）", () => {
+  const out = mergeLogRows(
+    [
+      R("00:01:01", "warn", "routed", "拨号未成功 剩余=100ms"),
+      R("00:02:01", "warn", "routed", "拨号未成功 剩余=100ms"),
+    ],
+    5,
+  );
+  assert.equal(out.length, 2, "隔了一分钟的两次失败是两件事，合成一条会让人低估故障频率");
+});
+
+test("级别不同的同类行绝不合并", () => {
+  const out = mergeLogRows([
+    R("00:01:01", "info", "mesh", "链路建立 conns=1"),
+    R("00:01:02", "error", "mesh", "链路建立 conns=2"),
+  ]);
+  assert.equal(out.length, 2);
+});
+
+test("跨午夜的相邻同类行仍然合并（时间差要按环形算）", () => {
+  const out = mergeLogRows([
+    R("23:59:59", "warn", "ble", "跳过候选 id=7 剩余=100ms"),
+    R("00:00:01", "warn", "ble", "跳过候选 id=7 剩余=80ms"),
+  ]);
+  assert.equal(out.length, 1, "23:59:59 与 00:00:01 只差 2 秒，按线性差会算成 23 小时");
+});
 
 test("logLineText：按「时间 · 级别 · target · 消息」拼出屏幕上真实的行文本", () => {
   assert.equal(

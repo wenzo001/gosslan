@@ -25,12 +25,18 @@
 | **★★★ 必读** | [AI_RULES.md](AI_RULES.md) | **AI 工程宪法**：核心不变量 INV-001~008、任务复杂度分级 L1/L2/L3、既有代码优先、协议/DB 规则、**跨版本兼容（§12）**、状态机、Bug 修复流程、范围边界（§3 当前不做）、Definition of Done |
 | **★★★ 必读** | [docs/acceptance/1.0-release.md](docs/acceptance/1.0-release.md) | **v1.0 验收标准**：P0 地基 + mesh 本体清单（含跨版本降级）、禁止事项、必须运行的验证命令 |
 | **★★★ 必读** | [AI_PROJECT_HANDOFF.md](AI_PROJECT_HANDOFF.md) | **项目全景**：完整功能清单、架构与代码导读、E2EE 状态机、工程约定、测试口径 |
-| **★★ 参考** | [docs/protocol-invariants.md](docs/protocol-invariants.md) | **协议不变量明细**（INV-P01~P24，含 INV-P24 跨版本优雅降级）+ 必须覆盖的测试矩阵：改协议/网络核心前必读 |
+| **★★★ 必读** | [docs/stability-roadmap.md](docs/stability-roadmap.md) | **稳定版工作地图（当前阶段的地图）**：审计结论、10 条风险、26 条在途任务的 A/B/C/D 重判与保留/修复/优化/延后/删除理由、自动化 vs 人工覆盖边界、8 条高风险旅程、执行顺序与每阶段退出判据。**做任何稳定性工作前先在这里定位自己在哪一格** |
+| **★★ 参考** | [docs/protocol-invariants.md](docs/protocol-invariants.md) | **协议不变量明细**（INV-P01~P29，条数现算 `node scripts/check-invariant-hooks.mjs`，含 INV-P24 跨版本优雅降级、INV-P25 发射不持锁、INV-P26 终态不可降级、INV-P29 群任务编号规则）+ 必须覆盖的测试矩阵：改协议/网络核心前必读 |
 | **★★ 参考** | [docs/AI_ENGINEERING_INDEX.md](docs/AI_ENGINEERING_INDEX.md) | 约束文档导航索引 + 文档与代码冲突时的处理规则 |
 | **★★ 参考** | [docs/adr/](docs/adr/) | **架构决策记录**：协议版本化（ADR-0007，2026-09-20 Accepted）、状态机边界、Rust/TS 契约、多路径选路、BLE、中继授权、故障注入测试 |
 | **★★ 参考** | [CHANGELOG.md](CHANGELOG.md) | **版本历史**：每个版本改了什么、为什么改（含所有已修 bug 的根因） |
+| **★★ 参考** | [docs/ARCHITECTURE-REVIEW-2026-09-24.md](docs/ARCHITECTURE-REVIEW-2026-09-24.md) | **架构复审（2026-09-24）**：12 条结构性问题的根因（全部带 file:line）、保持/收缩/拆分/解耦/延后的判断、8 步安全改造路线。**动核心链路前先看这份**，它同时是「为什么现在不做 X」的记录 |
+| **★★ 参考** | [docs/final-architecture-review.md](docs/final-architecture-review.md) | **第二阶段架构复审（2026-09-27）**：基线现算值、Large File Audit、11 问四态结论、Release 判定与「已有锁别再重做」清单 |
+| **★★ 参考** | [docs/ARCHITECTURE-MAP.html](docs/ARCHITECTURE-MAP.html) | **架构与接口契约图**（单文件，浏览器直接打开）：分层大图 + IPC 命令的「输入 → 输出」规则表（**条数不在这里抄**：图里那张表由页头 `CMDS.length` 现数，与后端注册表逐条双向核对由 `mapContract.test.ts` 判；权威口径 = `node scripts/check-key-boundary.mjs` 自己打印的那行"注册表 N 条"。此处曾长期手抄一个数、而注册表后来变了 ⇒ 这正是图自己改口要消灭的形状） + 事件/表结构/流程穿透 + 已核出的漂移清单。判「方向对不对」不用读代码 |
 | **★ 按需** | [docs/templates/BUG_FIX.md](docs/templates/BUG_FIX.md) | Bug 修复报告模板（复现 / 根因 / 影响 / 修复 / 回归） |
 | **★ 按需** | [docs/templates/ADR.md](docs/templates/ADR.md) | 新增架构决策记录模板 |
+| **★ 按需** | [docs/aoci-usage.md](docs/aoci-usage.md) | **AOCI 仓库认知层使用手册**：哪些文件入库、换机器怎么接宿主、谁在什么时候必须调它、9 个 MCP 工具与 CLI 只读命令速查、一条 Entry 的格式与 `S` 的两层配额、收尾三件套（verify→check→guide）、**§8 重新索引该走哪条路**（日常补条目 / 刷新基线 / 推倒重来的代价与回退性，外加本仓实测会被拒的六条命令与报错原话）。文中的配额上限与实况数字**都挂着现算命令**，别抄数字 |
+| **★ 按需** | [docs/large-file-split-plan.md](docs/large-file-split-plan.md) | **大文件拆分计划（>3000 行）**：现算出真正超阈值的 6 个文件、transport.rs 的 15 节构成、**26/202 条护栏锚点指着它**这一静默风险、行为不变的恒等判据与下刀顺序。动大文件前先读它 |
 
 **阅读顺序**：`AI_RULES.md`（约束）→ `docs/acceptance/1.0-release.md`（目标与验收）→ `AI_PROJECT_HANDOFF.md`（项目全貌）→ 涉及网络/协议时读 `docs/protocol-invariants.md` 与相关 ADR → 代码。
 
@@ -62,6 +68,13 @@
 
 ## 📁 项目结构
 
+> **不在本仓库里的配套项目**：公网中转服务器 **`gosslan-relay-server`** →
+> <https://github.com/fwd001/gosslan-relay-server>。零依赖 Node，只把两条连接拼成字节管道：不解析载荷、不落盘，
+> 部署与运维文档（PM2 / systemd / Docker / 故障排查）都在那个仓库的 README 里。
+> ⚠️ 改到中继发往的**线格式**时必须**同一轮改两个仓库**：协议规格写在那边 README
+> 「协议规格」一节，客户端侧的记录层封装与拨号在这边（`src-tauri/src/transport/`）。
+> 曾经它在主仓里有一份副本，2026-09-22 移除，只留这个指针 —— 重复源码迟早漂移。
+
 ```
 gosslan/
 ├── index.html
@@ -73,9 +86,21 @@ gosslan/
 ├── CHANGELOG.md              # 版本历史
 ├── docs/
 │   ├── AI_ENGINEERING_INDEX.md   # 约束文档导航
-│   ├── protocol-invariants.md    # 协议不变量明细 INV-P01~P18
-│   ├── acceptance/               # 版本验收标准（当前：1.0 release）
-│   ├── adr/                      # 架构决策记录
+│   ├── ARCHITECTURE-MAP.html     # ★ 单文件交互架构 + 接口契约图（浏览器直接打开）
+│   ├── stability-roadmap.md      # ★★★ 稳定版工作地图：风险/任务重判/覆盖边界/执行顺序
+│   ├── ARCHITECTURE-REVIEW-2026-09-24.md  # ★ 架构复审：根因 + 8 步路线
+│   ├── final-architecture-review.md  # ★ 第二阶段复审：现算基线 + 巨型文件审计 + 四态结论
+│   ├── protocol-invariants.md    # 协议不变量明细（INV-P 的条数与上界由 check-invariant-hooks 现打印，别抄）
+│   ├── VERSIONING.md             # ★ 版本号强制规则：每个提交声明档位 + 同一个提交把版本提上去
+│   ├── design-guidelines.md      # UI 规范（动界面必读：圆角 / hover / 配色 / 窗口边界）
+│   ├── migration-ledger.md       # 迁移台账：同一关注点有几个家、哪个在跑数据
+│   ├── domains.data.mjs          # 领域图数据（check-domain-map.mjs 读的就是这份）
+│   ├── ARCHITECTURE-EXPLAINED.md # 架构图解（新人版）⚠️ 自带 v4.2.7 快照戳，行号早已漂
+│   ├── acceptance/               # 验收标准 1.0-release + 稳定版验证覆盖矩阵（冒烟矩阵）
+│   │                             #   + 原生体验首轮建设报告（native-experience-round-1.md，
+│   │                             #     那份报告里的数字都是定稿时现算的，复跑命令逐条挂在正文）
+│   ├── notes/                    # 历史审计笔记（"当时发现了什么"，不是约束）
+│   ├── adr/                      # 架构决策记录（含 ADR-0020 公网哑管道中继）
 │   └── templates/                # Bug 修复 / ADR 模板
 ├── src/                      # Vue 3 前端
 │   ├── main.ts
@@ -100,14 +125,13 @@ gosslan/
     └── src/
         ├── main.rs / lib.rs
         ├── tray.rs           # 桌面托盘：关窗驻留、仅托盘退出（#[cfg(desktop)]）
-        ├── device.rs         # 设备指纹（gosslan- 前缀；桌面 machine-uid）
+        ├── device.rs         # 设备 ID 生成（gosslan- 前缀；随机数主导 + 设备属性混合，见 ADR-0021）
         ├── crypto.rs         # E2EE：X25519 + Ed25519 + ChaCha20-Poly1305
         ├── gossip_engine.rs  # Gossip 广播 + Bloom/LRU 去重 + 扇出
         ├── file_relay.rs  # 大文件切片 + 并行分发 + 重组
         ├── db.rs             # SQLite 存储层 + Schema
         ├── protocol.rs       # 线格式（UDP 包 / TCP 帧 / 消息枚举 / Gossip 信封）
         ├── state.rs          # AppState 全局状态
-        ├── schema.sql        # 创表脚本（文档用）
         ├── commands.rs       # Tauri 命令层
         ├── network/
         │   ├── mod.rs        # 网络启动 / 停止
@@ -235,7 +259,7 @@ npm run dist:win:msi    # 额外产出 MSI
 仓库内置三端 workflow（Windows / macOS / Android），推送一个 `v*` 标签即自动构建三端安装包并发布 Release（apk/dmg/exe 三件套）：
 
 ```bash
-npm run version:patch                 # 例：1.0.0 -> 1.0.1（同步 4 处版本 + CHANGELOG）
+npm run version:patch                 # 例：1.0.0 -> 1.0.1（同步 5 处版本号 + CHANGELOG）
 git add -A && git commit -m "release v1.0.1"
 git tag v1.0.1
 git push origin main && git push origin v1.0.1
@@ -257,7 +281,7 @@ npm run verify:full   # 重门禁层：cargo fmt/clippy/test、Rust 清单、护
 
 **默认跑快速层就够日常用**，但它**不等于"编得过"** —— 结束时脚本会列出没跑哪几项。
 改过 Rust 代码 / `Cargo.*` / 构建配置，提交前必须 `npm run verify:full`；
-发版或出包前再加 `-- --full`（123 条护栏逐条改坏验证）。
+发版或出包前再加 `-- --full`（全部护栏逐条改坏验证，条数由脚本自己打印）。
 CI（`verify.yml`）在任意分支每次 push 全跑，是这套分层的兜底。判据细节见 `AI_RULES.md` §37.1。
 
 ### 前端（node 内置测试运行器，零额外依赖，需 Node ≥ 22）
@@ -355,16 +379,21 @@ cd src-tauri && cargo test --features bluetooth
 - ~~蓝牙无配对通道~~ —— **已实现**（ADR-0015：`transport/bluetooth.rs` + `ble_framing` 通用分片，
   三端已发布），留在路线图会误导 AI 以为还要"补分片协议"
 - **QUIC 切换**：`transport.rs` 的"分帧读写 + 建链"两原语可替换为 `quinn`，消息分发逻辑无需改动
-- **服务端中转**：⚠️ 与产品定位冲突（无服务器、无账号）。跨网段已由**节点互相中继**解决
-  （ADR-0016 中继授权）；本节仅记录"技术上 JSON 帧可跑 WebSocket"这一事实，不构成计划
+- **服务端中转** —— **已采用为"可选自托管"**（ADR-0020，2026-09-21）：
+  <https://github.com/fwd001/gosslan-relay-server>。它是**只管组网**的哑管道 —— 按口令准入、把两条连接拼成字节管道，
+  不解析帧、不落盘；跨 CGNAT（两侧都没有公网地址）时补一条链路，局域网能连时自然闲置。
+  无账号、无注册、官方不运营，所以不构成"产品有个后台"。
+  跨网段仍优先靠节点互相中继与手动端点（ADR-0016 / ADR-0014）
 - **登录 / 账号体系（远期）**：当前用设备指纹识别用户，未来可在 `device_id` 之上叠加账号绑定，多设备同步
 
 ---
 
 ## 🔒 隐私与安全
 
-- 所有数据仅存本机 SQLite，无任何服务器。
-- 端到端加密，中继节点无法解密消息内容。
+- 聊天数据只存本机 SQLite：**官方不运营任何服务器**，也没有账号。可选的自托管中继
+  只搬密文字节、不解析也不存储（ADR-0020），关掉设置里的开关就没有这条链路。
+- 端到端加密，中继节点无法解密消息内容；走公网中继时额外套一层记录封装，
+  连设备 ID / 昵称 / 群名册 / 文件名这些元数据也不可见，且中继注入或重放任何一帧都会断链。
 - 共享目录访问做了路径规范化校验，杜绝目录穿越。
 - 如需更强的元数据隐藏，可将单聊的接收方标识从协议中移除（全节点尝试解密，仅接收方成功）。
 

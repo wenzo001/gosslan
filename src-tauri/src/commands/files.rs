@@ -243,7 +243,7 @@ fn build_file_message(
     // cid = 明文 sha256，接收方据此按 cid 拉取（ADR-0019 Phase 3）。
     // ⚠️ **这里不计算**：整文件哈希是 O(体积) 的，放在建记录这一步就等于把气泡挡在哈希之后
     // （真机 Mac 发 600MB：点完要"卡一会儿"才出现发送中气泡）。真正用于校验的那份由投递
-    // 任务算（`network/file.rs::send_file_from_path_at` → FileOffer.file_sha256），
+    // 任务算（`network/file/send.rs::send_file_from_path_at` → FileOffer.file_sha256），
     // 算完再回填本行的 sha256 字段（`db::fill_message_sha256`），所以最终值同源、不丢。
     let content = serde_json::json!({
         "name": name,
@@ -268,48 +268,51 @@ fn build_file_message(
         ts: db::now_ms(),
         seq,
         status: "sent".to_string(),
+        mention_targets: None,
     }
 }
 
-/// 永久失败收尾：队列置 failed，消息气泡置 failed，并通知前端。
+/// 永久失败收尾：把一单放弃重发的文件落终态，并通知前端。
+///
+/// ⚠️ 两件事按顺序做，不许颠倒：
+/// 1. **已经 `done` 的传输不是失败。** 传输行落到 `done` 意味着磁盘证据已经成立
+///    （长度对 + sha256 对 + `sync_all()` 之后才 rename），这时再把气泡与台账改成 failed，
+///    用户看到的就是"一个打开就在那儿的文件显示失败"⇒ 面向用户的两笔写与 emit 全部跳过。
+/// 2. **把队列行踢出重试集合的那一步排最后**（下面唯一那处 `mark_file_outbox_failed` 调用）。
+///    `list_expired_file_outbox` 只选 pending/sending ⇒ 它一跑，前面任何一步失败都永久无人补，
+///    症状是"气泡停在发送中、而这行再也扫不到"。同一条规矩在
+///    `transport.rs::finalize_expired_file` 上有逐函数注释；判据已升级成自动扫全部收尾路径
+///    （`lib.rs::every_finalize_path_defers_the_destructive_write`）。
+///    已 done 那一支同样要走到这一步：队列行必须关掉，否则每 tick 被重扫一遍又什么都不做。
+///
+/// 终态契约整体见 `db::file_transfer::upsert_transfer` 上面那段（INV-P26）。
 fn fail_file_job(state: &AppState, transfer_id: &str, reason: &str) {
-    {
+    // 全部落库都在唯一出口 `db::finalize_file_failure` 里（P7：三份收尾合成一份）：
+    // 气泡 → 台账 → 最后才关队列行，`done` 闸门也在那一处。
+    let announce = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::mark_file_outbox_failed(&dbc, transfer_id).ok();
-        db::set_message_status(&dbc, &format!("file-{transfer_id}"), "failed").ok();
-        // 保持 file_transfers 行已有的 name/size/path，仅把状态推进到 failed。
-        let _ = dbc.execute(
-            "UPDATE file_transfers SET status = 'failed', progress = 0.0 WHERE id = ?1",
-            rusqlite::params![transfer_id],
+        db::finalize_file_failure(&dbc, transfer_id, db::FileJobEnd::GiveUp).unwrap_or(false)
+    };
+    if announce {
+        let _ = state.app.emit(
+            "file-failed",
+            &crate::state::FileFailedInfo {
+                transfer_id: transfer_id.to_string(),
+                reason: reason.to_string(),
+            },
         );
     }
-    let _ = state.app.emit(
-        "file-failed",
-        &crate::state::FileFailedInfo {
-            transfer_id: transfer_id.to_string(),
-            reason: reason.to_string(),
-        },
-    );
 }
 
 /// 尝试投递某 peer 的全部 pending 文件（同一 peer 串行，不同 peer 并行）。
 /// 触发点与 `flush_outbox` / `flush_group_outbox` 一致：建链 / Hello / 心跳。
 pub async fn flush_pending_files(state: &Arc<AppState>, peer_id: &str) {
-    if !state
-        .file_sending
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(peer_id.to_string())
-    {
+    if !mark_peer_sending(&state.file_sending, peer_id) {
         return;
     }
     // 没有链路时不做无谓尝试，保持 pending，等下一次连接事件再触发。
     if !state.has_link(peer_id).await {
-        state
-            .file_sending
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(peer_id);
+        release_peer_send(&state.file_sending, peer_id);
         return;
     }
     let pending = {
@@ -317,19 +320,52 @@ pub async fn flush_pending_files(state: &Arc<AppState>, peer_id: &str) {
         db::list_pending_file_outbox(&dbc, peer_id).unwrap_or_default()
     };
     if pending.is_empty() {
-        state
-            .file_sending
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(peer_id);
+        release_peer_send(&state.file_sending, peer_id);
         return;
     }
     let st = state.clone();
     let peer = peer_id.to_string();
     tauri::async_runtime::spawn(async move {
+        // 槽位交给守卫：任务体里一次 panic（或 future 被 drop）也必须归还。
+        // 旧写法把 remove 手写在下面那个循环之后，panic 会跳过它 ⇒ 这个 peer
+        // 之后的所有文件永远抢不到槽位，界面只停在「发送中 0%」且不报任何错。
+        let _gate = PeerSendGuard::new(&st.file_sending, &peer);
         for (transfer_id, local_path) in pending {
             if !st.has_link(&peer).await {
                 break;
+            }
+            // 只剩蓝牙链路时，超过 `BLE_FILE_SIZE_LIMIT` 的文件**不启动**（2026-09-23 真机 600MB）：
+            // 保持 pending、不消耗 attempts、不落 failed —— LAN 一回来，下一次 flush 就会发。
+            // 判据是纯函数（`file::refuse_reason_for_best_link`），这里只负责取链路种类与体积。
+            // 必须排在 `mark_file_outbox_sending` 之前：那一步会把 attempts +1，
+            // 5 次上限一到就永久 failed，"等 LAN 回来自动重试"就成了空话。
+            let best_kind = {
+                let links = st.links.lock().await;
+                links.get(peer.as_str()).and_then(|ls| {
+                    let kinds: Vec<crate::mesh::PathKind> =
+                        ls.iter().map(|l| l.path_kind).collect();
+                    crate::state::best_link_kind(&kinds)
+                })
+            };
+            let size = std::fs::metadata(&local_path).map(|m| m.len()).unwrap_or(0);
+            if let Some(reason) = file::refuse_reason_for_best_link(best_kind, size) {
+                st.logger.warn(
+                    "file",
+                    format!(
+                        "只有蓝牙链路，{size} 字节超过 BLE_FILE_SIZE_LIMIT ⇒ 暂不发送，保持 pending 等 LAN transfer={transfer_id}"
+                    ),
+                );
+                // 让用户看见原因：不发的话界面只会停在"发送中 0%"，与"卡死"无法区分。
+                let _ = st.app.emit(
+                    "file-stalled",
+                    &crate::state::FileStalledInfo {
+                        transfer_id: transfer_id.clone(),
+                        stalled: true,
+                        idle_ms: 0,
+                        reason: Some(reason.to_string()),
+                    },
+                );
+                continue;
             }
             {
                 let dbc = st.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -348,38 +384,31 @@ pub async fn flush_pending_files(state: &Arc<AppState>, peer_id: &str) {
                     db::delete_file_outbox(&dbc, &transfer_id).ok();
                 }
                 Err(e) => {
-                    // retryable 错误也要检查超限 —— 超限直接 fail 不再重试。
-                    let over_limit = {
+                    // 判据只有一份（`file::send_retry_verdict`，纯函数 + 单测）：
+                    // 这里只负责"照裁决写库"，不在此处再比一次 attempts。
+                    let attempts = {
                         let dbc = st.db.lock().unwrap_or_else(|e| e.into_inner());
                         db::get_file_outbox_attempts(&dbc, &transfer_id)
-                            .map(|a| a >= crate::network::file::MAX_FILE_OUTBOX_RETRIES)
-                            .unwrap_or(false)
                     };
-                    if !e.retryable || over_limit {
-                        let reason = if over_limit {
-                            "连续重试超限（链路长时间未恢复）".to_string()
-                        } else {
-                            e.message.clone()
-                        };
-                        st.logger.warn(
-                            "file",
-                            format!(
-                                "[FAILED] transfer={transfer_id} reason={reason} (retryable={}, attempts_over={over_limit})",
-                                e.retryable
-                            ),
-                        );
-                        fail_file_job(&st, &transfer_id, &reason);
-                    } else {
-                        let dbc = st.db.lock().unwrap_or_else(|e| e.into_inner());
-                        db::mark_file_outbox_pending(&dbc, &transfer_id, 5_000).ok();
+                    match file::send_retry_verdict(&e, attempts) {
+                        file::RetryVerdict::GiveUp(reason) => {
+                            st.logger.warn(
+                                "file",
+                                format!(
+                                    "[FAILED] transfer={transfer_id} reason={reason} (retryable={}, attempts={attempts:?})",
+                                    e.retryable
+                                ),
+                            );
+                            fail_file_job(&st, &transfer_id, &reason);
+                        }
+                        file::RetryVerdict::Retry { backoff_ms } => {
+                            let dbc = st.db.lock().unwrap_or_else(|e| e.into_inner());
+                            db::mark_file_outbox_pending(&dbc, &transfer_id, backoff_ms).ok();
+                        }
                     }
                 }
             }
         }
-        st.file_sending
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&peer);
     });
 }
 
@@ -388,11 +417,14 @@ pub async fn flush_pending_files(state: &Arc<AppState>, peer_id: &str) {
 /// 做三件事：
 /// 1. 从 `file_send_cancels` 取 sender send(()) —— send_file_from_path / dispatch_group_file_to_peer
 ///    的 chunk loop 会 select! 到这个信号，cleanup + return "用户取消发送"。
-/// 2. DB 层：outbox → failed；消息状态 → failed；transfer → failed。
+/// 2. DB 层：**面向用户的三笔写先做**（消息气泡 `file-` / `gfile-` → cancelled、
+///    传输台账 → cancelled），**最后**才把 `file_outbox` 行标 cancelled —— 那一步才是
+///    "把行踢出重试集合"的写，排前面会让前面任何一次失败都永久无人补（同 `fail_file_job`，
+///    判据自动扫全部收尾路径）。用户主动取消记 `cancelled`，不记 `failed`（INV-P26）。
 /// 3. 通知前端 emit `file-cancelled` + `message-status-changed`。
 ///
-/// 如果文件已经发完或 sender 已关闭，signalled=false 但仍会 mark failed + emit 事件 ——
-/// 前端 UI 立刻切到失败态。
+/// 如果文件已经发完或 sender 已关闭，signalled=false 但仍会落 cancelled 并 emit 事件 ——
+/// 用户按了取消，界面必须立刻响应。已经 `done` 的传输行不会被改成"已取消"（INV-P26 的闸门）。
 ///
 /// 注意：file_sending（spawn loop 里按 peer_id 存的 HashSet）不需要我们清 ——
 /// spawn loop 收到 cancel 信号后会自己走到下一条或清掉。
@@ -428,14 +460,19 @@ pub async fn cancel_file_transfer(
     // 2. DB 层：单聊 outbox + 消息状态 + transfer
     //    群文件不走 file_outbox（走 group_files 表），但我们仍然 mark cancelled ——
     //    语义：用户主动停止用 "cancelled"，自动失败用 "failed"。
-    //    终态守卫保证幂等：已 delivered/read 的不会被覆盖。
+    //    ⚠️ 这句注释此前是**谎话**：紧接着调的是 `mark_file_outbox_failed`，
+    //    `file_outbox` 里落下的是 'failed' ⇒ 排查"这单为什么失败"的人会读到一个用户自己
+    //    按下的取消。三条队列查询只认 pending/sending，所以功能等价、台账不等价。
+    //    终态守卫保证幂等：已 delivered/read 的不会被覆盖；已 done 的传输行也不会被降级
+    //    （INV-P26）。
     {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        let _ = db::mark_file_outbox_failed(&dbc, &transfer_id);
-        let _ = db::set_message_status(&dbc, &format!("file-{transfer_id}"), "cancelled");
-        // 群文件消息前缀是 gfile-，也处理一下
-        let _ = db::set_message_status(&dbc, &format!("gfile-{transfer_id}"), "cancelled");
-        let _ = db::upsert_transfer(&dbc, &transfer_id, "", "", 0, "send", "cancelled", None, 0.0);
+        // 落库并入唯一出口（同一份顺序与 `done` 闸门）。取消与失败的区别在这里说得通：
+        // 用户取消的是**整条消息**（1:1 与群文件共用这个入口）⇒ `gfile-` 该写；
+        // 而超时/放弃只代表"某一个收件人没收到"，不该改写群气泡（见
+        // `db::finalize_file_failure` 与 `expired_file_does_not_touch_the_group_bubble`）。
+        // 取消一律照实响应：不看返回值、emit 也不被门控。
+        let _ = db::finalize_file_failure(&dbc, &transfer_id, db::FileJobEnd::Cancelled);
     }
 
     // 3. 通知前端
@@ -602,8 +639,12 @@ pub fn get_content_transfers(
     crate::content::store::list(&dbc, 200).unwrap_or_default()
 }
 
-#[tauri::command(async)]
-pub async fn send_file(
+/// 单聊文件的真实实现。**不再是 IPC 入口**：界面上只有 `send_file_auto` 这一条门。
+/// 两条入口并存的后果是「没人调的那条不会跟着主路径一起改」—— 0-A3 收了门面，
+/// 但这条实现当时仍是注册着的命令，这次才真正降级成模块内私有：
+/// 删掉注册后编译器立刻指出 `send_file_auto` 是它唯一的调用者，
+/// 那份「第二条入口」的账也因此第一次被算清。
+async fn send_file(
     state: State<'_, Arc<AppState>>,
     friend_id: String,
     path: String,
@@ -680,22 +721,10 @@ pub async fn send_file(
     });
     Ok(transfer_id)
 }
-
 /// 统一文件发送入口：当前稳定版统一走「直连 + 离线队列」。
 /// 只要好友最终上线，文件就会在连接事件触发时自动补发，不再依赖不可达的中继路径。
 #[tauri::command]
 pub async fn send_file_auto(
-    state: State<'_, Arc<AppState>>,
-    friend_id: String,
-    path: String,
-) -> Result<String, String> {
-    send_file(state, friend_id, path).await
-}
-
-/// 中继切片发送入口：保留命令名以兼容前端，当前实现回退到与直连相同的可靠队列，
-/// 避免「看似已发送、实际无法投递」的假成功。
-#[tauri::command]
-pub async fn send_file_relay(
     state: State<'_, Arc<AppState>>,
     friend_id: String,
     path: String,

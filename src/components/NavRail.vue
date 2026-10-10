@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
-import { avatarInitial, avatarInitialLen, nameToColor } from "@/utils/color";
 import { MoreHorizontal, Moon, ScrollText, Settings, Sun } from "lucide-vue-next";
 import UnreadBadge from "@/components/UnreadBadge.vue";
+import SelfAvatar from "@/components/SelfAvatar.vue";
 import { t } from "@/i18n";
 
 const NAV_STATES = ["chats", "contacts", "links", "favorites", "me"] as const;
@@ -27,7 +27,6 @@ const emit = defineEmits<{
 
 const app = useAppStore();
 const chat = useChatStore();
-const initials = computed(() => avatarInitial(app.device?.nickname));
 
 // ---------------- 二级菜单（设置 / 运行日志 收进这里，用户 2026-09-17） ----------------
 // 惯用法与 ConversationList 的「+」菜单完全一致（useExclusivePopup 互斥 + 键盘可达）。
@@ -102,27 +101,20 @@ onUnmounted(() => document.removeEventListener("click", onDocClick));
   <!-- 微信式窄导航栏：顶部本人头像 + 中部导航图标 + 底部偏好；
        选中项仅图标变色（主题色），不改底色，与微信一致 -->
   <aside
-    class="hidden shrink-0 select-none flex-col items-center bg-[var(--gosslan-rail)] py-3 md:flex"
+    class="hidden shrink-0 select-none flex-col items-center bg-[var(--gosslan-rail)] py-3 desktop:md:flex"
     :style="{ width: 'var(--gosslan-rail-w)' }"
   >
     <!-- 顶部：本人头像（点开设置/我）；在线点放在 overflow-hidden 按钮外层，避免被裁切 -->
     <div class="relative shrink-0">
       <button
-        class="gosslan-avatar-box flex h-10 w-10 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white transition hover:opacity-90"
+        class="block transition hover:opacity-90"
         :class="settingsOpening ? 'opacity-60' : ''"
         :aria-busy="settingsOpening"
-        :style="{ backgroundColor: nameToColor(app.device?.nickname ?? '') }"
         :title="app.present ? t('nav.me.online') : t('nav.me.offline')"
         :aria-label="t('nav.me.openSettings', { status: app.present ? t('nav.me.online') : t('nav.me.offline') })"
         @click="emit('open-settings')"
       >
-        <img alt="" v-if="app.device?.avatar" :src="app.device.avatar" class="h-full w-full object-cover" />
-        <span
-          v-else
-          class="gosslan-avatar-initial text-sm font-medium"
-          :data-len="avatarInitialLen(app.device?.nickname)"
-          >{{ initials }}</span
-        >
+        <SelfAvatar class="h-10 w-10 rounded-[var(--gosslan-avatar-radius)]" />
       </button>
       <!-- 本人在线状态点 -->
       <span

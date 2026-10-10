@@ -78,7 +78,22 @@ export default {
    */
   unmapped: [
     ["src-tauri/src/main.rs", "6 行，只有 tauri::Builder 的入口调用"],
-    ["src-tauri/src/lib.rs", "2168 行：模块注册 + 窗口管理 + 命令注册表（跨领域组装点，Phase 7）"],
+    ["src-tauri/src/lib.rs", "560 行：模块注册 + 窗口管理 + 命令注册表（跨领域组装点，Phase 7）。2026-09-28 起测试整段搬进同目录的 lib_tests.rs ⇒ 本文件只剩生产码"],
+    ["src-tauri/src/lib_tests.rs", "分册（include! 回 lib.rs 同一模块）：源码守卫的三份「视图」+ 11 行 include! 壳，2026-10-06 从 4,009 行切出来"],
+    // ↓ 同一刀的另外 11 册：**必须与 lib_tests.rs 同级平铺**，因为册内 `include_str!("commands.rs")` /
+    //   `include_str!("../gen/android/…")` 是相对本文件的路径，换目录会整体偏移一位（编译器会拒，
+    //   但那就不是"逐字未变"的搬家，恒等判据降级）。它们都是"守门人的守门人"，跨业务领域 ⇒ 归 unmapped。
+    ["src-tauri/src/lib_source_view_tests.rs", "测试分册：三份守卫视图的登记对账 + 按形状取源码的解析器"],
+    ["src-tauri/src/lib_window_tests.rs", "测试分册：capability 窗口标签、辅助窗口单例/串行、Cmd-W、外链协议门"],
+    ["src-tauri/src/lib_android_jni_tests.rs", "测试分册：Rust extern 与 Kotlin 签名互点、release 的 proguard keep 名单"],
+    ["src-tauri/src/lib_ble_tests.rs", "测试分册：BLE 指定拨号器、握手跳帧、外设节奏、载荷预算单一来源"],
+    ["src-tauri/src/lib_file_tests.rs", "测试分册：文件传输形状（泡前不整档扫、进度按已写字节、取消按收件人）"],
+    ["src-tauri/src/lib_relay_data_tests.rs", "测试分册：中继数据面策略、回收终态在锁外、口令不进日志、电路标 Relay"],
+    ["src-tauri/src/lib_outbox_tests.rs", "测试分册：Outbox 与过期终态（先落库再 emit、破坏性写延后）"],
+    ["src-tauri/src/lib_friend_identity_tests.rs", "测试分册：好友申请/自动接受与「三条路径各绑一次公钥」"],
+    ["src-tauri/src/lib_compat_gating_tests.rs", "测试分册：跨版本声明、新帧类型在发送口门控、受众三态"],
+    ["src-tauri/src/lib_startup_config_tests.rs", "测试分册：降级拒绝早于写、锁内不 await、符号链、通道偏好持久化"],
+    ["src-tauri/src/lib_delivery_shape_tests.rs", "测试分册：未知帧容忍、离线仍列出、群密钥先于群消息等接线形状"],
     [
       "src-tauri/src/commands.rs",
       "142 行 + 25 个子模块 / 26 个 tauri command：**前后端边界**，按领域拆是 Phase 7 的事",
@@ -167,7 +182,7 @@ export default {
       id: "messaging",
       name: "消息",
       tier: "L3",
-      paths: ["src-tauri/src/protocol.rs", "src-tauri/src/gossip_engine.rs"],
+      paths: ["src-tauri/src/protocol.rs", "src-tauri/src/protocol_tests.rs", "src-tauri/src/gossip_engine.rs"],
       invariants: [
         "INV-001",
         "INV-002",
@@ -219,9 +234,56 @@ export default {
       tier: "L3",
       paths: [
         "src-tauri/src/network/ble.rs", // BLE 中央角色（活）
+        // 分册目录：`network/ble/{central,peripheral,frame_io,io_loops}.rs`（2026-10-07 按角色切，
+        // `include!` 回同一模块 ⇒ 同域）。与 file 那册同一条理由：按目录认领，视图登记才逐册。
+        "src-tauri/src/network/ble",
         "src-tauri/src/network/transport.rs", // TCP 数据面（活，主文件；正按 include! 分册中）
+        "src-tauri/src/network/transport/tests.rs", // 分册：行为测试的模块壳（只剩 use + 15 行 include!，2026-10-06 再切）
         "src-tauri/src/network/transport/outbound.rs", // 分册：出站投递 + 链路选路（同模块，非新领域）
         "src-tauri/src/network/transport/gossip.rs", // 分册：Gossip 消费判据与 handle_gossip（同模块）
+        "src-tauri/src/network/transport/relay.rs", // 分册：公网盲管道中继的会合循环与协商接线（ADR-0020，同模块）
+        "src-tauri/src/network/transport/pending_keys.rs", // 分册：待发群密钥登记表（同模块，2026-10-06 搬出）
+        "src-tauri/src/network/transport/peer_state.rs", // 分册：会话链路快照 + peers 在线状态 + 成员公钥（同模块）
+        "src-tauri/src/network/transport/member_notices.rs", // 分册：成员变动的群内系统消息与文案（同模块）
+        "src-tauri/src/network/transport/outbox_flush.rs", // 分册：单聊/群聊离线队列补发（同模块）
+        "src-tauri/src/network/transport/queue_policy.rs", // 分册：链路队列字节预算与槽数折算（同模块，2026-10-06 第二批搬出）
+        "src-tauri/src/network/transport/link_state.rs", // 分册：conv_link 快照与连接登记表（同模块，2026-10-06 第二批搬出）
+        "src-tauri/src/network/transport/relay_file.rs", // 分册：中继文件传输 offer/chunk（同模块，2026-10-06 第二批搬出）
+        "src-tauri/src/network/transport/outbox_sweep.rs", // 分册：Outbox 超时清扫与过期终态（同模块，2026-10-06 第二批搬出）
+        "src-tauri/src/network/transport/read_receipt.rs", // 分册：已读回执路由与待发队列（同模块，2026-10-06 第二批搬出）
+        "src-tauri/src/network/transport/e2ee_payload.rs", // 分册（同模块，2026-10-06 第三批搬出）
+        "src-tauri/src/network/transport/group_file.rs", // 分册（同模块，2026-10-06 第三批搬出）
+        "src-tauri/src/network/transport/group_membership.rs", // 分册（同模块，2026-10-06 第三批搬出）
+        "src-tauri/src/network/transport/peer_registry.rs", // 分册（同模块，2026-10-06 第三批搬出）
+        "src-tauri/src/network/transport/handshake.rs", // 分册（同模块，2026-10-06 第四批搬出）
+        "src-tauri/src/network/transport/dial.rs", // 分册（同模块，2026-10-06 第四批搬出）
+        // ↓ 2026-10-07：`handle_message` 按**消息族**做函数级拆分后各族的入口册。
+        // 同模块（`transport.rs` 用 include! 贴回同一个模块 ⇒ 模块路径/可见性/测试名全不变），
+        // 所以这不是新领域，只是"分发留在主文件、处理体各归一册"。
+        // 漏登记会被 `check-domain-map.mjs` 判据 D 当场拦下（"无主文件"），不会静默失明。
+        "src-tauri/src/network/transport/handle_file.rs", // 分册：单聊文件传输 6 个变体的处理体
+        "src-tauri/src/network/transport/handle_share.rs", // 分册：共享目录拉取 + 单跳中继 6 个变体
+        "src-tauri/src/network/transport/handle_group.rs", // 分册：群聊成员/密钥/群文件 11 个变体
+        "src-tauri/src/network/transport/handle_identity.rs", // 分册：身份握手与好友关系 8 个变体
+        "src-tauri/src/network/transport/handle_messaging.rs", // 分册：消息与送达回执 4 个变体
+        // ↓ 2026-10-06：`tests.rs`（原 3,227 行、113 个顶层项）按内聚再切 15 册。
+        // 册名一律以 `_tests.rs` 结尾 —— `lib_tests.rs` 的登记对账守卫按这个后缀把它们豁免在
+        // 「生产码全集」视图之外（视图只装生产码）。这些是测试分册，不是新领域。
+        "src-tauri/src/network/transport/handshake_tests.rs", // 测试分册：握手帧预算 + Hello 验签 + 公钥锚
+        "src-tauri/src/network/transport/peer_state_tests.rs", // 测试分册：在线判定 + 成员公钥解析/补绑
+        "src-tauri/src/network/transport/dial_tests.rs", // 测试分册：拨号判据
+        "src-tauri/src/network/transport/route_tests.rs", // 测试分册：多链路选路次序
+        "src-tauri/src/network/transport/outbound_tests.rs", // 测试分册：出站投递/failover/背压
+        "src-tauri/src/network/transport/queue_tests.rs", // 测试分册：链路队列字节预算与创建点
+        "src-tauri/src/network/transport/framing_tests.rs", // 测试分册：帧编解码与读写循环
+        "src-tauri/src/network/transport/relay_tests.rs", // 测试分册：中继定向转发与中继侧 Ack
+        "src-tauri/src/network/transport/gossip_tests.rs", // 测试分册：Gossip 消费判据与传播层
+        "src-tauri/src/network/transport/e2ee_tests.rs", // 测试分册：直连 E2EE 载荷解封与重密封
+        "src-tauri/src/network/transport/group_keys_tests.rs", // 测试分册：待发群密钥登记与重发
+        "src-tauri/src/network/transport/dispatch_tests.rs", // 测试分册：入站去重/副作用/好友权限门
+        "src-tauri/src/network/transport/outbox_tests.rs", // 测试分册：离线队列与过期终态
+        "src-tauri/src/network/transport/read_receipt_tests.rs", // 测试分册：已读回执
+        "src-tauri/src/network/transport/listen_tests.rs", // 测试分册：监听口平台语义
         "src-tauri/src/network/dispatch.rs", // 三优先级调度 + BLE yield + 发送状态定义（新建，2026-09）
         "src-tauri/src/transport", // 新栈（部分接线）
       ],
@@ -241,7 +303,7 @@ export default {
         "platform", // transport/ble_android.rs 用 jni_method::kotlin_method
       ],
       notes:
-        "⚠️ **两个同名 transport.rs**：network/transport.rs（活；主文件 + include! 分册合计约 1 万行）与 transport/{mod,tcp}.rs（新栈）。「传输」这一个关注点今天有**三个家**：TCP 数据面走 network/、BLE 数据面走 transport/bluetooth.rs::driver + 三个外设模块、控制面（开关/状态/分流）走 transport/mod.rs。这是「改完这个 bug 又冒那个」的结构性来源，逐条证据见 docs/migration-ledger.md。BLE 载荷预算已收敛为单一事实来源（INV-P23，Phase 3/4）。",
+        "⚠️ **两个同名 transport.rs**：network/transport.rs（活；主文件 + include! 分册合计约 1 万行）与 transport/{mod,tcp}.rs（新栈）。「传输」这一个关注点今天有**三个家**：TCP 数据面走 network/、BLE 数据面走 transport/bluetooth.rs::driver + 三个外设模块、状态聚合走 transport/mod.rs（2026-09-24 0-A2 起它只剩状态汇总，**分流从来不在那里**：真分流是 dispatch.rs::message_priority + mesh/selection.rs::pick_link）。这是「改完这个 bug 又冒那个」的结构性来源，逐条证据见 docs/migration-ledger.md。BLE 载荷预算已收敛为单一事实来源（INV-P23，Phase 3/4）。",
     },
 
     // -------------------------------------------------------------------------
@@ -253,6 +315,14 @@ export default {
       tier: "L3",
       paths: [
         "src-tauri/src/network/file.rs",
+        "src-tauri/src/network/file_tests.rs", // 分册：尾部行为测试（include! 回同一模块，2026-09-28 搬出）
+        // 分册目录：`network/file/{send,relay_push,receive,group_receive,share_walk}.rs`
+        // （2026-10-07 按角色切册，`include!` 回同一模块 ⇒ 同域、非新领域）。
+        // 这里**按目录认领而不是逐册点名**：`check-domain-map.mjs` 判据 D 会把该目录下任何新文件
+        // 算成已归属，而"落在 file/ 里就属于文件传输域"是这条边界真正的说法；
+        // 视图登记（`network/mod.rs::file_src_for_guards()`）才是逐册的，漏一册由
+        // `lib_source_view_tests` 的登记对账判红 —— 两边的严格程度按各自的失效方式定。
+        "src-tauri/src/network/file",
         "src-tauri/src/content", // 内容传输逻辑层
         "src-tauri/src/storage", // 二进制落盘 + 缓存清理
       ],
@@ -279,13 +349,12 @@ export default {
       paths: [
         "src-tauri/src/db.rs", // 438 行 / Schema + 16 include!
         "src-tauri/src/db", // 16 个子模块：settings / clocks / friends / messages / conversations / offline_queue / file_transfer / favorites(含 tests) / ...
-        "src-tauri/src/schema.sql",
         "src-tauri/src/export.rs", // 聊天记录导出（磁盘满 / 迁机时的自救）
       ],
       invariants: ["INV-P05", "INV-P14", "INV-008"],
       activeHome: "src-tauri/src/db", // 16 个子模块（include! 物理拆分）
       enforce: false,
-      consumes: [], // 叶子域：db.rs / export.rs / schema.sql 在生产代码内只被装配层 use(state/commands),对其他领域无生产代码引用；tests 内 use protocol 已被 check-domain-deps.mjs 排除
+      consumes: ["messaging"], // 2026-09-28 #122 第二段起这是**真生产依赖**：db/messages.rs 的 mention_targets 列存的就是 protocol::MentionTarget，解码走 protocol::parse_mention_targets_column（三态规则只此一家，不在 db 里另写一份）。
       notes:
         "⚠️ **耦合热点**：`db::` 被 13 个文件引用，横跨 network/、transport/、mesh/、content/、file_relay、notifications、export、commands、state —— 即**传输层直接写库**。架构上最值得收口的一处（Phase 7）。",
     },
@@ -353,7 +422,7 @@ export default {
       enforce: false,
       consumes: [], // 前端域:本守门不扫 src/*(避跨 parser,且 utils/Api/组件相互 import 模式与后端 crate 不同),见 check-domain-deps.mjs 头部注释
       notes:
-        "⚠️ **没有领域边界**：stores/ 只有 2 个文件却是 2346 行（useChatStore.ts 1421 行 / 86 个导出成员），utils/ 92 个文件平铺。前端状态串味最容易产生 UI 回归 —— 拆分优先级高于后端大文件（Phase 7）。前端已有一整套源码扫描护栏（utils/designGuards.ts）。",
+        "⚠️ **没有领域边界**：`src/stores` 只有 3 个文件、`src/utils` 是平铺的一堆 —— **行数与个数一律现算，不许抄在图上**：`wc -l src/stores/*.ts`、`ls src/utils | wc -l`（截至 2026-09-28 现算：stores 共 3427 行、useChatStore.ts 2276 行、utils 119 个文件）。前端状态串味最容易产生 UI 回归 —— 拆分优先级高于后端大文件（Phase 7）。前端已有一整套源码扫描护栏（utils/designGuards.ts）。",
     },
   ],
 };

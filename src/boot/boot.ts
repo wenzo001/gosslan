@@ -22,7 +22,7 @@
 import "@/style.css";
 import { createApp, nextTick, watch, type App, type Component } from "vue";
 import { createPinia } from "pinia";
-import { invoke } from "@tauri-apps/api/core";
+import { api } from "@/api";
 import { currentLocale } from "@/i18n";
 
 // ---------------- 前端异常上报（必须在挂载之前注册） ----------------
@@ -38,7 +38,7 @@ export function reportFrontendError(kind: string, detail: string) {
   if (reportedErrorKeys.has(key) || reportedErrorCount >= 50) return;
   reportedErrorKeys.add(key);
   reportedErrorCount += 1;
-  void invoke("log_frontend_error", { kind, text: detail }).catch(() => {});
+  void api.logFrontendError(kind, detail).catch(() => {});
 }
 
 export function installFrontendErrorReporting() {
@@ -93,11 +93,14 @@ let bootDismissed = false;
 export function dismissBoot() {
   if (bootDismissed) return;
   bootDismissed = true;
-  // 每个窗口只会有其中一个骨架（各自的 HTML 只写自己的那一份），
-  // 这里统一处理，缺失的自然跳过。
-  for (const id of ["boot", "boot-logs", "boot-settings", "boot-todos"]) {
-    const el = document.getElementById(id);
-    if (!el) continue;
+  // ⚠️ **刻意不枚举 id**。这里原先写着 `["boot","boot-logs","boot-settings","boot-todos"]`，
+  // 于是新增的第 5 个窗口（`boot-preview`）永远撤不掉：那块骨架是
+  // `position:fixed; inset:0; z-index:9999` + 不透明底色（见 `skeleton.css`），
+  // 结果是 Vue 挂载成功、图片也取到了，**整页被一张看不见的骨架盖着** ——
+  // 用户报的"预览窗口只有骨架、没有内容"就是这条，而且与平台无关（macOS 同样）。
+  // 现在由骨架元素自己带 `boot-skeleton` 类（各 HTML 里就写在它身上），
+  // `windowEntries` 的守卫钉"每个窗口的骨架根必须有这个类" ⇒ 加窗口不可能再漏这一步。
+  for (const el of document.querySelectorAll<HTMLElement>(".boot-skeleton")) {
     el.classList.add("boot-hide");
     window.setTimeout(() => el.remove(), 220);
   }
@@ -135,7 +138,7 @@ export function createWindowApp(root: Component): App {
  * 不触发，会把窗口永久留在隐藏态。Rust 侧另有 4s 超时兜底（见 lib.rs）。
  */
 export function revealMainWindow() {
-  void invoke("focus_window").catch(() => {
+  void api.focusWindow().catch(() => {
     /* 非 Tauri 环境（纯 vite dev）会 reject，忽略即可 */
   });
 }
@@ -158,14 +161,35 @@ export function mountMainWindow(app: App) {
  *
  * 撤骨架放在 `nextTick()` 之后：等真实内容真的挂上去了再让骨架淡出，中间不露空白帧。
  */
-export async function mountAuxWindow(app: App, beforeMount?: () => Promise<void>) {
+/** 挂载结果：`ok:false` 表示"带着降级状态挂载了"，错误已经上报过，调用方只需决定是否补做。 */
+export type AuxMount = { ok: true } | { ok: false; error: unknown };
+
+export async function mountAuxWindow(
+  app: App,
+  beforeMount?: () => Promise<void>,
+): Promise<AuxMount> {
   installBootDismissal();
   installDocumentTitle();
-  try {
-    if (beforeMount) await beforeMount();
-  } finally {
-    app.mount("#app");
-    await nextTick();
-    window.dispatchEvent(new Event("gosslan:app-ready"));
+  let result: AuxMount = { ok: true };
+  if (beforeMount) {
+    try {
+      await beforeMount();
+    } catch (e) {
+      // ⚠️ 这里**不能把异常抛出去**（审计阶段 4 · 4.2）：原先是 `try/finally` + 自然外抛，
+      // 于是调用方 `mountAuxWindow(...).then(() => 注册焦点刷新)` 的 `.then` 整段被跳过 ——
+      // 偏偏"初始化失败"是最需要那个补救注册的时刻。结果是设置窗口拿不到网卡/共享目录后
+      // 再也自我修复，任务窗口空列表且没有实时监听，而且没有任何重试入口。
+      // 改成：仍然挂载（不给用户一个白窗），仍然上报（错误不藏），但把结果**交回调用方**。
+      result = { ok: false, error: e };
+      reportFrontendError(
+        "aux-init",
+        `独立窗口挂载前初始化失败，已降级挂载：${String(e)}
+${e instanceof Error ? (e.stack ?? "") : ""}`,
+      );
+    }
   }
+  app.mount("#app");
+  await nextTick();
+  window.dispatchEvent(new Event("gosslan:app-ready"));
+  return result;
 }

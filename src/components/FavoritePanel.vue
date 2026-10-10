@@ -22,10 +22,10 @@
  * 会随页面一起卸载。
  */
 import { computed, onMounted, ref, watch } from "vue";
-import { invoke } from "@tauri-apps/api/core";
 import { t } from "@/i18n";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
+import { useImagePreviewStore } from "@/stores/useImagePreview";
 import { useBackLayer } from "@/composables/useBackLayer";
 import ContextMenu from "@/components/ContextMenu.vue";
 import ForwardModal from "@/components/message/ForwardModal.vue";
@@ -37,16 +37,28 @@ import { FILE_KIND_COLORS, FILE_KIND_ICONS, fileExt, fileKindOf } from "@/utils/
 import { openLocalFile, saveLocalFile } from "@/utils/localFile";
 import { dropFavoritePreview, loadFavoritePreview } from "@/utils/favoritePreview";
 import { mergeItemLine, mergeSummary, parseMergePayload } from "@/utils/mergeCard";
-import { isKnownKind, UNSUPPORTED_KIND_LABEL } from "@/utils/messageKinds";
+import { isForwardableKind, isKnownKind, kindClass, UNSUPPORTED_KIND_LABEL } from "@/utils/messageKinds";
+import { cardCopyText } from "@/utils/cardText";
+import {
+  TODO_STATUS_LABEL_KEY,
+  TODO_STATUS_PILL,
+  isTodoStatus,
+  type TodoImage,
+  type TodoStatus,
+} from "@/utils/todos";
+import TodoImageThumb from "@/components/TodoImageThumb.vue";
 import {
   AlignLeft,
+  BarChart3,
   Code,
   Copy,
   CornerUpLeft,
   Download,
   FolderOpen,
   Image as ImageIcon,
+  ListTodo,
   Loader2,
+  Megaphone,
   MoreHorizontal,
   ScrollText,
   Share2,
@@ -54,11 +66,14 @@ import {
   X,
 } from "lucide-vue-next";
 import type { FavoriteEntry, FileMeta, MsgKind } from "@/types";
+import { api } from "@/api";
 
 const emit = defineEmits<{ (e: "close"): void }>();
 
 const app = useAppStore();
 const chat = useChatStore();
+/** 看图只有一个入口：统一的预览能力（桌面走单例窗口、移动走壳层覆盖层，让位逻辑在 store 里）。 */
+const preview = useImagePreviewStore();
 const { copyContent } = useClipboard();
 
 /** 头部标题：选中某条收藏时显示该条名称，否则显示收藏总数/标题。 */
@@ -66,6 +81,9 @@ const favTitle = computed(() => (active.value ? displayName(active.value) : head
 
 /** 统一返回：详情态先退回列表，列表态再关闭整个收藏层（与框架返回键一致）。 */
 function onFavBack() {
+  // 预览开着时先收预览（与任务详情/合并卡片同一套「只收最上面那层」；
+  // `closeIfFrom` 保证只有这份相册确实是收藏给出去的才收，不误伤别的入口）。
+  if (active.value) preview.closeIfFrom(favSource(active.value.id));
   if (active.value) active.value = null;
   else emit("close");
 }
@@ -84,13 +102,14 @@ useBackLayer(
   () => emit("close"),
 );
 
-type FilterKey = "all" | "text" | "image" | "file";
-/** 类型筛选（与 PC 微信一致：全部 / 文本 / 图片 / 文件）。 */
+type FilterKey = "all" | "text" | "image" | "file" | "card";
+/** 类型筛选（与 PC 微信一致：全部 / 文本 / 图片 / 文件；卡片类是我们自己的：待办/投票/公告）。 */
 const FILTERS: { key: FilterKey; label: string }[] = [
   { key: "all", label: "favorite.filterAll" },
   { key: "text", label: "favorite.filterText" },
   { key: "image", label: "favorite.filterImage" },
   { key: "file", label: "favorite.filterFile" },
+  { key: "card", label: "favorite.filterCard" },
 ];
 
 const loading = ref(false);
@@ -103,7 +122,6 @@ const active = ref<FavoriteEntry | null>(null);
 /** 图片缩略图：收藏 id → objectURL（按需加载；删除时释放）。 */
 const thumbs = ref<Record<string, string>>({});
 const menu = ref<{ x: number; y: number; item: FavoriteEntry } | null>(null);
-const viewer = ref<string | null>(null);
 const pendingDelete = ref<FavoriteEntry | null>(null);
 const forward = ref<FavoriteEntry | null>(null);
 
@@ -138,7 +156,23 @@ function searchText(f: FavoriteEntry): string {
     if (!p) return mergeSummary(f.content);
     return [p.title, ...p.items.map((i) => `${i.sender} ${mergeItemLine(i)}`)].join(" ");
   }
+  // 卡片类（待办/投票/公告）：按用户 2026-09-21 的"无害改法"放进了收藏，搜索也要覆盖
+  const card = cardText(f);
+  if (card !== null) return card;
   return metaOf(f)?.name ?? "";
+}
+
+/**
+ * 卡片类收藏（待办/投票/群公告）的**标题行**（列表行与详情标题共用）。
+ * 完整文字形态走 `cardCopyText`（与消息右键的「复制」同一份实现，见 utils/cardText）。
+ */
+function cardText(f: FavoriteEntry): string | null {
+  const full = cardCopyText(f.kind, f.content);
+  if (!full) return null;
+  // 去掉「群任务：」这类前缀与换行，给列表一行干净的标题
+  const first = full.split("\n")[0] ?? "";
+  const cut = first.indexOf("：");
+  return (cut >= 0 ? first.slice(cut + 1) : first).trim() || t("favorite.untitled");
 }
 
 /**
@@ -153,6 +187,8 @@ const filtered = computed(() => {
     if (filterKind.value === "all") return true;
     // 合并转发按"文本"归类：它的内容就是一段文字记录（筛选里没有单独的"聊天记录"档）
     if (filterKind.value === "text") return f.kind === "text" || f.kind === "code" || f.kind === "merge";
+    // 卡片类：待办/投票/群公告（与 forwardable/favoritable 的白名单同一判据）
+    if (filterKind.value === "card") return kindClass(f.kind) === "card";
     return f.kind === filterKind.value;
   };
   return items.value.filter((f) => {
@@ -187,6 +223,9 @@ function rowTitle(f: FavoriteEntry): string {
   // 未知 kind（对端 Gosslan 比本机新）的载荷是 JSON：既不能原样显示，也不能落到
   // `displayName()` 的兜底 —— 那等于给一条不认识的东西编一个"文件"身份。
   if (!isKnownKind(f.kind)) return UNSUPPORTED_KIND_LABEL;
+  // 卡片类（待办/投票/公告）：用户 2026-09-21 的"无害改法"放进收藏 ⇒ 这里要能正常显示
+  const card = cardText(f);
+  if (card !== null) return card.slice(0, 40) || t("favorite.untitled");
   if (f.kind === "text" || f.kind === "code") {
     const one = f.content.replace(/\s+/g, " ").trim();
     return one.slice(0, 40) || t("favorite.untitled");
@@ -195,10 +234,63 @@ function rowTitle(f: FavoriteEntry): string {
   return displayName(f);
 }
 
+/**
+ * 详情面板里那条收藏的"卡片文字形态"（待办=标题、投票=问题、公告=文本）；非卡片类为空。
+ * 与列表行共用同一份 `cardText`，避免两处漂移。
+ */
+const activeCardText = computed(() => (active.value ? cardText(active.value) : null));
+
+/** 卡片收藏的完整载荷（待办/投票/公告）；非卡片类为空对象。 */
+const activeCardPayload = computed<Record<string, unknown>>(() => {
+  const f = active.value;
+  if (!f || kindClass(f.kind) !== "card") return {};
+  try {
+    const p = JSON.parse(f.content) as unknown;
+    return p && typeof p === "object" ? (p as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+});
+
+/**
+ * 卡片收藏里带的图片（目前只有待办载荷有 `images`，每项是 `TodoImage`，字节按 sha256/cid 取）。
+ * ⚠️ 收藏**详情**此前只渲染了卡片的文字 ⇒ 群任务的图片不显示（用户 2026-09-21：
+ * 「收藏的详情里群任务图片不显示，你要做就做完整」）。这里复用 `TodoImageThumb`
+ * —— 它自带 cid 读取 + 退避重试，与聊天里任务卡的表现完全一致。
+ */
+const activeCardImages = computed<TodoImage[]>(() => {
+  const imgs = activeCardPayload.value.images;
+  if (!Array.isArray(imgs)) return [];
+  return imgs.filter(
+    (x): x is TodoImage => !!x && typeof x === "object" && typeof (x as TodoImage).sha256 === "string",
+  );
+});
+
+/** 待办的描述（没有就空串）；投票用不到。 */
+const activeCardDesc = computed(() => {
+  const d = activeCardPayload.value.description;
+  return typeof d === "string" ? d.trim() : "";
+});
+
+/** 待办的状态胶囊（没有 status 字段时为空）。 */
+const activeCardStatus = computed(() =>
+  active.value && active.value.kind === "todo" && isTodoStatus(activeCardPayload.value.status)
+    ? (activeCardPayload.value.status as TodoStatus)
+    : null,
+);
+
+/** 投票的选项（只读展示）。 */
+const activePollOptions = computed<string[]>(() => {
+  const opts = activeCardPayload.value.options;
+  return Array.isArray(opts) ? opts.filter((x): x is string => typeof x === "string") : [];
+});
+
 /** 列表行的摘要（标题之外再给一行，便于在列表里分辨）。 */
 function rowSubtitle(f: FavoriteEntry): string {
   // 与 rowTitle 同一判据：不认识就不给任何"看起来像内容"的东西（载荷是 JSON）
   if (!isKnownKind(f.kind)) return "";
+  const card = cardText(f);
+  if (card !== null) return card.length > 40 ? `…${card.slice(40, 100)}` : "";
   if (f.kind === "text" || f.kind === "code") {
     const one = f.content.replace(/\s+/g, " ").trim();
     return one.length > 40 ? `…${one.slice(40, 100)}` : "";
@@ -209,6 +301,9 @@ function rowSubtitle(f: FavoriteEntry): string {
 }
 
 function kindIcon(f: FavoriteEntry) {
+  if (f.kind === "todo") return ListTodo;
+  if (f.kind === "poll") return BarChart3;
+  if (f.kind === "announcement") return Megaphone;
   if (f.kind === "merge") return ScrollText;
   if (f.kind === "image" || f.kind === "file") return FILE_KIND_ICONS[fileKindOf(displayName(f))];
   return f.kind === "code" ? Code : AlignLeft;
@@ -284,15 +379,31 @@ async function copyItem(f: FavoriteEntry) {
       app.toast(t(ok ? "common.copied" : "favorite.copyFail"), ok ? "success" : "error");
       return;
     }
+    if (kindClass(f.kind) === "card") {
+      // 卡片收藏的"复制"= 它的完整文字形态（与消息右键的「复制」同一份实现）
+      const text = cardCopyText(f.kind, f.content);
+      if (!text) {
+        app.toast(t("favorite.copyFail"), "error");
+        return;
+      }
+      const ok = await copyContent("favorite", text);
+      app.toast(t(ok ? "common.copied" : "favorite.copyFail"), ok ? "success" : "error");
+      return;
+    }
     if (!f.media_path || !f.available) {
       app.toast(t("favorite.mediaGone"), "error");
       return;
     }
-    await invoke("copy_file_to_clipboard", { path: f.media_path });
+    await api.copyFileToClipboard(f.media_path);
     app.toast(t("common.copied"), "success");
   } catch (e) {
     app.toastError(e, t("favorite.copyFail"));
   }
+}
+
+/** 这份相册属于哪一条收藏：预览在来源页关闭时按它自收（见 store 的 `closeIfFrom`）。 */
+function favSource(id: string) {
+  return `fav:${id}`;
 }
 
 async function previewImage(f: FavoriteEntry) {
@@ -305,7 +416,24 @@ async function previewImage(f: FavoriteEntry) {
     app.toast(t("favorite.mediaGone"), "error");
     return;
   }
-  viewer.value = url;
+  // 收藏不再自己攒一层查看器（§12）：看图交给统一能力，桌面走单例预览窗口、移动走壳层覆盖层。
+  // 字节仍**按收藏 id 异步取**，objectURL 放进 `dataSrc` —— 不把 BLOB 塞回收录对象。
+  preview.openGallery([{ name: displayName(f), dataSrc: url }], 0, favSource(f.id));
+}
+
+/**
+ * 卡片收藏（群任务）里的那组图：整组交给统一预览，于是**可以左右翻**
+ * （以前收藏详情只能看被点的那一张，且要点一下"查看"按钮才看得到）。
+ * 形状与任务详情一致：`{ cid: sha256, name }`，字节由预览侧按 cid 取。
+ */
+function openCardImage(i: number) {
+  const f = active.value;
+  if (!f || activeCardImages.value.length === 0) return;
+  preview.openGallery(
+    activeCardImages.value.map((im) => ({ cid: im.sha256, name: im.name })),
+    i,
+    favSource(f.id),
+  );
 }
 
 async function openItem(f: FavoriteEntry) {
@@ -379,13 +507,14 @@ async function locate(f: FavoriteEntry) {
     app.toast(t("favorite.msgGone"), "info");
     return;
   }
-  const r = await chat.locateMessageInConv(f.conv_id, f.msg_id);
-  if (r !== "found") {
-    app.toast(t("favorite.msgGone"), "info");
-    return;
-  }
+  // ⚠️ 先收起本页并翻到会话，再发起定位（与 `ResponsiveLayout.onOpenSearchHit` 同一顺序，
+  // 用户 2026-09-24 #29「切换要瞬间响应」）。`locateMessageInConv` 会从最新一页往前
+  // **逐页翻到 MAX_PAGES** 才可能报"没找到"，把它整个 await 在翻页之前 =
+  // 点一条收藏后收藏页原地卡住几轮读库；找不到时如实 toast，人已经在会话里。
   if (app.isMobile) app.mobileView = "chat";
   emit("close");
+  const r = await chat.locateMessageInConv(f.conv_id, f.msg_id);
+  if (r !== "found") app.toast(t("favorite.msgGone"), "info");
 }
 
 function askDelete(f: FavoriteEntry) {
@@ -450,17 +579,17 @@ async function confirmDelete() {
       <div class="flex min-h-0 flex-1">
         <!-- 左栏 = 列表底 `--gosslan-list`（与聊天/通讯录/搜索列表同族）：
              此前用 main 的白色 `--gosslan-chat` 打底，整栏发白，和其它列表不一致（用户 2026-09-20）。 -->
-        <!-- ⚠️ `sm:flex-none` 不能省：`flex-1` 把 `flex-basis` 设成 0%，会让下面的 width 失效、
+        <!-- ⚠️ `desktop:sm:flex-none` 不能省：`flex-1` 把 `flex-basis` 设成 0%，会让下面的 width 失效、
              左列被拉伸成「和详情各占一半」，宽度就和别处的列表列对不上了（用户 2026-09-20）。
              宽度走 `var(--gosslan-list-w)`（= 布局里可拖拽的列表宽），与聊天/通讯录列表一致。 -->
         <!-- ⚠️ 只在**移动端**才在选中后收起左列（两级：列表 ↔ 详情）：桌面端详情的返回头部是
              `v-if="app.isMobile"`，收起左列后**没有返回入口**、没法再选下一条，所以桌面端保持两栏。
              ⚠️ 更正（用户 2026-09-20 指出）：早先这条注释把「这里怎么有圆角」的根因写成这个，是**错的** ——
              那个圆角来自主区 `<main>` 自身的 `rounded-tl`，与是否收起左列无关，已单独删除。 -->
-        <!-- ⚠️ 这里**不加** `sm:border-r`：两栏靠底色分栏（列表底 vs 详情白），与聊天/通讯录页一致；
+        <!-- ⚠️ 这里**不加** `desktop:sm:border-r`：两栏靠底色分栏（列表底 vs 详情白），与聊天/通讯录页一致；
              加一条竖线反而是别的页面没有的东西（用户 2026-09-20：「收藏页两栏中间多个分割线」）。 -->
         <div
-          class="min-h-0 bg-[var(--gosslan-list)] sm:flex sm:w-[var(--gosslan-list-w)] sm:flex-none sm:flex-col"
+          class="min-h-0 bg-[var(--gosslan-list)] desktop:sm:flex desktop:sm:w-[var(--gosslan-list-w)] desktop:sm:flex-none desktop:sm:flex-col"
           :class="app.isMobile && active ? 'hidden' : 'flex flex-1 flex-col'"
         >
           <div class="flex shrink-0 flex-col gap-2 px-2 pt-2">
@@ -579,7 +708,7 @@ async function confirmDelete() {
             <span class="min-w-0 truncate text-[15px] font-medium text-[var(--gosslan-text)]" :title="favTitle">{{ favTitle }}</span>
           </header>
 
-          <div class="min-h-0 flex-1 overflow-y-auto p-3">
+          <div class="min-h-0 flex-1 overflow-y-auto p-3 pb-[max(env(safe-area-inset-bottom),0.75rem)]">
             <div class="mb-2 flex items-center gap-2 text-[11px] text-[var(--gosslan-text-2)]">
               <span class="truncate" :title="senderName(active)">{{ senderName(active) }}</span>
               <span>·</span>
@@ -596,8 +725,13 @@ async function confirmDelete() {
             <img
               v-else-if="active.kind === 'image'"
               :src="thumbs[active.id] ?? ''"
-              class="max-h-72 w-full rounded-[var(--gosslan-radius-md)] object-contain"
+              class="max-h-72 w-full cursor-zoom-in rounded-[var(--gosslan-radius-md)] object-contain"
               :alt="displayName(active)"
+              :title="t('favorite.viewImage')"
+              role="button"
+              tabindex="0"
+              @click="previewImage(active)"
+              @keydown.enter.prevent="previewImage(active)"
             />
 
             <div v-else-if="active.kind === 'merge'" class="space-y-2">
@@ -610,6 +744,65 @@ async function confirmDelete() {
                     <template v-else>{{ mergeItemLine(it) }}</template>
                   </div>
                 </div>
+              </div>
+            </div>
+
+            <!-- 卡片类（待办/投票/群公告）：收藏**详情**按卡片自己的文字形态渲染。
+                 ⚠️ 必须排在下面"文件"的 `v-else` 之前 —— 否则卡片会落到文件分支，
+                 把 JSON 载荷当文件名/后缀显示（用户 2026-09-21：「收藏的卡片收藏详情里不显示」）。 -->
+            <div
+              v-else-if="activeCardText !== null"
+              class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-panel)] p-3"
+            >
+              <div class="flex items-start gap-2">
+                <component
+                  :is="kindIcon(active)"
+                  class="mt-0.5 h-4 w-4 shrink-0 text-[var(--gosslan-text-2)]"
+                  aria-hidden="true"
+                />
+                <div class="min-w-0 flex-1">
+                  <div class="break-words whitespace-pre-wrap text-[13px] leading-relaxed text-[var(--gosslan-text)]">
+                    {{ activeCardText }}
+                  </div>
+                  <!-- 待办的描述（卡片信息补全：之前只渲染了标题） -->
+                  <p
+                    v-if="activeCardDesc"
+                    class="mt-1 whitespace-pre-wrap break-words text-[12px] leading-relaxed text-[var(--gosslan-text-2)]"
+                  >
+                    {{ activeCardDesc }}
+                  </p>
+                  <!-- 投票选项（只读） -->
+                  <ul v-if="activePollOptions.length" class="mt-1.5 space-y-0.5">
+                    <li
+                      v-for="(o, i) in activePollOptions"
+                      :key="i"
+                      class="break-words text-[12px] leading-relaxed text-[var(--gosslan-text-2)]"
+                    >
+                      {{ o }}
+                    </li>
+                  </ul>
+                  <!-- 群任务图片：与聊天里任务卡**同一组件**（按 cid 取字节 + 退避重试）。
+                       用户 2026-09-21：「收藏的详情里群任务图片不显示，你要做就做完整」。 -->
+                  <div v-if="activeCardImages.length" class="mt-2 flex flex-wrap gap-1.5">
+                    <TodoImageThumb
+                      v-for="(img, i) in activeCardImages"
+                      :key="img.sha256"
+                      :image="img"
+                      clickable
+                      @open="openCardImage(i)"
+                    />
+                  </div>
+                </div>
+              </div>
+              <div class="mt-1.5 flex items-center gap-2 text-[11px] text-[var(--gosslan-text-2)]">
+                <span
+                  v-if="activeCardStatus"
+                  class="inline-flex h-5 items-center justify-center rounded-full px-2 font-medium leading-none"
+                  :class="TODO_STATUS_PILL[activeCardStatus]"
+                >
+                  {{ t(TODO_STATUS_LABEL_KEY[activeCardStatus]) }}
+                </span>
+                <span v-else>{{ t(`favorite.cardKind.${active.kind}`) }}</span>
               </div>
             </div>
 
@@ -636,6 +829,7 @@ async function confirmDelete() {
               <span class="whitespace-nowrap">{{ t("favorite.copy") }}</span>
             </button>
             <button
+              v-if="isForwardableKind(active.kind)"
               class="tap-safe flex min-w-14 flex-1 flex-col items-center gap-0.5 rounded-[var(--gosslan-radius-sm)] py-1.5 text-[11px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
               @click="startForward(active)"
             >
@@ -683,7 +877,7 @@ async function confirmDelete() {
           </div>
         </div>
         </Transition>
-        <div v-if="!active" class="hidden flex-1 items-center justify-center text-xs text-[var(--gosslan-text-2)] sm:flex">
+        <div v-if="!active" class="hidden flex-1 items-center justify-center text-xs text-[var(--gosslan-text-2)] desktop:sm:flex">
           {{ t("favorite.pickOne") }}
         </div>
       </div>
@@ -734,16 +928,6 @@ async function confirmDelete() {
         {{ t("favorite.delete") }}
       </button>
     </ContextMenu>
-
-    <!-- 图片查看：整屏点一下就走 -->
-    <button
-      v-if="viewer"
-      class="fixed inset-0 z-[90] flex items-center justify-center bg-black/80"
-      :aria-label="t('common.closeEsc')"
-      @click="viewer = null"
-    >
-      <img :src="viewer" class="max-h-[85vh] max-w-[92vw] object-contain" alt="" />
-    </button>
   </div>
 
   <!-- 转发弹窗：必须是根节点的同级，不能放进页面容器（页面一关会被一起卸载） -->

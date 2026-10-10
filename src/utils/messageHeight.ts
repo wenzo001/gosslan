@@ -3,6 +3,7 @@
 
 import {
   CLAMPED_CODE_BLOCK_HEIGHT,
+  IMAGE_BUBBLE_HEIGHT,
   codeBlockHeight,
   textBubbleHeight,
 } from "@/utils/previewMetrics";
@@ -21,8 +22,6 @@ const ROW_PADDING = 12;
 const NICKNAME_ROW = 18;
 /** 时间分割线（含 py-2） */
 const TIME_DIVIDER = 32;
-/** 图片气泡：max-h-72 */
-const IMAGE_BUBBLE = 288;
 /** 普通文件卡片 */
 const FILE_CARD = 92;
 /** 提示行（系统消息 / 已撤回）：text-xs 行盒 16 + ROW_PADDING 12。 */
@@ -38,8 +37,11 @@ const SYSTEM_ROW = 28;
 const MERGE_CARD = 96;
 /** 群任务卡片（TodoCardBubble）：头部(30) + 指派人行(24) + 底部按钮(38) + 余量。 */
 const TODO_CARD_BASE = 96;
-/** 任务卡片有描述时追加（描述最多 ~2.6 行 ≈ 50，留余量）。 */
-const TODO_CARD_DESC = 58;
+/** 任务卡片有描述时追加：描述预览 3 整行（12px × 行距 1.625 = 19.5）= 58.5，再加 `mt-1` 的 4 ⇒ 62.5，取 64。
+ *  ⚠️ 与 `TodoCardBubble.vue` 那句 `max-h-[calc(3*1.625em)]` **成对**：改渲染行数就得改这里，
+ *  否则就是低估 ⇒ 相邻消息互相遮挡（本文件顶部那条契约说的就是这件事）。
+ *  这一对的实测锁在运行时探针 `scripts/check-ui-runtime.mjs` 的 #116 那条（量矩形，不靠肉眼）。 */
+const TODO_CARD_DESC = 64;
 /** 任务卡片有图片时追加（一行 80px 缩略图 + 间距，留余量）。 */
 const TODO_CARD_IMAGES = 88;
 /**
@@ -94,7 +96,7 @@ function computeBubbleHeight(m: MessageRecord, fontSize: FontSizeKey): number {
     case "code":
       return codeBlockHeight(m.content);
     case "image":
-      return IMAGE_BUBBLE;
+      return IMAGE_BUBBLE_HEIGHT;
     case "file": {
       // 普通文件卡片 92；附件图片 ≤288；附件代码按截断态占位（读文件前预知不了行数）。
       let sub = "file";
@@ -106,7 +108,7 @@ function computeBubbleHeight(m: MessageRecord, fontSize: FontSizeKey): number {
       } catch {
         /* 历史 / 异常内容按普通 file 卡片估 */
       }
-      if (hasPath && sub === "image") return IMAGE_BUBBLE;
+      if (hasPath && sub === "image") return IMAGE_BUBBLE_HEIGHT;
       if (hasPath && sub === "code") return CLAMPED_CODE_BLOCK_HEIGHT;
       return FILE_CARD;
     }

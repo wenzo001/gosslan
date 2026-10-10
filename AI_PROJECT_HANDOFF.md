@@ -15,8 +15,11 @@
 
 ## 0. ⚠️ 时效性声明（2026-09-13 核对，**先读这一节**）
 
-本文主体的快照停在 **v1.0.0（2026-09-08）**，而仓库**实际已经在 `4.2.19`**，
+本文主体的快照停在 **v1.0.0（2026-09-08）**：那时仓库**实际已经在 `4.2.19`**，
 主干是 **`next`** 分支（`main` 停在 v2.1.2，落后 36 个提交）。
+**⚠️ 上面这一句里的四个数都是当天读数、不是现状**（`next` 在本地分支与远端跟踪引用里都已找不着，
+现读 `git branch -a` 看有没有它）。当前版本读 `npm run version:show`，当前分支读
+`git rev-parse --abbrev-ref HEAD`，落后/领先数读 `git rev-list --left-right --count "@{u}..HEAD"`。
 也就是说：**下面 §2 的功能清单、§7 的历史时间线都不是当前全貌**，只能当"早期架构与设计理由"读。
 
 当前状态请以这些为准（按可信度排序）：
@@ -27,7 +30,7 @@
 | 蓝牙（BLE）传输的完整设计与平台边界 | **`docs/adr/0015-ble-transport.md`**（含 §7.7 Android 外设、§7.9 Windows central） |
 | 蓝牙真机排查的过程与判据 | `docs/notes/ble-audit-2026-09-13.md`（架构图 / 根因 / Test A~F） |
 | 多路径选路、中继授权、窗口架构 | `docs/adr/0014`（多路径选路）· `0016`（中继授权）· `0018`（窗口架构）· `0017`（外部线格式） |
-| 版本号怎么升（强制流程） | `docs/VERSIONING.md` + `npm run version:check` |
+| 版本号怎么升（强制流程） | `docs/VERSIONING.md`（CI 把门的是 `check-change-budget.mjs` 判据 4：`Version-Bump` 声明与四个版本清单文件必须一致；`version:check` 是记账口径、**未进 CI**） |
 | UI 规范 | `docs/design-guidelines.md` |
 
 本文仍有价值的部分：§1 定位、§4 核心机制（E2EE 状态机 / 已读回执 / 前端消息管线）、
@@ -119,7 +122,7 @@
 | 公钥同步 | announce / FriendAccept / 好友建链路径自动同步公钥并持久化到 friends 表 |
 | 公钥缺失兜底 | 发送时查 friends → peers → 主动 `who_has` 探测等 1.2s 重试 → 仍缺则报明确错误 |
 | 解密失败兜底 | 收到 `enc1:` 解密失败（缺公钥/公钥已更新）→ 写入系统消息提示，**不静默丢消息** |
-| 设备指纹 | 前缀 `gosslan-`（桌面 machine-uid，移动端 UUID/主机名兜底）；私钥持久化本地 SQLite，重启身份不变 |
+| 设备 ID（界面叫「设备指纹」） | **首启生成一次**：`gosslan-` + hex(SHA256(16 字节随机 ‖ 机器码 ‖ 主机名 ‖ 网卡名))，此后**只认库里持久化值、绝不重新派生**（ADR-0021：派生式 id 在克隆镜像 / 默认主机名下会撞，撞了就是互相顶号 + Hello 密钥冲突硬拒）；私钥同样持久化本地 SQLite |
 | 隐私 | 数据只存本机；SQLite 不存 BLOB（图片/文件落 Cache 目录）；共享目录路径规范化校验 |
 
 ---
@@ -137,7 +140,7 @@ gosslan/
 │   └── build-android.yml    # Android APK（4 ABI）
 ├── package.json             # npm 脚本
 ├── scripts/
-│   ├── version.mjs          # 版本号统一维护（同步 4 处 + CHANGELOG [Unreleased] 落日志）
+│   ├── version.mjs          # 版本号统一维护（同步 5 处版本号 + CHANGELOG [Unreleased] 落日志）
 │   └── android/…            # Android 权限模板（CI 注入）
 ├── docs/
 │   ├── AI_ENGINEERING_INDEX.md  # ★ 约束文档导航 + 文档/代码冲突处理规则
@@ -174,12 +177,11 @@ gosslan/
     ├── commands.rs          # Tauri 命令层（40+ 命令：send_message / delete_conversation / …）
     ├── state.rs             # AppState：identity/db/peers/gossip/group_keys/outbox 等
     ├── db.rs                # SQLite 存储层（SCHEMA 常量 + 全部 CRUD + 事务）
-    ├── device.rs            # 设备指纹（gosslan- 前缀；桌面 machine-uid，移动端兜底）
+    ├── device.rs            # 设备 ID 生成（gosslan- 前缀；随机数主导 + 设备属性混合，见 ADR-0021）
     ├── crypto.rs            # ★ E2EE 原语：Identity / shared_secret / seal / open / 签名验签
     ├── protocol.rs          # 线格式：UDP 包 / TCP 帧 / Message 枚举 / GossipEnvelope
     ├── gossip_engine.rs     # Bloom+LRU 去重 / fanout / 信封构建与验签
     ├── file_relay.rs     # 大文件切片 + 并行分发 + 乱序重组
-    ├── schema.sql           # 建表脚本（与 db.rs SCHEMA 保持一致，文档用）
     ├── tray.rs              # 桌面托盘（#[cfg(desktop)] 门控；CloseRequested→隐藏）
     ├── network/
     │   ├── mod.rs           # 网络启动/停止
@@ -312,7 +314,7 @@ gosslan/
 
 ## 6. 测试与验证口径
 
-| 层 | 命令 | 现状 |
+| 层 | 命令 | 当时读数（v1.0.0 · 2026-09-08，**今天不作数**） |
 |---|---|---|
 | 前端纯函数 | `npm test`（node --test，需 Node ≥22） | 22/22 |
 | 前端类型+构建 | `npm run build`（vue-tsc + vite build） | 通过 |
@@ -321,6 +323,12 @@ gosslan/
 | 协议级 E2E | `src-tauri/examples/e2e_peer.rs`（无 GUI 直连真实实例，15+ 断言） | 手动跑 |
 | 全功能 dev 验证 | `scripts/e2e-dev.sh`（单机双实例，29 项断言） | 手动跑 |
 | 桌面冒烟 | `npx tauri build --debug` → 启动 .app 验证托盘/启动日志 | 手动跑 |
+
+**要看今天的数就跑这三把现成量具，别把读数抄回本表**（抄回来就是这张表当年的坏法）：
+
+- 前端测试文件数 / Rust 测试条数：`node scripts/check-test-manifest.mjs` —— 它自己打印"磁盘 N 个文件全部已登记"与"Rust 测试清单：基线 N 条全部在跑"。
+- 跑起来的实际通过数：`cd src-tauri && cargo test --lib` 末行的 `N passed`（⚠️ 单跑 `cargo test <过滤词>` 时过滤打空照样退 0，`filtered out` 那一半必须一起看，否则"没跑"会读成"跑过且绿"）。
+- 协议级 E2E 的断言条数：`e2e_peer` 跑完自己打印「E2E 验证结果」那块 —— 条数在那块里，不在本文。
 
 Android 交叉编译检查（无需 Gradle，快速验证代码能否过 Android 编译）：
 
@@ -464,4 +472,4 @@ CI：push `main` / push `v*` tag / 手动触发。tag 额外发布 Release。
 | `CHANGELOG.md` | 全部版本历史（每版 Added/Fixed/Changed 明细） |
 | `docs/adr/` | **架构决策记录**：协议版本化 / 状态机边界 / Rust-TS 契约 / 故障注入测试 |
 | `docs/templates/` | `BUG_FIX.md`（修复报告模板）、`ADR.md`（决策记录模板） |
-| `src-tauri/src/schema.sql` | 数据库 Schema（与 db.rs SCHEMA 一致） |
+| 表结构真源 | **只有 `src-tauri/src/db.rs` 的 `SCHEMA` 常量这一份**（另有一份 `content/store.rs::ensure_schema` 建的表）。原先那份手写 `schema.sql` 已于 2026-09-26 退役：它自称与 `db.rs` 一致而实测表名集合不等，且全仓没有任何代码读它 ⇒ 留着一份"看起来是事实源其实没人核对"的 DDL 比没有更坏 |

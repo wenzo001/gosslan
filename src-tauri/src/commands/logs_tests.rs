@@ -1,6 +1,7 @@
 // 职责边界：
 // - logs.rs 的源码守卫测试
 // - 辅助窗口几何不变式（fit_inside_main / centered）
+// - 跨窗口预览投递的校验（validate_preview 的三条可寻址来源 + 上限）
 #[cfg(test)]
 mod tests {
     use super::{friend_is_online, FRIEND_ONLINE_GRACE_MS};
@@ -15,11 +16,11 @@ mod tests {
     fn aux_window_fits_inside_the_main_window_and_is_centered() {
         use super::{fit_aux_window, AUX_WINDOW_MARGIN};
         // 四组真实参数：设置 780×600（最小 560×420）、日志 760×560（最小 420×320）、
-        // 群任务 560×620（最小 360×420）、外链 1000×720（最小 420×320）。
+        // 群任务 780×620（最小 360×420）、外链 1000×720（最小 420×320）。
         let cases = [
             ((780.0, 600.0), (560.0, 420.0)),
             ((760.0, 560.0), (420.0, 320.0)),
-            ((560.0, 620.0), (360.0, 420.0)),
+            ((780.0, 620.0), (360.0, 420.0)),
             ((1000.0, 720.0), (420.0, 320.0)),
         ];
         // 主窗口尺寸（物理像素）：默认 1000×680@100%、拉小、很小、放大、以及 125%/150% 缩放。
@@ -100,6 +101,135 @@ mod tests {
                 600 - 2 * (AUX_WINDOW_MARGIN * 2.0) as u32
             )
         );
+    }
+
+    /// 独立窗口**永远不许有一截掉在屏幕外**，且只有预览按显示器居中（用户 2026-10-09）。
+    ///
+    /// 上面那条不变式管的是**创建那一刻**（子窗口不比主窗口大）。这一条管的是它管不到的
+    /// 那半：预览窗口常驻、复用时刻意**不重算尺寸**（留住用户自己拉过的大小），于是
+    /// "后来把主窗口拉小了 / 把预览拉大了" 之后，按主窗口居中就会顶出屏幕边缘，
+    /// 而这几扇都是无边框窗口 —— 掉出去的那一截没有把手能拖回来。
+    #[cfg(desktop)]
+    #[test]
+    fn aux_windows_are_kept_inside_the_monitor_work_area() {
+        use super::{
+            aux_centers_on_monitor, centered_in_rect, clamp_pos_into_rect, fit_aux_window,
+        };
+        // 主屏工作区 1512×863，顶部让给菜单栏 ⇒ 左上角 y 不是 0 而是 37
+        let screen = (0i32, 37i32, 1512u32, 863u32);
+
+        // ① 预览按屏居中：四边留边相等，且用的是工作区而不是整屏（不许压住菜单栏）
+        let (cx, cy) = centered_in_rect(screen, (1120, 820));
+        assert_eq!(
+            (cx - screen.0, cy - screen.1),
+            ((1512 - 1120) / 2, (863 - 820) / 2),
+            "预览必须在主屏工作区内四边等距居中"
+        );
+        assert!(cy >= screen.1, "居中后仍不许压到菜单栏上面去");
+
+        // ② 复现用户那一屏：主窗口被拖到屏幕顶上（甚至顶出屏幕），预览维持原来的大尺寸。
+        let main_pos = (600i32, -120i32);
+        let g = fit_aux_window((700, 400), main_pos, 1.0, (1120.0, 820.0), (480.0, 360.0));
+        let raw = g.centered_pos((1120, 820)); // 旧摆法：按主窗口居中，尺寸用真实外框
+        assert!(
+            raw.1 < screen.1,
+            "这条用例的前提就是「旧摆法确实顶出了工作区上缘」；前提不成立判据就空转了"
+        );
+        let fixed = clamp_pos_into_rect(raw, (1120, 820), screen);
+        assert!(
+            fixed.0 >= screen.0
+                && fixed.1 >= screen.1
+                && fixed.0 + 1120 <= screen.0 + 1512
+                && fixed.1 + 820 <= screen.1 + 863,
+            "钳完必须整扇落在工作区内，实际 {fixed:?}"
+        );
+        // 只越界一个轴 ⇒ 另一个轴不许跟着动（否则"修一个偏移"会变成窗口横向也跳一下）
+        assert_eq!(fixed.0, raw.0, "水平本来就在屏内，不该被挪");
+
+        // ③ 窗口比那块屏还大 ⇒ 贴左上角，且**不许 panic**（clamp 在 lo > hi 时会 panic）
+        let tiny = (0i32, 0i32, 800u32, 600u32);
+        assert_eq!(clamp_pos_into_rect((5000, 5000), (1120, 820), tiny), (0, 0));
+        assert_eq!(centered_in_rect((100, 100, 500, 500), (600, 600)), (100, 100));
+
+        // ④ 左侧副屏（负坐标）同样成立：边界是那块屏自己的，不是"距原点多远"。
+        // 该屏 x ∈ [-1920, 0] ⇒ 1120 宽的窗最右只能到 0 - 1120 = -1120。
+        let left = (-1920i32, 0i32, 1920u32, 1080u32);
+        assert_eq!(clamp_pos_into_rect((-5000, -5000), (1120, 820), left), (-1920, 0));
+        assert_eq!(clamp_pos_into_rect((9999, 9999), (1120, 820), left), (-1120, 260));
+
+        // ⑤ 已经在工作区里 ⇒ 一字不动（防"钳制成把每扇窗口都硬拽到左上角"）
+        assert_eq!(clamp_pos_into_rect((196, 58), (1120, 820), screen), (196, 58));
+
+        // ⑥ 按屏居中**只给预览**，另外四扇仍以主窗口为参照物（2026-09-16 那条口径不许被顺带改掉）
+        assert!(aux_centers_on_monitor(crate::WINDOW_PREVIEW));
+        for label in [
+            crate::WINDOW_SETTINGS,
+            crate::WINDOW_LOGS,
+            crate::WINDOW_TASKS,
+            crate::WINDOW_LINK,
+            crate::WINDOW_MAIN,
+        ] {
+            assert!(!aux_centers_on_monitor(label), "{label} 不该按显示器居中");
+        }
+    }
+
+    /// 上面那条只证明**算得对**；这一条证明 `recenter_aux_window` 真的去用了它。
+    ///
+    /// 为什么单独钉：注入变异时把 `clamp_pos_into_rect(base, outer, r)` 整段换成 `base`，
+    /// 上面那条判据**全绿** —— 因为它测的是那两个纯函数本身，而坏掉的是"谁调它们"。
+    /// 这正是本仓反复出现的那类缺口：判据读了自己新写的函数，没读被测的那一段。
+    /// 判的是接线而不是观感（同 `lib_window_tests.rs` 里"每个 ensure_* 体必须含
+    /// `apply_aux_geometry(`"那一条的做法）。
+    #[cfg(desktop)]
+    #[test]
+    fn recenter_aux_window_actually_uses_the_placement_rules() {
+        let src = include_str!("logs.rs");
+        let start = src
+            .find("fn recenter_aux_window")
+            .expect("recenter_aux_window 必须还在（改名了就把这条一起改掉）");
+        let body = &src[start..start + src[start..].find("\n}\n").expect("函数收尾") + 3];
+        for call in [
+            "aux_centers_on_monitor(",   // 谁按屏居中、谁按主窗口居中，得由它说了算
+            "centered_in_rect(",         // 预览那一支
+            "clamp_pos_into_rect(",      // 最后一道"不许掉出屏幕"
+            "aux_anchor_rect(",          // 参照物是主窗口那块屏
+            "geo.centered_pos(",         // 另外四扇仍以主窗口为参照（2026-09-16 的口径）
+        ] {
+            assert!(
+                body.contains(call),
+                "`recenter_aux_window` 不再调用 {call} ⇒ 摆位规则被摘掉，而纯计算那条判据不会红"
+            );
+        }
+        // 反空转：切片必须真的只切到这一个函数体，而不是整个文件尾部
+        // （下一个函数是 `open_log_window`，它出现在切片里就说明收尾锚点找错了）
+        assert!(
+            !body.contains("open_log_window"),
+            "切片吃进了后面的函数 ⇒ 上面五条在任何实现下都恒真"
+        );
+        assert!(body.contains("set_position"), "切片没吃到函数体");
+    }
+
+    /// 还原"用户上次拉的尺寸"时的钳制（配合 `restore_aux_window_size`）。
+    ///
+    /// 用户 2026-09-21：「任务新窗口也太大了吧，另外，这个窗口都没记住用户的尺寸吗？」
+    /// 这两句是同一处逻辑的两面：还原得太宽松 ⇒ 状态文件里的历史大尺寸把窗口顶回去；
+    /// 不还原 ⇒ 用户拉过的大小白拉。所以判据是**双向**的，缺一条都会退化成用户报过的毛病。
+    #[cfg(desktop)]
+    #[test]
+    fn restored_aux_window_size_is_clamped_between_min_and_design() {
+        use super::clamp_aux_size;
+        let min = (360, 420);
+        let design = (780, 620);
+        // 用户拉小过 ⇒ 记住（这是"记住尺寸"的正面用例；之前的行为是把它丢回设计尺寸）
+        assert_eq!(clamp_aux_size((600, 500), min, design), (600, 500));
+        // 用户拉大过 / 老版本落过更大的盘 ⇒ 夹回设计尺寸
+        assert_eq!(clamp_aux_size((1080, 780), min, design), design);
+        // 只一边越界 ⇒ 只夹那一边（不要把没越界的一边也拖走）
+        assert_eq!(clamp_aux_size((1080, 500), min, design), (780, 500));
+        // 比最小还小 ⇒ 抬到最小（否则系统会把窗口顶回去，实际尺寸与状态对不上）
+        assert_eq!(clamp_aux_size((100, 100), min, design), min);
+        // 防御：min > max（几何不变式被违反）时不能 panic —— 窗口打不开比尺寸不合意严重得多
+        assert_eq!(clamp_aux_size((500, 500), (900, 900), (780, 620)), (900, 900));
     }
 
     /// `generate_handler!` 里列出的命令在**移动端也必须存在**。
@@ -712,6 +842,9 @@ mod tests {
             images: vec![],
             archived: false,
             done_at: None,
+            number: 0,
+            priority: "normal".to_string(),
+            category: "task".to_string(),
         };
         let insert = |msg_id: &str, seq: i64, p: &TodoPayload| {
             conn.execute(
@@ -739,8 +872,109 @@ mod tests {
         );
     }
 
-    /// 任务改动的鉴权判据（用户 2026-09-17 口径）：
-    /// 创建者/群主/被指派人可改指派人；创建者/群主可改标题/删除；创建者/被指派人可改状态。
+    /// 「线上**没带**这一格」不等于「就是这一格」：`4.31.14` 之前的载荷里根本没有
+    /// `priority` / `category` / `number` 三个键，而 `serde(default)` 会把"没带"读成默认值 ⇒
+    /// 老对端改一次状态就把这三格抹平（类型回「普通任务」、优先级回「常规」、编号变 0）。
+    /// 而 `latest_todo_def` 是**服务端判权的唯一输入**（三条窄道逐字比对类型与优先级）
+    /// ⇒ 抹平之后连"谁能改这条任务"都跟着错，且界面上完全看不出来。
+    ///
+    /// 规矩与前端 `src/utils/todos.ts::carryAbsentTodoFields` 是同一条（两处分头实现 ⇒ 改动同批改两边）。
+    #[test]
+    fn latest_todo_def_carries_fields_the_newest_payload_never_stated() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(crate::db::SCHEMA).unwrap();
+        let conv = "group:g1";
+        let insert = |msg_id: &str, kind: &str, seq: i64, content: &str| {
+            conn.execute(
+                "INSERT INTO messages (msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status) \
+                 VALUES (?1, ?2, 'alice', 'bob', ?3, ?4, 0, ?5, 'sent')",
+                rusqlite::params![msg_id, conv, kind, content, seq],
+            )
+            .unwrap();
+        };
+        // 创建：新版客户端发的，三格都说了
+        insert(
+            "m1",
+            "todo",
+            1,
+            r#"{"todo_id":"t1","title":"旧","assignees":["alice"],"status":"todo","creator":"alice",
+               "deleted":false,"description":"","images":[],"archived":false,
+               "priority":"high","category":"requirement","number":7,"done_at":null}"#,
+        );
+        // 老对端的一次改状态：这三个键**不存在**（不是 null，也不是默认值）
+        insert(
+            "m2",
+            "todo_update",
+            2,
+            r#"{"todo_id":"t1","title":"旧","assignees":["alice","bob"],"status":"done","creator":"alice",
+               "deleted":false,"description":"","images":[],"archived":false,"done_at":100}"#,
+        );
+        let def = super::latest_todo_def(&conn, conv, "t1").expect("取不到这条任务的定义");
+        assert_eq!(def.status, "done", "它说了的状态照常生效");
+        assert_eq!(
+            def.assignees,
+            vec!["alice".to_string(), "bob".to_string()],
+            "它显式带的键照常覆盖"
+        );
+        assert_eq!(def.priority, "high", "没带的这一格不许被抹回「常规」");
+        assert_eq!(def.category, "requirement", "没带的类型不许被抹回「普通任务」");
+        assert_eq!(def.number, 7, "创建那条说过的号是绝对坐标");
+
+        // 一份把号写成 0 的更新（老客户端从库里整份重建载荷时就是这个形状）
+        insert(
+            "m3",
+            "todo_update",
+            3,
+            r#"{"todo_id":"t1","title":"旧","assignees":["alice"],"status":"doing","creator":"alice",
+               "deleted":false,"description":"","images":[],"archived":false,"number":0}"#,
+        );
+        let def2 = super::latest_todo_def(&conn, conv, "t1").unwrap();
+        assert_eq!(def2.status, "doing", "最新一份的状态仍然是它说的");
+        assert_eq!(def2.number, 7, "更新里的 0 不许把固定编号抹掉");
+
+        // 反向：显式说了新值必须生效 —— 沿用只针对"没说"的那几格
+        insert(
+            "m4",
+            "todo_update",
+            4,
+            r#"{"todo_id":"t1","title":"旧","assignees":["alice"],"status":"done","creator":"alice",
+               "deleted":false,"description":"","images":[],"archived":false,
+               "priority":"low","category":"bug"}"#,
+        );
+        let def3 = super::latest_todo_def(&conn, conv, "t1").unwrap();
+        assert_eq!(def3.priority, "low", "说了就覆盖：这条规矩不许把正常改动也挡住");
+        assert_eq!(def3.category, "bug");
+    }
+
+    /// 任务改动的鉴权判据 —— 两档 + 「只动归档位」的放宽档（口径来自用户 2026-09-17、
+    /// 2026-09-20 与 2026-09-24）：
+    /// · 结构（改标题 / 删除）：创建者 **或** 群主
+    /// · 其余（描述 / 图片 / 指派人 / 状态）：创建者 **或** 群主 **或** 当前被指派人
+    /// · 归档：任何**群成员**都可以（用户 2026-09-24「群里所有人都可以归档」）
+    /// 旧载荷（**没有** `category` 这一格）必须解析成「普通任务」，且重新序列化时要带上它。
+    ///
+    /// 反面钉的是缺省形状：若这一格是 `Option`，前端读出来是 undefined ⇒ 界面上那一格空白，
+    /// 而对端已经存了一条"有类型"的任务 —— 同一个状态在两端两种形状。
+    #[test]
+    fn legacy_todo_payload_without_category_still_parses() {
+        use crate::protocol::{default_todo_category, todo_category_is_valid, TodoPayload};
+        let old = r#"{"todo_id":"t1","title":"旧任务","assignees":["alice"],"status":"todo",
+            "creator":"alice","deleted":false,"description":"","images":[],"archived":false,
+            "number":3,"priority":"normal","done_at":null}"#;
+        let p: TodoPayload = serde_json::from_str(old).expect("旧载荷必须仍能解析");
+        assert_eq!(p.category, default_todo_category());
+        assert_eq!(p.category, "task", "历史任务读出来是「普通任务」，不是「没类型」");
+        assert_eq!(p.number, 3, "顺带钉这行 JSON 真的解析到了那条任务（防夹具本身空转）");
+        assert!(todo_category_is_valid("requirement"));
+        assert!(!todo_category_is_valid("story"), "未知类型必须判非法（命令层据此拒收）");
+        let back = serde_json::to_string(&p).unwrap();
+        assert!(
+            back.contains("\"category\":\"task\""),
+            "重新发出时要带上这一格，不能靠对端猜"
+        );
+    }
+
+    /// 外加一条自洽检查：无关成员两档都不行（放宽群主权限不该顺带放进第三人）。
     #[test]
     fn todo_update_permission_matrix() {
         use crate::protocol::TodoPayload;
@@ -755,35 +989,450 @@ mod tests {
             images: vec![],
             archived: false,
             done_at: None,
+            number: 0,
+            priority: "normal".to_string(),
+            category: "task".to_string(),
         };
-        // 参数顺序：(def, actor, group_creator, edits_assignees, edits_structure)
-        // 创建者 alice：改状态 / 改指派人 / 改结构 全可以
-        assert!(super::may_update_todo(&def, "alice", "owner", false, false));
-        assert!(super::may_update_todo(&def, "alice", "owner", true, false));
-        assert!(super::may_update_todo(&def, "alice", "owner", false, true));
-        assert!(super::may_update_todo(&def, "alice", "owner", true, true));
-        // 被指派人 bob：能改状态、能改指派人；不能改标题/删除（结构）
-        assert!(super::may_update_todo(&def, "bob", "owner", false, false));
-        assert!(super::may_update_todo(&def, "bob", "owner", true, false));
+        // 参数顺序：(def, actor, group_creator, edits_structure)
+        // 档位只有两档（结构 = 改标题/删除；其余 = 描述/图片/指派人/状态/归档），
+        // 所以每条断言都是**不同的行为** —— 旧矩阵里那些只换 `edits_assignees` 的行
+        // 判的是同一件事（那个入参根本不参与判权，v4.23.1 已删）。
+        // 创建者 alice：两档都可以
+        assert!(super::may_update_todo(&def, "alice", "owner", false));
+        assert!(super::may_update_todo(&def, "alice", "owner", true));
+        // 被指派人 bob：能改状态 / 指派人 / 描述；不能改标题 / 删除。
+        // 后一条就是"同时改指派人 + 标题"必须被拒的形状（旧实现先判指派人会放行它）。
+        assert!(super::may_update_todo(&def, "bob", "owner", false));
         assert!(
-            !super::may_update_todo(&def, "bob", "owner", false, true),
+            !super::may_update_todo(&def, "bob", "owner", true),
             "被指派人不得改标题 / 删除任务"
         );
-        // bob 同时改「指派人 + 标题」：结构部分被拒
-        assert!(!super::may_update_todo(&def, "bob", "owner", true, true));
-        // 群主 owner：改什么都行 —— 含「仅改状态」（用户 2026-09-20「群主不能编辑群任务」：
-        // 此前描述/图片/状态被归到「被指派人」那档，群主改它们会被拒）
-        assert!(super::may_update_todo(&def, "owner", "owner", false, true));
-        assert!(super::may_update_todo(&def, "owner", "owner", true, false));
-        assert!(super::may_update_todo(&def, "owner", "owner", false, false));
-        assert!(super::may_update_todo(&def, "owner", "owner", true, true));
-        // 无关成员 carol：什么都不行
-        assert!(!super::may_update_todo(
-            &def, "carol", "owner", false, false
-        ));
-        assert!(!super::may_update_todo(&def, "carol", "owner", true, false));
-        assert!(!super::may_update_todo(&def, "carol", "owner", false, true));
-        assert!(!super::may_update_todo(&def, "carol", "owner", true, true));
+        // 群主 owner：两档都可以（用户 2026-09-20「群主不能编辑群任务」）
+        assert!(super::may_update_todo(&def, "owner", "owner", false));
+        assert!(super::may_update_todo(&def, "owner", "owner", true));
+        // 无关成员 carol：两档都不行（放宽群主权限**没有**顺带放进第三人）
+        assert!(!super::may_update_todo(&def, "carol", "owner", false));
+        assert!(!super::may_update_todo(&def, "carol", "owner", true));
+        // 自洽检查：actor 恰好等于群主时才算群主，别人冒充群主无效
+        assert!(super::may_update_todo(&def, "dave", "dave", true));
+        assert!(!super::may_update_todo(&def, "carol", "dave", true));
+    }
+
+    /// 「成员窄档」：归档 与 还原（用户 2026-09-24 与同日追加
+    /// 「归档和被归档的数据还原，任何人都可以操作，其他权限不变」）。
+    ///
+    /// 判权只有一行（`两档 || (是成员 && (只动归档位 || 只还原))`），值得钉的是
+    /// **两条窄档各自的入口**：口子一旦被"顺带改一点别的"挤进来，等于把前两档全部作废。
+    /// 所以「改标题 + 归档」「改状态 + 归档」「删除 + 归档」「值没真的翻转」都必须判否；
+    /// 还原还必须是**单向**的 `done → todo` —— 反过来就等于让任何成员替别人宣布"干完了"。
+    #[test]
+    fn todo_member_lanes_are_narrow_and_member_only() {
+        use crate::protocol::{TodoImage, TodoPayload};
+
+        /// 一次"改动请求"的 owned 版本（测试夹具）：从库里最新定义抄一份，再覆盖
+        /// 调用关心的那一两位。
+        ///
+        /// 为什么不用闭包产 `TodoEdit`：`TodoEdit` 是**借用**形状，闭包要么统一
+        /// 借用 `def.images`（那就永远测不到"图片被动过"），要么同时捕获 `def` 的数组
+        /// 与用例自己的数组（两个生命周期，借用检查器不让 —— 第一版就是这么撞墙的）。
+        /// owned 夹具 + 一个 `edit(&r)` 借出去，每个用例各持自己的请求，读起来也直白。
+        struct Req {
+            deleted: bool,
+            title: String,
+            status: String,
+            assignees: Vec<String>,
+            description: String,
+            images: Vec<TodoImage>,
+            archived: Option<bool>,
+            priority: String,
+            category: String,
+        }
+        fn req_of(def: &TodoPayload) -> Req {
+            Req {
+                deleted: def.deleted,
+                title: def.title.clone(),
+                status: def.status.clone(),
+                assignees: def.assignees.clone(),
+                description: def.description.clone(),
+                images: def.images.clone(),
+                archived: None,
+                priority: def.priority.clone(),
+                category: def.category.clone(),
+            }
+        }
+        fn edit(r: &Req) -> super::TodoEdit<'_> {
+            super::TodoEdit {
+                deleted: r.deleted,
+                title: &r.title,
+                status: &r.status,
+                assignees: &r.assignees,
+                description: &r.description,
+                images: &r.images,
+                archived: r.archived,
+                priority: &r.priority,
+                category: &r.category,
+            }
+        }
+        let def = TodoPayload {
+            todo_id: "t".into(),
+            title: "x".into(),
+            assignees: vec!["alice".into()],
+            status: "done".into(),
+            creator: "alice".into(),
+            deleted: false,
+            description: "d".into(),
+            images: vec![],
+            archived: false,
+            done_at: Some(1),
+            number: 0,
+            priority: "normal".to_string(),
+            category: "task".to_string(),
+        };
+        // 成员窄档只对"什么别的都没动"的请求成立，所以每个否定用例都从**已满足**的那一位
+        // 出发再加一处改动 —— 否则测的是另一个判据，不是"夹带"这一条。
+        let archive_req = |def: &TodoPayload| {
+            let mut r = req_of(def);
+            r.archived = Some(!def.archived);
+            r
+        };
+
+        // ---- 窄档一：只动归档位 ----
+        assert!(
+            super::archive_only_change(&def, &edit(&archive_req(&def))),
+            "纯归档要放行"
+        );
+        let archived_def = TodoPayload { archived: true, ..def.clone() };
+        assert!(
+            super::archive_only_change(&archived_def, &edit(&archive_req(&archived_def))),
+            "取消归档走同一条口子（库里 archived=true ⇒ 翻动就是 false）"
+        );
+        let mut r = archive_req(&def);
+        r.title = "改过的标题".into();
+        assert!(
+            !super::archive_only_change(&def, &edit(&r)),
+            "夹带改标题不许走这条口子"
+        );
+        let mut r = archive_req(&def);
+        r.status = "todo".into();
+        assert!(
+            !super::archive_only_change(&def, &edit(&r)),
+            "夹带改状态不许走这条口子（而且归档与还原本来就互斥）"
+        );
+        let mut r = archive_req(&def);
+        r.deleted = true;
+        assert!(
+            !super::archive_only_change(&def, &edit(&r)),
+            "夹带删除不许走这条口子"
+        );
+        let mut r = archive_req(&def);
+        r.images = vec![TodoImage {
+            id: "b".into(),
+            name: "b".into(),
+            size: 2,
+            sha256: "b".into(),
+            subtype: "image".into(),
+        }];
+        assert!(
+            !super::archive_only_change(&def, &edit(&r)),
+            "夹带加图片不许走这条口子"
+        );
+        let mut r = archive_req(&def);
+        r.category = "bug".into();
+        assert!(
+            !super::archive_only_change(&def, &edit(&r)),
+            "夹带改类型不许走归档这条口子（窄档对整个群放行，类型是内容改动）"
+        );
+        let mut r = archive_req(&def);
+        r.priority = "high".into();
+        assert!(
+            !super::archive_only_change(&def, &edit(&r)),
+            "夹带改优先级不许走归档这条口子"
+        );
+        let mut r = req_of(&def);
+        r.archived = Some(false);
+        assert!(
+            !super::archive_only_change(&def, &edit(&r)),
+            "库里本来就没归档 ⇒ 传相同值 = 什么都没改，空请求不进窄档"
+        );
+
+        // ---- 窄档三：认领一条「需求」= 只把自己加进名单 ----
+        let req_def = TodoPayload {
+            category: "requirement".into(),
+            status: "todo".into(),
+            ..def.clone()
+        };
+        let claim = |def: &TodoPayload, who: &str, extra: &str| {
+            let mut r = req_of(def);
+            match extra {
+                "title" => r.title = "顺手改的标题".into(),
+                "other" => r.assignees = vec!["alice".into(), "dave".into()],
+                "none" => {}
+                _ => r.assignees = vec!["alice".into(), who.into()],
+            }
+            r
+        };
+        assert!(
+            super::claim_only_change(&req_def, "carol", &edit(&claim(&req_def, "carol", "self"))),
+            "成员把自己加进一条未归档需求 = 认领，放行"
+        );
+        // 这条必须**接进总判权**，否则判据只活在自己的单测里（本仓撞过好几次"点名式判据=半个守卫"）
+        assert!(
+            super::may_change_todo(
+                &req_def,
+                "carol",
+                "someone_else",
+                false,
+                super::MemberLane {
+                    archive_only: false,
+                    reopen_only: false,
+                    claim_only: true,
+                    is_member: true,
+                },
+            ),
+            "认领档亮起来时，非创建者/非群主的成员必须真的过得去"
+        );
+        assert!(
+            !super::may_change_todo(
+                &req_def,
+                "carol",
+                "someone_else",
+                false,
+                super::MemberLane {
+                    archive_only: false,
+                    reopen_only: false,
+                    claim_only: true,
+                    is_member: false,
+                },
+            ),
+            "不是本群成员 ⇒ 认领档亮着也不许过（认领是群内协作动作）"
+        );
+        assert!(
+            !super::claim_only_change(&def, "carol", &edit(&claim(&def, "carol", "self"))),
+            "普通任务不许认领：否则任何人都能把自己塞进别人的任务再宣布它完成"
+        );
+        let bug_def = TodoPayload { category: "bug".into(), status: "todo".into(), ..def.clone() };
+        assert!(
+            !super::claim_only_change(&bug_def, "carol", &edit(&claim(&bug_def, "carol", "self"))),
+            "缺陷也不许认领（只开需求这一档）"
+        );
+        assert!(
+            !super::claim_only_change(
+                &req_def,
+                "carol",
+                &edit(&claim(&req_def, "carol", "title")),
+            ),
+            "夹带改标题不许走认领这条口子"
+        );
+        assert!(
+            !super::claim_only_change(&req_def, "carol", &edit(&claim(&req_def, "dave", "other"))),
+            "往名单里加**别人**不是认领（那要创建者/群主的权限）"
+        );
+        assert!(
+            !super::claim_only_change(&req_def, "alice", &edit(&claim(&req_def, "alice", "none"))),
+            "本来就在名单里 ⇒ 名单没变，不是认领（也不该由这条窄档放行）"
+        );
+        let mut r = claim(&req_def, "carol", "self");
+        r.archived = Some(true);
+        assert!(
+            !super::claim_only_change(&req_def, "carol", &edit(&r)),
+            "夹带归档不许走认领这条口子（那是归档那一档的事）"
+        );
+        let archived_req = TodoPayload {
+            category: "requirement".into(),
+            status: "todo".into(),
+            archived: true,
+            ..def.clone()
+        };
+        assert!(
+            !super::claim_only_change(
+                &archived_req,
+                "carol",
+                &edit(&claim(&archived_req, "carol", "self")),
+            ),
+            "已归档的需求不许认领（界面上那条按钮也不该出现）"
+        );
+
+        // ---- 窄档二：只把「完成」退回「待办」= 还原 ----
+        let mut r = req_of(&def);
+        r.status = "todo".into();
+        assert!(
+            super::reopen_only_change(&def, &edit(&r)),
+            "纯还原要放行（归档位与 done_at 由 resolve_done_archive 自动清）"
+        );
+        let mut r = req_of(&def);
+        r.status = "todo".into();
+        r.priority = "high".into();
+        assert!(
+            !super::reopen_only_change(&def, &edit(&r)),
+            "夹带改优先级不许走还原这条口子（本轮补钉：以前只比了标题/描述/图/指派人）"
+        );
+        let mut r = req_of(&def);
+        r.status = "todo".into();
+        r.category = "requirement".into();
+        assert!(
+            !super::reopen_only_change(&def, &edit(&r)),
+            "夹带改类型不许走还原这条口子"
+        );
+        assert!(
+            !super::reopen_only_change(&def, &edit(&req_of(&def))),
+            "什么都没改的请求不是还原"
+        );
+        let r = req_of(&archived_def);
+        assert!(
+            !super::reopen_only_change(&archived_def, &edit(&r)),
+            "库里不是完成态 ⇒ 这不是还原"
+        );
+        let mut r = req_of(&def);
+        r.status = "doing".into();
+        assert!(
+            !super::reopen_only_change(&def, &edit(&r)),
+            "还原只认 done → todo 这一个方向（退回「进行中」也算改状态）"
+        );
+        let mut r = req_of(&def);
+        r.status = "todo".into();
+        r.description = "改过的描述".into();
+        assert!(
+            !super::reopen_only_change(&def, &edit(&r)),
+            "夹带改描述不许走还原这条口子"
+        );
+
+        // ---- 判权：窄档只对本群成员生效，且不外溢（归档/还原这两档；认领那一档的
+        //      成员判定在上一段自己单测里钉，这里 claim_only 一律给 false 以免混进同一张表）----
+        let may = |archive_only: bool, reopen_only: bool, is_member: bool| {
+            super::may_change_todo(
+                &def,
+                "carol",
+                "owner",
+                false,
+                super::MemberLane { archive_only, reopen_only, claim_only: false, is_member },
+            )
+        };
+        assert!(may(true, false, true), "群成员只动归档位 ⇒ 可以");
+        assert!(may(false, true, true), "群成员只还原 ⇒ 可以");
+        assert!(!may(true, false, false), "不是本群成员 ⇒ 归档也不给");
+        assert!(!may(false, true, false), "不是本群成员 ⇒ 还原也不给");
+        assert!(
+            !may(false, false, true),
+            "普通成员改状态 / 描述 / 指派人仍然不行（放宽只覆盖那两位）"
+        );
+        assert!(
+            !super::may_change_todo(
+                &def,
+                "carol",
+                "owner",
+                true,
+                super::MemberLane { archive_only: false, reopen_only: false, claim_only: false, is_member: true }
+            ),
+            "结构改动（改标题 / 删除）不开给普通成员"
+        );
+
+        // 判权对了但**没接上命令**，这两条窄档就等于没做（而且没有任何测试会红）：
+        // `update_group_todo` 必须把两个判据都算进 `MemberLane` 再交给 `may_change_todo`。
+        // 只能钉接线（与本仓其余"判据有单测、接线有守卫"的分工一致）—— 误接回
+        // `may_update_todo` 不会有编译错误（函数还在、签名也对得上），
+        // 表现只是"所有人都归档不了 / 还原不了"。
+        // 就地 flatten（`lib.rs` 测试模块里那个 `code_flat` 是它的私有函数，跨不到这里）：
+        // 守卫搜的是"调用形状"，而 `cargo fmt` 会把多参调用拆成一行一个 ⇒ 不拆就搜不到。
+        let cmd: String = include_str!("group_files.rs")
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        let at = cmd
+            .find("if!may_change_todo(")
+            .expect("鉴权调用点找不到（被改写了？守卫要同步）");
+        // 窗口取到闭合的 `){` 为止，**不数固定字节**：数长度会随 fmt 漂移。
+        let win_end = cmd[at..]
+            .find("){")
+            .map(|k| at + k + 2)
+            .expect("找不到鉴权 if 的闭合");
+        assert!(
+            cmd[at..win_end].contains("lane,"),
+            "总判权必须收到 MemberLane，否则两条窄档都不生效"
+        );
+        let lane_at = cmd
+            .find("letlane=MemberLane{")
+            .expect("MemberLane 构造点找不到");
+        // 同样按"闭合标记"切，不数固定字节数：flatten 之后的串里全是中文注释，
+        // 按字节切法会切进多字节字符中间直接 panic（这条实测踩过一次）。
+        let lane_end = cmd[lane_at..]
+            .find("};")
+            .map(|k| lane_at + k + 2)
+            .expect("找不到 MemberLane 字面量的闭合");
+        let lane_win = &cmd[lane_at..lane_end];
+        for shape in [
+            "archive_only:archive_only_change(&def,&edit)",
+            "reopen_only:reopen_only_change(&def,&edit)",
+            "is_member:members.iter().any(|m|m==&s.device_id)",
+        ] {
+            assert!(lane_win.contains(shape), "窄档构造里缺 {shape}");
+        }
+        assert!(
+            !cmd.contains("if!may_update_todo("),
+            "命令层不得再直接调两档判据 —— 那样两条窄档会被绕开"
+        );
+    }
+
+    /// 跨窗口预览投递的校验（用户 #40：「全局一个预览窗口，任何界面都能调用」）。
+    ///
+    /// 为什么必须单测而不是只靠前端判据：这条路径的输入**能被远端影响**（名字和 base64
+    /// 来自消息载荷），而且产物挂在全局唯一窗口上 —— 一份畸形相册不会崩，只会一直难看地
+    /// 停在那儿。`blob:` 那条尤其要钉：它是**发起文档**的句柄，跨文档拿到只会渲染成破图，
+    /// 前端 `deliverableToWindow` 也判过一遍，但那是"要不要开新窗"，这里是"开都别让你开"。
+    #[cfg(desktop)]
+    #[test]
+    fn preview_gallery_validation_rejects_unaddressable_and_oversized() {
+        use super::{
+            validate_preview, PREVIEW_MAX_ITEMS, PREVIEW_MAX_NAME_LEN, AUX_PREVIEW_RESIDENT,
+        };
+        use crate::state::{PreviewGallery, PreviewItem};
+        let item = |name: &str, msg: Option<&str>, cid: Option<&str>, data: Option<&str>| {
+            PreviewItem {
+                name: name.to_string(),
+                msg_id: msg.map(|s| s.to_string()),
+                cid: cid.map(|s| s.to_string()),
+                data_src: data.map(|s| s.to_string()),
+            }
+        };
+        let gallery = |items: Vec<PreviewItem>, index: usize| PreviewGallery { items, index };
+
+        // 三种合法来源：消息 id / 内容 cid / 内联 data URL
+        for it in [
+            item("a.png", Some("m1"), None, None),
+            item("b.png", None, Some("cid1"), None),
+            item("c.png", None, None, Some("data:image/png;base64,AAAA")),
+        ] {
+            assert_eq!(validate_preview(&gallery(vec![it], 0)), Ok(()));
+        }
+
+        // 空相册 / 起始越界 / 条数超限 / 名字超长
+        assert!(validate_preview(&gallery(vec![], 0)).is_err(), "空相册不该开窗");
+        assert!(validate_preview(&gallery(vec![item("a", Some("m"), None, None)], 1)).is_err());
+        let many = (0..=PREVIEW_MAX_ITEMS)
+            .map(|i| {
+                let id = format!("m{i}");
+                item("a", Some(id.as_str()), None, None)
+            })
+            .collect();
+        assert!(validate_preview(&gallery(many, 0)).is_err(), "条数必须有上限");
+        let long_name = "x".repeat(PREVIEW_MAX_NAME_LEN + 1);
+        assert!(validate_preview(&gallery(vec![item(&long_name, Some("m"), None, None)], 0)).is_err());
+
+        // 不可寻址：blob 句柄 / 什么引用都没有 / 空字符串占位
+        for it in [
+            item("a", None, None, Some("blob:http://localhost/1")),
+            item("a", None, None, None),
+            item("a", Some(""), Some(""), Some("")),
+        ] {
+            assert!(
+                validate_preview(&gallery(vec![it], 0)).is_err(),
+                "不可跨文档寻址的条目必须整份拒绝"
+            );
+        }
+
+        // 预览窗口现在**常驻**（用户 2026-09-24 要"第二次打开快点"）。常驻带来的新义务在
+        // 前端那一侧：关掉时那个文档必须自己把相册放掉（`PreviewWindow.vue` 挂在
+        // close-requested 上）—— 这里钉住策略本身，别被人当成"漏改的一处布尔值"顺手翻回去。
+        assert!(AUX_PREVIEW_RESIDENT, "预览窗口应当常驻（关闭即隐藏）");
     }
 
     /// 完成 / 归档字段的权威推导（用户 2026-09-17：「完成以后手动归档」）。
@@ -824,6 +1473,69 @@ mod tests {
             super::resolve_done_archive(false, Some(true), true, Some(now - 1234), now),
             (false, None),
             "非完成态不得被归档（否则进行中的任务会从活动列表消失）"
+        );
+    }
+}
+
+/// 优先级那三档的表与缺省（协议层唯一的家）。
+#[cfg(test)]
+mod todo_priority_tests {
+    use crate::protocol::{TODO_PRIORITIES, default_todo_priority, todo_priority_is_valid};
+
+    #[test]
+    fn priority_defaults_to_medium() {
+        assert_eq!(default_todo_priority(), "normal");
+        assert!(TODO_PRIORITIES.contains(&"normal"));
+        assert_eq!(TODO_PRIORITIES.len(), 3);
+    }
+
+    #[test]
+    fn unknown_priority_is_rejected() {
+        assert!(todo_priority_is_valid("high") && todo_priority_is_valid("low"));
+        assert!(!todo_priority_is_valid("urgent"));
+        assert!(!todo_priority_is_valid(""));
+    }
+
+    /// 旧载荷没有 `priority` ⇒ 解析成"常规"，而不是解析失败（这条红了就说明
+    /// 新字段把历史任务的读取弄坏了）。
+    #[test]
+    fn legacy_payload_without_priority_reads_medium() {
+        let p: crate::protocol::TodoPayload =
+            serde_json::from_str(r#"{"todo_id":"t","title":"x"}"#).unwrap();
+        assert_eq!(p.priority, "normal");
+    }
+}
+
+/// 单张群任务图片的体积闸（用户 2026-09-29：「单张图片的大小可以做一个限制，比如 10MB 以内」）。
+///
+/// 判据放在**纯函数内核**上：两道命令（`todo_image_meta` / `save_todo_image_bytes`）都吃
+/// `AppState`，测试里没有构造路径（同一个理由见 `MAX_OUTGOING_IMAGE_BYTES` 那批用例）。
+#[cfg(test)]
+mod todo_image_size_tests {
+    use super::{MAX_TODO_IMAGE_BYTES, TODO_IMAGE_LIMIT_MB, todo_image_size_guard};
+
+    /// 边界：恰好等于上限**放行**（"10MB 以内"含 10MB），超一字节拒。
+    ///
+    /// 这一对是这条闸的全部意义 —— 只测"很大的一张要拒"挡不住把不等号写严一档
+    /// （`>` 改成 `>=` 时只有这一格会红）。
+    #[test]
+    fn limit_is_inclusive_and_one_byte_over_is_rejected() {
+        let exact = MAX_TODO_IMAGE_BYTES as u64;
+        assert!(
+            todo_image_size_guard(exact).is_ok(),
+            "{exact} 正好是上限，判成超限等于把文案里的「以内」读成「不满」"
+        );
+        assert!(todo_image_size_guard(exact + 1).is_err());
+        assert!(todo_image_size_guard(0).is_ok(), "空长度不该在这里判（另有「图片数据为空」）");
+    }
+
+    /// 拒收的文案必须说得出**那个数**：只说"图片过大"用户不知道该压到多少。
+    #[test]
+    fn rejection_names_the_limit() {
+        let err = todo_image_size_guard(MAX_TODO_IMAGE_BYTES as u64 + 1).unwrap_err();
+        assert!(
+            err.contains(&TODO_IMAGE_LIMIT_MB.to_string()),
+            "错误文案没带 MB 上限：{err}"
         );
     }
 }

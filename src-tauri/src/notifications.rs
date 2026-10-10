@@ -43,9 +43,7 @@ use crate::state::AppState;
 ///
 /// 与前端 app.notifyEnabled 是同一份持久化键；这里是后端也判一次的第二道闸门。
 pub fn notifications_enabled(conn: &rusqlite::Connection) -> bool {
-    crate::db::get_setting(conn, "notify_enabled")
-        .map(|v| v != "0")
-        .unwrap_or(true)
+    crate::db::get_config_bool(conn, "notify_enabled", true)
 }
 
 /// 当前平台的通知排障说明（测试通知与失败日志里带上，避免“发不出去也不知道为什么”）。
@@ -241,8 +239,9 @@ pub fn show(app: &tauri::AppHandle, title: &str, body: &str) -> Result<(), Strin
 }
 
 fn enabled(state: &Arc<AppState>) -> bool {
-    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-    notifications_enabled(&dbc)
+    // 走 AppState 的内存缓存（审计 2.1i）：每条通知都判一次总开关，
+    // 逐次抢全局 db 锁会在消息洪峰时加剧争用；未加载时读库一次回填。
+    state.notify_enabled_cached()
 }
 
 fn log_result(state: &Arc<AppState>, title: &str, r: Result<(), String>) -> Result<bool, String> {

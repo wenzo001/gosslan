@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, reactive, ref, watch } from "vue";
 import { Trash2 } from "lucide-vue-next";
 import { api } from "@/api";
 import { useAppStore } from "@/stores/useAppStore";
@@ -8,7 +8,7 @@ import SettingsGroup from "@/components/settings/SettingsGroup.vue";
 import SettingsRow from "@/components/settings/SettingsRow.vue";
 import SettingsToggle from "@/components/settings/SettingsToggle.vue";
 import { t } from "@/i18n";
-import type {RelayPolicy, RoutedEndpoint} from "@/types";
+import type {RelayConfig, RelayPolicy, RelayProbe, RoutedEndpoint} from "@/types";
 
 const props = defineProps<{ active: boolean; reloadToken?: number }>();
 
@@ -50,6 +50,8 @@ watch(
     await app.refreshInterfaces();
     await loadChannels();
     await loadEndpoints();
+    // 不 await：这一项失败只影响这一块控件的初始值，不该拖住整个网络设置页的打开。
+    void loadRelayConfig();
   },
   { immediate: true },
 );
@@ -148,6 +150,98 @@ async function toggleBluetooth() {
 // ---- 跨网段（Routed）端点配置 ----
 const endpoints = ref<RoutedEndpoint[]>([]);
 const newAddress = ref("");
+
+// ---- 公网中转（盲管道，ADR-0020）----
+// 界面文案必须讲清这条链路的定位，因为它最容易被误解成"开了就一律走公网"：
+// 只有局域网连不上时它才会被用上（选路 LAN 恒优先），关掉开关则一条电路都不建。
+const relayCfg = reactive<RelayConfig>({ enabled: false, server: "", token: "" });
+/** 已落库的那一份，只用来判"有没有改动"；显示源始终是 `relayCfg`。 */
+const relayLoaded = ref<RelayConfig | null>(null);
+const relayBusy = ref(false);
+
+async function loadRelayConfig() {
+  try {
+    const cfg = await api.getRelayConfig();
+    Object.assign(relayCfg, cfg);
+    relayLoaded.value = { ...cfg };
+  } catch (e) {
+    // 读不到就留空值 + 明确提示：设置页**不许**因为一个 IPC 失败而白屏或静默骗人
+    // （空表单会被读成"还没配"，所以必须说一声它其实是被后端挡了）。
+    app.toastError(e, t("settings.network.relayServer.toast.loadFailed"));
+  }
+}
+
+const relayDirty = computed(
+  () =>
+    !!relayLoaded.value &&
+    JSON.stringify(relayLoaded.value) !== JSON.stringify({ ...relayCfg }),
+);
+
+async function saveRelayConfig() {
+  relayBusy.value = true;
+  try {
+    // 后端返回**规范化后**的值（裸 IP 会被补成 `ip:59993`），直接回显：
+    // 用户因此看到"实际会连哪儿"，而不是他手打的原始串。
+    const saved = await api.saveRelayConfig(relayCfg.enabled, relayCfg.server, relayCfg.token);
+    Object.assign(relayCfg, saved);
+    relayLoaded.value = { ...saved };
+    relayProbe.value = null; // 上一份结论属于上一个地址，留着就是骗人
+    app.toast(t("settings.network.relayServer.toast.saved"), "success");
+  } catch (e) {
+    // 错误文案是后端给出的中文判据（地址格式 / 口令含空格 / 口令过长），原样显示。
+    app.toastError(e, t("settings.network.relayServer.toast.saveFailed"));
+    return;
+  } finally {
+    relayBusy.value = false;
+  }
+  // 存好之后**立刻真拨一次**（开了关才测：没开就没有一条电路，测了也是误导）。
+  // 刻意放在 save 的 try 之外：探测失败绝不能让用户以为"没保存成功"。
+  if (relayCfg.enabled) void runRelayProbe(true);
+}
+
+/** 最近一次真拨的结论；`null` = 还没测过（不预设任何"应该能连"的暗示）。 */
+const relayProbe = ref<RelayProbe | null>(null);
+const relayProbing = ref(false);
+/** 口令输入框是否明文显示（默认掩码，理由见模板里的注释）。 */
+const tokenVisible = ref(false);
+
+/** 三档各一句人话（`kind` 是机器可读串，文案在 i18n 里，不拿中文去匹配）。 */
+const relayProbeLine = computed(() => {
+  if (relayProbing.value) return t("settings.network.relayServer.checking");
+  const p = relayProbe.value;
+  if (!p) return "";
+  const head = t(`settings.network.relayServer.probe.${p.kind}`);
+  // 技术细节挂在同一行：抄给"部署服务器的那个人"看时，只有这句有用。
+  return `${head}（${t("settings.network.relayServer.probe.triedLabel")} ${p.tried}·${p.detail}）`;
+});
+
+/**
+ * 真拨一次。`autofillPort` = 探到别的端口能用时**回填并再存一次**。
+ *
+ * 这一步才是"少配置"的落点：用户只填 IP 时后端会依次试候选端口，试通的那个
+ * 必须写回 `relay_server`，否则每次启动都从默认端口重新猜一遍。
+ * 回填走同一个 `save_relay_config`（规范化与校验只有一份实现），不新开命令。
+ */
+async function runRelayProbe(autofillPort = false) {
+  if (!relayCfg.server.trim() || !relayCfg.token.trim()) return;
+  relayProbing.value = true;
+  try {
+    const r = await api.checkRelayServer(relayCfg.server, relayCfg.token);
+    relayProbe.value = r;
+    if (autofillPort && r.kind !== "unreachable" && r.server && r.server !== relayCfg.server) {
+      relayCfg.server = r.server;
+      const saved = await api.saveRelayConfig(relayCfg.enabled, relayCfg.server, relayCfg.token);
+      Object.assign(relayCfg, saved);
+      relayLoaded.value = { ...saved };
+      app.toast(`${t("settings.network.relayServer.toast.probePortFixed")} ${r.server}`, "success");
+    }
+  } catch (e) {
+    relayProbe.value = null;
+    app.toastError(e, t("settings.network.relayServer.probe.failed"));
+  } finally {
+    relayProbing.value = false;
+  }
+}
 
 async function loadEndpoints() {
   endpoints.value = await api.listRoutedEndpoints();
@@ -278,6 +372,94 @@ async function removeEndpoint(address: string) {
         {{ t("settings.network.routed.add") }}
       </button>
     </div>
+  </SettingsGroup>
+
+  <!-- 公网中转（ADR-0020）：一台用户自己部署的哑管道，只在局域网连不上时补一条链路。
+       刻意不做"实时连接状态"指示灯 —— 状态在那台机器上是内存里的配对表，客户端这边
+       能确定的只有"配了什么"和"有没有电路"，硬做一个绿灯只会给出错误的安心感。 -->
+  <SettingsGroup
+    :title="t('settings.network.relayServer')"
+    :footer="t('settings.network.relayServer.desc')"
+  >
+    <SettingsRow :label="t('settings.network.relayServer.enable')">
+      <SettingsToggle
+        :model-value="relayCfg.enabled"
+        :label="t('settings.network.relayServer.enable')"
+        @update:model-value="(v: boolean) => (relayCfg.enabled = v)"
+      />
+    </SettingsRow>
+
+    <SettingsRow :label="t('settings.network.relayServer.server')">
+      <input
+        v-model="relayCfg.server"
+        type="text"
+        inputmode="url"
+        autocomplete="off"
+        spellcheck="false"
+        :placeholder="t('settings.network.relayServer.serverPlaceholder')"
+        class="w-44 min-w-0 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-transparent px-3 py-1.5 text-right font-mono text-[13px] outline-none placeholder:text-[var(--gosslan-text-2)] focus:border-transparent"
+        @keyup.enter="saveRelayConfig"
+      />
+    </SettingsRow>
+
+    <SettingsRow
+      :label="t('settings.network.relayServer.token')"
+      :description="t('settings.network.relayServer.tokenHint')"
+    >
+      <div class="flex items-center gap-1.5">
+        <!--
+          默认掩码。`INTEGRATION.md` 要求 7 列的是"不写日志 / 不进上报 / 不出现在诊断截图里"，
+          这三条后端都成立（日志只记长度，见 `save_relay_config` 与 `check_relay_server`）。
+          但**用户为求助截图设置页**是最常见的一张截图，所以这一格按敏感信息处理：
+          默认掩码 + 显式"显示"。刻意不做"只写不可读"——那会让"我到底填的哪个口令"变成
+          只能重填才知道，而口令本身就在服务器部署文件里，藏它没有意义。
+        -->
+        <input
+          v-model="relayCfg.token"
+          :type="tokenVisible ? 'text' : 'password'"
+          autocomplete="off"
+          spellcheck="false"
+          :aria-label="t('settings.network.relayServer.token')"
+          :placeholder="t('settings.network.relayServer.tokenPlaceholder')"
+          class="w-44 min-w-0 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-transparent px-3 py-1.5 text-right font-mono text-[13px] outline-none placeholder:text-[var(--gosslan-text-2)] focus:border-transparent"
+          @keyup.enter="saveRelayConfig"
+        />
+        <button
+          class="shrink-0 rounded-[var(--gosslan-radius-sm)] px-1.5 py-1 text-[12px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-surface-2)]"
+          :aria-pressed="tokenVisible"
+          :aria-label="tokenVisible
+            ? t('settings.network.relayServer.token.hide')
+            : t('settings.network.relayServer.token.show')"
+          @click="tokenVisible = !tokenVisible"
+        >
+          {{ tokenVisible ? t("settings.network.relayServer.token.hide") : t("settings.network.relayServer.token.show") }}
+        </button>
+      </div>
+    </SettingsRow>
+
+    <SettingsRow
+      :label="t('settings.network.relayServer.save')"
+      :description="relayProbeLine || t('settings.network.relayServer.saveHint')"
+    >
+      <div class="flex items-center gap-2">
+        <button
+          class="shrink-0 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-3.5 py-1.5 text-[13px] font-medium text-white transition hover:bg-[var(--gosslan-primary-hover)] disabled:opacity-40"
+          :disabled="relayBusy || !relayDirty"
+          @click="saveRelayConfig"
+        >
+          {{ t("settings.network.relayServer.save") }}
+        </button>
+        <!-- 「测一下」：服务器可能是**后**部署的，所以重测不该要求用户先改一遍字段。 -->
+        <button
+          v-if="relayCfg.enabled"
+          class="shrink-0 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3.5 py-1.5 text-[13px] font-medium text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-surface-2)] disabled:opacity-40"
+          :disabled="relayProbing || !relayCfg.server.trim() || !relayCfg.token.trim()"
+          @click="runRelayProbe(true)"
+        >
+          {{ t("settings.network.relayServer.check") }}
+        </button>
+      </div>
+    </SettingsRow>
   </SettingsGroup>
 
     <!-- 中继授权（P2 / M4）——「我愿不愿意替别人转发消息」是本机策略，不读远端自报 -->

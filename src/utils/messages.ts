@@ -1,6 +1,10 @@
 import type { Conversation, MessageRecord } from "@/types";
 import { MENTION_AFTER, MENTION_BEFORE, escapeRe } from "./linkify.ts";
-import { isKnownKind, isSilentKind, UNSUPPORTED_KIND_LABEL } from "./messageKinds.ts";
+import {
+  countsTowardUnread,
+  isKnownKind,
+  UNSUPPORTED_KIND_LABEL,
+} from "./messageKinds.ts";
 import { mergeSummary } from "./mergeCard.ts";
 
 /**
@@ -25,11 +29,49 @@ export function mergeMessages(
   return merged;
 }
 
+/**
+ * 对端已读回执 ⇒ 把「我自己发的、`ts` 不晚于该回执」的消息推到 `read`。
+ *
+ * ⚠️ 这句判据有**三份副本**，必须同一口径：后端 `db/read_receipts.rs::mark_own_messages_read_upto`
+ * 是家（它的注释就写着"只排除 read 自己"就是缺陷），另外两处是 `gossip.rs` / `transport.rs` 的调用。
+ * 前端这份以前只排除了 `read` ⇒ 一条 **`failed`（本端根本没发出去）** 的话会被后面那条已读
+ * 一起点亮成「已读」，而它带着 `tmp-*` id、库里没有 ⇒ 每次重读都被 `appendLocalOnly` 追加回来，
+ * 错了再也纠不回来。**排除清单三件：`read`（已是）/ `failed`（没送达不可能被读过）/ `recalled`（撤回不许点亮）。**
+ * `sending` / `delivered` 保留在可推进的一侧（回执比 Ack 更新正是往前推，也是本端状态卡住时唯一的自愈路径）。
+ */
+const READ_PROMOTE_BLOCKED = ["read", "failed", "recalled"];
+
+export function promoteOnPeerRead(
+  list: MessageRecord[],
+  myDeviceId: string,
+  lastReadTs: number,
+): MessageRecord[] {
+  if (list.length === 0) return list;
+  let changed = false;
+  const out = list.map((m) => {
+    if (
+      m.sender_id !== myDeviceId ||
+      m.ts > lastReadTs ||
+      READ_PROMOTE_BLOCKED.includes(m.status)
+    ) {
+      return m;
+    }
+    changed = true;
+    return { ...m, status: "read" as const };
+  });
+  return changed ? out : list;
+}
+
 /** 送达状态推进序：只会前进，不会后退。 */
 const DELIVERY_ORDER = ["sent", "delivered", "read"];
 
 /** 两个送达状态中更靠后的一个；不在推进序上的状态（sending / failed）保持原样。 */
 export function furthestStatus(status: string, ahead: string): string {
+  // `sending` 与 `failed` 都不在上面那张表里 ⇒ 两者的 indexOf 都是 -1 ⇒ 查表判不出谁更靠后。
+  // 不加这一条，`replaceMessage` 里"取更靠后的状态"会把本端发送失败**吃掉**：
+  // 气泡永久停在「发送中」，而重发入口的判据正是 `status === "failed"`。
+  // 只对 `sending` 开口 —— 失败是本端事实，但它翻不动对端已经收到的证据（delivered/read）。
+  if (ahead === "failed" && status === "sending") return "failed";
   return DELIVERY_ORDER.indexOf(ahead) > DELIVERY_ORDER.indexOf(status) ? ahead : status;
 }
 
@@ -80,6 +122,66 @@ export function preserveDeliveryStatus(
     if (best === m.status && content === m.content) return m;
     return { ...m, status: best, content };
   });
+}
+
+/**
+ * `loadMessages` 的 DB 快照只含库里已有的行；两类记录**只存在于内存**：
+ * - `tmp-*`：send() 的乐观气泡（invoke 在途 / 已失败待重发）
+ * - `file-failed-*`：sendFileTo 失败时插入的 failed 占位
+ *
+ * 整表覆盖会把它们吞掉 —— 用户看到"刚发的消息凭空消失"，以为失败而重发
+ * （重复消息）；invoke 返回后 replaceMessage 又找不到列表项 → 真实记录
+ * 也静默丢失（后端不回声 message-received，无第二路径补回）。
+ * 把这些本地独有记录按原顺序追加到快照尾部（它们的 seq 是 MAX_SAFE_INTEGER，
+ * 理应排在最新一页之后）。见 2026-09-23 审计 1.3。
+ */
+export function appendLocalOnly(
+  fresh: MessageRecord[],
+  local: MessageRecord[],
+): MessageRecord[] {
+  if (local.length === 0) return fresh;
+  const freshIds = new Set(fresh.map((m) => m.msg_id));
+  const localOnly = local.filter(
+    (m) =>
+      !freshIds.has(m.msg_id) &&
+      (m.msg_id.startsWith("tmp-") || m.msg_id.startsWith("file-failed-")),
+  );
+  return localOnly.length ? [...fresh, ...localOnly] : fresh;
+}
+
+/**
+ * 乐观气泡（`tmp-*`）→ 真实记录的替换 —— `send()` 返回时唯一该走的一步。
+ *
+ * ## 为什么不能是裸 splice 就地替换
+ * 群发送有**两条路径会把同一条真实记录送进同一个列表**：后端为跨窗口同步加的自 emit
+ * （`commands/window.rs::send_group_payload`，2026-09-26 起），以及 `invoke` 的返回值。
+ * 自 emit 常常先到 ⇒ 真实记录已经落在列表里，随后那次"把乐观行换成真实记录"的 splice
+ * 就变成**再插一份同 `msg_id`** —— 用户看到的"刚发的消息显示两条"，而切一次会话
+ * （从库里重读，库里只有一行）又自己好了。⇒ 这里必须按 `msg_id` 认，不能按位置换。
+ *
+ * 返回新列表；`list` 里找不到那条乐观行时返回 `null`，由调用方走"挂在批量队列里等落地"
+ * 那条路（见 `applyReplacements`，那条路本身经过 upsert，不会产生重复）。
+ */
+export function replaceOptimistic(
+  list: MessageRecord[],
+  tmpMsgId: string,
+  next: MessageRecord,
+): MessageRecord[] | null {
+  const i = list.findIndex((m) => m.msg_id === tmpMsgId);
+  if (i < 0) return null;
+  const existing = list.find((m) => m.msg_id === next.msg_id);
+  if (!existing) {
+    return [...list.slice(0, i), { ...next, status: furthestStatus(list[i].status, next.status) }, ...list.slice(i + 1)];
+  }
+  // 真实记录已经在了：把那一条并进最终形态，并**摘掉**乐观行（顺序保持原样）。
+  const kept: MessageRecord = {
+    ...next,
+    content: pickMediaContent(existing, next),
+    status: furthestStatus(existing.status, next.status),
+  };
+  return list
+    .filter((_, k) => k !== i)
+    .map((m) => (m.msg_id === next.msg_id ? kept : m));
 }
 
 /**
@@ -135,9 +237,20 @@ export function syncProfileFromPeers(
   }
 }
 
-/** 消息摘要（会话列表展示）。 */
-export function previewText(rec: MessageRecord): string {
-  switch (rec.kind) {
+/**
+ * `kind` → 一行**人话**正文 —— 会话列表摘要、系统通知、置顶条与搜索结果页共用的唯一一份。
+ *
+ * 存在的理由与 `protocol::preview_text` 同一句：JSON 载荷的 kind 若不给人话，就会把
+ * 「界面上显示了一串 JSON」暴露给用户（用户 2026-09-17）。
+ *
+ * `textLimit` **只管** text / system 这类"载荷本身就是正文"的分支：
+ * 会话列表要截 30 字，而搜索结果页要在正文里定位关键词，截了就没得定位 ⇒ 传 0 不截。
+ * 卡片类分支不受它影响 —— 它们返回的是载荷里那一句（标题 / 问题 / 正文），本来就不是整段 JSON。
+ *
+ * ⚠️ 与 Rust `protocol::preview_text` 逐项同源（那份截断在 `truncate_preview` 里）。
+ */
+export function previewBody(kind: string, content: string, textLimit = 30): string {
+  switch (kind) {
     case "file":
       return "[文件]";
     case "image":
@@ -146,13 +259,13 @@ export function previewText(rec: MessageRecord): string {
       return "[代码]";
     // 合并转发：卡片是 JSON，截前 30 字符会得到 '{"title":"群聊的聊天记录"' 这种东西。
     case "merge":
-      return mergeSummary(rec.content);
+      return mergeSummary(content);
     case "todo":
     case "todo_update": {
       // 待办载荷是 JSON，直接吐出来就是「聊天列表/通知显示了一串 JSON」的毛病（用户 2026-09-17）。
       // 这里只取标题，回落到「[任务]」，让列表与通知都干净。
       try {
-        const p = JSON.parse(rec.content) as { title?: unknown };
+        const p = JSON.parse(content) as { title?: unknown };
         if (typeof p.title === "string" && p.title) return `[任务] ${p.title}`;
       } catch {
         /* 落到回落值 */
@@ -163,7 +276,7 @@ export function previewText(rec: MessageRecord): string {
     case "poll_vote": {
       // 投票载荷是 JSON：取问题，回落「[投票]」。
       try {
-        const p = JSON.parse(rec.content) as { question?: unknown };
+        const p = JSON.parse(content) as { question?: unknown };
         if (typeof p.question === "string" && p.question) return `[投票] ${p.question}`;
       } catch {
         /* 落到回落值 */
@@ -173,7 +286,7 @@ export function previewText(rec: MessageRecord): string {
     case "announcement": {
       // 公告正文本身就是给用户看的 ⇒ 取正文；删公告是墓碑事件，只显示「[公告]」。
       try {
-        const p = JSON.parse(rec.content) as { text?: unknown };
+        const p = JSON.parse(content) as { text?: unknown };
         if (typeof p.text === "string" && p.text) return `[公告] ${p.text}`;
       } catch {
         /* 落到回落值 */
@@ -194,10 +307,28 @@ export function previewText(rec: MessageRecord): string {
     default:
       // ⚠️ 表里**没有**的 kind（对端版本比本机新）绝不能原样截断 —— 那是"界面上出现一串
       // JSON 字符串"的最后一环（INV-P24 第 2 条）。判据与文案都与 Rust `preview_text` 同源，
-      // 由 `messageKinds.test.ts` 机器比对。已知但无专门文案的（text / system）照旧截断。
-      if (!isKnownKind(rec.kind)) return UNSUPPORTED_KIND_LABEL;
-      return rec.content.slice(0, 30);
+      // 由 `messageKinds.test.ts` 机器比对。已知但无专门文案的（text / system）按 `textLimit` 截。
+      if (!isKnownKind(kind)) return UNSUPPORTED_KIND_LABEL;
+      return textLimit > 0 ? content.slice(0, textLimit) : content;
   }
+}
+
+/** 消息摘要（会话列表展示）：正文截 30 字，卡片取载荷里那一句人话。 */
+export function previewText(rec: MessageRecord): string {
+  return previewBody(rec.kind, rec.content);
+}
+
+/**
+ * 一段**纯文本**里是否出现了 `@名字`（边界规则与 linkify 的高亮同源）。
+ *
+ * 单独导出是为了让**发送侧**也能复用同一套判断：输入框里手打的 `@周工` 不会被
+ * 成员选择器变成 token，只能靠名字回解成 id；如果那里另写一份正则，就会出现
+ * 「发送方认为 @ 了、接收方名单里却没有」这类两边不同步的缺陷。
+ */
+export function textMentionsName(text: string, name: string): boolean {
+  const n = name.trim();
+  if (!n) return false;
+  return new RegExp(`${MENTION_BEFORE}@${escapeRe(n)}${MENTION_AFTER}`).test(text);
 }
 
 /**
@@ -205,12 +336,13 @@ export function previewText(rec: MessageRecord): string {
  * 边界语义与 linkify 的 @提及高亮**共用** MENTION_BEFORE / MENTION_AFTER 两个常量，
  * 不允许在这里另写一份：两套边界一旦分叉，表现就是「气泡里高亮成蓝块、却没有红点和通知」。
  * 名字后的边界保证 @张三 不会误吞 @张三丰；前导边界见 MENTION_BEFORE（`]` 也算）。
+ *
+ * ⚠️ 这条是**兜底路径**，不是主路径：昵称可变、可重名，按名字判必然带错。
+ *    主路径见 `messageMentionsMe`（按设备 id）。
  */
 export function messageMentionsName(rec: MessageRecord, name: string): boolean {
   if (rec.kind !== "text") return false;
-  const n = name.trim();
-  if (!n) return false;
-  return new RegExp(`${MENTION_BEFORE}@${escapeRe(n)}${MENTION_AFTER}`).test(rec.content);
+  return textMentionsName(rec.content, name);
 }
 
 /**
@@ -240,11 +372,86 @@ export function messageMentionsAll(rec: MessageRecord): boolean {
 }
 
 /**
+ * 这条文本消息点到「我」了没有 —— 「有人@我」红点的**唯一**判定入口。
+ *
+ * 为什么不能只按昵称判（这是修掉的缺陷本身）：昵称既**可变**（改名后，历史上那些
+ * `@旧名字` 就不再指向这个人）又**不唯一**（群里两个人可以同名）。绑定到名字上，
+ * 表现就是「明明 @ 了我却没红点」和「没 @ 我却亮了」两种，而根因都在链路里没有
+ * 「被 @ 的是谁」这个信息 —— 现在有了：`mention_ids`。
+ *
+ * ⚠️ 三态不许合并成两态：
+ *  - **数组**（含空数组）⇒ 发送方明确回答了「我 @ 了这些人」，以 id 为准，**不再看昵称**。
+ *    空数组是"谁都没 @"这个肯定回答，不是"不知道"。
+ *  - **缺失 / null** ⇒ 发送方是不认识这个字段的旧版本，或这条是从库里读回来的历史行。
+ *    退回昵称判定 —— 新字段只能让新版本更准，不许让老对端的消息变暗（INV-P24 降级口径）。
+ *
+ * 「@所有人」始终走字面量那条路：它是发给全群的中文字面量（不随界面语言变），
+ * 发送方不会、也不该把它塞进 id 名单（那样等于把整份成员表写进每一条消息）。
+ *
+ * ⚠️ 这里修的是**判定**（红点/通知）。气泡里高亮的是**字符**：`@旧名字` 那三个字确实是
+ *    当时发出去的内容，改不了也不该改，所以改名后高亮可能落在旧名字上。
+ */
+export function messageMentionsMe(
+  rec: MessageRecord,
+  me: { id: string; name: string },
+): boolean {
+  if (rec.kind !== "text") return false;
+  if (messageMentionsAll(rec)) return true;
+  const ids = rec.mention_ids;
+  if (Array.isArray(ids)) {
+    // 我的 id 为空时直接判不中：不能让"身份尚未就绪"这一格靠空串匹配到名单里的空串
+    return !!me.id && ids.includes(me.id);
+  }
+  return textMentionsName(rec.content, me.name);
+}
+
+/**
  * 计算「消息缓存该保留哪些会话」：活跃会话必留，其余按 LRU 保留最近使用的至多 `maxConvs` 个。
  *
  * 纯函数，供 useChatStore 的消息缓存上界使用；调用方负责删除未保留的键。
  * 单独抽出来的原因：这是「会不会把用户正在看的会话淘汰掉」的唯一判定点，必须有单测锁定。
  */
+/**
+ * 「有人@我」红点的**摄入判定**（从 `useChatStore` 里抽出来的纯函数，规则一字未改）。
+ *
+ * 三条规则，一条都不能松：
+ *  - **只算群聊**（单聊不需要这个提醒）；
+ *  - **自己发的不算**；
+ *  - **正开着、且用户真的在看的那个会话不算** —— 这条与未读同源，也是 2026-09-28 拿真无障碍树
+ *    读不出结论的原因（读到 `E2E-Group，5 条未读` 而没有 @ 那句，分不清"该亮没亮"与"正开着所以不算"）。
+ *    ⚠️ **"开着"不等于"看着"**：桌面端启动时会自动打开最近的那个会话
+ *    （`ResponsiveLayout.vue` 那条 watch，行为对齐微信桌面版），窗口也常在后台或被整页浮层盖住。
+ *    那种时刻 @ 进来，若按"开着"就抑制红点，用户回来只看到「N 条未读」、看不出自己被 @ 过 ——
+ *    而已读那条用的正是更严的"真在看"口径 ⇒ 两条规则必须共用它，不许各取一半
+ *    （入参 `activeVisible` 就是那个口径由调用方传进来的那一份，见 `useChatStore` 的
+ *    `chatViewerLooking`）。
+ * 入参只吃**本地真正新增**的那批（重复投递已在调用方剔掉），所以重递不会反复点亮。
+ *
+ * `alsoMentionsMe` 是注入点：任务卡"指派给我"那条判定住在 `todos.ts`，
+ * 让它由调用方传进来，这里就不引第二条依赖（也才能在没有 store 的情况下测到这一半）。
+ */
+export function freshMentionedConvs(
+  freshByConv: Map<string, MessageRecord[]>,
+  activeConvId: string | null,
+  me: { id: string; name: string },
+  opts: { alsoMentionsMe?: (rec: MessageRecord) => boolean; activeVisible?: boolean } = {},
+): string[] {
+  const out: string[] = [];
+  for (const [cid, fresh] of freshByConv) {
+    if (cid === activeConvId && opts.activeVisible !== false) continue;
+    if (!cid.startsWith("group:")) continue;
+    for (const rec of fresh) {
+      if (rec.sender_id === me.id) continue;
+      // 「@所有人」与「点名」走的是同一个入口（`messageMentionsMe` 内部两条路），这里不再各判一次。
+      if (messageMentionsMe(rec, me) || opts.alsoMentionsMe?.(rec)) {
+        out.push(cid);
+        break;
+      }
+    }
+  }
+  return out;
+}
+
 export function selectCachedConversations(
   lruOrder: string[],
   activeId: string | null | undefined,
@@ -270,6 +477,55 @@ export function sortConversations(list: Conversation[]): Conversation[] {
 }
 
 /**
+ * 会话快照落地：**以后端为准**，但不许把"已经本地乐观清零的未读"点亮回来。
+ *
+ * 为什么需要它（`StaleGuard` 挡不住的那一半）：本仓有一族同形缺陷是"后发的请求先回来"，
+ * `StaleGuard` 已经管住了那一类。这里挡的是另一类 —— **同一份请求，数据本身是旧的**：
+ * t=400 发起 `getConversations()`，t=500 用户打开会话并乐观清零（`useChatStore` 里那条
+ * 「所有异步操作尽量乐观更新」的口径），t=600 那份带着 `unread = 3` 的快照才落地
+ * ⇒ 红点自己亮回来、排序也跟着回退，就是用户报的「我没点它怎么又红了」。
+ *
+ * 只豁免 `unread` 这一个字段：`last_msg` / `last_ts` / `pinned` / 名称头像 一律以快照为准
+ * （它们没有"本地已推进"的状态会被覆盖）。方向也刻意只做这一侧：
+ * **快照晚于清零时必须照抄后端** —— 那才是"清零之后又来了新消息"的正常情形，
+ * 反过来豁免就会把真未读永久压掉（比红点多亮一下严重得多）。
+ */
+export function applyConversationSnapshot(
+  prev: Conversation[],
+  snapshot: Conversation[],
+  clearedAt: ReadonlyMap<string, number>,
+  snapshotIssuedAt: number,
+): Conversation[] {
+  if (clearedAt.size === 0) return sortConversations(snapshot);
+  const previous = new Map(prev.map((c) => [c.id, c] as const));
+  return sortConversations(
+    snapshot.map((row) => {
+      const cleared = clearedAt.get(row.id);
+      if (cleared === undefined || cleared <= snapshotIssuedAt) return row;
+      const before = previous.get(row.id);
+      if (!before) return row;
+      return before.unread === row.unread ? row : { ...row, unread: before.unread };
+    }),
+  );
+}
+
+/**
+ * 丢掉过期的"已清零"水位。
+ *
+ * 窗口外的一律无效：一次在飞的 `getConversations()` 再慢也不会慢过这个窗口，
+ * 留着只会让这个 Map 跟着会话数无界增长。
+ */
+export function pruneUnreadClears(
+  clearedAt: Map<string, number>,
+  now: number,
+  windowMs: number,
+): void {
+  for (const [id, at] of clearedAt) {
+    if (now - at > windowMs) clearedAt.delete(id);
+  }
+}
+
+/**
  * 将一批新消息应用到会话列表：更新 last_msg/last_ts、累计未读（活跃会话不计），
  * 再按 `sortConversations` 重排。纯函数，便于测试与复用。
  */
@@ -277,20 +533,63 @@ export function applyIncomingToConversations(
   conversations: Conversation[],
   activeConvId: string | null,
   incomingByConv: Map<string, MessageRecord[]>,
+  selfSenderId = "",
 ): Conversation[] {
   const next: Conversation[] = conversations.map((c) => ({ ...c }));
   for (const [convId, rawMsgs] of incomingByConv) {
     // ⚠️ 静默类不参与未读与预览 —— 与后端 `is_non_notifying_kind` 同一口径。
     // 漏掉它的后果：别人回个表情，你的会话列表未读 +1、预览变成一段 JSON、
     // 会话还被顶到最前（后端 DB 里未读是 0，两边从此不一致）。
-    const msgs = rawMsgs.filter((m) => !isSilentKind(m.kind));
+    // ⚠️ 判据用 `countsTowardUnread`，**不是** `!isSilentKind` —— 与后端
+    // `protocol.rs::is_non_notifying_kind` 必须同一口径，那边明写 system 归"不计未读、
+    // 不改会话预览、不弹通知"（2026-09-23 审计 4.2 复核发现的漂移，现已收敛到这一份判据）。
+    // 静默类（表情回应/撤回）不在此记账的理由不变；漏掉它的后果也一样具体：
+    // 别人回个表情，你的会话列表未读 +1、预览变成一段 JSON、会话还被顶到最前
+    // （后端 DB 里未读是 0，两边从此不一致）。
+    const msgs = rawMsgs.filter((m) => countsTowardUnread(m.kind));
     if (msgs.length === 0) continue;
     const last = msgs[msgs.length - 1];
     const conv = next.find((c) => c.id === convId);
     if (!conv) continue;
     conv.last_msg = previewText(last);
     conv.last_ts = last.ts;
-    if (convId !== activeConvId) conv.unread += msgs.length;
+    // 自己发的那条**不计未读**，但上面两行仍要跑：后端给自己的消息写库时未读就是 0
+    // （`commands/window.rs` 的 `touch_conversation(..., 0)`），前端照加就等于两边永久不一致。
+    // 判据取"是不是本机发的"而不是 kind —— 群文件/公告/任务都走自 emit，按 kind 挡会漏。
+    const notMine = selfSenderId ? msgs.filter((m) => m.sender_id !== selfSenderId) : msgs;
+    if (convId !== activeConvId) conv.unread += notMine.length;
   }
   return sortConversations(next);
+}
+
+/**
+ * 「以下是未读消息」分割线该画在**已渲染时间线列表**的哪个下标（返回 -1 = 没有可画的行）。
+ *
+ * ⚠️ 入参刻意是"过滤后的时间线"而不是原始 `messages[convId]`：`unread` 是后端的计数，
+ * 分割线却要落在用户看得见的那些行里 —— 这两件事必须在**同一个坐标系**里换算。
+ * 旧实现拿原始列表算下标、到过滤后列表里用，而两个集合的差异是**双向**的
+ * （静默行占下标不占未读；`announcement`/`poll` 占未读却不显示），所以偏差方向随机
+ * （审计阶段 4 · 4.1-1）。
+ *
+ * 从末尾倒数时还要跳过「显示但**不**计未读」的行（`system`）：它占下标不占未读，
+ * 不跳就会把已读行算成未读。
+ *
+ * 残余误差（已知、不在本函数解决）：`announcement`/`poll` 计未读但不在传进来的列表里，
+ * 所以未读中含这类行时分割线会偏上几行。偏差方向单一、且不超过 `unread`，
+ * 比"两个方向随机偏"安全；要精确得让后端按可见性给数（协议改动）。
+ */
+export function unreadAnchorIndex(
+  rendered: readonly { kind: string }[],
+  unread: number,
+): number {
+  if (rendered.length === 0 || unread <= 0) return -1;
+  let seen = 0;
+  let anchor = -1;
+  for (let i = rendered.length - 1; i >= 0; i--) {
+    if (!countsTowardUnread(rendered[i].kind)) continue;
+    seen += 1;
+    anchor = i;
+    if (seen >= unread) break;
+  }
+  return anchor;
 }

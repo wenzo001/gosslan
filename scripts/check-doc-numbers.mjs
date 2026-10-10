@@ -1,0 +1,522 @@
+#!/usr/bin/env node
+/**
+ * 文档硬数字守卫（总指令§十三 / roadmap B-3）
+ *
+ * ## 为什么要有这个脚本
+ *
+ * 一个通宵里抓到四处同类漂移，全是**手写数字**：
+ *   ① `docs/acceptance/1.0-release.md` 写全量门禁「15 步」——实为 16，手抄的清单还漏了一步；
+ *   ② `README.md` 的 IPC 条数 138 → 实际 129；
+ *   ③ **门禁自己的文案也漂**：`verify.mjs` 的 `why:` 写「292 个取锁点」，
+ *      而同一步在同一次运行里打印 284 guard 绑定 + 11 语句临时量 = **295**；
+ *   ④ 同一个「取锁点条数」在仓库里同时存在 **292 / 295 / 296** 三种写法。
+ * 共同点：**这些数字都有唯一事实源，只是被人手抄了一遍。**
+ *
+ * ## 两类判据
+ *
+ * **A. 对账**：文档里凡出现「全量 N 步 / 快速 N 步」，N 必须等于 `verify.mjs --list` 现算出来的条数。
+ *    （`--list` 无副作用、退出 0，所以现算是便宜的。）
+ * **B. 禁令**：指定文件里不许再手写「取锁点」的条数 —— 真相是 `check-lock-scope.mjs`
+ *    每次实算并打印的，抄一份进文档就等于制造第二个事实源。
+ *
+ * **C. 双实例 E2E 的断言数由 harness 现算**：按模式归堆数 `check(` 调用，文档凡声明
+ *    「默认轮 N 断言 / 脏前缀轮 N 断言 / 续传轮 N 断言」必须等于现算值，且这些标注**一种都不许消失**
+ *    （否则「删掉标签」就是绕过这条守卫的最短路径）。归堆范围随搬家一起改口（同判据 E 那条先例）：
+ *    · 还没拆的族 —— 从驱动 `scripts/e2e-multi-instance.mjs` 的「顶层 `if (MODE) {` … 顶格 `}`」取块；
+ *    · 已拆的族 —— 每个 `scripts/e2e/rounds/<族>.mjs` 一整册就是那一轮，MODE 从册里那行
+ *      `export const MODE = "…"` 现读（**这条是册头写给判据 C 的契约，不是注释**）。
+ *    并且钉死「一个 MODE 只许有一个家」：同一 MODE 既在驱动有块、又有分册 ⇒ 红（半搬状态）。
+ *
+ * **D. harness 的每条正向轮次都必须被门禁 `local` 层点名**（§十五）。
+ *    判据 C 只管"断言数对不对"，管不到"这一轮**还在不在门禁里**"：把 `--group local` 里
+ *    某一步整条删掉，`verify:e2e` 会照样报「3 步全绿」，谁都不记得少了一步 —— 而这正是
+ *    GROUPS 那列存在的理由（"本地有、CI 永不跑"式的静默漏）在新层上的复现。
+ *    模式与 CLI 字符串的对应关系**从 harness 自己的 `const X = FAULT === "…"` 现读**，
+ *    不在这里手抄；同时反向钉两条：门禁里出现 `-lie` 模式 = 红（预期红的东西不许进门禁），
+ *    门禁里出现 harness 没有的 `--fault=` 值 = 红。
+ *
+ * **E. 护栏非空转用例数由脚本自己数**：真值只存在于 `scripts/guard_cases/<域>.py` 各分册的 `CASES`
+ *    列表里（2026-10-07 之前它们在 `verify-guards.py` 一份 3,747 行的字面量里，搬家后计数范围跟着搬），
+ *    跑起来那一步自己打印「[48/202]」这种进度，而契约图给人看的那张统计卡是**手抄的第二份**。
+ *    今天它就在眼前漂了一次：本轮把常驻群任务窗口那条 `:key` 护栏登记进 CASES（它早就有断言、
+ *    从没被证明过会红），总数从 189 变 190，而图上那一格一字未动 ⇒ 光靠"记得改"是守不住的。
+ *    与判据 C 同一条立场：**能被现算的数字不许留第二份手抄**，并且**那一格被删掉也算红**
+ *    （否则"删掉标签"就是绕过这条守卫的最短路径）。
+ *
+ * 退出码：0 = 通过；1 = 有漂移 / 有违规手写。
+ */
+import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+/** 被管的活文档：每次开工都会被 AI 读一遍、且**句子里的数字是在声明当前事实**的那几份。
+ *
+ * ⚠️ 已知边界（故意不管，不是漏了）：
+ *   · `docs/stability-roadmap.md` 是**漂移事故台账**，它的职责就是把"曾经写错过什么"原样记下来，
+ *     所以允许出现旧数字；它自己的状态表由人手维护，本脚本判不出"这句是历史还是这句是现状"。
+ *   · `CHANGELOG.md` 是带日期的历史发布记录，同理不管。
+ *   ⇒ 也就是说：**这条守卫只保证"契约面"没有第二个事实源**，不保证全仓库无手写数字。
+ */
+const LIVE_DOCS = [
+  "README.md",
+  "docs/acceptance/1.0-release.md",
+  "docs/acceptance/stability-smoke-matrix.md",
+  "docs/protocol-invariants.md",
+  "docs/ARCHITECTURE-MAP.html",
+  "scripts/verify.mjs",
+  "docs/large-file-split-plan.md",
+];
+
+const fails = [];
+
+// ---------- 判据 A：门禁步数必须现算对账 ----------
+function stepCounts() {
+  const run = (args) => {
+    const r = spawnSync("node", ["scripts/verify.mjs", ...args, "--list"], {
+      cwd: ROOT,
+      encoding: "utf8",
+    });
+    if (r.status !== 0) {
+      throw new Error(`verify.mjs ${args.join(" ")} --list 退出 ${r.status}：${r.stderr || r.stdout}`);
+    }
+    // --list 用「  N. 步骤名」编号快速层步骤；重门禁层在分隔线之后、不编号。
+    const numbered = [...r.stdout.matchAll(/^\s+(\d+)\.\s/gm)].map((m) => Number(m[1]));
+    return numbered.length;
+  };
+  return { quick: run([]), full: run(["--full-gate"]) };
+}
+
+let counts;
+try {
+  counts = stepCounts();
+} catch (e) {
+  console.error(`✗ 读不到门禁步数：${e.message}`);
+  process.exit(1);
+}
+console.log(`· 现算门禁步数：快速层 ${counts.quick} 步 / 全量 ${counts.full} 步`);
+
+// 只在"谈门禁"的句子里抓数字，避免把"三步走"这类散文误判成违约。
+const GATE_WORD = /(全量|完整门禁|重门禁|快速层|快速|full-gate|verify)/;
+const STEP_CLAIM = /([^\n]{0,28}?)(\d{1,3})\s*步/g;
+
+for (const rel of LIVE_DOCS) {
+  const abs = path.join(ROOT, rel);
+  if (!fs.existsSync(abs)) {
+    fails.push(`${rel} 不存在（守卫名单里却有它）`);
+    continue;
+  }
+  const text = fs.readFileSync(abs, "utf8");
+  for (const m of text.matchAll(STEP_CLAIM)) {
+    const [, before, nStr] = m;
+    if (!GATE_WORD.test(before)) continue;
+    const n = Number(nStr);
+    if (n === counts.quick || n === counts.full) continue;
+    fails.push(
+      `${rel}：手写「${before.trim().slice(-20) || "…"}${nStr} 步」= ${n}，` +
+        `现算只有 快速 ${counts.quick} / 全量 ${counts.full}`,
+    );
+  }
+}
+
+// ---------- 判据 B：手写「取锁点」条数一律禁止 ----------
+const LOCK_COUNT_BANNED = [
+  "README.md",
+  "docs/acceptance/1.0-release.md",
+  "docs/acceptance/stability-smoke-matrix.md",
+  "docs/protocol-invariants.md",
+  "docs/ARCHITECTURE-MAP.html",
+  "scripts/verify.mjs",
+  "scripts/check-lock-scope.mjs",
+];
+const LOCK_RE = /(\d{2,4})\s*(?:处|个)?\s*取锁点/g;
+
+for (const rel of LOCK_COUNT_BANNED) {
+  const abs = path.join(ROOT, rel);
+  if (!fs.existsSync(abs)) continue;
+  const text = fs.readFileSync(abs, "utf8");
+  for (const m of text.matchAll(LOCK_RE)) {
+    fails.push(
+      `${rel}：手写「${m[0].trim()}」——取锁点条数由 check-lock-scope.mjs 每次实算打印，` +
+        `抄进文档就是第二个事实源（已漂过一次：292/295/296 三种写法并存）`,
+    );
+  }
+}
+
+
+// ---------- 判据 C：双实例 E2E 的断言数由 harness 现算 ----------
+const HARNESS = "scripts/e2e-multi-instance.mjs";
+const ROUND_DIR = "scripts/e2e/rounds";
+/** 按「顶层 if (MODE) { … } 顶格 } 收尾」把 check( 调用归堆。
+ *  只认顶格的 `}` 收块 —— 与这个文件的写法一致；缩进的 } 一律不算闭合。 */
+/// harness 里的注入模式 → 活文档里必须出现的轮次名。**加一条注入就得在这里登记一行**：
+/// 没登记的表现是"文档永远不会要求它 ⇒ 这一轮的断言数没人对账"，正是要拦的那种静默漏。
+const MODE_LABEL = {
+  POISON: "脏前缀轮",
+  RESUME: "续传轮",
+  KILL: "杀进程轮",
+  FREEZE: "冻结轮",
+  DISK: "磁盘轮",
+  MULTI: "多文件轮",
+  SHRINK: "改小轮",
+  ROT: "改口轮",
+  STALL: "停滞轮",
+  SENDKILL: "发送端被杀轮",
+  // `--round=group` 不是注入而是**旅程轮**（§九 群聊），但它同样必须在这里登记：
+  // 不登记的表现就是"这一轮的断言数永远不会被对账"，与漏登记一条注入完全等价。
+  GROUP: "群聊轮",
+  // `--round=gossip3`（#75 三实例链式轮）同理：它挂在**发版前**那一层，不在本地层里，
+  // 但"没被门禁点名"不等于"可以不登记"——恰恰相反，越少人跑的轮次越需要有人数它的断言。
+  CHAIN: "链式轮",
+  // `--round=lanoff`（#89 的隔离轮）同理：它判的是"用户那个键真的说话"，
+  // 三条腿里中间那条是** absence 判据** ⇒ 登记与对账不能省，否则它的断言数永远没人核。
+  LANOFF: "关发现轮",
+  // `--round=gossip-late`（#77 的补递轮）：它判的是**转发路径的接线**（四个建链点上的那一次
+  // 重递），纯函数那半边有 9 条单测兜着、这一轮兜的是接上的那半边 —— 少了它，
+  // "把补递改成按当前可达再过滤一遍"这种写坏在本地层一点声音都不会出。
+  LATE: "补递轮",
+  TASK: "任务轮",
+  // `--round=groupcrash`（#121 的建群崩溃轮）：它判的是**投递那一半**（群名册在盘上、
+  // 那份"没送到"的登记只在内存里 ⇒ SIGKILL 之后必须还能靠建链重递自己收敛）。
+  // 与"重启后不许留下半个群"那种永绿断言的区别写在这轮的注释里 —— 登记不能省，
+  // 否则这八条断言永远不会被对账。
+  GCRASH: "建群崩溃轮",
+GFILE: "群文件轮",
+  // `--round=posttext`（§三 点名那一半）：默认轮的顺序是先文本再文件，所以"传完之后还能不能发文本"
+  // 从来没被判过 —— 这一轮补的就是这条，登记不能省，否则它的断言数永远不会被对账。
+  POSTTEXT: "续发轮",
+  // `--round=dmreaction`：1:1 那条静默事件的跨实例判据，登记不能省，
+  // 否则这六条断言永远不会被对账。
+  DMREACT: "单聊表情轮",
+};
+function harnessAsserts() {
+  const src = fs.readFileSync(path.join(ROOT, HARNESS), "utf8");
+  const per = {};
+  let mode = null;
+  let common = 0;
+  const driverModes = new Set();
+  for (const line of src.split("\n")) {
+    // 注释行整条跳过。这条不是洁癖：09-26 在 harness 头部写了句"每轮几条断言不在这里写，由
+    // check-doc-numbers 从下面的 check 调用点现算"——那行里出现了字面的 `check("(`，
+    // 于是**每一轮各多算 1 条**（默认轮 16→17），文档全被判红。
+    // ⇒ 判据"从源码数调用点"就必须区分得了注释与代码，否则说明性文字会把自己算进去。
+    // 反证形状：这行注释现在还留在 harness 里，而数字回到了真值 ⇒ 跳过确实生效。
+    if (/^\s*\/\//.test(line)) continue;
+    const open = line.match(/^\s*if \(([A-Z][A-Z_]*)\) \{/);
+    if (open) { mode = open[1]; if (mode !== "NEGATIVE") { per[mode] = per[mode] || 0; driverModes.add(mode); } continue; }
+    if (/^}/.test(line)) { mode = null; continue; }
+    // 只数「check("字符串名"」这种真断言调用点：`function check(` 与 `check(s.name, …)`
+    //    （失败记录器）都不是断言，混进来会把数算大。
+    const n = (line.match(/\bcheck\(\s*"/g) || []).length;
+    if (!n) continue;
+    if (mode === "NEGATIVE") continue; // 反向模式复用同一条旅程，不新增断言数
+    if (mode) per[mode] += n; else common += n;
+  }
+  // 分册：一册 = 一轮，MODE 从册里那行现读，check( 全归它
+  const dir = path.join(ROOT, ROUND_DIR);
+  const files = fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.endsWith(".mjs")).sort() : [];
+  const fileModes = new Map();
+  for (const f of files) {
+    const text = fs.readFileSync(path.join(dir, f), "utf8");
+    const m = text.match(/^export const MODE = "([A-Z][A-Z_]*)";$/m);
+    if (!m) {
+      throw new Error(`${ROUND_DIR}/${f} 没有那行 export const MODE = "…" ⇒ 这一册的断言数没有归属，` +
+        `判据 C 买不到"这一轮几条"，而它恰恰是最需要被对账的那一格`);
+    }
+    const modeName = m[1];
+    if (fileModes.has(modeName)) throw new Error(`${modeName} 有两份家：${fileModes.get(modeName)} 与 ${f} —— 一个 MODE 只许一个家`);
+    fileModes.set(modeName, f);
+    if (driverModes.has(modeName)) throw new Error(`${modeName} 半搬：驱动里还有 if (${modeName}) 块，${f} 也已经存在`);
+    let n = 0;
+    for (const line of text.split("\n")) {
+      if (/^\s*\/\//.test(line)) continue;
+      n += (line.match(/\bcheck\(\s*"/g) || []).length;
+    }
+    per[modeName] = n;
+  }
+  const unknown = Object.keys(per).filter((m2) => !(m2 in MODE_LABEL));
+  if (unknown.length) {
+    throw new Error(
+      `harness 里有没登记的注入模式块：${unknown.join(" / ")} —— 加一条注入要在 MODE_LABEL 登记轮次名，` +
+        `否则这一轮的断言数永远不会被对账`,
+    );
+  }
+  // 反向也钉（搬家改严）：MODE_LABEL 里登记过的每一轮，必须能在驱动或 rounds/ 里找到一个家。
+  // 漏这条的表现是"分册被删掉 ⇒ 那一轮的断言数静默变成 0，而文档里那句 N 条断言跟着改 0 就绿了"。
+  const homeless = Object.keys(MODE_LABEL).filter((m2) => !driverModes.has(m2) && !fileModes.has(m2));
+  if (homeless.length) {
+    throw new Error(
+      `MODE_LABEL 登记了 ${homeless.join(" / ")}，但驱动与 ${ROUND_DIR}/ 里都没有它的块或分册 ⇒ ` +
+        `这一轮的断言数现在无人可数（删分册等于绕过判据 C，不许）`,
+    );
+  }
+  const out = { 默认轮: common };
+  for (const [m2, label] of Object.entries(MODE_LABEL)) out[label] = common + (per[m2] || 0);
+  return out;
+}
+
+let e2e;
+try {
+  e2e = harnessAsserts();
+} catch (e) {
+  console.error(`✗ 读不到 harness 断言数：${e.message}`);
+  process.exit(1);
+}
+console.log(
+  `· 现算 E2E 断言数：${Object.entries(e2e).map(([k, v]) => `${k} ${v}`).join(" / ")}`,
+);
+/// 轮次名从 `MODE_LABEL` 现推，**不再手抄一份**：加一条轮次时要登记的地方只应该有一处
+/// （第一版在这里手抄过一遍名单，结果是"登记了 MODE_LABEL、文档声明却永远不被对账"，
+///  报出来的红还指着"文档没写"，而真正缺的是这张手抄表）。
+/// `故障轮` 是历史别名（文档里出现过），保留是因为它映射回 `脏前缀轮`。
+const CLAIM_LABELS = ["默认轮", "故障轮", ...Object.values(MODE_LABEL)];
+const E2E_CLAIM =
+  new RegExp(`(${CLAIM_LABELS.join("|")})([^。\\n]{0,16}?)(\\d{1,3})\\s*条?\\s*断言`, "g");
+const seenLabel = new Set();
+for (const rel of LIVE_DOCS) {
+  const abs = path.join(ROOT, rel);
+  if (!fs.existsSync(abs)) continue;
+  const text = fs.readFileSync(abs, "utf8");
+  for (const m of text.matchAll(E2E_CLAIM)) {
+    const label = m[1] === "故障轮" ? "脏前缀轮" : m[1];
+    seenLabel.add(label);
+    const n = Number(m[3]);
+    if (n === e2e[label]) continue;
+    fails.push(
+      `${rel}：手写「${label} ${m[3]} 条断言」= ${n}，` +
+        `现算 ${HARNESS} 是 ${e2e[label]} —— 加/删断言后要改的是 harness 的注释口径，不是文档里的数字`,
+    );
+  }
+}
+for (const label of Object.keys(e2e)) {
+  if (!seenLabel.has(label)) {
+    fails.push(`活文档里再没有「${label} N 断言」这种声明了 —— 删标签等于绕过判据 C，不许`);
+  }
+}
+
+// ---------- 判据 D：harness 的每条正向轮次都必须被门禁的 local 层点名 ----------
+/** 注入模式与 CLI 字符串的关系**取自 harness 自己**（`const X = FAULT === "…"`），
+ *  不在这里手抄一份 —— 手抄就是制造第二个事实源，正是本脚本反对的东西。 */
+function harnessFaultModes() {
+  const src = fs.readFileSync(path.join(ROOT, HARNESS), "utf8");
+  const out = [];
+  for (const m of src.matchAll(/^const ([A-Z][A-Z_]*) = FAULT === "([^"]+)"/gm)) out.push(m[2]);
+  if (!out.length) {
+    throw new Error(`harness 里解析不到任何 --fault= 模式（\`const X = FAULT === "…"\` 的写法变了？）`);
+  }
+  return out;
+}
+
+/** verify.mjs 里某个 `--group <g>` 那一段的原文（顶格 `}` 收尾，与判据 C 同一套取块约定）。 */
+function gateBlock(group) {
+  const src = fs.readFileSync(path.join(ROOT, "scripts/verify.mjs"), "utf8").split("\n");
+  const start = src.findIndex((l) => l === `if (groupFlag === "${group}") {`);
+  if (start < 0) throw new Error(`verify.mjs 里找不到 \`if (groupFlag === "${group}") {\` 这一段`);
+  let end = start + 1;
+  while (end < src.length && !/^\}/.test(src[end])) end++;
+  if (end >= src.length) throw new Error(`${group} 层那一段没找到顶格 } 收尾`);
+  return src.slice(start, end).join("\n");
+}
+
+/** harness 自己声明的**旅程轮次**（`const X = ROUND === "…"`，含它的 `-lie` 反向兄弟）。
+ *  与 `--fault=` 同理：CLI 字符串一律从 harness 现读，手抄就是第二个事实源。 */
+function harnessRoundModes() {
+  const src = fs.readFileSync(path.join(ROOT, HARNESS), "utf8");
+  const out = [];
+  for (const m of src.matchAll(/ROUND === "([a-z0-9-]+)"/g)) if (!out.includes(m[1])) out.push(m[1]);
+  if (!out.length) throw new Error('harness 里解析不到任何 --round= 轮次（`const X = ROUND === "…"` 的写法变了？）');
+  return out;
+}
+
+/** 只从 `args: [ … ]` 里取 CLI 字符串。
+ *  ⚠️ 这条收窄是被一次**假红**逼出来的：`why:` 说明文字里也会写 `--round=group-lie`（那是交代
+ *  反向轮怎么自证），整段扫会把"讲到了"读成"跑上了" ⇒ 判出"门禁点名了预期红的轮次"这种根本不存在的红。
+ *  真正决定跑不跑的只有 args，所以判据的输入也必须是 args。 */
+function gatedFlags(block, flag) {
+  const out = [];
+  for (const a of block.matchAll(/args: \[[^\]]*\]/g)) {
+    for (const m of a[0].matchAll(new RegExp(`--${flag}=([a-z0-9-]+)`, "g"))) out.push(m[1]);
+  }
+  return out;
+}
+
+try {
+  const modes = harnessFaultModes();
+  const block = [gateBlock("local"), gateBlock("release")].join("\n");
+  const gated = gatedFlags(block, "fault");
+  const lies = gated.filter((s) => s.endsWith("-lie"));
+  if (lies.length) {
+    fails.push(
+      `门禁层里点名了反向注入模式（${lies.join(" / ")}）—— 它们**预期红**，` +
+        `进门禁会把"能红"变成"常红"，那样整层会被静音掉`,
+    );
+  }
+  for (const s of gated) {
+    if (!modes.includes(s)) {
+      fails.push(`门禁层点名了 harness 里不存在的注入 --fault=${s}（harness 现有：${modes.join(" / ")}）`);
+    }
+  }
+  for (const s of modes) {
+    if (!gated.includes(s)) {
+      fails.push(
+        `harness 有正向轮次 --fault=${s}，但 verify.mjs 的门禁层没有它 —— ` +
+          `这条注入又从门禁里滑出去了（表现：verify:e2e 只报 3 步还全绿，谁都不记得少了一步）`,
+      );
+    }
+  }
+  // 旅程轮（`--round=`）走同一条对账：#75 新开 release 层之后，"正向轮只在某一层里被点名"
+  // 这件事有两个候选层，任何一层被删掉都不该是静默的。
+  const rounds = harnessRoundModes();
+  const gatedRounds = gatedFlags(block, "round");
+  const roundLies = gatedRounds.filter((s) => s.endsWith("-lie"));
+  if (roundLies.length) {
+    fails.push(`门禁层点名了反向旅程轮（${roundLies.join(" / ")}）—— 同 --fault 的 -lie 轮，预期红不许进门禁`);
+  }
+  for (const s of gatedRounds) {
+    if (!rounds.includes(s)) {
+      fails.push(`门禁层点名了 harness 里不存在的轮次 --round=${s}（harness 现有：${rounds.join(" / ")}）`);
+    }
+  }
+  for (const s of rounds) {
+    if (s.endsWith("-lie")) continue;
+    if (!gatedRounds.includes(s)) {
+      fails.push(
+        `harness 有正向旅程轮 --round=${s}，但 local / release 两层都没有它 —— ` +
+          `这一轮又变成"某人记得跑才算跑过"（表现同 --fault 那条：步数在，轮次没了）`,
+      );
+    }
+  }
+  const defaults = (block.match(/args: \[\s*"scripts\/e2e-multi-instance\.mjs"\s*\]/g) || []).length;
+  if (defaults !== 1) {
+    fails.push(`门禁层应当恰好 1 条"默认轮"（不带 --fault/--round 的 harness 调用），实际 ${defaults} 条`);
+  }
+  console.log(
+    `· 现算门禁 local+release 层：${defaults} 条默认轮 + ${gated.length} 条注入轮 + ` +
+      `${gatedRounds.length} 条旅程轮（harness 正向注入 ${modes.length} 条 / 正向旅程轮 ` +
+      `${rounds.filter((s) => !s.endsWith("-lie")).length} 条）`,
+  );
+} catch (e) {
+  console.error(`✗ 对账 harness 轮次 ↔ 门禁层失败：${e.message}`);
+  process.exit(1);
+}
+
+// ---------- 判据 E：护栏非空转用例数由 guard_cases/ 各分册自己数 ----------
+const GUARD_CASE_DIR = "scripts/guard_cases";
+let guardCases = 0;
+try {
+  // 2026-10-07：202 条 `Case` 从主文件切进 `guard_cases/<域>.py` ⇒ 计数范围跟着搬家。
+  // ⚠️ 这一处**只数分册文件**（`base.py` 装的是数据类、`__init__.py` 是装配表，两条都不构造用例）：
+  //   把主文件也扫进来会多算一次，而多算的那一份今天根本不存在。
+  // ★ 这条判据买不到的那一半，由 `guard_cases/__init__.py` 里那条**起跑前就炸**的对账补：
+  //   目录里的分册 ≠ `MODULES` 名单 ⇒ ImportError（漏点名的册子一条用例都不会跑 = 假绿）。
+  //   两件判据各守一侧：这里守"文档抄的数字对不对"，那里守"装配表有没有漏掉一册"。
+  const files = fs
+    .readdirSync(path.join(ROOT, GUARD_CASE_DIR))
+    .filter((f) => f.endsWith(".py") && f !== "base.py" && f !== "__init__.py")
+    .map((f) => path.join(GUARD_CASE_DIR, f));
+  for (const rel of files) {
+    const src = fs.readFileSync(path.join(ROOT, rel), "utf8");
+    // 只数 CASES 里顶格四空格的构造调用（与搬家前同一条形状规则）。
+    guardCases += (src.match(/^    Case\(/gm) ?? []).length;
+  }
+  if (guardCases === 0) {
+    throw new Error(
+      `数到 0 条 —— ${GUARD_CASE_DIR} 里的锚定形状变了（或目录空了），先修这条判据再谈文档`,
+    );
+  }
+  console.log(
+    `· 判据 E 现算护栏条数：${guardCases} 条（${files.length} 个分册；` +
+      `复跑 \`grep -h '^    Case(' ${GUARD_CASE_DIR}/*.py | wc -l\` 应得同一个数）`,
+  );
+} catch (e) {
+  console.error(`✗ 读不到护栏用例数：${e.message}`);
+  process.exit(1);
+}
+const GUARD_CLAIM = /<div class="num">(\d+)<\/div><div>([^<]*护栏非空转用例[^<]*)<\/div>/g;
+let guardSeen = false;
+for (const rel of LIVE_DOCS) {
+  const abs = path.join(ROOT, rel);
+  if (!fs.existsSync(abs)) continue;
+  for (const m of fs.readFileSync(abs, "utf8").matchAll(GUARD_CLAIM)) {
+    guardSeen = true;
+    const n = Number(m[1]);
+    if (n === guardCases) continue;
+    fails.push(
+      `${rel}：手写「护栏非空转用例 ${m[1]}」= ${n}，现算 ${GUARD_CASE_DIR}/*.py 是 ${guardCases} —— ` +
+        `往 CASES 里加/删一条用例时，改的应该是那条用例而不是文档里的数字`,
+    );
+  }
+}
+if (!guardSeen) {
+  fails.push(
+    `活文档里再没有「护栏非空转用例 N」这一格了 —— 删标签等于绕过判据 E，不许` +
+      `（要真想撤掉手抄，就把那一格改成不带数字的说法，而不是留着旧数字没人管）`,
+  );
+}
+
+// ---------- 判据 F：每一条反证（-lie）档都必须有一个 npm 入口，入口也不许指着已消失的档 ----------
+/// 这一族死法是**静默**的：`--round=xxx-lie` 写在 harness 里、注释也写着"配了反向自证"，
+/// 但 package.json 没有入口 ⇒ 下一个人既跑不到它、也不知道它存在，过一轮就直接把它删了
+/// ——「有反证」退化成"有反证的代码"，而判得住的东西是"跑得起来的"。与判据 D 同一族（集合互点、两个方向都要）。
+function harnessLieModes() {
+  const src = fs.readFileSync(path.join(ROOT, HARNESS), "utf8");
+  const out = new Set();
+  for (const m of src.matchAll(/"([a-z0-9][a-z0-9-]*-lie)"/g)) out.add(m[1]);
+  if (!out.size) {
+    throw new Error(`harness 里解析不到任何 -lie 反证档（\`"--round=x-lie"\` 的写法变了？）`);
+  }
+  return out;
+}
+function npmLieTargets() {
+  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
+  const m = new Map();
+  for (const [name, cmd] of Object.entries(pkg.scripts ?? {})) {
+    for (const g of String(cmd).matchAll(/--(?:round|fault)=([a-z0-9-]+)/g)) {
+      if (g[1].endsWith("-lie")) m.set(g[1], name);
+    }
+  }
+  return m;
+}
+let lieModes;
+let lieEntries;
+try {
+  lieModes = harnessLieModes();
+  lieEntries = npmLieTargets();
+} catch (e) {
+  console.error(`✗ 判据 F 读不到反证清单：${e.message}`);
+  process.exit(1);
+}
+for (const mode of lieModes) {
+  if (!lieEntries.has(mode)) {
+    fails.push(
+      `harness 里的反证档 --round/--fault=${mode} **没有 npm 入口** ⇒ 谁都跑不到它，` +
+        `「这一轮配了反向自证」就成了不可核对的声明。补一条 test:e2e:*-selfproof 或删掉那一档`,
+    );
+  }
+}
+for (const [mode, name] of lieEntries) {
+  if (!lieModes.has(mode)) {
+    fails.push(
+      `package.json 的 ${name} 指向反证档 ${mode}，但 harness 里已经没有这一档 ⇒ 死入口 ` +
+        `（留着它，下一次"跑反证"会跑成一趟正向轮并打印全绿）`,
+    );
+  }
+}
+
+if (fails.length) {
+  console.error(`\n✗ 文档硬数字漂移 ${fails.length} 处：`);
+  for (const f of fails) console.error(`  · ${f}`);
+  console.error(
+    `\n  改法分两种：判据 B 那类（真相自己会打印出来的）把数字从文档里删掉；` +
+      `判据 A/C/E/F 那类（文档就是要给人看一个现状数、或对账一张名单）把数字改成现算值、或去补那一档缺的登记，` +
+      `并记住真正该动的是源头` +
+      `（harness 里的注释口径、CASES 里那条用例）—— 只改文档等于把下一次漂移排上队。`,
+  );
+  process.exit(1);
+}
+console.log(
+  `✓ 文档硬数字对账通过（${LIVE_DOCS.length} 份活文档；取锁点条数无手写；E2E 断言数现算对账；` +
+    `harness 轮次与门禁 local+release 两层互点对齐；反证档 ${lieModes.size} 条与 npm 入口 ${lieEntries.size} 条双向对齐）`,
+);

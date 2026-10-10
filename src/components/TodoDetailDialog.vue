@@ -1,17 +1,35 @@
 <script setup lang="ts">
 /**
- * 任务详情（用户 2026-09-17：列表改成「微信式极简」—— 行内只留序号/标题/状态/元信息，
+ * 任务详情（用户 2026-09-17：列表改成「微信式极简」—— 行内只留固定编号/标题/状态/元信息，
  * **描述与图片、以及所有状态与编辑操作都收进这里**，点行打开）。
  *
  * 纯展示 + 意图上抛：真正的改状态/归档/编辑/删除都在 `GroupTasksBoard` 里
  * （那里已经握有折叠数据、权限判据与 API 调用），这里只渲染与 `emit`。
  */
-import { computed, ref, watch } from "vue";
+import { computed, watch } from "vue";
 import BaseModal from "@/components/BaseModal.vue";
+import { useImagePreviewStore } from "@/stores/useImagePreview";
+import MentionText from "@/components/message/MentionText.vue";
 import TodoImageThumb from "@/components/TodoImageThumb.vue";
-import { TODO_STATUSES, TODO_STATUS_LABEL_KEY, TODO_STATUS_PILL, type TodoItem, type TodoStatus } from "@/utils/todos";
+import TodoPickField from "@/components/TodoPickField.vue";
+import {
+  TODO_CATEGORIES,
+  TODO_CATEGORY_LABEL_KEY,
+  TODO_CATEGORY_PILL,
+  TODO_PRIORITIES,
+  TODO_PRIORITY_LABEL_KEY,
+  TODO_PRIORITY_PILL,
+  TODO_STATUSES,
+  TODO_STATUS_LABEL_KEY,
+  TODO_STATUS_PILL,
+  todoCode,
+  type TodoCategory,
+  type TodoItem,
+  type TodoPriority,
+  type TodoStatus,
+} from "@/utils/todos";
 import { fmtConversationTime } from "@/utils/time";
-import { Archive, Check, ChevronDown, Pencil, RotateCcw, Trash2 } from "lucide-vue-next";
+import { Archive, Check, Pencil, RotateCcw, Trash2, UserPlus } from "lucide-vue-next";
 import { t } from "@/i18n";
 
 const props = defineProps<{
@@ -20,16 +38,41 @@ const props = defineProps<{
   /** 该任务当前是否实际处于归档态（显式归档 或 完成满 7 天）。 */
   archived: boolean;
   canChangeStatus: boolean;
+  /**
+   * 能否**只动归档位**（群成员皆可，用户 2026-09-24 #37）。
+   * 与 `canChangeStatus` 是两件事：改状态 / 恢复仍归创建者、群主、被指派人。
+   */
+  canArchive: boolean;
+  /**
+   * 能否**还原**（把「完成」退回「待办」，一并退出归档）。与归档同一条成员窄档
+   * （用户 2026-09-24 追加：还原也开放给全体群成员）。
+   */
+  canRestore: boolean;
   canEditStructure: boolean;
   /** 能否改指派人（创建者/群主/当前被指派人）—— 被指派人也能通过编辑改指派人。 */
   canEditAssignees: boolean;
+  /**
+   * 能否**认领**这条需求（群成员皆可，但只限「需求」且自己还不在名单里）。
+   * 后端那条窄档是 `commands::claim_only_change`；这里只是"给不给按钮"，拦截在命令层。
+   */
+  canClaim: boolean;
   /** 名字解析（id → 昵称）；由看板注入 `memberProfile`，避免这里再依赖成员数据源。 */
   nameOf: (id: string) => string;
+  /**
+   * @ 渲染的判定输入（与聊天正文同一份推导）。同 `nameOf` 一样由看板注入 ——
+   * 本弹窗刻意不直接依赖成员数据源。
+   */
+  mentionNames?: string[];
+  selfMention?: { name: string; label: string } | null;
 }>();
 
 const emit = defineEmits<{
   (e: "close"): void;
   (e: "status", status: TodoStatus): void;
+  (e: "priority", priority: TodoPriority): void;
+  (e: "category", category: TodoCategory): void;
+  /** 认领 = "把自己追加进 assignees"这一步（不新增字段，权限跟着 assignees 走）。 */
+  (e: "claim"): void;
   (e: "complete"): void;
   (e: "archive"): void;
   (e: "restore"): void;
@@ -45,86 +88,133 @@ function statusText(s: TodoStatus): string {
 }
 
 /**
- * 状态改成**显式两步**（用户 2026-09-17：「一不小心就把状态改了」）。
+ * 三格（状态 / 优先级 / 类型）的候选表。
  *
- * 此前是一排 4 个分段按钮，一点即写库 —— 而且它长得跟看板顶部的**筛选**分段控件一模一样，
- * 用户会以为是"切视图"，于是顺手点、状态就变了。现在：当前状态是一个胶囊（一眼看清现状），
- * 改动要点开菜单再选（当前项直接置灰不可点），误触代价从"改错状态"变成"多看一眼"。
+ * 文案走 i18n ⇒ 必须是 computed：写成模块级常量的话，用户在设置里切语言之后
+ * 菜单里还是旧文案（这类"只有切换后才露出来"的破绽最难被查）。
  */
-const menuOpen = ref(false);
-function choose(s: TodoStatus) {
-  menuOpen.value = false;
-  if (s === props.item?.status) return; // 当前项本就不可点，双保险
-  emit("status", s);
+const statusOptions = computed(() => TODO_STATUSES.map((s) => ({ value: s, label: statusText(s) })));
+const priorityOptions = computed(() =>
+  TODO_PRIORITIES.map((p) => ({ value: p, label: t(TODO_PRIORITY_LABEL_KEY[p]) })),
+);
+const categoryOptions = computed(() =>
+  TODO_CATEGORIES.map((c) => ({ value: c, label: t(TODO_CATEGORY_LABEL_KEY[c]) })),
+);
+
+/**
+ * 图片点开大图（用户 2026-09-21：「任务详情里图片不能点击预览」）。
+ *
+ * 渲染用的是**全局那一份**预览实例（用户 2026-09-24 #40：看图是一个公共能力，
+ * 不再是每个面板各挂一个 `ImageLightbox`），本组件只给数组 + 来源标记 `task:<todoId>`。
+ * 相册条目按 **cid** 而不是 `msg_id` 解析 —— 待办描述图片的载荷里只有 sha256（= content store cid）。
+ * 预览的 z-[80] 压在弹窗 z-[65] 之上（与合并转发卡片同一做法）。
+ */
+const gallery = computed(() =>
+  (props.item?.images ?? []).map((im) => ({ cid: im.sha256, name: im.name })),
+);
+const preview = useImagePreviewStore();
+/** 这份相册属于"哪条任务的详情"（关闭时按来源收，见 `onDialogClose`）。 */
+const sourceKey = computed(() => (props.item ? `task:${props.item.todoId}` : null));
+const previewIsMine = computed(
+  () => preview.open && sourceKey.value !== null && preview.source === sourceKey.value,
+);
+function openAt(i: number) {
+  preview.openGallery(gallery.value, i, sourceKey.value);
 }
-// 关掉详情时收起菜单（下次打开是干净的）
+
+/**
+ * 弹窗要求关闭（点遮罩 / Esc）。
+ *
+ * 预览开着时**只收预览、不关详情**：HeadlessUI 的 `Dialog` 把「面板之外的任何点击」都当成
+ * 关闭信号（`useOutsideClick` 只认 `DialogPanel` 那几个容器），而预览是 `Teleport to="body"`
+ * 的、就排在面板外面 —— 不挡一下的话，在预览里点「保存 / 关闭」会顺带把任务详情一起关掉。
+ * 让最上面那层吃掉这一次关闭，也正好是浮层该有的层级语义。
+ */
+function onDialogClose() {
+  if (previewIsMine.value) {
+    preview.close();
+    return;
+  }
+  emit("close");
+}
+
+// 关掉详情时收起菜单（下次打开是干净的；预览由上面的 onDialogClose 收）
 watch(
   () => props.open,
   (v) => {
-    if (!v) menuOpen.value = false;
+    if (!v) {
+      // 详情被别处关掉（改状态/归档/完成后 closeDetail）时，按来源收掉这份相册
+      if (sourceKey.value) preview.closeIfFrom(sourceKey.value);
+    }
   },
+);
+/**
+ * 标题前缀那串编号：详情**不是**紧凑界面，所以永远给完整编号（用户 2026-09-30 规则 7）。
+ * 卡片与看板那一格超过 4 位只显后四位，这一格就是用户核对全码的出口；
+ * 没有号（旧版本对端建的）整个前缀不出现，与那两格同一口径。
+ */
+const fullCode = computed(() =>
+  props.item ? todoCode(props.item.category, props.item.number)?.full ?? "" : "",
 );
 </script>
 
 <template>
-  <BaseModal :open="open" :title="item?.title ?? t('todo.title')" width="max-w-lg" @close="emit('close')">
+  <BaseModal :open="open" :title="(fullCode ? fullCode + ' ' : '') + (item?.title ?? t('todo.title'))" width="max-w-lg" @close="onDialogClose">
     <div v-if="item" class="space-y-4">
+      <!-- 优先级三档（默认「常规」）。可用的人 = 发起人 / 关联人 / 群主：
+           与「改状态」同一档，所以复用同一个 `canChangeStatus` 入参，不另起一套判权。
+           三格（状态 / 优先级 / 类型）共用 `TodoPickField` —— 观感与键盘行为只有一份，
+           也修掉了原生 select 在暗夜模式下的"浅底 + 近白字"（见该组件头部注释）。 -->
+      <TodoPickField
+        :label="t('todo.priorityLabel')"
+        :hint="t('todo.priorityHint')"
+        :model-value="item.priority ?? 'normal'"
+        :current="t(TODO_PRIORITY_LABEL_KEY[item.priority ?? 'normal'])"
+        :current-class="TODO_PRIORITY_PILL[item.priority ?? 'normal']"
+        :options="priorityOptions"
+        :disabled="!canChangeStatus"
+        @update:model-value="(v: string) => emit('priority', v as TodoPriority)"
+      />
+      <!-- 类型三档（默认「任务」）。判权与优先级同一档 ⇒ 复用同一个 canChangeStatus。 -->
+      <TodoPickField
+        :label="t('todo.categoryLabel')"
+        :hint="t('todo.categoryHint')"
+        :model-value="item.category ?? 'task'"
+        :current="t(TODO_CATEGORY_LABEL_KEY[item.category ?? 'task'])"
+        :current-class="TODO_CATEGORY_PILL[item.category ?? 'task']"
+        :options="categoryOptions"
+        :disabled="!canChangeStatus"
+        @update:model-value="(v: string) => emit('category', v as TodoCategory)"
+      />
+      <!-- 认领：只在这一格出现 —— 需求 + 自己还不在名单里（+ 本群成员，由 canClaim 判）。
+           按下之后走的是"改指派人"那条既有命令，不新增接口，也不新增一次同步。 -->
+      <div v-if="canClaim" class="flex items-center justify-between gap-2">
+        <span class="text-xs text-[var(--gosslan-text-2)]">{{ t("todo.claimHint") }}</span>
+        <button
+          type="button"
+          class="tap-safe inline-flex h-7 items-center gap-1 rounded-md border border-[var(--gosslan-primary)] px-2.5 text-[12px] text-[var(--gosslan-accent-ink)] transition hover:opacity-80"
+          :aria-label="t('todo.claim')"
+          @click="emit('claim')"
+        >
+          <UserPlus class="h-3.5 w-3.5" aria-hidden="true" />
+          {{ t("todo.claim") }}
+        </button>
+      </div>
       <!-- 状态：**显式两步**（用户 2026-09-17：「一不小心就把状态改了」）。
            此前是一排 4 个分段按钮、一点即写库，而且与看板顶部的**筛选**分段控件长得一样，
            用户当成"切视图"就顺手点了。现在当前状态是一个胶囊（看清现状），改动要点开菜单再选，
-           当前项置灰不可点 —— 误触代价从"改错状态"变成"多看一眼"。 -->
-      <div class="flex items-center justify-between gap-2">
-        <span class="text-xs text-[var(--gosslan-text-2)]">{{ t("todo.statusLabel") }}</span>
-        <div class="relative">
-          <button
-            v-if="canChangeStatus"
-            type="button"
-            class="tap-safe inline-flex h-6 items-center justify-center gap-1 rounded-full px-2.5 text-[12px] font-medium leading-none transition hover:opacity-80"
-            :class="TODO_STATUS_PILL[item.status]"
-            :title="t('todo.statusChange')"
-            :aria-label="t('todo.statusChange')"
-            :aria-expanded="menuOpen"
-            aria-haspopup="menu"
-            @click="menuOpen = !menuOpen"
-          >
-            {{ statusText(item.status) }}
-            <ChevronDown class="h-3 w-3" />
-          </button>
-          <span
-            v-else
-            class="inline-flex h-6 items-center justify-center rounded-full px-2.5 text-[12px] font-medium leading-none"
-            :class="TODO_STATUS_PILL[item.status]"
-          >
-            {{ statusText(item.status) }}
-          </span>
-
-          <!-- 状态菜单（应用统一的 .gosslan-menu 观感；当前项置灰不可点） -->
-          <template v-if="canChangeStatus && menuOpen">
-            <button
-              type="button"
-              class="fixed inset-0 z-40 cursor-default"
-              :aria-label="t('todo.closeMenu')"
-              @click="menuOpen = false"
-            />
-            <div class="gosslan-menu frost absolute right-0 top-full z-50 mt-1" role="menu" aria-orientation="vertical">
-              <button
-                v-for="s in TODO_STATUSES"
-                :key="s"
-                type="button"
-                role="menuitem"
-                class="gosslan-menu-item"
-                :class="s === item.status ? 'font-medium text-[var(--gosslan-primary)]' : ''"
-                :disabled="s === item.status"
-                :aria-current="s === item.status ? 'true' : undefined"
-                @click="choose(s)"
-              >
-                {{ statusText(s) }}
-              </button>
-            </div>
-          </template>
-        </div>
-      </div>
-
+           当前项置灰不可点 —— 误触代价从"改错状态"变成"多看一眼"。
+           菜单形状与优先级 / 类型 两格同一份（`TodoPickField`）。 -->
+      <TodoPickField
+        :label="t('todo.statusLabel')"
+        :hint="t('todo.statusChange')"
+        :model-value="item.status"
+        :current="statusText(item.status)"
+        :current-class="TODO_STATUS_PILL[item.status]"
+        :options="statusOptions"
+        :disabled="!canChangeStatus"
+        @update:model-value="(v: string) => emit('status', v as TodoStatus)"
+      />
       <!-- 元信息：创建时间 / 创建人 / 指派 / 完成时间（用户 2026-09-17：时间要回显） -->
       <div class="space-y-1 text-[12px] text-[var(--gosslan-text-2)]">
         <div v-if="item.createdAt">{{ t("todo.createdAt", { time: fmtConversationTime(item.createdAt) }) }}</div>
@@ -140,16 +230,27 @@ watch(
           v-if="item.description"
           class="whitespace-pre-wrap break-words text-[12px] leading-relaxed text-[var(--gosslan-text)]"
         >
-          {{ item.description }}
+          <!-- 与聊天里的同一条 @ 走同一份渲染件（§9）：判定单源在 utils/linkify。 -->
+          <MentionText
+            :text="item.description"
+            :mention-names="mentionNames"
+            :self-mention="selfMention"
+          />
         </p>
         <p v-else class="text-[12px] text-[var(--gosslan-text-2)]">{{ t("todo.noDescription") }}</p>
       </div>
 
-      <!-- 图片 -->
+      <!-- 图片：点缩略图看大图（交给全局那一份预览实例，见 script 里的说明） -->
       <div v-if="item.images.length">
         <div class="mb-1.5 text-xs text-[var(--gosslan-text-2)]">{{ t("todo.imagesLabel") }}</div>
         <div class="flex flex-wrap gap-1.5">
-          <TodoImageThumb v-for="img in item.images" :key="img.sha256" :image="img" />
+          <TodoImageThumb
+            v-for="(img, i) in item.images"
+            :key="img.sha256"
+            :image="img"
+            clickable
+            @open="openAt(i)"
+          />
         </div>
       </div>
 
@@ -163,17 +264,21 @@ watch(
         >
           <Check class="mr-1 inline h-3.5 w-3.5" />{{ t("todo.complete") }}
         </button>
-        <!-- 完成之后**手动**归档（不再自动归档） -->
+        <!-- 完成之后**手动**归档（不再自动归档）。
+             归档那一档由 `canArchive` 决定 —— 它对**全体群成员**开放（用户 2026-09-24 #37），
+             比"改状态"宽；但只在「完成」态给按钮（后端拒绝归档未完成的任务）。
+             「恢复」仍然要 `canChangeStatus`：它是把状态改回待办，不是"取消归档"。 -->
         <button
-          v-else-if="canChangeStatus && !archived"
+          v-else-if="canArchive && item.status === 'done' && !archived"
           type="button"
           class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-hover)] px-3 py-1.5 text-[13px] text-[var(--gosslan-text-2)] transition hover:text-[var(--gosslan-text)]"
           @click="emit('archive')"
         >
           <Archive class="h-3.5 w-3.5" />{{ t("todo.archive") }}
         </button>
+        <!-- 「恢复」不在这里 —— 它是把状态从「完成」退回「待办」，见下面的 canRestore。 -->
         <button
-          v-if="archived && canChangeStatus"
+          v-if="archived && canRestore"
           type="button"
           class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-hover)] px-3 py-1.5 text-[13px] text-[var(--gosslan-text-2)] transition hover:text-[var(--gosslan-text)]"
           @click="emit('restore')"
@@ -206,4 +311,6 @@ watch(
       </div>
     </div>
   </BaseModal>
+
+  <!-- 大图预览：Teleport 到 body，压在弹窗之上（与合并转发卡片同一做法） -->
 </template>

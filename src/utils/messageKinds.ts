@@ -42,8 +42,13 @@ export const SILENT_KINDS: readonly string[] = [
 ];
 
 /**
- * 群级沉淀物：**进时间线**（该计未读、该通知），但**不属于"聊天历史"** ——
- * 清空聊天记录不得删、清空边界不得拦。这两点是它与 bubble 的全部差别。
+ * 群级沉淀物：**计未读、弹通知、清空聊天记录不得删、清空边界不得拦** ——
+ * 这四点是它与 bubble 的全部差别。
+ *
+ * ⚠️ 但"进不进时间线"**不由本清单决定**，逐项判决只在 `isRenderedInTimeline` 一处
+ * （今天：只有 `todo` 进；`announcement` 走聊天窗顶部的公告条，`poll` 本客户端发不出来）。
+ * 这行注释此前写的是"进时间线"，与那条判据相反 —— 就是这类"注释与代码各说一套"
+ * 让 2026-09-26 用户报的"自己发的任务在聊天里看不见"被当成设计如此（见 #82）。
  */
 export const CARD_KINDS: readonly string[] = ["announcement", "todo", "poll"];
 
@@ -80,6 +85,36 @@ export function isKnownKind(kind: string): boolean {
 }
 
 /**
+ * 这个 kind 会出现在**聊天时间线**里吗（`ChatWindow.vue` 的 `messages` 过滤判据）。
+ *
+ * 必须与 ChatWindow 共用一份而不是各写一遍：未读分割线的锚点是在 store 里算的
+ * （store 才知道 `conversation.unread`），却要拿去**过滤后的列表**里当下标用。
+ * 两边判据一旦漂移（比如这里加了 `announcement`、那边没加），表现就是分割线画错消息，
+ * 而且**方向随消息种类变化**——静默行占下标不占未读、card 行占未读不占下标。
+ */
+export function isRenderedInTimeline(kind: string): boolean {
+  return kindClass(kind) === "bubble" || kind === "todo";
+}
+
+/**
+ * 这个 kind **计入未读/触发通知**吗 —— 与 Rust `is_non_notifying_kind`
+ * （`src-tauri/src/protocol.rs:377-379`，= `is_silent_kind(kind) || kind == "system"`）同口径。
+ *
+ * 为什么不能直接用 `!isSilentKind(kind)`：`system` 归 **bubble**（要显示在时间线里，
+ * 例如「对方改了昵称」「下载了你的文件」），但后端明确**不给它记未读**。两者相差的正好是
+ * "渲染集合 \ 计未读集合"，所以凡是要把 `conversation.unread` 换算成时间线里某个位置的
+ * 判据（未读分割线的锚点就是这一个），都必须用本函数而不是 `isSilentKind` 的反面。
+ *
+ * 的两个消费点（判据只留这一份）：未读记账与会话预览
+ * （`utils/messages.ts::applyIncomingToConversations`）、是否弹系统通知
+ * （`useChatStore` 的通知闸门）。2026-09-23 审计 4.2 复核时发现这两处都只滤 `isSilentKind`
+ * ⇒ 后端不记账/不打扰的系统消息在前端会 +1 并弹通知；现已统一收敛到本函数。
+ */
+export function countsTowardUnread(kind: string): boolean {
+  return !isSilentKind(kind) && kind !== "system";
+}
+
+/**
  * 未知 kind 的占位文案。**必须与 Rust 的 `UNSUPPORTED_PREVIEW_LABEL` 一字不差** ——
  * 会话列表（Rust 算）与气泡（前端算）说的必须是同一句话，`messageKinds.test.ts` 直接
  * 读 `protocol.rs` 比对这个字面量。
@@ -110,4 +145,29 @@ export function isTipKind(kind: string): boolean {
  */
 export function isMultiSelectable(kind: string): boolean {
   return kind !== "todo";
+}
+
+/**
+ * 能否「转发」——**唯一一份判据**（消息右键菜单、长按面板、收藏详情操作条都从这里取）。
+ *
+ * 为什么必须收成一份（AI_RULES §32）：这三处的动作集合要**一致**，此前各写一份的结果是
+ * 「菜单里没有转发、收藏页却有」——用户 2026-09-21 报的正是这个（「收藏底下的操作和消息的
+ * 右键也不一样」），而且点下去必然失败：两条发送命令的 kind 白名单只收
+ * text/code(/file)/merge，卡片类会被直接拒。
+ *
+ * 合并转发卡片（merge）本身可以再转（微信允许"转发聊天记录"），它是自包含内容。
+ */
+export function isForwardableKind(kind: string): boolean {
+  return kind === "text" || kind === "code" || kind === "image" || kind === "file" || kind === "merge";
+}
+
+/**
+ * 能否「收藏」= 转发那几类 + **卡片类**（待办 / 投票 / 群公告）。
+ *
+ * 收藏走 `addFavorite(msgId)`、由**后端复制内容**，不重发、无副作用 ⇒ 卡片收藏是安全的
+ * （收藏夹已按卡片补了渲染分支：列表行 `cardText`、详情分支）。
+ * ⚠️ 转发**不含**卡片：那是个有副作用的动作（要做"把任务转给另一个群"得走专用发送路径）。
+ */
+export function isFavoritableKind(kind: string): boolean {
+  return isForwardableKind(kind) || kindClass(kind) === "card";
 }

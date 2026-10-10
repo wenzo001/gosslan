@@ -8,7 +8,7 @@ import { t } from "@/i18n";
 import { highlightText } from "@/utils/highlight";
 import { useDeferredRef } from "@/composables/useDeferredRef";
 import { useBackLayer } from "@/composables/useBackLayer";
-import { LOG_LEVEL_TEXT, filterLogLines } from "@/utils/logFilter";
+import { LOG_LEVEL_TEXT, filterLogLines, mergeLogRows } from "@/utils/logFilter";
 import type { LogEntry } from "@/types";
 
 /**
@@ -95,26 +95,11 @@ const rows = computed(() =>
   })),
 );
 
-/** 合并连续**完全相同**的行。判据只看原始字符串（不看 v-html 高亮标记），
- *  所以相同内容即使被高亮也会折叠。关掉 mergeDup 时直接透传 rows。 */
-const mergedRows = computed(() => {
-  if (!mergeDup.value) return rows.value.map((r) => ({ ...r, count: 1 }));
-  const out: (typeof rows.value[number] & { count: number })[] = [];
-  for (const r of rows.value) {
-    const last = out[out.length - 1];
-    if (
-      last &&
-      last.level === r.level &&
-      last.target.replace(/<[^>]+>/g, "") === r.target.replace(/<[^>]+>/g, "") &&
-      last.message.replace(/<[^>]+>/g, "") === r.message.replace(/<[^>]+>/g, "")
-    ) {
-      last.count += 1;
-    } else {
-      out.push({ ...r, count: 1 });
-    }
-  }
-  return out;
-});
+/** 合并同类行（判据与理由都在 `utils/logFilter.ts::mergeLogRows`：
+ *  归一化掉每次都变的量 + 允许非相邻但限一个时间窗）。关掉 mergeDup 时逐条透传。 */
+const mergedRows = computed(() =>
+  mergeDup.value ? mergeLogRows(rows.value) : rows.value.map((r) => ({ ...r, count: 1 })),
+);
 
 async function load() {
   // 窗口被隐藏/最小化时不必每 2s 拉一次：`get_logs` 会快照整份日志（几千条时是可观的
@@ -148,6 +133,8 @@ function onVisibility() {
   if (!document.hidden) void load();
 }
 onUnmounted(() => {
+  window.clearTimeout(copyTimer);
+  window.clearTimeout(confirmTimer);
   document.removeEventListener("visibilitychange", onVisibility);
   if (timer) clearInterval(timer);
 });
@@ -172,16 +159,22 @@ async function copyAll() {
       document.body.removeChild(ta);
     }
     copied.value = true;
-    setTimeout(() => (copied.value = false), 2000);
+    window.clearTimeout(copyTimer);
+    copyTimer = window.setTimeout(() => (copied.value = false), 2000);
   } catch {
     /* 复制失败静默：不打断用户 */
   }
 }
 
+/** 「已复制」与"再点一次确认清空"的自动复位定时器（卸载时要清，见 onUnmounted）。 */
+let copyTimer = 0;
+let confirmTimer = 0;
+
 function onClear() {
   if (!confirmClear.value) {
     confirmClear.value = true;
-    setTimeout(() => (confirmClear.value = false), 3000);
+    window.clearTimeout(confirmTimer);
+    confirmTimer = window.setTimeout(() => (confirmClear.value = false), 3000);
     return;
   }
   confirmClear.value = false;

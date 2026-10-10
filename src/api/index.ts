@@ -2,8 +2,9 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppSettings, CacheInfo, ChatSearchGroup, CleanupReport, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, Group, GroupFileEntry, GroupReadInfo, InterfaceCandidate, InterfaceInfo, LinkState, LogEntry, MessageRecord, Peer, PeerReadInfo, PendingRequest, RoutedEndpoint, RuntimeSnapshot, SearchResult, ShareEntry, TopologyInfo, TransferInfo } from "@/types";
+import type { AppSettings, CacheInfo, ChatSearchGroup, CleanupReport, ContentAudience, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, Group, GroupFileEntry, GroupReadInfo, InterfaceInfo, LinkState, LogEntry, MessageRecord, Peer, PeerReadInfo, PendingRequest, RelayConfig, RelayProbe, RoutedEndpoint, RuntimeSnapshot, ShareEntry, TopologyInfo, TransferInfo } from "@/types";
 import type { TodoImage } from "@/utils/todos";
+import type { PreviewGallery, PreviewImage } from "@/types";
 export const api = {
   /**
    * 监听"**另一个窗口**改了设置"（外观 / 语言 / 资料 / 目录 / 缓存策略）。
@@ -60,7 +61,14 @@ export const api = {
    * 是"同一件事的两种表达"，通知被合并/被跳过时也不该闪。撤销由系统负责，无需配对停止调用。
    * 移动端是空实现（无任务栏可闪），前端不必再判平台，但仍不必对移动端调用。
    */
-  requestAttention: () => invoke<void>("request_attention"),
+  /**
+   * 请求系统级注意（Windows 闪任务栏 / macOS 弹 Dock）。
+   *
+   * `urgent` 由调用方按**这批通知的内容**算（见 `utils/notifyUrgency.ts`）：macOS 只在
+   * 紧急时才弹跳（用户 2026-09-29：「Mac 端收到普通消息不要跳动 Dock 图标」），Windows
+   * 两档都继续闪。分端的规则在后端，前端只说"紧不紧急"。
+   */
+  requestAttention: (urgent: boolean) => invoke<void>("request_attention", { urgent }),
   /**
    * 未读提醒外显：托盘图标红点 + tooltip 条数、Windows 任务栏按钮角标、macOS Dock 数字。
    *
@@ -91,6 +99,13 @@ export const api = {
     invoke<MessageRecord>("send_message", { friendId, content, kind }),
   getMessages: (convId: string, limit?: number, offset?: number) =>
     invoke<MessageRecord[]>("get_messages", { convId, limit, offset }),
+  /**
+   * 一次拿回**多个群会话**的任务原始行（`todo` / `todo_update`），给"与我相关的未完成任务"
+   * 蓝色徽标用。⚠️ 这里只取原始行 —— 折叠与判定只有一份，在 `utils/todos.ts`
+   * （`foldTodos` + `openTodosForMe`）；在门面或后端再算一次就是第三个真源。
+   */
+  getGroupTodoMessages: (convIds: string[]) =>
+    invoke<MessageRecord[]>("get_group_todo_messages", { convIds }),
   getConvLink: (convId: string) => invoke<LinkState | null>("get_conv_link", { convId }),
   /** 请对端按 cid 再发一份内容（图片/文件「点击重取」）。false = 对方版本不支持。 */
   requestContent: (peerId: string, msgId: string) =>
@@ -102,6 +117,15 @@ export const api = {
   requestContentByCid: (peerId: string, cid: string, name: string, size: number) =>
     invoke<boolean>("request_content_by_cid", { peerId, cid, name, size }),
   getMessageCount: (convId: string) => invoke<number>("get_message_count", { convId }),
+  /**
+   * 打开会话的冷加载：一次拿最新一页（正序）。
+   *
+   * 为什么单独一条：按 offset 取尾部要先 `COUNT(*)`，那是**两轮** IPC，而每轮都得排队过
+   * 全局那把 db 锁 —— 多出来的一轮正是"切到冷会话先看到骨架、后半拍才出内容"。
+   * 翻页不用它：那一页要的是 total（判"还有没有更早历史"）。
+   */
+  getLatestMessages: (convId: string, limit?: number) =>
+    invoke<MessageRecord[]>("get_latest_messages", { convId, limit }),
   getConversations: () => invoke<Conversation[]>("get_conversations"),
   ensureConversation: (friendId: string) =>
     invoke<Conversation>("ensure_conversation", { friendId }),
@@ -124,8 +148,21 @@ export const api = {
   leaveGroup: (groupId: string) => invoke<void>("leave_group", { groupId }),
   getGroups: () => invoke<Group[]>("get_groups"),
   getGroupReads: (groupId: string) => invoke<GroupReadInfo[]>("get_group_reads", { groupId }),
-  sendGroupMessage: (groupId: string, content: string, kind: string) =>
-    invoke<MessageRecord>("send_group_message", { groupId, content, kind }),
+  /**
+   * 发群消息（文本 / 代码 / 合并）。
+   *
+   * `mentions` = 这条文本 @ 了哪些人（设备 id）。**三态里"没带这个键"是有意义的**：
+   * 缺省 ⇒ 载荷里不写 mentions 字段 ⇒ 接收端退回按昵称判定（旧版本对端就是这个形态）。
+   * 所以这里不能写成 `mentions ?? []` —— 空数组是"明确回答谁都没 @"，语义完全不同。
+   * 展开而不是直接传 `mentions`：不依赖序列化器会不会丢掉 undefined。
+   */
+  sendGroupMessage: (groupId: string, content: string, kind: string, mentions?: string[]) =>
+    invoke<MessageRecord>("send_group_message", {
+      groupId,
+      content,
+      kind,
+      ...(mentions ? { mentions } : {}),
+    }),
   listGroupFiles: (groupId: string) =>
     invoke<GroupFileEntry[]>("list_group_files", { groupId }),
   /** 发布群公告（仅群主；上限 500 字）。 */
@@ -167,6 +204,10 @@ export const api = {
       images?: TodoImage[];
       /** 显式归档意图：`true` = 手动归档；`undefined` = 不改（保留库中原值）。 */
       archived?: boolean;
+      /** 三档之一；不传 = 这次不动优先级。 */
+      priority?: string;
+      /** 类型三档之一；不传 = 这次不动类型（与 priority 同口径：改状态不会顺手把类型刷掉）。 */
+      category?: string;
     },
   ) =>
     invoke<MessageRecord>("update_group_todo", {
@@ -179,6 +220,8 @@ export const api = {
       description: patch.description ?? null,
       images: patch.images ?? null,
       archived: patch.archived ?? null,
+      priority: patch.priority ?? null,
+      category: patch.category ?? null,
     }),
   /** 置顶/取消置顶一条群消息（任意群成员；静默事件，不进时间线）。 */
   pinGroupMessage: (groupId: string, target: string, pinned: boolean) =>
@@ -197,13 +240,10 @@ export const api = {
   windowToggleFullscreen: () => invoke<boolean>("window_toggle_fullscreen"),
   windowClose: () => invoke<void>("window_close"),
 
-  sendFile: (friendId: string, path: string) => invoke<string>("send_file", { friendId, path }),
   cancelFileTransfer: (transferId: string) =>
     invoke<boolean>("cancel_file_transfer", { transferId }),
   sendFileAuto: (friendId: string, path: string) =>
     invoke<string>("send_file_auto", { friendId, path }),
-  sendFileRelay: (friendId: string, path: string) =>
-    invoke<string>("send_file_relay", { friendId, path }),
   sendGroupFile: (groupId: string, path: string) =>
     invoke<string>("send_group_file", { groupId, path }),
   saveOutgoingImage: (dataUrl: string) =>
@@ -232,6 +272,34 @@ export const api = {
   /** 媒体是否仍在本机（未被「存储清理」删除）。仅"确定已删除"时返回 false，
    *  查不到消息（在途的乐观消息）返回 true——不能把在途消息误标成已清理。 */
   mediaPresent: (msgId: string) => invoke<boolean>("media_present", { msgId }),
+
+  /**
+   * 以下 6 条以前**没有门面包装**：组件里直接 `invoke("copy_file", …)`，
+   * 于是"读 `src/api/index.ts` 就知道全部接口面"这个前提是假的（架构复审 0-A3 收口，
+   * 由 `events.test.ts` 的「IPC 只能从 src/api 门面走」钉住）。
+   */
+  /** 复制文件（另存为 / 拖拽保存）。Android 的"用户取消"是 reject，不是返回 null。 */
+  copyFile: (source: string, destination: string) =>
+    invoke<void>("copy_file", { source, destination }),
+  /** 文件本体写系统剪贴板（CF_HDROP）：可在资源管理器粘贴，也可粘回聊天框发送。 */
+  copyFileToClipboard: (path: string) => invoke<void>("copy_file_to_clipboard", { path }),
+  /** base64 写到目标路径（另存为的落地一步）。 */
+  saveDataFile: (base64Data: string, destination: string) =>
+    invoke<void>("save_data_file", { base64Data, destination }),
+  /** 剪贴板里的文件路径（粘贴发图那条路）。 */
+  readClipboardFilePaths: () => invoke<string[]>("read_clipboard_file_paths"),
+  /** 群文件每收件人进度汇总（气泡上「3/5 已收到」）。null = 这条 transfer 没有群投递记录。 */
+  getGroupFileDeliverySummary: (transferId: string) =>
+    invoke<{ completed: number; failed: number; waiting: number } | null>(
+      "get_group_file_delivery_summary",
+      { transferId },
+    ),
+  /**
+   * 前端异常落到后端日志（否则 WebView 里抛的错只有那个窗口自己知道）。
+   * **刻意不 catch**：上报失败不该改变界面行为，也不该在错误处理器里再抛一个错。
+   */
+  logFrontendError: (kind: string, text: string) =>
+    invoke<void>("log_frontend_error", { kind, text }),
 
   /**
    * 收藏（微信式）：**独立本地存储** —— 原消息/会话被删、缓存被清理都不影响。
@@ -284,6 +352,21 @@ export const api = {
     invoke<RoutedEndpoint[]>("add_routed_endpoint", { deviceId: null, address }),
   removeRoutedEndpoint: (address: string) =>
     invoke<RoutedEndpoint[]>("remove_routed_endpoint", { address }),
+  /**
+   * 公网中转（盲管道，ADR-0020）：读配置 / 存配置。
+   * 后端会规范化地址并在非法值时抛错 —— 调用方必须把错误原样显示给用户，
+   * 这里刻意不 catch：静默吞掉就会变成"点了保存、什么也没发生"。
+   */
+  getRelayConfig: () => invoke<RelayConfig>("get_relay_config"),
+  saveRelayConfig: (enabled: boolean, server: string, token: string) =>
+    invoke<RelayConfig>("save_relay_config", { enabled, server, token }),
+  /**
+   * 保存前真拨一次，拿回三档结论（`unreachable` / `rejected` / `held`）。
+   * 它**不改配置**，也不经过拨号器（不会登记链路）：只在裸 socket 上发一行首字，
+   * 看服务器是"立刻关"还是"挂着"。口令只在参数里过一次，后端不写进日志与报告。
+   */
+  checkRelayServer: (server: string, token: string) =>
+    invoke<RelayProbe>("check_relay_server", { server, token }),
   getCacheInfo: () => invoke<CacheInfo>("get_cache_info"),
   setCachePolicy: (retentionDays: number | null, maxBytes: number | null) =>
     invoke<void>("set_cache_policy", { retentionDays, maxBytes }),
@@ -303,12 +386,10 @@ export const api = {
   saveSettings: (s: AppSettings) => invoke<void>("save_settings", { settings: s }),
   resetSettings: () => invoke<void>("reset_settings"),
   broadcastChatStyle: (style: string) => invoke<void>("broadcast_chat_style", { style }),
-  searchMessages: (keyword: string) => invoke<SearchResult[]>("search_messages", { keyword }),
   clearAllData: () => invoke<void>("clear_all_data"),
 
   // 开发者诊断（隐藏面板用）
   getDiscoveryDiag: () => invoke<DiscoveryDiag>("get_discovery_diag"),
-  getInterfaceCandidates: () => invoke<InterfaceCandidate[]>("get_interface_candidates"),
   /**
    * 上报「应用是否在前台且窗口聚焦」。
    *
@@ -338,7 +419,6 @@ export const api = {
   clearLogs: () => invoke<void>("clear_logs"),
   /** 桌面端：打开独立日志窗口；移动端不要调用（用页面跳转）。 */
   openLogWindow: () => invoke<void>("open_log_window"),
-  closeLogWindow: () => invoke<void>("close_log_window"),
   /**
    * 把「文件选择器」给的东西落地成**真实可读的文件路径**。
    *
@@ -352,8 +432,56 @@ export const api = {
   openSettingsWindow: () => invoke<void>("open_settings_window"),
   closeSettingsWindow: () => invoke<void>("close_settings_window"),
 
-  /** 打开**指定群**的独立任务窗口（桌面端；每群一个窗口，label = `todo-<groupId>`）。 */
-  openGroupTodosWindow: (groupId: string) => invoke<void>("open_group_todos_window", { groupId }),
+    /**
+   * 让那扇**全局唯一**的群任务窗口去显示这个群（桌面端；固定 label `tasks`，切群 = 换内容）。
+   * `focusTodoId` = 打开后要直接展开的那条任务（#39）；不传 = 清掉上次的待展开。
+   */
+  openGroupTodosWindow: (groupId: string, focusTodoId?: string) =>
+    invoke<void>("open_group_todos_window", { groupId, focusTodoId: focusTodoId ?? null }),
+
+  /**
+   * 取走本窗口"该展开哪条任务"（一次性，取完即清）。
+   * 新建的窗口拿不到那条定向事件（发的时候监听者还不存在），只能靠自己挂载时取一次。
+   */
+  takeGroupTodoFocus: (groupId: string) =>
+    invoke<string | null>("take_group_todo_focus", { groupId }),
+
+  /**
+   * 群任务窗口已经存在时（不管是开着还是预热后藏着），后端定向推来的"换到这个群"提醒。
+   * 载荷带 groupId ⇒ 前端拿它换上下文并**重读数据**：常驻之后没有"重建即新数据"这回事了。
+   */
+  onGroupTodosTarget: (cb: (payload: { groupId: string }) => void) =>
+    listen<{ groupId: string }>("group-todos-target", (e) => cb(e.payload)),
+
+  /** 这扇群任务窗口**现在该显示哪个群**（预热过、还没被真正打开时是 null）。 */
+  getGroupTodosContext: () => invoke<string | null>("get_group_todos_context"),
+
+  /**
+   * **只投递**"该展开哪条"，不要求开窗口（桌面端）。
+   * 必须独立于 `launchAuxWindow`：那条启动器有单飞 + 防抖，被它合并掉的那一次
+   * 根本不会调 `open_group_todos_window` ⇒ 目标就地消失。
+   */
+  requestGroupTodoFocus: (groupId: string, todoId: string) =>
+    invoke<void>("request_group_todo_focus", { groupId, todoId }),
+
+  // ---------------- 全局图片预览（用户 2026-09-24 #40） ----------------
+  /**
+   * 把这份相册设为**那个全局唯一预览窗口**的内容（桌面端）。
+   * 已开着就替换内容并聚焦，没开就建一个 —— 调用方不需要知道窗口在不在。
+   */
+  openImagePreview: (items: PreviewImage[], index: number) =>
+    invoke<void>("open_image_preview", { gallery: { items, index } }),
+  /** 预览窗口自己取"现在该显示哪一份"（不清：每次投递都整体覆盖，见 Rust 侧说明）。 */
+  getImagePreviewGallery: () => invoke<PreviewGallery | null>("get_image_preview_gallery"),
+  /** 窗口已经开着时的"内容换了，再取一次"提醒。 */
+  onImagePreviewChanged: (cb: () => void) => listen("preview-gallery", () => cb()),
+  /**
+   * 把高频的两扇窗（图片预览 + 群任务）**先建好、文档先加载**，但不显示也不抢焦点。
+   * 桌面端启动后延后一拍调用；失败无所谓（最坏就是第一次仍然慢一点），
+   * 所以调用方一律 `.catch(() => {})`，不要给它弹提示。
+   */
+  prewarmAuxWindows: () => invoke<void>("prewarm_aux_windows"),
+
 
   /** 在独立窗口里加载一个外部网址（桌面端；窗口隔离，不授予远端页面任何命令权限）。 */
   openLinkWindow: (url: string, name: string) => invoke<void>("open_link_window", { url, name }),
@@ -434,6 +562,8 @@ export type EventHandlers = {
   onGroupsUpdated: (groupId: string) => void;
   /** 自己被移出群（group_id） */
   onGroupMemberRemoved: (groupId: string) => void;
+  /** 群发受众预告：这条 kind 群里有成员版本较旧会看成原始文本（消息已发出，仅解释）。 */
+  onContentAudience: (p: ContentAudience) => void;
   /**
    * 用户点了系统通知（桌面端；移动端走插件的 `actionPerformed`）。
    * 后端已经顺手把主窗口唤起，这里只需把界面切到目标会话 / 「新的朋友」。
@@ -466,15 +596,14 @@ export async function bindEvents(h: EventHandlers): Promise<UnlistenFn[]> {
     listen<FileFailedInfo>("file-failed", (e) => h.onFileFailed(e.payload)),
     listen<string>("file-cancelled", (e) => h.onFileCancelled(e.payload)),
     listen<string>("message-status-changed", (e) => h.onMessageStatusChanged(e.payload)),
-    // 后端改了这些消息的状态就发对应事件（sweeper 判失败 / 用户取消 / 用户重发）。
+    // 后端改了这些消息的状态就发对应事件（sweeper 判失败 / Ack 到达 / 文件被取消）。
     // 前端一律走「从 DB 重查该会话」：状态的唯一真相源是 messages.status（INV-006/P15），
     // 不在内存里再维护一套失败/取消状态机。
     listen<string>("message-failed", (e) => h.onMessageStatusChanged(e.payload)),
-    listen<string>("message-cancelled", (e) => h.onMessageStatusChanged(e.payload)),
-    listen<string>("message-resending", (e) => h.onMessageStatusChanged(e.payload)),
     listen<PeerStyleUpdate>("peer-style-updated", (e) => h.onPeerStyle(e.payload)),
     listen<string>("groups-updated", (e) => h.onGroupsUpdated(e.payload)),
     listen<string>("group-member-removed", (e) => h.onGroupMemberRemoved(e.payload)),
+    listen<ContentAudience>("content-audience", (e) => h.onContentAudience(e.payload)),
     // 「用户点了系统通知」：后端在 notify-rust 的点击回调里唤起主窗口后发出（见
     // notifications::on_notification_clicked）。桌面端**只有这一条**点击来源 ——
     // 插件的 actionPerformed 只有移动端会发。

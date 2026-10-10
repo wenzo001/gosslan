@@ -3,7 +3,8 @@ import { ref, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import SettingsGroup from "@/components/settings/SettingsGroup.vue";
-import { avatarInitial, avatarInitialLen, nameToColor } from "@/utils/color";
+import SelfAvatar from "@/components/SelfAvatar.vue";
+import { AVATAR_INPUT_LIMIT_MB, AVATAR_INPUT_MAX_BYTES, AVATAR_SIZE, pickAvatarJpeg } from "@/utils/avatarImage";
 import { Camera } from "lucide-vue-next";
 import { t } from "@/i18n";
 
@@ -33,6 +34,18 @@ watch(() => [app.device?.nickname, app.device?.avatar], () => {
   if (props.active) syncFromDevice();
 });
 
+/**
+ * 落库并让 store 成为唯一真相：`app.updateProfile` 的返回值就是新的 `device`，
+ * 上面那条 device 字段的 watch 会把两个 ref 重同步成**后端确认过的值**（含截断/改名）。
+ * "没变化就不发"这条保留：省一次广播，也避免每次失焦都给一条"已保存"。
+ */
+async function persistProfile(name: string) {
+  if (name === app.device?.nickname && avatar.value === app.device?.avatar) return;
+  await app.updateProfile(name, avatar.value);
+  await chat.refreshFriends();
+  app.toast(t("settings.profile.toast.saved"), "success");
+}
+
 /** 昵称：失焦或回车即保存（即点即存，无「保存」按钮）。 */
 async function saveProfileNow() {
   const name = nickname.value.trim();
@@ -41,10 +54,7 @@ async function saveProfileNow() {
     nickname.value = app.device?.nickname ?? "";
     return;
   }
-  if (name === app.device?.nickname && avatar.value === app.device?.avatar) return;
-  await app.updateProfile(name, avatar.value);
-  await chat.refreshFriends();
-  app.toast(t("settings.profile.toast.saved"), "success");
+  await persistProfile(name);
 }
 
 function onNicknameKeydown(e: KeyboardEvent) {
@@ -54,11 +64,10 @@ function onNicknameKeydown(e: KeyboardEvent) {
   }
 }
 
-/** 头像文件大小上限（2MB，原始文件、预处理前校验）。 */
-const MAX_AVATAR_FILE_SIZE = 2 * 1024 * 1024;
-/** 头像输出边长：中心裁剪成正方形后缩放到该尺寸（不放大），PNG 体积小且清晰。 */
-const AVATAR_SIZE = 512;
-
+/**
+ * 头像的体积/压缩口径都住在 `@/utils/avatarImage`（那里有判据）：
+ * 输入按原始文件判（用户 2026-09-29：「限制大小在 10MB 以内」），产出**一律** JPEG 并压到 1MB 以内。
+ */
 async function onAvatarChange(e: Event) {
   const input = e.target as HTMLInputElement;
   const f = input.files?.[0];
@@ -68,21 +77,45 @@ async function onAvatarChange(e: Event) {
     app.toast(t("settings.profile.toast.notImage"), "error");
     return;
   }
-  if (f.size > MAX_AVATAR_FILE_SIZE) {
-    app.toast(t("settings.profile.toast.avatarTooLarge"), "error");
+  if (f.size > AVATAR_INPUT_MAX_BYTES) {
+    app.toast(t("settings.profile.toast.avatarTooLarge", { mb: AVATAR_INPUT_LIMIT_MB }), "error");
     return;
   }
   try {
-    avatar.value = await processAvatar(f);
-    await saveProfileNow();
+    const next = await processAvatar(f);
+    const prev = avatar.value;
+    avatar.value = next; // 乐观：先让用户看见换成了这张
+    try {
+      // ⚠️ **不复用 `saveProfileNow()`**（用户 #24 的根因）：那条对"昵称为空"是提前 return，
+      // 于是"输入框恰好被清空 + 点头像"会让这次上传**被静默丢掉** —— 页面显示新头像、
+      // 后端里还是旧的，切个页就弹回去，正是"显示成功但没真成功"。
+      // 昵称为空是**另一个字段的未保存编辑**，头像该以库里现有的昵称为准一起提交。
+      const name = nickname.value.trim() || app.device?.nickname || "";
+      if (!name) {
+        // 连库里都没有昵称（设备信息还没到位）⇒ 明确拒绝，不发一个空昵称出去
+        avatar.value = prev;
+        app.toast(t("settings.profile.toast.nicknameEmpty"), "error");
+        return;
+      }
+      await persistProfile(name);
+    } catch (e) {
+      // 保存失败必须**回滚**：不回滚的话页面上挂着的是一个从没落库的头像
+      avatar.value = prev;
+      app.toastError(e, t("settings.profile.toast.avatarFail"));
+    }
   } catch {
+    // 图片本身读不出来（解码/画布失败）：这时还没动过 avatar，不需要回滚
     app.toast(t("settings.profile.toast.avatarFail"), "error");
   }
 }
 
 /**
- * 中心裁剪为正方形 → 缩放到 AVATAR_SIZE（不放大）→ 导出 PNG data URL（无损）。
+ * 中心裁剪为正方形 → 缩放到 AVATAR_SIZE（不放大）→ **JPEG** data URL。
  * 裁剪规则：上下长取宽度、左右长取高度，即以较短边为基准、居中裁成正方形。
+ *
+ * 为什么从 PNG 换成 JPEG（用户 2026-09-29）：PNG 对照片几乎不压缩，一张 512px 的照片 PNG
+ * 能到 300KB+，而头像要跨端广播；JPEG 在同样观感下小一个量级，还顺带把 HEIC 这类
+ * 对端画不出来的格式转成了公共分母。质量按阶梯**从高往低**取第一个够小的档位（见该模块）。
  */
 function processAvatar(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -99,9 +132,16 @@ function processAvatar(file: File): Promise<string> {
         canvas.height = out;
         const ctx = canvas.getContext("2d");
         if (!ctx) throw new Error("no 2d context");
+        // JPEG 没有透明通道：先铺白底，否则带 alpha 的图（logo 那类）整块变黑
+        ctx.fillStyle = "#fff";
+        ctx.fillRect(0, 0, out, out);
+        // 缩到 512 是这条链上唯一会真正"糊"的一步：默认的重采样在大比例缩小下会丢细节，
+        // `high` 让浏览器走它最好的过滤（用户 2026-09-29 抱怨的"不清晰"里，头像那一半在这儿）
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
         ctx.drawImage(img, sx, sy, side, side, 0, 0, out, out);
         URL.revokeObjectURL(url);
-        resolve(canvas.toDataURL("image/png"));
+        resolve(pickAvatarJpeg((q) => canvas.toDataURL("image/jpeg", q)));
       } catch (err) {
         URL.revokeObjectURL(url);
         reject(err);
@@ -119,25 +159,25 @@ function processAvatar(file: File): Promise<string> {
 <template>
   <SettingsGroup :title="t('settings.group.profile')">
     <div class="flex items-center gap-4 p-4">
-      <!-- 头像：点击更换 -->
+      <!-- 头像本体交给 SelfAvatar：与导航栏、"我的"页同一数据源、同一张默认脸。
+           换头像的入口从"整块红色蒙版"改成右下角标，两个理由：
+           ① 蒙版写的是 `opacity-0 group-hover:opacity-100`，而 `@media (hover: none)` 会把
+              触屏悬停兜底那个类强制成常显（见 style.css）⇒ 手机上头像被整个盖掉，
+              用户看到的就是一张红卡片（2026-10-07 反馈）；
+           ② `--gosslan-danger` 是危险色，"换一张图"不是破坏性动作。
+           角标做成**兄弟节点**而不是塞进 SelfAvatar：那层根节点带 overflow-hidden，
+           负偏移会被裁掉。`preview-src` 传的是本地那份乐观预览（失败会回滚）。 -->
       <button
-        class="gosslan-avatar-box group relative h-16 w-16 shrink-0 overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
-        :style="{ backgroundColor: nameToColor(nickname) }"
+        class="relative shrink-0"
         :title="t('settings.profile.changeAvatar')"
         :aria-label="t('settings.profile.changeAvatar')"
         @click="avatarInput?.click()"
       >
-        <img alt="" v-if="avatar" :src="avatar" class="h-full w-full object-cover" />
+        <SelfAvatar :preview-src="avatar" class="h-16 w-16 rounded-[var(--gosslan-avatar-radius)]" />
         <span
-          v-else
-          class="gosslan-avatar-initial text-2xl font-semibold"
-          :data-len="avatarInitialLen(nickname)"
-          >{{ avatarInitial(nickname) }}</span
+          class="pointer-events-none absolute -bottom-1 -right-1 flex h-6 w-6 items-center justify-center rounded-full border-2 border-[var(--gosslan-panel)] bg-[var(--gosslan-primary)] text-white"
         >
-        <span
-          class="hover-reveal-op absolute inset-0 flex items-center justify-center bg-[var(--gosslan-danger)] opacity-0 transition group-hover:opacity-100"
-        >
-          <Camera class="h-5 w-5" />
+          <Camera class="h-3.5 w-3.5" :stroke-width="2" />
         </span>
       </button>
 

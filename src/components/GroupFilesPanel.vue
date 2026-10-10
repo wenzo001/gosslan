@@ -12,7 +12,6 @@
  */
 import { t } from "@/i18n";
 import { computed, ref, watch } from "vue";
-import { invoke } from "@tauri-apps/api/core";
 import { api } from "@/api";
 import { useAppStore } from "@/stores/useAppStore";
 import { useMemberProfile } from "@/composables/useMemberProfile";
@@ -36,15 +35,21 @@ const failed = ref(false);
 
 async function load() {
   if (!props.groupId) return;
+  const gid = props.groupId;
   loading.value = true;
   failed.value = false;
   try {
-    files.value = await api.listGroupFiles(props.groupId);
+    const list = await api.listGroupFiles(gid);
+    // 慢响应过期守卫：期间换了群就不许把 A 群的清单写进 B 群的面板
+    // （与 4.1-7 同一条链上的另一半 —— 只补 watch 不补这里，切群瞬间的旧响应仍会回填）。
+    if (gid !== props.groupId) return;
+    files.value = list;
   } catch {
+    if (gid !== props.groupId) return;
     failed.value = true;
     files.value = [];
   } finally {
-    loading.value = false;
+    if (gid === props.groupId) loading.value = false;
   }
 }
 
@@ -54,6 +59,20 @@ watch(
   () => props.open,
   (v) => {
     if (v) void load();
+  },
+);
+
+// ⚠️ 必须 watch groupId（审计阶段 4 · 4.1-7）：面板开着时 activeConv 会被**通知点击**
+// 这类程序化路径换掉（`handleNotificationClick` → `openConversation`），而 `groupId` 变了
+// 上面的 open 判据根本不会再触发 ⇒ 标题/总数/整张清单全是上一个群的。
+// 这里清空而不是静默留着旧数据：宁可显示"加载中/空"，也不能让用户把 A 群的文件当成 B 群。
+watch(
+  () => props.groupId,
+  (v, old) => {
+    if (v === old) return;
+    files.value = [];
+    failed.value = false;
+    if (v && props.open) void load();
   },
 );
 
@@ -120,10 +139,7 @@ async function openFile(f: GroupFileEntry) {
  */
 async function refetch(f: GroupFileEntry) {
   try {
-    const ok = await invoke<boolean>("request_content", {
-      peerId: f.sender_id,
-      msgId: `gfile-${f.transfer_id}`,
-    });
+    const ok = await api.requestContent(f.sender_id, `gfile-${f.transfer_id}`);
     app.toast(
       t(ok ? "group.files.refetching" : "group.files.refetchUnsupported"),
       ok ? "info" : "error",

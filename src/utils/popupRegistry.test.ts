@@ -83,3 +83,53 @@ test("浮层互斥：跨类型互斥（消息菜单 ↔ 好友菜单 ↔ 已读�
   reset();
   assert.equal(activePopupKey(), null);
 });
+
+// ---------------- 使用侧协议（源码扫描） ----------------
+
+test("浮层协议：每个 `const X = useExclusivePopup(...)` 都必须 watch(X.isActive)", async () => {
+  // 协议有两半：claim/release 是"我要展开"，watch(isActive) 是"我被抢了 ⇒ 收起自己"。
+  // 只写前半的表现很具体：B 抢到展开权后 A 的 isActive 变 false，但没有任何人读它
+  // ⇒ 两块面板同时挂在屏幕上（2026-09-24 真机：连续点两条消息的表情入口，两个面板并存 ——
+  // 当时全仓 8 个浮层里只有表情面板漏了这条 watch）。
+  const { readFileSync, readdirSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const files: string[] = [];
+  const walk = (d: string) => {
+    for (const e of readdirSync(d, { withFileTypes: true })) {
+      const p = join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.name.endsWith(".vue")) files.push(p);
+    }
+  };
+  walk(join(import.meta.dirname, "..", "components"));
+  const missing: string[] = [];
+  /** 一个文件里到底找到几处使用点（一条都没找到 = 扫描本身空转，必须报）。 */
+  let seen = 0;
+  for (const f of files) {
+    const src = readFileSync(f, "utf8");
+    const where = f.slice(f.indexOf("components"));
+    // 形状一：整个 composable 对象存进一个变量
+    for (const m of src.matchAll(/const (\w+) = useExclusivePopup\(/g)) {
+      seen += 1;
+      const v = m[1];
+      if (!new RegExp(`watch\\(\\s*${v}\\.isActive`).test(src)) {
+        missing.push(`${where} → ${v}.isActive`);
+      }
+    }
+    // 形状二：**解构**并把 isActive 改名（`const { isActive: readersOpen, ... } = useExclusivePopup(...)`）。
+    // 只扫形状一的守卫对这种写法**完全看不见** —— 而本仓一半的浮层是这么写的
+    // （`MessageReceipt` 的已读弹层、看板的行内状态菜单）：漏掉它等于"协议只守一半使用点"，
+    // 而这正是这条测试存在的全部理由。
+    for (const m of src.matchAll(
+      /const\s*\{[^}]*?isActive:\s*(\w+)[^}]*?\}\s*=\s*useExclusivePopup\(/g,
+    )) {
+      seen += 1;
+      const v = m[1];
+      if (!new RegExp(`watch\\(\\s*${v}\\b`).test(src)) {
+        missing.push(`${where} → ${v}（解构出的 isActive）`);
+      }
+    }
+  }
+  assert.ok(seen >= 8, `只扫到 ${seen} 处浮层使用点 —— 判据形状失配，这条守卫等于没跑`);
+  assert.deepEqual(missing, [], "这些浮层只 claim 不监听被抢 ⇒ 同类缺陷会原地复发");
+});

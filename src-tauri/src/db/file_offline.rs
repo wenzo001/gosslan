@@ -36,7 +36,7 @@ pub fn list_pending_file_outbox(conn: &Connection, peer_id: &str) -> Result<Vec<
 }
 
 /// 投递开始：pending → sending，并累计一次尝试。
-/// 加 `WHERE status = 'pending'` 守卫：cancel_file_transfer 可能已把这条标记 failed，
+/// 加 `WHERE status = 'pending'` 守卫：cancel_file_transfer 可能已把这条标记 cancelled，
 /// 此时不应该再被我们推进 sending —— 否则 spawn loop 后续可能再 mark pending 把 failed 覆盖掉。
 pub fn mark_file_outbox_sending(
     conn: &Connection,
@@ -75,10 +75,28 @@ pub fn delete_file_outbox(conn: &Connection, transfer_id: &str) -> Result<()> {
     Ok(())
 }
 
-/// 永久失败：标记 failed，不再参与重试。
+/// 永久失败（**自动**判死：超时 / 重试耗尽 / 接收方不可达）：标记 failed，不再参与重试。
+/// 用户主动取消走 `mark_file_outbox_cancelled`，两者不许混用。
 pub fn mark_file_outbox_failed(conn: &Connection, transfer_id: &str) -> Result<()> {
     conn.execute(
         "UPDATE file_outbox SET status = 'failed' WHERE transfer_id = ?1",
+        params![transfer_id],
+    )?;
+    Ok(())
+}
+
+/// 用户主动取消：标记 cancelled，与"自动失败"分开记。
+///
+/// 三条队列查询（`list_pending_file_outbox` / `list_expired_file_outbox` /
+/// `reset_sending_to_pending`）都只认 `pending` / `sending` ⇒ `cancelled` 一旦写进去就是
+/// **永久出局**，不会被重发、不会被过期清扫再判一次死、也不被崩溃恢复复活
+/// （判据：`cascade_tests::cancelled_file_outbox_rows_are_never_requeued`）。
+///
+/// 为什么要单独一个状态而不是继续复用 `failed`：功能上两者今天等价，但台账不等价 ——
+/// 排查"这一单为什么失败"的人（或下一个照文档改代码的 AI）读到的会是用户自己按下的取消。
+pub fn mark_file_outbox_cancelled(conn: &Connection, transfer_id: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE file_outbox SET status = 'cancelled' WHERE transfer_id = ?1",
         params![transfer_id],
     )?;
     Ok(())
@@ -155,4 +173,63 @@ pub fn delete_file_outbox_for_peer(conn: &Connection, peer_id: &str) -> Result<(
         params![peer_id],
     )?;
     Ok(())
+}
+
+// 模块名刻意不叫 tests：本文件被 db.rs 用 include! 贴进 db 命名空间，名字要全局唯一。
+#[cfg(test)]
+mod file_outbox_peer_tests {
+    use super::delete_file_outbox_for_peer;
+    use crate::db::SCHEMA;
+    use rusqlite::{params, Connection};
+
+    fn mem() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn
+    }
+
+    fn seed(conn: &Connection, tid: &str, peer: &str) {
+        conn.execute(
+            "INSERT INTO file_outbox(transfer_id, peer_id, group_id, local_path, name, size, status, attempts, next_attempt_at, created_at)
+             VALUES(?1, ?2, NULL, '/tmp/x', 'x.bin', 10, 'pending', 0, 1, 1)",
+            params![tid, peer],
+        )
+        .unwrap();
+    }
+
+    fn count(conn: &Connection, peer: &str) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM file_outbox WHERE peer_id = ?1",
+            params![peer],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap()
+    }
+
+    /// 删好友时会顺带清这一位的待发文件队列（`commands/friends.rs` 那一步）。
+    /// 这里钉的是**作用面**：只许动被点名的那一位，别的人一行都不许少 ——
+    /// 这一句删错的代价是"另一个人的在途文件被静默取消"，而那件事用户界面上看不见。
+    #[test]
+    fn delete_for_peer_clears_only_that_peer() {
+        let conn = mem();
+        seed(&conn, "t-a1", "alice");
+        seed(&conn, "t-a2", "alice");
+        seed(&conn, "t-b1", "bob");
+        delete_file_outbox_for_peer(&conn, "alice").unwrap();
+        assert_eq!(count(&conn, "alice"), 0, "被点名那两位的队列要清空");
+        assert_eq!(count(&conn, "bob"), 1, "别人的在途文件一行都不许少");
+    }
+
+    /// 反例输入：没有匹配行时必须是 Ok。调用方那一步写的是 `.ok()`（吞错），
+    /// 一旦这里改成"没删到就报错"，那一次清理会被记成失败而没人重试 —— 好友行已经删掉了。
+    #[test]
+    fn delete_for_unknown_peer_is_ok_not_an_error() {
+        let conn = mem();
+        seed(&conn, "t-b1", "bob");
+        assert!(
+            delete_file_outbox_for_peer(&conn, "ghost").is_ok(),
+            "零行命中也要 Ok（幂等），否则调用方那步吞掉的错误会变成永久残留"
+        );
+        assert_eq!(count(&conn, "bob"), 1, "顺带确认它没把别人的行带走");
+    }
 }

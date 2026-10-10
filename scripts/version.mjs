@@ -3,9 +3,16 @@
 //   node scripts/version.mjs show          # 打印当前版本
 //   node scripts/version.mjs patch|minor|major
 //
-// 一次 bump 会同步更新三处版本号：package.json / src-tauri/Cargo.toml / src-tauri/tauri.conf.json，
+// 一次 bump 会同步更新**五处**版本号（按下面的编号步序）：
+//   1 package.json · 2 src-tauri/Cargo.toml · 3 src-tauri/tauri.conf.json
+//   4 package-lock.json · 5 src-tauri/Cargo.lock
 // 并把 CHANGELOG.md 的 [Unreleased] 小节落为带日期的版本小节。
+// ⚠️ 第 4、5 步是后补的（头部注释曾长期只写"三处"，与实现相反 —— 那份口径曾经同时
+// 存在于 README / AI_PROJECT_HANDOFF / 本注释三处副本里，每处各抄一次、各自过期）。
+// 守卫侧对的是**四个清单文件**（`check-change-budget.mjs` 判据 4），比这里少一个
+// `Cargo.lock`：那一处由下面第 5 步自己断言（跟不上就 exit 1），不在判据里重复一遍。
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 
 const mode = process.argv[2] ?? "show";
 
@@ -63,10 +70,36 @@ if (existsSync(lockPath)) {
   }
   writeFileSync(lockPath, JSON.stringify(lock, null, 2) + "\n");
 }
-// 注：src-tauri/Cargo.lock（TOML）由 cargo 构建时自动同步，发版前跑一次
-// `cd src-tauri && cargo check` 保证 lock 与 Cargo.toml 版本一致后一并提交。
+// 5) Cargo.lock —— 这里以前只留一句注释"由 cargo 自动同步"，于是**发版提交里 lock
+//    停在旧版本号**（4.29.41 与 4.29.42 两次现场），而 lock 与 Cargo.toml 不一致
+//    正是 `--locked` 构建会直接拒绝的那种不一致。既然这一步能自动化就交给它，
+//    并且**断言真的跟上了**：没跟上就报错退出，而不是留下一句"记得手工跑一次"。
+const cargoLockPath = "src-tauri/Cargo.lock";
+if (existsSync(cargoLockPath)) {
+  const cargoName = /^name\s*=\s*"([^"]+)"$/m.exec(readFileSync(cargoPath, "utf8"))?.[1];
+  const synced = spawnSync("cargo", ["update", "--offline", "-p", cargoName], {
+    cwd: "src-tauri",
+    encoding: "utf8",
+  });
+  const block = new RegExp(
+    `\\[\\[package\\]\\][\\s\\S]*?name = "${cargoName}"\\nversion = "([^"]+)"`,
+  ).exec(readFileSync(cargoLockPath, "utf8"));
+  if (!block) {
+    console.error(`✗ Cargo.lock 里找不到包 ${cargoName}，无法核对版本一致性`);
+    process.exit(1);
+  }
+  if (block[1] !== next) {
+    console.error(
+      `✗ Cargo.lock 仍是 ${block[1]}，期望 ${next}（cargo update 退出码 ${synced.status}）` +
+        `\n  ${synced.stderr?.trim().slice(0, 200) || ""}\n` +
+        "  手工处理：cd src-tauri && cargo update -p ${cargoName}（离线加 --offline）",
+    );
+    process.exit(1);
+  }
+  console.log(`✓ Cargo.lock 已同步：${cargoName} ${block[1]}`);
+}
 
-// 5) CHANGELOG.md（可选）
+// 6) CHANGELOG.md（可选）
 //    若不存在 [Unreleased] 小节则自动补一个占位小节，保证每次发版都有更新日志。
 const changelogPath = "CHANGELOG.md";
 if (existsSync(changelogPath)) {
@@ -89,6 +122,19 @@ if (existsSync(changelogPath)) {
   // 只替换那一行标题（`$&` 是匹配到的标题本身），正文里同名的引用不会被碰。
   ch = ch.replace(HEADING, `$&\n\n## [${next}] - ${localDate}`);
   writeFileSync(changelogPath, ch);
+  // ⚠️ 这条警告针对一个**静默**的事故形状（2026-09-28 实测到 4.31.7/4.31.8/4.31.9 三节各挂着
+  // 下一版的说明）：新节标题插在 `## [Unreleased]` 那一行的**下面**，所以"先跑本脚本、
+  // 再把条目写在锚点与新标题之间"会让新节看着有内容、实则装着上一次发版那条。
+  // 归属判据（`npm run version:changelog`）会在提交后报红，但这里当场说一声更省一轮返工。
+  const after = ch.split("\n");
+  const at = after.findIndex((l) => l.startsWith(`## [${next}]`));
+  const empty = at >= 0 && (at + 1 >= after.length || !/^### /.test(after.slice(at + 1, at + 4).find((l) => l.trim() !== "") ?? ""));
+  if (empty) {
+    console.log(
+      `⚠️  新节 \`## [${next}]\` 目前是空的：条目标题（\`### …\`）请写在**这一行之下**，` +
+        `不要写在 \`## [Unreleased]\` 与它之间（那样会把它塞进上一版的说明里）。`,
+    );
+  }
 }
 
 console.log(`版本已更新：${cur} -> ${next}`);

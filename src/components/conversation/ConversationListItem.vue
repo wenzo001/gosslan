@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
 import { fmtConversationTime } from "@/utils/time";
-import { avatarInitial, avatarInitialLen, nameToColor } from "@/utils/color";
+import { avatarSeedFor, type AvatarSeed } from "@/utils/avatarSeed";
 import { computed, onUnmounted } from "vue";
 import { useChatStore } from "@/stores/useChatStore";
+import { useAppStore } from "@/stores/useAppStore";
+import { isSelfConversation } from "@/utils/selfChat";
 import { useMemberProfile } from "@/composables/useMemberProfile";
 import { haptic } from "@/utils/haptics";
 import UnreadBadge from "@/components/UnreadBadge.vue";
-import { Megaphone, Pin } from "lucide-vue-next";
+import { ListChecks, Megaphone, Pin } from "lucide-vue-next";
 import type { Conversation } from "@/types";
 
 const props = defineProps<{
@@ -30,6 +32,19 @@ const emit = defineEmits<{
 }>();
 
 const chat = useChatStore();
+const app = useAppStore();
+
+/**
+ * 「这一行是不是我自己」——与通讯录那一行**同一个键、同一个判据**（用户 2026-09-29：
+ * 「聊天列表我自己后面也加一个『我』，和好友列表同步」）。判据必须复用
+ * `utils/selfChat.isSelfConversation`：仓库里那条测试明令各处不许再写一遍 `=== device_id`。
+ */
+const selfSuffix = computed(() =>
+  isSelfConversation({ id: props.conv.id }, app.device?.device_id) ? t("friend.selfSuffix") : "",
+);
+/** 看得见的那份名字与读屏那一份**共用同一个 computed**（`FriendListItem` 的同一条纪律）：
+ *  分两处各拼一次的话，迟早出现"屏幕上带（我）、读屏听不到"或反过来。 */
+const displayName = computed(() => props.conv.name + selfSuffix.value);
 const { memberProfile } = useMemberProfile();
 
 /** 该群当前是否有生效的公告（数据源：`list_active_group_announcements` 的全量折叠，
@@ -56,10 +71,30 @@ function openConv(conv: Conversation) {
 
 /** 群里有人 @ 我且未读（打开会话即清除）：微信式红色标签，显示在摘要前。 */
 const mentioned = computed(() => chat.mentionedConvs.has(props.conv.id));
+/** 「与我相关的未完成任务」数（`ListChecks` 图标 + 蓝色数字，见模板那段注释）。
+ *  判定与聊天头那颗任务图标共用 `store.openTodoByConv`
+ *  这一份，两个地方各数一次就是两份真源。单聊没有群任务 ⇒ 恒为 0。 */
+const openTasks = computed(() =>
+  props.conv.kind === "group" ? (chat.openTodoByConv[props.conv.id] ?? 0) : 0,
+);
 
-function initials(name: string) {
-  return avatarInitial(name);
-}
+/**
+ * 这一行的 accessible name。**必须把三件事都念出来**：未读数、有人 @ 我、与我相关的开放任务数。
+ *
+ * 为什么不是"让读屏自己读子节点"：`role=button` 一旦带 `aria-label`，后代就被折叠掉。
+ * 2026-09-26 用系统无障碍控件树实测过：原来只写群名时，行里那两枚徽标的数字**完全不在树里**
+ * ⇒ 读屏用户看得到"验收群"却不知道有几条没读、有活没干完。数字在屏幕上看得见 ≠ 读得到。
+ */
+const rowAriaLabel = computed(() => {
+  const parts = [
+    props.conv.unread > 0
+      ? t("conv.unread", { name: displayName.value, n: props.conv.unread })
+      : displayName.value,
+  ];
+  if (mentioned.value) parts.push(t("msg.mentioned"));
+  if (openTasks.value > 0) parts.push(t("todo.openForMe", { n: openTasks.value }));
+  return parts.join("，");
+});
 
 function onContextMenu(conv: Conversation, e: MouseEvent) {
   e.preventDefault();
@@ -125,19 +160,19 @@ onUnmounted(clearPress);
 
 /** 群头像九宫格成员（微信式 2x2）：资料解析统一走 useMemberProfile（本机/好友/节点，
  *  离线好友照常显示）。必须保持响应式：好友/群数据是异步加载的，非响应式会在
- *  启动时算死成占位块且不再更新。九宫格每格用成员名 hash → nameToColor，保证
- *  同一成员在单聊列表和群聊九宫格里默认色一致。 */
+ *  启动时算死成占位块且不再更新。九宫格每格的种子是**成员的设备 id**，保证
+ *  同一成员在单聊列表、群聊九宫格与消息流里是同一张脸。 */
 const gridTiles = computed(() => {
   if (props.conv.kind !== "group") return [];
   const groupId = props.conv.id.replace(/^group:/, "");
   const memberIds = chat.groups.find((g) => g.id === groupId)?.members ?? [];
-  const tiles: { avatar: string | null; label: string; len: number; color: string }[] = [];
+  const tiles: { avatar: string | null; seed: AvatarSeed | null }[] = [];
   for (const id of memberIds.slice(0, 4)) {
     const p = memberProfile(id);
-    tiles.push({ avatar: p.avatar, label: initials(p.name), len: avatarInitialLen(p.name), color: nameToColor(p.name) });
+    tiles.push({ avatar: p.avatar, seed: avatarSeedFor(id) });
   }
   while (tiles.length < Math.min(4, Math.max(memberIds.length, 1))) {
-    tiles.push({ avatar: null, label: initials(props.conv.name), len: avatarInitialLen(props.conv.name), color: nameToColor(props.conv.name) });
+    tiles.push({ avatar: null, seed: avatarSeedFor(groupId) });
   }
   return tiles;
 });
@@ -157,7 +192,7 @@ const gridTiles = computed(() => {
     :class="active
       ? 'bg-[var(--gosslan-list-active)] text-[var(--gosslan-list-active-text)]'
       : 'hover:bg-[var(--gosslan-list-hover)]'"
-    :aria-label="conv.unread > 0 ? t('conv.unread', { name: conv.name, n: conv.unread }) : conv.name"
+    :aria-label="rowAriaLabel"
     @click="openConv(conv)"
     @keydown.enter.prevent="openConv(conv)"
     @keydown.space.prevent="openConv(conv)"
@@ -176,21 +211,21 @@ const gridTiles = computed(() => {
         <div
           v-for="(t, i) in gridTiles"
           :key="i"
-          class="gosslan-avatar-box flex items-center justify-center overflow-hidden text-[11px] font-medium text-white"
-          :style="{ backgroundColor: t.color }"
+          class="gosslan-avatar-box flex items-center justify-center overflow-hidden text-white"
+          :style="{ backgroundColor: t.seed?.bg }"
         >
           <img alt="" v-if="t.avatar" :src="t.avatar" class="h-full w-full object-cover" />
-          <span v-else class="gosslan-avatar-initial" :data-len="t.len">{{ t.label }}</span>
+          <span v-else class="gosslan-avatar-emoji" aria-hidden="true">{{ t.seed?.emoji }}</span>
         </div>
       </div>
       <div
         v-else
         class="gosslan-avatar-box flex h-10 w-10 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
         :class="online === false ? 'grayscale opacity-70' : ''"
-        :style="{ backgroundColor: nameToColor(conv.name) }"
+        :style="{ backgroundColor: avatarSeedFor(conv.id)?.bg }"
       >
         <img alt="" v-if="conv.avatar" :src="conv.avatar" class="h-full w-full object-cover" />
-        <span v-else class="gosslan-avatar-initial text-sm font-medium" :data-len="avatarInitialLen(conv.name)">{{ initials(conv.name) }}</span>
+        <span v-else class="gosslan-avatar-emoji" aria-hidden="true">{{ avatarSeedFor(conv.id)?.emoji }}</span>
       </div>
       <!-- 在线标识：群聊不显示；离线标灰半透 -->
       <span
@@ -206,9 +241,10 @@ const gridTiles = computed(() => {
         <!-- 名字会被截断（`truncate`），必须给 title：否则悬停看不到完整名字。
              整行的 aria-label 只服务读屏，不产生 tooltip。 -->
         <span
+          data-conv-name
           class="truncate text-[13px] leading-5"
           :class="active ? 'font-medium text-[var(--gosslan-list-active-text)]' : 'text-[var(--gosslan-text)]'"
-          :title="conv.name"
+          :title="displayName"
         >
           <!-- 置顶标识（微信同款位置：名字左侧）。纯本地偏好，对方不可见。 -->
           <Pin
@@ -221,13 +257,37 @@ const gridTiles = computed(() => {
             v-if="hasAnnouncement"
             class="mr-1 inline-block h-3 w-3 shrink-0 align-[-1px] text-[var(--gosslan-warning-ink)]"
             :aria-label="t('conv.announceBadge')"
-          />{{ conv.name }}
+          />{{ displayName }}
         </span>
-        <span
-          class="shrink-0 whitespace-nowrap text-[11px]"
-          :class="active ? 'text-[var(--gosslan-list-active-text)] opacity-90' : 'text-[var(--gosslan-text-2)]'"
-        >
-          {{ fmtConversationTime(conv.last_ts) }}
+        <!-- 右半边这一簇 = 任务数 + 时间（原来两件事各自是 `justify-between` 的一个孩子，
+             名字短时任务数会**漂到行中间**，看着像没归属 —— 2026-09-29 拿真图量出来的）。
+             头像右上角那枚是**未读红点**，两枚叠在同一个挂点上会互相遮，而且颜色不同承担的
+             意思不同（红=有消息没看，蓝=有活没干完）。
+             §10「不要两个数字都长得一样」⇒ 数字前面带一枚 `ListChecks` 图标：未读是"圆里一个数"，
+             任务是"图标 + 数"。数字本身仍走全应用唯一的 `UnreadBadge`（designGuards 禁手写副本，
+             那 1.5px 光学补偿必须跟尺寸同生死），这里只加图标、不复制胶囊。
+             `data-todo-chip` 是给运行时探针认这一族的稳定钩子（改形状会静默少判一枚 ⇒ 见
+             `scripts/check-ui-runtime.mjs` 的 `todoShape`）。 -->
+        <span class="flex shrink-0 items-center gap-2">
+          <span
+            v-if="openTasks > 0"
+            data-todo-chip
+            class="flex items-center gap-[3px]"
+            :title="t('todo.openForMe', { n: openTasks })"
+          >
+            <ListChecks
+              class="h-3.5 w-3.5 text-[var(--gosslan-primary-active)]"
+              :stroke-width="2.2"
+              aria-hidden="true"
+            />
+            <UnreadBadge :count="openTasks" tone="info" />
+          </span>
+          <span
+            class="shrink-0 whitespace-nowrap text-[11px]"
+            :class="active ? 'text-[var(--gosslan-list-active-text)] opacity-90' : 'text-[var(--gosslan-text-2)]'"
+          >
+            {{ fmtConversationTime(conv.last_ts) }}
+          </span>
         </span>
       </div>
       <div class="mt-0.5 flex items-center justify-between gap-2">

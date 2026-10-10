@@ -1,22 +1,22 @@
 <script setup lang="ts">
 import {
   ArrowUpCircle,
-  Bluetooth,
   FolderOpen,
   ListChecks,
+  Loader2,
   Monitor,
-  Network,
-  Pencil,
-  Router,
-  Share2,
   Smartphone,
   Users,
 } from "lucide-vue-next";
 import BackArrow from "@/components/ui/BackArrow.vue";
+import UnreadBadge from "@/components/UnreadBadge.vue";
+import { computed } from "vue";
+import LinkIcon from "@/components/ui/LinkIcon.vue";
+import { linkIconName, type LinkIconName } from "@/utils/peerConnectionInfo";
 import type { Conversation, LinkState } from "@/types";
 import { t } from "@/i18n";
 
-defineProps<{
+const props = defineProps<{
   conv: Conversation | null;
   isGroup: boolean;
   online: boolean;
@@ -32,37 +32,48 @@ defineProps<{
   peerVersionNewer?: boolean;
   /** 会话当前链路（最近一条消息的链路 + 跳数）。单聊显示。 */
   linkState?: LinkState | null;
-  /** 仅群主可改名。 */
-  canRename: boolean;
   /** 移动端：显示返回列表的箭头。 */
   showBack?: boolean;
+  /**
+   * 「外面还有多少条没看」= 未读总数（用户 2026-09-24：进聊天页后 TabBar 隐藏，
+   * 返回箭头上要提示别的新消息）。
+   *
+   * 数字**不在头部算**：调用方传 `chat.totalUnread`，与底部 TabBar、桌面导航栏、
+   * 托盘/Dock 角标共用同一份判据（`channelState.test.ts` 钉过这条）。
+   */
+  unreadTotal?: number;
   /** 群任务窗口正在打开（按钮 pending 反馈；桌面端开独立窗口时才可能为真）。 */
   tasksOpening?: boolean;
+  /** 「与我相关的未完成任务」数（蓝色徽标）。0 就不画；判定在 store 的 `openTodoByConv`。 */
+  openTasks?: number;
 }>();
 const emit = defineEmits<{
   (e: "back"): void;
   (e: "open-members"): void;
   (e: "open-files"): void;
   (e: "open-tasks"): void;
-  (e: "rename"): void;
   (e: "open-share"): void;
 }>();
 
-/** 连接图标：桥接（跳数>0）→ Share2；直连按 path 选 Wifi/Network/Bluetooth。 */
-function linkIcon(path: string, hop: number): { icon: string; label: string } {
-  if (hop > 0) {
-    return {
-      icon: "relay",
-      label: t("chat.header.linkRelay", { n: hop }),
-    };
-  }
-  if (path === "bluetooth") {
-    return { icon: "bluetooth", label: t("chat.header.linkBluetooth") };
-  }
-  if (path === "routed") {
-    return { icon: "routed", label: t("chat.header.linkRouted") };
-  }
-  return { icon: "lan", label: t("chat.header.linkLan") };
+const unreadOutside = computed(() => props.unreadTotal ?? 0);
+/** 蓝色徽标的数字。与会话列表那枚同源（`chat.openTodoByConv`），不在这再算一遍。 */
+const openTasks = computed(() => props.openTasks ?? 0);
+const backLabel = computed(() =>
+  unreadOutside.value > 0
+    ? t("chat.header.backUnread", { n: unreadOutside.value })
+    : t("chat.header.back"),
+);
+
+/** 连接图标名走 `peerConnectionInfo` 的唯一判据（与好友列表/资料页同源）；文案仍用聊天头自己那套 key。 */
+function linkIcon(path: string, hop: number): { icon: LinkIconName; label: string } {
+  const icon = linkIconName({ link: path, hop });
+  let label: string;
+  if (hop > 0) label = t("chat.header.linkRelay", { n: hop });
+  else if (path === "bluetooth") label = t("chat.header.linkBluetooth");
+  else if (path === "relay") label = t("chat.header.linkRelayServer");
+  else if (path === "routed") label = t("chat.header.linkRouted");
+  else label = t("chat.header.linkLan");
+  return { icon, label };
 }
 </script>
 
@@ -75,11 +86,15 @@ function linkIcon(path: string, hop: number): { icon: string; label: string } {
     <div class="flex min-w-0 items-center gap-1.5">
       <button
         v-if="showBack"
-        class="tap-safe -ml-2 mr-1 flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-        :title="t('chat.header.back')" :aria-label="t('chat.header.back')"
+        class="tap-safe relative -ml-2 mr-1 flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+        :title="backLabel"
+        :aria-label="backLabel"
         @click="emit('back')"
       >
         <BackArrow />
+        <!-- 徽标用全应用唯一的 `UnreadBadge`（designGuards 禁止再手写一份），
+             挂点由调用方给 —— 组件自己的注释明令不要把定位写进去。 -->
+        <UnreadBadge v-if="unreadOutside > 0" :count="unreadOutside" class="absolute -right-1.5 -top-1" />
       </button>
       <span class="truncate text-[15px] font-medium leading-6" :title="conv?.name || t('chat.header.conversation')">{{ conv?.name || t("chat.header.conversation") }}<template v-if="isGroup && memberCount > 0"> ({{ memberCount }})</template></span>
       <span
@@ -113,12 +128,7 @@ function linkIcon(path: string, hop: number): { icon: string; label: string } {
         :title="linkIcon(linkState.path, linkState.hop).label"
         :aria-label="linkIcon(linkState.path, linkState.hop).label"
       >
-        <Share2 v-if="linkIcon(linkState.path, linkState.hop).icon === 'relay'" class="h-4 w-4" />
-        <Bluetooth v-else-if="linkIcon(linkState.path, linkState.hop).icon === 'bluetooth'" class="h-4 w-4" />
-        <Network v-else-if="linkIcon(linkState.path, linkState.hop).icon === 'routed'" class="h-4 w-4" />
-        <!-- 局域网直连：用「路由器」而不是 WiFi 扇形（用户 2026-09-17：WiFi 图标会让人
-             以为走的是无线上网，而这里表达的是"同一局域网内直连"）。 -->
-        <Router v-else class="h-4 w-4" />
+        <LinkIcon :name="linkIcon(linkState.path, linkState.hop).icon" class="h-4 w-4" />
         <span v-if="linkState.hop > 0" class="text-[11px] font-medium leading-none">{{ linkState.hop }}</span>
       </span>
     </div>
@@ -145,22 +155,27 @@ function linkIcon(path: string, hop: number): { icon: string; label: string } {
            能改什么由面板按权限决定。 -->
       <button
         v-if="isGroup"
-        class="tap-safe flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-        :class="tasksOpening ? 'opacity-60' : ''"
+        class="tap-safe relative flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
         :aria-busy="tasksOpening"
-        :title="t('chat.header.tasks')" :aria-label="t('chat.header.tasks')"
+        :title="t('chat.header.tasks')"
+        :aria-label="openTasks > 0 ? t('todo.openForMe', { n: openTasks }) : t('chat.header.tasks')"
         @click="emit('open-tasks')"
       >
-        <ListChecks class="h-[18px] w-[18px]" />
+        <!-- 正在开独立窗口时**换成转圈**，不是把图标调暗：`opacity-60` 在一个 18px 的图标上
+             几乎看不出来，而用户等的是"这一扇窗什么时候出来"（用户 2026-09-24：
+             "弹窗弹出很慢，我还以为没点了，点了好几下一会才弹出来"）。
+             连点会被启动器的单飞/防抖吃掉，所以"看起来没反应"必须靠这里补上。 -->
+        <Loader2 v-if="tasksOpening" class="h-[18px] w-[18px] animate-spin" />
+        <ListChecks v-else class="h-[18px] w-[18px]" />
+        <!-- 与我相关的未完成任务（蓝）。数字同时进 aria-label：只靠颜色区分"有活没干完"
+             对读屏用户等于没有提醒。 -->
+        <UnreadBadge v-if="openTasks > 0" :count="openTasks" tone="info" class="absolute -right-1.5 -top-1" />
       </button>
-      <button
-        v-if="isGroup && canRename"
-        class="tap-safe flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-        :title="t('chat.header.rename')" :aria-label="t('chat.header.rename')"
-        @click="emit('rename')"
-      >
-        <Pencil class="h-[17px] w-[17px]" />
-      </button>
+      <!-- 群管理只有一个入口（用户 2026-09-29 需求汇总四："右上角入口、编辑按钮的弹窗内容
+           重复，只保留一个清晰入口"）：以前这里有「成员」和「✏️ 改名」两枚按钮，而后者
+           做的事就是**打开同一个弹窗**（`@rename` 在调用方写的是 `membersOpen = true`），
+           而那个弹窗里本来就有改名输入框 + 保存按钮 ⇒ 同一件事两个入口、还多一枚图标。
+           改名能力没有消失，只是不再在这里重复一次。 -->
       <button
         v-if="!isGroup"
         class="tap-safe flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"

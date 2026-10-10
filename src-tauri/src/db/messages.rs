@@ -2,6 +2,18 @@
 // - 消息表 CRUD（insert/get/list/update_message_status）
 // ---------------- 消息 ----------------
 
+/// @ 的落点 ⇄ 库里那一列。**编解码规则本身不在这里**（在 `protocol::mention_targets_from_value`，
+/// 与线上那一份共用），因为这一列与网络字段必须给同一个三态答案：
+/// `NULL` / 坏 JSON / 半截 = 不知道 ⇒ 呈现层按昵称兜底；`'[]'` 才是"权威地说没有"。
+fn encode_mention_targets(v: &Option<Vec<crate::protocol::MentionTarget>>) -> Option<String> {
+    v.as_ref().and_then(|t| serde_json::to_string(t).ok())
+}
+
+fn decode_mention_targets(raw: Option<String>) -> Option<Vec<crate::protocol::MentionTarget>> {
+    raw.as_deref()
+        .and_then(crate::protocol::parse_mention_targets_column)
+}
+
 /// 插入一条消息，并返回「本次是否真的新建了记录」的三态裁决。
 ///
 /// - `Ok(true)` ：本次真的插入一条新行 —— 唯一应产生投递副作用（未读 +1、`message-received`）的情形。
@@ -15,9 +27,10 @@
 /// 「重复」并照常回 Ack，而 Ack 会让发送方删除 outbox 行，导致消息永久丢失。
 pub fn insert_message_if_new(conn: &Connection, m: &MessageRecord) -> Result<bool> {
     let changed = conn.execute(
-        "INSERT OR IGNORE INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status)
-         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-        params![m.msg_id, m.conv_id, m.sender_id, m.receiver_id, m.kind, m.content, m.ts, m.seq, m.status],
+        "INSERT OR IGNORE INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status, mention_targets)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        params![m.msg_id, m.conv_id, m.sender_id, m.receiver_id, m.kind, m.content, m.ts, m.seq, m.status,
+                encode_mention_targets(&m.mention_targets)],
     )?;
     Ok(changed > 0)
 }
@@ -36,8 +49,8 @@ pub fn insert_message_and_outbox(
 ) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
     tx.execute(
-        "INSERT INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status)
-         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        "INSERT INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status, mention_targets)
+         VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             m.msg_id,
             m.conv_id,
@@ -47,7 +60,8 @@ pub fn insert_message_and_outbox(
             m.content,
             m.ts,
             m.seq,
-            m.status
+            m.status,
+            encode_mention_targets(&m.mention_targets)
         ],
     )?;
     tx.execute(
@@ -85,7 +99,7 @@ pub fn get_messages(
     offset: i64,
 ) -> Result<Vec<MessageRecord>> {
     let mut stmt = conn.prepare(
-        "SELECT id, msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status
+        "SELECT id, msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status, mention_targets
          FROM messages WHERE conv_id = ?1 ORDER BY seq ASC, id ASC LIMIT ?2 OFFSET ?3",
     )?;
     let rows = stmt.query_map(params![conv_id, limit, offset], |r| {
@@ -100,9 +114,93 @@ pub fn get_messages(
             ts: r.get(7)?,
             seq: r.get(8)?,
             status: r.get(9)?,
+            mention_targets: decode_mention_targets(r.get(10)?),
         })
     })?;
     Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// 一次拿到**多个会话**里全部的任务行（`todo` / `todo_update`），供前端折叠出徽标数字。
+///
+/// 为什么只到"取原始行"为止：一条任务的真值是**多写者 LWW**（`(seq, msg_id)` 元组取最新）
+/// 加两态排除（完成 / 归档，其中归档还含"完成满 7 天自动归档"），这套折叠语义
+/// 今天在前端 `utils/todos.ts::foldTodos` 已经有一份、Rust `latest_todo_def` 有另一份，
+/// 再到 SQL 里数一遍就是**第三个真源** —— 那正是本仓反复付学费的漂移形状。
+/// 所以这里只负责"把料取回来"，判定仍然只有那一份。
+///
+/// 走 `idx_messages_conv_kind(conv_id, kind)`（见 `db.rs::ensure_post_schema_shape`）。
+pub fn get_todo_messages_for_conns(
+    conn: &Connection,
+    conv_ids: &[String],
+) -> Result<Vec<MessageRecord>> {
+    let mut out = Vec::new();
+    for conv_id in conv_ids {
+        let mut stmt = conn.prepare(
+            "SELECT id, msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status, mention_targets
+             FROM messages WHERE conv_id = ?1 AND kind IN ('todo', 'todo_update')
+             ORDER BY seq ASC, id ASC",
+        )?;
+        let rows = stmt.query_map(params![conv_id], |r| {
+            Ok(MessageRecord {
+                id: r.get(0)?,
+                msg_id: r.get(1)?,
+                conv_id: r.get(2)?,
+                sender_id: r.get(3)?,
+                receiver_id: r.get(4)?,
+                kind: crate::protocol::display_kind(&r.get::<_, String>(5)?),
+                content: r.get(6)?,
+                ts: r.get(7)?,
+                seq: r.get(8)?,
+                status: r.get(9)?,
+            mention_targets: decode_mention_targets(r.get(10)?),
+            })
+        })?;
+        out.extend(rows.filter_map(|r| r.ok()));
+    }
+    Ok(out)
+}
+
+/// 取「最新一页」：一次查询拿到会话尾部的 `limit` 条，返回顺序与 `get_messages` 一致（正序）。
+///
+/// ## 为什么要有这一条而不是用 `get_messages(limit, total - limit)`
+/// 后者要先 `COUNT(*)` 才知道 offset ⇒ 冷加载一个会话要打**两次** IPC，而每次都得排队过
+/// 全局那把 `Mutex<Connection>`（所有业务共用一个连接）。多出来的那一轮不是"慢一点"，
+/// 是用户切到冷会话时**先看到骨架、过一会儿才看到内容**的那半拍。
+/// 合成一条还顺带去掉一个窗口：原来 `COUNT` 与取页之间若插进新消息，拿旧 offset 去查新状态
+/// 会让这一页**漏掉最底部那几条**（要等下一次重查才出现）。
+///
+/// ## 顺序
+/// `ORDER BY seq DESC, id DESC` 是 `get_messages` 那份全序的镜像，取完再 `reverse()`
+/// 回来 —— 判据测试 `db::favorites_tests::latest_page_is_identical_to_the_count_plus_offset_two_step`
+/// 逐行比对两者。**不能只用 `seq`**：它是 Lamport 逻辑时钟，双方同时发送时同一会话内
+/// 会撞号，`id` 才是那根打破平局的稳定锚。
+pub fn get_latest_messages(
+    conn: &Connection,
+    conv_id: &str,
+    limit: i64,
+) -> Result<Vec<MessageRecord>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status, mention_targets
+         FROM messages WHERE conv_id = ?1 ORDER BY seq DESC, id DESC LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![conv_id, limit], |r| {
+        Ok(MessageRecord {
+            id: r.get(0)?,
+            msg_id: r.get(1)?,
+            conv_id: r.get(2)?,
+            sender_id: r.get(3)?,
+            receiver_id: r.get(4)?,
+            kind: crate::protocol::display_kind(&r.get::<_, String>(5)?),
+            content: r.get(6)?,
+            ts: r.get(7)?,
+            seq: r.get(8)?,
+            status: r.get(9)?,
+            mention_targets: decode_mention_targets(r.get(10)?),
+        })
+    })?;
+    let mut out: Vec<MessageRecord> = rows.filter_map(|r| r.ok()).collect();
+    out.reverse();
+    Ok(out)
 }
 
 /// 预览取源：按 msg_id 返回 (sender_id, content)，供 read_file_preview 定位本地路径
@@ -118,10 +216,10 @@ pub fn get_message_preview_source(conn: &Connection, msg_id: &str) -> Option<(St
     .flatten()
 }
 
-/// 按 msg_id 取完整消息记录（cancel_send / resend_message 等需要跨字段判断时用）。
+/// 按 msg_id 取完整消息记录（需要跨字段判断时用；今天只有 `network/file/receive.rs::resume_receive` 认领续传用它）。
 pub fn get_message_record(conn: &Connection, msg_id: &str) -> Option<MessageRecord> {
     conn.query_row(
-        "SELECT id, msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status
+        "SELECT id, msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status, mention_targets
          FROM messages WHERE msg_id = ?1",
         params![msg_id],
         |r| {
@@ -136,6 +234,7 @@ pub fn get_message_record(conn: &Connection, msg_id: &str) -> Option<MessageReco
                 ts: r.get(7)?,
                 seq: r.get(8)?,
                 status: r.get(9)?,
+            mention_targets: decode_mention_targets(r.get(10)?),
             })
         },
     )
@@ -165,8 +264,9 @@ pub fn get_favorite_source(
 /// 更新单条消息状态。**硬终态不可逆**：`read`（已读回执）、`delivered`（Ack）、
 /// `recalled`（被撤回）一旦写入，任何后续 set 都会被拒绝。
 ///
-/// 注意：`failed` 和 `cancelled` 是**软终态**（可通过 resend_message 回到 sending），
-/// 所以它们**不在** NOT IN 里 — sweeper 判 failed 后用户还能点重发。
+/// 注意：`failed` 和 `cancelled` 是**软终态**，所以它们**不在** NOT IN 里 ——
+/// outbox 补发成功要把 `failed` 往前推成 `sent`，卡在 failed 的行还要能被清扫器扫到。
+/// （原先写在这里的理由「可通过 resend_message 回到 sending」已失效：那条命令 2026-09-25 删了。）
 ///
 /// 典型竞态：Ack 因 outbox 补发晚于 ReadReceipt 到达，`read` 不能被回退成 `delivered`。
 pub fn set_message_status(conn: &Connection, msg_id: &str, status: &str) -> Result<()> {
@@ -232,46 +332,6 @@ pub fn fill_message_sha256(conn: &Connection, msg_id: &str, sha256: &str) -> Res
     Ok(true)
 }
 
-/// 搜索消息内容，返回匹配的会话 ID 列表（去重，按最新匹配排序）。
-/// LIKE 通配符（% _）被转义为普通字符，只做字面包含搜索。
-pub fn search_messages(conn: &Connection, keyword: &str, limit: i64) -> Result<Vec<String>> {
-    let pattern = format!("%{}%", escape_like(keyword));
-    let mut stmt = conn.prepare(
-        "SELECT DISTINCT conv_id FROM messages WHERE content LIKE ?1 ESCAPE '\\' ORDER BY ts DESC LIMIT ?2",
-    )?;
-    let rows = stmt.query_map(params![pattern, limit], |r| r.get::<_, String>(0))?;
-    Ok(rows.filter_map(|r| r.ok()).collect())
-}
-
-/// 获取会话中匹配关键词的最新一条消息（用于搜索结果摘要）。
-pub fn search_messages_in_conv(
-    conn: &Connection,
-    conv_id: &str,
-    keyword: &str,
-    limit: i64,
-) -> Result<Vec<MessageRecord>> {
-    let pattern = format!("%{}%", escape_like(keyword));
-    let mut stmt = conn.prepare(
-        "SELECT id, msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status
-         FROM messages WHERE conv_id = ?1 AND content LIKE ?2 ESCAPE '\\'
-         ORDER BY seq DESC, id DESC LIMIT ?3",
-    )?;
-    let rows = stmt.query_map(params![conv_id, pattern, limit], |r| {
-        Ok(MessageRecord {
-            id: r.get(0)?,
-            msg_id: r.get(1)?,
-            conv_id: r.get(2)?,
-            sender_id: r.get(3)?,
-            receiver_id: r.get(4)?,
-            kind: crate::protocol::display_kind(&r.get::<_, String>(5)?),
-            content: r.get(6)?,
-            ts: r.get(7)?,
-            seq: r.get(8)?,
-            status: r.get(9)?,
-        })
-    })?;
-    Ok(rows.filter_map(|r| r.ok()).collect())
-}
 
 /// 全历史检索的一条命中（含"该会话命中总数"，供「共 N 条相关聊天记录」用）。
 #[derive(Debug, Clone, PartialEq)]

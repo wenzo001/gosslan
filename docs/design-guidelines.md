@@ -182,9 +182,9 @@ Tailwind `.transition` 系列的曲线由本文件统一覆盖。
 
 | Token                    | Light                 | Dark                   | 用途                  |
 | ------------------------ | --------------------- | ---------------------- | ------------------- |
-| `--gosslan-danger`       | `#ff3b30`             | `#ff5548`              | **填充档**：危险按钮实底、未读徽标底、hover 底（Apple 系统红） |
+| `--gosslan-danger`       | `#d43d43`             | `#d43d43`              | **填充档**：危险按钮实底、未读徽标底、错误 toast。⚠️ 这一档**上面永远压着白字**，所以它和文字档受同一条 4.5 约束：2026-09-26 无障碍实测系统红 `#ff3b30` 只有 **3.55**（暗色 `#ff5548` **3.16**，hover 混白后更低）⇒ 压深一档，白字 **4.62**。不承担白字的填充（`--gosslan-warning`）仍保持系统色 |
 | `--gosslan-danger-ink`   | `#cc2418`             | `#ff5548`              | **文字/图标档**：删除、失败、错误提示（系统红当文字只有 3.55，不够 4.5） |
-| `--gosslan-danger-soft`  | `rgba(255,59,48,.12)` | `rgba(255,85,72,.18)`  | 危险的浅底 hover         |
+| `--gosslan-danger-soft`  | `rgba(212,61,67,.12)` | `rgba(255,85,72,.18)`  | 危险的浅底 hover         |
 | `--gosslan-warning`      | `#ff9500`             | `#ff9f0a`              | **填充档**：警告实底（Apple 系统橙） |
 | `--gosslan-warning-ink`  | `#c67600`             | `#ff9f0a`              | **图标档**：群主皇冠、文件夹图标（琥珀当图标只有 2.20，连图形档 3.0 都不到） |
 | `--gosslan-warning-soft` | `rgba(255,149,0,.12)` | `rgba(255,159,10,.18)` | 警告的浅底 hover         |
@@ -231,8 +231,16 @@ Tailwind `.transition` 系列的曲线由本文件统一覆盖。
 | 组合 | 实测 | 为何不拉到达标 |
 |---|---|---|
 | 在线绿点 `--gosslan-success` `#10b981` on 白底 | 2.54 | Apple 自家 `systemGreen #34C759` on white 只有 2.22 —— **已经比 Apple 更亮**。拉到 3:1 需要显著更深，绿点就不再是"在线"的语义色。离线点则已提到 systemGray（3.26 on 面板） |
-| 亮色 `--gosslan-danger` 填充档白字 | 3.55 | 未读徽标 / 危险实底上的**白字**。Apple 的计数徽标同样如此，属「短数字 + 高强调」的既有取舍；正文位置一律走 `-ink` 档 |
 | 亮色边框 `--gosslan-border` on 面板 | 1.23 | 亮色**靠阴影表达层级**，分隔线本就该淡（Apple 亮色分隔线同量级）。暗色没有有效阴影，才需要把边框拉到 1.64 —— 两套外观的判据不同，不要互搬 |
+
+★ **撤销过一条"已知偏差"（2026-09-26）**：这一族里原本还有一行「亮色 `--gosslan-danger` 填充档白字 3.55 ——
+Apple 的计数徽标同样如此，属短数字+高强调的既有取舍」。**它被推翻并改成了判据**，理由三条：
+① 徽标里的数字是**信息载体**（有几个没读、有几个任务），读不出就等于没有提醒，不是纯装饰；
+② Apple 自己也这么干不构成理由 —— 本项目的契约是自己定的 4.5，不能拿别人的破绽当自己的依据；
+③ 实测压深到 `#d43d43` 后白字 **4.62**，观感只是"红得沉一档"，仍是原生红，没有牺牲辨识语义。
+⇒ 现在 `tokenContrast` 的契约表里 `#ffffff on --gosslan-danger` 与 `#ffffff on --gosslan-danger-hover`
+两档（亮/暗各二）都是**会红的判据**，不再是注释里的取舍。hover 的方向也一并纠正：原来 `color-mix` 朝白混
+（实测把白字从 3.55 再拖到 **3.11**，混出来是 `#ff584f`），现在朝暗混（混出 `#bb363b`，白字 **5.67**）。
 
 ### 3.4 原生控件跟随外观
 
@@ -277,6 +285,12 @@ Tailwind `.transition` 系列的曲线由本文件统一覆盖。
   **不要把系统标题栏与自绘标题栏叠成两层**。日志窗口因为兼移动端整页形态，直接用 `TitleBar`。
 - 小窗口（设置 / 日志 / 群任务）**不给最大化**：builder 上 `.maximizable(false)`，
   caption 传 `:show-maximize="false"`（macOS 绿灯也不画）；可调整大小 / 最小化 / 关闭。
+- **任何内容浮层都不许盖住 caption（用户 2026-09-30：「图片预览独立窗口会遮住头部标题栏
+  关闭最小化那块，应该只在下面内容区，标题栏优先度最高」）**：`TitleBar` 自带 `z-[85]` ——
+  高于弹窗 `65` / 右键菜单 `70` / 操作面板与图片预览 `80`，只有 Toast（`90`，`pointer-events-none`）
+  允许浮在它上面（失败提示被压住等于没有反馈）。完整阶梯只写在 `src/components/BaseModal.vue`
+  那段注释里，**新增浮层请把层级留在 80 及以下**：超过 85 会被设计判据 ㉕
+  （`src/utils/designGuards.test.ts`，从源码现算，不抄数字）当场判红。
 - **唯一例外：外部链接窗口**保留系统标题栏 —— 它加载的是第三方网页，我们自己的文档不在那个窗口里，
   套自绘栏只能改用 iframe 包一层（大量站点有 `X-Frame-Options`，会直接白屏）。
 
@@ -319,8 +333,9 @@ Tailwind `.transition` 系列的曲线由本文件统一覆盖。
 - [ ] 布局尺寸变了的话，同步 `utils/previewMetrics.ts` / `messageHeight.ts`（虚拟列表估算）
 - [ ] **图标按钮补了 `aria-label`**（只有 `title` 不算——那是工具提示；§10.2）
 - [ ] **每个 `<img>` 都有 `alt`**：装饰性写 `alt=""`，内容图写真描述（§10.2）
-- [ ] **没有把操作藏在 hover 后面**：凡用 `group-hover:*` / `opacity-0` 揭示的元素都加了 `.hover-reveal` / `.hover-reveal-op`（§10.3）
+- [ ] **没有把操作藏在 hover 后面**：触屏与键盘是两个独立缺口 —— 凡用 `group-hover:*` / `opacity-0` 揭示的元素都加了 `.hover-reveal` / `.hover-reveal-op`（触屏常显），而**新的**"悬停才现的操作"应走 `.kb-reveal`（常驻布局 + 聚焦显形，别用 `hidden` 把可聚焦性一起删掉）（§10.3）
 - [ ] 新增毛玻璃（`backdrop-filter`）时确认在 `prefers-reduced-transparency` 下有回退（§10.1）
+- [ ] **新写的平台/输入能力判定没落在视图层**：纯样式差异用 CSS 媒体查询，UA 与"能不能悬停"引 `utils/platform.ts`，移动布局用 `useAppStore.isMobile`（§10.3.1，㉟ 守着）
 - [ ] 错误提示走 `app.toastError(e, "…")`，没有自己拼 `：${e}`（§9.5）
 
 ---
@@ -469,6 +484,40 @@ Tailwind `.transition` 系列的曲线由本文件统一覆盖。
 两边各写一份 `kind === "system"` 就会漏掉 `recalled`，估高与渲染差一行即互相遮挡。
 守护测试：`src/utils/messageKinds.test.ts`「提示行的判定只有一个来源」。
 
+### 8.2 点名（@）的视角规则（用户 2026-09-26 提，#85）
+
+**同一条消息里同一个 @，自己看和别人看不一样**：
+
+| 谁在看 | 看到什么 | 为什么 |
+|---|---|---|
+| 被点到的本人 | **`@你`**，且**加重**（`.mention-token--self`） | 名字对自己没有信息量，"在叫我"才是；扫一眼就要能分出来 |
+| 其他人 | 仍然是 `@张三` | 别人需要知道点的是谁，折成"你"就废了 |
+
+规则只有**一个来源**：`src/utils/linkify.ts` 产出 `kind: "mention" | "mention-self"`，
+渲染端（消息气泡与内容详情弹窗两处）按 kind 挂类名，**不在组件里再比一次名字**。
+
+⚠️ 一条写过的判据差点埋掉的坑：**同前缀昵称**。`张三` 是自己、`张三丰` 是别人时，
+`@张三丰` 必须还是 `@张三丰`，不能被前缀匹配折成 `@你` —— 这条有专门用例钉住
+（`linkify.test.ts`「@张三丰 @张三」那组）。
+
+**修饰类必须有定义**（本轮新加的护栏）：`designGuards::findModifierClassWithoutStyle`
+扫全部 `.vue`，凡是模板上挂了含 `--` 的修饰类而全局 `style.css` 与本文件 `<style>` 里都没有定义 ⇒ 报红。
+理由：这类退化的形态是**界面静默变朴素** —— 渲染不报错、类型不报错、测试不报错，
+只有用户看得见"高亮没了"。
+
+覆盖面是**模板 class 属性上写死的类名**，三种真实绑定写法各认一处：静态 `class="a b--c"`、
+对象 `:class="{ 'b--c': x }"`、三元与数组 `:class="ok ? 'b--c' : ''"` / `:class="['b--c']"`。
+**不覆盖在脚本里拼出来的类名**（`:class="[rowLevelBg(r.level)]"` 那类函数返回值）—— 静态扫不出来。
+这一格"到底认出了几枚"不写进文档（写了就会漂），由 `designGuards.test.ts`
+「全库扫到的修饰类清单要非空转」现算：少于下限即红，红消息里直接打印认出的清单。
+
+⚠️ **这条护栏第一版就漏过一枚**：它当时只认静态与对象两种写法，而筛选 chip 的选中态
+（`.gosslan-filter-chip--on`，`ChatSearchDialog.vue`）写的是三元形式 ⇒ 那枚类挂上去也没人守，
+且全库扫描**照样绿**（因为该类的定义本来就在）。是"把文档里的枚数拿去现算"这一步抓到它的，
+不是那条判据自己报的 —— 通用一条：**判据的覆盖面要靠现算输入清单来核，不能只信判据没红**。
+两处实测（都一正一反）：把 `.mention-token--self` / `.gosslan-filter-chip--on` 的定义改名
+⇒ 全库扫描各自立刻报红并指到用法行；撤掉即绿。
+
 ---
 
 ## 9. UI 优先：不可阻断渲染
@@ -535,7 +584,7 @@ Tailwind `.transition` 系列的曲线由本文件统一覆盖。
 - 纯图标状态（如消息回执的转圈/绿勾）用 `role="img"` + 可访问名 —— 否则读屏用户
   完全不知道消息发出去了没有。
 
-> ⚠️ 护栏的已知盲区：内部含 `{{ 表达式 }}`（如未读徽标、头像首字母）的按钮会被当作"有文本"而跳过。
+> ⚠️ 护栏的已知盲区：内部含 `{{ 表达式 }}`（如未读徽标、默认头像的 emoji）的按钮会被当作"有文本"而跳过。
 > 导航栏的「聊天 / 通讯录」正是这类，它们的名字会退化成裸数字，**仍需人工判断**。
 
 ### 10.2.1 图片 alt：装饰性与内容要分开
@@ -546,20 +595,62 @@ Tailwind `.transition` 系列的曲线由本文件统一覆盖。
 | 类型 | 写法 | 例 |
 |---|---|---|
 | 装饰性头像（旁边已有姓名，或所在行已有可访问名） | `alt=""` | 会话行 / 好友行 / 申请行 / 成员列表里的头像 |
+| 默认头像（emoji 小动物，#32） | `aria-hidden="true"` | 与上一行同口径：图形是装饰，人名由旁边的文本承载。判据 `designGuards::findAvatarFaceWithoutAriaHidden` 扫全部 `.vue` |
 | 内容图片（图片本身就是信息） | 真实描述 | 消息内图片 `alt="图片消息"`；预览用 `:alt="current?.name \|\| '图片预览'"` |
 
 ❌ 不要给装饰性头像写人名 —— 读屏会把同一个名字念两遍（一次来自行标签、一次来自 alt）。
 
-### 10.3 悬停不能是唯一入口
+**默认头像长什么样（#32，2026-09-27）**：没上传头像时不再是「按昵称截字」，而是
+**emoji 小动物 × 逐对挑过的背景色**（`src/utils/avatarSeed.ts`，组合表 108 对，条数由判据现算）。
+种子是**设备 id / 群 id**，不是昵称 —— 两条理由都不会自己守住：昵称可改（改一次换一张脸）、
+昵称也能撞（两个人同名就同脸）。现算的额外好处是**不新增跨设备同步字段**：
+任何一端拿到同一个 id 就复算出同一张脸，换设备、重装、清缓存都不变。
+字母那条路已由 `designGuards::findRetiredLetterAvatarUsage` 判成「不许复活」。
 
-任何用 `group-hover:*` 或 `opacity-0` 揭示的元素，都必须同时加 `.hover-reveal`（显示）
+### 10.3 悬停不能是唯一入口（触屏与键盘是**两个**缺口）
+
+**触屏那一半**：任何用 `group-hover:*` 或 `opacity-0` 揭示的元素，都必须同时加 `.hover-reveal`（显示）
 或 `.hover-reveal-op`（不透明）——这两个类在 `@media (hover: none)` 下退化为常显。
 
 真实事故：会话行的删除键写成 `hidden` + `group-hover:flex`，**Android 上永远不显示**
 ——桌面能删、手机删不掉（见 §7.4 / CHANGELOG）。同层的"删除好友"因为有长按兜底才幸免。
 
+**键盘那一半（2026-10-10 补，roadmap N19）**：`display:none` 是**连可聚焦性一起去掉**的，
+所以"悬停才现"若用 `hidden` 来藏，键盘用户既 Tab 不到、也回车不了 —— 这与触屏无关，
+`.hover-reveal` 那一家也救不了它（它只在无 hover 的设备上把 display 改回 flex）。
+新写的"悬停才现的操作"请走 **`.kb-reveal`**（`style.css`）：
+
+- 元素**常驻布局**、按 `opacity` 藏，`悬停 / :focus-visible / :focus-within / .kb-reveal-on` 任一条成立就显形；
+- `pointer-events` 必须跟着开合 —— 常驻之后不关掉，那颗看不见的按钮会吃掉它位置上原本的点击；
+- 带它的元素必须本就脱开文档流（`absolute`）或处在自适应宽的行里，否则"常驻"会改排版；
+- 触屏兜底同写在 `@media (hover: none)` 里，且 **opacity 与 pointer-events 两条都要放开**
+  （只放 opacity = 看得见却点不着）；
+- 揭示靠父级的 hover 组名（`.group/msg`、`.group/pin`）——**新增一个 hover 组就要在那里补一行**，
+  漏了不报错，只是键盘与悬停都看不见（正是本条要防的"写对了但不起作用"）。
+- 操作本身请用真 `<button type="button">`。**不要**用 `span role="button"`：role 只让读屏念出"这是按钮"，
+  **不给可聚焦性**；它嵌在另一个 `<button>` 里还属不合法的交互嵌套（`designGuards` ⑥ 2026-10-10 起会报这一型）。
+  做成同级兄弟，别靠 role 伪装。
+
 配套：触屏上小于 44px 的独立小按钮加 `tap-safe`（见 §2.3）。注意该规则 2026-09-10 之前
 **定义了但全库 0 处引用**，属"护栏写了没人用"的典型，code review 时一并核对。
+
+### 10.3.1 平台与输入方式只有一个家（roadmap N11）
+
+本仓的原生体验做法是**通用层 + 各端薄壳**，所以"这台是什么 / 能不能悬停"这类判断**不许在视图层各算一遍**
+——散写的 `isMac` / UA 分支会一处一处长成没法维护的分支网（约束里明写的那条）。三个家，按顺序问：
+
+1. **纯样式差异 ⇒ 让 CSS 自己表达**：`@media (hover: none)`、`@media (pointer: coarse)`、
+   `env(safe-area-inset-*)`、`prefers-reduced-motion` / `reduced-transparency` / `contrast`。
+   这一族已经在 `style.css` 里，**不要往组件里搬**。
+2. **平台与输入能力（UA、有没有真悬停）⇒ `utils/platform.ts`**：每个判定都是"纯函数 + 运行时常量"成对
+   （`isMacUA`/`isMac`、`isIOSUA`/`isIOS`、`isAndroidUA`/`isAndroid`、`canHoverByMedia`/`canHover`），
+   纯函数那一半是为了能在 Node 里单测。判悬停必须走媒体查询**而不是 UA**：窄窗口的桌面仍是 hover 设备，
+   宽屏的手机不是。
+3. **布局模式（要不要走移动那一套）⇒ `useAppStore` 的 `isMobile`**：那份是"平台优先、宽度兜底"，
+   顺序是 Android 首启事故换来的（见 `platform.ts` 的 `resolveMobileLayout` 注释），别在组件里另算一份宽度。
+
+由 `designGuards` ㉟ 守着：视图层出现 `matchMedia(`、`navigator.userAgent|platform|appVersion|maxTouchPoints`、
+`@tauri-apps/plugin-os` 即报（注释里的提及不算；`navigator.clipboard` 这类**不是平台判定**的 API 不在名单里）。
 
 ### 10.4 外观三态：跟随系统是默认
 
@@ -570,3 +661,164 @@ Tailwind `.transition` 系列的曲线由本文件统一覆盖。
 - **`index.html` 的骨架判定必须与 store 完全一致**（骨架先于 bundle 执行，不一致就会看到
   "骨架浅色 → 界面深色"闪一下）。改外观逻辑时两处一起改。
 - 强制模式下系统外观变化**不得**影响界面；跟随模式下系统变化要**即时**生效（监听 `prefers-color-scheme`）。
+
+---
+
+## 11. 原生体验：目标 / 结构性账 / 验收口径（2026-10-09 并入本文件）
+
+> **这一节的交互规则已经有不变量家了**：`docs/protocol-invariants.md` 的 **INV-P31** ——
+> 悬停揭示必须有非悬停可达路径、小尺寸热区（连同 `tap-safe` 只撑垂直方向这条量程边界）、
+> 关闭之后的两个终态（DOM 撤净 + 焦点归还）、以及「先证帧在出再谈还剩没剩」那条量具纪律。
+> 这一节继续讲怎么做；**规则本身以 INV-P31 为准**，同一句规矩不在两处各写一遍，
+> 否则两处会各自漂（本仓为这件事真翻过车）。
+
+> **为什么不新开 `docs/native-experience-standard.md`**：本文件 §1–§10 已经是原生体验的"公共层"
+> （token、交互态、动效令牌、无障碍、窗口边界）。另起一份只会造出**第二个真源**——
+> 本仓在"同一个关注点有两个家"上付过真实代价（`docs/AI_ENGINEERING_INDEX.md` 第 4、5 条前面那段）。
+> **任务清单也不另建**：原生体验的格子在 `docs/stability-roadmap.md` §12.6.1（N1–N8，已拆出 #127–#130）；
+> **性能基线在 `perf/README.md`**（那一节开头是"量具自检"，先读它再读任何数字）。
+
+### 11.1 目标与非目标
+
+| 目标（做对了才算） | 非目标（明确不做） |
+|---|---|
+| 反馈即时：按下同帧变色（§2.3 两条铁律） | 换 UI 框架 / 引第二套动画系统 |
+| 滚动与列表不抖、不闪、不空（§11.2） | 复刻 iOS 外观（胶囊按钮、大圆角、玻璃拟态铺满） |
+| 触摸、鼠标、键盘三条输入路径都能走完（§2.4、§10.2、§10.3） | 为"原生感"加没有信息量的动效、粒子、视差 |
+| 平台习惯走系统开关（§10.1、§10.4），且这类判定只有一个家（§10.3.1），不要求用户改 App 设置 | 为视觉效果碰协议 / 加密 / DB / IPC / 消息状态机 |
+| 长会话在低端设备仍可用（`perf/README.md`） | 宣称没跑过的平台已通过（一律记 UNVERIFIED） |
+
+### 11.2 列表与滚动：**虚拟化的输入必须现读，不许只在挂载时读一次**
+
+这是原生体验里唯一"结构性"的一条：流畅度不是靠加过渡买来的，是靠不渲染不该渲染的东西、
+不重算不该重算的东西。**输入坏一次，整页的流畅度判断全部失真。**
+
+- 规则：`viewport`（可视区高度）这类输入**必须由 `ResizeObserver` 跟着容器真实尺寸更新**。
+  只有 `onMounted` + `window` resize 是两个不够的读取点 —— 移动端软键盘弹出、断点切成整页形态、
+  常驻辅助窗口重新显示、面板开合挤压布局，这四类路径**都不发 `window:resize`**。
+  旧值偏大 ⇒ 整表被算成"可见"（全量渲染）；旧值偏小 ⇒ 滚到下方出现空白。**两个方向都是缺陷。**
+- 尺寸读不到 0 时**不写入**（常驻窗口关闭即隐藏 / `display:none`），保留上一个可用值 ——
+  与 `VirtualList.commitHeight` 拒绝 0 高度是同一个失败方向（写 0 会让整列塌到顶部）。
+- **量具必须自证它真的动过**：`perf/probe.mjs` 现在在采数前打印 `scrollerReal`
+  （写一次 `scrollTop` 读不回同样的值就是容器根本不是滚动容器）。这条不是抽象洁癖：
+  它坏过整整一次，症状是"帧间隔 p50 = 16.7ms 满帧"，而 16.7ms 正是**一个什么都不做的空闲帧**；
+  同期那句"估算调用数 0 ⇒ 稳态滚动不重算 ✓"也是假的 —— **调用数为 0 是因为没滚过**。
+  复跑：`node perf/probe.mjs 9223`（三步启动法见 `perf/README.md`）。
+
+### 11.3 动效：本应用的档位就是两个，不要为凑齐"标准档位"造没人用的 token
+
+| token | 值 | 用在哪 |
+|---|---|---|
+| `--gosslan-ease` | 强 ease-out | 所有过渡的曲线（Tailwind `.transition` 由 `style.css` 统一覆盖） |
+| `--gosslan-duration-fast` | 150ms | 轻反馈（hover/press/小元素） |
+| `--gosslan-duration` | 240ms | 结构性变化（浮层、面板、尺寸） |
+
+- **没有"页面切换 200–320ms"这一档，是有意的**：本应用是多窗口架构（§5），没有路由级过场，
+  造一个没人消费的 token 只会变成下一个"定义了但 0 处引用"（§10.3 那个真实事故）。
+- **主题色相关的规则必须写在顶层**（判据 ㉚ `findNestedThemeRuleIssues`）：`::selection` 与 `accent-color`
+  一旦被写进别的规则的括号里（例如 `input,textarea,…{ … }`），原生 CSS 嵌套会把它们编译成**后代**选择器
+  （`input ::selection` / `[contenteditable=""] progress`）⇒ 整条匹配不到任何东西。
+  这种写法**源码里看得见、判据扫得到、界面上没有** ⇒ 这一族只能判**嵌套深度**，
+  而且核对要读 `dist/assets/*.css`（读 `src/style.css` 不足以证明它生效）。
+- **动画系统零新增依赖**：Motion / GSAP / @vueuse/motion 都不在 `package.json` 里（现算：
+  `node -e "const d=require('./package.json');console.log(Object.keys({...d.dependencies,...d.devDependencies}).filter(k=>/motion|gsap|anime|framer/i.test(k)))"` ⇒ 应为空数组）。
+  要引入必须先给出"哪个具体交互靠 CSS transition 做不到"的证据，并且一次只引一套。
+- 动画完成 ≠ 业务完成：反馈可以立刻画，状态必须等真实回执（§9.3 乐观更新 + 失败回滚），
+  不许用动效掩盖失败（§9.5 错误统一出口）。
+
+### 11.4 平台分层：**这一条目前是"待收口"，不是"已生效的规矩"**
+
+现状（先记账，别写成已经做完了）：`src/utils/platform.ts` 是平台判定的**命名出口**
+（`isMac` / `isAndroid` / `isIOS` / `resolveMobileLayout`），但**组件里散写这三个标识符的文件不止一个**
+⇒ "所有平台分支都走这一个家"**今天不成立**。
+
+- 计数**不在这里写数字**（写了就会漂，而且本文件 §8.2 已经记过一次"判据覆盖面要靠现算核对"的教训）。
+  现算口径固定为：`grep -rlE '\b(isMac|isIOS|isAndroid|isWindows|isMobile)\b' src/components --include="*.vue" | wc -l`
+  （**`--include` 必须加引号**，不加引号在 zsh 下会被 glob 吞掉、报 `no matches found`，那条空结果不是"搜过没有"）。
+- 收口方向（属可维护性 + 原生体验，按优先级排在稳定/流畅之后，**不在本轮顺手做**）：
+  新增交互一律不自己判断平台，先问 CSS 能不能表达（`@media (hover: none)`、`env(safe-area-inset-*)`、
+  `prefers-*`），不能表达才走 `utils/platform.ts`；已散写的那几处等一次专门的收口改动
+  （散写点搬家会动到 §11.2 那条量具和窗口生命周期，必须单独一次可回滚的改动 + 单独一次门禁）。
+- 公共层（不随平台变）：§1 圆角、§2 交互态、§3 配色、§8 排版、§9 UI 优先、§10 无障碍与系统跟随。
+- 适配层（只在真实需要时存在，且必须是**有名字的一处**）：`utils/platform.ts`（判定）、
+  `utils/haptics.ts`（触觉，§2.3 含三端能力差异）、`env(safe-area-inset-*)`（安全区）、
+  `components/TitleBar.vue` + `components/window/AuxWindowShell.vue`（窗口 chrome，§5）、
+  `composables/useBackLayer.ts`（Android 返回层；iOS 侧滑 wry 未开 ⇒ 页内返回按钮，那条注释是准的）。
+
+### 11.5 验收口径：每一项要么挂得上复跑命令，要么明写未测量
+
+| 维度 | 今天的判据（**可复跑**） | 今天测不到的（不许从这里读出结论） |
+|---|---|---|
+| 流畅度 | `perf/probe.mjs` 的 `scrollerReal` + `virtualizationOK` 双真，再 `perf/run.mjs` 的 `longFramesOver50ms` 与 p95；**§八 那句「无布局跳跃」现在也有现算判据了** —— `PERF_ONLY=resize node perf/run.mjs`（量具五，目标页要带 `&fit=1`）：2026-10-10 现读 900→560→900→1200 四档里阅读态锚点行与它的亚像素偏移全同、`scrollTop` 一字未变，贴底态三档 `bottomGap` 恒 0 | **真机 60Hz/高刷设备上的实际帧表现**；**低端设备目前只有同机模拟降速的数**（量具六：4× p50 54.9、6× p50 77.4 ms、长帧 149/150 ⇒ 没有任何自适应降级，掉帧按 CPU 线性放大），低端 Android / 低功耗 macOS **实机仍未测**；**撤掉 CDP 视口覆写（回到真实窗口尺寸）那一态没读到**（`afterClearVp.landed=false`）；WKWebView / WebView2 / Android 的缩放锚定行为未测 |
+| 结构性成本 | 同上的 `offsetsRebuilds`（整表前缀和重算次数）——**它现在是"每帧一次"这一格开着** | 10 万档（`run.mjs` 180s 超时没跑完，归因未定，见 `perf/README.md`） |
+| 响应性 | §2.3 按下瞬时 + `:active` 里 `transition-duration: 0s`（由 `designGuards` 守着）；§9.1 点击同帧改 UI；**输入到首帧的毫秒数现在有量具了** —— `perf/latency.mjs`（CDP 真鼠标 → 真实 `BaseModal` 面板第一次带上计算样式那一帧），2026-10-10 基线 p50 15.5 / p95 17.4 ms、reduce 档 p50 14.5 / p95 15.6 ms | **真机 WebView**（WKWebView / WebView2 / Android）的输入到首帧：未测；且这台量具**分辨率就是一个采样帧**（≈16.7 ms）⇒ 不许拿它论证一帧之内的快慢，也不含网络与数据库 |
+| 稳定性 | `npm test`（含 `tokenContrast` / `a11yLabels` / `popupRegistry` / `VirtualList` 卸载出口那条护栏）+ `verify-guards.py` | 长时间运行：**600 步滚动已有数**（`PERF_ONLY=mem node perf/run.mjs 20000` ⇒ 堆 7.12 → 7.48 MB、DOM 元素第二轮不再长、`JSEventListeners` 恒 8），**小时级长跑、真图 / Blob-ObjectURL、Detached DOM 三格仍未测**；长跑那一头已从「两个端点」扩成**中间序列**（`PERF_MEM_STEPS=3000 PERF_MEM_BLOCK=500`，每 500 步一采）：2026-10-10 现读 6000 步里堆 7.15–7.26 MB、DOM 元素恒 108、`JSEventListeners` 十二个点全是 8 ⇒ 四类计数无一条上行。§七 第 7 项「后台 / 重新显示」这一态现在有数了 —— `node perf/background.mjs`（量具七，读**真实应用页**，阳性对照＝开跑先要求看到 `delay=5000` 且回调含 `Topology` 的注册，看不到就退 1 判读数作废）：2026-10-10 现读前台 20 s 内那条 5 秒刷新 **4 次＝一条不差**，隐藏 330 s 内只有 **16 次**（前 60 秒仍满速 12 次，**节流落在隐藏后 60–120 秒之间**，之后每分钟 1 次），回到前台又 4 次；两把独立尺（页内 shim 次数 / CDP 异常条数）逐档相等 4/4、16/16、4/4；整段隐藏期本页脚本总时长 **5 ms**、`JSEventListeners` 恒 58 ⇒ 给那条刷新补 `document.hidden` 门的收益是**有上界**的（最多那 12 次），这条判定不再是「常识」；⚠️ **这一态只有 Chromium 一个引擎**：WebView2 未实跑、WKWebView / Android WebView 的后台定时器策略一条证据都没有，且「另开标签模拟隐藏」≠ 窗口最小化 ≠ 移动端切后台 |
+| 无障碍 | §10 四条（可见焦点、可访问名、hover 不是唯一入口、系统三开关）各有判据 | 读屏软件真机播报（NVDA/VoiceOver）：未测；`::selection` 那一格见 `docs/stability-roadmap.md` §12.6.1 的 N7 |
+| 资源开销 | `npm run build` 后现量 dist，**两个口径一起报别混**：`du -sk dist`（按文件系统块，2026-10-10 = 2828 KB）与「逐文件字节求和」（同一天 = 2,479,504 B ≈ 2.4 MB），两者差约 15% 是块大小不是体积涨了；chunk 直接引 vite 自己那行打印（十进制 kB + gzip），别自己换算成 KiB（同一个 main chunk 是 `297.66 kB / gzip 90.09 kB`，换算成 KiB 就变成 291 —— 那不是回归，那是单位）。依赖数现读 `package.json`：`node -e "const p=require('./package.json');console.log(Object.keys(p.dependencies).length, Object.keys(p.devDependencies).length)"`（2026-10-10 = **13 9**；⚠️ 这里必须用 `Object.keys(...).length` —— `dependencies` 是对象不是数组，写 `p.dependencies.length` 会印 `undefined undefined`，这条命令本身就被这样抓出来过一次） | Windows / Android 安装包体积（出包机不在本机） |
+
+**当前真数（2026-10-10 现跑，跑法见上面两行）**：`npm test` **869 例 0 失败**（同日 earlier 861 ⇒ 本轮 N16 与 N22 各加 4 条静态判据，两条改动都动过应用码）；内存与长时运行那一格也不再是空的：`PERF_ONLY=mem node perf/run.mjs 20000` 现读 **600 步滚动堆 7.12 → 7.48 MB、DOM 元素 60 → 120 后第二轮没再长、`JSEventListeners` 恒为 8**（只到 600 步，小时级长跑与真图/ObjectURL 那一半仍未测；复跑命令与口径在 `perf/README.md` 量具四那一节）；
+缩放不跳位那一格也不再是空的：`PERF_ONLY=resize node perf/run.mjs 20000`（量具五，2026-10-10 两跑）阅读态四档锚点 `m-19898 @ -154px` 全同、`scrollTop` 恒 2532531，贴底态 `bottomGap` 恒 0 —— 复跑命令与两处未测的边界在 `perf/README.md` 量具五那一节，工单是 roadmap N28；
+生产构建 `dist` 按块 **2828 KB** / 按字节 **2.4 MB**，最大单个 chunk 是入口那份（vite 打印 **297.66 kB，gzip 90.09 kB**，19 个 js 合计 973 KiB）；
+依赖 **13 运行时 + 9 开发 = 22 项**，**动画库 0 项**（现算：那 13 项里没有任何动效库 —— 复跑就是把上面那行列名单的命令改成打印名字）。
+⚠️ chunk 的**文件名带 hash，别抄文件名**，要引用就引"跑 `npm run build` 后看 vite 打印那几行"。
+⚠️ 这一段自己就是"数字会当天漂"的现场：它原先写的是 855 例、且响应性那格写着"没有量具，记未测量" ——
+两处都在 2026-10-10 这天被现跑的数与 `perf/` 第三台量具推翻，所以口径改成**只报命令 + 报数并注明是哪天现量的**。
+
+### 11.6 禁止事项（汇总本文件已有的红线，不新立规矩）
+
+1. 不为视觉碰协议 / 加密 / DB 结构 / IPC 契约 / 消息状态机 / 传输 / 群同步（`AI_RULES.md`、`docs/protocol-invariants.md`）。
+2. 不删、不跳、不降、不伪造判据；**静态源码断言不等于真实界面通过**（§11.5 那一列"测不到的"就是这么来的）。
+3. 不给窗口根容器或标题栏按钮画圆角（§5）；不让浮层盖住 caption（§5 的 z 阶梯，超过 85 会被判红）。
+4. 不把操作藏在 hover 后面（§10.3 真实事故：Android 上永远不显示）。
+5. 不在辅助功能媒体查询里改文字色（§10.1：那会绕过 `tokenContrast` 的契约表）。
+6. 改字号/行高必须同步行高配对与高度估算常量（§1.4、§8）——**否则虚拟列表错位**，这一条与 §11.2 是同一件事的两面。
+7. 动画不许成为操作的前置条件，也不许在 `prefers-reduced-motion` 下留下没有反馈的死角。
+
+### 11.7 例外怎么记（沿用本文件既有格式）
+
+例外必须写全三样：**这是哪一条的例外 / 为什么它是例外 / 什么时候这条例外失效**。
+现存的三例：`sendFileTo` 不加手工乐观气泡（§9.3，后端会先 emit 完整元数据）、
+骨架屏允许字面值（§4，跑在 bundle 之前读不到 CSS 变量）、`--gosslan-msg-size` 允许偏离五档标尺
+（§8，用户阅读偏好优先于标尺）。**新增例外照这个格式，不许只写"这里特殊"**。
+
+### 11.8 回归要求（改动半径决定要跑哪一层）
+
+| 动了什么 | 至少要跑 |
+|---|---|
+| token / 配色 | `npm test`（`tokenContrast` 读真实 `style.css`）+ `index.html` 骨架同步（§4） |
+| 列表 / 滚动 / 虚拟列表 | `node perf/probe.mjs`（两个自检都必须 true）；动了估高还要 `messageHeight` 那组用例 |
+| 浮层 / 弹窗 / 键盘 | `npm run test:ui-runtime`（仓内 CDP 探针，真键盘事件 + 真 DOM，见 `docs/stability-roadmap.md` §12.6.1 那条改写） |
+| 窗口 / 辅助窗口几何 | `npm test` + `verify-guards.py`（`aux_window_*` 那几条锚点） |
+| 源文件搬家 / 大改 | `python3 scripts/verify-guards.py --list`（秒级、不注入）——**锚点会被搬家静默弄死** |
+
+### 11.9 弹窗关闭之后：**先证帧在出，再谈"还剩没剩"**（2026-10-10 两轮实测）
+
+浮层的关闭验收要写成**命中测试**（同一个坐标再真点一次，打不打得到底下的东西），不是 class、
+也不是"面板 opacity 是 0" —— 这条不变。但同一格上还挂过一条**已被证伪的结论**，值得留在文档里：
+
+> 一版登记为 P1 的「✕ 关完之后 portal 里留一层看不见但吃掉点击的浮层」（四处现场都复现，
+> 包括生产形状的宿主），**不是应用的行为**：headless 探针页 `visibilityState=hidden`、静止时
+> 不出帧，而 Headless UI 的过渡收尾要靠 `disposables.nextFrame`（两层 `requestAnimationFrame`）
+> ⇒ 离开过渡永远停在第一步，类名停在 `leave-from`（`opacity-100 scale-100`），壳一直挂着。
+> 泵帧之后同一批现场全部 `dlg=0`。**`BaseModal.vue` 一字未改。**
+
+所以本节的规则（新立浮层时适用，与层级阶梯 ㉕ 同层，`BaseModal` 是唯一的外壳）：
+
+- **关闭的验收按"同一个坐标再真点一次，打不打得到底下的东西"写**，不按"看得见吗"写。
+  看不见却还接得住点击的层，自查最难，用户读到的症状是"点了没反应"。
+- **读"关掉之后"之前，先让量具自证在出帧。** 凡靠 CSS 过渡收尾的组件（Headless UI 的
+  `TransitionChild` / `TransitionRoot`、Vue 的 `<Transition>`、WAAPI）都要两帧才收尾；页面冻住时
+  读到的是**停在中间的壳**——那是量具的形状，不是界面的形状。探针里的落点：`boot()` 那条
+  「量具在出帧」（泵 6 次 `captureScreenshot` 期间 rAF ≥ 2 次；这条红是**量具红**，不是产品红）
+  与 `readAfterClose()`（先泵帧再读），见 `scripts/check-ui-runtime.mjs` 的 `runOverlay`。
+- **焦点要还回去**（N14，2026-10-10 已修）：关完之后 `document.activeElement` 要回到打开它的那个元素。
+  外壳里唯一的落点是 `BaseModal` 的 `@after-leave` + `nextTick` —— 早一步 `Dialog` 还挂着，
+  它自己的 FocusSentinel 会把刚设的焦点抢回弹窗内部；且只在焦点确实掉到 `body` 时才还，
+  带 `preventScroll: true`（归还焦点不许顺手把底下那页滚走 —— 约束 7）。
+- 关闭有两条实现路径（Headless UI 自己那条 vs 宿主直接翻 `open`），**两条都要量**。
+  上一版正是拿"两条路径结果不同"当成了产品结论；实测差别其实不在谁发起关闭，
+  在**读的那一瞬间帧出没出**。
+
+**仍未尽的一半**：真机（WKWebView / WebView2 / Android）上"关闭那一刻窗口正好被遮挡 ⇒ rAF 停"
+会不会留下同样的中间态、以及窗口重新显示时它会不会自愈，**未实测**；人工步骤归 Smoke-11。
+

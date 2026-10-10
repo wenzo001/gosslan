@@ -27,6 +27,8 @@ Reconnect
 
 不得因为传输路径变化而变成不同业务消息。
 
+- 钩子：`db::tests::message_dedup_by_unique_msg_id` `db::tests::direct_and_gossip_same_msg_id_persist_single_row` `db::tests::outbox_identity_is_msg_id_not_payload` `db::tests::concurrent_same_msg_id_has_exactly_one_winner`
+
 ### 验证
 
 ```text
@@ -52,6 +54,8 @@ Notification: 不重复
 Read state: 不回退
 ACK: 可重复发送
 ```
+
+- 钩子：`db::tests::repeated_delivery_of_same_msg_id_yields_single_side_effect` `db::tests::unread_and_event_fire_only_for_the_winning_insert` `db::tests::group_msg_id_duplicate_counts_unread_and_event_once` `db::tests::late_ack_never_regresses_a_read_message`
 
 ### 推荐测试
 
@@ -83,6 +87,10 @@ socket write
 ```text
 message delivered
 ```
+
+- 钩子：`db::tests::message_and_outbox_are_written_atomically` `db::tests::ack_from_non_recipient_is_rejected` `db::tests::ack_sender_check_uses_group_file_owner` `db::tests::repeated_ack_is_idempotent` `network::transport::tests::direct_open_rejects_corrupt_and_tampered_payloads` `network::transport::tests::plaintext_payload_is_rejected` `db::tests::failed_decrypt_leaves_msg_id_free_for_the_later_good_copy`
+- ⚠️ **这些钩子各管一半，别读成"整条已被证明"**：上列后三条证明的是**接收侧前件** —— 密文损坏 / 被篡改 / 明文载荷都必须被 `open_direct_content` 拒收，且拒收后 `msg_id` 仍然空闲（⇒ 没落库）。而"于是也不发 Ack"这后半句今天**只由控制流保证**：`transport.rs` 的 `Message::ChatMessage` 臂里解密失败就是 `else { return; }`，Ack 那句在同一个臂的更后面，中间没有可注入的判定函数。
+  为什么没有行为用例（写清楚，免得下一个人重复调查）：本仓的 state **接不进测试夹具，而且原因不是"没装 MockRuntime"** —— `state.rs:873-874` 的 `AppState { pub app: AppHandle, … }` 里那个**裸 `AppHandle` 是具体 Wry 运行时**：结构体自身声明的是 `AppHandle<R: Runtime>`（`tauri-2.11.5/src/app.rs:386`），默认运行时由它上面那行 `#[default_runtime(crate::Wry, wry)]`（同文件 `:384`）展开成 `AppHandle<Wry>`，**不是** `pub type AppHandle` 那种可直接替换的别名；而 `AppState` 只有 `AppState::init(app: AppHandle)` 这一个构造器（`state.rs:1173`），`Cargo.toml` 里**没有 `[dev-dependencies]`**。⇒ **单开 `tauri` 的 `test` feature / 换用 `MockRuntime` 也接不进来**（`AppHandle<MockRuntime>` 与 `AppHandle<Wry>` 是两个不同类型），所以既实例化不了 state，也拿不到 `try_send` 需要的链接；全仓没有任何测试调用过 `handle_message`。要补这条，先补的是"能在测试里造出 AppState 并发出可捕获的出站帧"这件基础设施，不是再加一条断言。
 
 ### 发送方
 
@@ -133,6 +141,8 @@ ACK 到达：
 delete outbox
 ```
 
+- 钩子：`db::tests::message_and_outbox_are_written_atomically` `db::tests::outbox_offline_queue_dedup_and_delete` `tests::the_outbox_retry_decision_has_exactly_one_judge_and_one_caller` `tests::outbox_sweeper_emits_only_after_db_write_succeeds`
+
 ### 绝对禁止
 
 ```text
@@ -162,6 +172,8 @@ pending outbox
 
 并尝试补发。
 
+- 钩子：`db::tests::pending_read_survives_restart` `content::store::tests::failure_persists_resumable_or_terminal` `e2e:L-B 故障注入：两端重启后仍正确`
+
 ---
 
 ## 6. Retry
@@ -180,6 +192,27 @@ retry(msg_id)
 create_new_message()
 ```
 
+- 钩子：`db::tests::duplicate_transfer_id_offer_is_idempotent` `content::policy::tests::resume_only_from_chunk_boundaries` `network::file::tests::unknown_attempt_count_is_not_a_death_sentence` `network::file::tests::a_full_length_part_without_rename_is_not_progress` `e2e:故障注入判据③` `e2e:故障注入判据⑧`
+
+### 界面上的「重发」是**已知例外**（2026-09-25 记）
+
+按 `msg_id` 重投那套实现（`resend_message`）已经删除 —— 前端从未调用过它，
+界面上的「重发」实际是 `chat.send` **重发一条新消息**（新 `msg_id`）。
+所以今天这条不变量在 UI 路径上并不成立，把它写清楚比留一个隐形接口诚实。
+
+如果将来真要做「按原 id 重投」，那两条用真事故换来的规则必须连实现一起回来
+（原本是 `lib.rs` 里的两条源码护栏，跟着被删的命令一起走了）：
+
+1. **先密封再入队**：`messages` 存的是**明文**，直接把库内 content 上线就没有 `enc1:` 前缀 ⇒
+   接收端 `open_direct_content` 拒收（不落库、不 Ack）⇒ 重发静默变 no-op，
+   稍后又被清扫器判 failed（用户看到「点重发没反应」）。`ts`/`seq` 同理必须沿用原记录：
+   `seq: 0` 会让接收端把重发消息排到会话最前（排序按 seq，INV-P09），两端顺序分裂。
+   —— 两侧都能「正常加密」，普通单测测不出来。
+2. **所有可失败步骤通过之后才置 `sending`**：旧顺序先 `set_message_status("sending")`
+   再判群聊 / 取公钥 / 密钥交换 / 加密，失败路径不回滚 ⇒ 状态永久卡 `sending`，
+   而重发入口的守卫（`"sending" | "sent" => Err`）又把它挡死 ⇒ 这条消息**永远发不出去**，
+   outbox 也从未写入。触发条件是「对任何失败的群消息点重发」，必现。
+
 ---
 
 ## 7. Gossip
@@ -197,6 +230,8 @@ fanout bounded
 ```
 
 禁止无限传播。
+
+- 钩子：`mesh::router::tests::zero_ttl_is_dropped` `mesh::router::tests::broadcast_with_ttl_one_delivers_without_forwarding` `gossip_engine::tests::bloom_and_lru_dedup` `network::transport::tests::business_duplicate_still_enters_the_propagation_layer`
 
 ---
 
@@ -224,6 +259,8 @@ one UI message
 one logical delivery
 ```
 
+- 钩子：`db::tests::direct_and_gossip_same_msg_id_persist_single_row` `network::transport::tests::gossip_propagation_layer_stays_independent_of_local_persistence`
+
 ---
 
 ## 9. Ordering
@@ -248,6 +285,8 @@ Relay
 最终排序必须使用项目定义的消息时间/序列/稳定排序策略。
 
 不得用“最后收到的”作为业务真相。
+
+- 钩子：`db::tests::conversation_clock_is_monotonic` `db::tests::latest_page_breaks_seq_ties_by_id_exactly_like_the_ascending_query` `db::tests::late_ack_never_regresses_a_read_message`
 
 ---
 
@@ -283,6 +322,8 @@ decrypt failed
 → silently drop
 ```
 
+- 钩子：`network::transport::tests::plaintext_payload_is_rejected` `network::file::tests::tampered_chunk_fails_to_decrypt` `db::tests::own_sent_row_keeps_plaintext_selectable_by_sender`
+
 ---
 
 ## 11. Key Changes
@@ -309,6 +350,8 @@ warn
 
 当前实现若尚未具备完整 key rotation，应记录为已知限制，而不是让 AI 自行决定。
 
+- 钩子：`tests::friend_identity_anchor_has_one_binding_rule` `db::tests::update_friend_pubkeys_never_overwrites_a_bound_key` `guards:身份锚点的打标点必须留在 handle_message 的 Hello 分支` `guards:打标必须排在`
+
 ### 现在的决定（2026-09-13 实装，用户真机反馈后）
 
 | 绑定来源 | 公钥不一致时 | 理由 |
@@ -318,6 +361,36 @@ warn
 
 **用户可行动路径**（提示里必须写出来，否则等于把用户扔在原地）：
 `删掉该好友 → 重新添加`（聊天记录保留、**不需要重启**）。
+
+### 反过来的一面：这把锚点**是被谁写进去的**（2026-09-22 实装）
+
+上表管"绑好之后不一致怎么办"，这条管"绑下去的那一刻可不可信"。`update_friend_pubkeys`
+只填空、首写者永久胜出 ⇒ **写入侧的信任等级决定锚点本身**，而这此前是不对称的：
+`upsert_peer` 要求 `peers.keys_verified`（只有验签通过的 Hello 能打上），而三条"成为好友"
+的路径（直连 `FriendAccept` / 跨跳 Gossip `FriendAccept` / 本机点同意）读**同一张 `peers` 表**
+却不过这道闸 ⇒ 一次伪造的 UDP announce 抢先把 `friends.ed25519_pubkey` 填上，就是永久的。
+
+- 现在的规则（判据只有一份：`peer_keys_trusted` + `acceptable_friend_keys`）：
+  **`x25519`（加密钥匙）照旧早绑** —— 晚了就是"首次加密发送失败"，而 Gossip 那处补齐以
+  "这一封能解密"为持有证明；**`ed25519`（身份锚点）只认被证明过的来源**。
+- 为什么要收紧写入侧：锚点此后有三个消费者 —— Hello 验签（INV-P21）、安全码、
+  **公网中继的准入判据**（`list_bound_friend_identities` 只看它非空，ADR-0020 称那把钥匙
+  为"整个设计的支点"）。绑错的后果从"消息被加密给攻击者"扩到"我们主动跨公网给对方建电路"。
+- 留 NULL 不是死路，但**自愈的机制只有一处**：验签通过的 Hello 最终都会落进
+  `handle_message` 的 Hello 分支，那里在 `upsert_peer` **之后**调 `mark_peer_keys_verified`
+  （TCP 入站 / 出站拨号 / BLE 三条 transport 共用这一个写入点）。
+  ⚠️ 别把这句话理解成"`upsert_peer` 会自己打标"——它不会，它新建条目时**恒标
+  `keys_verified: false`**（`announce` 与 Hello 共用同一个函数，必须保守）；握手处那三次打标
+  也只覆盖"`peers` 条目已经由 announce 建好"的情形，条目还不存在时那次调用是空操作。
+  2026-09-22 补上 Hello 分支这一处之前，出站拨号与蓝牙**第一次**连上的好友整个会话都绑不上
+  锚点（安全码算不出、中继永不准入，且没有任何报错）—— 收紧来源必须同时把打标点补齐，
+  否则就是把安全改动做成可用性回退。次序也是判据的一部分：打标在 `upsert_peer` 之前 = 空操作。
+- 守卫：`friend_identity_anchor_has_one_binding_rule`（三处 accept 都走同一 helper、
+  `upsert_peer` 那道闸不许拆、Gossip 那处只准绑 x25519、**打标点的数量与"在 `upsert_peer`
+  之后"这条次序**）+
+  `accept_binds_encryption_key_but_defers_unverified_anchor`（两列的差别与 NULL 自愈）。
+  两条非空转用例登记在 `scripts/verify-guards.py`：删掉打标点、以及把打标挪到 `upsert_peer`
+  之前（换序不改计数，只有次序断言会响）。
 
 ### 为什么原来"必须重启"（真机 2026-09-13，已修）
 
@@ -352,6 +425,8 @@ identity public key
 
 必须保持一致，除非用户显式重置身份。
 
+- 钩子：`db::migration_tests::migration_preserves_identity_data` `mesh::manager::tests::forget_identity_clears_keys_but_keeps_the_connection` `db::tests::friend_add_and_pubkey_persistence`
+
 ---
 
 ## 13. Protocol Version
@@ -379,6 +454,8 @@ ADR
 
 未知扩展应在协议允许的情况下安全忽略。
 
+- 钩子：`tests::unknown_wire_frame_is_tolerated_after_auth` `discovery::routed::tests::device_id_is_optional_and_backward_compatible` `db::migration_tests::migration_fresh_db_gets_latest_version`
+
 ---
 
 ## 14. Persistence
@@ -398,6 +475,8 @@ peer map
 ```text
 SQLite must be source of truth
 ```
+
+- 钩子：`db::tests::pending_read_survives_restart` `db::tests::gfile_transfer_record_persists_local_path` `content::store::tests::failure_persists_resumable_or_terminal`
 
 ---
 
@@ -421,6 +500,8 @@ UI should be able to rehydrate from DB / command
 
 不能因为一次 event 丢失而导致永久状态丢失。
 
+- 钩子：`guards:常驻窗口（设置窗口重新显示必须刷新环境数据）` `src/api/events.test.ts#每个 Rust 事件都必须有前端消费者` `db::tests::pending_read_survives_restart`
+
 ---
 
 ## 16. Error Handling
@@ -442,6 +523,8 @@ security_related
 ```text
 Err → failed
 ```
+
+- 钩子：`src/utils/errors.test.ts` `guards:用户取消不得记成失败`
 
 ---
 
@@ -465,6 +548,31 @@ reassemble
 arrival order
 ```
 
+**续推论（2026-09-22 跨网真机：160MB 永远停在 0%）**：`order` 这条对**续传**同样成立，而且
+它有两个方向，只做一半必然出错 ——
+
+1. **接收端是"我有什么"的唯一权威，每一次 `FileOffer` 都必须把真实位置答出去。**
+   发送端的重试一律从 `from_bytes = 0` 起步（`flush_pending_files` 走的是不带位置的
+   `send_file_from_path`），它只能靠 `FileReject.received` 知道该从哪儿续。
+   判据只许一份：`file::decide_offer`（`has_active` 时用内存 `received`，否则用 `.part` 长度）。
+   历史上这里是两套规矩 —— 没有活跃接收器才比对前缀、有活跃接收器一律裸 `Accept` ⇒
+   接收端把已收前缀当"迟到的重复片"静默丢掉，发送端**每一轮都重传一遍已收部分**，
+   慢链路上永不收敛，而且全程不报错。
+2. **段号必须与发送端的"按段从 `seq = 0` 重编"对齐，但只在续传段归零。**
+   归零少了 ⇒ 新数据被判重复片丢掉（差一截、不报错）；归零无条件做 ⇒ 上一轮 attempt
+   还在排空的分片（队列 1024 槽 ≈ 262MB，丢 future 不排空队列）会被判成「跳号」
+   ⇒ `Err(文件分片顺序错误)` ⇒ 整单死。两个方向都有单测钉住（`decide_offer` 三条用例 +
+   `verify-guards.py` 两条变异用例）。
+3. **但"我有什么"这个数有上限：`.part` 长度 ≥ size 不算进度**（2026-09-26 A-12）。
+   `FileReject.received ≥ size` 在发送端读作「对方已完整收下」⇒ 记 `done` 并**删掉队列行**，
+   此后**再也没人重试**。一个帧同时承载"完成"与"进度"两种话时，"字节齐但没有成品"
+   （上一次收尾 `rename` 失败：目录只读 / 磁盘满 / 进程被杀在半步）就会被当成交付完成 ——
+   这与"接收端真实进度"和"rename 才算完成"两条同时冲突，取舍是：**台账 `done` 是唯一能点亮
+   「已收完」的事实**，≥ size 的磁盘前缀一律按 0 处理 ⇒ 重新整份收，走真实的哈希校验与真实的 rename。
+   **不补做那次 rename**：没成品的 `.part` 内容未经校验（脏前缀注入证明过它可以是随机字节）。
+
+- 钩子：`network::file::tests::receiver_hash_mismatch_fails` `file_relay::tests::chunks_stream_to_disk_and_completion_hands_back_a_path` `guards:中继收文件的哈希必须对组装后的明文算`
+
 ---
 
 ## 18. Security Boundary
@@ -480,6 +588,14 @@ Rust private key
 ```
 
 前端只能获得完成 UI 所需的公开信息或状态。
+
+- 钩子：`scripts/check-key-boundary.mjs` `guards:私钥边界：给 Identity 补一行 derive`
+  —— 判据 A 钉住"任何可序列化类型都不许带密钥字段"（命令返回值与 emit 载荷都要求 `Serialize`，
+  所以一条判据同时盖住两个出口）；判据 B 钉住"命令不许把密钥放在交出值的位置"，并要求
+  `generate_handler!` 里每条命令都能被扫到。⚠️ 残余：**两步搬运**（先 `let k = …to_bytes()`
+  再 `Ok(encode(k))`）文本判据抓不住，彻底封死要把 `Identity` 的私钥字段改成私有、
+  只暴露 `sign()` / `dh()`（登记为 B-1a 的后续项）。
+
 
 ---
 
@@ -501,6 +617,8 @@ sender_wall_clock 直接决定消息顺序
 receiver 纠正/猜测 sender 时钟
 ```
 
+- 钩子：`db::tests::conversation_clock_is_monotonic` `db::tests::clear_boundary_blocks_old_group_messages` `db::tests::latest_page_breaks_seq_ties_by_id_exactly_like_the_ascending_query` `network::file::tests::group_receive_rejects_gap_but_ignores_duplicate_seq` `network::file::tests::group_chunk_seq_rule_has_exactly_one_home`
+
 ---
 
 ## 20. Transport Priority
@@ -521,6 +639,8 @@ bulk 通道：FileChunk / GroupFileChunk / RelayChunk / FileDone / GroupFileDone
 ```text
 大文件分片占满唯一队列，导致聊天消息长时间排队
 ```
+
+- 钩子：`network::dispatch::tests::stress_mixed_priorities_no_starvation` `network::dispatch::tests::file_chunk_is_low_priority` `network::dispatch::tests::ack_is_high_priority` `network::dispatch::tests::ble_yield_fragments_allows_preemption`
 
 ---
 
@@ -558,6 +678,8 @@ friends / peers 中已绑定该 device_id 的 Ed25519 公钥？
 为「兼容旧版本」保留无签名的 Hello 分支
 ```
 
+- 钩子：`network::transport::tests::hello_auth_accepts_bound_identity` `network::transport::tests::hello_auth_rejects_attacker_declaring_own_key` `network::transport::tests::hello_auth_rejects_forged_sig_with_victim_pubkey` `network::transport::tests::hello_auth_rejects_missing_signature_and_tampering` `network::transport::tests::announced_attacker_key_cannot_bind_and_impersonate` `network::transport::relay_wiring_tests::negotiation_fails_closed_when_identity_does_not_match`
+
 ---
 
 ## 22. Invariant Exceptions
@@ -573,6 +695,8 @@ friends / peers 中已绑定该 device_id 的 Ed25519 公钥？
 
 两件事缺一不可，由 `scripts/check-invariant-exceptions.mjs` **双向**校验：
 代码标了而本节没登记 ⇒ FAIL；本节登记了而代码没标 ⇒ FAIL。
+
+- 钩子：`scripts/check-invariant-exceptions.mjs` `guards:自聊消息必须留在本地`
 
 ### 为什么必须有这一节（2026-09-16）
 
@@ -700,6 +824,8 @@ central 侧       btleplug 协商出的 ATT MTU          → 要减 ATT 头（3�
 末尾那个 `== b` 成立**正是因为外设侧不再减 ATT 头**。若有人给外设侧也减一次，
 这条立刻红 —— 而真机症状只是「某台设备收不到消息」，没有这条测试极难定位。
 
+- 钩子：`scripts/check-ble-constants.mjs` `transport::ble_framing::tests::both_sides_agree_on_the_same_link_budget` `transport::ble_framing::tests::notify_payload_budget_clamps_and_never_returns_zero`
+
 ### 为什么单列成一条不变量
 
 CHANGELOG `4.18.7 → 4.18.10` **连着四个版本**修同一个分片预算问题：
@@ -790,20 +916,50 @@ Gosslan 是**没有服务器、没有强制升级通道**的 mesh：网里同时
                             在此之前**单聊根本走不到兜底** —— 未知 kind 会让整帧解析失败并被
                             Unknown 降级丢弃（消息连库都进不了，双方都看不见「看不懂」）。
                             现在单聊与群聊两条路径都会落到占位气泡上。
+第 3 条 新字段可缺省 ✅ 本轮（[Unreleased]，未发版）第一个"带语义的可选字段"落地：群聊明文新增
+                            `mentions`（这条文本 @ 了谁的设备 id）+ `mention_targets`（每条 @ 的落点，#122）。**三态不许压成两态** ——
+                              · 缺键 ⇒ 对端是不认识这个字段的版本 ⇒ 读侧退回按昵称判；
+                              · 空数组 ⇒ 对端明确回答"这条谁都没 @" ⇒ **不许**退回。
+                            压成一态的破法特别隐蔽：界面全绿，只有"改过名字"与"两个人同名"
+                            两种场景静默判错，正是这一格原来判不到根的那个形状。
+                            判据：编解码两侧各有具名用例（protocol 层 gossip_plaintext /
+                            parse_gossip_plaintext 两组，含"错误形状判成缺失"与"正文一字节不改"），
+                            前端判定在 `messages.test.ts` 那组，投递形状在 state 层一条 flatten 用例；
+                            另有 4 条注入用例（标签 `mention-identity`）证明它们都会红。
+                            发送侧只 `text` 带（`code`/`merge` 里的 @名字不算点名）。
+                            **两份信息的落库待遇不一样，这条是 2026-09-28 拆开的**：
+                              · `mentions`（名单）仍然**不落库** —— 「有人@我」是摄入那一刻的一次性
+                                判定，重启即清空；为它开迁移换来的可观察行为是 0。
+                              · `mention_targets`（落点）**落库**（`messages.mention_targets`，
+                                迁移 v10→v11）—— "正文里哪一段算谁"是**那句话自己的历史事实**，
+                                不落库就等于重启后同一句话换了意思（同名两个人重新互相点亮）。
+                                可空、无回填：老行 = NULL = 不知道 ⇒ 仍按昵称兜底，
+                                所以这次迁移对既有行为是**纯增量**（判据：
+                                `migration_tests::v10_to_v11_adds_mention_targets_column_without_touching_existing_rows`
+                                钉"加列不许动到既有行一个字节"）。
+                                ⚠️ 库里那一列的解码与线上那一份**共用同一个函数**
+                                （`protocol::mention_targets_from_value`）—— 写成两处就是两个答案，
+                                而"重启前后同一条消息不同意思"正是这一格要消灭的东西。
 第 4 条 门控本身           ✅ v4.22.39  机制 = Hello 的 capability 位（**不是** protocol_version：
                             V1 期间新增的 kind 已经证明"V1 内部并不单调"，版本号当能力清单用会骗人）
-                              · 唯一判据 `protocol::kind_allowed_by_features` + 唯一映射表
+                              · 唯一判据 `protocol::dm_allowed_by_features`（1:1 发送口）+ 唯一映射表 `kind_required_feature`；群侧受众另走 `kind_audience`
                                 `kind_required_feature`（源守卫各判"只许一处"）
                               · 发送侧接线在 `commands/chat.rs::send_message`，且刻意排在
                                 公钥探测之前（不该为一个根本不会发的东西白探测 1.2s）
-                              · 未知即不支持：从没交换过 Hello / 已离线 ⇒ 位图按 0 处理
+                              · 未知即不支持：从没交换过 Hello / 已离线 ⇒ 位图按 0 处理（**决策**方向）
+                                但"不知道"与"它自己声明过缺位"分两句说：入口 `kind_blocked_hint`
+                                收 `Option<u32>`（缺条目=未知）。两张表都是内存态、重启即空、
+                                离线即被 sweep ⇒ 缺条目通常只代表对方此刻不在线，一律说成
+                                "版本较旧"是对用户作假指控（他会去催升级，而要做的只是等上线）
                             第一个被门控的东西不是假想的：`kind:"merge"` 是 V1 期间（9b26006）
                             才加的，v4.8.2 / v4.18.10 / v4.20.0 的 `MsgKind` 里没有它 ⇒
                             那些实例收到会**整帧丢掉**（第 2 条只修了我们这一侧），
                             发送方只会看到"发送失败"。
-                            ⬜ 残留（见待办）：群聊发送口未门控（成员能力不齐、且 gossip 是
-                            fire-and-forget，老成员只会静默看不见）；离线对端"未知即不支持"
-                            的代价是发不出去而不是延后判断 —— 要变成 outbox flush 期降级
+                            ⬜ 残留（见待办）：群聊发送口**刻意不门控**（成员能力不齐、且 gossip 是
+                            fire-and-forget）—— 老成员那边依旧只退化成原始文本，v4.24.0 起发送方
+                            会收到一条受众预告（只提示、不拦），所以不再是"静默看不见"；
+                            离线对端"未知即不支持"的代价是发不出去而不是延后判断 ——
+                            要变成 outbox flush 期降级
                             （那时才第一次真的知道对方能力）需要载荷可改写，是另一件事。
 ```
 
@@ -823,9 +979,336 @@ Gosslan 是**没有服务器、没有强制升级通道**的 mesh：网里同时
 不适用（别过度实现）：只加字段、不改语义、且老代码会忽略未知字段的变更 ⇒ 兼容，
 不需要 `protocol_version` bump，也不需要 legacy 分支。
 
+**⚠️ 上面那句只说了半个方向**（2026-09-30 复审群任务那三个新字段时抓到的）：
+"老代码忽略未知字段"保证的是**老读新**兼容；反过来**新读老**、而且是"写回"的时候不兼容 ——
+本仓的定义类数据是**从库里整份重建载荷再发出去**的 LWW 寄存器（群任务、收件人快照都是这一族），
+老对端的结构体里根本没有新字段，它写回来的那份载荷就**缺这三个键**，
+`serde(default)` 把"没带"读成默认值 ⇒ 老对端改一次状态，就把新字段抹回默认。
+mesh 没有服务器也没有强制升级 ⇒ 混合版本是常态，不是边角。
+
+⇒ 规矩：**凡是"整份重建再发出"的更新，新增字段必须能区分"没带"与"就是默认值"**。
+落地成两条：① 没说的格子**沿用这条记录已知的值**，说了的照常覆盖
+（前端 `src/utils/todos.ts::carryAbsentTodoFields` / 后端 `commands::latest_todo_def` ——
+两个家，改动必须同批改，跨语言契约那条用例钉着）；
+② **绝对坐标类字段**（创建那一刻定死、之后不许被任何编辑改走的，如群任务编号）
+只认创建那一条（`kind='todo'`）说过的值 ⇒ 一份写着 `0` 的更新不许把它抹没。
+"抹过就没了"的补救不在本条范围：要恢复就得另存一份按 id 的号，那是第二个事实来源，
+按 §十五 先不动。
+
+真实后果（写在这里是为了下次别把它当"界面小问题"）：类型回「普通任务」、优先级回「常规」
+（详情里那枚认领按钮跟着消失）、固定编号变成没号 —— 而**后端那份被抹平的 def 还是判权的输入**，
+所以症状会是"某些人忽然少了几个按钮"这种查不出根因的形状。
+
+判据：前端 `src/utils/todos.test.ts` 四条（没带沿用 / 显式仍覆盖 / 只认创建号 / 认领按钮那一格），
+后端 `commands::tests::latest_todo_def_carries_fields_the_newest_payload_never_stated`（真实 SQLite 夹具），
+外加一条跨语言契约钉住后端那三步还在。红绿各跑过：删掉后端沿用那三步 ⇒ 恰好后端那条红；
+写这五条用例之前它们全红（缺格沿用还没实现）。
+
+- 钩子：`guards:未知帧类型必须降级而不是拆链` `guards:Hello 必须声明本机版本` `tests::unknown_wire_frame_is_tolerated_after_auth` `src/utils/versioning.test.ts` `commands::tests::latest_todo_def_carries_fields_the_newest_payload_never_stated` `src/utils/todos.test.ts#老对端的更新不许把优先级与类型抹回默认` `src/utils/todos.test.ts#跨语言：后端也必须沿用没说的三格`
+
 ---
 
-# 25. Required Test Matrix
+## 25. Lock Scope
+
+### INV-P25 — 发射事件不得持有 db 锁
+
+**规则**：`AppState.db` 那把 `Mutex<Connection>` 的**存活期内不许出现任何 `emit`**。
+写库要用 `{ … }` 圈住（或 `drop(dbc);`），事件放到圈外再发。
+
+**为什么是硬规矩而不风格**：生产环境只有一条 SQLite 连接，前端每个 IPC 命令都抢同一把锁。
+锁内 emit 的完整链条是：后端发事件 → WebView 监听器立刻回一次 IPC → 那次 IPC 阻塞在
+还没释放的锁上 → **用户看到"出错那一刻界面整个冻一下"**。事件越是紧跟着一次刷新，
+冻得越明显，所以文件失败路径（`file-failed` ⇒ 前端立刻 `list_transfers`）是重灾区。
+
+**判据在哪跑**：`scripts/check-lock-scope.mjs`（`npm run verify` 快速层，CI frontend 组）。
+它把全部取锁点逐处扫一遍（**条数不在本文档写死**，由脚本每次实算打印），分三类判：guard 绑定（活到块结束或 `drop`）、`if let` 条件与实参位置的
+语句级临时量（活到本语句结束）、以及"判不出作用域"——第三类**直接红**，因为一个会因看不懂
+而静默放过的守卫比没有守卫更坏。判据本身带 7 段夹具自证（`--self-test`）。
+
+**边界（这条规矩不管什么）**：
+
+* 只管 db 那把锁。`peers` / `file_receivers` / `relay` 等 Mutex 没有被前端 IPC 抢，
+  把它们一起管需要逐个论证"谁在抢它"，那是另一件事。
+* 跨函数的 emit 看不见。缓解靠命名纪律：**会 emit 的一律叫 `emit*`**（现状如此，
+  `emit_failed` 是唯一 helper）。
+* 条件式临时量按 `edition = "2021"` 判（析构在块之前）。**升 2024 时这一半判据必须改成块级**，
+  否则假绿 —— 这是脚本头部判据 B 里那条警告的文档版。
+
+**为什么 2026-09-25 才立**：纪律本身早就写在 `network/transport.rs:90`，但那天补接收侧静默回收时，
+`fail_taken_receive` 仍然写成"写库 + emit 连着两行"——同一个函数体里两条相邻语句，逐行 review
+谁都看不出毛病，只有全局扫才看得见。同一批还扫出中继收文件失败分支 3 处同样的形状。
+**注释管不住新写的分支**，所以从这天起它是一条有机器判据的不变量。
+
+- 钩子：`scripts/check-lock-scope.mjs` `guards:db 锁作用域守卫必须抓得住`
+
+---
+
+## 26. Terminal State
+
+### INV-P26 — 有磁盘证据的状态不可被降级
+
+`file_transfers.status` 今天有 39 个写入点（active 12 / failed 12 / done 6 / pending 3 / sent / cancelled），
+所以"谁能写什么"必须由**写入口**保证，而不是靠每个调用点自觉。
+
+规则只有一条：**`done` 不许被改写成别的状态**。状态、进度、路径三个字段走的是同一条
+`ON CONFLICT DO UPDATE`，闸门加在语句上就一起生效（`db/file_transfer.rs::upsert_transfer`）。
+队列判死走 `mark_queued_transfer_failed`，合法集合同样是"非 done"。
+
+为什么只有 `done`：它是唯一带**磁盘证据**的状态（长度对 + sha256 对 + `sync_all()` 之后才 rename）。
+`sent` 只证明字节写出去了、没有送达证据；`failed` / `cancelled` 更不是终点 ——
+
+> **`failed` 必须还能改回 `active`**：`retry_incomplete_content` 复用同一个 `transfer_id`
+> 发 `ContentRequest`（`network/transport.rs:919`；2026-10-07 函数级拆分后这个函数**没搬**，
+> 它唯一的调用点搬进了 `network/transport/handle_identity.rs:103`，复跑
+> `grep -rn "retry_incomplete_content(" src-tauri/src --include=*.rs`）。把 `failed` 一起钉死的后果是
+> "一判死就永远停在失败，而字节其实还在流" —— 那恰好是本条要修的缺陷的反面。
+> 反向判据：`cascade_tests::a_failed_row_can_be_reactivated_by_the_next_attempt`。
+
+配套的两条口径：
+
+* **同一个关注点只有一个家**：除 `db/file_transfer.rs` 之外不许再出现直接
+  `UPDATE file_transfers SET status`（守卫 `cascade_tests::terminal_status_writes_have_one_home`）。
+  有第二个家时，"改一个忘一个"是常态 —— 本仓 §9 那族平行实现反复就是这个形状。
+* **文件队列的终态只有一个出口**：`db::finalize_file_failure(conn, transfer_id, end)`，`end ∈ {Expired, GiveUp, Cancelled}`。三份各写一遍的时期，同一条规矩只在两处成立、`done` 闸门只装在两扇门上（2026-09-25 合并，实测到的漂移全写在函数注释里）。取消与失败的口径差别也在这里定：`cancelled` 写 `file-` + `gfile-`（取消整条消息），超时/放弃只写 `file-`（一个收件人没收到不代表群消息失败）。
+* **把行踢出重试集合的那一步必须排最后**：`mark_file_outbox_{failed,cancelled}` 与
+  `delete_*_outbox_by_msg_id` 一跑，这一行就再也扫不到（三条队列查询只认 pending/sending），
+  前面任何一步失败都永久无人补 —— 症状是气泡停在「发送中」且不再有任何人来修它。
+  这条在审计 A3 时只对 `finalize_expired_file` 立了规矩，但**同形状的收尾当时有三份**
+  （`fail_file_job` / `cancel_file_transfer` 各抄了一份，顺序都是错的），点名式守卫看不见
+  没被点名的那些 ⇒ 2026-09-25 判据升级成自动扫（结构式，不是清单）：
+  `lib.rs::every_finalize_path_defers_the_destructive_write`。
+* **两个失败口径不许合并**：`file_outbox.status` 的 `failed` = **自动**判死（超时 / 重试耗尽 /
+  接收方不可达），`cancelled` = 用户主动取消。三条队列查询只认 `pending` / `sending`，
+  所以两者在功能上等价 —— 但台账不等价，混用之后"这一单为什么失败"就查不动了。
+  判据：`cascade_tests::cancelled_file_outbox_rows_are_never_requeued` +
+  `a_user_cancel_is_not_recorded_as_a_failure`。
+* **emit 由写库结果门控**（与 INV-P15 / 审计 A3 同一口径）：已经 `done` 的行没被改动，
+  就不该为它发 `file-failed`。为一个躺在下载目录里能打开的文件弹"传输失败"是谎话。
+
+**非空转证明**：两条 `verify-guards` 变异用例 —— 摘掉 `WHERE status <> 'done'` ⇒ 正向判据红；
+照本条落地前的建议把集合写成 `NOT IN ('done','failed','cancelled')` ⇒ 反向判据红。
+
+- 钩子：`guards:upsert_transfer 的「done 不可降级」闸门不得被摘掉` `db::cascade_tests::a_completed_transfer_row_is_never_downgraded` `db::tests::complete_ack_failure_cannot_downgrade_completed`
+
+### INV-P27 — 「用户在看这个会话」只有一个口径，抑制必须共用它
+
+凡是**因为"用户正在看这个会话"而抑制某个提醒**的地方 —— 「有人@我」红点、标记已读、系统通知、
+（将来若有）角标降噪 —— 判的必须是**同一份**可见性口径，不许各取一个条件子集。
+
+这条不是洁癖，是 2026-09-28 实测到的缺陷形状：同一件事在 `useChatStore` 里当时写了三份，
+各取的条件不同 ——
+
+| 抑制的是什么 | 当时取的条件 | 强弱 |
+|---|---|---|
+| 系统通知 | `!document.hidden && document.hasFocus() && 正是这个会话` | 严 |
+| 标记已读 | `!document.hidden && app.chatVisible` | 严 |
+| 「有人@我」红点 | **只比 `activeConv`** | ★ 最弱 = 缺陷 |
+
+最弱那一条为什么一定是错的：**"会话开着"不等于"有人在看"**。桌面端有一条刻意对齐微信桌面版的行为 ——
+启动时**自动打开最近的那个会话**（`layouts/ResponsiveLayout.vue` 里那条 watch）。
+于是"窗口在后台 + 那个会话被自动开着"是常态而不是边缘情况：
+此时收到的 @ 按已读那条正确地不判已读，却按红点那条**不亮红点**
+⇒ 用户回到窗口只看到「N 条未读」，**看不出自己被 @ 过，必须点开那个群才知道** ——
+而这恰好是这条提醒存在的唯一理由。
+★ **本条只管"该不该抑制"，不管"错过就没了"那半件事（2026-09-28 实测分界）**：这枚红点是
+**摄入那一刻的一次性判定**，全仓只有一个写入点、没有任何重算路径 ⇒ **软件刚打开那一两秒里到达的 @
+不会点亮**（同轮对照：把投递推迟到界面被证明渲染过之后 ⇒ 真 WKWebView 里读到 `[有人@我]`；
+开机同一秒投的那条读不到）。未读数照涨（那是后端算的），所以后果是"少一条提醒"而不是"少一条消息"。
+⇒ 这不是口径不一致，是**这条提醒的持久性缺口**：要不要在加载时按已落库的 `mention_targets` 补点亮一次
+= 会推翻"重启不该再亮一次红点"那条既定口径（INV-P24 第 3 条的那一半），**属语义决定、不在本条授权范围内**，
+拍板之前不改判定逻辑。
+
+规则：
+
+* **口径只有一个家**：`useChatStore::chatViewerLooking()`。消费者只许调用它，不许在自己的条件里
+  重写 `!document.hidden && app.chatVisible` 这个组合（组合出现 >1 次即判红，见钩子）。
+  两处各写一遍，迟早只改一处 —— 本仓 §9 那族平行实现反复就是这个形状。
+* **纯判定不许自己读 DOM**：摄入层的规则住在 `utils/messages.ts::freshMentionedConvs`，
+  可见性由调用方以 `activeVisible` 传进来。这样这一半在没有 store、没有窗口的环境里也能被测到，
+  也不会让第二条依赖漏进 `messages.ts`。
+* **缺省值只能选"更安静"的那一侧**：`activeVisible` 缺省为 `true`（= 沿用修复前的"开着就抑制"），
+  所以忘记传参**不会**凭空多出一类打扰；"没人忘记传"是靠下面那条反证用例与接缝守卫守的，
+  不是靠缺省值报警。
+
+⚠️ 边界（这几句要一起读，否则会被推成没写过的结论）：
+
+* 本条只管**抑制**。气泡里高亮的那串 `@名字` 仍是当时发出去的原文，不随可见性、也不随改名回写
+  （INV-P24 第 3 条）。
+* 红点是**摄入时刻的一次性判定**、不落库 ⇒ 重启不重放；本条不许它落库。
+* "用户真的在看"**不等于**"消息已送达"；送达状态另有自己的证据链，两者不许互相顶。
+
+判据与反证（四条各测一件事，去掉任何一条都会有一种坏法静默通过）：
+
+| 观察点 | 必须看到 |
+|---|---|
+| 会话开着但没在看（窗口在后台／被整页浮层盖住）时收到 @ | 红点**必须亮**（这次修的那一半） |
+| 会话开着且真在看时收到 @ | 红点**不许亮**（反向对照：不许把抑制整条放开） |
+| 调用点不再把可见性传进纯函数 | 接缝守卫报红（退回"开着就等于看着"） |
+| 已读那条把条件手写回去、口径分出第二个家 | 形状守卫报红（那个组合出现 2 次） |
+
+- 钩子：`src/utils/messages.test.ts#用户其实没在看` `src/utils/messages.test.ts#仍然不点亮` `src/utils/designGuards.test.ts#只许走 messageMentionsMe` `src/utils/channelState.test.ts#聊天视图真的可见`
+
+### INV-P28 — 摘表与判据必须同一次持锁，收尾只吃已摘出来的那一件
+
+凡是"按某个条件把东西从**内存表**里摘出来、再对它做收尾（写库 / emit / 改名 / 记台账）"的地方，
+**判据与 `remove` 必须在同一次持锁里完成**；收尾一律在锁外，且只使用已经摘出来的那一份。
+
+这条不是风格。本仓**四次**撞上同一个形状（每次单独修一半，于是下一次又来）：
+
+| 犯案点 | 旧形状 | 用户看到什么 |
+|---|---|---|
+| 单聊超时回收 | 先快照一批 id，再逐个收尾 | 快照与收尾之间挤进新 `FileOffer` ⇒ 把正在收的那一单判死 |
+| 群文件断链 | 锁内 `collect()` 出 id、锁外 `fail_group_file_chunk` | 同上（`fail_group_file_chunk` 连归属都不核对） |
+| 单聊断链 | 锁内 `collect()` 出 id、锁外逐个 `fail_receive` | `peer_id` 核对挡住了"别人的"，挡不住**同 peer 同 transfer_id 的新 attempt** ⇒ 多等一轮重试 |
+| 群断链（`5a0cfcc` 自己引入）| 已经原子摘了，循环却写 `for (tid, _r) in taken` —— **摘出来的那份被丢掉**，只调 finalize 那一半 | 群收件人的**内容台账** `record_failure ⇒ Incomplete` 没人写 ⇒ 行停在 `Active`，重取改走「Active 超 60s」那条兜底，退避口径变了、多等一轮。**这一条五层门禁 + 护栏 200 条整跑全绿，是评审抓到的** |
+
+规则：
+
+* **一个家**：摘取动作只许住在 `take_*` 这一族里 —— `take_stalled_receive` /
+  `take_stalled_group_receive` / `take_receives_for_peer` / `take_group_receives_for_peer`。
+  新增同类逻辑要么调它们，要么照它们的形状另写一条判据，不许在调用点重排"先看后摘"。
+* **收尾函数成对存在**：每个 `take_*` 配一个 `fail_taken_*`，签名里带**已摘出来的那份**（`&FileReceiver`），
+  这样"拿 id 回头再查表"在类型上就走不通。
+* ⚠️ 但"成对存在"不等于"被调用"：`take_*` 返回的那一份**必须在调用点被用完**。下划线前缀的绑定
+  （`for (x, _y)`）在 Rust 里是"我故意不用"，编译器与 clippy 都不响 ⇒ 本条的第四次就是这么犯下的。
+  ⇒ 判据要钉**带实参的调用形状**（`fail_taken_group_receive(&state, &r)`），钉函数名存在性会被注释喂饱。
+* ⚠️ 边界：本条管的是**内存表**的摘取原子性，不管 db 锁的作用域（那是 INV-P25：发射事件不得持 db 锁）；
+  也不管终态本身能不能被降级（那是 INV-P26）。三条常常在同一处代码里同时出现，所以必须分开判。
+* 与 INV-P26 的分界说清：断链/超时**允许**把一次传输记成可恢复的失败（`Incomplete`，建链时自动重取），
+  那不是"降级终态"；被禁止的是把已经落盘成功的收件人状态改回去。
+
+判据（三条各钉一件事；都是读源码文本的形状判据 —— 这段吃 `AppState`，本仓没有能驱动它的行为夹具，
+硬凑 mock 只会得到假绿）：
+
+| 判据 | 钉住什么 | 去掉修好的代码会不会红（2026-09-29 各跑一趟单点变异，每次只红对应那一条） |
+|---|---|---|
+| `peer_offline_group_cleanup_takes_before_finalizing` | 群侧三件事一起钉：① 必须走 `take_group_receives_for_peer(`；② 摘出来的那份必须被用完 —— 必须有 `fail_taken_group_receive(&state, &r)`、不许出现 `for (tid, _r) in taken`；③ 不许退回快照 id 的旧写法。断言一律钉**调用形状**：只写函数名会被上面点名 helper 的注释满足 ⇒ 半个守卫（第一次变异实测就是这么让第一条放行的）。窗口取「到下一个函数头为止」，另有一条**反空转闸**：盖不到 `finalize_failed_group_receive` 那一行就直接炸 | 三趟变异各红对应那一条：改回「锁内 `collect()` ⇒ 逐个收尾」红第 ①/③；删掉 `fail_taken_group_receive(&state, &r)` 那行红第 ②；**同一份断言在 `1a37376` 之前的 HEAD 上也直接红** ⇒ 咬的是真实犯过的形状。配套护栏用例「群断链收尾必须吃掉原子摘出来的那一份」（CASES 200 → 201）已过「改坏即 FAIL、恢复即 PASS」 |
+| `single_peer_offline_cleanup_also_takes_before_finalizing` | 单聊侧同一族规则（★ 专防"只修一个面"） | 把 `fail_receives_for_peer` 改回「快照 id ⇒ 逐个 `fail_receive(state, …)`」⇒ 恰好这一条红，另两条绿 |
+| `completed_guard_reads_recipient_status_in_the_handler` | 终态保护必须在**生产 handler** 里真的读收件人状态，不许只活在测试的模拟里 | 护栏用例「群文件 completed 的终态保护必须真读库」把那句 `.any(…)` 注入成常量 `.any(\|_\| false)` ⇒ 改坏即 FAIL、恢复即 PASS |
+
+复跑（改 `transport.rs` / `file.rs` 后单跑再还原，护栏那两条自己注入并还原）：
+`cargo test --lib group_receive_atomicity_tests` · `python3 scripts/verify-guards.py --only "completed 的终态保护"` ·
+`python3 scripts/verify-guards.py --only "群断链收尾必须吃掉"`（都在仓库根目录起跑）。
+
+- 钩子：`network::file::group_receive_atomicity_tests::peer_offline_group_cleanup_takes_before_finalizing` `network::file::group_receive_atomicity_tests::single_peer_offline_cleanup_also_takes_before_finalizing` `network::file::group_receive_atomicity_tests::completed_guard_reads_recipient_status_in_the_handler`
+
+
+---
+
+## 29. Group Todo Numbering
+
+### INV-P29 — 群任务编号 = 类型字母 + 组内永久递增数字，短码只是显示态
+
+用户 2026-09-30 定的八条，收敛成他原文那句"最终规则"：
+
+> 群任务编号 = 当前类型字母 + 永久递增数字；数字从 1 开始、唯一、删除/归档后永不复用；
+> 类型变化只改字母，优先级完全独立；数字超过 4 位时紧凑界面默认只显后四位，
+> 并且必须能让用户看到完整编号。
+
+**"唯一"的范围先写清楚**（这句是刻意留的，因为"全局"能被读成两种）：数字是**群内全局**唯一 ——
+一个群内三种类型共用同一条序列（所以会出现 `R1 / B2 / T3 / R4 / B5` 这种穿插），
+每个群各自从 1 起。这与"每个群任务都是从 1 开始、之后所有任务编号顺延"是同一句话，
+也让口头引用（"看板上 B12 那条"）在本群内唯一可解。
+
+| # | 规则 | 今天靠什么成立（不是靠谁记得） |
+|---|---|---|
+| 1 | 编号 = 字母 + 数字（`R` 需求 / `B` 缺陷 / `T` 任务） | 字母表 `TODO_CATEGORY_LETTER` 与算码函数 `todoCode` 只在 `src/utils/todos.ts` 一处；数字侧由 `db::todo_number_tests::numbers_start_at_one_and_increment_within_the_group` 钉 |
+| 2 | 数字从 1 起、唯一、只增、删除/归档都不回收 | 分配口只有一处 `db::next_todo_number` = 高水位 +1；高水位两个来源取大（`settings` 里那份 + 扫过的载荷里最大号，Lamport 式"见过就要躲"）⇒ `numbers_are_not_reused_after_messages_are_deleted` 与 `peer_allocated_numbers_are_avoided` 各钉一半 |
+| 3 | 改类型只换字母、数字一字不动 | **字母不落库、不上线**，由当前 `category` 现推 ⇒ 根本没有"改类型的迁移"这件事；`todos.test.ts#改类型只换字母` 钉住 |
+| 4 | 优先级不参与编号 | 编号只读 `category` + `number` 两格；反向判据 `todos.test.ts#优先级怎么改都不进编号`（连改三档，码一字不动） |
+| 5 | 数字超过 4 位时紧凑界面只显后四位 | `TODO_CODE_DIGITS` + `todoCode().label`；卡片与看板两格都只取 `label`，位数规则不在界面里重算（㉖ 那条判据钉"界面里不许出现 TODO_CODE_DIGITS"） |
+| 6 | 缩短时必须让用户知道"这不是全码" | PC 悬停 `title`（`todo.codeShortTip` 那句）；读屏的 `aria-label` **永远给全码**；移动端点卡片进详情 —— **详情标题不是紧凑界面，写的就是全码**（规则 7 那一格） |
+| 7 | 短码只是视觉，库/同步/引用一律用完整编号 + 内部 id | 线上载荷里只有 `pub number: i64`（完整数字），**没有 `letter` 这一格**（判据直接扫 `protocol.rs`）；所有引用键是 `todo_id` |
+| 8 | 多人同时发起不冲突 | 撞号由折叠层确定性收敛：`resolveTodoNumbers` 按 (号, todo_id) 定序、小的保号其余顺延，是纯函数 ⇒ 各端拿到同一批定义必然算出同一套号，**不需要仲裁帧**；判据 `todos.test.ts#多人同时发起撞了号` 含"顺序无关"那一条 |
+
+**为什么字母坚决不存进库里**（这条如果被"顺手优化"成存字符串，规则 3 就会变成一次数据迁移）：
+存了 `R12` 之后，"需求改成缺陷"要改所有已同步的事件、要和老对端争夺同一格、要在折叠里再判一次谁赢 ——
+那是把同一件事写成两个事实来源。字母能由类型现推，所以它**只能是显示态**。
+
+**这条不管的事**（别把它读成"号永远不会变"）：撞号顺延只动**撞上的那一条**（`t-b` 从 5 变 6），
+已经显示出去的号不会因为"来了新任务"漂移（`没有撞号时恒等` 钉住）。撞号那两条在各自库里的载荷
+仍写着当初分配的号（不改写已同步的事件），但**每一端的显示与引用都用折叠后的那一套号** ⇒ 界面与
+口头引用一致；要按号查库请先看折叠结果，主键永远是 `todo_id`（规则 7）。
+
+**清除聊天记录不会把号清零**：高水位是 `settings` 里的 `todo_num:<群>` 那一行，而
+`clear_all_data` 那句只删 `key LIKE 'gk:%'` ⇒ 清了记录再建任务照样避开用过的号（规则 2）。
+⚠️ 这条判据跑的是**测试里重抄的那段 SQL**（`db::tests::clear_all_data_sql_deletes_and_preserves`），
+不是生产函数本身 —— 那是这条用例原有的边界，别把它读成"改了生产 SQL 也会红"。
+
+**没号那一档**：4.31.14 之前对端建的任务载荷里根本没有 `number` ⇒ `todoCode` 返回 null、三处界面
+那一格一律留空（看板留的是**占位**，不让标题列左右跳）。宁可什么都不显示，也不按顺序补一个号 ——
+补出来的号会随集合变，正是规则 2 要防的形状（`legacy_payload_without_number_still_parses_as_zero`）。
+
+复跑（都在仓库根目录）：`npm test`（`src/utils/todos.test.ts` 里那几条 + `src/utils/designGuards.test.ts`
+㉖ + `src/utils/channelState.test.ts` 的"卡片实时状态/编号同源"）·
+`cargo test --lib todo_number_tests`（在 `src-tauri/` 下）· `node scripts/check-invariant-hooks.mjs`。
+
+- 钩子：`db::todo_number_tests::numbers_start_at_one_and_increment_within_the_group` `db::todo_number_tests::numbers_are_not_reused_after_messages_are_deleted` `db::todo_number_tests::peer_allocated_numbers_are_avoided` `db::todo_number_tests::legacy_payload_without_number_still_parses_as_zero` `db::tests::clear_all_data_sql_deletes_and_preserves` `src/utils/todos.test.ts#改类型只换字母、数字一字不动` `src/utils/todos.test.ts#优先级怎么改都不进编号` `src/utils/todos.test.ts#超过 4 位只留后四位并标出被缩短` `src/utils/todos.test.ts#多人同时发起撞了号` `src/utils/todos.test.ts#实时表给的是当前状态` `src/utils/designGuards.test.ts#群任务编号只有一个家` `src/utils/channelState.test.ts#群任务三处外显同源`
+
+---
+
+## 30. Frontend Self-Consistency
+
+### INV-P30 — 前端派生状态：唯一事实源 + 引用必须命中
+
+**这条为什么单开一节**：§1–§29 讲的是**协议与可靠性**（一条消息在网络里的生死）。
+本节讲另一类东西：**同一份语义在多处被实现时，其中一处漏了会怎样**。它们不碰网络，
+但同样会让用户看到"界面在说谎"，且**同样会静腐烂** —— 今天三次都是靠审计而非门禁发现的。
+
+2026-10-03 一次只读审计在 `presentation` 域连打三个补丁（Change Budget 判据 3 果然拦下，
+理由是 4.18.7→4.18.10 那种"每个补丁都很小、但它们在互相修"的标准犯案形态）。收敛如下：
+
+| # | 规则 | 今天靠什么成立（不是靠谁记得） |
+|---|---|---|
+| 1 | 同一份语义的每个派生状态**只有一个家** | `markFriendsOnlineFrom` 是 `online` 判定的唯一实现，`useChatStore` 两个调用点都调它（`channelState.test.ts` 钉住"必须恰好 2 处调用"）；`sendToBackend` 是单聊/群聊 invoke 分流的唯一实现（`retrySend.test.ts` 钉住） |
+| 2 | 界面引用的 `t()` key 必须在**中英两侧**都存在 | `src/i18n/index.test.ts` 扫全仓 `t("字面量")` 调用点；`t()` 的回落是 `dict[key] ?? key`，所以缺 key 不是报错而是**把裸 key 显示给用户** |
+| 3 | 重发**复用**失败那条气泡，不新建第二条 | `send(..., retryOfMsgId)` 原地把 failed 转回 sending；`appendLocalOnly` 把 `tmp-*` 视为只在内存，每次 `loadMessages` 重新追加 ⇒ 不复用就是**永久**两条 |
+| 4 | 派生值不许粘住上一轮结果 | `markFriendsOnlineFrom` 每次全量重算（`friendOnline.test.ts` 有"回落成离线"那一条） |
+| 5 | 同一份判据不许被抄成两份 | AI_RULES §32；上面三条的护栏都额外钉住"实现搬家时判据跟着搬"（形状断言扫源码，不扫运行时） |
+
+**为什么第 1 条要单独钉"必须恰好 2 处调用"**：只钉"判定含 `linkedIds`"是不够的 ——
+有人把某个调用点改回自己算 `online`，那条断言照样绿。**数调用点个数**才关得住第二个家。
+
+**这条不管的事**：后端派生状态的权威口径（如 `friend_is_online` 的三层条件）不在本节 ——
+那是 §1–§29 的事。本节只管"前端那一侧不许自己长出第二个家"。
+
+- 钩子：`src/utils/friendOnline.test.ts` `src/utils/retrySend.test.ts` `src/i18n/index.test.ts` `src/utils/channelState.test.ts#链路徽标/在线状态必须实时`
+
+---
+
+### INV-P31 — 表现层交互：可达性、热区、关闭收尾，和"量具先自证"
+
+**这条为什么单开一节**：INV-P30 已经把"同一份语义多处实现"收进一个家；但**交互层**还散着
+四条各自踩过坑、却没人当不变量写的规则（散在 `docs/design-guidelines.md` §11 与
+`docs/stability-roadmap.md` §12.6.1 的 N 系列行里）。2026-10-10 原生体验领域 F/G/H 补测时，
+`presentation` 域的修补形状提交又一次凑满 Change Budget 判据 3 的窗口（现算：
+`node scripts/check-change-budget.mjs` ⇒ 「presentation 3 次」）⇒ 按判据要求收敛到这里。
+
+| # | 规则 | 今天靠什么成立（不是靠谁记得） |
+|---|---|---|
+| 1 | 靠悬停揭示出来的操作，必须有一条**非悬停**也能用的路径 | 触屏那一半：`.hover-reveal` / `.hover-reveal-op` 定义在 `@media (hover: none)` 内（`style.css:575-582`），`designGuards` ① 扫「用了 `group-hover` / `opacity-0` 却没带兜底类」；键盘那一半**还欠着**（roadmap N19：`hover: hover` 设备上 Tab 到的是隐形元素），当前替代入口是消息右键菜单 `ContextMenu.vue`（自带完整键盘模型） |
+| 2 | 小尺寸可交互元素必须有热区扩展，且**必须知道这把尺子量不到哪一半** | `designGuards` ⑧ `findSmallTapTargets`（量程 2026-10-10 起含 `h-4`/`w-4`）+ 真实树那条「`src` 下所有小尺寸可交互元素都带 `tap-safe`」恒绿。⚠️ `.tap-safe` 是 `inset: -8px 0` —— **只撑垂直方向**，横向热区仍等于可见盒；16px 那颗加完也只有 32px 高，够不着 HIG 的 44pt |
+| 3 | 「关闭之后」有两个必须同时成立的终态：**DOM 撤净** + **焦点还给触发它的那个元素**，而且只有 `BaseModal` 这一个家 | 26 个调用方共用这一个外壳 ⇒ 时机只能是 `@after-leave`（早一步 `Dialog` 还挂着，Headless UI 的 FocusSentinel 会把焦点抢回弹窗内），且只在 `activeElement` 真落到 `body` 时才 `focus({ preventScroll: true })`（不还焦点 = 键盘用户 Tab 序列从头开始；顺手滚页 = 违反约束 7）。判据：`node scripts/check-ui-runtime.mjs --only=overlay` 共 32 条，其中三条钉 Esc / ✕ / 生产形状宿主 |
+| 4 | 判「关掉之后还剩没剩」之前，**量具必须先自证被测的那件事确实在发生**，并且**自证里不许有被吞掉的输入** | `scripts/check-ui-runtime.mjs` 的 `boot()` 里那条「量具在出帧」（泵 6 次 `captureScreenshot` 这段时间 rAF ≥ 2 次 ⇒ 这一条红是**量具红不是产品红**）+ 所有"关掉之后"的读数统一走 `readAfterClose()`；`perf/latency.mjs` 用同一套路（出帧自证 + 100 ms 长任务灵敏度对照，两条都过才报数）。根因写死在这：`--headless=new` 的页面 `visibilityState=hidden`、静止不出帧，而 Headless UI 的过渡收尾靠两层 `requestAnimationFrame` ⇒ 不泵帧就永远看见"还剩一层"（roadmap N13 就是这么被证伪的）。**这台量具自己坏过的四种形状（2026-10-10 记，都在"自证"这一侧；完整清单在 `perf/README.md`）**：① 泵帧的 `captureScreenshot` 被 `catch` 掉不计数 ⇒ "泵了 6 次"其实是"一次都没泵成"，于是自证那条红得莫名其妙 —— **吞掉自己判据的输入 = 造假红，与吞掉产品缺陷同罪**，所以失败次数必须一起打印；② 用**一次性** `rafPing` 去证明"这段时间在出帧" ⇒ 没人排队 rAF 时差值恒 0，把"没人排队"误报成"页面冻住"，所以计数器必须是**持续的**且 `frameStart` 清零、`frameStop` 直接返回窗口内帧数；③ **读时机读晚了** —— 过渡类名只在过渡期间挂着，落定之后去读计算时长会读回 `0s`，于是把**生效的仿真判成空转**（这一条连着红了两轮，最后撤的是判据的读法而不是产品）；④ **自证的期望值凭想象写死** —— 同日 E 组第一版把落点建在面板上、断"普通档 ≥1ms"，而落定态的普通档本来就是 `0s` ⇒ 红的是我编的那条规矩。出口不是放宽阈值，是换一个**恒被系统偏好作用到的节点**当落点（`body` 上那条 `!important` 两用都能现读到差），并把这台量具读不到的那一半**降级成打印读数** —— 别把量具的形状升级成产品判据。教训与②③同形：**探针报"某样东西不存在"之前，先证"我读的那一刻它本该在"**；而"它本该有的值"要来自实读，不来自我对实现的想象 |
+| 5 | 凡靠 CSS 表达的东西，核对要读**编译产物**，读 `src/style.css` 不足以证明它生效 | 已核过的一例：`prefers-reduced-motion` 在 `dist/assets/boot-*.css` 里就一条全局块（`*,*:before,*:after` 三个时长压到 `.01ms`），且该产物 mtime 晚于最后一次 `src/style.css` 提交 ⇒ 才敢写"生效"。历史代价见 `design-guidelines.md` §11.6（N7 那格"写了没生效"就是只读了源码） |
+| 6 | 表现层改动**不许改业务语义**：不许用动画掩盖失败、不许为动效碰状态机 | 这是总指令约束 5/6/7 在 UI 层的落地口径。可执行的那一半：这一类改动只许落在 UI 层文件（组件 / `style.css` / 探针），且**必须附一次反向对照**（摘掉改动 ⇒ 恰好对应那几条判据红），没有对照就不许写"已修" |
+
+**为什么第 2 条要把"尺子买不到哪一半"写进不变量**：只钉「必须有 `tap-safe`」会让人以为
+44pt 已经达标 —— 实测这把尺子的量程当初只到 `h-5..h-8`（16px 整档看不见），且它撑的是
+垂直方向。**量具的能力边界和被量对象一起写，才不会把"守卫生了绿"读成"体验过了"**。
+
+**这条不管的事**：具体某个组件该不该用悬停揭示（那是产品决定，例：消息行的表情入口在桌面
+靠悬停是用户 2026-09-30 明确要的，见 `MessageItem.vue:971-977`，本条不许反过来改它）；
+安全区底部内距的逐页布局（roadmap N16，静态守面已落地、真机避让仍未测）、WebView 版本兼容（N18）—— 那些格子还没走完，
+不是不变量。本条的文字口径（悬停不是唯一入口、减少动效那几节）在 design-guidelines §11.6 / §11.9，
+那是**给人读的散文，不是可跑钩子** ⇒ 不写进下面那一行（`check-invariant-hooks.mjs` 只认
+::/test.ts/scripts/guards:/e2e:/smoke:/NONE 六种形态，文档路径会被判成"绑了个不会跑的东西"）。
+
+- 钩子：`src/utils/designGuards.test.ts`（① 悬停揭示兜底、⑧ 小尺寸热区）`scripts/check-ui-runtime.mjs`（overlay 段 32 条、caption 段层级与命中）
+
+---
+
+# 27. Required Test Matrix
 
 核心消息功能至少覆盖：
 
@@ -853,3 +1336,19 @@ Gosslan 是**没有服务器、没有强制升级通道**的 mesh：网里同时
 | 老版本对端 + 新帧能力 | 发送方按对端版本门控 ⇒ 退回旧行为，不产生无法解析的帧 |
 | 对端版本更高 | 界面给出可解释状态，不是错误弹窗/裸 JSON/永久转圈 |
 | 老端 Hello（不带版本字段） | 照常建链；面板/日志显示「未声明」，不猜成版本 1 |
+| 晚到的失败判定落在已 done 的传输行（INV-P26） | 状态/进度/路径三样都不许变，且不发 `file-failed` |
+| 同一 transfer_id 的新一轮续传落在 failed 行（INV-P26 反向） | 必须能改回 active，否则断点续传停在旧终态 |
+| 锁内 emit（INV-P25） | `check-lock-scope.mjs` 扫全部取锁点为 0；判不出作用域的那一处**直接红**，不算通过 |
+| 会话开着但用户没在看时收到 @（INV-P27） | 「有人@我」红点**必须亮**；同时**不许**判已读（两条判的是同一份口径） |
+| 会话开着且真在看时收到 @（INV-P27 反向） | 红点**不许亮** —— 这条存在的唯一意义是让"顺手把抑制整条放开"变红 |
+| 老对端整份重建载荷、没带新增的三格（INV-P24） | 前后端都**沿用这条记录已知的值**；显式带了的照常覆盖（钉两个家：`carryAbsentTodoFields` 与 `latest_todo_def`） |
+| 一份更新把固定编号写成 0（INV-P24 反向） | 编号**不许被任何更新抹掉** —— 只认创建那一条说过的号；这条存在的意义是让"顺手把 def 里的号发回去"变红 |
+| 对端下线的接收收尾（INV-P28） | 群侧与单聊侧都必须"判据与摘表同一次持锁"，收尾只吃已摘出的那一份 ⇒ 摘取动作走 `take_*` 那一族 |
+| 把它改回「锁内 collect 出 id ⇒ 锁外逐个收尾」（INV-P28 反向） | 群侧与单聊侧那两条形状判据**各红自己那一条**；只红一边＝另一个面又被漏掉，那正是本条要防的形状 |
+| 两人同时发起群任务、各自分到同一个号（INV-P29） | 折叠后每一端都必须给出**互不相同且只增**的号（小的保号、其余顺延），且把定义换个顺序喂进来结果一致；卡片/看板/详情三处显示的是同一套号 |
+| 把编号改成「按当前显示顺序数 1..N」或把字母写进载荷（INV-P29 反向） | `designGuards` ㉖ 与 `channelState` 那条外显同源判据**各红自己那一条**⇒ 位置序号不能当编号、字母只能是显示态 |
+| 前端某个调用点改回自己算 `online`（INV-P30 反向） | `channelState` 那条"必须恰好 2 处调用"计数判据变红 ⇒ 第二个家不许长出来 |
+| 某处 `t()` 引用了中英两侧都不存在的 key（INV-P30 反向） | `i18n/index.test.ts` 点名 `xx 缺 key（文件:行）` ⇒ 裸 key 上屏在合入前就被拦 |
+| 把重发改回「新建一条乐观记录」（INV-P30 反向） | `retrySend.test.ts` 三条判据变红（形状断言 + 调用点计数 + 后端前提对账）⇒ 失败那条永远删不掉，两条一样的文字 |
+| 把某处悬停揭示的兜底类摘掉，或把 16px 的可交互元素写成不带 `tap-safe`（INV-P31 反向） | `designGuards` ① / ⑧ **各红自己那一条**；真实树那条「所有小尺寸可交互元素都带 `tap-safe`」变红 ⇒ 尺子量程放宽之后不再空转（2026-10-10 实测：摘掉 `tap-safe` ⇒ 122 pass / 1 fail，红的恰好是这一条） |
+| 弹窗关完之后不还焦点，或把「关掉之后还剩没剩」的判定挪到不泵帧的读法上（INV-P31 反向） | overlay 段那三条焦点判据变红（摘掉 `@after-leave` 实测 29/32）；而「量具在出帧」那条会先把不泵帧的读法判成**量具红** ⇒ 不会再出现第二次把冻结页面读成产品缺陷 |

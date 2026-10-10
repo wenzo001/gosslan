@@ -24,7 +24,7 @@ export interface Peer {
   ed25519_pubkey: string | null;
   /** 首次发现该节点的时间戳 */
   first_seen: number | null;
-  /** 当前实际链路类型：`lan` / `routed` / `bluetooth`（无链路时缺省） */
+  /** 当前实际链路类型：`lan` / `routed` / `relay`（公网中转）/ `bluetooth`（无链路时缺省） */
   link?: string | null;
 }
 
@@ -95,6 +95,25 @@ export interface MessageRecord {
   /** 每会话逻辑序号（Lamport），前端与后端都以它排序，而非墙上时钟。 */
   seq: number;
   status: string;
+  /**
+   * 这条文本消息 @ 了哪些**人**（设备 id 列表），由发送方在发出的那一刻算好随载荷带来。
+   *
+   * 三态（`messageMentionsMe` 按它判红点）：数组 = 发送方的权威回答（空数组即"没 @ 任何人"）；
+   * `undefined` / `null` = 不知道（发送方是不认识该字段的旧版本，或这条来自库里 ——
+   * **它不落库**，只随本次投递过来，因为「有人@我」本来就是摄入时的一次性判定，重启即清空）。
+   */
+  mention_ids?: string[] | null;
+  /**
+   * 每条 @ 在正文里的**落点**（#122：群里两个人同名时，只有被点名的那一段该算"@到我"）。
+   * 与 `mention_ids` 同样三态；结构与后端 `protocol::MentionTarget` 一字不差
+   * （`n` = 该昵称在正文里第几次以 `@昵称` 出现，1 起 —— 不用字符偏移是因为 Rust 按字节、
+   * JS 按 UTF-16，偏移跨语言传必错）。
+   * ★ 与 `mention_ids` **不同**的一点（4.31.2 起）：**这一份落库**（`messages.mention_targets`，
+   * 迁移 v10→v11）。因为"哪一段算谁"是那句话的历史事实，不落库就等于重启后同一句话换了意思；
+   * 而"`有人@我`"是一次性判定，重启不该再亮。老行 / 老对端 / 那一列写坏 ⇒ `null` = 不知道
+   * ⇒ 呈现层退回按昵称判（与旧版本同一兜底路径）。
+   */
+  mention_targets?: { id: string; name: string; n: number }[] | null;
 }
 
 /**
@@ -151,7 +170,8 @@ export interface GroupFileEntry {
 
 /** 会话的「当前链路」快照：最近一条消息走的链路 + 中间节点数。 */
 export interface LinkState {
-  path: "lan" | "routed" | "bluetooth";
+  /** `lan` / `routed`（跨网段·VPN 直达）/ `relay`（公网中转电路）/ `bluetooth`。 */
+  path: "lan" | "routed" | "relay" | "bluetooth";
   hop: number;
 }
 
@@ -160,6 +180,28 @@ export interface Group {
   name: string;
   creator: string;
   members: string[];
+}
+
+/**
+ * 全局图片预览里的一张图（用户 2026-09-24 #40）。字段名即**线格式**
+ * （Rust `PreviewItem` 用 `rename_all = "camelCase"` 与它对上）。
+ *
+ * 三种取字节的来源，按优先级：`dataSrc`（已在手边的 data URL）→ `cid`（待办描述图）
+ * → `msgId`（聊天消息）。⚠️ `blob:` objectURL **不属于任何一种**：它只在发起它的那个文档里
+ * 有效，跨到预览窗口就是破图 ⇒ 带 blob 的那份相册不走窗口，留在应用内覆盖层
+ * （判据在前端 `deliverableToWindow`，后端 `validate_preview` 再钉一次）。
+ */
+export interface PreviewImage {
+  name: string;
+  dataSrc?: string | null;
+  msgId?: string;
+  cid?: string;
+}
+
+/** 一次预览投递 = 相册 + 起始下标（窗口里的左右循环就在这个数组上转）。 */
+export interface PreviewGallery {
+  items: PreviewImage[];
+  index: number;
 }
 
 export interface InterfaceInfo {
@@ -220,11 +262,13 @@ export interface FileProgress {
 }
 
 /** 链路停滞状态翻转（与 Rust `state::FileStalledInfo` 同形）。
- *  `idle_ms` 是距最近一次**真正写出**分片的毫秒数，不是投进队列的时间。 */
+ *  `idle_ms` 是距最近一次**真正写出**分片的毫秒数，不是投进队列的时间。
+ *  `reason` = 为什么停（缺省 = 普通链路静默，界面用既有的「网络停滞」文案）。 */
 export interface FileStalledInfo {
   transfer_id: string;
   stalled: boolean;
   idle_ms: number;
+  reason?: string;
 }
 
 export interface FileDoneInfo {
@@ -252,6 +296,18 @@ export interface GroupReadInfo {
   last_read_ts: number;
 }
 
+/**
+ * 群发「受众预告」（事件 `content-audience`，见 Rust 侧 `protocol::kind_audience_hint`）。
+ *
+ * 消息**已经发出去了** —— 这条只解释"群里有谁会把这条看成一段原始文本"，不是失败通知。
+ * 文案整句由后端拼（判据与文案必须在同一处），前端不再自己组句子。
+ */
+export interface ContentAudience {
+  conv_id: string;
+  msg_id: string;
+  hint: string;
+}
+
 export interface TopologyInfo {
   node_count: number;
   relay_count: number;
@@ -277,6 +333,10 @@ export interface RuntimeSnapshot {
   peerCount: number;
   /** **我自己的在线状态**：任一通道在跑 = 在线；两个都关才是离线（用户 2026-09-12 定的规则） */
   present: boolean;
+  /** 已配置的「跨网段 / VPN」端点数（不是发现通道，配置在设置页；只给"有没有"，不给地址） */
+  routedEndpoints: number;
+  /** 公网中转状态（只有可公开的事实，**不含口令、不含服务器地址**） */
+  relay: { enabled: boolean; connected: boolean };
 }
 
 export interface ChannelStatus {
@@ -339,6 +399,38 @@ export interface AppSettings {
 /** 中继授权策略（与后端 `mesh::relay_policy::RelayPolicy` 一一对应）。 */
 export type RelayPolicy = "off" | "friends" | "allowlist" | "all";
 
+/**
+ * 公网中转（盲管道）配置，与后端 `commands::RelayConfigView` 一一对应（ADR-0020）。
+ *
+ * `server` 是**后端规范化后**的 `ip:port`（省略端口时补 59993）—— 界面回显这个值，
+ * 用户因此能立刻看到"实际会连哪儿"，而不是他手打的原始串。
+ */
+export interface RelayConfig {
+  enabled: boolean;
+  server: string;
+  token: string;
+}
+
+/**
+ * 一次"保存前真拨"的结论（后端 `check_relay_server`）。
+ *
+ * `kind` 是三档 **机器可读**串，与 Rust 侧 `RelayProbeKind::as_str` 同一套
+ * （`INTEGRATION.md` §1.1：服务器的两种命运差两个数量级，加上纯本端可判的 TCP 失败）：
+ * · `unreachable` 连不上（地址 / 端口 / 安全组）
+ * · `rejected`    首行被立刻拒绝（口令 / 版本 / 格式，精确原因只在服务器日志里）
+ * · `held`        首行已被接受、口令正确，只是对方这一轮没接入
+ * 刻意**没有**第四种："对方没开中转"与"对方不在线"对哑管道是同一个观测，分不出来。
+ */
+export interface RelayProbe {
+  kind: "unreachable" | "rejected" | "held";
+  /** 探到的那个 `ip:port`（全不可达时是第一个候选）。与已存值不同时界面应回填。 */
+  server: string;
+  /** 试过哪些端口，逗号分隔 —— 供用户抄给部署服务器的人看。 */
+  tried: string;
+  /** 技术细节。**不含口令**。 */
+  detail: string;
+}
+
 /** 缓存目录占用与策略 */
 export interface CacheInfo {
   /** 已接收的图片 / 文件（落在「文件存储目录」）：文件数与合计占用 */
@@ -367,14 +459,6 @@ export interface ExportSummary {
 }
 
 /** 搜索结果 */
-export interface SearchResult {
-  conv_id: string;
-  name: string;
-  match_content: string;
-  match_ts: number;
-  /** 命中消息的 msg_id —— 用于「跳到那一条」，见 useChatStore.locateMessageInConv。 */
-  match_msg_id: string;
-}
 
 /** 「搜索聊天记录」结果页的一条命中消息。 */
 export interface ChatSearchMessage {

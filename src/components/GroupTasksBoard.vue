@@ -5,60 +5,100 @@
  *
  * **观感（用户 2026-09-17：「还是太丑，至少要参考飞书/微信/钉钉」）**：走**微信式极简** ——
  * 无卡片无边框，纯列表行 + 分组小标题 + 分割线，尽量少色块；行内只保留
- * **序号 + 标题 + 状态 + 元信息**（描述/图片/所有操作点开**任务详情**看，见 `TodoDetailDialog`），
+ * **固定编号 + 标题 + 状态 + 元信息**（描述/图片/所有操作点开**任务详情**看，见 `TodoDetailDialog`），
  * 这样行高统一（不再"行高参差、满屏 pill"）。
  *
  * **归档**：不再自动归档（完成只记 `doneAt`）——「已归档」是筛选里的一个胶囊（带计数），
- * 完成后可手动归档，没手动归档的满 7 天由 `isEffectivelyArchived` 自动归档。
+ * 完成后可手动归档（**全体群成员都可以**，用户 2026-09-24 #37），
+ * 没手动归档的满 7 天由 `isEffectivelyArchived` 自动归档。
  *
  * **数据来源**：`foldTodos(该群会话的已加载消息)`。任务与群公告同属 `Card` kind ——
  * 不进消息时间线，只在这里折叠展示。⚠️ 只统计**已加载的消息页**（既有架构口径）。
  *
- * **权限**：与后端 `commands::may_update_todo` 一致（`canUpdateTodo` / `canEditAssignees`
- * 是显示用的镜像）—— 界面只是"不给按钮"，真正的拦截在后端命令里。
+ * **权限**：与后端 `commands::may_change_todo` 一致（`canUpdateTodo` / `canEditAssignees` /
+ * `canArchiveOrReopenTodo` 是显示用的镜像）—— 界面只是"不给按钮"，真正的拦截在后端命令里。
  */
-import { computed, onBeforeUnmount, ref, watch } from "vue";
-import { invoke } from "@tauri-apps/api/core";
+import { computed, onMounted, onBeforeUnmount, onUnmounted, ref, watch } from "vue";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { isAndroid } from "@/utils/platform";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { useMemberProfile } from "@/composables/useMemberProfile";
+import { useMentionContext } from "@/composables/useMentionContext";
 import BaseModal from "@/components/BaseModal.vue";
+import { useImagePreviewStore } from "@/stores/useImagePreview";
 import TodoDetailDialog from "@/components/TodoDetailDialog.vue";
 import TodoImageThumb from "@/components/TodoImageThumb.vue";
 import {
+  TODO_CATEGORY_LABEL_KEY,
+  TODO_CATEGORY_ICON_CLASS,
+  TODO_CATEGORY_PILL,
+  TODO_PRIORITY_LABEL_KEY,
+  TODO_PRIORITY_ICON_CLASS,
   TODO_STATUSES,
+  TODO_STATUS_BAR,
   TODO_STATUS_CLASS,
   TODO_STATUS_DEFAULT,
   TODO_STATUS_LABEL_KEY,
   TODO_STATUS_PILL,
+  canArchiveOrReopenTodo,
   canEditAssignees,
   canUpdateTodo,
   foldTodos,
   isEffectivelyArchived,
   parseTodo,
+  todoCode,
   type TodoImage,
   type TodoItem,
+  type TodoCategory,
+  type TodoPriority,
   type TodoStatus,
 } from "@/utils/todos";
 import { api } from "@/api";
+import { useExclusivePopup } from "@/composables/useExclusivePopup";
+import { popupLeft, popupPlacement, popupWidth } from "@/utils/popupPosition";
+import { MAX_TODO_IMAGE_BYTES, TODO_IMAGE_LIMIT_MB } from "@/utils/imageBytes";
 import { t } from "@/i18n";
-import { Check, CheckCircle2, ChevronDown, Circle, CircleDot, Clock, ImagePlus, Plus, X } from "lucide-vue-next";
+import { Archive, ArrowDown, ArrowUp, Bug, Check, CheckCircle2, ChevronDown, Circle, CircleDot, Clock, ImagePlus, Lightbulb, ListTodo, Loader2, Minus, Plus, RotateCcw, X } from "lucide-vue-next";
 
-const props = defineProps<{ groupId: string | null; open?: boolean; standalone?: boolean }>();
+const props = defineProps<{
+  groupId: string | null;
+  open?: boolean;
+  standalone?: boolean;
+  /**
+   * 打开看板时要**直达详情**的那条任务（用户 #23：点时间线上的任务卡片，不是只把看板翻开）。
+   * 独立窗口形态没有这个入参（跨文档传参要新造通道，见 `ChatWindow.openTasks` 的注释），
+   * 所以只在应用内弹窗/移动端生效。
+   */
+  focusTodoId?: string | null;
+}>();
 
 const app = useAppStore();
 const chat = useChatStore();
+/** 全局图片预览（#40）：本组件只给数组与来源标记，渲染与切换在那唯一的一份实例里。 */
+const preview = useImagePreviewStore();
 const { memberProfile, myId } = useMemberProfile();
+/** @ 渲染的判定输入：与聊天正文同一份推导（`useMentionContext`），再注入给详情弹窗。 */
+const { mentionNames, selfMention } = useMentionContext(() => props.groupId);
 
 const convId = computed(() => (props.groupId ? `group:${props.groupId}` : ""));
 const group = computed(() => chat.groups.find((g) => g.id === props.groupId) ?? null);
 const groupCreator = computed(() => group.value?.creator ?? "");
+/** 本群成员名单（归档/还原那条窄档的判据：只给本群成员，见 `canArchiveOrReopenTodo`）。 */
+const groupMembers = computed<string[]>(() => group.value?.members ?? []);
 
 /** 折叠出全部任务（按创建版本从新到旧），再拆成「活动」与「已归档」。 */
-const todos = computed(() => foldTodos(chat.messages[convId.value] ?? []));
+/** 取数口：那份**全表读**的任务行，不是有上界的消息缓存（`#154-9`；语义见 store 里 groupTodoRows 的注释）。 */
+const todos = computed(() => foldTodos(chat.groupTodoRows[convId.value] ?? []));
+// 面板/独立任务窗都可能先于启动时那次 bulk 读打开 ⇒ 按需补读，读过就不再打 IPC
+watch(
+  () => props.groupId,
+  (id) => {
+    if (id) void chat.ensureGroupTodoRows(`group:${id}`);
+  },
+  { immediate: true },
+);
 const activeTodos = computed(() => todos.value.filter((x) => !isEffectivelyArchived(x)));
 const archivedTodos = computed(() => todos.value.filter((x) => isEffectivelyArchived(x)));
 const doneCount = computed(() => todos.value.filter((x) => x.status === "done").length);
@@ -74,16 +114,86 @@ const FILTERS: { key: TodoFilter; labelKey: string }[] = [
   { key: "archived", labelKey: "todo.filter.archived" },
 ];
 
-const filter = ref<TodoFilter>("all");
+// 默认落在「给我的」而不是「全部」（用户 2026-09-29 需求汇总七：「默认选中关于我的 Tab，
+// 不要一进来就选中全部」）。刻意**不持久化**：这是一次进入的默认视野，不是用户设置的偏好；
+// 上一次手动切到哪一档不该决定这一次进来看见什么（同一条理由也适用于下面关面板时的复位）。
+const filter = ref<TodoFilter>("mine");
 
-/** 行内状态菜单：同一时间只开一个（行是 v-for，不能每行一个 bool）。 */
+/**
+ * 行内状态菜单：同一时间只开一个（行是 v-for，不能每行一个 bool）。
+ *
+ * ⚠️ 面板**必须 Teleport 到 body 后用 fixed 坐标**（用户 2026-09-24：下拉被遮挡）。
+ * 挂在行里时被两层东西裁掉：列表卡片自己的 `overflow-hidden`（画圆角用的）
+ * 和外面那层 `overflow-y-auto` 滚动容器 —— 与已读成员弹层、表情面板是同一个坑的第三处，
+ * 那两处 2026-09-24 已经改过（`MessageReceipt` / `MessageItem`），判据也早就抽成
+ * `utils/popupPosition`，这里只是终于用上了它。
+ * 菜单项只有 4 条、宽度固定 8rem，所以不像列表那样需要估高度：
+ * 横向按入口右缘对齐向左展开（不顶出屏幕右缘），纵向过视口中线就往上弹。
+ */
 const rowMenuId = ref<string | null>(null);
-function toggleRowMenu(todoId: string) {
-  rowMenuId.value = rowMenuId.value === todoId ? null : todoId;
+/** Teleport 出去之后拿不到"是哪条任务"，所以目标项自己也要留一份。 */
+const rowMenuTodo = ref<TodoItem | null>(null);
+/** fixed 坐标：往下弹用 `top`、往上弹用 `bottom`（贴入口上缘），不估菜单高度。 */
+const rowMenuPos = ref<{ left: number; top: number | null; bottom: number | null; width: number } | null>(
+  null,
+);
+const ROW_MENU_W = 128; // 8rem
+
+function openRowMenu(x: TodoItem, anchor: HTMLElement) {
+  const rect = anchor.getBoundingClientRect();
+  const width = popupWidth(ROW_MENU_W, window.innerWidth);
+  const below = popupPlacement(rect.top, window.innerHeight) === "below";
+  rowMenuTodo.value = x;
+  rowMenuId.value = x.todoId;
+  rowMenuPos.value = {
+    left: popupLeft({ left: rect.left, right: rect.right }, "end", width, window.innerWidth),
+    top: below ? rect.bottom + 4 : null,
+    bottom: below ? null : window.innerHeight - rect.top + 4,
+    width,
+  };
+  claimRowMenu();
+}
+function toggleRowMenu(x: TodoItem, e: MouseEvent) {
+  if (rowMenuId.value === x.todoId) {
+    closeRowMenu();
+    return;
+  }
+  const el = e.currentTarget as HTMLElement | null;
+  if (el) openRowMenu(x, el);
 }
 function closeRowMenu() {
   rowMenuId.value = null;
+  rowMenuTodo.value = null;
+  rowMenuPos.value = null;
+  releaseRowMenu();
 }
+
+/** 接入全局浮层互斥：右键菜单 / 表情面板 / 已读弹层与它同一时刻只能开一个。 */
+const {
+  isActive: rowMenuOpen,
+  claim: claimRowMenu,
+  release: releaseRowMenu,
+} = useExclusivePopup("todo-row-menu");
+watch(rowMenuOpen, (mine) => {
+  if (!mine && rowMenuId.value !== null) closeRowMenu();
+});
+
+/** 滚动 / 改窗口 ⇒ 收起（fixed 坐标会飘）。忽略菜单自己的内部滚动。 */
+function onScrollOrResize(e: Event) {
+  if (!rowMenuId.value) return;
+  if (e.type === "scroll" && rowMenuEl.value?.contains(e.target as Node)) return;
+  closeRowMenu();
+}
+const rowMenuEl = ref<HTMLElement | null>(null);
+onMounted(() => {
+  window.addEventListener("scroll", onScrollOrResize, true);
+  window.addEventListener("resize", onScrollOrResize);
+});
+onUnmounted(() => {
+  window.removeEventListener("scroll", onScrollOrResize, true);
+  window.removeEventListener("resize", onScrollOrResize);
+  closeRowMenu();
+});
 
 function isAssignedToMe(x: TodoItem): boolean {
   return !!myId.value && x.assignees.includes(myId.value);
@@ -116,23 +226,37 @@ const counts = computed<Record<TodoFilter, number>>(() => ({
 }));
 
 /**
- * 序号：按**当前显示顺序** 1..N（切筛选/切分组会重排 —— 用户要的是"列表里第几个"，
- * 内部 `todoId` 不适合展示）。
+ * 行首那串**固定编号**（`R12` / `B2345`）—— 口径整份在 `utils/todos.ts` 的 `todoCode`，这里只取用。
+ *
+ * 这一格以前数的是"当前显示顺序"1..N：切一次筛选或换一次分组，同一条任务的号就变了，
+ * 而口头引用要的恰恰是"同一条永远同一个号"（用户 2026-09-30 规则 2/8）⇒ 位置序号不能当编号，
+ * 整块换成折叠结果里的固定号。看板算**紧凑界面**：数字超过 4 位只显后四位（规则 5），
+ * 悬停那句必须说明"这不是全码"（规则 6）；全码在详情弹窗那格给。
+ * 旧版本对端建的任务没有号 ⇒ 这一格留空（占位仍留着，免得标题列左右跳），不补号。
  */
-const ordinals = computed(() => {
-  const m = new Map<string, number>();
-  let n = 0;
-  if (filter.value === "archived") {
-    for (const x of archivedTodos.value) m.set(x.todoId, ++n);
-  } else {
-    for (const g of grouped.value) for (const x of g.items) m.set(x.todoId, ++n);
-  }
-  return m;
-});
+function codeLabel(x: TodoItem): string {
+  return todoCode(x.category, x.number)?.label ?? "";
+}
+
+/** 悬停说明：被缩短时必须带上"只显后四位"那句；没缩短时直接给完整编号。 */
+function codeTip(x: TodoItem): string {
+  const c = todoCode(x.category, x.number);
+  if (!c) return "";
+  return c.shortened ? t("todo.codeShortTip", { full: c.full }) : t("todo.codeAria", { code: c.full });
+}
 
 /** 当前视图的条数（空态分流用）。 */
 const shownCount = computed(() =>
   filter.value === "archived" ? archivedTodos.value.length : filteredActive.value.length,
+);
+
+/**
+ * 独立窗口形态的首屏取数还没结束 ⇒ 显示"正在加载"，**不许**显示空态。
+ * 判据只有窗口形态这一半：主窗口里那份看板的数据来自已经加载好的会话消息，
+ * 那里没有"首次拉取"这件事，套上同一个条件就变成永远转圈。
+ */
+const loadingFirstScreen = computed(
+  () => !!props.groupId && !!props.standalone && !chat.todosLoadedOnce(props.groupId),
 );
 
 /** 分组小标题的图标（与状态语汇一致：待办=空心圈、进行中=实心点、延期=时钟、完成=对勾圈）。 */
@@ -141,6 +265,27 @@ const STATUS_ICON: Record<TodoStatus, typeof Circle> = {
   doing: CircleDot,
   overdue: Clock,
   done: CheckCircle2,
+};
+
+/**
+ * 行首那两枚图标的字形（用户 2026-10-09：「任务列表的前面可以加一些小图标，
+ * 显示出优先级 类型各种不同的区别，形象表达直观理解」）。
+ *
+ * ⚠️ **三档一律画**，不许给"缺省那一档"留空 —— 2026-09-30 在类型角标上已经证明过一次：
+ * 刻意不画的那档才是最难认的。区分度放在**形状**上，颜色只负责把「紧急」与「缺陷」提出来
+ * （两张配色表都在 `utils/todos.ts`，与文字/胶囊那两族同一家风）。
+ *
+ * 状态**不在这里画**：列表本来就按状态分组，加上左缘色条与右侧胶囊已经说了三遍。
+ */
+const PRIORITY_ICON: Record<TodoPriority, typeof Circle> = {
+  high: ArrowUp,
+  normal: Minus,
+  low: ArrowDown,
+};
+const CATEGORY_ICON: Record<TodoCategory, typeof Circle> = {
+  task: ListTodo,
+  requirement: Lightbulb,
+  bug: Bug,
 };
 
 function statusText(s: TodoStatus): string {
@@ -162,6 +307,36 @@ function canEditStructure(x: TodoItem): boolean {
 function canEditAssigneesOf(x: TodoItem): boolean {
   return canEditAssignees(x, myId.value, groupCreator.value);
 }
+/**
+ * 「归档」这一档对**全体群成员**开放（用户 2026-09-24 #37），
+ * 但只在「完成」这一态给按钮（后端对未完成任务的归档请求是明确拒绝，不是静默丢弃）。
+ */
+function canArchive(x: TodoItem): boolean {
+  return x.status === "done" && canArchiveOrReopenTodo(x, myId.value, groupCreator.value, groupMembers.value);
+}
+/**
+ * 「还原」= 把「完成」退回「待办」（后端 `resolve_done_archive` 据此一并清掉归档位与完成时间）。
+ * 与归档同一条成员窄档 ⇒ 同样开放给全体群成员（用户 2026-09-24 追加：
+ * 「归档和被归档的数据还原，任何人都可以操作，其他权限不变」）。
+ * 判据带上"当前是 done"：非完成态的行不配还原，后端也不认那是还原。
+ */
+function canReopen(x: TodoItem): boolean {
+  return x.status === "done" && canArchiveOrReopenTodo(x, myId.value, groupCreator.value, groupMembers.value);
+}
+/**
+ * 「认领」只开给**需求**（用户 2026-09-29），四条前提与后端 `claim_only_change` 一一对应：
+ * 类型是需求、自己还不在名单里、这条没归档、自己是本群成员。
+ * 这里只是**给不给按钮** —— 拦截在命令层，界面判错也不会变成权限漏洞。
+ */
+function canClaim(x: TodoItem): boolean {
+  return (
+    x.category === "requirement" &&
+    !x.archived &&
+    !!myId.value &&
+    !x.assignees.includes(myId.value) &&
+    groupMembers.value.includes(myId.value)
+  );
+}
 
 // ---------------- 任务详情（点行打开） ----------------
 /** 只存 id，详情项从折叠结果**实时查**：改完状态立刻反映，任务被删则自动关闭。 */
@@ -178,6 +353,38 @@ function closeDetail() {
   detailId.value = null;
 }
 
+/**
+ * 落到某条任务的详情。**两种触发共用这一个动作**（用户 #23 与 #39）：
+ * 应用内弹窗由下面的 watch 触发（ChatWindow 传 prop），独立窗口由根组件调
+ * （挂载时取一次性暂存、或收到定向事件后再取）。
+ *
+ * 查不到就**什么都不做**（任务被删 / 折叠结果里没有它）—— 看板照常在后面，
+ * 不弹"找不到"也不空指针。归档态要先切到「已归档」那一档，否则详情背后的列表
+ * 根本不是它所在的那一屏。
+ */
+function focusTodo(id: string) {
+  const x = todos.value.find((t) => t.todoId === id);
+  if (!x) return;
+  filter.value = isEffectivelyArchived(x) ? "archived" : "all";
+  openDetail(x);
+}
+defineExpose({ focusTodo });
+
+/**
+ * 应用内弹窗那条路：带着 `focusTodoId` 打开 ⇒ 直接落到那条任务（用户 #23）。
+ *
+ * 判据是 `[open, focusTodoId]` **一起看**：只看后者会漏掉"点同一条卡片第二次"
+ * （面板关掉再开，`focusTodoId` 没变，watch 不触发 ⇒ 用户以为按钮坏了）。
+ */
+watch(
+  [() => props.open, () => props.focusTodoId],
+  ([open, id]) => {
+    if (!open || !id) return;
+    focusTodo(id);
+  },
+  { immediate: true },
+);
+
 // ---------------- 新建 / 编辑（内联表单，不开第二层弹窗） ----------------
 const draft = ref<{
   todoId: string | null;
@@ -193,6 +400,34 @@ const draft = ref<{
   imagePaths: Record<string, string>;
 } | null>(null);
 const saving = ref(false);
+
+/**
+ * 表单里的大图预览（点缩略图打开）。渲染用的是**全局那一份**实例（#40），
+ * 这里只留"这份相册属于草稿"的标记：草稿的相册与已保存任务的相册来源不同，
+ * 而关表单时只能收掉**自己给出去**的那一份预览。
+ */
+const draftGallery = computed(() =>
+  (draft.value?.images ?? []).map((im) => ({ cid: im.sha256, name: im.name })),
+);
+const draftSource = computed(() => (draft.value ? `draft:${draft.value.todoId ?? "new"}` : null));
+/** 预览正开着、且就是这份草稿给的 ⇒ 收掉它而不是收表单（见 `closeDraft`）。 */
+const draftPreviewOpen = computed(
+  () => preview.open && draftSource.value !== null && preview.source === draftSource.value,
+);
+function openDraftImage(i: number) {
+  preview.openGallery(draftGallery.value, i, draftSource.value);
+}
+
+/** 关表单：预览开着时**只收预览、不关表单** —— HeadlessUI 的 Dialog 把「面板之外的任何点击」
+ *  都当成关闭信号，而预览是 Teleport 到 body 的、就在面板外面；不挡一下的话，在预览里点
+ *  「保存」，底下的表单会连编辑内容一起关掉（与 `TodoDetailDialog.onDialogClose` 同款处理）。 */
+function closeDraft() {
+  if (draftPreviewOpen.value) {
+    preview.close();
+    return;
+  }
+  draft.value = null;
+}
 
 /** 当前草稿能否改标题：新建随便改；编辑时只有创建者/群主能改（被指派人只能改指派人）。 */
 const draftCanEditTitle = computed(() => {
@@ -236,7 +471,13 @@ function toggleAssignee(id: string) {
   d.assignees = d.assignees.includes(id) ? d.assignees.filter((a) => a !== id) : [...d.assignees, id];
 }
 
-/** 选图并写入「元数据 + 待投递路径」：元数据随定义跨端同步，字节另走群文件管线。 */
+/**
+ * 选图并写入「元数据 + 待投递路径」：元数据随定义跨端同步，字节另走群文件管线。
+ *
+ * 桌面与 Android **都**走这条路：点「添加图片」直接弹选图器（用户 2026-09-29 改口：
+ * 「点击添加图片还是以前的上传图片逻辑，下面的聚焦框按现有逻辑」）。Android 尤其必须如此 ——
+ * WebView 的 paste 事件拿不到位图，选图是它唯一的加图入口。见 `onAddImageButton`。
+ */
 async function addImage() {
   const d = draft.value;
   if (!d) return;
@@ -248,7 +489,32 @@ async function addImage() {
   await addImageFromPaths(paths);
 }
 
-/** 公共入口：把若干本地图片路径加进草稿（文件选择器 / 粘贴 / 拖放共用）。 */
+/**
+ * 桌面端「点击 → 进入可粘贴/可拖入状态」的唯一动作（用户 2026-09-29 明确要的交互）。
+ * 粘贴挂在 `document` 上、拖入挂在 webview 事件上，所以这里**不需要**真的抢到焦点才生效 ——
+ * 点亮的是"该按哪一下键 / 该往哪儿放"这个提示，同时把焦点挪进图片区（`tabindex="-1"`）。
+ */
+function armImageZone() {
+  if (isAndroid) {
+    void addImage();
+    return;
+  }
+  pasteArmed.value = true;
+  dropZoneRef.value?.focus({ preventScroll: true });
+}
+
+/**
+ * 「添加图片」那一下：**弹选图器**（用户 2026-09-29：「点击添加图片还是以前的上传图片逻辑」），
+ * 同时把下面的图片区点亮 —— 点亮才谈得上"也可以 ⌘V 粘贴 / 拖进来"。
+ * 下面那个框自己单独点**仍然只聚焦、不弹选择器**（`armImageZone`，同一句需求里他确认过）。
+ */
+function onAddImageButton() {
+  pasteArmed.value = true;
+  dropZoneRef.value?.focus({ preventScroll: true });
+  void addImage();
+}
+
+/** 公共入口：把若干本地图片路径加进草稿（**Android 选图 / 桌面粘贴 / 桌面拖入**三条路汇这里）。 */
 async function addImageFromPaths(paths: string[]) {
   const d = draft.value;
   if (!d) return;
@@ -257,6 +523,12 @@ async function addImageFromPaths(paths: string[]) {
       // Android 给 content://，先落成本地路径；桌面原样返回。
       const local = await api.importPickedFile(p);
       const meta = await api.todoImageMeta(local);
+      // 单张上限的**唯一前端判点**：三条入口都汇到这里，所以不必在各入口各写一遍
+      // （权威闸在后端 `todo_image_size_guard`，同一个常量由 `imageBytes.test.ts` 比对）。
+      if (meta.size > MAX_TODO_IMAGE_BYTES) {
+        app.toast(t("todo.imageTooLarge", { mb: TODO_IMAGE_LIMIT_MB }), "error");
+        continue;
+      }
       d.images.push(meta);
       d.imagePaths[meta.sha256] = local;
     } catch (e) {
@@ -265,25 +537,28 @@ async function addImageFromPaths(paths: string[]) {
   }
 }
 
-// ---------------- 图片的粘贴与拖放（用户 2026-09-17） ----------------
+// ---------------- 图片的粘贴与拖入（用户 2026-09-17；2026-09-29 把"点击"改成只聚焦） ----------------
 // 只在草稿弹窗打开期间挂监听；关闭即全部退订并复位标志。
 
 const dropZoneRef = ref<HTMLElement | null>(null);
+/** 图片区是否已被点击「点亮」（等待粘贴）。纯视觉状态，不参与粘贴能否发生的判断。 */
+const pasteArmed = ref(false);
+/** 拖拽正悬停在图片区上（决定高亮与那句提示）。 */
 const imageDragOver = ref(false);
 let unlistenImageDrop: (() => void) | null = null;
 
-/** 图片区提示：桌面平台支持点击 / 粘贴 / 拖入；**Android 只有点击**（粘贴与拖放都不订阅，见下方 watch）。
+/** 图片区提示：桌面端**粘贴 + 拖入**（点击不再弹选择器，只把这一块点亮）；**Android 只有点击**
+ *  （粘贴与拖放都不订阅，见下方 watch）。
  *  ⚠️ 按**平台**（`isAndroid`）判，不是按 `app.isMobile` —— 后者是 `max-width:767px` 的视口宽度，
- *  窄桌面窗口也会命中，会误把桌面当移动端、把粘贴/拖放一起关掉（用户 2026-09-20「桌面端也不能粘贴文件」）。 */
-const imageHintText = computed(() =>
-  imageDragOver.value
-    ? t("todo.imageDropHere")
-    : isAndroid
-      ? t("todo.imageHintMobile")
-      : t("todo.imageHint"),
-);
+ *  窄桌面窗口也会命中，会误把桌面当移动端、把粘贴/拖入一起关掉（用户 2026-09-20「桌面端也不能粘贴文件」）。 */
+const imageHintText = computed(() => {
+  if (isAndroid) return t("todo.imageHintMobile");
+  if (imageDragOver.value) return t("todo.imageDropHere");
+  const mb = TODO_IMAGE_LIMIT_MB;
+  return pasteArmed.value ? t("todo.imageArmed", { mb }) : t("todo.imageHint", { mb });
+});
 
-/** 拖拽位置是否落在投放区上（Tauri 给的是物理像素，除以 DPR 才能跟 DOM 坐标比）。 */
+/** 拖拽位置是否落在图片区上（Tauri 给的是物理像素，除以 DPR 才能跟 DOM 坐标比）。 */
 function hitDropZone(pos: { x: number; y: number }): boolean {
   const el = dropZoneRef.value;
   if (!el) return false;
@@ -329,6 +604,8 @@ function onDocPaste(e: ClipboardEvent) {
     const bitmap = image;
     void (async () => {
       try {
+        // 剪贴板字节**原样交给后端落盘**（不画到 canvas、不重编码）—— 用户 2026-09-29 要求
+        // 「图片应该是原始的」，这条链上唯一的有损风险就是"顺手在这里压一下"。
         const buf = await bitmap.arrayBuffer();
         const path = await api.saveTodoImageBytes(new Uint8Array(buf));
         await addImageFromPaths([path]);
@@ -344,7 +621,7 @@ function onDocPaste(e: ClipboardEvent) {
     e.preventDefault();
     void (async () => {
       try {
-        const paths = await invoke<string[]>("read_clipboard_file_paths");
+        const paths = await api.readClipboardFilePaths();
         const imgs = paths.filter((p) => IMAGE_PATH_RE.test(p));
         if (imgs.length) await addImageFromPaths(imgs);
       } catch {
@@ -354,6 +631,13 @@ function onDocPaste(e: ClipboardEvent) {
   }
 }
 
+/**
+ * 拖入：**加图 + 抑制聊天那侧的接收**（用户 2026-09-29 汇总里明确"支持拖拽图片进入"）。
+ *
+ * ⚠️ 那个 `app.boardDropActive` 不是可有可无的装饰：草稿弹窗叠在聊天窗口上，`ChatWindow` 监的是
+ * **同一路** webview 拖放事件。不置起它，落在图片区的那一下会**顺路把文件当聊天附件发出去**
+ * （不可撤回），而不是"只加进任务"。
+ */
 async function subscribeImageDrop() {
   if (unlistenImageDrop) return;
   try {
@@ -363,7 +647,6 @@ async function subscribeImageDrop() {
       if (p.type === "enter" || p.type === "over") {
         const hit = hitDropZone(p.position);
         imageDragOver.value = hit;
-        // 让 ChatWindow 的聊天拖放让位（否则同一份文件会被当成聊天附件发出去）
         app.boardDropActive = hit;
         return;
       }
@@ -388,10 +671,13 @@ function unsubscribeImageDrop() {
   imageDragOver.value = false;
 }
 
-// 草稿弹窗开/关：接上 / 退订 粘贴与拖放（**Android 两者都不订阅**；按平台判，不按视口宽度）。
+// 草稿弹窗开/关：接上 / 退订粘贴与拖入（**Android 两者都不订阅**；按平台判，不按视口宽度）。
 watch(
   () => !!draft.value,
   (open) => {
+    // 每次开关表单都回到"没点亮"的那一句提示（上一次草稿的状态不该留下）
+    pasteArmed.value = false;
+    imageDragOver.value = false;
     if (isAndroid) return;
     if (open) {
       document.addEventListener("paste", onDocPaste);
@@ -477,6 +763,44 @@ async function setStatus(x: TodoItem, status: string) {
   }
 }
 /** 标记完成：只改状态（后端在**首次**完成时记权威 `doneAt`）。完成**不再**自动归档。 */
+/** 只动优先级这一格：其余字段由 store 从这条任务当前那份带回，所以改档不会顺手重写描述/指派人/状态。 */
+async function setPriority(item: TodoItem, p: TodoPriority) {
+  const gid = props.groupId;
+  if (!gid) return; // 群 id 还没到位时这条压根不该发（与 setStatus 同一口径）
+  try {
+    await chat.updateTodo(gid, item, { priority: p });
+    app.toast(t("todo.updateDone"), "success");
+  } catch (e) {
+    app.toast(String(e), "error");
+  }
+}
+/** 只动类型这一格（与 setPriority 同款：其余字段由 store 从这条任务当前那份带回）。 */
+async function setCategory(item: TodoItem, c: TodoCategory) {
+  const gid = props.groupId;
+  if (!gid) return;
+  try {
+    await chat.updateTodo(gid, item, { category: c });
+    app.toast(t("todo.updateDone"), "success");
+  } catch (e) {
+    app.toast(String(e), "error");
+  }
+}
+/**
+ * 认领 = 把「原名单 + 我自己」发回去这一步，**没有**新命令、新字段、新同步帧：
+ * 后端 `assignees` 就是改状态的判权依据，加进去之后那些权限自动跟着来。
+ * 顺序也照后端那条窄档的要求写死（追加在末尾），否则会被判成"改指派人"而落回创建者那一档。
+ */
+async function claim(item: TodoItem) {
+  const gid = props.groupId;
+  if (!gid || !myId.value) return;
+  try {
+    await chat.updateTodo(gid, item, { assignees: [...item.assignees, myId.value] });
+    app.toast(t("todo.claimed", { name: memberProfile(myId.value).name }), "success");
+  } catch (e) {
+    app.toast(String(e), "error");
+  }
+}
+
 async function completeTodo(x: TodoItem) {
   await setStatus(x, "done");
 }
@@ -518,11 +842,15 @@ watch(
   () => props.open,
   (v) => {
     if (!v) {
+      // 预览是全局那一份（#40）：面板整体关掉时按**来源**收掉自己给出去的那一份，
+      // 且必须在清 `draft`/`detailId` **之前**取到 key（清完就认不出来源了）。
+      const keys = [draftSource.value, detailId.value ? `task:${detailId.value}` : null];
       draft.value = null;
       pendingDelete.value = null;
       detailId.value = null;
-      rowMenuId.value = null;
-      filter.value = "all";
+      closeRowMenu();
+      for (const k of keys) if (k) preview.closeIfFrom(k);
+      filter.value = "mine";
     }
   },
 );
@@ -569,8 +897,19 @@ watch(
 
     <!-- 内容区：弹窗形态由 BaseModal 自己滚；窗口形态撑满剩余空间 -->
     <div class="overflow-y-auto pr-0.5 pt-2" :class="standalone ? 'min-h-0 flex-1' : ''">
+      <!-- 首屏还在路上：**必须**是"正在加载"而不是空态。窗口现在先挂载、数据后台取
+           （用户 2026-09-24 报"弹窗弹出很慢"），没有这一档的话首帧会理直气壮地显示
+           「暂无任务」—— 那是假空态，比慢更糟。只在窗口形态判：主窗口里那份看板的数据
+           走的是已加载的会话消息，没有"首次拉取"这件事。 -->
+      <div
+        v-if="loadingFirstScreen"
+        class="flex items-center justify-center gap-2 py-8 text-sm text-[var(--gosslan-text-2)]"
+      >
+        <Loader2 class="h-4 w-4 animate-spin" />
+        {{ t("todo.loading") }}
+      </div>
       <!-- 空态（按当前筛选分流） -->
-      <div v-if="shownCount === 0 && !draft" class="py-8 text-center text-sm text-[var(--gosslan-text-2)]">
+      <div v-else-if="shownCount === 0 && !draft" class="py-8 text-center text-sm text-[var(--gosslan-text-2)]">
         {{ filter === "archived" ? t("todo.archivedEmpty") : filter === "all" ? t("todo.empty") : t("todo.filterEmpty") }}
       </div>
 
@@ -589,33 +928,76 @@ watch(
         <div
           v-for="x in archivedTodos"
           :key="x.todoId"
-          class="flex items-center gap-2.5 border-b border-[var(--gosslan-divider)] px-3 py-2.5 transition last:border-b-0 hover:bg-[var(--gosslan-hover)]"
+          class="relative flex items-center gap-2.5 border-b border-[var(--gosslan-divider)] px-3 py-2.5 transition last:border-b-0 hover:bg-[var(--gosslan-hover)]"
         >
-          <span class="w-5 shrink-0 text-center text-[11px] tabular-nums text-[var(--gosslan-text-2)]">
-            {{ ordinals.get(x.todoId) }}
-          </span>
+          <!-- 状态色条（用户 2026-09-24 #37）：与活动列表同一套语言，色值走 `TODO_STATUS_BAR` 唯一映射 -->
+          <span
+            class="absolute inset-y-0 left-0 w-0.5"
+            :class="TODO_STATUS_BAR[x.status]"
+            aria-hidden="true"
+          ></span>
+          <span
+            class="w-9 shrink-0 font-mono text-[11px] tabular-nums text-[var(--gosslan-text-2)]"
+            :title="codeTip(x)"
+          >{{ codeLabel(x) }}</span>
           <button type="button" class="min-w-0 flex-1 text-left" @click="openDetail(x)">
-            <div class="truncate text-[13px] font-medium text-[var(--gosslan-text-2)] line-through" :title="x.title">
+            <div class="truncate text-[13px] font-medium text-[var(--gosslan-text-2)]" :title="x.title">
               {{ x.title }}
             </div>
-            <div class="mt-0.5 flex flex-wrap items-center gap-x-1 text-[11px] text-[var(--gosslan-text-2)]">
-              <span v-if="x.creator">{{ t("todo.creator", { name: memberProfile(x.creator).name }) }}</span>
+            <!-- 已归档那一档用**同一套**层级（名字加字重、标签退次级），只是标题整行本来就压暗：
+                 一条规则两处写，不留"活动行改了、归档行没改"这种第二份真相。 -->
+            <div class="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-[11px] text-[var(--gosslan-text-2)]">
+              <span v-if="x.creator">
+                {{ t("todo.rowCreator") }}
+                <span class="font-medium text-[var(--gosslan-text)]">{{ memberProfile(x.creator).name }}</span>
+              </span>
               <span v-if="assigneeNames(x)" :title="assigneeNames(x)">
-                <span class="mx-1">·</span>{{ t("todo.assigneesInline", { names: assigneeNames(x) }) }}
+                {{ t("todo.rowAssignee") }}
+                <span class="font-medium text-[var(--gosslan-text)]">{{ assigneeNames(x) }}</span>
               </span>
             </div>
           </button>
+          <!-- 类型角标：**三档一律画**（用户 2026-09-30 实测反馈「暗夜模式下有 bug，
+               而且在列表上没有明显标识、不好区分」）。
+               以前只有「需求 / 缺陷」画、「任务」刻意不画，理由是"每行都挂一个灰标签会把区分淹掉"——
+               实际结果是**反向的**：没有标签那一档才是最难认的，扫一眼只能靠猜。
+               「任务」用中性档（hover 底 + text-2），彩色只留给需求/缺陷 ⇒ 噪声没有涨上去。 -->
+          <span
+            class="shrink-0 inline-flex h-5 items-center justify-center rounded-full px-2 text-[11px] leading-none"
+            :class="TODO_CATEGORY_PILL[x.category]"
+            :title="t(TODO_CATEGORY_LABEL_KEY[x.category])"
+          >
+            {{ t(TODO_CATEGORY_LABEL_KEY[x.category]) }}
+          </span>
           <span class="shrink-0 inline-flex h-5 items-center justify-center rounded-full px-2 text-[11px] font-medium leading-none" :class="TODO_STATUS_PILL[x.status]">
             {{ statusText(x.status) }}
           </span>
+          <!-- 快捷「还原」：以前只在详情里（用户 2026-09-24：归档要有还原按钮，
+               且和归档一样对全体群成员开放）。点一下 = 把这条从归档里拎回「待办」。 -->
+          <button
+            v-if="canReopen(x)"
+            type="button"
+            class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]"
+            :title="t('todo.restore')"
+            :aria-label="t('todo.restore')"
+            @click.stop="restoreTodo(x)"
+          >
+            <RotateCcw class="h-4 w-4" />
+          </button>
         </div>
       </template>
 
       <!-- 活动任务：按状态分组（空组不占位） -->
       <template v-else>
         <div v-for="g in grouped" :key="g.status">
-          <!-- 分组小标题：带底色的条（分组之间一眼分得开，也给白底卡片一个"分节"观感） -->
-          <div class="flex items-center gap-1.5 bg-[var(--gosslan-bg)] px-3 py-1.5">
+          <!-- 分组小标题：带底色的条（分组之间一眼分得开，也给白底卡片一个"分节"观感）。
+               左缘与下面每一行画同一道状态色条 ⇒ 整节从上到下是同一个颜色，扫一眼就分组。 -->
+          <div class="relative flex items-center gap-1.5 bg-[var(--gosslan-bg)] px-3 py-1.5">
+            <span
+              class="absolute inset-y-0 left-0 w-0.5"
+              :class="TODO_STATUS_BAR[g.status]"
+              aria-hidden="true"
+            ></span>
             <component
               :is="STATUS_ICON[g.status]"
               class="h-4 w-4 shrink-0"
@@ -626,27 +1008,72 @@ watch(
             <span class="text-[11px] text-[var(--gosslan-text-2)]">{{ g.items.length }}</span>
           </div>
 
-          <!-- 任务行：序号 + 标题/元信息（点开详情）+ 状态 + 快捷完成 -->
+          <!-- 任务行：固定编号 + 标题/元信息（点开详情）+ 状态 + 快捷完成 -->
           <div
             v-for="x in g.items"
             :key="x.todoId"
-            class="flex items-center gap-2.5 border-b border-[var(--gosslan-divider)] px-3 py-2.5 transition last:border-b-0 hover:bg-[var(--gosslan-hover)]"
+            class="relative flex items-center gap-2.5 border-b border-[var(--gosslan-divider)] px-3 py-2.5 transition last:border-b-0 hover:bg-[var(--gosslan-hover)]"
           >
-            <span class="w-5 shrink-0 text-center text-[11px] tabular-nums text-[var(--gosslan-text-2)]">
-              {{ ordinals.get(x.todoId) }}
+            <!-- 状态色条：整行左缘一道 2px（判据与颜色都在 `TODO_STATUS_BAR` 一处，
+                 与分组头、状态胶囊同族）。底色会盖掉 hover/选中态、四色同屏也花，所以只做一条。 -->
+            <span
+              class="absolute inset-y-0 left-0 w-0.5"
+              :class="TODO_STATUS_BAR[x.status]"
+              aria-hidden="true"
+            ></span>
+            <!-- 行首两枚：**优先级 + 类型**（用户 2026-10-09 要的那排小图标）。
+                 两枚各占一个 `<span>` 是为了让原生 tooltip 分别落在自己那枚上 ——
+                 `<svg>` 上的 `title` 属性在部分内核里不出提示，而合并成一句又要新造词条。
+                 图标本身 `aria-hidden`：它说的这件事文字层已经说了（悬停有词、详情里两格都在），
+                 读屏再念一遍"向上箭头"只是噪声。
+                 ⚠️ 类型会在这里出现两次（图标 + 编号首字母 T/R/B）：字母是**口头引用的编号**，
+                 INV-P29 要求它在，不能为了不留重复而拿掉；图标管扫一眼、字母管对账。 -->
+            <span class="flex w-8 shrink-0 items-center gap-1">
+              <span :title="t(TODO_PRIORITY_LABEL_KEY[x.priority])">
+                <component
+                  :is="PRIORITY_ICON[x.priority]"
+                  class="h-3.5 w-3.5 shrink-0"
+                  :class="TODO_PRIORITY_ICON_CLASS[x.priority]"
+                  :stroke-width="2.2"
+                  aria-hidden="true"
+                />
+              </span>
+              <span :title="t(TODO_CATEGORY_LABEL_KEY[x.category])">
+                <component
+                  :is="CATEGORY_ICON[x.category]"
+                  class="h-3.5 w-3.5 shrink-0"
+                  :class="TODO_CATEGORY_ICON_CLASS[x.category]"
+                  :stroke-width="2.2"
+                  aria-hidden="true"
+                />
+              </span>
             </span>
+            <span
+              class="w-9 shrink-0 font-mono text-[11px] tabular-nums text-[var(--gosslan-text-2)]"
+              :title="codeTip(x)"
+            >{{ codeLabel(x) }}</span>
             <button type="button" class="min-w-0 flex-1 text-left" @click="openDetail(x)">
+              <!-- 完成态**不再划删除线**（用户 2026-09-24 #37：「完成的不要加横线，像删除一样」）：
+                   完成是这条任务的结论，划掉会让它读成"作废"。状态由左缘色条 + 右侧胶囊 +
+                   分组头三处一起说清楚，不靠划线。 -->
               <div
-                class="truncate text-[13px] font-medium"
-                :class="x.status === 'done' ? 'text-[var(--gosslan-text-2)] line-through' : 'text-[var(--gosslan-text)]'"
+                class="truncate text-[13px] font-medium text-[var(--gosslan-text)]"
                 :title="x.title"
               >
                 {{ x.title }}
               </div>
-              <div class="mt-0.5 flex flex-wrap items-center gap-x-1 text-[11px] text-[var(--gosslan-text-2)]">
-                <span v-if="x.creator">{{ t("todo.creator", { name: memberProfile(x.creator).name }) }}</span>
+              <!-- 一行里的层级（用户 2026-09-29 需求汇总七：「重点信息不清晰，要突出发起人和指派人，
+                   其他文字弱化」）：**名字**用主文本色 + 中等字重，**标签**留在次级色。
+                   行内不写整句（「由 X 发起」那种）—— 11px 下整句读不出主次，标签+名字两段才分得开。
+                   详情弹窗里仍用完整句子（那里字号够，读得出）⇒ 同一件事两处写法不同是刻意的。 -->
+              <div class="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-[11px] text-[var(--gosslan-text-2)]">
+                <span v-if="x.creator">
+                  {{ t("todo.rowCreator") }}
+                  <span class="font-medium text-[var(--gosslan-text)]">{{ memberProfile(x.creator).name }}</span>
+                </span>
                 <span v-if="assigneeNames(x)" :title="assigneeNames(x)">
-                  <span class="mx-1">·</span>{{ t("todo.assigneesInline", { names: assigneeNames(x) }) }}
+                  {{ t("todo.rowAssignee") }}
+                  <span class="font-medium text-[var(--gosslan-text)]">{{ assigneeNames(x) }}</span>
                 </span>
               </div>
             </button>
@@ -661,7 +1088,7 @@ watch(
                 :title="t('todo.statusLabel')"
                 :aria-label="t('todo.statusLabel')"
                 :aria-expanded="rowMenuId === x.todoId"
-                @click.stop="toggleRowMenu(x.todoId)"
+                @click.stop="toggleRowMenu(x, $event)"
               >
                 {{ statusText(x.status) }}
                 <ChevronDown class="h-3 w-3" />
@@ -673,30 +1100,8 @@ watch(
               >
                 {{ statusText(x.status) }}
               </span>
-
-              <template v-if="canChangeStatus(x) && rowMenuId === x.todoId">
-                <button
-                  type="button"
-                  class="fixed inset-0 z-40 cursor-default"
-                  :aria-label="t('todo.closeMenu')"
-                  @click.stop="closeRowMenu"
-                />
-                <div class="gosslan-menu frost absolute right-0 top-full z-50 mt-1" role="menu" aria-orientation="vertical">
-                  <button
-                    v-for="s in TODO_STATUSES"
-                    :key="s"
-                    type="button"
-                    role="menuitem"
-                    class="gosslan-menu-item"
-                    :class="s === x.status ? 'font-medium text-[var(--gosslan-accent-ink)]' : ''"
-                    :disabled="s === x.status"
-                    :aria-current="s === x.status ? 'true' : undefined"
-                    @click.stop="setStatus(x, s); closeRowMenu()"
-                  >
-                    {{ statusText(s) }}
-                  </button>
-                </div>
-              </template>
+              <!-- 菜单不在这里：它 Teleport 到 body（被卡片 overflow-hidden 与滚动容器
+                   两层裁过，见脚本里 `openRowMenu` 上方的注释）-->
             </div>
             <!-- 快捷「完成」：待办清单最高频的动作，留在行内（飞书/钉钉同做法）。
                  完成后任务仍留在列表（只换分组），不会"点错就丢"。 -->
@@ -709,6 +1114,19 @@ watch(
               @click.stop="completeTodo(x)"
             >
               <Check class="h-4 w-4" />
+            </button>
+            <!-- 快捷「归档」：以前只在任务详情里，列表上看到一条干完的想收掉
+                 得先点开详情（用户 2026-09-24：归档该在列表的操作里）。
+                 与「完成」按状态互斥（只有完成态能归档），所以两枚按钮不会同屏抢位。 -->
+            <button
+              v-if="canArchive(x)"
+              type="button"
+              class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]"
+              :title="t('todo.archive')"
+              :aria-label="t('todo.archive')"
+              @click.stop="archiveTodo(x)"
+            >
+              <Archive class="h-4 w-4" />
             </button>
           </div>
         </div>
@@ -723,11 +1141,19 @@ watch(
     :item="detailItem"
     :archived="detailArchived"
     :can-change-status="detailItem ? canChangeStatus(detailItem) : false"
+    :can-archive="detailItem ? canArchive(detailItem) : false"
+    :can-restore="detailItem ? canReopen(detailItem) : false"
     :can-edit-structure="detailItem ? canEditStructure(detailItem) : false"
     :can-edit-assignees="detailItem ? canEditAssigneesOf(detailItem) : false"
+    :can-claim="detailItem ? canClaim(detailItem) : false"
     :name-of="(id: string) => memberProfile(id).name"
+    :mention-names="mentionNames"
+    :self-mention="selfMention"
     @close="closeDetail"
     @status="(s: TodoStatus) => detailItem && setStatus(detailItem, s)"
+    @priority="(p: TodoPriority) => detailItem && setPriority(detailItem, p)"
+    @category="(c: TodoCategory) => detailItem && setCategory(detailItem, c)"
+    @claim="detailItem && claim(detailItem)"
     @complete="detailItem && completeTodo(detailItem)"
     @archive="detailItem && archiveTodo(detailItem)"
     @restore="detailItem && restoreTodo(detailItem)"
@@ -742,7 +1168,7 @@ watch(
     :open="!!draft"
     :title="draft?.todoId ? t('todo.edit') : t('todo.create')"
     width="max-w-lg"
-    @close="draft = null"
+    @close="closeDraft()"
   >
     <div v-if="draft" class="space-y-4">
       <!-- 标题 -->
@@ -793,16 +1219,16 @@ watch(
         ></textarea>
       </div>
 
-      <!-- 图片：桌面端点击 / 粘贴 / 拖入（用户 2026-09-17），虚线框是投放区；
-           移动端**只支持点击**，所以不画虚线（虚线在移动端没有可拖的东西，反而误导）。
-           有图时缩略图排在区内；拖入命中时框体高亮。 -->
+      <!-- 图片（用户 2026-09-29 定的交互）：桌面端**点击只负责"点亮/聚焦"，然后 ⌘V/Ctrl+V 粘贴，
+           或把图片拖进来**——点击不再弹文件选择器；Android 没有剪贴板图片 ⇒ 点击仍是选图。
+           虚线框 = 可拖入的目标（拖拽悬停时高亮）；点亮态只换描边色，不加尺寸（避免聚焦那一下文字跳位）。 -->
       <div>
         <div class="mb-1.5 flex items-center justify-between">
           <span class="text-xs text-[var(--gosslan-text-2)]">{{ t("todo.imagesLabel") }}</span>
           <button
             type="button"
             class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-sm)] px-1.5 py-0.5 text-[11px] text-[var(--gosslan-accent-ink)] transition hover:bg-[var(--gosslan-hover)]"
-            @click="addImage"
+            @click="onAddImageButton"
           >
             <ImagePlus class="h-3.5 w-3.5" />
             {{ t("todo.addImage") }}
@@ -813,24 +1239,25 @@ watch(
              会被拦掉，所以这里不写 @drop 之类的 HTML5 拖放属性。 -->
         <div
           ref="dropZoneRef"
-          class="rounded-[var(--gosslan-radius-md)] border transition"
+          tabindex="-1"
+          class="rounded-[var(--gosslan-radius-md)] border transition focus:outline-none"
           :class="isAndroid
             ? 'border-[var(--gosslan-border)]'
-            : imageDragOver
+            : imageDragOver || pasteArmed
               ? 'border-dashed border-[var(--gosslan-primary)] bg-[var(--gosslan-hover)]'
               : 'border-dashed border-[var(--gosslan-border)]'"
         >
           <button
             v-if="draft.images.length === 0"
             type="button"
-            class="w-full cursor-pointer px-3 py-6 text-center text-[11px] leading-relaxed text-[var(--gosslan-text-2)] transition hover:text-[var(--gosslan-text)]"
-            @click="addImage"
+            class="w-full cursor-pointer rounded-[var(--gosslan-radius-md)] px-3 py-6 text-center text-[11px] leading-relaxed text-[var(--gosslan-text-2)] transition hover:text-[var(--gosslan-text)]"
+            @click="armImageZone"
           >
             {{ imageHintText }}
           </button>
           <div v-else class="flex flex-wrap gap-1.5 p-2">
             <div v-for="(img, i) in draft.images" :key="img.sha256" class="group relative">
-              <TodoImageThumb :image="img" />
+              <TodoImageThumb :image="img" clickable @open="openDraftImage(i)" />
               <button
                 type="button"
                 class="tap-safe absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-[var(--gosslan-danger)] text-white opacity-90 transition hover:opacity-100"
@@ -869,12 +1296,12 @@ watch(
 
       <!-- 操作 -->
       <div class="flex items-center justify-end gap-2 border-t border-[var(--gosslan-divider)] pt-3">
-        <button
-          class="tap-safe rounded-[var(--gosslan-radius-md)] px-3 py-1.5 text-[13px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-          @click="draft = null"
-        >
-          {{ t("common.cancel") }}
-        </button>
+          <button
+            class="tap-safe rounded-[var(--gosslan-radius-md)] px-3 py-1.5 text-[13px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+            @click="closeDraft()"
+          >
+            {{ t("common.cancel") }}
+          </button>
         <button
           class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-3 py-1.5 text-[13px] text-white transition hover:opacity-90 disabled:opacity-50"
           :disabled="saving"
@@ -910,4 +1337,48 @@ watch(
       </button>
     </div>
   </BaseModal>
+
+  <!-- 大图预览：表单里的缩略图也可点开（与任务详情一致）。
+       Teleport 到 body、z-[80] 压在上面那些弹窗之上；放在模板最末 ⇒ 返回栈里它是最上面一层。 -->
+
+  <!-- 行内状态菜单：**Teleport 到 body + fixed 坐标**。
+       挂在行里时它被两层东西裁掉 —— 列表卡片的 `overflow-hidden`（画圆角用）与外面那层
+       `overflow-y-auto`（用户 2026-09-24：「换状态下拉被遮挡」）。z-[70] 与「已读成员」
+       弹层同档：压在弹窗之上、大图预览（z-[80]）之下。 -->
+  <Teleport to="body">
+    <button
+      v-if="rowMenuId && rowMenuPos"
+      type="button"
+      class="fixed inset-0 z-[65] cursor-default"
+      :aria-label="t('todo.closeMenu')"
+      @click.stop="closeRowMenu"
+    />
+    <div
+      v-if="rowMenuTodo && rowMenuPos"
+      ref="rowMenuEl"
+      class="gosslan-menu frost fixed z-[70]"
+      role="menu"
+      aria-orientation="vertical"
+      :style="{
+        left: `${rowMenuPos.left}px`,
+        top: rowMenuPos.top !== null ? `${rowMenuPos.top}px` : undefined,
+        bottom: rowMenuPos.bottom !== null ? `${rowMenuPos.bottom}px` : undefined,
+        width: `${rowMenuPos.width}px`,
+      }"
+    >
+      <button
+        v-for="s in TODO_STATUSES"
+        :key="s"
+        type="button"
+        role="menuitem"
+        class="gosslan-menu-item"
+        :class="s === rowMenuTodo.status ? 'font-medium text-[var(--gosslan-accent-ink)]' : ''"
+        :disabled="s === rowMenuTodo.status"
+        :aria-current="s === rowMenuTodo.status ? 'true' : undefined"
+        @click.stop="setStatus(rowMenuTodo, s); closeRowMenu()"
+      >
+        {{ statusText(s) }}
+      </button>
+    </div>
+  </Teleport>
 </template>

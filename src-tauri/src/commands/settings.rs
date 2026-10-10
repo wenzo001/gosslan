@@ -81,7 +81,7 @@ pub fn settings_patch_values(db: &rusqlite::Connection, changed: &[&str]) -> ser
             "darkMode" => {
                 map.insert(
                     key.to_string(),
-                    json!(db::get_setting(db, "dark_mode").map(|v| v == "1")),
+                    json!(db::get_config_bool_opt(db, "dark_mode")),
                 );
             }
             "appearanceMode" => {
@@ -94,17 +94,13 @@ pub fn settings_patch_values(db: &rusqlite::Connection, changed: &[&str]) -> ser
             "notifyEnabled" => {
                 map.insert(
                     key.to_string(),
-                    json!(db::get_setting(db, "notify_enabled")
-                        .map(|v| v != "0")
-                        .unwrap_or(true)),
+                    json!(db::get_config_bool(db, "notify_enabled", true)),
                 );
             }
             "notifyShowContent" => {
                 map.insert(
                     key.to_string(),
-                    json!(db::get_setting(db, "notify_show_content")
-                        .map(|v| v != "0")
-                        .unwrap_or(true)),
+                    json!(db::get_config_bool(db, "notify_show_content", true)),
                 );
             }
             "language" => {
@@ -233,15 +229,11 @@ pub fn get_settings(state: State<'_, Arc<AppState>>) -> Settings {
     Settings {
         theme_color: db::get_setting(&dbc, "theme_color"),
         font_family: db::get_setting(&dbc, "font_family"),
-        dark_mode: db::get_setting(&dbc, "dark_mode").map(|v| v == "1"),
+        dark_mode: db::get_config_bool_opt(&dbc, "dark_mode"),
         appearance_mode: db::get_setting(&dbc, "appearance_mode"),
         // 通知默认开启、默认显示正文：缺省时按 `Some(true)`，旧记录与未设置都能有合理行为。
-        notify_enabled: db::get_setting(&dbc, "notify_enabled")
-            .map(|v| v != "0")
-            .or(Some(true)),
-        notify_show_content: db::get_setting(&dbc, "notify_show_content")
-            .map(|v| v != "0")
-            .or(Some(true)),
+        notify_enabled: db::get_config_bool_opt(&dbc, "notify_enabled").or(Some(true)),
+        notify_show_content: db::get_config_bool_opt(&dbc, "notify_show_content").or(Some(true)),
         language: db::get_setting(&dbc, "language"),
         relay_policy: db::get_setting(&dbc, "relay_policy"),
         relay_allowlist: db::get_setting(&dbc, "relay_allowlist"),
@@ -281,6 +273,8 @@ pub fn save_settings(
     if let Some(v) = settings.notify_enabled {
         db::set_setting(&dbc, "notify_enabled", if v { "1" } else { "0" })
             .map_err(|e| e.to_string())?;
+        // 热路径缓存同步（is_zh/notify 同一套纪律，审计 2.1i）
+        state.inner().cache_notify_enabled(v);
         changed.push("notifyEnabled");
     }
     if let Some(v) = settings.notify_show_content {
@@ -291,6 +285,8 @@ pub fn save_settings(
     if let Some(v) = settings.language {
         if LANGUAGES.contains(&v.as_str()) {
             db::set_setting(&dbc, "language", &v).map_err(|e| e.to_string())?;
+            // 热路径缓存同步（is_zh 零锁读，审计 2.1i）
+            state.inner().cache_lang_pref(&v);
             changed.push("language");
         }
     }
@@ -345,6 +341,12 @@ pub fn reset_settings(
         &RETENTION_KEY,
         &MAX_BYTES_KEY,
         &"bt_enabled",
+        // 公网中转（ADR-0020）：恢复默认时一并清掉，包括口令。
+        // 留着它比清掉更糟 —— 用户点"恢复默认"后机器上仍存着一个通往公网的准入口令，
+        // 而界面上已经看不到这个功能在哪儿配的。清掉的代价是重新填一次。
+        &RELAY_ENABLED_KEY,
+        &RELAY_SERVER_KEY,
+        &RELAY_TOKEN_KEY,
         &"chat_peer_styles",
         &"nickname",
         &"avatar",
@@ -357,6 +359,9 @@ pub fn reset_settings(
     // 否则用户点了恢复默认、行为却还是旧的限制策略（要重启才生效）。
     drop(dbc);
     state.set_relay_policy_config(crate::mesh::relay_policy::RelayConfig::default());
+    // 热路径缓存同理（审计 2.1i）：language / notify_enabled 已被删除，
+    // 缓存必须回到未加载态，下次读取从库回填默认值。
+    state.invalidate_hot_setting_cache();
     // 「恢复默认」把大部分键**删掉**了（不是写成某个值），逐一送 patch 反而容易漏；
     // 用 `"*"` 明确表示"全量都变了" —— 接收方做一次完整重拉（一次性动作，不心疼）。
     state.notify_settings_changed(&["*"], Some(window.label()), json!({}));

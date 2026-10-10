@@ -1,21 +1,22 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
-import { invoke } from "@tauri-apps/api/core";
 import { useAppStore } from "@/stores/useAppStore";
+import { MAX_PASTED_IMAGE_BYTES, PASTED_IMAGE_LIMIT_MB } from "@/utils/imageBytes";
 import EmojiPicker from "@/components/EmojiPicker.vue";
 import { QUOTE_BORDER, QUOTE_BG, QUOTE_TEXT_STYLE } from "@/utils/quoteStyle";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
 import { haptic } from "@/utils/haptics";
 import { mentionHighlightColor, resolveChatColors } from "@/utils/chatStyle";
-import { avatarInitial, avatarInitialLen, nameToColor } from "@/utils/color";
+import { avatarSeedFor } from "@/utils/avatarSeed";
 import { classifyPaste } from "@/utils/clipboard";
 import { isImeKey } from "@/utils/ime";
 import { Folder, Smile, SquareCode, Users, X } from "lucide-vue-next";
 import type { MsgKind } from "@/types";
-import { MENTION_ALL_TOKEN } from "@/utils/messages";
+import { MENTION_ALL_TOKEN, textMentionsName } from "@/utils/messages";
 import { isMentionLead } from "@/utils/linkify";
 import { isSelfConversation } from "@/utils/selfChat";
+import { api } from "@/api";
 
 const props = defineProps<{
   /** 会话切换时聚焦输入框（切换会话 = 新会话，重置草稿由父组件卸载/挂载决定）。 */
@@ -26,8 +27,13 @@ const props = defineProps<{
   mentionMembers?: { id: string; name: string }[];
 }>();
 const emit = defineEmits<{
-  (e: "send", payload: { content: string; kind: MsgKind }): void;
-  (e: "send-image", dataUrl: string): void;
+  // `mentionIds` = 这条文本 @ 了谁（设备 id）。缺省 = 这条不带名单 = 接收端按昵称兜底，
+  // 与"空数组 = 明确回答谁都没 @"是两回事，所以这里不能给默认值。
+  (e: "send", payload: { content: string; kind: MsgKind; mentionIds?: string[] }): void;
+  // 交出去的是 **File 本身**，不是 data URL：读文件是异步的，若在组件里 await 完再 emit，
+  // 接收方只能在"读完之后"才知道要发给谁 —— 期间用户切了会话，图片就发到别的会话去了。
+  // 读取挪到发送方，让会话 id 在粘贴的那一刻被同步捕获（审计阶段 4 · 4.1-5）。
+  (e: "send-image", file: File): void;
   (e: "attach"): void;
   (e: "close-quote"): void;
   (e: "paste-files", paths: string[]): void;
@@ -131,6 +137,30 @@ function serializeDraft(): string {
   return (editorRef.value?.innerText ?? "").replace(/\n+$/, "").slice(0, MAX_INPUT_LENGTH);
 }
 
+/**
+ * 这条文本 @ 了谁（设备 id 名单）。两种来源取并集：
+ *  ① **成员选择器**插入的 token —— `data-mention-id` 就是权威答案（选中了就是那个人，
+ *     同名成员因此不会互相顶掉）；
+ *  ② 用户**手打**的 `@名字` —— 只能按名字回解，用的是接收端兜底**同一份**边界规则
+ *     （`textMentionsName`）；两边不同源就会出现「发送方没带、接收方按名字误亮」的割裂。
+ * 「所有人」不进名单：它是正文里的固定中文字面量，接收端按字面判（见 MENTION_ALL_ID）。
+ *
+ * ⚠️ 必须在 `send()` 清空 innerHTML **之前**调用：DOM 一清，① 就没有来源了。
+ */
+function draftMentionIds(text: string): string[] {
+  const ids = new Set<string>();
+  editorRef.value
+    ?.querySelectorAll<HTMLElement>(".mention-token[data-mention-id]")
+    .forEach((el) => {
+      const id = el.dataset.mentionId;
+      if (id && id !== MENTION_ALL_ID) ids.add(id);
+    });
+  for (const m of props.mentionMembers ?? []) {
+    if (textMentionsName(text, m.name)) ids.add(m.id);
+  }
+  return [...ids];
+}
+
 /** 发送：立即清空输入框（optimistic UI，不等 IPC 返回）。引用消息在首行拼接引用头。 */
 function send(kind?: MsgKind, content?: string) {
   let text = content ?? serializeDraft();
@@ -140,6 +170,8 @@ function send(kind?: MsgKind, content?: string) {
     const idSuffix = props.quote.msgId != null ? `|${props.quote.msgId}` : "";
     text = `「引用 ${props.quote.sender}：${props.quote.snippet}${idSuffix}」\n${text}`;
   }
+  // 清空 DOM 前先把名单读走；非文本（代码 / 由 content 参数直接发的那些）不带名单
+  const mentionIds = content === undefined && k === "text" ? draftMentionIds(text) : undefined;
   if (editorRef.value) editorRef.value.innerHTML = "";
   hasDraft.value = false;
   mention.value = null;
@@ -153,7 +185,7 @@ function send(kind?: MsgKind, content?: string) {
   // 消息已经乐观入列（DOM 立刻更新）→ 给一下轻触觉，确认"发出去了"。
   // 按 Apple 的触觉规则：只在关键动作给，且是按下即给（不是等网络回来才给）。
   haptic("light");
-  emit("send", { content: text, kind: k });
+  emit("send", { content: text, kind: k, mentionIds });
 }
 
 /**
@@ -237,7 +269,8 @@ const mentionActive = ref(0);
 
 /**
  * 「所有人」是**虚拟成员**：本组件内用它做 key 与展示，发送出去的仍是纯文本 `@所有人`
- * （见 `serializeDraft` 走 innerText 读回 token 文本）。因此它不需要 id 参与任何后端调用。
+ * （见 `serializeDraft` 走 innerText 读回 token 文本）。因此它**不进** `draftMentionIds`
+ * 那份名单 —— 真实成员的 id 现在会随载荷发给对端，而「所有人」永远只按字面量判。
  * 发送到正文里的字面量必须是固定中文 `MENTION_ALL_TOKEN`：它是一条**发给所有人的文本**，
  * 接收端按字面匹配，不能随发送方的界面语言变化，否则英文界面发出去的 @所有人 没人能识别。
  */
@@ -537,7 +570,15 @@ async function onPaste(e: ClipboardEvent) {
       app.toast(t("chat.selfChatTextOnly"), "error");
       return;
     }
-    emit("send-image", await fileToDataUrl(imageFile));
+    // 前置体积闸（同一判据的 TS 侧镜像，见 utils/imageBytes 的注释）：后端要解完 base64
+    // 才知道超限，而那时 JS 堆 + IPC JSON + Rust Vec 已经各分配了一份。
+    if (imageFile.size > MAX_PASTED_IMAGE_BYTES) {
+      app.toast(t("chat.imageTooLarge", { max: PASTED_IMAGE_LIMIT_MB }), "error");
+      return;
+    }
+    // ⚠️ 同步 emit，不许 await：`emit` 之前一旦挂起，ChatWindow 捕获到的就是"切走之后"的
+    // 会话。读取与发送都在那侧完成，粘贴发生在哪个会话就发给哪个会话。
+    emit("send-image", imageFile);
     return;
   }
 
@@ -545,7 +586,7 @@ async function onPaste(e: ClipboardEvent) {
   let filePaths: string[] = [];
   if (types.includes("Files")) {
     try {
-      filePaths = await invoke<string[]>("read_clipboard_file_paths");
+      filePaths = await api.readClipboardFilePaths();
     } catch {
       filePaths = [];
     }
@@ -580,14 +621,6 @@ async function onPaste(e: ClipboardEvent) {
   document.execCommand("insertText", false, text.slice(0, room));
 }
 
-function fileToDataUrl(f: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const r = new FileReader();
-    r.onload = () => resolve(r.result as string);
-    r.onerror = reject;
-    r.readAsDataURL(f);
-  });
-}
 </script>
 
 <template>
@@ -626,12 +659,11 @@ function fileToDataUrl(f: File): Promise<string> {
           </span>
           <span
             v-else
-            class="gosslan-avatar-box flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-full text-[11px] text-white"
-            :style="{ backgroundColor: nameToColor(m.name) }"
+            class="gosslan-avatar-box flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-full text-white"
+            :style="{ backgroundColor: avatarSeedFor(m.id)?.bg }"
           ><span
-            class="gosslan-avatar-initial"
-            :data-len="avatarInitialLen(m.name)"
-          >{{ avatarInitial(m.name) }}</span></span>
+            class="gosslan-avatar-emoji" aria-hidden="true"
+          >{{ avatarSeedFor(m.id)?.emoji }}</span></span>
           <span class="min-w-0 flex-1 truncate" :title="m.name">{{ m.name }}</span>
         </button>
       </div>

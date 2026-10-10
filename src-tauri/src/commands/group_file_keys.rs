@@ -42,12 +42,7 @@ pub fn ensure_group_file_key(
 /// 源文件已不存在 → recipient 置 failed（不留永远无法投递的 pending）；
 /// 无 link 时保持 pending，本次直接返回（下次连接事件再触发）。
 pub async fn flush_pending_group_files(state: &Arc<AppState>, peer_id: &str) {
-    if !state
-        .group_file_sending
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(peer_id.to_string())
-    {
+    if !mark_peer_sending(&state.group_file_sending, peer_id) {
         return; // 该 peer 已有投递任务在执行
     }
     let pending = {
@@ -55,11 +50,7 @@ pub async fn flush_pending_group_files(state: &Arc<AppState>, peer_id: &str) {
         db::list_pending_group_files_for_recipient(&dbc, peer_id).unwrap_or_default()
     };
     if pending.is_empty() {
-        state
-            .group_file_sending
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(peer_id);
+        release_peer_send(&state.group_file_sending, peer_id);
         return;
     }
     let mut tasks: Vec<(String, String, String)> = Vec::new();
@@ -81,27 +72,33 @@ pub async fn flush_pending_group_files(state: &Arc<AppState>, peer_id: &str) {
         }
     }
     if tasks.is_empty() {
-        state
-            .group_file_sending
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(peer_id);
+        release_peer_send(&state.group_file_sending, peer_id);
         return;
     }
-    let s2 = state.clone();
+    let st = state.clone();
     let peer = peer_id.to_string();
     tauri::async_runtime::spawn(async move {
+        // 槽位交给守卫：任务体里一次 panic（或 future 被 drop）也必须归还 ——
+        // 旧写法把 remove 手写在下面那个循环之后，panic 会跳过它。
+        let _gate = PeerSendGuard::new(&st.group_file_sending, &peer);
         for (tid, gid, src) in tasks {
-            if let Err(e) = dispatch_group_file_to_peer(&s2, &tid, &gid, &peer, &src).await {
+            if let Err(e) = dispatch_group_file_to_peer(&st, &tid, &gid, &peer, &src).await {
+                // ★ 补发路径也要落终态（#154-4 真正的洞就在这条路径上）：
+                // 它原先只 log 不写状态，而 dispatch 一进来已把该成员置成 `sending`，
+                // 重试查询只捞 `pending` ⇒ 补发失败一次就"永远在发"，重启也不重试。
+                if let Some(next) = group_file_status_after_fail(&e) {
+                    let dbc = st.db.lock().unwrap_or_else(|e| e.into_inner());
+                    let _ = db::update_group_file_recipient(&dbc, &tid, &peer, next, 0.0);
+                }
                 app_handle_log(
-                    &s2,
-                    &format!("group-file dispatch {tid} -> {peer} failed: {e}"),
+                    &st,
+                    &format!(
+                        "group-file dispatch {tid} -> {peer} failed: {} 终态={:?}",
+                        group_file_send_err_reason(&e),
+                        group_file_status_after_fail(&e)
+                    ),
                 );
             }
         }
-        s2.group_file_sending
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&peer);
     });
 }

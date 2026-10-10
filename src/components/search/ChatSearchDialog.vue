@@ -35,7 +35,7 @@ import {
 } from "@/utils/chatSearch";
 import { t } from "@/i18n";
 import type { ChatSearchGroup, ChatSearchMessage } from "@/types";
-import { isKnownKind, UNSUPPORTED_KIND_LABEL } from "@/utils/messageKinds";
+import { previewBody } from "@/utils/messages";
 
 const props = defineProps<{ open: boolean; initialKeyword?: string }>();
 const emit = defineEmits<{
@@ -47,12 +47,18 @@ const emit = defineEmits<{
 /**
  * 搜索结果里一行显示的文本（INV-P24 第 2 条）。
  *
- * 本机不认识的 kind（对端 Gosslan 比本机新）载荷往往是 JSON —— 检索页直接铺 `content`
- * 等于把 JSON 摆给用户看。这里换成与气泡/会话列表同一句占位文案。
+ * ⚠️ 这里**绝不能**直接铺 `content`：SQL 检索的是载荷原文，而图片 / 文件 / 合并转发 /
+ * 任务 / 投票 / 公告这六种 kind 的载荷就是 JSON —— 以前只把"本机不认识的 kind"换成了
+ * 占位文案（887477e），认识的那六种照样把 `{"title":"…","sha256":"…"}` 摆给用户看
+ * （用户 2026-10-09：「搜索列表显示的都是 json」）。
+ * 现在与气泡、会话列表、系统通知共用 `previewBody` 那唯一一份「kind → 人话」。
+ *
+ * 第三个参数传 0 = **不截断**：会话列表要截 30 字，而这里要在正文里定位关键词
+ * （`hitSnippet` 与 `highlightText` 都按关键词找），截了就没得定位了。
  */
 function cellText(m?: ChatSearchMessage): string {
   if (!m) return "";
-  return isKnownKind(m.kind) ? m.content : UNSUPPORTED_KIND_LABEL;
+  return previewBody(m.kind, m.content, 0);
 }
 
 const app = useAppStore();
@@ -84,6 +90,27 @@ const senderName = computed(
 const activeGroup = computed(
   () => groups.value.find((g) => g.conv_id === activeConvId.value) ?? groups.value[0] ?? null,
 );
+
+/**
+ * 键盘选结果（原生感走查 N2）。⚠️ 这里**只缺方向键**：Esc / 点遮罩关闭是 `BaseModal`
+ * 用的 HeadlessUI `Dialog` 自带的，再写一遍就是两套状态（那种"看着更保险"的重复实现
+ * 正是本仓反复反对的那类）。
+ * `activeIdx` 是当前高亮的那一条命中；回车打开它 —— 关键词还没搜过时回车仍是"立刻重搜"
+ * （保留原来的语义：输入时 150ms 防抖，回车是"我确定现在就查"）。
+ */
+const activeIdx = ref(0);
+/** 已经发过请求的那个关键词；与 `keyword` 不等 ⇒ 输入还没落成结果，此时回车=重搜。 */
+const searched = ref("");
+const listRef = ref<HTMLDivElement | null>(null);
+
+function stepHit(d: number) {
+  const n = activeGroup.value?.messages.length ?? 0;
+  if (!n) return;
+  activeIdx.value = Math.max(0, Math.min(n - 1, activeIdx.value + d));
+  listRef.value
+    ?.querySelector(`[data-hit="${activeIdx.value}"]`)
+    ?.scrollIntoView({ block: "nearest" });
+}
 const total = computed(() => totalHits(groups.value));
 const inputRef = ref<HTMLInputElement | null>(null);
 
@@ -108,6 +135,8 @@ async function runSearch(keepSenderOptions = false) {
     });
     if (mine !== seq) return; // 只接受最后一次请求的结果（连打时会有多个在途）
     groups.value = result;
+    searched.value = keyword.value;
+    activeIdx.value = 0;
     if (keepSenderOptions) senderOptions.value = senderOptionsFrom(result);
     // 选中态：保持当前选中；若它已不在结果里，落到第一条
     if (!result.some((g) => g.conv_id === activeConvId.value)) {
@@ -123,10 +152,22 @@ async function runSearch(keepSenderOptions = false) {
   }
 }
 
-/** 回车：立即按当前关键词重搜（输入时有 150ms 防抖，回车是"我确定，现在就查"）。 */
+/** 回车：关键词已经落成结果 ⇒ 打开高亮那一条；还没搜过 ⇒ 立刻重搜（原语义保留）。 */
 function onEnter(e: KeyboardEvent) {
   if (ime.isIme(e)) return;
+  if (searched.value === keyword.value && activeGroup.value?.messages.length) {
+    openHit(activeIdx.value);
+    return;
+  }
   void runSearch(senderFilter.value === null);
+}
+
+function openHit(idx: number) {
+  const g = activeGroup.value;
+  const msg = g?.messages[Math.max(0, Math.min((g?.messages.length ?? 1) - 1, idx))];
+  if (!g) return;
+  emit("open-conversation", { convId: g.conv_id, msgId: msg?.msg_id ?? "" });
+  emit("close");
 }
 
 function searchActive() {
@@ -190,11 +231,8 @@ function choosePreset(p: SearchDatePreset) {
 }
 
 function enterChat() {
-  const g = activeGroup.value;
-  if (!g) return;
-  const msgId = g.messages[0]?.msg_id ?? "";
-  emit("open-conversation", { convId: g.conv_id, msgId });
-  emit("close");
+  // 与键盘同一条路：打开**高亮那一条**（以前固定 `messages[0]` ⇒ 鼠标点的和回车跳的可能不是同一条）
+  openHit(activeIdx.value);
 }
 
 /** 单聊不重复显示发送者名字（微信同款）；群聊才显示"谁说的"。 */
@@ -232,6 +270,8 @@ function showSender(group: ChatSearchGroup): boolean {
           :aria-label="t('search.placeholder')"
           class="w-full bg-transparent text-[13px] placeholder:text-[var(--gosslan-text-2)] outline-none focus:border-transparent"
           @keydown.enter.prevent="onEnter"
+          @keydown.down.prevent="stepHit(1)"
+          @keydown.up.prevent="stepHit(-1)"
           @compositionstart="ime.onStart"
           @compositionend="ime.onEnd"
         />
@@ -256,7 +296,7 @@ function showSender(group: ChatSearchGroup): boolean {
         >
           {{ senderName ?? t("search.sender") }}
         </button>
-        <div v-if="senderMenuOpen" class="gosslan-menu absolute right-0 top-9 z-20 max-h-64 overflow-y-auto">
+        <div v-if="senderMenuOpen" class="gosslan-menu frost absolute right-0 top-9 z-20 max-h-64 overflow-y-auto">
           <button role="menuitem" class="gosslan-menu-item" @click="chooseSender(null)">
             {{ t("search.sender.all") }}
           </button>
@@ -284,7 +324,7 @@ function showSender(group: ChatSearchGroup): boolean {
         >
           {{ datePreset === "all" ? t("search.date") : t(`search.date.${datePreset}`) }}
         </button>
-        <div v-if="dateMenuOpen" class="gosslan-menu absolute right-0 top-9 z-20">
+        <div v-if="dateMenuOpen" class="gosslan-menu frost absolute right-0 top-9 z-20">
           <button
             v-for="p in SEARCH_DATE_PRESETS"
             :key="p"
@@ -299,9 +339,9 @@ function showSender(group: ChatSearchGroup): boolean {
     </div>
 
     <!-- 结果：左会话 / 右命中消息（微信同款两栏） -->
-    <div class="mt-3 flex min-h-0 flex-1 flex-col overflow-hidden rounded-[var(--gosslan-radius-lg)] border border-[var(--gosslan-divider)] md:h-[52vh] md:flex-none md:flex-row">
+    <div class="mt-3 flex min-h-0 flex-1 flex-col overflow-hidden rounded-[var(--gosslan-radius-lg)] border border-[var(--gosslan-divider)] desktop:md:h-[52vh] desktop:md:flex-none desktop:md:flex-row">
       <!-- 左栏 -->
-      <div class="flex max-h-[38%] w-full shrink-0 flex-col overflow-y-auto border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-list)] md:max-h-none md:w-[240px] md:border-b-0 md:border-r">
+      <div class="flex max-h-[38%] w-full shrink-0 flex-col overflow-y-auto border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-list)] desktop:md:max-h-none desktop:md:w-[240px] desktop:md:border-b-0 desktop:md:border-r">
         <p v-if="!keyword.trim()" class="px-3 py-6 text-center text-xs text-[var(--gosslan-text-2)]">
           {{ t("search.hint") }}
         </p>
@@ -323,7 +363,7 @@ function showSender(group: ChatSearchGroup): boolean {
             : 'hover:bg-[var(--gosslan-list-hover)]'"
           @click="activeConvId = g.conv_id"
         >
-          <MessageAvatar :name="g.name" :avatar="g.avatar" />
+          <MessageAvatar :id="g.conv_id" :name="g.name" :avatar="g.avatar" />
           <span class="min-w-0 flex-1">
             <span class="flex items-baseline gap-2">
               <span class="min-w-0 flex-1 truncate text-[13px] font-medium text-[var(--gosslan-text)]" :title="g.name">{{ g.name }}</span>
@@ -359,13 +399,16 @@ function showSender(group: ChatSearchGroup): boolean {
             <ChevronRight class="h-3.5 w-3.5" />
           </button>
         </div>
-        <div class="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+        <div ref="listRef" class="min-h-0 flex-1 overflow-y-auto px-4 py-3">
           <div
-            v-for="m in activeGroup?.messages ?? []"
+            v-for="(m, hi) in activeGroup?.messages ?? []"
             :key="m.msg_id"
-            class="flex gap-2.5 py-2.5"
+            :data-hit="hi"
+            :aria-current="hi === activeIdx ? 'true' : undefined"
+            class="flex gap-2.5 rounded-[var(--gosslan-radius-md)] px-2 py-2.5"
+            :class="hi === activeIdx ? 'bg-[var(--gosslan-hover)]' : ''"
           >
-            <MessageAvatar :name="m.sender_name" />
+            <MessageAvatar :id="m.sender_id" :name="m.sender_name" />
             <div class="min-w-0 flex-1">
               <div class="flex items-baseline gap-2">
                 <span

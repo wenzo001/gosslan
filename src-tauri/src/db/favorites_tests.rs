@@ -26,6 +26,7 @@ mod tests {
             ts: 1,
             seq: 1,
             status: "sent".into(),
+            mention_targets: None,
         }
     }
 
@@ -573,6 +574,83 @@ mod tests {
         assert_eq!(get_messages(&conn, "c1", 100, 0).unwrap().len(), 1);
     }
 
+    /// 按 `msg_id` 序列比对（`MessageRecord` 没有 `PartialEq`，而这里要的正是"同一批行、
+    /// 同一个顺序"，逐字段比对反而会把"内容不同"这种无关差异一起放进来）。
+    fn ids(rows: &[MessageRecord]) -> Vec<String> {
+        rows.iter().map(|r| r.msg_id.clone()).collect()
+    }
+
+    /// 插入 `n` 条 seq 递增的消息。`seq_start` 用来制造与别的会话交错的序号。
+    fn insert_seq_run(conn: &Connection, conv_id: &str, from: i64, n: i64) {
+        for i in 0..n {
+            let seq = from + i;
+            let mut m = rec(&format!("m{conv_id}-{seq}"), conv_id);
+            m.seq = seq;
+            insert_message(conn, &m).unwrap();
+        }
+    }
+
+    /// 「最新一页」必须与「先 `count` 再按 `offset` 取」**逐行同序等价** ——
+    /// 这条恒等判据是本刀的全部安全性：前端把两轮 IPC 合成一轮，读到的行集与顺序
+    /// 一个字都不能变（变了就是消息顺序画反、或底部停在第 100 条历史）。
+    #[test]
+    fn latest_page_is_identical_to_the_count_plus_offset_two_step() {
+        let conn = mem();
+        insert_seq_run(&conn, "c1", 1, 250);
+
+        let total = count_messages(&conn, "c1");
+        let offset = (total - 100).max(0);
+        let two_step = get_messages(&conn, "c1", 100, offset).unwrap();
+
+        assert_eq!(two_step.len(), 100, "前提：两轮取到的确实是尾部 100 条");
+        assert_eq!(ids(&get_latest_messages(&conn, "c1", 100).unwrap()), ids(&two_step));
+    }
+
+    /// seq 是 Lamport 时钟，**同一会话内可以撞号**（两侧同时各发一条时双方都可能给出
+    /// 同一个序号），所以 `get_messages` 用 `id` 兜底打破平局。取尾部必须沿用同一份
+    /// 全序 —— 否则平局那几条在"两轮"和"一轮"之间会换位。
+    #[test]
+    fn latest_page_breaks_seq_ties_by_id_exactly_like_the_ascending_query() {
+        let conn = mem();
+        // 4 条正常序号，再加 3 条**同 seq** 的行（后插入者 id 更大 = 更"新"）。
+        insert_seq_run(&conn, "c1", 1, 4);
+        for i in 0..3 {
+            let mut m = rec(&format!("tie-{i}"), "c1");
+            m.seq = 4;
+            insert_message(&conn, &m).unwrap();
+        }
+
+        let all = get_messages(&conn, "c1", 100, 0).unwrap();
+        assert_eq!(all.len(), 7, "前提：平局行没有被唯一约束吞掉");
+        assert_eq!(ids(&get_latest_messages(&conn, "c1", 3).unwrap()), ids(&all[4..]));
+        // 取满整表时也必须逐行等价（等价于"会话不满一页"的冷加载）。
+        assert_eq!(ids(&get_latest_messages(&conn, "c1", 100).unwrap()), ids(&all));
+    }
+
+    /// 会话隔离 + 短会话：不满一页时给全部，且绝不串到别的会话（前端整表覆盖，
+    /// 串一条就是把别人的消息画进当前会话）。
+    #[test]
+    fn latest_page_is_scoped_to_its_conversation_and_returns_a_short_tail_whole() {
+        let conn = mem();
+        insert_seq_run(&conn, "c1", 1, 2);
+        insert_seq_run(&conn, "c2", 1, 30);
+
+        let got = get_latest_messages(&conn, "c1", 100).unwrap();
+        assert_eq!(got.len(), 2);
+        assert!(got.iter().all(|r| r.conv_id == "c1"));
+        assert_eq!(ids(&got), vec!["mc1-1", "mc1-2"], "短会话也要正序返回");
+        assert!(get_latest_messages(&conn, "no-such-conv", 100).unwrap().is_empty());
+    }
+
+    /// 与 P0-2 一样，"最新一页"不得把别人的会话行漏进来 —— 换会话瞬间的脏读形态。
+    #[test]
+    fn latest_page_returns_an_empty_page_instead_of_erroring_on_an_unknown_limit() {
+        let conn = mem();
+        insert_seq_run(&conn, "c1", 1, 3);
+        // limit 0 由命令层夹住，db 层保持与 `get_messages` 一致的裸语义：0 行就是 0 行。
+        assert!(get_latest_messages(&conn, "c1", 0).unwrap().is_empty());
+    }
+
     /// P0-2 根因（反面用例，锁定必须避免的写法）：真实 msg_id 一旦被「解密失败的占位
     /// 系统消息」占用，之后同一 msg_id 的正确副本会被 INSERT OR IGNORE 静默吞掉，
     /// 明文永久不可恢复。所以接收端解不开时绝不能写任何占用真实 msg_id 的行。
@@ -1107,90 +1185,43 @@ mod tests {
                 ts: 1,
                 seq: 1,
                 status: "delivered".into(),
+                mention_targets: None,
             },
         )
         .unwrap();
     }
 
-    /// 普通文本搜索：中文 + 英文。
+    /// LIKE 搜索的性质，逐条打在**活的** `search_history` 上。
+    ///
+    /// 原先这六条钉的是 `search_messages` —— 那条命令在 IPC 门面之下没有任何调用点，
+    /// 已随门面一起删掉。两份查询共用 `escape_like` + `ESCAPE '\'`，
+    /// 所以断言是**搬过来**而不是连覆盖一起删掉。
     #[test]
-    fn search_messages_plain_text() {
-        let conn = mem();
-        insert_text_msg(&conn, "m1", "conv1", "hello world");
-        insert_text_msg(&conn, "m2", "conv2", "今天测试 hello");
-        insert_text_msg(&conn, "m3", "conv3", "没有匹配");
-
-        let r = search_messages(&conn, "hello", 10).unwrap();
-        assert_eq!(r.len(), 2);
-        assert!(r.contains(&"conv1".to_string()));
-        assert!(r.contains(&"conv2".to_string()));
-
-        let r = search_messages(&conn, "没有", 10).unwrap();
-        assert_eq!(r.len(), 1);
-        assert_eq!(r[0], "conv3");
-    }
-
-    /// LIKE 通配符 % 和 _ 按字面字符搜索，不作为 wildcard。
-    #[test]
-    fn search_messages_escapes_like_wildcards() {
+    fn search_history_treats_like_wildcards_as_literals() {
         let conn = mem();
         insert_text_msg(&conn, "m1", "conv1", "100% 完成");
         insert_text_msg(&conn, "m2", "conv2", "a_b 测试");
-
-        // % 应按字面搜索，不是 wildcard
-        let r = search_messages(&conn, "100%", 10).unwrap();
-        assert_eq!(r.len(), 1, "% 应按字面匹配");
-        assert_eq!(r[0], "conv1");
-
-        // _ 应按字面搜索，不是 wildcard
-        let r = search_messages(&conn, "a_b", 10).unwrap();
-        assert_eq!(r.len(), 1, "_ 应按字面匹配");
-        assert_eq!(r[0], "conv2");
-
-        // 不应匹配 "100% 完成" 中的 "100" 作为独立搜索（% 是字面字符）
-        let r = search_messages(&conn, "100", 10).unwrap();
-        assert_eq!(r.len(), 1, "'100' 应匹配 '100% 完成'");
+        insert_text_msg(&conn, "m3", "conv3", "你好世界 \u{1F30D}");
+        insert_text_msg(&conn, "m4", "conv4", "Hello World");
+        // 活查询多一道闸：只搜还在会话列表里的会话 ⇒ 先把四行会话建出来
+        for cid in ["conv1", "conv2", "conv3", "conv4"] {
+            ensure_conversation(&conn, cid, "single", cid, None).unwrap();
+        }
+        let hits = |kw: &str| -> Vec<String> {
+            search_history(&conn, kw, None, None, None, 50)
+                .unwrap()
+                .into_iter()
+                .map(|h| h.msg_id)
+                .collect()
+        };
+        assert_eq!(hits("100%"), vec!["m1"], "% 当通配用会把别的一并捞进来");
+        assert_eq!(hits("a_b"), vec!["m2"], "_ 当通配用会匹配任意单字符");
+        assert_eq!(hits("世界"), vec!["m3"], "中文按字符匹配");
+        assert_eq!(hits("\u{1F30D}"), vec!["m3"], "emoji 按字符匹配，不是按 UTF-8 字节切片");
+        assert!(hits("hello world").contains(&"m4".to_string()), "ASCII 大小写不敏感");
+        assert!(hits("查不到").is_empty());
     }
 
-    /// 空结果。
-    #[test]
-    fn search_messages_no_results() {
-        let conn = mem();
-        insert_text_msg(&conn, "m1", "conv1", "hello");
-        let r = search_messages(&conn, "不存在", 10).unwrap();
-        assert!(r.is_empty());
-    }
-
-    /// 中文搜索正常。
-    #[test]
-    fn search_messages_chinese() {
-        let conn = mem();
-        insert_text_msg(&conn, "m1", "conv1", "你好世界");
-        insert_text_msg(&conn, "m2", "conv2", "hello world");
-        let r = search_messages(&conn, "你好", 10).unwrap();
-        assert_eq!(r.len(), 1);
-        assert_eq!(r[0], "conv1");
-    }
-
-    /// emoji 搜索正常（按字符匹配，非 UTF-8 字节）。
-    #[test]
-    fn search_messages_emoji() {
-        let conn = mem();
-        insert_text_msg(&conn, "m1", "conv1", "🎉庆祝🎉");
-        let r = search_messages(&conn, "🎉", 10).unwrap();
-        assert_eq!(r.len(), 1);
-    }
-
-    /// 大小写不敏感搜索。
-    #[test]
-    fn search_messages_case_insensitive() {
-        let conn = mem();
-        insert_text_msg(&conn, "m1", "conv1", "Hello World");
-        let r = search_messages(&conn, "hello", 10).unwrap();
-        assert_eq!(r.len(), 1);
-        let r = search_messages(&conn, "HELLO", 10).unwrap();
-        assert_eq!(r.len(), 1);
-    }
 
     /// update_conversation_profile 只更新 name/avatar，不修改 last_msg/last_ts。
     #[test]
@@ -1261,6 +1292,9 @@ mod tests {
         set_setting(&conn, "device_id", "dev-1").unwrap();
         set_setting(&conn, "nickname", "昵称").unwrap();
         set_setting(&conn, "gk:g1", "secret").unwrap();
+        // 群任务编号的高水位也是 settings 里的一行（`todo_num:<群>`）：
+        // 清除聊天数据的 SQL 只删 `gk:%`，这一行必须留下 —— 留下才谈得上"号永不复用"（INV-P29）。
+        set_setting(&conn, "todo_num:g1", "7").unwrap();
 
         // 模拟 clear_all_data SQL 部分
         let tx = conn.unchecked_transaction().unwrap();
@@ -1288,6 +1322,11 @@ mod tests {
         assert!(get_friend(&conn, "f1").is_some());
         assert_eq!(get_setting(&conn, "device_id").as_deref(), Some("dev-1"));
         assert_eq!(get_setting(&conn, "nickname").as_deref(), Some("昵称"));
+        assert_eq!(
+            get_setting(&conn, "todo_num:g1").as_deref(),
+            Some("7"),
+            "高水位被清掉了 ⇒ 下次建任务会从 1 重开，把已经用过的号再发一遍"
+        );
     }
 
     // ---------- 群文件 per-recipient 投递状态 ----------
@@ -1973,6 +2012,68 @@ mod tests {
         assert_eq!(t.path.as_deref(), Some("/downloads/report.pdf"));
         assert_eq!(t.status, "done");
         assert_eq!(t.progress, 1.0);
+    }
+
+    /// 中继态回收 / Offer 判据的两个单行助手（审计 A2 + A6）。
+    ///
+    /// 钉的是**边界**而不是"能跑"：回收只准改 active 行（已 done 的行被改写成 failed
+    /// = 用户看到收好的文件变失败），而 `is_transfer_done` 必须只认 done（把 active
+    /// 当成"已收完"会让正在传输的文件被回绝重推）。
+    #[test]
+    fn transfer_terminal_helpers_touch_only_their_own_rows() {
+        let conn = mem();
+        for (id, status) in [
+            ("t-active", "active"),
+            ("t-done", "done"),
+            ("t-sent", "sent"),
+        ] {
+            upsert_transfer(&conn, id, "b", "x.bin", 10, "receive", status, None, 0.5).unwrap();
+        }
+
+        // active ⇒ 改到 failed 并回报"确实改了"（调用方据此才 emit file-failed）
+        assert!(mark_transfer_failed_if_active(&conn, "t-active").unwrap());
+        assert_eq!(transfer_status(&conn, "t-active").as_deref(), Some("failed"));
+        // 第二次不再命中 active：回报 false，调用方据此**不重复** emit
+        assert!(
+            !mark_transfer_failed_if_active(&conn, "t-active").unwrap(),
+            "已落终态的行不该再被回收动作改写"
+        );
+
+        // done ⇒ 既有终态不许被回收改写
+        assert!(
+            !mark_transfer_failed_if_active(&conn, "t-done").unwrap(),
+            "回收只改 active 行"
+        );
+        assert_eq!(transfer_status(&conn, "t-done").as_deref(), Some("done"));
+
+        // 库里没有的行（只登记在中继内存表里）⇒ false，不 panic
+        assert!(!mark_transfer_failed_if_active(&conn, "t-missing").unwrap());
+
+        // `sent`（中继推送写完分片、无对端回执）必须是**终态**：回收若把它扫成 failed，
+        // 就等于把"对方可能已经收到"判成"失败"，用户于是去重推一份本已成功的文件。
+        assert!(
+            !mark_transfer_failed_if_active(&conn, "t-sent").unwrap(),
+            "sent 必须已被排除在 active 集合外，否则一小时回收会改写它"
+        );
+        assert_eq!(transfer_status(&conn, "t-sent").as_deref(), Some("sent"));
+
+        // is_transfer_done 只认 done
+        assert!(is_transfer_done(&conn, "t-done").unwrap());
+        assert!(!is_transfer_done(&conn, "t-active").unwrap());
+        assert!(
+            !is_transfer_done(&conn, "t-sent").unwrap(),
+            "sent 不是 done：它只证明字节写出去了，没有送达证据"
+        );
+        assert!(!is_transfer_done(&conn, "t-missing").unwrap());
+    }
+
+    fn transfer_status(conn: &Connection, id: &str) -> Option<String> {
+        conn.query_row(
+            "SELECT status FROM file_transfers WHERE id = ?1",
+            params![id],
+            |r| r.get::<_, String>(0),
+        )
+        .ok()
     }
 
     /// 群消息 outbox：同一 msg_id 对不同 peer 各保留一行；GroupAck 只删对应行。

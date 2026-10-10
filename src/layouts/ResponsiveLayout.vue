@@ -9,6 +9,7 @@ import { useShortcuts } from "@/composables/useShortcuts";
 import { useBackLayer } from "@/composables/useBackLayer";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import NavRail from "@/components/NavRail.vue";
+import SelfAvatar from "@/components/SelfAvatar.vue";
 import TitleBar from "@/components/TitleBar.vue";
 import ConversationList from "@/components/ConversationList.vue";
 import ChatWindow from "@/components/ChatWindow.vue";
@@ -23,6 +24,8 @@ import ShareDirectory from "@/components/ShareDirectory.vue";
 import LogViewer from "@/components/LogViewer.vue";
 import FavoritePanel from "@/components/FavoritePanel.vue";
 import ToastHud from "@/components/ToastHud.vue";
+import ImageLightbox from "@/components/message/ImageLightbox.vue";
+import { useImagePreviewStore } from "@/stores/useImagePreview";
 import LinksList from "@/components/LinksList.vue";
 import MobilePageFrame from "@/components/MobilePageFrame.vue";
 import ProfileSection from "@/components/settings/ProfileSection.vue";
@@ -30,6 +33,13 @@ import { Compass, MessageCircle, ScrollText, Settings, Star, UserCircle, Users }
 import type { ExternalLink, Friend, PendingRequest } from "@/types";
 const app = useAppStore();
 const chat = useChatStore();
+/** 全局图片预览的宿主（实例只有一个，见模板末尾那处 `<ImageLightbox>`）。 */
+const preview = useImagePreviewStore();
+// 本布局就是那份覆盖层的宿主 ⇒ 告诉预览 store「投递被拒时退回我这里，是有东西可看的」。
+// 独立群任务窗口不渲染 ResponsiveLayout，那个文档里这个标记一直是 false ⇒ 同一场失败会
+// 被明确报出来并收起状态，而不是留着 open=true 把任务详情锁成「点遮罩关不掉」
+// （为什么不能靠"是不是主窗口"来推，见 useImagePreview.ts 里 overlayMounted 那段说明）。
+preview.overlayMounted = true;
 
 /**
  * 导航状态——**单一数据源**，替代之前分散的 `view` + `favoritesOpen`。
@@ -274,11 +284,15 @@ async function rejectRequest(r: PendingRequest) {
 async function sendMessageTo(id: string) {
   profileFriend.value = null;
   navState.value = "chats";
+  // ⚠️ 视图切换排在一切 await 之前（用户 2026-09-24 #29「切换会话要瞬间响应，数据后台异步加载」）。
+  // `openConversation` 第一行就同步写下 `activeConv`，其后才是骨架 + 异步拉消息；
+  // 把 `mobileView` 写在 await 之后 ⇒ 移动端点「发消息」要等完两轮 IPC 才翻页，
+  // 点下去那一下毫无反应。与 `ConversationList.openConv` 同一顺序。
+  if (app.isMobile) app.mobileView = "chat";
   // 「自己」的会话行可能还不存在：先 ensure（后端有 self 分支，会用本机昵称/头像命名），
   // 否则列表里会显示成一串 gosslan-xxxx。
   if (id === app.device?.device_id) await api.ensureConversation(id);
   await chat.openConversation(id);
-  if (app.isMobile) app.mobileView = "chat";
 }
 
 async function removeFriend(f: Friend) {
@@ -529,7 +543,7 @@ function onResizeEnd() {
          （收藏页另有下面那条，见下）。 -->
     <div
       v-if="!app.isMobile && !favoritesOpen"
-      class="relative z-10 hidden w-2 cursor-col-resize transition-colors hover:bg-[var(--gosslan-divider)] md:block"
+      class="relative z-10 hidden w-2 cursor-col-resize transition-colors hover:bg-[var(--gosslan-divider)] desktop:md:block"
       :class="resizing ? '-mx-1 bg-[var(--gosslan-divider)]' : '-mx-1'"
       @pointerdown="onResizeStart"
       @pointermove="onResizeMove"
@@ -575,7 +589,7 @@ function onResizeEnd() {
            ⚠️ 这里与下面 TabBar 的 v-if **共用同一个 `showMobileTabBar`**（不要再各写一份条件）：
            两边一旦不一致，TabBar 已隐藏时 pb 还白留着 → 底部空一大截（用户 2026-09-19）。 -->
       <div
-        class="min-h-0 flex flex-1 flex-col md:pb-0"
+        class="min-h-0 flex flex-1 flex-col desktop:md:pb-0"
         :class="showMobileTabBar ? 'pb-[calc(4rem+env(safe-area-inset-bottom))]' : ''"
         :style="app.isMobile && app.keyboardInset > 0
           ? { paddingBottom: `${app.keyboardInset + 8}px` }
@@ -595,10 +609,10 @@ function onResizeEnd() {
               :aria-label="t('nav.profile')"
               @click="openProfile()"
             >
-              <div class="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-full bg-[var(--gosslan-primary)]/10 text-2xl text-[var(--gosslan-primary)]">
-                <img v-if="app.device?.avatar" :src="app.device.avatar" alt="" class="h-full w-full object-cover" />
-                <UserCircle v-else class="h-10 w-10" />
-              </div>
+              <!-- 没上传头像时同样是那套 emoji 小动物（用户 2026-10-07：「它是一个蓝色的
+                   一个图标，跟那个头像没有同步」）。原来这里画的是 lucide 的 `UserCircle`
+                   ⇒ 同一个账号在导航栏是 emoji、在「我的」页是个蓝灰人形。 -->
+              <SelfAvatar class="h-14 w-14 shrink-0 rounded-full" />
               <div class="flex min-w-0 flex-1 flex-col">
                 <span class="truncate text-base font-medium" :title="app.device?.nickname || app.device?.device_id || t('nav.me')">{{ app.device?.nickname || app.device?.device_id || t("nav.me") }}</span>
                 <span class="truncate text-xs text-[var(--gosslan-text-2)]" :title="app.device?.device_id">{{ app.device?.device_id || "" }}</span>
@@ -749,7 +763,7 @@ function onResizeEnd() {
         </span>
         <span class="text-[11px]">{{ t("nav.contacts") }}</span>
       </button>
-      <!-- 收藏：移动端 rail hidden md:flex（看不到），TabBar 保留入口。
+      <!-- 收藏：移动端 rail hidden desktop:md:flex（看不到），TabBar 保留入口。
            桌面端 NavRail 也有星标按钮，风格一致。 -->
       <button
         class="relative flex flex-1 flex-col items-center gap-0.5 py-2.5"
@@ -807,6 +821,16 @@ function onResizeEnd() {
         <ProfileSection :active="profileOpen" :reload-token="profileReloadToken" />
       </MobilePageFrame>
     </Transition>
+
+    <!-- 全局图片预览：**整个应用只有这一个实例**（用户 2026-09-24 #40）。
+         状态在 `useImagePreviewStore`，任何功能都按 `{items, startIndex, source}` 调它，
+         不再各自挂一份 `<ImageLightbox>` 各抄一遍数组。 -->
+    <ImageLightbox
+      :images="preview.images"
+      v-model:index="preview.index"
+      :open="preview.open && !preview.inWindow"
+      @close="preview.close()"
+    />
 
     <!-- Toast：主窗口与独立窗口共用的 HUD（见 `ToastHud.vue` 的说明）。 -->
     <ToastHud />

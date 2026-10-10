@@ -137,6 +137,57 @@ test("「添加好友」页的通道开关：走 store、用开关给的目标�
   );
 });
 
+/**
+ * 「添加好友」空状态必须把**跨网通道**（VPN / 公网中转）也算进去（用户 2026-09-22）。
+ *
+ * 现场：用户不在局域网、只开了公网中转，关掉局域网/蓝牙两个开关后界面只说"两条通道都关了"，
+ * 于是以为"中转坏了搜不到人"。真相是中转**本就不为陌生人配对**（哑管道，ADR-0020 D4）——
+ * 所以空状态必须改口说清"跨网通道只连通已是好友的人"，而不是笼统地报"都关了"。
+ * 这条退化不会报错（界面照常显示一句话），只能静态钉住。
+ */
+test("「添加好友」空状态：跨网通道在线时不许笼统说「都关了」，且不得搬入口令/地址", () => {
+  const modal = read("components/AddFriendModal.vue");
+  assert.match(
+    modal,
+    /hasCrossNet\.value\s*\?\s*t\("friend\.add\.empty\.onlyCrossNet"\)/,
+    "LAN/BT 都关但 VPN/中转在线时，必须走 onlyCrossNet 这条诚实文案（说清只连通已是好友的人）",
+  );
+  assert.match(modal, /app\.runtime\?\.routedEndpoints/, "VPN 端点数必须读自运行快照（唯一真相源）");
+  assert.match(modal, /app\.runtime\?\.relay/, "中转状态必须读自运行快照（唯一真相源）");
+  // 口令与服务器地址只属于设置页：快照里压根没有它们，加好友页也不许去别处捞。
+  assert.ok(!/\.token\b/.test(modal), "加好友页绝不许出现中转口令");
+  assert.ok(!/getRelayConfig/.test(modal), "加好友页不得拉取含口令的中转配置（只读快照里的可公开字段）");
+});
+
+/**
+ * 连接类型图标必须**只有一处映射**（用户 2026-09-22：四种通道的图标各界面全局统一）。
+ *
+ * 此前图标选择内联在 ChatHeader 一处；好友列表要显示同款图标就得再抄一遍 v-if 链 ——
+ * 抄出来的第二份迟早和第一份漂移（少一种通道、或图标对错）。判据：图标名由
+ * `peerConnectionInfo::linkIconName` 唯一给出、渲染由 `components/ui/LinkIcon.vue` 唯一负责，
+ * 聊天头与好友列表都**引用**这两者，而不是各自再写 lucide 图标的 v-if 链。
+ */
+test("连接图标全局统一：linkIconName 唯一判据 + LinkIcon.vue 唯一渲染，聊天头/好友列表都引用", () => {
+  const info = read("utils/peerConnectionInfo.ts");
+  assert.match(info, /export function linkIconName\(/, "图标名判据必须收在 peerConnectionInfo（单一真相源）");
+  const linkIcon = read("components/ui/LinkIcon.vue");
+  assert.match(linkIcon, /name === 'relayServer'/, "LinkIcon 必须能渲染公网中转图标（与桥接区分）");
+  assert.match(linkIcon, /name === 'relay'/, "LinkIcon 必须能渲染 mesh 桥接图标");
+  for (const f of ["components/chat/ChatHeader.vue", "components/conversation/FriendListItem.vue"]) {
+    const src = read(f);
+    assert.match(src, /import LinkIcon from "@\/components\/ui\/LinkIcon\.vue"/, `${f} 必须用共享 LinkIcon`);
+    assert.match(src, /linkIconName\(/, `${f} 的图标名必须走 linkIconName 唯一判据，不许自己再写 v-if 链`);
+  }
+  // 好友列表的链路来自节点表关联（Friend 不带 link），且 v-memo 必须带上它，否则链路变了图标不刷新
+  const list = read("components/ConversationList.vue");
+  assert.match(list, /:link="linkOf\(f\.device_id\)"/, "好友列表必须把节点表里的链路类型传给行");
+  assert.match(
+    list,
+    /v-memo="\[f\.nickname, f\.avatar, f\.online, linkOf\(f\.device_id\)/,
+    "v-memo 必须含链路类型，否则链路变化时图标不刷新（v-memo 会跳过重渲染）",
+  );
+});
+
 test("移动端「新的朋友」必须切到主面板（否则点了像没反应）", () => {
   const layout = read("layouts/ResponsiveLayout.vue");
   const open = layout.slice(
@@ -168,10 +219,18 @@ test("安卓文件选择：选择器的返回值必须先落地成真实路径�
 test("已读回执只在「聊天视图真的可见」时才发（用户 2026-09-12 实测）", () => {
   const store = read("stores/useChatStore.ts");
   // 判据必须同时看：是这个会话 + 应用在前台 + **聊天视图可见**
+  // ★ 2026-09-28：这三个条件搬进了 `chatViewerLooking()`，因为「有人@我」红点那条也要读同一份口径
+  //  （"会话开着"不等于"看着"：桌面端启动会自动打开最近那个会话）。所以这里改成钉两件事：
+  //  ① 那份口径有一个家、家里同时判前台与视图可见；② 标记已读那条真的走它（不许再手写一遍）。
   assert.match(
     store,
-    /activeConv\.value !== convId \|\| document\.hidden \|\| !app\.chatVisible/,
-    "去抖标记已读必须同时判「聊天视图可见」——否则用户在设置页/新的朋友页时收到消息也会被标已读",
+    /function chatViewerLooking\(\)[\s\S]{0,200}!document\.hidden && app\.chatVisible/,
+    "「在不在看」这份口径必须有一个家，且家里同时判「前台 + 聊天视图可见」——否则用户在设置页/新的朋友页时收到消息也会被标已读",
+  );
+  assert.match(
+    store,
+    /activeConv\.value !== convId \|\| !chatViewerLooking\(\)/,
+    "去抖标记已读必须走那份共用口径 ⇒ 它和「有人@我」两条不许各写一遍条件（两处各写迟早只改一处）",
   );
   assert.match(
     store,
@@ -291,11 +350,11 @@ test("提请注意必须与实际发出的通知同进同出（放 flushNotifica
   const store = read("stores/useChatStore.ts");
   const flushAt = store.indexOf("function flushNotifications");
   const notifyAt = store.indexOf("function maybeNotify");
-  const callAt = store.indexOf("api.requestAttention()");
+  const callAt = store.indexOf("api.requestAttention(urgent)");
   assert.ok(flushAt > 0 && notifyAt > 0 && callAt > 0, "store 里这三处都应能找到（函数被改名了？）");
   assert.ok(
     flushAt < callAt && callAt < notifyAt,
-    "api.requestAttention() 必须写在 flushNotifications 里（且在 maybeNotify 之前），否则会脱离通知单独闪烁",
+    "api.requestAttention(urgent) 必须写在 flushNotifications 里（且在 maybeNotify 之前），否则会脱离通知单独闪烁",
   );
   assert.match(
     store,
@@ -361,15 +420,32 @@ test("托盘红点的实现必须整块 cfg 到非 macOS（否则 macOS 腿 clip
  * 两条根因都在这条测试里钉死：
  * 1. 前端只按"在不在节点表"判在线 ⇒ 有活跃链路但广播没收到的好友被显示离线；
  * 2. 聊天头的链路状态只按"消息条数"刷新 ⇒ 链路切回直连后仍显示「桥接」。
+ *
+ * ⚠️ 2026-10-03：在线判定已从 store 私有函数抽到 `utils/friendOnline.ts`
+ * （原先被抄成两份，`searchNearbyPeers` 那份漏了 `linkedIds`）。判据随之跟到新家 ——
+ * **要盯的是"判定必须含 linkedIds"这件事，不是它住在哪个文件**。
+ * 这里同时钉住两个调用点都走共用函数，否则那份"第二个家"会重新长出来。
  */
 test("链路徽标/在线状态必须实时（不能只看节点表或消息快照）", () => {
-  const chat = read("stores/useChatStore.ts");
+  const online = read("utils/friendOnline.ts");
   assert.match(
-    chat,
+    online,
     /linkedIds\.has\(f\.device_id\)/,
     "在线必须包含「有活跃链路」的节点（与后端 friend_is_online 同口径）",
   );
-  assert.match(chat, /filter\(\(x\) => x\.link\)/, "peers-updated 的 link 字段必须被用上");
+  assert.match(online, /filter\(\(x\) => x\.link\)/, "peers-updated 的 link 字段必须被用上");
+  // 两个调用点共用同一份实现：AI_RULES §32（同一份语义不许有两个家）。
+  // 少了任一条 ⇒ 那条路径会退回"只看节点表"的旧口径。
+  // 数的是**调用**（`markFriendsOnlineFrom(` 带左括号），import 那行不带括号，不计入。
+  const chat = read("stores/useChatStore.ts");
+  const calls = [...chat.matchAll(/[^.\w]markFriendsOnlineFrom\(/g)].length;
+  assert.equal(
+    calls,
+    2, // onPeers 与 searchNearbyPeers 各一次
+    `useChatStore 里 markFriendsOnlineFrom 被调用 ${calls} 次，期望 2（onPeers + searchNearbyPeers）。
+     任一调用点改成自己算 online，linkedIds 那一层就会被悄悄丢掉 —— 那正是本条判据
+     2026-09-14 钉住的缺陷。`,
+  );
   const win = read("components/ChatWindow.vue");
   assert.match(
     win,
@@ -408,10 +484,16 @@ test("图片预览：在途失败不缓存 + 传输完成时失效重读", () =>
  * 判据：api 暴露 request_content；图片气泡失败可触发重取；前端真的调后端命令。
  */
 test("内容拉取：点击重取必须接通后端 request_content", () => {
-  assert.match(read("api/index.ts"), /requestContent:/, "api 必须暴露 request_content");
+  const api = read("api/index.ts");
+  assert.match(api, /requestContent:/, "api 必须暴露 request_content");
+  assert.match(
+    api,
+    /requestContent: \([^)]*\) =>\s*invoke<boolean>\("request_content"/,
+    "门面必须真的调到后端命令（组件不再直连 invoke，所以这一环必须钉住）",
+  );
   const item = read("components/MessageItem.vue");
   assert.match(item, /@refetch="refetchContent"/, "图片气泡失败必须能触发重取");
-  assert.match(item, /invoke<boolean>\("request_content"/, "必须真的调后端命令");
+  assert.match(item, /api\.requestContent\(/, "组件必须走门面重取，而不是自己吞掉");
 });
 
 /** 统一内容状态（ADR-0019 Phase 1）：未完成/失败的文件卡片必须能给「重新获取」。 */
@@ -422,4 +504,307 @@ test("统一内容状态：未完成/失败的文件必须能给「重新获取�
   assert.match(bubble, /emit\('refetch'\)/, "未完成时按钮必须触发 refetch");
   const item = read("components/MessageItem.vue");
   assert.match(item, /:content-retry=/, "MessageItem 必须把统一状态传给文件卡片");
+});
+
+/**
+ * 移动端「外面还有多少条没看」的两处外显必须同源。
+ *
+ * 为什么要钉：进聊天页后底部 TabBar 被隐藏（用户 2026-09-24：返回箭头上要提示别的新消息），
+ * 于是补了第二处徽标。第二处最容易退化成"在聊天头里自己再聚合一份"或"顺手减掉当前会话"，
+ * 那样两处数字会在同一屏里对不上 —— 而用户判断"同步/不同步"恰恰只看这两处。
+ *
+ * 判据只有 `useChatStore.totalUnread` 一个（"什么算未读"已在批次 k 收敛到 `countsTowardUnread`），
+ * 聊天头只接 prop、不自己算；当前会话进入即清未读，所以总数天然就是"外面"的量。
+ */
+test("未读总数外显（TabBar + 返回箭头）必须共用 totalUnread 一个判据", () => {
+  const store = read("stores/useChatStore.ts");
+  assert.match(store, /const totalUnread = computed/, "总数只能有一份");
+
+  const header = read("components/chat/ChatHeader.vue");
+  assert.match(header, /unreadTotal\?: number/, "聊天头只接现成的总数，不自算");
+  assert.doesNotMatch(header, /\.reduce\(/, "聊天头里出现聚合 = 会和 TabBar 漂移");
+  assert.match(header, /<UnreadBadge/, "徽标走全局唯一实现");
+
+  assert.match(
+    read("components/ChatWindow.vue"),
+    /:unread-total="chat\.totalUnread"/,
+    "调用方必须把 totalUnread 原样传下去",
+  );
+  assert.match(
+    read("layouts/ResponsiveLayout.vue"),
+    /:count="chat\.totalUnread"/,
+    "TabBar 与返回箭头读同一个数",
+  );
+});
+
+/**
+ * 「切到会话」这个动作必须排在"把数据读回来"之前（用户 2026-09-24 #29：
+ * 切换会话要瞬间响应，内容随后由骨架让位给异步加载）。
+ *
+ * 为什么只钉调用顺序、不钉耗时：`openConversation` 第一行就**同步**写下 `activeConv`，
+ * 之后才是 `loadMessages`（两轮串行 IPC + 后端全局 `Mutex<Connection>` 排队）。
+ * 所以把翻页写在 await 之后，退化的不是"快一点慢一点"，而是**整页要等读库才出现** ——
+ * 点下去毫无反应，再点第二下才看见变化。这类退化在界面上看起来"功能还在"，
+ * 只有静态钉顺序能挡住。
+ *
+ * 三处都各有过一次这种写法（会话列表 `openConv` 一直是对的，另外三条是补上的）：
+ * 收藏跳转那一处最贵 —— `locateMessageInConv` 会从最新一页往前**逐页**翻到 MAX_PAGES。
+ */
+test("切会话的三处入口：翻页/收页必须排在读数据之前", () => {
+  const body = (src: string, fn: string, nextFn: string) => {
+    const at = src.indexOf(fn);
+    assert.ok(at > 0, `找不到 ${fn}（函数被改名了？）`);
+    const end = src.indexOf(nextFn, at);
+    return src.slice(at, end > at ? end : at + 1600);
+  };
+  // ⚠️ 两侧都必须**找得到**：`indexOf` 找不到返回 -1，而 -1 小于任何真实下标 ——
+  // 只比大小的话"把翻页那行整行删掉"反而会让守卫变绿（假绿）。
+  const mustComeFirst = (scope: string, first: string, second: string, why: string) => {
+    const a = scope.indexOf(first);
+    const b = scope.indexOf(second);
+    assert.ok(a >= 0, `${why} —— 但这一段里已经找不到 ${first} 了`);
+    assert.ok(b >= 0, `${why} —— 但这一段里已经找不到 ${second} 了`);
+    assert.ok(a < b, why);
+  };
+
+  const layout = read("layouts/ResponsiveLayout.vue");
+  mustComeFirst(
+    body(layout, "async function sendMessageTo", "\nasync function removeFriend"),
+    'app.mobileView = "chat"',
+    "await chat.openConversation",
+    "「发消息」：翻页必须排在 openConversation 之前",
+  );
+
+  const store = read("stores/useChatStore.ts");
+  mustComeFirst(
+    body(store, "async function handleNotificationClick", "\n  /**\n   * 通知点击的**统一路由**"),
+    'app.mobileView = "chat"',
+    "await openConversation",
+    "点通知进会话：翻页必须排在 openConversation 之前（focusWindow 仍须先行，见函数内注释）",
+  );
+
+  const fav = read("components/FavoritePanel.vue");
+  mustComeFirst(
+    body(fav, "async function locate(", "\nfunction askDelete"),
+    'emit("close")',
+    "await chat.locateMessageInConv",
+    "收藏跳转：先收起本页再逐页定位（定位最坏翻 10 页）",
+  );
+});
+
+/**
+ * 通讯录里「自己」那一行的标记（用户 2026-09-24 #31：认不出哪一个是自己）。
+ *
+ * 「自己」是一条**伪好友行**，与好友共用同一条渲染/排序/搜索路径，所以标记必须
+ * 挂在渲染层，而不是去改数据（改 nickname 会连带影响分组首字母、排序与搜索命中）。
+ * 两处退化值得钉：
+ * - 通讯录有**两个渲染分支**（搜索时平铺 / 浏览时按首字母分组），只给一个挂上
+ *   就是"搜到了带（我）、平时不带"这种只在半个界面上成立的修复；
+ * - 判据必须是 `isSelfConversation`（`utils/selfChat` 明写了"各处各写一遍
+ *   `=== device_id` 迟早漏一处"），文案必须走 i18n（英文界面不该出现「（我）」）。
+ */
+test("通讯录「（我）」标记：两个渲染分支都要挂，判据与文案都走同一条路", () => {
+  const list = read("components/ConversationList.vue");
+  const selfSites = (list.match(/:is-self="isSelfRow\(f\.device_id\)"/g) ?? []).length;
+  assert.equal(selfSites, 2, "平铺与分组两个 FriendListItem 分支都要传 is-self");
+  const judgeAt = list.indexOf("function isSelfRow");
+  assert.ok(judgeAt > 0, "isSelfRow 应存在（判据收在一个函数里）");
+  assert.match(
+    list.slice(judgeAt, judgeAt + 400),
+    /isSelfConversation\(/,
+    "行身份必须复用 isSelfConversation，不再写一份 === device_id",
+  );
+
+  const item = read("components/conversation/FriendListItem.vue");
+  assert.match(item, /isSelf\?: boolean/, "标记由调用方传，组件不读 store");
+  assert.match(item, /t\("friend\.selfSuffix"\)/, "文案走 i18n");
+  // 只查模板段：注释里提到「（我）」是在解释这件事，不是硬编码。
+  const tplAt = item.indexOf("<template>");
+  assert.ok(tplAt > 0, "找不到 <template>（这一段就空转了）");
+  assert.ok(
+    !item.slice(tplAt).includes("（我）"),
+    "模板里不该硬编码中文后缀（英文界面会出现「（我）」）",
+  );
+  // 悬停 title 与读屏 aria 都要用同一份带标记的名字，否则"看得见、念不出来"。
+  assert.match(item, /:aria-label="t\('friend\.listItem\.aria', \{ name: displayName/, "aria 用带标记的名字");
+  assert.match(item, /:title="displayName"/, "title 用带标记的名字");
+});
+
+/**
+ * 群任务的三处外显必须同源于**同一份折叠结果**（用户 2026-09-24 #23）。
+ *
+ * 三条各自都"看起来功能还在"，只有静态钉调用路径能挡住：
+ * 1. **时间线里的任务卡片**读的是创建那条 `todo` 消息的载荷，而之后所有改动都走
+ *    `todo_update`（静默、不进时间线）⇒ 卡片自己的载荷永远停在创建时，而新建恒为「待办」。
+ *    表现："群里任务早干完了，聊天里那条还挂着待办" —— 这正是要点卡片去看的原因。
+ *    同一句话还管着编号的**类型字母**：载荷里的 `category` 也是创建那一刻的，
+ *    所以字母必须由实时表里那份当前类型现推（否则「改成缺陷了卡片还写着 R」）。
+ *    修法只能是会话层折一次传下去（`reactionMap` 同构）；每条气泡自己折叠就是 O(n²)。
+ * 2. **两处任务计数**（弹窗标题 / 成员面板摘要）原先算"含归档的全部"，而看板默认那一档
+ *    是活动任务 ⇒ 标题写 (9) 进去只看到 6 条。三处消费者必须同一次 `foldTodos` +
+ *    同一个 `isEffectivelyArchived` 过滤。
+ * 3. **点卡片直达详情**的 watch 必须同时看 `open`：只看 id 的话，关掉面板再点**同一条**卡片
+ *    第二次不触发（值没变），用户看到的就是"这个按钮时灵时不灵"。
+ */
+test("群任务三处外显同源：卡片实时状态 / 两处计数口径 / 点卡片直达", () => {
+  const chatWin = read("components/ChatWindow.vue");
+  assert.match(
+    chatWin,
+    /const todoLive = computed\(\(\) => \{[\s\S]{0,400}foldTodos\(chat\.messages\[convId/,
+    "会话层折叠一次产出 todo_id → 当前状态与当前编号（不许放进每条气泡）",
+  );
+  assert.match(chatWin, /:todo-live="todoLive"/, "折叠结果要传给 MessageItem");
+  assert.match(
+    read("components/MessageItem.vue"),
+    /:live-todo="todoLive"/,
+    "再传给任务卡片（少这一环等于白折）",
+  );
+  const card = read("components/TodoCardBubble.vue");
+  assert.match(
+    card,
+    /const status = computed<TodoStatus>\(\s*\(\) =>[^;]*props\.liveTodo/,
+    "卡片的状态必须优先查实时表，查不到才退回创建快照",
+  );
+  // 编号那一格是同一个开关的**另一面**（用户 2026-09-30 规则 3：改类型只换字母）：
+  // 字母由**当前**类型现推，所以卡片也必须查这张表 —— 只修状态那一面就是"改成缺陷了还写着 R"。
+  assert.match(
+    card,
+    /const code = computed\(\(\) =>\s*props\.liveTodo\?\.get\(/,
+    "卡片的编号码必须优先查实时表：只看创建快照会让改完类型后的字母停在旧值",
+  );
+
+  for (const f of ["components/GroupTasksPanel.vue", "components/GroupMemberPanel.vue"]) {
+    assert.match(
+      read(f),
+      /foldTodos\([\s\S]{0,160}?\.filter\(\(x\) => !isEffectivelyArchived\(x\)\)/,
+      `${f} 的条数要滤掉已归档 —— 与看板默认那一档同口径`,
+    );
+  }
+
+  const board = read("components/GroupTasksBoard.vue");
+  assert.match(
+    board,
+    /watch\(\s*\[\(\) => props\.open, \(\) => props\.focusTodoId\]/,
+    "直达详情的 watch 必须把 open 一起看，否则第二次点同一条卡片不生效",
+  );
+});
+
+/**
+ * 桌面端「点聊天里的任务卡片 → 独立窗口展开那条任务」的接线（用户 2026-09-24 #39）。
+ *
+ * 这个需求的实现难点**不是**功能，是三个各自都能悄悄失效的点，所以只能钉源码：
+ * 1. **两条投递路径都得在**：新建的窗口不会收到定向事件（那时还没有监听者），
+ *    只能靠它挂载时自己取一次性暂存；已经开着的窗口不会经历挂载，只能靠事件叫醒。
+ *    少任何一条，表现都是"有时点了没反应" —— 这种 bug 只在真机上偶发，测试抓不住。
+ * 2. **投递必须独立于启动器**：`launchAuxWindow` 有单飞 + 连点防抖，判定"这次不算新打开"
+ *    时**根本不会调用** `open_group_todos_window` ⇒ 如果目标只随那次调用走，
+ *    第二张卡片带的 todoId 就地消失。所以 `requestGroupTodoFocus` 必须排在启动器**之前**。
+ * 3. **暂存不能被下次打开继承**：不带目标地打开（标题栏按钮）必须清掉上次的暂存，
+ *    否则用户从按钮打开窗口会被上次那条任务莫名展开。
+ *
+ * 事件名本身（`group-todo-focus`）两端是否对得上，由 `src/api/events.test.ts` 负责
+ * （它扫 Rust 的 emit/emit_to 与前端 listen 的名单），这里不重复。
+ */
+test("桌面端任务窗口的展开投递：两条路 + 独立于启动器 + 不带目标时清暂存", () => {
+  const cmd = readCommandsSrc();
+  const openAt = cmd.indexOf("pub fn open_group_todos_window(");
+  assert.ok(openAt > 0, "找不到 open_group_todos_window");
+  // 桌面版那个先出现（移动端桩在更下面），到下一段文档注释为止就是它的函数体。
+  const openEnd = cmd.indexOf("\n///", openAt);
+  const openBody = cmd.slice(openAt, openEnd);
+  assert.ok(openBody.length > 500, "open_group_todos_window 的窗口切得太短（守卫会空转）");
+  const takeAt = cmd.indexOf("fn take_group_todo_focus(", openEnd);
+  assert.ok(takeAt > openEnd, "找不到 take_group_todo_focus（守卫会空转）");
+  // ① 新建走暂存；**复用必须无条件发事件**
+  // （2026-09-24：窗口从"关窗即销毁"改成常驻之后，这条事件多了一项职责 —— 复用的窗口不会
+  //  重新挂载、也就不会自己重读数据，不收到的话看到的就是上一次那份旧列表。
+  //  条件里再带 `focus_todo_id.is_some()` 就等于"只是打开看板"那次不刷新，所以判据是**恰好**
+  //  `if !created {`，多一个条件都要红。）
+  assert.match(openBody, /pending\.insert\(group_id\.clone\(\), id\.clone\(\)\)/, "带目标时必须写暂存");
+  assert.match(openBody, /pending\.remove\(&group_id\)/, "不带目标时必须清掉上次暂存");
+  assert.match(openBody, /if !created \{/, "复用时（没经历挂载）必须无条件定向发事件");
+  assert.doesNotMatch(
+    openBody,
+    /if !created && focus_todo_id/,
+    "把发事件重新收窄成「只带目标时才发」= 常驻窗口复用时不再刷新数据",
+  );
+  // ② 取走即清（否则同一次点击会被展开两次 / 留下过期目标）
+  assert.match(cmd.slice(takeAt, takeAt + 400), /\.remove\(&group_id\)/, "取走必须同时清掉（一次性）");
+
+  const win = read("components/GroupTodosWindow.vue");
+  // 固定 label 之后，"该显示哪个群"也是**两条互补路径**（与暂存那两条同形）：
+  // 挂载时自己取一次上下文（预热过 / 新建的窗口那时还没有事件监听者），
+  // 已经存在的窗口靠定向事件被叫醒 —— 而且那条事件现在承担"换群 + 重读"两件事。
+  assert.match(
+    win,
+    /onMounted\(\(\) => \{[\s\S]{0,220}?api\s*\.\s*getGroupTodosContext\(\)/,
+    "挂载时必须主动取一次上下文（只发事件的话，预热/新建那一次就是点了没反应）",
+  );
+  assert.match(
+    win,
+    /onGroupTodosTarget\(\(payload\)[\s\S]{0,160}?applyTarget\(/,
+    "被定向事件叫醒时必须换上下文并重读（常驻之后没有『重建即新数据』这回事了）",
+  );
+  assert.match(win, /await chat\.loadGroupTodos\(next\)/, "叫醒之后确实要重读该群数据");
+  // 换群必须重置看板内部状态（筛选 / 草稿 / 展开态都属于上一个群）—— 留着就是串群。
+  assert.match(
+    win,
+    /<GroupTasksBoard\s+:key="groupId"/,
+    "看板必须按群重挂（:key=\"groupId\"），否则切群会带着上一个群的草稿与筛选",
+  );
+
+  // 局部变量别叫 `chat` —— 那是 store 实例在本仓的固定叫法，
+  // `storeContract` 会把它当 "chat.indexOf" 即"store 上缺一个成员"来判。
+  const mainWin = read("components/ChatWindow.vue");
+  const reqAt = mainWin.indexOf("api.requestGroupTodoFocus(");
+  const launchAt = mainWin.indexOf('launchAuxWindow("tasks"');
+  assert.ok(reqAt > 0, "主窗口必须投递展开目标");
+  assert.ok(launchAt > 0, "找不到启动器调用点（守卫会空转）");
+  assert.ok(reqAt < launchAt, "投递展开必须排在 launchAuxWindow 之前 —— 启动器会把后面那次调用整段合并掉");
+});
+
+/**
+ * 未读的"本地清零"只有一个家，而且旧快照不得把它点亮回来（架构复审第 5 步 · 3）。
+ *
+ * 复审原本这条写的是"未读收成单一来源（后端给值）"。核过之后前提不成立：
+ * 后端 `mark_read` 就是 `UPDATE conversations SET unread = 0`，`totalUnread` 也只由
+ * `conversations[].unread` 求和 —— 真相源本来就一个。漏的是**过渡**：乐观清零之后，
+ * 一份清零前发起的快照落地会把红点原样点亮（`refreshConversations` 里那句
+ * 「我没点它怎么又红了」就是这个），而 `StaleGuard` 挡不住它（同一份请求、数据是旧的）。
+ * 上一轮新加的"回到前台重拉会话"恰好放大了这条 —— 所以修它是收尾，不是新需求。
+ */
+test("本地清零只有一个家，且会话快照不得点亮已清零的未读", () => {
+  const store = read("stores/useChatStore.ts");
+  const codeLines = store
+    .split("\n")
+    .map((l, i) => ({ l: l.trim(), i: i + 1 }))
+    .filter((x) => x.l.length && !x.l.startsWith("//") && !x.l.startsWith("*") && !x.l.startsWith("/*"));
+
+  const writes = codeLines.filter((x) => x.l.includes(".unread = 0"));
+  assert.equal(
+    writes.length,
+    1,
+    `本地清零只能有一处实现，这些行还在各自写：${writes.map((w) => `${w.i}: ${w.l}`).join(" | ")}`,
+  );
+  assert.match(
+    store,
+    /function clearUnreadLocally\(convId: string\)[\s\S]{0,300}\.unread = 0/,
+    "唯一那处必须住在 clearUnreadLocally 里（它同时打水位，漏一个就不是同一个家）",
+  );
+  // 三个 markRead 回调 + 打开会话的乐观清零，至少四处都走这个入口
+  assert.ok(
+    (store.match(/clearUnreadLocally\(/g) ?? []).length >= 4,
+    "markRead 之后不许再各自手写清零 —— 水位漏打就等于豁免机制形同不存在",
+  );
+
+  // 接线：快照落地必须带上"发起时刻"，否则豁免无从判断；水位必须被回收
+  const refresh = store.slice(store.indexOf("async function refreshConversations("));
+  const body = refresh.slice(0, refresh.indexOf("\n  }", 10));
+  assert.match(body, /const issuedAt = Date\.now\(\);/, "必须在**发起前**取时刻（落地后取就晚了）");
+  assert.match(
+    body,
+    /applyConversationSnapshot\(\s*conversations\.value,\s*list,\s*unreadClearedAt,\s*issuedAt,?\s*\)/,
+    "refreshConversations 必须经 applyConversationSnapshot 落地，不能整表覆盖",
+  );
+  assert.match(body, /pruneUnreadClears\(/, "水位要回收，否则这个 Map 跟着会话数无界增长");
 });

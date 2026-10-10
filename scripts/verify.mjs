@@ -6,8 +6,8 @@
  *
  * 这个仓库的验证手段散在很多地方，且此前**没有任何一个地方把它们串起来**：
  *
- *   · `npm test`                        前端断言（457）
- *   · `cargo test --features bluetooth` Rust 用例（505）
+ *   · `npm test`                        前端断言（条数由它自己打印，写在这里一定会腐烂）
+ *   · `cargo test --features bluetooth` Rust 用例（同上）
  *   · `check-test-manifest`             挡住"测试静默不跑"
  *   · `check-invariant-exceptions`      挡住"照文档误修"
  *   · `check-ble-constants`             挡住"BLE 载荷预算多处各算一遍"
@@ -37,7 +37,7 @@
  *     npm run verify:full -- --no-guards  # 全量层但跳过护栏扫描（护栏工具缺失时的临时绕过，会留痕）
  *                                     #   （快速层本来就不含护栏扫描，那里加这个参数是无操作）
  *     npm run verify -- --list    # 只列出会跑哪些步骤（加 -- --full-gate 看全量层）
- *     node scripts/verify.mjs --group frontend|rust|android
+ *     node scripts/verify.mjs --group <组名>      # 组名只认下面 GROUPS 那份，非法值会自报全部合法值
  *                                 # 只跑某一个 CI job 的步骤（CI 用这个，见下面「CI 归属」）
  *
  * ### 为什么分两层（实测数据，不是猜的）
@@ -75,21 +75,30 @@
  *
  * ## 有意**没有**包含 `npm run version:check`
  *
- * 它当前是**红的**（`29ee060` 与 `7c03341` 两个历史提交缺 `Version-Bump:` 声明）。
- * 把它塞进来会让这个入口一出生就是红的，而红的入口等于没有入口 ——
- * 大家会立刻开始绕过它。等那两个提交在后续发布流程里被消化掉之后再加。
- * 同理，`cargo fmt --check`（517 处差异）与 `clippy`（未安装）也不在这里。
+ * ~~它当前是红的（`29ee060` 与 `7c03341` 两个历史提交缺 `Version-Bump:` 声明）~~
+ * —— 那句归因已被 #123 作废（声明检查只看未推送提交），今天又把它剩下的那半条"必红"修掉了
+ * （①「版本落后」现在只看**真欠的档位**：纯文档/判据提交不再逼出版本号）。
+ * **仍然不进这一层**，原因换成了可成立的那一条：②只看未推送提交，而这一层跑在本地工作树、
+ * 远端引用是几分钟前的状态 ⇒ 它判的是"我还没推的那几条"，这类判断该由**人**在提交时看
+ * （`git commit` 之前跑一次），而不该塞进每次回归都跑的门禁里 —— 塞进去等于让门禁去审判
+ * 一个正在变动的集合。CI 上真正的闸是 `check-change-budget.mjs` 判据 4（声明 ↔ 四个版本清单文件）。
+ * ~~同理，`cargo fmt --check`（517 处差异）与 `clippy`（未安装）也不在这里。~~
+ * —— 这句今天一并改掉：那两条**都已经是全量层里的步骤**（见下面 `cargo fmt --check --all` /
+ * `cargo clippy（-D warnings，--features bluetooth）`），而"517 处差异""clippy 未安装"两个前提
+ * 今天现跑分别是 **0 处**与 `clippy 0.1.98` ⇒ 那是当时的快照被当成了事实。
  *
  * ⚠️ 但 `version:check` 里**混着**一件与记账无关的事：CHANGELOG 结构检查
  * （唯一行首 `## [Unreleased]` 锚点 / 标题格式 / 新在前降序）。它现在有独立入口
  * `npm run version:changelog`，**已纳入本入口** —— 结构是结构、记账是记账，
  * 不该因为"版本还没发"就连结构检查一起红掉（这正是它此前被判成护栏失效的原因）。
  *
- * 退出码：0 = 全部通过；1 = 有步骤失败（默认 fail-fast，不继续跑后面的）。
+ * 退出码：0 = 全部通过；1 = 有步骤失败。
+ * 默认 fail-fast（第一步红就停），**例外**是 `--group local` / `--group release`：
+ * 那两层的每一步都是独立的一轮 E2E ⇒ 默认跑完再汇总（见下面 `KEEP_GOING` 那段，红照样 exit 1）。
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -143,6 +152,44 @@ const listOnly = argv.includes("--list");
  */
 const fullGate = argv.includes("--full-gate") || full;
 
+/**
+ * 起跑前先自扫自家脚本：模板字符串链**少一个 `+`** 会被解析成"标签模板"——
+ * 语法完全合法（`node --check` 量不到），只在运行到那一行时抛 `TypeError: "…" is not a function`。
+ * 真实代价 2026-10-10：那一步 `why` 的散文连着六行少 `+`，于是**本地层从加载期就崩**，
+ * 而快速层与 CI 都不构造那一段 ⇒ 一整天没人知道，红只在真正要跑本地层那一刻才露。
+ * 所以这条扫描放在**任何一步之前**，让每一层（含 CI 跑的那层）都先过它。
+ *
+ * 刻意排除的合法写法：行尾是 `,` / `;` / `)` / `]` 的相邻字面量（数组元素、多参数调用），
+ * 显式以 `+` 收尾的正常链式拼接，以及注释行（`*` / `//` / `/*` 开头）。
+ */
+const BAD_CHAIN_DIRS = ["scripts", "perf"];
+const badChains = [];
+for (const dir of BAD_CHAIN_DIRS) {
+  const absDir = path.join(ROOT, dir);
+  let names = [];
+  try {
+    names = readdirSync(absDir);
+  } catch {
+    continue; // 目录不在（比如某些平台上没有 perf/）⇒ 没什么可扫
+  }
+  for (const f of names.filter((n) => n.endsWith(".mjs"))) {
+    const lines = readFileSync(path.join(absDir, f), "utf8").split("\n");
+    for (let i = 0; i < lines.length - 1; i += 1) {
+      const a = lines[i].trimEnd();
+      const bStart = lines[i + 1].trimStart();
+      if (!a.endsWith("`") || a.endsWith("+")) continue;
+      if (/^\s*(\*|\/\/|\/\*)/.test(lines[i]) || bStart.startsWith("*")) continue;
+      if (bStart.startsWith("`")) badChains.push(`${dir}/${f}:${i + 1}`);
+    }
+  }
+}
+if (badChains.length > 0) {
+  console.error("✗ 模板字符串链少了一个 +（相邻字面量会被当成标签模板 ⇒ 运行期 TypeError，"
+    + "而 node --check 看不见）：");
+  for (const w of badChains) console.error(`   · ${w}`);
+  process.exit(1);
+}
+
 // ⚠️ 快速层不跑护栏 ⇒ 连"找 python"都不做：否则没装 python 的机器上，一个与护栏无关的
 // 快速检查会因为找不到解释器直接红（分层时很容易顺手漏掉这一条）。
 const python = noGuards || !fullGate ? null : findPython();
@@ -165,6 +212,77 @@ const steps = [
     cwd: ROOT,
     cmd: NODE_EXE,
     args: ["scripts/check-invariant-exceptions.mjs"],
+  },
+  {
+    group: "frontend",
+    name: "不变量钩子守卫",
+    why: "挡住「文档写着'必须'、下面没有任何东西在跑」——每条 INV-P 的 `- 钩子：` 必须当场解析成真实存在的"
+      + "用例/护栏/夹具；测试改名或被删而文档没回来改，这里就红（条数由该步自己打印）",
+    cwd: ROOT,
+    cmd: NODE_EXE,
+    args: ["scripts/check-invariant-hooks.mjs"],
+  },
+  {
+    group: "frontend",
+    name: "私钥边界守卫",
+    why: "钉住 INV-P18：可序列化类型（=命令返回值与 emit 载荷的共同要求）不许带密钥字段，"
+      + "命令也不许把密钥放在交出值的位置；破掉时**界面完全无症状**，所以只能靠机器判（条数由该步打印）",
+    cwd: ROOT,
+    cmd: NODE_EXE,
+    args: ["scripts/check-key-boundary.mjs"],
+  },
+  {
+    group: "frontend",
+    name: "db 锁作用域守卫",
+    why: "挡住「锁还活着时 emit」——只有一条 SQLite 连接，前端收到事件后的第一次 IPC 抢同一把锁 ⇒ 那一刻界面冻一下；全部取锁点逐处判（条数由该步自己打印，别处不抄），判据自带 7 段夹具自证",
+    cwd: ROOT,
+    cmd: NODE_EXE,
+    args: ["scripts/check-lock-scope.mjs"],
+  },
+  {
+    group: "frontend",
+    name: "文档硬数字对账",
+    why: "挡住「文档抄了一份数字、下次改代码没人回来改它」——门禁步数由 verify --list 现算对账；取锁点条数一律禁止手写（曾在四处共存三种写法）",
+    cwd: ROOT,
+    cmd: NODE_EXE,
+    args: ["scripts/check-doc-numbers.mjs"],
+  },
+  {
+    group: "frontend",
+    name: "文档 file:line 引用对账",
+    why: "挡住「文档里的 file:line 指向不存在的文件或早已超出文件范围」——实测 2026-10-03：台账引 `transport/mod.rs:122`（该文件只有 118 行）、`lib.rs:1920`（全文 560 行），全部照亮通过。与上一条同一立场（能被现算的东西不许留第二份手抄），只是那条管「数字」、这条管「指向」",
+    cwd: ROOT,
+    cmd: NODE_EXE,
+    args: ["scripts/check-doc-citations.mjs"],
+  },
+  {
+    group: "frontend",
+    name: "shell 变量护栏",
+    why: "挡住「$var 紧跟中文 ⇒ bash 把中文一起吞进变量名、该变量的值整段丢失」——实测 `bash -c 'echo \"$SRC（后续）\"'` 输出 `��后续）`，路径整个没了；本仓 2026-10-03 一天内两处踩到（ci-run.sh 的注释记着它，新写守卫时又犯一次），而这些行几乎都在**错误分支**上，正是排障时唯一要看的那一行",
+    cwd: ROOT,
+    cmd: NODE_EXE,
+    args: ["scripts/check-shell-var-cjk.mjs"],
+  },
+  {
+    group: "frontend",
+    name: "判据脚本自身可解析",
+    why: "挡住「门禁的判据脚本自己语法坏了，而只有贵层才发现」——实测：#126 往 harness 一条提示语后接第二行，落在已闭合的模板字符串外，E2E 层从此跑不了；能发现它的只有 E2E 层自己（一次 500s+，改一句提示语不会有人去跑）",
+    cwd: ROOT,
+    cmd: NODE_EXE,
+    args: ["scripts/check-scripts-parse.mjs"],
+  },
+  {
+    group: "frontend",
+    name: "护栏注入锚点静态核对",
+    light: true,
+    why: `挡住「护栏的锚点跟着被钉的那段码搬家，从此注入注不上去、那条守卫静默空转」——
+      实测 2026-09-29：1:1 门控换成 dm_allowed_by_features、content_features() 又多了第四个位，
+      两条 rust Case 的锚点当场失效（verify-guards.py --list 退 1），而快速层与全量层的护栏步
+      **只扫前端子集** ⇒ 两层当时都是绿的，这个洞只能靠 --list 或 40 分钟的整跑才看得见。
+      跑的就是 --list 那条起跑前核对：不编译、不注入，秒级成本。`,
+    cwd: ROOT,
+    cmd: "python3",
+    args: ["scripts/verify-guards.py", "--list"],
   },
   {
     group: "frontend",
@@ -193,7 +311,17 @@ const steps = [
   {
     group: "frontend",
     name: "Change Budget 守门",
-    why: "挡住「改动半径不声明 + 同领域反复打补丁」——L2 需 [plan]、L3/敏感文件需 [impact]、同领域 3 次 fix 即红",
+    why: "挡住「改动半径不声明 + 同领域反复打补丁 + 版本声明不成立」——L2 需 [plan]、L3/敏感文件需 [impact]、同领域 3 次修补即红（按 Version-Bump 声明判「修补」，不看 feat/fix 前缀）、声明与四个版本清单文件必须双向一致",
+    // 退出码 2 = 受检范围为空（一个 commit 都没判到）。**不能算 ✅**：它既不是通过也不是失败，
+    // 而是"这一步没看过任何代码" ⇒ 汇总里单列成未覆盖项（跟重门禁层同一套说法）。
+    zeroCoverageExit: 2,
+    // ⚠️ 这一步红了**不许**吃掉后面几步的证据（2026-09-28 实测代价）：它是本组第 11 步，
+    // 一次「标题少写 [impact]」让 CHANGELOG 结构 / npm test / npm run build / 护栏非空转
+    // 四步全部标"未跑"，而且连着三次推送都这样 ⇒ CI 只说得出"标记漏了"，
+    // 说不出"前端到底还能不能测过、还能不能构建"。而 §十二 要的正是后面这几件事。
+    // 它只读 git 元数据，与后面几步之间**没有** KEEP_GOING 那段讲的「编译 → 测试」依赖
+    // ⇒ 继续跑不会堆级联红，只是把该拿的证据拿全。红仍然是红（退出码语义一位没动）。
+    keepGoingOnFail: true,
     cwd: ROOT,
     cmd: NODE_EXE,
     args: ["scripts/check-change-budget.mjs"],
@@ -339,10 +467,18 @@ function isHeavyStep(s) {
  *
  * 强制声明：漏写 `group` 的步骤会在下面当场红 —— 因为静默漏掉的后果正是
  * "本地有这条门禁、CI 永远不跑"，那比没有更危险。
+ *
+ * ⚠️ 但 `local` **不是第四个 CI job**，它是显式反过来的那一格："这一层 CI 就是跑不动，
+ * 并且要让所有人看见它没跑"。真把它并进 frontend/rust，CI 不会变强，只会把一个需要
+ * release 产物 + GUI 会话 + 百 MB 磁盘的层变成一条永远红的 job。
  */
-const GROUPS = ["frontend", "rust", "android"];
+const GROUPS = ["frontend", "rust", "android", "local", "release"];
 
-/** `--group <frontend|rust|android>`：CI 的三个 job 各自只说"跑哪个组"，清单不再抄一份。 */
+/**
+ * `--group <组名>`：组名的唯一真源是下面这份 `GROUPS`（别在注释或文档里再抄一份枚举 ——
+ * 抄过一次就会漂：这里曾长期写着 "frontend|rust|android" 三个，而 `local`/`release` 落地后没人回头改）。
+ * CI 的三个 job 各取 frontend / rust / android；local 与 release 是本地专项层。
+ */
 const groupFlag = (() => {
   const i = argv.indexOf("--group");
   return i >= 0 ? argv[i + 1] : null;
@@ -350,6 +486,490 @@ const groupFlag = (() => {
 if (groupFlag && !GROUPS.includes(groupFlag)) {
   console.error(`✗ --group 只接受 ${GROUPS.join(" / ")}，收到 "${groupFlag}"`);
   process.exit(1);
+}
+
+/**
+ * `local` / `release` 这两层的每一步都是**独立的一轮 E2E**，步骤之间没有"前一步不成就不能跑"的依赖
+ * ⇒ 默认**跑完再汇总**（要回旧行为：加 `--fail-fast`）。
+ * 为什么只有这一族反过来：fail-fast 省的只是时间，而**红的那一刻恰恰是最需要证据的时候**。
+ * 现场（2026-09-27 实测）：屏幕锁着 ⇒ 「报告带全屏帧」那一格按环境红 ⇒ 旧默认让本地层
+ * 第 1 轮 0.8s 判负、**后面 13 轮全部标"未跑"**，一次环境问题吃掉整层证据。
+ * ⚠️ 快速层/全量层**不改**：那里的步骤真有"编译 → 测试"的依赖，继续跑只会堆出一屏级联红。
+ * 唯一例外是**自己声明了 `keepGoingOnFail` 的那一步**（目前只有 Change Budget）：它只读 git
+ * 元数据，与后面的步骤没有依赖 ⇒ 它红不该把后面几步的证据一起吃掉（理由与现场写在该步上）。
+ * 退出码语义不变：**任何一步红 ⇒ 仍然 exit 1**，跑更多只是多拿证据，不是把红洗白。
+ */
+const KEEP_GOING =
+  !argv.includes("--fail-fast") && (groupFlag === "local" || groupFlag === "release");
+
+/**
+ * 「本地专项层」（§十五要的 test:multi-instance / test:fault-injection）。
+ *
+ * 之前这四轮正向 E2E 只活在 package.json 的脚本里 —— `grep e2e-multi-instance scripts/verify.mjs`
+ * 零命中 ⇒ 没有任何门禁会跑它，等于"某人记得跑"才算跑过。现在接进同一个入口。
+ *
+ * 但**不假装 CI 覆盖了它**：归属列写 frontend/rust 会造出"CI 有这条 job"的假象，而 CI 现在真跑不动
+ * （要 release 产物 + 桌面 GUI 会话 + 百 MB 磁盘，Windows 那条腿还卡在 #47）。所以用一个显式的
+ * `local` 组声明"这一层 CI 不跑"，并且**默认层与全量层都不收它** ⇒ 快速层/全量层的计数一位没动
+ * （那两个数有 `check-doc-numbers.mjs` 对着 `--list` 现算对账）。
+ */
+const LOCAL_ONLY_WHY =
+  "本地专项：要 release 产物 + 桌面 GUI 会话 + 百 MB 级磁盘，CI 现在跑不动（Windows 腿卡在 #47）⇒ 宁可不跑，不许把没跑写成绿";
+if (groupFlag === "local") {
+  steps.push(
+    {
+      group: "local",
+      name: "UI 运行时探针：键盘出口 + 悬停操作的键盘入口（表情入口与置顶 ✕）+ 任务卡片与图片骨架真渲染",
+      why:
+        `§19/§20 那一格唯一能自动化的形状：焦点落点、方向键走格子、Esc 关完之后焦点去哪、` +
+        `回车打开的是不是高亮那一条 —— 这些只有走过**真浏览器输入管线**才看得见，` +
+        `而仓里没有 DOM 测试地基（没有 jsdom / vitest / @vue/test-utils / playwright 依赖）。` +
+        `这一条用「vite dev + 本机 playwright 缓存里的 Chrome for Testing + Node 内置 WebSocket 讲 CDP」，` +
+        `**不给 package.json 加任何依赖**（加一层测试框架属于"为稳定性任务改动项目外的东西"）。` +
+        `★ 六把非空转都是当场跑过的：① 把组件里的 COLS 从 8 改成 7（布局仍是 8 列）⇒ ` +
+        `恰好"↓ 走整行"与"↓ 之后 x 不变"两条红、其余 11 条照常绿；` +
+        `② 把 #92 修掉的那行改回旧行为（回车固定开第一条）⇒ 恰好"emit 的必须是高亮那条"红，` +
+        `报错里直接印出 msgId=m0 而高亮在 index 2。另外 Enter/空格不带 text 时零次激活，` +
+        `这一条被固定成正向跑里的一条**反向对照判据**（不是装饰：没有它，"回车能选中"可能是探针自造的假绿）。` +
+        `③ 摘掉任务卡缩略图的 clickable（= #112 修复前的真形状）⇒ 恰好「键盘可达」与「Enter 开统一预览」两条红；` +
+        `④ 把卡片「查实时状态表」改回「只读快照」（= #23 修复前的形状）⇒ 恰好那条状态换档的判据红。` +
+        `⑤ 同一张表的**另一个面**（用户 2026-09-30 编号规则 3/5/6）：把卡片那串码改回只读创建快照 ⇒ ` +
+        `恰好「字母来自实时类型」与「五位数字只显后四位、且 title/aria 带全码」两条红、其余照常绿；` +
+        `⑥ 那两条各配一条对照 —— 夹具那份快照既没类型也没号，所以「不传实时表就没有码」必须成立，` +
+        `否则上面那串 B2345 是探针自己造出来的。` +
+        `★ 2026-09-30 又补了两段真渲染：` +
+        `一段是「caption × 遮罩」：TitleBar 与图片遮罩真挂在同一页，量 elementFromPoint 命中的是谁 ——` +
+        `「✕/− 与整窗唯一拖拽区点得着」这件事静态层级比大小判不出来；` +
+        `另一段是「那颗表情入口」：真发一次 Input.dispatchMouseEvent 把指针移进气泡那一列 —— ` +
+        `它原先写的是 hidden group-hover/msg:flex（不悬停就根本不在布局里，尺寸与底边都量不到），` +
+        `2026-10-10 N19 换成 .kb-reveal（opacity 藏、常驻布局）之后同一段还要**真按 Tab 与回车**：` +
+        `焦点必须落得进那颗入口、聚焦后必须自己显形、回车必须真打开选择器，` +
+        `并带一次「按回 display:none ⇒ Tab 再也落不进去」的可逆单点变异（证明这条键盘判据会咬）。` +
+        `★ 同日再加一段 --only=pinkb：真挂 ChatWindow + 走 store 自己的 enqueueMessage 种一条置顶，` +
+        `连按 Tab 焦点必须落得进那颗「取消置顶」、聚焦后显形、**真按回车那条真的从置顶条上消失**；` +
+        `transport 那一条（api.pinGroupMessage）换成替身，替身之后全是生产码——真投递另由 --round=group 判。` +
+        `两段各自都带可逆反面对照：把 caption 的层级按回修之前 ⇒ 同一个点被遮罩吃掉；` +
+        `把入口按回旧的中线居中 ⇒ 多行气泡上底边飘起来。` +
+        `⚠️ 时机也判过一次：同一份内容连跑两次，第一次「两枚徽标半径不同」「名字是省略号」假红、` +
+        `读数全是 0px/clip ⇒ 真相是 style.css 还在飞（vite dev 把 CSS 当模块注入）。` +
+        `现在 install 里现读 :root 上那个 --gosslan-radius-pill 取到非空值才算就绪，取不到就当探针失败抛错。` +
+        `★ 同批还判上 #97 那半句「那张卡真出现在时间线里」：标题在 DOM 里、载荷内部字段名不外露、` +
+        `同一句 @ 在两种视角下换标签、底部入口 emit 的是这条的 todo_id。` +
+        `⚠️ 顺手记一条夹具自己的坑：props 对象必须建在渲染函数里面 —— 提到外面求值一次就把 open 冻住，` +
+        `表情面板整块不渲染；是隔壁那两段把它照出来的 ⇒ **改夹具要跑全部段**（段数不写死：数一下 check-ui-runtime.mjs 里那几个 run* 函数即可），别只跑新写的那一段**。` +
+        `★ 2026-10-10 又加一段 --only=imgskel：把真组件 MessageImageBubble 挂起来量骨架矩形（加载中 288 == 估算常量、终态 128），并带一次「把骨架按回 128」的单点变异 —— N22 那条「预留==估算」的契约光靠静态判据只能证明「引了常量」，证不了那个数真落到盒子上。` +
+      `⚠️ 两条口径边界：① 这是**浏览器内**，WKWebView / WebView2 一律未证 ⇒ 那一半仍是人工（Smoke-11）；` +
+        `② 缺 Chrome for Testing 时这一条是**红**，不是跳过（§十 不许把没跑写成 PASS），` +
+        `CI 不跑这一层所以不会因此变红；` +
+        `③ 2026-10-10 起"环境起不来"分三型各自具名红，报结论要照那几行读数说、不许笼统写成"环境问题"：` +
+        `端口被上次中断的残留实例占着（那是**假绿通道**，起跑前就拒）、spawn 并入已存在的浏览器实例、` +
+        `单次 CDP 调用不回包（45 s 预算）。正常路径的日志还会打引擎版本（「· 引擎：…」那一行），换引擎造成的读数变化要能自证。` +
+        `④ 当晚又定标一件事：回车发法固定为「keyDown 带 text + keyUp」——旧档 rawKeyDown 自己带 text 时` +
+        ` CfT 153 会进入自持重复（按完 28 次、每秒再涨 ~550 次），界面上的 toggle 读数就变掷硬币。` +
+        `新增的 keyOnce 四条（表情入口 2 + 取消置顶 2）判「只激活一次」与「空等 1 秒不再增长」；` +
+        `报「键盘回车真能用」只许引 reaction 那两条 —— pinkb 那一对经实测对重复不敏感（✕ 按完就离开 DOM）。` +
+        `⑤ 2026-10-10 新增 --only=inputpanel：第一次把 MessageComposer 挂进真实布局壳（卡片压到视口底部），` +
+        `量输入框那两张「往上长」的面板（表情面板与 @ 候选列表都不走 Teleport，留在卡片里面 ⇒ 单独挂组件量不到这一型）。` +
+        `带两次可逆变异：把卡片改成 overflow:hidden ⇒ 裁切必须被报出而 inViewport 仍为真（证明裁切那条不是视口那条的别名）、` +
+        `把面板推到视口外 ⇒ inViewport 翻假；@ 那条还判「换个普通字符就必须不出现」+ 回车发出后载荷里带 mentionIds。` +
+        `⚠️ 它判不了「软键盘在不在」——那是设备行为，仍归 Smoke-11。` +
+      `${LOCAL_ONLY_WHY}`,
+      cwd: ROOT,
+      cmd: NODE_EXE,
+      args: ["scripts/check-ui-runtime.mjs"],
+    },
+    {
+      group: "local",
+      name: "构建与打包同 feature 集的 release 二进制（#126：测的那份必须就是发的那份）",
+      why: `双实例 E2E 跑的是 src-tauri/target/release/gosslan。五条打包命令全都带 --features bluetooth` +
+        `（那件事由 buildConfig.test.ts 钉着），但这份门禁二进制过去是靠人手动 cargo build --release 编的 ——` +
+        `不带这个 feature ⇒ 这一层测到的二进制里根本没有蓝牙代码 = "测的那份 ≠ 发的那份"，` +
+        `而 E2E 报告不会为此说任何话。现在门禁自己先编一次同 feature 集的那份：` +
+        `cargo 是增量的，没改过就是秒级 no-op，代价只出现在"确实变了"的时候。` +
+        `★ 日常快速层照样不碰 cargo（这条在 local 层，不是 quick）—— 用户 2026-09-27 明确要求` +
+        `"日常快速 verify 不必每次强制完整 BLE 重编译，但涉及 Rust/Transport/Bluetooth/构建配置与正式 release 必须验含 Bluetooth 的真实构建"。` +
+        LOCAL_ONLY_WHY,
+      cwd: TAURI,
+      cmd: "cargo",
+      args: ["build", "--release", "--features", "bluetooth"],
+    },
+    {
+      group: "local",
+      name: "双实例 E2E：默认轮（文本 + 文件 + 重启）",
+      why: `两个真实 release 进程对发，断言两侧 DB/日志/磁盘收敛一致；${LOCAL_ONLY_WHY}`,
+      cwd: ROOT,
+      cmd: NODE_EXE,
+      args: ["scripts/e2e-multi-instance.mjs"],
+    },
+    {
+      group: "local",
+      name: "双实例 E2E：尺寸阶梯 · 1 KB（极小档）",
+      why: `同一趟旅程（文本 + 文件 + 重启）换 **1 KB** 重跑，证明默认轮不是"只在 1 MB 上成立"。` +
+        `极小档专打两件事：单片文件（不足一片）不许在收尾前被当成完成、` +
+        `以及"零头即整份"时进度与终态仍然自洽。断言条数与默认轮同源（阶梯不加新断言，只换尺寸）；` +
+        `${LOCAL_ONLY_WHY}`,
+      cwd: ROOT,
+      cmd: NODE_EXE,
+      args: ["scripts/e2e-multi-instance.mjs", "--size=0.001"],
+    },
+    {
+      group: "local",
+      name: "双实例 E2E：尺寸阶梯 · 10 MB（中段多片）",
+      why: `同一趟旅程换 **10 MB** 重跑：这是"多片 + 最后一片是零头"那一格 —— ` +
+        `阶梯里最容易藏 off-by-one 的位置（片数 = ⌈size/片长⌉，收尾只认最后一次 rename）。` +
+        `⚠️ 边界：100 MB 及以上不进本地层（一次几分钟、CI 与本地都会烂），` +
+        `那一档按 §十 记 SIMULATED/真机，由 `+"`E2E_KILL_MB`"+` 那条杀进程轮代偿覆盖大文件窗口；${LOCAL_ONLY_WHY}`,
+      cwd: ROOT,
+      cmd: NODE_EXE,
+      args: ["scripts/e2e-multi-instance.mjs", "--size=10"],
+    },
+    {
+      group: "local",
+      name: "双实例 E2E：脏 .part 前缀注入",
+      why: `接收侧预置脏前缀 ⇒ 整体校验必须拦下、重试补齐；产品要么自愈要么明确失败，不许假 done；${LOCAL_ONLY_WHY}`,
+      cwd: ROOT,
+      cmd: NODE_EXE,
+      args: ["scripts/e2e-multi-instance.mjs", "--fault=poison-part"],
+    },
+    {
+      group: "local",
+      name: "双实例 E2E：真前缀必须被续传复用",
+      why: `接收侧已有源文件自己的前缀 ⇒ 发送端不许从 0 重灌整份（160 MB 真机事故那一格）；${LOCAL_ONLY_WHY}`,
+      cwd: ROOT,
+      cmd: NODE_EXE,
+      args: ["scripts/e2e-multi-instance.mjs", "--fault=resume-prefix"],
+    },
+    {
+      group: "local",
+      name: "双实例 E2E：接收中 SIGKILL 后重启续完",
+      why: `百 MB 文件在飞时杀掉接收端 ⇒ 半路不许出现终名、发送侧不许报 done，重启后按盘上真实字节续完；${LOCAL_ONLY_WHY}`,
+      cwd: ROOT,
+      cmd: NODE_EXE,
+      args: ["scripts/e2e-multi-instance.mjs", "--fault=kill-mid"],
+    },
+    {
+      group: "local",
+      name: "双实例 E2E：对端失联（进程被冻住）后解冻续完",
+      why: `SIGSTOP 冻住接收端 ⇒ 失联期间两侧都不许 done、接收目录不许出现终名；解冻后对端自己补齐且只成功一次。` +
+        `⚠️ 这一轮**没有**覆盖"到点重投"：实测失联期间发送侧一次都没尝试（file_outbox 只由链路事件驱动 flush，没有到点定时器），` +
+        `所以也**不能**声称钉住了"write 成功 ≠ 已送达"；该缺口按 A 类风险登记在 roadmap，修好前别改口；${LOCAL_ONLY_WHY}`,
+      cwd: ROOT,
+      cmd: NODE_EXE,
+      args: ["scripts/e2e-multi-instance.mjs", "--fault=peer-freeze"],
+    },
+    {
+      group: "local",
+      name: "双实例 E2E：接收目录写不进去（磁盘满/只读）必须明确失败并止步",
+      why: `把接收端目录改成只读 ⇒ 对端在 offer 期就建不出临时文件、只能回 FileReject；` +
+        `钉"写不进去不等于传输成功"：发送侧必须在重试上限内落到明确终态（GiveUp→failed）、` +
+        `次数不许超过 MAX_FILE_OUTBOX_RETRIES、接收目录不许留下这个 transfer 的任何东西；` +
+        `与冻结轮互为对照（那一轮对端不回话⇒根本没尝试，这一轮对端活着⇒真跑到 GiveUp）；${LOCAL_ONLY_WHY}`,
+      cwd: ROOT,
+      cmd: NODE_EXE,
+      args: ["scripts/e2e-multi-instance.mjs", "--fault=recv-readonly"],
+    },
+    {
+      group: "local",
+      name: "双实例 E2E：入队后源文件被改小 ⇒ 按磁盘真值收发、两侧终态一致",
+      why: `先冻住接收端、入队（气泡 + 台账 + 队列三行一起写，复刻点击那一刻的产物）、把原件截断、再解冻 ⇒ ` +
+        `发送端 offer 的 size 必然来自截断后的盘（A 只在收到入站帧时才读盘，A-9）。钉的是：` +
+        `落地字节数与新 size 一致、内容 hash 与截断后的源一致（不是半截也不是多给旧字节）、` +
+        `两侧同时 done 且队列行已关、接收目录只留终名那一份。` +
+        `★ 这一轮同时照出 A-11（实测：发送侧气泡与台账的 size 仍是入队时那份，与真正发出去的字节不等）——` +
+        `修之前不许把那个分歧写成断言；${LOCAL_ONLY_WHY}`,
+      cwd: ROOT,
+      cmd: NODE_EXE,
+      args: ["scripts/e2e-multi-instance.mjs", "--fault=src-shrunk"],
+    },
+    {
+      group: "local",
+      name: "双实例 E2E：三个文件一起排队（含两个同名）⇒ 一张都不许丢、内容不许串味",
+      why: `一次入队 3 个 transfer，其中两张**文件名相同、内容不同**（真机形状：一次选两张同名截图）。` +
+        `钉的是：三单各自落 done 且队列清空（串行投递不许把后面的挤死）、同名两单必须落在**两个不同路径**` +
+        `（少一次就是后一次 rename 覆盖前一次 = 静默丢数据）、落地内容多重集合 == 源内容多重集合` +
+        `（交错/串味/被顶掉都会露出来）、每单两侧台账各只一行、无 .part 残留。` +
+        `⚠️ 边界要写清：这一格证明的是「同 peer 串行 flush ⇒ 后一单的 offer 一定看得见前一单已 rename 的文件」，` +
+        `**没有**覆盖"两个 offer 都在任一次 rename 之前到达"那个真会撞 final_path 的交错（那需要三个实例：两个发送者 → 一个接收者）；${LOCAL_ONLY_WHY}`,
+      cwd: ROOT,
+      cmd: NODE_EXE,
+      args: ["scripts/e2e-multi-instance.mjs", "--fault=multi-file"],
+    },
+    {
+      group: "local",
+      name: "双实例 E2E：预置可写 .part 后目录改只读 ⇒ 只有收尾 rename 塌（半路失败不冒充完成）",
+      why: `先给接收端放**真前缀** .part（⇒ offer 不被拒、字节照流进来），再把接收目录 chmod 成只读：` +
+        `往已存在的 inode 里写不需要目录写权限，唯一会 EACCES 的就是收尾那次 rename —— 与⑤（offer 期就写不进、` +
+        `接收侧一行都不写）互为两半。钉的是：.part 必须真被续写过（证明这一轮打的不是⑤那条路）、` +
+        `A 侧终态明确（行被收尾删除 / failed / cancelled / done 都算，停在 pending/sending = 界面永远转圈）、` +
+        `attempts ≤ MAX_FILE_OUTBOX_RETRIES、接收侧台账不许假 done。` +
+        `★ 这一轮实测照出 **A-12**（A {status:gone,aT:done} / B=failed / .part 整份 / final 不存在 —— ` +
+        `AlreadyHave 按字节数短路，绕过了「rename 才算完成」）：交叉自洽那条判据今天不成立，` +
+        `按 A-11 的先例**只打印不设断言**，修完再补；${LOCAL_ONLY_WHY}`,
+      cwd: ROOT,
+      cmd: NODE_EXE,
+      args: ["scripts/e2e-multi-instance.mjs", "--fault=recv-dir-rotted"],
+    },
+    {
+      group: "local",
+      name: "双实例 E2E：100 MB 在飞时冻住接收端 ⇒ 盘上进度一字不涨，解冻后补到源内容",
+      why: `§七「发送方提前放弃 / 接收方仍在线」与 §19「文件·断线」的交叉格，此前零跨实例判据。` +
+        `与冻结轮④的区别是**时序**：④ 先冻再入队，实测那一轮 A 一次都没尝试（A-9：待传队列只被入站帧带动）` +
+        `⇒ ④ 里根本没有在飞字节；这一轮先用 50 ms 自旋抓到 .part 真的在长，再 SIGSTOP。` +
+        `钉的是不变量「接收端真实进度」：对端停止写盘之后盘上进度必须**一字不涨**（A 灌进 socket 与内核缓冲的` +
+        `字节都不许算进度），两侧都不许在失联期间记 done；解冻之后必须补到源内容、两侧 done、队列清零、` +
+        `半截 .part 不残留。★ 实测（2026-09-26）：在飞窗口抓得住（动手时刻的 .part 在 1.8MB / 7.1MB 之间摆，` +
+        `随机器负载变 ⇒ 只打印不设判据），冻结 70s 期间一字不涨；` +
+        `而先兑现的出口是 chunk loop 那句 [FILE] COMPLETED … ok=false（attempts 涨到 1、队列退回 pending），` +
+        `60s 的 [STALL] **一行都没出现** ⇒ 所以这一轮不断言"走的哪一条放弃出口"（钉死任一条都会假红），只打印；` +
+        `解冻→终名落地 5.5s / 28.6s / 51.6s 都实测到过（原链路续完 vs 先退避再重拨）。` +
+        `★ 另一条被本地层跑红才找到的判据教训：**A 的终态天然晚于 B 的 rename**（A 的 done + 删队列行由对端 ` +
+        `FileCompleteAck 点亮，而 ack 在 rename 之后才发；实测这段滞后不是常数——0.0s 与 14.6s 都出现过 ⇒ ` +
+        `"立刻读"和"睡固定秒数再读"都会红，只能有界等）⇒ 终局那条走 waitSendTerminal()，` +
+        `有界等 60s（心跳 5s + 队列退避 5s），到不了才判红；同一形状在默认轮/杀进程轮/冻结轮一并收口，` +
+        `其中杀进程轮原本用 sleep(15s) 把这个竞态藏住而不是解决。` +
+        `另⚠️：这**不是**「用户点取消」（那条要 IPC 调 cancel_file_transfer，harness 零改产码调不到）。` +
+        `每轮条数由 check-doc-numbers 现算，只登记在验收矩阵顶部「轮次账」一处；${LOCAL_ONLY_WHY}`,
+      cwd: ROOT,
+      cmd: NODE_EXE,
+      args: ["scripts/e2e-multi-instance.mjs", "--fault=stall-mid"],
+    },
+    {
+      group: "local",
+      name: "双实例 E2E：100 MB 在飞时 SIGKILL 发送端 ⇒ 崩溃不许抹掉「已入队」，重启后自己续完",
+      why: `§七「发送过程中杀进程」×「重启后继续」+ §八「本端重启」+ §九「数据生命周期：` +
+        `运行→退出→重新启动」的交叉格，此前**零跨实例判据** —— 注入③ 杀的是接收端，` +
+        `全仓没有任何一轮从"发送端自己崩了"这一侧看过。钉的核心不是"能不能续传"` +
+        `（②/③ 已证），而是**一次崩溃不许把「已入队」这个事实抹掉**：队列行是` +
+        `「先入队再投递」的载体，它若因崩溃变成 done 或消失，这一单就永久没人再发，` +
+        `而用户界面上的气泡还在 —— 最难发现的一种丢法。时序：判据自己入队 → 50 ms 自旋` +
+        `抓到 .part 真的在长 → SIGKILL A → 死透后再等 20 s（这段是"发送端不存在"的时间）→` +
+        `重启 A → 等它自己补完。★ 实测（2026-09-26，26 断言全绿）：在飞 .part=5,242,880 B 时杀，` +
+        `那 20 s 里 B 无终名、B 台账 failed、A 台账 active、**A 队列行仍是 1**；` +
+        `A 重启后 12.6 s 从盘上那点字节续到整份 104,857,600 B、sha 等于源、两侧 done、` +
+        `队列清零、不留 .part。终局那条照⑨ 的教训走 waitSendTerminal()（A 的 done 由对端 ack` +
+        `点亮，B 落地不是 A 的同步点）。反证轮（入口在 package.json 的 sendside-selfproof）只换` +
+        `"补完该等于哪个摘要"这一份输入 —— 反向模式**不许**写进这一层：它预期红，进门禁就是把整层静音。` +
+        `⚠️ 每轮条数由 check-doc-numbers 现算，只登记在验收矩阵顶部「轮次账」` +
+        `一处；${LOCAL_ONLY_WHY}`,
+      cwd: ROOT,
+      cmd: NODE_EXE,
+      args: ["scripts/e2e-multi-instance.mjs", "--fault=sender-kill-mid"],
+    },
+    {
+      group: "local",
+      name: "双实例 E2E：群聊这一族跨实例真跑（发送 / 离线成员补发 / 撤回 G-Set / Ack 清队列）",
+      why: `§九「群聊」此前在跨实例层面是**零判据**（harness 里 grep group 只命中 file_outbox 的列名，` +
+        `从没建过群），而群消息走的是一条与 1:1 不同的管道：group_outbox 按成员一行 + Gossip 信封 + ` +
+        `GroupAck 删行 + G-Set 撤回。这一轮停机预置两端群记录（形状照 e2e_peer.rs 的 ensure_test_group 先例）、` +
+        `A 排四条群消息（正文 / 撤回 / 第二条正文 / **一句 @**），**入队时对端进程还没起** ⇒ 只能靠建链后的 ` +
+        `flush_group_outbox 送达，顺带就是 §五 点名的「群聊 + 离线成员重新上线」与「聊天 + 群聊 + 文件」两格组合。` +
+        `★ 那句 @ 钉的是 §8 那条存储不变量：**库里那串字节一个字都不许动** —— 逐字等于打出去的原文，` +
+        `且既没被换成呈现层的「@你」（那等于把我的视角烧进公共数据）、也没被"规范化"成 device id（那会把可读那份弄没）。` +
+        `群聊轮全绿（每轮条数由 check-doc-numbers 现算，只登记在验收矩阵顶部「轮次账」一处）；`+"`--round=group-lie`"+"` 只翻判据读的那个 id ⇒ 9 条红、" +
+        `其余与 id 无关的保持绿（证明这些条读的是真落库行，不是同义反复）。` +
+        `⚠️ 边界两条：① 群 payload **不做 re-seal**（transport.rs:6689-6693），所以信封由 harness 自己签名加密 —— ` +
+        `这一轮的绿只证明"接收端能解出来并落库"，不证明"发送内核自己会怎么组信封"；` +
+        `② 发送侧本地的撤回物化**不设判据**（harness 写的是入队形状、没执行产品的撤回命令，` +
+        `按"我以为应该"去断言就是替产品许愿）；群文件端到端也不在这一格，` +
+        `群任务另起 `+"`--round=task`"+`，而「@你」在真界面上长什么样属运行时层（Smoke-10/11 那一类）。${LOCAL_ONLY_WHY}`,
+      cwd: ROOT,
+      cmd: NODE_EXE,
+      args: ["scripts/e2e-multi-instance.mjs", "--round=group"],
+    },
+    {
+      group: "local",
+      name: "双实例 E2E：局域网开关的隔离判据（关掉 ⇒ 对端学不到我，翻回来 ⇒ 重新学得到）",
+      why: `#89 剩下的那一半：**全程带着 GOSSLAN_AUTOSTART=1 跑**，证的就是"预置说关"连强制联网的环境变量都不许越过。` +
+        `三条腿——开着先学到 → 关掉之后 A 的 announce 计数一字不涨 → 把键翻回开又涨回来；` +
+        `中间那条的期望值在它的 -lie 反向轮里翻面（只翻判据、不动注入）。` +
+        `⚠️ 观察者 A 全程不重启：不然"不涨"就退化成"没人再看"的同义反复。` + LOCAL_ONLY_WHY,
+      cwd: ROOT,
+      cmd: NODE_EXE,
+      args: ["scripts/e2e-multi-instance.mjs", "--round=lanoff"],
+    },
+    {
+      group: "local",
+      name: "双实例 E2E：正在建群时被 SIGKILL ⇒ 对端仍必须自己学到这个群（重递不许依赖内存登记）",
+      why: `§28「链路失效」那一族里今天做得成的那一格（另一格"断所有链路"要 root 或真设备）。` +
+        `⚠️ 它**刻意不是**"重启后不许留下半个群"那种形状：真实建群路径把 groups / group_members /` +
+        `settings(gk:) / conversations 四张写放在同一个事务里（` + "`commands/groups.rs:7`" + `）⇒ ` +
+        `那句断言永远绿，是本仓反复判过的"半个守卫"。有作用点的一半在**投递**：` +
+        `提交之后才逐成员推 GroupKey，而"没推出去"的重试登记 ` + "`pending_group_keys`" + ` 是**进程内**的一张表 ` +
+        `⇒ 一次 SIGKILL 必然抹掉它。所以这轮钉的是那句设计注释的另一半：**群名册才是事实源，` +
+        `链路活着就重递**（` + "`requeue_group_keys_for_peer`" + `，建链 / Hello / 心跳三处）。` +
+        `时序：群只写在 A 的盘上（= 命令层已 commit、GroupKey 一次都没送到）→ 只起 A、对端缺席 15s →` +
+        `真 SIGKILL A → 死透后再等 10s（这段是"A 根本不存在"的时间）→ 再起 A+B → 有界等 B 自己长出这个群。` +
+        `八条断言：预置侧 B 零行（正向轮那条"学到了"的对照物）+ 缺席期 A 名册 2 位 + A 那份密钥逐字节在盘上` +
+        `（重递的原料）+ 崩溃后名册仍是 2 位 + B 学到群行（creator/name 对）+ 成员恰好 2 位（重复 requeue 要幂等）+` +
+        `B 手里那把对称密钥与 A 那份逐字节相同 + B 不许凭空多出一行会话（关系同步 ≠ 聊天同步）。` +
+        `反证 ` + "`--round=groupcrash-lie`" + ` 照 group-lie 的先例：**等待用真 id、判据读翻过的 id** ⇒ ` +
+        `红的只能来自"读的不是真落库行"。` +
+        `⚠️ 边界三条：① 这轮造的是**磁盘能表达的那份等价坏状态**（那条内存队列从进程外写不进去），` +
+        `所以它不判"内存登记本身对不对"；② 群 payload 不做 re-seal，信封与密钥都由 harness 预置 ⇒ ` +
+        `绿只证明"接收端能学到并落库"，不证明发送内核自己怎么组 GroupKey 帧；` +
+        `③ 收敛靠的是"下一次建链/Hello/心跳带动重递"，所以这轮判的是**会收敛**，不判"多快"。` +
+        `每轮条数由 check-doc-numbers 现算，只登记在验收矩阵顶部「轮次账」一处。${LOCAL_ONLY_WHY}`,
+      cwd: ROOT,
+      cmd: NODE_EXE,
+      args: ["scripts/e2e-multi-instance.mjs", "--round=groupcrash"],
+    },
+    {
+      group: "local",
+      name: "双实例 E2E：A 只把群文件备在自己盘上 ⇒ B 上线后必须收到逐字节相同的那份",
+      why: `§七-4 点名的「文件 + 群聊」＋§六 群聊清单里的「群文件」，今天只有单元级判据、`
+        + `**两个真实进程之间发一份群文件**这一格没有任何自动化。`
+        + `预置：群在两端都存在（接收端的权限判据要求 sender ∈ 本地群成员），货只长在 A 的盘上 —— `
+        + `群文件行 / 每个成员一行 / file_transfers 的源路径 / settings 里那份用群密钥封好的 file_key。`
+        + `投递、分片、AEAD、改名收尾、台账终态全部由生产码自己跑（flush_pending_group_files 在建链/Hello/心跳三处触发）。`
+        + `★ 为什么不照抄 1:1 那三条手写 DB 行：群文件多一份「群密钥封装的 file_key」，`
+        + `接收端要用它自己的群密钥解开才肯建会话 ⇒ 密封这一步走生产 crypto（e2e_peer 的 --gfk 模式），`
+        + `在 JS 里复刻它的线格式就是本仓反复判死的「用 mock 结果冒充真实测试」。`
+        + `反向 --round=gfile-lie 只翻判据读的那份摘要，预置与时序一字不动。`
+        + `每轮条数由 check-doc-numbers 现算，只登记在验收矩阵顶部「轮次账」一处。${LOCAL_ONLY_WHY}`,
+      cwd: ROOT,
+      cmd: NODE_EXE,
+      args: ["scripts/e2e-multi-instance.mjs", "--round=gfile"],
+    },
+    {
+      group: "local",
+      name: "双实例 E2E：1:1 的一条静默事件必须送到对端，且不许顶会话、不许改摘要",
+      why: `需求汇总三点名「群聊 + 1:1 都要」表情回应，而 1:1 这一半今天只有单元级判据：`
+        + `位图门控、载荷校验、前端接线各自绿，**两个真实进程之间送一条静默事件**这一格`
+        + `没有任何自动化。形状：先把 B 侧那条会话摆成静止态（未读 7 + 摘要一句哨兵），`
+        + `再往 A 的 outbox 塞一条 kind=reaction，判六条 —— B 侧恰好落一条／那一行的 kind`
+        + `仍是 reaction（新枚举个变体真的被对端解析并落库）／静止态确实成立（不成立则下面`
+        + `两条是在判一个不存在的行）／未读仍是 7／摘要仍是那句哨兵（没被载荷那段 JSON 覆写）／`
+        + `A 侧队列行被对端 Ack 回收。⚠️ 判不到的两半按 §十五 记未验证、不写 PASS：`
+        + `发送侧门控（dm_allowed_by_features 在 send_message 里面，harness 没有"让应用执行一条`
+        + `命令"的入口）与"折叠成一枚胶囊"（前端折叠，DB 里没有那一格）。`
+        + `反向 --round=dmreaction-lie 只翻判据读的那两份期望值（未读数 + 摘要哨兵），`
+        + `预置与时序一字不动。每轮条数由 check-doc-numbers 现算，`
+        + `只登记在验收矩阵顶部「轮次账」一处。${LOCAL_ONLY_WHY}`,
+      cwd: ROOT,
+      cmd: NODE_EXE,
+      args: ["scripts/e2e-multi-instance.mjs", "--round=dmreaction"],
+    },
+  );
+  steps.push(
+    {
+      group: "local",
+      name: "双实例 E2E：传完一份文件之后，同一对进程续发的那条普通文本必须照常送达",
+      why:
+        "§三 点名的就是这一格：「大文件之后继续发送普通消息」。默认轮的顺序是**先文本再文件**"
+        + "（J1 → J2）⇒ 它只判过「文件之前聊天能用」，从来没判过一份文件走完之后再投一条会不会被拖死。"
+        + "这一轮不加新预置、不换链路：同两个实例、同一条已建立的链路，只是把那条文本放到 J2 之后塞进 outbox。"
+        + "判的是四件事：B 侧恰好落一条（既不卡死也不重复）、明文解得回来、A 侧 outbox 由**对端 Ack** 删除、"
+        + "A 侧状态前进过 sending；再加一条 §五 的隔离形状 —— 续发这条不许把刚完成那份的终态从 done 改回去（P7）。"
+        + `反向 --round=posttext-lie 只翻判据读的那几份值（1:1 的期望明文 + 读台账用的 transfer_id + 群那条读的会话 id + 连发第 3 条的期望明文），预置与时序一字不动。`
+        + `每轮条数由 check-doc-numbers 现算，只登记在验收矩阵顶部「轮次账」一处。${LOCAL_ONLY_WHY}`,
+      cwd: ROOT,
+      cmd: NODE_EXE,
+      args: ["scripts/e2e-multi-instance.mjs", "--round=posttext"],
+    },
+  );
+} else if (!groupFlag) {
+  // 不跑也要说出来 —— 一片绿暗示"全跑过了"正是这套门禁最反对的样子。
+  // 不写轮数：这一层的条目由上面的步骤表自己点名，写死数字就是下一个漂移点（同 CHANGELOG 的口径）。
+  console.log(`· 本地专项层（多实例 E2E，条目见 npm run verify:e2e）本轮没跑：${LOCAL_ONLY_WHY}`);
+  console.log("  要跑它：npm run verify:e2e（或 --group local）");
+}
+
+/**
+ * 「发版前专项层」：三实例链式轮（用户 2026-09-26 拍板＝**建，但只挂在发版前**，不进日常本地门禁）。
+ *
+ * 为什么单开一层而不是塞进 `local`：这一轮除了基础旅程那七步，还要**同时开三个真进程**、
+ * 并且为第三个实例多付一次"先单独起来自建身份、再停机写库、再三端同场"的重启。
+ * 塞进日常层会让每次 `verify:e2e` 都多等一节，而"太慢于是被人跳过"的门禁等于没有门禁。
+ * 所以它只在发版检查单里被点名，CI 也不认领（理由同 `local`：要 release 产物 + 桌面 GUI 会话）。
+ */
+const RELEASE_ONLY_WHY =
+  "发版前专项：第三个真进程 + 为它多重启一轮 ⇒ 日常层不收，发版检查单点名跑（npm run verify:release）";
+if (groupFlag === "release") {
+  steps.push(
+    {
+      group: "release",
+      name: "三实例链式 E2E：A 从没直发给 C 的那条群消息，C 仍收敛到了",
+      why:
+        `§五「群聊 + gossip」里唯一两实例测不到的那一半：**成员不在发送者的逐成员直发队列里，` +
+        `只能靠中间人把 gossip 扇给它**。判据钉两侧 —— A 的直发队列里没有任何面向 C 的行（这才是` +
+        `"不是直发"的正身，不依赖拓扑），以及 C 侧的落库：一行、明文、发送者仍是 A、` +
+        `conv_id/seq 与信封一致、且 B 自己不重复落库。` +
+        `⚠️ 两条已实测的边界（别把这一轮读成它们已被证明）：同机造不出"A-C 无链路"` +
+        `（关掉局域网发现仍在广播与验收），以及"C 晚到就收不到"（中间人只对当时可达的邻居扇出，` +
+        `不补推）—— 前者仍在待拍板，后者已由 #77 落地、并另起下面那一格「round=gossip-late」判。` +
+        `非空转由 ` +
+        "`--round=gossip3-lie`" +
+        ` 反向轮证：只翻判据读的那个 id ⇒ 读 C 库的那四条必须报红，而拓扑那两条照常绿。${RELEASE_ONLY_WHY}`,
+      cwd: ROOT,
+      cmd: NODE_EXE,
+      args: ["scripts/e2e-multi-instance.mjs", "--round=gossip3"],
+    },
+    {
+      group: "release",
+      name: "三实例补递 E2E：A 在 C 上线之前就发完，C 与中间人建链后仍拿到了那条",
+      why:
+        `#77 那一格的判据。与链式轮同一套拓扑（A—B—C，A 与 C 互不为好友、互不给端点），` +
+        `只是**启动时序反过来**：链式轮先建好 B↔C 再让 A 发（证明"当时能扇到"），这一轮让 A 在` +
+        `C 还不存在时就发完（证明"以后还能补到"）。判据钉三侧 —— B 在 C 上线之前就已落库` +
+        `（手里有过它才谈得上补）、B 的日志里出现指向 C 的补递行（归因：这条是补的不是扇的）、` +
+        `C 侧落库一行且明文/发送者/conv_id/seq 全对；另有两条前置挡住"其实直连也能拿到"的假绿：` +
+        `C 侧没有任何与 A 的建链行、A 的逐成员直发队列里没有面向 C 的行。` +
+        `⚠️ 边界（不许读成群消息最终一定一致）：补递缓存是**进程内**的、每组只留最近 16 条、` +
+        `只留 10 分钟窗口 —— 中间人重启过或 C 掉线太久，补到的就是部分历史；这一轮只证` +
+        `"窗口内、同一次运行里"这一格。非空转由 ` +
+        "`--round=gossip-late-lie`" +
+        ` 反向轮证：只翻判据读的那个 id ⇒ 读 C 库的那三条必须报红，拓扑与归因那几条照常绿。` +
+        `${RELEASE_ONLY_WHY}`,
+      cwd: ROOT,
+      cmd: NODE_EXE,
+      args: ["scripts/e2e-multi-instance.mjs", "--round=gossip-late"],
+    },
+    {
+      group: "release",
+      name: "任务专项 E2E：任务在两个真实进程之间**双向**收敛，且扛得住重启与发送端崩溃",
+      why:
+        `第二阶段 §22 那一格。载荷形状逐字对齐 protocol.rs::TodoPayload（snake_case 无 rename），` +
+        `群消息按 seq 定序：A 发起 todo(1) → todo_update(2,done) → todo_update(3,done+archived) → ` +
+        `todo_update(4,doing)，B 发起 todo(5) → todo_update(6,done)。判据钉在**两侧的数据事实**上：` +
+        `收的那一侧每条各恰好一行（重复投递/丢件都当场红）、必须是解密后的明文 JSON（拿到密文或空串即红）、` +
+        `同一条 todo_id、创建那条的 assignees 必须含**对端**的 device_id（「与我相关」的输入就是它）、` +
+        `status 由 todo 变 done 且带 done_at、归档那条只允许 done+archived=true、重开回 doing 且清掉 done_at、` +
+        `seq 不许乱（LWW 靠它）、creator 与 sender_id 都不许被改写成接收者自己、` +
+        `不许串进 1:1 会话、**两侧**的 group_outbox 都要被 GroupAck 清成 0；另有一步专判重启：` +
+        `六条状态行的 kind:seq 一字不变、A 侧对端发起的两条不许变成第二行（已 Ack 的队列不许被点亮成二次投递）。` +
+        `§28「正在任务同步时退出」那一格也落在这一轮里：对端整个缺席时把两条任务入队 ⇒ 只起发送端 ⇒ 缺席期队列行必须是 2 行、` +
+        `对端侧 0 行 ⇒ **SIGKILL 发送端** ⇒ 崩溃后队列行与那两条气泡都必须还在（「已入队」这个事实不许被一次崩溃抹掉）⇒ ` +
+        `再起两端，建链带动 flush ⇒ 对端必须各恰好一行且明文解得开、seq 7→8、todo→done，发送侧队列最终被 GroupAck 清成 0。` +
+        `文件族（注入⑩）早就证过同一件事，群任务这一族以前没有判据。` +
+        `§27「任务 + 图片」那一格也在这轮：对端发起的那条任务带两张图片引用（一张 image 一张 file），` +
+        `判的是**五个字段逐字段全等且顺序不变**（元数据过线、真实字节走群文件管线 —— SQLite 不存 BLOB 这条原则继续保持）；` +
+        `每个字段掉了都是静默的：subtype 错就渲染成文件块、sha256/id 错就本地取不到字节、size 错就进度对不上。` +
+        `★ 这一腿还顺带照出一个只有**反向跑**才能发现的空转：写成「(p?.images ?? []).every(...)」时，` +
+        `"一条都没收到"恒为真 ⇒ 加判据先问"一条都没收到时它是真还是假"。` +
+        ` 在"一条都没收到"时恒为真 —— 加判据时先问"一条都没收到时它是真还是假"。` +
+        `★ 为什么"B→A"那一腿是真判据而不是自我循环：A 侧那两行 harness **没有**预置，` +
+        `唯一可能的来源是 B 建链后 flush_group_outbox 真投递 + A 自己解密落库。` +
+        `⚠️ 两条边界（别把这一轮读成已证明的东西）：` +
+        `①**徽标那个数字不在判据里** —— 它是前端 store 现算的，SQLite 里没有这一格，` +
+        `本轮判的是它的输入（状态行 + 指派关系）；读数本身归 utils/todos 的纯函数用例与运行时层。` +
+        `②**"发起方自己发完立刻在自己时间线看到"也不在判据里** —— harness 没有任何"让应用自己执行一次动作"` +
+        `的入口（全仓只认 GOSSLAN_INSTANCE / GOSSLAN_AUTOSTART），两侧那一行都是预置写进去的，` +
+        `判它等于循环论证；那一半要靠内核自 emit 之后留的那行痕迹（017a433）在能驱动 UI 的轮次里补（Smoke-10）。` +
+        `非空转两条路：` +
+        "`--round=task-lie`" +
+        ` 只翻判据读的 msg_id ⇒ 读对端库的那几条必须报红，而发送侧预置那条照常绿；` +
+        `重启那三条、"对端队列清成 0"那条、以及崩溃那一整腿（缺席 / 队列行 / 气泡 / 最终清成 0）lie 都判不到` +
+        `（它们读的是真 id，拿翻过的 id 去读只会得到"0 行"，分不清"没送达"与"没留住"），` +
+        `改由**只换期望值**的变异跑分两次证：一次把重启那几条换成假期望、一次把崩溃腿五条换成假期望 ⇒ ` +
+        `各自"恰好被改的那几条红、其余照常绿"，跑完还原并核对 diff 只剩纯新增。` +
+        RELEASE_ONLY_WHY,
+      cwd: ROOT,
+      cmd: NODE_EXE,
+      args: ["scripts/e2e-multi-instance.mjs", "--round=task"],
+    },
+  );
+} else if (!groupFlag) {
+  console.log(`· 发版前专项层（三实例链式 E2E）本轮没跑：${RELEASE_ONLY_WHY}`);
 }
 
 /** 列出"不属于本组"的步骤：组模式下也必须点名未跑项，不许用一片绿暗示"全跑过了"。 */
@@ -389,13 +1009,20 @@ const heldOut = steps.length - active.length;
  * 内部都在跑 cargo）。
  */
 function mayTouchToolchain(s) {
+  // 不可豁免的那一半：args 里出现 cargo，作者声明挡不住它。
+  if (s.args.some((a) => typeof a === "string" && a.startsWith("cargo"))) return true;
+  // 可豁免的那一半：由步骤作者显式声明"这个入口不拉 Rust 工具链"。
+  // 为什么允许声明而不是只按 cmd 判：cmd=python3 只说明解释器，说明不了脚本内部 ——
+  // `verify-guards.py --list` 只读文件、不编译不注入（秒级），不带 --list 时才会逐条重编译。
+  // 撒谎不会被静默吞掉：这一步在快速层里自己印秒数，变慢了当场看得见
+  //（分层自检要防的是"没人会去查原因"，不是"作者声明过就必须信"）。
+  if (s.light === true) return false;
   return (
     s.cmd === "cargo" ||
     s.cmd === "rustup" ||
     s.cmd === "bash" ||
     s.cmd === "python3" ||
-    s.cmd === "python" ||
-    s.args.some((a) => typeof a === "string" && a.startsWith("cargo"))
+    s.cmd === "python"
   );
 }
 
@@ -497,18 +1124,33 @@ for (const [i, s] of active.entries()) {
   const secs = ((Date.now() - start) / 1000).toFixed(1);
 
   // status 为 null 表示被信号杀掉（或命令没跑起来）。
-  const ok = r.status === 0;
-  results.push({ name: s.name, ok, secs });
+  // 退出码 `zeroCoverageExit` 单独一类：命令跑了、但范围内没有任何东西可判 ⇒ 不红，
+  // 但也**绝不记成 ✅**（本项目最忌讳"没守却当作守了"）。
+  const zero = s.zeroCoverageExit != null && r.status === s.zeroCoverageExit;
+  const ok = r.status === 0 || zero;
+  results.push({ name: s.name, ok, secs, zeroCoverage: zero });
 
   if (!ok) {
     console.error(
       `\n❌ 第 ${i + 1} 步失败：${s.name}（${secs}s）` +
         (r.status === null ? `（未能执行：${r.error?.message ?? "未知原因"}）` : ""),
     );
+    if (KEEP_GOING) {
+      // 独立轮次：继续跑后面的，最后一起汇总。红**不会**被这样洗白 —— 见结尾的退出码。
+      console.error("   这一层各步是独立的轮次 ⇒ 继续跑后面的（要旧行为加 `--fail-fast`）。");
+      continue;
+    }
+    if (s.keepGoingOnFail) {
+      // 单步例外（理由写在该步自己的注释里）：它与后面的步骤没有依赖 ⇒ 红不该吃掉它们的证据。
+      console.error("   这一步与后面的步骤没有依赖 ⇒ 继续跑，把证据拿全（红不会被这样洗白）。");
+      continue;
+    }
     console.error("   后面的步骤没有跑（fail-fast）。");
     break;
   }
-  console.log(`      ✅ ${secs}s\n`);
+  console.log(
+    zero ? `      ⚠️ 零覆盖 ${secs}s（跑了，但范围内没有可判定的对象）\n` : `      ✅ ${secs}s\n`,
+  );
 }
 
 const total = ((Date.now() - t0) / 1000).toFixed(1);
@@ -517,8 +1159,12 @@ const notRun = active.length - results.length;
 
 console.log("--- 汇总 ---");
 for (const r of results) {
-  const mark = r.skipped ? "⏭" : r.ok ? "✅" : "❌";
-  const tail = r.skipped ? `跳过（${r.skipped}）` : `${r.secs}s`;
+  const mark = r.skipped ? "⏭" : r.zeroCoverage ? "⚠️" : r.ok ? "✅" : "❌";
+  const tail = r.skipped
+    ? `跳过（${r.skipped}）`
+    : r.zeroCoverage
+      ? `零覆盖 ${r.secs}s（没判到任何对象）`
+      : `${r.secs}s`;
   console.log(`  ${mark} ${r.name}  ${tail}`);
 }
 for (const s of active.slice(results.length)) {
@@ -541,6 +1187,7 @@ if (groupFlag && failed.length === 0) {
 }
 
 const skipped = results.filter((r) => r.skipped).length;
+const zeroCov = results.filter((r) => r.zeroCoverage);
 const ran = results.filter((r) => !r.skipped).length;
 
 if (failed.length === 0) {
@@ -550,6 +1197,11 @@ if (failed.length === 0) {
     }通过（${ran} 步${skipped ? `，跳过 ${skipped} 步` : ""}，共 ${total}s）`,
   );
   if (skipped) console.log("   ⚠️ 被跳过的步骤在 CI 上仍会跑 —— 别把本地的 ⏭ 当成通过。");
+  if (zeroCov.length) {
+    console.log(`   ⚠️ ${zeroCov.length} 步**零覆盖**（跑了但没判到东西）：${zeroCov.map((r) => r.name).join("、")}`);
+    console.log("      最常见成因：本地在 push 之后重跑（`origin/main..HEAD` 已为空）。");
+    console.log("      零覆盖 ≠ 守住 —— 要看它真判了什么，用 `node scripts/check-change-budget.mjs --range a..b`。");
+  }
   process.exit(0);
 }
 console.error(`\n❌ 失败 ${failed.length} 步${notRun ? `，未跑 ${notRun} 步` : ""}（共 ${total}s）`);

@@ -95,7 +95,7 @@ pub async fn pin_group_message(
     // 置顶在界面上的呈现是 `foldPinned(该会话全部消息)` 折叠出来的 ——
     // 事件不进前端 store，折叠就看不到它，界面要等重进会话重新拉全量才刷新。
     // 此前这里返回 `()`，前端拿到了也无从 enqueue。
-    send_group_payload(state.inner(), &group_id, "pin", content).await
+    send_group_payload(state.inner(), &group_id, "pin", content, None).await
 }
 
 /// 撤回窗口：超过它就不再允许撤回。
@@ -147,7 +147,7 @@ pub async fn recall_group_message(
     let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
     // 先发事件（走与普通消息同一条可靠管道），成功后再物化本地 ——
     // 顺序反了会出现「本地显示已撤回、但对端根本没收到」。
-    send_group_payload(s, &group_id, crate::protocol::KIND_RECALL, content).await?;
+    send_group_payload(s, &group_id, crate::protocol::KIND_RECALL, content, None).await?;
     {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         let seq = db::get_clock(&dbc, &conv_id);
@@ -181,7 +181,7 @@ pub async fn send_group_reaction(
     }
     let payload = crate::protocol::ReactionPayload { target, emoji, add };
     let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
-    send_group_payload(state.inner(), &group_id, "reaction", content).await
+    send_group_payload(state.inner(), &group_id, "reaction", content, None).await
 }
 
 #[tauri::command(async)]
@@ -333,6 +333,7 @@ pub async fn send_group_file(
             ts: db::now_ms(),
             seq,
             status: "sending".to_string(),
+            mention_targets: None,
         };
         {
             let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -427,20 +428,20 @@ pub async fn send_group_file(
                 dispatch_group_file_to_peer(&s3, &tid3, &gid3, &m3, src3.to_string_lossy().as_ref())
                     .await
             {
-                // 错误出口必须落一个**终态**：`dispatch_group_file_to_peer` 一进来就把该成员
-                // 置成 sending，而离线补发只捞 `status = 'pending'`（db/group_files.rs:107）——
-                // 留在 sending 等于"永远在发、重启也不会重试"，群文件面板上那条永远转圈。
-                // 用户主动停止记 cancelled（与单聊同语义），其余记 failed。
-                let status = if e == "用户取消发送" {
-                    "cancelled"
-                } else {
-                    "failed"
-                };
+                // 错误出口必须落一个**终态**（理由见 `GroupFileSendErr` 的注释）。
+                // 原先这里按错误**文案**猜 cancelled / failed，且把"没链路"这类可重试的也判成 failed；
+                // 现在与补发路径共用同一个裁决（`group_file_status_after_fail`）⇒ 一条判据一个家。
+                let status = group_file_status_after_fail(&e);
                 let dbc = s3.db.lock().unwrap_or_else(|e| e.into_inner());
-                let _ = db::update_group_file_recipient(&dbc, &tid3, &m3, status, 0.0);
+                if let Some(next) = status {
+                    let _ = db::update_group_file_recipient(&dbc, &tid3, &m3, next, 0.0);
+                }
                 app_handle_log(
                     &s3,
-                    &format!("group-file dispatch {tid3} -> {m3} failed: {e}"),
+                    &format!(
+                        "group-file dispatch {tid3} -> {m3} failed: {} 终态={:?}",
+                        group_file_send_err_reason(&e), status
+                    ),
                 );
             }
         });
