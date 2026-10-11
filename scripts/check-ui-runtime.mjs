@@ -417,6 +417,9 @@ window.__probe = (() => {
       // 任务卡底部那个入口 emit 的是 "open"（载荷是 todo_id）。tag 刻意叫 open-id：
       // 与上面那条 'open'（搜索弹窗的 open-conversation）区分开，免得两段互相污染判据。
       onOpen: (v) => events.push(['open-id', String(v)]),
+      // 任务卡**主体**（头部/描述/指派人）emit 的是 "open-panel"（不带 id，
+      // 与底部"直达这一条详情"区分）。tag 与 open-id 对齐。
+      onOpenPanel: () => events.push(['open-panel']),
       // 输入框那一族（--only=inputpanel）要读得到"这条到底带不带 @ 的名单"：
       // 编辑器上只有 token 的 DOM，载荷才有 mentionIds ⇒ 没有 onSend 就只能看 DOM 猜。
       onSend: (p) => events.push(['send', JSON.stringify(p)]),
@@ -942,6 +945,54 @@ window.__probe = (() => {
     m.api[name] = async () => payload;
     return true;
   };
+  /**
+   * 群任务看板实时同步夹具（必须在挂看板**之前**装好：看板 setup 就会发首屏读取）。
+   * 替掉两条 api：
+   *  - getGroupTodoMessages：返回 window.__todoRows 那份"DB 快照"（测试随时可换）；
+   *  - onMessageReceived：抓住订阅回调，返回 unlisten（调 watchGroupTodos 的返回值即触发）。
+   * 返回总线控制句柄；H.todoEmit / H.todoRows / H.todoStats 给后续步骤用。
+   */
+  H.todoBus = async () => {
+    const m = await import('/src/api/index.ts');
+    window.__todoStats = { reads: 0, lastIds: null, unsubscribed: false, subscribed: 0 };
+    window.__todoRows = [];
+    window.__todoListener = null;
+    m.api.getGroupTodoMessages = async (ids) => {
+      window.__todoStats.reads += 1;
+      window.__todoStats.lastIds = ids;
+      // 模拟 IPC 异步：给 microtask 一拍（调用方本就 await）
+      return JSON.parse(JSON.stringify(window.__todoRows));
+    };
+    m.api.onMessageReceived = async (cb) => {
+      window.__todoStats.subscribed += 1;
+      window.__todoListener = cb;
+      return () => {
+        window.__todoStats.unsubscribed = true;
+        window.__todoListener = null;
+      };
+    };
+    return true;
+  };
+  /** 换"DB 快照"（模拟对端改动已经落库）。 */
+  H.todoRows = (rows) => { window.__todoRows = rows; return rows.length; };
+  /** 从后端事件方向推一条/批 message-received（走看板真实订阅）。 */
+  H.todoEmit = (recs) => {
+    const l = window.__todoListener;
+    if (!l) return false;
+    for (const r of recs) l(r);
+    return true;
+  };
+  H.todoStats = () => JSON.parse(JSON.stringify(window.__todoStats));
+  /** 拿到挂在页面 pinia 上的 chat store（必须在一次 install 之后）。 */
+  H.chatStore = async () => {
+    const piniaUrl = performance.getEntriesByType('resource')
+      .map((e) => e.name || '').find((u) => u.includes('/node_modules/.vite/deps/pinia.js?v='));
+    if (!piniaUrl || !window.__pinia) return null;
+    const P = await import(piniaUrl);
+    P.setActivePinia(window.__pinia);
+    const S = await import('/src/stores/useChatStore.ts');
+    return S.useChatStore();
+  };
   /** 往搜索框里打字：走 v-model 需要 input 事件，不能直接改 .value 就完事。 */
   H.typeKeyword = async (text) => {
     const input = document.querySelector('input[type="search"], input[role="searchbox"], input');
@@ -980,7 +1031,9 @@ window.__probe = (() => {
       text: (e.textContent || '').trim(), w: Math.round(r.width), h: Math.round(r.height) };
   };
   H.focusThumb = () => {
-    const t = document.querySelector('[role="button"]');
+    // 优先任务卡缩略图（80×80 那块）：任务卡主体也是 role=button 且在 DOM 里更早，
+    // 取第一个会聚焦到卡片主体而不是图片。没有缩略图的场景再退回第一个 role=button。
+    const t = document.querySelector('.h-20[role="button"]') || document.querySelector('[role="button"]');
     if (!t) return false;
     t.focus();
     return document.activeElement === t;
@@ -1444,6 +1497,7 @@ async function main() {
     const emoji = want("emoji");
     const search = want("search");
     const task = want("task");
+    const tasksrt = want("tasksrt");
     const convbadge = want("convbadge");
     const caption = want("caption");
     const reaction = want("reaction");
@@ -1455,6 +1509,7 @@ async function main() {
     if (emoji) await runEmoji(cdp, url);
     if (search) await runSearch(cdp, url);
     if (task) await runTaskCard(cdp, url);
+    if (tasksrt) await runTasksRealtime(cdp, url);
     if (convbadge) await runConvBadge(cdp, url);
     if (caption) await runCaption(cdp, url);
     if (reaction) await runReaction(cdp, url);
@@ -3290,6 +3345,332 @@ async function runTaskCard(cdp, url) {
   check("卡片底部那个入口 emit 的是**这条**的 todo_id（不是 undefined、也不是别条）",
     clicked === true && opened.length === 1 && opened[0] === TODO_ID,
     "1 次 open 且带 " + TODO_ID, JSON.stringify(ev));
+
+  // —— 三个命中区互不干扰（本轮修复）：主体开面板 / 底部开这条详情 / 图片只开预览 ——
+  // 重新挂一份带实时状态的卡（上面那步的事件已清空）
+  await mount({
+    message: JSON.parse(MSG),
+    mentionNames: ["小布"],
+    selfMention: null,
+    liveTodoPairs: [[TODO_ID, "doing", "task", 7]],
+  });
+
+  // 区①：点主体（标题所在的 role=button 区域，注意卡片里还有图片缩略图也是 role=button，
+  // 用「包着编号 .font-mono 的那个」精确取主体，不许靠 document.querySelector 取到第一个）
+  await cdp.eval("window.__probe.reset()");
+  const bodyClick = await cdp.eval(`(() => {
+    const mono = document.querySelector('.font-mono');
+    const region = mono && mono.closest('[role="button"][tabindex="0"]');
+    if (!region) return { ok: false, why: '找不到主体命中区' };
+    // 点的是内部标题 span（事件 target 是后代），验证处理器不在按钮上而在整块主体上
+    const title = region.querySelector('.truncate');
+    (title || region).click();
+    return { ok: true };
+  })()`);
+  let ev2 = await cdp.eval("window.__probe.events");
+  let panel = ev2.filter((e) => e[0] === "open-panel").length;
+  let detail = ev2.filter((e) => e[0] === "open-id").length;
+  check("点卡片主体：只 emit open-panel（打开面板），不直达任何一条详情",
+    bodyClick.ok === true && panel === 1 && detail === 0,
+    "open-panel×1 / open-id×0", JSON.stringify(ev2));
+
+  // 区①键盘：聚焦主体后 Enter 与 Space 都开面板（且 Space 不滚页）
+  await cdp.eval("window.__probe.reset()");
+  const kb1 = await cdp.eval(`(() => {
+    const mono = document.querySelector('.font-mono');
+    const region = mono && mono.closest('[role="button"][tabindex="0"]');
+    if (!region) return false;
+    region.focus();
+    return document.activeElement === region;
+  })()`);
+  await cdp.key("Enter", "Enter", "\r", 13);
+  await cdp.key(" ", "Space", " ", 32);
+  const evK = await cdp.eval("window.__probe.events");
+  check("键盘焦点在卡片主体：Enter 与 Space 各打开一次面板（鼠标/触摸/键盘三入口不冲突）",
+    kb1 === true && evK.filter((e) => e[0] === "open-panel").length === 2
+      && evK.filter((e) => e[0] === "open-id").length === 0,
+    "open-panel×2", JSON.stringify(evK));
+
+  // 区③：点图片缩略图 —— 只开统一预览，open-panel / open-id 一个都不许有
+  await cdp.eval("window.__probe.reset()");
+  const imgClick = await cdp.eval(`(() => {
+    // 缩略图是 80×80 那块（含 h-20 w-20），主体命中区里没有这个尺寸类
+    const t = Array.from(document.querySelectorAll('[role="button"]'))
+      .find((el) => el.classList.contains('h-20'));
+    if (!t) return { ok: false, why: '找不到缩略图' };
+    t.click();
+    return { ok: true };
+  })()`);
+  const pv2 = await cdp.eval("window.__probe.previewState()");
+  const ev3 = await cdp.eval("window.__probe.events");
+  check("点卡片图片：只打开统一预览（冒泡被图片区截断，不顺路开面板/详情）",
+    imgClick.ok === true && pv2.open === true && pv2.source === "task-card:" + TODO_ID
+      && ev3.filter((e) => e[0] === "open-panel" || e[0] === "open-id").length === 0,
+    "预览开且无开面板事件", JSON.stringify({ pv: pv2, ev: ev3 }));
+
+  // 区③键盘（回归保护）：缩略图 Enter 同样只开预览
+  await cdp.eval("window.__probe.reset()");
+  await cdp.eval("window.__probe.focusThumb()");
+  await cdp.key("Enter", "Enter", "\r", 13);
+  const pv3 = await cdp.eval("window.__probe.previewState()");
+  const ev4 = await cdp.eval("window.__probe.events");
+  check("键盘在缩略图上按 Enter：只开预览，不触发主体的 open-panel（两区域键盘处理互不串线）",
+    pv3.open === true && ev4.filter((e) => e[0] === "open-panel" || e[0] === "open-id").length === 0,
+    "仅预览", JSON.stringify({ pv: pv3, ev: ev4 }));
+
+  // 区①里的链接：描述含真 URL 时，点链接不许顺手弹面板（链接走外部打开；插件在探针里
+  // 调不起来会被组件自己 catch，我们只断言"没有面板事件"）。注意本仓的链接是无 href 的
+  // <a>（点击统一走 opener，MessageLinkText 全仓同一形状）⇒ 用描述里的 a 来认。
+  const linkMsg = JSON.parse(MSG);
+  linkMsg.content = JSON.stringify({ ...payload, description: "看这个 https://example.com/spec 就好" });
+  await mount({ message: linkMsg, mentionNames: ["小布"], selfMention: null });
+  await cdp.eval("window.__probe.reset()");
+  const linkClick = await cdp.eval(`(async () => {
+    const a = document.querySelector('p a');
+    if (!a) return { ok: false, why: '描述里的链接没渲染成 a' };
+    a.click();
+    await new Promise((r) => setTimeout(r, 50));
+    return { ok: true };
+  })()`);
+  const ev5 = await cdp.eval("window.__probe.events");
+  check("描述里的 URL 链接点击不被主体拦截（只走链接，不弹任务面板/详情）",
+    linkClick.ok === true
+      && ev5.filter((e) => e[0] === "open-panel" || e[0] === "open-id").length === 0,
+    "无面板事件", JSON.stringify(linkClick) + " " + JSON.stringify(ev5));
+}
+
+/**
+ * 群任务看板**实时同步**行为测试（`--only=tasksrt`）。
+ *
+ * 不挂源码字符串、不直接改 store：在真浏览器里挂真的 `GroupTasksBoard`，把
+ * `getGroupTodoMessages`（DB 快照）与 `onMessageReceived`（事件订阅）两条 api 替成
+ * 可控夹具，然后从**后端事件方向**推 message-received，断言看板 DOM 真的更新、
+ * 计数正确、不重复、不被旧事件回滚、订阅可摘、重开与持久化一致。
+ *
+ * 这一族曾真坏过：看板改折 groupTodoRows（51dac87）后，独立窗口的订阅仍只重载
+ * messages —— 事件收到了、IPC 也发了，看板一动不动。源码形状测试发现不了
+ * "订阅接到了错误的数据源"，所以这里必须走真实订阅→重读→折叠→渲染整条链。
+ */
+async function runTasksRealtime(cdp, url) {
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+
+  // 有界等待：全量连跑时长会话里 150ms 去抖定时器偶发 >450ms 才落地（固定 sleep
+  // 在 solo 跑绿、全集跑红）。条件满足即继续，到点才报红，不把时序写成脆弱断言。
+  const waitFor = async (fn, timeoutMs = 3_000, stepMs = 100) => {
+    const deadline = Date.now() + timeoutMs;
+    let v = await fn();
+    while (!v && Date.now() < deadline) {
+      await sleep(stepMs);
+      v = await fn();
+    }
+    return v;
+  };
+
+  // 页面内常量与记录工厂（形状与后端落库一致：conv_id/seq/ts/msg_id/kind/content）
+  const SETUP = `(async () => {
+    window.GID = 'g1';
+    window.CONV = 'group:g1';
+    window.ME = 'probe-me';
+    window.OTHER = 'probe-other';
+    window.__mk = (id, seq, kind, def, ts) => ({
+      msg_id: 'm-' + id + '-' + seq,
+      sender_id: window.OTHER,
+      conv_id: window.CONV,
+      kind, seq, ts,
+      status: 'read',
+      content: JSON.stringify(Object.assign({
+        todo_id: id, title: id, assignees: [window.ME], status: 'todo',
+        creator: window.OTHER, deleted: false, description: '', images: [],
+        archived: false, done_at: null, number: 0, priority: 'normal', category: 'task',
+      }, def)),
+    });
+    return true;
+  })()`;
+  await cdp.eval(SETUP);
+  await cdp.eval("window.__probe.todoBus()");
+
+  /** 读看板当下：筛选胶囊（DOM 顺序 = all/mine/created/archived）、列表行标题、弹窗文本。 */
+  const view = async () =>
+    cdp.eval(`(() => {
+      const pills = Array.from(document.querySelectorAll('button[aria-pressed]')).map((b) => ({
+        pressed: b.getAttribute('aria-pressed') === 'true',
+        count: Number((b.querySelector('span') || {}).textContent || '0'),
+      }));
+      // 行标题按钮：活动列表与归档列表都是 button.min-w-0.flex-1
+      const rowTitles = Array.from(document.querySelectorAll('button.min-w-0.flex-1'))
+        .map((b) => (b.querySelector('.truncate') || {}).textContent || '');
+      const dialogs = document.querySelectorAll('[role="dialog"]').length;
+      const dialogText = (document.querySelector('[role="dialog"]') || {}).textContent || '';
+      return {
+        pills,
+        rowTitles,
+        uniqTitles: [...new Set(rowTitles)],
+        dialogs,
+        dialogText,
+      };
+    })()`);
+
+  // —— 初始快照：对端已建 A（待办，指派给我）——
+  await cdp.eval(`(async () => {
+    const now = Date.now();
+    window.__probe.todoRows([
+      window.__mk('A', 1, 'todo', { title: '写周报', number: 1 }, now),
+    ]);
+    return window.__probe.todoRows.length;
+  })()`);
+  await cdp.eval(`window.__probe.install('/src/components/GroupTasksBoard.vue', '', ${JSON.stringify(JSON.stringify({ groupId: "g1", open: true }))})`);
+  await cdp.eval(`window.__probe.seedDevice('probe-me')`);
+  await waitFor(async () => (await view()).uniqTitles.includes("写周报"), 4_000);
+
+  const v0 = await view();
+  check("初始：看板列出 A，默认筛选「给我的」且计数 all=1/mine=1/created=0/archived=0",
+    v0.pills.length === 4 && v0.uniqTitles.includes("写周报")
+      && v0.pills.map((p) => p.count).join(",") === "1,1,0,0"
+      && v0.pills[1].pressed === true,
+    "行=" + JSON.stringify(v0.uniqTitles) + " pills=" + JSON.stringify(v0.pills), JSON.stringify(v0.pills));
+  const reads0 = (await cdp.eval("window.__probe.todoStats()")).reads;
+  check("首屏只发一次全表读取（ensure 已加载不重复打 IPC）",
+    reads0 === 1, "reads=1", "reads=" + reads0);
+
+  // —— 订阅真实事件（独立窗口的那条路径）——
+  await cdp.eval(`(async () => {
+    const chat = await window.__probe.chatStore();
+    window.__unwatch = await chat.watchGroupTodos('g1');
+    return true;
+  })()`);
+  const st1 = await cdp.eval("window.__probe.todoStats()");
+  check("watchGroupTodos 注册了一次 message-received 订阅",
+    st1.subscribed === 1, "subscribed=1", JSON.stringify(st1));
+
+  // —— 展开 A 的详情：验证实时更新不把展开态关掉 ——
+  await cdp.eval(`(() => {
+    const btns = Array.from(document.querySelectorAll('button.min-w-0.flex-1'));
+    const a = btns.find((b) => (b.textContent || '').includes('写周报'));
+    if (!a) return false;
+    a.click();
+    return true;
+  })()`);
+  await sleep(200);
+  const vDetail0 = await view();
+  check("点行打开了任务详情弹窗", vDetail0.dialogs === 1 && vDetail0.dialogText.includes("写周报"),
+    "dialog 含旧标题", "dialogs=" + vDetail0.dialogs);
+
+  // —— 对端一批变更（模拟另一个成员连发）：A 改成完成并改名、新增 B、新增 C 后完成并归档。
+  //    同步推 5 个事件，其中 B 的创建事件重复一次 —— 150ms 去抖后只许重读一次。 ——
+  await cdp.eval(`(async () => {
+    const now = Date.now();
+    const rows = [
+      window.__mk('A', 1, 'todo', { title: '写周报', number: 1 }, now - 2000),
+      window.__mk('A', 2, 'todo_update', { title: '周报已发出', status: 'done', done_at: now, number: 1 }, now),
+      window.__mk('B', 3, 'todo', { title: '修打印机', number: 2 }, now),
+      window.__mk('C', 4, 'todo', { title: '订场地', number: 3 }, now),
+      window.__mk('C', 5, 'todo_update', { title: '订场地', status: 'done', done_at: now, archived: true, number: 3 }, now + 1),
+    ];
+    window.__probe.todoRows(rows);
+    const events = [rows[1], rows[2], rows[3], rows[4], rows[2] /* B 重复帧 */];
+    window.__probe.todoEmit(events);
+    return events.length;
+  })()`);
+  // 等到「1 次重读」落地而不是睡固定时长（长会话下定时器可能延迟）。
+  await waitFor(async () =>
+    ((await cdp.eval("window.__probe.todoStats()")).reads - reads0) === 1);
+  await waitFor(async () => (await view()).uniqTitles.includes("修打印机"));
+  const st2 = await cdp.eval("window.__probe.todoStats()");
+  check("5 个事件（含 1 个重复帧）只合并成 1 次重读（150ms 去抖真实生效）",
+    st2.reads - reads0 === 1, "Δreads=1", "Δreads=" + (st2.reads - reads0));
+
+  const v1 = await view();
+  check("新增/改名/完成/归档后：活动 all=2、mine=2、归档=1（计数与列表一致）",
+    v1.pills.map((p) => p.count).join(",") === "2,2,0,1",
+    "2,2,0,1", JSON.stringify(v1.pills));
+  check("活动列表出现新任务 B 与改名后的 A，归档的 C 不在活动列表，且无重复行",
+    v1.uniqTitles.includes("修打印机") && v1.uniqTitles.includes("周报已发出")
+      && !v1.uniqTitles.includes("写周报") && !v1.uniqTitles.includes("订场地")
+      && v1.rowTitles.length === v1.uniqTitles.length,
+    JSON.stringify(v1.rowTitles), JSON.stringify(v1.rowTitles));
+  check("更新前展开的详情弹窗仍开着，且内容已是改名后的 A（展开态保留 + 内容实时）",
+    v1.dialogs === 1 && v1.dialogText.includes("周报已发出") && !v1.dialogText.includes("订场地"),
+    "dialog 跟到新标题", "dialogs=" + v1.dialogs);
+  check("筛选没被实时更新重置（仍停在「给我的」）",
+    v1.pills[1].pressed === true, "mine pressed", JSON.stringify(v1.pills.map((p) => p.pressed)));
+
+  // —— 切到「全部」，再来一批重复/旧序事件：筛选保留、终态不被旧帧回滚 ——
+  await cdp.eval(`(() => {
+    document.querySelectorAll('button[aria-pressed]')[0].click();
+    return true;
+  })()`);
+  await sleep(150);
+  await cdp.eval(`window.__probe.todoEmit([window.__mk('A', 1, 'todo', { title: '写周报', number: 1 }, Date.now() - 9000)])`);
+  await cdp.eval(`window.__probe.todoEmit([window.__mk('A', 1, 'todo', { title: '写周报', number: 1 }, Date.now() - 9000)])`);
+  // 旧事件只触发重读、不允许回滚；状态在落地前后都成立，给定时器一个固定窗口即可
+  // （unlisten 的清理会摘掉尚未落地的定时器，不会污染后面的"reads 不变"断言）。
+  await sleep(300);
+  const v2 = await view();
+  check("旧 seq / 重复事件后：列表不回滚到旧标题（DB 快照是真相），筛选仍在「全部」",
+    v2.uniqTitles.includes("周报已发出") && !v2.uniqTitles.includes("写周报")
+      && v2.pills[0].pressed === true,
+    JSON.stringify(v2.uniqTitles), JSON.stringify(v2.uniqTitles));
+
+  // —— 归档筛选：C 在归档里，且只有它一条 ——
+  await cdp.eval(`(() => {
+    document.querySelectorAll('button[aria-pressed]')[3].click();
+    return true;
+  })()`);
+  await sleep(150);
+  const v3 = await view();
+  check("「已归档」里正好是 C 一条（归档计数与列表一致）",
+    v3.pills[3].count === 1 && v3.uniqTitles.length === 1 && v3.uniqTitles[0] === "订场地",
+    JSON.stringify(v3.uniqTitles) + " count=" + v3.pills[3].count, JSON.stringify(v3.uniqTitles));
+
+  // —— 取消订阅：之后的事件不再触发重读（监听器真的被摘掉，没有泄漏的第二条）——
+  await cdp.eval(`(() => { window.__unwatch(); return true; })()`);
+  const readsBefore = (await cdp.eval("window.__probe.todoStats()")).reads;
+  await cdp.eval(`(async () => {
+    const now = Date.now();
+    const rows = JSON.parse(JSON.stringify(window.__todoRows));
+    rows.push(window.__mk('D', 6, 'todo', { title: '新任务 D', number: 4 }, now));
+    window.__probe.todoRows(rows);
+    window.__probe.todoEmit([rows[rows.length - 1]]);
+    return true;
+  })()`);
+  await sleep(350);
+  const st3 = await cdp.eval("window.__probe.todoStats()");
+  const v4 = await view();
+  check("unlisten 后再推事件：不发重读、看板也不出现新任务（订阅确实摘干净）",
+    st3.reads === readsBefore && st3.unsubscribed === true && !v4.uniqTitles.includes("新任务 D"),
+    "reads 不变", "reads " + readsBefore + "→" + st3.reads + " unsub=" + st3.unsubscribed);
+
+  // —— 重新订阅（相当于窗口重新聚焦/换群再换回）：漏下的变更立刻补回来 ——
+  await cdp.eval(`(async () => {
+    const chat = await window.__probe.chatStore();
+    await chat.watchGroupTodos('g1');
+    window.__probe.todoEmit([window.__todoRows[window.__todoRows.length - 1]]);
+    return true;
+  })()`);
+  await cdp.eval(`(() => {
+    document.querySelectorAll('button[aria-pressed]')[0].click(); // 回「全部」看活动行
+    return true;
+  })()`);
+  await waitFor(async () => (await view()).uniqTitles.includes("新任务 D"), 3_000);
+  const v5 = await view();
+  check("重新订阅后事件再次生效：D 出现在看板（自愈，不需要重开窗口）",
+    v5.uniqTitles.includes("新任务 D"), JSON.stringify(v5.uniqTitles), JSON.stringify(v5.uniqTitles));
+
+  // —— 关闭再打开：重新挂一块看板，首屏读到的与"DB"一致（持久化一致性）——
+  const finalRows = await cdp.eval("JSON.parse(JSON.stringify(window.__todoRows))");
+  await cdp.eval(`window.__probe.install('/src/components/GroupTasksBoard.vue', '', ${JSON.stringify(JSON.stringify({ groupId: "g1", open: true }))})`);
+  await cdp.eval(`window.__probe.seedDevice('probe-me')`);
+  await waitFor(async () =>
+    (await view()).pills.map((p) => p.count).join(",") === "3,3,0,1", 4_000);
+  const v6 = await view();
+  check("面板关闭重开：首屏直接呈现持久化终态（A 改名/B 新增/C 归档/D 已到），不靠事件补",
+    v6.uniqTitles.includes("周报已发出") && v6.uniqTitles.includes("修打印机")
+      && v6.uniqTitles.includes("新任务 D") && !v6.uniqTitles.includes("订场地")
+      && v6.pills.map((p) => p.count).join(",") === "3,3,0,1",
+    "3,3,0,1", JSON.stringify({ t: v6.uniqTitles, pills: v6.pills.map((p) => p.count) }));
+  void finalRows;
 }
 
 /**

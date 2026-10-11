@@ -1427,6 +1427,7 @@ async function copyFileToClipboard() {
             :mention-targets="message.mention_targets"
             :mine="mine"
             @open="emit('open-tasks', $event)"
+            @open-panel="emit('open-tasks')"
           />
 
           <!-- 本机不认识的 kind（= 对端 Gosslan 比本机新）：给可解释的占位，

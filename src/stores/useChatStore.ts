@@ -820,6 +820,32 @@ export const useChatStore = defineStore("chat", () => {
     groupTodoRows.value = putTodoRows(groupTodoRows.value, [convId], rows);
   }
 
+  /**
+   * 实时事件后的**单群**重读（独立任务窗专用）。
+   *
+   * 看板折的是 `groupTodoRows`（全表读，见上），不是有上界的 `messages` —— 早期
+   * 独立窗口的实时订阅只重载 `loadMessages`，而看板早就不折那份缓存（提交 51dac87
+   * 改了取数口、漏改订阅），表现就是「别人增/改/完成/归档任务，窗口里一动不动，
+   * 切走再切回才更新」。这里以 DB 为真相**整表替换这一个群**：去重、防幽灵、
+   * 防旧快照回滚全部由 DB 快照与 StaleGuard 承担，不做"按事件增量拼"（事件可能
+   * 重复 / 乱序 / 重连后补发，拼错就是第二个真相源）。
+   * 与 `ensureGroupTodoRows` 共用同一个 StaleGuard 键 ⇒ 首屏读与事件读互相作废，
+   * 只有最后一次发起的结果能落地。读失败保留旧列表（与窗口焦点兜底同口径）。
+   */
+  async function reloadGroupTodoRows(groupId: string) {
+    const convId = `group:${groupId}`;
+    const tok = refreshGuard.begin(`todoRows:${convId}`);
+    let rows: MessageRecord[];
+    try {
+      rows = await api.getGroupTodoMessages([convId]);
+    } catch {
+      // 读失败保留旧列表（下次事件或窗口重新聚焦时再试）；悬空序号由下一次 begin 自行作废。
+      return;
+    }
+    if (!refreshGuard.isCurrent(`todoRows:${convId}`, tok)) return;
+    groupTodoRows.value = putTodoRows(groupTodoRows.value, [convId], rows);
+  }
+
   async function refreshConversations() {
     const tok = refreshGuard.begin("conversations");
     // 发起时刻：这是"快照里的数据至少有多新"的下界（单连接单锁 ⇒ 读一定发生在发起之后）
@@ -1310,6 +1336,12 @@ export const useChatStore = defineStore("chat", () => {
   /**
    * 只订阅**本会话**的 `message-received`，让窗口里的任务随远端改动实时刷新
    * （突发消息合并到 150ms 一次重拉）。返回取消函数。
+   *
+   * ⚠️ 去抖后重读的必须是 **`groupTodoRows`（全表读）**：看板折的是那一份，
+   * 不是有上界的消息缓存。这里曾重载 `loadMessages`（写 `messages`），看板却
+   * 在 51dac87 改成折 `groupTodoRows` ⇒ 别人改任务时订阅收到了事件、也发了 IPC，
+   * 看板却一动不动（只有焦点兜底的全量重读碰巧把它刷新）。现在每条事件都以 DB
+   * 为真相重拉这一个群的任务行，重复/乱序/补发事件都不会产生重复或回滚。
    */
   async function watchGroupTodos(groupId: string): Promise<() => void> {
     const convId = `group:${groupId}`;
@@ -1319,7 +1351,7 @@ export const useChatStore = defineStore("chat", () => {
       if (groupTodosTimer !== null) window.clearTimeout(groupTodosTimer);
       groupTodosTimer = window.setTimeout(() => {
         groupTodosTimer = null;
-        void loadMessages(convId);
+        void reloadGroupTodoRows(groupId);
       }, 150);
     });
     groupTodosUnlisten = unlisten;

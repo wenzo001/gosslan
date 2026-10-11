@@ -51,7 +51,18 @@ const props = defineProps<{
   selfMention?: { name: string; label: string } | null;
 }>();
 /** 带上 `todo_id`：点卡片要直达**这一条**任务的详情（用户 #23），不是只把看板打开。 */
-const emit = defineEmits<{ (e: "open", todoId: string | undefined): void }>();
+const emit = defineEmits<{
+  /**
+   * 点**底部操作区**：打开看板并直达这条任务详情。载荷是这条任务的 todo_id
+   * （查不到 id 时为 undefined，调用方退化为只打开看板）。
+   */
+  (e: "open", todoId: string | undefined): void;
+  /**
+   * 点**卡片主体**（头部 / 描述 / 指派人）：只打开群任务面板，不直达某条详情。
+   * 与底部按钮是两个互不重叠的命中区，不共用一个处理器。
+   */
+  (e: "open-panel"): void;
+}>();
 
 const { cardStyle } = props;
 
@@ -77,6 +88,24 @@ const cardGallery = computed(() =>
 const cardSource = computed(() => (todoId.value ? `task-card:${todoId.value}` : null));
 function openCardImage(i: number) {
   preview.openGallery(cardGallery.value, i, cardSource.value);
+}
+
+/**
+ * 点卡片**主体**：只打开群任务面板（不直达某一条）。
+ *
+ * 三个命中区互不重叠（见模板）：主体 → open-panel；底部操作条 → open(todoId)；
+ * 图片缩略图 → 统一预览（在外层就地 stop，绝不冒泡成开面板）。
+ * 描述里可能有真链接（MentionText → MessageLinkText 渲染的 `<a>`）：点链接必须
+ * 只走外部打开，不能顺手把面板也弹出来。
+ */
+function openPanel(e: MouseEvent) {
+  if ((e.target as HTMLElement | null)?.closest("a")) return;
+  emit("open-panel");
+}
+function openPanelKey(e: KeyboardEvent) {
+  if (e.key !== "Enter" && e.key !== " ") return;
+  e.preventDefault(); // 空格不滚页
+  emit("open-panel");
 }
 /**
  * 卡片显示的状态 = **当前**状态（折叠结果），查不到才退回创建时的快照。
@@ -108,6 +137,17 @@ function statusText(s: TodoStatus): string {
 <template>
   <div class="relative w-64 max-w-full" :style="cardStyle">
     <div class="overflow-hidden rounded-[var(--gosslan-bubble-radius)]">
+    <!-- 命中区①：卡片主体（头部 / 描述 / 指派人）→ 只打开群任务面板，不直达某一条。
+         role=button + tabindex 让它与底部真按钮一样键盘可达；hover 给反馈。
+         ⚠️ 这里不许用透明覆盖层：图片与底部操作条是**兄弟**命中区，盖一层会一起吃掉。 -->
+    <div
+      class="cursor-pointer transition hover:bg-[var(--gosslan-hover)]"
+      role="button"
+      tabindex="0"
+      :aria-label="todo?.title || t('todo.title')"
+      @click="openPanel"
+      @keydown="openPanelKey"
+    >
     <div class="flex items-center gap-2 px-3 pt-2.5">
       <ListTodo class="h-4 w-4 shrink-0 text-[var(--gosslan-primary)]" />
       <!-- 群内固定编号（`R12` / `B2345`）：成员各自库里同一条任务是同一个号，口头引用才对得上。
@@ -171,7 +211,10 @@ function statusText(s: TodoStatus): string {
       />
     </p>
 
-    <div v-if="cardImages.length" class="mt-1.5 flex flex-wrap gap-1 px-3">
+    <div v-if="cardImages.length" class="mt-1.5 flex flex-wrap gap-1 px-3" @click.stop @keydown.enter.stop @keydown.space.stop>
+      <!-- 命中区③：图片缩略图 → 只开统一预览。整块 stop：无论模板以后怎么挪，
+           这里的点击都不许冒泡成「打开任务面板/详情」（缩略图自己的键盘处理
+           直接调预览，不合成 click，不会走到主体的 keydown）。 -->
       <TodoImageThumb
         v-for="(img, i) in cardImages"
         :key="img.sha256"
@@ -194,7 +237,10 @@ function statusText(s: TodoStatus): string {
         {{ t("todo.assigneesEmpty") }}
       </span>
     </div>
+    </div>
+    <!-- /命中区①：主体 -->
 
+    <!-- 命中区②：底部操作条 → 打开看板并直达**这条**任务详情（带 todoId）。 -->
     <button
       type="button"
       class="mt-2 flex w-full items-center justify-center gap-1 border-t border-[var(--gosslan-card-line)] py-1.5 text-[12px] text-[var(--gosslan-primary)] transition hover:bg-[var(--gosslan-hover)]"
