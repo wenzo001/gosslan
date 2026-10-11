@@ -91,6 +91,10 @@ fn build(
     sound: bool,
     extra: &HashMap<String, String>,
 ) -> notify_rust::Notification {
+    // `extra` 目前只有 macOS 读（action 按钮文案）。这个无条件引用让参数在
+    // Windows/Linux 编译下也算"被使用"，避免跨平台 unused_parameter（-D warnings 会挂）；
+    // 零成本，不影响 macOS 块里的真实读取。
+    let _ = &extra;
     let identifier = app.config().identifier.clone();
     let mut notification = notify_rust::Notification::new();
     notification.summary(title).body(body).auto_icon();
@@ -121,11 +125,13 @@ fn build(
         } else {
             identifier.as_str()
         });
-        // ⚠️ macOS（NSUserNotificationCenter 后端）上，没有 action 按钮 / wait_for_click
-        // 的通知在 mac-notification-sys 里按 shouldWait=false 投递：**点正文的回调会被
-        // 直接丢弃**（PENDING 条目投递完即移除）。挂一个按钮才会走"同步投递 + 等交互"
-        // 路径；点正文仍然映射成 Default（见 show_click_impl 的双判定），
-        // 点这个按钮则映射成 Action("open")。文案由调用方本地化后经 extra 给。
+        // ⚠️ 这个按钮只在 macOS 上加，是点击捕获的**承重件**：mac-notification-sys
+        // 在无 action 按钮 / wait_for_click 时按 shouldWait=false 投递，点正文的回调会被
+        // 直接丢弃（PENDING 条目投递完即移除）。挂了按钮才走"同步投递 + 等交互"路径；
+        // 点正文仍映射成 Default，点按钮映射 Action("open")，show_click_impl 两者都认。
+        // Windows / Linux 不加：它们的正文点击本身就能回调（on_activated(None) /
+        // XDG default action），加按钮会凭空给每条通知添一个外观元素，且 Action 键
+        // 没有对应处理，成了死按钮。
         let label = extra
             .get("action_label")
             .map(String::as_str)
@@ -303,7 +309,7 @@ fn show_click_impl(
     target_os = "netbsd"
 )))]
 fn show_click_impl(
-    app: &tauri::AppHandle,
+    app: tauri::AppHandle,
     title: &str,
     body: &str,
     extra: HashMap<String, String>,

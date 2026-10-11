@@ -128,24 +128,27 @@ pub async fn search_nearby_peers(state: State<'_, Arc<AppState>>) -> Result<Vec<
 pub fn set_app_active(state: State<'_, Arc<AppState>>, active: bool) {
     use std::sync::atomic::Ordering;
     let s = state.inner();
-    if s.app_active.swap(active, Ordering::Relaxed) == active {
-        return;
-    }
-    #[cfg(feature = "bluetooth")]
-    {
-        crate::network::ble::wake_scan(s);
-        s.logger.info(
-            "ble",
-            format!(
-                "[SCAN] 应用{} ⇒ 扫描节奏切换为 {}",
-                if active {
-                    "回到前台/聚焦"
-                } else {
-                    "进入后台/失焦"
-                },
-                if active { "5s" } else { "30s" }
-            ),
-        );
+    // 只在状态**真的翻转**时做事。注意不能写成「相同就提前 return」：无 bluetooth
+    // 特性时下面的块整体被 cfg 掉，return 会成为函数末语句，新 clippy（1.98）在
+    // 非 bluetooth 构建下以 needless_return 挂门禁。把工作放进「翻转」分支，两种
+    // 特性配置都干净，行为一字不变。
+    if s.app_active.swap(active, Ordering::Relaxed) != active {
+        #[cfg(feature = "bluetooth")]
+        {
+            crate::network::ble::wake_scan(s);
+            s.logger.info(
+                "ble",
+                format!(
+                    "[SCAN] 应用{} ⇒ 扫描节奏切换为 {}",
+                    if active {
+                        "回到前台/聚焦"
+                    } else {
+                        "进入后台/失焦"
+                    },
+                    if active { "5s" } else { "30s" }
+                ),
+            );
+        }
     }
 }
 

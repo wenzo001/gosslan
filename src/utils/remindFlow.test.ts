@@ -167,6 +167,14 @@ test("后端：notify_desktop 以 opts 收 msg_id/action_label，点击载荷带
     /NSUserNotificationDefaultSoundName/,
     "macOS 默认声音必须用完整常量（传 default 会被当成不存在的声音文件）",
   );
+  // action 按钮只能加在 macOS 块里：Windows/Linux 正文点击本身就能回调，
+  // 全局加按钮会给每条 toast 添外观元素，且非 mac 的回调只认 Default，按钮成死键。
+  const buildAt = notif.indexOf("fn build(");
+  const buildBody = notif.slice(buildAt, buildAt + 4500);
+  const macBlockAt = buildBody.indexOf('#[cfg(target_os = "macos")]');
+  const actionAt = buildBody.indexOf('.action("open"');
+  assert.ok(macBlockAt > 0 && actionAt > macBlockAt,
+    "notification.action 必须只在 macOS cfg 块内（Windows/Linux 不加按钮）");
 });
 
 test("MessageItem：发起入口要求消息已成功发出；接收标识与确认按钮齐备", () => {

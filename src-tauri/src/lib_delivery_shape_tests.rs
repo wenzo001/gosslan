@@ -542,3 +542,33 @@
             "自我移除必须同时删 group 行与 gk 设置（缺密钥，迟到的 remind 帧才打不开）"
         );
     }
+
+    /// 强提醒第 3 阶段④：**1:1** 发送侧也要做目标真实性校验（与群内核同一条例）。
+    ///
+    /// 群路径在 `group_files.rs` 已校验；1:1 `send_message` 只 parse 不验真就会放行
+    /// 指向"幽灵消息"的 remind —— 对方收到通知、点开定位不到。这条钉住发送侧：
+    /// remind 的 target 必须是本会话真实一行；remind_ack 的 target 必须是真实 remind 行。
+    #[test]
+    fn direct_remind_validates_target_message_exists() {
+        let cmds = all_commands_src();
+        // 先 code_flat 压掉所有空白：cargo fmt 会把 match 臂 / 链式调用拆行，
+        // 直接在原文上搜 `"remind"=>{` 这类无空格锚点必然假失败（本册既有条例）。
+        let body = code_flat(&rust_fn_body(cmds, "pub async fn send_message("));
+        assert!(
+            body.contains("\"remind\"=>{")
+                && body.contains("parse_remind_payload(&content)")
+                && body.contains("db::get_message_record(&dbc,&p.target)")
+                && body.contains("m.conv_id==friend_id"),
+            "1:1 remind 出帧前必须现读消息表，确认 target 真实存在于本会话"
+        );
+        assert!(
+            body.contains("\"remind_ack\"=>{")
+                && body.contains("m.conv_id==friend_id&&m.kind==\"remind\""),
+            "1:1 remind_ack 的 target 必须是本会话一行真实 remind（防止凭空确认）"
+        );
+        assert!(
+            body.contains("\"要提醒的消息不存在\"")
+                && body.contains("\"对应的强提醒不存在\""),
+            "校验失败必须明确拒发（不能让幽灵提醒发出去）"
+        );
+    }
