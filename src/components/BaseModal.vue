@@ -128,7 +128,7 @@ useBackLayer(
         <div
           :class="fullscreen
             ? 'flex min-h-full items-stretch justify-center'
-            : 'flex min-h-full items-center justify-center p-4'"
+            : 'flex min-h-full justify-center p-4'"
         >
           <!-- 整页形态：铺满 + 自带标题栏（含左上返回/关闭）与安全区；
                卡片形态：保持原有的居中卡片。
@@ -137,7 +137,11 @@ useBackLayer(
                "Passing props on template!"（Vue 渲染直接炸 ⇒ 整个窗口卡死）。
                —— 整页形态按「一页」处理：与设置/日志/收藏等详情页**同一套 page-slide**
                （从右滑入 / 滑出），而不是卡片的淡入缩放。否则同样是整页下钻，
-               群任务 / 搜索页的转场却和别的详情页不一样（用户 2026-09-20「群任务的转场好像不对」）。 -->
+               群任务 / 搜索页的转场却和别的详情页不一样（用户 2026-09-20「群任务的转场好像不对」）。
+               卡片形态垂直居中用 `my-auto`，⚠️ 不许改回 items-center —— 内容高于视口时 flex
+               居中会让卡片顶部溢出到滚动容器之外（WebKit/Blink 经典坑），表现为「最下面能
+               滚出来、头部一块永远被遮挡」（任务长详情实测，2026-10-12）；max-h + 内部滚动区
+               保证再长的内容顶部也能完整滚到，标题栏始终钉住不滚走。 -->
           <TransitionChild
             as="template"
             :enter="fullscreen
@@ -178,10 +182,10 @@ useBackLayer(
             </DialogPanel>
             <DialogPanel
               v-else
-              class="elevated w-full rounded-[var(--gosslan-radius-xl)] bg-[var(--gosslan-panel)] p-5 text-left align-middle text-[var(--gosslan-text)]"
+              class="elevated my-auto flex max-h-[calc(100vh-2rem)] w-full flex-col rounded-[var(--gosslan-radius-xl)] bg-[var(--gosslan-panel)] p-5 text-left align-middle text-[var(--gosslan-text)]"
               :class="width"
             >
-              <div v-if="title" class="mb-4 flex items-start justify-between gap-3">
+              <div v-if="title" class="mb-4 flex shrink-0 items-start justify-between gap-3">
                 <DialogTitle as="h3" class="text-base font-semibold leading-6">
                   {{ title }}
                 </DialogTitle>
@@ -193,7 +197,10 @@ useBackLayer(
                   <X class="h-4 w-4" />
                 </button>
               </div>
-              <slot />
+              <!-- 只有内容区滚：标题栏（含 ✕）始终钉在顶部，长内容从头部开始全部可达。 -->
+              <div class="min-h-0 flex-1 overflow-y-auto">
+                <slot />
+              </div>
             </DialogPanel>
           </TransitionChild>
         </div>

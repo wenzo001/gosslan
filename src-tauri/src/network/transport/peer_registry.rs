@@ -2,6 +2,56 @@
 // 从 transport.rs 搬出：`include!` 回同一模块 ⇒ 模块路径、可见性、测试全名一字不变。
 // 大文件拆分第三批；守卫视图与领域图的分册清单一同登记。
 
+/// 登记一条「好友密钥轮换候选」并通知前端（用户确认后由 `sync_friend_keys` 落库）。
+///
+/// 调用前提：调用方已经用**新 ed25519 公钥自验签**通过了本次 Hello
+/// （证明对端持有新私钥），但新公钥与 friends 表的绑定值不一致（典型场景：
+/// 对方卸载重装导致身份密钥重建）。这里再加两道闸：
+/// 1. 只给**好友**登记 —— 非好友的冲突不进聊天界面，避免陌生节点刷横幅；
+/// 2. 同一对候选密钥只通知一次（对端会反复重连/重发 Hello）。
+///
+/// 未签名的 UDP announce 冲突**不许**走这里（那是 `warn_key_conflict_once` 的职责）。
+pub(crate) fn record_key_rotation_candidate(
+    state: &AppState,
+    device_id: &str,
+    x25519_pubkey: &str,
+    ed25519_pubkey: &str,
+) {
+    if x25519_pubkey.is_empty() || ed25519_pubkey.is_empty() {
+        return;
+    }
+    {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        if db::get_friend(&dbc, device_id).is_none() {
+            return; // 不是好友：不给一键换钥入口（仍走 verify_hello 的硬拒）
+        }
+    }
+    let is_new = {
+        let mut map = state
+            .pending_key_rotations
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let same = matches!(map.get(device_id),
+            Some(c) if c.x25519_pubkey == x25519_pubkey && c.ed25519_pubkey == ed25519_pubkey);
+        if same {
+            false
+        } else {
+            map.insert(
+                device_id.to_string(),
+                crate::state::PendingKeyRotation {
+                    x25519_pubkey: x25519_pubkey.to_string(),
+                    ed25519_pubkey: ed25519_pubkey.to_string(),
+                    ts: db::now_ms(),
+                },
+            );
+            true
+        }
+    };
+    if is_new {
+        let _ = state.app.emit("friend-key-changed", device_id);
+    }
+}
+
 /// 同一 device_id 报出与已绑定值不同的公钥时，向用户给出**一次**可见告警。
 ///
 /// 为什么必须让用户看见：这是区分「对方重装了应用」与「有人冒名顶替」的唯一外部信号。

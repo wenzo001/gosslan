@@ -845,6 +845,17 @@ export const zhCN: MessageDict = {
   "friend.remove.bodySuffix": "」？",
   "friend.remove.item1": "聊天记录保留在本地，可通过「添加好友」重新添加",
   "friend.remove.item2": "对方不受影响，仅解除本机好友关系",
+  // ---- 好友身份密钥变更（对方卸载重装等）：聊天内横幅 + 确认同步 ----
+  "friend.keyRotated.banner": "{name} 的身份密钥已变更（常见于卸载重装应用），消息与文件暂时发不出去。若已通过其他方式确认是本人操作，可同步新密钥；无法确认请删除好友。",
+  "friend.keyRotated.sync": "同步新密钥",
+  "friend.keyRotated.remove": "删除好友",
+  "friend.keyRotated.syncTitle": "同步新身份密钥？",
+  "friend.keyRotated.syncBody": "将把「{name}」的身份密钥更新为本次观察到的新值，同步后消息与文件收发立即恢复。请先通过其他方式确认这是本人操作（例如对方刚重装过应用）。",
+  "friend.keyRotated.syncItem1": "新密钥已通过对端私钥自验签，但自验签本身不能排除冒名顶替",
+  "friend.keyRotated.syncItem2": "若无法确认是本人，请取消并直接删除好友",
+  "friend.keyRotated.confirmSync": "确认同步",
+  "friend.keyRotated.syncFail": "同步新密钥失败，请重试",
+  "friend.keysSynced": "已同步好友的新身份密钥，消息与文件收发已恢复",
 
   // ---- 会话列表 / 共享目录 / 拓扑 ----
   "conv.unread": "{name}，{n} 条未读",

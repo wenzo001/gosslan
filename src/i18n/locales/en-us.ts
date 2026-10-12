@@ -824,6 +824,17 @@ export const enUS: MessageDict = {
   "friend.remove.bodySuffix": "\"?",
   "friend.remove.item1": "Chat history stays on this device; you can re-add via \"Add Friend\"",
   "friend.remove.item2": "The other side is unaffected; only the local friend relationship is removed",
+  // ---- Friend identity key changed (reinstall, etc.): in-chat banner + confirmed sync ----
+  "friend.keyRotated.banner": "{name}'s identity keys changed (usually after reinstalling the app), so messages and files can't be delivered. If you've verified it's really them, sync the new keys; otherwise remove the friend.",
+  "friend.keyRotated.sync": "Sync new keys",
+  "friend.keyRotated.remove": "Remove friend",
+  "friend.keyRotated.syncTitle": "Sync new identity keys?",
+  "friend.keyRotated.syncBody": "This updates {name}'s identity keys to the newly observed pair, after which messages and files flow again. First verify through another channel that this is really them (e.g. they just reinstalled the app).",
+  "friend.keyRotated.syncItem1": "The new keys passed the peer's self-signature, but a self-signature alone cannot rule out impersonation",
+  "friend.keyRotated.syncItem2": "If you can't verify their identity, cancel and remove the friend instead",
+  "friend.keyRotated.confirmSync": "Sync anyway",
+  "friend.keyRotated.syncFail": "Failed to sync new keys, please try again",
+  "friend.keysSynced": "Friend's new identity keys synced; messages and files are flowing again",
 
   // ---- Conversations / Shared folder / Topology ----
   "conv.unread": "{name}, {n} unread",

@@ -69,6 +69,7 @@ import type {
   FileStalledInfo,
   FavoriteEntry,
   Friend,
+  FriendKeyRotation,
   Group,
   GroupReadInfo,
   MessageRecord,
@@ -98,6 +99,12 @@ export const useChatStore = defineStore("chat", () => {
   const friends = ref<Friend[]>([]);
   /** 后端给的**原始**好友申请列表（可能含已经过期的：对方已同意 / 我已把他加上了）。 */
   const rawPendingRequests = ref<PendingRequest[]>([]);
+  /**
+   * 「好友密钥已更换、等待用户确认」的候选（device_id -> 候选）。
+   * 后端只在新私钥 Hello 自验签通过时登记，仅内存态；前端据此在单聊顶部
+   * 显示「同步新密钥 / 删除好友」横幅。用户确认或删好友后由后端事件清掉。
+   */
+  const keyRotations = ref<Record<string, FriendKeyRotation>>({});
   /**
    * 展示用的好友申请列表：**已经在好友列表里的申请自动消失**。
    *
@@ -736,6 +743,26 @@ export const useChatStore = defineStore("chat", () => {
     const list = await api.getPendingRequests();
     if (!refreshGuard.isCurrent("pending", tok)) return;
     rawPendingRequests.value = list;
+  }
+  /** 重新拉取待确认的好友密钥轮换（后端只保留好友条目，内存态）。 */
+  async function refreshKeyRotations() {
+    try {
+      const list = await api.getFriendKeyRotations();
+      const next: Record<string, FriendKeyRotation> = {};
+      for (const r of list) next[r.device_id] = r;
+      keyRotations.value = next;
+    } catch {
+      // 老后端没有这个命令时静默（兼容），不影响聊天主流程。
+    }
+  }
+  /** 用户确认是本人后同步好友的新身份密钥；成功后候选由后端事件移除。 */
+  async function syncFriendKeys(peerId: string) {
+    await api.syncFriendKeys(peerId);
+    delete keyRotations.value[peerId];
+    keyRotations.value = { ...keyRotations.value };
+    await refreshFriends();
+    await refreshConversations();
+    app.toast(t("friend.keysSynced"), "success");
   }
   /**
    * 「这条会话我在本地已经判过已读」的水位（convId → 时刻）。
@@ -1536,10 +1563,21 @@ export const useChatStore = defineStore("chat", () => {
   async function removeFriend(peerId: string) {
     const prev = friends.value;
     friends.value = prev.filter((f) => f.device_id !== peerId);
+    // 后端 remove_friend 会同步删掉密钥轮换候选；乐观一并清，否则聊天顶部的
+    // 换钥横幅要等 friend-removed 事件往返后才消失。
+    const prevRotation = keyRotations.value[peerId];
+    if (prevRotation) {
+      const nextRotations = { ...keyRotations.value };
+      delete nextRotations[peerId];
+      keyRotations.value = nextRotations;
+    }
     try {
       await api.removeFriend(peerId);
     } catch (e) {
       friends.value = prev; // 回滚
+      if (prevRotation) {
+        keyRotations.value = { ...keyRotations.value, [peerId]: prevRotation };
+      }
       throw e;
     }
   }
@@ -2238,6 +2276,16 @@ export const useChatStore = defineStore("chat", () => {
       onFriendRejected: () => {},
       onFriendRemoved: async () => {
         await refreshFriends();
+        // 后端在删好友时会一并删掉该好友的密钥轮换候选：本地表跟着清，
+        // 否则聊天顶部的换钥横幅会残留（候选只在内存，事件不带全量列表）。
+        await refreshKeyRotations();
+      },
+      // 好友重装应用、新私钥 Hello 自验签通过：后端登记候选，这里拉全量列表。
+      onFriendKeyChanged: () => {
+        void refreshKeyRotations();
+      },
+      onFriendKeysSynced: () => {
+        void refreshKeyRotations();
       },
       onFriendMessageBlocked: () => {
         app.toast(t("send.notFriend"), "error");
@@ -2376,6 +2424,7 @@ export const useChatStore = defineStore("chat", () => {
       "refreshPeers",
       "refreshTopology",
       "refreshAnnouncements",
+      "refreshKeyRotations",
     ] as const;
     const results = await Promise.allSettled([
       refreshFriends(),
@@ -2386,6 +2435,7 @@ export const useChatStore = defineStore("chat", () => {
       refreshPeers(),
       refreshTopology(),
       refreshAnnouncements(),
+      refreshKeyRotations(),
     ]);
     results.forEach((r, i) => {
       if (r.status === "rejected") {
@@ -2537,6 +2587,10 @@ export const useChatStore = defineStore("chat", () => {
     refreshFriends,
     refreshPending,
     refreshConversations,
+    /** 待确认的好友密钥轮换候选（device_id -> 候选），聊天顶部横幅的数据源。 */
+    keyRotations,
+    refreshKeyRotations,
+    syncFriendKeys,
     /** 群 → 「与我相关的未完成任务」数（蓝色徽标的数据源，判定见 `utils/todos::openTodosForMe`） */
     openTodoByConv,
     groupTodoRows,

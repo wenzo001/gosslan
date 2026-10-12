@@ -2,7 +2,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppSettings, CacheInfo, ChatSearchGroup, CleanupReport, ContentAudience, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, Group, GroupFileEntry, GroupReadInfo, InterfaceInfo, LinkState, LogEntry, MessageRecord, Peer, PeerReadInfo, PendingRequest, RelayConfig, RelayProbe, RoutedEndpoint, RuntimeSnapshot, ShareEntry, TopologyInfo, TransferInfo } from "@/types";
+import type { AppSettings, CacheInfo, ChatSearchGroup, CleanupReport, ContentAudience, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, FriendKeyRotation, Group, GroupFileEntry, GroupReadInfo, InterfaceInfo, LinkState, LogEntry, MessageRecord, Peer, PeerReadInfo, PendingRequest, RelayConfig, RelayProbe, RoutedEndpoint, RuntimeSnapshot, ShareEntry, TopologyInfo, TransferInfo } from "@/types";
 import type { TodoImage } from "@/utils/todos";
 import type { PreviewGallery, PreviewImage } from "@/types";
 export const api = {
@@ -98,6 +98,10 @@ export const api = {
   getSafetyNumber: (peerId: string) =>
     invoke<string | null>("get_safety_number", { peerId }),
   removeFriend: (peerId: string) => invoke<void>("remove_friend", { peerId }),
+  /** 待确认的好友密钥轮换列表（对方重装应用换身份时出现，仅内存态）。 */
+  getFriendKeyRotations: () => invoke<FriendKeyRotation[]>("get_friend_key_rotations"),
+  /** 用户确认是本人后，把好友身份密钥同步成观察到的新值。 */
+  syncFriendKeys: (peerId: string) => invoke<void>("sync_friend_keys", { peerId }),
   getPendingRequests: () => invoke<PendingRequest[]>("get_pending_requests"),
   sendFriendRequest: (peerId: string) => invoke<void>("send_friend_request", { peerId }),
   respondFriendRequest: (peerId: string, accept: boolean) =>
@@ -562,6 +566,10 @@ export type EventHandlers = {
   onFriendAccepted: (id: string) => void;
   onFriendRejected: (id: string) => void;
   onFriendRemoved: (id: string) => void;
+  /** 观察到某位好友的新身份密钥（候选），聊天界面应提示同步。 */
+  onFriendKeyChanged: (id: string) => void;
+  /** 某好友的密钥轮换已被用户确认同步。 */
+  onFriendKeysSynced: (id: string) => void;
   onFriendMessageBlocked: (id: string) => void;
   onMessage: (rec: MessageRecord) => void;
   onMessageAcked: (msgId: string) => void;
@@ -601,6 +609,8 @@ export async function bindEvents(h: EventHandlers): Promise<UnlistenFn[]> {
     listen<string>("friend-accepted", (e) => h.onFriendAccepted(e.payload)),
     listen<string>("friend-rejected", (e) => h.onFriendRejected(e.payload)),
     listen<string>("friend-removed", (e) => h.onFriendRemoved(e.payload)),
+    listen<string>("friend-key-changed", (e) => h.onFriendKeyChanged(e.payload)),
+    listen<string>("friend-keys-synced", (e) => h.onFriendKeysSynced(e.payload)),
     listen<string>("friend-message-blocked", (e) => h.onFriendMessageBlocked(e.payload)),
     listen<MessageRecord>("message-received", (e) => h.onMessage(e.payload)),
     listen<string>("message-acked", (e) => h.onMessageAcked(e.payload)),

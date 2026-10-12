@@ -1197,6 +1197,24 @@ pub struct AppState {
     /// 已就「身份密钥冲突」告警过的 device_id（本进程内去重）。
     /// announce 每 5s 一次、冲突会持续存在，不去重会把聊天记录刷爆。
     pub key_conflict_warned: Mutex<std::collections::HashSet<String>>,
+    /// 「好友重装后身份密钥变更」的**待确认轮换**：device_id -> 对端新身份（候选）。
+    ///
+    /// 只在新 ed25519 对 Hello **自验签通过**、但与 friends 表绑定值不一致时登记 ——
+    /// 即「持新私钥的同一 device_id」，且对方是好友。未签名的 UDP announce 不进这里
+    /// （任何人可伪造，不能作为一键换钥依据）。用户在聊天界面确认是本人后，
+    /// 经 `sync_friend_keys` 命令覆盖 friends 表；删除好友时一并清掉。仅内存，重启清空。
+    pub pending_key_rotations: Mutex<HashMap<String, PendingKeyRotation>>,
+}
+
+/// 一次待确认的好友密钥轮换候选（见 `AppState::pending_key_rotations`）。
+#[derive(Clone)]
+pub struct PendingKeyRotation {
+    /// 对端自报的新加密公钥（base64）。
+    pub x25519_pubkey: String,
+    /// 对端自报、且已通过本次 Hello 自签名验证的新身份公钥（base64）。
+    pub ed25519_pubkey: String,
+    /// 首次观察到的时刻（ms）。
+    pub ts: i64,
 }
 
 impl AppState {
@@ -1467,6 +1485,7 @@ impl AppState {
             ble_scan: Mutex::new(BleScanStats::default()),
             seen_hello_nonces: Mutex::new(VecDeque::new()),
             key_conflict_warned: Mutex::new(std::collections::HashSet::new()),
+            pending_key_rotations: Mutex::new(HashMap::new()),
         }))
     }
 
