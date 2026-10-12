@@ -47,7 +47,8 @@ import {
   todoMentionsMe,
   type TodoImage,
 } from "@/utils/todos";
-import { invalidateFilePreview } from "@/utils/filePreview";
+import { invalidateFilePreview, dropFilePreview, clearFilePreviews } from "@/utils/filePreview";
+import { clearFavoritePreviews } from "@/utils/favoritePreview";
 import { t } from "@/i18n";
 import { shouldRunThrottled } from "@/utils/defer";
 import { mergePeerList } from "@/utils/peerMerge";
@@ -946,6 +947,10 @@ export const useChatStore = defineStore("chat", () => {
     pendingReplace.clear();
     pendingAcks.clear();
     notifMap.clear();
+    // 预览缓存与 `clearAllData` 同口径整份放掉（含**收藏**那份独立缓存 ——
+    // 上面刚把 `favorites` 清了，它的 objectURL 留着就是纯粹的死字节）。
+    clearFilePreviews();
+    clearFavoritePreviews();
     await Promise.all([
       refreshConversations(),
       refreshGroups(),
@@ -1186,6 +1191,25 @@ export const useChatStore = defineStore("chat", () => {
     cacheOrder.push(convId);
   }
 
+  /**
+   * 放掉一批消息各自占的图片预览缓存（会话整块逐出时调用）。
+   *
+   * 为什么按 msg_id 逐个 drop 而不是"整份 clear"：`messages.value` 里同一时刻还有
+   * 另外 7 个会话的图在缓存里，`clear()` 会把它们一起打掉、切回去全都重读一遍。
+   *
+   * 键就是 msg_id：接收侧的 msg_id 本身长成 `file-{transfer_id}` / `gfile-{transfer_id}`
+   * （见 `commands::resolve_media_path` 的注释与 `handle_file.rs` / `group_file.rs` 的构造），
+   * 而 `loadFilePreview(msg.value.msg_id, ...)` 正是拿它当缓存键 ⇒ 直接对上。
+   * 待办描述图那条走的是 `cid`，不在这里（它挂在任务定义上、不随会话逐出）。
+   */
+  function releasePreviewsOf(msgs: readonly MessageRecord[] | undefined) {
+    if (!msgs) return;
+    for (const m of msgs) {
+      if (m.kind !== "file" && m.kind !== "image") continue;
+      dropFilePreview(m.msg_id);
+    }
+  }
+
   /** 把消息缓存收缩到 MAX_CACHED_CONVS 个会话（保留活跃会话 + 最近使用的若干个）。 */
   function enforceMessageCacheBound() {
     const keys = Object.keys(messages.value);
@@ -1193,6 +1217,12 @@ export const useChatStore = defineStore("chat", () => {
     const keep = selectCachedConversations(cacheOrder, activeConv.value, MAX_CACHED_CONVS);
     for (const cid of keys) {
       if (keep.has(cid)) continue;
+      // 会话被整块逐出 ⇒ 它那些消息的图片预览也一并放掉。
+      // 为什么必须联动：预览缓存的键是 `file-<transferId>` / `gfile-<transferId>` /
+      // 待办图的 `cid`，**不是** msg_id —— 单靠 LRU 那 60 MiB 封顶虽然不会无限涨，
+      // 但"这个会话已经不看了"是最强的释放信号，白占着就是让后看的图去挤前看的图。
+      // 顺序必须在 `delete messages.value[cid]` **之前**取列表（删完就取不到了）。
+      releasePreviewsOf(messages.value[cid]);
       delete messages.value[cid];
       // 分页簿记一并清掉：切回该会话时 loadMessages 会重新从 DB 取最新一页
       pagesLoaded.delete(cid);
@@ -2065,6 +2095,11 @@ export const useChatStore = defineStore("chat", () => {
     pendingAcks.clear();
     pendingReplace.clear();
     notifMap.clear();
+    // 图片预览缓存整份放掉：库都清了，那些 objectURL 指向的文件已经不存在，
+    // 留着就是几 MB～几十 MB 的死字节 + 一堆点了必然裂图的缓存条目。
+    // 收藏那份同理 —— `clear_all_data` 也删收藏行与副本。
+    clearFilePreviews();
+    clearFavoritePreviews();
     void refreshTransfers();
   }
 

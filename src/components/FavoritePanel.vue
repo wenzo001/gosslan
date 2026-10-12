@@ -21,7 +21,7 @@
  * `ForwardModal` 必须写在页面根节点的**同级**：页面由 `v-if` 挂载，转发弹窗写进页面容器里
  * 会随页面一起卸载。
  */
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { t } from "@/i18n";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
@@ -35,7 +35,7 @@ import { fmtConversationTime } from "@/utils/time";
 import { humanSize, rgba } from "@/utils/color";
 import { FILE_KIND_COLORS, FILE_KIND_ICONS, fileExt, fileKindOf } from "@/utils/fileKind";
 import { openLocalFile, saveLocalFile } from "@/utils/localFile";
-import { dropFavoritePreview, loadFavoritePreview } from "@/utils/favoritePreview";
+import { dropFavoritePreview, loadFavoritePreview, clearFavoritePreviews } from "@/utils/favoritePreview";
 import { mergeItemLine, mergeSummary, parseMergePayload } from "@/utils/mergeCard";
 import { isForwardableKind, isKnownKind, kindClass, UNSUPPORTED_KIND_LABEL } from "@/utils/messageKinds";
 import { cardCopyText } from "@/utils/cardText";
@@ -147,6 +147,13 @@ async function load() {
 // 每次进入页面都重拉：页面不在时用户可能在别处收藏过（消息菜单），缓存旧快照会少条目。
 // 组件由 v-if 挂载，挂载即代表"刚打开"，各 ref 初始都是 null（干净状态），直接拉一次即可。
 onMounted(() => void load());
+
+// 面板关闭（组件卸载）时放掉本面板用过的预览 objectURL。
+// 为什么必须在**这里**：`dropFavoritePreview` 原先只在"删单条收藏"时调用，而关面板
+// 只是卸载组件、缓存仍挂在模块上 ⇒ 看过一屏收藏图再关掉，那几十 MB 一直留着
+// （收藏的图往往是原图大小，这是这份独立缓存最大的泄漏面）。
+// 判据：面板由 `v-else-if` 挂载 ⇒ 关闭必然走卸载，onUnmounted 是唯一不漏的挂钩点。
+onUnmounted(() => clearFavoritePreviews());
 
 /** 单条收藏里参与搜索的文本。 */
 function searchText(f: FavoriteEntry): string {

@@ -471,9 +471,19 @@
         // 少了这条，预热就变成"启动时弹出一扇没内容的预览窗"（比慢更糟）。
         let prewarm = rust_fn_body(commands, "pub fn prewarm_aux_windows(");
         assert!(
-            code_flat(&prewarm).contains("ensure_preview_window(&app,&state,false)")
-                && code_flat(&prewarm).contains("ensure_tasks_window(&app,&state,\"\",false)"),
-            "预热必须把**两扇**高频窗都备好，且都走共用的窗口构造、reveal 传 false"
+            code_flat(&prewarm).contains("ensure_preview_window(&app,&state,false)"),
+            "预热必须把预览窗备好，且走共用的窗口构造、reveal 传 false"
+        );
+        // ⚠️ **群任务窗不预热**（2026-10-12 决策，反了这条就是回归）：
+        // 它常驻（`AUX_TASKS_RESIDENT = true`）⇒ 启动时那 ~23 MB 的 WebView 是**白占**的，
+        // 而首开群任务是低频动作，付一次 1–2 秒完全可以接受，付完之后照样秒开。
+        // 旧注释里"label 是 `todo-<groupId>`、启动时不知道是哪个群"那套说法**已过时**：
+        // label 现在是固定常量 `WINDOW_TASKS`（`ensure_tasks_window` 里实证），
+        // 全应用只有一扇常驻群任务窗，切群是对已存在的窗发 `group-todos-target` 事件。
+        // ⇒ 当年"预热没有确定性"的理由不成立，但"不预热"这个结论仍然成立，只是理由换成了收益。
+        assert!(
+            !code_flat(&prewarm).contains("ensure_tasks_window("),
+            "群任务窗不许再预热：它常驻 ⇒ 启动预热纯属白占约 23 MB 常驻内存（2026-10-12）"
         );
         assert!(
             !code_flat(&prewarm).contains(".show()")

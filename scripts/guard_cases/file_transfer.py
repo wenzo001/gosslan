@@ -112,8 +112,8 @@ CASES: list[Case] = [
             "\"消息先到、字节后到\"，在途读预览得到的失败若被永久缓存，文件落盘后也不会重读。",
         file=ROOT / "src" / "utils" / "filePreview.ts",
         injections=[(
-            '      if (r.missing || r.note === "文件过大，无法预览") cache.set(msgId, r);',
-            "      cache.set(msgId, r);",
+            '      if (r.missing || r.note === "文件过大，无法预览") cache.put(msgId, r);',
+            "      cache.put(msgId, r);",
         )],
         cmd=["node", "--test", "--experimental-strip-types", "--disable-warning=ExperimentalWarning",
              "src/utils/channelState.test.ts"],

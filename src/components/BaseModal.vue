@@ -117,10 +117,16 @@ useBackLayer(
         leave-from="opacity-100"
         leave-to="opacity-0"
       >
-        <div class="glass fixed inset-0 bg-[var(--gosslan-overlay)]" aria-hidden="true" />
+        <div class="glass fixed inset-x-0 bottom-0 top-[var(--gosslan-window-safe-top)] bg-[var(--gosslan-overlay)]" aria-hidden="true" />
       </TransitionChild>
+      <!-- ⚠️ 滚动层与遮罩都从 `var(--gosslan-window-safe-top)` 起算，不从视口 (0,0) 起算。
+           桌面窗口是 `decorations(false)` + 自绘 caption（`TitleBar.vue`，流内元素），而本弹窗
+           经 portal 挂到 `<body>` ⇒ 铺满视口时卡片顶部会钻到 caption 底下被压住（✕ 与标题一起
+           被 caption 吃掉）。让开之后 Win/Linux 让 38px、macOS 让 28px（跟着
+           `--gosslan-title-h` 的 `.platform-mac` 覆盖自动切），**移动端该变量为 0 ⇒ 零变化**。
+           变量的定义与判据（`html:not(.is-mobile)`）见 `style.css` 的窗口显示安全区那一节。 -->
       <div
-        class="fixed inset-0 overflow-y-auto overflow-x-hidden"
+        class="fixed inset-x-0 bottom-0 top-[var(--gosslan-window-safe-top)] overflow-y-auto overflow-x-hidden"
         :style="app.isMobile && app.keyboardInset > 0
           ? { paddingBottom: `${app.keyboardInset + 12}px` }
           : undefined"
@@ -182,7 +188,7 @@ useBackLayer(
             </DialogPanel>
             <DialogPanel
               v-else
-              class="elevated my-auto flex max-h-[calc(100vh-2rem)] w-full flex-col rounded-[var(--gosslan-radius-xl)] bg-[var(--gosslan-panel)] p-5 text-left align-middle text-[var(--gosslan-text)]"
+              class="elevated my-auto flex max-h-[calc(100vh-var(--gosslan-window-safe-top)-2rem)] w-full flex-col rounded-[var(--gosslan-radius-xl)] bg-[var(--gosslan-panel)] p-5 text-left align-middle text-[var(--gosslan-text)]"
               :class="width"
             >
               <div v-if="title" class="mb-4 flex shrink-0 items-start justify-between gap-3">
@@ -197,8 +203,11 @@ useBackLayer(
                   <X class="h-4 w-4" />
                 </button>
               </div>
-              <!-- 只有内容区滚：标题栏（含 ✕）始终钉在顶部，长内容从头部开始全部可达。 -->
-              <div class="min-h-0 flex-1 overflow-y-auto">
+              <!-- 只有内容区滚：标题栏（含 ✕）始终钉在顶部，长内容从头部开始全部可达。
+                   `pr-[var(--gosslan-scroll-gutter)]` 是**滚动条留白**：Win/Linux 的 6px 常显细滚动条
+                   原先紧贴正文（贴边感），现在正好落进这 8px 里；macOS 是系统 overlay 滚动条
+                   （不占布局宽）⇒ 这 8px 只是呼吸感，两侧视觉仍对称（详见 `style.css` 该变量说明）。 -->
+              <div class="min-h-0 flex-1 overflow-y-auto pr-[var(--gosslan-scroll-gutter)]">
                 <slot />
               </div>
             </DialogPanel>
