@@ -106,7 +106,7 @@ export const zhCN: MessageDict = {
   "settings.group.storage.footer": "本页只管「本机落盘的图片与文件」（聊天里收到的附件）和聊天数据库占用；聊天文字不会被自动清理。改动即时保存。保持「永久保存 + 无限制」即不做任何自动删除。",
   "settings.group.about.footer": "Gosslan v{version} · 无服务器 P2P · 端到端加密 · 数据仅存本机",
   "settings.group.notifications": "通知",
-  "settings.group.notifications.footer": "应用在后台、或正在看别的会话时，用系统通知提醒新消息",
+  "settings.group.notifications.footer": "应用在后台、或正在看别的会话时，用系统通知提醒新消息。紧急通知会弹跳 Dock / 闪烁任务栏，系统勿扰不会阻止这一动作",
   "settings.group.files.footer": "接收好友发来的文件放这里；共享目录是你开放给好友浏览的文件夹",
   "settings.group.reset": "重置与数据",
 
@@ -121,6 +121,10 @@ export const zhCN: MessageDict = {
   "settings.notify.test.sending": "发送中…",
   "settings.notify.test.sent": "已发送：{hint}",
   "settings.notify.test.failed": "测试通知发送失败",
+  "settings.notify.remindSound": "强提醒声音",
+  "settings.notify.remindSound.desc": "桌面端播放系统通知声，系统静音或勿扰时不响；Android 声音由系统的「强提醒」通知通道控制，可在系统设置中关闭",
+  "settings.notify.remindVibrate": "强提醒振动",
+  "settings.notify.remindVibrate.desc": "仅 Android 生效，随通知通道振动；iPhone 与桌面端不支持应用内振动",
 
   "settings.share.folder": "共享文件夹",
 
@@ -164,6 +168,8 @@ export const zhCN: MessageDict = {
 
   // ---- 通知动作 ----
   "notification.markRead": "标记已读",
+  // macOS 系统通知上的「打开」按钮（点击捕获的承重件，固定短词）
+  "notification.view": "查看",
 
   // ---- 外观 ----
   "settings.appearance.mode": "外观",
@@ -485,6 +491,33 @@ export const zhCN: MessageDict = {
   "msg.system": "系统",
   "msg.message": "消息",
   "msg.pin": "置顶",
+  "msg.remind": "强提醒",
+  "msg.remindAck": "强提醒确认",
+
+  // ---- 强提醒 ----
+  // 右键 / 长按菜单入口
+  "remind.menuEntry": "强提醒",
+  // 系统通知（title 后会拼上发送者昵称）
+  "remind.notifyTitle": "强提醒",
+  "remind.notifyBody": "请尽快查看这条消息",
+  "remind.notifyBodyHidden": "你收到一条强提醒",
+  // Android 通知通道描述（系统通知设置里可见）
+  "remind.channelDesc": "强提醒：横幅通知、声音与振动",
+  // 气泡下方五态标识（六态中的 S0 与普通消息无关）
+  "remind.stageFailed": "发送失败",
+  "remind.stagePending": "待送达",
+  "remind.stageDelivered": "已送达",
+  "remind.stageReminded": "已提醒",
+  "remind.stageConfirmed": "已确认",
+  "remind.gotIt": "我知道了",
+  "remind.locateFail": "原消息暂时找不到，可能还未同步到本机",
+  "remind.sendFail": "强提醒发送失败",
+  "remind.confirmFail": "确认失败",
+  // 群聊受众选择
+  "remind.audienceTitle": "选择提醒的人",
+  "remind.audienceHint": "至少选择 1 位成员；被选中的人会收到强提醒通知。",
+  "remind.audienceCount": "已选 {n} 人",
+  "remind.audienceConfirm": "发送提醒",
   "msg.unpin": "取消置顶",
   "msg.pinFail": "置顶失败",
   "msg.pinCollapse": "收起",
@@ -529,10 +562,12 @@ export const zhCN: MessageDict = {
   "todo.loading": "正在加载任务…",
   "todo.loadFail": "任务读取失败，关掉窗口再打开可重试",
   "todo.doneCount": "{n}/{total} 已完成",
-  // 四态由用户 2026-09-16 定：手动选、不做截止时间（「延期」就是人标出来的状态）
+  // 状态由用户手动选、不做截止时间（「延期」就是人标出来的状态）；
+  // 「做不了」（2026-10-12）与完成同族，是可归档的终态。
   "todo.status.todo": "待办",
   "todo.status.doing": "进行中",
   "todo.status.overdue": "延期",
+  "todo.status.impossible": "做不了",
   "todo.status.done": "完成",
   "todo.priorityLabel": "优先级",
 "todo.priorityHint": "先做哪一条；默认「常规」。",
@@ -542,6 +577,9 @@ export const zhCN: MessageDict = {
   "todo.category.task": "任务",
   "todo.category.requirement": "需求",
   "todo.category.bug": "缺陷",
+  "todo.category.custom": "自定义…",
+  "todo.categoryCustomPlaceholder": "输入自定义类型名",
+  "todo.categoryCustomNeedName": "请输入自定义类型名称",
   // 编号口径（字母 + 永久递增数字、超过 4 位只显后四位）见 utils/todos.ts 的 todoCode()
   // 与 docs/protocol-invariants.md 的 INV-P29；这两句是它唯一的两处文案。
   "todo.codeAria": "任务编号 {code}",
@@ -591,13 +629,27 @@ export const zhCN: MessageDict = {
   "todo.assigneesInline": "指派 {names}",
   "todo.imageCount": "{n} 张图片",
   "todo.archivedEmpty": "归档里还没有任务",
-  "todo.archivedHint": "完成之后可手动归档；完成后满 7 天自动归档",
+  "todo.archivedHint": "完成或标记为做不了之后可手动归档；进入终态满 7 天自动归档",
   "todo.archive": "归档",
   "todo.description": "描述",
   "todo.noDescription": "没有描述",
   "todo.statusChange": "更改状态",
   "todo.doneAt": "完成于 {time}",
+  "todo.impossibleAt": "标记为做不了于 {time}",
   "todo.createdAt": "创建于 {time}",
+  // 全员操作流水（详情弹窗）：一条事件里可能含多项，用「·」连接。
+  "todo.history.sectionTitle": "操作记录",
+  "todo.history.created": "创建了任务",
+  "todo.history.changeTitle": "修改了标题",
+  "todo.history.description": "修改了描述",
+  "todo.history.status": "状态：{from} → {to}",
+  "todo.history.priority": "优先级：{from} → {to}",
+  "todo.history.category": "类型：{from} → {to}",
+  "todo.history.assigneesAdd": "添加指派人：{names}",
+  "todo.history.assigneesRemove": "移除指派人：{names}",
+  "todo.history.archived": "归档了任务",
+  "todo.history.restored": "还原为待办",
+  "todo.history.deleted": "删除了任务",
   "todo.imageHint": "点一下这里，再按 ⌘V / Ctrl+V 粘贴，或把图片拖进来（单张 {mb}MB 以内）",
   "todo.imageHintMobile": "点击添加图片",
   "todo.imageArmed": "已聚焦 · 按 ⌘V / Ctrl+V 粘贴，或拖入图片（单张 {mb}MB 以内）",
@@ -610,6 +662,8 @@ export const zhCN: MessageDict = {
   "todo.mentionYou": "[任务@你]",
   "todo.completedNotice": "任务已完成：{title}",
   "todo.completedNoticeNoTitle": "你创建的任务已完成",
+  "todo.impossibleNotice": "任务被标记为做不了：{title}",
+  "todo.impossibleNoticeNoTitle": "你创建的任务被标记为做不了",
   "preview.title": "图片预览",
   "preview.unavailable": "这台设备暂时打不开这张图的预览",
   "todo.windowNoGroup": "还没有选择要查看哪个群的任务",

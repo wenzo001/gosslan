@@ -80,9 +80,17 @@ export const api = {
    *
    * `convId` 必须传：**点通知要定位到会话**就得让后端知道这条通知属于谁 ——
    * 点击是后端（notify-rust 的 handle）捕获的，前端拿不到那个时机。
+   * `opts.msgId`（仅强提醒）：被提醒的原消息，点击后继续定位到它。
+   * `opts.sound`（仅强提醒）：让系统通知通道发声。
+   * `opts.actionLabel`（仅 macOS 用）：通知上「打开」按钮的本地化文案 —— macOS 的
+   * 点击捕获必须挂一个 action 按钮（见 src-tauri/src/notifications.rs）。
    */
-  notifyDesktop: (title: string, body: string, convId: string) =>
-    invoke<boolean>("notify_desktop", { title, body, convId }),
+  notifyDesktop: (
+    title: string,
+    body: string,
+    convId: string,
+    opts?: { msgId?: string; sound?: boolean; actionLabel?: string },
+  ) => invoke<boolean>("notify_desktop", { title, body, convId, opts }),
   /** 设置页「发送测试通知」：成功返回平台说明，失败返回真实原因（供排障）。 */
   sendTestNotification: () => invoke<string>("send_test_notification"),
   getFriends: () => invoke<Friend[]>("get_friends"),
@@ -178,6 +186,8 @@ export const api = {
     assignees: string[],
     description?: string,
     images?: TodoImage[],
+    category?: string,
+    customCategory?: string,
   ) =>
     invoke<MessageRecord>("send_group_todo", {
       groupId,
@@ -185,6 +195,8 @@ export const api = {
       assignees,
       description: description ?? null,
       images: images ?? null,
+      category: category ?? null,
+      customCategory: customCategory ?? null,
     }),
   /**
    * 更新群任务：改状态 / 改标题与指派人 / 改描述与图片 / 删除（`deleted: true`）。
@@ -206,8 +218,13 @@ export const api = {
       archived?: boolean;
       /** 三档之一；不传 = 这次不动优先级。 */
       priority?: string;
-      /** 类型三档之一；不传 = 这次不动类型（与 priority 同口径：改状态不会顺手把类型刷掉）。 */
+      /** 类型（任务/需求/缺陷/自定义）；不传 = 这次不动类型。 */
       category?: string;
+      /**
+       * 自定义类型名：仅 category="custom" 时有意义。**显式传 `""` = 随调用一起提交**
+       *（非 custom 档时后端会清空它）；`undefined` = 这次不带这格，后端沿用库里的名字。
+       */
+      customCategory?: string;
     },
   ) =>
     invoke<MessageRecord>("update_group_todo", {
@@ -222,6 +239,7 @@ export const api = {
       archived: patch.archived ?? null,
       priority: patch.priority ?? null,
       category: patch.category ?? null,
+      customCategory: patch.customCategory ?? null,
     }),
   /** 置顶/取消置顶一条群消息（任意群成员；静默事件，不进时间线）。 */
   pinGroupMessage: (groupId: string, target: string, pinned: boolean) =>
@@ -534,6 +552,8 @@ export interface NotificationClick {
   type: "chat" | "friend_request";
   /** 聊天消息才有：点开要定位到哪个会话。 */
   conv_id?: string;
+  /** 强提醒才有：被提醒的原消息（点开后继续定位到它，不只是打开会话）。 */
+  msg_id?: string;
 }
 
 export type EventHandlers = {

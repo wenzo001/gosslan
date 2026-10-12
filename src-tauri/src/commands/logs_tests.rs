@@ -845,6 +845,7 @@ mod tests {
             number: 0,
             priority: "normal".to_string(),
             category: "task".to_string(),
+            custom_category: String::new(),
         };
         let insert = |msg_id: &str, seq: i64, p: &TodoPayload| {
             conn.execute(
@@ -944,6 +945,31 @@ mod tests {
         let def3 = super::latest_todo_def(&conn, conv, "t1").unwrap();
         assert_eq!(def3.priority, "low", "说了就覆盖：这条规矩不许把正常改动也挡住");
         assert_eq!(def3.category, "bug");
+
+        // 自定义类型名的沿用：custom 档最新一份没带名字（老对端重建载荷）时，
+        // 往更旧的定义里找回最近说过的名字，不能让下一次保存因空名被拒。
+        insert(
+            "m5",
+            "todo",
+            5,
+            r#"{"todo_id":"t1","title":"旧","assignees":["alice"],"status":"todo","creator":"alice",
+               "deleted":false,"description":"","images":[],"archived":false,
+               "priority":"low","category":"custom","custom_category":"复盘会","number":7}"#,
+        );
+        insert(
+            "m6",
+            "todo_update",
+            6,
+            r#"{"todo_id":"t1","title":"旧","assignees":["alice"],"status":"doing","creator":"alice",
+               "deleted":false,"description":"","images":[],"archived":false,
+               "priority":"low","category":"custom"}"#,
+        );
+        let def4 = super::latest_todo_def(&conn, conv, "t1").unwrap();
+        assert_eq!(def4.category, "custom");
+        assert_eq!(
+            def4.custom_category, "复盘会",
+            "最新一份没带自定义名 ⇒ 沿用最近一份说过的名字"
+        );
     }
 
     /// 任务改动的鉴权判据 —— 两档 + 「只动归档位」的放宽档（口径来自用户 2026-09-17、
@@ -992,6 +1018,7 @@ mod tests {
             number: 0,
             priority: "normal".to_string(),
             category: "task".to_string(),
+            custom_category: String::new(),
         };
         // 参数顺序：(def, actor, group_creator, edits_structure)
         // 档位只有两档（结构 = 改标题/删除；其余 = 描述/图片/指派人/状态/归档），
@@ -1046,6 +1073,7 @@ mod tests {
             archived: Option<bool>,
             priority: String,
             category: String,
+            custom_category: String,
         }
         fn req_of(def: &TodoPayload) -> Req {
             Req {
@@ -1058,6 +1086,7 @@ mod tests {
                 archived: None,
                 priority: def.priority.clone(),
                 category: def.category.clone(),
+                custom_category: def.custom_category.clone(),
             }
         }
         fn edit(r: &Req) -> super::TodoEdit<'_> {
@@ -1071,6 +1100,7 @@ mod tests {
                 archived: r.archived,
                 priority: &r.priority,
                 category: &r.category,
+                custom_category: &r.custom_category,
             }
         }
         let def = TodoPayload {
@@ -1087,6 +1117,7 @@ mod tests {
             number: 0,
             priority: "normal".to_string(),
             category: "task".to_string(),
+            custom_category: String::new(),
         };
         // 成员窄档只对"什么别的都没动"的请求成立，所以每个否定用例都从**已满足**的那一位
         // 出发再加一处改动 —— 否则测的是另一个判据，不是"夹带"这一条。
@@ -1296,6 +1327,47 @@ mod tests {
             "夹带改描述不许走还原这条口子"
         );
 
+        // ---- 「做不了」与完成同族：可归档、可还原 ----
+        let impossible_def = TodoPayload {
+            status: "impossible".into(),
+            ..def.clone()
+        };
+        assert!(
+            super::archive_only_change(&impossible_def, &edit(&archive_req(&impossible_def))),
+            "做不了是终态：成员只动归档位必须放行（归档门由命令层把关）"
+        );
+        let mut r = req_of(&impossible_def);
+        r.status = "todo".into();
+        assert!(
+            super::reopen_only_change(&impossible_def, &edit(&r)),
+            "做不了 → 待办 = 还原，与完成走同一条成员窄档"
+        );
+        let mut r = req_of(&impossible_def);
+        r.status = "doing".into();
+        assert!(
+            !super::reopen_only_change(&impossible_def, &edit(&r)),
+            "做不了 → 进行中 是普通改状态，不是还原"
+        );
+        // 夹带改自定义类型名不许走归档/还原窄档
+        let custom_def = TodoPayload {
+            category: "custom".into(),
+            custom_category: "复盘会".into(),
+            ..def.clone()
+        };
+        let mut r = archive_req(&custom_def);
+        r.custom_category = "别的名字".into();
+        assert!(
+            !super::archive_only_change(&custom_def, &edit(&r)),
+            "夹带改自定义类型名不许走归档窄档"
+        );
+        let mut r = req_of(&custom_def);
+        r.status = "todo".into();
+        r.custom_category = "别的名字".into();
+        assert!(
+            !super::reopen_only_change(&custom_def, &edit(&r)),
+            "夹带改自定义类型名不许走还原窄档"
+        );
+
         // ---- 判权：窄档只对本群成员生效，且不外溢（归档/还原这两档；认领那一档的
         //      成员判定在上一段自己单测里钉，这里 claim_only 一律给 false 以免混进同一张表）----
         let may = |archive_only: bool, reopen_only: bool, is_member: bool| {
@@ -1474,6 +1546,47 @@ mod tests {
             (false, None),
             "非完成态不得被归档（否则进行中的任务会从活动列表消失）"
         );
+        // 「做不了」与完成同属终态：首次进入记 done_at、可手动归档
+        assert_eq!(
+            super::resolve_done_archive(true, Some(true), false, None, now),
+            (true, Some(now)),
+            "做不了首次标记：可手动归档并记终态时间"
+        );
+    }
+
+    /// 状态表与校验（五态：待办 / 进行中 / 延期 / 做不了 / 完成）。
+    #[test]
+    fn todo_status_table_has_five_and_impossible_is_terminal() {
+        use crate::protocol::{TODO_STATUSES, todo_status_is_terminal, todo_status_is_valid};
+        assert_eq!(
+            TODO_STATUSES,
+            ["todo", "doing", "overdue", "impossible", "done"]
+        );
+        assert!(todo_status_is_valid("impossible"));
+        assert!(todo_status_is_terminal("done"));
+        assert!(todo_status_is_terminal("impossible"));
+        assert!(!todo_status_is_terminal("doing"));
+        assert!(!todo_status_is_terminal("nope"));
+    }
+
+    /// 自定义类型：custom 档必须带名字，名字受限长；非 custom 档一律清空。
+    #[test]
+    fn custom_category_is_normalized() {
+        assert_eq!(
+            super::normalize_custom_category("custom", Some("复盘会")).unwrap(),
+            "复盘会"
+        );
+        assert_eq!(
+            super::normalize_custom_category("custom", Some("  带空白  ")).unwrap(),
+            "带空白"
+        );
+        assert!(super::normalize_custom_category("custom", Some("   ")).is_err(), "空名必须拒");
+        assert!(super::normalize_custom_category("custom", None).is_err());
+        let long = "很".repeat(crate::protocol::TODO_CUSTOM_CATEGORY_MAX_LEN + 1);
+        assert!(super::normalize_custom_category("custom", Some(&long)).is_err(), "超长必须拒");
+        // 非 custom 档：无论传什么都清空，不报错（服务端单一真相）
+        assert_eq!(super::normalize_custom_category("task", Some("残留")).unwrap(), "");
+        assert_eq!(super::normalize_custom_category("bug", None).unwrap(), "");
     }
 }
 

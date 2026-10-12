@@ -20,9 +20,16 @@ import type { MessageRecord } from "@/types";
  * 任务状态取值 —— **与 Rust `protocol::TODO_STATUSES` 必须一致**，
  * 由 `messageKinds.test.ts` 读 `protocol.rs` 逐项比对（与 `WIRE_KINDS` 同一套跨语言契约）。
  */
-export const TODO_STATUSES = ["todo", "doing", "overdue", "done"] as const;
+// ⚠️ `impossible`（做不了）与 `done` 同族，是**终态**：见 isTodoTerminalStatus
+// （徽标排除、归档门、done_at 与自动归档共用）。位置在 done 前一档，菜单按语义递进排列。
+export const TODO_STATUSES = ["todo", "doing", "overdue", "impossible", "done"] as const;
 
 export type TodoStatus = (typeof TODO_STATUSES)[number];
+
+/** 终态 = 完成 / 做不了（与 Rust `todo_status_is_terminal` 同一份口径）。 */
+export function isTodoTerminalStatus(s: unknown): s is "done" | "impossible" {
+  return s === "done" || s === "impossible";
+}
 
 /**
  * 任务优先级三档的**唯一取值表**（与 Rust `TODO_PRIORITIES` 同序同值）。
@@ -72,7 +79,8 @@ function isTodoPriority(v: unknown): v is TodoPriority {
  * 名字用 `category` 而不是 `kind`：本仓的 `kind` 固定指线上消息类型，
  * 而 `parseTodo` 上一行就在判 `rec.kind`，同名会在同一段代码里撞车。
  */
-export const TODO_CATEGORIES = ["task", "requirement", "bug"] as const;
+// custom = 用户自己输入的类型名（配 customCategory 文本字段，由服务端校验非空/长度）。
+export const TODO_CATEGORIES = ["task", "requirement", "bug", "custom"] as const;
 export type TodoCategory = (typeof TODO_CATEGORIES)[number];
 /** 缺省档（历史任务与旧版载荷读出来都是它，不是"没类型"）。 */
 export const TODO_CATEGORY_DEFAULT: TodoCategory = "task";
@@ -80,6 +88,8 @@ export const TODO_CATEGORY_LABEL_KEY: Record<TodoCategory, string> = {
   task: "todo.category.task",
   requirement: "todo.category.requirement",
   bug: "todo.category.bug",
+  // 菜单里那一项的固定文案（「自定义…」）；胶囊当前值要显示用户输入的名字，见 todoCategoryName。
+  custom: "todo.category.custom",
 };
 /**
  * 类型 → **胶囊徽标**配色（soft 底 + `*-ink` 字，与 `TODO_STATUS_PILL` 同一套家风）。
@@ -94,6 +104,8 @@ export const TODO_CATEGORY_PILL: Record<TodoCategory, string> = {
   requirement:
     "bg-[color-mix(in_srgb,var(--gosslan-primary)_14%,transparent)] text-[var(--gosslan-accent-ink)]",
   bug: "bg-[var(--gosslan-danger-soft)] text-[var(--gosslan-danger-ink)]",
+  // 自定义类型 = 用户自己起的标签，语义上中立：走中性底，不抢三种内置类型的颜色。
+  custom: "bg-[var(--gosslan-hover)] text-[var(--gosslan-text)]",
 };
 
 function isTodoCategory(v: unknown): v is TodoCategory {
@@ -111,6 +123,7 @@ export const TODO_CATEGORY_TEXT_CLASS: Record<TodoCategory, string> = {
   task: "text-[var(--gosslan-text-2)]",
   requirement: "text-[var(--gosslan-accent-ink)]",
   bug: "text-[var(--gosslan-danger-ink)]",
+  custom: "text-[var(--gosslan-text)]",
 };
 
 /**
@@ -127,6 +140,7 @@ export const TODO_CATEGORY_ICON_CLASS: Record<TodoCategory, string> = {
   task: "text-[var(--gosslan-text-2)]",
   requirement: "text-[var(--gosslan-primary)]",
   bug: "text-[var(--gosslan-danger-ink)]",
+  custom: "text-[var(--gosslan-text-2)]",
 };
 
 /**
@@ -159,7 +173,25 @@ export const TODO_CATEGORY_LETTER: Record<TodoCategory, string> = {
   requirement: "R",
   bug: "B",
   task: "T",
+  // 自定义类型统一用 C（Custom）：名字是自由文本、字母只服务编号识别，不为每个自定义名单独造字母。
+  custom: "C",
 };
+
+/** 自定义类型名上限 —— 必须与 Rust `TODO_CUSTOM_CATEGORY_MAX_LEN` 同一个数。 */
+export const TODO_CUSTOM_CATEGORY_MAX_LEN = 20;
+
+/**
+ * 一条任务当前该显示的**类型名**：custom 档显示用户输入的名字，其余档显示枚举的 i18n key
+ * （调用方再 `t()`）。custom 名字缺失（旧载荷/异常）时退回枚举文案，不留空白胶囊。
+ */
+export function todoCategoryName(
+  item: Pick<TodoItem, "category" | "customCategory">,
+): { key: string; text: string | null } {
+  if (item.category === "custom" && item.customCategory) {
+    return { key: "", text: item.customCategory };
+  }
+  return { key: TODO_CATEGORY_LABEL_KEY[item.category] ?? TODO_CATEGORY_LABEL_KEY.task, text: null };
+}
 
 /** 紧凑界面里数字最多占几位；超出只留**后**几位（前缀字母永远在）。 */
 export const TODO_CODE_DIGITS = 4;
@@ -200,6 +232,7 @@ export const TODO_STATUS_LABEL_KEY: Record<TodoStatus, string> = {
   todo: "todo.status.todo",
   doing: "todo.status.doing",
   overdue: "todo.status.overdue",
+  impossible: "todo.status.impossible",
   done: "todo.status.done",
 };
 
@@ -214,6 +247,8 @@ export const TODO_STATUS_CLASS: Record<TodoStatus, string> = {
   todo: "text-[var(--gosslan-text-2)]",
   doing: "text-[var(--gosslan-primary)]",
   overdue: "text-[var(--gosslan-warning-ink)]",
+  // 做不了是**结论**而不是出错（不抢缺陷红/延期橙），用次级文本色与 X 图标表达"此路不通"。
+  impossible: "text-[var(--gosslan-text-2)]",
   done: "text-[var(--gosslan-success-ink)]",
 };
 
@@ -227,6 +262,7 @@ export const TODO_STATUS_PILL: Record<TodoStatus, string> = {
   todo: "bg-[var(--gosslan-hover)] text-[var(--gosslan-text-2)]",
   doing: "bg-[color-mix(in_srgb,var(--gosslan-primary)_14%,transparent)] text-[var(--gosslan-accent-ink)]",
   overdue: "bg-[var(--gosslan-warning-soft)] text-[var(--gosslan-warning-ink)]",
+  impossible: "bg-[var(--gosslan-hover)] text-[var(--gosslan-text-2)]",
   done: "bg-[var(--gosslan-success-soft)] text-[var(--gosslan-success-ink)]",
 };
 
@@ -243,6 +279,8 @@ export const TODO_STATUS_BAR: Record<TodoStatus, string> = {
   todo: "bg-[var(--gosslan-status-offline)]",
   doing: "bg-[var(--gosslan-primary)]",
   overdue: "bg-[var(--gosslan-warning)]",
+  // 与「待办」同为灰系但深一档：色条分族（在办=蓝/橙、终态=绿/深灰），区分靠 X 图标与胶囊。
+  impossible: "bg-[var(--gosslan-text-2)]",
   done: "bg-[var(--gosslan-success)]",
 };
 
@@ -267,8 +305,10 @@ export interface TodoItem {
   creator: string;
   /** 优先级（三档，缺省常规）。 */
   priority: TodoPriority;
-  /** 类型（三档，缺省普通任务）。三者同列，界面上用胶囊 tag 区分。 */
+  /** 类型（任务/需求/缺陷/自定义，缺省普通任务）。同列，界面上用胶囊 tag 区分。 */
   category: TodoCategory;
+  /** 自定义类型名（仅 category==="custom" 有值；由服务端校验非空与长度）。 */
+  customCategory: string;
   /** 长文本描述（2026-09-17 优化）。 */
   description: string;
   /** 描述里附带的图片（仅元数据，真实字节走群文件管线）。 */
@@ -347,6 +387,9 @@ export function parseTodo(rec: MessageRecord): TodoDef | null {
       priority: isTodoPriority(p.priority) ? p.priority : TODO_PRIORITY_DEFAULT,
       // 类型同口径：读不出合法值 ⇒ 先当"没说这一格"，由折叠决定沿用还是回落
       category: isTodoCategory(p.category) ? p.category : TODO_CATEGORY_DEFAULT,
+      // 自定义名是普通字符串字段：没带就是空串。是否沿用由折叠结合 absent.category 决定
+      //（老对端不认识 custom 档时，类别与名字要一起沿用，不能只留类别不留名字）。
+      customCategory: typeof p.custom_category === "string" ? p.custom_category.trim() : "",
       deleted: p.deleted === true,
       description: typeof p.description === "string" ? p.description : "",
       images: Array.isArray(p.images)
@@ -383,6 +426,9 @@ export function carryAbsentTodoFields(prev: TodoDef, next: TodoDef): TodoDef {
     ...next,
     priority: a.priority ? prev.priority : next.priority,
     category: a.category ? prev.category : next.category,
+    // 类别沿用时自定义名必须一起沿用：只把 category=custom 留下而名字变空串，
+    // 下一次保存就会被服务端按"自定义名称不能为空"拒掉。
+    customCategory: a.category ? prev.customCategory : next.customCategory,
     number: a.number ? prev.number : next.number,
   };
 }
@@ -444,7 +490,17 @@ export function foldTodos(records: MessageRecord[]): TodoItem[] {
     const prevDef = defs.get(d.todoId);
     // ★ 后一份定义**没说到**的格子沿用已知的值（老对端的载荷根本没有这三格 ⇒
     //   不沿用就会被一次编辑抹平）。规矩与 Rust `commands::latest_todo_def` 同一条。
-    const merged = prevDef ? carryAbsentTodoFields(prevDef, d) : d;
+    let merged = prevDef ? carryAbsentTodoFields(prevDef, d) : d;
+    // 类别仍是 custom 却没带名字（老对端重建载荷时会丢这一格）⇒ 沿用上一个已知名字，
+    // 与 Rust `latest_todo_def` 的 carry_custom_category 同口径。
+    if (
+      merged.category === "custom" &&
+      !merged.customCategory &&
+      prevDef?.category === "custom" &&
+      prevDef.customCategory
+    ) {
+      merged = { ...merged, customCategory: prevDef.customCategory };
+    }
     if (newer(merged.seq, merged.msgId, prevDef)) defs.set(d.todoId, merged);
   }
   const live = [...defs.values()]
@@ -456,7 +512,7 @@ export function foldTodos(records: MessageRecord[]): TodoItem[] {
       if (a.seq !== b.seq) return b.seq - a.seq; // 新的在前
       return a.msgId < b.msgId ? 1 : -1; // 同 seq 按 msg_id 比（与 newer 同规则）
     })
-    .map(({ todoId, title, assignees, status, creator, priority, category, description, images, archived, doneAt }) => ({
+    .map(({ todoId, title, assignees, status, creator, priority, category, customCategory, description, images, archived, doneAt }) => ({
       todoId,
       number: numbers.get(todoId) ?? 0,
       title,
@@ -467,6 +523,7 @@ export function foldTodos(records: MessageRecord[]): TodoItem[] {
       // ⚠️ 这一串是**白名单式**解构：新字段不写在这里就会在 parse 之后被静默丢掉
       // （能编译、门禁全绿、界面上没有那一格 —— 最难查的一种"接了一半"）。
       category,
+      customCategory,
       description,
       images,
       archived,
@@ -502,10 +559,10 @@ export function todoLiveMap(items: TodoItem[]): Map<string, TodoLive> {
  * 一条任务**实际上**是否已归档（用于列表过滤）。
  *
  * 两种情况（用户 2026-09-17：完成之后手动归档）：
- * - 显式 `archived` 为真 ⇒ 已归档（用户在完成之后手动点的）；
- * - 或「完成且超过 `TODO_AUTO_ARCHIVE_DAYS` 天」⇒ 自动归档（没手动归档的兜底）。
+ * - 显式 `archived` 为真 ⇒ 已归档（用户在进入终态之后手动点的）；
+ * - 或「终态（完成/做不了）且超过 `TODO_AUTO_ARCHIVE_DAYS` 天」⇒ 自动归档（没手动归档的兜底）。
  *
- * 自动归档是**前端计算**的（`doneAt` 由后端在**首次**完成时填权威时间戳、重复保存不改），
+ * 自动归档是**前端计算**的（`doneAt` 由后端在**首次**进入终态时填权威时间戳、重复保存不改），
  * 不另存字段、也不依赖定时任务，跨端结果一致。
  */
 export function isEffectivelyArchived(
@@ -513,7 +570,7 @@ export function isEffectivelyArchived(
   now: number = Date.now(),
 ): boolean {
   if (item.archived) return true;
-  if (item.status === "done" && item.doneAt != null) {
+  if (isTodoTerminalStatus(item.status) && item.doneAt != null) {
     return now - item.doneAt >= TODO_AUTO_ARCHIVE_DAYS * 86400000;
   }
   return false;
@@ -522,10 +579,10 @@ export function isEffectivelyArchived(
 /**
  * 「与我相关且还活着」的任务 —— 蓝色徽标的**唯一**判据（用户 2026-09-26）。
  *
- * 口径原话是"除了完成和归档的其他数据都统计"，所以排除的只有两态：
- * - `status === "done"`（完成）；
+ * 口径原话是"除了完成和归档的其他数据都统计"，所以排除的只有两类：
+ * - **终态**（`done` 完成 / `impossible` 做不了）；
  * - **归档**，且必须走 [`isEffectivelyArchived`] 那一份 —— 它同时含"手动归档"与
- *   "完成满 7 天自动归档"，在别处再写一遍 `item.archived` 就会与列表口径分叉。
+ *   "终态满 7 天自动归档"，在别处再写一遍 `item.archived` 就会与列表口径分叉。
  * 其余状态（待办 / 进行中 / 延期）一律计入。
  *
  * "与我相关" = 指派里有我 **或** 我是创建人（我发的任务还挂着，用户也要看得见）。
@@ -538,7 +595,7 @@ export function openTodosForMe<
   if (!myId) return [];
   return items.filter(
     (t) =>
-      t.status !== "done" &&
+      !isTodoTerminalStatus(t.status) &&
       !isEffectivelyArchived(t, now) &&
       (t.assignees.includes(myId) || t.creator === myId),
   );
@@ -624,19 +681,149 @@ export function todoMentionsMe(rec: MessageRecord, myId: string): boolean {
 }
 
 /**
- * 这条记录是否是「**我创建的任务被完成了**」—— 用于给创建人提示（用户 2026-09-17）。
+ * 这条记录是否是「**我创建的任务进入终态了**」—— 用于给创建人提示
+ * （完成：用户 2026-09-17；做不了：2026-10-12 同族放行）。
  *
- * 返回任务标题（标题为空串时仍返回空串，调用方自行回落文案）；不是该情形返回 `null`。
+ * 返回终态与任务标题（标题为空串时仍返回空串，调用方自行回落文案）；不是该情形返回 `null`。
  *
- * 为什么单独放行：改状态走的是 `todo_update`（Silent，不打扰全群），但"我派的活被干完了"
+ * 为什么单独放行：改状态走的是 `todo_update`（Silent，不打扰全群），但"我派的活有了结论"
  * 对**创建人**是个该知道的变化 —— 只在创建人这里破例，其他人仍然一条通知都不多。
- * 只认「完成」这一种 status，改标题/改指派人/删除都不提示。
+ * 只认终态（完成/做不了），改标题/改指派人/删除都不提示。
  */
-export function todoCompletedForCreator(rec: MessageRecord, myId: string): string | null {
+export function todoTerminalForCreator(
+  rec: MessageRecord,
+  myId: string,
+): { status: TodoStatus; title: string } | null {
   if (!myId || rec.kind !== "todo_update") return null;
   const d = parseTodo(rec);
-  if (!d || d.deleted || d.status !== "done" || d.creator !== myId) return null;
-  return d.title;
+  if (!d || d.deleted || !isTodoTerminalStatus(d.status) || d.creator !== myId) return null;
+  return { status: d.status, title: d.title };
+}
+
+/**
+ * 旧的窄口径包装：只认「完成」。保留给既有调用点/测试；新代码用
+ * [`todoTerminalForCreator`]（做不了与完成同族）。
+ */
+export function todoCompletedForCreator(rec: MessageRecord, myId: string): string | null {
+  const t = todoTerminalForCreator(rec, myId);
+  return t && t.status === "done" ? t.title : null;
+}
+
+// ---------------- 操作记录（全员对这条任务的改动流水） ----------------
+//
+// 数据源就是消息库里这条任务的全部 `todo`/`todo_update` 事件：任务定义是 LWW 寄存器，
+// 每次改动都是"重新发一份完整定义"，所以相邻两份定义逐字段 diff 就能还原**谁在什么时候
+// 改了什么**（用户 2026-10-12：任务列表里要展示所有人的操作记录）。不新增协议字段、
+// 不新增数据库表 —— 事件日志本来就在（ADR-0018 任务无专表）。
+
+/** 一类可展示的改动；文案在视图层用 i18n 映射，纯函数不依赖翻译。 */
+export type TodoHistoryChangeKind =
+  | "created"
+  | "title"
+  | "description"
+  | "status"
+  | "priority"
+  | "category"
+  | "assignees_add"
+  | "assignees_remove"
+  | "archived"
+  | "restored"
+  | "deleted";
+
+export interface TodoHistoryChange {
+  kind: TodoHistoryChangeKind;
+  /** status/priority 变更：原档/新档（视图层映射 i18n）。 */
+  from?: string;
+  to?: string;
+  /** category 变更时两档的自定义名（非 custom 档为空串，视图层对枚举档走 i18n）。 */
+  fromCustom?: string;
+  toCustom?: string;
+  /** 指派人变更：进出的成员 id（视图层用 nameOf 解析昵称）。 */
+  ids?: string[];
+}
+
+export interface TodoHistoryEntry {
+  /** 该条事件的消息时间（ms）。 */
+  ts: number;
+  /** 操作者 device_id（= 该条消息的 sender_id）。 */
+  actor: string;
+  /** 这一次事件包含的全部改动（通常 1 条；旧客户端合并改动时可能多条）。 */
+  changes: TodoHistoryChange[];
+  /** 产生该条记录的消息 id（去重/排查用）。 */
+  msgId: string;
+}
+
+interface HistoryDef {
+  d: TodoDef;
+  ts: number;
+  actor: string;
+  msgId: string;
+}
+
+/**
+ * 还原一条任务的操作流水（**旧的在前**）。
+ *
+ * - 输入是该群的原始消息行（与 `foldTodos` 同源），函数自己按 `(seq, msg_id)` 排序，
+ *   与 LWW 折叠同一条序规则；
+ * - 同一条事件里被删除/重建（理论上不会发生）按定义顺序逐段 diff；
+ * - 墓碑是最后一个可见事件；图片增删不进流水（描述附图是编辑的一部分，单列只会刷噪声）；
+ * - 一条事件里没有可识别改动（例如只换了图片）则**不产生条目**：流水只记读得懂的动作。
+ */
+export function buildTodoHistory(todoId: string, records: MessageRecord[]): TodoHistoryEntry[] {
+  const defs: HistoryDef[] = [];
+  for (const rec of records) {
+    const d = parseTodo(rec);
+    if (!d || d.todoId !== todoId) continue;
+    defs.push({ d, ts: rec.ts, actor: rec.sender_id, msgId: rec.msg_id });
+  }
+  defs.sort((a, b) => a.d.seq - b.d.seq || (a.d.msgId < b.d.msgId ? -1 : 1));
+  const out: TodoHistoryEntry[] = [];
+  let before: TodoDef | null = null;
+  for (const cur of defs) {
+    const changes: TodoHistoryChange[] = [];
+    const d = cur.d;
+    if (before === null) {
+      // 库里最早的一份：正常是 kind="todo" 的创建事件；历史裁剪导致只剩 update 时也按"创建"展示。
+      changes.push({ kind: "created" });
+    } else if (d.deleted && !before.deleted) {
+      changes.push({ kind: "deleted" });
+    } else if (!d.deleted) {
+      if (d.title !== before.title) changes.push({ kind: "title" });
+      if (d.description !== before.description) changes.push({ kind: "description" });
+      // 还原 = 从终态退回待办（服务端同时清归档位与完成时间），它在语义上不是普通状态变更。
+      if (d.status !== before.status) {
+        if (isTodoTerminalStatus(before.status) && d.status === "todo") {
+          changes.push({ kind: "restored" });
+        } else {
+          changes.push({ kind: "status", from: before.status, to: d.status });
+        }
+      }
+      if (d.priority !== before.priority) {
+        changes.push({ kind: "priority", from: before.priority, to: d.priority });
+      }
+      if (d.category !== before.category || d.customCategory !== before.customCategory) {
+        changes.push({
+          kind: "category",
+          from: before.category,
+          to: d.category,
+          fromCustom: before.customCategory,
+          toCustom: d.customCategory,
+        });
+      }
+      // 闭包里 TS 不再保持 null 收窄 ⇒ 用局部常量（逻辑上进入 else 时 before 必非空）。
+      const prevDef = before;
+      const added = d.assignees.filter((a) => !prevDef.assignees.includes(a));
+      const removed = prevDef.assignees.filter((a) => !d.assignees.includes(a));
+      if (added.length) changes.push({ kind: "assignees_add", ids: added });
+      if (removed.length) changes.push({ kind: "assignees_remove", ids: removed });
+      if (d.archived && !before.archived) changes.push({ kind: "archived" });
+    }
+    if (changes.length) {
+      out.push({ ts: cur.ts, actor: cur.actor, changes, msgId: cur.msgId });
+    }
+    before = d;
+  }
+  return out;
 }
 
 // ---------------- 看板 / 面板取的那一份源（#154-9） ----------------

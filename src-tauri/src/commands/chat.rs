@@ -38,6 +38,15 @@ pub async fn send_message(
             crate::protocol::parse_reaction_payload(&content)?;
             MsgKind::Reaction
         }
+        // 强提醒发起 / 回执：载荷先过校验；1:1 门控在下面统一处理。
+        "remind" => {
+            crate::protocol::parse_remind_payload(&content)?;
+            MsgKind::Remind
+        }
+        "remind_ack" => {
+            crate::protocol::parse_remind_ack_payload(&content)?;
+            MsgKind::RemindAck
+        }
         _ => return Err("不支持的消息类型".to_string()),
     };
 
@@ -46,6 +55,30 @@ pub async fn send_message(
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         if db::get_friend(&dbc, &friend_id).is_none() {
             return Err("对方不是好友，请先扫描添加好友之后再继续聊天。".to_string());
+        }
+        // 强提醒的目标真实性（与群内核 group_files.rs 同一条例）：
+        // remind 指向的原消息、remind_ack 指向的 remind 行都必须真实存在于本会话，
+        // 否则对方点开通知只会定位到"幽灵消息"。
+        match kind.as_str() {
+            "remind" => {
+                let p = crate::protocol::parse_remind_payload(&content)?;
+                let valid = db::get_message_record(&dbc, &p.target)
+                    .map(|m| m.conv_id == friend_id)
+                    .unwrap_or(false);
+                if !valid {
+                    return Err("要提醒的消息不存在".to_string());
+                }
+            }
+            "remind_ack" => {
+                let p = crate::protocol::parse_remind_ack_payload(&content)?;
+                let valid = db::get_message_record(&dbc, &p.target)
+                    .map(|m| m.conv_id == friend_id && m.kind == "remind")
+                    .unwrap_or(false);
+                if !valid {
+                    return Err("对应的强提醒不存在".to_string());
+                }
+            }
+            _ => {}
         }
     }
 

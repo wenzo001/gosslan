@@ -39,6 +39,9 @@ export const SILENT_KINDS: readonly string[] = [
   // 任务的**创建**（`todo`）反过来是 Card —— 被指派的人得知道自己被派了活。
   "todo_update",
   "poll_vote",
+  // 强提醒发起 / 回执：强提醒的高优先级通知单独走通道（第 3 阶段），不进普通通知。
+  "remind",
+  "remind_ack",
 ];
 
 /**
@@ -170,4 +173,22 @@ export function isForwardableKind(kind: string): boolean {
  */
 export function isFavoritableKind(kind: string): boolean {
   return isForwardableKind(kind) || kindClass(kind) === "card";
+}
+
+/**
+ * 能否对这条消息发起「强提醒」—— 只对**有实质内容**的消息：
+ * text/code/image/file/merge（bubble 内容）+ poll/todo/announcement（card）。
+ * system/recalled 是提示行、静默事件不可提醒。调用方还必须同时判「这条是自己发的」。
+ */
+export function isRemindableKind(kind: string): boolean {
+  return (
+    kind === "text" ||
+    kind === "code" ||
+    kind === "image" ||
+    kind === "file" ||
+    kind === "merge" ||
+    kind === "poll" ||
+    kind === "todo" ||
+    kind === "announcement"
+  );
 }

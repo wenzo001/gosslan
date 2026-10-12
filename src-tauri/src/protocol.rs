@@ -4,6 +4,8 @@
 //! - 所有消息均为 `{ "type": "...", ... }` 形态的 JSON，便于未来在 QUIC / WebSocket 中继上复用。
 //! - TCP 帧 = 4 字节大端长度前缀 + JSON 负载，最大 64MB（足以承载 256KB 文件的 base64 分片）。
 
+use std::collections::HashSet;
+
 use serde::{Deserialize, Serialize};
 
 /// UDP 发现端口（局域网广播）
@@ -314,6 +316,12 @@ pub enum MsgKind {
     /// 表情回应（静默状态事件）。1:1 也要能回应，所以它必须同时出现在这张发送侧词表里。
     /// 发往 1:1 时受 `dm_required_features` 门控（见那个函数上那段"群/1:1 解析方式不同"的说明）。
     Reaction,
+    /// 强提醒发起（静默控制事件，载荷 `RemindPayload`）。
+    /// 1:1 受 `dm_required_features` 门控；群侧受众在载荷 `actors` 里显式列出（不默认全群）。
+    Remind,
+    /// 强提醒回执（接收端自动「已触发提醒处理」与用户主动「我知道了」共用，
+    /// 载荷 `RemindAckPayload{target, stage}`）。
+    RemindAck,
 }
 
 impl MsgKind {
@@ -326,6 +334,8 @@ impl MsgKind {
             MsgKind::System => "system",
             MsgKind::Merge => "merge",
             MsgKind::Reaction => "reaction",
+            MsgKind::Remind => "remind",
+            MsgKind::RemindAck => "remind_ack",
         }
     }
 
@@ -337,6 +347,8 @@ impl MsgKind {
             "system" => MsgKind::System,
             "merge" => MsgKind::Merge,
             "reaction" => MsgKind::Reaction,
+            "remind" => MsgKind::Remind,
+            "remind_ack" => MsgKind::RemindAck,
             _ => MsgKind::Text,
         }
     }
@@ -398,6 +410,10 @@ pub const WIRE_KINDS: &[(&str, KindClass)] = &[
     // 该计未读、该弹通知、该进搜索、清空聊天记录时该被删、也应受清空边界约束，
     // 所以是 Bubble 而不是 Card（Card 是"群级沉淀物"，清空边界不拦它，见 KindClass）。
     ("merge", KindClass::Bubble),
+    // 强提醒：发起与回执都是静默控制事件 —— 不进时间线、不计未读、不弹普通通知；
+    // 强提醒自己的高优先级通知在第 3 阶段单独接，不借普通通知通道。
+    ("remind", KindClass::Silent),
+    ("remind_ack", KindClass::Silent),
 ];
 
 /// 未知 kind 一律按 `Bubble` 处理 —— 与 `MsgKind::from_wire_str` 回退到 `Text` 同语义：
@@ -454,6 +470,11 @@ pub fn is_non_notifying_kind(kind: &str) -> bool {
 
 pub fn is_silent_kind(kind: &str) -> bool {
     kind_class(kind) == KindClass::Silent
+}
+
+/// 直接查登记表（不像 `kind_class` 对未知值回落 Bubble）：未知 kind 返回 `None`。
+pub fn kind_class_of(kind: &str) -> Option<KindClass> {
+    WIRE_KINDS.iter().find(|(k, _)| *k == kind).map(|(_, c)| *c)
 }
 
 /// 生成 `kind NOT IN (...)` 用的 SQL 字面量列表（**从 `WIRE_KINDS` 派生**）。
@@ -825,6 +846,8 @@ pub fn preview_text(kind: &str, content: &str) -> String {
         "reaction" => "[回应]".to_string(),
         "recall" | "recalled" => "[撤回]".to_string(),
         "pin" => "[置顶]".to_string(),
+        "remind" => "[强提醒]".to_string(),
+        "remind_ack" => "[强提醒确认]".to_string(),
         other if is_known_kind(other) => truncate_preview(content),
         _ => UNSUPPORTED_PREVIEW_LABEL.to_string(),
     }
@@ -885,6 +908,87 @@ pub fn is_valid_emoji_token(s: &str) -> bool {
     let inner = &s[1..s.len() - 1];
     // 内层不得再出现方括号（否则 `[[x]` 这类畸形会被当成合法 token）
     !inner.is_empty() && !inner.contains(['[', ']']) && !s.contains(char::is_control)
+}
+
+// ─────────────────────────── 强提醒（kind = remind / remind_ack）───────────────────────────
+
+/// 回执 stage：接收端**自动**带出（走完提醒处理，S3）。注意 S3 只是"本机已处理"，
+/// 不是"用户看到了"，更不是"用户确认"。
+pub const REMIND_STAGE_ALERTED: &str = "alerted";
+/// 回执 stage：用户**主动点「我知道了」**（S4）。确认知晓 ≠ 事情已完成。
+pub const REMIND_STAGE_CONFIRMED: &str = "confirmed";
+
+/// 强提醒发起载荷（`kind = "remind"`）。
+///
+/// 与 `ReactionPayload` 同构：一串独立静默消息、引用原消息；身份是消息自己的 `msg_id`。
+/// 去重/重试/离线恢复全部复用消息管道（msg_id 不变 ⇒ `INSERT OR IGNORE` 幂等）。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct RemindPayload {
+    /// 被提醒的原消息 msg_id
+    pub target: String,
+    /// 群聊：显式选定的提醒对象（device_id 名单）。私聊忽略本字段，目标恒为对方。
+    /// 缺省 = 空名单 —— 第一版**不默认全群**。
+    #[serde(default)]
+    pub actors: Vec<String>,
+}
+
+/// 强提醒回执载荷（`kind = "remind_ack"`）：S3（自动）与 S4（主动）共用一种帧，
+/// 由 `stage` 区分；confirmed 在折叠时恒胜 alerted。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct RemindAckPayload {
+    /// 对应的 `remind` 事件 msg_id（不是原消息 id）
+    pub target: String,
+    /// alerted | confirmed（见常量）
+    pub stage: String,
+}
+
+/// 单次提醒的受众名单上限（防超长名单打帧；群规模本身也远小于此）。
+pub const REMIND_ACTORS_MAX: usize = 512;
+
+/// 校验发起载荷（1:1 发送入口用；群侧命令将来收分开参数、走同一套形态判据）。
+pub fn parse_remind_payload(content: &str) -> Result<RemindPayload, String> {
+    let p: RemindPayload =
+        serde_json::from_str(content).map_err(|e| format!("强提醒载荷解析失败：{e}"))?;
+    if p.target.trim().is_empty() {
+        return Err("强提醒缺少目标消息".to_string());
+    }
+    if p.actors.len() > REMIND_ACTORS_MAX {
+        return Err("强提醒对象超过上限".to_string());
+    }
+    Ok(p)
+}
+
+/// 校验回执载荷：target 非空、stage 只收两档。
+pub fn parse_remind_ack_payload(content: &str) -> Result<RemindAckPayload, String> {
+    let p: RemindAckPayload =
+        serde_json::from_str(content).map_err(|e| format!("强提醒回执载荷解析失败：{e}"))?;
+    if p.target.trim().is_empty() {
+        return Err("强提醒回执缺少目标".to_string());
+    }
+    if p.stage != REMIND_STAGE_ALERTED && p.stage != REMIND_STAGE_CONFIRMED {
+        return Err("强提醒回执阶段非法".to_string());
+    }
+    Ok(p)
+}
+
+/// 群受众成员校验：按"当前在册成员集合"把名单劈成（有效, 无效）两半，保持原顺序。
+///
+/// 群成员权限变化（移除）后发送/重发必须重跑这一步 —— 被移出的人不该再收到提醒、
+/// 也不该还能确认（见 §六.2）。调用点在拿到劈分结果后：有效名单为空 ⇒ 整次提醒判失败。
+pub fn partition_remind_actors<'a>(
+    actors: &'a [String],
+    known_members: &HashSet<String>,
+) -> (Vec<&'a str>, Vec<&'a str>) {
+    let mut good = Vec::new();
+    let mut bad = Vec::new();
+    for a in actors {
+        if known_members.contains(a) {
+            good.push(a.as_str());
+        } else {
+            bad.push(a.as_str());
+        }
+    }
+    (good, bad)
 }
 
 /// 群任务（`kind = "todo"`）。
@@ -967,6 +1071,10 @@ pub struct TodoPayload {
     /// **不新增消息类型**（见 [`crate::protocol::WIRE_KINDS`] 的「不许扩散」约束）。
     #[serde(default = "default_todo_category")]
     pub category: String,
+    /// 自定义类型名（仅 `category == "custom"` 时有意义；非自定义类型一律由服务端清空）。
+    /// 用户 2026-10-12：任务类型要能自己输入。长度上限见 [`TODO_CUSTOM_CATEGORY_MAX_LEN`]。
+    #[serde(default)]
+    pub custom_category: String,
     /// 群内**固定**任务编号（1 起递增、组内唯一、永不复用）。
     ///
     /// 分配只有一处（`db::next_todo_number`），**创建那一刻**定下来；之后每一次改状态 /
@@ -990,7 +1098,17 @@ pub struct TodoPayload {
 ///
 /// ⚠️ 状态是**手动选**的：没有截止时间、也没有"过了日期自动变延期"这回事 ——
 /// 「延期」就是人手动标出来的一个状态。
-pub const TODO_STATUSES: [&str; 4] = ["todo", "doing", "overdue", "done"];
+///
+/// `impossible`（做不了，2026-10-12）与 `done` 同族，是**终态**：不再计入未完成徽标、
+/// 可被归档（命令层把归档门从「仅完成」放宽为「完成/做不了」），首次进入时与 done
+/// 一样记 `done_at`（复用 7 天自动归档）。位置放在 done 前一档：菜单/分组按
+/// 「在办 → 延期 → 做不了 → 完成」的语义递进排列。
+pub const TODO_STATUSES: [&str; 5] = ["todo", "doing", "overdue", "impossible", "done"];
+
+/// 任务是否进入终态（完成 / 做不了）。终态共用归档门、`done_at` 与"可还原回待办"。
+pub fn todo_status_is_terminal(s: &str) -> bool {
+    matches!(s, "done" | "impossible")
+}
 
 /// 缺省状态（新建的任务 = 待办）。也是 `status` 字段缺失时的解析回落值。
 pub fn default_todo_status() -> String {
@@ -1025,7 +1143,7 @@ pub fn todo_priority_is_valid(s: &str) -> bool {
 /// `src/utils/messageKinds.test.ts` 读本文件逐项比对（与 `TODO_PRIORITIES` 同一套跨语言契约，
 /// 含**缺省值**：旧载荷没有这一格时两侧必须回落成同一个类型）。
 /// 加第四种 = 两张表各加一个值 + 前端 label/class 两张表补齐；只改一侧当场红。
-pub const TODO_CATEGORIES: [&str; 3] = ["task", "requirement", "bug"];
+pub const TODO_CATEGORIES: [&str; 4] = ["task", "requirement", "bug", "custom"];
 
 /// 缺省类型 = 普通任务。也是载荷里 `category` 缺失时的解析回落值。
 pub fn default_todo_category() -> String {
@@ -1036,6 +1154,9 @@ pub fn default_todo_category() -> String {
 pub fn todo_category_is_valid(s: &str) -> bool {
     TODO_CATEGORIES.contains(&s)
 }
+
+/// 自定义类型名上限（与标题一样按字符数，胶囊/编号行只放得下一个短语）。
+pub const TODO_CUSTOM_CATEGORY_MAX_LEN: usize = 20;
 
 /// 投票的**定义**层（`kind = "poll"`）。结构与任务同构。
 ///

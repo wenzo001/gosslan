@@ -417,6 +417,9 @@ window.__probe = (() => {
       // 任务卡底部那个入口 emit 的是 "open"（载荷是 todo_id）。tag 刻意叫 open-id：
       // 与上面那条 'open'（搜索弹窗的 open-conversation）区分开，免得两段互相污染判据。
       onOpen: (v) => events.push(['open-id', String(v)]),
+      // 任务卡**主体**（头部/描述/指派人）emit 的是 "open-panel"（不带 id，
+      // 与底部"直达这一条详情"区分）。tag 与 open-id 对齐。
+      onOpenPanel: () => events.push(['open-panel']),
       // 输入框那一族（--only=inputpanel）要读得到"这条到底带不带 @ 的名单"：
       // 编辑器上只有 token 的 DOM，载荷才有 mentionIds ⇒ 没有 onSend 就只能看 DOM 猜。
       onSend: (p) => events.push(['send', JSON.stringify(p)]),
@@ -942,6 +945,54 @@ window.__probe = (() => {
     m.api[name] = async () => payload;
     return true;
   };
+  /**
+   * 群任务看板实时同步夹具（必须在挂看板**之前**装好：看板 setup 就会发首屏读取）。
+   * 替掉两条 api：
+   *  - getGroupTodoMessages：返回 window.__todoRows 那份"DB 快照"（测试随时可换）；
+   *  - onMessageReceived：抓住订阅回调，返回 unlisten（调 watchGroupTodos 的返回值即触发）。
+   * 返回总线控制句柄；H.todoEmit / H.todoRows / H.todoStats 给后续步骤用。
+   */
+  H.todoBus = async () => {
+    const m = await import('/src/api/index.ts');
+    window.__todoStats = { reads: 0, lastIds: null, unsubscribed: false, subscribed: 0 };
+    window.__todoRows = [];
+    window.__todoListener = null;
+    m.api.getGroupTodoMessages = async (ids) => {
+      window.__todoStats.reads += 1;
+      window.__todoStats.lastIds = ids;
+      // 模拟 IPC 异步：给 microtask 一拍（调用方本就 await）
+      return JSON.parse(JSON.stringify(window.__todoRows));
+    };
+    m.api.onMessageReceived = async (cb) => {
+      window.__todoStats.subscribed += 1;
+      window.__todoListener = cb;
+      return () => {
+        window.__todoStats.unsubscribed = true;
+        window.__todoListener = null;
+      };
+    };
+    return true;
+  };
+  /** 换"DB 快照"（模拟对端改动已经落库）。 */
+  H.todoRows = (rows) => { window.__todoRows = rows; return rows.length; };
+  /** 从后端事件方向推一条/批 message-received（走看板真实订阅）。 */
+  H.todoEmit = (recs) => {
+    const l = window.__todoListener;
+    if (!l) return false;
+    for (const r of recs) l(r);
+    return true;
+  };
+  H.todoStats = () => JSON.parse(JSON.stringify(window.__todoStats));
+  /** 拿到挂在页面 pinia 上的 chat store（必须在一次 install 之后）。 */
+  H.chatStore = async () => {
+    const piniaUrl = performance.getEntriesByType('resource')
+      .map((e) => e.name || '').find((u) => u.includes('/node_modules/.vite/deps/pinia.js?v='));
+    if (!piniaUrl || !window.__pinia) return null;
+    const P = await import(piniaUrl);
+    P.setActivePinia(window.__pinia);
+    const S = await import('/src/stores/useChatStore.ts');
+    return S.useChatStore();
+  };
   /** 往搜索框里打字：走 v-model 需要 input 事件，不能直接改 .value 就完事。 */
   H.typeKeyword = async (text) => {
     const input = document.querySelector('input[type="search"], input[role="searchbox"], input');
@@ -980,7 +1031,9 @@ window.__probe = (() => {
       text: (e.textContent || '').trim(), w: Math.round(r.width), h: Math.round(r.height) };
   };
   H.focusThumb = () => {
-    const t = document.querySelector('[role="button"]');
+    // 优先任务卡缩略图（80×80 那块）：任务卡主体也是 role=button 且在 DOM 里更早，
+    // 取第一个会聚焦到卡片主体而不是图片。没有缩略图的场景再退回第一个 role=button。
+    const t = document.querySelector('.h-20[role="button"]') || document.querySelector('[role="button"]');
     if (!t) return false;
     t.focus();
     return document.activeElement === t;
@@ -1204,11 +1257,17 @@ async function waitForVite(child, timeoutMs = 90_000) {
   const t0 = nowMs();
   let buf = "";
   const p = new Promise((res, rej) => {
-    child.stdout.on("data", (d) => {
-      buf += d.toString();
-      if (/Local:/.test(buf)) res(true);
-    });
-    child.stderr.on("data", (d) => { buf += d.toString(); });
+    // vite 6 把启动横幅（含 "Local:"）打到 **stderr**：只听 stdout 会在 90s 后假超时。
+    // 两个流都认。
+    const onData = (d) => {
+      // vite 6 的横幅带 ANSI 码："Local\x1b[22m:"，直接匹配 /Local:/ 永远不成立。
+      // 累积原文（exit 排障要看），判定前剥掉 ANSI。
+      const text = d.toString();
+      buf += text;
+      if (/Local:/.test(buf.replace(/\x1b\[[0-9;]*m/g, ""))) res(true);
+    };
+    child.stdout.on("data", onData);
+    child.stderr.on("data", onData);
     child.on("exit", (c) => rej(new Error(`vite 提前退出 ${c}：\n${buf.slice(-800)}`)));
   });
   await Promise.race([p, sleep(timeoutMs).then(() => { throw new Error(`vite ${timeoutMs}ms 没起来：\n${buf.slice(-800)}`); })]);
@@ -1438,23 +1497,27 @@ async function main() {
     const emoji = want("emoji");
     const search = want("search");
     const task = want("task");
+    const tasksrt = want("tasksrt");
     const convbadge = want("convbadge");
     const caption = want("caption");
     const reaction = want("reaction");
     const roster = want("roster");
     const overlay = want("overlay");
     const imgskel = want("imgskel");
+    const imgload = want("imgload");
     const pinkb = want("pinkb");
-  const inputpanel = want("inputpanel");
+    const inputpanel = want("inputpanel");
     if (emoji) await runEmoji(cdp, url);
     if (search) await runSearch(cdp, url);
     if (task) await runTaskCard(cdp, url);
+    if (tasksrt) await runTasksRealtime(cdp, url);
     if (convbadge) await runConvBadge(cdp, url);
     if (caption) await runCaption(cdp, url);
     if (reaction) await runReaction(cdp, url);
     if (roster) await runReactionRoster(cdp, url);
     if (overlay) await runOverlay(cdp, url);
     if (imgskel) await runImageSkeleton(cdp, url);
+    if (imgload) await runImageLoad(cdp, url);
     if (pinkb) await runPinKeyboard(cdp, url);
     if (inputpanel) await runInputPanels(cdp, url);
     process.exitCode = results.every((r) => r.ok) ? 0 : 1;
@@ -1761,13 +1824,15 @@ async function runPinKeyboard(cdp, url) {
  * 为什么必须真浏览器量：这一格判的是**渲染出来的矩形高度**，静态 class 判据只能证明
  * "组件引了常量"，证不了那个数最后落到盒子上（内联样式被别的规则盖掉、或者组件根本没挂起来）。
  *
- * 夹具：src 给一条 dev server 上不存在的路径，然后由探针按组件自己的退避节奏代投 error。
+ * 夹具：src 给一条 dev server 上不存在的路径，eager <img> 会自己拿到 404、自己走完退避；
+ * 探针另外按节奏代投 error，把"落 failed"的时间收在有界窗口里。
  * ⚠️ 两个"试过但不对"的写法都留在这里，免得下一个人再试一次：
  *   ① "内容永不完成的 blob"——URL.createObjectURL 直接抛 overload 错（本仓探针第一次跑就是这么红的，
- *      红的是夹具不是产品）；② 等它**自己**报错——这张 <img> 在 loading="lazy" 且尚未显示时
- *      根本没发起请求（下面那条网络读数 0 次），退避链第一步就迈不出去。
- * 于是 loading 态读的是挂载即得的那个预留（state 初值就是 loading），failed 态由代投 error 走满
- * 5 档退避得到 —— 打的仍是组件自己那个 @error 处理器，顺带把"全部重试失败才落 failed"
+ *      红的是夹具不是产品）；② 早期这张 <img> 带 loading="lazy"，而它在 @load 之前 display:none
+ *      ⇒ 懒加载图永不发请求，退避链第一步都迈不出去（v4.35.2 图片全打不开的真根因，见
+ *      MessageImageBubble.vue 里 img-eager-ok 注释；正向回归在 --only=imgload 那段）。
+ * loading 态读的是挂载即得的那个预留（state 初值就是 loading），failed 态由 error（自然 404 +
+ * 代投）走满 5 档退避得到 —— 打的仍是组件自己那个 @error 处理器，顺带把"全部重试失败才落 failed"
  * （用户 2026-09-12：『加载失败应该是不可逆的最终结果』）在真浏览器里走了一遍。
  */
 async function runImageSkeleton(cdp, url) {
@@ -1801,16 +1866,14 @@ async function runImageSkeleton(cdp, url) {
     restored === true && back.ok === true && back.h === back.cap,
     "rect.h == IMAGE_BUBBLE_HEIGHT", JSON.stringify(back));
 
-  // 等退避全部用完（8.4s）⇒ 落进 failed，那时占位必须换成紧凑那一档
-  // 终态那一档由探针**代浏览器投一次 error**（打的就是组件自己那个 @error 处理器）。
-  // 为什么不靠它自己报错：实测这张 <img> 在 loading="lazy" + 尚未显示（hidden）时
-  // **根本没发起请求**（下面那条网络读数是这件事的证据，0 次 = 没请求），于是退避链第一步就迈不出去。
-  // 为了凑一个态去改产品码不值得 ⇒ 按处理器真实的退避节奏（最短那档 400ms）把这 5 次投满，
-  // 顺带也把"重试全部失败才会落 failed"这条语义在真浏览器里走了一遍。
+  // 等退避全部用完（8.4s）⇒ 落进 failed，那时占位必须换成紧凑那一档。
+  // 终态由 error 事件驱动：eager <img> 对不存在的路径会自己拿到 404（自然 error），
+  // 探针再按节奏代投 error，把等满 8.4s 退避链的时间收在有界窗口里（打的都是组件自己
+  // 那个 @error 处理器，顺带把"重试全部失败才会落 failed"在真浏览器里走一遍）。
   const netSeen = await cdp.eval(`(() => performance.getEntriesByType('resource')
     .map((e) => e.name).filter((n) => n.includes('gosslan-probe-missing-image')).length)()`);
   console.log("· imgskel 网络读数：这条 src 在页面资源计时里出现 " + netSeen
-    + " 次（0 = 隐藏 + lazy 的那张 <img> 在这台账具里根本没发起请求）");
+    + " 次（eager 隐藏图也会发请求；0 才是反常——见 img-eager-ok 那个死锁）");
 
   // 有界：退避 5 档 + 每档之间要等 img 换代，14s 上限给真机/CI 抖动留余量。
   let failed = null;
@@ -1829,6 +1892,71 @@ async function runImageSkeleton(cdp, url) {
   check("失败态：退避用完后落到紧凑占位（不为一张永远等不来的图撑 288px 灰块）",
     !!failed && failed.ok === true && failed.h === failed.placeholder,
     "state=failed 且 rect.h == IMAGE_PLACEHOLDER_HEIGHT", JSON.stringify(failed));
+}
+
+/**
+ * 有效图片必须真的从"加载中"走到"已加载"，并且**加载完才允许点开预览**（v4.35.2 真根因回归）。
+ *
+ * 死锁形状：`<img>` 在自身 @load 之前被 `hidden`（display:none）藏着，再带 loading="lazy"
+ * ⇒ 懒加载只对参与排版、靠近视口的元素发请求，display:none 的那张**永远不发请求**
+ * ⇒ @load 永不触发 ⇒ state 永远停在 loading（5 档退避后落 failed）⇒ 自己发的/对方发的图全打不开。
+ * 6853680 统一给消息行补 lazy 时引入；修复见 MessageImageBubble.vue 的 img-eager-ok 注释。
+ *
+ * 判据全打在**真组件 + 真解码**上：
+ *  1. 喂一张有效的 data URL，data-img-state 必须在有界时间内变成 loaded（hidden 不挡 eager）；
+ *  2. loaded 后 <img> 真解码（naturalWidth>0）、退出隐藏、盒子变成可点的 button；
+ *  3. 这条 <img> 不许带 loading="lazy"（与 display:none 同框就是死锁，静态锁，加回来当场红）；
+ *  4. 点击必须 emit open（预览打不开的用户-facing 那一半）。
+ * 不做引擎级"lazy 隐藏图不加载"对照：脚本插入的隐藏 lazy 图在 CfT 153 上会加载，
+ * 只有 Vue 挂载路径那张不加载，跨引擎/版本不稳定 —— 见函数尾注释。
+ */
+async function runImageLoad(cdp, url) {
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+  // 2×2 不透明 PNG，data URL 不依赖任何网络/dev server 路由
+  const PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEklEQVR4nGP8z8DwnwEJ"
+    + "MDIYMhYAcgsB/w0FHT8AAAAASUVORK5CYII=";
+  const mounted = await cdp.eval("window.__probe.install('/src/components/message/MessageImageBubble.vue', '', "
+    + JSON.stringify(JSON.stringify({ src: PNG })) + ")");
+  check("有效图：图片盒挂出来了（回归段才有得量）", !!mounted && mounted.ok === true, "install ok", JSON.stringify(mounted));
+
+  // 有界等 @load（eager 隐藏图也会立刻发 data URL 解析；正常应在首轮就 loaded）
+  let box = null;
+  let rounds = 0;
+  for (let i = 0; i < 25; i += 1) {
+    rounds = i + 1;
+    box = await cdp.eval("window.__probe.imgBox()");
+    const img = await cdp.eval(`(() => { const el = document.querySelector('[data-img-el]');
+      return el ? { nw: el.naturalWidth, display: getComputedStyle(el).display,
+        loading: el.getAttribute('loading'), role: el.closest('[data-img-state]').getAttribute('role') } : null; })()`);
+    box = { ...(box || {}), ...(img || {}) };
+    if (box.state === "loaded" && box.nw > 0) break;
+    await sleep(200);
+  }
+  console.log(`· imgload 等到 loaded 用了 ${rounds} 轮（每轮 200ms）`);
+  check("有效图：state 必须走到 loaded（lazy+hidden 死锁时永远停在 loading，最终 failed）",
+    box.state === "loaded", "state=loaded", JSON.stringify({ state: box.state, rounds }));
+  check("有效图：<img> 真解码且退出 display:none",
+    box.nw > 0 && box.display !== "none", `naturalWidth>0 且 display!=none`, JSON.stringify(box));
+  check("有效图：这一条不许带 loading=\"lazy\"（与 display:none 同框就是死锁；豁免理由写在 img-eager-ok 注释里）",
+    box.loading === null, "loading 属性不存在", "loading=" + JSON.stringify(box.loading));
+  check("有效图：loaded 后盒子才可点（role=button；没加载完时点击只该走重取）",
+    box.role === "button", "role=button", "role=" + JSON.stringify(box.role));
+
+  // 点击：夹具把组件的 @open 记成 ['open-id', src]（见 PAGE_FIXTURE 的 mkProps.onOpen）
+  await cdp.eval("window.__probe.reset()");
+  const root = await cdp.eval(`(() => { const r = document.querySelector('[data-img-state]');
+    if (!r) return false; r.click(); return true; })()`);
+  await sleep(150);
+  const opened = await cdp.eval("window.__probe.events.some((e) => e[0] === 'open-id')");
+  check("有效图：点击已加载的图片必须上抛 open（用户点了就要进预览）",
+    root === true && opened === true, "events 含 open-id", `root=${root} opened=${opened}`);
+  // 引擎行为对照不做进自动判据：CfT 153 实测"脚本插入的隐藏 lazy 图"会加载，而 Vue 挂载路径上
+  // 那张不加载（构造顺序/文档时机差异，跨引擎不稳定）。死锁的真证据是上面的产品级回归
+  //（6853680 引入 lazy 后 state 永不进 loaded，修复前用真 blob 实测 12s naturalWidth=0），
+  // 加上第 3 条对 loading 属性的静态锁 —— 谁把 lazy 加回来当场变红，不必再放一张会随浏览器
+  // 版本翻转的对照图。
 }
 
 /**
@@ -3284,6 +3412,332 @@ async function runTaskCard(cdp, url) {
   check("卡片底部那个入口 emit 的是**这条**的 todo_id（不是 undefined、也不是别条）",
     clicked === true && opened.length === 1 && opened[0] === TODO_ID,
     "1 次 open 且带 " + TODO_ID, JSON.stringify(ev));
+
+  // —— 三个命中区互不干扰（本轮修复）：主体开面板 / 底部开这条详情 / 图片只开预览 ——
+  // 重新挂一份带实时状态的卡（上面那步的事件已清空）
+  await mount({
+    message: JSON.parse(MSG),
+    mentionNames: ["小布"],
+    selfMention: null,
+    liveTodoPairs: [[TODO_ID, "doing", "task", 7]],
+  });
+
+  // 区①：点主体（标题所在的 role=button 区域，注意卡片里还有图片缩略图也是 role=button，
+  // 用「包着编号 .font-mono 的那个」精确取主体，不许靠 document.querySelector 取到第一个）
+  await cdp.eval("window.__probe.reset()");
+  const bodyClick = await cdp.eval(`(() => {
+    const mono = document.querySelector('.font-mono');
+    const region = mono && mono.closest('[role="button"][tabindex="0"]');
+    if (!region) return { ok: false, why: '找不到主体命中区' };
+    // 点的是内部标题 span（事件 target 是后代），验证处理器不在按钮上而在整块主体上
+    const title = region.querySelector('.truncate');
+    (title || region).click();
+    return { ok: true };
+  })()`);
+  let ev2 = await cdp.eval("window.__probe.events");
+  let panel = ev2.filter((e) => e[0] === "open-panel").length;
+  let detail = ev2.filter((e) => e[0] === "open-id").length;
+  check("点卡片主体：只 emit open-panel（打开面板），不直达任何一条详情",
+    bodyClick.ok === true && panel === 1 && detail === 0,
+    "open-panel×1 / open-id×0", JSON.stringify(ev2));
+
+  // 区①键盘：聚焦主体后 Enter 与 Space 都开面板（且 Space 不滚页）
+  await cdp.eval("window.__probe.reset()");
+  const kb1 = await cdp.eval(`(() => {
+    const mono = document.querySelector('.font-mono');
+    const region = mono && mono.closest('[role="button"][tabindex="0"]');
+    if (!region) return false;
+    region.focus();
+    return document.activeElement === region;
+  })()`);
+  await cdp.key("Enter", "Enter", "\r", 13);
+  await cdp.key(" ", "Space", " ", 32);
+  const evK = await cdp.eval("window.__probe.events");
+  check("键盘焦点在卡片主体：Enter 与 Space 各打开一次面板（鼠标/触摸/键盘三入口不冲突）",
+    kb1 === true && evK.filter((e) => e[0] === "open-panel").length === 2
+      && evK.filter((e) => e[0] === "open-id").length === 0,
+    "open-panel×2", JSON.stringify(evK));
+
+  // 区③：点图片缩略图 —— 只开统一预览，open-panel / open-id 一个都不许有
+  await cdp.eval("window.__probe.reset()");
+  const imgClick = await cdp.eval(`(() => {
+    // 缩略图是 80×80 那块（含 h-20 w-20），主体命中区里没有这个尺寸类
+    const t = Array.from(document.querySelectorAll('[role="button"]'))
+      .find((el) => el.classList.contains('h-20'));
+    if (!t) return { ok: false, why: '找不到缩略图' };
+    t.click();
+    return { ok: true };
+  })()`);
+  const pv2 = await cdp.eval("window.__probe.previewState()");
+  const ev3 = await cdp.eval("window.__probe.events");
+  check("点卡片图片：只打开统一预览（冒泡被图片区截断，不顺路开面板/详情）",
+    imgClick.ok === true && pv2.open === true && pv2.source === "task-card:" + TODO_ID
+      && ev3.filter((e) => e[0] === "open-panel" || e[0] === "open-id").length === 0,
+    "预览开且无开面板事件", JSON.stringify({ pv: pv2, ev: ev3 }));
+
+  // 区③键盘（回归保护）：缩略图 Enter 同样只开预览
+  await cdp.eval("window.__probe.reset()");
+  await cdp.eval("window.__probe.focusThumb()");
+  await cdp.key("Enter", "Enter", "\r", 13);
+  const pv3 = await cdp.eval("window.__probe.previewState()");
+  const ev4 = await cdp.eval("window.__probe.events");
+  check("键盘在缩略图上按 Enter：只开预览，不触发主体的 open-panel（两区域键盘处理互不串线）",
+    pv3.open === true && ev4.filter((e) => e[0] === "open-panel" || e[0] === "open-id").length === 0,
+    "仅预览", JSON.stringify({ pv: pv3, ev: ev4 }));
+
+  // 区①里的链接：描述含真 URL 时，点链接不许顺手弹面板（链接走外部打开；插件在探针里
+  // 调不起来会被组件自己 catch，我们只断言"没有面板事件"）。注意本仓的链接是无 href 的
+  // <a>（点击统一走 opener，MessageLinkText 全仓同一形状）⇒ 用描述里的 a 来认。
+  const linkMsg = JSON.parse(MSG);
+  linkMsg.content = JSON.stringify({ ...payload, description: "看这个 https://example.com/spec 就好" });
+  await mount({ message: linkMsg, mentionNames: ["小布"], selfMention: null });
+  await cdp.eval("window.__probe.reset()");
+  const linkClick = await cdp.eval(`(async () => {
+    const a = document.querySelector('p a');
+    if (!a) return { ok: false, why: '描述里的链接没渲染成 a' };
+    a.click();
+    await new Promise((r) => setTimeout(r, 50));
+    return { ok: true };
+  })()`);
+  const ev5 = await cdp.eval("window.__probe.events");
+  check("描述里的 URL 链接点击不被主体拦截（只走链接，不弹任务面板/详情）",
+    linkClick.ok === true
+      && ev5.filter((e) => e[0] === "open-panel" || e[0] === "open-id").length === 0,
+    "无面板事件", JSON.stringify(linkClick) + " " + JSON.stringify(ev5));
+}
+
+/**
+ * 群任务看板**实时同步**行为测试（`--only=tasksrt`）。
+ *
+ * 不挂源码字符串、不直接改 store：在真浏览器里挂真的 `GroupTasksBoard`，把
+ * `getGroupTodoMessages`（DB 快照）与 `onMessageReceived`（事件订阅）两条 api 替成
+ * 可控夹具，然后从**后端事件方向**推 message-received，断言看板 DOM 真的更新、
+ * 计数正确、不重复、不被旧事件回滚、订阅可摘、重开与持久化一致。
+ *
+ * 这一族曾真坏过：看板改折 groupTodoRows（51dac87）后，独立窗口的订阅仍只重载
+ * messages —— 事件收到了、IPC 也发了，看板一动不动。源码形状测试发现不了
+ * "订阅接到了错误的数据源"，所以这里必须走真实订阅→重读→折叠→渲染整条链。
+ */
+async function runTasksRealtime(cdp, url) {
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+
+  // 有界等待：全量连跑时长会话里 150ms 去抖定时器偶发 >450ms 才落地（固定 sleep
+  // 在 solo 跑绿、全集跑红）。条件满足即继续，到点才报红，不把时序写成脆弱断言。
+  const waitFor = async (fn, timeoutMs = 3_000, stepMs = 100) => {
+    const deadline = Date.now() + timeoutMs;
+    let v = await fn();
+    while (!v && Date.now() < deadline) {
+      await sleep(stepMs);
+      v = await fn();
+    }
+    return v;
+  };
+
+  // 页面内常量与记录工厂（形状与后端落库一致：conv_id/seq/ts/msg_id/kind/content）
+  const SETUP = `(async () => {
+    window.GID = 'g1';
+    window.CONV = 'group:g1';
+    window.ME = 'probe-me';
+    window.OTHER = 'probe-other';
+    window.__mk = (id, seq, kind, def, ts) => ({
+      msg_id: 'm-' + id + '-' + seq,
+      sender_id: window.OTHER,
+      conv_id: window.CONV,
+      kind, seq, ts,
+      status: 'read',
+      content: JSON.stringify(Object.assign({
+        todo_id: id, title: id, assignees: [window.ME], status: 'todo',
+        creator: window.OTHER, deleted: false, description: '', images: [],
+        archived: false, done_at: null, number: 0, priority: 'normal', category: 'task',
+      }, def)),
+    });
+    return true;
+  })()`;
+  await cdp.eval(SETUP);
+  await cdp.eval("window.__probe.todoBus()");
+
+  /** 读看板当下：筛选胶囊（DOM 顺序 = all/mine/created/archived）、列表行标题、弹窗文本。 */
+  const view = async () =>
+    cdp.eval(`(() => {
+      const pills = Array.from(document.querySelectorAll('button[aria-pressed]')).map((b) => ({
+        pressed: b.getAttribute('aria-pressed') === 'true',
+        count: Number((b.querySelector('span') || {}).textContent || '0'),
+      }));
+      // 行标题按钮：活动列表与归档列表都是 button.min-w-0.flex-1
+      const rowTitles = Array.from(document.querySelectorAll('button.min-w-0.flex-1'))
+        .map((b) => (b.querySelector('.truncate') || {}).textContent || '');
+      const dialogs = document.querySelectorAll('[role="dialog"]').length;
+      const dialogText = (document.querySelector('[role="dialog"]') || {}).textContent || '';
+      return {
+        pills,
+        rowTitles,
+        uniqTitles: [...new Set(rowTitles)],
+        dialogs,
+        dialogText,
+      };
+    })()`);
+
+  // —— 初始快照：对端已建 A（待办，指派给我）——
+  await cdp.eval(`(async () => {
+    const now = Date.now();
+    window.__probe.todoRows([
+      window.__mk('A', 1, 'todo', { title: '写周报', number: 1 }, now),
+    ]);
+    return window.__probe.todoRows.length;
+  })()`);
+  await cdp.eval(`window.__probe.install('/src/components/GroupTasksBoard.vue', '', ${JSON.stringify(JSON.stringify({ groupId: "g1", open: true }))})`);
+  await cdp.eval(`window.__probe.seedDevice('probe-me')`);
+  await waitFor(async () => (await view()).uniqTitles.includes("写周报"), 4_000);
+
+  const v0 = await view();
+  check("初始：看板列出 A，默认筛选「给我的」且计数 all=1/mine=1/created=0/archived=0",
+    v0.pills.length === 4 && v0.uniqTitles.includes("写周报")
+      && v0.pills.map((p) => p.count).join(",") === "1,1,0,0"
+      && v0.pills[1].pressed === true,
+    "行=" + JSON.stringify(v0.uniqTitles) + " pills=" + JSON.stringify(v0.pills), JSON.stringify(v0.pills));
+  const reads0 = (await cdp.eval("window.__probe.todoStats()")).reads;
+  check("首屏只发一次全表读取（ensure 已加载不重复打 IPC）",
+    reads0 === 1, "reads=1", "reads=" + reads0);
+
+  // —— 订阅真实事件（独立窗口的那条路径）——
+  await cdp.eval(`(async () => {
+    const chat = await window.__probe.chatStore();
+    window.__unwatch = await chat.watchGroupTodos('g1');
+    return true;
+  })()`);
+  const st1 = await cdp.eval("window.__probe.todoStats()");
+  check("watchGroupTodos 注册了一次 message-received 订阅",
+    st1.subscribed === 1, "subscribed=1", JSON.stringify(st1));
+
+  // —— 展开 A 的详情：验证实时更新不把展开态关掉 ——
+  await cdp.eval(`(() => {
+    const btns = Array.from(document.querySelectorAll('button.min-w-0.flex-1'));
+    const a = btns.find((b) => (b.textContent || '').includes('写周报'));
+    if (!a) return false;
+    a.click();
+    return true;
+  })()`);
+  await sleep(200);
+  const vDetail0 = await view();
+  check("点行打开了任务详情弹窗", vDetail0.dialogs === 1 && vDetail0.dialogText.includes("写周报"),
+    "dialog 含旧标题", "dialogs=" + vDetail0.dialogs);
+
+  // —— 对端一批变更（模拟另一个成员连发）：A 改成完成并改名、新增 B、新增 C 后完成并归档。
+  //    同步推 5 个事件，其中 B 的创建事件重复一次 —— 150ms 去抖后只许重读一次。 ——
+  await cdp.eval(`(async () => {
+    const now = Date.now();
+    const rows = [
+      window.__mk('A', 1, 'todo', { title: '写周报', number: 1 }, now - 2000),
+      window.__mk('A', 2, 'todo_update', { title: '周报已发出', status: 'done', done_at: now, number: 1 }, now),
+      window.__mk('B', 3, 'todo', { title: '修打印机', number: 2 }, now),
+      window.__mk('C', 4, 'todo', { title: '订场地', number: 3 }, now),
+      window.__mk('C', 5, 'todo_update', { title: '订场地', status: 'done', done_at: now, archived: true, number: 3 }, now + 1),
+    ];
+    window.__probe.todoRows(rows);
+    const events = [rows[1], rows[2], rows[3], rows[4], rows[2] /* B 重复帧 */];
+    window.__probe.todoEmit(events);
+    return events.length;
+  })()`);
+  // 等到「1 次重读」落地而不是睡固定时长（长会话下定时器可能延迟）。
+  await waitFor(async () =>
+    ((await cdp.eval("window.__probe.todoStats()")).reads - reads0) === 1);
+  await waitFor(async () => (await view()).uniqTitles.includes("修打印机"));
+  const st2 = await cdp.eval("window.__probe.todoStats()");
+  check("5 个事件（含 1 个重复帧）只合并成 1 次重读（150ms 去抖真实生效）",
+    st2.reads - reads0 === 1, "Δreads=1", "Δreads=" + (st2.reads - reads0));
+
+  const v1 = await view();
+  check("新增/改名/完成/归档后：活动 all=2、mine=2、归档=1（计数与列表一致）",
+    v1.pills.map((p) => p.count).join(",") === "2,2,0,1",
+    "2,2,0,1", JSON.stringify(v1.pills));
+  check("活动列表出现新任务 B 与改名后的 A，归档的 C 不在活动列表，且无重复行",
+    v1.uniqTitles.includes("修打印机") && v1.uniqTitles.includes("周报已发出")
+      && !v1.uniqTitles.includes("写周报") && !v1.uniqTitles.includes("订场地")
+      && v1.rowTitles.length === v1.uniqTitles.length,
+    JSON.stringify(v1.rowTitles), JSON.stringify(v1.rowTitles));
+  check("更新前展开的详情弹窗仍开着，且内容已是改名后的 A（展开态保留 + 内容实时）",
+    v1.dialogs === 1 && v1.dialogText.includes("周报已发出") && !v1.dialogText.includes("订场地"),
+    "dialog 跟到新标题", "dialogs=" + v1.dialogs);
+  check("筛选没被实时更新重置（仍停在「给我的」）",
+    v1.pills[1].pressed === true, "mine pressed", JSON.stringify(v1.pills.map((p) => p.pressed)));
+
+  // —— 切到「全部」，再来一批重复/旧序事件：筛选保留、终态不被旧帧回滚 ——
+  await cdp.eval(`(() => {
+    document.querySelectorAll('button[aria-pressed]')[0].click();
+    return true;
+  })()`);
+  await sleep(150);
+  await cdp.eval(`window.__probe.todoEmit([window.__mk('A', 1, 'todo', { title: '写周报', number: 1 }, Date.now() - 9000)])`);
+  await cdp.eval(`window.__probe.todoEmit([window.__mk('A', 1, 'todo', { title: '写周报', number: 1 }, Date.now() - 9000)])`);
+  // 旧事件只触发重读、不允许回滚；状态在落地前后都成立，给定时器一个固定窗口即可
+  // （unlisten 的清理会摘掉尚未落地的定时器，不会污染后面的"reads 不变"断言）。
+  await sleep(300);
+  const v2 = await view();
+  check("旧 seq / 重复事件后：列表不回滚到旧标题（DB 快照是真相），筛选仍在「全部」",
+    v2.uniqTitles.includes("周报已发出") && !v2.uniqTitles.includes("写周报")
+      && v2.pills[0].pressed === true,
+    JSON.stringify(v2.uniqTitles), JSON.stringify(v2.uniqTitles));
+
+  // —— 归档筛选：C 在归档里，且只有它一条 ——
+  await cdp.eval(`(() => {
+    document.querySelectorAll('button[aria-pressed]')[3].click();
+    return true;
+  })()`);
+  await sleep(150);
+  const v3 = await view();
+  check("「已归档」里正好是 C 一条（归档计数与列表一致）",
+    v3.pills[3].count === 1 && v3.uniqTitles.length === 1 && v3.uniqTitles[0] === "订场地",
+    JSON.stringify(v3.uniqTitles) + " count=" + v3.pills[3].count, JSON.stringify(v3.uniqTitles));
+
+  // —— 取消订阅：之后的事件不再触发重读（监听器真的被摘掉，没有泄漏的第二条）——
+  await cdp.eval(`(() => { window.__unwatch(); return true; })()`);
+  const readsBefore = (await cdp.eval("window.__probe.todoStats()")).reads;
+  await cdp.eval(`(async () => {
+    const now = Date.now();
+    const rows = JSON.parse(JSON.stringify(window.__todoRows));
+    rows.push(window.__mk('D', 6, 'todo', { title: '新任务 D', number: 4 }, now));
+    window.__probe.todoRows(rows);
+    window.__probe.todoEmit([rows[rows.length - 1]]);
+    return true;
+  })()`);
+  await sleep(350);
+  const st3 = await cdp.eval("window.__probe.todoStats()");
+  const v4 = await view();
+  check("unlisten 后再推事件：不发重读、看板也不出现新任务（订阅确实摘干净）",
+    st3.reads === readsBefore && st3.unsubscribed === true && !v4.uniqTitles.includes("新任务 D"),
+    "reads 不变", "reads " + readsBefore + "→" + st3.reads + " unsub=" + st3.unsubscribed);
+
+  // —— 重新订阅（相当于窗口重新聚焦/换群再换回）：漏下的变更立刻补回来 ——
+  await cdp.eval(`(async () => {
+    const chat = await window.__probe.chatStore();
+    await chat.watchGroupTodos('g1');
+    window.__probe.todoEmit([window.__todoRows[window.__todoRows.length - 1]]);
+    return true;
+  })()`);
+  await cdp.eval(`(() => {
+    document.querySelectorAll('button[aria-pressed]')[0].click(); // 回「全部」看活动行
+    return true;
+  })()`);
+  await waitFor(async () => (await view()).uniqTitles.includes("新任务 D"), 3_000);
+  const v5 = await view();
+  check("重新订阅后事件再次生效：D 出现在看板（自愈，不需要重开窗口）",
+    v5.uniqTitles.includes("新任务 D"), JSON.stringify(v5.uniqTitles), JSON.stringify(v5.uniqTitles));
+
+  // —— 关闭再打开：重新挂一块看板，首屏读到的与"DB"一致（持久化一致性）——
+  const finalRows = await cdp.eval("JSON.parse(JSON.stringify(window.__todoRows))");
+  await cdp.eval(`window.__probe.install('/src/components/GroupTasksBoard.vue', '', ${JSON.stringify(JSON.stringify({ groupId: "g1", open: true }))})`);
+  await cdp.eval(`window.__probe.seedDevice('probe-me')`);
+  await waitFor(async () =>
+    (await view()).pills.map((p) => p.count).join(",") === "3,3,0,1", 4_000);
+  const v6 = await view();
+  check("面板关闭重开：首屏直接呈现持久化终态（A 改名/B 新增/C 归档/D 已到），不靠事件补",
+    v6.uniqTitles.includes("周报已发出") && v6.uniqTitles.includes("修打印机")
+      && v6.uniqTitles.includes("新任务 D") && !v6.uniqTitles.includes("订场地")
+      && v6.pills.map((p) => p.count).join(",") === "3,3,0,1",
+    "3,3,0,1", JSON.stringify({ t: v6.uniqTitles, pills: v6.pills.map((p) => p.count) }));
+  void finalRows;
 }
 
 /**

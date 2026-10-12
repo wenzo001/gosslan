@@ -6,7 +6,7 @@
  * 纯展示 + 意图上抛：真正的改状态/归档/编辑/删除都在 `GroupTasksBoard` 里
  * （那里已经握有折叠数据、权限判据与 API 调用），这里只渲染与 `emit`。
  */
-import { computed, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import BaseModal from "@/components/BaseModal.vue";
 import { useImagePreviewStore } from "@/stores/useImagePreview";
 import MentionText from "@/components/message/MentionText.vue";
@@ -16,20 +16,24 @@ import {
   TODO_CATEGORIES,
   TODO_CATEGORY_LABEL_KEY,
   TODO_CATEGORY_PILL,
+  TODO_CUSTOM_CATEGORY_MAX_LEN,
   TODO_PRIORITIES,
   TODO_PRIORITY_LABEL_KEY,
   TODO_PRIORITY_PILL,
   TODO_STATUSES,
   TODO_STATUS_LABEL_KEY,
   TODO_STATUS_PILL,
+  isTodoTerminalStatus,
   todoCode,
+  type TodoHistoryChange,
+  type TodoHistoryEntry,
   type TodoCategory,
   type TodoItem,
   type TodoPriority,
   type TodoStatus,
 } from "@/utils/todos";
 import { fmtConversationTime } from "@/utils/time";
-import { Archive, Check, Pencil, RotateCcw, Trash2, UserPlus } from "lucide-vue-next";
+import { Archive, Check, Pencil, RotateCcw, Tag, Trash2, UserPlus } from "lucide-vue-next";
 import { t } from "@/i18n";
 
 const props = defineProps<{
@@ -64,13 +68,19 @@ const props = defineProps<{
    */
   mentionNames?: string[];
   selfMention?: { name: string; label: string } | null;
+  /**
+   * 全员操作流水（由看板从该任务的全部 todo/todo_update 事件 diff 得到，旧的在前）。
+   * 默认空数组：没有操作记录时整段不渲染。
+   */
+  history?: TodoHistoryEntry[];
 }>();
 
 const emit = defineEmits<{
   (e: "close"): void;
   (e: "status", status: TodoStatus): void;
   (e: "priority", priority: TodoPriority): void;
-  (e: "category", category: TodoCategory): void;
+  /** 切类型；custom 档第二个参数带用户输入的名字。 */
+  (e: "category", category: TodoCategory, customName?: string): void;
   /** 认领 = "把自己追加进 assignees"这一步（不新增字段，权限跟着 assignees 走）。 */
   (e: "claim"): void;
   (e: "complete"): void;
@@ -100,6 +110,79 @@ const priorityOptions = computed(() =>
 const categoryOptions = computed(() =>
   TODO_CATEGORIES.map((c) => ({ value: c, label: t(TODO_CATEGORY_LABEL_KEY[c]) })),
 );
+/** 类型胶囊当前文案：custom 档显示用户输入的名字（没名字时退回「自定义…」菜单项文案）。 */
+const categoryCurrent = computed(() => {
+  const x = props.item;
+  if (!x) return "";
+  if (x.category === "custom") return x.customCategory || t(TODO_CATEGORY_LABEL_KEY.custom);
+  return t(TODO_CATEGORY_LABEL_KEY[x.category]);
+});
+
+/**
+ * 自定义类型名的**编辑缓冲**：选「自定义…」只是把档位切到 custom，真正写入要等用户
+ * 输完名字确认（与状态/优先级的"一点即写"刻意不同 —— custom 没有名字会被后端拒）。
+ * 切到别的任务/打开弹窗时，用该任务当前的名字预填。
+ */
+const customDraft = ref("");
+watch(
+  () => [props.open, props.item?.todoId] as const,
+  ([open]) => {
+    if (open) customDraft.value = props.item?.category === "custom" ? (props.item.customCategory ?? "") : "";
+  },
+  { immediate: true },
+);
+function onCategoryPick(v: string) {
+  if (v === "custom") {
+    // 已经是 custom 且有名字：再次点开菜单点它不产生写入（disabled 已挡住，这里兜底）。
+    if (props.item?.category === "custom" && props.item.customCategory) return;
+    // 第一次切到 custom：只展开输入框，不发请求（没名字，发了必被拒）。
+    customDraft.value = props.item?.customCategory ?? "";
+    return;
+  }
+  emit("category", v as TodoCategory);
+}
+function applyCustomCategory() {
+  const name = customDraft.value.trim();
+  if (!name) return;
+  emit("category", "custom", name);
+}
+
+// ---------------- 操作记录（纯展示；diff 在 utils/todos.ts 的 buildTodoHistory） ----------------
+const historyEntries = computed<TodoHistoryEntry[]>(() => props.history ?? []);
+/** 一条改动的人类文案（i18n 现算，切语言后弹窗里直接跟着变）。 */
+function changeText(c: TodoHistoryChange): string {
+  const nameOf = props.nameOf;
+  const statusName = (s?: string) => (s ? t(TODO_STATUS_LABEL_KEY[s as TodoStatus] ?? `?${s}`) : "");
+  const priorityName = (s?: string) =>
+    s ? t(TODO_PRIORITY_LABEL_KEY[s as TodoPriority] ?? `?${s}`) : "";
+  const categoryName = (s: string | undefined, custom: string | undefined): string => {
+    if (!s) return "";
+    if (s === "custom") return custom || t(TODO_CATEGORY_LABEL_KEY.custom);
+    return t(TODO_CATEGORY_LABEL_KEY[s as TodoCategory] ?? `?${s}`);
+  };
+  switch (c.kind) {
+    case "created": return t("todo.history.created");
+    case "title": return t("todo.history.changeTitle");
+    case "description": return t("todo.history.description");
+    case "status":
+      return t("todo.history.status", { from: statusName(c.from), to: statusName(c.to) });
+    case "priority":
+      return t("todo.history.priority", { from: priorityName(c.from), to: priorityName(c.to) });
+    case "category":
+      return t("todo.history.category", {
+        from: categoryName(c.from, c.fromCustom),
+        to: categoryName(c.to, c.toCustom),
+      });
+    case "assignees_add":
+      return t("todo.history.assigneesAdd", { names: (c.ids ?? []).map(nameOf).join("、") });
+    case "assignees_remove":
+      return t("todo.history.assigneesRemove", { names: (c.ids ?? []).map(nameOf).join("、") });
+    case "archived": return t("todo.history.archived");
+    case "restored": return t("todo.history.restored");
+    case "deleted": return t("todo.history.deleted");
+    default: return "";
+  }
+}
 
 /**
  * 图片点开大图（用户 2026-09-21：「任务详情里图片不能点击预览」）。
@@ -175,17 +258,38 @@ const fullCode = computed(() =>
         :disabled="!canChangeStatus"
         @update:model-value="(v: string) => emit('priority', v as TodoPriority)"
       />
-      <!-- 类型三档（默认「任务」）。判权与优先级同一档 ⇒ 复用同一个 canChangeStatus。 -->
-      <TodoPickField
-        :label="t('todo.categoryLabel')"
-        :hint="t('todo.categoryHint')"
-        :model-value="item.category ?? 'task'"
-        :current="t(TODO_CATEGORY_LABEL_KEY[item.category ?? 'task'])"
-        :current-class="TODO_CATEGORY_PILL[item.category ?? 'task']"
-        :options="categoryOptions"
-        :disabled="!canChangeStatus"
-        @update:model-value="(v: string) => emit('category', v as TodoCategory)"
-      />
+      <!-- 类型四档（任务/需求/缺陷/自定义，默认「任务」）。判权与优先级同一档。
+           custom 档选中后不立即写入：先展开输入框拿到名字，确认才发请求（后端对空名明确拒收）。 -->
+      <div>
+        <TodoPickField
+          :label="t('todo.categoryLabel')"
+          :hint="t('todo.categoryHint')"
+          :model-value="item.category ?? 'task'"
+          :current="categoryCurrent"
+          :current-class="TODO_CATEGORY_PILL[item.category ?? 'task']"
+          :options="categoryOptions"
+          :disabled="!canChangeStatus"
+          @update:model-value="onCategoryPick"
+        />
+        <div v-if="canChangeStatus && item.category === 'custom'" class="mt-2 flex items-center gap-2">
+          <Tag class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-text-2)]" aria-hidden="true" />
+          <input
+            v-model="customDraft"
+            :maxlength="TODO_CUSTOM_CATEGORY_MAX_LEN"
+            class="min-w-0 flex-1 rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-bg)] px-2.5 py-1.5 text-[13px] outline-none transition focus:border-transparent"
+            :placeholder="t('todo.categoryCustomPlaceholder')"
+            @keydown.enter.prevent="applyCustomCategory"
+          />
+          <button
+            type="button"
+            class="tap-safe shrink-0 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-2.5 py-1.5 text-[12px] text-white transition hover:opacity-90 disabled:opacity-40"
+            :disabled="!customDraft.trim()"
+            @click="applyCustomCategory"
+          >
+            {{ t("common.confirm") }}
+          </button>
+        </div>
+      </div>
       <!-- 认领：只在这一格出现 —— 需求 + 自己还不在名单里（+ 本群成员，由 canClaim 判）。
            按下之后走的是"改指派人"那条既有命令，不新增接口，也不新增一次同步。 -->
       <div v-if="canClaim" class="flex items-center justify-between gap-2">
@@ -220,7 +324,9 @@ const fullCode = computed(() =>
         <div v-if="item.createdAt">{{ t("todo.createdAt", { time: fmtConversationTime(item.createdAt) }) }}</div>
         <div v-if="creator">{{ t("todo.creator", { name: creator }) }}</div>
         <div v-if="assignees" :title="assignees">{{ t("todo.assigneesInline", { names: assignees }) }}</div>
-        <div v-if="item.doneAt">{{ t("todo.doneAt", { time: fmtConversationTime(item.doneAt) }) }}</div>
+        <!-- 终态时间：完成显示「完成时间」，做不了显示「标记时间」（同一个后端权威时间戳 done_at）。 -->
+        <div v-if="item.doneAt && item.status === 'done'">{{ t("todo.doneAt", { time: fmtConversationTime(item.doneAt) }) }}</div>
+        <div v-else-if="item.doneAt && item.status === 'impossible'">{{ t("todo.impossibleAt", { time: fmtConversationTime(item.doneAt) }) }}</div>
       </div>
 
       <!-- 描述（全文，不截断） -->
@@ -254,22 +360,42 @@ const fullCode = computed(() =>
         </div>
       </div>
 
+      <!-- 全员操作记录：这条任务从创建到当前的全部改动流水（diff 来自事件日志，见 buildTodoHistory）。 -->
+      <div v-if="historyEntries.length" class="border-t border-[var(--gosslan-divider)] pt-3">
+        <div class="mb-1.5 text-xs text-[var(--gosslan-text-2)]">{{ t("todo.history.sectionTitle") }}</div>
+        <ul class="max-h-44 space-y-1 overflow-y-auto pr-1">
+          <li
+            v-for="(entry, i) in [...historyEntries].reverse()"
+            :key="entry.msgId + ':' + i"
+            class="flex items-baseline gap-2 text-[12px] leading-relaxed"
+          >
+            <span class="shrink-0 tabular-nums text-[var(--gosslan-text-2)]">{{ fmtConversationTime(entry.ts) }}</span>
+            <span class="shrink-0 font-medium text-[var(--gosslan-text)]">{{ nameOf(entry.actor) }}</span>
+            <span class="min-w-0 flex-1 text-[var(--gosslan-text-2)]">
+              <span v-for="(c, j) in entry.changes" :key="c.kind + j">
+                <span v-if="j > 0" class="mx-0.5 text-[var(--gosslan-text-2)]">·</span>{{ changeText(c) }}
+              </span>
+            </span>
+          </li>
+        </ul>
+      </div>
+
       <!-- 操作：完成（主）/ 归档 / 恢复 / 编辑 / 删除 -->
       <div class="flex flex-wrap items-center gap-2 border-t border-[var(--gosslan-divider)] pt-3">
         <button
-          v-if="canChangeStatus && item.status !== 'done'"
+          v-if="canChangeStatus && !isTodoTerminalStatus(item.status)"
           type="button"
           class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-3 py-1.5 text-[13px] text-white transition hover:bg-[var(--gosslan-primary-hover)]"
           @click="emit('complete')"
         >
           <Check class="mr-1 inline h-3.5 w-3.5" />{{ t("todo.complete") }}
         </button>
-        <!-- 完成之后**手动**归档（不再自动归档）。
+        <!-- 进入终态（完成/做不了）之后**手动**归档。
              归档那一档由 `canArchive` 决定 —— 它对**全体群成员**开放（用户 2026-09-24 #37），
-             比"改状态"宽；但只在「完成」态给按钮（后端拒绝归档未完成的任务）。
+             比"改状态"宽；但只在终态给按钮（后端拒绝归档非终态任务）。
              「恢复」仍然要 `canChangeStatus`：它是把状态改回待办，不是"取消归档"。 -->
         <button
-          v-else-if="canArchive && item.status === 'done' && !archived"
+          v-else-if="canArchive && isTodoTerminalStatus(item.status) && !archived"
           type="button"
           class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-hover)] px-3 py-1.5 text-[13px] text-[var(--gosslan-text-2)] transition hover:text-[var(--gosslan-text)]"
           @click="emit('archive')"

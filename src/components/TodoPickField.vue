@@ -45,6 +45,15 @@ watch(
     if (v) open.value = false;
   },
 );
+/**
+ * 点任意一项都立即关菜单，再把选择抛给父层。不能只靠 `watch(modelValue)` 关 ——
+ * 「自定义类型…」那一项父层不会立刻落值（要先拿到用户输入的名字再提交），
+ * 只靠值变化会让菜单挂在原地。
+ */
+function pick(value: string) {
+  open.value = false;
+  emit("update:modelValue", value);
+}
 </script>
 
 <template>
@@ -90,7 +99,7 @@ watch(
             :class="o.value === modelValue ? 'font-medium text-[var(--gosslan-primary)]' : ''"
             :disabled="o.value === modelValue"
             :aria-current="o.value === modelValue ? 'true' : undefined"
-            @click="emit('update:modelValue', o.value)"
+            @click="pick(o.value)"
           >
             {{ o.label }}
           </button>

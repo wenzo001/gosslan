@@ -10,9 +10,11 @@ import {
   TIP_KINDS,
   UNSUPPORTED_KIND_LABEL,
   isKnownKind,
+  isRemindableKind,
   isSilentKind,
   isTipKind,
   isRenderedInTimeline,
+  countsTowardUnread,
   kindClass,
 } from "./messageKinds.ts";
 import {
@@ -207,7 +209,7 @@ test("对照：解析器看得见人为造的漂移（判据不空转）", () =>
   assert.notEqual(defMutated, protocolRs, "缺省值那条替换没生效 ⇒ 对照空转");
   assert.equal(rustDefaultOf(defMutated, "default_todo_priority"), "low");
   // 类型那一格同理：只改 Rust 侧的值 / 只改 Rust 侧的缺省，比对都必须看得见
-  const catMutated = protocolRs.replace('["task", "requirement", "bug"]', '["task", "requirement", "defect"]');
+  const catMutated = protocolRs.replace('["task", "requirement", "bug", "custom"]', '["task", "requirement", "bug", "defect"]');
   assert.notEqual(catMutated, protocolRs, "类型表那条替换没生效 ⇒ 对照空转");
   assert.notDeepEqual(
     rustTableOf(catMutated, "TODO_CATEGORIES"),
@@ -311,4 +313,23 @@ test("时间线过滤只有一份判据，且 todo 卡片真的在渲染链里",
   );
   const item = read("../../src/components/MessageItem.vue");
   assert.match(item, /TodoCardBubble/, "todo 的专门卡片被摘掉了 —— 时间线里会退回原始 JSON");
+});
+
+test("强提醒：发起/回执是静默 kind（不计未读、不进时间线、不走普通通知）", () => {
+  for (const k of ["remind", "remind_ack"]) {
+    assert.ok(SILENT_KINDS.includes(k), `${k} 必须在静默清单里`);
+    assert.equal(isSilentKind(k), true);
+    assert.equal(isRenderedInTimeline(k), false, `${k} 不进时间线（标识挂在原消息上）`);
+    assert.equal(countsTowardUnread(k), false, `${k} 不计未读`);
+    assert.ok(isKnownKind(k), `${k} 必须是本机认识的 kind（不能走未知兜底）`);
+  }
+});
+
+test("isRemindableKind：只有有实质内容的消息可被强提醒；提示行/静默事件不行", () => {
+  for (const k of ["text", "code", "image", "file", "merge", "poll", "todo", "announcement"]) {
+    assert.equal(isRemindableKind(k), true, `${k} 应当可提醒`);
+  }
+  for (const k of ["system", "recalled", "remind", "remind_ack", "reaction", "pin", ""]) {
+    assert.equal(isRemindableKind(k), false, `${k} 不应当可提醒`);
+  }
 });
