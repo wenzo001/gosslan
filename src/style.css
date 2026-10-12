@@ -140,6 +140,9 @@
   --gosslan-ease: cubic-bezier(0.32, 0.72, 0, 1);
   --gosslan-duration-fast: 150ms;
   --gosslan-duration: 240ms;
+  /* 窗口抖动：一次提醒需要几下来回摆动才看得出是"抖动"，比结构性变化更长。
+     只动时长，曲线仍用 --gosslan-ease（设计规范：新增动效不另写曲线）。 */
+  --gosslan-duration-shake: 520ms;
 
   /* 版式尺寸：64px 侧栏（图标有呼吸感）+ 250px 列表栏 + 56px 头部 */
   --gosslan-rail-w: 64px;
@@ -552,6 +555,29 @@ progress {
   content: "";
   position: absolute;
   inset: -4px;
+}
+
+/* ---------------- 窗口抖动（强提醒到达时的视觉表达） ----------------
+   收到强提醒且用户正在看该会话时，给聊天窗口一个短促的横向摆幅（挂在整块聊天容器上，
+   含头部/列表/输入区），纯 transform、不参与布局。由 `prefers-reduced-motion` 统一关闭。 */
+@keyframes gosslan-shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  15%,
+  45%,
+  75% {
+    transform: translateX(-7px);
+  }
+  30%,
+  60%,
+  90% {
+    transform: translateX(7px);
+  }
+}
+.gosslan-shake {
+  animation: gosslan-shake var(--gosslan-duration-shake) var(--gosslan-ease) 1;
 }
 
 /* 尊重"减弱动态效果"（Apple 无障碍要求）：关掉过渡与动画 */

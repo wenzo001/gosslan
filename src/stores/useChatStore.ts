@@ -410,6 +410,22 @@ export const useChatStore = defineStore("chat", () => {
     }
   }
 
+  // ---------------- 强提醒的窗口抖动（收到时的视觉表达） ----------------
+  /**
+   * 抖动信号（自增计数）：触发聊天窗口抖动动画的**唯一入口**。
+   * 用计数而非布尔 —— 连续收到强提醒时只有值变化才能让 `watch` 每次都重放动画。
+   */
+  const shakeSignal = ref(0);
+  /** 抖动动画节流（ms）：防连发强提醒把窗口抖个不停。 */
+  const SHAKE_ANIM_MIN_INTERVAL_MS = 1200;
+  let lastShakeAt = 0;
+  function triggerRemindShake() {
+    const now = Date.now();
+    if (now - lastShakeAt < SHAKE_ANIM_MIN_INTERVAL_MS) return;
+    lastShakeAt = now;
+    shakeSignal.value += 1;
+  }
+
   /**
    * 接收一条 kind=remind：
    * 1. 判「是不是发给我」：群聊看 actors 名单（受众是名单层语义），私聊恒为对端→我；
@@ -446,9 +462,11 @@ export const useChatStore = defineStore("chat", () => {
       },
     );
 
-    // 应用在前台且正查看该会话 → 不做任何强提醒（时间线上的强提醒标识本身可见）。
+    // 应用在前台且正查看该会话 → 不弹通知（时间线上的强提醒标识本身可见），改为**抖动聊天窗口**
+    // —— 强提醒在"用户就在看"这一档的视觉表达（复用 remind，不新增 kind）。
     const viewing =
       !document.hidden && document.hasFocus() && activeConv.value === rec.conv_id;
+    if (viewing && app.notifyEnabled) triggerRemindShake();
     // 总开关关着：不响不振不弹（声音/振动是通知的子集，用户预期一致）。
     if (!app.notifyEnabled || viewing) return;
 
@@ -2562,6 +2580,7 @@ export const useChatStore = defineStore("chat", () => {
     watchGroupTodos,
     send,
     sendReminder,
+    shakeSignal,
     confirmReminder,
     sendFriendRequest,
     respondRequest,

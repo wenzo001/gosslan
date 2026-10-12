@@ -201,3 +201,18 @@ test("群受众弹窗：排除自己、至少 1 人才能确认", () => {
   assert.match(dlg, /filter\(\(id\) => id !== myId\.value\)/, "候选必须排除自己");
   assert.match(dlg, /:disabled="selected\.size === 0"/, "零选择不能确认（第一版不默认全群）");
 });
+
+test("前台正查看该会话 → 抖动聊天窗口（复用 remind，不新增 kind）", () => {
+  const store = read("stores/useChatStore.ts");
+  const at = store.indexOf("function handleIncomingRemind");
+  const body = store.slice(at, at + 2600);
+  assert.match(
+    body,
+    /if \(viewing && app\.notifyEnabled\) triggerRemindShake\(\);/,
+    "用户就在看该会话时抖动窗口（总开关关着则不抖）",
+  );
+  // 抖动信号必须被 ChatWindow 的根容器消费 + 有动画类，否则是一条死接线
+  const win = read("components/ChatWindow.vue");
+  assert.match(win, /chat\.shakeSignal/, "ChatWindow 必须消费 shakeSignal");
+  assert.match(win, /gosslan-shake/, "根容器必须挂抖动的动画类");
+});
