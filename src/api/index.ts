@@ -186,6 +186,8 @@ export const api = {
     assignees: string[],
     description?: string,
     images?: TodoImage[],
+    category?: string,
+    customCategory?: string,
   ) =>
     invoke<MessageRecord>("send_group_todo", {
       groupId,
@@ -193,6 +195,8 @@ export const api = {
       assignees,
       description: description ?? null,
       images: images ?? null,
+      category: category ?? null,
+      customCategory: customCategory ?? null,
     }),
   /**
    * 更新群任务：改状态 / 改标题与指派人 / 改描述与图片 / 删除（`deleted: true`）。
@@ -214,8 +218,13 @@ export const api = {
       archived?: boolean;
       /** 三档之一；不传 = 这次不动优先级。 */
       priority?: string;
-      /** 类型三档之一；不传 = 这次不动类型（与 priority 同口径：改状态不会顺手把类型刷掉）。 */
+      /** 类型（任务/需求/缺陷/自定义）；不传 = 这次不动类型。 */
       category?: string;
+      /**
+       * 自定义类型名：仅 category="custom" 时有意义。**显式传 `""` = 随调用一起提交**
+       *（非 custom 档时后端会清空它）；`undefined` = 这次不带这格，后端沿用库里的名字。
+       */
+      customCategory?: string;
     },
   ) =>
     invoke<MessageRecord>("update_group_todo", {
@@ -230,6 +239,7 @@ export const api = {
       archived: patch.archived ?? null,
       priority: patch.priority ?? null,
       category: patch.category ?? null,
+      customCategory: patch.customCategory ?? null,
     }),
   /** 置顶/取消置顶一条群消息（任意群成员；静默事件，不进时间线）。 */
   pinGroupMessage: (groupId: string, target: string, pinned: boolean) =>

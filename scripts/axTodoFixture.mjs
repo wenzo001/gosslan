@@ -39,6 +39,7 @@ export function todoFixturePayload(deviceId, over = {}) {
     archived: false,
     priority: "normal",
     category: TODO_FIXTURE.category,
+    custom_category: "",
     number: TODO_FIXTURE.number,
     done_at: null,
     ...over,

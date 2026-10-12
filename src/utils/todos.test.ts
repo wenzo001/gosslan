@@ -15,8 +15,12 @@ import {
   canUpdateTodo,
   foldTodos,
   isEffectivelyArchived,
+  isTodoTerminalStatus,
+  buildTodoHistory,
   parseTodo,
+  todoCategoryName,
   todoCompletedForCreator,
+  todoTerminalForCreator,
   todoMentionsMe,
   openTodosForMe,
   putTodoRows,
@@ -336,9 +340,17 @@ test("多个任务互不干扰；非任务消息被忽略", () => {
   assert.equal(foldTodos([text]).length, 0);
 });
 
-test("状态取值表：四态且缺省是待办（与 protocol.rs 的 TODO_STATUSES 对齐）", () => {
-  assert.deepEqual([...TODO_STATUSES], ["todo", "doing", "overdue", "done"]);
+test("状态取值表：五态且缺省是待办（与 protocol.rs 的 TODO_STATUSES 对齐）", () => {
+  assert.deepEqual([...TODO_STATUSES], ["todo", "doing", "overdue", "impossible", "done"]);
   assert.equal(TODO_STATUS_DEFAULT, "todo");
+});
+
+test("impossible 与 done 同属终态；终态之外的三态不是", () => {
+  assert.equal(isTodoTerminalStatus("done"), true);
+  assert.equal(isTodoTerminalStatus("impossible"), true);
+  for (const s of ["todo", "doing", "overdue", "", "DONE", null]) {
+    assert.equal(isTodoTerminalStatus(s), false, `${JSON.stringify(s)} 不是终态`);
+  }
 });
 
 /**
@@ -546,6 +558,10 @@ const todoFixture = (
   assignees: [],
   status: TODO_STATUS_DEFAULT,
   creator: "other",
+  priority: TODO_PRIORITY_DEFAULT,
+  category: TODO_CATEGORY_DEFAULT,
+  customCategory: "",
+  number: 0,
   description: "",
   images: [],
   archived: false,
@@ -578,6 +594,129 @@ test("归档优先于状态：未完成但已归档的任务也不进徽标（�
 test("本机 id 还没拿到时返回空 —— 身份未就绪不许点亮一个假数字", () => {
   const items = [todoFixture({ todoId: "a", assignees: [""], creator: "" })];
   assert.deepEqual(openTodosForMe(items, ""), []);
+});
+
+test("做不了（impossible）是终态：与完成一样不进徽标、可归档/自动归档", () => {
+  const DAY = 86400000;
+  const now = 1_800_000_000_000;
+  // 不计入未完成徽标（即使指派给我 / 我是创建人）
+  assert.deepEqual(
+    openTodosForMe(
+      [
+        todoFixture({ todoId: "a", assignees: ["me"], status: "impossible" }),
+        todoFixture({ todoId: "b", creator: "me", status: "impossible" }),
+      ],
+      "me",
+    ),
+    [],
+  );
+  // 显式归档 / 满 7 天自动归档，与完成同口径
+  assert.equal(isEffectivelyArchived({ status: "impossible", archived: true, doneAt: null }, now), true);
+  assert.equal(
+    isEffectivelyArchived({ status: "impossible", archived: false, doneAt: now - 6 * DAY }, now),
+    false,
+  );
+  assert.equal(
+    isEffectivelyArchived(
+      { status: "impossible", archived: false, doneAt: now - TODO_AUTO_ARCHIVE_DAYS * DAY },
+      now,
+    ),
+    true,
+  );
+});
+
+test("自定义类型：载荷字段被折叠读取，老对端没说这一格时沿用不抹掉", () => {
+  const create = rec("todo", "m1", "a", {
+    todo_id: "t1", title: "定制流程", assignees: ["a"], creator: "a",
+    status: "todo", category: "custom", custom_category: "复盘会", number: 7,
+  }, 1);
+  const folded1 = foldTodos([create]);
+  assert.equal(folded1[0].category, "custom");
+  assert.equal(folded1[0].customCategory, "复盘会");
+  assert.deepEqual(todoCategoryName(folded1[0]), { key: "", text: "复盘会" });
+  // 老对端改了一次状态：载荷不带 category/custom_category（absent）⇒ 类型与名字都沿用
+  const oldPeerUpdate = rec("todo_update", "m2", "a", {
+    todo_id: "t1", title: "定制流程", assignees: ["a"], creator: "a",
+    status: "doing",
+  }, 2);
+  const folded2 = foldTodos([create, oldPeerUpdate]);
+  assert.equal(folded2[0].category, "custom", "没说类型 ⇒ 沿用 custom，不许回落任务");
+  assert.equal(folded2[0].customCategory, "复盘会", "自定义名随类型一起沿用");
+  // 显式切回内置档：名字读不到也无所谓（服务端会清空），显示走枚举文案
+  const back = rec("todo_update", "m3", "a", {
+    todo_id: "t1", title: "定制流程", assignees: ["a"], creator: "a",
+    status: "doing", category: "task", custom_category: "", number: 7,
+  }, 3);
+  const folded3 = foldTodos([create, oldPeerUpdate, back]);
+  assert.equal(folded3[0].category, "task");
+  assert.deepEqual(todoCategoryName(folded3[0]), { key: "todo.category.task", text: null });
+});
+
+test("buildTodoHistory：创建/改状态/归档/还原/删除/指派进出按时间还原，且只含这一条任务", () => {
+  const upd = (seq: number, sender: string, extra: Record<string, unknown>, kind = "todo_update"): MessageRecord =>
+    rec(kind, `mu${seq}`, sender, {
+      todo_id: "t1", title: "写周报", assignees: ["a"], creator: "a",
+      status: "todo", ...extra,
+    }, seq);
+  const other = upd(9, "a", { todo_id: "t2", status: "done" });
+  // 每帧显式带上当前状态：只改一个字段时其余字段必须与上一帧相同，否则就不是单字段变更。
+  const records = [
+    upd(1, "a", {}, "todo"),
+    upd(2, "b", { status: "doing" }),
+    upd(3, "a", { status: "doing", priority: "high" }),
+    upd(4, "a", { status: "doing", priority: "high", assignees: ["a", "c"] }),
+    upd(5, "c", { status: "doing", priority: "high", assignees: ["a"] }),
+    upd(6, "b", { status: "impossible", priority: "high", assignees: ["a"] }),
+    upd(7, "b", { status: "impossible", priority: "high", assignees: ["a"], archived: true }),
+    upd(8, "a", { status: "todo", priority: "high", assignees: ["a"], archived: false }),
+    upd(10, "a", { status: "todo", priority: "high", assignees: ["a"], deleted: true }),
+    other,
+  ];
+  const h = buildTodoHistory("t1", records);
+  const kinds = h.map((e) => e.changes.map((c) => c.kind));
+  assert.deepEqual(kinds, [
+    ["created"],
+    ["status"],
+    ["priority"],
+    ["assignees_add"],
+    ["assignees_remove"],
+    ["status"], // todo → impossible（普通状态变更，不是还原）
+    ["archived"],
+    ["restored"], // 终态 → 待办
+    ["deleted"],
+  ]);
+  // 操作人按事件 sender_id 记录（全员操作都看得到，不只创建人）
+  assert.equal(h[1].actor, "b");
+  assert.equal(h[3].changes[0].ids?.[0], "c");
+  // 指派进出与状态参数
+  assert.equal(h[1].changes[0].to, "doing");
+  assert.equal(h[5].changes[0].to, "impossible");
+  // 别的任务的事件不混进来
+  assert.equal(buildTodoHistory("t1", [other]).length, 0);
+  assert.equal(buildTodoHistory("t2", [other])[0].changes[0].kind, "created");
+});
+
+test("buildTodoHistory：乱序输入按 (seq,msg_id) 排，图片-only 更新不产生噪声条目", () => {
+  const mk = (seq: number, msgId: string, extra: Record<string, unknown>, kind = "todo_update"): MessageRecord =>
+    rec(kind, msgId, "a", {
+      todo_id: "t1", title: "x", assignees: ["a"], creator: "a", status: "todo", ...extra,
+    }, seq);
+  const records = [
+    mk(3, "m3", { status: "done" }),
+    mk(1, "m1", {}, "todo"),
+    mk(2, "m2", { images: [{ sha256: "img1" }] }),
+  ];
+  const h = buildTodoHistory("t1", records);
+  assert.deepEqual(h.map((e) => e.changes[0].kind), ["created", "status"]);
+});
+
+test("todoTerminalForCreator：完成与做不了都提示创建人；旧窄口径包装只认完成", () => {
+  const impossible = { ...def("t1", 5, { status: "impossible", creator: "me" }), kind: "todo_update" as MessageRecord["kind"] };
+  const done = { ...def("t2", 5, { status: "done", creator: "me" }), kind: "todo_update" as MessageRecord["kind"] };
+  assert.deepEqual(todoTerminalForCreator(impossible, "me"), { status: "impossible", title: "写周报" });
+  assert.deepEqual(todoTerminalForCreator(done, "me"), { status: "done", title: "写周报" });
+  assert.equal(todoCompletedForCreator(impossible, "me"), null, "旧窄口径不认做不了");
+  assert.equal(todoCompletedForCreator(done, "me"), "写周报");
 });
 
 
@@ -688,7 +827,7 @@ test("撞号时两端算出同一套号：todo_id 小的保住原号，其余顺
 
 // ── 编号的**显示口径**（字母 + 数字；用户 2026-09-30 那八条，全文见 INV-P29）──────
 test("三档类型各有一个字母，且字母表与取值表一一映射", () => {
-  assert.deepEqual(TODO_CATEGORY_LETTER, { requirement: "R", bug: "B", task: "T" });
+  assert.deepEqual(TODO_CATEGORY_LETTER, { requirement: "R", bug: "B", task: "T", custom: "C" });
   // 一一映射（两个方向都不许撞）：加第四种类型时这张表必须补齐，否则两条断言之一会红
   assert.equal(new Set(TODO_CATEGORIES.map((c) => TODO_CATEGORY_LETTER[c])).size, TODO_CATEGORIES.length);
   assert.equal(new Set(Object.values(TODO_CATEGORY_LETTER)).size, TODO_CATEGORIES.length);

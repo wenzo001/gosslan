@@ -1504,8 +1504,9 @@ async function main() {
     const roster = want("roster");
     const overlay = want("overlay");
     const imgskel = want("imgskel");
+    const imgload = want("imgload");
     const pinkb = want("pinkb");
-  const inputpanel = want("inputpanel");
+    const inputpanel = want("inputpanel");
     if (emoji) await runEmoji(cdp, url);
     if (search) await runSearch(cdp, url);
     if (task) await runTaskCard(cdp, url);
@@ -1516,6 +1517,7 @@ async function main() {
     if (roster) await runReactionRoster(cdp, url);
     if (overlay) await runOverlay(cdp, url);
     if (imgskel) await runImageSkeleton(cdp, url);
+    if (imgload) await runImageLoad(cdp, url);
     if (pinkb) await runPinKeyboard(cdp, url);
     if (inputpanel) await runInputPanels(cdp, url);
     process.exitCode = results.every((r) => r.ok) ? 0 : 1;
@@ -1822,13 +1824,15 @@ async function runPinKeyboard(cdp, url) {
  * 为什么必须真浏览器量：这一格判的是**渲染出来的矩形高度**，静态 class 判据只能证明
  * "组件引了常量"，证不了那个数最后落到盒子上（内联样式被别的规则盖掉、或者组件根本没挂起来）。
  *
- * 夹具：src 给一条 dev server 上不存在的路径，然后由探针按组件自己的退避节奏代投 error。
+ * 夹具：src 给一条 dev server 上不存在的路径，eager <img> 会自己拿到 404、自己走完退避；
+ * 探针另外按节奏代投 error，把"落 failed"的时间收在有界窗口里。
  * ⚠️ 两个"试过但不对"的写法都留在这里，免得下一个人再试一次：
  *   ① "内容永不完成的 blob"——URL.createObjectURL 直接抛 overload 错（本仓探针第一次跑就是这么红的，
- *      红的是夹具不是产品）；② 等它**自己**报错——这张 <img> 在 loading="lazy" 且尚未显示时
- *      根本没发起请求（下面那条网络读数 0 次），退避链第一步就迈不出去。
- * 于是 loading 态读的是挂载即得的那个预留（state 初值就是 loading），failed 态由代投 error 走满
- * 5 档退避得到 —— 打的仍是组件自己那个 @error 处理器，顺带把"全部重试失败才落 failed"
+ *      红的是夹具不是产品）；② 早期这张 <img> 带 loading="lazy"，而它在 @load 之前 display:none
+ *      ⇒ 懒加载图永不发请求，退避链第一步都迈不出去（v4.35.2 图片全打不开的真根因，见
+ *      MessageImageBubble.vue 里 img-eager-ok 注释；正向回归在 --only=imgload 那段）。
+ * loading 态读的是挂载即得的那个预留（state 初值就是 loading），failed 态由 error（自然 404 +
+ * 代投）走满 5 档退避得到 —— 打的仍是组件自己那个 @error 处理器，顺带把"全部重试失败才落 failed"
  * （用户 2026-09-12：『加载失败应该是不可逆的最终结果』）在真浏览器里走了一遍。
  */
 async function runImageSkeleton(cdp, url) {
@@ -1862,16 +1866,14 @@ async function runImageSkeleton(cdp, url) {
     restored === true && back.ok === true && back.h === back.cap,
     "rect.h == IMAGE_BUBBLE_HEIGHT", JSON.stringify(back));
 
-  // 等退避全部用完（8.4s）⇒ 落进 failed，那时占位必须换成紧凑那一档
-  // 终态那一档由探针**代浏览器投一次 error**（打的就是组件自己那个 @error 处理器）。
-  // 为什么不靠它自己报错：实测这张 <img> 在 loading="lazy" + 尚未显示（hidden）时
-  // **根本没发起请求**（下面那条网络读数是这件事的证据，0 次 = 没请求），于是退避链第一步就迈不出去。
-  // 为了凑一个态去改产品码不值得 ⇒ 按处理器真实的退避节奏（最短那档 400ms）把这 5 次投满，
-  // 顺带也把"重试全部失败才会落 failed"这条语义在真浏览器里走了一遍。
+  // 等退避全部用完（8.4s）⇒ 落进 failed，那时占位必须换成紧凑那一档。
+  // 终态由 error 事件驱动：eager <img> 对不存在的路径会自己拿到 404（自然 error），
+  // 探针再按节奏代投 error，把等满 8.4s 退避链的时间收在有界窗口里（打的都是组件自己
+  // 那个 @error 处理器，顺带把"重试全部失败才会落 failed"在真浏览器里走一遍）。
   const netSeen = await cdp.eval(`(() => performance.getEntriesByType('resource')
     .map((e) => e.name).filter((n) => n.includes('gosslan-probe-missing-image')).length)()`);
   console.log("· imgskel 网络读数：这条 src 在页面资源计时里出现 " + netSeen
-    + " 次（0 = 隐藏 + lazy 的那张 <img> 在这台账具里根本没发起请求）");
+    + " 次（eager 隐藏图也会发请求；0 才是反常——见 img-eager-ok 那个死锁）");
 
   // 有界：退避 5 档 + 每档之间要等 img 换代，14s 上限给真机/CI 抖动留余量。
   let failed = null;
@@ -1890,6 +1892,71 @@ async function runImageSkeleton(cdp, url) {
   check("失败态：退避用完后落到紧凑占位（不为一张永远等不来的图撑 288px 灰块）",
     !!failed && failed.ok === true && failed.h === failed.placeholder,
     "state=failed 且 rect.h == IMAGE_PLACEHOLDER_HEIGHT", JSON.stringify(failed));
+}
+
+/**
+ * 有效图片必须真的从"加载中"走到"已加载"，并且**加载完才允许点开预览**（v4.35.2 真根因回归）。
+ *
+ * 死锁形状：`<img>` 在自身 @load 之前被 `hidden`（display:none）藏着，再带 loading="lazy"
+ * ⇒ 懒加载只对参与排版、靠近视口的元素发请求，display:none 的那张**永远不发请求**
+ * ⇒ @load 永不触发 ⇒ state 永远停在 loading（5 档退避后落 failed）⇒ 自己发的/对方发的图全打不开。
+ * 6853680 统一给消息行补 lazy 时引入；修复见 MessageImageBubble.vue 的 img-eager-ok 注释。
+ *
+ * 判据全打在**真组件 + 真解码**上：
+ *  1. 喂一张有效的 data URL，data-img-state 必须在有界时间内变成 loaded（hidden 不挡 eager）；
+ *  2. loaded 后 <img> 真解码（naturalWidth>0）、退出隐藏、盒子变成可点的 button；
+ *  3. 这条 <img> 不许带 loading="lazy"（与 display:none 同框就是死锁，静态锁，加回来当场红）；
+ *  4. 点击必须 emit open（预览打不开的用户-facing 那一半）。
+ * 不做引擎级"lazy 隐藏图不加载"对照：脚本插入的隐藏 lazy 图在 CfT 153 上会加载，
+ * 只有 Vue 挂载路径那张不加载，跨引擎/版本不稳定 —— 见函数尾注释。
+ */
+async function runImageLoad(cdp, url) {
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+  // 2×2 不透明 PNG，data URL 不依赖任何网络/dev server 路由
+  const PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAEklEQVR4nGP8z8DwnwEJ"
+    + "MDIYMhYAcgsB/w0FHT8AAAAASUVORK5CYII=";
+  const mounted = await cdp.eval("window.__probe.install('/src/components/message/MessageImageBubble.vue', '', "
+    + JSON.stringify(JSON.stringify({ src: PNG })) + ")");
+  check("有效图：图片盒挂出来了（回归段才有得量）", !!mounted && mounted.ok === true, "install ok", JSON.stringify(mounted));
+
+  // 有界等 @load（eager 隐藏图也会立刻发 data URL 解析；正常应在首轮就 loaded）
+  let box = null;
+  let rounds = 0;
+  for (let i = 0; i < 25; i += 1) {
+    rounds = i + 1;
+    box = await cdp.eval("window.__probe.imgBox()");
+    const img = await cdp.eval(`(() => { const el = document.querySelector('[data-img-el]');
+      return el ? { nw: el.naturalWidth, display: getComputedStyle(el).display,
+        loading: el.getAttribute('loading'), role: el.closest('[data-img-state]').getAttribute('role') } : null; })()`);
+    box = { ...(box || {}), ...(img || {}) };
+    if (box.state === "loaded" && box.nw > 0) break;
+    await sleep(200);
+  }
+  console.log(`· imgload 等到 loaded 用了 ${rounds} 轮（每轮 200ms）`);
+  check("有效图：state 必须走到 loaded（lazy+hidden 死锁时永远停在 loading，最终 failed）",
+    box.state === "loaded", "state=loaded", JSON.stringify({ state: box.state, rounds }));
+  check("有效图：<img> 真解码且退出 display:none",
+    box.nw > 0 && box.display !== "none", `naturalWidth>0 且 display!=none`, JSON.stringify(box));
+  check("有效图：这一条不许带 loading=\"lazy\"（与 display:none 同框就是死锁；豁免理由写在 img-eager-ok 注释里）",
+    box.loading === null, "loading 属性不存在", "loading=" + JSON.stringify(box.loading));
+  check("有效图：loaded 后盒子才可点（role=button；没加载完时点击只该走重取）",
+    box.role === "button", "role=button", "role=" + JSON.stringify(box.role));
+
+  // 点击：夹具把组件的 @open 记成 ['open-id', src]（见 PAGE_FIXTURE 的 mkProps.onOpen）
+  await cdp.eval("window.__probe.reset()");
+  const root = await cdp.eval(`(() => { const r = document.querySelector('[data-img-state]');
+    if (!r) return false; r.click(); return true; })()`);
+  await sleep(150);
+  const opened = await cdp.eval("window.__probe.events.some((e) => e[0] === 'open-id')");
+  check("有效图：点击已加载的图片必须上抛 open（用户点了就要进预览）",
+    root === true && opened === true, "events 含 open-id", `root=${root} opened=${opened}`);
+  // 引擎行为对照不做进自动判据：CfT 153 实测"脚本插入的隐藏 lazy 图"会加载，而 Vue 挂载路径上
+  // 那张不加载（构造顺序/文档时机差异，跨引擎不稳定）。死锁的真证据是上面的产品级回归
+  //（6853680 引入 lazy 后 state 永不进 loaded，修复前用真 blob 实测 12s naturalWidth=0），
+  // 加上第 3 条对 loading 属性的静态锁 —— 谁把 lazy 加回来当场变红，不必再放一张会随浏览器
+  // 版本翻转的对照图。
 }
 
 /**

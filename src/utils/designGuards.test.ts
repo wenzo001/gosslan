@@ -2175,27 +2175,30 @@ test("看板行首的优先级与类型图标三档一律画，不许给缺省�
   //   `canClaim` 里那句 `x.category === "requirement"`（认领只开给需求）是正当条件，
   //   第一版就是被它判成红的 —— 尺子宽到会咬合规写法，下一个人的处置是把它改松，
   //   那条判据就没了。所以只圈这两枚图标**自己那一段**，看它有没有被 v-if / v-show 挡起来。
-  const iconRegion = (key: string): string => {
-    const at = board.indexOf(`:title="t(${key}[`);
-    assert.ok(at >= 0, `行首少了 ${key} 那一枚（连悬停词都不在了）`);
+  // 类型那枚的悬停词走 categoryText(x)（custom 档要显示用户输入的名字，不能写死枚举文案）。
+  const iconRegion = (marker: string): string => {
+    const at = board.indexOf(marker);
+    assert.ok(at >= 0, `行首少了 ${marker} 那一枚（连悬停词都不在了）`);
     const start = board.lastIndexOf("<span", at);
     const end = board.indexOf("</span>", at);
-    assert.ok(start >= 0 && end > start, `${key} 那一枚的元素形状读不出来`);
+    assert.ok(start >= 0 && end > start, `${marker} 那一枚的元素形状读不出来`);
     return board.slice(start, end);
   };
-  for (const key of ["TODO_PRIORITY_LABEL_KEY", "TODO_CATEGORY_LABEL_KEY"]) {
-    assert.ok(
-      !/v-if|v-show/.test(iconRegion(key)),
-      `${key} 那一枚被条件化了 ⇒ 缺省档又变成"扫一眼靠猜"（㉔ 那次已经纠正过一回）`,
-    );
-  }
+  assert.ok(
+    !/v-if|v-show/.test(iconRegion(':title="t(TODO_PRIORITY_LABEL_KEY[')),
+    "TODO_PRIORITY_LABEL_KEY 那一枚被条件化了 ⇒ 缺省档又变成“扫一眼靠猜”",
+  );
+  assert.ok(
+    !/v-if|v-show/.test(iconRegion(':title="categoryText(x)"')),
+    "TODO_CATEGORY 那一枚被条件化了 ⇒ 缺省档又变成“扫一眼靠猜”（㉔ 那次已经纠正过一回）",
+  );
   for (const map of ["TODO_PRIORITY_ICON_CLASS", "TODO_CATEGORY_ICON_CLASS"]) {
     const at = todos.indexOf(`export const ${map}`);
     assert.ok(at >= 0, `${map} 不在了`);
     // 只取那张表的**字面量本身**（到第一个顶格 `};` 为止）。按固定长度切会吃进下一张表，
     // 于是"这张表少一档、下一张表里有那一档"也能通过 —— 分母松了就等于没判。
     const body = todos.slice(at, at + 1200).split("\n};")[0];
-    for (const k of map.includes("PRIORITY") ? ["high", "normal", "low"] : ["task", "requirement", "bug"]) {
+    for (const k of map.includes("PRIORITY") ? ["high", "normal", "low"] : ["task", "requirement", "bug", "custom"]) {
       assert.ok(
         new RegExp(`^\\s*(${k}|"${k}")\\s*:`, "m").test(body),
         `${map} 里少了 ${k} 那一档`,
@@ -2219,7 +2222,9 @@ test("看板行首的优先级与类型图标三档一律画，不许给缺省�
     assert.ok(at >= 0, `${mapName} 不在了`);
     const body = board.slice(at, at + 400).split("\n};")[0];
     const used = [...body.matchAll(/:\s*([A-Z][A-Za-z0-9]*)\s*,/g)].map((m) => m[1]);
-    assert.ok(used.length === 3, `${mapName} 只数到 ${used.length} 个取值（应当是三档）`);
+    // 优先级三档；类型四档（任务/需求/缺陷/自定义）。少一个 = 新档位静默没图标。
+    const expected = mapName === "PRIORITY_ICON" ? 3 : 4;
+    assert.ok(used.length === expected, `${mapName} 只数到 ${used.length} 个取值（应当是 ${expected} 档）`);
     for (const name of used) {
       assert.ok(imported.has(name), `${mapName} 用了 ${name}，但它不在 lucide 的 import 里 ⇒ 那一格静默不渲染`);
     }
@@ -2466,24 +2471,29 @@ test("真实树：src/components/message 下每条 <img> 都带两个 hint（分
   const files = collectVueFiles(dir);
   const sites: string[] = [];
   const bad: string[] = [];
-  let exempt = 0;
+  const exemptNames: string[] = [];
   for (const f of files) {
     const src = readFileSync(f, "utf8");
     const n = findImgTags(src).length;
     if (n === 0) continue;
     const rel = f.replace(dir + "/", "");
     sites.push(`${rel}=${n}`);
-    if (src.includes("img-eager-ok")) { exempt += 1; continue; }
+    if (src.includes("img-eager-ok")) { exemptNames.push(rel); continue; }
     for (const issue of findMessageImageWithoutFetchHint(src)) {
       bad.push(`${rel}:${issue.line} ${issue.message.slice(0, 46)}`);
     }
   }
   sites.sort();
   bad.sort();
+  exemptNames.sort();
   assert.ok(sites.length >= 9, `message/ 下的 <img> 只数到 ${sites.length} 份，尺子大概失效了：\n${sites.join("\n")}`);
   assert.deepEqual(bad, [], `有消息图缺 fetch hint：\n${bad.join("\n")}`);
-  assert.equal(exempt, 1, `显式豁免的那份应当只有 ImageLightbox 一支，现数 ${exempt}（${sites.join(", ")}）`);
-  console.log(`· 真实树 <img> 分母：${sites.length} 份文件 / 共 ${sites.reduce((a, s) => a + Number(s.split("=")[1]), 0)} 条标签，豁免 ${exempt} 份`);
+  // 豁免只有两支且理由都必须写在组件里：
+  // - ImageLightbox：用户主动点开的整屏大图，懒加载只会让它更晚出现；
+  // - MessageImageBubble：图在自身 @load 之前 display:none，lazy 会让它永不发请求（死锁，v4.35.2 真根因）。
+  assert.deepEqual(exemptNames, ["ImageLightbox.vue", "MessageImageBubble.vue"],
+    `显式豁免的两份必须是 ImageLightbox 与 MessageImageBubble，现数 ${JSON.stringify(exemptNames)}`);
+  console.log(`· 真实树 <img> 分母：${sites.length} 份文件 / 共 ${sites.reduce((a, s) => a + Number(s.split("=")[1]), 0)} 条标签，豁免 ${exemptNames.length} 份（${exemptNames.join("、")}）`);
 });
 
 test("N21 判据：列表型 prop 的绑定里出现空数组字面量必须报（正向）", () => {

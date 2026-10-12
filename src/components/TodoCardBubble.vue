@@ -176,10 +176,14 @@ function statusText(s: TodoStatus): string {
            「任务」这一档不占位，旧数据读出来也是它 ⇒ 与不画完全同形。 -->
       <span
         v-if="todo && todo.category !== 'task'"
-        class="shrink-0 text-[11px]"
+        class="shrink-0 max-w-[6rem] truncate text-[11px]"
         :class="TODO_CATEGORY_TEXT_CLASS[todo.category]"
+        :title="todo.category === 'custom' ? todo.customCategory : undefined"
       >
-        {{ t(TODO_CATEGORY_LABEL_KEY[todo.category]) }}
+        <!-- 卡片读的是**创建快照**里的类型：自定义档直接显示当时输入的名字，没有名字退回菜单文案。 -->
+        {{ todo.category === "custom"
+          ? (todo.customCategory || t(TODO_CATEGORY_LABEL_KEY.custom))
+          : t(TODO_CATEGORY_LABEL_KEY[todo.category]) }}
       </span>
       <span
         class="min-w-0 flex-1 truncate text-[13px] font-medium text-[var(--gosslan-card-ink)]"

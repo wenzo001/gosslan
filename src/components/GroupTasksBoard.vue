@@ -30,25 +30,34 @@ import BaseModal from "@/components/BaseModal.vue";
 import { useImagePreviewStore } from "@/stores/useImagePreview";
 import TodoDetailDialog from "@/components/TodoDetailDialog.vue";
 import TodoImageThumb from "@/components/TodoImageThumb.vue";
+import TodoPickField from "@/components/TodoPickField.vue";
 import {
+  TODO_CATEGORIES,
   TODO_CATEGORY_LABEL_KEY,
   TODO_CATEGORY_ICON_CLASS,
   TODO_CATEGORY_PILL,
+  TODO_CUSTOM_CATEGORY_MAX_LEN,
+  TODO_PRIORITIES,
   TODO_PRIORITY_LABEL_KEY,
   TODO_PRIORITY_ICON_CLASS,
+  TODO_PRIORITY_PILL,
   TODO_STATUSES,
   TODO_STATUS_BAR,
   TODO_STATUS_CLASS,
   TODO_STATUS_DEFAULT,
   TODO_STATUS_LABEL_KEY,
   TODO_STATUS_PILL,
+  buildTodoHistory,
   canArchiveOrReopenTodo,
   canEditAssignees,
   canUpdateTodo,
   foldTodos,
   isEffectivelyArchived,
+  isTodoTerminalStatus,
   parseTodo,
+  todoCategoryName,
   todoCode,
+  type TodoHistoryEntry,
   type TodoImage,
   type TodoItem,
   type TodoCategory,
@@ -60,7 +69,7 @@ import { useExclusivePopup } from "@/composables/useExclusivePopup";
 import { popupLeft, popupPlacement, popupWidth } from "@/utils/popupPosition";
 import { MAX_TODO_IMAGE_BYTES, TODO_IMAGE_LIMIT_MB } from "@/utils/imageBytes";
 import { t } from "@/i18n";
-import { Archive, ArrowDown, ArrowUp, Bug, Check, CheckCircle2, ChevronDown, Circle, CircleDot, Clock, ImagePlus, Lightbulb, ListTodo, Loader2, Minus, Plus, RotateCcw, X } from "lucide-vue-next";
+import { Archive, Bug, Check, CheckCircle2, ChevronDown, ChevronsDown, Circle, CircleDot, Clock, ImagePlus, Lightbulb, ListTodo, Loader2, Minus, Plus, RotateCcw, Tag, X, XCircle, Zap } from "lucide-vue-next";
 
 const props = defineProps<{
   groupId: string | null;
@@ -101,7 +110,23 @@ watch(
 );
 const activeTodos = computed(() => todos.value.filter((x) => !isEffectivelyArchived(x)));
 const archivedTodos = computed(() => todos.value.filter((x) => isEffectivelyArchived(x)));
+// 这里只数**完成**：「做不了」是另一种终态，看板里有自己的分组，不计入「已完成 n/总数」。
 const doneCount = computed(() => todos.value.filter((x) => x.status === "done").length);
+
+/**
+ * 一条任务的操作流水（详情弹窗用）。数据口与 `todos` 同源（全表读的任务消息行），
+ * 只是不过滤 —— 墓碑/每次更新都要在流水里留痕，所以这里不能只喂折叠后的 TodoItem。
+ */
+function historyFor(x: TodoItem | null): TodoHistoryEntry[] {
+  if (!x) return [];
+  return buildTodoHistory(x.todoId, chat.groupTodoRows[convId.value] ?? []);
+}
+
+/** 类型胶囊上该写的字：自定义档显示用户输入的名字，其余档走 i18n。 */
+function categoryText(x: Pick<TodoItem, "category" | "customCategory">): string {
+  const n = todoCategoryName(x);
+  return n.text ?? t(n.key);
+}
 
 // ---------------- 筛选（全部 / 给我的 / 我创建的 / 已归档） ----------------
 
@@ -259,11 +284,12 @@ const loadingFirstScreen = computed(
   () => !!props.groupId && !!props.standalone && !chat.todosLoadedOnce(props.groupId),
 );
 
-/** 分组小标题的图标（与状态语汇一致：待办=空心圈、进行中=实心点、延期=时钟、完成=对勾圈）。 */
+/** 分组小标题的图标（与状态语汇一致：待办=空心圈、进行中=实心点、延期=时钟、做不了=叉圈、完成=对勾圈）。 */
 const STATUS_ICON: Record<TodoStatus, typeof Circle> = {
   todo: Circle,
   doing: CircleDot,
   overdue: Clock,
+  impossible: XCircle,
   done: CheckCircle2,
 };
 
@@ -277,15 +303,19 @@ const STATUS_ICON: Record<TodoStatus, typeof Circle> = {
  *
  * 状态**不在这里画**：列表本来就按状态分组，加上左缘色条与右侧胶囊已经说了三遍。
  */
+// 2026-10-12 形象化：紧急=闪电（一眼看到）、常规=一横、不急=双下箭头；
+// 区分靠形状，颜色仍只有「紧急」抢主色（两张配色表见 utils/todos.ts）。
 const PRIORITY_ICON: Record<TodoPriority, typeof Circle> = {
-  high: ArrowUp,
+  high: Zap,
   normal: Minus,
-  low: ArrowDown,
+  low: ChevronsDown,
 };
 const CATEGORY_ICON: Record<TodoCategory, typeof Circle> = {
   task: ListTodo,
   requirement: Lightbulb,
   bug: Bug,
+  // 自定义类型没有专属语义 ⇒ 通用「标签」图标，语义中性。
+  custom: Tag,
 };
 
 function statusText(s: TodoStatus): string {
@@ -309,19 +339,19 @@ function canEditAssigneesOf(x: TodoItem): boolean {
 }
 /**
  * 「归档」这一档对**全体群成员**开放（用户 2026-09-24 #37），
- * 但只在「完成」这一态给按钮（后端对未完成任务的归档请求是明确拒绝，不是静默丢弃）。
+ * 但只在终态（完成 / 做不了）给按钮（后端对非终态任务的归档请求是明确拒绝，不是静默丢弃）。
  */
 function canArchive(x: TodoItem): boolean {
-  return x.status === "done" && canArchiveOrReopenTodo(x, myId.value, groupCreator.value, groupMembers.value);
+  return isTodoTerminalStatus(x.status) && canArchiveOrReopenTodo(x, myId.value, groupCreator.value, groupMembers.value);
 }
 /**
- * 「还原」= 把「完成」退回「待办」（后端 `resolve_done_archive` 据此一并清掉归档位与完成时间）。
- * 与归档同一条成员窄档 ⇒ 同样开放给全体群成员（用户 2026-09-24 追加：
+ * 「还原」= 把终态（完成 / 做不了）退回「待办」（后端 `resolve_done_archive` 据此一并清掉
+ * 归档位与完成时间）。与归档同一条成员窄档 ⇒ 同样开放给全体群成员（用户 2026-09-24 追加：
  * 「归档和被归档的数据还原，任何人都可以操作，其他权限不变」）。
- * 判据带上"当前是 done"：非完成态的行不配还原，后端也不认那是还原。
+ * 判据带上"当前是终态"：非终态的行不配还原，后端也不认那是还原。
  */
 function canReopen(x: TodoItem): boolean {
-  return x.status === "done" && canArchiveOrReopenTodo(x, myId.value, groupCreator.value, groupMembers.value);
+  return isTodoTerminalStatus(x.status) && canArchiveOrReopenTodo(x, myId.value, groupCreator.value, groupMembers.value);
 }
 /**
  * 「认领」只开给**需求**（用户 2026-09-29），四条前提与后端 `claim_only_change` 一一对应：
@@ -393,6 +423,11 @@ const draft = ref<{
   /** 草稿内的状态：**只在编辑时**可改（新建恒为「待办」，`send_group_todo` 不收状态）。
    *  表单里的改动要到「保存」才写库，所以这里用分段控件没有"误触改状态"的问题。 */
   status: TodoStatus;
+  /** 草稿内的类型（含 custom 档；自定义名放 customCategory）。 */
+  category: TodoCategory;
+  customCategory: string;
+  /** 草稿内的优先级。 */
+  priority: TodoPriority;
   description: string;
   images: TodoImage[];
   /** 本次编辑新选中的图片本地路径，按 sha256 索引（仅需随字节管线投递，不进定义元数据）。
@@ -444,6 +479,9 @@ function startCreate() {
     title: "",
     assignees: myId.value ? [myId.value] : [],
     status: TODO_STATUS_DEFAULT,
+    category: "task",
+    customCategory: "",
+    priority: "normal",
     description: "",
     images: [],
     imagePaths: {},
@@ -455,11 +493,42 @@ function startEdit(x: TodoItem) {
     title: x.title,
     assignees: [...x.assignees],
     status: x.status,
+    category: x.category,
+    customCategory: x.customCategory ?? "",
+    priority: x.priority,
     description: x.description,
     images: [...x.images],
     imagePaths: {},
   };
 }
+/** 草稿类型切换：选「自定义…」时若还没有名字，给输入框一个占位焦点；切走其它档不清名字，切回来还在。 */
+function setDraftCategory(c: TodoCategory) {
+  const d = draft.value;
+  if (!d) return;
+  d.category = c;
+}
+function setDraftPriority(p: TodoPriority) {
+  const d = draft.value;
+  if (!d) return;
+  d.priority = p;
+}
+/** 草稿里三格的候选/当前文案（TodoPickField 要 computed 文案，这里直接读响应式 draft）。 */
+const draftPriorityOptions = computed(() =>
+  TODO_PRIORITIES.map((p) => ({ value: p, label: t(TODO_PRIORITY_LABEL_KEY[p]) })),
+);
+const draftCategoryOptions = computed(() =>
+  TODO_CATEGORIES.map((c) => ({ value: c, label: t(TODO_CATEGORY_LABEL_KEY[c]) })),
+);
+const draftPriorityLabel = computed(() =>
+  draft.value ? t(TODO_PRIORITY_LABEL_KEY[draft.value.priority]) : "",
+);
+const draftCategoryLabel = computed(() => {
+  const d = draft.value;
+  if (!d) return "";
+  return d.category === "custom" && d.customCategory.trim()
+    ? d.customCategory.trim()
+    : t(TODO_CATEGORY_LABEL_KEY[d.category]);
+});
 /** 详情里点「编辑」：关详情、展开内联表单。 */
 function editFromDetail(x: TodoItem) {
   closeDetail();
@@ -712,6 +781,12 @@ async function saveDraft() {
     app.toast(t("todo.needAssignee"), "error");
     return;
   }
+  // 自定义类型必须带名字（后端也会拒；前端先拦，避免一次失败往返）。
+  if (d.category === "custom" && !d.customCategory.trim()) {
+    app.toast(t("todo.categoryCustomNeedName"), "error");
+    return;
+  }
+  const customCategory = d.category === "custom" ? d.customCategory.trim() : "";
   saving.value = true;
   try {
     let todoId: string;
@@ -720,12 +795,17 @@ async function saveDraft() {
       await chat.updateTodo(
         props.groupId,
         cur ?? { todoId: d.todoId, title, assignees: d.assignees, status: d.status, description: d.description, images: d.images },
-        { title, assignees: d.assignees, status: d.status, description: d.description, images: d.images },
+        {
+          title, assignees: d.assignees, status: d.status, description: d.description, images: d.images,
+          priority: d.priority, category: d.category, customCategory,
+        },
       );
       todoId = d.todoId;
       app.toast(t("todo.updateDone"), "success");
     } else {
-      const rec = await chat.createTodo(props.groupId, title, d.assignees, d.description, d.images);
+      const rec = await chat.createTodo(
+        props.groupId, title, d.assignees, d.description, d.images, d.category, customCategory,
+      );
       const parsed = parseTodo(rec);
       todoId = parsed?.todoId ?? "";
       app.toast(t("todo.createDone"), "success");
@@ -774,12 +854,22 @@ async function setPriority(item: TodoItem, p: TodoPriority) {
     app.toast(String(e), "error");
   }
 }
-/** 只动类型这一格（与 setPriority 同款：其余字段由 store 从这条任务当前那份带回）。 */
-async function setCategory(item: TodoItem, c: TodoCategory) {
+/**
+ * 只动类型这一格（与 setPriority 同款：其余字段由 store 从这条任务当前那份带回）。
+ * `customName` 仅 c="custom" 时有意义；切回内置档时传空串，由后端把残留自定义名清掉。
+ */
+async function setCategory(item: TodoItem, c: TodoCategory, customName?: string) {
   const gid = props.groupId;
   if (!gid) return;
+  if (c === "custom" && !(customName ?? "").trim()) {
+    app.toast(t("todo.categoryCustomNeedName"), "error");
+    return;
+  }
   try {
-    await chat.updateTodo(gid, item, { category: c });
+    await chat.updateTodo(gid, item, {
+      category: c,
+      customCategory: c === "custom" ? (customName ?? "").trim() : "",
+    });
     app.toast(t("todo.updateDone"), "success");
   } catch (e) {
     app.toast(String(e), "error");
@@ -963,11 +1053,18 @@ watch(
                实际结果是**反向的**：没有标签那一档才是最难认的，扫一眼只能靠猜。
                「任务」用中性档（hover 底 + text-2），彩色只留给需求/缺陷 ⇒ 噪声没有涨上去。 -->
           <span
-            class="shrink-0 inline-flex h-5 items-center justify-center rounded-full px-2 text-[11px] leading-none"
+            class="shrink-0 inline-flex max-w-[7rem] items-center gap-1 truncate h-5 rounded-full px-2 text-[11px] leading-none"
             :class="TODO_CATEGORY_PILL[x.category]"
-            :title="t(TODO_CATEGORY_LABEL_KEY[x.category])"
+            :title="categoryText(x)"
           >
-            {{ t(TODO_CATEGORY_LABEL_KEY[x.category]) }}
+            <component
+              :is="CATEGORY_ICON[x.category]"
+              class="h-3 w-3 shrink-0"
+              :class="TODO_CATEGORY_ICON_CLASS[x.category]"
+              :stroke-width="2.2"
+              aria-hidden="true"
+            />
+            <span class="truncate" :title="categoryText(x)">{{ categoryText(x) }}</span>
           </span>
           <span class="shrink-0 inline-flex h-5 items-center justify-center rounded-full px-2 text-[11px] font-medium leading-none" :class="TODO_STATUS_PILL[x.status]">
             {{ statusText(x.status) }}
@@ -1038,7 +1135,7 @@ watch(
                   aria-hidden="true"
                 />
               </span>
-              <span :title="t(TODO_CATEGORY_LABEL_KEY[x.category])">
+              <span :title="categoryText(x)">
                 <component
                   :is="CATEGORY_ICON[x.category]"
                   class="h-3.5 w-3.5 shrink-0"
@@ -1106,7 +1203,7 @@ watch(
             <!-- 快捷「完成」：待办清单最高频的动作，留在行内（飞书/钉钉同做法）。
                  完成后任务仍留在列表（只换分组），不会"点错就丢"。 -->
             <button
-              v-if="canChangeStatus(x) && x.status !== 'done'"
+              v-if="canChangeStatus(x) && !isTodoTerminalStatus(x.status)"
               type="button"
               class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-success-soft)] hover:text-[var(--gosslan-success-ink)]"
               :title="t('todo.complete')"
@@ -1139,6 +1236,7 @@ watch(
   <TodoDetailDialog
     :open="!!detailItem"
     :item="detailItem"
+    :history="historyFor(detailItem)"
     :archived="detailArchived"
     :can-change-status="detailItem ? canChangeStatus(detailItem) : false"
     :can-archive="detailItem ? canArchive(detailItem) : false"
@@ -1152,7 +1250,7 @@ watch(
     @close="closeDetail"
     @status="(s: TodoStatus) => detailItem && setStatus(detailItem, s)"
     @priority="(p: TodoPriority) => detailItem && setPriority(detailItem, p)"
-    @category="(c: TodoCategory) => detailItem && setCategory(detailItem, c)"
+    @category="(c: TodoCategory, name?: string) => detailItem && setCategory(detailItem, c, name)"
     @claim="detailItem && claim(detailItem)"
     @complete="detailItem && completeTodo(detailItem)"
     @archive="detailItem && archiveTodo(detailItem)"
@@ -1204,6 +1302,40 @@ watch(
           >
             <span :class="draft.status === s ? TODO_STATUS_CLASS[s] : ''">{{ statusText(s) }}</span>
           </button>
+        </div>
+      </div>
+
+      <!-- 优先级 + 类型：与详情弹窗同一套 TodoPickField（一个家）。
+           新建也能选（此前只能建完再进详情改，自定义类型没有入口）。 -->
+      <TodoPickField
+        :label="t('todo.priorityLabel')"
+        :model-value="draft.priority"
+        :current="draftPriorityLabel"
+        :current-class="TODO_PRIORITY_PILL[draft.priority]"
+        :options="draftPriorityOptions"
+        @update:model-value="(v: string) => setDraftPriority(v as TodoPriority)"
+      />
+      <div>
+        <TodoPickField
+          :label="t('todo.categoryLabel')"
+          :model-value="draft.category"
+          :current="draftCategoryLabel"
+          :current-class="TODO_CATEGORY_PILL[draft.category]"
+          :options="draftCategoryOptions"
+          @update:model-value="(v: string) => setDraftCategory(v as TodoCategory)"
+        />
+        <!-- 自定义名输入：只在 custom 档展开。:maxlength 与后端同一份上限。 -->
+        <div v-if="draft.category === 'custom'" class="mt-2 flex items-center gap-2 pl-1">
+          <Tag class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-text-2)]" aria-hidden="true" />
+          <input
+            v-model="draft.customCategory"
+            :maxlength="TODO_CUSTOM_CATEGORY_MAX_LEN"
+            class="min-w-0 flex-1 rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-bg)] px-2.5 py-1.5 text-[13px] outline-none transition focus:border-transparent"
+            :placeholder="t('todo.categoryCustomPlaceholder')"
+          />
+          <span class="shrink-0 text-[11px] text-[var(--gosslan-text-2)]">
+            {{ draft.customCategory.length }}/{{ TODO_CUSTOM_CATEGORY_MAX_LEN }}
+          </span>
         </div>
       </div>
 

@@ -119,10 +119,33 @@ const MAX_TODO_TITLE_LEN: usize = 200;
 /// 群任务描述上限：长文本说明，但仍要受控（避免单条任务撑爆事件日志）。
 const MAX_TODO_DESC_LEN: usize = 4000;
 
+/// 规范化「自定义类型名」（创建/更新两条命令共用，安全边界只能有一处）。
+///
+/// - `category == "custom"` ⇒ `custom_category` 必填、去空白后不能为空、不能超长；
+/// - 其它三档 ⇒ 一律返回空串（调用方传来的残留文本由服务端清掉，不允许"任务类型但挂着
+///   一段自定义名"这种半态）。
+fn normalize_custom_category(category: &str, raw: Option<&str>) -> Result<String, String> {
+    if category != "custom" {
+        return Ok(String::new());
+    }
+    let name = raw.unwrap_or("").trim().to_string();
+    if name.is_empty() {
+        return Err("自定义类型名称不能为空".to_string());
+    }
+    if name.chars().count() > crate::protocol::TODO_CUSTOM_CATEGORY_MAX_LEN {
+        return Err(format!(
+            "自定义类型名称不能超过 {} 字",
+            crate::protocol::TODO_CUSTOM_CATEGORY_MAX_LEN
+        ));
+    }
+    Ok(name)
+}
+
 /// 创建一条群任务（任意成员）。
 ///
 /// `todo_id` 用随机 id（`todo-<uuid>`）而不是"创建事件的 msg_id"：后续每一次改状态/改标题
 /// 都是**重新发一份定义**，它们必须引用同一个键，而 msg_id 每次都会变。
+#[allow(clippy::too_many_arguments)]
 #[tauri::command(async)]
 pub async fn send_group_todo(
     state: State<'_, Arc<AppState>>,
@@ -132,6 +155,7 @@ pub async fn send_group_todo(
     description: Option<String>,
     images: Option<Vec<crate::protocol::TodoImage>>,
     category: Option<String>,
+    custom_category: Option<String>,
 ) -> Result<MessageRecord, String> {
     let s = state.inner();
     // 类型只在**给了值**时校验；没给就是缺省那一档（旧前端不传这一格也要能建任务）。
@@ -146,6 +170,8 @@ pub async fn send_group_todo(
         }
         None => crate::protocol::default_todo_category(),
     };
+    // 自定义名只在 category="custom" 时保留，非自定义类型由服务端清空（见函数注释）。
+    let custom_category = normalize_custom_category(&category, custom_category.as_deref())?;
     let title = title.trim().to_string();
     if title.is_empty() {
         return Err("任务标题不能为空".to_string());
@@ -173,6 +199,7 @@ pub async fn send_group_todo(
         creator: s.device_id.clone(),
         priority: crate::protocol::default_todo_priority(),
         category,
+        custom_category,
         deleted: false,
         description,
         images,
@@ -252,6 +279,9 @@ fn latest_todo_def(
     let mut carry_priority: Option<String> = None;
     let mut carry_category: Option<String> = None;
     let mut carry_number: Option<i64> = None;
+    // 自定义类型名同理：旧版本对端不认识 custom 档，它重建的载荷不会带这一格，
+    // 不沿用就会把已经输入过的自定义名抹成空串（自定义类型没有名字 = 下次保存被服务端拒）。
+    let mut carry_custom_category: Option<String> = None;
     // 创建那一条说过的号：绝对坐标，压过任何一份更新里的号。DESC 扫到最后一刻 = 最旧那条创建。
     let mut created_number: Option<i64> = None;
     for row in rows.flatten() {
@@ -272,6 +302,14 @@ fn latest_todo_def(
             .filter(|s| crate::protocol::todo_category_is_valid(s))
             .map(str::to_string);
         let stated_number = v.get("number").and_then(|x| x.as_i64()).filter(|n| *n > 0);
+        let stated_custom = v
+            .get("custom_category")
+            .and_then(|x| x.as_str())
+            .map(str::trim)
+            .filter(|s| {
+                !s.is_empty() && s.chars().count() <= crate::protocol::TODO_CUSTOM_CATEGORY_MAX_LEN
+            })
+            .map(str::to_string);
         let Ok(p) = serde_json::from_value::<crate::protocol::TodoPayload>(v) else {
             continue;
         };
@@ -290,6 +328,9 @@ fn latest_todo_def(
         if carry_number.is_none() {
             carry_number = stated_number;
         }
+        if carry_custom_category.is_none() {
+            carry_custom_category = stated_custom;
+        }
         if kind == "todo" && stated_number.is_some() {
             created_number = stated_number;
         }
@@ -304,6 +345,13 @@ fn latest_todo_def(
     }
     if let Some(n) = created_number.or(carry_number) {
         p.number = n;
+    }
+    // 只有最新那份的类型仍是 custom 时才补名字：非 custom 档的载荷里带不带文本都无意义
+    //（保存时服务端会清空），这里也不该把旧名字复活。
+    if p.custom_category.is_empty() && p.category == "custom" {
+        if let Some(name) = carry_custom_category {
+            p.custom_category = name;
+        }
     }
     Some(p)
 }
@@ -380,6 +428,7 @@ struct TodoEdit<'a> {
     archived: Option<bool>,
     priority: &'a str,
     category: &'a str,
+    custom_category: &'a str,
 }
 
 /// 本次请求是否**只动归档位**：其余字段与库里最新定义逐字相同，且归档值确实翻转了。
@@ -399,28 +448,32 @@ fn archive_only_change(def: &crate::protocol::TodoPayload, e: &TodoEdit<'_>) -> 
         && e.priority == def.priority
         // 类型同理：需求改成缺陷、缺陷改成普通任务，都是**内容改动**不是归档
         && e.category == def.category
+        // 自定义类型名同理：它是类型的一部分，成员归档时不许顺手改掉
+        && e.custom_category == def.custom_category
 }
 
-/// 本次请求是否**只是"还原"**：库里状态是「完成」，请求把它退回「待办」，其余字段逐字相同。
+/// 本次请求是否**只是"还原"**：库里状态是终态（完成/做不了），请求把它退回「待办」，
+/// 其余字段逐字相同。
 ///
-/// 为什么"还原"要看状态而不是看归档位：`resolve_done_archive` 对**非完成态**一律写回
+/// 为什么"还原"要看状态而不是看归档位：`resolve_done_archive` 对**非终态**一律写回
 /// `archived=false, done_at=None` ⇒ 客户端只要把状态退回待办，归档位与完成时间自动就被清了。
 /// 所以"还原"这件事在后端只有**一个**入参可变，正好能像归档那样判得死板。
-/// ⚠️ 方向是单向的（只允许 `done → todo`）：反方向「把待办直接改成完成」是真正的
+/// ⚠️ 方向是单向的（只允许「终态 → todo」）：反方向「把待办直接改成完成」是真正的
 /// 完成动作，仍归创建者 / 群主 / 被指派人 —— 否则任何人都能替别人宣布干完了。
 fn reopen_only_change(def: &crate::protocol::TodoPayload, e: &TodoEdit<'_>) -> bool {
     !e.deleted
-        && def.status == "done"
+        && crate::protocol::todo_status_is_terminal(&def.status)
         && e.status == "todo"
         && e.title == def.title
         && e.assignees == def.assignees
         && e.description == def.description
         && same_images(e.images, &def.images)
         // ⚠️ 这两格以前**没比**：那条写归档窄档的理由（"对整个群放行的口子不该让人顺着改内容"）
-        // 对还原这一档同样成立 —— 漏比的后果是任何成员都能拿一次 `done → todo` 顺带把优先级
+        // 对还原这一档同样成立 —— 漏比的后果是任何成员都能拿一次终态 → 待办顺带把优先级
         // 或类型改掉，而界面上只看得到"有人把它还原了"。补成与归档那一档同一口径。
         && e.priority == def.priority
         && e.category == def.category
+        && e.custom_category == def.custom_category
 }
 
 /// 请求的指派人名单是否正好等于「原名单 + 末尾追加 actor」这一个改动。
@@ -454,6 +507,8 @@ fn claim_only_change(def: &crate::protocol::TodoPayload, actor: &str, e: &TodoEd
         // 认领不许顺带归档（那是归档那一档的事）
         && e.archived.is_none()
         && same_images(e.images, &def.images)
+        // 类型名也是"内容"，成员窄档不许顺着认领改掉
+        && e.custom_category == def.custom_category
         && assignees_are_def_plus_actor(&def.assignees, e.assignees, actor)
 }
 
@@ -493,23 +548,23 @@ fn may_change_todo(
     may_update_todo(def, actor, group_creator, edits_structure) || lane.allows()
 }
 
-/// 完成态与归档字段的**权威推导**（纯函数，便于单测）。
+/// 终态（完成 / 做不了）与归档字段的**权威推导**（纯函数，便于单测）。
 ///
-/// 口径（用户 2026-09-17：「完成以后手动归档」）：
-/// - **非完成态** ⇒ 一律 `(archived=false, done_at=None)` —— "重新打开"就等于把它从归档里拿回来；
-/// - **完成态** ⇒ `done_at` **沿用原值**（只在首次完成时记 `now`），否则用户改个标题就把
+/// 口径（用户 2026-09-17：「完成以后手动归档」；2026-10-12「做不了与完成同族，可归档」）：
+/// - **非终态** ⇒ 一律 `(archived=false, done_at=None)` —— "重新打开"就等于把它从归档里拿回来；
+/// - **终态** ⇒ `done_at` **沿用原值**（只在首次进入终态时记 `now`），否则用户改个标题就把
 ///   7 天自动归档的计时重置了；`archived` 只由**显式请求**决定（`None` = 保留原值）。
 ///
 /// 两处都刻意**不接受客户端自报 `done_at`** ⇒ 无法伪造"完成时间"骗过自动归档；
-/// 也刻意不允许"非完成却归档" ⇒ 否则一条进行中的任务会从活动列表里消失。
+/// 也刻意不允许"非终态却归档" ⇒ 否则一条进行中的任务会从活动列表里消失。
 fn resolve_done_archive(
-    is_done: bool,
+    is_terminal: bool,
     requested_archived: Option<bool>,
     prev_archived: bool,
     prev_done_at: Option<i64>,
     now: i64,
 ) -> (bool, Option<i64>) {
-    if !is_done {
+    if !is_terminal {
         return (false, None);
     }
     (
@@ -544,6 +599,7 @@ pub async fn update_group_todo(
     archived: Option<bool>,
     priority: Option<String>,
     category: Option<String>,
+    custom_category: Option<String>,
 ) -> Result<MessageRecord, String> {
     let s = state.inner();
     let title = title.trim().to_string();
@@ -604,6 +660,18 @@ pub async fn update_group_todo(
         Some(c) => c,
         None => def.category.clone(),
     };
+    // `None` ⇒ 沿用库里的自定义名；`Some` 经统一规范化（非 custom 档清空、custom 档校验非空/长度）。
+    let custom_category = match custom_category {
+        Some(cc) => normalize_custom_category(&category, Some(cc.as_str()))?,
+        None => {
+            // 只改状态/优先级那类请求没传这一格：类型档本身也没变，连名字一起沿用。
+            if category == def.category && category == "custom" {
+                def.custom_category.clone()
+            } else {
+                normalize_custom_category(&category, Some(def.custom_category.as_str()))?
+            }
+        }
+    };
     let edits_assignees = assignees != def.assignees;
     let edits_structure = deleted || title != def.title;
     let edit = TodoEdit {
@@ -616,6 +684,7 @@ pub async fn update_group_todo(
         archived,
         priority: &priority,
         category: &category,
+        custom_category: &custom_category,
     };
     let lane = MemberLane {
         archive_only: archive_only_change(&def, &edit),
@@ -640,15 +709,15 @@ pub async fn update_group_todo(
             "只有创建者或被指派人可以修改任务状态".to_string()
         });
     }
-    // 「归档」只在完成态成立（`resolve_done_archive` 对非完成态一律写回 archived=false）。
-    // 原来这里是**静默丢弃**：调用方拿到一条成功的记录、任务却没进归档，正是
-    // "显示成功但没真成功"。放宽到全体成员之后更容易撞上（成员没资格改状态、
-    // 却可能挑一条没完成的任务点归档），所以改成明确拒绝。
-    if archived == Some(true) && status != "done" {
-        return Err("只有完成的任务可以归档".to_string());
+    // 「归档」只在终态（完成 / 做不了）成立（`resolve_done_archive` 对非终态一律写回
+    // archived=false）。原来这里是**静默丢弃**：调用方拿到一条成功的记录、任务却没进归档，
+    // 正是"显示成功但没真成功"。放宽到全体成员之后更容易撞上（成员没资格改状态、
+    // 却可能挑一条没干完的任务点归档），所以改成明确拒绝。
+    if archived == Some(true) && !crate::protocol::todo_status_is_terminal(&status) {
+        return Err("只有完成或标记为做不了的任务可以归档".to_string());
     }
     let (archived, done_at) = resolve_done_archive(
-        status == "done",
+        crate::protocol::todo_status_is_terminal(&status),
         archived,
         def.archived,
         def.done_at,
@@ -670,6 +739,7 @@ pub async fn update_group_todo(
         number: def.number,
         priority,
         category,
+        custom_category,
     };
     let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
     let (todo_id, status) = (payload.todo_id.clone(), payload.status.clone());

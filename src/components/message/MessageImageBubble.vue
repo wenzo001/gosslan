@@ -127,7 +127,15 @@ onUnmounted(clearTimer);
     <span v-if="state === 'failed'" class="absolute inset-x-0 bottom-1 text-center text-[11px] opacity-70">
       {{ t("msg.imageLoadFailed") }}
     </span>
-    <img loading="lazy" decoding="async" :alt="t('msg.imageMessage')"
+    <!-- img-eager-ok：这张图必须 eager，不许加 loading="lazy"。
+         它在自身 @load 触发前被 `hidden`（display:none）藏着，而懒加载只对"在视口附近、
+         参与排版"的元素发请求 —— display:none 的懒加载图**永不发请求**（Chromium/WebKit/WebView2
+         三引擎同形，2026-10-12 headless 实测：blob 有效、手动 new Image() 能解码，挂在这里
+         12 秒 naturalWidth 仍是 0，资源计数 0）。⇒ @load 永不触发 ⇒ state 永不进 loaded ⇒
+         图永远被藏住，退避 5 次后落「图片加载失败」，点击也只走重取而不开预览
+         （6853680 给消息行统一补 lazy 时引入，v4.35.2 真机：自己发的和对方发的图全打不开）。
+         虚拟列表只挂载视口附近的行，eager 不会把屏外图提前拉下来；异步解码仍由 decoding="async" 保留。 -->
+    <img decoding="async" :alt="t('msg.imageMessage')"
       data-img-el
       :key="loadKey"
       :src="props.src"

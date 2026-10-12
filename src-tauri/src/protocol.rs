@@ -1071,6 +1071,10 @@ pub struct TodoPayload {
     /// **不新增消息类型**（见 [`crate::protocol::WIRE_KINDS`] 的「不许扩散」约束）。
     #[serde(default = "default_todo_category")]
     pub category: String,
+    /// 自定义类型名（仅 `category == "custom"` 时有意义；非自定义类型一律由服务端清空）。
+    /// 用户 2026-10-12：任务类型要能自己输入。长度上限见 [`TODO_CUSTOM_CATEGORY_MAX_LEN`]。
+    #[serde(default)]
+    pub custom_category: String,
     /// 群内**固定**任务编号（1 起递增、组内唯一、永不复用）。
     ///
     /// 分配只有一处（`db::next_todo_number`），**创建那一刻**定下来；之后每一次改状态 /
@@ -1094,7 +1098,17 @@ pub struct TodoPayload {
 ///
 /// ⚠️ 状态是**手动选**的：没有截止时间、也没有"过了日期自动变延期"这回事 ——
 /// 「延期」就是人手动标出来的一个状态。
-pub const TODO_STATUSES: [&str; 4] = ["todo", "doing", "overdue", "done"];
+///
+/// `impossible`（做不了，2026-10-12）与 `done` 同族，是**终态**：不再计入未完成徽标、
+/// 可被归档（命令层把归档门从「仅完成」放宽为「完成/做不了」），首次进入时与 done
+/// 一样记 `done_at`（复用 7 天自动归档）。位置放在 done 前一档：菜单/分组按
+/// 「在办 → 延期 → 做不了 → 完成」的语义递进排列。
+pub const TODO_STATUSES: [&str; 5] = ["todo", "doing", "overdue", "impossible", "done"];
+
+/// 任务是否进入终态（完成 / 做不了）。终态共用归档门、`done_at` 与"可还原回待办"。
+pub fn todo_status_is_terminal(s: &str) -> bool {
+    matches!(s, "done" | "impossible")
+}
 
 /// 缺省状态（新建的任务 = 待办）。也是 `status` 字段缺失时的解析回落值。
 pub fn default_todo_status() -> String {
@@ -1129,7 +1143,7 @@ pub fn todo_priority_is_valid(s: &str) -> bool {
 /// `src/utils/messageKinds.test.ts` 读本文件逐项比对（与 `TODO_PRIORITIES` 同一套跨语言契约，
 /// 含**缺省值**：旧载荷没有这一格时两侧必须回落成同一个类型）。
 /// 加第四种 = 两张表各加一个值 + 前端 label/class 两张表补齐；只改一侧当场红。
-pub const TODO_CATEGORIES: [&str; 3] = ["task", "requirement", "bug"];
+pub const TODO_CATEGORIES: [&str; 4] = ["task", "requirement", "bug", "custom"];
 
 /// 缺省类型 = 普通任务。也是载荷里 `category` 缺失时的解析回落值。
 pub fn default_todo_category() -> String {
@@ -1140,6 +1154,9 @@ pub fn default_todo_category() -> String {
 pub fn todo_category_is_valid(s: &str) -> bool {
     TODO_CATEGORIES.contains(&s)
 }
+
+/// 自定义类型名上限（与标题一样按字符数，胶囊/编号行只放得下一个短语）。
+pub const TODO_CUSTOM_CATEGORY_MAX_LEN: usize = 20;
 
 /// 投票的**定义**层（`kind = "poll"`）。结构与任务同构。
 ///

@@ -43,7 +43,7 @@ import {
   openTodosForMe,
   putTodoRows,
   type TodoRowsByConv,
-  todoCompletedForCreator,
+  todoTerminalForCreator,
   todoMentionsMe,
   type TodoImage,
 } from "@/utils/todos";
@@ -301,12 +301,16 @@ export const useChatStore = defineStore("chat", () => {
    */
   function notifyBody(count: number, last: MessageRecord): string {
     let preview = previewText(last);
-    const doneTitle = todoCompletedForCreator(last, myDeviceId.value);
-    if (doneTitle !== null) {
-      // 我创建的任务被完成：通知里明确说「已完成」，而不是笼统的「[任务] 标题」。
-      preview = doneTitle
-        ? t("todo.completedNotice", { title: doneTitle })
-        : t("todo.completedNoticeNoTitle");
+    const terminal = todoTerminalForCreator(last, myDeviceId.value);
+    if (terminal !== null) {
+      // 我创建的任务进入终态：通知里明确说「已完成 / 标记为做不了」，而不是笼统的「[任务] 标题」。
+      preview = terminal.status === "impossible"
+        ? (terminal.title
+          ? t("todo.impossibleNotice", { title: terminal.title })
+          : t("todo.impossibleNoticeNoTitle"))
+        : (terminal.title
+          ? t("todo.completedNotice", { title: terminal.title })
+          : t("todo.completedNoticeNoTitle"));
     } else if ((last.kind === "todo" || last.kind === "todo_update") && todoMentionsMe(last, myDeviceId.value)) {
       // 任务 @ 我：预览前缀「@你」，让锁屏/通知中心一眼看出是点名我
       // （与「有人@我」徽标同口径：被指派人 = 被 @）。
@@ -328,23 +332,27 @@ export const useChatStore = defineStore("chat", () => {
     const myId = app.device?.device_id;
     if (!myId || rec.sender_id === myId) return;
 
-    // 任务被完成 → 给**创建人**提示。`todo_update` 本是静默事件（不打扰全群），
-    // 但"我派的活被干完了"对创建人是个该知道的变化，单独放行；其余静默事件照旧不弹。
-    // 按 msg_id 去重：同一事件经多条投递路径反复 emit 时不重复提示创建人。
-    const doneTitle = todoCompletedForCreator(rec, myId);
-    if (doneTitle !== null && !notifiedTodoDone.has(rec.msg_id)) {
+    // 任务进入终态（完成 / 做不了）→ 给**创建人**提示。`todo_update` 本是静默事件
+    //（不打扰全群），但"我派的活有了结论"对创建人是个该知道的变化，单独放行；
+    // 其余静默事件照旧不弹。按 msg_id 去重：同一事件经多条投递路径反复 emit 时不重复提示。
+    const terminal = todoTerminalForCreator(rec, myId);
+    if (terminal !== null && !notifiedTodoDone.has(rec.msg_id)) {
       notifiedTodoDone.add(rec.msg_id);
       while (notifiedTodoDone.size > NOTIFIED_TODO_DONE_MAX) {
         const oldest = notifiedTodoDone.values().next().value;
         if (oldest === undefined) break;
         notifiedTodoDone.delete(oldest);
       }
+      const terminalText = terminal.status === "impossible"
+        ? (terminal.title
+          ? t("todo.impossibleNotice", { title: terminal.title })
+          : t("todo.impossibleNoticeNoTitle"))
+        : (terminal.title
+          ? t("todo.completedNotice", { title: terminal.title })
+          : t("todo.completedNoticeNoTitle"));
       // 正看着该会话：系统通知会被抑制，改用应用内 toast —— 否则创建人"什么都看不到"。
       if (!document.hidden && document.hasFocus() && activeConv.value === rec.conv_id) {
-        app.toast(
-          doneTitle ? t("todo.completedNotice", { title: doneTitle }) : t("todo.completedNoticeNoTitle"),
-          "info",
-        );
+        app.toast(terminalText, "info");
         return;
       }
       if (!app.notifyEnabled) return;
@@ -1641,15 +1649,25 @@ export const useChatStore = defineStore("chat", () => {
   // 任务看板跑在独立窗口、另有一份 store，所以本端回送必须由后端 emit（见
   // `commands/window.rs::send_group_payload` 的自 emit 与 lib.rs 的同名形状守卫）。
 
-  /** 新建一条群任务（任意成员）。description / images 可选。返回新建的消息记录（含 todo_id）。 */
+  /** 新建一条群任务（任意成员）。description / images / 类型可选。返回新建的消息记录（含 todo_id）。 */
   async function createTodo(
     groupId: string,
     title: string,
     assignees: string[],
     description?: string,
     images?: TodoImage[],
+    category?: string,
+    customCategory?: string,
   ): Promise<MessageRecord> {
-    const rec = await api.sendGroupTodo(groupId, title, assignees, description, images);
+    const rec = await api.sendGroupTodo(
+      groupId,
+      title,
+      assignees,
+      description,
+      images,
+      category,
+      customCategory,
+    );
     enqueueMessage(rec);
     return rec;
   }
@@ -1671,12 +1689,14 @@ export const useChatStore = defineStore("chat", () => {
       deleted: boolean;
       description: string;
       images: TodoImage[];
-      /** 显式归档：`true` = 手动归档（完成之后）。不传 = 保留库中原值。 */
+      /** 显式归档：`true` = 手动归档（进入终态之后）。不传 = 保留库中原值。 */
       archived: boolean;
       /** 优先级（三档）。不传 = 保留库中原值 ⇒ 改状态/改描述都不会顺手把档位重置。 */
       priority: string;
-      /** 类型（三档）。同 priority 那一格：不传就保留库里的，别让它被"改个状态"顺手刷成普通任务。 */
+      /** 类型（任务/需求/缺陷/自定义）。同 priority 那一格：不传就保留库里的。 */
       category: string;
+      /** 自定义类型名（仅 category="custom" 有效）。不传 = 保留库里的名字。 */
+      customCategory: string;
     }> = {},
   ) {
     const rec = await api.updateGroupTodo(groupId, item.todoId, {
@@ -1692,6 +1712,7 @@ export const useChatStore = defineStore("chat", () => {
       // 但这里没转发 ⇒ 选完类型弹「已更新」而库里一字未动，类型检查与全量层都拦不住。
       // 键集合的对账由 src/utils/storeContract.test.ts 那条判据负责，别再靠人眼数。
       category: patch.category,
+      customCategory: patch.customCategory,
     });
     enqueueMessage(rec);
   }

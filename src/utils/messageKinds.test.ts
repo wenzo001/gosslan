@@ -209,7 +209,7 @@ test("对照：解析器看得见人为造的漂移（判据不空转）", () =>
   assert.notEqual(defMutated, protocolRs, "缺省值那条替换没生效 ⇒ 对照空转");
   assert.equal(rustDefaultOf(defMutated, "default_todo_priority"), "low");
   // 类型那一格同理：只改 Rust 侧的值 / 只改 Rust 侧的缺省，比对都必须看得见
-  const catMutated = protocolRs.replace('["task", "requirement", "bug"]', '["task", "requirement", "defect"]');
+  const catMutated = protocolRs.replace('["task", "requirement", "bug", "custom"]', '["task", "requirement", "bug", "defect"]');
   assert.notEqual(catMutated, protocolRs, "类型表那条替换没生效 ⇒ 对照空转");
   assert.notDeepEqual(
     rustTableOf(catMutated, "TODO_CATEGORIES"),
