@@ -80,6 +80,20 @@ pub(crate) fn verify_hello(
         let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
         bound_ed25519_from_peer(peers.get(device_id))
     });
+    // 绑定值与自报值不一致（对方重装应用换了身份）时：先按**新私钥自验签**，
+    // 通过则给聊天界面留一个"用户确认后同步新密钥"的候选（仍拒绝本次连接）。
+    // 未通过自验签 = 连"持新私钥者本人"都证明不了，或纯伪造，不登记。
+    if let Some(expected) = bound.as_deref() {
+        if expected != ed25519_pubkey
+            && crypto::verify_signature(
+                ed25519_pubkey,
+                &hello_signing_bytes(device_id, tcp_port, nonce, x25519_pubkey, ed25519_pubkey),
+                sig_b64,
+            )
+        {
+            record_key_rotation_candidate(state, device_id, x25519_pubkey, ed25519_pubkey);
+        }
+    }
     hello_auth_decision(
         bound.as_deref(),
         device_id,

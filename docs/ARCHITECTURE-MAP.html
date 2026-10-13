@@ -679,6 +679,8 @@ const CMDS = [
   ["get_friends", "friends", "", "Friend[]"],
   ["get_safety_number", "friends", "peer_id str", "str?"],
   ["remove_friend", "friends", "peer_id str", "()|err"],
+  ["get_friend_key_rotations", "friends", "", "FriendKeyRotation[]"],
+  ["sync_friend_keys", "friends", "peer_id str", "()|err"],
   ["list_active_group_announcements", "group_announcements", "", "ActiveAnnouncement[]|err"],
   ["pin_group_message", "group_announcements", "group_id str; target str; pinned bool", "MessageRecord|err"],
   ["recall_group_message", "group_announcements", "group_id str; target str", "()|err"],
@@ -968,6 +970,7 @@ const EVENTS = [
   ["friend-request", "PendingRequest", "收到入向申请（验签不过的会拒）", "bell 角标 + 请求列表", "全体窗口"],
   ["friend-accepted · friend-rejected · friend-removed", "peer_id str", "对端回应或解除；removed 同时解除内存身份绑定（否则重装只能重启）", "刷新好友列表 / 清会话归属", "全体窗口"],
   ["friend-message-blocked", "peer_id str", "非好友发来的内容被拒（不落库、不回 Ack）", "提示 + 引导加好友", "全体窗口"],
+  ["friend-key-changed · friend-keys-synced", "peer_id str", "好友重装后新私钥 Hello 自验签通过但与绑定不一致（仅好友、同候选去重）/ 用户确认同步完成", "聊天顶部换钥横幅出现或收起 + 重拉候选", "全体窗口"],
   ["groups-updated", "str", "群名册/改名/转让有变化", "chat.refreshGroups", "全体窗口"],
   ["group-member-removed", "group_id str", "自己被移出群", "handleSelfRemovedFromGroup（回滚 + 收起面板）", "全体窗口"],
   ["peer-style-updated", "{device_id,style}", "对端聊天样式广播到达", "app.applyPeerStyle（当前页立即换，不等重开）", "全体窗口"],
@@ -1476,9 +1479,9 @@ function buildDir() {
     '<div class="grid2" style="margin-bottom:14px">' +
       '<div class="stat"><div class="num">' + CMDS.length + '</div><div>后端注册命令</div></div>' +
       '<div class="stat"><div class="num">' + CMDS.filter((r) => !SEM[r[0]] || !SEM[r[0]].dead).length + '</div><div>前端有调用</div></div>' +
-      '<div class="stat"><div class="num">27</div><div>后端字面量事件名（表内合并成 ' + EVENTS.length + ' 行；动态拼的不计）</div></div>' +
+      '<div class="stat"><div class="num">29</div><div>后端字面量事件名（表内合并成 ' + EVENTS.length + ' 行；动态拼的不计）</div></div>' +
       '<div class="stat"><div class="num">19</div><div>SQLite 表</div></div>' +
-      '<div class="stat"><div class="num">222</div><div>护栏非空转用例（改坏即红·这个数由 scripts/guard_cases/*.py 的 CASES 现算，判据 E 对账）</div></div>' +
+      '<div class="stat"><div class="num">227</div><div>护栏非空转用例（改坏即红·这个数由 scripts/guard_cases/*.py 的 CASES 现算，判据 E 对账）</div></div>' +
       '<div class="stat"><div class="num">local</div><div>跨进程 E2E：正向轮接进 <code>verify</code> 的 <code>local</code> 组，要第三个真实实例那一轮单独挂在 <code>release</code> 组（发版前才跑，落点＝发版检查单点名）；每轮断言数由 <code>check-doc-numbers.mjs</code> 从 harness 现算对账，手写即红；入口 <code>npm run verify:e2e</code> / <code>npm run verify:release</code>；<b>两层 CI 都不跑</b></div></div>' +
       '<div class="stat"><div class="num">现算</div><div>Rust / 前端测试条数：分别由 <code>cargo test</code> 与 <code>npm test</code> 自己打印，图上不抄</div></div>' +
       '<div class="stat"><div class="num">20</div><div>反证 / 判据自查档的红数基线（<code>npm run selfproof:check</code>，量具不进门禁）</div></div>' +

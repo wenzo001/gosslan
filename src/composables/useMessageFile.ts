@@ -3,7 +3,7 @@ import { computed, ref, toValue, watch, type MaybeRefOrGetter } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { api } from "@/api";
-import { loadFilePreview } from "@/utils/filePreview";
+import { loadThumbPreview } from "@/utils/filePreview";
 import { parseFileMeta } from "@/utils/fileMeta";
 import { openLocalFile, saveLocalFile } from "@/utils/localFile";
 import { shouldProbePresence } from "@/utils/mediaAvailability";
@@ -103,7 +103,12 @@ export function useMessageFile(
     const sub = previewSubtype.value;
     const meta = fileMeta.value;
     if (sub) {
-      const r = await loadFilePreview(msg.value.msg_id, sub, meta?.name ?? "");
+      // 气泡宽只有 208px（见 MessageImageBubble 的 w-52）⇒ 用缩略图，别整份原图进气泡。
+      // `loadThumbPreview` 在压不动时（GIF/小图/解码失败/无 canvas）**原样回退原图**，
+      // 所以这条路径的行为与改造前一致，只是大图不再按原图那份体积长期占内存。
+      // ⚠️ 点大图那条路（ImageLightbox）走的仍是 `loadFilePreview`（原图）—— 两份缓存
+      // 分开正是为了不让"点开看清"变成"点开看糊"，详见 filePreview 里 thumbCache 的注释。
+      const r = await loadThumbPreview(msg.value.msg_id, meta?.name ?? "");
       // await 期间该气泡可能已不满足预览条件（切换/失败）→ 丢弃，避免贴到错误气泡。
       if (previewSubtype.value !== sub) return;
       attachmentUrl.value = r.url ?? null;

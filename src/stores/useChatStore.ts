@@ -47,7 +47,8 @@ import {
   todoMentionsMe,
   type TodoImage,
 } from "@/utils/todos";
-import { invalidateFilePreview } from "@/utils/filePreview";
+import { invalidateFilePreview, dropFilePreview, clearFilePreviews } from "@/utils/filePreview";
+import { clearFavoritePreviews } from "@/utils/favoritePreview";
 import { t } from "@/i18n";
 import { shouldRunThrottled } from "@/utils/defer";
 import { mergePeerList } from "@/utils/peerMerge";
@@ -69,6 +70,7 @@ import type {
   FileStalledInfo,
   FavoriteEntry,
   Friend,
+  FriendKeyRotation,
   Group,
   GroupReadInfo,
   MessageRecord,
@@ -98,6 +100,12 @@ export const useChatStore = defineStore("chat", () => {
   const friends = ref<Friend[]>([]);
   /** 后端给的**原始**好友申请列表（可能含已经过期的：对方已同意 / 我已把他加上了）。 */
   const rawPendingRequests = ref<PendingRequest[]>([]);
+  /**
+   * 「好友密钥已更换、等待用户确认」的候选（device_id -> 候选）。
+   * 后端只在新私钥 Hello 自验签通过时登记，仅内存态；前端据此在单聊顶部
+   * 显示「同步新密钥 / 删除好友」横幅。用户确认或删好友后由后端事件清掉。
+   */
+  const keyRotations = ref<Record<string, FriendKeyRotation>>({});
   /**
    * 展示用的好友申请列表：**已经在好友列表里的申请自动消失**。
    *
@@ -737,6 +745,26 @@ export const useChatStore = defineStore("chat", () => {
     if (!refreshGuard.isCurrent("pending", tok)) return;
     rawPendingRequests.value = list;
   }
+  /** 重新拉取待确认的好友密钥轮换（后端只保留好友条目，内存态）。 */
+  async function refreshKeyRotations() {
+    try {
+      const list = await api.getFriendKeyRotations();
+      const next: Record<string, FriendKeyRotation> = {};
+      for (const r of list) next[r.device_id] = r;
+      keyRotations.value = next;
+    } catch {
+      // 老后端没有这个命令时静默（兼容），不影响聊天主流程。
+    }
+  }
+  /** 用户确认是本人后同步好友的新身份密钥；成功后候选由后端事件移除。 */
+  async function syncFriendKeys(peerId: string) {
+    await api.syncFriendKeys(peerId);
+    delete keyRotations.value[peerId];
+    keyRotations.value = { ...keyRotations.value };
+    await refreshFriends();
+    await refreshConversations();
+    app.toast(t("friend.keysSynced"), "success");
+  }
   /**
    * 「这条会话我在本地已经判过已读」的水位（convId → 时刻）。
    *
@@ -919,6 +947,10 @@ export const useChatStore = defineStore("chat", () => {
     pendingReplace.clear();
     pendingAcks.clear();
     notifMap.clear();
+    // 预览缓存与 `clearAllData` 同口径整份放掉（含**收藏**那份独立缓存 ——
+    // 上面刚把 `favorites` 清了，它的 objectURL 留着就是纯粹的死字节）。
+    clearFilePreviews();
+    clearFavoritePreviews();
     await Promise.all([
       refreshConversations(),
       refreshGroups(),
@@ -1159,6 +1191,25 @@ export const useChatStore = defineStore("chat", () => {
     cacheOrder.push(convId);
   }
 
+  /**
+   * 放掉一批消息各自占的图片预览缓存（会话整块逐出时调用）。
+   *
+   * 为什么按 msg_id 逐个 drop 而不是"整份 clear"：`messages.value` 里同一时刻还有
+   * 另外 7 个会话的图在缓存里，`clear()` 会把它们一起打掉、切回去全都重读一遍。
+   *
+   * 键就是 msg_id：接收侧的 msg_id 本身长成 `file-{transfer_id}` / `gfile-{transfer_id}`
+   * （见 `commands::resolve_media_path` 的注释与 `handle_file.rs` / `group_file.rs` 的构造），
+   * 而 `loadFilePreview(msg.value.msg_id, ...)` 正是拿它当缓存键 ⇒ 直接对上。
+   * 待办描述图那条走的是 `cid`，不在这里（它挂在任务定义上、不随会话逐出）。
+   */
+  function releasePreviewsOf(msgs: readonly MessageRecord[] | undefined) {
+    if (!msgs) return;
+    for (const m of msgs) {
+      if (m.kind !== "file" && m.kind !== "image") continue;
+      dropFilePreview(m.msg_id);
+    }
+  }
+
   /** 把消息缓存收缩到 MAX_CACHED_CONVS 个会话（保留活跃会话 + 最近使用的若干个）。 */
   function enforceMessageCacheBound() {
     const keys = Object.keys(messages.value);
@@ -1166,6 +1217,12 @@ export const useChatStore = defineStore("chat", () => {
     const keep = selectCachedConversations(cacheOrder, activeConv.value, MAX_CACHED_CONVS);
     for (const cid of keys) {
       if (keep.has(cid)) continue;
+      // 会话被整块逐出 ⇒ 它那些消息的图片预览也一并放掉。
+      // 为什么必须联动：预览缓存的键是 `file-<transferId>` / `gfile-<transferId>` /
+      // 待办图的 `cid`，**不是** msg_id —— 单靠 LRU 那 60 MiB 封顶虽然不会无限涨，
+      // 但"这个会话已经不看了"是最强的释放信号，白占着就是让后看的图去挤前看的图。
+      // 顺序必须在 `delete messages.value[cid]` **之前**取列表（删完就取不到了）。
+      releasePreviewsOf(messages.value[cid]);
       delete messages.value[cid];
       // 分页簿记一并清掉：切回该会话时 loadMessages 会重新从 DB 取最新一页
       pagesLoaded.delete(cid);
@@ -1536,10 +1593,21 @@ export const useChatStore = defineStore("chat", () => {
   async function removeFriend(peerId: string) {
     const prev = friends.value;
     friends.value = prev.filter((f) => f.device_id !== peerId);
+    // 后端 remove_friend 会同步删掉密钥轮换候选；乐观一并清，否则聊天顶部的
+    // 换钥横幅要等 friend-removed 事件往返后才消失。
+    const prevRotation = keyRotations.value[peerId];
+    if (prevRotation) {
+      const nextRotations = { ...keyRotations.value };
+      delete nextRotations[peerId];
+      keyRotations.value = nextRotations;
+    }
     try {
       await api.removeFriend(peerId);
     } catch (e) {
       friends.value = prev; // 回滚
+      if (prevRotation) {
+        keyRotations.value = { ...keyRotations.value, [peerId]: prevRotation };
+      }
       throw e;
     }
   }
@@ -2027,6 +2095,11 @@ export const useChatStore = defineStore("chat", () => {
     pendingAcks.clear();
     pendingReplace.clear();
     notifMap.clear();
+    // 图片预览缓存整份放掉：库都清了，那些 objectURL 指向的文件已经不存在，
+    // 留着就是几 MB～几十 MB 的死字节 + 一堆点了必然裂图的缓存条目。
+    // 收藏那份同理 —— `clear_all_data` 也删收藏行与副本。
+    clearFilePreviews();
+    clearFavoritePreviews();
     void refreshTransfers();
   }
 
@@ -2238,6 +2311,16 @@ export const useChatStore = defineStore("chat", () => {
       onFriendRejected: () => {},
       onFriendRemoved: async () => {
         await refreshFriends();
+        // 后端在删好友时会一并删掉该好友的密钥轮换候选：本地表跟着清，
+        // 否则聊天顶部的换钥横幅会残留（候选只在内存，事件不带全量列表）。
+        await refreshKeyRotations();
+      },
+      // 好友重装应用、新私钥 Hello 自验签通过：后端登记候选，这里拉全量列表。
+      onFriendKeyChanged: () => {
+        void refreshKeyRotations();
+      },
+      onFriendKeysSynced: () => {
+        void refreshKeyRotations();
       },
       onFriendMessageBlocked: () => {
         app.toast(t("send.notFriend"), "error");
@@ -2376,6 +2459,7 @@ export const useChatStore = defineStore("chat", () => {
       "refreshPeers",
       "refreshTopology",
       "refreshAnnouncements",
+      "refreshKeyRotations",
     ] as const;
     const results = await Promise.allSettled([
       refreshFriends(),
@@ -2386,6 +2470,7 @@ export const useChatStore = defineStore("chat", () => {
       refreshPeers(),
       refreshTopology(),
       refreshAnnouncements(),
+      refreshKeyRotations(),
     ]);
     results.forEach((r, i) => {
       if (r.status === "rejected") {
@@ -2537,6 +2622,10 @@ export const useChatStore = defineStore("chat", () => {
     refreshFriends,
     refreshPending,
     refreshConversations,
+    /** 待确认的好友密钥轮换候选（device_id -> 候选），聊天顶部横幅的数据源。 */
+    keyRotations,
+    refreshKeyRotations,
+    syncFriendKeys,
     /** 群 → 「与我相关的未完成任务」数（蓝色徽标的数据源，判定见 `utils/todos::openTodosForMe`） */
     openTodoByConv,
     groupTodoRows,

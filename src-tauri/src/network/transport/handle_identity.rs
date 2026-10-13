@@ -253,6 +253,11 @@ async fn handle_identity_and_friend_messages(state: &Arc<AppState>, peer_id: &st
             // ⚠️ 与 `remove_friend` 对称：**关系解除就解除身份绑定**，否则对方重装换过公钥后
             // 这条内存里的旧公钥会一直当信任根用（症状同样是"只能重启"）。
             forget_peer_identity(state, &from);
+            state
+                .pending_key_rotations
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&from);
             let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
             db::remove_friend(&dbc, &from).ok();
             drop(dbc);

@@ -8,17 +8,26 @@
 // 缓存策略与 filePreview 完全一致（含"只缓存确定性失败"）：同一个面板反复滚动/开关，
 // 不该每次都把图片从磁盘读一遍；而"仍在读取中"这类未知失败**不能**缓存，
 // 否则用户永远看到失败态。
+//
+// 容量同 filePreview：走 `blobLru` 按**累计字节数**封顶（60 MiB，负责人 2026-10-10 决策），
+// 逐出/delete/clear 一律 revoke。收藏面板关掉时调 `clearFavoritePreviews()` 整份释放 ——
+// 原先只有"删单条收藏"才会释放，**关面板不释放**是这份独立缓存的主要泄漏面。
 
 import { api } from "@/api";
-import { imageMime } from "@/utils/filePreview";
+import { imageMime, PREVIEW_CACHE_MAX_BYTES } from "@/utils/filePreview";
 import { previewFailureResult, type PreviewResult } from "@/utils/mediaAvailability";
+import { createBlobLru } from "@/utils/blobLru";
 
 export type { PreviewResult };
 
 /** 图片预览上限：与消息预览同值，避免"气泡里能看、收藏里看不了"这种不一致。 */
 const IMAGE_MAX_BYTES = 15 * 1024 * 1024;
 
-const cache = new Map<string, PreviewResult>();
+const cache = createBlobLru<PreviewResult & { bytes?: number }>({
+  maxBytes: PREVIEW_CACHE_MAX_BYTES,
+  maxEntryBytes: IMAGE_MAX_BYTES,
+  revoke: (url) => URL.revokeObjectURL(url),
+});
 const inflight = new Map<string, Promise<PreviewResult>>();
 
 /** 加载某个收藏副本的图片预览。失败/超限返回 `{note}`，调用方据此回退成文件卡片。 */
@@ -35,15 +44,18 @@ export function loadFavoritePreview(id: string, name: string): Promise<PreviewRe
       // 其余平台是 ArrayBuffer。`new Uint8Array` 同时接受两者，一处归一
       // （直接 `new Blob([number[]])` 会把数组强转成 "137,80,…" 字符串，图片就坏了）。
       const bytes = new Uint8Array(raw);
-      const r: PreviewResult = { url: URL.createObjectURL(new Blob([bytes], { type: imageMime(name) })) };
-      cache.set(id, r);
+      const r: PreviewResult & { bytes?: number } = {
+        url: URL.createObjectURL(new Blob([bytes], { type: imageMime(name) })),
+        bytes: bytes.length,
+      };
+      cache.put(id, r);
       return r;
     } catch (e) {
       const msg = String(e);
       console.error(`[favoritePreview] 预览失败 (id=${id}, name=${name}): ${msg}`);
       const r = previewFailureResult(msg);
       // 只缓存确定性失败（副本已不在 / 文件过大）：未知失败缓存了会永久显示失败态。
-      if (r.missing || r.note === "文件过大，无法预览") cache.set(id, r);
+      if (r.missing || r.note === "文件过大，无法预览") cache.put(id, r);
       return r;
     } finally {
       inflight.delete(id);
@@ -61,8 +73,17 @@ export function loadFavoritePreview(id: string, name: string): Promise<PreviewRe
  * 用户删掉一张 10MB 的收藏图，内存不会自己还回来。
  */
 export function dropFavoritePreview(id: string) {
-  const hit = cache.get(id);
-  if (hit?.url) URL.revokeObjectURL(hit.url);
   cache.delete(id);
   inflight.delete(id);
+}
+
+/** 释放**整份**收藏预览缓存（收藏面板关闭时调用）。 */
+export function clearFavoritePreviews() {
+  cache.clear();
+  inflight.clear();
+}
+
+/** 当前收藏预览缓存的累计字节数（诊断/测试用）。 */
+export function favoritePreviewCacheBytes(): number {
+  return cache.bytes();
 }

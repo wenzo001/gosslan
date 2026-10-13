@@ -392,6 +392,97 @@ CASES: list[Case] = [
         expect_fail_hint="打标必须排在 upsert_peer 之后",
         tags=["rust", "identity", "relay"],
     ),
+    # ---- 好友重装换身份：一键同步新密钥（2026-10-12 用户真机）----
+    Case(
+        name="换钥候选登记前必须用**新公钥**自验签（删掉验签门 = 伪造 Hello 也能换钥）",
+        why="对方卸载重装后身份密钥重建。候选只在『绑定值不一致 + 新私钥 Hello 自验签通过』\n"
+        "     时才允许登记；把自验签整块拿掉，任何同 device_id 的伪造 Hello 都会给出\n"
+        "     「同步新密钥」入口，等于一次自报公钥就能冒充好友（E2EE 击穿）。",
+        file=TAURI / "src" / "network" / "transport" / "handshake.rs",
+        injections=[(
+            "        if expected != ed25519_pubkey\n"
+            "            && crypto::verify_signature(\n"
+            "                ed25519_pubkey,\n"
+            "                &hello_signing_bytes(device_id, tcp_port, nonce, x25519_pubkey, ed25519_pubkey),\n"
+            "                sig_b64,\n"
+            "            )\n"
+            "        {\n",
+            "        if expected != ed25519_pubkey\n"
+            "        {\n",
+        )],
+        cmd=cargo("test", "--lib", "key_rotation_candidate_requires_friend_and_new_key_self_signature"),
+        cwd=TAURI,
+        expect_fail_hint="登记前必须用",
+        tags=["rust", "identity", "friend"],
+    ),
+    Case(
+        name="换钥候选只给好友登记（好友门反转 = 陌生节点也能刷换钥横幅）",
+        why="record_key_rotation_candidate 必须先查 friends 表：不是好友的密钥冲突不进聊天界面。\n"
+        "     is_none→is_some 后好友反而不登记、非好友才登记，属于反向放行进 UI。",
+        file=TAURI / "src" / "network" / "transport" / "peer_registry.rs",
+        injections=[(
+            "        if db::get_friend(&dbc, device_id).is_none() {\n",
+            "        if db::get_friend(&dbc, device_id).is_some() {\n",
+        )],
+        cmd=cargo("test", "--lib", "key_rotation_candidate_requires_friend_and_new_key_self_signature"),
+        cwd=TAURI,
+        expect_fail_hint="非好友的密钥冲突不进聊天界面",
+        tags=["rust", "identity", "friend"],
+    ),
+    Case(
+        name="sync_friend_keys 必须同时忘掉内存 peers 旧绑定（否则同步后 Hello 仍被硬拒）",
+        why="同步只改 friends 表一条腿不够：verify_hello 还会回落到内存 peers 的旧公钥，\n"
+        "     用户点了「同步新密钥」但消息照样发不出去。注入删掉 forget_peer_identity。",
+        file=TAURI / "src" / "commands" / "friends.rs",
+        injections=[(
+            "    // 忘掉内存 peers 里的旧公钥与冲突告警标记：否则新 Hello 仍按旧绑定被硬拒。\n"
+            "    crate::network::transport::forget_peer_identity(s, &peer_id);\n",
+            "    // 忘掉内存 peers 里的旧公钥与冲突告警标记：否则新 Hello 仍按旧绑定被硬拒。\n"
+            "    let _ = peer_id.len();\n",
+        )],
+        cmd=cargo("test", "--lib", "sync_friend_keys_replaces_both_trust_legs_under_explicit_confirm"),
+        cwd=TAURI,
+        expect_fail_hint="必须同时忘掉内存 peers",
+        tags=["rust", "identity", "friend"],
+    ),
+    Case(
+        name="收到对方 FriendRemove 必须清掉换钥候选（关系没了横幅不能残留）",
+        why="候选清理必须覆盖两条解除路径里的『对方删我』：handle_identity 的 FriendRemove\n"
+        "     分支不清，pending 候选就在内存里挂到重启，列表命令虽按好友表过滤能兜住，\n"
+        "     但重新加回同一好友时陈旧候选会立刻复活。",
+        file=TAURI / "src" / "network" / "transport" / "handle_identity.rs",
+        injections=[(
+            "            state\n"
+            "                .pending_key_rotations\n"
+            "                .lock()\n"
+            "                .unwrap_or_else(|e| e.into_inner())\n"
+            "                .remove(&from);\n",
+            "            let _ = from.len();\n",
+        )],
+        cmd=cargo("test", "--lib", "pending_key_rotation_cleared_on_both_friend_removal_paths"),
+        cwd=TAURI,
+        expect_fail_hint="收到对方解除关系也要清候选",
+        tags=["rust", "identity", "friend"],
+    ),
+    Case(
+        name="本地 remove_friend 必须清掉换钥候选（本地删好友路径对称清理）",
+        why="与上一条对称：用户在横幅上直接点「删除好友」后，候选必须当场消失，\n"
+        "     不能等 friend-removed 事件往返，更不能残留到重新加好友时复活。",
+        file=TAURI / "src" / "commands" / "friends.rs",
+        injections=[(
+            "    // 密钥轮换候选一起清：关系都没了，横幅与待确认状态没有意义。\n"
+            "    s.pending_key_rotations\n"
+            "        .lock()\n"
+            "        .unwrap_or_else(|e| e.into_inner())\n"
+            "        .remove(&peer_id);\n",
+            "    // 密钥轮换候选一起清：关系都没了，横幅与待确认状态没有意义。\n"
+            "    let _ = peer_id.len();\n",
+        )],
+        cmd=cargo("test", "--lib", "pending_key_rotation_cleared_on_both_friend_removal_paths"),
+        cwd=TAURI,
+        expect_fail_hint="本地删好友必须连带清掉换钥候选",
+        tags=["rust", "identity", "friend"],
+    ),
     Case(
         name="公网中转的口令不许被写进日志或诊断事件（INTEGRATION.md 要求 7）",
         why="这条链路上「服务器口令」是唯一准入手段，而调试时最容易手滑写出的就是\n"

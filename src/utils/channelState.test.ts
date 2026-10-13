@@ -466,7 +466,7 @@ test("图片预览：在途失败不缓存 + 传输完成时失效重读", () =>
   assert.match(fp, /export function invalidateFilePreview\(/, "必须提供预览缓存失效入口");
   assert.match(
     fp,
-    /if \(r\.missing \|\| r\.note === "文件过大，无法预览"\) cache\.set\(msgId, r\)/,
+    /if \(r\.missing \|\| r\.note === "文件过大，无法预览"\) cache\.put\(msgId, r\)/,
     "只有确定性失败才缓存 —— 在途失败缓存了就永远不会重读",
   );
   const store = read("stores/useChatStore.ts");
