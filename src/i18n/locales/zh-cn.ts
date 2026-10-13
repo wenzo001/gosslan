@@ -657,6 +657,9 @@ export const zhCN: MessageDict = {
   "todo.imageTooLarge": "单张图片不能超过 {mb}MB",
   "todo.imagePasteFail": "保存粘贴的图片失败",
   "todo.openPanel": "查看任务",
+  // 图片超过 `TODO_CARD_IMAGE_VISIBLE`(4) 张时才出现；行为与「查看任务」完全一致
+  // （打开群任务列表并直达这条任务），见 TodoCardBubble.vue 的命中区②注释。
+  "todo.viewMoreImages": "查看更多",
   "todo.openForMe": "{n} 个与我相关的未完成任务",
   "mention.self": "@你",
   "todo.mentionYou": "[任务@你]",

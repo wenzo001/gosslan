@@ -64,6 +64,8 @@ async function toggleMaximize() {
  */
 const focused = ref(true);
 let unlistenFocus: (() => void) | null = null;
+/** 窗口尺寸变化监听（刷新最大化字形），卸载时退订。 */
+let unlistenResize: (() => void) | null = null;
 
 /** macOS 绿灯的 Option-click → 全屏（HIG：缩放按钮按住 Option 进入/退出全屏）。 */
 const fullscreen = ref(false);
@@ -72,6 +74,16 @@ async function toggleFullscreen() {
     fullscreen.value = await api.windowToggleFullscreen();
   } catch {
     fullscreen.value = false;
+  }
+}
+
+/** 主动同步一次全屏状态（挂载/尺寸变化时调；失败就保持 false）。 */
+async function refreshFullscreen() {
+  if (!props.showMaximize) return;
+  try {
+    fullscreen.value = await getCurrentWindow().isFullscreen();
+  } catch {
+    /* 非 Tauri 环境忽略 */
   }
 }
 
@@ -128,6 +140,7 @@ function onKeydown(e: KeyboardEvent) {
 
 onMounted(() => {
   refreshMaximized();
+  refreshFullscreen();
   window.addEventListener("keydown", onKeydown);
   // 焦点跟踪：失败（非 Tauri 环境 / 权限）就保持"聚焦"外观，不影响任何功能。
   void (async () => {
@@ -141,11 +154,29 @@ onMounted(() => {
       /* 忽略：非 Tauri 环境（纯 vite dev） */
     }
   })();
+  // 最大化/全屏状态跟踪：尺寸与全屏变化时把按钮字形刷成"还原"。
+  //
+  // 只靠 onMounted 问一次是不够的——按钮是用户点的，点了就变，不监听就永远是初始字形
+  // （用户 2026-10-12：「点了最大化，图标没有变成还原的样子」）。
+  // 窗口尺寸变化（用户拖角、跨屏、进/出全屏）都会触发 onResized；全屏还有专属事件。
+  void (async () => {
+    try {
+      const w = getCurrentWindow();
+      unlistenResize = await w.onResized(() => {
+        void refreshMaximized();
+        void refreshFullscreen();
+      });
+    } catch {
+      /* 忽略：非 Tauri 环境 */
+    }
+  })();
 });
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onKeydown);
   unlistenFocus?.();
   unlistenFocus = null;
+  unlistenResize?.();
+  unlistenResize = null;
 });
 </script>
 

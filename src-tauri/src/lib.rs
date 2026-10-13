@@ -103,6 +103,28 @@ pub const WINDOW_LABELS: &[&str] = &[
     WINDOW_TASKS,
 ];
 
+/// **允许被最大化**的窗口标签白名单。
+///
+/// ## 为什么需要它（用户 2026-10-12 实测：macOS 绿灯与标题栏双击"点了没反应"）
+///
+/// 曾用 `WebviewWindow::is_maximizable()` 作判据，看着正是标准 API，实则**在 macOS 上恒 false**：
+/// 我们的窗口全是 `decorations:false`，tao 建出的 styleMask 里**没有 `Titled` 位**
+/// （`tao-0.35.3/platform_impl/macos/window.rs:216-222`），而 AppKit 的 zoom button
+/// 只在 Titled 窗上存在 ⇒ `is_maximizable()` 读不到 button 就返回 false
+/// （同文件 L1105-1115，`set_maximizable` 也因此静默失效，见 L826-834）。
+/// 独立探针实测：borderless 窗 `is_maximizable()`=false，但直接 `set_maximized(true)`
+/// 照样铺满可见区、`set_maximized(false)` 照样还原 —— **能力一直在，只是判据说谎**。
+/// 完整推导见 `commands/window.rs::window_toggle_maximize` 的注释。
+///
+/// 受影响的只有 `WINDOW_MAIN`：`logs.rs` 里设置/日志/群任务/预览四扇辅助窗都在 builder 上
+/// 显式写了 `.maximizable(false)`（小窗口不给放大），那才是"不能最大化"的可信来源。
+/// 本清单与那四处 builder 由 `window_maximizable_matches_builder` 测试交叉核对
+/// （改一边忘另一边会红）。
+///
+/// ⚠️ 只在桌面有意义；移动端没有窗口概念，`window_toggle_maximize` 走另一个桩。
+#[cfg(desktop)]
+pub const MAXIMIZABLE_WINDOWS: &[&str] = &[WINDOW_MAIN];
+
 /// 安装 panic hook：把 panic（位置 + 消息）写进应用日志文件，并打到 stderr。
 ///
 /// 为什么必须装（用户 2026-09-12 安卓实测「点进去 3 秒闪退，拿不到任何日志」）：

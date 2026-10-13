@@ -297,6 +297,31 @@ export interface TodoImage {
   subtype: string;
 }
 
+/**
+ * 聊天气泡卡片里**最多画几张缩略图**（用户 2026-10-12：超过就显示「查看更多」）。
+ *
+ * 为什么必须是共享常量而不是各写一个 4：这个数同时决定两件事 ——
+ *  ① `TodoCardBubble` 的 `v-for` 取前几张；
+ *  ② `utils/messageHeight.ts` 的 `todoImageAllowance()` 按"可见几张"占几行高度。
+ * 两处只要有一处写字面量，改数量时另一边就会静默不同步 ⇒ 虚拟列表遮挡（本仓已记的契约）。
+ *
+ * 为什么是 4：卡片 `w-64`，内容宽 `256 − 24(px-3×2) = 232px`，缩略图 80px + gap 4px
+ * ⇒ 每行正好 2 张，4 张 = 整整 2 行；再多就得靠「查看更多」去详情弹窗里看全部
+ * （详情弹窗是「查看全部」的目的地，显示全部图，不截断）。
+ */
+export const TODO_CARD_IMAGE_VISIBLE = 4;
+
+/**
+ * 按上限切出要画的缩略图，并告诉调用方"是否还有更多"（`TodoCardBubble` 的唯一入口）。
+ *
+ * 单独成函数而不是让组件自己 `slice` + `>` 比较：判据要与 `todoImageAllowance()`
+ * 的行数算式**逐字对应**（见 messageHeight.ts 的注释），放在这里两处才不会各自漂移。
+ */
+export function visibleTodoImages<T>(images: T[]): { shown: T[]; hasMore: boolean } {
+  const shown = images.slice(0, TODO_CARD_IMAGE_VISIBLE);
+  return { shown, hasMore: images.length > TODO_CARD_IMAGE_VISIBLE };
+}
+
 export interface TodoItem {
   todoId: string;
   title: string;

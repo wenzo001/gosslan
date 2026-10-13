@@ -637,6 +637,7 @@ export const enUS: MessageDict = {
   "todo.imageTooLarge": "Each image must be {mb} MB or smaller",
   "todo.imagePasteFail": "Failed to save the pasted image",
   "todo.openPanel": "View task",
+  "todo.viewMoreImages": "View more",
   "todo.openForMe": "{n} open tasks for you",
   "mention.self": "@you",
   "todo.mentionYou": "[Task @you]",

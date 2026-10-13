@@ -190,6 +190,338 @@ pub fn spawn_outbox_sweeper(
                     );
                 }
             }
+
+            // --- 内容台账对账（B2）：文件层说"done"、内容层却还不知道的那些行 ---
+            // 见 `reconcile_completed_content` 的注释：这一格就是"每次建链整批重投"的永动来源。
+            // 两相位：① 短锁取候选；② **不持锁**读盘算摘要（600MB 的哈希不能占着 db 锁）；
+            // ③ 短锁写回。每 tick 上限 `CONTENT_RECONCILE_PER_TICK` 条 ⇒ 有界，不随积压增长。
+            let cands = {
+                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                list_reconcilable_content(&dbc, CONTENT_RECONCILE_PER_TICK).unwrap_or_default()
+            };
+            for c in cands {
+                let ok = content_file_matches(&c.cid, &c.path, c.size);
+                let wrote = {
+                    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                    finish_reconcile(&dbc, &c, db::now_ms(), ok)
+                };
+                if ok && !wrote {
+                    state.logger.warn(
+                        "content",
+                        format!("内容台账对账写回失败，保留可恢复状态下轮再试 cid={} from={}", c.cid, c.peer_id),
+                    );
+                } else if !ok && log_throttled("content_reconcile_invalid", 30_000) {
+                    state.logger.warn(
+                        "content",
+                        format!(
+                            "文件层已 done 但盘上那份不可用（缺失/长度不符/摘要不等），不标记完成 cid={} from={}",
+                            c.cid, c.peer_id
+                        ),
+                    );
+                }
+            }
         }
     })
+}
+
+/// 每 tick 最多对账几条内容台账。有界性就在这里：积压再多也只按这个速度消化，
+/// 不会在某一个 tick 里把整盘文件哈希一遍。
+pub(crate) const CONTENT_RECONCILE_PER_TICK: usize = 8;
+
+/// 一条待对账的候选（文件层 done + 内容层还认为没收完）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ReconcileCandidate {
+    pub cid: String,
+    pub peer_id: String,
+    pub transfer_id: String,
+    pub name: String,
+    pub path: String,
+    pub size: u64,
+}
+
+/// 取候选：`content_transfers` 里方向为 receive、状态仍可恢复、**自己没有 path**，
+/// 而它的 `transfer_id` 在 `file_transfers` 里是 `done` 且带着 path 的那些行。
+/// 三者同时成立才是"两张表各执一词"；任一不成立都不许进来（尤其不许只看数据库就说完成）。
+///
+/// 为什么这一格必须有人管（2026-10-13 真机第 7 条）：单聊收尾此前只写 `file_transfers`，
+/// 于是内容台账那一行永远停在可恢复态 ⇒ `retry_incomplete_content` 每次建链整批重投，
+/// 而服务侧那 15 秒把接收循环堵死。B1 修今后的收尾，**这一条修已经卡住的存量**。
+pub(crate) fn list_reconcilable_content(
+    dbc: &rusqlite::Connection,
+    limit: usize,
+) -> rusqlite::Result<Vec<ReconcileCandidate>> {
+    // 参数化 LIMIT（不拼 SQL）。⚠️ **path 取的是文件层那一份（`ft.path`）**：内容层那一行的 path
+    // 恰恰是 NULL（这正是"各执一词"的定义），把它 SELECT 出来会在类型转换上直接炸
+    // （`InvalidColumnType(_, "path", Null)`，实测踩过）；`transfer_id` 为 NULL 时 JOIN 不命中
+    // ⇒ 没有实物证据的行不进候选。
+    let mut stmt = dbc.prepare(
+        "SELECT ct.cid, ct.peer_id, ct.transfer_id, ct.name, ft.path, ct.size
+           FROM content_transfers ct
+           JOIN file_transfers ft ON ft.id = ct.transfer_id
+          WHERE ct.direction = 'receive'
+            AND ct.status IN ('queued','active','incomplete')
+            AND ct.path IS NULL
+            AND ft.status = 'done'
+            AND ft.path IS NOT NULL
+          ORDER BY ct.updated_at ASC
+          LIMIT ?1",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![limit as i64], |r| {
+        Ok(ReconcileCandidate {
+            cid: r.get(0)?,
+            peer_id: r.get(1)?,
+            transfer_id: r.get(2)?,
+            name: r.get(3)?,
+            path: r.get(4)?,
+            size: r.get::<_, i64>(5)?.max(0) as u64,
+        })
+    })?;
+    rows.collect()
+}
+
+/// 实物校验：文件存在、字节数等于声明的 size、且**实际** SHA-256 等于 cid。
+/// `file_transfers` 没有摘要列（`db.rs` 的建表语句），所以"内容对不对"只能靠重算，
+/// 而重算必须发生在接收循环之外 —— 这就是 B2 住在这个清扫器里的原因。
+/// 先比长度再算摘要：长度不对的（半截文件）不必再花一次全盘哈希。
+pub(crate) fn content_file_matches(cid: &str, path: &str, size: u64) -> bool {
+    use sha2::Digest as _;
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !meta.is_file() || meta.len() != size {
+        return false;
+    }
+    let Ok(bytes) = std::fs::read(path) else {
+        return false;
+    };
+    let mut h = sha2::Sha256::new();
+    h.update(&bytes);
+    let hex: String = h.finalize().iter().map(|b| format!("{b:02x}")).collect();
+    hex.eq_ignore_ascii_case(cid)
+}
+
+/// 写回：校验通过 ⇒ `record_local`（Complete + path + received=size，幂等）；
+/// 不通过 ⇒ `record_failure(Local)`（可恢复 ⇒ 仍在重试队列里，"文件没了"要能再拉一次，
+/// 而不是被就地判死）。两条都必须**真写入成功**才返回 true（审计 A3 同型：
+/// 写库没成就不算这一轮做过事，下 tick 重来）。
+pub(crate) fn finish_reconcile(
+    dbc: &rusqlite::Connection,
+    c: &ReconcileCandidate,
+    now_ms: i64,
+    ok: bool,
+) -> bool {
+    use crate::content::model::{Direction, FailReason};
+    if ok {
+        return crate::content::store::record_local(
+            dbc,
+            &c.cid,
+            &c.peer_id,
+            None,
+            &c.name,
+            c.size,
+            Direction::Receive,
+            &c.path,
+            now_ms,
+        )
+        .is_ok();
+    }
+    // 实物不可用 ⇒ 记一次可恢复失败：状态回 Incomplete、退避照走、8 次封顶后 Rejected。
+    // 这里绝不写 path —— 写了就等于把一份没验过的文件当成"本机完整持有"的种子。
+    crate::content::store::record_failure(
+        dbc,
+        &c.cid,
+        &c.peer_id,
+        Direction::Receive,
+        FailReason::Local,
+        now_ms,
+    )
+    .is_ok()
+}
+
+#[cfg(test)]
+mod content_reconcile_tests {
+    use super::{
+        content_file_matches, finish_reconcile, list_reconcilable_content, ReconcileCandidate,
+    };
+    use crate::content::model::{Direction, TransferRecord, TransferStatus};
+    use sha2::Digest as _;
+
+    fn sha_hex(b: &[u8]) -> String {
+        let mut h = sha2::Sha256::new();
+        h.update(b);
+        h.finalize().iter().map(|x| format!("{x:02x}")).collect()
+    }
+
+    fn db_both() -> rusqlite::Connection {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch(crate::db::SCHEMA).unwrap();
+        crate::content::store::ensure_schema(&c).unwrap();
+        c
+    }
+
+    fn temp_file(tag: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!("gosslan-reconcile-{tag}-{}.bin", std::process::id()));
+        let _ = std::fs::remove_file(&p);
+        std::fs::write(&p, bytes).unwrap();
+        p
+    }
+
+    /// 内容层的一行（默认 receive/incomplete、无 path，就是"还在等对端给"的形状）。
+    fn seed_content(c: &rusqlite::Connection, cid: &str, tid: &str, status: TransferStatus, path: Option<&str>) {
+        let now = crate::db::now_ms();
+        crate::content::store::upsert(
+            c,
+            &TransferRecord {
+                cid: cid.into(),
+                transfer_id: Some(tid.into()),
+                peer_id: "dev-a".into(),
+                group_id: None,
+                name: format!("{tid}.bin"),
+                size: 2048,
+                direction: Direction::Receive,
+                status,
+                received: 0,
+                attempts: 0,
+                next_attempt_at: 0,
+                last_error: None,
+                path: path.map(str::to_string),
+                created_at: now,
+                updated_at: now,
+            },
+        )
+        .unwrap();
+    }
+
+    fn seed_file(c: &rusqlite::Connection, tid: &str, status: &str, path: Option<&str>) {
+        crate::db::upsert_transfer(
+            c,
+            tid,
+            "dev-a",
+            &format!("{tid}.bin"),
+            2048,
+            "receive",
+            status,
+            path,
+            if status == "done" { 1.0 } else { 0.0 },
+        )
+        .unwrap();
+    }
+
+    /// ① 两张表各执一词、且盘上那份真的对得上 ⇒ 收口成 Complete，且不再被重试队列捞起。
+    #[test]
+    fn reconciles_a_genuinely_received_file_into_complete() {
+        let bytes: Vec<u8> = vec![0x4Du8; 2048];
+        let cid = sha_hex(&bytes);
+        let p = temp_file("ok", &bytes);
+        let c = db_both();
+        seed_content(&c, &cid, "x1", TransferStatus::Incomplete, None);
+        seed_file(&c, "x1", "done", Some(p.to_str().unwrap()));
+        // 先验夹具本身（前提不成立时，后面每一条都只是在判一个不存在的路径）
+        let seeded = crate::content::store::get(&c, &cid, "dev-a", Direction::Receive)
+            .unwrap()
+            .expect("夹具要真的写出内容台账那一行");
+        assert_eq!(seeded.status, TransferStatus::Incomplete);
+        assert_eq!(seeded.transfer_id.as_deref(), Some("x1"));
+        assert!(seeded.path.is_none());
+
+        let cands = list_reconcilable_content(&c, 8).unwrap();
+        assert_eq!(cands.len(), 1, "执一词的那一行必须被找出来，实得 {cands:?}");
+        assert!(content_file_matches(&cid, &cands[0].path, bytes.len() as u64));
+        assert!(finish_reconcile(&c, &cands[0], crate::db::now_ms(), true));
+
+        let rec = crate::content::store::get(&c, &cid, "dev-a", Direction::Receive)
+            .unwrap()
+            .unwrap();
+        assert_eq!(rec.status, TransferStatus::Complete, "对账通过必须收口");
+        assert_eq!(rec.path.as_deref(), Some(p.to_str().unwrap()));
+        assert_eq!(rec.received, 2048);
+        let resumable = crate::content::store::list_resumable_for_peer(&c, "dev-a").unwrap();
+        assert!(resumable.is_empty(), "收口之后不许再被重投，实得 {resumable:?}");
+    }
+
+    /// ② 盘上那份摘要不等于 cid（被换过/半截）⇒ **绝不**标记完成，且仍可恢复。
+    #[test]
+    fn a_hash_mismatch_is_never_marked_complete() {
+        let bytes: Vec<u8> = vec![0x11u8; 2048];
+        let wrong: Vec<u8> = vec![0x22u8; 2048];
+        let cid = sha_hex(&bytes);
+        let p = temp_file("bad", &wrong);
+        let c = db_both();
+        seed_content(&c, &cid, "x2", TransferStatus::Incomplete, None);
+        seed_file(&c, "x2", "done", Some(p.to_str().unwrap()));
+
+        let cands = list_reconcilable_content(&c, 8).unwrap();
+        assert_eq!(cands.len(), 1);
+        assert!(!content_file_matches(&cid, &cands[0].path, 2048), "摘要不符必须判不可用");
+        assert!(finish_reconcile(&c, &cands[0], crate::db::now_ms(), false));
+        let rec = crate::content::store::get(&c, &cid, "dev-a", Direction::Receive)
+            .unwrap()
+            .unwrap();
+        assert_ne!(rec.status, TransferStatus::Complete, "没有实物证据不许收口");
+        assert!(rec.path.is_none());
+        let resumable = crate::content::store::list_resumable_for_peer(&c, "dev-a").unwrap();
+        assert!(
+            resumable.iter().any(|x| x.cid == cid),
+            "文件坏了要还能再拉一次（就地判死 = 内容永久拿不到）"
+        );
+    }
+
+    /// ③ 文件不存在 / 长度不符 ⇒ 同样不收口。
+    #[test]
+    fn missing_or_short_file_is_not_complete() {
+        let bytes: Vec<u8> = vec![0x33u8; 2048];
+        let cid = sha_hex(&bytes);
+        let c = db_both();
+        seed_content(&c, &cid, "x3", TransferStatus::Incomplete, None);
+        seed_file(&c, "x3", "done", Some("/nope/definitely-not-here.bin"));
+        let cands = list_reconcilable_content(&c, 8).unwrap();
+        assert_eq!(cands.len(), 1);
+        assert!(!content_file_matches(&cid, &cands[0].path, 2048));
+        assert!(!content_file_matches(&cid, &cands[0].path, 17));
+        assert!(finish_reconcile(&c, &cands[0], crate::db::now_ms(), false));
+        let rec = crate::content::store::get(&c, &cid, "dev-a", Direction::Receive)
+            .unwrap()
+            .unwrap();
+        assert_ne!(rec.status, TransferStatus::Complete);
+    }
+
+    /// ④ 候选口径本身：只有"文件层 done + 内容层未收口 + 内容层没有 path"三者同人才进来。
+    #[test]
+    fn candidates_exclude_every_healthy_or_unprovable_shape() {
+        let c = db_both();
+        // (a) 内容层已 Complete ⇒ 不动它
+        seed_content(&c, "cid-done", "xa", TransferStatus::Complete, Some("/tmp/whatever.bin"));
+        seed_file(&c, "xa", "done", Some("/tmp/whatever.bin"));
+        // (b) 文件层还没 done（还在收）⇒ 不能当完成
+        seed_content(&c, "cid-partial", "xb", TransferStatus::Incomplete, None);
+        seed_file(&c, "xb", "active", None);
+        // (c) 文件行根本没有 ⇒ 无实物证据
+        seed_content(&c, "cid-nofile", "xc", TransferStatus::Incomplete, None);
+        // (d) 合法的那一条
+        let bytes: Vec<u8> = vec![0x55u8; 2048];
+        let cid = sha_hex(&bytes);
+        let p = temp_file("cand", &bytes);
+        seed_content(&c, &cid, "xd", TransferStatus::Incomplete, None);
+        seed_file(&c, "xd", "done", Some(p.to_str().unwrap()));
+        let got: Vec<String> = list_reconcilable_content(&c, 8)
+            .unwrap()
+            .into_iter()
+            .map(|x| x.cid)
+            .collect();
+        assert_eq!(got, vec![cid.clone()], "只许捞出 (d) 那一条，实得 {got:?}");
+    }
+
+    /// ⑤ 有界性：每 tick 至多 `limit` 条，积压再多也只按这个速度消化。
+    #[test]
+    fn candidate_pull_is_bounded_per_tick() {
+        let c = db_both();
+        for i in 0..12 {
+            let tid = format!("t{i}");
+            seed_content(&c, &format!("cid{i:02}"), &tid, TransferStatus::Incomplete, None);
+            seed_file(&c, &tid, "done", Some("/tmp/none.bin"));
+        }
+        assert_eq!(list_reconcilable_content(&c, 8).unwrap().len(), 8, "单轮上限必须生效");
+        assert_eq!(list_reconcilable_content(&c, 1).unwrap().len(), 1);
+        let _: ReconcileCandidate; // 类型被用到（避免未使用告警）
+    }
 }

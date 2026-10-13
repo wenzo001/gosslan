@@ -239,6 +239,12 @@ const DMREACT = ROUND === "dmreaction" || ROUND === "dmreaction-lie";
 // 默认轮的顺序是**先文本（J1）再文件（J2）** ⇒ 它判的是"文件之前聊天能用"，
 // 从来没有一条判据把那条文本放到**一份文件走完之后**再投。这一轮补的就是那一半。
 const POSTTEXT = ROUND === "posttext" || ROUND === "posttext-lie";
+/// `--round=contentpull`（真机第 7 条那条自死锁：按 cid 从对端拉内容）。
+/// 这一轮补的是 harness 从没驱动过的那条路径 —— `grep -c ContentRequest scripts/e2e/rounds/*.mjs`
+/// 在建这册之前是**全 0**，而双实例门禁里所有"文件"判据走的都是**发送侧主动 offer**那条管道
+/// （`file_outbox` → flush），与"请求侧按 cid 拉、服务侧回发"这条管道只有收尾代码相同、入口完全不同。
+/// 断言条数不在这里写：判据 C 从分册的 check( 现算。
+const CONTENTPULL = ROUND === "contentpull" || ROUND === "contentpull-lie";
 
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, createCipheriv, createPrivateKey, randomBytes, randomUUID, sign } from "node:crypto";
@@ -261,6 +267,7 @@ import * as late from "./e2e/rounds/late.mjs";
 import * as lanoff from "./e2e/rounds/lanoff.mjs";
 import * as gcrash from "./e2e/rounds/gcrash.mjs";
 import * as gfile from "./e2e/rounds/gfile.mjs";
+import * as contentpull from "./e2e/rounds/contentpull.mjs";
 import * as poison from "./e2e/rounds/poison.mjs";
 import * as resume from "./e2e/rounds/resume.mjs";
 import * as kill from "./e2e/rounds/kill.mjs";
@@ -607,6 +614,9 @@ if (LATE) await late.run();
 if (LANOFF) await lanoff.run();
 if (GCRASH) await gcrash.run();
 if (GFILE) await gfile.run();
+// 内容拉取轮排在**最后**（与群文件轮同一档）：它自己 stopAll → 停机预置 → 再起两端，
+// 排在后面就不会把这条旅程里的日志锚点（`peer=` / boot 行）搅进上一轮的读数里。
+if (CONTENTPULL) await contentpull.run();
 const REPORT_GAPS = [];
 function writeReport(failed) {
   fs.mkdirSync(RUN_DIR, { recursive: true });

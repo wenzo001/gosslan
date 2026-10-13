@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """护栏非空转用例分册：前端呈现层（components / layouts / entries / 样式与打包配置里的界面判据）。
 
-本册现数 49 条（复跑 `grep -c '^    Case(' scripts/guard_cases/frontend_ui.py` ⇒ 就是这个数；
+本册现数 53 条（2026-10-13：49 → 53，新加的四条是「缩略图自己拦冒泡 / 「查看更多」的 `.stop` /
+图片段占位按张数算 / 弹窗留白配对」；复跑 `grep -c '^    Case(' scripts/guard_cases/frontend_ui.py` ⇒ 就是这个数；
 用不带行首锚的写法会多算一条 —— 多出来的正是这一行本身）；2026-10-07 从 `scripts/verify-guards.py`（原 4,176 行、202 条挤在一份
 `CASES` 字面量里）按**锚定的被守物**切出来，切过来那 30 条的块文本逐字未搬动过一字 ⇒
 恒等判据＝`verify-guards.py --list` 的输出排序后与拆前**逐字节相同**（条数与用例名都不是"我觉得一样"）。
@@ -800,4 +801,60 @@ CASES: list[Case] = [
         cwd=ROOT,
         expect_fail_hint="的标题元素不是 div",
         tags=["frontend", "new-guards", "emoji"],
-    ),]
+    ),
+    Case(
+        name="任务卡缩略图不再自己拦冒泡必须被抓住（点图片会连面板一起开）",
+        why="用户 2026-10-12 定的口径是「点图片只看图，点图片周围才展开任务面板」。"
+        "     上一轮为了让『周围』那一圈能冒泡，把容器上的 @click.stop 摘了 —— 摘掉之后必须有"
+        "     人接手拦这一次点击，否则缩略图的点击会一路冒到卡片主体（它自己也是 role=button 并"
+        "     挂着开面板），变成预览与面板双开。2026-10-13 这条是被探针**已有**的判据当场读出红的。"
+        "     注入 = 删掉缩略图自己那句 stopPropagation。",
+        file=ROOT / "src" / "components" / "TodoImageThumb.vue",
+        injections=[("  e.stopPropagation();\n", "")],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="又开预览又开面板",
+        tags=["frontend", "new-guards", "todo"],
+    ),
+    Case(
+        name="「查看更多」丢掉 .stop 必须被抓住（直达那条任务会被冲掉）",
+        why="用户要求这颗按钮表现得和底部「查看任务」**一模一样**。底部那颗在命中区①之外，"
+        "     而它为了贴着图片带排在①**之内** => 少了 .stop 就会在 emit open(todoId) 之后再多冒"
+        "     一个不带任务号的 open-panel：面板开两次，直达这条任务的效果被冲掉。"
+        "     注入 = 把那颗按钮的 .stop 摘掉。",
+        file=ROOT / "src" / "components" / "TodoCardBubble.vue",
+        injections=[("@click.stop=\"emit('open', todoId)\"", "@click=\"emit('open', todoId)\"")],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="顺路再发一个",
+        tags=["frontend", "new-guards", "todo"],
+    ),
+    Case(
+        name="卡片图片段占位退回魔数行数必须被抓住（1 张图白占两行 / 超限漏一行）",
+        why="可见张数与占位行数只能有一个家（utils/todos.ts 那个常量）。写成魔数时两种缺陷都会"
+        "     静默发生，实测数字都在：只有 1 张图的卡多占一整行（卡片之间出现空洞），"
+        "     超过上限那条又漏掉「查看更多」那一行（相邻消息互相遮挡）。运行时那半边在探针里、"
+        "     而探针 CI 不跑 => 源码这一半必须自己会红。注入 = 行数算式写成魔数 2。",
+        file=ROOT / "src" / "utils" / "messageHeight.ts",
+        injections=[("Math.ceil(visible / TODO_CARD_IMAGE_PER_ROW)", "2")],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="现算行数",
+        tags=["frontend", "new-guards", "todo"],
+    ),
+    Case(
+        name="弹窗滚动区把留白配对拆成单边必须被抓住（用户那句「左小右大」）",
+        why="卡片 p-5 左右各 20px。滚动区给正文留出滚动条落脚的 8px，就必须同时把同样宽度从右侧"
+        "     边距里让回来，否则右侧净留白比左侧多出一截 —— 这正是用户 2026-10-12 报的那条。"
+        "     真「算出来对称」的判据在运行时探针（--only=winsafe，并带一条撤掉修复必变红的反向"
+        "     对照），而那层 CI 不跑 => 这里先钉住「这一对没被单边删掉」。"
+        "     注入 = 只删滚动区那条负右边距（页脚那一处同一对故意留着，证明锚点取的是滚动区那一行）。",
+        file=ROOT / "src" / "components" / "BaseModal.vue",
+        injections=[("overflow-y-auto pr-[var(--gosslan-scroll-gutter)] -mr-[var(--gosslan-scroll-gutter)]",
+                     "overflow-y-auto pr-[var(--gosslan-scroll-gutter)]")],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="必须成对",
+        tags=["frontend", "new-guards", "modal"],
+    ),
+]

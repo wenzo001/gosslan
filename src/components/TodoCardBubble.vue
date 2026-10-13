@@ -25,6 +25,7 @@ import {
   TODO_STATUS_PILL,
   parseTodo,
   todoCode,
+  visibleTodoImages,
   type TodoLive,
   type TodoStatus,
 } from "@/utils/todos";
@@ -82,6 +83,12 @@ const todoId = computed(() => todo.value?.todoId);
  */
 const preview = useImagePreviewStore();
 const cardImages = computed(() => todo.value?.images ?? []);
+/**
+ * 卡片里**只画前 `TODO_CARD_IMAGE_VISIBLE` 张**（用户 2026-10-12：图多时先看几张，
+ * 剩下的去详情弹窗）。条数上限共享自 `utils/todos.ts`，`messageHeight.ts` 的
+ * `todoImageAllowance()` 按同一个常量算行数 —— 两处不许各写字面量，否则会遮挡。
+ */
+const cardThumbs = computed(() => visibleTodoImages(cardImages.value));
 const cardGallery = computed(() =>
   cardImages.value.map((im) => ({ cid: im.sha256, name: im.name })),
 );
@@ -94,7 +101,9 @@ function openCardImage(i: number) {
  * 点卡片**主体**：只打开群任务面板（不直达某一条）。
  *
  * 三个命中区互不重叠（见模板）：主体 → open-panel；底部操作条 → open(todoId)；
- * 图片缩略图 → 统一预览（在外层就地 stop，绝不冒泡成开面板）。
+ * 图片缩略图 → 统一预览（**由缩略图自己** `stopPropagation`，见 `TodoImageThumb.open`）。
+ * ⚠️ 拦截点在缩略图而不在图片带容器：容器一 stop 会把"图片周围那一圈"（空隙、`px-3` 内边距、
+ * 右侧留白）一起吃掉，那正是 2026-10-12 用户实测「点图片周围没反应」的根因。
  * 描述里可能有真链接（MentionText → MessageLinkText 渲染的 `<a>`）：点链接必须
  * 只走外部打开，不能顺手把面板也弹出来。
  */
@@ -215,18 +224,49 @@ function statusText(s: TodoStatus): string {
       />
     </p>
 
-    <div v-if="cardImages.length" class="mt-1.5 flex flex-wrap gap-1 px-3" @click.stop @keydown.enter.stop @keydown.space.stop>
-      <!-- 命中区③：图片缩略图 → 只开统一预览。整块 stop：无论模板以后怎么挪，
-           这里的点击都不许冒泡成「打开任务面板/详情」（缩略图自己的键盘处理
-           直接调预览，不合成 click，不会走到主体的 keydown）。 -->
+    <!-- ⚠️ 这里的 `@click.stop` **不许**留在容器上（2026-10-12 用户实测：点图片周围没反应）：
+         容器一 stop，整条图片带（含缩略图之间的空隙、右侧留白、px-3 内边距）全部不再冒泡
+         ⇒ 点到"图片周围"什么都不会发生，而用户认为那些区域属于卡片主体、应该展开任务面板。
+         正确形状是**只让缩略图自己拦**：`TodoImageThumb.open()` 里对可点的那一支调
+         `e.stopPropagation()` ⇒ 点缩略图只开预览（不会顺手把面板也弹出来），
+         而容器不再 stop ⇒ 图片周围那些区域正常冒泡到命中区①。
+         ⚠️ 键域仍在这里 stop：缩略图的键盘处理**不合成 click**（走不到主体的 keydown），
+         容器若放行 keydown，在缩略图上按回车会"又开预览又开面板"。
+         ⇒ 这一层是**故意的**：click 交给缩略图自己拦、keydown 由容器兜住（Enter/Space 两键都要）。 -->
+    <div
+      v-if="cardImages.length"
+      class="mt-1.5 flex flex-wrap gap-1 px-3"
+      @keydown.enter.stop
+      @keydown.space.stop
+    >
+      <!-- 命中区③：图片缩略图 → 只开统一预览。
+           只画前 `TODO_CARD_IMAGE_VISIBLE` 张（超出的由下面的「查看更多」去详情弹窗看）；
+           预览相册仍是**全部**图（cardGallery 未截断）⇒ 从第 2 张起往后翻能看到全部。 -->
       <TodoImageThumb
-        v-for="(img, i) in cardImages"
+        v-for="(img, i) in cardThumbs.shown"
         :key="img.sha256"
         :image="img"
         clickable
         @open="openCardImage(i)"
       />
     </div>
+
+    <!-- 图多于上限时的入口（用户 2026-10-12：图片超过 4 张应显示「查看更多」，
+         点了像底部「查看任务」一样打开列表并直达这条任务）。
+         ⚠️ 与底部按钮**同一套行为、同一个 emit**（`open` 带 todoId）：用户明确说
+         「像查看任务一样」，所以这里不另开一条路径 —— 两处都落到 open(todoId)。
+         ⚠️ `.stop` 是这条"一模一样"的一部分，不是可选的：底部那颗在命中区①**之外**，
+         而这颗为了贴着图片带排在①**之内** ⇒ 不 stop 就会在 open(todoId) 之后再多冒一个
+         open-panel（面板被打开两次，第二次还不带 todoId ⇒ 直达这条任务的效果被冲掉）。 -->
+    <button
+      v-if="cardThumbs.hasMore"
+      type="button"
+      class="mt-1.5 flex w-full items-center justify-center gap-1 px-3 py-1 text-[12px] text-[var(--gosslan-primary)] transition hover:bg-[var(--gosslan-hover)]"
+      @click.stop="emit('open', todoId)"
+    >
+      {{ t("todo.viewMoreImages") }}
+      <ChevronRight class="h-3 w-3" />
+    </button>
 
     <div class="mt-1.5 flex min-w-0 flex-wrap items-center gap-1 px-3">
       <span

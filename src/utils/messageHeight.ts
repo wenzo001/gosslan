@@ -7,6 +7,8 @@ import {
   codeBlockHeight,
   textBubbleHeight,
 } from "@/utils/previewMetrics";
+// 可见图片数的唯一家（卡片画几张、这里按几行估高，同一个常量）
+import { TODO_CARD_IMAGE_VISIBLE } from "@/utils/todos";
 import type { FontSizeKey } from "@/utils/chatStyle";
 import { isKnownKind, isTipKind } from "@/utils/messageKinds";
 import type { MessageRecord } from "@/types";
@@ -42,8 +44,37 @@ const TODO_CARD_BASE = 96;
  *  否则就是低估 ⇒ 相邻消息互相遮挡（本文件顶部那条契约说的就是这件事）。
  *  这一对的实测锁在运行时探针 `scripts/check-ui-runtime.mjs` 的 #116 那条（量矩形，不靠肉眼）。 */
 const TODO_CARD_DESC = 64;
-/** 任务卡片有图片时追加（一行 80px 缩略图 + 间距，留余量）。 */
-const TODO_CARD_IMAGES = 88;
+/**
+ * 任务卡片图片段的占位 —— 按**这一条自己的张数**算，不是按上限算。
+ *
+ * 三个数都来自运行时探针 `scripts/check-ui-runtime.mjs --only=task` 的「高度实测表」
+ * （2026-10-13 实测：1 行那一段 80、2 行 164、`mt-1.5`=6、「查看更多」那颗 26）：
+ *  - 缩略图 `h-20` = 80，`gap-1` = 4，图片带自己的 `mt-1.5` = 6；
+ *  - 卡片 `w-64` ⇒ 内容宽 `256 − 24(px-3×2) = 232`，`80+4+80=164` 正好两列 ⇒ 每行 2 张；
+ *  - 张数超过可见上限时多一行「查看更多」：`mt-1.5`(6) + 26 = 32。
+ *
+ * ⚠️ 为什么不能像上一版那样"有图就加一整块"（那是按 `VISIBLE` 张算的固定值）：
+ *  一条只有 1 张图的任务会白占 2 行的高度（实测多留 86px ⇒ 卡片之间出现空洞），
+ *  而一条 5 张以上的又**少**了「查看更多」那一行（实测差 32px ⇒ 相邻消息互相遮挡）。
+ *  两个方向都被探针钉住：`真实 ≤ 估算` 与 `估算 − 真实 ≤ 100`。
+ * ⚠️ 可见张数只许引 `TODO_CARD_IMAGE_VISIBLE`（`todos.ts` 那一个家）—— 卡片画几张与这里
+ *  占几行必须同源，改一边忘一边就是本文件顶部那条契约说的已发生事故类型。
+ */
+const TODO_CARD_IMAGE_ROW = 80;
+const TODO_CARD_IMAGE_GAP = 4;
+const TODO_CARD_IMAGE_TOP = 6;
+/** 每行 2 张：`80 + gap 4 + 80 = 164` 落在 232px 内容宽里，第三张必然折行。 */
+const TODO_CARD_IMAGE_PER_ROW = 2;
+const TODO_CARD_VIEW_MORE = 32;
+
+/** 图片段（含「查看更多」那一行）占多少高度；`count` = 这条任务**载荷里**的图片张数。 */
+function todoImageAllowance(count: number): number {
+  if (count <= 0) return 0;
+  const visible = Math.min(count, TODO_CARD_IMAGE_VISIBLE);
+  const rows = Math.ceil(visible / TODO_CARD_IMAGE_PER_ROW);
+  const band = TODO_CARD_IMAGE_TOP + rows * TODO_CARD_IMAGE_ROW + (rows - 1) * TODO_CARD_IMAGE_GAP;
+  return band + (count > TODO_CARD_IMAGE_VISIBLE ? TODO_CARD_VIEW_MORE : 0);
+}
 /**
  * 未知 kind 的占位气泡（`UnsupportedKindBubble`）：说明行 + 展开按钮 + 上下边距，留余量。
  *
@@ -121,17 +152,19 @@ function computeBubbleHeight(m: MessageRecord, fontSize: FontSizeKey): number {
     case "merge":
       return MERGE_CARD;
     case "todo": {
-      // 卡片高度随描述/图片存在与否变化；宁可多估留白，也不让相邻消息互相遮挡。
+      // 卡片高度随描述/图片**张数**变化；宁可多估留白，也不让相邻消息互相遮挡。
+      // 张数要现数（不是"有没有图"那种布尔判断）：可见上限之外的图不画，但会多出一行
+      // 「查看更多」⇒ 占位必须按这一条自己的张数算，见 `todoImageAllowance`。
       let desc = false;
-      let imgs = false;
+      let imgCount = 0;
       try {
         const o = JSON.parse(m.content) as { description?: string; images?: unknown[] };
         desc = typeof o?.description === "string" && o.description.length > 0;
-        imgs = Array.isArray(o?.images) && o.images.length > 0;
+        imgCount = Array.isArray(o?.images) ? o.images.length : 0;
       } catch {
         /* 异常内容按最小卡片估 */
       }
-      return TODO_CARD_BASE + (desc ? TODO_CARD_DESC : 0) + (imgs ? TODO_CARD_IMAGES : 0);
+      return TODO_CARD_BASE + (desc ? TODO_CARD_DESC : 0) + todoImageAllowance(imgCount);
     }    // 本机不认识的 kind（对端版本比本机新）⇒ 渲染占位气泡，高度与载荷长度无关
     // （详见 `UNSUPPORTED_BUBBLE` 的说明：按文本估会留出一大片空白）。
     default:
