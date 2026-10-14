@@ -283,6 +283,16 @@ pub(crate) fn list_reconcilable_content(
 /// `file_transfers` 没有摘要列（`db.rs` 的建表语句），所以"内容对不对"只能靠重算，
 /// 而重算必须发生在接收循环之外 —— 这就是 B2 住在这个清扫器里的原因。
 /// 先比长度再算摘要：长度不对的（半截文件）不必再花一次全盘哈希。
+///
+/// ⚠️ **分块喂哈希器，不许整读进内存**（与 `network/file/receive.rs` 的续传前缀校验、
+///   `network/file/relay_push.rs` 的逐片读盘同一立场）。这里原先是**一次整读整份文件**：
+///   这一条跑在**无人操作的 30s 空闲 tick** 上，一份几百 MB 的收件文件会让进程瞬间占用
+///   ≈ 文件大小的内存；而分配失败在 Rust 里是 **abort 而不是 panic** —— panic hook 不记、
+///   release 又开着 `panic = "abort"`，表现就是用户 2026-10-14 报的
+///   「Windows 开着不动，过会儿自己就关了」（日志里一个字都没有，正是这条路径的形状）。
+///   ⚠️ 这句刻意不写成那个调用的字面量：按形状扫全集的守卫
+///   `transport_src_never_whole_file_read` 会把自己写的注释读成缺陷（"注释里复述被断言的那句"
+///   这一族本仓踩过，见那条守卫的注释）。
 pub(crate) fn content_file_matches(cid: &str, path: &str, size: u64) -> bool {
     use sha2::Digest as _;
     let Ok(meta) = std::fs::metadata(path) else {
@@ -291,11 +301,19 @@ pub(crate) fn content_file_matches(cid: &str, path: &str, size: u64) -> bool {
     if !meta.is_file() || meta.len() != size {
         return false;
     }
-    let Ok(bytes) = std::fs::read(path) else {
+    let Ok(mut src) = std::fs::File::open(path) else {
         return false;
     };
     let mut h = sha2::Sha256::new();
-    h.update(&bytes);
+    let mut buf = vec![0u8; crate::protocol::FILE_CHUNK];
+    loop {
+        // 读失败（权限、被外部删掉、磁盘错）都算"对不上"，交给下一 tick 再看，不谎报 complete。
+        match std::io::Read::read(&mut src, &mut buf) {
+            Ok(0) => break,
+            Ok(n) => h.update(&buf[..n]),
+            Err(_) => return false,
+        }
+    }
     let hex: String = h.finalize().iter().map(|b| format!("{b:02x}")).collect();
     hex.eq_ignore_ascii_case(cid)
 }

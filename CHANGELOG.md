@@ -13,6 +13,43 @@
 
 ## [Unreleased]
 
+## [4.38.1] - 2026-10-14
+
+### Windows：开着不动过会儿自己就关了（4.38.0 的回归，已修）
+
+用户 2026-10-14：「win 最新版在打开情况下不动，有可能软件崩溃掉，过会自己就关了」—— 而且是**无声**的：
+运行日志里一个字都没有。
+
+- **根因**：4.38.0 修「每次建链整批重投」时加的内容台账对账（`transport/outbox_sweep.rs::content_file_matches`）
+  用**一次整读整份文件**再算 SHA-256，而它跑在**无人操作的 30 秒空闲 tick** 上（清扫器每 tick 最多取 N 条候选）。
+  一份几百 MB 的收件文件会让进程瞬间占用 ≈ 文件大小的内存；**分配失败在 Rust 里是 abort 不是 panic** ——
+  panic hook 不记、release 又开着 `panic = "abort"` 且 `strip = true`，所以表现就是"过会儿自己关了、日志干净"。
+- **修法**：改成 `File::open` + 定长缓冲（`FILE_CHUNK` = 256 KiB）循环 `read`/`update`，与本仓
+  `network/file/receive.rs`（续传前缀校验）和 `network/file/relay_push.rs`（逐片读盘）同一立场 ——
+  那两处早就为同一个形状修过一遍。摘要不符/读失败仍判"不可用"，交给下一 tick，不谎报 complete。
+- ⚠️ **为什么它当时全绿通过（这条比修复本身更重要）**：那两处老缺陷各配了一条**按文件锚定**的反证
+  （`guard_cases/file_transfer.py` 的「建发送记录前不得整读文件」、`transport_network.py` 的整读注入档），
+  所以在新分册里重新引入同一形状时，守卫根本看不见新文件 —— 门禁全绿、缺陷照发。
+  新增按**形状**扫全集的守卫 `tests::transport_src_never_whole_file_read`：读 `transport_src_for_guards()` 那份
+  生产码视图，任何一处出现整读盘字面量就红（阳性对照：视图里必须至少有一处流式读盘，否则是尺子读空了）。
+  反向对照实测：把整读塞回代码 ⇒ 恰好这一条 FAILED（命中 1 处），还原 ⇒ 绿。
+- 验证：`cargo test --features bluetooth --lib` = 834 passed / 0 failed；`cargo fmt --check` 与
+  `cargo clippy --features bluetooth -- -D warnings` 均退 0。
+
+### 任务弹窗里不再叠第二条滚动条
+
+用户 2026-10-14：「任务面板操作记录，不要在内置滚动条」。详情弹窗本来就整块在 `BaseModal` 的滚动区里，
+里面又各套了一条 `max-h-* + overflow-y-auto` ⇒ 两条滚动条叠着，滚轮落到哪条取决于鼠标停在哪。
+按形状数了调用点，**三处一起收**（只改他点名的那一条就是漏）：
+
+- `TodoDetailDialog.vue` 的「操作记录」列表（原 `max-h-44 overflow-y-auto`）；
+- `GroupTasksBoard.vue` 新建/编辑里「指派」那一格（原 `max-h-40 overflow-y-auto`）；
+- `GroupMemberPanel.vue`「选择好友」那一格（原 `max-h-40 overflow-y-auto`）。
+
+三处都改成随外层那一条滚。验证：`npx vue-tsc --noEmit` 退 0、`node scripts/check-ui-runtime.mjs --only=task` = 29/29 绿
+（含"每种张数卡片真实高度 ≤ 估算"那两条，去掉内嵌 cap 后估高口径没被改坏）。
+
+
 ### 取证轮保留：失败轮那条"永远不删"补上了天数上限（仓库体积从 25 GB 收到 5.1 GB）
 
 用户 2026-10-14：「清除一下这个项目文件夹无用缓存，防止文件夹无限扩大」。现量下来两处会只涨不收：

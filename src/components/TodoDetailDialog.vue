@@ -360,10 +360,14 @@ const fullCode = computed(() =>
         </div>
       </div>
 
-      <!-- 全员操作记录：这条任务从创建到当前的全部改动流水（diff 来自事件日志，见 buildTodoHistory）。 -->
+      <!-- 全员操作记录：这条任务从创建到当前的全部改动流水（diff 来自事件日志，见 buildTodoHistory）。
+           ⚠️ 这里**不写** `max-h-*` + `overflow-y-auto`（用户 2026-10-14：「操作记录不要在内置滚动条」）：
+           这块本来就在 BaseModal 的滚动区里，再套一条就成"外层一条、里面一条"，
+           滚轮落到哪条取决于鼠标停在哪 —— 与「操作条不许随内容滚走」是同一家族的第二个面。
+           流水再长也交给外层那一条滚。 -->
       <div v-if="historyEntries.length" class="border-t border-[var(--gosslan-divider)] pt-3">
         <div class="mb-1.5 text-xs text-[var(--gosslan-text-2)]">{{ t("todo.history.sectionTitle") }}</div>
-        <ul class="max-h-44 space-y-1 overflow-y-auto pr-1">
+        <ul class="space-y-1">
           <li
             v-for="(entry, i) in [...historyEntries].reverse()"
             :key="entry.msgId + ':' + i"

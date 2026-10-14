@@ -298,3 +298,34 @@
     fn code_flat(src: &str) -> String {
         src.chars().filter(|c| !c.is_whitespace()).collect()
     }
+
+    /// 形状守卫（2026-10-14 负责人报「Windows 开着不动，过会儿自己就关了」）：
+    /// transport 生产码全集里任何一处都不许整读盘。老守卫是按文件锚定的，
+    /// 所以 4.38.0 在新分册里重新引入同一形状时全绿通过 —— 按形状扫视图才管得到以后新增的文件。
+    /// 只剥整行注释；行尾注释里出现这个字面量仍会报红（刻意的严，宁可换个说法）。
+    #[test]
+    fn transport_src_never_whole_file_read() {
+        let src = crate::network::transport_src_for_guards();
+        let hits: Vec<&str> = src
+            .lines()
+            .map(str::trim_start)
+            .filter(|t| !(t.starts_with("//") || t.starts_with("/*") || t.starts_with('*')))
+            .filter(|t| t.contains("std::fs::read("))
+            .collect();
+        // 阳性对照：视图里必须有合规的流式读盘样本，否则"零命中"可能只是尺子读空了。
+        let compliant = src
+            .lines()
+            .filter(|l| l.contains("std::fs::File::open("))
+            .count();
+        assert!(
+            compliant >= 1,
+            "`std::fs::File::open(` 命中 {compliant} ⇒ 尺子的分母空了，先确认视图还读得到 transport 分册"
+        );
+        assert!(
+            hits.is_empty(),
+            "transport 生产码不许整读盘（空闲 tick 上一个几百 MB 的文件会让进程瞬间占用 ≈ 文件大小，\
+             分配失败是 abort 不是 panic ⇒ 无声消失）。改用 File::open + 定长缓冲循环。命中 {} 处：\n{}",
+            hits.len(),
+            hits.join("\n")
+        );
+    }

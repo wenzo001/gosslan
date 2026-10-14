@@ -1406,7 +1406,7 @@ watch(
       <!-- 指派（**权限依据**，至少一人） -->
       <div>
         <div class="mb-1.5 text-xs text-[var(--gosslan-text-2)]">{{ t("todo.pickMembers") }}</div>
-        <div class="flex max-h-40 flex-wrap gap-1.5 overflow-y-auto">
+        <div class="flex flex-wrap gap-1.5">
           <button
             v-for="id in group?.members ?? []"
             :key="id"
