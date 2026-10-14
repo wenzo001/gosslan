@@ -423,6 +423,8 @@ export const zhCN: MessageDict = {
   "common.sendMessage": "发消息",
   "common.group": "群",
   "common.me": "我",
+  // 查不到这个人时的兜底前缀（后接 id 后四位）—— 裸 device id 不许印到界面上（用户 2026-10-14）
+  "common.unknownMember": "未知成员",
   "common.image": "图片",
   "common.file": "文件",
   "common.code": "代码",

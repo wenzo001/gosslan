@@ -26,6 +26,13 @@ import { createInitScope, type InitScope } from "@/utils/initScope";
 import { StaleGuard } from "@/utils/staleGuard";
 import { EMPTY_STRING_LIST } from "@/utils/emptyList";
 import { actionableRequests } from "@/utils/friendRequests";
+import { resolveMemberName } from "@/utils/memberName";
+import {
+  observeMemberNames,
+  readMemberNames,
+  writeMemberNames,
+  type MemberNameCache,
+} from "@/utils/memberNameCache";
 import { mergeNoticesInto, notificationBody, type QueuedNotice } from "@/utils/notifications";
 import { batchIsUrgent } from "@/utils/notifyUrgency";
 import {
@@ -98,6 +105,15 @@ let chatInitScope: InitScope | null = null;
 export const useChatStore = defineStore("chat", () => {
   const peers = ref<Peer[]>([]);
   const friends = ref<Friend[]>([]);
+  /**
+   * 「最后一次见到的名字」本机缓存（只用于显示，不参与任何信任判断）。
+   * 它管的是用户 2026-10-14 报的那半句「名字…会变」：非好友的群成员一离线，
+   * `peers`（纯内存）里就没他了，界面上的名字会跟着换一档来源。判据与写盘策略见
+   * `utils/memberNameCache.ts` 的文件头。
+   */
+  const memberNames = ref<MemberNameCache>(
+    readMemberNames(typeof localStorage === "undefined" ? null : localStorage),
+  );
   /** 后端给的**原始**好友申请列表（可能含已经过期的：对方已同意 / 我已把他加上了）。 */
   const rawPendingRequests = ref<PendingRequest[]>([]);
   /**
@@ -157,15 +173,36 @@ export const useChatStore = defineStore("chat", () => {
   const notifMap = new Map<number, string>();
   const NOTIF_MAP_MAX = 128;
 
+  /**
+   * 把这一批在线节点自报的名字记进本机缓存。**三个 `peers.value` 写入点都必须走这里** ——
+   * 少一个就会又出现「某条路径刷新见过的人，离线后名字不见了」（同"同一判据两个家"那一族）。
+   * 没有真变化时 `observeMemberNames` 返回 null ⇒ 一次存储都不写。
+   */
+  function rememberSeenNames(list: readonly { device_id: string; nickname?: string | null }[]) {
+    const next = observeMemberNames(memberNames.value, list);
+    if (!next) return;
+    memberNames.value = next;
+    writeMemberNames(typeof localStorage === "undefined" ? null : localStorage, next);
+  }
+
   function nicknameOf(id: string): string {
-    // 自己这一支必须在最前面：`friends` / `peers` 都不含本机，缺这一支时"谁加了这条回应"
-    // 会退化成裸设备 id（表情回应条上印出 `gosslan-xxxx` 就是这个形状）。
-    if (id && id === app.device?.device_id) return app.device?.nickname || id;
+    // 顺序与兜底的**判据**在 `utils/memberName.ts`（纯函数、可在 Node 单测）——
+    // 这里只负责"从哪张表取"。以前这两处各写一遍（聊天走本函数、任务面板走 `useMemberProfile`），
+    // 连兜底都不一致：这里返回裸 `device_id`（= 用户 2026-10-14 说的"有时候显示设备名"），
+    // 那里对自己返回「我」。同一个人同一屏可以两个写法，所以把判据收成一个家。
     const f = friends.value.find((x) => x.device_id === id);
-    if (f) return f.nickname;
     const p = peers.value.find((x) => x.device_id === id);
-    if (p) return p.nickname;
-    return id;
+    return resolveMemberName(
+      id,
+      {
+        selfId: app.device?.device_id ?? "",
+        selfNickname: app.device?.nickname ?? "",
+        friendNickname: f?.nickname,
+        peerNickname: p?.nickname,
+        snapshotNickname: memberNames.value[id],
+      },
+      { me: t("common.me"), unknownMember: t("common.unknownMember") },
+    );
   }
 
   const myDeviceId = computed(() => app.device?.device_id ?? "");
@@ -720,6 +757,7 @@ export const useChatStore = defineStore("chat", () => {
     // 整表直写会换掉数组与里面每个对象 ⇒ 凡读过 peers 的渲染全部失效（见 utils/peerMerge）。
     const merged = mergePeerList(peers.value, list);
     if (merged) peers.value = merged;
+    rememberSeenNames(list);
   }
   /** 按需探测：群发一次 who_has 后返回周围在线节点（添加好友时调用）。 */
   async function searchNearbyPeers() {
@@ -730,6 +768,7 @@ export const useChatStore = defineStore("chat", () => {
     if (!refreshGuard.isCurrent("peers", tok)) return peers.value;
     const merged = mergePeerList(peers.value, list);
     if (merged) peers.value = merged;
+    rememberSeenNames(list);
     markFriendsOnlineFrom(friends.value, list);
     return peers.value;
   }
@@ -2289,6 +2328,7 @@ export const useChatStore = defineStore("chat", () => {
         // （消息行模板里的 nicknameOf 读的就是 peers）。没变就不写。
         const merged = mergePeerList(peers.value, p);
         if (merged) peers.value = merged;
+        rememberSeenNames(p);
         markFriendsOnlineFrom(friends.value, p);
         // 同步好友/单聊会话的昵称/头像（对方改名后立即生效）
         syncProfileFromPeers(friends.value, conversations.value, p);

@@ -47,9 +47,10 @@ const emit = defineEmits<{
 }>();
 
 const chat = useChatStore();
-/** 设备 id 对用户没有意义；取不到昵称才退回 id（宁可长也不许空）。 */
+/** 名字一律走 store 那一个家：它现在**永不**返回裸 device_id（查不到就是「未知成员 + id 后四位」），
+ *  所以这里不再补 `|| id` —— 补了就是把第二条兜底写在第二个家里。 */
 function nameOf(id: string): string {
-  return chat.nicknameOf(id) || id;
+  return chat.nicknameOf(id);
 }
 
 /** 一行最多列几人，其余折成 +N（同一份判据也用于悬停 title，两处不能各写一个数）。 */

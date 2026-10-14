@@ -415,6 +415,8 @@ export const enUS: MessageDict = {
   "common.sendMessage": "Message",
   "common.group": "Group",
   "common.me": "Me",
+  // 兜底前缀（后接 id 后四位）：裸 device id 不许出现在界面上（与 zh-cn 同键，两份必须同时改）
+  "common.unknownMember": "Unknown member",
   "common.image": "Image",
   "common.file": "File",
   "common.code": "Code",

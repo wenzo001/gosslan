@@ -266,11 +266,13 @@ function copyOut(content: string): string {
 }
 
 /** 头像取色名：必须与列表/回执/弹层同源（昵称），否则同一人两处颜色分叉。
- *  群聊由父组件传 nicknameOf 结果；单聊在此兜一把，防止退化成按设备 ID 哈希。 */
+ *  群聊由父组件传 nicknameOf 结果；单聊在此兜一把。
+ *  ⚠️ 不再往后面接 `|| sender_id`：`chat.nicknameOf` 判不到时返回「未知成员 + id 后四位」，
+ *  永远非空 —— 再接一次就是把第二条兜底写进第二个家（见 `utils/memberName.ts`）。 */
 const avatarName = computed(() =>
   mine.value
     ? app.device?.nickname || ""
-    : props.senderName || chat.nicknameOf(props.message.sender_id) || props.message.sender_id,
+    : props.senderName || chat.nicknameOf(props.message.sender_id),
 );
 /**
  * 头像：自己取本机；对端从好友/在线节点表取（peer 改资料后由 syncProfileFromPeers
