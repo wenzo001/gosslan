@@ -207,8 +207,10 @@ pub fn spawn_outbox_sweeper(
             //   ② 单轮**字节**预算 `CONTENT_RECONCILE_TICK_BYTE_BUDGET`，但**第一条恒放行**
             //      （否则一个超大候选永远排不进预算 ⇒ 那一行台账饿死；有界的含义是"每轮最多读
             //      这么多盘"，不是"大文件永远不对账"）；
-            //   ③ 跳过**还在写的那半截**：`.part` 后缀，或 `file_receivers` 里仍有同一个
-            //      `transfer_id`（那说明这份文件正在收，哈希必然对不上，纯抢带宽）。
+            //   ③ 跳过**还在写的那半截**：`file_receivers` 里仍有同一个 `transfer_id`（那说明这份
+            //      文件正在收，哈希必然对不上，纯抢带宽），或这份 `.part` 的 mtime 还在最近 60s 内
+            //      （真的在落盘）。⚠️ 只看 `.part` 后缀会永久饿死一个"名字就叫 xxx.part"的成品文件
+            //      —— 这一列里从来只写改名后的最终路径，判据细节见 `part_is_being_written`。
             let inflight: std::collections::HashSet<String> = {
                 let recv = state
                     .file_receivers
@@ -219,11 +221,11 @@ pub fn spawn_outbox_sweeper(
             let mut byte_budget = CONTENT_RECONCILE_TICK_BYTE_BUDGET;
             let mut scanned = 0usize;
             for c in cands {
-                if inflight.contains(&c.transfer_id) || is_inflight_reconcile_path(&c.path) {
+                if inflight.contains(&c.transfer_id) || part_is_being_written(&c.path, db::now_ms()) {
                     state.logger.info(
                         "content",
                         format!(
-                            "内容台账对账跳过在途的那半截（正在收/还是 .part），本轮不读盘 cid={} from={}",
+                            "内容台账对账跳过在途的那半截（正在收/这份 .part 还在写），本轮不读盘 cid={} from={}",
                             c.cid, c.peer_id
                         ),
                     );
@@ -316,6 +318,37 @@ pub(crate) fn is_inflight_reconcile_path(path: &str) -> bool {
         .extension()
         .and_then(|s| s.to_str())
         == Some("part")
+}
+
+/// 「正在被写」的判定窗口：比一轮 tick（30s）宽一倍，覆盖两次写入之间的空档。
+pub(crate) const RECONCILE_PART_ACTIVE_MS: i64 = 60_000;
+
+/// 后缀是 `.part` **且此刻磁盘上那份还在被写**（mtime 落在 `RECONCILE_PART_ACTIVE_MS` 内）。
+///
+/// ⚠️ 为什么不能只看后缀（评审 2026-10-14 抓到的那条我自造的坑）：这里的 path 取自
+/// `file_transfers.path`，而那一列**只有改名落盘之后才会被写**（`finish_receiver_into` 写的是
+/// 最终路径；`fail_taken_receive` 里原话"不能把 .part 写进 path"，中继那份是 `<id>.relay.part`
+/// 也从不进这一列）。⇒ 后缀命中"在途半截"的情况其实不存在，真正会命中的是
+/// **用户本来就把文件叫做 `xxx.part`**（浏览器未完成的下载、分卷包都是这个后缀）——
+/// 那份早就收完了，按后缀跳过就是**这一行台账每轮都被跳过、永远对不上账**，
+/// 于是每次建链整批重投 ⇒ 又变回 B2 要杀的那个永动来源。
+/// ⇒ "正在写"必须由 mtime 说话；真正的在途传输另有 `file_receivers` 那份 `transfer_id` 兜着。
+pub(crate) fn part_is_being_written(path: &str, now_ms: i64) -> bool {
+    if !is_inflight_reconcile_path(path) {
+        return false;
+    }
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    let Ok(mtime) = meta.modified() else {
+        return false;
+    };
+    let Ok(millis) = mtime.duration_since(std::time::UNIX_EPOCH) else {
+        return false;
+    };
+    let written_at = millis.as_millis() as i64;
+    // 允许 ±：机器时钟回拨时不许让一份文件永久判成"正在写"
+    (now_ms - written_at).abs() < RECONCILE_PART_ACTIVE_MS
 }
 
 /// 一条待对账的候选（文件层 done + 内容层还认为没收完）。
@@ -449,9 +482,9 @@ pub(crate) fn finish_reconcile(
 #[cfg(test)]
 mod content_reconcile_tests {
     use super::{
-        content_file_matches, finish_reconcile, is_inflight_reconcile_path,
+        content_file_matches, finish_reconcile, is_inflight_reconcile_path, part_is_being_written,
         list_reconcilable_content, reconcile_take_next, ReconcileCandidate,
-        CONTENT_RECONCILE_PER_TICK, CONTENT_RECONCILE_TICK_BYTE_BUDGET,
+        CONTENT_RECONCILE_PER_TICK, CONTENT_RECONCILE_TICK_BYTE_BUDGET, RECONCILE_PART_ACTIVE_MS,
     };
     use crate::content::model::{Direction, TransferRecord, TransferStatus};
     use sha2::Digest as _;
@@ -654,14 +687,63 @@ mod content_reconcile_tests {
     }
 
     /// ⑦ 在途的那半截不许读盘：`.part` 是 `make_receiver` 的命名口径，
-    /// 它的字节数与摘要必然对不上 —— 花几十秒读它再判"不完成"，抢的正是当前传输的磁盘带宽。
+    /// ⑦ 在途的那半截不许读盘：`.part` 是 `make_receiver` 的命名口径，它的字节数与摘要
+    /// 必然对不上 —— 花几十秒读它再判「不完成」，抢的正是当前传输的磁盘带宽。
+    ///
+    /// ★ 但**只按后缀会把一行台账永久饿死**（评审 2026-10-14 抓到我自己造的那条坑）：候选的 path
+    /// 取自 `file_transfers.path`，而那一列只有改名落盘之后才被写 ⇒ 后缀命中的更可能是
+    /// 「用户本来就把文件叫做 `xxx.part`」（浏览器未完成的下载、分卷包都是这个后缀），而那份早收完了。
+    /// ⇒ 「正在写」必须由 **mtime** 说话。两个方向都钉住：新鲜 ⇒ 跳过；陈旧 ⇒ 必须放行去对账。
     #[test]
-    fn inflight_part_paths_are_skipped_before_any_disk_read() {
+    fn inflight_part_files_are_skipped_but_a_part_named_deliverable_is_not_starved() {
+        use std::fs::OpenOptions;
+        use std::time::{Duration, SystemTime};
+
+        // 后缀判定本身（一正一反）
         assert!(is_inflight_reconcile_path("/x/y/abc.part"));
         assert!(is_inflight_reconcile_path("abc.part"));
-        // 反例：已经改好名的正式文件、没有后缀的文件、以及后缀只在中间出现的名字
         assert!(!is_inflight_reconcile_path("/x/y/报告.pdf"));
         assert!(!is_inflight_reconcile_path("/x/y/abc"));
         assert!(!is_inflight_reconcile_path("/x/part/abc.bin"));
+
+        // 窗口至少覆盖一轮 tick，否则一次慢写入会被当成「已收完」而去哈希半截文件
+        assert!(
+            RECONCILE_PART_ACTIVE_MS as u64 >= crate::network::transport::OUTBOX_SWEEPER_INTERVAL_MS,
+            "判定窗口比 tick 还短的话，一轮没写完的文件会被当成品去哈希"
+        );
+
+        let dir = std::env::temp_dir().join(format!("gosslan-part-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let now = crate::db::now_ms();
+        let fresh = dir.join("live.part");
+        let aged = dir.join("named-as-part.part"); // 用户真的把文件叫这个名字，且早已收完
+        let done = dir.join("final.pdf");
+        for p in [&fresh, &aged, &done] {
+            std::fs::write(p, b"x").unwrap();
+        }
+        assert!(600_000 >= RECONCILE_PART_ACTIVE_MS, "夹具必须落在窗口之外");
+        let ten_min_ago = SystemTime::UNIX_EPOCH + Duration::from_millis((now - 600_000) as u64);
+        for p in [&aged, &done] {
+            let f = OpenOptions::new().write(true).open(p).unwrap();
+            f.set_modified(ten_min_ago).unwrap();
+        }
+
+        assert!(
+            part_is_being_written(fresh.to_str().unwrap(), now),
+            "mtime 还新鲜的 .part = 真在写 ⇒ 本轮不读盘"
+        );
+        assert!(
+            !part_is_being_written(aged.to_str().unwrap(), now),
+            "十分钟没动过的 .part 就是成品 ⇒ 必须放行去对账，否则那一行台账每轮被跳过、永动重投又回来了"
+        );
+        assert!(
+            !part_is_being_written(done.to_str().unwrap(), now),
+            "后缀不是 .part 就不进这道判定"
+        );
+        assert!(
+            !part_is_being_written(dir.join("gone.part").to_str().unwrap(), now),
+            "文件不在盘上不算「正在写」（该走原来那条读不到内容的分支）"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

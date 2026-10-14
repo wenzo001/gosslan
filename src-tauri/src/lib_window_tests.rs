@@ -797,6 +797,10 @@
             "show_existing_aux_window(",
             "install_hide_on_close(",
             "decorate_aux_window(",
+            // `placed` 是"建好之后要做的摆位/收尾"整段（里面就是上面那些 getter）。
+            // 需求 4 说的"锁内只执行必要创建逻辑"，落在源码上就是这一条不许进锁块 ——
+            // 少了这个标记，把 `placed(&win)` 挪回锁内仍然判绿（评审 2026-10-14 抓到）。
+            "placed(",
         ];
         for at in sites {
             // 反向扫到"包含这次取锁的块"的开括号

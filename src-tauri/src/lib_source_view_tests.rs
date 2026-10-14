@@ -337,7 +337,8 @@
     /// 为什么单独钉这一格：`content_file_matches` 已经是**分块**喂哈希器（不整读进内存，
     /// 见上一条判据），所以"不许整读进内存"那条守卫**看不见**这个问题 ——
     /// 它慢在占着 async worker 跑几十秒，而同一个 runtime 上还跑着所有 async 命令
-    /// （开设置窗就是其中之一）。字节预算与"跳过在途 .part"是第二道界，这条钉的是线程归属。
+    /// （开设置窗就是其中之一）。字节预算与"跳过在途那份 .part（mtime 还新鲜的）"是第二道界，
+    /// 这条钉的是线程归属。
     #[test]
     fn sweeper_whole_file_hash_runs_off_the_async_worker() {
         let src = crate::network::transport_src_for_guards();
@@ -357,7 +358,7 @@
         for kept in [
             "CONTENT_RECONCILE_PER_TICK",
             "CONTENT_RECONCILE_TICK_BYTE_BUDGET",
-            "is_inflight_reconcile_path(",
+            "part_is_being_written(",
             "reconcile_take_next(",
         ] {
             assert!(
