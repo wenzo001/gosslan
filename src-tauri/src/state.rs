@@ -1085,14 +1085,21 @@ pub struct AppState {
     /// 此处登记失败项，由建链 / Hello / 心跳的 flush_pending_group_keys 重试。
     pub pending_group_keys: Mutex<HashMap<String, std::collections::HashSet<String>>>,
 
-    /// **已发出、还没被同意/拒绝的好友申请**（peer_id 集合）。
+    /// **已发出、还没被同意/拒绝的好友申请**：peer_id -> (首次登记时刻 ms, 上次补发时刻 ms)。
     ///
     /// 为什么必须登记（用户 2026-09-12 真机）：「好友已发送，等待对方确认」，但对方
     /// **什么都没收到** —— 好友申请是一条**没有回执**的定向帧，链路正好在那一刻抖动
     /// （BLE 镜像互拨把链路打断）时它就**静默丢了**，而发送方界面依然显示"已发送"。
-    /// 现在：发出即登记；对端建链/Hello 补全时重发一次（`flush_pending_friend_request`）；
+    /// 现在：发出即登记；对端建链/Hello 补全时重发（`flush_pending_friend_request`）；
     /// 收到同意（`FriendAccept`）或拒绝（`FriendReject`）后清除。
-    pub pending_out_requests: Mutex<std::collections::HashSet<String>>,
+    ///
+    /// ⚠️ 为什么要带这两个时刻（用户 2026-10-14 真机：「群内加好友会弹出很多个」）：
+    /// 补发每份都是**新 `message_id`** 的信封（那是"上一份可能丢了"的前提，不能复用旧 id），
+    /// 而调用点挂在建链**和每轮心跳**上（5s 一轮）⇒ 一条没人应答的申请会每 5 秒向整个网洪泛一份，
+    /// 对端界面也会反复收到事件。间隔判据在纯函数 `friend_request_flush_decision` 里，
+    /// 与 `pending_out_accepts` 的区别是**不设次数上限也不设放弃窗口** —— 申请等的是"对方做人"，
+    /// 上限等于偷偷废掉「离线时自动暂存、上线后补发」那条承诺。
+    pub pending_out_requests: Mutex<std::collections::HashMap<String, (i64, i64)>>,
 
     /// **待补发的好友同意回执**：peer_id -> (首次登记时刻 ms, 已补发次数, 上次补发时刻 ms)。
     ///
@@ -1457,7 +1464,7 @@ impl AppState {
             task_window_group: Mutex::new(None),
             dial_permits: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_DIALS)),
             inbound_permits: Arc::new(tokio::sync::Semaphore::new(MAX_INBOUND_CONNECTIONS)),
-            pending_out_requests: Mutex::new(std::collections::HashSet::new()),
+            pending_out_requests: Mutex::new(std::collections::HashMap::new()),
             pending_out_accepts: Mutex::new(std::collections::HashMap::new()),
             group_keys: Mutex::new(HashMap::new()),
             peers: Mutex::new(HashMap::new()),

@@ -19,10 +19,15 @@
     #[test]
     fn friend_request_survives_a_dropped_link() {
         let commands = all_commands_src();
-        let i = commands
-            .find("pub async fn send_friend_request(")
-            .expect("send_friend_request 必须在");
-        let body = &commands[i..i + 1200];
+        // ⚠️ 用**花括号配对切函数体**（`rust_fn_body`），不要写成 `&src[i..i + 1200]` 这种
+        // 定长字节窗口：中文注释多，字节边界会落在码点中间 —— 实测过一次
+        // `end byte index is not a char boundary` 直接把这条测试弄 panic（2026-10-14），
+        // 而且窗口本身既可能截进下一个函数、也可能把要判的东西截在外面。
+        let body = rust_fn_body(&commands, "pub async fn send_friend_request(");
+        assert!(
+            !body.is_empty(),
+            "函数体切出来是空 ⇒ 签名锚点没对上，这条判据在空转"
+        );
         assert!(
             body.contains("pending_out_requests"),
             "命令必须**先登记**再发（丢了才知道要补发）"
@@ -44,6 +49,25 @@
         assert!(
             forget.contains("pending_out_requests"),
             "收到同意/拒绝后必须清掉登记，否则会一直补发"
+        );
+        // 补发的**限频**必须真的接在那条纯函数判定上，并且成功后要记下本次时刻 ——
+        // 内核写得再对，没人调 / 调了不记时刻，行为就等于没有（2026-10-14 真机：
+        // 每轮心跳（5s）补发一份新 message_id 的信封 ⇒ 对端连续弹出很多条）。
+        let flush = rust_fn_body(&transport, "pub async fn flush_pending_friend_request(");
+        let flush_f = code_flat(&flush);
+        assert!(
+            flush_f.contains("friend_request_flush_decision(entry,now,MIN_INTERVAL_MS)"),
+            "补发必须走 `friend_request_flush_decision` 那个判定（锁内只判定、不跨 await 持锁）"
+        );
+        assert!(
+            flush_f.contains(".and_modify(|e|e.1=now)") && flush_f.contains("ifdecision==FriendRequestFlush::Nothing{return;}"),
+            "发送成功后必须记下本次补发时刻，且 Nothing 时必须立刻返回 —— 少任一半都拦不住每轮心跳重发"
+        );
+        // 间隔的**数值**也要钉在用它的那处：行为判据传的是自变量，改这个常量它管不着，
+        // 而改成 0 就等价于回到"每轮心跳补发一份"（那条真机缺陷的原始形状）。
+        assert!(
+            flush_f.contains("constMIN_INTERVAL_MS:i64=30_000;"),
+            "补发最小间隔必须是 30s 这一档（心跳是 5s，间隔小于它就等于没限频）"
         );
     }
 
@@ -93,6 +117,70 @@
         );
     }
 
+    /// **同一条好友申请重复到达，不许刷屏似地弹系统通知**（用户 2026-10-14 真机：
+    /// 「正常聊天时群内加好友会弹出很多个，连续多条加好友的弹窗也有问题」）。
+    ///
+    /// 机制（逐行核对过，不是猜）：发送方在**每次建链补全和每次心跳**都会
+    /// `flush_pending_friend_request`（`handle_identity.rs` 的两个调用点；心跳周期
+    /// `dial.rs` 的 `HEARTBEAT_INTERVAL_SECS = 5`）重发一条**新 message_id** 的信封
+    /// （`send_friend_request_via_link` 每次都 `build_envelope`），所以接收方两层去重
+    /// （mesh `on_receive` + `GossipEngine::is_new(message_id)`）**结构上看不见重复**；
+    /// 而接收侧原先把 `pending_requests.insert(..)` 的返回值丢掉 ⇒ 每一份都当成新申请
+    /// 各 emit 一次事件、各弹一条系统通知。
+    ///
+    /// 这与 2026-09-28 那次给 `FriendAccept` 修掉的是**同一个形状**（直连缺门控、跨跳有门控），
+    /// 修法也照那一次：两条路径收成一个家，事件照发（前端幂等刷新），
+    /// **通知只按"本机是不是第一次握着这条申请"决定**。
+    #[test]
+    fn every_friend_request_path_notifies_only_on_first_sighting() {
+        let transport = crate::network::transport_src_for_guards();
+        let transport_f = code_flat(&transport);
+        assert_eq!(
+            transport_f.matches("apply_friend_request(state,").count(),
+            2,
+            "两条 FriendRequest 路径（直连 `Message::FriendRequest` + 跨跳 `GossipKind::FriendRequest`）\
+             必须走同一个家 —— 各写一遍正是这次抓到的缺陷形状"
+        );
+        // 家之外不许再有人自己发这份事件 / 自己弹这条通知（"两处各写一遍"就是漂移的开始）。
+        assert_eq!(
+            transport.matches("emit(\"friend-request\"").count(),
+            1,
+            "`friend-request` 事件的发送点必须只有一处（在那个家里）——\
+             两处各 emit 意味着两处可以各弹各的通知"
+        );
+        assert_eq!(
+            transport_f.matches("show_click_if_enabled(state").count(),
+            1,
+            "好友申请的系统通知只许有一个发起点（在那个家里）"
+        );
+        let home = rust_fn_body(&transport, "pub(crate) async fn apply_friend_request(");
+        let home_f = code_flat(&home);
+        assert!(
+            home_f.contains("ifwas_pending{") && home_f.contains("show_click_if_enabled(state"),
+            "通知必须由『第一次握着这条申请』门控 —— 重复投递不许刷屏"
+        );
+        assert!(
+            home_f.contains("auto_accept_if_already_friend(state,"),
+            "自动同意也在那个家里做（两条路径都必须先做，别各写一遍）"
+        );
+        assert!(
+            home_f.contains("pending_requests.lock()") && home_f.contains(".insert("),
+            "这个家必须真的读 insert 的返回值来判定是不是首次（丢掉返回值就是本缺陷的原形）"
+        );
+        // 门控的**输入**也要钉住：形状判据管得住"有没有那个 if"，管不住"参数有没有写反"。
+        // 实测过一条假绿：把 `prior.is_none()` 改成 `prior.is_some()`（判反 ⇒ 首次不弹、
+        // 重复才弹）时，纯函数那条行为判据和上面几条形状判据都不红。
+        assert!(
+            home_f.contains("friend_request_arrival_decision(prior.is_none())"),
+            "门控的输入必须是 insert 的返回值（None = 本机第一次握着这条申请）"
+        );
+        assert!(
+            !home_f.contains("friend_request_arrival_decision(true)")
+                && !home_f.contains("friend_request_arrival_decision(false)"),
+            "不许把首次判定硬编码成常量 —— 那等于拆掉门控却留着判据的名字"
+        );
+    }
+
     /// **"申请人已经是我的好友"时，这条申请必须被自动同意**（双方关系必须收敛）。
     ///
     /// 真实缺陷（用户 2026-09-12 真机实测）：B 的好友列表里已经有 A，而 A 是**重置过的账号**、
@@ -113,9 +201,17 @@
             .matches("auto_accept_if_already_friend(state, ")
             .count();
         assert_eq!(
-            calls, 2,
-            "两条 FriendRequest 路径（直连 `Message::FriendRequest` + 跨跳 `GossipKind::FriendRequest`）\
-             都必须先做自动同意 —— 只修一条就会『同一件事两种行为』（这正是上一条缺陷的成因）"
+            calls, 1,
+            "自动同意必须**只有一处**发起点 —— 且那一处是 `apply_friend_request` 这个家。\n\
+             2026-10-14 之前的形状是两条 FriendRequest 路径各调一遍（共 2 处），那正是\
+             「通知/登记各写一遍」能各自漂移的原因；现在两条路径都进同一个家\
+             （由 every_friend_request_path_notifies_only_on_first_sighting 钉两条都走进来），\
+             家内部做这一次自动同意 ⇒ 少一条消费者会红在那条上，这一条只需钉「没有第二处」。"
+        );
+        let home = rust_fn_body(&transport, "pub(crate) async fn apply_friend_request(");
+        assert!(
+            home.contains("auto_accept_if_already_friend(state, "),
+            "这一次自动同意必须在那个家里（别把它挪到某一条路径上，那又回到两种行为）"
         );
         let commands = all_commands_src();
         assert_eq!(

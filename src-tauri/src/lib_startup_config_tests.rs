@@ -238,10 +238,14 @@
         );
         assert_eq!(
             transport.matches("crate::notifications::show").count(),
-            3,
-            "三处 Rust 侧通知（好友申请×2 + 好友通过×1）都必须走 notifications（含开关与错误）。\
-             原先是 4（通过那件事在直连与跨跳各写一遍），2026-09-28 收成一个\
-             `apply_friend_accept` 之后只剩一家 —— 这个数字**只许因为又漏了一条路而变大**"
+            2,
+            "两处 Rust 侧通知（好友申请×1 + 好友通过×1）都必须走 notifications（含开关与错误）。\
+             历史：原先是 4（两件事各在直连与跨跳写一遍）→ 2026-09-28 收成一个 `apply_friend_accept` \
+             变 3 → 2026-10-14 申请也收成一个 `apply_friend_request` 变 2（真机缺陷：发送方每轮心跳\
+             补发一份新 message_id 的信封，两处各弹各的通知 ⇒ 「加好友弹出很多个」）。\
+             这个数字**只许因为又漏了一条路而变大**；「两条路径都走进那个家」由\
+             lib_friend_identity_tests 的 every_friend_request_path_notifies_only_on_first_sighting \
+             钉住，所以这里收窄不会放过漏掉某条路。"
         );
         let notif = include_str!("notifications.rs");
         assert!(
@@ -257,4 +261,71 @@
             commands.contains("pub fn send_test_notification("),
             "必须有设置页可调用的测试通知命令"
         );
+    }
+
+    /// **第二次启动不许再起一份完整应用**（用户 2026-10-14：「点了一下弹出加好友的那个，
+    /// 然后就又弹出另一个聊天主框 —— 同时启动了两个程序」）。
+    ///
+    /// 为什么这是唯一可能的形状：一个进程内造不出第二个"聊天主框"——
+    /// `main` 只来自 `tauri.conf.json` 那一份窗口声明，`WebviewWindowBuilder` 全仓只有
+    /// `commands/logs.rs` 的五处辅助窗在用，前端 0 处 `new WebviewWindow`（`lib_window_tests.rs`
+    /// 还钉着"谁都不许按 label 分支渲染聊天"）。所以看到两扇主框 = **两个进程**，
+    /// 各自有独立的托盘图标、数据库句柄与 mesh 身份 —— 同一条好友申请会被两个进程
+    /// 各弹一次通知，这同时放大了"加好友弹出很多个"。
+    ///
+    /// ⚠️ 守卫**必须给开发/测试的双实例出口留活路**：`scripts/e2e/core.mjs` 起实例时
+    /// 带 `GOSSLAN_INSTANCE=<n>` + `GOSSLAN_AUTOSTART=1`，无条件守卫会直接废掉整条
+    /// 双实例 E2E 路线（那是本仓唯一能证跨进程行为的一层）。
+    #[test]
+    fn second_launch_focuses_the_running_app_instead_of_duplicating_it() {
+        let src = include_str!("lib.rs");
+        assert!(
+            src.contains("tauri_plugin_single_instance::init("),
+            "没装单实例守卫 ⇒ 多点一次图标就是再起一份完整应用（用户报的那一格）"
+        );
+        let at = src
+            .find("tauri_plugin_single_instance::init(")
+            .expect("上面已判过");
+        let around = &src[at.saturating_sub(1_200)..(at + 600).min(src.len())];
+        assert!(
+            around.contains("allow_second_instance_launch("),
+            "守卫必须走那个纯函数出口判定（开发/测试双实例靠它），不许无条件注册"
+        );
+        assert!(
+            around.contains("crate::tray::show_main_window("),
+            "第二次的正确结局是把已有主窗叫到前台 —— 而不是新建窗口、也不是静默退出"
+        );
+        // 依赖必须只在桌面三平台（插件上游不支持 android/ios，装上会让移动端编译失败）
+        let cargo = include_str!("../Cargo.toml");
+        let c = code_flat(cargo);
+        assert!(
+            c.contains("tauri-plugin-single-instance"),
+            "Cargo.toml 缺 tauri-plugin-single-instance 依赖"
+        );
+        let lib_f = code_flat(src);
+        assert!(
+            lib_f.contains("cfg(all(desktop,any(target_os=\"macos\",windows,target_os=\"linux\")))"),
+            "守卫与其依赖的 cfg 必须是同一组平台（不一致 = 移动端构建当场断）"
+        );
+    }
+
+    /// 上面那条守卫的**放行出口**必须只认开发/测试那两个变量（真值表）。
+    ///
+    /// 为什么单独立一条：源码形状判据管得住"注册处走了这个函数"，管不住函数本身被改宽
+    /// （比如顺手写成恒 `true` ⇒ 守卫变成装饰，用户还是会看到两个进程）。
+    /// 而改窄会把双实例 E2E 整条路线关掉 —— 两个方向都要有读数。
+    #[cfg(all(desktop, any(target_os = "macos", windows, target_os = "linux")))]
+    #[test]
+    fn second_instance_exit_is_only_the_dev_multi_open() {
+        // 真用户环境（两个变量都没设）⇒ 必须拦下来
+        assert!(!allow_second_instance_launch(None, None));
+        // 双实例 harness 那一档：带 GOSSLAN_INSTANCE ⇒ 放行
+        assert!(allow_second_instance_launch(Some("2"), None));
+        // headless 起绑定地址那一档：GOSSLAN_AUTOSTART=1 ⇒ 放行
+        assert!(allow_second_instance_launch(None, Some("1")));
+        // 反证：AUTOSTART 写成别的值不算多开出口（别把"任意非空"当放行）
+        assert!(!allow_second_instance_launch(None, Some("0")));
+        assert!(!allow_second_instance_launch(None, Some("yes")));
+        // GOSSLAN_INSTANCE 只要存在（含空串）就算开发多开 —— 判的是"有没有这个出口"
+        assert!(allow_second_instance_launch(Some(""), None));
     }

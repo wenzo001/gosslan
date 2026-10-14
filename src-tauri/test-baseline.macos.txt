@@ -555,6 +555,7 @@ network::transport::tests::friend_accept_backfills_pubkeys_from_peers
 network::transport::tests::friend_accept_flush_is_bounded_and_spaced
 network::transport::tests::friend_chat_message_accepted
 network::transport::tests::friend_message_blocked_has_original_sender
+network::transport::tests::friend_request_arrival_notifies_only_the_first_time
 network::transport::tests::gossip_group不受好友检查影响
 network::transport::tests::gossip_propagation_layer_stays_independent_of_local_persistence
 network::transport::tests::gossip_trust_for_known_friend_never_tofus
@@ -583,6 +584,7 @@ network::transport::tests::oversize_frame_is_a_local_failure_and_writes_nothing
 network::transport::tests::peer_offline_after_tail_truth_table
 network::transport::tests::peer_offline_rule_has_one_home
 network::transport::tests::peer_wide_receiver_cleanup_is_gated_on_total_link_loss
+network::transport::tests::pending_friend_request_reflush_is_spaced_not_per_heartbeat
 network::transport::tests::pending_reads_keeps_max_timestamp
 network::transport::tests::pick_member_x25519_prefers_peers_then_friends
 network::transport::tests::plaintext_payload_is_rejected
@@ -724,6 +726,7 @@ tests::direct_remind_validates_target_message_exists
 tests::duplicate_file_done_still_answers_with_an_ack
 tests::every_finalize_path_defers_the_destructive_write
 tests::every_friend_accept_path_forgets_the_pending_request
+tests::every_friend_request_path_notifies_only_on_first_sighting
 tests::external_link_rejects_non_http_schemes
 tests::file_attempt_epoch_is_wired_on_both_sides
 tests::file_send_progress_counts_wire_not_queue
@@ -773,6 +776,8 @@ tests::removing_a_friend_also_drops_the_in_memory_identity_binding
 tests::runtime_snapshot_reports_real_bluetooth_runtime
 tests::runtime_state_has_a_single_source
 tests::scan_results_are_not_filtered_by_unconnected_services
+tests::second_instance_exit_is_only_the_dev_multi_open
+tests::second_launch_focuses_the_running_app_instead_of_duplicating_it
 tests::self_chat_stays_local
 tests::sync_friend_keys_replaces_both_trust_legs_under_explicit_confirm
 tests::tasks_window_uses_one_fixed_label_cross_checked_with_frontend

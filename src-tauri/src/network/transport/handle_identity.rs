@@ -183,45 +183,19 @@ async fn handle_identity_and_friend_messages(state: &Arc<AppState>, peer_id: &st
             if to != state.device_id {
                 return;
             }
-            // 他已经是我的好友 ⇒ 直接同意（别插 pending，见 auto_accept_if_already_friend）
-            if auto_accept_if_already_friend(state, &from).await {
-                return;
-            }
-            let req = PendingRequest {
-                from: from.clone(),
-                from_nickname: from_nickname.clone(),
-                from_avatar: from_avatar.clone(),
-                ts,
-            };
-            state
-                .pending_requests
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .insert(from.clone(), req.clone());
-            let _ = state.app.emit("friend-request", &req);
-            let mut extra = std::collections::HashMap::new();
-            extra.insert("type".to_string(), "friend_request".to_string());
-            // macOS 点击捕获必须带 action 按钮（见 crate::notifications）；
-            // 这条通知不经前端，文案与标题同为固定中文。
-            extra.insert("action_label".to_string(), "查看".to_string());
-            // 好友申请是**不经前端**的通知：必须走后端开关 + 错误可见的统一入口。
-            // 点击（Windows）后唤起窗口并跳到「新的朋友」；移动端点击由插件送回前端。
-            let click_app = state.app.clone();
-            let _ = crate::notifications::show_click_if_enabled(
+            // 登记、事件、留痕与系统通知都在 `apply_friend_request` 那一个家里做
+            // （跨跳那条走同一个家）—— 通知由「本机是否第一次握着这条申请」门控。
+            apply_friend_request(
                 state,
-                "好友申请",
-                &format!("{from_nickname} 请求添加你为好友"),
-                extra,
-                false,
-                move || {
-                    crate::notifications::on_notification_clicked(
-                        &click_app,
-                        "friend_request",
-                        None,
-                        None,
-                    )
+                PendingRequest {
+                    from,
+                    from_nickname,
+                    from_avatar,
+                    ts,
                 },
-            );
+                "收到好友申请",
+            )
+            .await;
         }
         Message::FriendAccept { from, to } => {
             if from != peer_id {

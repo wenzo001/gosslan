@@ -177,6 +177,22 @@ fn install_panic_hook(app: Option<tauri::AppHandle>) {
     }));
 }
 
+/// 「这第二次启动该不该真的起一个新进程」的判定（纯函数、可单测）。
+///
+/// 只有**开发与测试的多开出口**算该：双实例 E2E harness 起实例时带
+/// `GOSSLAN_INSTANCE=<n>`（见 `scripts/e2e/core.mjs`），并常配 `GOSSLAN_AUTOSTART=1` 选绑定地址。
+/// 那一层是本仓唯一能证跨进程行为的路线，守卫不许把它一起关掉。
+///
+/// 真用户环境里第二个进程 = 第二扇主窗 + 第二个托盘图标 + 第二份 mesh 身份，
+/// 同一条好友申请会被两个进程各弹一次通知（用户 2026-10-14：「同时启动了两个程序，这有问题」）。
+#[cfg(all(desktop, any(target_os = "macos", windows, target_os = "linux")))]
+pub(crate) fn allow_second_instance_launch(
+    instance_env: Option<&str>,
+    autostart_env: Option<&str>,
+) -> bool {
+    instance_env.is_some() || autostart_env == Some("1")
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // 先装 hook（此刻还没有 state，先只打 stderr；setup 里拿到 logger 后再装一次带上文件日志）
@@ -212,6 +228,18 @@ pub fn run() {
                 .with_denylist(&[WINDOW_SETTINGS, WINDOW_LOGS])
                 .build(),
         );
+    }
+
+    // 单实例守卫：第二个进程不再建窗，而是把**已有那份**主窗叫到前台。
+    // 平台清单必须与 Cargo.toml 里那条依赖的 `cfg` 同一组（判据在 lib_startup_config_tests）。
+    #[cfg(all(desktop, any(target_os = "macos", windows, target_os = "linux")))]
+    if !allow_second_instance_launch(
+        std::env::var("GOSSLAN_INSTANCE").ok().as_deref(),
+        std::env::var("GOSSLAN_AUTOSTART").ok().as_deref(),
+    ) {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            crate::tray::show_main_window(app);
+        }));
     }
 
     let app = builder

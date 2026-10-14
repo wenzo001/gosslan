@@ -319,6 +319,89 @@ pub(crate) fn apply_friend_accept(state: &Arc<AppState>, from: &str, trace: &str
     }
 }
 
+/// 「这条到达的好友申请该不该弹系统通知」的判定结果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FriendRequestArrival {
+    /// 本机第一次握着这条申请 ⇒ 留痕 + 弹系统通知。
+    Notify,
+    /// 同一条申请再次到达 ⇒ 事件照发（前端幂等刷新列表），**不弹通知**。
+    SilentRefresh,
+}
+
+/// 幂等判据的**纯函数内核**：`first_sighting` = 登记前内存里没有这个人
+/// （= `pending_requests.insert(..)` 返回 `None`）。
+///
+/// 为什么要钉死这一格（用户 2026-10-14 真机：「群内加好友会弹出很多个，连续多条的弹窗也有问题」）：
+/// 好友申请**没有回执**，发送方在每次建链补全和每次心跳都会补发一次
+/// （`flush_pending_friend_request`，心跳 5s 一轮），而每份补发都是**新 `message_id`** 的信封
+/// ⇒ 接收方两层去重（mesh `on_receive` + `GossipEngine::is_new`）结构上看不见"重复"。
+/// 所以幂等只能判在"本机是否已经握着这条申请"上，判在帧 id 上是判不住的。
+pub fn friend_request_arrival_decision(first_sighting: bool) -> FriendRequestArrival {
+    if first_sighting {
+        FriendRequestArrival::Notify
+    } else {
+        FriendRequestArrival::SilentRefresh
+    }
+}
+
+/// 收到「好友申请」后的**全部**本地动作 —— 直连与跨跳共用这一个家。
+///
+/// ## 为什么要收成一家
+/// 与 `apply_friend_accept` 同一条理由（2026-09-28 复审抓到的形状）：判据原先在两处各写一遍，
+/// 而**两处都把 `insert(..)` 的返回值丢掉** ⇒ 每一份补发都当成新申请，各 emit 一次事件、
+/// 各弹一条系统通知。"同一句话两处各写一遍、且两处都缺同一个条件"就是这类缺陷的形状，
+/// 所以连通知文案与点击路由都收进来。
+///
+/// ## 幂等判据
+/// 事件每次都发（前端 store 据此重拉「新的朋友」，幂等；漏发会让首次那一份恰好没被界面收到时
+/// 列表永远不刷新），但**通知只在第一次**。已经是好友的情形由
+/// `auto_accept_if_already_friend` 先行收敛（那条路径自己会走完整的同意流程）。
+pub(crate) async fn apply_friend_request(state: &Arc<AppState>, req: PendingRequest, trace: &str) {
+    // 他已经是我的好友 ⇒ 直接同意（别插 pending，见 auto_accept_if_already_friend）
+    if auto_accept_if_already_friend(state, &req.from).await {
+        return;
+    }
+    let prior = {
+        let mut pending = state
+            .pending_requests
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        pending.insert(req.from.clone(), req.clone())
+    };
+    // 每次都发：前端只是据此重拉列表，重复无害（见上面的「幂等判据」）。
+    let _ = state.app.emit("friend-request", &req);
+    let was_pending =
+        friend_request_arrival_decision(prior.is_none()) == FriendRequestArrival::Notify;
+    if was_pending {
+        state.logger.info(
+            "friend",
+            format!("{trace} peer={} nickname={}", req.from, req.from_nickname),
+        );
+        let mut extra = std::collections::HashMap::new();
+        extra.insert("type".to_string(), "friend_request".to_string());
+        // macOS 点击捕获必须带 action 按钮（见 crate::notifications）。
+        extra.insert("action_label".to_string(), "查看".to_string());
+        // 好友申请是**不经前端**的通知：必须走后端开关 + 错误可见的统一入口。
+        // 点击唤起窗口并跳到「新的朋友」；移动端点击由插件送回前端。
+        let click_app = state.app.clone();
+        let _ = crate::notifications::show_click_if_enabled(
+            state,
+            "好友申请",
+            &format!("{} 请求添加你为好友", req.from_nickname),
+            extra,
+            false,
+            move || {
+                crate::notifications::on_notification_clicked(&click_app, "friend_request", None, None)
+            },
+        );
+    } else {
+        // 重复投递（同一申请被补发）：只留一行便于排查的痕迹，**不通知**。
+        state
+            .logger
+            .info("friend", format!("重复的好友申请（已忽略通知）peer={}", req.from));
+    }
+}
+
 pub fn forget_pending_request(state: &AppState, peer_id: &str) {
     state
         .pending_requests
@@ -334,19 +417,67 @@ pub fn forget_pending_request(state: &AppState, peer_id: &str) {
         .remove(peer_id);
 }
 
-/// **补发"我方已发出、还未被处理"的好友申请**（建链 / Hello 补全时调用）。
+/// 待发好友申请的补发判定结果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FriendRequestFlush {
+    /// 该补发一次。
+    Flush,
+    /// 根本没有登记，或距上次补发不足最小间隔 ⇒ 什么都不做。
+    Nothing,
+}
+
+/// 补发策略的**纯函数内核**：`entry = (首次登记时刻, 上次补发时刻)`，`None` = 没有登记。
+///
+/// 与 `friend_accept_flush_decision` 的两点差别（**别把它们合并**）：
+/// · **不设次数上限、不设放弃窗口** —— 申请等的是"对方做人"，对方可能几天后才看到，
+///   加上限等于偷偷废掉「对方离线时暂存、上线后自动补发」那条承诺（INV-P04）；
+///   回执那条要数次数是因为它"我这边的动作已经做完"，这条不是。
+/// · 因此这里只有一个约束量：最小间隔。
+///
+/// 为什么必须有间隔（用户 2026-10-14 真机：「群内加好友会弹出很多个，连续多条的弹窗也有问题」）：
+/// 调用点挂在建链**和每轮心跳**上（`dial.rs` 的 `HEARTBEAT_INTERVAL_SECS = 5`），而每份补发
+/// 都必须是**新 `message_id`** 的信封（复用旧 id 会被对端两层去重直接丢弃，那正是
+/// "丢了没人知道"的前提）⇒ 不限频就是一条没人应答的申请每 5 秒向整个网洪泛一份。
+/// 频率这一半归发送侧，通知那一半归接收侧的 `friend_request_arrival_decision` —— 两半都要，
+/// 只做接收侧仍会在 BLE 上把链路刷满。
+pub fn friend_request_flush_decision(
+    entry: Option<(i64, i64)>,
+    now: i64,
+    min_interval_ms: i64,
+) -> FriendRequestFlush {
+    let Some((_issued, last)) = entry else {
+        return FriendRequestFlush::Nothing;
+    };
+    // `last == 0` = 登记后一次都没补发过 ⇒ 这是第一个补发机会，立刻发（保住"秒到"）
+    if last != 0 && now - last < min_interval_ms {
+        return FriendRequestFlush::Nothing;
+    }
+    FriendRequestFlush::Flush
+}
+
+/// **补发"我方已发出、还未被处理"的好友申请**（建链 / Hello 补全与心跳时调用）。
 ///
 /// 为什么需要（用户 2026-09-12 真机）：「好友已发送，等待对方确认」，但对方**什么都没收到**
 /// —— 好友申请是**没有回执**的定向帧，链路正好在那一刻抖动（BLE 镜像互拨打断链路）时
-/// 它就静默丢了，而发送方界面依然显示"已发送"。现在发出即登记，这里补发一次；
-/// 收到同意/拒绝（走 `forget_pending_request`）后清除，所以不会无限重发。
+/// 它就静默丢了，而发送方界面依然显示"已发送"。现在发出即登记，这里补发；
+/// 收到同意/拒绝（走 `forget_pending_request`）后清除。
+///
+/// ⚠️ 补发的**频率**由 `friend_request_flush_decision` 管（见上面的理由）：这里只负责
+/// "锁内取判定 → 锁外发送 → 成功后记下本次时刻"，判定绝不在持锁时 await。
 pub async fn flush_pending_friend_request(state: &Arc<AppState>, peer_id: &str) {
-    let pending = state
-        .pending_out_requests
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .contains(peer_id);
-    if !pending {
+    const MIN_INTERVAL_MS: i64 = 30_000;
+    let now = crate::db::now_ms();
+    // 锁内只做判定（**绝不跨 await 持锁**）
+    let decision = {
+        let entry = state
+            .pending_out_requests
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(peer_id)
+            .copied();
+        friend_request_flush_decision(entry, now, MIN_INTERVAL_MS)
+    };
+    if decision == FriendRequestFlush::Nothing {
         return;
     }
     // ⚠️ **已经是好友就不再补发**。
@@ -374,11 +505,17 @@ pub async fn flush_pending_friend_request(state: &Arc<AppState>, peer_id: &str) 
             .info("friend", format!("已是好友，停止补发申请 peer={peer_id}"));
         return;
     }
-    // 复用同一条发送路径（含目标定向 + 重签），失败也不清登记 —— 下次建链再试
+    // 复用同一条发送路径（含目标定向 + 重签），失败也不清登记 —— 下次机会再试
     if crate::commands::send_friend_request_via_link(state, peer_id)
         .await
         .is_ok()
     {
+        state
+            .pending_out_requests
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(peer_id.to_string())
+            .and_modify(|e| e.1 = now);
         state.logger.info(
             "friend",
             format!("补发好友申请 peer={peer_id}（此前链路抖动丢过）"),

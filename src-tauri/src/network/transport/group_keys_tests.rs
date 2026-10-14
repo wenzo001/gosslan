@@ -103,6 +103,68 @@
         );
     }
 
+    // ---- 好友申请到达：通知只按"第一次握着这条申请"决定 ----
+    //
+    // 真机（2026-10-14 用户反馈）：正常聊天时「群内加好友」会**连续弹出很多条**通知。
+    // 根因不在网络层重复投递本身 —— 申请没有回执，发送方每次建链和每轮心跳都会补发一份
+    // **新 message_id** 的信封（那是保住「离线补发」承诺所必需的）—— 根因在接收端把
+    // `pending_requests.insert(..)` 的返回值丢掉了：结构上看不见"这条我已经握着了"，
+    // 于是每份补发都算一次新申请、各弹一条通知。帧 id 判不住重复，所以幂等只能判在这里。
+    #[test]
+    fn friend_request_arrival_notifies_only_the_first_time() {
+        // 第一次握着这条申请 ⇒ 该通知
+        assert_eq!(
+            friend_request_arrival_decision(true),
+            FriendRequestArrival::Notify
+        );
+        // 已经握着（补发到达）⇒ 只做静默刷新，不通知（只换一个输入的反向对照）
+        assert_eq!(
+            friend_request_arrival_decision(false),
+            FriendRequestArrival::SilentRefresh
+        );
+    }
+
+    /// **待发好友申请的补发必须有间隔，不能每轮心跳发一次**（与上一条通知门控是同一个
+    /// 真机缺陷的两半：接收端不再刷屏，发送端也不该每 5 秒向整个群洪泛一份新 `message_id`）。
+    ///
+    /// 与 `friend_accept_flush_is_bounded_and_spaced` 的关键差别：**没有次数上限、没有放弃窗口**。
+    /// 同意回执是"我这边的动作已做完"，补 3 次足够；而申请是**等对方做人**，对方可能几天后才看到，
+    /// 所以这里只受"最小间隔"约束 —— 收成有上限就等于偷偷废掉「离线补发」那条承诺（INV-P04）。
+    #[test]
+    fn pending_friend_request_reflush_is_spaced_not_per_heartbeat() {
+        let now = 1_000_000_i64;
+        let min_interval = 30_000_i64;
+        // 没有登记 ⇒ 什么都不做
+        assert_eq!(
+            friend_request_flush_decision(None, now, min_interval),
+            FriendRequestFlush::Nothing
+        );
+        // 刚登记、一次都没补发过（last=0）⇒ 立刻补发（建链补发就是这条登记的本职）
+        assert_eq!(
+            friend_request_flush_decision(Some((now - 1_000, 0)), now, min_interval),
+            FriendRequestFlush::Flush
+        );
+        // 距上次补发只过了一轮心跳（5s）⇒ 不发。这一格就是「连续多条弹窗」的流量来源。
+        assert_eq!(
+            friend_request_flush_decision(Some((now - 60_000, now - 5_000)), now, min_interval),
+            FriendRequestFlush::Nothing
+        );
+        // 间隔够了 ⇒ 继续补发
+        assert_eq!(
+            friend_request_flush_decision(Some((now - 60_000, now - 30_000)), now, min_interval),
+            FriendRequestFlush::Flush
+        );
+        // 一天前登记的，仍然补发（不设放弃窗口 —— 与 accept 那条必须不同）
+        assert_eq!(
+            friend_request_flush_decision(
+                Some((now - 86_400_000, now - 31_000)),
+                now,
+                min_interval
+            ),
+            FriendRequestFlush::Flush
+        );
+    }
+
     // ---- 群成员变更：接收端的分支选择 ----
     //
     // 真实事故（2026-09-12 用户反馈）：群主移人后，**其余成员**的成员表不变小、

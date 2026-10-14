@@ -13,6 +13,62 @@
 
 ## [Unreleased]
 
+## [4.39.2] - 2026-10-14
+
+### 加好友不再连弹好几条；第二次启动不再多出一个完整程序
+
+用户 2026-10-14：「正常聊天时，群内加好友会弹出很多个；点了一下那个弹窗，又弹出另一个聊天主框，
+等于同时启动了两个程序；连续多条加好友的弹窗也有问题」。这是**两个根因**，都在后端。
+
+**根因一：接收端没有「这条申请我是不是已经握着了」的判据。** 好友申请没有回执，发送端在
+每次建链补全**和每轮心跳**（`dial.rs` 的 `HEARTBEAT_INTERVAL_SECS = 5`）都会补发一次，而每份补发
+必须是**新 `message_id`** 的信封（复用旧 id 会被对端两层去重直接丢弃，那正是"丢了没人知道"的前提）⇒
+接收端 mesh 去重与 `GossipEngine::is_new` **结构上看不见重复**。而 `handle_identity.rs` 的直连分支与
+`gossip.rs` 的跨跳分支各自把 `pending_requests.insert(..)` 的返回值丢掉 ⇒ 每 5 秒算一次"新申请"、
+各 emit 一次事件、各弹一条系统通知。这正是 2026-09-28 给 `FriendAccept` 修过的**同一个形状**
+（那条的注释原话：判据只在一条路径上修就会"同一件事两种行为"），申请这一条是没修的双胞胎；
+且 `pending_out_requests` 当时是 `HashSet`，结构上就没法像 `pending_out_accepts` 那样限频。
+
+- 两条路径收成一个家 `apply_friend_request`（登记 → 事件 → 留痕 → 通知都在这一处），
+  通知由新的纯函数判据 `friend_request_arrival_decision(首次)` 门控：**事件照发**（前端按 `from`
+  幂等替换，不会堆多条），**通知只在第一次**；重复到达留一行日志。
+- 发送端限频：`pending_out_requests` 改成 `(首次登记时刻, 上次补发时刻)`，补发前走纯函数
+  `friend_request_flush_decision` —— **只设 30s 最小间隔，不设次数上限也不设放弃窗口**
+  （申请等的是"对方做人"，加上限等于偷偷废掉「对方离线时暂存、上线后自动补发」那条承诺）。
+  两半都要：只做接收端，BLE 仍会被每轮心跳刷满。
+- ⚠️ 与同文件里公钥那条 `peers 优先`、以及 `friend_accept_flush_decision` 的"3 次 / 2 分钟窗口"
+  都不是一件事，注释里写明不许合并。
+
+**根因二：全仓没有任何单实例守卫。** 一个进程内**造不出**第二个聊天主框 —— `main` 只来自
+`tauri.conf.json` 那一份声明，`WebviewWindowBuilder` 只有 `commands/logs.rs` 五处辅助窗在用，
+前端 0 处 `new WebviewWindow` ⇒ 看到两扇主框只能是**两个进程**：各自一份主窗、托盘图标、
+数据库句柄和 mesh 身份，同一条好友申请被两个进程各弹一次（这也放大了根因一）。
+现在装上 `tauri-plugin-single_instance`：第二次启动不建新窗，改为把已有主窗叫到前台。
+出口只认开发/测试的多开变量（`GOSSLAN_INSTANCE` / `GOSSLAN_AUTOSTART=1`）—— 双实例 E2E 是本仓
+唯一能证跨进程行为的一层，守卫不许把它关掉；依赖与注册处的 `cfg` 都限死在 mac/windows/linux 三家
+（上游不支持 android/ios，装上移动端编译失败），并且有一条判据钉住两边一致。
+
+判据（新增 5 条 + 2 条按新形状改写，全部变异实测）：`friend_request_arrival_notifies_only_the_first_time`
+（首次/非首次成对）、`pending_friend_request_reflush_is_spaced_not_per_heartbeat`（5 秒内不发 /
+首次机会立刻发 / 一天后仍发，钉住"不设上限"这条与 accept 的差别）、
+`every_friend_request_path_notifies_only_on_first_sighting`（两条路径都走进那个家 + 事件与通知各只一处发起点 +
+**门控输入必须是 `prior.is_none()`**）、`friend_request_survives_a_dropped_link` 新增三格（补发必须调那个判定、
+Nothing 必须立刻返回、成功必须记下本次时刻、间隔常量 30s 不许改成 0）、
+`second_launch_focuses_the_running_app_instead_of_duplicating_it` + `second_instance_exit_is_only_the_dev_multi_open`
+（形状 + 真值表两条一起：形状管得住"注册处走了函数"，真值表管得住"函数被改宽成恒放行"）。
+实测红面：兜底判定硬编码 / 判反 / 少一条路径 / 不记补发时刻 / 间隔改成 0 / 出口恒放行 /
+第二次不叫已有主窗 / 无条件注册 八种各红对应那一条。
+**两处顺带修掉的量具缺陷**：`friend_request_survives_a_dropped_link` 原先用 `&src[i..i+1200]` 定长**字节**窗口
+取函数体，中文注释下边界会落在码点中间（本次实测 `not a char boundary` 直接 panic），改用
+`rust_fn_body` 按花括号配对切；`crate::notifications::show` 的点数判据从 3 收到 2（两条申请路径合并的结果），
+并把"为什么这里可以更小"写进消息 —— 漏一条路径由那条"两条都走进家"的判据负责，收窄不放过缺陷。
+
+验证：`cargo test --features bluetooth --lib` = 845 passed / 0 failed（840→845，基线 `--update` +
+`--sync-baselines`，现读 macos 845+3 / windows 833+15 差额均有源码门控背书）、`cargo fmt --all` 与
+`cargo clippy --features bluetooth --lib -- -D warnings` 退 0、`npm test` = 985 passed / 0 failed（未动前端，
+`onFriendRequest` 本来就按 `from` 幂等替换，界面不会堆条目）、`node scripts/check-doc-numbers.mjs` 与
+`node scripts/check-test-manifest.mjs` 通过。
+
 ## [4.39.1] - 2026-10-14
 
 ### 后端那份名字判据：兜底不再返回设备标识（4.38.2 没覆盖到的另一半）
