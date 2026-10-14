@@ -329,3 +329,40 @@
             hits.join("\n")
         );
     }
+
+    /// 30s 清扫器里那次**整文件哈希**必须落在 `spawn_blocking` 里
+    /// （2026-10-14 Windows 真机：Mac 往 Windows 传 3.x GB，收尾 + 对账那一段
+    /// 「点设置没窗、拖窗口没反应」）。
+    ///
+    /// 为什么单独钉这一格：`content_file_matches` 已经是**分块**喂哈希器（不整读进内存，
+    /// 见上一条判据），所以"不许整读进内存"那条守卫**看不见**这个问题 ——
+    /// 它慢在占着 async worker 跑几十秒，而同一个 runtime 上还跑着所有 async 命令
+    /// （开设置窗就是其中之一）。字节预算与"跳过在途 .part"是第二道界，这条钉的是线程归属。
+    #[test]
+    fn sweeper_whole_file_hash_runs_off_the_async_worker() {
+        let src = crate::network::transport_src_for_guards();
+        let body = rust_fn_body(&src, "pub fn spawn_outbox_sweeper(");
+        let flat = code_flat(&body);
+        assert!(
+            flat.contains("tokio::task::spawn_blocking(move||{content_file_matches("),
+            "清扫器的整文件哈希必须交给 spawn_blocking：留在 async 执行路径上 = 钉住一个 tokio worker，\
+             而开辅助窗的 async 命令排在同一个 runtime 上（2026-10-14 Windows 真机的形状）"
+        );
+        // 反例形状：直接 `let ok = content_file_matches(..)` 就地跑（写回成这个样子必须红）
+        assert!(
+            !flat.contains("letok=content_file_matches("),
+            "清扫器里又出现了**就地**的 content_file_matches 调用：慢活回到 async worker 上了"
+        );
+        // 另外两道界（条数 + 字节）与"跳过在途"必须都还在，不许被"顺手简化"掉
+        for kept in [
+            "CONTENT_RECONCILE_PER_TICK",
+            "CONTENT_RECONCILE_TICK_BYTE_BUDGET",
+            "is_inflight_reconcile_path(",
+            "reconcile_take_next(",
+        ] {
+            assert!(
+                body.contains(kept),
+                "清扫器少了 {kept} —— 它是这一轮有界性的一部分（条数界、字节界、在途跳过）"
+            );
+        }
+    }

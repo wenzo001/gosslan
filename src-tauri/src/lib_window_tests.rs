@@ -544,7 +544,7 @@
             );
         }
 
-        let helper = rust_fn_body(commands, "fn ensure_aux_window<F>(");
+        let helper = rust_fn_body(commands, "fn ensure_aux_window<F, P>(");
         // 防"锚点过期 ⇒ 拿到空/残段 ⇒ 下面的断言空转"。
         assert!(
             !helper.is_empty(),
@@ -555,13 +555,15 @@
             "`ensure_aux_window` 必须用创建锁串行化（否则并发会开出第二个窗口）"
         );
         assert!(
-            // 签名在 2026-09-24 多了一个 `reveal`（预热那条路要"建好但不显示"），
-            // 判据本身没变：**拿锁前后各查一次**，少一次就会在并发下开出第二个窗口。
-            helper
-                .matches("show_existing_aux_window(app, label, geo, reveal)")
-                .count()
-                >= 2,
-            "`ensure_aux_window` 必须做双重检查（拿锁前后各查一次），实际只有一次"
+            // 签名在 2026-09-24 多了 `reveal`（预热那条路要"建好但不显示"），
+            // 2026-10-14 又多了 `placed`（摆位必须落在锁外）。判据本身没变：
+            // **拿锁前后各查一次**，少一次就会在并发下开出第二个窗口。
+            // 变的是"锁内那一次怎么查"：现在必须是 `get_webview_window`（只读管理器那张表），
+            // **不许**是 `show_existing_aux_window`（它里面要 `recenter` ⇒ 等主线程应答的 getter，
+            // 那就是"带着不可重入的锁等主线程"，见 `aux_window_create_lock_scope_never_waits_on_the_main_thread`）。
+            helper.contains("show_existing_aux_window(app, label, geo, reveal)")
+                && helper.contains("app.get_webview_window(label)"),
+            "`ensure_aux_window` 必须做双重检查（锁外快路径 + 锁内存在性判定），少一次就会开出第二个窗口"
         );
         assert!(
             // 2026-09-17：`resident` 改成参数（设置/日志常驻；群任务窗口每群一个 ⇒ 关闭即销毁）。
@@ -743,4 +745,119 @@
             ts.contains(r#""tasks""#),
             "前端启动器的 label 联合类型必须含 `tasks`（与 Rust WINDOW_TASKS 同一份字面量）"
         );
+    }
+
+    /// 建窗那把**不可重入**创建锁的作用域里，不许出现任何"要等主线程应答"的调用
+    /// （2026-10-14 Windows 真机：Mac 往 Windows 传 3.x GB，收尾那一段
+    /// 「点设置没窗、拖窗口没反应」）。
+    ///
+    /// 为什么必须有这条：`ensure_aux_window` 的注释把"锁里只留建窗"写得很清楚，而注释挡不住
+    /// 任何人把 `apply_aux_geometry(win, g)` 这类摆位调用挪回锁内 —— 那几步问的是窗口自己的
+    /// 外框 / 所在屏（`tauri-runtime-wry` 的 `getter!` 就是 `rx.recv()`，**真等主线程**）。
+    /// 主线程一忙，这个工作线程就带着创建锁挂住 ⇒ 四扇辅助窗一起点不开。
+    ///
+    /// 判据形状：按花括号配对切出**每一处持锁块**逐块扫标记；再反钉这些标记在文件里确实存在
+    /// （否则"全文已经没有摆位调用"会让这条判据静默空转）。
+    #[test]
+    fn aux_window_create_lock_scope_never_waits_on_the_main_thread() {
+        let src = include_str!("commands/logs.rs");
+        let bytes = src.as_bytes();
+        // 只算"真的在取锁"的那几处（`static AUX_WINDOW_CREATE_LOCK: …` 那行声明不算）。
+        let sites: Vec<usize> = bytes
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| **b == b'A')
+            .map(|(i, _)| i)
+            .filter(|i| {
+                src[*i..].starts_with("AUX_WINDOW_CREATE_LOCK")
+                    && src[*i + "AUX_WINDOW_CREATE_LOCK".len()..]
+                        .chars()
+                        .filter(|c| !c.is_whitespace())
+                        .collect::<String>()
+                        .starts_with(".lock()")
+            })
+            .collect();
+        assert!(
+            !sites.is_empty(),
+            "一处持锁点都没找到 ⇒ 这条判据会空转（锁被删掉时它也必须报红，而不是变绿）"
+        );
+        // 等主线程应答的 runtime getter，以及会走到它们身上的本项目函数
+        let blocking = [
+            "outer_size(",
+            "outer_position(",
+            "scale_factor(",
+            "inner_position(",
+            "current_monitor(",
+            "primary_monitor(",
+            "monitor_from_point(",
+            "is_maximized(",
+            "recenter_aux_window(",
+            "apply_aux_geometry(",
+            "restore_aux_window_size(",
+            "show_existing_aux_window(",
+            "install_hide_on_close(",
+            "decorate_aux_window(",
+        ];
+        for at in sites {
+            // 反向扫到"包含这次取锁的块"的开括号
+            let mut depth = 0i32;
+            let mut open = None;
+            for j in (0..at).rev() {
+                match bytes[j] {
+                    b'}' => depth += 1,
+                    b'{' => {
+                        if depth == 0 {
+                            open = Some(j);
+                            break;
+                        }
+                        depth -= 1;
+                    }
+                    _ => {}
+                }
+            }
+            let open =
+                open.expect("取锁语句必须落在某个块里（切不出块首 = 本判据不认识这个形状）");
+            let mut depth = 0i32;
+            let mut close = None;
+            for k in open..bytes.len() {
+                match bytes[k] {
+                    b'{' => depth += 1,
+                    b'}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            close = Some(k);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let close = close.expect("持锁块的括号不配对");
+            let block = &src[open..=close];
+            for marker in blocking {
+                assert!(
+                    !block.contains(marker),
+                    "创建锁的作用域里出现了 `{marker}`：它要等主线程应答。主线程一忙，这个线程就带着\
+                     不可重入的创建锁挂住 ⇒ 所有辅助窗一起点不开（2026-10-14 Windows 真机）。\
+                     挪到锁外去 —— `ensure_aux_window` 的 `placed` 闭包就是为这件事拆出来的。"
+                );
+            }
+            assert!(
+                block.contains("build()"),
+                "持锁块里必须仍有 build()：串行创建是这条锁存在的理由。\
+                 若有意改成\"锁外建窗\"，要连同本判据一起重写，不是绕过它。"
+            );
+        }
+        // 反空转：这些调用在文件里必须仍然存在（只是必须落在锁外）
+        for marker in [
+            "recenter_aux_window(",
+            "apply_aux_geometry(",
+            "decorate_aux_window(",
+        ] {
+            assert!(
+                src.contains(marker),
+                "logs.rs 里已经没有 `{marker}` ⇒ 上面那圈断言会因为\"全文没有这种调用\"而空转：\
+                 请把这条判据一并改掉，别留一条永远为真的守卫"
+            );
+        }
     }

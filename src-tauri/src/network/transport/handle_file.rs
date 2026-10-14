@@ -416,7 +416,7 @@ async fn handle_file_messages(state: &Arc<AppState>, peer_id: &str, msg: Message
                 );
                 return;
             }
-            match file::finish_receive(state, &transfer_id, peer_id) {
+            match file::finish_receive(state, &transfer_id, peer_id).await {
                 Err(e) => {
                     let _ = state.app.emit(
                         "file-failed",

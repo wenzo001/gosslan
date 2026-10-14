@@ -199,8 +199,70 @@ pub fn spawn_outbox_sweeper(
                 let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                 list_reconcilable_content(&dbc, CONTENT_RECONCILE_PER_TICK).unwrap_or_default()
             };
+            // ★ 2026-10-14 真机之后加的两道隔离（用户：Mac 往 Windows 传 3.x GB，收尾那一段
+            // 「点设置没窗、拖窗口没反应」）。条数上限**管不住字节**：8 条 GB 级候选就是单轮
+            // 几十 GB 读盘，而这份读盘原本直接在 async 执行路径上 —— 同一个 runtime 上还跑着
+            // 所有 async 命令（开设置窗就是其中之一），worker 被占满 ⇒ 用户点什么都没反应。
+            //   ① 整文件哈希交给 `spawn_blocking`（阻塞线程池），worker 立刻回到调度池；
+            //   ② 单轮**字节**预算 `CONTENT_RECONCILE_TICK_BYTE_BUDGET`，但**第一条恒放行**
+            //      （否则一个超大候选永远排不进预算 ⇒ 那一行台账饿死；有界的含义是"每轮最多读
+            //      这么多盘"，不是"大文件永远不对账"）；
+            //   ③ 跳过**还在写的那半截**：`.part` 后缀，或 `file_receivers` 里仍有同一个
+            //      `transfer_id`（那说明这份文件正在收，哈希必然对不上，纯抢带宽）。
+            let inflight: std::collections::HashSet<String> = {
+                let recv = state
+                    .file_receivers
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                recv.keys().cloned().collect()
+            };
+            let mut byte_budget = CONTENT_RECONCILE_TICK_BYTE_BUDGET;
+            let mut scanned = 0usize;
             for c in cands {
-                let ok = content_file_matches(&c.cid, &c.path, c.size);
+                if inflight.contains(&c.transfer_id) || is_inflight_reconcile_path(&c.path) {
+                    state.logger.info(
+                        "content",
+                        format!(
+                            "内容台账对账跳过在途的那半截（正在收/还是 .part），本轮不读盘 cid={} from={}",
+                            c.cid, c.peer_id
+                        ),
+                    );
+                    continue;
+                }
+                if !reconcile_take_next(scanned, byte_budget, c.size) {
+                    // 预算用完 ⇒ 剩下的留到下一 tick（`ORDER BY updated_at ASC` 保证老的那批先做）
+                    if log_throttled("content_reconcile_budget", 30_000) {
+                        state.logger.info(
+                            "content",
+                            format!(
+                                "内容台账对账本轮字节预算用完（剩余 {byte_budget} 字节 < 下一条 {} 字节），下轮继续",
+                                c.size
+                            ),
+                        );
+                    }
+                    break;
+                }
+                byte_budget = byte_budget.saturating_sub(c.size);
+                scanned += 1;
+                let (cid, path, size) = (c.cid.clone(), c.path.clone(), c.size);
+                let ok = match tokio::task::spawn_blocking(move || {
+                    content_file_matches(&cid, &path, size)
+                })
+                .await {
+                    Ok(v) => v,
+                    // 阻塞任务被中断（panic / 运行时关闭）⇒ **不写回、不谎报**，那一行留在可恢复态，
+                    // 下一 tick 自然重来。写 `false` 会把"我没验过"说成"文件坏了"。
+                    Err(e) => {
+                        state.logger.warn(
+                            "content",
+                            format!(
+                                "内容台账对账的读盘任务被中断，保留可恢复态下轮再试 cid={}: {e}",
+                                c.cid
+                            ),
+                        );
+                        continue;
+                    }
+                };
                 let wrote = {
                     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                     finish_reconcile(&dbc, &c, db::now_ms(), ok)
@@ -227,6 +289,34 @@ pub fn spawn_outbox_sweeper(
 /// 每 tick 最多对账几条内容台账。有界性就在这里：积压再多也只按这个速度消化，
 /// 不会在某一个 tick 里把整盘文件哈希一遍。
 pub(crate) const CONTENT_RECONCILE_PER_TICK: usize = 8;
+
+/// 每 tick 最多**读多少字节**的盘来做对账（2026-10-14 真机之后加的 second bound）。
+///
+/// 为什么条数上限不够：条数封顶管不住单件体积 —— 8 条 3 GB 的收件文件就是单轮 ~24 GB 读盘，
+/// 而这份读盘是**同步**的（分块喂哈希器，但仍在线程上跑到完）。Windows 上表现就是用户报的
+/// 「传大文件期间点设置没窗、拖窗口没反应」：同一个 async runtime 上还跑着所有 async 命令。
+/// 256 MiB 的选择：够在 30s 一轮里消化掉若干普通图片/文件（一轮 ≪ 磁盘 30 秒的预算），
+/// 又不至于让某个 tick 独占 I/O 几十秒。
+pub(crate) const CONTENT_RECONCILE_TICK_BYTE_BUDGET: u64 = 256 * 1024 * 1024;
+
+/// 字节预算判定（**纯函数**，便于单测）：本轮要不要读这一条的盘。两条规则合在这里，
+/// 免得"第一条恒放行"与"预算够不够"两处各写一遍（那就是缺陷会漏的那族）。
+/// ① 本轮还一条都没读 ⇒ 恒放行 —— 超大候选**不许被永久饿死**（那一行台账会永远停在可恢复态，
+///    而每次建链都会整批重投它，正是 B2 要治的那个永动来源）；
+/// ② 否则必须装得下剩余预算。边界取 `<=`：恰好等于预算算装得下。
+pub(crate) fn reconcile_take_next(scanned: usize, budget: u64, size: u64) -> bool {
+    scanned == 0 || size <= budget
+}
+
+/// 这一条路径是不是**还没写完的半截**（`.part` 是 `make_receiver` 的命名口径）。
+/// 半截文件的字节数与摘要必然对不上，花几十秒读它再判"不完成"是纯浪费，
+/// 而且会把**正在进行的传输**的磁盘带宽抢走 —— 那正是"越大的文件越容易卡住界面"的形状。
+pub(crate) fn is_inflight_reconcile_path(path: &str) -> bool {
+    std::path::Path::new(path)
+        .extension()
+        .and_then(|s| s.to_str())
+        == Some("part")
+}
 
 /// 一条待对账的候选（文件层 done + 内容层还认为没收完）。
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -359,7 +449,9 @@ pub(crate) fn finish_reconcile(
 #[cfg(test)]
 mod content_reconcile_tests {
     use super::{
-        content_file_matches, finish_reconcile, list_reconcilable_content, ReconcileCandidate,
+        content_file_matches, finish_reconcile, is_inflight_reconcile_path,
+        list_reconcilable_content, reconcile_take_next, ReconcileCandidate,
+        CONTENT_RECONCILE_PER_TICK, CONTENT_RECONCILE_TICK_BYTE_BUDGET,
     };
     use crate::content::model::{Direction, TransferRecord, TransferStatus};
     use sha2::Digest as _;
@@ -541,5 +633,35 @@ mod content_reconcile_tests {
         assert_eq!(list_reconcilable_content(&c, 8).unwrap().len(), 8, "单轮上限必须生效");
         assert_eq!(list_reconcilable_content(&c, 1).unwrap().len(), 1);
         let _: ReconcileCandidate; // 类型被用到（避免未使用告警）
+    }
+
+    /// ⑥ 第二条界（字节）与"第一条恒放行"（2026-10-14 真机：3.x GB 对账把窗口操作挤死）。
+    /// 两条规则各一反一正：只看条数上限会放进来 8 个 GB 级候选；只按字节封顶会把超大那一条
+    /// **永久饿死**（它永远排不进预算 ⇒ 那一行台账停在可恢复态，每次建链整批重投）。
+    #[test]
+    fn reconcile_byte_budget_bounds_a_round_without_starving_oversize_files() {
+        // 正：装得下就下一轮继续读
+        assert!(reconcile_take_next(1, 256 << 20, 200 << 20));
+        // 边界：恰好等于剩余预算算装得下（`<=` 不是 `<`）
+        assert!(reconcile_take_next(1, 100, 100));
+        // 反：装不下就本轮收手（留到下一 tick，`ORDER BY updated_at ASC` 保证不饿死老的）
+        assert!(!reconcile_take_next(1, 100, 101));
+        // ★ 第一条恒放行：3 GB 的候选在 256 MiB 预算下也必须被读一次
+        assert!(reconcile_take_next(0, 256 << 20, 3 << 30));
+        // 有界性口径本身：预算与条数上限是两个独立界，都不许写死成"不限"
+        assert_eq!(CONTENT_RECONCILE_PER_TICK, 8);
+        assert_eq!(CONTENT_RECONCILE_TICK_BYTE_BUDGET, 256 * 1024 * 1024);
+    }
+
+    /// ⑦ 在途的那半截不许读盘：`.part` 是 `make_receiver` 的命名口径，
+    /// 它的字节数与摘要必然对不上 —— 花几十秒读它再判"不完成"，抢的正是当前传输的磁盘带宽。
+    #[test]
+    fn inflight_part_paths_are_skipped_before_any_disk_read() {
+        assert!(is_inflight_reconcile_path("/x/y/abc.part"));
+        assert!(is_inflight_reconcile_path("abc.part"));
+        // 反例：已经改好名的正式文件、没有后缀的文件、以及后缀只在中间出现的名字
+        assert!(!is_inflight_reconcile_path("/x/y/报告.pdf"));
+        assert!(!is_inflight_reconcile_path("/x/y/abc"));
+        assert!(!is_inflight_reconcile_path("/x/part/abc.bin"));
     }
 }

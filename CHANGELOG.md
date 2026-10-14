@@ -13,6 +13,58 @@
 
 ## [Unreleased]
 
+## [4.39.3] - 2026-10-14
+
+### Windows：大文件收尾期间窗口操作失灵（开窗/拖拽/双击）—— 运行时阻塞修复
+
+用户 2026-10-14 真机：从 Mac 往 Windows 传一个 3.x GB 的文件，Mac 端进度 100%、单勾灰，
+Windows 端"还没接完"，而**这段时间里点设置没窗、拖标题栏不动、双击标题栏不放大缩小**；
+另一台没在传的 Windows 拖拽是正常的。要求是「用户的当前操作优先级第一，异步的活一律不许挡住界面」。
+
+根因不是协议，是三处运行时归属，加一条与忙无关的功能缺失：
+
+- **收尾的 GB 级 `fsync` 钉住了 async worker**：`finish_receive` 里的 SHA finalize + `sync_all()`
+  + rename 原本直接在 `reader_loop` 的 tokio 任务里跑（那段代码自己的注释就写着
+  「600MB 的 fsync 是秒级慢活，而它跑在 reader_loop 里」）。所有 async 命令（含开窗那些
+  `#[tauri::command(async)]`）排在同一个 runtime 上 ⇒ worker 被占满就是"点了没窗"。
+  现在整体交给 `tokio::task::spawn_blocking`，错误出口与状态机一字未改。
+- **30s 清扫器的整文件哈希也在 async 路径上，而且只按条数封顶**：`content_file_matches` 每 tick
+  最多 8 条，但**条数界管不住字节**（8 个 GB 级候选 = 单轮几十 GB 读盘）。现在同样进
+  `spawn_blocking`，另加两道界：单轮**字节**预算 256 MiB（第一条恒放行，否则超大候选会被永久饿死，
+  那一行台账停在可恢复态 = B2 要治的那个"每次建链整批重投"），以及**跳过在途的那半截**
+  （`.part` 后缀，或 `file_receivers` 里仍有同一个 `transfer_id`）。30s tick 与 8 条上限不变，
+  outbox 语义一字未动。
+- **建窗那把不可重入锁的作用域太大**：`ensure_aux_window` 原先在持 `AUX_WINDOW_CREATE_LOCK`
+  期间做 decorate + 摆位，而摆位要问窗口自己的外框/所在屏（`tauri-runtime-wry` 的 `getter!`
+  是 `rx.recv()`，**真等主线程**）⇒ 主线程一忙就带着创建锁挂住，四扇辅助窗一起点不开。
+  现在闭包拆成 `build`（锁内，只有建窗）+ `placed`（锁外，摆位/decorate/显示），
+  锁内的存在性判定换成只读管理器表的 `get_webview_window`。竞态那一路不再重复摆位（归建它的那个创建者）。
+- **Windows 双击标题栏没有任何通路**（与忙无关）：`TitleBar.vue` 的双击处理器第一句就
+  `!isMac` return，注释声称"Windows 由 tao 的拖拽区原生处理"—— 而 `data-tauri-drag-region`
+  这个属性全仓只在注释里出现过、模板从来没有；tao 0.35.3 也没有 `WM_NCLBUTTONDBLCLK` 处理；
+  本应用所有窗口 `decorations:false`，Windows 上根本没有系统标题栏。现在两平台走与绿灯
+  同一个出口（`windowToggleMaximize`），"能不能最大化"仍由后端 `MAXIMIZABLE_WINDOWS` 白名单判。
+
+判据（4 条新 Rust + 2 条新前端，全部实测过反例）：
+`aux_window_create_lock_scope_never_waits_on_the_main_thread`（按花括号切出每处持锁块，块内出现
+`outer_size(` / `current_monitor(` / `recenter_aux_window(` 等即红）、
+`sweeper_whole_file_hash_runs_off_the_async_worker`、`receive_finalize_slow_work_happens_outside_the_receiver_lock`
+（新增"慢活必须在 spawn_blocking 里"那一格）、
+`reconcile_byte_budget_bounds_a_round_without_starving_oversize_files`、
+`inflight_part_paths_are_skipped_before_any_disk_read`、
+「标题栏双击不许按平台早退：Windows 也必须能最大化」、「双击与绿灯共用同一个缩放出口」。
+四笔单点变异（把 getter 塞回锁里 / 两处写回成就地跑 / 删掉字节预算判定）各自只红目标那一条；
+两笔前端变异（塞回 `!isMac`、绕过包装函数自己调命令）同样各红各的。
+Rust 基线随新用例前移：macos 845 → 849、windows 同步。
+
+⚠️ 仍未验证/仍未解决：**Windows 真机复验**（传一个大文件到收尾，看设置窗与拖拽是否全程可响应、
+双击是否缩放）—— 浏览器层与单测都量不到原生窗口行为；「主线程在传输期间被什么直接占住」这一环
+只有静态依赖源码（IPC 回调 = 主线程）与症状分叉（忙的那台失灵、不忙的那台正常）两条证据，
+没有真机栈读数。另外每片到达时同一片两次抢 `file_receivers` 锁、进度事件被 500ms 落库钳住
+这两格本轮未动。
+
+## [4.39.2] - 2026-10-14
+
 ### 治理补齐：重复好友事件写成不变量、成员名字判据常驻化、领域图补登 P24–P33
 
 只动文档与测试，**应用码零改动**。三格缺口 + 三尾项：

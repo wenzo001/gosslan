@@ -93,12 +93,21 @@ function onGreenClick(e: MouseEvent) {
 }
 
 /**
- * 双击标题栏 → 缩放（仅 macOS；Windows 由 tao 的拖拽区原生处理双击最大化）。
- * ⚠️ 系统偏好「双击标题栏的动作」在 WebView 里读不到，这里用系统默认的"缩放"。
- * 不可最大化的窗口（辅助窗口）直接不响应。
+ * 双击标题栏 → 缩放（**两个桌面平台同一条路**，能力判断交给后端）。
+ *
+ * ⚠️ 这一格原先是 `if (props.isMobile || !isMac || !props.showMaximize) return;`，注释写的理由是
+ * 「Windows 由 tao 的拖拽区原生处理双击最大化」—— **那个前提是假的**，三条证据一起指着它：
+ *  · `data-tauri-drag-region` 全仓只出现在下面那条拖拽注释里，模板从来没写过这个属性；
+ *  · tao 0.35.3 没有任何 `WM_NCLBUTTONDBLCLK` 处理，wry 0.55.1 的 Windows 侧也没有 drag-region 扩展；
+ *  · 本应用所有窗口都是 `decorations: false`（caption 由前端自绘），Windows 上根本没有系统标题栏。
+ * ⇒ 症状就是用户 2026-10-14 真机报的「Mac 双击能放大缩小，Windows 不行」。
+ *
+ * 现在两平台都走**与绿灯同一个出口** `toggleMaximize()` → 后端 `window_toggle_maximize`，
+ * 「这扇窗能不能最大化」仍由后端那份 `MAXIMIZABLE_WINDOWS` 白名单判（小窗口点了也是 no-op），
+ * 前端不拿平台当闸门 —— 与 `refreshMaximized` 那条"别把能力判断写回前端"的口径一致。
  */
 function onTitlebarDblClick() {
-  if (props.isMobile || !isMac || !props.showMaximize) return;
+  if (props.isMobile || !props.showMaximize) return;
   void toggleMaximize();
 }
 
