@@ -1765,6 +1765,7 @@ export const useChatStore = defineStore("chat", () => {
     images?: TodoImage[],
     category?: string,
     customCategory?: string,
+    customIcon?: string,
   ): Promise<MessageRecord> {
     const rec = await api.sendGroupTodo(
       groupId,
@@ -1774,6 +1775,7 @@ export const useChatStore = defineStore("chat", () => {
       images,
       category,
       customCategory,
+      customIcon,
     );
     enqueueMessage(rec);
     return rec;
@@ -1804,6 +1806,8 @@ export const useChatStore = defineStore("chat", () => {
       category: string;
       /** 自定义类型名（仅 category="custom" 有效）。不传 = 保留库里的名字。 */
       customCategory: string;
+      /** 自定义类型的图标键（仅 custom 有效）。不传 = 保留库里挑过的那枚。 */
+      customIcon: string;
     }> = {},
   ) {
     const rec = await api.updateGroupTodo(groupId, item.todoId, {
@@ -1820,6 +1824,9 @@ export const useChatStore = defineStore("chat", () => {
       // 键集合的对账由 src/utils/storeContract.test.ts 那条判据负责，别再靠人眼数。
       category: patch.category,
       customCategory: patch.customCategory,
+      // 与上面那条注释同一个坑的另一格：`custom_icon` 声明了却没转发 ⇒
+      // 选完图标弹「已更新」而库里一字未动。键集合由 storeContract 那条判据对账。
+      customIcon: patch.customIcon,
     });
     enqueueMessage(rec);
   }

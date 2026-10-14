@@ -582,6 +582,19 @@ export const zhCN: MessageDict = {
   "todo.category.custom": "自定义…",
   "todo.categoryCustomPlaceholder": "输入自定义类型名",
   "todo.categoryCustomNeedName": "请输入自定义类型名称",
+  "todo.pickIcon": "图标",
+  // 自定义类型可选的十枚图标（键集合必须与 `utils/todos.ts` 的 TODO_CUSTOM_ICONS 一一对应，
+  // 由 `todoCustomIcons.test.ts` 双向对账 —— 少一枚就是屏幕上有个无名图标）
+  "todo.icon.tag": "标签",
+  "todo.icon.flag": "旗帜",
+  "todo.icon.star": "星标",
+  "todo.icon.zap": "闪电",
+  "todo.icon.wrench": "工具",
+  "todo.icon.heart": "在意",
+  "todo.icon.book": "文档",
+  "todo.icon.clock": "时限",
+  "todo.icon.target": "目标",
+  "todo.icon.sparkles": "新增",
   // 编号口径（字母 + 永久递增数字、超过 4 位只显后四位）见 utils/todos.ts 的 todoCode()
   // 与 docs/protocol-invariants.md 的 INV-P29；这两句是它唯一的两处文案。
   "todo.codeAria": "任务编号 {code}",

@@ -846,6 +846,8 @@ mod tests {
             priority: "normal".to_string(),
             category: "task".to_string(),
             custom_category: String::new(),
+            // 与 `custom_category` 同一格道理：夹具/测试载荷少一个字段，被测的就是自造路径。
+            custom_icon: String::new(),
         };
         let insert = |msg_id: &str, seq: i64, p: &TodoPayload| {
             conn.execute(
@@ -1019,6 +1021,8 @@ mod tests {
             priority: "normal".to_string(),
             category: "task".to_string(),
             custom_category: String::new(),
+            // 与 `custom_category` 同一格道理：夹具/测试载荷少一个字段，被测的就是自造路径。
+            custom_icon: String::new(),
         };
         // 参数顺序：(def, actor, group_creator, edits_structure)
         // 档位只有两档（结构 = 改标题/删除；其余 = 描述/图片/指派人/状态/归档），
@@ -1074,6 +1078,7 @@ mod tests {
             priority: String,
             category: String,
             custom_category: String,
+            custom_icon: String,
         }
         fn req_of(def: &TodoPayload) -> Req {
             Req {
@@ -1087,6 +1092,7 @@ mod tests {
                 priority: def.priority.clone(),
                 category: def.category.clone(),
                 custom_category: def.custom_category.clone(),
+                custom_icon: def.custom_icon.clone(),
             }
         }
         fn edit(r: &Req) -> super::TodoEdit<'_> {
@@ -1101,6 +1107,7 @@ mod tests {
                 priority: &r.priority,
                 category: &r.category,
                 custom_category: &r.custom_category,
+                custom_icon: &r.custom_icon,
             }
         }
         let def = TodoPayload {
@@ -1118,6 +1125,8 @@ mod tests {
             priority: "normal".to_string(),
             category: "task".to_string(),
             custom_category: String::new(),
+            // 与 `custom_category` 同一格道理：夹具/测试载荷少一个字段，被测的就是自造路径。
+            custom_icon: String::new(),
         };
         // 成员窄档只对"什么别的都没动"的请求成立，所以每个否定用例都从**已满足**的那一位
         // 出发再加一处改动 —— 否则测的是另一个判据，不是"夹带"这一条。
@@ -1587,6 +1596,45 @@ mod tests {
         // 非 custom 档：无论传什么都清空，不报错（服务端单一真相）
         assert_eq!(super::normalize_custom_category("task", Some("残留")).unwrap(), "");
         assert_eq!(super::normalize_custom_category("bug", None).unwrap(), "");
+    }
+
+    /// 自定义类型的**图标**（用户 2026-10-14：名字之外还要能挑图标）。与上面那条同一组立场，
+    /// 三条各钉一个容易写反的方向：① 白名单外拒收（不静默回落成默认，那会把"界面给了后端不认的值"
+    /// 藏成一条悄悄换了图标的任务）；② 没给/给空 ⇒ 落成默认那枚（界面要有确定的形状）；
+    /// ③ 非 custom 档 ⇒ 清空，**不**落成默认（否则普通任务会挂着一枚自定义图标 = 半态）。
+    #[test]
+    fn custom_icon_is_normalized() {
+        for key in crate::protocol::TODO_CUSTOM_ICONS {
+            assert_eq!(
+                super::normalize_custom_icon("custom", Some(key)).unwrap(),
+                key,
+                "白名单内的键必须原样收下：{key}"
+            );
+        }
+        assert_eq!(
+            super::normalize_custom_icon("custom", None).unwrap(),
+            crate::protocol::TODO_CUSTOM_ICON_DEFAULT,
+            "没说 ⇒ 默认那枚，不是空串"
+        );
+        assert_eq!(
+            super::normalize_custom_icon("custom", Some("   ")).unwrap(),
+            crate::protocol::TODO_CUSTOM_ICON_DEFAULT,
+            "空白与没说同义"
+        );
+        assert!(
+            super::normalize_custom_icon("custom", Some("not_a_real_icon_key")).is_err(),
+            "白名单外的值必须拒，不静默回落"
+        );
+        assert_eq!(
+            super::normalize_custom_icon("task", Some("star")).unwrap(),
+            "",
+            "非 custom 档清空（不留\"普通任务挂自定义图标\"的半态）"
+        );
+        assert_eq!(
+            super::normalize_custom_icon("bug", None).unwrap(),
+            "",
+            "非 custom 档也不落成默认"
+        );
     }
 }
 

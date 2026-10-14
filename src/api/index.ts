@@ -192,6 +192,7 @@ export const api = {
     images?: TodoImage[],
     category?: string,
     customCategory?: string,
+    customIcon?: string,
   ) =>
     invoke<MessageRecord>("send_group_todo", {
       groupId,
@@ -201,6 +202,7 @@ export const api = {
       images: images ?? null,
       category: category ?? null,
       customCategory: customCategory ?? null,
+      customIcon: customIcon ?? null,
     }),
   /**
    * 更新群任务：改状态 / 改标题与指派人 / 改描述与图片 / 删除（`deleted: true`）。
@@ -229,6 +231,11 @@ export const api = {
        *（非 custom 档时后端会清空它）；`undefined` = 这次不带这格，后端沿用库里的名字。
        */
       customCategory?: string;
+      /**
+       * 自定义类型图标（白名单内的键名，见 `utils/todos.ts` 的 `TODO_CUSTOM_ICONS`）。
+       * 仅 custom 档有意义；`undefined` = 这次不带这格，后端沿用库里挑过的图标。
+       */
+      customIcon?: string;
     },
   ) =>
     invoke<MessageRecord>("update_group_todo", {
@@ -244,6 +251,7 @@ export const api = {
       priority: patch.priority ?? null,
       category: patch.category ?? null,
       customCategory: patch.customCategory ?? null,
+      customIcon: patch.customIcon ?? null,
     }),
   /** 置顶/取消置顶一条群消息（任意群成员；静默事件，不进时间线）。 */
   pinGroupMessage: (groupId: string, target: string, pinned: boolean) =>

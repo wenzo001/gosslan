@@ -1075,6 +1075,16 @@ pub struct TodoPayload {
     /// 用户 2026-10-12：任务类型要能自己输入。长度上限见 [`TODO_CUSTOM_CATEGORY_MAX_LEN`]。
     #[serde(default)]
     pub custom_category: String,
+    /// 自定义类型的**图标**（仅 `category == "custom"` 时有意义；非自定义类型一律由服务端清空）。
+    /// 用户 2026-10-14：「任务类型自定义是可以自己输入，自定义类型名称，图标」。
+    ///
+    /// 存的是 [`TODO_CUSTOM_ICONS`] 里的**键名**，不是 emoji、也不是组件名：
+    /// · emoji 跨端字体不一（同一枚 🔧 在 Windows/鸿蒙上可能落回方框），而图标在这里承担"扫一眼分类"；
+    /// · 组件名会把前端的实现细节写进线上载荷，对端拿到一个它没有的组件就只剩空白。
+    /// 空串 = 没挑 ⇒ 两端都画默认那枚（`tag`），不是"没有图标"。
+    /// `#[serde(default)]` ⇒ 旧版本对端发的载荷读出来是空串，行为与"没挑"一致（不猜、不报错）。
+    #[serde(default)]
+    pub custom_icon: String,
     /// 群内**固定**任务编号（1 起递增、组内唯一、永不复用）。
     ///
     /// 分配只有一处（`db::next_todo_number`），**创建那一刻**定下来；之后每一次改状态 /
@@ -1157,6 +1167,27 @@ pub fn todo_category_is_valid(s: &str) -> bool {
 
 /// 自定义类型名上限（与标题一样按字符数，胶囊/编号行只放得下一个短语）。
 pub const TODO_CUSTOM_CATEGORY_MAX_LEN: usize = 20;
+
+/// 自定义类型可选的**图标键**白名单（用户 2026-10-14：自定义类型除了名字还要能挑图标）。
+///
+/// 线上只传这里的键名，两端各自映射到图标库里的组件 —— 于是载荷里既没有 emoji 的字体风险，
+/// 也没有把前端组件名写进协议的实现泄漏。顺序与前端 `src/utils/todos.ts` 的
+/// `TODO_CUSTOM_ICONS` 必须同序同值（同 `TODO_CATEGORIES` 那条跨语言守卫的口径，
+/// 由 `lib_compat_gating_tests.rs` 逐值对账）。
+///
+/// 10 枚是一屏放得下的上限：再多选择器就要滚，而"挑一枚认得出形状的"本来不需要几十个选项。
+pub const TODO_CUSTOM_ICONS: [&str; 10] = [
+    "tag", "flag", "star", "zap", "wrench", "heart", "book", "clock", "target", "sparkles",
+];
+
+/// 默认那枚图标键（自定义类型没挑、或旧对端不认识这一格时，两端画同一个形状）。
+pub const TODO_CUSTOM_ICON_DEFAULT: &str = "tag";
+
+/// 图标键是否合法。空串在这里**不**算合法 —— "没挑"由服务端规范化成默认那枚，
+/// 不接受客户端把空串当成第三种状态传来（与状态/优先级/类型"未知值一律拒收"同口径）。
+pub fn todo_custom_icon_is_valid(s: &str) -> bool {
+    TODO_CUSTOM_ICONS.contains(&s)
+}
 
 /// 投票的**定义**层（`kind = "poll"`）。结构与任务同构。
 ///

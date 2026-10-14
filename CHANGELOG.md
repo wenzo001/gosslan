@@ -13,6 +13,49 @@
 
 ## [Unreleased]
 
+## [4.39.0] - 2026-10-14
+
+### 自定义任务类型现在能挑图标（名字之外的那一半）
+
+用户 2026-10-14：「任务类型自定义是可以自己输入，自定义类型名称，图标」。名字在 4.36.0 就落了
+（`custom_category` + 服务端 `normalize_custom_category`），**图标一直没落** ——
+看板行首与胶囊那枚对 custom 档恒画通用「标签」（`CATEGORY_ICON.custom = Tag`，注释写的是
+"自定义类型没有专属语义"），也就是把"没有专属语义"当成了"不需要专属形状"。
+
+- 线上加 `TodoPayload.custom_icon`，值是**白名单键名**（`TODO_CUSTOM_ICONS` 十枚），不是 emoji、
+  也不是组件名：emoji 在 Windows/鸿蒙上可能落回方框，而组件名会把前端实现细节写进协议、
+  对端拿到一个它没有的组件只剩空白。`#[serde(default)]` ⇒ 旧对端发的载荷读出来是空串，
+  两端都画默认那枚（`TODO_CUSTOM_ICON_DEFAULT = "tag"`），混合版本是常态而不是异常。
+- 服务端两处规范化与"名字"同一口径：**非 custom 档一律清空**（不留"普通任务挂一枚自定义图标"的半态）、
+  custom 档只认白名单、表外值明确拒收不静默回落（和"类型/状态/优先级"那一族同一立场）。
+- **老对端不认识这一格时的沿用**（carry）与自定义名同一条规矩：两端各一份 ——
+  Rust `latest_todo_def` 与前端 `carryAbsentTodoFields`，两边一起改，判"没说"的口径都是
+  "键不存在 **或** 值本端读不出合法值"。少改一边就是"对方改一次状态，我挑的图标被抹回默认"。
+- 成员窄档（只归档 / 只还原 / 只认领）三条判定各补一个 `custom_icon` 比较：漏一条，
+  "改图标顺带归档"就能顺着窄档口子被非创建者做成（这条是判权面，不是显示面）。
+- 选择器只有一份：`TodoIconPicker.vue`，看板草稿与详情弹窗两个入口共用。
+  两个编辑器各写一排按钮就会开始不一致（同一判据两个家）。每枚带 `tap-safe` + `aria-pressed` +
+  中英两份可读名称。
+
+判据（新增 4 条，都是双向/带对照的）：`todoCustomIcons.test.ts` 三条（映射与白名单**双向**一致、
+默认键在表内、每枚都有中英两份文案键 —— 少一枚就是屏幕上有个无名图标）；
+`messageKinds.test.ts` 加一格跨语言对账（TS 与 Rust 的白名单同序同值 + 默认值同一个）；
+Rust `custom_icon_is_normalized` 钉三个容易写反的方向（表外值必须拒、没给落默认、非 custom 清空且**不**落默认）。
+另外两条既有守卫当场把我拦住并各修掉一处：`夹具载荷的键必须盖住 TodoPayload 全部字段`
+（`scripts/axTodoFixture.mjs` 漏了 `custom_icon`）与 `小尺寸可交互元素必须带 tap-safe`
+（选择器按钮 h-7 没加）。这正是它们存在的意义：新字段接一半，界面上就是"选了没反应"。
+
+⚠️ 有意没做的一格：**图标变化不写进操作记录文案**（名字变化写）。那一行给的是"这条任务变成了什么"，
+十枚图标各写一句会让流水变成图标说明书；要加得先想清楚呈现形态，那是产品决定。
+
+档位：新增能力、向后兼容 ⇒ `Version-Bump: minor`（4.38.2 → 4.39.0，五处版本清单同提交）。
+改动落在 `protocol.rs`（敏感文件）⇒ 标题带 `[impact]`。
+验证：`cargo test --features bluetooth --lib` = 835 passed / 0 failed、`cargo fmt --all --check` 与
+`cargo clippy -- -D warnings` 退 0、`npm test` = 984 passed / 0 failed、`npx vue-tsc --noEmit` 退 0、
+`node scripts/check-test-manifest.mjs` 通过（新测试文件已登记、基线已 `--sync-baselines`）。
+
+
+
 ## [4.38.2] - 2026-10-14
 
 ### 成员名字：不再退化成设备标识，也不再"每次看都不一样"
