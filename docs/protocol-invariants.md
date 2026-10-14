@@ -1352,6 +1352,15 @@ mesh 没有服务器也没有强制升级 ⇒ 混合版本是常态，不是边�
 | 把重发改回「新建一条乐观记录」（INV-P30 反向） | `retrySend.test.ts` 三条判据变红（形状断言 + 调用点计数 + 后端前提对账）⇒ 失败那条永远删不掉，两条一样的文字 |
 | 把某处悬停揭示的兜底类摘掉，或把 16px 的可交互元素写成不带 `tap-safe`（INV-P31 反向） | `designGuards` ① / ⑧ **各红自己那一条**；真实树那条「所有小尺寸可交互元素都带 `tap-safe`」变红 ⇒ 尺子量程放宽之后不再空转（2026-10-10 实测：摘掉 `tap-safe` ⇒ 122 pass / 1 fail，红的恰好是这一条） |
 | 弹窗关完之后不还焦点，或把「关掉之后还剩没剩」的判定挪到不泵帧的读法上（INV-P31 反向） | overlay 段那三条焦点判据变红（摘掉 `@after-leave` 实测 29/32）；而「量具在出帧」那条会先把不泵帧的读法判成**量具红** ⇒ 不会再出现第二次把冻结页面读成产品缺陷 |
+| 一台机器上第二次启动应用（正常使用，INV-P32） | 第二个进程**不许**建窗、**不许**起第二份后台，只能把已经开着的那扇主窗叫到前台（出口判定 `allow_second_instance_launch` ⇒ 动作 `show_main_window`）；同一条链路上同一条好友申请不许被两边各弹一次 |
+| 显式声明多开（开发/测试那一臂，INV-P32 反向之一） | 带 `GOSSLAN_INSTANCE` 或 `GOSSLAN_AUTOSTART=1` ⇒ 放行第二实例；把判定改宽成"恒放行"或去掉显式声明这一格 ⇒ 真值表那条判据红（`tests::second_instance_exit_is_only_the_dev_multi_open` 双向钉：无变量⇒拦 / 带变量⇒放行 / `AUTOSTART` 非 `1` 不算放行） |
+| 把注册处的出口判定丢掉、或整个删掉单实例注册（INV-P32 反向之二） | `guards:第二次启动` 那条注入（把 `if !allow_second_instance_launch(..)` 换成 `if false {`）红在"守卫必须走那个纯函数出口判定"上；`tests::second_launch_focuses_the_running_app_instead_of_duplicating_it` 红在它其中一格断言"注册处必须调 `crate::tray::show_main_window(`" |
+| 把注册处的 `cfg` 改成含移动端（INV-P32 反向之三） | 依赖解析阶段就断（上游没有 android/ios 那条 target，不是静默）；同一条判据还钉"注册处那串 `cfg` 字面量恰好是三家桌面"。⚠️ 已知不足：**只把 `Cargo.toml` 那一节的平台清单改宽**今天不会红（判据只要求"这条依赖存在"），一致性靠注释 + 移动端构建 —— 见 INV-P32 规则 3 |
+| dev 构建与已安装那份同时开着（INV-P32 的边界，不是判据） | 今天**仍是两个进程** —— 插件按"同一个可执行文件/应用标识"分组，不同 bundle 之间不去重；正常使用遇不到，双实例调试与真机验证会照原样出现，别把本条读成已解决 |
+| 同一条好友申请在同一进程里到达第二次（INV-P33） | 只有第一次弹系统通知；第二次照发 `friend-request` 事件 + 一行「重复的好友申请（已忽略通知）」日志，**不弹通知** |
+| 同一条好友同意在同一进程里到达第二次（INV-P33） | 只有"从不是好友变成好友"那一次弹；第二次 `was_friend=true` ⇒ 不弹，`friend-accepted` 事件照常发 |
+| 把首次判定硬编码（`friend_request_arrival_decision(true)`）或写反成 `is_some`（INV-P33 反向） | `tests::every_friend_request_path_notifies_only_on_first_sighting` 红，且 `guards:好友申请的通知只在第一次到达时弹` 那条注入把同一份判据再红一次；把 `if was_friend` 门控摘掉 ⇒ 同意那一支的形状断言红 |
+| 接收端**重启后**又收到同一条申请（INV-P33 的边界，不是判据） | 今天**会再弹一次** —— 申请只活在内存里（库里没有那张表），所以本条只承诺同一进程生命周期内不重复；这一格留在下面「边界」里待拍板，别把它写成已解决 |
 
 ---
 
@@ -1371,7 +1380,7 @@ mesh 没有服务器也没有强制升级 ⇒ 混合版本是常态，不是边�
 |---|---|---|
 | 1 | 第二个进程不许建窗、不许起第二份后台，只能把已有的主窗叫到前台 | 单实例插件注册在 `lib.rs`；`tests::second_launch_focuses_the_running_app_instead_of_duplicating_it` 钉"注册处必须调 `show_main_window`"，`guards:第二次启动` 那一条注入钉"不许绕过出口判定" |
 | 2 | 多开只允许出现在开发/测试里，且必须显式声明 | 出口是一个纯函数 `allow_second_instance_launch`，只认 `GOSSLAN_INSTANCE` / `GOSSLAN_AUTOSTART=1`；真值表判据 `tests::second_instance_exit_is_only_the_dev_multi_open` 双向钉（无变量⇒拦 / 带变量⇒放行 / `AUTOSTART` 非 `1` 不算放行） |
-| 3 | 这条守卫不许顺手把移动端构建弄坏 | 插件依赖与注册处的 `cfg` 都限死 mac/windows/linux 同一组（上游不支持 android/ios），同一份判据里比对两边字面量 |
+| 3 | 这条守卫不许顺手把移动端构建弄坏 | 注册处（`allow_second_instance_launch` 那个判定块，在 `lib.rs`）带 `#[cfg(all(desktop, any(target_os = "macos", windows, target_os = "linux")))]`，依赖声明在 `Cargo.toml` 的 `[target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]` 那一节。⚠️ **这条判据今天钉的是两件事**：注册处那串 `cfg` 字面量恰好是这三家桌面 + `Cargo.toml` 里**有**这条依赖；它**不**逐字比对两边清单是否同构 ⇒ 只把依赖那一节的平台清单改宽，这条判据不会红（"必须同一组"今天是写在 Cargo.toml 注释与注册处上方的警告里）。真会把宽改判红的是移动端编译门禁那一腿（上游只支持这三家桌面） |
 
 **边界（如实写下，别当成已解决）**：插件按"同一个可执行文件/应用标识"分组，
 所以**不同 bundle 之间不去重** —— 同时跑 dev 构建与已安装的那份，仍然是两个进程。
@@ -1382,3 +1391,55 @@ mesh 没有服务器也没有强制升级 ⇒ 混合版本是常态，不是边�
 - 反向：把注册处的出口判定改宽成恒放行 ⇒ 真值表那条红；把注册整个删掉或改成无条件 ⇒
   `guards:第二次启动` 那条注入红在"守卫必须走那个纯函数出口判定"上；
   把 `cfg` 改成含移动端 ⇒ 依赖解析阶段就断（不是静默）。
+
+---
+
+### INV-P33 — 重复到达的好友申请 / 好友同意，同一进程内不许重复弹系统通知
+
+**这条为什么单开一节**（用户 2026-10-14 真机原话）：「群内加好友就会弹出很多个……多条连续加好友的
+弹窗也有问题」。它当时是被当成"界面 bug"报上来的，实际是**幂等判据缺失**：
+好友申请与同意回执都是**没有 ACK 的定向帧**，发送方会在每次建链补全与每轮心跳时补发，
+而每份补发必须是**新的 `message_id`** 的信封（复用旧 id 会被对端两层去重直接丢弃 ——
+那正是"丢了没人知道"的前提）。于是接收侧的两层帧去重
+（`MeshRouter::on_receive(frame_id)` + `GossipEngine::is_new(message_id)`）**结构上看不见"重复"**，
+每一份补发都被当成第一次 ⇒ 各弹一条系统通知。
+
+**所以幂等只能判在"本机是否已经握着这一条"上，判在帧 id 上是判不住的** —— 这是本条的核心，
+也是它和 INV-P02（同一消息不得因传输路径变化变成两条）不重合的地方：P02 管"业务身份"，
+本条管"同一业务身份第二次到达时，用户侧的副作用该不该再来一次"。
+
+| # | 规则 | 今天靠什么成立（去重键与通知边界，逐个指到实物） |
+|---|---|---|
+| 1 | 申请：系统通知只许由"本机第一次握着这条申请"点亮 | 键 = `pending_requests.insert(from)` 返回的**旧值**（`network/transport/handshake.rs:364`，`None`=第一次）；判定经纯函数出口 `friend_request_arrival_decision`（`:339`，调用点 `:374`）；通知只在 `Notify` 那一支（`:387` 的 `show_click_if_enabled`）。直连与跨跳两个到达点共用这一个家（`network/transport/handle_identity.rs:188` / `network/transport/gossip.rs:501`） |
+| 2 | 同意：系统通知只许由"这一次真的从不是好友变成好友"点亮 | 键 = **持久**好友表：`db::get_friend(..).is_some()` 在 `add_friend` **之前**取值（`network/transport/handshake.rs:292`–`301` 的 `was_friend`），门控在 `:307`，通知在 `:314`；两个到达点同样共用这一个家（`network/transport/handle_identity.rs:210` / `network/transport/gossip.rs:523`） |
+| 3 | 首次判定不许硬编码、不许写反 | 判据的输入只许是 `insert` 的返回值。把 `prior.is_none()` 写成恒 `true` ⇒ 回到刷屏；写成 `is_some` ⇒ 变成"首次不弹、重复才弹"，两种都静默 ⇒ `tests::every_friend_request_path_notifies_only_on_first_sighting` 认这两种形状（它同时数调用点：两个到达点只许有一个家、通知只许有一个发起点） |
+| 4 | 频率那一半在**发送侧**：补发必须有最小间隔 | `friend_request_flush_decision`（`network/transport/handshake.rs:443`）+ 调用处的 `const MIN_INTERVAL_MS: i64 = 30_000;`（`:468`），挂在建链与每轮心跳（`network/transport/handle_identity.rs:98`、`:136`）。接收侧门控挡得住刷屏，挡不住"一条没人应答的申请每 5 秒向整个网洪泛一份新信封" ⇒ 两半都要，只做接收侧仍会把 BLE 链路刷满 |
+| 5 | `emit` 每次都发**不算违反本条** | 事件是"请界面重拉一次"的幂等信号，不是用户可见的通知；漏发会让"首次那个 emit 恰好没被界面收到"时列表永不刷新（`network/transport/handshake.rs:304`–`306`、`:371`–`372`）。本条只约束**系统通知**那一路（`notifications.rs` 的 `show_if_enabled` / `show_click_if_enabled`，两者都已带后端开关与错误可见） |
+| 6 | 已经是好友的人再发申请，不许落到"通知"那一支 | `apply_friend_request` 进门先走 `auto_accept_if_already_friend`（`network/transport/handshake.rs:361`）⇒ 关系直接收敛成同意，不插 pending、不弹"请求添加你为好友" |
+
+**边界（如实写下，别当成已解决 —— 这一格是本条现在唯一不成立的地方）**：
+规则 1 的键是**内存态**。`pending_requests` 是 `Mutex<HashMap>`（`state.rs:1076`，构造处 `state.rs:1472`
+给的是空表），而库里**没有对应的表**（`CREATE TABLE` 清单里既没有 `friend_requests` 也没有
+`pending_requests` —— 可复跑：`grep -rn "CREATE TABLE" src-tauri/src --include="*.rs"`）。
+发送侧那份登记同样只在内存里（`state.rs:1102`）。于是：
+
+- **接收端重启**后内存表是空的，而只要发送端没重启、它对那条申请仍在补发 ⇒
+  同一条申请会被判成"第一次见到"，**再弹一次通知**。
+- 同意那一支**没有**这个问题：它的键在 `friends` 表里，重启还在。
+
+⇒ 所以本条的可信范围只到**同一进程生命周期内**；把它写成跨重启的不变量就是假话。
+今天它造成的实际体感有限（重启后「新的朋友」列表本身也是空的 —— `get_pending_requests` 读的就是
+那份内存 ⇒ 通知与界面口径一致，不是"已经处理完又弹一条"），但"重复通知"确实在跨重启这一维复发。
+要收口只有两条路：把申请持久化（连带迁移与旧库补列），或按申请人 id 记一条持久的"已通知过"痕迹。
+**两者都属应用码改动，本轮按边界没动**，留待负责人拍板。
+另：两个进程各弹一次是 INV-P32 那条边界（不同 bundle 之间不去重）的下游症状，不在这里重复记。
+
+- 钩子：`tests::every_friend_request_path_notifies_only_on_first_sighting` `tests::every_friend_accept_path_forgets_the_pending_request` `network::transport::tests::friend_request_arrival_notifies_only_the_first_time` `network::transport::tests::pending_friend_request_reflush_is_spaced_not_per_heartbeat` `guards:好友申请的通知只在第一次到达时弹` `guards:待发好友申请的补发必须有间隔` `guards:两条 FriendAccept 路径走同一个家`
+- 反向：把 `friend_request_arrival_decision(prior.is_none())` 改成恒 `true` ⇒ 具名用例红，
+  `guards:好友申请的通知只在第一次到达时弹` 那条注入再把同一份判据红一次（改坏即 FAIL、恢复即 PASS）；
+  把 `const MIN_INTERVAL_MS` 改成 `0` ⇒ `guards:待发好友申请的补发必须有间隔` 红在"间隔"那一格；
+  把 `if was_friend` 的门控摘掉 ⇒ `tests::every_friend_accept_path_forgets_the_pending_request`
+  里那格 `was_friend` + `show_if_enabled` 的形状断言红。
+  ⚠️ **本条判据的已知不足**：同意那一支今天**只有形状断言，没有专属注入 Case**
+  （`guards:两条 FriendAccept 路径走同一个家` 的注入打的是"少一条消费者"与"家里不清 pending"，
+  都不碰 `was_friend` 门控）⇒ 摘掉门控在本地单测会红，但注入层没有独立一条证明它会红。

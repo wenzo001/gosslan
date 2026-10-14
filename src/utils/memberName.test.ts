@@ -140,6 +140,85 @@ test("跨语言契约：后端兜底与这里的位数/措辞同一条", () => {
   );
 });
 
+// ↓↓↓ 这两格管的是**入口**，上面那些管的是纯函数本身。
+/**
+ * 跨入口契约（前端这一侧）：`useChatStore.nicknameOf` 必须把判断**交给** `resolveMemberName`。
+ *
+ * 为什么不能只测纯函数（用户 2026-10-14：「操作记录名字同步，有时候还会显示设备名，会变」）：
+ * 缺陷当时的形状是"入口自己写了一遍顺序 + 自己兜 `return id`"，那时纯函数根本不存在；
+ * 反过来今天只测纯函数的话，有人把判断抄回入口 ⇒ 这一册全绿而用户看到的仍是 `gosslan-xxxx`。
+ * 与上面那条钉**后端**入口（`resolve_nickname`）的是同一族判据，两条各管一个入口，
+ * 缺一条就是半个守卫。
+ *
+ * 反例能力（本轮实测两句都真红过，形状写在 `docs/migration-ledger.md` 那一行里）：
+ *  · 把委托摘掉、退回 `return id;` ⇒ 红在"必须委托"那一格；
+ *  · 委托之后另起一条 `return id;` ⇒ 红在"调用之后不许再有代码"那一格；
+ *  · 委托之前插一条 `if (!f && !p) return id;` ⇒ 红在"裸 id 不许出现在返回位"那一格。
+ */
+test("入口委托：nicknameOf 必须把判断交给 memberName.ts 那一个家", () => {
+  const at = (rel: string) => join(dirname(fileURLToPath(import.meta.url)), rel);
+  const body0 = sliceFnBody(readFileSync(at("../stores/useChatStore.ts"), "utf8"), "function nicknameOf(");
+  assert.ok(body0 !== null, "useChatStore.ts 里找不到 `function nicknameOf(` ⇒ 入口搬家，这条判据失去落点");
+  // 先去掉整行注释：那两段注释里**复述了**"这里返回裸 device_id"，留着它既能把反例判成绿、
+  // 也能把正例判成红（本仓那条"注释里复述被断言句"的旧账同族）。
+  const body = body0!.replace(/^[ \t]*\/\/.*$/gm, "");
+  assert.match(body, /return\s+resolveMemberName\(/, "nicknameOf 不再委托 resolveMemberName ⇒ 显示名判据长出第二个家");
+  const call = body.lastIndexOf("resolveMemberName(");
+  const close = matchParen(body, call + "resolveMemberName".length);
+  assert.ok(close >= 0, "委托调用的实参括号没闭合 ⇒ 这份源码形状已不是本判据认识的那种");
+  // 「调用点还在」不等于「返回的是它」：调用之后除一个分号不许再有代码。
+  assert.equal(body.slice(close + 1).trim(), ";", "委托调用之后还有别的代码 ⇒ 返回的不再是纯函数那个结果");
+  // 裸 id 兜底的两种真实写法（第一种就是修之前那一支）：`return id` / `… || id` / `… ?? id`。
+  assert.doesNotMatch(body, /return\s+id\b/, "nicknameOf 里出现 `return id…`：查不到的人会把设备标识当名字返回");
+  assert.doesNotMatch(body, /(\|\||\?\?)\s*id\b/, "nicknameOf 里出现 `|| id`／`?? id`：第二个兜底家又长回来了");
+  // 兜底措辞必须来自 i18n 那一个家（不许在入口里手打一份"未知成员"）。
+  const flat = body.replace(/\s+/g, " ");
+  assert.ok(
+    flat.includes('unknownMember: t("common.unknownMember")'),
+    "nicknameOf 没把 i18n 的「未知成员」措辞交给纯函数 ⇒ 兜底文案出现第二个家",
+  );
+});
+
+/**
+ * 消费侧不许再有第二个兜底家：两个读名字的地方都必须止步于那一个家。
+ *
+ *  · `MessageItem.vue` 的头像取色名原来写的是 `… || chat.nicknameOf(…) || props.message.sender_id`
+ *    —— `nicknameOf` 判不到时给的是「未知成员 abcd」，**永远非空**，再接一次既把设备标识送进
+ *    取色（同一个人两处颜色分叉），又把兜底抄进第三个家。
+ *  · `useMemberProfile.ts` 原来自己写过一遍「自己 → 好友表 → 在线节点表 → 兜底」，而且兜底与
+ *    store 不同形（那边返回裸 device_id、这边对自己返回「我」）⇒「聊天里的名字和操作记录里的
+ *    名字不一样」就是这么来的。现在它只许取 `nicknameOf` 的结果，不许在返回处重新判名字。
+ *
+ * ⚠️ 这两格判的是**形状**（第二个家不许长回来），不是运行时行为 —— 行为那半边由上面的真值表用例管。
+ * 本仓没有任何测试构造过 `AppState` / pinia store，所以这里也**不声称**有入口级的端到端覆盖。
+ */
+test("消费侧不再兜裸 id：头像取色名与资料页都止步于那一个家", () => {
+  const at = (rel: string) => join(dirname(fileURLToPath(import.meta.url)), rel);
+  const stripComments = (s: string) => s.replace(/\/\*[\s\S]*?\*\/|^[ \t]*\/\/.*$/gm, "");
+
+  const vue = readFileSync(at("../components/MessageItem.vue"), "utf8");
+  const from = vue.indexOf("const avatarName");
+  assert.ok(from >= 0, "MessageItem.vue 里找不到 `const avatarName` ⇒ 那一格搬家/改名，这条判据失去落点");
+  // 切片按"下一个顶层 const"收口，不用定长窗口：窗口跨进邻规则就会误判（本仓那条旧账）。
+  const to = vue.indexOf("\nconst ", from + 1);
+  assert.ok(to > from, "avatarName 之后找不到下一个顶层 `const` ⇒ 切片边界判不出来，本判据认识的那种形状已变");
+  const seg = stripComments(vue.slice(from, to));
+  assert.match(seg, /chat\.nicknameOf\(/, "头像取色名不再走 nicknameOf ⇒ 名字来源长出第二个家");
+  assert.doesNotMatch(
+    seg,
+    /(\|\||\?\?)\s*(?:props\.)?(?:message\.)?sender_id\b/,
+    "取色名后面又接了裸 sender_id 兜底 ⇒ 第二个家 + 同一个人两处颜色分叉",
+  );
+
+  const profile = readFileSync(at("../composables/useMemberProfile.ts"), "utf8");
+  const fn = sliceFnBody(profile, "function memberProfile(");
+  assert.ok(fn !== null, "useMemberProfile.ts 里找不到 `function memberProfile(` ⇒ 入口搬家，这条判据失去落点");
+  const fnBody = stripComments(fn!);
+  assert.match(fnBody, /chat\.nicknameOf\(/, "资料页不再走 nicknameOf ⇒ 显示名判据长出第二个家");
+  assert.doesNotMatch(fnBody, /name:\s/, "memberProfile 在返回处重新判了名字（只许用那一次委托的结果）");
+  assert.doesNotMatch(fnBody, /(\|\||\?\?)\s*id\b/, "memberProfile 里出现 `|| id`／`?? id`：裸设备标识的兜底回来了");
+});
+
 /** 从 `open` 这个 `(` 出发，按配对找到它自己的 `)`，返回其下标（找不到返回 -1）。 */
 function matchParen(src: string, open: number): number {
   let depth = 0;
