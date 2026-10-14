@@ -956,7 +956,7 @@ mod tests {
             5,
             r#"{"todo_id":"t1","title":"旧","assignees":["alice"],"status":"todo","creator":"alice",
                "deleted":false,"description":"","images":[],"archived":false,
-               "priority":"low","category":"custom","custom_category":"复盘会","number":7}"#,
+               "priority":"low","category":"custom","custom_category":"复盘会","custom_icon":"flag","number":7}"#,
         );
         insert(
             "m6",
@@ -972,6 +972,21 @@ mod tests {
             def4.custom_category, "复盘会",
             "最新一份没带自定义名 ⇒ 沿用最近一份说过的名字"
         );
+        assert_eq!(
+            def4.custom_icon, "flag",
+            "图标是同一条规矩的另一个面：m6 没带 `custom_icon` ⇒ 不许被 serde(default) 抹回默认那枚"
+        );
+        // 反向：显式说了新图标必须生效（沿用只针对"没说"）
+        insert(
+            "m7",
+            "todo_update",
+            7,
+            r#"{"todo_id":"t1","title":"旧","assignees":["alice"],"status":"doing","creator":"alice",
+               "deleted":false,"description":"","images":[],"archived":false,
+               "priority":"low","category":"custom","custom_category":"复盘会","custom_icon":"star"}"#,
+        );
+        let def5 = super::latest_todo_def(&conn, conv, "t1").unwrap();
+        assert_eq!(def5.custom_icon, "star", "说了就覆盖：这条规矩不许把正常换图标也挡住");
     }
 
     /// 任务改动的鉴权判据 —— 两档 + 「只动归档位」的放宽档（口径来自用户 2026-09-17、

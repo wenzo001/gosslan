@@ -318,7 +318,7 @@ test("跨语言：后端也必须沿用没说的三格（与前端 carryAbsentTo
   const src = readFileSync(join(here, "../../src-tauri/src/commands/group_files.rs"), "utf8");
   const problems = (text: string): string[] => {
     const out: string[] = [];
-    for (const key of ["priority", "category", "number"]) {
+    for (const key of ["priority", "category", "number", "custom_icon"]) {
       if (!text.includes(`.get("${key}")`)) out.push(`没按"键在不在"读 ${key} ⇒ serde(default) 会把没带抹成默认值`);
       if (!text.includes(`carry_${key}`)) out.push(`没有把 ${key} 沿用下去的那一步`);
     }
