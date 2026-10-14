@@ -13,6 +13,31 @@
 
 ## [Unreleased]
 
+### 取证轮保留：失败轮那条"永远不删"补上了天数上限（仓库体积从 25 GB 收到 5.1 GB）
+
+用户 2026-10-14：「清除一下这个项目文件夹无用缓存，防止文件夹无限扩大」。现量下来两处会只涨不收：
+`src-tauri/target/debug` 18.5 GB（cargo 从不回收旧 hash 的那份，`cargo clean gc` 只管全局 registry 不管项目 target），
+以及双实例 E2E 的历史轮次目录 —— **保留规则原本只管"通过的轮最多留 30 个"，失败轮是一个都不删**，
+实测攒到 382 个目录 / 1.83 GB，而真正被在库文档点名的只有 22 个。
+
+- 删了 `src-tauri/target/debug`（删前现证两条：`git check-ignore` 命中 + `git ls-files` 对它 0 个跟踪文件）。
+  `target/release` **保留** —— E2E 与本地层跑的就是那份，重编一次 6m43s，删它省不了多少还直接拖慢下一轮。
+- 失败轮加第二条出口（负责人拍板按天数收）：**超过 N 天（默认 7）且没被在库文档点名**的失败轮才进删除名额。
+  四条立场一条没动：被文档点名的不删、`unknown`（没有 `summary.json` = 崩在半路）永不删、
+  引用名单拿不到 ⇒ 一个都不删、反向模式（`--round=X-lie`）⇒ 一趟都不删。上限走
+  `GOSSLAN_KEEP_RUNS` / `GOSSLAN_KEEP_RED_DAYS`，默认值只有 `retentionLimits()` 一处读。
+- 判据从 8 格加到 16 格（每格只换一个输入），并**逐格打了穿**：五组单点变异分别只红对应那一条
+  （其中"上限缺失"与"取不到年龄"两格第一版变异是空转 —— `30 > undefined` 本来就假，
+  要同时把比较那行改成 `?? 0` / `?? 999` 才打得穿 ⇒ 这两格真正锁的是"双重 fail-closed"）。
+  `--prune-selfcheck` 那条秒级入口顺手把"格数"改成判据自己数着印，不再抄写死的数字。
+- 新增 `--prune-only`：一次性清账与轮末收尾走**同一份** `pruneOldRuns`（顺手把 `classifyRun`/`dirBytes`/
+  删除循环都收进 `scripts/e2e/core.mjs` 一个家，原来驱动里那份与本条是同判据两处家）。
+  实测：反向对照（两个上限放到 9999）删 0 个；真跑删 285 个、释放 1568.6 MB，`test-results` 1.83 GB → 287 MB。
+  ⚠️ 一次写读数时把 `bytes/1048576` 标成了 GB（那是 MB），单位要在打印当场核对，别信标签。
+- 清完复核：仍在盘上且被文档点名的目录 = 22 个（与清前的引用普查同数）⇒ 没救走任何一份被引用的证据。
+  复跑：`ls -d test-results/run-* | wc -l`、`du -sh test-results`、`node scripts/e2e-multi-instance.mjs --prune-selfcheck`。
+
+
 ## [4.38.0] - 2026-10-14
 
 ### 桌面窗口：macOS 绿灯与双击标题栏终于有反应了

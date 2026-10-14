@@ -138,23 +138,105 @@ export function citedRunIds() {
   }
   return set;
 }
-export function prunePlan({ runs, keep, negative, cited }) {
+/// 一轮留在盘上的痕迹算绿、算红，还是算"没跑完"。判据只留这一个家（2026-10-14 从驱动里搬上来）：
+/// 收尾那一跑和一次性清账走的是同一个分类，谁也不许另写一份 summary 读法。
+export function classifyRun(dir) {
+  const sum = path.join(dir, "summary.json");
+  if (!fs.existsSync(sum)) return "unknown"; // 崩在半路 ⇒ 现场比"省空间"值钱
+  try {
+    const v = JSON.parse(fs.readFileSync(sum, "utf8")).verdict;
+    return v === "PASS" ? "green" : v === "FAIL" ? "red" : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+export function prunePlan({ runs, keep, negative, cited, redMaxAgeDays }) {
   if (negative) return [];
   if (!Number.isFinite(keep) || keep < 0) return [];
   if (!cited) return []; // fail-closed：引用名单拿不到 ⇒ 一个都不删（和"自证不过就不删"同一立场）
+  const doomed = new Set();
   const greens = runs
     .filter((r) => r.outcome === "green" && !cited.has(r.name)) // ★ 被文档点名的绿轮不占删除名额
     .sort((a, b) => (a.name < b.name ? 1 : -1)); // 目录名是 ISO 时间戳 ⇒ 字典序倒排 = 新的在前
   // 返回**按名字升序**（= 从最老的删起），让调用侧与自证都不依赖 sort 的方向
-  return greens.slice(keep).map((r) => r.name).sort();
+  for (const r of greens.slice(keep)) doomed.add(r.name);
+  // ★ 失败轮的第二条出口（2026-10-14 负责人拍板）：原来「红轮一个都不删」就是它只涨不收的原因
+  //   （实测 346 轮 1.72 GB，而在库文档点名的只有 22 个）。这里只放**超过 N 天且没被点名**的那些走，
+  //   三条立场没动：被文档点名 = 证据正被引用、`unknown` = 崩在半路没有 verdict（现场比省空间值钱）、
+  //   N 没给或写坏 = 当作"没这条上限"。三档任一输入变了都必须少删，所以各自配了一条反证。
+  if (Number.isFinite(redMaxAgeDays) && redMaxAgeDays >= 0) {
+    for (const r of runs) {
+      if (r.outcome !== "red" || cited.has(r.name)) continue;
+      if (Number.isFinite(r.ageDays) && r.ageDays > redMaxAgeDays) doomed.add(r.name);
+    }
+  }
+  return [...doomed].sort();
+}
+/// 目录字节数（递归）。收尾报表与"本轮内部清理"共用这一份，别再各写一遍 du 的形状。
+export function dirBytes(d) {
+  if (!fs.existsSync(d)) return 0;
+  let n = 0;
+  for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+    const p = path.join(d, e.name);
+    n += e.isDirectory() ? dirBytes(p) : fs.statSync(p).size;
+  }
+  return n;
+}
+/// 保留上限只有这一个家：轮末收尾与 `--prune-only` 一次性清账读同一对环境变量。
+/// 默认值抄成两份的话，改一份就会让"平时收多少"和"手动收一次"悄悄不是同一件事。
+export function retentionLimits() {
+  return {
+    keep: Number(process.env.GOSSLAN_KEEP_RUNS || 30),
+    redMaxAgeDays: Number(process.env.GOSSLAN_KEEP_RED_DAYS || 7),
+  };
+}
+/// 按 `prunePlan` 给的名单删历史轮次 —— **删目录不可逆，所以这四条硬约束跟着这份实现走**：
+/// ① 只允许碰 `root/run-*`，且跳过 `cur`（本轮自己）；② 被文档点名的不进删除名额；
+/// ③ 引用名单拿不到 ⇒ 一个都不删；④ 反向模式 ⇒ 一趟都不删。调用侧只负责先自证、再转达结果。
+export function pruneOldRuns({ root, cur, negative, keep, redMaxAgeDays, cited }) {
+  if (!fs.existsSync(root)) return { deleted: [], bytes: 0, left: 0, spared: 0, missingCited: 0, citedAvailable: !!cited };
+  const dirs = fs.readdirSync(root, { withFileTypes: true })
+    .filter((e) => e.isDirectory() && e.name.startsWith("run-"))
+    .map((e) => e.name);
+  const present = new Set(dirs);
+  const runs = dirs.filter((n) => n !== cur)
+    .map((n) => ({
+      name: n,
+      outcome: classifyRun(path.join(root, n)),
+      // 目录名本身就是 ISO 时间戳，但**按 mtime 算龄**：目录名在拷动/还原时会骗人，mtime 不会。
+      ageDays: (Date.now() - fs.statSync(path.join(root, n)).mtimeMs) / 86400000,
+    }));
+  const doomed = prunePlan({ runs, keep, negative, cited, redMaxAgeDays });
+  // `spared` = 被文档点名且还在盘上的目录数（它是"证据正被保护"的分母，不等于"这一趟多救下几个"）。
+  // `missingCited` = 文档点名但盘上找不到 ⇒ 只报数，不改判。
+  const spared = cited ? dirs.filter((n) => cited.has(n)).length : 0;
+  const missingCited = cited ? [...cited].filter((n) => !present.has(n)).length : 0;
+  let bytes = 0;
+  const gone = [];
+  for (const name of doomed) {
+    const dir = path.join(root, name);
+    if (name === cur || !dir.startsWith(root + path.sep)) continue; // 双保险：不碰本轮、不跑出根目录
+    bytes += dirBytes(dir);
+    fs.rmSync(dir, { recursive: true, force: true });
+    gone.push(name);
+  }
+  const left = fs.readdirSync(root, { withFileTypes: true })
+    .filter((e) => e.isDirectory() && e.name.startsWith("run-")).length;
+  return { deleted: gone, bytes, left, spared, missingCited, citedAvailable: !!cited };
 }
 export function selfcheckPrune() {
   const fails = [];
+  let total = 0;
   const eq = (name, got, want) => {
+    total += 1;
     const a = JSON.stringify(got), b = JSON.stringify(want);
     if (a !== b) fails.push(`${name}：预期 ${b} / 实际 ${a}`);
   };
-  const mk = (tag, outcome) => (outcome ? { name: "run-" + tag, outcome } : { name: "run-" + tag });
+  const mk = (tag, outcome, ageDays) => ({
+    name: "run-" + tag,
+    ...(outcome ? { outcome } : {}),
+    ...(ageDays === undefined ? {} : { ageDays }),
+  });
   const greens = [mk("a", "green"), mk("b", "green"), mk("c", "green")]; // c 最新
   const NONE = new Set();
   eq("绿轮超上限 ⇒ 删最老的那几个", prunePlan({ runs: greens, keep: 1, negative: false, cited: NONE }), ["run-a", "run-b"]);
@@ -167,7 +249,20 @@ export function selfcheckPrune() {
   //   第一格红 ⇒ 证明"留下 a"是引用给的，不是排序巧合；第二格红 ⇒ 证明 fail-closed 那条真的关着门。
   eq("被文档点名的绿轮 ⇒ 哪怕超上限也不删", prunePlan({ runs: greens, keep: 1, negative: false, cited: new Set(["run-a"]) }), ["run-b"]);
   eq("引用名单拿不到（null）⇒ 一个都不删", prunePlan({ runs: greens, keep: 1, negative: false, cited: null }), []);
-  return fails;
+  // ★ 失败轮的「按天数封顶」这一族（2026-10-14）。第 1/2/3 格是**同一批输入只换一个量**的三胞胎：
+  //   分别证明"删是因为超龄"、"留下是因为没超龄"、"留下是因为被文档点名"，谁也不是排序巧合。
+  const oldRed = [mk("old", "red", 30)];
+  eq("红轮超过 N 天且没被点名 ⇒ 删", prunePlan({ runs: oldRed, keep: 30, negative: false, cited: NONE, redMaxAgeDays: 7 }), ["run-old"]);
+  eq("红轮没超 N 天 ⇒ 一个都不删", prunePlan({ runs: [mk("old", "red", 3)], keep: 30, negative: false, cited: NONE, redMaxAgeDays: 7 }), []);
+  eq("红轮被文档点名 ⇒ 超龄也不删", prunePlan({ runs: oldRed, keep: 30, negative: false, cited: new Set(["run-old"]), redMaxAgeDays: 7 }), []);
+  eq("没给 N（未设上限）⇒ 红轮一个都不删", prunePlan({ runs: oldRed, keep: 30, negative: false, cited: NONE }), []);
+  eq("N 写坏了（NaN/负数）⇒ 红轮不删", prunePlan({ runs: oldRed, keep: 30, negative: false, cited: NONE, redMaxAgeDays: Number.NaN }), []);
+  eq("取不到年龄（缺 ageDays）⇒ 红轮不删", prunePlan({ runs: [mk("old", "red")], keep: 30, negative: false, cited: NONE, redMaxAgeDays: 7 }), []);
+  eq("崩在半路（没有 summary=unknown）⇒ 超龄也不删", prunePlan({ runs: [mk("u", "unknown", 30)], keep: 30, negative: false, cited: NONE, redMaxAgeDays: 7 }), []);
+  eq("绿轮超限与红轮超龄同时发生 ⇒ 两个都进名单", prunePlan({ runs: [mk("a", "green"), ...oldRed], keep: 0, negative: false, cited: NONE, redMaxAgeDays: 7 }), ["run-a", "run-old"]);
+  // ★ 格数由判据自己数着印 —— 写死在调用侧的那句"8 格"在加到 16 格那天就变成假话了（同一族见
+  //   本仓「账表型工具只存观测值／分母自打印」那条纪律）。
+  return { fails, total };
 }
 // ── 环境事实（不认识的平台直接退，不猜）────────────────────────────
 export function appDataDir() {
