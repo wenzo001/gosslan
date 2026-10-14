@@ -643,6 +643,29 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
             {
                 return;
             }
+            // ⚠️ 可观测性缺口（用户 2026-10-13：「刚加了好友，两端能看到互相在线，但我发的单聊他收不到」）。
+            // 定向给**本机**的加密单聊信封如果在这里解不开，下面那句 `if let Some(pt)` 整块跳过：
+            // 不落库、不通知界面、也**不回 ChatAck** ⇒ 发送端状态永远停在「已发送」（不是"没送达"），
+            // outbox 行永远留着，每次重连再用同一把（可能已过期的）公钥重新密封发一遍 ——
+            // 失败是静默且自我一致的，两端日志各留一片空白，事后根本分不出"没收到"与"收到了打不开"。
+            // 这一条就是那道分界；只报布尔量，不报密钥本身（日志会进报告产物）。
+            if env.kind == GossipKind::Chat && env.encrypted && plaintext.is_none() {
+                let (has_local_key, local_matches_envelope) = {
+                    let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
+                    match peers.get(&env.sender_id).and_then(|p| p.x25519_pubkey.as_deref()) {
+                        // 本机没有对方的 X25519：这条一定解不开（要等同步新密钥或对方重新上线补齐）
+                        None => (false, false),
+                        Some(k) => (true, k == env.sender_pubkey.as_str()),
+                    }
+                };
+                state.logger.warn(
+                    "chat",
+                    format!(
+                        "单聊信封解不开（本机为接收方）msg={} peer={} 本机存有对方密钥={} 与信封自报一致={}",
+                        env.message_id, env.sender_id, has_local_key, local_matches_envelope
+                    ),
+                );
+            }
             if let Some(pt) = plaintext {
                 let crate::protocol::GossipPlaintext {
                     kind,
@@ -664,6 +687,14 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                             // 只记条数：落点里带昵称，昵称不进日志（日志会进报告产物）
                             mention_targets.as_ref().map_or("none".to_string(), |v| v.len().to_string())
                         ),
+                    );
+                } else {
+                    // 单聊也要留一条"到达本机并解开"的正向痕迹（此前只有群聊有 ⇒ 手机日志里
+                    // "没收到"与"收到了但没有任何一行"完全同形，用户只能报"不知道为什么收不到"）。
+                    // 记 kind 不记正文：与群聊那条同一口径，正文/昵称不进日志。
+                    state.logger.info(
+                        "chat",
+                        format!("单聊消息已收 msg={} kind={}", env.message_id, kind),
                     );
                 }
                 // GossipKind::Chat：好友关系检查（非好友不落库、不通知、通知发送方）

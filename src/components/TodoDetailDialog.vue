@@ -380,8 +380,14 @@ const fullCode = computed(() =>
         </ul>
       </div>
 
-      <!-- 操作：完成（主）/ 归档 / 恢复 / 编辑 / 删除 -->
-      <div class="flex flex-wrap items-center gap-2 border-t border-[var(--gosslan-divider)] pt-3">
+    </div>
+
+    <!-- 操作条走 footer 插槽 ⇒ 它在滚动区**之外**，永不随内容滚走（2026-10-12 用户要求）。 -->
+    <template #footer>
+      <!-- ⚠️ `v-if="item"` 必须带上：这条操作条现在在 `v-if="item"` 那层**之外**
+           （它搬到了 footer 插槽，就是为了不随内容滚走）⇒ 少了这个判断，
+           item 为 null 时按钮会去读 `item.status` 而崩。 -->
+      <div v-if="item" class="flex flex-wrap items-center gap-2 border-t border-[var(--gosslan-divider)] pt-3">
         <button
           v-if="canChangeStatus && !isTodoTerminalStatus(item.status)"
           type="button"
@@ -435,7 +441,7 @@ const fullCode = computed(() =>
           <Trash2 class="h-4 w-4" />
         </button>
       </div>
-    </div>
+    </template>
   </BaseModal>
 
   <!-- 大图预览：Teleport 到 body，压在弹窗之上（与合并转发卡片同一做法） -->

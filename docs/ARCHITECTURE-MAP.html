@@ -810,7 +810,7 @@ const SEM = {
   list_group_files: { d: "群文件列表，带 <code>local_state ∈ local|receiving|remote|failed</code> 与 <code>delivered/total</code>。" },
   get_group_file_delivery_summary: { d: "群文件每收件人进度汇总 <code>{completed, failed, waiting}</code>（气泡上的「3/5 已收到」）。" },
   request_content: { d: "按 msgId 请求补拉内容。" },
-  request_content_by_cid: { d: "按 cid 请求补拉。<b>拥有即授权</b>：任何持有该内容的设备都能当源。" },
+  request_content_by_cid: { d: "按 cid 请求补拉。<b>拥有即授权</b>：任何持有该内容的设备都能当源。⚠️ <b>服务侧不许在入站循环里 await 整条握手</b>（A-14，2026-10-13）：旧形状等对端 <code>FileAccept</code> 才能往下走，而那一帧正是被自己堵住的 reader 读回来的 ⇒ 每次必满 15 秒、同链路群聊/单聊/心跳全进不来。现在投给<b>每对端一条有界串行队列</b>（<code>queue_policy::FileService</code>，容量 8、<code>ServeTicket::{Accepted,Merged,RejectedFull}</code>、<code>close_peer</code> 即取消、generation 防旧 worker 踢掉新的），串行还顺带保住 <code>pending_file_accept</code> 那个<b>只按 transfer_id 登记</b>的单键。受众判定在 handler 不在 <code>find_source</code>（后者只认 <code>cid + path IS NOT NULL</code>）：<code>content_serve_allowed</code> = 好友 <b>或</b> 该内容所属群的成员。" },
   save_outgoing_image: { d: "把剪贴板 / 拖进来的 dataURL 落成临时文件并返回 <code>{path,name,size}</code>（发送前的必经一步）。" },
   open_file_native: { d: "用系统关联程序打开（NSWorkspace / FileProvider / Android intent）。" },
   delete_file: { d: "删本地文件（只删该删的位置；不做「顺手清目录」）。" },
@@ -956,7 +956,7 @@ const EVENTS = [
   ["peers-updated", "Peer[]", "发现/建链/清扫改动后，由 300ms 合并窗口的 emitter 统一发（<code>try_lock</code>，抢不到就跳过，绝不卡网络）", "chat.refreshPeers / TopologyBar", "全体窗口"],
   ["message-received", "MessageRecord", "对端帧解开并落库成功时；也用于自己发出的那一行的首帧", "chat.enqueueMessage（进时间线/计未读/通知）", "全体窗口"],
   ["message-acked", "msg_id str", "发送方收到对端 Ack，<b>且核过 outbox 里确有该行</b>", "onMessageAcked → 气泡转 delivered", "全体窗口"],
-  ["group-message-acked", "{msg_id}", "群成员回 GroupAck，删掉<b>那一个成员</b>的 group_outbox 行", "同上（共用一个处理）", "全体窗口"],
+  ["group-message-acked", "{msg_id}", "群成员回 GroupAck，删掉<b>那一个成员</b>的 group_outbox 行，<b>并在同一次锁里把这条消息写进真库终态</b> <code>db::set_message_status(…, \"delivered\")</code>（A-15，2026-10-13：过去只删行 + emit ⇒ 内存里 advance 一次，一重启就退回单勾，而「状态唯一真相源是 <code>messages.status</code>」是写着 INV-006 的）", "同上（共用一个处理）", "全体窗口"],
   ["message-status-changed", "msg_id str", "状态被外部改动（补发、重投、取消）", "onMessageStatusChanged", "全体窗口"],
   ["message-failed", "msg_id str", "<b>只有过期清扫器</b>写 failed（可达超 120s / 群与文件 30min）", "气泡转失败 + toast", "全体窗口"],
   ["message-recalled", "msg_id str", "撤回落 <code>group_recalled_messages</code> 并物化之后", "从时间线摘掉那一条", "全体窗口"],
@@ -1481,7 +1481,7 @@ function buildDir() {
       '<div class="stat"><div class="num">' + CMDS.filter((r) => !SEM[r[0]] || !SEM[r[0]].dead).length + '</div><div>前端有调用</div></div>' +
       '<div class="stat"><div class="num">29</div><div>后端字面量事件名（表内合并成 ' + EVENTS.length + ' 行；动态拼的不计）</div></div>' +
       '<div class="stat"><div class="num">19</div><div>SQLite 表</div></div>' +
-      '<div class="stat"><div class="num">227</div><div>护栏非空转用例（改坏即红·这个数由 scripts/guard_cases/*.py 的 CASES 现算，判据 E 对账）</div></div>' +
+      '<div class="stat"><div class="num">231</div><div>护栏非空转用例（改坏即红·这个数由 scripts/guard_cases/*.py 的 CASES 现算，判据 E 对账）</div></div>' +
       '<div class="stat"><div class="num">local</div><div>跨进程 E2E：正向轮接进 <code>verify</code> 的 <code>local</code> 组，要第三个真实实例那一轮单独挂在 <code>release</code> 组（发版前才跑，落点＝发版检查单点名）；每轮断言数由 <code>check-doc-numbers.mjs</code> 从 harness 现算对账，手写即红；入口 <code>npm run verify:e2e</code> / <code>npm run verify:release</code>；<b>两层 CI 都不跑</b></div></div>' +
       '<div class="stat"><div class="num">现算</div><div>Rust / 前端测试条数：分别由 <code>cargo test</code> 与 <code>npm test</code> 自己打印，图上不抄</div></div>' +
       '<div class="stat"><div class="num">20</div><div>反证 / 判据自查档的红数基线（<code>npm run selfproof:check</code>，量具不进门禁）</div></div>' +

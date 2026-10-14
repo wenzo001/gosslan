@@ -190,6 +190,9 @@ GFILE: "群文件轮",
   // `--round=dmreaction`：1:1 那条静默事件的跨实例判据，登记不能省，
   // 否则这六条断言永远不会被对账。
   DMREACT: "单聊表情轮",
+  // `--round=contentpull`（真机第 7 条那条自死锁）：**按 cid 从对端拉内容**这条管道以前是零跨实例判据
+  // （既有各轮的文件都走发送侧主动 offer），登记不能省，否则这一轮的断言数永远不会被对账。
+  CONTENTPULL: "内容拉取轮",
 };
 function harnessAsserts() {
   const src = fs.readFileSync(path.join(ROOT, HARNESS), "utf8");

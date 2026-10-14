@@ -1118,6 +1118,14 @@ pub struct AppState {
 
     /// 等待对方接受的文件传输：transfer_id -> 接受信号
     pub pending_file_accept: Mutex<HashMap<String, tokio::sync::oneshot::Sender<Result<(), u64>>>>,
+    /// 内容服务（`ContentRequest` 触发的回发）的**每对端有界串行队列**。
+    ///
+    /// 为什么必须在接收循环之外：那份服务的应答（`FileAccept`/`FileReject`）要由**同一条连接的
+    /// reader_loop** 读回来，而在循环里 await 整条握手 = 每次必走满 15 秒（2026-10-13 真机第 7 条：
+    /// 手机端被 14 条内容重试串行服务 ≈ 210 秒，期间同链路群聊/单聊/心跳全部读不到）。
+    /// 为什么是"每对端串行"而不是 `tokio::spawn`：`pending_file_accept` 只按 `transfer_id`
+    /// **单键**登记，同链路多路并发传文件会互相挤掉登记（这张表历史上就因同形问题修过一次）。
+    pub file_service: std::sync::Arc<crate::network::transport::FileService>,
     /// 等待接收方完成确认的直连文件传输：transfer_id -> 完成信号。
     /// 发送方在 FileDone 之后等待 FileCompleteAck，只有 success=true 才推进 delivered。
     pub pending_file_complete: Mutex<HashMap<String, tokio::sync::oneshot::Sender<bool>>>,
@@ -1404,6 +1412,9 @@ impl AppState {
         Ok(Arc::new(AppState {
             app,
             db: Mutex::new(conn),
+            file_service: crate::network::transport::FileService::new(
+                crate::network::transport::FILE_SERVICE_QUEUE_CAP,
+            ),
             device_id,
             tcp_port,
             // 「前端还没推语言」的初值；前端 `app.init()` 随后就会推一次真实值。

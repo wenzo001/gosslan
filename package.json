@@ -1,7 +1,7 @@
 {
   "name": "gosslan",
   "private": true,
-  "version": "4.37.1",
+  "version": "4.38.0",
   "type": "module",
   "description": "Gosslan — 无服务器 P2P 局域网即时通讯（Tauri v2 + Vue 3 + TypeScript）",
   "scripts": {
@@ -59,6 +59,8 @@
     "test:e2e:dmreaction-selfproof": "node scripts/e2e-multi-instance.mjs --round=dmreaction-lie",
     "test:e2e:posttext": "node scripts/e2e-multi-instance.mjs --round=posttext",
     "test:e2e:posttext-selfproof": "node scripts/e2e-multi-instance.mjs --round=posttext-lie",
+    "test:e2e:contentpull": "node scripts/e2e-multi-instance.mjs --round=contentpull",
+    "test:e2e:contentpull-selfproof": "node scripts/e2e-multi-instance.mjs --round=contentpull-lie",
     "test:e2e:logtail-selfproof": "node scripts/e2e-multi-instance.mjs --logtail-selfcheck",
     "test:fault-injection:resume": "node scripts/e2e-multi-instance.mjs --fault=resume-prefix",
     "test:fault-injection:kill": "node scripts/e2e-multi-instance.mjs --fault=kill-mid",

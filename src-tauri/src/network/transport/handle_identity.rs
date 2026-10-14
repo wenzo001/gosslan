@@ -124,6 +124,13 @@ async fn handle_identity_and_friend_messages(state: &Arc<AppState>, peer_id: &st
             flush_pending_group_reads(state, &device_id).await;
             crate::commands::flush_pending_files(state, &device_id).await;
             crate::commands::flush_pending_group_files(state, &device_id).await;
+            // 内容拉取也走这同一个"链路确实活着"的机会。为什么必须加在这里：服务侧的队列是
+            // **有界**的（每对端 `FILE_SERVICE_QUEUE_CAP`），满了会显式拒绝 ⇒ 若只有"下次建链"
+            // 才重投，稳定链路上被拒的那条就永远不再被请求（本仓既有事实：`retry_incomplete_content`
+            // 此前只有 Hello 一个调用点）。它自带闸门：`should_retry_now` 要求状态 Incomplete 且
+            // 退避到点（2→60s），`on_failure` 到 `MAX_CONTENT_RETRIES` 封顶转 Rejected ⇒
+            // 有界、对端驱动，**不是**新造的后台定时器。
+            retry_incomplete_content(state, &device_id).await;
             // 心跳 = 链路确实活着。这一帧丢了的好友申请/同意回执在这里补发，
             // 不必等到链路再断一次、重新建链（真机：点了加好友要等几分钟才有反应）。
             flush_pending_friend_request(state, &device_id).await;

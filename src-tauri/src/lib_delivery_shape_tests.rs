@@ -572,3 +572,31 @@
             "校验失败必须明确拒发（不能让幽灵提醒发出去）"
         );
     }
+
+    /// 群消息的 `GroupAck` 臂必须**把 `messages.status` 一起推进**（INV-006/P15：状态的唯一真相源在库里）。
+    ///
+    /// 现场是用户 2026-10-12 那份库（只读现算，一个字节没写）：
+    /// `group_outbox` 与 `outbox` 都是 **0 行**，而 **16 条群消息**（9 text + 5 todo_update + 1 todo
+    /// + 1 reaction）的 `messages.status` 永远停在 `sent`；同一时段对端自己的已读标记
+    /// `group_reads.last_read_ts` 落在这批消息**之后**（12:36:19.873 vs 最后一条 12:36:19）。
+    /// ⇒ 队列行不是被清扫器删的（`finalize_expired_message` 判失败会同时把 status 写成 `failed`），
+    ///   而是被 **GroupAck** 删的 ⇒ **对面真收到了**，缺的只是本机这一侧的终态写入。
+    /// 后果：那条"已送达"只活在内存里（前端 `onMessageAcked` advance 一次），一重启就退回单勾
+    /// ⇒ 用户读成"手机端收不到"。1:1 那一臂早就写 `db::set_message_status(..., "delivered")`，
+    /// 群这一臂漏了同一次写 —— 下面那句阳性对照钉的就是"两臂口径必须一致"，
+    /// 它同时保证本判据不会在"两边都没有"的世界里假绿。
+    #[test]
+    fn group_ack_advances_sender_message_status_like_dm_ack_does() {
+        let dm = code_flat(include_str!("network/transport/handle_messaging.rs"));
+        let group = code_flat(include_str!("network/transport/handle_group.rs"));
+        assert!(
+            dm.contains("db::set_message_status(&dbc,&msg_id,\"delivered\")"),
+            "1:1 Ack 臂那次持久化写入不见了 ⇒ 本判据的对照失效（先去核对口径，别把群侧改成跟着错）"
+        );
+        assert!(
+            group.contains("db::set_message_status(&dbc,&msg_id,\"delivered\")"),
+            "GroupAck 臂只删队列 + emit 前端事件 ⇒ 送达事实不落库（INV-006 被破），\
+             重启后那批群消息永远显示未送达（真机 16 行 stuck at sent 就是这个形状）。\
+             口径照抄 1:1 Ack 那一臂：`db::set_message_status(&dbc, &msg_id, \\\"delivered\\\")`"
+        );
+    }

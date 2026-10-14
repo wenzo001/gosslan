@@ -121,6 +121,21 @@ pub async fn send_message(
             .unwrap_or_else(|e| e.into_inner())
             .get(&friend_id)
             .and_then(|p| p.x25519_pubkey.clone());
+        // ⚠️ 库里那把**优先**，而它一旦是错的就一直是错的（好友表只填空、绝不覆盖，
+        // 见 `db/friends.rs` 与 `network/transport/e2ee_payload.rs` 同一条说明）。
+        // 两份都在且不同 ⇒ 本机正在用的这把，**不是**界面那串安全码所依据的那一份
+        // ⇒ 「双方安全码对得上」这时并不能证明消息解得开。
+        // 没有这一行时，"我发的他收不到"在发送端日志里完全 invisible：对端解不开是不回
+        // 送达确认的静默丢弃，本机只会一直显示"已发送"（用户 2026-10-13 撞的正是这个形状）。
+        // 只报布尔量与 peer，不报密钥本身（日志会进报告产物）。持续不一致时每条发送各记一行。
+        if let (Some(db_key), Some(peer_key)) = (&from_db, &from_peers) {
+            if db_key != peer_key {
+                s.logger.warn(
+                    "dispatch",
+                    format!("单聊密封用的密钥与在线自报的不一致（取库里那把）peer={friend_id}"),
+                );
+            }
+        }
         match from_db.or(from_peers) {
             Some(k) => Some(k),
             None => {

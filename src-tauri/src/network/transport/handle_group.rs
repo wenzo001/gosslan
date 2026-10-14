@@ -70,6 +70,17 @@ async fn handle_group_messages(state: &Arc<AppState>, peer_id: &str, msg: Messag
             {
                 let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                 let _ = db::delete_group_outbox(&dbc, &msg_id, &from);
+                // ⚠️ 同一次锁里还必须把这条消息的**终态落库**（2026-10-13 真机第 7 条的另一半）。
+                // 口径逐字照抄 1:1 那一臂（`handle_messaging.rs` 的 `Message::Ack`）：
+                // `db::set_message_status(..., "delivered")`，它的 WHERE 自带"只前进不回退"
+                // （`status NOT IN ('read','delivered','recalled')`），所以后到的第二个成员 Ack
+                // 不会把已经 `read` 的行退回 `delivered`。
+                // 为什么过去只 emit 不够：前端的 `onMessageAcked` 只在内存里 advance 一次，
+                // 而本仓的不变量是「状态的唯一真相源是 messages.status」。真机现场（用户 10-12 那份库，
+                // 只读现算）：`group_outbox` 0 行、16 条群消息却永远 `sent`，而对端的已读标记
+                // 已经落在这批消息之后 ⇒ 队列行是被 Ack 删的（清扫器判失败会同时写 `failed`），
+                // 也就是**对面收到了**，只有本机没记下这个事实 ⇒ 一重启就退回"未送达"的观感。
+                let _ = db::set_message_status(&dbc, &msg_id, "delivered");
             }
             let _ = state.app.emit(
                 "group-message-acked",

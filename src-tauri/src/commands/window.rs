@@ -20,12 +20,43 @@ pub fn window_minimize(_app: tauri::AppHandle) {}
 
 /// 切换**当前窗口**最大化，返回切换后的状态。
 ///
-/// 先判 `is_maximizable`：设置/日志/群任务窗口在 builder 上设了 `.maximizable(false)`
-/// （小窗口不给最大化），这里再兜一道，免得 UI 层的按钮判断漏了。
+/// ## ⚠️ 为什么不能信 `is_maximizable()`
+///
+/// 它看着正是"这个窗口能不能最大化"的标准 API，实则**在 macOS 上永远返回 false**，
+/// 于是主窗口的绿灯单击 / 标题栏双击点了完全没反应（用户 2026-10-12 实测）。
+///
+/// 完整根因链（tao 0.35.3 源码 + 真机探针实测，见 git 历史里的独立探针工程）：
+/// 1. `tao/platform_impl/macos/window.rs:216-222`：`decorations(false)`（我们所有窗口都是）
+///    创建出的 styleMask = `Borderless | Resizable | Miniaturizable`，**没有 `Titled` 位**。
+/// 2. `window.rs:300-305`：`!attrs.maximizable` 时去 `standardWindowButton(ZoomButton)
+///    .setEnabled(false)`；`L1105-1115` `is_maximizable()` 反过来读同一个 button 的
+///    `isEnabled()`，`window.button(ZoomButton)` 取不到就 `return false`。
+///    ⇒ **Borderless 窗没有 zoom button ⇒ `is_maximizable()` 恒 false**，
+///    `set_maximizable(true)`（L826-834）也就成了静默 no-op。
+/// 3. 实测（tao 0.35.3 探针，2000×1360 窗口）：`is_maximizable()`=**false**；
+///    但只要绕过这道判断直接 `set_maximized(true)`，窗口照样变到 2940×1718（可见区），
+///    `set_maximized(false)` 也照样还原到 1000×680 的逻辑尺寸 —— **能力其实一直在**。
+///
+/// 更反直觉的一点：`set_fullscreen` 反而**不受影响**（`macos/util/async.rs:113-142`
+/// 会在缺 `Titled|Resizable` 位时临时补位并存 `saved_style`）。所以同一扇窗表现为
+/// "全屏能用、最大化点不动"，很像是权限被拒，实则只是这一道判据失真。
+///
+/// 顺带排除一条误判：Tauri 的 ACL 闸门（`tauri/webview/mod.rs:1823`）是
+/// `(plugin_command.is_some() || has_app_acl_manifest || !is_local) && ...`，而本项目
+/// `gen/schemas/acl-manifests.json` 里没有 `__app-acl__` ⇒ 本地来源的**自定义命令
+/// 不走 ACL**。日志里那条 `window.destroy not allowed ... allow-destroy` 是 core 的
+/// `plugin:window|destroy` 钥匙，与这里的 `window_toggle_maximize` 无关。
+///
+/// ## 现在的判据
+///
+/// 改成读**我们自己写进 builder 的显式配置**：`logs.rs` 里四扇辅助窗都写了
+/// `.maximizable(false)`（小窗口不给放大），那才是"这个窗不能最大化"的唯一可信来源。
+/// 但 builder 上的配置运行时读不回来 ⇒ 由 [`crate::MAXIMIZABLE_WINDOWS`] 维护一份白名单
+/// （与 `logs.rs` 的 builder 由 `window_maximizable_matches_builder` 测试交叉核对）。
 #[cfg(desktop)]
 #[tauri::command]
 pub fn window_toggle_maximize(window: tauri::WebviewWindow) -> bool {
-    if !window.is_maximizable().unwrap_or(true) {
+    if !window_can_maximize(&window) {
         return false;
     }
     match window.is_maximized() {
@@ -40,6 +71,16 @@ pub fn window_toggle_maximize(window: tauri::WebviewWindow) -> bool {
     }
 }
 
+/// 「这个窗口允许被最大化吗」的**唯一**可信判据（桌面）。
+///
+/// 见 [`window_toggle_maximize`] 的注释：`is_maximizable()` 在 macOS Borderless 窗上恒假，
+/// 必须换成显式白名单。白名单的含义是"我们**打算**让它可最大化"，与平台实际能力分开 ——
+/// 平台能力由 `logs.rs` 的 builder 与 `set_maximizable` 表达。
+#[cfg(desktop)]
+pub(crate) fn window_can_maximize(window: &tauri::WebviewWindow) -> bool {
+    crate::MAXIMIZABLE_WINDOWS.contains(&window.label())
+}
+
 /// 移动端窗口始终铺满屏幕，等价于「不可再最大化」。
 #[cfg(mobile)]
 #[tauri::command]
@@ -48,6 +89,10 @@ pub fn window_toggle_maximize(_app: tauri::AppHandle) -> bool {
 }
 
 /// 返回**当前窗口**是否最大化。
+///
+/// 真值直接来自 tao：macOS Borderless 窗上 `set_maximized` 走 `setFrame(visibleFrame)`
+/// 分支（`macos/util/async.rs:155-199`），`is_zoomed()` 在缺 `Titled` 位时退回"比对 frame
+/// 与 visibleFrame"的比较，所以还原之后这个值会变回 false —— 与我们的 UI 需要一致。
 #[cfg(desktop)]
 #[tauri::command]
 pub fn window_is_maximized(window: tauri::WebviewWindow) -> bool {

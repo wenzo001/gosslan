@@ -34,6 +34,7 @@ import {
   countCommonLayerPlatformImports,
   findImgTags,
   teleportedRootClasses,
+  checkTodoCardImageLimit,
 } from "./designGuards.ts";
 
 // ---------------- ⓪ 选中态/原生控件颜色必须吃主题变量（#35-N7） ----------------
@@ -2769,3 +2770,171 @@ test("㊱ 真实树：全 src 的 .vue 里没有一处「可见浮层裸 inset-0
   console.log(`· ㊱ 真实树分母：扫 ${files.length} 份 .vue，可见浮层盖顶 0 处`);
 });
 
+/**
+ * ㊲ **BaseModal 的固定页脚必须留在滚动区之外**，且标题栏不许被 flex 压扁。
+ *
+ * 用户 2026-10-12 两条实测：
+ *  ①「中间可滚动的区域应该不包含下面操作按钮那块」—— 调用方原先把操作按钮写在默认插槽
+ *    的最后一项，它就跟着内容一起滚：长内容时用户得先滚到底才看得见「完成 / 编辑 / 删除」。
+ *     ⇒ BaseModal 加了 `#footer` 插槽，`v-if="$slots.footer"` ⇒ 没传时不渲染任何东西。
+ *  ②「窗口大时卡片完整，窗口一缩小头部就被缩上去一些」—— 卡片总高被 `max-h` 夹住时，
+ *     flex 会压扁**没写 shrink-0 的那一层**（原标题 div），且表现为从上面被切掉一截。
+ *
+ * 三个断言分别钉：标题栏 shrink-0、滚动区 `min-h-0 flex-1`（唯一可压缩项）、footer 在滚动区之后。
+ * 判据扣的是 class 串本身（不依赖格式化）：footer 的 class 串必须同时含 `mt-4` 与 `shrink-0`，
+ * 且它在源码里出现的位置必须在滚动区那一行**之后**（顺序 = DOM 顺序）。
+ */
+test("㊲ BaseModal：标题栏不塌、页脚不滚走（用户实测两条）", () => {
+  const src = readFileSync(join(import.meta.dirname, "..", "components", "BaseModal.vue"), "utf8");
+
+  // ① 标题栏必须 shrink-0（它现在是 `mb-4 flex shrink-0 items-start justify-between gap-3`）
+  const titleCls = /class="([^"]*\bmb-4\b[^"]*)"/.exec(src)?.[1] ?? "";
+  assert.ok(titleCls.includes("shrink-0"),
+    `标题栏 class 必须含 shrink-0 —— 否则 max-h 夹住卡片时 flex 会把它压扁，`
+    + `表现为「窗口一缩小头部就被缩上去一些」。当前：${titleCls}`);
+
+  // ② 滚动区必须是唯一可压缩项（min-h-0 + flex-1 成对，缺一就可能被下方内容顶出可视区）
+  //    ⚠️ 文件里有**两个** overflow-y-auto：外层那个铺满视口的滚动容器（fixed inset-x-0），
+  //    和卡片内部真正滚内容的那一层。判据要认准后者 —— 它带 min-h-0 + flex-1。
+  const scroller = /class="([^"]*\bmin-h-0 flex-1\b[^"]*overflow-y-auto[^"]*)"/.exec(src)?.[1] ?? "";
+  assert.ok(scroller.includes("min-h-0") && scroller.includes("flex-1"),
+    `滚动区必须写 \`min-h-0 flex-1\`（唯一可压缩项）。当前：${scroller}`);
+  // ②b 留白与负右边距**成对**（用户那句「左右边距看着左小右大」修的就是这一对）：
+  //    只留 `pr-[…]` 而不把同样宽度从右边距里让回来 ⇒ 右侧多出一整截净空隙。
+  //    ⚠️ 为什么源码层也要钉一条：真正"算出来对称"的判据在运行时探针（`--only=winsafe`，
+  //    还带一条撤掉就变红的反面对照），而**那一层 CI 不跑**。这里这条不证对称，
+  //    只证"这一对没被单边删掉" —— 顺序不敏感（两条各自 in 判断，不拼成一条正则）。
+  const GUT = "var(--gosslan-scroll-gutter)";
+  assert.ok(
+    scroller.includes(`pr-[${GUT}]`) && scroller.includes(`-mr-[${GUT}]`),
+    `滚动区的留白与负右边距必须成对（pr-[…] 与 -mr-[…] 在同一条 class 上）—— ` +
+      `只留 pr 就是右侧比左侧多出一截，正是用户报的那条。当前：${scroller}`,
+  );
+
+  // ③ footer 插槽：DOM 顺序必须在滚动区之后，且自身 shrink-0（不被上面的内容区挤掉）
+  const footerSlot = /<slot\s+name="footer"\s*\/>/.exec(src);
+  assert.ok(footerSlot, "BaseModal 必须提供 `#footer` 插槽（v-if=\"$slots.footer\"）");
+  const scrollIdx = src.indexOf('overflow-y-auto');
+  const footerIdx = footerSlot ? src.indexOf('<slot name="footer"') : -1;
+  assert.ok(footerIdx > scrollIdx,
+    `#footer 必须在滚动区之后 —— 顺序即 DOM 顺序，写前面就又被内容区顶出去了\n`
+    + `  scrollIdx=${scrollIdx} footerIdx=${footerIdx}`);
+  // footer 外壳那层也要 shrink-0 + mt-4（与标题栏 mb-4 对称）
+  const footerWrap = /v-if="\$slots\.footer"[\s\S]{0,400}?class="([^"]*)"/.exec(src)?.[1] ?? "";
+  assert.ok(footerWrap.includes("shrink-0"),
+    `footer 外壳必须 shrink-0（否则滚动区会把按钮区挤没）。当前：${footerWrap}`);
+  assert.ok(footerWrap.includes("mt-4"),
+    `footer 外壳必须与标题栏的 mb-4 对称（间距一致）。当前：${footerWrap}`);
+  // 页脚绝不能自己变成滚动容器（否则它又跟着内容滚了）
+  assert.ok(!footerWrap.includes("overflow-"),
+    `footer 外壳不许带滚动（它就得钉在卡片底部）。当前：${footerWrap}`);
+
+  console.log("· ㊲ 分母：BaseModal 标题栏 shrink-0 + 滚动区 min-h-0/flex-1 + #footer 在其后且 shrink-0/mt-4");
+});
+
+/**
+ * ㊲ **群任务卡片：点图片周围那一圈必须展开任务面板**（三个命中区互不重叠）。
+ *
+ * 用户 2026-10-12 实测：「点图片能展示大图（正常），但点图片周围区域应该展开任务列表，
+ * 当前没反应」。根因：图片带容器上挂着 `@click.stop`，一 stop 就把整条图片带
+ * （缩略图之间的空隙、右侧留白、`px-3` 内边距）全部挡在命中区①之外。
+ *
+ * 正确形状（这条守卫钉的就是它，**两半都在**）：
+ *  - 图片带容器：**只有 keydown 带 `.stop`**（Enter/Space 两键都要），click 放行；
+ *  - 缩略图自己拦：`TodoImageThumb.open()` 在可点那一支调 `e.stopPropagation()` ⇒
+ *    点图片只开预览。⚠️ 容器一放行 click，这一半就是**必需**的：卡片主体本身也是
+ *    `role=button` 并挂着 `@click="openPanel"`，缩略图再不拦，点图片就变成
+ *    「预览和面板一起开」（2026-10-13 实测：探针那条"点卡片图片只开预览"当场红）。
+ *  - 命中区①卡片主体 `@click="openPanel"`、命中区②底部按钮 `@click="emit('open', todoId)"`。
+ *
+ * ⚠️ 为什么 keydown 还要 stop：缩略图的键盘处理不合成 click（走不到主体的 keydown），
+ * 容器若放行 keydown，在缩略图上按回车就变成「又开预览又开面板」。
+ * 别看到 `@keydown.enter.stop` 就顺手给容器补一个 `@click.stop`。
+ */
+test("㊲ 群任务卡片：图片带容器不许 stop 冒泡（点图片周围要能展开面板）", () => {
+  const src = readFileSync(join(import.meta.dirname, "..", "components", "TodoCardBubble.vue"), "utf8");
+
+  // 图片带容器：keydown 两键都要 stop，click 一行都不许有
+  const imgRow = /v-if="cardImages\.length"[\s\S]{0,300}?@keydown\.enter\.stop\s+@keydown\.space\.stop/.exec(src);
+  assert.ok(imgRow, "图片带容器必须保留 Enter/Space 两个 keydown.stop（否则缩略图上按回车会又开预览又开面板）");
+  // 容器那一整条元素（从 <div 到闭合 >）里不许出现任何 @click 绑定。
+  // ⚠️ 判据必须覆盖**整个元素**、不能只看到 keydown 之前 —— 第一版就是只查 keydown 之前的
+  // 切片，结果"把 @click.stop 补在 keydown 后面"这个变异大摇大摆放行了（自证时抓到，此处修）。
+  const divOpen = src.indexOf("<div", src.indexOf('v-if="cardImages.length"') - 200);
+  const divEnd = src.indexOf(">", src.indexOf('v-if="cardImages.length"'));
+  const containerTag = src.slice(divOpen, divEnd);
+  assert.ok(!/@click/.test(containerTag),
+    `图片带容器不许再挂 @click.stop —— 一 stop，点图片周围（空隙/内边距/右侧留白）`
+    + `就再也不会展开面板。容器标签：\n${containerTag}`);
+  // 缩略图必须带 clickable（默认 false，漏给 = 图渲染了但点不动，编译/类型/单测全绿）
+  assert.ok(/<TodoImageThumb[\s\S]{0,200}?\bclickable\b/.test(src),
+    "TodoImageThumb 必须显式给 clickable —— 该 prop 默认 false，漏了表现为「图在、点不动」");
+
+  // ⚠️ 成对的另一半（容器放行 click 之后才成立的那一条）：必须由**缩略图自己**拦住这次交互。
+  //   漏了它，点图片就同时触发卡片主体（它也挂着 @click="openPanel"）⇒ 预览和面板一起开，
+  //   而"图片周围要能展开面板"这条需求本身没变 —— 所以两半必须同时钉，缺一半就是另一回事坏了。
+  //   判据读**去掉注释**的那一份并按花括号切出函数体：注释里写着 stopPropagation 不算数，
+  //   定长窗口还可能跨进邻规则（本仓在形状守卫上栽过的两种假绿）。
+  const thumbSrc = readFileSync(join(import.meta.dirname, "..", "components", "TodoImageThumb.vue"), "utf8");
+  const thumbCode = thumbSrc
+    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "))
+    .replace(/^[ \t]*\/\/.*$/gm, (m) => m.replace(/[^\n]/g, " "));
+  const openBody = /function open\(e: Event\) \{([\s\S]*?)\n\}/.exec(thumbCode)?.[1] ?? "";
+  const stopIdx = openBody.indexOf("e.stopPropagation();");
+  const emitIdx = openBody.indexOf('emit("open");');
+  assert.ok(openBody.length > 0, "找不到 TodoImageThumb.open 的函数体 —— 形状变了，这条判据得同步改");
+  assert.ok(
+    openBody.includes("if (!props.clickable) return;"),
+    "TodoImageThumb.open 必须先判 clickable：不可点的缩略图没消费这次交互，不该吞掉冒泡",
+  );
+  assert.ok(
+    stopIdx >= 0 && emitIdx > stopIdx,
+    "TodoImageThumb.open 必须在 emit open **之前**调 e.stopPropagation() —— " +
+      "容器已放行 click，这里再不拦，点图片就会「又开预览又开面板」",
+  );
+
+  // 三个命中区的接线必须在（主体→open-panel / 底部→open(todoId) / 图→preview）
+  assert.ok(/@click="openPanel"/.test(src), "命中区①（卡片主体）必须接 openPanel");
+  assert.ok(/@click="emit\('open', todoId\)"/.test(src), "命中区②（底部操作条）必须 emit open(todoId)");
+  assert.ok(/@open="openCardImage\(i\)"/.test(src), "命中区③（缩略图）必须接 openCardImage");
+  // openPanel 必须放过真链接（描述里的 <a> 不能顺手把面板弹出来）
+  assert.ok(/function openPanel\(e: MouseEvent\) \{[\s\S]{0,200}?closest\("a"\)/.test(src),
+    "openPanel 必须跳过 closest(\"a\") —— 点描述里的链接只该打开外部，不该弹面板");
+
+  console.log("· ㊲ 分母：TodoCardBubble 图片带容器 keydown.stop×2 + click 放行 + clickable + 三命中区接线 + openPanel 放过 <a；缩略图自己 stopPropagation（先判 clickable、拦在 emit 之前）");
+});
+
+
+/**
+ * ㊳ **任务卡片可见图片数：一个常量、两个消费点**（用户 2026-10-12：图片超过 4 张应显示「查看更多」）。
+ *
+ * 为什么这条值得由机器盯：这个数同时决定「卡片画几张」与「估算端按几行算高」，
+ * 而两处失步都不报错、构建也过 —— 界面只是开始遮挡（本仓顶部契约明写的已发生事故类型）。
+ * 所以常量住在 `utils/todos.ts`，这条守卫只认一种写法：模板引用 `visibleTodoImages()` 的结果，
+ * 估算端引用 `TODO_CARD_IMAGE_VISIBLE`。
+ *
+ * ⚠️ 自证纪律：三个变异（改上限两边只改一边、模板裸写 `slice(0,4)`、删「查看更多」按钮）
+ * 逐一验证过都能精确变红，源码随后还原并 diff 校验。
+ */
+test("㊳ 任务卡片：可见图片数一个家，估算端同行高（否则虚拟列表遮挡）", () => {
+  const bubble = readFileSync(join(import.meta.dirname, "..", "components", "TodoCardBubble.vue"), "utf8");
+  const estimator = readFileSync(join(import.meta.dirname, "messageHeight.ts"), "utf8");
+
+  const issues = checkTodoCardImageLimit(bubble, estimator);
+  assert.equal(issues.length, 0, issues.map((i) => `L${i.line}: ${i.message}`).join("\n"));
+
+  // 阳性对照：共享常量与被引函数必须真的存在于 todos.ts（否则上面 0 条是"尺子没有分母"）
+  const todos = readFileSync(join(import.meta.dirname, "todos.ts"), "utf8");
+  assert.ok(/export const TODO_CARD_IMAGE_VISIBLE = \d+/.test(todos),
+    "todos.ts 必须定义 TODO_CARD_IMAGE_VISIBLE（这条守卫的正门）");
+  assert.ok(/export function visibleTodoImages</.test(todos),
+    "todos.ts 必须定义 visibleTodoImages（卡片与估算端唯一入口）");
+  assert.ok(/\bfrom "@\/utils\/todos"/.test(bubble),
+    "TodoCardBubble 必须从 @/utils/todos 引（组件侧引用点）");
+
+  // 上限值本身就是被钉住的那一个数（用户原话"超过 4 张"）
+  const visible = Number(/TODO_CARD_IMAGE_VISIBLE = (\d+)/.exec(todos)?.[1]);
+  assert.equal(visible, 4, `可见图片数必须是 4（用户 2026-10-12 原话"超过 4 张"）。当前：${visible}`);
+
+  console.log("· ㊳ 分母：TodoCardBubble 走 visibleTodoImages + 「查看更多」emit open(todoId) + i18n key + 相册不截断；messageHeight 引 TODO_CARD_IMAGE_VISIBLE");
+});

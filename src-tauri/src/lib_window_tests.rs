@@ -65,6 +65,129 @@
         }
     }
 
+    /// 自定义窗口命令**内部调到的** core 权限必须都在 capability 里。
+    ///
+    /// ## 这条守卫的真实价值（2026-10-12 复盘修正）
+    ///
+    /// 最初写它时的归因是错的：当时以为 `window_toggle_maximize` / `window_toggle_fullscreen`
+    /// "点了没反应"是 ACL 静默拒绝 `core:window:set-fullscreen` / `allow-unmaximize` 导致的。
+    /// 源码核对后**不成立**：Tauri 2.11.5 `tauri/src/webview/mod.rs:1823` 的闸门是
+    /// `(plugin_command.is_some() || has_app_acl_manifest || !is_local) && request.cmd
+    /// != FETCH_CHANNEL_DATA_COMMAND && invoke.acl.is_none()`，而本项目
+    /// `gen/schemas/acl-manifests.json` 的 keys 里**没有 `__app-acl__`** ⇒
+    /// `has_app_acl_manifest=false` ⇒ 本地来源的**自定义命令**压根不进 ACL 闸门。
+    /// 真根因是 tao 的 `is_maximizable()` 在 Borderless 窗上恒 false（见
+    /// `commands/window.rs::window_toggle_maximize` 的长注释与
+    /// [`window_maximizable_matches_builder`]）。
+    ///
+    /// 即便如此，这条守卫本身**仍然要留**：它保证"命令实现里新出现的 core 方法调用
+    /// 都在 capability 里"，那对**将来**某个真走 ACL 的场景（远端来源、将来引入 app
+    /// ACL manifest、`plugin:` 前缀命令）是必须的。保留，但别再拿它解释历史缺陷。
+    #[test]
+    fn capability_grants_every_window_permission_the_commands_use() {
+        let raw = include_str!("../capabilities/default.json");
+        let caps: serde_json::Value =
+            serde_json::from_str(raw).expect("capabilities/default.json 必须是合法 JSON");
+        let perms: Vec<String> = caps
+            .get("permissions")
+            .and_then(|v| v.as_array())
+            .expect("capabilities/default.json 缺少 permissions 数组")
+            .iter()
+            .map(|v| v.as_str().expect("permissions 数组项必须是字符串").to_string())
+            .collect();
+        // 前端 `api.window*` 那族 + TitleBar 的缩放/全屏/拖拽/聚焦真正会走到的 core 权限。
+        // 取"命令实现里现读"而不是"凭记忆抄"：命令源码必须真的出现对应的 core 方法名。
+        // `.show()` 不在 window.rs 而在 commands/logs.rs（辅助窗口共用那条构造），
+        // 所以这里读"窗口命令那几份源码的并集" —— 只读 window.rs 会把 show 漏掉，
+        // 而 show 恰恰是辅助窗口能不能现身的那一个。
+        let window_src = format!(
+            "{}\n{}\n{}",
+            include_str!("commands/window.rs"),
+            include_str!("commands/logs.rs"),
+            include_str!("commands/network.rs"),
+        );
+        let required: [(&str, &str); 8] = [
+            ("allow-maximize", ".maximize()"),
+            ("allow-unmaximize", ".unmaximize()"),
+            ("allow-set-fullscreen", ".set_fullscreen("),
+            ("allow-is-maximized", ".is_maximized()"),
+            ("allow-is-fullscreen", ".is_fullscreen()"),
+            ("allow-minimize", ".minimize()"),
+            ("allow-show", ".show()"),
+            ("allow-hide", ".hide()"),
+        ];
+        // 注意 `allow-start-dragging` **不在这张表里**：那条是前端
+        // `getCurrentWindow().startDragging()` 直接调 Tauri 自己的 core 命令，不走我们的
+        // Rust 源码 ⇒ 用"源码里找不找得到"当锚点会永远对不上。它由前端契约那侧保证。
+        for (perm, needle) in required {
+            // 只对**桌面**那一支提要求：移动端那两个 #[cfg(mobile)] 桩什么都不调，
+            // 而 capability 是桌面产物（android 有另一份 schema）。
+            #[cfg(desktop)]
+            assert!(
+                window_src.contains(needle),
+                "窗口命令源码里找不到 {needle} ⇒ 上面那张 required 表过期了，请同步改这条守卫"
+            );
+            assert!(
+                perms.iter().any(|p| p == &format!("core:window:{perm}")),
+                "capability 缺 `core:window:{perm}` —— {needle} 会被 ACL 静默拒绝，\
+                 表现为「按钮点了没反应」而前端日志一切正常"
+            );
+        }
+    }
+
+    /// `MAXIMIZABLE_WINDOWS` 与 `logs.rs` 里各窗 builder 的 `.maximizable(...)` 必须一致。
+    ///
+    /// ## 为什么会有这份清单（用户 2026-10-12：macOS 绿灯 / 双击标题栏"点了没反应"）
+    ///
+    /// 根因不是权限、不是前端，是 **tao 的 `is_maximizable()` 在 Borderless 窗上恒 false**：
+    /// 我们所有窗口都是 `decorations:false`，tao 建出的 styleMask 缺 `Titled` 位
+    /// （`tao-0.35.3/platform_impl/macos/window.rs:216-222`），AppKit 的 zoom button
+    /// 只在 Titled 窗上存在，于是 `is_maximizable()` 取不到 button 就 return false
+    /// （同文件 L1105-1115）。实测探针：borderless 窗 `is_maximizable()`=false，
+    /// 但直接 `set_maximized(true)` 照样铺满可见区、还原也正常 ⇒ **能力一直在，判据说谎**。
+    ///
+    /// 所以判据换成"我们自己写进 builder 的显式配置"，而那份配置运行时读不回来
+    /// ⇒ 由 `crate::MAXIMIZABLE_WINDOWS` 维护白名单，两边由本测试交叉核对
+    /// （改一边忘另一边会红）。同时"辅助窗那几处 `.maximizable(false)` 的数量必须等于
+    /// 白名单之外的窗口数"把两侧真正绑在一起：往白名单里多加一扇辅助窗（本该禁用的），
+    /// 数量立刻对不上 ⇒ 红。
+    ///
+    /// ⚠️ 这条守卫本身也按同一套规矩验证过非空转：把 `WINDOW_SETTINGS` 加进白名单会红
+    /// （4 扇 builder vs 3 扇白名单外窗口），把未登记的 `WINDOW_LINK` 加进去也会红
+    /// （子集断言）。
+    #[test]
+    fn window_maximizable_matches_builder() {
+        #[cfg(desktop)]
+        {
+            let logs_src = include_str!("commands/logs.rs");
+            // 白名单必须是 WINDOW_LABELS 的子集（否则等于给不存在的窗口授权）。
+            for label in crate::MAXIMIZABLE_WINDOWS {
+                assert!(
+                    crate::WINDOW_LABELS.contains(label),
+                    "MAXIMIZABLE_WINDOWS 含未登记的窗口 `{label}`"
+                );
+            }
+            // 双向绑定：builder 里显式禁掉的窗数 == 白名单之外的已登记窗数。
+            // 左侧 4 = settings/logs/preview/tasks（见 `commands/logs.rs` 四扇辅助窗）；
+            // 右侧 = WINDOW_LABELS − MAXIMIZABLE_WINDOWS = 5 − 1 = 4。
+            let disabled = logs_src.matches(".maximizable(false)").count();
+            let allowed = crate::WINDOW_LABELS
+                .iter()
+                .filter(|l| !crate::MAXIMIZABLE_WINDOWS.contains(l))
+                .count();
+            assert_eq!(
+                disabled, allowed,
+                "commands/logs.rs 里有 {disabled} 处 `.maximizable(false)`，但 \
+                 WINDOW_LABELS − MAXIMIZABLE_WINDOWS 有 {allowed} 扇 —— 两侧漂移了。\
+                 新增辅助窗时请同时决定它的 builder 与白名单归属"
+            );
+            assert!(
+                !crate::MAXIMIZABLE_WINDOWS.is_empty(),
+                "白名单为空 ⇒ 没有任何窗口能最大化（用户实测绿灯/双击无反应）"
+            );
+        }
+    }
+
     /// **反向**守卫：外链窗口**必须不被**任何 capability 覆盖。
     ///
     /// 它加载的是远端页面；一旦被 capability 覆盖，第三方内容就能调用本应用的

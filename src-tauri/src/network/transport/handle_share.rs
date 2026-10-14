@@ -7,6 +7,70 @@
 // 为什么并成一族：这 6 个变体都是「替别人取/传」而不是「给我」——ContentRequest 按 cid 拉取、ShareTree/ShareFile 读写共享目录、
 //   RelayFileOffer/RelayChunk 是单跳借道。它们共用同一批判据（丢帧必留痕、单跳限制、授权闸）。
 
+/// 「谁能从我这里按 cid 取走这份内容」的判定内核 —— ADR-0019「拥有即授权」的**受众那一半**。
+/// （`content::store::find_source` 只判"本机是否真持有完整字节"，它**不看请求方是谁**；
+/// 把请求方纳入判据的就是这里。此前这段逻辑长在 `async` + 两道锁中间，所以那五条边界
+/// 一条都没法单测 —— 同 `friend_accept_flush_decision` / `diag_event_from_send_result` /
+/// `should_keep_peer` 三条先例的做法：把判定抽成纯函数，臂里只负责把事实取出来。）
+///
+/// 最容易写反的两格，都是**该拒**的那两格：
+/// ① 内容行挂着群 id 但**那一行群已经不存在**（退群/删群）⇒ 不能因为"有个群 id"就放行；
+/// ② 既不是好友、内容又没挂群 ⇒ 陌生人不能凭一个 cid 把别人的文件拉走。
+pub(crate) fn content_serve_allowed(
+    is_friend: bool,
+    source_group_id: Option<&str>,
+    group_members: Option<&[String]>,
+    requester: &str,
+) -> bool {
+    if is_friend {
+        return true;
+    }
+    match (source_group_id, group_members) {
+        (Some(_), Some(members)) => members.iter().any(|m| m == requester),
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod content_serve_gate_tests {
+    use super::content_serve_allowed;
+
+    /// 好友那一臂不看群：内容没挂群 id 也照服务（1:1 补拉走的正是这条路）。
+    #[test]
+    fn friend_is_allowed_without_any_group() {
+        assert!(content_serve_allowed(true, None, None, "p-b"));
+    }
+
+    /// 「群成员当种子」这一格（ADR-0019 里内容寻址的意义所在）：A→B 送达后，
+    /// 没拿到的 C **不是 B 的好友**，但仍能从 B 拉 —— 只要 C 在内容所属群的成员表里。
+    #[test]
+    fn group_member_is_allowed_without_being_a_friend() {
+        let members = ["p-a".to_string(), "p-b".to_string(), "p-c".to_string()];
+        assert!(content_serve_allowed(false, Some("g-1"), Some(&members[..]), "p-c"));
+    }
+
+    /// 反面对照①：同一条内容、同一张成员表，**不在群里**的请求方必须被拒。
+    /// （没有这条，上一条会因为"成员表整个没被读"而假绿。）
+    #[test]
+    fn stranger_in_another_group_is_denied() {
+        let members = ["p-a".to_string(), "p-b".to_string()];
+        assert!(!content_serve_allowed(false, Some("g-1"), Some(&members[..]), "p-z"));
+    }
+
+    /// 反面对照②：内容行挂着群 id，但**那一行群已经不在了** ⇒ 拒。
+    /// 写反成 `unwrap_or(true)` 的话，删群/退群之后陌生人反而能取走内容。
+    #[test]
+    fn missing_group_row_is_denied() {
+        assert!(!content_serve_allowed(false, Some("g-gone"), None, "p-c"));
+    }
+
+    /// 反面对照③：不是好友且内容没挂群（纯 1:1 的内容被陌生人按 cid 请求）⇒ 拒。
+    #[test]
+    fn non_friend_without_group_binding_is_denied() {
+        assert!(!content_serve_allowed(false, None, None, "p-z"));
+    }
+}
+
 async fn handle_share_and_relay_messages(state: &Arc<AppState>, peer_id: &str, msg: Message) {
     // 这层 match 与原函数里的同一层（臂仍是 8 格缩进 ⇒ 逐字未改）。
     // `_ => {}` 不是吞消息：调用方只在命中本族变体时才把 msg 交进来。
@@ -37,17 +101,18 @@ async fn handle_share_and_relay_messages(state: &Arc<AppState>, peer_id: &str, m
             };
             // 授权：是好友，**或** 是该内容所属群的成员 —— 群聊里 A→B 成功后，
             // 没拿到的 C 可以从已收完的 B 拉（B 是种子，内容寻址的意义所在）。
+            // 判据本体在 `content_serve_allowed`（纯函数 ⇒ 五条边界都有单测）；这里只把事实取出来。
             let allowed = {
                 let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                if db::get_friend(&dbc, &from).is_some() {
-                    true
-                } else if let Some(g) = group_id.as_deref() {
-                    db::get_group(&dbc, g)
-                        .map(|grp| grp.members.iter().any(|m| m == &from))
-                        .unwrap_or(false)
+                let is_friend = db::get_friend(&dbc, &from).is_some();
+                let members = if is_friend {
+                    None
                 } else {
-                    false
-                }
+                    group_id
+                        .as_deref()
+                        .and_then(|g| db::get_group(&dbc, g).map(|grp| grp.members))
+                };
+                content_serve_allowed(is_friend, group_id.as_deref(), members.as_deref(), &from)
             };
             if !allowed {
                 state.logger.warn(
@@ -62,24 +127,70 @@ async fn handle_share_and_relay_messages(state: &Arc<AppState>, peer_id: &str, m
             } else {
                 transfer_id
             };
-            match crate::network::file::send_file_from_path_at(
-                state,
-                &from,
-                &transfer_id,
-                std::path::PathBuf::from(&path),
+            // ⚠️ 不在这个臂里 await 整条握手（2026-10-13 真机第 7 条的自死锁）：
+            // `send_file_from_path_at` 发完 FileOffer 要等对端的 FileAccept/FileReject，
+            // 而那一帧正是由**这条被本函数堵住的 reader 循环**读回来的 ⇒ 每次必走满 15 秒，
+            // 期间同链路群聊/单聊/心跳全部进不来。改成投给"每对端一个有界串行队列"：
+            // 同一对端仍一次一单 ⇒ `pending_file_accept` 那个只按 transfer_id 登记的单键
+            // 不会被并发踩到，但应答读得到 ⇒ 这条路径第一次能真正成功。
+            let fs = state.file_service.clone();
+            if !fs.has_worker(&from) {
+                let exec_state = state.clone();
+                fs.start_worker(&from, move |job| {
+                    let exec_state = exec_state.clone();
+                    async move {
+                        match crate::network::file::send_file_from_path_at(
+                            &exec_state,
+                            &job.peer_id,
+                            &job.transfer_id,
+                            job.path.clone(),
+                            job.from_seq,
+                            job.from_bytes,
+                        )
+                        .await
+                        {
+                            Ok(()) => exec_state.logger.info(
+                                "content",
+                                format!(
+                                    "已按 ContentRequest 回发内容 cid={} -> {}",
+                                    job.cid, job.peer_id
+                                ),
+                            ),
+                            Err(e) => exec_state.logger.warn(
+                                "content",
+                                format!(
+                                    "ContentRequest 服务失败 cid={} from={}: {e:?}",
+                                    job.cid, job.peer_id
+                                ),
+                            ),
+                        }
+                    }
+                });
+            }
+            match fs.submit(FileServeJob {
+                cid: cid.clone(),
+                peer_id: from.clone(),
+                transfer_id: transfer_id.clone(),
+                path: std::path::PathBuf::from(&path),
                 from_seq,
                 from_bytes,
-            )
-            .await
-            {
-                Ok(()) => state.logger.info(
-                    "content",
-                    format!("已按 ContentRequest 回发内容 cid={cid} -> {from}"),
-                ),
-                Err(e) => state.logger.warn(
-                    "content",
-                    format!("ContentRequest 服务失败 cid={cid} from={from}: {e:?}"),
-                ),
+            }) {
+                // Merged（同 cid 已在队里）也走这一支：不重复服务是设计，静默即可
+                ServeTicket::Accepted | ServeTicket::Merged => {}
+                // 队列满：**必须留痕**，因为"这条请求这一轮没被服务"只能靠这行看见；
+                // 重投路径是既有的（请求方退避 + 心跳机会，见 `handle_identity.rs` 心跳臂）。
+                ServeTicket::RejectedFull => {
+                    if log_throttled("content_serve_full", 5_000) {
+                        // 带上当前深度：这条日志就是"队列确实有界"的现场读数（否则只能靠读代码相信它）
+                        let depth = fs.queued_len(&from);
+                        state.logger.warn(
+                            "content",
+                            format!(
+                                "ContentRequest 服务队列已满（每对端上限 {FILE_SERVICE_QUEUE_CAP}，当前深度 {depth}），本轮不服务、留给重投 cid={cid} from={from}"
+                            ),
+                        );
+                    }
+                }
             }
         }
         Message::ShareTreeRequest {

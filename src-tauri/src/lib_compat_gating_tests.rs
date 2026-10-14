@@ -280,3 +280,74 @@
             "必须有 .part 定期清扫（可恢复失败会保留前缀，不能让它们无限堆积）"
         );
     }
+
+    /// **广播留痕的"三条路全失败才报警"这条口径必须同时管住两条发送路**（4.18.5 定的规则，
+    /// 但它当时只落在了 `broadcast()` 那一臂上）。
+    ///
+    /// 为什么这条只能钉源码（与 INV-P24 那条同因）：它判的是"日志里**不该有**的那一行"，
+    /// 没有任何测试会因为规则漏掉而失败 —— 而漏掉的后果在真机日志上直接可见：
+    /// 用户 Mac 端 20:26:13 / 20:26:21 两条 `diag/broadcast_error: target=255.255.255.255,
+    /// error=No route to host (os error 65)`，同一批里 `diag/bc_directed` 每次都成功。
+    /// macOS 上 socket 绑了具体网卡 IP 时 limited 广播本来就发不出去（EHOSTUNREACH），
+    /// 而 `broadcast_probe()`（「打开添加好友」时那次 who_has 探测）**没做 directed_ok 抑制**，
+    /// 于是每次探测都留一条 WARN —— 这正是那条规则当初要消灭的东西（"每 5 秒两条 WARN 会把
+    /// 真正有用的信息淹掉"），而且日志环只有 500 条，淹掉的是诊断历史本身。
+    #[test]
+    fn broadcast_diag_suppression_covers_both_send_paths() {
+        const SRC: &str = include_str!("network/discovery.rs");
+        // 阳性对照：已经合规的那一臂必须被同一把尺子认成"合规"，
+        // 否则"两臂都没有抑制"的世界里，下面那条判据会跟着假绿。
+        let announce = code_flat(&rust_fn_body(SRC, "async fn broadcast("));
+        assert!(
+            announce.contains(
+                "if!directed_ok{let(kind,detail)=diag_event_from_send_result(&bcast_target,\"bc_limited\",&bcast_res);"
+            ),
+            "`broadcast()` 里 limited 的留痕必须包在 `if !directed_ok` 里（尺子的正样本，红了说明判据形状过期了，不是产品坏了）"
+        );
+        // 这一条才是本轮补的那一半：探测那臂必须走同一个口径。
+        let probe = code_flat(&rust_fn_body(SRC, "async fn broadcast_probe("));
+        assert!(
+            probe.contains(
+                "if!directed_ok{let(kind,detail)=diag_event_from_send_result(&bcast_target,\"who_has_sent\",&bcast_res);"
+            ),
+            "`broadcast_probe()` 没按 directed_ok 抑制 ⇒ 每次「打开添加好友」都在 macOS 上留一条 255.255.255.255 的 WARN（用户日志实测形状）"
+        );
+        // 分母：两条广播路各自都要算出 directed_ok。只有一条算了 = 另一条照刷，
+        // 而这个数字从 2 变成 1 的那一刻就是规则又漏回一个家。
+        assert_eq!(
+            SRC.matches("let directed_ok =").count(),
+            2,
+            "广播留痕口径必须恰好有两个家（announce + probe）"
+        );
+    }
+
+    /// **受众闸的接线**：那条判定必须走纯核（它有 5 条单测），不许再写回臂里。
+    ///
+    /// 为什么不能只测纯核（同 INV-P24 第 4 条那条守卫的道理）：判据写得再对，
+    /// 发送点不调用 = 没有门控 —— 而这里"不调用"的形态就是把那三行 `if/else` 抄回臂里，
+    /// 那样五条边界一条都测不到（臂在 async + 两道锁中间）。
+    /// 分母取**臂内计数 = 1**（不数整文件 ⇒ 以后再加单测不会把这条碰红）。
+    /// 反面那条钉的是旧形状的签名 `unwrap_or(false)`：把"拒"写成兜底默认，正是最容易顺手写回去的形态。
+    #[test]
+    fn content_request_serve_gate_delegates_to_the_pure_kernel() {
+        const SRC: &str = include_str!("network/transport/handle_share.rs");
+        let arm = code_flat(&rust_fn_body(SRC, "async fn handle_share_and_relay_messages("));
+        assert!(
+            arm.contains("content_serve_allowed(is_friend,group_id.as_deref(),members.as_deref(),&from)"),
+            "ContentRequest 那臂必须把受众判定交给纯核 content_serve_allowed（写回臂里 = 那 5 条边界又变成测不到）"
+        );
+        assert_eq!(
+            arm.matches("content_serve_allowed(").count(),
+            1,
+            "臂里的委托必须恰好一处（多了说明判定被拆成两份，两份会漂移）"
+        );
+        assert!(
+            !arm.contains("unwrap_or(false)"),
+            "臂里不许再出现 `unwrap_or(false)` 那种「把拒写成兜底默认」的形状（A-15 之前群密钥那处就是它埋的）"
+        );
+        // 阳性对照：纯核本身必须在场（否则上面三条在「两处一起删掉」的世界里会假绿）
+        assert!(
+            SRC.contains("pub(crate) fn content_serve_allowed("),
+            "纯核的定义必须在场 —— 缺它时上面那两条会跟着一起绿，那是假绿"
+        );
+    }

@@ -821,20 +821,56 @@ fn finish_receiver_into(
         .ok();
         return Err(reason);
     }
+    // 终态要**一次写全**：`file_transfers` 说 done 而 `content_transfers` 还停在 active/incomplete，
+    // 就是 2026-10-13 真机第 7 条那个永动重试 —— 拉取队列只看后一张表
+    // （`content/store.rs::list_resumable_for_peer` 的 `status IN ('queued','active','incomplete')`），
+    // 而 `Complete` 全仓唯一构造点是 `content::store::record_local`，此前 5 个调用点都在
+    // 群文件 / 群公告 / 待办 / 中继，单聊这一条没有 ⇒ 每次建链整批再投。
+    // 两句放同一事务 ⇒ 要么两张表一起收口，要么一起不动；"不动"落在**可恢复**那一侧（宁可重投一次，
+    // 不可假 complete）。事务本身失败时退回今天的形状：只写 `file_transfers`，界面上那句"已收到"
+    // 仍然成立（文件此刻确实已在盘上，见上面 SHA + fsync + rename 三道），内容台账留给下次建链补。
     {
-        let dbc = db_lock.lock().unwrap_or_else(|e| e.into_inner());
-        db::upsert_transfer(
-            &dbc,
-            transfer_id,
-            &r.peer_id,
-            &r.name,
-            r.size,
-            "receive",
-            "done",
-            Some(r.final_path.to_string_lossy().as_ref()),
-            1.0,
-        )
-        .ok();
+        let mut dbc = db_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let path_str = r.final_path.to_string_lossy().to_string();
+        let both = dbc.transaction().and_then(|tx| {
+            db::upsert_transfer(
+                &tx,
+                transfer_id,
+                &r.peer_id,
+                &r.name,
+                r.size,
+                "receive",
+                "done",
+                Some(path_str.as_str()),
+                1.0,
+            )?;
+            crate::content::store::record_local(
+                &tx,
+                &r.expected_sha256,
+                &r.peer_id,
+                None,
+                &r.name,
+                r.size,
+                crate::content::model::Direction::Receive,
+                &path_str,
+                db::now_ms(),
+            )?;
+            tx.commit()
+        });
+        if both.is_err() {
+            db::upsert_transfer(
+                &dbc,
+                transfer_id,
+                &r.peer_id,
+                &r.name,
+                r.size,
+                "receive",
+                "done",
+                Some(r.final_path.to_string_lossy().as_ref()),
+                1.0,
+            )
+            .ok();
+        }
     }
     Ok((
         r.name.clone(),

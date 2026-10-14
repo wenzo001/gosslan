@@ -1894,3 +1894,103 @@ export function countCommonLayerPlatformImports(raw: string): number {
   const fromStore = (raw.match(/\buseAppStore\b/g) ?? []).length > 0 ? 1 : 0;
   return fromPlatform + fromStore;
 }
+
+// ---------------- ㊳ 任务卡片可见图片数：一个常量、两个消费点 ----------------
+
+/**
+ * ㊳ **任务卡片"最多画几张图"只能有一个家**（用户 2026-10-12：超过 4 张应显示「查看更多」）。
+ *
+ * 为什么这条值得由机器盯：这个数同时决定两件事，而两处失步都不报错、构建也过 ——
+ *  ① `TodoCardBubble.vue` 的 `v-for` 画几张；
+ *  ② `messageHeight.ts` 的 `todoImageAllowance()` 按可见张数占几行高度（估少了 ⇒ 虚拟列表遮挡，
+ *     本仓顶部契约明写的已发生事故类型）。
+ * 任何一处写字面量，改数量时就只会改到另一边。所以常量住在 `utils/todos.ts`，
+ * 这条守卫只许一种写法：模板引用 `cardThumbs.shown/hasMore`，估算端 import 常量。
+ *
+ * 逃生阀：`todo-card-image-ok` 整份跳过（临时试验用，不留长期形态）。
+ */
+export function checkTodoCardImageLimit(bubbleSrc: string, estimatorSrc: string): GuardIssue[] {
+  const out: GuardIssue[] = [];
+  const src = bubbleSrc.replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, " "));
+  if (src.includes("todo-card-image-ok")) return out;
+
+  // ① 组件必须从 todos.ts 引那个共享常量/函数（不许自己 slice 或比较）
+  if (!/visibleTodoImages/.test(src)) {
+    out.push({
+      line: 0,
+      message:
+        "TodoCardBubble 必须用 utils/todos.ts 的 visibleTodoImages() 取可见缩略图 ——" +
+        "自己 `slice(0, 4)` 或裸比 `.length > 4` 都会让 messageHeight.ts 的行高失去同一个来源。",
+    });
+  }
+  // ② 模板里不许出现裸字面量上限（`v-for` 的截断只能由函数给）
+  if (/slice\(0\s*,\s*4\)|\.length\s*>\s*4/.test(src)) {
+    out.push({
+      line: lineAt(src, src.search(/slice\(0\s*,\s*4\)|\.length\s*>\s*4/)),
+      message:
+        "模板里裸写了 4 —— 可见图片数的唯一家是 todos.ts 的 TODO_CARD_IMAGE_VISIBLE。" +
+        "写在这里，改数量时估算端（messageHeight.ts）不会跟着走。",
+    });
+  }
+  // ③ 「查看更多」必须与底部按钮**同一套行为**：emit open 带 todoId，且自己把点击拦住
+  //    （`.stop` 不是风格问题：这颗排在命中区①**之内**，不拦就会在 open(todoId) 之后
+  //    再多冒一个 open-panel ⇒ 面板被开两次、第二次不带 id，直达这条任务被冲掉）。
+  if (!/v-if="cardThumbs\.hasMore"[\s\S]{0,600}?@click\.stop="emit\('open', todoId\)"/.test(src)) {
+    out.push({
+      line: 0,
+      message:
+        "「查看更多」按钮漏了、没接到 emit('open', todoId)、或缺 `.stop` —— 用户要求它表现得和" +
+        "「查看任务」一致（打开列表并直达这条任务）。它在命中区①里面，少了 .stop 就会顺路再发一个" +
+        " open-panel（不带 todoId），把直达效果冲掉。",
+    });
+  }
+  // ④ 文案必须走 i18n key（中英两份已同步；裸中文 = 英文界面显示中文）
+  if (!/todo\.viewMoreImages/.test(src)) {
+    out.push({ line: 0, message: "「查看更多」文案必须走 t(\"todo.viewMoreImages\")（i18n 护栏会抓裸 key）。" });
+  }
+  // ⑤ 预览相册不许被截断（卡片只画 4 张，但从第 2 张起往后翻要能看到全部）
+  if (!/const cardGallery = computed\(\(\) =>\s*\n?\s*cardImages\.value\.map/.test(src)) {
+    out.push({
+      line: 0,
+      message:
+        "cardGallery 必须由**完整**的 cardImages 生成 —— 卡片只画前几张，但预览相册要能翻到全部：" +
+        "截断卡片缩略图时如果顺手把 cardGallery 也截了，从第 2 张往后就再也翻不到剩下的图" +
+        "（卡片看不到的那几张，在预览里也不见了，而编译与类型全都过）。",
+    });
+  }
+  // ⑥ 估算端必须按**这一条自己的张数**算图片段，且张数上限引共享常量。
+  //    为什么两个方向都要钉（数都来自探针的高度实测表，2026-10-13）：
+  //     · 按上限写死一整块 ⇒ 只有 1 张图的卡白占 2 行（实测多留 86px ⇒ 卡片之间出现空洞）；
+  //     · 只判"有没有图" ⇒ 超过上限那条漏掉「查看更多」那一行（实测差 32px ⇒ 相邻消息遮挡）。
+  //    所以三件事都要在：算式存在、算式引的是共享常量、调用点传的确实是**数出来的张数**。
+  const estCode = estimatorSrc
+    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "))
+    .replace(/^[ \t]*\/\/.*$/gm, (m) => m.replace(/[^\n]/g, " "));
+  const allowance = /function todoImageAllowance[\s\S]{0,700}?\n\}/.exec(estCode)?.[0] ?? "";
+  if (!allowance.includes("TODO_CARD_IMAGE_VISIBLE") || !allowance.includes("Math.ceil(")) {
+    out.push({
+      line: lineAt(estimatorSrc, estimatorSrc.search(/function\s+todoImageAllowance/)),
+      message:
+        "图片段占位必须由 todoImageAllowance() 按 TODO_CARD_IMAGE_VISIBLE 现算行数（ceil(可见张数/每行)）—— " +
+        "写死一个魔数会与「卡片画几张」脱钩，改一处只会改到一边。",
+    });
+  }
+  // ⑦ 调用点必须把**张数**传进去：只判 `images.length > 0` 再取固定值 = 上面那两个缺陷的形状。
+  if (!/todoImageAllowance\(/.test(estCode) || !/images\??\.length/.test(estCode)) {
+    out.push({
+      line: 0,
+      message:
+        "估算端必须真的去数载荷里的图片张数（images.length）并传给 todoImageAllowance() —— " +
+        "只留一个「有没有图」的布尔判断，超限时那一行「查看更多」就没人估（虚拟列表遮挡）。",
+    });
+  }
+  // ⑧ 代码（不是注释）里要引得到共享常量：注释里写过了不算，本仓多次栽在"注释写了、代码没引"。
+  if (!/TODO_CARD_IMAGE_VISIBLE/.test(estCode)) {
+    out.push({
+      line: 0,
+      message:
+        "messageHeight.ts 必须在**代码**里引用 TODO_CARD_IMAGE_VISIBLE（注释里写不算 —— 行高算式要与可见张数同源）。",
+    });
+  }
+  return out.sort((a, b) => a.line - b.line);
+}
