@@ -24,6 +24,7 @@ import {
   findNestedThemeRuleIssues,
   findFloatingLayerWithoutEscape,
   findTopInsetWithoutBottomInset,
+  findFixedOverlayWithoutWindowSafeTop,
   findMessageImageWithoutFetchHint,
   findFreshEmptyArrayProp,
   countListPropBindings,
@@ -2636,3 +2637,135 @@ test("㉟ 真实树：视图层一个裸写都没有，而正门确实在被用�
   assert.ok(throughTheDoor >= 5, `只有 ${throughTheDoor} 份组件走 common layer ⇒ 判据指向的那个家大概没人用，口径要重看`);
   console.log(`· N11 真实树分母：视图层 ${files.length} 份 .vue，${throughTheDoor} 份走 common layer，裸写平台判定 0 处`);
 });
+
+// ---------------- ㊱ 桌面弹窗必须让开自绘标题栏（窗口显示安全区） ----------------
+//
+// 真实缺陷：桌面窗口 `decorations(false)` + **流内**自绘 caption（TitleBar，Win 38px / macOS 28px），
+// 而 BaseModal 经 portal 挂到 `<body>` 铺的是 `fixed inset-0` ⇒ 从视口 (0,0) 起算，
+// 卡片顶部钻到 caption 底下：标题与右上角 ✕ 一起被压住。这条判据守的就是"外壳那一层要读变量"。
+
+test("㊱ 形状：铺满视口的浮层外壳不读 window-safe-top ⇒ 报出来", () => {
+  const buggy = `<template>
+  <div class="fixed inset-0 overflow-y-auto">
+    <div class="elevated my-auto max-h-[calc(100vh-2rem)]"><slot /></div>
+  </div>
+</template>`;
+  const issues = findFixedOverlayWithoutWindowSafeTop(buggy);
+  assert.equal(issues.length, 1, `这种"裸 inset-0 盖顶"必须报 1 条，现数 ${issues.length}`);
+  assert.match(issues[0].message, /window-safe-top/);
+  assert.ok(issues[0].line > 0, "要带行号");
+});
+
+test("㊱ 合规写法不报（分母要含合规形状，否则判据自己空转）", () => {
+  const fixed = `<template>
+  <div class="fixed inset-x-0 bottom-0 top-[var(--gosslan-window-safe-top)] overflow-y-auto">
+    <slot />
+  </div>
+</template>`;
+  assert.deepEqual(findFixedOverlayWithoutWindowSafeTop(fixed), [],
+    "拆成 inset-x-0 bottom-0 + top-[var(...)] 这条既有写法要算合规");
+});
+
+test("㊱ 反面：注释里的写法、非定位元素、逃生阀 —— 都不许报", () => {
+  // ① 注释里写一句 `inset-0` 不算作用点（㉜/㉝/㉟ 同一课：注释能喂饱的判据不是判据）
+  assert.deepEqual(findFixedOverlayWithoutWindowSafeTop(
+    "<template>\n<!-- 这里刻意不用 fixed inset-0 -->\n<div class=\"flex\">x</div>\n</template>"), []);
+  // ② 没定位的普通容器不在分母里
+  assert.deepEqual(findFixedOverlayWithoutWindowSafeTop(
+    `<template><div class="inset-0"><slot /></div></template>`), []);
+  // ③ 逃生阀：确实要铺满的文件（纯遮罩层那种）
+  assert.deepEqual(findFixedOverlayWithoutWindowSafeTop(
+    `<!-- window-safe-ok -->\n<template><div class="fixed inset-0 bg-[var(--gosslan-overlay)]" /></template>`), []);
+});
+
+test("㊱ 真实树：BaseModal 的外壳层确实读了 window-safe-top，且安全区变量在 style.css 里定义完整（分母现数）", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const modal = readFileSync(join(srcDir, "components", "BaseModal.vue"), "utf8");
+  // ⚠️ 一律只看 **class 属性**，不许拿整份文件当文本搜 —— 第一版就是这么写坏的：
+  // `modal.includes("my-auto")` 被**注释里那句**「卡片形态垂直居中用 `my-auto`」喂饱，
+  // 于是把 my-auto 真删掉、改回 items-center，判据照样绿（实测确认）。
+  // 注释能喂饱的判据不是判据（㉜/㉝/㉟/㉞ 同一课）。
+  // ⚠️ 而且必须同时收 `class="…"` 与 `:class="…"`：卡片形态那个居中行是**三元绑定**
+  // （`fullscreen ? … : 'flex min-h-full justify-center p-4'`），只扫静态 class 会漏掉它
+  // ⇒ 那一侧取到 undefined，断言在 `elevated` 另一支上静默通过（第二版就是这么又栽一次的）。
+  const classes = [...modal.matchAll(/(?<!:)class="([^"]*)"/g)].map((m) => m[1]);
+  const boundClasses = [...modal.matchAll(/:class="([^"]*)"/g)].map((m) => m[1]);
+  const allClassText = [...classes, ...boundClasses];
+
+  // 分母是"外壳那一层"：BaseModal 的遮罩与滚动层都必须让开（只让一个照样压顶）
+  const safeHits = allClassText.filter((c) => c.includes("top-[var(--gosslan-window-safe-top)]")).length;
+  assert.ok(safeHits >= 2,
+    `BaseModal 的 class 属性里只数到 ${safeHits} 处读 window-safe-top，外壳那两层（遮罩 + 滚动层）都要让开`);
+
+  // 卡片高度也要扣掉安全区，否则矮视口下 max-h 仍按屏幕高算，底部会被挤出可视区
+  const cardCls = allClassText.find((c) => c.includes("elevated"));
+  assert.ok(cardCls, "BaseModal 里必须有一个 .elevated 卡片元素");
+  assert.ok(cardCls.includes("max-h-[calc(100vh-var(--gosslan-window-safe-top)"),
+    "卡片 max-h 必须扣掉安全区：`calc(100vh - var(--gosslan-window-safe-top) - 2rem)`");
+
+  // ⚠️ 不许改回 items-center（v4.37.0 教训：内容超高时顶部溢出到滚动容器之外，头部永远被遮挡）
+  assert.ok(cardCls.includes("my-auto"),
+    "卡片 class 里必须保留 my-auto —— 改回 items-center 会让超高内容的顶部溢出到滚动区之外");
+  // 居中行那一支（卡片形态）：它必须只是 `justify-center`，**不许**带 items-center。
+  // ⚠️ 这里判的是**垂直**方向（`items-*`）：水平居中本来就是 `justify-center`，
+  // 与 `my-auto`（垂直）不是一回事 —— v4.37.0 的教训只针对垂直那半，别把水平的一起动了。
+  // 那一行是三元绑定（`fullscreen ? 'flex min-h-full items-stretch justify-center' : 'flex min-h-full justify-center p-4'`），
+  // 卡片那一支的判据是"含 min-h-full 且不含 items-stretch"（items-stretch 是整页形态，它铺满是对的）。
+  const rowSrc = allClassText.find((c) => c.includes("min-h-full") && c.includes("justify-center"));
+  assert.ok(rowSrc,
+    "卡片形态的居中行（三元绑定里那一支 `'flex min-h-full justify-center p-4'`）必须在");
+  const cardRow = rowSrc.split(":").map((s) => s.trim())
+    .find((s) => s.includes("min-h-full") && !s.includes("items-stretch")) ?? rowSrc;
+  assert.ok(!/\bitems-center\b/.test(cardRow),
+    `卡片形态的居中行不许写成 items-center（v4.37.0 教训：内容高于视口时 flex 垂直居中会让顶部溢出到滚动容器之外）；`
+    + `水平居中保持 justify-center 原样即可：${cardRow}`);
+
+  // style.css 侧：两个变量的定义与判据都要在，且移动端必须归 0
+  const css = readFileSync(join(srcDir, "style.css"), "utf8");
+  assert.match(css, /--gosslan-window-safe-top:\s*0px/,
+    "style.css 的 :root 里必须把 --gosslan-window-safe-top 定义成 0px（移动端为 0，这是零回归的根据）");
+  assert.match(css, /html:not\(\.is-mobile\)\s*\{[^}]*--gosslan-window-safe-top:\s*var\(--gosslan-title-h\)/,
+    "桌面的安全区覆盖必须挂在 `html:not(.is-mobile)` 上（不能用 .platform-mac 当桌面判据 —— Windows/Linux 会拿不到）");
+  assert.match(css, /--gosslan-scroll-gutter:\s*\d+px/,
+    "滚动条留白间距变量必须在中央变量区定义（BaseModal 的内容区读它）");
+  console.log("· ㊱ 分母：BaseModal 外壳 " + safeHits + " 层读安全区变量 + 卡片 max-h 扣除 + my-auto 居中；"
+    + "style.css 两个变量定义齐备");
+});
+
+/**
+ * ㊱ 真实树扫描：**全 src 一个都不许漏**。
+ *
+ * ⚠️ 这一条是 2026-10-12 补的，它补的是一个真缺口：`findFixedOverlayWithoutWindowSafeTop`
+ * 写出来之后**只跑了夹具、没有跑过真实树**，而夹具全绿完全掩盖了两件事：
+ *  ① 分母太宽 —— 第一版把 `absolute inset-0`（行内点击层）与 `aria-hidden` 遮罩、
+ *     `cursor-default` 点击捕手全算进来，真实树上报 **7 个文件**，逐格读完**只有 1 个是真的**；
+ *  ② 那**唯一真的一个**（`ImageLightbox.vue` 主窗实例没让顶，右上角保存/关闭被 caption 压住）
+ *     正是要靠这条扫描才会浮出来的 —— 因为它的夹具用例压根不存在。
+ * ⇒ 教训与 ㉜/㉝/㉟ 同一条：**判据写完必须扫真实树**，否则它只是"一套自说自话的夹具"。
+ * 分母纪律：`assert.equal(bad.length, 0)` 是结论，同时把**扫描分母**（扫了几份 .vue）
+ * 打进日志 —— 分母为 0 时那条绿是假的（路径写错/glob 没匹配到都会这样）。
+ */
+test("㊱ 真实树：全 src 的 .vue 里没有一处「可见浮层裸 inset-0 盖顶」（分母现数）", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const files: string[] = [];
+  (function walk(dir: string) {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.name.endsWith(".vue")) files.push(p);
+    }
+  })(srcDir);
+
+  const bad: string[] = [];
+  for (const f of files) {
+    for (const issue of findFixedOverlayWithoutWindowSafeTop(readFileSync(f, "utf8"))) {
+      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}`);
+    }
+  }
+  // 分母自检：一份都没扫到说明路径/遍历坏了，那种绿不算数（㉜ 同一课）。
+  assert.ok(files.length > 50, `只扫到 ${files.length} 份 .vue ⇒ 遍历路径大概错了，这条绿不算数`);
+  assert.deepEqual(bad, [],
+    `这些可见浮层铺满了视口顶部却没让开自绘 caption（桌面会压住标题与 ✕）：\n  ${bad.join("\n  ")}`);
+  console.log(`· ㊱ 真实树分母：扫 ${files.length} 份 .vue，可见浮层盖顶 0 处`);
+});
+

@@ -119,6 +119,11 @@ pub async fn remove_friend(state: State<'_, Arc<AppState>>, peer_id: String) -> 
     // `friends` 表那一行删掉只解除了一条腿；`verify_hello` 还会回落到内存 `peers` 表里
     // 广播学来的旧公钥 ⇒ 对方重装换过公钥时，删了好友重新加也照样被硬拒。
     crate::network::transport::forget_peer_identity(s, &peer_id);
+    // 密钥轮换候选一起清：关系都没了，横幅与待确认状态没有意义。
+    s.pending_key_rotations
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&peer_id);
     // 通知对方解除好友关系（对方收到后也会删除本机好友行）
     let msg = Message::FriendRemove {
         from: s.device_id.clone(),
@@ -126,6 +131,105 @@ pub async fn remove_friend(state: State<'_, Arc<AppState>>, peer_id: String) -> 
     };
     let _ = try_send(s, &peer_id, &msg).await;
     let _ = s.app.emit("friend-removed", &peer_id);
+    Ok(())
+}
+
+/// 一条待确认的好友密钥轮换（发给前端展示用；只含好友，非好友不登记）。
+#[derive(serde::Serialize)]
+pub struct FriendKeyRotation {
+    pub device_id: String,
+    pub nickname: String,
+    pub x25519_pubkey: String,
+    pub ed25519_pubkey: String,
+    /// 首次观察到的时刻（ms），前端可按时间排序/显示"刚刚"。
+    pub ts: i64,
+}
+
+/// 列出当前所有「好友身份密钥已更换、等待用户确认」的候选。
+///
+/// 候选只在内存里（见 `AppState::pending_key_rotations`），且只返回**仍是好友**的条目；
+/// 已经删除的好友自然消失。聊天界面据此显示「同步新密钥」横幅。
+#[tauri::command(async)]
+pub fn get_friend_key_rotations(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<FriendKeyRotation>, String> {
+    let s = state.inner();
+    let pending = s
+        .pending_key_rotations
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+    let mut out = Vec::new();
+    for (device_id, c) in pending {
+        // 只保留仍是好友的：删除好友后横幅必须立刻消失。
+        if let Some((nickname, _)) = db::get_friend(&dbc, &device_id) {
+            out.push(FriendKeyRotation {
+                device_id,
+                nickname,
+                x25519_pubkey: c.x25519_pubkey,
+                ed25519_pubkey: c.ed25519_pubkey,
+                ts: c.ts,
+            });
+        }
+    }
+    // 新观察到的候选排最前（Reverse ⇒ 按 ts 降序；clippy 要求 sort_by_key）。
+    out.sort_by_key(|r| std::cmp::Reverse(r.ts));
+    Ok(out)
+}
+
+/// 用户确认「对方换密钥是本人操作（如重装应用）」后，把好友的身份密钥同步成新值。
+///
+/// 为什么必须显式命令而不是自动覆盖：自报公钥来自网络，自动覆盖等于任何同 ID 的
+/// 广播都能冒充好友（E2EE 被击穿）。候选已通过**新私钥的 Hello 自验签**（证明持有新私钥），
+/// 再加用户本人确认，才允许覆盖 friends 表。同步后：内存 peers 的旧绑定一起忘掉
+/// （`forget_peer_identity`），下次 Hello 以新密钥验签通过，消息/文件收发恢复。
+#[tauri::command(async)]
+pub async fn sync_friend_keys(
+    state: State<'_, Arc<AppState>>,
+    peer_id: String,
+) -> Result<(), String> {
+    let s = state.inner();
+    let candidate = {
+        let map = s
+            .pending_key_rotations
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        map.get(&peer_id).cloned()
+    }
+    .ok_or_else(|| "没有观察到这位好友的新密钥；请确认对方在线并重试过".to_string())?;
+    let name = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        let (name, _) = db::get_friend(&dbc, &peer_id)
+            .ok_or_else(|| "对方已经不是好友了".to_string())?;
+        db::replace_friend_pubkeys(
+            &dbc,
+            &peer_id,
+            &candidate.x25519_pubkey,
+            &candidate.ed25519_pubkey,
+        )
+        .map_err(|e| e.to_string())?;
+        name
+    };
+    {
+        let mut map = s
+            .pending_key_rotations
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        map.remove(&peer_id);
+    }
+    // 忘掉内存 peers 里的旧公钥与冲突告警标记：否则新 Hello 仍按旧绑定被硬拒。
+    crate::network::transport::forget_peer_identity(s, &peer_id);
+    s.logger.info(
+        "identity",
+        format!("用户确认后同步好友新身份密钥 peer={peer_id}（对方重装等合法换钥）"),
+    );
+    insert_system_message(
+        s,
+        &peer_id,
+        &format!("已按你的确认同步「{name}」的新身份密钥，消息与文件收发已恢复。"),
+    );
+    let _ = s.app.emit("friend-keys-synced", &peer_id);
     Ok(())
 }
 

@@ -317,9 +317,16 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
         v-if="open"
         ref="dialogRef"
         tabindex="-1"
-        class="glass fixed inset-0 z-[80] flex items-center justify-center outline-none"
+        class="glass fixed inset-x-0 bottom-0 top-[var(--gosslan-window-safe-top,0px)] z-[80] flex items-center justify-center outline-none"
         :style="{
           background: 'rgba(0, 0, 0, 0.45)',
+          // 让开自绘 caption。**两层口径**，不要只留一层：
+          //  · class 里那句 `top-[var(--gosslan-window-safe-top)]` 是**默认**（主窗那条路径）——
+          //    主窗那个全局实例（`ResponsiveLayout.vue`）从来不传 `topInset`，改造前它整层
+          //    滑到 caption（z-[85]）底下，右上角保存/关闭被压住；
+          //  · 这里再让显式的 `topInset` prop（独立预览窗 `PreviewWindow.vue` 在传）
+          //    优先覆盖默认值 —— 那条既有口径不动。
+          // 移动端该变量为 0 ⇒ 与改造前逐字相同。
           ...(topInset ? { top: topInset } : {}),
         }"
         role="dialog"
@@ -330,10 +337,17 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
       >
         <!-- 右上操作区：保存 + 关闭（与其它弹窗一致的样式） -->
         <!-- 移动端让开状态栏/挖孔（`safe-area-inset-top`）：用户 2026-09-12 实测
-             「安卓端图片预览右上角的保存和叉叉与状态栏重叠」。桌面端 env() 为 0，视觉不变。 -->
+             「安卓端图片预览右上角的保存和叉叉与状态栏重叠」。
+             ⚠️ **桌面端不能只靠 `topInset` prop**（2026-10-12 修）：那个 prop 只有独立预览窗
+             （`PreviewWindow.vue`）在传，而**主窗**那个全局实例（`ResponsiveLayout.vue`）
+             一个都没传 ⇒ 桌面端 `env()` 恒为 0，操作区落在 `top: 1rem`，被自绘 caption
+             （z-[85]，Win 38px / macOS 28px）**压住** —— 用户要的"所有窗口统一做好显示安全区"
+             漏的就是这一格。现在统一读 `--gosslan-window-safe-top`：
+             桌面 = caption 高度、移动端 = 0，且 `env()` 那半照旧保留（真机上两者可能同时不为 0）。
+             写成相加而不是取其一：移动端这个变量是 0 ⇒ 结果与改造前逐字相同（零回归）。 -->
         <div
           class="absolute right-4 z-10 flex items-center gap-1"
-          :style="{ top: 'calc(env(safe-area-inset-top, 0px) + 1rem)' }"
+          :style="{ top: 'calc(var(--gosslan-window-safe-top, 0px) + env(safe-area-inset-top, 0px) + 1rem)' }"
         >
           <!-- 加 drop-shadow 让白字在白色图片上也可见（问题修复：白背景白字→隐形） -->
           <button

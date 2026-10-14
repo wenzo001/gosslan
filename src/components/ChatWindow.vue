@@ -31,7 +31,7 @@ import { foldTodos, todoLiveMap, type TodoLive } from "@/utils/todos";
 import { isRenderedInTimeline } from "@/utils/messageKinds";
 import { activePopupKey } from "@/utils/popupRegistry";
 import { previewText } from "@/utils/messages";
-import { ArrowDown, Bluetooth, Layers, X, Pin, Megaphone, Trash2, Share2, Star } from "lucide-vue-next";
+import { ArrowDown, Bluetooth, Layers, X, Pin, Megaphone, Trash2, Share2, Star, ShieldAlert, KeyRound } from "lucide-vue-next";
 import {
   isAnnounceDismissed,
   readAnnounceSeen,
@@ -96,6 +96,49 @@ const peerVersionNewer = computed(() => {
   if (!conv.value || conv.value.kind !== "single") return false;
   return chat.friends.find((f) => f.device_id === conv.value!.id)?.peer_version_newer ?? false;
 });
+
+/**
+ * 单聊顶部的「好友身份密钥已更换、等待确认」候选。
+ *
+ * 后端在对端用**新私钥自验签的 Hello** 通过、但新公钥与 friends 表绑定值不一致时登记
+ * （典型场景：对方卸载重装应用，身份密钥重建 ⇒ 消息/文件全发不过去）。
+ * 群聊与自聊不存在这个问题。自验签只证明「持有新私钥」，是不是本人必须用户带外确认，
+ * 所以这里给两个出口：确认是本人 → 同步新密钥；无法确认 → 删除好友（替代旧的"删了重加"）。
+ */
+const keyRotation = computed(() => {
+  const id = chat.activeConv;
+  if (!id || isGroup.value || isSelfChat.value) return null;
+  return chat.keyRotations[id] ?? null;
+});
+const syncKeysOpen = ref(false);
+const syncingKeys = ref(false);
+async function confirmSyncKeys() {
+  const id = chat.activeConv;
+  if (!id || syncingKeys.value) return;
+  syncingKeys.value = true;
+  try {
+    await chat.syncFriendKeys(id);
+    syncKeysOpen.value = false;
+  } catch (e) {
+    app.toastError(e, t("friend.keyRotated.syncFail"));
+  } finally {
+    syncingKeys.value = false;
+  }
+}
+/** 横幅上的「删除好友」：复用既有二次确认弹窗文案（与资料页/右键菜单同一破坏性口径）。 */
+const removeKeyPeerOpen = ref(false);
+async function confirmRemoveKeyPeer() {
+  const id = chat.activeConv;
+  const name = keyRotation.value?.nickname ?? "";
+  removeKeyPeerOpen.value = false;
+  if (!id) return;
+  try {
+    await chat.removeFriend(id);
+    app.toast(t("conv.toast.friendRemoved", { name }), "info");
+  } catch (e) {
+    app.toastError(e, t("common.deleteFail"));
+  }
+}
 
 /** 会话当前链路（最近一条消息的链路 + 跳数）。单聊显示，群聊不显示。 */
 const linkState = ref<LinkState | null>(null);
@@ -1137,6 +1180,41 @@ function onLoadMore() {
       @open-share="emit('open-share')"
     />
 
+    <!-- 好友身份密钥变更横幅（对方卸载重装等合法换钥）：候选只在后端通过**新私钥 Hello
+         自验签**后登记，但自验签只证明"持有新私钥"，是不是本人必须用户带外确认。
+         两个出口都在聊天界面就地解决，替代旧的"删掉好友重新加、还得重启"：
+         确认是本人 → 同步新密钥（覆盖 friends 绑定 + 清内存旧绑定，下一次 Hello 即恢复）；
+         无法确认 → 删除好友。候选由后端登记/清除（删好友/对方解除关系自动消失），前端只读。 -->
+    <div
+      v-if="keyRotation"
+      class="mx-2 mt-1 flex shrink-0 items-start gap-2 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-warning-soft)] bg-[color-mix(in_srgb,var(--gosslan-warning)_8%,transparent)] px-3 py-2"
+    >
+      <ShieldAlert class="mt-0.5 h-4 w-4 shrink-0 text-[var(--gosslan-warning-ink)]" aria-hidden="true" />
+      <div class="min-w-0 flex-1">
+        <p class="text-[12px] leading-snug text-[var(--gosslan-text)]">
+          {{ t("friend.keyRotated.banner", { name: keyRotation.nickname }) }}
+        </p>
+        <div class="mt-1.5 flex flex-wrap gap-2">
+          <button
+            type="button"
+            class="tap-safe inline-flex items-center gap-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-2.5 py-1 text-[12px] text-white transition hover:bg-[var(--gosslan-primary-hover)]"
+            @click="syncKeysOpen = true"
+          >
+            <KeyRound class="h-3 w-3" aria-hidden="true" />
+            {{ t("friend.keyRotated.sync") }}
+          </button>
+          <button
+            type="button"
+            class="tap-safe inline-flex items-center gap-1 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-2.5 py-1 text-[12px] text-[var(--gosslan-danger-ink)] transition hover:bg-[var(--gosslan-hover)]"
+            @click="removeKeyPeerOpen = true"
+          >
+            <Trash2 class="h-3 w-3" aria-hidden="true" />
+            {{ t("friend.keyRotated.remove") }}
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- 群公告条：**有公告且这条没在本机收起过**才出现（用户 2026-09-17 要"没有公告不该
          常驻一条空横幅"；2026-09-29 再要"看完能临时关掉，等公告更新了再回来"）。
          浅警告底 + 描边 + 圆角，点正文开全文弹窗，右侧 ✕ 只收起、不删公告。 -->
@@ -1484,6 +1562,69 @@ function onLoadMore() {
           </template>
         </div>
       </template>
+    </BaseModal>
+
+    <!-- 同步好友新身份密钥：安全敏感动作，必须二次确认（自验签 ≠ 已证明是本人）。
+         候选消失（对方已被删/已同步）时弹窗自动关不住内容，用 v-if 保证不悬空提交。 -->
+    <BaseModal
+      :open="syncKeysOpen && !!keyRotation"
+      :title="t('friend.keyRotated.syncTitle')"
+      @close="syncKeysOpen = false"
+    >
+      <div v-if="keyRotation" class="space-y-3">
+        <p class="text-sm leading-relaxed">
+          {{ t("friend.keyRotated.syncBody", { name: keyRotation.nickname }) }}
+        </p>
+        <ul class="space-y-1 text-xs leading-relaxed text-[var(--gosslan-warning-ink)]">
+          <li>· {{ t("friend.keyRotated.syncItem1") }}</li>
+          <li>· {{ t("friend.keyRotated.syncItem2") }}</li>
+        </ul>
+        <div class="flex justify-end gap-2 pt-2">
+          <button
+            class="tap-safe rounded-[var(--gosslan-radius-md)] px-4 py-1.5 text-sm transition hover:bg-[var(--gosslan-hover)]"
+            :disabled="syncingKeys"
+            @click="syncKeysOpen = false"
+          >{{ t("common.cancel") }}</button>
+          <button
+            class="tap-safe inline-flex items-center gap-1.5 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-4 py-1.5 text-sm text-white transition hover:bg-[var(--gosslan-primary-hover)] disabled:opacity-50"
+            :disabled="syncingKeys"
+            @click="confirmSyncKeys"
+          >
+            <KeyRound class="h-3.5 w-3.5" aria-hidden="true" />
+            {{ t("friend.keyRotated.confirmSync") }}
+          </button>
+        </div>
+      </div>
+    </BaseModal>
+
+    <!-- 删除好友（换钥横幅的第二个出口）：沿用 friend.remove.* 既有文案口径。 -->
+    <BaseModal
+      :open="removeKeyPeerOpen && !!keyRotation"
+      :title="t('friend.remove.title')"
+      @close="removeKeyPeerOpen = false"
+    >
+      <div v-if="keyRotation" class="space-y-3">
+        <p class="text-sm">
+          {{ t("friend.remove.bodyPrefix") }}<span class="font-medium text-[var(--gosslan-danger-ink)]">{{ keyRotation.nickname }}</span>{{ t("friend.remove.bodySuffix") }}
+        </p>
+        <ul class="space-y-1 text-xs text-[var(--gosslan-text-2)]">
+          <li>· {{ t("friend.remove.item1") }}</li>
+          <li>· {{ t("friend.remove.item2") }}</li>
+        </ul>
+        <div class="flex justify-end gap-2 pt-2">
+          <button
+            class="tap-safe rounded-[var(--gosslan-radius-md)] px-4 py-1.5 text-sm transition hover:bg-[var(--gosslan-hover)]"
+            @click="removeKeyPeerOpen = false"
+          >{{ t("common.cancel") }}</button>
+          <button
+            class="tap-safe inline-flex items-center gap-1.5 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-1.5 text-sm text-white transition hover:bg-[var(--gosslan-danger-hover)]"
+            @click="confirmRemoveKeyPeer"
+          >
+            <Trash2 class="h-3.5 w-3.5" aria-hidden="true" />
+            {{ t("common.deleteFriend") }}
+          </button>
+        </div>
+      </div>
     </BaseModal>
 
     <!-- 群文件列表 -->

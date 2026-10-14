@@ -1443,6 +1443,125 @@ export function findTopInsetWithoutBottomInset(src: string): GuardIssue[] {
   ];
 }
 
+// ---------------- ㊱ 桌面弹窗必须让开自绘标题栏（窗口显示安全区） ----------------
+/**
+ * 判据：铺满视口的浮层外壳顶部必须读 `var(--gosslan-window-safe-top)`，不许裸 `inset-0` 盖顶。
+ *
+ * 为什么这是判据而不是审美：桌面窗口是 `decorations(false)` + **流内**自绘 caption
+ * （`TitleBar.vue`，`var(--gosslan-title-h)`，Win 38px / macOS 28px），而弹窗经 portal 挂到
+ * `<body>`、铺的是 `fixed inset-0` ⇒ 从视口 (0,0) 起算，卡片顶部直接钻到 caption 底下，
+ * 标题与右上角 ✕ 一起被压住（用户实测过的那一类）。移动端没有 caption
+ * （`TitleBar` 的 `v-if="!isMobile"`），所以那套变量在移动端必须是 **0**
+ * ⇒ 让位写法在移动端零变化，一个写法两种形态都对。
+ *
+ * ⚠️ 这条只看**外壳那一层**（`fixed` + 四边铺满），不判卡片自己的 `max-h` / `my-auto` ——
+ * 后两者是另一条判据的事，而且卡片高度要真视口才量得准（运行时那半在
+ * `scripts/check-ui-runtime.mjs` 的 overlay 段）。
+ * ⚠️ 判据读的是**类名**（复用文件顶部那份 `CLASS_ATTR_RE`），注释里写一句不算 ——
+ * 写注释过关的判据不是判据。
+ * 逃生阀：文件里带 `window-safe-ok` 注释整份跳过（确实铺满是有意的）。
+ *
+ * ## 分母收窄过（2026-10-12，逐格核过真实树之后）
+ * 第一版把 `absolute inset-0` 与所有"看不见的点击层"都算进来，在真实树上报了 **7 个文件**，
+ * 逐格读完**只有 1 个是真的**。多出来的 6 个都是假红，形状各有各的道理，必须写清楚：
+ *  - `MessageItem.vue:1114` 是 `absolute inset-0`（**行内**透明点击层，不是视口浮层）⇒
+ *    只判 `fixed`。`absolute` 的定位基准是父元素，"让开窗口 caption"对它没有意义。
+ *  - `ActionSheet.vue:28` / `GroupTasksBoard.vue:1484` / `TodoPickField.vue:88` 都是
+ *    **不可见的点击捕手**（`aria-hidden` 遮罩、或 `cursor-default` 的整屏按钮，只负责"点外面关掉"）。
+ *    它们**本来就该铺满**：caption 是 `z-[85]`，这些层（z-40/65）恒在它之下，
+ *    既不会盖住 caption 也不被 caption 遮住内容（它们没有内容）⇒ 让位只会留出一条点不着的缝。
+ *  - `FavoritePanel.vue:694` / `MobilePageFrame.vue:53` 命中的那一支是
+ *    `app.isMobile` / `mode === 'overlay'` 的**移动端分支**，移动端没有 caption（变量恒 0）。
+ *  ⇒ 判据收成三条：`fixed` + 四边铺满 + **这一层看得见**，且**不是移动端分支**。
+ *  "看不见"靠两条既有类名特征判（`aria-hidden` 的装饰遮罩、`cursor-default` 的点击捕手），
+ *  "移动端分支"靠 `:class` 三元里出现的移动判据判（见 `MOBILE_BRANCH_RE`）。
+ *  不靠 `aria-hidden` 文本单独一条 —— 见测试里那几条正反面夹具。
+ */
+const WINDOW_SAFE_TOP_RE = /top-\[var\(--gosslan-window-safe-top\)\]/;
+/** 四边都铺满的写法：`inset-0`，或 `inset-x-0 bottom-0` + 顶到某个值。 */
+const FULL_BLEED_RE = /\binset-0\b/;
+/**
+ * "整层只是点击捕手、没有任何可见内容"的既有写法。
+ *
+ * `cursor-default` 是本仓那三处整屏关闭层的共同标记（它们用 `<button>`/`<div>` 铺满整屏、
+ * 光标故意不变成手型，因为那不是"一个能点的控件"）。
+ */
+const INVISIBLE_CATCHER_RE = /\bcursor-default\b/;
+/**
+ * `:class` 三元里的**移动端分支**标记。
+ *
+ * 命中形状：`:class="app.isMobile ? 'fixed inset-0 …' : 'flex …'"`（FavoritePanel / MobilePageFrame）。
+ * 那一支只在移动端生效，而移动端没有自绘 caption（`--gosslan-window-safe-top` 恒为 0）
+ * ⇒ 它铺满是**对的**，让它去读那个变量反而是空转。
+ * 判据只认全仓那一个"本机是移动布局"的口径（`isMobile` / `mode === 'overlay'` 这类
+ * 明显表达"整页覆盖形态"的条件），不是随便一个三元就豁免。
+ */
+const MOBILE_BRANCH_RE = /\b(isMobile|mode\s*===\s*['"]overlay['"])/;
+
+export function findFixedOverlayWithoutWindowSafeTop(src: string): GuardIssue[] {
+  if (src.includes("window-safe-ok")) return [];
+  const hits = [...src.matchAll(CLASS_ATTR_RE)];
+  const issues: GuardIssue[] = [];
+  for (const m of hits) {
+    const cls = m[1];
+    // ① 只判**视口锚定**的层：`absolute` 的基准是父元素，与窗口 caption 无关（见上）。
+    if (!/\bfixed\b/.test(cls)) continue;
+    if (!FULL_BLEED_RE.test(cls)) continue;
+    if (WINDOW_SAFE_TOP_RE.test(cls)) continue;
+    // ② 不可见的点击捕手／装饰遮罩不在分母里：它们本来就该铺满（见上）。
+    if (INVISIBLE_CATCHER_RE.test(cls)) continue;
+    if (isInvisibleBackdrop(src, m.index)) continue;
+    // ③ 移动端分支不在分母里：那边没有 caption（见上）。
+    if (isMobileBranch(src, m.index)) continue;
+    issues.push({
+      line: lineAt(src, m.index),
+      message:
+        "这层浮层 `inset-0` 铺满了视口顶部，却没读 `var(--gosslan-window-safe-top)` —— " +
+        "桌面窗口的 caption 是**流内**元素（自绘标题栏，Win 38px / macOS 28px），" +
+        "弹窗经 portal 挂到 `<body>` ⇒ 卡片顶部会钻到 caption 底下被压住（标题与 ✕ 一起看不见）。" +
+        "改法：把 `inset-0` 拆成 `inset-x-0 bottom-0 top-[var(--gosslan-window-safe-top)]`。" +
+        "⚠️ 移动端该变量为 0（没有 caption）⇒ 一个写法两种形态都对，不要另外加平台判断。" +
+        "变量定义与判据见 `style.css` 的窗口显示安全区那一节。",
+    });
+  }
+  return issues;
+}
+
+/**
+ * 这个作用点是不是"纯遮罩"（`aria-hidden` 的装饰层或只负责点击关闭的层）。
+ *
+ * 判据取该标签**自身**那一小段文本（起点到 `>`），在里面找 `aria-hidden` ——
+ * 只搜紧邻的这个标签，不搜整份文件（否则同文件里任何一处 `aria-hidden` 都会把
+ * 所有浮层一起豁免掉）。
+ */
+function isInvisibleBackdrop(src: string, index: number): boolean {
+  const tagEnd = src.indexOf(">", index);
+  const tag = src.slice(index, tagEnd === -1 ? index + 400 : tagEnd);
+  return tag.includes("aria-hidden");
+}
+
+/**
+ * 这个 `class` 属性是不是某个 `:class` 三元里**移动端那一支**。
+ *
+ * ⚠️ 条件的位置**两个方向都有**，只看一边必然漏（两版都栽在这上面，逐处实测出来的）：
+ *  · 向前看不够：`:class="mode === 'overlay'\n ? 'fixed inset-0 …'"` ——
+ *    条件在 `class="` **之后**（就是那个属性值的开头）；
+ *  · 只看紧邻前缀（到上一个 `>`）也不够：`:class="app.isMobile\n ? '…'"` 那种写法里
+ *    `isMobile` 落在标签属性区里，而按 `>` 切会把它整段切掉。
+ * ⇒ 取"本标签起点前 300 字符"到"属性值里第一个引号段结束"这段**并集**：
+ * 向前覆盖属性区，向后覆盖属性值开头的三元条件。两侧各取有界长度，
+ * 不扫整份文件（否则别处的 `isMobile` 会把不相干的层一起豁免）。
+ */
+function isMobileBranch(src: string, index: number): boolean {
+  const tagStart = src.lastIndexOf("<", index);
+  const from = tagStart === -1 ? Math.max(0, index - 400) : Math.max(0, tagStart - 300);
+  // 向后：`class="` 之后到该属性值结束（Vue 里 `:class="... 'a' : 'b'"` 都在引号内）。
+  const valStart = src.indexOf('"', index);
+  const valEnd = valStart === -1 ? index : src.indexOf('"', valStart + 1);
+  const to = valEnd === -1 ? index + 300 : valEnd;
+  return MOBILE_BRANCH_RE.test(src.slice(from, index) + src.slice(index, to));
+}
+
 // ---------------- ㉚ 主题色规则必须在顶层（#35-N7 的真实缺陷） ----------------
 /**
  * 判的是**嵌套深度**，不是"这条规则写没写"。

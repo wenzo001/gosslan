@@ -54,6 +54,19 @@ export interface PendingRequest {
   ts: number;
 }
 
+/**
+ * 一条「好友身份密钥已更换、等待用户确认」的候选（对方卸载重装等场景）。
+ * 候选里的新公钥已经在后端通过新私钥的 Hello 自验签（证明持有新私钥），
+ * 但是否是本人仍需用户带外确认，确认后调用 syncFriendKeys 覆盖绑定。
+ */
+export interface FriendKeyRotation {
+  device_id: string;
+  nickname: string;
+  x25519_pubkey: string;
+  ed25519_pubkey: string;
+  ts: number;
+}
+
 export type MsgKind =
   | "text"
   | "code"

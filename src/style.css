@@ -161,6 +161,32 @@
      （用户 2026-09-12 反馈：「mac 自己写的三个关闭按钮，和原生的关闭按钮的样式好像
      不太一样，还有大小」）。 */
   --gosslan-title-h: 38px;
+  /* ---------------- 窗口显示安全区（桌面自绘标题栏 / 移动端为 0） ----------------
+     桌面窗口是 `decorations(false)` + 自绘 caption（`TitleBar.vue`，`var(--gosslan-title-h)`），
+     那条 caption 是**流内**元素。而弹窗经 portal 挂到 `<body>`、铺的是 `fixed inset-0`
+     ⇒ 从视口 (0,0) 起算，卡片顶部会**钻到 caption 底下被压住**（用户实测过的那一类）。
+     这里给"窗口内容区的真实上边界"一个名字，浮层让开它即可。
+
+     ⚠️ 判据必须是 `html.is-mobile`（由 `useAppStore.applyIsMobile()` 独家写，判据 =
+     `platform.ts::resolveMobileLayout`，**平台优先、宽度兜底**），**不能**用 `.platform-mac`
+     当桌面判据：那个类只在 macOS 上打，Windows / Linux 桌面会拿不到安全区。
+     也**不许**用 `md:` 宽度断点 —— 安卓首帧的视口宽度会说谎（启动权限弹框盖住 WebView 时
+     读到 980px 兜底档 ⇒ CSS 判"桌面"、手机上凭空多出一条 38px 顶边距），这条纪律见
+     `tailwind.config.js` 的 `desktop:` 变体与 `docs/ARCHITECTURE-MAP.html`。
+
+     桌面取值 = `var(--gosslan-title-h)` ⇒ 跟着 `.platform-mac` 的 28px 覆盖一起走，
+     Win/Linux 38px、macOS 28px，**一处定义两平台自洽**，不需要各写一份。
+     移动端 = 0：移动端没有 caption（`TitleBar` 的 `v-if="!isMobile"`），
+     整屏形态走的是 `env(safe-area-inset-*)`，这套变量在那边必须**不产生任何影响**。 */
+  --gosslan-window-safe-top: 0px;
+  /* 滚动条留白（滚动层 / 内容区与滚动条之间）。
+     Win/Linux 用 706 行那条**常显 6px 细滚动条**，内容贴着滚动条没有呼吸感；
+     macOS 是系统 overlay（`.platform-mac ::-webkit-scrollbar { width: auto }`，不占布局宽）
+     ⇒ 两侧都按**留白**而不是"补滚动条宽度"来取值：这样 Mac 上不会因为多补 6px 而
+     与左侧p-5 明显不对称，Win 上那 6px 滚动条正好落进这段留白里。
+     取 8px：Win 下 6px 滚动条 + 2px 净空隙；Mac 下 8px 视觉留白（与 12px 圆角同量级）。 */
+  --gosslan-scroll-gutter: 8px;
+
   /* ---------------- 圆角梯度（对齐 iOS HIG / WWDC25「Shape & Concentricity」） ----------------
      选形状看"密度与层级"，不要到处都圆：
        ① 固定半径 —— 本应用绝大多数元素（紧凑、密集的桌面/移动控件）
@@ -752,6 +778,14 @@ progress {
    整组与系统视觉等价。 */
 .platform-mac {
   --gosslan-title-h: 28px;
+}
+
+/* 桌面：窗口内容区的上边界 = 自绘 caption 的高度（移动端保持 0，见 `:root` 里的说明）。
+   ⚠️ 选择器是 `html:not(.is-mobile)` 而不是 `.platform-mac`：Windows / Linux 也有 caption，
+   `.platform-mac` 只覆盖 macOS。这一条与 tailwind 的 `desktop:` 变体（`html:not(.is-mobile) &`）
+   同一个判据 —— 全仓只有 `is-mobile` 这一个"本机是移动布局吗"的口径。 */
+html:not(.is-mobile) {
+  --gosslan-window-safe-top: var(--gosslan-title-h);
 }
 
 .platform-mac ::-webkit-scrollbar {

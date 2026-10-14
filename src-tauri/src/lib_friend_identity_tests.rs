@@ -286,3 +286,135 @@
              只写「建议当面核对」等于把用户扔在原地"
         );
     }
+
+    /// 好友重装换身份（2026-10-12 用户真机：装新包后密钥变了，文件全发不出去，
+    /// 只能删好友重加）：**只有「对方是好友 + 新私钥 Hello 自验签通过」才允许登记
+    /// 一键换钥候选**。
+    ///
+    /// 安全底线：未签名的 UDP announce 冲突、或连自验签都过不了的伪造 Hello 绝不能给出
+    /// 「同步新密钥」入口 —— 那等于任何同 device_id 的广播都能冒名顶替（E2EE 被击穿）。
+    /// 同一对候选密钥只通知一次（对端会反复重连，不去重就把界面刷爆）。
+    #[test]
+    fn key_rotation_candidate_requires_friend_and_new_key_self_signature() {
+        let tr = crate::network::transport_src_for_guards();
+        // ① verify_hello：登记点之前必须先过两道闸 —— 绑定值不一致 + 用**新公钥**自验签。
+        let vh = rust_fn_body(&tr, "pub(crate) fn verify_hello(");
+        let at = vh
+            .find("record_key_rotation_candidate(state, device_id, x25519_pubkey, ed25519_pubkey)")
+            .expect("公钥不一致且自验签通过时必须登记换钥候选（聊天横幅的数据源）");
+        let before = code_flat(&vh[..at]);
+        assert!(
+            before.contains("ifletSome(expected)=bound.as_deref()")
+                && before.contains("ifexpected!=ed25519_pubkey"),
+            "必须先判『绑定值与自报值不一致』：一致是正常握手，不许登记候选"
+        );
+        assert!(
+            before.contains("crypto::verify_signature(ed25519_pubkey,&hello_signing_bytes("),
+            "登记前必须用**新公钥**（不是绑定的旧公钥）验本次 Hello 的自签名"
+        );
+        // ② 登记函数：好友门 + 同候选去重 + 仅新候选通知前端。
+        let rec = rust_fn_body(&tr, "pub(crate) fn record_key_rotation_candidate(");
+        assert!(
+            rec.contains("db::get_friend(&dbc, device_id).is_none()"),
+            "非好友的密钥冲突不进聊天界面（陌生节点不许刷换钥横幅）"
+        );
+        assert!(
+            rec.contains("c.x25519_pubkey == x25519_pubkey")
+                && rec.contains("c.ed25519_pubkey == ed25519_pubkey"),
+            "同一对候选密钥必须去重（对端重连/重发 Hello 都会再报，不拦就反复 emit 刷界面）"
+        );
+        assert!(
+            rec.contains(r#"emit("friend-key-changed", device_id)"#),
+            "出现新候选必须通知前端刷新横幅"
+        );
+        // ③ 未签名的 announce 冲突不许走这个入口：全 transport 视图里登记点只能有一处调用。
+        assert_eq!(
+            tr.matches("record_key_rotation_candidate(state").count(),
+            1,
+            "换钥候选只能由 verify_hello（签名 Hello 路径）登记；\
+             warn_key_conflict_once 那条未签名 announce 路径调了它就是给伪造广播开一键换钥门"
+        );
+        // ④ 列表命令只返回**仍是好友**的候选（删好友后横幅必须立刻消失）。
+        let cmd = all_commands_src();
+        let get = rust_fn_body(cmd, "pub fn get_friend_key_rotations(");
+        assert!(
+            get.contains("db::get_friend(&dbc, &device_id)"),
+            "候选列表必须按好友表现滤：删除好友后该候选不能再出现在聊天界面"
+        );
+    }
+
+    /// 用户确认换钥（`sync_friend_keys`）：候选必须真的观察到、对方必须仍是好友、
+    /// 只许走**覆盖式**写入，而且两条信任腿（friends 行 + 内存 peers 旧绑定）必须一起换，
+    /// 否则下一次 Hello 仍按旧公钥硬拒（症状：点了同步还是发不出去）。
+    ///
+    /// 与只填空的 `update_friend_pubkeys` 刻意分开：自动覆盖会击穿 E2EE，覆盖只能由
+    /// 「自验签通过的候选 + 用户显式确认」触发。
+    #[test]
+    fn sync_friend_keys_replaces_both_trust_legs_under_explicit_confirm() {
+        let cmd = all_commands_src();
+        let body = rust_fn_body(cmd, "pub async fn sync_friend_keys(");
+        assert!(
+            body.contains("没有观察到这位好友的新密钥"),
+            "没有候选（没观察到自验签通过的新密钥）必须拒绝 —— 命令绝不接受前端自报的公钥"
+        );
+        assert!(
+            body.contains("对方已经不是好友了"),
+            "落库前必须复查好友关系：候选可能是删除好友前留下的陈旧条目"
+        );
+        let flat = code_flat(&body);
+        assert!(
+            flat.contains("db::replace_friend_pubkeys("),
+            "必须走覆盖式写入（候选已通过新私钥自验签 + 用户显式确认）"
+        );
+        assert!(
+            !flat.contains("db::update_friend_pubkeys("),
+            "不许走只填空的 update_friend_pubkeys：旧值非空时它什么都不改，同步就是假的"
+        );
+        assert!(
+            body.contains("forget_peer_identity(s, &peer_id)"),
+            "必须同时忘掉内存 peers 里的旧公钥/冲突标记，否则下一次 Hello 仍按旧绑定硬拒"
+        );
+        assert!(
+            body.contains("pending_key_rotations") && body.contains("map.remove(&peer_id)"),
+            "同步成功后必须从候选表移除，防止横幅残留/重复落库"
+        );
+        assert!(
+            body.contains(r#"emit("friend-keys-synced", &peer_id)"#),
+            "同步成功必须通知前端收起横幅并刷新"
+        );
+        // db 层：覆盖与只填空是两个函数，COALESCE 语义不许被悄悄改掉。
+        let db = include_str!("db/friends.rs");
+        let rep = rust_fn_body(db, "pub fn replace_friend_pubkeys(");
+        assert!(
+            rep.contains("UPDATE friends SET x25519_pubkey = ?2, ed25519_pubkey = ?3"),
+            "覆盖式 SQL 必须两把公钥都写"
+        );
+        let fill = rust_fn_body(db, "pub fn update_friend_pubkeys(");
+        assert!(
+            fill.contains("COALESCE(x25519_pubkey, ?2)") && fill.contains("COALESCE(ed25519_pubkey, ?3)"),
+            "只填空的路径必须保持 COALESCE（绝不覆盖已有绑定）"
+        );
+    }
+
+    /// 换钥候选必须随**两条解除关系路径**一起清掉：本地 `remove_friend` 命令、
+    /// 以及收到对方发来的 `FriendRemove`（handle_identity 分支）。少清任何一条，
+    /// 关系都没了聊天顶部还挂着换钥横幅。
+    #[test]
+    fn pending_key_rotation_cleared_on_both_friend_removal_paths() {
+        let cmd = all_commands_src();
+        let remove = rust_fn_body(cmd, "pub async fn remove_friend(");
+        assert!(
+            remove.contains("pending_key_rotations"),
+            "本地删好友必须连带清掉换钥候选（关系解除，横幅无意义）"
+        );
+        let tr = crate::network::transport_src_for_guards();
+        let fam = rust_fn_body(&tr, "async fn handle_identity_and_friend_messages(");
+        let start = fam
+            .find("Message::FriendRemove {")
+            .expect("FriendRemove 分支必须还在（本护栏锚点）");
+        let branch = &fam[start..start + 1500.min(fam.len() - start)];
+        assert!(
+            code_flat(branch).contains("pending_key_rotations"),
+            "收到对方解除关系也要清候选，与 remove_friend 命令对称"
+        );
+    }

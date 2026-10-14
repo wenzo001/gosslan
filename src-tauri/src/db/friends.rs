@@ -62,6 +62,26 @@ pub fn update_friend_pubkeys(
     Ok(())
 }
 
+/// **用户显式确认后**覆盖好友的两把公钥（密钥轮换）。
+///
+/// 与 [`update_friend_pubkeys`]（只填空、绝不覆盖）刻意分开：对方卸载重装应用后
+/// 身份密钥重建，旧绑定会导致「文件分片解密失败」、消息发不出。自动覆盖会击穿 E2EE
+/// （一次自报公钥就能冒充好友），所以只有用户在聊天界面点「同步新密钥」（且候选密钥
+/// 已通过新私钥的 Hello 自验签）才允许走到这里。
+pub fn replace_friend_pubkeys(
+    conn: &Connection,
+    device_id: &str,
+    x25519: &str,
+    ed25519: &str,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE friends SET x25519_pubkey = ?2, ed25519_pubkey = ?3
+         WHERE device_id = ?1",
+        params![device_id, x25519, ed25519],
+    )?;
+    Ok(())
+}
+
 /// 获取好友的 X25519 公钥（用于 ECDH 加密）。
 pub fn get_friend_x25519(conn: &Connection, device_id: &str) -> Option<String> {
     conn.query_row(

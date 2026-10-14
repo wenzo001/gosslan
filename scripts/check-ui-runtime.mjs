@@ -509,6 +509,120 @@ window.__probe = (() => {
   };
 
   /**
+   * 标题栏 × **卡片弹窗**那一路的合成夹具（2026-10-12：窗口显示安全区）。
+   *
+   * 与 'composeStack' 的区别：那一路合成的是 ImageLightbox（整屏遮罩），这一路合成的是
+   * 'BaseModal' 的**卡片形态** —— 要判的是"卡片顶边是否落在 caption 底边之下"，
+   * 而卡片自己的 'max-h' 又依赖 '--gosslan-window-safe-top'，所以必须真挂真量；
+   * 静态判据只能证"源码里读了变量"，证不了"读完之后卡片真的让开了"。
+   *
+   * 'long' 给长内容（把卡片顶到 max-h 上限）—— 矮视口 + 长内容是用户报的那个形状。
+   * 'isMobile' 切 '<html class="is-mobile">'：移动端该变量必须是 0（零回归那半边）。
+   */
+  H.composeModalStack = async (opts) => {
+    const V = window.__probe.vue;
+    if (!V) return { ok: false, why: '先跑一次 install 把页面那份 vue 拿进来' };
+    const o = opts || {};
+    // 移动端标记：'--gosslan-window-safe-top' 的桌面覆盖挂在 'html:not(.is-mobile)' 上，
+    // 所以这一档必须**真的**切那个类，不能靠"反正变量是 0"假设。
+    document.documentElement.classList.toggle('is-mobile', !!o.isMobile);
+    const [tbM, bmM] = await Promise.all([
+      import('/src/components/TitleBar.vue'),
+      import('/src/components/BaseModal.vue'),
+    ]);
+    const TitleBar = tbM.default;
+    const BaseModal = bmM.default;
+    document.body.innerHTML = '';
+    const host = document.createElement('div');
+    host.id = 'modal-stack-host';
+    // 真宿主形状：'h-screen flex-col' + 流内 TitleBar + 内容区（与 ResponsiveLayout 同构）。
+    host.className = 'flex h-screen flex-col overflow-hidden';
+    document.body.appendChild(host);
+    const long = 'x'.repeat(o.long === false ? 40 : 4000);
+    const Root = {
+      render() {
+        return V.h('div', { class: 'flex h-full flex-col' }, [
+          // isMobile 时 TitleBar 自己 'v-if="!isMobile"' 不渲染 —— 与真应用一致。
+          // ⚠️ 必须**把 isMobile 传下去**：html 上那个 'is-mobile' 类只影响 CSS 变量，
+          // TitleBar 的显隐读的是 prop（v-if=!isMobile）。第一版只切了类、没传 prop
+          // ⇒ 移动端那一档 caption 照旧渲染，三条移动判据全红（实测踩过）。
+          V.h(TitleBar, { title: '小院儿', isMobile: !!o.isMobile }),
+          V.h('div', { class: 'min-h-0 flex-1 bg-white' }, '内容区'),
+          V.h(BaseModal, {
+            open: true,
+            title: '探针弹窗',
+            width: 'max-w-sm',
+            onClose: () => { window.__probe.events.push(['close']); },
+          }, { default: () => V.h('div', { id: 'probe-long' }, long) }),
+        ]);
+      },
+    };
+    const app = V.createApp(Root);
+    if (window.__pinia) app.use(window.__pinia);
+    app.mount(host);
+    await V.nextTick(); await V.nextTick();
+    return { ok: true, isMobile: !!o.isMobile, long: o.long !== false };
+  };
+  /**
+   * 现读卡片矩形、caption 矩形、安全区变量的**计算值**，以及"卡片顶边是否在 caption 之下"。
+   *
+   * ⚠️ 安全区变量读的是 'getComputedStyle(document.documentElement)' 上的值 ——
+   * 那是"CSS 真的生效了"的证据（读源码只能证"写了"）。顶层那条 N7 教训
+   * （"写了没生效"）正是靠这种现读才戳穿的。
+   */
+  H.modalStackRead = () => {
+    const cap = document.querySelector('[data-caption]');
+    const panel = document.querySelector('[role="dialog"] .elevated');
+    const scroller = document.querySelector('[role="dialog"] .overflow-y-auto');
+    if (!panel) return { ok: false, why: '没挂出 .elevated 卡片（BaseModal 没渲染？）' };
+    const pr = panel.getBoundingClientRect();
+    const cr = cap ? cap.getBoundingClientRect() : null;
+    const safeTop = getComputedStyle(document.documentElement)
+      .getPropertyValue('--gosslan-window-safe-top').trim();
+    // 滚动层顶边（就是"让开之后"那条线的几何证据）
+    const sr = scroller ? scroller.getBoundingClientRect() : null;
+    return {
+      ok: true,
+      safeTop,
+      hasCaption: !!cap,
+      capBottom: cr ? Math.round(cr.bottom) : null,
+      cardTop: Math.round(pr.top),
+      cardBottom: Math.round(pr.bottom),
+      scrollTop: sr ? Math.round(sr.top) : null,
+      innerHeight: window.innerHeight,
+      // 卡片顶边不低于 caption 底边 = 没有被压住
+      cardBelowCaption: cr ? Math.round(pr.top) >= Math.round(cr.bottom) : null,
+      // 卡片底边不超过视口底边 = 没被挤出可视区
+      cardFitsBottom: Math.round(pr.bottom) <= window.innerHeight + 1,
+      panelH: Math.round(pr.height),
+    };
+  };
+  /**
+   * 反面对照：把安全区变量按回"修之前"（0）⇒ 卡片必然又跑回 caption 底下。
+   * 少了这一条，上面那句 'cardBelowCaption' 在"caption 根本没渲染"时也会恒真。
+   */
+  H.setWindowSafeTop = (mode) => {
+    const root = document.documentElement;
+    if (mode === 'off') root.style.setProperty('--gosslan-window-safe-top', '0px');
+    else root.style.removeProperty('--gosslan-window-safe-top');
+    return getComputedStyle(root).getPropertyValue('--gosslan-window-safe-top').trim();
+  };
+  /**
+   * 把卡片内容撑到超过视口高度 —— 让卡片顶到 max-h 上限。
+   *
+   * 为什么对照非要这一步：卡片是 'my-auto' 居中的，内容不高时它停在视口中间，
+   * "顶边在 caption 之下"**恒真**（撤掉安全区也照样成立）⇒ 那样的对照什么都没证。
+   * 撑高之后 'my-auto' 会把卡片顶边推到"它被允许到的最高处"，那才是安全区在管事的位置。
+   */
+  H.forceModalTall = (on) => {
+    const el = document.getElementById('probe-long');
+    if (!el) return false;
+    el.style.height = on ? '400vh' : '';
+    return true;
+  };
+
+
+  /**
    * 量那颗"添加表情回复"入口（用户 2026-09-30：「按钮位置在视觉观感上应该与聊天内容最下边对齐，
    * 按钮再紧凑一些，现在有点大」）。
    * 列（=按钮的定位父元素，也就是气泡那一列）不从外面找：按钮就挂在那一列的直接子级上，
@@ -1507,6 +1621,7 @@ async function main() {
     const imgload = want("imgload");
     const pinkb = want("pinkb");
     const inputpanel = want("inputpanel");
+    const winsafe = want("winsafe");
     if (emoji) await runEmoji(cdp, url);
     if (search) await runSearch(cdp, url);
     if (task) await runTaskCard(cdp, url);
@@ -1520,6 +1635,7 @@ async function main() {
     if (imgload) await runImageLoad(cdp, url);
     if (pinkb) await runPinKeyboard(cdp, url);
     if (inputpanel) await runInputPanels(cdp, url);
+    if (winsafe) await runWindowSafe(cdp, url);
     process.exitCode = results.every((r) => r.ok) ? 0 : 1;
     exitCode = process.exitCode;
   } catch (e) {
@@ -1835,6 +1951,120 @@ async function runPinKeyboard(cdp, url) {
  * 代投）走满 5 档退避得到 —— 打的仍是组件自己那个 @error 处理器，顺带把"全部重试失败才落 failed"
  * （用户 2026-09-12：『加载失败应该是不可逆的最终结果』）在真浏览器里走了一遍。
  */
+/**
+ * 窗口显示安全区那一段（--only=winsafe）。
+ *
+ * 用户 2026-10-12 报的两件事里，第二件是"卡片弹窗顶部被自绘窗口标题栏（caption）压住"，
+ * 并明写要求「**窗口头部不是可显示区域，所有窗口统一做好显示安全区**」。
+ *
+ * 为什么必须有运行时这一半：静态判据（designGuards ㊱）只能证"源码里读了
+ * `var(--gosslan-window-safe-top)`"，证不了三件真事：
+ *   ① CSS 变量在这个文档里**真的算出了非零值**（写了没生效是 N7 那一课）；
+ *   ② 读完变量之后**卡片的真实矩形**确实落在 caption 底边之下；
+ *   ③ 矮视口 + 长内容时卡片底边仍留在可视区内（顶部让开却不能把底部挤出去）。
+ * 三条都读真几何（getBoundingClientRect + getComputedStyle），不读类名。
+ *
+ * ⚠️ 口径边界（报结论必须带上）：这里在**浏览器**里合成 TitleBar + BaseModal 卡片形态，
+ * 量的是布局与 CSS 变量；真机上 Win 的 38px caption 与常显滚动条、macOS 的 28px overlay
+ * 仍属人工（Smoke-11）。移动端那一档只证"变量为 0 ⇒ 卡片顶边不被额外推下"。
+ */
+async function runWindowSafe(cdp, url) {
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+  await cdp.eval("window.__probe.install('/src/components/TitleBar.vue', '', '')");
+
+  // ── 桌面 + 长内容（用户报的那个形状）──────────────────────────────
+  const comp = await cdp.eval('window.__probe.composeModalStack({ long: true })');
+  check("桌面：TitleBar 与 BaseModal 卡片真的同时挂在页面上",
+    !!comp && comp.ok === true, "composeModalStack ok", JSON.stringify(comp));
+
+  const a = await cdp.eval("window.__probe.modalStackRead()");
+  check("安全区变量在桌面算出非零值（写了没用 = 没写）",
+    a.ok === true && a.safeTop !== "" && a.safeTop !== "0px",
+    "safeTop 非 0px", JSON.stringify({ safeTop: a.safeTop }));
+  check("caption 真的渲染出来了（否则下一条的让位判据没有作用点）",
+    a.ok === true && a.hasCaption === true, "hasCaption=true", JSON.stringify(a));
+  check("卡片顶边落在 caption 底边之下（不再被标题栏压住）",
+    a.ok === true && a.cardBelowCaption === true,
+    "cardTop >= capBottom", JSON.stringify({ cardTop: a.cardTop, capBottom: a.capBottom }));
+  check("长内容 + 矮视口：卡片底边仍留在可视区内",
+    a.ok === true && a.cardFitsBottom === true,
+    "cardBottom <= innerHeight", JSON.stringify({ cardBottom: a.cardBottom, innerHeight: a.innerHeight }));
+
+  // 反面对照：把变量按回"修之前"（0）⇒ 卡片必须又能跑到 caption 底下那一带。
+  // ⚠️ 对照必须让卡片**真的顶到视口上沿**才说明问题：卡片是 `my-auto` 居中的，
+  // 内容不高时它本来就停在视口中间 —— 那种情况下"cardTop >= capBottom"恒真，
+  // 对照也就没有判别力（第一版实测 cardTop=148 而 capBottom=28，看着像通过，其实什么都没证）。
+  // ⇒ 先把内容撑到超过视口高度（卡片顶到 max-h 上限、`my-auto` 把顶边推到安全区那条线），
+  //   再看撤掉安全区之后顶边是否真的上移到 caption 底下。
+  await cdp.eval("window.__probe.forceModalTall(true)");
+  const tallRead = await cdp.eval("window.__probe.modalStackRead()");
+  // 前置判据：卡片必须**真的**被撑到 max-h 上限（panelH 明显大于短内容那一档），
+  // 否则"my-auto 居中"会把顶边留在视口中间，撤掉安全区也看不出位移 ⇒ 对照无判别力。
+  check("对照前置：长内容把卡片撑到了 max-h 上限（否则对照没有判别力）",
+    tallRead.ok === true && tallRead.panelH > 200 && tallRead.cardTop >= tallRead.capBottom,
+    "panelH > 200 且 cardTop >= capBottom",
+    JSON.stringify({ cardTop: tallRead.cardTop, capBottom: tallRead.capBottom, panelH: tallRead.panelH }));
+
+  // 反面对照：把变量按回"修之前"（0）⇒ 卡片顶边必须按**推导出来的关系**上移。
+  //
+  // ⚠️ 断言不是"cardTop 掉到 capBottom 以下"，也不是"上移量 == safeTop" —— 两个都红过，
+  // 而且都红得没道理。卡片被 max-h 夹住、又在**已经被安全区缩小的区域里** `my-auto` 居中：
+  //     可用高度 = V − S（S = 安全区）
+  //     cardTop  = S + (V − S − H)/2
+  //     ⇒ 撤掉安全区后 cardTop₀ = (V − H)/2
+  //     ⇒ 位移 = S − S/2 = **S/2**
+  // 实测 S=28 ⇒ 位移 14px，与推导逐位吻合（53 → 39）。
+  // ⇒ 判据取 `≈ safeTop/2`：这是安全区真的在管事的**因果**证据（而且是可推导的量，
+  //   不是"看起来动了"），不受卡片高度夹持影响。
+  const safePx = parseFloat(a.safeTop) || 0;
+  const offVal = await cdp.eval("window.__probe.setWindowSafeTop('off')");
+  const b = await cdp.eval("window.__probe.modalStackRead()");
+  const shifted = tallRead.cardTop - b.cardTop;
+  check("对照：把安全区按回 0 ⇒ 卡片顶边按 my-auto 的关系上移 safeTop/2（证明那条让位判据会咬）",
+    offVal === "0px" && b.ok === true && Math.abs(shifted - safePx / 2) <= 1,
+    "上移量 ≈ safeTop/2", JSON.stringify({ offVal, shifted, expect: safePx / 2, cardTop: b.cardTop }));
+  await cdp.eval("window.__probe.setWindowSafeTop('on')");
+  const c = await cdp.eval("window.__probe.modalStackRead()");
+  // 可逆判据取"回到原来的那一档"（顶边在 caption 之下 + 与撤掉时相比又下移了约 safeTop/2），
+  // ⚠️ 不给逐像素相等：内容被撑高后滚动条/留白那几像素会让读数漂 1–3px（实测 53→50），
+  // 那不是"页面被弄坏了"，是布局里本来就有的可变项。
+  // 少了对"又下移回去"这一半，就分不清"恢复了"与"恢复成另一个样子"。
+  check("对照可逆：恢复变量后卡片又下移回安全区那一档（不是「测一次就把页面弄坏了」）",
+    c.ok === true && c.cardTop >= c.capBottom
+      && (c.cardTop - b.cardTop) > safePx / 2 - 4,
+    "cardTop >= capBottom 且比撤掉时下移约 safeTop/2",
+    JSON.stringify({ cardTop: c.cardTop, capBottom: c.capBottom, offCardTop: b.cardTop }));
+  await cdp.eval("window.__probe.forceModalTall(false)");
+
+  // ── 移动端：变量必须是 0，卡片不被额外推下（零回归那半边）──────────
+  const m = await cdp.eval('window.__probe.composeModalStack({ long: true, isMobile: true })');
+  const d = await cdp.eval("window.__probe.modalStackRead()");
+  check("移动端：安全区变量为 0（没有 caption，这套不能让移动端多出顶边距）",
+    !!m && m.ok === true && d.ok === true && (d.safeTop === "0px" || d.safeTop === ""),
+    "safeTop = 0px", JSON.stringify({ safeTop: d.safeTop }));
+  check("移动端：TitleBar 不渲染（与真应用 v-if=!isMobile 一致）",
+    d.ok === true && d.hasCaption === false, "hasCaption=false", JSON.stringify({ hasCaption: d.hasCaption }));
+  // 移动端没有 caption ⇒ 卡片顶边应当在视口顶部附近（被 my-auto 居中，不许被安全区推下去）。
+  check("移动端：卡片没被安全区额外推下（顶边仍在视口上半区，不是被顶下去一截）",
+    d.ok === true && d.cardTop < d.innerHeight / 2,
+    "cardTop < innerHeight/2", JSON.stringify({ cardTop: d.cardTop, innerHeight: d.innerHeight }));
+
+  // ── 主窗那条路径：ImageLightbox 不传 topInset，也必须让开 caption ──────
+  // 2026-10-12 真实缺陷：那个 prop 只有独立预览窗在传，主窗全局实例一个都没传
+  // ⇒ 遮罩铺到 (0,0)，右上角保存/关闭被 z-[85] 的 caption 压住。
+  // ⚠️ 必须先**退出移动端那一档**：上一步给 `<html>` 挂了 `is-mobile`，
+  // 而安全区的桌面覆盖挂在 `html:not(.is-mobile)` 上 ⇒ 不撤掉的话这一条量到的
+  // ovTop 恒为 0（实测踩过：ovTop=0 / capBottom=28，看着像产品红，其实是探针自己污染的）。
+  await cdp.eval("window.__probe.composeModalStack({ isMobile: false })");
+  await cdp.eval("window.__probe.composeStack('')");
+  const e = await cdp.eval("window.__probe.stackRead()");
+  check("主窗那条路径：图片灯箱也不许铺到顶（右上角保存/关闭被 caption 压住过）",
+    e.ok === true && e.ovTop >= e.capBottom,
+    "ovTop >= capBottom", JSON.stringify({ ovTop: e.ovTop, capBottom: e.capBottom }));
+}
+
 async function runImageSkeleton(cdp, url) {
   await cdp.send("Page.navigate", { url });
   await sleep(3_000);
