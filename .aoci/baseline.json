@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-04T12:17:40Z",
-  "updated_at": "2026-10-14T10:31:51Z",
+  "updated_at": "2026-10-14T11:29:45Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -77,21 +77,21 @@
     },
     "CHANGELOG.md": {
       "role": "index",
-      "sha256": "8f8c7a59126779257df2297d96ceac9cf56c954d09296bdd2bee0635165e7b2c",
-      "size": 387917,
-      "normalized_sha256": "8f8c7a59126779257df2297d96ceac9cf56c954d09296bdd2bee0635165e7b2c"
+      "sha256": "a8f3526fa3842dac9cc218d07160181f5f72b6bd93a93a502bf4608ddd447090",
+      "size": 389952,
+      "normalized_sha256": "a8f3526fa3842dac9cc218d07160181f5f72b6bd93a93a502bf4608ddd447090"
     },
     "README.md": {
       "role": "index",
-      "sha256": "97cba14c9b655eefd38059ee38c30aed110d25294b64f2cddc21d0858d0443dc",
-      "size": 30653,
-      "normalized_sha256": "97cba14c9b655eefd38059ee38c30aed110d25294b64f2cddc21d0858d0443dc"
+      "sha256": "51b8f4b875ab74e88f93079dff3392a6bf53635c667976a0cbfd024db1075917",
+      "size": 30758,
+      "normalized_sha256": "51b8f4b875ab74e88f93079dff3392a6bf53635c667976a0cbfd024db1075917"
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "9772fefa56acef4423e512e535c6b13d0a498954d4ca6ce55da527369a5cb140",
-      "size": 294764,
-      "normalized_sha256": "9772fefa56acef4423e512e535c6b13d0a498954d4ca6ce55da527369a5cb140"
+      "sha256": "ef74317034fce39e7196eb7efa546ce7bde2c63a257c1c3bf20301d3c2f06357",
+      "size": 294785,
+      "normalized_sha256": "ef74317034fce39e7196eb7efa546ce7bde2c63a257c1c3bf20301d3c2f06357"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -119,9 +119,9 @@
     },
     "docs/ARCHITECTURE-MAP.html": {
       "role": "index",
-      "sha256": "0e0358ef76c780b76eaf07c37c0c1cb437b371f1941692670cf1429d48960d35",
+      "sha256": "5ec968dea230c6edcf8cefc0398c5681eb5493e08948891606676338a9f57c78",
       "size": 194232,
-      "normalized_sha256": "0e0358ef76c780b76eaf07c37c0c1cb437b371f1941692670cf1429d48960d35"
+      "normalized_sha256": "5ec968dea230c6edcf8cefc0398c5681eb5493e08948891606676338a9f57c78"
     },
     "docs/ARCHITECTURE-REVIEW-2026-09-24.md": {
       "role": "index",
@@ -359,9 +359,9 @@
     },
     "docs/protocol-invariants.md": {
       "role": "index",
-      "sha256": "2e80e4db40c0732c1913116d6e9564ad041951dbbb8180e84d28383f463eb865",
-      "size": 80735,
-      "normalized_sha256": "2e80e4db40c0732c1913116d6e9564ad041951dbbb8180e84d28383f463eb865"
+      "sha256": "8e10181d648fbeaf1c96b39a057ab8a6cbca544966e1e893bd483c99e14a1af4",
+      "size": 83714,
+      "normalized_sha256": "8e10181d648fbeaf1c96b39a057ab8a6cbca544966e1e893bd483c99e14a1af4"
     },
     "docs/stability-roadmap.md": {
       "role": "index",
@@ -1055,9 +1055,9 @@
     },
     "scripts/guard_cases/desktop_misc.py": {
       "role": "index",
-      "sha256": "c7cc737c9a1ffb46bdc60303078e9c28ec5aeca26f7fee42c7742f3468f0d60b",
-      "size": 30779,
-      "normalized_sha256": "c7cc737c9a1ffb46bdc60303078e9c28ec5aeca26f7fee42c7742f3468f0d60b"
+      "sha256": "da532afd556b7efacd94716f307fad51577b31a8f5a1ed6d14bab72b74aa7c24",
+      "size": 32130,
+      "normalized_sha256": "da532afd556b7efacd94716f307fad51577b31a8f5a1ed6d14bab72b74aa7c24"
     },
     "scripts/guard_cases/file_transfer.py": {
       "role": "index",
@@ -1085,9 +1085,9 @@
     },
     "scripts/guard_cases/transport_network.py": {
       "role": "index",
-      "sha256": "69c16fe8d9df2f9adca9d0c9fbb15b5e053b404e3bf5acaf1cbf007728f29bdc",
-      "size": 41860,
-      "normalized_sha256": "69c16fe8d9df2f9adca9d0c9fbb15b5e053b404e3bf5acaf1cbf007728f29bdc"
+      "sha256": "e2b9c2dec0d2a03d6ee7668be508d7df5cce74a37d7dd30cb8b62f9ac6dd0807",
+      "size": 43770,
+      "normalized_sha256": "e2b9c2dec0d2a03d6ee7668be508d7df5cce74a37d7dd30cb8b62f9ac6dd0807"
     },
     "scripts/inject-android-signing.mjs": {
       "role": "index",
