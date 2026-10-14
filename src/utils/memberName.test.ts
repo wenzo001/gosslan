@@ -9,7 +9,12 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { memberIdTail, resolveMemberName, MEMBER_ID_TAIL_LEN } from "./memberName.ts";
+import { zhCN } from "../i18n/locales/zh-cn.ts";
+import { enUS } from "../i18n/locales/en-us.ts";
 
 const TEXT = { me: "我", unknownMember: "未知成员" };
 const SELF = "gosslan-aaaaaaaaaaaa1111";
@@ -76,3 +81,93 @@ test("本机备注压过上次见到的名字（备注是我起的，不该被�
   const name = resolveMemberName(OTHER, { selfId: SELF, friendNickname: "老王", snapshotNickname: "Wang-PC" }, TEXT);
   assert.equal(name, "老王");
 });
+
+/**
+ * 跨语言契约：后端那份 `resolve_nickname`（`src-tauri/src/network/transport/member_notices.rs`）
+ * 与这里必须是**同一条兜底**。
+ *
+ * 为什么值得钉：显示名以前有三个家，前端两个在 4.38.2 收了，后端那一份还写着自己的顺序，
+ * 而它的兜底是 `device_id` 原文。后端拿它构造的是**落库**的群系统消息
+ * （「X 加入了群聊」）与受众提示里"任务"那一格 ⇒ 界面出现设备标识的那一半根本不在前端这条路上。
+ * 两侧漂移是静默的：TS 单测全绿、Rust 单测全绿，用户看到的仍然是 `gosslan-xxxx`。
+ *
+ * 钉三件事：尾部位数同值、中英两份"未知成员"措辞逐字一致（i18n 与 Rust 各一份，谁改都要红）。
+ */
+test("跨语言契约：后端兜底与这里的位数/措辞同一条", () => {
+  const rs = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "../../src-tauri/src/network/transport/member_notices.rs"),
+    "utf8",
+  );
+  const tailM = rs.match(/pub const MEMBER_ID_TAIL_LEN: usize = (\d+)/);
+  assert.ok(tailM, "member_notices.rs 里找不到 MEMBER_ID_TAIL_LEN ⇒ 后端那份搬家或改名，判据要跟着改");
+  assert.equal(Number(tailM[1]), MEMBER_ID_TAIL_LEN, "id 尾巴位数两侧必须同值");
+
+  const labelM = rs.match(/format!\("([^"]+) \{\}"/g) ?? [];
+  const zhLabels = labelM.map((s) => (s.match(/format!\("([^"]+) \{\}"/) ?? [])[1]).filter(Boolean);
+  assert.ok(zhLabels.length >= 2, `后端"未知成员"那一支的文案字面量少于两份（实得 ${zhLabels.length}）⇒ 中英有一边被删`);
+  // 与 i18n 逐字对账：一门语言对不上就红（不许按"文件里有无中文"判是哪一门）。
+  assert.ok(zhLabels.includes(zhCN["common.unknownMember"]), `后端中文兜底与 i18n 不一致: ${zhLabels.join(" / ")}`);
+  assert.ok(zhLabels.includes(enUS["common.unknownMember"]), `后端英文兜底与 i18n 不一致: ${zhLabels.join(" / ")}`);
+  // 反证的正面对写法：后端那**一个入口**必须把判断交给纯函数。判"不许出现某字面量"会漏
+  //（旧写法 `return n; } id.to_string() }` 就不长得像任何一种固定形状），而"必须委托"这条
+  // 只要有人把判断抄回入口就会红。
+  //
+  // ⚠️ 用**花括号配对切函数体**而不是定长窗口：`resolve_nickname` 的取数有五条锁链，
+  // 窗口太短会读到函数体外（本次实测 900 字符就假红过一次），太宽又会跨进下一个函数体。
+  const body = sliceFnBody(rs, "pub fn resolve_nickname");
+  assert.ok(body !== null, "member_notices.rs 里找不到 pub fn resolve_nickname ⇒ 入口搬家，这条判据失去落点");
+  const callAt = body!.lastIndexOf("pick_member_display_name(");
+  assert.ok(
+    callAt >= 0,
+    "resolve_nickname 不再委托 pick_member_display_name ⇒ 显示名判据出现第二个家",
+  );
+  // 「调用点还在」不等于「返回的那条路是它」：实测两条假绿 ——
+  //  · 在委托之前插一条 `if true { return id.to_string(); }`，上一条照样绿；
+  //  · 把委托降级成 `let _ = 调用; id.to_string()`（返回值变成裸 id），上一条也照样绿。
+  // 所以补两条窄判据：入口里不许出现"把裸 id 当结果返回"的语句，且**调用必须是函数体末尾那个表达式**
+  //（调用之后除了空白不许再有代码，调用之前除了上一条语句的分号也不许夹别的东西）。
+  assert.doesNotMatch(
+    body!,
+    /return\s+id\b/,
+    "resolve_nickname 里出现 `return id…`：查不到的人会把设备标识当名字返回（用户报的那一格）",
+  );
+  const after = matchParen(body!, callAt + "pick_member_display_name".length);
+  assert.ok(after >= 0, "委托调用的实参括号没闭合 ⇒ 这份源码形状已经不是本判据认识的那种");
+  assert.equal(
+    body!.slice(after + 1).trim(),
+    "",
+    "委托调用之后还有别的代码 ⇒ 返回值不再是纯函数的结果（第二条家换了位置）",
+  );
+});
+
+/** 从 `open` 这个 `(` 出发，按配对找到它自己的 `)`，返回其下标（找不到返回 -1）。 */
+function matchParen(src: string, open: number): number {
+  let depth = 0;
+  for (let i = open; i < src.length; i++) {
+    const c = src[i];
+    if (c === "(") depth++;
+    else if (c === ")") {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+/** 按花括号配对切出一个函数体的原文（从签名之后的第一个 `{` 到与之配对的 `}`）。 */
+function sliceFnBody(src: string, sig: string): string | null {
+  const at = src.indexOf(sig);
+  if (at < 0) return null;
+  const open = src.indexOf("{", at);
+  if (open < 0) return null;
+  let depth = 0;
+  for (let i = open; i < src.length; i++) {
+    const c = src[i];
+    if (c === "{") depth++;
+    else if (c === "}") {
+      depth--;
+      if (depth === 0) return src.slice(open + 1, i);
+    }
+  }
+  return null;
+}

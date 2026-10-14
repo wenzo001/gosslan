@@ -213,3 +213,81 @@
     }
 
     // ---------- 群成员公钥解析（peers 优先、friends 回落） ----------
+
+    // ---------- 显示名判据（与前端 utils/memberName.ts 同一顺序、同一兜底） ----------
+    //
+    // ⚠️ 别把这一族和上面那条「公钥 peers 优先」混为一谈：公钥要的是**最新那一份**，
+    // 名字要的是**我起的那一个**（用户 2026-10-14：「名字同步，有时候还会显示设备名，会变」）。
+    // 两个方向相反，合成一个口径会一边对一边错。
+    //
+    // 旧实现返回 `device_id` 原文，而群系统消息是**落库**的 ⇒ 一串 `gosslan-xxxx` 永久留在时间线里。
+    #[test]
+    fn display_name_prefers_local_alias_over_self_report() {
+        // 「会变」那一半：对方改自报昵称，不该盖掉我给他起的备注。
+        let zh = |alias: Option<&str>, peer: Option<&str>| {
+            pick_member_display_name("gosslan-abcdef12", "me", "", alias, peer, None, true)
+        };
+        assert_eq!(zh(Some("阿强"), Some("Q")), "阿强");
+        // 只换这一个输入：备注缺席时才轮到对方自报（反向对照，防止把优先级写反）。
+        assert_eq!(zh(None, Some("Q")), "Q");
+        assert_eq!(zh(Some(""), Some("Q")), "Q");
+    }
+
+    #[test]
+    fn display_name_never_returns_raw_device_id() {
+        // 三格来源全查不到 ⇒ 只能是「未知成员 + 后四位」，不许出现整串 id。
+        let id = "gosslan-abcdef12";
+        let zh = pick_member_display_name(id, "me", "", None, None, None, true);
+        assert_eq!(zh, "未知成员 ef12");
+        assert!(!zh.contains(id), "兜底不许带上完整设备标识: {zh}");
+        assert_eq!(
+            pick_member_display_name(id, "me", "", None, None, None, false),
+            "Unknown member ef12"
+        );
+    }
+
+    #[test]
+    fn display_name_treats_blank_source_as_absent() {
+        // 空格昵称不该把兜底吃掉（旧代码 `is_empty()` 只挡空串，且请求名那一支完全不判空
+        // ⇒「」加入了群聊）。三格全空白必须落到「未知成员」。
+        let r = pick_member_display_name(
+            "gosslan-abcdef12",
+            "me",
+            "",
+            Some("   "),
+            Some("\t"),
+            Some(" "),
+            true,
+        );
+        assert_eq!(r, "未知成员 ef12");
+        // 反证：只把备注换成真名字，就必须用备注（证明上面那格不是恒落兜底）。
+        assert_eq!(
+            pick_member_display_name("gosslan-abcdef12", "me", "", Some("阿强"), Some("\t"), None, true),
+            "阿强"
+        );
+    }
+
+    #[test]
+    fn display_name_self_branch_and_empty_id() {
+        assert_eq!(
+            pick_member_display_name("me", "me", "我本人", Some("x"), Some("y"), None, true),
+            "我本人"
+        );
+        // 昵称还没写进内存（极早期）：中英两份兜底，与 `self_display_name` 同口径。
+        assert_eq!(pick_member_display_name("me", "me", "  ", None, None, None, true), "我");
+        assert_eq!(pick_member_display_name("me", "me", "", None, None, None, false), "Me");
+        // 空 id = "没有这个人"，返回空串（调用方靠这一点区分，前端 resolveMemberName 同一格）。
+        assert_eq!(pick_member_display_name("", "me", "", None, None, None, true), "");
+    }
+
+    #[test]
+    fn member_id_tail_shape_and_oversize_id() {
+        assert_eq!(member_id_tail("abcdef"), "cdef");
+        // 不足位数原样（不许把 "ab" 截成别的形状）。
+        assert_eq!(member_id_tail("ab"), "ab");
+        assert_eq!(member_id_tail("abcd"), "abcd");
+        // 按码点数而不是按字节切：非 ASCII 输入不许 panic，也不许落在码点中间
+        // （这一支的全部意义是"任何输入都弄不坏界面"；字节切片会在多字节处直接崩）。
+        assert_eq!(member_id_tail("张三李四王"), "三李四王");
+        assert_eq!(member_id_tail(""), "");
+    }

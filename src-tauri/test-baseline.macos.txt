@@ -536,6 +536,10 @@ network::transport::tests::direct_open_rejects_corrupt_and_tampered_payloads
 network::transport::tests::direct_open_succeeds_with_current_keys
 network::transport::tests::directed_relay_target_routes_share_and_offer_frames
 network::transport::tests::dispatch_arms_and_volume_arms_agree
+network::transport::tests::display_name_never_returns_raw_device_id
+network::transport::tests::display_name_prefers_local_alias_over_self_report
+network::transport::tests::display_name_self_branch_and_empty_id
+network::transport::tests::display_name_treats_blank_source_as_absent
 network::transport::tests::e2e_gossip_encrypt_sign_decrypt
 network::transport::tests::expired_file_does_not_touch_the_group_bubble
 network::transport::tests::expired_file_never_rewrites_a_completed_transfer
@@ -569,6 +573,7 @@ network::transport::tests::insert_outcome_maps_to_side_effect_and_ack_policy
 network::transport::tests::link_low_queue_is_bounded_by_bytes_not_frame_count
 network::transport::tests::link_queues_are_created_from_one_place
 network::transport::tests::malformed_known_frame_still_errors
+network::transport::tests::member_id_tail_shape_and_oversize_id
 network::transport::tests::member_removed_action_full_truth_table
 network::transport::tests::new_peer_entry_respects_friend_key_anchor
 network::transport::tests::non_frame_bytes_still_error
