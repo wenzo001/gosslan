@@ -69,6 +69,27 @@ Nothing 必须立刻返回、成功必须记下本次时刻、间隔常量 30s �
 `onFriendRequest` 本来就按 `from` 幂等替换，界面不会堆条目）、`node scripts/check-doc-numbers.mjs` 与
 `node scripts/check-test-manifest.mjs` 通过。
 
+### 同一次修复的收尾（同一版内）：注入锚点跟着搬家、护栏加三条、单实例写进不变量
+
+- **CI 第一次跑红了**（`前端测试 / 清单 / 构建` 第 10 步「护栏注入锚点静态核对」0.8s 就退）：
+  我改源文件的同时改坏了两处注入锚点 —— `transport.rs` 那条还指着
+  `if auto_accept_if_already_friend(state, &from).await {`（已被搬进家、变量名变成 `req.from`），
+  `commands.rs` 那条还指着旧的 `.insert(peer_id.clone());`（现在是 `entry(..).or_insert((now, 0))`）。
+  **这正是那条静态核对存在的意义**：锚点失效时注入注不上去，守卫会静默空转，
+  而它守的恰恰是这次新加的判据。两处锚点都**从当前源码里现取**再写回（不凭记忆抄），
+  并逐条跑过 `verify-guards --only` 确认"改坏即 FAIL、恢复即 PASS"。
+- 三条新护栏 Case（231 → **234 条**，`docs/ARCHITECTURE-MAP.html` 里那个手写数跟着改）：
+  通知门控的输入被硬编码、补发间隔常量被改成 0、注册处被绕过出口判定无条件注册 ——
+  三种都是我今天手工变异验证过的形状，落成常驻用例，别人改回去会当场红。
+- 用户随后把这条说成了产品规则（**正常使用只许一个实例；点 Windows 通知只回显已开的那个；
+  测试时才允许多开**）⇒ 写进 `docs/protocol-invariants.md` 的 **INV-P32**，钩子两条 Rust 判据
+  + 一条 guard case（`check-invariant-hooks` 现算 32 条全部绑定）。顺手修掉 README 里
+  「INV-P01~P29」这个已经漂了两格的手写上界 —— 改成只认 `check-invariant-hooks` 现算。
+- ⚠️ 如实记下没解决的一半：单实例插件按"同一个可执行文件/应用标识"分组，
+  **不同 bundle 之间不去重**（dev 构建与已安装的 .app 同时开着仍是两个进程）。
+  正常使用碰不到，真机验证与双实例调试时会碰到 —— 这一格留给负责人裁决，不当已解决写。
+
+
 ## [4.39.1] - 2026-10-14
 
 ### 后端那份名字判据：兜底不再返回设备标识（4.38.2 没覆盖到的另一半）
