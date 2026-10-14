@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-04T12:17:40Z",
-  "updated_at": "2026-10-14T07:25:35Z",
+  "updated_at": "2026-10-14T07:32:54Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -1948,9 +1948,9 @@
     },
     "src-tauri/src/commands/logs_tests.rs": {
       "role": "index",
-      "sha256": "15b02985e008a970e201312ce4481e8ca8cb5d8e73b960d5972bd5cf0691fdf7",
-      "size": 81269,
-      "normalized_sha256": "15b02985e008a970e201312ce4481e8ca8cb5d8e73b960d5972bd5cf0691fdf7"
+      "sha256": "f7fbd02db4504e233207266d46fa1eca2f050362fc0d50b7b9556c913eb779c9",
+      "size": 82129,
+      "normalized_sha256": "f7fbd02db4504e233207266d46fa1eca2f050362fc0d50b7b9556c913eb779c9"
     },
     "src-tauri/src/commands/mobile_picker.rs": {
       "role": "index",
