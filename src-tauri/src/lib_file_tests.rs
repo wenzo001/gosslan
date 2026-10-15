@@ -293,7 +293,7 @@
     #[test]
     fn receive_finalize_slow_work_happens_outside_the_receiver_lock() {
         let file = &crate::network::file_src_for_guards();
-        let body = rust_fn_body(file, "pub fn finish_receive(");
+        let body = rust_fn_body(file, "pub async fn finish_receive(");
         let flat = code_flat(&body);
         assert!(
             flat.contains("letr={letmutrecv=state.file_receivers.lock()"),
@@ -312,8 +312,15 @@
         );
         // 摘出来的那份接收器必须**交给核心**，不是就地收尾（就地收尾 = 慢活回到锁的同一作用域）
         assert!(
-            flat.contains("finish_receiver_into(&state.db,transfer_id,r)"),
+            flat.contains("finish_receiver_into(&st.db,&transfer_id,r)"),
             "包装函数必须把摘出的接收器整体交给 finish_receiver_into —— 自己留着用就是持锁慢活"
+        );
+        // ★ 2026-10-14 新增的那一半（用户真机：3.x GB 收尾期间 Windows 窗口操作全失灵）：
+        // 慢活必须整体在 `spawn_blocking` 里。留在 async 路径上 = 钉住一个 tokio worker，
+        // 而同一个 runtime 上还跑着所有 async 命令（开设置窗/日志窗）⇒ 点了没窗。
+        assert!(
+            flat.contains("tokio::task::spawn_blocking(move||finish_receiver_into("),
+            "收尾慢活必须交给 spawn_blocking（写回成同步调用就是把 GB 级 fsync 重新钉回 tokio worker）"
         );
         let core = rust_fn_body(file, "fn finish_receiver_into(");
         let core_flat = code_flat(&core);

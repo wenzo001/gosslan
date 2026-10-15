@@ -691,16 +691,24 @@ pub fn fail_receives_for_peer(state: &AppState, peer_id: &str) {
 }
 
 /// 接收方：收尾，返回 (name, size, final_path, peer_id)。
-pub fn finish_receive(
-    state: &AppState,
+///
+/// ⚠️ **这是一次 `spawn_blocking`，不是随手加的 async**（用户 2026-10-14 真机：3.x GB 收尾那一段
+/// 期间 Windows 的窗口操作全失灵）：SHA finalize + `sync_all()` + rename 是**秒级到几十秒**的
+/// 磁盘慢活，而这个函数原本由 `reader_loop` 的 tokio 任务直接调用 ⇒ 它钉住的是
+/// **异步 runtime 的 worker 线程**，而那同一个 runtime 上还跑着所有 async 命令
+/// （`open_settings_window` / `open_log_window` …）。表现就是"文件还在处理时，点设置没窗、
+/// 拖窗口没反应"。搬到阻塞线程池之后，worker 立刻回到调度池里，慢活照做、一件不少。
+///
+/// ⚠️ 锁只用来"把接收器摘出来"，摘完立刻放（2026-09-23 真机 600MB 复核）：
+/// 下面这段是 SHA finalize + `sync_all()` + rename —— 600MB 的 fsync 是秒级慢活，
+/// 而它跑在 reader_loop 里；持锁期间**同一时刻其它并发文件的 `write_chunk` 全部堵在同一把锁上**
+/// ⇒ 那些传输不再写出 ⇒ 发送端 60s 停滞判据（`FILE_STALL_ABORT_MS`）把它们判死。
+/// 摘出来之后这份接收器已经不在表里，锁外独占使用它是安全的。
+pub async fn finish_receive(
+    state: &Arc<AppState>,
     transfer_id: &str,
     peer_id: &str,
 ) -> Result<Option<(String, u64, PathBuf, String)>, String> {
-    // ⚠️ 锁只用来"把接收器摘出来"，摘完立刻放（2026-09-23 真机 600MB 复核）：
-    // 下面这段是 SHA finalize + `sync_all()` + rename —— 600MB 的 fsync 是秒级慢活，
-    // 而它跑在 reader_loop 里；持锁期间**同一时刻其它并发文件的 `write_chunk` 全部堵在同一把锁上**
-    // ⇒ 那些传输不再写出 ⇒ 发送端 60s 停滞判据（`FILE_STALL_ABORT_MS`）把它们判死。
-    // 摘出来之后这份接收器已经不在表里，锁外独占使用它是安全的。
     let r = {
         let mut recv = state
             .file_receivers
@@ -717,7 +725,17 @@ pub fn finish_receive(
             None => return Ok(None),
         }
     };
-    finish_receiver_into(&state.db, transfer_id, r).map(Some)
+    // 摘出来的那份接收器**整个交给阻塞线程池**：包装函数此后不再碰它（判据
+    // `receive_finalize_slow_work_happens_outside_the_receiver_lock` 同时钉着"摘锁形状"与
+    // "慢活整体在 spawn_blocking 里"两件事）。
+    let st = state.clone();
+    let transfer_id = transfer_id.to_string();
+    tokio::task::spawn_blocking(move || finish_receiver_into(&st.db, &transfer_id, r))
+        .await
+        // 阻塞任务只会在 panic / 运行时关闭时出错；两种都当"这次没收口"上抛，
+        // 由调用方那一条失败分支照原样发 `file-failed` + 回一帧失败确认（不谎报成功）。
+        .map_err(|e| format!("接收收尾任务被中断: {e}"))?
+        .map(Some)
 }
 
 /// 摘出接收器之后的收尾：完整性裁决 → fsync → 改名落盘 → 落库终态。

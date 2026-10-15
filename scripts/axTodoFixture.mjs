@@ -40,6 +40,9 @@ export function todoFixturePayload(deviceId, over = {}) {
     priority: "normal",
     category: TODO_FIXTURE.category,
     custom_category: "",
+    // 与 Rust `TodoPayload` 逐字段对齐由 designGuards 那条"夹具盖住全部字段"判据钉：
+    // 新字段不写在这里，真窗口读的就是自造路径（曾经漏过 custom_category，现在漏的是这一格）。
+    custom_icon: "",
     number: TODO_FIXTURE.number,
     done_at: null,
     ...over,

@@ -28,6 +28,7 @@ commands::tests::bt_switch_plan_coalesces_intent_and_keeps_the_cooldown
 commands::tests::clear_is_batched_so_the_db_lock_is_held_only_briefly
 commands::tests::content_uri_yields_a_real_file_name_when_it_encodes_one
 commands::tests::custom_category_is_normalized
+commands::tests::custom_icon_is_normalized
 commands::tests::decode_accepts_png_jpeg_gif_webp
 commands::tests::decode_rejects_empty_image
 commands::tests::decode_rejects_invalid_base64
@@ -489,7 +490,9 @@ network::tests::transport_success_starts_discovery_and_merges_handles
 network::transport::content_reconcile_tests::a_hash_mismatch_is_never_marked_complete
 network::transport::content_reconcile_tests::candidate_pull_is_bounded_per_tick
 network::transport::content_reconcile_tests::candidates_exclude_every_healthy_or_unprovable_shape
+network::transport::content_reconcile_tests::inflight_part_files_are_skipped_but_a_part_named_deliverable_is_not_starved
 network::transport::content_reconcile_tests::missing_or_short_file_is_not_complete
+network::transport::content_reconcile_tests::reconcile_byte_budget_bounds_a_round_without_starving_oversize_files
 network::transport::content_reconcile_tests::reconciles_a_genuinely_received_file_into_complete
 network::transport::content_serve_gate_tests::friend_is_allowed_without_any_group
 network::transport::content_serve_gate_tests::group_member_is_allowed_without_being_a_friend
@@ -528,6 +531,10 @@ network::transport::tests::direct_open_rejects_corrupt_and_tampered_payloads
 network::transport::tests::direct_open_succeeds_with_current_keys
 network::transport::tests::directed_relay_target_routes_share_and_offer_frames
 network::transport::tests::dispatch_arms_and_volume_arms_agree
+network::transport::tests::display_name_never_returns_raw_device_id
+network::transport::tests::display_name_prefers_local_alias_over_self_report
+network::transport::tests::display_name_self_branch_and_empty_id
+network::transport::tests::display_name_treats_blank_source_as_absent
 network::transport::tests::e2e_gossip_encrypt_sign_decrypt
 network::transport::tests::expired_file_does_not_touch_the_group_bubble
 network::transport::tests::expired_file_never_rewrites_a_completed_transfer
@@ -543,6 +550,7 @@ network::transport::tests::friend_accept_backfills_pubkeys_from_peers
 network::transport::tests::friend_accept_flush_is_bounded_and_spaced
 network::transport::tests::friend_chat_message_accepted
 network::transport::tests::friend_message_blocked_has_original_sender
+network::transport::tests::friend_request_arrival_notifies_only_the_first_time
 network::transport::tests::gossip_group不受好友检查影响
 network::transport::tests::gossip_propagation_layer_stays_independent_of_local_persistence
 network::transport::tests::gossip_trust_for_known_friend_never_tofus
@@ -561,6 +569,7 @@ network::transport::tests::insert_outcome_maps_to_side_effect_and_ack_policy
 network::transport::tests::link_low_queue_is_bounded_by_bytes_not_frame_count
 network::transport::tests::link_queues_are_created_from_one_place
 network::transport::tests::malformed_known_frame_still_errors
+network::transport::tests::member_id_tail_shape_and_oversize_id
 network::transport::tests::member_removed_action_full_truth_table
 network::transport::tests::new_peer_entry_respects_friend_key_anchor
 network::transport::tests::non_frame_bytes_still_error
@@ -570,6 +579,7 @@ network::transport::tests::oversize_frame_is_a_local_failure_and_writes_nothing
 network::transport::tests::peer_offline_after_tail_truth_table
 network::transport::tests::peer_offline_rule_has_one_home
 network::transport::tests::peer_wide_receiver_cleanup_is_gated_on_total_link_loss
+network::transport::tests::pending_friend_request_reflush_is_spaced_not_per_heartbeat
 network::transport::tests::pending_reads_keeps_max_timestamp
 network::transport::tests::pick_member_x25519_prefers_peers_then_friends
 network::transport::tests::plaintext_payload_is_rejected
@@ -686,6 +696,7 @@ tests::already_have_shortcut_shares_the_send_finalization
 tests::android_jni_signatures_match_kotlin
 tests::android_peripheral_paces_its_notifications
 tests::autostart_env_never_overrides_an_explicit_lan_off
+tests::aux_window_create_lock_scope_never_waits_on_the_main_thread
 tests::aux_window_open_is_singleton_serialized_and_resident
 tests::aux_windows_open_their_own_document
 tests::ble_connect_cheap_path_requires_an_existing_connection
@@ -711,6 +722,7 @@ tests::direct_remind_validates_target_message_exists
 tests::duplicate_file_done_still_answers_with_an_ack
 tests::every_finalize_path_defers_the_destructive_write
 tests::every_friend_accept_path_forgets_the_pending_request
+tests::every_friend_request_path_notifies_only_on_first_sighting
 tests::external_link_rejects_non_http_schemes
 tests::file_attempt_epoch_is_wired_on_both_sides
 tests::file_send_progress_counts_wire_not_queue
@@ -760,13 +772,17 @@ tests::removing_a_friend_also_drops_the_in_memory_identity_binding
 tests::runtime_snapshot_reports_real_bluetooth_runtime
 tests::runtime_state_has_a_single_source
 tests::scan_results_are_not_filtered_by_unconnected_services
+tests::second_instance_exit_is_only_the_dev_multi_open
+tests::second_launch_focuses_the_running_app_instead_of_duplicating_it
 tests::self_chat_stays_local
+tests::sweeper_whole_file_hash_runs_off_the_async_worker
 tests::sync_friend_keys_replaces_both_trust_legs_under_explicit_confirm
 tests::tasks_window_uses_one_fixed_label_cross_checked_with_frontend
 tests::terminal_finalize_defers_the_destructive_write
 tests::the_outbox_retry_decision_has_exactly_one_judge_and_one_caller
 tests::todo_commands_log_identity_only_after_the_send_succeeded
 tests::transport_locks_tolerate_poison
+tests::transport_src_never_whole_file_read
 tests::unknown_wire_frame_is_tolerated_after_auth
 tests::window_maximizable_matches_builder
 tests::window_pattern_matcher_is_not_vacuous

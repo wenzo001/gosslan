@@ -378,7 +378,7 @@ async function confirmAction() {
               <X class="h-3.5 w-3.5" />
             </button>
           </div>
-          <div class="max-h-40 overflow-y-auto">
+          <div>
             <!-- 真按钮（不是 `div @click`）：键盘要能 Tab 到并回车添加 -->
             <button
               v-for="f in addableFriends"

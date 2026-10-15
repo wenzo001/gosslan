@@ -298,3 +298,72 @@
     fn code_flat(src: &str) -> String {
         src.chars().filter(|c| !c.is_whitespace()).collect()
     }
+
+    /// 形状守卫（2026-10-14 负责人报「Windows 开着不动，过会儿自己就关了」）：
+    /// transport 生产码全集里任何一处都不许整读盘。老守卫是按文件锚定的，
+    /// 所以 4.38.0 在新分册里重新引入同一形状时全绿通过 —— 按形状扫视图才管得到以后新增的文件。
+    /// 只剥整行注释；行尾注释里出现这个字面量仍会报红（刻意的严，宁可换个说法）。
+    #[test]
+    fn transport_src_never_whole_file_read() {
+        let src = crate::network::transport_src_for_guards();
+        let hits: Vec<&str> = src
+            .lines()
+            .map(str::trim_start)
+            .filter(|t| !(t.starts_with("//") || t.starts_with("/*") || t.starts_with('*')))
+            .filter(|t| t.contains("std::fs::read("))
+            .collect();
+        // 阳性对照：视图里必须有合规的流式读盘样本，否则"零命中"可能只是尺子读空了。
+        let compliant = src
+            .lines()
+            .filter(|l| l.contains("std::fs::File::open("))
+            .count();
+        assert!(
+            compliant >= 1,
+            "`std::fs::File::open(` 命中 {compliant} ⇒ 尺子的分母空了，先确认视图还读得到 transport 分册"
+        );
+        assert!(
+            hits.is_empty(),
+            "transport 生产码不许整读盘（空闲 tick 上一个几百 MB 的文件会让进程瞬间占用 ≈ 文件大小，\
+             分配失败是 abort 不是 panic ⇒ 无声消失）。改用 File::open + 定长缓冲循环。命中 {} 处：\n{}",
+            hits.len(),
+            hits.join("\n")
+        );
+    }
+
+    /// 30s 清扫器里那次**整文件哈希**必须落在 `spawn_blocking` 里
+    /// （2026-10-14 Windows 真机：Mac 往 Windows 传 3.x GB，收尾 + 对账那一段
+    /// 「点设置没窗、拖窗口没反应」）。
+    ///
+    /// 为什么单独钉这一格：`content_file_matches` 已经是**分块**喂哈希器（不整读进内存，
+    /// 见上一条判据），所以"不许整读进内存"那条守卫**看不见**这个问题 ——
+    /// 它慢在占着 async worker 跑几十秒，而同一个 runtime 上还跑着所有 async 命令
+    /// （开设置窗就是其中之一）。字节预算与"跳过在途那份 .part（mtime 还新鲜的）"是第二道界，
+    /// 这条钉的是线程归属。
+    #[test]
+    fn sweeper_whole_file_hash_runs_off_the_async_worker() {
+        let src = crate::network::transport_src_for_guards();
+        let body = rust_fn_body(&src, "pub fn spawn_outbox_sweeper(");
+        let flat = code_flat(&body);
+        assert!(
+            flat.contains("tokio::task::spawn_blocking(move||{content_file_matches("),
+            "清扫器的整文件哈希必须交给 spawn_blocking：留在 async 执行路径上 = 钉住一个 tokio worker，\
+             而开辅助窗的 async 命令排在同一个 runtime 上（2026-10-14 Windows 真机的形状）"
+        );
+        // 反例形状：直接 `let ok = content_file_matches(..)` 就地跑（写回成这个样子必须红）
+        assert!(
+            !flat.contains("letok=content_file_matches("),
+            "清扫器里又出现了**就地**的 content_file_matches 调用：慢活回到 async worker 上了"
+        );
+        // 另外两道界（条数 + 字节）与"跳过在途"必须都还在，不许被"顺手简化"掉
+        for kept in [
+            "CONTENT_RECONCILE_PER_TICK",
+            "CONTENT_RECONCILE_TICK_BYTE_BUDGET",
+            "part_is_being_written(",
+            "reconcile_take_next(",
+        ] {
+            assert!(
+                body.contains(kept),
+                "清扫器少了 {kept} —— 它是这一轮有界性的一部分（条数界、字节界、在途跳过）"
+            );
+        }
+    }

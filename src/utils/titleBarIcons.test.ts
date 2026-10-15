@@ -76,3 +76,133 @@ test("最大化/全屏状态必须订阅窗口尺寸变化（否则图标永远�
     "onBeforeUnmount 必须退订 onResized",
   );
 });
+
+/**
+ * 双击标题栏**不许按平台早退**（用户 2026-10-14 真机：「Mac 双击能放大缩小，Windows 不行」）。
+ *
+ * 根因不是环境问题，是这一格里少了一条通路：旧写法 `if (…|| !isMac || …) return;` 把非 macOS
+ * 的双击整条关掉，而注释声称"Windows 由 tao 的拖拽区原生处理"—— 三条证据说明那句是假的：
+ * `data-tauri-drag-region` 全仓只出现在注释里（模板没写过这个属性）、tao 0.35.3 没有
+ * `WM_NCLBUTTONDBLCLK` 处理、本应用所有窗口 `decorations:false`（Windows 上没有系统标题栏可双击）。
+ *
+ * 判据钉三件事，缺一就红：① 处理器里不许出现任何按桌面平台禁用的分支（`isMac` / `isWindows`）；
+ * ② 必须走与绿灯同一个后端出口 `toggleMaximize()`；③ 移动端那条早退要留着（那条 caption 不渲染）。
+ * ⚠️ 按**花括号配对**切函数体，不用定长窗口：窗口跨进邻居函数就会误判（本仓踩过那一族）。
+ */
+test("标题栏双击不许按平台早退：Windows 也必须能最大化", () => {
+  const body = sliceBracedFn(script, "function onTitlebarDblClick()");
+  assert.ok(body !== null, "TitleBar.vue 里找不到 onTitlebarDblClick ⇒ 这一格搬家，判据要跟着改口");
+  const flat = body!.replace(/\s+/g, "");
+  for (const banned of ["isMac", "isWindows", "isLinux"]) {
+    assert.ok(
+      !flat.includes(banned),
+      `双击处理器里出现 ${banned}：又把某个桌面平台的双击关掉了（Windows 双击没反应就是这么来的）`,
+    );
+  }
+  assert.ok(
+    flat.includes("toggleMaximize()"),
+    "双击必须走与绿灯同一个出口 toggleMaximize()（能不能最大化由后端白名单判，不在这里按平台判）",
+  );
+  assert.ok(
+    flat.includes("props.isMobile"),
+    "移动端那条早退要留着：移动端根本不渲染这条 caption，不该把 IPC 打进去",
+  );
+});
+
+/**
+ * 双击与绿灯**必须是同一个出口**（一个判据失真会同时打死两个入口，看起来像两个缺陷 ——
+ * 上一轮 `is_maximizable()` 那次就是这个形状）。这里钉的是"不许各写一遍"。
+ */
+test("双击与绿灯共用同一个缩放出口", () => {
+  const dbl = sliceBracedFn(script, "function onTitlebarDblClick()") ?? "";
+  const green = sliceBracedFn(script, "function onGreenClick(") ?? "";
+  assert.ok(dbl.includes("toggleMaximize"), "双击那条必须调 toggleMaximize");
+  assert.ok(green.includes("toggleMaximize"), "绿灯那条必须调 toggleMaximize");
+  assert.ok(
+    !/api\.windowToggleMaximize/.test(dbl) && !/api\.windowToggleMaximize/.test(green),
+    "两个入口都不许绕过包装函数自己调命令（包装函数负责刷字形与吞错）",
+  );
+});
+
+/**
+ * 双击的第二下**不许再起一次 OS 拖拽**（评审 2026-10-14：这一格只接 `dblclick` 是不够的）。
+ *
+ * caption 的 `mousedown` 会调 `startDragging()`；tao 在 Windows 上把它落成
+ * `ReleaseCapture()` + `WM_NCLBUTTONDOWN/HTCAPTION` ⇒ 主线程进 Win32 的**模态移动循环**，
+ * 那一次 `mouseup` 由系统消费掉。WebView 收不到 up 就合成不出 click，`dblclick` 永不派发
+ * —— 于是"删掉 `!isMac` 早退"这一改在 Windows 上可能是**死代码**（Mac 照旧，因为那边 up 收得到）。
+ *
+ * 所以缩放必须有一条**只看 `mousedown` 时刻差**的通路。判据钉四件事，缺一就红：
+ * ① 第二下的早退必须排在 `startDragging(` **之前**（顺序错了等于没拦）；
+ * ② 早退条件是 `secondPress && props.showMaximize`（不可最大化的窗第二下仍要能拖）；
+ * ③ 走与绿灯/双击同一个出口 `toggleMaximize()`；④ 这里也不许出现按桌面平台禁用的分支。
+ */
+test("标题栏按下：第二下必须翻缩放，不许再进 OS 拖拽循环", () => {
+  const body = sliceBracedFn(script, "function onDragStart(");
+  assert.ok(
+    body !== null,
+    "TitleBar.vue 里找不到 onDragStart ⇒ 这一格搬家，判据要跟着改口",
+  );
+  const flat = body!.replace(/\s+/g, "");
+  const gateAt = flat.indexOf("if(secondPress&&props.showMaximize)");
+  const dragAt = flat.indexOf("startDragging(");
+  assert.ok(dragAt >= 0, "拖拽本体不许删：caption 唯一的拖动通路就是这里");
+  assert.ok(
+    gateAt >= 0,
+    "第二下的早退不见了（第二下也去起拖拽 ⇒ Windows 上那个模态循环会把 mouseup 吞掉，双击就没反应）",
+  );
+  assert.ok(
+    gateAt < dragAt,
+    "早退必须排在 startDragging 之前 —— 排在后面等于这一按已经进过模态循环了",
+  );
+  assert.ok(
+    flat.includes("toggleMaximize()"),
+    "第二下必须走与绿灯/双击同一个缩放出口（能力判断仍由后端白名单判）",
+  );
+  for (const banned of ["isMac", "isWindows", "isLinux"]) {
+    assert.ok(
+      !flat.includes(banned),
+      `按下处理器里出现 ${banned}：又是"按桌面平台把一条通路关掉"那个形状`,
+    );
+  }
+});
+
+/**
+ * 一次双击**只能翻一次**（`dblclick` 与"第二下"两条通路并存时必须去重）。
+ *
+ * 翻两下 = 放大又还原，界面上看就是"双击了没反应"，与原本报的缺陷长得一模一样 ——
+ * 而这条只有 macOS 会撞到（那边 `dblclick` 真的会派发），所以去重必须写死在判据里。
+ */
+test("双击的两条缩放通路必须去重", () => {
+  const dbl = (sliceBracedFn(script, "function onTitlebarDblClick()") ?? "").replace(/\s+/g, "");
+  assert.ok(
+    dbl.includes("captionJustToggledByPress()"),
+    "dblclick 通路必须先问「第二下是不是刚翻过」，否则 Mac 上一次双击翻两下",
+  );
+  const drag = (sliceBracedFn(script, "function onDragStart(") ?? "").replace(/\s+/g, "");
+  assert.ok(
+    drag.includes("lastCaptionToggleAt="),
+    "第二下翻缩放时必须记下时刻，去重才有依据（只有一边写、另一边读的话这条判据会假绿）",
+  );
+});
+
+/**
+ * 按花括号配对切出一个函数体（从签名之后的第一个 `{` 到与之配对的 `}`）。
+ * 找不到签名或括号不闭合返回 null —— 让调用方把"判据失去落点"报成红，而不是静默跳过。
+ */
+function sliceBracedFn(src: string, sig: string): string | null {
+  const at = src.indexOf(sig);
+  if (at < 0) return null;
+  const open = src.indexOf("{", at);
+  if (open < 0) return null;
+  let depth = 0;
+  for (let i = open; i < src.length; i++) {
+    const c = src[i];
+    if (c === "{") depth++;
+    else if (c === "}") {
+      depth--;
+      if (depth === 0) return src.slice(open + 1, i);
+    }
+  }
+  return null;
+}

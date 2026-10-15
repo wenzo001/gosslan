@@ -113,6 +113,37 @@ function isTodoCategory(v: unknown): v is TodoCategory {
 }
 
 /**
+ * 自定义类型可选的**图标键**白名单（用户 2026-10-14：「自定义类型名称，图标」）。
+ *
+ * 线上只传这里的键名（与 Rust `TODO_CUSTOM_ICONS` 同序同值，由 `messageKinds.test.ts`
+ * 那条跨语言守将对账），两端各自映射成图标组件：
+ *  · 不传 emoji —— 同一枚符号在 Windows/鸿蒙上可能落回方框，而图标在这里承担"扫一眼分类"；
+ *  · 不传组件名 —— 那会把前端实现细节写进协议，对端拿到一个它没有的组件只剩空白。
+ * 键顺序 = 选择器里的展示顺序（常用的放前面）。
+ */
+export const TODO_CUSTOM_ICONS = [
+  "tag",
+  "flag",
+  "star",
+  "zap",
+  "wrench",
+  "heart",
+  "book",
+  "clock",
+  "target",
+  "sparkles",
+] as const;
+export type TodoCustomIcon = (typeof TODO_CUSTOM_ICONS)[number];
+
+/** 没挑、或旧对端不认识这一格时，两端画同一个形状（与 Rust `TODO_CUSTOM_ICON_DEFAULT` 同值）。 */
+export const TODO_CUSTOM_ICON_DEFAULT: TodoCustomIcon = "tag";
+
+/** 图标键是否合法。表外的值一律不认（宁可回落默认，也不让一枚未知形状进渲染）。 */
+export function isTodoCustomIcon(v: unknown): v is TodoCustomIcon {
+  return typeof v === "string" && (TODO_CUSTOM_ICONS as readonly string[]).includes(v);
+}
+
+/**
  * 类型 → **文字**颜色：聊天气泡里那一行用。
  *
  * 与胶囊那份分开是刻意的：气泡表头那一行的字数与 `utils/messageHeight.ts` 的 `TODO_CARD_DESC`
@@ -334,6 +365,12 @@ export interface TodoItem {
   category: TodoCategory;
   /** 自定义类型名（仅 category==="custom" 有值；由服务端校验非空与长度）。 */
   customCategory: string;
+  /**
+   * 自定义类型的图标键（用户 2026-10-14：名字之外还要能挑图标；仅 custom 档有意义）。
+   * 解析端保证**永远是白名单内的键**（读不出来就落 `TODO_CUSTOM_ICON_DEFAULT`）⇒ 渲染层
+   * 不必再判 undefined，也不会出现"这一格没挑所以画空白"。
+   */
+  customIcon: TodoCustomIcon;
   /** 长文本描述（2026-09-17 优化）。 */
   description: string;
   /** 描述里附带的图片（仅元数据，真实字节走群文件管线）。 */
@@ -372,6 +409,8 @@ interface TodoAbsent {
   priority: boolean;
   category: boolean;
   number: boolean;
+  /** 载荷里没带 `custom_icon` 键（老对端不认识这一格）⇒ 折叠时沿用已知的，别抹成默认。 */
+  customIcon: boolean;
 }
 
 /** 完成态超过该天数后自动归档（前端计算，见 `isEffectivelyArchived`）。 */
@@ -397,6 +436,7 @@ export function parseTodo(rec: MessageRecord): TodoDef | null {
       priority: !isTodoPriority(p.priority),
       category: !isTodoCategory(p.category),
       number: !(typeof p.number === "number" && p.number > 0),
+      customIcon: !isTodoCustomIcon(p.custom_icon),
     };
     return {
       todoId: p.todo_id,
@@ -415,6 +455,8 @@ export function parseTodo(rec: MessageRecord): TodoDef | null {
       // 自定义名是普通字符串字段：没带就是空串。是否沿用由折叠结合 absent.category 决定
       //（老对端不认识 custom 档时，类别与名字要一起沿用，不能只留类别不留名字）。
       customCategory: typeof p.custom_category === "string" ? p.custom_category.trim() : "",
+      // 图标读不出合法键 ⇒ 落默认那枚（渲染要的是一个确定形状）。是否"沿用旧的"看 absent.customIcon。
+      customIcon: isTodoCustomIcon(p.custom_icon) ? p.custom_icon : TODO_CUSTOM_ICON_DEFAULT,
       deleted: p.deleted === true,
       description: typeof p.description === "string" ? p.description : "",
       images: Array.isArray(p.images)
@@ -446,7 +488,7 @@ export function parseTodo(rec: MessageRecord): TodoDef | null {
  */
 export function carryAbsentTodoFields(prev: TodoDef, next: TodoDef): TodoDef {
   const a = next.absent;
-  if (!a || (!a.priority && !a.category && !a.number)) return next;
+  if (!a || (!a.priority && !a.category && !a.number && !a.customIcon)) return next;
   return {
     ...next,
     priority: a.priority ? prev.priority : next.priority,
@@ -454,6 +496,9 @@ export function carryAbsentTodoFields(prev: TodoDef, next: TodoDef): TodoDef {
     // 类别沿用时自定义名必须一起沿用：只把 category=custom 留下而名字变空串，
     // 下一次保存就会被服务端按"自定义名称不能为空"拒掉。
     customCategory: a.category ? prev.customCategory : next.customCategory,
+    // 图标与名字同一条规矩的另一个面：类别沿用时图标必须一起沿用，否则"老对端改一次状态"
+    // 就把用户挑过的图标抹回默认那枚（Rust 侧 `latest_todo_def` 里有同一条，两边一起改）。
+    customIcon: a.customIcon ? prev.customIcon : next.customIcon,
     number: a.number ? prev.number : next.number,
   };
 }
@@ -537,7 +582,7 @@ export function foldTodos(records: MessageRecord[]): TodoItem[] {
       if (a.seq !== b.seq) return b.seq - a.seq; // 新的在前
       return a.msgId < b.msgId ? 1 : -1; // 同 seq 按 msg_id 比（与 newer 同规则）
     })
-    .map(({ todoId, title, assignees, status, creator, priority, category, customCategory, description, images, archived, doneAt }) => ({
+    .map(({ todoId, title, assignees, status, creator, priority, category, customCategory, customIcon, description, images, archived, doneAt }) => ({
       todoId,
       number: numbers.get(todoId) ?? 0,
       title,
@@ -549,6 +594,7 @@ export function foldTodos(records: MessageRecord[]): TodoItem[] {
       // （能编译、门禁全绿、界面上没有那一格 —— 最难查的一种"接了一半"）。
       category,
       customCategory,
+      customIcon,
       description,
       images,
       archived,

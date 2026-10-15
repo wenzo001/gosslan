@@ -12,6 +12,7 @@ import { useImagePreviewStore } from "@/stores/useImagePreview";
 import MentionText from "@/components/message/MentionText.vue";
 import TodoImageThumb from "@/components/TodoImageThumb.vue";
 import TodoPickField from "@/components/TodoPickField.vue";
+import TodoIconPicker from "@/components/TodoIconPicker.vue";
 import {
   TODO_CATEGORIES,
   TODO_CATEGORY_LABEL_KEY,
@@ -31,6 +32,8 @@ import {
   type TodoItem,
   type TodoPriority,
   type TodoStatus,
+  TODO_CUSTOM_ICON_DEFAULT,
+  type TodoCustomIcon,
 } from "@/utils/todos";
 import { fmtConversationTime } from "@/utils/time";
 import { Archive, Check, Pencil, RotateCcw, Tag, Trash2, UserPlus } from "lucide-vue-next";
@@ -81,6 +84,8 @@ const emit = defineEmits<{
   (e: "priority", priority: TodoPriority): void;
   /** 切类型；custom 档第二个参数带用户输入的名字。 */
   (e: "category", category: TodoCategory, customName?: string): void;
+  /** 换自定义类型的图标（用户 2026-10-14 同一条需求的另一格）：单字段发出去，其余由后端沿用。 */
+  (e: "icon", icon: TodoCustomIcon): void;
   /** 认领 = "把自己追加进 assignees"这一步（不新增字段，权限跟着 assignees 走）。 */
   (e: "claim"): void;
   (e: "complete"): void;
@@ -289,6 +294,14 @@ const fullCode = computed(() =>
             {{ t("common.confirm") }}
           </button>
         </div>
+        <!-- 图标那一格与名字同档展开。这一份与看板草稿共用 `TodoIconPicker`：
+             两个编辑器各写一排按钮就会开始不一致（同一判据两个家）。 -->
+        <div v-if="canChangeStatus && item.category === 'custom'" class="mt-2">
+          <TodoIconPicker
+            :model-value="item.customIcon ?? TODO_CUSTOM_ICON_DEFAULT"
+            @update:model-value="(v: TodoCustomIcon) => emit('icon', v)"
+          />
+        </div>
       </div>
       <!-- 认领：只在这一格出现 —— 需求 + 自己还不在名单里（+ 本群成员，由 canClaim 判）。
            按下之后走的是"改指派人"那条既有命令，不新增接口，也不新增一次同步。 -->
@@ -360,10 +373,14 @@ const fullCode = computed(() =>
         </div>
       </div>
 
-      <!-- 全员操作记录：这条任务从创建到当前的全部改动流水（diff 来自事件日志，见 buildTodoHistory）。 -->
+      <!-- 全员操作记录：这条任务从创建到当前的全部改动流水（diff 来自事件日志，见 buildTodoHistory）。
+           ⚠️ 这里**不写** `max-h-*` + `overflow-y-auto`（用户 2026-10-14：「操作记录不要在内置滚动条」）：
+           这块本来就在 BaseModal 的滚动区里，再套一条就成"外层一条、里面一条"，
+           滚轮落到哪条取决于鼠标停在哪 —— 与「操作条不许随内容滚走」是同一家族的第二个面。
+           流水再长也交给外层那一条滚。 -->
       <div v-if="historyEntries.length" class="border-t border-[var(--gosslan-divider)] pt-3">
         <div class="mb-1.5 text-xs text-[var(--gosslan-text-2)]">{{ t("todo.history.sectionTitle") }}</div>
-        <ul class="max-h-44 space-y-1 overflow-y-auto pr-1">
+        <ul class="space-y-1">
           <li
             v-for="(entry, i) in [...historyEntries].reverse()"
             :key="entry.msgId + ':' + i"

@@ -13,6 +13,359 @@
 
 ## [Unreleased]
 
+## [4.39.4] - 2026-10-14
+
+### 4.39.3 那笔热修的事后评审补的三处（两处是我自己造出来的坑）
+
+独立评审（`superpowers:requesting-code-review`）读完 `a28e37e..6514179` 的 diffs 报的四条 Important，
+逐条回到源码复核后收掉三条，第四条按范围只登记不改码：
+
+- **双击的第二下不再进 OS 的模态拖拽循环**（`TitleBar.vue`）。上一版只删了 `!isMac` 早退、
+  另起了 `@dblclick`，但 caption 的 `mousedown` 每次都调 `startDragging()`，而 tao 在 Windows
+  把它落成 `ReleaseCapture()` + `WM_NCLBUTTONDOWN/HTCAPTION` ⇒ 主线程进 Win32 模态移动循环，
+  那一次 `mouseup` 被系统消费掉，WebView 合成不出 click，`dblclick` 就可能**永远不来** ——
+  照那个形状交付，"Windows 双击最大化"这一条有变成死代码的风险（`data-tauri` 的
+  `e.detail` 同样不可信，所以判据只用 `mousedown` 的时刻差）。现在第二下直接翻缩放、不起拖拽；
+  `dblclick` 通路保留（macOS 今天就走它，结果不变），两条用时刻去重 ⇒ **一次双击只翻一次**
+  （翻两次＝放大又还原，界面上看就是"点了没反应"，与原本报的缺陷长得一模一样）。
+  判据：`标题栏按下：第二下必须翻缩放，不许再进 OS 拖拽循环`、`双击的两条缩放通路必须去重`。
+- **`.part` 那道跳过改成"后缀 + mtime 还新鲜"**（`outbox_sweep.rs`）。上一版按后缀跳过的 path
+  取自 `file_transfers.path`，而那一列只有**改名落盘之后**才写（`fail_taken_receive` 里原话
+  「不能把 .part 写进 path」，中继那份是 `<id>.relay.part` 也从不进这一列）⇒ 后缀真正命中的是
+  **用户本来就把文件叫做 `xxx.part`**（浏览器未完成的下载、分卷包都是这后缀）的成品文件，
+  于是那一行台账**每轮都被跳过、永远对不上账**，每次建链整批重投 —— 正是 B2 要杀的那个永动来源。
+  真正的在途另有 `file_receivers` 那份 `transfer_id` 兜着。用例
+  `inflight_part_files_are_skipped_but_a_part_named_deliverable_is_not_starved` 两个方向都钉（
+  新鲜 mtime ⇒ 跳；十分钟没动 ⇒ 必须放行）。
+- **锁作用域判据补上 `placed(` 这个标记**（`lib_window_tests.rs`）。原清单里漏了它，
+  把 `placed(&win)` 整段挪回创建锁里仍然判绿，而需求说的正是"锁内只做必要的创建逻辑"。
+
+**评审的第四条没改码**（按"不许自行扩展范围"）：群文件收尾 `group_file.rs` 的 `sync_all()` + rename
+仍是上一版修前的同一个形状（跑在 async 执行路径上）。单聊这条已解，群那条**症状会在传大群文件时复发**，
+已登记为后续任务，不夹进这次发布。
+
+**判据的反例能力是实测过的**，不是论证：五笔单点变异各红对应那一条
+（helper 退回只看后缀 → ⑦；循环退回只看后缀 → 清扫器形状判据；`placed` 挪回锁内 → 锁作用域判据；
+删掉第二下早退 → 第二下判据；去掉去重 → 去重判据），跑完逐笔按字节还原。
+⚠️ 其中第一版 `placed` 那笔变异**当时是绿的**，查下来是变异脚本自己的缺陷（删除用的模式是刚插入
+文本的子串，把移动后的那行也吃掉了）—— 改成先删后插才红在 `lib_window_tests.rs:842`。
+
+⚠️ **仍未验证（这次发布后也没有）**：Windows 真机。用户明确"不自己测了"，所以
+「双击标题栏放大/还原」「传大文件期间点设置/拖窗口」这两条只有源码级与单测级证据；
+原生窗口行为量不到。
+
+## [4.39.3] - 2026-10-14
+
+### Windows：大文件收尾期间窗口操作失灵（开窗/拖拽/双击）—— 运行时阻塞修复
+
+用户 2026-10-14 真机：从 Mac 往 Windows 传一个 3.x GB 的文件，Mac 端进度 100%、单勾灰，
+Windows 端"还没接完"，而**这段时间里点设置没窗、拖标题栏不动、双击标题栏不放大缩小**；
+另一台没在传的 Windows 拖拽是正常的。要求是「用户的当前操作优先级第一，异步的活一律不许挡住界面」。
+
+根因不是协议，是三处运行时归属，加一条与忙无关的功能缺失：
+
+- **收尾的 GB 级 `fsync` 钉住了 async worker**：`finish_receive` 里的 SHA finalize + `sync_all()`
+  + rename 原本直接在 `reader_loop` 的 tokio 任务里跑（那段代码自己的注释就写着
+  「600MB 的 fsync 是秒级慢活，而它跑在 reader_loop 里」）。所有 async 命令（含开窗那些
+  `#[tauri::command(async)]`）排在同一个 runtime 上 ⇒ worker 被占满就是"点了没窗"。
+  现在整体交给 `tokio::task::spawn_blocking`，错误出口与状态机一字未改。
+- **30s 清扫器的整文件哈希也在 async 路径上，而且只按条数封顶**：`content_file_matches` 每 tick
+  最多 8 条，但**条数界管不住字节**（8 个 GB 级候选 = 单轮几十 GB 读盘）。现在同样进
+  `spawn_blocking`，另加两道界：单轮**字节**预算 256 MiB（第一条恒放行，否则超大候选会被永久饿死，
+  那一行台账停在可恢复态 = B2 要治的那个"每次建链整批重投"），以及**跳过在途的那半截**
+  （`.part` 后缀，或 `file_receivers` 里仍有同一个 `transfer_id`）。30s tick 与 8 条上限不变，
+  outbox 语义一字未动。
+- **建窗那把不可重入锁的作用域太大**：`ensure_aux_window` 原先在持 `AUX_WINDOW_CREATE_LOCK`
+  期间做 decorate + 摆位，而摆位要问窗口自己的外框/所在屏（`tauri-runtime-wry` 的 `getter!`
+  是 `rx.recv()`，**真等主线程**）⇒ 主线程一忙就带着创建锁挂住，四扇辅助窗一起点不开。
+  现在闭包拆成 `build`（锁内，只有建窗）+ `placed`（锁外，摆位/decorate/显示），
+  锁内的存在性判定换成只读管理器表的 `get_webview_window`。竞态那一路不再重复摆位（归建它的那个创建者）。
+- **Windows 双击标题栏没有任何通路**（与忙无关）：`TitleBar.vue` 的双击处理器第一句就
+  `!isMac` return，注释声称"Windows 由 tao 的拖拽区原生处理"—— 而 `data-tauri-drag-region`
+  这个属性全仓只在注释里出现过、模板从来没有；tao 0.35.3 也没有 `WM_NCLBUTTONDBLCLK` 处理；
+  本应用所有窗口 `decorations:false`，Windows 上根本没有系统标题栏。现在两平台走与绿灯
+  同一个出口（`windowToggleMaximize`），"能不能最大化"仍由后端 `MAXIMIZABLE_WINDOWS` 白名单判。
+
+判据（4 条新 Rust + 2 条新前端，全部实测过反例）：
+`aux_window_create_lock_scope_never_waits_on_the_main_thread`（按花括号切出每处持锁块，块内出现
+`outer_size(` / `current_monitor(` / `recenter_aux_window(` 等即红）、
+`sweeper_whole_file_hash_runs_off_the_async_worker`、`receive_finalize_slow_work_happens_outside_the_receiver_lock`
+（新增"慢活必须在 spawn_blocking 里"那一格）、
+`reconcile_byte_budget_bounds_a_round_without_starving_oversize_files`、
+`inflight_part_paths_are_skipped_before_any_disk_read`、
+「标题栏双击不许按平台早退：Windows 也必须能最大化」、「双击与绿灯共用同一个缩放出口」。
+四笔单点变异（把 getter 塞回锁里 / 两处写回成就地跑 / 删掉字节预算判定）各自只红目标那一条；
+两笔前端变异（塞回 `!isMac`、绕过包装函数自己调命令）同样各红各的。
+Rust 基线随新用例前移：macos 845 → 849、windows 同步。
+
+⚠️ 仍未验证/仍未解决：**Windows 真机复验**（传一个大文件到收尾，看设置窗与拖拽是否全程可响应、
+双击是否缩放）—— 浏览器层与单测都量不到原生窗口行为；「主线程在传输期间被什么直接占住」这一环
+只有静态依赖源码（IPC 回调 = 主线程）与症状分叉（忙的那台失灵、不忙的那台正常）两条证据，
+没有真机栈读数。另外每片到达时同一片两次抢 `file_receivers` 锁、进度事件被 500ms 落库钳住
+这两格本轮未动。
+
+## [4.39.2] - 2026-10-14
+
+### 治理补齐：重复好友事件写成不变量、成员名字判据常驻化、领域图补登 P24–P33
+
+只动文档与测试，**应用码零改动**。三格缺口 + 三尾项：
+
+- **新增 `INV-P33`**（`docs/protocol-invariants.md`）：重复到达的好友申请 / 好友同意，同一进程内不许
+  重复弹系统通知。契约按实物写：申请那一支的幂等键 = `pending_requests.insert()` 的旧值
+  （`network/transport/handshake.rs:364`）经纯函数出口判定；同意那一支的键 = **持久**好友表
+  （`get_friend` 在 `add_friend` 之前取值）；`emit` 每次都发是有意为之、写进规则里说明它不算违反；
+  补发频率那一半归发送侧（30s 最小间隔）。
+  ⚠️ **同节里如实登记了一个反例**：申请只活在内存里、库里没有那张表 ⇒ **接收端重启后**若对方仍在
+  补发，同一条申请会再弹一次通知。所以这条的可信范围只到同一进程生命周期内，跨重启那一格留给负责人拍板
+  （要收它得改应用码：申请持久化，或按申请人记一条持久的"已通知过"痕迹）。本轮没动。
+- **成员名称判据常驻化**（`src/utils/memberName.test.ts` 新增两格）：「入口委托：nicknameOf 必须把判断
+  交给 `memberName.ts` 那一个家」与「消费侧不再兜裸 id：头像取色名与资料页都止步于那一个家」。
+  反例能力是实测的：八笔单点变异（插裸 id 短路 / 委托之后另起返回 / 委托整条改名 / 兜底措辞手打不走
+  i18n / 取色名再接一次裸 sender_id / 返回处重新判名字 / 后端入口插 `return id.to_string()` / 后端委托
+  降级成丢弃返回值）**各自只红目标那一条**，命中各自的断言消息，文件逐字节还原。
+  ⚠️ 这些判的是**源码形状与纯函数结果**——全仓没有任何测试构造过 `AppState` 或 pinia store，
+  所以**没有**入口级端到端覆盖，界面观感仍待真机复验。
+- **迁移台账补第 12 行**（`docs/migration-ledger.md`）：成员显示名从"三个家"收成"一门语言一份纯函数 +
+  入口只取数"，串上 `afd2dcd` / `fffc794` / `9539c2c` 与判据实物。同一行里记下**没收口的那一格的根因**：
+  `friends.nickname` 全仓只有一个 SQL 写家且是覆盖式（`db/friends.rs:12`），两个调用点喂进去的都是**远端来源**
+  的名字（一处是对端自报的昵称，一处是"同意那一刻解析到的那份"——可能是自报、申请里带的，也可能是
+  「未知成员 abcd」），而没有任何面向用户的"改好友备注"命令 ⇒ 纯函数注释里那句"好友备注（我起的，最稳）"
+  与数据面不符，"备注优先"挡不住对方改名（静态判据，未做真机读数）。
+- **INV-P32 补 Required Test Matrix 四行**（正向一臂 / 反向三臂 / 已知边界一行），并把那条规则 3 的
+  判据强度**改口成它真实钉的东西**：今天只要求"注册处的 `cfg` 字面量是三家桌面"+"`Cargo.toml` 里有这条依赖"，
+  **不**比对两边平台清单是否同构 ⇒ 只改宽依赖那一节不会红，一致性今天靠注释 + 移动端编译门禁。
+- **`docs/domains.data.mjs` 补登 INV-P24…P33**（此前这份名单停在 P23）：十条逐个按"本节正文或其钩子点名的
+  实现/判据落在本域 `paths` 上"登记，并在注释里点名实物；`friendship`（`paths` 是空的）那条明确写出它的
+  实现体跨 transport / platform / persistence 三域。
+  ✅ `docs/ARCHITECTURE-MAP.html` 里那份 `DOMAINS` 快照的 `inv` 数组**已同步**（图上同样停在 P23 ⇒ 与真源不一致，
+  按最小修复处理：只改七个领域各自的 `inv` 数组，逐域逐序与 `domains.data.mjs` 现算相等；图的其他快照字段
+  与页头 HEAD/版本标记**没重取**，也没那个必要 —— HEAD 仍是 `247ed8c`）。改完 `node --check` 那段内联 JS 退 0。
+
+## [4.39.2] - 2026-10-14
+
+### 加好友不再连弹好几条；第二次启动不再多出一个完整程序
+
+用户 2026-10-14：「正常聊天时，群内加好友会弹出很多个；点了一下那个弹窗，又弹出另一个聊天主框，
+等于同时启动了两个程序；连续多条加好友的弹窗也有问题」。这是**两个根因**，都在后端。
+
+**根因一：接收端没有「这条申请我是不是已经握着了」的判据。** 好友申请没有回执，发送端在
+每次建链补全**和每轮心跳**（`dial.rs` 的 `HEARTBEAT_INTERVAL_SECS = 5`）都会补发一次，而每份补发
+必须是**新 `message_id`** 的信封（复用旧 id 会被对端两层去重直接丢弃，那正是"丢了没人知道"的前提）⇒
+接收端 mesh 去重与 `GossipEngine::is_new` **结构上看不见重复**。而 `handle_identity.rs` 的直连分支与
+`gossip.rs` 的跨跳分支各自把 `pending_requests.insert(..)` 的返回值丢掉 ⇒ 每 5 秒算一次"新申请"、
+各 emit 一次事件、各弹一条系统通知。这正是 2026-09-28 给 `FriendAccept` 修过的**同一个形状**
+（那条的注释原话：判据只在一条路径上修就会"同一件事两种行为"），申请这一条是没修的双胞胎；
+且 `pending_out_requests` 当时是 `HashSet`，结构上就没法像 `pending_out_accepts` 那样限频。
+
+- 两条路径收成一个家 `apply_friend_request`（登记 → 事件 → 留痕 → 通知都在这一处），
+  通知由新的纯函数判据 `friend_request_arrival_decision(首次)` 门控：**事件照发**（前端按 `from`
+  幂等替换，不会堆多条），**通知只在第一次**；重复到达留一行日志。
+- 发送端限频：`pending_out_requests` 改成 `(首次登记时刻, 上次补发时刻)`，补发前走纯函数
+  `friend_request_flush_decision` —— **只设 30s 最小间隔，不设次数上限也不设放弃窗口**
+  （申请等的是"对方做人"，加上限等于偷偷废掉「对方离线时暂存、上线后自动补发」那条承诺）。
+  两半都要：只做接收端，BLE 仍会被每轮心跳刷满。
+- ⚠️ 与同文件里公钥那条 `peers 优先`、以及 `friend_accept_flush_decision` 的"3 次 / 2 分钟窗口"
+  都不是一件事，注释里写明不许合并。
+
+**根因二：全仓没有任何单实例守卫。** 一个进程内**造不出**第二个聊天主框 —— `main` 只来自
+`tauri.conf.json` 那一份声明，`WebviewWindowBuilder` 只有 `commands/logs.rs` 五处辅助窗在用，
+前端 0 处 `new WebviewWindow` ⇒ 看到两扇主框只能是**两个进程**：各自一份主窗、托盘图标、
+数据库句柄和 mesh 身份，同一条好友申请被两个进程各弹一次（这也放大了根因一）。
+现在装上 `tauri-plugin-single_instance`：第二次启动不建新窗，改为把已有主窗叫到前台。
+出口只认开发/测试的多开变量（`GOSSLAN_INSTANCE` / `GOSSLAN_AUTOSTART=1`）—— 双实例 E2E 是本仓
+唯一能证跨进程行为的一层，守卫不许把它关掉；依赖与注册处的 `cfg` 都限死在 mac/windows/linux 三家
+（上游不支持 android/ios，装上移动端编译失败），并且有一条判据钉住两边一致。
+
+判据（新增 5 条 + 2 条按新形状改写，全部变异实测）：`friend_request_arrival_notifies_only_the_first_time`
+（首次/非首次成对）、`pending_friend_request_reflush_is_spaced_not_per_heartbeat`（5 秒内不发 /
+首次机会立刻发 / 一天后仍发，钉住"不设上限"这条与 accept 的差别）、
+`every_friend_request_path_notifies_only_on_first_sighting`（两条路径都走进那个家 + 事件与通知各只一处发起点 +
+**门控输入必须是 `prior.is_none()`**）、`friend_request_survives_a_dropped_link` 新增三格（补发必须调那个判定、
+Nothing 必须立刻返回、成功必须记下本次时刻、间隔常量 30s 不许改成 0）、
+`second_launch_focuses_the_running_app_instead_of_duplicating_it` + `second_instance_exit_is_only_the_dev_multi_open`
+（形状 + 真值表两条一起：形状管得住"注册处走了函数"，真值表管得住"函数被改宽成恒放行"）。
+实测红面：兜底判定硬编码 / 判反 / 少一条路径 / 不记补发时刻 / 间隔改成 0 / 出口恒放行 /
+第二次不叫已有主窗 / 无条件注册 八种各红对应那一条。
+**两处顺带修掉的量具缺陷**：`friend_request_survives_a_dropped_link` 原先用 `&src[i..i+1200]` 定长**字节**窗口
+取函数体，中文注释下边界会落在码点中间（本次实测 `not a char boundary` 直接 panic），改用
+`rust_fn_body` 按花括号配对切；`crate::notifications::show` 的点数判据从 3 收到 2（两条申请路径合并的结果），
+并把"为什么这里可以更小"写进消息 —— 漏一条路径由那条"两条都走进家"的判据负责，收窄不放过缺陷。
+
+验证：`cargo test --features bluetooth --lib` = 845 passed / 0 failed（840→845，基线 `--update` +
+`--sync-baselines`，现读 macos 845+3 / windows 833+15 差额均有源码门控背书）、`cargo fmt --all` 与
+`cargo clippy --features bluetooth --lib -- -D warnings` 退 0、`npm test` = 985 passed / 0 failed（未动前端，
+`onFriendRequest` 本来就按 `from` 幂等替换，界面不会堆条目）、`node scripts/check-doc-numbers.mjs` 与
+`node scripts/check-test-manifest.mjs` 通过。
+
+### 同一次修复的收尾（同一版内）：注入锚点跟着搬家、护栏加三条、单实例写进不变量
+
+- **CI 第一次跑红了**（`前端测试 / 清单 / 构建` 第 10 步「护栏注入锚点静态核对」0.8s 就退）：
+  我改源文件的同时改坏了两处注入锚点 —— `transport.rs` 那条还指着
+  `if auto_accept_if_already_friend(state, &from).await {`（已被搬进家、变量名变成 `req.from`），
+  `commands.rs` 那条还指着旧的 `.insert(peer_id.clone());`（现在是 `entry(..).or_insert((now, 0))`）。
+  **这正是那条静态核对存在的意义**：锚点失效时注入注不上去，守卫会静默空转，
+  而它守的恰恰是这次新加的判据。两处锚点都**从当前源码里现取**再写回（不凭记忆抄），
+  并逐条跑过 `verify-guards --only` 确认"改坏即 FAIL、恢复即 PASS"。
+- 三条新护栏 Case（231 → **234 条**，`docs/ARCHITECTURE-MAP.html` 里那个手写数跟着改）：
+  通知门控的输入被硬编码、补发间隔常量被改成 0、注册处被绕过出口判定无条件注册 ——
+  三种都是我今天手工变异验证过的形状，落成常驻用例，别人改回去会当场红。
+- 用户随后把这条说成了产品规则（**正常使用只许一个实例；点 Windows 通知只回显已开的那个；
+  测试时才允许多开**）⇒ 写进 `docs/protocol-invariants.md` 的 **INV-P32**，钩子两条 Rust 判据
+  + 一条 guard case（`check-invariant-hooks` 现算 32 条全部绑定）。顺手修掉 README 里
+  「INV-P01~P29」这个已经漂了两格的手写上界 —— 改成只认 `check-invariant-hooks` 现算。
+- ⚠️ 如实记下没解决的一半：单实例插件按"同一个可执行文件/应用标识"分组，
+  **不同 bundle 之间不去重**（dev 构建与已安装的 .app 同时开着仍是两个进程）。
+  正常使用碰不到，真机验证与双实例调试时会碰到 —— 这一格留给负责人裁决，不当已解决写。
+
+
+## [4.39.1] - 2026-10-14
+
+### 后端那份名字判据：兜底不再返回设备标识（4.38.2 没覆盖到的另一半）
+
+用户 2026-10-14：「任务列表操作记录名字同步，有时候还会显示设备名，会变」。4.38.2 把**前端**那两份判据
+收成了一个家，但显示名其实有**三个**家 —— 后端 `member_notices.rs` 的 `resolve_nickname` 写着自己的顺序，
+而它的兜底是 `device_id` 原文。它有 20 个调用点，拿它构造的全是**落库或推给界面**的文案：群系统消息
+「X 加入了群聊 / 已被移出群聊 / 退出了群聊 / 成为新群主」、受众预告里"任务"那一格、错误串「X 不是群成员」、
+会话摘要与文件到达通知。**所以界面里出现设备标识的那一半根本不在前端这条路上** —— 而系统消息是落库的，
+对方后来改名也修不回历史里那一条。
+
+- 顺序改成 **自己 → 好友备注 → 在线自报 → 请求里带的名字 → 「未知成员 + id 后四位」**，与前端逐格一致。
+  旧顺序把「对方自报的昵称」放在「我起的备注」之前 ⇒ 同一屏上气泡写备注、系统消息写自报名（=「会变」）。
+  ⚠️ 别把它和同文件里那条**公钥**的"peers 优先"混成一件事：公钥要的是最新那一份，名字要的是我认的那一份，
+  两个方向本来相反（`pick_member_x25519_prefers_peers_then_friends` 钉的是前者）。
+- 兜底不再返回裸 id：新增 `unknown_member_label`，中英两份与 i18n `common.unknownMember` 逐字一致。
+- 三个来源一律先 `trim()` 再判空 ⇒ 顺带修掉旧代码里「请求名 / 备注是空串就原样返回」那一格（「」加入了群聊）。
+- 判据抽成纯函数 `pick_member_display_name`（与同文件 `member_removed_action` 同一手法：把"容易漏一支"的判断
+  做成可单测的纯函数），入口 `resolve_nickname` 只取数，并以该调用作为**函数体的返回表达式**。
+
+判据（新增 6 条，每条都做了变异实测）：Rust 五条 —— 备注优先与"没有备注才轮到自报"成对、永不裸 id、
+空白来源算「没有」（配一条只把备注换成真名字的反证）、自己那一支中英两份 + 空 id 返回空串、
+尾巴位数与非 ASCII 不许 panic；`memberName.test.ts` 加一格跨语言契约（位数同值、中英措辞逐字对 i18n、
+入口必须以纯函数调用为返回表达式）。实测红面：兜底改回 `id.to_string()` 只红 Rust 那两条；备注与自报调换
+只红"备注优先"那一条；位数 4→5 / 中文措辞改掉 / 入口插一条早退 `return id.to_string()` / 委托降级成
+`let _ = 调用; id.to_string()` 四种都红跨语言那一格 —— 静息态先跑一次确认判据本身不空转。
+其中「委托降级」那一种最初测出来是**假绿**（只判"调用点还在"证明不了返回的是它），补了"必须是末尾表达式"
+这条才咬住；那条注释留在测试里，免得下一个读者把这格放宽回包含性判断。
+
+验证：`cargo test --features bluetooth --lib` = 840 passed / 0 failed（835→840，基线已 `--update` +
+`--sync-baselines`，现读 macos 840+3 / windows 828+15 差额均有源码门控背书）、`cargo fmt --all` 与
+`cargo clippy --features bluetooth --lib -- -D warnings` 退 0（clippy 把 `for + if let` 判成
+`unnecessary_if_let`，改成 `.into_iter().flatten().find(...)` 之后复跑全套）、`npm test` = 985 passed / 0 failed、
+`npx vue-tsc --noEmit` 退 0。
+
+## [4.39.0] - 2026-10-14
+
+### 自定义任务类型现在能挑图标（名字之外的那一半）
+
+用户 2026-10-14：「任务类型自定义是可以自己输入，自定义类型名称，图标」。名字在 4.36.0 就落了
+（`custom_category` + 服务端 `normalize_custom_category`），**图标一直没落** ——
+看板行首与胶囊那枚对 custom 档恒画通用「标签」（`CATEGORY_ICON.custom = Tag`，注释写的是
+"自定义类型没有专属语义"），也就是把"没有专属语义"当成了"不需要专属形状"。
+
+- 线上加 `TodoPayload.custom_icon`，值是**白名单键名**（`TODO_CUSTOM_ICONS` 十枚），不是 emoji、
+  也不是组件名：emoji 在 Windows/鸿蒙上可能落回方框，而组件名会把前端实现细节写进协议、
+  对端拿到一个它没有的组件只剩空白。`#[serde(default)]` ⇒ 旧对端发的载荷读出来是空串，
+  两端都画默认那枚（`TODO_CUSTOM_ICON_DEFAULT = "tag"`），混合版本是常态而不是异常。
+- 服务端两处规范化与"名字"同一口径：**非 custom 档一律清空**（不留"普通任务挂一枚自定义图标"的半态）、
+  custom 档只认白名单、表外值明确拒收不静默回落（和"类型/状态/优先级"那一族同一立场）。
+- **老对端不认识这一格时的沿用**（carry）与自定义名同一条规矩：两端各一份 ——
+  Rust `latest_todo_def` 与前端 `carryAbsentTodoFields`，两边一起改，判"没说"的口径都是
+  "键不存在 **或** 值本端读不出合法值"。少改一边就是"对方改一次状态，我挑的图标被抹回默认"。
+- 成员窄档（只归档 / 只还原 / 只认领）三条判定各补一个 `custom_icon` 比较：漏一条，
+  "改图标顺带归档"就能顺着窄档口子被非创建者做成（这条是判权面，不是显示面）。
+- 选择器只有一份：`TodoIconPicker.vue`，看板草稿与详情弹窗两个入口共用。
+  两个编辑器各写一排按钮就会开始不一致（同一判据两个家）。每枚带 `tap-safe` + `aria-pressed` +
+  中英两份可读名称。
+
+判据（新增 4 条，都是双向/带对照的）：`todoCustomIcons.test.ts` 三条（映射与白名单**双向**一致、
+默认键在表内、每枚都有中英两份文案键 —— 少一枚就是屏幕上有个无名图标）；
+`messageKinds.test.ts` 加一格跨语言对账（TS 与 Rust 的白名单同序同值 + 默认值同一个）；
+Rust `custom_icon_is_normalized` 钉三个容易写反的方向（表外值必须拒、没给落默认、非 custom 清空且**不**落默认）。
+另外两条既有守卫当场把我拦住并各修掉一处：`夹具载荷的键必须盖住 TodoPayload 全部字段`
+（`scripts/axTodoFixture.mjs` 漏了 `custom_icon`）与 `小尺寸可交互元素必须带 tap-safe`
+（选择器按钮 h-7 没加）。这正是它们存在的意义：新字段接一半，界面上就是"选了没反应"。
+
+⚠️ 有意没做的一格：**图标变化不写进操作记录文案**（名字变化写）。那一行给的是"这条任务变成了什么"，
+十枚图标各写一句会让流水变成图标说明书；要加得先想清楚呈现形态，那是产品决定。
+
+档位：新增能力、向后兼容 ⇒ `Version-Bump: minor`（4.38.2 → 4.39.0，五处版本清单同提交）。
+改动落在 `protocol.rs`（敏感文件）⇒ 标题带 `[impact]`。
+验证：`cargo test --features bluetooth --lib` = 835 passed / 0 failed、`cargo fmt --all --check` 与
+`cargo clippy -- -D warnings` 退 0、`npm test` = 984 passed / 0 failed、`npx vue-tsc --noEmit` 退 0、
+`node scripts/check-test-manifest.mjs` 通过（新测试文件已登记、基线已 `--sync-baselines`）。
+
+
+
+## [4.38.2] - 2026-10-14
+
+### 成员名字：不再退化成设备标识，也不再"每次看都不一样"
+
+用户 2026-10-14：「任务列表操作记录名字同步，有时候还会显示设备知名，会变」。查出两条独立的根因：
+
+- **「显示设备名」**：`chat.nicknameOf()` 查不到这个人时**返回裸 `device_id`**（界面上就是一串
+  `gosslan-…`），而群任务面板/详情弹窗/成员面板走的是另一份 `useMemberProfile`。
+  两份的顺序一样、**兜底不一样**（那边返回 id、这边对自己返回「我」）⇒ 同一个人同一屏可以两个写法。
+- **「会变」**：群成员表只存 `device_id`（`group_members`），全库**没有 peers 表**，
+  在线节点的昵称只活在内存里（`chat.peers` 来自 `get_peers`）⇒ 非好友的群成员一离线就查无此名，
+  名字随"此刻能不能查到"来回跳。
+
+做法：
+
+- 判据抽成纯函数 `utils/memberName.ts`（自己 → 好友备注 → 在线自报 → 最后一次见到的名字 →
+  「未知成员 + id 后四位」，**永不返回裸 id**）。`nicknameOf` 与 `memberProfile` 都走它 ——
+  两个家收成一个家，`memberProfile` 现在只管头像与在线。
+- 新增本机名字缓存 `utils/memberNameCache.ts`（与 `announcementDismiss` 同一立场：只用于显示、
+  不参与任何信任判断、读失败退空表、写失败静默）。上限 240 条、见过来就重插、超了裁最老的。
+  **没有真变化时返回 `null` ⇒ 一次存储都不写**（`refreshPeers` 反复跑，直写就是每 333ms 落一次盘）。
+- store 里**三个** `peers.value` 整表赋值点全部接上记名，并有一条按形状数的覆盖面判据
+  （新增第四个写入点而漏接缓存时它会红，而不是等用户再看见一次"名字会变"）。
+- 顺手拆掉两个把裸 id 又接回去的调用点（消息行头像取色、表情回应条的 `|| id`）——
+  判据既然永不返回空，再接一次就是把第二条兜底写进第二个家。
+
+判据：`utils/memberName.test.ts` 12 条 + `utils/memberNameCache.test.ts` 10 条，成对交付
+（查得到/查不到、有备注/没备注、有昵称/没昵称、有快照/无快照各只换一个输入；
+覆盖面那条带阳性对照 —— 两个 0 也算相等是假绿）。验证：`npm test` = 980 passed / 0 failed、
+`npx vue-tsc --noEmit` 退 0、`node scripts/check-test-manifest.mjs` 通过（两份新测试文件已登记进 `test` 清单）。
+
+
+
+## [4.38.1] - 2026-10-14
+
+### Windows：开着不动过会儿自己就关了（4.38.0 的回归，已修）
+
+用户 2026-10-14：「win 最新版在打开情况下不动，有可能软件崩溃掉，过会自己就关了」—— 而且是**无声**的：
+运行日志里一个字都没有。
+
+- **根因**：4.38.0 修「每次建链整批重投」时加的内容台账对账（`transport/outbox_sweep.rs::content_file_matches`）
+  用**一次整读整份文件**再算 SHA-256，而它跑在**无人操作的 30 秒空闲 tick** 上（清扫器每 tick 最多取 N 条候选）。
+  一份几百 MB 的收件文件会让进程瞬间占用 ≈ 文件大小的内存；**分配失败在 Rust 里是 abort 不是 panic** ——
+  panic hook 不记、release 又开着 `panic = "abort"` 且 `strip = true`，所以表现就是"过会儿自己关了、日志干净"。
+- **修法**：改成 `File::open` + 定长缓冲（`FILE_CHUNK` = 256 KiB）循环 `read`/`update`，与本仓
+  `network/file/receive.rs`（续传前缀校验）和 `network/file/relay_push.rs`（逐片读盘）同一立场 ——
+  那两处早就为同一个形状修过一遍。摘要不符/读失败仍判"不可用"，交给下一 tick，不谎报 complete。
+- ⚠️ **为什么它当时全绿通过（这条比修复本身更重要）**：那两处老缺陷各配了一条**按文件锚定**的反证
+  （`guard_cases/file_transfer.py` 的「建发送记录前不得整读文件」、`transport_network.py` 的整读注入档），
+  所以在新分册里重新引入同一形状时，守卫根本看不见新文件 —— 门禁全绿、缺陷照发。
+  新增按**形状**扫全集的守卫 `tests::transport_src_never_whole_file_read`：读 `transport_src_for_guards()` 那份
+  生产码视图，任何一处出现整读盘字面量就红（阳性对照：视图里必须至少有一处流式读盘，否则是尺子读空了）。
+  反向对照实测：把整读塞回代码 ⇒ 恰好这一条 FAILED（命中 1 处），还原 ⇒ 绿。
+- 验证：`cargo test --features bluetooth --lib` = 834 passed / 0 failed；`cargo fmt --check` 与
+  `cargo clippy --features bluetooth -- -D warnings` 均退 0。
+
+### 任务弹窗里不再叠第二条滚动条
+
+用户 2026-10-14：「任务面板操作记录，不要在内置滚动条」。详情弹窗本来就整块在 `BaseModal` 的滚动区里，
+里面又各套了一条 `max-h-* + overflow-y-auto` ⇒ 两条滚动条叠着，滚轮落到哪条取决于鼠标停在哪。
+按形状数了调用点，**三处一起收**（只改他点名的那一条就是漏）：
+
+- `TodoDetailDialog.vue` 的「操作记录」列表（原 `max-h-44 overflow-y-auto`）；
+- `GroupTasksBoard.vue` 新建/编辑里「指派」那一格（原 `max-h-40 overflow-y-auto`）；
+- `GroupMemberPanel.vue`「选择好友」那一格（原 `max-h-40 overflow-y-auto`）。
+
+三处都改成随外层那一条滚。验证：`npx vue-tsc --noEmit` 退 0、`node scripts/check-ui-runtime.mjs --only=task` = 29/29 绿
+（含"每种张数卡片真实高度 ≤ 估算"那两条，去掉内嵌 cap 后估高口径没被改坏）。
+
+
 ### 取证轮保留：失败轮那条"永远不删"补上了天数上限（仓库体积从 25 GB 收到 5.1 GB）
 
 用户 2026-10-14：「清除一下这个项目文件夹无用缓存，防止文件夹无限扩大」。现量下来两处会只涨不收：

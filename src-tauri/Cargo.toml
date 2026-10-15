@@ -1,6 +1,6 @@
 [package]
 name = "gosslan"
-version = "4.38.0"
+version = "4.39.4"
 description = "Gosslan — 无服务器 P2P 局域网即时通讯"
 authors = ["wd.f"]
 edition = "2021"
@@ -57,6 +57,15 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 # spawn 掉丢了，用户报"收不到通知"时无法定位。
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd"))'.dependencies]
 notify-rust = "4.11"
+
+# 单实例守卫：第二次启动（多点一次图标 / 由通知唤起）不许再起一份完整应用 ——
+# 两个进程 = 两扇主窗 + 两个托盘图标 + 两份 mesh 身份，同一条好友申请会被两个进程各弹一次通知
+#（用户 2026-10-14「同时启动了两个程序」）。守卫本身给开发/测试的双实例出口留了开关，
+# 见 lib.rs 的 `allow_second_instance_launch`。
+# ⚠️ 这里的平台清单必须与 lib.rs 注册处的 `cfg` **同一组**（上游只支持这三家桌面，
+#    给 android/ios 装上会编译失败；有一条源码判据钉着两边一致）。
+[target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
+tauri-plugin-single-instance = "2"
 
 # machine-uid 0.5 上游不支持 Android/iOS（`machine_id` 模块仅对 linux/macos/windows 等定义），
 # 在 aarch64-linux-android 目标上会编译失败。因此仅对非移动目标引入；

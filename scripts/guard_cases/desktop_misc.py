@@ -222,13 +222,29 @@ CASES: list[Case] = [
         "收到同意/拒绝后清除",
         file=TAURI / "src" / "commands.rs",
         injections=[(
-            "    s.pending_out_requests\n        .lock()\n        .unwrap_or_else(|e| e.into_inner())\n        .insert(peer_id.clone());\n",
+            "    {\n        let now = crate::db::now_ms();\n        // or_insert\uff1a\u5df2\u7ecf\u6302\u7740\u8fd9\u6761\u7533\u8bf7\u65f6**\u4e0d\u91cd\u7f6e\u4e0a\u6b21\u8865\u53d1\u65f6\u523b**\uff08\u5426\u5219\u8fde\u70b9\u51e0\u6b21\u5c31\u628a\u95f4\u9694\u5224\u6ca1\u4e86\uff09\n        s.pending_out_requests\n            .lock()\n            .unwrap_or_else(|e| e.into_inner())\n            .entry(peer_id.clone())\n            .or_insert((now, 0));\n    }\n",
             "",
         )],
         cmd=cargo("test", "--lib", "friend_request_survives_a_dropped_link"),
         cwd=TAURI,
         expect_fail_hint="先登记",
         tags=["rust", "friend"],
+    ),
+    Case(
+        name="第二次启动不许再起一个实例（只能回显已有的那个）",
+        why="用户 2026-10-14：正常使用只许有一个实例，点 Windows 通知或任何其它操作都不许产生新实例，"
+        "只许把已打开的那个回显出来（测试时才靠 GOSSLAN_INSTANCE 允许多开）。"
+        "注册处一旦丢掉那个出口判定，守卫要么变成永远不装、要么把双实例 E2E 一起关掉 —— "
+        "两种都在编译期看不出来",
+        file=TAURI / "src" / "lib.rs",
+        injections=[(
+            "    if !allow_second_instance_launch(\n        std::env::var(\"GOSSLAN_INSTANCE\").ok().as_deref(),\n        std::env::var(\"GOSSLAN_AUTOSTART\").ok().as_deref(),\n    ) {\n",
+            "    if false {\n",
+        )],
+        cmd=cargo("test", "--lib", "second_launch_focuses_the_running_app"),
+        cwd=TAURI,
+        expect_fail_hint="守卫必须走那个纯函数出口判定",
+        tags=["desktop", "friend"],
     ),
     # ---------------- Rust：分批清空（点清除数据不卡死的机制） ----------------
     Case(
