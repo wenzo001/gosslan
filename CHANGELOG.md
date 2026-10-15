@@ -13,6 +13,44 @@
 
 ## [Unreleased]
 
+## [4.40.7] - 2026-10-15
+
+### 审计第八轮：入站 accept 的两格静默拒绝补现场证据（⑪），并用量具否掉「空转」这条假想危害
+
+现象仍在问题 B 这一族（「对端在列表里可就是连不上，要双方都重启才恢复」）。`network/transport.rs` 的 accept
+循环里此前有两格 `… else { continue }`：accept 自己报错、以及入站并发许可（上限 128）占满 ⇒ **一行日志都不打**，
+磁盘上没有任何东西能把「TCP 建连失败」与「本机把自己拒了」分开（指令 §五要求这两格必须分得开）。
+
+这轮先把「要不要加退避」这条量掉，因为它是这格的假想危害：
+
+| 量具（本机 macOS，压 `RLIMIT_NOFILE` 后让 N 条连接进 accept 队列再 accept） | 读数 |
+| --- | --- |
+| 队列 1 条：`accept()` 报 errno 24（EMFILE） | 之后 poll **不再报可读**；腾出 fd 再 accept 得 **errno 35（EAGAIN）** ⇒ 那条已建好的连接被这次失败的 accept **吃掉**了 |
+| 队列 2 / 4 / 8 条 | 就绪次数 **1 / 3 / 7**（每失败一次吃掉一条）、cpu/wall **0 / 2 / 15 / 1%** ⇒ **不是空转** |
+| 锁定版本源码核对 | mio 1.2.3 `sys/unix/selector/kqueue.rs:127` 注册带 `EV_CLEAR`（边缘）；tokio 1.53.1 `TcpListener::poll_accept` 对非 `WouldBlock` 的错误直接 `Poll::Ready(Err)` ⇒ 既不重唤醒也不自旋 |
+
+⇒ 结论反过来用：**这一格不加退避、不改循环结构**（量具否证了假想危害，写上去的就是没被测过的东西），只补
+「分类 + 节流 warn」。`accept_failed` 带 `kind` 与 `raw_os_error`：Windows 上句柄耗尽的错误码要和 macOS 的 24
+分开证明，不能凭「精简系统」下结论（§四.3），所以原始码直接进日志。`inbound_full` 带被拒地址与剩余许可数。
+两者都走现成的 `log_throttled(…, 10_000)`，复用既有 `logger.warn("link", …)` 通道，不新增磁盘高频写。
+分类用 `raw_os_error()` 而不是 `ErrorKind::TooManyOpenFiles`：后者在 rustc 1.98 仍 unstable
+（`io_error_too_many_open_files`，实测编译报 E0658）。
+
+护栏落在 `transport/listen_tests.rs`（分册之 15「监听口平台语义」）新用例
+`inbound_rejects_are_logged_not_silent`：按字面锚取 accept 循环体为窗口，正向钉两处节流与两条 warn 及 EMFILE
+原始码分类、反证钉两格静默形状（`… else { continue }`）不许回来、分母钉这个循环里 `.warn(` 恰好两处。
+**非空转实测**：把 `accept_failed` 那整个日志块删掉后重跑，护栏在第一条正向断言处报红（`0 passed; 1 failed`），
+恢复后 `861 passed; 0 failed`、`cargo clippy --features bluetooth --lib -- -D warnings` 干净。
+为什么是源码护栏而不是行为测试：accept 循环在 `tokio::spawn` 里吃 `Arc<AppState>`（要真实 tauri `AppHandle`，
+单测造不出来），`dial_tests.rs` 的 `lan_dial_failure_is_logged_not_swallowed` 是同一条先例。
+测试名两平台基线同步登记（`--sync-baselines`）：macos 861 条、windows 849 条，差额全部由源码门控背书。
+
+顺带把三条只读到「没做」的账登记清楚（本轮不动码、各写理由）：⑥ 群收尾那一格三个写库动作各自吞错且不在同一
+事务，而对账扫的谓词要求 `content_transfers` 已有一行 —— 群侧那一行正是在这里首次构造 ⇒ **判为无兜底**，本轮
+按事务收拢（另节）；③ 每片两次取 `file_receivers` 是顺序不是嵌套、无故障证据 ⇒ 不动；⑧ `transport.rs` 的
+`eprintln!` 所在函数拿不到 logger 且整段 `#[cfg(windows)]`，本机与 Android 门禁都编译不到 ⇒ 改了也无法自证，
+留待连着 Windows 编译验证一起做。
+
 ## [4.40.6] - 2026-10-15
 
 ### 审计第七轮：INV-P34 的「第十一格」——设置里点「清除数据」时，整棵树删除还钉在 worker 上
