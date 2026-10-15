@@ -228,11 +228,52 @@ pub async fn spawn(
                 biased;
                 _ = shutdown.changed() => break,
                 accept = listener.accept() => {
-                    let Ok((stream, peer_addr)) = accept else { continue };
+                                        let (stream, peer_addr) = match accept {
+                        Ok(v) => v,
+                        Err(e) => {
+                            // 入站 accept 失败必须**留痕**（2026-10-15 全链路审计 ⑪）。本机实测：句柄耗尽时
+                            // `accept()` 报 EMFILE，而**每一次失败的 accept 会丢掉队列里一条已建好的连接**
+                            //（腾出 fd 后再 accept 得到 EAGAIN ⇒ 那条连接已经不在）⇒ 现场看到的正是问题 B 那句
+                            // 「对端在列表里可就是连不上」。同时把 `raw_os_error` 打出来：Windows 上句柄耗尽的
+                            // 错误码要和 macOS 的 24 分开证明，不能凭「精简系统」猜（§四.3）。
+                            if log_throttled("accept_failed", 10_000) {
+                                // 不用 `ErrorKind::TooManyOpenFiles`：它在 1.98 仍是 unstable
+                                //（`io_error_too_many_open_files`）。三平台的原始码都可判，且日志里直接可见：
+                                // macOS/BSD 24、Linux 23、Winsock WSAEMFILE 10024。
+                                let emfile =
+                                    matches!(e.raw_os_error(), Some(24) | Some(23) | Some(10024));
+                                let class = if emfile {
+                                    "本机句柄/描述符耗尽"
+                                } else {
+                                    "非句柄类"
+                                };
+                                state.logger.warn(
+                                    "link",
+                                    format!(
+                                        "accept 失败（{class}）kind={:?} raw={:?}：{e} —— 已排队的这条入站连接会被丢掉，",
+                                        e.kind(),
+                                        e.raw_os_error(),
+                                    ),
+                                );
+                            }
+                            continue;
+                        }
+                    };
                     // **入站连接上限**：没有它，一台主机可以无限建连（每个连接 2 个 1024
                     // 容量信道 + 2 个任务）。拿不到许可就直接 drop stream（等价于拒绝），
                     // 不排队 —— 排队只会把资源消耗推迟到以后。
-                    let Ok(permit) = state.inbound_permits.clone().try_acquire_owned() else {
+                                        let Ok(permit) = state.inbound_permits.clone().try_acquire_owned() else {
+                        // 拒绝也要留痕：这一格是「应用自己把对端拒了」的唯一证据，和上面 accept 失败、
+                        // 和「对端根本没拨过来」是三种不同结局，日志里必须分得开。
+                        if log_throttled("inbound_full", 10_000) {
+                            state.logger.warn(
+                                "link",
+                                format!(
+                                    "拒绝入站连接 {peer_addr}：并发上限已占满（剩余许可 {}）",
+                                    state.inbound_permits.available_permits()
+                                ),
+                            );
+                        }
                         continue;
                     };
                     let st = state.clone();

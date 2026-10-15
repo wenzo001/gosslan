@@ -569,6 +569,7 @@ network::transport::tests::hello_auth_tofu_requires_self_consistent_signature
 network::transport::tests::hello_avatar_is_capped_for_the_handshake_frame
 network::transport::tests::hello_binding_ignores_unverified_announced_keys
 network::transport::tests::inbound_dedup_truth_table
+network::transport::tests::inbound_rejects_are_logged_not_silent
 network::transport::tests::insert_outcome_maps_to_side_effect_and_ack_policy
 network::transport::tests::lan_dial_failure_is_logged_not_swallowed
 network::transport::tests::link_low_queue_is_bounded_by_bytes_not_frame_count
@@ -770,6 +771,7 @@ tests::receive_finalize_slow_work_happens_outside_the_receiver_lock
 tests::receiver_abort_notifies_the_sender_inside_the_loop
 tests::relay_circuit_is_tagged_relay_not_routed
 tests::relay_data_plane_respects_policy
+tests::relay_file_lifecycle_slow_work_runs_off_the_async_worker
 tests::relay_receive_hashes_assembled_plaintext_once
 tests::relay_reclaim_finalizes_in_db_and_emits_outside_the_lock
 tests::relay_send_does_not_claim_unproven_success
@@ -793,6 +795,7 @@ tests::todo_commands_log_identity_only_after_the_send_succeeded
 tests::transport_locks_tolerate_poison
 tests::transport_src_never_whole_file_read
 tests::unknown_wire_frame_is_tolerated_after_auth
+tests::whole_file_slow_work_never_runs_on_an_async_worker
 tests::window_maximizable_matches_builder
 tests::window_pattern_matcher_is_not_vacuous
 transport::ble_framing::tests::both_sides_agree_on_the_same_link_budget
@@ -844,5 +847,3 @@ user_dirs::tests::empty_resolved_path_is_not_accepted
 user_dirs::tests::nothing_configured_stays_none
 user_dirs::tests::store_then_load_returns_the_same_directory_in_both_modes
 user_dirs::tests::the_two_user_directories_do_not_interfere
-tests::relay_file_lifecycle_slow_work_runs_off_the_async_worker
-tests::whole_file_slow_work_never_runs_on_an_async_worker

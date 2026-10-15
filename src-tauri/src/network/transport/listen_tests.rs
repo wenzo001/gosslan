@@ -3,7 +3,7 @@
 // 为什么拆：`transport/tests.rs` 原来 3,227 行、5 个顶层项全挤在同一个 `mod tests` 里。
 // 机制与 `file_tests.rs` / `logs_tests.rs` 同一条：`include!` 是文本粘贴 ⇒ 这些项仍属于
 // `crate::network::transport::tests` 这同一个模块 ⇒ 模块路径、`use`、可见性、**测试全名一字不变**
-// （恒等判据＝`cargo test --features bluetooth --lib -- --list` 的 789 条用例名差集 0 行）。
+// （恒等判据＝`cargo test --features bluetooth --lib -- --list` 的用例名差集 0 行（条数以现算为准））。
 // ⚠️ 本册**不进** `network::transport_src_for_guards()` 那份"生产码全集"视图：视图掺测试字面量会把
 // 按窗口取段的守卫飘到测试文本上（2026-10-06 实测 4 条假红）。`lib_tests.rs` 里那条登记对账守卫
 // 按 `_tests.rs` 结尾豁免本册 —— 别为了消红把测试文本并进去（那正是假绿的形状）。
@@ -209,4 +209,70 @@
 
         let _ = tx2.send(true);
         let _ = tokio::time::timeout(Duration::from_secs(2), task2).await;
+    }
+
+    /// 入站 accept 的两格静默拒绝必须**留痕**（2026-10-15 全链路审计 ⑪，指令 §五）。
+    ///
+    /// 旧形状是 accept 循环里两处 `… else { continue }`：一行日志都不打 ⇒ 磁盘上没有任何东西
+    /// 能把「TCP 建连失败」和「本机把自己拒了」分开，而问题 B 的现场正是「对端在节点列表里、
+    /// 可就是连不上」。
+    ///
+    /// 实测（本机 macOS，脚本形状：压 `RLIMIT_NOFILE` 后让 N 条连接进 accept 队列再 accept）：
+    /// - 队列 1 条：accept 报 errno 24（EMFILE）之后 poll 不再报可读，腾出 fd 再 accept 得 EAGAIN
+    ///   ⇒ **那条已建好的连接被这次失败的 accept 丢掉了**；
+    /// - 队列 2/4/8 条：就绪事件次数 = 1/3/7（每失败一次吃掉一条），cpu/wall ≤ 15% ⇒ **不是空转**；
+    /// - mio 1.2.3 `sys/unix/selector/kqueue.rs:127` 用 `EV_CLEAR`（边缘），tokio 1.53.1
+    ///   `TcpListener::accept` 对非 `WouldBlock` 的错误直接 `Poll::Ready(Err)`。
+    /// ⇒ 所以这条补丁**刻意不加退避、不改循环结构**（那会是没被测过的东西），只补日志与分类。
+    ///
+    /// 为什么是源码护栏而不是行为测试：accept 循环在 `spawn` 里、吃 `Arc<AppState>`（要真实
+    /// tauri `AppHandle`，单测造不出来），与本册同族的 `dial_tests.rs`
+    /// `lan_dial_failure_is_logged_not_swallowed` 是一条先例。
+    #[test]
+    fn inbound_rejects_are_logged_not_silent() {
+        let src = crate::network::transport_src_for_guards();
+        let start = src
+            .find("let accept_task = tokio::spawn(async move {")
+            .expect("找不到 accept 循环（这条护栏会空转）");
+        let end = src[start..]
+            .find("// 心跳：")
+            .map(|i| start + i)
+            .expect("accept 循环之后找不到心跳段（函数边界变了，护栏需同步）");
+        let body = &src[start..end];
+        let flat: String = body.chars().filter(|c| !c.is_whitespace()).collect();
+
+        // ① accept 报错那一格：节流与 warn 分两条断言（节流块里先算错误分类，再打日志 ⇒ 两者中间有语句）
+        assert!(
+            flat.contains("iflog_throttled(\"accept_failed\",10_000){"),
+            "accept 失败必须走节流：句柄耗尽时不节流会把日志刷满"
+        );
+        assert!(
+            flat.contains("state.logger.warn(\"link\",format!(\"accept失败"),
+            "accept 失败必须打一条 warn：否则「对端连不上」在日志里没有任何形状"
+        );
+        // ② 分类：EMFILE 要单列，别和「网络异常」混成一格
+        assert!(
+            flat.contains("matches!(e.raw_os_error(),Some(24)|Some(23)|Some(10024))"),
+            "accept 失败日志必须能把「本机句柄耗尽」分出来（§四.2 要区分「必须重启才能释放的资源」）"
+        );
+        // ③ 许可占满那一格：同样留痕
+        assert!(
+            flat.contains("iflog_throttled(\"inbound_full\",10_000){state.logger.warn("),
+            "入站许可占满也必须留痕：这是「应用自己拒了对端」的唯一证据"
+        );
+        // ④ 反证：两格的静默形状都不许回来
+        assert!(
+            !flat.contains("letOk((stream,peer_addr))=acceptelse{continue};"),
+            "accept 报错不许再用 `let Ok(..) = accept else {{ continue }}` 吞掉"
+        );
+        assert!(
+            !flat.contains("try_acquire_owned()else{continue;};"),
+            "入站许可占满不许再用裸 `else {{ continue; }}` 静默拒绝"
+        );
+        // ⑤ 分母：这个循环里只许有这两处 warn（多了说明又开始给常态连接打日志）
+        assert_eq!(
+            body.matches(".warn(").count(),
+            2,
+            "accept 循环只许给「报错」和「拒绝」两格留痕"
+        );
     }
