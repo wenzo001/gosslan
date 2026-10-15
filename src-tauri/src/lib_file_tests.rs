@@ -496,3 +496,78 @@
             "不许退回整份读进内存的那一版（GB 级前缀 = 等量内存峰值）"
         );
     }
+
+    /// 群文件收尾的三处写库必须**先在同一个事务里**，事务失败时**必须留痕**再退回逐句补写
+    /// （2026-10-15 全链路审计 ⑥）。
+    ///
+    /// 旧形状：`update_group_file_recipient` / `upsert_transfer` / `content::store::record_local`
+    /// 三处各自 `let _ =` / `.ok()` 吞错 ⇒ 内容台账那一行**可能根本没被构造**，而对账扫
+    /// （`outbox_sweep.rs::list_reconcilable_content`）的谓词要求 `content_transfers` 已有一行
+    /// 且 `path IS NULL` ⇒「行没写成」这一格**没有兜底**：盘上有文件、台账不知道，这台不算种子。
+    ///
+    /// 为什么不是「失败就整体不动」：收件方与 `file_transfers` 不收口会把气泡停在
+    /// 「文件已在盘上但永不完成」的中间态（指令 §3.2.C），那一格只能靠重启恢复 ⇒ 用新故障修旧故障。
+    ///
+    /// 为什么是源码护栏：这段收尾吃 `Arc<AppState>`（要真实 tauri `AppHandle`），单测造不出来
+    /// ⇒ 与本文件 `group_receive_finalize_slow_work_runs_off_the_async_worker` 同一条先例。
+    /// 窗口按两条注释锚切，不用定长窗口（2026-10-15 护栏纪律：定长会跨进邻规则）。
+    #[test]
+    fn group_receive_finalize_writes_three_ledgers_in_one_transaction_with_logged_fallback() {
+        let src = crate::network::transport_src_for_guards();
+        let start = src
+            .find("// 全部成功：正式文件已落盘")
+            .expect("找不到群收尾锚点（这条护栏会空转）");
+        let end = src[start..]
+            .find("group_file_keys")
+            .map(|i| start + i)
+            .expect("群收尾之后找不到 group_file_keys（边界变了，护栏需同步）");
+        let body = &src[start..end];
+        let flat: String = body.chars().filter(|c| !c.is_whitespace()).collect();
+
+        // ① 三处写只有**一份**（闭包），事务与失败补写共用 ⇒ 补写不会和事务里那半边漂开
+        assert!(
+            flat.contains("letwrite_ledgers=|conn:&rusqlite::Connection|->rusqlite::Result<()>{"),
+            "三张台账的写必须收成一个闭包（两份手写迟早少一张表）"
+        );
+        for w in [
+            "db::update_group_file_recipient(",
+            "db::upsert_transfer(",
+            "crate::content::store::record_local(",
+        ] {
+            assert_eq!(
+                flat.matches(w).count(),
+                1,
+                "{w} 在这个块里只许一份；两份 ⇒ 又回到「手写两遍迟早漂开」"
+            );
+        }
+        // ② 这一份先整体进事务（要么三张表一起收口，要么一起不动）
+        assert!(
+            flat.contains("letwrote=dbc.transaction().and_then(|tx|write_ledgers(&tx))"),
+            "群收尾三处写必须包在同一个事务里"
+        );
+        // ③ 失败必须留痕，且只许这一格留痕。两条探针分开：Err 分支里注释写在 `warn(` 之前，
+        //    而去空白**不去注释** ⇒ 跨注释的形状判不了（护栏纪律第 48 条的反面）。
+        assert!(
+            flat.contains("ifletErr(e)=wrote{"),
+            "事务结果必须有失败分支：没有 ⇒ 写库失败仍然静默"
+        );
+        assert!(
+            flat.contains("state.logger.warn(\"group_file\""),
+            "事务失败必须打一条 warn：否则「文件收下了但没人能从我这里拉」在日志里没有任何形状"
+        );
+        assert_eq!(
+            body.matches(".warn(").count(),
+            1,
+            "群收尾只许给事务失败那一格留痕（多了就是又给常态收尾打日志）"
+        );
+        // ④ 反证：旧的静默形状不许回来
+        assert!(!flat.contains(".ok();"), "群收尾块里不许再有 `.ok()` 吞错");
+        // ⑤ 事务失败后仍要落一次写：补写必须在 warn 之后（= 挂在 Err 分支里，不是被删）
+        let warn_at = flat
+            .find("state.logger.warn(\"group_file\"")
+            .expect("失败留痕必须存在");
+        let fb_at = flat
+            .find("let_=write_ledgers(&dbc)")
+            .expect("事务失败的补写不许被删（删 ⇒ 事务一失败就永不收口，气泡停在中间态）");
+        assert!(warn_at < fb_at, "补写必须在 warn 之后、Err 分支之内");
+    }

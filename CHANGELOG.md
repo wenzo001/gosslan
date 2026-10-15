@@ -13,6 +13,42 @@
 
 ## [Unreleased]
 
+## [4.40.8] - 2026-10-15
+
+### 审计第九轮：群文件收尾的三张台账收进同一事务（⑥），失败那一半留痕但不许停在中间态
+
+`network/transport/group_file.rs` 的群接收收尾（`handle_group_file_done` 成功分支）此前把三张台账各写一次、
+错误各吞一次：`update_group_file_recipient` 与 `record_local` 用 `let _ =`、`upsert_transfer` 用 `.ok()` ⇒
+`content_transfers` 那一行**可能根本没被构造**（群侧这一行就是在这里首次写的）。而对账扫
+`outbox_sweep.rs::list_reconcilable_content` 的谓词要求内容层**已有一行**且 `path IS NULL` ⇒「行根本没写成」
+它捞不到 ⇒ 这一格**没有兜底**：盘上有文件、台账不知道，这一台不算种子，别人再也拉不到。
+单聊那一家在 2026-10-13 真机第 7 条（`file_transfers` 说 done、`content_transfers` 没有 ⇒ 每次建链整批再投）
+之后已经是「同一事务」，群这一处是同一个形状的第二家 —— 这正是指令 §四要求分开证明、不许靠重启恢复的那类。
+
+改法（最小、可回滚）：
+
+- 三处写收进**一个闭包**（只有一份 ⇒ 补写不会和事务里那半边漂开），整体放进 `dbc.transaction()`；
+- 事务失败 ⇒ 打一条 `group_file` warn（带 `transfer_id`），再退回今天的形状逐句补写。
+  **不选「整体不动」**：收件方与 `file_transfers` 不收口会把气泡停在「文件确实已在盘上但永不完成」那一格
+  （§3.2.C），而那一格只能靠重启恢复 ⇒ 等于用一个新故障去修一个旧故障；
+- 失败时 `GroupFileCompleteAck` 仍按今天的 `success = true` 发出 —— 这是既有协议语义，本轮**不改**（改它
+  会让发送端把已落盘的文件判成失败，属于协议语义变更，需单独设计评审）。因此这一格留下的已知缺口是：
+  事务与补写都失败时，对端仍会以为这台已完成而不再补投 ⇒ 需要真机读数才知道实际发生频率。
+
+护栏 `lib_file_tests.rs::group_receive_finalize_writes_three_ledgers_in_one_transaction_with_logged_fallback`：
+窗口按两条注释锚切（不用定长窗口），正向钉「闭包一份 + `dbc.transaction().and_then(|tx| write_ledgers(&tx))` +
+三处写各出现恰好一次 + Err 分支里有 warn 且 warn 之后有补写」，反证钉 `.ok();` 不许回来。
+**非空转实测**：把事务换成裸写 `write_ledgers(&dbc)` ⇒ 恰好在「必须包在同一个事务里」那条报红；恢复后全绿。
+
+本轮同批被既有护栏拦下一次并据此改形：`group_receive_finalize_slow_work_runs_off_the_async_worker` 按数量钉
+「recipient 与 `file_transfers` 的终态写各恰好两处（一失败一成功）」，我第一版把三处写在补写里又手写了一遍 ⇒
+该守卫判红。这个红是对的：**两份手写迟早少一张表**。改成闭包后那条既有守卫一字未动、读数仍是 2/2。
+
+自动化读数：`cargo test --features bluetooth --lib` **862 passed / 0 failed**，
+`cargo clippy --features bluetooth --lib -- -D warnings` 干净，测试名两平台基线同步（macos 862 / windows 850）。
+真机双端未验证：本轮造不出「事务中途失败」的真实注入通道（要 SQLite BUSY 或磁盘错误时机），
+所以「修复后群文件不会再丢种子行」只能等 §五 那条新 warn 在现场出现与否来判读。
+
 ## [4.40.7] - 2026-10-15
 
 ### 审计第八轮：入站 accept 的两格静默拒绝补现场证据（⑪），并用量具否掉「空转」这条假想危害

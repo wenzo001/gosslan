@@ -351,35 +351,54 @@ async fn handle_group_file_done(
     };
     // 全部成功：正式文件已落盘 → completed / progress 1.0 → 气泡转 delivered → 清理
     {
-        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        let _ =
-            db::update_group_file_recipient(&dbc, &transfer_id, &state.device_id, "completed", 1.0);
-        // 群文件本地路径持久化到 transfer 记录：打开/另存/历史加载经
-        // transfer_id（gfile-{tid}）关联到该真实本地路径（重启后仍有效）
-        db::upsert_transfer(
-            &dbc,
-            &transfer_id,
-            &sender_id,
-            &gf.name,
-            gf.size,
-            "receive",
-            "done",
-            Some(final_path.to_string_lossy().as_ref()),
-            1.0,
-        )
-        .ok();
-        // 群聊里"已收完的成员"同样登记为种子：C 可从 B 拉（ADR-0019 Phase 3）。
-        let _ = crate::content::store::record_local(
-            &dbc,
-            &gf.sha256,
-            &sender_id,
-            Some(&group_id),
-            &gf.name,
-            gf.size,
-            crate::content::model::Direction::Receive,
-            &final_path.to_string_lossy(),
-            db::now_ms(),
-        );
+        // 三张表**同一个事务**（2026-10-15 全链路审计 ⑥）。这一格此前有三处各自吞错：`let _ =` /
+        // `.ok()` ⇒ 收件方那行可能停在非 completed、`file_transfers` 说 done 而 `content_transfers`
+        // 那一行**根本没被构造**（群侧这一行就是在这里首次写的）。对账扫
+        // `outbox_sweep.rs::list_reconcilable_content` 的谓词要求内容层**已有一行**且 `path IS NULL`
+        // ⇒「行根本没写成」它捞不到 ⇒ 这一格**没有兜底**：盘上有文件、台账不知道，这一台从此不算种子。
+        // 单聊那一家在 10-13 真机第 7 条之后已经是「同一事务、要么一起收口要么一起不动」
+        // （`network/file/receive.rs`），群这一处是同一个形状的第二家。
+        // 三处写只写**一份**（闭包），事务与失败补写共用同一段 ⇒ 补写那半边不会和事务里那半边漂开。
+        let write_ledgers = |conn: &rusqlite::Connection| -> rusqlite::Result<()> {
+            db::update_group_file_recipient(conn, &transfer_id, &state.device_id, "completed", 1.0)?;
+            db::upsert_transfer(
+                conn,
+                &transfer_id,
+                &sender_id,
+                &gf.name,
+                gf.size,
+                "receive",
+                "done",
+                Some(final_path.to_string_lossy().as_ref()),
+                1.0,
+            )?;
+            crate::content::store::record_local(
+                conn,
+                &gf.sha256,
+                &sender_id,
+                Some(&group_id),
+                &gf.name,
+                gf.size,
+                crate::content::model::Direction::Receive,
+                &final_path.to_string_lossy(),
+                db::now_ms(),
+            )
+        };
+        let mut dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        let wrote = dbc.transaction().and_then(|tx| write_ledgers(&tx));
+        if let Err(e) = wrote {
+            // 事务失败 ⇒ 三张表一起没动。这里**退回今天的形状**逐句补写，不选「整体不动」：
+            // 收件方与 `file_transfers` 不收口会把气泡停在「文件确实已在盘上但永不完成」那一格
+            // （指令 §3.2.C），而那一格只能靠重启恢复 ⇒ 等于用一个新故障去修一个旧故障。
+            // 内容台账那一半才是可留给下次建链补的。失败必须留痕，不许再静默。
+            state.logger.warn(
+                "group_file",
+                format!(
+                    "群文件收尾事务失败 transfer_id={transfer_id}：已退回逐句补写，内容台账那一半仍可能缺（缺 ⇒ 这台不算种子，别人拉不到）: {e}"
+                ),
+            );
+            let _ = write_ledgers(&dbc);
+        }
     }
     state
         .group_file_keys
