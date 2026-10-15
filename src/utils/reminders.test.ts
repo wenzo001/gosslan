@@ -192,6 +192,26 @@ test("payload builder 与 Rust 字段名逐字一致", () => {
   assert.equal(buildRemindAckPayload("r1", "confirmed"), JSON.stringify({ target: "r1", stage: "confirmed" }));
 });
 
+test("抖动标记：shake=true 追加 shake 字段，缺省载荷逐字节不变；解析只认 true", () => {
+  // 普通强提醒（第 3 参缺省 false）必须与旧载荷逐字节一致 —— 老对端/守卫都按这个形状读。
+  assert.equal(buildRemindPayload("m1", []), JSON.stringify({ target: "m1", actors: [] }));
+  assert.equal(
+    buildRemindPayload("m1", ["d2"], false),
+    JSON.stringify({ target: "m1", actors: ["d2"] }),
+  );
+  assert.equal(
+    buildRemindPayload("m1", [], true),
+    JSON.stringify({ target: "m1", actors: [], shake: true }),
+  );
+
+  const row = (content: string) => rec({ kind: "remind", content });
+  assert.equal(parseRemind(row(buildRemindPayload("m1", [], true)))?.shake, true);
+  assert.equal(parseRemind(row(buildRemindPayload("m1", [])))?.shake, undefined);
+  // 脏值不当真：只有布尔 true 才算抖动帧。
+  assert.equal(parseRemind(row('{"target":"m1","shake":"yes"}'))?.shake, undefined);
+  assert.equal(parseRemind(row('{"target":"m1","shake":1}'))?.shake, undefined);
+});
+
 test("phase 排序常量只进不退", () => {
   const order: ReminderPhase[] = ["failed", "pending", "delivered", "reminded", "confirmed"];
   for (let i = 1; i < order.length; i++) {

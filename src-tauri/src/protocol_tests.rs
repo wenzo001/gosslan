@@ -1399,6 +1399,36 @@ mod tests {
         }
     }
 
+    /// 「抖动」标记：`shake:true` 可解析；缺省 / 脏值按普通强提醒（false）；
+    /// 且 **false 时序列化不出现 `shake` 键** —— 普通提醒（含群侧 Rust 自己造的那份）载荷逐字节不变。
+    #[test]
+    fn remind_payload_shake_flag_roundtrip() {
+        let p = parse_remind_payload(r#"{"target":"m1","actors":[],"shake":true}"#).unwrap();
+        assert!(p.shake, "shake:true 必须解析为 true");
+
+        assert!(!parse_remind_payload(r#"{"target":"m1"}"#).unwrap().shake);
+        assert!(
+            parse_remind_payload(r#"{"target":"m1","shake":"yes"}"#).is_err(),
+            "shake 非布尔必须拒（不静默吞成 true）"
+        );
+
+        let plain = serde_json::to_string(&RemindPayload {
+            target: "m1".to_string(),
+            actors: vec![],
+            shake: false,
+        })
+        .unwrap();
+        assert_eq!(plain, r#"{"target":"m1","actors":[]}"#, "普通提醒不许多出 shake 键");
+
+        let shook = serde_json::to_string(&RemindPayload {
+            target: "m1".to_string(),
+            actors: vec![],
+            shake: true,
+        })
+        .unwrap();
+        assert_eq!(shook, r#"{"target":"m1","actors":[],"shake":true}"#);
+    }
+
     /// 确认载荷：stage 只收 alerted / confirmed 两档；target 空挡。
     #[test]
     fn remind_ack_payload_stage_is_validated() {

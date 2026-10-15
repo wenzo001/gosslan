@@ -390,6 +390,26 @@ const reminderMap = computed(() => {
 });
 
 /**
+ * 强提醒到达时的**窗口抖动**开关：由 store 的 `shakeSignal` 驱动（只有收到强提醒、且用户
+ * 正在看该会话时才自增）。挂在整块聊天容器上（见模板根节点）。
+ */
+const shaking = ref(false);
+watch(
+  () => chat.shakeSignal,
+  () => {
+    // 重新触发：先置回 false，下一帧再置 true —— 只增删 class 的话，上一次动画没结束就不会重放。
+    shaking.value = false;
+    requestAnimationFrame(() => {
+      shaking.value = true;
+    });
+  },
+);
+/** 只认根容器自己的 animationend（子元素一次性动画会冒泡上来，误关会截断抖动）。 */
+function onShakeAnimEnd(e: AnimationEvent) {
+  if (e.target === e.currentTarget) shaking.value = false;
+}
+
+/**
  * 时间线上每张任务卡片的**当前**状态与**当前**编号码（`todo_id` → 那两格）。
  *
  * 为什么必须单独算：卡片气泡读的是**创建那条 `todo` 消息的载荷**，而之后的每次改动都走
@@ -707,6 +727,18 @@ async function onSendImage(file: File) {
     await chat.sendImage(convId, dataUrl);
   } catch (e) {
     app.toastError(e, t("msg.sendFailed"));
+  }
+}
+
+// ---------------- 窗口抖动（仿 QQ） ----------------
+/** 工具栏抖动按钮：对会话里最近一条已发出的消息发起强提醒，对方窗口随即抖动。 */
+async function onShake() {
+  const convId = chat.activeConv;
+  if (!convId || !isPeerFriend.value || isGroup.value || isSelfChat.value) return;
+  try {
+    await chat.shakeConversation(convId);
+  } catch (e) {
+    app.toastError(e, t("chat.shake.failed"));
   }
 }
 
@@ -1136,7 +1168,11 @@ function onLoadMore() {
 </script>
 
 <template>
-  <div class="flex h-full flex-col bg-[var(--gosslan-chat)]">
+  <div
+    class="flex h-full flex-col bg-[var(--gosslan-chat)]"
+    :class="{ 'gosslan-shake': shaking }"
+    @animationend="onShakeAnimEnd"
+  >
     <ChatHeader
       :conv="conv"
       :is-group="isGroup"
@@ -1474,10 +1510,12 @@ function onLoadMore() {
         :conv-id="chat.activeConv"
         :quote="quote"
         :mention-members="mentionMembers"
+        :shake-enabled="!isGroup && !isSelfChat && isPeerFriend"
         @send="onSend"
         @send-image="onSendImage"
         @attach="attachFile"
         @paste-files="sendPastedFiles"
+        @shake="onShake"
         @close-quote="quote = null"
       />
       <div

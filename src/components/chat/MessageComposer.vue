@@ -11,7 +11,7 @@ import { mentionHighlightColor, resolveChatColors } from "@/utils/chatStyle";
 import { avatarSeedFor } from "@/utils/avatarSeed";
 import { classifyPaste } from "@/utils/clipboard";
 import { isImeKey } from "@/utils/ime";
-import { Folder, Smile, SquareCode, Users, X } from "lucide-vue-next";
+import { Folder, Smile, SquareCode, Users, X, Zap } from "lucide-vue-next";
 import type { MsgKind } from "@/types";
 import { MENTION_ALL_TOKEN, textMentionsName } from "@/utils/messages";
 import { isMentionLead } from "@/utils/linkify";
@@ -25,6 +25,8 @@ const props = defineProps<{
   quote?: { sender: string; snippet: string; msgId?: string | number } | null;
   /** 群成员（不含自己）：非空时输入 @ 弹出成员选择（群聊 @ 功能）。 */
   mentionMembers?: { id: string; name: string }[];
+  /** 是否显示「抖动」按钮：仅单聊（非群聊、非自聊）为 true。群聊/自聊无意义，不给入口。 */
+  shakeEnabled?: boolean;
 }>();
 const emit = defineEmits<{
   // `mentionIds` = 这条文本 @ 了谁（设备 id）。缺省 = 这条不带名单 = 接收端按昵称兜底，
@@ -37,6 +39,7 @@ const emit = defineEmits<{
   (e: "attach"): void;
   (e: "close-quote"): void;
   (e: "paste-files", paths: string[]): void;
+  (e: "shake"): void;
 }>();
 
 const app = useAppStore();
@@ -50,6 +53,25 @@ const isSelfChat = computed(() =>
   isSelfConversation({ id: props.convId ?? "" }, app.device?.device_id),
 );
 const codeMode = ref(false);
+
+/**
+ * 抖动冷却（毫秒）：与 QQ 一致 —— 短时间不能连抖，避免刷屏打扰对方。
+ * 冷却期间按钮置灰不可点；这是**纯 UI 节流**，真正的发送链路在 store。
+ */
+const SHAKE_COOLDOWN_MS = 3000;
+const shakeCooling = ref(false);
+let shakeTimer: ReturnType<typeof setTimeout> | null = null;
+
+function onShakeClick() {
+  if (shakeCooling.value || !props.shakeEnabled) return;
+  emit("shake");
+  haptic("light");
+  shakeCooling.value = true;
+  shakeTimer = setTimeout(() => {
+    shakeCooling.value = false;
+    shakeTimer = null;
+  }, SHAKE_COOLDOWN_MS);
+}
 
 /** 草稿**总量**的字符硬上限。三处兜底：粘贴按剩余容量截断、发送前再截一次。
  *  为什么要按总量（而不是"单次粘贴量"）：按住 Ctrl+V 连发时每次都会成功插入一份，
@@ -495,6 +517,7 @@ onUnmounted(() => {
   document.removeEventListener("click", onDocClickForEmoji);
   document.removeEventListener("click", onDocClickForMention);
   document.removeEventListener("selectionchange", onSelectionChange);
+  if (shakeTimer) clearTimeout(shakeTimer);
 });
 watch(emojiOpen, () => {
   if (emojiOpen.value) autoResize();
@@ -746,6 +769,21 @@ async function onPaste(e: ClipboardEvent) {
           </button>
           <EmojiPicker :open="emojiOpen" @select="insertEmoji" @close="closeEmoji" />
         </div>
+        <!-- 窗口抖动（仿 QQ）：仅单聊显示。点一下 ⇒ 对会话里最近一条已发出的消息发起强提醒，
+             对方窗口随即抖动。冷却期置灰防连抖；@mousedown.prevent 保持编辑器焦点。 -->
+        <button
+          v-if="shakeEnabled"
+          class="tap-safe flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-md)] transition"
+          :class="shakeCooling
+            ? 'cursor-default text-[var(--gosslan-text-2)] opacity-40'
+            : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
+          :disabled="shakeCooling"
+          :title="t('chat.composer.shake')" :aria-label="t('chat.composer.shake')"
+          @mousedown.prevent
+          @click="onShakeClick"
+        >
+          <Zap class="h-5 w-5" :stroke-width="1.75" />
+        </button>
         <!-- @mousedown.prevent 保持编辑器焦点：否则点击按钮后焦点落到按钮上，
              紧接着按 Enter 会激活按钮（把 codeMode 再切回去）而非走编辑器 keydown 发送。 -->
         <button

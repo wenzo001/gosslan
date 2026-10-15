@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use tauri::{
-    menu::{MenuBuilder, MenuItemBuilder},
+    menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Manager, WindowEvent,
 };
@@ -340,10 +340,20 @@ fn build_tray<R: tauri::Runtime>(
     state: &Arc<crate::state::AppState>,
 ) -> tauri::Result<()> {
     let show_item = MenuItemBuilder::with_id("show", "显示主窗口").build(app)?;
+    // 勿扰模式：**复用「通知总开关」**（`notify_enabled`，用户 2026-10-12 拍板）。
+    // 勾选态 = 勿扰开 = 通知关。勾/取消由 CheckMenuItem 自身翻转，事件里只落库 + 广播。
+    let dnd_on = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        !crate::db::get_config_bool(&dbc, "notify_enabled", true)
+    };
+    let dnd_item = CheckMenuItemBuilder::with_id("dnd", "勿扰模式")
+        .checked(dnd_on)
+        .build(app)?;
     let restart_item = MenuItemBuilder::with_id("restart", "重启").build(app)?;
     let quit_item = MenuItemBuilder::with_id("quit", "退出").build(app)?;
     let menu = MenuBuilder::new(app)
         .item(&show_item)
+        .item(&dnd_item)
         .item(&restart_item)
         .item(&quit_item)
         .build()?;
@@ -353,6 +363,32 @@ fn build_tray<R: tauri::Runtime>(
         .tooltip(tray_tooltip(state.is_zh(), 0))
         .on_menu_event(|app, event| match event.id().as_ref() {
             "show" => show_main_window(app),
+            "dnd" => {
+                // 勿扰模式 = 通知总开关取反（复用同一开关）。CheckMenuItem 点击时已自行翻转
+                // 勾选态，这里只把新值落库 + 同步缓存 + 广播给所有窗口（前端据此停止/恢复通知）。
+                let state = app.state::<std::sync::Arc<crate::state::AppState>>();
+                let now_on = {
+                    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                    crate::db::get_config_bool(&dbc, "notify_enabled", true)
+                };
+                let next = !now_on;
+                let patch = {
+                    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                    let _ = crate::db::set_setting(
+                        &dbc,
+                        "notify_enabled",
+                        if next { "1" } else { "0" },
+                    );
+                    // 与 settings.rs 的 patch 同形（前端按 camelCase 读）：只带这一个键。
+                    serde_json::json!({ "notifyEnabled": next })
+                };
+                state.cache_notify_enabled(next);
+                // origin 用哨兵 "tray"（不是任何窗口 label）：托盘菜单发起、没有"发起窗口"，
+                // 全部窗口都要收到这次变更（主窗的通知开关、设置窗都要跟着刷新）。
+                // 传 `Some(...)` 而非 `None` 是硬约定 —— events 守卫要求每个改设置的后端命令
+                // 都带 origin，避免"发起窗口收到自己事件"的回灌（见 `state.rs::notify_settings_changed`）。
+                state.notify_settings_changed(&["notifyEnabled"], Some("tray"), patch);
+            }
             "restart" => {
                 // 重启 = 释放网络资源（TCP listener / UDP socket / shutdown 任务）
                 // 后以同一可执行文件重新启动自身。

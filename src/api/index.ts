@@ -54,6 +54,7 @@ export const api = {
   getPeers: () => invoke<Peer[]>("get_peers"),
   searchNearbyPeers: () => invoke<Peer[]>("search_nearby_peers"),
   focusWindow: () => invoke<void>("focus_window"),
+  shakeWindow: () => invoke<void>("shake_window"),
   /**
    * 提请用户注意：Windows 闪任务栏按钮、macOS 弹跳 Dock 图标，直到窗口回到前台。
    *
