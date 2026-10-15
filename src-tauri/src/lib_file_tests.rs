@@ -399,3 +399,100 @@
             "核心函数不得碰 group_file_receivers：一碰就能把接收表的锁写回慢活的作用域"
         );
     }
+
+    /// 续传那格（4.40.1 登记的 ②，2026-10-15 收掉）：**整份 `.part` 前缀的校验必须交给阻塞线程池**。
+    ///
+    /// 为什么还要单独钉一条：4.39.3 交出的是单聊收尾、4.40.1 交出的是群收尾，而 Offer 分支里
+    /// `from_bytes > 0` 那一格一直没动 ⇒ "传到九成断链、对端来续传"时接收端仍会在几秒到几十秒里
+    /// 点什么都没反应（同一个 runtime 上还排着所有 async 开窗命令）。本机实测这条流式 SHA-256
+    /// ≈ 1 GB/s（256 MiB / 0.26 s，`python hashlib` 同分块尺寸现量），3 GB 前缀就是约 3 秒；
+    /// 精简 Windows 的冷盘上还要再乘一次读。
+    ///
+    /// 判据钉形状不钉行为：单元层拿不住"真实 GB 级文件 + 计时 + 看窗口点不点得动"，
+    /// 而形状一旦退化成同步调用，表现就是"续传时界面僵一下"，回查成本极高（同上一条守卫的理由）。
+    #[test]
+    fn resume_prefix_hash_runs_off_the_async_worker() {
+        let view = &crate::network::transport_src_for_guards();
+        let body = rust_fn_body(view, "async fn handle_file_messages(");
+        // 注释不计入判据（否则注释里复述一遍这句话就能把守卫喂绿）
+        let stripped: String = body
+            .lines()
+            .map(str::trim_start)
+            .filter(|t| !t.starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let flat = code_flat(&stripped);
+
+        // ★ 慢活整体交给阻塞线程池（写回成就地调用 = 把整份前缀哈希重新钉回 tokio worker）
+        assert!(
+            flat.contains("tokio::task::spawn_blocking(move||{file::resume_receive("),
+            "续传的整份前缀校验必须整体交给 spawn_blocking"
+        );
+        // 旧的同步形状不许回来
+        assert!(
+            !flat.contains("letreceived=iffrom_bytes>0{file::resume_receive("),
+            "旧的同步续传形状不许回来"
+        );
+
+        // 位置判据：交出的是**续传那一格**，不是随便某一格（两格对调不改变出现次数，
+        // 所以只数个数会漏 —— 这条与 4.40.2 那条"现取 socket"的教训同一种病）。
+        let at = flat.find("letreceived=iffrom_bytes>0{");
+        let arm_end = flat.find("}else{file::begin_receive(");
+        let bl = flat.find("tokio::task::spawn_blocking(");
+        let awaited = flat.find(".await.unwrap_or_else(|e|Err(format!(");
+        assert!(
+            at.is_some() && arm_end.is_some() && bl.is_some() && awaited.is_some(),
+            "判据锚点缺失（护栏需要同步更新）: if={at:?} else={arm_end:?} blocking={bl:?} await={awaited:?}"
+        );
+        let (at, arm_end, bl, awaited) = (at.unwrap(), arm_end.unwrap(), bl.unwrap(), awaited.unwrap());
+        assert!(
+            bl > at && bl < arm_end,
+            "spawn_blocking 必须就在续传那一格里（续传臂起点 {at}、臂尾 {arm_end}、实得 {bl}）：\
+             挪去新建接收器那一臂就是把没哈希的那一格交出去、而真正哈希的那格留在 worker 上"
+        );
+        assert!(
+            awaited > bl && awaited < arm_end,
+            "线程池的结果必须在续传臂内被接住（{bl} → {awaited} → 臂尾 {arm_end}）"
+        );
+        // JoinError 不许被当成成功：假装收到 Ok 会**回 Accept 却没注册接收器** ⇒ 整单静默死掉
+        assert!(
+            flat.contains(".await.unwrap_or_else(|e|Err(format!("),
+            "线程池中断必须落成 Err 走拒绝出口，不许 unwrap_or(Ok(..)) 假装成功"
+        );
+
+        // 生产调用点按数量说话（两个家必然漂移，与上面那两条守卫同一条规矩）
+        assert_eq!(
+            flat.matches("file::resume_receive(").count(),
+            1,
+            "续传只许有一个生产调用点"
+        );
+        assert_eq!(
+            flat.matches("file::begin_receive(").count(),
+            1,
+            "新建接收器同理只许一个调用点"
+        );
+
+        // ★ 反面的一半：被交出去的那份活儿**不许被删掉**。有人把守卫判绿的最短路径是
+        // 干脆不校验前缀（哈希器换成空的）—— 那会让"前缀被外部改过"永远查不出来。
+        let file_view = &crate::network::file_src_for_guards();
+        let core = rust_fn_body(file_view, "pub fn resume_receive(");
+        // 这一份**也必须去注释**：那句"这曾经是 std::fs::read(&tmp_path)"就写在注释里，
+        // 带着注释跑反面判据会当场假红（而正面判据带着注释则会假绿 —— 两个方向都得防）。
+        let core_stripped: String = core
+            .lines()
+            .map(str::trim_start)
+            .filter(|t| !t.starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let core_flat = code_flat(&core_stripped);
+        for keep in ["letmutbuf=vec![0u8;FILE_CHUNK];", "h.update(&buf[..n]);"] {
+            assert!(
+                core_flat.contains(keep),
+                "续传必须**逐块**把前缀喂进校验器（缺 `{keep}`：整份读入会占满内存，不读就是放行改过的前缀）"
+            );
+        }
+        assert!(
+            !core_flat.contains("std::fs::read(&tmp_path)"),
+            "不许退回整份读进内存的那一版（GB 级前缀 = 等量内存峰值）"
+        );
+    }
