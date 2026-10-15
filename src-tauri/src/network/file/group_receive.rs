@@ -140,3 +140,61 @@ pub fn fail_taken_group_receive(state: &AppState, r: &FileReceiver) {
         db::now_ms(),
     );
 }
+
+/// 摘出接收器之后的群文件**落盘收尾**：完整性裁决 → fsync → 改名落盘。
+///
+/// ⚠️ **这一整段必须在 `spawn_blocking` 里跑，不许退回 async 路径**（用户 2026-10-14 真机：
+/// 传 3.x GB 期间 Windows 点设置没窗、拖窗口没反应）。单聊那份收尾 4.39.3 已经交出去，
+/// 群这一处是**同一个根因的第二家**：SHA finalize + `sync_all()` + rename 是秒级到几十秒的
+/// GB 级磁盘慢活，原本由 `reader_loop` 的 tokio 任务直接跑 ⇒ 钉住一个 async worker，
+/// 而同一个 runtime 上还排着所有 `#[tauri::command(async)]`（开设置窗 / 日志窗）。
+///
+/// 与单聊 `finish_receiver_into` 同一条规矩：这个函数**不要 `AppState`**，只要摘出来的
+/// 接收器与下载目录 ⇒ "显示成功是不是真成功"第一次可以由**生产码**驱动单测
+/// （此前那四条群用例各自在测试里重写一遍操作序列，生产码改坏它们不红）。
+/// 它也拿不到 `group_file_receivers` 那张表 ⇒ "持锁做慢活"那个形状不可能从这里长回去。
+///
+/// 四个 `Err` 出口都清 `.part`，且调用方必须把每一格都停在终态：
+/// ① 字节数与声明的 `size` 不等（丢片/截断）；② 实际 SHA-256 与发送方声明不符
+/// （**含**"发送方没声明"—— 空期望值不通过，fail-closed）；③ fsync 失败；④ rename 失败。
+pub fn finish_group_receive_into(
+    mut r: FileReceiver,
+    downloads: &Path,
+) -> Result<PathBuf, String> {
+    if r.received != r.size {
+        let _ = std::fs::remove_file(&r.tmp_path);
+        return Err("文件传输未完成".to_string());
+    }
+    {
+        use sha2::Digest;
+        let actual_hex: String = r
+            .hasher
+            .clone()
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        if !actual_hex.eq_ignore_ascii_case(&r.expected_sha256) {
+            let _ = std::fs::remove_file(&r.tmp_path);
+            return Err("文件完整性校验失败".to_string());
+        }
+    }
+    // 改名前写透（这就是那段秒级慢活本体）
+    if r.file.sync_all().is_err() {
+        let _ = std::fs::remove_file(&r.tmp_path);
+        return Err("文件落盘失败".to_string());
+    }
+    // drop 句柄后才 rename（Windows 不允许 rename 一个还开着的文件）
+    drop(r.file);
+    // 最终名是"开始接收"那一刻定下的，而那时同样在途的同名传输还没落盘、`unique_path`
+    // 看不到它 ⇒ 两条同名传输可能选中同一个名字。落盘前再确认一次，被占走就换名。
+    // （单聊是在写盘时才定名，所以没有这个竞态 —— 这也是"群聊出问题、单聊正常"的原因。）
+    if r.final_path.exists() {
+        r.final_path = unique_path(downloads, &r.name);
+    }
+    if std::fs::rename(&r.tmp_path, &r.final_path).is_err() {
+        let _ = std::fs::remove_file(&r.tmp_path);
+        return Err("文件改名落盘失败".to_string());
+    }
+    Ok(r.final_path)
+}

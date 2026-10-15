@@ -277,7 +277,7 @@ async fn handle_group_file_done(
     }
 
     // 从接收表移除（取得所有权），做最终校验与落盘
-    let mut r = match state
+    let r = match state
         .group_file_receivers
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -287,53 +287,35 @@ async fn handle_group_file_done(
         None => return,
     };
 
-    // 1. size 校验：received 必须等于声明大小
-    if r.received != r.size {
-        let _ = std::fs::remove_file(&r.tmp_path);
-        set_gfile_bubble_status(state, &transfer_id, "failed");
-        state
-            .group_file_keys
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&transfer_id);
-        {
-            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-            let _ = db::update_group_file_recipient(
-                &dbc,
-                &transfer_id,
-                &state.device_id,
-                "failed",
-                0.0,
-            );
-            // 接收 transfer 同步 failed
-            db::upsert_transfer(
-                &dbc,
-                &transfer_id,
-                &sender_id,
-                &gf.name,
-                gf.size,
-                "receive",
-                "failed",
-                None,
-                0.0,
-            )
-            .ok();
-        }
-        send_group_file_complete_ack(state, &transfer_id, &group_id, &sender_id, false).await;
-        return;
-    }
-    // 2. SHA-256 校验：finalize 增量哈希（不重读 .part），与发送方声明比对
+    // 1-4. 最终校验（size + SHA-256）→ sync_all → drop → rename：**整段交给阻塞线程池**。
+    //
+    // 这段是 GB 级秒级到几十秒的磁盘慢活，原本直接在 `reader_loop` 的 tokio 任务里跑 ⇒ 钉住一个
+    // async worker，而同一个 runtime 上还排着所有 `#[tauri::command(async)]`（开设置窗/日志窗）⇒
+    // 用户真机那句"传大文件期间点设置没窗"。单聊那份收尾 4.39.3 已经交出去（`finish_receive`），
+    // 群这一处是**同一个根因的第二家**（4.39.4 评审登记、本轮收掉）。
+    //
+    // 四个失败出口原本各写一遍收尾，其中 **SHA-256 那一格漏了 `upsert_transfer`** ⇒ 校验失败时
+    // `file_transfers` 永远停在 `active`（另三格写 failed）。收成一份之后那一格不再可能单独漏。
+    let downloads = state
+        .downloads_dir
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let finalized = match tokio::task::spawn_blocking(move || {
+        file::finish_group_receive_into(r, &downloads)
+    })
+    .await
     {
-        use sha2::Digest;
-        let actual_hex: String = r
-            .hasher
-            .clone()
-            .finalize()
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
-        if !actual_hex.eq_ignore_ascii_case(&r.expected_sha256) {
-            let _ = std::fs::remove_file(&r.tmp_path);
+        Ok(res) => res,
+        Err(e) => Err(format!("群文件收尾任务被中断: {e}")),
+    };
+    let final_path = match finalized {
+        Ok(p) => p,
+        Err(why) => {
+            state.logger.warn(
+                "group_file",
+                format!("群文件收尾失败 transfer={transfer_id} 原因={why}"),
+            );
             set_gfile_bubble_status(state, &transfer_id, "failed");
             state
                 .group_file_keys
@@ -349,94 +331,24 @@ async fn handle_group_file_done(
                     "failed",
                     0.0,
                 );
+                // 接收 transfer 同步 failed（四种失败都要走到这一格，不许停在 active）
+                db::upsert_transfer(
+                    &dbc,
+                    &transfer_id,
+                    &sender_id,
+                    &gf.name,
+                    gf.size,
+                    "receive",
+                    "failed",
+                    None,
+                    0.0,
+                )
+                .ok();
             }
             send_group_file_complete_ack(state, &transfer_id, &group_id, &sender_id, false).await;
             return;
         }
-    }
-    // 3. sync_all：落盘前确保数据写透
-    if let Err(e) = r.file.sync_all() {
-        let _ = e.to_string();
-        let _ = std::fs::remove_file(&r.tmp_path);
-        set_gfile_bubble_status(state, &transfer_id, "failed");
-        state
-            .group_file_keys
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&transfer_id);
-        {
-            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-            let _ = db::update_group_file_recipient(
-                &dbc,
-                &transfer_id,
-                &state.device_id,
-                "failed",
-                0.0,
-            );
-            // 接收 transfer 同步 failed
-            db::upsert_transfer(
-                &dbc,
-                &transfer_id,
-                &sender_id,
-                &gf.name,
-                gf.size,
-                "receive",
-                "failed",
-                None,
-                0.0,
-            )
-            .ok();
-        }
-        send_group_file_complete_ack(state, &transfer_id, &group_id, &sender_id, false).await;
-        return;
-    }
-    // 4. drop 文件句柄后 rename（Windows 不允许 rename 打开中的文件）
-    drop(r.file);
-    // 最终名是"开始接收"时就定下的，那一刻同样在途的同名传输还没落盘、unique_path 看不到它
-    // → 两条同名传输可能选中同一个名字。这里在真正落盘前再确认一次：被占走就换名。
-    // （单聊路径本来就是在写盘时才定名，所以没有这个竞态——这也是"群聊出问题、单聊正常"的原因。）
-    if r.final_path.exists() {
-        let dl = state
-            .downloads_dir
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone();
-        r.final_path = file::unique_path(&dl, &r.name);
-    }
-    if std::fs::rename(&r.tmp_path, &r.final_path).is_err() {
-        let _ = std::fs::remove_file(&r.tmp_path);
-        set_gfile_bubble_status(state, &transfer_id, "failed");
-        state
-            .group_file_keys
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&transfer_id);
-        {
-            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-            let _ = db::update_group_file_recipient(
-                &dbc,
-                &transfer_id,
-                &state.device_id,
-                "failed",
-                0.0,
-            );
-            // 接收 transfer 同步 failed
-            db::upsert_transfer(
-                &dbc,
-                &transfer_id,
-                &sender_id,
-                &gf.name,
-                gf.size,
-                "receive",
-                "failed",
-                None,
-                0.0,
-            )
-            .ok();
-        }
-        send_group_file_complete_ack(state, &transfer_id, &group_id, &sender_id, false).await;
-        return;
-    }
+    };
     // 全部成功：正式文件已落盘 → completed / progress 1.0 → 气泡转 delivered → 清理
     {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -452,7 +364,7 @@ async fn handle_group_file_done(
             gf.size,
             "receive",
             "done",
-            Some(r.final_path.to_string_lossy().as_ref()),
+            Some(final_path.to_string_lossy().as_ref()),
             1.0,
         )
         .ok();
@@ -465,7 +377,7 @@ async fn handle_group_file_done(
             &gf.name,
             gf.size,
             crate::content::model::Direction::Receive,
-            &r.final_path.to_string_lossy(),
+            &final_path.to_string_lossy(),
             db::now_ms(),
         );
     }
@@ -506,7 +418,7 @@ async fn handle_group_file_done(
             kind: kind.to_string(),
             content: serde_json::json!({
                 "name": gf.name,
-                "path": r.final_path.to_string_lossy(),
+                "path": final_path.to_string_lossy(),
                 "size": gf.size,
                 "sha256": gf.sha256,
                 "subtype": subtype,
@@ -539,7 +451,7 @@ async fn handle_group_file_done(
                 transfer_id: transfer_id.to_string(),
                 name: gf.name.clone(),
                 size: gf.size,
-                path: r.final_path.to_string_lossy().to_string(),
+                path: final_path.to_string_lossy().to_string(),
             },
         );
     }

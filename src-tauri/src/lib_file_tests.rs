@@ -335,3 +335,67 @@
             "核心函数不得再碰 file_receivers 表：一碰就能把锁写回慢活的作用域（这条是结构性的）"
         );
     }
+
+    /// 群文件收尾的**同一格**（2026-10-15）：慢活必须整体在 `spawn_blocking` 里，
+    /// 而四种失败的终态收尾只许有**一个家**。
+    ///
+    /// 为什么要单独钉一条、不复用上面那条：4.39.3 只把单聊那份交出去，群那份
+    /// （`handle_group_file_done`）仍在 `reader_loop` 的 tokio 任务里做 GB 级 fsync + rename
+    /// ⇒ 传大群文件时"点设置没窗 / 拖窗口没反应"会原样复发。同时群那四个失败出口各写一遍
+    /// 收尾，其中 SHA-256 那一格漏了 `file_transfers` 的终态写（校验失败后那一行永远停在
+    /// `active`）。两条都是"同一个根因的第二个家"，而这类形状正好要靠一条**按数量**说话的守卫。
+    #[test]
+    fn group_receive_finalize_slow_work_runs_off_the_async_worker() {
+        let view = &crate::network::transport_src_for_guards();
+        let body = rust_fn_body(view, "async fn handle_group_file_done(");
+        let flat = code_flat(&body);
+        // ★ 慢活整体交给阻塞线程池（写回成就地调用 = 把 GB 级 fsync 重新钉回 tokio worker）
+        assert!(
+            flat.contains(
+                "tokio::task::spawn_blocking(move||{file::finish_group_receive_into(r,&downloads)})"
+            ),
+            "群收尾的校验+fsync+rename 必须整体交给 spawn_blocking（同一个 runtime 上还排着所有 async 开窗命令）"
+        );
+        // 摘表形状：接收器必须按 transfer_id 摘出后再收尾（摘在锁内、收在锁外）
+        assert!(
+            flat.contains(
+                ".group_file_receivers.lock().unwrap_or_else(|e|e.into_inner()).remove(&transfer_id)"
+            ),
+            "群接收器必须先按 transfer_id 摘出，锁不在慢活的作用域里"
+        );
+
+        // 终态收尾按数量说话：一失败一成功，各恰好一处。整行注释不计入分母（否则注释里
+        // 复述一遍这句话就能把判据喂绿）。
+        let stripped: String = body
+            .lines()
+            .map(str::trim_start)
+            .filter(|t| !t.starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let flat_no_comment = code_flat(&stripped);
+        assert_eq!(
+            flat_no_comment.matches("db::update_group_file_recipient(").count(),
+            2,
+            "recipient 终态写入必须恰好两处（失败一处 + 成功一处）；四个失败出口各写一遍就是漏改 SHA 那格的成因"
+        );
+        assert_eq!(
+            flat_no_comment.matches("db::upsert_transfer(").count(),
+            2,
+            "file_transfers 终态写入必须恰好两处 —— 少一处就意味着某种失败把那一行永远留在 active"
+        );
+
+        // 真正干活的那一份：三件慢活都还在，而且它拿不到接收表（结构性的，长不回去）
+        let core_view = &crate::network::file_src_for_guards();
+        let core = rust_fn_body(core_view, "pub fn finish_group_receive_into(");
+        let core_flat = code_flat(&core);
+        for slow in [".sync_all()", "hasher.clone().finalize()", "std::fs::rename("] {
+            assert!(
+                core_flat.contains(slow),
+                "慢活 {slow} 必须在 finish_group_receive_into 里（挪走≠删掉，掉了它这份文件永远不会落盘）"
+            );
+        }
+        assert!(
+            !core_flat.contains("group_file_receivers"),
+            "核心函数不得碰 group_file_receivers：一碰就能把接收表的锁写回慢活的作用域"
+        );
+    }

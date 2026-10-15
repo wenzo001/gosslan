@@ -390,22 +390,61 @@ pub fn run() {
                     let forced = std::env::var("GOSSLAN_AUTOSTART").ok().as_deref() == Some("1");
                     // 键缺失（首次安装 / 旧版本升级）→ 持久化为 true，之后每次启动
                     // 读到明确的 "1" 而非依赖 unwrap_or(true) 的隐式默认。
-                    let enabled = {
-                        let dbc = st.db.lock().unwrap_or_else(|e| e.into_inner());
-                        crate::db::get_lan_enabled(&dbc)
-                    };
-                    if enabled {
-                        // st 即将 move 进 start，先 clone 一份用于失败日志。
-                        let st_log = st.clone();
-                        let started = if forced {
-                            network::start(st, "0.0.0.0".to_string()).await
-                        } else {
-                            network::start_from_prefs(st).await
+                    //
+                    // ⚠️ 失败后要**继续试**（2026-10-15 全链路审计：旧写法试一次就放弃，
+                    // 而"auto 模式这一刻找不到可用网卡"与"发现套接字 bind/组播失败"都会在
+                    // 几十秒内自己变好 —— 开机自启跑在 DHCP 之前正是这个形状）。旧形状下
+                    // 本进程此后既没监听也没 announce，唯一出路是重启应用。
+                    // 间隔与停止条件都是 `network` 里的纯函数（有单测）。
+                    let mut attempt = 0u32;
+                    loop {
+                        // 每一轮都重读这个键：用户在设置里关掉 ⇒ 立刻收手，不得替他联网
+                        // （上面 2026-09-27 那段历史讲的是同一条规矩）。
+                        let enabled = {
+                            let dbc = st.db.lock().unwrap_or_else(|e| e.into_inner());
+                            crate::db::get_lan_enabled(&dbc)
                         };
-                        if let Err(e) = started {
-                            st_log
-                                .logger
-                                .error("lan", format!("自动开启局域网通道失败: {e}"));
+                        // 已经起来就不再插手（也包括用户或 harness 在重试窗口里自己打开的那次）。
+                        let running = st
+                            .network
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .is_some();
+                        if !network::should_keep_retrying_lan_autostart(running, enabled) {
+                            break;
+                        }
+                        let started = if forced {
+                            network::start(st.clone(), "0.0.0.0".to_string()).await
+                        } else {
+                            network::start_from_prefs(st.clone()).await
+                        };
+                        match started {
+                            Ok(()) => {
+                                if attempt > 0 {
+                                    // 恢复要留痕：没有这一行，"重试链后来自己通了"在日志里是看不见的
+                                    st.logger.info(
+                                        "lan",
+                                        format!("局域网通道在第 {} 次重试后开启成功", attempt),
+                                    );
+                                }
+                                break;
+                            }
+                            Err(e) => {
+                                attempt += 1;
+                                let delay = network::lan_autostart_delay(attempt);
+                                // 前 3 次与此后每 10 次各记一条：永久没有局域网的机器不该
+                                // 被这条重试链刷成每 30 秒一条 error。
+                                if attempt <= 3 || attempt % 10 == 0 {
+                                    st.logger.error(
+                                        "lan",
+                                        format!(
+                                            "自动开启局域网通道失败（第 {attempt} 次）: {e} —— {} 秒后自行重试，无需重启应用",
+                                            delay.as_secs()
+                                        ),
+                                    );
+                                }
+                                tokio::time::sleep(delay).await;
+                            }
                         }
                     }
                 });

@@ -75,6 +75,8 @@ async fn writer_loop(
     mut shutdown: watch::Receiver<bool>,
     // 本连接的取消信号（M3#6）：由健康 watchdog 在半开链路上触发。
     mut cancel: watch::Receiver<bool>,
+    // 同一条链路的**发送端**：写不出去时由这里点亮判死（与 watchdog 同一条出口）。
+    cancel_tx: watch::Sender<bool>,
 ) {
     let mut high_open = true;
     let mut normal_open = true;
@@ -151,6 +153,27 @@ async fn writer_loop(
                     }
                     // 这条连接已经写不出去了 —— 记一次失败，供 M3 的选路与收敛使用。
                     mark_conn_failure(&state, &peer_id, &endpoint);
+                    // ⚠️ 还必须**拆掉这一条链路**（2026-10-15 全链路审计的已证实缺陷）。
+                    // 旧形状是"记一次失败 + break"，链路仍留在 `state.links` 里 —— 于是形成
+                    // **单向黑洞**：本机的读半还活着（对端心跳照收 ⇒ `touch_peer` 把 peer 顶成在线，
+                    // 45s 读活性看门狗也不会 reap），而这一条的 writer 已经死了 ⇒
+                    //  · `try_send` 之后永远返回"连接已关闭"（outbound.rs 那份判定），消息只进 outbox；
+                    //  · `ensure_link` 的 `has_lan_path` 因为表里那条 LAN 链路还在而**拒绝重拨**；
+                    //  · `is_healthy` 对 1 次连续失败仍判健康。
+                    // 三者叠加 ⇒ 除非重启进程（或对方自己先拆）就再也发不出去，正是用户说的
+                    // "要双方反复重启应用才能恢复"。上面 `:113` 那句注释本来就写着"照旧走
+                    // 判死+拆链"，这一格是代码没跟上注释。
+                    //
+                    // 出口用**同一条**：点亮本链路的 cancel ⇒ reader_loop 在 `:191` 一起退出，
+                    // 由它那份收尾精确摘除本 channel（空了才删 key、mesh 层同步注销、必要时才标离线），
+                    // 不在这里重复实现一遍拆链。
+                    if log_throttled("writer_dead", 5_000) {
+                        state.logger.warn(
+                            "link",
+                            format!("写失败判死拆链 peer={peer_id} ep={endpoint}（读半可能仍活着，不算本机故障）"),
+                        );
+                    }
+                    let _ = cancel_tx.send(true);
                     break;
                 }
             }

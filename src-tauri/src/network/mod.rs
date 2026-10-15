@@ -214,6 +214,36 @@ pub async fn start_from_prefs(state: Arc<AppState>) -> Result<(), String> {
     }
 }
 
+/// 自动开启失败后**下一轮**的间隔（纯函数，便于单测）：5s → 10s → 20s → 30s 封顶。
+///
+/// 为什么必须有重试这条出口（2026-10-15 全链路审计，`lib.rs` 那份旧写法只试一次）：
+/// `start()` 会在两类"这一刻本机还没准备好"的情形下失败 ——
+/// ① auto 模式 `find_lan_interface()` 找不到可用网卡（开机自启跑在 DHCP 拿到地址之前，
+///    精简过的 Windows 镜像上驱动/服务起得更晚，这条尤其容易命中）；
+/// ② 发现用的 UDP 套接字 bind 或 `join_multicast_v4` 失败（接口刚起来还没就绪）。
+/// 两类都会在几十秒内自己变好，但旧写法失败后**本进程再也不会尝试联网**：日志里只有
+/// 一句"自动开启局域网通道失败"，之后既没有监听也没有 announce，对端也找不到本机 ⇒
+/// 唯一出路是重启应用。两台机器同时冷启动时就成了"要双方都重启才恢复"。
+///
+/// 这不是"加超时/加重试次数掩盖问题"：这一格缺的是**恢复路径本身**（代码里此前没有任何
+/// 第二次尝试），而失败原因与错误文本都还在日志里。
+pub(crate) fn lan_autostart_delay(attempt: u32) -> Duration {
+    let secs = match attempt.saturating_sub(1) {
+        0 => 5,
+        1 => 10,
+        2 => 20,
+        _ => 30,
+    };
+    Duration::from_secs(secs)
+}
+
+/// 下一轮还要不要再试（纯函数）：
+/// - 通道已经起来 ⇒ 收手（也包括用户自己在设置页打开的那次 ⇒ 不去打断它）；
+/// - 库里写着"关" ⇒ 收手，**不得替用户联网**（`lib.rs` 那段 2026-09-27 的历史同一条规矩）。
+pub(crate) fn should_keep_retrying_lan_autostart(running: bool, enabled: bool) -> bool {
+    !running && enabled
+}
+
 /// **只给源码守卫用**：`network/transport.rs` 已按 `commands.rs` 的先例分册
 /// （`include!` 进同一模块，运行时零差异），而守卫是用 `include_str!` 读**文件文本**的。
 /// 只读主文件会让搬进分册的代码 0 命中 ⇒ 守卫假红，而下一个人会以为红的是代码不是锚点。
@@ -408,5 +438,45 @@ mod tests {
             stopped.load(Ordering::SeqCst),
             "discovery 失败时必须等已启动的 transport 任务退出，不留半启动状态"
         );
+    }
+}
+
+// 自动开启局域网通道那条重试链的两个纯函数（2026-10-15 全链路审计）。
+//
+// 为什么钉这两个纯函数而不是端到端：`start()` 要 `AppState`（必须有真实 tauri `AppHandle`，
+// 单测造不出来），而这一格真正会错的是**判断**这两件事 ——
+// ① 什么时候该停（通道已经起来了 / 用户把开关关了），② 间隔是不是"越试越慢且有上限"。
+// 每条都配一反证，避免判据空转。
+#[cfg(test)]
+mod lan_autostart_tests {
+    use super::*;
+
+    #[test]
+    fn lan_autostart_backoff_grows_then_caps_at_thirty_seconds() {
+        let secs: Vec<u64> = (1..=8)
+            .map(|attempt| lan_autostart_delay(attempt).as_secs())
+            .collect();
+        assert_eq!(
+            secs,
+            vec![5, 10, 20, 30, 30, 30, 30, 30],
+            "退避节奏一变就得同步这里"
+        );
+        // 反证一：不许越试越快（重试风暴会去抢同一把 bind）
+        for w in secs.windows(2) {
+            assert!(w[1] >= w[0], "间隔必须单调不减");
+        }
+        // 反证二：不许没有上限
+        assert_eq!(lan_autostart_delay(u32::MAX).as_secs(), 30);
+    }
+
+    #[test]
+    fn lan_autostart_stops_when_running_or_switched_off() {
+        // 通道没起来 + 库里说开 ⇒ 继续试（这一格缺的就是它，旧代码等于永远 false）
+        assert!(should_keep_retrying_lan_autostart(false, true));
+        // 已经起来 ⇒ 收手（包括别人在重试窗口里手动打开的那次，不许打断）
+        assert!(!should_keep_retrying_lan_autostart(true, true));
+        // 库里说关 ⇒ 收手，不得替用户联网
+        assert!(!should_keep_retrying_lan_autostart(false, false));
+        assert!(!should_keep_retrying_lan_autostart(true, false));
     }
 }
