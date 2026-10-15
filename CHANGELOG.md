@@ -13,6 +13,49 @@
 
 ## [Unreleased]
 
+## [4.40.5] - 2026-10-15
+
+### 审计第五轮：INV-P34 的一处假前提被源码推翻，顺出三家新违规并一次搬完
+
+现象仍在问题 A 这一族（「接收端界面卡死或部分功能失效」）。4.40.4 写分母判据时，我把
+`#[tauri::command(async)]` 挂在**同步 fn** 上的命令判成"已经在运行时之外"，据此把
+`commands/group_todo_media.rs` 排除在法条之外。本轮读锁定版本源码，这条前提是错的：
+
+| 依据（锁定版本，不是 latest） | 事实 |
+|---|---|
+| `tauri-macros-2.6.3/src/command/wrapper.rs:249` | `ExecutionContext::Async` 一律生成 `respond_async_serialized(async move { 函数(...) })` —— 同步命令的**函数调用就在 async 块里** |
+| `tauri-2.11.5/src/ipc/mod.rs:375` | 那个 future 由 `crate::async_runtime::spawn` 投递 ⇒ 命令体跑在 **tokio worker**，不是阻塞线程池 |
+| 同文件 `wrapper.rs:264` 的 `kind = "sync_threadpool"` | 只是 tracing 标签，不承担调度语义 —— 我上一轮正是被它误导 |
+| 本仓 `src-tauri/src/lib_window_tests.rs:225` | 那条守卫自己的注释早就写着同一句依据；我没读它就把例外写了进去 |
+
+于是"例外"变成漏网。按形状现数（排除测试册、去重）：全仓 121 处 `command(async)` 标记里 **79 处挂在同步 fn 上**，
+其中体内出现整文件级慢活的 5 处逐行核过属性紧贴 `pub fn`，三处无体积上限或属同一法条管辖：
+`commands/helpers.rs:7 copy_file`（另存为，拷任意大小接收文件）、`commands/favorites.rs:103 add_favorite`
+（收藏，`std::fs::copy` 拷**原文件**、全仓唯一无上限的一格）、`commands/group_todo_media.rs:46 todo_image_meta`
+（整图 SHA-256，被 10 MiB 体积闸管住 —— 有界也不开例外，理由写在函数注释里）。另外两处预览
+（`read_file_preview` / `read_favorite_preview` / `read_content_preview`）都被同一体内
+`max_bytes.min(15 MiB)` 管住，登记为**契约**而非尺子管辖。
+
+修法与前三轮同一条：只换执行线程（`tokio::task::spawn_blocking` + 命令改 `async fn`），状态机、错误文案、
+返回类型一字不动；前端零改动（`src/api/index.ts:313`、`:342` 本来就是 `invoke(...)` 吃 promise）。
+登记项 ⑦ 随之**降级**：`read_file_preview` 不在主线程、且有 15 MiB 上限，原假设"界面线程上做 15 MiB"
+这一半已被源码证伪；剩下要真机量的只有前端那半（15 MiB 字节进 JS 后解析/Blob 化的主线程耗时）。
+
+判据侧扩了一格（不是新写一条）：`tests::whole_file_slow_work_never_runs_on_an_async_worker` 的体起点
+从只认 `async fn` 扩到也认"紧贴 `command(async)]` 的同步 `fn`"，PRIMITIVES 由 7 个加到 8 个（`std::fs::copy(`）。
+分母随实测前移：**现算 13 处 / 11 册**（新增 `commands/favorites.rs`、`commands/group_todo_media.rs`、`commands/helpers.rs`），
+`std::fs::read(` 有意不数 —— 它与"读一份 8 KB 配置"字面同形，数进来尺子就成噪声。
+先跑等价尺子定作用面：它在"今天的规则"下复现已提交断言的 10 处 / 8 册 / 0 offenders（阳性对照通过），
+扩展后报出恰为那三处 ⇒ 断言数字不是猜的。变异配对实测：把 `copy_file` 退回旧形状（同步 fn + 直接 `fs::copy`，
+可编译）⇒ 那条判据红且**只点名** `commands/helpers.rs [std::fs::copy(`（命中 1 处），恢复即绿。
+测试名未增删 ⇒ 两份基线文件不动（860 / 848）。
+
+同轮另两处：`scripts/guard_cases/toolchain.py` 里 force push 那条护栏用例的范围钉死（它此前被未推送
+历史的预算欠账牵着红，机格还印成"源码或环境已被破坏"）；移动端编译门禁本机首次跑通（`aarch64` 两档 0 warning）。
+
+**没动的**：判据 3 的重复犯案红灯照旧（transport 在未推送窗口第 4 次 + 21aa0dd 缺 `Version-Bump:`），
+它要的是分片推与补声明，不是再改代码；问题 B 一侧本轮零改动；登记项 ③④⑥⑧⑨ 仍在原处。
+
 ## [4.40.4] - 2026-10-15
 
 ### 全链路稳定性审计第四轮：INV-P34 那一族的**剩余四家一次搬完**，并把"同一条根因会长新家"钉成分母判据

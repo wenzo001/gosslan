@@ -43,7 +43,7 @@ pub(crate) fn todo_image_size_guard(len: u64) -> Result<(), String> {
 /// 记的是用户原路径，落在 `media_dirs`（downloads/cache/favorites）之外 ⇒ 缓存清理
 /// （`cache_cleaner` 只删那三个目录内的文件）**动不到**用户的原始文件。
 #[tauri::command(async)]
-pub fn todo_image_meta(
+pub async fn todo_image_meta(
     state: State<'_, Arc<AppState>>,
     path: String,
 ) -> Result<crate::protocol::TodoImage, String> {
@@ -55,7 +55,17 @@ pub fn todo_image_meta(
     // 体积闸放在**这里**而不是只放前端：Android 选图 / 桌面粘贴 / 桌面拖入三条入口最终都要经过
     // 这道元数据命令，所以它是唯一能一次覆盖三条路的落点（前端的同名判断只是"别把超限的图读进 JS 堆"的前置省功）。
     todo_image_size_guard(meta.len())?;
-    let sha256 = file::sha256_file_hex(p)?;
+    // ⚠️ INV-P34：同步 fn 挂 `#[tauri::command(async)]` 不等于离开运行时 —— 宏把函数体塞进
+    // `async_runtime::spawn` 的 future（tauri-macros 2.6.3 `command/wrapper.rs:249` +
+    // tauri 2.11.5 `ipc/mod.rs:375`），跑的是 tokio worker，和开窗命令、网络任务同池。
+    // 10 MiB 的整图哈希虽是有界的一格，但同一条法不能"有界就例外"——否则下一个改体积闸的人
+    // 不会想起这里。顺序与错误出口一字未改。
+    let hash_path = path.clone();
+    let sha256 = tokio::task::spawn_blocking(move || {
+        file::sha256_file_hex(std::path::Path::new(&hash_path))
+    })
+    .await
+    .unwrap_or_else(|e| Err(format!("待办图片哈希任务被线程池中断: {e}")))?;
     let name = p
         .file_name()
         .map(|n| n.to_string_lossy().to_string())

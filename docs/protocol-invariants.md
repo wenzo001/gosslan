@@ -1361,7 +1361,7 @@ mesh 没有服务器也没有强制升级 ⇒ 混合版本是常态，不是边�
 | 同一条好友同意在同一进程里到达第二次（INV-P33） | 只有"从不是好友变成好友"那一次弹；第二次 `was_friend=true` ⇒ 不弹，`friend-accepted` 事件照常发 |
 | 把首次判定硬编码（`friend_request_arrival_decision(true)`）或写反成 `is_some`（INV-P33 反向） | `tests::every_friend_request_path_notifies_only_on_first_sighting` 红，且 `guards:好友申请的通知只在第一次到达时弹` 那条注入把同一份判据再红一次；把 `if was_friend` 门控摘掉 ⇒ 同意那一支的形状断言红 |
 | 接收端**重启后**又收到同一条申请（INV-P33 的边界，不是判据） | 今天**会再弹一次** —— 申请只活在内存里（库里没有那张表），所以本条只承诺同一进程生命周期内不重复；这一格留在下面「边界」里待拍板，别把它写成已解决 |
-| 大文件的 GB 级慢活跑在哪条线程上（INV-P34） | 登记在册的七处（单聊收尾、群收尾、续传前缀校验、中继发送前整份哈希、中继重组含完成片 fsync、中继接收整份校验、中继落盘）必须整体在**阻塞线程池**里跑 ⇒ 传输期间开设置窗 / 拖窗口照常。本条不承诺"传得更快"，只承诺"不钉住 tokio worker"（同一个 runtime 上还排着所有 `#[tauri::command(async)]`） |
+| 大文件的 GB 级慢活跑在哪条线程上（INV-P34） | 登记在册的十处（单聊收尾、群收尾、续传前缀校验、中继发送前整份哈希、中继重组含完成片 fsync、中继接收整份校验、中继落盘、另存为整文件复制、收藏整文件复制、待办图整图哈希）必须整体在**阻塞线程池**里跑 ⇒ 传输期间开设置窗 / 拖窗口照常。本条不承诺"传得更快"，只承诺"不钉住 tokio worker"（同一个 runtime 上还排着所有 `#[tauri::command(async)]`） |
 | 把其中任意一处写回成就地调用（INV-P34 反向之一） | 对应那条具名判据红：`tests::receive_finalize_slow_work_happens_outside_the_receiver_lock` / `tests::group_receive_finalize_slow_work_runs_off_the_async_worker` / `tests::resume_prefix_hash_runs_off_the_async_worker` |
 | 把 `spawn_blocking` 交出去但把线程池的 `Err` 伪装成 `Ok`（INV-P34 反向之二） | `tests::resume_prefix_hash_runs_off_the_async_worker` 红在"结果必须在续传臂内被接住"那一格 —— 假装成功会**回 Accept 却没注册接收器**，整单静默死掉 |
 | 把被交出去的那份活儿删掉（INV-P34 反向之三，最短的消红路径） | 同一批判据的反面那格红（收尾三件慢活 / 逐块喂校验器必须还在原函数里）；挪走 ≠ 删掉 |
@@ -1466,21 +1466,23 @@ mesh 没有服务器也没有强制升级 ⇒ 混合版本是常态，不是边�
 
 | # | 规则 | 今天靠什么成立（逐个指到实物） |
 |---|---|---|
-| 1 | 登记在册的七处慢活必须**整体**交给阻塞线程池，不许留在 async 路径上 | 单聊收尾 `finish_receiver_into` 与群收尾 `finish_group_receive_into` 由 `tests::receive_finalize_slow_work_happens_outside_the_receiver_lock`、`tests::group_receive_finalize_slow_work_runs_off_the_async_worker` 钉；续传前缀校验 `file::resume_receive` 由 `tests::resume_prefix_hash_runs_off_the_async_worker` 钉（调用点在 `network/transport/handle_file.rs` 的 `from_bytes > 0` 那一臂）；中继链那四格由 `tests::relay_file_lifecycle_slow_work_runs_off_the_async_worker` 一格一条钉（发送前哈希、完成片 fsync、整份校验、落盘） |
+| 1 | 登记在册的十处慢活必须**整体**交给阻塞线程池，不许留在 async 路径上 | 单聊收尾 `finish_receiver_into` 与群收尾 `finish_group_receive_into` 由 `tests::receive_finalize_slow_work_happens_outside_the_receiver_lock`、`tests::group_receive_finalize_slow_work_runs_off_the_async_worker` 钉；续传前缀校验 `file::resume_receive` 由 `tests::resume_prefix_hash_runs_off_the_async_worker` 钉（调用点在 `network/transport/handle_file.rs` 的 `from_bytes > 0` 那一臂）；中继链那四格由 `tests::relay_file_lifecycle_slow_work_runs_off_the_async_worker` 一格一条钉（发送前哈希、完成片 fsync、整份校验、落盘）；4.40.5 又收三格：另存为 `commands::copy_file`、收藏 `commands::add_favorite`、待办图元数据 `commands::todo_image_meta` —— 它们原先是**同步 fn 挂 `#[tauri::command(async)]`**，曾被判成'已在池外'（见下面那条更正），现由分母判据按形状盯着 |
 | 2 | 判据要按**位置**钉，只数出现次数不算钉住 | 第三条判据同时断言"交出点在续传臂的起点与 `else` 臂之间"——把那一行整体挪出循环/挪到别的臂，出现次数一点不变（4.40.2 那条"现取 socket"的判据就是这么被抓出半空的） |
 | 3 | 交出执行上下文**不等于**可以丢掉那份活儿 | 被交出去的那一段必须还在原地做完整的事（收尾的校验 + fsync + rename；续传的**逐块**喂校验器）。把哈希换成空的是最短的"消红"路径，各条判据的反面那格专门拦它 |
 | 4 | 线程池的结果不许被吞 | `JoinHandle` 的 `Err` 必须落成 `Err` 走既有拒绝出口。写成 `unwrap_or(Ok(..))` 会**回 Accept 却没注册接收器** ⇒ 整单静默死掉，比原 bug 更糟 |
 | 5 | 慢活不许持接收表的锁（这一半不由本条管） | 由 INV-P28 负责（摘表与判据同一次持锁、收尾只吃已摘出的那份）；本条只管"在哪条线程上跑"，两条判据互补不重叠 |
-| 6 | **家清单**是法条的一部分：新增一处慢活不许悄悄出现 | `tests::whole_file_slow_work_never_runs_on_an_async_worker` 遍历生产码（跳 `gen/` 与 `*_tests.rs`），对每个 `async fn` 体用一条词法判据「慢活调用前面最近的 `spawn_blocking(` 与它之间不许出现 `.await`」，并把**现算处数**与**落在哪几册**都钉成登记值（判据自己打印分母，另有"文件数 > 100"的阳性对照拦"尺子空转"） |
+| 6 | **家清单**是法条的一部分：新增一处慢活不许悄悄出现 | `tests::whole_file_slow_work_never_runs_on_an_async_worker` 遍历生产码（跳 `gen/` 与 `*_tests.rs`），对每个**跑在池上的体**用一条词法判据（体起点认两种：`async fn`，以及紧贴 `#[tauri::command(async)]` 的同步 `fn`）「慢活调用前面最近的 `spawn_blocking(` 与它之间不许出现 `.await`」，8 个 primitive 里 `std::fs::copy(` 是 4.40.5 补的（整份复制随文件大小线性长），而 `std::fs::read(` **故意不进**—— 它与'读一份 8 KB 配置'字面同形，数进来等于把尺子稀释成噪声；预览那三格的有界性由同一体内的 `max_bytes.min(15 MiB)` 保证，那是**契约**不是尺子。并把**现算处数**与**落在哪几册**都钉成登记值（判据自己打印分母，另有"文件数 > 100"的阳性对照拦"尺子空转"） |
 
-**边界（如实写下，别当成已解决）**：七处家今天都在池子里了，但**这条法仍有两处买不到的地方**，都由 4.40.4 那次变异实测确认、不是推测：
+**更正（2026-10-15，读过锁定版本源码后推翻本条此前的一句依据）**：`#[tauri::command(async)]` 挂在**同步 fn** 上**不是**豁免 —— 宏对 `ExecutionContext::Async` 一律生成 `respond_async_serialized(async move { 函数(...) })`（tauri-macros 2.6.3 那份 wrapper.rs 的第 249 行），那个 future 由 `async_runtime::spawn` 投递（tauri 2.11.5 那份 mod.rs 的第 375 行）⇒ 命令体跑在 **tokio worker**，不是阻塞线程池。宏里那句 `kind = "sync_threadpool"` 只是 tracing 标签，别据它推执行上下文。本仓 `lib_window_tests.rs:225` 那条守卫自己的依据句写的正是同一事实，4.40.4 却反过来拿它当例外，于是漏掉三格（收藏/另存为/待办图）。
+
+**边界（如实写下，别当成已解决）**：十处家今天都在池子里了，但**这条法仍有两处买不到的地方**，都由 4.40.4 那次变异实测确认、不是推测：
 ① 分母判据认的是**名字** —— 以后新增一类"同步 helper 里藏着整份慢活"（新的函数名），不在那份清单里就看不见 ⇒ 加名字时要连同台账第 13 行一起说一句；
 ② "包进了池子但不等它"（丢掉 JoinHandle）分母**判绿**，只有按格点名那条判据红 —— 两次单点变异各红一条，正是为了把这个差别留在纸面上。
-另有一格在**前端且本轮没判**：macOS WKWebView 上 `read_file_preview` 的字节若以 `number[]` 形态回传，最大 15 MiB 要在主线程解析（`src-tauri/src/commands/helpers.rs:177` 与 `src/utils/filePreview.ts:191` 的说法是否仍成立，需要真机量一次主线程耗时才能判）。别把本条读成"全仓再无慢活钉在界面线程或 worker 上"。
+登记项 ⑦ 已**降级但仍没判**：`read_file_preview` 那一格本身在 worker 上（见上面那条更正）、且被同一体内的 15 MiB 上限管住，所以它不再是'界面线程上的 15 MiB'这一形状；剩下要真机量的只有**前端那半**（15 MiB 字节进 JS 后解析/建 Blob 的主线程耗时，`src/utils/filePreview.ts`）。别把本条读成'全仓再无慢活钉在界面线程或 worker 上'。别把本条读成"全仓再无慢活钉在界面线程或 worker 上"。
 
 - 钩子：`tests::receive_finalize_slow_work_happens_outside_the_receiver_lock` `tests::group_receive_finalize_slow_work_runs_off_the_async_worker` `tests::resume_prefix_hash_runs_off_the_async_worker` `tests::relay_file_lifecycle_slow_work_runs_off_the_async_worker` `tests::whole_file_slow_work_never_runs_on_an_async_worker`
 - 反向：把任一处写回成就地调用 ⇒ 对应那条红；把交出的动作挪到别的臂/别的函数 ⇒ 位置那格红；
   把线程池的 `Err` 伪装成 `Ok` ⇒ 假成功那格红；删掉被交出去的那份活儿 ⇒ 反面那格红；
-  包了却不 `.await` ⇒ 按格点名那条红、分母那条绿（盲区，实测）；在已登记的册里新增一处没包的慢活 ⇒ 分母红在处数与 offenders 两处。
+  包了却不 `.await` ⇒ 按格点名那条红、分母那条绿（盲区，实测）；在已登记的册里新增一处没包的慢活 ⇒ 分母红在处数与 offenders 两处；在一台同步命令（挂 `command(async)`）里新增整份复制/哈希 ⇒ 分母红在 offenders 那一格（4.40.5 实测：把 `copy_file` 退回旧形状，只红 1 处且点名 `commands/helpers.rs [std::fs::copy(`）。
   ⚠️ **不许**为了消红去改这三条判据的锚点形状，也不许去改 Change Budget 的领域映射或窗口大小 ——
   这条不变量存在的意义就是"下一个家必须被同一族判据当场抓住"，而不是让窗口清掉。

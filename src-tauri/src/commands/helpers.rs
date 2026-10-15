@@ -4,7 +4,7 @@
 
 /// 将文件从 source 复制到 destination（用于"另存为"下载功能）。
 #[tauri::command(async)]
-pub fn copy_file(source: String, destination: String) -> Result<(), String> {
+pub async fn copy_file(source: String, destination: String) -> Result<(), String> {
     // Android 的「另存为」对话框返回的是 content:// URI，std::fs::copy 写不了，
     // 必须经 ContentResolver（见 android_open::save_path / OpenWith.saveWith）。
     #[cfg(target_os = "android")]
@@ -13,7 +13,19 @@ pub fn copy_file(source: String, destination: String) -> Result<(), String> {
             return crate::android_open::save_path(&source, &destination);
         }
     }
-    std::fs::copy(&source, &destination).map_err(|e| e.to_string())?;
+    // ⚠️ INV-P34：`#[tauri::command(async)]` 挂在**同步 fn** 上不是豁免 —— 宏把整个函数体
+    // 放进 `async_runtime::spawn` 的 future 里（tauri-macros 2.6.3 `command/wrapper.rs:249` +
+    // tauri 2.11.5 `ipc/mod.rs:375`），跑的是 tokio **worker**，和所有 async 开窗命令、网络任务同池；
+    // 本仓 `lib_window_tests.rs:225` 那条守卫的自述也是这句。"另存为"拷的是任意大小的接收文件
+    // ⇒ 600 MB 就把一个 worker 按在磁盘复制上数秒。这里只换执行线程，签名与错误出口一字未改。
+    let copied = {
+        let s = source.clone();
+        let d = destination.clone();
+        tokio::task::spawn_blocking(move || std::fs::copy(&s, &d).map_err(|e| e.to_string()))
+            .await
+            .unwrap_or_else(|e| Err(format!("另存复制任务被线程池中断: {e}")))
+    };
+    copied?;
     Ok(())
 }
 

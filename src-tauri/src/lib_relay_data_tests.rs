@@ -438,7 +438,10 @@
     /// 所以清单本身就是法条的一部分，加名字时要在 `docs/migration-ledger.md` 第 13 行说一句。
     #[test]
     fn whole_file_slow_work_never_runs_on_an_async_worker() {
-        const PRIMITIVES: [&str; 7] = [
+        // `std::fs::copy(` 是 2026-10-15 补的第八个：收藏 / 另存为拷的都是**没有体积上限**的整份文件。
+        // 反过来，`std::fs::read(` 不进来 —— 它和"读一份 8 KB 配置"字面同形，按字面数会把尺子稀释成
+        // 噪声；预览那三格的真有界性由同一体内的 `max_bytes.min(15 MiB)` 保证，那是**契约**不是尺子。
+        const PRIMITIVES: [&str; 8] = [
             "sha256_file_hex(",
             "sync_all()",
             "add_chunk(",
@@ -446,10 +449,14 @@
             "finish_receiver_into(",
             "finish_group_receive_into(",
             "move_received_file(",
+            "std::fs::copy(",
         ];
         // 登记好的"家"（顺序即排序后的比较顺序）。
         let registered: Vec<&str> = vec![
+            "commands/favorites.rs",
             "commands/group_announcements.rs",
+            "commands/group_todo_media.rs",
+            "commands/helpers.rs",
             "commands/mobile_picker.rs",
             "network/file/receive.rs",
             "network/file/relay_push.rs",
@@ -503,6 +510,15 @@
             let full = f.to_string_lossy().replace('\\', "/");
             let rel = full.rsplit("/src/").next().unwrap_or(&full).to_string();
             let mut hit_here = false;
+            // 「跑在池上的体」有两种（2026-10-15 补第二种，此前整格看不见）：
+            // ① `async fn`；② 挂了 `#[tauri::command(async)]` 的**同步 fn**。
+            // 第二种不是豁免：读过锁定版本源码 —— 宏对 `ExecutionContext::Async` 一律生成
+            // `respond_async_serialized(async move { 函数(...) })`（tauri-macros 2.6.3
+            // `command/wrapper.rs:249`），而那个 future 被 `async_runtime::spawn` 投递
+            // （tauri 2.11.5 `ipc/mod.rs:375`） ⇒ 同步命令体同样占 tokio worker。本仓
+            // `lib_window_tests.rs:225` 那条守卫自己的依据句写的就是这一句，此前 INV-P34 却
+            // 反过来把它当成"已在池外"，于是 favorites / helpers / group_todo_media 三处漏网。
+            let mut segs: Vec<(usize, usize)> = Vec::new();
             let mut at = 0usize;
             while let Some(k) = body[at..].find("async fn ") {
                 let start = at + k;
@@ -510,6 +526,33 @@
                     .find("\n}")
                     .map(|i| start + i)
                     .unwrap_or(body.len());
+                segs.push((start, end));
+                at = start + "async fn ".len();
+            }
+            {
+                const MARKER: &str = "command(async)]";
+                let mut at = 0usize;
+                while let Some(k) = body[at..].find(MARKER) {
+                    let from = at + k + MARKER.len();
+                    let Some(f) = body[from..].find("fn ") else {
+                        at = from;
+                        continue;
+                    };
+                    let start = from + f;
+                    // 紧贴的已是 `async fn` ⇒ 上面那一支数过了，这里不重复数。
+                    if body[from..start].contains("async") {
+                        at = start;
+                        continue;
+                    }
+                    let end = body[start..]
+                        .find("\n}")
+                        .map(|i| start + i)
+                        .unwrap_or(body.len());
+                    segs.push((start, end));
+                    at = start + MARKER.len();
+                }
+            }
+            for (start, end) in segs {
                 let seg = &body[start..end];
                 for pr in PRIMITIVES {
                     let mut p = 0usize;
@@ -523,13 +566,12 @@
                             .unwrap_or(false);
                         if !wrapped {
                             offenders.push(format!(
-                                "{rel}  [{pr}]  ← async fn 体内、前面最近的 spawn_blocking 与它之间已经 .await（或根本没有）"
+                                "{rel}  [{pr}]  ← 跑在池上的体内、前面最近的 spawn_blocking 与它之间已经 .await（或根本没有）"
                             ));
                         }
                         p = call + pr.len();
                     }
                 }
-                at = start + "async fn ".len();
             }
             if hit_here {
                 homes.push(rel);
@@ -543,8 +585,8 @@
         );
         assert_eq!(
             total,
-            10,
-            "整份慢活现数到 {total} 处、登记 10 处。对不上时先分清哪一种：\\n             ① 新增的是**合规**的一格（也在池里跑）⇒ 把这一格数与 `homes` 清单一起改上来，\\n             ② 新增的是**没包的** ⇒ 先搬进 spawn_blocking（同链已有 10 处写法可抄），\\n             ③ 改了 helper 的名字 ⇒ PRIMITIVES 清单要同步，否则这条法就悄悄少了一格。"
+            13,
+            "整份慢活现数到 {total} 处、登记 13 处。对不上时先分清哪一种：\\n             ① 新增的是**合规**的一格（也在池里跑）⇒ 把这一格数与 `homes` 清单一起改上来，\\n             ② 新增的是**没包的** ⇒ 先搬进 spawn_blocking（同链已有 13 处写法可抄），\\n             ③ 改了 helper 的名字 ⇒ PRIMITIVES 清单要同步，否则这条法就悄悄少了一格。"
         );
         assert!(
             offenders.is_empty(),
