@@ -616,11 +616,19 @@ CASES: list[Case] = [
         # `sha256_file_hex(`」「不得有 `.hasher`」⇒ 不是谁弄坏了锚点，是**守卫变强后旧坏法写不出来了**。
         # 新坏法取今天真能编译的退化形状（整份 fs::read 进内存再 digest）：一次踩中两条断言，
         # 且正是 P4 要消灭的「内存峰值 ≈ 2× 文件大小」。
+        # 锚点第二次死（2026-10-15，4.40.4）：这次不是守卫变强，是**那一行的形状搬家了** ——
+        # 整份哈希从「就地 match file::sha256_file_hex(&part_path)」改成先 spawn_blocking().await
+        # 再 match ⇒ 锚点字面随之失效，起跑前静态核对 0.3s 报红、一条测试都没跑（省下整轮时间）。
+        # 新锚点取「交出 → await → 兜底」那三行（全 network 树现数唯一）；坏法把整份哈希换回
+        # 「整读进内存 + digest」：既**删掉** sha256_file_hex( 这一格、又**引入** Sha256::digest(&
+        # ⇒ 一次踩中两条断言，报的还是「完整性校验必须对…」那一条。闭包包住 `?` 是必须的 ——
+        # 处理函数返回 ()，裸 `?` 编译不过（编译不过不能算判据抓到了）。
+        # 教训：按形状钉的判据，搬家式修复要同批改注入锚点；而「静态核对锚点」那一步就是为这一刻。
         # ⚠️ 上一版注释里「把 r.hasher 塞回去」那个方案**编译不过**（Reassembly 早已没有该字段，
         #    而那字面量正是断言①要抓的）⇒ 守卫变强时不许凭猜写新锚点，先确认新形状可编译。
         injections=[(
-            "            let actual_hex = match file::sha256_file_hex(&part_path) {\n",
-            "            let actual_hex = match (|| -> Result<String, String> {\n                use sha2::{Digest, Sha256};\n                let __b = std::fs::read(&part_path).map_err(|e| e.to_string())?;\n                Ok(Sha256::digest(&__b).iter().map(|b| format!(\"{b:02x}\")).collect())\n            })() {\n",
+            '                tokio::task::spawn_blocking(move || file::sha256_file_hex(&p))\n                    .await\n                    .unwrap_or_else(|e| Err(format!("中继哈希任务被线程池中断: {e}")))\n',
+            '                (|| -> Result<String, String> {\n                    use sha2::{Digest, Sha256};\n                    let __b = std::fs::read(&p).map_err(|e| e.to_string())?;\n                    Ok(Sha256::digest(&__b).iter().map(|b| format!("{b:02x}")).collect())\n                })()\n',
         )],
         cmd=cargo("test", "--lib", "relay_receive_hashes_assembled_plaintext_once"),
         cwd=TAURI,
