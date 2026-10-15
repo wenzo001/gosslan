@@ -1361,6 +1361,11 @@ mesh 没有服务器也没有强制升级 ⇒ 混合版本是常态，不是边�
 | 同一条好友同意在同一进程里到达第二次（INV-P33） | 只有"从不是好友变成好友"那一次弹；第二次 `was_friend=true` ⇒ 不弹，`friend-accepted` 事件照常发 |
 | 把首次判定硬编码（`friend_request_arrival_decision(true)`）或写反成 `is_some`（INV-P33 反向） | `tests::every_friend_request_path_notifies_only_on_first_sighting` 红，且 `guards:好友申请的通知只在第一次到达时弹` 那条注入把同一份判据再红一次；把 `if was_friend` 门控摘掉 ⇒ 同意那一支的形状断言红 |
 | 接收端**重启后**又收到同一条申请（INV-P33 的边界，不是判据） | 今天**会再弹一次** —— 申请只活在内存里（库里没有那张表），所以本条只承诺同一进程生命周期内不重复；这一格留在下面「边界」里待拍板，别把它写成已解决 |
+| 大文件的 GB 级慢活跑在哪条线程上（INV-P34） | 单聊收尾、群收尾、续传前缀校验这三处必须整体在**阻塞线程池**里跑 ⇒ 传输期间开设置窗 / 拖窗口照常。本条不承诺"传得更快"，只承诺"不钉住 tokio worker"（同一个 runtime 上还排着所有 `#[tauri::command(async)]`） |
+| 把其中任意一处写回成就地调用（INV-P34 反向之一） | 对应那条具名判据红：`tests::receive_finalize_slow_work_happens_outside_the_receiver_lock` / `tests::group_receive_finalize_slow_work_runs_off_the_async_worker` / `tests::resume_prefix_hash_runs_off_the_async_worker` |
+| 把 `spawn_blocking` 交出去但把线程池的 `Err` 伪装成 `Ok`（INV-P34 反向之二） | `tests::resume_prefix_hash_runs_off_the_async_worker` 红在"结果必须在续传臂内被接住"那一格 —— 假装成功会**回 Accept 却没注册接收器**，整单静默死掉 |
+| 把被交出去的那份活儿删掉（INV-P34 反向之三，最短的消红路径） | 同一批判据的反面那格红（收尾三件慢活 / 逐块喂校验器必须还在原函数里）；挪走 ≠ 删掉 |
+| 中继收发的整份哈希与 `move_received_file`（INV-P34 的边界，不是判据） | 今天**仍在 async 路径上**（`src-tauri/src/network/file/relay_push.rs:63`、`src-tauri/src/network/transport/relay_file.rs:286` 与 `:352`）⇒ 本条只承诺已收口的三处，别把它读成"全仓再无慢活钉 worker" |
 
 ---
 
@@ -1443,3 +1448,39 @@ mesh 没有服务器也没有强制升级 ⇒ 混合版本是常态，不是边�
   ⚠️ **本条判据的已知不足**：同意那一支今天**只有形状断言，没有专属注入 Case**
   （`guards:两条 FriendAccept 路径走同一个家` 的注入打的是"少一条消费者"与"家里不清 pending"，
   都不碰 `was_friend` 门控）⇒ 摘掉门控在本地单测会红，但注入层没有独立一条证明它会红。
+
+---
+
+### INV-P34 — 文件生命周期的 GB 级慢活只许在阻塞线程池里跑（不许钉住 tokio worker）
+
+**这条为什么单开一节**：它不是从理论来的，是从**同一个根因被修了三次**来的 ——
+4.39.3 收单聊收尾、4.40.1 收群收尾、4.40.3 收续传前缀校验，每一次都是有人重新发现"还有一个家"。
+负责人报的原始现象是「发送或接收图片、大文件时，接收端界面卡死或部分功能失效」（问题 A）。
+它的后半根本不在前端：本应用只有**一个 tokio runtime**，`#[tauri::command(async)]` 的开窗命令
+与网络任务排在同一个调度池里 ⇒ 一段 GB 级的 SHA-256 / `sync_all()` / `rename` 在 async 路径上
+跑多久，界面就"点了没窗"多久。这种失败**瞬时、自愈、无日志**，是最难归因的一类，
+而 2026-10-14 那条真机记录（3.x GB 收尾期间 Windows 窗口操作全失灵）已经把它钉成了事实。
+
+| # | 规则 | 今天靠什么成立（逐个指到实物） |
+|---|---|---|
+| 1 | 已证实的三处慢活必须**整体**交给阻塞线程池，不许留在 async 路径上 | 单聊收尾 `finish_receiver_into` 与群收尾 `finish_group_receive_into` 由 `tests::receive_finalize_slow_work_happens_outside_the_receiver_lock`、`tests::group_receive_finalize_slow_work_runs_off_the_async_worker` 钉；续传前缀校验 `file::resume_receive` 由 `tests::resume_prefix_hash_runs_off_the_async_worker` 钉（调用点在 `network/transport/handle_file.rs` 的 `from_bytes > 0` 那一臂） |
+| 2 | 判据要按**位置**钉，只数出现次数不算钉住 | 第三条判据同时断言"交出点在续传臂的起点与 `else` 臂之间"——把那一行整体挪出循环/挪到别的臂，出现次数一点不变（4.40.2 那条"现取 socket"的判据就是这么被抓出半空的） |
+| 3 | 交出执行上下文**不等于**可以丢掉那份活儿 | 被交出去的那一段必须还在原地做完整的事（收尾的校验 + fsync + rename；续传的**逐块**喂校验器）。把哈希换成空的是最短的"消红"路径，各条判据的反面那格专门拦它 |
+| 4 | 线程池的结果不许被吞 | `JoinHandle` 的 `Err` 必须落成 `Err` 走既有拒绝出口。写成 `unwrap_or(Ok(..))` 会**回 Accept 却没注册接收器** ⇒ 整单静默死掉，比原 bug 更糟 |
+| 5 | 慢活不许持接收表的锁（这一半不由本条管） | 由 INV-P28 负责（摘表与判据同一次持锁、收尾只吃已摘出的那份）；本条只管"在哪条线程上跑"，两条判据互补不重叠 |
+
+**边界（如实写下，别当成已解决 —— 这一格是本条现在不成立的地方）**：本条只覆盖**已收口的三处**。
+今天仍有两处 GB 级慢活留在 async 路径上，均为现读：
+`src-tauri/src/network/file/relay_push.rs:63` 在 `async fn relay_push_file` 里对整份待发文件算
+SHA-256；`src-tauri/src/network/transport/relay_file.rs:286` 与 `:352` 在
+`async fn handle_relay_chunk` 里对整份 `.part` 算 SHA-256 并搬动落盘文件（那个文件里
+`spawn_blocking` 出现 0 次，可复跑核对）。还有一处在**前端且尚未证实**：macOS WKWebView 上
+`read_file_preview` 的字节若以 `number[]` 形态回传，最大 15 MiB 要在主线程解析
+（`src-tauri/src/commands/helpers.rs:177` 与 `src/utils/filePreview.ts:191` 的说法是否仍成立，
+需要真机量一次主线程耗时才能判 —— 本轮没有判）。这三格留在账上，别把本条读成"全仓再无慢活钉 worker"。
+
+- 钩子：`tests::receive_finalize_slow_work_happens_outside_the_receiver_lock` `tests::group_receive_finalize_slow_work_runs_off_the_async_worker` `tests::resume_prefix_hash_runs_off_the_async_worker`
+- 反向：把任一处写回成就地调用 ⇒ 对应那条红；把交出的动作挪到别的臂/别的函数 ⇒ 位置那格红；
+  把线程池的 `Err` 伪装成 `Ok` ⇒ 假成功那格红；删掉被交出去的那份活儿 ⇒ 反面那格红。
+  ⚠️ **不许**为了消红去改这三条判据的锚点形状，也不许去改 Change Budget 的领域映射或窗口大小 ——
+  这条不变量存在的意义就是"下一个家必须被同一族判据当场抓住"，而不是让窗口清掉。
