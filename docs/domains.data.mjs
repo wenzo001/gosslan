@@ -308,6 +308,7 @@ export default {
         "INV-P25", // 发射事件不得持 db 锁：本节正文引用的违规形状就在 network/transport.rs（扫描面是全仓取锁点，条数由 check-lock-scope.mjs 现算打印）
         "INV-P26", // 终态不可降级：本域有 relay_file.rs / group_file.rs / outbox_sweep.rs 等写入点（闸门实体在 persistence）
         "INV-P33", // 重复好友事件不重复通知：两个到达点 handle_identity.rs + gossip.rs，幂等家 handshake.rs
+        "INV-P34", // 慢活的执行位置：本域 relay_file.rs:286/:352 是本条边界里尚未收口的两格之一（判据在 lib_file_tests.rs）
       ],
       // ⚠️ 三个家：TCP 数据面在 network/、BLE 数据面在 network/ble.rs + transport/、控制面在 transport/mod.rs
       activeHome: "src-tauri/src/network/transport.rs", // 活路径的具体文件（network/ 整体是活的家）
@@ -353,6 +354,7 @@ export default {
         // ↓ 2026-10-14 补登，口径同「本节/其判据点名的实现落在本域 paths 上」：
         "INV-P26", // 文件传输行的终态：本域 network/file/{receive,send,relay_push}.rs 是写入点，闸门那句 WHERE 在 persistence 的 db/file_transfer.rs
         "INV-P28", // 摘表与判据同一次持锁：判据 = network/file_tests.rs 里的 group_receive_atomicity_tests 那两条（单聊侧与群侧各一条）
+        "INV-P34", // 慢活只许在阻塞线程池里跑：本域有 file/receive.rs 的续传哈希、file/group_receive.rs 与 file/send.rs 的收尾/发前哈希；判据点名的 relay_push.rs:63 也在本域
       ],
       activeHome: "src-tauri/src/network/file.rs",
       enforce: false,

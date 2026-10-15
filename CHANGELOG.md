@@ -65,6 +65,20 @@
 Rust 基线随新用例前移：macos 857 → 858、windows 845 → 846（两份都是
 `cargo test --features bluetooth --lib -- --list` 现算的差集补的，不是手加计数）。
 
+**这一笔另外补了一条不变量（INV-P34）+ 台账第 13 行。** 为什么必须补：Change Budget 的判据 3 在
+第三笔同领域 patch 上亮了红（`transport` 在最近五个"修补形状"提交里出现三次：`21aa0dd` / `2dc1850` /
+`eccfe40`）。它判的不是"这次改大了"，而是"同一个根因连着修三次 ⇒ 缺一条不变量与一个单一事实来源"——
+这个判断是对的，而且上一轮我自己就把"未推区间同领域已有两条 patch 形状提交时该交回负责人推送"写进了
+那个脚本的注释，这一轮没照它做。所以正解不是再补一条点状守卫，而是把"文件生命周期的 GB 级慢活只许在
+阻塞线程池里跑"写成 **INV-P34**（钩子 = 上面那三条具名判据；`node scripts/check-invariant-hooks.mjs`
+现算「34 条全部绑定」），并在台账第 13 行登记"哪几处已搬、哪几处仍在旧家、下一次收口必须一次搬完 +
+数分母而不是再加点状守卫"。连带同步 `docs/domains.data.mjs` 的 transport / files 两份 `invariants`
+清单与 `docs/ARCHITECTURE-MAP.html` 里那段 `inv` 快照（两份手抄不同批改就会分叉），图过
+`node --check`；`check-doc-numbers` / `check-doc-citations`（66 处 `file:line` 全部落在真文件真行）/
+`check-domain-map` / `check-invariant-exceptions` 各退 0。
+⚠️ **判据 3 那条红不因为这一笔消失**：它读的是未推送范围，只有"下一次推送的新范围"或负责人明确接受
+才会清掉；**不许**为了消红去改领域映射或窗口大小。
+
 **同一轮里量到但没改的（原样登记，不夹进这次发布）**：① 中继收发的整文件哈希与
 `move_received_file`（同一根因的第四、第五家）、③ 每片两次 `file_receivers` 抢锁、
 ④ 落库节流与事件节流共用 `last_report_ms`、⑥ 群 done 失败不把 content 落到 `Incomplete`、
