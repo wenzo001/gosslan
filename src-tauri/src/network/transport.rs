@@ -687,7 +687,7 @@ async fn handle_incoming(
             high: high_tx.clone(),
             normal: normal_tx.clone(),
             low: low_tx.clone(),
-            cancel: cancel_tx,
+            cancel: cancel_tx.clone(),
         });
     // 同步到 mesh 层：让 Peer/Connection 模型知道这条连接存在
     register_connection(&state, &peer_id, MeshEndpoint::Tcp(peer_addr), inbound_kind);
@@ -702,6 +702,7 @@ async fn handle_incoming(
         low_rx,
         shutdown.clone(),
         cancel_rx.clone(),
+        cancel_tx,
     ));
     // 验签通过后**回发**自己的 Hello：让拨号方也能学到本节点的身份与双公钥。
     //

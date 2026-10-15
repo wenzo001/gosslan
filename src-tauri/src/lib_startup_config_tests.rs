@@ -186,9 +186,18 @@
             !block.contains("if forced || enabled"),
             "GOSSLAN_AUTOSTART 不许再把用户显式关掉的局域网判成开（那条假产品结论就是这么来的）"
         );
+        // 2026-10-15 这条判据跟着启动块的形状改口（旧锚点是字面量 `if enabled {`）。
+        // **判据的意思一个字没变**：开不开只由 db 里的 `lan_enabled` 决定。变的是实现形状 ——
+        // 失败后不再有"一次就放弃"，而是每轮重新读这个键、由纯函数决定还试不试
+        // （旧形状下用户在重试窗口里关掉开关会被下一次尝试覆盖；现在每一轮都重读）。
         assert!(
-            block.contains("\n                    if enabled {"),
-            "开不开网络只能由 `enabled`（= db 里的 lan_enabled）决定，形状必须留在启动块里"
+            block.contains("let enabled = {") && block.contains("crate::db::get_lan_enabled(&dbc)"),
+            "开不开网络必须由 db 里的 lan_enabled 决定，而且这个键要在启动块里现读（不许拿进程启动时的快照）"
+        );
+        assert!(
+            block.contains("should_keep_retrying_lan_autostart(running, enabled)"),
+            "重试链的停止条件必须是 (通道已在跑 ⇒ 停) 或 (库里说关 ⇒ 停) 这两条之一；\
+             把 enabled 换成常量 true 就是替用户联网，正是本条判据要拦的形状"
         );
         assert!(
             block.contains("let started = if forced {") && block.contains("\"0.0.0.0\""),

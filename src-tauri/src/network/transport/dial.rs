@@ -569,7 +569,7 @@ async fn connect_to_peer(
             high: high_tx.clone(),
             normal: normal_tx.clone(),
             low: low_tx.clone(),
-            cancel: cancel_tx,
+            cancel: cancel_tx.clone(),
         });
     // 同步到 mesh 层（拨号侧同样登记，路径类型由调用方携带）
     register_connection(state, &peer_id, ep.clone(), path_kind);
@@ -584,6 +584,7 @@ async fn connect_to_peer(
         low_rx,
         shutdown.clone(),
         cancel_rx.clone(),
+        cancel_tx,
     ));
 
     // 握手已在建链前完成（两条路径都发过自己的 Hello，且都验过对端的 Hello），

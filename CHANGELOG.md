@@ -13,6 +13,85 @@
 
 ## [Unreleased]
 
+## [4.40.1] - 2026-10-15
+
+### 全链路稳定性审计：三个已证实根因的修复（问题 A 群文件收尾 + 问题 B 两处「非重启不可」）
+
+负责人 2026-10-15 下了一道以真实故障为中心的审计指令（问题 A：传大图/大文件时接收端界面卡死；
+问题 B：局域网连接不稳、要双方反复重启应用才恢复）。本轮**先取证后改码**，收掉三条源码级已证实的
+缺陷；每条都做了「旧绿·新红」成对变异，且还原后逐字节比对。
+
+**1）群文件收尾的 GB 级慢活仍钉在 async worker 上（问题 A 同源缺陷的第二家）。**
+4.39.3 只把单聊那份 `finish_receive` 交给阻塞线程池，群那一份
+`network/transport/group_file.rs` 的 `handle_group_file_done` 里 SHA finalize + `sync_all()` +
+rename 仍然直接在 `reader_loop` 的 tokio 任务里跑 ⇒ 传大群文件时"点设置没窗、拖窗口不动"会原样复发
+（4.39.4 评审第四条登记过、当时按范围没动）。现在这段整体落到新抽出的
+`network/file/group_receive.rs::finish_group_receive_into()`，由 `spawn_blocking` 驱动，
+错误出口与状态机一字未改。
+顺手抓到第二个不对称：群那四个失败出口里 **只有 SHA-256 那一格漏了 `db::upsert_transfer`**
+⇒ 校验失败后 `file_transfers` 那一行永远停在 `active`（另三格写 `failed`）。收成一份收尾后
+不可能再单独漏，并由新守卫按**数量**钉住（recipient / transfer 各恰好两处：一失败一成功）。
+`file_tests.rs` 里那五条群用例原本是各自重写一遍操作序列的**抄本**（生产码改坏它们不红，
+与本册 `receive_group_chunk` 已改掉的假覆盖同一种病）⇒ 现在直接驱动生产函数。
+
+**2）写失败的链路不摘除 ⇒ 单向黑洞、只有重启才恢复（问题 B 已证实）。**
+`transport/queue_policy.rs::writer_loop` 遇到真 socket 写失败只 `mark_conn_failure` 一次就 `break`，
+链路仍留在 `state.links` 里。此时本机读半若还活着（对端心跳照收 ⇒ peer 显示在线、45s 读活性看门狗
+不 reap，`is_healthy` 对 1 次失败也判健康），后果是三件事叠死：`try_send` 永远返回"连接已关闭"、
+消息只进 outbox、`ensure_link` 因 `has_lan_path` 为真而**永久拒绝重拨**。上面 `:113` 的注释本来就写着
+"照旧走判死+拆链"，是代码没跟上注释。现在失败格与 watchdog 判死走**同一条出口**：点亮该链路的
+`cancel` ⇒ `reader_loop` 一起退出、由它那份按 channel 精确摘除（空了才删 key、mesh 层同步注销），
+另加一条节流 warn 留痕。
+
+**3）自动开启局域网通道失败后本进程再也不试 ⇒ 冷启动赶在网卡就绪前就永久离线（问题 B 已证实）。**
+`lib.rs` 的启动块只调一次 `start_from_prefs`，`Err` 只落一条 error 日志。而 auto 模式下
+`discovery::spawn` 会在 `find_lan_interface()` 这一刻找不到可用网卡时**硬失败**
+（`resolve_bind_ip` 的 `ok_or("auto mode: no eligible LAN interface found")`），
+UDP bind / `join_multicast_v4` 失败同样让整个通道起不来 —— 开机自启跑在 DHCP 拿到地址之前正是这个形状，
+精简过的 Windows 镜像上驱动/服务起得更晚。失败之后既没有监听也没有 announce，此后没有任何一处会再试
+⇒ 唯一出路是重启应用；两台机器同时冷启动就成了"要双方都重启"。
+现在按 5s → 10s → 20s → 30s 封顶重试，每轮**现读** `lan_enabled`（用户关掉就立刻收手，
+不得替他联网）、并检查通道是否已被别人（设置页 / harness）起来（起来了就不插手）。
+节奏与停止条件都是 `network/mod.rs` 里的纯函数，各有正反两臂判据。
+⚠️ 已知边界：`start()` 本身没有单飞锁 —— 若用户恰好在重试 tick 那一瞬手动开启，仍可能与重试并发
+（这个竞争在两次手动开启之间本来就存在，本轮没扩范围去补它）。
+
+**同一轮里量到但**没改**的（登记，不夹进这次发布）：** ① 中继收发的整文件哈希与 `move_received_file`
+（`transport/relay_file.rs`、`transport/relay_push.rs`）仍在 async 路径上，是同一个根因的第三、第四家；
+② `resume_receive` 对整份 `.part`（可达 GB 级）的分片哈希仍由 reader 任务就地跑
+（`file/receive.rs:127-153` ← `handle_file.rs:190`）；③ 每片到达时同一份 `file_receivers` 锁被抢两次
+（`receive.rs:519-522` + `handle_file.rs:358-374`）；④ 落库节流与事件节流**共用同一个** `last_report_ms`
+⇒ 分片间隔 ≤250ms 时那条 500ms 断点续传检查点几乎不写，而检查点一写又把紧跟着的那条进度事件钳住；
+⑤ `discovery` 的网卡/广播地址/组播出口只在 `spawn` 那一刻解析一次，运行期没有任何重解析点
+（`find_lan_interface` 生产侧唯一调用点在 `discovery.rs:322`）⇒ 会话中途换 IP / 虚拟网卡重排后
+发送侧长期 `broadcast_error`，而收侧（绑 0.0.0.0）还听得见 ⇒ 双双失联且不会自愈；
+⑥ 群 done 失败的四格都没把 content 那张表从 `Active` 落到可重取的 `Incomplete`
+（`fail_taken_group_receive` 只做中途/断链那一族）⇒ 要不要收由负责人拍板；
+⑦ 前端一处待真机定量：`read_file_preview` 走 `tauri::ipc::Response`，macOS WKWebView 上按仓内自己的
+注释是 `number[]` JSON ⇒ 最大 15 MiB 的图片要在主线程 JSON.parse + 复制一份
+（`commands/helpers.rs:177-196`、`src/utils/filePreview.ts:191-196`），这是接收端唯一还在的
+主线程嫌疑点，静态量不到大小。
+
+**判据（4 条新增 + 1 条改口，全部实测反例）：**
+`group_receive_finalize_slow_work_runs_off_the_async_worker`（慢活在 `spawn_blocking` 里、摘表形状、
+终态写入按数量恰好两处、核心函数拿不到 `group_file_receivers`）、
+`network::transport::tests::writer_socket_failure_cancels_and_logs_before_break`（拆链 + 留痕只许出现在
+真写失败那一格；`Local`/`Stopped` 两格不许点亮 cancel）、
+`lan_autostart_backoff_grows_then_caps_at_thirty_seconds`、
+`lan_autostart_stops_when_running_or_switched_off`；
+`autostart_env_never_overrides_an_explicit_lan_off` 的锚点按新形状改口，**判据意思一个字没变**
+（开不开仍只由 db 里的 `lan_enabled` 决定，且必须在启动块里现读）。
+七笔单点变异各红对应那一条（把慢活写回就地 await ⇒ 守卫红而五条行为用例全绿 —— 这条格只有形状守卫量得到；
+删 `cancel_tx.send(true)` / 把它挪进 `Local` 格 / 把重试的 `enabled` 硬编成 true / 停止条件去掉 `enabled` /
+`rename` 短路 / 失败终态少写一处），跑完逐笔还原。
+Rust 基线随新用例前移：macos 849 → 853、windows 837 → 841（两份都是按
+`cargo test --features bluetooth --lib -- --list` 现算的差集补的，不是手加计数）。
+
+⚠️ **仍未验证（这次也没有）**：Windows 真机与 X-Lite 真机。上面 2)、3) 两条的因果链是源码级 + 单测级证据；
+"冷启动竞态"和"单向写死"在真机上到底是不是负责人遇到的那一次，需要他按
+`docs/stability-roadmap.md` 里新登记的复现步骤回验（两台机器同时开机自启、以及一台拔网线另一台继续发）。
+本地双实例 harness 覆盖不到这两条（它测的是运行中链路，不是启动时序，也不是原生窗口线程）。
+
 ## [4.40.0] - 2026-10-15
 
 ### Added（单聊「窗口抖动」）

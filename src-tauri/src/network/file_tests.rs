@@ -7,7 +7,7 @@
 mod tests {
     use super::{
         chunk_exceeds_declared, chunk_seq_decision, classify_file_subtype, clear_file_wire_progress_in, derive_file_name,
-        file_peer_key, receive_is_stale, safe_file_name, safe_transfer_id, unique_path,
+        file_peer_key, finish_group_receive_into, receive_is_stale, safe_file_name, safe_transfer_id, unique_path,
         wire_progress_bytes, ChunkSeq, WireLedger, FILE_RECEIVE_IDLE_ABORT_MS,
         MAX_FILE_OUTBOX_RETRIES,
     };
@@ -1288,37 +1288,14 @@ mod tests {
         }
     }
 
-    /// 模拟 handle_group_file_done 的最终校验与落盘序列：
-    /// size → SHA-256 → sync_all → drop(file) → rename（与生产代码同序）。
+    /// 群收尾**由生产码驱动**（`finish_group_receive_into`），不在测试里重写序列。
+    ///
+    /// 这里原来是一份"size → SHA-256 → sync_all → drop → rename"的**抄本**：抄本钉的是抄本，
+    /// 生产侧把任一格改坏（漏 fsync、漏清 `.part`、把校验顺序换掉）这五条用例照样全绿，
+    /// 而台账却拿它们的名字当"群侧已覆盖"的证据 —— 与本册 `receive_group_chunk` 那处
+    /// 已经改掉的假覆盖是同一种病。2026-10-15：慢活整体搬进 `spawn_blocking` 时一并收成生产调用。
     fn finalize_group_receive(r: crate::state::FileReceiver) -> Result<std::path::PathBuf, String> {
-        if r.received != r.size {
-            let _ = std::fs::remove_file(&r.tmp_path);
-            return Err("文件传输未完成".to_string());
-        }
-        {
-            use sha2::Digest;
-            let actual_hex: String = r
-                .hasher
-                .clone()
-                .finalize()
-                .iter()
-                .map(|b| format!("{b:02x}"))
-                .collect();
-            if !actual_hex.eq_ignore_ascii_case(&r.expected_sha256) {
-                let _ = std::fs::remove_file(&r.tmp_path);
-                return Err("文件完整性校验失败".to_string());
-            }
-        }
-        r.file.sync_all().map_err(|e| {
-            let _ = std::fs::remove_file(&r.tmp_path);
-            e.to_string()
-        })?;
-        drop(r.file);
-        std::fs::rename(&r.tmp_path, &r.final_path).map_err(|e| {
-            let _ = std::fs::remove_file(&r.tmp_path);
-            e.to_string()
-        })?;
-        Ok(r.final_path)
+        finish_group_receive_into(r, &std::env::temp_dir())
     }
 
     /// 2+3+4. 正常多 chunk + Done：SHA-256 正确 → rename 成功 → 正式文件内容一致，
@@ -1378,7 +1355,12 @@ mod tests {
         assert!(!part.exists(), "SHA 不匹配后 .part 必须被删除");
     }
 
-    /// 9. rename 失败 → failed（final_path 非法/被占用），不报告完成。
+    /// 9. rename 失败 → failed（final_path 的父目录不存在），不报告完成。
+    ///
+    /// ⚠️ 这一格的安排换过：旧写法是把 `final_path` 指向一个**已存在的目录**，而生产侧在 rename
+    /// 之前有一道"名字被占就换名"的 `unique_path` 兜底（同名并发传输那条竞态的修法）——
+    /// 已存在 ⇒ 会被换成一个新名字 ⇒ rename 反而成功，判的就不是 rename 失败那一格了。
+    /// 现在把 `final_path` 放到一个不存在的目录下：`exists()` 为假 ⇒ 不换名 ⇒ rename 必错。
     #[test]
     fn group_done_rename_failure_fails() {
         let file_key = crypto::random_key();
@@ -1386,15 +1368,12 @@ mod tests {
         let sealed = crypto::seal_symmetric(&file_key, b"data").unwrap();
         must_write(receive_group_chunk(&mut r, 0, &sealed));
 
-        // final_path 指向一个已存在的目录 → rename 必然失败
-        let dir = std::env::temp_dir().join(format!("gosslan-test-dir-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        r.final_path = dir.clone();
+        let missing = std::env::temp_dir().join(format!("gosslan-missing-dir-{}", std::process::id()));
+        r.final_path = missing.join("x.bin");
 
         let part = r.tmp_path.clone();
         assert!(finalize_group_receive(r).is_err());
         assert!(!part.exists(), "rename 失败后 .part 必须被清理");
-        let _ = std::fs::remove_dir(&dir);
     }
 
     /// 19. 空文件：无 Chunk，Done 阶段 size==0 → 空文件 SHA-256 → 正式文件创建，

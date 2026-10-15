@@ -98,3 +98,66 @@
             "low 队列必须由 `low_queue_slots` 折算出来，不能直接给常量深度"
         );
     }
+
+    /// 写失败必须**拆掉这一条链路**（2026-10-15 全链路审计：单向黑洞的根因修复）。
+    ///
+    /// 旧形状：`WriteOutcome::Failed` 只 `mark_conn_failure` + `break` ⇒ writer 任务结束，
+    /// 但 `Link` 还留在 `state.links` 里。于是本机的读半若还活着（对端心跳照收 ⇒ peer 显示在线、
+    /// 45s 读活性看门狗不 reap），`try_send` 之后永远返回"连接已关闭"、`ensure_link` 又因为
+    /// `has_lan_path` 为真而拒绝重拨 ⇒ **只有重启进程才恢复**。上面 `:113` 那句注释本来就写着
+    /// "照旧走判死+拆链"，是代码没跟上注释。
+    ///
+    /// 为什么是源码护栏而不是行为测试：`writer_loop` 吃 `Arc<AppState>`（要真实 tauri
+    /// `AppHandle`，单测造不出来），与本册 `writer_loop_splits_local_from_socket_failure_exactly_once`
+    /// 同一条先例。四格判据里有正有反：拆链只许出现在失败格。
+    #[test]
+    fn writer_socket_failure_cancels_and_logs_before_break() {
+        let src = crate::network::transport_src_for_guards();
+        let start = src
+            .find("async fn writer_loop(")
+            .expect("找不到 writer_loop（这条护栏会空转）");
+        let end = src[start..]
+            .find("async fn reader_loop(")
+            .map(|i| start + i)
+            .expect("writer_loop 之后找不到 reader_loop（函数边界变了，护栏需同步）");
+        let body = &src[start..end];
+        let flat: String = body.chars().filter(|c| !c.is_whitespace()).collect();
+
+        let mark = "mark_conn_failure(&state,&peer_id,&endpoint)";
+        let at = flat
+            .find(mark)
+            .expect("写失败分支里找不到 mark_conn_failure（护栏需同步更新）");
+        let failed_tail = &flat[at..];
+        let before = &flat[..at];
+
+        // ① 失败格必须点亮本链路的 cancel（= 与 watchdog 判死同一条出口，摘链交给 reader 那份收尾）
+        assert!(
+            failed_tail.contains("cancel_tx.send(true)"),
+            "TCP 写失败必须拆这一条链路：只记一次失败就 break，链路会永远留在 links 里，\
+             has_lan_path 于是永久拒绝重拨 ⇒ 单向发不出去、只有重启应用才恢复"
+        );
+        // ② 拆链要留痕（不静默）—— 观测合同里"写失败"这一格必须能在日志里认出来
+        assert!(
+            failed_tail.contains(".warn("),
+            "写失败拆链必须打一条 warn：没有它，用户报『要重启才恢复』时日志里没有任何可关联的痕迹"
+        );
+        // ③ 反证：载荷本机就写不出去（Local）与主动停机（Stopped）两格**不许**拆链，
+        //    所以 cancel 发送只能出现在 mark_conn_failure 之后
+        assert!(
+            !before.contains(".send(true)"),
+            "拆链信号只能由真·socket 写失败点亮：Ok/Stopped/Local 三格都还继续用这条链路"
+        );
+        // ④ 失败后这条 writer 任务仍要退出（不能留在表里空转）
+        assert!(failed_tail.contains("break;"), "写失败后必须结束本 writer 任务");
+        // ⑤ cancel 的发送端必须真的进了 writer_loop（两个建链点都得给，写失败才拆得动）
+        assert!(
+            body.contains("cancel_tx: watch::Sender<bool>,"),
+            "writer_loop 必须拿到本链路 cancel 的发送端，否则上面 ① 那条判据无从成立"
+        );
+        assert_eq!(
+            src.match_indices("tokio::spawn(writer_loop(").count(),
+            2,
+            "writer_loop 的建链点应恰好两处（出站拨号 + 入站接受），两处都要把 cancel 发送端传进去"
+        );
+    }
+

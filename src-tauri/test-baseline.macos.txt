@@ -491,6 +491,8 @@ network::file::tests::unique_path_never_returns_existing_path
 network::file::tests::unknown_attempt_count_is_not_a_death_sentence
 network::file::tests::wire_ledger_is_reclaimed_on_every_exit_path
 network::file::tests::wire_progress_is_counted_per_recipient_within_one_group_transfer
+network::lan_autostart_tests::lan_autostart_backoff_grows_then_caps_at_thirty_seconds
+network::lan_autostart_tests::lan_autostart_stops_when_running_or_switched_off
 network::tests::discovery_failure_rolls_back_started_transport
 network::tests::transport_bind_failure_never_starts_discovery
 network::tests::transport_success_starts_discovery_and_merges_handles
@@ -624,6 +626,7 @@ network::transport::tests::timed_out_send_leaves_nothing_behind
 network::transport::tests::unknown_wire_type_degrades_instead_of_erroring
 network::transport::tests::writer_failure_preserves_pending_for_read_receipt
 network::transport::tests::writer_loop_splits_local_from_socket_failure_exactly_once
+network::transport::tests::writer_socket_failure_cancels_and_logs_before_break
 nickname::tests::base36_is_zero_padded_and_uppercase
 nickname::tests::default_nickname_is_deterministic_and_looks_right
 nickname::tests::different_devices_get_different_suffixes
@@ -741,6 +744,7 @@ tests::group_ack_advances_sender_message_status_like_dm_ack_does
 tests::group_audience_is_wired_and_keeps_three_states
 tests::group_file_cancel_registry_is_scoped_per_recipient
 tests::group_keys_always_precede_group_messages
+tests::group_receive_finalize_slow_work_runs_off_the_async_worker
 tests::group_relation_sync_updates_existing_conversation_title_but_never_creates_one
 tests::group_remind_ack_is_user_layer_separate_from_transport_group_ack
 tests::group_remind_rides_delivery_kernel_with_validated_audience
