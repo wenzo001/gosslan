@@ -86,6 +86,24 @@ GB 级文件走中继时发生：单元测试钉的是执行上下文形状，�
 ⑨ UDP 读那两处 `let Ok(..) else { continue }`。问题 B 一侧本轮**零改动**：修复已在 4.40.2 之前落地，
 缺的是 X-Lite 真机读数，不是代码。
 
+**整层门禁重跑的读数（2026-10-15 18:48，`npm run verify:full`，退 1，828.9s）**：23 步里 20 绿、2 红、1 未跑。
+第 14 步 Change Budget 红是**已报的历史欠账**（判据 3：transport 在未推送窗口里第 4 次 ⇒ 249927f/eccfe40/2dc1850/21aa0dd；
+判据 4：21aa0dd 动了四个版本清单却没写 `Version-Bump:`）。**新的一条不在代码里**：第 22 步护栏非空转 89 条只红在
+最后那条 `force push 后 before 不可达`，而它红的半边是"恢复源码之后必须 PASS"—— 这条用例为了跑到被守的那段
+（`check-change-budget.mjs` 的 `beforeGivenButUnreachable` 分支带 `!fromJson`，用 fixture 就整段不执行）
+必须用真实 git 范围，于是默认候选链替它取了 `origin/main..HEAD`＝**未推送范围**：判据 3/4 的历史欠账直接把它拖红，
+机格还把它印成「源码或环境已被破坏」，归因指错了地方（本用例守的是"范围来源"，不是"这批提交合不合预算"）。
+修法是**把它的范围钉死在一段已推送旧提交**（`--range 73d9e20~1..73d9e20`，一条 docs 单提交 ⇒ 三道判据恒绿 ⇒
+注入态只会因为被守的那格红），与上一条 [88/89]（修 fixture 接缝）同属接缝病、同一个家。现算：
+`verify-guards.py --only "Change Budget"` 退 0、11 条全部"改坏即 FAIL、恢复即 PASS"；`--list` 退 0。
+**这条修复不改变第 14 步的结论**：欠账还在，仍按三条分片推（分片后每次 CI 判的是 `before..sha` 那一小窗）。
+
+**移动端编译门禁（23 步里最后那一步）在本版首次本机跑通**：`bash scripts/check-mobile.sh --bluetooth` 退 0，
+`aarch64-linux-android` 两档（默认 feature / `--features bluetooth`）各 0 warning。它证明的是本轮三处
+`spawn_blocking` 搬家在 android 的 cfg 路径上编得过、没引入新 warning；**不**证明 §4.4 的第 6 项（Windows ↔ Android
+真机建连）—— 那一格仍然只能等真机。本轮汇总里它之所以是「未跑」，是第 22 步 fail-fast 带下来的，不是 skipReason ——
+现算 `rustup target list --installed` 含 `aarch64-linux-android`、`~/Library/Android/sdk` 在，所以本机跑得动这一步。
+
 
 ## [4.40.3] - 2026-10-15
 
