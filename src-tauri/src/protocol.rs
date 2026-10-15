@@ -930,6 +930,12 @@ pub struct RemindPayload {
     /// 缺省 = 空名单 —— 第一版**不默认全群**。
     #[serde(default)]
     pub actors: Vec<String>,
+    /// 「抖动」标记（工具栏「抖动」按钮发起）：复用同一条 remind 传输与回执，但接收端
+    /// **只抖不弹**系统通知（前端读；用户 2026-10-15「抖动就可以了，不要接强提醒的弹窗通知」）。
+    /// 缺省 = 普通强提醒。`skip_serializing_if` 让 false 不出现在 JSON 里 —— 普通提醒（含群侧
+    /// 本模块自己序列化的那份）载荷逐字节不变。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub shake: bool,
 }
 
 /// 强提醒回执载荷（`kind = "remind_ack"`）：S3（自动）与 S4（主动）共用一种帧，

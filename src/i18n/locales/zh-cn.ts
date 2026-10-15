@@ -447,6 +447,10 @@ export const zhCN: MessageDict = {
   "emoji.all": "全部表情",
   "chat.composer.code": "代码消息",
   "chat.composer.sendFile": "发送文件（自动选择最优路线）",
+  // 窗口抖动（仿 QQ）：仅单聊可用；底层是对最近一条已发消息发起强提醒
+  "chat.composer.shake": "抖动窗口",
+  "chat.shake.noTarget": "还没有可抖动的消息，先发一条再抖动",
+  "chat.shake.failed": "抖动发送失败",
   "chat.composer.remind": "选择提醒的人",
   "chat.composer.cancelQuote": "取消引用",
   "chat.composer.tooLong": "内容已达上限（{max} 字符），本次未全部粘贴",

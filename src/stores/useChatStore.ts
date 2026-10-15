@@ -472,6 +472,29 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   /**
+   * 收到点名的强提醒（含工具栏「抖动」按钮）时：**把窗口直接拉到前台 + 切到该会话，再抖动**。
+   *
+   * 用户 2026-10-12：抖动可以不提醒，但窗口要直接给他打开 —— 所以先把窗口/会话带出来再抖，
+   * 而不是只在"此刻正看着"时才抖（那样在两个窗口间点一下发送就必然不抖）。
+   * 抽成独立函数还有一个原因：`handleIncomingRemind` 的体被 `remindFlow` 守卫按固定长度切片，
+   * 调用点只留一行才不会把后面那段通知逻辑挤出切片（切片是守卫判"回执先于通知"的锚）。
+   */
+  function raiseAndShakeOnRemind(convId: string) {
+    void api.focusWindow();
+    if (activeConv.value !== convId) void openConversation(convId);
+    // 抖动 = **整个 OS 窗口**抖动（Rust 移动窗口，仿 QQ）；移动端没有可移动的独立窗口
+    // ⇒ 退回聊天区 CSS 动画（`shakeSignal` → ChatWindow 的 `gosslan-shake`）。
+    if (app.isMobile) {
+      triggerRemindShake();
+      return;
+    }
+    const now = Date.now();
+    if (now - lastShakeAt < SHAKE_ANIM_MIN_INTERVAL_MS) return;
+    lastShakeAt = now;
+    void api.shakeWindow().catch(() => {});
+  }
+
+  /**
    * 接收一条 kind=remind：
    * 1. 判「是不是发给我」：群聊看 actors 名单（受众是名单层语义），私聊恒为对端→我；
    * 2. 按 remind msg_id 去重（R8：同帧重复到达不能反复响 / 反复回执）；
@@ -507,13 +530,14 @@ export const useChatStore = defineStore("chat", () => {
       },
     );
 
-    // 应用在前台且正查看该会话 → 不弹通知（时间线上的强提醒标识本身可见），改为**抖动聊天窗口**
-    // —— 强提醒在"用户就在看"这一档的视觉表达（复用 remind，不新增 kind）。
+    // 收到点名的强提醒（含「抖动」按钮）：把窗口拉到前台 + 切到该会话，再抖动窗口。
     const viewing =
       !document.hidden && document.hasFocus() && activeConv.value === rec.conv_id;
-    if (viewing && app.notifyEnabled) triggerRemindShake();
+    if (app.notifyEnabled) raiseAndShakeOnRemind(rec.conv_id);
     // 总开关关着：不响不振不弹（声音/振动是通知的子集，用户预期一致）。
-    if (!app.notifyEnabled || viewing) return;
+    // `payload.shake`：工具栏「抖动」发起的帧**只抖不弹**系统通知
+    //（用户 2026-10-15「抖动就可以了，不要接强提醒的弹窗通知」）—— 抖动本身已在上一行完成。
+    if (!app.notifyEnabled || viewing || payload.shake) return;
 
     const title = `${t("remind.notifyTitle")} · ${nicknameOf(rec.sender_id)}`;
     const body = app.notifyShowContent
@@ -1590,8 +1614,35 @@ export const useChatStore = defineStore("chat", () => {
    * 群聊必须带显式 actors 名单（第一版不默认全群）；私聊名单为空（默认对方）。
    * 复用普通 send 链路（乐观气泡/outbox/Ack），不另造传输。
    */
-  async function sendReminder(convId: string, targetMsgId: string, actors: string[] = []) {
-    await send(convId, buildRemindPayload(targetMsgId, actors), "remind");
+  async function sendReminder(
+    convId: string,
+    targetMsgId: string,
+    actors: string[] = [],
+    shake = false,
+  ) {
+    await send(convId, buildRemindPayload(targetMsgId, actors, shake), "remind");
+  }
+
+  /**
+   * 工具栏「抖动」按钮（仿 QQ 窗口抖动）：对会话里**最近一条已成功发出的消息**发起强提醒。
+   *
+   * 为什么锚定消息而不是发一个独立帧：本项目没有"无目标抖动"这种协议 —— 强提醒（`remind`）
+   * 本来就要求指向一条真实消息（否则对方点通知会定位到"幽灵消息"）。所以一次点击 = 对最近
+   * 一条可提醒的消息发起强提醒，对方窗口随即抖动（复用 handleIncomingRemind 的那条路）。
+   * 最近一条可提醒的消息都没有（会话空 / 全在发送中）⇒ 明确报错，不静默。
+   */
+  async function shakeConversation(convId: string): Promise<void> {
+    if (!convId || convId.startsWith("group:")) return;
+    const list = messages.value[convId] ?? [];
+    // 与 MessageItem 的 canRemindEntry 同口径：只认"已成功发出"的消息（sending/failed 会指向幽灵消息）。
+    const last = [...list]
+      .reverse()
+      .find((m) => m.status === "sent" || m.status === "delivered" || m.status === "read");
+    if (!last) throw new Error(t("chat.shake.noTarget"));
+    // 不做本机自抖：用户 2026-10-12「点抖动别弹自己」——只让对方窗口抖，
+    // 发送方这边靠消息上的强提醒标识（已提醒/已确认）反馈。
+    // 第 4 个参数 shake=true：接收端**只抖不弹**（用户 2026-10-15「不要接强提醒的弹窗通知」）。
+    await sendReminder(convId, last.msg_id, [], true);
   }
 
   /**
@@ -2716,6 +2767,7 @@ export const useChatStore = defineStore("chat", () => {
     watchGroupTodos,
     send,
     sendReminder,
+    shakeConversation,
     shakeSignal,
     confirmReminder,
     sendFriendRequest,

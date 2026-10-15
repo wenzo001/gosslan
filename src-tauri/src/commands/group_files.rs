@@ -72,6 +72,8 @@ pub async fn send_group_message(
             let out = crate::protocol::RemindPayload {
                 target: p.target,
                 actors: good,
+                // 群侧不发起「抖动」（工具栏抖动只走 1:1 单聊）。
+                shake: false,
             };
             let content = serde_json::to_string(&out).map_err(|e| e.to_string())?;
             return send_group_payload(s, &group_id, "remind", content, None).await;

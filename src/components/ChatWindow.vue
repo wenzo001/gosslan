@@ -730,6 +730,18 @@ async function onSendImage(file: File) {
   }
 }
 
+// ---------------- 窗口抖动（仿 QQ） ----------------
+/** 工具栏抖动按钮：对会话里最近一条已发出的消息发起强提醒，对方窗口随即抖动。 */
+async function onShake() {
+  const convId = chat.activeConv;
+  if (!convId || !isPeerFriend.value || isGroup.value || isSelfChat.value) return;
+  try {
+    await chat.shakeConversation(convId);
+  } catch (e) {
+    app.toastError(e, t("chat.shake.failed"));
+  }
+}
+
 // ---------------- 引用 / 转发 ----------------
 /** 待引用消息（MessageItem 右键"引用"设置，随发送或手动取消清除）。 */
 const quote = ref<{ sender: string; snippet: string; msgId: string | number } | null>(null);
@@ -1498,10 +1510,12 @@ function onLoadMore() {
         :conv-id="chat.activeConv"
         :quote="quote"
         :mention-members="mentionMembers"
+        :shake-enabled="!isGroup && !isSelfChat && isPeerFriend"
         @send="onSend"
         @send-image="onSendImage"
         @attach="attachFile"
         @paste-files="sendPastedFiles"
+        @shake="onShake"
         @close-quote="quote = null"
       />
       <div

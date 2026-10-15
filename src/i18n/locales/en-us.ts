@@ -436,6 +436,10 @@ export const enUS: MessageDict = {
   "emoji.all": "All emoji",
   "chat.composer.code": "Code message",
   "chat.composer.sendFile": "Send file (auto route)",
+  // Window shake (QQ-like): single chat only; sends a strong reminder to the latest sent message
+  "chat.composer.shake": "Shake window",
+  "chat.shake.noTarget": "No message to shake yet — send one first",
+  "chat.shake.failed": "Failed to send shake",
   "chat.composer.remind": "Choose people to notify",
   "chat.composer.cancelQuote": "Cancel quote",
   "chat.composer.tooLong": "Input limit reached ({max} characters); the paste was truncated",

@@ -38,7 +38,8 @@ export function parseRemind(rec: MessageRecord): RemindPayload | null {
     if (typeof p?.target !== "string" || !p.target.trim()) return null;
     if (p.actors != null && !Array.isArray(p.actors)) return null;
     const actors = (p.actors ?? []).filter((x): x is string => typeof x === "string");
-    return { target: p.target, actors };
+    // 抖动标记：只认真布尔 true，其余（缺省/脏值）一律按普通强提醒处理。
+    return p.shake === true ? { target: p.target, actors, shake: true } : { target: p.target, actors };
   } catch {
     return null;
   }
@@ -182,9 +183,14 @@ export function foldReminders(records: MessageRecord[]): Map<string, ReminderSta
 /**
  * 发起载荷 builder（字段名与 Rust `protocol::RemindPayload` 逐字一致，
  * 契约/解析两侧共用，不另造词表）。
+ *
+ * `shake=true` 时追加 `"shake":true` 标记（工具栏「抖动」按钮用）：复用同一条 remind 传输，
+ * 但接收端**只抖不弹**。默认路径（普通强提醒）载荷逐字节不变 —— 有守卫钉住（reminders.test）。
  */
-export function buildRemindPayload(target: string, actors: string[] = []): string {
-  return JSON.stringify({ target, actors });
+export function buildRemindPayload(target: string, actors: string[] = [], shake = false): string {
+  return shake
+    ? JSON.stringify({ target, actors, shake: true })
+    : JSON.stringify({ target, actors });
 }
 
 /** 回执载荷 builder（对应 Rust `RemindAckPayload`）。 */

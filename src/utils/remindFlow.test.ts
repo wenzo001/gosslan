@@ -44,7 +44,7 @@ test("接收门控：群聊先判 actors 名单，再以当前成员表复核（
 test("S3 自动回执与本地通知是否弹出解耦（R1：通知 API 成功不是对方已收到）", () => {
   const store = read("stores/useChatStore.ts");
   const at = store.indexOf("function handleIncomingRemind");
-  const body = store.slice(at, at + 2600);
+  const body = store.slice(at, at + 3200);
   // 回执在所有本地通知逻辑之前（移动端权限询问与桌面 notify 命令都在其后）
   const ack = body.indexOf("buildRemindAckPayload(rec.msg_id, \"alerted\")");
   const permAsk = body.indexOf("app.ensureNotifyPermission()");
@@ -52,14 +52,14 @@ test("S3 自动回执与本地通知是否弹出解耦（R1：通知 API 成功�
   assert.ok(ack > 0 && ack < permAsk && ack < notify, "S3 回执必须先于且独立于本地提醒");
 });
 
-test("抑制矩阵：总开关关着 / 前台正查看该会话 → 不振不弹；判定含 document.hidden", () => {
+test("抑制矩阵：总开关关着 / 前台正查看该会话 / 抖动帧 → 不振不弹；判定含 document.hidden", () => {
   const store = read("stores/useChatStore.ts");
   const at = store.indexOf("function handleIncomingRemind");
-  const body = store.slice(at, at + 2000);
+  const body = store.slice(at, at + 2600);
   assert.match(
     body,
-    /if \(!app\.notifyEnabled \|\| viewing\) return;/,
-    "总开关与查看抑制必须在振动/通知之前短路",
+    /if \(!app\.notifyEnabled \|\| viewing \|\| payload\.shake\) return;/,
+    "总开关与查看抑制必须在振动/通知之前短路（抖动帧 shake 也在同一句短路：只抖不弹）",
   );
   assert.match(
     body,
@@ -202,17 +202,48 @@ test("群受众弹窗：排除自己、至少 1 人才能确认", () => {
   assert.match(dlg, /:disabled="selected\.size === 0"/, "零选择不能确认（第一版不默认全群）");
 });
 
-test("前台正查看该会话 → 抖动聊天窗口（复用 remind，不新增 kind）", () => {
+test("工具栏「抖动」入口 + 收到强提醒时把窗口拉到前台并抖动", () => {
   const store = read("stores/useChatStore.ts");
   const at = store.indexOf("function handleIncomingRemind");
-  const body = store.slice(at, at + 2600);
+  const body = store.slice(at, at + 2800);
   assert.match(
     body,
-    /if \(viewing && app\.notifyEnabled\) triggerRemindShake\(\);/,
-    "用户就在看该会话时抖动窗口（总开关关着则不抖）",
+    /if \(app\.notifyEnabled\) raiseAndShakeOnRemind\(rec\.conv_id\);/,
+    "收到强提醒要先把窗口拉到前台（用户要求：抖动可以不提醒，但窗口直接打开）",
   );
-  // 抖动信号必须被 ChatWindow 的根容器消费 + 有动画类，否则是一条死接线
+  assert.match(
+    store,
+    /function raiseAndShakeOnRemind\(convId: string\) \{\s*void api\.focusWindow\(\);\s*if \(activeConv\.value !== convId\) void openConversation\(convId\);/,
+    "先拉起窗口 + 切到发起方会话",
+  );
+  assert.match(
+    store,
+    /void api\.shakeWindow\(\)\.catch/,
+    "桌面端抖动**整扇窗口**（Rust 移动 OS 窗口，不是只抖聊天区）",
+  );
+  // 工具栏「抖动」按钮：图标（Zap）排在表情之后，点击走 shakeConversation
+  const composer = read("components/chat/MessageComposer.vue");
+  assert.match(composer, /\(e: "shake"\): void;/, "输入区必须声明 shake 事件");
+  assert.match(
+    composer,
+    /:aria-label="t\('chat\.composer\.emoji'\)"[\s\S]{0,900}v-if="shakeEnabled"[\s\S]{0,600}Zap/,
+    "抖动的图标按钮必须排在表情按钮之后",
+  );
   const win = read("components/ChatWindow.vue");
+  assert.match(win, /@shake="onShake"/, "ChatWindow 必须接住 shake 事件");
+  assert.match(win, /chat\.shakeConversation\(convId\)/, "onShake 必须走 shakeConversation");
   assert.match(win, /chat\.shakeSignal/, "ChatWindow 必须消费 shakeSignal");
   assert.match(win, /gosslan-shake/, "根容器必须挂抖动的动画类");
+  assert.match(
+    store,
+    /async function shakeConversation\([\s\S]{0,600}sendReminder\(convId, last\.msg_id, \[\], true\)/,
+    "shakeConversation 必须对最近一条可提醒的消息发起**带 shake 标记**的强提醒",
+  );
+  // 抖动帧只抖不弹：shake 标记必须在"该不该弹系统通知"那一句里抑制掉普通通知，
+  // 且 raiseAndShakeOnRemind 仍在它之前（抖不因抑制而丢）。用户 2026-10-15。
+  assert.match(
+    body,
+    /if \(!app\.notifyEnabled \|\| viewing \|\| payload\.shake\) return;/,
+    "抖动帧只抖不弹：shake 标记必须抑制强提醒的系统通知（用户 2026-10-15「不要接强提醒的弹窗通知」）",
+  );
 });

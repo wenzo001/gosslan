@@ -187,6 +187,41 @@ pub fn focus_window(_app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// 抖动主窗口：把**整扇 OS 窗口**左右快速偏移几像素再回位（仿 QQ「窗口抖动」）。
+///
+/// 为什么在 Rust 侧而不是前端 CSS：要抖的是整个窗口，不是窗口内的某个 DOM —— CSS 只能移动
+/// 页面内容、移不动 OS 窗口。移动窗口有现成先例（`commands/logs.rs` 摆设置/日志窗口）。
+///
+/// 失败静默：个别桌面环境（远程会话 / 不允许移动窗口的 WM）会让 `set_position` 无效，
+/// 而抖动只是"提醒"，不该因此报错打断收消息。位置读完即刻回位，末尾一定回到 `start`。
+#[cfg(desktop)]
+#[tauri::command(async)]
+pub async fn shake_window(app: tauri::AppHandle) -> Result<(), String> {
+    let Some(win) = app.get_webview_window("main") else {
+        return Ok(());
+    };
+    let Ok(start) = win.outer_position() else {
+        return Ok(());
+    };
+    // 偏移序列：左右各一次算一个来回，三个来回后回位（幅度略递减，收得更自然）。
+    for dx in [10i32, -10, 10, -10, 8, -8, 0] {
+        let _ = win.set_position(tauri::Position::Physical(tauri::PhysicalPosition::new(
+            start.x + dx,
+            start.y,
+        )));
+        tokio::time::sleep(std::time::Duration::from_millis(45)).await;
+    }
+    let _ = win.set_position(tauri::Position::Physical(start));
+    Ok(())
+}
+
+/// 移动端没有可移动的独立窗口 —— 抖动由前端在聊天区做 CSS 动画（见 `useChatStore`）。
+#[cfg(mobile)]
+#[tauri::command]
+pub fn shake_window(_app: tauri::AppHandle) -> Result<(), String> {
+    Ok(())
+}
+
 /// 新消息到达时提请用户注意：Windows 闪任务栏按钮、macOS 弹跳 Dock 图标，**直到应用获得焦点**。
 ///
 /// 为什么是 `Critical` 而不是 `Informational`（tao 0.35 的实现差异）：
