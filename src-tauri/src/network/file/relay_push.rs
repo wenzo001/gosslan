@@ -60,7 +60,13 @@ async fn relay_push_file(
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "unnamed".to_string());
     let file_key = crypto::random_key();
-    let file_sha256 = sha256_file_hex(&path)?;
+    // ⚠️ 整份文件的哈希交给阻塞线程池（INV-P34；与 `file/send.rs` 直发那一格同一条规矩）。
+    // 留在 async 路径上就是钉住一个 tokio worker —— 中继推送的正是共享目录里的文件，
+    // 而同一个 runtime 上还排着所有开窗命令。顺序与错误出口一字未改（`?` 的落点还是外层那个）。
+    let hash_path = path.clone();
+    let file_sha256 = tokio::task::spawn_blocking(move || sha256_file_hex(&hash_path))
+        .await
+        .unwrap_or_else(|e| Err(format!("中继哈希任务被线程池中断: {e}")))?;
     let receiver_pubkey = resolve_member_x25519(state, peer_id)
         .ok_or_else(|| "无法获取对方公钥，无法加密文件".to_string())?;
     let shared = crypto::shared_secret(&state.identity.x25519_secret, &receiver_pubkey)

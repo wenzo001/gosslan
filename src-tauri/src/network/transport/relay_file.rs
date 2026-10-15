@@ -152,9 +152,26 @@ async fn handle_relay_chunk(
             };
             bytes
         };
+        // ⚠️ 整次重组调用交给**阻塞线程池**（INV-P34）。这一格比其它家更糟：完成那一片时
+        // `add_chunk` 对整份 `.part` 做 `sync_all()`（见 `file_relay.rs` 里"改名之前必须 flush 到盘"
+        // 那条注释），数百 MB 就是秒级，而它同时**攥着 relay 全局锁** —— 留在 async 路径上等于
+        // 一边钉住一个 tokio worker（窗口命令与它同池），一边让别的传输的分片排队。
+        // 状态机、错误出口、返回类型一字不改，只换执行线程。
         let completed = {
-            let mut relay = state.relay.lock().unwrap_or_else(|e| e.into_inner());
-            relay.add_chunk(&transfer_id, seq, &bytes)
+            let st = state.clone();
+            let tid = transfer_id.clone();
+            tokio::task::spawn_blocking(move || {
+                let mut relay = st.relay.lock().unwrap_or_else(|e| e.into_inner());
+                relay.add_chunk(&tid, seq, &bytes)
+            })
+            .await
+            .unwrap_or_else(|e| {
+                // 只可能在阻塞任务自己 panic 或线程池关停时走到这里。这份文件已经不可能
+                // 补齐，所以落"判死"那一支（终态与形状不合法同一条出路：换源重取）。
+                // 上面那句「分片形状不合法」的前缀因此会跟着一条内部错误 —— 措辞不准但结局真实，
+                // 拆成第四支要动 `ChunkOutcome` 的枚举，这一轮不动它。
+                ChunkOutcome::Rejected(format!("内部错误（非形状问题）：重组任务被线程池中断: {e}"))
+            })
         };
         // 三种非完成结果各自的处理完全不同，所以按枚举分派（见 `file_relay::ChunkOutcome`）。
         let (name, expected_size, part_path) = match completed {
@@ -283,7 +300,15 @@ async fn handle_relay_chunk(
             // 文件级完整性：**流式**算 SHA-256（边读边算，峰值只有一个读缓冲）。
             // 分片按到达顺序解密时可能重复（多邻居泛洪）也可能乱序（多路径时延不同），
             // 所以哈希只能在字节归位后整体算一次（2026-09-23 审计 1.8）。
-            let actual_hex = match file::sha256_file_hex(&part_path) {
+            // ⚠️ 这次整份哈希交给阻塞线程池（INV-P34）：实测流式 SHA-256 ≈ 1 GB/s，
+            // 3 GB 就是约 3 秒钉住一个 tokio worker，而所有 async 开窗命令排在同一个池里。
+            let hashed = {
+                let p = part_path.clone();
+                tokio::task::spawn_blocking(move || file::sha256_file_hex(&p))
+                    .await
+                    .unwrap_or_else(|e| Err(format!("中继哈希任务被线程池中断: {e}")))
+            };
+            let actual_hex = match hashed {
                 Ok(hex) => hex,
                 Err(reason) => {
                     let _ = std::fs::remove_file(&part_path);
@@ -349,7 +374,17 @@ async fn handle_relay_chunk(
             }
             // 校验已过 ⇒ 内容指纹就是这个已确证的 sha256，不再重算一遍整份文件。
             let cid = rs.expected_sha256;
-            let path = match move_received_file(state, &name, &part_path) {
+            // ⚠️ 落盘（rename，跨卷时退化为整份 copy + remove）交给阻塞线程池（INV-P34）：
+            // 与上面那格同一条根因，跨卷时它比哈希更慢（GB 级复制）。
+            let moved = {
+                let st = state.clone();
+                let nm = name.clone();
+                let pp = part_path.clone();
+                tokio::task::spawn_blocking(move || move_received_file(&st, &nm, &pp))
+                    .await
+                    .unwrap_or_else(|e| Err(format!("中继落盘任务被线程池中断: {e}")))
+            };
+            let path = match moved {
                 Ok(path) => path,
                 Err(reason) => {
                     {

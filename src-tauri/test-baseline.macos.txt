@@ -856,3 +856,5 @@ user_dirs::tests::moved_directory_is_followed_through_the_bookmark
 user_dirs::tests::nothing_configured_stays_none
 user_dirs::tests::store_then_load_returns_the_same_directory_in_both_modes
 user_dirs::tests::the_two_user_directories_do_not_interfere
+tests::relay_file_lifecycle_slow_work_runs_off_the_async_worker
+tests::whole_file_slow_work_never_runs_on_an_async_worker

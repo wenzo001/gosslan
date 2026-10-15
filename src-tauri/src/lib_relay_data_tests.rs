@@ -317,3 +317,248 @@
              并与 VPN 直达路径同优先级（四种通道必须可区分）"
         );
     }
+
+    /// 中继文件链上**四格整份文件慢活**必须都在阻塞线程池里（INV-P34，2026-10-15）。
+    ///
+    /// 为什么上一条不够（`relay_receive_hashes_assembled_plaintext_once` 判的是"整份一次性算、
+    /// 不逐片喂、不整读进内存"）：那一族的病不在**算法**在**线程** —— 同一句正确的流式哈希，
+    /// 写在 async worker 上就是秒级钉住一个 worker，而同一个 runtime 上还排着所有
+    /// `#[tauri::command(async)]` 的开窗命令（4.39.3 单聊收尾 / 4.40.1 群收尾 / 4.40.3 续传
+    /// 都是这一条根因，用户 2026-10-14 真机：传 3.x GB 那一段"点设置没窗、拖窗口没反应"）。
+    /// "算法对"的守卫看不见它，必须按执行上下文钉。
+    ///
+    /// 四格：`relay_push_file` 发送前的整份哈希；`handle_relay_chunk` 的①重组（完成那一片时对
+    /// 整份 `.part` 做 `sync_all`，同时还攥着 relay 全局锁）②整份哈希③改名落盘（跨卷退化为整份 copy）。
+    ///
+    /// 每格钉三件事：**包住了**（`spawn_blocking(` 就在它前面）、**等它跑完了**（紧跟 `.await` 并兜住
+    /// JoinError —— 丢掉 JoinHandle 是另一种死法：活照跑但状态机不推进，传输永远停在完成前一秒）、
+    /// **旧形状没了**（负向锚点，防"改回去了但注释还留着"）。
+    #[test]
+    fn relay_file_lifecycle_slow_work_runs_off_the_async_worker() {
+        // 先剥整行注释再扁平化：这些格子上方都挂着"为什么必须在池里"的警告注释，
+        // 不剥的话**旧写法在注释里被复述一遍**就会被当成命中（既假红也假绿）。
+        fn flat_code(s: &str) -> String {
+            let kept: Vec<&str> = s
+                .lines()
+                .map(str::trim_start)
+                .filter(|t| !t.starts_with("//") && !t.starts_with("/*") && !t.starts_with('*'))
+                .collect();
+            code_flat(&kept.join("\n"))
+        }
+        let t = crate::network::transport_src_for_guards();
+        let f = crate::network::file_src_for_guards();
+        assert!(
+            t.contains("fn handle_relay_chunk("),
+            "transport 视图里没有 `transport/relay_file.rs` ⇒ 这条守卫扫的是空集，会假绿。\
+             新增分册要在 `transport_src_for_guards()` 里同步登记一行。"
+        );
+        assert!(
+            f.contains("fn relay_push_file("),
+            "file 视图里没有 `file/relay_push.rs` ⇒ 同上，扫不到发送前那一格哈希。"
+        );
+        let chunk = flat_code(&rust_fn_body(&t, "async fn handle_relay_chunk("));
+        let push = flat_code(&rust_fn_body(&f, "async fn relay_push_file("));
+        // 0 = handle_relay_chunk 的体，1 = relay_push_file 的体。
+        let bodies = [chunk.clone(), push.clone()];
+        let cases: [(&str, usize, &str, &str, &str); 4] = [
+            (
+                "中继发送前的整份哈希",
+                1,
+                "tokio::task::spawn_blocking(move||sha256_file_hex(&hash_path))",
+                "sha256_file_hex(&hash_path)).await.unwrap_or_else(",
+                "letfile_sha256=sha256_file_hex(&path)?",
+            ),
+            (
+                "中继重组（完成片整份 fsync + 全局锁）",
+                0,
+                "tokio::task::spawn_blocking(move||{letmutrelay=st.relay.lock()",
+                "relay.add_chunk(&tid,seq,&bytes)}).await.unwrap_or_else(",
+                "letcompleted={letmutrelay=state.relay.lock()",
+            ),
+            (
+                "中继接收的整份 .part 哈希",
+                0,
+                "tokio::task::spawn_blocking(move||file::sha256_file_hex(&p))",
+                "file::sha256_file_hex(&p)).await.unwrap_or_else(",
+                "letactual_hex=matchfile::sha256_file_hex(&part_path)",
+            ),
+            (
+                "中继落盘（rename / 跨卷整份 copy）",
+                0,
+                "tokio::task::spawn_blocking(move||move_received_file(&st,&nm,&pp))",
+                "move_received_file(&st,&nm,&pp)).await.unwrap_or_else(",
+                "letpath=matchmove_received_file(state,&name,&part_path)",
+            ),
+        ];
+        for (what, idx, wrap, awaited, legacy) in cases {
+            let b = &bodies[idx];
+            assert!(
+                b.contains(wrap),
+                "`{what}` 这一格找不到 `{wrap}` ⇒ 整份文件慢活又回到 async 执行路径上了：\
+                 几百 MB 就是秒级钉住一个 tokio worker，而所有开窗命令排在同一个池里\
+                 （用户 2026-10-14 真机）。交回 spawn_blocking，写法与同链另三格一致。"
+            );
+            assert!(
+                b.contains(awaited),
+                "`{what}` 包进了 spawn_blocking 却没等它（缺 `{awaited}`）：丢掉 JoinHandle = 慢活照跑，\
+                 但状态机永远不推进 ⇒ 传输停在完成前一秒，既没有 file-done 也没有失败终态。"
+            );
+            assert!(
+                !b.contains(legacy),
+                "`{what}` 的旧写法又出现了（`{legacy}`）：这一格不许跑在 async worker 上。"
+            );
+        }
+        // 分母：这两册里"池化"的次数各自钉死（相等而不是 `>=`）。
+        // 为什么用相等：这一族是"同一条根因有四个家"里唯一会**自己长新家**的地方 ——
+        // 有人在这里新增一处慢活却忘了包，`>=` 会放过去；相等逼作者要么搬进池里、要么把这一格数上来。
+        assert_eq!(
+            chunk.matches("tokio::task::spawn_blocking(").count(),
+            3,
+            "`handle_relay_chunk` 现数到的 spawn_blocking 与登记的 3 次（重组 / 整份哈希 / 落盘）不符"
+        );
+        assert_eq!(
+            push.matches("tokio::task::spawn_blocking(").count(),
+            1,
+            "`relay_push_file` 现数到的 spawn_blocking 与登记的 1 次（发送前整份哈希）不符"
+        );
+    }
+
+    /// **INV-P34 的分母**：全生产码里"整份文件级慢活"只许出现在登记过的那几个家，
+    /// 而且每一处都必须被 `spawn_blocking` 包着。
+    ///
+    /// 为什么不满足于上一条按文件锚定的守卫：这条根因**已经复发过四次**，而按文件/按函数锚定的守卫
+    /// 对新分册、对新函数一律看不见 ⇒ 下一次复发照样全绿（4.40.3 那一条就是这么漏掉续传那一格的）。
+    /// 所以这条按**形状**扫整个 `src/`。
+    ///
+    /// 判据词法可判定：**一个 `async fn` 体内出现的慢活调用，它前面最近的一次 `spawn_blocking(`
+    /// 与它之间不许出现 `.await`**（出现了就说明"这活是在当前 worker 上跑的、那次 await 之后才轮到下一格）。
+    ///
+    /// ⚠️ 诚实边界：这条看得见 `add_chunk(` 这种"同步 helper 里藏着 GB 级 fsync"的间接形状，
+    /// **靠的是 helper 的名字在清单里**。以后新增一类整份慢活（新 helper 名），这条守卫看不见它 ——
+    /// 所以清单本身就是法条的一部分，加名字时要在 `docs/migration-ledger.md` 第 13 行说一句。
+    #[test]
+    fn whole_file_slow_work_never_runs_on_an_async_worker() {
+        const PRIMITIVES: [&str; 7] = [
+            "sha256_file_hex(",
+            "sync_all()",
+            "add_chunk(",
+            "resume_receive(",
+            "finish_receiver_into(",
+            "finish_group_receive_into(",
+            "move_received_file(",
+        ];
+        // 登记好的"家"（顺序即排序后的比较顺序）。
+        let registered: Vec<&str> = vec![
+            "commands/group_announcements.rs",
+            "commands/mobile_picker.rs",
+            "network/file/receive.rs",
+            "network/file/relay_push.rs",
+            "network/file/send.rs",
+            "network/transport/group_file.rs",
+            "network/transport/handle_file.rs",
+            "network/transport/relay_file.rs",
+        ];
+        let src_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files: Vec<std::path::PathBuf> = Vec::new();
+        let mut stack = vec![src_root];
+        while let Some(dir) = stack.pop() {
+            let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+            for e in rd.flatten() {
+                let p = e.path();
+                let name = p
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                if p.is_dir() {
+                    // `gen/` 是 Tauri 生成的工程壳（android/ios 里有整份第三方源码），不是本仓生产码。
+                    if name != "gen" {
+                        stack.push(p);
+                    }
+                } else if name.ends_with(".rs") && !name.ends_with("_tests.rs") && name != "tests.rs" {
+                    files.push(p);
+                }
+            }
+        }
+        files.sort();
+        let mut offenders: Vec<String> = Vec::new();
+        let mut homes: Vec<String> = Vec::new();
+        let mut total = 0usize;
+        for f in &files {
+            let Ok(raw) = std::fs::read_to_string(f) else { continue };
+            // 与 `rust_fn_body` 同一条归一化：Windows 上 git 会检出成 CRLF，不归一化就看不见收尾锚点。
+            let norm = raw.replace("\r\n", "\n");
+            // 只剥整行注释，**保留换行**（收尾锚点 `\n}` 靠它）。
+            // ⚠️ 判「是不是注释」要剥前导空白，但**留下的那一行必须保持原样**：
+            // 收尾锚点靠的是第 0 列的 `}`。一旦把每行 trim_start，每个函数体都会在
+            // 第一个内层 `}` 处被腰斩 ⇒ 尺子读到 0 处、offenders 恰好为空 = 假绿
+            // （本轮实测踩过：同一条规则 python 版读到 10 处，Rust 版读到 0 处）。
+            let kept: Vec<&str> = norm
+                .lines()
+                .filter(|l| {
+                    let t = l.trim_start();
+                    !(t.starts_with("//") || t.starts_with("/*") || t.starts_with('*'))
+                })
+                .collect();
+            let body = kept.join("\n");
+            let full = f.to_string_lossy().replace('\\', "/");
+            let rel = full.rsplit("/src/").next().unwrap_or(&full).to_string();
+            let mut hit_here = false;
+            let mut at = 0usize;
+            while let Some(k) = body[at..].find("async fn ") {
+                let start = at + k;
+                let end = body[start..]
+                    .find("\n}")
+                    .map(|i| start + i)
+                    .unwrap_or(body.len());
+                let seg = &body[start..end];
+                for pr in PRIMITIVES {
+                    let mut p = 0usize;
+                    while let Some(j) = seg[p..].find(pr) {
+                        let call = p + j;
+                        total += 1;
+                        hit_here = true;
+                        let wrapped = seg[..call]
+                            .rfind("spawn_blocking(")
+                            .map(|i| !seg[i..call].contains(".await"))
+                            .unwrap_or(false);
+                        if !wrapped {
+                            offenders.push(format!(
+                                "{rel}  [{pr}]  ← async fn 体内、前面最近的 spawn_blocking 与它之间已经 .await（或根本没有）"
+                            ));
+                        }
+                        p = call + pr.len();
+                    }
+                }
+                at = start + "async fn ".len();
+            }
+            if hit_here {
+                homes.push(rel);
+            }
+        }
+        // 阳性对照（本仓吃过"检索条件写窄、把存在筛成不存在"的亏）：尺子空转时 offenders 也是空的。
+        assert!(
+            files.len() > 100,
+            "生产码只现数到 {} 个 .rs —— 目录走错了，这条守卫是在空集上恒绿",
+            files.len()
+        );
+        assert_eq!(
+            total,
+            10,
+            "整份慢活现数到 {total} 处、登记 10 处。对不上时先分清哪一种：\\n             ① 新增的是**合规**的一格（也在池里跑）⇒ 把这一格数与 `homes` 清单一起改上来，\\n             ② 新增的是**没包的** ⇒ 先搬进 spawn_blocking（同链已有 10 处写法可抄），\\n             ③ 改了 helper 的名字 ⇒ PRIMITIVES 清单要同步，否则这条法就悄悄少了一格。"
+        );
+        assert!(
+            offenders.is_empty(),
+            "INV-P34：整份文件级慢活不许跑在 tokio worker 上（同一个 runtime 还排着所有 async 开窗命令；\\n             本机实测流式 SHA-256 ≈ 1 GB/s ⇒ 3 GB 就是约 3 秒「点设置没窗、拖窗口没反应」）。\\n             命中 {} 处：\\n{}",
+            offenders.len(),
+            offenders.join("\n")
+        );
+        assert_eq!(
+            homes,
+            registered,
+            "整份慢活的「家」清单与登记不一致（现数 {} 个 / 登记 {} 个）。新增一册就把那一册登记进来，\
+             并在 `docs/migration-ledger.md` 第 13 行说一句 —— 没登记就红是刻意的：\
+             这条根因复发过四次，前三次都因为守卫按文件锚定而没看见新家。",
+            homes.len(),
+            registered.len()
+        );
+    }

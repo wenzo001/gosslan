@@ -13,6 +13,77 @@
 
 ## [Unreleased]
 
+## [4.40.4] - 2026-10-15
+
+### 全链路稳定性审计第四轮：INV-P34 那一族的**剩余四家一次搬完**，并把"同一条根因会长新家"钉成分母判据
+
+**根因（已证实，与 4.39.3 / 4.40.1 / 4.40.3 同一条）**：Tauri v2 只有一个 tokio runtime，
+`#[tauri::command(async)]` 的开窗命令与网络收发排在**同一个 worker 池**里；文件生命周期上任何
+"整份文件级"的同步慢活（整份 SHA-256、完成片那次 `sync_all()`、改名/跨卷整份 copy）写在 async 路径上，
+就是把界面按秒级钉住 —— 用户 2026-10-14 真机原话「传 3.x GB 那一段，点设置没窗、拖窗口没反应」。
+
+**这一轮收掉的四家**（都在中继链上，前三轮只搬到直发与直收）：
+
+| 家 | 位置 | 那一格在干什么 |
+|---|---|---|
+| ① 发送前整份哈希 | `src-tauri/src/network/file/relay_push.rs:67` | 中继推送共享目录里的文件，哈希整份 |
+| ② 完成片的整盘 fsync | `src-tauri/src/network/transport/relay_file.rs:163` → `file_relay.rs` 的 `add_chunk` | **最糟的一家**：`sync_all()` 整份，同时**攥着 `relay` 全局锁** ⇒ 一边钉 worker、一边让别的传输的分片排队 |
+| ③ 收齐后整份校验 | `src-tauri/src/network/transport/relay_file.rs` 的 `hashed` 那一格 | 流式 SHA-256 整份 `.part`（本机实测 ≈ 1 GB/s ⇒ 3 GB ≈ 3 秒） |
+| ④ 校验通过后落盘 | 同文件的 `moved` 那一格 → `move_received_file` | 同卷 rename；跨卷退化为**整份 copy + remove** |
+
+**改法**：四处都是**纯执行上下文搬迁**（`tokio::task::spawn_blocking` + `.await` + 兜住 JoinError），
+状态机、调用顺序（写盘→fsync→校验→落盘）、错误出口、协议字段**一字未改** ⇒ 可单点回滚。
+②的 JoinError 落进 `ChunkOutcome::Rejected`：那份文件已不可能补齐，终态与"形状不合法"同一条出路
+（换源重取），代价是那行日志前缀「分片形状不合法」会跟着一条内部错误 —— 拆成第四支要动
+`ChunkOutcome` 枚举，这一轮不动它，如实记在这儿。
+
+**为什么不再补一条点状守卫，而是补分母**：这条根因已复发**四次**，而按文件/按函数锚定的守卫对新分册、
+对新函数一律看不见 ⇒ 下一次复发照样全绿（4.40.3 就是这么漏掉续传那一格的）。所以这一轮加两条：
+
+- `tests::relay_file_lifecycle_slow_work_runs_off_the_async_worker` —— 四格各钉三件事：包进了池子、
+  **等它跑完了**（紧跟 `.await.unwrap_or_else(`）、旧写法没回来；另把 `handle_relay_chunk` 里的池化次数
+  钉成相等（不是 `>=`）——新增一处忘了包就红，逼作者要么搬要么登记。
+- `tests::whole_file_slow_work_never_runs_on_an_async_worker` —— **INV-P34 的分母**：遍历
+  `src/**/*.rs`（跳过 `gen/`、`*_tests.rs`、`tests.rs`），对每个 `async fn` 体用一条词法可判的规则
+  「慢活调用前面最近的一次 `spawn_blocking(` 与它之间不许出现 `.await`」；慢活清单是
+  `sha256_file_hex( / sync_all() / add_chunk( / resume_receive( / finish_receiver_into( /
+  finish_group_receive_into( / move_received_file(`；现算 10 处、落在 8 册，两处都钉相等 + 一条
+  "文件数 > 100"的阳性对照（尺子空转时 offenders 也恰好为空 —— 那正是本仓最怕的假绿形状）。
+
+**判据非空转（三次单点变异，块体字面取自文件、不凭记忆抄）**：
+① 发送前哈希退回 worker ⇒ 两条都红，点守卫点名"中继发送前的整份哈希"那一格、分母守卫点名
+`network/file/relay_push.rs`；② `add_chunk` 退回 worker ⇒ 两条都红，各自点名"中继重组"那一格与
+`network/transport/relay_file.rs`；③ **包了但丢掉 JoinHandle** ⇒ **只有点守卫红**、分母守卫仍绿
+（这一条是量具买不到的那一半，写在用例的注释里而不是装作它管得到）；三次还原后复跑都是绿。
+
+**本轮自己踩到的三处尺子错（都改的是尺子，没动被量对象）**：
+① 第一版分母守卫把"注释过滤"写成了 `.map(str::trim_start)` ⇒ 每一行的第 0 列都变成 `}`，
+函数体在**第一个内层花括号**处被腰斩，`--list` 之外的一切读数归零，而 offenders 恰好为空 = 假绿；
+现算读到 0 处而 python 同规则读到 10 处，才把这条抓出来（正解：判注释时剥前导空白，**留下的那一行保持原样**）。
+② 变异脚手架两次编译不过 ⇒ 按纪律记为**无效读数**重做，没有把"编译失败"当成"判据抓到了"。
+③ 写锚点时凭记忆猜了一个 `}))` 的收尾，实际是单个 `)` ⇒ 落笔前用脚本把扁平化原文打出来核了一遍。
+
+**治理同步**：`docs/protocol-invariants.md` 的 INV-P34 补上这两条钩子并把"边界"那一格从
+"还剩四家"改成"四家已搬 + 分母守卫的两处买不到的地方"；`docs/migration-ledger.md` 第 13 行
+把同一条根因的家清单更新为"已收口 + 新增家必须登记"；`docs/domains.data.mjs` 与
+`docs/ARCHITECTURE-MAP.html` 的 `inv` 快照本轮无新增 id ⇒ 未改（改过才要两处一起动）。
+Rust 基线随新用例前移：macos 858 → 860、windows 846 → 848（两份都由 `--list` 现算差集补，不是手加计数）。
+
+**验证到哪一步（诚实版）**：`cargo test --features bluetooth --lib` 860 passed / 0 failed、
+`cargo fmt` 退 0、`cargo check --features bluetooth --lib --tests` 退 0。⚠️ 但**效果**只在真有一个
+GB 级文件走中继时发生：单元测试钉的是执行上下文形状，双实例 harness 不制造"中继链上的整份校验窗口"
+⇒ 现在的状态是"已修改 + 判据已自动化"，**不是**"生产已修复"。真机回验（两台同网段，任选一台当中继接收方 B）：
+① A 向 B 中继发送 600 MB 以上文件（两台之间无直连、需借道时最能暴露这一族）；② 在 B 上
+**边收边点设置 / 拖窗口 / 切聊天** —— 修复前在"收齐那一瞬"卡数秒，修复后应立即响应；
+③ 传完立刻发一条普通文本，确认消息通路未被大文件挤掉；④ 跨卷场景（下载目录与 `.part` 不同卷）单独再走一遍④那一格。
+
+**登记但这一轮仍未动的**：③ 每片两次 `file_receivers` 抢锁、④ 落库节流与事件节流共用 `last_report_ms`、
+⑥ 群 done 失败不把 content 落到 `Incomplete`、⑦ macOS `read_file_preview` 的主线程形状（要真机量
+15 MiB 图片预览才判得动，本轮既没证实也没推翻）、⑧ `set_abortive_close` 的 `eprintln!`、
+⑨ UDP 读那两处 `let Ok(..) else { continue }`。问题 B 一侧本轮**零改动**：修复已在 4.40.2 之前落地，
+缺的是 X-Lite 真机读数，不是代码。
+
+
 ## [4.40.3] - 2026-10-15
 
 ### 全链路稳定性审计第三轮：问题 A 的第三家 —— 续传时整份 `.part` 前缀的校验不再钉住 async worker
