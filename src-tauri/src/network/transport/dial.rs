@@ -342,10 +342,18 @@ pub async fn ensure_link(
     if !should {
         return;
     }
-    // LAN 发现路径的拨号失败是常态（对端离线、或本轮该由对端拨），刻意不打日志；
-    // 但**握手验签失败/身份不符**会在 `connect_to_peer` 内以 warn + 诊断事件留痕
-    // （那是「有人冒充」或「配置写错」的信号，不能静默）。
-    let _ = connect_to_peer(
+    // LAN 发现路径的**去重命中 / 在途 / 并发满**是每 5s 一轮的常态，静默（与 Routed 那臂同口径）。
+    // 但 `Failed` 不能再吞（2026-10-15 全链路审计 §五）：问题 B 的现场就是「对端在节点列表里、
+    // 可就是连不上」，而当时磁盘上**一行证据都没有** —— 只能靠猜是发现失败、TCP 建连失败还是
+    // 握手没回。`DialOutcome::Failed` 的字符串本来就带阶段名（`连接失败:` / `连接超时（Ns）` /
+    // `握手发送失败:` / `握手读取失败:` / `握手超时（Ns）` / `握手失败: 对端首帧不是 Hello`），
+    // 原样落日志即可区分，不在这里再分类一次（分类逻辑有两个家必然漂移）。
+    //
+    // 节流 30s 一条：一个「UDP 收得到、TCP 被防火墙 DROP」的对端每 5s 就会拨号超时一次，
+    // 不节流会把 500 条的日志环刷满。⚠️ 节流键是全局的（`log_throttled` 只吃 `&'static str`）
+    // ⇒ 多个对端同时连不上时，一行里只会出现最先失败的那一个 peer，不是每个 peer 各一行。
+    // 握手验签失败 / 身份不符另有 `connect_to_peer` 内部的 warn + 诊断事件，这里不重复。
+    if let DialOutcome::Failed(why) = connect_to_peer(
         state,
         Some(peer_id),
         endpoint,
@@ -353,7 +361,15 @@ pub async fn ensure_link(
         shutdown,
         None,
     )
-    .await;
+    .await
+    {
+        if log_throttled("lan_dial_fail", 30_000) {
+            state.logger.warn(
+                "lan",
+                format!("拨号未成功 peer={peer_id} ep={endpoint}：{why}"),
+            );
+        }
+    }
 }
 
 /// 建立一条到 `endpoint` 的连接。

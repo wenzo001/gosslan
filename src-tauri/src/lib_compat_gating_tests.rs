@@ -321,6 +321,106 @@
         );
     }
 
+    /// **广播连续全失败 ⇒ 发送出口必须重绑**（4.40.1 登记的 ⑤，本轮收掉；问题 B 的
+    /// "网卡切换 / IP 变化 / 休眠唤醒后可恢复"那一格）。
+    ///
+    /// 为什么只能钉源码（与上面那条同因）：这条性质要的是**运行期发生网卡变化之后**的行为，
+    /// 单测造不出第二张网卡，本地双实例 harness 也不拔网线。而它退化后**看起来一切正常**
+    /// —— 收侧绑 0.0.0.0 照旧听得见，于是节点列表里"我看得见别人、别人看不见我"，
+    /// 除了重启应用没有第二条出路。
+    ///
+    /// 判据分两类：① 节拍与出口（在 `spawn` 的广播循环里）；② 重绑自身的顺序与边界
+    /// （加组播成功才换、诊断字段跟着改、**收侧那只不许换**）。
+    #[test]
+    fn discovery_send_egress_rebinds_after_sustained_silence() {
+        const SRC: &str = include_str!("network/discovery.rs");
+        let spawn = code_flat(&rust_fn_body(SRC, "pub async fn spawn("));
+
+        // ① 三条广播路的成败必须汇成一个"这轮到底出声了没有"（`next_fail_streak` 的输入）
+        let bc = code_flat(&rust_fn_body(SRC, "async fn broadcast("));
+        assert!(
+            bc.contains("directed_ok||bcast_res.is_ok()||mcast_res.is_ok()"),
+            "broadcast() 必须返回三条路里是否至少发出去一条 —— 只有一条腿能用（macOS 常态）绝不能算成静默"
+        );
+        // ② 循环真的在数连拍，并且到点就去重绑
+        assert!(
+            spawn.contains("streak=next_fail_streak(sent_any,streak);"),
+            "广播循环必须用 next_fail_streak 累计三路全灭的轮数（不累计 = 这条修复根本没接线）"
+        );
+        assert!(
+            spawn.contains("ifstreak>=SEND_SILENT_REBIND_ROUNDS{"),
+            "连拍必须与 SEND_SILENT_REBIND_ROUNDS 比阈值后才动手（一轮失败就拆建 socket 是抖动源）"
+        );
+        assert!(
+            spawn.contains("reprobe_send_socket(&state,&send_cell,manual,cur_ip)"),
+            "到阈值那一轮必须真的调用 reprobe_send_socket，否则判据只是注释"
+        );
+        // 到点必须先清连拍：不清的话此后每一轮都会去拆建一次 socket（偶发失败跑成出口抖动）
+        assert_eq!(
+            spawn.matches("streak=0;").count(),
+            1,
+            "重绑那一轮必须恰好清一次连拍（判据按形状数：`streak = 0;` 只许出现在动手那一格）"
+        );
+        // ③ 手动模式的判据来自配置里那个 ip，不许写死
+        assert!(
+            spawn.contains("letmanual=!ip.is_unspecified();"),
+            "manual 必须由 `!ip.is_unspecified()` 现推：写死 true 会让自动模式永远不重绑（静默退化）"
+        );
+        // ④ 每个发送/接收路径都**现取**当前 socket。⚠️ 只数总次数是不够的（2026-10-15 变异 M9
+        // 实测假绿过一次：把那行整体挪到 `loop` 外面，次数一点没变、代码却退化成永久快照）
+        // ⇒ 三条都按**形状**钉位置，总数只当分母用。
+        assert!(
+            spawn.contains("loop{letsend_socket=send_cell.current();"),
+            "接收循环必须**每轮**现取发送 socket：取到循环外面就变成永久快照，出口换过网卡之后仍往退役的旧 fd 上发"
+        );
+        assert!(
+            spawn.contains("broadcast_probe(&send_cell.current(),&state,tcp_port,lan_bc).await;"),
+            "「打开添加好友」那次探测也必须现取出口：它恰恰是用户主动找设备的那一下，拿旧 socket 就是白点一次"
+        );
+        assert_eq!(
+            spawn.matches("broadcast(&send_cell.current(),&state,tcp_port,lan_bc).await").count(),
+            2,
+            "首次广播 + 周期广播两处都要现取（少一处=那一臂退回旧 Arc 快照，重绑之后发不出去）"
+        );
+        assert_eq!(
+            spawn.matches("send_cell.current()").count(),
+            4,
+            "接收循环 + 首次广播 + 周期广播 + 按需探测必须各现取一次当前发送 socket"
+        );
+
+        // ⑤ 重绑函数自己的边界
+        let reprobe = rust_fn_body(SRC, "fn reprobe_send_socket(");
+        let reprobe_flat = code_flat(&reprobe);
+        assert!(
+            reprobe_flat.contains("bind_udp_reusable(new_ip,UDP_PORT)"),
+            "新出口必须走同一个 `bind_udp_reusable`（SO_REUSEPORT / 非阻塞 / 组播出口那套一个都不能少）"
+        );
+        let join = reprobe_flat.find("join_multicast_v4(MULTICAST_GROUP,new_ip)");
+        let swap = reprobe_flat.find("cell.swap(new_socket)");
+        assert!(
+            join.is_some() && swap.is_some() && join < swap,
+            "必须**先**在新接口上加组播、成功之后才换 socket：先换再加不上，会把唯一还能用的出口拆掉"
+        );
+        assert!(
+            reprobe_flat.contains("diag.bound_ip=new_ip.to_string();"),
+            "重绑后诊断里的 bound_ip 必须跟着改，否则开发者面板会指着那只已退役的 socket（假证据比没证据更坏）"
+        );
+        assert!(
+            reprobe.contains("\"broadcast_stuck_error\"") && reprobe.contains("\"discovery_rebind\""),
+            "两条结局都要留痕：换了（discovery_rebind）与**没换**（broadcast_stuck_error）是排查重启才恢复时的两种结论"
+        );
+        // ⑥ 结构性边界：收侧那只 socket 不参与重绑（绑 0.0.0.0，网卡变化不影响它）
+        assert!(
+            !reprobe.contains("bind_udp_recv("),
+            "reprobe_send_socket 不许重建收侧 socket：0.0.0.0 那只不受网卡变化影响，换它只会丢包"
+        );
+        assert_eq!(
+            SRC.matches("cell.swap(").count(),
+            1,
+            "发送出口的更换必须恰好一个家（第二处 = 两个地方各自决定换什么，会漂移）"
+        );
+    }
+
     /// **受众闸的接线**：那条判定必须走纯核（它有 5 条单测），不许再写回臂里。
     ///
     /// 为什么不能只测纯核（同 INV-P24 第 4 条那条守卫的道理）：判据写得再对，

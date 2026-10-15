@@ -13,6 +13,97 @@
 
 ## [Unreleased]
 
+## [4.40.2] - 2026-10-15
+
+### 全链路稳定性审计第二轮：问题 B 的「出口重绑」与「LAN 拨号留痕」（4.40.1 登记的 ⑤ 收掉）
+
+上一轮把三条已证实根因收掉后，登记了七条没动的。本轮收其中**两条**，都是负责人那句
+「要双方反复重启应用才能恢复」的直接候选：
+
+**1）发送出口的网卡/IP 只在 `spawn` 那一刻解析一次 ⇒ 本机 IP 一变就永久失声（4.40.1 的 ⑤）。**
+`network/discovery.rs` 的 `bind_udp_reusable` 必须把发送 socket 钉在具体 LAN IP 上（那是躲开
+VPN/虚拟网卡劫持出口的唯一办法），可它在整个进程生命周期里只绑一次。本机 IP 一旦没了
+（DHCP 续约、切 Wi-Fi、休眠唤醒、精简镜像上网卡服务重启后重排），子网广播 + limited 广播 +
+组播**三条路同时** `EADDRNOTAVAIL`；而收侧那只绑 `0.0.0.0`，照旧听得见 ⇒
+**我看得见别人、别人从此找不到我，且本进程永不自愈，只能重启应用** —— 与问题 B 的形状一致。
+现在发送 socket 进了一个可换的 `SendCell`：广播循环数「三路全灭」的连拍，
+到 `SEND_SILENT_REBIND_ROUNDS`（3 轮，自适应周期下约 15~60s）就重新 `find_lan_interface()`、
+在新接口上建 socket、**先加组播成功**再换、并把诊断里的 `bound_ip`/`selected_interface` 一起改掉；
+收侧那只刻意不换（0.0.0.0 不受网卡变化影响）。三条「不换」判据都是刻意的：
+**手动模式不替他改配置**、**没探到可用网卡时不拆手里唯一那只**、**还是同一个 IP 就不原地拆建**。
+`who_has` 的回包与接收循环读的那只 socket 也都改成**每轮现取**，否则会停在退役的旧 fd 上。
+
+**2）LAN 拨号失败被 `let _ =` 吞掉 ⇒ §五 要求区分的「TCP 建连失败」在日志里根本没有。**
+`transport/dial.rs::ensure_link` 此前对 `connect_to_peer` 的结果一字不打（注释写的是"失败是常态"）。
+常态的是**去重命中 / 在途 / 并发满**那三种，`Failed` 不是 —— 而问题 B 的现场恰恰是
+「对端在节点列表里、可就是连不上」，当时磁盘上零证据，只能靠猜是发现没发现到、TCP 连不上、
+还是握手没回。现在 `Failed` 那一格走一条**节流 30s** 的 warn，内容原样带上
+`DialOutcome::Failed` 的字符串（它本来就写明了阶段：`连接失败:` / `连接超时（5s）` /
+`握手发送失败:` / `握手读取失败:` / `握手超时（5s）` / `首帧不是 Hello`），
+不在这里再分类一次 —— 同一个判断有两个家是这仓库踩过的坑。
+身份不符 / 验签失败仍由 `connect_to_peer` 内部那条 warn + 诊断事件负责，这里不重复。
+
+**同一轮里量到但**没改**的（登记，不夹进这次发布）：** 上一轮 ①②③④⑥⑦ 六条原样仍在
+（中继收发整文件哈希与 `move_received_file`、`resume_receive` 整份 `.part` 就地哈希、
+每片两次 `file_receivers` 抢锁、落库/事件共用 `last_report_ms`、群 done 失败不回落 `Incomplete`、
+macOS WKWebView `read_file_preview` 的 `number[]` 主线程解析）。本轮新增两条：
+⑧ `network/transport.rs:533` `set_abortive_close` 失败走 `eprintln!` ——
+`logging.rs:209` 注释写明 release 无控制台，那行**永远看不见**，而它预告的正是
+「59992 被 TIME_WAIT 占死 ⇒ 重启后 bind 失败」这条生产故障。不改的理由有两条：
+一是**没有任何现场证据**表明 `set_linger` 真失败过（按约束"所有修改必须能追溯到故障证据"）；
+二是它是 `#[cfg(windows)]` 的签名改动，本机这条腿编译不到它（还牵到 `listen_tests.rs:81`
+那条 Windows 专属用例），改错了要等 Windows CI 才炸 ⇒ 收益不抵风险。
+⑨ 接收循环那两处 `let Ok(..) = res else { continue }`（`discovery.rs` UDP 读）：
+Windows 上对端端口不可达会以 `ConnectionRefused`/`WouldBlock` 形态反复回来，
+现在的写法既不计「读失败」也不留痕。是否真的是现场噪声，需要 Windows 真机日志判，本轮不猜。
+
+**判据（4 条新增，全部实测反例）：**
+`network::discovery::tests::broadcast_streak_counts_only_full_silence`（只有三路全灭才累计；
+任一条腿能用就归零；饱和加不回绕；阈值不许写成 1）、
+`network::discovery::tests::send_egress_rebind_keeps_manual_dead_and_same_ip`（三条不换 + 一条该换，
+四臂逐条）、
+`tests::discovery_send_egress_rebinds_after_sustained_silence`（源码形状：三路 OR 成 sent_any、
+连拍进阈值、到点真调 `reprobe_send_socket`、`manual` 由配置现推、
+**接收循环 / 首次广播 / 周期广播 / 按需探测四条发送路径各按形状钉住"现取"**、
+**先加组播后换**、诊断跟着改、两种结局各一条留痕、不许重建收侧 socket、
+`streak = 0;` 与 `cell.swap(` 按数量恰好各一处）、
+`network::transport::tests::lan_dial_failure_is_logged_not_swallowed`（`Failed` 必须被接住、
+节流在 warn 外面、旧的 `let _ =` 形状不许回来、本函数只许一处 warn）。
+
+⚠️ **这条判据是第一版写完才发现半空的**（值得记下来）：那版对"现取出口"只数了
+`send_cell.current()` 的**出现次数**（==4）。变异 M9 把那一行整体挪到 `loop` **外面** ——
+次数一点没变、代码却退化成永久快照，跑完 12 笔时那一笔是**绿的**。
+⇒ 数量判据量不到位置；补成三条按形状钉的连续串（`loop{letsend_socket=send_cell.current();` 等）
+之后 M9 才红。教训与仓内那条老规矩同源：**「有断言」≠「被证明会失败」**，
+分母要含"合规写法的形状"，不是只含个数。
+
+**12 笔单点变异各红对应那一条**（`bad=0`，逐笔只红一条、无连带）：
+`next_fail_streak` 两臂对调 / 删手动那一臂 / `manual` 写死 true / 阈值写成永不触发 /
+到点不调 `reprobe_send_socket` / 加组播失败也照换 / 重绑不更新诊断 `bound_ip` /
+动手那轮不清连拍 / 接收循环取到循环外（**第一版判据抓不到，补形状后才抓到**）/
+探测那臂拿回旧快照 / LAN 拨号失败退回 `let _ =` / 留痕被 `if false` 关掉。
+跑完逐笔还原，`git status` 复核工作树只剩本轮那 5 个业务文件。
+（探针自身的两处尺子错也记一下：`--list` 的名字含 `::`，用 `split(":")[0]` 会把每条都切成模块首段
+⇒ 4 条"找不到"、脚本按设计一个字没改；`cargo test` 在测试失败时也打 `error: test failed`，
+上一版把它当编译错误 ⇒ 每笔多出两条假象。两处都改探针，不改被判的代码。）
+Rust 基线随新用例前移：macos 853 → 857、windows 841 → 845（两份都是
+`cargo test --features bluetooth --lib -- --list` 现算的差集补的，不是手加计数）。
+
+**验证到哪一步（诚实版）：** 本地 macOS 上 `cargo test --features bluetooth --lib` 全绿；
+上面这些判据的**非空转**靠单点变异证（每笔只改一个点、跑整套、红了哪几条逐笔记下，
+跑完逐笔还原）。⚠️ 但这条修复的**效果**只发生在"运行期本机 IP 真的变了"的时候，
+而这在单元测试与本仓的双实例 harness 里都造不出来（它测的是运行中链路，不模拟网卡变化）
+⇒ 现在的状态是**已修改 + 判据已自动化**，不是"生产已修复"。
+真机复现步骤（负责人侧，两台同网段机器任选一台）：
+① 记下 A 的日志行 `diag/discovery_started: send_bind=<IP>`；
+② 在 A 上换 IP（关 Wi-Fi 再开 / 换一次路由器 DHCP / 唤醒睡眠）；
+③ 看 B 的节点列表：修复前 A 会**一直消失直到 A 重启**，修复后应在 3 轮广播内（约 15~60s）
+自己回来，A 的日志里出现一行 `diag/discovery_rebind: <旧IP> -> <新IP> bc=... iface=...`；
+④ 若只看到 `diag/broadcast_stuck_error`（没换成）就是三条「不换」判据命中了，
+把那一行的 `manual=` 与 `探测=` 两个字段贴回来即可定位，不需要猜。
+另一格同法回验：防火墙黑洞场景下，A 的日志现在应出现 `[lan] 拨号未成功 peer=… ep=…：连接超时（5s …）`
+（每 30s 至多一条）——修复前这一格一个字都没有。
+
 ## [4.40.1] - 2026-10-15
 
 ### 全链路稳定性审计：三个已证实根因的修复（问题 A 群文件收尾 + 问题 B 两处「非重启不可」）

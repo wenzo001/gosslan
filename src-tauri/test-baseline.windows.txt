@@ -388,6 +388,7 @@ network::ble::tests::reconnect_hello_must_not_go_to_the_stale_route
 network::ble::tests::throughput_estimate_matches_real_mtu_budgets
 network::discovery::tests::adaptive_interval_thresholds_and_jitter_bounds
 network::discovery::tests::broadcast_diag_event_reflects_send_result
+network::discovery::tests::broadcast_streak_counts_only_full_silence
 network::discovery::tests::discovery_recv_socket_actually_receives_broadcast
 network::discovery::tests::expired_deadline_is_ready_immediately
 network::discovery::tests::is_rfc1918_covers_private_ranges
@@ -400,6 +401,7 @@ network::discovery::tests::resolve_bind_ip_auto_uses_lan_ip
 network::discovery::tests::resolve_bind_ip_manual_uses_user_ip
 network::discovery::tests::score_candidate_orders_correctly
 network::discovery::tests::score_candidate_rfc1918_boundary
+network::discovery::tests::send_egress_rebind_keeps_manual_dead_and_same_ip
 network::discovery::tests::vgate0_never_selected_as_bind_address
 network::dispatch::tests::ack_is_high_priority
 network::dispatch::tests::ble_yield_fragments_allows_preemption
@@ -568,6 +570,7 @@ network::transport::tests::hello_avatar_is_capped_for_the_handshake_frame
 network::transport::tests::hello_binding_ignores_unverified_announced_keys
 network::transport::tests::inbound_dedup_truth_table
 network::transport::tests::insert_outcome_maps_to_side_effect_and_ack_policy
+network::transport::tests::lan_dial_failure_is_logged_not_swallowed
 network::transport::tests::link_low_queue_is_bounded_by_bytes_not_frame_count
 network::transport::tests::link_queues_are_created_from_one_place
 network::transport::tests::malformed_known_frame_still_errors
@@ -722,6 +725,7 @@ tests::content_pull_requires_capability_negotiation
 tests::content_request_serve_gate_delegates_to_the_pure_kernel
 tests::cosmetic_title_read_cannot_abort_the_window
 tests::direct_remind_validates_target_message_exists
+tests::discovery_send_egress_rebinds_after_sustained_silence
 tests::duplicate_file_done_still_answers_with_an_ack
 tests::every_finalize_path_defers_the_destructive_write
 tests::every_friend_accept_path_forgets_the_pending_request
