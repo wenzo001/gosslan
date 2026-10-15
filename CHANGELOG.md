@@ -15,7 +15,87 @@
 
 ## [4.40.5] - 2026-10-15
 
-### 审计第五轮：INV-P34 的一处假前提被源码推翻，顺出三家新违规并一次搬完
+### 审计第六轮：⑦ 那格从"要真机才判得动"变成"形状已判、量级有下界"，另登记两处只查到没动的
+
+**这一轮零应用码**（只改 `docs/protocol-invariants.md`、`docs/migration-ledger.md` 第 13 行、本节）。
+
+**先记门禁读数**（`npm run verify:full` 在 tip `c5737d7`，日志 `/tmp/v4399.log`）：23 步**红 1 步**
+——红的是第 14 步 Change Budget，红在**未推送范围**的判据 3（重复犯案那格），属已知历史欠账，
+不是本轮造出来的；其余 22 步全绿，含第 22 步护栏非空转（前端子集，838.1s）与第 23 步 Android
+编译门禁（16.2s），总 913.2s，`VERIFY_EXIT=1`。⚠️ 后台完成通知报的是**启动器**的退出码 0，
+不是这条链的 ⇒ 认结论只认日志里那行 `VERIFY_EXIT`。上一轮那条"护栏注入步被历史欠账牵着红"
+的接缝病在这份读数里已经消失（第 22 步绿）。
+
+**⑦ 的形状判定（问题 A 的前端那一半，此前我写过"要真机才判得动"，那句太重了）**：读**锁定版本**
+的 crate 源码（`src-tauri/Cargo.lock` 现算 tauri 2.11.5 / tauri-macros 2.6.3），三件事是源码里写死的：
+
+| 依据 | 事实 |
+|---|---|
+| 那份 ipc 下的 protocol.rs 第 392 到 405 行 | 响应体是原始字节时，`target_os = macos/ios` **无条件**走 `responder_eval`（把响应序列化进一段 JS 源码再 eval）；只有非 mac/ios **且** 自定义协议没被前端逐请求上报为 blocked，才走 Channel→自定义协议（前端直接拿 ArrayBuffer） |
+| 同那份 crate 的 ipc 下 mod.rs 第 133 到 140 行 + format_callback.rs 第 83 到 89 行 | 序列化形状 = `serde_json::to_string(&Vec<u8>)` ⇒ **一字节一个十进制数**；那份 mod.rs 第 54 到 56 行的文档自己就写着"number array 比 base64 更慢" |
+| `src/utils/filePreview.ts:191` 那句注释 | 「mac 上是 number[]、其余平台是 ArrayBuffer」**与源码一致** —— 此前它只是口头说法，现在有据 |
+
+**顺出的一处欠账（同一条根因常有第二个家）**：这一族不是 `read_file_preview` 单独一格，是**三格一家**，
+同一条 15 MiB 封顶：`commands/helpers.rs:189`、`commands/favorites.rs:239`（`read_favorite_preview`）、
+`commands/favorites.rs:303`（`read_content_preview`）；前端对应也是**三个归一点**：
+`src/utils/filePreview.ts:148`（`loadThumbPreview`）、`:196`（`loadFilePreview`）、`:242`（`loadContentPreview`）。
+复跑：`grep -rn "max_bytes.min(15 \* 1024 \* 1024)" src-tauri/src --include="*.rs"` 与
+`grep -n "new Uint8Array(raw)" src/utils/filePreview.ts`。
+
+**量级（本机 V8 一次读数，是**下界**不是真机读数）**：把 `serde_json` 那个形状原样喂给 JS 再量解析成本 ——
+
+| 载荷 | 元素数 | 注入的 JS 源串 | JSON.parse | new Uint8Array | 合计 | ArrayBuffer 对照 |
+|---|---|---|---|---|---|---|
+| 512 KiB（代码预览上限） | 524,288 | 1.8 MiB | 15.3 ms | 0.5 ms | **15.8 ms** | 0.0 ms |
+| 200 KiB 缩略图 | 204,800 | 0.7 MiB | 4.6 ms | 0.2 ms | **4.8 ms** | 0.0 ms |
+| 2 MiB 常见图片 | 2,097,152 | 7.1 MiB | 63.1 ms | 3.0 ms | **66.1 ms** | 0.0 ms |
+| 5 MiB 大图 | 5,242,880 | 17.8 MiB | 183.3 ms | 6.4 ms | **189.7 ms** | 0.0 ms |
+| 15 MiB（三格共同的封顶） | 15,728,640 | 53.6 MiB | 576.8 ms | 40.0 ms | **616.9 ms** | 0.0 ms |
+
+每次探针都自校"往返字节一致"（首末字节 + 长度全等），ArrayBuffer 那条是同一次运行里的对照。**两半仍没量**，
+不许读成"已测出真机耗时"：① 真机是 JavaScriptCore，且它还必须先解析那段 53.6 MiB 源串本身 ⇒ 616.9 ms 只是下界；
+② 那段源串**交给 webview 的那一步**发生在主线程，那一半本轮既没证实也没推翻。另有一条边界要写清：
+JS 跑在 WKWebView 的 WebContent 进程，这六百多毫秒表现的是"窗口里点没反应、图不画"（问题 A 后半句
+"部分功能失效"），**不是**"拖窗口没反应"——后者是 INV-P34 那一族（tokio 被 GB 级慢活钉住、饿死开窗命令）。
+
+**真机回验步骤（问题 A 这一格，负责人做一次就能收）**：macOS 上让对端发来一张 12–15 MiB 的图片，
+在本机 devtools 控制台把一次 `await invoke('read_file_preview', { msgId, maxBytes })` 用
+`performance.now()` 前后夹住打印；再连点侧栏/输入框记录"从点击到有反应"的间隔。⚠️ 开着 devtools
+本身就吃主线程，读数会**偏高**，只能当上界用。
+
+**登记但这一轮没动（两处，都是"查到了没修"）**：
+⑩ **收藏失败会留下一个没人登记的文件**：`commands/favorites.rs:177` 的
+`db::insert_favorite(...).map_err(\|e\| e.to_string())?` 这条出口**不删**刚刚复制进收藏目录的副本，
+而同一函数里 `if !inserted` 那一臂是显式删的 —— 两个臂对同一件事两种结局。收藏目录没有孤儿清理
+（`favorites_dir` 的读者只有 `commands/channel.rs`、`commands/favorites.rs`、`state.rs`；
+`remove_favorite` 只删登记过的那条 `media_path`；`cache_cleaner` 从已登记的 content 出发）。
+磁盘满那一半本轮**实测过**：8 MB 的 MS-DOS 卷里 `std::fs::copy` 一个 40 MB 文件 ⇒
+`kind=StorageFull raw_os=Some(28) msg=No space left on device (os error 28)`，目标文件留下
+**7,340,032 字节**的半份。修法就四行（那条 `?` 改成先 `remove_file(&dst)` 再返回，注释与 `!inserted`
+那一臂同口径 + 一条 warn），没动的理由不是"太重"，是**账**：未推送范围已经红在判据 3，
+再加应用码提交会把那格红推得更远，而这一格的新形状判据要另起一个 `include_str!` 视图。
+⑪ **入站 accept 的错误臂静默**：`network/transport.rs:231` 的 `let Ok((stream, peer_addr)) = accept else { continue }`
+对**任何** accept 错误都一样处理 —— 不退避、不分类、**一条日志都不打**。本机探针（照同一形状写，非阻塞 std）
+读数：把 `RLIMIT_NOFILE` 压到 1 之后，accept 队列里 149 条挂着的连接产生 **128 次**
+`kind=TooManyOpenFiles raw_os=Some(24)`，全部被那条臂吞掉。含义有两层：其一，这类错误**有可分类的
+`ErrorKind`**，所以"按 `TooManyOpenFiles` 单独限频打一条 warn"这个最小诊断补丁写得出来、不需要字符串匹配；
+其二，如果 FD 真被耗光，端口就不再接受任何入站连接，而日志里**零线索** —— 这正是 §4.2 问的
+"是否存在必须重启应用才能释放的状态"的形状。**但**我没证生产会走到这里：FD 耗尽的前半截（接收器表项 +
+文件句柄 + `.part` 永不回收）已在 4.39.x 修掉，本轮没有任何真机 FD 读数 ⇒ 置信度只到"形状已证实、
+触发条件待验证"。要收这一格，先要的是**读数量**：Windows 那台 X-Lite 上跑一次"连续传 20 个文件 +
+断网重连 10 次"，同时记录进程句柄数（任务管理器"句柄"列或 `Get-Process -Id <pid>.HandleCount`），
+句柄单调上升不回落 ⇒ 前半截还在；平了但仍然连不上 ⇒ 才轮到 ⑪ 这条臂。
+
+**顺带修掉两处文档自身的缺陷**：`docs/migration-ledger.md` 第 13 行那句"尚未证实"把锚点写成了
+`commands/helpers.rs:177` —— 那个行号是**隔壁的 `media_present`**，`read_file_preview` 在 `:189`
+（file:line 引用对账只查引用存不存在，查不出指错格，所以这类错不会自己冒出来）；
+`docs/protocol-invariants.md` 那条边界段结尾把"别把本条读成…"同一句写了两遍（一版用单引号一版用双引号），
+已合并成一句。
+
+**交付状态（按 §七 的口径，不许越级）**：以上全部落在 1「已发现但尚未修改」与 3「已通过自动化验证」
+之间 —— 第 3 类只到"文档与实物对齐"这一层。**真实双端读数本轮仍为零**，问题 B 一侧没动一行码，
+⑪ 与 ⑦ 都还在等负责人那两次真机量。
+
 
 现象仍在问题 A 这一族（「接收端界面卡死或部分功能失效」）。4.40.4 写分母判据时，我把
 `#[tauri::command(async)]` 挂在**同步 fn** 上的命令判成"已经在运行时之外"，据此把
