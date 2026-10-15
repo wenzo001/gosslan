@@ -76,7 +76,15 @@ onMounted(() => {
       /* 订阅失败只影响"窗口已开着时再点图"这一条路（内容会停在上一次） */
     });
   void getCurrentWindow()
-    .onCloseRequested(() => releaseAlbum())
+    .onCloseRequested((event) => {
+      // 必须拦：`@tauri-apps/api` 的包装在 handler 之后会自己判 `isPreventDefault()`，
+      // 没拦就去调 `window.destroy()` —— 本窗口能力表里没批那条权限，于是只落一条
+      // 界面 rejection；而哪天放宽了它，这扇**常驻、关闭即隐藏**的窗会连 WebView 一起被销毁
+      // （第二次看图不再秒开）。Rust 那侧 `install_hide_on_close` 已经是 prevent_close + hide，
+      // 所以这里拦下来与既有语义两边一致，不是新行为。
+      event.preventDefault();
+      releaseAlbum();
+    })
     .then((fn) => {
       if (disposed) {
         fn();

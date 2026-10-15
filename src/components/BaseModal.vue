@@ -191,6 +191,13 @@ useBackLayer(
               class="elevated my-auto flex max-h-[calc(100vh-var(--gosslan-window-safe-top)-2rem)] w-full flex-col rounded-[var(--gosslan-radius-xl)] bg-[var(--gosslan-panel)] p-5 text-left align-middle text-[var(--gosslan-text)]"
               :class="width"
             >
+              <!-- ⚠️ 标题栏 `shrink-0` + 内容区 `min-h-0 flex-1` 是**一对**，缺一不可：
+                   2026-10-12 用户实测「窗口大时卡片完整，窗口一缩小头部就被缩上去一些」。
+                   根因是标题栏虽然写了 `shrink-0`，但卡片总高被 `max-h` 夹住时，
+                   flex 仍会把**没写 shrink-0 的那一层**（原来这里是裸的标题 div）压扁；
+                   而 `items-start` 让它表现为"标题被从上面切掉一截"。
+                   现在：标题栏 `shrink-0`、内容区 `min-h-0 flex-1`（唯一可压缩项）、
+                   滚动区自己消化溢出 ⇒ 窗口再矮，标题与 ✕ 也完整可见且可点。 -->
               <div v-if="title" class="mb-4 flex shrink-0 items-start justify-between gap-3">
                 <DialogTitle as="h3" class="text-base font-semibold leading-6">
                   {{ title }}
@@ -204,11 +211,28 @@ useBackLayer(
                 </button>
               </div>
               <!-- 只有内容区滚：标题栏（含 ✕）始终钉在顶部，长内容从头部开始全部可达。
-                   `pr-[var(--gosslan-scroll-gutter)]` 是**滚动条留白**：Win/Linux 的 6px 常显细滚动条
-                   原先紧贴正文（贴边感），现在正好落进这 8px 里；macOS 是系统 overlay 滚动条
-                   （不占布局宽）⇒ 这 8px 只是呼吸感，两侧视觉仍对称（详见 `style.css` 该变量说明）。 -->
-              <div class="min-h-0 flex-1 overflow-y-auto pr-[var(--gosslan-scroll-gutter)]">
+                   ⚠️ **滚动条留白必须从卡片自己的右内距里让出来，不能再加一层**
+                   （2026-10-12 用户实测：「左右边距视觉上左边小、右边大，应该是一样的」）：
+                   卡片是 `p-5`（左右各 20px）。若只在滚动区加一层 `pr-8px`，右侧总留白就变成
+                   28px 而左侧仍是 20px ⇒ 正文明显偏左。所以这里给滚动区一个**负的右边距**
+                   （`-mr-[var(--gosslan-scroll-gutter)]`），把它自己那 8px 从卡片的 20px 里"借"回来：
+                   正文右边缘到卡片右边缘仍是 20px（其中 8px 供滚动条落脚、12px 净空隙），
+                   与左侧 20px 对称。
+                   macOS 是系统 overlay 滚动条（不占布局宽）⇒ 同样对称，只是那 8px 纯属呼吸感。 -->
+              <div class="min-h-0 flex-1 overflow-y-auto pr-[var(--gosslan-scroll-gutter)] -mr-[var(--gosslan-scroll-gutter)]">
                 <slot />
+              </div>
+              <!-- 固定页脚（可选插槽）：**在滚动区之外**，因此永远钉在卡片底部不随内容滚走。
+                   为什么要有它（2026-10-12 用户实测：「中间可滚动的区域应该不包含下面操作按钮那块」）：
+                   这里原先只有默认插槽 ⇒ 调用方把操作按钮写在内容的最后一项，它就跟着内容一起滚，
+                   长内容时用户得先把记录滚到底才看得见「完成 / 编辑 / 删除」。
+                   没有传这个插槽时**不渲染任何东西**（29 个既有调用方零变化）。
+                   `mt-4` 与标题栏的 `mb-4` 对称；`shrink-0` 保证它不被上面的滚动区挤压。 -->
+              <div
+                v-if="$slots.footer"
+                class="mt-4 shrink-0 pr-[var(--gosslan-scroll-gutter)] -mr-[var(--gosslan-scroll-gutter)]"
+              >
+                <slot name="footer" />
               </div>
             </DialogPanel>
           </TransitionChild>

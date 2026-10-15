@@ -31,6 +31,7 @@ import { useImagePreviewStore } from "@/stores/useImagePreview";
 import TodoDetailDialog from "@/components/TodoDetailDialog.vue";
 import TodoImageThumb from "@/components/TodoImageThumb.vue";
 import TodoPickField from "@/components/TodoPickField.vue";
+import TodoIconPicker from "@/components/TodoIconPicker.vue";
 import {
   TODO_CATEGORIES,
   TODO_CATEGORY_LABEL_KEY,
@@ -63,7 +64,10 @@ import {
   type TodoCategory,
   type TodoPriority,
   type TodoStatus,
+  TODO_CUSTOM_ICON_DEFAULT,
+  type TodoCustomIcon,
 } from "@/utils/todos";
+import { TODO_CUSTOM_ICON_COMPONENTS } from "@/utils/todoCustomIcons";
 import { api } from "@/api";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
 import { popupLeft, popupPlacement, popupWidth } from "@/utils/popupPosition";
@@ -123,6 +127,16 @@ function historyFor(x: TodoItem | null): TodoHistoryEntry[] {
 }
 
 /** 类型胶囊上该写的字：自定义档显示用户输入的名字，其余档走 i18n。 */
+/**
+ * 行首/胶囊那枚图标：custom 档用**用户挑过**的那枚，其余三档用内置映射。
+ * 不认识的值（老数据、手工构造的对象）回落 custom 档默认形状 —— 宁可画一枚通用的，
+ * 也不要 `undefined` 让图标位置塌成空白（渲染层拿不到"为什么没有图标"这件事）。
+ */
+function categoryIconOf(x: Pick<TodoItem, "category" | "customIcon">) {
+  if (x.category === "custom") return TODO_CUSTOM_ICON_COMPONENTS[x.customIcon] ?? CATEGORY_ICON.custom;
+  return CATEGORY_ICON[x.category];
+}
+
 function categoryText(x: Pick<TodoItem, "category" | "customCategory">): string {
   const n = todoCategoryName(x);
   return n.text ?? t(n.key);
@@ -426,6 +440,8 @@ const draft = ref<{
   /** 草稿内的类型（含 custom 档；自定义名放 customCategory）。 */
   category: TodoCategory;
   customCategory: string;
+  /** 草稿内挑的自定义类型图标（仅 custom 档送后端）。 */
+  customIcon: TodoCustomIcon;
   /** 草稿内的优先级。 */
   priority: TodoPriority;
   description: string;
@@ -481,6 +497,7 @@ function startCreate() {
     status: TODO_STATUS_DEFAULT,
     category: "task",
     customCategory: "",
+    customIcon: TODO_CUSTOM_ICON_DEFAULT,
     priority: "normal",
     description: "",
     images: [],
@@ -495,6 +512,7 @@ function startEdit(x: TodoItem) {
     status: x.status,
     category: x.category,
     customCategory: x.customCategory ?? "",
+    customIcon: x.customIcon ?? TODO_CUSTOM_ICON_DEFAULT,
     priority: x.priority,
     description: x.description,
     images: [...x.images],
@@ -787,6 +805,8 @@ async function saveDraft() {
     return;
   }
   const customCategory = d.category === "custom" ? d.customCategory.trim() : "";
+  // 图标与名字同一档：非 custom 档送空串由后端清空，custom 档送白名单内的键。
+  const customIcon = d.category === "custom" ? d.customIcon : "";
   saving.value = true;
   try {
     let todoId: string;
@@ -797,14 +817,14 @@ async function saveDraft() {
         cur ?? { todoId: d.todoId, title, assignees: d.assignees, status: d.status, description: d.description, images: d.images },
         {
           title, assignees: d.assignees, status: d.status, description: d.description, images: d.images,
-          priority: d.priority, category: d.category, customCategory,
+          priority: d.priority, category: d.category, customCategory, customIcon,
         },
       );
       todoId = d.todoId;
       app.toast(t("todo.updateDone"), "success");
     } else {
       const rec = await chat.createTodo(
-        props.groupId, title, d.assignees, d.description, d.images, d.category, customCategory,
+        props.groupId, title, d.assignees, d.description, d.images, d.category, customCategory, customIcon,
       );
       const parsed = parseTodo(rec);
       todoId = parsed?.todoId ?? "";
@@ -875,6 +895,18 @@ async function setCategory(item: TodoItem, c: TodoCategory, customName?: string)
     app.toast(String(e), "error");
   }
 }
+async function setIcon(item: TodoItem, icon: TodoCustomIcon) {
+  const gid = props.groupId;
+  if (!gid) return;
+  try {
+    // 只发这一格：其余字段后端按"没说就沿用库里的"处理（与自定义名同一套 carry 规矩）。
+    await chat.updateTodo(gid, item, { customIcon: icon });
+    app.toast(t("todo.updateDone"), "success");
+  } catch (e) {
+    app.toast(String(e), "error");
+  }
+}
+
 /**
  * 认领 = 把「原名单 + 我自己」发回去这一步，**没有**新命令、新字段、新同步帧：
  * 后端 `assignees` 就是改状态的判权依据，加进去之后那些权限自动跟着来。
@@ -1058,7 +1090,7 @@ watch(
             :title="categoryText(x)"
           >
             <component
-              :is="CATEGORY_ICON[x.category]"
+              :is="categoryIconOf(x)"
               class="h-3 w-3 shrink-0"
               :class="TODO_CATEGORY_ICON_CLASS[x.category]"
               :stroke-width="2.2"
@@ -1137,7 +1169,7 @@ watch(
               </span>
               <span :title="categoryText(x)">
                 <component
-                  :is="CATEGORY_ICON[x.category]"
+                  :is="categoryIconOf(x)"
                   class="h-3.5 w-3.5 shrink-0"
                   :class="TODO_CATEGORY_ICON_CLASS[x.category]"
                   :stroke-width="2.2"
@@ -1251,6 +1283,7 @@ watch(
     @status="(s: TodoStatus) => detailItem && setStatus(detailItem, s)"
     @priority="(p: TodoPriority) => detailItem && setPriority(detailItem, p)"
     @category="(c: TodoCategory, name?: string) => detailItem && setCategory(detailItem, c, name)"
+    @icon="(i: TodoCustomIcon) => detailItem && setIcon(detailItem, i)"
     @claim="detailItem && claim(detailItem)"
     @complete="detailItem && completeTodo(detailItem)"
     @archive="detailItem && archiveTodo(detailItem)"
@@ -1337,6 +1370,11 @@ watch(
             {{ draft.customCategory.length }}/{{ TODO_CUSTOM_CATEGORY_MAX_LEN }}
           </span>
         </div>
+        <!-- 图标那一格与名字同一档展开（用户 2026-10-14 同一条需求的两半）。
+             与详情弹窗共用 `TodoIconPicker`：两份编辑器不许各写一排按钮。 -->
+        <div v-if="draft.category === 'custom'" class="mt-2 pl-1">
+          <TodoIconPicker v-model="draft.customIcon" :aria-label="t('todo.pickIcon')" />
+        </div>
       </div>
 
       <!-- 描述 -->
@@ -1406,7 +1444,7 @@ watch(
       <!-- 指派（**权限依据**，至少一人） -->
       <div>
         <div class="mb-1.5 text-xs text-[var(--gosslan-text-2)]">{{ t("todo.pickMembers") }}</div>
-        <div class="flex max-h-40 flex-wrap gap-1.5 overflow-y-auto">
+        <div class="flex flex-wrap gap-1.5">
           <button
             v-for="id in group?.members ?? []"
             :key="id"

@@ -1604,6 +1604,194 @@ mod tests {
         }
     }
 
+    /// 与生产 `db::init` 同一对调用（`db.rs:705-707`）⇒ 两张表都在，测试不自建第二份建表口径。
+    fn db_with_both_schemas() -> std::sync::Mutex<rusqlite::Connection> {
+        let db = std::sync::Mutex::new(rusqlite::Connection::open_in_memory().unwrap());
+        let dbc = db.lock().unwrap();
+        dbc.execute_batch(crate::db::SCHEMA).unwrap();
+        crate::content::store::ensure_schema(&dbc).unwrap();
+        drop(dbc);
+        db
+    }
+
+    /// Offer 到达时生产登记的那一行 Active（`transport/handle_file.rs` 的接收臂同形状）。
+    /// 只造"开始收"的状态，**不**碰完成态 —— 完成态必须由被测的生产码自己写出来。
+    fn seed_active_content(db: &std::sync::Mutex<rusqlite::Connection>, cid: &str, tid: &str, size: u64) {
+        let now = crate::db::now_ms();
+        let dbc = db.lock().unwrap();
+        crate::content::store::upsert(
+            &dbc,
+            &crate::content::model::TransferRecord {
+                cid: cid.to_string(),
+                transfer_id: Some(tid.to_string()),
+                peer_id: "dev-a".into(),
+                group_id: None,
+                name: format!("{tid}.bin"),
+                size,
+                direction: crate::content::model::Direction::Receive,
+                status: crate::content::model::TransferStatus::Active,
+                received: 0,
+                attempts: 0,
+                next_attempt_at: 0,
+                last_error: None,
+                path: None,
+                created_at: now,
+                updated_at: now,
+            },
+        )
+        .unwrap();
+    }
+
+    fn sha_hex(b: &[u8]) -> String {
+        use sha2::Digest as _;
+        let mut h = sha2::Sha256::new();
+        h.update(b);
+        h.finalize().iter().map(|x| format!("{x:02x}")).collect()
+    }
+
+    /// **B1**：单聊**收完**一个文件之后，内容台账必须跟着收口成 `complete` + 真实 `path`。
+    ///
+    /// 为什么必须有（2026-10-13 真机第 7 条的永动重试）：完成判定今天住在两张表里，而单聊收尾
+    /// 只写 `file_transfers`（`upsert_transfer(…, "done", path, 1.0)`），**没有任何一处**写
+    /// `content_transfers`。`TransferStatus::Complete` 的构造点全仓只有 `content::store::record_local`
+    /// 一个，而它 5 个调用点都在群文件 / 群公告 / 待办 / 中继 ⇒ 单聊那一行永远停在
+    /// `active`（后被 `record_failure` 判成 `incomplete`），而拉取队列正是按
+    /// `status IN ('queued','active','incomplete')` 决定要不要再投 ⇒ 每次建链整批重投。
+    ///
+    /// 这条驱动的是**生产收尾函数** `finish_receiver_into`（#25 把它拆成只要
+    /// `Mutex<Connection>`、不要 `AppState`，就是为了这一格能被单测跑），不是测试里重写一遍操作序列。
+    #[test]
+    fn one_to_one_receive_finalize_completes_the_content_ledger() {
+        use super::finish_receiver_into;
+        use crate::content::model::{Direction, TransferStatus};
+        let bytes: Vec<u8> = vec![0xC3u8; 5000];
+        let cid = sha_hex(&bytes);
+        let db = db_with_both_schemas();
+        seed_active_content(&db, &cid, "xfer-b1", bytes.len() as u64);
+
+        let r = receiver_holding("b1-ok", &bytes, bytes.len() as u64, &cid);
+        let (name, size, final_path, peer) = finish_receiver_into(&db, "xfer-b1", r)
+            .expect("字节齐、SHA 对、rename 成 ⇒ 生产收尾必须成功");
+        assert_eq!((name.as_str(), size, peer.as_str()), ("b1-ok.bin", 5000, "dev-a"));
+
+        // ① 完成的前提是实物：成品真在盘上、字节与源逐字节相同、摘要就是那个 cid
+        let on_disk = std::fs::read(&final_path).expect("rename 之后成品必须存在");
+        assert_eq!(on_disk, bytes, "落盘字节与源不等");
+        assert_eq!(sha_hex(&on_disk), cid);
+
+        // ② 内容台账那一行必须跟着收口（今天的实现 ⇒ 这一条必红）
+        let dbc = db.lock().unwrap();
+        let rec = crate::content::store::get(&dbc, &cid, "dev-a", Direction::Receive)
+            .unwrap()
+            .expect("那一行必须还在（不许靠删行来「停止重试」）");
+        assert_eq!(
+            rec.status,
+            TransferStatus::Complete,
+            "单聊收尾必须把内容台账收成 Complete，否则 `list_resumable_for_peer` 会永远再投它"
+        );
+        assert_eq!(rec.received, size, "收口时 received 要等于 size（断点续传的起点就是它）");
+        assert_eq!(
+            rec.path.as_deref(),
+            Some(final_path.to_string_lossy().as_ref()),
+            "path 要指向刚落地的那份成品 —— `find_source` 就是按 path 非空决定能不能替别人服务"
+        );
+
+        // ③ 收口之后不再进重试队列（"重复投递"停下来的那一步）
+        let resumable = crate::content::store::list_resumable_for_peer(&dbc, "dev-a").unwrap();
+        assert!(
+            resumable.iter().all(|x| x.cid != cid),
+            "已完整持有的内容不许再被拉取队列捞起，实得 {resumable:?}"
+        );
+    }
+
+    /// **B1 的反面**：SHA 不符时**绝不允许**把内容台账收成 complete。
+    ///
+    /// 这条今天就会通过（今天根本没有完成写入，也就无从过度标记），它钉的是**修完之后**的边界：
+    /// 完成只能由"实物 + 逐字节校验 + 真 rename"三件一起成立来触发；而失败那支必须仍然
+    /// 留在可恢复队列里（不许把"这次没成"写成"永远不要了"，那是 `db/file_transfer.rs` 里
+    /// 判死过的那类"一判死就停在失败"）。
+    #[test]
+    fn sha_mismatch_does_not_complete_the_content_ledger() {
+        use super::finish_receiver_into;
+        use crate::content::model::{Direction, TransferStatus};
+        let bytes: Vec<u8> = vec![0x5Au8; 4096];
+        let cid = sha_hex(&bytes);
+        let db = db_with_both_schemas();
+        seed_active_content(&db, &cid, "xfer-b1-bad", bytes.len() as u64);
+
+        // 发送方声明的摘要与真实内容不符 ⇒ fail-closed
+        let r = receiver_holding("b1-bad", &bytes, bytes.len() as u64, &"f".repeat(64));
+        let err = finish_receiver_into(&db, "xfer-b1-bad", r)
+            .expect_err("SHA 不符必须判失败，不许落盘");
+        assert!(err.contains("完整性"), "实得：{err}");
+
+        let dbc = db.lock().unwrap();
+        let rec = crate::content::store::get(&dbc, &cid, "dev-a", Direction::Receive)
+            .unwrap()
+            .expect("行必须还在");
+        assert_ne!(
+            rec.status,
+            TransferStatus::Complete,
+            "校验不过的那条不许收成 Complete（否则半截文件会被 `find_source` 当完整种子发给别人）"
+        );
+        assert!(rec.path.is_none(), "没有成品就不许留下 path");
+
+        let resumable = crate::content::store::list_resumable_for_peer(&dbc, "dev-a").unwrap();
+        assert!(
+            resumable.iter().any(|x| x.cid == cid),
+            "这次失败要还能被重试捞起，实得 {resumable:?}"
+        );
+    }
+
+    /// **B1 的第三支：内容台账自己写不进去**（这里用"只建了 `SCHEMA`、没跑
+    /// `content::store::ensure_schema`"来真实触发一次写失败 —— 走的就是生产那条错误路径，
+    /// 不是 mock 一个返回值）。
+    ///
+    /// 要钉住的是两侧：① 事务回滚 ⇒ **绝不出现假 Complete**（宁可下次重投，不能把没有台账的
+    /// 内容当完整种子发出去）；② 退回今天的形状 ⇒ `file_transfers` 仍写 done、
+    /// `finish_receiver_into` 仍返回 Ok（文件确实在盘上，UI 那句"已收到"是真的），
+    /// 于是这一格**不会**因为台账写坏而把一次成功接收判成失败。
+    #[test]
+    fn content_ledger_write_failure_leaves_no_false_complete() {
+        use super::finish_receiver_into;
+        let bytes: Vec<u8> = vec![0x77u8; 3072];
+        let cid = sha_hex(&bytes);
+        // 只建 SCHEMA ⇒ `content_transfers` 这张表不存在 ⇒ record_local 必然失败
+        let db = std::sync::Mutex::new(rusqlite::Connection::open_in_memory().unwrap());
+        db.lock().unwrap().execute_batch(crate::db::SCHEMA).unwrap();
+
+        let r = receiver_holding("b1-dberr", &bytes, bytes.len() as u64, &cid);
+        let out = finish_receiver_into(&db, "xfer-b1-dberr", r);
+        assert!(out.is_ok(), "台账写不进去不该把一次真实成功的接收判成失败，实得 {out:?}");
+        let final_path = out.as_ref().unwrap().2.clone();
+        assert_eq!(std::fs::read(&final_path).unwrap(), bytes, "成品必须真在盘上");
+
+        let dbc = db.lock().unwrap();
+        let st: String = dbc
+            .query_row(
+                "SELECT status FROM file_transfers WHERE id = ?1",
+                rusqlite::params!["xfer-b1-dberr"],
+                |r| r.get(0),
+            )
+            .expect("file_transfers 那一行要按今天的语义留下 done");
+        assert_eq!(st, "done");
+        // 没有这张表 ⇒ 结构上不可能有假 Complete；这里显式把"没有完成态"读出来，
+        // 以免将来有人把兜底改成"吞掉错误继续往下走"而没人发现。
+        let tables: Vec<String> = dbc
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='content_transfers'")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(
+            tables.is_empty(),
+            "本用例的前提是内容台账不可写；若它存在了，这条判据就是在判一个不存在的失败"
+        );
+        // 有表时的那一半由另外两条用例钉：`one_to_one_receive_finalize_completes_…`（真完成才写
+        // Complete）与 `sha_mismatch_does_not_complete_…`（校验失败绝不写 Complete）。
+    }
+
     /// §七「两个 offer 都在任一次 rename 之前到达」＝ 两份**不同内容**的同名文件同时在途。
     ///
     /// 机制（不是猜测，逐处可查）：单聊的 `final_path` 在 `begin` 就用 `unique_path` 定死

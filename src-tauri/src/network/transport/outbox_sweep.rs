@@ -190,6 +190,560 @@ pub fn spawn_outbox_sweeper(
                     );
                 }
             }
+
+            // --- 内容台账对账（B2）：文件层说"done"、内容层却还不知道的那些行 ---
+            // 见 `reconcile_completed_content` 的注释：这一格就是"每次建链整批重投"的永动来源。
+            // 两相位：① 短锁取候选；② **不持锁**读盘算摘要（600MB 的哈希不能占着 db 锁）；
+            // ③ 短锁写回。每 tick 上限 `CONTENT_RECONCILE_PER_TICK` 条 ⇒ 有界，不随积压增长。
+            let cands = {
+                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                list_reconcilable_content(&dbc, CONTENT_RECONCILE_PER_TICK).unwrap_or_default()
+            };
+            // ★ 2026-10-14 真机之后加的两道隔离（用户：Mac 往 Windows 传 3.x GB，收尾那一段
+            // 「点设置没窗、拖窗口没反应」）。条数上限**管不住字节**：8 条 GB 级候选就是单轮
+            // 几十 GB 读盘，而这份读盘原本直接在 async 执行路径上 —— 同一个 runtime 上还跑着
+            // 所有 async 命令（开设置窗就是其中之一），worker 被占满 ⇒ 用户点什么都没反应。
+            //   ① 整文件哈希交给 `spawn_blocking`（阻塞线程池），worker 立刻回到调度池；
+            //   ② 单轮**字节**预算 `CONTENT_RECONCILE_TICK_BYTE_BUDGET`，但**第一条恒放行**
+            //      （否则一个超大候选永远排不进预算 ⇒ 那一行台账饿死；有界的含义是"每轮最多读
+            //      这么多盘"，不是"大文件永远不对账"）；
+            //   ③ 跳过**还在写的那半截**：`file_receivers` 里仍有同一个 `transfer_id`（那说明这份
+            //      文件正在收，哈希必然对不上，纯抢带宽），或这份 `.part` 的 mtime 还在最近 60s 内
+            //      （真的在落盘）。⚠️ 只看 `.part` 后缀会永久饿死一个"名字就叫 xxx.part"的成品文件
+            //      —— 这一列里从来只写改名后的最终路径，判据细节见 `part_is_being_written`。
+            let inflight: std::collections::HashSet<String> = {
+                let recv = state
+                    .file_receivers
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                recv.keys().cloned().collect()
+            };
+            let mut byte_budget = CONTENT_RECONCILE_TICK_BYTE_BUDGET;
+            let mut scanned = 0usize;
+            for c in cands {
+                if inflight.contains(&c.transfer_id) || part_is_being_written(&c.path, db::now_ms()) {
+                    state.logger.info(
+                        "content",
+                        format!(
+                            "内容台账对账跳过在途的那半截（正在收/这份 .part 还在写），本轮不读盘 cid={} from={}",
+                            c.cid, c.peer_id
+                        ),
+                    );
+                    continue;
+                }
+                if !reconcile_take_next(scanned, byte_budget, c.size) {
+                    // 预算用完 ⇒ 剩下的留到下一 tick（`ORDER BY updated_at ASC` 保证老的那批先做）
+                    if log_throttled("content_reconcile_budget", 30_000) {
+                        state.logger.info(
+                            "content",
+                            format!(
+                                "内容台账对账本轮字节预算用完（剩余 {byte_budget} 字节 < 下一条 {} 字节），下轮继续",
+                                c.size
+                            ),
+                        );
+                    }
+                    break;
+                }
+                byte_budget = byte_budget.saturating_sub(c.size);
+                scanned += 1;
+                let (cid, path, size) = (c.cid.clone(), c.path.clone(), c.size);
+                let ok = match tokio::task::spawn_blocking(move || {
+                    content_file_matches(&cid, &path, size)
+                })
+                .await {
+                    Ok(v) => v,
+                    // 阻塞任务被中断（panic / 运行时关闭）⇒ **不写回、不谎报**，那一行留在可恢复态，
+                    // 下一 tick 自然重来。写 `false` 会把"我没验过"说成"文件坏了"。
+                    Err(e) => {
+                        state.logger.warn(
+                            "content",
+                            format!(
+                                "内容台账对账的读盘任务被中断，保留可恢复态下轮再试 cid={}: {e}",
+                                c.cid
+                            ),
+                        );
+                        continue;
+                    }
+                };
+                let wrote = {
+                    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                    finish_reconcile(&dbc, &c, db::now_ms(), ok)
+                };
+                if ok && !wrote {
+                    state.logger.warn(
+                        "content",
+                        format!("内容台账对账写回失败，保留可恢复状态下轮再试 cid={} from={}", c.cid, c.peer_id),
+                    );
+                } else if !ok && log_throttled("content_reconcile_invalid", 30_000) {
+                    state.logger.warn(
+                        "content",
+                        format!(
+                            "文件层已 done 但盘上那份不可用（缺失/长度不符/摘要不等），不标记完成 cid={} from={}",
+                            c.cid, c.peer_id
+                        ),
+                    );
+                }
+            }
         }
     })
+}
+
+/// 每 tick 最多对账几条内容台账。有界性就在这里：积压再多也只按这个速度消化，
+/// 不会在某一个 tick 里把整盘文件哈希一遍。
+pub(crate) const CONTENT_RECONCILE_PER_TICK: usize = 8;
+
+/// 每 tick 最多**读多少字节**的盘来做对账（2026-10-14 真机之后加的 second bound）。
+///
+/// 为什么条数上限不够：条数封顶管不住单件体积 —— 8 条 3 GB 的收件文件就是单轮 ~24 GB 读盘，
+/// 而这份读盘是**同步**的（分块喂哈希器，但仍在线程上跑到完）。Windows 上表现就是用户报的
+/// 「传大文件期间点设置没窗、拖窗口没反应」：同一个 async runtime 上还跑着所有 async 命令。
+/// 256 MiB 的选择：够在 30s 一轮里消化掉若干普通图片/文件（一轮 ≪ 磁盘 30 秒的预算），
+/// 又不至于让某个 tick 独占 I/O 几十秒。
+pub(crate) const CONTENT_RECONCILE_TICK_BYTE_BUDGET: u64 = 256 * 1024 * 1024;
+
+/// 字节预算判定（**纯函数**，便于单测）：本轮要不要读这一条的盘。两条规则合在这里，
+/// 免得"第一条恒放行"与"预算够不够"两处各写一遍（那就是缺陷会漏的那族）。
+/// ① 本轮还一条都没读 ⇒ 恒放行 —— 超大候选**不许被永久饿死**（那一行台账会永远停在可恢复态，
+///    而每次建链都会整批重投它，正是 B2 要治的那个永动来源）；
+/// ② 否则必须装得下剩余预算。边界取 `<=`：恰好等于预算算装得下。
+pub(crate) fn reconcile_take_next(scanned: usize, budget: u64, size: u64) -> bool {
+    scanned == 0 || size <= budget
+}
+
+/// 这一条路径是不是**还没写完的半截**（`.part` 是 `make_receiver` 的命名口径）。
+/// 半截文件的字节数与摘要必然对不上，花几十秒读它再判"不完成"是纯浪费，
+/// 而且会把**正在进行的传输**的磁盘带宽抢走 —— 那正是"越大的文件越容易卡住界面"的形状。
+pub(crate) fn is_inflight_reconcile_path(path: &str) -> bool {
+    std::path::Path::new(path)
+        .extension()
+        .and_then(|s| s.to_str())
+        == Some("part")
+}
+
+/// 「正在被写」的判定窗口：比一轮 tick（30s）宽一倍，覆盖两次写入之间的空档。
+pub(crate) const RECONCILE_PART_ACTIVE_MS: i64 = 60_000;
+
+/// 后缀是 `.part` **且此刻磁盘上那份还在被写**（mtime 落在 `RECONCILE_PART_ACTIVE_MS` 内）。
+///
+/// ⚠️ 为什么不能只看后缀（评审 2026-10-14 抓到的那条我自造的坑）：这里的 path 取自
+/// `file_transfers.path`，而那一列**只有改名落盘之后才会被写**（`finish_receiver_into` 写的是
+/// 最终路径；`fail_taken_receive` 里原话"不能把 .part 写进 path"，中继那份是 `<id>.relay.part`
+/// 也从不进这一列）。⇒ 后缀命中"在途半截"的情况其实不存在，真正会命中的是
+/// **用户本来就把文件叫做 `xxx.part`**（浏览器未完成的下载、分卷包都是这个后缀）——
+/// 那份早就收完了，按后缀跳过就是**这一行台账每轮都被跳过、永远对不上账**，
+/// 于是每次建链整批重投 ⇒ 又变回 B2 要杀的那个永动来源。
+/// ⇒ "正在写"必须由 mtime 说话；真正的在途传输另有 `file_receivers` 那份 `transfer_id` 兜着。
+pub(crate) fn part_is_being_written(path: &str, now_ms: i64) -> bool {
+    if !is_inflight_reconcile_path(path) {
+        return false;
+    }
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    let Ok(mtime) = meta.modified() else {
+        return false;
+    };
+    let Ok(millis) = mtime.duration_since(std::time::UNIX_EPOCH) else {
+        return false;
+    };
+    let written_at = millis.as_millis() as i64;
+    // 允许 ±：机器时钟回拨时不许让一份文件永久判成"正在写"
+    (now_ms - written_at).abs() < RECONCILE_PART_ACTIVE_MS
+}
+
+/// 一条待对账的候选（文件层 done + 内容层还认为没收完）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ReconcileCandidate {
+    pub cid: String,
+    pub peer_id: String,
+    pub transfer_id: String,
+    pub name: String,
+    pub path: String,
+    pub size: u64,
+}
+
+/// 取候选：`content_transfers` 里方向为 receive、状态仍可恢复、**自己没有 path**，
+/// 而它的 `transfer_id` 在 `file_transfers` 里是 `done` 且带着 path 的那些行。
+/// 三者同时成立才是"两张表各执一词"；任一不成立都不许进来（尤其不许只看数据库就说完成）。
+///
+/// 为什么这一格必须有人管（2026-10-13 真机第 7 条）：单聊收尾此前只写 `file_transfers`，
+/// 于是内容台账那一行永远停在可恢复态 ⇒ `retry_incomplete_content` 每次建链整批重投，
+/// 而服务侧那 15 秒把接收循环堵死。B1 修今后的收尾，**这一条修已经卡住的存量**。
+pub(crate) fn list_reconcilable_content(
+    dbc: &rusqlite::Connection,
+    limit: usize,
+) -> rusqlite::Result<Vec<ReconcileCandidate>> {
+    // 参数化 LIMIT（不拼 SQL）。⚠️ **path 取的是文件层那一份（`ft.path`）**：内容层那一行的 path
+    // 恰恰是 NULL（这正是"各执一词"的定义），把它 SELECT 出来会在类型转换上直接炸
+    // （`InvalidColumnType(_, "path", Null)`，实测踩过）；`transfer_id` 为 NULL 时 JOIN 不命中
+    // ⇒ 没有实物证据的行不进候选。
+    let mut stmt = dbc.prepare(
+        "SELECT ct.cid, ct.peer_id, ct.transfer_id, ct.name, ft.path, ct.size
+           FROM content_transfers ct
+           JOIN file_transfers ft ON ft.id = ct.transfer_id
+          WHERE ct.direction = 'receive'
+            AND ct.status IN ('queued','active','incomplete')
+            AND ct.path IS NULL
+            AND ft.status = 'done'
+            AND ft.path IS NOT NULL
+          ORDER BY ct.updated_at ASC
+          LIMIT ?1",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![limit as i64], |r| {
+        Ok(ReconcileCandidate {
+            cid: r.get(0)?,
+            peer_id: r.get(1)?,
+            transfer_id: r.get(2)?,
+            name: r.get(3)?,
+            path: r.get(4)?,
+            size: r.get::<_, i64>(5)?.max(0) as u64,
+        })
+    })?;
+    rows.collect()
+}
+
+/// 实物校验：文件存在、字节数等于声明的 size、且**实际** SHA-256 等于 cid。
+/// `file_transfers` 没有摘要列（`db.rs` 的建表语句），所以"内容对不对"只能靠重算，
+/// 而重算必须发生在接收循环之外 —— 这就是 B2 住在这个清扫器里的原因。
+/// 先比长度再算摘要：长度不对的（半截文件）不必再花一次全盘哈希。
+///
+/// ⚠️ **分块喂哈希器，不许整读进内存**（与 `network/file/receive.rs` 的续传前缀校验、
+///   `network/file/relay_push.rs` 的逐片读盘同一立场）。这里原先是**一次整读整份文件**：
+///   这一条跑在**无人操作的 30s 空闲 tick** 上，一份几百 MB 的收件文件会让进程瞬间占用
+///   ≈ 文件大小的内存；而分配失败在 Rust 里是 **abort 而不是 panic** —— panic hook 不记、
+///   release 又开着 `panic = "abort"`，表现就是用户 2026-10-14 报的
+///   「Windows 开着不动，过会儿自己就关了」（日志里一个字都没有，正是这条路径的形状）。
+///   ⚠️ 这句刻意不写成那个调用的字面量：按形状扫全集的守卫
+///   `transport_src_never_whole_file_read` 会把自己写的注释读成缺陷（"注释里复述被断言的那句"
+///   这一族本仓踩过，见那条守卫的注释）。
+pub(crate) fn content_file_matches(cid: &str, path: &str, size: u64) -> bool {
+    use sha2::Digest as _;
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !meta.is_file() || meta.len() != size {
+        return false;
+    }
+    let Ok(mut src) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut h = sha2::Sha256::new();
+    let mut buf = vec![0u8; crate::protocol::FILE_CHUNK];
+    loop {
+        // 读失败（权限、被外部删掉、磁盘错）都算"对不上"，交给下一 tick 再看，不谎报 complete。
+        match std::io::Read::read(&mut src, &mut buf) {
+            Ok(0) => break,
+            Ok(n) => h.update(&buf[..n]),
+            Err(_) => return false,
+        }
+    }
+    let hex: String = h.finalize().iter().map(|b| format!("{b:02x}")).collect();
+    hex.eq_ignore_ascii_case(cid)
+}
+
+/// 写回：校验通过 ⇒ `record_local`（Complete + path + received=size，幂等）；
+/// 不通过 ⇒ `record_failure(Local)`（可恢复 ⇒ 仍在重试队列里，"文件没了"要能再拉一次，
+/// 而不是被就地判死）。两条都必须**真写入成功**才返回 true（审计 A3 同型：
+/// 写库没成就不算这一轮做过事，下 tick 重来）。
+pub(crate) fn finish_reconcile(
+    dbc: &rusqlite::Connection,
+    c: &ReconcileCandidate,
+    now_ms: i64,
+    ok: bool,
+) -> bool {
+    use crate::content::model::{Direction, FailReason};
+    if ok {
+        return crate::content::store::record_local(
+            dbc,
+            &c.cid,
+            &c.peer_id,
+            None,
+            &c.name,
+            c.size,
+            Direction::Receive,
+            &c.path,
+            now_ms,
+        )
+        .is_ok();
+    }
+    // 实物不可用 ⇒ 记一次可恢复失败：状态回 Incomplete、退避照走、8 次封顶后 Rejected。
+    // 这里绝不写 path —— 写了就等于把一份没验过的文件当成"本机完整持有"的种子。
+    crate::content::store::record_failure(
+        dbc,
+        &c.cid,
+        &c.peer_id,
+        Direction::Receive,
+        FailReason::Local,
+        now_ms,
+    )
+    .is_ok()
+}
+
+#[cfg(test)]
+mod content_reconcile_tests {
+    use super::{
+        content_file_matches, finish_reconcile, is_inflight_reconcile_path, part_is_being_written,
+        list_reconcilable_content, reconcile_take_next, ReconcileCandidate,
+        CONTENT_RECONCILE_PER_TICK, CONTENT_RECONCILE_TICK_BYTE_BUDGET, RECONCILE_PART_ACTIVE_MS,
+    };
+    use crate::content::model::{Direction, TransferRecord, TransferStatus};
+    use sha2::Digest as _;
+
+    fn sha_hex(b: &[u8]) -> String {
+        let mut h = sha2::Sha256::new();
+        h.update(b);
+        h.finalize().iter().map(|x| format!("{x:02x}")).collect()
+    }
+
+    fn db_both() -> rusqlite::Connection {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch(crate::db::SCHEMA).unwrap();
+        crate::content::store::ensure_schema(&c).unwrap();
+        c
+    }
+
+    fn temp_file(tag: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!("gosslan-reconcile-{tag}-{}.bin", std::process::id()));
+        let _ = std::fs::remove_file(&p);
+        std::fs::write(&p, bytes).unwrap();
+        p
+    }
+
+    /// 内容层的一行（默认 receive/incomplete、无 path，就是"还在等对端给"的形状）。
+    fn seed_content(c: &rusqlite::Connection, cid: &str, tid: &str, status: TransferStatus, path: Option<&str>) {
+        let now = crate::db::now_ms();
+        crate::content::store::upsert(
+            c,
+            &TransferRecord {
+                cid: cid.into(),
+                transfer_id: Some(tid.into()),
+                peer_id: "dev-a".into(),
+                group_id: None,
+                name: format!("{tid}.bin"),
+                size: 2048,
+                direction: Direction::Receive,
+                status,
+                received: 0,
+                attempts: 0,
+                next_attempt_at: 0,
+                last_error: None,
+                path: path.map(str::to_string),
+                created_at: now,
+                updated_at: now,
+            },
+        )
+        .unwrap();
+    }
+
+    fn seed_file(c: &rusqlite::Connection, tid: &str, status: &str, path: Option<&str>) {
+        crate::db::upsert_transfer(
+            c,
+            tid,
+            "dev-a",
+            &format!("{tid}.bin"),
+            2048,
+            "receive",
+            status,
+            path,
+            if status == "done" { 1.0 } else { 0.0 },
+        )
+        .unwrap();
+    }
+
+    /// ① 两张表各执一词、且盘上那份真的对得上 ⇒ 收口成 Complete，且不再被重试队列捞起。
+    #[test]
+    fn reconciles_a_genuinely_received_file_into_complete() {
+        let bytes: Vec<u8> = vec![0x4Du8; 2048];
+        let cid = sha_hex(&bytes);
+        let p = temp_file("ok", &bytes);
+        let c = db_both();
+        seed_content(&c, &cid, "x1", TransferStatus::Incomplete, None);
+        seed_file(&c, "x1", "done", Some(p.to_str().unwrap()));
+        // 先验夹具本身（前提不成立时，后面每一条都只是在判一个不存在的路径）
+        let seeded = crate::content::store::get(&c, &cid, "dev-a", Direction::Receive)
+            .unwrap()
+            .expect("夹具要真的写出内容台账那一行");
+        assert_eq!(seeded.status, TransferStatus::Incomplete);
+        assert_eq!(seeded.transfer_id.as_deref(), Some("x1"));
+        assert!(seeded.path.is_none());
+
+        let cands = list_reconcilable_content(&c, 8).unwrap();
+        assert_eq!(cands.len(), 1, "执一词的那一行必须被找出来，实得 {cands:?}");
+        assert!(content_file_matches(&cid, &cands[0].path, bytes.len() as u64));
+        assert!(finish_reconcile(&c, &cands[0], crate::db::now_ms(), true));
+
+        let rec = crate::content::store::get(&c, &cid, "dev-a", Direction::Receive)
+            .unwrap()
+            .unwrap();
+        assert_eq!(rec.status, TransferStatus::Complete, "对账通过必须收口");
+        assert_eq!(rec.path.as_deref(), Some(p.to_str().unwrap()));
+        assert_eq!(rec.received, 2048);
+        let resumable = crate::content::store::list_resumable_for_peer(&c, "dev-a").unwrap();
+        assert!(resumable.is_empty(), "收口之后不许再被重投，实得 {resumable:?}");
+    }
+
+    /// ② 盘上那份摘要不等于 cid（被换过/半截）⇒ **绝不**标记完成，且仍可恢复。
+    #[test]
+    fn a_hash_mismatch_is_never_marked_complete() {
+        let bytes: Vec<u8> = vec![0x11u8; 2048];
+        let wrong: Vec<u8> = vec![0x22u8; 2048];
+        let cid = sha_hex(&bytes);
+        let p = temp_file("bad", &wrong);
+        let c = db_both();
+        seed_content(&c, &cid, "x2", TransferStatus::Incomplete, None);
+        seed_file(&c, "x2", "done", Some(p.to_str().unwrap()));
+
+        let cands = list_reconcilable_content(&c, 8).unwrap();
+        assert_eq!(cands.len(), 1);
+        assert!(!content_file_matches(&cid, &cands[0].path, 2048), "摘要不符必须判不可用");
+        assert!(finish_reconcile(&c, &cands[0], crate::db::now_ms(), false));
+        let rec = crate::content::store::get(&c, &cid, "dev-a", Direction::Receive)
+            .unwrap()
+            .unwrap();
+        assert_ne!(rec.status, TransferStatus::Complete, "没有实物证据不许收口");
+        assert!(rec.path.is_none());
+        let resumable = crate::content::store::list_resumable_for_peer(&c, "dev-a").unwrap();
+        assert!(
+            resumable.iter().any(|x| x.cid == cid),
+            "文件坏了要还能再拉一次（就地判死 = 内容永久拿不到）"
+        );
+    }
+
+    /// ③ 文件不存在 / 长度不符 ⇒ 同样不收口。
+    #[test]
+    fn missing_or_short_file_is_not_complete() {
+        let bytes: Vec<u8> = vec![0x33u8; 2048];
+        let cid = sha_hex(&bytes);
+        let c = db_both();
+        seed_content(&c, &cid, "x3", TransferStatus::Incomplete, None);
+        seed_file(&c, "x3", "done", Some("/nope/definitely-not-here.bin"));
+        let cands = list_reconcilable_content(&c, 8).unwrap();
+        assert_eq!(cands.len(), 1);
+        assert!(!content_file_matches(&cid, &cands[0].path, 2048));
+        assert!(!content_file_matches(&cid, &cands[0].path, 17));
+        assert!(finish_reconcile(&c, &cands[0], crate::db::now_ms(), false));
+        let rec = crate::content::store::get(&c, &cid, "dev-a", Direction::Receive)
+            .unwrap()
+            .unwrap();
+        assert_ne!(rec.status, TransferStatus::Complete);
+    }
+
+    /// ④ 候选口径本身：只有"文件层 done + 内容层未收口 + 内容层没有 path"三者同人才进来。
+    #[test]
+    fn candidates_exclude_every_healthy_or_unprovable_shape() {
+        let c = db_both();
+        // (a) 内容层已 Complete ⇒ 不动它
+        seed_content(&c, "cid-done", "xa", TransferStatus::Complete, Some("/tmp/whatever.bin"));
+        seed_file(&c, "xa", "done", Some("/tmp/whatever.bin"));
+        // (b) 文件层还没 done（还在收）⇒ 不能当完成
+        seed_content(&c, "cid-partial", "xb", TransferStatus::Incomplete, None);
+        seed_file(&c, "xb", "active", None);
+        // (c) 文件行根本没有 ⇒ 无实物证据
+        seed_content(&c, "cid-nofile", "xc", TransferStatus::Incomplete, None);
+        // (d) 合法的那一条
+        let bytes: Vec<u8> = vec![0x55u8; 2048];
+        let cid = sha_hex(&bytes);
+        let p = temp_file("cand", &bytes);
+        seed_content(&c, &cid, "xd", TransferStatus::Incomplete, None);
+        seed_file(&c, "xd", "done", Some(p.to_str().unwrap()));
+        let got: Vec<String> = list_reconcilable_content(&c, 8)
+            .unwrap()
+            .into_iter()
+            .map(|x| x.cid)
+            .collect();
+        assert_eq!(got, vec![cid.clone()], "只许捞出 (d) 那一条，实得 {got:?}");
+    }
+
+    /// ⑤ 有界性：每 tick 至多 `limit` 条，积压再多也只按这个速度消化。
+    #[test]
+    fn candidate_pull_is_bounded_per_tick() {
+        let c = db_both();
+        for i in 0..12 {
+            let tid = format!("t{i}");
+            seed_content(&c, &format!("cid{i:02}"), &tid, TransferStatus::Incomplete, None);
+            seed_file(&c, &tid, "done", Some("/tmp/none.bin"));
+        }
+        assert_eq!(list_reconcilable_content(&c, 8).unwrap().len(), 8, "单轮上限必须生效");
+        assert_eq!(list_reconcilable_content(&c, 1).unwrap().len(), 1);
+        let _: ReconcileCandidate; // 类型被用到（避免未使用告警）
+    }
+
+    /// ⑥ 第二条界（字节）与"第一条恒放行"（2026-10-14 真机：3.x GB 对账把窗口操作挤死）。
+    /// 两条规则各一反一正：只看条数上限会放进来 8 个 GB 级候选；只按字节封顶会把超大那一条
+    /// **永久饿死**（它永远排不进预算 ⇒ 那一行台账停在可恢复态，每次建链整批重投）。
+    #[test]
+    fn reconcile_byte_budget_bounds_a_round_without_starving_oversize_files() {
+        // 正：装得下就下一轮继续读
+        assert!(reconcile_take_next(1, 256 << 20, 200 << 20));
+        // 边界：恰好等于剩余预算算装得下（`<=` 不是 `<`）
+        assert!(reconcile_take_next(1, 100, 100));
+        // 反：装不下就本轮收手（留到下一 tick，`ORDER BY updated_at ASC` 保证不饿死老的）
+        assert!(!reconcile_take_next(1, 100, 101));
+        // ★ 第一条恒放行：3 GB 的候选在 256 MiB 预算下也必须被读一次
+        assert!(reconcile_take_next(0, 256 << 20, 3 << 30));
+        // 有界性口径本身：预算与条数上限是两个独立界，都不许写死成"不限"
+        assert_eq!(CONTENT_RECONCILE_PER_TICK, 8);
+        assert_eq!(CONTENT_RECONCILE_TICK_BYTE_BUDGET, 256 * 1024 * 1024);
+    }
+
+    /// ⑦ 在途的那半截不许读盘：`.part` 是 `make_receiver` 的命名口径，
+    /// ⑦ 在途的那半截不许读盘：`.part` 是 `make_receiver` 的命名口径，它的字节数与摘要
+    /// 必然对不上 —— 花几十秒读它再判「不完成」，抢的正是当前传输的磁盘带宽。
+    ///
+    /// ★ 但**只按后缀会把一行台账永久饿死**（评审 2026-10-14 抓到我自己造的那条坑）：候选的 path
+    /// 取自 `file_transfers.path`，而那一列只有改名落盘之后才被写 ⇒ 后缀命中的更可能是
+    /// 「用户本来就把文件叫做 `xxx.part`」（浏览器未完成的下载、分卷包都是这个后缀），而那份早收完了。
+    /// ⇒ 「正在写」必须由 **mtime** 说话。两个方向都钉住：新鲜 ⇒ 跳过；陈旧 ⇒ 必须放行去对账。
+    #[test]
+    fn inflight_part_files_are_skipped_but_a_part_named_deliverable_is_not_starved() {
+        use std::fs::OpenOptions;
+        use std::time::{Duration, SystemTime};
+
+        // 后缀判定本身（一正一反）
+        assert!(is_inflight_reconcile_path("/x/y/abc.part"));
+        assert!(is_inflight_reconcile_path("abc.part"));
+        assert!(!is_inflight_reconcile_path("/x/y/报告.pdf"));
+        assert!(!is_inflight_reconcile_path("/x/y/abc"));
+        assert!(!is_inflight_reconcile_path("/x/part/abc.bin"));
+
+        // 窗口至少覆盖一轮 tick，否则一次慢写入会被当成「已收完」而去哈希半截文件
+        assert!(
+            RECONCILE_PART_ACTIVE_MS as u64 >= crate::network::transport::OUTBOX_SWEEPER_INTERVAL_MS,
+            "判定窗口比 tick 还短的话，一轮没写完的文件会被当成品去哈希"
+        );
+
+        let dir = std::env::temp_dir().join(format!("gosslan-part-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let now = crate::db::now_ms();
+        let fresh = dir.join("live.part");
+        let aged = dir.join("named-as-part.part"); // 用户真的把文件叫这个名字，且早已收完
+        let done = dir.join("final.pdf");
+        for p in [&fresh, &aged, &done] {
+            std::fs::write(p, b"x").unwrap();
+        }
+        assert!(600_000 >= RECONCILE_PART_ACTIVE_MS, "夹具必须落在窗口之外");
+        let ten_min_ago = SystemTime::UNIX_EPOCH + Duration::from_millis((now - 600_000) as u64);
+        for p in [&aged, &done] {
+            let f = OpenOptions::new().write(true).open(p).unwrap();
+            f.set_modified(ten_min_ago).unwrap();
+        }
+
+        assert!(
+            part_is_being_written(fresh.to_str().unwrap(), now),
+            "mtime 还新鲜的 .part = 真在写 ⇒ 本轮不读盘"
+        );
+        assert!(
+            !part_is_being_written(aged.to_str().unwrap(), now),
+            "十分钟没动过的 .part 就是成品 ⇒ 必须放行去对账，否则那一行台账每轮被跳过、永动重投又回来了"
+        );
+        assert!(
+            !part_is_being_written(done.to_str().unwrap(), now),
+            "后缀不是 .part 就不进这道判定"
+        );
+        assert!(
+            !part_is_being_written(dir.join("gone.part").to_str().unwrap(), now),
+            "文件不在盘上不算「正在写」（该走原来那条读不到内容的分支）"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

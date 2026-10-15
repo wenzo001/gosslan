@@ -553,7 +553,13 @@ window.__probe = (() => {
             title: '探针弹窗',
             width: 'max-w-sm',
             onClose: () => { window.__probe.events.push(['close']); },
-          }, { default: () => V.h('div', { id: 'probe-long' }, long) }),
+          }, (() => {
+            const s = { default: () => V.h('div', { id: 'probe-long' }, long) };
+            // footer 插槽是**可选**的（BaseModal 里写的是 'v-if="$slots.footer"'）：
+            // 不传时挂出来的形状与既有那 7 条判据一模一样 ⇒ 加这一档不动老结论。
+            if (o.footer) s.footer = () => V.h('div', { id: 'probe-footer' }, '操作条');
+            return s;
+          })()),
         ]);
       },
     };
@@ -619,6 +625,104 @@ window.__probe = (() => {
     if (!el) return false;
     el.style.height = on ? '400vh' : '';
     return true;
+  };
+
+  /**
+   * 弹窗**内部**布局契约的现读（用户 2026-10-12 三条实测：①窗口一缩小"头部就缩上去一些"、
+   * ②"中间可滚动区域不该包含下面的操作按钮"、③"左右边距看着左边小右边大"）。
+   *
+   * 为什么这三条非得现读，源码判据（'designGuards' ㊲）不够：这三条说的是 'flex' 压缩、插槽位置
+   * 与"滚动条留白从哪一侧让出"**算出来的结果** —— class 写了不等于布局真按预期发生。
+   * ⚠️ 卡片里有**两个** 'overflow-y-auto'（外层那条铺满视口、卡片内那条才真滚内容）⇒
+   *   必须按 'min-h-0 flex-1' 精确取内层，取错就量到外层（同款坑本仓记过不止一次）。
+   * ⚠️ "被压扁"的判据用 "盒高 < scrollHeight"，不用"高度等于某个猜测像素"：
+   *   前者直接复现用户那句"缩上去一截"，后者一改字号/行高就自造假红。
+   */
+  H.modalLayoutRead = () => {
+    const panel = document.querySelector('[role="dialog"] .elevated');
+    if (!panel) return { ok: false, why: '没挂出 .elevated 卡片（BaseModal 没渲染？）' };
+    // 标题行不靠 class 认（那些 utility 会随主题改）：卡片里只有 ✕ 带 aria-label，
+    // 它的最近 div 就是标题行那一格 —— 锚点取自被断言的东西自己，不取自我的记忆。
+    const closeBtn = panel.querySelector('button[aria-label]');
+    const titleRow = closeBtn ? closeBtn.closest('div') : null;
+    const scroller = panel.querySelector('div.min-h-0.flex-1.overflow-y-auto');
+    const body = document.getElementById('probe-long');
+    const footer = document.getElementById('probe-footer');
+    const pr = panel.getBoundingClientRect();
+    const tr = titleRow ? titleRow.getBoundingClientRect() : null;
+    const sr = scroller ? scroller.getBoundingClientRect() : null;
+    const br = body ? body.getBoundingClientRect() : null;
+    const fr = footer ? footer.getBoundingClientRect() : null;
+    const maxH = getComputedStyle(panel).maxHeight;
+    const titleBoxH = tr ? +tr.height.toFixed(1) : -1;
+    // 标题行里最高的那个孩子：判"被压扁"要跟**孩子**比，不跟 scrollHeight 比 ——
+    // scrollHeight 会把行盒取整也算进去（实测 26.6 vs 28 那种 1.4px 的假红就这么来的）。
+    const titleMaxChildH = titleRow
+      ? +(Math.max(0, ...Array.from(titleRow.children)
+          .map((c) => c.getBoundingClientRect().height))).toFixed(1)
+      : -1;
+    // 滚动条这次真占了多宽：macOS overlay ⇒ 0；经典滚动条（headless Chrome / Win）是正数。
+    const sbW = scroller ? scroller.offsetWidth - scroller.clientWidth : -1;
+    const leftInset = br ? +(br.left - pr.left).toFixed(1) : -1;
+    const rightInset = br ? +(pr.right - br.right).toFixed(1) : -1;
+    return {
+      ok: true,
+      panelTop: Math.round(pr.top),
+      panelBottom: Math.round(pr.bottom),
+      panelH: Math.round(pr.height),
+      maxH,
+      vh: window.innerHeight,
+      sbW,
+      titleBoxH,
+      titleMaxChildH,
+      // 盒子比自己的孩子还矮 = 真被 flex 压扁（用户那句"缩上去一些"的几何形状）
+      titleSquashed: tr && titleRow ? titleBoxH < titleMaxChildH - 0.5 : null,
+      titleInside: tr ? tr.top >= pr.top - 1 && tr.bottom <= pr.bottom + 1 : null,
+      titleInScroller: scroller && titleRow ? scroller.contains(titleRow) : null,
+      scrollerFound: !!scroller,
+      // 溢出必须是真的：内容不溢出时"操作条不跟着滚"这条判据就是空转
+      scrollerOverflows: scroller ? scroller.scrollHeight > scroller.clientHeight + 1 : null,
+      footerFound: !!footer,
+      footerInScroller: scroller && footer ? scroller.contains(footer) : null,
+      footerInsidePanel: fr ? fr.top >= pr.top - 1 && fr.bottom <= pr.bottom + 1 : null,
+      footerBottom: fr ? Math.round(fr.bottom) : -1,
+      leftInset,
+      rightInset,
+      // 扣掉滚动条占的宽度才是"净留白" —— 判左右对称只能拿它比，见下面那条判据的口径边界
+      netRightInset: +(rightInset - sbW).toFixed(1),
+      srH: sr ? Math.round(sr.height) : -1,
+    };
+  };
+  /**
+   * 反面对照：**在浏览器里就地撤掉某一项修复**，读数必须朝推导出的方向变。
+   *
+   * 为什么要有这一步（而不是只让上面那几条绿着就算过）：那几条钉的是"class 写对之后的结果"，
+   * 但一条永远绿的判据和一条空转的判据看起来一模一样。这里用的是本文件自己的老套路
+   * （见 setWindowSafeTop）：不改源码、只改这一档的样式，量完立刻还原 ——
+   * 撤掉负右外边距 ⇒ 净留白必然多出约一个 gutter；放开标题行的 shrink-0 ⇒ 它必然被压扁。
+   * 撤了却读不出变化 = 那条判据什么都没证。
+   */
+  H.modalLayoutFlip = (which) => {
+    const panel = document.querySelector('[role="dialog"] .elevated');
+    if (!panel) return { ok: false, why: '没挂出 .elevated 卡片' };
+    const scroller = panel.querySelector('div.min-h-0.flex-1.overflow-y-auto');
+    const closeBtn = panel.querySelector('button[aria-label]');
+    const titleRow = closeBtn ? closeBtn.closest('div') : null;
+    if (which === 'gutter-off') {
+      if (!scroller) return { ok: false, why: '没找到滚动区' };
+      scroller.style.marginRight = '0px'; // 撤掉 -mr-[var(--gosslan-scroll-gutter)]
+    } else if (which === 'gutter-on') {
+      if (scroller) scroller.style.marginRight = '';
+    } else if (which === 'title-off') {
+      if (!titleRow) return { ok: false, why: '没找到标题行' };
+      titleRow.style.flexShrink = '1'; // 撤掉 shrink-0
+      titleRow.style.minHeight = '0';
+    } else if (which === 'title-on') {
+      if (titleRow) { titleRow.style.flexShrink = ''; titleRow.style.minHeight = ''; }
+    } else {
+      return { ok: false, why: '未知的对照档: ' + which };
+    }
+    return { ok: true };
   };
 
 
@@ -2050,6 +2154,59 @@ async function runWindowSafe(cdp, url) {
   check("移动端：卡片没被安全区额外推下（顶边仍在视口上半区，不是被顶下去一截）",
     d.ok === true && d.cardTop < d.innerHeight / 2,
     "cardTop < innerHeight/2", JSON.stringify({ cardTop: d.cardTop, innerHeight: d.innerHeight }));
+
+  // ── 弹窗**内部**布局契约（用户 2026-10-12 三条：头部被切 / 操作条跟着滚 / 左右边距不等）──
+  // 重挂一份带 footer 插槽的卡片，并把内容撑到超过视口 ⇒ 卡片顶在 max-h，
+  // 这才是用户"窗口一缩小"看到的那一档；内容不溢出时这三条都没有作用点。
+  await cdp.eval('window.__probe.composeModalStack({ long: true, footer: true })');
+  const tallOn = await cdp.eval("window.__probe.forceModalTall(true)");
+  const L = await cdp.eval("window.__probe.modalLayoutRead()");
+  check("前置：内容真在溢出、滚动区与 footer 都取对了元素（否则下面几条空转）",
+    tallOn === true && L.ok === true && L.scrollerFound === true
+      && L.scrollerOverflows === true && L.footerFound === true && L.titleMaxChildH > 0,
+    "scroller 在 + 溢出 + footer 在 + 标题行有孩子", JSON.stringify(L));
+  check("头部没被压扁：标题行盒高容得下自己的孩子、且完整在卡片里（用户那句「窗口一缩小头部缩上去一些」）",
+    L.titleSquashed === false && L.titleInside === true,
+    "boxH >= maxChildH 且整行在卡片内",
+    JSON.stringify({ boxH: L.titleBoxH, maxChildH: L.titleMaxChildH, inside: L.titleInside }));
+  check("只有内容区在滚：标题行与操作条都在滚动区**之外**（用户「可滚动区域不该包含下面的操作按钮」）",
+    L.titleInScroller === false && L.footerInScroller === false,
+    "两者都不在 scroller 内",
+    JSON.stringify({ titleIn: L.titleInScroller, footerIn: L.footerInScroller }));
+  check("操作条钉在卡片底部且完整可见（长内容时不滚到底也看得见「完成 / 编辑 / 删除」）",
+    L.footerInsidePanel === true && L.footerBottom <= L.panelBottom + 1,
+    "footer 落在卡片盒内", JSON.stringify({ footerBottom: L.footerBottom, panelBottom: L.panelBottom }));
+  // 口径边界（必须带上）：这里量的是"正文边缘到卡片内边缘"，右侧要**扣掉滚动条自己占的宽度**
+  // 才是净留白 —— 因为浏览器把滚动条放在内容盒与 padding 之间，它总是额外加宽右侧：
+  //  · macOS 系统 overlay 滚动条 ⇒ sbW=0 ⇒ 净留白 == 右留白 ⇒ 用户看到的正是这条（他说"左小右大"就是这条红了）；
+  //  · headless Chrome / Windows 经典滚动条 ⇒ sbW>0 ⇒ 右留白必然多出 sbW，那是滚动条本身，不是留白不等。
+  // ⇒ 判 `leftInset ≈ rightInset − sbW`：少了负边距（`-mr-[var(--gosslan-scroll-gutter)]`）时
+  //   净留白会变成 28 ⇒ 这条精确变红；而它在三种滚动条下都成立，不靠运气。
+  check("左右净留白对称：正文左/右边缘到卡片内边缘（右侧扣掉滚动条占宽）距离相等（用户「左边小、右边大」）",
+    L.leftInset > 0 && Math.abs(L.leftInset - L.netRightInset) <= 2,
+    "|left − (right − 滚动条宽)| <= 2",
+    JSON.stringify({ left: L.leftInset, right: L.rightInset, sbW: L.sbW, netRight: L.netRightInset }));
+  // —— 反面对照：两条新判据必须"撤掉修复就变红"，否则它们与空转的那条长得一模一样 ——
+  const flipG = await cdp.eval("window.__probe.modalLayoutFlip('gutter-off')");
+  const Lg = await cdp.eval("window.__probe.modalLayoutRead()");
+  check("对照①：就地撤掉滚动区的负右外边距 ⇒ 右侧净留白真的多出一个 gutter 左右",
+    flipG.ok === true && Lg.ok === true && (Lg.netRightInset - L.netRightInset) >= 6
+      && Math.abs(L.leftInset - Lg.netRightInset) > 2,
+    "净右留白增加 >= 6 且不再等于左留白",
+    JSON.stringify({ before: L.netRightInset, after: Lg.netRightInset, left: L.leftInset }));
+  await cdp.eval("window.__probe.modalLayoutFlip('gutter-on')");
+  const flipT = await cdp.eval("window.__probe.modalLayoutFlip('title-off')");
+  const Lt = await cdp.eval("window.__probe.modalLayoutRead()");
+  check("对照②：放开标题行的 shrink-0 ⇒ 长内容下它真被压扁（boxH < maxChildH，就是用户那句「缩上去一些」）",
+    flipT.ok === true && Lt.ok === true && Lt.titleSquashed === true,
+    "titleSquashed=true",
+    JSON.stringify({ boxH: Lt.titleBoxH, maxChildH: Lt.titleMaxChildH, panelH: Lt.panelH }));
+  await cdp.eval("window.__probe.modalLayoutFlip('title-on')");
+  const Lr = await cdp.eval("window.__probe.modalLayoutRead()");
+  check("对照可逆：两项都还原后读数回到原样（对照本身没把这一档页面弄坏）",
+    Lr.ok === true && Lr.titleSquashed === false && Math.abs(Lr.netRightInset - L.netRightInset) <= 1,
+    "回到原读数", JSON.stringify({ boxH: Lr.titleBoxH, netRight: Lr.netRightInset }));
+  await cdp.eval("window.__probe.forceModalTall(false)");
 
   // ── 主窗那条路径：ImageLightbox 不传 topInset，也必须让开 caption ──────
   // 2026-10-12 真实缺陷：那个 prop 只有独立预览窗在传，主窗全局实例一个都没传
@@ -3705,6 +3862,26 @@ async function runTaskCard(cdp, url) {
       && ev3.filter((e) => e[0] === "open-panel" || e[0] === "open-id").length === 0,
     "预览开且无开面板事件", JSON.stringify({ pv: pv2, ev: ev3 }));
 
+  // 区③的**另一半**（用户 2026-10-12 原话：「点图片的周围那些区域 点击事件应该是展开任务列表」）。
+  // 上面那条只证了"点缩略图不顺路开面板"；"点空白那一圈要开面板"此前**没有任何正向断言** ——
+  // 只有源码侧 ㊲ 那条"容器不许挂 @click.stop"的形状禁令。禁令在、正向行为坏了照样绿，
+  // 而 2026-10-12 那个缺陷恰好就是这个形状（容器一 stop，整条图片带不再冒泡）。
+  // 派发目标取图片带容器本身：事件的 target 是那一层 div，不是任何缩略图 ⇒
+  // 这正好是"缩略图之间的空隙 / px-3 内边距 / 右侧留白"的等价形状，冒泡必须一路通到命中区①。
+  await cdp.eval("window.__probe.reset()");
+  const bandClick = await cdp.eval(`(() => {
+    const t = Array.from(document.querySelectorAll('[role="button"].h-20'))[0];
+    const band = t ? t.parentElement : null;
+    if (!band) return { ok: false, why: '找不到图片带容器' };
+    band.click();
+    return { ok: true };
+  })()`);
+  const evBand = await cdp.eval("window.__probe.events");
+  check("点图片带里空白那一圈（target=容器本身）：必须展开任务面板，且不多发 open-id",
+    bandClick.ok === true && evBand.filter((e) => e[0] === "open-panel").length === 1
+      && evBand.filter((e) => e[0] === "open-id").length === 0,
+    "open-panel×1 / open-id×0", JSON.stringify({ bandClick, ev: evBand }));
+
   // 区③键盘（回归保护）：缩略图 Enter 同样只开预览
   await cdp.eval("window.__probe.reset()");
   await cdp.eval("window.__probe.focusThumb()");
@@ -3734,6 +3911,133 @@ async function runTaskCard(cdp, url) {
     linkClick.ok === true
       && ev5.filter((e) => e[0] === "open-panel" || e[0] === "open-id").length === 0,
     "无面板事件", JSON.stringify(linkClick) + " " + JSON.stringify(ev5));
+
+  // —— 图片超过上限 ⇒ 只画前几张 + 出「查看更多」，且它表现得和「查看任务」一模一样 ——
+  // 用户 2026-10-12：任务卡片图多到 10 张时堆满卡面；点「查看更多」要像「查看任务」那样
+  // 打开列表并直达这条任务。上限的唯一家在 utils/todos.ts，这里**现读**不写死。
+  const LIMIT = await cdp.eval(`(async () => {
+    const u = await import('/src/utils/todos.ts');
+    return u.TODO_CARD_IMAGE_VISIBLE;
+  })()`);
+  const mkImages = (n, cidBase) =>
+    Array.from({ length: n }, (_, i) => ({
+      id: cidBase + i, name: `图${i}.jpg`, size: 2048,
+      sha256: (cidBase + i).repeat(Math.ceil(64 / (cidBase + i).length)).slice(0, 64),
+      subtype: "image",
+    }));
+
+  const moreLabel = await cdp.eval(`(async () => {
+    const i = await import('/src/i18n');
+    return i.t('todo.viewMoreImages');
+  })()`);
+
+  // 缩略图的形状锚点：`TodoImageThumb` 根节点 = `role=button` + `h-20 w-20`（80×80）。
+  // ⚠️ 这里**不许**改用"某个 role=button 祖先的 children"去数：卡片主体（命中区①）自己也是
+  //   `role=button`，那样数出来恒为 1，量的是主体不是缩略图 —— 2026-10-12 那一版探针正是这么
+  //   把"只画 4 张"读成"只画 1 张"的（判据红得像是产品缺陷，实际是尺子读错了对象）。
+  const MEASURE = `(() => {
+    const thumbs = Array.from(document.querySelectorAll('[role="button"].h-20'));
+    const band = thumbs.length ? thumbs[0].parentElement : null;
+    const root = document.querySelector('.bubble-tail');
+    const card = root ? root.closest('div') : null;
+    const label = ${JSON.stringify(moreLabel)};
+    const more = Array.from(document.querySelectorAll('button'))
+      .find((b) => (b.textContent || '').trim().startsWith(label));
+    return {
+      rendered: thumbs.length,
+      bandH: band ? +band.getBoundingClientRect().height.toFixed(1) : -1,
+      moreH: more ? +more.getBoundingClientRect().height.toFixed(1) : 0,
+      cardH: card ? +card.getBoundingClientRect().height.toFixed(1) : -1,
+      // 「查看更多」在不在命中区①**里面**（决定它要不要自己 stop）
+      moreInBody: more ? !!more.closest('[role="button"][tabindex="0"]') : false,
+    };
+  })()`;
+
+  await cdp.eval("window.__probe.reset()");
+  await mount({
+    message: JSON.parse(JSON.stringify({
+      ...JSON.parse(MSG), content: JSON.stringify({ ...payload, images: mkImages(LIMIT + 6, "f") }),
+    })),
+    mentionNames: ["小布"],
+    selfMention: null,
+  });
+  const manyGeo = await cdp.eval(MEASURE);
+  check(`图片 ${LIMIT + 6} 张 ⇒ 卡片只画 ${LIMIT} 张（其余去详情弹窗看）`,
+    manyGeo.rendered === LIMIT, `恰好 ${LIMIT} 张`, JSON.stringify(manyGeo));
+  check("超限时出现「查看更多」按钮",
+    manyGeo.moreH > 0, `那颗高度 > 0`, JSON.stringify(manyGeo));
+
+  await cdp.eval("window.__probe.reset()");
+  const moreClicked = await cdp.eval(`(() => {
+    const label = ${JSON.stringify(moreLabel)};
+    const b = Array.from(document.querySelectorAll('button'))
+      .find((x) => (x.textContent || '').trim().startsWith(label));
+    if (!b) return false;
+    b.click();
+    return true;
+  })()`);
+  const evMore = await cdp.eval("window.__probe.events");
+  const moreOpened = evMore.filter((e) => e[0] === "open-id").map((e) => e[1]);
+  const morePanel = evMore.filter((e) => e[0] === "open-panel").length;
+  // ⚠️ 必须**按文案**认这颗按钮，不许用"没有 svg 的那个 button"之类的形状去猜：
+  // 「查看更多」自己带一个 ChevronRight ⇒ 猜"无 svg"永远选不中它，会退到最后一颗
+  // （=底部「查看任务」），于是这条判据量的是别的按钮，产品缺陷被读成绿。
+  // 且"一模一样"要求**只有** open(todoId)：多一个 open-panel 就是面板被开两次、
+  // 第二次不带 id ⇒ 直达这条任务的效果被冲掉。
+  check("点「查看更多」= 点「查看任务」：只 emit open 带**这条**的 todo_id，不多冒 open-panel",
+    moreClicked === true && moreOpened.length === 1 && moreOpened[0] === TODO_ID && morePanel === 0,
+    "1 次 open-id=" + TODO_ID + " 且 open-panel×0", JSON.stringify(evMore) + " " + JSON.stringify(manyGeo));
+
+  // 反面对照：刚好上限张数 ⇒ 一个缩略图都不少，且**没有**「查看更多」（否则 4 张也弹按钮）
+  await cdp.eval("window.__probe.reset()");
+  await mount({
+    message: JSON.parse(JSON.stringify({
+      ...JSON.parse(MSG), content: JSON.stringify({ ...payload, images: mkImages(LIMIT, "e") }),
+    })),
+    mentionNames: ['小布'],
+    selfMention: null,
+  });
+  const exactGeo = await cdp.eval(MEASURE);
+  check(`对照：正好 ${LIMIT} 张 ⇒ 全画出来且不出现「查看更多」（判据不是恒真）`,
+    exactGeo.rendered === LIMIT && exactGeo.moreH === 0,
+    `${LIMIT} 张且无更多按钮`, JSON.stringify(exactGeo));
+
+  // —— 高度契约：每种张数都按"同一份估算 vs 同一个 DOM"对照 ——
+  // ⚠️ 三条纪律：① 估算端现读，不在探针里抄数（抄了一份就钉不住真正的同步）；
+  // ② 每条记录**必须有各自的 msg_id** —— messageHeight 的缓存键是 `fontSize|msg_id`，
+  //   两条记录共用一个号时，第二次读到的是第一次的缓存（2026-10-12 那版就这么读出
+  //   "有图 == 无图"，把估算端读成"没长"）；③ 两个方向都要量：估少了 ⇒ 相邻消息互相遮挡，
+  //   估多了 ⇒ 卡片之间出现一大片空洞（本文件顶部那条契约说的是前者，后者同样是真的）。
+  const COUNTS = [0, 1, 2, 3, LIMIT, LIMIT + 1, LIMIT + 6];
+  const rows = [];
+  for (const n of COUNTS) {
+    await mount({
+      message: JSON.parse(JSON.stringify({
+        ...JSON.parse(MSG), content: JSON.stringify({ ...payload, images: mkImages(n, `h${n}`) }),
+      })),
+      mentionNames: ["小布"],
+      selfMention: null,
+    });
+    const g = await cdp.eval(MEASURE);
+    const est = await cdp.eval(`(async () => {
+      const h = await import('/src/utils/messageHeight.ts');
+      const rec = { msg_id: 'm-probe-h-${n}', sender_id: 'dev-me', kind: 'todo',
+        content: JSON.stringify({ ...${JSON.stringify(payload)}, images: ${JSON.stringify(mkImages(n, `h${n}`))} }),
+        ts: 1700000000000 };
+      return h.estimateMessageHeight(rec, undefined,
+        { messages: [], isGroup: false, selfId: 'dev-me', fontSize: 'md' });
+    })()`);
+    rows.push({ n, rendered: g.rendered, band: g.bandH, more: g.moreH, real: g.cardH, est });
+  }
+  console.log("  · 高度实测表（张数/渲染/图片带/查看更多/卡片真实/估算）: " + JSON.stringify(rows));
+  check("每种张数：卡片真实高度 ≤ 估算（估少了就是虚拟列表遮挡）",
+    rows.every((r) => r.real > 0 && r.est > 0 && r.real <= r.est),
+    "全部 real ≤ est", JSON.stringify(rows));
+  check("每种张数：估算不许比真实多出一整行以上（估多了＝卡片之间出现空洞）",
+    rows.every((r) => r.est - r.real <= 100), "est-real ≤ 100", JSON.stringify(rows));
+  check("只画前几张时，图片带高度按可见张数收敛（第 5 张往后不再长高）",
+    rows.filter((r) => r.n >= LIMIT).every((r) => r.band === rows.find((x) => x.n === LIMIT).band),
+    "≥上限的图片带等高", JSON.stringify(rows.map((r) => [r.n, r.band])));
 }
 
 /**

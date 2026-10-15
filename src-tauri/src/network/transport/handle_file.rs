@@ -278,6 +278,17 @@ async fn handle_file_messages(state: &Arc<AppState>, peer_id: &str, msg: Message
                 .remove(&transfer_id)
             {
                 let _ = tx.send(Ok(()));
+            } else if log_throttled("file_accept_no_waiter", 5_000) {
+                // ⚠️ 不静默（2026-10-13 真机第 7 条那轮审计点名的"关键异常被吞掉"）：
+                // 这一支以前是 `if let Some(tx)` 没有 else ⇒ "对端回了 accept 而本机没有在等"
+                // 这条事实在日志里**一个字都不留**。而它恰恰是区分两种死法的唯一读数：
+                // ① 对端根本没答（链路/对端问题）；② 对端答了、但那台机器的入站循环正被
+                // 上一次握手的 await 占着 ⇒ 应答读回来时等待者已经超时撤走（内容拉取自死锁就是这种）。
+                // 只记 id 与 peer，不记任何正文；节流 5s 挡掉"整批迟到的应答"刷屏。
+                state.logger.warn(
+                    "file",
+                    format!("收到 FileAccept 但本机没在等它，按迟到丢弃 transfer={transfer_id} peer={peer_id}"),
+                );
             }
         }
         Message::FileReject {
@@ -292,6 +303,16 @@ async fn handle_file_messages(state: &Arc<AppState>, peer_id: &str, msg: Message
             {
                 // 把"接收端已持有多少字节"回给发送端 ⇒ 它从该偏移续发，无需重头。
                 let _ = tx.send(Err(received));
+            } else if log_throttled("file_reject_no_waiter", 5_000) {
+                // 同 FileAccept 那一支：迟到的 reject 过去也是静默吞掉，而 reject 带着
+                // 「对端实际持有多少字节」这个续传关键量 —— 丢了它就只能整份重灌，
+                // 现场却读不出"丢过"。（`received` 是字节数，不是正文，可以进日志。）
+                state.logger.warn(
+                    "file",
+                    format!(
+                        "收到 FileReject 但本机没在等它，按迟到丢弃 transfer={transfer_id} peer={peer_id} received={received}"
+                    ),
+                );
             }
         }
         Message::FileCompleteAck {
@@ -395,7 +416,7 @@ async fn handle_file_messages(state: &Arc<AppState>, peer_id: &str, msg: Message
                 );
                 return;
             }
-            match file::finish_receive(state, &transfer_id, peer_id) {
+            match file::finish_receive(state, &transfer_id, peer_id).await {
                 Err(e) => {
                     let _ = state.app.emit(
                         "file-failed",

@@ -495,52 +495,20 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                             None,
                         )
                         .await;
-                        // 他已经是我的好友 ⇒ 直接同意（公钥刚从信封里记下，回执发得出去）
-                        if auto_accept_if_already_friend(state, &env.sender_id).await {
-                            return;
-                        }
-                        let req = PendingRequest {
-                            from: env.sender_id.clone(),
-                            from_nickname,
-                            from_avatar,
-                            ts: env.ts,
-                        };
-                        state
-                            .pending_requests
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .insert(env.sender_id.clone(), req.clone());
-                        let _ = state.app.emit("friend-request", &req);
-                        // 留痕：跨跳好友申请是内存态（pending_requests），日志是唯一
-                        // 可观测「谁申请了我」的手段（headless 测试与真机排障都靠它）。
-                        state.logger.info(
-                            "friend",
-                            format!(
-                                "收到跨跳好友申请 peer={} nickname={}",
-                                env.sender_id, req.from_nickname
-                            ),
-                        );
-                        let mut extra = std::collections::HashMap::new();
-                        extra.insert("type".to_string(), "friend_request".to_string());
-                        // macOS 点击捕获必须带 action 按钮（见 crate::notifications）。
-                        extra.insert("action_label".to_string(), "查看".to_string());
-                        // 与直连那条路径同口径：点击唤起窗口 + 跳到「新的朋友」。
-                        let click_app = state.app.clone();
-                        let _ = crate::notifications::show_click_if_enabled(
+                        // 登记、事件、留痕与系统通知都在 `apply_friend_request` 那一个家里做
+                        // （直连那条走同一个家）—— 通知由「本机是否第一次握着这条申请」门控，
+                        // 发送方每 5s 心跳补发一份新 message_id 的信封不该刷屏。
+                        apply_friend_request(
                             state,
-                            "好友申请",
-                            &format!("{} 请求添加你为好友", req.from_nickname),
-                            extra,
-                            false,
-                            move || {
-                                crate::notifications::on_notification_clicked(
-                                    &click_app,
-                                    "friend_request",
-                                    None,
-                                    None,
-                                )
+                            PendingRequest {
+                                from: env.sender_id.clone(),
+                                from_nickname,
+                                from_avatar,
+                                ts: env.ts,
                             },
-                        );
+                            "收到跨跳好友申请",
+                        )
+                        .await;
                     }
                 }
             }
@@ -643,6 +611,29 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
             {
                 return;
             }
+            // ⚠️ 可观测性缺口（用户 2026-10-13：「刚加了好友，两端能看到互相在线，但我发的单聊他收不到」）。
+            // 定向给**本机**的加密单聊信封如果在这里解不开，下面那句 `if let Some(pt)` 整块跳过：
+            // 不落库、不通知界面、也**不回 ChatAck** ⇒ 发送端状态永远停在「已发送」（不是"没送达"），
+            // outbox 行永远留着，每次重连再用同一把（可能已过期的）公钥重新密封发一遍 ——
+            // 失败是静默且自我一致的，两端日志各留一片空白，事后根本分不出"没收到"与"收到了打不开"。
+            // 这一条就是那道分界；只报布尔量，不报密钥本身（日志会进报告产物）。
+            if env.kind == GossipKind::Chat && env.encrypted && plaintext.is_none() {
+                let (has_local_key, local_matches_envelope) = {
+                    let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
+                    match peers.get(&env.sender_id).and_then(|p| p.x25519_pubkey.as_deref()) {
+                        // 本机没有对方的 X25519：这条一定解不开（要等同步新密钥或对方重新上线补齐）
+                        None => (false, false),
+                        Some(k) => (true, k == env.sender_pubkey.as_str()),
+                    }
+                };
+                state.logger.warn(
+                    "chat",
+                    format!(
+                        "单聊信封解不开（本机为接收方）msg={} peer={} 本机存有对方密钥={} 与信封自报一致={}",
+                        env.message_id, env.sender_id, has_local_key, local_matches_envelope
+                    ),
+                );
+            }
             if let Some(pt) = plaintext {
                 let crate::protocol::GossipPlaintext {
                     kind,
@@ -664,6 +655,14 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                             // 只记条数：落点里带昵称，昵称不进日志（日志会进报告产物）
                             mention_targets.as_ref().map_or("none".to_string(), |v| v.len().to_string())
                         ),
+                    );
+                } else {
+                    // 单聊也要留一条"到达本机并解开"的正向痕迹（此前只有群聊有 ⇒ 手机日志里
+                    // "没收到"与"收到了但没有任何一行"完全同形，用户只能报"不知道为什么收不到"）。
+                    // 记 kind 不记正文：与群聊那条同一口径，正文/昵称不进日志。
+                    state.logger.info(
+                        "chat",
+                        format!("单聊消息已收 msg={} kind={}", env.message_id, kind),
                     );
                 }
                 // GossipKind::Chat：好友关系检查（非好友不落库、不通知、通知发送方）

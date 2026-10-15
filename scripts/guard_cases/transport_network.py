@@ -147,12 +147,43 @@ CASES: list[Case] = [
         "⇒ 两边都看不到、谁也加不上，只能先把 B 里的 A 删掉再加回来",
         file=TAURI / "src" / "network" / "transport.rs",
         injections=[(
-            "            if auto_accept_if_already_friend(state, &from).await {",
+            "    if auto_accept_if_already_friend(state, &req.from).await {",
             "            if false {",
         )],
         cmd=cargo("test", "--lib", "friend_request_from_existing_friend_auto_accepts"),
         cwd=TAURI,
         expect_fail_hint="两条 FriendRequest 路径",
+        tags=["rust", "friend"],
+    ),
+    Case(
+        name="好友申请的通知只在第一次到达时弹（重复补发不许刷屏）",
+        why="用户 2026-10-14 真机：正常聊天时「群内加好友会弹出很多个，连续多条的弹窗也有问题」——"
+        "申请没有回执，发送端每轮心跳补发一份**新 message_id** 的信封，接收端两层帧去重结构上看不见重复；"
+        "而首次判定要是被硬编码成本地测试用的常量（或写反成 is_some），"
+        "表现是「首次不弹、重复才弹」或回到刷屏，两种都静默 —— 编译器与那两条路径都不报错",
+        file=TAURI / "src" / "network" / "transport.rs",
+        injections=[(
+            "        friend_request_arrival_decision(prior.is_none())",
+            "        friend_request_arrival_decision(true)",
+        )],
+        cmd=cargo("test", "--lib", "every_friend_request_path_notifies_only_on_first_sighting"),
+        cwd=TAURI,
+        expect_fail_hint="门控的输入必须是",
+        tags=["rust", "friend"],
+    ),
+    Case(
+        name="待发好友申请的补发必须有间隔（不许每轮心跳发一份）",
+        why="与上一条同一次真机报告的另一半：每 5 秒向整个网洪泛一份新信封，中间节点跟着重签重转，"
+        "BLE 上尤其贵。行为判据把间隔当**自变量**传，看不见调用处的常量；把 30_000 改成 0 就是"
+        "回到「每轮心跳补发一份」的原始形状，所以这条注入专门打在那个常量上",
+        file=TAURI / "src" / "network" / "transport.rs",
+        injections=[(
+            "const MIN_INTERVAL_MS: i64 = 30_000;",
+            "const MIN_INTERVAL_MS: i64 = 0;",
+        )],
+        cmd=cargo("test", "--lib", "friend_request_survives_a_dropped_link"),
+        cwd=TAURI,
+        expect_fail_hint="补发最小间隔",
         tags=["rust", "friend"],
     ),
     Case(

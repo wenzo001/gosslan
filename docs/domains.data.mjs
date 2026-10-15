@@ -166,7 +166,15 @@ export default {
       tier: "L3",
       // 目前住在 commands.rs + db.rs 里，**没有独立文件** —— 这正是它最容易跨界污染的原因
       paths: [],
-      invariants: ["INV-P12"],
+      invariants: [
+        "INV-P12",
+        // ↓ 2026-10-14 补登。**本域 paths 是空的**（关系流程今天没有独立文件），所以这条登记的依据
+        // 不是"文件在本域"，而是"这条契约管的就是好友关系这一格"，实现体跨三域、逐处点名在此：
+        // 幂等家与两个到达点 = transport（network/transport/handshake.rs:364 / :292，
+        // handle_identity.rs:188 / :210，gossip.rs:501 / :523）；通知出口 = platform（notifications.rs）；
+        // 同意那一支的幂等键 = persistence 的 friends 表（db/friends.rs 的 get_friend）。
+        "INV-P33",
+      ],
       activeHome: null,
       activeHomeNote: "暂无独立文件：逻辑在 commands.rs 的 friend 命令与 db/friends.rs 的表 CRUD",
       enforce: false,
@@ -198,6 +206,10 @@ export default {
         "INV-P08",
         "INV-P19",
         "INV-P22",
+        // 2026-10-14 补登（此前这份名单停在 P23，P24 以后的十条一条都没登记 ⇒ 图上按领域筛不变量是空的）：
+        // 登记口径 = **本节正文里点名过的、且落在本域 paths 上的实现/判据**，不是"语义上像"。
+        "INV-P24", // protocol.rs：PROTOCOL_VERSION / kind 容忍表（FLEX_DM_KIND、DM_LEGACY_KINDS、kind_allowed_by_features）
+        "INV-P29", // protocol.rs：群任务载荷里那格固定编号（字母只是显示态、数字才是契约）
       ],
       activeHome: "src-tauri/src/protocol.rs",
       enforce: false,
@@ -287,7 +299,16 @@ export default {
         "src-tauri/src/network/dispatch.rs", // 三优先级调度 + BLE yield + 发送状态定义（新建，2026-09）
         "src-tauri/src/transport", // 新栈（部分接线）
       ],
-      invariants: ["INV-P20", "INV-P22", "INV-P23"],
+      invariants: [
+        "INV-P20",
+        "INV-P22",
+        "INV-P23",
+        // ↓ 2026-10-14 补登，口径同「本节/其判据点名的实现落在本域 paths 上」：
+        "INV-P24", // 声明本机版本：network/transport/handshake.rs + network/ble.rs 两处用 PROTOCOL_VERSION
+        "INV-P25", // 发射事件不得持 db 锁：本节正文引用的违规形状就在 network/transport.rs（扫描面是全仓取锁点，条数由 check-lock-scope.mjs 现算打印）
+        "INV-P26", // 终态不可降级：本域有 relay_file.rs / group_file.rs / outbox_sweep.rs 等写入点（闸门实体在 persistence）
+        "INV-P33", // 重复好友事件不重复通知：两个到达点 handle_identity.rs + gossip.rs，幂等家 handshake.rs
+      ],
       // ⚠️ 三个家：TCP 数据面在 network/、BLE 数据面在 network/ble.rs + transport/、控制面在 transport/mod.rs
       activeHome: "src-tauri/src/network/transport.rs", // 活路径的具体文件（network/ 整体是活的家）
       secondHome: "src-tauri/src/transport",
@@ -326,7 +347,13 @@ export default {
         "src-tauri/src/content", // 内容传输逻辑层
         "src-tauri/src/storage", // 二进制落盘 + 缓存清理
       ],
-      invariants: ["INV-P17", "INV-P22"],
+      invariants: [
+        "INV-P17",
+        "INV-P22",
+        // ↓ 2026-10-14 补登，口径同「本节/其判据点名的实现落在本域 paths 上」：
+        "INV-P26", // 文件传输行的终态：本域 network/file/{receive,send,relay_push}.rs 是写入点，闸门那句 WHERE 在 persistence 的 db/file_transfer.rs
+        "INV-P28", // 摘表与判据同一次持锁：判据 = network/file_tests.rs 里的 group_receive_atomicity_tests 那两条（单聊侧与群侧各一条）
+      ],
       activeHome: "src-tauri/src/network/file.rs",
       enforce: false,
       consumes: [
@@ -351,7 +378,15 @@ export default {
         "src-tauri/src/db", // 16 个子模块：settings / clocks / friends / messages / conversations / offline_queue / file_transfer / favorites(含 tests) / ...
         "src-tauri/src/export.rs", // 聊天记录导出（磁盘满 / 迁机时的自救）
       ],
-      invariants: ["INV-P05", "INV-P14", "INV-008"],
+      invariants: [
+        "INV-P05",
+        "INV-P14",
+        "INV-008",
+        // ↓ 2026-10-14 补登，口径同「本节/其判据点名的实现落在本域 paths 上」：
+        "INV-P24", // 老对端整份重建载荷时「沿用已知值」那一格：db/messages.rs 的 latest_todo_def
+        "INV-P26", // 闸门实体：db/file_transfer.rs 的 upsert_transfer 尾巴那句 `WHERE status <> 'done'`（注入用例打的正是这里）
+        "INV-P29", // 编号的分配与不复用：db/groups.rs 里 `mod todo_number_tests` 那四条具名判据（号从 1 起、删了不回收、避让对端分到的号）
+      ],
       activeHome: "src-tauri/src/db", // 16 个子模块（include! 物理拆分）
       enforce: false,
       consumes: ["messaging"], // 2026-09-28 #122 第二段起这是**真生产依赖**：db/messages.rs 的 mention_targets 列存的就是 protocol::MentionTarget，解码走 protocol::parse_mention_targets_column（三态规则只此一家，不在 db 里另写一份）。
@@ -377,7 +412,11 @@ export default {
         "src-tauri/src/notifications.rs",
         "src-tauri/src/user_dirs.rs",
       ],
-      invariants: [],
+      invariants: [
+        // ↓ 2026-10-14 补登，口径同「本节/其判据点名的实现落在本域 paths 上」：
+        "INV-P32", // 单实例：回显动作就是本域 tray.rs 的 `show_main_window`（单实例插件注册处调它）；判定出口 `allow_second_instance_launch` 在 lib.rs —— 那是装配模块，本守门刻意不给它领域归属
+        "INV-P33", // 重复好友事件不许重复弹通知：通知出口 = 本域 notifications.rs 的 show_if_enabled / show_click_if_enabled（幂等判据那一家在 transport）
+      ],
       activeHome: "src-tauri/src/menu.rs",
       enforce: false,
       consumes: ["persistence"], // user_dirs.rs 用 db；notifications.rs 仅引用 state(装配)；android_open/jni_method 互引(同域)
@@ -417,7 +456,15 @@ export default {
         "src/api",
         "src/utils",
       ],
-      invariants: [],
+      invariants: [
+        // ↓ 2026-10-14 补登，口径 = 「本节正文或其钩子点名的实现/判据落在本域 paths 上」
+        // （本域 paths 含 src/utils、src/stores、src/components、src/composables；下面每条都按这个口径核过实物）：
+        "INV-P24", // 老对端没带新增那三格时「沿用已知值」的前端一半：src/utils/todos.ts 的 carryAbsentTodoFields
+        "INV-P27", // 「用户在看这个会话」只有一个口径：src/utils/messages.ts 的 messageMentionsMe（判据在 messages.test.ts / designGuards.test.ts）
+        "INV-P29", // 短码只是显示态：src/utils/todos.ts（字母按 kind+actor 现推，卡片/看板/详情同一套号）
+        "INV-P30", // 派生状态唯一事实源：src/utils/friendOnline.ts 的 markFriendsOnlineFrom；另两条判据是形状判据（retrySend.test.ts、channelState.test.ts），判的是 src/stores 里那一份
+        "INV-P31", // 表现层交互：src/utils/designGuards.test.ts 的 ① 悬停揭示兜底与 ⑧ 小尺寸热区两格（真源护栏在 scripts/check-ui-runtime.mjs）
+      ],
       activeHome: "src/stores",
       enforce: false,
       consumes: [], // 前端域:本守门不扫 src/*(避跨 parser,且 utils/Api/组件相互 import 模式与后端 crate 不同),见 check-domain-deps.mjs 头部注释

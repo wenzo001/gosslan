@@ -103,6 +103,28 @@ pub const WINDOW_LABELS: &[&str] = &[
     WINDOW_TASKS,
 ];
 
+/// **允许被最大化**的窗口标签白名单。
+///
+/// ## 为什么需要它（用户 2026-10-12 实测：macOS 绿灯与标题栏双击"点了没反应"）
+///
+/// 曾用 `WebviewWindow::is_maximizable()` 作判据，看着正是标准 API，实则**在 macOS 上恒 false**：
+/// 我们的窗口全是 `decorations:false`，tao 建出的 styleMask 里**没有 `Titled` 位**
+/// （`tao-0.35.3/platform_impl/macos/window.rs:216-222`），而 AppKit 的 zoom button
+/// 只在 Titled 窗上存在 ⇒ `is_maximizable()` 读不到 button 就返回 false
+/// （同文件 L1105-1115，`set_maximizable` 也因此静默失效，见 L826-834）。
+/// 独立探针实测：borderless 窗 `is_maximizable()`=false，但直接 `set_maximized(true)`
+/// 照样铺满可见区、`set_maximized(false)` 照样还原 —— **能力一直在，只是判据说谎**。
+/// 完整推导见 `commands/window.rs::window_toggle_maximize` 的注释。
+///
+/// 受影响的只有 `WINDOW_MAIN`：`logs.rs` 里设置/日志/群任务/预览四扇辅助窗都在 builder 上
+/// 显式写了 `.maximizable(false)`（小窗口不给放大），那才是"不能最大化"的可信来源。
+/// 本清单与那四处 builder 由 `window_maximizable_matches_builder` 测试交叉核对
+/// （改一边忘另一边会红）。
+///
+/// ⚠️ 只在桌面有意义；移动端没有窗口概念，`window_toggle_maximize` 走另一个桩。
+#[cfg(desktop)]
+pub const MAXIMIZABLE_WINDOWS: &[&str] = &[WINDOW_MAIN];
+
 /// 安装 panic hook：把 panic（位置 + 消息）写进应用日志文件，并打到 stderr。
 ///
 /// 为什么必须装（用户 2026-09-12 安卓实测「点进去 3 秒闪退，拿不到任何日志」）：
@@ -155,6 +177,22 @@ fn install_panic_hook(app: Option<tauri::AppHandle>) {
     }));
 }
 
+/// 「这第二次启动该不该真的起一个新进程」的判定（纯函数、可单测）。
+///
+/// 只有**开发与测试的多开出口**算该：双实例 E2E harness 起实例时带
+/// `GOSSLAN_INSTANCE=<n>`（见 `scripts/e2e/core.mjs`），并常配 `GOSSLAN_AUTOSTART=1` 选绑定地址。
+/// 那一层是本仓唯一能证跨进程行为的路线，守卫不许把它一起关掉。
+///
+/// 真用户环境里第二个进程 = 第二扇主窗 + 第二个托盘图标 + 第二份 mesh 身份，
+/// 同一条好友申请会被两个进程各弹一次通知（用户 2026-10-14：「同时启动了两个程序，这有问题」）。
+#[cfg(all(desktop, any(target_os = "macos", windows, target_os = "linux")))]
+pub(crate) fn allow_second_instance_launch(
+    instance_env: Option<&str>,
+    autostart_env: Option<&str>,
+) -> bool {
+    instance_env.is_some() || autostart_env == Some("1")
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // 先装 hook（此刻还没有 state，先只打 stderr；setup 里拿到 logger 后再装一次带上文件日志）
@@ -190,6 +228,18 @@ pub fn run() {
                 .with_denylist(&[WINDOW_SETTINGS, WINDOW_LOGS])
                 .build(),
         );
+    }
+
+    // 单实例守卫：第二个进程不再建窗，而是把**已有那份**主窗叫到前台。
+    // 平台清单必须与 Cargo.toml 里那条依赖的 `cfg` 同一组（判据在 lib_startup_config_tests）。
+    #[cfg(all(desktop, any(target_os = "macos", windows, target_os = "linux")))]
+    if !allow_second_instance_launch(
+        std::env::var("GOSSLAN_INSTANCE").ok().as_deref(),
+        std::env::var("GOSSLAN_AUTOSTART").ok().as_deref(),
+    ) {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            crate::tray::show_main_window(app);
+        }));
     }
 
     let app = builder

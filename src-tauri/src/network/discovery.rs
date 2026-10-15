@@ -645,16 +645,25 @@ async fn broadcast_probe(
     if let Ok(data) = serde_json::to_vec(&who) {
         // 与 announce 同一口径：子网广播 + limited 广播都发（见 broadcast 的说明）。
         // 「打开添加好友」在 macOS 上能否发现对方，就取决于这条。
-        if let Some(bc) = lan_broadcast {
+        let directed_ok = if let Some(bc) = lan_broadcast {
             let directed = format!("{bc}:{UDP_PORT}");
             let res = socket.send_to(&data, &directed).await;
             let (kind, detail) = diag_event_from_send_result(&directed, "who_has_sent", &res);
             state.push_diag_event(kind, &detail);
-        }
+            res.is_ok()
+        } else {
+            false
+        };
         let bcast_target = format!("255.255.255.255:{UDP_PORT}");
         let bcast_res = socket.send_to(&data, &bcast_target).await;
-        let (kind, detail) = diag_event_from_send_result(&bcast_target, "who_has_sent", &bcast_res);
-        state.push_diag_event(kind, &detail);
+        // 留痕抑制必须与 `broadcast()` 那一条同口径（4.18.5 定的规则，此前只落在那一臂上）：
+        // macOS 上 socket 绑了具体网卡 IP，limited 广播本来就发不出去（EHOSTUNREACH），
+        // 而探测是用户主动点的，每次都刷一条 WARN 只会淹掉日志环里真正有用的行。
+        if !directed_ok {
+            let (kind, detail) =
+                diag_event_from_send_result(&bcast_target, "who_has_sent", &bcast_res);
+            state.push_diag_event(kind, &detail);
+        }
     }
     // 同时广播自身，让周围节点也能立刻发现我们
     broadcast(socket, state, tcp_port, lan_broadcast).await;

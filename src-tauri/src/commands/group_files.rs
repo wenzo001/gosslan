@@ -141,6 +141,27 @@ fn normalize_custom_category(category: &str, raw: Option<&str>) -> Result<String
     Ok(name)
 }
 
+/// 规范化「自定义类型图标」（创建/更新两条命令共用，与 [`normalize_custom_category`] 同一处口径）。
+///
+/// - 非 custom 档 ⇒ 一律空串。残留的图标键由服务端清掉，不留「普通任务挂着一枚自定义图标」的半态
+///   （与"非自定义类型挂着自定义名"是同一条约束的另一面，见上面那条函数注释）。
+/// - custom 档 ⇒ 认白名单内的键；**没给或给空串都落成默认那枚**（"没挑"不等于"挑了一个空图标"，
+///   界面需要一个确定的形状）；白名单外的值明确拒绝、不静默回落（同类型/状态/优先级那一族立场：
+///   静默回落会把"界面给出一个后端不认的值"变成一条悄悄存成默认图标的任务）。
+fn normalize_custom_icon(category: &str, raw: Option<&str>) -> Result<String, String> {
+    if category != "custom" {
+        return Ok(String::new());
+    }
+    let key = raw.unwrap_or("").trim().to_string();
+    if key.is_empty() {
+        return Ok(crate::protocol::TODO_CUSTOM_ICON_DEFAULT.to_string());
+    }
+    if !crate::protocol::todo_custom_icon_is_valid(&key) {
+        return Err("自定义类型图标不合法".to_string());
+    }
+    Ok(key)
+}
+
 /// 创建一条群任务（任意成员）。
 ///
 /// `todo_id` 用随机 id（`todo-<uuid>`）而不是"创建事件的 msg_id"：后续每一次改状态/改标题
@@ -156,6 +177,7 @@ pub async fn send_group_todo(
     images: Option<Vec<crate::protocol::TodoImage>>,
     category: Option<String>,
     custom_category: Option<String>,
+    custom_icon: Option<String>,
 ) -> Result<MessageRecord, String> {
     let s = state.inner();
     // 类型只在**给了值**时校验；没给就是缺省那一档（旧前端不传这一格也要能建任务）。
@@ -172,6 +194,8 @@ pub async fn send_group_todo(
     };
     // 自定义名只在 category="custom" 时保留，非自定义类型由服务端清空（见函数注释）。
     let custom_category = normalize_custom_category(&category, custom_category.as_deref())?;
+    // 图标同一条规矩的另一个面：只在 custom 档保留，非 custom 档清空（见 `normalize_custom_icon`）。
+    let custom_icon = normalize_custom_icon(&category, custom_icon.as_deref())?;
     let title = title.trim().to_string();
     if title.is_empty() {
         return Err("任务标题不能为空".to_string());
@@ -200,6 +224,7 @@ pub async fn send_group_todo(
         priority: crate::protocol::default_todo_priority(),
         category,
         custom_category,
+        custom_icon,
         deleted: false,
         description,
         images,
@@ -282,6 +307,9 @@ fn latest_todo_def(
     // 自定义类型名同理：旧版本对端不认识 custom 档，它重建的载荷不会带这一格，
     // 不沿用就会把已经输入过的自定义名抹成空串（自定义类型没有名字 = 下次保存被服务端拒）。
     let mut carry_custom_category: Option<String> = None;
+    // 图标是同一条沿用规矩的另一个面：老对端重建的载荷不带这一格，不沿用就会把用户挑过的
+    // 图标抹回默认那枚（名字那一格已经为这个坑写过注释 —— 两个面必须一起想）。
+    let mut carry_custom_icon: Option<String> = None;
     // 创建那一条说过的号：绝对坐标，压过任何一份更新里的号。DESC 扫到最后一刻 = 最旧那条创建。
     let mut created_number: Option<i64> = None;
     for row in rows.flatten() {
@@ -310,6 +338,13 @@ fn latest_todo_def(
                 !s.is_empty() && s.chars().count() <= crate::protocol::TODO_CUSTOM_CATEGORY_MAX_LEN
             })
             .map(str::to_string);
+        // "没带键"= 没说（可以沿用），"带了但值不在白名单"= 脏数据（不沿用）。
+        let stated_icon = v
+            .get("custom_icon")
+            .and_then(|x| x.as_str())
+            .map(str::trim)
+            .filter(|s| s.is_empty() || crate::protocol::todo_custom_icon_is_valid(s))
+            .map(str::to_string);
         let Ok(p) = serde_json::from_value::<crate::protocol::TodoPayload>(v) else {
             continue;
         };
@@ -331,6 +366,9 @@ fn latest_todo_def(
         if carry_custom_category.is_none() {
             carry_custom_category = stated_custom;
         }
+        if carry_custom_icon.is_none() {
+            carry_custom_icon = stated_icon;
+        }
         if kind == "todo" && stated_number.is_some() {
             created_number = stated_number;
         }
@@ -351,6 +389,18 @@ fn latest_todo_def(
     if p.custom_category.is_empty() && p.category == "custom" {
         if let Some(name) = carry_custom_category {
             p.custom_category = name;
+        }
+    }
+    // 图标同一档处理；补一步"还是空就落成默认那枚"：我们保存的 custom 行永远带一个白名单内的键，
+    // 所以到这里仍为空 ⇒ 这份载荷来自不认识图标的那一端，界面需要的是一个确定的形状而不是空白。
+    if p.category == "custom" {
+        if p.custom_icon.is_empty() {
+            if let Some(icon) = carry_custom_icon {
+                p.custom_icon = icon;
+            }
+        }
+        if p.custom_icon.is_empty() {
+            p.custom_icon = crate::protocol::TODO_CUSTOM_ICON_DEFAULT.to_string();
         }
     }
     Some(p)
@@ -429,6 +479,7 @@ struct TodoEdit<'a> {
     priority: &'a str,
     category: &'a str,
     custom_category: &'a str,
+    custom_icon: &'a str,
 }
 
 /// 本次请求是否**只动归档位**：其余字段与库里最新定义逐字相同，且归档值确实翻转了。
@@ -450,6 +501,7 @@ fn archive_only_change(def: &crate::protocol::TodoPayload, e: &TodoEdit<'_>) -> 
         && e.category == def.category
         // 自定义类型名同理：它是类型的一部分，成员归档时不许顺手改掉
         && e.custom_category == def.custom_category
+        && e.custom_icon == def.custom_icon
 }
 
 /// 本次请求是否**只是"还原"**：库里状态是终态（完成/做不了），请求把它退回「待办」，
@@ -474,6 +526,7 @@ fn reopen_only_change(def: &crate::protocol::TodoPayload, e: &TodoEdit<'_>) -> b
         && e.priority == def.priority
         && e.category == def.category
         && e.custom_category == def.custom_category
+        && e.custom_icon == def.custom_icon
 }
 
 /// 请求的指派人名单是否正好等于「原名单 + 末尾追加 actor」这一个改动。
@@ -509,6 +562,7 @@ fn claim_only_change(def: &crate::protocol::TodoPayload, actor: &str, e: &TodoEd
         && same_images(e.images, &def.images)
         // 类型名也是"内容"，成员窄档不许顺着认领改掉
         && e.custom_category == def.custom_category
+        && e.custom_icon == def.custom_icon
         && assignees_are_def_plus_actor(&def.assignees, e.assignees, actor)
 }
 
@@ -600,6 +654,7 @@ pub async fn update_group_todo(
     priority: Option<String>,
     category: Option<String>,
     custom_category: Option<String>,
+    custom_icon: Option<String>,
 ) -> Result<MessageRecord, String> {
     let s = state.inner();
     let title = title.trim().to_string();
@@ -672,6 +727,19 @@ pub async fn update_group_todo(
             }
         }
     };
+    // 图标与名字是**同一条沿用规矩的两个面**（漏掉任何一个面，就会出现"改了名字，图标被抹掉"
+    // 或反过来 —— 本仓那条"同一开关的另一个面在'已改'那行底下继续漏"说的就是这个形状）。
+    // `None` ⇒ 沿用库里的图标；`Some` 经统一规范化（非 custom 档清空、custom 档认白名单）。
+    let custom_icon = match custom_icon {
+        Some(ci) => normalize_custom_icon(&category, Some(ci.as_str()))?,
+        None => {
+            if category == def.category && category == "custom" {
+                def.custom_icon.clone()
+            } else {
+                normalize_custom_icon(&category, Some(def.custom_icon.as_str()))?
+            }
+        }
+    };
     let edits_assignees = assignees != def.assignees;
     let edits_structure = deleted || title != def.title;
     let edit = TodoEdit {
@@ -685,6 +753,7 @@ pub async fn update_group_todo(
         priority: &priority,
         category: &category,
         custom_category: &custom_category,
+        custom_icon: &custom_icon,
     };
     let lane = MemberLane {
         archive_only: archive_only_change(&def, &edit),
@@ -740,6 +809,7 @@ pub async fn update_group_todo(
         priority,
         category,
         custom_category,
+        custom_icon,
     };
     let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
     let (todo_id, status) = (payload.todo_id.clone(), payload.status.clone());

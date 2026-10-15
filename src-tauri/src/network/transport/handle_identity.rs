@@ -124,6 +124,13 @@ async fn handle_identity_and_friend_messages(state: &Arc<AppState>, peer_id: &st
             flush_pending_group_reads(state, &device_id).await;
             crate::commands::flush_pending_files(state, &device_id).await;
             crate::commands::flush_pending_group_files(state, &device_id).await;
+            // 内容拉取也走这同一个"链路确实活着"的机会。为什么必须加在这里：服务侧的队列是
+            // **有界**的（每对端 `FILE_SERVICE_QUEUE_CAP`），满了会显式拒绝 ⇒ 若只有"下次建链"
+            // 才重投，稳定链路上被拒的那条就永远不再被请求（本仓既有事实：`retry_incomplete_content`
+            // 此前只有 Hello 一个调用点）。它自带闸门：`should_retry_now` 要求状态 Incomplete 且
+            // 退避到点（2→60s），`on_failure` 到 `MAX_CONTENT_RETRIES` 封顶转 Rejected ⇒
+            // 有界、对端驱动，**不是**新造的后台定时器。
+            retry_incomplete_content(state, &device_id).await;
             // 心跳 = 链路确实活着。这一帧丢了的好友申请/同意回执在这里补发，
             // 不必等到链路再断一次、重新建链（真机：点了加好友要等几分钟才有反应）。
             flush_pending_friend_request(state, &device_id).await;
@@ -176,45 +183,19 @@ async fn handle_identity_and_friend_messages(state: &Arc<AppState>, peer_id: &st
             if to != state.device_id {
                 return;
             }
-            // 他已经是我的好友 ⇒ 直接同意（别插 pending，见 auto_accept_if_already_friend）
-            if auto_accept_if_already_friend(state, &from).await {
-                return;
-            }
-            let req = PendingRequest {
-                from: from.clone(),
-                from_nickname: from_nickname.clone(),
-                from_avatar: from_avatar.clone(),
-                ts,
-            };
-            state
-                .pending_requests
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .insert(from.clone(), req.clone());
-            let _ = state.app.emit("friend-request", &req);
-            let mut extra = std::collections::HashMap::new();
-            extra.insert("type".to_string(), "friend_request".to_string());
-            // macOS 点击捕获必须带 action 按钮（见 crate::notifications）；
-            // 这条通知不经前端，文案与标题同为固定中文。
-            extra.insert("action_label".to_string(), "查看".to_string());
-            // 好友申请是**不经前端**的通知：必须走后端开关 + 错误可见的统一入口。
-            // 点击（Windows）后唤起窗口并跳到「新的朋友」；移动端点击由插件送回前端。
-            let click_app = state.app.clone();
-            let _ = crate::notifications::show_click_if_enabled(
+            // 登记、事件、留痕与系统通知都在 `apply_friend_request` 那一个家里做
+            // （跨跳那条走同一个家）—— 通知由「本机是否第一次握着这条申请」门控。
+            apply_friend_request(
                 state,
-                "好友申请",
-                &format!("{from_nickname} 请求添加你为好友"),
-                extra,
-                false,
-                move || {
-                    crate::notifications::on_notification_clicked(
-                        &click_app,
-                        "friend_request",
-                        None,
-                        None,
-                    )
+                PendingRequest {
+                    from,
+                    from_nickname,
+                    from_avatar,
+                    ts,
                 },
-            );
+                "收到好友申请",
+            )
+            .await;
         }
         Message::FriendAccept { from, to } => {
             if from != peer_id {

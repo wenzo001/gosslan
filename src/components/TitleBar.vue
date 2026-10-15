@@ -64,6 +64,8 @@ async function toggleMaximize() {
  */
 const focused = ref(true);
 let unlistenFocus: (() => void) | null = null;
+/** 窗口尺寸变化监听（刷新最大化字形），卸载时退订。 */
+let unlistenResize: (() => void) | null = null;
 
 /** macOS 绿灯的 Option-click → 全屏（HIG：缩放按钮按住 Option 进入/退出全屏）。 */
 const fullscreen = ref(false);
@@ -75,18 +77,58 @@ async function toggleFullscreen() {
   }
 }
 
+/** 主动同步一次全屏状态（挂载/尺寸变化时调；失败就保持 false）。 */
+async function refreshFullscreen() {
+  if (!props.showMaximize) return;
+  try {
+    fullscreen.value = await getCurrentWindow().isFullscreen();
+  } catch {
+    /* 非 Tauri 环境忽略 */
+  }
+}
+
 function onGreenClick(e: MouseEvent) {
   if (e.altKey) void toggleFullscreen();
   else void toggleMaximize();
 }
 
+/** 双击判定的时间窗：与系统默认 DoubleClickTime 同量级，取保守的 400ms。 */
+const CAPTION_DOUBLE_PRESS_MS = 400;
+/** 上一次 caption 按下 / 翻折缩放的时刻（`performance.now()`）。 */
+let lastCaptionPressAt = 0;
+let lastCaptionToggleAt = 0;
+
+/** 第二下按下时已经翻过一次 ⇒ 紧随其后的 `dblclick` 不许再翻。 */
+function captionJustToggledByPress() {
+  return performance.now() - lastCaptionToggleAt < CAPTION_DOUBLE_PRESS_MS;
+}
+
 /**
- * 双击标题栏 → 缩放（仅 macOS；Windows 由 tao 的拖拽区原生处理双击最大化）。
- * ⚠️ 系统偏好「双击标题栏的动作」在 WebView 里读不到，这里用系统默认的"缩放"。
- * 不可最大化的窗口（辅助窗口）直接不响应。
+ * 双击标题栏 → 缩放（**两个桌面平台同一条路**，能力判断交给后端）。
+ *
+ * ⚠️ 这一格原先是 `if (props.isMobile || !isMac || !props.showMaximize) return;`，注释写的理由是
+ * 「Windows 由 tao 的拖拽区原生处理双击最大化」—— **那个前提是假的**，三条证据一起指着它：
+ *  · `data-tauri-drag-region` 全仓只出现在下面那条拖拽注释里，模板从来没写过这个属性；
+ *  · tao 0.35.3 没有任何 `WM_NCLBUTTONDBLCLK` 处理，wry 0.55.1 的 Windows 侧也没有 drag-region 扩展；
+ *  · 本应用所有窗口都是 `decorations: false`（caption 由前端自绘），Windows 上根本没有系统标题栏。
+ * ⇒ 症状就是用户 2026-10-14 真机报的「Mac 双击能放大缩小，Windows 不行」。
+ *
+ * 现在两平台都走**与绿灯同一个出口** `toggleMaximize()` → 后端 `window_toggle_maximize`，
+ * 「这扇窗能不能最大化」仍由后端那份 `MAXIMIZABLE_WINDOWS` 白名单判（小窗口点了也是 no-op），
+ * 前端不拿平台当闸门 —— 与 `refreshMaximized` 那条"别把能力判断写回前端"的口径一致。
+ *
+ * ⚠️ 但**只接 `dblclick` 在 Windows 上可能根本不来**（这是同一格里没写完的第二半）：caption 的
+ * `mousedown` 会调 `startDragging()`，而 tao 在 Windows 上把它落成 `ReleaseCapture()` +
+ * `WM_NCLBUTTONDOWN/HTCAPTION` ⇒ 主线程进 Win32 的**模态移动循环**，那一次 `mouseup` 由系统消费掉，
+ * WebView 收不到 up 就合成不出 click，`dblclick` 也就永远不会派发（`detail` 同理不可信）。
+ * ⇒ 缩放另有一条**只按 `mousedown` 时间差判定**的通路（见 `onDragStart`），它不依赖 click 计数。
+ * 这条 `dblclick` 通路保留（macOS 今天就走它，行为不变），两者用 `lastCaptionToggleAt` 去重：
+ * **一次双击只翻一次**（翻两次＝放大又还原，界面上看就是"点了没反应"）。
  */
 function onTitlebarDblClick() {
-  if (props.isMobile || !isMac || !props.showMaximize) return;
+  if (props.isMobile || !props.showMaximize) return;
+  if (captionJustToggledByPress()) return;
+  lastCaptionToggleAt = performance.now();
   void toggleMaximize();
 }
 
@@ -99,10 +141,23 @@ function onTitlebarDblClick() {
  * macOS 上手动实现和原生等价，统一用这一套减少平台分叉。
  *
  * 按钮用 `data-no-drag-region` + `@mousedown.stop` 阻止冒泡到这里。
+ *
+ * ⚠️ **第二下不起拖拽**：双击的两下之间没有位移，本该判成"缩放"而不是"移动窗口"。这一条同时修掉
+ * 两个毛病 —— ① 缩放不依赖浏览器合成 `dblclick`（上面说了，Windows 上那个 up 会被 OS 吃掉）；
+ * ② 双击时窗口不再被第二下拖走一下（原生标题栏也不会）。判定只用 `mousedown` 的时刻差，
+ * 所以 click 计数/detail 是不是可信都无所谓。**不许在这里加平台分支**（这一格踩过那一次）。
  */
 function onDragStart(e: MouseEvent) {
   if (props.isMobile) return;
   if (e.button !== 0) return; // 只响应左键
+  const now = performance.now();
+  const secondPress = now - lastCaptionPressAt < CAPTION_DOUBLE_PRESS_MS;
+  lastCaptionPressAt = now;
+  if (secondPress && props.showMaximize) {
+    lastCaptionToggleAt = now;
+    void toggleMaximize();
+    return;
+  }
   try {
     void getCurrentWindow().startDragging();
   } catch {
@@ -128,6 +183,7 @@ function onKeydown(e: KeyboardEvent) {
 
 onMounted(() => {
   refreshMaximized();
+  refreshFullscreen();
   window.addEventListener("keydown", onKeydown);
   // 焦点跟踪：失败（非 Tauri 环境 / 权限）就保持"聚焦"外观，不影响任何功能。
   void (async () => {
@@ -141,11 +197,29 @@ onMounted(() => {
       /* 忽略：非 Tauri 环境（纯 vite dev） */
     }
   })();
+  // 最大化/全屏状态跟踪：尺寸与全屏变化时把按钮字形刷成"还原"。
+  //
+  // 只靠 onMounted 问一次是不够的——按钮是用户点的，点了就变，不监听就永远是初始字形
+  // （用户 2026-10-12：「点了最大化，图标没有变成还原的样子」）。
+  // 窗口尺寸变化（用户拖角、跨屏、进/出全屏）都会触发 onResized；全屏还有专属事件。
+  void (async () => {
+    try {
+      const w = getCurrentWindow();
+      unlistenResize = await w.onResized(() => {
+        void refreshMaximized();
+        void refreshFullscreen();
+      });
+    } catch {
+      /* 忽略：非 Tauri 环境 */
+    }
+  })();
 });
 onBeforeUnmount(() => {
   window.removeEventListener("keydown", onKeydown);
   unlistenFocus?.();
   unlistenFocus = null;
+  unlistenResize?.();
+  unlistenResize = null;
 });
 </script>
 

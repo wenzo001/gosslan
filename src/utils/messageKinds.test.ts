@@ -20,6 +20,8 @@ import {
 import {
   TODO_CATEGORIES,
   TODO_CATEGORY_DEFAULT,
+  TODO_CUSTOM_ICONS,
+  TODO_CUSTOM_ICON_DEFAULT,
   TODO_PRIORITIES,
   TODO_PRIORITY_DEFAULT,
   TODO_STATUSES,
@@ -133,6 +135,13 @@ function rustTableOf(src: string, name: string): string[] {
   return [...src.slice(at, end).matchAll(/"([a-z_]+)"/g)].map((m) => m[1]);
 }
 
+/** 取 `pub const NAME: &str = "x";` 里那个字面量。 */
+function rustStringOf(src: string, name: string): string {
+  const m = src.match(new RegExp(`pub const ${name}: &str = "([a-z_]+)"`));
+  assert.ok(m, `找不到 ${name} 的字面量 ⇒ 默认值这条判据失去落点`);
+  return m[1];
+}
+
 /** 取 `pub fn NAME() -> String { "x".to_string() }` 里那个字面量。 */
 function rustDefaultOf(src: string, fn: string): string {
   const m = src.match(new RegExp(`pub fn ${fn}\\(\\) -> String \\{\\s*"([a-z_]+)"\\.to_string\\(\\)`));
@@ -176,6 +185,26 @@ test("跨语言契约：优先级表与缺省值两侧一致", () => {
  * ⚠️ 缺省值必须一起钉：旧载荷没有 `category` 时两侧各回落一份 ⇒ 同一条任务在两个成员界面上
  * 一个显示「任务」角标、另一个显示空白。
  */
+/**
+ * 跨语言契约第四格：自定义类型的**图标键白名单**（用户 2026-10-14 要的那格）。
+ *
+ * 与类型表同一类风险：后端 `todo_custom_icon_is_valid` 按自己那份白名单拒收，
+ * 前端按自己那份画选择器 —— 两侧一飘，症状是"选了保存被拒"或"存进去了但对端画不出"。
+ * ⚠️ 默认值必须一起钉：旧对端不认识这一格时，两侧各回落一枚就是两种形状。
+ */
+test("跨语言契约：自定义图标白名单与默认值两侧一致", () => {
+  const rust = rustTableOf(protocolRs, "TODO_CUSTOM_ICONS");
+  assert.ok(rust.length >= 3, `解析出的图标键太少（${rust.length}），表格式可能变了`);
+  assert.deepEqual([...TODO_CUSTOM_ICONS].sort(), [...rust].sort(), "TS 与 Rust 的图标白名单必须同集合");
+  assert.deepEqual([...TODO_CUSTOM_ICONS], rust, "TS 与 Rust 的图标白名单必须同序（选择器顺序跟着它）");
+  assert.equal(
+    TODO_CUSTOM_ICON_DEFAULT,
+    rustStringOf(protocolRs, "TODO_CUSTOM_ICON_DEFAULT"),
+    "默认图标键必须同一个",
+  );
+  assert.ok(rust.includes(TODO_CUSTOM_ICON_DEFAULT), "默认键必须落在白名单内");
+});
+
 test("跨语言契约：任务类型表与缺省值两侧一致", () => {
   const rust = rustTableOf(protocolRs, "TODO_CATEGORIES");
   assert.ok(rust.length >= 3, `解析出的类型太少（${rust.length}），表格式可能变了`);

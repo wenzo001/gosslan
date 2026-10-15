@@ -174,6 +174,28 @@ fn decorate_aux_window(win: &tauri::WebviewWindow, app: &tauri::AppHandle) {
 /// 常驻 = 群任务 / 预览 / 外链，销毁 = 设置 / 日志（这两个每次都要读最新的环境与日志尾部）。
 /// 每扇的取舍理由写在各自的 `AUX_*_RESIDENT` 常量上，别在这里再数一遍（数一遍就会过时）。
 ///
+/// 打开（或聚焦）一个独立窗口：**单例 + 串行创建**。
+///
+/// 所有独立窗口都走这里，别在各自的命令里各写一遍 —— 单例与并发安全是"每个窗口都要有"的
+/// 性质，散着写就一定会漏（这正是用户 2026-09-12 报的"连点会出怪事"的来源）。
+///
+/// `geo` 是**按主窗口**算好的几何（见 [`aux_window_geometry`]）：创建时用它摆尺寸与位置，
+/// 已存在时用它把窗口重新摆回主窗口那块屏（见 [`show_existing_aux_window`]）。
+///
+/// ## 参数拆成 `build` + `placed` 两个闭包（2026-10-14，Windows 真机）
+///
+/// · `build` —— **在创建锁里**执行，且只许做一件事：把窗口建出来（`WebviewWindowBuilder::build()`）。
+/// · `placed` —— **在锁外**执行：decorate / 摆位 / 还原用户尺寸 / 重新居中。
+///
+/// 为什么要拆开（用户 2026-10-14 真机：Mac 往 Windows 传 3.x GB，收尾那一段
+/// 「点设置没窗、拖窗口没反应」）：`placed` 那几步要么问窗口自己的几何
+/// （`outer_size()` / `current_monitor()` / `monitor_from_point()` —— 全是**等主线程应答**的
+/// getter，见 `tauri-runtime-wry` 的 `getter!`），要么只是"入队即返回"的 setter。
+/// 它们原本混在 `build` 闭包里 ⇒ **带着不可重入的创建锁等主线程**；而大文件收尾的 GB 级
+/// `fsync` / 整文件对账正好把 async worker 与主线程的活排满 ⇒ 这个工作线程挂在锁上，
+/// 于是**四扇辅助窗一起点不开**，要等前面那单跑完才恢复。
+/// 拆开之后：锁的作用域只剩「再查一次在不在 + 建出来」，任何等主线程的调用都在锁外。
+///
 /// `reveal`：真的要打开（显示 + 抢焦点），还是**预热**（只把 WebView 与文档准备好，不显示）。
 /// 见 [`prewarm_aux_windows`]。
 ///
@@ -192,42 +214,63 @@ fn decorate_aux_window(win: &tauri::WebviewWindow, app: &tauri::AppHandle) {
 /// 工作线程发起则安全：`build()` 只是把创建**入队**到事件循环并立刻返回（`proxy.send_event`），
 /// 主线程不在任何 IPC 回调里 ⇒ 没有可重入的现场。macOS 需要的"AppKit 必须在主线程"由
 /// [`decorate_aux_window`] 单独投回主线程。
-///
-/// `reveal = false` 是**预热**用的：把这扇窗建好、文档加载好，但不显示也不抢焦点
-/// （用户 2026-09-24：「启动的时候后台异步把高频窗口的 WebView 开销开好，用的时候秒开」）。
-/// 建完之后真正的"打开"走的是 `show_existing_aux_window` 那条快路径 ⇒ 只剩摆位与 show。
 #[cfg(desktop)]
-fn ensure_aux_window<F>(
+#[allow(clippy::type_complexity)]
+fn ensure_aux_window<F, P>(
     app: &tauri::AppHandle,
     label: &str,
     geo: Option<AuxWindowGeometry>,
     resident: bool,
     reveal: bool,
     build: F,
+    placed: P,
 ) -> Result<(tauri::WebviewWindow, bool), String>
 where
     F: FnOnce() -> Result<tauri::WebviewWindow, tauri::Error>,
+    P: FnOnce(&tauri::WebviewWindow),
 {
     // 快路径：已经建过（包括"上次关掉只是隐藏了"、也包括"预热过还没用过"）⇒ 按需显示 + 聚焦。
+    // 这一条整个在锁外：里面的 `recenter_aux_window` 要问窗口自己的外框（等主线程的 getter）。
     if let Some(win) = show_existing_aux_window(app, label, geo, reveal) {
         return Ok((win, false));
     }
-    // 慢路径：同一时刻只允许一个创建者。等锁期间别人可能已经建好了 ⇒ 拿到锁后**再查一次**。
-    let _guard = AUX_WINDOW_CREATE_LOCK
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    if let Some(win) = show_existing_aux_window(app, label, geo, reveal) {
-        return Ok((win, false));
-    }
-    let win = build().map_err(|e| format!("创建 {label} 窗口失败: {e}"))?;
-    if resident {
-        install_hide_on_close(&win);
-    }
-    if reveal {
+    // 慢路径：**锁的作用域 = 「再查一次在不在」+「把窗口建出来」，仅此两件**
+    // （判据 `aux_window_create_lock_scope_never_waits_on_the_main_thread` 钉的就是这一格）。
+    let (win, created) = {
+        let _guard = AUX_WINDOW_CREATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // 等锁期间别人可能已经建好了 ⇒ 拿到锁后再查一次。`get_webview_window` 只读管理器里
+        // 那张表（不是 runtime 的 getter）⇒ 不会把"等主线程"带回锁的作用域。
+        match app.get_webview_window(label) {
+            Some(existing) => (existing, false),
+            None => match build() {
+                Ok(w) => (w, true),
+                Err(e) => return Err(format!("创建 {label} 窗口失败: {e}")),
+            },
+        }
+    };
+    // ↓ 从这里开始**已经没有锁**：下面每一步都可以安全地等主线程应答。
+    if created {
+        // 新建：摆位与 decorate 由调用方那段闭包做（锁外），再决定显不显示。
+        placed(&win);
+        if resident {
+            install_hide_on_close(&win);
+        }
+        if reveal {
+            let _ = win.show();
+            let _ = win.set_focus();
+        }
+    } else if reveal {
+        // 竞态：这扇窗是别人刚建好的 ⇒ 摆位归那一个创建者（它的 `placed`/显示还在后面）。
+        // 这里刻意**不做任何要等主线程的摆位**（原先那条二次检查走 `show_existing_aux_window`
+        // 会 `recenter` ⇒ 正是"带着创建锁等主线程"的形状），只补一次纯 setter 的唤起：
+        // 万一对方那一路没显示（比如它被更早的异常打断），用户这次点击仍然有反应。
+        let _ = win.unminimize();
         let _ = win.show();
         let _ = win.set_focus();
     }
-    Ok((win, true))
+    Ok((win, created))
 }
 
 /// 独立窗口衬在主窗口里的留边（**逻辑**像素）：子窗口与主窗口边缘至少隔开这么多。
@@ -530,6 +573,7 @@ pub fn open_log_window(
     let title = aux_window_title(&state, "运行日志", "Runtime Logs", None);
     // 克隆一份给闭包：`ensure_aux_window` 同时借用 `app` 做存在性检查，
     // 闭包再 move 走同一个 handle 会借不过（且闭包必须 `'static` 才能交给 Tauri 创建）。
+    let placed_app = app.clone(); // decorate 那几步在锁外跑 ⇒ 单独一个 handle（AppHandle 是廉价克隆）
     let build_app = app.clone();
     // 尺寸与位置按主窗口算（见 aux_window_geometry 的说明）；窗口是**关闭即销毁**的，
     // 每次打开都新建 ⇒ 每次都按主窗口重新居中（不存在"用户摆好的窗口"）。
@@ -541,7 +585,7 @@ pub fn open_log_window(
         AUX_WINDOWS_RESIDENT,
         true, // reveal：真的要把这扇窗显示出来（不是预热）
         move || {
-            let win = WebviewWindowBuilder::new(
+            WebviewWindowBuilder::new(
                 &build_app,
                 crate::WINDOW_LOGS,
                 WebviewUrl::App("logs.html".into()),
@@ -567,12 +611,15 @@ pub fn open_log_window(
             .maximizable(false)
             .minimizable(true)
             .closable(true)
-            .build()?;
-            decorate_aux_window(&win, &build_app);
+            .build()
+        },
+        // ↓ 这段是 `placed`：**创建锁外**执行。decorate / 摆位要么问窗口几何（等主线程应答的
+        // getter），要么只是入队即返回的 setter —— 留在锁里就是"带着不可重入的锁等主线程"。
+        move |win| {
+            decorate_aux_window(win, &placed_app);
             if let Some(g) = geo {
-                apply_aux_geometry(&win, g);
+                apply_aux_geometry(win, g);
             }
-            Ok(win)
         },
     )
     .map(|_| ())
@@ -601,6 +648,7 @@ pub fn open_settings_window(
     use tauri::{WebviewUrl, WebviewWindowBuilder};
     let bg = aux_window_background(&state);
     let title = aux_window_title(&state, "设置", "Settings", None); // 同 open_log_window：文档加载后由前端接管
+    let placed_app = app.clone(); // decorate 那几步在锁外跑 ⇒ 单独一个 handle（AppHandle 是廉价克隆）
     let build_app = app.clone(); // 同 open_log_window：闭包要 `'static`，不能再借 `app`
                                  // 尺寸与位置按主窗口算，理由见 aux_window_geometry。
     let geo = aux_window_geometry(&app, (780.0, 600.0), (560.0, 420.0));
@@ -611,7 +659,7 @@ pub fn open_settings_window(
         AUX_WINDOWS_RESIDENT,
         true, // reveal：真的要把这扇窗显示出来（不是预热）
         move || {
-            let win = WebviewWindowBuilder::new(
+            WebviewWindowBuilder::new(
                 &build_app,
                 crate::WINDOW_SETTINGS,
                 WebviewUrl::App("settings.html".into()),
@@ -629,12 +677,15 @@ pub fn open_settings_window(
             .maximizable(false)
             .minimizable(true)
             .closable(true)
-            .build()?;
-            decorate_aux_window(&win, &build_app);
+            .build()
+        },
+        // ↓ 这段是 `placed`：**创建锁外**执行。decorate / 摆位要么问窗口几何（等主线程应答的
+        // getter），要么只是入队即返回的 setter —— 留在锁里就是"带着不可重入的锁等主线程"。
+        move |win| {
+            decorate_aux_window(win, &placed_app);
             if let Some(g) = geo {
-                apply_aux_geometry(&win, g);
+                apply_aux_geometry(win, g);
             }
-            Ok(win)
         },
     )
     .map(|_| ())
@@ -746,6 +797,7 @@ fn ensure_tasks_window(
     let bg = aux_window_background(state);
     let title = aux_window_title(state, "群任务", "Group Tasks", Some(group_name));
     let geo = aux_window_geometry(app, (780.0, 620.0), (360.0, 420.0));
+    let placed_app = app.clone(); // decorate 那几步在锁外跑 ⇒ 单独一个 handle（AppHandle 是廉价克隆）
     let build_app = app.clone();
     ensure_aux_window(
         app,
@@ -754,7 +806,7 @@ fn ensure_tasks_window(
         AUX_TASKS_RESIDENT,
         reveal,
         move || {
-            let win = WebviewWindowBuilder::new(
+            WebviewWindowBuilder::new(
                 &build_app,
                 crate::WINDOW_TASKS,
                 WebviewUrl::App("todos.html".into()),
@@ -773,16 +825,18 @@ fn ensure_tasks_window(
             .maximizable(false)
             .minimizable(true)
             .closable(true)
-            .build()?;
-            decorate_aux_window(&win, &build_app);
+            .build()
+        },
+        // ↓ `placed`（锁外）：这几步全要问窗口自己的外框/所在屏 ⇒ 绝不能挪进创建锁里。
+        move |win| {
+            decorate_aux_window(win, &placed_app);
             if let Some(g) = geo {
-                apply_aux_geometry(&win, g);
+                apply_aux_geometry(win, g);
                 // 先还原用户拉过的尺寸，再按**当时**的外框重算居中 —— 顺序反了就偏半个差值
                 // （用户 2026-09-21：「每次弹出来都不居中」）。只记尺寸、不记位置。
-                restore_aux_window_size(&win, &g);
-                recenter_aux_window(&win, &g);
+                restore_aux_window_size(win, &g);
+                recenter_aux_window(win, &g);
             }
-            Ok(win)
         },
     )
 }
@@ -1030,6 +1084,7 @@ fn ensure_preview_window(
     // 「主窗口 − 两侧各 24px」，所以**永不比主窗口大**（那条几何不变式见 logs_tests），
     // 主窗口本身小的时候跟着缩 —— 这正是想要的，不去破不变式。
     let geo = aux_window_geometry(app, (1120.0, 820.0), (480.0, 360.0));
+    let placed_app = app.clone(); // decorate 那几步在锁外跑 ⇒ 单独一个 handle（AppHandle 是廉价克隆）
     let build_app = app.clone();
     ensure_aux_window(
         app,
@@ -1038,7 +1093,7 @@ fn ensure_preview_window(
         AUX_PREVIEW_RESIDENT,
         reveal,
         move || {
-            let win = WebviewWindowBuilder::new(
+            WebviewWindowBuilder::new(
                 &build_app,
                 crate::WINDOW_PREVIEW,
                 WebviewUrl::App("preview.html".into()),
@@ -1054,14 +1109,16 @@ fn ensure_preview_window(
             .maximizable(false)
             .minimizable(true)
             .closable(true)
-            .build()?;
-            decorate_aux_window(&win, &build_app);
+            .build()
+        },
+        // ↓ `placed`（锁外），理由同群任务窗那处。
+        move |win| {
+            decorate_aux_window(win, &placed_app);
             if let Some(g) = geo {
-                apply_aux_geometry(&win, g);
-                restore_aux_window_size(&win, &g);
-                recenter_aux_window(&win, &g);
+                apply_aux_geometry(win, g);
+                restore_aux_window_size(win, &g);
+                recenter_aux_window(win, &g);
             }
-            Ok(win)
         },
     )
 }
@@ -1145,7 +1202,7 @@ pub fn open_link_window(
         AUX_LINK_RESIDENT,
         true, // reveal：真的要把这扇窗显示出来（不是预热）
         move || {
-            let win = WebviewWindowBuilder::new(
+            WebviewWindowBuilder::new(
                 &build_app,
                 crate::WINDOW_LINK,
                 WebviewUrl::External(build_url),
@@ -1158,11 +1215,14 @@ pub fn open_link_window(
             .min_inner_size(420.0, 320.0)
             .background_color(bg)
             .visible(false)
-            .build()?;
+            .build()
+        },
+        // ↓ `placed`（锁外）。外链窗保留系统标题栏 ⇒ 不 decorate（见 decorate_aux_window 的警告），
+        // 所以这一段不需要 handle，只需要 geo —— 也就没有任何"等主线程"的调用被留在创建锁里。
+        move |win| {
             if let Some(g) = geo {
-                apply_aux_geometry(&win, g);
+                apply_aux_geometry(win, g);
             }
-            Ok(win)
         },
     )?;
     // 复用已有窗口：导航到新网址并更新标题。新建时它已加载该网址，无需再 navigate。

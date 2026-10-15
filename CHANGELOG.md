@@ -29,6 +29,866 @@
 - `npm run build`（vue-tsc + vite）通过。
 - 未动 Rust / 协议 / DB：`cargo` 门禁不受影响。
 
+## [4.39.4] - 2026-10-14
+
+### 4.39.3 那笔热修的事后评审补的三处（两处是我自己造出来的坑）
+
+独立评审（`superpowers:requesting-code-review`）读完 `a28e37e..6514179` 的 diffs 报的四条 Important，
+逐条回到源码复核后收掉三条，第四条按范围只登记不改码：
+
+- **双击的第二下不再进 OS 的模态拖拽循环**（`TitleBar.vue`）。上一版只删了 `!isMac` 早退、
+  另起了 `@dblclick`，但 caption 的 `mousedown` 每次都调 `startDragging()`，而 tao 在 Windows
+  把它落成 `ReleaseCapture()` + `WM_NCLBUTTONDOWN/HTCAPTION` ⇒ 主线程进 Win32 模态移动循环，
+  那一次 `mouseup` 被系统消费掉，WebView 合成不出 click，`dblclick` 就可能**永远不来** ——
+  照那个形状交付，"Windows 双击最大化"这一条有变成死代码的风险（`data-tauri` 的
+  `e.detail` 同样不可信，所以判据只用 `mousedown` 的时刻差）。现在第二下直接翻缩放、不起拖拽；
+  `dblclick` 通路保留（macOS 今天就走它，结果不变），两条用时刻去重 ⇒ **一次双击只翻一次**
+  （翻两次＝放大又还原，界面上看就是"点了没反应"，与原本报的缺陷长得一模一样）。
+  判据：`标题栏按下：第二下必须翻缩放，不许再进 OS 拖拽循环`、`双击的两条缩放通路必须去重`。
+- **`.part` 那道跳过改成"后缀 + mtime 还新鲜"**（`outbox_sweep.rs`）。上一版按后缀跳过的 path
+  取自 `file_transfers.path`，而那一列只有**改名落盘之后**才写（`fail_taken_receive` 里原话
+  「不能把 .part 写进 path」，中继那份是 `<id>.relay.part` 也从不进这一列）⇒ 后缀真正命中的是
+  **用户本来就把文件叫做 `xxx.part`**（浏览器未完成的下载、分卷包都是这后缀）的成品文件，
+  于是那一行台账**每轮都被跳过、永远对不上账**，每次建链整批重投 —— 正是 B2 要杀的那个永动来源。
+  真正的在途另有 `file_receivers` 那份 `transfer_id` 兜着。用例
+  `inflight_part_files_are_skipped_but_a_part_named_deliverable_is_not_starved` 两个方向都钉（
+  新鲜 mtime ⇒ 跳；十分钟没动 ⇒ 必须放行）。
+- **锁作用域判据补上 `placed(` 这个标记**（`lib_window_tests.rs`）。原清单里漏了它，
+  把 `placed(&win)` 整段挪回创建锁里仍然判绿，而需求说的正是"锁内只做必要的创建逻辑"。
+
+**评审的第四条没改码**（按"不许自行扩展范围"）：群文件收尾 `group_file.rs` 的 `sync_all()` + rename
+仍是上一版修前的同一个形状（跑在 async 执行路径上）。单聊这条已解，群那条**症状会在传大群文件时复发**，
+已登记为后续任务，不夹进这次发布。
+
+**判据的反例能力是实测过的**，不是论证：五笔单点变异各红对应那一条
+（helper 退回只看后缀 → ⑦；循环退回只看后缀 → 清扫器形状判据；`placed` 挪回锁内 → 锁作用域判据；
+删掉第二下早退 → 第二下判据；去掉去重 → 去重判据），跑完逐笔按字节还原。
+⚠️ 其中第一版 `placed` 那笔变异**当时是绿的**，查下来是变异脚本自己的缺陷（删除用的模式是刚插入
+文本的子串，把移动后的那行也吃掉了）—— 改成先删后插才红在 `lib_window_tests.rs:842`。
+
+⚠️ **仍未验证（这次发布后也没有）**：Windows 真机。用户明确"不自己测了"，所以
+「双击标题栏放大/还原」「传大文件期间点设置/拖窗口」这两条只有源码级与单测级证据；
+原生窗口行为量不到。
+
+## [4.39.3] - 2026-10-14
+
+### Windows：大文件收尾期间窗口操作失灵（开窗/拖拽/双击）—— 运行时阻塞修复
+
+用户 2026-10-14 真机：从 Mac 往 Windows 传一个 3.x GB 的文件，Mac 端进度 100%、单勾灰，
+Windows 端"还没接完"，而**这段时间里点设置没窗、拖标题栏不动、双击标题栏不放大缩小**；
+另一台没在传的 Windows 拖拽是正常的。要求是「用户的当前操作优先级第一，异步的活一律不许挡住界面」。
+
+根因不是协议，是三处运行时归属，加一条与忙无关的功能缺失：
+
+- **收尾的 GB 级 `fsync` 钉住了 async worker**：`finish_receive` 里的 SHA finalize + `sync_all()`
+  + rename 原本直接在 `reader_loop` 的 tokio 任务里跑（那段代码自己的注释就写着
+  「600MB 的 fsync 是秒级慢活，而它跑在 reader_loop 里」）。所有 async 命令（含开窗那些
+  `#[tauri::command(async)]`）排在同一个 runtime 上 ⇒ worker 被占满就是"点了没窗"。
+  现在整体交给 `tokio::task::spawn_blocking`，错误出口与状态机一字未改。
+- **30s 清扫器的整文件哈希也在 async 路径上，而且只按条数封顶**：`content_file_matches` 每 tick
+  最多 8 条，但**条数界管不住字节**（8 个 GB 级候选 = 单轮几十 GB 读盘）。现在同样进
+  `spawn_blocking`，另加两道界：单轮**字节**预算 256 MiB（第一条恒放行，否则超大候选会被永久饿死，
+  那一行台账停在可恢复态 = B2 要治的那个"每次建链整批重投"），以及**跳过在途的那半截**
+  （`.part` 后缀，或 `file_receivers` 里仍有同一个 `transfer_id`）。30s tick 与 8 条上限不变，
+  outbox 语义一字未动。
+- **建窗那把不可重入锁的作用域太大**：`ensure_aux_window` 原先在持 `AUX_WINDOW_CREATE_LOCK`
+  期间做 decorate + 摆位，而摆位要问窗口自己的外框/所在屏（`tauri-runtime-wry` 的 `getter!`
+  是 `rx.recv()`，**真等主线程**）⇒ 主线程一忙就带着创建锁挂住，四扇辅助窗一起点不开。
+  现在闭包拆成 `build`（锁内，只有建窗）+ `placed`（锁外，摆位/decorate/显示），
+  锁内的存在性判定换成只读管理器表的 `get_webview_window`。竞态那一路不再重复摆位（归建它的那个创建者）。
+- **Windows 双击标题栏没有任何通路**（与忙无关）：`TitleBar.vue` 的双击处理器第一句就
+  `!isMac` return，注释声称"Windows 由 tao 的拖拽区原生处理"—— 而 `data-tauri-drag-region`
+  这个属性全仓只在注释里出现过、模板从来没有；tao 0.35.3 也没有 `WM_NCLBUTTONDBLCLK` 处理；
+  本应用所有窗口 `decorations:false`，Windows 上根本没有系统标题栏。现在两平台走与绿灯
+  同一个出口（`windowToggleMaximize`），"能不能最大化"仍由后端 `MAXIMIZABLE_WINDOWS` 白名单判。
+
+判据（4 条新 Rust + 2 条新前端，全部实测过反例）：
+`aux_window_create_lock_scope_never_waits_on_the_main_thread`（按花括号切出每处持锁块，块内出现
+`outer_size(` / `current_monitor(` / `recenter_aux_window(` 等即红）、
+`sweeper_whole_file_hash_runs_off_the_async_worker`、`receive_finalize_slow_work_happens_outside_the_receiver_lock`
+（新增"慢活必须在 spawn_blocking 里"那一格）、
+`reconcile_byte_budget_bounds_a_round_without_starving_oversize_files`、
+`inflight_part_paths_are_skipped_before_any_disk_read`、
+「标题栏双击不许按平台早退：Windows 也必须能最大化」、「双击与绿灯共用同一个缩放出口」。
+四笔单点变异（把 getter 塞回锁里 / 两处写回成就地跑 / 删掉字节预算判定）各自只红目标那一条；
+两笔前端变异（塞回 `!isMac`、绕过包装函数自己调命令）同样各红各的。
+Rust 基线随新用例前移：macos 845 → 849、windows 同步。
+
+⚠️ 仍未验证/仍未解决：**Windows 真机复验**（传一个大文件到收尾，看设置窗与拖拽是否全程可响应、
+双击是否缩放）—— 浏览器层与单测都量不到原生窗口行为；「主线程在传输期间被什么直接占住」这一环
+只有静态依赖源码（IPC 回调 = 主线程）与症状分叉（忙的那台失灵、不忙的那台正常）两条证据，
+没有真机栈读数。另外每片到达时同一片两次抢 `file_receivers` 锁、进度事件被 500ms 落库钳住
+这两格本轮未动。
+
+## [4.39.2] - 2026-10-14
+
+### 治理补齐：重复好友事件写成不变量、成员名字判据常驻化、领域图补登 P24–P33
+
+只动文档与测试，**应用码零改动**。三格缺口 + 三尾项：
+
+- **新增 `INV-P33`**（`docs/protocol-invariants.md`）：重复到达的好友申请 / 好友同意，同一进程内不许
+  重复弹系统通知。契约按实物写：申请那一支的幂等键 = `pending_requests.insert()` 的旧值
+  （`network/transport/handshake.rs:364`）经纯函数出口判定；同意那一支的键 = **持久**好友表
+  （`get_friend` 在 `add_friend` 之前取值）；`emit` 每次都发是有意为之、写进规则里说明它不算违反；
+  补发频率那一半归发送侧（30s 最小间隔）。
+  ⚠️ **同节里如实登记了一个反例**：申请只活在内存里、库里没有那张表 ⇒ **接收端重启后**若对方仍在
+  补发，同一条申请会再弹一次通知。所以这条的可信范围只到同一进程生命周期内，跨重启那一格留给负责人拍板
+  （要收它得改应用码：申请持久化，或按申请人记一条持久的"已通知过"痕迹）。本轮没动。
+- **成员名称判据常驻化**（`src/utils/memberName.test.ts` 新增两格）：「入口委托：nicknameOf 必须把判断
+  交给 `memberName.ts` 那一个家」与「消费侧不再兜裸 id：头像取色名与资料页都止步于那一个家」。
+  反例能力是实测的：八笔单点变异（插裸 id 短路 / 委托之后另起返回 / 委托整条改名 / 兜底措辞手打不走
+  i18n / 取色名再接一次裸 sender_id / 返回处重新判名字 / 后端入口插 `return id.to_string()` / 后端委托
+  降级成丢弃返回值）**各自只红目标那一条**，命中各自的断言消息，文件逐字节还原。
+  ⚠️ 这些判的是**源码形状与纯函数结果**——全仓没有任何测试构造过 `AppState` 或 pinia store，
+  所以**没有**入口级端到端覆盖，界面观感仍待真机复验。
+- **迁移台账补第 12 行**（`docs/migration-ledger.md`）：成员显示名从"三个家"收成"一门语言一份纯函数 +
+  入口只取数"，串上 `afd2dcd` / `fffc794` / `9539c2c` 与判据实物。同一行里记下**没收口的那一格的根因**：
+  `friends.nickname` 全仓只有一个 SQL 写家且是覆盖式（`db/friends.rs:12`），两个调用点喂进去的都是**远端来源**
+  的名字（一处是对端自报的昵称，一处是"同意那一刻解析到的那份"——可能是自报、申请里带的，也可能是
+  「未知成员 abcd」），而没有任何面向用户的"改好友备注"命令 ⇒ 纯函数注释里那句"好友备注（我起的，最稳）"
+  与数据面不符，"备注优先"挡不住对方改名（静态判据，未做真机读数）。
+- **INV-P32 补 Required Test Matrix 四行**（正向一臂 / 反向三臂 / 已知边界一行），并把那条规则 3 的
+  判据强度**改口成它真实钉的东西**：今天只要求"注册处的 `cfg` 字面量是三家桌面"+"`Cargo.toml` 里有这条依赖"，
+  **不**比对两边平台清单是否同构 ⇒ 只改宽依赖那一节不会红，一致性今天靠注释 + 移动端编译门禁。
+- **`docs/domains.data.mjs` 补登 INV-P24…P33**（此前这份名单停在 P23）：十条逐个按"本节正文或其钩子点名的
+  实现/判据落在本域 `paths` 上"登记，并在注释里点名实物；`friendship`（`paths` 是空的）那条明确写出它的
+  实现体跨 transport / platform / persistence 三域。
+  ✅ `docs/ARCHITECTURE-MAP.html` 里那份 `DOMAINS` 快照的 `inv` 数组**已同步**（图上同样停在 P23 ⇒ 与真源不一致，
+  按最小修复处理：只改七个领域各自的 `inv` 数组，逐域逐序与 `domains.data.mjs` 现算相等；图的其他快照字段
+  与页头 HEAD/版本标记**没重取**，也没那个必要 —— HEAD 仍是 `247ed8c`）。改完 `node --check` 那段内联 JS 退 0。
+
+## [4.39.2] - 2026-10-14
+
+### 加好友不再连弹好几条；第二次启动不再多出一个完整程序
+
+用户 2026-10-14：「正常聊天时，群内加好友会弹出很多个；点了一下那个弹窗，又弹出另一个聊天主框，
+等于同时启动了两个程序；连续多条加好友的弹窗也有问题」。这是**两个根因**，都在后端。
+
+**根因一：接收端没有「这条申请我是不是已经握着了」的判据。** 好友申请没有回执，发送端在
+每次建链补全**和每轮心跳**（`dial.rs` 的 `HEARTBEAT_INTERVAL_SECS = 5`）都会补发一次，而每份补发
+必须是**新 `message_id`** 的信封（复用旧 id 会被对端两层去重直接丢弃，那正是"丢了没人知道"的前提）⇒
+接收端 mesh 去重与 `GossipEngine::is_new` **结构上看不见重复**。而 `handle_identity.rs` 的直连分支与
+`gossip.rs` 的跨跳分支各自把 `pending_requests.insert(..)` 的返回值丢掉 ⇒ 每 5 秒算一次"新申请"、
+各 emit 一次事件、各弹一条系统通知。这正是 2026-09-28 给 `FriendAccept` 修过的**同一个形状**
+（那条的注释原话：判据只在一条路径上修就会"同一件事两种行为"），申请这一条是没修的双胞胎；
+且 `pending_out_requests` 当时是 `HashSet`，结构上就没法像 `pending_out_accepts` 那样限频。
+
+- 两条路径收成一个家 `apply_friend_request`（登记 → 事件 → 留痕 → 通知都在这一处），
+  通知由新的纯函数判据 `friend_request_arrival_decision(首次)` 门控：**事件照发**（前端按 `from`
+  幂等替换，不会堆多条），**通知只在第一次**；重复到达留一行日志。
+- 发送端限频：`pending_out_requests` 改成 `(首次登记时刻, 上次补发时刻)`，补发前走纯函数
+  `friend_request_flush_decision` —— **只设 30s 最小间隔，不设次数上限也不设放弃窗口**
+  （申请等的是"对方做人"，加上限等于偷偷废掉「对方离线时暂存、上线后自动补发」那条承诺）。
+  两半都要：只做接收端，BLE 仍会被每轮心跳刷满。
+- ⚠️ 与同文件里公钥那条 `peers 优先`、以及 `friend_accept_flush_decision` 的"3 次 / 2 分钟窗口"
+  都不是一件事，注释里写明不许合并。
+
+**根因二：全仓没有任何单实例守卫。** 一个进程内**造不出**第二个聊天主框 —— `main` 只来自
+`tauri.conf.json` 那一份声明，`WebviewWindowBuilder` 只有 `commands/logs.rs` 五处辅助窗在用，
+前端 0 处 `new WebviewWindow` ⇒ 看到两扇主框只能是**两个进程**：各自一份主窗、托盘图标、
+数据库句柄和 mesh 身份，同一条好友申请被两个进程各弹一次（这也放大了根因一）。
+现在装上 `tauri-plugin-single_instance`：第二次启动不建新窗，改为把已有主窗叫到前台。
+出口只认开发/测试的多开变量（`GOSSLAN_INSTANCE` / `GOSSLAN_AUTOSTART=1`）—— 双实例 E2E 是本仓
+唯一能证跨进程行为的一层，守卫不许把它关掉；依赖与注册处的 `cfg` 都限死在 mac/windows/linux 三家
+（上游不支持 android/ios，装上移动端编译失败），并且有一条判据钉住两边一致。
+
+判据（新增 5 条 + 2 条按新形状改写，全部变异实测）：`friend_request_arrival_notifies_only_the_first_time`
+（首次/非首次成对）、`pending_friend_request_reflush_is_spaced_not_per_heartbeat`（5 秒内不发 /
+首次机会立刻发 / 一天后仍发，钉住"不设上限"这条与 accept 的差别）、
+`every_friend_request_path_notifies_only_on_first_sighting`（两条路径都走进那个家 + 事件与通知各只一处发起点 +
+**门控输入必须是 `prior.is_none()`**）、`friend_request_survives_a_dropped_link` 新增三格（补发必须调那个判定、
+Nothing 必须立刻返回、成功必须记下本次时刻、间隔常量 30s 不许改成 0）、
+`second_launch_focuses_the_running_app_instead_of_duplicating_it` + `second_instance_exit_is_only_the_dev_multi_open`
+（形状 + 真值表两条一起：形状管得住"注册处走了函数"，真值表管得住"函数被改宽成恒放行"）。
+实测红面：兜底判定硬编码 / 判反 / 少一条路径 / 不记补发时刻 / 间隔改成 0 / 出口恒放行 /
+第二次不叫已有主窗 / 无条件注册 八种各红对应那一条。
+**两处顺带修掉的量具缺陷**：`friend_request_survives_a_dropped_link` 原先用 `&src[i..i+1200]` 定长**字节**窗口
+取函数体，中文注释下边界会落在码点中间（本次实测 `not a char boundary` 直接 panic），改用
+`rust_fn_body` 按花括号配对切；`crate::notifications::show` 的点数判据从 3 收到 2（两条申请路径合并的结果），
+并把"为什么这里可以更小"写进消息 —— 漏一条路径由那条"两条都走进家"的判据负责，收窄不放过缺陷。
+
+验证：`cargo test --features bluetooth --lib` = 845 passed / 0 failed（840→845，基线 `--update` +
+`--sync-baselines`，现读 macos 845+3 / windows 833+15 差额均有源码门控背书）、`cargo fmt --all` 与
+`cargo clippy --features bluetooth --lib -- -D warnings` 退 0、`npm test` = 985 passed / 0 failed（未动前端，
+`onFriendRequest` 本来就按 `from` 幂等替换，界面不会堆条目）、`node scripts/check-doc-numbers.mjs` 与
+`node scripts/check-test-manifest.mjs` 通过。
+
+### 同一次修复的收尾（同一版内）：注入锚点跟着搬家、护栏加三条、单实例写进不变量
+
+- **CI 第一次跑红了**（`前端测试 / 清单 / 构建` 第 10 步「护栏注入锚点静态核对」0.8s 就退）：
+  我改源文件的同时改坏了两处注入锚点 —— `transport.rs` 那条还指着
+  `if auto_accept_if_already_friend(state, &from).await {`（已被搬进家、变量名变成 `req.from`），
+  `commands.rs` 那条还指着旧的 `.insert(peer_id.clone());`（现在是 `entry(..).or_insert((now, 0))`）。
+  **这正是那条静态核对存在的意义**：锚点失效时注入注不上去，守卫会静默空转，
+  而它守的恰恰是这次新加的判据。两处锚点都**从当前源码里现取**再写回（不凭记忆抄），
+  并逐条跑过 `verify-guards --only` 确认"改坏即 FAIL、恢复即 PASS"。
+- 三条新护栏 Case（231 → **234 条**，`docs/ARCHITECTURE-MAP.html` 里那个手写数跟着改）：
+  通知门控的输入被硬编码、补发间隔常量被改成 0、注册处被绕过出口判定无条件注册 ——
+  三种都是我今天手工变异验证过的形状，落成常驻用例，别人改回去会当场红。
+- 用户随后把这条说成了产品规则（**正常使用只许一个实例；点 Windows 通知只回显已开的那个；
+  测试时才允许多开**）⇒ 写进 `docs/protocol-invariants.md` 的 **INV-P32**，钩子两条 Rust 判据
+  + 一条 guard case（`check-invariant-hooks` 现算 32 条全部绑定）。顺手修掉 README 里
+  「INV-P01~P29」这个已经漂了两格的手写上界 —— 改成只认 `check-invariant-hooks` 现算。
+- ⚠️ 如实记下没解决的一半：单实例插件按"同一个可执行文件/应用标识"分组，
+  **不同 bundle 之间不去重**（dev 构建与已安装的 .app 同时开着仍是两个进程）。
+  正常使用碰不到，真机验证与双实例调试时会碰到 —— 这一格留给负责人裁决，不当已解决写。
+
+
+## [4.39.1] - 2026-10-14
+
+### 后端那份名字判据：兜底不再返回设备标识（4.38.2 没覆盖到的另一半）
+
+用户 2026-10-14：「任务列表操作记录名字同步，有时候还会显示设备名，会变」。4.38.2 把**前端**那两份判据
+收成了一个家，但显示名其实有**三个**家 —— 后端 `member_notices.rs` 的 `resolve_nickname` 写着自己的顺序，
+而它的兜底是 `device_id` 原文。它有 20 个调用点，拿它构造的全是**落库或推给界面**的文案：群系统消息
+「X 加入了群聊 / 已被移出群聊 / 退出了群聊 / 成为新群主」、受众预告里"任务"那一格、错误串「X 不是群成员」、
+会话摘要与文件到达通知。**所以界面里出现设备标识的那一半根本不在前端这条路上** —— 而系统消息是落库的，
+对方后来改名也修不回历史里那一条。
+
+- 顺序改成 **自己 → 好友备注 → 在线自报 → 请求里带的名字 → 「未知成员 + id 后四位」**，与前端逐格一致。
+  旧顺序把「对方自报的昵称」放在「我起的备注」之前 ⇒ 同一屏上气泡写备注、系统消息写自报名（=「会变」）。
+  ⚠️ 别把它和同文件里那条**公钥**的"peers 优先"混成一件事：公钥要的是最新那一份，名字要的是我认的那一份，
+  两个方向本来相反（`pick_member_x25519_prefers_peers_then_friends` 钉的是前者）。
+- 兜底不再返回裸 id：新增 `unknown_member_label`，中英两份与 i18n `common.unknownMember` 逐字一致。
+- 三个来源一律先 `trim()` 再判空 ⇒ 顺带修掉旧代码里「请求名 / 备注是空串就原样返回」那一格（「」加入了群聊）。
+- 判据抽成纯函数 `pick_member_display_name`（与同文件 `member_removed_action` 同一手法：把"容易漏一支"的判断
+  做成可单测的纯函数），入口 `resolve_nickname` 只取数，并以该调用作为**函数体的返回表达式**。
+
+判据（新增 6 条，每条都做了变异实测）：Rust 五条 —— 备注优先与"没有备注才轮到自报"成对、永不裸 id、
+空白来源算「没有」（配一条只把备注换成真名字的反证）、自己那一支中英两份 + 空 id 返回空串、
+尾巴位数与非 ASCII 不许 panic；`memberName.test.ts` 加一格跨语言契约（位数同值、中英措辞逐字对 i18n、
+入口必须以纯函数调用为返回表达式）。实测红面：兜底改回 `id.to_string()` 只红 Rust 那两条；备注与自报调换
+只红"备注优先"那一条；位数 4→5 / 中文措辞改掉 / 入口插一条早退 `return id.to_string()` / 委托降级成
+`let _ = 调用; id.to_string()` 四种都红跨语言那一格 —— 静息态先跑一次确认判据本身不空转。
+其中「委托降级」那一种最初测出来是**假绿**（只判"调用点还在"证明不了返回的是它），补了"必须是末尾表达式"
+这条才咬住；那条注释留在测试里，免得下一个读者把这格放宽回包含性判断。
+
+验证：`cargo test --features bluetooth --lib` = 840 passed / 0 failed（835→840，基线已 `--update` +
+`--sync-baselines`，现读 macos 840+3 / windows 828+15 差额均有源码门控背书）、`cargo fmt --all` 与
+`cargo clippy --features bluetooth --lib -- -D warnings` 退 0（clippy 把 `for + if let` 判成
+`unnecessary_if_let`，改成 `.into_iter().flatten().find(...)` 之后复跑全套）、`npm test` = 985 passed / 0 failed、
+`npx vue-tsc --noEmit` 退 0。
+
+## [4.39.0] - 2026-10-14
+
+### 自定义任务类型现在能挑图标（名字之外的那一半）
+
+用户 2026-10-14：「任务类型自定义是可以自己输入，自定义类型名称，图标」。名字在 4.36.0 就落了
+（`custom_category` + 服务端 `normalize_custom_category`），**图标一直没落** ——
+看板行首与胶囊那枚对 custom 档恒画通用「标签」（`CATEGORY_ICON.custom = Tag`，注释写的是
+"自定义类型没有专属语义"），也就是把"没有专属语义"当成了"不需要专属形状"。
+
+- 线上加 `TodoPayload.custom_icon`，值是**白名单键名**（`TODO_CUSTOM_ICONS` 十枚），不是 emoji、
+  也不是组件名：emoji 在 Windows/鸿蒙上可能落回方框，而组件名会把前端实现细节写进协议、
+  对端拿到一个它没有的组件只剩空白。`#[serde(default)]` ⇒ 旧对端发的载荷读出来是空串，
+  两端都画默认那枚（`TODO_CUSTOM_ICON_DEFAULT = "tag"`），混合版本是常态而不是异常。
+- 服务端两处规范化与"名字"同一口径：**非 custom 档一律清空**（不留"普通任务挂一枚自定义图标"的半态）、
+  custom 档只认白名单、表外值明确拒收不静默回落（和"类型/状态/优先级"那一族同一立场）。
+- **老对端不认识这一格时的沿用**（carry）与自定义名同一条规矩：两端各一份 ——
+  Rust `latest_todo_def` 与前端 `carryAbsentTodoFields`，两边一起改，判"没说"的口径都是
+  "键不存在 **或** 值本端读不出合法值"。少改一边就是"对方改一次状态，我挑的图标被抹回默认"。
+- 成员窄档（只归档 / 只还原 / 只认领）三条判定各补一个 `custom_icon` 比较：漏一条，
+  "改图标顺带归档"就能顺着窄档口子被非创建者做成（这条是判权面，不是显示面）。
+- 选择器只有一份：`TodoIconPicker.vue`，看板草稿与详情弹窗两个入口共用。
+  两个编辑器各写一排按钮就会开始不一致（同一判据两个家）。每枚带 `tap-safe` + `aria-pressed` +
+  中英两份可读名称。
+
+判据（新增 4 条，都是双向/带对照的）：`todoCustomIcons.test.ts` 三条（映射与白名单**双向**一致、
+默认键在表内、每枚都有中英两份文案键 —— 少一枚就是屏幕上有个无名图标）；
+`messageKinds.test.ts` 加一格跨语言对账（TS 与 Rust 的白名单同序同值 + 默认值同一个）；
+Rust `custom_icon_is_normalized` 钉三个容易写反的方向（表外值必须拒、没给落默认、非 custom 清空且**不**落默认）。
+另外两条既有守卫当场把我拦住并各修掉一处：`夹具载荷的键必须盖住 TodoPayload 全部字段`
+（`scripts/axTodoFixture.mjs` 漏了 `custom_icon`）与 `小尺寸可交互元素必须带 tap-safe`
+（选择器按钮 h-7 没加）。这正是它们存在的意义：新字段接一半，界面上就是"选了没反应"。
+
+⚠️ 有意没做的一格：**图标变化不写进操作记录文案**（名字变化写）。那一行给的是"这条任务变成了什么"，
+十枚图标各写一句会让流水变成图标说明书；要加得先想清楚呈现形态，那是产品决定。
+
+档位：新增能力、向后兼容 ⇒ `Version-Bump: minor`（4.38.2 → 4.39.0，五处版本清单同提交）。
+改动落在 `protocol.rs`（敏感文件）⇒ 标题带 `[impact]`。
+验证：`cargo test --features bluetooth --lib` = 835 passed / 0 failed、`cargo fmt --all --check` 与
+`cargo clippy -- -D warnings` 退 0、`npm test` = 984 passed / 0 failed、`npx vue-tsc --noEmit` 退 0、
+`node scripts/check-test-manifest.mjs` 通过（新测试文件已登记、基线已 `--sync-baselines`）。
+
+
+
+## [4.38.2] - 2026-10-14
+
+### 成员名字：不再退化成设备标识，也不再"每次看都不一样"
+
+用户 2026-10-14：「任务列表操作记录名字同步，有时候还会显示设备知名，会变」。查出两条独立的根因：
+
+- **「显示设备名」**：`chat.nicknameOf()` 查不到这个人时**返回裸 `device_id`**（界面上就是一串
+  `gosslan-…`），而群任务面板/详情弹窗/成员面板走的是另一份 `useMemberProfile`。
+  两份的顺序一样、**兜底不一样**（那边返回 id、这边对自己返回「我」）⇒ 同一个人同一屏可以两个写法。
+- **「会变」**：群成员表只存 `device_id`（`group_members`），全库**没有 peers 表**，
+  在线节点的昵称只活在内存里（`chat.peers` 来自 `get_peers`）⇒ 非好友的群成员一离线就查无此名，
+  名字随"此刻能不能查到"来回跳。
+
+做法：
+
+- 判据抽成纯函数 `utils/memberName.ts`（自己 → 好友备注 → 在线自报 → 最后一次见到的名字 →
+  「未知成员 + id 后四位」，**永不返回裸 id**）。`nicknameOf` 与 `memberProfile` 都走它 ——
+  两个家收成一个家，`memberProfile` 现在只管头像与在线。
+- 新增本机名字缓存 `utils/memberNameCache.ts`（与 `announcementDismiss` 同一立场：只用于显示、
+  不参与任何信任判断、读失败退空表、写失败静默）。上限 240 条、见过来就重插、超了裁最老的。
+  **没有真变化时返回 `null` ⇒ 一次存储都不写**（`refreshPeers` 反复跑，直写就是每 333ms 落一次盘）。
+- store 里**三个** `peers.value` 整表赋值点全部接上记名，并有一条按形状数的覆盖面判据
+  （新增第四个写入点而漏接缓存时它会红，而不是等用户再看见一次"名字会变"）。
+- 顺手拆掉两个把裸 id 又接回去的调用点（消息行头像取色、表情回应条的 `|| id`）——
+  判据既然永不返回空，再接一次就是把第二条兜底写进第二个家。
+
+判据：`utils/memberName.test.ts` 12 条 + `utils/memberNameCache.test.ts` 10 条，成对交付
+（查得到/查不到、有备注/没备注、有昵称/没昵称、有快照/无快照各只换一个输入；
+覆盖面那条带阳性对照 —— 两个 0 也算相等是假绿）。验证：`npm test` = 980 passed / 0 failed、
+`npx vue-tsc --noEmit` 退 0、`node scripts/check-test-manifest.mjs` 通过（两份新测试文件已登记进 `test` 清单）。
+
+
+
+## [4.38.1] - 2026-10-14
+
+### Windows：开着不动过会儿自己就关了（4.38.0 的回归，已修）
+
+用户 2026-10-14：「win 最新版在打开情况下不动，有可能软件崩溃掉，过会自己就关了」—— 而且是**无声**的：
+运行日志里一个字都没有。
+
+- **根因**：4.38.0 修「每次建链整批重投」时加的内容台账对账（`transport/outbox_sweep.rs::content_file_matches`）
+  用**一次整读整份文件**再算 SHA-256，而它跑在**无人操作的 30 秒空闲 tick** 上（清扫器每 tick 最多取 N 条候选）。
+  一份几百 MB 的收件文件会让进程瞬间占用 ≈ 文件大小的内存；**分配失败在 Rust 里是 abort 不是 panic** ——
+  panic hook 不记、release 又开着 `panic = "abort"` 且 `strip = true`，所以表现就是"过会儿自己关了、日志干净"。
+- **修法**：改成 `File::open` + 定长缓冲（`FILE_CHUNK` = 256 KiB）循环 `read`/`update`，与本仓
+  `network/file/receive.rs`（续传前缀校验）和 `network/file/relay_push.rs`（逐片读盘）同一立场 ——
+  那两处早就为同一个形状修过一遍。摘要不符/读失败仍判"不可用"，交给下一 tick，不谎报 complete。
+- ⚠️ **为什么它当时全绿通过（这条比修复本身更重要）**：那两处老缺陷各配了一条**按文件锚定**的反证
+  （`guard_cases/file_transfer.py` 的「建发送记录前不得整读文件」、`transport_network.py` 的整读注入档），
+  所以在新分册里重新引入同一形状时，守卫根本看不见新文件 —— 门禁全绿、缺陷照发。
+  新增按**形状**扫全集的守卫 `tests::transport_src_never_whole_file_read`：读 `transport_src_for_guards()` 那份
+  生产码视图，任何一处出现整读盘字面量就红（阳性对照：视图里必须至少有一处流式读盘，否则是尺子读空了）。
+  反向对照实测：把整读塞回代码 ⇒ 恰好这一条 FAILED（命中 1 处），还原 ⇒ 绿。
+- 验证：`cargo test --features bluetooth --lib` = 834 passed / 0 failed；`cargo fmt --check` 与
+  `cargo clippy --features bluetooth -- -D warnings` 均退 0。
+
+### 任务弹窗里不再叠第二条滚动条
+
+用户 2026-10-14：「任务面板操作记录，不要在内置滚动条」。详情弹窗本来就整块在 `BaseModal` 的滚动区里，
+里面又各套了一条 `max-h-* + overflow-y-auto` ⇒ 两条滚动条叠着，滚轮落到哪条取决于鼠标停在哪。
+按形状数了调用点，**三处一起收**（只改他点名的那一条就是漏）：
+
+- `TodoDetailDialog.vue` 的「操作记录」列表（原 `max-h-44 overflow-y-auto`）；
+- `GroupTasksBoard.vue` 新建/编辑里「指派」那一格（原 `max-h-40 overflow-y-auto`）；
+- `GroupMemberPanel.vue`「选择好友」那一格（原 `max-h-40 overflow-y-auto`）。
+
+三处都改成随外层那一条滚。验证：`npx vue-tsc --noEmit` 退 0、`node scripts/check-ui-runtime.mjs --only=task` = 29/29 绿
+（含"每种张数卡片真实高度 ≤ 估算"那两条，去掉内嵌 cap 后估高口径没被改坏）。
+
+
+### 取证轮保留：失败轮那条"永远不删"补上了天数上限（仓库体积从 25 GB 收到 5.1 GB）
+
+用户 2026-10-14：「清除一下这个项目文件夹无用缓存，防止文件夹无限扩大」。现量下来两处会只涨不收：
+`src-tauri/target/debug` 18.5 GB（cargo 从不回收旧 hash 的那份，`cargo clean gc` 只管全局 registry 不管项目 target），
+以及双实例 E2E 的历史轮次目录 —— **保留规则原本只管"通过的轮最多留 30 个"，失败轮是一个都不删**，
+实测攒到 382 个目录 / 1.83 GB，而真正被在库文档点名的只有 22 个。
+
+- 删了 `src-tauri/target/debug`（删前现证两条：`git check-ignore` 命中 + `git ls-files` 对它 0 个跟踪文件）。
+  `target/release` **保留** —— E2E 与本地层跑的就是那份，重编一次 6m43s，删它省不了多少还直接拖慢下一轮。
+- 失败轮加第二条出口（负责人拍板按天数收）：**超过 N 天（默认 7）且没被在库文档点名**的失败轮才进删除名额。
+  四条立场一条没动：被文档点名的不删、`unknown`（没有 `summary.json` = 崩在半路）永不删、
+  引用名单拿不到 ⇒ 一个都不删、反向模式（`--round=X-lie`）⇒ 一趟都不删。上限走
+  `GOSSLAN_KEEP_RUNS` / `GOSSLAN_KEEP_RED_DAYS`，默认值只有 `retentionLimits()` 一处读。
+- 判据从 8 格加到 16 格（每格只换一个输入），并**逐格打了穿**：五组单点变异分别只红对应那一条
+  （其中"上限缺失"与"取不到年龄"两格第一版变异是空转 —— `30 > undefined` 本来就假，
+  要同时把比较那行改成 `?? 0` / `?? 999` 才打得穿 ⇒ 这两格真正锁的是"双重 fail-closed"）。
+  `--prune-selfcheck` 那条秒级入口顺手把"格数"改成判据自己数着印，不再抄写死的数字。
+- 新增 `--prune-only`：一次性清账与轮末收尾走**同一份** `pruneOldRuns`（顺手把 `classifyRun`/`dirBytes`/
+  删除循环都收进 `scripts/e2e/core.mjs` 一个家，原来驱动里那份与本条是同判据两处家）。
+  实测：反向对照（两个上限放到 9999）删 0 个；真跑删 285 个、释放 1568.6 MB，`test-results` 1.83 GB → 287 MB。
+  ⚠️ 一次写读数时把 `bytes/1048576` 标成了 GB（那是 MB），单位要在打印当场核对，别信标签。
+- 清完复核：仍在盘上且被文档点名的目录 = 22 个（与清前的引用普查同数）⇒ 没救走任何一份被引用的证据。
+  复跑：`ls -d test-results/run-* | wc -l`、`du -sh test-results`、`node scripts/e2e-multi-instance.mjs --prune-selfcheck`。
+
+
+## [4.38.0] - 2026-10-14
+
+### 桌面窗口：macOS 绿灯与双击标题栏终于有反应了
+
+用户 2026-10-12 实测：macOS 上点绿灯、双击主窗口标题栏**都完全没反应**，而全屏那颗是好的 —— 看着像权限被拒。
+
+- **真根因不是权限**：判据 `is_maximizable()` 在 macOS 无边框窗上**恒 false**（本次按 `Cargo.lock` 那一份
+  tao 0.35.3 源码逐行核过：`decorations:false` 建出的 styleMask 是 `Borderless|Resizable|Miniaturizable`，
+  没有 `Titled` 位 ⇒ AppKit 的 zoom button 不存在 ⇒ 读它的 `isEnabled()` 直接返回 false，
+  而 `set_maximizable(true)` 因为是"取到 button 才设置"也一并成了静默 no-op）。
+  **能力一直都在**：`set_maximized` 里没有任何可最大化判据，且缺 `Titled` 位时它走的是
+  `setFrame(visibleFrame)` 那条分支（原生 zoom 那条要求 `Resizable && Titled`），
+  `is_zoomed()` 同样退回"比对 frame 与 visibleFrame"⇒ 放大与还原都真做得成，还原后读数也会变回 false。
+  ⇒ 绿灯与双击标题栏共用同一个命令出口，所以**一处判据失真同时打死两个入口**。
+- 判据换成**我们自己写进 builder 的显式配置**：新增 `MAXIMIZABLE_WINDOWS` 白名单（当前只放主窗口），
+  与 `commands/logs.rs` 里那四处 `.maximizable(false)` 由新测试 `window_maximizable_matches_builder` 交叉核对
+  （改一边忘另一边会红）；同时补进 `is_maximized` / `is_fullscreen` 等**命令内部真的会调到的** core 权限。
+- 标题栏订阅 `onResized` 刷新最大化/全屏字形（原来只在挂载时问一次 ⇒ 点了按钮图标永远是初始样子），
+  并在卸载时退订。
+- 这两条新增的 Rust 用例纳入测试基线：`--update` 只补了本平台 ⇒ mac **809 → 811**，而 Windows 那份留空。
+  ⚠️ **我先前据此写下"跨平台少 2 条只报 ⚠ 不报红"，那句在一分钟内被这条判据自己证伪了** —— 快速层第 1 步
+  当场**报红**并给出出口（"这些用例在别的平台基线里存在、却没有一条 `target_os` 门控能解释"）。
+  按它点名的修法补跑 `node scripts/check-test-manifest.mjs --sync-baselines` ⇒ macos 811+3 / windows **799**+15，
+  两份基线都补齐，守卫转绿。教训形状：**"⚠ 的那条"与"红的那条"是同一工具的两条不同判据**，
+  看见一条的措辞就推断整件的严重度，等于拿一个出口去猜另一个出口。
+- ⚠️ 已知边界（tao 的行为，本机继承）：多显示器时这条 `setFrame` 用的是**主显**的 visibleFrame，
+  而 `is_zoomed()` 比的是**窗口所在屏** —— 在外接屏上放大可能出现图标不更新、再点一次仍放大。
+  这条只是登记，未处理。
+- ⚠️ 本轮修复**自己留下的一格**（读实现时现抓到，登记未改）：`window_toggle_maximize` 里
+  `let _ = window.maximize(); true` —— 系统真拒绝那次最大化时错误被吞掉，函数仍返回 `true`，
+  而前端把这个返回值直接赋给图标状态 ⇒ 极端情况下"图标说已最大化、窗其实没最大化"。
+  今天没有证据说这条路会被踩到（`maximize()` 在无边框窗上实测能成），所以**不在本轮改**：
+  改法是"动作后再问一次真实状态再返回"，那要顺带决定"问不到时算哪一档"，属窗口面独立一格。
+
+### 群任务卡片：点图片周围、点「查看更多」、卡片高度估算三处修完
+
+- **点缩略图会「预览 + 任务面板」一起开**：上一轮为了让"点图片周围那一圈也能展开列表"把
+  `@click.stop` 从图片带容器上摘了下来，但没人接手拦这次点击 ⇒ 冒泡进了卡片主体（它自己就是个
+  `role=button` 挂着开面板）。改由**缩略图自己**在可点那一支 `stopPropagation` ——
+  点图片只看图、点图片周围照常展开面板。这条正是运行时探针**已有**的判据先读出红抓到的
+  （`node scripts/check-ui-runtime.mjs --only=task`）。
+- **「查看更多」会把"直达这条任务"冲掉**：那颗按钮排在命中区①**之内**（底部「查看任务」在①之外），
+  不加 `.stop` 就会在 `open(todoId)` 之后再冒一个不带任务号的 `open-panel`。已补 `.stop`，
+  并把判据从"有 emit open"收紧为"只有 open、且 open-panel 零次"。
+- **卡片高度估算被写成"有无图"一刀切**：改成按可见上限算一整块之后，1 张图的卡白占两行、
+  5 张以上又漏掉「查看更多」那一行（前者是空洞、后者是虚拟列表遮挡 —— 两个方向都是缺陷）。
+  现在按**这一条自己的张数**算行数并计入那一行；探针加了"张数 / 图片带 / 查看更多 / 真实高度 / 估算"
+  的实测表，六种张数下 `估算 − 真实` 收敛成同一个常数。共享常量仍只有一个家（`utils/todos.ts`）。
+- 弹窗布局三条（用户同日实测）由运行时几何判据钉住：标题行不许被 flex 压扁、操作条必须在滚动区**之外**
+  且钉在卡片底部、正文左右净留白对称（右侧扣掉滚动条实占宽度再比 —— 经典滚动条与 macOS overlay
+  滚动条两种环境下都成立）。并各带一条**就地撤掉修复 ⇒ 读数必须变**的反面对照，防止判据空转。
+- 顺带修掉 4 处**探针自身的错判**（它们会把产品读成缺陷、或把缺陷读成绿）：数缩略图时数到的是卡片主体
+  （恒为 1）；靠"没有 svg 的按钮"认「查看更多」（那颗自带箭头 ⇒ 永远选不中，退化成点了别的按钮）；
+  两次估算共用同一个 `msg_id`（高度缓存键是 `fontSize|msg_id` ⇒ 第二次读到第一次的缓存，读出"有图==无图"）。
+
+### 单聊收不到消息：先补上能归因的那两行日志
+
+用户 2026-10-12 报「刚加的好友，能看到互相在线，但我发的群聊和单聊手机端都收不到」。核完代码的第一条结论是
+**这份日志当时无法证明任何事**：单聊走 gossip 信封这条路，而这条路**收到并解开之后一行日志都不打**
+（`群消息@输入` 那句被 `kind == Group` 挡着）⇒ "手机日志里没有"与"没收到"长得一模一样。
+
+- 补上单聊的正向到达留痕（记 id 与 kind，不记正文/昵称，与群聊那条同一口径），
+  以及**定向给本机却解不开**时的告警，并带上"本机是否存有对方密钥 / 与信封自报是否一致"两个布尔量。
+- 已核清的两条事实（都读了实现）：发送端那句 `try_send result=true` 只代表**进了本机发送队列**，
+  没有链路时那个分支还写死 `true`，随后状态就被写成 `sent` ⇒ 界面的"已发送"不等于对方收到；
+  单聊有 `ChatAck`（解开并落库才回），所以"到底送达没送达"本身是可查的。
+- 本轮另补一行**发送端**留痕：库里那把与在线自报的那把不一致时（本机取库里那把）记一条 warn。
+  没有它时"我发的他收不到"在发送端日志上完全看不见，而对端解不开又是不回送达确认的静默丢弃。
+
+**已核清的事实**（逐条读了实现，不是推测）：
+
+- 单聊到达**本来就不打日志** ⇒ "手机日志里没有"既不能证明收到、也不能证明没收到。这是本轮补日志的唯一理由。
+- 定向给本机却解不开的加密单聊信封：不落库、不通知界面、**也不回 ChatAck**（三处早退都静默）。
+- `try_send result=true` 只代表进了本机发送队列；没有链路时那个分支还写死 `true`，随后状态被写成 `sent`。
+  界面确实有"已送达"这一档（双勾）—— 但 `MessageReceipt.vue` 的注释断言"写出去≈对方收到、这状态一闪而过"，
+  而这条故障形态恰恰是**永远停在这一档**，所以那句前提在这里是不成立的（本轮只登记，未改文案）。
+- 好友公钥的取用在仓内有**两套顺序**：1:1 密封与直发解密是"库里那份优先"，
+  而界面安全码与群密钥分发是"在线那份优先"。⇒ 两份不一致时**"安全码对得上"不证明消息解得开**。
+- 库里那份"只填空、绝不覆盖"（唯一覆盖式写入要求用户显式确认），检测到变化时的动作是
+  **在聊天里插一条 ⚠️「身份密钥发生变化，已保留原密钥未替换」**，不是刷新。
+  顺带更正一处**与实现相反**的注释（它写着"会自动刷新、一个广播周期内收敛"）。
+
+**根因已定**（下面第 1 条被代码、他本机库、他两端日志三个来源分别对上；第 2、3 条是被证据降级/排除的历史候选，
+留着是因为它们记着"为什么不是密钥那条路"）。修法两刀都**未做**，等独立一轮。
+
+1. **现在的头号候选 = 内容服务在接收循环里等"自己那条链路"的应答（自死锁，不是慢）**
+   —— 本轮把先前那句"最坏 15 秒的队头阻塞"**升级**成"必定走满 15 秒"，因为读完两侧实现后
+   等待的对象正是被自己堵住的那条循环：接收循环**单帧串行**（`queue_policy.rs:204` 就地
+   `handle_message(...).await`），而 ContentRequest 那一臂（`handle_share.rs:65-83`）发的
+   `FileOffer` 之后 `timeout(15s, rx)`（`file/send.rs:204`）等的 `FileAccept`/`FileReject`
+   **要由同一条连接的 reader_loop 读回来** ⇒ 应答结构上读不到。
+   同文件的下载请求那一臂（`ShareFileRequest`，`:195`）却是 `tokio::spawn` 出去的 ⇒ 同一个问题两种写法。
+   群聊与单聊在直连时都是 `Message::Gossip` 帧，排在同一个循环后面（`transport.rs:1197-1199`），
+   **心跳/Hello 也在同一个 match**（`:1094`）⇒ 一次文件服务会让"消息进不来"和"我还活着也读不到"同时发生。
+   ➕ **他给的两端日志里自带一组对照，27 个样本零重叠**（逐 `tid` 把 `offer SENT` 与它**自己**的应答相减现算）：
+   手机侧用户在界面选的那 15 单（从命令/outbox 起，接收循环空闲）accept 等待 = **14 单 0 秒 + 1 单 1 秒**；
+   电脑侧自发的 5 单同样**全 0 秒**；而手机侧服务那 14 条内容重试的 7 单（从 handler 里起）
+   **7/7 全部超时，每单恰好 15.0 秒**（第 8 单落在日志截断之后，所以可见的是 7 不是 8）。
+   同一条链路、同一个对端、同一段发送代码，两种起点、相反结局 ⇒ "对端慢/网络差"这类解释被当场排除。
+   ➕ 两处让它**永不收敛**的账（都读了实现）：① 应答到达时 waiter 早被超时摘掉，而
+   `handle_file.rs:287-295` 的 FileReject 臂是 `if let Some(tx)` **没有 else** ⇒ 那帧被静默丢掉，
+   本机永远学不会"对方其实已经有"；② "要不要再拉一次"住在 `content_transfers`（按 **cid**：
+   `status IN ('queued','active','incomplete')`，`content/store.rs:156-167`），而"本机已收完"住在
+   `file_transfers`（按 **transfer_id**：`db::is_transfer_done`，`handle_file.rs:91-93`）——
+   AlreadyHave 那一支回完帧就 `return`（`:112-129`），两边谁也不回写对方 ⇒ 同一台机器上
+   "我有完整字节"和"这条还没收完"**同时成立**，每次建链再投 14 条（重试那份账自己也在
+   `transport.rs:962-983` 无条件 `record_failure`），直到封顶才停。
+   ★ **第②条已在用户本机库里读到实物**（10-13 只读打开 `gosslan.db`，`mode=ro`，未写）：
+   `content_transfers` 20 行里有 **14 行 `direction='receive' AND status='incomplete'`、`received` 全是 262144、
+   `path` 全 NULL**，而这 14 个 `transfer_id` 在 `file_transfers` 里**全是 `done`** ⇒ 两张表各执一词被直接观察到。
+   其中 2 行 `received` 已**等于** `size` 却仍未收口 ⇒ 缺的写入点被钉死：`touch_received` 只推进 `received`
+   （`content/store.rs:208-222`），这条路上没人写 `path` + `complete`。
+   `attempts=2` 对上 `MAX_CONTENT_RETRIES=8`（`content/policy.rs:14`）、`next_attempt_at` 早已到期
+   ⇒ **还剩 6 轮风暴排在队里**，每轮 ≈ 14 × 15 s 的手机侧入站阻塞；下次建链应当整批重投（可验证的预测）。
+   ➕ **缺失的那个写入点已经定位到具体调用点**（这一步把上面"两边谁也不回写对方"那句欠精确的说法收紧了）：
+   单聊接收这条路上 `content::store` 只有三处调用 —— `file/receive.rs:581` `touch_received`（只推进字节数）、
+   `file/receive.rs:651` `record_failure`、`transport/handle_file.rs:238` 在 Offer 时登记一条 Active（`path: None`）；
+   **收尾成功那一步没有任何一处把内容收口成 complete + path**。`record_local` 全仓 5 个调用点
+   （`transport/group_file.rs:460`、`transport/relay_file.rs:395`、`commands/group_announcements.rs:235/:278`、
+   `commands/group_todo_media.rs:77`）**全部在群文件 / 群公告 / 待办 / 中继那几条路上，单聊那一条不在里面**
+   ⇒ 台账里那 14 行永远停在"incomplete + 无 path"，而 `content/store.rs:156-167` 正是按这个状态决定要不要再拉。
+   ➕ 这条缺陷有**第二个可见症状，而且他的日志里已经出现**：`find_source`（`:173-188`）要求 `path` 非空才算"本机有这份内容"，
+   所以手机反过来向电脑要同一份内容时，电脑会答"本机没有该内容"——日志 20:28:13 那句
+   `ContentRequest：本机没有该内容 cid=b9e8df92…` 里的 **b9e8df92 正是那 14 行中的一行**（电脑其实有那些字节，
+   `file_transfers` 那单是 done）。⇒ 同一个洞两头咬：拉的人永远拉不完，被拉的人答"我没有"。
+   ⚠️ 修法第②刀因此有了最小形状：**在 1:1 接收收尾成功处补一个 `record_local`**，口径照抄群文件那处（不是新抽象，
+   是把已有的一环接上）。第①刀（把内容服务搬出接收循环）仍然必须做 —— 否则"对方真有、我没有"这种**合法**的拉取
+   也一样读不到自己的应答、照样 15 秒超时。
+   ⚠️ 边界：这条解释"那几分钟到不了/很晚到 + 链路被判死重连"，**不自动等于永久丢**（outbox 会补发）。
+   ⚠️ 修法本轮**未做**（两刀，都不引入同链路并发）：**①** 内容服务搬出接收循环 = **每对端一个串行的后台服务队列**
+   —— 同一对端仍一次一单（`pending_file_accept` 那个单键注册不会被并发踩到），但应答读得到 ⇒ 这条路径
+   改完**第一次能真正成功**，而不只是"不那么慢"；直接 `spawn` 会把"同一连接多路并发传文件"变成既成事实，不走那条。
+   **②** "对方已完整收下"必须能**回写拉取台账**（把该 cid 判完成、停止重试），并给那句被
+   `let _ = try_send(...)` 丢掉的发送留痕。
+   ⚠️ 验证缺口（现数）：`scripts/e2e/` 全册（含 `core.mjs`）搜 `ContentRequest` **0 命中** ⇒ 双实例
+   E2E 没覆盖这一格，改它得配一轮新判据（正向：建链后的内容重试必须真送达；反向：服务期间另一条链路的
+   聊天必须在有界时间内被读到），跑现成的 gfile 轮证明不了。
+   ➕ 为此**只加了一把量具**（不改行为）：接收循环给每次 `handle_message` 计时，单次 ≥3s 且过 5s
+   节流时打一条 `[link] 入站处理占用接收循环 …ms`。`cargo fmt`/`clippy -D warnings` 退 0，
+   `cargo test --features bluetooth` **811 passed**，并用重编出的 debug 二进制跑了一遍真双实例
+   `test:e2e:gfile`（退 0、28 条断言全绿，产物 `test-results/run-2026-10-13T04-06-38-773Z/`）。
+   **读数：那行一次都没出现，而这个负读数证明不了任何事** —— 那一轮从头到尾没有 ContentRequest
+   （该轮 **10 份实例日志里 `content` 与 `ContentRequest` 均 0 行**，逐文件 `count` 现算），
+   也就是那条 15 秒就地 await 的分支根本没被走到；通道本身是活的（A、B 两份 stdout **各有 7 行**
+   `[link] 建链`），所以不是"日志没接上"。跑的那份二进制确实带着量具：`summary.json` 的
+   `binary` = `target/debug/gosslan`（mtime 与起跑同一秒），`grep -ac inbound_head_of_line` = 1
+   —— 阳性对照用同一条命令打已知会打印的 `offer SENT`（1）与一个不存在的词（0）。
+   ⚠️ 这里差点被自己的尺子骗一次：先用 `strings -a | grep -c "入站处理占用接收循环"` 拿到 **0**，
+   差一步就据此判"这轮跑的是不含量具的旧二进制、整段实测作废"。真实原因是 `strings` 只提取可打印
+   ASCII 字节串，**UTF-8 中文每字节 ≥0x80、被当终止符 ⇒ 中文字面量对这把尺子结构性不可见**；
+   换成同一条编译单元里的 ASCII 常量（那处节流的键名）才拿到真读数。
+   它只说明一件事：**正常的本机一轮里没有任何入站处理越过 3 秒**。量具自身的"能打印"仍**未被证明**：
+   `reader_loop` 是本文件私有、`queue_policy.rs` 没有 `#[cfg(test)]`，而现成的 19 份轮次分册里
+   没有一格会触发长入站处理 ⇒ 要证它得靠新那轮 ContentRequest 判据，或在真机那次故障现场抓这条日志
+   —— 这把尺子买的就是现场，不是 CI。
+2. 原先排第一的"发送端握着过期公钥"**基本作废**：两端建链都是 `new_peer=true`，而密钥冲突核对
+   恰恰只在"新建 peers 条目"时跑 ⇒ 两把若不同，聊天里**应当**有那条「⚠️ 身份密钥发生变化」。
+3. 判这几条谁对，只缺一格读数：**电脑上看那几条的勾是单勾还是双勾**（双勾＝已收下，问题在
+   显示/通知侧；单勾常驻＝真没被接受）。
+
+### 按 cid 拉内容这条路径终于能跑通了：入站自死锁、两张台账分叉，外加一条被实测推翻的判据形状
+
+上面那条根因（第 7 条）的**两刀都落了**，并给这条路径第一次配上跨实例判据。范围严格止于
+「文件传输与入站阻塞」：不动加密与身份信任、不重构网络架构、不碰无关 UI。
+
+- **① 内容服务搬出接收循环 = 每对端一个有界串行队列**（`transport/queue_policy.rs` 新增 `FileService`，
+  `FILE_SERVICE_QUEUE_CAP = 8`；`handle_share.rs` 那一臂改成投队列）。
+  为什么是"每对端一个、内部串行"而不是裸 `tokio::spawn`：`pending_file_accept` 那张表只按
+  `transfer_id` 单键登记，同对端并发服务会互相踩掉对方的等待者 —— **这不是推论，是本轮实测到的第二种死法**
+  （同机 LAN + Routed 两条链路各服务一次同一个 tid ⇒ 15 秒的等待塌成一串瞬时失败，
+  旧二进制日志里同一秒内 `offer SENT` 与 `offer TIMEOUT/REJECTED` 成对刷屏）。
+  队列语义按合同逐条配齐且每条都有用例：非阻塞 `try_send`；同 cid 合并（`Merged`）；满 ⇒ `RejectedFull`
+  **显式拒绝 + 带上当前深度的留痕**（不是"warn 完就丢"）；`ServeWorkerGuard` 按 generation 比对 ⇒
+  **旧 worker 退场不会把新 worker 踢掉**；断线 ⇒ `close_peer` 丢掉发送端 ⇒ worker 自然退出、整条 entry 注销
+  （不留永久占位的 map 条目）；worker panic ⇒ 走同一个 Drop 收口。
+  ★ 容量恢复的重新调度路径**是既有的、不是新造的定时器**：`retry_incomplete_content` 此前只有 Hello
+  一个调用点（现数），稳定链路上被拒的那一条就永远不再被请求 ⇒ 把它挂进 `Message::Heartbeat` 那一臂
+  （同一臂里已经有 7 个 flush，是产品既有的"链路确实活着"的机会）。自带 `should_retry_now` 退避闸与
+  `MAX_CONTENT_RETRIES=8` 封顶，不是"未经证明的周期性后台重试"。
+- **② 完成状态一致性：收尾那两张表写进同一个事务**（`file/receive.rs` 的 `finish_receiver_into`）。
+  只有"字节数够、SHA-256 等于 cid、`sync_all` 成功、唯一名重查之后 `rename` 成功"这四件全成，
+  才在 `db.transaction()` 里一次写 `file_transfers = done` + `content::store::record_local(complete + path)`；
+  **事务失败退回今天那份单写** —— 宁可让内容台账留在可恢复名单里（下次再验一次），
+  也绝不给出"台账说 complete 而盘上没有验证过的整份文件"。
+  这一刀补的是全仓那个最隐蔽的洞：`TransferStatus::Complete` 的唯一构造点在 `record_local` 内部，
+  而 `record_local` 的 5 个调用点（群文件 / 群公告 / 待办媒体 / 中继）**没有一个在 1:1 接收收尾这条路上**。
+- **③ 那 14 行已经分叉的台账由代码自己收口，不手改用户库**（`transport/outbox_sweep.rs` 新增一趟，
+  每 tick 最多 8 条，跑在既有 sweeper 的 30s 循环里；取锁一律短暂、哈希放在锁外）。
+  口径按合同：`JOIN file_transfers` 找出「文件台账说 `done`、内容台账说 `incomplete` 且 `path` 为空」的行，
+  **先把文件真读一遍验 size + sha256 == cid**，验过才补 complete；验不过记 `FailReason::Local`
+  保持可恢复状态（不宣布完成，也不删行）。
+  ★ **已经在用户那份库上现读过一次（只读打开 `gosslan.db`，一个字节都没写）**：对账查询命中 **14 行**
+  （合计 **235.7 MB** 要真读一遍验 SHA），**逐行 `stat` 出文件、字节数相符、sha256 与 cid 全部相等 ⇒ 14 行全都会被判"补成 complete"**，
+  验不过记 `Local` 的那一支这次是 0 行；这 14 行同属一个对端（id 尾 `1cb88c`），且**这 14 个 cid 在本机任何一行里都没有 `path`**
+  ⇒ "两头咬"不再是只靠一条日志行推的：他手机上那次「本机没有该内容」的**全部 14 个原料**都在这里。
+  ⚠️ 这一格仍**没有**写"他的库已经自愈"：现读证明的是"查询命中 + 验证会过"，
+  而"下一次启动后那 14 行真的变成 complete"要等他跑带修复的版本（sweeper 每 tick 8 条 ⇒ 两 tick 收完）。
+- **④ 不再静默吞掉关键异常**：`handle_file.rs` 的 `FileAccept` / `FileReject` 两支过去是
+  `if let Some(tx)` 没有 else ⇒ "应答到达而本机已经不在等它"这条事实**日志里一个字都不留**，
+  而它恰恰是区分「对端没答」与「对端答了但我读不到」的唯一读数（本轮就是靠它把死法②抓出来的）。
+  现在各补一条 5s 节流的 warn，只记 id / peer / 字节数，不记正文。
+- ➕ 顺手量到一个**别再用错当证据**的事实：接收侧的 `file_transfers` 行**不是**"建起接收器"那一步写的
+  （旧行为跑完 12 单，B 侧只有 1 行、却有 12 个 `.part` 与 12 行 active 的内容台账）。
+  判"对端确实应答过"改用接收目录里的脚印（`.part` 或终名文件），因为 `handle_file.rs` 是
+  **先建接收器（开 `.part`）再 `try_send(FileAccept)`** 在同一个臂里 —— 有脚印就一定发过应答。
+
+**门禁实测（本轮收尾现跑）**：`npm run verify` 快速层 **17 步全绿（16.7s）**；
+`npm run verify:full` 全量层 **23 步全绿（744.1s）** —— 含 `cargo fmt`/项目 clippy 门/`cargo test`、
+测试清单守卫、**89 条护栏的非空转注入验证（686.6s，改坏即 FAIL、恢复即 PASS）** 与
+移动端编译门禁（Android，16.4s）。注入跑完后逐处现读，本轮新加的 7 个标记
+（`FILE_SERVICE_QUEUE_CAP` / 收尾事务那段 / `list_reconcilable_content` / 两条 `*_no_waiter` 节流键 /
+`content_serve_full` / 心跳臂里那次 `retry_incomplete_content`）每处仍恰好命中一个文件，
+脏路径数与内容清单未变 ⇒ 注入的写回是原样的（mtime 会变，这是那一步的既有副作用）。
+⚠️ 快速层里那条 `Change Budget` 报「1 步零覆盖」不是本轮造成的：本轮**没有提交**，
+`origin/main..HEAD` 为空 ⇒ 它按设计说出"没判到东西"，`--range` 才有读数。
+
+**Rust 侧判据**：14 条新用例（6 条队列 + 3 条收尾 + 5 条对账）。
+`cargo test --features bluetooth --lib` ⇒ **825 passed / 0 failed**；
+`cargo fmt --check --all` 退 0；项目规定的 clippy 门 `cargo clippy --features bluetooth -- -D warnings` 退 0；
+两份测试清单基线按工具自己的出口登记（`check-test-manifest.mjs --update` + `--sync-baselines`）⇒
+macos **825** / windows **813**（这一对在下面那节「群聊那一半」之后又各 +1 ⇒ **现值是 macos 826 / windows 814**，两处都由同一个工具现算，别抄这里的数）。
+
+**跨实例那一轮新建**（`scripts/e2e/rounds/contentpull.mjs`；登记五处：分册的 `export const MODE` /
+驱动的旗标 + import + 分发 / `check-doc-numbers.mjs` 的 `MODE_LABEL` / `package.json` 正反两跑 /
+`verify.mjs` 的 local 层 + 验收矩阵「轮次账」，现算 **内容拉取轮 27 条断言**）。
+这一格以前的跨实例判据是**零**：`scripts/e2e/rounds/` 全册（含 `core.mjs`）搜 `ContentRequest` 建册前 0 命中，
+而所有既有"文件"轮走的都是**发送侧主动 offer** 那条管道（`file_outbox` → flush），
+与"请求侧按 cid 拉、服务侧回发"只有收尾代码相同、入口完全不同。
+形状：A 的盘上有 12 份完整字节（`content_transfers` 有 `path` = 拥有即授权的原料），
+B 逐份留一行 `receive / incomplete / path NULL / 退避已到点`（复刻真机那 14 行的形状）
+⇒ 上线后由生产侧的 Hello 臂与心跳臂**自己发出真帧**，harness 不伪造任何一帧。
+★ 第一份刻意给到 40 MB：溢出是"提交比服务快"的结果，窗口必须由**实测的服务耗时**撑开而不是碰运气。
+
+三面实测（同一份判据）：
+
+> ⚠️ 跑这三趟时踩到一条环境事实，值得记：`verify:full` 里的护栏注入是「改坏 → 跑 → **原样写回**」，写回会把 `.rs` 的 mtime 推到当下，而攒提交期间工作树本来就是脏的 ⇒ E2E 那条「二进制不许比源码旧」的 pre-flight **退 2 拒跑**（它的豁免分支要求 `src-tauri/src` 与 HEAD 内容一致）。处置只有一条：`cargo build --release --features bluetooth` 再跑，**不许放宽那条门**。退 2 也不是判据红，别混着读。
+
+| 跑法 | 结果 | 现场 |
+| --- | --- | --- |
+| 旧行为（从 abb99f8 现编的那份，产品码逐字节等于 HEAD，只把 harness 换成新册） | **9/30 条报红**：12 份一份都没取回 · B 侧 12/12 已应答而 A 侧读到 accept **0 行** · 23 行满额超时 · `.part` 12 个 · 可恢复 12 行 · 「永远取不到的那一单不许卡住同对端其余各单」也红 · **断线那一格连「腾出手来开始服务第二批」都做不到**（90s 内一次都没开始 ⇒ 上一批的满额握手还占着入站；那一趟因此在第一条前置判据后就地收住，只执行到 30 条） | `test-results/run-2026-10-13T13-06-15-658Z`（已从旧树搬进本仓；更早两趟的记录在 `run-2026-10-13T10-17-34-075Z` 与 `run-2026-10-13T11-59-12-278Z`） |
+| 新行为（当前工作树现编的 release） | **32 条全绿**：从建链到 12 份全部到位 **4807 ms** · 溢出留痕 1 行（5s 节流，一行不代表只拒一单）· 重投行数 16 之后两个心跳周期不再增长 · 文本落库 4305 ms；**服务方半路被 SIGTERM 之后，第二批 4 份 40 MB 由重起来的连接取完，15.4s** | `run-2026-10-13T13-05-25-808Z` |
+| 反向 `--round=contentpull-lie`（只翻判据读的那两份值：期望摘要 + 期望台账终态） | **恰好 2/32 报红**，其余 12 条照绿，而"实际"列里印着真相 `读数 ["complete"]` ⇒ 红来自断言本身 | `run-2026-10-13T13-13-57-617Z` |
+
+⚠️ **一条判据形状被自己的 RED 推翻**（记下来防再犯，完整形状见验收矩阵那一格）：
+这一轮第一版把「入站被占死多久」写成"A 进入第一次服务后 30 秒内那条文本要落进 A 的库"，
+在旧二进制上量到 **5300 ms ⇒ 假绿**；更早一版把它放在停机预置里，量到 **1 ms ⇒ 也是假绿**。
+两个成因都是真的：① B 的 Hello 臂里 `flush_outbox` 排在 `retry_incomplete_content` **之前**
+⇒ 停机写好的那条文本天生排在所有请求前面，量到的是"帧到达的先后"而不是"入站被占住多久"；
+② 两条链路各自阻塞、链路一抖就双双走进"同一个 tid 被两次注册"那条瞬时死法 ⇒ 15 秒的等待根本不成串。
+⇒ 这条路径上**墙上时间不是可靠判据**，改判"谁答了 / 谁没读到"这一对确定性读数，耗时只如实打印。
+
+★ **同一条自死锁也解释了那 6 条 1:1 `failed`**（把他两端日志与他库的 `ts` 对齐后现算出来的，日志口径是本地 UTC+8）：
+  那 6 条文本写在 **20:36:23–20:36:25**，而手机那半份日志在 **20:36:11 / 20:36:27 / 20:36:42 / 20:36:57 / 20:37:12**
+  反复打出「`ContentRequest` → `offer SENT` → `offer TIMEOUT/REJECTED`」这一段（整份手机日志里这类事件 52 条，
+  其中 7 条是满额超时、其余是秒级的瞬时失败 ⇒ 两种死法都在这台真机上出现过），
+  也就是**那 6 条文本落库的那一两分钟，手机的入站正被自己的内容服务占着** ⇒ 它读不到对端发来的文本，
+  发送侧的 outbox 就在 120s 判死里把它们点亮成 `failed`。
+  ⚠️ 这是**时间对齐 + 机制同源**的证据，不是逐条 msg_id 的因果链（日志里没有"某条文本被某条链路拒收"这种行）；
+  ⇒ 修完之后这一格的可观察预测（**还没在他机器上验过，别读成已验证**）：
+  同一条链路上"一边在按 cid 拉大文件、另一边连发普通文本"不该再把任何一条点亮成 `failed`，
+  而 `--round=contentpull` 里那条「内容与方向都对」的文本判据就是这条预测在 harness 里的替身。
+
+⚠️ 仍未覆盖 / 未做（不许读成已验证）：
+① 真机那 14 行**启动之后**的终态（命中与 SHA 验证已现读，见上面那条 ★；还缺的是"跑起来真的收口"这一格，
+   要等他启动带修复的版本后再现读一次那两份库）；
+② 「本机没有该内容」那一支**本轮已补进同一轮**（第 N+1 个 cid 是现造的随机 32 字节、盘上根本不存在，A 侧也故意不写那一行 ⇒ `find_source` 必然取不到）：服务方必须明着说一句「本机没有该内容」，那一行**不许**被写成 complete、盘上不许出现假文件，而且这个永远取不到的 cid **只该消耗自己的 attempts 退避**——不许卡住同对端其余各单（实测它 21 秒里自己吃掉 4 次 attempts，其余 12 份照样全部到位、接收目录零残留）。
+③ 群成员作为种子被拉（`find_source` 的群分支）在新队列上的跨实例覆盖 —— 群文件轮不测拉取；
+   （合同点名的另一格**已经补上**：「旧连接不许阻塞新连接 / 队列里没开工的作业不许变成永久占位」现在有跨实例判据 —— 服务方在第二批 4 份 40 MB 的第一份在飞时被整个杀掉，重起来之后剩余各单必须全部落盘且逐份 sha 对得上，且补齐它们的必须是**新连接**的日志（`stashLogs` 把旧日志整份移走，所以那里数到的行只可能来自重启之后）。旧二进制在这一格的前置判据就红：90 秒内根本没腾出手开始服务第二批。）
+④ **「取消」这一格本轮已更正：它不是欠账，是这层没有那个对象**（原先这句写着"单条作业的显式取消没有接到队列"，
+   放在"仍未覆盖"里 ⇒ 只扫列表的人会去补一个界面上没有东西可指的取消入口）。现读接口面三条为证：
+   `FileServeJob` 的字段只有 `cid/peer_id/transfer_id/path/from_seq/from_bytes`（**无**取消句柄）；
+   `FileService` 公开面恰好七个 `new/submit/start_worker/has_worker/queued_len/unregister_worker/close_peer`；
+   `PeerQueueState.tx` 的注释自陈关停方式 —— `queue_policy.rs:330` 原文
+   **被 close_peer 丢掉 ⇒ 收端自然结束 ⇒ worker 退出**（关停不靠轮询）。
+   ⚠️ 源码里**没有**反引号：我照自己抄进台账的那句「被 \`close_peer\` 丢掉…」去检索时 0 命中，
+   那是本会话第四次自造正则假阴性（前三次见交接文档那条「数一个集合要先和工具自己打印的分母对账」）。
+   ⇒ 这层的取消语义**就是**整条对端通道被关（断线 / 退出 / worker 崩），两个出口各有具名用例
+   （`a_retiring_old_worker_does_not_kick_the_new_one`、`worker_exits_and_unregisters_after_shutdown_and_panic`）；
+   "同一条内容不被排两次、跑完才放开"另有 `ServeTicket::Merged` + `queued: HashSet<cid>` 两件。
+   产品那侧的"取消发送"从来不进这条队列（走 `send_file_from_path_at` 内部那条 `cancel_rx`，
+   由 `file_cancel_keys_are_scoped_per_recipient` 等钉着）；
+⑤ 版本号、提交、tag、发布一律**未做**（合同：停在可审查的结果上等他拍板）。
+   现状请现读，别抄这里的数：`git status --porcelain | wc -l`（脏路径数）、
+   `git log --oneline origin/main..HEAD | wc -l`（未推送提交数）、`git tag --points-at HEAD`（本轮没打新 tag，
+   挂在 HEAD 上那个 `v4.37.1` 是 10-12 既有的）。
+
+### 群聊那一半也修了：GroupAck 终于把「对端收到了」写进自己的库
+
+同一句用户诉求（「加好友后电脑端发的群聊/单聊手机端收不到」）里，**群聊那半边不是投递失败，是发起方自己的终态从没落库**。
+现场是只读现算他那份 `gosslan.db`（一个字节没写）：`group_outbox` **0 行**，而 **16 条群消息**
+（9 text + 5 todo_update + 1 todo + 1 reaction）的 `messages.status` 永远停在 `sent`；
+同一时段对端自己的已读标记 `group_reads.last_read_ts` 停在**最后一条本身**（12:36:19.873，也就是 `23f9e9d0…` 那一行）。
+⚠️ 这一句原本只是"时间比较"，**证据等级不够**；10-13 深夜换成两条**正面读数**：
+① 手机侧的入站行（`gossip.rs:684` 打的 `群消息@输入 msg=<id>`）与电脑侧 `群消息已回送本机窗口 msg=<id>`
+   逐 `msg_id` 求交集 = **11 条正面命中**（这些条手机确实处理到了）；
+② 更要紧的是那个标记**不是对端自报的时钟** —— 现读 `handle_group.rs:33-46`：它是拿回执里的 `last_read_msg_id`
+   **回查本机 `messages` 表**（限 `sender_id = 本机 AND conv_id = 'group:<gid>'`）取那条的 `ts`，
+   而 `1791808579873` 正是本机库里 `23f9e9d0…` 那一行自己的 ts ⇒ **对端点名了它 = 它收到了这条**
+   （同批更早的 4 条按 ts 顺序渲染，也在它的视野里）。
+⛔ 同时记一条纪律（我在这条上翻过一次车）：用户给的是**节选日志** —— "这件事一旦发生就必然打"的
+   `[ACK] 已持久化 ⇒ 回执` 在两半都 **0 条**，而电脑库里有 26 条 `delivered`/`read`（只能由回执点亮）
+   ⇒ 这份日志必然不完整 ⇒ **"手机日志里少了 5 条"这种缺席型读数没有证明力**（我中途据此判过"那 5 条没送达"，已作废）。
+⇒ 队列行不是被超时清扫器删的（`finalize_expired_message` 判失败会同时写 `failed`），而是被 **GroupAck** 删的
+⇒ **对面真收到了**，缺的只是本机这一次写入（⚠️ 这句现在**只覆盖群聊那 16 行**；
+"真没送到"的是另一族 —— 电脑库里那 **6 条显式终态 `failed` 的 1:1 文本**。
+   （等级要说准：`failed` 是**发送侧**的正面读数 —— 120 秒没等到回执，比日志缺席硬一档；
+   而"手机那侧当时到底处理没处理"在本机无从直读，靠的是机制推断 —— 手机 20:36:11 起 7 轮满额 15 秒
+   `offer TIMEOUT`（这 6 条的发送时刻 20:36:23–25 正落在区间里）+ 回执从没回来过。两半合起来才是这条结论。）
+旧形状里 `handle_group.rs` 的 GroupAck 臂只「删队列 + emit 前端事件」，
+而前端的 `onMessageAcked` 只在内存里 advance 一次 ⇒ **一重启就退回单勾**，用户读成"收不到"，
+而本仓的不变量写着「消息状态的唯一真相源是 `messages.status`」（INV-006/P15）。
+
+★ **归因后来在同一张表里拿到了一条天然对照**（2026-10-13 只读现算，比"推断"硬一档）：本机自己发的群消息按
+`msg_id` 前缀分成两族 —— **7 行 `gfile-*`**（群文件气泡，终态由**文件完成那条写入点**点亮）全部 `delivered`，
+**16 行十六进制 msg_id**（9 text + 5 todo_update + 1 todo + 1 reaction，终态**只有** GroupAck 那条路能点亮）
+全部停在 `sent`。⇒ 同一时段、同一个对端、同一张表，走"另一个写入点"的那族前进、走 GroupAck 的那族一条没动 ——
+缺的正是这一处写入，而不是"消息没投递出去"。复跑：
+`sqlite3 -readonly ~/Library/Application\ Support/com.gosslan.app/gosslan.db "SELECT kind,status,substr(msg_id,1,7),COUNT(*) FROM messages WHERE conv_id LIKE 'group:%' AND sender_id='gosslan-3c3a50b7f85a4' GROUP BY kind,status,substr(msg_id,1,7);"`（21 组）
+（`gossip.rs:577` 那条 `set_message_status` 是 **1:1** 的 ChatAck（守 `outbox` 表），不碰群行 —— 别把它读成群的第二条写入路径）。
+⚠️ 同一份库现在（10-13 现读）仍是 **14 行 `receive`/`incomplete` + 这 16 行 `sent`**，且文件 mtime 停在
+**10-12 20:30** ⇒ 带修复的那份他**还没跑过**，"自愈"那条预测尚未被真机验证。
+
+- 修法口径**逐字照抄 1:1 那一臂**：`db::set_message_status(&dbc, &msg_id, "delivered")`，
+  它的 `WHERE status NOT IN ('read','delivered','recalled')` 自带"只前进不回退" ⇒ 第二个成员后到的 Ack
+  不会把已经 `read` 的行退回 `delivered`；也没有引入"按成员数聚合"的新语义（前端本来就是收到任一 Ack 就 advance）。
+- ★ 这一条同时把既有那条「不许被判成 failed」照出是**半个守卫**：它禁的是 `failed`，
+  对"停在 `sent` 不动"完全无感 ⇒ 补的是同一条队列的另一半读数，不是把同类检查再数一遍。
+- **判据两条**：Rust 侧形状判据 `group_ack_advances_sender_message_status_like_dm_ack_does`
+  （带**阳性对照**：先断言 1:1 那一臂这次写入还在，否则"两边都没有"的世界里判据会假绿）——
+  先跑出真 RED：群侧那条在 `lib_delivery_shape_tests.rs:596` panic，对照那条同时通过；
+  跨实例侧在群聊轮补一条「A 侧这几条群消息的终态必须由对端 GroupAck 点亮进真库」⇒ 群聊轮现算 **37 条断言**。
+- 三面实测（同一份判据）：旧二进制 ⇒ **恰好 1/37 红**，实际值就是用户库那个形状
+  `["sent","sent","sent","sent","sent","sent"]`（`test-results/run-2026-10-13T11-00-05-132Z`，其余 36 条照绿）；
+  新二进制 ⇒ **37 条全绿**（`run-2026-10-13T11-01-19-596Z`）；反向 `--round=group-lie` ⇒ **`9/37`，红数没涨**
+  （新那条读真 id ⇒ 反证档里照绿，`run-2026-10-13T11-01-33-639Z`）。
+- 基线：新增 1 条 Rust 用例 ⇒ `check-test-manifest.mjs --update` + `--sync-baselines` ⇒ macos **826** / windows **814**；
+  `cargo test --features bluetooth --lib` **826 passed / 0 failed**，`cargo fmt --check --all` 与项目 clippy 门各退 0。
+  这一刀落地后**两层门禁都重跑过**（不是沿用上一节那次数）：`npm run verify` **17 步全绿、退 0**；
+  `npm run verify:full` **23 步全绿 / 退 0**（含 89 条护栏非空转注入与 Android 编译）。
+  之后那条 30 秒判据被推翻、跨实例轮补到 11 格 ⇒ 两层又各跑第三遍：**17 步退 0 / 23 步 1014.6s 退 0**。
+  注入跑完再逐处现读：本轮 8 个标记每处仍恰好命中它自己的文件 —— `set_message_status` 那条命中 1:1 与群两处，
+  正是判据要钉的「两臂口径一致」那个形状。
+- **运行时层（macOS 真 WebView 无障碍树）对着重编后的产物各跑了一遍**（`npm run -s verify:ax` 退 0：
+  内容树挂上 `AXWebArea=1`、节点 33、带可访问名 18、可操作控件 12 按钮 + 1 输入框）。
+  这一层读的是 `src-tauri/target/release/gosslan`（mtime 现读 2026-10-13 20:50:23），那份二进制里
+  `strings -a … | grep -c` 现算三个 ASCII 标记各为 **1**：`content_serve_full`（A 段每对端串行队列）、
+  `inbound_head_of_line`、`file_accept_no_waiter`（④ 那条迟到应答诊断）⇒ "启动没被本轮改动弄坏"这一条
+  现在覆盖的是**含本轮 Rust 那一侧**的构建，不再只是界面侧改动。
+  ⚠️ 同时记一条量具痕迹，防下一次误判成"源码又被动过"：跑完之后 `src-tauri/src` 下有 5 个 `.rs` 的 mtime
+  晚于那份二进制（现读 21:35–22:06），其中 `commands/channel.rs` / `commands/favorites.rs` /
+  `commands/settings.rs` 按 `git status` 是 **clean vs HEAD** ⇒ 那是护栏注入器把原文**逐字节写回**的脚印
+  （时间戳新、内容未变，`npm run verify:full` 的注入那一步跑完就是这个形状）。它的后果只有一个：**直接**
+  `npm run test:e2e:*` 那条路上那道前置门会拒跑（`scripts/e2e-multi-instance.mjs:339-370` 现读 ——
+  它的"只是 mtime 抖动 ⇒ 放行"那条豁免要求 `src-tauri/src` 与 HEAD **内容完全一致**，而本轮工作区脏
+  （条数**别抄**，现算：`git status --porcelain | wc -l`；其中 `git status --porcelain -- src-tauri/src | wc -l` = **16** 个 `.rs` 未提交 ⇒ 豁免那条路走不到，只能拒）。而 `npm run verify:e2e`（local 组）不受影响：
+  它自己第 1 步是 UI 运行时探针、**第 2 步就是 `cargo build --release --features bluetooth`**
+  （`scripts/verify.mjs:581-594`），编完二进制自然最新 ⇒ 单跑一轮之前先重编；
+  若重编是 cargo 的 no-op、二进制 mtime 原地不动（项目记忆里记过这个形状），
+  再加一句 `touch src-tauri/src/lib.rs` 逼它重链。**别放宽那道门。**
+- ⚠️ 仍**没**判的一格：用户那 16 行在他下次启动带修复的版本**之前**不会自己前进（这一刀修的是"以后"，
+  不是历史行的回填 —— 回填要决定"已删的队列行算不算收到过"，那是另一个决定，没做也不假装做了）。
+
+### 附件日志里那条 `window.destroy not allowed`：预览窗不再让依赖替它销毁窗口
+
+用户那份电脑端日志（2026-10-12 20:27:39）有一条 `[前端 rejection] window.destroy not allowed.
+Permissions associated with this command: core:window:allow-destroy`。它在我们的源码里查无此调用
+（`grep -rin destroy src/` 现算 **0 命中**），根因在依赖的实现里 —— 现读 `dist/assets/tauri-*.js`
+（@tauri-apps/api **2.11.1**）：`onCloseRequested` 的包装是
+`await handler(l); l.isPreventDefault() || await this.destroy()`
+⇒ **handler 不 `preventDefault()` 就等于授权库去销毁那扇窗**。全 `src/` 里注册 close-requested 的只有
+`PreviewWindow.vue` 一处（分母现算），而它当时写成 `() => releaseAlbum()`，没拦。
+
+- 为什么这是缺陷而不是"一条无害噪声"：Rust 那侧 `install_hide_on_close` 是 `prevent_close() + hide()`
+  （那条形状判据在 `lib_window_tests.rs:618`）⇒ 预览窗**关闭即隐藏、常驻**，设计上从不该被销毁。
+  眼下它靠"能力表里没批 `allow-destroy`"才没被销毁 —— **设计挂在一条没批的权限上**：
+  哪天有人为别的目的放宽这条，第二次看图就不再秒开、还得重建整扇窗，而界面上不会有任何提示。
+- 修法**一行**、不动权限：handler 里先 `event.preventDefault()` 再放相册（与 Rust 那半边的语义一致，
+  不是新行为）。`src-tauri/capabilities/default.json` 现读仍**不含** `core:window:allow-destroy`。
+- 判据：`src/utils/previewHosting.test.ts` 新增「注册了 close-requested 的窗口必须 preventDefault」。
+  形状是"扫全 `src/` 找注册点 → **分母现算**（`>= 1` 才继续，扫不到就是空转）→ 按**括号配对**切出那一次调用整段
+  （不用定长窗口，那会跨进邻居规则）→ 要求段内出现 `preventDefault()`"。
+  两面当场实测：**改之前真 RED**（报错点名 `components/window/PreviewWindow.vue` 那一处），
+  **改之后该文件 4/4 绿**；快速层 `npm run verify` **17 步退 0**，`npm test` 现算 **959/959/0**。
+- ⚠️ 口径边界两条：① 判据只认**内联** handler，改成具名函数会红（报错里写了那时该怎么办，不许放宽成"文件里出现过就算"）；
+  ② 这一条**没有**真机证据 —— 快速层里没有任何一层会启动 WebView 去点那扇预览窗，
+  所以"rejection 从此不再出现"是**依赖源码 + 源码形状判据**的结论，不是运行时读数。
+  ⚠️ 归属：这一刀改的是**前端**。当时（写这一节时）`target/release/gosslan` 还是 20:50:23 那份、不含它；
+  **现已重挣** —— 23:46:26 那份新二进制的嵌入口径是 `dist/index.html` mtime **23:30:06 < 23:46:26**，
+  且 `dist/assets/preview-*.js` 里 `preventDefault` 现算 **1**；对**新产物**重跑 `npm run verify:ax` **退 0**
+  （`AXWebArea=1` · 节点 33 · 带可访问名 18 · 12 按钮 + 1 输入框）。
+  ⚠️ 但它依旧只到"控件树读得到、启动没被弄坏"这一格：界面对不对、✕ 实际效果、键盘出口仍归人工（工具自己的三条边界）。
+
+### 「打开添加好友」不再为 macOS 那条本来发不出去的 limited 广播刷 WARN（4.18.5 那条规则补上漏掉的另一臂）
+
+把用户两端日志**逐条**过完（29 行 WARN/ERROR / 9 种形状）之后，剩下这一条是**能修**的：他 Mac 端
+20:26:13 / 20:26:21 两条 `diag/broadcast_error: target=255.255.255.255:59991, error=No route to host (os error 65)`，
+而同一批日志里 `diag/bc_directed` 每一轮都成功。
+
+- **不是"网络坏了"**：4.18.1 早就记过根因（`docs/notes/changelog-archive.md`，socket 绑具体网卡 IP 时
+  向 `255.255.255.255` 发会 `EHOSTUNREACH`，精确子网地址才是能用的那条），而 4.18.5 为此定了一条口径
+  ——「子网广播成功时不再为 limited / multicast 的失败刷告警……原先每 5 秒两条 WARN 持续数分钟，
+  把真正有用的信息淹掉了」。**问题是这条口径只落在了 `broadcast()` 一臂上**：
+  `broadcast_probe()`（用户点「添加好友」时那次 who_has 探测）无条件推 limited 的结果 ⇒
+  每次探测留一条 WARN。同一条规则的**另一个面**在"已改"那行底下继续漏 —— 日志环只有 500 条，
+  淹掉的是诊断历史本身。
+- 修法：`broadcast_probe()` 与 `broadcast()` 走同一个门（同一函数里先算 `directed_ok`，
+  limited 的留痕包进 `if !directed_ok`）；**不改**协议、不改广播目标、不动权限。
+- 判据：`broadcast_diag_suppression_covers_both_send_paths`（`lib_compat_gating_tests.rs`）——
+  阳性对照钉"已经合规的那一臂必须被同一把尺子认成合规"（否则"两臂都没抑制"的世界里判据会假绿）、
+  新钉那一半按 `rust_fn_body` + `code_flat` 取体（注释里复述规则不算数）、
+  分母是 `let directed_ok =` 在整个文件里必须恰好 **2** 处。
+  两面当场实测：**改前真 RED**（`lib_compat_gating_tests.rs:309` panic，报的就是探测那臂没抑制；
+  对照那条同时通过 ⇒ 尺子本身是好的）；**改后** 该用例绿 + `cargo test --features bluetooth --lib`
+  **827 passed / 0 failed**（其中按 `discovery` 过滤的 22 条全绿）+ `cargo fmt --check --all` 退 0
+  + 项目 clippy 门 `--features bluetooth -- -D warnings` 0 条。
+- 基线：新增 1 条 Rust 用例 ⇒ `check-test-manifest.mjs --update` + `--sync-baselines` ⇒ macos **827** / windows **815**
+  （⚠️ 这只有那一刀；同一晚再往后受众闸那一格又 +6 ⇒ 最终树现算 **macos 833 / windows 821**，
+  数一律现读 `wc -l src-tauri/test-baseline.macos.txt src-tauri/test-baseline.windows.txt`，别抄本行）
+  （两条都按"上一版 + 这一条"现推，差额仍由源码门控背书）；快速层 `npm run verify` **17 步退 0**。
+- ⚠️ **这条没有真机读数**：它是"日志里不该出现的那一行"，本机跑不出用户那台 macOS 的探测时序，
+  所以交付形式是**源码形状判据 + 他日志的既有形状**，不是运行时对照。
+  ★ **归属已重挣**（这一刀改的是 Rust 生产码 ⇒ 按"改动落在哪层就重跑哪层"整条链重跑，四步退码逐条现取）：
+  `npm run verify:full` **23 步退 0**（第 22 步 = 89 条护栏非空转，第 23 步 = Android
+  `cargo check --target aarch64-linux-android` 0 warning）→ `cargo build --release --features bluetooth` **退 0**
+  （新产物 mtime 现读 **23:46:26**；`find src-tauri/src -name '*.rs' -newer <二进制>` **为空** ⇒ 它是最新那份）
+  → **内容拉取轮 32 条全绿**（`run-2026-10-13T15-46-26-618Z`）→ **群聊轮 37 条全绿**（`run-2026-10-13T15-47-19-313Z`）；
+  新产物里 `content_serve_full` / `inbound_head_of_line` / `file_accept_no_waiter` 三个标记现算各为 **1**。
+  ⚠️ 一次量具自纠：我本想用 `strings -a <二进制> | grep -c 'plugin:window|destroy'` 证明预览窗那刀进了二进制，
+  读数是 **0** —— 那**不是**"没编进去"，而是 JS bundle 在 Tauri 里压缩嵌入、`strings` 读不到 JS 字面量。
+  换两条能证的：`dist/assets/preview-*.js` 里 `preventDefault` = **1**，且 `dist/index.html` mtime
+  **23:30:06** 早于二进制 **23:46:26**（这份 dist 确实被嵌进了那次编译）。
+- 清账里其余各条的下落（手机端后台广播被拒 = 系统行为、回前台 **20:35:56** 自愈；
+  `好友同意回执补发结束` = 有界补发设计内、对面 **20:26:29 已收到**第一帧；
+  BLE 三条 = 平台边界 + **他手机上「附近的设备」权限没给**；`ResizeObserver` 两端各一条 = 良性噪声）
+  逐条写在 `AI_TASK_HANDOFF_CURRENT.md` 的「附件两端日志的 WARN/ERROR 全量清账」那一节，含复跑分母的脚本。
+
+### 「谁能按 cid 取走内容」那道闸从臂里搬进纯核，并第一次有了 5 + 1 条判据
+
+台账里原先有一条写错定位的欠账：「群成员作为种子被拉 = `find_source` 的群分支没有跨实例判据」。
+现读 `content/store.rs:173-188` ⇒ **`find_source` 没有群分支**，它的谓词只有 `cid=?1 AND path IS NOT NULL`（"拥有"那一半）。
+群成员那一臂在 **`handle_share.rs` 的授权闸**里，而它当时长在 `async` + 两道锁中间 ⇒ **五条边界一条都测不到**。
+
+- 按本仓三条既有先例（`friend_accept_flush_decision` / `diag_event_from_send_result` / `should_keep_peer`）
+  把判定抽成 `content_serve_allowed(is_friend, source_group_id, group_members, requester)`。
+  ⚠️ **只搬判定、不改信任策略**（合同明写本轮不动加密与身份信任）：四种输入组合逐条与旧写法对照过 ——
+  好友放行 / 非好友但内容所属群里放行 / 群行已不在 ⇒ **拒** / 内容没挂群 ⇒ **拒**，语义一字未变。
+- 新增 `network::transport::content_serve_gate_tests` **5 条**：`friend_is_allowed_without_any_group`、
+  `group_member_is_allowed_without_being_a_friend`（= C 从已收完的 B 拉这一格）、
+  `stranger_in_another_group_is_denied`、`missing_group_row_is_denied`（写反成 `unwrap_or(true)` 就等于删群后陌生人还能取）、
+  `non_friend_without_group_binding_is_denied`。
+- 再加接线判据 `content_request_serve_gate_delegates_to_the_pure_kernel`（`lib_compat_gating_tests.rs`）：
+  臂里必须恰好**一处**委托（分母取臂内计数，不数整文件 ⇒ 以后加用例不会碰红）、
+  反面钉旧形状签名 `unwrap_or(false)`、阳性对照要求纯核定义本身在场（防"两处一起删掉"假绿）。
+- **三条单点变异当场跑过**（有断言 ≠ 被证明会失败）：
+  M1 兜底臂 `_ => false` → `true` ⇒ 恰好 **2 红**（两个"该拒"的边界），余 3 绿；
+  M2 成员判定改恒真 ⇒ 恰好 **1 红**（`stranger_in_another_group_is_denied`），余 4 绿；
+  M3 把判定**抄回臂里**（旧形状）⇒ 恰好**接线判据那 1 条红**（`lib_compat_gating_tests.rs:335`），5 条纯核单测全绿
+  —— 这正是"只有单测没有接线"会漏掉的那一格。三次之后都从 /tmp 备份原样拷回，
+  `diff -q` 现验**文件与备份逐字节相同**（不是"我觉得改回来了"）。
+- 读数：`cargo test --features bluetooth --lib` **833 passed / 0 failed**（827 + 5 + 1），`cargo fmt --check --all` 退 0，
+  `cargo clippy --features bluetooth -- -D warnings` 0 条；基线走工具出口 `--update` + `--sync-baselines`（只往上抬，无名字消失）；
+  `npm run verify` **17 步退 0**。
+- ⚠️ **跨实例那一格仍欠，但欠的东西变了**：不再是"判据本体没写"，而是**夹具要第三个实例** ——
+  现读 `core.mjs:203` `INSTANCES = [1, 2].map(…)` 恰好两个，且互为好友由公共播种写入（`core.mjs:495` 的
+  `INSERT INTO friends(…)`）⇒ 内容拉取轮现在走的是闸的**第一条臂**（好友放行），群成员那条臂在跨实例层还没走过。
+  （那一轮的 `ContentRequest` 是生产侧 `retry_incomplete_content` 自己发的，不是手搓帧 ⇒ 测的是真接线。）
+- 顺手补了契约图两处（`docs/ARCHITECTURE-MAP.html`）：`group-message-acked` 那行原来只写"删掉那个成员的
+  group_outbox 行" ⇒ **图本身记录的就是 A-15 那个错形状**；`request_content_by_cid` 节点补上"服务侧不许在入站
+  循环里 await 整条握手 + 每对端一条有界串行队列 + 受众判定在 handler 不在 `find_source`"。
+  ⚠️ 这张图的 125 KB 内联 JS **没有任何门禁解析**（`arch-map-stats.mjs` / `check-doc-numbers.mjs` 都只做正则取数）
+  ⇒ 改完自己跑 `node --check`（退 0），否则插一个未转义引号会**门禁全绿而图打不开**。
+
+### 一处自造红（记下来防再犯）
+
+本轮往 `scripts/guard_cases/frontend_ui.py` 加了 4 条非空转用例（**锚定口径现算**：
+`grep -c '^    Case(' scripts/guard_cases/frontend_ui.py` ⇒ **49 → 53**；不带行首锚会多算一条，
+因为该文件自己的说明行里就写着这个命令 —— 同批把那句"本册现数"从 49 改到 53），
+护栏套件跑完只这一条红，且红得完全应该：`docs/ARCHITECTURE-MAP.html` 手写的
+「护栏非空转用例 227」被现算成 231 ⇒ **加/删用例必须同批改那张图**。按该判据自己给的口径处理
+（判据 E 这类"文档要给人看一个现状数"→ 改成现算值），并把 4 条用例的两种缺陷口径、
+以及 `designGuards.ts` 里 ㊳ 第⑤条**原来只剩半句话**的报错文案一并补全。
+
 ## [4.37.1] - 2026-10-12
 
 ### 内存：图片预览缓存有硬封顶了，气泡不再整份加载原图

@@ -479,6 +479,31 @@ export async function run() {
     check("A 侧这一轮排的每条群气泡都不许被判成 failed（failed 的唯一裁决不能被群路径绕过）",
       aStatus.length === aSeededIds.length && !aStatus.includes("failed"),
       `${aSeededIds.length} 行都有状态且无 failed`, JSON.stringify(aStatus));
+    // ★ 这一格钉的是**发起方自己那一行的终态有没有落库**（2026-10-13 真机第 7 条的另一半）。
+    // 上面那条只禁 `failed`，所以"队列行被 GroupAck 删了、而 messages.status 永远停在 sent"
+    // 这种形状今天是**判不出来**的 —— 用户的库正是这个形状：`group_outbox` 0 行、
+    // 16 条群消息停在 `sent`，而对端的已读标记已经落在这批消息之后（⇒ 对面真收到了）。
+    // 后果全在观感上：前端 `onMessageAcked` 只在内存里 advance 一次，一重启/重开会话就退回单勾，
+    // 而本仓的不变量是「消息状态的唯一真相源是 messages.status」。
+    // 读法要**等**：GroupAck 是 B 收到之后才发的，比 B 落库更晚，所以这里给一个有界窗口
+    // （同 §十六 那条"终局判据要等发送侧自己点亮"的既有口径，不在那一瞬间单点读一次）。
+    let aStatusAdv = [];
+    const advDeadline = nowMs() + 60_000;
+    for (;;) {
+      const d = openDb(INSTANCES[0].db, true);
+      try {
+        aStatusAdv = d.prepare(
+          `SELECT status FROM messages WHERE msg_id IN (${inList(1)})`,
+        ).all(...aSeededIds).map((r) => r.status);
+      } finally { d.close(); }
+      if (aStatusAdv.length === aSeededIds.length && aStatusAdv.every((x) => x === "delivered" || x === "read")) break;
+      if (nowMs() >= advDeadline) break;
+      await sleep(500);
+    }
+    check("A 侧这几条群消息的终态必须由对端 GroupAck 点亮进真库（delivered 或 read）—— 只 emit 不写库 ⇒ 重启退回 sent",
+      aStatusAdv.length === aSeededIds.length
+      && aStatusAdv.every((x) => x === "delivered" || x === "read"),
+      `${aSeededIds.length} 行全部前进过 sent`, JSON.stringify(aStatusAdv));
     check("A 侧那条正文此刻仍是 text —— ⚠️ **实测出来的边界**：harness 写的是入队形状，"
       + "没有执行产品的撤回命令 ⇒ 发送侧本地物化不在这一格的证明范围里",
       aT1?.kind === "text", "text（本格的已知边界）", aT1?.kind);

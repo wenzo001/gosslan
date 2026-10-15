@@ -339,10 +339,15 @@ pub async fn send_friend_request(
     // **先登记再发**：好友申请没有回执，链路抖动时它会静默丢失，而界面照样显示"已发送"
     //（用户 2026-09-12 真机：对方什么都没收到）。登记后由建链/Hello 补全时重发，
     // 收到同意/拒绝再清除（见 `forget_pending_request`）。
-    s.pending_out_requests
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(peer_id.clone());
+    {
+        let now = crate::db::now_ms();
+        // or_insert：已经挂着这条申请时**不重置上次补发时刻**（否则连点几次就把间隔判没了）
+        s.pending_out_requests
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(peer_id.clone())
+            .or_insert((now, 0));
+    }
     send_friend_request_via_link(s, &peer_id).await
 }
 

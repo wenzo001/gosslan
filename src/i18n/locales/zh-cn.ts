@@ -423,6 +423,8 @@ export const zhCN: MessageDict = {
   "common.sendMessage": "发消息",
   "common.group": "群",
   "common.me": "我",
+  // 查不到这个人时的兜底前缀（后接 id 后四位）—— 裸 device id 不许印到界面上（用户 2026-10-14）
+  "common.unknownMember": "未知成员",
   "common.image": "图片",
   "common.file": "文件",
   "common.code": "代码",
@@ -580,6 +582,19 @@ export const zhCN: MessageDict = {
   "todo.category.custom": "自定义…",
   "todo.categoryCustomPlaceholder": "输入自定义类型名",
   "todo.categoryCustomNeedName": "请输入自定义类型名称",
+  "todo.pickIcon": "图标",
+  // 自定义类型可选的十枚图标（键集合必须与 `utils/todos.ts` 的 TODO_CUSTOM_ICONS 一一对应，
+  // 由 `todoCustomIcons.test.ts` 双向对账 —— 少一枚就是屏幕上有个无名图标）
+  "todo.icon.tag": "标签",
+  "todo.icon.flag": "旗帜",
+  "todo.icon.star": "星标",
+  "todo.icon.zap": "闪电",
+  "todo.icon.wrench": "工具",
+  "todo.icon.heart": "在意",
+  "todo.icon.book": "文档",
+  "todo.icon.clock": "时限",
+  "todo.icon.target": "目标",
+  "todo.icon.sparkles": "新增",
   // 编号口径（字母 + 永久递增数字、超过 4 位只显后四位）见 utils/todos.ts 的 todoCode()
   // 与 docs/protocol-invariants.md 的 INV-P29；这两句是它唯一的两处文案。
   "todo.codeAria": "任务编号 {code}",
@@ -657,6 +672,9 @@ export const zhCN: MessageDict = {
   "todo.imageTooLarge": "单张图片不能超过 {mb}MB",
   "todo.imagePasteFail": "保存粘贴的图片失败",
   "todo.openPanel": "查看任务",
+  // 图片超过 `TODO_CARD_IMAGE_VISIBLE`(4) 张时才出现；行为与「查看任务」完全一致
+  // （打开群任务列表并直达这条任务），见 TodoCardBubble.vue 的命中区②注释。
+  "todo.viewMoreImages": "查看更多",
   "todo.openForMe": "{n} 个与我相关的未完成任务",
   "mention.self": "@你",
   "todo.mentionYou": "[任务@你]",
