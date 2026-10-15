@@ -441,7 +441,7 @@
         // `std::fs::copy(` 是 2026-10-15 补的第八个：收藏 / 另存为拷的都是**没有体积上限**的整份文件。
         // 反过来，`std::fs::read(` 不进来 —— 它和"读一份 8 KB 配置"字面同形，按字面数会把尺子稀释成
         // 噪声；预览那三格的真有界性由同一体内的 `max_bytes.min(15 MiB)` 保证，那是**契约**不是尺子。
-        const PRIMITIVES: [&str; 8] = [
+        const PRIMITIVES: [&str; 10] = [
             "sha256_file_hex(",
             "sync_all()",
             "add_chunk(",
@@ -450,6 +450,17 @@
             "finish_group_receive_into(",
             "move_received_file(",
             "std::fs::copy(",
+            // 4.40.6 补的第九个名字：按名字它**只**表示"整棵树删除"（不会与"读 8 KB 配置"
+            // 那种小活儿字面同形），所以进清单不制造噪声。现算生产码 12 处里 9 处在
+            // `#[cfg(test)]` 的测试体内、一处是 `Drop`（不扫），剩下 3 处全在同一个
+            // async 命令体内 —— 复跑 `grep -rn "std::fs::remove_dir_all(" src-tauri/src`。
+            "std::fs::remove_dir_all(",
+            // 4.40.6 同一轮补的第十个名字。为什么**必须**有它：把整棵树删除抽进一个同步
+            // helper（`clear_dir_contents`）之后，`std::fs::remove_dir_all(` 在受扫体内出现 0 次、
+            // 尺子判绿 —— 这正是台账第 13 行写的盲区①「同步 helper 里藏着整份慢活」的第一次真实命中。
+            // 登记 helper 自己的名字，才拦得住「以后有人把它直接搬回 async 体里就地调」。
+            // 复跑：grep -rn "clear_dir_contents(" src-tauri/src/commands/favorites.rs
+            "clear_dir_contents(",
         ];
         // 登记好的"家"（顺序即排序后的比较顺序）。
         let registered: Vec<&str> = vec![
@@ -585,7 +596,7 @@
         );
         assert_eq!(
             total,
-            13,
+            16,
             "整份慢活现数到 {total} 处、登记 13 处。对不上时先分清哪一种：\\n             ① 新增的是**合规**的一格（也在池里跑）⇒ 把这一格数与 `homes` 清单一起改上来，\\n             ② 新增的是**没包的** ⇒ 先搬进 spawn_blocking（同链已有 13 处写法可抄），\\n             ③ 改了 helper 的名字 ⇒ PRIMITIVES 清单要同步，否则这条法就悄悄少了一格。"
         );
         assert!(

@@ -458,6 +458,35 @@ async fn clear_table_batched(s: &Arc<AppState>, table: &str) -> Result<u64, Stri
     }
 }
 
+/// 清空一个目录的**内容**（保留目录本身）。整棵树的删除是按数据量的慢活，
+/// 因此只许由 `clear_all_data` 在阻塞线程池里调它（INV-P34）—— 本函数本身是**同步**的。
+/// `read_dir` 失败立即向上报 Err（沿用旧口径，不吞、也不继续猜后面那几个目录）；
+/// 单个条目删不掉则收集成 `{tag}: 路径 (错误)` 继续走完整理。
+fn clear_dir_contents(dir: &std::path::Path, tag: &str) -> Result<Vec<String>, String> {
+    let mut errors: Vec<String> = Vec::new();
+    if !dir.exists() {
+        return Ok(errors);
+    }
+    for entry in std::fs::read_dir(dir)
+        .map_err(|e| e.to_string())?
+        .filter_map(|e| e.ok())
+    {
+        let path = entry.path();
+        let result = if path.is_file() {
+            std::fs::remove_file(&path)
+        } else if path.is_dir() {
+            std::fs::remove_dir_all(&path)
+        } else {
+            Ok(())
+        };
+        if let Err(e) = result {
+            errors.push(format!("{tag}: {} ({})", path.display(), e));
+        }
+    }
+    Ok(errors)
+}
+
+
 #[tauri::command]
 pub async fn clear_all_data(
     state: State<'_, Arc<AppState>>,
@@ -561,78 +590,36 @@ pub async fn clear_all_data(
         .clear();
 
     // 3. 文件系统清理（DB commit 成功后执行）
-    //    收集错误而非立即返回，避免文件清理失败伪装成"整个操作失败"
-    let mut fs_errors: Vec<String> = Vec::new();
-
-    // 清空 cache_dir 内容（保留目录本身）
-    if s.cache_dir.exists() {
-        for entry in std::fs::read_dir(&s.cache_dir)
-            .map_err(|e| e.to_string())?
-            .filter_map(|e| e.ok())
-        {
-            let p = entry.path();
-            let result = if p.is_file() {
-                std::fs::remove_file(&p)
-            } else if p.is_dir() {
-                std::fs::remove_dir_all(&p)
-            } else {
-                Ok(())
-            };
-            if let Err(e) = result {
-                fs_errors.push(format!("cache_dir: {} ({})", p.display(), e));
-            }
-        }
-    }
-    // 清空 downloads_dir 内容（保留目录本身）
-    let dl = s
-        .downloads_dir
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone();
-    if dl.exists() {
-        for entry in std::fs::read_dir(&dl)
-            .map_err(|e| e.to_string())?
-            .filter_map(|e| e.ok())
-        {
-            let p = entry.path();
-            let result = if p.is_file() {
-                std::fs::remove_file(&p)
-            } else if p.is_dir() {
-                std::fs::remove_dir_all(&p)
-            } else {
-                Ok(())
-            };
-            if let Err(e) = result {
-                fs_errors.push(format!("downloads_dir: {} ({})", p.display(), e));
-            }
-        }
-    }
-    // 清空收藏副本目录（保留目录本身）。
-    // 收藏目录不在 media_dirs 里、也不受存储清理影响（那正是它存在的意义），
-    // 所以必须在这里**显式**清 —— 否则收藏记录删了、副本文件会永远留在磁盘上。
-    if s.favorites_dir.exists() {
-        for entry in std::fs::read_dir(&s.favorites_dir)
-            .map_err(|e| e.to_string())?
-            .filter_map(|e| e.ok())
-        {
-            let p = entry.path();
-            let result = if p.is_file() {
-                std::fs::remove_file(&p)
-            } else if p.is_dir() {
-                std::fs::remove_dir_all(&p)
-            } else {
-                Ok(())
-            };
-            if let Err(e) = result {
-                fs_errors.push(format!("favorites_dir: {} ({})", p.display(), e));
-            }
-        }
-    }
-
+    //    收集错误而非立即返回，避免文件清理失败伪装成"整个操作失败"。
+    //    ⚠️ INV-P34：整棵树删除是**按数据量**的慢活 —— `downloads_dir` 正是 GB 级接收文件
+    //    落地的地方，收藏目录里装着复制出来的副本。上面那一半库删除**刻意**分批 + 让出调度
+    //    （注释里写着用户实测"点「清除数据」→ 设置窗口卡死、点不动"），这一半原先却就地做，
+    //    形状与 4.39.3~4.40.5 修掉的那一族相同：本应用只有一个 tokio runtime，所有开窗命令
+    //    与它同池。这里交出的只有**执行上下文**：删的还是那三个目录（同一顺序）、
+    //    `read_dir` 失败仍按原口径立即向上报 Err、错误仍在末尾收成同一条 Err。
+    let cache_dir = s.cache_dir.clone();
+    let downloads_dir = {
+        s.downloads_dir
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    };
+    let favorites_dir = s.favorites_dir.clone();
+    let fs_errors: Vec<String> = tokio::task::spawn_blocking(move || {
+        let mut v = clear_dir_contents(&cache_dir, "cache_dir")?;
+        v.extend(clear_dir_contents(&downloads_dir, "downloads_dir")?);
+        // 收藏目录不在 media_dirs 里、也不受存储清理影响（那正是它存在的意义），
+        // 所以必须在这里**显式**清 —— 否则收藏记录删了、副本文件会永远留在磁盘上。
+        v.extend(clear_dir_contents(&favorites_dir, "favorites_dir")?);
+        Ok::<Vec<String>, String>(v)
+    })
+    .await
+    .unwrap_or_else(|e| Err(format!("清除数据的文件清理任务被线程池中断: {e}")))?;
     // 破坏性操作必须**广播**：用户实测（Mac 4.1.10）"在设置里清了缓存、目录和聊天记录，
     // 但主界面没反应" —— 因为清除只发生在设置窗口自己的 store 里，主窗口是另一个 WebView，
     // 它手里的会话列表/消息一条都没变（看起来像"没清掉"）。
     // 注意：即使有文件没删掉，**数据库记录已经清了** ⇒ 也要广播（否则界面同样显示旧数据）。
+
     s.notify_data_cleared(Some(window.label()));
 
     if fs_errors.is_empty() {

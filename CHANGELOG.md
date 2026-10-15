@@ -13,6 +13,66 @@
 
 ## [Unreleased]
 
+## [4.40.6] - 2026-10-15
+
+### 审计第七轮：INV-P34 的「第十一格」——设置里点「清除数据」时，整棵树删除还钉在 worker 上
+
+现象仍在问题 A 这一族（「界面卡死或部分功能失效」），触发点是**用户在设置窗口点「清除数据」**。
+这条不是猜的：同一函数上半段的注释里就写着负责人实测「点「清除数据」→ 设置窗口卡死、点不动」，
+4.39 那一轮为此把**库删除**改成分批 + `tokio::task::yield_now()`；本轮读到下半段才发现
+**文件删除那一半从来没动** —— 同一根因在同一个函数里被修了一次、留了一次。
+
+| 证据 | 实物 |
+|---|---|
+| 违规形状 | `commands/favorites.rs` 的 `clear_all_data`（async 命令）体内直接 `std::fs::read_dir` + `remove_file` + **`remove_dir_all`** 遍历 `cache_dir`、`downloads_dir`、`favorites_dir` 三个目录 |
+| 为什么这是 GB 级 | `downloads_dir` 正是接收文件落地的地方、`favorites_dir` 装着收藏复制出来的副本；整棵树删除的耗时**按数据量**，不设上限 |
+| 为什么钉住 worker | 本应用只有一个 tokio runtime，所有 `#[tauri::command]` 与网络任务同池（4.40.5 那节已用锁定版本源码把这条钉死：宏把同步命令体也塞进 `async_runtime::spawn`） |
+| 生产码里这个名字共几处 | `grep -rn "std::fs::remove_dir_all(" src-tauri/src` 现数 **12 处**：8 处在 `#[cfg(test)]` 测试体内、1 处在 `Drop`（尺子不扫）、**3 处全在这一个 async 命令体内** |
+
+**最小修改点**：把下半段三个目录的清理**整体**交给 `tokio::task::spawn_blocking`，抽出一个同步
+helper `clear_dir_contents(dir, tag)`，并给它配 `unwrap_or_else(|e| Err(..))?` —— 线程池的 `Err`
+不许被伪装成 `Ok`（INV-P34 规则 4）。**行为逐格恒等**：删的还是那三个目录、顺序不变、
+`read_dir` 失败仍按原口径**立即**向上报 Err（不是吞掉、也不是继续猜后面）、单条删不掉仍收成
+`{tag}: 路径 (错误)` 在末尾拼成同一条 Err、`notify_data_cleared` 的广播时机不变、那条带文件路径的
+错误文案一字未动。回滚＝revert 这一笔。
+
+**判据是先红后绿落下来的**（不是补的）：分母判据 `tests::whole_file_slow_work_never_runs_on_an_async_worker`
+的 `PRIMITIVES` 从 8 个名字加到 **10 个**，两条红依次为 ——
+① 加 `std::fs::remove_dir_all(` 那刻：`现数到 16 处、登记 13 处`；登记值改到 16 后红换成
+`offenders 命中 3 处，全部点名 commands/favorites.rs [std::fs::remove_dir_all(]`（判据自己打印的家）。
+② 搬完之后再跑：处数落回 **13** —— 不是回到原样，是**组成变了**：`remove_dir_all` 在受扫体内出现 0 次
+（它搬进了同步 helper），新增的是 3 次 `clear_dir_contents(` 调用。
+
+**这里正好撞上台账第 13 行写着的盲区①，而且这是它第一次真实命中**：尺子扫的是 async 体，
+"把整份慢活抽进一个同步 helper"会让该名字在受扫体内归零 ⇒ 判据**判绿**。同一形状如果落在
+"抽了 helper 却直接在 async 体里调它"上，光登记 `remove_dir_all` 是拦不住的。所以第十个名字登记的
+是 **helper 自己的名字** `clear_dir_contents(` —— 以后谁把它搬回 async 体就地调，分母当场红。
+**反例能力（本轮实测）**：把其中一格改成 spawn_blocking 之前的直接调用（单点变异）⇒ 判据红在处数那格
+（`现数到 17 处、登记 16 处`）；offenders 那一格被前一条 assert 先挡住**没打印**，所以这条变异只验到
+"会红"，没验到"红得有名有姓"——这点如实记着，与 4.40.4 那笔"处数与 offenders 两处都红"不同。
+变异体已逐字节还原（`diff -q` 与自备份一致）。
+
+**读数（全部裸取退码，不经管道）**：`cargo fmt --check --all` 退 0；`cargo clippy --features bluetooth -- -D warnings`
+（门禁第 19 步那条原命令）退 0；`cargo test --features bluetooth` 全目标 **860 passed / 0 failed**（lib 860、
+bin 0、doc 1 ignored）；分母判据绿且现数=登记=13、家=11 册。
+⚠️ 记两条我自己踩过的：① 一开始把 clippy 退码接在 `| tail` 后面 ⇒ 拿到的是 `tail` 的 0，屏幕上还印着
+48 个 error；② 那 48 个 error 来自我**自造的** `clippy --lib --tests`，而门禁那条命令是绿的、
+`src-tauri/tests/` 这个目录根本不存在 ⇒ 认结论只认门禁原命令，别拿自己拼的命令行当读数。
+
+**这一格仍然买不到的**：尺子认的是**名字**，`remove_file` / `read_dir` 这类"与读 8 KB 配置字面同形"
+的小活儿照旧不进清单（进了尺子就成噪声，台账第 13 行第 ③ 条盲区原样保留）。本轮只新增了两个名字。
+
+**登记但这一轮没动**：⑪ `network/transport.rs:231` 的 accept 错误臂一律静默 `continue`（本机实测
+`TooManyOpenFiles`/os 24 ×128 次零日志，最小诊断补丁形状已给出，等推送窗口）、⑩ 收藏那条 `?` 出口
+不留删副本、③ 每片两次 `file_receivers` 抢锁、④ 落库节流与事件节流共用 `last_report_ms`、
+⑥ 群 done 失败不落 `Incomplete`、⑦ 预览 IPC 的两半真机读数、⑧ `set_abortive_close` 的 `eprintln!`、
+⑨ UDP 两处 `let Ok(..) else { continue }`。
+
+**交付状态**：这一格是「已修改 + 自动化判据已落」，**不是**「生产已修复」——负责人真机上点一次
+「清除数据」（ downloads 里先放几个 GB 级文件 ）才是收口证据；本轮双端读数仍为零。
+
+
+
 ## [4.40.5] - 2026-10-15
 
 ### 审计第六轮：⑦ 那格从"要真机才判得动"变成"形状已判、量级有下界"，另登记两处只查到没动的
