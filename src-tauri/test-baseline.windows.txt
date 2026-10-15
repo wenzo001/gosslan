@@ -690,6 +690,7 @@ protocol::tests::remind_actor_partition_against_membership
 protocol::tests::remind_kinds_are_silent
 protocol::tests::remind_msg_kind_mapping
 protocol::tests::remind_payload_parse_and_defaults
+protocol::tests::remind_payload_shake_flag_roundtrip
 protocol::tests::unknown_message_kind_still_decodes_as_a_chat_message
 protocol::tests::unknown_message_type_is_a_hard_parse_error
 protocol::tests::wire_kind_matches_the_serde_tag
