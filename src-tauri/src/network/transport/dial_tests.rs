@@ -156,4 +156,55 @@
         ));
     }
 
+    /// LAN 拨号失败必须**留痕**（2026-10-15 全链路审计 §五）。
+    ///
+    /// 旧形状是 `let _ = connect_to_peer(..).await;` 一行吞掉：问题 B 的现场正是「对端在节点
+    /// 列表里、可就是连不上」，而磁盘上一行证据都没有 ⇒ 「发现失败 / TCP 建连失败 / 握手失败」
+    /// 三种结局只能靠猜。现在 `Failed` 那一格走节流 warn（`DialOutcome::Failed` 的字符串本身
+    /// 就带阶段名，不在这里再分类一次 —— 同一判断两个家必然漂移）。
+    ///
+    /// 为什么是源码护栏而不是行为测试：`ensure_link` 吃 `Arc<AppState>`（要真实 tauri
+    /// `AppHandle`，单测造不出来），与本册 `writer_socket_failure_cancels_and_logs_before_break`
+    /// 同一条先例。
+    #[test]
+    fn lan_dial_failure_is_logged_not_swallowed() {
+        let src = crate::network::transport_src_for_guards();
+        let start = src
+            .find("pub async fn ensure_link(")
+            .expect("找不到 ensure_link（这条护栏会空转）");
+        let end = src[start..]
+            .find("async fn connect_to_peer(")
+            .map(|i| start + i)
+            .expect("ensure_link 之后找不到 connect_to_peer（函数边界变了，护栏需同步）");
+        let body = &src[start..end];
+        let flat: String = body.chars().filter(|c| !c.is_whitespace()).collect();
+
+        // ① 拨号结果必须被接住并只对 Failed 那一格留痕
+        assert!(
+            flat.contains("ifletDialOutcome::Failed(why)=connect_to_peer("),
+            "LAN 拨号不能再用 `let _ =` 吞掉结果：失败原因（TCP 建连 / 握手 / 超时）是问题 B 唯一的现场证据"
+        );
+        // ② 留痕 = 节流 + warn，且节流在 warn 外面（每 5s 一轮，不节流会刷满 500 条日志环）
+        assert!(
+            flat.contains("iflog_throttled(\"lan_dial_fail\",30_000){state.logger.warn("),
+            "LAN 拨号失败必须打一条节流 warn：既不能静默，也不能每 5s 刷一行"
+        );
+        // ③ 反证：旧的静默形状不许回来
+        assert!(
+            !body.contains("let _ = connect_to_peer("),
+            "`let _ = connect_to_peer(..)` 就是本轮收掉的那个吞错形状，不许再写回去"
+        );
+        // ④ 分母：本函数只有一个拨号出口、一处 warn（多了说明又开始给常态结果打日志）
+        assert_eq!(
+            body.matches("connect_to_peer(").count(),
+            1,
+            "ensure_link 的拨号出口应恰好一处（两处=去重判据被复制）"
+        );
+        assert_eq!(
+            body.matches(".warn(").count(),
+            1,
+            "ensure_link 里只许给 Failed 那一格留痕：AlreadyConnected/AlreadyDialing/DialBusy/Stopped 都是每轮常态，必须静默"
+        );
+    }
+
     // ---- M3-b：发送顺序（按端点对齐两套链路表 + pick_link 排序）----

@@ -274,6 +274,93 @@ fn bind_udp_recv(port: u16) -> Result<UdpSocket, String> {
     UdpSocket::from_std(std_sock).map_err(|e| format!("register UDP recv socket: {e}"))
 }
 
+/// **发送侧** UDP socket 的可换容器。
+///
+/// ## 为什么要有这一层（4.40.1 登记的 ⑤，本轮收掉）
+///
+/// `bind_udp_reusable` 把发送 socket 钉在**具体 LAN IP** 上 —— 那是躲开 VPN/虚拟网卡劫持
+/// 出口所必需的（见 `bind_udp_reusable` 的注释）。但它在 `spawn` 那一刻只绑一次，此后没有
+/// 任何一处再绑。于是本机 IP 在运行期没了（DHCP 续约、切 Wi-Fi、休眠唤醒、精简镜像上网卡
+/// 服务重启后重排）时，子网广播、limited 广播、组播**三条路全部** `EADDRNOTAVAIL`；
+/// 而收侧那只绑 `0.0.0.0`，照旧听得见。后果正是问题 B 的形状：
+/// **我收得到别人、别人从此找不到我，本进程永不自愈，只能重启应用。**
+///
+/// 所以只有**发送侧**需要这一层，`recv_socket`(0.0.0.0) 不受网卡变化影响，刻意不换。
+///
+/// 锁只在取/换 `Arc` 的瞬间持有，绝不跨 `await`（`std::sync::RwLock` 的守卫不是 `Send`，
+/// 跨 await 持有会让整个 future 编译不过）。
+struct SendCell(std::sync::RwLock<Arc<UdpSocket>>);
+
+impl SendCell {
+    fn new(sock: UdpSocket) -> Self {
+        Self(std::sync::RwLock::new(Arc::new(sock)))
+    }
+
+    /// 当前该用的发送 socket。每轮循环取一次，取完立刻放锁。
+    fn current(&self) -> Arc<UdpSocket> {
+        self.0.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// 换上新 socket（旧的随引用归零自动关 fd）。
+    fn swap(&self, sock: UdpSocket) {
+        *self.0.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(sock);
+    }
+}
+
+/// 连续多少轮「三条广播路全失败」后，重新探测网卡并把发送出口换过去。
+/// 周期广播自适应 5~20s 一轮 ⇒ 最坏约 15~60s 内自愈，也不会每轮都拆建 socket。
+const SEND_SILENT_REBIND_ROUNDS: u32 = 3;
+
+/// 广播失败连拍计数（纯函数，便于正反两臂单测）。
+/// · 三条路里**任一条**成功 ⇒ 归零：网络恢复了，或本机本来就只有子网广播那条腿能用（macOS）。
+/// · 全失败 ⇒ +1（饱和加，不溢出）。
+fn next_fail_streak(sent_any: bool, streak: u32) -> u32 {
+    if sent_any {
+        0
+    } else {
+        streak.saturating_add(1)
+    }
+}
+
+/// 该不该把发送出口从 `cur_ip` 换到探测结果（纯函数）。
+/// `Some((新 IP, 新子网广播))` = 换；`None` = 这一轮不换。
+///
+/// 三条「不换」各有原因，都不许顺手放宽：
+/// · **手动模式**（用户钉了网卡）不换 —— 静默改绑等于替用户改配置，他的意图就是「走这块卡」；
+///   那种情况下日志里的 `broadcast_stuck_error` 才是该看的证据。
+/// · **探不到可用 LAN**（`found == None`，网卡还没起来）不换 —— 不能把手里唯一那只 socket 拆了，
+///   拆完连「以前还能发」的那半都没了。
+/// · **探到的还是同一个 IP** 不换 —— 三路全失败另有原因（防火墙 / 网络配置为公用 / 对端不在这条网），
+///   原地拆建同一地址只会白拆一次。
+fn plan_send_rebind(
+    manual: bool,
+    cur_ip: Ipv4Addr,
+    found: Option<(Ipv4Addr, Ipv4Addr)>,
+) -> Option<(Ipv4Addr, Ipv4Addr)> {
+    if manual {
+        return None;
+    }
+    let (new_ip, new_bc) = found?;
+    (new_ip != cur_ip).then_some((new_ip, new_bc))
+}
+
+/// 取本机 IP 所在网卡的名称（只用于诊断展示）。找不到返回空串。
+fn interface_name_for(ip: Ipv4Addr) -> String {
+    if_addrs::get_if_addrs()
+        .ok()
+        .into_iter()
+        .flatten()
+        .find_map(|i| {
+            if let if_addrs::IfAddr::V4(_) = &i.addr {
+                if i.ip() == std::net::IpAddr::V4(ip) {
+                    return Some(i.name.clone());
+                }
+            }
+            None
+        })
+        .unwrap_or_default()
+}
+
 fn announce_packet(state: &AppState, tcp_port: u16) -> UdpPacket {
     // 注意：announce 不携带 avatar——头像可能很大，塞进 UDP 广播会超报文上限
     // （EMSGSIZE "Message too long"）导致发现失效；头像改由 TCP 建链后的 UserInfo 同步。
@@ -343,7 +430,8 @@ pub async fn spawn(
                 format!("join multicast {MULTICAST_GROUP} on {multicast_iface} failed: {e}")
             })?;
     }
-    let send_socket = Arc::new(send_socket);
+    // 发送侧进 `SendCell`（可换），收侧保持裸 `Arc`（绑 0.0.0.0，网卡变化不影响它）。
+    let send_cell = Arc::new(SendCell::new(send_socket));
     let recv_socket = Arc::new(recv_socket);
 
     // 记录诊断：启动参数（bound_ip 必须是真实 LAN IP，供前端开发者面板展示）
@@ -356,19 +444,7 @@ pub async fn spawn(
         diag.multicast_join_result = "ok".into();
         diag.multicast_if_result = "ok".into();
         diag.udp_port = UDP_PORT;
-        diag.selected_interface = if_addrs::get_if_addrs()
-            .ok()
-            .into_iter()
-            .flatten()
-            .find_map(|i| {
-                if let if_addrs::IfAddr::V4(_) = &i.addr {
-                    if i.ip() == std::net::IpAddr::V4(udp_bind_ip) {
-                        return Some(i.name.clone());
-                    }
-                }
-                None
-            })
-            .unwrap_or_default();
+        diag.selected_interface = interface_name_for(udp_bind_ip);
     }
     state.push_diag_event(
         "discovery_started",
@@ -387,7 +463,7 @@ pub async fn spawn(
     // 会把同一份数据报只投给其中一个 socket，只读一个就会漏掉一半的发现包。
     let recv_task = {
         let recv_socket = recv_socket.clone();
-        let send_socket = send_socket.clone();
+        let send_cell = send_cell.clone();
         let state = state.clone();
         let my_id = my_id.clone();
         let mut shutdown = shutdown.clone();
@@ -396,16 +472,20 @@ pub async fn spawn(
             let mut buf_recv = vec![0u8; 2048];
             let mut buf_send = vec![0u8; 2048];
             loop {
+                let send_socket = send_cell.current();
+                // 每轮**现取**发送 socket：出口被重绑过（`reprobe_send_socket`）之后这里拿到的就是
+                // 新网卡上那只，发给具体地址的单播才会跟着换接口 —— 不会停在退役的旧 socket 上。
+                // ⚠️ 这一行必须留在 `loop` 体内：挪到循环外就退化成一份永久快照（判据按形状钉住了）。
                 tokio::select! {
                     biased;
                     _ = shutdown.changed() => break,
                     res = recv_socket.recv_from(&mut buf_recv) => {
                         let Ok((len, src)) = res else { continue };
-                        handle_datagram(&state, &send_socket, &my_id, &buf_recv[..len], src, tcp_port, &shutdown).await;
+                        handle_datagram(&state, &send_cell, &my_id, &buf_recv[..len], src, tcp_port, &shutdown).await;
                     }
                     res = send_socket.recv_from(&mut buf_send) => {
                         let Ok((len, src)) = res else { continue };
-                        handle_datagram(&state, &send_socket, &my_id, &buf_send[..len], src, tcp_port, &shutdown).await;
+                        handle_datagram(&state, &send_cell, &my_id, &buf_send[..len], src, tcp_port, &shutdown).await;
                     }
                 }
             }
@@ -414,12 +494,19 @@ pub async fn spawn(
 
     // ---- 广播循环（自适应周期 + 抖动，避免大规模节点广播风暴与同步惊群） ----
     let broadcast_task = {
-        let socket = send_socket.clone();
+        let send_cell = send_cell.clone();
         let state = state.clone();
         let mut shutdown = shutdown.clone();
+        // 手动模式下用户钉死了网卡，运行期**不许**替他换（判据见 `plan_send_rebind`）。
+        let manual = !ip.is_unspecified();
         tokio::spawn(async move {
+            let mut cur_ip = udp_bind_ip;
+            let mut lan_bc = lan_broadcast;
             // 首次立刻广播
-            broadcast(&socket, &state, tcp_port, lan_broadcast).await;
+            let mut streak = next_fail_streak(
+                broadcast(&send_cell.current(), &state, tcp_port, lan_bc).await,
+                0,
+            );
             // 下一轮周期广播的时刻。只在真正广播后重算，探测分支不改变节拍。
             let mut next_at = Instant::now() + Duration::from_secs(next_wait(&state));
             loop {
@@ -427,13 +514,25 @@ pub async fn spawn(
                     biased;
                     _ = shutdown.changed() => break,
                     _ = sleep_until(next_at) => {
-                        broadcast(&socket, &state, tcp_port, lan_broadcast).await;
+                        let sent_any = broadcast(&send_cell.current(), &state, tcp_port, lan_bc).await;
                         sweep_peers(&state);
+                        streak = next_fail_streak(sent_any, streak);
+                        if streak >= SEND_SILENT_REBIND_ROUNDS {
+                            // 到点先清计数：不管这轮换没换成，下一次尝试都要再过 N 轮，
+                            // 否则「换不出去」会退化成每轮都拆建 socket（还顺手刷日志）。
+                            streak = 0;
+                            if let Some((new_ip, new_bc)) =
+                                reprobe_send_socket(&state, &send_cell, manual, cur_ip)
+                            {
+                                cur_ip = new_ip;
+                                lan_bc = Some(new_bc);
+                            }
+                        }
                         next_at = Instant::now() + Duration::from_secs(next_wait(&state));
                     }
                     // 按需探测：用户打开「添加好友」时触发一次 who_has 群发
                     _ = probe.changed() => {
-                        broadcast_probe(&socket, &state, tcp_port, lan_broadcast).await;
+                        broadcast_probe(&send_cell.current(), &state, tcp_port, lan_bc).await;
                     }
                 }
             }
@@ -480,12 +579,12 @@ fn diag_event_from_send_result(
 /// 处理一个收到的发现报文（`announce` / `who_has`）。
 ///
 /// 从接收循环里抽出来是为了**两个 socket 共用同一套逻辑**（见 `spawn` 里为什么有两个）。
-/// 出包一律走 `send_socket`（绑具体 LAN IP）—— 对端会拿 `src.ip()` 回连我们，
-/// 源地址必须是真实 LAN IP。
+/// 出包一律走**当前**的发送 socket（绑具体 LAN IP，`SendCell`）—— 对端会拿 `src.ip()` 回连我们，
+/// 源地址必须是真实 LAN IP；出口换过网卡之后，回包也必须跟着走新那只。
 #[allow(clippy::too_many_arguments)]
 async fn handle_datagram(
     state: &Arc<AppState>,
-    send_socket: &Arc<UdpSocket>,
+    send_cell: &Arc<SendCell>,
     my_id: &str,
     buf: &[u8],
     src: std::net::SocketAddr,
@@ -558,14 +657,15 @@ async fn handle_datagram(
             // 与建链路径打满（回包风暴 + 一次性 ensure_link）。
             // 这里让每个节点各自等一个 0~500ms 随机时长再回，
             // 把回包摊开；对"打开添加好友"的感知延迟影响可忽略。
-            let socket = send_socket.clone();
+            let socket = send_cell.clone();
             let state = state.clone();
             tokio::spawn(async move {
                 let jitter = OsRng.next_u64() % 500;
                 tokio::time::sleep(Duration::from_millis(jitter)).await;
                 let reply = announce_packet(&state, tcp_port);
                 if let Ok(data) = serde_json::to_vec(&reply) {
-                    let _ = socket.send_to(&data, src).await;
+                    // 抖动之后**再取一次**当前 socket：这 0~500ms 里出口可能被重绑过。
+                    let _ = socket.current().send_to(&data, src).await;
                 }
             });
         }
@@ -573,15 +673,22 @@ async fn handle_datagram(
     }
 }
 
+/// 广播一轮 announce，返回**三条路里是否至少发出去一条**（`sent_any`）。
+///
+/// 这个返回值是给广播循环数连拍用的（`next_fail_streak` → `reprobe_send_socket`）：
+/// 只有三路全灭才算「本机在局域网上发不出声」，macOS 那种「只有子网广播这条腿能用」的
+/// 正常形态绝不能累计，否则每次正常运行都会隔几轮去拆建一次 socket。
 async fn broadcast(
     socket: &UdpSocket,
     state: &AppState,
     tcp_port: u16,
     lan_broadcast: Option<Ipv4Addr>,
-) {
+) -> bool {
     let pkt = announce_packet(state, tcp_port);
     let Ok(data) = serde_json::to_vec(&pkt) else {
-        return;
+        // 一个字都没发出去 ⇒ 按"这一轮没出声"计。序列化失败不是网卡问题（重绑也治不了它），
+        // 但把它报成"发出去了"会让连拍计数撒谎 —— 宁可多探一次网卡，也不能漏报失声。
+        return false;
     };
     // **两种广播都发**，各自覆盖对方的短板：
     // · limited broadcast（255.255.255.255）：Windows 默认禁用 directed broadcast
@@ -620,6 +727,69 @@ async fn broadcast(
         let (kind, detail) = diag_event_from_send_result(&mcast_target, "bc_multicast", &mcast_res);
         state.push_diag_event(kind, &detail);
     }
+    directed_ok || bcast_res.is_ok() || mcast_res.is_ok()
+}
+
+/// 广播连续几轮三路全失败后，重新选网卡并把**发送侧**出口换过去。
+///
+/// 收侧那只绑 `0.0.0.0` 的 socket 刻意不动：它不受网卡变化影响（见 `discovery_recv_bind_ip`）。
+/// 返回 `Some((新 IP, 新子网广播))` = 已换，调用方据此更新下一轮广播的目标；
+/// `None` = 这一轮不换（三条判据见 `plan_send_rebind`，或新 socket 没建起来）。
+///
+/// 同步函数，不是 async：整段只有 `if_addrs` 枚举 + 建/绑 socket + 加组播这几个即时系统调用，
+/// 最轻的失败也远不到需要挪进阻塞线程池的量级（那是 GB 级 fsync 那一族的规矩）。
+fn reprobe_send_socket(
+    state: &AppState,
+    cell: &SendCell,
+    manual: bool,
+    cur_ip: Ipv4Addr,
+) -> Option<(Ipv4Addr, Ipv4Addr)> {
+    let found = find_lan_interface();
+    let Some((new_ip, new_bc)) = plan_send_rebind(manual, cur_ip, found) else {
+        // 这一条必须响：它标的正是「本机在局域网发不出声，而且我们**没有**自救」这一格。
+        // 排查「要重启才恢复」时，「没探到网卡」和「探到了但不肯换（手动模式 / 还是同一个 IP）」
+        // 是两条完全不同的结论，混成一句"广播失败"就会去查错的那一头。
+        state.push_diag_event(
+            "broadcast_stuck_error",
+            &format!(
+                "连续 {SEND_SILENT_REBIND_ROUNDS} 轮广播三路全失败且未重绑: manual={manual}, bound={cur_ip}, 探测={found:?}"
+            ),
+        );
+        return None;
+    };
+    let new_socket = match bind_udp_reusable(new_ip, UDP_PORT) {
+        Ok(s) => s,
+        Err(e) => {
+            state.push_diag_event(
+                "discovery_rebind_error",
+                &format!("新出口 {new_ip}:{UDP_PORT} 绑定失败，保留 {cur_ip}: {e}"),
+            );
+            return None;
+        }
+    };
+    // 组播先加上再换：加不上说明这块卡也用不了，那时不能把唯一还在的那只拆掉。
+    if let Err(e) = new_socket.join_multicast_v4(MULTICAST_GROUP, new_ip) {
+        state.push_diag_event(
+            "discovery_rebind_error",
+            &format!("新出口 {new_ip} 加入组播 {MULTICAST_GROUP} 失败，保留 {cur_ip}: {e}"),
+        );
+        return None;
+    }
+    let iface = interface_name_for(new_ip);
+    cell.swap(new_socket);
+    {
+        // 诊断字段必须跟着改，否则开发者面板会一直指着那只已退役的 socket
+        // ——「界面显示出口是 eth0、实际从 en0 发」这种假证据比没有证据更坏。
+        let mut diag = state.diag.lock().unwrap_or_else(|e| e.into_inner());
+        diag.bound_ip = new_ip.to_string();
+        diag.selected_ip = new_ip.to_string();
+        diag.selected_interface = iface.clone();
+    }
+    state.push_diag_event(
+        "discovery_rebind",
+        &format!("{cur_ip} -> {new_ip} bc={new_bc} iface={iface}"),
+    );
+    Some((new_ip, new_bc))
 }
 
 /// 按需探测：群发 `who_has` 请求周围节点单播回复其 `announce`，并同时广播一次自身 announce。
@@ -903,6 +1073,49 @@ mod tests {
         assert!(!is_virtual_interface_name("以太网"));
         // 实测确认的企业 VPN 适配器
         assert!(is_virtual_interface_name("vgateO"));
+    }
+
+    /// 广播连拍只在**三路全灭**时累计（出口重绑的节拍）。
+    ///
+    /// 反过来说最重要：macOS 上 limited 广播与组播**本来就发不出去**（socket 绑了具体网卡 IP
+    /// 时 EHOSTUNREACH），只有子网广播那条腿能用 —— 那是**正常运行**。若把"有一条失败"也算进
+    /// 连拍，每台 Mac 每隔几轮就会拆建一次发送 socket，把稳态跑成抖动。
+    #[test]
+    fn broadcast_streak_counts_only_full_silence() {
+        assert_eq!(next_fail_streak(true, 0), 0);
+        assert_eq!(
+            next_fail_streak(true, 7),
+            0,
+            "任一条腿发得出去就不算本机失声，计数必须清零（macOS 常态只有子网广播能用）"
+        );
+        assert_eq!(next_fail_streak(false, 0), 1);
+        assert_eq!(next_fail_streak(false, 2), 3);
+        assert_eq!(
+            next_fail_streak(false, u32::MAX),
+            u32::MAX,
+            "长期断网不许回绕成 0 —— 回绕会把重绑节拍变成随机，最坏永远不触发"
+        );
+        // 阈值必须大于 1：单轮失败就拆建 socket，会把"对端重启了一秒"这种抖动放大成出口抖动
+        assert!(
+            SEND_SILENT_REBIND_ROUNDS > 1,
+            "重绑阈值不得为 1（一轮失败就换出口 = 抖动源）"
+        );
+    }
+
+    /// 出口重绑的三条「不换」判据 + 那一条「该换」（问题 B 的"网络变化后可恢复"）。
+    #[test]
+    fn send_egress_rebind_keeps_manual_dead_and_same_ip() {
+        let a: Ipv4Addr = "192.168.1.5".parse().unwrap();
+        let b: Ipv4Addr = "192.168.31.9".parse().unwrap();
+        let bc: Ipv4Addr = "192.168.31.255".parse().unwrap();
+        // ① 手动钉了网卡 ⇒ 就算探到别的也不换（不许静默替用户改配置）
+        assert_eq!(plan_send_rebind(true, a, Some((b, bc))), None);
+        // ② 探不到可用 LAN（网卡还没起来）⇒ 保持现状，不许把手里唯一那只拆了
+        assert_eq!(plan_send_rebind(false, a, None), None);
+        // ③ 探到的还是同一个 IP ⇒ 三路全失败另有原因，原地拆建没有意义
+        assert_eq!(plan_send_rebind(false, a, Some((a, bc))), None);
+        // ④ 正面那一格：本机 IP 真的换了才换
+        assert_eq!(plan_send_rebind(false, a, Some((b, bc))), Some((b, bc)));
     }
 
     /// 评分确定性：不依赖输入顺序，虚拟接口名始终排在真实 LAN 之后
