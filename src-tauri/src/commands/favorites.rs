@@ -100,7 +100,7 @@ pub fn list_favorites(state: State<'_, Arc<AppState>>) -> Result<Vec<Favorite>, 
 /// —— 前端整套渲染/打开/另存都只认 `content.path`，改写这一处就让收藏零改动复用它们。
 /// 副本是"独立存储"的物理保证：之后删除会话、清理缓存都不再影响这条收藏。
 #[tauri::command(async)]
-pub fn add_favorite(
+pub async fn add_favorite(
     state: State<'_, Arc<AppState>>,
     msg_id: String,
     conv_id: String,
@@ -139,8 +139,21 @@ pub fn add_favorite(
         let dst = s
             .favorites_dir
             .join(favorite_copy_name(&id, &content, &src));
-        std::fs::copy(&src, &dst).map_err(|e| format!("复制到收藏目录失败：{e}"))?;
-        media_size = std::fs::metadata(&dst).map(|m| m.len() as i64).unwrap_or(0);
+        // ⚠️ INV-P34：同步 fn 挂 `#[tauri::command(async)]` **不是**离开运行时（宏把函数体塞进
+        // `async_runtime::spawn` 的 future ⇒ tokio worker，依据见 `copy_file` 那格同一条注释）。
+        // 这里拷的是消息里那份**原文件**、没有体积上限 ⇒ 收藏 600 MB 就把一个 worker 按在磁盘
+        // 复制上数秒。只换执行线程：状态机、错误文案、返回类型一字未改。
+        let copied = {
+            let sp = src.clone();
+            let dp = dst.clone();
+            tokio::task::spawn_blocking(move || {
+                std::fs::copy(&sp, &dp).map_err(|e| format!("复制到收藏目录失败：{e}"))?;
+                Ok::<i64, String>(std::fs::metadata(&dp).map(|m| m.len() as i64).unwrap_or(0))
+            })
+            .await
+            .unwrap_or_else(|e| Err(format!("收藏复制任务被线程池中断: {e}")))
+        };
+        media_size = copied?;
         let dst_str = dst.to_string_lossy().to_string();
         final_content = db::favorite_content_with_path(&content, &dst_str);
         media_path = Some(dst_str);
