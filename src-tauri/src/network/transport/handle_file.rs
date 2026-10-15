@@ -187,16 +187,26 @@ async fn handle_file_messages(state: &Arc<AppState>, peer_id: &str, msg: Message
                 }
             }
             let received = if from_bytes > 0 {
-                file::resume_receive(
-                    state,
-                    &transfer_id,
-                    &from,
-                    &name,
-                    size,
-                    file_key,
-                    file_sha256.clone(),
-                    from_bytes,
-                )
+                // ⚠️ 这一格交给阻塞线程池，与 4.39.3 的单聊收尾、4.40.1 的群收尾是同一条规矩，
+                // 收的是 4.40.1 登记的 ②：`resume_receive` 要把 `.part` 前缀**整份**喂进校验器，
+                // 而前缀最长就等于整个文件（本机实测这条流式 SHA-256 ≈ 1 GB/s ⇒ 3 GB 前缀就是
+                // 约 3 秒，精简 Windows 的冷盘上还要再乘）。留在 async 路径上就是钉住一个
+                // tokio worker，同一个 runtime 上还排着所有 async 命令（开设置窗 / 日志窗）
+                // ⇒ 续传那几秒点了没窗，与问题 A 的已证实根因同一种病。
+                //
+                // 顺序一字未动：校验跑完才注册接收器、才回 Accept。本连接后面的分片在这期间
+                // 本来就读不进来（全仓六处 handle_message 调用点都是就地 await，没有一处 spawn
+                // 出去），所以"让出 worker"既不新开竞态窗口，也不改变发送端等到 Accept 的时长。
+                let st = state.clone();
+                let tid = transfer_id.clone();
+                let from_owner = from.clone();
+                let fname = name.clone();
+                let sha = file_sha256.clone();
+                tokio::task::spawn_blocking(move || {
+                    file::resume_receive(&st, &tid, &from_owner, &fname, size, file_key, sha, from_bytes)
+                })
+                .await
+                .unwrap_or_else(|e| Err(format!("续传校验任务被线程池中断: {e}")))
             } else {
                 file::begin_receive(
                     state,
