@@ -755,3 +755,38 @@ test('store 的 updateTodo 不许漏转 patch 里声明过的键（category 那�
   assert.ok(!fwdMutated.includes("category"), "摘掉之后必须看不见 category ⇒ 否则判据是恒过的");
   assert.ok(!declared.every((k) => fwdMutated.includes(k)), "摘掉之后 declared ⊆ forwarded 必须被打破");
 });
+
+/**
+ * 群历史那枚「低调的按钮」的三跳必须一路接得住（负责人 2026-10-16 追加手动同步那一格）。
+ *
+ * 为什么要单独判这一条：`chat.syncGroupHistoryNow` 这一跳已经被本文件开头的扫描器兜住
+ * （界面引用的 store 成员必须在 store 里导出），但**组件之间的 emit 没有任何家**——
+ * ChatHeader 声明了 `(e: "sync-history")`，而调用方漏写 `@sync-history` 时，
+ * 表现是"按钮点下去什么都不发生"：编译过、类型过、门禁全绿，功能是一个零。
+ * 那正是本仓最反对的静默形状，所以要在这里判，而不是等用户报"按钮坏了"。
+ */
+test("群历史按钮的 emit 必须有调用方接住，一路到命令名", () => {
+  const header = readFileSync(join(ROOT, "components", "chat", "ChatHeader.vue"), "utf8");
+  const win = readFileSync(join(ROOT, "components", "ChatWindow.vue"), "utf8");
+  const store = readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8");
+  const api = readFileSync(join(ROOT, "api", "index.ts"), "utf8");
+
+  assert.match(header, /\(e: "sync-history"\): void;/, "ChatHeader 里那一声必须还声明着");
+  assert.match(
+    header,
+    /@click="emit\('sync-history'\)"/,
+    "按钮必须真的喊这一声（只留声明不喊 = 界面上一枚死图标）",
+  );
+  assert.match(win, /@sync-history="onSyncGroupHistory"/, "调用方必须接住这一声");
+  assert.match(win, /await chat\.syncGroupHistoryNow\(/, "接住之后必须真交给 store");
+  assert.match(store, /await api\.syncGroupHistoryNow\(/, "store 必须真调 api");
+  assert.match(api, /invoke<string>\("sync_group_history_now"/, "api 必须打到那个命令名");
+
+  // 非空转对照：把调用方那一行摘掉 ⇒ 必须判不出来（否则这六条是恒过的装饰）。
+  const mutated = win.replace(/\n *@sync-history="onSyncGroupHistory"/, "");
+  assert.notEqual(mutated, win, "对照那条替换没生效 ⇒ 这条对照什么都没测");
+  assert.ok(
+    !/@sync-history="onSyncGroupHistory"/.test(mutated),
+    "摘掉之后必须看不见那一行 ⇒ 否则判据是恒过的",
+  );
+});

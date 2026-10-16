@@ -625,6 +625,76 @@ mod group_history_db_tests {
         assert_eq!(n, 2);
     }
 
+    /// 「老版本只同步了几条、现在信息不全」那一格的正面判据（负责人 2026-10-16 追加手动按钮时补齐）：
+    /// 第二趟带进来的是一份**更全**的页 ⇒ 缺的那条补上、已有的一条**一个字都不动**。
+    ///
+    /// 为什么"已有那条不动"必须单独判：这一族最容易写成的形状是 `INSERT OR REPLACE`
+    /// （看着也幂等），但它会把本机那一行的 `status`/`content` 按对端那份盖回去 ——
+    /// 表现是"我在这条消息下面已经回复过/它已经撤回过，重跑一次同步又变回原样"。
+    #[test]
+    fn a_second_full_pass_fills_the_hole_and_touches_nothing_already_there() {
+        let conn = mem();
+        ensure_conversation(&conn, "group:g1", "group", "群", None).unwrap();
+        let item = |id: &str, seq: i64, who: &str, text: &str| GroupHistoryItem {
+            msg_id: id.into(),
+            sender_id: who.into(),
+            kind: "text".into(),
+            content: text.into(),
+            ts: 1_000 + seq,
+            seq,
+            mention_targets: None,
+        };
+        // 第一趟：本机只拿到 seq=5 那一条（老版本同步到的那几条）。
+        let partial = GroupHistoryPage {
+            items: vec![item("s1", 5, "a", "早就有的一条")],
+            files: vec![],
+        };
+        let first = apply_group_history_page(&conn, "g1", "me", "群", &partial).unwrap();
+        assert_eq!((first.inserted, first.duplicate), (1, 0));
+        // 本机把自己那条推到 seq=9（对端那份只到 6）⇒ 第二趟必须既补洞又不压本机时钟。
+        crate::db::observe_clock(&conn, "group:g1", 9).ok();
+        let before: (String, i64, String) = conn
+            .query_row(
+                "SELECT content,ts,status FROM messages WHERE msg_id='s1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+
+        let fuller = GroupHistoryPage {
+            items: vec![
+                item("s1", 5, "a", "早就有的一条"),
+                item("s2", 6, "b", "那次错过的一条"),
+            ],
+            files: vec![],
+        };
+        let second = apply_group_history_page(&conn, "g1", "me", "群", &fuller).unwrap();
+        assert_eq!(
+            (second.inserted, second.duplicate),
+            (1, 1),
+            "缺的那条补上、已有那条认成重复：这就是「只补没有的或错过的」"
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT content,ts,status FROM messages WHERE msg_id='s1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap(),
+            before,
+            "已有那一行必须逐字不动（本机状态不许被对端那份盖回去）"
+        );
+        assert_eq!(
+            get_clock(&conn, "group:g1"),
+            9,
+            "本机已经推到 9 ⇒ 补两条旧历史不许把时钟压回去（否则我下一条排到它们前面）"
+        );
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM messages WHERE conv_id='group:g1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 2);
+    }
+
     /// 保留源机的 `ts`（不是本机收到时刻），并把本机时钟抬到历史之后。
     /// 这两格写反的表现分别是"全部显示刚刚"和"我新发的消息排在旧消息前面"。
     #[test]

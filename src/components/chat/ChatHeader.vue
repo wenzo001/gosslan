@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import {
   ArrowUpCircle,
+  CloudDownload,
   FolderOpen,
   ListChecks,
   Loader2,
@@ -44,6 +45,13 @@ const props = defineProps<{
   unreadTotal?: number;
   /** 群任务窗口正在打开（按钮 pending 反馈；桌面端开独立窗口时才可能为真）。 */
   tasksOpening?: boolean;
+  /**
+   * 这一群此刻正在搬历史（自动那一趟或手动点出来的同一趟都算）。
+   *
+   * 读数来自 store 的 `groupHistorySync`，**不在这里判**：头部自己再记一份"我点了"
+   * 就会出现"自动那趟在跑、按钮却还亮着"。
+   */
+  historySyncing?: boolean;
   /** 「与我相关的未完成任务」数（蓝色徽标）。0 就不画；判定在 store 的 `openTodoByConv`。 */
   openTasks?: number;
 }>();
@@ -53,6 +61,7 @@ const emit = defineEmits<{
   (e: "open-files"): void;
   (e: "open-tasks"): void;
   (e: "open-share"): void;
+  (e: "sync-history"): void;
 }>();
 
 const unreadOutside = computed(() => props.unreadTotal ?? 0);
@@ -170,6 +179,24 @@ function linkIcon(path: string, hop: number): { icon: LinkIconName; label: strin
         <!-- 与我相关的未完成任务（蓝）。数字同时进 aria-label：只靠颜色区分"有活没干完"
              对读屏用户等于没有提醒。 -->
         <UnreadBadge v-if="openTasks > 0" :count="openTasks" tone="info" class="absolute -right-1.5 -top-1" />
+      </button>
+      <!-- 群历史补齐：任何成员都能点，语义是"再问群里最全的那个人要一趟"。
+           刻意排在最后、并比其它入口暗一档（负责人 2026-10-16：「按钮可以不要太明显，但要有这个功能」），
+           而它**不是**装饰：老成员手里只有几条老版本同步来的记录时，只有这一格能把缺的那几条补回来
+           —— 自动那一趟只服务"本机第一次知道这个群"，那道闸是刻意的（升级后不许满屏开始拉）。
+           自己已经最全的人点它 = 全量重扫一遍、每一行都认成重复 ⇒ 一条不动，这由
+           `group_history_db_tests` 里那两条重放用例判。跑起来时图标换成转圈：
+           搬运在后台，这里只负责"我按下之后它真的在动"。 -->
+      <button
+        v-if="isGroup"
+        class="tap-safe flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)] opacity-70 transition hover:bg-[var(--gosslan-hover)] hover:opacity-100"
+        :disabled="historySyncing"
+        :aria-busy="historySyncing"
+        :title="t('chat.header.syncHistory')" :aria-label="t('chat.header.syncHistory')"
+        @click="emit('sync-history')"
+      >
+        <Loader2 v-if="historySyncing" class="h-[18px] w-[18px] animate-spin" />
+        <CloudDownload v-else class="h-[18px] w-[18px]" />
       </button>
       <!-- 群管理只有一个入口（用户 2026-09-29 需求汇总四："右上角入口、编辑按钮的弹窗内容
            重复，只保留一个清晰入口"）：以前这里有「成员」和「✏️ 改名」两枚按钮，而后者

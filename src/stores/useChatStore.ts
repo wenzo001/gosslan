@@ -856,6 +856,31 @@ export const useChatStore = defineStore("chat", () => {
     app.toast(t("friend.keysSynced"), "success");
   }
   /**
+   * 界面上那颗低调的「从群里最全的那个人补齐」按钮（负责人 2026-10-16 追加：
+   * 已经在群里、但手里只有几条老版本同步来的记录的人，也要能自己点一下）。
+   *
+   * 后端返回的是一句**裁决短码**（`started` / `already_running` / `no_source` / `no_group`），
+   * 搬运本身在后台 ⇒ 这里只负责"点下去之后有没有回声"：
+   * ① `started` **不弹提示** —— 按钮自己会变成转圈、横幅随 `group-history-progress` 动起来，
+   *    再叠一条 toast 就是需求最后半句（"不要太明显"）的反面；
+   * ② 其余三种都要有一句：它们共同点是"点了之后屏幕上什么都不动"，
+   *    没有解释就等于用户以为按钮坏了（⇒ 连点，而这正是本仓反复吃过的那类"看起来没反应"）。
+   * 四个键逐条写字面量，不走 `` `chat.groupHistory.${verdict}` `` ——
+   * `i18n/index.test.ts` 那条"字面量 `t()` 必须命中真实 key"的判据读的是字面量，
+   * 拼出来的键名它看不见，于是漏一个语言的后果是运行时静默回退成键名。
+   */
+  async function syncGroupHistoryNow(groupId: string) {
+    const verdict = await api.syncGroupHistoryNow(groupId);
+    if (verdict === "already_running") {
+      app.toast(t("chat.groupHistory.alreadyRunning"), "info");
+    } else if (verdict === "no_source") {
+      app.toast(t("chat.groupHistory.noSource"), "info");
+    } else if (verdict === "no_group") {
+      app.toast(t("chat.groupHistory.noGroup"), "info");
+    }
+    // 未知短码（老后端/以后加档）刻意不弹：宁可不解释，也不编一句没有对应文案的话。
+  }
+  /**
    * 「这条会话我在本地已经判过已读」的水位（convId → 时刻）。
    *
    * 存在的理由见 `utils/messages.ts::applyConversationSnapshot`：`StaleGuard` 只挡
@@ -2801,6 +2826,7 @@ export const useChatStore = defineStore("chat", () => {
     keyRotations,
     refreshKeyRotations,
     syncFriendKeys,
+    syncGroupHistoryNow,
     /** 群 → 「与我相关的未完成任务」数（蓝色徽标的数据源，判定见 `utils/todos::openTodosForMe`） */
     openTodoByConv,
     groupTodoRows,

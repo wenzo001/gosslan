@@ -465,3 +465,19 @@ pub async fn leave_group(state: State<'_, Arc<AppState>>, group_id: String) -> R
     let _ = s.app.emit("groups-updated", &group_id);
     Ok(())
 }
+
+/// 界面上那颗低调的「从群里最全的那个人补一趟」按钮。
+///
+/// 返回的是裁决短码（`started` / `already_running` / `no_source` / `no_group`），
+/// **不是**搬了多少条 —— 搬运是后台那一趟的事，进度照旧走 `group-history-progress`。
+/// 命令自己不等结果：等结果就等于把"点了没反应"变成"点了卡住"（这条需求的最后半句是"别让用户感觉到卡顿"）。
+#[tauri::command(async)]
+pub async fn sync_group_history_now(
+    state: State<'_, Arc<AppState>>,
+    group_id: String,
+) -> Result<String, String> {
+    Ok(crate::network::group_history::request_manual_sync(state.inner(), &group_id)
+        .await
+        .as_str()
+        .to_string())
+}
