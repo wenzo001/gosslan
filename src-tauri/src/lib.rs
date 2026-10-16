@@ -151,6 +151,87 @@ fn state_mark(target: &str, message: &str) {
     }
 }
 
+/// 分配失败也要在进程消失前留一行。
+///
+/// 为什么这条不是"顺手加的保险"：`[profile.release] panic = "abort"` 下，分配失败走的是
+/// `handle_alloc_error` → abort，**根本不经过 panic 钩子**，而它产生的 Windows 异常码
+/// 与 panic 完全一样（`0xc0000409`，都是 `__fastfail`）⇒ 不留痕就永远分不开这两种死法。
+/// 2026-10-16 那台机器上恰好两种都有登记，所以这一格不是假想需求。
+///
+/// 只做"记一笔再把 null 原样交回去"，**不改任何分配行为**：调用方照旧走它自己的
+/// `handle_alloc_error`。写入本身要申请内存 ⇒ [`logging::crash_note`] 里带再入闸。
+struct NotingAlloc;
+
+unsafe impl std::alloc::GlobalAlloc for NotingAlloc {
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        let p = std::alloc::System.alloc(layout);
+        if p.is_null() {
+            note_alloc_failure("分配", layout.size(), layout.align());
+        }
+        p
+    }
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
+        std::alloc::System.dealloc(ptr, layout)
+    }
+    unsafe fn realloc(&self, ptr: *mut u8, layout: std::alloc::Layout, new_size: usize) -> *mut u8 {
+        let p = std::alloc::System.realloc(ptr, layout, new_size);
+        if p.is_null() {
+            note_alloc_failure("重分配", new_size, layout.align());
+        }
+        p
+    }
+    unsafe fn alloc_zeroed(&self, layout: std::alloc::Layout) -> *mut u8 {
+        let p = std::alloc::System.alloc_zeroed(layout);
+        if p.is_null() {
+            note_alloc_failure("分配(清零)", layout.size(), layout.align());
+        }
+        p
+    }
+}
+
+#[global_allocator]
+static GLOBAL_ALLOC: NotingAlloc = NotingAlloc;
+
+#[inline]
+fn note_alloc_failure(what: &str, size: usize, align: usize) {
+    crate::logging::crash_note(&format!(
+        "{what}失败：请求 {size} 字节（对齐 {align}）⇒ 分配器即将 abort（不是 panic，钩子不会跑）"
+    ));
+}
+
+/// 最早把崩溃现场路径绑好的插件。
+///
+/// ⚠️ **注册顺序就是它的功能**：必须排在所有插件最前面，尤其是单实例守卫之前 ——
+/// 插件 setup 按注册顺序跑（锁定版 tauri 2.11.5 `app.rs:2440` 的 `initialize_plugins`），
+/// 而守卫一旦判定"已有另一份在跑"就直接 `std::process::exit(0)`，那时我们的 logger 还不存在。
+/// 绑好之后立刻写一条"启动尝试"：**文件里只有启动尝试、没有后面的路标** ⇒ 进程在极早期就消失了
+/// （被守卫顶掉 / 崩在初始化之前），这本身就是需要的读数，而不是"机制没生效"。
+fn crash_bootstrap_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> {
+    tauri::plugin::Builder::new("crash-bootstrap")
+        .setup(|app, _api| {
+            use tauri::Manager as _;
+            match app.path().app_data_dir() {
+                Ok(dir) => {
+                    let instance = crate::state::instance_id();
+                    let stem = if instance > 0 {
+                        format!("gosslan-{instance}")
+                    } else {
+                        "gosslan".to_string()
+                    };
+                    crate::logging::bind_crash_file(&crate::logging::crash_file_for(&dir, &stem));
+                    crate::logging::crash_note(
+                        "启动尝试：进程已起，logger 尚未建立（bootstrap 已绑定现场路径）",
+                    );
+                }
+                Err(e) => {
+                    eprintln!("[gosslan] bootstrap 拿不到 app_data_dir，崩溃现场无法落盘：{e}")
+                }
+            }
+            Ok(())
+        })
+        .build()
+}
+
 fn install_panic_hook(app: Option<tauri::AppHandle>) {
     std::panic::set_hook(Box::new(move |info| {
         let location = info
@@ -166,11 +247,18 @@ fn install_panic_hook(app: Option<tauri::AppHandle>) {
         let text = format!("panic @ {location}：{payload}");
         // ① 文件日志（应用内「运行日志」页能看到）——
         //    通过 AppHandle 取 `Arc<AppState>` 的 logger，避免给 Logger 加 Clone
+        let mut recorded = false;
         if let Some(handle) = &app {
             use tauri::Manager as _;
             if let Some(st) = handle.try_state::<std::sync::Arc<crate::state::AppState>>() {
                 st.logger.error("panic", text.clone());
+                recorded = true;
             }
+        }
+        // ② **还没有 logger 也必须留痕**（启动早期、数据库迁移中途 panic —— 就是"打开就闪退、
+        //    盘上一个字没有"那种）。走不依赖 state 的独立通道；这条臂就是那三个丢掉的现场。
+        if !recorded {
+            crate::logging::crash_note(&text);
         }
         // ② stderr：android logcat / 终端都能捞到（`adb logcat | grep -i panic`）
         eprintln!("[gosslan]{text}");
@@ -201,6 +289,8 @@ pub fn run() {
     // 于是 `mut` 在移动端是多余的 —— 显式标注而不是去掉 `mut`（桌面端确实要改）。
     #[cfg_attr(mobile, allow(unused_mut))]
     let mut builder = tauri::Builder::default()
+        // ⚠️ 必须排第一：插件 setup 按注册顺序跑，而单实例守卫会在 logger 建立之前就 `exit(0)`
+        .plugin(crash_bootstrap_plugin())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())

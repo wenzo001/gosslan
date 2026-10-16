@@ -463,6 +463,11 @@ fn build_tray<R: tauri::Runtime>(
                 std::thread::spawn(|| {
                     std::thread::sleep(std::time::Duration::from_millis(1500));
                     eprintln!("[gosslan][app] 正常退出路径未在 1.5s 内完成，强制退出");
+                    // 这条 `exit(0)` 在用户那边**看起来就是一次闪退**（窗口没了、没有报错），
+                    // 所以退出前必须留一行 —— 否则现场里"进程消失"和"崩溃"分不清。
+                    crate::logging::crash_note(
+                        "退出兜底：正常收尾未在 1.5s 内完成 ⇒ 守护线程强制 exit(0)（不是崩溃）",
+                    );
                     std::process::exit(0);
                 });
                 let app = app.clone();

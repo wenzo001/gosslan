@@ -35,7 +35,8 @@
 use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 use serde::Serialize;
 
@@ -165,6 +166,73 @@ pub struct LogEntry {
     pub message: String,
 }
 
+/// 崩溃现场文件的**独立**写入通道 —— 不依赖 `AppState`、不依赖 `Logger` 已经建好。
+///
+/// 为什么必须有它：本模块上面的 `write_crash_block` 挂在 `Logger` 上，而 `Logger` 是
+/// `AppState::init` 里才建的 —— 于是"崩在 logger 建起来之前"（数据库迁移、启动早期）
+/// 这一整段**一个字都留不下**。而 `[profile.release] panic = "abort"` 下分配失败走的是
+/// `handle_alloc_error` → abort，**根本不经过 panic 钩子**，产生的异常码却和 panic 一模一样
+/// （`0xc0000409`）⇒ 不留痕就永远分不开这两种死法。
+///
+/// 路径由 [`bind_crash_file`] 尽早绑定（见 lib.rs 那个 bootstrap 插件）。
+static CRASH_FILE: OnceLock<PathBuf> = OnceLock::new();
+/// 防再入：分配失败时写这一行本身还要申请内存，可能再次打进分配器。
+static NOTE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+/// 把现场文件路径交给独立写入器。**只认第一次绑定**（后来的 `Logger::new` 用的是同一个路径）。
+pub fn bind_crash_file(path: &std::path::Path) {
+    let _ = CRASH_FILE.set(path.to_path_buf());
+}
+
+/// 进程要消失之前都能调的一行留痕。目录没绑定 ⇒ 退回 stderr（不假装写成了）。
+///
+/// ⚠️ 与 `write_crash_block` 的分工：那条带"崩之前 300 条"上下文（要靠内存环，只有 logger 在时做得到）；
+/// 这条只保证**一定写得出**，用在还没有 logger、或压根不会经过 panic 钩子的路径上。
+pub fn crash_note(text: &str) {
+    match CRASH_FILE.get() {
+        Some(path) => crash_note_to(path, text),
+        None => eprintln!("[gosslan] (现场文件未绑定，只能打到 stderr) {text}"),
+    }
+}
+
+/// 真正写那一行的部分。**拆成显式路径**是为了可测：`CRASH_FILE` 是进程级 OnceLock，
+/// 单元测试之间共享，直接测全局那条会互相抢绑定。
+pub fn crash_note_to(path: &std::path::Path, text: &str) {
+    use std::io::Write;
+    if NOTE_IN_PROGRESS.swap(true, Ordering::SeqCst) {
+        return; // 再入：正在写现场时又触发分配失败，直接放弃这条（否则无限递归）
+    }
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(
+            f,
+            ">>> {text}  @{} 版本 {} · {}-{} · {}",
+            format_utc(now_ms()),
+            env!("CARGO_PKG_VERSION"),
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+            if cfg!(debug_assertions) {
+                "debug"
+            } else {
+                "release"
+            },
+        );
+        let _ = f.flush();
+    }
+    NOTE_IN_PROGRESS.store(false, Ordering::SeqCst);
+}
+
+/// 现场文件路径（供 bootstrap 与测试用）。
+pub fn crash_file_for(dir: &std::path::Path, stem: &str) -> PathBuf {
+    dir.join(format!("{stem}-crash.log"))
+}
+
 /// 应用级 logger：内存 ring buffer + 落盘文件，线程安全（`Arc<AppState>` 跨线程共享）。
 pub struct Logger {
     entries: Mutex<VecDeque<LogEntry>>,
@@ -189,6 +257,8 @@ impl Logger {
             fingerprint,
             diag_fold: Mutex::new(HashMap::new()),
         };
+        // 把路径交给独立写入器（若 bootstrap 更早绑过，这条就是 no-op；只认第一次）
+        bind_crash_file(&logger.crash_path());
         logger.write_startup_marker();
         logger
     }
@@ -377,7 +447,7 @@ impl Logger {
     }
     /// 崩溃现场文件（**不参与轮转**）：`logs/gosslan-crash.log`，多实例是 `gosslan-1-crash.log`。
     fn crash_path(&self) -> PathBuf {
-        self.dir.join(format!("{}-crash.log", self.stem))
+        crash_file_for(&self.dir, &self.stem)
     }
 
     /// 把「崩溃这一句 + 崩之前的最后若干条日志」同步写进一个不轮转的文件。
@@ -827,5 +897,50 @@ mod tests {
             len <= DIAG_FOLD_KEYS + 1,
             "折叠表超上界必须整表重开（实测 {len} > 上界 {DIAG_FOLD_KEYS}）"
         );
+    }
+
+    /// ★ 独立通道：**没有 logger 也要留得下痕**（分配失败、崩在 logger 建立之前都走这条路）。
+    /// 没这条判据的话那两个洞是静默的 —— 而分配失败产生的异常码与 panic 一模一样（都是 `__fastfail`），
+    /// 分不开就等于把内存耗尽当成代码 bug 去查。
+    ///
+    /// ⚠️ 三条断言**必须待在同一个测试里顺序跑**：再入闸是进程级 `AtomicBool`，
+    /// 拆成两条会被 libtest 的线程池并发执行 —— 一条把闸置起来，另一条的写入就被吃掉，
+    /// 于是"整包绿、单跑红"（本仓实测过的假绿形状）。
+    #[test]
+    fn crash_note_writes_without_a_logger_and_survives_the_reentry_guard() {
+        let dir = std::env::temp_dir().join(format!("gosslan-note-{}", std::process::id()));
+        let file = crash_file_for(&dir, "note-test");
+
+        crash_note_to(
+            &file,
+            "分配失败：请求 999999999 字节（对齐 8）⇒ 分配器即将 abort",
+        );
+        let body = std::fs::read_to_string(&file)
+            .expect("独立通道必须能把文件建出来 —— 此刻还没有 logger");
+        assert!(body.contains(">>> 分配失败"), "现场里没有这一条");
+        assert!(
+            body.contains(env!("CARGO_PKG_VERSION")),
+            "每条留痕都要自带版本号，不能再靠 CI 时刻反推"
+        );
+
+        // 闸开着的时候再来一条：必须被丢掉（写一行本身要申请内存 ⇒ 不拦就是无限递归）
+        NOTE_IN_PROGRESS.store(true, Ordering::SeqCst);
+        crash_note_to(&file, "第二条（模拟正在写的时候又触发一次分配失败）");
+        NOTE_IN_PROGRESS.store(false, Ordering::SeqCst);
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            body,
+            "再入时还往外写 ⇒ 分配失败会把自己递归下去"
+        );
+
+        // 正向对照：闸放下之后，第三条要能写进去（否则上面那条"没写"可能只是通道坏了）
+        crash_note_to(&file, "第三条（闸已放下）");
+        let after = std::fs::read_to_string(&file).unwrap();
+        assert!(
+            after.contains("第三条（闸已放下）"),
+            "通道被再入闸永久卡死了"
+        );
+        assert!(!after.contains("第二条"), "被拦掉的那条不该出现在文件里");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

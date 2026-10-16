@@ -827,3 +827,120 @@
         }
         None
     }
+
+    /// ★ **能让进程消失的路径，消失之前必须留一行。**
+    ///
+    /// 为什么单独钉这一族（2026-10-16 真机）：那台机器上同时存在两种死法，异常码都是 `0xc0000409`
+    /// （`__fastfail`）—— 一种是 panic（`panic = "abort"` 走 abort），另一种是**分配失败**
+    /// （`handle_alloc_error` → abort，**根本不经过 panic 钩子**）。不留痕就永远分不开，
+    /// 而"分不开"的代价是把内存耗尽当成代码 bug 去查。
+    ///
+    /// 四条各管一件事，全部按**站点数**钉，不是"存在即通过"：
+    /// ① 生产码里每一处 `std::process::exit(` 前面 8 行内必须有 `crash_note(` —— 现在钉 1 处
+    ///    （托盘那条 1.5s 兜底硬退；它在用户那边**看起来就是一次闪退**，不留痕就会被当成崩溃）。
+    /// ② 必须有 `#[global_allocator]` 包装，且它的失败路径调 `crash_note`。
+    /// ③ panic 钩子必须有"还没有 logger 也要写"那一臂（`if !recorded`）。
+    /// ④ bootstrap 插件必须注册在单实例守卫**之前** —— 守卫会在 logger 建立之前就 `exit(0)`，
+    ///    顺序错了这条通道等于白装（"注册顺序就是功能"的实例）。
+    ///
+    /// ⚠️ 已知盲区：只认字面 `std::process::exit(`；`std::process::abort()` 与**依赖里**的 exit
+    ///    （单实例守卫那条就在插件里）扫不到 —— 后者由 ④ 的顺序 + 启动留痕兜住。
+    #[test]
+    fn no_path_can_end_the_process_without_leaving_a_note_first() {
+        let src_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files: Vec<std::path::PathBuf> = Vec::new();
+        let mut stack = vec![src_root.clone()];
+        while let Some(dir) = stack.pop() {
+            let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+            for e in rd.flatten() {
+                let pth = e.path();
+                let name = pth
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                if pth.is_dir() {
+                    if name != "gen" {
+                        stack.push(pth);
+                    }
+                } else if name.ends_with(".rs")
+                    && !name.ends_with("_tests.rs")
+                    && name != "tests.rs"
+                {
+                    files.push(pth);
+                }
+            }
+        }
+        files.sort();
+
+        let mut exit_sites = 0usize;
+        let mut naked: Vec<String> = Vec::new();
+        for f in &files {
+            let Ok(raw) = std::fs::read_to_string(f) else { continue };
+            // 去注释：守卫自己的注释里也写着这两个字面串，不剥就会自己判自己绿。
+            let norm = raw.replace("\r\n", "\n");
+            let lines: Vec<&str> = norm
+                .lines()
+                .map(|l| {
+                    let t = l.trim_start();
+                    if t.starts_with("//") || t.starts_with("/*") || t.starts_with('*') {
+                        ""
+                    } else {
+                        l
+                    }
+                })
+                .collect();
+            for (i, l) in lines.iter().enumerate() {
+                if l.contains("std::process::exit(") {
+                    exit_sites += 1;
+                    let from = i.saturating_sub(8);
+                    if !lines[from..=i].iter().any(|x| x.contains("crash_note(")) {
+                        naked.push(format!("{}:{}", f.display(), i + 1));
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            exit_sites, 1,
+            "生产码里 `std::process::exit(` 的站点数变了（现在钉 1 处 = 托盘 1.5s 兜底）\
+             ⇒ 多出来的那一处必须先按同样形状留痕，再把这里改到位"
+        );
+        assert!(naked.is_empty(), "这些硬退前面没有 crash_note ⇒ 退出会静默：{naked:?}");
+
+        let lib_raw = std::fs::read_to_string(src_root.join("lib.rs")).expect("lib.rs 必须读得到");
+        let lib_norm = lib_raw.replace("\r\n", "\n");
+        let lib: Vec<&str> = lib_norm
+            .lines()
+            .map(|l| {
+                let t = l.trim_start();
+                if t.starts_with("//") || t.starts_with("/*") || t.starts_with('*') {
+                    ""
+                } else {
+                    l
+                }
+            })
+            .collect();
+        let libj = lib.join("\n");
+        assert!(
+            libj.contains("#[global_allocator]"),
+            "分配失败不经过 panic 钩子 —— 没有 global_allocator 包装，这一族死法就永远没有记录"
+        );
+        assert!(
+            libj.contains("crash_note("),
+            "分配器包装必须真的调 crash_note，光有 #[global_allocator] 是空壳"
+        );
+        assert!(
+            libj.contains("if !recorded"),
+            "panic 钩子少了\u{201c}还没有 logger 也要写\u{201d}那一臂 ⇒ 启动早期崩就是静默"
+        );
+        let boot = libj
+            .find("crash_bootstrap_plugin()")
+            .expect("bootstrap 插件没注册 ⇒ 现场路径要等 logger 建好才绑得上");
+        let single = libj
+            .find("tauri_plugin_single_instance::init(")
+            .expect("单实例守卫注册点不见了（这条顺序判据要跟着重写，不是删掉）");
+        assert!(
+            boot < single,
+            "bootstrap 必须排在单实例守卫**之前**：守卫会在 logger 建立之前就 exit(0)，\
+             顺序反了这条留痕通道永远来不及绑"
+        );
+    }
