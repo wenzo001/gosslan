@@ -32,6 +32,7 @@
 //!   轮转为 `.old.log`（覆盖上一份旧文件），磁盘占用上界约 1 MB。
 //! - 清理触发是**惰性**的（每次写时检查），不另起后台任务，避免额外线程与复杂度。
 
+use std::collections::HashMap;
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -130,6 +131,9 @@ const MAX_LOG_FILE_BYTES: u64 = 512 * 1024;
 const MAX_CRASH_FILE_BYTES: u64 = 2 * 1024 * 1024;
 /// 每次崩溃现场附带多少条"崩溃之前的运行日志"（取内存环，与文件轮转无关）。
 const CRASH_CONTEXT_LINES: usize = 300;
+/// diag 同秒折叠表的键上限：键是 `(target, 整行文本)`，而文本里带设备 id 与来源 IP ⇒ 会随
+/// 局域网规模与时间增长。**封顶后整表重开**（宁可偶尔多写一条，也不让它变成"永远只增"的内存洞）。
+const DIAG_FOLD_KEYS: usize = 512;
 
 /// 日志级别。按严重度递增：Info < Warn < Error。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -170,6 +174,10 @@ pub struct Logger {
     /// 设备短指纹 — 每台机器自动生成（hostname 前 6 字符 + 平台 tag），
     /// 让多设备日志能一眼区分来源。格式：`[dev:Win-7f3a]` / `[dev:And-b2c1]` / `[dev:Mac-9e4d]`。
     fingerprint: String,
+    /// diag 同秒折叠表：`(target, 整行文本) → 上一个写下它的 epoch 秒`。
+    /// 见 [`Logger::fold_diag_same_second`]。放成实例字段而不是全局 static，
+    /// 这样多实例（`gosslan-1`）与单元测试各有一份，互不污染。
+    diag_fold: Mutex<HashMap<(String, String), i64>>,
 }
 
 impl Logger {
@@ -179,6 +187,7 @@ impl Logger {
             dir,
             stem: stem.to_string(),
             fingerprint,
+            diag_fold: Mutex::new(HashMap::new()),
         }
     }
 
@@ -192,9 +201,26 @@ impl Logger {
         self.log(Level::Error, target, message.into());
     }
 
-    /// 记录一条日志：进内存 buffer → debug 下打 stderr → 落盘。
+    /// 记录一条日志：diag 同秒折叠 → 进内存 buffer → debug 下打 stderr → 落盘。
     pub fn log(&self, level: Level, target: &str, message: String) {
         let ts = now_ms();
+
+        // 0) **diag 的同秒重复折叠**（用户 2026-10-16 真机实测的缺口）：
+        //    `diag/announce_verified` 对**同一台设备、同一秒**能重复 5~6 条
+        //    （`state.rs:1913` 是 `diag/` 这个前缀唯一的出生地，已现读核对），
+        //    于是 512 KiB 的日志几分钟翻一代、只留一代 ⇒ 真崩时那句 `panic @ 文件:行:列`
+        //    在文件里结构上留不住。整行文本 + target + 秒三者全同的重复本身不带新信息，
+        //    所以这不是"少记"，是"记一次"。
+        //
+        // ⚠️ 只管 `Info`：`warn` / `error` 一律放行，不看折叠表 ——
+        //    2026-10-16 那轮审计的主题就是"失败必须看得见"，绝不能顺手把错误折掉。
+        //    有判据钉着这两头（`diag_warn_and_error_are_never_folded`）。
+        if level == Level::Info
+            && message.starts_with("diag/")
+            && self.fold_diag_same_second(target, &message, ts)
+        {
+            return;
+        }
 
         // 1) 内存 ring buffer（有界，防无限增长）
         {
@@ -382,6 +408,24 @@ impl Logger {
             let _ = writeln!(f, "{line}");
         }
         let _ = f.flush();
+    }
+
+    /// 同一 epoch 秒内、同一 `target` 且**整行文本完全相同**的 diag 只留第一条。
+    /// 返回 `true` = 这条是重复，调用方直接丢弃（不进内存环、不落盘、不打 logcat）。
+    fn fold_diag_same_second(&self, target: &str, message: &str, ts_ms: i64) -> bool {
+        let sec = ts_ms.div_euclid(1000);
+        let mut fold = self.diag_fold.lock().unwrap_or_else(|e| e.into_inner());
+        // 封顶就整表重开：键里带设备 id 与来源 IP，局域网跑久了键会一直长——
+        // 宁可偶尔多写一条重复，也不留一个"永远只增"的内存洞。
+        if fold.len() > DIAG_FOLD_KEYS {
+            fold.clear();
+        }
+        let key = (target.to_string(), message.to_string());
+        if fold.get(&key) == Some(&sec) {
+            return true;
+        }
+        fold.insert(key, sec);
+        false
     }
 
     fn append_file(&self, ts: i64, level: Level, target: &str, message: &str) {
@@ -608,5 +652,122 @@ mod tests {
             "正向对照失败：真 panic 没落盘"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★ 折叠的**两根轴**必须都在：同 target + 同文 + 同一秒才折；换秒、换 target、换文本都不折。
+    /// 直接测辅助函数而不是 `log()` —— 那样不依赖墙上时钟，跨秒边界不会让它偶发红。
+    #[test]
+    fn diag_folds_only_on_identical_text_in_the_same_second() {
+        let dir = std::env::temp_dir().join(format!("gosslan-fold-axes-{}", std::process::id()));
+        let logger = Logger::new(dir, "t", "[dev:test]".to_string());
+        let sec = 1_792_000_000_000i64; // 某个整秒的毫秒值
+
+        let msg = "diag/announce_verified: from=peer-a via=10.1.22.3";
+        assert!(
+            !logger.fold_diag_same_second("discovery", msg, sec),
+            "第一条必须留下（正向对照）"
+        );
+        assert!(
+            logger.fold_diag_same_second("discovery", msg, sec + 999),
+            "同一秒里的同文重复必须折掉"
+        );
+        assert!(
+            !logger.fold_diag_same_second("discovery", msg, sec + 1000),
+            "换到下一秒必须重新留一条 —— 否则长期只剩一条，实时性全丢"
+        );
+        assert!(
+            !logger.fold_diag_same_second("routed", msg, sec),
+            "同文不同 target 不许互相折（两个子系统的同名事件是两回事）"
+        );
+        assert!(
+            !logger.fold_diag_same_second(
+                "discovery",
+                "diag/announce_verified: from=peer-b via=10.1.22.4",
+                sec
+            ),
+            "不同设备/不同来源必须各留一条 —— 折叠不能把「谁在场」这条信息抹平"
+        );
+    }
+
+    /// 端到端：`log()` 真的接了这一步（只测上面那条辅助函数测不出来 —— 摘掉调用它就还是绿的）。
+    /// 断言写成"< 6"而不是"== 1"：紧密循环里可能正好跨过一个秒边界，那也顶多是 2。
+    #[test]
+    fn log_wire_actually_folds_the_diag_flood() {
+        let dir = std::env::temp_dir().join(format!("gosslan-fold-wire-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let logger = Logger::new(dir.clone(), "t", "[dev:test]".to_string());
+        for _ in 0..6 {
+            logger.info(
+                "discovery",
+                "diag/announce_verified: from=peer-a via=10.1.22.3",
+            );
+        }
+        let n = logger.snapshot(None).len();
+        assert!(
+            n < 6,
+            "六条同秒同文还是全进了环 ⇒ log() 里那一步折叠没生效（实得 {n} 条）"
+        );
+        assert!(n >= 1, "折叠不能把这一族彻底吃掉（实得 {n} 条）");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ⚠️ 反向判据（本轮最要紧的一格）：**错误永远不许折**。
+    /// 2026-10-16 那轮审计的主题就是"失败必须看得见"，把 warn/error 一起折掉就是倒退。
+    #[test]
+    fn diag_warn_and_error_are_never_folded() {
+        let dir = std::env::temp_dir().join(format!("gosslan-fold-levels-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let logger = Logger::new(dir.clone(), "t", "[dev:test]".to_string());
+        for _ in 0..4 {
+            logger.warn("discovery", "diag/bind_error: addr=10.1.22.3");
+            logger.error("discovery", "diag/relay_error: hop=2");
+        }
+        let snap = logger.snapshot(None);
+        assert_eq!(
+            snap.len(),
+            8,
+            "warn/error 各 4 条必须全留（被折就是又把错误藏起来）"
+        );
+        assert_eq!(
+            snap.iter().filter(|e| e.level == "warn").count(),
+            4,
+            "warn 一条都不能少"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 折叠只认 `diag/` 这一族：非 diag 的 info 重复照旧各留一条
+    /// （否则"同一句异常文案出现两次"这种真信息会被悄悄吃掉）。
+    #[test]
+    fn non_diag_info_is_not_folded() {
+        let dir = std::env::temp_dir().join(format!("gosslan-fold-scope-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let logger = Logger::new(dir.clone(), "t", "[dev:test]".to_string());
+        logger.info("file", "收到文件 done");
+        logger.info("file", "收到文件 done");
+        assert_eq!(
+            logger.snapshot(None).len(),
+            2,
+            "非 diag 的 info 被折了 ⇒ 判据范围写宽了"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 折叠表自己必须有界：键里带设备 id 与来源 IP，局域网跑久了会一直长。
+    #[test]
+    fn diag_fold_table_is_bounded_by_restarting_not_growing() {
+        let dir = std::env::temp_dir().join(format!("gosslan-fold-cap-{}", std::process::id()));
+        let logger = Logger::new(dir, "t", "[dev:test]".to_string());
+        for i in 0..(DIAG_FOLD_KEYS + 40) {
+            logger.info(
+                "discovery",
+                format!("diag/announce_verified: from=peer-{i}"),
+            );
+        }
+        let len = logger.diag_fold.lock().unwrap().len();
+        assert!(
+            len <= DIAG_FOLD_KEYS + 1,
+            "折叠表超上界必须整表重开（实测 {len} > 上界 {DIAG_FOLD_KEYS}）"
+        );
     }
 }
