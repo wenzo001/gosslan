@@ -13,6 +13,26 @@
 
 ## [Unreleased]
 
+### 文档：群历史那一轮的 AOCI 认知收尾（4 条新 Entry + 33 条整行重绑）
+
+按 AGENTS.md 那条认知合同走了一次维护。`aoci` MCP 在这台机器上仍然起不来（stdio 进程 ready 之前退出、
+`aoci maintain` 这个子命令在 CLI 里根本没有），所以走的仍是 CLI `update-entry` 逐条通道，
+每条都带 `--source-sha256`（绑定当前文件字节）。
+
+- **新增 4 条** Entry：`src-tauri/src/db/group_history.rs`、`src-tauri/src/network/group_history.rs`、
+  `docs/notes/group-history-sync-2026-10-16.md`、`scripts/e2e/rounds/ghsync.mjs`。其中两条落笔时被预算闸挡回 ——
+  S 字段按 UTF-8 字节 ÷3 计 token，重要度档位 **7=80 / 8=140 / 9=200**；闸给的处置是"在该档位内完整重写：
+  压缩语义，而不是机械截断"，所以是逐条改写后重过 `--preview`，不是砍尾巴。
+- **整行重绑 33 条** = 14 条本轮真的改了职责（群族臂表 11→13、卡片落库站点 13→14、`35 变体 / 38 臂`
+  那套台账数字改成"由判据自己打印"、轮次册数不再钉死而挂现读命令）+ 19 条只把指纹绑回当前字节
+  （逐字未变 ⇒ 不产生 diff，这也是下面那个 20/16 的来源）。
+- 判据（现算，不抄）：`aoci --json check` 的 `code_stale` ∩ `git show --name-only --format= 13291fd` = **0**，
+  `code_missing` ∩ 同一集合 = **0**；**全仓仍剩 35 条 `code_stale` 属别的会话的账，本轮不清**。
+  索引净变化 `git diff --numstat aoci.code.txt` = 20 增 / 16 删（= 4 新增 + 16 行有实义改动），
+  `aoci status` 现读条目 **620**、基线 **985** 文件；复跑 `grep -c ': F:' aoci.code.txt`。
+- ★ 一条今天才学到的形状约束：**Entry 正文里不许出现 `|`**。它同时是 F/R/A/S 的字段分隔符，
+  把"现读 `ls … | wc -l`"这种命令原样写进 S 会让整行被判 `fras_structure_invalid`（不是超预算，是结构崩）。
+
 ## [4.43.0] - 2026-10-16
 
 ### 新功能：群信息同步 —— 新进群的人自动拿到群里的聊天与群任务
