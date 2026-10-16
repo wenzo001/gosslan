@@ -540,10 +540,14 @@
                 "{w} 在这个块里只许一份；两份 ⇒ 又回到「手写两遍迟早漂开」"
             );
         }
-        // ② 这一份先整体进事务（要么三张表一起收口，要么一起不动）
+        // ② 这一份先整体进事务，并且**必须显式提交**（要么三张表一起收口，要么一起不动）。
+        // rusqlite 的 `Transaction::new_unchecked` 把 `drop_behavior` 初始化为 `Rollback`
+        // （锁定版 rusqlite 0.31.0 `src/transaction.rs:127`）⇒ 少了 `tx.commit()` 时闭包末尾
+        // 一 drop 就整段回滚，而 `and_then` 仍返回 `Ok` ⇒ 下面的 Err 分支永不触发 ⇒ 三张台账
+        // 一句都没落库却「看起来成功」。单聊那一家（`network/file/receive.rs`）闭包末尾就有 commit。
         assert!(
-            flat.contains("letwrote=dbc.transaction().and_then(|tx|write_ledgers(&tx))"),
-            "群收尾三处写必须包在同一个事务里"
+            flat.contains("letwrote=dbc.transaction().and_then(|tx|{write_ledgers(&tx)?;tx.commit()})"),
+            "群收尾三处写必须包在同一个事务里并显式 commit：不 commit ⇒ 默认 drop 即回滚，wrote 仍是 Ok ⇒ 补写分支永不触发"
         );
         // ③ 失败必须留痕，且只许这一格留痕。两条探针分开：Err 分支里注释写在 `warn(` 之前，
         //    而去空白**不去注释** ⇒ 跨注释的形状判不了（护栏纪律第 48 条的反面）。

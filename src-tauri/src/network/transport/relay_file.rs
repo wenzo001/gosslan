@@ -461,7 +461,13 @@ async fn handle_relay_chunk(
                     status: "delivered".to_string(),
                     mention_targets: None,
                 };
-                db::insert_message(&dbc, &rec).ok();
+                // 落库失败必须留痕（审计 2026-10-16，与群文件卡片同一格）：吞掉后界面没这张卡、日志无痕。
+                if let Err(e) = db::insert_message(&dbc, &rec) {
+                    state.logger.error(
+                        "relay",
+                        format!("中继收齐后的文件卡片落库失败 msg={}：{e}", rec.msg_id),
+                    );
+                }
                 let nm = resolve_nickname(state, &from);
                 db::touch_conversation(
                     &dbc,

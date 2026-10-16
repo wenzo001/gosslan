@@ -1,5 +1,6 @@
 // 职责边界：
 // - `lib_tests.rs` 测试分册之6 —— 公网中继数据面：定向策略、回收终态落库在锁外、口令不进日志、电路标 Relay
+//   ＋ 两条**按形状扫全仓**的分母判据（INV-P34 整份慢活在哪条线程上 / 卡片类落库失败不许静默吞掉）
 // 为什么拆：`src-tauri/src/lib_tests.rs` 原来 4,009 行、96 个顶层项挤在同一个 `mod tests` 里。
 // 机制与 `network/transport/tests.rs` 那一刀同一条：`include!` 是文本粘贴 ⇒ 这些项仍属于
 // `crate::lib_tests` 里那同一个 `mod tests` ⇒ 模块路径、`use`、可见性、**测试全名一字不变**
@@ -469,6 +470,8 @@
             "commands/group_todo_media.rs",
             "commands/helpers.rs",
             "commands/mobile_picker.rs",
+            // 4.40.9 群台账一次性补账：候选闸之后的那份整文件哈希（在 spawn_blocking 里、且等它）。
+            "network/file/ledger_backfill.rs",
             "network/file/receive.rs",
             "network/file/relay_push.rs",
             "network/file/send.rs",
@@ -596,8 +599,8 @@
         );
         assert_eq!(
             total,
-            16,
-            "整份慢活现数到 {total} 处、登记 13 处。对不上时先分清哪一种：\\n             ① 新增的是**合规**的一格（也在池里跑）⇒ 把这一格数与 `homes` 清单一起改上来，\\n             ② 新增的是**没包的** ⇒ 先搬进 spawn_blocking（同链已有 13 处写法可抄），\\n             ③ 改了 helper 的名字 ⇒ PRIMITIVES 清单要同步，否则这条法就悄悄少了一格。"
+            17,
+            "整份慢活现数到 {total} 处、登记 17 处。对不上时先分清哪一种：\\n             ① 新增的是**合规**的一格（也在池里跑）⇒ 把这一格数与 `homes` 清单一起改上来，\\n             ② 新增的是**没包的** ⇒ 先搬进 spawn_blocking（同链已有 17 处写法可抄），\\n             ③ 改了 helper 的名字 ⇒ PRIMITIVES 清单要同步，否则这条法就悄悄少了一格。"
         );
         assert!(
             offenders.is_empty(),
@@ -614,4 +617,211 @@
             homes.len(),
             registered.len()
         );
+    }
+
+    /// **卡片类落库失败不许被静默吞掉**（2026-10-16 稳定性体检那一族的护栏）。
+    ///
+    /// 这一族的失败形状既不崩也不报错：那条消息/那张卡从此不存在，或者 `content.path` 永远缺着
+    /// ⇒ 预览被判成"已被清理"并**永久缓存**（负责人报的"气泡没出现 / 图片打不开而日志一字不记"）。
+    /// 13 处里 4 处本来就向上报错（`?` / `.map_err`），**9 处是这两轮改成留痕的**（上一批 5 处 + 本轮 4 处，
+    /// 其中两处正是上一批漏在同一文件另一面的第二面）。这条判据负责拦**下一次复发**，包括复发在一家我从没见过的文件里。
+    ///
+    /// 为什么按**括号配对**取调用尾部而不是按行窗口 / 按 `;` 切语句：多行实参是常态
+    /// （`update_message_content` 那一句就跨四行），按 `;` 切会把 `match` 与块表达式腰斩，
+    /// 按行取窗口会漏 —— 本仓已经吃过"单行正则数跨行 `expect(...)` 返回 0"的亏。
+    ///
+    /// 允许名单只有四种（其余一律算吞）：`?`、`.map_err`、调用前是 `if let Err(e) =`、
+    /// 或调用前把 `Result` 赋给变量交给三态判据（`let inserted =` / `let backfilled =`）。
+    /// `.unwrap()` / `.expect()` **故意不在名单里**：那会 panic 在 `reader_loop` 或命令体上，比留痕更糟。
+    ///
+    /// 明写的三条边界（不装作它管一切）：
+    /// ① 认的是"紧跟调用的那 24 个字符" ⇒「先存进一个不在名单里的变量、到别处才 `.ok()`」它看不见，
+    ///    那一半由 `total_sites` 钉住：新增或改写调用点必须让分母跟着变，逼作者来这里看一眼。
+    /// ② `if let Err(e) = …` 那一臂如果被人**清空**并把变量改名成 `_e`，本判据仍然判绿 ——
+    ///    那种形状由 `cargo clippy -D warnings` 的 unused-variable 拦（不改名就红），不由这条判据管。
+    ///    M-B 那笔变异（把 `Err(e)` 臂的留痕摘掉）之所以红，是因为它落在了 `match` 那一支上，
+    ///    而 `match` 这一支判的是"Err 臂里到底有没有 logger"，不是"有没有 Err 臂"。
+    /// ③ 只认这五个名字 ⇒ 以后新增一类"卡片类落库"函数（例如 `insert_notice_message`），
+    ///    不进 NAMES 就看不见；这与 INV-P34 分母的盲区①是同一条，加名字时连同本注释一起改。
+    #[test]
+    fn card_message_writes_never_swallow_their_error() {
+        const NAMES: [&str; 5] = [
+            "insert_message_and_outbox(",
+            "insert_message_if_new(",
+            "insert_message(",
+            "update_message_content(",
+            "fill_message_sha256(",
+        ];
+        let src_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files: Vec<std::path::PathBuf> = Vec::new();
+        let mut stack = vec![src_root];
+        while let Some(dir) = stack.pop() {
+            let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+            for e in rd.flatten() {
+                let p = e.path();
+                let name = p
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                if p.is_dir() {
+                    if name != "gen" {
+                        stack.push(p);
+                    }
+                } else if name.ends_with(".rs") && !name.ends_with("_tests.rs") && name != "tests.rs"
+                {
+                    files.push(p);
+                }
+            }
+        }
+        files.sort();
+        let mut offenders: Vec<String> = Vec::new();
+        let mut total_sites = 0usize;
+        for f in &files {
+            let Ok(raw) = std::fs::read_to_string(f) else { continue };
+            let norm = raw.replace("\r\n", "\n");
+            // 去注释但保留换行（与本族另两条判据同一条规矩）。
+            let code: String = norm
+                .lines()
+                .map(|l| {
+                    let t = l.trim_start();
+                    if t.starts_with("//") || t.starts_with("/*") || t.starts_with('*') {
+                        ""
+                    } else {
+                        match l.find("//") {
+                            Some(i) => &l[..i],
+                            None => l,
+                        }
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            // 全程按 char 走，不按 byte：这些文件里大量中文串，字节下标与 char 下标不等价。
+            let mut chars: Vec<char> = code.chars().filter(|c| !c.is_whitespace()).collect();
+            // 内联 `#[cfg(test)] mod …{…}` 整段抹掉：本仓测试多数住在 `*_tests.rs`（上面已按文件名跳过），
+            // 但 `db/groups.rs`、`db/clocks.rs` 里还有历史遗留的内联测试模块，那里 `.unwrap()` 是**对的**
+            // （测试该 panic）。不抹就会把六处测试代码报成生产缺陷 ⇒ 而"判据一片假红"的下一步
+            // 通常是有人把它放宽，那才是真损失。
+            let mut at = 0usize;
+            while let Some(pos) = find(&chars, at, "#[cfg(test)]") {
+                let Some(m) = find(&chars, pos, "mod") else { break };
+                let Some(o) = find(&chars, m, "{") else { break };
+                let Some(c) = brace_close(&chars, o) else { break };
+                for slot in &mut chars[m..=c] {
+                    *slot = '_';
+                }
+                at = c + 1;
+            }
+            for nm in NAMES {
+                let mut at = 0usize;
+                while let Some(call) = find(&chars, at, nm) {
+                    at = call + 1;
+                    let pre: String = chars[..call].iter().collect();
+                    if pre.ends_with("pubfn") || pre.ends_with("fn") {
+                        continue; // 定义自身
+                    }
+                    // **定义体内部的转调不算一家**：`pub fn insert_message(conn, m)` 的函数体就是
+                    // `insert_message_if_new(conn, m).map(|_| ())` —— 一句薄包装（`.map` 原样带着 Err 上抛）。
+                    // 按" enclosing fn 是不是这几个名字之一"来认，而不是整册豁免 `db/messages.rs`：
+                    // 豁免整册会让"以后有人在这册里新加一处吞错"从此看不见（那正是本轮在修的形状）。
+                    if let Some(k) = pre.rfind("fn") {
+                        let id: String = chars[k + 2..]
+                            .iter()
+                            .take_while(|c| c.is_alphanumeric() || **c == '_')
+                            .collect();
+                        if NAMES.iter().any(|n| *n == format!("{id}(")) {
+                            continue;
+                        }
+                    }
+                    total_sites += 1;
+                    let open = call + nm.len() - 1;
+                    let Some(close) = brace_close(&chars, open) else {
+                        offenders.push(format!(
+                            "{}  [{nm}]  ← 圆括号没配对上（判据自己读不动这一处，必须人工看）",
+                            f.display()
+                        ));
+                        continue;
+                    };
+                    let tail: String =
+                        chars[close + 1..(close + 25).min(chars.len())].iter().collect();
+                    let head: String = chars[call.saturating_sub(16)..call].iter().collect();
+                    let handled = head.contains("ifletErr(e)=")
+                        || head.contains("letinserted=")
+                        || head.contains("letbackfilled=")
+                        || tail.starts_with('?')
+                        || tail.starts_with(".map_err(")
+                        // `match <调用> { Ok(..) => .., Err(..) => { 记一笔 } }`：认**尾部形状**而不是
+                        // 认 head 里的 `match` —— 扁平化后 `match` 会被路径粘住（`matchdb::fill_…`），
+                        // 按 head 认关键字是"我以为的实现形状"那种错法（本仓吃过同形的一次）。
+                        || (tail.starts_with("{Ok(") && match_logs_err(&chars, close + 1));
+                    if !handled {
+                        offenders.push(format!(
+                            "{}  [{nm}]  尾部 {tail:?} 头部 {head:?} —— 结果既没向上报错也没有留痕",
+                            f.display()
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(
+            files.len() > 100,
+            "生产码只现数到 {} 个 .rs ⇒ 目录走错了，这条判据是在空集上恒绿",
+            files.len()
+        );
+        assert_eq!(
+            total_sites, 13,
+            "卡片类落库点现数到 {total_sites} 处、登记 13 处。对不上先分清哪一种：\
+             ① 新增了一家 ⇒ 它也必须要么向上报错、要么留痕，再把这一格数改上来；\
+             ② 有人把某处的形状改了（比如从 `if let Err` 换成先存变量）⇒ 上面那份允许名单要一起改，\
+             不许只改登记数让它继续空转；\
+             ③ 新增了内联 `#[cfg(test)]` 模块 ⇒ 抹除那一步要一起看。"
+        );
+        assert!(
+            offenders.is_empty(),
+            "落库失败不许静默吞掉（`.ok()` / `let _ =` / `.unwrap_or(_)` / 裸丢弃都算）——\n\
+             这一族这两轮已改过九家（另 4 处本来就向上报错）；命中 {} 处：\n{}",
+            offenders.len(),
+            offenders.join("\n")
+        );
+    }
+
+    /// `match <调用> { Ok(..) => .., Err(..) => { 记一笔 } }` 这一族：
+    /// **Err 臂里真的调了 logger** 才算留痕 —— `match … { Err(_) => false }` 就是吞
+    /// （本仓 `network/file/send.rs` 在 2026-10-16 之前是 `.unwrap_or(false)`，同一个形状的两种写法）。
+    fn match_logs_err(chars: &[char], after_call: usize) -> bool {
+        // 紧跟调用右括号的必须是 match 的那个左花括号（不然 `match` 认的是别的东西）
+        if find(chars, after_call, "{") != Some(after_call) {
+            return false;
+        }
+        let Some(close) = brace_close(chars, after_call) else {
+            return false;
+        };
+        let seg: String = chars[after_call..=close].iter().collect();
+        seg.contains("Err(") && seg.contains("logger.")
+    }
+
+    /// 在 `chars` 里从 `from` 起找一段 ASCII 字面量（判据只找自己写的这些名字，全是 ASCII）。
+    fn find(chars: &[char], from: usize, needle: &str) -> Option<usize> {
+        let n: Vec<char> = needle.chars().collect();
+        if n.is_empty() || from + n.len() > chars.len() {
+            return None;
+        }
+        (from..=chars.len() - n.len()).find(|&i| chars[i..i + n.len()] == n[..])
+    }
+
+    /// 从 `open`（必须是左括号/左花括号）起做配对，返回匹配的右括号下标。
+    fn brace_close(chars: &[char], open: usize) -> Option<usize> {
+        let mut depth = 0usize;
+        for i in open..chars.len() {
+            match chars[i] {
+                '(' | '{' | '[' => depth += 1,
+                ')' | '}' | ']' => {
+                    depth = depth.checked_sub(1)?;
+                    if depth == 0 {
+                        return Some(i);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
     }

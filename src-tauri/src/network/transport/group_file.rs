@@ -123,7 +123,15 @@ async fn handle_group_file_offer(
         };
         {
             let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-            db::insert_message(&dbc, &rec).ok();
+            // 落库失败必须留痕（审计 2026-10-16）：这一格是"卡片类"消息，吞掉后界面没有那张卡
+            // 而日志一字不记 ⇒ 现场无从归因。不改行为：仍然继续往下走（文件已在盘上是事实），
+            // 只是不再静默。
+            if let Err(e) = db::insert_message(&dbc, &rec) {
+                state.logger.error(
+                    "group_file",
+                    format!("群文件卡片落库失败 msg={}：{e}", rec.msg_id),
+                );
+            }
             db::touch_conversation(
                 &dbc,
                 &format!("group:{group_id}"),
@@ -385,7 +393,13 @@ async fn handle_group_file_done(
             )
         };
         let mut dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        let wrote = dbc.transaction().and_then(|tx| write_ledgers(&tx));
+        // 闭包末尾必须 `tx.commit()`：rusqlite 的 `Transaction` 默认 drop 行为是 Rollback
+        // （锁定版 0.31.0 `transaction.rs:127`），少这一步就是「三张表一起回滚、而 wrote 仍是 Ok」
+        // ⇒ 下面那条 Err 分支永不触发，界面看着成功、台账一句都没落库。
+        let wrote = dbc.transaction().and_then(|tx| {
+            write_ledgers(&tx)?;
+            tx.commit()
+        });
         if let Err(e) = wrote {
             // 事务失败 ⇒ 三张表一起没动。这里**退回今天的形状**逐句补写，不选「整体不动」：
             // 收件方与 `file_transfers` 不收口会把气泡停在「文件确实已在盘上但永不完成」那一格
@@ -455,8 +469,24 @@ async fn handle_group_file_done(
         // 内容（文件尚未下载），Done 时必须显式更新，否则接收方图片/代码预览因缺 path 失败。
         {
             let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-            db::update_message_content(&dbc, &done_rec.msg_id, &done_rec.content, &done_rec.status)
-                .ok();
+            if let Err(e) = db::update_message_content(
+                &dbc,
+                &done_rec.msg_id,
+                &done_rec.content,
+                &done_rec.status,
+            ) {
+                // 落库失败必须留痕（第八家）：这一句写的是 `content.path`。它没写成 ⇒
+                // `read_file_preview` 按 msg_id 反查不到本地文件，而那个"已被清理"的确定性失败判定
+                // 会被前端**永久缓存**（见下面那条 `file-done` 的注释）⇒ 盘上有文件、气泡永远空白。
+                // 行为一字不改：仍然继续往下 emit。
+                state.logger.error(
+                    "group_file",
+                    format!(
+                        "群文件 path 回填失败 msg={}：{e}",
+                        done_rec.msg_id
+                    ),
+                );
+            }
         }
         let _ = state.app.emit("message-received", &done_rec);
         // 群**接收**端也必须 emit `file-done`：单聊、中继、群发送方都发，唯独这里漏了。

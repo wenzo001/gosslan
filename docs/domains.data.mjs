@@ -338,8 +338,9 @@ export default {
       paths: [
         "src-tauri/src/network/file.rs",
         "src-tauri/src/network/file_tests.rs", // 分册：尾部行为测试（include! 回同一模块，2026-09-28 搬出）
-        // 分册目录：`network/file/{send,relay_push,receive,group_receive,share_walk}.rs`
-        // （2026-10-07 按角色切册，`include!` 回同一模块 ⇒ 同域、非新领域）。
+        // 分册目录：`network/file/{send,relay_push,receive,group_receive,ledger_backfill,share_walk}.rs`
+        // （2026-10-07 按角色切册，`include!` 回同一模块 ⇒ 同域、非新领域；
+        //  2026-10-16 加第六册 ledger_backfill = 群台账一次性补账，同一条 `include!` 机制）。
         // 这里**按目录认领而不是逐册点名**：`check-domain-map.mjs` 判据 D 会把该目录下任何新文件
         // 算成已归属，而"落在 file/ 里就属于文件传输域"是这条边界真正的说法；
         // 视图登记（`network/mod.rs::file_src_for_guards()`）才是逐册的，漏一册由
@@ -354,7 +355,7 @@ export default {
         // ↓ 2026-10-14 补登，口径同「本节/其判据点名的实现落在本域 paths 上」：
         "INV-P26", // 文件传输行的终态：本域 network/file/{receive,send,relay_push}.rs 是写入点，闸门那句 WHERE 在 persistence 的 db/file_transfer.rs
         "INV-P28", // 摘表与判据同一次持锁：判据 = network/file_tests.rs 里的 group_receive_atomicity_tests 那两条（单聊侧与群侧各一条）
-        "INV-P34", // 慢活只许在阻塞线程池里跑：本域有 file/receive.rs 的续传哈希、file/group_receive.rs 与 file/send.rs 的收尾/发前哈希；判据点名的 relay_push.rs:63 也在本域
+        "INV-P34", // 慢活只许在阻塞线程池里跑：本域有 file/receive.rs 的续传哈希、file/group_receive.rs 与 file/send.rs 的收尾/发前哈希、file/relay_push.rs:67 的发送前哈希，4.40.9 起还有 file/ledger_backfill.rs 那份补账用的整份哈希（按格判据在 ledger_backfill_tests.rs）
       ],
       activeHome: "src-tauri/src/network/file.rs",
       enforce: false,

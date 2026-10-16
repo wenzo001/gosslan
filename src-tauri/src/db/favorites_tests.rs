@@ -832,6 +832,62 @@ mod tests {
         assert!(content.contains("/tmp/a.png"), "path 必须指向本地文件");
     }
 
+    /// 上一条的**另一半**（2026-10-16 审计）：`update_message_content` 也写 status，
+    /// 所以它必须有和 `set_message_status` 同一道单调闸 —— 已读过的行不许被群文件 Done
+    /// 回退成 `delivered`（`set_message_status` 上方注释点名的就是这条竞态，而它能从第二个家重新发生）。
+    ///
+    /// 两个方向一起判，缺一半都判不住：
+    /// ① 状态**不回退**（闸生效）；② content **照旧回填**（闸不许顺手把路径也挡住 ⇒ 预览会缺 path）。
+    #[test]
+    fn update_message_content_backfills_path_without_regressing_read() {
+        let conn = mem();
+        insert_message(
+            &conn,
+            &rec_as(
+                "gfile-2",
+                "group:g1",
+                "image",
+                r#"{"name":"b.png","size":3,"subtype":"image"}"#,
+            ),
+        )
+        .unwrap();
+        set_message_status(&conn, "gfile-2", "delivered").unwrap();
+        // `read` 只能由已读回执那条路写（`set_message_status` 的闸会挡住 delivered→read 的
+        // 前进之外的方向），这里按 `db/read_receipts.rs` 的同一形状直接落到 read，
+        // 目的是构造"用户已经读过这条"这个前置状态。
+        conn.execute(
+            "UPDATE messages SET status = 'read' WHERE msg_id = 'gfile-2'",
+            [],
+        )
+        .unwrap();
+
+        // Done 晚到，且它带的是"前进到 delivered"——这一格必须只补内容、不动状态
+        update_message_content(
+            &conn,
+            "gfile-2",
+            r#"{"name":"b.png","path":"/tmp/b.png","size":3,"subtype":"image"}"#,
+            "delivered",
+        )
+        .unwrap();
+
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM messages WHERE msg_id = 'gfile-2'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            status, "read",
+            "已读不许被路径回填回退成 delivered —— 与 set_message_status 同一道闸"
+        );
+        let (_, content) = get_message_preview_source(&conn, "gfile-2").unwrap();
+        assert!(
+            content.contains("/tmp/b.png"),
+            "状态不回退不等于 content 不回填（挡了路径就是预览缺 path 那个老形状）"
+        );
+    }
+
     /// Test 1 + Test 2（单聊）：Direct→Gossip 与 Gossip→Direct 两种顺序都只生效一次。
     #[test]
     fn unread_and_event_fire_only_for_the_winning_insert() {

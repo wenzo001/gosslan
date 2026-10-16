@@ -893,6 +893,17 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                     }
                     (rec, inserted)
                 };
+                // 落库失败必须留痕（同上第七家）：这一格行为不改 —— Err 时既不 emit 也不回 GroupAck，
+                // 发送方保留 outbox 继续补发；补的是"这台为什么没收到这条"在日志里的存在感。
+                if let Err(e) = &inserted {
+                    state.logger.error(
+                        "chat",
+                        format!(
+                            "Gossip 消息落库失败 msg={}：{e} —— 不产生本地副作用，群侧不回 Ack（发送方保留待发）",
+                            env.message_id
+                        ),
+                    );
+                }
                 // 重复投递与数据库失败都不产生本地副作用；Gossip 的转发已在上面完成。
                 if announced_on(&inserted) {
                     let _ = state.app.emit(

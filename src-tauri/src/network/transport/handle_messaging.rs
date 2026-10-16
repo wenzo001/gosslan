@@ -143,6 +143,19 @@ async fn handle_messaging_arm(state: &Arc<AppState>, peer_id: &str, msg: Message
             // 真数据库错误 ⇒ 消息没有持久化 ⇒ 既不投递也绝不 Ack：Ack 会让发送方删除
             // outbox 行，把一次临时故障变成永久丢消息（与 P0-2 同源的红线）。
             if !may_ack(&inserted) {
+                // 落库失败必须留痕（审计 2026-10-16 五家的第六家）：**行为一字未改** —— 仍然既不投递
+                // 也绝不 Ack（Ack 会让发送方删掉 outbox 行，把一次临时故障变成永久丢消息）。
+                // 补的只是"对方为什么永远收不到"这一格在日志里有没有据可查。
+                // `may_ack` 为假 ⇔ 落库返回 Err（重复那条仍为真 ⇒ 走不到这里），见 dispatch_tests 三态。
+                if let Err(e) = &inserted {
+                    state.logger.error(
+                        "dispatch",
+                        format!(
+                            "1:1 入站消息落库失败 msg={}：{e} —— 不回 Ack，发送方 outbox 保留待补发",
+                            msg_id
+                        ),
+                    );
+                }
                 return;
             }
             if announced_on(&inserted) {
