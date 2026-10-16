@@ -223,6 +223,13 @@ const LATE = ROUND === "gossip-late" || ROUND === "gossip-late-lie";
 /// 任务专项轮（第二阶段 §22）：一条任务「创建 → 被指派者收到 → 改成完成」跨两个真实进程。
 /// 判的是这一族在 SQLite 里**真的存在**的事实；徽标那个数字是前端 store 算的，不在本层判（见 roadmap §13.3 的层次修正）。
 const TASK = ROUND === "task" || ROUND === "task-lie";
+
+/// **群历史同步轮**（`--round=ghsync`，2026-10-16 需求：新进群的人自动拿到群里的聊天与群任务）。
+/// 判的是**只有第二个真实进程才能证明**的那一半：B 作为"刚入群、手里一格历史都没有"的那一台，
+/// 靠生产码自己完成选源 → 摘要问答 → 分页取页 → 群密钥解封 → 幂等落库 → 标记收口。
+/// 预置只写"入群欠一份历史"那一枚 settings 标记（`note_new_membership` 在真入群时写的同一份形状）——
+/// 入群那一帧本身是群主的 IPC 命令，进程外造不出（这条边界与 roadmap 里"跨实例建群那一半仍缺"是同一条）。
+const GHSYNC = ROUND === "ghsync" || ROUND === "ghsync-lie";
 /// #121（`--round=groupcrash`）：**正在建群时被 SIGKILL** —— §28「链路失效」那一族里
 /// 唯一今天做得成的格子。钉的是"群名册才是事实源、重递不许依赖内存登记"，
 /// 完整动机与为什么不预置队列行写在那一步的注释里。
@@ -280,6 +287,7 @@ import * as disk from "./e2e/rounds/disk.mjs";
 import * as rot from "./e2e/rounds/rot.mjs";
 import * as shrink from "./e2e/rounds/shrink.mjs";
 import * as multi from "./e2e/rounds/multi.mjs";
+import * as ghsync from "./e2e/rounds/ghsync.mjs";
 
 
 
@@ -643,6 +651,9 @@ if (GFILE) await gfile.run();
 // 内容拉取轮排在**最后**（与群文件轮同一档）：它自己 stopAll → 停机预置 → 再起两端，
 // 排在后面就不会把这条旅程里的日志锚点（`peer=` / boot 行）搅进上一轮的读数里。
 if (CONTENTPULL) await contentpull.run();
+// 群历史轮排在最末：它自己 `stopAll → 预置 → 再起两端`，且**等的是 60 秒一轮的清扫任务**，
+// 放在任何一轮之前都会把那一轮的日志锚点（`建链 peer=` / boot 行）搅进自己的读数里。
+if (GHSYNC) await ghsync.run();
 const REPORT_GAPS = [];
 function writeReport(failed) {
   fs.mkdirSync(RUN_DIR, { recursive: true });

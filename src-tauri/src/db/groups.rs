@@ -239,6 +239,13 @@ pub fn delete_group(conn: &Connection, group_id: &str) -> Result<()> {
         "DELETE FROM settings WHERE key = ?1",
         params![crate::db::clear_boundary_key(group_id)],
     )?;
+    // 历史同步状态也随群一起删（2026-10-16 需求自带的另一半）：退群会把消息删光，
+    // 而那个 `done` 标记说的是"**我**已经拿到过历史"。留着它，被重新拉进群的人就再也
+    // 不会触发同步 —— 界面上是一个空的群，而他要的恰恰是新进群的人自动拿到历史。
+    tx.execute(
+        "DELETE FROM settings WHERE key = ?1",
+        params![crate::db::group_history_state_key(group_id)],
+    )?;
     tx.execute("DELETE FROM groups WHERE id = ?1", params![group_id])?;
     tx.execute(
         "DELETE FROM conversations WHERE id = ?1",

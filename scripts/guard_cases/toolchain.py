@@ -65,8 +65,8 @@ CASES: list[Case] = [
         "     注入方式：把 CONTENT_FEATURE_MERGE 从本机广播的位图里摘掉",
         file=TAURI / "src" / "protocol.rs",
         injections=[(
-            "pub fn content_features() -> u32 {\n    CONTENT_FEATURE_PULL\n        | CONTENT_FEATURE_MERGE\n        | CONTENT_FEATURE_FILE_EPOCH\n        | CONTENT_FEATURE_FLEX_DM_KIND\n}",
-            "pub fn content_features() -> u32 {\n    CONTENT_FEATURE_PULL\n        | CONTENT_FEATURE_FILE_EPOCH\n        | CONTENT_FEATURE_FLEX_DM_KIND\n}",
+            "pub fn content_features() -> u32 {\n    CONTENT_FEATURE_PULL\n        | CONTENT_FEATURE_MERGE\n        | CONTENT_FEATURE_FILE_EPOCH\n        | CONTENT_FEATURE_FLEX_DM_KIND\n        | CONTENT_FEATURE_GROUP_HISTORY\n}",
+            "pub fn content_features() -> u32 {\n    CONTENT_FEATURE_PULL\n        | CONTENT_FEATURE_FILE_EPOCH\n        | CONTENT_FEATURE_FLEX_DM_KIND\n        | CONTENT_FEATURE_GROUP_HISTORY\n}",
         )],
         cmd=cargo("test", "--lib", "every_gated_kind_is_advertised_by_us"),
         cwd=TAURI,

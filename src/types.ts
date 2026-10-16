@@ -337,6 +337,24 @@ export interface GroupReadInfo {
 }
 
 /**
+ * 群历史同步进度（事件 `group-history-progress`，见 Rust 侧
+ * `network/group_history::emit_progress`）。
+ *
+ * `phase` 四档：`running`（还在取页）/ `done`（这一趟收口）/ `failed`（本机或所有源出问题，
+ * 标记保持待同步、后台还会再试）。文案整句由前端按 `synced/total` 组 ——
+ * 这里没有像「受众预告」那样由后端拼句，因为分母本身会随源机读数变化，
+ * 拼好的整句一旦落后于计数就会在界面上自相矛盾。
+ */
+export interface GroupHistoryProgress {
+  group_id: string;
+  source: string;
+  synced: number;
+  total: number;
+  phase: "running" | "done" | "failed";
+  reason?: string | null;
+}
+
+/**
  * 群发「受众预告」（事件 `content-audience`，见 Rust 侧 `protocol::kind_audience_hint`）。
  *
  * 消息**已经发出去了** —— 这条只解释"群里有谁会把这条看成一段原始文本"，不是失败通知。

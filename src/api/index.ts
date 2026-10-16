@@ -2,7 +2,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppSettings, CacheInfo, ChatSearchGroup, CleanupReport, ContentAudience, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, FriendKeyRotation, Group, GroupFileEntry, GroupReadInfo, InterfaceInfo, LinkState, LogEntry, MessageRecord, Peer, PeerReadInfo, PendingRequest, RelayConfig, RelayProbe, RoutedEndpoint, RuntimeSnapshot, ShareEntry, TopologyInfo, TransferInfo } from "@/types";
+import type { AppSettings, CacheInfo, ChatSearchGroup, CleanupReport, ContentAudience, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, FriendKeyRotation, Group, GroupFileEntry, GroupHistoryProgress, GroupReadInfo, InterfaceInfo, LinkState, LogEntry, MessageRecord, Peer, PeerReadInfo, PendingRequest, RelayConfig, RelayProbe, RoutedEndpoint, RuntimeSnapshot, ShareEntry, TopologyInfo, TransferInfo } from "@/types";
 import type { TodoImage } from "@/utils/todos";
 import type { PreviewGallery, PreviewImage } from "@/types";
 export const api = {
@@ -597,6 +597,11 @@ export type EventHandlers = {
   onPeerStyle: (p: PeerStyleUpdate) => void;
   /** 群信息变更（群密钥建群 / 群改名 / 成员变更） */
   onGroupsUpdated: (groupId: string) => void;
+  /**
+   * 群历史同步进度（新成员入群后后台自动补聊天与群任务，见 Rust
+   * `network/group_history.rs`）。`running` 期间提示条常驻，`done` / `failed` 收起。
+   */
+  onGroupHistoryProgress: (p: GroupHistoryProgress) => void;
   /** 自己被移出群（group_id） */
   onGroupMemberRemoved: (groupId: string) => void;
   /** 群发受众预告：这条 kind 群里有成员版本较旧会看成原始文本（消息已发出，仅解释）。 */
@@ -641,6 +646,10 @@ export async function bindEvents(h: EventHandlers): Promise<UnlistenFn[]> {
     listen<string>("message-failed", (e) => h.onMessageStatusChanged(e.payload)),
     listen<PeerStyleUpdate>("peer-style-updated", (e) => h.onPeerStyle(e.payload)),
     listen<string>("groups-updated", (e) => h.onGroupsUpdated(e.payload)),
+    // 群历史同步进度（新成员入群后后台自动补，见 Rust `network/group_history.rs`）。
+    listen<GroupHistoryProgress>("group-history-progress", (e) =>
+      h.onGroupHistoryProgress(e.payload),
+    ),
     listen<string>("group-member-removed", (e) => h.onGroupMemberRemoved(e.payload)),
     listen<ContentAudience>("content-audience", (e) => h.onContentAudience(e.payload)),
     // 「用户点了系统通知」：后端在 notify-rust 的点击回调里唤起主窗口后发出（见

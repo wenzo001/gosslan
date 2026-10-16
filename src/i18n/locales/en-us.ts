@@ -373,6 +373,10 @@ export const enUS: MessageDict = {
   "chat.header.tasks": "Group Tasks",
   "chat.header.share": "Shared Folder",
   "chat.selfChat": "Chat with myself",
+  // Group history sync (a newly joined member automatically receives the chat and group tasks).
+  "chat.groupHistory.syncing": "Syncing group messages — {synced} of {total} received",
+  "chat.groupHistory.syncingUnknown": "Syncing group messages — {synced} received",
+  "chat.groupHistory.failed": "Group message sync didn't finish; it retries once a member is online",
   "chat.selfChatHint": "Notes & files to yourself",
   "chat.eventBindFail": "Failed to start live message listeners; new messages may not arrive. Please restart the app.",
   "chat.selfChatTextOnly": "Chat-with-myself doesn't support images or files yet",

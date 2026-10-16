@@ -559,6 +559,11 @@ pub fn run() {
                     }
                 });
             }
+            // 群历史同步的清扫任务（负责人 2026-10-16 需求）：入群那一刻常常没有人在线，
+            // 只靠那一次喊话，"自动同步"就变成看运气。这一格每 60 秒看一次还挂着
+            // "待同步"标记的群，有人在线就补上。形态与上面那条补账作业同一条纪律：
+            // **没跑完不写完成标记**，所以这一轮没跑成不会被钉成永久不做。
+            crate::network::group_history::spawn_group_history_sweeper(&state);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

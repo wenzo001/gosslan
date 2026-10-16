@@ -1,11 +1,11 @@
-// 职责边界：`handle_message` 的「群聊与群文件」分支组 —— 只处理 `GroupReadReceipt`、`GroupAck`、`GroupKey`、`GroupRename`、`GroupMemberRemoved`、`GroupCreatorChanged`、`GroupMemberLeft`、`GroupFileOffer`、`GroupFileChunk`、`GroupFileDone`、`GroupFileCompleteAck` 这些变体；不做路由、不起新连接，落库/发送都在各自臂体里（与原函数逐字相同）。
+// 职责边界：`handle_message` 的「群聊与群文件」分支组 —— 只处理 `GroupReadReceipt`、`GroupAck`、`GroupKey`、`GroupRename`、`GroupMemberRemoved`、`GroupCreatorChanged`、`GroupMemberLeft`、`GroupFileOffer`、`GroupFileChunk`、`GroupFileDone`、`GroupFileCompleteAck`、`GroupHistoryRequest`、`GroupHistoryReply` 这些变体；不做路由、不起新连接，落库/发送都在各自臂体里（与原函数逐字相同）。
 // 为什么单独一册：`handle_message` 原来 1,540 行 / 38 个臂挤在一个函数里。已用 AST 现量过
 //   **match 之前没有裸 let 绑定、分支之间不共享局部量** ⇒ 按消息族拆出去是机械搬家而不是改控制流，
 //   依据与量法见 docs/large-file-split-plan.md §5.1。
 // 恒等判据（每族都跑同一套）：`cargo test --features bluetooth --lib -- --list` 用例名差集 0 行、
 //   `verify-guards.py --list` 每条锚点仍恰好命中一次、clippy `-D warnings`、`cargo fmt --check`。
-// 为什么并成一族：这 11 个变体共用同一套群前提——密钥必须先到（GroupKey 排在消息之前，2026-09-27 #77 补递轮钉的就是这条次序）、
-//   受众按群算（GroupAck/GroupReadReceipt 是 G-Set 语义）、群文件走另一条 outbox（每人一行）。
+// 为什么并成一族：这 13 个变体共用同一套群前提——密钥必须先到（GroupKey 排在消息之前，2026-09-27 #77 补递轮钉的就是这条次序）、
+//   受众按群算（GroupAck/GroupReadReceipt 是 G-Set 语义，群历史两帧同样只服务本群成员）、群文件走另一条 outbox（每人一行）。
 //   留在 handle_message 里时这些前提散在 11 个臂中间，读一处看不到另一处。
 
 async fn handle_group_messages(state: &Arc<AppState>, peer_id: &str, msg: Message) {
@@ -189,6 +189,39 @@ async fn handle_group_messages(state: &Arc<AppState>, peer_id: &str, msg: Messag
                 success,
             )
             .await;
+        }
+        // 群历史同步（2026-10-16 需求）：臂体只做搬运，判定与取数都在 `network/group_history.rs`
+        // —— 那一个家同时管着"该不该给/给哪一页"与"拿到一页怎么落库"，
+        // 拆在两处就会各写一遍授权（本仓为"同一开关的另一个面"付过学费）。
+        Message::GroupHistoryRequest {
+            request_id,
+            from,
+            to,
+            group_id,
+            after_seq,
+            after_id,
+            limit,
+        } => {
+            crate::network::group_history::handle_request(
+                state,
+                peer_id,
+                request_id,
+                from,
+                to,
+                group_id,
+                after_seq,
+                after_id,
+                limit,
+            )
+            .await;
+        }
+        Message::GroupHistoryReply {
+            request_id,
+            from,
+            to,
+            reply,
+        } => {
+            crate::network::group_history::handle_reply(state, peer_id, request_id, from, to, reply);
         }
         _ => {}
     }

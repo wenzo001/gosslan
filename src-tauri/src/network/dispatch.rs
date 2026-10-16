@@ -57,6 +57,10 @@ pub fn message_priority(msg: &Message) -> MessagePriority {
         Message::FileChunk { .. }
         | Message::RelayChunk { .. }
         | Message::GroupFileChunk { .. }
+        // 群历史的一页正文：新成员补 800 条聊天时这里是本特征里最大的一块流量。
+        // 留在 Low 是需求本身的要求（「别让用户感觉到卡顿」）——聊天与文件分片随时能把它打断。
+        // 顺序不靠队列保序：请求方按 `(seq, id)` 游标逐页要，下一页只在上一页落库后才发。
+        | Message::GroupHistoryReply { .. }
         // 终止帧**必须和分片同 channel**，保证 FileChunk 流的协议顺序不被调度打乱
         //（FileDone 不能跑到 FileChunk 前面，否则接收端按 done 期待的 chunk 数量
         // 对不上）。
@@ -74,7 +78,12 @@ pub fn message_priority(msg: &Message) -> MessagePriority {
         // 完成回执是「接收方向发送方」的确认，与本机上行分片流无顺序耦合；
         // 走 Low 会被别人占满的分片队列压住（旧两级语义是 priority），留在 Normal。
         | Message::FileCompleteAck { .. }
-        | Message::GroupFileCompleteAck { .. } => MessagePriority::Normal,
+        | Message::GroupFileCompleteAck { .. }
+        // 群历史**请求**帧很小、要的是"尽快问到摘要好选源"，留在 Normal；
+        // 它的**应答**（一页正文）在上面的 Low 档。两半分开是有意的：
+        // 把请求也压进 Low，选源那一趟就要排队等别人的分片，界面上一条"正在同步"
+        // 会迟迟不出现（用户要的"无感"里包含"该出现的提示要出现"）。
+        | Message::GroupHistoryRequest { .. } => MessagePriority::Normal,
 
         // Gossip：大部分是 Normal，但 payload 特别大的降级为 Low
         Message::Gossip { envelope } => {
