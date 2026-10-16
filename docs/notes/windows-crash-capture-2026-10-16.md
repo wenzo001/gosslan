@@ -73,12 +73,22 @@ Select-String -Path "$dir\gosslan*.log" -Pattern '群文件台账补账'      # 
 ### 2a. 崩溃 dump（管理员 PowerShell，一次性的开关）
 
 ```powershell
+# ⚠️ 2026-10-16 傍晚更正：这一版我原先写的是"值落在 LocalDumps 根键"，那对**所有进程**生效。
+# 实测代价就在用户机器上：`CrashDumps\gosslan\pwsh.exe.31828.dmp` = **264 MB**（pwsh 也崩了一次，
+# 它的带堆 dump 也落进了我们那个目录）。按 DumpCount=6 算，上限就是 ~1.8 GB 磁盘。
+# 正确做法：值落在 **`LocalDumps\gosslan.exe` 子键**上，只对这一个可执行文件生效。
 $kd = "HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps"
-New-Item -Force -Path $kd | Out-Null
-New-ItemProperty -Force -Path $kd -Name DumpFolder   -PropertyType ExpandString -Value "%LOCALAPPDATA%\CrashDumps\gosslan"
-New-ItemProperty -Force -Path $kd -Name DumpType     -PropertyType DWord -Value 2      # 2 = 完整 dump
-New-ItemProperty -Force -Path $kd -Name DumpCount    -PropertyType DWord -Value 6
+New-Item -Force -Path "$kd\gosslan.exe" | Out-Null
+New-ItemProperty -Force -Path "$kd\gosslan.exe" -Name DumpFolder -PropertyType ExpandString -Value "%LOCALAPPDATA%\CrashDumps\gosslan"
+New-ItemProperty -Force -Path "$kd\gosslan.exe" -Name DumpType   -PropertyType DWord -Value 2   # 1=Mini(不含堆) 2=Heap(含堆) 4=Full
+New-ItemProperty -Force -Path "$kd\gosslan.exe" -Name DumpCount  -PropertyType DWord -Value 3
+# 把之前落在根键上的全局值撤掉，免得继续给别的应用写几百 MB
+Remove-ItemProperty -Path $kd -Name DumpFolder,DumpType,DumpCount -EA SilentlyContinue
 ```
+
+> 也顺手改掉一处旧笔误：本文更早的版本把 `DumpType=2` 注释成"完整 dump"——**不对**，
+> `1=Mini`（只有线程栈与模块清单，**不含堆**）、`2=Heap`、`4=Full`。我们要的是 2。
+> 实测一份 4.40.9 的 B 型崩溃 Heap dump = **291 MB**（`gosslan.exe.71016.dmp`，17:53:44）。
 
 （`DumpType 2` 会写整份内存，磁盘要留够；只想要轻一点就填 `1` 迷你堆 dump。）
 
