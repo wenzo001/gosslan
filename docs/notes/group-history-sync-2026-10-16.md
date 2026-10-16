@@ -225,3 +225,35 @@ npm run test:e2e:ghsync-selfproof                                      # 反证�
 ⚠️ 两条 e2e 命令前置的是 `src-tauri/target/release/gosslan`：改过任何 `.rs` 就要先
 `cargo build --release`，否则 harness 的 preflight 以"源码比二进制新"直接拒跑
 （这是刻意的 —— 拿旧二进制跑新判据得出的结论不算结论）。
+
+## 九、进群那一刻的各种情况（负责人 2026-10-16 追问："各种情况都不能报错"）
+
+这张表是**逐条读代码填的**，不是设想。"看得见的动静"那一列写的是用户实际会看到什么 ——
+需求底线是：**除了"确实办不成"，任何一路都不该弹错误**。
+
+| # | 情况 | 走哪条臂 | 看得见的动静 | 判据 |
+| --- | --- | --- | --- | --- |
+| 1 | 建群的人 / 本机自己创建的群 | 不写标记（两个触发点都要求"本机原来不认识这个群"） | 什么都没有 | `only_an_explicit_pending_marker_starts_a_run` |
+| 2 | 全新的小群，谁都没说过话 | 问了 N 台、每台都答 `total=0` ⇒ 选不出源 ⇒ `NoSource` | **静默**（一条 info 日志，无横幅无提示）；标记留 `pending`，60s 后再问 | `peers_without_any_history_are_not_eligible`（空群不许参与选源，也就不会被写成 `done`） |
+| 3 | 一个候选都连不上（都离线 / 都还没升级） | `eligible_peers` 为空 ⇒ 立刻 `NoSource`，**一个字节都不发** | 静默，同上 | `empty_candidate_list_has_no_source` + 门控那一族（INV-P24「不门控不许发」） |
+| 4 | 群里有历史、本机一格都没有（需求主场景） | 摘要 → 选源 → `(seq,id)` 分页 → 解封 → 幂等落库 → 收口 `done` | 一条细横幅随页数前进，跑完自己消失 | 跨实例正向轮 `--round=ghsync`（本步 14 条）+ 三条归因 |
+| 5 | 中途进群、手里已有几条（老版本同步来的） | 自动那趟**不再跑**（只认第一次知道这个群）；补齐靠手动那颗按钮 ⇒ 全量重扫 + `msg_id` 去重 ⇒ 只补缺口 | 点一下：一句"已开始…"，随后横幅随页数前进 | `a_second_full_pass_fills_the_hole_and_touches_nothing_already_there`、`applying_the_same_page_twice_inserts_once` |
+| 6 | 群密钥还在路上（只先收到过群消息的那类新成员） | 第一页就 `NoKey` ⇒ **不喊"未完成"**（此刻横幅还没露过面），标记留 `pending`，密钥落地后下一轮清扫自己补 | 静默 | `a_key_that_has_not_arrived_is_not_reported_as_a_failure`（本轮新加：两行结局 + 两条接线计数） |
+| 7 | 群里只剩自己（单成员群） | 同 3：候选为空 | 静默 | 同 3 |
+| 8 | 标记还在、群已经没了（退群/删群赶在前面） | `NoGroup` ⇒ **删掉标记**而不是写 `done`（对不存在的群，两个都不是事实） | 群已从列表里没了，无动静 | `leaving_a_group_drops_its_sync_marker_too` |
+| 9 | 用户手动清过这个群的历史 | 落库前逐条过水位 ⇒ 清空点之前的行不许回来；群任务/公告（Card 类）不受这道闸管 | 不会"清掉又自己长回来" | `cleared_history_stays_cleared_after_a_sync` + `cleared_boundary_does_not_block_group_tasks_or_announcements` |
+| 10 | 对端是没升级的老版本 | 能力位为 0 ⇒ 不发给它、也不把它当源（双向都不碰） | 静默 | `the_frame_is_gated_and_advertised`、`every_gated_kind_is_advertised_by_us` |
+| 11 | 两个人同时进群 | 各自一台、各自一枚标记，互不影响；同一批行靠 `msg_id` 去重 | 各自看见自己的横幅 | **无专用判据**（见下面缺口 2） |
+
+**为什么 2 / 3 / 6 是"留在 pending"而不是收口**：一台都问不到 ≠ 这一群没有历史，它只是
+"现在还不知道"。写成 `done` 会把一件没发生的事变成永久状态（INV-P26 反面）；而留着 `pending`
+顺带成了"进群之后大家才开始说话"这一路唯一的迟到补账入口 ⇒ **这条每 60 秒的循环不是缺陷**。
+要不要再加一档"连败 N 天就停"是**没做的**：停了就没有迟到补账 —— 归负责人拍板（§六·补 末段同一条）。
+
+### 这一节里如实登记的三个缺口
+
+1. 表里 2 / 3 / 6 那三条"选不出源就留 pending、不许写 done"的**臂本身**在 IO 外壳里，本册没有
+   能构造 `AppState` 的单测 ⇒ 判据只覆盖它上游那张纯表（选源/门控），外壳那一半靠注释与读代码。
+2. 第 11 行（同时进群）没有跨进程判据：现有正向轮只有一台新机在搬。
+3. 第 6 行的"密钥落地后下一轮自动补上"没有跨进程判据：harness 造不出"先只收群消息、后收 GroupKey"
+   这个时序（与"跨实例建群那一半仍缺"是同一条边界）。
