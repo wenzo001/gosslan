@@ -318,7 +318,7 @@ logging::tests::logger_clear_empties_memory
 logging::tests::logger_memory_ring_buffer_is_bounded
 logging::tests::logger_persists_to_file_and_rotates
 logging::tests::non_diag_info_is_not_folded
-logging::tests::only_the_panic_target_creates_a_crash_file
+logging::tests::only_the_panic_target_writes_a_crash_block
 macos_bookmark::tests::bookmark_to_a_deleted_directory_fails_cleanly
 macos_bookmark::tests::create_then_resolve_returns_the_same_directory
 macos_bookmark::tests::garbage_bookmark_is_an_error_not_a_panic
