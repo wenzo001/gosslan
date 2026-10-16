@@ -702,6 +702,24 @@ pub struct TransferInfo {
     pub progress: f64,
 }
 
+/// 本机这一群的**历史同步进度**（`settings` 里 `ghsync:group:<gid>` 那份 JSON）。
+///
+/// 负责人 2026-10-16 的需求形状：新进群的人要自动拿到群里的聊天与群任务。这件事可能
+/// 跑一半就断网、重启、或那台最全的成员下线 ⇒ 必须有一个**落在盘上**的判断依据
+/// （INV-P26：能从盘上证实的状态不许从界面上的读数倒推）。
+/// `status` 只有两个值：`pending`（还要继续，含"一趟没跑完"）与 `done`（这一趟收口了）。
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct GroupHistorySyncState {
+    pub status: String,
+    /// 这一趟从谁那儿取的（只为日志与诊断；换源不算状态变化）
+    pub source: String,
+    /// 已同步进来的条数（本机侧读数，含被水位挡住的那些之外的部分）
+    pub synced: i64,
+    /// 源机报的总条数（进度分母；`0` = 还不知道）
+    pub total: i64,
+    pub updated_at: i64,
+}
+
 /// 群文件元数据（DB 表 group_files）。一个 transfer_id 对应一个群文件；
 /// 成员投递状态在 group_file_recipients 中按 (transfer_id, recipient_id) 独立维护。
 pub struct GroupFile {
@@ -1182,6 +1200,27 @@ pub struct AppState {
     /// 等待共享目录树响应：request_id -> 应答通道
     pub pending_share_tree:
         Mutex<HashMap<String, tokio::sync::oneshot::Sender<Vec<crate::protocol::ShareEntry>>>>,
+    /// 等待群历史应答：request_id -> (问的是哪个群, 应答通道)。
+    /// `network/group_history.rs` 的请求方登记，`transport/handle_group.rs` 的应答臂投递。
+    ///
+    /// 为什么键是随机 `request_id` 而不是 `(peer, group)`：同一个群可以同时问好几个人
+    /// （选源那一趟要扇出去），而键里带 peer 就会让**别的**对端拿一个自报的 group 字段
+    /// 把别人正在等的应答顶掉。随机 id 只有真发过这个请求的任务知道 ⇒ 未注册的应答直接丢弃。
+    /// 为什么把 group 一起存：应答里的 `group_id` 是对端自报的，要有一个本机-side 的期望值
+    /// 才能判"答的是不是我问的那个群"（拿 A 群的历史冒充 B 群，落库就会写进错的会话）。
+    pub pending_group_history: Mutex<
+        HashMap<
+            String,
+            (
+                String,
+                tokio::sync::oneshot::Sender<crate::protocol::GroupHistoryReplyBody>,
+            ),
+        >,
+    >,
+    /// **正在跑群历史同步的那几个群**（在飞闸，见 `network::group_history::spawn_sync`）。
+    /// 入群钩子、群消息顺手建群那一路、以及每 60 秒的清扫任务都会喊同一声；
+    /// 没有这一格，同一个群会同时排两三趟、各要一遍同样的历史（结果一样，开销翻倍）。
+    pub group_history_active: Mutex<std::collections::HashSet<String>>,
 
     /// 节点表是否需要向前端推送（节流合并用，见 `spawn_peer_emitter`）
     pub peers_dirty: AtomicBool,
@@ -1489,6 +1528,8 @@ impl AppState {
             file_receivers: Mutex::new(HashMap::new()),
             file_wire_progress: Mutex::new(HashMap::new()),
             pending_share_tree: Mutex::new(HashMap::new()),
+            pending_group_history: Mutex::new(HashMap::new()),
+            group_history_active: Mutex::new(std::collections::HashSet::new()),
             peers_dirty: AtomicBool::new(false),
             network_generation: AtomicU64::new(0),
             peers_notify: Arc::new(Notify::new()),

@@ -31,7 +31,7 @@ import { foldTodos, todoLiveMap, type TodoLive } from "@/utils/todos";
 import { isRenderedInTimeline } from "@/utils/messageKinds";
 import { activePopupKey } from "@/utils/popupRegistry";
 import { previewText } from "@/utils/messages";
-import { ArrowDown, Bluetooth, Layers, X, Pin, Megaphone, Trash2, Share2, Star, ShieldAlert, KeyRound } from "lucide-vue-next";
+import { ArrowDown, Bluetooth, Layers, X, Pin, Megaphone, Trash2, Share2, Star, ShieldAlert, KeyRound, Loader2 } from "lucide-vue-next";
 import {
   isAnnounceDismissed,
   readAnnounceSeen,
@@ -112,6 +112,30 @@ const keyRotation = computed(() => {
 });
 const syncKeysOpen = ref(false);
 const syncingKeys = ref(false);
+/**
+ * 当前群会话的「群历史同步中」读数（负责人 2026-10-16 需求：新进群的人自动拿到群里的
+ * 聊天与群任务；后端一页一页搬，每搬完一页喊一声，见 Rust `network/group_history.rs`）。
+ *
+ * 不是群会话、或这一群没在同步 ⇒ `null` ⇒ 横幅**不占位**（与群公告条同一口径：
+ * 没有事由不该常驻一条横幅）。
+ */
+const groupHistory = computed(() => {
+  const id = chat.activeConv;
+  if (!id || !id.startsWith("group:")) return null;
+  return chat.groupHistorySync[id.slice("group:".length)] ?? null;
+});
+/**
+ * 提示条那句话的**唯一**写法。正文与 `title` 必须同源：`truncate` 把句子截掉时，
+ * 全文要能在 `title` 里读到 —— 那是 `utils/designGuards.test.ts` 里
+ * 「被截断的文本必须有 title」那条判据，写两份就会有一份漂移。
+ */
+const groupHistoryText = computed(() => {
+  const p = groupHistory.value;
+  if (!p) return "";
+  return p.total > 0
+    ? t("chat.groupHistory.syncing", { synced: p.synced, total: p.total })
+    : t("chat.groupHistory.syncingUnknown", { synced: p.synced });
+});
 async function confirmSyncKeys() {
   const id = chat.activeConv;
   if (!id || syncingKeys.value) return;
@@ -1225,6 +1249,28 @@ function onLoadMore() {
           </button>
         </div>
       </div>
+    </div>
+
+    <!-- 群历史同步中（新成员入群后后端自动补，见 Rust network/group_history.rs）。
+         刻意做成一条细横幅：不弹窗、不挡输入框、不收键盘焦点 —— 需求要的是
+         "可以有提示"且"别让用户感觉到卡顿"，所以这一条既不能是模态，也不能每秒重画。
+         `role=status` + `aria-live=polite`：读数在变，但读屏软件不会打断用户在做的事。 -->
+    <div
+      v-if="groupHistory"
+      class="mx-2 mt-1 flex shrink-0 items-center gap-2 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3 py-1.5"
+      role="status"
+      aria-live="polite"
+    >
+      <Loader2
+        class="h-3.5 w-3.5 shrink-0 animate-spin text-[var(--gosslan-primary)]"
+        aria-hidden="true"
+      />
+      <p
+        class="min-w-0 flex-1 truncate text-[12px] leading-snug text-[var(--gosslan-text-2)]"
+        :title="groupHistoryText"
+      >
+        {{ groupHistoryText }}
+      </p>
     </div>
 
     <!-- 群公告条：**有公告且这条没在本机收起过**才出现（用户 2026-09-17 要"没有公告不该

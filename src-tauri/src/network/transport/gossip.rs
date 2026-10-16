@@ -755,6 +755,9 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                         }
                         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                         let known = db::get_group(&dbc, &gid);
+                        // 本机从没建过这个群的记录 = 第一次成为它的成员（与 `handle_group_key`
+                        // 里那个读数同一个用途，只是这一路是"从未收到 GroupKey、只收到群消息"的成员）。
+                        let first_membership = known.is_none();
                         let is_self_declared_creator = env.sender_id == creator;
                         let display_name = match &known {
                             // 已有该群：只有群主自称时才更新名字，否则沿用本地名字
@@ -773,6 +776,13 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                         db::upsert_group(&dbc, &gid, &display_name, &creator, &all).ok();
                         drop(dbc);
                         let _ = state.app.emit("groups-updated", &gid);
+                        // 这一路也是"第一次成为成员"（有些人只收到过群消息、从没收到 GroupKey，
+                        // 见上面那段建群注释）。不喊这一声，那一类新成员就永远拿不到历史 ——
+                        // 而需求写的是"新进群的人员"，与他靠哪一帧知道自己在群里无关。
+                        // 放在 `drop(dbc)` 之后：`note_new_membership` 自己还要取那把锁（INV-P25）。
+                        if first_membership {
+                            crate::network::group_history::note_new_membership(state, &gid);
+                        }
                     }
                 }
                 let preview = preview_content(&kind, &content);

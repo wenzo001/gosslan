@@ -79,6 +79,7 @@ import type {
   Friend,
   FriendKeyRotation,
   Group,
+  GroupHistoryProgress,
   GroupReadInfo,
   MessageRecord,
   Peer,
@@ -148,6 +149,14 @@ export const useChatStore = defineStore("chat", () => {
   const messages = ref<Record<string, MessageRecord[]>>({});
   // group_id -> reader_id -> reader 已读到的最大时间戳
   const groupReads = ref<Record<string, Record<string, number>>>({});
+  /**
+   * group_id -> 群历史同步进度（新成员入群后后端自动补聊天与群任务，
+   * 见 Rust `network/group_history.rs`；事件 `group-history-progress`）。
+   *
+   * 只装**还没收口**的那几个群：`done` 与 `failed` 都会把条目撤掉，
+   * 于是界面不会留下一条永远挂着、但其实已经不会再变的"同步中"（那种残留比没有提示更坏）。
+   */
+  const groupHistorySync = ref<Record<string, GroupHistoryProgress>>({});
   const activeConv = ref<string | null>(null);
   // 群聊里有人 @ 我且未读的会话 id 集合 → 列表摘要前显示 [有人@我]。
   // 纯前端运行时标志（不落库）：打开会话即清除，重启后随未读一起消失。
@@ -1016,6 +1025,9 @@ export const useChatStore = defineStore("chat", () => {
     conversations.value = [];
     groups.value = [];
     groupReads.value = {};
+    // 与 groupReads 同批清：后端把库清了，那几条"正在补历史"的提示也就没有对应的作业了。
+    // 留着它们的表现是设置里清完数据回主界面，横幅还挂着一句"正在同步 320/800"。
+    groupHistorySync.value = {};
     rawPendingRequests.value = [];
     transfers.value = [];
     // 收藏也随「清除数据」一并清空（后端删了行与副本）：不清的话，面板开着时仍显示
@@ -2202,6 +2214,9 @@ export const useChatStore = defineStore("chat", () => {
     conversations.value = [];
     groups.value = [];
     groupReads.value = {};
+    // 与 groupReads 同批清：后端把库清了，那几条"正在补历史"的提示也就没有对应的作业了。
+    // 留着它们的表现是设置里清完数据回主界面，横幅还挂着一句"正在同步 320/800"。
+    groupHistorySync.value = {};
     activeConv.value = null;
     mentionedConvs.value = new Set();
     // 与 `resetAfterDataCleared` **同一组**（那边清的是同三张表）：后端把库清了，
@@ -2363,6 +2378,48 @@ export const useChatStore = defineStore("chat", () => {
       ...groupReads.value,
       [p.group_id]: { ...readers, [p.reader_id]: p.last_read_ts },
     };
+  }
+
+  /** 群历史同步期间重查当前会话的节流时刻（见 `onGroupHistoryProgress` 里第 ② 条）。 */
+  let historyReloadAt = 0;
+
+  /**
+   * 后端每搬完一页群历史喊一声（事件 `group-history-progress`；需求原话
+   * "同步中，可以有提示。别让用户感觉到卡顿"）。
+   *
+   * 这里只做两件事：
+   *   ① 更新那条提示（`ChatWindow.vue` 读 `groupHistorySync` 画一条细横幅，不弹窗、不挡输入）；
+   *   ② 只在**正打开着这一群**时重查消息，且最多每 1.5 秒一次。
+   *
+   * ②里的节流不是"省 IPC"的偏好问题：一页 200 条、页间让出 120ms，不节流就是每秒约 8 次
+   * 整会话重查，而每次重查都要跨进程去抢那把全局 db 锁 —— 后台补账就会变成用户手上的卡顿，
+   * 正是这条需求要避开的东西。`done` 那一发不受节流（它是终态，必须刷准）。
+   *
+   * `failed` 撤掉提示并 toast 一句：那时没有任何作业还在跑，留一条常驻"同步中"
+   * 就是在界面里挂一句假话；而不留任何痕迹的话，用户只会看到"这个群怎么没几条消息"。
+   */
+  function onGroupHistoryProgress(p: GroupHistoryProgress) {
+    const convId = `group:${p.group_id}`;
+    const wasTracking = !!groupHistorySync.value[p.group_id];
+    const next = { ...groupHistorySync.value };
+    if (p.phase === "running") {
+      next[p.group_id] = p;
+    } else {
+      delete next[p.group_id];
+    }
+    groupHistorySync.value = next;
+    // 会话列表：第一页落到本机时才会凭空多出一个群会话（新成员原本没有会话行），
+    // 所以第一次看到这一群在同步时刷一次；`done` 再刷一次把预览对齐到最后一条。
+    // 中间每页都刷是纯浪费（标题只由聊天活动驱动，页内不会变）。
+    if (!wasTracking || p.phase !== "running") void refreshConversations();
+    const now = Date.now();
+    if (activeConv.value === convId && (p.phase !== "running" || now - historyReloadAt >= 1500)) {
+      historyReloadAt = now;
+      void loadMessages(convId);
+    }
+    if (p.phase === "failed") {
+      app.toast(t("chat.groupHistory.failed"), "info");
+    }
   }
 
   async function init() {
@@ -2539,6 +2596,7 @@ export const useChatStore = defineStore("chat", () => {
         void refreshGroups();
         void refreshConversations();
       },
+      onGroupHistoryProgress,
       onGroupMemberRemoved: (groupId) => {
         // 被移出群：后端已删本地群，前端关闭会话 + 刷新
         void handleSelfRemovedFromGroup(groupId);
@@ -2721,6 +2779,7 @@ export const useChatStore = defineStore("chat", () => {
     contentTransfers,
     messages,
     groupReads,
+    groupHistorySync,
     groupReaderIds,
     activeConv,
     mentionedConvs,

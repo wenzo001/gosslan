@@ -1229,7 +1229,11 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
         | Message::GroupFileOffer { .. }
         | Message::GroupFileChunk { .. }
         | Message::GroupFileDone { .. }
-        | Message::GroupFileCompleteAck { .. }) => handle_group_messages(state, peer_id, m).await,
+        | Message::GroupFileCompleteAck { .. }
+        // 群历史同步两帧（2026-10-16 需求）：同属"群"这一族 —— 受众按群算、正文用群密钥密封、
+        // 前提同样是密钥已经先到（`GroupKey` 排在前面）。处理体在 `group_history` 引擎那册。
+        | Message::GroupHistoryRequest { .. }
+        | Message::GroupHistoryReply { .. }) => handle_group_messages(state, peer_id, m).await,
         m @ (Message::FileOffer { .. }
         | Message::FileAccept { .. }
         | Message::FileReject { .. }
@@ -1301,16 +1305,21 @@ async fn handle_group_key(
     // 见 `group_add_member`：加人不再轮换群密钥；轮换只保留在「移除成员」路径
     // （那个时机群主必然在线，且撤权本就需要换新密钥）。
     // 无本地群记录时（新成员首次拿密钥）此处放行，这是新成员入群的唯一途径。
-    if !members.iter().any(|m| m == &from) || !members.iter().any(|m| m == &to) {
-        return;
-    }
-    if let Some(group) = db::get_group(
-        &state.db.lock().unwrap_or_else(|e| e.into_inner()),
-        &group_id,
-    ) {
+    // 这一份读数**同时**是"本机是不是第一次成为这个群的成员"的判据 ——
+    // 群历史同步（2026-10-16 需求）只在该它为 `None` 时才记待同步标记：
+    // 群主重发密钥（`resend_group_key_to` / pending_keys 在建链时补投）不该让一个
+    // 已经补过历史的成员再补一遍。
+    let known_group = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::get_group(&dbc, &group_id)
+    };
+    if let Some(group) = &known_group {
         if group.creator != from {
             return;
         }
+    }
+    if !members.iter().any(|m| m == &from) || !members.iter().any(|m| m == &to) {
+        return;
     }
     let pubkey = {
         let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
@@ -1376,6 +1385,13 @@ async fn handle_group_key(
     }
     let _ = state.app.emit("group-key-received", &group_id);
     let _ = state.app.emit("groups-updated", &group_id);
+    // 第一次成为这个群的成员 ⇒ 记一个"欠一份群历史"的标记并立刻试一趟
+    //（负责人 2026-10-16：新进群的人要自动拿到群里的聊天与群任务）。
+    // 喊话放在两个 emit **之后**：`note_new_membership` 自己会取 db 锁，
+    // 而 INV-P25 那条规矩就是"持锁不许 emit"—— 顺序写反了就把这条纪律还回去了。
+    if known_group.is_none() {
+        crate::network::group_history::note_new_membership(state, &group_id);
+    }
 }
 
 // ---------------- 群文件传输：offer / chunk / done / 完成回执、失败与停滞回收 ----------------

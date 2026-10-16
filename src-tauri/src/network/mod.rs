@@ -12,6 +12,10 @@ pub mod ble;
 pub mod discovery;
 pub mod dispatch;
 pub mod file;
+/// 群历史同步引擎（2026-10-16 需求：新成员自动拿到群里的聊天与群任务）。
+/// 普通 `mod`（不是 `include!` 分册）⇒ 不进 `transport_src_for_guards()` 那三份
+/// "生产码全集"视图；以全集为判据的形状守卫本来也不管这一册。
+pub mod group_history;
 pub mod transport;
 
 use std::sync::Arc;

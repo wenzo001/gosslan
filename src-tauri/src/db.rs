@@ -763,6 +763,8 @@ include!("db/read_receipts.rs");
 include!("db/favorites.rs");
 
 include!("db/recalls.rs");
+// 群历史同步的两半：服务端分页取数 + 新成员侧幂等落库（2026-10-16 需求）
+include!("db/group_history.rs");
 
 #[cfg(test)]
 mod cascade_tests;

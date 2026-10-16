@@ -188,12 +188,14 @@
     #[test]
     fn dispatch_arms_and_volume_arms_agree() {
         let view = crate::network::transport_src_for_guards();
-        // 台账是现读 `network/transport.rs` 的分发臂逐组数出来的（合计 35 个变体）：
+        // 台账是现读 `network/transport.rs` 的分发臂逐组数出来的（合计 37 个变体）：
         //   file 6 = FileOffer / FileAccept / FileReject / FileCompleteAck / FileChunk / FileDone
         let families: [(&str, usize); 5] = [
             ("handle_file_messages", 6),
             ("handle_share_and_relay_messages", 6),
-            ("handle_group_messages", 11),
+            // 13 = 上面那 11 个群帧 + `GroupHistoryRequest` / `GroupHistoryReply`
+            //（2026-10-16 群历史同步：同一族的两个新臂，处理体借道 `network/group_history.rs`）
+            ("handle_group_messages", 13),
             ("handle_identity_and_friend_messages", 8),
             ("handle_messaging_arm", 4),
         ];

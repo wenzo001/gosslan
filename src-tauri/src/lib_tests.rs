@@ -112,6 +112,8 @@ mod tests {
             include_str!("db/favorites.rs"),
             "\n",
             include_str!("db/recalls.rs"),
+            "\n",
+            include_str!("db/group_history.rs"),
         )
     }
 

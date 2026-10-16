@@ -275,7 +275,8 @@ export default {
         // 漏登记会被 `check-domain-map.mjs` 判据 D 当场拦下（"无主文件"），不会静默失明。
         "src-tauri/src/network/transport/handle_file.rs", // 分册：单聊文件传输 6 个变体的处理体
         "src-tauri/src/network/transport/handle_share.rs", // 分册：共享目录拉取 + 单跳中继 6 个变体
-        "src-tauri/src/network/transport/handle_group.rs", // 分册：群聊成员/密钥/群文件 11 个变体
+        "src-tauri/src/network/transport/handle_group.rs", // 分册：群聊成员/密钥/群文件/群历史 13 个变体（臂数现算：`node scripts/check-test-manifest.mjs` 不判这个，取 `dispatch_tests.rs` 里那份 families 台账）
+        "src-tauri/src/network/group_history.rs", // 群历史同步引擎（2026-10-16）：选源、分页拉取、应答与授权；落库那一半在 persistence 的 db/group_history.rs
         "src-tauri/src/network/transport/handle_identity.rs", // 分册：身份握手与好友关系 8 个变体
         "src-tauri/src/network/transport/handle_messaging.rs", // 分册：消息与送达回执 4 个变体
         // ↓ 2026-10-06：`tests.rs`（原 3,227 行、113 个顶层项）按内聚再切 15 册。

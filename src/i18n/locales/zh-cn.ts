@@ -375,6 +375,10 @@ export const zhCN: MessageDict = {
   "chat.header.tasks": "群任务",
   "chat.header.share": "共享目录",
   "chat.selfChat": "和自己聊天",
+  // 群历史同步（新成员入群后自动补群里的聊天与群任务）：细横幅里那条读数，随页数前进。
+  "chat.groupHistory.syncing": "正在同步群消息，已收到 {synced} / {total} 条",
+  "chat.groupHistory.syncingUnknown": "正在同步群消息，已收到 {synced} 条",
+  "chat.groupHistory.failed": "群消息同步未完成，有成员在线时会自动重试",
   "chat.selfChatHint": "记笔记、传文件给自己",
   // 事件监听绑定失败（实时消息/回执/在线状态全部不可用）：必须显式提示重启，
   // 否则界面"看起来正常"却永远收不到任何事件（2026-09-23 审计 1.6）

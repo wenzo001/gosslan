@@ -127,6 +127,32 @@ pub const CONTENT_FEATURE_FILE_EPOCH: u32 = 1 << 2;
  */
 pub const CONTENT_FEATURE_FLEX_DM_KIND: u32 = 1 << 3;
 
+/**
+ * 能力位：**能应答 `group_history_request`**（把本机的群聊天与群任务分页交给新成员）。
+ *
+ * 为什么又开一位而不是复用 `CONTENT_FEATURE_PULL`（那位管"按 cid 取字节"）：
+ * 两件事的红利完全不同。按 cid 取到的是**一个文件**，取不回聊天历史；
+ * 而把位复用会让老端收到一帧它能解析、但语义完全没实现的东西
+ * —— 它只会 `Unknown` 丢掉（老端读循环本来就忽略未知 `type`），
+ * 于是新成员那头等到超时，还以为对端"愿意给但没给"。各占一位才报得准"谁升级到哪一步"。
+ *
+ * 只用于**门控发送**：本机永远不会对没声明这位的对端发 `group_history_request`
+ * （INV-P24 第 4 条「不门控不许发」）。
+ */
+pub const CONTENT_FEATURE_GROUP_HISTORY: u32 = 1 << 4;
+
+/// 群历史一页的**条数**上限（服务端一页最多交几条消息）。
+/// 与下面那个字节上限同住 `protocol.rs`：一条页的预算只有一个家（INV-P23），
+/// 收发两侧都从这里取，不许在调用点各写一遍字面量。
+pub const GROUP_HISTORY_PAGE_ITEMS: u32 = 200;
+/// 群历史一页的**字节**上限（序列化后、base64 之前的 JSON 长度）。
+///
+/// 为什么条数还不够：一条 `merge`（合并转发）卡片能把 content 撑到几十 KB，
+/// 200 条就可能是十几 MB 的一帧 —— 那会把这条链路的 Low 队列（1024 槽）
+/// 一次性吃掉一大截，正撞 INV-P20「聊天不许被大块饿死」。所以两个闸都要有，
+/// 先到哪个算哪个。
+pub const GROUP_HISTORY_PAGE_MAX_BYTES: usize = 1_500_000;
+
 /// 本机支持的内容能力位图。**不参与 Hello 签名**（见 hello_signing_bytes）：
 /// 老端忽略该字段、新端据此决定能不能对它发拉取帧。
 pub fn content_features() -> u32 {
@@ -134,6 +160,7 @@ pub fn content_features() -> u32 {
         | CONTENT_FEATURE_MERGE
         | CONTENT_FEATURE_FILE_EPOCH
         | CONTENT_FEATURE_FLEX_DM_KIND
+        | CONTENT_FEATURE_GROUP_HISTORY
 }
 
 /// 「哪个 kind 需要对端具备哪一点能力」的**唯一**答案。`None` = V1 词表内、对所有对端安全。
@@ -1395,6 +1422,108 @@ impl GossipEnvelope {
     }
 }
 
+/// 群历史一页里的一条消息（`group_history_reply.sealed` 解开后的 JSON 元素）。
+///
+/// 三个刻意的取舍，都是"新成员拿到的必须与群里其他人看到的同一件事"这一条的形状：
+/// - **不带 `status`**：接收侧一律按 `delivered` 落库（历史同步不是投递回执，
+///   把源机那一台的状态机搬过来只会造假 —— 源机的 `read` 是**它自己**读过，
+///   不代表本机读过，也不代表发送方该收到已读回执）。
+/// - **带源机的 `ts`**：这是"什么时候发的"，不是"我什么时候收到的"。实时群消息落库时
+///   `ts` 用本机接收时刻（见 `transport/gossip.rs` 那句 `let ts = db::now_ms()`），
+///   历史同步要是照抄那条，500 条旧消息会全部显示成"刚刚" —— 时间线直接失真。
+/// - **`kind` 原样搬**：查询侧不走 `display_kind()`（它把 `video`/`audio` 折成 `file`
+///   供界面用），否则同步过来的消息与实时收到的同一类消息在库里成了两种 kind。
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct GroupHistoryItem {
+    pub msg_id: String,
+    pub sender_id: String,
+    pub kind: String,
+    pub content: String,
+    pub ts: i64,
+    pub seq: i64,
+    /// 三态照原样带：`None` = 源机也不知道（老对端发的消息没带这个键），
+    /// 不许在序列化侧替它补成空数组（那会把"不知道"写成"谁都没 @"）。
+    #[serde(default)]
+    pub mention_targets: Option<Vec<MentionTarget>>,
+}
+
+/// 群历史一页里附带的群文件**台账**行（不含 `path`）。
+///
+/// 为什么不带 path：那是源机的本地路径，写进本机台账会让预览去找一个本机根本不存在的路径。
+/// 为什么仍要带这一行：卡片消息只给了名字/大小/哈希，而"这份能不能再从别人那儿拉"
+/// 要靠 `group_files` 那行把 transfer_id 与群、发送者对上（受众闸 `content_serve_allowed`
+/// 读的就是这个归属）。字节本身按需另走 `ContentRequest`，历史同步**不**代拉文件内容。
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct GroupHistoryFile {
+    pub transfer_id: String,
+    pub sender_id: String,
+    pub name: String,
+    pub size: u64,
+    pub sha256: String,
+    #[serde(default)]
+    pub scope: String,
+    #[serde(default)]
+    pub todo_id: String,
+    /// 源机那一行的创建时间：本机补台账时照原样落，群文件列表就是按它排的
+    /// （不带的话，新成员看到的文件顺序会与他入群的先后混在一起）。
+    #[serde(default)]
+    pub created_at: i64,
+}
+
+/// `group_history_reply` 帧的正文。**同时**作为交付给等待中请求方的载荷类型
+/// —— 写成一份而不是两处清单，是因为字段清单一旦复制，下一轮加减字段必然只改一边
+/// （本仓为这个形状付过学费：同一个开关的另一个面会在"已改"那行底下继续漏）。
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct GroupHistoryReplyBody {
+    pub group_id: String,
+    /// false = 拒绝或给不了（不是成员 / 本机没有这个群 / 没有群密钥 / 页取不动）。
+    /// 不靠"超时"表达这件事：请求方要能分清"这台不给"（该换源）与"这台没答"（该重试）。
+    pub ok: bool,
+    /// 给日志用的原因（不进界面；界面只有"没同步成"这一档）。
+    #[serde(default)]
+    pub reason: String,
+    /// 源机这一群的全貌 —— 选源判据：**最早** = `oldest_seq` 最小，**最全** = `total` 最大。
+    #[serde(default)]
+    pub oldest_seq: i64,
+    #[serde(default)]
+    pub newest_seq: i64,
+    #[serde(default)]
+    pub total: i64,
+    /// 下一页游标；`has_more = false` 时这一对无意义。
+    #[serde(default)]
+    pub next_seq: i64,
+    #[serde(default)]
+    pub next_id: i64,
+    #[serde(default)]
+    pub has_more: bool,
+    /// 源机见过的最大群任务编号高水位（含它已删掉的号）。
+    /// 不带这一格，本机只从消息行推高水位，会给源机**已删除**的那个号重新分配一次
+    /// —— 而 INV-P29 说编号永不复用。
+    #[serde(default)]
+    pub todo_high_water: i64,
+    /// base64(群密钥 AEAD(`GroupHistoryPage` 的 JSON))；`ok = false` 时为空。
+    #[serde(default)]
+    pub sealed: String,
+}
+
+/// `group_history_reply.sealed` 解开后的载荷。
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct GroupHistoryPage {
+    pub items: Vec<GroupHistoryItem>,
+    #[serde(default)]
+    pub files: Vec<GroupHistoryFile>,
+}
+
+/// `GroupHistoryRequest` 两个游标的缺省值 = "从头"。
+///
+/// 为什么缺省必须是 `-1` 而不是 serde 默认的 `0`：库里可能存在 `seq = 0` 的历史行
+/// （`db::insert_message` 的旧写入路径没有 `seq.max(1)` 那道闸），缺省 0 会让
+/// "从头取"的第一页把它们整批留在游标之前 —— 少一帧正文这件事在界面上看不出来，
+/// 只会让用户以为这个群本来就没这几条。
+pub fn default_history_cursor() -> i64 {
+    -1
+}
+
 /// TCP 帧消息（P2P 节点间传输）
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -1747,6 +1876,39 @@ pub enum Message {
         group_id: String,
         from: String,
     },
+    /// **群历史拉取请求**（负责人 2026-10-16 需求：新进群的人自动拿到群里的聊天与群任务）。
+    ///
+    /// 一条请求要两件事，所以两帧就够（不再另开"探测帧"）：
+    /// `limit = 0` 只要摘要（用来选源），`limit > 0` 要那一页数据。
+    /// 于是「从谁那儿取」这个决定不需要第三种帧形状。
+    GroupHistoryRequest {
+        /// 本机生成的随机 id（base64）；应答原样带回，用于把回包交给等待中的请求方。
+        request_id: String,
+        from: String,
+        to: String,
+        group_id: String,
+        /// keyset 游标：取 `(seq, id)` 严格大于这一对的一页。
+        /// `-1` 是"从头"的哨兵 —— 不用 0 是因为库里可能有 `seq = 0` 的历史行，
+        /// 那样第一页会整批漏掉它们（`seq > 0` 把它们挡在游标前面）。
+        #[serde(default = "default_history_cursor")]
+        after_seq: i64,
+        #[serde(default = "default_history_cursor")]
+        after_id: i64,
+        /// 0 = 只要摘要、不要正文。
+        limit: u32,
+    },
+    /// 群历史应答。正文见 `GroupHistoryReplyBody`（帧与交付给等待方的载荷**同一份类型**，
+    /// 免得字段清单出现第二处）。
+    ///
+    /// ⚠️ 内容用**群密钥**密封（`reply.sealed`）而不是 X25519 双向密封：应答的是群里共有
+    /// 内容，群内任何成员都该能解（口径与 `GroupFileOffer.sealed_file_key` 一致）。
+    /// 帧本身只在**已验签的直连链路**上收发，所以链路上另有一层对端身份保证（INV-P21）。
+    GroupHistoryReply {
+        request_id: String,
+        from: String,
+        to: String,
+        reply: GroupHistoryReplyBody,
+    },
     /// 中继文件传输元数据（切片总数等，先于 RelayChunk）。
     /// `sealed_file_key`：与 FileOffer 同义——用接收方公钥封装的文件会话密钥，
     /// 中继节点不持有也不解封，仅接收方能解开。
@@ -1803,7 +1965,7 @@ pub enum Message {
 impl Message {
     /// 诊断用：这条消息的**线格式类型名**（= `#[serde(tag = "type")]` 里的那个值）。
     ///
-    /// 为什么从序列化结果反读、而不是手写一遍 `match`：`Message` 有 36 个变体，
+    /// 为什么从序列化结果反读、而不是手写一遍 `match`：`Message` 的变体一直在长，
     /// 手写映射就是给协议加了**第二份事实来源** —— 将来新增变体时忘了同步，
     /// 日志里会出现**错误的类型名**，比没有日志更坏（真机排查会被带偏）。
     /// 这里永远与 serde 一致，代价是序列化一次；**只在错误/诊断路径**调用。
