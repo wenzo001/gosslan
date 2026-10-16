@@ -1936,7 +1936,7 @@ impl AppState {
 
 /// 解析多开实例号：优先 `--instance N` / `-i N` 启动参数，其次 `GOSSLAN_INSTANCE` 环境变量。
 /// 返回 0 表示默认单实例。
-fn instance_id() -> u32 {
+pub(crate) fn instance_id() -> u32 {
     let args: Vec<String> = std::env::args().collect();
     let mut it = args.iter();
     while let Some(a) = it.next() {
