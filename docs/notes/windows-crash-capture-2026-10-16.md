@@ -441,9 +441,25 @@ Get-Content "$env:APPDATA\com.gosslan.app\logs\gosslan-crash.log" -Tail 310
 还原后与原件逐字节一致。前置条件也被钉过：那条测试先把主日志**撑到必然已轮转**（断言 `.old.log` 存在），
 否则"现场还在"可能只是因为日志还没翻 —— 那就是空转。
 
-**本轮没做的两格（都是有意的，不是漏掉）**：
-- 洪水本体（`state.rs:1895 push_diag_event` 的按设备按秒去重）：`state.rs`/`lib.rs` 此刻被同工作树另一会话改着未提交，
-  同文件并发改会毁掉对方的在飞工作。机制已不依赖日志文件，这条不再挡路。
-- CHANGELOG 条目 + 版本提档：`CHANGELOG.md` 与 `package.json` 也在同一批在飞文件里 ⇒ 不占别人的文件。
-  版本档经门禁**现判为 L1 且判据 4「无声明」通过**（`node scripts/check-change-budget.mjs --range HEAD~1..HEAD`），
-  所以不提档不产生红；那两格等对方落定后补。
+**这一轮补上的第二半（commit `2356c39`）：洪水本体被折在日志器里，`state.rs` 一行没动。**
+去重的自然落点是 `state.rs:1895 push_diag_event`，而那个文件正被同工作树另一会话改着未提交 ⇒
+现读核对 `diag/` 这个前缀在全仓**只有一个出生地**（`state.rs:1913` 的 `format!("diag/{kind}: {detail}")`），
+于是规则放进 `Logger::log` 入口：`level == Info` 且整行以 `diag/` 开头时，
+**同 target + 整行文本完全相同 + 同一个 epoch 秒**只留第一条（三条全同的重复不带新信息 ⇒ 不是"少记"，是"记一次"；跨秒必然重新记）。
+
+两条刻意划死的反向边界，各有判据：
+
+- **`warn` / `error` 永远不折**（`diag_warn_and_error_are_never_folded`，4+4 条逐条数）——
+  本轮审计的主题就是"失败必须看得见"，把错误一起折掉就是倒退。
+- **只管 `diag/` 这一族**（`non_diag_info_is_not_folded`）—— 非 diag 的 info 重复照旧各留一条。
+
+折叠表 `≤ 512` 键、超了整表重开（键里带设备 id 与来源 IP，不封顶就是"永远只增"的内存洞），
+且挂在 `Logger` 实例字段而不是全局 static ⇒ 多实例与单测互不污染。
+五步判据 + 四笔单点变异**各红且只红对应那一条**（详见该笔提交说明）。
+
+**还剩的一格（有意的，不是漏掉）**：CHANGELOG 条目与版本提档 —— `CHANGELOG.md` 与 `package.json`
+此刻同样在那批在飞文件里 ⇒ 不占别人的文件。不提档会不会挡发版不是我猜的：
+门禁**现判** `L1` 且判据 4「无声明」通过（`node scripts/check-change-budget.mjs --range HEAD~1..HEAD` 退码 0）；
+新用例名也没整本重写基线，只把**我那 8 条**塞进索引（`macos 880→888`、`windows 868→876`），
+因为判据口径是"**缺名 FAIL、多名只 WARN**"（`check-test-manifest.mjs:25-26`）——
+把别人还没进 main 的用例名登记进去，反而会在 main 上造出一条真红。
