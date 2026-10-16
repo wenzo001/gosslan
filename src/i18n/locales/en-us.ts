@@ -377,6 +377,7 @@ export const enUS: MessageDict = {
   // Group history sync (a newly joined member automatically receives the chat and group tasks).
   "chat.groupHistory.syncing": "Syncing group messages — {synced} of {total} received",
   "chat.groupHistory.syncingUnknown": "Syncing group messages — {synced} received",
+  "chat.groupHistory.started": "Asked the most complete member for the history; it fills in shortly",
   "chat.groupHistory.alreadyRunning": "This group is already syncing; wait for it to finish",
   "chat.groupHistory.noSource": "No member is reachable right now; it retries once one is online",
   "chat.groupHistory.noGroup": "This group no longer exists on this device",

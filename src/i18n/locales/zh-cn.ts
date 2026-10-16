@@ -381,6 +381,7 @@ export const zhCN: MessageDict = {
   "chat.groupHistory.syncingUnknown": "正在同步群消息，已收到 {synced} 条",
   // 手动点那颗按钮时的三种"点了之后屏幕上什么都不动"的结局，每一种都要有一句解释。
   // `started` 刻意没有文案：按钮自己会变成转圈、横幅随进度动起来，再叠一条提示就吵了。
+  "chat.groupHistory.started": "已开始向群里最全的成员要历史，稍后自动接上",
   "chat.groupHistory.alreadyRunning": "这一群正在同步中，请等它跑完",
   "chat.groupHistory.noSource": "群里暂时没有可问的成员，等有人在线时会自动补上",
   "chat.groupHistory.noGroup": "本机已经没有这个群",
