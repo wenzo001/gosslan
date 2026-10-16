@@ -126,6 +126,10 @@ mod logcat {
 const MAX_MEM_LOGS: usize = 500;
 /// 单个日志文件大小上限（字节），超出即轮转。
 const MAX_LOG_FILE_BYTES: u64 = 512 * 1024;
+/// 崩溃现场文件的磁盘上界（字节）：超了就**整份重开**，不做多代归档、也绝不无限增长。
+const MAX_CRASH_FILE_BYTES: u64 = 2 * 1024 * 1024;
+/// 每次崩溃现场附带多少条"崩溃之前的运行日志"（取内存环，与文件轮转无关）。
+const CRASH_CONTEXT_LINES: usize = 300;
 
 /// 日志级别。按严重度递增：Info < Warn < Error。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -262,6 +266,23 @@ impl Logger {
 
         // 3) 落盘（追加写，超限轮转）。失败静默：日志本身不能反过来拖垮主流程。
         self.append_file(ts, level, target, &message);
+
+        // 4) **崩溃那一条额外单独落盘**。
+        //
+        // 为什么必须有它（2026-10-16 真机抓到的缺口）：主日志 512 KiB 就轮转、**只留一代**，
+        // 而局域网自检那句 `diag/announce_verified` 实测**同一秒对同一设备重复 5~6 条**
+        // ⇒ 几分钟就换一代 ⇒ 真崩时那句 `panic @ 文件:行:列：消息` 结构上不可能还在盘上，
+        // 用户只能报"崩了但没日志"（那次就这样丢了三个现场）。
+        //
+        // 上下文取自**内存环**（`MAX_MEM_LOGS`）而不是文件：于是"日志被洪水冲掉"
+        // 与"崩溃现场丢失"从此解耦 —— 哪怕 `gosslan.log`/`.old.log` 已经翻过好几代，
+        // 崩溃现场里仍带着崩之前的最后 `CRASH_CONTEXT_LINES` 条。
+        //
+        // 钩子点就是 panic 钩子那条 `logger.error("panic", …)`（见 lib.rs），本模块零侵入：
+        // 不改钩子、不改调用方，因此不碰任何正在别处改动的文件。
+        if target == "panic" {
+            self.write_crash_block(ts, &message);
+        }
     }
 
     /// UI 快照：按时间正序（旧 → 新）返回内存日志。
@@ -291,6 +312,76 @@ impl Logger {
     }
     fn old_path(&self) -> PathBuf {
         self.dir.join(format!("{}.old.log", self.stem))
+    }
+    /// 崩溃现场文件（**不参与轮转**）：`logs/gosslan-crash.log`，多实例是 `gosslan-1-crash.log`。
+    fn crash_path(&self) -> PathBuf {
+        self.dir.join(format!("{}-crash.log", self.stem))
+    }
+
+    /// 把「崩溃这一句 + 崩之前的最后若干条日志」同步写进一个不轮转的文件。
+    ///
+    /// ⚠️ 调用点在 panic 钩子里，紧接着就是 `abort()`（`[profile.release] panic = "abort"`）
+    /// ⇒ 这里**必须同步写、写完即关**（`File` + `writeln!`，没有 BufWriter 留在手里），
+    /// 而且**任何失败一律静默**：诊断代码不许在进程临死前再抛一个 panic。
+    fn write_crash_block(&self, ts: i64, message: &str) {
+        // 先在锁内把上下文取出来（`append_file` 那条路不加锁，这里也不会与它互相等）。
+        let context: Vec<String> = {
+            let q = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+            let skip = q.len().saturating_sub(CRASH_CONTEXT_LINES);
+            q.iter()
+                .skip(skip)
+                .map(|e| {
+                    format!(
+                        "{} {} {} [{}] {}",
+                        self.fingerprint,
+                        format_utc(e.ts),
+                        e.level,
+                        e.target,
+                        e.message
+                    )
+                })
+                .collect()
+        };
+
+        let path = self.crash_path();
+        // 有界：超过上界就整份重开（只保留最近的现场，磁盘上界 = 上界 + 一个块）。
+        let over_cap = matches!(std::fs::metadata(&path), Ok(m) if m.len() > MAX_CRASH_FILE_BYTES);
+        let opened = if over_cap {
+            std::fs::File::create(&path)
+        } else {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+        };
+        let Ok(mut f) = opened else { return };
+
+        use std::io::Write;
+        // 版本必须写进现场：2026-10-16 为了搞清"崩的是哪一版"只能拿 CI 构建时刻反推。
+        let _ = writeln!(
+            f,
+            "\n===== 崩溃现场 {} ===== 版本 {} · {}-{} · {} · 设备 {}",
+            format_utc(ts),
+            env!("CARGO_PKG_VERSION"),
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+            if cfg!(debug_assertions) {
+                "debug"
+            } else {
+                "release"
+            },
+            self.fingerprint,
+        );
+        let _ = writeln!(f, ">>> {message}");
+        let _ = writeln!(
+            f,
+            "----- 崩之前 {} 条运行日志（取自内存环，与文件轮转无关）-----",
+            context.len()
+        );
+        for line in &context {
+            let _ = writeln!(f, "{line}");
+        }
+        let _ = f.flush();
     }
 
     fn append_file(&self, ts: i64, level: Level, target: &str, message: &str) {
@@ -418,6 +509,104 @@ mod tests {
         let old = dir.join("t.old.log");
         let cur_len = std::fs::metadata(&cur).map(|m| m.len()).unwrap_or(0);
         assert!(old.exists() || cur_len <= MAX_LOG_FILE_BYTES);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ★ 崩溃现场必须**独立于轮转**存在，并且自带版本号。
+    ///
+    /// 直接对应 2026-10-16 那三个丢掉的现场：主日志 512 KiB 就翻一代，
+    /// 而局域网自检一秒能写 5~6 条 ⇒ `panic @ 文件:行:列` 一定被冲掉了。
+    /// 这里刻意把日志写到"必然已经轮转"的量级，再崩一次，验证现场仍然完整。
+    #[test]
+    fn crash_block_survives_rotation_and_carries_version_and_context() {
+        let dir = std::env::temp_dir().join(format!("gosslan-crash-carry-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let logger = Logger::new(dir.clone(), "t", "[dev:test]".to_string());
+
+        // 洪水：把内存环填满并越过容量。每条带一段填充，使总量必然越过 512 KiB ⇒ 主日志一定已轮转，
+        // 于是"现场还在"这件事不是因为日志还没翻（那就是空转）。
+        let n = MAX_MEM_LOGS + 60;
+        for i in 0..n {
+            logger.info(
+                "discovery",
+                format!(
+                    "diag/announce_verified: from=peer-{i} via=10.1.22.1 {}",
+                    "p".repeat(900)
+                ),
+            );
+        }
+        assert!(
+            std::fs::metadata(dir.join("t.old.log")).is_ok(),
+            "前置条件不成立：主日志根本没轮转，这一条就成了空转"
+        );
+
+        logger.error("panic", "panic @ src/network/x.rs:7:1：index out of bounds");
+
+        let crash = std::fs::read_to_string(dir.join("t-crash.log")).expect("崩溃现场必须落盘");
+        assert!(
+            crash.contains("panic @ src/network/x.rs:7:1"),
+            "现场里必须有 panic 原文（文件:行:列）"
+        );
+        assert!(
+            crash.contains(env!("CARGO_PKG_VERSION")),
+            "现场必须自带版本号 —— 不能再拿 CI 构建时刻反推'崩的是哪一版'"
+        );
+        // 环里 500 条 = info i=61..559 加那条 panic；附带最后 300 条 ⇒ i=261..559 必须在、260 必须没有。
+        assert!(crash.contains("from=peer-559"), "必须带崩之前最近一条");
+        assert!(crash.contains("from=peer-261"), "附带窗口的边界那条必须在");
+        assert!(
+            !crash.contains("from=peer-260"),
+            "窗口外的旧条不许混进来（证明附带量真的按 CRASH_CONTEXT_LINES 截断）"
+        );
+        assert_eq!(
+            crash.matches("\n[dev:test] ").count(),
+            CRASH_CONTEXT_LINES,
+            "上下条文数必须钉在附带上限（多了=没截断，少了=没抄全）；按行首计数，表头那处指纹不计"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 现场文件也必须有磁盘上界：它不参与轮转，不封顶就是"永远只增"。
+    #[test]
+    fn crash_file_is_capped_by_reopening_not_growing_forever() {
+        let dir = std::env::temp_dir().join(format!("gosslan-crash-cap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t-crash.log");
+        std::fs::write(&path, "x".repeat(3 * 1024 * 1024)).unwrap();
+
+        let logger = Logger::new(dir.clone(), "t", "[dev:test]".to_string());
+        logger.error("panic", "panic @ src/y.rs:1:1：boom");
+
+        let len = std::fs::metadata(&path).unwrap().len();
+        assert!(
+            len < MAX_CRASH_FILE_BYTES,
+            "超上界必须整份重开（实测 {len} 字节 > 上界 {MAX_CRASH_FILE_BYTES}）"
+        );
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(body.contains("boom"), "重开之后新现场必须在");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 只有 panic 那一条走这条路：普通 error 不许建出现场文件（否则又变成第二个洪水源）。
+    #[test]
+    fn only_the_panic_target_creates_a_crash_file() {
+        let dir = std::env::temp_dir().join(format!("gosslan-crash-key-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let logger = Logger::new(dir.clone(), "t", "[dev:test]".to_string());
+
+        logger.error("file", "普通错误不该留下现场");
+        logger.warn("panic-ish", "target 名字像但不是也不行");
+        assert!(
+            !dir.join("t-crash.log").exists(),
+            "非 panic 的日志把崩溃现场文件建出来了"
+        );
+
+        logger.error("panic", "panic @ src/z.rs:2:2：真崩");
+        assert!(
+            dir.join("t-crash.log").exists(),
+            "正向对照失败：真 panic 没落盘"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
