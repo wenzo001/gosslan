@@ -158,6 +158,12 @@ export const api = {
     invoke<void>("group_remove_member", { groupId, deviceId }),
   transferGroupCreator: (groupId: string, newCreator: string) =>
     invoke<void>("transfer_group_creator", { groupId, newCreator }),
+  /**
+   * 头部那颗低调的按钮：让后端为这一群再跑一趟常规群历史同步。
+   * 返回裁决短码（started / already_running / no_source / no_group），搬运在后台 ⇒ 不等结果。
+   */
+  syncGroupHistoryNow: (groupId: string) =>
+    invoke<string>("sync_group_history_now", { groupId }),
   leaveGroup: (groupId: string) => invoke<void>("leave_group", { groupId }),
   getGroups: () => invoke<Group[]>("get_groups"),
   getGroupReads: (groupId: string) => invoke<GroupReadInfo[]>("get_group_reads", { groupId }),

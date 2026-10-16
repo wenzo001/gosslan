@@ -1184,6 +1184,22 @@ async function sendPastedFiles(paths: string[]) {
   }
 }
 
+/**
+ * 头部那颗低调的「从群里补齐历史消息」按钮（负责人 2026-10-16 追加：老成员也要能自己点一下）。
+ *
+ * 这里只做两件事：确认当前确实是一个群会话、把群 id 交给 store。裁决文案与提示都在 store 里 ——
+ * 组件里再写一份就会有两套话术，而这个文件里已经有一份横幅文案了（`groupHistoryText`）。
+ */
+async function onSyncGroupHistory() {
+  const id = chat.activeConv;
+  if (!id || !id.startsWith("group:")) return;
+  try {
+    await chat.syncGroupHistoryNow(id.slice("group:".length));
+  } catch (e) {
+    app.toastError(e, t("chat.groupHistory.error"));
+  }
+}
+
 /** 触顶加载更早的历史消息。 */
 function onLoadMore() {
   const convId = chat.activeConv;
@@ -1210,9 +1226,11 @@ function onLoadMore() {
       @back="app.mobileView = 'list'"
       @open-members="membersOpen = true"
       @open-files="filesOpen = true"
+      :history-syncing="!!groupHistory"
       :tasks-opening="tasksOpening"
             :open-tasks="openTasksForActive"
       @open-tasks="openTasks()"
+      @sync-history="onSyncGroupHistory"
       @open-share="emit('open-share')"
     />
 

@@ -697,6 +697,7 @@ const CMDS = [
   ["create_group", "groups", "name str; members str[]", "Group|err"],
   ["distribute_group_key", "groups", "group_id str", "()|err"],
   ["get_group_reads", "groups", "group_id str", "GroupReadInfo[]"],
+  ["sync_group_history_now", "groups", "group_id str", "str|err"],
   ["get_groups", "groups", "", "Group[]"],
   ["group_add_member", "groups", "group_id str; device_id str", "()|err"],
   ["group_remove_member", "groups", "group_id str; device_id str", "()|err"],

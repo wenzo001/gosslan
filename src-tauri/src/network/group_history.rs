@@ -820,6 +820,16 @@ pub fn spawn_group_history_sweeper(state: &Arc<AppState>) {
     });
 }
 
+/// 记下"这一群欠一份历史"的**唯一**出口。
+///
+/// 为什么单独成函数而不是在两处各写一遍：这一枚标记同时是清扫任务的判据（`should_sync_group`
+/// 只认显式 `pending`），多一个写它的家就意味着"谁把它写成 pending"这件事要按两处对账
+/// （INV-P23 批评的正是这种形状）。
+fn mark_history_pending(state: &Arc<AppState>, group_id: &str) {
+    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+    db::write_group_history_state(&dbc, group_id, db::GROUP_HISTORY_STATUS_PENDING, "", 0, 0).ok();
+}
+
 /// 新成员入群时调用：记下"这一群欠一份历史"，并立刻试一趟。
 ///
 /// 为什么标记与起跑是两个动作而不是一个函数里顺手做完：标记要落在**入群那同一段锁**里
@@ -827,12 +837,100 @@ pub fn spawn_group_history_sweeper(state: &Arc<AppState>) {
 /// 顺序错了的表现是：标记写了、进程在那之前崩了 ⇒ 界面上永远停在"没历史"，
 /// 而这一格靠清扫任务还能救回来 —— 所以真正的要求只有一条：**标记必须先于任何起跑**。
 pub fn note_new_membership(state: &Arc<AppState>, group_id: &str) {
-    {
-        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::write_group_history_state(&dbc, group_id, db::GROUP_HISTORY_STATUS_PENDING, "", 0, 0)
-            .ok();
-    }
+    mark_history_pending(state, group_id);
     spawn_sync(state, group_id);
+}
+
+/// 手动那一格的四种结局（负责人 2026-10-16 追加：老成员也要能自己点一下补历史）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManualVerdict {
+    /// 已排上：接下来照常规那趟跑（进度走 `group-history-progress`）。
+    Started,
+    /// 这一群已经在搬了 ⇒ 不重复排、也不改标记（改了会让在飞那趟收口时的读数对不上）。
+    AlreadyRunning,
+    /// 本机没有这个群 ⇒ 不写标记：对一个不存在的群声明"欠历史"是假事实。
+    NoGroup,
+    /// 现在没有任何可问的候选（都没在线 / 都还没升级到认得这一帧）。
+    /// 标记**照写** —— 这正是清扫任务存在的理由：有人在线了就自动补上。
+    NoSource,
+}
+
+impl ManualVerdict {
+    /// 线上/界面上用的那个短码（前端只按它选文案，不解析句子）。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ManualVerdict::Started => "started",
+            ManualVerdict::AlreadyRunning => "already_running",
+            ManualVerdict::NoGroup => "no_group",
+            ManualVerdict::NoSource => "no_source",
+        }
+    }
+}
+
+/// 手动同步的裁决表：只吃三个读数，没有任何 IO —— 所以它能被逐行判。
+///
+/// 顺序是有意义的：`NoGroup` 排在最前，因为"点了一个本机根本没有的群"这件事不该被
+/// "有人在飞"盖过去（后者只是等一会儿，前者是界面上那一行已经不该存在了）。
+pub fn decide_manual_sync(
+    has_group: bool,
+    in_flight: bool,
+    eligible_sources: usize,
+) -> ManualVerdict {
+    if !has_group {
+        return ManualVerdict::NoGroup;
+    }
+    if in_flight {
+        return ManualVerdict::AlreadyRunning;
+    }
+    if eligible_sources == 0 {
+        return ManualVerdict::NoSource;
+    }
+    ManualVerdict::Started
+}
+
+/// 界面上那颗小按钮的后端：让**任何**群成员（不只新进的那位）主动跑一趟常规同步。
+///
+/// 它不新增第二种搬运形状，只是"再跑一趟常规那趟"，而这恰好就是需求要的结果：
+/// 常规那趟的游标起点本来就是 `after_seq = -1`（全量重扫），落库按 `msg_id` 幂等
+/// ⇒ 自己已经最全的人点 ⇒ 每一行都被判成"已有"、补进 0 条；中间缺的那几条会被补上。
+/// 两处闸也照原样生效：用户清掉的历史不会被这一趟复活（`group_message_blocked_by_boundary`），
+/// 撤回墓碑照旧。**没有**"我最全就别问了"这种本地捷径 —— 别人手里有没有本机缺的那几条，
+/// 只有问过一次才知道（与自动那一格同一个理由）。
+///
+/// 与自动那一格的唯一区别：这里**不受 `should_sync_group` 那道"只认 pending"的闸管**
+/// （那道闸划的是"升级后不许满屏开始拉"这条线，手动点一下是用户自己给的许可）。
+pub async fn request_manual_sync(state: &Arc<AppState>, group_id: &str) -> ManualVerdict {
+    let members = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::get_group(&dbc, group_id).map(|g| g.members)
+    };
+    let Some(members) = members else {
+        return ManualVerdict::NoGroup;
+    };
+    let in_flight = state
+        .group_history_active
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(group_id);
+    // 在飞时不再花一次候选探测的功夫（那一趟自己正在问同样的事）。
+    let sources = if in_flight {
+        1
+    } else {
+        eligible_peers(state, &members).await.len()
+    };
+    let verdict = decide_manual_sync(true, in_flight, sources);
+    if verdict == ManualVerdict::Started || verdict == ManualVerdict::NoSource {
+        // NoSource 也要写标记：这一趟没人可问，不等于"这一群不缺历史"（清扫任务会再来问）。
+        mark_history_pending(state, group_id);
+    }
+    if verdict == ManualVerdict::Started {
+        spawn_sync(state, group_id);
+    }
+    state.logger.info(
+        "group",
+        format!("群历史手动同步请求 group={group_id}：{}", verdict.as_str()),
+    );
+    verdict
 }
 
 /// 应答臂：把 `group_history_reply` 交给正在等它的那个请求方。
@@ -1163,6 +1261,91 @@ mod group_history_engine_tests {
             "升级前就在群里的老成员不许被动开始拉历史"
         );
         assert!(!should_sync_group(Some("")));
+    }
+
+    /// 手动那一格的裁决表。
+    ///
+    /// 这条判的是"点下去之后到底发生了什么"那四种结局**互斥且都可达**：
+    /// 少一格就是界面上一句没有对应读数的话。顺序也判（NoGroup 必须压过在飞）。
+    #[test]
+    fn the_manual_button_is_a_decision_table_not_a_second_shape() {
+        use ManualVerdict::*;
+        assert_eq!(
+            decide_manual_sync(true, false, 3),
+            Started,
+            "有群、没在飞、有候选 ⇒ 排一趟"
+        );
+        assert_eq!(
+            decide_manual_sync(true, false, 0),
+            NoSource,
+            "一个候选都问不到 ⇒ 明说，别假装开始了"
+        );
+        assert_eq!(
+            decide_manual_sync(true, true, 0),
+            AlreadyRunning,
+            "在飞优先于候选数（那一趟自己正在问同一批人）"
+        );
+        assert_eq!(
+            decide_manual_sync(false, true, 5),
+            NoGroup,
+            "本机没有这个群时必须压过一切：对不存在的群不许声明任何同步事实"
+        );
+        // 短码是前端选文案的唯一依据 ⇒ 钉住串本身（改名要连 i18n 一起改）。
+        assert_eq!(
+            [Started, AlreadyRunning, NoSource, NoGroup]
+                .iter()
+                .map(|v| v.as_str())
+                .collect::<Vec<_>>()
+                .join(","),
+            "started,already_running,no_source,no_group"
+        );
+    }
+
+    /// 「自己最全的人点一下 ⇒ 只补缺的、其余一字不变」这条需求的**接线**判据。
+    ///
+    /// 行为本身由 `group_history_db_tests` 里那两条重放用例判（同一份页两次落库、
+    /// 中间缺一条再补上）；这里判的是它接没接上：
+    /// ① 标记只有**一个**写它的家（两处各写 = 谁把标记写成 pending 要按两处对账）；
+    /// ② 手动那一路唯一的起跑出口还是 `spawn_sync`（不许另起第二个 `tokio::spawn`）；
+    /// ③ 命令注册了一次，且 `request_manual_sync` 除命令外没有第二个调用者。
+    #[test]
+    fn the_manual_entry_shares_one_marker_home_and_one_spawn_gate() {
+        let body = engine_body();
+        assert_eq!(
+            body.matches("db::GROUP_HISTORY_STATUS_PENDING,").count(),
+            1,
+            "本册生产码里写 pending 现数到 {} 处（登记 1 处 = `mark_history_pending` 那一个家）",
+            body.matches("db::GROUP_HISTORY_STATUS_PENDING,").count()
+        );
+        assert_eq!(
+            body.matches("mark_history_pending(state,group_id)").count(),
+            2,
+            "两个入口（入群钩子 / 手动按钮）都走那一个家，现数到 {} 处（登记 2 处）",
+            body.matches("mark_history_pending(state,group_id)").count()
+        );
+        assert_eq!(
+            body.matches("spawn_sync(state,group_id)").count(),
+            2,
+            "起跑出口还是 `spawn_sync` 两处调用（入群 + 手动），现数到 {} 处",
+            body.matches("spawn_sync(state,group_id)").count()
+        );
+
+        let cmd = code_flat(include_str!("../commands/groups.rs"));
+        assert_eq!(
+            cmd.matches("request_manual_sync(state.inner(),&group_id)")
+                .count(),
+            1,
+            "`request_manual_sync` 全仓只该有命令那一个调用者，现数到 {} 处",
+            cmd.matches("request_manual_sync(state.inner(),&group_id)")
+                .count()
+        );
+        let lib = code_flat(include_str!("../lib.rs"));
+        assert_eq!(
+            lib.matches("commands::sync_group_history_now,").count(),
+            1,
+            "命令注册现数到 {} 处（登记 1 处 = `generate_handler!` 那一行）；0 = 界面上的按钮点了没人接",
+            lib.matches("commands::sync_group_history_now,").count()
+        );
     }
 
     /// 落库前的那一页预算闸：两个维度各自封顶，且**必须真的被调用一次**。

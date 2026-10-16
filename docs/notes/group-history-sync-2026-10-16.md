@@ -126,6 +126,44 @@ A 自己没有"收口"那一行）。反证档 `--round=ghsync-lie` 按 harness 
 **观感与"看不出卡顿"必须由负责人真机判**：横幅的措辞、数字前进的节律、以及消息增量出现时的表现。
 本仓没有任何一层会替这几点作证 —— 也别拿"数据面轮次全绿"去替它作证，那是两件事。
 
+## 六·补、手动那一格：老成员也能自己点一下（同日追加需求）
+
+追加的原话是："这个人已经加进来，但他的信息有几条是老版本同步的、现在信息不全，我需要有一个按钮，
+所有群成员也有一个按钮，从群好友里最全的那一套拉；如果最全的人自己点了，他扫描完发现他自己最全，
+只会补充一些没有的或者错过的信息……每个人都有一个这样小的同步按钮，按钮可以不要太明显，但要有这个功能。"
+
+拆成四条可判的：
+
+| 那句口语 | 落点 |
+| --- | --- |
+| 所有群成员都有这个入口 | 后端 `request_manual_sync` **不受** `should_sync_group` 那道"只认 pending"的闸管（那道闸划的是"升级后不许满屏开始拉"，见 §七·3；手动点一下是用户自己给的许可） |
+| 从最全的那一套拉 | 复用常规那趟，不新第二种搬运形状：还是问一圈摘要 → 按 (最早, 最全, id) 选一台 → `(seq, id)` 分页 |
+| 自己最全 ⇒ 只补缺的/错过的 | 常规那趟游标起点本来就是 `after_seq = -1`（全量重扫），落库按 `msg_id` 幂等 ⇒ 已有行全部认成"重复"、一条不动，只有缺的那几条进库。**没有**"我最全就别问了"这种本地捷径：别人手里有没有本机缺的那几条，只有问过一次才知道（与 §一 同一个理由） |
+| 按钮不要太明显，但要有功能 | 群按钮那一族的最后一枚，`opacity-70` + 同一套 ghost 样式；跑起来时图标换成转圈。真正"有功能"这件事由接线判据兜住（见下），不靠观感 |
+
+四种裁决（`ManualVerdict`，短码是前端选文案的唯一依据）：`started` / `already_running` /
+`no_source` / `no_group`。`started` **刻意不弹提示**——按钮自己会转圈、横幅随进度动起来，
+再叠一条 toast 就是"不要太明显"的反面；其余三种都要有一句，因为它们共同的形状是
+"点了之后屏幕上什么都不动"，没解释就等于按钮坏了（⇒ 连点，那是本仓反复吃过的那类静默）。
+`no_source` 时标记照写：这一趟没人可问不等于这一群不缺历史，清扫任务（§五）会在有人在线时补上。
+
+**这一格有多少证据**（逐条具名，全部真跑过）：
+
+- Rust 裁决表 —— `the_manual_button_is_a_decision_table_not_a_second_shape`（四格互斥可达 +
+  `no_group` 必须压过"在飞" + 短码串逐字钉住）。
+- Rust 接线 —— `the_manual_entry_shares_one_marker_home_and_one_spawn_gate`：
+  写 pending 只有**一个**家（`mark_history_pending`，两个入口共用）、起跑出口还是 `spawn_sync`、
+  命令注册一次、`request_manual_sync` 除命令外没有第二个调用者。
+- Rust 行为 —— `a_second_full_pass_fills_the_hole_and_touches_nothing_already_there`
+  （缺的那条补上、已有那一行逐字不动、本机时钟不被压回）+ 既有的
+  `applying_the_same_page_twice_inserts_once`（自己最全 ⇒ 第二趟 `(inserted, duplicate) = (0, N)`）。
+- 前端 —— `storeContract.test.ts` 里"群历史按钮的 emit 必须有调用方接住，一路到命令名"
+  （含一条"把调用方那一行摘掉"的非空转对照——组件之间那一跳**原本没有任何家**，
+  漏接的表现正是"编译过、类型过、门禁全绿，而功能是一个零"）。
+  另外四道现成的家一起覆盖它：`chat.*` 引用必须在 store 里导出、命令必须有前端调用点
+  （`events.test.ts`）、命令注册表必须与 `docs/ARCHITECTURE-MAP.html` 的 `CMDS` 双向相等
+  （`mapContract.test.ts`）、纯图标按钮必须有 `aria-label`（`a11yLabels.test.ts` 全库扫描）。
+
 ## 七、已知边界（不是待办里的隐瞒）
 
 1. **只从有直连链路的成员取**。跨跳借道搬整段历史没做：一页 1.5MB 的帧经第三方转一跳
@@ -135,7 +173,7 @@ A 自己没有"收口"那一行）。反证档 `--round=ghsync-lie` 按 harness 
    源机那份本地 `path` 在上 wire 前被剥掉（否则对面预览一个本机不存在的路径）。
    要点开哪个文件，走既有的 `ContentRequest`（受众闸 `content_serve_allowed` 认群成员，
    新成员本来就有权拉）。
-3. **老群不动**。只有入群时明确写过 `pending` 标记的群才会被扫到
+3. **老群不动（自动那一路）**。只有入群时明确写过 `pending` 标记的群才会被扫到（§六·补 那个手动入口是唯一的例外：它由用户自己按下，不受这道闸管，但仍照写同一枚标记）
    （`should_sync_group(None) == false`）。这一条划的是"这轮只服务新进群的人"与
    "升级后满屏开始拉历史"之间那条线。
 4. **`#77` 那套补递照旧**。`mesh/gossip_replay.rs` 的窗口（每组 16 条 / 10 分钟）
@@ -155,6 +193,13 @@ A 自己没有"收口"那一行）。反证档 `--round=ghsync-lie` 按 harness 
    洪水现场；先记在这里，别等到出问题才想起没做）。
 
 ## 八、复跑清单（本文每条硬数字都能这样现算）
+
+手动那一格（§六·补）：
+
+```bash
+cd src-tauri && cargo test --features bluetooth --lib group_history          # 裁决表 + 接线 + 重放那三条
+node --test --test-reporter=tap src/utils/storeContract.test.ts              # 那一跳的接线与非空转对照
+```
 
 ```bash
 cd src-tauri && cargo test --features bluetooth --lib group_history    # 第一/三/四/七节那 34 条判据（条数由这条命令自己打印）

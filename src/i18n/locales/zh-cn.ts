@@ -373,11 +373,18 @@ export const zhCN: MessageDict = {
   "chat.header.members": "群成员",
   "chat.header.files": "群文件",
   "chat.header.tasks": "群任务",
+  "chat.header.syncHistory": "从群里补齐历史消息",
   "chat.header.share": "共享目录",
   "chat.selfChat": "和自己聊天",
   // 群历史同步（新成员入群后自动补群里的聊天与群任务）：细横幅里那条读数，随页数前进。
   "chat.groupHistory.syncing": "正在同步群消息，已收到 {synced} / {total} 条",
   "chat.groupHistory.syncingUnknown": "正在同步群消息，已收到 {synced} 条",
+  // 手动点那颗按钮时的三种"点了之后屏幕上什么都不动"的结局，每一种都要有一句解释。
+  // `started` 刻意没有文案：按钮自己会变成转圈、横幅随进度动起来，再叠一条提示就吵了。
+  "chat.groupHistory.alreadyRunning": "这一群正在同步中，请等它跑完",
+  "chat.groupHistory.noSource": "群里暂时没有可问的成员，等有人在线时会自动补上",
+  "chat.groupHistory.noGroup": "本机已经没有这个群",
+  "chat.groupHistory.error": "没能开始同步",
   "chat.groupHistory.failed": "群消息同步未完成，有成员在线时会自动重试",
   "chat.selfChatHint": "记笔记、传文件给自己",
   // 事件监听绑定失败（实时消息/回执/在线状态全部不可用）：必须显式提示重启，
