@@ -182,12 +182,48 @@ pub struct Logger {
 
 impl Logger {
     pub fn new(dir: PathBuf, stem: &str, fingerprint: String) -> Logger {
-        Logger {
+        let logger = Logger {
             entries: Mutex::new(VecDeque::with_capacity(MAX_MEM_LOGS)),
             dir,
             stem: stem.to_string(),
             fingerprint,
             diag_fold: Mutex::new(HashMap::new()),
+        };
+        logger.write_startup_marker();
+        logger
+    }
+
+    /// 在崩溃现场文件里落一条**启动路标**。
+    ///
+    /// 为什么必须有它：现场文件只在 panic 时写 ⇒ "里面没有新块"有两种完全不同的成因
+    /// （① 这段时间根本没崩；② 崩了，但不是 Rust panic —— 例如 2026-10-16 那次
+    /// `KERNELBASE` 抛的 `0xe0000008`）。有了启动路标，两者一眼分开：
+    /// **最后一条是"启动"而不是"崩溃现场" ⇒ 上一次进程不是 panic 死的**。
+    /// 顺带把版本号永久写进这份文件，"崩的是哪一版"不再需要反推。
+    ///
+    /// 刻意不用设备指纹开头 ⇒ 崩溃现场里"上下条文数"那条计数判据不受它影响。
+    fn write_startup_marker(&self) {
+        use std::io::Write;
+        let _ = std::fs::create_dir_all(&self.dir);
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.crash_path())
+        {
+            let _ = writeln!(
+                f,
+                "----- 启动 {} 版本 {} · {}-{} · {} · 设备 {} -----",
+                format_utc(now_ms()),
+                env!("CARGO_PKG_VERSION"),
+                std::env::consts::OS,
+                std::env::consts::ARCH,
+                if cfg!(debug_assertions) {
+                    "debug"
+                } else {
+                    "release"
+                },
+                self.fingerprint,
+            );
         }
     }
 
@@ -632,24 +668,46 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 只有 panic 那一条走这条路：普通 error 不许建出现场文件（否则又变成第二个洪水源）。
+    /// 只有 panic 那一条会留下现场块；普通 error 不许（否则又变成第二个洪水源）。
+    /// 同时验证启动路标 —— 它是"没崩" 与 "崩了但不是 panic" 唯一的分叉点。
     #[test]
-    fn only_the_panic_target_creates_a_crash_file() {
+    fn only_the_panic_target_writes_a_crash_block() {
         let dir = std::env::temp_dir().join(format!("gosslan-crash-key-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let logger = Logger::new(dir.clone(), "t", "[dev:test]".to_string());
+        let crash = dir.join("t-crash.log");
+
+        // 建 logger 就该有启动路标（含版本号），但**不该**有崩溃块。
+        let after_start = std::fs::read_to_string(&crash).expect("启动路标必须落盘");
+        assert!(after_start.contains("启动 "), "启动路标没写进去");
+        assert!(
+            after_start.contains(env!("CARGO_PKG_VERSION")),
+            "启动路标必须自带版本号"
+        );
+        assert!(
+            !after_start.contains(">>> "),
+            "刚启动就出现崩溃块 ⇒ 判据把两件事混了"
+        );
 
         logger.error("file", "普通错误不该留下现场");
         logger.warn("panic-ish", "target 名字像但不是也不行");
+        let body = std::fs::read_to_string(&crash).unwrap();
         assert!(
-            !dir.join("t-crash.log").exists(),
-            "非 panic 的日志把崩溃现场文件建出来了"
+            !body.contains(">>> "),
+            "非 panic 的日志把崩溃块写出来了 ⇒ 折叠/落盘的门槛没生效"
+        );
+        assert!(
+            body.matches("----- 启动 ").count() == 1,
+            "普通日志不该重复写启动路标（实得 {} 条）",
+            body.matches("----- 启动 ").count()
         );
 
         logger.error("panic", "panic @ src/z.rs:2:2：真崩");
         assert!(
-            dir.join("t-crash.log").exists(),
-            "正向对照失败：真 panic 没落盘"
+            std::fs::read_to_string(&crash)
+                .unwrap()
+                .contains(">>> panic @ src/z.rs:2:2"),
+            "正向对照失败：真 panic 没落崩溃块"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
