@@ -362,3 +362,37 @@ Get-WinEvent -FilterHashtable @{LogName='Application';ProviderName='Application 
 `3b73c22` 与 §6d 那两处待修（崩溃行单独落不轮转文件、自检按秒去重）都要动 `lib.rs` / `state.rs` / `logging.rs` / `discovery.rs`
 —— 而 **2026-10-16 深夜这个工作树里另有会话正在写「群信息同步」**（`lib.rs`、`state.rs`、`network/mod.rs` 等 30 多个文件在飞、未提交）。
 ⇒ 同一文件并发改会把对方的在飞工作毁掉，所以本轮**只提交自己那一本文档**，那两处小修等对方落定后再开。
+
+### 7e. §7c 那条已跑完：60 天与 14 天**返回同样 7 条**（10-16 深夜实测）
+
+最早仍是 `10-12 19:33:43 / 4.37.0.0`。⚠️ 但这条"缺席"**现在还不能当证据** ——
+`Application` 日志是滚动覆盖的，而本机已有过一次教训（"日志是节选 ⇒ 缺席不算证据"）。
+要让它成立先证覆盖面，一条纯读命令：
+
+```powershell
+Get-WinEvent -LogName Application -Oldest -EA SilentlyContinue | Select -First 1 | %{ "日志最早一条：$($_.TimeCreated)" }
+(Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\EventLog\Application' -EA SilentlyContinue) |
+  select MaxSize,Retention | Format-List
+```
+
+- 最早一条**早于 10-12 10:37**（`v4.36.0` 打 tag 的时刻）⇒ 缺席成立：**崩溃的历史起点就是 4.37.0**
+  ⇒ §5 那 23 笔塌成 `3b73c22` 一笔，而 **4.40.9 带着它** ⇒ 今晚大概率还会崩（这不是坏消息，是能把样本拿满）。
+- 最早一条**晚于那几天** ⇒ 窗口被截，"从 4.37.0 才开始"这句作废，起点仍未知。
+
+### 7f. ★ 有一个不改代码就能抬起取证上限的开关
+
+§7b 那条"找不到新 panic 点"指向一族很常见的解释：**触发形状是新的、panic 点是旧的**
+⇒ 要拿的不是 diff，而是**那句 panic 文本本身**。它落盘会被 §6d 的洪水冲掉，能不能从 dump 拿回来取决于 dump 类型：
+
+```powershell
+# 管理员 PowerShell。Mini(1) 只带线程栈与模块清单、**不含堆**；
+# 而我们那句格式化后的 panic 文本（lib.rs:166）和「内存里最后 500 条日志环」（logging.rs MAX_MEM_LOGS）都在堆上。
+# Heap(2) 才带得上，体积仍是几十 MB 量级、发得出来。
+Set-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps' -Name DumpType -Value 2
+```
+
+⇒ 换完之后，**下一次崩溃的 dump 里同时带着 panic 那一句 + 最后 500 条日志（即使文件已被轮转冲掉）**。
+这一格比 §6d 那两处代码修改更快生效，因为它**不需要装新版**。
+
+（对已有的两个 Mini dump 做字符串抽取我**不看好**：没有堆内存，多半只捞得到栈上残留。想试也不贵，
+但请把力气放在上面这条开关 + 今晚那一次。）
