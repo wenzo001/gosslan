@@ -826,12 +826,17 @@ pub fn spawn_group_history_sweeper(state: &Arc<AppState>) {
 /// 只认显式 `pending`），多一个写它的家就意味着"谁把它写成 pending"这件事要按两处对账
 /// （INV-P23 批评的正是这种形状）。
 fn mark_history_pending(state: &Arc<AppState>, group_id: &str) {
-    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-    if let Err(e) =
+    let failure = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::write_group_history_state(&dbc, group_id, db::GROUP_HISTORY_STATUS_PENDING, "", 0, 0)
-    {
-        // 这一枚标记就是清扫名单的**唯一输入**：写失败的结局是"这一群永远不会再被扫到"，
-        // 而界面上只会停在"没历史"，没有任何东西说它为什么没动 ⇒ 必须留痕（不是装饰）。
+            .err()
+            .map(|e| e.to_string())
+    };
+    // 留痕放在**放掉 db 锁之后**：`logger` 那句是要落盘的，而这一把锁是全应用唯一的写入口
+    // —— 为一条错误日志按住它，别人（包括正在发消息的那条路）就得排在这条日志后面。
+    // 这一枚标记又是清扫名单的**唯一输入**：写失败的结局是"这一群永远不会再被扫到"，
+    // 界面上只停在"没历史"而日志一个字都没有 ⇒ 必须说，但不能在锁里说。
+    if let Some(e) = failure {
         state.logger.error(
             "group",
             format!(
@@ -924,19 +929,24 @@ pub async fn request_manual_sync(state: &Arc<AppState>, group_id: &str) -> Manua
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .contains(group_id);
-    // 在飞时不再花一次候选探测的功夫（那一趟自己正在问同样的事）。
+    // 在飞时**不去探**候选（那一趟自己正在问同样的事）。表里"在飞"排在候选数之前，
+    // 所以这一格传什么都改变不了结局 —— 传 1 而不是 0，是为了不把"根本没探"写成"探到 0 台"
+    // （那会变成一条假事实留在代码里，读的人以为这里判过候选）。
     let sources = if in_flight {
         1
     } else {
         eligible_peers(state, &members).await.len()
     };
-    let verdict = decide_manual_sync(true, in_flight, sources);
+    let mut verdict = decide_manual_sync(true, in_flight, sources);
     if verdict == ManualVerdict::Started || verdict == ManualVerdict::NoSource {
         // NoSource 也要写标记：这一趟没人可问，不等于"这一群不缺历史"（清扫任务会再来问）。
         mark_history_pending(state, group_id);
     }
-    if verdict == ManualVerdict::Started {
-        spawn_sync(state, group_id);
+    if verdict == ManualVerdict::Started && !spawn_sync(state, group_id) {
+        // 上面那个 `in_flight` 读数与闸门之间隔着一段 await ⇒ 两次连点可以都看见"没在飞"。
+        // 真被闸门拒掉的时候，裁决表说的 "started" 就不是事实 —— 以闸门的答案为准，
+        // 不许对用户撒一句"已经开始了"（这句要是撒出去，界面上既没有转圈也没有横幅）。
+        verdict = ManualVerdict::AlreadyRunning;
     }
     state.logger.info(
         "group",

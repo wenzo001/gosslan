@@ -860,18 +860,21 @@ export const useChatStore = defineStore("chat", () => {
    * 已经在群里、但手里只有几条老版本同步来的记录的人，也要能自己点一下）。
    *
    * 后端返回的是一句**裁决短码**（`started` / `already_running` / `no_source` / `no_group`），
-   * 搬运本身在后台 ⇒ 这里只负责"点下去之后有没有回声"：
-   * ① `started` **不弹提示** —— 按钮自己会变成转圈、横幅随 `group-history-progress` 动起来，
-   *    再叠一条 toast 就是需求最后半句（"不要太明显"）的反面；
-   * ② 其余三种都要有一句：它们共同点是"点了之后屏幕上什么都不动"，
-   *    没有解释就等于用户以为按钮坏了（⇒ 连点，而这正是本仓反复吃过的那类"看起来没反应"）。
+   * 搬运本身在后台 ⇒ 这里只负责"点下去之后有没有回声"：**四种都要有一句**。
+   * 这里翻过一次车（原话是"`started` 不弹提示，因为按钮自己会变成转圈、横幅会跟着动"）：
+   * 那个理由是假的。转圈与横幅都只在**第一条进度事件**到达之后才存在，而后端的顺序是
+   * "先向最多 8 台各问一次摘要（每台最长 4s）→ 才取第一页" ⇒ 点下去到横幅出现之间有一段
+   * 界面上什么都没有的窗口，用户读数就是"我按了一枚没反应的图标"⇒ 连点。
    * 四个键逐条写字面量，不走 `` `chat.groupHistory.${verdict}` `` ——
    * `i18n/index.test.ts` 那条"字面量 `t()` 必须命中真实 key"的判据读的是字面量，
    * 拼出来的键名它看不见，于是漏一个语言的后果是运行时静默回退成键名。
    */
   async function syncGroupHistoryNow(groupId: string) {
     const verdict = await api.syncGroupHistoryNow(groupId);
-    if (verdict === "already_running") {
+    if (verdict === "started") {
+      // 见上面那条：这一段窗口里既没有横幅也没有转圈，不弹这一句就等于按下没回声。
+      app.toast(t("chat.groupHistory.started"), "info");
+    } else if (verdict === "already_running") {
       app.toast(t("chat.groupHistory.alreadyRunning"), "info");
     } else if (verdict === "no_source") {
       app.toast(t("chat.groupHistory.noSource"), "info");
