@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-04T12:17:40Z",
-  "updated_at": "2026-10-16T10:56:04Z",
+  "updated_at": "2026-10-16T11:08:55Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -161,9 +161,9 @@
     },
     "docs/acceptance/stability-smoke-matrix.md": {
       "role": "index",
-      "sha256": "d579ada21549cc93e7fbfafc70bcc048b0fee13cd5c5e682247d1f12013921a9",
-      "size": 84403,
-      "normalized_sha256": "d579ada21549cc93e7fbfafc70bcc048b0fee13cd5c5e682247d1f12013921a9"
+      "sha256": "3ca65137e8304b0aba9af600994bc812053c8b654a01438db0bb6c24083ec4bc",
+      "size": 85154,
+      "normalized_sha256": "3ca65137e8304b0aba9af600994bc812053c8b654a01438db0bb6c24083ec4bc"
     },
     "docs/acceptance/strong-reminder-final.md": {
       "role": "index",
