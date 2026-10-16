@@ -181,6 +181,17 @@ pub fn should_sync_group(status: Option<&str>) -> bool {
     status == Some(db::GROUP_HISTORY_STATUS_PENDING)
 }
 
+/// 密钥还没到，要不要对用户喊那一句"同步未完成"？
+///
+/// **只在横幅已经露过面之后才喊。** 没露过面就不喊：密钥还没到是一个**正常的进行中状态**
+/// （新成员常常先收到群消息、群密钥还在路上），而标记留在 pending ⇒ 密钥落地后下一轮清扫
+/// （60 秒）自己会补上。这时候弹一句"未完成"，是把"还不知道"报成"办砸了" ——
+/// 而这一路需求的底线是"各种情况都不能报错"。
+/// 已经露过面就必须喊：那时不喊，横幅会一直挂在"正在同步"上收不掉（terminal 只有 done/failed）。
+pub fn should_announce_key_missing(banner_seen: bool) -> bool {
+    banner_seen
+}
+
 fn new_request_id() -> String {
     let mut b = [0u8; 12];
     rand_core::OsRng.fill_bytes(&mut b);
@@ -422,6 +433,9 @@ pub async fn run_group_history_sync(state: &Arc<AppState>, group_id: &str) -> Sy
     let mut synced = 0i64;
     let mut total_declared = 0i64;
     let mut pages = 0usize;
+    // 横幅露过面没有：第一条 `running` 事件才算露面。"密钥未到"要不要喊那句错就取决于它
+    // （见 `should_announce_key_missing`：没露过面就喊 = 把正常的进行中状态报成失败）。
+    let mut banner_seen = false;
 
     loop {
         pages += 1;
@@ -465,6 +479,7 @@ pub async fn run_group_history_sync(state: &Arc<AppState>, group_id: &str) -> Sy
                     "running",
                     None,
                 );
+                banner_seen = true;
                 if !has_more {
                     break;
                 }
@@ -491,15 +506,25 @@ pub async fn run_group_history_sync(state: &Arc<AppState>, group_id: &str) -> Sy
             PageAttempt::NoKey => {
                 // 没有群密钥就一格也解不开。这里**不许**放过成"这页是空的"：
                 // 那会把"还没拿到密钥"这一格写成一个看起来像成功的完成标记。
-                emit_progress(
-                    state,
-                    group_id,
-                    &source,
-                    synced,
-                    total_declared,
-                    "failed",
-                    Some("no group key"),
-                );
+                // 也**不许**在横幅还没露面时就弹那句"未完成"——密钥在路上是常态（判据注释）。
+                if should_announce_key_missing(banner_seen) {
+                    emit_progress(
+                        state,
+                        group_id,
+                        &source,
+                        synced,
+                        total_declared,
+                        "failed",
+                        Some("no group key"),
+                    );
+                } else {
+                    state.logger.info(
+                        "group",
+                        format!(
+                            "群历史这一趟停在密钥未到 group={group_id}（标记留着，密钥落地后下一轮清扫自己补）"
+                        ),
+                    );
+                }
                 return SyncOutcome::Incomplete {
                     synced,
                     reason: "本机没有该群密钥".to_string(),
@@ -1283,6 +1308,40 @@ mod group_history_engine_tests {
             "升级前就在群里的老成员不许被动开始拉历史"
         );
         assert!(!should_sync_group(Some("")));
+    }
+
+    /// 「密钥还没到」这一格不许报错——它是常态，不是失败（负责人 2026-10-16：各种情况都不能报错）。
+    ///
+    /// 两行都得判：没露过面 ⇒ 闭嘴（标记留着，清扫任务下一轮自己补）；露过面 ⇒ 必须给一个 terminal，
+    /// 否则横幅永远停在"正在同步"收不掉。少第一行的表现是"新成员一进群就看见一句同步未完成"，
+    /// 少第二行的表现是"那条提示条赖在界面上"。
+    #[test]
+    fn a_key_that_has_not_arrived_is_not_reported_as_a_failure() {
+        assert!(
+            !should_announce_key_missing(false),
+            "横幅还没露过面 ⇒ 密钥未到不许弹那句错（正常的进行中状态）"
+        );
+        assert!(
+            should_announce_key_missing(true),
+            "横幅已经挂着 ⇒ 必须收掉它，否则界面永远停在「正在同步」"
+        );
+        // 接线：旗标要在第一条 running 事件那儿点亮，且密钥那一臂真的在问这道判据。
+        // 只判函数存在是没用的——判据空转的形态正是"函数还在、没人调用"。
+        let body = engine_body();
+        assert_eq!(
+            body.matches("banner_seen=true").count(),
+            1,
+            "旗标现数到 {} 处点亮（0 = 永不点亮 ⇒ 密钥那一臂等于永远闭嘴，横幅赖着收不掉）",
+            body.matches("banner_seen=true").count()
+        );
+        assert_eq!(
+            body.matches("should_announce_key_missing(banner_seen)")
+                .count(),
+            1,
+            "密钥那一臂现数到 {} 处调用这道判据（0 = 判据空转）",
+            body.matches("should_announce_key_missing(banner_seen)")
+                .count()
+        );
     }
 
     /// 手动那一格的裁决表。
