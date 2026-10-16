@@ -463,3 +463,41 @@ Get-Content "$env:APPDATA\com.gosslan.app\logs\gosslan-crash.log" -Tail 310
 新用例名也没整本重写基线，只把**我那 8 条**塞进索引（`macos 880→888`、`windows 868→876`），
 因为判据口径是"**缺名 FAIL、多名只 WARN**"（`check-test-manifest.mjs:25-26`）——
 把别人还没进 main 的用例名登记进去，反而会在 main 上造出一条真红。
+
+---
+
+## 9. 2026-10-16 傍晚：4.40.9 崩了 —— 但**这是第二种死法**，我们的机制接不住它
+
+`Application Error` 里新出现一条 **17:53:42、版本 `4.40.9.0`** 的条目 ⇒ §6c/§7 那句"4.40.9 零样本"到此结束。
+**可它的形状不是我们一直追的那一种**：
+
+| | 形状 A（追了一路的那个） | **形状 B（这次这个）** |
+|---|---|---|
+| 出错模块 | `gosslan.exe`（我们自己） | **`KERNELBASE.dll`** |
+| 异常码 | `0xc0000409` = `__fastfail`（abort/panic=abort 的出口） | **`0xe0000008`** |
+| 偏移 | 每个构建一个值（4.37.0→`0x4b86c4`、4.38.0→`0x4b8535`、4.40.0→`0x4c6314`） | **`0xc408a`，两次完全相同**（因为它在系统 dll 里，不在我们二进制里） |
+| 出现次数 | 5 条（10-12 19:33 → 10-16 12:17） | 2 条（**10-15 17:36:58** 与 10-16 17:53:42） |
+
+- `0xE0000000` 那一段是**软件异常**（有人调 `RaiseException` 主动抛的），不是硬件 fault。
+  ⚠️ 我没有 `0xe0000008` 的可信映射，**不猜**。公开可比的只有一例：Electron 应用崩溃里
+  `RaiseException+69 in KERNELBASE.dll`，其上游是 `KERNELBASE!WaitForMultipleObjectsEx`
+  （[Kong/insomnia#4331](https://github.com/Kong/insomnia/issues/4331)，那条还写着"内存涨到 3 GB 然后崩"）。
+  两条 B 型事件都在 **2 秒内**跟着别的应用落 dump（10-15 那次 2 秒后是 `Trae CN.exe`）⇒ 与"别家一起死"的形状更贴。
+- ★ **关键含义：§8 那套崩溃现场机制只接得住形状 A。** 它挂在 panic 钩子上，而 B 不是 Rust panic
+  ⇒ 下一次崩如果是 B，`gosslan-crash.log` **不会新增块** —— 那不是机制坏了，是它管不着这种死法。
+  B 只能靠**带堆的 dump**（`DumpType` 已改 2）与事件日志。
+- **① 那段返回空 = 这台机器上一份 WER 文本报告都没有**（四个 `ReportQueue`/`ReportArchive` 根目录全空）。
+  与他截图那句 `Error launching CrashSender.exe` 互相印证：**WER 的上报链路是断的**（助手起不起来），
+  于是取证只剩两条腿：`Application Error` 事件 + `LocalDumps`。别指望 `Report.wer` 里的 Bucket。
+- **我上一条命令自己有个错要认**：`DumpFolder` 我指到了 `%LOCALAPPDATA%\CrashDumps\gosslan`（**子目录**），
+  而我给的读数命令是 `Get-ChildItem "$env:LOCALAPPDATA\CrashDumps" -Filter 'gosslan*'` 没加 `-Recurse`
+  ⇒ 屏幕上那个 `gosslan 0 MB` 是**那个目录本身**，不是 dump。17:53 那次到底有没有落下带堆的 dump，
+  这条命令**没看到**，读数作废，要用 `-Recurse` 重取。
+
+### 9a. 于是下一步分成两问，别再混着问
+
+1. **A 型（我们自己 abort 的那一族）**：装带机制的构建（tip `8236b1e`），崩了看 `gosslan-crash.log` 有没有块。
+   有块 ⇒ 直接拿 `文件:行:列`。没块 ⇒ 说明这次是 B 型或"崩在 logger 之前"。
+2. **B 型（KERNELBASE 抛出的那一族）**：只认 dump。先确认 17:53 那次有没有留下带堆的 dmp（`-Recurse`），
+   有就报大小与时间戳；没有就再崩一次（`DumpType=2` 已生效）。
+   两份 dump 的差别（Mini vs Heap）决定我能不能给你一段本机抽取脚本把栈和堆里的文本捞出来。
