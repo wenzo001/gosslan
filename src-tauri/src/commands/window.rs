@@ -133,8 +133,13 @@ pub fn window_toggle_fullscreen(_app: tauri::AppHandle) -> bool {
 /// 关闭**当前窗口**。
 ///
 /// **主窗口 = 隐藏**（托盘语义：关掉窗口 ≠ 退出应用，与 `tray.rs` 的 CloseRequested 一致）；
-/// **辅助窗口 = `close()`** —— 外链窗口（常驻）由 `install_hide_on_close` 转成隐藏，
-/// 其余（设置/日志/群任务，均不常驻）直接销毁。写死 "main" 会让辅助窗口的关闭键把**主窗口**藏起来。
+/// **辅助窗口 = `close()`**，但"关了就藏"这件事由各自的 `AUX_*_RESIDENT` 决定 ——
+/// 凡是常驻那几扇（现读 `commands/logs.rs` 里那几个常量），`install_hide_on_close` 已把
+/// `close()` 变成"prevent + hide"，所以这里对它们调 `close()` 实际是藏起来。
+/// ⚠️ 这里**刻意不再点名哪些窗口常驻**：`commands/logs.rs` 自己的注释写着
+/// 「每扇的取舍理由写在各自的 `AUX_*_RESIDENT` 常量上，别在这里再数一遍（数一遍就会过时）」——
+/// 而这一句此前正是这么过时的：它写着"群任务不常驻"，实物却是 `AUX_TASKS_RESIDENT = true`。
+/// 写死 "main" 会让辅助窗口的关闭键把**主窗口**藏起来。
 #[cfg(desktop)]
 #[tauri::command]
 pub fn window_close(window: tauri::WebviewWindow) {

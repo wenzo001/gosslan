@@ -224,7 +224,14 @@ pub fn insert_system_message(state: &AppState, conv_id: &str, text: &str) {
         status: "sent".to_string(),
         mention_targets: None,
     };
-    db::insert_message(&dbc, &rec).ok();
+    // 落库失败必须留痕（审计 2026-10-16）：下面那次 emit 照样发出去 ⇒ 界面闪一下卡片、
+    // 重开就没了，而这种形状在日志里原本一字不记。
+    if let Err(e) = db::insert_message(&dbc, &rec) {
+        state.logger.error(
+            "chat",
+            format!("合并转发落库失败 msg={}：{e}", rec.msg_id),
+        );
+    }
     drop(dbc);
     let _ = state.app.emit("message-received", &rec);
 }

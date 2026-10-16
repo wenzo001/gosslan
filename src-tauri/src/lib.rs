@@ -493,6 +493,72 @@ pub fn run() {
                     }
                 });
             }
+            // 群文件台账一次性补账（2026-10-16 方案 A，见
+            // `docs/notes/group-file-ledger-backfill-2026-10-16.md`）：治的是"文件在盘上、消息行也写着
+            // 路径，但收尾那三张台账一张都没落库"的那一格 —— 那一格让这台**不算种子**，别人再也拉不到
+            // 这份内容，而对账扫描器的谓词捞不到"行根本没写成"，所以它没有兜底。
+            //
+            // ⚠️ 刻意**不是** DB 迁移：补账唯一的判据是整文件 SHA-256，而群文件能到 GB 级；迁移跑在
+            // 启动路径上，等于把 INV-P34 那一族已经修过十一家的根因（打开应用就卡）亲手装回起点。
+            // 形态因此是"启动后一次性的后台作业 + settings 一个开关"，整趟跑完才写开关 ⇒ 中途崩下次重启重来，
+            // 而每一条写都幂等。
+            {
+                let st = state.clone();
+                tauri::async_runtime::spawn(async move {
+                    // 晚一点再动：首屏、局域网自启、`.part` 清扫都排在同一段，
+                    // 一次后台补账不该跟它们抢盘（这条链上没有用户在等的东西）。
+                    tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+                    let already = {
+                        let dbc = st.db.lock().unwrap_or_else(|e| e.into_inner());
+                        crate::db::get_config_bool(
+                            &dbc,
+                            crate::network::file::GFILE_LEDGER_BACKFILL_DONE_KEY,
+                            false,
+                        )
+                    };
+                    if already {
+                        return;
+                    }
+                    let stats = crate::network::file::run_group_ledger_backfill(&st).await;
+                    st.logger.info(
+                        "file",
+                        format!(
+                            "群文件台账补账跑完：候选 {}、补上 {}、跳过 {}、对不回身份的卡片 {}、收口 {}",
+                            stats.gaps,
+                            stats.repaired,
+                            stats.skipped,
+                            stats.orphan,
+                            if stats.incomplete { "否" } else { "是" }
+                        ),
+                    );
+                    if stats.incomplete {
+                        // **没收口就不写标记**（2026-10-16 评审抓出来的 P1）：作业里两条提前返回
+                        // （扫描失败 / 任务被中断）与任一条事务写失败都算没收口。旧形状下标记照写 ⇒
+                        // 一次 SQLITE_BUSY 就把这台**永久**钉成"不再补账"，而那本来只是一次临时故障；
+                        // 比"不补"更糟的是"把不补变成不可恢复的决定"。
+                        st.logger.error(
+                            "file",
+                            "群文件台账补账：这一趟没收口 ⇒ 完成标记**不写**，下次启动会再来一遍（每一条写都是幂等的）",
+                        );
+                        return;
+                    }
+                    let marked = {
+                        let dbc = st.db.lock().unwrap_or_else(|e| e.into_inner());
+                        crate::db::set_setting(
+                            &dbc,
+                            crate::network::file::GFILE_LEDGER_BACKFILL_DONE_KEY,
+                            "1",
+                        )
+                    };
+                    if let Err(e) = marked {
+                        // 开关写不上 ⇒ 下次启动会再跑一遍（写本身幂等）。这不算故障，但必须看得见。
+                        st.logger.error(
+                            "file",
+                            format!("群文件台账补账：完成标记写失败，下次启动会重跑一遍 —— {e}"),
+                        );
+                    }
+                });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

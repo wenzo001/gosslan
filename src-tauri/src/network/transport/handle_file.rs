@@ -509,7 +509,13 @@ async fn handle_file_messages(state: &Arc<AppState>, peer_id: &str, msg: Message
                             status: "delivered".to_string(),
                             mention_targets: None,
                         };
-                        db::insert_message(&dbc, &rec).ok();
+                        // 落库失败必须留痕（审计 2026-10-16）：吞掉后界面没这张文件卡、日志无痕。
+                        if let Err(e) = db::insert_message(&dbc, &rec) {
+                            state.logger.error(
+                                "file",
+                                format!("单聊文件卡片落库失败 msg={}：{e}", rec.msg_id),
+                            );
+                        }
                         let nm = resolve_nickname(state, &sender_id);
                         let preview = if kind == "image" {
                             "[图片]".to_string()

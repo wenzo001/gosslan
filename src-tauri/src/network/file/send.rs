@@ -67,7 +67,19 @@ pub async fn send_file_from_path_at(
     let msg_id = format!("file-{transfer_id}");
     let backfilled = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::fill_message_sha256(&dbc, &msg_id, &file_sha256).unwrap_or(false)
+        match db::fill_message_sha256(&dbc, &msg_id, &file_sha256) {
+            Ok(b) => b,
+            Err(e) => {
+                // 留痕（第九家）：旧写法 `unwrap_or(false)` 把"库报错"和"幂等跳过/缺行"
+                // 压成同一个 false ⇒ 现场看不出是故障还是正常，而这一格失败的真实代价是
+                // 前端那条 message-received 不再补发、卡片按空 cid 带出去。返回值仍是 false，行为不变。
+                state.logger.error(
+                    "file",
+                    format!("发送行 sha256 回填失败 msg={}：{e}", msg_id),
+                );
+                false
+            }
+        }
     };
     if backfilled {
         // 改了库还必须让前端也看到：只写库时内存里那条记录仍是 cid 空的版本，

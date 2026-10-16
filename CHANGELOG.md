@@ -13,6 +13,255 @@
 
 ## [Unreleased]
 
+## [4.40.9] - 2026-10-16
+
+### 4.40.8 那一版群收尾的事务其实一句都没落库：缺 `tx.commit()`，默认 drop 即回滚（⑥ 的第二半）
+
+`network/transport/group_file.rs` 群接收收尾把三张台账收进了 `dbc.transaction().and_then(|tx| write_ledgers(&tx))`，
+但闭包末尾**没有 `tx.commit()`**。rusqlite 的 `Transaction::new_unchecked` 把 `drop_behavior` 初始化成 `Rollback`
+（锁定版 0.31.0 `src/transaction.rs:127`，`finish_()` 在 `!is_autocommit()` 时按该行为回滚）⇒ `tx` 在闭包结束即整段回滚，
+而 `and_then` 拿到的是 `write_ledgers` 的 `Ok(())` ⇒ `wrote` 永远是 Ok ⇒ 那条"失败留痕 + 逐句补写"的 Err 分支
+**结构上不可能触发**。净效果比 4.40.8 修之前更糟：改前三处各写各的、至少常态能落库；改后名义上"同一事务"、
+实际上三张表一句都没写，而 UI 与 `GroupFileCompleteAck` 都按成功走。单聊那一家 `network/file/receive.rs:876`
+闭包末尾有 `tx.commit()`（当时现数全仓 23 处 `.commit()`；4.40.9 现读改成两个口径分开写：**文本出现 32 处 / 排测试分册 22 处**，因为补账那一格又加了一次显式 commit），群这一处是漏的那一个。
+
+改法（最小）：闭包末尾补 `tx.commit()` —— `write_ledgers(&tx)?; tx.commit()`。
+
+护栏 `lib_file_tests.rs::group_receive_finalize_writes_three_ledgers_in_one_transaction_with_logged_fallback`
+第②条从"必须包在同一个事务里"改成"包在同一个事务里**并显式 commit**"。
+**这条护栏原来是个假守卫**：它的非空转只测了"换成裸写 `write_ledgers(&dbc)`"，从没测"有事务、没 commit"这一格 ⇒
+861 条全绿的同时把 bug 钉成了规矩。成对变异实测（同一条断言只换被测源码）：未修源码上 `FAILED`（panic 在
+`lib_file_tests.rs:548`）；补上 commit 后转绿。
+
+### 稳定性体检第一轮：掐掉一条**按消息数增长**的 Windows 对象通道、补一格对端可控路径的边界、五家静默吞错改留痕、给 `messages.status` 的第二家补闸
+
+起因是负责人的一句现场观察：**整晚只开着、不发消息也不操作，不崩；崩发生在收/发消息时，或他正在操作别的应用时，
+而且可能连带带走别家 WebView2。** 这句话直接否证了"资源自然增长到顶"那一族 —— 挂着不动也该涨 ——
+并把矛头收到"只有活动路径才跑的那段码"上。
+
+**1）托盘图标：只在「有未读 ↔ 无未读」翻转时重设**（`tray.rs`）
+
+旧写法每次未读数变化都重跑一遍整张图标的逐像素混合再 `set_icon`，**未读 3→4 时红点图其实是同一张**。
+Windows 侧 `set_icon` = 新建一枚 `HICON` + `Shell_NotifyIconW`，而 `tray-icon` 在 `Shell_NotifyIconW` 失败时
+**早退、跳过后面那次 `DestroyIcon`** ⇒ 句柄只增不减；图标/窗口这类对象走**每会话共享的桌面堆**，
+这正是"我们崩、别家 WebView2 也被带走"能同时成立的那一类机制。改成翻转才动之后，一条消息洪水从
+「每条一枚 HICON」降成两次（变红点、变回原图）。基准只在 `set_icon` **成功**时才记 —— 设失败就留在旧状态，
+下次变化还会再来一遍，否则一次失败会把图标永久钉在错的那一张上。
+
+用例两条（`tray::tests`）：翻转矩阵 + 真实序列 `0→1→…→8→0` 断言"只许三次重设"（第一次定基准），
+把决策改回"每次都设"会当场数出 9 次。形状上用 `#[cfg_attr(target_os = "macos", allow(dead_code))]`
+而不是整块 `#[cfg]`（照 `user_dirs.rs:26` 的反向写法）⇒ **mac 本地每次 `cargo test` 仍判得住这一格**，
+不把证据全交给 Windows 腿。
+
+**2）`open_file_native` 补目录边界**（`commands/files.rs`）
+
+这条边界本仓早就有，只是漏在另一家身上：同文件 `delete_file` 上方的注释**自己写着**
+"若哪天有 UI 把它接到消息里的 `path`（该字段由对端控制），没有它就会变成对端点一下删掉本机任意文件"，
+删除侧照这句加了闸，而打开侧原先把前端来的字符串**原样**交给系统默认应用。链路现读是通的：
+`MessageItem.vue:610` / `GroupFilesPanel.vue:127` → `utils/localFile.ts:29` → `api/index.ts:285` → 这里。
+⇒ 一个过了 Hello 验签但被盗用/恶意的**好友身份**发一条带 `path` 的消息，本机的人点一下气泡就会打开任意路径。
+
+改法：canonicalize 后只放行本应用自己管的四格（downloads / cache / favorites / 合并转发暂存 share），
+**拒绝必留痕**（`file` 类目）——真机有没有合法用例被挡住，只有那条日志知道。
+判定时顺序不能反：**边界用 canonical 结果**（能解掉 `..` 与符号链接），**交给系统的仍是原路径** ——
+Windows 的 `canonicalize` 返回 `\\?\C:\…` verbatim 形式，而这条链在 Windows/Linux 上走
+`tauri_plugin_opener` → `ShellExecuteW`，**`ShellExecute` 不支持 `\\?\` 前缀**
+（macOS 走 NSWorkspace、Android 走 FileProvider 才与它无关）。把 canonical 直接递出去，
+买到的是"边界严了、但你最常按的那个『打开』在 Windows 上死了"。
+判据抽成纯函数 `path_under_any`，并让 `delete_file` 也改调它（不留第二个家）；
+五条用例里最关键的一条是**按分量比对**：`downloads_evil/x` 不许被 `downloads/` 放行
+（随手写成字符串前缀就会放过它），另有一条"空清单一律不放行"拦"canonicalize 失败退化成空表 ⇒ 边界被静默打开"。
+
+**3）五家"卡片类"落库失败从静默改成留痕**
+
+`transport/group_file.rs:126`、`transport/relay_file.rs:464`、`transport/handle_file.rs:512`、
+`commands/group_announcements.rs:340`、`commands/share.rs:227` 原先都是 `db::insert_message(...).ok();`。
+要说准范围：**主消息接收路径不是这样**（`handle_messaging.rs` 带 `?`、失败会拆链），
+静默的是文件卡片 / 中继收齐卡片 / 群公告卡片 / 合并转发这几家 ⇒ 后果是"文件已在盘上、聊天里没那张卡、日志一字不记"。
+**行为一字未改**，只补 `logger.error`；target 全部复用已有名字（`group_file`/`relay`/`file`/`group`/`chat`），不新造类目。
+`check-invariant-hooks` 判的是"钩子绑没绑"，判不到"这一格留没留痕"——那一半门今天仍然不存在，这一条是留痕不是判据。
+
+**4）`messages.status` 的第二家裸写补上同一道闸**（`db/messages.rs`）
+
+`set_message_status` 上方注释点名的那条竞态（Ack 因 outbox 补发晚于 ReadReceipt 到达 ⇒ `read` 不许被回退成 `delivered`）
+**原来只在一家上成立**。分母现算，全仓写 `messages.status` 的只有三处：`db/read_receipts.rs` 写 `read`（前进，无问题）、
+`set_message_status`（有 `NOT IN ('read','delivered','recalled')` 闸）、**`update_message_content` 一句 `status = ?3` 没闸**。
+最后这家的调用点是 `network/transport/group_file.rs:472`（群文件 Done）⇒ 走的正是"收消息时才跑"的那段码；
+它不解释闪退，但它是同一族**静默错账**：已读会被路径回填打回未读。
+
+闸只加在 `status` 上（`CASE WHEN status NOT IN (…) THEN ?3 ELSE status END`），**content 照旧无条件回填** ——
+把路径一起挡掉就退回"预览缺 path"那个老形状，所以两个方向必须一起判。`failed`/`cancelled` 仍按既有口径当软终态允许前进。
+用例一条（`db::tests::update_message_content_backfills_path_without_regressing_read`），与既有那条
+`…_backfills_path_for_preview` 配成一正一反。**成对变异实测**：修复态 2 passed → 用正则把 `CASE` 换回裸
+`status = ?3`（脚本自证注入 1 处）⇒ **恰好只有新那条 FAILED、旧那条仍 ok** → 还原后再 2 passed。
+
+**自动化读数**：`cargo fmt` 退 0、`cargo clippy --features bluetooth --lib -- -D warnings` 退 0、
+`cargo test --features bluetooth --lib` **871 passed / 0 failed**（本轮累计 +8 条：5 边界 + 2 托盘 + 1 状态闸）、
+`verify-guards.py --list` 退 0（这次搬家没把注入锚点带坏）、`check-test-manifest.mjs` 复跑退 0，
+测试名基线双边补齐（**macos 871 / windows 859**，跨平台差额由源码门控背书）；
+`node scripts/verify.mjs` 快速层 17 步全绿。另补一份全仓此前**没有**的现场取证手册：
+`docs/notes/windows-crash-capture-2026-10-16.md`（日志抢证 / WER / 事件日志三条 / 句柄计数采样与判读表）。
+
+**仍然没验的，写清楚**：
+① 真机 Windows 未验 —— 上面那条 HICON/`DestroyIcon` 的路径在**外部 crate** 里，本机连编译面都不在；
+本轮做的是"把按消息数增长的那条通道掐短"，不是"证明桌面堆耗尽就是根因"。
+② `panic = "abort"`（全平台生效）+ release 无 stderr + `strip = true`，根因判读仍要靠 `lib.rs:154-175`
+那条 panic hook 落进运行日志的 `channel="panic"` 行 —— 已登记为"负责人这两天抓一次回来"。
+③ CSP 这一格**故意没动**（`tauri.conf.json` 仍是 `"csp": null`）：五入口各有外链 script、前端 53 处 `blob:`、
+预览走自定义协议 ⇒ 配错**静默白屏**，属必须真机验的一类，负责人选"单独一轮再上"。
+④ 4.40.8 那版群收尾「台账实际是空的」这一格**只在跑过 `2de9264` 之后那版的机器上成立**：
+本轮更正 —— `git tag --contains 2de9264` 空、`git ls-remote --tags origin` 最新 `v4.39.4`，
+而发布流按 tag 触发 ⇒ 没有任何已发布安装包带那笔未 commit 的事务（线上旧版的缺账来自它前面那个
+「三处写各吞各的错」的形状，来源不同、修法同一份）。存量补账本轮已做，见下面那一节。
+
+### 存量补账走方案 A：群台账一次性后台作业（不做成迁移），新写的那段事务被自己的正向用例当场抓红
+
+上一节登记的那一格（文件在盘上、三张台账一张都没有 ⇒ 这台不算种子、别人拉不到，而对账扫描器的谓词
+捞不到「行根本没写成」）现在有了补的路。设计前提与五种反证在
+[`docs/notes/group-file-ledger-backfill-2026-10-16.md`](docs/notes/group-file-ledger-backfill-2026-10-16.md)，
+那一节末尾另记了实现期对本文两处更正（路径不必扫目录、判据来源换成 `group_files.sha256`）。
+
+落点：`network/file/ledger_backfill.rs`（+ 判据册 `_tests.rs`）、`db/messages.rs::list_gfile_message_rows`、
+`lib.rs` setup 里那一格作业。四条口径：
+
+1. **不是迁移**：补账唯一的判据是整份 SHA-256，而群文件能到 GB 级；迁移在启动路径上同步跑，
+   就是把 INV-P34 那一族已经数到十二家的同一个根因亲手装回起点（负责人点的正是这一条，选了 A）。
+   形态因此是「启动后 20 秒起一次性后台作业 + settings 一个开关」，整趟跑完才写开关 ⇒ 中途崩下次重来，
+   而每一条写幂等。
+2. **三张都收口的行一次盘都不碰**：候选闸是三个走索引的点查（recipient / `is_transfer_done` /
+   `content_transfers` 那一行），排在任何磁盘动作之前 ⇒ 健康机器跑这一趟的代价是一次 SELECT。
+3. **哈希不握着库锁**：`gfile_ledger_repair` 收的是调用方在阻塞线程池里算好的 `Result<String, String>`，
+   不是自己就地算 —— 本仓只有一个 tokio runtime，而 `state.db` 这把锁上排着消息收发与所有会读库的命令，
+   GB 级哈希握着它几秒就是那几秒整条链一起等。形状判据按「全册只这一处整文件哈希」钉住它不被搬回去。
+4. **认不上就一格都不写**（同名同大小、内容差一个字节的那一份被明确拒掉），路径失效同样不写；
+   recipient 行不在 ⇒ **不造它**（那是「群外 state」，权限归 Offer 那一段），另两格照写并留一条 warn。
+
+判据实测（七条新用例，全部本轮真跑）：正向补齐 + 补完不再进候选、哈希差一个字节 ⇒ 四格断言全不写（并把
+「声明 ≠ 实测」两个 hex 原样带进日志）、路径失效 ⇒ 同上、第二次补不许多插行、候选闸四种形状
+（健康 / 本机是发送方 / 还没落盘 都不进；卡片写着 path 却对不回 `group_files` ⇒ 只能数进孤儿，
+因为「存量还剩多少补不了」没有这个数就是零条证据）、INV-P34 那条按格形状。
+另跑四笔单点变异（每笔只改一处、跑当时那整册 **877** 条、逐笔还原后 `cmp` 确认逐字一致）：删 `orphan += 1` → 候选闸 1 红；
+把哈希搬回 async 体就地算 → 按格那条 + 分母那条 2 红；哈希闸放宽成永远放行 → 对不上那一条 1 红；
+把 `tx.commit()` 换成 `Ok(())` → 正向 + 幂等 + 候选闸 + 按格 4 红。⚠️ 顺带量到一件事：
+**直接删 `tx.commit()` 那一行在本仓这处写法下编译失败**（闭包尾部变成 `()`）⇒ 登记的是**能编译**的那条形状，
+别把编译器的运气当守卫。
+第七条是**接线判据** `group_ledger_backfill_is_wired_once_at_startup_after_the_run`：`lib.rs` 那一格 spawn 如果被删，其余整册（当时 878 条）全绿而补账永远不会再跑（静默失效那一类）。它钉调用点只 1 处、完成标记只认常量名不认手抄字面量（现数 2 处 = 读一次 + 写一次）、由 `spawn(async move {})` 驱动、**跑完整趟才写标记**（次序）。两笔变异实测：写标记那处换成手抄键名 → 计数红；「跑作业」与「写完成标记」两段换序 → 次序红。为什么这条不套 INV-P34 那句「交出点与慢活之间不许 .await」：
+本作业在 spawn 之后**先 sleep 20 秒**再动（让首屏、局域网自启、`.part` 清扫先跑），那个 `.await` 是刻意排在调用前面的 —— 第一次就跑红过，红在判据自己，改的是判据不是产品。
+
+⚠️ **前两条第一次跑是红的，红在我自己身上**：新写的 `gfile_ledger_repair` 又漏了一次 `tx.commit()`，
+与这轮在修的 `2de9264` 是同一个形状，被刚写下的正向用例当场报「recipient 仍是 sending」。
+这条判据族的价值第一次是在作者自己身上验证的，不是"读过觉得它对"。
+
+读数（**这三节的最终整册以现读为准**：七条新用例全部在册之后是 **879 通过 / 0 失败**；下面这些 877/878 是各次跑当时的整册数，保留是为了让每条结论对它那次跑负责）：
+`cargo test --features bluetooth --lib` **877 通过 / 0 失败**（+6）、`cargo fmt --check` 退 0、
+`cargo clippy --features bluetooth --lib -- -D warnings` 退 0；INV-P34 分母判据现算从 16 处/11 册变到
+**17 处/12 册**，两处登记值与 `docs/migration-ledger.md` 第 13 行、`docs/protocol-invariants.md` 那条法
+一并改齐（顺带修掉本文里那两处 stale 的「13/11」—— 判据当时登记的实数是 16/11，抄文档一直对不上）。
+
+**有一类结构性补不了（本轮现读登记）**：`scope == "todo"` 的群图按设计**不插卡片行**
+（Offer 把插气泡包在 `if scope != "todo"` 里），而本作业的候选来源就是那些 `gfile-%` 消息行 ⇒ 这一类**看不见也数不出**。
+4.40.8 若发生在待办图上，本轮补不了 —— 不是"选择不修"，是这条路上没有任何证据。要收它得从 `group_files` 那侧重开一格。
+
+**仍然没验的**：这一趟没在真机跑过 —— 本机没有那批缺账的库，所以"存量确实被补上"只有单测判据、没有装机读数。
+等 Windows 抓崩溃日志那一轮顺带现算：日志里那条 `群文件台账补账跑完：候选 N、补上 N、跳过 N`，
+配 `SELECT COUNT(*) FROM content_transfers WHERE direction='receive' AND path IS NULL`。
+那一行日志现在带四个数：`群文件台账补账跑完：候选 N、补上 N、跳过 N、对不回身份的卡片 N`，
+最后那个是本轮**补不了**的那一块（设计那节第 5 条）。
+`list_gfile_ledger_gaps` 的**规模**也没量过（按卡片行数 × 三次点查握库锁），今天无读数 ⇒
+若"跑完"那条迟迟不来，先量这一格，别先怀疑哈希。
+
+### 稳定性体检第二轮：把「落库失败要看得见」这一族数完整（又找出三家），并给它配一条按形状扫全仓的判据
+
+上一批改了五家卡片落库的静默吞错。这次先问的不是"还有没有"，而是**按形状数一遍**：
+把五个名字（`insert_message` / `insert_message_if_new` / `insert_message_and_outbox` /
+`update_message_content` / `fill_message_sha256`）在生产码里逐个取调用尾部，看那个 `rusqlite::Result`
+到底去了哪儿。数到 **13 个落库点**，按四类分：向上报错 `?` / `.map_err` **4 处**（`commands/chat.rs` ×2、`commands/files.rs`、`commands/window.rs`）、`if let Err` 留痕 **6 处**、`match` 的 Err 臂留痕 **1 处**、
+交给三态判据（`let inserted =`，Err 臂里留痕）**2 处** ⇒ **要留痕的是 9 处**：上一批改了 5 处，本轮又找出 **4 处**
+—— 其中 **2 处是我上一批自己漏的第二面**、2 处是入站那两家（流量比原来那五家都大）：
+
+- `network/transport/group_file.rs:472` —— 群 Done 回填 `content.path` 那一句仍然是 `.ok();`。
+  上一批把**同一个文件里** `insert_message` 那一面改成留痕了，同一个收尾的另一面就在"已改"那行底下继续漏
+  （本仓那条老账：同一开关的另一个面最容易漏）。它没写成 ⇒ `read_file_preview` 反查不到本地文件，
+  而"已被清理"这个确定性失败判定会被前端**永久缓存** ⇒ 盘上有文件、气泡永远空白。
+- `network/file/send.rs:70` —— `fill_message_sha256(...).unwrap_or(false)` 把"库报错"和"幂等跳过/缺行"
+  压成同一个 `false`。`db/messages.rs` 顶上那句注释**本来就写着**"调用方不得把 Err 折叠成 false"，
+  只是没人机器核对过；这一格的代价是合并卡片按空 cid 带出去 ⇒ 对端再也拉不回这份字节（v4.22.16 那族）。
+  改成 `match`，Err 臂留痕后**仍返回 false**（返回值与行为一字不变）。
+- `network/transport/handle_messaging.rs:145`（臂体在 `:154`）与 `network/transport/gossip.rs:898` —— 入站落库返回 Err 时
+  行为是**对的**（不投递、绝不 Ack ⇒ 发送方 outbox 保留待补发），但日志一字不记。这两家比原来那五家流量都大。
+
+四处都只补 `logger.error`（target 复用已有的 `group_file` / `file` / `dispatch` / `chat`，没有新起名字），
+**行为一字未动**。顺带排掉一颗雷：日志 target 白名单只挡 Android 的 info 级进 logcat，
+`Warn|Error` 一律进、落盘无条件（`logging.rs:248-251`）⇒ 这一族不是"写了看不见的假留痕"。
+
+判据（这一族的**防复发**，之前完全没有）：`tests::card_message_writes_never_swallow_their_error`
+（`lib_relay_data_tests.rs`，与 INV-P34 那条分母判据同册同形状）。它按**括号配对**取调用尾部，
+不按行窗口也不按 `;` 切语句（多行实参是常态，`update_message_content` 那一句就跨四行 ——
+本仓吃过"单行正则数跨行返回 0"的亏）；禁形 `.ok()` / `let _ =` / `.unwrap_or(_)` / 裸丢弃，
+允许名单只有四种：`?`、`.map_err`、调用前是 `if let Err(e) =`、或交给三态判据（`let inserted =` /
+`let backfilled =`）。`.unwrap()` / `.expect()` **故意不在名单里**：那会 panic 在 `reader_loop` 或命令体上，
+比留痕更糟。两条非空转设计：**站点总数钉成 13**（放宽尺子或新增一家不登记 ⇒ 立刻红），
+以及把内联 `#[cfg(test)]` 段整段抹掉后再数（不抹会把 `db/{groups,clocks}.rs` 里**五处**正当的测试 `.unwrap()` 报成生产缺陷（现读：`db/groups.rs:434/502`、`db/clocks.rs:120/168/179`；上一版写「六处」是把一处 `network/file/send.rs` 的生产调用误算进了测试） —— 而"判据一片假红"的下一步通常是有人把它放宽）。
+
+三笔单点变异实测（每笔只改一处、跑这一条用例、逐笔还原后 `cmp` 确认逐字一致）：
+把第八家退回 `.ok();` → offenders 红；把第九家 `match` 的 Err 臂留痕摘掉（`Err(_e) => false`）→ offenders 红；
+把判据自己的 `NAMES` 少认一个名字 → 分母那条红（13 → 12）。三条边界如实写在判据注释里，不装作它管一切。
+
+收尾按 AGENTS.md 那条认知合同走了一次 AOCI 维护（本会话没有注册 `aoci` MCP，走的是 CLI 的 `update-entry` 逐条通道，每条都带 `--source-sha256`）：**新增 3 条**（`network/file/ledger_backfill.rs`、`ledger_backfill_tests.rs`、`commands/files_tests.rs`），**就地改准 5 条被本轮证伪的旧条目**（`network/file.rs` 的「切成五册 / 主文件 398 行」、`commands/files.rs` 的「只允许删除下载目录内」——现在是两侧共用一个谓词、四个托管目录、`db/messages.rs` 的状态闸第二个家与新读者、`transport/group_file.rs` 的「三张台账同事务且必须 commit」、`lib_relay_data_tests.rs` 的册职责），并顺手按工具自己的字典把两处规模档位改准。S 字段有按档位给的 token 预算（本轮实测：L 档 200、DP8L 那条 140），超了就整条拒收 ⇒ 不是截断，是重写到预算内。
+索引净变化现算：`git diff --numstat aoci.code.txt` = 8 增 / 5 删（=3 新增 + 5 整行替换），`aoci status` 的条目数 616、基线 981 文件。
+
+台账同步刷新（都是现算，不抄）：`include!(` 缝合点 **113**（本轮 +3）、生产码 `let _ =` **356 处 / 67 册**、
+`.ok();` **110 处**，并写明这三个是**观测值不是缺陷清单**。本轮**不新造 INV**（这条属可观测性纪律，
+挂进 `protocol-invariants.md` 要连钩子登记、例外、图里 inv 快照一起改六处，而它今天的实际价值已被上面那条判据兜住）
+—— 理由连同第 8~12 行一起登记在 `docs/audit/ledger-2026-10-16.md` §5。
+
+### 稳定性体检第三轮：两路只读审查回来以后，先补我自己那条判据的假绿，再补被查出的一条 P1
+
+这一节的四条全部来自**独立复核**，不是我自己又看了一遍：两路只读子代理（一路读逻辑、一路做判据与登记对账）
+加我自己对每条结论的复现。全程没跑过编译以外的一件事，且都限定只读。
+
+**已修**：
+
+1. **P1 —— 完成标记是无条件写的**（`lib.rs:534` 之前）。补账作业里两条提前返回（候选扫描失败、扫描任务被中断）
+   与任一条台账写失败，都不影响标记照写 ⇒ **一次 SQLITE_BUSY 就把这台永久钉成"不再补账"**，
+   把一次临时故障变成一个不可恢复的决定。加 `GfileLedgerBackfillStats::incomplete`（三处置位），
+   `lib.rs` 用 `if stats.incomplete { 留痕; return; }` 挡在写标记之前；那句与实际不符的注释改成
+   「标记的语义是**有一整趟跑到底**」。
+2. **P2 —— 接线那条 `#[test]` 我落在了 `mod` 闭合之后** ⇒ 没有 `#[cfg(test)]`，**会被编进 release 产物**，
+   还带着 `include_str!("../../lib.rs")` 把整份 lib.rs 烤进二进制。它逻辑正确、跑也绿，纯粹是位置错。挪进 mod ⇒
+   全名多一段，两份基线同步；⚠️ 顺带量到一个工具形状：`--sync-baselines` **只增不删**，改名后另一条腿留着旧名，
+   被"跨平台并集"那条判据抓住时它报的是「macos 少一条」而真因是 windows 多一条 —— 只能手工删那一行才平。
+3. **P2 —— 候选扫描在 async worker 上握着全仓唯一那把 db 锁**。审查给的"LIKE 不走索引、整表扫"这个**前提我否证了**：
+   用**应用里那台引擎**（rusqlite / `libsqlite3-sys 0.28.0`）现读 `EXPLAIN QUERY PLAN` =
+   `SCAN messages USING INDEX sqlite_autoindex_messages_1`，与本机 CLI 3.50.6 同解，`ORDER BY msg_id` 免排序。
+   但结论仍成立（全索引扫代价随消息总数长、且握锁）⇒ 整段进 `spawn_blocking`（闭包内取锁，照同段 `.part` 清扫那格的形状），
+   并把这条执行计划钉成用例 `candidate_query_is_index_scanned_by_the_engine_we_ship`（用了自动索引 + 不许出现 `USE TEMP B-TREE`）。
+4. **⚠️ 我这条新门判据自己是假绿的，被变异例行公事抓出来**：断言原本写「找得到 `if stats.incomplete {`」，
+   而 `lib.rs` 那句日志三元式 `if stats.incomplete { "否" } else { "是" }` 含同一串 ⇒
+   把门改成 `if false`（可编译的破坏形状）之后**判据仍然绿**。改成钉**出现次数 == 2**（三元式 1 + 门 1），
+   再取"写标记之前最后一次出现"定位那道门判次序。复跑同一笔变异现在红并写着"现数到 1 处"。
+   这条与既有那条「存在性断言是半个守卫」同形，但这次是**我在同一轮里新写的一条**，值得单独记。
+
+还顺手清了两处**文档/注释与实物相反**的账：
+
+- `commands/window.rs` 的 `window_close` 注释写着「其余（设置/日志/群任务，均不常驻）直接销毁」，实物是 `AUX_TASKS_RESIDENT = true`（现读四常量 WINDOWS=false / LINK=true / TASKS=true / PREVIEW=true）。这违反的正是 `commands/logs.rs:175` 自己写的规矩——「每扇的取舍理由写在各自常量上，别在这里再数一遍，数一遍就会过时」。新注释**不再点名**，改指常量。
+- `docs/audit/ledger-2026-10-16.md` §4 从「代理报、尚未自验」逐条改成带现读结论的表；改的过程中**我自己上一条复跑命令被打脸两次**：① 挂在「11 个 `message-received` emit 点」后面那条 `grep -rn 'emit("message-received"'` 只得 **10** —— 生产码是 `emit(` 换行再写事件名的跨行形状，行式正则天然漏一条（台账里现在行式／跨行式并列，并标明哪个是假数）；② 上一版写「`useChatStore.ts` 三次整表**其中** 5 次逐行 `JSON.parse`」，现读该文件 `JSON.parse` = **0 次**，那 5 处真身在 `src/utils/`（`messageHeight.ts:136/161`、`messages.ts:81/268`、`fileMeta.ts:22`）——**数是从子代理来的真数，文件是我拼上去的**。教训：验数要连「这数在哪个文件」一起验，给复跑命令要站在读者的位置原样跑一遍。
+
+**只登记、不改的**：`scope == "todo"` 的群图按设计不插卡片行 ⇒ 补账结构性看不见那一类（上一节已写）；
+`ledger_backfill.rs` 头部缺「搬家同批必须做的两件事」那句成例提醒，已按 `network/file/send.rs` 的形状补上。
+
+对账结果里**复算与我一致**的部分（不是白跑：它们否证了我文档里三处 stale 数）：卡片落库判据的分母 **13** 与四类拆分
+（上抛 4 / `if let Err` 6 / `match` 1 / 三态 2）、INV-P34 的 **17 处 / 12 册**（含 12 项登记的排序与绝对路径排序后逐格一致）、
+两个新册在 `include!`、`file_src_for_guards()`、两份基线（该册 8 条用例名两平台逐字对得上，复跑：把 `test-baseline.*.txt` 里含 `gfile_ledger_backfill_tests` 的行与源码 `#[test]` 名单做双向差集，两侧都应为空）、`domains.data.mjs` 里的登记。
+被改准的：`protocol-invariants.md` 与 `migration-ledger.md` 各有一处仍写"十一处/十家"；两处把那条按格判据写成
+`tests::` 前缀（真名是 `network::file::gfile_ledger_backfill_tests::…`，指不到实物）；"全仓 23 处 `.commit()`"改成两个口径
+（文本 32 / 排测试分册 22）；"六处正当的测试 `.unwrap()`"实为**五处**（我把一处生产调用误算进测试）；
+台账"共 6 笔变异"改成按族拆开计数；`include!` 三处口径那句 110 → 113。
+
+读数（全部本轮现跑）：`cargo test --features bluetooth --lib` **880 通过 / 0 失败**、`clippy -D warnings` 0、`fmt --check` 0、
+测试清单守卫 0（macos 880 / windows 与并集一致）、文档硬数字与 `file:line` 两道对账各退 0；
+判据侧另有两笔新变异：门改成 `if false` → 接线那条红；补账册摘掉一条 `incomplete` 置位 → 同一条红（各红各的）。
+
 ## [4.40.8] - 2026-10-15
 
 ### 审计第九轮：群文件收尾的三张台账收进同一事务（⑥），失败那一半留痕但不许停在中间态

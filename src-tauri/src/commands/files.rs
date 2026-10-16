@@ -96,7 +96,7 @@ pub fn delete_file(state: State<'_, Arc<AppState>>, path: String) -> Result<(), 
         .unwrap_or_else(|e| e.into_inner())
         .clone();
     let under_downloads = std::fs::canonicalize(&dl)
-        .map(|dir| file.starts_with(dir))
+        .map(|dir| path_under_any(&file, &[dir]))
         .unwrap_or(false);
     if !under_downloads {
         return Err("只能删除下载目录内的文件".to_string());
@@ -104,11 +104,67 @@ pub fn delete_file(state: State<'_, Arc<AppState>>, path: String) -> Result<(), 
     std::fs::remove_file(&file).map_err(|e| e.to_string())
 }
 
+/// 纯函数：`file` 是否落在 `roots` 里任意一个之下（**按路径分量**比，不是字符串前缀）。
+///
+/// 抽出来只为它能被单测判住 —— "对端给的 `path` 直接交给系统默认应用打开"这一格
+/// 本机看不见也摸不着，只能靠机器。分量比对是刻意的：`/app/downloads_evil/x`
+/// 不许被 `/app/downloads` 放行（字符串前缀会放过去）。
+fn path_under_any(file: &std::path::Path, roots: &[std::path::PathBuf]) -> bool {
+    roots.iter().any(|dir| file.starts_with(dir))
+}
+
 /// 用系统默认应用打开本地文件。
 /// macOS 走 NSWorkspace（沙盒下 /usr/bin/open 被拦）；Android 走 FileProvider + ACTION_VIEW
 /// （私有目录的文件不能以 file:// 交给别的应用，见 android_open.rs）；Windows/Linux 走 opener。
+///
+/// ⚠️ **只允许打开本应用自己管的那几个目录里的文件**（审计 2026-10-16）。
+/// 这条边界早就存在，只是漏在另一家身上：同文件 `delete_file` 与 `helpers.rs::resolve_media_path`
+/// 都做了 canonicalize + 目录比对，而这里原先把前端来的字符串**原样**交给系统 ——
+/// 而那个字符串是**对端可控**的（消息内容里的 `path` 字段由发送方写，见 `delete_file` 上方注释
+/// 自己写明的担忧）。链路是通的：`MessageItem.vue:610` / `GroupFilesPanel.vue:127`
+/// → `utils/localFile.ts:29` → `api/index.ts:285` → 这里。
+/// ⇒ 一个已过 Hello 验签但被盗用/恶意的好友身份，发一条带 `path` 的消息，本机上的人点一下气泡
+/// 就会用默认应用打开**任意**路径（.exe、\\?\UNC 远程分享、别人的文档都算）。
+///
+/// 拒绝时**必须留痕**（不许静默）：真机有没有合法用例被这条挡住，只有那条日志知道。
 #[tauri::command(async)]
-pub fn open_file_native(path: String) -> Result<(), String> {
+pub fn open_file_native(
+    state: State<'_, Arc<AppState>>,
+    path: String,
+) -> Result<(), String> {
+    let s = state.inner();
+    let file = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
+    let mut roots: Vec<std::path::PathBuf> = Vec::new();
+    for dir in [
+        s.downloads_dir
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+            .as_path(),
+        s.cache_dir.as_path(),
+        s.favorites_dir.as_path(),
+    ] {
+        if let Ok(canonical) = std::fs::canonicalize(dir) {
+            roots.push(canonical);
+        }
+    }
+    // 合并转发的暂存目录是运行期才知道的，没设过就没这一格。
+    let share = s.share_dir.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if let Some(canonical) = share.as_deref().and_then(|p| std::fs::canonicalize(p).ok()) {
+        roots.push(canonical);
+    }
+    if !path_under_any(&file, &roots) {
+        s.logger.warn(
+            "file",
+            format!("拒绝用系统默认应用打开托管目录之外的路径：{path}"),
+        );
+        return Err("只能打开本应用保存的文件".to_string());
+    }
+    // ⚠️ 交给系统的是**原始路径**，不是上面那份 canonical 结果：Windows 的 `canonicalize` 返回
+    // `\\?\C:\…` 这种 verbatim 形式，而这条链在 Windows/Linux 上走 `tauri_plugin_opener` → `ShellExecuteW`，
+    // **ShellExecute 不支持 `\\?\` 前缀**（macOS 走 NSWorkspace、Android 走 FileProvider，才与它无关）。
+    // 边界判定照旧用 canonical（能解掉 `..` 与符号链接），打开用原路径 —— 顺序不能反，
+    // 反了就是"安全了，但你最常按的那个按钮在 Windows 上死了"。
     crate::open_path::open_path_native(std::path::Path::new(&path))
 }
 
@@ -737,3 +793,6 @@ pub fn get_transfers(state: State<'_, Arc<AppState>>) -> Vec<TransferInfo> {
     let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
     db::list_transfers(&dbc).unwrap_or_default()
 }
+
+// ---------------- 测试 ----------------
+include!("files_tests.rs");

@@ -245,6 +245,33 @@ mod dot {
         }
     }
 }
+/// 托盘图标**只许在「有未读 ↔ 无未读」翻转时**重设。
+///
+/// 为什么这不是微优化而是止血：未读 3→4 时红点图是**同一张**，可旧写法每次调用都重跑一遍整张图标的
+/// 逐像素混合再 `set_icon`。Windows 侧 `set_icon` = 新建一枚 `HICON` + `Shell_NotifyIconW`，而
+/// `tray-icon` 在 `Shell_NotifyIconW` 失败时**早退、跳过后面那次 `DestroyIcon`** ⇒ 句柄只增不减。
+/// 图标/窗口这类对象走**每会话共享的桌面堆** —— 「整晚只开着不操作不崩、收发时才崩、还会带走别家
+/// WebView2」这个形状里，这是唯一一条**按消息数增长**的通道，先把它掐掉（用户 2026-10-16 的观察）。
+///
+/// `last_applied` = 上一次**成功**落地的状态；`None` 表示还没设过 ⇒ 第一次必须设
+/// （建托盘时给的是无红点原图，之后要有一个确定的基准，不能假设系统里那张是哪一种）。
+///
+/// ⚠️ macOS 不改托盘图标（那侧红点不符合平台习惯）⇒ 这个符号在 mac 的编译面里没人调。
+/// 这里用 `cfg_attr(allow(dead_code))` 而不是整块 `#[cfg]` 掉：**代码与用例在所有平台都编译**，
+/// mac 本地每次 `cargo test` 都判得住这一格（形状同 `user_dirs.rs` 里那条反向写法）。
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+fn tray_icon_refresh(last_applied: Option<bool>, unread_nonzero: bool) -> Option<bool> {
+    if last_applied == Some(unread_nonzero) {
+        None
+    } else {
+        Some(unread_nonzero)
+    }
+}
+
+/// 上一次成功落地的托盘图标状态：0=没设过，1=无红点，2=带红点。
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+static TRAY_ICON_STATE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
 /// 更新未读提醒：托盘红点 + tooltip 条数 + Dock / 启动器角标。
 ///
 /// 这几件事一起做，是因为它们**表达同一件事**（还有未读），分几处状态就会漂移：
@@ -271,19 +298,34 @@ pub fn set_unread_badge<R: tauri::Runtime>(app: &tauri::AppHandle<R>, unread: u3
         }
         #[cfg(not(target_os = "macos"))]
         {
-            let icon = app.default_window_icon().map(|base| {
-                if unread == 0 {
-                    base.clone()
-                } else {
-                    tauri::image::Image::new_owned(
-                        dot::with_unread_dot(base.rgba(), base.width(), base.height()),
-                        base.width(),
-                        base.height(),
-                    )
+            let last = match TRAY_ICON_STATE.load(std::sync::atomic::Ordering::Relaxed) {
+                1 => Some(false),
+                2 => Some(true),
+                _ => None,
+            };
+            // 只有「有/无未读」翻转才动图标；条数已经由上面那次 tooltip 表达了。
+            if let Some(with_dot) = tray_icon_refresh(last, unread != 0) {
+                let icon = app.default_window_icon().map(|base| {
+                    if with_dot {
+                        tauri::image::Image::new_owned(
+                            dot::with_unread_dot(base.rgba(), base.width(), base.height()),
+                            base.width(),
+                            base.height(),
+                        )
+                    } else {
+                        base.clone()
+                    }
+                });
+                if let Some(icon) = icon {
+                    // 只在**成功**时记基准：设失败就留在旧状态，下一次未读变化还会再来一遍
+                    // —— 否则一次失败会把图标永久钉在错的那一张上（红点清了但图上还挂着）。
+                    if tray.set_icon(Some(icon)).is_ok() {
+                        TRAY_ICON_STATE.store(
+                            if with_dot { 2 } else { 1 },
+                            std::sync::atomic::Ordering::Relaxed,
+                        );
+                    }
                 }
-            });
-            if let Some(icon) = icon {
-                let _ = tray.set_icon(Some(icon));
             }
         }
     }
@@ -497,5 +539,46 @@ mod tests {
         assert_eq!(tray_title(99).as_deref(), Some("99"));
         assert_eq!(tray_title(100).as_deref(), Some("99+"));
         assert_eq!(tray_title(u32::MAX).as_deref(), Some("99+"));
+    }
+
+    /// 图标只在「有 ↔ 无未读」翻转时重设；同状态重复调用一律不动。
+    /// 判的是纯决策函数 ⇒ 所有平台都编译、mac 本地每次 `cargo test` 都判得住
+    /// （被拦的代价在 Windows 那条 `set_icon` 上，本机看不见，这一点如实记着）。
+    #[test]
+    fn tray_icon_redrawn_only_on_has_or_hasnt_transition() {
+        use super::tray_icon_refresh;
+        assert_eq!(
+            tray_icon_refresh(None, false),
+            Some(false),
+            "第一次一定要设，不能假设系统里挂着的是哪一张"
+        );
+        assert_eq!(tray_icon_refresh(None, true), Some(true));
+        assert_eq!(
+            tray_icon_refresh(Some(true), true),
+            None,
+            "未读 3→4 图标是同一张 ⇒ 重设就是白白新建一枚 HICON"
+        );
+        assert_eq!(tray_icon_refresh(Some(false), false), None);
+        assert_eq!(tray_icon_refresh(Some(false), true), Some(true));
+        assert_eq!(tray_icon_refresh(Some(true), false), Some(false));
+    }
+
+    /// 一串真实收信序列（0→1→2→…→8→0）里，图标只许被重设**三次**：定基准、变红点、变回原图。
+    /// 把决策改回"每次都设"，这条会数出 9 次并当场报错 —— 它是上一条的正面实物判据。
+    #[test]
+    fn unread_flood_reapplies_icon_three_times_not_once_per_message() {
+        use super::tray_icon_refresh;
+        let mut last: Option<bool> = None;
+        let mut applied = 0usize;
+        for unread in [0u32, 1, 2, 3, 4, 5, 6, 7, 8, 0] {
+            if let Some(with_dot) = tray_icon_refresh(last, unread != 0) {
+                applied += 1;
+                last = Some(with_dot);
+            }
+        }
+        assert_eq!(
+            applied, 3,
+            "10 次未读变化只许 3 次重设（第一次定基准 / 变红点 / 变回原图），其余 7 次是同一张图"
+        );
     }
 }

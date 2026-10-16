@@ -216,6 +216,21 @@ pub fn get_message_preview_source(conn: &Connection, msg_id: &str) -> Option<(St
     .flatten()
 }
 
+/// 群文件卡片行的原文：`(msg_id, conv_id, content)`，按 msg_id 稳定排序。
+///
+/// 只有群台账补账作业读它（`network/file/ledger_backfill.rs`）。为什么消息行是那条路的起点：
+/// 卡片是 Offer 时插的，而 4.40.8 那次回滚只吞掉了收尾的三张台账 ⇒ **消息行活着**，
+/// 它带的 `path`（Done 在事务外回填的）与 `gfile-{transfer_id}` 这个键正好能把台账对回去。
+/// 这里只交行，"要不要补、能不能补"全在作业侧判。
+pub fn list_gfile_message_rows(conn: &Connection) -> Result<Vec<(String, String, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT msg_id, conv_id, content FROM messages
+         WHERE msg_id LIKE 'gfile-%' ORDER BY msg_id",
+    )?;
+    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+    rows.collect()
+}
+
 /// 按 msg_id 取完整消息记录（需要跨字段判断时用；今天只有 `network/file/receive.rs::resume_receive` 认领续传用它）。
 pub fn get_message_record(conn: &Connection, msg_id: &str) -> Option<MessageRecord> {
     conn.query_row(
@@ -283,6 +298,15 @@ pub fn set_message_status(conn: &Connection, msg_id: &str, status: &str) -> Resu
 /// 状态同时前进到 delivered。与 `set_message_status` 不同，这里会改写 content——
 /// `read_file_preview` 按 msg_id 反查 content 定位本地文件，群文件 Offer 阶段先落库
 /// 无 path 的内容，Done 时必须显式回填，否则接收方图片/代码预览因缺 path 失败。
+///
+/// ⚠️ **状态那一半必须有和 `set_message_status` 同一道单调闸**（2026-10-16 审计）：
+/// 这是 `messages.status` 全仓唯一一处裸写（分母现算：`db/read_receipts.rs` 写 'read' 是前进、
+/// `set_message_status` 有闸、这里没有），于是 `set_message_status` 上方注释点名的那条竞态
+/// （Ack 晚于 ReadReceipt 到 ⇒ `read` 被回退成 `delivered`）**能从第二个家重新发生** ——
+/// 而且走的是群文件 Done 这条路，正是"收消息时才跑"的那段码。
+///
+/// 闸只加在 status 上，**不加在 content 上**：路径回填必须无条件成功，否则预览缺 path。
+/// `failed` / `cancelled` 仍是软终态（与 `set_message_status` 同口径）：它们允许被前进成 delivered。
 pub fn update_message_content(
     conn: &Connection,
     msg_id: &str,
@@ -290,7 +314,13 @@ pub fn update_message_content(
     status: &str,
 ) -> Result<()> {
     conn.execute(
-        "UPDATE messages SET content = ?2, status = ?3 WHERE msg_id = ?1",
+        "UPDATE messages
+            SET content = ?2,
+                status = CASE
+                    WHEN status NOT IN ('read', 'delivered', 'recalled') THEN ?3
+                    ELSE status
+                END
+          WHERE msg_id = ?1",
         params![msg_id, content, status],
     )?;
     Ok(())

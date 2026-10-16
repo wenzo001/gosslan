@@ -337,7 +337,13 @@ pub async fn send_group_file(
         };
         {
             let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-            db::insert_message(&dbc, &rec).ok();
+            // 落库失败必须留痕（审计 2026-10-16）：公告卡片没落库而日志无痕 ⇒ 用户只看见"发不出去/没公告"。
+            if let Err(e) = db::insert_message(&dbc, &rec) {
+                s.logger.error(
+                    "group",
+                    format!("群公告卡片落库失败 msg={}：{e}", rec.msg_id),
+                );
+            }
             db::upsert_transfer(
                 &dbc,
                 &transfer_id,

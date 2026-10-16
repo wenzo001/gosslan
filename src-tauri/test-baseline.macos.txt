@@ -3,6 +3,11 @@ commands::attention_tests::other_desktops_keep_the_previous_behavior
 commands::attention_tests::windows_flashes_regardless_of_urgency
 commands::cache_clean_schedule_tests::first_round_is_scheduled_before_the_loop_not_inside_it
 commands::cache_clean_schedule_tests::vacuum_only_when_the_freed_bytes_are_worth_rewriting_the_db
+commands::files_gate_tests::allows_files_inside_a_managed_dir
+commands::files_gate_tests::any_of_several_managed_dirs_matches
+commands::files_gate_tests::empty_root_list_denies_everything
+commands::files_gate_tests::rejects_paths_outside_every_managed_dir
+commands::files_gate_tests::sibling_dir_with_the_same_prefix_is_not_allowed
 commands::group_file_dispatch_tests::cancel_is_recorded_as_cancelled_not_failed
 commands::group_file_dispatch_tests::no_failure_leaves_the_row_in_sending
 commands::group_file_dispatch_tests::retryable_goes_back_to_pending
@@ -246,6 +251,7 @@ db::tests::update_conversation_profile_noop_on_missing
 db::tests::update_conversation_profile_preserves_last_msg
 db::tests::update_friend_pubkeys_never_overwrites_a_bound_key
 db::tests::update_message_content_backfills_path_for_preview
+db::tests::update_message_content_backfills_path_without_regressing_read
 db::tests::update_one_recipient_does_not_affect_others
 db::tests::upsert_group_file_receive_reestablishes_session
 db::todo_number_tests::legacy_payload_without_number_still_parses_as_zero
@@ -420,6 +426,14 @@ network::dispatch::tests::large_gossip_payload_downgrades_to_low
 network::dispatch::tests::message_priority_classification_coverage
 network::dispatch::tests::normal_scheduled_before_low
 network::dispatch::tests::stress_mixed_priorities_no_starvation
+network::file::gfile_ledger_backfill_tests::absent_file_writes_not_a_single_cell
+network::file::gfile_ledger_backfill_tests::candidate_gate_skips_healthy_send_side_and_unfinished_rows
+network::file::gfile_ledger_backfill_tests::candidate_query_is_index_scanned_by_the_engine_we_ship
+network::file::gfile_ledger_backfill_tests::group_ledger_backfill_hashes_off_the_async_worker
+network::file::gfile_ledger_backfill_tests::group_ledger_backfill_is_wired_once_at_startup_after_the_run
+network::file::gfile_ledger_backfill_tests::hash_mismatch_writes_not_a_single_cell
+network::file::gfile_ledger_backfill_tests::positive_fill_completes_all_three_ledgers
+network::file::gfile_ledger_backfill_tests::second_repair_is_idempotent
 network::file::group_receive_atomicity_tests::completed_guard_reads_recipient_status_in_the_handler
 network::file::group_receive_atomicity_tests::peer_offline_group_cleanup_takes_before_finalizing
 network::file::group_receive_atomicity_tests::single_peer_offline_cleanup_also_takes_before_finalizing
@@ -728,6 +742,7 @@ tests::bt_defaults_on_everywhere
 tests::cache_cleaner_walk_never_follows_symlinks
 tests::capability_covers_every_window_label
 tests::capability_grants_every_window_permission_the_commands_use
+tests::card_message_writes_never_swallow_their_error
 tests::channel_status_exposes_persisted_preference
 tests::cmd_w_is_handled_by_our_own_menu_item
 tests::content_pull_requires_capability_negotiation
@@ -853,6 +868,8 @@ transport::tcp::tests::wire_format_is_length_prefixed_big_endian
 transport::tcp::tests::write_then_read_roundtrip
 tray::tests::menu_bar_number_clears_at_zero_and_caps_at_99
 tray::tests::tooltip_carries_unread_count_only_when_positive
+tray::tests::tray_icon_redrawn_only_on_has_or_hasnt_transition
+tray::tests::unread_flood_reapplies_icon_three_times_not_once_per_message
 user_dirs::tests::bookmark_wins_over_the_stored_path
 user_dirs::tests::broken_bookmark_falls_back_to_the_stored_path
 user_dirs::tests::corrupted_bookmark_is_cleared_and_path_still_used
