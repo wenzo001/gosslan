@@ -827,7 +827,19 @@ pub fn spawn_group_history_sweeper(state: &Arc<AppState>) {
 /// （INV-P23 批评的正是这种形状）。
 fn mark_history_pending(state: &Arc<AppState>, group_id: &str) {
     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-    db::write_group_history_state(&dbc, group_id, db::GROUP_HISTORY_STATUS_PENDING, "", 0, 0).ok();
+    if let Err(e) =
+        db::write_group_history_state(&dbc, group_id, db::GROUP_HISTORY_STATUS_PENDING, "", 0, 0)
+    {
+        // 这一枚标记就是清扫名单的**唯一输入**：写失败的结局是"这一群永远不会再被扫到"，
+        // 而界面上只会停在"没历史"，没有任何东西说它为什么没动 ⇒ 必须留痕（不是装饰）。
+        state.logger.error(
+            "group",
+            format!(
+                "群历史待同步标记写失败 group={group_id}：{e} —— 这一群不会进清扫名单，\
+                 要补历史得再点一次那颗按钮"
+            ),
+        );
+    }
 }
 
 /// 新成员入群时调用：记下"这一群欠一份历史"，并立刻试一趟。
