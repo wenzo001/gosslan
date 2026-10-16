@@ -396,3 +396,54 @@ Set-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\Local
 
 （对已有的两个 Mini dump 做字符串抽取我**不看好**：没有堆内存，多半只捞得到栈上残留。想试也不贵，
 但请把力气放在上面这条开关 + 今晚那一次。）
+
+---
+
+## 8. 崩溃现场机制已落地（commit `80b93ec`，只动 `src-tauri/src/logging.rs`）
+
+用户 2026-10-16 深夜的诉求："写一套崩溃前保存错误的机制，能在某个文件里查看、发给你就能定位"。
+
+**它是什么**：panic 钩子那条 `logger.error("panic", …)` 现在除了写主日志，还会**同步**把三样东西追加进一个
+**不参与轮转**的文件 ——
+
+```
+%APPDATA%\com.gosslan.app\logs\gosslan-crash.log
+```
+
+1. `>>> panic @ 文件:行:列：消息`（直接就是定位点，不需要 dump、不需要 WinDbg）；
+2. **崩之前最后 300 条运行日志**，取自内存环 `MAX_MEM_LOGS` 而不是文件 ⇒ 与 §6d 那股洪水**解耦**，
+   哪怕 `gosslan.log`/`.old.log` 已经翻过好几代，这 300 条仍然完整；
+3. 表头带 **版本号 + 平台 + debug/release + 设备指纹**（今天为"崩的是哪一版"只能拿 CI 时刻反推）。
+
+磁盘上界 2 MiB：超了**整份重开**（它不轮转，不封顶就是永远只增）。此刻进程正要 `abort()` ⇒ 全程同步写、
+写完即关（手里不留 BufWriter）、**任何失败一律静默**（诊断代码不许在临死前再抛一个 panic）。
+
+**用法（下一次崩之后）**：
+
+```powershell
+# 一个块 = 表头 1 + panic 原文 1 + 分隔 1 + 上下文 300 ⇒ 取 310 行才够拿到完整最后一块。
+# （`-Tail 120` 不够：`>>> panic` 那行在**块头**，取尾巴会正好把它切掉。）
+Get-Content "$env:APPDATA\com.gosslan.app\logs\gosslan-crash.log" -Tail 310
+```
+把输出整段贴回来即可 —— 这一份不再需要"30 分钟内抢日志"，也不依赖事件日志。
+
+**边界要说清（三条，别当成万能）**：
+1. 只有 **panic** 会写它。被外部拿走（资源/驱动）或非 Rust 崩溃 ⇒ 文件里不会新增块，
+   那种情况仍要看 §2b 的故障模块与 §7f 的 dump 类型。
+2. 崩在 **logger 建立之前**（`lib.rs:199` 那个还没 state 的早期钩子）也没有块 —— 与 §5 那条"两种没有 panic 的成因"同源。
+3. **判"这台装的是不是带机制的构建"**：最直接的证据是崩一次之后该文件存不存在（文件名唯一，旧版绝不会有）。
+   不要靠文件名或版本串认 —— 这一版没提版本档（见下），产物仍叫 `Gosslan_4.40.9_x64-setup.exe`、
+   数值版本仍是 `4.40.9.0`。**请从 `80b93ec` 那次 Actions 运行下载**，别看名字。
+
+**验证（本地实测，数字现算）**：`cargo test --features bluetooth --lib logging::` → **7 passed / 0 failed**；
+`cargo clippy --features bluetooth --lib -- -D warnings` → 退码 0；
+两笔单点变异：摘掉 `if target == "panic"` 那一步 → **3 条判据全红**；表头去掉 `env!("CARGO_PKG_VERSION")` → 版本那条红 1 条；
+还原后与原件逐字节一致。前置条件也被钉过：那条测试先把主日志**撑到必然已轮转**（断言 `.old.log` 存在），
+否则"现场还在"可能只是因为日志还没翻 —— 那就是空转。
+
+**本轮没做的两格（都是有意的，不是漏掉）**：
+- 洪水本体（`state.rs:1895 push_diag_event` 的按设备按秒去重）：`state.rs`/`lib.rs` 此刻被同工作树另一会话改着未提交，
+  同文件并发改会毁掉对方的在飞工作。机制已不依赖日志文件，这条不再挡路。
+- CHANGELOG 条目 + 版本提档：`CHANGELOG.md` 与 `package.json` 也在同一批在飞文件里 ⇒ 不占别人的文件。
+  版本档经门禁**现判为 L1 且判据 4「无声明」通过**（`node scripts/check-change-budget.mjs --range HEAD~1..HEAD`），
+  所以不提档不产生红；那两格等对方落定后补。
