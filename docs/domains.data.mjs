@@ -365,6 +365,7 @@ export default {
         "persistence", // network/file.rs 用 db（与 transport 同病）
         "transport", // network/file.rs 用 network::transport
         "messaging", // network/file.rs 用 protocol::{Message, ShareEntry, FILE_CHUNK}
+        "observability", // network/file.rs 用 logging::Logger（接收台账写失败的留痕）
       ],
       notes:
         "原则（storage/mod.rs）：**SQLite 不存 BLOB**，二进制全部落盘、前端异步懒加载。content/ 是「内容生命周期」逻辑层，network/file.rs 是它的网络侧执行点。",
@@ -436,11 +437,11 @@ export default {
       name: "可观测性",
       tier: "L2",
       // 只认领后端：它的 UI（LogViewer / DevDiagPanel）物理上住在 presentation 的地盘（src/components）
-      paths: ["src-tauri/src/logging.rs"],
+      paths: ["src-tauri/src/logging.rs", "src-tauri/src/db_hold.rs"],
       invariants: ["INV-P16"],
       activeHome: "src-tauri/src/logging.rs",
       enforce: false,
-      consumes: [], // 叶子域：logging.rs 在 src-tauri/src 内无 use crate::xxx（被 state.rs / commands.rs 引用）
+      consumes: [], // 叶子域：logging.rs / db_hold.rs 在 src-tauri/src 内无 use crate::xxx（被 state.rs / commands.rs / lib.rs 引用）
       notes:
         "本项目最强项（结构化日志 + 日志窗口 + 诊断面板 + CHANGELOG 里大量「真机日志定位」）。Phase 8 要补的是**按 msg_id 串起一条消息的生命周期**（Trace）。另有 logs.html 作为独立日志窗口入口。",
     },

@@ -19,6 +19,7 @@ use tokio::time::Duration;
 
 use crate::crypto;
 use crate::db;
+use crate::logging::Logger;
 use crate::network::transport::{
     clear_file_wire_progress_in, file_wire_chunks_at, file_wire_progress_at, resolve_member_x25519,
     send_on_link, try_send,

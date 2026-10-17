@@ -1033,6 +1033,8 @@ export const zhCN: MessageDict = {
   "send.receivingPct": "接收中 {pct}%",
   // 对端长时间没再收任何一片（后端按 writer 实发判定）：进度条会冻住，必须说清是网络卡住
   "send.stalled": "网络停滞，等待恢复…",
+  "send.queued": "排队中…",
+  "send.unknownState": "状态未知，可重新发送",
   "msg.cleaned": "已被清理",
   // 认不出的消息类型（对端 Gosslan 比本机新）：可解释的占位，绝不显示载荷原文（INV-P24）
   "msg.unsupportedKind": "对方发送了一种本机还不支持的消息，升级 Gosslan 后可查看",

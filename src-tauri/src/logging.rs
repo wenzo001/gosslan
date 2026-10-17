@@ -136,6 +136,18 @@ const CRASH_CONTEXT_LINES: usize = 300;
 /// 局域网规模与时间增长。**封顶后整表重开**（宁可偶尔多写一条，也不让它变成"永远只增"的内存洞）。
 const DIAG_FOLD_KEYS: usize = 512;
 
+// ---- 上一轮故障现场进内存 ----
+/// 读上一轮 `<stem>.log` 尾部的字节上限（不整份读入）。
+const PREV_RUN_TAIL_BYTES: u64 = 128 * 1024;
+/// 进环行数上限：小于 [`MAX_MEM_LOGS`]，给本轮留出空间。
+const PREV_RUN_MAX_LINES: usize = 120;
+/// 崩溃现场文件只读尾部这些字节。
+const PREV_CRASH_TAIL_BYTES: u64 = 64 * 1024;
+/// 现场原生行（`>>>` / `----- 启动` / `=====`）最多带几条。
+const PREV_CRASH_MAX_LINES: usize = 40;
+/// 原生行合成一条记录的字符上界。
+const PREV_CRASH_MAX_CHARS: usize = 4_000;
+
 /// 日志级别。按严重度递增：Info < Warn < Error。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Level {
@@ -246,6 +258,8 @@ pub struct Logger {
     /// 见 [`Logger::fold_diag_same_second`]。放成实例字段而不是全局 static，
     /// 这样多实例（`gosslan-1`）与单元测试各有一份，互不污染。
     diag_fold: Mutex<HashMap<(String, String), i64>>,
+    /// `seed_previous_run` 是否已跑过，用来保证它自身幂等。
+    seed_ran: std::sync::atomic::AtomicBool,
 }
 
 impl Logger {
@@ -256,6 +270,7 @@ impl Logger {
             stem: stem.to_string(),
             fingerprint,
             diag_fold: Mutex::new(HashMap::new()),
+            seed_ran: std::sync::atomic::AtomicBool::new(false),
         };
         // 把路径交给独立写入器（若 bootstrap 更早绑过，这条就是 no-op；只认第一次）
         bind_crash_file(&logger.crash_path());
@@ -563,6 +578,128 @@ impl Logger {
             let _ = writeln!(f, "{line}");
         }
     }
+
+    /// 把上一轮留在盘上的记录读进内存环。`get_logs` 只读内存，不补这一步，
+    /// 崩溃重启后界面与"一键复制"里就没有刚发生的那次故障。
+    ///
+    /// 覆盖范围：只读 `<stem>.log` 尾部 ≤ [`PREV_RUN_TAIL_BYTES`]、最多 [`PREV_RUN_MAX_LINES`] 行，
+    /// 已轮转的 `<stem>.old.log` 不读；`<stem>-crash.log` 只取原生三类行合成一条，
+    /// 块内那些指纹开头的上下文行不重复搬。进环后按 ring 语义淘汰，不是永久保留。
+    ///
+    /// 只读，也不走 `Logger::log`（那会落盘并污染 diag 折叠表）；IO 或解析失败都当"没有上一轮"。
+    /// 返回进环条数，由调用方写一条 boot 日志。
+    pub fn seed_previous_run(&self) -> usize {
+        // 幂等：第二次调用不再灌一遍。
+        if self
+            .seed_ran
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            return 0;
+        }
+        let mut seeded: Vec<LogEntry> = Vec::new();
+        let mut pending: Option<LogEntry> = None;
+        for raw in read_tail_lines(&self.current_path(), PREV_RUN_TAIL_BYTES) {
+            match parse_log_line(&raw, &self.fingerprint) {
+                Some(entry) => {
+                    if let Some(prev) = pending.take() {
+                        seeded.push(prev);
+                    }
+                    pending = Some(entry);
+                }
+                // 多行消息的续行（前端异常带 stack）接回上一条；结构行不当续行。
+                None => match pending.as_mut() {
+                    Some(prev) if !is_crash_native_line(&raw) => {
+                        if prev.message.len() + raw.len() <= PREV_CRASH_MAX_CHARS * 4 {
+                            prev.message.push('\n');
+                            prev.message.push_str(&raw);
+                        }
+                    }
+                    _ => {}
+                },
+            }
+        }
+        if let Some(last) = pending.take() {
+            seeded.push(last);
+        }
+        if seeded.len() > PREV_RUN_MAX_LINES {
+            // 只留最近的：越靠近上一轮结束越可能包含 panic 位置与失败原因。
+            let cut = seeded.len() - PREV_RUN_MAX_LINES;
+            seeded.drain(0..cut);
+        }
+        if seeded.is_empty() && !crash_native_exists(&self.crash_path()) {
+            // 盘上什么都没有时不造"上一轮"标题。
+            return 0;
+        }
+
+        let head_ts = seeded.first().map(|e| e.ts).unwrap_or_else(now_ms);
+        let mut out: Vec<LogEntry> = Vec::new();
+        if !seeded.is_empty() {
+            out.push(LogEntry {
+                ts: head_ts.saturating_sub(1),
+                level: Level::Info.as_str().to_string(),
+                target: "boot".to_string(),
+                message: format!(
+                    "—— 以下 {} 行是上一轮启动留下的记录（截自 {} 尾部 ≤{} KiB；已轮转的 .old.log 不在内）——",
+                    seeded.len(),
+                    self.current_path().display(),
+                    PREV_RUN_TAIL_BYTES / 1024,
+                ),
+            });
+            out.extend(seeded);
+        }
+        // 最后一条启动路标是本轮 `Logger::new` 刚写的，剔掉才算上一轮。
+        let mut native: Vec<String> = read_tail_lines(&self.crash_path(), PREV_CRASH_TAIL_BYTES)
+            .into_iter()
+            .filter(|l| is_crash_native_line(l))
+            .collect();
+        if native
+            .last()
+            .map(|l| l.starts_with("----- 启动 "))
+            .unwrap_or(false)
+        {
+            native.pop();
+        }
+        if !native.is_empty() {
+            if native.len() > PREV_CRASH_MAX_LINES {
+                let cut = native.len() - PREV_CRASH_MAX_LINES;
+                native.drain(0..cut);
+            }
+            let mut body = String::from("—— 上一轮崩溃现场/路标（截自 ");
+            body.push_str(&self.crash_path().display().to_string());
+            body.push_str(" 尾部）——\n");
+            for line in &native {
+                if body.len() + line.len() > PREV_CRASH_MAX_CHARS {
+                    body.push_str("…（超出字符上界，后面的行在盘上）");
+                    break;
+                }
+                body.push_str(line);
+                body.push('\n');
+            }
+            let has_block = native.iter().any(|l| l.starts_with("===== 崩溃现场"));
+            out.push(LogEntry {
+                ts: head_ts,
+                level: if has_block {
+                    Level::Error.as_str()
+                } else {
+                    Level::Info.as_str()
+                }
+                .to_string(),
+                target: "crash".to_string(),
+                message: body,
+            });
+        }
+
+        let count = out.len();
+        let mut q = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        // 本轮还没写过日志，排在最前面即时间正序。
+        for entry in out {
+            q.push_back(entry);
+        }
+        while q.len() > MAX_MEM_LOGS {
+            q.pop_front();
+        }
+        count
+    }
 }
 
 fn now_ms() -> i64 {
@@ -596,6 +733,104 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
     let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
     (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+/// [`civil_from_days`] 的逆：(年, 月, 日) → Unix 天数。
+fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = if m > 2 { m - 3 } else { m + 9 };
+    let doy = (153 * mp as i64 + 2) / 5 + d as i64 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// UTC `YYYY-MM-DD HH:MM:SS` → Unix 毫秒。解析不出来返回 `None`，不拿当前时间凑。
+fn parse_utc_to_ms(text: &str) -> Option<i64> {
+    let (date, time) = text.split_once(' ')?;
+    let mut d = date.split('-');
+    let y: i64 = d.next()?.parse().ok()?;
+    let mo: i64 = d.next()?.parse().ok()?;
+    let dd: i64 = d.next()?.parse().ok()?;
+    let mut t = time.split(':');
+    let h: i64 = t.next()?.parse().ok()?;
+    let mi: i64 = t.next()?.parse().ok()?;
+    let s: i64 = t.next()?.parse().ok()?;
+    if !(1..=12).contains(&mo) || !(1..=31).contains(&dd) || h > 23 || mi > 59 || s > 60 {
+        return None;
+    }
+    let days = days_from_civil(y, mo as u32, dd as u32);
+    Some((days * 86_400 + h * 3_600 + mi * 60 + s) * 1_000)
+}
+
+/// 崩溃现场文件独有的三类行：独立通道留痕、启动路标、崩溃块头。
+/// 指纹开头的行是运行日志的副本，由 `<stem>.log` 负责，不重复搬。
+fn is_crash_native_line(line: &str) -> bool {
+    line.starts_with(">>> ")
+        || line.starts_with("----- 启动 ")
+        || line.starts_with("===== 崩溃现场")
+}
+
+/// 现场文件里是否有原生行：区分"首次启动什么都没有"与"有但读不全"。
+fn crash_native_exists(path: &std::path::Path) -> bool {
+    read_tail_lines(path, PREV_CRASH_TAIL_BYTES)
+        .iter()
+        .any(|l| is_crash_native_line(l))
+}
+
+/// 读文件尾部至多 `max_bytes` 字节并按行返回。从中间起读会让首行成为半条，直接丢掉；
+/// 文件不存在或读不动返回空，不 panic。
+fn read_tail_lines(path: &std::path::Path, max_bytes: u64) -> Vec<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return Vec::new();
+    };
+    let Ok(len) = f.metadata().map(|m| m.len()) else {
+        return Vec::new();
+    };
+    let start = len.saturating_sub(max_bytes);
+    if f.seek(SeekFrom::Start(start)).is_err() {
+        return Vec::new();
+    }
+    let mut buf = Vec::new();
+    if f.take(max_bytes).read_to_end(&mut buf).is_err() {
+        return Vec::new();
+    }
+    let text = String::from_utf8_lossy(&buf).to_string();
+    let mut lines: Vec<String> = text.split('\n').map(|s| s.to_string()).collect();
+    if start > 0 && !lines.is_empty() {
+        lines.remove(0);
+    }
+    lines.retain(|l| !l.trim().is_empty());
+    lines
+}
+
+/// 把一行落盘日志解回 [`LogEntry`]，格式由 [`Logger::append_file`] 决定：
+/// `<fingerprint> <YYYY-MM-DD HH:MM:SS> <level> [<target>] <message>`。
+/// 指纹不符、字段缺失、级别不认识或时间解析不出来都返回 `None`。
+fn parse_log_line(line: &str, fingerprint: &str) -> Option<LogEntry> {
+    let rest = line.strip_prefix(fingerprint)?.strip_prefix(' ')?;
+    let mut it = rest.splitn(4, ' ');
+    let date = it.next()?;
+    let time = it.next()?;
+    let level = it.next()?;
+    let tail = it.next()?;
+    if !matches!(level, "info" | "warn" | "error") {
+        return None;
+    }
+    let ts = parse_utc_to_ms(&format!("{date} {time}"))?;
+    let (target, message) = tail.split_once(']')?;
+    let target = target.strip_prefix('[')?.trim();
+    if target.is_empty() {
+        return None;
+    }
+    Some(LogEntry {
+        ts,
+        level: level.to_string(),
+        target: target.to_string(),
+        message: message.trim_start().to_string(),
+    })
 }
 
 #[cfg(test)]
@@ -942,5 +1177,261 @@ mod tests {
         );
         assert!(!after.contains("第二条"), "被拦掉的那条不该出现在文件里");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---------------- 上一轮故障现场进内存（`seed_previous_run`）----------------
+
+    /// 每个测试独立的临时目录；带时间戳，避免上一次残留被当成本轮输入。
+    fn fresh_dir(tag: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!(
+            "gosslan-prevrun-{tag}-{}-{nanos}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// 造一行落盘日志，格式与 [`Logger::append_file`] 一致。
+    fn prev_line(fingerprint: &str, ms: i64, level: &str, target: &str, message: &str) -> String {
+        format!(
+            "{} {} {} [{}] {}",
+            fingerprint,
+            format_utc(ms),
+            level,
+            target,
+            message
+        )
+    }
+
+    #[test]
+    fn days_from_civil_inverts_civil_from_days() {
+        for days in [-719_468i64, 0, 20_545, 25_500, 100_000] {
+            let (y, m, d) = civil_from_days(days);
+            assert_eq!(
+                days_from_civil(y, m, d),
+                days,
+                "civil_from_days({days}) 的逆不成立"
+            );
+        }
+        // 与 format_utc 互逆（整秒）
+        let ms = 1_789_132_854_000i64;
+        assert_eq!(parse_utc_to_ms(&format_utc(ms)), Some(ms));
+        // 解不出来返回 None：凑当前时间会把上一轮的行排到本轮之后
+        assert_eq!(parse_utc_to_ms("2026-13-01 00:00:00"), None);
+        assert_eq!(parse_utc_to_ms("2026-10-17"), None);
+        assert_eq!(parse_utc_to_ms("2026-10-17 24:00:00"), None);
+    }
+
+    #[test]
+    fn parse_log_line_roundtrips_and_rejects_foreign_or_malformed_lines() {
+        let fp = "[dev:test]";
+        let ms = 1_789_132_854_000i64;
+        let line = prev_line(fp, ms, "warn", "file", "收尾失败 id=abc");
+        let e = parse_log_line(&line, fp).expect("自己写出去的格式必须解得回来");
+        assert_eq!(e.ts, ms);
+        assert_eq!(e.level, "warn");
+        assert_eq!(e.target, "file");
+        assert_eq!(e.message, "收尾失败 id=abc");
+        // 正文里带 `]` 与空格也必须原样留下（target 只吃到第一个 `]`）
+        let tricky = prev_line(fp, ms, "error", "ui", "a]b at [x] y");
+        assert_eq!(parse_log_line(&tricky, fp).unwrap().message, "a]b at [x] y");
+        // 不是这台设备/这个实例的指纹
+        assert!(parse_log_line(&line, "[dev:other]").is_none());
+        // 级别不认识
+        assert!(parse_log_line("[dev:test] 2026-09-11 13:20:54 trace [file] x", fp).is_none());
+        // 崩溃现场的路标行不是日志行
+        assert!(parse_log_line("----- 启动 2026-09-11 13:20:54 版本 4.44.3", fp).is_none());
+    }
+
+    #[test]
+    fn previous_run_log_and_crash_scene_are_seeded_before_this_runs_lines() {
+        let dir = fresh_dir("seed-ok");
+        let fp = "[dev:test]";
+        let base = 1_789_132_854_000i64;
+        std::fs::write(
+            dir.join("t.log"),
+            format!(
+                "{}\n{}\n",
+                prev_line(fp, base, "info", "boot", "上一轮：AppState::init 完成"),
+                prev_line(
+                    fp,
+                    base + 1_000,
+                    "error",
+                    "panic",
+                    "panic @ src/foo.rs:1:9：index out of bounds"
+                ),
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            crash_file_for(&dir, "t"),
+            "===== 崩溃现场 2026-09-11 13:21:00 ===== 版本 4.44.3 · macos-aarch64 · release\ngoes context that is not a log line\n>>> 分配失败：请求 123 字节\n",
+        )
+        .unwrap();
+
+        let logger = Logger::new(dir.clone(), "t", fp.to_string());
+        let n = logger.seed_previous_run();
+        assert!(n >= 3, "标题 + 上一轮两行 + 现场，实测 {n} 条");
+        let snap = logger.snapshot(None);
+
+        // 上一轮那两行在环里，时间戳来自文件本身
+        let panic_row = snap
+            .iter()
+            .find(|e| e.message.contains("panic @ src/foo.rs"))
+            .expect("上一轮的 panic 行必须可见 —— 这正是崩溃重启后要复制走的那一句");
+        assert_eq!(panic_row.level, "error");
+        assert_eq!(panic_row.ts, base + 1_000);
+        assert_eq!(panic_row.target, "panic");
+
+        // 标题行说明来历
+        assert!(snap[0].message.contains("上一轮启动留下的记录"));
+        assert_eq!(snap[0].target, "boot");
+
+        // 现场记录：块头与独立通道留痕都在，本轮刚写的启动路标不在
+        let scene = snap
+            .iter()
+            .find(|e| e.target == "crash")
+            .expect("现场记录没进环");
+        assert!(
+            scene.message.contains("版本 4.44.3"),
+            "现场必须自带版本/平台上下文"
+        );
+        assert!(scene.message.contains("分配失败"));
+        assert_eq!(scene.level, "error", "带崩溃块头的现场必须是错误级");
+        assert!(
+            !scene.message.contains("----- 启动 "),
+            "路标是 Logger::new 刚写的 ⇒ 属于本轮，不许冒充上一轮"
+        );
+
+        // 本轮写的行排在后面
+        logger.info("test", "本轮第一条");
+        let snap2 = logger.snapshot(None);
+        assert_eq!(snap2.last().unwrap().message, "本轮第一条");
+        assert_eq!(snap2.len(), snap.len() + 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn first_startup_without_any_history_seeds_nothing() {
+        let dir = fresh_dir("seed-empty");
+        let logger = Logger::new(dir.clone(), "t", "[dev:test]".to_string());
+        assert_eq!(
+            logger.seed_previous_run(),
+            0,
+            "首次启动不该造出\"上一轮\"标题"
+        );
+        assert!(
+            logger.snapshot(None).is_empty(),
+            "没有历史就必须一条都不进环"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 上一轮记录只读不写：调用多少次都不许改盘上字节数。
+    #[test]
+    fn previous_run_seed_writes_nothing_to_disk_however_many_times_it_is_called() {
+        let dir = fresh_dir("seed-nowrite");
+        let fp = "[dev:test]";
+        std::fs::write(
+            dir.join("t.log"),
+            format!(
+                "{}\n",
+                prev_line(fp, 1_789_132_854_000, "info", "boot", "上一轮的一条")
+            ),
+        )
+        .unwrap();
+        let logger = Logger::new(dir.clone(), "t", fp.to_string());
+        let log_len = std::fs::metadata(dir.join("t.log")).unwrap().len();
+        let crash_len = std::fs::metadata(crash_file_for(&dir, "t")).unwrap().len();
+
+        let memory_after_first = logger.seed_previous_run();
+        assert_eq!(
+            memory_after_first, 2,
+            "标题 + 那一条（现场里只有本轮路标 ⇒ 被剔掉）"
+        );
+        for _ in 0..5 {
+            assert_eq!(logger.seed_previous_run(), 0, "第二次起必须是 no-op");
+        }
+        assert_eq!(
+            std::fs::metadata(dir.join("t.log")).unwrap().len(),
+            log_len,
+            "seed 往日志文件写过一个字节 ⇒ 每重启一次就复制一遍历史"
+        );
+        assert_eq!(
+            std::fs::metadata(crash_file_for(&dir, "t")).unwrap().len(),
+            crash_len,
+            "seed 不许碰现场文件"
+        );
+        assert_eq!(logger.snapshot(None).len(), 2, "内存条数也不随重复调用增长");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn previous_run_seed_is_bounded_and_keeps_the_newest_lines() {
+        let dir = fresh_dir("seed-bound");
+        let fp = "[dev:test]";
+        let base = 1_789_132_854_000i64;
+        // 400 行 × ~550 字节 ⇒ 约 220 KB，**超过** 128 KiB 的尾部上界，同时行数也超过 120
+        let mut text = String::new();
+        for i in 0..400i64 {
+            text.push_str(&prev_line(
+                fp,
+                base + i * 1_000,
+                "info",
+                "diag",
+                &format!("第 {i} 条 {}", "x".repeat(500)),
+            ));
+            text.push('\n');
+        }
+        std::fs::write(dir.join("t.log"), &text).unwrap();
+        let logger = Logger::new(dir.clone(), "t", fp.to_string());
+        let n = logger.seed_previous_run();
+        assert_eq!(
+            n,
+            PREV_RUN_MAX_LINES + 1,
+            "进环必须正好封顶在 {PREV_RUN_MAX_LINES} 行 + 1 条标题，实测 {n}"
+        );
+        let snap = logger.snapshot(None);
+        assert!(
+            snap.iter().any(|e| e.message.contains("第 399 条")),
+            "留下的必须是**最近**的那些 —— panic 与失败原因都排在尾巴上"
+        );
+        assert!(!snap.iter().any(|e| e.message.contains("第 0 条")));
+        assert_eq!(snap.len(), n);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 接线判据：调用点要存在、只有一处，并排在第一条日志之前。
+    #[test]
+    fn previous_run_seed_is_wired_at_startup() {
+        let src = include_str!("state.rs");
+        let call = "logger.seed_previous_run();";
+        assert_eq!(
+            src.match_indices(call).count(),
+            1,
+            "接线点只许一处（两处就把同一批上一轮的行灌两遍）"
+        );
+        let seed_at = src.find(call).unwrap();
+        let new_at = src
+            .find("Logger::new(")
+            .expect("state.rs 里必须能找到 Logger::new");
+        assert!(new_at < seed_at, "必须先有 logger 再灌历史");
+        // 本轮第一条日志只能排在接线点之后，否则本轮刚写的行会被当成上一轮
+        let tail = &src[new_at..];
+        let first_log = ["logger.info(", "logger.warn(", "logger.error("]
+            .iter()
+            .filter_map(|p| tail.find(p))
+            .min();
+        if let Some(offset) = first_log {
+            assert!(
+                src[..new_at + offset].contains(call),
+                "接线点必须排在本轮第一条日志之前"
+            );
+        }
     }
 }

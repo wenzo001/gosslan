@@ -12,6 +12,15 @@ mod tests {
         MAX_FILE_OUTBOX_RETRIES,
     };
 
+    /// 不读日志内容的用例共用这一份。
+    fn throwaway_logger() -> &'static crate::logging::Logger {
+        static L: std::sync::OnceLock<crate::logging::Logger> = std::sync::OnceLock::new();
+        L.get_or_init(|| {
+            let dir = std::env::temp_dir().join(format!("gosslan-recv-throwaway-{}", std::process::id()));
+            crate::logging::Logger::new(dir, "t-throwaway", "[dev:test]".to_string())
+        })
+    }
+
     /// 写出记账必须**随发送尝试一起回收**（v4.22.38）。
     ///
     /// 重点是"提前 return 那条路"：`stream_file` 有十来处早退（取消/链路关闭/加密失败/`?`），
@@ -1649,7 +1658,7 @@ mod tests {
         seed_active_content(&db, &cid, "xfer-b1", bytes.len() as u64);
 
         let r = receiver_holding("b1-ok", &bytes, bytes.len() as u64, &cid);
-        let (name, size, final_path, peer) = finish_receiver_into(&db, "xfer-b1", r)
+        let (name, size, final_path, peer) = finish_receiver_into(&db, &throwaway_logger(), "xfer-b1", r)
             .expect("字节齐、SHA 对、rename 成 ⇒ 生产收尾必须成功");
         assert_eq!((name.as_str(), size, peer.as_str()), ("b1-ok.bin", 5000, "dev-a"));
 
@@ -1700,7 +1709,7 @@ mod tests {
 
         // 发送方声明的摘要与真实内容不符 ⇒ fail-closed
         let r = receiver_holding("b1-bad", &bytes, bytes.len() as u64, &"f".repeat(64));
-        let err = finish_receiver_into(&db, "xfer-b1-bad", r)
+        let err = finish_receiver_into(&db, &throwaway_logger(), "xfer-b1-bad", r)
             .expect_err("SHA 不符必须判失败，不许落盘");
         assert!(err.contains("完整性"), "实得：{err}");
 
@@ -1740,7 +1749,7 @@ mod tests {
         db.lock().unwrap().execute_batch(crate::db::SCHEMA).unwrap();
 
         let r = receiver_holding("b1-dberr", &bytes, bytes.len() as u64, &cid);
-        let out = finish_receiver_into(&db, "xfer-b1-dberr", r);
+        let out = finish_receiver_into(&db, &throwaway_logger(), "xfer-b1-dberr", r);
         assert!(out.is_ok(), "台账写不进去不该把一次真实成功的接收判成失败，实得 {out:?}");
         let final_path = out.as_ref().unwrap().2.clone();
         assert_eq!(std::fs::read(&final_path).unwrap(), bytes, "成品必须真在盘上");
@@ -1819,11 +1828,11 @@ mod tests {
         b.name = a.name.clone();
 
         assert!(
-            finish_receiver_into(&db, "xfer-a", a).is_ok(),
+            finish_receiver_into(&db, &throwaway_logger(), "xfer-a", a).is_ok(),
             "第一份收尾应当成功"
         );
         assert!(
-            finish_receiver_into(&db, "xfer-b", b).is_ok(),
+            finish_receiver_into(&db, &throwaway_logger(), "xfer-b", b).is_ok(),
             "第二份也该收下（拍板＝改名共存，不是拒收）"
         );
 
@@ -1879,7 +1888,7 @@ mod tests {
         // ① 绿路：字节齐 + 哈希对 ⇒ 改名落盘、行是 done 且带真实路径
         let ok = receiver_holding("rcv-ok", &payload, payload.len() as u64, &real_sha);
         let (tmp, final_path) = (ok.tmp_path.clone(), ok.final_path.clone());
-        assert!(finish_receiver_into(&db, "t-ok", ok).is_ok());
+        assert!(finish_receiver_into(&db, &throwaway_logger(), "t-ok", ok).is_ok());
         assert!(!tmp.exists(), "临时文件必须被改名带走（留下就是双份）");
         assert_eq!(
             std::fs::read(&final_path).unwrap(),
@@ -1904,7 +1913,7 @@ mod tests {
         );
         let (tmp, final_path) = (short.tmp_path.clone(), short.final_path.clone());
         assert_eq!(
-            finish_receiver_into(&db, "t-short", short).err(),
+            finish_receiver_into(&db, &throwaway_logger(), "t-short", short).err(),
             Some("文件传输未完成".to_string())
         );
         assert!(
@@ -1920,7 +1929,7 @@ mod tests {
         let bad = receiver_holding("rcv-bad", &corrupted, payload.len() as u64, &real_sha);
         let (tmp, final_path) = (bad.tmp_path.clone(), bad.final_path.clone());
         assert_eq!(
-            finish_receiver_into(&db, "t-bad", bad).err(),
+            finish_receiver_into(&db, &throwaway_logger(), "t-bad", bad).err(),
             Some("文件完整性校验失败".to_string())
         );
         assert!(
@@ -1932,7 +1941,7 @@ mod tests {
         // ④ 发送方没声明哈希（空期望）⇒ **fail-closed**：没有期望值不等于通过
         let nodecl = receiver_holding("rcv-nodecl", &payload, payload.len() as u64, "");
         assert_eq!(
-            finish_receiver_into(&db, "t-nodecl", nodecl).err(),
+            finish_receiver_into(&db, &throwaway_logger(), "t-nodecl", nodecl).err(),
             Some("文件完整性校验失败".to_string()),
             "空 expected_sha256 必须判失败 —— 否则一条不带哈希的 FileDone 就能宣布成功"
         );
@@ -1945,7 +1954,7 @@ mod tests {
             payload.len() as u64,
             &real_sha.to_uppercase(),
         );
-        assert!(finish_receiver_into(&db, "t-upper", upper).is_ok());
+        assert!(finish_receiver_into(&db, &throwaway_logger(), "t-upper", upper).is_ok());
         assert_eq!(row("t-upper").0, "done");
     }
 
@@ -2018,7 +2027,7 @@ mod tests {
 
         std::fs::remove_dir_all(&root).unwrap();
 
-        let err = finish_receiver_into(&db, "t-rot", r).err();
+        let err = finish_receiver_into(&db, &throwaway_logger(), "t-rot", r).err();
         let _ = std::fs::remove_dir_all(&root);
         assert!(
             err.is_some(),
@@ -2048,7 +2057,7 @@ mod tests {
         let db = std::sync::Mutex::new(rusqlite::Connection::open_in_memory().unwrap());
         db.lock().unwrap().execute_batch(crate::db::SCHEMA).unwrap();
 
-        finish_receiver_into(&db, "t-empty", recv)
+        finish_receiver_into(&db, &throwaway_logger(), "t-empty", recv)
             .expect("0 字节的空文件必须能正常完成，不许因 size=0 被判成「没收完」");
         assert_eq!(
             std::fs::metadata(&final_path).unwrap().len(),
@@ -2079,7 +2088,7 @@ mod tests {
         let bad = receiver_holding("rcv-empty-bad", b"", 0, "不是真的哈希");
         let bad_final = bad.final_path.clone();
         assert!(
-            finish_receiver_into(&db, "t-empty-bad", bad).is_err(),
+            finish_receiver_into(&db, &throwaway_logger(), "t-empty-bad", bad).is_err(),
             "空文件摘要不符 ⇒ 必须失败，不许因 size=0 免检"
         );
         assert!(!bad_final.exists(), "摘要不符的空文件不许被改名成交付成品");
@@ -2202,6 +2211,234 @@ mod tests {
             RetryVerdict::GiveUp(_)
         ));
     }
+    // ---------------- 台账终态写入失败的留痕 ----------------
+
+    /// 需要读日志内容的用例各自建一份，避免共用实例被别的用例写脏。
+    fn capture_logger(tag: &str) -> crate::logging::Logger {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!(
+            "gosslan-recv-note-{tag}-{}-{nanos}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        crate::logging::Logger::new(dir, "t-note", "[dev:test]".to_string())
+    }
+
+    fn file_error_notes(logger: &crate::logging::Logger) -> Vec<String> {
+        logger
+            .snapshot(None)
+            .into_iter()
+            .filter(|e| e.target == "file" && e.level == "error")
+            .map(|e| e.message)
+            .collect()
+    }
+
+    /// 注入通道用"表不存在"触发真实的 rusqlite 错误，不 mock 返回值。
+    fn db_missing_content_table() -> std::sync::Mutex<rusqlite::Connection> {
+        let db = std::sync::Mutex::new(rusqlite::Connection::open_in_memory().unwrap());
+        db.lock().unwrap().execute_batch(crate::db::SCHEMA).unwrap();
+        db
+    }
+
+    fn db_missing_file_transfers() -> std::sync::Mutex<rusqlite::Connection> {
+        let db = db_missing_content_table();
+        db.lock()
+            .unwrap()
+            .execute_batch("DROP TABLE file_transfers;")
+            .unwrap();
+        db
+    }
+
+    /// 主写失败、补偿成功：一条痕，带 stage / 传输 id / 错误原因，不带文件名与路径。
+    #[test]
+    fn ledger_primary_write_failure_emits_one_diagnostic_note() {
+        use super::finish_receiver_into;
+        let bytes: Vec<u8> = vec![0x31u8; 2048];
+        let cid = sha_hex(&bytes);
+        let db = db_missing_content_table();
+        let logger = capture_logger("primary");
+
+        let r = receiver_holding("note-primary", &bytes, bytes.len() as u64, &cid);
+        let out = finish_receiver_into(&db, &logger, "xfer-note-primary", r);
+        assert!(
+            out.is_ok(),
+            "台账写不进去不该把真实成功的接收判成失败，实得 {out:?}"
+        );
+
+        let notes = file_error_notes(&logger);
+        assert_eq!(notes.len(), 1, "主写失败应恰好一条痕，实得 {notes:?}");
+        let note = &notes[0];
+        assert!(note.contains("stage=done-tx-repaired"), "实得：{note}");
+        assert!(note.contains("xfer-note-primary"), "痕里要带传输 id：{note}");
+        assert!(note.contains("content_transfers"), "错误原因要进来：{note}");
+        assert!(!note.contains("note-primary.bin"), "痕里不带文件名：{note}");
+        assert!(
+            !note.contains("/tmp/") && !note.contains("/var/"),
+            "痕里不带落盘路径：{note}"
+        );
+    }
+
+    /// 主写与补偿都失败：两次错误分开可读，并写出后果（行可能停在 active）。
+    #[test]
+    fn ledger_primary_and_fallback_both_failing_says_the_row_may_stay_active() {
+        use super::finish_receiver_into;
+        let bytes: Vec<u8> = vec![0x32u8; 2048];
+        let cid = sha_hex(&bytes);
+        let db = db_missing_file_transfers();
+        let logger = capture_logger("both");
+
+        let r = receiver_holding("note-both", &bytes, bytes.len() as u64, &cid);
+        let out = finish_receiver_into(&db, &logger, "xfer-note-both", r);
+        assert!(out.is_ok(), "文件已在盘上，收尾返回值不谎报失败：{out:?}");
+
+        let notes = file_error_notes(&logger);
+        assert_eq!(notes.len(), 1, "两条路都坏也只合成一句，实得 {notes:?}");
+        let note = &notes[0];
+        assert!(note.contains("stage=done-tx-and-fallback"), "实得：{note}");
+        assert!(
+            note.contains("主写=") && note.contains("补偿也失败="),
+            "两次错误要各自可读：{note}"
+        );
+        assert!(note.contains("仍停在 active"), "要写出后果：{note}");
+    }
+
+    /// 正常完成路径不留痕。
+    #[test]
+    fn normal_completion_writes_no_ledger_note() {
+        use super::finish_receiver_into;
+        let bytes: Vec<u8> = vec![0x33u8; 2048];
+        let cid = sha_hex(&bytes);
+        let db = db_with_both_schemas();
+        let logger = capture_logger("clean");
+
+        let r = receiver_holding("note-ok", &bytes, bytes.len() as u64, &cid);
+        finish_receiver_into(&db, &logger, "xfer-note-ok", r).expect("两张表都在，收尾应成功");
+        assert!(
+            logger.snapshot(None).is_empty(),
+            "正常路径不该留痕，实得 {:?}",
+            file_error_notes(&logger)
+        );
+    }
+
+    /// 判死那一支在台账也写不进去时同样留痕。
+    #[test]
+    fn size_mismatch_with_broken_ledger_still_leaves_its_stage_note() {
+        use super::finish_receiver_into;
+        let bytes: Vec<u8> = vec![0x34u8; 128];
+        let db = db_missing_file_transfers();
+        let logger = capture_logger("size");
+
+        // declared 256、实收 128 ⇒ 走"字节数不符"那一支
+        let r = receiver_holding("note-size", &bytes, 256, &sha_hex(&bytes));
+        let err = finish_receiver_into(&db, &logger, "xfer-note-size", r)
+            .expect_err("字节数不符必须判失败");
+        assert!(err.contains("未完成"), "实得：{err}");
+        let notes = file_error_notes(&logger);
+        assert_eq!(notes.len(), 1, "实得 {notes:?}");
+        assert!(
+            notes[0].contains("stage=size-mismatch-failed") && notes[0].contains("xfer-note-size"),
+            "实得：{}",
+            notes[0]
+        );
+    }
+
+    /// 接线判据：每个 stage 常量除定义外都要有调用点。
+    #[test]
+    fn every_declared_ledger_stage_has_a_real_call_site() {
+        let src = include_str!("file/receive.rs");
+        for (name, value) in [
+            ("LEDGER_STAGE_BEGIN", "begin-active"),
+            ("LEDGER_STAGE_FAILED", "failed-terminal"),
+            ("LEDGER_STAGE_INCOMPLETE", "incomplete-record"),
+            ("LEDGER_STAGE_PROGRESS", "progress-touch"),
+            ("LEDGER_STAGE_SIZE", "size-mismatch-failed"),
+            ("LEDGER_STAGE_SHA", "sha-mismatch-failed"),
+            ("LEDGER_STAGE_FSYNC", "fsync-failed"),
+            ("LEDGER_STAGE_RENAME", "rename-failed"),
+            ("LEDGER_STAGE_DONE_REPAIRED", "done-tx-repaired"),
+            ("LEDGER_STAGE_DONE_BOTH", "done-tx-and-fallback"),
+        ] {
+            assert!(
+                src.contains(&format!("\"{value}\"")),
+                "{name} 的取值字面量不在源码里"
+            );
+            let occurrences = src.match_indices(name).count();
+            assert!(occurrences >= 2, "{name} 只有定义、没有调用点");
+        }
+    }
+
+    /// note 文本形状（纯函数）：三段都在，内容与路径一个不带。
+    #[test]
+    fn terminal_ledger_note_shape_has_ids_and_never_content() {
+        use super::{terminal_ledger_failure_note, LEDGER_STAGE_SHA};
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        let real = db
+            .execute("UPDATE no_such_table SET a = 1", [])
+            .err()
+            .expect("这条语句必然报错");
+
+        let one = terminal_ledger_failure_note(LEDGER_STAGE_SHA, "t-1", &real, None);
+        assert!(one.contains("stage=sha-mismatch-failed"), "实得：{one}");
+        assert!(one.contains("id=t-1"), "实得：{one}");
+        assert!(one.contains("no_such_table"), "错误原因要进来：{one}");
+        assert!(!one.contains("补偿"), "没有补偿失败时不提补偿：{one}");
+
+        let two = terminal_ledger_failure_note(LEDGER_STAGE_SHA, "t-1", &real, Some(&real));
+        assert!(
+            two.contains("主写=") && two.contains("补偿也失败="),
+            "实得：{two}"
+        );
+    }
+
+    /// 错误文本要**有上界**：SQLite 的原文长度不可控（列名多长它就回多长），而这一句进的是
+    /// 有界的内存日志环和一键复制。超长文本用一条真实的 `execute` 失败造，不手搓错误变体。
+    #[test]
+    fn ledger_note_bounds_the_sqlite_error_text() {
+        use super::{
+            bounded_err_text, terminal_ledger_failure_note, LEDGER_ERR_TEXT_MAX,
+            LEDGER_STAGE_DONE_REPAIRED,
+        };
+        let db = rusqlite::Connection::open_in_memory().unwrap();
+        db.execute("CREATE TABLE t (a INTEGER)", []).unwrap();
+        // 尾巴上放一个哨兵：它出现在日志里就说明截断没生效（上界之内全是重复字符，看不出边界）。
+        let long_col = format!("zzzzzzzzzz{}tail_sentinel", "x".repeat(4000));
+        let err = db
+            .execute(&format!("UPDATE t SET {long_col} = 1"), [])
+            .err()
+            .expect("不存在的列必然报错");
+        let raw = err.to_string();
+        let head: String = raw.chars().take(80).collect();
+        assert!(
+            raw.chars().count() > LEDGER_ERR_TEXT_MAX,
+            "这条用例的前提是原文确实超长，实得 {} 字符，开头：{head}",
+            raw.chars().count()
+        );
+
+        let bounded = bounded_err_text(&err);
+        assert_eq!(
+            bounded.chars().count(),
+            LEDGER_ERR_TEXT_MAX + 1,
+            "截断后应当正好是上界加一个省略号"
+        );
+        assert!(!bounded.contains("tail_sentinel"), "尾巴不许跟着进日志");
+
+        let note =
+            terminal_ledger_failure_note(LEDGER_STAGE_DONE_REPAIRED, "t-bound", &err, Some(&err));
+        assert!(
+            note.contains("stage=done-tx-repaired") && note.contains("id=t-bound"),
+            "实得：{note}"
+        );
+        assert_eq!(
+            note.matches('…').count(),
+            2,
+            "主写与补偿两段各一个省略号 ⇒ 两段都截了，实得 {}",
+            note.matches('…').count()
+        );
+        assert!(!note.contains(&long_col), "整条长列名不许原样进日志");
+    }
 }
 
 #[cfg(test)]
@@ -2315,3 +2552,4 @@ mod group_receive_atomicity_tests {
         );
     }
 }
+

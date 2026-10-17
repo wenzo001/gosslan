@@ -386,21 +386,30 @@ pub fn spawn_cache_auto_clean(s: &std::sync::Arc<crate::state::AppState>) {
                 let dirs = media_dirs(&st2);
                 let report = cache_cleaner::clean_files(&dirs, policy);
                 let vacuumed = report.removed > 0 && cache_clean_should_vacuum(report.freed_bytes);
-                if vacuumed {
-                    let dbc = st2.db.lock().unwrap_or_else(|e| e.into_inner());
-                    let _ = dbc.execute_batch("VACUUM");
-                    drop(dbc);
-                }
+                // VACUUM 重写整份 db、期间持住唯一那条连接 ⇒ 用时与失败都必须说出来。
+                // 计时在锁内、产日志在锁外：把 logger 的同步落盘塞进持锁区间是反方向。
+                let vacuum_note = if vacuumed {
+                    let started = std::time::Instant::now();
+                    let failure = {
+                        let dbc = st2.db.lock().unwrap_or_else(|e| e.into_inner());
+                        dbc.execute_batch("VACUUM").err().map(|e| e.to_string())
+                    };
+                    let ms = started.elapsed().as_millis();
+                    match failure {
+                        None => format!("已做，用时 {ms}ms"),
+                        Some(err) => format!("失败，用时 {ms}ms: {err}"),
+                    }
+                } else {
+                    "跳过（释放量未达阈值）".to_string()
+                };
                 if report.removed > 0 {
-                    // 日志必须带上"这次没 VACUUM"这一半：否则盘上 db 没缩，
-                    // 读日志的人只能猜是阈值还是失败。
+                    // 三态都要留痕：做了多久、失败在哪儿、还是压根没做。
+                    // 只说"已做/跳过"的话，盘上 db 没缩时读日志的人分不清阈值与失败。
                     st2.logger.info(
                         "storage",
                         format!(
-                            "自动缓存清理：删 {} 个文件、释放 {} 字节，VACUUM {}",
-                            report.removed,
-                            report.freed_bytes,
-                            if vacuumed { "已做" } else { "跳过（释放量未达阈值）" }
+                            "自动缓存清理：删 {} 个文件、释放 {} 字节，VACUUM {vacuum_note}",
+                            report.removed, report.freed_bytes,
                         ),
                     );
                 }

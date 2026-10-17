@@ -4,6 +4,8 @@ use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
+
+use crate::db_hold::DbLock;
 use std::time::Duration;
 
 use rusqlite::Connection;
@@ -916,7 +918,7 @@ pub struct PreviewGallery {
 
 pub struct AppState {
     pub app: AppHandle,
-    pub db: Mutex<Connection>,
+    pub db: DbLock<Connection>,
     pub device_id: String,
     pub tcp_port: u16,
     /// 前端推来的「界面实际用的是哪种语言」（三态，见 [`Self::is_zh`] 与 `set_ui_language`）。
@@ -1329,6 +1331,18 @@ impl AppState {
             format!("[dev:{plat}-{host}]")
         };
         let logger = Logger::new(app_data.join("logs"), &log_stem, dev_fingerprint);
+        // 把上一轮留在盘上的记录读进内存环：get_logs 只读内存，不补这一步，
+        // 崩溃重启后界面里看不见刚发生的那次故障。
+        // 必须紧跟 Logger::new、排在本轮第一条日志之前；接线点只许一处。
+        let seeded = logger.seed_previous_run();
+        if seeded > 0 {
+            logger.info(
+                "boot",
+                format!(
+                    "上一轮记录已载入内存：{seeded} 条（只读，盘上原件不动；内存环有上界会淘汰）"
+                ),
+            );
+        }
 
         // 文件接收目录：默认 app_data/downloads，允许用户在设置里改（持久化到 settings）。
         // 与共享目录同理：用户自选的目录在沙盒里重启后会失访，必须靠书签把权限带回来，
@@ -1457,7 +1471,7 @@ impl AppState {
 
         Ok(Arc::new(AppState {
             app,
-            db: Mutex::new(conn),
+            db: DbLock::new(conn),
             file_service: crate::network::transport::FileService::new(
                 crate::network::transport::FILE_SERVICE_QUEUE_CAP,
             ),

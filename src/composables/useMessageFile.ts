@@ -8,6 +8,11 @@ import { parseFileMeta } from "@/utils/fileMeta";
 import { openLocalFile, saveLocalFile } from "@/utils/localFile";
 import { shouldProbePresence } from "@/utils/mediaAvailability";
 import { isAndroid } from "@/utils/platform";
+import {
+  transferDisplayKind,
+  transferShowsProgress,
+  transferStatusTextKey,
+} from "@/utils/transferState";
 import { codeNeedsClamp } from "@/utils/previewMetrics";
 import type { FileMeta, MessageRecord } from "@/types";
 
@@ -52,22 +57,25 @@ export function useMessageFile(
     };
   });
 
-  /** 进度 0~1；无记录（历史消息）返回 null 表示不显示进度条。 */
+  /** 只有 active 才画活动进度；终态与等待态交出 null，界面上不再留任何"还在传"的暗示。 */
   const fileProgress = computed(() => {
     const t = transfer.value;
-    if (!t || t.status === "done") return null;
+    if (!t || !transferShowsProgress(t.status)) return null;
     return t.progress;
   });
   const fileStatusText = computed(() => {
     const t = transfer.value;
-    if (!t || t.status === "done") return null;
-    // 链路停滞：后端按 writer **实发**判定（对端长时间没再收任何一片）。不显示出来的话，
-    // 用户看到的是"进度条冻在 63%"，只能猜是软件死了 —— 而后端其实还在背压里等。
-    // 停滞原因优先：「只有蓝牙链路、这个文件在等局域网」和「网络卡住了」是两件不同的事，
-    // 说错会把用户引去查网络（而网络没问题）。后端没给原因时回退既有的通用文案。
-    if (chat.isTransferStalled(t.id)) return chat.transferStallReason(t.id) ?? $t("send.stalled");
-    const pct = Math.round((t.progress ?? 0) * 100);
-    return t.direction === "send" ? $t("send.sendingPct", { pct }) : $t("send.receivingPct", { pct });
+    if (!t) return null;
+    // 停滞原因优先：进度条冻住时，用户得知道是网络卡住还是在排队（后端按 writer 实发判定）。
+    if (chat.isTransferStalled(t.id) && transferDisplayKind(t.status) !== "done") {
+      return chat.transferStallReason(t.id) ?? $t("send.stalled");
+    }
+    if (transferShowsProgress(t.status)) {
+      const pct = Math.round((t.progress ?? 0) * 100);
+      return t.direction === "send" ? $t("send.sendingPct", { pct }) : $t("send.receivingPct", { pct });
+    }
+    const key = transferStatusTextKey(t.status);
+    return key ? $t(key) : null;
   });
 
   const attachmentUrl = ref<string | null>(null);

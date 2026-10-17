@@ -1003,6 +1003,8 @@ export const enUS: MessageDict = {
   "send.sendingPct": "Sending {pct}%",
   "send.receivingPct": "Receiving {pct}%",
   "send.stalled": "Network stalled, waiting to recover…",
+  "send.queued": "Queued…",
+  "send.unknownState": "Unknown state. You can resend it.",
   "msg.cleaned": "Cleaned up",
   "msg.unsupportedKind": "The sender used a message type this build can't display. Update Gosslan to view it.",
   "msg.showRawContent": "Show raw content",
