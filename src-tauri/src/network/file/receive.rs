@@ -829,12 +829,15 @@ fn bounded_err_text(err: &rusqlite::Error) -> String {
 /// （**含**"发送方没声明"这一种 —— 空期望值不通过，fail-closed）；③ fsync 或 rename 失败。
 /// 这三条合起来就是界面上那句「已收到」的证据，少任何一条都是假成功。
 ///
-/// 为什么要独立成一个函数（#25）：它只要一个 `Mutex<Connection>`，不要 `AppState`
+/// 为什么要独立成一个函数（#25）：它只要一个 db 锁、不要 `AppState`
 /// （那个要 tauri `AppHandle`，单测造不出来）⇒ 「显示成功是不是真成功」第一次可以拿
 /// **生产码**驱动，而不是像现有几处接收端测试那样各自重写一遍操作序列（生产码改坏它们不红）。
 /// 另外它拿不到 `file_receivers` 那张表 ⇒ "持锁 fsync" 那个形状不可能从这里长回去。
+///
+/// 形参收 `DbLock` 而不是裸 `Mutex<Connection>`：这五处取锁正是"台账停在 active"那族故障的
+/// 现场，走裸 Mutex 的话一次持锁读数都不会有（夹具那边用 `DbLock::new` 造，取锁写法一字不变）。
 fn finish_receiver_into(
-    db_lock: &std::sync::Mutex<rusqlite::Connection>,
+    db_lock: &crate::db_hold::DbLock<rusqlite::Connection>,
     logger: &Logger,
     transfer_id: &str,
     mut r: FileReceiver,

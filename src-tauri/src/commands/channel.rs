@@ -371,6 +371,21 @@ fn cache_clean_should_vacuum(freed_bytes: u64) -> bool {
     freed_bytes >= CACHE_CLEAN_VACUUM_MIN_FREED_BYTES
 }
 
+/// 释放量没达阈值时那句（也是 `format_vacuum_note` 之外唯一的一种结局）。
+const VACUUM_SKIPPED_NOTE: &str = "跳过（释放量未达阈值）";
+
+/// VACUUM 那一句话说的是什么（纯函数，便于把句子形状测出来）。
+///
+/// **等锁**与**执行**是两个数，不许合成一个"用时"：合成之后读不出"这一下慢是别人还
+/// 握着那条连接，还是 VACUUM 自己慢"——而这两件事的处置完全相反（前者去看持锁观测里
+/// 谁握得久，后者去查 db 体量）。执行时长严格从**取得锁之后**起算。
+fn format_vacuum_note(wait_ms: u64, exec_ms: u64, failure: Option<String>) -> String {
+    match failure {
+        None => format!("已做，执行 {exec_ms}ms（等锁 {wait_ms}ms）"),
+        Some(err) => format!("失败，执行 {exec_ms}ms（等锁 {wait_ms}ms）: {err}"),
+    }
+}
+
 /// 启动 [`CACHE_CLEAN_FIRST_DELAY_SECS`] 后跑第一轮，之后每 [`CACHE_CLEAN_INTERVAL_SECS`]；
 /// 清理走 `clean_files`，VACUUM 只在释放量过 [`CACHE_CLEAN_VACUUM_MIN_FREED_BYTES`] 时才做 ——
 /// 整段在 spawn_blocking 里做：文件遍历/删除与偶发 VACUUM 都不该占用 tokio worker，
@@ -388,19 +403,19 @@ pub fn spawn_cache_auto_clean(s: &std::sync::Arc<crate::state::AppState>) {
                 let vacuumed = report.removed > 0 && cache_clean_should_vacuum(report.freed_bytes);
                 // VACUUM 重写整份 db、期间持住唯一那条连接 ⇒ 用时与失败都必须说出来。
                 // 计时在锁内、产日志在锁外：把 logger 的同步落盘塞进持锁区间是反方向。
+                // 两个数分开报：`wait_ms` 是**排队等这把锁**，`exec_ms` 是拿到锁之后 VACUUM
+                // 自己跑了多久。合成一个"用时"就读不出"这一下慢是因为别人握着，还是因为它真慢"。
                 let vacuum_note = if vacuumed {
-                    let started = std::time::Instant::now();
-                    let failure = {
+                    let (wait_ms, exec_ms, failure) = {
                         let dbc = st2.db.lock().unwrap_or_else(|e| e.into_inner());
-                        dbc.execute_batch("VACUUM").err().map(|e| e.to_string())
+                        let wait_ms = dbc.wait_ms();
+                        let started = std::time::Instant::now();
+                        let failure = dbc.execute_batch("VACUUM").err().map(|e| e.to_string());
+                        (wait_ms, started.elapsed().as_millis() as u64, failure)
                     };
-                    let ms = started.elapsed().as_millis();
-                    match failure {
-                        None => format!("已做，用时 {ms}ms"),
-                        Some(err) => format!("失败，用时 {ms}ms: {err}"),
-                    }
+                    format_vacuum_note(wait_ms, exec_ms, failure)
                 } else {
-                    "跳过（释放量未达阈值）".to_string()
+                    VACUUM_SKIPPED_NOTE.to_string()
                 };
                 if report.removed > 0 {
                     // 三态都要留痕：做了多久、失败在哪儿、还是压根没做。
@@ -517,6 +532,58 @@ mod cache_clean_schedule_tests {
         );
         assert!(cache_clean_should_vacuum(CACHE_CLEAN_VACUUM_MIN_FREED_BYTES));
         assert!(cache_clean_should_vacuum(CACHE_CLEAN_VACUUM_MIN_FREED_BYTES * 4));
+    }
+
+    /// 那句话必须把"等锁"与"执行"报成两个数：合成一个"用时"就读不出慢的是别人还是 VACUUM。
+    #[test]
+    fn vacuum_note_keeps_wait_and_execution_apart() {
+        let done = format_vacuum_note(900, 20, None);
+        assert!(done.contains("执行 20ms"), "实得：{done}");
+        assert!(done.contains("等锁 900ms"), "实得：{done}");
+        assert!(
+            !done.contains("920"),
+            "两个数又被加成一个了：它把排队算进了 VACUUM 自己。实得：{done}"
+        );
+        let failed = format_vacuum_note(5, 800, Some("disk I/O error".to_string()));
+        assert!(
+            failed.contains("执行 800ms") && failed.contains("等锁 5ms") && failed.contains("失败"),
+            "实得：{failed}"
+        );
+        assert!(
+            !VACUUM_SKIPPED_NOTE.contains("ms"),
+            "跳过那一档根本没取锁，不该出现任何时长"
+        );
+    }
+
+    /// 执行计时的**起点**必须排在取得锁之后、等待读数必须来自这把锁本身。
+    /// 这条是按源码文本判形状（这里造不出真 VACUUM 的慢），把两行调回原位就当场红。
+    #[test]
+    fn vacuum_execution_timer_starts_after_the_lock_is_held() {
+        let src = include_str!("channel.rs");
+        let at = src
+            .find("let (wait_ms, exec_ms, failure) = {")
+            .expect("自动清理那段 VACUUM 的计时形状变了 ⇒ 这条判据要跟着改");
+        let body = &src[at..src[at..].find("};").map(|e| e + at).unwrap_or(src.len())];
+        let lock_at = body.find("st2.db.lock()").expect("函数里没有取锁");
+        let wait_from_guard = body.find("dbc.wait_ms()").expect("等待没读这把锁自己的读数");
+        let started_at = body.find("Instant::now()").expect("执行耗时没计时");
+        let exec_at = body.find("execute_batch(\"VACUUM\")").expect("没有 VACUUM 那一句");
+        assert!(
+            lock_at < started_at && started_at < exec_at,
+            "执行计时又从头算起包含了排队：取锁 {} · 起表 {} · 执行 {}",
+            lock_at,
+            started_at,
+            exec_at
+        );
+        assert!(
+            lock_at < wait_from_guard,
+            "等锁的读数排在取锁之前 ⇒ 它量的不是这把锁的排队"
+        );
+        assert_eq!(
+            body.matches("Instant::now()").count(),
+            1,
+            "这一格只该有一个计时起点（多出来那个就是把等待又算进执行）"
+        );
     }
 
     /// 首轮必须排在 `loop` **外面**：那条 bug 的形状就是"sleep(6h) 是循环第一句"，

@@ -2,6 +2,8 @@ commands::attention_tests::macos_bounces_only_when_urgent
 commands::attention_tests::other_desktops_keep_the_previous_behavior
 commands::attention_tests::windows_flashes_regardless_of_urgency
 commands::cache_clean_schedule_tests::first_round_is_scheduled_before_the_loop_not_inside_it
+commands::cache_clean_schedule_tests::vacuum_execution_timer_starts_after_the_lock_is_held
+commands::cache_clean_schedule_tests::vacuum_note_keeps_wait_and_execution_apart
 commands::cache_clean_schedule_tests::vacuum_only_when_the_freed_bytes_are_worth_rewriting_the_db
 commands::files_gate_tests::allows_files_inside_a_managed_dir
 commands::files_gate_tests::any_of_several_managed_dirs_matches
@@ -279,12 +281,16 @@ db::todo_reads_tests::todo_read_is_not_a_paged_read
 db::todo_reads_tests::todo_read_keeps_conversations_apart
 db::todo_reads_tests::todo_read_returns_ascending_seq_and_carries_mention_targets
 db::todo_reads_tests::todo_read_returns_only_todo_kinds
+db_hold::tests::a_long_hold_on_an_idle_lock_is_the_slow_one
+db_hold::tests::counters_do_not_bleed_across_threads_or_across_locks
 db_hold::tests::hold_over_threshold_produces_exactly_one_line
 db_hold::tests::poisoning_still_reaches_the_caller_with_its_guard
 db_hold::tests::quiet_window_emits_nothing
 db_hold::tests::short_hold_is_counted_but_not_slow
+db_hold::tests::the_only_way_to_bypass_the_timer_is_closed
 db_hold::tests::timed_lock_is_wired_into_the_app
 db_hold::tests::try_lock_blocked_by_a_holder_is_not_counted
+db_hold::tests::waiting_for_the_lock_is_not_counted_as_holding_it
 device::tests::empty_attributes_still_yield_valid_distinct_ids
 device::tests::generated_id_keeps_the_one_prefix_and_length
 device::tests::identical_attributes_still_produce_different_ids
@@ -521,6 +527,7 @@ network::file::tests::one_to_one_receive_finalize_completes_the_content_ledger
 network::file::tests::other_files
 network::file::tests::permanent_send_failure_gives_up_with_the_real_reason
 network::file::tests::progress_counts_written_chunks_not_enqueued_bytes
+network::file::tests::receive_finalize_locks_are_counted_by_the_timer
 network::file::tests::receive_is_done_only_when_size_and_sha_both_prove_it
 network::file::tests::receiver_hash_lifecycle_success
 network::file::tests::receiver_hash_mismatch_fails

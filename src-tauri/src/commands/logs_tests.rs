@@ -613,7 +613,7 @@ mod tests {
             }
             tx.commit().unwrap();
         }
-        let db = std::sync::Mutex::new(conn);
+        let db = crate::db_hold::DbLock::new(conn);
 
         // ① 单次调用只允许删一批
         let first = super::clear_one_batch(&db, "messages").unwrap();
@@ -621,6 +621,13 @@ mod tests {
             first,
             super::CLEAR_BATCH_ROWS as u64,
             "单次调用必须只删一批（一次 2000 行）；删更多说明事务又变大了"
+        );
+        // 这一批的取锁必须有读数：2026-10-17 之前这里走的是裸 Mutex，而"点「清除数据」
+        // 界面卡死"正是持锁观测要量的一位 —— 量不到就等于那条路没修。
+        assert_eq!(
+            db.take_summary().takes,
+            1,
+            "一批删除恰好一次取锁，且必须经带计时的锁；计到 0 就是又退回裸 Mutex"
         );
         let left_after_first: i64 = db
             .lock()
@@ -644,6 +651,21 @@ mod tests {
             }
         }
         assert_eq!(total, rows as u64, "必须把行删干净");
+        // ③ 从头到尾的持锁读数：一次核对行数的读 + 四批删除，一条都不许漏计；
+        //    而"分批"要证明的是**没有任何一批**慢到该被单独说出来。
+        let s = db.take_summary();
+        assert_eq!(
+            s.takes,
+            4,
+            "①之后又有 1 次核对行数的读 + 3 批删除 ⇒ 4 次；少于这个数就是有取锁绕开了计时，实得 {s:?}"
+        );
+        assert_eq!(s.slow, 0, "分批之后没有任何一批该被判成慢持锁，实得 {s:?}");
+        assert!(
+            s.hold_max_ms < crate::db_hold::DEFAULT_SLOW_MS,
+            "单批最长持有 {}ms 必须压在阈值 {}ms 之下 ⇒ 分批还在起作用",
+            s.hold_max_ms,
+            crate::db_hold::DEFAULT_SLOW_MS
+        );
         let left: i64 = db
             .lock()
             .unwrap()
