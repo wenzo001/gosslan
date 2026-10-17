@@ -25,7 +25,10 @@
 - **文件气泡永远显示"发送中 84%"**。进度只在 `active` 那一态显示；`pending` 说排队、`failed`/`cancelled` 说终态、
   认不出的状态绝不显示成已完成。状态口径收进 `src/utils/transferState.ts` 一份，composable 与气泡共用。
 - **界面冻住时没有任何持锁读数**。`AppState::db` 换成 `db_hold::DbLock`：既有取锁写法一字不变，
-  先放锁再记原子量，超阈值（默认 500ms）每分钟最多一行；VACUUM 另外带上用时与失败原因，不再吞掉错误。
+  先放锁再记原子计数，超阈值（默认 500ms）每分钟最多一行。**等待与持有是两个数**（排队 800ms
+  不许被读成"有人握了 800ms"，判慢只认持有）；`DbLock` 刻意不实现 `Deref`，所以不存在
+  "把 `&state.db` 当裸 Mutex 传出去、那一段一次都不计"那条路 —— 文件接收收尾与「清除数据」
+  那批删除因此都有了读数。VACUUM 分开报"等锁"与"执行"，不再吞掉错误。
 
 判据：`logging::tests::previous_run_*`、`network::file::tests::ledger_*`、`src/utils/transferState.test.ts`、
 `db_hold::tests::*`，每条都验过"改坏即 FAIL、恢复即 PASS"。台账见 `docs/audit/ledger-2026-10-17.md`。

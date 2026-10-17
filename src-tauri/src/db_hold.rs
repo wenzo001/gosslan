@@ -3,9 +3,17 @@
 //! `AppState::db` 用的是这里的 `DbLock`：取锁语义与 `std::sync::Mutex` 一致（含 poisoning，
 //! 调用点写法一字不变），只在**释放锁之后**更新几个原子计数，因此不会因为埋点加长持锁。
 //!
-//! 覆盖范围如实限定：经 `DbLock` 的 `lock()` / `try_lock()` 全部计入（`try_lock()` 的调用点都在
-//! 桌面侧，移动端今天只有 `lock()`）；直接构造的 `Mutex<Connection>`（例如测试夹具）不在这把锁上，
-//! 不计入。持有期间的耗时能测到，但测不出"是谁拿的"（没有标签体系），所以定位要靠
+//! 两个量分得很开：`wait` = 开始请求锁到真正取得锁；`hold` = 取得锁到释放。慢锁判定、
+//! `hold_total_ms`、`hold_max_ms` **只认 hold**，等锁排到多久都不算慢持锁 —— 否则一次
+//! 纯排队的取锁会被读成"有人握了 800ms"，而排队的真正原因是别人那一次握得久。
+//!
+//! 覆盖范围如实限定：`AppState::db` 上经 `DbLock::lock()` / `try_lock()` 的取锁全部计入
+//! （`try_lock()` 拿不到的那次没有持锁区间，不计；其调用点都在 `#[cfg(desktop)]` 里，
+//! 移动端今天只有 `lock()`）。这里**刻意不实现 `Deref`**：一旦有 `Deref`，`&state.db` 就能
+//! 悄悄当 `&Mutex<Connection>` 传出去，函数里那次 `.lock()` 走裸 Mutex、一笔都不计（2026-10-17
+//! 实测这样漏过 6 处，见判据 `the_only_way_to_bypass_the_timer_is_closed`）。
+//! 测试夹具里直接构造的 `Mutex<Connection>` 不在这把锁上，也不该计。
+//! 持有多久能测到，但测不出"是谁拿的"（没有标签体系），所以定位要靠
 //! "最长持有 + 最长等待 + 超阈值次数"三条一起看。
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -114,31 +122,51 @@ impl<T> DbLock<T> {
     }
 
     fn guard<'a>(&'a self, guard: MutexGuard<'a, T>, started: Instant) -> DbGuard<'a, T> {
+        let wait = started.elapsed();
         DbGuard {
             guard: Some(guard),
-            started,
-            wait: started.elapsed(),
+            acquired: Instant::now(),
+            wait,
             stats: Arc::clone(&self.stats),
             slow_ms: Arc::clone(&self.slow_ms),
         }
     }
 }
 
-impl<T> std::ops::Deref for DbLock<T> {
-    type Target = Mutex<T>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.inner
-    }
-}
-
 /// 持锁区间。`Drop` 里先放锁再记账：记一笔虽然只是几个原子量，但排在放锁之前就是加长持锁。
 pub struct DbGuard<'a, T> {
     guard: Option<MutexGuard<'a, T>>,
-    started: Instant,
+    /// **取得**锁的那一刻（不含排队），所以 `held_ms()` 里一个毫秒都不掺等待。
+    acquired: Instant,
+    /// 请求锁到取得锁的时长，在取得锁的那一次调用里就量好了。
     wait: Duration,
     stats: Arc<HoldStats>,
     slow_ms: Arc<AtomicU64>,
+}
+
+impl<T> DbGuard<'_, T> {
+    /// 这一段排队排了多久（ms）。给"等待大、持有小"那种诊断用。
+    pub fn wait_ms(&self) -> u64 {
+        self.wait.as_millis() as u64
+    }
+
+    /// 从取得锁到现在的持有时长（ms）。
+    pub fn held_ms(&self) -> u64 {
+        self.acquired.elapsed().as_millis() as u64
+    }
+}
+
+/// 只为 `.expect()` / `.unwrap()` 的失败分支服务：`Result<DbGuard, PoisonError<DbGuard>>`
+/// 要 `DbGuard: Debug` 才解得开。不把内层 `Connection` 打出来（它也不 `Debug`），
+/// 只报这次区间自身的两个量 —— 够定位"哪一次解不开"，也不引入新的读数口径。
+impl<T> std::fmt::Debug for DbGuard<'_, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DbGuard")
+            .field("wait_ms", &self.wait_ms())
+            .field("held_ms", &self.held_ms())
+            .field("released", &self.guard.is_none())
+            .finish()
+    }
 }
 
 impl<T> std::ops::Deref for DbGuard<'_, T> {
@@ -161,7 +189,7 @@ impl<T> std::ops::DerefMut for DbGuard<'_, T> {
 
 impl<T> Drop for DbGuard<'_, T> {
     fn drop(&mut self) {
-        let held = self.started.elapsed();
+        let held = self.acquired.elapsed();
         let wait = self.wait;
         drop(self.guard.take());
         let held_ms = held.as_millis() as u64;
@@ -264,6 +292,140 @@ mod tests {
         assert_eq!(s.takes, 2, "实得 {s:?}");
     }
 
+    /// 排队 ≠ 持有：甲握着锁不放，乙只是**等**了很久、拿到之后什么都没做。
+    /// 这一条钉的是"两个量必须真的分开"，所以断言全是相对关系，不猜绝对耗时：
+    /// 乙自己的 `wait_ms` 大而 `held_ms` 小；整把锁的 `slow` 只由甲那一次触发；
+    /// `hold_total_ms` 不许把乙那段排队也累进去（旧实现里它是 `wait_max` 的两倍上下）。
+    #[test]
+    fn waiting_for_the_lock_is_not_counted_as_holding_it() {
+        let db = DbLock::new(0u32);
+        db.set_slow_threshold_ms(30);
+        let (about_to_wait_tx, about_to_wait_rx) = std::sync::mpsc::channel();
+        let (measured_tx, measured_rx) = std::sync::mpsc::channel();
+        let (released_tx, released_rx) = std::sync::mpsc::channel();
+        let db_ref = &db;
+
+        std::thread::scope(|scope| {
+            // 两个闭包都 `move`：`Receiver` 不是 `Sync`，只能整只搬进线程；
+            // `db_ref` 是共享引用（Copy），搬两次不冲突。
+            scope.spawn(move || {
+                let held = db_ref.lock().unwrap_or_else(|e| e.into_inner());
+                // 只在"乙已经要去等"之后再多握一会儿 ⇒ 乙的排队时长由这段握住的时间决定，
+                // 而不是靠两边各睡一个固定时长去撞时间窗。
+                about_to_wait_rx.recv().expect("乙没到位，甲不该空握");
+                std::thread::sleep(Duration::from_millis(120));
+                drop(held);
+                released_tx.send(()).expect("主线程还在收");
+            });
+            scope.spawn(move || {
+                about_to_wait_tx.send(()).expect("甲还在");
+                let g = db_ref.lock().unwrap_or_else(|e| e.into_inner());
+                let reading = (g.wait_ms(), g.held_ms());
+                // 先放锁再报读数：记账排在 Drop 里，主线程要等的是**两条区间都结束**。
+                drop(g);
+                measured_tx.send(reading).expect("主线程还在收");
+            });
+            let (wait, hold) = measured_rx.recv().expect("乙的读数必须取回来");
+            released_rx.recv().expect("甲的持锁区间没结束");
+            assert!(wait >= 50, "乙实打实排了队，实得等待 {wait}ms");
+            assert!(
+                hold <= 10,
+                "乙拿到锁之后什么都没做，这段不许被读成持有 {hold}ms"
+            );
+            let s = db.take_summary();
+            assert_eq!(s.takes, 2, "两次真拿到");
+            assert_eq!(
+                s.slow, 1,
+                "只有甲那次长持有该触发慢锁判定；把排队也算进来就变 2 次。实得 {s:?}"
+            );
+            assert!(s.wait_max_ms >= 50, "实得 {s:?}");
+            assert!(
+                s.hold_total_ms <= s.wait_max_ms + 40,
+                "累计持有里掺进了排队：等待 {wait}ms，累计持有 {}ms，实得 {s:?}",
+                s.hold_total_ms
+            );
+        });
+    }
+
+    /// 反面对照：锁没人抢，握得久才是真慢锁 —— 判定由 hold 触发，`wait` 保持贴着 0。
+    #[test]
+    fn a_long_hold_on_an_idle_lock_is_the_slow_one() {
+        let db = DbLock::new(0u32);
+        db.set_slow_threshold_ms(30);
+        let g = db.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(g.wait_ms() <= 10, "没人抢的锁不该量出排队");
+        assert!(g.held_ms() < 30, "刚拿到就判成慢，说明阈值读错了对象");
+        std::thread::sleep(Duration::from_millis(80));
+        assert!(g.held_ms() >= 60, "实得 {}ms", g.held_ms());
+        drop(g);
+        let s = db.take_summary();
+        assert_eq!(s.slow, 1, "长持有必须触发判定，实得 {s:?}");
+        assert!(s.hold_max_ms >= 60, "实得 {s:?}");
+        assert!(s.wait_max_ms <= 10, "这条路上没有排队，实得 {s:?}");
+    }
+
+    /// 计数挂在每把锁自己的 `Arc` 上（不是全局 static）：多线程同抢一把、另有第二把，
+    /// 三者互不污染。这条用例不含任何时序断言。
+    #[test]
+    fn counters_do_not_bleed_across_threads_or_across_locks() {
+        let shared = DbLock::new(0u32);
+        let other = DbLock::new(0u32);
+        other.set_slow_threshold_ms(1);
+        const THREADS: usize = 4;
+        const TAKES: usize = 25;
+        std::thread::scope(|scope| {
+            for _ in 0..THREADS {
+                scope.spawn(|| {
+                    for _ in 0..TAKES {
+                        let g = shared.lock().unwrap_or_else(|e| e.into_inner());
+                        drop(g);
+                    }
+                });
+            }
+        });
+        drop(other.lock().unwrap_or_else(|e| e.into_inner()));
+        let s = shared.take_summary();
+        assert_eq!(
+            s.takes,
+            (THREADS * TAKES) as u64,
+            "{THREADS} 个线程各 {TAKES} 次，一次都不许少计"
+        );
+        assert_eq!(s.slow, 0, "空持锁不该被别的锁的阈值判成慢");
+        let o = other.take_summary();
+        assert_eq!(o.takes, 1, "另一把锁的计数不许串过来");
+        assert_eq!(o.slow, 0);
+        assert_eq!(shared.take_summary().takes, 0, "读走之后同一个窗口不该再报");
+    }
+
+    /// 绕开计时的唯一那条路就是"`&Mutex<Connection>` 形参 + 裸 `Mutex::lock()`"，
+    /// 而它只有在 `DbLock` 能被 `Deref` 成 `Mutex` 时才走得通。三件事一起钉：
+    /// 这里不许长出 `Deref`、那两份生产码的形参必须是带计时的锁、且不得再收裸 Mutex。
+    #[test]
+    fn the_only_way_to_bypass_the_timer_is_closed() {
+        let hold = include_str!("db_hold.rs");
+        // 分两段拼：写成一条完整字面量的话，这段源码自己就带着它，`contains` 永远为真。
+        let deref_impl = concat!("impl<T> std::ops::", "Deref for DbLock");
+        assert!(
+            !hold.contains(deref_impl),
+            "DbLock 又可以被 Deref 成裸 Mutex 了：&state.db 会悄悄退化成 &Mutex<Connection>"
+        );
+        for (name, src) in [
+            ("receive.rs", include_str!("network/file/receive.rs")),
+            ("favorites.rs", include_str!("commands/favorites.rs")),
+        ] {
+            assert_eq!(
+                src.matches("&std::sync::Mutex<rusqlite::Connection>")
+                    .count(),
+                0,
+                "{name} 里还有收裸 Mutex 的 db 形参，那里每次取锁都不计数"
+            );
+            assert!(
+                src.contains("DbLock<rusqlite::Connection>"),
+                "{name} 的 db 形参没换成带计时的锁"
+            );
+        }
+    }
+
     /// 接线判据：字段必须真的换成这把带计时的锁，读者与产日志点各只许一处。
     #[test]
     fn timed_lock_is_wired_into_the_app() {
@@ -271,7 +433,7 @@ mod tests {
         assert_eq!(
             state.matches("pub db: DbLock<Connection>").count(),
             1,
-            "AppState.db 必须换成 DbLock，否则 315 处取锁一条都不计"
+            "AppState.db 必须换成 DbLock，否则全仓那些取锁一条都不计"
         );
         assert!(
             !state.contains("db: Mutex<Connection>"),

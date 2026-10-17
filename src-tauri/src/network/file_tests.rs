@@ -1593,8 +1593,8 @@ mod tests {
     }
 
     /// 与生产 `db::init` 同一对调用（`db.rs:705-707`）⇒ 两张表都在，测试不自建第二份建表口径。
-    fn db_with_both_schemas() -> std::sync::Mutex<rusqlite::Connection> {
-        let db = std::sync::Mutex::new(rusqlite::Connection::open_in_memory().unwrap());
+    fn db_with_both_schemas() -> crate::db_hold::DbLock<rusqlite::Connection> {
+        let db = crate::db_hold::DbLock::new(rusqlite::Connection::open_in_memory().unwrap());
         let dbc = db.lock().unwrap();
         dbc.execute_batch(crate::db::SCHEMA).unwrap();
         crate::content::store::ensure_schema(&dbc).unwrap();
@@ -1604,7 +1604,7 @@ mod tests {
 
     /// Offer 到达时生产登记的那一行 Active（`transport/handle_file.rs` 的接收臂同形状）。
     /// 只造"开始收"的状态，**不**碰完成态 —— 完成态必须由被测的生产码自己写出来。
-    fn seed_active_content(db: &std::sync::Mutex<rusqlite::Connection>, cid: &str, tid: &str, size: u64) {
+    fn seed_active_content(db: &crate::db_hold::DbLock<rusqlite::Connection>, cid: &str, tid: &str, size: u64) {
         let now = crate::db::now_ms();
         let dbc = db.lock().unwrap();
         crate::content::store::upsert(
@@ -1647,7 +1647,8 @@ mod tests {
     /// `status IN ('queued','active','incomplete')` 决定要不要再投 ⇒ 每次建链整批重投。
     ///
     /// 这条驱动的是**生产收尾函数** `finish_receiver_into`（#25 把它拆成只要
-    /// `Mutex<Connection>`、不要 `AppState`，就是为了这一格能被单测跑），不是测试里重写一遍操作序列。
+    /// 那把 db 锁、不要 `AppState`，就是为了这一格能被单测跑；夹具因此也用 `DbLock`，
+    /// 那五处取锁才和生产一样计入持锁观测），不是测试里重写一遍操作序列。
     #[test]
     fn one_to_one_receive_finalize_completes_the_content_ledger() {
         use super::finish_receiver_into;
@@ -1745,7 +1746,7 @@ mod tests {
         let bytes: Vec<u8> = vec![0x77u8; 3072];
         let cid = sha_hex(&bytes);
         // 只建 SCHEMA ⇒ `content_transfers` 这张表不存在 ⇒ record_local 必然失败
-        let db = std::sync::Mutex::new(rusqlite::Connection::open_in_memory().unwrap());
+        let db = crate::db_hold::DbLock::new(rusqlite::Connection::open_in_memory().unwrap());
         db.lock().unwrap().execute_batch(crate::db::SCHEMA).unwrap();
 
         let r = receiver_holding("b1-dberr", &bytes, bytes.len() as u64, &cid);
@@ -1803,7 +1804,7 @@ mod tests {
         };
         let first: Vec<u8> = vec![0xA1u8; 4096];
         let second: Vec<u8> = vec![0xB2u8; 4096];
-        let db = std::sync::Mutex::new(rusqlite::Connection::open_in_memory().unwrap());
+        let db = crate::db_hold::DbLock::new(rusqlite::Connection::open_in_memory().unwrap());
         db.lock().unwrap().execute_batch(crate::db::SCHEMA).unwrap();
         let path_of = |id: &str| -> Option<String> {
             db.lock()
@@ -1872,7 +1873,7 @@ mod tests {
             h.update(&payload);
             h.finalize().iter().map(|b| format!("{b:02x}")).collect()
         };
-        let db = std::sync::Mutex::new(rusqlite::Connection::open_in_memory().unwrap());
+        let db = crate::db_hold::DbLock::new(rusqlite::Connection::open_in_memory().unwrap());
         db.lock().unwrap().execute_batch(crate::db::SCHEMA).unwrap();
         let row = |id: &str| -> (String, Option<String>) {
             db.lock()
@@ -1988,7 +1989,7 @@ mod tests {
         let dl = root.join("Downloads");
         std::fs::create_dir_all(&dl).unwrap();
 
-        let db = std::sync::Mutex::new(rusqlite::Connection::open_in_memory().unwrap());
+        let db = crate::db_hold::DbLock::new(rusqlite::Connection::open_in_memory().unwrap());
         db.lock().unwrap().execute_batch(crate::db::SCHEMA).unwrap();
         let row = |id: &str| -> (String, Option<String>) {
             db.lock()
@@ -2054,7 +2055,7 @@ mod tests {
         let empty_sha = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
         let recv = receiver_holding("rcv-empty", b"", 0, empty_sha);
         let (tmp, final_path) = (recv.tmp_path.clone(), recv.final_path.clone());
-        let db = std::sync::Mutex::new(rusqlite::Connection::open_in_memory().unwrap());
+        let db = crate::db_hold::DbLock::new(rusqlite::Connection::open_in_memory().unwrap());
         db.lock().unwrap().execute_batch(crate::db::SCHEMA).unwrap();
 
         finish_receiver_into(&db, &throwaway_logger(), "t-empty", recv)
@@ -2237,13 +2238,13 @@ mod tests {
     }
 
     /// 注入通道用"表不存在"触发真实的 rusqlite 错误，不 mock 返回值。
-    fn db_missing_content_table() -> std::sync::Mutex<rusqlite::Connection> {
-        let db = std::sync::Mutex::new(rusqlite::Connection::open_in_memory().unwrap());
+    fn db_missing_content_table() -> crate::db_hold::DbLock<rusqlite::Connection> {
+        let db = crate::db_hold::DbLock::new(rusqlite::Connection::open_in_memory().unwrap());
         db.lock().unwrap().execute_batch(crate::db::SCHEMA).unwrap();
         db
     }
 
-    fn db_missing_file_transfers() -> std::sync::Mutex<rusqlite::Connection> {
+    fn db_missing_file_transfers() -> crate::db_hold::DbLock<rusqlite::Connection> {
         let db = db_missing_content_table();
         db.lock()
             .unwrap()
@@ -2342,6 +2343,44 @@ mod tests {
             notes[0].contains("stage=size-mismatch-failed") && notes[0].contains("xfer-note-size"),
             "实得：{}",
             notes[0]
+        );
+    }
+
+    /// 收尾那五处取锁必须真的走带计时的锁。2026-10-17 之前这个函数收的是
+    /// `&Mutex<Connection>`（`&state.db` 被 Deref 成裸 Mutex），于是"台账停在 active"
+    /// 那一段一次读数都没有 —— 而那正是持锁观测要查的第一现场。
+    #[test]
+    fn receive_finalize_locks_are_counted_by_the_timer() {
+        use super::finish_receiver_into;
+        let bytes: Vec<u8> = vec![0x35u8; 2048];
+        let cid = sha_hex(&bytes);
+
+        // 绿路：只有收尾那一笔终态写 ⇒ 恰好一次取锁
+        let db = db_with_both_schemas();
+        let logger = capture_logger("count-ok");
+        let r = receiver_holding("count-ok", &bytes, bytes.len() as u64, &cid);
+        let _ = db.take_summary(); // 夹具建表那几次先读走，下面只判被测那一段
+        finish_receiver_into(&db, &logger, "xfer-count-ok", r).expect("收尾应成功");
+        let s = db.take_summary();
+        assert_eq!(
+            s.takes, 1,
+            "绿路上收尾恰好取锁一次；计到 0 就是那条路又退回裸 Mutex"
+        );
+        assert_eq!(s.slow, 0, "内存库里这一次收尾不该被读成慢持锁，实得 {s:?}");
+
+        // 判死那一支：写 failed 那一次同样要有读数
+        let db2 = db_missing_file_transfers();
+        let logger2 = capture_logger("count-fail");
+        let r2 = receiver_holding("count-fail", &bytes, 256, &cid);
+        let _ = db2.take_summary();
+        assert!(
+            finish_receiver_into(&db2, &logger2, "xfer-count-fail", r2).is_err(),
+            "声明 256、实收 2048 必须判失败"
+        );
+        assert_eq!(
+            db2.take_summary().takes,
+            1,
+            "字节数不符那一支也得经带计时的锁取一次"
         );
     }
 

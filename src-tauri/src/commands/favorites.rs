@@ -422,8 +422,11 @@ const CLEAR_BATCH_ROWS: usize = 2000;
 /// 删**一批**（同步核心，便于单测）：一批一个短事务，返回删除行数。
 ///
 /// 表名只来自本文件里的字面量列表，不存在注入面。
+///
+/// 形参收 `DbLock` 而不是裸 `Mutex<Connection>`：上面那句"握锁数秒"正是持锁观测要量的一位，
+/// 走裸 Mutex 的话这条路上一次读数都不会有。
 fn clear_one_batch(
-    db: &std::sync::Mutex<rusqlite::Connection>,
+    db: &crate::db_hold::DbLock<rusqlite::Connection>,
     table: &str,
 ) -> Result<u64, String> {
     let dbc = db.lock().unwrap_or_else(|e| e.into_inner());
