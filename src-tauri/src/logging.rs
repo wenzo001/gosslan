@@ -607,12 +607,14 @@ impl Logger {
                     pending = Some(entry);
                 }
                 // 多行消息的续行（前端异常带 stack）接回上一条；结构行不当续行。
+                // 超过续行预算的那一行直接丢：内存环是有界的，宁可少接一段也不让它长回去。
                 None => match pending.as_mut() {
-                    Some(prev) if !is_crash_native_line(&raw) => {
-                        if prev.message.len() + raw.len() <= PREV_CRASH_MAX_CHARS * 4 {
-                            prev.message.push('\n');
-                            prev.message.push_str(&raw);
-                        }
+                    Some(prev)
+                        if !is_crash_native_line(&raw)
+                            && prev.message.len() + raw.len() <= PREV_CRASH_MAX_CHARS * 4 =>
+                    {
+                        prev.message.push('\n');
+                        prev.message.push_str(&raw);
                     }
                     _ => {}
                 },
