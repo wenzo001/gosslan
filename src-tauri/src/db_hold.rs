@@ -100,6 +100,9 @@ impl<T> DbLock<T> {
         self.slow_ms.load(Ordering::Relaxed)
     }
 
+    /// 只给用例把阈值调小（生产走 [`DEFAULT_SLOW_MS`]，没有运行期改它的入口）：
+    /// 没有这个入口的话，「超阈值要产一行」那条判据就得睡 500ms 才能观测到。
+    #[cfg(test)]
     pub fn set_slow_threshold_ms(&self, ms: u64) {
         self.slow_ms.store(ms.max(1), Ordering::Relaxed);
     }
