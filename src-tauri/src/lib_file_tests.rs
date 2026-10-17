@@ -312,7 +312,7 @@
         );
         // 摘出来的那份接收器必须**交给核心**，不是就地收尾（就地收尾 = 慢活回到锁的同一作用域）
         assert!(
-            flat.contains("finish_receiver_into(&st.db,&transfer_id,r)"),
+            flat.contains("finish_receiver_into(&st.db,&st.logger,&transfer_id,r)"),
             "包装函数必须把摘出的接收器整体交给 finish_receiver_into —— 自己留着用就是持锁慢活"
         );
         // ★ 2026-10-14 新增的那一半（用户真机：3.x GB 收尾期间 Windows 窗口操作全失灵）：

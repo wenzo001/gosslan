@@ -126,7 +126,7 @@ const canOpen = computed(() => props.ready && props.tappable !== false);
       <span v-if="delivery.waiting > 0">· {{ t("msg.waitingOnline", { n: delivery.waiting }) }}</span>
       <span v-if="delivery.failed > 0" class="text-[var(--gosslan-danger-ink)]">· {{ t("msg.failedCount", { n: delivery.failed }) }}</span>
     </div>
-    <!-- 传输进度条（发送/接收中实时显示，完成后消失）。卡片是中性色，进度条用主题色做强调 -->
+    <!-- 进度条只在活动传输时出现；状态文案独立一行 —— 进度停下来之后那句话还得说得出失败/取消 -->
     <template v-if="progress !== null">
       <div class="h-1 overflow-hidden rounded-full bg-[var(--gosslan-divider)]">
         <div
@@ -134,8 +134,8 @@ const canOpen = computed(() => props.ready && props.tappable !== false);
           :style="{ width: `${Math.round(progress * 100)}%` }"
         ></div>
       </div>
-      <div class="text-[11px] opacity-70">{{ statusText }}</div>
     </template>
+    <div v-if="statusText" class="text-[11px] opacity-70">{{ statusText }}</div>
     <span aria-hidden="true" class="bubble-tail" :class="mine ? 'tail-mine' : 'tail-other'"></span>
   </div>
 </template>

@@ -208,7 +208,8 @@ pub fn begin_receive(
         expected_sha256,
         &state.file_receivers,
     )?;
-    {
+    // 首笔 active 写不进去，这单在台账上就不存在。note 出锁之后再写，锁内不做文件 IO。
+    let begin_note = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::upsert_transfer(
             &dbc,
@@ -221,7 +222,11 @@ pub fn begin_receive(
             Some(final_path.to_string_lossy().as_ref()),
             0.0,
         )
-        .ok();
+        .err()
+        .map(|e| terminal_ledger_failure_note(LEDGER_STAGE_BEGIN, transfer_id, &e, None))
+    };
+    if let Some(note) = begin_note {
+        state.logger.error("file", note);
     }
     Ok(final_path)
 }
@@ -577,14 +582,24 @@ pub fn write_chunk(
         )
     };
     if report {
-        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        let _ = crate::content::store::touch_received(
-            &dbc,
-            &cid,
-            &owner,
-            received,
-            crate::db::now_ms(),
-        );
+        // 进度落点写不进去，续传起点就丢了。`report` 本身就是 500ms 节流，warn 级不刷屏。
+        let touch_err = {
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+            crate::content::store::touch_received(
+                &dbc,
+                &cid,
+                &owner,
+                received,
+                crate::db::now_ms(),
+            )
+            .err()
+        };
+        if let Some(e) = touch_err {
+            state.logger.warn(
+                "file",
+                terminal_ledger_failure_note(LEDGER_STAGE_PROGRESS, transfer_id, &e, None),
+            );
+        }
     }
     Ok(received)
 }
@@ -629,9 +644,10 @@ pub fn take_stalled_receive(state: &AppState, now: i64) -> Option<(String, FileR
 pub fn fail_taken_receive(state: &AppState, transfer_id: &str, r: &FileReceiver, reason: &str) {
     // **保留 .part**（不删）：这是断点续传的前缀。只有"确定是永久失败"（校验不符）
     // 才删；超时/断链属于可恢复。陈旧 .part 由 resume_receive 的 TTL 与后续清理收割。
-    {
+    let fail_notes = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::upsert_transfer(
+        let mut notes: Vec<String> = Vec::new();
+        if let Err(e) = db::upsert_transfer(
             &dbc,
             transfer_id,
             &r.peer_id,
@@ -641,21 +657,39 @@ pub fn fail_taken_receive(state: &AppState, transfer_id: &str, r: &FileReceiver,
             "failed",
             None,
             0.0,
-        )
-        .ok();
+        ) {
+            notes.push(terminal_ledger_failure_note(
+                LEDGER_STAGE_FAILED,
+                transfer_id,
+                &e,
+                None,
+            ));
+        }
         // 注意：**不能**把 .part 写进 path —— find_source 只看 path 非空就当作可服务内容，
         // 那样会把"半截文件"当成完整种子发出去。.part 的位置由 transfer_id 推导。
         let _ = &r.tmp_path;
         // 统一状态：中途失败/超时/断链 ⇒ **Incomplete**（可恢复）。
         // 于是建链时 retry_incomplete_content 会按退避自动重取，而不是永远停在 Active。
-        let _ = crate::content::store::record_failure(
+        // 单独一格 stage：这一笔丢的是"能不能自动重取"，不是界面显示。
+        if let Err(e) = crate::content::store::record_failure(
             &dbc,
             &r.expected_sha256,
             &r.peer_id,
             crate::content::model::Direction::Receive,
             crate::content::model::FailReason::Partial,
             db::now_ms(),
-        );
+        ) {
+            notes.push(terminal_ledger_failure_note(
+                LEDGER_STAGE_INCOMPLETE,
+                transfer_id,
+                &e,
+                None,
+            ));
+        }
+        notes
+    };
+    for note in fail_notes {
+        state.logger.error("file", note);
     }
     emit_failed(state, transfer_id, reason);
 }
@@ -730,12 +764,62 @@ pub async fn finish_receive(
     // "慢活整体在 spawn_blocking 里"两件事）。
     let st = state.clone();
     let transfer_id = transfer_id.to_string();
-    tokio::task::spawn_blocking(move || finish_receiver_into(&st.db, &transfer_id, r))
+    tokio::task::spawn_blocking(move || finish_receiver_into(&st.db, &st.logger, &transfer_id, r))
         .await
         // 阻塞任务只会在 panic / 运行时关闭时出错；两种都当"这次没收口"上抛，
         // 由调用方那一条失败分支照原样发 `file-failed` + 回一帧失败确认（不谎报成功）。
         .map_err(|e| format!("接收收尾任务被中断: {e}"))?
         .map(Some)
+}
+
+/// 台账写入的阶段名。每格都要有调用点，也要有用例。
+pub(crate) const LEDGER_STAGE_BEGIN: &str = "begin-active";
+pub(crate) const LEDGER_STAGE_FAILED: &str = "failed-terminal";
+pub(crate) const LEDGER_STAGE_INCOMPLETE: &str = "incomplete-record";
+pub(crate) const LEDGER_STAGE_PROGRESS: &str = "progress-touch";
+pub(crate) const LEDGER_STAGE_SIZE: &str = "size-mismatch-failed";
+pub(crate) const LEDGER_STAGE_SHA: &str = "sha-mismatch-failed";
+pub(crate) const LEDGER_STAGE_FSYNC: &str = "fsync-failed";
+pub(crate) const LEDGER_STAGE_RENAME: &str = "rename-failed";
+pub(crate) const LEDGER_STAGE_DONE_REPAIRED: &str = "done-tx-repaired";
+pub(crate) const LEDGER_STAGE_DONE_BOTH: &str = "done-tx-and-fallback";
+
+/// 台账关键写入失败时要留的那一句（纯函数，便于单独测文本形状）。
+///
+/// 三种情况靠 `stage` 与 `fallback` 区分：只有主写入失败、主写失败但补偿成功
+/// （`done-tx-repaired`）、主写与补偿都失败（`done-tx-and-fallback`）。
+/// 日志自身落盘失败由 Logger 处理，不经过这里。
+///
+/// 只带阶段、传输 id 和 SQLite 错误文本（截到 `LEDGER_ERR_TEXT_MAX` 字符）；这一句
+/// 不主动写入文件名、落盘路径或内容。rusqlite 里唯一自带路径的变体是 `InvalidPath`，
+/// 它只在打开库文件时产生，收尾这条路上碰不到。
+pub(crate) fn terminal_ledger_failure_note(
+    stage: &str,
+    transfer_id: &str,
+    err: &rusqlite::Error,
+    fallback: Option<&rusqlite::Error>,
+) -> String {
+    let primary = bounded_err_text(err);
+    match fallback {
+        None => format!("台账写入失败 stage={stage} id={transfer_id}: {primary}"),
+        Some(second) => format!(
+            "台账写入失败 stage={stage} id={transfer_id}: 主写={primary} · 补偿也失败={} ⇒ 该行可能仍停在 active（界面上的进度会一直不动）",
+            bounded_err_text(second)
+        ),
+    }
+}
+
+/// 错误文本进日志的字符上界。SQLite 原文长度不可控（一条 `no such column` 会把候选列名全列出来），
+/// 而这一句要的只是"哪一步、为什么"。
+const LEDGER_ERR_TEXT_MAX: usize = 240;
+
+fn bounded_err_text(err: &rusqlite::Error) -> String {
+    let raw = err.to_string();
+    if raw.chars().count() <= LEDGER_ERR_TEXT_MAX {
+        return raw;
+    }
+    let head: String = raw.chars().take(LEDGER_ERR_TEXT_MAX).collect();
+    format!("{head}…")
 }
 
 /// 摘出接收器之后的收尾：完整性裁决 → fsync → 改名落盘 → 落库终态。
@@ -751,33 +835,13 @@ pub async fn finish_receive(
 /// 另外它拿不到 `file_receivers` 那张表 ⇒ "持锁 fsync" 那个形状不可能从这里长回去。
 fn finish_receiver_into(
     db_lock: &std::sync::Mutex<rusqlite::Connection>,
+    logger: &Logger,
     transfer_id: &str,
     mut r: FileReceiver,
 ) -> Result<(String, u64, PathBuf, String), String> {
     if r.received != r.size {
         let _ = std::fs::remove_file(&r.tmp_path);
-        let dbc = db_lock.lock().unwrap_or_else(|e| e.into_inner());
-        db::upsert_transfer(
-            &dbc,
-            transfer_id,
-            &r.peer_id,
-            &r.name,
-            r.size,
-            "receive",
-            "failed",
-            None,
-            0.0,
-        )
-        .ok();
-        return Err("文件传输未完成".to_string());
-    }
-    // 文件级完整性校验：实际 SHA-256 必须与发送方声明一致，否则不落盘
-    {
-        use sha2::Digest;
-        let actual = r.hasher.clone().finalize();
-        let actual_hex: String = actual.iter().map(|b| format!("{b:02x}")).collect();
-        if !actual_hex.eq_ignore_ascii_case(&r.expected_sha256) {
-            let _ = std::fs::remove_file(&r.tmp_path);
+        let note = {
             let dbc = db_lock.lock().unwrap_or_else(|e| e.into_inner());
             db::upsert_transfer(
                 &dbc,
@@ -790,26 +854,65 @@ fn finish_receiver_into(
                 None,
                 0.0,
             )
-            .ok();
+            .err()
+            .map(|e| terminal_ledger_failure_note(LEDGER_STAGE_SIZE, transfer_id, &e, None))
+        };
+        if let Some(note) = note {
+            logger.error("file", note);
+        }
+        return Err("文件传输未完成".to_string());
+    }
+    // 文件级完整性校验：实际 SHA-256 必须与发送方声明一致，否则不落盘
+    {
+        use sha2::Digest;
+        let actual = r.hasher.clone().finalize();
+        let actual_hex: String = actual.iter().map(|b| format!("{b:02x}")).collect();
+        if !actual_hex.eq_ignore_ascii_case(&r.expected_sha256) {
+            let _ = std::fs::remove_file(&r.tmp_path);
+            let note = {
+                let dbc = db_lock.lock().unwrap_or_else(|e| e.into_inner());
+                db::upsert_transfer(
+                    &dbc,
+                    transfer_id,
+                    &r.peer_id,
+                    &r.name,
+                    r.size,
+                    "receive",
+                    "failed",
+                    None,
+                    0.0,
+                )
+                .err()
+                .map(|e| terminal_ledger_failure_note(LEDGER_STAGE_SHA, transfer_id, &e, None))
+            };
+            if let Some(note) = note {
+                logger.error("file", note);
+            }
             return Err("文件完整性校验失败".to_string());
         }
     }
     if let Err(e) = r.file.sync_all() {
         let reason = e.to_string();
         let _ = std::fs::remove_file(&r.tmp_path);
-        let dbc = db_lock.lock().unwrap_or_else(|e| e.into_inner());
-        db::upsert_transfer(
-            &dbc,
-            transfer_id,
-            &r.peer_id,
-            &r.name,
-            r.size,
-            "receive",
-            "failed",
-            None,
-            0.0,
-        )
-        .ok();
+        let note = {
+            let dbc = db_lock.lock().unwrap_or_else(|e| e.into_inner());
+            db::upsert_transfer(
+                &dbc,
+                transfer_id,
+                &r.peer_id,
+                &r.name,
+                r.size,
+                "receive",
+                "failed",
+                None,
+                0.0,
+            )
+            .err()
+            .map(|e| terminal_ledger_failure_note(LEDGER_STAGE_FSYNC, transfer_id, &e, None))
+        };
+        if let Some(note) = note {
+            logger.error("file", note);
+        }
         return Err(reason);
     }
     drop(r.file);
@@ -824,19 +927,25 @@ fn finish_receiver_into(
     }
     if let Err(e) = std::fs::rename(&r.tmp_path, &r.final_path) {
         let reason = e.to_string();
-        let dbc = db_lock.lock().unwrap_or_else(|e| e.into_inner());
-        db::upsert_transfer(
-            &dbc,
-            transfer_id,
-            &r.peer_id,
-            &r.name,
-            r.size,
-            "receive",
-            "failed",
-            None,
-            0.0,
-        )
-        .ok();
+        let note = {
+            let dbc = db_lock.lock().unwrap_or_else(|e| e.into_inner());
+            db::upsert_transfer(
+                &dbc,
+                transfer_id,
+                &r.peer_id,
+                &r.name,
+                r.size,
+                "receive",
+                "failed",
+                None,
+                0.0,
+            )
+            .err()
+            .map(|e| terminal_ledger_failure_note(LEDGER_STAGE_RENAME, transfer_id, &e, None))
+        };
+        if let Some(note) = note {
+            logger.error("file", note);
+        }
         return Err(reason);
     }
     // 终态要**一次写全**：`file_transfers` 说 done 而 `content_transfers` 还停在 active/incomplete，
@@ -875,8 +984,9 @@ fn finish_receiver_into(
             )?;
             tx.commit()
         });
-        if both.is_err() {
-            db::upsert_transfer(
+        let done_note = match both {
+            // 补偿写成功：file_transfers 收口，content_transfers 留给下次建链补（状态仍正确）。
+            Err(primary) => match db::upsert_transfer(
                 &dbc,
                 transfer_id,
                 &r.peer_id,
@@ -886,8 +996,26 @@ fn finish_receiver_into(
                 "done",
                 Some(r.final_path.to_string_lossy().as_ref()),
                 1.0,
-            )
-            .ok();
+            ) {
+                Ok(()) => Some(terminal_ledger_failure_note(
+                    LEDGER_STAGE_DONE_REPAIRED,
+                    transfer_id,
+                    &primary,
+                    None,
+                )),
+                // 两次都失败：两张表都可能停在 active，界面上的进度就永远不动。
+                Err(second) => Some(terminal_ledger_failure_note(
+                    LEDGER_STAGE_DONE_BOTH,
+                    transfer_id,
+                    &primary,
+                    Some(&second),
+                )),
+            },
+            Ok(()) => None,
+        };
+        drop(dbc);
+        if let Some(note) = done_note {
+            logger.error("file", note);
         }
     }
     Ok((

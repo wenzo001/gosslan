@@ -18,6 +18,7 @@ pub mod content;
 /// 公开给 `examples/e2e_peer.rs` 协议级 E2E 测试对端复用（线格式与密码学原语）。
 pub mod crypto;
 mod db;
+mod db_hold;
 mod device;
 pub mod discovery;
 /// 聊天记录导出（纯文字单文件）：磁盘满 / 换机时的自救手段。
@@ -535,6 +536,22 @@ pub fn run() {
                                 }
                                 tokio::time::sleep(delay).await;
                             }
+                        }
+                    }
+                });
+            }
+            // db 持锁观测：每分钟读走一次计数，只有真出现慢持锁才产一行。
+            // 读者必须只有这一处（take_summary 会清零，两个读者会互相吞计数）。
+            {
+                let st = state.clone();
+                tauri::async_runtime::spawn(async move {
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                        let summary = st.db.take_summary();
+                        if let Some(line) =
+                            db_hold::summary_line(&summary, st.db.slow_threshold_ms())
+                        {
+                            st.logger.info("db", line);
                         }
                     }
                 });
