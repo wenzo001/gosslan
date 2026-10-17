@@ -3,9 +3,10 @@
 //! `AppState::db` 用的是这里的 `DbLock`：取锁语义与 `std::sync::Mutex` 一致（含 poisoning，
 //! 调用点写法一字不变），只在**释放锁之后**更新几个原子计数，因此不会因为埋点加长持锁。
 //!
-//! 覆盖范围如实限定：经 `DbLock` 的 `lock()` / `try_lock()` 全部计入；直接构造的
-//! `Mutex<Connection>`（例如测试夹具）不在这把锁上，不计入。持有期间的耗时能测到，
-//! 但测不出"是谁拿的"（没有标签体系），所以定位要靠"最长持有 + 最长等待 + 超阈值次数"三条一起看。
+//! 覆盖范围如实限定：经 `DbLock` 的 `lock()` / `try_lock()` 全部计入（`try_lock()` 的调用点都在
+//! 桌面侧，移动端今天只有 `lock()`）；直接构造的 `Mutex<Connection>`（例如测试夹具）不在这把锁上，
+//! 不计入。持有期间的耗时能测到，但测不出"是谁拿的"（没有标签体系），所以定位要靠
+//! "最长持有 + 最长等待 + 超阈值次数"三条一起看。
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -74,6 +75,11 @@ impl<T> DbLock<T> {
     }
 
     /// 非阻塞取锁。拿不到的那次没有持锁区间，因此不计数。
+    ///
+    /// 调用点（开窗时那一点群名、辅助窗初始底色）都在 `#[cfg(desktop)]` 里 —— 移动端今天没有
+    /// "不许阻塞主线程的 db 读"。按 `tray.rs` 立的口径用 `cfg_attr` 静音这一条，而不是整块 `#[cfg]`
+    /// 掉：方法与它自己的用例在所有平台都参与编译。
+    #[cfg_attr(mobile, allow(dead_code))]
     pub fn try_lock(&self) -> Result<DbGuard<'_, T>, TryLockError<DbGuard<'_, T>>> {
         let started = Instant::now();
         match self.inner.try_lock() {
