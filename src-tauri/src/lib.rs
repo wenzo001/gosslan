@@ -771,6 +771,7 @@ pub fn run() {
             commands::copy_file_to_clipboard,
             commands::read_clipboard_file_paths,
             commands::save_data_file,
+            commands::save_media_as,
             commands::delete_file,
             commands::save_outgoing_image,
             commands::open_file_native,

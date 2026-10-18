@@ -13,8 +13,11 @@ import type { MessageDict } from "./dict.ts";
 
 export const zhCN: MessageDict = {
   // ---- 通用 ----
+  "common.actions": "操作",
+  "common.dialog": "对话框",
   "common.cancel": "取消",
   "common.confirm": "确定",
+  "common.retry": "重试",
   "common.clear": "清除",
   "common.notSet": "未设置",
   "common.chooseFolder": "选择文件夹",
@@ -40,6 +43,7 @@ export const zhCN: MessageDict = {
   // ---- 运行日志页 ----
   "logs.title": "运行日志",
   "logs.empty": "暂无日志。应用只在关键事件或出错时记录，正常情况下保持安静。",
+  "logs.loadFail": "日志读取失败",
   "logs.count": "{n} 条",
   "logs.copy": "复制",
   "logs.copied": "已复制",
@@ -262,6 +266,7 @@ export const zhCN: MessageDict = {
 
   // ---- 网络通道 ----
   "settings.network.lan": "局域网通道",
+  "network.refreshFail": "读取网卡信息失败",
   "settings.network.lan.desc": "发现并连接同一局域网内的其他设备",
   "settings.network.lan.peers": "{n} 个节点在线",
   "settings.network.lan.off": "未开启",
@@ -368,6 +373,7 @@ export const zhCN: MessageDict = {
 
   // ---- 聊天头部 ----
   "chat.header.back": "返回",
+  "chat.loadFail": "消息加载失败",
   "chat.header.backUnread": "返回，{n} 条未读",
   "chat.header.conversation": "会话",
   "chat.header.members": "群成员",
@@ -498,6 +504,7 @@ export const zhCN: MessageDict = {
   "msg.failedCount": "{n} 人失败",
   "msg.imageLoadFailed": "图片加载失败",
   "msg.imagePreview": "图片预览",
+  "msg.lightbox.loading": "正在加载图片…",
   "msg.cannotPreview": "无法预览该图片",
   "msg.locateOriginal": "点击定位到原消息（{id}）",
   "msg.locateQuote": "定位到引用的消息",
@@ -578,7 +585,7 @@ export const zhCN: MessageDict = {
   "todo.create": "新建任务",
   "todo.empty": "暂无任务",
   "todo.loading": "正在加载任务…",
-  "todo.loadFail": "任务读取失败，关掉窗口再打开可重试",
+  "todo.loadFail": "任务读取失败",
   "todo.doneCount": "{n}/{total} 已完成",
   // 状态由用户手动选、不做截止时间（「延期」就是人标出来的状态）；
   // 「做不了」（2026-10-12）与完成同族，是可归档的终态。
@@ -700,6 +707,11 @@ export const zhCN: MessageDict = {
   "todo.impossibleNoticeNoTitle": "你创建的任务被标记为做不了",
   "preview.title": "图片预览",
   "preview.unavailable": "这台设备暂时打不开这张图的预览",
+  "preview.loading": "正在载入图片…",
+  "preview.empty": "图片不可用或已过期",
+  "preview.error": "图片加载失败",
+  "preview.retry": "重试",
+  "preview.timeout": "预览加载超时",
   "todo.windowNoGroup": "还没有选择要查看哪个群的任务",
   "nav.links": "链接",
   "links.title": "外部链接",
@@ -908,9 +920,6 @@ export const zhCN: MessageDict = {
   "share.empty": "对方未设置共享目录或目录为空",
   "share.toast.downloading": "开始下载「{name}」",
   "share.toast.downloadFail": "下载失败",
-  "topo.nodes": "{n} 节点",
-  "topo.relays": "{n} 中继",
-  "topo.rtt": "平均时延 {rtt}",
 
   // ---- 会话列表（删除 / 空态 / 搜索） ----
   "common.deleteFail": "删除失败",
@@ -984,6 +993,7 @@ export const zhCN: MessageDict = {
   "diag.virtual": "虚拟",
   "diag.selected": "选中",
   "diag.loading": "加载中...",
+  "diag.loadFail": "诊断数据读取失败",
   // ---- 网络诊断重构（用户 2026-09-13）：一条通道一张卡，蓝牙有自己的状态，
   //      「最近事件」已并入运行日志，不再有 diag.events / diag.noEvents。
   "diag.channels": "通道状态",

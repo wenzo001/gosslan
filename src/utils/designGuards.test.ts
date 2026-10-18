@@ -37,6 +37,7 @@ import {
   checkTodoCardImageLimit,
   findLiteralRadiusClasses,
   findDirectSemanticIconImports,
+  findHandWrittenSolidDangerButtons,
 } from "./designGuards.ts";
 
 // ---------------- ⓪ 选中态/原生控件颜色必须吃主题变量（#35-N7） ----------------
@@ -2731,6 +2732,14 @@ test("㊱ 真实树：BaseModal 的外壳层确实读了 window-safe-top，且�
     "桌面的安全区覆盖必须挂在 `html:not(.is-mobile)` 上（不能用 .platform-mac 当桌面判据 —— Windows/Linux 会拿不到）");
   assert.match(css, /--gosslan-scroll-gutter:\s*\d+px/,
     "滚动条留白间距变量必须在中央变量区定义（BaseModal 的内容区读它）");
+
+  // Reka 的 DialogContent 要求每个对话框都有可访问名称（DialogTitle）。整页形态允许不传 title，
+  // 所以两条分支各要有一份 sr-only 兜底；删掉任何一份，读屏就只能报一个没有名字的对话框。
+  const modalSrc = readFileSync(join(srcDir, "components", "BaseModal.vue"), "utf8");
+  assert.match(modalSrc, /<DialogContent\b/, "BaseModal 必须由 Reka 的 DialogContent 承载");
+  const fallbacks = [...modalSrc.matchAll(/<DialogTitle\s+v-if="!title"\s+class="sr-only"/g)].length;
+  assert.equal(fallbacks, 2,
+    "整页形态与卡片形态各需要一份 sr-only DialogTitle 兜底（无 title 时仍要有可访问名称）");
   console.log("· ㊱ 分母：BaseModal 外壳 " + safeHits + " 层读安全区变量 + 卡片 max-h 扣除 + my-auto 居中；"
     + "style.css 两个变量定义齐备");
 });
@@ -2981,6 +2990,12 @@ const SEMANTIC_ICON_NAMES = ["Check", "Loader2", "RotateCcw", "Trash2", "X"];
 test("㊵ 高频语义图标直连 lucide → 报；走入口 → 放行（夹具）", () => {
   const buggy = `<script setup lang="ts">\nimport { Loader2, X } from "lucide-vue-next";\n</script>`;
   assert.equal(findDirectSemanticIconImports(buggy, SEMANTIC_ICON_NAMES).length, 2);
+  const swallowed = `<script setup lang="ts">\nimport { computed, ref } from "vue";\nimport { api } from "@/api";\nimport { Loader2, RotateCw } from "lucide-vue-next";\n</script>`;
+  assert.equal(
+    findDirectSemanticIconImports(swallowed, SEMANTIC_ICON_NAMES).length,
+    1,
+    "跨多条 import 也必须逐条匹配（旧正则把前面的 import 吞进来 ⇒ 直连 Loader2 漏报）",
+  );
 
   const ok = `<script setup lang="ts">\nimport { Loader2, X } from "@/components/ui/icons";\n</script>`;
   assert.deepEqual(findDirectSemanticIconImports(ok, SEMANTIC_ICON_NAMES), []);
@@ -3021,4 +3036,33 @@ test("㊵ 真实树：5 个高频语义图标只从 ui/icons.ts 引（分母现�
     assert.ok(new RegExp(`\\b${name}\\b`).test(barrel), `ui/icons.ts 必须导出 ${name}`);
   }
   console.log(`· ㊵ 分母：扫 ${files.length} 份源码，高频语义图标直连 lucide 0 处`);
+});
+
+// ---------------- ㊶ 实底危险按钮只走 DangerBtn ----------------
+
+test("㊶ 手写实底危险按钮 → 报；DangerBtn / 圆形徽标 / hover-only → 放行（夹具）", () => {
+  const buggy = `<template><button class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-2 text-sm text-white">删</button></template>`;
+  assert.equal(findHandWrittenSolidDangerButtons(buggy).length, 1);
+
+  const opacityBug = `<template><button class="bg-[var(--gosslan-danger)] hover:opacity-90">删</button></template>`;
+  assert.equal(findHandWrittenSolidDangerButtons(opacityBug).length, 1, "hover:opacity-90 的旧写法也必须被抓到");
+
+  const ok = `<template><DangerBtn size="large">删</DangerBtn><button class="rounded-full bg-[var(--gosslan-danger)] h-4 w-4">x</button><button class="hover:bg-[var(--gosslan-danger)]">x</button></template>`;
+  assert.deepEqual(findHandWrittenSolidDangerButtons(ok), []);
+});
+
+test("㊶ 真实树：实底危险按钮只剩 DangerBtn（分母现算）", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const files = collectVueFiles(srcDir);
+  assert.ok(files.length > 50, `只扫到 ${files.length} 份 .vue ⇒ 遍历路径大概错了，这条绿不算数`);
+
+  const bad: string[] = [];
+  for (const f of files) {
+    if (f.endsWith("components/ui/DangerBtn.vue")) continue;
+    for (const issue of findHandWrittenSolidDangerButtons(readFileSync(f, "utf8"))) {
+      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+    }
+  }
+  assert.deepEqual(bad, [], `以下位置仍在手写实底危险按钮：\n${bad.join("\n")}`);
+  console.log(`· ㊶ 分母：扫 ${files.length} 份 .vue（排除 DangerBtn 自身），手写实底危险按钮 0 处`);
 });

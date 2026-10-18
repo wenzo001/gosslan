@@ -694,3 +694,33 @@ PROBE_N=500 PROBE_BYTES=2097152 node perf/previewHeap.mjs    # 更大规模（�
 ③ renderer RSS 当粗上界 ⇒ **剂量对照把它判死了**：喂 12.5 MB 涨 130 MB、喂 200 MB 只涨 11.8 MB，
 完全不跟剂量走（第一版还把"两次读数之间多出一个 renderer"算进增量，那个洞修掉之后仍然不跟剂量走）。
 
+
+## 2026-10-18 复跑：20k 基线 + 10 万档「未归因」结案（P7 测量后不改码）
+
+同一台机器、headless Brave（`--disable-gpu --disable-software-rasterizer` 未加）、dev 构建，
+先过 `probe.mjs` 自检（`scrollerReal: true` / `virtualizationOK: true`），再采数。命令与上面三步相同，
+只有 10 万档走 `PERF_ONLY=calib`（整表估算一遍，不滚 660 帧）。
+
+| 档位 | 读数 | 读法 |
+|---|---|---|
+| 20k `calib()`（5 次） | **1.3 ms/遍**（min 1.1 / max 2.7；0.07 µs/条） | 整表前缀和重算在 20k 档只占一帧的 ~8% |
+| 20k cold 60 帧 × 800px | avg 16.7 / p50 16.7 / p95 **17.5** / max 18.3 ms；`longFramesOver50ms` **0** | 未掉帧 |
+| 20k warm 300 帧（上/下各一轮） | p95 **16.8** / max ≤17.9 ms；`longFramesOver50ms` **0** | 未掉帧 |
+| 20k 定位 | `targetRendered: true`（0 / 1 / 10000 / 19998 / 19999） | 10k 与末尾各有 overlap/gap 对（估算高度与真实渲染高度的固有误差，非本轮改动） |
+| **100k `calib()`** | **1768.4 ms/遍**（min 1606.8 / max 1901；**17.68 µs/条**） | **不是线性**：20k→100k 条数 ×5，单遍却 ×1360 |
+
+10 万档为什么突然贵：`utils/messageHeight.ts` 的 `BUBBLE_CACHE_MAX = 50_000`。
+100k 条时缓存装不下，每一遍都会把前 50k 挤出去 ⇒ 下一遍这 50k 全部 cache miss，
+重新走 `computeBubbleHeight`（file 类消息还要 `JSON.parse`）。20k 档整表都装得下，
+所以第一遍之后全是哈希查找 —— 两档量的不是同一个算法阶段。
+
+**这条 10 万读数不构成产品问题**：`useChatStore.ts:1281-1282,1330` 的缓存上界是
+`PAGE_SIZE(100) × MAX_PAGES(10) = 1000 条/会话`（`MAX_CACHED_CONVS = 8` 个会话）。
+按 20k 的线性成本外推，1000 条整表重算 ≈ **0.065 ms/帧**；按 10 万档的 cache-miss 成本也只在
+“超过 5 万条”时才付，产品里到不了。⇒ **VirtualList 的前缀和不动**（`perf/README` 上方自己那条
+“不许为性能赌坏虚拟列表”依然成立）。
+
+`file-progress` 也**不加前端批处理**：Rust 侧已经是 250 ms（`network/file/send.rs:489-527`、
+`handle_file.rs:367-393`）/ 1000 ms（`relay_file.rs:194-207`）节流；前端
+`updateTransferProgress` 只做**单条原地写**（`useChatStore.ts:2386-2394`），
+Vue 在同一 tick 内合并渲染。再叠一层 rAF 合并只会增加延迟与代码面，且没有测到它要治的长帧。

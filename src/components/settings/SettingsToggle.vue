@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { SwitchRoot, SwitchThumb } from "reka-ui";
 import { Loader2 } from "@/components/ui/icons";
 
 withDefaults(
@@ -29,21 +30,20 @@ const emit = defineEmits<{ (e: "update:modelValue", v: boolean): void }>();
 </script>
 
 <template>
-  <button
+  <SwitchRoot
     class="tap-safe relative shrink-0 rounded-full transition"
     :class="[
       size === 'md' ? 'h-6 w-11' : 'h-5 w-9',
       modelValue ? 'bg-[var(--gosslan-primary)]' : 'bg-[var(--gosslan-border)]',
       disabled ? 'opacity-50' : '',
     ]"
-    role="switch"
-    :aria-checked="modelValue"
-    :aria-busy="pending"
-    :aria-label="label"
+    :model-value="modelValue"
     :disabled="disabled"
-    @click="emit('update:modelValue', !modelValue)"
+    :aria-label="label"
+    :aria-busy="pending"
+    @update:model-value="emit('update:modelValue', $event === true)"
   >
-    <span
+    <SwitchThumb
       class="absolute top-0.5 flex items-center justify-center rounded-full bg-white shadow transition-all"
       :class="[
         size === 'md' ? 'h-5 w-5' : 'h-4 w-4',
@@ -58,6 +58,6 @@ const emit = defineEmits<{ (e: "update:modelValue", v: boolean): void }>();
         aria-hidden="true"
       />
       <slot />
-    </span>
-  </button>
+    </SwitchThumb>
+  </SwitchRoot>
 </template>

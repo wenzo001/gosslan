@@ -19,6 +19,7 @@ import { computed, onMounted, ref } from "vue";
 import { Bluetooth, RefreshCw, Wifi } from "lucide-vue-next";
 import BaseModal from "@/components/BaseModal.vue";
 import { api } from "@/api";
+import { friendlyError } from "@/utils/errors";
 import type { DiscoveryDiag, PeerVersionDiag } from "@/types";
 
 defineProps<{ open: boolean }>();
@@ -26,14 +27,17 @@ const emit = defineEmits<{ (e: "close"): void }>();
 
 const diag = ref<DiscoveryDiag | null>(null);
 const loading = ref(false);
+/** 首屏读失败的可读原因；有旧快照时不显示（保留上一次读数，不把内容换成错误页）。 */
+const loadError = ref("");
 
 async function refresh() {
   loading.value = true;
   try {
     // 一次命令拿全（通道 + 候选）：避免两个命令各拿一份、数据对不上
     diag.value = await api.getDiscoveryDiag();
-  } catch {
-    /* 后端未就绪时保持上一次快照，用户可手动重试 */
+    loadError.value = "";
+  } catch (e) {
+    if (!diag.value) loadError.value = friendlyError(e, t("diag.loadFail"));
   } finally {
     loading.value = false;
   }
@@ -363,6 +367,16 @@ function ageText(ms: number | null): string {
       </template>
 
       <div v-else-if="loading" class="py-4 text-center opacity-50">{{ t("diag.loading") }}</div>
+      <div v-else-if="loadError" role="alert" class="space-y-2 py-4 text-center">
+        <p class="text-[var(--gosslan-danger-ink)]">{{ loadError }}</p>
+        <button
+          type="button"
+          class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2.5 py-1 text-[var(--gosslan-primary)] transition hover:bg-[var(--gosslan-hover)]"
+          @click="refresh"
+        >
+          {{ t("common.retry") }}
+        </button>
+      </div>
     </div>
   </BaseModal>
 </template>

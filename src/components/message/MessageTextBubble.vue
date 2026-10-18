@@ -9,7 +9,8 @@ import MessageLinkText from "@/components/message/MessageLinkText.vue";
 import { splitEmoji } from "@/utils/emoji";
 import { mentionHighlightColor } from "@/utils/chatStyle";
 import { parseQuote } from "@/utils/quote";
-import { Check, Copy } from "lucide-vue-next";
+import { Copy } from "lucide-vue-next";
+import { Check } from "@/components/ui/icons";
 
 const props = defineProps<{
   content: string;

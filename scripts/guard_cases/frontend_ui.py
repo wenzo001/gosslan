@@ -431,18 +431,22 @@ CASES: list[Case] = [
         expect_fail_hint="列表必须是全量",
         tags=["frontend", "search"],
     ),
-    # ---------------- 前端：Headless UI 模板插槽 ----------------
+    # ---------------- 前端：Reka Dialog 的可访问名称 ----------------
     Case(
-        name="as=template 插槽不得有注释（dev 保留注释 ⇒ 渲染抛错 ⇒ 窗口卡死）",
-        why="用户实测：点「+ → 添加好友」整个窗口卡死的真因 —— BaseModal 在 TransitionChild 插槽里放了注释",
+        name="BaseModal 无标题时必须有 sr-only DialogTitle（否则读屏没有可访问名称）",
+        why="2026-10-18 从 HeadlessUI 迁到 Reka 后，旧的 as=template 插槽形态已消失；"
+        "新的硬约束是每个 DialogContent 都要有可访问名称 —— 整页形态允许不传 title，"
+        "删掉 sr-only 兜底就会留下一个读屏念不出名字的对话框。",
         file=ROOT / "src" / "components" / "BaseModal.vue",
         injections=[(
-            '<TransitionChild\n            as="template"',
-            '<TransitionChild\n            as="template"\n          >\n            <!-- 注入的注释 -->',
+            '<DialogTitle v-if="!title" class="sr-only">{{ t("common.dialog") }}</DialogTitle>\n'
+            '            </header>',
+            '<span v-if="!title" class="sr-only">{{ t("common.dialog") }}</span>\n'
+            '            </header>',
         )],
         cmd=npm("test"),
         cwd=ROOT,
-        expect_fail_hint="HTML 注释",
+        expect_fail_hint="DialogTitle",
         tags=["frontend", "render"],
     ),
     Case(
@@ -693,10 +697,11 @@ CASES: list[Case] = [
         name="自绘菜单丢掉 frost 必须被抓住（.gosslan-menu 自己不带底）",
         why="`.gosslan-menu` 只声明尺寸/描边/圆角/阴影，底在**另一个类** `.frost` 上（style.css 两条规则）"
         "     ⇒ 漏一个类不报错、不影响构建，只有肉眼看得见（用户 2026-10-09：「筛选下拉都是透明的」，"
-        "     全站六处容器里搜索面板那两处漏了）。注入 = 把 sender 菜单的 frost 摘掉。",
+        "     全站六处容器里搜索面板那两处漏了）。注入 = 把 sender 菜单的 frost 摘掉；"
+        "     2026-10-18 迁 Reka 后菜单内容改由 DropdownMenuContent 承载，锚点跟着新形状走。",
         file=ROOT / "src" / "components" / "search" / "ChatSearchDialog.vue",
-        injections=[('class="gosslan-menu frost absolute right-0 top-9 z-20 max-h-64',
-                     'class="gosslan-menu absolute right-0 top-9 z-20 max-h-64')],
+        injections=[('class="frost gosslan-menu z-[80] max-h-64 overflow-y-auto"',
+                     'class="gosslan-menu z-[80] max-h-64 overflow-y-auto"')],
         cmd=npm("test"),
         cwd=ROOT,
         expect_fail_hint="发现透明得能看见底下一层的自绘菜单",

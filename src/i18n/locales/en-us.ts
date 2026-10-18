@@ -13,7 +13,10 @@ import type { MessageDict } from "./dict.ts";
 
 export const enUS: MessageDict = {
   // ---- Common ----
+  "common.actions": "Actions",
+  "common.dialog": "Dialog",
   "common.cancel": "Cancel",
+  "common.retry": "Retry",
   "common.confirm": "Confirm",
   "common.clear": "Clear",
   "common.notSet": "Not Set",
@@ -40,6 +43,7 @@ export const enUS: MessageDict = {
   // ---- Runtime logs page ----
   "logs.title": "Runtime Logs",
   "logs.empty": "No logs yet. Gosslan only logs key events or errors, staying quiet otherwise.",
+  "logs.loadFail": "Failed to load logs",
   "logs.count": "{n} entries",
   "logs.copy": "Copy",
   "logs.copied": "Copied",
@@ -264,6 +268,7 @@ export const enUS: MessageDict = {
 
   // ---- Network Channel ----
   "settings.network.lan": "LAN Channel",
+  "network.refreshFail": "Failed to read network interfaces",
   "settings.network.lan.desc": "Discover and connect to other devices on the same LAN",
   "settings.network.lan.peers": "{n} peers online",
   "settings.network.lan.off": "Off",
@@ -366,6 +371,7 @@ export const enUS: MessageDict = {
 
   // ---- Chat header ----
   "chat.header.back": "Back",
+  "chat.loadFail": "Failed to load messages",
   "chat.header.backUnread": "Back, {n} unread",
   "chat.header.conversation": "Conversation",
   "chat.header.members": "Members",
@@ -485,6 +491,7 @@ export const enUS: MessageDict = {
   "msg.failedCount": "{n} failed",
   "msg.imageLoadFailed": "Failed to load image",
   "msg.imagePreview": "Image preview",
+  "msg.lightbox.loading": "Loading image…",
   "msg.cannotPreview": "This image can't be previewed",
   "msg.locateOriginal": "Click to jump to the original message ({id})",
   "msg.locateQuote": "Jump to quoted message",
@@ -561,7 +568,7 @@ export const enUS: MessageDict = {
   "todo.create": "New task",
   "todo.empty": "No tasks yet",
   "todo.loading": "Loading tasks…",
-  "todo.loadFail": "Couldn't load tasks — close this window and open it again to retry",
+  "todo.loadFail": "Couldn't load tasks",
   "todo.doneCount": "{n}/{total} done",
   "todo.status.todo": "To do",
   "todo.status.doing": "In progress",
@@ -675,6 +682,11 @@ export const enUS: MessageDict = {
   "todo.impossibleNoticeNoTitle": "A task you created was marked can't-do",
   "preview.title": "Image preview",
   "preview.unavailable": "This image can't be previewed on this device right now",
+  "preview.loading": "Loading image…",
+  "preview.empty": "This image is unavailable or has expired",
+  "preview.error": "Image failed to load",
+  "preview.retry": "Retry",
+  "preview.timeout": "Preview timed out",
   "todo.windowNoGroup": "No group selected for this task window yet",
   "nav.links": "Links",
   "links.title": "External links",
@@ -882,9 +894,6 @@ export const enUS: MessageDict = {
   "share.empty": "The peer hasn't set a shared folder, or it's empty",
   "share.toast.downloading": "Downloading \"{name}\"",
   "share.toast.downloadFail": "Download failed",
-  "topo.nodes": "{n} peers",
-  "topo.relays": "{n} relays",
-  "topo.rtt": "Avg latency {rtt}",
 
   // ---- Conversation list (delete / empty / search) ----
   "common.deleteFail": "Delete failed",
@@ -958,6 +967,7 @@ export const enUS: MessageDict = {
   "diag.virtual": "Virtual",
   "diag.selected": "Selected",
   "diag.loading": "Loading…",
+  "diag.loadFail": "Couldn't load diagnostics",
   "diag.channels": "Channels",
   "diag.lan": "LAN",
   "diag.bt": "Bluetooth (BLE)",

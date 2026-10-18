@@ -366,13 +366,6 @@ export interface ContentAudience {
   hint: string;
 }
 
-export interface TopologyInfo {
-  node_count: number;
-  relay_count: number;
-  avg_rtt_ms: number | null;
-  online: boolean;
-}
-
 /** 传输通道状态（局域网 / 蓝牙） */
 /**
  * 运行状态的**唯一快照**（与 Rust 的 `RuntimeSnapshot` 逐字对应，用户要求的第 ② 项）。

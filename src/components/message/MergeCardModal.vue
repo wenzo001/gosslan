@@ -13,7 +13,7 @@
  * 不带 cid 的旧载荷 / 文件（非图片）没有回源钥匙，只能显示 `[图片] 名字` / `[文件] 名字`。
  */
 import { computed, onBeforeUnmount, reactive, watch } from "vue";
-import { Loader2 } from "lucide-vue-next";
+import { Loader2 } from "@/components/ui/icons";
 import { t } from "@/i18n";
 import BaseModal from "@/components/BaseModal.vue";
 import { useImagePreviewStore } from "@/stores/useImagePreview";

@@ -117,7 +117,7 @@ gosslan/
 │   └── components/
 │       ├── NavRail.vue / ConversationList.vue / ChatWindow.vue
 │       ├── MessageItem.vue / CodeBlock.vue / VirtualList.vue
-│       ├── TopologyBar.vue / BaseModal.vue
+│       ├── BaseModal.vue
 │       └── ShareDirectory.vue / SettingsPanel.vue / AddFriendModal.vue / GroupCreateModal.vue
 └── src-tauri/                # Rust 后端
     ├── Cargo.toml
@@ -277,11 +277,13 @@ git push origin main && git push origin v1.0.1
 
 ```bash
 npm run verify        # 快速层：结构门禁 + 前端断言 + vue-tsc 类型检查，不碰 cargo（秒级）
-npm run verify:full   # 重门禁层：cargo fmt/clippy/test、Rust 清单、护栏非空转、Android 交叉编译
+npm run verify:local  # 本地日常重门禁：只跳过「护栏非空转」，其余照跑（2026-10-18 实测 64.0s）
+npm run verify:full   # 完整重门禁：cargo fmt/clippy/test、Rust 清单、护栏非空转、Android 交叉编译
 ```
 
 **默认跑快速层就够日常用**，但它**不等于"编得过"** —— 结束时脚本会列出没跑哪几项。
-改过 Rust 代码 / `Cargo.*` / 构建配置，提交前必须 `npm run verify:full`；
+改过 Rust 代码 / `Cargo.*` / 构建配置，本地跑 `npm run verify:local`（只跳过最长的护栏非空转，
+起跑与汇总都会点名）；完整 `verify:full` 留到发版/推送前或交给 CI；
 发版或出包前再加 `-- --full`（全部护栏逐条改坏验证，条数由脚本自己打印）。
 CI（`verify.yml`）在任意分支每次 push 全跑，是这套分层的兜底。判据细节见 `AI_RULES.md` §37.1。
 

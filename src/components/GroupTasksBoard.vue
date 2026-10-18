@@ -19,6 +19,12 @@
  * `canArchiveOrReopenTodo` 是显示用的镜像）—— 界面只是"不给按钮"，真正的拦截在后端命令里。
  */
 import { computed, onMounted, onBeforeUnmount, onUnmounted, ref, watch } from "vue";
+import {
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuPortal,
+  DropdownMenuRoot,
+} from "reka-ui";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { isAndroid } from "@/utils/platform";
@@ -27,6 +33,7 @@ import { useChatStore } from "@/stores/useChatStore";
 import { useMemberProfile } from "@/composables/useMemberProfile";
 import { useMentionContext } from "@/composables/useMentionContext";
 import BaseModal from "@/components/BaseModal.vue";
+import StateBlock from "@/components/ui/StateBlock.vue";
 import { useImagePreviewStore } from "@/stores/useImagePreview";
 import TodoDetailDialog from "@/components/TodoDetailDialog.vue";
 import TodoImageThumb from "@/components/TodoImageThumb.vue";
@@ -34,14 +41,16 @@ import TodoPickField from "@/components/TodoPickField.vue";
 import TodoIconPicker from "@/components/TodoIconPicker.vue";
 import {
   TODO_CATEGORIES, TODO_CATEGORY_LABEL_KEY, TODO_CATEGORY_ICON_CLASS, TODO_CATEGORY_PILL, TODO_CUSTOM_CATEGORY_MAX_LEN, TODO_PRIORITIES, TODO_PRIORITY_LABEL_KEY, TODO_PRIORITY_ICON_CLASS, TODO_PRIORITY_PILL, TODO_STATUSES, TODO_STATUS_BAR, TODO_STATUS_CLASS, TODO_STATUS_DEFAULT, TODO_STATUS_LABEL_KEY, TODO_STATUS_PILL, buildTodoHistory, canArchiveOrReopenTodo, canEditAssignees, canUpdateTodo, foldTodos, isEffectivelyArchived, isTodoTerminalStatus, parseTodo, todoCategoryName, todoCode, type TodoHistoryEntry, type TodoImage, type TodoItem, type TodoCategory, type TodoPriority, type TodoStatus, TODO_CUSTOM_ICON_DEFAULT, type TodoCustomIcon, } from "@/utils/todos";
+import { isTodoRowsLoaded, todoRowsLoadState } from "@/utils/todos";
 import { TODO_CUSTOM_ICON_COMPONENTS } from "@/utils/todoCustomIcons";
+import { friendlyError } from "@/utils/errors";
 import { api } from "@/api";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
-import { popupLeft, popupPlacement, popupWidth } from "@/utils/popupPosition";
 import { MAX_TODO_IMAGE_BYTES, TODO_IMAGE_LIMIT_MB } from "@/utils/imageBytes";
 import { t } from "@/i18n";
+import DangerBtn from "@/components/ui/DangerBtn.vue";
 import { Archive, Bug, CheckCircle2, ChevronDown, ChevronsDown, Circle, CircleDot, Clock, ImagePlus, Lightbulb, ListTodo, Minus, Plus, Tag, XCircle, Zap } from "lucide-vue-next";
-import { Check, Loader2, RotateCcw, X } from "@/components/ui/icons";
+import { Check, RotateCcw, X } from "@/components/ui/icons";
 
 const props = defineProps<{
   groupId: string | null;
@@ -72,11 +81,39 @@ const groupMembers = computed<string[]>(() => group.value?.members ?? []);
 /** 折叠出全部任务（按创建版本从新到旧），再拆成「活动」与「已归档」。 */
 /** 取数口：那份**全表读**的任务行，不是有上界的消息缓存（`#154-9`；语义见 store 里 groupTodoRows 的注释）。 */
 const todos = computed(() => foldTodos(chat.groupTodoRows[convId.value] ?? []));
-// 面板/独立任务窗都可能先于启动时那次 bulk 读打开 ⇒ 按需补读，读过就不再打 IPC
+/**
+ * 首屏补读 + 它自己的三态。
+ *
+ * 面板/独立任务窗都可能先于启动时那次 bulk 读打开 ⇒ 按需补读，读过就不再打 IPC。
+ * 这一读是**异步 IPC**：失败时若什么都不画，下面的 `shownCount === 0` 会把
+ * 「读失败」显示成「暂无任务」—— 假空态，用户没有任何重试入口。
+ * 因此这里自己持有 loading/error：`rowsLoaded` 为假且没有错误 ⇒ 加载中；
+ * 有错误 ⇒ 错误块 + 重试。读失败的原因由 store 记在 `groupTodoRowsErrors`
+ * （三个入口共用一份单飞），这里只负责呈现。
+ *
+ * `open` 一起看：同一群关掉再打开时也要重新试一次（尤其上次失败过）。
+ */
+const rowsState = computed(() =>
+  convId.value
+    ? todoRowsLoadState(chat.groupTodoRows, chat.groupTodoRowsErrors, convId.value)
+    : { status: "ready" as const, error: "" },
+);
+const rowsLoading = ref(false);
+async function loadTodoRows() {
+  const id = props.groupId;
+  if (!id) return;
+  if (isTodoRowsLoaded(chat.groupTodoRows, `group:${id}`)) return;
+  rowsLoading.value = true;
+  try {
+    await chat.ensureGroupTodoRows(`group:${id}`);
+  } finally {
+    rowsLoading.value = false;
+  }
+}
 watch(
-  () => props.groupId,
-  (id) => {
-    if (id) void chat.ensureGroupTodoRows(`group:${id}`);
+  [() => props.groupId, () => props.open],
+  ([id, open]) => {
+    if (id && open !== false) void loadTodoRows();
   },
   { immediate: true },
 );
@@ -129,34 +166,26 @@ const filter = ref<TodoFilter>("mine");
 /**
  * 行内状态菜单：同一时间只开一个（行是 v-for，不能每行一个 bool）。
  *
- * ⚠️ 面板**必须 Teleport 到 body 后用 fixed 坐标**（用户 2026-09-24：下拉被遮挡）。
- * 挂在行里时被两层东西裁掉：列表卡片自己的 `overflow-hidden`（画圆角用的）
- * 和外面那层 `overflow-y-auto` 滚动容器 —— 与已读成员弹层、表情面板是同一个坑的第三处，
- * 那两处 2026-09-24 已经改过（`MessageReceipt` / `MessageItem`），判据也早就抽成
- * `utils/popupPosition`，这里只是终于用上了它。
- * 菜单项只有 4 条、宽度固定 8rem，所以不像列表那样需要估高度：
- * 横向按入口右缘对齐向左展开（不顶出屏幕右缘），纵向过视口中线就往上弹。
+ * ⚠️ 菜单**必须 Portal 到 body**（用户 2026-09-24：下拉被遮挡）。挂在行里时被两层东西裁掉：
+ * 列表卡片自己的 `overflow-hidden`（画圆角用的）和外面那层 `overflow-y-auto` 滚动容器。
+ * 现在由 Reka DropdownMenu 的 Portal + 虚拟锚点（入口右缘/下缘）负责翻转与贴边；
+ * 本仓只留互斥注册与「滚动就收起」（虚拟锚点是入口当时的坐标，会跟丢）。
  */
 const rowMenuId = ref<string | null>(null);
 /** Teleport 出去之后拿不到"是哪条任务"，所以目标项自己也要留一份。 */
 const rowMenuTodo = ref<TodoItem | null>(null);
-/** fixed 坐标：往下弹用 `top`、往上弹用 `bottom`（贴入口上缘），不估菜单高度。 */
-const rowMenuPos = ref<{ left: number; top: number | null; bottom: number | null; width: number } | null>(
-  null,
-);
+/** 虚拟锚点：入口右缘 + 下缘。翻转/贴边由 Reka 的 floating-ui 负责，不再手算 top/bottom。 */
+const rowMenuPos = ref<{ x: number; y: number; width: number } | null>(null);
 const ROW_MENU_W = 128; // 8rem
 
 function openRowMenu(x: TodoItem, anchor: HTMLElement) {
   const rect = anchor.getBoundingClientRect();
-  const width = popupWidth(ROW_MENU_W, window.innerWidth);
-  const below = popupPlacement(rect.top, window.innerHeight) === "below";
   rowMenuTodo.value = x;
   rowMenuId.value = x.todoId;
   rowMenuPos.value = {
-    left: popupLeft({ left: rect.left, right: rect.right }, "end", width, window.innerWidth),
-    top: below ? rect.bottom + 4 : null,
-    bottom: below ? null : window.innerHeight - rect.top + 4,
-    width,
+    x: rect.right,
+    y: rect.bottom,
+    width: Math.max(96, Math.min(ROW_MENU_W, window.innerWidth - 16)),
   };
   claimRowMenu();
 }
@@ -175,6 +204,23 @@ function closeRowMenu() {
   releaseRowMenu();
 }
 
+const rowMenuAnchor = computed(() => {
+  const p = rowMenuPos.value;
+  if (!p) return undefined;
+  return {
+    getBoundingClientRect: () => ({
+      width: 0,
+      height: 0,
+      x: p.x,
+      y: p.y,
+      left: p.x,
+      right: p.x,
+      top: p.y,
+      bottom: p.y,
+    }),
+  };
+});
+
 /** 接入全局浮层互斥：右键菜单 / 表情面板 / 已读弹层与它同一时刻只能开一个。 */
 const {
   isActive: rowMenuOpen,
@@ -185,13 +231,10 @@ watch(rowMenuOpen, (mine) => {
   if (!mine && rowMenuId.value !== null) closeRowMenu();
 });
 
-/** 滚动 / 改窗口 ⇒ 收起（fixed 坐标会飘）。忽略菜单自己的内部滚动。 */
-function onScrollOrResize(e: Event) {
-  if (!rowMenuId.value) return;
-  if (e.type === "scroll" && rowMenuEl.value?.contains(e.target as Node)) return;
-  closeRowMenu();
+/** 滚动 / 改窗口 ⇒ 收起（虚拟锚点是入口当时的坐标，会跟丢）。 */
+function onScrollOrResize() {
+  if (rowMenuId.value) closeRowMenu();
 }
-const rowMenuEl = ref<HTMLElement | null>(null);
 onMounted(() => {
   window.addEventListener("scroll", onScrollOrResize, true);
   window.addEventListener("resize", onScrollOrResize);
@@ -258,12 +301,27 @@ const shownCount = computed(() =>
 );
 
 /**
- * 独立窗口形态的首屏取数还没结束 ⇒ 显示"正在加载"，**不许**显示空态。
- * 判据只有窗口形态这一半：主窗口里那份看板的数据来自已经加载好的会话消息，
- * 那里没有"首次拉取"这件事，套上同一个条件就变成永远转圈。
+ * 首屏取数还没结束 ⇒ 显示"正在加载"，**不许**显示空态。
+ *
+ * 两半判据合在这里：
+ * - 独立窗口：`loadGroupTodos`（群名/成员/会话）还没结算；
+ * - 两种形态都要的：那份**全表任务行**还没读到（`loadTodoRows` 的 IPC 在飞）。
+ *
+ * 后者曾经只在窗口形态判，理由是"主窗口里那份看板的数据来自已加载的会话消息"——
+ * 从 #154-9 把取数口换成 `groupTodoRows` 之后这句话就不再成立：应用内弹窗
+ * 同样会先打一次 IPC，不判它就会先闪一下「暂无任务」的假空态。
  */
 const loadingFirstScreen = computed(
   () => !!props.groupId && !!props.standalone && !chat.todosLoadedOnce(props.groupId),
+);
+const firstScreenLoading = computed(
+  () => loadingFirstScreen.value || rowsLoading.value || rowsState.value.status === "loading",
+);
+/** 首屏读失败的可读文案（成功读到过就不会有这条；失败重试成功时 store 会清掉）。 */
+const rowsErrorText = computed(() =>
+  rowsState.value.status === "error"
+    ? friendlyError(rowsState.value.error, t("todo.loadFail"))
+    : "",
 );
 
 /** 分组小标题的图标（与状态语汇一致：待办=空心圈、进行中=实心点、延期=时钟、做不了=叉圈、完成=对勾圈）。 */
@@ -989,15 +1047,18 @@ watch(
     <div class="overflow-y-auto pr-0.5 pt-2" :class="standalone ? 'min-h-0 flex-1' : ''">
       <!-- 首屏还在路上：**必须**是"正在加载"而不是空态。窗口现在先挂载、数据后台取
            （用户 2026-09-24 报"弹窗弹出很慢"），没有这一档的话首帧会理直气壮地显示
-           「暂无任务」—— 那是假空态，比慢更糟。只在窗口形态判：主窗口里那份看板的数据
-           走的是已加载的会话消息，没有"首次拉取"这件事。 -->
-      <div
-        v-if="loadingFirstScreen"
-        class="flex items-center justify-center gap-2 py-8 text-sm text-[var(--gosslan-text-2)]"
-      >
-        <Loader2 class="h-4 w-4 animate-spin" />
-        {{ t("todo.loading") }}
-      </div>
+           「暂无任务」—— 那是假空态，比慢更糟。两种形态都判：应用内弹窗同样要先读
+           那份全表任务行（见 `loadingFirstScreen` 的注释）。 -->
+      <StateBlock v-if="firstScreenLoading" kind="loading" :title="t('todo.loading')" />
+      <!-- 首屏读失败：空态会把"读失败"说成"没有任务"，且没有任何恢复入口 ⇒
+           这里给错误 + 重试（原因来自 store 的 groupTodoRowsErrors）。 -->
+      <StateBlock
+        v-else-if="rowsErrorText"
+        kind="error"
+        :title="rowsErrorText"
+        :retry-label="t('common.retry')"
+        @retry="loadTodoRows"
+      />
       <!-- 空态（按当前筛选分流） -->
       <div v-else-if="shownCount === 0 && !draft" class="py-8 text-center text-sm text-[var(--gosslan-text-2)]">
         {{ filter === "archived" ? t("todo.archivedEmpty") : filter === "all" ? t("todo.empty") : t("todo.filterEmpty") }}
@@ -1184,6 +1245,7 @@ watch(
                 :class="TODO_STATUS_PILL[x.status]"
                 :title="t('todo.statusLabel')"
                 :aria-label="t('todo.statusLabel')"
+                aria-haspopup="menu"
                 :aria-expanded="rowMenuId === x.todoId"
                 @click.stop="toggleRowMenu(x, $event)"
               >
@@ -1467,56 +1529,47 @@ watch(
       >
         {{ t("common.cancel") }}
       </button>
-      <button
-        class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-3 py-1.5 text-[13px] text-white transition hover:opacity-90"
-        @click="confirmDelete"
-      >
+      <DangerBtn @click="confirmDelete">
         {{ t("common.delete") }}
-      </button>
+      </DangerBtn>
     </div>
   </BaseModal>
 
   <!-- 大图预览：表单里的缩略图也可点开（与任务详情一致）。
        Teleport 到 body、z-[80] 压在上面那些弹窗之上；放在模板最末 ⇒ 返回栈里它是最上面一层。 -->
 
-  <!-- 行内状态菜单：**Teleport 到 body + fixed 坐标**。
+  <!-- 行内状态菜单：虚拟锚点由入口右缘/下缘给出，Reka 负责 Portal、翻转与点外部。
        挂在行里时它被两层东西裁掉 —— 列表卡片的 `overflow-hidden`（画圆角用）与外面那层
        `overflow-y-auto`（用户 2026-09-24：「换状态下拉被遮挡」）。z-[70] 与「已读成员」
        弹层同档：压在弹窗之上、大图预览（z-[80]）之下。 -->
-  <Teleport to="body">
-    <button
-      v-if="rowMenuId && rowMenuPos"
-      type="button"
-      class="fixed inset-0 z-[65] cursor-default"
-      :aria-label="t('todo.closeMenu')"
-      @click.stop="closeRowMenu"
-    />
-    <div
-      v-if="rowMenuTodo && rowMenuPos"
-      ref="rowMenuEl"
-      class="gosslan-menu frost fixed z-[70]"
-      role="menu"
-      aria-orientation="vertical"
-      :style="{
-        left: `${rowMenuPos.left}px`,
-        top: rowMenuPos.top !== null ? `${rowMenuPos.top}px` : undefined,
-        bottom: rowMenuPos.bottom !== null ? `${rowMenuPos.bottom}px` : undefined,
-        width: `${rowMenuPos.width}px`,
-      }"
-    >
-      <button
-        v-for="s in TODO_STATUSES"
-        :key="s"
-        type="button"
-        role="menuitem"
-        class="gosslan-menu-item"
-        :class="s === rowMenuTodo.status ? 'font-medium text-[var(--gosslan-accent-ink)]' : ''"
-        :disabled="s === rowMenuTodo.status"
-        :aria-current="s === rowMenuTodo.status ? 'true' : undefined"
-        @click.stop="setStatus(rowMenuTodo, s); closeRowMenu()"
+  <DropdownMenuRoot
+    v-if="rowMenuTodo && rowMenuPos"
+    :open="true"
+    :modal="false"
+    @update:open="(open) => { if (!open) closeRowMenu(); }"
+  >
+    <DropdownMenuPortal>
+      <DropdownMenuContent
+        :reference="rowMenuAnchor"
+        side="bottom"
+        align="end"
+        :side-offset="4"
+        :collision-padding="8"
+        class="gosslan-menu frost z-[70]"
+        :style="{ width: `${rowMenuPos.width}px` }"
       >
-        {{ statusText(s) }}
-      </button>
-    </div>
-  </Teleport>
+        <DropdownMenuItem
+          v-for="s in TODO_STATUSES"
+          :key="s"
+          class="gosslan-menu-item"
+          :class="s === rowMenuTodo.status ? 'font-medium text-[var(--gosslan-accent-ink)]' : ''"
+          :disabled="s === rowMenuTodo.status"
+          :aria-current="s === rowMenuTodo.status ? 'true' : undefined"
+          @select="rowMenuTodo && setStatus(rowMenuTodo, s)"
+        >
+          {{ statusText(s) }}
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenuPortal>
+  </DropdownMenuRoot>
 </template>

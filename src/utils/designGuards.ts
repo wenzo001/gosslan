@@ -2048,7 +2048,10 @@ export function findLiteralRadiusClasses(src: string): GuardIssue[] {
 export function findDirectSemanticIconImports(src: string, names: string[]): GuardIssue[] {
   if (src.includes("icon-entry-ok")) return [];
   const out: GuardIssue[] = [];
-  const re = /^import\s*\{([\s\S]*?)\}\s*from\s*["']lucide-vue-next["'];?/gm;
+  // ⚠️ 不要用 `[\s\S]*?`：它会从文件里**前面的** `import {` 一路吞到这条 lucide import，
+  // 最后一个名字会带上 `import { ` 前缀，`imported.includes(name)` 于是漏报（2026-10-18 实测
+  // GroupFilesPanel / MergeCardModal 直连 Loader2 而判据报 0 处）。`[^}]*` 只吃到本条的 `}`。
+  const re = /^import\s*\{([^}]*)\}\s*from\s*["']lucide-vue-next["'];?/gm;
   for (const m of src.matchAll(re)) {
     const imported = m[1]
       .split(",")
@@ -2064,6 +2067,42 @@ export function findDirectSemanticIconImports(src: string, names: string[]): Gua
           "不要直接引 `lucide-vue-next`（入口是换图标库/统一尺寸时唯一要改的地方）。",
       });
     }
+  }
+  return out.sort((a, b) => a.line - b.line);
+}
+
+// ---------------- ㊶ 实底危险按钮只走 DangerBtn ----------------
+
+/**
+ * 检查模板里手写的"实底危险按钮"。
+ *
+ * 设计规范：危险操作按钮只有 `components/ui/DangerBtn.vue` 一份实现
+ * （danger 实底 + 白字 + danger-hover）。手写副本最容易漂移的两处：
+ *   · `hover:opacity-90`（暗化）而不是 `danger-hover`（亮一档）；
+ *   · 尺寸各写各的，确认弹窗高度不一致。
+ *
+ * 判据：`<button class="…">` 的 class 里出现独立的 `bg-[var(--gosslan-danger)]`
+ * （不是 `hover:` 前缀）→ 报。两个例外：
+ *   · 圆形图标徽标（class 含 `rounded-full`），它不是文本按钮，没有 DangerBtn 变体；
+ *   · `DangerBtn.vue` 自身（调用方写 `<DangerBtn>`，不会命中 `<button>`；树扫描时跳过该文件）。
+ * HTML 注释先抹成空格（保留换行与行号），避免注释里的示例造成假红。
+ */
+const SOLID_DANGER_CLASS = "bg-[var(--gosslan-danger)]";
+
+export function findHandWrittenSolidDangerButtons(src: string): GuardIssue[] {
+  const cleaned = src.replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, " "));
+  const out: GuardIssue[] = [];
+  for (const m of cleaned.matchAll(/<button\b([\s\S]*?)>/g)) {
+    const classMatch = m[1].match(/\bclass="([^"]*)"/);
+    if (!classMatch) continue;
+    const classes = classMatch[1].split(/\s+/).filter(Boolean);
+    if (!classes.includes(SOLID_DANGER_CLASS) || classes.includes("rounded-full")) continue;
+    out.push({
+      line: lineAt(cleaned, m.index ?? 0),
+      message:
+        "实底危险按钮必须用 `components/ui/DangerBtn.vue`（danger 实底 + danger-hover + 统一尺寸）。" +
+        "手写副本常用 `hover:opacity-90` 暗化，且尺寸各写各的；圆形图标徽标（rounded-full）除外。",
+    });
   }
   return out.sort((a, b) => a.line - b.line);
 }

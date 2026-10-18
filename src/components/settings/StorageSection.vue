@@ -3,8 +3,7 @@ import { computed, ref, watch } from "vue";
 import { api } from "@/api";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { useAppStore } from "@/stores/useAppStore";
-import BaseModal from "@/components/BaseModal.vue";
-import DangerBtn from "@/components/ui/DangerBtn.vue";
+import ConfirmDialog from "@/components/ui/ConfirmDialog.vue";
 import SettingsGroup from "@/components/settings/SettingsGroup.vue";
 import SettingsRow from "@/components/settings/SettingsRow.vue";
 import { formatBytes } from "@/utils/format";
@@ -231,44 +230,22 @@ watch(
   </SettingsGroup>
 
   <!-- 自动删除策略：开启前确认（替代 window.confirm，与整体样式一致） -->
-  <BaseModal
+  <ConfirmDialog
     :open="!!pendingPolicy"
     :title="t('settings.storage.confirm.title')"
-    @close="cancelPolicyChange"
-  >
-    <div class="space-y-3">
-      <p class="text-sm leading-relaxed text-[var(--gosslan-text)]">
-        {{ t("settings.storage.confirm.body", { keep: pendingPolicy?.keep ?? "", cap: pendingPolicy?.cap ?? "" }) }}
-      </p>
-      <div class="flex justify-end gap-2 pt-2">
-        <button
-          class="rounded-[var(--gosslan-radius-md)] px-4 py-1.5 text-sm transition hover:bg-[var(--gosslan-hover)]"
-          @click="cancelPolicyChange"
-        >{{ t("common.cancel") }}</button>
-        <DangerBtn size="large" @click="confirmPolicyChange">
-          {{ t("common.confirm") }}
-        </DangerBtn>
-      </div>
-    </div>
-  </BaseModal>
+    :body="t('settings.storage.confirm.body', { keep: pendingPolicy?.keep ?? '', cap: pendingPolicy?.cap ?? '' })"
+    :confirm-label="t('common.confirm')"
+    @cancel="cancelPolicyChange"
+    @confirm="confirmPolicyChange"
+  />
 
   <!-- 立即清理：会永久删除历史消息引用到的图片/文件 → 二次确认 -->
-  <BaseModal
+  <ConfirmDialog
     :open="confirmClean"
     :title="t('settings.storage.clean.title')"
-    @close="confirmClean = false"
-  >
-    <div class="space-y-3">
-      <p class="text-sm leading-relaxed text-[var(--gosslan-text)]">{{ t("settings.storage.clean.confirm") }}</p>
-      <div class="flex justify-end gap-2 pt-2">
-        <button
-          class="rounded-[var(--gosslan-radius-md)] px-4 py-1.5 text-sm transition hover:bg-[var(--gosslan-hover)]"
-          @click="confirmClean = false"
-        >{{ t("common.cancel") }}</button>
-        <DangerBtn size="large" @click="cleanNow">
-          {{ t("settings.storage.clean.btn") }}
-        </DangerBtn>
-      </div>
-    </div>
-  </BaseModal>
+    :body="t('settings.storage.clean.confirm')"
+    :confirm-label="t('settings.storage.clean.btn')"
+    @cancel="confirmClean = false"
+    @confirm="cleanNow"
+  />
 </template>

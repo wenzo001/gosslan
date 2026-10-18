@@ -21,6 +21,9 @@ function deps(overrides: Partial<SaveImageDeps> = {}): SaveImageDeps & { calls: 
     saveDataFile: async (b, dest) => {
       calls.push(`save:${b}:${dest}`);
     },
+    saveMedia: async (src, dest) => {
+      calls.push(`media:${src.msgId ?? src.cid}:${dest}`);
+    },
     ...overrides,
   };
 }
@@ -31,6 +34,32 @@ test("成功：选目的地 → 取字节 → 落盘，顺序与入参正确", a
   assert.deepEqual(d.calls, [
     "name",
     "pick:image-1.png",
+    "bytes:blob:x",
+    "save:YmFzZTY0:/tmp/a.png",
+  ]);
+});
+
+test("有 msg_id / cid：走后端直接拷贝，不取字节、不走 base64", async () => {
+  const d = deps();
+  assert.equal(await saveImageWith("blob:x", d, { msgId: "m1" }), "saved");
+  assert.deepEqual(d.calls, [
+    "name",
+    "pick:image-1.png",
+    "media:m1:/tmp/a.png",
+  ]);
+});
+
+test("源路径失败（乐观消息 / 已清理）：回退到字节路径，用户仍能保存", async () => {
+  const d = deps();
+  d.saveMedia = async (_src, dest) => {
+    d.calls.push(`media-fail:${dest}`);
+    throw new Error("文件不存在");
+  };
+  assert.equal(await saveImageWith("blob:x", d, { cid: "c1" }), "saved");
+  assert.deepEqual(d.calls, [
+    "name",
+    "pick:image-1.png",
+    "media-fail:/tmp/a.png",
     "bytes:blob:x",
     "save:YmFzZTY0:/tmp/a.png",
   ]);

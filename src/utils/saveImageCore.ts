@@ -3,6 +3,12 @@ import { isDialogCancelled, saveDestinationOf } from "./saveDestination.ts";
 /** 另存图片的两种终态；取消不是错误，不抛。 */
 export type SaveImageOutcome = "saved" | "cancelled";
 
+/** 图片在本机的来源：聊天消息（msg_id）或 content store（cid）。 */
+export interface ImageSource {
+  msgId?: string;
+  cid?: string;
+}
+
 export interface SaveImageDeps {
   /** 默认文件名（含扩展名），由调用方按当前语言生成。 */
   defaultName(): string;
@@ -12,6 +18,8 @@ export interface SaveImageDeps {
   toBase64(url: string): Promise<string>;
   /** 落盘（Rust save_data_file）。 */
   saveDataFile(base64Data: string, destination: string): Promise<void>;
+  /** 后端按来源直接拷贝（不经 base64 IPC）；失败时回退到上面的字节路径。 */
+  saveMedia?(source: ImageSource, destination: string): Promise<void>;
 }
 
 /**
@@ -24,6 +32,7 @@ export interface SaveImageDeps {
 export async function saveImageWith(
   url: string,
   deps: SaveImageDeps,
+  source?: ImageSource,
 ): Promise<SaveImageOutcome> {
   let picked: unknown;
   try {
@@ -34,6 +43,14 @@ export async function saveImageWith(
   }
   const destination = saveDestinationOf(picked);
   if (!destination) return "cancelled";
+  if (source && deps.saveMedia) {
+    try {
+      await deps.saveMedia(source, destination);
+      return "saved";
+    } catch {
+      // 源路径可能已清理 / 乐观消息尚未落库 —— 退回字节路径，让用户仍能保存。
+    }
+  }
   const base64Data = await deps.toBase64(url);
   await deps.saveDataFile(base64Data, destination);
   return "saved";

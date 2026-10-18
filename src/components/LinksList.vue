@@ -13,6 +13,8 @@ import { useAppStore } from "@/stores/useAppStore";
 import { useBackLayer } from "@/composables/useBackLayer";
 import MobilePageFrame from "@/components/MobilePageFrame.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
+import StateBlock from "@/components/ui/StateBlock.vue";
+import { friendlyError } from "@/utils/errors";
 import { api } from "@/api";
 import { t } from "@/i18n";
 import { MAX_EXTERNAL_LINKS, MAX_LINK_NAME_CHARS, validateLinkInput } from "@/utils/externalLinks";
@@ -30,6 +32,7 @@ const emit = defineEmits<{
 const app = useAppStore();
 const links = ref<ExternalLink[]>([]);
 const loading = ref(true);
+const loadError = ref("");
 /** 当前草稿（`id === null` = 新增）。 */
 const draft = ref<{ id: string | null; name: string; url: string } | null>(null);
 const saving = ref(false);
@@ -38,8 +41,9 @@ async function load() {
   loading.value = true;
   try {
     links.value = await api.listExternalLinks();
+    loadError.value = "";
   } catch (e) {
-    app.toastError(e, t("links.loadFail"));
+    loadError.value = friendlyError(e, t("links.loadFail"));
   } finally {
     loading.value = false;
   }
@@ -153,6 +157,14 @@ async function remove(l: ExternalLink) {
       </div>
 
       <p v-if="loading" class="px-2 py-3 text-xs text-[var(--gosslan-text-2)]">{{ t("links.loading") }}</p>
+      <StateBlock
+        v-else-if="loadError"
+        kind="error"
+        :title="t('links.loadFail')"
+        :detail="loadError"
+        :retry-label="t('common.retry')"
+        @retry="load()"
+      />
       <p
         v-else-if="!links.length && !draft"
         class="px-2 py-8 text-center text-xs text-[var(--gosslan-text-2)]"

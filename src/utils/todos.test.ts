@@ -36,6 +36,7 @@ import {
   mergeIncomingTodoRows,
   todoRowsFor,
   isTodoRowsLoaded,
+  todoRowsLoadState,
 } from "./todos.ts";
 import type { TodoItem } from "./todos.ts";
 import type { MessageRecord } from "../types";
@@ -934,4 +935,23 @@ test("改派别人之后，新被指派人也能改优先级（判权与「谁�
   assert.equal(it.priority, "low");
   assert.equal(canUpdateTodo(it, "b", "g"), true); // 关联人
   assert.equal(canUpdateTodo(it, "z", "g"), false); // 路人（既非发起人也不是群主）
+});
+
+// ── 任务行首屏三态 ──────────────────────────────────────────────
+// 缺陷形状：异步读还没开始/失败时，看板按 `foldTodos([])` 显示「暂无任务」——
+// 把"读失败"说成"没有任务"，用户既看不出出错，也没有重试入口。
+test("首屏三态：读到过 = ready；没读到有记录 = error；没读到没记录 = loading（不许落到空态）", () => {
+  const rows = { "group:a": [] };
+  assert.equal(todoRowsLoadState(rows, {}, "group:a").status, "ready");
+  assert.equal(todoRowsLoadState({}, { "group:b": "db locked" }, "group:b").status, "error");
+  assert.equal(todoRowsLoadState({}, { "group:b": "db locked" }, "group:b").error, "db locked");
+  assert.equal(todoRowsLoadState({}, {}, "group:c").status, "loading");
+  // 键存在即"读到过"：空数组是合法的"这个群确实没有任务"，不是还没读
+  assert.equal(todoRowsLoadState({ "group:d": [] }, {}, "group:d").status, "ready");
+});
+
+test("首屏三态：成功读到过之后，残留的失败记录不能把内容盖成错误态", () => {
+  const rows = { "group:a": [] };
+  const state = todoRowsLoadState(rows, { "group:a": "上一次失败" }, "group:a");
+  assert.deepEqual(state, { status: "ready", error: "" });
 });

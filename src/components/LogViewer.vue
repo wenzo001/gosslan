@@ -1,11 +1,14 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { useVirtualizer } from "@tanstack/vue-virtual";
 import { Copy, RefreshCw, Search } from "lucide-vue-next";
 import { Trash2, X } from "@/components/ui/icons";
 import TitleBar from "@/components/TitleBar.vue";
 import MobilePageFrame from "@/components/MobilePageFrame.vue";
 import { api } from "@/api";
 import { t } from "@/i18n";
+import StateBlock from "@/components/ui/StateBlock.vue";
+import { friendlyError } from "@/utils/errors";
 import { highlightText } from "@/utils/highlight";
 import { useDeferredRef } from "@/composables/useDeferredRef";
 import { useBackLayer } from "@/composables/useBackLayer";
@@ -35,6 +38,8 @@ useBackLayer(
 
 /** 时间正序（旧 → 新）的原始日志；展示与复制都从它派生。 */
 const logs = ref<LogEntry[]>([]);
+/** 首屏读失败且有没内容可展示时，明确区分“没有日志”和“读不到日志”。 */
+const loadError = ref("");
 /** 展示用：最新在上（倒序），打开即见最近的错误。 */
 const displayLogs = computed(() => [...logs.value].reverse());
 const autoRefresh = ref(true);
@@ -84,6 +89,31 @@ const lines = computed(() =>
 /** 命中过滤词的行（保持倒序）。 */
 const matched = computed(() => filterLogLines(lines.value, deferredFilter.value));
 
+/**
+ * 日志可能几千行，整表 `v-for` 会把主线程按在 DOM 构建上（用户：「日志页打开/过滤一顿一顿」）。
+ * 用 TanStack Virtual 只渲染视口附近的行；行高由 `measureElement` 实测（长日志换行后高度不等）。
+ * 滚动容器在两种外壳（独立窗 / 移动页）里各有一份，但同一时刻只挂一个 ⇒ 共用一个 ref。
+ */
+const logScroll = ref<HTMLElement | null>(null);
+const virtualizer = useVirtualizer(computed(() => ({
+  count: mergedRows.value.length,
+  getScrollElement: () => logScroll.value,
+  estimateSize: () => 26,
+  overscan: 12,
+  getItemKey: (index: number) => mergedRows.value[index]?.key ?? index,
+})));
+const virtualRows = computed(() => virtualizer.value.getVirtualItems()
+  .map((v) => ({ ...v, key: String(v.key), row: mergedRows.value[v.index] }))
+  .filter((v): v is typeof v & { row: NonNullable<typeof v.row> } => !!v.row));
+/** Vue 的模板 ref 会给 `Element | 组件实例`；TanStack 只接受真实元素，这里收窄一次。 */
+function measureRow(el: Element | { $el?: Element } | null) {
+  const node = el instanceof Element ? el : el?.$el;
+  if (node) virtualizer.value.measureElement(node);
+}
+const totalSize = computed(() => virtualizer.value.getTotalSize());
+// 过滤词一变，旧滚动位置可能已越界（新结果更短）⇒ 回到顶部，否则视口落在空白区。
+watch(trimmedFilter, () => virtualizer.value.scrollToOffset(0));
+
 /** 渲染行：命中处加高亮标记（复用会话搜索同一套 `highlightText`，视觉语言一致）。 */
 const rows = computed(() =>
   matched.value.map((l) => ({
@@ -108,8 +138,10 @@ async function load() {
   if (typeof document !== "undefined" && document.hidden) return;
   try {
     logs.value = await api.getLogs(timeWindow.value);
-  } catch {
-    /* 后端暂不可用（如 logs 窗口创建瞬间 state 未就绪）→ 保持现状，下次轮询重试 */
+    loadError.value = "";
+  } catch (e) {
+    // 有旧内容时保持现状（下次轮询重试）；一屏都没有才把“读失败”说出来。
+    if (logs.value.length === 0) loadError.value = friendlyError(e, t("logs.loadFail"));
   }
 }
 
@@ -348,38 +380,52 @@ const rowLevelBg = (lv: string) =>
 
     <!-- 日志列表 -->
     <div class="min-h-0 flex-1 overflow-y-auto px-3 py-2 font-mono text-[13px] leading-relaxed">
-      <div v-if="logs.length === 0" class="mt-16 text-center text-sm text-[var(--gosslan-text-2)]">
+      <StateBlock
+        v-if="logs.length === 0 && loadError"
+        kind="error"
+        :title="t('logs.loadFail')"
+        :detail="loadError"
+        :retry-label="t('common.retry')"
+        @retry="load()"
+      />
+      <div v-else-if="logs.length === 0" class="mt-16 text-center text-sm text-[var(--gosslan-text-2)]">
         {{ t("logs.empty") }}
       </div>
       <div v-else-if="mergedRows.length === 0" class="mt-16 text-center text-sm text-[var(--gosslan-text-2)]">
         {{ t("logs.filterEmpty") }}
       </div>
-      <div v-else>
+      <div v-else :style="{ height: totalSize + 'px', position: 'relative' }">
         <!-- `v-memo`：行内容全部来自这几个字符串（v-html 的 4 段 + 级别色），
              所以只要它们没变就跳过 patch。两个收益：
              ① 打字/粘贴时（过滤值走延迟镜像，这些字符串没变）每行零 patch；
              ② 日志每 2 秒轮询刷新时，未变动的行也不重新写 innerHTML。
              改这一行时注意：**新增任何渲染字段都要加进依赖数组**，否则该字段不刷新。 -->
         <div
-          v-for="r in mergedRows"
-          :key="r.key"
-          v-memo="[r.time, r.levelText, r.target, r.message, r.level, r.count]"
-          class="flex gap-2 rounded px-1 py-0.5 transition"
-          :class="[rowLevelBg(r.level), 'hover:bg-[var(--gosslan-hover)]']"
+          v-for="v in virtualRows"
+          :key="v.key"
+          :data-index="v.index"
+          :ref="measureRow"
+          :style="{ position: 'absolute', top: 0, left: 0, width: '100%', transform: `translateY(${v.start}px)` }"
         >
-          <span class="shrink-0 select-none text-[var(--gosslan-text-2)]" v-html="r.time"></span>
-          <span class="w-12 shrink-0 select-none font-semibold" :class="levelTextClass(r.level)" v-html="r.levelText"></span>
-          <span class="min-w-0 flex-1 break-all">
-            <span class="text-[var(--gosslan-text-2)]" v-html="r.target"></span>
-            <span v-html="r.message"></span>
-          </span>
-          <span
-            v-if="r.count > 1"
-            class="ml-1 shrink-0 text-[11px] font-medium text-[var(--gosslan-text-2)]"
-            :title="`已合并 ${r.count} 条相同日志`"
+          <div
+            v-memo="[v.row.time, v.row.levelText, v.row.target, v.row.message, v.row.level, v.row.count]"
+            class="flex gap-2 rounded px-1 py-0.5 transition"
+            :class="[rowLevelBg(v.row.level), 'hover:bg-[var(--gosslan-hover)]']"
           >
-            ×{{ r.count }}
-          </span>
+            <span class="shrink-0 select-none text-[var(--gosslan-text-2)]" v-html="v.row.time"></span>
+            <span class="w-12 shrink-0 select-none font-semibold" :class="levelTextClass(v.row.level)" v-html="v.row.levelText"></span>
+            <span class="min-w-0 flex-1 break-all">
+              <span class="text-[var(--gosslan-text-2)]" v-html="v.row.target"></span>
+              <span v-html="v.row.message"></span>
+            </span>
+            <span
+              v-if="v.row.count > 1"
+              class="ml-1 shrink-0 text-[11px] font-medium text-[var(--gosslan-text-2)]"
+              :title="`已合并 ${v.row.count} 条相同日志`"
+            >
+              ×{{ v.row.count }}
+            </span>
+          </div>
         </div>
       </div>
     </div>
@@ -499,34 +545,48 @@ const rowLevelBg = (lv: string) =>
         </button>
       </div>
 
-      <div class="min-h-0 flex-1 overflow-y-auto px-3 py-2 font-mono text-[13px] leading-relaxed">
-        <div v-if="logs.length === 0" class="mt-16 text-center text-sm text-[var(--gosslan-text-2)]">
+      <div ref="logScroll" class="min-h-0 flex-1 overflow-y-auto px-3 py-2 font-mono text-[13px] leading-relaxed">
+        <StateBlock
+          v-if="logs.length === 0 && loadError"
+          kind="error"
+          :title="t('logs.loadFail')"
+          :detail="loadError"
+          :retry-label="t('common.retry')"
+          @retry="load()"
+        />
+        <div v-else-if="logs.length === 0" class="mt-16 text-center text-sm text-[var(--gosslan-text-2)]">
           {{ t("logs.empty") }}
         </div>
         <div v-else-if="mergedRows.length === 0" class="mt-16 text-center text-sm text-[var(--gosslan-text-2)]">
           {{ t("logs.filterEmpty") }}
         </div>
-        <div v-else>
+        <div v-else :style="{ height: totalSize + 'px', position: 'relative' }">
           <div
-            v-for="r in mergedRows"
-            :key="r.key"
-            v-memo="[r.time, r.levelText, r.target, r.message, r.level, r.count]"
-            class="flex gap-2 rounded px-1 py-0.5 transition"
-            :class="[rowLevelBg(r.level), 'hover:bg-[var(--gosslan-hover)]']"
+            v-for="v in virtualRows"
+            :key="v.key"
+            :data-index="v.index"
+            :ref="measureRow"
+            :style="{ position: 'absolute', top: 0, left: 0, width: '100%', transform: `translateY(${v.start}px)` }"
           >
-            <span class="shrink-0 select-none text-[var(--gosslan-text-2)]" v-html="r.time"></span>
-            <span class="w-12 shrink-0 select-none font-semibold" :class="levelTextClass(r.level)" v-html="r.levelText"></span>
-            <span class="min-w-0 flex-1 break-all">
-              <span class="text-[var(--gosslan-text-2)]" v-html="r.target"></span>
-              <span v-html="r.message"></span>
-            </span>
-            <span
-              v-if="r.count > 1"
-              class="ml-1 shrink-0 text-[11px] font-medium text-[var(--gosslan-text-2)]"
-              :title="`已合并 ${r.count} 条相同日志`"
+            <div
+              v-memo="[v.row.time, v.row.levelText, v.row.target, v.row.message, v.row.level, v.row.count]"
+              class="flex gap-2 rounded px-1 py-0.5 transition"
+              :class="[rowLevelBg(v.row.level), 'hover:bg-[var(--gosslan-hover)]']"
             >
-              ×{{ r.count }}
-            </span>
+              <span class="shrink-0 select-none text-[var(--gosslan-text-2)]" v-html="v.row.time"></span>
+              <span class="w-12 shrink-0 select-none font-semibold" :class="levelTextClass(v.row.level)" v-html="v.row.levelText"></span>
+              <span class="min-w-0 flex-1 break-all">
+                <span class="text-[var(--gosslan-text-2)]" v-html="v.row.target"></span>
+                <span v-html="v.row.message"></span>
+              </span>
+              <span
+                v-if="v.row.count > 1"
+                class="ml-1 shrink-0 text-[11px] font-medium text-[var(--gosslan-text-2)]"
+                :title="`已合并 ${v.row.count} 条相同日志`"
+              >
+                ×{{ v.row.count }}
+              </span>
+            </div>
           </div>
         </div>
       </div>

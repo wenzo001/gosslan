@@ -7,8 +7,9 @@
  * 微信 macOS 的会话菜单含置顶/免打扰/独立窗口等。本应用已具备**置顶**（纯本地偏好，
  * 不广播不同步），因此菜单为：置顶/取消置顶 → 删除聊天记录（危险项放最后并标红，
  * 与微信一致），下方给一句说明（只删本机、不影响对方），避免误删恐慌。
- * 外观走 `style.css` 的 `.gosslan-menu*` 统一类（#4）。
+ * 外观走 `style.css` 的 `.gosslan-menu*` 统一类（#4）；键盘/焦点/关闭由 Reka DropdownMenu 承担。
  */
+import { DropdownMenuItem, DropdownMenuSeparator } from "reka-ui";
 import { t } from "@/i18n";
 import { Pin, PinOff } from "lucide-vue-next";
 import { Trash2 } from "@/components/ui/icons";
@@ -23,16 +24,20 @@ const emit = defineEmits<{
 </script>
 
 <template>
-  <ContextMenu :x="x" :y="y" :estimated-height="130" @close="emit('close')">
-    <button role="menuitem" class="gosslan-menu-item" @click="emit('toggle-pin')">
+  <ContextMenu :x="x" :y="y" @close="emit('close')">
+    <DropdownMenuItem class="gosslan-menu-item" @select="emit('toggle-pin')">
       <component :is="pinned ? PinOff : Pin" />
       {{ pinned ? t("conv.unpin") : t("conv.pin") }}
-    </button>
+    </DropdownMenuItem>
     <div class="gosslan-menu-hint">{{ t("conv.pin.hint") }}</div>
-    <button role="menuitem" class="gosslan-menu-item gosslan-menu-item--danger" @click="emit('delete')">
+    <DropdownMenuSeparator class="gosslan-menu-sep" />
+    <DropdownMenuItem
+      class="gosslan-menu-item gosslan-menu-item--danger"
+      @select="emit('delete')"
+    >
       <Trash2 />
       {{ t("conv.delete") }}
-    </button>
+    </DropdownMenuItem>
     <div class="gosslan-menu-hint">{{ t("conv.delete.hint") }}</div>
   </ContextMenu>
 </template>

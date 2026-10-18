@@ -22,6 +22,7 @@
  * 会随页面一起卸载。
  */
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { DropdownMenuItem, DropdownMenuSeparator } from "reka-ui";
 import { t } from "@/i18n";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
@@ -30,9 +31,13 @@ import { useBackLayer } from "@/composables/useBackLayer";
 import ContextMenu from "@/components/ContextMenu.vue";
 import ForwardModal from "@/components/message/ForwardModal.vue";
 import BackArrow from "@/components/ui/BackArrow.vue";
+import DangerBtn from "@/components/ui/DangerBtn.vue";
+import StateBlock from "@/components/ui/StateBlock.vue";
+import { friendlyError } from "@/utils/errors";
 import { useClipboard } from "@/composables/useClipboard";
 import { fmtConversationTime } from "@/utils/time";
-import { humanSize, rgba } from "@/utils/color";
+import { rgba } from "@/utils/color";
+import { formatBytes } from "@/utils/format";
 import { FILE_KIND_COLORS, FILE_KIND_ICONS, fileExt, fileKindOf } from "@/utils/fileKind";
 import { openLocalFile, saveLocalFile } from "@/utils/localFile";
 import { dropFavoritePreview, loadFavoritePreview, clearFavoritePreviews } from "@/utils/favoritePreview";
@@ -94,6 +99,7 @@ const FILTERS: { key: FilterKey; label: string }[] = [
 
 const loading = ref(false);
 const failed = ref(false);
+const loadError = ref("");
 /** 搜索关键词（在标题 / 正文 / 文件名里找）。 */
 const keyword = ref("");
 const filterKind = ref<FilterKey>("all");
@@ -117,8 +123,10 @@ async function load() {
   failed.value = false;
   try {
     await chat.refreshFavorites();
-  } catch {
+    loadError.value = "";
+  } catch (e) {
     failed.value = true;
+    loadError.value = friendlyError(e, t("favorite.loadFail"));
   } finally {
     loading.value = false;
   }
@@ -284,7 +292,7 @@ function rowSubtitle(f: FavoriteEntry): string {
   }
   if (f.kind === "merge") return mergeSummary(f.content);
   const size = metaOf(f)?.size ?? f.media_size;
-  return size > 0 ? humanSize(size) : "";
+  return size > 0 ? formatBytes(size) : "";
 }
 
 function kindIcon(f: FavoriteEntry) {
@@ -545,19 +553,20 @@ async function confirmDelete() {
       {{ t("favorite.loading") }}
     </div>
 
-    <div
+    <StateBlock
       v-else-if="failed"
-      class="flex flex-1 items-center justify-center text-sm text-[var(--gosslan-text-2)]"
-    >
-      {{ t("favorite.loadFail") }}
-    </div>
+      kind="error"
+      :title="t('favorite.loadFail')"
+      :detail="loadError"
+      :retry-label="t('common.retry')"
+      @retry="load()"
+    />
 
-    <div
+    <StateBlock
       v-else-if="items.length === 0"
-      class="flex flex-1 items-center justify-center text-sm text-[var(--gosslan-text-2)]"
-    >
-      {{ t("favorite.empty") }}
-    </div>
+      kind="empty"
+      :title="t('favorite.empty')"
+    />
 
     <div v-else class="flex min-h-0 flex-1 flex-col">
       <!-- 两栏：左列表（搜索+筛选+列表）+ 右详情；窄屏退化成两级（列表 ↔ 详情）。
@@ -801,7 +810,7 @@ async function confirmDelete() {
               </div>
               <div class="mt-1 text-[11px] text-[var(--gosslan-text-2)]">
                 {{ fileExt(displayName(active)).toUpperCase() }} ·
-                {{ humanSize(metaOf(active)?.size ?? active.media_size) }}
+                {{ formatBytes(metaOf(active)?.size ?? active.media_size) }}
               </div>
             </div>
           </div>
@@ -883,39 +892,35 @@ async function confirmDelete() {
           >
             <X class="mr-1 inline h-3.5 w-3.5" />{{ t("common.cancel") }}
           </button>
-          <button
-            class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-2 text-sm text-white transition hover:opacity-90"
-            @click="confirmDelete"
-          >
+          <DangerBtn size="large" @click="confirmDelete">
             {{ t("common.delete") }}
-          </button>
+          </DangerBtn>
         </div>
       </div>
     </div>
 
     <!-- 行菜单：复制 / 转发 / 跳回原消息 / 删除（桌面右键与移动 ⋯ 共用一份实现） -->
-    <ContextMenu v-if="menu" :x="menu.x" :y="menu.y" :estimated-height="180" @close="menu = null">
-      <button role="menuitem" class="gosslan-menu-item" @click="copyItem(menu.item)">
+    <ContextMenu v-if="menu" :x="menu.x" :y="menu.y" @close="menu = null">
+      <DropdownMenuItem class="gosslan-menu-item" @select="copyItem(menu.item)">
         <Copy />
         {{ t("favorite.copy") }}
-      </button>
-      <button role="menuitem" class="gosslan-menu-item" @click="startForward(menu.item)">
+      </DropdownMenuItem>
+      <DropdownMenuItem class="gosslan-menu-item" @select="startForward(menu.item)">
         <Share2 />
         {{ t("favorite.forward") }}
-      </button>
-      <button role="menuitem" class="gosslan-menu-item" @click="locate(menu.item)">
+      </DropdownMenuItem>
+      <DropdownMenuItem class="gosslan-menu-item" @select="locate(menu.item)">
         <CornerUpLeft />
         {{ t("favorite.locate") }}
-      </button>
-      <div class="gosslan-menu-sep" role="separator"></div>
-      <button
-        role="menuitem"
+      </DropdownMenuItem>
+      <DropdownMenuSeparator class="gosslan-menu-sep" />
+      <DropdownMenuItem
         class="gosslan-menu-item gosslan-menu-item--danger"
-        @click="askDelete(menu.item)"
+        @select="askDelete(menu.item)"
       >
         <Trash2 />
         {{ t("favorite.delete") }}
-      </button>
+      </DropdownMenuItem>
     </ContextMenu>
   </div>
 

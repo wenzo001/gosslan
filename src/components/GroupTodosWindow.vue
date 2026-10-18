@@ -25,14 +25,14 @@
  */
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { api } from "@/api";
 import AuxWindowShell from "@/components/window/AuxWindowShell.vue";
+import StateBlock from "@/components/ui/StateBlock.vue";
 import GroupTasksBoard from "@/components/GroupTasksBoard.vue";
+import { friendlyError } from "@/utils/errors";
 import { currentLocale, t } from "@/i18n";
 
-const app = useAppStore();
 const chat = useChatStore();
 
 /** 这扇窗现在服务哪个群（`null` = 还没被打开过，只是预热放着）。 */
@@ -69,6 +69,8 @@ const boardRef = ref<InstanceType<typeof GroupTasksBoard> | null>(null);
  * "点了卡片，窗口开了却没展开那条"（#39 的原始诉求）。
  */
 const pendingFocusId = ref<string | null>(null);
+/** 首屏（或换群）读失败时的可见出口；重试成功即清空。 */
+const loadError = ref("");
 
 async function deliverFocus(id: string) {
   await nextTick(); // 看板可能刚刚因换群整块重挂，等它挂上再投
@@ -84,15 +86,14 @@ async function deliverFocus(id: string) {
 async function applyTarget(next: string | null) {
   if (!next) return;
   const switched = groupId.value !== next;
-  const fresh = !chat.todosLoadedOnce(next);
   groupId.value = next;
+  loadError.value = "";
   if (switched) void chat.watchGroupTodos(next).catch(() => {});
   try {
     await chat.loadGroupTodos(next);
   } catch (e) {
-    // 首次（或换群）读失败要说出来：那看起来和"这个群没有任务"一模一样。
-    // 只是刷新一个已加载过的群失败则保持静默 —— 列表里还有内容可看，比清空重来更好。
-    if (fresh) app.toastError(e, t("todo.loadFail"));
+    // 读失败必须留下可见出口：替换成错误态 + 重试，而不是让看板停在“暂无任务”。
+    loadError.value = friendlyError(e, t("todo.loadFail"));
   }
   const id = await api.takeGroupTodoFocus(next).catch(() => null);
   if (!id) return;
@@ -174,6 +175,14 @@ onUnmounted(() => {
     <div v-if="!groupId" class="p-6 text-sm text-[var(--gosslan-text-2)]">
       {{ t("todo.windowNoGroup") }}
     </div>
+    <StateBlock
+      v-else-if="loadError"
+      kind="error"
+      :title="t('todo.loadFail')"
+      :detail="loadError"
+      :retry-label="t('common.retry')"
+      @retry="applyTarget(groupId)"
+    />
     <div v-else class="min-h-0 flex-1 overflow-hidden p-4">
       <!-- `:key` 是换群必须做的重置：筛选/草稿/展开态都属于上一个群，留着就是串群。 -->
       <GroupTasksBoard :key="groupId" ref="boardRef" :group-id="groupId" standalone />

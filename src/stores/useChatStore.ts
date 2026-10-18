@@ -57,7 +57,6 @@ import {
 import { invalidateFilePreview, dropFilePreview, clearFilePreviews } from "@/utils/filePreview";
 import { clearFavoritePreviews } from "@/utils/favoritePreview";
 import { t } from "@/i18n";
-import { shouldRunThrottled } from "@/utils/defer";
 import { mergePeerList } from "@/utils/peerMerge";
 import { markFriendsOnlineFrom } from "@/utils/friendOnline";
 import {
@@ -84,7 +83,6 @@ import type {
   MessageRecord,
   Peer,
   PendingRequest,
-  TopologyInfo,
   ContentTransfer,
   TransferInfo,
 } from "@/types";
@@ -147,6 +145,8 @@ export const useChatStore = defineStore("chat", () => {
   /** 统一内容状态（ADR-0019）：未完成/失败的气泡据此显示「点击重试」。 */
   const contentTransfers = ref<ContentTransfer[]>([]);
   const messages = ref<Record<string, MessageRecord[]>>({});
+  /** 首屏消息读失败：convId → 原始错误。成功后清空；UI 只在列表为空时展示。 */
+  const messageLoadErrors = ref<Record<string, string>>({});
   // group_id -> reader_id -> reader 已读到的最大时间戳
   const groupReads = ref<Record<string, Record<string, number>>>({});
   /**
@@ -161,12 +161,6 @@ export const useChatStore = defineStore("chat", () => {
   // 群聊里有人 @ 我且未读的会话 id 集合 → 列表摘要前显示 [有人@我]。
   // 纯前端运行时标志（不落库）：打开会话即清除，重启后随未读一起消失。
   const mentionedConvs = ref(new Set<string>());
-  const topology = ref<TopologyInfo>({
-    node_count: 0,
-    relay_count: 0,
-    avg_rtt_ms: null,
-    online: false,
-  });
 
   const activeConversation = computed(
     () => conversations.value.find((c) => c.id === activeConv.value) ?? null,
@@ -932,6 +926,21 @@ export const useChatStore = defineStore("chat", () => {
    *  于是同一句判据两个家（#154-9）。两者现在来自**同一次读**。
    *  键存在 = 读到过（空数组 = 确实没有任务）；语义见 `utils/todos::putTodoRows`。 */
   const groupTodoRows = ref<TodoRowsByConv>({});
+  /** 任务行读失败的原因（键存在 = 这一次首屏读失败且还没有成功过）。 */
+  const groupTodoRowsErrors = ref<Record<string, string>>({});
+  /** 同一会话的单飞表：三个界面同时要求补读时只打一次 IPC。 */
+  const groupTodoRowsInflight = new Map<string, Promise<void>>();
+  /** 读成功（无论走哪条取数口）就清掉这几个会话的失败记录。 */
+  function clearGroupTodoRowsErrors(convIds: string[]) {
+    let changed = false;
+    const next = { ...groupTodoRowsErrors.value };
+    for (const cid of convIds) {
+      if (!next[cid]) continue;
+      delete next[cid];
+      changed = true;
+    }
+    if (changed) groupTodoRowsErrors.value = next;
+  }
   /** 单调序号：只有最后一次发起的结果能落地（任务连着变时会话刷新会挨个追上来）。 */
   let openTodoSeq = 0;
   async function refreshOpenTodos() {
@@ -949,6 +958,7 @@ export const useChatStore = defineStore("chat", () => {
     if (mine !== openTodoSeq) return;
     // 同一次读同时喂徽标与那三处界面（见 groupTodoRows 的注释）
     groupTodoRows.value = putTodoRows(groupTodoRows.value, ids, rows);
+    clearGroupTodoRowsErrors(ids);
     const byConv = new Map<string, MessageRecord[]>();
     for (const r of rows) {
       const list = byConv.get(r.conv_id) ?? [];
@@ -965,13 +975,36 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   /** 按需补读某个群的任务行：冷启动只开任务窗、或身份未就绪时 bulk 读没跑成的情况。
-   *  已读到过就直接返回 ⇒ 不会每次打开面板都打一次 IPC（"读过没有"就看键在不在）。 */
-  async function ensureGroupTodoRows(convId: string) {
+   *  已读到过就直接返回 ⇒ 不会每次打开面板都打一次 IPC（"读过没有"就看键在不在）。
+   *
+   *  三条入口（看板 / 任务弹窗 / 成员面板）会同时要求补读 ⇒ 同一会话**单飞**：
+   *  否则每次打开都会打两三份 IPC，而 StaleGuard 只留最后一份，另外几份纯属白读。
+   *  失败写进 `groupTodoRowsErrors` 而不向调用方抛：调用点全是 `void`，上一次
+   *  未捕获的 rejection 在 Tauri 里只会安静地进控制台，界面继续理直气壮地显示
+   *  「暂无任务」—— 与"假空态"是同一个缺陷。 */
+  async function ensureGroupTodoRows(convId: string): Promise<void> {
     if (!convId || isTodoRowsLoaded(groupTodoRows.value, convId)) return;
+    const flying = groupTodoRowsInflight.get(convId);
+    if (flying) return flying;
     const tok = refreshGuard.begin(`todoRows:${convId}`);
-    const rows = await api.getGroupTodoMessages([convId]);
-    if (!refreshGuard.isCurrent(`todoRows:${convId}`, tok)) return;
-    groupTodoRows.value = putTodoRows(groupTodoRows.value, [convId], rows);
+    const task = (async () => {
+      try {
+        const rows = await api.getGroupTodoMessages([convId]);
+        if (!refreshGuard.isCurrent(`todoRows:${convId}`, tok)) return;
+        groupTodoRows.value = putTodoRows(groupTodoRows.value, [convId], rows);
+        clearGroupTodoRowsErrors([convId]);
+      } catch (e) {
+        if (!refreshGuard.isCurrent(`todoRows:${convId}`, tok)) return;
+        groupTodoRowsErrors.value = {
+          ...groupTodoRowsErrors.value,
+          [convId]: e instanceof Error ? e.message : String(e),
+        };
+      } finally {
+        groupTodoRowsInflight.delete(convId);
+      }
+    })();
+    groupTodoRowsInflight.set(convId, task);
+    return task;
   }
 
   /**
@@ -992,12 +1025,21 @@ export const useChatStore = defineStore("chat", () => {
     let rows: MessageRecord[];
     try {
       rows = await api.getGroupTodoMessages([convId]);
-    } catch {
+    } catch (e) {
       // 读失败保留旧列表（下次事件或窗口重新聚焦时再试）；悬空序号由下一次 begin 自行作废。
+      // 但"从来没读到过"时不能只留一个空列表：那会被看板当成「暂无任务」，
+      // 所以沿用首屏那条错误记录，界面至少给得出错误 + 重试。
+      if (!isTodoRowsLoaded(groupTodoRows.value, convId)) {
+        groupTodoRowsErrors.value = {
+          ...groupTodoRowsErrors.value,
+          [convId]: e instanceof Error ? e.message : String(e),
+        };
+      }
       return;
     }
     if (!refreshGuard.isCurrent(`todoRows:${convId}`, tok)) return;
     groupTodoRows.value = putTodoRows(groupTodoRows.value, [convId], rows);
+    clearGroupTodoRowsErrors([convId]);
   }
 
   async function refreshConversations() {
@@ -1114,23 +1156,6 @@ export const useChatStore = defineStore("chat", () => {
       transfersRepairTimer = null;
       void refreshTransfers();
     }, 400);
-  }
-  /** 上一次真正拉取拓扑的时间（`refreshTopologyThrottled` 用）。 */
-  let lastTopologyAt = 0;
-
-  /** 由高频事件触发的拓扑刷新：最多 1s 一次（判据是纯函数，见 `utils/defer`）。 */
-  function refreshTopologyThrottled() {
-    const now = Date.now();
-    if (!shouldRunThrottled(now, lastTopologyAt, 1000)) return;
-    lastTopologyAt = now;
-    void refreshTopology();
-  }
-
-  async function refreshTopology() {
-    const tok = refreshGuard.begin("topology");
-    const list = await api.getTopology();
-    if (!refreshGuard.isCurrent("topology", tok)) return;
-    topology.value = list;
   }
 
   /**
@@ -1372,6 +1397,12 @@ export const useChatStore = defineStore("chat", () => {
     const seq = (loadSeqs.get(convId) ?? 0) + 1;
     loadSeqs.set(convId, seq);
     touchCacheOrder(convId);
+    // 重试时若上次失败留下的是合成空列表，先移除它让 ChatWindow 回到骨架态；
+    // 已有真实内容则保留，刷新失败不清屏。
+    if (messageLoadErrors.value[convId]) {
+      delete messageLoadErrors.value[convId];
+      if ((messages.value[convId]?.length ?? 0) === 0) delete messages.value[convId];
+    }
     // ⚠️ 必须在**函数开头**作废"已翻到顶"这个结论，不能只在成功路径末尾清：
     // IPC 失败会走 catch 提前 return、seq 被后来者抢走也会提前 return —— 那些路径下
     // 内存列表同样是"只有最新一页"，若 historyTops 还留着 true，`loadMoreMessages`
@@ -1387,10 +1418,11 @@ export const useChatStore = defineStore("chat", () => {
       // 判据：`storeContract` 钉住"冷加载只发一次消息页 IPC"，Rust 侧钉住
       // 「一次取尾 == 两轮按 offset 取，逐行同序」。
       list = await api.getLatestMessages(convId, PAGE_SIZE);
-    } catch {
+    } catch (e) {
       // 读库失败也要把该会话标记为「已加载」：留 undefined 会让 ChatWindow 的加载骨架
       // 永远停在那里（UI 先行就得保证"必有终态"）。给空列表 = 回到"暂无消息"的正常态。
       if (messages.value[convId] === undefined) messages.value[convId] = [];
+      messageLoadErrors.value[convId] = e instanceof Error ? e.message : String(e);
       return;
     }
     if (seq !== (loadSeqs.get(convId) ?? 0) || activeConv.value !== convId) return;
@@ -2516,10 +2548,6 @@ export const useChatStore = defineStore("chat", () => {
         markFriendsOnlineFrom(friends.value, p);
         // 同步好友/单聊会话的昵称/头像（对方改名后立即生效）
         syncProfileFromPeers(friends.value, conversations.value, p);
-        // 拓扑（节点数/中继数/平均 RTT/在线）变化很慢，而 peers-updated 最多 3/s；
-        // 每个事件都发一次 IPC 纯属浪费（每次 IPC 都要跨进程 + 过主线程消息循环，
-        // 攒起来就是"顿"）。这里节流到最多 1s 一次，另有 5s 定时器兜底。
-        refreshTopologyThrottled();
       },
       onFriendRequest: (req) => {
         // 去重：同一设备多次申请只保留最新一条（过滤历史重复申请）
@@ -2682,7 +2710,6 @@ export const useChatStore = defineStore("chat", () => {
       "refreshGroups",
       "refreshTransfers",
       "refreshPeers",
-      "refreshTopology",
       "refreshAnnouncements",
       "refreshKeyRotations",
     ] as const;
@@ -2693,7 +2720,6 @@ export const useChatStore = defineStore("chat", () => {
       refreshGroups(),
       refreshTransfers(),
       refreshPeers(),
-      refreshTopology(),
       refreshAnnouncements(),
       refreshKeyRotations(),
     ]);
@@ -2786,9 +2812,6 @@ export const useChatStore = defineStore("chat", () => {
       // 注册失败只影响"点通知跳转"，不影响其余事件；留痕而不是静默吞掉。
       console.error("[chat] 通知点击回调注册失败：点系统通知不会定位到会话", e);
     });
-    // 定时刷新拓扑
-    const topoTimer = setInterval(() => void refreshTopology(), 5000);
-    scope.onDispose(() => clearInterval(topoTimer));
     // 窗口重新可见：补发当前会话已读回执 + 冲刷后台期间滞留的消息批次
     // （具名函数 + 成对 removeEventListener：匿名 handler 摘不掉，重复 init 会叠加）
     const onVisibility = () => {
@@ -2834,7 +2857,6 @@ export const useChatStore = defineStore("chat", () => {
     groupReaderIds,
     activeConv,
     mentionedConvs,
-    topology,
     activeConversation,
     totalUnread,
     unreadJump,
@@ -2856,6 +2878,7 @@ export const useChatStore = defineStore("chat", () => {
     /** 群 → 「与我相关的未完成任务」数（蓝色徽标的数据源，判定见 `utils/todos::openTodosForMe`） */
     openTodoByConv,
     groupTodoRows,
+    groupTodoRowsErrors,
     ensureGroupTodoRows,
     refreshGroups,
     resetAfterDataCleared,
@@ -2863,7 +2886,6 @@ export const useChatStore = defineStore("chat", () => {
     stalledTransfers,
     isTransferStalled,
     transferStallReason,
-    refreshTopology,
     favorites,
     refreshFavorites,
     addFavorite,
@@ -2872,6 +2894,7 @@ export const useChatStore = defineStore("chat", () => {
     deleteMessages,
     openConversation,
     loadMessages,
+    messageLoadErrors,
     loadMoreMessages,
     loadGroupTodos,
     todosLoadedOnce,

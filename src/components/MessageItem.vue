@@ -28,7 +28,7 @@ import MessageCodeBubble from "@/components/message/MessageCodeBubble.vue";
 import MergeCard from "@/components/message/MergeCard.vue";import MessageFileBubble from "@/components/message/MessageFileBubble.vue";
 import MessageImageBubble from "@/components/message/MessageImageBubble.vue";
 import MessageReceipt from "@/components/message/MessageReceipt.vue";
-import BaseModal from "@/components/BaseModal.vue";
+import ConfirmDialog from "@/components/ui/ConfirmDialog.vue";
 import MessageReactionBar from "@/components/message/MessageReactionBar.vue";
 import EmojiPicker from "@/components/EmojiPicker.vue";
 import type { ReactionChip } from "@/utils/reactions";
@@ -431,15 +431,18 @@ function closeActionSheet() {
 /**
  * 吞掉"弹面板那一下"的抬手事件。
  *
- * 根因（用户 2026-09-13 Android 实测「弹出 sheet 之后一放手立马就缩回去了」）：
- * 面板是 HeadlessUI `Dialog`，它的 `useOutsideClick` 在 **document 捕获阶段** 挂了 `touchend`，
+ * 历史根因（用户 2026-09-13 Android 实测「弹出 sheet 之后一放手立马就缩回去了」）：
+ * 当时面板是 HeadlessUI `Dialog`，它的 `useOutsideClick` 在 **document 捕获阶段** 挂了 `touchend`，
  * 判据是"`touchend` 的 target 在不在对话框容器里" —— 而 touch 事件的 target 在
  * **`touchstart` 那一刻就固定**成那条消息了，所以抬手必被判成"点了外面" ⇒ 立刻 `@close`。
  *
- * ⚠️ 监听**必须挂在 `window` 的捕获阶段**：HeadlessUI 挂的是 `document` 捕获，两者同阶段时
- * 按注册顺序执行（它先注册，我们一定排在后面）；而捕获路径是 `window → document → … → target`，
- * 只有挂 `window` 才抢得到它前面。它内部有 `if (e.defaultPrevented) return`，`preventDefault` 就够。
- * 顺带也杀掉了这次 tap 的合成 `click`（不会误触气泡里的链接）。
+ * 现在面板是 Reka UI 的 Dialog：outside-click 走 document 上的 `pointerdown`（冒泡），
+ * 抬手只产生 pointerup / touchend ⇒ 原触发路径已不存在。监听保留为**不依赖弹层库**的兜底：
+ * 顺带杀掉这次 tap 的合成 `click`（不会误触气泡里的链接）。
+ *
+ * ⚠️ 监听**必须挂在 `window` 的捕获阶段**：`document` 上的捕获监听与它同阶段、同目标时按注册
+ * 顺序执行（库先注册，我们一定排在后面）；而捕获路径是 `window → document → … → target`，
+ * 只有挂 `window` 才抢得到它前面。`preventDefault` 对任何按 `defaultPrevented` 让路的实现都够。
  */
 function swallowLongPressRelease(e: TouchEvent) {
   if (!shouldSwallowLongPressRelease({ openedByHeldPress: longPressHeld, sheetOpen: sheetOpen.value })) {
@@ -742,7 +745,8 @@ async function saveImage() {
   const url = imageDataUrl.value;
   if (!url) return;
   try {
-    if ((await saveImageAs(url)) === "saved") app.toast(t("msg.imageSaved"), "success");
+    const source = props.message.msg_id ? { msgId: props.message.msg_id } : undefined;
+    if ((await saveImageAs(url, source)) === "saved") app.toast(t("msg.imageSaved"), "success");
   } catch (e) {
     app.toastError(e, t("msg.saveImageFail"));
   }
@@ -1484,23 +1488,14 @@ async function copyFileToClipboard() {
        不参与布局，所以留在选中底色的包裹之外（既不占高度、也不该被选中态影响）。 -->
 
   <!-- 撤回二次确认：破坏性且不可逆，必须显式确认（各端一致，移动端同样弹这个） -->
-  <BaseModal :open="confirmingRecall" :title="t('msg.recall')" @close="confirmingRecall = false">
-    <p class="text-sm leading-relaxed text-[var(--gosslan-text)]">{{ t("msg.recallConfirm") }}</p>
-    <div class="mt-5 flex justify-end gap-2">
-      <button
-        class="tap-safe rounded-[var(--gosslan-radius-md)] px-4 py-2 text-sm text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-        @click="confirmingRecall = false"
-      >
-        {{ t("common.cancel") }}
-      </button>
-      <button
-        class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-2 text-sm text-white transition hover:bg-[var(--gosslan-danger-hover)]"
-        @click="confirmRecall"
-      >
-        {{ t("common.confirm") }}
-      </button>
-    </div>
-  </BaseModal>
+  <ConfirmDialog
+    :open="confirmingRecall"
+    :title="t('msg.recall')"
+    :confirm-label="t('common.confirm')"
+    :body="t('msg.recallConfirm')"
+    @cancel="confirmingRecall = false"
+    @confirm="confirmRecall"
+  />
 
   <MessageContentModal
     :open="fullModalOpen"

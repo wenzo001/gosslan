@@ -99,9 +99,15 @@
 | B2 | 语义图标入口 + 5 个高频图标迁移 | 中（机械改动面大） | 完成（`ui/icons.ts` 静态再导出；21 文件/22 处 import；`npm test` 1000/1000；build 退出 0） |
 | B3 | 未使用依赖与死代码清理（lightbox / clsx / tailwind-merge / cn） | 低 | 完成（生产依赖 13→10；`npm test` 998/998；`npm run build` 退出 0） |
 | B4 | 可靠性小修（watchGroupTodos 竞态；先补测试） | 中 | 完成（StaleGuard 令牌；`npm test` 1001/1001；build 退出 0；接线判据含非空转对照） |
-| B5 | 完整回归 + 性能/体积读数 + 最终报告 | 无 | 进行中（5.0.0 tip 上跑 `verify:full`；报告见 `refactor-5.0-report.md`） |
+| B5 | 完整回归 + 性能/体积读数 + 最终报告 | 无 | 完成（5.0.0 tip 上 `verify:full` 23/23 全过，`FULL_EXIT=0`，1385.7s；最终 tip 快速层 17/17；报告见 `refactor-5.0-report.md`） |
 | B6 | 另存图片去重（`saveImageWith` 纯核心 + 薄接线） | 低 | 完成（5.0.1；`npm test` 1007/1007、build 退出 0；新增 6 条路径单测） |
-| 后续 | SegmentedControl 状态色适配、saveImage 去重、字节格式统一、事件风暴合并 | 中 | 登记，不阻塞 5.0 |
+| B7 | 字节体积格式化收敛（`formatBytes` 唯一实现） | 低 | 完成（5.0.2；`npm test` 1007/1007、build 退出 0；新增 1 条边界单测） |
+| B8 | 剩余实底危险按钮收编 + 判据 ㊶ | 低 | 完成（5.0.3；7 处改走 `DangerBtn`；84 份 `.vue` 真实树 0 处手写副本；`npm test` 1009/1009、build 退出 0） |
+| B9 | 零引用 `TopologyBar.vue` 与 5 秒拓扑 IPC 轮询清理 | 低 | 完成（5.0.3；删组件、store 的 `topology`/`refreshTopology`/定时器、`api.getTopology`、`TopologyInfo`、`topo.*`；Rust `get_topology` 保留并在 `DEAD_COMMANDS` 登记；`npm test` 1009/1009、build 退出 0） |
+| 备注 | B6–B9 收敛为三笔提交：`f385b9a`（5.0.1）、`13931f4`（5.0.2–5.0.3 + 拓扑清理）、`d31db1e`（记账） | — | Change Budget 同领域窗口保持 2 笔；折历史前后树逐字节相同（`git diff --stat` 空） |
+| 备注 | rebase 到 `origin/main 643ca1e`（INV-P25 判据 D） | — | 冲突仅在版本清单/CHANGELOG；版本取 5.0.x；Rust 单测 968/0、fmt/clippy/清单守卫均 0 |
+| 备注 | 最终尖 `d31db1e` 整跑 | — | `verify:full` 23/23、`FULL_EXIT=0`、1169.4s（第 22 步 1090.3s、第 23 步 14.8s）；前端 1009/1009、Rust 968/0；UI 探针 262/265（3 条与基线相同） |
+| 后续 | `refreshTransfers` 事件合并、SegmentedControl 状态色适配、空态/loading/错误态统一 | 中 | 登记，不阻塞 5.0（前两项需运行时读数或新变体） |
 
 ## 6. 门禁与证据纪律
 

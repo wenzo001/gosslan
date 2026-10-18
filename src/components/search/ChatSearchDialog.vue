@@ -16,11 +16,19 @@
  * 不引入微信的具体色值 —— 这是用户明确要求「按本项目约束标准」的部分。
  */
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import {
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuPortal,
+  DropdownMenuRoot,
+  DropdownMenuTrigger,
+} from "reka-ui";
 import { ChevronRight, Search } from "lucide-vue-next";
 import { X } from "@/components/ui/icons";
 import { api } from "@/api";
 import { useAppStore } from "@/stores/useAppStore";
 import { useImeEnterGuard } from "@/composables/useImeEnterGuard";
+import { t } from "@/i18n";
 import BaseModal from "@/components/BaseModal.vue";
 import MessageAvatar from "@/components/message/MessageAvatar.vue";
 import { highlightText } from "@/utils/highlight";
@@ -34,7 +42,8 @@ import {
   type SearchDatePreset,
   type SenderOption,
 } from "@/utils/chatSearch";
-import { t } from "@/i18n";
+import StateBlock from "@/components/ui/StateBlock.vue";
+import { friendlyError } from "@/utils/errors";
 import type { ChatSearchGroup, ChatSearchMessage } from "@/types";
 import { previewBody } from "@/utils/messages";
 
@@ -69,6 +78,8 @@ const ime = useImeEnterGuard();
 const keyword = ref("");
 const groups = ref<ChatSearchGroup[]>([]);
 const searching = ref(false);
+/** 检索失败的可见出口；有结果时保持结果，空屏时换成错误+重试。 */
+const searchError = ref("");
 const activeConvId = ref<string | null>(null);
 
 /** 筛选条件。筛选项与日期都走后端（命中总数必须按当前筛选算，不能只筛已加载的那几条）。 */
@@ -121,6 +132,7 @@ async function runSearch(keepSenderOptions = false) {
   const kw = keyword.value.trim();
   if (!kw) {
     groups.value = [];
+    searchError.value = "";
     searchActive();
     return;
   }
@@ -136,6 +148,7 @@ async function runSearch(keepSenderOptions = false) {
     });
     if (mine !== seq) return; // 只接受最后一次请求的结果（连打时会有多个在途）
     groups.value = result;
+    searchError.value = "";
     searched.value = keyword.value;
     activeIdx.value = 0;
     if (keepSenderOptions) senderOptions.value = senderOptionsFrom(result);
@@ -146,7 +159,7 @@ async function runSearch(keepSenderOptions = false) {
   } catch (e) {
     if (mine === seq) {
       groups.value = [];
-      app.toastError(e, t("search.fail"));
+      searchError.value = friendlyError(e, t("search.fail"));
     }
   } finally {
     if (mine === seq) searching.value = false;
@@ -231,6 +244,16 @@ function choosePreset(p: SearchDatePreset) {
   datePreset.value = p;
 }
 
+/** 两个筛选菜单互斥：打开一个就收起另一个（旧实现是在按钮的 @click 里手写）。 */
+function onSenderOpen(open: boolean) {
+  senderMenuOpen.value = open;
+  if (open) dateMenuOpen.value = false;
+}
+function onDateOpen(open: boolean) {
+  dateMenuOpen.value = open;
+  if (open) senderMenuOpen.value = false;
+}
+
 function enterChat() {
   // 与键盘同一条路：打开**高亮那一条**（以前固定 `messages[0]` ⇒ 鼠标点的和回车跳的可能不是同一条）
   openHit(activeIdx.value);
@@ -286,57 +309,68 @@ function showSender(group: ChatSearchGroup): boolean {
         </button>
       </div>
 
-      <!-- 发送人 / 日期：与微信同位置、同语义（点开一个小菜单选，不做日历控件） -->
-      <div class="relative shrink-0">
-        <button
-          class="gosslan-filter-chip"
-          :class="senderFilter ? 'gosslan-filter-chip--on' : ''"
-          :aria-expanded="senderMenuOpen"
-          aria-haspopup="menu"
-          @click="senderMenuOpen = !senderMenuOpen; dateMenuOpen = false"
-        >
-          {{ senderName ?? t("search.sender") }}
-        </button>
-        <div v-if="senderMenuOpen" class="gosslan-menu frost absolute right-0 top-9 z-20 max-h-64 overflow-y-auto">
-          <button role="menuitem" class="gosslan-menu-item" @click="chooseSender(null)">
-            {{ t("search.sender.all") }}
-          </button>
+      <!-- 发送人 / 日期：与微信同位置、同语义（点开一个小菜单选，不做日历控件）。
+           菜单的开关/键盘/点外部由 Reka DropdownMenu 承担；两个筛选互斥，靠 onSenderOpen/onDateOpen。 -->
+      <DropdownMenuRoot :open="senderMenuOpen" :modal="false" @update:open="onSenderOpen">
+        <DropdownMenuTrigger as-child>
           <button
-            v-for="o in senderOptions"
-            :key="o.id"
-            role="menuitem"
-            class="gosslan-menu-item"
-            @click="chooseSender(o.id)"
+            class="gosslan-filter-chip"
+            :class="senderFilter ? 'gosslan-filter-chip--on' : ''"
           >
-            <span class="min-w-0 flex-1 truncate" :title="o.name">{{ o.name }}</span>
-            <span class="text-[var(--gosslan-text-2)]">{{ o.count }}</span>
+            {{ senderName ?? t("search.sender") }}
           </button>
-          <div v-if="!senderOptions.length" class="gosslan-menu-hint">{{ t("search.sender.empty") }}</div>
-        </div>
-      </div>
+        </DropdownMenuTrigger>
+        <DropdownMenuPortal>
+          <DropdownMenuContent
+            align="end"
+            :side-offset="0"
+            :collision-padding="8"
+            class="frost gosslan-menu z-[80] max-h-64 overflow-y-auto"
+          >
+            <DropdownMenuItem class="gosslan-menu-item" @select="chooseSender(null)">
+              {{ t("search.sender.all") }}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              v-for="o in senderOptions"
+              :key="o.id"
+              class="gosslan-menu-item"
+              @select="chooseSender(o.id)"
+            >
+              <span class="min-w-0 flex-1 truncate" :title="o.name">{{ o.name }}</span>
+              <span class="text-[var(--gosslan-text-2)]">{{ o.count }}</span>
+            </DropdownMenuItem>
+            <div v-if="!senderOptions.length" class="gosslan-menu-hint">{{ t("search.sender.empty") }}</div>
+          </DropdownMenuContent>
+        </DropdownMenuPortal>
+      </DropdownMenuRoot>
 
-      <div class="relative shrink-0">
-        <button
-          class="gosslan-filter-chip"
-          :class="datePreset !== 'all' ? 'gosslan-filter-chip--on' : ''"
-          :aria-expanded="dateMenuOpen"
-          aria-haspopup="menu"
-          @click="dateMenuOpen = !dateMenuOpen; senderMenuOpen = false"
-        >
-          {{ datePreset === "all" ? t("search.date") : t(`search.date.${datePreset}`) }}
-        </button>
-        <div v-if="dateMenuOpen" class="gosslan-menu frost absolute right-0 top-9 z-20">
+      <DropdownMenuRoot :open="dateMenuOpen" :modal="false" @update:open="onDateOpen">
+        <DropdownMenuTrigger as-child>
           <button
-            v-for="p in SEARCH_DATE_PRESETS"
-            :key="p"
-            role="menuitem"
-            class="gosslan-menu-item"
-            @click="choosePreset(p)"
+            class="gosslan-filter-chip"
+            :class="datePreset !== 'all' ? 'gosslan-filter-chip--on' : ''"
           >
-            {{ t(`search.date.${p}`) }}
+            {{ datePreset === "all" ? t("search.date") : t(`search.date.${datePreset}`) }}
           </button>
-        </div>
-      </div>
+        </DropdownMenuTrigger>
+        <DropdownMenuPortal>
+          <DropdownMenuContent
+            align="end"
+            :side-offset="0"
+            :collision-padding="8"
+            class="frost gosslan-menu z-[80]"
+          >
+            <DropdownMenuItem
+              v-for="p in SEARCH_DATE_PRESETS"
+              :key="p"
+              class="gosslan-menu-item"
+              @select="choosePreset(p)"
+            >
+              {{ t(`search.date.${p}`) }}
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenuPortal>
+      </DropdownMenuRoot>
     </div>
 
     <!-- 结果：左会话 / 右命中消息（微信同款两栏） -->
@@ -352,6 +386,14 @@ function showSender(group: ChatSearchGroup): boolean {
           <span class="h-3 w-3 animate-spin rounded-full border-2 border-[var(--gosslan-border)] border-t-[var(--gosslan-primary)]"></span>
           {{ t("search.searching") }}
         </p>
+        <StateBlock
+          v-else-if="searchError"
+          kind="error"
+          :title="t('search.fail')"
+          :detail="searchError"
+          :retry-label="t('common.retry')"
+          @retry="runSearch()"
+        />
         <p v-else-if="!groups.length" class="px-3 py-6 text-center text-xs text-[var(--gosslan-text-2)]">
           {{ t("search.empty") }}
         </p>

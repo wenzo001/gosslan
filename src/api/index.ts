@@ -2,7 +2,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppSettings, CacheInfo, ChatSearchGroup, CleanupReport, ContentAudience, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, FriendKeyRotation, Group, GroupFileEntry, GroupHistoryProgress, GroupReadInfo, InterfaceInfo, LinkState, LogEntry, MessageRecord, Peer, PeerReadInfo, PendingRequest, RelayConfig, RelayProbe, RoutedEndpoint, RuntimeSnapshot, ShareEntry, TopologyInfo, TransferInfo } from "@/types";
+import type { AppSettings, CacheInfo, ChatSearchGroup, CleanupReport, ContentAudience, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, FriendKeyRotation, Group, GroupFileEntry, GroupHistoryProgress, GroupReadInfo, InterfaceInfo, LinkState, LogEntry, MessageRecord, Peer, PeerReadInfo, PendingRequest, RelayConfig, RelayProbe, RoutedEndpoint, RuntimeSnapshot, ShareEntry, TransferInfo } from "@/types";
 import type { TodoImage } from "@/utils/todos";
 import type { PreviewGallery, PreviewImage } from "@/types";
 export const api = {
@@ -49,7 +49,6 @@ export const api = {
   stopNetwork: () => invoke<RuntimeSnapshot>("stop_network"),
   /** 取运行状态快照（唯一真相源；旧 `get_channel_status`/`get_network_status` 已删除）。 */
   getRuntimeSnapshot: () => invoke<RuntimeSnapshot>("get_runtime_snapshot"),
-  getTopology: () => invoke<TopologyInfo>("get_topology"),
 
   getPeers: () => invoke<Peer[]>("get_peers"),
   searchNearbyPeers: () => invoke<Peer[]>("search_nearby_peers"),
@@ -323,6 +322,13 @@ export const api = {
   /** base64 写到目标路径（另存为的落地一步）。 */
   saveDataFile: (base64Data: string, destination: string) =>
     invoke<void>("save_data_file", { base64Data, destination }),
+  /** 按 msg_id / cid 从后端直接另存（源文件已在后端，不走 base64 IPC）。 */
+  saveMediaAs: (source: { msgId?: string; cid?: string }, destination: string) =>
+    invoke<void>("save_media_as", {
+      msgId: source.msgId,
+      cid: source.cid,
+      destination,
+    }),
   /** 剪贴板里的文件路径（粘贴发图那条路）。 */
   readClipboardFilePaths: () => invoke<string[]>("read_clipboard_file_paths"),
   /** 群文件每收件人进度汇总（气泡上「3/5 已收到」）。null = 这条 transfer 没有群投递记录。 */

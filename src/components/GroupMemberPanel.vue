@@ -5,10 +5,12 @@ import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import BaseModal from "@/components/BaseModal.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
+import DangerBtn from "@/components/ui/DangerBtn.vue";
 import { useMemberProfile } from "@/composables/useMemberProfile";
 import { avatarSeedFor } from "@/utils/avatarSeed";
 import {
-  TODO_STATUSES, TODO_STATUS_CLASS, TODO_STATUS_LABEL_KEY, foldTodos, isEffectivelyArchived, } from "@/utils/todos";
+  TODO_STATUSES, TODO_STATUS_CLASS, TODO_STATUS_LABEL_KEY, foldTodos, isEffectivelyArchived, todoRowsLoadState, } from "@/utils/todos";
+import { friendlyError } from "@/utils/errors";
 import { ArrowRightLeft, Crown, ListChecks, LogOut, Plus, UserMinus } from "lucide-vue-next";
 import { Loader2, X } from "@/components/ui/icons";
 import type { Friend } from "@/types";
@@ -43,6 +45,15 @@ watch(
   { immediate: true },
 );
 
+const todoConvId = computed(() => (props.groupId ? `group:${props.groupId}` : ""));
+/** 读到过没有 / 读失败原因 —— 摘要区同样不许把"还没读到"或"读失败"写成「暂无任务」。 */
+const todoRowsState = computed(() =>
+  todoConvId.value
+    ? todoRowsLoadState(chat.groupTodoRows, chat.groupTodoRowsErrors, todoConvId.value)
+    : { status: "ready" as const, error: "" },
+);
+const todoRowsLoaded = computed(() => todoRowsState.value.status === "ready");
+const todoRowsError = computed(() => todoRowsState.value.error);
 const todoSummary = computed(() => {
   const rows = props.groupId ? chat.groupTodoRows[`group:${props.groupId}`] ?? [] : [];
   const items = foldTodos(rows).filter((x) => !isEffectivelyArchived(x));
@@ -50,6 +61,9 @@ const todoSummary = computed(() => {
   for (const it of items) byStatus[it.status] = (byStatus[it.status] ?? 0) + 1;
   return { total: items.length, done: byStatus.done ?? 0, byStatus };
 });
+function retryTodoRows() {
+  if (todoConvId.value) void chat.ensureGroupTodoRows(todoConvId.value);
+}
 /** 当前用户是否为群主（可见「添加/移除成员」操作） */
 const isOwner = computed(() => !!group.value && group.value.creator === myId.value);
 /** 展示「添加成员」面板 */
@@ -349,7 +363,22 @@ async function confirmAction() {
             {{ t(TODO_STATUS_LABEL_KEY[s]) }} {{ todoSummary.byStatus[s] }}
           </span>
         </div>
-        <div v-else class="mt-1.5 text-[11px] text-[var(--gosslan-text-2)]">{{ t("todo.empty") }}</div>
+        <div v-else class="mt-1.5 text-[11px] text-[var(--gosslan-text-2)]">
+          <template v-if="todoRowsLoaded">{{ t("todo.empty") }}</template>
+          <template v-else-if="todoRowsError">
+            {{ friendlyError(todoRowsError, t("todo.loadFail")) }}
+            <button
+              type="button"
+              class="tap-safe ml-1 inline-flex items-center rounded-[var(--gosslan-radius-sm)] px-1 text-[var(--gosslan-primary)] hover:bg-[var(--gosslan-hover)]"
+              @click="retryTodoRows"
+            >
+              {{ t("common.retry") }}
+            </button>
+          </template>
+          <template v-else>
+            <Loader2 class="mr-1 inline h-3 w-3 animate-spin" aria-hidden="true" />{{ t("todo.loading") }}
+          </template>
+        </div>
       </div>
 
       <!-- 添加成员（仅群主）：切换出一列可选好友 -->
@@ -446,12 +475,9 @@ async function confirmAction() {
         >
           {{ t("common.cancel") }}
         </button>
-        <button
-          class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-3 py-1.5 text-sm text-white transition hover:bg-[var(--gosslan-danger-hover)]"
-          @click="confirmAction"
-        >
+        <DangerBtn size="large" @click="confirmAction">
           {{ t("common.confirm") }}
-        </button>
+        </DangerBtn>
       </div>
     </template>
   </BaseModal>

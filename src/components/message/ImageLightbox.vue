@@ -78,10 +78,18 @@ useBackLayer(
 
 const src = ref<string>("");
 const note = ref<string | null>(null);
+const resolving = ref(false);
 
 function apply(r: PreviewResult) {
   src.value = r.url ?? "";
   note.value = r.note ?? null;
+}
+
+/** 字节拿到了但浏览器解不出图（损坏 / 非图片）：清掉 src 走可见的错误出口，而不是留一张裂图。 */
+function onImageError() {
+  src.value = "";
+  note.value = t("msg.cannotPreview");
+  resolving.value = false;
 }
 
 /**
@@ -98,28 +106,33 @@ const resolveGuard = new StaleGuard();
 async function resolveCurrent() {
   const tok = resolveGuard.begin("current");
   const img = current.value;
+  resolving.value = true;
   // 过了 await 之后的每一步都要问一句"我还是最新的那次吗"，是则 apply、否则整个丢弃
   const put = (r: PreviewResult) => {
     if (resolveGuard.isCurrent("current", tok)) apply(r);
   };
-  if (!img) {
-    // 同步分支也一律走 put：被更新的一次抢走后，"清空"同样不该执行
+  try {
+    if (!img) {
+      // 同步分支也一律走 put：被更新的一次抢走后，"清空"同样不该执行
+      put({});
+      return;
+    }
+    if (img.dataSrc) {
+      put({ url: img.dataSrc });
+      return;
+    }
+    if (img.cid) {
+      put(await loadContentPreview(img.cid, img.name));
+      return;
+    }
+    if (img.msgId) {
+      put(await loadFilePreview(img.msgId, "image", img.name));
+      return;
+    }
     put({});
-    return;
+  } finally {
+    if (resolveGuard.isCurrent("current", tok)) resolving.value = false;
   }
-  if (img.dataSrc) {
-    put({ url: img.dataSrc });
-    return;
-  }
-  if (img.cid) {
-    put(await loadContentPreview(img.cid, img.name));
-    return;
-  }
-  if (img.msgId) {
-    put(await loadFilePreview(img.msgId, "image", img.name));
-    return;
-  }
-  put({});
 }
 
 watch(current, () => void resolveCurrent(), { immediate: true });
@@ -133,8 +146,12 @@ function go(delta: number) {
 /** 保存当前图片：对话框 / 取字节 / 落盘收在 utils/saveImageAs（与 MessageItem 共用一份）。 */
 async function saveImage() {
   if (!src.value) return;
+  const item = current.value;
+  const source = item?.msgId ? { msgId: item.msgId }
+    : item?.cid ? { cid: item.cid }
+      : undefined;
   try {
-    if ((await saveImageAs(src.value)) === "saved") app.toast(t("msg.imageSaved"), "success");
+    if ((await saveImageAs(src.value, source)) === "saved") app.toast(t("msg.imageSaved"), "success");
   } catch (e) {
     app.toastError(e, t("msg.saveImageFail"));
   }
@@ -411,13 +428,28 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
             @pointermove="onPointerMove"
             @pointerup="onPointerUp"
             @pointercancel="onPointerUp"
+            @error="onImageError"
           />
         </template>
         <div
           v-else
-          class="flex h-48 items-center justify-center px-8 text-sm text-white/70"
+          class="flex h-48 flex-col items-center justify-center gap-3 px-8 text-center text-sm text-white/70"
         >
-          {{ note ?? t("msg.cannotPreview") }}
+          <template v-if="resolving">
+            <span class="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white/80"></span>
+            {{ t("msg.lightbox.loading") }}
+          </template>
+          <template v-else>
+            <span>{{ note ?? t("msg.cannotPreview") }}</span>
+            <button
+              v-if="current?.msgId || current?.cid"
+              type="button"
+              class="tap-safe rounded-[var(--gosslan-radius-md)] bg-white/15 px-3 py-1.5 text-xs text-white transition hover:bg-white/25"
+              @click.stop="resolveCurrent()"
+            >
+              {{ t("common.retry") }}
+            </button>
+          </template>
         </div>
 
         <!-- 底部提示：计数 + 操作说明 -->

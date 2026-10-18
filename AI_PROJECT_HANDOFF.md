@@ -170,7 +170,7 @@ gosslan/
 │       ├── VirtualList.vue       # 虚拟滚动（绝对定位 + 触顶加载）
 │       ├── CodeBlock.vue / BaseModal.vue / SettingsPanel.vue
 │       ├── AddFriendModal.vue / GroupCreateModal.vue / ShareDirectory.vue
-│       └── NavRail.vue / TopologyBar.vue
+│       └── NavRail.vue
 └── src-tauri/src/
     ├── lib.rs               # Tauri Builder：插件/状态/托盘 setup/invoke_handler 注册
     ├── main.rs

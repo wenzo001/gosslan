@@ -18,17 +18,40 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api } from "@/api";
 import AuxWindowShell from "@/components/window/AuxWindowShell.vue";
 import ImageLightbox from "@/components/message/ImageLightbox.vue";
-import type { PreviewImage } from "@/stores/useImagePreview";
+import StateBlock from "@/components/ui/StateBlock.vue";
+import {
+  INITIAL_PREVIEW_VIEW,
+  PREVIEW_PULL_TIMEOUT_MS,
+  reducePreviewGallery,
+  withTimeout,
+  type PreviewGalleryView,
+} from "@/utils/previewGalleryState";
 import { t } from "@/i18n";
 
-const images = ref<PreviewImage[]>([]);
-const index = ref(0);
-/**
- * 首帧没内容时**不算 open**：等第一次取到相册再点亮。
- * 这样组件内部那条"open 变化时复位缩放/焦点"的逻辑有一次真正的 false→true，
- * 而不是带着空数组在窗口里挂着一个空白全屏层。
- */
-const open = computed(() => images.value.length > 0);
+const view = ref<PreviewGalleryView>({ ...INITIAL_PREVIEW_VIEW });
+const index = computed({
+  get: () => view.value.index,
+  set: (value: number) => {
+    view.value = { ...view.value, index: value };
+  },
+});
+let generation = 0;
+
+const blockedKind = computed<"loading" | "empty" | "error">(() =>
+  view.value.status === "ready" ? "loading" : view.value.status,
+);
+const blockedTitle = computed(() => {
+  switch (view.value.status) {
+    case "empty":
+      return t("preview.empty");
+    case "error":
+      return t("preview.error");
+    default:
+      return t("preview.loading");
+  }
+});
+const blockedDetail = computed(() => (view.value.status === "error" ? view.value.error : ""));
+const blockedRetry = computed(() => (view.value.status === "error" ? t("preview.retry") : ""));
 
 /**
  * 取当前该看的相册。⚠️ **不清**后端那份暂存 —— 每次投递都会整体覆盖它，
@@ -36,10 +59,26 @@ const open = computed(() => images.value.length > 0);
  * 窗口在"事件先到、监听器还没注册"的窗口期就会拿不到内容（这正是批次 w 记过的竞态）。
  */
 async function pull() {
-  const gallery = await api.getImagePreviewGallery().catch(() => null);
-  if (!gallery?.items?.length) return;
-  images.value = gallery.items;
-  index.value = Math.min(Math.max(gallery.index ?? 0, 0), gallery.items.length - 1);
+  const gen = ++generation;
+  view.value = reducePreviewGallery(view.value, { kind: "begin" });
+  try {
+    const gallery = await withTimeout(
+      api.getImagePreviewGallery(),
+      PREVIEW_PULL_TIMEOUT_MS,
+      t("preview.timeout"),
+    );
+    if (disposed || gen !== generation) return;
+    view.value = reducePreviewGallery(view.value, {
+      kind: "loaded",
+      gallery: gallery ?? { items: [], index: 0 },
+    });
+  } catch (err) {
+    if (disposed || gen !== generation) return;
+    view.value = reducePreviewGallery(view.value, {
+      kind: "failed",
+      message: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
 
 let unlisten: (() => void) | null = null;
@@ -56,8 +95,8 @@ let disposed = false;
  * ⌘W / Ctrl+W 三条路都会经过它，漏一条就是一个不会放资源的窗口。
  */
 function releaseAlbum() {
-  images.value = [];
-  index.value = 0;
+  generation++;
+  view.value = reducePreviewGallery(view.value, { kind: "released" });
 }
 
 onMounted(() => {
@@ -119,12 +158,21 @@ function closeSelf() {
 <template>
   <AuxWindowShell :title="t('preview.title')">
     <ImageLightbox
-      :images="images"
+      v-if="view.status === 'ready'"
+      :images="view.images"
       v-model:index="index"
-      :open="open"
+      :open="true"
       top-inset="var(--gosslan-title-h)"
       hide-close
       @close="closeSelf()"
+    />
+    <StateBlock
+      v-else
+      :kind="blockedKind"
+      :title="blockedTitle"
+      :detail="blockedDetail"
+      :retry-label="blockedRetry"
+      @retry="pull()"
     />
   </AuxWindowShell>
 </template>

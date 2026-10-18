@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, reactive, ref, watch } from "vue";
-import { Trash2 } from "lucide-vue-next";
+import { Trash2 } from "@/components/ui/icons";
 import { api } from "@/api";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
@@ -16,6 +16,8 @@ const app = useAppStore();
 const chat = useChatStore();
 
 const selectedIp = ref("0.0.0.0");
+/** 同一轮网卡枚举失败只提示一次，切走再回来可重新提示。 */
+let ifaceToastShown = false;
 
 // 通道状态来自 store（唯一真相源）—— 另一处（添加好友页）开关也会立刻反映到这里
 // `?? []` 是**防御性**写法：万一 store 还没就绪（或热更新留下了旧实例），
@@ -47,7 +49,16 @@ watch(
     // 手机端：打开网络设置时才按需拉起蓝牙通道（同上）
     void app.ensureBluetoothOn();
     selectedIp.value = app.boundIp ?? app.preferredIp ?? "0.0.0.0";
-    await app.refreshInterfaces();
+    try {
+      await app.refreshInterfaces();
+      ifaceToastShown = false;
+    } catch (e) {
+      // 网卡枚举失败不能截断后面的通道/端点加载；同一轮失败只提示一次。
+      if (!ifaceToastShown) {
+        ifaceToastShown = true;
+        app.toastError(e, t("network.refreshFail"));
+      }
+    }
     await loadChannels();
     await loadEndpoints();
     // 不 await：这一项失败只影响这一块控件的初始值，不该拖住整个网络设置页的打开。

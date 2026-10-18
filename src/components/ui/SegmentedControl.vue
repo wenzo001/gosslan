@@ -9,9 +9,10 @@
  *   border + primary-light 底 + accent-ink 字 + font-medium
  * 非激活：border-transparent + text-2 + hover-bg
  *
- * 为什么要抽：此前 AppearanceSection / ChatStyleSection / GroupTasksBoard 过滤 /
- * 状态切换 四处手搓，激活态各写各的（有的 border + 主题色，有的 bg-panel shadow-sm，
- * 有的干脆没样式）。统一后所有 segmented 切换器一份代码维护。
+ * 为什么要抽：此前多处手搓、激活态各写各的（有的 border + 主题色，有的
+ * bg-panel shadow-sm，有的干脆没样式）。现在 AppearanceSection / GeneralSection
+ * 共用这一份。GroupTasksBoard 的筛选胶囊（带计数）与草稿状态（带语义色）
+ * **刻意不并入**：前者是 chips 而非分段，后者合并会丢掉状态色信息。
  */
 
 type Option = {
