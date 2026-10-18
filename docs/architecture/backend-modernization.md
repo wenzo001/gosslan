@@ -232,6 +232,16 @@
   环境噪声，`RUSTUP_TOOLCHAIN=stable-aarch64-apple-darwin` 复跑绿，非产品失败）。
   未跑：group/gossip/互操作/真机。
 
+### B13（已落地，5.0.32）：SQLite 锁观测摘要进运行日志
+- `DbLock` 早已逐次量 wait/hold，但 `take_summary()` 只有测试在读 ⇒ 现场看不到锁竞争。
+- 新增 `AppState::spawn_db_hold_reporter`：60s 周期、`DbLock` 的唯一生产读者；空窗口
+  不产行，慢持锁（默认 ≥500ms）才 warn 一行（取锁次数/最长持有/最长等待/累计/
+  超阈值次数），不含 SQL、参数、正文或文件名。
+- 判据 `db_hold_summary_has_exactly_one_production_reader` 钉住唯一读者、唯一启动点、
+  阈值来源与日志出口；Rust **990 通过 + 1 ignored**，基线 991（Windows 974）；
+  干净 worktree `verify:local` **22/22 / 165.0s**。
+- 未改锁语义、DB、协议；E2E/真机 **NOT RUN**（本批只加日志出口）。
+
 ### B11（已落地，5.0.30）：应用数据目录权限 `0700`
 - 真实安装的 app data 目录是 `0755`：文件虽已 `0600`，同机其他用户仍可列出备份名、
   日志名与实例库名。`AppState::init()` 在解析目录后调用
