@@ -390,7 +390,7 @@ window.__probe = (() => {
     const host = document.createElement('div');
     host.id = 'probe-host';
     document.body.appendChild(host);
-    const state = Vue.reactive({ open: false, initialKeyword: '' });
+    const state = Vue.reactive({ open: false, initialKeyword: '', groupId: null });
     window.__st = state;
     // 夹具原先把 props 写死成 open/initialKeyword + 三个回调；任务卡那一族要的是
     // message / liveTodo / mentionNames / selfMention ⇒ 第三参收一份 JSON props。
@@ -412,6 +412,7 @@ window.__probe = (() => {
     const mkProps = () => ({
       open: state.open,
       initialKeyword: state.initialKeyword,
+      groupId: state.groupId,
       onSelect: (v) => events.push(['select', v]),
       onClose: () => events.push(['close']),
       onOpenConversation: (p) => events.push(['open', JSON.stringify(p)]),
@@ -435,6 +436,14 @@ window.__probe = (() => {
     });
     if (pinia) app.use(pinia);
     window.__pinia = pinia;
+    // TanStack Query：组件用 useQuery/useQueryClient 时，夹具 app 必须装同一份插件。
+    // vue-query 的预构建文件是组件 import 时加载的 ⇒ 从资源条目取真实 URL，不手拼版本号。
+    const qUrl = resUrls().find((u) => u.includes('/deps/') && u.includes('vue-query.js?v='));
+    if (qUrl) {
+      const Q = await import(qUrl);
+      window.__qc = new Q.QueryClient();
+      app.use(Q.VueQueryPlugin, { queryClient: window.__qc });
+    }
     app.mount(host);
     window.__probe.vue = Vue;
     window.__probe.state = state;
@@ -1304,6 +1313,67 @@ window.__probe = (() => {
     const S = await import('/src/stores/useChatStore.ts');
     return S.useChatStore();
   };
+  /** 分段控件（Reka RadioGroup）的形状与焦点读数。 */
+  H.segmentedInfo = () => {
+    const g = document.querySelector('[role="radiogroup"]');
+    if (!g) return { present: false };
+    const items = Array.from(g.querySelectorAll('[role="radio"]'));
+    return {
+      present: true,
+      label: g.getAttribute('aria-label'),
+      groupTab: g.tabIndex,
+      items: items.map((el) => ({
+        text: String(el.textContent || '').trim(),
+        checked: el.getAttribute('aria-checked'),
+        tab: el.tabIndex,
+      })),
+      active: String(document.activeElement && document.activeElement.textContent || '').trim(),
+    };
+  };
+  H.groupFocus = () => {
+    const g = document.querySelector('[role="radiogroup"]');
+    if (!g) return false;
+    g.focus();
+    return true;
+  };
+  H.radioFocus = (i) => {
+    const el = document.querySelectorAll('[role="radio"]')[i];
+    if (!el) return false;
+    el.focus();
+    return true;
+  };
+  H.radioPoint = (i) => {
+    const el = document.querySelectorAll('[role="radio"]')[i];
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+  };
+  /** 字号滑块（Reka Slider）的形状/值与 store 读数。 */
+  H.sliderInfo = () => {
+    const t = document.querySelector('[role="slider"]');
+    if (!t) return { present: false };
+    const r = t.getBoundingClientRect();
+    const root = t.parentElement ? t.parentElement.getBoundingClientRect() : null;
+    const style = window.__pinia && window.__pinia.state && window.__pinia.state.value.app
+      ? window.__pinia.state.value.app.chatStyle : null;
+    return {
+      present: true,
+      now: t.getAttribute('aria-valuenow'),
+      min: t.getAttribute('aria-valuemin'),
+      max: t.getAttribute('aria-valuemax'),
+      text: t.getAttribute('aria-valuetext'),
+      focused: document.activeElement === t,
+      rect: { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) },
+      root: root ? { x: Math.round(root.x), y: Math.round(root.y), w: Math.round(root.width), h: Math.round(root.height) } : null,
+      font: style ? style.fontSize : null,
+    };
+  };
+  H.sliderFocus = () => {
+    const t = document.querySelector('[role="slider"]');
+    if (!t) return false;
+    t.focus();
+    return true;
+  };
   /**
    * 把夹具里的名字真的种进 store 的名字表。
    *
@@ -1371,6 +1441,42 @@ window.__probe = (() => {
     window.__st.open = v;
     const t = window.__probe.vue;
     await t.nextTick(); await t.nextTick();
+  };
+  /** 群文件面板：换群（Query key 跟着变）。 */
+  H.setGroup = async (v) => {
+    window.__st.groupId = v;
+    const t = window.__probe.vue;
+    await t.nextTick(); await t.nextTick();
+  };
+  /**
+   * 群文件夹具（必须在挂面板之前装）：
+   * listGroupFiles 记录每次请求的群 id、可切换成失败；
+   * onGroupFileActivity 抓住订阅回调，并记录订阅/退订次数（关面板要摘干净）。
+   */
+  H.groupFilesBus = async () => {
+    const m = await import('/src/api/index.ts');
+    window.__gf = { calls: [], fail: false, subs: 0, unsub: 0, emit: null };
+    m.api.listGroupFiles = async (gid) => {
+      window.__gf.calls.push(gid);
+      if (window.__gf.fail) throw new Error('ipc down');
+      return [{
+        transfer_id: gid + '-1',
+        name: gid + '.bin',
+        size: 1024,
+        sender_id: 'peer-1',
+        created_at: 0,
+        local_state: 'local',
+        local_path: '/tmp/' + gid + '.bin',
+        delivered: 1,
+        total: 1,
+      }];
+    };
+    m.api.onGroupFileActivity = async (cb) => {
+      window.__gf.subs += 1;
+      window.__gf.emit = cb;
+      return () => { window.__gf.unsub += 1; };
+    };
+    return true;
   };
   /**
    * 会话行这一刻「读屏得到的名字」与两枚徽标（#88 / #117 剩下的那一半）。
@@ -1834,6 +1940,9 @@ async function main() {
     const ctxmenu = want("ctxmenu");
     const todopick = want("todopick");
     const sw = want("switch");
+    const seg = want("segmented");
+    const slider = want("slider");
+    const files = want("files");
     const task = want("task");
     const tasksrt = want("tasksrt");
     const convbadge = want("convbadge");
@@ -1851,6 +1960,9 @@ async function main() {
     if (ctxmenu) await runCtxMenu(cdp, url);
     if (todopick) await runTodoPick(cdp, url);
     if (sw) await runSwitch(cdp, url);
+    if (seg) await runSegmented(cdp, url);
+    if (slider) await runSlider(cdp, url);
+    if (files) await runGroupFiles(cdp, url);
     if (task) await runTaskCard(cdp, url);
     if (tasksrt) await runTasksRealtime(cdp, url);
     if (convbadge) await runConvBadge(cdp, url);
@@ -3676,8 +3788,20 @@ async function runSearch(cdp, url) {
         content: '{"name":"命中.png","path":"/x/命中.png","size":2048,"sha256":"ab12"}', ts: 3 },
     ],
   };
-  await cdp.eval(`window.__probe.install('/src/components/search/ChatSearchDialog.vue', '')`);
+  await cdp.eval(
+    `window.__probe.install('/src/components/search/ChatSearchDialog.vue', '', ${JSON.stringify(JSON.stringify({ initialKeyword: "初" }))})`,
+  );
   await cdp.eval(`window.__probe.stubApi('searchChatHistory', ${JSON.stringify([GROUP])})`);
+  // 打开弹窗时的检索次数：关键词/筛选的复位 watcher 若也发请求，这里会多 1。
+  await cdp.eval(`(async () => {
+    const m = await import('/src/api/index.ts');
+    const f = m.api.searchChatHistory;
+    window.__searchOpenCalls = 0;
+    m.api.searchChatHistory = async (...a) => {
+      window.__searchOpenCalls += 1;
+      return f(...a);
+    };
+  })()`);
   await cdp.eval("window.__probe.setOpen(true)");
   // 搜索弹窗是整页转场（BaseModal 的 gosslan-dialog-page，translateX(100%) → 0）。
   // 不能用 playState 判"就位"：窗口被盖住时 document.visibilityState=hidden，动画时钟冻在 0，
@@ -3700,6 +3824,22 @@ async function runSearch(cdp, url) {
   if (!settled || !settled.ok) {
     console.log("  · 搜索弹窗入场未就位：" + JSON.stringify(settled));
   }
+  // 打开 watcher 里的检索是异步的（await nextTick 后才发）；先等它真的发出去，
+  // 再留 250ms 给"关键词/筛选复位 watcher 的 150ms 防抖"——有第二条就会在这段里出现。
+  for (let i = 0; i < 60; i += 1) {
+    if (await cdp.eval("window.__searchOpenCalls")) break;
+    await sleep(50);
+  }
+  await sleep(250);
+  const openCalls = await cdp.eval("window.__searchOpenCalls");
+  const openDiag = await cdp.eval(`({
+    open: window.__st && window.__st.open,
+    initialKeyword: window.__st && window.__st.initialKeyword,
+    input: (document.querySelector('input') || {}).value,
+    calls: window.__searchOpenCalls,
+  })`);
+  check("打开弹窗只发一次检索（筛选项复位不再触发第二次 IPC）",
+    openCalls === 1, "1 次", JSON.stringify(openDiag));
   const typed = await cdp.eval(`window.__probe.typeKeyword('命中')`);
   const hits = () => cdp.eval("window.__probe.hits()");
   const h0 = await hits();
@@ -3936,6 +4076,252 @@ async function runSwitch(cdp, url) {
   check("禁用态：点击不发 update，且 disabled 属性在",
     s1.present === true && s1.disabled === true && evDisabled.length === 0,
     "disabled=true / 0 个事件", JSON.stringify({ disabled: s1.disabled, events: evDisabled }));
+}
+
+/**
+ * 群文件面板：TanStack Query 真实业务迁移的端到端判据。
+ * 不再是"读一眼组件源码"——这里跑真实组件 + 真实 QueryClient，只把两条 IPC 命令换成夹具。
+ */
+async function runGroupFiles(cdp, url) {
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+  await cdp.eval("window.__probe.groupFilesBus()");
+  const mounted = await cdp.eval("window.__probe.install('/src/components/GroupFilesPanel.vue', '', '')");
+  await sleep(150);
+
+  const open = async (v) => {
+    await cdp.eval(`window.__probe.setOpen(${v})`);
+    await sleep(700);
+  };
+  const group = async (gid) => {
+    await cdp.eval(`window.__probe.setGroup(${JSON.stringify(gid)})`);
+    await sleep(700);
+  };
+  const info = () => cdp.eval(`(() => {
+    const dlg = document.querySelector('[role="dialog"]');
+    const text = dlg ? dlg.innerText : '';
+    return {
+      dialog: !!dlg,
+      files: dlg ? [...dlg.querySelectorAll('[title$=".bin"]')].map((el) => el.getAttribute('title')) : [],
+      text,
+      calls: window.__gf.calls.slice(),
+      subs: window.__gf.subs,
+      unsub: window.__gf.unsub,
+      qc: !!window.__qc,
+    };
+  })()`);
+  const cache = (gid) => cdp.eval(`(() => {
+    const q = window.__qc && window.__qc.getQueryCache().find({ queryKey: ['groupFiles', ${JSON.stringify(gid)}] });
+    return q ? { status: q.state.status, hasData: Array.isArray(q.state.data) && q.state.data.length > 0 } : null;
+  })()`);
+  const fire = async () => {
+    await cdp.eval("window.__gf.emit()");
+    await sleep(700);
+  };
+
+  check("夹具装上了真实的 QueryClient（否则面板 setup 就会抛 no QueryClient）",
+    mounted && mounted.ok === true && (await info()).qc === true, "QueryClient 在", JSON.stringify(mounted));
+
+  await group("g1");
+  await open(true);
+  let s = await info();
+  check("打开面板：按群拉一次清单并渲染文件行",
+    s.dialog && s.calls.join(",") === "g1" && s.files.includes("g1.bin"),
+    "calls=[g1] / g1.bin", JSON.stringify({ calls: s.calls, files: s.files }));
+
+  await open(false);
+  await open(true);
+  s = await info();
+  check("关掉再打开：同一群也重新拉取（staleTime 0，不是读旧快照）",
+    s.calls.join(",") === "g1,g1" && s.files.includes("g1.bin"),
+    "calls=[g1,g1]", JSON.stringify({ calls: s.calls, files: s.files }));
+
+  await group("g2");
+  s = await info();
+  check("面板开着时换群：立刻请求新群，旧群文件不再出现在面板里",
+    s.calls.join(",") === "g1,g1,g2" && s.files.includes("g2.bin") && !s.files.includes("g1.bin"),
+    "calls=[g1,g1,g2] / 只有 g2.bin", JSON.stringify({ calls: s.calls, files: s.files }));
+
+  const before = s.calls.length;
+  await fire();
+  s = await info();
+  check("文件事件到达：只失效当前群并重拉一次",
+    s.calls.length === before + 1 && s.calls[s.calls.length - 1] === "g2",
+    `calls +1（${before} → ${before + 1}）且最后一条是 g2`,
+    JSON.stringify({ calls: s.calls }));
+
+  // 刷新失败：旧清单必须留着（走 warning banner），缓存状态变 error。
+  await cdp.eval("window.__gf.fail = true");
+  const beforeFail = (await info()).calls.length;
+  await fire();
+  s = await info();
+  const st = await cache("g2");
+  check("刷新失败保留旧清单：文件行还在，查询状态 error，且确实重试过一次",
+    s.files.includes("g2.bin") && st && st.status === "error" && st.hasData
+      && s.calls.length === beforeFail + 2,
+    "g2.bin 仍在 / status=error / 2 次尝试",
+    JSON.stringify({ files: s.files, cache: st, calls: s.calls }));
+
+  await cdp.eval("window.__gf.fail = false");
+  await fire();
+  s = await info();
+  check("失败后恢复：下一次事件失效把清单拉回 success",
+    (await cache("g2")).status === "success" && s.files.includes("g2.bin"),
+    "status=success", JSON.stringify(await cache("g2")));
+
+  await open(false);
+  s = await info();
+  check("关掉面板：事件订阅成对摘除（subs === unsub）",
+    s.subs > 0 && s.unsub === s.subs, `subs=${s.subs} / unsub=${s.unsub}`,
+    JSON.stringify({ subs: s.subs, unsub: s.unsub }));
+}
+
+async function runSegmented(cdp, url) {
+  // 焦点模拟与 reaction 段同口径：RovingFocus 用 .focus() 移动，方向键要真的送到被聚焦项。
+  await cdp.send("Page.bringToFront").catch(() => {});
+  await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: true });
+  try {
+    await cdp.send("Page.navigate", { url });
+    await sleep(3_000);
+    await cdp.eval(PAGE_FIXTURE);
+    const mount = async (extra = {}) => {
+      const props = {
+        modelValue: "a",
+        options: [{ value: "a", label: "甲" }, { value: "b", label: "乙" }, { value: "c", label: "丙" }],
+        size: "sm",
+        ariaLabel: "测试分段",
+        ...extra,
+      };
+      await cdp.eval(
+        `window.__probe.install('/src/components/ui/SegmentedControl.vue', '', ${JSON.stringify(JSON.stringify(props))})`,
+      );
+      await sleep(200);
+    };
+    const info = () => cdp.eval("window.__probe.segmentedInfo()");
+    const events = () => cdp.eval("window.__probe.events");
+
+    await mount();
+    const s0 = await info();
+    check("分段控件由 Reka 渲染成 radiogroup + 3 个 radio",
+      s0.present === true && s0.items.length === 3 && s0.label === "测试分段",
+      "radiogroup / 3 个 radio / aria-label", JSON.stringify(s0));
+    check("RovingFocus 的 Tab 停靠点在整组上，组内 radio 初始都是 -1",
+      s0.present === true && s0.groupTab === 0 && s0.items.every((x) => x.tab === -1),
+      "groupTab=0 / 组内全 -1",
+      JSON.stringify({ groupTab: s0.groupTab, tabs: s0.items.map((x) => x.tab) }));
+
+    await cdp.eval("window.__probe.reset(); window.__probe.groupFocus()");
+    await sleep(80);
+    const sFocus = await info();
+    check("Tab 进组后焦点落到当前选中项（不是停在组容器上）",
+      sFocus.active.includes("甲"), "activeText 含甲", sFocus.active);
+    // 真按键：keydown 与 keyup 之间留出一帧。RadioGroupItem 在 focus 的
+    // setTimeout(0) 里按“方向键还按着”决定是否 click；同帧发 keyup 会把这次点击吃掉。
+    await cdp.send("Input.dispatchKeyEvent", {
+      type: "keyDown", key: "ArrowRight", code: "ArrowRight",
+      windowsVirtualKeyCode: 39, nativeVirtualKeyCode: 39,
+    });
+    await sleep(80);
+    await cdp.send("Input.dispatchKeyEvent", {
+      type: "keyUp", key: "ArrowRight", code: "ArrowRight",
+      windowsVirtualKeyCode: 39, nativeVirtualKeyCode: 39,
+    });
+    await sleep(250);
+    const ev1 = await events();
+    const s1 = await info();
+    check("→ 从选中项移到下一项并选中（emit update=b）",
+      ev1.some((e) => e[0] === "update" && e[1] === "b"),
+      "update=b", JSON.stringify(ev1));
+    check("焦点真的落在第二项，且第二项成为新的 Tab 停靠点",
+      s1.active.includes("乙") && s1.items[1].tab === 0,
+      "activeText 含乙 / item1.tab=0",
+      JSON.stringify({ active: s1.active, tabs: s1.items.map((x) => x.tab) }));
+
+    await mount();
+    await cdp.eval("window.__probe.reset()");
+    const pt = await cdp.eval("window.__probe.radioPoint(2)");
+    check("对照：拿得到第三颗分段的落点", !!pt && pt.x > 0 && pt.y > 0, "坐标 >0", JSON.stringify(pt));
+    if (pt) {
+      await cdp.click(pt.x, pt.y);
+      await sleep(200);
+      const ev2 = await events();
+      check("点击第三项：emit update=c", ev2.some((e) => e[0] === "update" && e[1] === "c"),
+        "update=c", JSON.stringify(ev2));
+    }
+
+    await mount({ disabled: true });
+    await cdp.eval("window.__probe.reset()");
+    const dpt = await cdp.eval("window.__probe.radioPoint(1)");
+    if (dpt) await cdp.click(dpt.x, dpt.y);
+    await sleep(200);
+    const ev3 = await events();
+    check("禁用态：点任何一项都不发 update", ev3.length === 0, "0 个事件", JSON.stringify(ev3));
+  } finally {
+    await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: false }).catch(() => {});
+  }
+}
+
+async function runSlider(cdp, url) {
+  await cdp.send("Page.bringToFront").catch(() => {});
+  await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: true });
+  try {
+    await cdp.send("Page.navigate", { url });
+    await sleep(3_000);
+    await cdp.eval(PAGE_FIXTURE);
+    // setChatStyle 会落库并广播；探针只验交互，替掉这两条后端命令。
+    await cdp.eval("window.__probe.stubApi('saveSettings', null)");
+    await cdp.eval("window.__probe.stubApi('broadcastChatStyle', null)");
+    const installed = await cdp.eval(
+      "window.__probe.install('/src/components/settings/ChatStyleSection.vue', '')",
+    );
+    check("对照：字号设置段挂得起来（挂不上下面就是空跑）",
+      !!installed && installed.ok === true, "install ok", JSON.stringify(installed));
+    if (!installed || installed.ok !== true) return;
+    await sleep(300);
+    const info = () => cdp.eval("window.__probe.sliderInfo()");
+    const s0 = await info();
+    check("字号滑块由 Reka 渲染成 role=slider，带 aria-valuemin/max/now 与 valuetext",
+      s0.present === true && s0.min === "0" && s0.max === "4" && s0.now === "2"
+        && String(s0.text).includes("px"),
+      "slider / 0..4 / now=2 / valuetext 含 px", JSON.stringify(s0));
+    check("初始 store 字号就是 md（now=2 与业务值一致）",
+      s0.present === true && s0.font === "md", "font=md", s0.font);
+
+    await cdp.eval("window.__probe.sliderFocus()");
+    await cdp.key("ArrowRight", "ArrowRight", "", 39);
+    await sleep(150);
+    const s1 = await info();
+    check("→ 一档：aria-valuenow=3 且 store 字号跟着变",
+      s1.now === "3" && s1.font !== "md", "now=3 / font 改变",
+      JSON.stringify({ now: s1.now, font: s1.font }));
+
+    await cdp.key("Home", "Home", "", 36);
+    await sleep(150);
+    const s2 = await info();
+    check("Home 跳到最小档（0）", s2.now === "0", "now=0", s2.now);
+
+    await cdp.key("End", "End", "", 35);
+    await sleep(150);
+    const s3 = await info();
+    check("End 跳到最大档（4）", s3.now === "4", "now=4", s3.now);
+
+    const pt = await cdp.eval(`(function () {
+      const s = window.__probe.sliderInfo();
+      if (!s.present || !s.root) return null;
+      return { x: s.root.x + Math.round(s.root.w * 0.25), y: s.root.y + Math.round(s.root.h / 2) };
+    })()`);
+    check("对照：拿得到滑块轨道 25% 处的落点", !!pt && pt.x > 0 && pt.y > 0, "坐标 >0", JSON.stringify(pt));
+    if (pt) {
+      await cdp.click(pt.x, pt.y);
+      await sleep(200);
+      const s4 = await info();
+      check("点击轨道 25%：就近吸附到第 1 档（0..4）", s4.now === "1", "now=1",
+        JSON.stringify({ now: s4.now, font: s4.font }));
+    }
+  } finally {
+    await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: false }).catch(() => {});
+  }
 }
 
 async function runTodoPick(cdp, url) {

@@ -13,6 +13,40 @@
 
 ## [Unreleased]
 
+## [5.0.10] - 2026-10-18
+
+### 重构：异步数据层试点 TanStack Query（群文件面板）
+
+- 新增 `@tanstack/vue-query@5.104.4`（MIT）。`createWindowApp` 给**每个窗口**装一份 QueryClient：
+  `retry 1` / `retryDelay 0` / `refetchOnWindowFocus false`；staleTime/gcTime 由具体查询自带。
+- `GroupFilesPanel.vue` 去掉手写的 `files/loading/failed/loadError`、两个 watch 与
+  `gid !== props.groupId` 过期守卫，改成按群分键的 `useQuery`：切群时 A 群的慢响应只会写回 A 群的 key；
+  关掉再打开仍重拉；刷新失败保留旧清单；同一 key 的并发请求合并。重试入口与两条错误态（有旧数据/无旧数据）不变。
+- 新增窄订阅 `api.onGroupFileActivity`（`file-done/failed/cancelled` + `gfile-` 的
+  message-received / group-message-acked / message-status-changed）：面板开着时只失效当前群，
+  文件落盘、新群文件与「已送达 N/M」不再等重开面板；关面板时成对退订。
+- 新增 `src/utils/groupFilesQuery.test.ts` 5 条（分键、staleTime 0 重拉、并发合并、失败保留 + retry、
+  失效半径）与 `--only=files` 8 条真渲染判据（打开重拉、切群隔离、事件失效、失败保留、恢复、退订）。
+- `npm test` 1039 通过 / 0 失败；`npm run build` 退出 0（main 307.80 kB / gzip 92.90，
+  vendor 200.45 kB / gzip 61.47 —— vendor 增量即 Query 运行时）。
+
+### 重构：设置页单选与字号滑杆迁 Reka
+
+- `SegmentedControl.vue` 从手写 `role=radiogroup/radio` 按钮改为 Reka `RadioGroupRoot/RadioGroupItem`：
+  roving focus、方向键、选中态与禁用语义交给库；保留尺寸、配色、徽标与 `modelValue` 契约。
+- `ChatStyleSection.vue` 的字号滑杆改为 Reka `SliderRoot/Track/Range/Thumb`：方向键/Home/End/点击
+  由库处理；保留五档圆点视觉、`aria-valuetext`（`px · 文案`）与 `setChatStyle` 落库。
+- `rekaPrimitives.test.ts` 钉住 RadioGroup/Slider 的入参形状与「不许退回手写 role/pointerdown」；
+  新增 `--only=segmented` 8/8、`--only=slider` 8/8。
+
+### 修复与收敛：重复提交、重复检索与剪贴板
+
+- 新增 `useSubmitGuard`：`GroupCreateModal` 建群、`ProfileSection` 保存资料在请求在飞时不再重复发起；
+  `GroupTasksBoard.saveDraft` 补同形闸门。
+- `ChatSearchDialog` 打开时先置 `opening`，关键词/筛选 watcher 不再对初始值多发一次 IPC（`--only=search` 15/15）。
+- `useClipboard` 与 `LogViewer` 的复制改走 VueUse `useClipboard({ legacy: true })`，
+  删除手写 `navigator.clipboard` / `execCommand` 回退。
+
 ## [5.0.9] - 2026-10-18
 
 ### 重构：设置开关迁到 Reka Switch

@@ -231,14 +231,25 @@ test("跨 IPC 的回填必须核对「数据还是不是当前会话/群」", ()
     "refreshLinkState 缺过期守卫：上一个对端的链路会写进当前聊天头（4.1-3）",
   );
 
+  // 4.1-7 的守卫换形状：手工 `gid !== props.groupId` 已交给 TanStack Query 的 per-group key。
+  // 现在要钉两件事 —— ①缓存键必须带群 id；②queryFn 必须用构建 options 时捕获的那个 id
+  // （回调里现读 props 会让"还没开始执行的请求"按新群取数、却写进旧群的 key）。
   const gfp = readFileSync(join(ROOT, "components", "GroupFilesPanel.vue"), "utf8");
   assert.ok(
-    gfp.includes("() => props.groupId"),
-    "GroupFilesPanel 不 watch groupId：换群后面板仍是上一个群的清单（4.1-7）",
+    gfp.includes("const gid = props.groupId"),
+    "GroupFilesPanel 没在构建查询时捕获 groupId（4.1-7 的旧响应守卫会失去锚点）",
   );
   assert.ok(
-    gfp.includes("gid !== props.groupId"),
-    "GroupFilesPanel.load() 缺过期守卫：切群瞬间的旧响应仍会把 A 群清单回填进 B 群",
+    gfp.includes('queryKey: groupFilesKey(gid ?? "")'),
+    "GroupFilesPanel 的查询没按群分键：切群后 A 群的清单会进 B 群（4.1-7）",
+  );
+  assert.ok(
+    gfp.includes("queryFn: () => api.listGroupFiles(gid as string)"),
+    "queryFn 必须在捕获的 gid 上取数：现读 props 会把慢响应写错 key（4.1-7）",
+  );
+  assert.ok(
+    !gfp.includes("files.value = list"),
+    "不要保留手工回填清单的第二条路径：缓存写入口只应有 Query",
   );
 });
 

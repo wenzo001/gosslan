@@ -7,11 +7,14 @@ import SelfAvatar from "@/components/SelfAvatar.vue";
 import { AVATAR_INPUT_LIMIT_MB, AVATAR_INPUT_MAX_BYTES, AVATAR_SIZE, pickAvatarJpeg } from "@/utils/avatarImage";
 import { Camera } from "lucide-vue-next";
 import { t } from "@/i18n";
+import { useSubmitGuard } from "@/composables/useSubmitGuard";
 
 const props = defineProps<{ active: boolean; reloadToken?: number }>();
 
 const app = useAppStore();
 const chat = useChatStore();
+/** 失焦保存与回车/头像上传可能同时发生：只放行一次 updateProfile。 */
+const { busy: savingProfile, run: runProfileSave } = useSubmitGuard();
 
 const nickname = ref("");
 const avatar = ref<string | null>(null);
@@ -41,9 +44,11 @@ watch(() => [app.device?.nickname, app.device?.avatar], () => {
  */
 async function persistProfile(name: string) {
   if (name === app.device?.nickname && avatar.value === app.device?.avatar) return;
-  await app.updateProfile(name, avatar.value);
-  await chat.refreshFriends();
-  app.toast(t("settings.profile.toast.saved"), "success");
+  await runProfileSave(async () => {
+    await app.updateProfile(name, avatar.value);
+    await chat.refreshFriends();
+    app.toast(t("settings.profile.toast.saved"), "success");
+  });
 }
 
 /** 昵称：失焦或回车即保存（即点即存，无「保存」按钮）。 */
@@ -190,6 +195,7 @@ function processAvatar(file: File): Promise<string> {
         <input
           v-model="nickname"
           maxlength="40"
+          :aria-busy="savingProfile"
           class="w-full rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none transition focus:border-transparent"
           :placeholder="t('settings.profile.nickname.placeholder')"
           @blur="saveProfileNow"

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useVirtualizer } from "@tanstack/vue-virtual";
+import { useClipboard as useVueClipboard } from "@vueuse/core";
 import { Copy, RefreshCw, Search } from "lucide-vue-next";
 import { Trash2, X } from "@/components/ui/icons";
 import TitleBar from "@/components/TitleBar.vue";
@@ -38,6 +39,8 @@ useBackLayer(
 
 /** 时间正序（旧 → 新）的原始日志；展示与复制都从它派生。 */
 const logs = ref<LogEntry[]>([]);
+/** 剪贴板写入交给 VueUse（legacy 会回退 execCommand），本组件只管"已复制"提示。 */
+const { copy: copyText } = useVueClipboard({ legacy: true });
 /** 首屏读失败且有没内容可展示时，明确区分“没有日志”和“读不到日志”。 */
 const loadError = ref("");
 /** 展示用：最新在上（倒序），打开即见最近的错误。 */
@@ -177,26 +180,11 @@ async function copyAll() {
   const text = logs.value
     .map((l) => `[${fmt(l.ts)}] [${LOG_LEVEL_TEXT[l.level] ?? l.level}] [${l.target}] ${l.message}`)
     .join("\n");
-  try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text);
-    } else {
-      // fallback：非 secure context（老 WebView）用 execCommand
-      const ta = document.createElement("textarea");
-      ta.value = text;
-      ta.style.position = "fixed";
-      ta.style.opacity = "0";
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand("copy");
-      document.body.removeChild(ta);
-    }
-    copied.value = true;
-    window.clearTimeout(copyTimer);
-    copyTimer = window.setTimeout(() => (copied.value = false), 2000);
-  } catch {
-    /* 复制失败静默：不打断用户 */
-  }
+  // 写入/回退都交给 VueUse；它不返回布尔值，失败也不打断用户。
+  await copyText(text);
+  copied.value = true;
+  window.clearTimeout(copyTimer);
+  copyTimer = window.setTimeout(() => (copied.value = false), 2000);
 }
 
 /** 「已复制」与"再点一次确认清空"的自动复位定时器（卸载时要清，见 onUnmounted）。 */

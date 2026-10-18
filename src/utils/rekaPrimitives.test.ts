@@ -28,3 +28,25 @@ test("设置开关走 Reka Switch，不再手写 role=switch / aria-checked", ()
   assert.ok(!src.includes(":checked="), "Reka Vue 没有 checked 入参（写了也静默不生效）");
   assert.ok(src.includes(":aria-label=\"label\""), "开关的可访问名必须来自必填 label");
 });
+
+test("分段控件走 Reka RadioGroup，方向键与单 Tab 停靠点交给库", () => {
+  const src = read("components/ui/SegmentedControl.vue").replace(/\/\*[\s\S]*?\*\//g, "");
+  assert.ok(src.includes("RadioGroupRoot"), "分段控件没有接 Reka RadioGroupRoot");
+  assert.ok(src.includes("RadioGroupItem"), "分段控件没有接 Reka RadioGroupItem");
+  assert.ok(!src.includes('role="radiogroup"'), "仍手写 role=radiogroup（Reka 会自己写）");
+  assert.ok(!src.includes('role="radio"'), "仍手写 role=radio（Reka 会自己写）");
+  assert.ok(!src.includes(":aria-checked="), "仍手写 aria-checked（Reka 会自己写）");
+  assert.ok(src.includes(":model-value=\"modelValue\""), "必须用 RadioGroup 的 modelValue 入参");
+  assert.ok(src.includes("@update:model-value="), "必须监听 update:modelValue");
+});
+
+test("字号滑块走 Reka Slider，不再自写 pointer/键盘步进", () => {
+  const src = read("components/settings/ChatStyleSection.vue").replace(/\/\*[\s\S]*?\*\//g, "");
+  assert.ok(src.includes("SliderRoot"), "字号滑块没有接 Reka SliderRoot");
+  assert.ok(src.includes("SliderThumb"), "字号滑块没有接 Reka SliderThumb");
+  assert.ok(!src.includes('role="slider"'), "仍手写 role=slider（Reka 会自己写）");
+  assert.ok(!src.includes("@pointerdown="), "仍自写 pointerdown（应交给 Reka Slider）");
+  assert.ok(!src.includes("@pointermove="), "仍自写 pointermove（应交给 Reka Slider）");
+  assert.ok(!src.includes("@keydown.left="), "仍自写方向键步进（应交给 Reka Slider）");
+  assert.ok(src.includes(":aria-valuetext="), "滑块必须有可读的 aria-valuetext");
+});

@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed } from "vue";
+import { SliderRange, SliderRoot, SliderThumb, SliderTrack } from "reka-ui";
 import { useAppStore } from "@/stores/useAppStore";
 import SettingsGroup from "@/components/settings/SettingsGroup.vue";
 import { CHAT_FONT_SIZES, CHAT_PRESETS, fontPx, resolveChatColors, type ChatPreset } from "@/utils/chatStyle";
@@ -10,12 +11,6 @@ const app = useAppStore();
 /** 当前字号在 CHAT_FONT_SIZES 里的索引（0..4）。 */
 const fontIndex = computed(() => CHAT_FONT_SIZES.findIndex((f) => f.key === app.chatStyle.fontSize));
 
-/** thumb 绝对定位 left 值，百分比。5 档时 0/25/50/75/100%。 */
-const thumbPct = computed(() => {
-  const maxIdx = CHAT_FONT_SIZES.length - 1;
-  return `${(fontIndex.value / maxIdx) * 100}%`;
-});
-
 /** 把索引映射回 key 存到 store。 */
 function applyFontIndex(idx: number) {
   const clamped = Math.max(0, Math.min(CHAT_FONT_SIZES.length - 1, idx));
@@ -23,56 +18,19 @@ function applyFontIndex(idx: number) {
   app.setChatStyle({ fontSize: key });
 }
 
-/** 点击/拖拽共用：把鼠标 x 坐标转成档位索引。 */
-const sliderRef = ref<HTMLElement | null>(null);
-function xToIndex(clientX: number) {
-  const el = sliderRef.value;
-  if (!el) return 0;
-  const rect = el.getBoundingClientRect();
-  const x = clientX - rect.left;
-  const pct = Math.max(0, Math.min(1, x / rect.width));
-  return Math.round(pct * (CHAT_FONT_SIZES.length - 1));
-}
-
-/** 拖拽支持：pointerdown 开始 → pointermove 跟随 → pointerup 结束。
- *
- * 为什么用 Pointer Events（而非 mouse/touch 分别处理）：
- *   一套事件覆盖三种输入——桌面鼠标 / 手机触摸 / 触控笔。
- *   浏览器会自动把 touch 翻译成 pointer 事件，不需要写 @touchstart/@touchmove。
- *
- * 移动端防坑：
- *   1) CSS `touch-action: none` —— 告诉浏览器"这个区域不要拦截 touch 做页面滚动"
- *   2) pointerdown 里 preventDefault —— 防止触摸触发 text selection / hover
- *   3) setPointerCapture —— 手指滑出滑块范围仍能收到 move/up
- */
-let dragging = false;
-function onSliderPointerDown(e: PointerEvent) {
-  e.preventDefault(); // 阻止触摸触发文字选中 / hover
-  dragging = true;
-  (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-  applyFontIndex(xToIndex(e.clientX));
-}
-function onSliderPointerMove(e: PointerEvent) {
-  if (!dragging) return;
-  e.preventDefault(); // 防止 touchmove 被当成页面滚动
-  applyFontIndex(xToIndex(e.clientX));
-}
-function onSliderPointerUp(e: PointerEvent) {
-  dragging = false;
-  try {
-    (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
-  } catch {
-    /* 某些 Android WebView 在 releasePointerCapture 抛错，忽略即可 */
-  }
-}
-
-/** 键盘 ←/→ 步进一档。 */
-function stepFont(delta: -1 | 1) {
-  applyFontIndex(fontIndex.value + delta);
+/** Reka Slider 的值是数组（支持多 thumb）；这里只有一个 thumb，取第 0 项。 */
+function onSliderValue(v: number[] | undefined) {
+  applyFontIndex(v?.[0] ?? 0);
 }
 
 /** 当前字号的 px 值（供预览气泡实时用 inline style）。 */
 const currentFontPx = computed(() => fontPx(app.chatStyle.fontSize));
+
+/** 滑块的可读值：px + 档位名。 */
+const fontSizeLabel = computed(
+  () =>
+    `${currentFontPx.value}px · ${t(CHAT_FONT_SIZES[fontIndex.value]?.label ?? "chatStyle.fontSize.md")}`,
+);
 
 /** 预览色："theme" 预设按当前主题色实时派生，其余取表明暗值。 */
 function swatchOf(p: ChatPreset): { mineBubble: string; otherBubble: string } {
@@ -146,42 +104,33 @@ const previewOtherStyle = computed(() => {
         </div>
       </div>
 
-      <!-- 离散字号滑块（自实现，不依赖原生 range）。
-           5 档段落式：一条 4px 灰条 + 5 个等间距刻度圆点 + 一个主题色 thumb。
-           点击灰条任意位置 → 就近吸附到一档；thumb 根据当前档位绝对定位。
-           比原生 range 靠谱：WebKit 把 track 设透明后经常塌掉，自己写完全可控。 -->
+      <!-- 字体档位滑块：行为交给 Reka Slider（方向键/Home/End/PageUp/PageDown、
+           指针拖拽、触摸与禁用态），本组件只保留微信同款的 5 个刻度点 + 主题色 thumb 外观。 -->
       <div class="flex items-center gap-3">
         <span class="font-medium text-[var(--gosslan-text-2)]" style="font-size: 11px;">A</span>
-        <div
-          ref="sliderRef"
+        <SliderRoot
+          :model-value="[fontIndex]"
+          :min="0"
+          :max="CHAT_FONT_SIZES.length - 1"
+          :step="1"
           class="font-size-slider"
-          @pointerdown="onSliderPointerDown"
-          @pointermove="onSliderPointerMove"
-          @pointerup="onSliderPointerUp"
-          @pointercancel="onSliderPointerUp"
-          @keydown.left="stepFont(-1)"
-          @keydown.right="stepFont(1)"
-          role="slider"
-          :aria-valuemin="0"
-          :aria-valuemax="CHAT_FONT_SIZES.length - 1"
-          :aria-valuenow="fontIndex"
-          tabindex="0"
+          @update:model-value="onSliderValue"
         >
-          <!-- 轨道：灰条 + 5 个刻度圆点（段落感）。 -->
-          <div class="font-size-slider-track">
+          <SliderTrack class="font-size-slider-track">
             <span
               v-for="i in CHAT_FONT_SIZES.length"
               :key="i"
               class="font-size-slider-dot"
               :class="{ active: i - 1 === fontIndex }"
             />
-          </div>
-          <!-- thumb：主题色实心圆，绝对定位。位置 = 当前档位 / (总档数-1) * 100%。 -->
-          <div
+            <SliderRange class="font-size-slider-range" />
+          </SliderTrack>
+          <SliderThumb
             class="font-size-slider-thumb"
-            :style="{ left: thumbPct }"
+            :aria-label="t('settings.chatStyle.fontSize')"
+            :aria-valuetext="fontSizeLabel"
           />
-        </div>
+        </SliderRoot>
         <span class="font-medium text-[var(--gosslan-text-2)]" style="font-size: 18px;">A</span>
       </div>
     </div>
@@ -217,39 +166,31 @@ const previewOtherStyle = computed(() => {
 
 <style scoped>
 /**
- * 自实现离散字号滑块（5 档段落式，微信同款）。
+ * 字号滑块的**外观**（行为由 Reka Slider 提供：方向键/Home/End/PageUp/PageDown、
+ * 指针拖拽、触摸、禁用态与 aria-valuenow/min/max）。
  *
- * 为什么不用原生 input[type=range]：
- *   WebKit 把 track 设透明后经常塌成 0 高，或 thumb 定位错位。
- *   自实现只有 15 行 CSS + 简单的点击/键盘逻辑，完全可控。
+ * 结构（Reka 负责布局与事件）：
+ *   SliderRoot.font-size-slider
+ *     SliderTrack.font-size-slider-track  → 5 个刻度点 + SliderRange（隐藏）
+ *     SliderThumb.font-size-slider-thumb  → 主题色圆点
  *
- * 结构：
- *   ┌── .font-size-slider (flex-1, relative) ──┐
- *   │  .font-size-slider-track (absolute)       │
- *   │    └── .font-size-slider-dot × 5 (flex)   │
- *   │  .font-size-slider-thumb (absolute)       │
- *   └───────────────────────────────────────────┘
+ * 不再自己写 pointerdown/move/up 与 x→档位换算：那套逻辑此前在 WebKit 触摸、
+ * pointer capture 释放失败等边界上都要单独兜底，现在交给库。
  */
 
-/* 滑块容器：relative + 垂直居中。
-   左右 padding = thumb 半径（8px），让 thumb 在 0% / 100% 时正好贴齐容器边缘。
+/* 滑块容器：relative + 固定高度。左右留白由 Reka 的 thumbAlignment="contain" 处理
+   （0%/100% 时 thumb 会内收半个宽度），所以这里不再自己加 padding。
    touch-action: none —— 移动端触摸不触发页面滚动 / 缩放 / 点击高亮。 */
 .font-size-slider {
   position: relative;
   flex: 1;
   height: 24px;
-  display: flex;
-  align-items: center;
+  display: block;
   cursor: pointer;
   outline: none;
-  padding: 0 8px;
   touch-action: none;
   -webkit-user-select: none;
   user-select: none;
-}
-.font-size-slider:focus-visible {
-  border-radius: 4px;
-  box-shadow: 0 0 0 2px var(--gosslan-primary-ring);
 }
 
 /* 轨道：一条 4px 圆角灰条，绝对铺满容器中心。 */
@@ -257,15 +198,21 @@ const previewOtherStyle = computed(() => {
   position: absolute;
   left: 0;
   right: 0;
+  top: 10px;
   height: 4px;
   border-radius: 2px;
   background: var(--gosslan-border);
-  /* 5 个刻度圆点等间距分布。 */
+  /* 5 个刻度圆点等间距分布；左右 8px 让首尾点与 thumb 中心对齐。 */
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 0 2px; /* 首尾点留余量不贴边 */
+  padding: 0 8px;
+  box-sizing: border-box;
   z-index: 0;
+}
+/* 本设计只用“点 + thumb”表达档位，不画填充段。 */
+.font-size-slider-range {
+  display: none;
 }
 .font-size-slider-dot {
   width: 6px;
@@ -283,23 +230,25 @@ const previewOtherStyle = computed(() => {
   background: var(--gosslan-primary);
 }
 
-/* thumb：主题色实心圆，绝对定位。left 由 JS 计算（0 / 25 / 50 / 75 / 100%）。
-   用 translateX(-50%) 让 thumb 中心对齐百分比位置。 */
+/* thumb：主题色实心圆。position/left/transform 由 Reka 内联写，这里只负责大小与颜色。 */
 .font-size-slider-thumb {
-  position: absolute;
+  top: 4px;
   width: 16px;
   height: 16px;
   border-radius: 50%;
   background: var(--gosslan-primary);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
-  transform: translateX(-50%);
-  transition: left 160ms ease, transform 120ms;
+  transition: box-shadow 120ms;
   z-index: 1;
 }
 .font-size-slider:hover .font-size-slider-thumb {
-  transform: translateX(-50%) scale(1.1);
+  box-shadow: 0 0 0 4px var(--gosslan-primary-ring);
 }
 .font-size-slider:active .font-size-slider-thumb {
-  transform: translateX(-50%) scale(1.15);
+  box-shadow: 0 0 0 6px var(--gosslan-primary-ring);
+}
+.font-size-slider-thumb:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--gosslan-primary-ring);
 }
 </style>
