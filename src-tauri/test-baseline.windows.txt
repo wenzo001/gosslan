@@ -156,6 +156,7 @@ db::migration_tests::hot_queries_use_their_indexes
 db::migration_tests::hot_tables_carry_exactly_the_intended_indexes
 db::migration_tests::index_on_a_migration_added_column_must_not_live_in_schema
 db::migration_tests::init_backs_up_an_old_version_before_migrating_and_keeps_the_rows
+db::migration_tests::init_error_display_is_actionable_and_names_the_backup_file
 db::migration_tests::init_sets_a_bounded_busy_timeout
 db::migration_tests::mention_targets_keep_all_three_states_through_write_then_read
 db::migration_tests::migration_double_start_does_not_reapply

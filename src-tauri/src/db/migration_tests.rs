@@ -1700,3 +1700,23 @@ fn a_backup_can_be_restored_and_migrated_again_without_losing_rows() {
     cleanup_db_and_backups(&restored_path);
     cleanup_db_and_backups(&path);
 }
+
+#[test]
+fn init_error_display_is_actionable_and_names_the_backup_file() {
+    let d = InitError::Downgrade {
+        current: DB_VERSION + 1,
+    };
+    let text = d.to_string();
+    assert!(text.contains("DB user_version="), "{text}");
+    assert!(text.contains("拒绝降级"), "{text}");
+
+    let b = InitError::Backup {
+        path: "/tmp/gosslan-backup.db".into(),
+        reason: "disk full".into(),
+    };
+    let text = b.to_string();
+    assert!(
+        text.contains("/tmp/gosslan-backup.db") && text.contains("disk full"),
+        "备份错误必须点名文件与原因：{text}"
+    );
+}
