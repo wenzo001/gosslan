@@ -1,12 +1,14 @@
 # Gosslan 5.0 重构报告（截至 2026-10-18）
 
-> 分支：`feat/5.0` · 基线：`origin/main` @ `643ca1e` · 当前版本：`5.0.9`
+> 分支：`feat/5.0` · 基线：`origin/main` @ `643ca1e` · 当前版本：`5.0.21`
+> 当前 tip：`6672ac3`（app，5.0.11–5.0.21）+ docs 提交（矩阵与本报告）；本地未推送。
 > 开源替换矩阵（A/B/C/D、真实调用点、许可证与读数）见
 > [`open-source-replacement-matrix.md`](open-source-replacement-matrix.md)。
 > 工作树：`/Users/wendongfu/Documents/code/gosslan`（已从隔离工作树搬回主目录；`gosslan-5.0` 已删除）
-> 完整门禁：`npm run verify:full` 在当前应用提交的**上一版应用树**上 **23/23、退出码 0、922.2s**；
-> 其后只追加了 `verify:local` 工具、一条 Rust 测试的启动竞态修复与网络诊断面板的错误出口，
-> 复跑 `verify:local` **22/22、64–73s**，唯一跳过的是已在上一轮全绿的「护栏非空转」。
+> 本轮验证：`npm test` 1059/1059；`npm run build` 退出 0；全量 UI 探针 **338/338**；
+> `npm run verify:local` **22/22、退出码 0**（唯一跳过「护栏非空转」）。
+> 完整 `verify:full` 的最近读数 **23/23、1385.7s** 来自 5.0.9 前的应用树；按用户 2026-10-18 的本地策略，
+> 最长步「护栏非空转」只在发版前/远端 CI 跑，本地批次以 `verify:local` 22/22 为准。
 
 ## 1. 架构对比
 
@@ -89,6 +91,38 @@
   不是 Radix 的 `checked/update:checked`；写错不报错、点开关无反应。`rekaPrimitives.test.ts`
   钉住入参形状，`--only=switch` 4/4 在真渲染里判点击与禁用。
 - `npm test` 1030/1030；build 退出 0（`main` 307.27 kB / gzip 92.55）。
+
+## 3.6 2026-10-18 二期收口批次（5.0.10–5.0.18）
+
+- **Reka 原语补齐**：RadioGroup（`SegmentedControl`）、Slider（`ChatStyleSection`）、Select
+  （`SettingsSelect`，5 处原生 `<select>` 全部替换）、FocusScope（`ImageLightbox`，修掉 Tab 逃到
+  背景页）、Toast（`createToastManager` + Provider/Viewport/Root，去重、`limit=3`、live region）；
+  加上此前的 Dialog/DropdownMenu/Switch，共 **8 类原语、19 个 `.vue` 直接接入**。
+- **TanStack**：Query 接管三个纯读/主动检索面板（群文件、共享目录、搜索聊天记录），按主体 id /
+  关键词分键 —— 旧响应只会写回它自己的键；Virtual 接管日志长列表的两条外壳。
+- **Zod**：群名/昵称/链接表单 + `list_group_files` / `request_share_tree` / `search_chat_history`
+  三个 IPC 返回（搜索含嵌套命中消息）；`kind` 放行任意字符串以保未知 kind 的前向兼容。
+- **dayjs**：`utils/time.ts` 三个固定形状 helper 替代手写 `padStart` / `toLocaleTimeString`。
+- **修掉的真实缺陷**：`ToastList` 全局 Esc `preventDefault` 吞掉所有弹层的 Esc；`ImageLightbox`
+  的 Tab 逃逸；搜索的手写 `seq` 竞态、打开时双重请求与筛选复位时机。Toast 探针里两条旧 Esc 断言
+  随缺陷一起撤销，换成「Esc 收起 toast 栈 + `defaultPrevented=false`」的一条更强判据 ——
+  不是为消红删断言，旧断言本身编码了缺陷行为（矩阵 UI 行有同一说明）。
+- **5.0.19（mitt + v-html 安全）**：同窗口 `window.dispatchEvent(new Event(...))` 改为
+  `mitt@3.0.1` 的类型安全事件表；`APP_ACTION` 四处 + `navigate-to-contacts` 统一走
+  `emitAction`/`onAction`（解绑函数必须调用）。Tauri 菜单事件仍由 `bindMenuEvents` 转成同一批动作。
+  全仓 `v-html` 审计为 4 处构造即转义（highlightText / hljs / escapeHtml），新增 `findVHtmlSinks`
+  允许清单判据；未引入 DOMPurify（没有渲染对端原文 HTML 的路径）。
+- **5.0.20（vue-i18n）**：`i18n/index.ts` 的 150 行自研「字典 + 插值」引擎改走
+  `vue-i18n@11.4.16`；1003×2 条消息逐字对账后 5 条字面 `@` 改写 `{'@'}`，缺参保留 `{name}`
+  的既有语义由 `t()` 适配；新增全量消息编译判据。vendor gzip +18.84（消息编译器成本）。
+- **5.0.21（日志窗口开发环境白屏）**：两个叠加根因——① `useVirtualizer` 的 options computed
+  在 setup 期间立即求值 `count: mergedRows.value.length`，而 `mergedRows` 声明在后面 ⇒
+  Vue dev 抛 TDZ `Cannot access 'mergedRows' before initialization`，LogViewer 子树退化成注释节点
+  （生产构建晚一步求值，故只在 dev 白屏）；② 独立窗滚动容器漏 `ref="logScroll"` ⇒ virtualizer
+  拿不到滚动元素，工具栏有"N 条"而列表区永远为空。修复为：`rows`/`mergedRows` 前置 + 补 ref。
+  新增 `--only=logs` 3 条与源码顺序/双 ref 判据；单点变异摘 ref ⇒ 0/3 红，恢复 3/3。
+- **读数**：`npm test` 1055/1055；全量 UI 探针 338/338；`verify:local` 22/22（182.8s）；
+  build `main` 308.91 kB / gzip 93.36、vendor 266.17 kB / gzip 80.66。
 
 ## 3.2 2026-10-18 右键菜单批次（5.0.6）
 
@@ -257,29 +291,27 @@
 
 ## 9. 工作区状态
 
-`feat/5.0` 工作区干净；已 rebase 到 `origin/main 643ca1e`，当前版本 `5.0.4`。
-本地共 3 笔应用码提交（`d60e607` 5.0.0 / `f385b9a` 5.0.1 / `51cfcb6` 5.0.2–5.0.4）
-加 1 笔记账提交（`745bdc3` 二期路线图与读数）；未推送、未打 tag。
-5.0.2–5.0.4 的所有前端/工具改动合并为一笔 `[impact]` 补丁提交，是为避开
-Change Budget「同领域窗口 ≥3」；每次折历史后都用 `git write-tree` 对折前/折后做了
-**逐字节恒等核对**，备份分支 `backup/pre-5.0.4-p1p3-54b116b` 可回退。
-**完整门禁 23/23 在当前应用提交的上一版树上整跑**（922.2s）；其后只追加了
-`verify:local` 工具、`db_hold` 测试竞态修复与网络诊断面板的错误出口，
-`verify:local` 22/22（64–73s），唯一跳过项已在全量层全绿。
+`feat/5.0` 工作区干净；已 rebase 到 `origin/main 643ca1e`，当前版本 `5.0.21`。
+本地共 4 笔未推送提交（`bee0127` 5.0.10 / `6672ac3` 5.0.11–5.0.21 / `b6ff993` + 本 docs 提交两笔记账）；
+未打 tag、未 push。5.0.11–5.0.20 的应用码、CHANGELOG、工具与测试折叠在一笔 `[impact]` 提交里，
+是为避开 Change Budget「同领域窗口 ≥3」；矩阵与报告各自独立成 `[plan]` 提交。
+本轮门禁：`npm test` 1060/1060、`verify:local` 22/22、全量 UI 探针 341/341；
+完整 `verify:full` 按用户策略留给发版前/远端 CI（最长步不在本地跑），本地收口以 `verify:local` 为准。
 主工作树就是本分支工作树；没有另一路 AI 的未提交改动。
 
 ## 10. 下一步建议
 
 1. 合并前用 `git rebase origin/main` 同步远端；重点复核 `useChatStore.ts`、
    `designGuards.ts` 与图标 import 文件的冲突。
-2. 日常批次按用户 2026-10-18 定的策略：`npm run verify:local`（22 步、64.0s）；
+2. 日常批次按用户 2026-10-18 定的策略：`npm run verify:local`（22 步；本机负载下 77–183s）；
    完整 `verify:full` 只在发版/推送前或远端 CI 跑。跳过开关在 CI / `--group release`
    下会被拒绝，且起跑与汇总都会点名。
 3. 下一批优先做 §8 的 4（`refreshTransfers` 事件合并），先补运行时读数再改。
 4. 视觉/空态统一仍缺截图基线与组件证据，按 §8 第 6 条保留。
-5. 下一轮（待 push 清空 Change Budget 窗口后）可删的**零引用导出**（扫描范围
-   `src/` + `scripts/` + 测试，均为定义处唯一出现）：`favoritePreviewCacheBytes`、
-   `filePreviewCacheBytes`、`fileKindColor`、`ICON_WELL_BG`、`__resetWindowLauncherForTest`。
+5. 待 push 清空 Change Budget 窗口后可删的**零引用导出**（扫描范围 `src/` + `scripts/` + 测试，
+   均为定义处唯一出现）：`favoritePreviewCacheBytes`、`filePreviewCacheBytes`、`fileKindColor`、
+   `ICON_WELL_BG`、`__resetWindowLauncherForTest`。窗口未清前任何 presentation 改动都应折进
+   `4d360cc`，不许再起第 3 笔应用码提交。
    未在本轮提交，是因为再加一笔 presentation 补丁会触发 Change Budget 窗口 ≥3。
 5. 依赖审计：10 个生产依赖逐项有 import（含动态 import），无新增可删；
    devDependencies 中“无 import”的 7 项均为 Tailwind/TS/vue-tsc/Tauri CLI 配置型工具。
@@ -291,18 +323,23 @@ Change Budget「同领域窗口 ≥3」；每次折历史后都用 `git write-tr
    README / 架构图已同步。
    `cargo tree -d` 的 `base64` 0.21/0.22 重复来自 `swift-rs → tauri-utils`（传递依赖），无可直接处置项。
 
-## 6. 补充任务书最终报告（12 项）
+## 6. 补充任务书最终报告（13 项）
 
-> 口径：本节所有数字均为 2026-10-18 当前 tip（`feat/5.0`，版本 5.0.9）现算；
+> 口径：本节所有数字均为 2026-10-19 当前 tip（`feat/5.0`，版本 5.0.20，app `6672ac3`）现算；
 > 矩阵逐行证据在 [`open-source-replacement-matrix.md`](open-source-replacement-matrix.md)。
+> 13 问映射：1–5 → 6.1–6.4；6（Pinia/Query/mitt/Tauri Event 边界）→ 6.6 + 6.6.1；
+> 7（Virtual/Table/表单程度）→ 6.6.1 + 6.9；8（组件体系覆盖）→ 6.6；9（平台状态）→ 6.10；
+> 10（体积/性能/内存）→ 6.9；11（业务不变量）→ 6.10；12（测试与风险）→ 6.11；
+> 13（下一阶段）→ 6.12。
 
 ### 6.1 通用基础能力完整清单
 
-按真实调用面扫描，前端通用基础能力共 **26 项唯一能力**（矩阵 28 行，含 2 行“已迁”回指）：
+按真实调用面扫描，前端通用基础能力共 **35 项唯一能力**（矩阵 36 行，含 1 行"已迁"回指）：
 弹窗/抽屉壳、弹层动效、点外部/遮罩、长列表虚拟化（日志、消息）、右键菜单、搜索筛选菜单、
-四处锚定菜单、设置开关、图标入口、图片另存、Tooltip、Popover/Tabs/Accordion/Collapsible、
-Checkbox/Radio、命令面板/快捷搜索、原生下拉、异步请求/缓存、表单、路由、日期时间、Toast/通知、
-图片/媒体查看、Markdown/代码高亮、剪贴板、运行时校验、文件选择/保存。
+四处锚定菜单、锚定 Popover（表情选择器/表情名单/已读名单）、设置开关、单选分段、字号滑杆、
+设置/表单下拉、日期时间、浮层焦点、图标入口、图片另存、Tooltip、Tabs/折叠、Checkbox/Radio、
+命令面板/快捷搜索、异步请求/缓存、表单、路由、Toast/通知、图片/媒体查看、Markdown/代码高亮、
+剪贴板、运行时校验、文件选择/保存。
 
 ### 6.2 每个能力的原实现、替代库和实际迁移调用点
 
@@ -313,104 +350,204 @@ Checkbox/Radio、命令面板/快捷搜索、原生下拉、异步请求/缓存�
 | 搜索筛选 | 手写 `role=menu` + 按钮开关 | Reka DropdownMenu | `ChatSearchDialog.vue` 发送人/日期 |
 | 其余锚定菜单 | 四个文件各自手写 `role=menu` + 键盘/外点 | Reka DropdownMenu | `ConversationList`「+」、`NavRail`「更多」、`TodoPickField`、`GroupTasksBoard` 行内状态 |
 | 设置开关 | 自绘 `button role=switch` | Reka Switch | `settings/SettingsToggle.vue`（9 个调用点） |
+| 单选分段 | 手写 `role=radiogroup/radio` + 按钮 | Reka RadioGroup | `ui/SegmentedControl.vue` |
+| 字号滑杆 | 手写 pointerdown/move + 键盘 + 五档圆点 | Reka Slider | `settings/ChatStyleSection.vue` |
+| 设置下拉 | 5 处原生 `<select>` | Reka Select | `ui/SettingsSelect.vue` + 外观/网络/存储三页 |
+| 浮层焦点 | 手写焦点容器与归还（Tab 会逃逸） | Reka FocusScope | `message/ImageLightbox.vue` |
+| Toast | store 数组 + 每条 `setTimeout` | Reka Toast | `ToastHud.vue`、`ToastList.vue`、`utils/toastManager.ts` |
 | 日志长列表 | 两条外壳整表 `v-for` | `@tanstack/vue-virtual` | `LogViewer.vue`（独立窗 / 移动页） |
+| 异步查询/缓存 | 手写 loading/error/`StaleGuard`/`seq` | `@tanstack/vue-query` | `GroupFilesPanel`、`ShareDirectory`、`ChatSearchDialog` |
+| 同窗口事件总线 | `window.dispatchEvent(new Event(...))` + 字符串事件监听 | `mitt` | `utils/appActions.ts` + `ResponsiveLayout`/`ConversationList`/`useChatStore` |
+| 多语言 i18n | 自研 150 行「字典 + `{name}` 插值」 | `vue-i18n` | `src/i18n/index.ts` + 全仓 78 个 `t()` 调用点 |
+| 表单与 IPC 校验 | 手写 `trim`/长度判断；`invoke<T>` 编译期断言 | `zod/mini` | `validation.ts` + 三个 IPC 返回 + 群名/昵称/链接 |
+| 日期时间 | 手写 `padStart` / `toLocaleTimeString` | `dayjs` | `utils/time.ts` + `LogViewer`/`DevDiagPanel`/`StorageSection` |
 | 图片另存 | JS 整图 base64 → `save_data_file` | Rust `save_media_as` 源路径直拷 | `helpers.rs`、`api/index.ts`、`saveImageAs`、`saveImageCore`、灯箱/消息 |
-| 图标 | 直连 lucide + 12 处漏网 + 手写 SVG | Lucide 统一入口 | `components/ui/icons.ts` + 195 份源码扫描 |
+| 图标 | 直连 lucide + 12 处漏网 + 手写 SVG | Lucide 统一入口 | `components/ui/icons.ts` + 全仓扫描 |
 
 其余 C/D 类（消息虚拟化、异步缓存、表单、路由、原生 select、日期、Toast、媒体查看、Markdown、
 剪贴板、运行时校验、Tooltip、空的面板原语）的原实现与保留证据见矩阵第 2 节。
 
 ### 6.3 A/B/C/D 四类判定及证据
 
-现算矩阵：**A 2、B 11、C 9、D 6**（28 行；去重后 A2/B9/C9/D6 = 26 项）。
-- A（已统一）：模态壳、图标入口。
-- B（已适配迁移）：弹层动效、遮罩命中、两处长列表、保存链、右键菜单、搜索筛选、锚定菜单、开关。
-- C（保留业务/平台语义）：消息 `VirtualList`（P7 实测 20k 滚动 p95 17.5/16.8 ms、长帧 0；上界 1000 条/会话）、
-  SQLite+事件驱动缓存、原生 select、日期、Toast、媒体查看器、Markdown、Tooltip（272 个原生 `title`）、
-  产品搜索（Reka 2.11 无 CommandRoot）。
-- D（无调用面 / 技术不适用）：表单、路由、Checkbox/Radio、Popover/Tabs/Accordion/Collapsible、
-  剪贴板、运行时校验；均有“重新评估条件”。
+现算矩阵：**A 3、B 20、C 8、D 5**（36 行；去重后 A3/B19/C8/D5 = 35 项）。
+- A（已统一）：模态弹窗壳、日期/时间格式化、图标入口。
+- B（已适配迁移）：弹层动效、遮罩命中、面板收起、两处长列表、保存链、右键菜单、搜索筛选、
+  锚定菜单、开关、分段、滑杆、下拉、焦点层、Toast、IPC 校验、异步查询/缓存、文件选择/保存、
+  同窗口事件总线（mitt）、多语言（vue-i18n）。
+- C（保留业务/平台语义）：消息 `VirtualList`（P7 实测 20k 滚动 p95 17.5/16.8 ms、长帧 0；
+  上界 1000 条/会话）、SQLite+事件驱动缓存、产品搜索（Reka 2.11 无 CommandRoot）、
+  锚定 Popover（`useHoverCard` 三处，迁移硬点见矩阵）、图片/媒体查看器、Markdown、
+  HTML 过滤（DOMPurify 暂不引入，4 处 v-html 构造即转义）、Tooltip（274 个原生 `title`，现算）。
+- D（无调用面 / 技术不适用）：表单、路由、Checkbox/Radio、Tabs/Accordion/Collapsible、剪贴板；
+  均有"重新评估条件"。
 
 ### 6.4 已删除的自研实现和依赖
 
-- 依赖：删除 **`@headlessui/vue`**（唯一消费者是弹窗/抽屉）。
-- 删除的自研内核：`ContextMenu.vue` 的 Teleport/document click/window keydown/↑↓/Home/End/估算高度
-  贴边内收（135 → 92 行）；`ConversationList` 的「+」键盘/外点/焦点循环（640 → 582 行）；
-  `NavRail` 的「更多」键盘/外点（306 → 261 行）；`SettingsToggle` 的手写开关语义（63 → 63 行，内核换库）。
+- 依赖：删除 **`@headlessui/vue`**（唯一消费者是弹窗/抽屉）；未新增未使用依赖，生产依赖 14 个。
+- 删除/接管的自研内核：
+  - `ContextMenu.vue` 的 Teleport/document click/window keydown/↑↓/Home/End/估算高度贴边内收（135 → 92 行）；
+  - `ConversationList` 的「+」键盘/外点/焦点循环（641 → 582 行）、`NavRail` 的「更多」键盘/外点（306 → 261 行）；
+  - `SettingsToggle` 的开关语义（63 → 63 行，内核换库）；
+  - `ChatSearchDialog` 的 `seq` 竞态守卫、`searching/searchError`、150ms 防抖与两个筛选 watcher（改 Query key）；
+  - `useAppStore` 的 Toast 数组/定时器；`ImageLightbox` 的手写焦点容器；5 处原生 `<select>` 与 `.gosslan-select*`；
+  - 三组异步面板的 loading/error/`StaleGuard` 手工守卫（群文件、共享目录、搜索）；
+  - `i18n/index.ts` 的手写插值/回退引擎（150 行，改由 vue-i18n 承担）；
+  - `window.dispatchEvent(new Event(action))` + 各组件 `removeEventListener` 对称解绑（5 个应用事件，
+    改由 mitt + `onAction` 返回的解绑函数承担）。
 - 保留的薄适配：`ContextMenu.vue`（坐标 + 主题 + 焦点归还）、`SettingsToggle`（设计令牌 + pending）、
-  `StateBlock`/`ConfirmDialog`（业务外观），均不含弹层定位/键盘导航实现。
+  `SettingsSelect.vue`（主题化面板）、`StateBlock`/`ConfirmDialog`（业务外观），均不含弹层定位/键盘导航实现。
 
 ### 6.5 尚未迁移的通用能力及明确原因
 
 见 6.3 的 C/D 两类；每条在矩阵第 2 节都有原实现、候选、证据与重评估条件。
 其中“没有调用面”的 D 类不是拒绝迁移，而是当前仓库不存在该控件；出现真实需求时直接按 Reka 原语接入。
+唯一的 C 类交互原语是锚定 Popover：三处真实调用点共用 `useHoverCard`（手写四向摆位/滚动收起），
+迁移硬点是表情选择器的零高度 `absolute` 面板与名单的 hover/focus/长按三触发；本轮按证据保留，
+矩阵那一行已从"无调用面"更正为"有调用面、待改版后再迁"。
 
 ### 6.6 ReUI、Reka UI、shadcn-vue、Lucide、TanStack 的实际采用
 
 - **ReUI**：只作设计/交互模式参考（React 实现，不引入运行时）；采用其“组件状态与可访问性成对”的做法，
   未新增依赖。
-- **Reka UI 2.11.0（MIT）**：Dialog（弹窗/抽屉）、DropdownMenu（右键 + 6 处锚定菜单）、
-  Switch（9 个设置开关）；共 3 类原语、11 个业务组件接入。
-- **shadcn-vue**：评估后**不引入**其组件副本；直接用 Reka 原语 + Gosslan token/类，
-  避免“复制一份组件再自维护”。保留的封装只有 `StateBlock`/`ConfirmDialog` 等业务外观件。
+- **Reka UI 2.11.0（MIT）**：**8 类原语**（Dialog、DropdownMenu、Switch、RadioGroup、Slider、Select、
+  FocusScope、Toast），**19 个 `.vue` 文件**直接 import；业务外观仍由 Gosslan token/类承担。
+- **shadcn-vue**：评估后**不引入**其组件副本。它把组件源码复制进仓库，与“直接用 Reka 原语 + 本仓
+  token”相比只多一层需要自维护的副本，且会和 `StateBlock`/`ConfirmDialog` 等业务外观件重复。
+- **PrimeVue / Naive UI（纸面对比，未安装）**：两者都是带主题系统的完整组件套件；接入等于并行第二套
+  设计系统（颜色/间距/暗色/移动端断点都要重对齐），并为少数真实调用面引入整套运行时。本仓的约束是
+  “行为交给库、外观交给 token”，Reka 的 headless 形态更贴合；出现复杂表格/表单时按模块评估。
 - **Lucide**：唯一常规图标体系；高频语义图标只从 `ui/icons.ts` 引，判据 ㊵ 真实树直连 0 处；
-  10 处平台/产品专属手写 SVG 逐处判定保留。
-- **TanStack**：`@tanstack/vue-virtual` 在日志窗口真实落地；Query/Table/Router/Form 经逐模块比对后
-  为 C/D（SQLite + 事件流 + 可靠投递/加密/事务不可由通用缓存替代；无复杂表格/路由/表单调用面）。
+  平台/产品专属手写 SVG 逐处判定保留。
+- **TanStack**：`@tanstack/vue-query` 在三个真实面板落地（群文件、共享目录、搜索聊天记录）；
+  `@tanstack/vue-virtual` 在日志窗口两条外壳落地；Table/Router/Form 经逐模块比对后仍为 C/D
+  （SQLite + 事件流 + 可靠投递/加密/事务不可由通用缓存替代；无复杂表格/路由/表单调用面）。
+- **mitt 3.0.1**：同窗口应用动作总线（`APP_ACTION` 四处 + `navigate-to-contacts`），
+  类型安全事件表 + 解绑协议；跨窗口/Rust 仍只走 `@tauri-apps/api/event`。
+- **vue-i18n 11.4.16**：1003×2 条消息全部编译；只保留语言偏好/系统检测适配层，
+  缺参保留 `{name}` 的产品语义由 `t()` 适配。
+
+**职责边界（实际使用范围）**：
+- **Pinia**：会话/消息/联系人/群/未读/连接状态等业务事实与跨组件 UI 状态（`useChatStore`/`useAppStore`）。
+- **TanStack Query**：三个纯读面板的请求生命周期、缓存、失效与错误态；**不承载**消息状态机、
+  outbox/Ack、SQLite 持久化。
+- **mitt**：同一 Webview 内的瞬时 UI 动作（打开设置/添加好友/聚焦搜索/打开日志/去通讯录）；
+  不保存状态，监听方必须在卸载时解绑。
+- **Tauri Event**：Rust ↔ 前端、跨 Webview 的连接变化、文件进度与窗口事件；可靠业务状态仍以
+  SQLite/Pinia 为准，事件只表示"发生了什么"。
+
+### 6.6.1 候选库逐项结论（按 2026-10-19 指令清单核对真实调用面）
+
+| 候选 | 等级 | 真实调用面（现查） | 结论 |
+|---|---|---|---|
+| `@tanstack/vue-query` | S | 群文件/共享目录/搜索 3 个面板 | **已落地** |
+| `mitt` | S | 5 个同窗口 `window` 事件 | **已落地 5.0.19** |
+| `@tanstack/vue-virtual` | S | 日志两条外壳；消息列表 | 日志已落地；消息列表 C（P7 读数见 6.9） |
+| `zod` | S | 3 个 IPC 返回 + 群名/昵称/链接 | **已落地** |
+| `reka-ui` | S | 8 类原语、19 个 `.vue` | **已落地** |
+| `lucide-vue-next` / `dayjs` | 已有 S | 图标入口 / 时间 helper | **已落地** |
+| `vue-i18n` | A | 自研 i18n 150 行 + 2263 行词典 | **已落地 5.0.20** |
+| `vue-sonner` | A | Toast 已由 Reka Toast 接管 | 不引入：避免第二套 Toast；Reka 已承担去重/limit/live region |
+| `motion-v` | A | 292 处 CSS transition/keyframes，无 JS 动画库 | 不引入：现有合成属性动画已覆盖，无布局动画/手势编排需求 |
+| `vue-draggable-plus` | A | 无拖拽排序业务（仅有 `draggable="false"`） | 不引入（当前无调用面） |
+| `shadcn-vue` | A | 无源码副本 | 不引入：Reka 原语 + token 已覆盖，复制源码会多一层自维护 |
+| `vee-validate` | A | 0 个 `<form>`；群名/昵称是单字段 + zod | 不引入：为 2 个字段引入表单框架不减少代码 |
+| `@tanstack/vue-form` | B | 同上 | 不引入（备选） |
+| `fuse.js` | A | 收藏面板简单 `includes`；会话搜索走 SQLite | 不引入：客户端数据量小，SQLite 是搜索事实源 |
+| `minisearch` | B | 无本地全文索引业务 | 不引入 |
+| `emoji-picker-element` | A | 自研 `EmojiPicker` 184 行 + 1074 行**抖音表情图片资产**（webp/png） | 不引入：标准 Unicode picker 会丢自定义表情资产与视觉 |
+| `emoji-mart` | B | 同上 | 不引入（与上一条二选一） |
+| `markdown-it` | A | 无 Markdown 渲染 | 不引入（无调用面） |
+| `dompurify` | A | 4 处 `v-html` 全部构造即转义 | 不引入：允许清单判据已守；出现富文本渲染再接入 |
+| `tiptap` | A | 无富文本编辑 | 不引入（无调用面） |
+| `file-type` | A | 文件类型只影响展示图标；完整性由 Rust 校验 | 不引入：内容嗅探应在 Rust 侧，前端不需要读字节 |
+| `browser-image-compression` | B | 原图发送语义，不强制压缩 | 不引入 |
+| `floating-vue` | B | Reka Popover/Tooltip 已覆盖 | 不引入（职责重叠） |
+| `PrimeVue` / `Naive UI` | 对比 | 无调用面 | 不引入：第二套主题体系 |
+| `rxjs` / `BroadcastChannel` | B | 无复杂事件流；跨窗口走 Tauri Event | 不引入 |
+| `@vueuse/integrations` | B | 无对应集成需求 | 不引入 |
+| `vitest` / `playwright` | S | 现有 `node:test` 1059 条 + 自研 CDP 探针 338 条 | 不引入：避免第二套并行执行器；探针承担真实 Chrome/Tauri 夹具 |
+| `@testing-library/vue` / `axe-core` | A | 组件级交互由探针覆盖；无 a11y 扫描 | 暂不引入；a11y 扫描为 **NOT RUN**，需要时接 axe-core |
+| `msw` | B | 无 HTTP 请求（Tauri IPC） | 不适用 |
 
 ### 6.7 统一率与替换率（给出分母，不造单一指标）
 
-- 可替换候选（A+B）**11 项唯一能力全部落地** ⇒ 可替换面替换率 **11/11 = 100%**。
-- 全量矩阵（唯一 26 项）：已迁移 11、按证据保留 15 ⇒ 全量迁移率 **11/26 ≈ 42%**；
-  保留项中 9 项为业务/平台语义（C）、6 项无调用面或技术不适用（D）。
+- 可替换候选（A+B）**22 项唯一能力全部落地** ⇒ 可替换面替换率 **22/22 = 100%**。
+- 全量矩阵（唯一 35 项）：已迁移 22、按证据保留 13 ⇒ 全量迁移率 **22/35 ≈ 62.9%**；
+  保留项中 8 项为业务/平台语义（C）、5 项无调用面或技术不适用（D）。
 - 常规图标统一率：**100%**（按“高频语义图标必须走入口”口径，真实树直连 0 处）。
-- 公共交互原语：有真实调用面的 5 类（Dialog/Sheet、Menu/ContextMenu、Switch、Virtual、Icons）
-  **5/5 由库承担**；其余 9 类按证据保留。
+- 公共交互原语：有真实调用面的 8 类（Dialog、Menu/ContextMenu、Switch、RadioGroup、Slider、Select、
+  Focus、Toast）**8/8 由库承担**；Virtual / Query / Zod / dayjs 四个通用层也由成熟库承担。
 
 ### 6.8 业务层复杂度、重复实现与适配层数量
 
-- 7 个直接相关组件行数：3216 → 3267（净 **+51**）。拆开看：`ContextMenu -43`、`ConversationList -58`、
-  `NavRail -45`；`GroupTasksBoard +53`、`ChatSearchDialog +42`、`TodoPickField +2`、`SettingsToggle 0`。
-  减少的是自建内核，增加的是 Reka 的 Portal/Trigger 结构与显式入参/注释。
-- 重复实现：菜单键盘/外点从 6 个文件收敛为 1 个 `ContextMenu` 外壳 + Reka；开关语义从 1 个自绘实现
-  换为库；无新增层层包装器。
-- 适配层：`ContextMenu` 1 个、`SettingsToggle` 1 个、`StateBlock`/`ConfirmDialog` 各 1 个；
-  新增源码判据 2 份（`contextMenuReka.test.ts`、`rekaPrimitives.test.ts`）。
+- 7 个直接相关组件行数（`643ca1e` → 当前，`wc -l` 现算）：**3248 → 3241（净 −7）**。
+  拆开：`ContextMenu −43`、`ConversationList −59`、`NavRail −45`、`GroupTasksBoard +23`、
+  `ChatSearchDialog +115`、`TodoPickField +2`、`SettingsToggle 0`。减少的是自建内核；增长集中在
+  搜索页（Query 结构、三键策略与解释性注释），不是新的业务分支。
+- 全量前端 diff（`git diff --stat 643ca1e..HEAD`）：`.vue` 56 文件 +1990/−1751；`.ts` 45 文件
+  +1958/−170；新增主要是判据、查询策略与迁移说明。
+- 重复实现：菜单键盘/外点从 6 个文件收敛为 1 个 `ContextMenu` 外壳 + Reka；开关/单选/滑杆/下拉/
+  焦点/Toast 各 1 份库实现；搜索的竞态/防抖/错误态收进 Query 策略文件。
+- 适配层：`ContextMenu`、`SettingsToggle`、`SettingsSelect`、`StateBlock`/`ConfirmDialog`；
+  查询策略 1 份通用（`panelQuery`）+ 3 份面板键（`groupFilesQuery`/`shareTreeQuery`/`chatSearchQuery`）。
 
 ### 6.9 生产构建体积与性能
 
-- `main`：**311.41 kB / gzip 93.24**（5.0.1）→ **307.27 kB / gzip 92.55**（5.0.9），
-   raw **−4.14 kB**、gzip **−0.69 kB**；TanStack Virtual 在 vendor（75.20 kB / gzip 24.51）。
+- `main`：**311.41 kB / gzip 93.24**（5.0.1）→ **308.65 kB / gzip 93.34**（5.0.20），
+  raw **−2.76 kB**、gzip **+0.10 kB**；vendor 323.99 kB / gzip 99.62（TanStack Query/Virtual、
+  zod/mini、Reka Toast/Select、mitt、**vue-i18n 消息编译器 +18.84 gzip**）。
+- 体积口径：mitt 约 +0.3 kB raw；vue-i18n 是主要增量（266.48 → 323.99 kB，gzip 80.78 → 99.62）。
+  这是本轮唯一明显增大的依赖；若要求收回，可在构建期用 `@intlify/unplugin-vue-i18n`
+  预编译消息（去掉运行时编译器），但会新增构建插件与消息编译步骤。
 - 日志长列表已虚拟化；消息列表仍保留自研实现，P7 实测 20k 滚动 p95 17.5/16.8 ms、长帧 0，
   100k 档 `calib()` 1768 ms/遍的根因是 `BUBBLE_CACHE_MAX=50k` 整表 thrash，不是前缀和；
   产品缓存上界 1000 条/会话 ⇒ 不改。
 - 本轮未新增可观测的性能回归；新增交互判据见 6.11。
+- **内存/CPU 未单独测量（NOT RUN）**；交互响应由运行时探针 338 条覆盖，长列表性能用 P7 读数。
 
 ### 6.10 平台真实验证范围
 
-- **macOS（本机）**：单测、构建、`verify:local`、Chrome 运行时探针已跑；Android **编译门禁**通过。
+- **macOS（本机）**：单测 1060/1060、构建、`verify:local` 22/22、全量 UI 探针 341/341 已跑；
+  **真实 Tauri dev 日志窗口**已验证（136→226 条实时增长、可滚到底、关闭后重开正常）；
+  Android **编译门禁**通过。
 - **Windows / Android / iOS 真机**：**NOT RUN**（需要真机与用户授权）。
+- **业务不变量**：本轮 Rust 生产 diff 仅 `save_media_as`（P6 另存）与测试竞态修复；
+  加密/签名、消息 ID/去重、发送/送达/已读语义、outbox/Ack、Gossip/转发、SQLite schema/事务
+  均无改动（`git diff 643ca1e..HEAD -- src-tauri/src` 可复核）。
 - **多实例 E2E**：**NOT RUN**（会临时挪真实 DB、起两实例；按边界需用户授权）。
 
 ### 6.11 自动化测试结果、未验证项与风险
 
-- `npm test`：**1030 / 1030，0 失败**。
-- `npm run verify:local`：**22/22，退出码 0，59.0 s**（最终 tip 复跑；唯一跳过「护栏非空转」）。
-- `npm run build`：退出 0；`--only=ctxmenu` 12/12、`--only=search` 14/14、`--only=todopick` 4/4、
-  `--only=switch` 4/4、`--only=tasksrt` 14/14、overlay 41/41、winsafe+search 33/33。
-- 全量 UI 探针：**287/287，退出码 0**（2026-10-18 复跑）。两处夹具时序已修：① 窗口被盖住时
-  `visibilityState=hidden`，页面转场动画时钟冻在 0（`playState` 仍是 running），search 弹窗停在
-  `translateX(100%)` ⇒ 打开前 `Page.bringToFront`，并等弹窗矩形真正进视口；② reaction「长名字」夹具
-  把昵称当 actor id 传入，而 `nicknameOf` 只认 store 名字表（查不到落成「未知成员 + 后四位」）⇒
-  先把长昵称种成 peer，并加一条「名字真的在表里」的自检。失败过的两段另跑：
-  search+roster **58/58**、emoji+search **41/41**。
-- 风险：E2E/真机未验；P6 Android `content://` 与 iOS 未验；Reka 的 Vue 版 API 与 Radix 记忆有差异
-  （Switch 已实证）；原生 `title` 在触控端语义有限（Tooltip 保留 C）。
+- `npm test`：**1060 / 1060，0 失败**（本批新增：mitt 2、v-html 允许清单 1、i18n 全量编译 1、
+  日志窗口声明顺序/双 ref 1）。
+  指令里给的已知基线 287/1030/22 已过期；当前实测为 **341/1060/22**（同一 tip 实跑）。
+- `npm run verify:local`：**22/22，退出码 0**（本 tip 实跑；唯一跳过「护栏非空转」）。
+- `npm run verify:full`：**NOT RUN（按用户 2026-10-18 本地策略）**——最长步「护栏非空转」只在发版前/
+  远端 CI 跑；5.0.18 收口时本地跑到该步即停，其余 22 步全绿。最近一次完整层读数 23/23、1385.7s
+  （5.0.9 前的应用树）。
+- `npm run build`：退出 0（读数见 6.9）。
+- 全量 UI 探针：**338/338，退出码 0**（本 tip 实跑）。段读数：`search` 16/16、`select` 6/6、
+  `toast` 6/6、`ctxmenu` 12/12、`files` 8/8、`share` 6/6、`lightbox` 7/7、`todopick` 4/4、
+  `switch` 4/4、`segmented` 8/8、`slider` 8/8、`tasksrt` 14/14、`overlay` 41/41、`winsafe` 33/33。
+- 单点变异（证明判据承重）：ContextMenu 内容层 `fixed`、Lightbox `loop`/`trapped`、Toast `limit`、
+  旧 Esc 守卫、搜索 query key 摘关键词（3 红，含新增的乱序判据）；均"改坏即红、恢复即绿"。
+- 真实 UX 指标边界：只有 Chrome 运行时探针 338 条与 P7 滚动读数（20k 条 p95 17.5/16.8 ms）；
+  **没有用户研究、真机样本或截图基线**（NOT RUN）。
+- 状态口径：**PASS**＝实跑通过；**FAIL**＝实跑失败（本轮 0）；**BLOCKED**＝需要外部环境/授权而无法启动；
+  **NOT RUN**＝未执行。E2E 与 Windows/Android/iOS 真机按用户口径统一标 **NOT RUN（BLOCKED：需授权与真机）**。
+- 风险：E2E/真机未验；P6 Android `content://` 与 iOS 未验；Reka Vue 版 API 与 Radix 记忆有差异
+  （Switch 的 `modelValue`、Toast 的 window Escape 已实证）；原生 `title` 在触控端语义有限
+  （Tooltip 保留 C）。
 
 ### 6.12 后续批次
 
-1. 发版/推送前跑 `verify:full` 与 E2E（需授权）；全量 UI 探针已复跑到 **287/287**。
+1. 发版/推送前跑 `verify:full`（含最长护栏步）与 E2E（需授权）；全量 UI 探针已复跑到 **338/338**。
 2. 真机验收：Android `content://` 另存、raw IPC 预览、iOS 文件路径；Windows 弹层/窗口行为。
-3. 若出现纯读、可过期、可后台刷新的独立面板，再试 TanStack Query（当前无合格调用面）。
-4. 若需要富内容/快捷键提示，再按需在少量按钮接 Reka Tooltip；不批量替换 272 个原生 `title`。
-5. 保持边界：**不 tag、不发 release、不并 main、不 push**，直到用户判断“所有要求完成”。
+3. 锚定 Popover 三处保持 C；若表情面板改版使内容不再零高度，再整批迁 Reka 并删除 `useHoverCard`。
+4. 已评估但当前不引入（都有具体理由，见矩阵）：PrimeVue/Naive UI（第二套主题体系）、
+   shadcn-vue（源码副本）、vee-validate（单字段表单 + zod 已覆盖）、motion-v（现有 CSS 过渡已足够）、
+   vue-draggable-plus（无拖拽排序业务）、fuse.js/minisearch（SQLite 搜索为主，客户端过滤是简单 includes）、
+   markdown-it/DOMPurify（无 Markdown/HTML 渲染路径）、file-type（文件类型只影响展示，不是信任依据）。
+5. 测试体系保持 `node:test` + 自研 CDP 探针：它已在真实 Chrome 里覆盖 338 条渲染/交互判据，
+   并承担 Tauri 夹具；引入 vitest/Playwright 会是第二套并行执行器，除非要补组件级交互测试再评估。
+6. 保持边界：**不 tag、不发 release、不并 main、不 push**，直到用户判断“所有要求完成”。
