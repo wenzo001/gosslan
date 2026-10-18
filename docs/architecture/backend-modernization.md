@@ -168,6 +168,9 @@
   超时红、进程 exit 0（自证通过）；`kill-mid-lie`（期望字节 +1、sha 换成错值）
   两条断言如期红（`6291457 vs 6291456`、sha 不符）——这是该轮的 **EXPECTED RED**，
   不是产品失败。正向 `kill-mid` 的 25/25 因此不是空转。
+  `sender-kill-mid-lie`（sha 换成错值）如期红（expected `0000…` / actual `20492a…`）；
+  `recv-readonly-lie`（把“该失败”换成“必须 done”）如期红（expected done / actual failed）。
+  四条负控共同证明：发送端崩溃续传、接收端写失败这两族正向断言都不是空转。
 - **依赖安全审计**：`cargo audit --file src-tauri/Cargo.lock` **exit 0、0 个漏洞**；
   10 条 allowed warnings（unmaintained/unsound，均为传递依赖）：`proc-macro-error`、
   `unic-*`（6 个未维护）、`zbus_names`/`zvariant`/`zvariant_derive`（Linux D-Bus，未维护）、
