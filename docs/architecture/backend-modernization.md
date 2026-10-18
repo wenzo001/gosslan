@@ -245,6 +245,16 @@
   记录原版本、备份路径、校验结果。
 - 未知未来版本：`current > DB_VERSION` 在**任何写入前**拒绝，已有测试 `downgrade_refusal_writes_nothing`。
 - 迁移失败：每步 `unchecked_transaction` 回滚，`user_version` 不前进；备份保留。
+- **真实数据副本实测（2026-10-19，5.0.31 release）**：对本机真实安装库做只读一致性
+  `.backup` 副本（源库未写），在隔离 HOME 用 5.0.31 启动 7s 后停止：迁移前后
+  `user_version=11`、`integrity_check=ok`；8 张主表行数完全一致（messages 56、friends 3、
+  groups 1、settings 34、file_transfers 12、content_transfers 35、favorites 0、
+  group_members 4）；语义聚合也逐项相等（messages `56:19100:100369643617480`、
+  friends `3:63:5376106593919`、groups `1:4:1792329496228`、settings `34:834:1140`、
+  file_transfers `12:88273400:21507826111856`、content_transfers `35:3547177738:3532648832`，
+  格式为 `行数:长度和:时间和`）。启动后目录 **0700**、库 **0600**（B6/B11 生效）。
+  **边界**：该库已是 v11，这次证明的是“5.0 打开真实 4.x 数据不丢不改 + 权限收紧”，
+  **不是** v10→v11 的真实用户库 schema 迁移；后者仍 **NOT RUN**。
 - 迁移步骤登记口径：`MIGRATIONS` 数组的每个 `Migration { from, to, description, run }`
   就是一个独立、有名字、有起止版本的步骤（当前 11 步，每步一个事务），迁移测试按
   `from` 逐个重放。**没有拆成 `vN.sql` 文件**：多数步骤含列/索引条件判断与数据回填
