@@ -205,6 +205,8 @@
   失败只告警不阻断启动）。
 - **实测（2026-10-19，5.0.30）**：临时目录 `0755 → 0700`；Rust **986 通过 + 1 ignored**；
   基线 986 → 987。只改启动期目录权限，未改文件内容/DB/协议。
+- **真实启动验证**：隔离 HOME 预置 app data 目录 `0755`，启动 5.0.30 release 后目录
+  变为 **`0700`**，生成的 `gosslan-1.db` 与 crash 日志均为 **`0600`**；随后停止实例。
 
 ## 4. 4.x → 5.0 数据迁移与恢复
 
@@ -299,7 +301,7 @@
 |---|---|
 | macOS arm64 | **PASS**：fmt/clippy/Rust/前端/Android 编译、32 轮 E2E |
 | Android aarch64 | **PASS（仅编译）**：默认与 bluetooth 两档 0 warning |
-| Windows | **BLOCKED（环境）**：`cargo xwin` 缺 `llvm-lib`；运行时 **NOT RUN** |
+| Windows | **BLOCKED（环境）**：`cargo xwin` 用本地 `llvm-ar` shim 过了 C 归档，卡在 `tauri-winres` 需要 `llvm-rc`；未装系统 LLVM；运行时 **NOT RUN** |
 | Linux | 运行时 **NOT RUN**；audit 警告集中在 Linux GTK/D-Bus 传递依赖 |
 | iOS | **BLOCKED（环境）**：本机无 iOS SDK/完整 Xcode；运行时 **NOT RUN** |
 
