@@ -39,6 +39,10 @@
   `RUSTUP_TOOLCHAIN` 复跑绿）；contentpull 增 A-16 受众闸（非好友同群仍按 cid 服务）
   **36/36**；干净 worktree `verify:local` **22/22**（64.4s）。
   其余 E2E 轮次与真机仍按 **NOT RUN**。
+- 真实数据副本：本机真实安装库的只读 `.backup` 副本用 5.0.31 启动 7s，前后
+  `user_version=11`/`integrity_check=ok`、8 张主表行数与 6 组语义聚合逐项相等，
+  目录/库权限收紧为 **0700/0600**；源库未写。该库已是 v11，**不是**真实 4.x
+  用户库的 v10→v11 schema 迁移（后者仍 **NOT RUN**）。
 
 ## [5.0.30] - 2026-10-19
 
