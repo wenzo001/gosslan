@@ -136,6 +136,21 @@
   `fmt`/gate 形状 `clippy` 退出 0。E2E/真机 **NOT RUN**。
 - 边界：目录权限不动；Windows ACL 未在本批处理。
 
+### E2E 实测（2026-10-19，隔离 HOME）
+- 用干净 worktree 在 `824cadb` 构建 release，`HOME=/tmp/gosslan-e2e-home*` 起双实例；
+  真实 app data 的 `gosslan.db` / `-wal` mtime 前后**完全不变**。
+- `--round=contentpull`：40MB + 12 份 **32/32 PASS**；`E2E_PULL_BIG_MB=300` 复跑
+  **32/32 PASS**（拉取 4774ms、文本 2768ms 落库、accept 超时 0、队列溢出留痕 1 行；
+  断线格 4 份全部落盘且 sha 正确）。
+- 默认轮（J1 文本 + J2 文件 + 重启 + Routed）**18/18 PASS**。
+- 真实 UI：300MB 传输开始（A 日志 `[FILE] offer SENT`）后 **734ms**，接收端 B 的
+  **设置窗口出现**（窗口名 `设置`；macOS System Events 按 PID 激活 + Cmd+,）。
+- 修正测试时序：断线格原断言假设“杀之前 0 个 accept”。300MB 轮实测 `ucoh1k`
+  在 stop 前已被旧连接接下（旧日志 17:47:55 accept RECEIVED），重启后新连接补其余 3 单，
+  4 份文件全部落盘且 sha 正确。断言改为“杀前已接下的不算剩余”，总 accept 仍须覆盖
+  4 单且超时 0；不是产品缺陷，也不放宽产品判据。
+- 未跑：其余 18 个轮次、真机；Windows/Linux/iOS 运行时未验证。
+
 ## 4. 4.x → 5.0 数据迁移与恢复
 
 - 现有迁移链已是 `user_version` 单调版本 + 每步事务 + 降级拒绝；本批补的是**迁移前快照**。

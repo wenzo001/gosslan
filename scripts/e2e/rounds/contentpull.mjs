@@ -428,6 +428,14 @@ export async function run() {
       serveStarted, "90s 内看见针对批次 2 第一单的 offer SENT",
       serveStarted ? "开始了" : "90s 内一次都没开始服务 ⇒ 上一批的满额握手还把这台的入站占着");
     if (!serveStarted) return; // 这一格已经红了，不必再往下杀
+    // 杀之前的 accept 也算"已经开工"：2026-10-19 实测 `E2E_PULL_BIG_MB=300` 时，
+    // 批次 2 的 `ucoh1k` 在 stop 前就已被旧连接接下（旧日志 17:47:55 accept RECEIVED），
+    // 重启后新连接只补了其余 3 单、4 份文件全部落盘且 sha 正确。
+    // 原断言要求"新连接 accept ≥ 4"把这一份合法的杀前进度当成失败 ⇒ 按**剩余份额**判。
+    const preAcc = batch.reduce(
+      (n, b) => n + countLinesWith(INSTANCES[0], "[FILE] accept RECEIVED", b.tid),
+      0,
+    );
     await stopOne(INSTANCES[0]);
     const killedAt = nowMs();
     await sleep(3_000); // 让 B 那侧真的看到链路断了（不是"进程还在、只是没回话"）
@@ -470,8 +478,9 @@ export async function run() {
     // 这就是"旧连接不阻塞新连接"的现场读数，不需要去猜是哪条链路干的。
     const newAcc = batch.reduce((n, b) => n + countLinesWith(INSTANCES[0], "[FILE] accept RECEIVED", b.tid), 0);
     const newTmo = batch.reduce((n, b) => n + countLinesWith(INSTANCES[0], "[FILE] offer TIMEOUT/REJECTED", b.tid), 0);
-    check("补齐这几单的必须是**新起的那条连接**：A 重启后的日志里这几单都有 accept RECEIVED、且没有一次满额超时（旧连接的队列与登记不许留在新连接上）",
-      newAcc >= batch.length && newTmo === 0,
-      `新连接 accept ≥ ${batch.length} 且超时 0 行`, `accept ${newAcc} 行 · 超时 ${newTmo} 行`);
+    check("补齐剩余的必须是**新起的那条连接**：杀前已接下的不算剩余；其余各单都必须在重启后的日志里有 accept RECEIVED、且没有一次满额超时（旧连接的队列与登记不许留在新连接上）",
+      preAcc < batch.length && newAcc + preAcc >= batch.length && newTmo === 0,
+      `杀前 accept < ${batch.length} 单，且杀前 + 新连接 accept ≥ ${batch.length}、超时 0 行`,
+      `杀前 accept ${preAcc} 行 · 新连接 accept ${newAcc} 行 · 超时 ${newTmo} 行`);
   });
 }
