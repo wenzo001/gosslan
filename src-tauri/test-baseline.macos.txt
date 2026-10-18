@@ -341,6 +341,7 @@ logging::tests::diag_folds_only_on_identical_text_in_the_same_second
 logging::tests::diag_warn_and_error_are_never_folded
 logging::tests::first_startup_without_any_history_seeds_nothing
 logging::tests::format_utc_epoch_and_known_dates
+logging::tests::log_and_crash_files_are_owner_only
 logging::tests::log_wire_actually_folds_the_diag_flood
 logging::tests::logger_clear_empties_memory
 logging::tests::logger_memory_ring_buffer_is_bounded

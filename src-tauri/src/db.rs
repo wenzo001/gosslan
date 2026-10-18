@@ -7,6 +7,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, params_from_iter, Connection, OpenFlags, OptionalExtension, Result};
 
+use crate::private_fs::restrict_to_owner;
 use crate::state::{
     Conversation, Favorite, Friend, Group, GroupFile, GroupFileRecipient, MessageRecord,
     TransferInfo,
@@ -655,28 +656,6 @@ CREATE TABLE IF NOT EXISTS favorites (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_favorites_msg  ON favorites(msg_id);
 CREATE INDEX        IF NOT EXISTS idx_favorites_time ON favorites(favorited_at DESC);
 "#;
-
-/// Unix：把数据库/侧车/备份收紧到仅属主可读写（`0600`）。
-///
-/// 真实安装目录实测：`gosslan.db` 与 `-wal` 都是 `0644`，同机其他用户可读，
-/// 而库里存着身份密钥与全部消息。SQLite 新建 `-wal/-shm` 时会沿用主库的权限位，
-/// 所以主库在 `Connection::open` 之后就要收紧；已有侧车与备份再逐个补一次。
-///
-/// 失败只告警不中止：某些文件系统不支持 POSIX 权限，启动可用性优先；
-/// 正常磁盘上必须成功（`init_tightens_database_sidecars_and_backup_to_owner_only`）。
-#[cfg(unix)]
-fn restrict_to_owner(path: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    if !path.exists() {
-        return;
-    }
-    if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
-        eprintln!("[gosslan-db] 无法把 {} 收紧到 0600：{e}", path.display());
-    }
-}
-
-#[cfg(not(unix))]
-fn restrict_to_owner(_path: &Path) {}
 
 /// 启动时把**历史**迁移备份补收紧到 `0600`。
 ///

@@ -1,6 +1,6 @@
 # Gosslan 后端基础设施现代化（5.0）——基线与迁移方案
 
-> 分支 `feat/5.0` · 版本 5.0.26 · Rust 1.98.1 · 目标平台 macOS/Windows/Linux/Android/iOS
+> 分支 `feat/5.0` · 版本 5.0.27 · Rust 1.98.1 · 目标平台 macOS/Windows/Linux/Android/iOS
 > 真实库（只读核对）：`~/Library/Application Support/com.gosslan.app/gosslan.db`，
 > `user_version=11`、19 张业务表、`journal_mode=wal`、`PRAGMA integrity_check=ok`。
 > 本文是阶段 B 的选型/迁移方案；每批实施后回填读数，不把"计划"当"完成"。
@@ -117,6 +117,14 @@
 - 启动时扫描本库 `<stem>.pre-v…-to-v….db`，把 5.0.22–5.0.25 留下的 `0644` 备份
   补收紧到 `0600`；先做文件名匹配再 `stat`，同目录其它文件/目录不动。
 - 边界：不改变目录权限（可能是共享临时目录）；Windows ACL 未在本批处理。
+
+### B7（已落地，5.0.27）：日志与崩溃现场权限收紧
+- 真实安装实测：`logs/*.log`、`*-crash.log` 均为 `0644`，日志里有 peer id、IP、文件名。
+- 改动：抽出 `private_fs::restrict_to_owner`（Unix `0600`，非 Unix 无操作），数据库/侧车/
+  迁移备份/运行日志/崩溃现场/启动路标共用一个实现；日志轮转后的 `.old.log` 保留原 mode。
+- **实测（2026-10-19，5.0.27）**：启动路标与首条日志均 `0600`；Rust **983/983**；
+  基线 982 → 983；`fmt`/gate 形状 `clippy` 退出 0。E2E/真机 **NOT RUN**。
+- 边界：目录权限不动；Windows ACL 未在本批处理。
 
 ## 4. 4.x → 5.0 数据迁移与恢复
 

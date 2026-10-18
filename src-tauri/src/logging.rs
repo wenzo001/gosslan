@@ -40,6 +40,8 @@ use std::sync::{Mutex, OnceLock};
 
 use serde::Serialize;
 
+use crate::private_fs::restrict_to_owner;
+
 /// 内存保留的日志条数上限。
 /// Android 的 logcat 镜像：**合批 + 单线程 fork**（见 `Logger::log` 里的说明）。
 ///
@@ -222,6 +224,7 @@ pub fn crash_note_to(path: &std::path::Path, text: &str) {
         .append(true)
         .open(path)
     {
+        restrict_to_owner(path);
         let _ = writeln!(
             f,
             ">>> {text}  @{} 版本 {} · {}-{} · {}",
@@ -295,6 +298,7 @@ impl Logger {
             .append(true)
             .open(self.crash_path())
         {
+            restrict_to_owner(&self.crash_path());
             let _ = writeln!(
                 f,
                 "----- 启动 {} 版本 {} · {}-{} · {} · 设备 {} -----",
@@ -502,6 +506,7 @@ impl Logger {
                 .open(&path)
         };
         let Ok(mut f) = opened else { return };
+        restrict_to_owner(&path);
 
         use std::io::Write;
         // 版本必须写进现场：2026-10-16 为了搞清"崩的是哪一版"只能拿 CI 构建时刻反推。
@@ -567,6 +572,7 @@ impl Logger {
             .append(true)
             .open(&path)
         {
+            restrict_to_owner(&path);
             let line = format!(
                 "{} {} {} [{}] {}",
                 self.fingerprint,
@@ -1435,5 +1441,29 @@ mod tests {
                 "接线点必须排在本轮第一条日志之前"
             );
         }
+    }
+
+    /// 日志与崩溃现场含 peer id / IP / 文件名，不能同机其他用户可读。
+    /// 构造时用默认 umask 建文件，断言启动路标与第一条日志都被收紧到 `0600`。
+    #[cfg(unix)]
+    #[test]
+    fn log_and_crash_files_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        fn mode(p: &std::path::Path) -> u32 {
+            std::fs::metadata(p).unwrap().permissions().mode() & 0o777
+        }
+
+        let dir = std::env::temp_dir().join(format!("gosslan-log-mode-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let logger = Logger::new(dir.clone(), "t", "[dev:test]".to_string());
+        logger.info("test", "mode");
+
+        let crash = dir.join("t-crash.log");
+        assert!(crash.exists(), "Logger::new 必须写启动路标");
+        assert_eq!(mode(&crash), 0o600, "崩溃现场必须收紧到 0600");
+        let cur = dir.join("t.log");
+        assert_eq!(mode(&cur), 0o600, "运行日志必须收紧到 0600");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
