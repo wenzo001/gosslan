@@ -13,6 +13,18 @@
 
 ## [Unreleased]
 
+## [5.0.32] - 2026-10-19
+
+### 可观测性：SQLite 锁等待/持有时长进入运行日志
+
+- `DbLock` 早已逐次量 wait/hold，但 `take_summary()` 此前只有测试在读 ⇒ 现场看不到
+  锁竞争。新增 `AppState::spawn_db_hold_reporter`（60s 周期，`DbLock` 的唯一生产读者）：
+  空窗口不产行；慢持锁（默认 ≥500ms）时 warn 一行，含取锁次数、最长持有、最长等待、
+  累计持有、超阈值次数；不含 SQL、参数、文件名或正文。
+- 判据 `db_hold_summary_has_exactly_one_production_reader` 钉住唯一读者、唯一启动点、
+  阈值来源与日志出口；Rust **990 通过 + 1 ignored**，基线 990→991（Windows 973→974）。
+- 不改锁语义、DB、协议；E2E/真机 **NOT RUN**。
+
 ## [5.0.31] - 2026-10-19
 
 ### 修复：原件事后变小后，发送侧台账与气泡的 `size` 跟实发字节走（A-11）

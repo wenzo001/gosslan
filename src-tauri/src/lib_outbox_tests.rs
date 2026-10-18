@@ -251,3 +251,39 @@
             "lib.rs 不该自己算接收超时——判据在 file::receive_is_stale"
         );
     }
+
+    /// `DbLock` 量了 wait/hold，但摘要必须真的接到生产日志 —— 只测 `summary_line`
+    /// 不够：没人读 `take_summary()` 时，现场依旧看不到"谁握了多久、排队多久"。
+    /// 同时钉住唯一读者：两个读者会互相清计数，读到的都是残缺窗口。
+    #[test]
+    fn db_hold_summary_has_exactly_one_production_reader() {
+        let lib = include_str!("lib.rs");
+        let state = include_str!("state.rs");
+        assert_eq!(
+            lib.matches("AppState::spawn_db_hold_reporter(").count(),
+            1,
+            "锁观测的启动点必须恰好一处（多一处就多一个读者，互相吞计数）"
+        );
+        assert_eq!(
+            state.matches("pub fn spawn_db_hold_reporter(").count(),
+            1,
+            "锁观测上报器必须留在 state.rs 里且只有一份"
+        );
+        assert_eq!(
+            state.matches("st.db.take_summary()").count(),
+            1,
+            "take_summary() 消费即清零：生产代码里只许这一个读者"
+        );
+        for needle in [
+            "tauri::async_runtime::spawn",
+            "summary_line(",
+            "DB_HOLD_REPORT_SECS",
+            "logger.warn(\"db\"",
+            "slow_threshold_ms()",
+        ] {
+            assert!(
+                state.contains(needle),
+                "锁观测缺 {needle} —— 摘要要么没进日志，要么读了错的阈值"
+            );
+        }
+    }
