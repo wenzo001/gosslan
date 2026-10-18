@@ -35,6 +35,8 @@ import {
   findImgTags,
   teleportedRootClasses,
   checkTodoCardImageLimit,
+  findLiteralRadiusClasses,
+  findDirectSemanticIconImports,
 } from "./designGuards.ts";
 
 // ---------------- ⓪ 选中态/原生控件颜色必须吃主题变量（#35-N7） ----------------
@@ -2937,4 +2939,86 @@ test("㊳ 任务卡片：可见图片数一个家，估算端同行高（否则�
   assert.equal(visible, 4, `可见图片数必须是 4（用户 2026-10-12 原话"超过 4 张"）。当前：${visible}`);
 
   console.log("· ㊳ 分母：TodoCardBubble 走 visibleTodoImages + 「查看更多」emit open(todoId) + i18n key + 相册不截断；messageHeight 引 TODO_CARD_IMAGE_VISIBLE");
+});
+
+// ---------------- ㊴ 字面圆角必须走 token ----------------
+
+test("㊴ 字面圆角 → 报；token / full / none / 注释 → 放行（夹具）", () => {
+  const buggy = `<template><div class="rounded-lg p-2"></div><button class="rounded-[6px]"></button></template>`;
+  const issues = findLiteralRadiusClasses(buggy);
+  assert.equal(issues.length, 2, issues.map((i) => i.message).join("\n"));
+  assert.equal(issues[0].line, 1, "应定位到那一行");
+
+  const ok = `<template><div class="rounded-[var(--gosslan-radius-md)]"></div><span class="rounded-full"></span><em class="rounded-none"></em></template>`;
+  assert.deepEqual(findLiteralRadiusClasses(ok), []);
+
+  // 规范明确保留的三个语义别名不能被当成字面值（2026-10-18 首跑真实假阳性）
+  const aliases = `<template><div class="rounded-[var(--gosslan-avatar-radius)]"></div><div class="rounded-[var(--gosslan-item-radius)]"></div><div class="rounded-[var(--gosslan-bubble-radius)]"></div></template>`;
+  assert.deepEqual(findLiteralRadiusClasses(aliases), []);
+
+  const commented = `<template><!-- <div class="rounded-lg"> --><div class="rounded-[var(--gosslan-radius-sm)]"></div></template>`;
+  assert.deepEqual(findLiteralRadiusClasses(commented), []);
+});
+
+test("㊴ 真实树：全 src 的 .vue 没有字面圆角（分母现算）", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const files = collectVueFiles(srcDir);
+  assert.ok(files.length > 50, `只扫到 ${files.length} 份 .vue ⇒ 遍历路径大概错了，这条绿不算数`);
+  const bad: string[] = [];
+  for (const f of files) {
+    for (const issue of findLiteralRadiusClasses(readFileSync(f, "utf8"))) {
+      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+    }
+  }
+  assert.deepEqual(bad, [], `以下位置写了字面圆角：\n${bad.join("\n")}`);
+  console.log(`· ㊴ 分母：扫 ${files.length} 份 .vue，字面圆角 0 处`);
+});
+
+// ---------------- ㊵ 高频语义图标只从 ui/icons.ts 引 ----------------
+
+const SEMANTIC_ICON_NAMES = ["Check", "Loader2", "RotateCcw", "Trash2", "X"];
+
+test("㊵ 高频语义图标直连 lucide → 报；走入口 → 放行（夹具）", () => {
+  const buggy = `<script setup lang="ts">\nimport { Loader2, X } from "lucide-vue-next";\n</script>`;
+  assert.equal(findDirectSemanticIconImports(buggy, SEMANTIC_ICON_NAMES).length, 2);
+
+  const ok = `<script setup lang="ts">\nimport { Loader2, X } from "@/components/ui/icons";\n</script>`;
+  assert.deepEqual(findDirectSemanticIconImports(ok, SEMANTIC_ICON_NAMES), []);
+
+  const escaped = `<!-- icon-entry-ok -->\n<script setup lang="ts">\nimport { X } from "lucide-vue-next";\n</script>`;
+  assert.deepEqual(findDirectSemanticIconImports(escaped, SEMANTIC_ICON_NAMES), []);
+});
+
+test("㊵ 真实树：5 个高频语义图标只从 ui/icons.ts 引（分母现算）", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const files: string[] = [];
+  (function walk(dir: string) {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (
+        (entry.name.endsWith(".vue") || entry.name.endsWith(".ts")) &&
+        !entry.name.endsWith(".test.ts") &&
+        full !== join(srcDir, "components", "ui", "icons.ts")
+      ) {
+        files.push(full);
+      }
+    }
+  })(srcDir);
+  assert.ok(files.length > 100, `只扫到 ${files.length} 份源码 ⇒ 遍历路径大概错了，这条绿不算数`);
+
+  const bad: string[] = [];
+  for (const f of files) {
+    for (const issue of findDirectSemanticIconImports(readFileSync(f, "utf8"), SEMANTIC_ICON_NAMES)) {
+      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+    }
+  }
+  assert.deepEqual(bad, [], `以下位置仍直连 lucide：\n${bad.join("\n")}`);
+
+  // 阳性对照：入口必须真的导出这 5 个名字（否则"全库 0 处"只是没人可引）
+  const barrel = readFileSync(join(srcDir, "components", "ui", "icons.ts"), "utf8");
+  for (const name of SEMANTIC_ICON_NAMES) {
+    assert.ok(new RegExp(`\\b${name}\\b`).test(barrel), `ui/icons.ts 必须导出 ${name}`);
+  }
+  console.log(`· ㊵ 分母：扫 ${files.length} 份源码，高频语义图标直连 lucide 0 处`);
 });

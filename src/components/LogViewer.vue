@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
-import { Copy, RefreshCw, Search, Trash2, X } from "lucide-vue-next";
+import { Copy, RefreshCw, Search } from "lucide-vue-next";
+import { Trash2, X } from "@/components/ui/icons";
 import TitleBar from "@/components/TitleBar.vue";
 import MobilePageFrame from "@/components/MobilePageFrame.vue";
 import { api } from "@/api";

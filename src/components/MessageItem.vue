@@ -10,15 +10,7 @@ import { useMessageFile } from "@/composables/useMessageFile";
 import { useMemberProfile } from "@/composables/useMemberProfile";
 import { IMAGE_PLACEHOLDER_HEIGHT, textNeedsClamp } from "@/utils/previewMetrics";
 import {
-  isFavoritableKind,
-  isForwardableKind,
-  isKnownKind,
-  isMultiSelectable,
-  isRemindableKind,
-  isTipKind,
-  kindClass,
-  UNSUPPORTED_KIND_LABEL,
-} from "@/utils/messageKinds";
+  isFavoritableKind, isForwardableKind, isKnownKind, isMultiSelectable, isRemindableKind, isTipKind, kindClass, UNSUPPORTED_KIND_LABEL, } from "@/utils/messageKinds";
 import { cardCopyText } from "@/utils/cardText";
 import { isSelfMessage } from "@/utils/selfChat";
 import { EMPTY_REACTION_CHIPS, EMPTY_STRING_LIST } from "@/utils/emptyList";
@@ -47,7 +39,8 @@ import UnsupportedKindBubble from "@/components/message/UnsupportedKindBubble.vu
 import MessageContextMenu from "@/components/message/MessageContextMenu.vue";
 import RemindAudienceDialog from "@/components/RemindAudienceDialog.vue";
 import ActionSheet from "@/components/ActionSheet.vue";
-import { BellRing, Check, Copy, CornerUpLeft, ImageOff, ListChecks, Pin, Save, Share2, Smile, Star, TextSelect, Undo2 } from "lucide-vue-next";
+import { BellRing, Copy, CornerUpLeft, ImageOff, ListChecks, Pin, Save, Share2, Smile, Star, TextSelect, Undo2 } from "lucide-vue-next";
+import { Check } from "@/components/ui/icons";
 import type { MessageRecord, MsgKind } from "@/types";
 import type { ReminderPhase, ReminderState } from "@/utils/reminders";
 import { urlToBase64 } from "@/utils/imageBytes";

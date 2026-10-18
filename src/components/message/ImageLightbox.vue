@@ -6,7 +6,8 @@
 import { clampScale, pinchScale, swipeDirection } from "@/utils/lightboxGestures";
 import { t } from "@/i18n";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { ChevronLeft, ChevronRight, RotateCcw, Save, X } from "lucide-vue-next";
+import { ChevronLeft, ChevronRight, Save } from "lucide-vue-next";
+import { RotateCcw, X } from "@/components/ui/icons";
 import { useAppStore } from "@/stores/useAppStore";
 import { loadContentPreview, loadFilePreview, type PreviewResult } from "@/utils/filePreview";
 import { isDialogCancelled, saveDestinationOf } from "@/utils/saveDestination";

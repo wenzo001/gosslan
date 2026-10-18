@@ -11,7 +11,8 @@ import { mentionHighlightColor, resolveChatColors } from "@/utils/chatStyle";
 import { avatarSeedFor } from "@/utils/avatarSeed";
 import { classifyPaste } from "@/utils/clipboard";
 import { isImeKey } from "@/utils/ime";
-import { Folder, Smile, SquareCode, Users, X, Zap } from "lucide-vue-next";
+import { Folder, Smile, SquareCode, Users, Zap } from "lucide-vue-next";
+import { X } from "@/components/ui/icons";
 import type { MsgKind } from "@/types";
 import { MENTION_ALL_TOKEN, textMentionsName } from "@/utils/messages";
 import { isMentionLead } from "@/utils/linkify";
@@ -811,7 +812,7 @@ async function onPaste(e: ClipboardEvent) {
           <Folder class="h-5 w-5" :stroke-width="1.75" />
         </button>
         <button
-          class="tap-safe ml-auto flex h-8 shrink-0 items-center rounded-[6px] px-3.5 text-[13px] font-medium transition"
+          class="tap-safe ml-auto flex h-8 shrink-0 items-center rounded-[var(--gosslan-radius-sm)] px-3.5 text-[13px] font-medium transition"
           :class="hasDraft
             ? 'bg-[var(--gosslan-primary)] text-white hover:bg-[var(--gosslan-primary-hover)]'
             : 'cursor-default bg-[var(--gosslan-hover)] text-[var(--gosslan-text-2)]'"

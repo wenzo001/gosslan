@@ -11,6 +11,7 @@ import FriendListItem from "@/components/conversation/FriendListItem.vue";
 import FriendContextMenu from "@/components/conversation/FriendContextMenu.vue";
 import ConversationContextMenu from "@/components/conversation/ConversationContextMenu.vue";
 import BaseModal from "@/components/BaseModal.vue";
+import DangerBtn from "@/components/ui/DangerBtn.vue";
 import UnreadBadge from "@/components/UnreadBadge.vue";
 import { APP_ACTION } from "@/api";
 import { groupByInitial } from "@/utils/nameGroup";
@@ -606,10 +607,9 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
             class="rounded-[var(--gosslan-radius-md)] px-4 py-1.5 text-sm transition hover:bg-[var(--gosslan-hover)]"
             @click="pendingRemoveFriend = null"
           >{{ t("common.cancel") }}</button>
-          <button
-            class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-1.5 text-sm text-white transition hover:bg-[var(--gosslan-danger-hover)]"
-            @click="confirmDeleteFriend"
-          >{{ t("common.deleteFriend") }}</button>
+          <DangerBtn size="large" @click="confirmDeleteFriend">
+            {{ t("common.deleteFriend") }}
+          </DangerBtn>
         </div>
       </div>
     </BaseModal>
@@ -630,10 +630,9 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
             class="rounded-[var(--gosslan-radius-md)] px-4 py-1.5 text-sm transition hover:bg-[var(--gosslan-hover)]"
             @click="pendingDelete = null"
           >{{ t("common.cancel") }}</button>
-          <button
-            class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-1.5 text-sm text-white transition hover:bg-[var(--gosslan-danger-hover)]"
-            @click="confirmDeleteConv"
-          >{{ t("common.delete") }}</button>
+          <DangerBtn size="large" @click="confirmDeleteConv">
+            {{ t("common.delete") }}
+          </DangerBtn>
         </div>
       </div>
     </BaseModal>

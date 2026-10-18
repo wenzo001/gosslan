@@ -16,7 +16,8 @@
  * 不引入微信的具体色值 —— 这是用户明确要求「按本项目约束标准」的部分。
  */
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
-import { ChevronRight, Search, X } from "lucide-vue-next";
+import { ChevronRight, Search } from "lucide-vue-next";
+import { X } from "@/components/ui/icons";
 import { api } from "@/api";
 import { useAppStore } from "@/stores/useAppStore";
 import { useImeEnterGuard } from "@/composables/useImeEnterGuard";

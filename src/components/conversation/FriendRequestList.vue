@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
-import { Check, X } from "lucide-vue-next";
+import { Check } from "lucide-vue-next";
+import { X } from "@/components/ui/icons";
 import { avatarSeedFor } from "@/utils/avatarSeed";
 import type { PendingRequest } from "@/types";
 

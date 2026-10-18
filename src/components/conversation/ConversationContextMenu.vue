@@ -10,7 +10,8 @@
  * 外观走 `style.css` 的 `.gosslan-menu*` 统一类（#4）。
  */
 import { t } from "@/i18n";
-import { Pin, PinOff, Trash2 } from "lucide-vue-next";
+import { Pin, PinOff } from "lucide-vue-next";
+import { Trash2 } from "@/components/ui/icons";
 import ContextMenu from "@/components/ContextMenu.vue";
 
 defineProps<{ x: number; y: number; pinned: boolean }>();

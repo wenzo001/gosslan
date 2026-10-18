@@ -12,10 +12,12 @@ import { onMounted, ref } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useBackLayer } from "@/composables/useBackLayer";
 import MobilePageFrame from "@/components/MobilePageFrame.vue";
+import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
 import { api } from "@/api";
 import { t } from "@/i18n";
 import { MAX_EXTERNAL_LINKS, MAX_LINK_NAME_CHARS, validateLinkInput } from "@/utils/externalLinks";
-import { ExternalLink as ExternalLinkIcon, Pencil, Plus, Trash2 } from "lucide-vue-next";
+import { ExternalLink as ExternalLinkIcon, Pencil, Plus } from "lucide-vue-next";
+import { Trash2 } from "@/components/ui/icons";
 import type { ExternalLink } from "@/types";
 
 defineProps<{ opening?: boolean }>();
@@ -144,13 +146,9 @@ async function remove(l: ExternalLink) {
           >
             {{ t("common.cancel") }}
           </button>
-          <button
-            class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-3 py-1.5 text-[13px] text-white transition hover:bg-[var(--gosslan-primary-hover)] disabled:opacity-50"
-            :disabled="saving"
-            @click="saveDraft"
-          >
+          <PrimaryBtn :disabled="saving" @click="saveDraft">
             {{ t("common.save") }}
-          </button>
+          </PrimaryBtn>
         </div>
       </div>
 

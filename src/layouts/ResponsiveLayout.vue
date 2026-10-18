@@ -9,6 +9,7 @@ import { useShortcuts } from "@/composables/useShortcuts";
 import { useBackLayer } from "@/composables/useBackLayer";
 import type { UnlistenFn } from "@tauri-apps/api/event";
 import NavRail from "@/components/NavRail.vue";
+import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
 import SelfAvatar from "@/components/SelfAvatar.vue";
 import TitleBar from "@/components/TitleBar.vue";
 import ConversationList from "@/components/ConversationList.vue";
@@ -702,20 +703,17 @@ function onResizeEnd() {
                聊天列表页面，你可以做一个文字说明兜底，或者在样式上做一个空状态就行了。」
                ⇒ 与左侧会话列表**同一口径**：有好友 → 发起聊天（跳通讯录选人）；
                  无好友 → 添加好友；两种情况都配同一句说明文字。 -->
-          <button
+          <PrimaryBtn
             v-if="chat.friends.length"
-            class="tap-safe mt-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-4 py-2 text-sm font-medium text-white transition hover:bg-[var(--gosslan-primary-hover)]"
+            size="large"
+            class="mt-1"
             @click="navState = 'contacts'"
           >
             {{ t("conv.startChat") }}
-          </button>
-          <button
-            v-else
-            class="tap-safe mt-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-4 py-2 text-sm font-medium text-white transition hover:bg-[var(--gosslan-primary-hover)]"
-            @click="addFriendOpen = true"
-          >
+          </PrimaryBtn>
+          <PrimaryBtn v-else size="large" class="mt-1" @click="addFriendOpen = true">
             {{ t("common.addFriend") }}
-          </button>
+          </PrimaryBtn>
           <div class="text-xs opacity-70">
             {{ chat.friends.length ? t("conv.emptyHintHasFriends") : t("conv.emptyHintNoFriends") }}
           </div>

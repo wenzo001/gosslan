@@ -23,7 +23,8 @@ import StorageSection from "@/components/settings/StorageSection.vue";
 import SecuritySection from "@/components/settings/SecuritySection.vue";
 import AboutSection from "@/components/settings/AboutSection.vue";
 import ResetSection from "@/components/settings/ResetSection.vue";
-import { UserRound, Palette, SlidersHorizontal, Wifi, HardDrive, Lock, Info, Bell, FolderOpen, RotateCcw } from "lucide-vue-next";
+import { UserRound, Palette, SlidersHorizontal, Wifi, HardDrive, Lock, Info, Bell, FolderOpen } from "lucide-vue-next";
+import { RotateCcw } from "@/components/ui/icons";
 import { t } from "@/i18n";
 import { api } from "@/api";
 
@@ -87,7 +88,7 @@ const navItems = computed<{ key: SectionKey; label: string; icon: unknown }[]>((
 function onKeydown(e: KeyboardEvent) {
   if (e.key !== "Escape") return;
   // 有弹层（如清除数据二次确认）时先让弹层处理，避免一层 Esc 连窗口一起关掉。
-  if (document.querySelector(".vel-modal, [role='dialog']")) return;
+  if (document.querySelector("[role='dialog']")) return;
   void api.closeSettingsWindow().catch(() => {});
 }
 onMounted(() => window.addEventListener("keydown", onKeydown));

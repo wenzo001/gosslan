@@ -4,10 +4,12 @@ import { api } from "@/api";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { useAppStore } from "@/stores/useAppStore";
 import BaseModal from "@/components/BaseModal.vue";
+import DangerBtn from "@/components/ui/DangerBtn.vue";
 import SettingsGroup from "@/components/settings/SettingsGroup.vue";
 import SettingsRow from "@/components/settings/SettingsRow.vue";
 import { formatBytes } from "@/utils/format";
-import { Download, Trash2 } from "lucide-vue-next";
+import { Download } from "lucide-vue-next";
+import { Trash2 } from "@/components/ui/icons";
 import { t } from "@/i18n";
 import type { CacheInfo } from "@/types";
 
@@ -243,10 +245,9 @@ watch(
           class="rounded-[var(--gosslan-radius-md)] px-4 py-1.5 text-sm transition hover:bg-[var(--gosslan-hover)]"
           @click="cancelPolicyChange"
         >{{ t("common.cancel") }}</button>
-        <button
-          class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-1.5 text-sm text-white transition hover:bg-[var(--gosslan-danger-hover)]"
-          @click="confirmPolicyChange"
-        >{{ t("common.confirm") }}</button>
+        <DangerBtn size="large" @click="confirmPolicyChange">
+          {{ t("common.confirm") }}
+        </DangerBtn>
       </div>
     </div>
   </BaseModal>
@@ -264,10 +265,9 @@ watch(
           class="rounded-[var(--gosslan-radius-md)] px-4 py-1.5 text-sm transition hover:bg-[var(--gosslan-hover)]"
           @click="confirmClean = false"
         >{{ t("common.cancel") }}</button>
-        <button
-          class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-1.5 text-sm text-white transition hover:bg-[var(--gosslan-danger-hover)]"
-          @click="cleanNow"
-        >{{ t("settings.storage.clean.btn") }}</button>
+        <DangerBtn size="large" @click="cleanNow">
+          {{ t("settings.storage.clean.btn") }}
+        </DangerBtn>
       </div>
     </div>
   </BaseModal>

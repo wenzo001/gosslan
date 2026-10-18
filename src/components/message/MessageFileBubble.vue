@@ -5,7 +5,8 @@ import type { FileMeta } from "@/types";
 import { humanSize, rgba } from "@/utils/color";
 import { FILE_KIND_COLORS, FILE_KIND_ICONS, fileExt, fileKindOf } from "@/utils/fileKind";
 import { useAppStore } from "@/stores/useAppStore";
-import { Download, Loader2, RotateCw, X } from "lucide-vue-next";
+import { Download, RotateCw } from "lucide-vue-next";
+import { Loader2, X } from "@/components/ui/icons";
 
 const props = defineProps<{
   meta: FileMeta;

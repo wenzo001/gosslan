@@ -4,16 +4,13 @@ import { computed, ref, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import BaseModal from "@/components/BaseModal.vue";
+import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
 import { useMemberProfile } from "@/composables/useMemberProfile";
 import { avatarSeedFor } from "@/utils/avatarSeed";
 import {
-  TODO_STATUSES,
-  TODO_STATUS_CLASS,
-  TODO_STATUS_LABEL_KEY,
-  foldTodos,
-  isEffectivelyArchived,
-} from "@/utils/todos";
-import { ArrowRightLeft, Crown, ListChecks, Loader2, LogOut, Plus, UserMinus, X } from "lucide-vue-next";
+  TODO_STATUSES, TODO_STATUS_CLASS, TODO_STATUS_LABEL_KEY, foldTodos, isEffectivelyArchived, } from "@/utils/todos";
+import { ArrowRightLeft, Crown, ListChecks, LogOut, Plus, UserMinus } from "lucide-vue-next";
+import { Loader2, X } from "@/components/ui/icons";
 import type { Friend } from "@/types";
 
 const props = defineProps<{
@@ -223,14 +220,14 @@ async function confirmAction() {
             :placeholder="t('group.namePlaceholder')"
             @keydown.enter.prevent="saveName"
           />
-          <button
-            type="button"
-            class="tap-safe shrink-0 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-3 py-2 text-[13px] text-white transition hover:bg-[var(--gosslan-primary-hover)] disabled:opacity-50"
+          <PrimaryBtn
+            size="dense"
+            shrink
             :disabled="renaming || !nameDraft.trim() || nameDraft.trim() === group.name"
             @click="saveName"
           >
             {{ t("common.save") }}
-          </button>
+          </PrimaryBtn>
         </div>
         <p v-else class="px-3 py-2 text-sm text-[var(--gosslan-text)]">{{ group.name }}</p>
       </div>
@@ -249,14 +246,12 @@ async function confirmAction() {
             :placeholder="t('group.announcePlaceholder')"
           ></textarea>
           <div class="mt-2 flex justify-end">
-            <button
-              type="button"
-              class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-3 py-1.5 text-[13px] text-white transition hover:bg-[var(--gosslan-primary-hover)] disabled:opacity-50"
+            <PrimaryBtn
               :disabled="publishing || !announceDraft.trim()"
               @click="publishAnnouncement"
             >
               {{ currentAnnouncement ? t("group.announceEdit") : t("group.announcePublish") }}
-            </button>
+            </PrimaryBtn>
           </div>
         </template>
         <p
@@ -452,7 +447,7 @@ async function confirmAction() {
           {{ t("common.cancel") }}
         </button>
         <button
-          class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-3 py-1.5 text-sm text-white transition hover:bg-[var(--gosslan-danger-hover)]"
+          class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-3 py-1.5 text-sm text-white transition hover:bg-[var(--gosslan-danger-hover)]"
           @click="confirmAction"
         >
           {{ t("common.confirm") }}

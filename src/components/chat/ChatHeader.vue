@@ -1,14 +1,6 @@
 <script setup lang="ts">
-import {
-  ArrowUpCircle,
-  CloudDownload,
-  FolderOpen,
-  ListChecks,
-  Loader2,
-  Monitor,
-  Smartphone,
-  Users,
-} from "lucide-vue-next";
+import { ArrowUpCircle, CloudDownload, FolderOpen, ListChecks, Monitor, Smartphone, Users } from "lucide-vue-next";
+import { Loader2 } from "@/components/ui/icons";
 import BackArrow from "@/components/ui/BackArrow.vue";
 import UnreadBadge from "@/components/UnreadBadge.vue";
 import { computed } from "vue";

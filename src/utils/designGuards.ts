@@ -802,14 +802,13 @@ function lastTopLevelDefIndex(css: string, selector: string): number {
 export function checkStyleCascade(css: string): GuardIssue[] {
   const out: GuardIssue[] = [];
 
-  // ②-1 降级媒体查询必须晚于 .glass / .frost / .vel-modal 的顶级定义
+  // ②-1 降级媒体查询必须晚于 .glass / .frost 的顶级定义
   const baseIdx = Math.max(
     lastTopLevelDefIndex(css, "\\.glass"),
     lastTopLevelDefIndex(css, "\\.frost"),
-    lastTopLevelDefIndex(css, "\\.vel-modal"),
   );
   if (baseIdx < 0) {
-    out.push({ line: 0, message: "style.css 里找不到 .glass / .frost / .vel-modal 的定义" });
+    out.push({ line: 0, message: "style.css 里找不到 .glass / .frost 的定义" });
   }
   const blocks: [string, string][] = [
     ["降低透明度", "@media (prefers-reduced-transparency: reduce)"],
@@ -1991,6 +1990,80 @@ export function checkTodoCardImageLimit(bubbleSrc: string, estimatorSrc: string)
       message:
         "messageHeight.ts 必须在**代码**里引用 TODO_CARD_IMAGE_VISIBLE（注释里写不算 —— 行高算式要与可见张数同源）。",
     });
+  }
+  return out.sort((a, b) => a.line - b.line);
+}
+
+// ---------------- ㊴ 圆角只能走 token ----------------
+
+/**
+ * 检查静态 class 里的字面圆角值。
+ *
+ * 设计规范 §1.2：圆角只有一个来源（`--gosslan-radius-*`）。字面值 `rounded-lg`
+ * 无法全局调整，也看不出"这一档是给谁用的"；2026-10-18 复核时全仓只剩 2 处，
+ * 属于"随时会再长回来"的形状，所以收成机器判据。
+ *
+ * 判据：`rounded` / `rounded-t|r|b|l|tl|tr|br|bl` 后接
+ *   · 命名档位（sm/md/lg/xl/2xl/3xl）→ 报；
+ *   · 任意值（如 `rounded-[6px]`）→ 报；值是 `var(--gosslan-radius-*)` 时放行；
+ *   · `rounded-full` / `rounded-none` → 放行（规范明确允许）。
+ * HTML 注释先抹成空格（保留换行与行号），避免注释里的示例造成假红。
+ */
+const LITERAL_RADIUS_RE = /^rounded(?:-[trbl]{1,2})?-(sm|md|lg|xl|2xl|3xl|\[[^\]]+\])$/;
+/**
+ * 任何 `--gosslan-*` 变量都算 token。只认 `--gosslan-radius-*` 会误伤规范里
+ * **明确保留**的三个语义别名（`--gosslan-avatar-radius` / `--gosslan-item-radius` /
+ * `--gosslan-bubble-radius`，见 docs/design-guidelines.md §1.2 末行）。
+ */
+const TOKEN_RADIUS_RE = /^rounded(?:-[trbl]{1,2})?-\[var\(--gosslan-[a-z-]+\)\]$/;
+
+export function findLiteralRadiusClasses(src: string): GuardIssue[] {
+
+  const cleaned = src.replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, " "));
+  const out: GuardIssue[] = [];
+  for (const m of cleaned.matchAll(CLASS_ATTR_RE)) {
+    for (const cls of m[1].split(/\s+/).filter(Boolean)) {
+      if (!LITERAL_RADIUS_RE.test(cls) || TOKEN_RADIUS_RE.test(cls)) continue;
+      out.push({
+        line: lineAt(cleaned, m.index ?? 0),
+        message:
+          "圆角写了字面值 —— 一律用 `rounded-[var(--gosslan-radius-*)]`。" +
+          "字面值无法全局调整，也看不出这一档是给谁用的（docs/design-guidelines.md §1.2）；" +
+          "`rounded-full` / `rounded-none` 不受此限。",
+      });
+    }
+  }
+  return out.sort((a, b) => a.line - b.line);
+}
+
+// ---------------- ㊵ 高频语义图标只从 ui/icons.ts 引 ----------------
+
+/**
+ * 检查直接从 `lucide-vue-next` 导入的高频语义图标。
+ *
+ * 为什么：`components/ui/icons.ts` 是这 5 个语义的稳定入口；继续从 lucide 直接引
+ * 会让"换图标库 / 统一尺寸"又变成多点修改。只判 import 语句，不猜模板用法；
+ * 临时过渡可用文件级 `icon-entry-ok` 逃生阀。
+ */
+export function findDirectSemanticIconImports(src: string, names: string[]): GuardIssue[] {
+  if (src.includes("icon-entry-ok")) return [];
+  const out: GuardIssue[] = [];
+  const re = /^import\s*\{([\s\S]*?)\}\s*from\s*["']lucide-vue-next["'];?/gm;
+  for (const m of src.matchAll(re)) {
+    const imported = m[1]
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .map((s) => s.split(/\s+as\s+/)[0].trim());
+    for (const name of names) {
+      if (!imported.includes(name)) continue;
+      out.push({
+        line: lineAt(src, m.index ?? 0),
+        message:
+          `高频语义图标 \`${name}\` 必须从 \`@/components/ui/icons\` 引，` +
+          "不要直接引 `lucide-vue-next`（入口是换图标库/统一尺寸时唯一要改的地方）。",
+      });
+    }
   }
   return out.sort((a, b) => a.line - b.line);
 }
