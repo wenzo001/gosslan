@@ -12,7 +12,7 @@ import { shouldStartLongPress, shouldSwallowLongPressRelease } from "./longPress
  *      于是"命中就不起长按"的老判据让**按在文字上**（气泡绝大部分面积）彻底没反应，
  *      只有按到 `px-3 py-1.5` 那圈内边距才弹。
  * 2. 「弹出 sheet 之后一放手立马就缩回去了」
- *    ⇒ HeadlessUI `Dialog` 的 outside-click 在 document 捕获阶段挂 `touchend`，
+ *    ⇒ 当时的 HeadlessUI `Dialog` 在 document 捕获阶段挂 `touchend`（现在换 Reka 后走 pointerdown，
  *      而 touch 的 target 在 touchstart 就定死了（= 那条消息）⇒ 抬手被判成"点了外面"。
  *      必须在 window 捕获阶段 `preventDefault` 吞掉。
  *
@@ -84,16 +84,15 @@ test("操作面板：点任何一项都必须收起（引用/转发会跳到别�
   //    用户 2026-09-13 安卓实测：「点『引用』这个 sheet 应该自动隐藏；点『转发』也应该自动隐藏，
   //    因为它会跳转到界面内去操作聊天」—— 不在这一层统一收，就得每个入口各写一遍，漏一个就挡住新界面。
   const sheet = read("components/ActionSheet.vue");
-  const panelAt = sheet.indexOf("<DialogPanel");
-  assert.ok(panelAt > 0, "ActionSheet 里找不到 <DialogPanel>（模板结构变了？）");
-  // ⚠️ 只看**开标签本身**：整个 `<DialogPanel>…</DialogPanel>` 里还含"取消"按钮，
-  //    它自己也有 `@click=\"emit('close')\"` —— 用整段去断言的话，把面板上的收起删掉也测不出来
-  //    （这个空转正是 `verify-guards.py` 抓出来的）。
+  const panelAt = sheet.indexOf("<DialogContent");
+  assert.ok(panelAt > 0, "ActionSheet 里找不到 <DialogContent>（弹层原语换了？）");
+  // ⚠️ 只看**开标签本身**：整个对话框里还含"取消"按钮，它自己也有 `@click=\"emit('close')\"`
+  //    —— 用整段去断言的话，把面板上的收起删掉也测不出来（这个空转正是 `verify-guards.py` 抓出来的）。
   const panelOpenTag = sheet.slice(panelAt, sheet.indexOf(">", panelAt) + 1);
   assert.match(
     panelOpenTag,
     /@click="emit\('close'\)"/,
-    "ActionSheet 的 <DialogPanel> 开标签必须在点击时收起 —— 否则点完『引用/转发/保存图片』面板还挂在那儿",
+    "ActionSheet 的 DialogContent 开标签必须在点击时收起 —— 否则点完『引用/转发/保存图片』面板还挂在那儿",
   );
 
   // ② 引用 / 转发另加一道保险：它们是"跳到别处去操作"（引用草稿 / 转发弹窗），
@@ -134,8 +133,8 @@ test("MessageItem：面板展开期间必须在 window 捕获阶段吞掉抬手�
   assert.match(
     item,
     /window\.addEventListener\(\s*"touchend",\s*swallowLongPressRelease,\s*\{\s*capture:\s*true/,
-    "必须挂 window 的**捕获**阶段：HeadlessUI 的 outside-click 挂的是 document 捕获，" +
-      "同阶段按注册顺序执行（它先注册），只有 window 才抢得到它前面",
+    "必须挂 window 的**捕获**阶段：document 上的同类监听与它同阶段时按注册顺序执行（库先注册），" +
+      "只有 window 捕获才抢得到它前面",
   );
   assert.match(
     item,
@@ -146,7 +145,7 @@ test("MessageItem：面板展开期间必须在 window 捕获阶段吞掉抬手�
     item.indexOf("function swallowLongPressRelease"),
     item.indexOf("function swallowLongPressRelease") + 700,
   );
-  assert.match(fn, /e\.preventDefault\(\)/, "吞掉的动作就是 preventDefault（HeadlessUI 判据里有 `if (e.defaultPrevented) return`）");
+  assert.match(fn, /e\.preventDefault\(\)/, "吞掉的动作就是 preventDefault（按 defaultPrevented 让路的实现都吃这一下）");
   assert.match(fn, /shouldSwallowLongPressRelease\(\{/, "吞不吞要走纯判据，不许写死 true");
   assert.ok(
     !/if \(textSelecting\.value\) return;[\s\S]{0,200}closest\("\.gosslan-selectable"\)\) return;/.test(item),

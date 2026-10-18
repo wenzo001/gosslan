@@ -87,6 +87,54 @@ pub fn save_data_file(base64_data: String, destination: String) -> Result<(), St
     Ok(())
 }
 
+/// 按 `msg_id` / `cid` 把本机媒体另存到用户选择的目的地。
+///
+/// 与 `save_data_file` 的区别：这条**不经过 base64 IPC** —— 源文件本来就在后端
+/// （接收落盘 / 自选发送 / content store），前端只需要给出"哪一条"和"存到哪"。
+/// 大图另存时省掉 JS 堆里的 base64 与 JSON 载荷；Android 的 `content://` 目的地
+/// 复用 `copy_file` 已经验证过的 ContentResolver 分支。
+#[tauri::command(async)]
+pub async fn save_media_as(
+    state: State<'_, Arc<AppState>>,
+    msg_id: Option<String>,
+    cid: Option<String>,
+    destination: String,
+) -> Result<(), String> {
+    let s = state.inner();
+    let source = if let Some(id) = msg_id.as_deref() {
+        match resolve_media_path(s, id) {
+            MediaPath::Present(p) => *p,
+            MediaPath::Unknown(e) => return Err(e),
+            MediaPath::Gone => return Err("文件不存在".to_string()),
+        }
+    } else if let Some(cid) = cid.as_deref() {
+        let path = {
+            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+            crate::content::store::find_local_path(&dbc, cid)
+        }
+        .ok_or_else(|| "文件不存在".to_string())?;
+        let file = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
+        if !file.is_file() {
+            return Err("文件不存在".to_string());
+        }
+        file
+    } else {
+        return Err("缺少图片来源".to_string());
+    };
+
+    #[cfg(target_os = "android")]
+    {
+        if destination.starts_with("content://") {
+            return crate::android_open::save_path(&source.to_string_lossy(), &destination);
+        }
+    }
+    let (src, dst) = (source, destination);
+    tokio::task::spawn_blocking(move || std::fs::copy(&src, &dst).map_err(|e| e.to_string()))
+        .await
+        .unwrap_or_else(|e| Err(format!("另存任务被线程池中断: {e}")))?;
+    Ok(())
+}
+
 /// 解析 `msg_id` 指向的本地媒体文件的结果。
 ///
 /// 由 `read_file_preview` 与 `media_present` 共用，避免出现第二份路径解析实现

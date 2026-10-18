@@ -7,7 +7,7 @@
  * `useMemberProfile`，与群成员面板一致。
  */
 import { computed, ref, watch } from "vue";
-import { Check } from "lucide-vue-next";
+import { Check } from "@/components/ui/icons";
 import BaseModal from "@/components/BaseModal.vue";
 import SelfAvatar from "@/components/SelfAvatar.vue";
 import { useChatStore } from "@/stores/useChatStore";

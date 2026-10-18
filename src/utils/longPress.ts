@@ -61,18 +61,18 @@ export function shouldStartLongPress(c: LongPressContext): boolean {
 /**
  * 抬手指那一下要不要**吞掉**（`preventDefault`）。
  *
- * 为什么（用户 2026-09-13 Android）：「弹出 sheet 之后**一放手立马就缩回去了**」。
- * 面板用的是 HeadlessUI `Dialog`，它的 `useOutsideClick` 在 **document 捕获阶段** 挂了
+ * 历史根因（HeadlessUI 1.x，用户 2026-09-13 Android）：「弹出 sheet 之后**一放手立马就缩回去了**」。
+ * 当时面板用的是 HeadlessUI `Dialog`，它的 `useOutsideClick` 在 **document 捕获阶段** 挂了
  * `touchend`，判据是"`touchend` 的 target 在不在对话框容器里"；而 touch 事件的 target
  * 在 **`touchstart` 那一刻就固定**成那条消息了 ⇒ 抬手必被判成"点了外面" ⇒ `@close`。
- * （它的 `click` 分支在移动端被 `isMobile()` 短路掉了，所以只有 `touchend` 这条路径。）
  *
- * 处理办法：面板展开期间，在 **window 捕获阶段**拦下这次 `touchend` 并 `preventDefault()`
- * —— HeadlessUI 的判据里有 `if (e.defaultPrevented) return`，于是它不再关面板；
- * 顺带也杀掉了这次 tap 的合成 `click`（不会误触气泡里的链接）。
+ * 现在面板是 Reka UI 的 Dialog：outside-click 走 document 上的 `pointerdown`（冒泡），
+ * 抬手只产生 pointerup / touchend ⇒ 上面那条触发路径已经不存在。监听仍然保留，因为它是
+ * **不依赖弹层库实现**的一道兜底：顺手杀掉这次 tap 的合成 `click`（不会误触气泡里的链接），
+ * 将来若某层改回 click / touchend 判定，这里仍然挡得住。
  *
- * ⚠️ 必须挂 `window`：`document` 上的捕获监听是和它同阶段、同目标注册的，先注册的先跑，
- * 我们后注册的一定排在 HeadlessUI 后面；而捕获路径是 `window → document → … → target`。
+ * ⚠️ 必须挂 `window` 捕获：`document` 上的捕获监听与它同阶段、同目标，先注册的先跑；
+ * 我们后注册的一定排在弹层库后面，而捕获路径是 `window → document → … → target`。
  */
 export function shouldSwallowLongPressRelease(c: {
   /** 长按那根手指还按着（面板就是这次按压弹出来的）。 */

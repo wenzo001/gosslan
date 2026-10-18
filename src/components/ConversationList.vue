@@ -1,6 +1,13 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import {
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuPortal,
+  DropdownMenuRoot,
+  DropdownMenuTrigger,
+} from "reka-ui";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { useSearchKeyword } from "@/composables/useSearchKeyword";
@@ -10,8 +17,7 @@ import ConversationListItem from "@/components/conversation/ConversationListItem
 import FriendListItem from "@/components/conversation/FriendListItem.vue";
 import FriendContextMenu from "@/components/conversation/FriendContextMenu.vue";
 import ConversationContextMenu from "@/components/conversation/ConversationContextMenu.vue";
-import BaseModal from "@/components/BaseModal.vue";
-import DangerBtn from "@/components/ui/DangerBtn.vue";
+import ConfirmDialog from "@/components/ui/ConfirmDialog.vue";
 import UnreadBadge from "@/components/UnreadBadge.vue";
 import { APP_ACTION } from "@/api";
 import { groupByInitial } from "@/utils/nameGroup";
@@ -117,6 +123,7 @@ const friendGroups = computed(() =>
 /**
  * 加号下拉菜单展开态：点击外部自动收起；并参与全局浮层互斥
  * ——右键消息菜单 / 已读弹层展开时会自动收起它（右键不触发 click，靠点击关闭会漏）。
+ * 菜单的开关（点外部/Esc/选中）、焦点移入与归还交给 Reka DropdownMenu；这里只保留互斥注册。
  */
 const plusPopup = useExclusivePopup("plus-menu");
 const plusOpen = ref(false);
@@ -124,68 +131,16 @@ const plusOpen = ref(false);
 watch(plusPopup.isActive, (mine) => {
   if (!mine && plusOpen.value) plusOpen.value = false;
 });
-watch(() => props.view, () => closePlus());
-
-function togglePlus() {
-  if (plusOpen.value) {
-    closePlus();
-    return;
-  }
-  plusOpen.value = true;
-  plusPopup.claim();
-  // 打开即把焦点移进第一条，键盘可以接着 ↑/↓ 或 Enter
-  void nextTick(() => {
-    plusMenuRef.value?.querySelector<HTMLElement>(".gosslan-menu-item:not([disabled])")?.focus();
-  });
-}
-
-function closePlus() {
-  plusPopup.release();
+watch(() => props.view, () => {
   plusOpen.value = false;
-  // 关闭后把焦点还给「+」按钮（HIG：浮层关闭焦点不丢）。只在这两种情况下还：
-  // 焦点还在菜单里，或已经掉到 body —— 否则会抢走鼠标刚点到的行/输入框。
-  const active = document.activeElement;
-  const stuck = active === document.body || (!!plusMenuRef.value && plusMenuRef.value.contains(active));
-  if (stuck) void nextTick(() => plusBtn.value?.focus());
-}
+  plusPopup.release();
+});
 
-/**
- * 「+」下拉的键盘可达（HIG *Full Keyboard Access*）：打开即聚焦第一条，
- * ↑/↓ 循环、Esc 关闭。与右键菜单（`ContextMenu.vue`）同一套交互约定。
- */
-function onPlusMenuKey(e: KeyboardEvent) {
-  if (e.key === "Escape") {
-    e.preventDefault();
-    closePlus();
-    return;
-  }
-  const list = Array.from(
-    plusMenuRef.value?.querySelectorAll<HTMLElement>(".gosslan-menu-item:not([disabled])") ?? [],
-  );
-  if (!list.length) return;
-  const idx = list.indexOf(document.activeElement as HTMLElement);
-  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-    e.preventDefault();
-    const delta = e.key === "ArrowDown" ? 1 : -1;
-    const next = idx < 0 ? (delta > 0 ? 0 : list.length - 1) : (idx + delta + list.length) % list.length;
-    list[next]?.focus();
-  } else if (e.key === "Home") {
-    e.preventDefault();
-    list[0]?.focus();
-  } else if (e.key === "End") {
-    e.preventDefault();
-    list[list.length - 1]?.focus();
-  }
+function onPlusOpen(open: boolean) {
+  plusOpen.value = open;
+  if (open) plusPopup.claim();
+  else plusPopup.release();
 }
-
-const plusBtn = ref<HTMLButtonElement | null>(null);
-const plusMenuRef = ref<HTMLElement | null>(null);
-
-function onDocClickForPlus() {
-  closePlus();
-}
-onMounted(() => document.addEventListener("click", onDocClickForPlus));
-onUnmounted(() => document.removeEventListener("click", onDocClickForPlus));
 
 // 聚焦搜索框（⌘F / Ctrl+F 与 macOS 菜单「会话 → 搜索」共用同一动作）
 const searchInput = ref<HTMLInputElement | null>(null);
@@ -404,40 +359,41 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
         />
       </div>
       <div class="relative flex shrink-0 items-center">
-        <!-- 微信式：单个加号，点开下拉（添加好友 / 创建群聊） -->
-        <button
-          ref="plusBtn"
-          class="tap-safe flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-list-hover)]"
-          :title="t('conv.addTitle')" :aria-label="t('conv.addTitle')"
-          :aria-expanded="plusOpen"
-          aria-haspopup="menu"
-          @click.stop="togglePlus"
-        >
-          <Plus class="h-[18px] w-[18px]" />
-        </button>
-        <!-- 右上角「+」下拉（用户 2026-09-12 晚 #9：「消息页右上角加号的弹出的下拉弹窗，
-             参考微信这边只是暗色模式；亮色就是配色的话，按现有的配色，但是样式参考微信」）
-             ⇒ 结构与外观统一走 `.gosslan-menu*`（与右键菜单同一套），
-             条目带图标、32px 行高、6px 面板内边距 —— 微信式。 -->
-        <div
-          v-if="plusOpen"
-          ref="plusMenuRef"
-          class="frost gosslan-menu absolute right-0 top-8 z-30"
-          role="menu"
-          aria-orientation="vertical"
-          @keydown="onPlusMenuKey"
-        >
-          <button role="menuitem" class="gosslan-menu-item" @click.stop="closePlus(); emit('open-add-friend')">
-            <UserPlus />
-            {{ t("common.addFriend") }}
-          </button>
-          <button role="menuitem" class="gosslan-menu-item" @click.stop="closePlus(); emit('open-group')">
-            <UsersRound />
-            {{ t("common.createGroup") }}
-          </button>
-          <!-- 「和自己聊天」入口已从 + 菜单移除（用户 2026-09-17）：通讯录里已有「自己」
-               （与好友同一条渲染路径、点击看自己的资料页），两个入口重复了。 -->
-        </div>
+        <!-- 微信式：单个加号，点开下拉（添加好友 / 创建群聊）。
+             开关/键盘/点外部由 Reka DropdownMenu 承担；互斥仍走全局 plusPopup。 -->
+        <DropdownMenuRoot :open="plusOpen" :modal="false" @update:open="onPlusOpen">
+          <DropdownMenuTrigger as-child>
+            <button
+              class="tap-safe flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-list-hover)]"
+              :title="t('conv.addTitle')" :aria-label="t('conv.addTitle')"
+              @click.stop
+            >
+              <Plus class="h-[18px] w-[18px]" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuPortal>
+            <!-- 右上角「+」下拉（用户 2026-09-12 晚 #9：「消息页右上角加号的弹出的下拉弹窗，
+                 参考微信这边只是暗色模式；亮色就是配色的话，按现有的配色，但是样式参考微信」）
+                 ⇒ 结构与外观统一走 `.gosslan-menu*`（与右键菜单同一套）。 -->
+            <DropdownMenuContent
+              align="end"
+              :side-offset="0"
+              :collision-padding="8"
+              class="frost gosslan-menu z-[80]"
+            >
+              <DropdownMenuItem class="gosslan-menu-item" @select="emit('open-add-friend')">
+                <UserPlus />
+                {{ t("common.addFriend") }}
+              </DropdownMenuItem>
+              <DropdownMenuItem class="gosslan-menu-item" @select="emit('open-group')">
+                <UsersRound />
+                {{ t("common.createGroup") }}
+              </DropdownMenuItem>
+              <!-- 「和自己聊天」入口已从 + 菜单移除（用户 2026-09-17）：通讯录里已有「自己」
+                   （与好友同一条渲染路径、点击看自己的资料页），两个入口重复了。 -->
+            </DropdownMenuContent>
+          </DropdownMenuPortal>
+        </DropdownMenuRoot>
       </div>
     </div>
 
@@ -588,53 +544,39 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
     />
 
     <!-- 二次确认：删除好友（保留聊天记录，可重新添加） -->
-    <BaseModal
+    <ConfirmDialog
       :open="pendingRemoveFriend !== null"
       :title="t('common.deleteFriend')"
-      @close="pendingRemoveFriend = null"
+      :confirm-label="t('common.deleteFriend')"
+      @cancel="pendingRemoveFriend = null"
+      @confirm="confirmDeleteFriend"
     >
-      <div class="space-y-3">
-        <p class="text-sm text-[var(--gosslan-text)]">
-          {{ t("conv.removeFriend.bodyPrefix") }}<span class="font-medium text-[var(--gosslan-danger-ink)]">{{ pendingRemoveFriend?.nickname }}</span>{{ t("conv.removeFriend.bodySuffix") }}
-        </p>
-        <ul class="space-y-1 text-xs text-[var(--gosslan-text-2)]">
-          <li>· {{ t("conv.removeFriend.item1") }}</li>
-          <li>· {{ t("conv.removeFriend.item2") }}</li>
-          <li>· {{ t("conv.removeFriend.item3") }}</li>
-        </ul>
-        <div class="flex justify-end gap-2 pt-2">
-          <button
-            class="rounded-[var(--gosslan-radius-md)] px-4 py-1.5 text-sm transition hover:bg-[var(--gosslan-hover)]"
-            @click="pendingRemoveFriend = null"
-          >{{ t("common.cancel") }}</button>
-          <DangerBtn size="large" @click="confirmDeleteFriend">
-            {{ t("common.deleteFriend") }}
-          </DangerBtn>
-        </div>
-      </div>
-    </BaseModal>
+      <p class="text-sm text-[var(--gosslan-text)]">
+        {{ t("conv.removeFriend.bodyPrefix") }}<span class="font-medium text-[var(--gosslan-danger-ink)]">{{ pendingRemoveFriend?.nickname }}</span>{{ t("conv.removeFriend.bodySuffix") }}
+      </p>
+      <ul class="space-y-1 text-xs text-[var(--gosslan-text-2)]">
+        <li>· {{ t("conv.removeFriend.item1") }}</li>
+        <li>· {{ t("conv.removeFriend.item2") }}</li>
+        <li>· {{ t("conv.removeFriend.item3") }}</li>
+      </ul>
+    </ConfirmDialog>
 
     <!-- 二次确认：删除聊天记录（仅本地清理，不影响对方） -->
-    <BaseModal :open="pendingDelete !== null" :title="t('conv.delete')" @close="pendingDelete = null">
-      <div class="space-y-3">
-        <p class="text-sm text-[var(--gosslan-text)]">
-          {{ t("conv.delete.bodyPrefix") }}<span class="font-medium text-[var(--gosslan-danger-ink)]">{{ pendingDelete?.name }}</span>{{ t("conv.delete.bodySuffix") }}
-        </p>
-        <ul class="space-y-1 text-xs text-[var(--gosslan-text-2)]">
-          <li>· {{ t("conv.delete.item1") }}</li>
-          <li>· {{ t("conv.delete.item2") }}</li>
-          <li>· {{ t("conv.delete.item3") }}</li>
-        </ul>
-        <div class="flex justify-end gap-2 pt-2">
-          <button
-            class="rounded-[var(--gosslan-radius-md)] px-4 py-1.5 text-sm transition hover:bg-[var(--gosslan-hover)]"
-            @click="pendingDelete = null"
-          >{{ t("common.cancel") }}</button>
-          <DangerBtn size="large" @click="confirmDeleteConv">
-            {{ t("common.delete") }}
-          </DangerBtn>
-        </div>
-      </div>
-    </BaseModal>
+    <ConfirmDialog
+      :open="pendingDelete !== null"
+      :title="t('conv.delete')"
+      :confirm-label="t('common.delete')"
+      @cancel="pendingDelete = null"
+      @confirm="confirmDeleteConv"
+    >
+      <p class="text-sm text-[var(--gosslan-text)]">
+        {{ t("conv.delete.bodyPrefix") }}<span class="font-medium text-[var(--gosslan-danger-ink)]">{{ pendingDelete?.name }}</span>{{ t("conv.delete.bodySuffix") }}
+      </p>
+      <ul class="space-y-1 text-xs text-[var(--gosslan-text-2)]">
+        <li>· {{ t("conv.delete.item1") }}</li>
+        <li>· {{ t("conv.delete.item2") }}</li>
+        <li>· {{ t("conv.delete.item3") }}</li>
+      </ul>
+    </ConfirmDialog>
   </div>
 </template>

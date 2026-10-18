@@ -939,6 +939,24 @@ export function todoRowsFor(rows: TodoRowsByConv, convId: string): MessageRecord
 }
 
 /**
+ * 任务行首屏的三态（看板 / 任务弹窗 / 成员面板共用一份判据）。
+ *
+ * - 读到过 ⇒ `ready`：**即使**失败记录还留着（成功过就以数据为准，错误不该盖住内容）；
+ * - 没读到 + 有失败记录 ⇒ `error`（带原因，调用方给重试入口）；
+ * - 没读到 + 没有记录 ⇒ `loading`（"还没开始/正在读"都算，调用方不许显示空态）。
+ */
+export type TodoRowsLoadState = { status: "loading" | "ready" | "error"; error: string };
+export function todoRowsLoadState(
+  rows: TodoRowsByConv,
+  errors: Record<string, string>,
+  convId: string,
+): TodoRowsLoadState {
+  if (isTodoRowsLoaded(rows, convId)) return { status: "ready", error: "" };
+  const error = errors[convId] ?? "";
+  return error ? { status: "error", error } : { status: "loading", error: "" };
+}
+
+/**
  * 乐观更新（自己刚发的、或事件里收到的任务行）落在**同一份**源上。
  *
  * 两条规矩都要：

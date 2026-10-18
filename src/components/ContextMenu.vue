@@ -1,135 +1,92 @@
 <script setup lang="ts">
-/* focus-ring-ok:file：本组件的**容器**带 `outline-none`（`role="menu"` / `role="dialog"` +
-   `tabindex="-1"`，只用于把焦点接进来），焦点指示由内部条目/控件承担；
-   给整块容器画 2px 环在全屏遮罩/弹出菜单上只会变成噪声。
-   ⇒ 按 `designGuards` ⑦ 的约定，用文件级逃生阀显式声明，而不是靠"没人发现"。 */
+/* focus-ring-ok:file：菜单容器只用来把焦点接进来（`role="menu"` + `tabindex="-1"`），
+   焦点指示由内部条目承担；给整块弹层画 2px 环只会变成噪声。按 `designGuards` ⑦ 的文件级口径声明。 */
 /**
  * 右键/上下文菜单的**统一外壳**（用户需求 2026-09-12 晚 #4：「全局的右键菜单样式尽量保持统一」）。
  *
- * 它只负责"怎么弹"这一层：Teleport 到 body、贴边内收、点外部/Esc 关闭、阻止冒泡与二次右键。
- * 「长什么样」全部交给 `style.css` 的 `.gosslan-menu*` 类 —— 这样任何菜单（包括锚定在按钮上的
- * 下拉）都能共用同一套外观，不必各自复刻内边距/圆角/悬停色（那正是此前四处不一致的来源）。
+ * 弹层内核（贴边翻转、点外部/Esc 关闭、焦点移入/归还、↑↓/Home/End/首字母跳转）全部交给 Reka UI 的
+ * DropdownMenu：它接受一个虚拟锚点 `reference`，所以「在鼠标坐标处弹出」不需要自建定位与键盘循环。
+ * 本组件只保留业务侧的坐标入参、Gosslan 的 `.gosslan-menu*` 外观和关闭后的焦点归还。
  *
- * 为什么要 Teleport：菜单挂在触发元素内部时会被父级的 `overflow: hidden`（会话列表就是）
- * 裁掉，也会被 `z-index` 层级困住。
+ * ⚠️ 菜单内容**不能**再写 `fixed`：定位层是 Reka 的 popper wrapper（它才量尺寸和做翻转/内收），
+ * `fixed` 子元素不贡献父级尺寸 ⇒ wrapper 量到 0×0，贴边翻转会静默失效（实测踩过）。
  *
- * ## 键盘可达（HIG *Full Keyboard Access*）
- * 菜单可以用键盘唤起（Shift+F10 / 菜单键 → `contextmenu` 事件），所以它也必须能用键盘操作：
- * 打开时把焦点移进菜单，↑/↓ 在条目间移动、Home/End 跳首尾、Esc 关闭并把焦点还给触发元素。
- * 条目本身由调用方写成 `<button class="gosslan-menu-item">`（见各 `*ContextMenu.vue`），
- * 这里按同一个类名收集条目 —— 用类名而不是 `button` 标签，是为了不把菜单里的说明文字
- * / 分隔线误当成条目。
+ * 条目必须由调用方写成 `<DropdownMenuItem class="gosslan-menu-item" @select="…">`（见各
+ * `*ContextMenu.vue`）；说明文字/分隔线不进菜单集合，不参与键盘导航。
  */
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
+import { nextTick, onMounted, ref } from "vue";
+import {
+  DropdownMenuContent,
+  DropdownMenuPortal,
+  DropdownMenuRoot,
+} from "reka-ui";
 
-const props = withDefaults(
-  defineProps<{
-    x: number;
-    y: number;
-    /** 预估高度，用于贴近屏幕底部时向上收（不必精确，宁大勿小）。 */
-    estimatedHeight?: number;
-  }>(),
-  { estimatedHeight: 260 },
-);
+const props = defineProps<{ x: number; y: number }>();
 
 const emit = defineEmits<{ (e: "close"): void }>();
 
-/** 贴边内收：菜单宽按 184px（`.gosslan-menu` 最小宽 + 余量）估。 */
-const pos = computed(() => ({
-  left: `${Math.max(8, Math.min(props.x, window.innerWidth - 192))}px`,
-  top: `${Math.max(8, Math.min(props.y, window.innerHeight - props.estimatedHeight))}px`,
-}));
+/** 鼠标位置作为零尺寸锚点：`side=bottom`/`align=start` 时菜单左上角落在 (x, y)。 */
+const anchor = {
+  getBoundingClientRect: () => ({
+    width: 0,
+    height: 0,
+    x: props.x,
+    y: props.y,
+    left: props.x,
+    right: props.x,
+    top: props.y,
+    bottom: props.y,
+  }),
+};
 
-const rootRef = ref<HTMLElement | null>(null);
+const contentRef = ref<{ $el?: Element } | null>(null);
 /** 打开前的焦点位置：关闭后还回去，避免键盘用户"焦点丢失"（落到 body）。 */
 let restoreFocus: HTMLElement | null = null;
+let closing = false;
 
-/** 当前可聚焦的菜单条目（`.gosslan-menu-item` 与调用方模板约定，见文件头注释）。 */
-function items(): HTMLElement[] {
-  const root = rootRef.value;
-  if (!root) return [];
-  return Array.from(root.querySelectorAll<HTMLElement>(".gosslan-menu-item:not([disabled])"));
-}
+onMounted(() => {
+  restoreFocus = document.activeElement as HTMLElement | null;
+});
 
-/** ↑/↓ 循环移动焦点；当前焦点不在菜单内时，向下从第一条开始、向上从最后一条开始。 */
-function moveFocus(delta: 1 | -1) {
-  const list = items();
-  if (!list.length) return;
-  const idx = list.indexOf(document.activeElement as HTMLElement);
-  const next = idx < 0 ? (delta > 0 ? 0 : list.length - 1) : (idx + delta + list.length) % list.length;
-  list[next]?.focus();
-}
-
-// 点击菜单外 / Esc 关闭。菜单根节点 `@click.stop`，所以内部点击不会触发关闭。
-function onDocClick() {
+function close() {
+  if (closing) return;
+  closing = true;
+  const back = restoreFocus;
+  restoreFocus = null;
+  const active = document.activeElement;
+  const menu = contentRef.value?.$el;
+  // 只在焦点还留在菜单里（键盘选择）或已经掉到 body 上（鼠标点条目）时归还，
+  // 以免抢走用户用鼠标点到的其它元素。
+  const stuck = active === document.body || (!!menu && menu.contains(active));
   emit("close");
-}
-function onWindowKey(e: KeyboardEvent) {
-  // Esc 在 window 上也听一遍：焦点若因某些操作跑出菜单（例如条目里再开面板），仍能关掉。
-  if (e.key === "Escape") emit("close");
-}
-/** 菜单内的键盘导航（焦点在菜单里时才会走到这里）。 */
-function onMenuKey(e: KeyboardEvent) {
-  switch (e.key) {
-    case "ArrowDown":
-      e.preventDefault();
-      moveFocus(1);
-      break;
-    case "ArrowUp":
-      e.preventDefault();
-      moveFocus(-1);
-      break;
-    case "Home": {
-      e.preventDefault();
-      items()[0]?.focus();
-      break;
-    }
-    case "End": {
-      e.preventDefault();
-      const list = items();
-      list[list.length - 1]?.focus();
-      break;
-    }
-    default:
-      break;
+  if (stuck && back && document.body.contains(back)) {
+    nextTick(() => back.focus({ preventScroll: true }));
   }
 }
 
-onMounted(() => {
-  document.addEventListener("click", onDocClick);
-  window.addEventListener("keydown", onWindowKey);
-  // 打开即把焦点移进菜单（没有条目时落在容器上），这样 ↑/↓ 立刻可用
-  restoreFocus = document.activeElement as HTMLElement | null;
-  void nextTick(() => {
-    (items()[0] ?? rootRef.value)?.focus();
-  });
-});
-onBeforeUnmount(() => {
-  document.removeEventListener("click", onDocClick);
-  window.removeEventListener("keydown", onWindowKey);
-  // 关闭后把焦点还给触发元素：仅当焦点还留在菜单里、或已经掉到 body 上时才还，
-  // 以免抢走用户用鼠标点到的其它元素（鼠标点击不会给 div 聚焦，所以这里通常是必要的）。
-  const active = document.activeElement;
-  const stuck = active === document.body || (!!rootRef.value && rootRef.value.contains(active));
-  if (stuck) restoreFocus?.focus?.();
-  restoreFocus = null;
-});
+function onOpenChange(open: boolean) {
+  if (!open) close();
+}
 </script>
 
 <template>
-  <Teleport to="body">
-    <div
-      ref="rootRef"
-      class="frost gosslan-menu fixed z-[70] select-none outline-none"
-      :style="pos"
-      role="menu"
-      aria-orientation="vertical"
-      tabindex="-1"
-      @click.stop
-      @contextmenu.prevent
-      @keydown="onMenuKey"
-    >
-      <slot />
-    </div>
-  </Teleport>
+  <DropdownMenuRoot :open="true" :modal="false" @update:open="onOpenChange">
+    <DropdownMenuPortal>
+      <DropdownMenuContent
+        ref="contentRef"
+        :reference="anchor"
+        side="bottom"
+        align="start"
+        :side-offset="0"
+        :align-offset="0"
+        :collision-padding="8"
+        class="frost gosslan-menu z-[70] select-none outline-none"
+        aria-orientation="vertical"
+        @click.stop
+        @contextmenu.prevent
+      >
+        <slot />
+      </DropdownMenuContent>
+    </DropdownMenuPortal>
+  </DropdownMenuRoot>
 </template>

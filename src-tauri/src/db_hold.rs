@@ -300,6 +300,7 @@ mod tests {
     fn waiting_for_the_lock_is_not_counted_as_holding_it() {
         let db = DbLock::new(0u32);
         db.set_slow_threshold_ms(30);
+        let (held_tx, held_rx) = std::sync::mpsc::channel();
         let (about_to_wait_tx, about_to_wait_rx) = std::sync::mpsc::channel();
         let (measured_tx, measured_rx) = std::sync::mpsc::channel();
         let (released_tx, released_rx) = std::sync::mpsc::channel();
@@ -310,14 +311,19 @@ mod tests {
             // `db_ref` 是共享引用（Copy），搬两次不冲突。
             scope.spawn(move || {
                 let held = db_ref.lock().unwrap_or_else(|e| e.into_inner());
-                // 只在"乙已经要去等"之后再多握一会儿 ⇒ 乙的排队时长由这段握住的时间决定，
-                // 而不是靠两边各睡一个固定时长去撞时间窗。
+                // ⚠️ 必须先让乙看到"甲已经握住"再收乙的信号。旧写法让乙**先**发信号、
+                // **后**调 lock()：系统忙时乙可能抢在甲之前拿到锁，等待自然量到 0ms，
+                // 这不是产品缺陷而是测试自己的启动竞态（2026-10-18 实测红过一次）。
+                held_tx.send(()).expect("乙还在");
                 about_to_wait_rx.recv().expect("乙没到位，甲不该空握");
-                std::thread::sleep(Duration::from_millis(120));
+                std::thread::sleep(Duration::from_millis(200));
                 drop(held);
                 released_tx.send(()).expect("主线程还在收");
             });
             scope.spawn(move || {
+                held_rx.recv().expect("甲没先握住，这条测量没有判别力");
+                // 甲握着时 try_lock 必须失败 ⇒ 这一刻起乙再去 lock() 一定是在排队。
+                assert!(db_ref.try_lock().is_err(), "甲握着时 try_lock 必须拿不到");
                 about_to_wait_tx.send(()).expect("甲还在");
                 let g = db_ref.lock().unwrap_or_else(|e| e.into_inner());
                 let reading = (g.wait_ms(), g.held_ms());
@@ -327,7 +333,7 @@ mod tests {
             });
             let (wait, hold) = measured_rx.recv().expect("乙的读数必须取回来");
             released_rx.recv().expect("甲的持锁区间没结束");
-            assert!(wait >= 50, "乙实打实排了队，实得等待 {wait}ms");
+            assert!(wait >= 100, "乙实打实排了队，实得等待 {wait}ms");
             assert!(
                 hold <= 10,
                 "乙拿到锁之后什么都没做，这段不许被读成持有 {hold}ms"

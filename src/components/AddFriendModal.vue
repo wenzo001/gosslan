@@ -10,7 +10,8 @@ import { api } from "@/api";
 import SettingsToggle from "@/components/settings/SettingsToggle.vue";
 import BaseModal from "@/components/BaseModal.vue";
 import { avatarSeedFor } from "@/utils/avatarSeed";
-import { Check, UserPlus } from "lucide-vue-next";
+import { UserPlus } from "lucide-vue-next";
+import { Check } from "@/components/ui/icons";
 import { X } from "@/components/ui/icons";
 
 const props = defineProps<{ open: boolean }>();

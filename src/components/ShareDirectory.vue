@@ -6,7 +6,7 @@ import { useChatStore } from "@/stores/useChatStore";
 import { api } from "@/api";
 import BaseModal from "@/components/BaseModal.vue";
 import { Download, Folder, RefreshCw } from "lucide-vue-next";
-import { humanSize } from "@/utils/color";
+import { formatBytes } from "@/utils/format";
 import { reportError } from "@/utils/errors";
 import { StaleGuard } from "@/utils/staleGuard";
 import type { ShareEntry } from "@/types";
@@ -118,7 +118,7 @@ watch(
       >
         <Folder v-if="e.is_dir" class="h-4 w-4 shrink-0 text-[var(--gosslan-warning-ink)]" />
         <span class="flex-1 truncate text-sm" :title="e.name">{{ e.name }}</span>
-        <span v-if="!e.is_dir" class="text-[11px] text-[var(--gosslan-text-2)]">{{ humanSize(e.size) }}</span>
+        <span v-if="!e.is_dir" class="text-[11px] text-[var(--gosslan-text-2)]">{{ formatBytes(e.size) }}</span>
         <button
           v-if="!e.is_dir"
           class="tap-safe flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-primary)] transition hover:bg-[var(--gosslan-hover)]"

@@ -6,7 +6,8 @@ import { useExclusivePopup } from "@/composables/useExclusivePopup";
 import { useHoverCard } from "@/composables/useHoverCard";
 import { avatarSeedFor } from "@/utils/avatarSeed";
 import type { SendState } from "@/composables/useMessageDisplay";
-import { Check, CheckCheck } from "lucide-vue-next";
+import { CheckCheck } from "lucide-vue-next";
+import { Check } from "@/components/ui/icons";
 import { Loader2, X } from "@/components/ui/icons";
 
 const props = defineProps<{

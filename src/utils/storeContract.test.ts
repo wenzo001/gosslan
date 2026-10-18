@@ -503,7 +503,10 @@ test("chat.init() 必须先拆掉上一轮注册，且每条注册都要配对�
     /for \(const f of fns\) scope\.onDispose\(f\)/.test(initBody),
     "bindEvents 返回的 unlisten 必须逐个交给 scope 保管",
   );
-  assert.ok(/scope\.onDispose\(\(\) => clearInterval\(/.test(initBody), "拓扑定时器必须有句柄");
+  assert.ok(
+    !/setInterval\(/.test(initBody) || /scope\.onDispose\(\(\) => clearInterval\(/.test(initBody),
+    "init 里若有定时器必须交给 scope 保管（拓扑轮询已于 5.0.3 删除）",
+  );
   assert.ok(
     /scope\.onDispose\(\(\) => document\.removeEventListener\("visibilitychange", onVisibility\)\)/.test(
       initBody,

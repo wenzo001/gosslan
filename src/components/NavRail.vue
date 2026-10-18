@@ -1,5 +1,12 @@
 <script setup lang="ts">
-import { nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { ref, watch } from "vue";
+import {
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuPortal,
+  DropdownMenuRoot,
+  DropdownMenuTrigger,
+} from "reka-ui";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
@@ -29,72 +36,19 @@ const app = useAppStore();
 const chat = useChatStore();
 
 // ---------------- 二级菜单（设置 / 运行日志 收进这里，用户 2026-09-17） ----------------
-// 惯用法与 ConversationList 的「+」菜单完全一致（useExclusivePopup 互斥 + 键盘可达）。
+// 惯用法与 ConversationList 的「+」菜单完全一致（useExclusivePopup 互斥）；键盘/焦点/外点交给 Reka。
 const morePopup = useExclusivePopup("rail-more");
 const moreOpen = ref(false);
-const moreBtnRef = ref<HTMLButtonElement | null>(null);
-const moreMenuRef = ref<HTMLDivElement | null>(null);
 
 watch(morePopup.isActive, (mine) => {
   if (!mine && moreOpen.value) moreOpen.value = false;
 });
 
-function toggleMore() {
-  if (moreOpen.value) {
-    closeMore();
-    return;
-  }
-  moreOpen.value = true;
-  morePopup.claim();
-  void nextTick(() => {
-    moreMenuRef.value?.querySelector<HTMLElement>(".gosslan-menu-item:not([disabled])")?.focus();
-  });
+function onMoreOpen(open: boolean) {
+  moreOpen.value = open;
+  if (open) morePopup.claim();
+  else morePopup.release();
 }
-
-function closeMore() {
-  morePopup.release();
-  moreOpen.value = false;
-  // 关闭后把焦点还给触发按钮（HIG：浮层关闭焦点不丢）
-  const active = document.activeElement;
-  const stuck = active === document.body || (!!moreMenuRef.value && moreMenuRef.value.contains(active));
-  if (stuck) void nextTick(() => moreBtnRef.value?.focus());
-}
-
-/** 二级菜单的键盘可达（Esc / ↑↓ 循环 / Home / End），与「+」菜单同一套约定。 */
-function onMoreMenuKey(e: KeyboardEvent) {
-  if (e.key === "Escape") {
-    e.preventDefault();
-    closeMore();
-    return;
-  }
-  const items = Array.from(
-    moreMenuRef.value?.querySelectorAll<HTMLElement>(".gosslan-menu-item:not([disabled])") ?? [],
-  );
-  if (items.length === 0) return;
-  const idx = items.indexOf(document.activeElement as HTMLElement);
-  if (e.key === "ArrowDown") {
-    e.preventDefault();
-    items[(idx + 1) % items.length]?.focus();
-  } else if (e.key === "ArrowUp") {
-    e.preventDefault();
-    items[(idx - 1 + items.length) % items.length]?.focus();
-  } else if (e.key === "Home") {
-    e.preventDefault();
-    items[0]?.focus();
-  } else if (e.key === "End") {
-    e.preventDefault();
-    items[items.length - 1]?.focus();
-  }
-}
-
-function onDocClick(e: MouseEvent) {
-  const target = e.target as HTMLElement;
-  if (moreOpen.value && !moreBtnRef.value?.contains(target) && !moreMenuRef.value?.contains(target)) {
-    closeMore();
-  }
-}
-onMounted(() => document.addEventListener("click", onDocClick));
-onUnmounted(() => document.removeEventListener("click", onDocClick));
 </script>
 
 <template>
@@ -263,43 +217,44 @@ onUnmounted(() => document.removeEventListener("click", onDocClick));
         <Moon v-else class="h-5 w-5" />
       </button>
       <div class="relative">
-        <button
-          ref="moreBtnRef"
-          class="flex h-11 w-11 items-center justify-center rounded-[var(--gosslan-radius-lg)] text-[var(--gosslan-rail-text)] transition hover:bg-[var(--gosslan-rail-hover)]"
-          :title="t('nav.more')" :aria-label="t('nav.more')"
-          :aria-haspopup="moreOpen ? 'menu' : undefined" :aria-expanded="moreOpen"
-          @click.stop="toggleMore"
-        >
-          <MoreHorizontal class="h-5 w-5" />
-        </button>
-        <!-- 二级菜单：向右弹出（rail 只有 64px 宽，向下会顶出屏幕） -->
-        <div
-          v-if="moreOpen"
-          ref="moreMenuRef"
-          class="frost gosslan-menu absolute bottom-0 left-full z-30 ml-2"
-          role="menu"
-          aria-orientation="vertical"
-          @keydown="onMoreMenuKey"
-        >
-          <button
-            role="menuitem"
-            class="gosslan-menu-item"
-            :aria-busy="settingsOpening"
-            @click.stop="closeMore(); emit('open-settings')"
-          >
-            <Settings class="h-4 w-4" />
-            {{ t("nav.settings") }}
-          </button>
-          <button
-            role="menuitem"
-            class="gosslan-menu-item"
-            :aria-busy="logsOpening"
-            @click.stop="closeMore(); emit('open-logs')"
-          >
-            <ScrollText class="h-4 w-4" />
-            {{ t("nav.logs") }}
-          </button>
-        </div>
+        <DropdownMenuRoot :open="moreOpen" :modal="false" @update:open="onMoreOpen">
+          <DropdownMenuTrigger as-child>
+            <button
+              class="flex h-11 w-11 items-center justify-center rounded-[var(--gosslan-radius-lg)] text-[var(--gosslan-rail-text)] transition hover:bg-[var(--gosslan-rail-hover)]"
+              :title="t('nav.more')" :aria-label="t('nav.more')"
+              @click.stop
+            >
+              <MoreHorizontal class="h-5 w-5" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuPortal>
+            <!-- 二级菜单：向右弹出（rail 只有 64px 宽，向下会顶出屏幕） -->
+            <DropdownMenuContent
+              side="right"
+              align="end"
+              :side-offset="8"
+              :collision-padding="8"
+              class="frost gosslan-menu z-[80]"
+            >
+              <DropdownMenuItem
+                class="gosslan-menu-item"
+                :aria-busy="settingsOpening"
+                @select="emit('open-settings')"
+              >
+                <Settings class="h-4 w-4" />
+                {{ t("nav.settings") }}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                class="gosslan-menu-item"
+                :aria-busy="logsOpening"
+                @select="emit('open-logs')"
+              >
+                <ScrollText class="h-4 w-4" />
+                {{ t("nav.logs") }}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenuPortal>
+        </DropdownMenuRoot>
       </div>
     </div>
   </aside>

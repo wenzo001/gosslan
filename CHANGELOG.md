@@ -13,6 +13,219 @@
 
 ## [Unreleased]
 
+## [5.0.9] - 2026-10-18
+
+### 重构：设置开关迁到 Reka Switch
+
+- `SettingsToggle.vue`（设置/网络/添加好友共 9 处）从自绘 `button role=switch` 改为
+  Reka `SwitchRoot/SwitchThumb`；role、aria-checked、Space/Enter 与禁用语义由库负责，
+  Gosslan 只保留尺寸/配色/pending 小转圈和必填可访问名 label。
+- 迁移中撞到一处真实 API 差异：Reka 的 Vue 版 Switch 是 `modelValue/update:modelValue`，
+  不是 Radix 的 `checked/update:checked` —— 写错不报错、点开关无反应。已改正并由
+  `rekaPrimitives.test.ts` 钉住入参形状。
+- 新增 `--only=switch` 4 条真渲染判据（role/name、初始 aria-checked、点击 emit、禁用不 emit）。
+- `npm test` 1030 通过 / 0 失败；`npm run build` 退出 0（main 307.27 kB / gzip 92.55）。
+
+## [5.0.8] - 2026-10-18
+
+### 重构：其余四处手写 role=menu 全部迁到 Reka DropdownMenu
+
+- `ConversationList` 的「+」菜单、`NavRail` 的「更多」菜单、`TodoPickField` 的状态/优先级/类型
+  三格下拉、`GroupTasksBoard` 的行内状态菜单，全部改走 Reka `DropdownMenuRoot/Trigger/Content/Item`。
+  开关、点外部、Esc、↑↓/Home/End 与焦点归还交给库；`useExclusivePopup` 全局互斥与滚动收起保留。
+- 群任务看板用入口右缘/下缘作为**虚拟锚点**，贴边翻转交给 floating-ui；不再手算 top/bottom，
+  也不再自建 `popupPlacement`。
+- 新增聚合判据：全 `src/components/**/*.vue` 不再出现 `role="menuitem"`；新增 `--only=todopick`
+  4 条真渲染判据（开菜单、↓ 跳过禁用项、回车发值并收起）。
+- `npm test` 1029 通过 / 0 失败；`npm run build` 退出 0（main 307.27 kB / gzip 92.55）；
+  `--only=tasksrt` 14/14；`--only=todopick` 4/4。
+
+## [5.0.7] - 2026-10-18
+
+### 重构：搜索筛选菜单迁到 Reka DropdownMenu
+
+- `ChatSearchDialog.vue` 的发送人/日期两个筛选菜单从手写 `role=menu` + 绝对定位 + 按钮开关
+  改为 Reka `DropdownMenuRoot/Trigger/Portal/Content/Item`；互斥收进 `onSenderOpen/onDateOpen`，
+  条目用 `@select`，外观仍走 `.gosslan-menu*`。
+- 菜单 `:modal="false"`：筛选菜单不能把搜索框焦点抢回菜单（实测模态焦点陷阱会让随后 ↑↓ 落空）。
+- Portal 到 body 后用 `z-[80]`，并给搜索探针补「菜单在嵌套 Dialog 的 aria-hidden/pointer-events
+  下仍可命中」判据（`--only=search` 14/14）。
+- `npm test` 1026 通过 / 0 失败；`npm run build` 退出 0（main 309.27 kB / gzip 93.39）。
+
+## [5.0.6] - 2026-10-18
+
+### 重构：右键菜单外壳迁到 Reka DropdownMenu（去掉自建焦点/键盘/外点内核）
+
+- `ContextMenu.vue` 不再手写 Teleport、document click、window keydown、↑↓/Home/End 循环与估算高度的
+  贴边内收：鼠标坐标作为 Reka `DropdownMenuContent` 的虚拟锚点，定位、翻转、点外部、Esc 与
+  roving focus 全部交给库；本仓只保留坐标入参、`.gosslan-menu*` 主题和关闭后的焦点归还。
+- 四个业务右键菜单（消息、会话、联系人、收藏）的条目改成 `DropdownMenuItem` + `@select`，
+  分隔线用 `DropdownMenuSeparator`；外观与 z 序不变，键盘高亮补 `data-highlighted` 配色。
+- 修掉迁移中暴露的一处真实退化：菜单内容不能再写 `fixed` —— fixed 子元素不贡献 popper
+  wrapper 尺寸，wrapper 量到 0×0，floating-ui 的贴边翻转会静默失效；新增源码判据钉住。
+- 新增 UI 运行时探针 `--only=ctxmenu` 12 条：坐标原点、7 个条目、↓/回车选中、Esc、
+  点外部、焦点归还、右下角翻转全部在真渲染里验证。
+- `npm test` 1025 通过 / 0 失败；`npm run build` 退出 0（main 309.12 kB / gzip 93.35）；
+  `--only=ctxmenu` 12/12。
+
+## [5.0.5] - 2026-10-18
+
+### 重构：通用弹窗从 Headless UI 迁到 Reka UI（A 类直接替换）
+
+- `BaseModal.vue` / `ActionSheet.vue` 改走 `reka-ui@2.11.0` 的
+  `DialogRoot/Portal/Overlay/Content/Title`；`@headlessui/vue` 的唯一消费者消失，依赖删除。
+- 焦点陷阱、Esc、点外部、`aria-modal` 与关闭后焦点归还由 Reka 原语接管；本仓只保留
+  窗口安全区、卡片/整页外观、键盘让位与「点一项即收起」。
+- 修复迁移中暴露的两处真实几何问题：卡片形态内容根的空白区必须让点击穿到遮罩
+  （Reka 内联 `pointer-events:auto`，用 `.gosslan-dialog-card` 覆盖）；内容层动画挂在
+  `DialogContent` 自身后，探针必须在入场动画落定后再读几何。
+- `npm test` 1017 通过 / 0 失败；overlay 探针 41/41；winsafe+search 33/33。
+
+### 重构：运行日志长列表改用 TanStack Virtual（B 类真实业务试迁移）
+
+- `LogViewer.vue` 的独立窗与移动页两条外壳共用 `useVirtualizer` + `measureElement`
+  动态测高，不再整表 `v-for`；过滤变化回到列表顶部，避免短结果落在越界滚动位。
+- 新增 `utils/logViewerVirtual.test.ts` 两条护栏：两条外壳都必须虚拟化、禁止退回整表渲染、
+  过滤必须回顶。`npm test` 1021 通过 / 0 失败；build 退出 0。
+
+### 重构：图片另存去掉保存链的 base64 IPC（P6 部分）
+
+- 新增 Rust `save_media_as(msg_id?, cid?, destination)`：按消息或 content store 解析源文件，
+  直接拷到用户选择的目的地；桌面/iOS 走 `std::fs::copy`（`spawn_blocking`），
+  Android `content://` 复用 `ContentResolver` 分支。前端 `saveImageAs` 优先走源路径，
+  源已清理/乐观消息未落库时回退原有字节路径。
+- 图片**预览**早已走 `tauri::ipc::Response` 原始字节，本轮不再重复改造；真机 raw IPC 与
+  SAF 行为仍未验证（NOT RUN）。
+- `cargo check --lib` 退出 0；`cargo fmt --check` 退出 0；helpers Rust 用例 8/8。
+
+## [5.0.4] - 2026-10-18
+
+### 修复：图片预览窗口在 IPC 失败或空相册时静默白屏
+
+- 新增 `utils/previewGalleryState.ts` 纯状态机：`loading / ready / empty / error` 四态，
+  有旧内容时刷新失败保留旧图，关闭（`released`）清空供常驻窗口复用；IPC 加 8s 超时，
+  迟到结果按代次号丢弃。
+- `PreviewWindow.vue` 接入状态机：失败显示错误原因与「重试」，空相册显示明确空态，
+  不再只留一个空壳窗口。
+- 新增公共 `components/ui/StateBlock.vue`（加载 / 空 / 错误 + 重试），辅助窗口后续按同一入口迁移。
+- 新增 6 条状态机单测；`npm test` 1015 通过 / 0 失败；`npm run build` 退出 0；
+  `main` 310.01 kB（gzip 92.99）。
+
+### 修复：图标入口判据的假绿 + 12 处直连迁移
+
+- 判据 ㊵ 的正则 `[\s\S]*?` 会从文件里**前面的** `import {` 一路吞到 lucide 那条，
+  最后一个名字带上 `import { ` 前缀而漏报：实测 `GroupFilesPanel` / `MergeCardModal` 等
+  12 个文件直连 `Check` / `X` / `Loader2` / `RotateCcw` / `Trash2`，判据仍报 0 处。
+  改为 `[^}]*` 只吃到本条 `}`，并补「多条 import 在前」的夹具。
+- 12 处直连全部改走 `@/components/ui/icons`；入口新增 `AlertCircle`、`ImageOff` 供状态块使用。
+- 10 处手写 SVG 逐处判定为**平台/产品专属图形**并保留：macOS 红绿灯与 Windows 11 窗口字形、
+  NavRail 依赖“选中实心 + 内部镂空”的四个图标、iOS 专用返回 chevron；理由写在二期路线图。
+- 真实树 195 份源码直连 0 处；`npm test` 1015 通过 / 0 失败；build 退出 0；
+  UI 探针 262/265（3 条失败与基线完全同集合）。
+- 二期路线图与迁移清单落 `docs/architecture/frontend-experience-roadmap.md`。
+
+### 修复：辅助窗口与群文件面板的失败出口
+
+- 群任务窗口：首屏/换群读失败改为「错误原因 + 重试」状态，不再只 toast 后停在“暂无任务”。
+- 日志窗口：区分“无日志”和“读失败”；空屏时显示错误与重试，有旧内容时继续静默轮询重试。
+- 网络设置：网卡枚举失败不再截断后续通道/端点加载，同一轮失败只提示一次。
+- 网络诊断面板：首屏读失败不再只剩一个刷新按钮，显示原因与重试；已有旧快照时保留旧读数。
+- 群文件面板：刷新失败保留已加载清单，只有一屏都没有才换成错误态；加载中不再隐藏已有列表。
+- 收藏面板与链接列表：加载失败改为「原因 + 重试」，空态改走统一 `StateBlock`。
+- 新增 `ui/ConfirmDialog.vue`：统一二次确认的标题/正文/条目/备注与取消/危险确认页脚；
+  `busy` 时两键禁用且 Esc/返回不关闭。`StorageSection`（策略开启、立即清理）、
+  `ResetSection`（恢复默认、清除聊天数据）、`ConversationList`（删除好友、删除聊天记录）
+  共 6 处迁移，删掉各自的 `BaseModal` 手写页脚。
+- 聊天主窗：消息首屏读失败不再伪装成“暂无消息”，改为错误原因 + 重试；store 新增
+  `messageLoadErrors`，重试时回到骨架态。聊天记录搜索失败同样改为错误 + 重试。
+- 图片灯箱：加载中显示独立文案；字节取到但浏览器解不出图时清掉裂图，显示原因与重试
+  （按 msgId/cid 可重取），不再留一张破图。
+- `npm test` 1015 通过 / 0 失败；`npm run build` 退出 0；`main` 311.12 kB（gzip 93.38）。
+
+### 修复：群任务看板首屏的「假空态」与三个入口的重复 IPC
+
+- 群任务看板（应用内弹窗与独立窗口共用）首屏读那份全表任务行时只有转圈与空态两档：
+  IPC 一失败就显示「暂无任务」，既没有失败原因也没有恢复入口。现在按
+  `loading / ready / error` 三态呈现，失败给「重试」；成员面板的任务摘要同样区分
+  「加载中 / 读失败 / 确实没有任务」。
+- `useChatStore.ensureGroupTodoRows` 的三个入口（看板 / 任务弹窗 / 成员面板）改为**单飞**：
+  同一次打开只打一份 IPC；失败写进 `groupTodoRowsErrors`，不再产生未捕获的 rejection。
+- 任一条取数口读成功都会清掉失败记录；事件重读在“从未读到过”时也记失败，
+  避免看板永久停在加载态。
+- 新增 `utils/todos.todoRowsLoadState` 纯选择器与 2 条单测（读到过优先于残留错误；
+  空数组是合法的“确实没有任务”，不是还没读）。
+- `npm test` 1017 通过 / 0 失败；`npm run verify` 17/17、退出码 0（18.5s）；
+  `main` 311.96 kB（gzip 93.55）。
+
+### 重构：聊天主窗与撤回确认收编 ConfirmDialog
+
+- `ChatWindow` 的换钥同步、删除好友、批量删除与 `MessageItem` 的撤回确认共 4 处改走
+  `ConfirmDialog`：取消/确认页脚、尺寸、`busy` 禁用与 Esc 行为只剩一份实现。
+  换钥同步是主题色主按钮（`danger=false`）；删除好友正文保留危险色昵称，走默认插槽。
+- 群公告删除仍是“公告查看弹窗内的两段式确认”，不是独立确认框，保留并写明理由。
+- `npm test` 1017 通过 / 0 失败；`npm run verify` 17/17、退出码 0（17.9s）；
+  `main` 310.02 kB（gzip 93.43）。
+
+### 工具：本地门禁拆出最长一步（`npm run verify:local`）
+
+- `scripts/verify.mjs` 新增 `--skip-guard-sweep`：本地只跳过「护栏非空转」整步
+  （2026-10-18 实测 843.1s，占 23 步全量层 922.2s 的 91%），其余 22 步照跑；
+  起跑与汇总各留一条醒目记录，CI 与 `--group release` 拒绝该开关。
+- `package.json` 新增 `npm run verify:local`（= `--full-gate --skip-guard-sweep`）：
+  实测 22/22、退出码 0、64.0s。**发版/推送前仍跑完整的 `npm run verify:full`。**
+- 修复 `db_hold` 排队测试的启动竞态：旧写法先发信号后 `lock()`，系统忙时等待线程
+  可能先拿到锁（实测等待 0ms）；改为先确认持锁线程已握住、等待线程 `try_lock`
+  失败后再放行，单测连跑 11 次全绿。
+
+### 性能：P7 量具复跑（结论：不改码）
+
+- `perf/probe.mjs` 自检通过后复跑 20k：滚动 p95 17.5 / 16.8 ms、`longFramesOver50ms` 0；
+  整表前缀和一遍 1.3 ms。10 万档 `PERF_ONLY=calib` 为 1768 ms/遍，根因是
+  `BUBBLE_CACHE_MAX = 50_000` 在 10 万条时整表 thrash，不是前缀和算法本身；
+  产品消息缓存上界 1000 条/会话，到不了这一档 ⇒ `VirtualList` 不动。
+- `file-progress` 源侧已有 250 / 1000 ms 节流，前端只做单条原地写、Vue 同一 tick 合并渲染
+  ⇒ 不再叠 rAF 批处理（只增延迟与代码面）。
+- 读数、命令与判据写进 `perf/README.md`；本条不改应用代码。
+
+
+## [5.0.3] - 2026-10-18
+
+### 重构：剩余实底危险按钮收编 + 形状判据
+
+- `ChatWindow`（3 处）、`MessageItem`、`GroupTasksBoard`、`FavoritePanel`、`GroupMemberPanel`
+  共 7 处手写实底危险按钮改走 `DangerBtn`；3 处尺寸本就一致，3 处顺带把
+  `hover:opacity-90` 修正为 `danger-hover`，3 处由旧的 `py-2` 统一到校准后的 `py-1.5`。
+- 新增判据 ㊶：`.vue` 模板里出现手写 `bg-[var(--gosslan-danger)]` 按钮即报；
+  圆形图标徽标（`rounded-full`）与 `DangerBtn` 自身除外。真实树 84 份 `.vue`，0 处。
+
+### 清理：拓扑栏与每 5 秒一次的拓扑 IPC 轮询
+
+- 删除 `components/TopologyBar.vue`：84 份 `.vue` 中唯一零引用（无静态 import、
+  无动态注册、无模板标签；README 与架构图中的出现只是目录树/清单文字）。
+- `useChatStore` 随之删除 `topology` 状态、`refreshTopology` 与节流、
+  `peers-updated` 上的触发，以及每 5 秒一次的 `setInterval`——这些代码的
+  唯一读者就是该组件。`api.getTopology`、`types.TopologyInfo`、`topo.*` 文案同步删除。
+- Rust 命令 `get_topology` **保留**（应用内只读诊断接口，无前端入口），
+  在 `src/api/events.test.ts` 的 `DEAD_COMMANDS` 登记保留原因，IPC 门面判据仍然生效。
+- `storeContract` 的定时器判据改为条件式：`init` 里若出现 `setInterval` 仍必须交给
+  `scope` 保管；不再强制要求一个已被删除的轮询定时器。
+- README / `AI_PROJECT_HANDOFF.md` / `docs/ARCHITECTURE-MAP.html` 的组件树与
+  `peers-updated` 消费者同步改为 `chat.refreshPeers`。
+- `npm test` 1009 通过 / 0 失败；`npm run build` 退出 0；`main` 310.67 kB
+  （gzip 93.21，较 5.0.2 少 0.74 kB，与删除前持平——组件本就零引用、不在产物里）。
+
+## [5.0.2] - 2026-10-18
+
+### 重构：字节体积格式化收敛为一套
+
+- `utils/format.ts` 的 `formatBytes` 成为唯一实现，补齐 TB 档；`utils/color.ts`
+  移除 `humanSize`（体积格式化不属于颜色模块）。
+- 5 个调用方（收藏面板、群文件、共享目录、文件气泡、存储设置）统一到
+  `formatBytes`；显示差异仅两处：`<1KB` 由 `0.0 B` 变整数 `0 B`，GB 由一位小数变两位。
+- 新增 `format.test.ts` 覆盖 B/KB/MB/GB/TB 与精度边界；Rust 侧注释同步指向新名字。
+- `npm test` 1007 通过 / 0 失败；`npm run build` 退出 0；`main` 311.41 kB
+  （gzip 93.24，与 5.0.1 持平）。
+
 ## [5.0.1] - 2026-10-18
 
 ### 重构：另存图片收敛为一个状态机

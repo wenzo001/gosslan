@@ -388,6 +388,7 @@ window.__probe = (() => {
     }
     document.body.innerHTML = mountHtml;
     const host = document.createElement('div');
+    host.id = 'probe-host';
     document.body.appendChild(host);
     const state = Vue.reactive({ open: false, initialKeyword: '' });
     window.__st = state;
@@ -424,6 +425,8 @@ window.__probe = (() => {
       // 编辑器上只有 token 的 DOM，载荷才有 mentionIds ⇒ 没有 onSend 就只能看 DOM 猜。
       onSend: (p) => events.push(['send', JSON.stringify(p)]),
       onAttach: () => events.push(['attach']),
+      // TodoPickField 的 v-model：把选中值记进账本（--only=todopick）。
+      'onUpdate:modelValue': (v) => events.push(['update', String(v)]),
     });
     const app = Vue.createApp({
       setup() {
@@ -438,6 +441,85 @@ window.__probe = (() => {
     await Vue.nextTick(); await Vue.nextTick();
     document.addEventListener('click', () => { clickCount++; }, true);
     return { ok: true, cmp: cmpPath, pinia: !!pinia };
+  };
+  /**
+   * 右键菜单专用挂载：把 MessageContextMenu 包在"父组件收到 close 就卸载"的状态里。
+   * 普通 install 只把 emit 记进账本、不会卸载组件 ⇒ "关掉之后 DOM 是否撤净"无法读。
+   * 打开前先聚焦一个固定按钮，用来判"关闭后焦点有没有还回去"。
+   */
+  H.installMenu = async (propsJson) => {
+    const V = window.__probe.vue;
+    if (!V) return { ok: false, why: '先跑一次 install 把页面那份 vue 拿进来' };
+    const mod = await import('/src/components/message/MessageContextMenu.vue');
+    document.body.innerHTML = '<button data-probe-opener id="opener">触发点</button>';
+    const opener = document.querySelector('[data-probe-opener]');
+    if (opener) opener.focus();
+    const host = document.createElement('div');
+    host.id = 'probe-host';
+    document.body.appendChild(host);
+    const st = V.reactive({ open: true });
+    const base = JSON.parse(propsJson);
+    const handlers = {
+      onClose: () => { events.push(['close']); st.open = false; },
+    };
+    for (const name of ['copy-text', 'copy-image', 'save-image', 'save-file', 'copy-file',
+      'quote', 'locate-quote', 'recall', 'pin', 'forward', 'favorite', 'cancel-send',
+      'remind', 'multi-select']) {
+      const key = 'on' + name.split('-').map((s) => s[0].toUpperCase() + s.slice(1)).join('');
+      handlers[key] = () => events.push([name]);
+    }
+    const app = V.createApp({
+      setup() {
+        return () => st.open ? V.h(mod.default, Object.assign({}, base, handlers)) : null;
+      },
+    });
+    if (window.__pinia) app.use(window.__pinia);
+    app.mount(host);
+    window.__probe.vue = V;
+    await V.nextTick(); await V.nextTick();
+    return { ok: true };
+  };
+  /** 第一个带 aria-haspopup=menu 的按钮中心点（三选一字段那一段用）。 */
+  H.firstMenuTrigger = () => {
+    const b = document.querySelector('button[aria-haspopup="menu"]');
+    if (!b) return null;
+    const r = b.getBoundingClientRect();
+    return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+  };
+  /** 第一个开关的可访问属性与落点（SettingsToggle 那一段用）。 */
+  H.switchInfo = () => {
+    const el = document.querySelector('[role="switch"]');
+    if (!el) return { present: false };
+    const r = el.getBoundingClientRect();
+    return {
+      present: true,
+      checked: el.getAttribute('aria-checked'),
+      label: el.getAttribute('aria-label'),
+      busy: el.getAttribute('aria-busy'),
+      disabled: el.hasAttribute('disabled'),
+      x: Math.round(r.left + r.width / 2),
+      y: Math.round(r.top + r.height / 2),
+    };
+  };
+  /** 菜单的几何、条目集合与焦点位置（右键菜单那一段的读数来源）。 */
+  H.menu = () => {
+    const el = document.querySelector('[role="menu"].gosslan-menu');
+    if (!el) return { present: false, active: -1, items: [] };
+    const r = el.getBoundingClientRect();
+    const items = Array.from(el.querySelectorAll('[role="menuitem"]'));
+    const cs = getComputedStyle(el);
+    return {
+      present: true,
+      left: Math.round(r.left), top: Math.round(r.top),
+      right: Math.round(r.right), bottom: Math.round(r.bottom),
+      vw: window.innerWidth, vh: window.innerHeight,
+      items: items.map((i) => String(i.textContent || '').trim()),
+      active: items.indexOf(document.activeElement),
+      activeText: String((document.activeElement && document.activeElement.textContent) || '').trim(),
+      orientation: el.getAttribute('aria-orientation'),
+      side: el.getAttribute('data-side'),
+      bg: cs.backgroundColor,
+    };
   };
   /**
    * 标题栏 × 内容浮层那一路的**合成**夹具（2026-09-30 用户：「所有独立窗口标题栏都不会被内容栏遮住」）。
@@ -578,15 +660,17 @@ window.__probe = (() => {
    */
   H.modalStackRead = () => {
     const cap = document.querySelector('[data-caption]');
+    const layer = document.querySelector('[role="dialog"]');
     const panel = document.querySelector('[role="dialog"] .elevated');
-    const scroller = document.querySelector('[role="dialog"] .overflow-y-auto');
+    const row = panel?.parentElement ?? null;
     if (!panel) return { ok: false, why: '没挂出 .elevated 卡片（BaseModal 没渲染？）' };
     const pr = panel.getBoundingClientRect();
     const cr = cap ? cap.getBoundingClientRect() : null;
     const safeTop = getComputedStyle(document.documentElement)
       .getPropertyValue('--gosslan-window-safe-top').trim();
     // 滚动层顶边（就是"让开之后"那条线的几何证据）
-    const sr = scroller ? scroller.getBoundingClientRect() : null;
+    const sr = layer?.getBoundingClientRect() ?? null;
+    const cs = panel ? getComputedStyle(panel) : null;
     return {
       ok: true,
       safeTop,
@@ -596,6 +680,15 @@ window.__probe = (() => {
       cardBottom: Math.round(pr.bottom),
       scrollTop: sr ? Math.round(sr.top) : null,
       innerHeight: window.innerHeight,
+      // 几何诊断：卡片被 max-h 夹住后还剩多少可居中空间，直接读结构而不是猜
+      layerH: sr ? Math.round(sr.height) : null,
+      rowH: row ? Math.round(row.getBoundingClientRect().height) : null,
+      rowPadTop: row ? getComputedStyle(row).paddingTop : null,
+      cardH: Math.round(pr.height),
+      cardMaxH: cs ? cs.maxHeight : null,
+      cardMarginTop: cs ? cs.marginTop : null,
+      cardMarginBottom: cs ? cs.marginBottom : null,
+      layerCls: layer ? String(layer.className).slice(0, 80) : null,
       // 卡片顶边不低于 caption 底边 = 没有被压住
       cardBelowCaption: cr ? Math.round(pr.top) >= Math.round(cr.bottom) : null,
       // 卡片底边不超过视口底边 = 没被挤出可视区
@@ -1211,6 +1304,24 @@ window.__probe = (() => {
     const S = await import('/src/stores/useChatStore.ts');
     return S.useChatStore();
   };
+  /**
+   * 把夹具里的名字真的种进 store 的名字表。
+   *
+   * 回应名单上显示的名字来自 nicknameOf（friends / peers / 快照三张表），**不认裸 id**：
+   * 查不到会落成「未知成员 + 后四位」。把长昵称直接当 actor id 传进来，那条「长名字必须
+   * 顶到 max-width 并被省略号截断」量到的其实是一段短兜底文案 —— 探针自己失真，不是界面错。
+   * 种成 peer 之后，nameOf(id) 与断言里的 LONG 才是同一个被测对象。
+   */
+  H.seedMembers = async (list) => {
+    const chat = await H.chatStore();
+    if (!chat) return { ok: false, why: 'chat store 不在（先跑一次 install）' };
+    const have = new Set(chat.peers.map((p) => p.device_id));
+    chat.peers = [...chat.peers, ...list
+      .filter((m) => !have.has(m.device_id))
+      .map((m) => ({ device_id: m.device_id, nickname: m.nickname }))];
+    await new Promise((r) => setTimeout(r, 80));
+    return { ok: true, names: list.map((m) => chat.nicknameOf(m.device_id)) };
+  };
   /** 往搜索框里打字：走 v-model 需要 input 事件，不能直接改 .value 就完事。 */
   H.typeKeyword = async (text) => {
     const input = document.querySelector('input[type="search"], input[role="searchbox"], input');
@@ -1451,12 +1562,18 @@ window.__probe = (() => {
   /** 菜单自己**计算后**的背景 —— 透明就是用户那句「筛选下拉都是透明的」。 */
   H.menuStyle = () => {
     const m = document.querySelector('.gosslan-menu');
-    if (!m) return { present: false, bg: '', blur: '' };
+    if (!m) return { present: false, bg: '', blur: '', hit: false, hidden: false, pe: '' };
     const cs = getComputedStyle(m);
+    const r = m.getBoundingClientRect();
+    const top = document.elementFromPoint(r.left + Math.min(r.width / 2, 24), r.top + 10);
     return {
       present: true,
       bg: cs.backgroundColor,
       blur: cs.backdropFilter || cs.webkitBackdropFilter || '',
+      // 嵌套在 Reka Dialog 里：Portal 出去后必须仍能被命中、且没被 Dialog 的 aria-hidden 关掉。
+      hit: !!(top && m.contains(top)),
+      hidden: m.closest('[aria-hidden="true"]') !== null,
+      pe: cs.pointerEvents,
     };
   };
   /** 方向键与回车都挂在搜索框上 ⇒ 点过菜单之后必须把焦点还回去，不然下面的键盘判据红在夹具。 */
@@ -1714,6 +1831,9 @@ async function main() {
     const want = (name) => !ONLY || ONLY.split(",").includes(name);
     const emoji = want("emoji");
     const search = want("search");
+    const ctxmenu = want("ctxmenu");
+    const todopick = want("todopick");
+    const sw = want("switch");
     const task = want("task");
     const tasksrt = want("tasksrt");
     const convbadge = want("convbadge");
@@ -1728,6 +1848,9 @@ async function main() {
     const winsafe = want("winsafe");
     if (emoji) await runEmoji(cdp, url);
     if (search) await runSearch(cdp, url);
+    if (ctxmenu) await runCtxMenu(cdp, url);
+    if (todopick) await runTodoPick(cdp, url);
+    if (sw) await runSwitch(cdp, url);
     if (task) await runTaskCard(cdp, url);
     if (tasksrt) await runTasksRealtime(cdp, url);
     if (convbadge) await runConvBadge(cdp, url);
@@ -2080,6 +2203,9 @@ async function runWindowSafe(cdp, url) {
 
   // ── 桌面 + 长内容（用户报的那个形状）──────────────────────────────
   const comp = await cdp.eval('window.__probe.composeModalStack({ long: true })');
+  // Reka 的出入场动画挂在 DialogContent 自身（Presence 只观察那个元素）⇒ 入场那 200ms 里
+  // 整块内容层都在 scale(0.95)，读到的 top/height 是缩放后的矩形。布局判据要的是落定态。
+  await sleep(500);
   check("桌面：TitleBar 与 BaseModal 卡片真的同时挂在页面上",
     !!comp && comp.ok === true, "composeModalStack ok", JSON.stringify(comp));
 
@@ -2103,6 +2229,7 @@ async function runWindowSafe(cdp, url) {
   // ⇒ 先把内容撑到超过视口高度（卡片顶到 max-h 上限、`my-auto` 把顶边推到安全区那条线），
   //   再看撤掉安全区之后顶边是否真的上移到 caption 底下。
   await cdp.eval("window.__probe.forceModalTall(true)");
+  await sleep(300); // 内容高度变了：等一次布局/RO 落定，别在半帧上读几何
   const tallRead = await cdp.eval("window.__probe.modalStackRead()");
   // 前置判据：卡片必须**真的**被撑到 max-h 上限（panelH 明显大于短内容那一档），
   // 否则"my-auto 居中"会把顶边留在视口中间，撤掉安全区也看不出位移 ⇒ 对照无判别力。
@@ -2111,25 +2238,29 @@ async function runWindowSafe(cdp, url) {
     "panelH > 200 且 cardTop >= capBottom",
     JSON.stringify({ cardTop: tallRead.cardTop, capBottom: tallRead.capBottom, panelH: tallRead.panelH }));
 
-  // 反面对照：把变量按回"修之前"（0）⇒ 卡片顶边必须按**推导出来的关系**上移。
+  // 反面对照：把变量按回"修之前"（0）⇒ 卡片顶边必须按 `my-auto` 的关系上移。
   //
-  // ⚠️ 断言不是"cardTop 掉到 capBottom 以下"，也不是"上移量 == safeTop" —— 两个都红过，
-  // 而且都红得没道理。卡片被 max-h 夹住、又在**已经被安全区缩小的区域里** `my-auto` 居中：
-  //     可用高度 = V − S（S = 安全区）
-  //     cardTop  = S + (V − S − H)/2
-  //     ⇒ 撤掉安全区后 cardTop₀ = (V − H)/2
-  //     ⇒ 位移 = S − S/2 = **S/2**
-  // 实测 S=28 ⇒ 位移 14px，与推导逐位吻合（53 → 39）。
-  // ⇒ 判据取 `≈ safeTop/2`：这是安全区真的在管事的**因果**证据（而且是可推导的量，
-  //   不是"看起来动了"），不受卡片高度夹持影响。
+  // 位移有两个 regime（2026-10-18 落定后现量）：
+  //   ① 卡片还有居中余量（H < 可用高度）：cardTop = S + 余量/2 ⇒ 位移 = **S/2**；
+  //   ② 卡片被 max-h 夹满（H = 可用高度，余量 0）：cardTop = S + 16 ⇒ 位移 = **S**。
+  // 这一档的夹具把内容撑到 400vh，实测正是 ②（tall: H=maxH=353、可用=353）；
+  // 旧版读到的 53→39（S/2）是**入场缩放中的矩形**（0.95 系数），不是落定态。
+  // ⇒ 判据取区间 [S/2, S+1]：两个 regime 都算“安全区在管事”，0 位移仍然红。
+  //   （只放宽到两个可推导值之间，不是“看起来动了”就行。）
   const safePx = parseFloat(a.safeTop) || 0;
   const offVal = await cdp.eval("window.__probe.setWindowSafeTop('off')");
+  await sleep(120); // 变量变了 ⇒ 等布局跑完再读
   const b = await cdp.eval("window.__probe.modalStackRead()");
   const shifted = tallRead.cardTop - b.cardTop;
-  check("对照：把安全区按回 0 ⇒ 卡片顶边按 my-auto 的关系上移 safeTop/2（证明那条让位判据会咬）",
-    offVal === "0px" && b.ok === true && Math.abs(shifted - safePx / 2) <= 1,
-    "上移量 ≈ safeTop/2", JSON.stringify({ offVal, shifted, expect: safePx / 2, cardTop: b.cardTop }));
+  console.log("  · 读数（不判绿红）：winsafe 几何 tall=" + JSON.stringify(tallRead)
+    + " off=" + JSON.stringify(b));
+  check("对照：把安全区按回 0 ⇒ 卡片顶边上移（余量版 S/2、夹满版 S；0 位移说明变量没管事）",
+    offVal === "0px" && b.ok === true
+      && shifted >= safePx / 2 - 1 && shifted <= safePx + 1,
+    "上移量落在 [safeTop/2, safeTop]（实测夹满档）",
+    JSON.stringify({ offVal, shifted, range: [safePx / 2, safePx], cardTop: b.cardTop, cardH: tallRead.cardH }));
   await cdp.eval("window.__probe.setWindowSafeTop('on')");
+  await sleep(120);
   const c = await cdp.eval("window.__probe.modalStackRead()");
   // 可逆判据取"回到原来的那一档"（顶边在 caption 之下 + 与撤掉时相比又下移了约 safeTop/2），
   // ⚠️ 不给逐像素相等：内容被撑高后滚动条/留白那几像素会让读数漂 1–3px（实测 53→50），
@@ -2571,6 +2702,16 @@ async function rosterChecks(cdp, url) {
     actors: [i === 0 ? LONG : "同事甲", "同事乙"], latest: "同事乙",
   }));
   check("多颗：挂出一条带 12 颗回应的消息", await mount("peer-a", false, MANY), "install 成功");
+  // 长名字必须**先在 store 的名字表里**：`nicknameOf` 查不到会把 id 落成
+  // 「未知成员 + 后四位」，下面三条量的就会是那段短兜底文案（探针失真，不是界面错）。
+  const seeded = await cdp.eval("window.__probe.seedMembers(" + JSON.stringify([
+    { device_id: LONG, nickname: LONG },
+    { device_id: "同事甲", nickname: "同事甲" },
+    { device_id: "同事乙", nickname: "同事乙" },
+  ]) + ")");
+  check("多颗：长名字真的在 store 的名字表里（否则下面量的是「未知成员」）",
+    !!seeded && seeded.ok === true && seeded.names[0] === LONG,
+    "nicknameOf(LONG) === LONG", JSON.stringify(seeded));
   const pts = await cdp.eval("window.__probe.allChipPoints()");
   check("多颗：拿得到每一颗胶囊的落点（>= 8 颗才谈得上「贴哪一边」）",
     Array.isArray(pts) && pts.length >= 8, "至少 8 颗", "现读 " + (pts ? pts.length : 0) + " 颗");
@@ -2848,7 +2989,12 @@ async function runOverlay(cdp, url) {
       const dlgs = document.querySelectorAll('[role="dialog"]');
       const dlg = dlgs[0] || null;
       const panel = dlg ? dlg.querySelector('.elevated') : null;
-      const portal = document.getElementById('headlessui-portal-root');
+      // 「挂到文档根」不再靠库自己的 portal 容器名：Reka UI 用 Vue Teleport 直接挂 body，
+      // HeadlessUI 当年是 #headlessui-portal-root。判据要的是**在不在宿主子树之外**，
+      // 所以从宿主根反着数 —— 换回任何一家弹层库这条都不用改。
+      const mountHost = document.getElementById('mhost') || document.getElementById('probe-host');
+      const portalDlgCount = [...document.querySelectorAll('[role="dialog"]')]
+        .filter((d) => !mountHost || !mountHost.contains(d)).length;
       const op = document.getElementById('opener');
       const rr = op.getBoundingClientRect();
       const hit = document.elementFromPoint(Math.round(rr.left + rr.width / 2), Math.round(rr.top + rr.height / 2));
@@ -2858,8 +3004,8 @@ async function runOverlay(cdp, url) {
       return {
         openFlag: (window.__mstate || window.__probe.state).open === true,
         dlgCount: dlgs.length,
-        // portal 根是**惰性创建**的（从没开过弹窗时它压根不存在）⇒ 不存在就等于 0 份
-        portalDlgCount: portal ? portal.querySelectorAll('[role="dialog"]').length : 0,
+        // 宿主子树之外的 dialog 数。Reka 的 Teleport 没有自己的根节点 ⇒ 反向数才可靠。
+        portalDlgCount,
         panelW: pr ? Math.round(pr.width) : 0,
         panelTop: pr ? Math.round(pr.top) : -1,
         panelBottom: pr ? Math.round(pr.bottom) : -1,
@@ -2874,7 +3020,8 @@ async function runOverlay(cdp, url) {
             + " / " + getComputedStyle(panel).transitionDelay
           : '-',
         backdropOpacity: (() => {
-          const g = dlg ? dlg.querySelector('.glass') : null;
+          const g = dlg ? dlg.parentElement?.querySelector('.gosslan-dialog-overlay')
+            ?? document.querySelector('.gosslan-dialog-overlay') : null;
           return g ? getComputedStyle(g).opacity : '(无遮罩节点)';
         })(),
         wrapperPE: (() => {
@@ -2946,7 +3093,7 @@ async function runOverlay(cdp, url) {
     // 但它必须报出来 —— 没有它，下一轮又会把停在 leave-from 的壳读成"界面上有残留层"。
     const frames = await framesDuringPump(6);
     check("[" + tag + "] 量具在出帧（泵 6 次截图这段时间里 rAF ≥ 2 次）——"
-      + "Headless UI 的过渡收尾要两帧；页面静止不出帧时读到的是停在 leave-from 的壳，那是量具的形状不是界面的形状",
+      + "关闭动画收尾要两帧；页面静止不出帧时读到的是停在动画中途的壳，那是量具的形状不是界面的形状",
       typeof frames === "number" && frames >= 2, "rAF 次数 >= 2", "实际 " + JSON.stringify(frames));
     return base;
   }
@@ -2984,7 +3131,7 @@ async function runOverlay(cdp, url) {
     trapIds.push(r.focusId);
     if (r.focusInDlg !== true) trapOk = false;
   }
-  check("A 连按 5 次 Tab 焦点始终没跑出弹窗（焦点陷阱由 Headless UI 提供，没被我们自己写漏）",
+  check("A 连按 5 次 Tab 焦点始终没跑出弹窗（焦点陷阱由 Reka UI 提供，没被我们自己写漏）",
     trapOk === true, "五次都 focusInDlg=true", JSON.stringify(trapIds));
 
   // 真鼠标按下背景按钮那一点：一个动作同时判「不穿透」与「点外部关闭」
@@ -3019,7 +3166,7 @@ async function runOverlay(cdp, url) {
       && e.bodyStyle === base.bodyStyle && e.htmlOv === base.htmlOv,
     "close+1 且 open=false 且 dlgCount=0 且样式==基线",
     JSON.stringify({ cl: e.closeEvents, open: e.openFlag, dlg: e.dlgCount, bodyStyle: e.bodyStyle, htmlOv: e.htmlOv }));
-  check("A Esc 关掉之后焦点回到打开它的那颗按钮（N14：Headless UI 只管把焦点收进弹窗，"
+  check("A Esc 关掉之后焦点回到打开它的那颗按钮（N14：弹层原语只管把焦点收进弹窗，"
     + "还回去这一下得有人做 —— 而那一刻 DOM 已经撤干净，所以这不是残留壳造成的）",
     e.focusId === "opener" && e.dlgCount === 0, "activeElement==opener",
     "实际 " + e.focusId + " dlg=" + e.dlgCount);
@@ -3069,7 +3216,7 @@ async function runOverlay(cdp, url) {
     x.openFlag === false && x.dlgCount === 0 && x.portalDlgCount === 0,
     "open=false 且 dlg=0 且 portal=0",
     JSON.stringify({ open: x.openFlag, dlg: x.dlgCount, portal: x.portalDlgCount }));
-  check("B 右上角 ✕ 关掉之后焦点也回到那颗按钮（两条关闭路径都要量：Esc 走 Headless UI 自己那条，"
+  check("B 右上角 ✕ 关掉之后焦点也回到那颗按钮（两条关闭路径都要量：Esc 走弹层原语自己那条，"
     + "✕ 走宿主 emit close，发起方不一样）",
     x.focusId === "opener" && x.openFlag === false, "activeElement==opener",
     "实际 " + x.focusId + " open=" + x.openFlag);
@@ -3299,7 +3446,7 @@ async function runOverlay(cdp, url) {
     JSON.stringify({ hits: e3.openerHits, base: rdClose.openerHits, hit: e3.hitId, dlg: e3.dlgCount }));
 
   await openModal();
-  await cdp.key("Escape", "Escape", "", 27); // 真按键：Headless UI 自己那条路径
+  await cdp.key("Escape", "Escape", "", 27); // 真按键：弹层原语自己那条路径
   await sleep(700);
   const e4 = await readAfterClose();
   check("E reduce 下 Esc（真按键）也关得掉、DOM 撤净、焦点回到那颗按钮（两条关闭路径的发起方不一样，都得在这档量一遍）",
@@ -3507,6 +3654,10 @@ async function runEmoji(cdp, url) {
  * 也就是"看起来在选、实际打开的是第一条"。所以判据钉的是 emit 出去的 msgId 本身。
  */
 async function runSearch(cdp, url) {
+  // 窗口被别的应用盖住时 document.visibilityState=hidden，CSS 动画时钟会冻在 0
+  // （playState 仍是 running）⇒ 页面转场停在 translateX(100%)，弹窗整个在视口外。
+  // 全量顺序跑时实测「emoji 段之后 search 段红、单跑绿」就是这一条。先提到前台。
+  await cdp.send("Page.bringToFront").catch(() => {});
   await cdp.send("Page.navigate", { url });
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
@@ -3528,6 +3679,27 @@ async function runSearch(cdp, url) {
   await cdp.eval(`window.__probe.install('/src/components/search/ChatSearchDialog.vue', '')`);
   await cdp.eval(`window.__probe.stubApi('searchChatHistory', ${JSON.stringify([GROUP])})`);
   await cdp.eval("window.__probe.setOpen(true)");
+  // 搜索弹窗是整页转场（BaseModal 的 gosslan-dialog-page，translateX(100%) → 0）。
+  // 不能用 playState 判"就位"：窗口被盖住时 document.visibilityState=hidden，动画时钟冻在 0，
+  // playState 仍是 running、transform 永远停在 translateX(100%)（实测 emoji 段之后就是这样）。
+  // 所以这里等的是**弹窗矩形真的进视口**；发现页面 hidden 就再把窗口提到前台。
+  let settled = null;
+  for (let i = 0; i < 80; i += 1) {
+    settled = await cdp.eval(`(() => {
+      const d = document.querySelector('[role="dialog"]');
+      if (!d) return { ok: false, why: "no-dialog" };
+      const b = d.getBoundingClientRect();
+      return { ok: b.left >= -1 && b.right <= innerWidth + 1
+          && b.top >= -1 && b.bottom <= innerHeight + 1,
+        vis: document.visibilityState, x: Math.round(b.x), w: Math.round(b.width) };
+    })()`);
+    if (settled.ok) break;
+    if (settled.vis === "hidden") await cdp.send("Page.bringToFront").catch(() => {});
+    await sleep(50);
+  }
+  if (!settled || !settled.ok) {
+    console.log("  · 搜索弹窗入场未就位：" + JSON.stringify(settled));
+  }
   const typed = await cdp.eval(`window.__probe.typeKeyword('命中')`);
   const hits = () => cdp.eval("window.__probe.hits()");
   const h0 = await hits();
@@ -3558,10 +3730,20 @@ async function runSearch(cdp, url) {
     !!chip && chip.x > 0 && chip.y > 0, "坐标 >0", JSON.stringify(chip));
   if (chip) {
     await cdp.click(chip.x, chip.y);
-    const st = await cdp.eval("window.__probe.menuStyle()");
+    // 点完等菜单真的进来再读样式：Vue 的 v-if 走微任务调度，CDP 的 click 返回与下一帧
+    // 谁先到没有保证。这不是放宽判据：菜单一直不出现仍然会红，只是不再把"还没渲染"读成"透明"。
+    let st = await cdp.eval("window.__probe.menuStyle()");
+    for (let i = 0; i < 20 && !st.present; i += 1) {
+      await sleep(50);
+      st = await cdp.eval("window.__probe.menuStyle()");
+    }
     check("点开筛选菜单：它自己必须真有底（透明 = 用户那句「筛选下拉都是透明的」）",
       st.present === true && st.bg !== "rgba(0, 0, 0, 0)" && st.bg !== "transparent",
-      "计算后的背景色不是透明", JSON.stringify(st));
+      "计算后的背景色不是透明", JSON.stringify({ st, settled }));
+    check("筛选菜单从 Dialog 里 Portal 出去后仍可命中、没被 aria-hidden/pointer-events 关掉",
+      st.present === true && st.hit === true && st.hidden === false && st.pe !== "none",
+      "hit=true / hidden=false / pointer-events≠none",
+      JSON.stringify({ hit: st.hit, hidden: st.hidden, pe: st.pe }));
     // 菜单与键盘判据共用这个弹窗，而方向键挂在**输入框**上：点过菜单必须把焦点还回去，
     // 否则下面那批 ↑↓ 会红在夹具上而不是产品上。
     const refocus = await cdp.eval("window.__probe.focusInput()");
@@ -3609,6 +3791,198 @@ async function runSearch(cdp, url) {
  * 顺带把 #112（卡片图走统一预览）与 §9（描述里的 @）这两条在运行时层各判一次 ——
  * 结构级判据说"调用点给了 clickable"，这里判"按 Enter 之后那份预览真的开了"。
  */
+/**
+ * 右键菜单那一段（--only=ctxmenu）。
+ *
+ * 2026-10-18 把外壳从自建 Teleport/document click/window keydown/焦点循环迁到 Reka DropdownMenu 的
+ * 虚拟锚点。源码判据只能证明"调用点换了库"，这里在真渲染里判四件会静默坏掉的事：
+ *  ① 菜单真的出现在鼠标坐标处（锚点没接上时 Reka 会落在 (0,0) 或触发元素上）；
+ *  ② ↑↓ 的 roving focus 真把焦点放到条目上，且回车选中**那一条**并发出对应动作；
+ *  ③ Esc / 点外部各关一次（自建监听回潮会双份关闭），关闭后焦点回到打开前的元素；
+ *  ④ 贴右下角弹出时整块仍在视口内（floating-ui 翻转替代了原来的手写 clamp）。
+ */
+async function runCtxMenu(cdp, url) {
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+  // installMenu 复用的是 install 拿到的页面那份 vue/pinia ⇒ 先普通挂一次引导。
+  await cdp.eval("window.__probe.install('/src/components/TitleBar.vue', '', '')");
+
+  const mount = async (props) => {
+    const r = await cdp.eval(`window.__probe.installMenu(${JSON.stringify(JSON.stringify(props))})`);
+    await sleep(300);
+    return r;
+  };
+  const menu = () => cdp.eval("window.__probe.menu()");
+  const events = () => cdp.eval("window.__probe.events");
+
+  const boot = await mount({ x: 320, y: 80, kind: "text", canPin: true, quotedId: "q1" });
+  check("对照：菜单夹具挂得上（挂不上下面几条就是空跑）",
+    !!boot && boot.ok === true, "ok=true", JSON.stringify(boot));
+
+  const m0 = await menu();
+  check("菜单在鼠标坐标处弹出（下方有空间时左上角落到 (320,80)，不是默认的 0,0）",
+    m0.present === true && Math.abs(m0.left - 320) <= 2 && Math.abs(m0.top - 80) <= 2 && m0.side === "bottom",
+    "left≈320 / top≈80 / side=bottom",
+    JSON.stringify({ left: m0.left, top: m0.top, side: m0.side }));
+  check("菜单是 role=menu，七个条目全部被 Reka 收进菜单集合",
+    m0.present === true && m0.orientation === "vertical" && m0.items.length === 7,
+    "7 条 menuitem", JSON.stringify(m0.items));
+  check("菜单自己仍有实底（.gosslan-menu 的 frost 底没被迁移丢掉）",
+    m0.present === true && m0.bg !== "rgba(0, 0, 0, 0)" && m0.bg !== "transparent",
+    "背景不是透明", m0.bg);
+
+  await cdp.key("ArrowDown", "ArrowDown", "", 40);
+  const k1 = await menu();
+  check("↓ 把焦点移到第一条（Reka roving focus 接管，不是外壳自建循环）",
+    k1.active === 0, "active=0", k1.active);
+  await cdp.key("ArrowDown", "ArrowDown", "", 40);
+  const k2 = await menu();
+  check("再 ↓ 移到第二条", k2.active === 1, "active=1", k2.active);
+
+  await cdp.eval("window.__probe.reset()");
+  await cdp.key("Enter", "Enter", "\r", 13);
+  await sleep(200);
+  const evEnter = await events();
+  const afterEnter = await menu();
+  check("回车选中高亮那条：只发该条动作并卸载菜单（不是只关不发）",
+    evEnter.some((e) => e[0] === "pin") && afterEnter.present === false,
+    "pin + 菜单消失", JSON.stringify(evEnter));
+  check("回车关闭后焦点回到打开前的元素（键盘用户不丢焦点）",
+    await cdp.eval("document.activeElement && document.activeElement.id === 'opener'") === true,
+    "activeElement=#opener", await cdp.eval("document.activeElement && document.activeElement.id"));
+
+  await cdp.eval("window.__probe.reset()");
+  await mount({ x: 200, y: 180, kind: "text" });
+  await cdp.key("Escape", "Escape", "", 27);
+  await sleep(200);
+  const evEsc = await events();
+  const afterEsc = await menu();
+  check("Esc 关菜单且 close 只发一次（自建 window keydown 回潮会变成两次）",
+    afterEsc.present === false && evEsc.filter((e) => e[0] === "close").length === 1,
+    "菜单消失 + close×1", JSON.stringify(evEsc));
+  check("Esc 后焦点也回到打开前的元素",
+    await cdp.eval("document.activeElement && document.activeElement.id === 'opener'") === true,
+    "activeElement=#opener", await cdp.eval("document.activeElement && document.activeElement.id"));
+
+  const vp = await cdp.eval("({ w: window.innerWidth, h: window.innerHeight })");
+  await cdp.eval("window.__probe.reset()");
+  await mount({ x: 200, y: 180, kind: "text" });
+  await cdp.click(vp.w - 30, vp.h - 30);
+  await sleep(200);
+  const evOut = await events();
+  const afterOut = await menu();
+  check("点菜单外关闭（DismissableLayer 真接住了外部指针）",
+    afterOut.present === false && evOut.filter((e) => e[0] === "close").length === 1,
+    "菜单消失 + close×1", JSON.stringify(evOut));
+
+  await cdp.eval("window.__probe.reset()");
+  await mount({ x: vp.w - 10, y: vp.h - 10, kind: "text", canPin: true });
+  const corner = await menu();
+  check("贴右下角弹出时整块翻到视口内（floating-ui 的翻转替代了手写 clamp）",
+    corner.present === true && corner.left >= 0 && corner.top >= 0
+      && corner.right <= vp.w && corner.bottom <= vp.h && corner.right < vp.w - 5,
+    `四边都在 0..${vp.w}x${vp.h} 且没有顶到右边`,
+    JSON.stringify({ before: corner, vp }));
+}
+
+/**
+ * 三选一字段那一段（--only=todopick）。
+ *
+ * `TodoPickField` 是状态/优先级/类型三格共用的锚定下拉，2026-10-18 从手写
+ * `role=menu` + 全屏遮罩迁到 Reka DropdownMenu。源码判据只能证明调用了库；
+ * 这里在真渲染里判：入口真能开、↓ 跳过禁用的当前项、回车选中发值并收起。
+ */
+/**
+ * 设置开关那一段（--only=switch）。
+ *
+ * `SettingsToggle` 是 9 个调用点共用的开关，2026-10-18 从自绘 button 迁到 Reka Switch。
+ * 这里在真渲染里判：role=switch 与必填可访问名由库写、点击确实 emit、禁用时不再 emit。
+ */
+async function runSwitch(cdp, url) {
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+  const mount = async (props) => {
+    await cdp.eval(
+      `window.__probe.install('/src/components/settings/SettingsToggle.vue', '', ${JSON.stringify(JSON.stringify(props))})`,
+    );
+    await sleep(150);
+  };
+  const info = () => cdp.eval("window.__probe.switchInfo()");
+  const events = () => cdp.eval("window.__probe.events");
+
+  await mount({ modelValue: false, label: "深色模式", size: "md" });
+  const s0 = await info();
+  check("开关由 Reka 渲染成 role=switch，且可访问名来自必填 label",
+    s0.present === true && s0.label === "深色模式", "role=switch / label=深色模式", JSON.stringify(s0));
+  check("初始 aria-checked=false、未禁用", s0.checked === "false" && s0.disabled === false,
+    "checked=false / disabled=false", JSON.stringify({ checked: s0.checked, disabled: s0.disabled }));
+  if (s0.present) {
+    await cdp.eval("window.__probe.reset()");
+    await cdp.click(s0.x, s0.y);
+    await sleep(150);
+    const ev = await events();
+    check("点一下开关：emit update:modelValue=true",
+      ev.some((e) => e[0] === "update" && e[1] === "true"), "update=true", JSON.stringify(ev));
+  }
+
+  await cdp.eval("window.__probe.reset()");
+  await mount({ modelValue: false, label: "深色模式", disabled: true });
+  const s1 = await info();
+  if (s1.present) await cdp.click(s1.x, s1.y);
+  await sleep(150);
+  const evDisabled = await events();
+  check("禁用态：点击不发 update，且 disabled 属性在",
+    s1.present === true && s1.disabled === true && evDisabled.length === 0,
+    "disabled=true / 0 个事件", JSON.stringify({ disabled: s1.disabled, events: evDisabled }));
+}
+
+async function runTodoPick(cdp, url) {
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+  const props = {
+    label: "类型",
+    current: "需求",
+    currentClass: "",
+    modelValue: "requirement",
+    options: [
+      { value: "requirement", label: "需求" },
+      { value: "bug", label: "缺陷" },
+      { value: "custom", label: "自定义…" },
+    ],
+  };
+  await cdp.eval(
+    `window.__probe.install('/src/components/TodoPickField.vue', '', ${JSON.stringify(JSON.stringify(props))})`,
+  );
+  await sleep(200);
+  const menu = () => cdp.eval("window.__probe.menu()");
+  const events = () => cdp.eval("window.__probe.events");
+
+  const pt = await cdp.eval("window.__probe.firstMenuTrigger()");
+  check("对照：拿得到三选一字段的菜单入口（拿不到下面就是空跑）",
+    !!pt && pt.x > 0 && pt.y > 0, "坐标 >0", JSON.stringify(pt));
+  if (!pt) return;
+  await cdp.click(pt.x, pt.y);
+  await sleep(200);
+  const m0 = await menu();
+  check("点开三选一字段：3 条选项全部由 Reka 收进菜单集合",
+    m0.present === true && m0.items.length === 3, "3 条 menuitem", JSON.stringify(m0.items));
+  await cdp.key("ArrowDown", "ArrowDown", "", 40);
+  const m1 = await menu();
+  check("↓ 跳过禁用的当前项，高亮「缺陷」（键盘导航不是停在禁用项上）",
+    m1.activeText.includes("缺陷"), "activeText=缺陷", m1.activeText);
+  await cdp.eval("window.__probe.reset()");
+  await cdp.key("Enter", "Enter", "\r", 13);
+  await sleep(200);
+  const ev = await events();
+  const gone = await menu();
+  check("回车选中：emit update:modelValue=bug 且菜单收起",
+    ev.some((e) => e[0] === "update" && e[1] === "bug") && gone.present === false,
+    "update=bug + 菜单消失", JSON.stringify(ev));
+}
+
 async function runTaskCard(cdp, url) {
   await cdp.send("Page.navigate", { url });
   await sleep(3_000);

@@ -992,6 +992,19 @@ html:not(.is-mobile) {
   background: var(--gosslan-hover);
 }
 
+/* Reka 菜单条目是 div（role=menuitem，由 roving tabindex 接管焦点），
+   键盘高亮不会触发 :hover ⇒ 用库给的 data-highlighted 与 :focus-visible 补同一套底色。 */
+.gosslan-menu-item[data-highlighted],
+.gosslan-menu-item:focus-visible {
+  background: var(--gosslan-hover);
+}
+
+.gosslan-menu-item[data-disabled],
+.gosslan-menu-item[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .gosslan-menu-item:disabled {
   opacity: 0.5;
   cursor: default;
@@ -1080,3 +1093,42 @@ html:not(.is-mobile) {
   }
 }
 
+
+/* ---------------------------------------------------------------------------
+   Reka UI Dialog 原语的进入/退出（2026-10-18 迁移）
+   `data-state` 由 Reka 的 Presence 写在 DialogContent / DialogOverlay 上；
+   动画必须挂在**被 Presence 观察的那个元素**上，退出动画才会被等到。
+   --------------------------------------------------------------------------- */
+@keyframes gosslan-dialog-fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes gosslan-dialog-fade-out { from { opacity: 1; } to { opacity: 0; } }
+@keyframes gosslan-dialog-pop-in { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
+@keyframes gosslan-dialog-pop-out { from { opacity: 1; transform: scale(1); } to { opacity: 0; transform: scale(0.95); } }
+@keyframes gosslan-dialog-page-in { from { transform: translateX(100%); opacity: 0.4; } to { transform: translateX(0); opacity: 1; } }
+@keyframes gosslan-dialog-page-out { from { transform: translateX(0); opacity: 1; } to { transform: translateX(100%); opacity: 0.4; } }
+@keyframes gosslan-dialog-sheet-in { from { transform: translateY(100%); } to { transform: translateY(0); } }
+@keyframes gosslan-dialog-sheet-out { from { transform: translateY(0); } to { transform: translateY(100%); } }
+
+.gosslan-dialog-overlay[data-state="open"] { animation: gosslan-dialog-fade-in 200ms ease-out; }
+.gosslan-dialog-overlay[data-state="closed"] { animation: gosslan-dialog-fade-out 150ms ease-in forwards; }
+.gosslan-dialog-card[data-state="open"] { animation: gosslan-dialog-pop-in 200ms ease-out; }
+.gosslan-dialog-card[data-state="closed"] { animation: gosslan-dialog-pop-out 150ms ease-in forwards; }
+.gosslan-dialog-page[data-state="open"] { animation: gosslan-dialog-page-in var(--gosslan-duration) var(--gosslan-ease); }
+.gosslan-dialog-page[data-state="closed"] { animation: gosslan-dialog-page-out var(--gosslan-duration) var(--gosslan-ease) forwards; }
+.gosslan-dialog-sheet[data-state="open"] { animation: gosslan-dialog-sheet-in 200ms ease-out; }
+.gosslan-dialog-sheet[data-state="closed"] { animation: gosslan-dialog-sheet-out 150ms ease-in forwards; }
+
+/* 卡片形态的内容根铺满视口，只承担"居中 + 滚动"。Reka 的 DismissableLayer 会给它写
+   内联 pointer-events:auto（顶层图层要接事件），普通类名压不过 ⇒ 这里用 !important 把
+   空白区让给遮罩（否则整块屏幕都算"内容里面"，点外部永远关不掉），卡片自己再恢复命中。
+   事件冒泡不受祖先 pointer-events 影响，所以卡片里的按钮照常工作。 */
+.gosslan-dialog-card { pointer-events: none !important; }
+.gosslan-dialog-card .elevated { pointer-events: auto !important; }
+
+@media (prefers-reduced-motion: reduce) {
+  .gosslan-dialog-overlay[data-state],
+  .gosslan-dialog-card[data-state],
+  .gosslan-dialog-page[data-state],
+  .gosslan-dialog-sheet[data-state] {
+    animation: none !important;
+  }
+}

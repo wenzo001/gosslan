@@ -10,10 +10,9 @@
 import { ref } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
-import BaseModal from "@/components/BaseModal.vue";
-import DangerBtn from "@/components/ui/DangerBtn.vue";
+import ConfirmDialog from "@/components/ui/ConfirmDialog.vue";
 import SettingsGroup from "@/components/settings/SettingsGroup.vue";
-import { RotateCcw } from "lucide-vue-next";
+import { RotateCcw } from "@/components/ui/icons";
 import { Trash2 } from "@/components/ui/icons";
 import { t } from "@/i18n";
 
@@ -87,59 +86,44 @@ async function doClearAllData() {
     </p>
 
     <!-- 恢复默认：会连带重置昵称/头像并广播给好友，必须确认 -->
-    <BaseModal
+    <ConfirmDialog
       :open="confirmRestore"
       :title="t('settings.restore.title')"
-      @close="confirmRestore = false"
-    >
-      <div class="space-y-3">
-        <p class="text-sm text-[var(--gosslan-text)]">{{ t("settings.restore.warning") }}</p>
-        <ul class="space-y-1 text-xs text-[var(--gosslan-text-2)]">
-          <li>· {{ t("settings.restore.item.profile") }}</li>
-          <li>· {{ t("settings.restore.item.appearance") }}</li>
-          <li>· {{ t("settings.restore.item.network") }}</li>
-        </ul>
-        <p class="text-xs text-[var(--gosslan-text-2)]">{{ t("settings.restore.note") }}</p>
-        <div class="flex justify-end gap-2 pt-2">
-          <button
-            class="rounded-[var(--gosslan-radius-md)] px-4 py-1.5 text-sm transition hover:bg-[var(--gosslan-hover)]"
-            @click="confirmRestore = false"
-          >{{ t("common.cancel") }}</button>
-          <DangerBtn size="large" @click="restoreDefaults">
-            {{ t("settings.reset.restore") }}
-          </DangerBtn>
-        </div>
-      </div>
-    </BaseModal>
+      :body="t('settings.restore.warning')"
+      :items="[
+        t('settings.restore.item.profile'),
+        t('settings.restore.item.appearance'),
+        t('settings.restore.item.network'),
+      ]"
+      :note="t('settings.restore.note')"
+      :confirm-label="t('settings.reset.restore')"
+      @cancel="confirmRestore = false"
+      @confirm="restoreDefaults"
+    />
 
     <!-- 清除聊天数据：破坏性操作，逐条讲清"删什么 / 不删什么"，再给红色确认键 -->
-    <BaseModal :open="clearConfirmOpen" :title="t('settings.clear.title')" @close="clearConfirmOpen = false">
-      <div class="space-y-3">
-        <p class="text-sm text-[var(--gosslan-text)]">{{ t("settings.clear.warning") }}</p>
-        <ul class="space-y-1 text-xs text-[var(--gosslan-text-2)]">
-          <li>· {{ t("settings.clear.item.messages") }}</li>
-          <li>· {{ t("settings.clear.item.transfers") }}</li>
-          <li>· {{ t("settings.clear.item.cache") }}</li>
-          <li>· {{ t("settings.clear.item.groups") }}</li>
-        </ul>
-        <p class="text-sm text-[var(--gosslan-text)]">{{ t("settings.clear.unaffected") }}</p>
-        <ul class="space-y-1 text-xs text-[var(--gosslan-text-2)]">
-          <li>· {{ t("settings.clear.item.friends") }}</li>
-          <li>· {{ t("settings.clear.item.identity") }}</li>
-          <li>· {{ t("settings.clear.item.profile") }}</li>
-          <li>· {{ t("settings.clear.item.otherDevices") }}</li>
-        </ul>
-        <p class="text-xs text-[var(--gosslan-text-2)]">{{ t("settings.clear.note") }}</p>
-        <div class="flex justify-end gap-2 pt-2">
-          <button
-            class="rounded-[var(--gosslan-radius-md)] px-4 py-1.5 text-sm transition hover:bg-[var(--gosslan-hover)]"
-            @click="clearConfirmOpen = false"
-          >{{ t("common.cancel") }}</button>
-          <DangerBtn size="large" @click="doClearAllData">
-            {{ t("common.clear") }}
-          </DangerBtn>
-        </div>
-      </div>
-    </BaseModal>
+    <ConfirmDialog
+      :open="clearConfirmOpen"
+      :title="t('settings.clear.title')"
+      :confirm-label="t('common.clear')"
+      @cancel="clearConfirmOpen = false"
+      @confirm="doClearAllData"
+    >
+      <p class="text-sm text-[var(--gosslan-text)]">{{ t("settings.clear.warning") }}</p>
+      <ul class="space-y-1 text-xs text-[var(--gosslan-text-2)]">
+        <li>· {{ t("settings.clear.item.messages") }}</li>
+        <li>· {{ t("settings.clear.item.transfers") }}</li>
+        <li>· {{ t("settings.clear.item.cache") }}</li>
+        <li>· {{ t("settings.clear.item.groups") }}</li>
+      </ul>
+      <p class="text-sm text-[var(--gosslan-text)]">{{ t("settings.clear.unaffected") }}</p>
+      <ul class="space-y-1 text-xs text-[var(--gosslan-text-2)]">
+        <li>· {{ t("settings.clear.item.friends") }}</li>
+        <li>· {{ t("settings.clear.item.identity") }}</li>
+        <li>· {{ t("settings.clear.item.profile") }}</li>
+        <li>· {{ t("settings.clear.item.otherDevices") }}</li>
+      </ul>
+      <p class="text-xs text-[var(--gosslan-text-2)]">{{ t("settings.clear.note") }}</p>
+    </ConfirmDialog>
   </div>
 </template>

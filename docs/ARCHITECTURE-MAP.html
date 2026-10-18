@@ -710,6 +710,7 @@ const CMDS = [
   ["read_clipboard_file_paths", "helpers", "", "str[]"],
   ["read_file_preview", "helpers", "msg_id str; max_bytes int", "Response|err"],
   ["save_data_file", "helpers", "base64_data str; destination str", "()|err"],
+  ["save_media_as", "helpers", "msg_id str?; cid str?; destination str", "()|err"],
   ["clear_logs", "logs", "", "()|err"],
   ["close_settings_window", "logs", "", "()|err"],
   ["get_group_todos_context", "logs", "", "str?"],
@@ -864,6 +865,7 @@ const SEM = {
   read_clipboard_file_paths: { d: "读剪贴板里的文件路径（粘贴发图那条路）。", n: "无 api 包装" },
   read_file_preview: { d: "按 msgId 取前 <code>maxBytes</code> 字节 → ArrayBuffer；<b>超限返回 <code>\"TOO_LARGE\"</code> 并 reject</b>。", n: "无 api 包装" },
   save_data_file: { d: "base64 写到目标路径（另存为的落地一步）。", n: "无 api 包装" },
+  save_media_as: { d: "按 msgId / cid 从后端直接拷到目的地（另存图片；<b>不走 base64 IPC</b>，Android content:// 走 ContentResolver）。", n: "api.saveMediaAs" },
 
   /* ── commands/logs.rs —— 注意：这个文件装的是「窗口 + 日志 + 跨窗口投递」三件事 ── */
   open_settings_window: { d: "开设置窗口。<b>async + 建窗锁双检</b>；常驻=false ⇒ 关即销毁，下次是新建。", n: "关即销毁" },
@@ -956,7 +958,7 @@ const EVENTS = [
   // 但属于 §二 要的「已废弃但代码仍存在 / dead code」那一类 —— 图上不写就等于没登记。
   ["group-key-received", "group_id str", "与 <code>groups-updated</code> 同一条路径一起发（收到群密钥时）", "<b>无人监听</b>：前端只处理 groups-updated ⇒ 冗余事件，删除候选", "全体窗口"],
   ["group-file-log", "msg str", "群任务图片落盘/投递那条链的诊断输出（commands/group_todo_media.rs）", "<b>无人监听</b>：DevDiag 面板改走 <code>get_discovery_diag</code> 轮询 ⇒ 保留待接", "全体窗口"],
-  ["peers-updated", "Peer[]", "发现/建链/清扫改动后，由 300ms 合并窗口的 emitter 统一发（<code>try_lock</code>，抢不到就跳过，绝不卡网络）", "chat.refreshPeers / TopologyBar", "全体窗口"],
+  ["peers-updated", "Peer[]", "发现/建链/清扫改动后，由 300ms 合并窗口的 emitter 统一发（<code>try_lock</code>，抢不到就跳过，绝不卡网络）", "chat.refreshPeers", "全体窗口"],
   ["message-received", "MessageRecord", "对端帧解开并落库成功时；也用于自己发出的那一行的首帧", "chat.enqueueMessage（进时间线/计未读/通知）", "全体窗口"],
   ["message-acked", "msg_id str", "发送方收到对端 Ack，<b>且核过 outbox 里确有该行</b>", "onMessageAcked → 气泡转 delivered", "全体窗口"],
   ["group-message-acked", "{msg_id}", "群成员回 GroupAck，删掉<b>那一个成员</b>的 group_outbox 行，<b>并在同一次锁里把这条消息写进真库终态</b> <code>db::set_message_status(…, \"delivered\")</code>（A-15，2026-10-13：过去只删行 + emit ⇒ 内存里 advance 一次，一重启就退回单勾，而「状态唯一真相源是 <code>messages.status</code>」是写着 INV-006 的）", "同上（共用一个处理）", "全体窗口"],

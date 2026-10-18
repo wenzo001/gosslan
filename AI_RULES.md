@@ -1419,16 +1419,21 @@ Use engineering judgment.
 
 ```text
 npm run verify          快速层：不碰 cargo（结构门禁 + 前端断言 + vue-tsc 类型检查），秒级
-npm run verify:full     重门禁层：加 cargo fmt/clippy/test、Rust 清单、护栏非空转扫描、Android 交叉编译
+npm run verify:local    **本地日常重门禁**：只跳过「护栏非空转」，其余照跑（2026-10-18 实测 64.0s）
+npm run verify:full     完整重门禁：加 cargo fmt/clippy/test、Rust 清单、护栏非空转扫描、Android 交叉编译
 ```
+
+`verify:local` 只省掉最长的一步（「护栏非空转」2026-10-18 实测 843.1s，占 23 步总耗时 922.2s
+的 91%）。它**不是护栏通过的证据**：起跑与汇总都会点名跳过项；CI 与 `--group release`
+拒绝 `--skip-guard-sweep`。本地日常其余 22 步全绿即可继续；完整链留到发版/推送前或交给 CI。
 
 **默认只跑快速层，但它不等于"编得过"。** 层结束时脚本会**逐条列出没跑哪些重门禁**——
 别把本地的绿当成全绿，也别把这一行的省略当成"检查变松了"：
 
 ```text
 只改了文档 / 注释 / 前端文案样式   → npm run verify 足够，push 交给 CI 全跑
-改过 Rust 代码 / Cargo.* / 构建配置 → 提交前必须 npm run verify:full
-发版、打 tag、给用户出安装包        → npm run verify:full -- --full（护栏全量逐条改坏验证）
+改过 Rust 代码 / Cargo.* / 构建配置 → npm run verify:local（22 步）；完整链留给发版前/CI
+发版、打 tag、给用户出安装包        → npm run verify:full（必要时再加 -- --full）
 ```
 
 **为什么这样拆（实测）**：一次全量 verify = 412s，其中只有 **5.1s** 真在执行测试

@@ -11,13 +11,19 @@
  * 而且与同弹窗里「状态」那一格本来就是同一个形状（`.gosslan-menu`）——
  * 不再一处原生一处自绘，两套键盘/焦点/观感。
  *
- * ⚠️ 已知边界（与替换前一致，不是这次引入的）：菜单不实现方向键循环，
- * 靠 Tab 走到各项 + Esc 关整个弹窗兜底。要做方向键导航得连「状态」那格一起改，
- * 那是独立一轮（同 `.gosslan-menu` 的其它使用者也在等它）。
+ * ⚠️ 已知边界（与替换前一致，不是这次引入的）：菜单的 ↑/↓ 由 Reka DropdownMenu 接管；
+ * 但 Esc 仍会先关菜单（不再直接关整个弹窗）。要做“Esc 一次关弹窗”得连外层一起改，
+ * 那是独立一轮。
  */
 import { ref, watch } from "vue";
 import { ChevronDown } from "lucide-vue-next";
-import { t } from "@/i18n";
+import {
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuPortal,
+  DropdownMenuRoot,
+  DropdownMenuTrigger,
+} from "reka-ui";
 
 const props = defineProps<{
   /** 行左边的字段名（如「类型」）。 */
@@ -60,20 +66,40 @@ function pick(value: string) {
   <div class="flex items-center justify-between gap-2">
     <span class="text-xs text-[var(--gosslan-text-2)]">{{ label }}</span>
     <div class="relative">
-      <button
-        v-if="!disabled"
-        type="button"
-        class="tap-safe inline-flex h-6 items-center justify-center gap-1 rounded-full px-2.5 text-[12px] font-medium leading-none transition hover:opacity-80"
-        :class="currentClass"
-        :title="hint ?? label"
-        :aria-label="hint ?? label"
-        :aria-expanded="open"
-        aria-haspopup="menu"
-        @click="open = !open"
-      >
-        {{ current }}
-        <ChevronDown class="h-3 w-3" aria-hidden="true" />
-      </button>
+      <DropdownMenuRoot v-if="!disabled" :open="open" :modal="false" @update:open="open = $event">
+        <DropdownMenuTrigger as-child>
+          <button
+            type="button"
+            class="tap-safe inline-flex h-6 items-center justify-center gap-1 rounded-full px-2.5 text-[12px] font-medium leading-none transition hover:opacity-80"
+            :class="currentClass"
+            :title="hint ?? label"
+            :aria-label="hint ?? label"
+          >
+            {{ current }}
+            <ChevronDown class="h-3 w-3" aria-hidden="true" />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuPortal>
+          <DropdownMenuContent
+            align="end"
+            :side-offset="4"
+            :collision-padding="8"
+            class="gosslan-menu frost z-[80]"
+          >
+            <DropdownMenuItem
+              v-for="o in options"
+              :key="o.value"
+              class="gosslan-menu-item"
+              :class="o.value === modelValue ? 'font-medium text-[var(--gosslan-primary)]' : ''"
+              :disabled="o.value === modelValue"
+              :aria-current="o.value === modelValue ? 'true' : undefined"
+              @select="pick(o.value)"
+            >
+              {{ o.label }}
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenuPortal>
+      </DropdownMenuRoot>
       <span
         v-else
         class="inline-flex h-6 items-center justify-center rounded-full px-2.5 text-[12px] font-medium leading-none"
@@ -81,30 +107,6 @@ function pick(value: string) {
       >
         {{ current }}
       </span>
-
-      <template v-if="!disabled && open">
-        <button
-          type="button"
-          class="fixed inset-0 z-40 cursor-default"
-          :aria-label="t('todo.closeMenu')"
-          @click="open = false"
-        />
-        <div class="gosslan-menu frost absolute right-0 top-full z-50 mt-1" role="menu" aria-orientation="vertical">
-          <button
-            v-for="o in options"
-            :key="o.value"
-            type="button"
-            role="menuitem"
-            class="gosslan-menu-item"
-            :class="o.value === modelValue ? 'font-medium text-[var(--gosslan-primary)]' : ''"
-            :disabled="o.value === modelValue"
-            :aria-current="o.value === modelValue ? 'true' : undefined"
-            @click="pick(o.value)"
-          >
-            {{ o.label }}
-          </button>
-        </div>
-      </template>
     </div>
   </div>
 </template>

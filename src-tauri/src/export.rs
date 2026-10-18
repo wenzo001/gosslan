@@ -103,7 +103,7 @@ fn json_str_field(content: &str, key: &str) -> Option<String> {
         .and_then(|v| v.get(key).and_then(|x| x.as_str()).map(|s| s.to_string()))
 }
 
-/// 人类可读体积。与前端 `humanSize` 保持同一档位口径（B/KB/MB/GB）。
+/// 人类可读体积。与前端 `utils/format.ts` 的 `formatBytes` 保持同一口径（B/KB/MB/GB）。
 fn human_size(bytes: u64) -> String {
     const KB: f64 = 1024.0;
     let b = bytes as f64;

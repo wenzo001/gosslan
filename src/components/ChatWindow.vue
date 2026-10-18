@@ -3,6 +3,7 @@ import { t } from "@/i18n";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { api } from "@/api";
 import { useAppStore } from "@/stores/useAppStore";
+import StateBlock from "@/components/ui/StateBlock.vue";
 import { useChatStore } from "@/stores/useChatStore";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -12,6 +13,7 @@ import GroupMemberPanel from "@/components/GroupMemberPanel.vue";
 import GroupFilesPanel from "@/components/GroupFilesPanel.vue";
 import GroupTasksPanel from "@/components/GroupTasksPanel.vue";
 import BaseModal from "@/components/BaseModal.vue";
+import ConfirmDialog from "@/components/ui/ConfirmDialog.vue";
 import ChatHeader from "@/components/chat/ChatHeader.vue";
 import MessageComposer from "@/components/chat/MessageComposer.vue";
 import ForwardModal from "@/components/message/ForwardModal.vue";
@@ -31,6 +33,7 @@ import { foldTodos, todoLiveMap, type TodoLive } from "@/utils/todos";
 import { isRenderedInTimeline } from "@/utils/messageKinds";
 import { activePopupKey } from "@/utils/popupRegistry";
 import { previewText } from "@/utils/messages";
+import DangerBtn from "@/components/ui/DangerBtn.vue";
 import { ArrowDown, Bluetooth, Layers, Pin, Megaphone, Share2, Star, ShieldAlert, KeyRound } from "lucide-vue-next";
 import { Loader2, Trash2, X } from "@/components/ui/icons";
 import {
@@ -79,6 +82,13 @@ const messages = computed(() =>
 const messagesLoading = computed(
   () => !!chat.activeConv && chat.messages[chat.activeConv] === undefined,
 );
+/** 消息首屏读失败（空屏时才有意义）；成功后 store 会清空。 */
+const messageLoadError = computed(() =>
+  chat.activeConv ? (chat.messageLoadErrors[chat.activeConv] ?? "") : "",
+);
+function retryMessages() {
+  if (chat.activeConv) void chat.loadMessages(chat.activeConv);
+}
 
 const online = computed(() => {
   if (!conv.value || conv.value.kind !== "single") return false;
@@ -1447,6 +1457,14 @@ function onLoadMore() {
           <div class="h-9 w-32 animate-pulse rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-hover)]"></div>
         </div>
       </div>
+      <StateBlock
+        v-else-if="messageLoadError"
+        kind="error"
+        :title="t('chat.loadFail')"
+        :detail="messageLoadError"
+        :retry-label="t('common.retry')"
+        @retry="retryMessages"
+      />
       <div
         v-else-if="messages.length === 0"
         class="mt-20 text-center text-sm text-[var(--gosslan-text-2)]"
@@ -1632,57 +1650,39 @@ function onLoadMore() {
             >
               {{ t("common.cancel") }}
             </button>
-            <button
-              class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-3 py-1.5 text-[13px] text-white transition hover:bg-[var(--gosslan-danger-hover)]"
-              @click="deleteAnnouncement"
-            >
+            <DangerBtn @click="deleteAnnouncement">
               {{ t("common.delete") }}
-            </button>
+            </DangerBtn>
           </template>
         </div>
       </template>
     </BaseModal>
 
     <!-- 同步好友新身份密钥：安全敏感动作，必须二次确认（自验签 ≠ 已证明是本人）。
-         候选消失（对方已被删/已同步）时弹窗自动关不住内容，用 v-if 保证不悬空提交。 -->
-    <BaseModal
+         候选消失（对方已被删/已同步）时弹窗自动关不住内容，用 v-if 保证不悬空提交。
+         `danger=false`：这不是删除，主按钮用主题色；`busy` 期间两键与 Esc 都禁用。 -->
+    <ConfirmDialog
       :open="syncKeysOpen && !!keyRotation"
       :title="t('friend.keyRotated.syncTitle')"
-      @close="syncKeysOpen = false"
-    >
-      <div v-if="keyRotation" class="space-y-3">
-        <p class="text-sm leading-relaxed">
-          {{ t("friend.keyRotated.syncBody", { name: keyRotation.nickname }) }}
-        </p>
-        <ul class="space-y-1 text-xs leading-relaxed text-[var(--gosslan-warning-ink)]">
-          <li>· {{ t("friend.keyRotated.syncItem1") }}</li>
-          <li>· {{ t("friend.keyRotated.syncItem2") }}</li>
-        </ul>
-        <div class="flex justify-end gap-2 pt-2">
-          <button
-            class="tap-safe rounded-[var(--gosslan-radius-md)] px-4 py-1.5 text-sm transition hover:bg-[var(--gosslan-hover)]"
-            :disabled="syncingKeys"
-            @click="syncKeysOpen = false"
-          >{{ t("common.cancel") }}</button>
-          <button
-            class="tap-safe inline-flex items-center gap-1.5 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-4 py-1.5 text-sm text-white transition hover:bg-[var(--gosslan-primary-hover)] disabled:opacity-50"
-            :disabled="syncingKeys"
-            @click="confirmSyncKeys"
-          >
-            <KeyRound class="h-3.5 w-3.5" aria-hidden="true" />
-            {{ t("friend.keyRotated.confirmSync") }}
-          </button>
-        </div>
-      </div>
-    </BaseModal>
+      :confirm-label="t('friend.keyRotated.confirmSync')"
+      :body="keyRotation ? t('friend.keyRotated.syncBody', { name: keyRotation.nickname }) : ''"
+      :items="[t('friend.keyRotated.syncItem1'), t('friend.keyRotated.syncItem2')]"
+      :danger="false"
+      :busy="syncingKeys"
+      @cancel="syncKeysOpen = false"
+      @confirm="confirmSyncKeys"
+    />
 
-    <!-- 删除好友（换钥横幅的第二个出口）：沿用 friend.remove.* 既有文案口径。 -->
-    <BaseModal
+    <!-- 删除好友（换钥横幅的第二个出口）：沿用 friend.remove.* 既有文案口径。
+         正文里昵称要点成危险色 ⇒ 走默认插槽，页脚仍由 ConfirmDialog 统一。 -->
+    <ConfirmDialog
       :open="removeKeyPeerOpen && !!keyRotation"
       :title="t('friend.remove.title')"
-      @close="removeKeyPeerOpen = false"
+      :confirm-label="t('common.deleteFriend')"
+      @cancel="removeKeyPeerOpen = false"
+      @confirm="confirmRemoveKeyPeer"
     >
-      <div v-if="keyRotation" class="space-y-3">
+      <template v-if="keyRotation">
         <p class="text-sm">
           {{ t("friend.remove.bodyPrefix") }}<span class="font-medium text-[var(--gosslan-danger-ink)]">{{ keyRotation.nickname }}</span>{{ t("friend.remove.bodySuffix") }}
         </p>
@@ -1690,21 +1690,8 @@ function onLoadMore() {
           <li>· {{ t("friend.remove.item1") }}</li>
           <li>· {{ t("friend.remove.item2") }}</li>
         </ul>
-        <div class="flex justify-end gap-2 pt-2">
-          <button
-            class="tap-safe rounded-[var(--gosslan-radius-md)] px-4 py-1.5 text-sm transition hover:bg-[var(--gosslan-hover)]"
-            @click="removeKeyPeerOpen = false"
-          >{{ t("common.cancel") }}</button>
-          <button
-            class="tap-safe inline-flex items-center gap-1.5 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-1.5 text-sm text-white transition hover:bg-[var(--gosslan-danger-hover)]"
-            @click="confirmRemoveKeyPeer"
-          >
-            <Trash2 class="h-3.5 w-3.5" aria-hidden="true" />
-            {{ t("common.deleteFriend") }}
-          </button>
-        </div>
-      </div>
-    </BaseModal>
+      </template>
+    </ConfirmDialog>
 
     <!-- 群文件列表 -->
     <GroupFilesPanel :open="filesOpen" :group-id="activeGroupId" @close="filesOpen = false" />
@@ -1738,25 +1725,14 @@ function onLoadMore() {
     />
 
     <!-- 批量删除的二次确认：本地删除不可逆（微信也是"删除后无法恢复"） -->
-    <BaseModal :open="confirmBatchDelete" :title="t('multi.delete')" @close="confirmBatchDelete = false">
-      <p class="text-sm leading-relaxed text-[var(--gosslan-text)]">
-        {{ t("multi.deleteConfirm", { n: selectedCount }) }}
-      </p>
-      <div class="mt-5 flex justify-end gap-2">
-        <button
-          class="tap-safe rounded-[var(--gosslan-radius-md)] px-4 py-2 text-sm text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-          @click="confirmBatchDelete = false"
-        >
-          {{ t("common.cancel") }}
-        </button>
-        <button
-          class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-2 text-sm text-white transition hover:bg-[var(--gosslan-danger-hover)]"
-          @click="doBatchDelete"
-        >
-          {{ t("common.delete") }}
-        </button>
-      </div>
-    </BaseModal>
+    <ConfirmDialog
+      :open="confirmBatchDelete"
+      :title="t('multi.delete')"
+      :confirm-label="t('common.delete')"
+      :body="t('multi.deleteConfirm', { n: selectedCount })"
+      @cancel="confirmBatchDelete = false"
+      @confirm="doBatchDelete"
+    />
 
 
     <!-- 图片相册预览（会话内全部图片，左右箭头 / 键盘 ←→ 切换） -->

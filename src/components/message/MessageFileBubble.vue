@@ -2,7 +2,8 @@
 import { t } from "@/i18n";
 import { computed, type CSSProperties } from "vue";
 import type { FileMeta } from "@/types";
-import { humanSize, rgba } from "@/utils/color";
+import { rgba } from "@/utils/color";
+import { formatBytes } from "@/utils/format";
 import { FILE_KIND_COLORS, FILE_KIND_ICONS, fileExt, fileKindOf } from "@/utils/fileKind";
 import { useAppStore } from "@/stores/useAppStore";
 import { Download, RotateCw } from "lucide-vue-next";
@@ -87,7 +88,7 @@ const canOpen = computed(() => props.ready && props.tappable !== false);
         <div v-else class="mt-0.5 flex items-center gap-1 text-[11px] opacity-70">
           <span>{{ extLabel }}</span>
           <span>·</span>
-          <span>{{ humanSize(meta.size) }}</span>
+          <span>{{ formatBytes(meta.size) }}</span>
           <template v-if="note">
             <span>·</span>
             <span class="truncate" :title="note">{{ note }}</span>

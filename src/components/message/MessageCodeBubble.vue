@@ -3,7 +3,8 @@ import { t } from "@/i18n";
 import { computed } from "vue";
 import CodeBlock from "@/components/CodeBlock.vue";
 import { CODE_CLAMP_HEIGHT, CODE_SURFACE } from "@/utils/previewMetrics";
-import { Check, Copy } from "lucide-vue-next";
+import { Copy } from "lucide-vue-next";
+import { Check } from "@/components/ui/icons";
 
 const props = defineProps<{
   /** inline code 消息取消息正文，代码附件取本地读到的文本。 */

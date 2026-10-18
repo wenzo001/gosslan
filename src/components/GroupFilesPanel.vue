@@ -17,10 +17,15 @@ import { useAppStore } from "@/stores/useAppStore";
 import { useMemberProfile } from "@/composables/useMemberProfile";
 import BaseModal from "@/components/BaseModal.vue";
 import { fmtConversationTime } from "@/utils/time";
-import { humanSize, rgba } from "@/utils/color";
+import { rgba } from "@/utils/color";
+import { formatBytes } from "@/utils/format";
 import { FILE_KIND_COLORS, FILE_KIND_ICONS, fileExt, fileKindOf } from "@/utils/fileKind";
 import { openLocalFile } from "@/utils/localFile";
-import { Loader2, RotateCw } from "lucide-vue-next";
+import { RotateCw } from "lucide-vue-next";
+import { Loader2 } from "@/components/ui/icons";
+import StateBlock from "@/components/ui/StateBlock.vue";
+import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
+import { friendlyError } from "@/utils/errors";
 import type { GroupFileEntry } from "@/types";
 
 const props = defineProps<{ open: boolean; groupId: string | null }>();
@@ -32,6 +37,7 @@ const { memberProfile, myId } = useMemberProfile();
 const files = ref<GroupFileEntry[]>([]);
 const loading = ref(false);
 const failed = ref(false);
+const loadError = ref("");
 
 async function load() {
   if (!props.groupId) return;
@@ -44,10 +50,12 @@ async function load() {
     // （与 4.1-7 同一条链上的另一半 —— 只补 watch 不补这里，切群瞬间的旧响应仍会回填）。
     if (gid !== props.groupId) return;
     files.value = list;
-  } catch {
+    loadError.value = "";
+  } catch (e) {
     if (gid !== props.groupId) return;
+    // 有旧清单就保留（刷新失败不该把已经看到的文件清空），只有一屏都没有才换成错误态。
     failed.value = true;
-    files.value = [];
+    loadError.value = friendlyError(e, t("group.files.loadFail"));
   } finally {
     if (gid === props.groupId) loading.value = false;
   }
@@ -166,17 +174,32 @@ function stateText(state: GroupFileEntry["local_state"]): string {
   >
     <div class="space-y-3">
       <div v-if="files.length" class="text-xs text-[var(--gosslan-text-2)]">
-        {{ t("group.files.totalSize", { n: files.length, size: humanSize(totalSize) }) }}
+        {{ t("group.files.totalSize", { n: files.length, size: formatBytes(totalSize) }) }}
       </div>
 
-      <div v-if="loading" class="flex items-center justify-center gap-2 py-8 text-sm text-[var(--gosslan-text-2)]">
+      <div v-if="failed && files.length > 0" class="flex items-center justify-between gap-2 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-warning-soft)] px-2.5 py-1.5 text-xs text-[var(--gosslan-text-body)]">
+        <span class="min-w-0 truncate" :title="loadError">{{ t("group.files.loadFail") }}</span>
+        <PrimaryBtn size="default" shrink @click="load()">
+          <span class="inline-flex items-center gap-1">
+            <RotateCw class="h-3.5 w-3.5" aria-hidden="true" />
+            {{ t("common.retry") }}
+          </span>
+        </PrimaryBtn>
+      </div>
+
+      <div v-if="loading && files.length === 0" class="flex items-center justify-center gap-2 py-8 text-sm text-[var(--gosslan-text-2)]">
         <Loader2 class="h-4 w-4 animate-spin" />
         {{ t("group.files.loading") }}
       </div>
 
-      <div v-else-if="failed" class="py-8 text-center text-sm text-[var(--gosslan-text-2)]">
-        {{ t("group.files.loadFail") }}
-      </div>
+      <StateBlock
+        v-else-if="failed && files.length === 0"
+        kind="error"
+        :title="t('group.files.loadFail')"
+        :detail="loadError"
+        :retry-label="t('common.retry')"
+        @retry="load()"
+      />
 
       <div v-else-if="files.length === 0" class="py-8 text-center text-sm text-[var(--gosslan-text-2)]">
         {{ t("group.files.empty") }}
@@ -207,7 +230,7 @@ function stateText(state: GroupFileEntry["local_state"]): string {
             <div class="mt-0.5 flex items-center gap-1 text-[11px] text-[var(--gosslan-text-2)]">
               <span>{{ extLabel(f.name) }}</span>
               <span>·</span>
-              <span>{{ humanSize(f.size) }}</span>
+              <span>{{ formatBytes(f.size) }}</span>
               <span>·</span>
               <span class="truncate" :title="senderLabel(f.sender_id)">{{ senderLabel(f.sender_id) }}</span>
               <span>·</span>

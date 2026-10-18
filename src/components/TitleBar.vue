@@ -14,7 +14,7 @@
 import { onBeforeUnmount, onMounted, ref } from "vue";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api } from "@/api";
-import { X } from "lucide-vue-next";
+import { X } from "@/components/ui/icons";
 import { isMac } from "@/utils/platform";
 import { t } from "@/i18n";
 

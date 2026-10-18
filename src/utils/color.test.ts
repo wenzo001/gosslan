@@ -5,7 +5,6 @@ import {
   lighten,
   darken,
   rgba,
-  humanSize,
     mixHex,
   luma,
   mixToLuma,
@@ -36,14 +35,6 @@ test("主题色派生链：hover 比主色浅、active 比主色深", () => {
   const av = (darken("#3b82f6", 0.08).match(/\d+/g) ?? []).map(Number);
   assert.ok(hv[0] >= base[0]);
   assert.ok(av[0] <= base[0]);
-});
-
-test("humanSize 单位换算与精度", () => {
-  assert.equal(humanSize(0), "0.0 B");
-  assert.equal(humanSize(1024), "1.0 KB");
-  assert.equal(humanSize(1024 * 1024), "1.0 MB");
-  assert.equal(humanSize(1024 * 1024 * 1024), "1.0 GB");
-  assert.equal(humanSize(1536), "1.5 KB");
 });
 
 test("luma: 黑白两端为 0/255，中间色介于其间", () => {

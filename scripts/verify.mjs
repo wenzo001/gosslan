@@ -35,6 +35,9 @@
  *     npm run verify:full -- --full   # 再加**全量**护栏（含 Rust 用例，每条都要重编译，10 分钟以上）
  *                                     #   （`--full` 也会自动拉起重门禁层，不会静默跑成快速层）
  *     npm run verify:full -- --no-guards  # 全量层但跳过护栏扫描（护栏工具缺失时的临时绕过，会留痕）
+ *     npm run verify:full -- --skip-guard-sweep
+ *                                     # **本地日常**：只跳过最长的「护栏非空转」一步（历史 843–1262s），
+ *                                     #   其余 22 步照跑；CI / --group release 会拒绝这个开关。
  *                                     #   （快速层本来就不含护栏扫描，那里加这个参数是无操作）
  *     npm run verify -- --list    # 只列出会跑哪些步骤（加 -- --full-gate 看全量层）
  *     node scripts/verify.mjs --group <组名>      # 组名只认下面 GROUPS 那份，非法值会自报全部合法值
@@ -133,6 +136,14 @@ function findPython() {
 const argv = process.argv.slice(2);
 const full = argv.includes("--full");
 const noGuards = argv.includes("--no-guards");
+/**
+ * 本地日常开关：只跳过「护栏非空转」那一步（它占全量层的 90% 以上耗时）。
+ *
+ * ⚠️ 它**只省时间，不表示护栏通过**：发版与 CI 必须跑完整链。因此：
+ * - `--group release` 与 `CI` 环境下拒绝这个开关；
+ * - 起跑与汇总都各留一条醒目记录，不允许绿得看不出少跑了一步。
+ */
+const skipGuardSweep = argv.includes("--skip-guard-sweep");
 const listOnly = argv.includes("--list");
 /**
  * 是否跑「重门禁层」（cargo 编译 / 护栏非空转 / Android 交叉编译）。
@@ -386,7 +397,7 @@ const steps = [
   },
 ];
 
-if (!noGuards) {
+if (!noGuards && !skipGuardSweep) {
   // 条数与耗时都交给该步自己打印（`verify-guards.py` 有 `[n/m]` 进度）——
   // 写死在这里的数字一定会腐烂：这里曾经同时错过"97 条"和"十几秒"两个旧值。
   steps.push({
@@ -485,6 +496,10 @@ const groupFlag = (() => {
 })();
 if (groupFlag && !GROUPS.includes(groupFlag)) {
   console.error(`✗ --group 只接受 ${GROUPS.join(" / ")}，收到 "${groupFlag}"`);
+  process.exit(1);
+}
+if (skipGuardSweep && (process.env.CI || groupFlag === "release")) {
+  console.error("✗ --skip-guard-sweep 只允许本地日常批次：CI 与 --group release 必须跑完整的「护栏非空转」。");
   process.exit(1);
 }
 
@@ -1151,6 +1166,10 @@ if (!existsSync(path.join(ROOT, "dist")) && active.some((s) => s.cwd === TAURI))
 console.log(
   `=== Gosslan verify —— ${fullGate ? "全量层（含 cargo 编译 / 护栏扫描 / Android）" : "快速层（不编译）"} ===\n`,
 );
+if (skipGuardSweep) {
+  console.warn("⚠️ --skip-guard-sweep：本机跳过「护栏非空转」整步（历史 843–1262s）。");
+  console.warn("   这不等于护栏通过；发版/推送前必须跑完整的 `npm run verify:full`（CI 也会跑）。");
+}
 
 const results = [];
 const t0 = Date.now();
@@ -1221,6 +1240,9 @@ for (const r of results) {
 }
 for (const s of active.slice(results.length)) {
   console.log(`  ⏭   ${s.name}（未跑）`);
+}
+if (skipGuardSweep) {
+  console.log("  ⏭   护栏非空转（按 --skip-guard-sweep 本地跳过；发版/CI 必须跑完整链）");
 }
 // ⚠️ 快速层/组模式都必须**点名**它没跑什么：本项目最忌讳的就是"没守却当作守了"。
 // 绿色只表示"这一层的门禁过了"，不表示"代码编得过"，也不表示"别的 job 那组过了"。
