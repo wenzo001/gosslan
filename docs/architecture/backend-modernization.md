@@ -149,7 +149,14 @@
   在 stop 前已被旧连接接下（旧日志 17:47:55 accept RECEIVED），重启后新连接补其余 3 单，
   4 份文件全部落盘且 sha 正确。断言改为“杀前已接下的不算剩余”，总 accept 仍须覆盖
   4 单且超时 0；不是产品缺陷，也不放宽产品判据。
-- 未跑：其余 18 个轮次、真机；Windows/Linux/iOS 运行时未验证。
+- 扩展覆盖（同一隔离 HOME，release 5.0.29）：`kill-mid` **25/25**、`peer-freeze` **24/24**、
+  `multi-file` **24/24**、`gossip3` **25/25**、`sender-kill-mid` **26/26**（修复 outbox 后）、
+  `recv-readonly` **24/24**、`group` **37/37**（`GOSSLAN_AX=1` 真界面读到 `[有人@我]`/6 未读）、
+  `gfile` **28/28**（群文件逐字节一致）、`ghsync` **32/32**（新成员历史/群任务同步、
+  时间/seq 保真、路径剥离、未读 0、标记 done）。合计 **12 轮 / 327 断言全绿**。
+- `gfile` 首跑因驱动内 `cargo build --example e2e_peer` 遇到本机 toolchain 环境问题退出 1；
+  直接构建成功（16s）后带 `RUSTUP_TOOLCHAIN` 复跑 **28/28** 绿 —— 环境噪声，不是产品缺陷。
+- 未跑：其余 E2E 轮次、真机；Windows/Linux/iOS 运行时未验证；真实 4.x 用户库未执行。
 
 ### B10（已落地，5.0.29）：文件发送成功后的队列行统一清理
 - E2E `sender-kill-mid` 发现：发送端在飞时被 SIGKILL、重启续传完成后，两侧
