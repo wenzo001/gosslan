@@ -1,6 +1,6 @@
 # Gosslan 后端基础设施现代化（5.0）——基线与迁移方案
 
-> 分支 `feat/5.0` · 版本 5.0.29 · Rust 1.98.1 · 目标平台 macOS/Windows/Linux/Android/iOS
+> 分支 `feat/5.0` · 版本 5.0.30 · Rust 1.98.1 · 目标平台 macOS/Windows/Linux/Android/iOS
 > 真实库（只读核对）：`~/Library/Application Support/com.gosslan.app/gosslan.db`，
 > `user_version=11`、19 张业务表、`journal_mode=wal`、`PRAGMA integrity_check=ok`。
 > 本文是阶段 B 的选型/迁移方案；每批实施后回填读数，不把"计划"当"完成"。
@@ -187,6 +187,14 @@
   （按 `transfer_id` 幂等；无队列行时 no-op；失败留痕）。源码守卫要求成功收尾
   必须包含该调用。Rust **985 通过 + 1 ignored**；`sender-kill-mid` 复跑见下。
 - 未改变成功/失败判定、重试状态机、协议与文件内容。
+
+### B11（已落地，5.0.30）：应用数据目录权限 `0700`
+- 真实安装的 app data 目录是 `0755`：文件虽已 `0600`，同机其他用户仍可列出备份名、
+  日志名与实例库名。`AppState::init()` 在解析目录后调用
+  `private_fs::restrict_dir_to_owner` 收紧到 `0700`（Unix；非 Unix 无操作，
+  失败只告警不阻断启动）。
+- **实测（2026-10-19，5.0.30）**：临时目录 `0755 → 0700`；Rust **986 通过 + 1 ignored**；
+  基线 986 → 987。只改启动期目录权限，未改文件内容/DB/协议。
 
 ## 4. 4.x → 5.0 数据迁移与恢复
 

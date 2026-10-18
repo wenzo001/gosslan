@@ -752,6 +752,7 @@ nickname::tests::legacy_defaults_are_recognised_but_chosen_names_are_not
 notifications::tests::notify_enabled_defaults_on_and_uses_the_same_key_as_the_frontend
 notifications::tests::platform_hint_is_never_empty
 notifications::tests::windows_only_branch_is_source_checkable_for_pattern_bounds
+private_fs::tests::restrict_dir_to_owner_sets_0700
 protocol::tests::announce_rejects_forged_signature_with_victim_pubkey
 protocol::tests::announce_rejects_signed_but_incomplete_packets
 protocol::tests::announce_rejects_tampering_on_every_signed_field
