@@ -3,8 +3,9 @@
 //! 数据库迁移由 PRAGMA user_version 驱动，见 `run_migrations()` / `MIGRATIONS` 数组。
 
 use std::path::Path;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Result};
+use rusqlite::{params, params_from_iter, Connection, OpenFlags, OptionalExtension, Result};
 
 use crate::state::{
     Conversation, Favorite, Friend, Group, GroupFile, GroupFileRecipient, MessageRecord,
@@ -50,6 +51,8 @@ pub enum InitError {
     /// 唯一正确的处置是拒绝打开（AI_RULES 的"能升不能毁"红线），但必须给用户
     /// 可读、可行动的解释（`downgrade_message`），不能只是一个错误。
     Downgrade { current: u32 },
+    /// 迁移前备份失败或校验不通过。**原库未改动**，备份文件保留供诊断。
+    Backup { path: String, reason: String },
     /// 其它 SQLite 错误（打不开、迁移失败……）。
     Sqlite(rusqlite::Error),
 }
@@ -91,6 +94,10 @@ impl std::fmt::Display for InitError {
                 "DB user_version={current} > app DB_VERSION={DB_VERSION}: \
                  数据来自更新的版本，拒绝降级打开（未执行任何迁移）"
             ),
+            Self::Backup { path, reason } => write!(
+                f,
+                "迁移前备份失败/校验不通过（原库未改动）：{path}: {reason}"
+            ),
             Self::Sqlite(e) => write!(f, "{e}"),
         }
     }
@@ -100,7 +107,7 @@ impl std::error::Error for InitError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Sqlite(e) => Some(e),
-            Self::Downgrade { .. } => None,
+            Self::Downgrade { .. } | Self::Backup { .. } => None,
         }
     }
 }
@@ -671,12 +678,85 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_favorites_msg  ON favorites(msg_id);
 CREATE INDEX        IF NOT EXISTS idx_favorites_time ON favorites(favorited_at DESC);
 "#;
 
+/// 迁移前一致性快照 + 可验证判据（数据安全优先）。
+///
+/// 为什么用 `VACUUM INTO` 而不是复制主文件：WAL 模式下已提交数据可能还在 `-wal` 里，
+/// 直接 `fs::copy` 主文件（或连同 `-wal/-shm` 一起）不是原子快照。`VACUUM INTO` 由
+/// SQLite 自己开读事务，把**已提交状态**写成一个独立单文件；随后用只读连接校验
+/// `integrity_check=ok`、迁移前版本、业务表数，三者任一不满足就中止迁移并保留原库。
+///
+/// 备份名带进程 id + 纳秒时间戳：失败重试不会覆盖上一份可用备份；刻意不自动删除
+/// （迁移是低频事件，保留诊断证据比省几 MB 重要）。
+fn backup_before_migration(
+    conn: &Connection,
+    db_path: &Path,
+    from_version: u32,
+    expected_tables: i64,
+) -> std::result::Result<(), InitError> {
+    let parent = db_path.parent().unwrap_or_else(|| Path::new("."));
+    let stem = db_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("gosslan");
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let backup = parent.join(format!(
+        "{stem}.pre-v{from_version}-to-v{DB_VERSION}-{}-{stamp}.db",
+        std::process::id()
+    ));
+    let backup_str = backup.to_string_lossy().to_string();
+    let fail = |reason: String| InitError::Backup {
+        path: backup_str.clone(),
+        reason,
+    };
+    conn.execute("VACUUM INTO ?1", [backup_str.as_str()])
+        .map_err(|e| fail(format!("VACUUM INTO: {e}")))?;
+    let check = Connection::open_with_flags(&backup, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|e| fail(format!("打开备份: {e}")))?;
+    let integrity: String = check
+        .query_row("PRAGMA integrity_check", [], |r| r.get(0))
+        .map_err(|e| fail(format!("integrity_check: {e}")))?;
+    if integrity != "ok" {
+        return Err(fail(format!("integrity_check 结果不是 ok：{integrity}")));
+    }
+    let version: u32 = check
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .map_err(|e| fail(format!("读取备份版本: {e}")))?;
+    if version != from_version {
+        return Err(fail(format!(
+            "备份 user_version={version}，迁移前应为 {from_version}"
+        )));
+    }
+    let tables: i64 = check
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(|e| fail(format!("统计备份表数: {e}")))?;
+    if tables != expected_tables {
+        return Err(fail(format!(
+            "备份业务表数={tables}，迁移前为 {expected_tables}"
+        )));
+    }
+    eprintln!(
+        "[gosslan-db] pre-migration backup ok: {backup_str} \
+         (v{from_version}→v{DB_VERSION}, tables={tables}, integrity=ok)"
+    );
+    Ok(())
+}
+
 /// 打开（或创建）数据库并执行迁移。
 pub fn init(path: &Path) -> std::result::Result<Connection, InitError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).ok();
     }
     let conn = Connection::open(path)?;
+    // 备份 / VACUUM / 其它进程短暂持锁时不要立刻 SQLITE_BUSY；5s 内排队等待。
+    // 这不是"把锁竞争藏起来"：等待有上界，超时仍返回错误，调用方照常进入错误态。
+    conn.busy_timeout(Duration::from_secs(5))?;
     // S13: 数据库版本高于当前程序 — 说明用户从更新版本的 App 降级了，旧代码不认识新
     // schema，继续使用会导致数据损坏。**拒绝继续，不降级、不删除。**
     //
@@ -702,12 +782,20 @@ pub fn init(path: &Path) -> std::result::Result<Connection, InitError> {
             |r| r.get(0),
         )
         .unwrap_or(0);
-    conn.execute_batch(SCHEMA)?;
-    // 内容传输逻辑层自己的表（schema 归它所有，保持分层）。
-    crate::content::store::ensure_schema(&conn)?;
     // 判据：`user_version` 没写过 **且** 一张业务表都没有。只看前者会把
     // "老库（v1/v2 时代根本不存在 user_version）"误判成新库 ⇒ 那条库的形状就永远补不回来。
     let is_fresh = current == 0 && pre_table_count == 0;
+
+    // **迁移前保护**：已有库且需要前进 schema 时，先在**任何写操作之前**做一致性快照。
+    // 这里位于 `execute_batch(SCHEMA)` 之前是语义的一部分：备份失败就中止，原库一个字节
+    // 都不改；不许带着"备份没成功"继续往下迁移。
+    if !is_fresh && current < DB_VERSION {
+        backup_before_migration(&conn, path, current, pre_table_count)?;
+    }
+
+    conn.execute_batch(SCHEMA)?;
+    // 内容传输逻辑层自己的表（schema 归它所有，保持分层）。
+    crate::content::store::ensure_schema(&conn)?;
 
     if is_fresh {
         conn.pragma_update(None, "user_version", DB_VERSION)?;
