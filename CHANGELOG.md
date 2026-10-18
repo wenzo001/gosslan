@@ -30,9 +30,9 @@
   recv-readonly、group、gfile、ghsync、recv-dir-rotted、src-shrunk、lanoff、
   posttext、task、dmreaction；group 用 AX 读到 `[有人@我]`/6 未读。`gfile` 首跑为
   `cargo build --example e2e_peer` 的 toolchain 环境噪声，复跑绿。
-- 旧/新二进制互操作：4.44.4 release ↔ 5.0.29 双向各 **18/18 PASS**
-  （正向 A=4.44.4/B=5.0.29、反向 A=5.0.29/B=4.44.4；文本/Ack/文件 sha/重启/Routed）。
-  未覆盖群聊/复杂新帧的旧端互操作。
+- 旧/新二进制互操作（4.44.4 release ↔ 5.0.29，A/B 双向）：default **18/18 ×2**、
+  group **37/37 ×2**、gfile **28/28 ×2**、gossip3 **25/25 ×2**，合计
+  **8 轮 / 216 断言全绿**；两侧 DB_VERSION=11。未覆盖真机与 4.x 用户库实迁移。
 - `src-shrunk` 已知展示差异：A 入队台账/气泡仍记 1048576，B 台账/盘上 4096；
   内容、sha、两侧终态均正确，属 UI 尺寸展示口径，不影响数据完整性。
 
