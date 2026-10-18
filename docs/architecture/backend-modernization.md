@@ -321,7 +321,7 @@
 
 ### 6.1 基线
 
-- 分支 `feat/5.0`，版本 **5.0.31**；本地未推笔数现算（`git rev-list --count origin/main..HEAD`）；Rust 1.98.1。
+- 分支 `feat/5.0`，版本 **5.0.32**；本地未推笔数现算（`git rev-list --count origin/main..HEAD`）；Rust 1.98.1。
 - 真实库只读核对：`user_version=11`、19 张业务表、WAL、`integrity_check=ok`；
   **未对真实用户库执行迁移**。
 - 工作树仍有并行会话的前端改动，本轮未暂存、未覆盖。
@@ -366,7 +366,7 @@
 - 机制：`user_version` 单调迁移链（v0–v11）+ 每步事务 + 降级拒绝；迁移前
   `VACUUM INTO` + `integrity_check`/版本/表数校验，失败以 `InitError::Backup` 中止；
   `busy_timeout=5s`。
-- 判据：迁移测试 **38 通过 + 1 ignored**、Rust **989 通过 + 1 ignored**；
+- 判据：迁移测试 **38 通过 + 1 ignored**、Rust **990 通过 + 1 ignored**；
   覆盖 v0 legacy、1..10 每个起始版本、损坏库原文件逐字节不变、备份恢复再迁移。
 - 真实 v10 DDL 夹具（`0b84f11^`）18 张历史表 + 各实体数据迁移后逐字段保留。
 - 真实数据副本演练：只读副本置 v10 → 生产 `init`：19 表/208 行、备份 integrity ok、
@@ -421,7 +421,7 @@
 |---|---|---|
 | `npm run verify:local`（干净 worktree，5.0.31） | **0** | **22/22，64.4s** |
 | `cargo xwin build --release --target x86_64-pc-windows-msvc --features bluetooth` | 0 | **2m39s**，`gosslan.exe` 9.6MB（PE32+ GUI x86-64） |
-| `cargo test --lib --features bluetooth` | 0 | **989 通过 + 1 ignored** |
+| `cargo test --lib --features bluetooth` | 0 | **990 通过 + 1 ignored** |
 | 迁移测试 | 0 | **38 通过 + 1 ignored** |
 | E2E（32 轮，隔离 HOME） | 0 | **863/863 断言** |
 | `cargo audit --file src-tauri/Cargo.lock` | 0 | **0 漏洞，10 allowed warnings** |
@@ -439,13 +439,13 @@
 ### 6.9 最终结论
 
 - **是否达到本轮重构目标？** **未全部达到**。数据安全、迁移保护、权限、网络可靠性、
-  兼容性、E2E 与 macOS 验收已落地并有实测证据（B1–B12、Rust 989+1、E2E 32 轮/863、
+  兼容性、E2E 与 macOS 验收已落地并有实测证据（B1–B12、Rust 990+1、E2E 32 轮/863、
   互操作 8 轮/216）；真实 4.x 用户库 schema 迁移与真实设备/平台运行时仍未验证。
 - **用户数据是否经过真实迁移验证？** **部分**。v0–v11 合成迁移、逐字 v10 DDL 夹具、
   v10 真实数据副本迁移演练均通过；本机真实安装库（已是 v11）的一致性只读副本由
   5.0.31 启动后，8 表行数与 6 组语义聚合逐项一致。**真实 4.x 用户库的 v10→v11
   schema 迁移仍 NOT RUN**（本机没有处于 v10 的真实用户库）。
-- **是否确认没有破坏已有业务功能？** **在已跑范围内确认**：Rust 989+1、E2E 32 轮/863、
+- **是否确认没有破坏已有业务功能？** **在已跑范围内确认**：Rust 990+1、E2E 32 轮/863、
   4.44.4↔5.0.29 互操作 8 轮/216、迁移 38+1、cargo audit 0 漏洞；未跑的真机与
   Windows/iOS/Linux 运行时不能据此确认。
 - **大文件传输期间应用仍可响应？** **通过（有边界）**：300MB 传输下接收端设置窗口
@@ -459,3 +459,19 @@
   连接串行化、Windows ACL、Linux GTK/D-Bus 传递依赖告警；另有 A-9/A-10/A-13 等
   已登记未修项（见 `docs/stability-roadmap.md`）。
 - 未 push、未 tag、未 release、未 merge main；目标不标记完成。
+
+### 6.10 可观测性覆盖（第九阶段）
+
+| 链路 | 现有关键锚点 | 关联键 | 缺口 |
+|---|---|---|---|
+| 消息 | 创建/入队/发送/确认/落库各自的既有日志（outbox、chat 命令） | `msg_id` | 无跨进程统一 trace，只能按 `msg_id` 人工串 |
+| 文件 | `[FILE] offer-sending` / `offer SENT` / `accept RECEIVED` / `COMPLETED ok=`；接收侧初始化/ SHA / fsync / rename 失败留痕 | `transfer_id` | 无单条"总耗时分解"（accept→首片→末片→Ack 分散在多行） |
+| 内容拉取 | `ContentRequest：本机没有该内容 cid=` / `请求方无权限 cid=`；服务队列溢出留痕 | `cid` / `tid` | — |
+| 发现/链路 | `diag/announce_verified`、`建链 peer=`、`DialOutcome::Failed` 阶段名 | peer id | 成功路径缺分阶段耗时 |
+| DB | 新增 `db 持锁观测：…`（60s 窗口，慢锁才 warn；含取锁次数/最长持有/最长等待/累计/超阈值次数） | 无（全局单锁） | 事务级耗时与锁等待原因仍不可见；`busy_timeout` 触发无专门行 |
+| 后台任务 | 清扫器/队列失败留痕 | 任务名 | 任务退出/取消没有统一一行 |
+| 工具决策 | 不引 `tracing`/OpenTelemetry：同步落盘是崩溃现场与最后一条日志的证据前提（B4）；外部遥测需隐私评估 | — | — |
+
+- 新增锁摘要的**唯一生产读者**与唯一启动点由
+  `db_hold_summary_has_exactly_one_production_reader` 钉住；数字行不含 SQL、参数、
+  正文或文件名。

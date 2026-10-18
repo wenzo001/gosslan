@@ -396,6 +396,7 @@ pub fn run() {
             // 「运行日志」页（安卓上这是唯一能拿到的诊断路径，见 `install_panic_hook`）。
             install_panic_hook(Some(app.handle().clone()));
             state::AppState::spawn_peer_emitter(&state);
+            state::AppState::spawn_db_hold_reporter(&state);
             app.manage(state.clone());
             // 系统托盘：关闭主窗口仅隐藏到托盘，退出需走托盘菜单
             // ⚠️ 三条语句必须一起包进 `#[cfg(desktop)]` 块：属性只作用于**紧跟其后的那一条**，

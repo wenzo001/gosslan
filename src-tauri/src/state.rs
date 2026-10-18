@@ -1982,7 +1982,30 @@ impl AppState {
             }
         });
     }
+
+    /// 周期性把 SQLite 锁观测摘要写进运行日志。
+    ///
+    /// `DbLock` 已经逐次量了 wait/hold，但 `take_summary()` 此前只有测试在读 ⇒ 现场
+    /// 看不到"谁握了多久、排队多久"。这里做**唯一生产读者**（两个读者会互相吞计数）；
+    /// 空窗口不产行，只有慢持锁（默认 ≥500ms）才 warn 一行，数字里不含 SQL/正文。
+    pub fn spawn_db_hold_reporter(state: &Arc<AppState>) {
+        let st = state.clone();
+        tauri::async_runtime::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(DB_HOLD_REPORT_SECS)).await;
+                let summary = st.db.take_summary();
+                if let Some(line) =
+                    crate::db_hold::summary_line(&summary, st.db.slow_threshold_ms())
+                {
+                    st.logger.warn("db", line);
+                }
+            }
+        });
+    }
 }
+
+/// 锁观测摘要的周期（秒）。只在有慢持锁时产出一行，正常窗口零噪声。
+const DB_HOLD_REPORT_SECS: u64 = 60;
 
 /// 解析多开实例号：优先 `--instance N` / `-i N` 启动参数，其次 `GOSSLAN_INSTANCE` 环境变量。
 /// 返回 0 表示默认单实例。
