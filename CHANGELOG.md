@@ -13,6 +13,19 @@
 
 ## [Unreleased]
 
+## [5.0.29] - 2026-10-19
+
+### 修复：文件发送成功后统一清理 `file_outbox`
+
+- E2E `sender-kill-mid` 实测：发送端在飞时被 SIGKILL、重启续传完成后，两侧 `file_transfers`
+  都是 `done`、文件 sha 正确，但发送端 `file_outbox` 仍残留 `pending` 行 ⇒ 清扫器会在
+  下次建链再投一次（重复投递），界面也可能永久停在“排队中”。
+- `finalize_send_accepted` 现在对**所有成功路径**（正常 `FileCompleteAck`、`AlreadyHave`
+  快路、重启续传/内容拉取等）统一调用 `drop_sent_outbox_row`（按 `transfer_id` 幂等；
+  直接发送没有队列行时 no-op；删除失败照旧留痕）。`flush_pending_files` 原有调用点保留。
+- 加强源码守卫：成功收尾函数必须包含 `drop_sent_outbox_row(`；Rust **985 通过 + 1 ignored**。
+  E2E `sender-kill-mid` 复跑见该轮读数；E2E/真机其余项仍按 NOT RUN 标注。
+
 ## [5.0.28] - 2026-10-19
 
 ### 安全：启动时收紧历史日志文件

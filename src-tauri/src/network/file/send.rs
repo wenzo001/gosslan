@@ -669,6 +669,13 @@ fn finalize_send_accepted(
     for note in notes {
         state.logger.error("file", note);
     }
+    // 任何成功收尾都必须清掉队列行：AlreadyHave 快路、重启后续传、内容拉取等路径
+    // 都可能绕过 `flush_pending_files` 的 Ok 分支（2026-10-19 sender-kill E2E 实测：
+    // 两侧 done、文件 sha 正确，但 A 的 file_outbox 仍 pending ⇒ 清扫器会再投一次）。
+    // 删除按 transfer_id 幂等；直接发送没有队列行时是 no-op。
+    if let Some(note) = drop_sent_outbox_row(&state.db, transfer_id) {
+        state.logger.error("file", note);
+    }
     // 通知前端发送方文件消息已完成（前端 onMessageAcked 会把 spinner 切为空圆框）
     let _ = state
         .app

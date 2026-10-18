@@ -1,6 +1,6 @@
 # Gosslan 后端基础设施现代化（5.0）——基线与迁移方案
 
-> 分支 `feat/5.0` · 版本 5.0.28 · Rust 1.98.1 · 目标平台 macOS/Windows/Linux/Android/iOS
+> 分支 `feat/5.0` · 版本 5.0.29 · Rust 1.98.1 · 目标平台 macOS/Windows/Linux/Android/iOS
 > 真实库（只读核对）：`~/Library/Application Support/com.gosslan.app/gosslan.db`，
 > `user_version=11`、19 张业务表、`journal_mode=wal`、`PRAGMA integrity_check=ok`。
 > 本文是阶段 B 的选型/迁移方案；每批实施后回填读数，不把"计划"当"完成"。
@@ -150,6 +150,16 @@
   4 份文件全部落盘且 sha 正确。断言改为“杀前已接下的不算剩余”，总 accept 仍须覆盖
   4 单且超时 0；不是产品缺陷，也不放宽产品判据。
 - 未跑：其余 18 个轮次、真机；Windows/Linux/iOS 运行时未验证。
+
+### B10（已落地，5.0.29）：文件发送成功后的队列行统一清理
+- E2E `sender-kill-mid` 发现：发送端在飞时被 SIGKILL、重启续传完成后，两侧
+  `file_transfers` 均 `done`、文件 sha 正确，但发送端 `file_outbox` 仍残留 `pending`
+  行（清扫器会再次投递）。根因是队列行删除只挂在 `flush_pending_files` 的 `Ok`
+  分支，`AlreadyHave`/续传/恢复等成功路径绕过它。
+- 修复：`finalize_send_accepted` 对所有成功路径统一 `drop_sent_outbox_row`
+  （按 `transfer_id` 幂等；无队列行时 no-op；失败留痕）。源码守卫要求成功收尾
+  必须包含该调用。Rust **985 通过 + 1 ignored**；`sender-kill-mid` 复跑见下。
+- 未改变成功/失败判定、重试状态机、协议与文件内容。
 
 ## 4. 4.x → 5.0 数据迁移与恢复
 
