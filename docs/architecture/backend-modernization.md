@@ -139,7 +139,8 @@
 ### E2E 实测（2026-10-19，隔离 HOME）
 - 用干净 worktree 在 `824cadb` 构建 release，`HOME=/tmp/gosslan-e2e-home*` 起双实例；
   真实 app data 的 `gosslan.db` / `-wal` mtime 前后**完全不变**。
-- `--round=contentpull`：40MB + 12 份 **32/32 PASS**；`E2E_PULL_BIG_MB=300` 复跑
+- `--round=contentpull`：40MB + 12 份 **36/36 PASS**（2026-10-19 增 A-16 受众闸：非好友同群
+  仍按 cid 服务，4 条断言）；`E2E_PULL_BIG_MB=300` 复跑
   **32/32 PASS**（拉取 4774ms、文本 2768ms 落库、accept 超时 0、队列溢出留痕 1 行；
   断线格 4 份全部落盘且 sha 正确）。
 - 默认轮（J1 文本 + J2 文件 + 重启 + Routed）**18/18 PASS**。
@@ -166,7 +167,7 @@
   `resume-prefix` **23/23**（真实前缀复用）、`groupcrash` **26/26**（建群中崩溃）、
   `gossip-late` **23/23**（晚加入群的 gossip 收敛）、`stall-mid` **25/25**（中途停滞）、
   `disk` **18/18**（磁盘/队列）。
-  标准轮合计 **24 轮 / 657 断言**；加互操作 **8 轮/216**，共 **32 轮 / 873 断言全绿**。
+  标准轮合计 **24 轮 / 661 断言**；加互操作 **8 轮/216**，共 **32 轮 / 877 断言全绿**。
 - **反向自证（证明正向断言非空转）**：`--negative`（幽灵收件人）投递断言如期
   超时红、进程 exit 0（自证通过）；`kill-mid-lie`（期望字节 +1、sha 换成错值）
   两条断言如期红（`6291457 vs 6291456`、sha 不符）——这是该轮的 **EXPECTED RED**，
@@ -291,7 +292,7 @@
 - 不改消息编码、消息 ID、签名输入、加密格式、确认语义与 SQLite 字段含义。
 - 不重构前端；若 IPC 契约必须变化，先列影响面并提供后端兼容层。
 - 不 push/tag/release/merge main；每批独立提交、独立门禁。
-- 多实例 E2E：**32 轮 / 873 断言 PASS**（隔离 HOME，含 4.44.4↔5.0.29 双向互操作）；
+- 多实例 E2E：**32 轮 / 877 断言 PASS**（隔离 HOME，含 4.44.4↔5.0.29 双向互操作）；
   真机、Windows/iOS/Linux 运行时为 **NOT RUN**，不得用桌面编译代替。
 
 ## 6. 最终验收报告（2026-10-19）
@@ -353,7 +354,7 @@
 ### 6.5 网络与文件传输
 
 - 协议字节不变；写循环可被 shutdown/cancel 打断，队列有字节预算。
-- E2E 标准 **24 轮 / 657 断言** + 旧新互操作 **8 轮 / 216 断言** = **32 轮 / 873 断言全绿**。
+- E2E 标准 **24 轮 / 661 断言** + 旧新互操作 **8 轮 / 216 断言** = **32 轮 / 877 断言全绿**。
 - 互操作：4.44.4 ↔ 5.0.29 双向 default/group/gfile/gossip3；两侧 `DB_VERSION=11`。
 - 真实 UI：300MB 传输开始后 **734ms** 接收端设置窗口可开；group 轮 AX 读到
   `[有人@我]`/6 未读。
@@ -397,7 +398,7 @@
 | `npm run verify:local`（干净 worktree，5.0.31） | **0** | **22/22，64.4s** |
 | `cargo test --lib --features bluetooth` | 0 | **989 通过 + 1 ignored** |
 | 迁移测试 | 0 | **38 通过 + 1 ignored** |
-| E2E（32 轮，隔离 HOME） | 0 | **873/873 断言** |
+| E2E（32 轮，隔离 HOME） | 0 | **877/877 断言** |
 | `cargo audit --file src-tauri/Cargo.lock` | 0 | **0 漏洞，10 allowed warnings** |
 | `version:check` / Change Budget / CHANGELOG / 文档硬数字 | 0 | 全部通过 |
 
