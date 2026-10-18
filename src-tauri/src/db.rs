@@ -45,16 +45,27 @@ fn column_exists(conn: &Connection, table: &str, col: &str) -> Result<bool> {
 /// 协议层已经在这上面摔过一次：`decode_frame` 用 `unknown variant` 前缀分类，结果把
 /// "未知嵌套枚举值"也误判成"未知帧类型"，整条消息被吞（INV-P24 第 2 条，v4.22.34 才修掉）。
 /// 启动期的降级判定是同一类判断，所以一开始就给它一个类型。
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum InitError {
     /// 数据文件的 `user_version` 比本机 `DB_VERSION` 新 ⇒ **本机程序比数据旧**。
     /// 唯一正确的处置是拒绝打开（AI_RULES 的"能升不能毁"红线），但必须给用户
     /// 可读、可行动的解释（`downgrade_message`），不能只是一个错误。
+    #[error("{}", downgrade_display(*current))]
     Downgrade { current: u32 },
     /// 迁移前备份失败或校验不通过。**原库未改动**，备份文件保留供诊断。
+    #[error("迁移前备份失败/校验不通过（原库未改动）：{path}: {reason}")]
     Backup { path: String, reason: String },
     /// 其它 SQLite 错误（打不开、迁移失败……）。
-    Sqlite(rusqlite::Error),
+    #[error(transparent)]
+    Sqlite(#[from] rusqlite::Error),
+}
+
+/// 日志用的**单行**技术描述（降级那句长文案由 `InitError::downgrade_message` 给人看）。
+fn downgrade_display(current: u32) -> String {
+    format!(
+        "DB user_version={current} > app DB_VERSION={DB_VERSION}: \
+         数据来自更新的版本，拒绝降级打开（未执行任何迁移）"
+    )
 }
 
 impl InitError {
@@ -82,39 +93,6 @@ impl InitError {
                  Your messages were NOT modified — the check runs before any write.\n\
                  Install a Gosslan version at least as new as the one that created this data."
         )
-    }
-}
-
-impl std::fmt::Display for InitError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // 日志用**单行**技术描述（`downgrade_message` 那段长文案给人看，别刷进日志文件）。
-        match self {
-            Self::Downgrade { current } => write!(
-                f,
-                "DB user_version={current} > app DB_VERSION={DB_VERSION}: \
-                 数据来自更新的版本，拒绝降级打开（未执行任何迁移）"
-            ),
-            Self::Backup { path, reason } => write!(
-                f,
-                "迁移前备份失败/校验不通过（原库未改动）：{path}: {reason}"
-            ),
-            Self::Sqlite(e) => write!(f, "{e}"),
-        }
-    }
-}
-
-impl std::error::Error for InitError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Sqlite(e) => Some(e),
-            Self::Downgrade { .. } | Self::Backup { .. } => None,
-        }
-    }
-}
-
-impl From<rusqlite::Error> for InitError {
-    fn from(e: rusqlite::Error) -> Self {
-        Self::Sqlite(e)
     }
 }
 

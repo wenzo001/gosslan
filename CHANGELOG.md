@@ -13,6 +13,17 @@
 
 ## [Unreleased]
 
+## [5.0.23] - 2026-10-19
+
+### 重构：启动期错误类型改用 thiserror
+
+- 新增 `thiserror@2.0.21`（MIT OR Apache-2.0，`rust-version = 1.77` 与仓库一致；依赖树里已有）。
+- `InitError` 的 `Display` / `Error` / `From` 样板改由 derive 生成：`Sqlite` 走 `#[from]` +
+  `transparent`；`Backup` 保留原单行日志文案；降级那只用 `downgrade_display` 保持单行技术描述，
+  `downgrade_message` 的人话长文案一字未改。
+- 新增 1 条 `Display` 判据（降级文案含两个版本号与"拒绝降级打开"；备份失败文案点名备份路径）；
+  Rust 测试基线 976 → 977。方案见 `docs/architecture/backend-modernization.md`，E2E/真机 **NOT RUN**。
+
 ## [5.0.22] - 2026-10-19
 
 ### 加固：数据库迁移前一致性备份 + busy_timeout

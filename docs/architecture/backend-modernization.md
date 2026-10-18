@@ -1,6 +1,6 @@
 # Gosslan 后端基础设施现代化（5.0）——基线与迁移方案
 
-> 分支 `feat/5.0` · HEAD `22fa71d` · 版本 5.0.21 · Rust 1.98.1 · 目标平台 macOS/Windows/Linux/Android/iOS
+> 分支 `feat/5.0` · 版本 5.0.23 · Rust 1.98.1 · 目标平台 macOS/Windows/Linux/Android/iOS
 > 真实库（只读核对）：`~/Library/Application Support/com.gosslan.app/gosslan.db`，
 > `user_version=11`、19 张业务表、`journal_mode=wal`、`PRAGMA integrity_check=ok`。
 > 本文是阶段 B 的选型/迁移方案；每批实施后回填读数，不把"计划"当"完成"。
@@ -15,7 +15,7 @@
 | 加密/身份 | x25519-dalek、ed25519-dalek、chacha20poly1305、sha2、rand_core | 成熟 crate；身份/签名/密钥格式已有判据 | 不更换算法/格式；只审计随机源与日志泄露面 |
 | 系统集成 | Tauri 官方 notification/dialog/fs/opener/window-state/single-instance 已在用 | 官方插件优先原则已落实 | Windows 文件剪贴板等平台专用实现需逐项核对；移动端 API 差异 |
 | 日志/诊断 | 自研 `logging.rs`（1439 行）+ 运行日志窗口 | 文件日志、前端异常上报、`db_hold` 观测 | 未用 `tracing`；缺稳定 span/关联 id（C/B 类，迁移成本高） |
-| 错误 | 大量 `Result<_, String>` | 启动期 `InitError` 已类型化 | 领域/基础设施错误未统一；`thiserror` 为候选（分批，不一次性改全仓） |
+| 错误 | 大量 `Result<_, String>` | 启动期 `InitError` 已用 `thiserror` derive（5.0.23） | 领域/基础设施错误未统一；其余边界按批迁移，不一次性扫全仓 |
 | 测试/门禁 | 968 条 Rust 基线 + 前端 1060 + 338→341 UI 探针；`verify:local` 22 步 | 迁移、锁作用域、慢活、Android 编译门禁 | E2E/真机 NOT RUN；迁移的备份/恢复演练缺失 |
 
 ## 2. 依赖选型（A/B/C/D）
@@ -56,9 +56,18 @@
   - 回滚：删除新增备份/恢复原库即可回到旧行为；备份是独立文件，不改原库。
 - 护栏：更新「数表必须早于 SCHEMA」注入锚点并单跑该护栏（改坏即 FAIL、恢复即 PASS）。
 
-### B2–B5（未开工）
-- B2 错误类型化（`thiserror`，先 DB/迁移/网络边界）——未开工；当前 `InitError` 已类型化，
-  其余全仓 `Result<_, String>` 改造需单独批次，避免一次性扫全仓。
+### B2（已落地，5.0.23）：启动期错误改用 `thiserror`
+- `thiserror@2.0.21`（MIT OR Apache-2.0，MSRV 1.77；依赖树里已有）。
+- `InitError` 的 `Display` / `Error` / `From` 样板改由 derive 生成：`Sqlite` 走 `#[from]` +
+  `transparent`；`Backup` 保留原单行日志文案；降级只用 `downgrade_display` 保持单行技术描述，
+  `downgrade_message` 的人话长文案不变。
+- **实测（2026-10-19，5.0.23）**：新增 1 条 `Display` 判据（降级含两个版本号与"拒绝降级打开"；
+  备份失败点名路径），迁移测试 **34/34**；Rust 基线 976 → **977**（macOS 977 / Windows 965）；
+  `npm run verify:local` **22/22、退出码 0、85.8s**（含 fmt/clippy/Rust 977/Android 编译）。
+  其余 `Result<_, String>` 边界仍留待后续批次，避免一次性扫全仓。
+- 回滚：删除 `thiserror` 依赖并恢复手写 `impl` 即可，错误文案与类型不变。
+
+### B3–B5（未开工）
 - B3 网络帧与缓冲（`tokio-util`/`bytes` 原型）——未开工；必须做字节级协议对照与断连/半包测试，
   且当前无 E2E 授权，不整体替换。
 - B4 `tracing`/span 关联 id——未开工；保留现有 logger，先评估。
