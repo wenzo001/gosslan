@@ -161,8 +161,14 @@
   （1:1 表情回应）。
 - 续传/崩溃扩展：`poison-part` **22/22**（脏 .part 前缀自愈或明确失败）、
   `resume-prefix` **23/23**（真实前缀复用）、`groupcrash` **26/26**（建群中崩溃）、
-  `gossip-late` **23/23**（晚加入群的 gossip 收敛）。
-  标准轮合计 **22 轮 / 607 断言**；加互操作 **8 轮/216**，共 **30 轮 / 823 断言全绿**。
+  `gossip-late` **23/23**（晚加入群的 gossip 收敛）、`stall-mid` **25/25**（中途停滞）、
+  `disk` **18/18**（磁盘/队列）。
+  标准轮合计 **24 轮 / 650 断言**；加互操作 **8 轮/216**，共 **32 轮 / 866 断言全绿**。
+- **依赖安全审计**：`cargo audit --file src-tauri/Cargo.lock` **exit 0、0 个漏洞**；
+  10 条 allowed warnings（unmaintained/unsound，均为传递依赖）：`proc-macro-error`、
+  `unic-*`（6 个未维护）、`zbus_names`/`zvariant`/`zvariant_derive`（Linux D-Bus，未维护）、
+  `glib 0.18.5` unsound（Linux GTK 路径，RUSTSEC-2024-0429）。Linux 运行时未验证；
+  这些属于 Tauri/GTK 依赖链，未在本轮强升。
 - **旧/新二进制互操作**（4.x tag `v4.44.4` release ↔ 5.0.29，同一 harness 用包装脚本按实例
   分派二进制，A/B 两个方向都跑）：
   - default（文本 + 文件 + 重启 + Routed）**18/18 ×2**

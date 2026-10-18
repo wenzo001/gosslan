@@ -44,8 +44,11 @@
   group **37/37 ×2**、gfile **28/28 ×2**、gossip3 **25/25 ×2**，合计
   **8 轮 / 216 断言全绿**；两侧 DB_VERSION=11。未覆盖真机与 4.x 用户库实迁移。
 - 续传/崩溃扩展：`poison-part` **22/22**、`resume-prefix` **23/23**、
-  `groupcrash` **26/26**、`gossip-late` **23/23**。标准轮合计 **22 轮 / 607 断言**，
-  加互操作共 **30 轮 / 823 断言全绿**。
+  `groupcrash` **26/26**、`gossip-late` **23/23**、`stall-mid` **25/25**、`disk` **18/18**。
+  标准轮合计 **24 轮 / 650 断言**，加互操作共 **32 轮 / 866 断言全绿**。
+- 依赖安全审计：`cargo audit --file src-tauri/Cargo.lock` **exit 0、0 个漏洞**；
+  10 条 allowed warnings（unmaintained/unsound，传递依赖：proc-macro-error、unic-*、
+  zbus/zvariant、glib 0.18.5；glib 仅 Linux GTK 路径）。Linux 运行时未验证。
 - `src-shrunk` 已知展示差异：A 入队台账/气泡仍记 1048576，B 台账/盘上 4096；
   内容、sha、两侧终态均正确，属 UI 尺寸展示口径，不影响数据完整性。
 
