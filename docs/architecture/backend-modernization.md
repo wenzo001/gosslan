@@ -217,4 +217,111 @@
 - 不改消息编码、消息 ID、签名输入、加密格式、确认语义与 SQLite 字段含义。
 - 不重构前端；若 IPC 契约必须变化，先列影响面并提供后端兼容层。
 - 不 push/tag/release/merge main；每批独立提交、独立门禁。
-- E2E、Windows/iOS/Android 真机为 **NOT RUN**，不得用桌面编译代替。
+- 多实例 E2E：**32 轮 / 866 断言 PASS**（隔离 HOME，含 4.44.4↔5.0.29 双向互操作）；
+  真机、Windows/iOS/Linux 运行时为 **NOT RUN**，不得用桌面编译代替。
+
+## 6. 最终验收报告（2026-10-19）
+
+### 6.1 基线
+
+- 分支 `feat/5.0`，tip `f1f68c4`，版本 **5.0.30**，本地未推 **28 笔**；Rust 1.98.1。
+- 真实库只读核对：`user_version=11`、19 张业务表、WAL、`integrity_check=ok`；
+  **未对真实用户库执行迁移**。
+- 工作树仍有并行会话的前端改动，本轮未暂存、未覆盖。
+
+关键模块清单（审计结论）：
+
+| 模块 | 责任 | 实现/并发 | 主要失败路径 | 测试 | 替换结论 |
+|---|---|---|---|---|---|
+| `db.rs` + `db/*` | schema/迁移/实体读写 | 单 `DbLock<Connection>`，WAL，`busy_timeout` | 迁移失败回滚、降级拒绝、备份失败中止 | 迁移 38 条 + 数据保存/索引判据 | 保留 rusqlite |
+| `network/transport` | 分帧、链路队列、读写循环 | Tokio、有界队列、取消 watch | 写失败拆链、半包/超长帧、断连 | 字节/队列/锁作用域判据 | 保留自研分帧 |
+| `network/file` | 文件分块、续传、收尾 | `spawn_blocking` 慢活、盘上真值续传 | SHA/大小/rename/ACK 失败 | E2E kill/freeze/readonly/rotted/shrink | 保留业务状态机 |
+| discovery/mesh/gossip/relay | 发现、路由、传播、中继 | Tokio + 有界通道；TTL/去重 | 断链、半开、队列满 | gossip3/late/lanoff E2E | 保留协议 |
+| `crypto`/`device` | 身份、签名、AEAD、随机源 | x25519/ed25519/chacha20poly1305/`OsRng` | 解密失败、缺公钥、错密钥 | 私钥边界/协议判据 | 不换算法/格式 |
+| `commands`/`state` | IPC、生命周期、任务管理 | `#[tauri::command]`、spawn_blocking | 参数校验、权限、任务取消 | 命令/守卫/E2E | 保留装配层 |
+| `logging`/`private_fs` | 诊断、敏感文件权限 | 同步落盘、ring buffer；Unix 0600/0700 | 写失败告警、权限失败不阻断 | 日志/权限判据 | 不换 tracing |
+| `content/store` | 内容寻址、拉取台账 | SQLite + 事务 | 丢片、假 complete、残留 | contentpull/ghsync E2E | 保留 |
+| 系统插件 | 通知/对话框/fs/opener/window-state/single-instance | Tauri 官方插件 | 平台差异 | 编译/代码审计 | 官方优先 |
+
+### 6.2 依赖选型
+
+| 依赖 | 结论 | 理由 |
+|---|---|---|
+| `thiserror 2.0.21` | **采用** | MIT OR Apache-2.0，MSRV 1.77；替换 `InitError` 手写样板 |
+| `rusqlite 0.31` | 保留 | SQLx 会重写全部 DB 边界，收益未证 |
+| SQLite `VACUUM INTO` | 采用 | 迁移前一致性快照，不复制运行中的 `-wal/-shm` |
+| `tokio-util` + `bytes` | 不采用 | 现有分帧约 30 行 + 字节判据；真实缺口是两次写，已直接修 |
+| `tracing` | 不采用 | 同步落盘是崩溃现场/最后一条日志的证据前提 |
+| SQLx / Refinery / libp2p / iroh | 不采用 | 与现有协议、迁移链、离线可靠性不兼容或收益未证 |
+| Tauri 官方插件 | 已在用 | notification/dialog/fs/opener/window-state/single-instance |
+
+### 6.3 自研代码减少
+
+- `InitError` 的 `Display/Error/From` 改由 `thiserror` derive。
+- TCP ≤8KiB 小帧合并为一次 `poll_write`；大帧保持两次写、不复制载荷。
+- 三个附件预览命令移出 async worker（`spawn_blocking`）。
+- 数据库/侧车/备份/日志/目录权限收敛到共享 `private_fs`。
+- 保留：线协议分帧、Gossip/去重/可靠投递、身份与加密格式、`user_version` 迁移链；
+  这些有字节级或数据级判据，替换风险大于收益。
+
+### 6.4 数据库与迁移
+
+- 机制：`user_version` 单调迁移链（v0–v11）+ 每步事务 + 降级拒绝；迁移前
+  `VACUUM INTO` + `integrity_check`/版本/表数校验，失败以 `InitError::Backup` 中止；
+  `busy_timeout=5s`。
+- 判据：迁移测试 **38 通过 + 1 ignored**、Rust **986 通过 + 1 ignored**；
+  覆盖 v0 legacy、1..10 每个起始版本、损坏库原文件逐字节不变、备份恢复再迁移。
+- 真实 v10 DDL 夹具（`0b84f11^`）18 张历史表 + 各实体数据迁移后逐字段保留。
+- 真实数据副本演练：只读副本置 v10 → 生产 `init`：19 表/208 行、备份 integrity ok、
+  逐表行数与关键聚合一致；源库未改。
+- **未完成**：真实 4.x 用户库不在本机，真实用户数据迁移 **NOT RUN**。
+
+### 6.5 网络与文件传输
+
+- 协议字节不变；写循环可被 shutdown/cancel 打断，队列有字节预算。
+- E2E 标准 **24 轮 / 650 断言** + 旧新互操作 **8 轮 / 216 断言** = **32 轮 / 866 断言全绿**。
+- 互操作：4.44.4 ↔ 5.0.29 双向 default/group/gfile/gossip3；两侧 `DB_VERSION=11`。
+- 真实 UI：300MB 传输开始后 **734ms** 接收端设置窗口可开；group 轮 AX 读到
+  `[有人@我]`/6 未读。
+- E2E 发现并修复：发送端崩溃恢复后 `file_outbox` 残留 `pending` ⇒ 重复投递；
+  `finalize_send_accepted` 对所有成功路径统一清理（5.0.29）。
+- 已知展示差异：`src-shrunk` 中 A 入队台账/气泡仍记 1MB、B 台账/盘上 4KB；
+  内容/sha/终态正确，属 UI 尺寸展示口径。
+- **未完成**：真机/跨设备传输 **NOT RUN**。
+
+### 6.6 跨平台与系统集成
+
+| 平台 | 结果 |
+|---|---|
+| macOS arm64 | **PASS**：fmt/clippy/Rust/前端/Android 编译、32 轮 E2E |
+| Android aarch64 | **PASS（仅编译）**：默认与 bluetooth 两档 0 warning |
+| Windows | **BLOCKED（环境）**：`cargo xwin` 缺 `llvm-lib`；运行时 **NOT RUN** |
+| Linux | 运行时 **NOT RUN**；audit 警告集中在 Linux GTK/D-Bus 传递依赖 |
+| iOS | **BLOCKED（环境）**：本机无 iOS SDK/完整 Xcode；运行时 **NOT RUN** |
+
+系统插件与 `open_path` 平台分派已核对；Windows ACL 未在本轮处理。
+
+### 6.7 自动化测试
+
+| 命令 | 退出码 | 读数 |
+|---|---|---|
+| `npm run verify:local`（干净 worktree `40a0b5a`） | **0** | **22/22，198.8s** |
+| `cargo test --lib --features bluetooth` | 0 | **986 通过 + 1 ignored** |
+| 迁移测试 | 0 | **38 通过 + 1 ignored** |
+| E2E（32 轮，隔离 HOME） | 0 | **866/866 断言** |
+| `cargo audit --file src-tauri/Cargo.lock` | 0 | **0 漏洞，10 allowed warnings** |
+| `version:check` / Change Budget / CHANGELOG / 文档硬数字 | 0 | 全部通过 |
+
+### 6.8 剩余风险
+
+- **高**：真实 4.x 用户库迁移未执行；Windows/iOS/Linux 运行时与真机未验证。
+- **中**：单一 SQLite 连接串行化读写；入站 handler 单链路串行；`src-shrunk` 尺寸展示差异；
+  Windows ACL 未处理；audit 的 glib/zbus 警告仅 Linux 路径。
+- **低**：备份无保留上限；`gfile` 首跑曾遇 toolchain 环境噪声（复跑绿）；目录权限仅在
+  Unix 生效。
+
+### 6.9 最终结论
+
+未达到“全部完成”：数据安全、迁移保护、权限、网络可靠性、兼容性、E2E 与 macOS 验收
+已落地并有实测证据；但真实 4.x 用户数据迁移、真实设备/平台运行时仍未验证，不能宣称
+全面完成。未 push、未 tag、未 release、未 merge main；目标不标记完成。
