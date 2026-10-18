@@ -6,6 +6,7 @@ import { useChatStore } from "@/stores/useChatStore";
 import BaseModal from "@/components/BaseModal.vue";
 import { avatarSeedFor } from "@/utils/avatarSeed";
 import { Check } from "@/components/ui/icons";
+import { useSubmitGuard } from "@/composables/useSubmitGuard";
 
 const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<{ (e: "close"): void }>();
@@ -14,6 +15,8 @@ const app = useAppStore();
 const chat = useChatStore();
 const name = ref("");
 const selected = ref<string[]>([]);
+/** 建群是在途提交只放行一次：双击不会建出两个群。 */
+const { busy: creating, run: runCreate } = useSubmitGuard();
 
 watch(
   () => props.open,
@@ -41,14 +44,17 @@ async function create() {
     app.toast(t("group.toast.noMember"), "error");
     return;
   }
-  try {
-    const g = await chat.createGroup(name.value.trim(), selected.value);
-    app.toast(t("group.toast.created", { name: g.name }), "success");
-    emit("close");
-    chat.openConversation(`group:${g.id}`);
-  } catch (e) {
-    app.toastError(e, t("group.toast.createFail"));
-  }
+  // 双击/重复点击只会发一次 createGroup（校验在拿到提交权之前做，不占着 busy）。
+  await runCreate(async () => {
+    try {
+      const g = await chat.createGroup(name.value.trim(), selected.value);
+      app.toast(t("group.toast.created", { name: g.name }), "success");
+      emit("close");
+      chat.openConversation(`group:${g.id}`);
+    } catch (e) {
+      app.toastError(e, t("group.toast.createFail"));
+    }
+  });
 }
 </script>
 
@@ -99,7 +105,7 @@ async function create() {
 
     <button
       class="mt-4 w-full rounded-[var(--gosslan-radius-lg)] bg-[var(--gosslan-primary)] py-2.5 text-sm font-medium text-white transition hover:bg-[var(--gosslan-primary-hover)] disabled:opacity-40"
-      :disabled="selected.length === 0 || !name.trim()"
+      :disabled="selected.length === 0 || !name.trim() || creating"
       @click="create"
     >
       {{ t("common.createGroup") }}

@@ -9,11 +9,16 @@
  *   border + primary-light 底 + accent-ink 字 + font-medium
  * 非激活：border-transparent + text-2 + hover-bg
  *
- * 为什么要抽：此前多处手搓、激活态各写各的（有的 border + 主题色，有的
+ * 行为交给 Reka `RadioGroupRoot/RadioGroupItem`：方向键在选项间移动并选中、
+ * 整组只有一个 Tab 停靠点、禁用态与 `role=radio/aria-checked` 由库维护。
+ * 本组件只保留 Gosslan 的尺寸、配色与徽标槽。
+ *
+ * 为什么抽：此前多处手搓、激活态各写各的（有的 border + 主题色，有的
  * bg-panel shadow-sm，有的干脆没样式）。现在 AppearanceSection / GeneralSection
  * 共用这一份。GroupTasksBoard 的筛选胶囊（带计数）与草稿状态（带语义色）
  * **刻意不并入**：前者是 chips 而非分段，后者合并会丢掉状态色信息。
  */
+import { RadioGroupItem, RadioGroupRoot } from "reka-ui";
 
 type Option = {
   value: string;
@@ -48,26 +53,21 @@ const sizeClasses: Record<string, string> = {
 </script>
 
 <template>
-  <div
-    role="radiogroup"
+  <RadioGroupRoot
+    :model-value="modelValue"
+    :disabled="disabled"
+    orientation="horizontal"
     :aria-label="ariaLabel"
     class="flex gap-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-bg)] p-0.5"
+    @update:model-value="(v) => emit('update:modelValue', String(v))"
   >
-    <button
+    <RadioGroupItem
       v-for="opt in options"
       :key="opt.value"
-      type="button"
-      role="radio"
-      :aria-checked="modelValue === opt.value"
+      :value="opt.value"
       :disabled="disabled"
-      class="tap-safe flex flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-[var(--gosslan-radius-sm)] border transition disabled:opacity-50"
-      :class="[
-        sizeClasses[size],
-        modelValue === opt.value
-          ? 'border-transparent bg-[var(--gosslan-primary)] font-medium text-white shadow-sm'
-          : 'border-transparent text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]',
-      ]"
-      @click="emit('update:modelValue', opt.value)"
+      class="tap-safe flex flex-1 items-center justify-center gap-1.5 whitespace-nowrap rounded-[var(--gosslan-radius-sm)] border transition disabled:opacity-50 data-[state=checked]:border-transparent data-[state=checked]:bg-[var(--gosslan-primary)] data-[state=checked]:font-medium data-[state=checked]:text-white data-[state=checked]:shadow-sm data-[state=unchecked]:border-transparent data-[state=unchecked]:text-[var(--gosslan-text-2)] hover:data-[state=unchecked]:bg-[var(--gosslan-hover)]"
+      :class="sizeClasses[size]"
     >
       {{ opt.label }}
       <span
@@ -81,6 +81,6 @@ const sizeClasses: Record<string, string> = {
       >
         {{ opt.badge }}
       </span>
-    </button>
-  </div>
+    </RadioGroupItem>
+  </RadioGroupRoot>
 </template>

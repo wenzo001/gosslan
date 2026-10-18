@@ -11,7 +11,8 @@
  *    所以本面板在清空聊天历史后依然完整。
  */
 import { t } from "@/i18n";
-import { computed, ref, watch } from "vue";
+import { computed, onBeforeUnmount, watch } from "vue";
+import { useQuery, useQueryClient } from "@tanstack/vue-query";
 import { api } from "@/api";
 import { useAppStore } from "@/stores/useAppStore";
 import { useMemberProfile } from "@/composables/useMemberProfile";
@@ -26,6 +27,12 @@ import { Loader2 } from "@/components/ui/icons";
 import StateBlock from "@/components/ui/StateBlock.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
 import { friendlyError } from "@/utils/errors";
+import {
+  GROUP_FILES_QUERY_POLICY,
+  groupFilesKey,
+  invalidateGroupFiles,
+} from "@/utils/groupFilesQuery";
+import { createInitScope, type InitScope } from "@/utils/initScope";
 import type { GroupFileEntry } from "@/types";
 
 const props = defineProps<{ open: boolean; groupId: string | null }>();
@@ -34,55 +41,74 @@ const emit = defineEmits<{ (e: "close"): void }>();
 const app = useAppStore();
 const { memberProfile, myId } = useMemberProfile();
 
-const files = ref<GroupFileEntry[]>([]);
-const loading = ref(false);
-const failed = ref(false);
-const loadError = ref("");
+/**
+ * 清单缓存交给 TanStack Query（见 utils/groupFilesQuery 的判据）：
+ * · queryKey 按群分键 ⇒ 切群时 A 群的慢响应只会写回 A 群的缓存，不存在"回填进 B 群"；
+ * · enabled 跟 open/groupId ⇒ 每次打开重拉（staleTime 0），关着时不打 IPC；
+ * · 同一 key 的并发请求合并、失败重试、旧数据保留都是库的既有语义。
+ */
+const filesQuery = useQuery(
+  computed(() => {
+    // 在构建 options 时捕获群 id：即便 queryFn 延后执行，数据也只会写回它自己的 key。
+    const gid = props.groupId;
+    return {
+      queryKey: groupFilesKey(gid ?? ""),
+      queryFn: () => api.listGroupFiles(gid as string),
+      enabled: props.open && !!gid,
+      ...GROUP_FILES_QUERY_POLICY,
+    };
+  }),
+);
+const queryClient = useQueryClient();
 
-async function load() {
-  if (!props.groupId) return;
-  const gid = props.groupId;
-  loading.value = true;
-  failed.value = false;
-  try {
-    const list = await api.listGroupFiles(gid);
-    // 慢响应过期守卫：期间换了群就不许把 A 群的清单写进 B 群的面板
-    // （与 4.1-7 同一条链上的另一半 —— 只补 watch 不补这里，切群瞬间的旧响应仍会回填）。
-    if (gid !== props.groupId) return;
-    files.value = list;
-    loadError.value = "";
-  } catch (e) {
-    if (gid !== props.groupId) return;
-    // 有旧清单就保留（刷新失败不该把已经看到的文件清空），只有一屏都没有才换成错误态。
-    failed.value = true;
-    loadError.value = friendlyError(e, t("group.files.loadFail"));
-  } finally {
-    if (gid === props.groupId) loading.value = false;
-  }
+const files = computed<GroupFileEntry[]>(() => filesQuery.data.value ?? []);
+const loading = computed(
+  () => !!props.groupId && (filesQuery.isPending.value || filesQuery.isFetching.value),
+);
+const failed = computed(() => filesQuery.isError.value);
+const loadError = computed(() =>
+  filesQuery.error.value
+    ? friendlyError(filesQuery.error.value, t("group.files.loadFail"))
+    : "",
+);
+
+/** 重试入口：失败后旧清单仍在（banner）或为空（StateBlock），两条都走同一次 refetch。 */
+function load() {
+  void filesQuery.refetch();
 }
 
-// 每次打开都重拉：面板不在时可能刚收完一个文件（状态会变），
-// 缓存一份旧快照会让用户看到"未下载"却其实早就到了。
-watch(
-  () => props.open,
-  (v) => {
-    if (v) void load();
-  },
-);
+/**
+ * 面板开着时跟随后端事件失效当前群（旧的实现只在重新打开时才知道状态变了）：
+ * 文件落盘/失败/取消、新的 gfile- 消息、gfile- 送达回执。
+ * 门控在 `open` 上：关着时没必要订阅；浏览器预览（无 Tauri）里 listen 会 reject，静默跳过。
+ */
+let activityScope: InitScope | null = null;
 
-// ⚠️ 必须 watch groupId（审计阶段 4 · 4.1-7）：面板开着时 activeConv 会被**通知点击**
-// 这类程序化路径换掉（`handleNotificationClick` → `openConversation`），而 `groupId` 变了
-// 上面的 open 判据根本不会再触发 ⇒ 标题/总数/整张清单全是上一个群的。
-// 这里清空而不是静默留着旧数据：宁可显示"加载中/空"，也不能让用户把 A 群的文件当成 B 群。
+function stopActivityWatch() {
+  activityScope?.dispose();
+  activityScope = null;
+}
+
 watch(
-  () => props.groupId,
-  (v, old) => {
-    if (v === old) return;
-    files.value = [];
-    failed.value = false;
-    if (v && props.open) void load();
+  () => props.open && !!props.groupId,
+  (active) => {
+    stopActivityWatch();
+    if (!active) return;
+    const scope = createInitScope();
+    activityScope = scope;
+    api
+      .onGroupFileActivity(() => {
+        const gid = props.groupId;
+        if (gid) void invalidateGroupFiles(queryClient, gid);
+      })
+      .then((unlisten) => scope.onDispose(unlisten))
+      .catch(() => {
+        /* 非 Tauri 环境：面板仍可关闭重开刷新 */
+      });
   },
+  { immediate: true },
 );
+onBeforeUnmount(stopActivityWatch);
 
 /** 每项的文件类型与配色 —— 与文件气泡同一套（utils/fileKind），保证同一种文件在
  *  列表和气泡里长得一样。 */

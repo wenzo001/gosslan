@@ -40,6 +40,28 @@ export const api = {
    */
   onMessageReceived: (cb: (rec: MessageRecord) => void) =>
     listen<MessageRecord>("message-received", (e) => cb(e.payload)),
+  /**
+   * 只订阅「会影响群文件清单」的事件（**窄**封装，与 `onMessageReceived` 同一条口径）。
+   *
+   * 三类变化：本机文件落盘/失败/取消（`local_state`）、新的 `gfile-` 消息（多一行）、
+   * `gfile-` 的送达回执（「已送达 N/M」）。事件载荷没有群 id ⇒ 调用方按前缀失效，
+   * 只重拉当前打开的那一个群。
+   */
+  onGroupFileActivity: (cb: () => void) =>
+    Promise.all([
+      listen("file-done", () => cb()),
+      listen("file-failed", () => cb()),
+      listen("file-cancelled", () => cb()),
+      listen<MessageRecord>("message-received", (e) => {
+        if (e.payload.msg_id.startsWith("gfile-")) cb();
+      }),
+      listen<{ msg_id: string }>("group-message-acked", (e) => {
+        if (e.payload.msg_id.startsWith("gfile-")) cb();
+      }),
+      listen<string>("message-status-changed", (e) => {
+        if (e.payload.startsWith("gfile-")) cb();
+      }),
+    ]).then((fns) => () => fns.forEach((fn) => fn())),
   getDeviceInfo: () => invoke<DeviceInfo>("get_device_info"),
   updateProfile: (nickname: string, avatar: string | null) =>
     invoke<DeviceInfo>("update_profile", { nickname, avatar }),

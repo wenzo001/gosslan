@@ -127,6 +127,8 @@ const total = computed(() => totalHits(groups.value));
 const inputRef = ref<HTMLInputElement | null>(null);
 
 let seq = 0;
+/** 正在做打开时的状态复位：这期间 keyword/筛选的 watcher 不该再发请求。 */
+const opening = ref(false);
 /** 是否把本次结果记为「发送人候选项的来源」（只在无发送人筛选时记）。 */
 async function runSearch(keepSenderOptions = false) {
   const kw = keyword.value.trim();
@@ -192,14 +194,18 @@ function searchActive() {
 /** 关键词防抖：输入即搜（微信也是输入就出结果），150ms 足够合并连打又不觉得延迟。 */
 let debounce: ReturnType<typeof setTimeout> | null = null;
 watch(keyword, () => {
-  // 关闭时也会改 keyword（重置状态），那时不该再发请求
-  if (!props.open) return;
-  if (debounce) clearTimeout(debounce);
+  // 任何一次关键词变化都先丢掉上一次待发的请求（关闭/打开复位也不会留下旧定时器）。
+  if (debounce) {
+    clearTimeout(debounce);
+    debounce = null;
+  }
+  // 关闭时也会改 keyword（重置状态），打开复位期间也会改：两处都不该再发请求。
+  if (!props.open || opening.value) return;
   debounce = setTimeout(() => void runSearch(senderFilter.value === null), 150);
 });
 
 watch([senderFilter, datePreset], () => {
-  if (!props.open) return;
+  if (!props.open || opening.value) return;
   void runSearch(senderFilter.value === null);
 });
 
@@ -223,13 +229,18 @@ watch(
       dateMenuOpen.value = false;
       return;
     }
-    keyword.value = (props.initialKeyword ?? "").trim();
-    senderFilter.value = null;
-    datePreset.value = "all";
-    await nextTick();
+    // 复位这三个值会触发上面的 watcher。打开时的检索由下面这一次 `runSearch` 负责，
+    // 复位期间先挂起 watcher，否则每次打开都白跑一次额外的全表扫描（实测两个在途请求）。
+    opening.value = true;
+    try {
+      keyword.value = (props.initialKeyword ?? "").trim();
+      senderFilter.value = null;
+      datePreset.value = "all";
+      await nextTick();
+    } finally {
+      opening.value = false;
+    }
     inputRef.value?.focus();
-    // 打开时只检索这一次：关键词/筛选的 watcher 已用 `props.open` 守卫，
-    // 重置这两个值不会再多发一个请求（否则每次打开都白跑一次全表扫描）。
     await runSearch(true);
   },
 );

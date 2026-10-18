@@ -22,6 +22,7 @@
 import "@/style.css";
 import { createApp, nextTick, watch, type App, type Component } from "vue";
 import { createPinia } from "pinia";
+import { VueQueryPlugin } from "@tanstack/vue-query";
 import { api } from "@/api";
 import { currentLocale } from "@/i18n";
 
@@ -125,6 +126,15 @@ export function createWindowApp(root: Component): App {
     reportFrontendError("vue", `${e.message} [${info}]\n${e.stack ?? ""}`);
   };
   app.use(createPinia());
+  // 异步查询缓存（每个窗口一份 QueryClient：窗口之间本来就不共享内存）。
+  // · retry 1 + retryDelay 0：本地 IPC 抖动重试一次，不让用户等退避；
+  // · refetchOnWindowFocus false：切回窗口不额外打 IPC（实时事件另有订阅）；
+  // · 具体 staleTime/gcTime 由各查询自带（见 utils/groupFilesQuery.ts）。
+  app.use(VueQueryPlugin, {
+    queryClientConfig: {
+      defaultOptions: { queries: { retry: 1, retryDelay: 0, refetchOnWindowFocus: false } },
+    },
+  });
   return app;
 }
 

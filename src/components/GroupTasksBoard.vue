@@ -814,6 +814,8 @@ function removeImage(idx: number) {
 }
 
 async function saveDraft() {
+  // 保存按钮与标题框 Enter 共用这一条：在途时重入会重复建/改同一条任务。
+  if (saving.value) return;
   const d = draft.value;
   if (!d || !props.groupId) return;
   const title = d.title.trim();
