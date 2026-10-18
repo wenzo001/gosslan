@@ -1909,3 +1909,90 @@ fn every_4x_entity_survives_the_v7_to_current_replay_with_its_semantics() {
     drop(conn);
     cleanup_db_and_backups(&path);
 }
+
+// ---------------------------------------------------------------------------
+// 隐私：数据库、WAL/SHM 侧车与迁移备份都只允许属主读写（Unix）
+// ---------------------------------------------------------------------------
+
+/// 真实安装目录实测：`gosslan.db` 与 `-wal` 都是 `0644`，同机其他用户可读 ——
+/// 而库里存着身份密钥与全部消息。启动时必须把主库、侧车与**新产生的备份**都收紧到
+/// `0600`；备份是 `VACUUM INTO` 的完整副本，权限不能比原库宽。
+#[cfg(unix)]
+#[test]
+fn init_tightens_database_sidecars_and_backup_to_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+
+    fn mode(p: &Path) -> u32 {
+        fs::metadata(p).unwrap().permissions().mode() & 0o777
+    }
+
+    let path = temp_db_path();
+    let conn = init(&path).expect("fresh db");
+    conn.execute("INSERT INTO settings(key,value) VALUES ('k','v')", [])
+        .unwrap();
+    // 显式造出“历史安装留下的 0644”，避免测试进程 umask=077 时平凡通过。
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+    for suffix in ["-wal", "-shm"] {
+        let p = PathBuf::from(format!("{}{}", path.display(), suffix));
+        if p.exists() {
+            fs::set_permissions(&p, fs::Permissions::from_mode(0o644)).unwrap();
+        }
+    }
+    // 强制走一次真实迁移，才会产生迁移前备份。
+    conn.pragma_update(None, "user_version", 10).unwrap();
+    drop(conn);
+
+    let conn = init(&path).expect("v10 → v11");
+    assert_eq!(mode(&path), 0o600, "主库必须收紧到 0600");
+    for suffix in ["-wal", "-shm"] {
+        let p = PathBuf::from(format!("{}{}", path.display(), suffix));
+        if p.exists() {
+            assert_eq!(mode(&p), 0o600, "{suffix} 侧车必须收紧到 0600");
+        }
+    }
+    let backups = backup_paths(&path);
+    assert_eq!(backups.len(), 1, "v10→v11 必须先备份");
+    assert_eq!(
+        mode(&backups[0]),
+        0o600,
+        "迁移备份是完整副本，权限不得比原库宽"
+    );
+
+    drop(conn);
+    cleanup_db_and_backups(&path);
+}
+
+/// B6 之前（5.0.22–5.0.25）创建的迁移备份可能是 0644；启动时要补收紧。
+/// 只认本库的 `<stem>.pre-v…-to-v….db`，同目录的其它 `.db` 不许误伤。
+#[cfg(unix)]
+#[test]
+fn init_tightens_historical_backups_but_not_unrelated_files() {
+    use std::os::unix::fs::PermissionsExt;
+
+    fn mode(p: &Path) -> u32 {
+        fs::metadata(p).unwrap().permissions().mode() & 0o777
+    }
+
+    let path = temp_db_path();
+    let dir = path.parent().unwrap().to_path_buf();
+    let stem = path.file_stem().unwrap().to_string_lossy().to_string();
+    let old_backup = dir.join(format!("{stem}.pre-v9-to-v10-1-2.db"));
+    let unrelated = dir.join(format!("{stem}-notes.db"));
+    fs::write(&old_backup, b"old backup").unwrap();
+    fs::write(&unrelated, b"unrelated").unwrap();
+    fs::set_permissions(&old_backup, fs::Permissions::from_mode(0o644)).unwrap();
+    fs::set_permissions(&unrelated, fs::Permissions::from_mode(0o644)).unwrap();
+
+    let conn = init(&path).expect("fresh db");
+    assert_eq!(mode(&old_backup), 0o600, "历史迁移备份必须补收紧到 0600");
+    assert_eq!(
+        mode(&unrelated),
+        0o644,
+        "同目录其它文件不属于迁移备份，不许被改权限"
+    );
+
+    drop(conn);
+    let _ = fs::remove_file(&old_backup);
+    let _ = fs::remove_file(&unrelated);
+    cleanup_db_and_backups(&path);
+}
