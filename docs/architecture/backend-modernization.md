@@ -1,6 +1,6 @@
 # Gosslan 后端基础设施现代化（5.0）——基线与迁移方案
 
-> 分支 `feat/5.0` · 版本 5.0.24 · Rust 1.98.1 · 目标平台 macOS/Windows/Linux/Android/iOS
+> 分支 `feat/5.0` · 版本 5.0.25 · Rust 1.98.1 · 目标平台 macOS/Windows/Linux/Android/iOS
 > 真实库（只读核对）：`~/Library/Application Support/com.gosslan.app/gosslan.db`，
 > `user_version=11`、19 张业务表、`journal_mode=wal`、`PRAGMA integrity_check=ok`。
 > 本文是阶段 B 的选型/迁移方案；每批实施后回填读数，不把"计划"当"完成"。
@@ -81,25 +81,26 @@
 - 选型：`tokio-util::codec` + `bytes` 不引入。`Framed` 只是把同一段分帧逻辑搬进新依赖，
   不会消除两次写；当前分层（业务序列化 / 字节分帧 / seal）也因此保持不变。
 
-### B4–B5（未开工）
-- B4 `tracing`/span 关联 id——未开工；保留现有 logger，先评估。
-- B5 系统插件/跨平台逐项核对——未开工；notification/dialog/fs/opener/window-state/single-instance
-  已在用；移动端真机为 **NOT RUN**。
+### B4（已评估，5.0.25）：不换 `tracing`
+- 现有 logger 的同步落盘是崩溃现场与“最后一条日志”的证据前提：进程异常退出后，
+  文件里必须已经有那一行；换异步写或整体替换会削弱证据链。`tracing` 仍要自己接同步 writer，
+  只会增加迁移面；peer/transfer/channel 等关联字段已由现有日志承担。
+- 本轮不引入 span 体系；若以后要做，按“关联 id → span → 采样”单独设计，不整体替换。
 
-### B2：错误类型化（分批）
-- 在 DB/迁移、文件保存、网络入口定义 `thiserror` 枚举；IPC 边界仍转成可读字符串，保持前端契约。
-
-### B3：网络帧与缓冲（B 类原型）
-- 用 `tokio-util::codec` + `bytes` 做一个**隔离原型**，逐字节比对现有帧；只有在断连/半包/大帧/
-  背压测试全部等价后才替换。不改变协议字节与消息 ID/加密语义。
-
-### B4：日志/追踪评估
-- 先为消息发送、文件分块、DB 事务、连接建立补稳定关联 id；评估 `tracing` 的收益与替换成本，
-  不整体替换现有 logger。
-
-### B5：系统集成与跨平台
-- 逐项核对官方插件支持矩阵；Windows 文件剪贴板/Android JNI/iOS 沙盒保留薄适配；
-  所有移动端未跑项标 NOT RUN。
+### B5（已落地，5.0.25）：预览读取移出 async worker + 系统插件核对
+- `read_file_preview` / `read_favorite_preview` / `read_content_preview` 从
+  `#[tauri::command(async)] + 同步 fn` 改为 `async fn` + `spawn_blocking`：
+  三者都要 `canonicalize` 与最多 15 MiB 的 `std::fs::read`，慢盘/网络盘上会钉住 Tokio worker。
+  15 MiB 上限与路径越权检查一字未改。
+- 新增 1 条源码判据：三格必须在 `spawn_blocking` 之后读盘、读盘前不许跨 `.await`、15 MiB
+  上限必须还在。注入一处 `spawn_blocking` 之前的读盘 ⇒ **FAIL**，恢复 ⇒ **PASS**。
+- **实测（2026-10-19，5.0.25）**：全量 Rust **980/980**；基线 979 → **980**
+  （macOS 980 / Windows 968）；`cargo fmt --check` 与 gate 形状的
+  `cargo clippy --features bluetooth -- -D warnings` 均退出 0。
+- 系统插件核对：notification / dialog / fs / opener / window-state / single-instance 均为官方插件
+  且已在 `lib.rs` 初始化；`open_path` 的 macOS `NSWorkspace`、Android FileProvider、
+  Windows/Linux opener 分派与注释一致。Windows 文件剪贴板 / Android JNI / iOS 沙盒仍为平台薄适配；
+  **移动端与 Windows 真机 NOT RUN**。
 
 ## 4. 4.x → 5.0 数据迁移与恢复
 

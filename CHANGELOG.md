@@ -13,6 +13,21 @@
 
 ## [Unreleased]
 
+## [5.0.25] - 2026-10-19
+
+### 优化：附件预览读盘移出 async worker
+
+- `read_file_preview` / `read_favorite_preview` / `read_content_preview` 从
+  `#[tauri::command(async)] + 同步 fn` 改为 `async fn` + `spawn_blocking`：三者都要做
+  `canonicalize` 与最多 15 MiB 的 `std::fs::read`，慢盘/网络盘上会钉住一个 Tokio worker，
+  而同一 runtime 上还排着开窗与网络命令。15 MiB 上限与路径越权检查一字未改。
+- 新增 1 条源码判据：三格必须在 `spawn_blocking` 之后读盘、读盘前不许跨 `.await`、15 MiB
+  上限必须还在。注入一处 `spawn_blocking` 之前的读盘 ⇒ **FAIL**，恢复 ⇒ **PASS**。
+- 日志/追踪评估：**不换 `tracing`**。现有 logger 的同步落盘是崩溃现场与“最后一条日志”
+  的诊断前提（崩溃后文件里必须有那一行），换异步写或整体替换会削弱证据链；结论记入
+  `docs/architecture/backend-modernization.md`（B4），本批无代码改动。
+- Rust 测试基线 979 → **980**；全量 Rust **980/980**；E2E/真机 **NOT RUN**。
+
 ## [5.0.24] - 2026-10-19
 
 ### 优化：TCP 小帧合并写 + 分帧选型结论
