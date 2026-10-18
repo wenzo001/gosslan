@@ -33,6 +33,7 @@ pub fn upsert_transfer(
         "INSERT INTO file_transfers(id, peer_id, name, size, direction, status, path, progress, created_at)
          VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
          ON CONFLICT(id) DO UPDATE SET status = excluded.status,
+             size = excluded.size,
              path = COALESCE(excluded.path, file_transfers.path),
              progress = excluded.progress
          WHERE file_transfers.status <> 'done'",
@@ -130,8 +131,28 @@ pub fn finalize_file_failure(
             bubble &= set_message_status(conn, &format!("gfile-{transfer_id}"), status).is_ok();
         }
         if bubble {
-            changed =
-                upsert_transfer(conn, transfer_id, "", "", 0, "send", status, None, 0.0).is_ok();
+            // 终态写入不知道"这次传了多大"，必须沿用台账里已知的 size：A-11 之后
+            // `upsert_transfer` 的冲突分支会同步 size，原样传 0 会把已知大小抹掉。
+            let known_size: u64 = conn
+                .query_row(
+                    "SELECT size FROM file_transfers WHERE id = ?1",
+                    params![transfer_id],
+                    |r| r.get::<_, i64>(0),
+                )
+                .map(|v| v.max(0) as u64)
+                .unwrap_or(0);
+            changed = upsert_transfer(
+                conn,
+                transfer_id,
+                "",
+                "",
+                known_size,
+                "send",
+                status,
+                None,
+                0.0,
+            )
+            .is_ok();
         }
     }
 

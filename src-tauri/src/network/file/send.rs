@@ -64,10 +64,12 @@ pub async fn send_file_from_path_at(
         .map_err(SendFileError::permanent)?;
     // 发送行的 sha256 在建记录时是空的（不能让气泡等一次 O(体积) 扫描），这里用真正用于
     // 校验的那份补上 —— 同一值、幂等，重试的后续尝试进来也是 no-op。
+    // 气泡的 size 同理：建行时写的是点击那一刻的磁盘大小；源文件在发送前变小/变大时，
+    // 必须按实际发出去的字节回填（2026-10-19 `src-shrunk` 实测差异）。
     let msg_id = format!("file-{transfer_id}");
-    let backfilled = {
+    let (sha_backfilled, size_backfilled) = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        match db::fill_message_sha256(&dbc, &msg_id, &file_sha256) {
+        let sha = match db::fill_message_sha256(&dbc, &msg_id, &file_sha256) {
             Ok(b) => b,
             Err(e) => {
                 // 留痕（第九家）：旧写法 `unwrap_or(false)` 把"库报错"和"幂等跳过/缺行"
@@ -79,9 +81,20 @@ pub async fn send_file_from_path_at(
                 );
                 false
             }
-        }
+        };
+        let size_changed = match db::fill_message_size(&dbc, &msg_id, size) {
+            Ok(b) => b,
+            Err(e) => {
+                state.logger.error(
+                    "file",
+                    format!("发送行 size 回填失败 msg={}：{e}", msg_id),
+                );
+                false
+            }
+        };
+        (sha, size_changed)
     };
-    if backfilled {
+    if sha_backfilled || size_backfilled {
         // 改了库还必须让前端也看到：只写库时内存里那条记录仍是 cid 空的版本，
         // 用户在同一会话里把刚发出去的文件转成合并卡片时，卡片按 `sha256`(=cid) 带出去，
         // 对端就再也拉不回这份内容（v4.22.16 引入的回归）。

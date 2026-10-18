@@ -124,12 +124,12 @@ export async function run() {
       sent.b.size === landedBytes, landedBytes, sent.b.size);
     check("发送端气泡回填的 sha256 必须等于落地文件摘要（内容寻址 cid 不许撒谎）",
       sent.bubbleSha === got, got?.slice(0, 12) + "…", sent.bubbleSha?.slice(0, 12) ?? "空");
-    // ⚠️ 这一行**不是断言**，是这一轮照出来的**分歧证据**（已按 A-11 登记 roadmap）：
-    //   气泡与发送台账的 size 来自点击那一刻的磁盘，`upsert_transfer` 的 ON CONFLICT 只改
-    //   status/path/progress、不改 size ⇒ 原件事后变小时，A 自己看到的"多大"和真正发出去、
-    //   B 收到的那份就不是一个数。修（回填 size）之前不许把它写成断言，也不许删这条打印。
+    check("发送端台账的 size 必须等于真正发出去的字节数（A-11：原件事后变小也要跟真值）",
+      sent.a.size === landedBytes, landedBytes, `入队 ${SHRINK_BYTES} → A 台账 ${sent.a.size}`);
+    check("发送端气泡的 size 必须等于真正发出去的字节数（A-11：回填同时改库与通知前端）",
+      sent.bubbleSize === landedBytes, landedBytes, `入队 ${SHRINK_BYTES} → A 气泡 ${sent.bubbleSize}`);
     console.log(
-      `  · 实测 size 分歧：入队 ${SHRINK_BYTES} → 实发 ${landedBytes}` +
+      `  · 实测 size：入队 ${SHRINK_BYTES} → 实发 ${landedBytes}` +
       ` | A 气泡 ${sent.bubbleSize} · A 台账 ${sent.a.size} · B 台账 ${sent.b.size}`,
     );
   });

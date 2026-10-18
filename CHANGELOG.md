@@ -13,6 +13,32 @@
 
 ## [Unreleased]
 
+## [5.0.31] - 2026-10-19
+
+### 修复：原件事后变小后，发送侧台账与气泡的 `size` 跟实发字节走（A-11）
+
+- `src-shrunk` E2E 实测：入队后原件被截断到 4096 B，线协议、落地内容、sha、两侧终态
+  都正确，但发送侧 `file_transfers.size` 与气泡 `content.size` 仍是入队时的 1048576
+  —— `upsert_transfer` 的冲突分支只更新 status/path/progress，气泡则从未回填。
+- `upsert_transfer` 冲突更新同步 `size = excluded.size`，保留 `WHERE status <> 'done'`
+  （已完成行仍不许被晚到写入降级或改尺寸）；新增 `db::fill_message_size`，与
+  `fill_message_sha256` 同一形状（幂等、缺行/非 JSON 静默跳过、返回是否真的改了行）。
+  发送入口用实际 `metadata.len()` 回填气泡；任一字段变更时重发 `message-received`，
+  让前端内存里的那条记录同步到真值（与 v4.22.16 的 sha 回填同一道理）。
+- 单测先红后绿三条：`transfer_upsert_keeps_size_in_sync_until_done`、
+  `fill_message_size_backfills_the_actual_size_once`，以及失败收尾的
+  `a_failure_finalize_keeps_the_known_transfer_size`（终态写入传 size=0 是“不知道”，
+  必须沿用台账已知值，否则新同步逻辑会把失败单抹成 0）。Rust **989 通过 + 1 ignored**，
+  基线 987 → **990**（macOS；Windows 970 → 973）。
+- E2E `src-shrunk` 补两条断言（A 台账 / A 气泡 size == 实发字节），5.0.31 release
+  复跑 **26/26 ×3**：入队 1048576 → 实发 4096，A 气泡/A 台账/B 台账均 4096；
+  默认轮 **18/18**（文件链回归）、失败路径 `recv-readonly` **24/24**；同一终态 release
+  回归受 size 同步影响的文件链：`kill-mid` 25/25、`sender-kill-mid` 26/26、
+  `peer-freeze` 24/24、`multi-file` 24/24、`poison-part` 22/22、`resume-prefix` 23/23、
+  `recv-dir-rotted` 24/24、`gfile` 28/28（首跑为 cargo 默认 toolchain 环境噪声，显式
+  `RUSTUP_TOOLCHAIN` 复跑绿）；干净 worktree `verify:local` **22/22**（64.4s）。
+  其余 E2E 轮次与真机仍按 **NOT RUN**。
+
 ## [5.0.30] - 2026-10-19
 
 ### 安全：应用数据目录收紧到仅属主可进入
@@ -55,7 +81,7 @@
   10 条 allowed warnings（unmaintained/unsound，传递依赖：proc-macro-error、unic-*、
   zbus/zvariant、glib 0.18.5；glib 仅 Linux GTK 路径）。Linux 运行时未验证。
 - `src-shrunk` 已知展示差异：A 入队台账/气泡仍记 1048576，B 台账/盘上 4096；
-  内容、sha、两侧终态均正确，属 UI 尺寸展示口径，不影响数据完整性。
+  内容、sha、两侧终态均正确，属 UI 尺寸展示口径，不影响数据完整性（A-11，已在 5.0.31 修复）。
 
 ## [5.0.28] - 2026-10-19
 

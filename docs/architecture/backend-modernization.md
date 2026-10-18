@@ -155,7 +155,9 @@
   `gfile` **28/28**（群文件逐字节一致）、`ghsync` **32/32**（新成员历史/群任务同步、
   时间/seq 保真、路径剥离、未读 0、标记 done）、`recv-dir-rotted` **24/24**
   （只有最后 rename 失败：发送侧明确 failed、不删队列行冒充成功、接收侧不假 done）、
-  `src-shrunk` **24/24**（入队后源文件变小：按截断后的磁盘真值收发，内容/sha/终态一致）。
+  `src-shrunk` **26/26 ×3**（入队后源文件变小：按截断后的磁盘真值收发，内容/sha/终态一致；
+  A-11 修复后补两条 size 断言：A 台账/A 气泡都等于实发 4096）；同一终态 release 上
+  `recv-readonly` **24/24**（失败收尾仍按原语义推进，size 不被抹成 0）。
 - 网络/业务扩展：`lanoff` **26/26**（LAN 关闭后走 Routed）、`posttext` **39/39**
   （重启后文本投递）、`task` **49/49**（群任务同步）、`dmreaction` **24/24**
   （1:1 表情回应）。
@@ -163,7 +165,7 @@
   `resume-prefix` **23/23**（真实前缀复用）、`groupcrash` **26/26**（建群中崩溃）、
   `gossip-late` **23/23**（晚加入群的 gossip 收敛）、`stall-mid` **25/25**（中途停滞）、
   `disk` **18/18**（磁盘/队列）。
-  标准轮合计 **24 轮 / 650 断言**；加互操作 **8 轮/216**，共 **32 轮 / 866 断言全绿**。
+  标准轮合计 **24 轮 / 652 断言**；加互操作 **8 轮/216**，共 **32 轮 / 868 断言全绿**。
 - **反向自证（证明正向断言非空转）**：`--negative`（幽灵收件人）投递断言如期
   超时红、进程 exit 0（自证通过）；`kill-mid-lie`（期望字节 +1、sha 换成错值）
   两条断言如期红（`6291457 vs 6291456`、sha 不符）——这是该轮的 **EXPECTED RED**，
@@ -184,8 +186,9 @@
   - gossip3（A→B→C 三节点传播）**25/25 ×2**
   合计 **8 轮 / 216 断言全绿**。4.x release 构建 2m44s/3m01s；两侧 `DB_VERSION=11`。
   未覆盖：真机、4.x 用户库实迁移、其余 E2E 轮次。
-- 已知展示差异（`src-shrunk` 实测）：A 的入队台账/气泡仍记 1048576，B 台账/盘上为 4096；
-  字节内容、sha、两侧终态都正确。它是 UI 尺寸字段的展示口径，不影响数据完整性，未在本轮改。
+- 已修展示差异（`src-shrunk` 实测，A-11）：修前 A 的入队台账/气泡仍记 1048576、B 台账/盘上为 4096；
+  5.0.31 起 `upsert_transfer` 同步 `size`、`fill_message_size` 回填气泡，复跑 A 气泡/A 台账/B 台账
+  均为实发 4096，且补了两条断言钉住。
 
 - `gfile` 首跑因驱动内 `cargo build --example e2e_peer` 遇到本机 toolchain 环境问题退出 1；
   直接构建成功（16s）后带 `RUSTUP_TOOLCHAIN` 复跑 **28/28** 绿 —— 环境噪声，不是产品缺陷。
@@ -200,6 +203,26 @@
   （按 `transfer_id` 幂等；无队列行时 no-op；失败留痕）。源码守卫要求成功收尾
   必须包含该调用。Rust **985 通过 + 1 ignored**；`sender-kill-mid` 复跑见下。
 - 未改变成功/失败判定、重试状态机、协议与文件内容。
+
+### B12（已落地，5.0.31）：原件事后变小时发送侧 `size` 跟实发字节走（A-11）
+- `src-shrunk` 修前实测：入队 1048576 → 截断后实发 4096，线协议/落地内容/sha/两侧终态都正确，
+  但发送侧 `file_transfers.size` 与气泡 `content.size` 仍是 1048576；接收侧写的是 4096。
+- 根因：`upsert_transfer` 的 `ON CONFLICT` 只更新 status/path/progress；气泡从未回填 size。
+- 修复：冲突分支同步 `size = excluded.size`，保留 `WHERE status <> 'done'` 终态闸；
+  新增 `db::fill_message_size`（与 `fill_message_sha256` 同形状：幂等、缺行/非 JSON 跳过），
+  发送入口按实际 `metadata.len()` 回填，并在任一字段变更时重发 `message-received`。
+- 边界：失败收尾 `finalize_file_failure` 调 `upsert_transfer` 时传的 `size=0` 是"不知道"，
+  现在先读台账已知 size 再写 —— 否则新同步逻辑会把失败单抹成 0。单测
+  `a_failure_finalize_keeps_the_known_transfer_size` 先红后绿。
+- **实测（2026-10-19，5.0.31）**：单测先红后绿三条；Rust **989 通过 + 1 ignored**，
+  基线 987→990（Windows 970→973）；`src-shrunk` **26/26 ×3**（A 气泡/A 台账/B 台账均 4096），
+  默认轮 **18/18**，`recv-readonly` **24/24**（失败收尾路径）。
+  同一终态 release 上把受 size 同步影响的文件链全部回归：`kill-mid` **25/25**、
+  `sender-kill-mid` **26/26**、`peer-freeze` **24/24**、`multi-file` **24/24**、
+  `poison-part` **22/22**、`resume-prefix` **23/23**、`recv-dir-rotted` **24/24**、
+  `gfile` **28/28**（首跑仍是 `cargo build --example e2e_peer` 无默认 toolchain 的
+  环境噪声，`RUSTUP_TOOLCHAIN=stable-aarch64-apple-darwin` 复跑绿，非产品失败）。
+  未跑：group/gossip/互操作/真机。
 
 ### B11（已落地，5.0.30）：应用数据目录权限 `0700`
 - 真实安装的 app data 目录是 `0755`：文件虽已 `0600`，同机其他用户仍可列出备份名、
@@ -226,14 +249,14 @@
 - 不改消息编码、消息 ID、签名输入、加密格式、确认语义与 SQLite 字段含义。
 - 不重构前端；若 IPC 契约必须变化，先列影响面并提供后端兼容层。
 - 不 push/tag/release/merge main；每批独立提交、独立门禁。
-- 多实例 E2E：**32 轮 / 866 断言 PASS**（隔离 HOME，含 4.44.4↔5.0.29 双向互操作）；
+- 多实例 E2E：**32 轮 / 868 断言 PASS**（隔离 HOME，含 4.44.4↔5.0.29 双向互操作）；
   真机、Windows/iOS/Linux 运行时为 **NOT RUN**，不得用桌面编译代替。
 
 ## 6. 最终验收报告（2026-10-19）
 
 ### 6.1 基线
 
-- 分支 `feat/5.0`，tip `f1f68c4`，版本 **5.0.30**，本地未推 **28 笔**；Rust 1.98.1。
+- 分支 `feat/5.0`，版本 **5.0.31**；本地未推笔数现算（`git rev-list --count origin/main..HEAD`）；Rust 1.98.1。
 - 真实库只读核对：`user_version=11`、19 张业务表、WAL、`integrity_check=ok`；
   **未对真实用户库执行迁移**。
 - 工作树仍有并行会话的前端改动，本轮未暂存、未覆盖。
@@ -278,7 +301,7 @@
 - 机制：`user_version` 单调迁移链（v0–v11）+ 每步事务 + 降级拒绝；迁移前
   `VACUUM INTO` + `integrity_check`/版本/表数校验，失败以 `InitError::Backup` 中止；
   `busy_timeout=5s`。
-- 判据：迁移测试 **38 通过 + 1 ignored**、Rust **986 通过 + 1 ignored**；
+- 判据：迁移测试 **38 通过 + 1 ignored**、Rust **989 通过 + 1 ignored**；
   覆盖 v0 legacy、1..10 每个起始版本、损坏库原文件逐字节不变、备份恢复再迁移。
 - 真实 v10 DDL 夹具（`0b84f11^`）18 张历史表 + 各实体数据迁移后逐字段保留。
 - 真实数据副本演练：只读副本置 v10 → 生产 `init`：19 表/208 行、备份 integrity ok、
@@ -288,14 +311,14 @@
 ### 6.5 网络与文件传输
 
 - 协议字节不变；写循环可被 shutdown/cancel 打断，队列有字节预算。
-- E2E 标准 **24 轮 / 650 断言** + 旧新互操作 **8 轮 / 216 断言** = **32 轮 / 866 断言全绿**。
+- E2E 标准 **24 轮 / 652 断言** + 旧新互操作 **8 轮 / 216 断言** = **32 轮 / 868 断言全绿**。
 - 互操作：4.44.4 ↔ 5.0.29 双向 default/group/gfile/gossip3；两侧 `DB_VERSION=11`。
 - 真实 UI：300MB 传输开始后 **734ms** 接收端设置窗口可开；group 轮 AX 读到
   `[有人@我]`/6 未读。
 - E2E 发现并修复：发送端崩溃恢复后 `file_outbox` 残留 `pending` ⇒ 重复投递；
   `finalize_send_accepted` 对所有成功路径统一清理（5.0.29）。
-- 已知展示差异：`src-shrunk` 中 A 入队台账/气泡仍记 1MB、B 台账/盘上 4KB；
-  内容/sha/终态正确，属 UI 尺寸展示口径。
+- A-11 已修（5.0.31）：`src-shrunk` 修前 A 入队台账/气泡仍记 1MB、B 台账/盘上 4KB；
+  修复后两处 size 都按实发字节回填，复跑 A/B 台账与气泡一致（4096），断言已补。
 - **未完成**：真机/跨设备传输 **NOT RUN**。
 
 ### 6.6 跨平台与系统集成
@@ -314,19 +337,19 @@
 
 | 命令 | 退出码 | 读数 |
 |---|---|---|
-| `npm run verify:local`（干净 worktree `40a0b5a`） | **0** | **22/22，198.8s** |
-| `cargo test --lib --features bluetooth` | 0 | **986 通过 + 1 ignored** |
+| `npm run verify:local`（干净 worktree，5.0.31） | **0** | **22/22，64.4s** |
+| `cargo test --lib --features bluetooth` | 0 | **989 通过 + 1 ignored** |
 | 迁移测试 | 0 | **38 通过 + 1 ignored** |
-| E2E（32 轮，隔离 HOME） | 0 | **866/866 断言** |
+| E2E（32 轮，隔离 HOME） | 0 | **868/868 断言** |
 | `cargo audit --file src-tauri/Cargo.lock` | 0 | **0 漏洞，10 allowed warnings** |
 | `version:check` / Change Budget / CHANGELOG / 文档硬数字 | 0 | 全部通过 |
 
 ### 6.8 剩余风险
 
 - **高**：真实 4.x 用户库迁移未执行；Windows/iOS/Linux 运行时与真机未验证。
-- **中**：单一 SQLite 连接串行化读写；入站 handler 单链路串行；`src-shrunk` 尺寸展示差异；
+- **中**：单一 SQLite 连接串行化读写；入站 handler 单链路串行；
   Windows ACL 未处理；audit 的 glib/zbus 警告仅 Linux 路径。
-- **低**：备份无保留上限；`gfile` 首跑曾遇 toolchain 环境噪声（复跑绿）；目录权限仅在
+- **低**：迁移备份只按数量清扫、无时间保留策略；`gfile` 首跑曾遇 toolchain 环境噪声（复跑绿）；目录权限仅在
   Unix 生效。
 
 ### 6.9 最终结论
