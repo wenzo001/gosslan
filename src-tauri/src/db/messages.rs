@@ -363,6 +363,36 @@ pub fn fill_message_sha256(conn: &Connection, msg_id: &str, sha256: &str) -> Res
 }
 
 
+/// 发送文件气泡的 `size` 回填为**实际发出去的字节数**。
+///
+/// 气泡在建行时写的是用户点击那一刻的磁盘大小；源文件在发送前变小/变大时，
+/// `file_transfers` 与气泡都必须跟实际值走（2026-10-19 `src-shrunk` 实测差异）。
+/// 与 `fill_message_sha256` 同一形状：幂等、缺行/非 JSON 静默跳过、返回是否真的改了行。
+pub fn fill_message_size(conn: &Connection, msg_id: &str, size: u64) -> Result<bool> {
+    let current: Option<String> = conn
+        .query_row(
+            "SELECT content FROM messages WHERE msg_id = ?1",
+            params![msg_id],
+            |r| r.get(0),
+        )
+        .ok();
+    let Some(content) = current else {
+        return Ok(false);
+    };
+    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return Ok(false);
+    };
+    if value.get("size").and_then(|v| v.as_u64()) == Some(size) {
+        return Ok(false);
+    }
+    value["size"] = serde_json::Value::Number(size.into());
+    conn.execute(
+        "UPDATE messages SET content = ?2 WHERE msg_id = ?1",
+        params![msg_id, value.to_string()],
+    )?;
+    Ok(true)
+}
+
 /// 全历史检索的一条命中（含"该会话命中总数"，供「共 N 条相关聊天记录」用）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChatSearchHit {

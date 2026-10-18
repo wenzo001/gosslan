@@ -702,6 +702,23 @@ fn a_done_transfer_is_not_announced_failed_yet_its_queue_row_closes() {
     );
 }
 
+/// 失败收尾调用的是 `upsert_transfer(..., size = 0, ...)`（"这次不知道大小"）：
+/// A-11 之后冲突分支会同步 size ⇒ 若原样把 0 写进去，一个已知 10 字节的失败单会被抹成 0。
+#[test]
+fn a_failure_finalize_keeps_the_known_transfer_size() {
+    let conn = fresh_db();
+    seed_send_job(&conn, "t8", "sending");
+
+    finalize_file_failure(&conn, "t8", FileJobEnd::GiveUp).unwrap();
+
+    let size: i64 = conn
+        .query_row("SELECT size FROM file_transfers WHERE id = 't8'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(size, 10, "失败收尾只改状态/进度，不许把已知 size 抹成 0");
+}
+
 /// 反向的一半：没收成的那一行，三处必须**一起**推进并回报 true。
 /// 只钉正向会变成"永远返回 false 也通过" —— 那正好是关掉 emit、让前端永久卡在 X% 的形状。
 #[test]
@@ -761,4 +778,85 @@ fn outbox_status(conn: &Connection, tid: &str) -> String {
         |r| r.get(0),
     )
     .unwrap()
+}
+
+/// 源文件在发送前变大/变小时，**台账 size 必须跟实际值**；`done` 终态仍不许被晚到的写入改掉。
+#[test]
+fn transfer_upsert_keeps_size_in_sync_until_done() {
+    let conn = fresh_db();
+    upsert_transfer(
+        &conn, "t1", "p1", "a.bin", 1_048_576, "send", "pending", None, 0.0,
+    )
+    .unwrap();
+    upsert_transfer(
+        &conn, "t1", "p1", "a.bin", 4096, "send", "active", None, 0.0,
+    )
+    .unwrap();
+    let size: i64 = conn
+        .query_row("SELECT size FROM file_transfers WHERE id = 't1'", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(size, 4096, "源文件变小后，台账必须跟实际发送字节数");
+
+    upsert_transfer(
+        &conn,
+        "t1",
+        "p1",
+        "a.bin",
+        4096,
+        "send",
+        "done",
+        Some("/d/a.bin"),
+        1.0,
+    )
+    .unwrap();
+    upsert_transfer(&conn, "t1", "p1", "a.bin", 999, "send", "active", None, 0.0).unwrap();
+    let (size, status): (i64, String) = conn
+        .query_row(
+            "SELECT size, status FROM file_transfers WHERE id = 't1'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        (size, status.as_str()),
+        (4096, "done"),
+        "done 终态不许被晚到的 size/status 覆盖"
+    );
+}
+
+/// 发送文件气泡的 `size` 回填：只补这一个字段、同值幂等、缺行/非 JSON 静默跳过。
+#[test]
+fn fill_message_size_backfills_the_actual_size_once() {
+    let conn = fresh_db();
+    ins_msg(
+        &conn,
+        "file-t1",
+        "p1",
+        "file",
+        "{\"name\":\"a.bin\",\"size\":1048576,\"sha256\":\"aa11\"}",
+        1,
+    );
+    assert!(
+        fill_message_size(&conn, "file-t1", 4096).unwrap(),
+        "第一次回填必须报告真的改了行"
+    );
+    let content: String = conn
+        .query_row(
+            "SELECT content FROM messages WHERE msg_id = 'file-t1'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+    assert_eq!(v["size"], 4096);
+    assert_eq!(v["sha256"], "aa11", "其余字段不许被改动");
+    assert!(
+        !fill_message_size(&conn, "file-t1", 4096).unwrap(),
+        "同值必须幂等，不产生第二次写"
+    );
+    assert!(!fill_message_size(&conn, "missing", 1).unwrap());
+    ins_msg(&conn, "file-bad", "p1", "file", "not json", 2);
+    assert!(!fill_message_size(&conn, "file-bad", 1).unwrap());
 }
