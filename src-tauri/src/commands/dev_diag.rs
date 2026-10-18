@@ -243,6 +243,70 @@ fn collect_peer_versions(s: &Arc<AppState>) -> Vec<crate::state::PeerVersionDiag
     out
 }
 
+/// 把若干条连接的健康度折成诊断行（纯函数，`collect_conn_health` 只负责取锁与喂数据）。
+///
+/// 抽出来的原因不是复用，是**可判**：真实链路的"只有写出、从没读到"这一格在生产里要靠
+/// 半开 TCP 才能造出来，而这一格恰恰是那两个数字的全部区别所在 ⇒ 纯函数可以当场钉死。
+pub(crate) fn conn_health_rows(
+    conns: &[&crate::mesh::Connection],
+    now: i64,
+    health_timeout_ms: i64,
+    max_failures: u32,
+) -> Vec<crate::state::ConnHealthDiag> {
+    let mut rows: Vec<crate::state::ConnHealthDiag> = conns
+        .iter()
+        .map(|c| crate::state::ConnHealthDiag {
+            device_id: c.peer_id.clone(),
+            conn_id: c.id.clone(),
+            endpoint: c.endpoint.to_string(),
+            path_kind: c.path_kind.as_str().to_string(),
+            last_write_seen_ms: c.health.last_write_seen_ms,
+            last_read_seen_ms: c.health.last_read_seen_ms,
+            write_age_ms: c.health.last_write_seen_ms.map(|t| now - t),
+            read_age_ms: c.health.last_read_seen_ms.map(|t| now - t),
+            // 健康结论与选路/看门狗**同一个判据、同一份阈值**，否则面板会说谎。
+            healthy: c
+                .health
+                .is_healthy(now, health_timeout_ms, max_failures),
+            consecutive_failures: c.health.consecutive_failures,
+        })
+        .collect();
+    // 行序必须稳定：同一 peer 的多条连接之间按端点排，两轮读数才能逐行对齐
+    //（不然"哪条坏了"又得靠眼睛在两屏里找同一条）。
+    rows.sort_by(|a, b| (&a.device_id, &a.endpoint).cmp(&(&b.device_id, &b.endpoint)));
+    rows
+}
+
+/// 收集「每条连接最后一次读到一个完整帧 / 最后一次写出成功」的活性读数（纯只读，不改任何状态）。
+///
+/// 为什么非开这一格不可：这两个时间戳今天就**有人写**（`reader_loop` 解出一整帧记一次、
+/// `writer_loop` 写成功记一次），而 `last_write_seen_ms` 在应用内**一个读者都没有**。
+/// 于是"回执到底没离开对端 socket"与"回执上路了但我这边没读到"两种现场，在日志里长得一模一样
+/// （2026-10-17 那轮 J2 就是被这一格挡住读不下去）。
+///
+/// ⚠️ 三个不许混淆的口径，面板上按字面写：
+/// · **写出成功**（`last_write_seen_ms`）：半开 TCP 上它会一直前进，所以它不是"对端活着"的证据；
+/// · **读到并解析出一个完整帧**（`last_read_seen_ms`）：读循环是 `read_frame` 一次拿一整帧 ⇒
+///   现有状态量的是"成帧"，**字节级读到**没有第三个读数，别把这两个数当一个用；
+/// · **派发完成**：没有读数（只有 ≥3 s 的队头阻塞留痕），所以这一格只能答"帧到没到"，
+///   答不了"到了之后有没有进对的处理分支"。
+/// `None` 表示这条连接建立以来那件事**从没发生过**（不是 0 —— 0 会被读成"很久以前"）。
+///
+/// 按**连接**出行而不是按 peer：同一对节点之间可以同时挂着多条 socket，而"整段没帧"这一类
+/// 故障实测是逐连接发生的（一个 peer 的两条连接里只有一条被判死）⇒ 聚合成 peer 会把坏的那条盖掉。
+///
+/// 锁只在取快照那几行的作用域内持有（本命令是同步的，不存在跨 await 持锁）。
+fn collect_conn_health(s: &Arc<AppState>) -> Vec<crate::state::ConnHealthDiag> {
+    let now = db::now_ms();
+    {
+        let pm = s.peer_manager.lock().unwrap_or_else(|e| e.into_inner());
+        let (health_timeout_ms, max_failures) = (pm.health_timeout_ms(), pm.max_failures());
+        let conns: Vec<&crate::mesh::Connection> =
+            pm.peers().flat_map(|p| p.connections()).collect();
+        conn_health_rows(&conns, now, health_timeout_ms, max_failures)
+    }
+}
+
 /// 获取网络诊断状态（供隐藏开发者面板展示）。
 ///
 /// 数据分两块，**互不冒充**：`mode`/`bound_ip`/… 只描述局域网；蓝牙在 `bluetooth` 里
@@ -283,5 +347,8 @@ pub fn get_discovery_diag(state: State<'_, Arc<AppState>>) -> crate::state::Disc
     result.protocol_version = crate::protocol::PROTOCOL_VERSION;
     result.app_version = crate::protocol::current_app_version().to_string();
     result.peer_versions = collect_peer_versions(s);
+    // 按连接的收发活性：现取，不缓存 —— 这一格存在的意义就是"此刻还在不在动"，
+    // 留一份旧快照就等于把它变成第二条日志。
+    result.conn_health = collect_conn_health(s);
     result
 }

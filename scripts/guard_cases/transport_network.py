@@ -341,7 +341,17 @@ CASES: list[Case] = [
                 "Err(WriteError::Local(_)) => WriteOutcome::Failed,",
             ),
             (
-                "Err(WriteError::Socket(_)) => WriteOutcome::Failed,",
+                "                        Err(WriteError::Socket(e)) => {\n"
+                "                            if let Some(note) = crate::network::file::ack_writer_failure_note(\n"
+                "                                &msg,\n"
+                "                                \"socket\",\n"
+                "                                &e.to_string(),\n"
+                "                            ) {\n"
+                "                                state.logger.error(\"file\", note);\n"
+                "                            }\n"
+                "                            WriteOutcome::Failed\n"
+                "                        }\n"
+                ,
                 "Err(WriteError::Socket(e)) => WriteOutcome::Local(e.to_string()),",
             ),
         ],

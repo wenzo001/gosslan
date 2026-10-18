@@ -86,6 +86,18 @@ function peerVersionText(p: PeerVersionDiag): string {
 function peerIsNewer(p: PeerVersionDiag): boolean {
   return p.protocol_version !== null && p.protocol_version > (diag.value?.protocol_version ?? 0);
 }
+
+/**
+ * 一条连接的活性读数距今多久。
+ *
+ * `null` 要说成"从没"而不是"0"：0 在语义上是"刚刚"，而这一格的整个用处就是区分
+ * "这台从没读到过对端的帧"与"很久没读到"（半开链路是后者，新建连接是前者）。
+ */
+function ageText(ms: number | null): string {
+  if (ms === null) return t("diag.connNever");
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
+}
 </script>
 
 <template>
@@ -308,6 +320,42 @@ function peerIsNewer(p: PeerVersionDiag): boolean {
               >
                 {{ peerVersionText(p) }}
                 <template v-if="peerIsNewer(p)"> · {{ t("diag.peerNewer") }}</template>
+              </span>
+            </div>
+          </div>
+        </section>
+
+        <!-- ⑥ 连接活性：按连接两列各说各话（写出成功 ≠ 读到帧），排查"对端整段没帧"这一类的第一现场 -->
+        <section>
+          <h4 class="mb-1.5 font-semibold text-[13px]">{{ t("diag.connHealth") }}</h4>
+          <p class="mb-1 opacity-60">{{ t("diag.connHealthHint") }}</p>
+          <p v-if="diag.conn_health.length === 0" class="opacity-50">
+            {{ t("diag.connHealthEmpty") }}
+          </p>
+          <div v-else class="max-h-48 space-y-1 overflow-y-auto font-mono text-[11px]">
+            <div
+              v-for="c in diag.conn_health"
+              :key="c.conn_id"
+              class="flex flex-wrap items-baseline gap-x-3 gap-y-0.5"
+            >
+              <span class="min-w-0 flex-1 truncate opacity-70" :title="c.conn_id">
+                {{ c.device_id }} · {{ c.path_kind }} {{ c.endpoint }}
+              </span>
+              <span class="shrink-0" :title="String(c.last_write_seen_ms)">
+                {{ t("diag.connWrite") }} {{ ageText(c.write_age_ms) }}
+              </span>
+              <span
+                class="shrink-0"
+                :class="c.read_age_ms === null ? 'text-[var(--gosslan-danger-ink)]' : ''"
+                :title="String(c.last_read_seen_ms)"
+              >
+                {{ t("diag.connRead") }} {{ ageText(c.read_age_ms) }}
+              </span>
+              <span
+                class="shrink-0"
+                :class="c.healthy ? 'text-[var(--gosslan-success-ink)]' : 'text-[var(--gosslan-danger-ink)]'"
+              >
+                {{ c.healthy ? t("diag.connHealthy") : t("diag.connUnhealthy") }}
               </span>
             </div>
           </div>

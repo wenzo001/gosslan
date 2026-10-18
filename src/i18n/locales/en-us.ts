@@ -994,6 +994,17 @@ export const enUS: MessageDict = {
   "diag.peerNotDeclared": "no version declared (older build)",
   "diag.peerVersionLine": "protocol {p} · app {a}",
   "diag.peerNewer": "peer protocol is newer",
+  "diag.connHealth": "Connection liveness (per connection, not per node)",
+  "diag.connHealthHint":
+    "The \"written\" column is this side succeeding to push bytes into the socket; on a half-open link it keeps advancing and does NOT prove the peer is alive. " +
+    "The \"frame read\" column measures a fully parsed frame (the read loop takes one frame at a time; there is no separate byte-level reading). " +
+    "Empty means it never happened since the connection was created — a 0 would read as \"a long time ago\".",
+  "diag.connHealthEmpty": "No registered connection at all",
+  "diag.connWrite": "written",
+  "diag.connRead": "frame read",
+  "diag.connHealthy": "healthy",
+  "diag.connUnhealthy": "unhealthy",
+  "diag.connNever": "never",
 
   // ---- Send / notification / file ops ----
   "send.fileFail": "Failed to send file",

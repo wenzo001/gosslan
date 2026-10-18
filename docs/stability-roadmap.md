@@ -43,7 +43,7 @@
 | 前端只能走 `src/api`（出现 `@tauri-apps/api/core` 即红） | `src/api/events.test.ts` | 绿 |
 | 注册表 ↔ 契约图 IPC 表双向等值、两侧无重复 | `src/utils/mapContract.test.ts` | 绿，实测 **129** 条 |
 | 门面包装必须被引用；注册表 ↔ 前端调用面逐条对账；死命令必须为 0 | `mapContract.test.ts` / `events.test.ts` | 绿（本轮已删 5 条零引用命令） |
-| 发射事件不得持 DB 锁（INV-P25） | `scripts/check-lock-scope.mjs`（全部取锁点逐处扫；条数由脚本自己打印） | 绿 |
+| 发射事件不得持 DB 锁；持锁期间也不许调用自锁 helper（INV-P25） | `scripts/check-lock-scope.mjs`（全部取锁点逐处扫，判据 A–D；条数由脚本自己打印） | 绿 |
 | 领域图必须认领每个源文件、一文件一域、`activeHome` 字段齐 | `check-domain-map.mjs` 判据 A–F | 绿 |
 | Rust 跨域 `use crate::…` 必须在 `consumes` 里 | `check-domain-deps.mjs` 判据 G–I | 绿（**只扫 Rust，前端不扫**） |
 | 不变量例外必须登记 | `check-invariant-exceptions.mjs` | 绿（现 2 条：INV-P03/P04） |

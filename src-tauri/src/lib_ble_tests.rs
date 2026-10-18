@@ -1,5 +1,6 @@
 // 职责边界：
 // - `lib_tests.rs` 测试分册之4 —— BLE 形状：指定拨号器、握手跳帧、外设节奏、载荷预算与运行态单一来源
+//   （另含**连接活性**这一族：读写活性不许互相冒充、诊断出口的接线与只读形状）
 // 为什么拆：`src-tauri/src/lib_tests.rs` 原来 4,009 行、96 个顶层项挤在同一个 `mod tests` 里。
 // 机制与 `network/transport/tests.rs` 那一刀同一条：`include!` 是文本粘贴 ⇒ 这些项仍属于
 // `crate::lib_tests` 里那同一个 `mod tests` ⇒ 模块路径、`use`、可见性、**测试全名一字不变**
@@ -520,5 +521,96 @@
         assert!(
             body.contains("event_target_label(target) != origin.as_deref()"),
             "过滤条件必须是『目标窗口 ≠ 发起窗口』"
+        );
+    }
+
+    /// 连接活性诊断必须把「写出成功」与「读到完整帧」当**两件事**（与 `ConnectionHealth` 的
+    /// M3-0b 读写拆分同一条口径，这里钉的是它在诊断出口那一端不许被并回去）。
+    ///
+    /// 为什么现在要钉：`last_write_seen_ms` 从今天起**有了第一个读者**（2026-10-17 那轮 J2 的现场是
+    /// "回执到底没离开对端 socket"与"回执上路了但我这侧没读到"两种现场在日志里长得一模一样，
+    /// 而这两个数正好一边能答一半）。这一格要是把两列合成一列，或者让"写过"点亮"读到"，
+    /// 出口就白开了 —— 半开 TCP 上写会一直成功，把写读成读就是把死链路报成活链路。
+    #[test]
+    fn conn_health_diag_keeps_write_and_read_liveness_apart() {
+        let mk = |peer: &str, port: u16| {
+            crate::mesh::Connection::new(
+                peer,
+                crate::mesh::Endpoint::Tcp(format!("127.0.0.1:{port}").parse().unwrap()),
+                crate::mesh::PathKind::Lan,
+            )
+        };
+        // 刻意**反着喂**：读到的那条排在前面，行的顺序必须由函数自己按端点定，不能跟着入参漂
+        //（同一 peer 的多条 socket 要能跨两轮读数逐行对齐）。
+        let mut read_only = mk("p1", 50_002);
+        read_only.health.mark_read_seen(1_500, None);
+        let mut wrote_only = mk("p1", 50_001);
+        wrote_only.health.mark_write_seen(1_000);
+        let refs: Vec<&crate::mesh::Connection> = vec![&read_only, &wrote_only];
+
+        let rows = crate::commands::conn_health_rows(&refs, 2_000, 10_000, 3);
+
+        assert_eq!(rows.len(), 2, "一个 peer 的两条连接必须出两行（按 peer 聚合会盖掉坏的那条）");
+        assert_eq!(rows[0].endpoint, "127.0.0.1:50001");
+        assert_eq!(rows[1].endpoint, "127.0.0.1:50002");
+        // 每行的时间戳只属于自己那条连接（身份匹配）
+        assert_eq!(rows[0].last_write_seen_ms, Some(1_000));
+        assert_eq!(rows[0].write_age_ms, Some(1_000));
+        assert_eq!(rows[1].last_read_seen_ms, Some(1_500));
+        assert_eq!(rows[1].read_age_ms, Some(500));
+        // ★ 不许冒充：只写过、从没读到帧的那一条，读活性必须是 `None`（不是 0、不能被写点亮），
+        //   而且必须判不健康 —— 半开 TCP 就是这个形状。
+        assert_eq!(
+            rows[0].last_read_seen_ms, None,
+            "写出成功不得把读活性点亮（那等于把死链路报成活链路）"
+        );
+        assert_eq!(rows[0].read_age_ms, None, "没有读过就得说'从没发生过'，0 会被读成'很久以前'");
+        assert!(
+            !rows[0].healthy,
+            "只有写出成功的连接不得判健康（is_healthy 只认读活性）"
+        );
+        assert!(rows[1].healthy, "读到过完整帧的连接才叫健康");
+        assert_eq!(rows[1].last_write_seen_ms, None);
+    }
+
+    /// 这条诊断出口的**接线**与"只读"形状：面板那一路真的取这份快照，而且只许**读**连接登记表。
+    ///
+    /// 为什么不能只测纯函数：`conn_health_rows` 写得再对，`get_discovery_diag` 不接 = 面板永远空；
+    /// 而"接线"这一格以前踩过的是**存在性**断言（同一句话也写在注释里就假绿）⇒ 这里按出现次数数。
+    /// 只读那一半另有一条硬理由：这个命令是**同步**命令，一旦有人为了"顺手补个状态"在里面
+    /// 调 `mark_*` / `upsert_*`，诊断出口就变成了链路上的第二个写入者 —— 观测改变被观测对象。
+    #[test]
+    fn conn_health_diag_is_wired_and_reads_only() {
+        let cmds = all_commands_src();
+        let flat = code_flat(&cmds);
+        assert_eq!(
+            flat.matches("result.conn_health=collect_conn_health(").count(),
+            1,
+            "get_discovery_diag 里必须恰好一处接上连接活性快照：0 处=面板永远空，2 处=重复采集"
+        );
+        let body = rust_fn_body(&cmds, "fn collect_conn_health(");
+        let body_flat = code_flat(&body);
+        assert_eq!(
+            body_flat.matches("conn_health_rows(").count(),
+            1,
+            "采集函数必须把行交给那个纯函数产（自己另写一份映射=第二份口径）"
+        );
+        // 行必须来自**按连接**的遍历，不许退化成按 peer 聚合
+        assert!(
+            body_flat.contains("pm.peers().flat_map(|p|p.connections())"),
+            "诊断行要逐连接取，聚合到 peer 就把坏的那条盖掉"
+        );
+        // 只读：这一路只许走读接口，一个写动作都不许出现
+        for banned in ["mark_", "upsert_", "remove_", "seed_", "forget_", ".lock().await"] {
+            assert!(
+                !body_flat.contains(banned),
+                "诊断采集里出现了写接口或跨 await 持锁：{banned}"
+            );
+        }
+        // 结构与前端类型两头到位
+        let state = include_str!("state.rs");
+        assert!(
+            state.contains("pub conn_health: Vec<ConnHealthDiag>"),
+            "DiscoveryDiag 必须有 conn_health 这一格，否则命令返回值没有落脚处"
         );
     }

@@ -620,6 +620,29 @@ export interface DiscoveryDiag {
   app_version: string;
   /** 各对端在 Hello 里声明的版本 */
   peer_versions: PeerVersionDiag[];
+  /** 按**连接**（不是按 peer）列出的收发活性读数 */
+  conn_health: ConnHealthDiag[];
+}
+
+/**
+ * 诊断面板的一行「这条连接最后一次读到 / 写出是什么时候」。
+ *
+ * ⚠️ 两列语义**不可互换**（Rust 侧 `mesh::ConnectionHealth` 同一口径）：
+ * · `last_write_seen_ms` = 本端写出成功。半开 TCP 上它会一直前进，所以它不是"对端活着"的证据；
+ * · `last_read_seen_ms` = 本端读到并解析出**一个完整帧**（读循环一帧一次，字节级没有单独读数）。
+ * `null` = 这条连接建立以来那件事从没发生过（不是"很久以前"）。
+ */
+export interface ConnHealthDiag {
+  device_id: string;
+  conn_id: string;
+  endpoint: string;
+  path_kind: string;
+  last_write_seen_ms: number | null;
+  last_read_seen_ms: number | null;
+  write_age_ms: number | null;
+  read_age_ms: number | null;
+  healthy: boolean;
+  consecutive_failures: number;
 }
 
 /** 诊断面板的一行「对端声明了什么版本」（ADR-0007 决策 1）。 */

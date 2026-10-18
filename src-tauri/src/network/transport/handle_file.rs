@@ -400,7 +400,7 @@ async fn handle_file_messages(state: &Arc<AppState>, peer_id: &str, msg: Message
                     // 无人应答、干等一个 FILE_ACK_IDLE，再按"可重试"整发 5 次 —— 真机上
                     // 表现为两边都显示失败，而中间几十分钟界面上一直"发送中"。
                     if file::fail_receive(state, &transfer_id, peer_id, &e) {
-                        let _ = try_send(
+                        if let Err(se) = try_send(
                             state,
                             peer_id,
                             &Message::FileCompleteAck {
@@ -408,7 +408,17 @@ async fn handle_file_messages(state: &Arc<AppState>, peer_id: &str, msg: Message
                                 success: false,
                             },
                         )
-                        .await;
+                        .await
+                        {
+                            state.logger.error(
+                                "file",
+                                file::ack_send_failure_note(
+                                    file::ACK_STAGE_CHUNK_ABORTED,
+                                    &transfer_id,
+                                    &se,
+                                ),
+                            );
+                        }
                     }
                 }
             }
@@ -435,15 +445,25 @@ async fn handle_file_messages(state: &Arc<AppState>, peer_id: &str, msg: Message
                             reason: e,
                         },
                     );
-                    let _ = try_send(
+                    if let Err(se) = try_send(
                         state,
                         peer_id,
                         &Message::FileCompleteAck {
-                            transfer_id,
+                            transfer_id: transfer_id.clone(),
                             success: false,
                         },
                     )
-                    .await;
+                    .await
+                    {
+                        state.logger.error(
+                            "file",
+                            file::ack_send_failure_note(
+                                file::ACK_STAGE_FINISH_FAILED,
+                                &transfer_id,
+                                &se,
+                            ),
+                        );
+                    }
                 }
                 Ok(None) => {
                     // 重复 FileDone：若本机此前已成功完成该 transfer，则补一个成功确认，
@@ -453,30 +473,50 @@ async fn handle_file_messages(state: &Arc<AppState>, peer_id: &str, msg: Message
                         db::is_transfer_done(&dbc, &transfer_id).unwrap_or(false)
                     };
                     if already_done {
-                        let _ = try_send(
+                        if let Err(se) = try_send(
                             state,
                             peer_id,
                             &Message::FileCompleteAck {
-                                transfer_id,
+                                transfer_id: transfer_id.clone(),
                                 success: true,
                             },
                         )
-                        .await;
+                        .await
+                        {
+                            state.logger.error(
+                                "file",
+                                file::ack_send_failure_note(
+                                    file::ACK_STAGE_DUP_DONE,
+                                    &transfer_id,
+                                    &se,
+                                ),
+                            );
+                        }
                     } else {
                         // 接收器已清且库非 done（接收态被 TTL 回收 / 本机从未接受该
                         // 传输）：也必须回一帧失败确认（2026-09-23 审计 A5）—— 旧实现
                         // 这里静默，发送端收不到任何帧只能干等静默窗口超时。立刻拿到
                         // 失败终态才不会白等；发送端只认 file_transfers 里登记的
                         // peer_id，伪造面不变。
-                        let _ = try_send(
+                        if let Err(se) = try_send(
                             state,
                             peer_id,
                             &Message::FileCompleteAck {
-                                transfer_id,
+                                transfer_id: transfer_id.clone(),
                                 success: false,
                             },
                         )
-                        .await;
+                        .await
+                        {
+                            state.logger.error(
+                                "file",
+                                file::ack_send_failure_note(
+                                    file::ACK_STAGE_NO_RECEIVER,
+                                    &transfer_id,
+                                    &se,
+                                ),
+                            );
+                        }
                     }
                 }
                 Ok(Some((name, size, path, sender_id))) => {
@@ -516,7 +556,9 @@ async fn handle_file_messages(state: &Arc<AppState>, peer_id: &str, msg: Message
                                 format!("单聊文件卡片落库失败 msg={}：{e}", rec.msg_id),
                             );
                         }
+                        drop(dbc);
                         let nm = resolve_nickname(state, &sender_id);
+                        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                         let preview = if kind == "image" {
                             "[图片]".to_string()
                         } else {
@@ -536,15 +578,25 @@ async fn handle_file_messages(state: &Arc<AppState>, peer_id: &str, msg: Message
                             path: path.to_string_lossy().to_string(),
                         },
                     );
-                    let _ = try_send(
+                    if let Err(se) = try_send(
                         state,
                         peer_id,
                         &Message::FileCompleteAck {
-                            transfer_id,
+                            transfer_id: transfer_id.clone(),
                             success: true,
                         },
                     )
-                    .await;
+                    .await
+                    {
+                        state.logger.error(
+                            "file",
+                            file::ack_send_failure_note(
+                                file::ACK_STAGE_COMPLETED,
+                                &transfer_id,
+                                &se,
+                            ),
+                        );
+                    }
                 }
             }
         }

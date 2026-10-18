@@ -814,12 +814,66 @@ pub(crate) fn terminal_ledger_failure_note(
 const LEDGER_ERR_TEXT_MAX: usize = 240;
 
 fn bounded_err_text(err: &rusqlite::Error) -> String {
-    let raw = err.to_string();
+    bounded_raw_text(&err.to_string())
+}
+
+fn bounded_raw_text(raw: &str) -> String {
     if raw.chars().count() <= LEDGER_ERR_TEXT_MAX {
-        return raw;
+        return raw.to_string();
     }
     let head: String = raw.chars().take(LEDGER_ERR_TEXT_MAX).collect();
     format!("{head}…")
+}
+
+/// 接收端回 `FileCompleteAck` 的五个出口各自的 stage（取值互不相同，判据按"不互相冒充"钉）。
+/// 只有 `try_send` **返回 Err** 才记，成功路径一行都不写 —— 回执每单至多一次，写成 info
+/// 也会变成"每条文件传输都留一行"的噪声，而这一族要的只是"哪一分支、为什么没送出去"。
+pub(crate) const ACK_STAGE_CHUNK_ABORTED: &str = "ack-chunk-aborted";
+pub(crate) const ACK_STAGE_FINISH_FAILED: &str = "ack-finish-failed";
+pub(crate) const ACK_STAGE_DUP_DONE: &str = "ack-duplicate-done";
+pub(crate) const ACK_STAGE_NO_RECEIVER: &str = "ack-no-receiver";
+pub(crate) const ACK_STAGE_COMPLETED: &str = "ack-completed";
+
+/// 回执发不出去时的那一句留痕（与台账那几条同一口径：只有 stage / `transfer_id` / 有界错误文本，
+/// 不带文件名、路径、内容、密钥）。
+///
+/// `try_send` 的 `Err` 是 `String`，类别只有三种形状：`未建立连接`（选路一条都没挑上）、
+/// `连接已关闭`、`发送队列已满…`。把它们原样带进日志才能分"B 没发出去"与"发了但 A 没读到"
+/// —— 后者这条日志不会出现。
+///
+/// 为什么单独成函数：调用点在 `transport/handle_file.rs`（那五处此前全是 `let _ =`），
+/// 而它只要字符串不要 `AppState` ⇒ 出站帧这条路本仓没有能驱动真 `try_send` 的异步夹具
+/// （见 `lib_file_tests.rs` 那两条源码守卫同样的理由），至少文本形状能拿生产码判。
+pub(crate) fn ack_send_failure_note(stage: &str, transfer_id: &str, err: &str) -> String {
+    format!(
+        "完成回执发不出去 stage={stage} id={transfer_id}: {}",
+        bounded_raw_text(err.trim())
+    )
+}
+
+/// **writer 出口**那一格的留痕（`transport/queue_policy.rs::writer_loop`）：`try_send` 返回
+/// `Ok` 只代表帧进了这条连接的 mpsc，真正写 socket 的是 writer 任务 —— 两者之间没有别的答案。
+///
+/// 只在**这一帧确实是 `FileCompleteAck`** 时才记：writer 同时扛着所有族的帧（心跳、Hello、
+/// 群消息、几百万条 `FileChunk`），把别人的写失败报成"回执故障"会把归因指错地方；不匹配就
+/// 返回 `None`，一行都不写。`outcome` 只有两个取值，分的是"谁的错"：
+/// `local` = 本机就没写成（超长 / 序列化不出来，一个字节都没上链路，链路保留）；
+/// `socket` = 真的 socket 写失败（这条链路随即判死拆掉）。
+pub(crate) fn ack_writer_failure_note(
+    msg: &Message,
+    outcome: &str,
+    reason: &str,
+) -> Option<String> {
+    match msg {
+        Message::FileCompleteAck {
+            transfer_id,
+            success,
+        } => Some(format!(
+            "完成回执没写成 stage=ack-writer id={transfer_id} success={success} 出口={outcome}: {}",
+            bounded_raw_text(reason.trim())
+        )),
+        _ => None,
+    }
 }
 
 /// 摘出接收器之后的收尾：完整性裁决 → fsync → 改名落盘 → 落库终态。

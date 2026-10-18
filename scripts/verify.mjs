@@ -234,7 +234,7 @@ const steps = [
   {
     group: "frontend",
     name: "db 锁作用域守卫",
-    why: "挡住「锁还活着时 emit」——只有一条 SQLite 连接，前端收到事件后的第一次 IPC 抢同一把锁 ⇒ 那一刻界面冻一下；全部取锁点逐处判（条数由该步自己打印，别处不抄），判据自带 7 段夹具自证",
+    why: "挡住「锁还活着时 emit」与「锁还活着时调用内部又取同一把锁的 helper」（std Mutex 不可重入 ⇒ 同线程二次取锁永久 park）——只有一条 SQLite 连接；全部取锁点逐处判（条数由该步自己打印，别处不抄），判据自带夹具自证",
     cwd: ROOT,
     cmd: NODE_EXE,
     args: ["scripts/check-lock-scope.mjs"],
