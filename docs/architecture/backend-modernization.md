@@ -1,6 +1,6 @@
 # Gosslan 后端基础设施现代化（5.0）——基线与迁移方案
 
-> 分支 `feat/5.0` · 版本 5.0.25 · Rust 1.98.1 · 目标平台 macOS/Windows/Linux/Android/iOS
+> 分支 `feat/5.0` · 版本 5.0.26 · Rust 1.98.1 · 目标平台 macOS/Windows/Linux/Android/iOS
 > 真实库（只读核对）：`~/Library/Application Support/com.gosslan.app/gosslan.db`，
 > `user_version=11`、19 张业务表、`journal_mode=wal`、`PRAGMA integrity_check=ok`。
 > 本文是阶段 B 的选型/迁移方案；每批实施后回填读数，不把"计划"当"完成"。
@@ -105,6 +105,18 @@
   且已在 `lib.rs` 初始化；`open_path` 的 macOS `NSWorkspace`、Android FileProvider、
   Windows/Linux opener 分派与注释一致。Windows 文件剪贴板 / Android JNI / iOS 沙盒仍为平台薄适配；
   **移动端与 Windows 真机 NOT RUN**。
+
+### B6（已落地，5.0.26）：敏感文件权限收紧（Unix `0600`）
+- 真实安装只读实测：`~/Library/Application Support/com.gosslan.app/gosslan.db` 与 `-wal`
+  均为 `0644`，同机其他用户可读；库里存着身份密钥与全部消息。
+- 改动：`db::init()` 打开主库后立即 `chmod 0600`；启用 WAL 后补收紧 `-wal/-shm`；
+  `VACUUM INTO` 备份在校验前收紧为 `0600`。SQLite 新建侧车会沿用主库权限位。
+- **实测（2026-10-19，5.0.26）**：显式把主库/侧车改回 `0644` 后重放 v10→v11，
+  主库/侧车/备份全部 `0600`；Rust **982/982**；基线 981 → 982。非 Unix 无操作；
+  权限设置失败只告警不阻断启动。E2E/真机 **NOT RUN**。
+- 启动时扫描本库 `<stem>.pre-v…-to-v….db`，把 5.0.22–5.0.25 留下的 `0644` 备份
+  补收紧到 `0600`；先做文件名匹配再 `stat`，同目录其它文件/目录不动。
+- 边界：不改变目录权限（可能是共享临时目录）；Windows ACL 未在本批处理。
 
 ## 4. 4.x → 5.0 数据迁移与恢复
 

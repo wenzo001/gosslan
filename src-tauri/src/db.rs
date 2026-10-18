@@ -656,6 +656,70 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_favorites_msg  ON favorites(msg_id);
 CREATE INDEX        IF NOT EXISTS idx_favorites_time ON favorites(favorited_at DESC);
 "#;
 
+/// Unix：把数据库/侧车/备份收紧到仅属主可读写（`0600`）。
+///
+/// 真实安装目录实测：`gosslan.db` 与 `-wal` 都是 `0644`，同机其他用户可读，
+/// 而库里存着身份密钥与全部消息。SQLite 新建 `-wal/-shm` 时会沿用主库的权限位，
+/// 所以主库在 `Connection::open` 之后就要收紧；已有侧车与备份再逐个补一次。
+///
+/// 失败只告警不中止：某些文件系统不支持 POSIX 权限，启动可用性优先；
+/// 正常磁盘上必须成功（`init_tightens_database_sidecars_and_backup_to_owner_only`）。
+#[cfg(unix)]
+fn restrict_to_owner(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if !path.exists() {
+        return;
+    }
+    if let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
+        eprintln!("[gosslan-db] 无法把 {} 收紧到 0600：{e}", path.display());
+    }
+}
+
+#[cfg(not(unix))]
+fn restrict_to_owner(_path: &Path) {}
+
+/// 启动时把**历史**迁移备份补收紧到 `0600`。
+///
+/// B6 只保证新产生的备份是 `0600`；5.0.22–5.0.25 创建的备份仍可能是 `0644`。
+/// 只匹配本库的 `<stem>.pre-v…-to-v….db`，不碰同目录其它文件/目录。
+#[cfg(unix)]
+fn sweep_old_backups(db_path: &Path) {
+    let Some(parent) = db_path.parent() else {
+        return;
+    };
+    let Some(stem) = db_path.file_stem().and_then(|s| s.to_str()) else {
+        return;
+    };
+    let prefix = format!("{stem}.pre-v");
+    let Ok(rd) = std::fs::read_dir(parent) else {
+        return;
+    };
+    for entry in rd.flatten() {
+        let p = entry.path();
+        let Some(name) = p.file_name().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        // 先做纯字符串匹配再做 stat：共享临时目录可能有上万条目，
+        // 对每个条目 `is_file()` 会把一次启动扫描放大成秒级。
+        if !name.starts_with(&prefix) || !name.contains("-to-v") || !name.ends_with(".db") {
+            continue;
+        }
+        if p.is_file() {
+            restrict_to_owner(&p);
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn sweep_old_backups(_db_path: &Path) {}
+
+/// `gosslan.db` → `gosslan.db-wal` / `gosslan.db-shm`（不能用 `with_extension`，会吃掉 `.db`）。
+fn sidecar_path(path: &Path, suffix: &str) -> std::path::PathBuf {
+    let mut s = path.as_os_str().to_os_string();
+    s.push(suffix);
+    std::path::PathBuf::from(s)
+}
+
 /// 迁移前一致性快照 + 可验证判据（数据安全优先）。
 ///
 /// 为什么用 `VACUUM INTO` 而不是复制主文件：WAL 模式下已提交数据可能还在 `-wal` 里，
@@ -691,6 +755,8 @@ fn backup_before_migration(
     };
     conn.execute("VACUUM INTO ?1", [backup_str.as_str()])
         .map_err(|e| fail(format!("VACUUM INTO: {e}")))?;
+    // 备份是完整副本（含身份密钥与消息），权限不得比原库宽。
+    restrict_to_owner(&backup);
     let check = Connection::open_with_flags(&backup, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .map_err(|e| fail(format!("打开备份: {e}")))?;
     let integrity: String = check
@@ -732,6 +798,10 @@ pub fn init(path: &Path) -> std::result::Result<Connection, InitError> {
         std::fs::create_dir_all(parent).ok();
     }
     let conn = Connection::open(path)?;
+    // 先收紧主库权限：SQLite 之后新建的 `-wal/-shm` 会沿用主库的权限位。
+    restrict_to_owner(path);
+    // 历史版本创建的迁移备份（B6 之前）可能是 0644，启动时一并补收紧。
+    sweep_old_backups(path);
     // 备份 / VACUUM / 其它进程短暂持锁时不要立刻 SQLITE_BUSY；5s 内排队等待。
     // 这不是"把锁竞争藏起来"：等待有上界，超时仍返回错误，调用方照常进入错误态。
     conn.busy_timeout(Duration::from_secs(5))?;
@@ -792,6 +862,9 @@ pub fn init(path: &Path) -> std::result::Result<Connection, InitError> {
     )?;
     // 开启 WAL，提升并发读写
     conn.pragma_update(None, "journal_mode", "WAL").ok();
+    // 已有侧车可能带着历史安装的 0644；补收紧一次（新建侧车已继承主库 0600）。
+    restrict_to_owner(&sidecar_path(path, "-wal"));
+    restrict_to_owner(&sidecar_path(path, "-shm"));
     // NORMAL：牺牲极小崩溃一致性换取更高写入吞吐（500-1000 节点高频落库场景）
     conn.pragma_update(None, "synchronous", "NORMAL").ok();
     conn.pragma_update(None, "foreign_keys", "ON").ok();
