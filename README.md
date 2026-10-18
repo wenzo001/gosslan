@@ -11,7 +11,7 @@
 **端到端加密强制开启**，无需注册登录，用**设备指纹**识别同一用户，连上局域网即自动同步用户资料。
 支持 **Windows / macOS / Android** 三端。
 
-> 技术栈：Tauri v2 · Rust · Vue 3 (Composition API) · TypeScript · Vite · **Tailwind CSS · Headless UI · Lucide 图标** · SQLite
+> 技术栈：Tauri v2 · Rust · Vue 3 (Composition API) · TypeScript · Vite · **Tailwind CSS · Reka UI · Lucide 图标** · SQLite
 
 ---
 

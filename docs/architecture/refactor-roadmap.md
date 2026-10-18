@@ -1,6 +1,12 @@
 # Gosslan 5.0 重构路线与验收台账
 
-> 分支：`feat/5.0` · 基线：`origin/main` @ `3d4bd02` · 工作树：`/Users/wendongfu/Documents/code/gosslan-5.0`
+> ⚠️ 2026-10-19 更新：本文件是 5.x 起点的规划/台账，保留历史结论；**当前依赖与决策以
+> [`open-source-replacement-matrix.md`](open-source-replacement-matrix.md) 与
+> [`refactor-5.0-report.md`](refactor-5.0-report.md) 为准**。下表里「Headless UI 保留 / Reka 不引入 /
+> TanStack Query、Virtual 不引入」等结论已被 5.0.5–5.0.20 推翻：HeadlessUI 已删除，Reka UI 8 类原语、
+> Query 三个面板、Virtual 日志页、mitt、vue-i18n 均已落地。
+>
+> 分支：`feat/5.0` · 基线：`origin/main` @ `3d4bd02` · 工作树：`/Users/wendongfu/Documents/code/gosslan`
 > 目标：在不改协议、加密语义、SQLite 结构与可靠投递机制的前提下，治理前端冗余、统一设计系统、按证据引入成熟库，并用仓库现有门禁持续验收。
 > 约束：主工作树由另一路开发与完整门禁占用，本分支的一切修改只发生在独立 worktree；主分支前进时用 rebase 同步。
 
@@ -17,7 +23,7 @@
 ## 2. 关键前提纠正
 
 - **仓库没有 Ant Design Vue。** `package.json` 无该依赖，`src` 无任何 `ant-design-vue` / `antd` 引用（`grep -RIn -i 'ant-design\\|antd' src package.json` 返回 0）。因此不存在“AntDV 迁移”问题，G1 的落点是**现有自研设计系统的收敛与护栏**。
-- 现状是单一 UI 库组合：Tailwind + Headless UI（仅 `BaseModal.vue`、`ActionSheet.vue`）+ Lucide 图标 + 自研 token/组件。没有第二套主题系统或图标库。
+- 起点是单一 UI 库组合：Tailwind + Headless UI（仅 `BaseModal.vue`、`ActionSheet.vue`，5.0.5 起改 Reka UI）+ Lucide 图标 + 自研 token/组件。没有第二套主题系统或图标库。
 - 设计令牌已在 `src/style.css` 定义（圆角/字号/语义色/动效/布局），规范在 `docs/design-guidelines.md`，并已有大量机器判据在 `src/utils/designGuards.ts`。
 
 ## 3. 审计结论（A–G）
@@ -29,7 +35,7 @@
 | `ui/PrimaryBtn.vue`、`ui/DangerBtn.vue` | 新增后 0 个真实调用（仅注释提到） | **本批迁入真实调用点**，不删除；尺寸按真实用法校准 |
 | `ui/BackArrow.vue` | 5 个调用点，平台自适应返回箭头 | 保留（唯一实现） |
 | `ui/SegmentedControl.vue` | 2 个调用点；`GroupTasksBoard.vue` 仍手写分段控件且激活态不同 | 暂缓：需支持状态色点，直接迁会丢信息，登记为后续适配 |
-| `BaseModal.vue` / `ActionSheet.vue` | BaseModal 29 个实例，Headless UI 负责焦点与 portal | 保留，不动 |
+| `BaseModal.vue` / `ActionSheet.vue` | BaseModal 29 个实例；起点由 Headless UI 负责焦点与 portal | 5.0.5 已迁 Reka Dialog（焦点/portal/Esc/外点交给库） |
 | `ContextMenu.vue` / `.gosslan-menu` | 菜单外观唯一源；锚定下拉只绕开摆位 | 保留 |
 | `ToastHud.vue` | 唯一 Toast 实现，3 处挂载 | 保留 |
 | 空态 / loading / 错误态 | 空态 20 个 i18n key、无统一组件；loading 有 Loader2 / RefreshCw / CSS 圆环三套 | **证据不足**统一视觉；先登记，不做大迁移 |
@@ -49,8 +55,8 @@
 |---|---|---|
 | `vue-easy-lightbox` | 全仓无 import；仅 `vite.config.ts` 死分支、`style.css` 死规则、`SettingsWindow.vue` 死选择器 | **已删除**（4.44.6；cascade 判据同步去掉 `.vel-modal`） |
 | `clsx` + `tailwind-merge` | 仅 `utils/cn.ts` 使用；`cn()` 在应用代码 0 调用，只有自测 | **已删除**（4.44.6；实现 + 自测 + npm test 清单） |
-| `@headlessui/vue` | BaseModal / ActionSheet 真实使用 | 保留 |
-| `dayjs` / `highlight.js` / `pinia` / `vue-easy-lightbox` 之外的其余项 | 均有真实归属 | 保留 |
+| `@headlessui/vue` | BaseModal / ActionSheet 曾真实使用 | **5.0.5 已删除**（改 Reka Dialog） |
+| `dayjs` / `highlight.js` / `pinia` 等其余项 | 均有真实归属 | 保留（vue-i18n/mitt 于 5.0.19/5.0.20 新增） |
 
 ### D. 状态、请求封装、事件流
 
@@ -63,7 +69,8 @@
 
 - `VirtualList.vue` 自带 key 锚定 prepend、贴底状态机、跳转落定、0.5px 高度、live region；高度缓存有 2000 上界，滚动走 rAF + passive。
 - 仓库性能台读数（`perf/README.md`）：20k 合成行 p50 16.7ms、>50ms 长帧 0；1000 条整表估算约 0.1ms。
-- 结论：**不引入 TanStack Virtual**。现有实现承载聊天专属语义，库只解决通用测量；没有证据表明当前是瓶颈。再评估触发条件：真机真实会话（含图/群回执）p95 > 16.7ms 或长帧，或单会话实时消息远超 2 万。
+- 起点结论：**不引入 TanStack Virtual**。现有实现承载聊天专属语义，库只解决通用测量；没有证据表明当前是瓶颈。
+  5.0.5 已在日志页两条外壳落地 `useVirtualizer`；消息列表仍保留自研（P7 读数见报告 §6.9）。
 - 未验证：真图解码、15MiB 单图重挂载、逐出与灯箱显示 URL 的竞态（C 类）。
 
 ### F. Tauri 前后端边界
@@ -82,11 +89,11 @@
 | 候选 | 结论 | 理由 |
 |---|---|---|
 | ReUI | **仅作模式参考** | React/shadcn 生态，不能作为 Vue 依赖引入 |
-| `reka-ui` | **暂不引入** | 现有 Headless UI 已覆盖弹窗/动作面板；引入会形成第二套无样式原语，收益未证明 |
+| `reka-ui` | **5.0.5 已引入 2.11.0** | 现为 Dialog/DropdownMenu/Switch/RadioGroup/Slider/Select/FocusScope/Toast 主方案 |
 | `shadcn-vue` | **不引入** | 会生成一套与现有 token/组件并行的源码体系，迁移成本大于收益 |
 | Lucide | **保留** | 已是唯一图标来源；本批建立语义图标入口（静态具名再导出，保 tree-shaking） |
-| TanStack Query | **不引入** | 数据来自 Tauri 事件 + SQLite + Pinia，无 HTTP 请求缓存语义；引入会与消息状态机/离线队列形成重复状态 |
-| TanStack Virtual | **不引入** | 见 §3E，现有实现有专属语义且性能台无瓶颈 |
+| TanStack Query | **已落地（5.0.11–5.0.20）** | 三个纯读/主动检索面板；消息状态机/离线队列仍在 Pinia/SQLite |
+| TanStack Virtual | **已落地（5.0.5，日志页）** | 见 §3E；消息列表仍保留自研实现 |
 | TanStack Table | **不引入** | 无复杂表格需求（任务看板不是表格） |
 | TanStack Router / Form | **不引入** | 多窗口 HTML 入口 + 手写导航/表单，无证据表明现有实现有问题 |
 
