@@ -14,6 +14,7 @@ import { highlightText } from "@/utils/highlight";
 import { useDeferredRef } from "@/composables/useDeferredRef";
 import { useBackLayer } from "@/composables/useBackLayer";
 import { LOG_LEVEL_TEXT, filterLogLines, mergeLogRows } from "@/utils/logFilter";
+import { fmtClock, fmtDateTime } from "@/utils/time";
 import type { LogEntry } from "@/types";
 
 /**
@@ -55,13 +56,6 @@ const mergeDup = ref(true);
 /** 清空两段式确认：第一次点击进入待确认态，再次点击才真正清空。 */
 const confirmClear = ref(false);
 
-function fmt(ts: number): string {
-  const d = new Date(ts);
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(
-    d.getMinutes(),
-  )}:${p(d.getSeconds())}`;
-}
 
 /** 过滤词。字面**包含**匹配（不区分大小写，不做模糊/正则）—— 见 `@/utils/logFilter`。 */
 /** 绑在过滤框上的原值（立即更新）。 */
@@ -83,7 +77,7 @@ const lines = computed(() =>
   displayLogs.value.map((l, i) => ({
     key: `${l.ts}-${l.target}-${i}`,
     level: l.level,
-    time: fmt(l.ts).slice(11),
+    time: fmtClock(l.ts),
     target: l.target,
     message: l.message,
   })),
@@ -97,6 +91,30 @@ const matched = computed(() => filterLogLines(lines.value, deferredFilter.value)
  * 用 TanStack Virtual 只渲染视口附近的行；行高由 `measureElement` 实测（长日志换行后高度不等）。
  * 滚动容器在两种外壳（独立窗 / 移动页）里各有一份，但同一时刻只挂一个 ⇒ 共用一个 ref。
  */
+/**
+ * ⚠️ `rows` / `mergedRows` 必须声明在 `useVirtualizer` **之前**：virtualizer 的 options 是
+ * 一个 `computed`，Vue 开发构建会在 setup 期间立即求值 `count: mergedRows.value.length`；
+ * 顺序反过来会抛 `Cannot access 'mergedRows' before initialization`（TDZ），
+ * 整个 LogViewer 子树退化成注释节点 ⇒ 开发环境日志窗口白屏（生产构建晚一步求值，看起来正常）。
+ */
+/** 渲染行：命中处加高亮标记（复用会话搜索同一套 `highlightText`，视觉语言一致）。 */
+const rows = computed(() =>
+  matched.value.map((l) => ({
+    key: l.key,
+    level: l.level,
+    time: highlightText(l.time, trimmedFilter.value),
+    levelText: highlightText(LOG_LEVEL_TEXT[l.level] ?? l.level, trimmedFilter.value),
+    target: highlightText(`[${l.target}]`, trimmedFilter.value),
+    message: highlightText(l.message, trimmedFilter.value),
+  })),
+);
+
+/** 合并同类行（判据与理由都在 `utils/logFilter.ts::mergeLogRows`：
+ *  归一化掉每次都变的量 + 允许非相邻但限一个时间窗）。关掉 mergeDup 时逐条透传。 */
+const mergedRows = computed(() =>
+  mergeDup.value ? mergeLogRows(rows.value) : rows.value.map((r) => ({ ...r, count: 1 })),
+);
+
 const logScroll = ref<HTMLElement | null>(null);
 const virtualizer = useVirtualizer(computed(() => ({
   count: mergedRows.value.length,
@@ -116,24 +134,6 @@ function measureRow(el: Element | { $el?: Element } | null) {
 const totalSize = computed(() => virtualizer.value.getTotalSize());
 // 过滤词一变，旧滚动位置可能已越界（新结果更短）⇒ 回到顶部，否则视口落在空白区。
 watch(trimmedFilter, () => virtualizer.value.scrollToOffset(0));
-
-/** 渲染行：命中处加高亮标记（复用会话搜索同一套 `highlightText`，视觉语言一致）。 */
-const rows = computed(() =>
-  matched.value.map((l) => ({
-    key: l.key,
-    level: l.level,
-    time: highlightText(l.time, trimmedFilter.value),
-    levelText: highlightText(LOG_LEVEL_TEXT[l.level] ?? l.level, trimmedFilter.value),
-    target: highlightText(`[${l.target}]`, trimmedFilter.value),
-    message: highlightText(l.message, trimmedFilter.value),
-  })),
-);
-
-/** 合并同类行（判据与理由都在 `utils/logFilter.ts::mergeLogRows`：
- *  归一化掉每次都变的量 + 允许非相邻但限一个时间窗）。关掉 mergeDup 时逐条透传。 */
-const mergedRows = computed(() =>
-  mergeDup.value ? mergeLogRows(rows.value) : rows.value.map((r) => ({ ...r, count: 1 })),
-);
 
 async function load() {
   // 窗口被隐藏/最小化时不必每 2s 拉一次：`get_logs` 会快照整份日志（几千条时是可观的
@@ -178,7 +178,7 @@ onUnmounted(() => {
 /** 一键复制：时间正序（便于按因果排查）。 */
 async function copyAll() {
   const text = logs.value
-    .map((l) => `[${fmt(l.ts)}] [${LOG_LEVEL_TEXT[l.level] ?? l.level}] [${l.target}] ${l.message}`)
+    .map((l) => `[${fmtDateTime(l.ts)}] [${LOG_LEVEL_TEXT[l.level] ?? l.level}] [${l.target}] ${l.message}`)
     .join("\n");
   // 写入/回退都交给 VueUse；它不返回布尔值，失败也不打断用户。
   await copyText(text);
@@ -367,7 +367,7 @@ const rowLevelBg = (lv: string) =>
     </div>
 
     <!-- 日志列表 -->
-    <div class="min-h-0 flex-1 overflow-y-auto px-3 py-2 font-mono text-[13px] leading-relaxed">
+    <div ref="logScroll" class="min-h-0 flex-1 overflow-y-auto px-3 py-2 font-mono text-[13px] leading-relaxed">
       <StateBlock
         v-if="logs.length === 0 && loadError"
         kind="error"

@@ -390,7 +390,7 @@ window.__probe = (() => {
     const host = document.createElement('div');
     host.id = 'probe-host';
     document.body.appendChild(host);
-    const state = Vue.reactive({ open: false, initialKeyword: '', groupId: null });
+    const state = Vue.reactive({ open: false, initialKeyword: '', groupId: null, selectValue: 'b', liveModel: false, isolated: false });
     window.__st = state;
     // 夹具原先把 props 写死成 open/initialKeyword + 三个回调；任务卡那一族要的是
     // message / liveTodo / mentionNames / selfMention ⇒ 第三参收一份 JSON props。
@@ -398,6 +398,15 @@ window.__probe = (() => {
     // 而且**必须走应用自己那份 todoLiveMap**（import 到的还是组件用的同一个模块实例）：
     // 在这里手写一遍"字母怎么拼、几位要缩短"就是给编号口径开第二个家，探针会先骗过自己。
     const extra = propsJson ? JSON.parse(propsJson) : {};
+    // 受控 v-model 的夹具开关（--only=select）：开了才把 modelValue 接进 state.selectValue，
+    // 其余段一律不注入 modelValue，避免给没有这个 prop 的组件多挂一条 fallthrough 属性。
+    if (extra.liveModel) state.liveModel = true;
+    delete extra.liveModel;
+    // 通用夹具会给每个组件塞 open/initialKeyword/groupId。根节点恰好是 SelectRoot 时，
+    // open=false 会经 fallthrough 变成"受控且永不打开"——测出来像库坏了，其实是夹具串味。
+    // isolated=true 时只传调用方显式给的 props（--only=select 用）。
+    if (extra.isolated) state.isolated = true;
+    delete extra.isolated;
     if (Array.isArray(extra.liveTodoPairs)) {
       const T = await import('/src/utils/todos.ts');
       extra.liveTodo = T.todoLiveMap(extra.liveTodoPairs.map((p) => ({
@@ -409,26 +418,35 @@ window.__probe = (() => {
     //   提到外面求值一次就把 props 冻在 false 上 —— 表情面板那段当场整块不渲染（格子数 0），
     //   是隔壁那两段把它照出来的（**夹具的重构也要跑全量，别只跑新写的那一段**）。
     //   另：这一段是模板字符串里的源码，注释里也不许出现反引号（会提前结束模板）。
-    const mkProps = () => ({
-      open: state.open,
-      initialKeyword: state.initialKeyword,
-      groupId: state.groupId,
-      onSelect: (v) => events.push(['select', v]),
-      onClose: () => events.push(['close']),
-      onOpenConversation: (p) => events.push(['open', JSON.stringify(p)]),
-      // 任务卡底部那个入口 emit 的是 "open"（载荷是 todo_id）。tag 刻意叫 open-id：
-      // 与上面那条 'open'（搜索弹窗的 open-conversation）区分开，免得两段互相污染判据。
-      onOpen: (v) => events.push(['open-id', String(v)]),
-      // 任务卡**主体**（头部/描述/指派人）emit 的是 "open-panel"（不带 id，
-      // 与底部"直达这一条详情"区分）。tag 与 open-id 对齐。
-      onOpenPanel: () => events.push(['open-panel']),
-      // 输入框那一族（--only=inputpanel）要读得到"这条到底带不带 @ 的名单"：
-      // 编辑器上只有 token 的 DOM，载荷才有 mentionIds ⇒ 没有 onSend 就只能看 DOM 猜。
-      onSend: (p) => events.push(['send', JSON.stringify(p)]),
-      onAttach: () => events.push(['attach']),
-      // TodoPickField 的 v-model：把选中值记进账本（--only=todopick）。
-      'onUpdate:modelValue': (v) => events.push(['update', String(v)]),
-    });
+    const mkProps = () => {
+      const props = {
+        ...(state.isolated ? {} : {
+        open: state.open,
+        initialKeyword: state.initialKeyword,
+        groupId: state.groupId,
+        onSelect: (v) => events.push(['select', v]),
+        onClose: () => events.push(['close']),
+        onOpenConversation: (p) => events.push(['open', JSON.stringify(p)]),
+        // 任务卡底部那个入口 emit 的是 "open"（载荷是 todo_id）。tag 刻意叫 open-id：
+        // 与上面那条 'open'（搜索弹窗的 open-conversation）区分开，免得两段互相污染判据。
+        onOpen: (v) => events.push(['open-id', String(v)]),
+        // 任务卡**主体**（头部/描述/指派人）emit 的是 "open-panel"（不带 id，
+        // 与底部"直达这一条详情"区分）。tag 与 open-id 对齐。
+        onOpenPanel: () => events.push(['open-panel']),
+        // 输入框那一族（--only=inputpanel）要读得到"这条到底带不带 @ 的名单"：
+        // 编辑器上只有 token 的 DOM，载荷才有 mentionIds ⇒ 没有 onSend 就只能看 DOM 猜。
+        onSend: (p) => events.push(['send', JSON.stringify(p)]),
+        onAttach: () => events.push(['attach']),
+        }),
+        // TodoPickField 的 v-model：把选中值记进账本（--only=todopick）。
+        'onUpdate:modelValue': (v) => {
+          events.push(['update', String(v)]);
+          if (state.liveModel) state.selectValue = v;
+        },
+      };
+      if (state.liveModel) props.modelValue = state.selectValue;
+      return props;
+    };
     const app = Vue.createApp({
       setup() {
         return () => Vue.h(mod.default, Object.assign(mkProps(), extra));
@@ -451,6 +469,22 @@ window.__probe = (() => {
     document.addEventListener('click', () => { clickCount++; }, true);
     return { ok: true, cmp: cmpPath, pinia: !!pinia };
   };
+  /** 受控下拉（--only=select）：选中值写回 state.selectValue，才能读"触发器文案跟着变"。 */
+  H.selectMount = async () => H.install(
+    '/src/components/ui/SettingsSelect.vue',
+    '<button id="opener">opener</button>',
+    JSON.stringify({
+      isolated: true,
+      liveModel: true,
+      options: [
+        { value: 'a', label: 'Alpha' },
+        { value: 'b', label: 'Beta' },
+        { value: 'c', label: 'Gamma' },
+      ],
+      selectLabel: '测试选择',
+      triggerClass: 'max-w-[180px]',
+    }),
+  );
   /**
    * 右键菜单专用挂载：把 MessageContextMenu 包在"父组件收到 close 就卸载"的状态里。
    * 普通 install 只把 emit 记进账本、不会卸载组件 ⇒ "关掉之后 DOM 是否撤净"无法读。
@@ -480,6 +514,47 @@ window.__probe = (() => {
     const app = V.createApp({
       setup() {
         return () => st.open ? V.h(mod.default, Object.assign({}, base, handlers)) : null;
+      },
+    });
+    if (window.__pinia) app.use(window.__pinia);
+    app.mount(host);
+    window.__probe.vue = V;
+    await V.nextTick(); await V.nextTick();
+    return { ok: true };
+  };
+  /**
+   * 图片预览的专用挂载：先聚焦一颗真按钮当 opener，再按 open/index 受控挂载。
+   * 普通 install 的 onClose 只记账、不翻 open ⇒ 量不到"关闭后焦点归还"与"卸载后 DOM 撤净"。
+   */
+  H.lightboxMount = async () => {
+    // 这一段没有别的 install 先垫场：先借 install 拿到页面那份 vue/pinia（关着渲染），
+    // 再换成"opener + 受控 open/index"的专用宿主。
+    if (!window.__probe.vue) {
+      await H.install('/src/components/message/ImageLightbox.vue', '', JSON.stringify({ images: [], index: 0 }));
+    }
+    const V = window.__probe.vue;
+    if (!V) return { ok: false, why: '先跑一次 install 把页面那份 vue 拿进来' };
+    const mod = await import('/src/components/message/ImageLightbox.vue');
+    document.body.innerHTML = '<button id="opener" type="button">打开预览</button>';
+    document.getElementById('opener').focus();
+    const host = document.createElement('div');
+    host.id = 'probe-host';
+    document.body.appendChild(host);
+    const st = V.reactive({ open: true, index: 0 });
+    window.__lbState = st;
+    const images = [
+      { dataSrc: 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', name: 'one.gif' },
+      { dataSrc: 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', name: 'two.gif' },
+    ];
+    const app = V.createApp({
+      setup() {
+        return () => V.h(mod.default, {
+          images,
+          index: st.index,
+          open: st.open,
+          onClose: () => { window.__probe.events.push(['close']); st.open = false; },
+          'onUpdate:index': (v) => { st.index = v; },
+        });
       },
     });
     if (window.__pinia) app.use(window.__pinia);
@@ -1449,6 +1524,39 @@ window.__probe = (() => {
     await t.nextTick(); await t.nextTick();
   };
   /**
+   * 共享目录夹具（必须在挂面板之前装）：请求按好友挂起，由 resolveShare 决定何时返回，
+   * 用来照「A 的慢响应在切到 B 之后才到」这一拍。下载记录 (friendId, path) 供归属判据。
+   */
+  H.shareBus = async () => {
+    const m = await import('/src/api/index.ts');
+    window.__share = { calls: [], downloads: [], pending: {} };
+    m.api.requestShareTree = (fid) => {
+      window.__share.calls.push(fid);
+      return new Promise((resolve) => { window.__share.pending[fid] = resolve; });
+    };
+    m.api.downloadSharedFile = async (fid, path) => {
+      window.__share.downloads.push([fid, path]);
+      return '';
+    };
+    return true;
+  };
+  H.resolveShare = (fid, names) => {
+    const r = window.__share.pending[fid];
+    if (!r) return false;
+    delete window.__share.pending[fid];
+    r(names.map((name) => ({ name, path: fid + '/' + name, is_dir: false, size: 10 })));
+    return true;
+  };
+  /** 切当前会话（共享目录按好友分键的驱动）。 */
+  H.setConv = async (id) => {
+    const chat = await H.chatStore();
+    if (!chat) return false;
+    chat.activeConv = id;
+    const t = window.__probe.vue;
+    await t.nextTick(); await t.nextTick();
+    return true;
+  };
+  /**
    * 群文件夹具（必须在挂面板之前装）：
    * listGroupFiles 记录每次请求的群 id、可切换成失败；
    * onGroupFileActivity 抓住订阅回调，并记录订阅/退订次数（关面板要摘干净）。
@@ -1943,6 +2051,10 @@ async function main() {
     const seg = want("segmented");
     const slider = want("slider");
     const files = want("files");
+    const share = want("share");
+    const lightbox = want("lightbox");
+    const toast = want("toast");
+    const select = want("select");
     const task = want("task");
     const tasksrt = want("tasksrt");
     const convbadge = want("convbadge");
@@ -1955,6 +2067,7 @@ async function main() {
     const pinkb = want("pinkb");
     const inputpanel = want("inputpanel");
     const winsafe = want("winsafe");
+    const logs = want("logs");
     if (emoji) await runEmoji(cdp, url);
     if (search) await runSearch(cdp, url);
     if (ctxmenu) await runCtxMenu(cdp, url);
@@ -1963,6 +2076,10 @@ async function main() {
     if (seg) await runSegmented(cdp, url);
     if (slider) await runSlider(cdp, url);
     if (files) await runGroupFiles(cdp, url);
+    if (share) await runShareDirectory(cdp, url);
+    if (lightbox) await runLightbox(cdp, url);
+    if (toast) await runToast(cdp, url);
+    if (select) await runSelect(cdp, url);
     if (task) await runTaskCard(cdp, url);
     if (tasksrt) await runTasksRealtime(cdp, url);
     if (convbadge) await runConvBadge(cdp, url);
@@ -1975,6 +2092,7 @@ async function main() {
     if (pinkb) await runPinKeyboard(cdp, url);
     if (inputpanel) await runInputPanels(cdp, url);
     if (winsafe) await runWindowSafe(cdp, url);
+    if (logs) await runLogs(cdp, url);
     process.exitCode = results.every((r) => r.ok) ? 0 : 1;
     exitCode = process.exitCode;
   } catch (e) {
@@ -3765,6 +3883,70 @@ async function runEmoji(cdp, url) {
  * **回车打开的必须是高亮那一条** —— 旧行为是鼠标与回车都固定开 `messages[0]`，
  * 也就是"看起来在选、实际打开的是第一条"。所以判据钉的是 emit 出去的 msgId 本身。
  */
+/**
+ * 运行日志独立窗（--only=logs）。
+ *
+ * 2026-10-19 开发环境白屏的两个真实根因都在这里判：
+ *  ① `useVirtualizer` 的 options computed 在 setup 里**立即**读取 `mergedRows`，而
+ *     `mergedRows` 声明在后面 ⇒ Vue dev 抛 `Cannot access 'mergedRows' before
+ *     initialization`（TDZ），LogViewer 整棵子树退化成注释节点；
+ *  ② 独立窗分支的滚动容器漏了 `ref="logScroll"` ⇒ virtualizer 拿不到滚动元素，
+ *     工具栏能显示"N 条"但列表区永远为空。
+ * 判据只看可观察结局：standalone 挂载后必须有虚拟行、只渲染视口附近、滚到底换成旧日志。
+ */
+async function runLogs(cdp, url) {
+  await cdp.send("Page.bringToFront").catch(() => {});
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+  const LOGS = Array.from({ length: 200 }, (_, i) => ({
+    ts: 1_700_000_000_000 + i * 1000,
+    level: i % 17 === 0 ? "warn" : "info",
+    target: `probe-${i}`,
+    message: `日志行 ${String(i).padStart(3, "0")}`,
+  }));
+  await cdp.eval(`window.__probe.stubApi('getLogs', ${JSON.stringify(LOGS)})`);
+  const mounted = await cdp.eval(
+    `window.__probe.install('/src/components/LogViewer.vue', '', ${JSON.stringify(JSON.stringify({ standalone: true }))})`,
+  );
+  await sleep(900);
+  const read = () => cdp.eval(`(() => {
+    const rows = [...document.querySelectorAll('[data-index]')];
+    const scroll = rows[0] ? rows[0].closest('.overflow-y-auto') : null;
+    const texts = rows.map((r) => (r.innerText || '').replace(/\\s+/g, ' ').trim());
+    return {
+      rows: rows.length,
+      first: texts[0] || '',
+      last: texts[texts.length - 1] || '',
+      scrollTop: scroll ? Math.round(scroll.scrollTop) : -1,
+      scrollHeight: scroll ? scroll.scrollHeight : -1,
+      clientHeight: scroll ? scroll.clientHeight : -1,
+      hasTitle: (document.body.innerText || '').includes('运行日志'),
+    };
+  })()`);
+  let s = await read();
+  check("日志独立窗：standalone 挂载后渲染出虚拟行（不再是空白/注释节点）",
+    mounted && mounted.ok === true && s.hasTitle === true && s.rows > 0,
+    "挂载成功 / 有标题 / rows>0", JSON.stringify({ mounted, s }));
+  check("日志独立窗：200 条只渲染视口附近的行（虚拟化生效，且滚动容器真的有高度）",
+    s.rows > 0 && s.rows < 100 && s.scrollHeight > s.clientHeight,
+    "0 < rows < 100 且 scrollHeight > clientHeight", JSON.stringify(s));
+  const before = s.first;
+  await cdp.eval(`(() => {
+    const row = document.querySelector('[data-index]');
+    const scroll = row && row.closest('.overflow-y-auto');
+    if (!scroll) return false;
+    scroll.scrollTop = scroll.scrollHeight;
+    scroll.dispatchEvent(new Event('scroll', { bubbles: true }));
+    return true;
+  })()`);
+  await sleep(500);
+  s = await read();
+  check("日志独立窗：滚到底后渲染换到另一批旧日志（滚动 + 虚拟窗口换页）",
+    s.rows > 0 && s.scrollTop > 0 && s.first !== before,
+    "scrollTop>0 且首行变化", JSON.stringify({ before, s }));
+}
+
 async function runSearch(cdp, url) {
   // 窗口被别的应用盖住时 document.visibilityState=hidden，CSS 动画时钟会冻在 0
   // （playState 仍是 running）⇒ 页面转场停在 translateX(100%)，弹窗整个在视口外。
@@ -3917,6 +4099,63 @@ async function runSearch(cdp, url) {
     "1 次 open 且 msgId=m2", `at=${beforeEnter.at} / ${JSON.stringify(opened)}`);
   check("跟着必须关一次弹窗（打开与关闭是同一次动作，不能只 emit 不关）",
     ev.filter((e) => e[0] === "close").length === 1, "1 次 close", JSON.stringify(ev));
+
+  // ---------------- 迁移到 Query 后新增：乱序响应不得跨关键词回填 ----------------
+  // 旧实现靠 `seq` 只认最后一次请求；现在靠 query key。这里判的是**可观察结局**：
+  // 「慢」的响应晚到，页面上必须仍是「快」的结果 —— 谁也不许把旧关键字的结果铺回来。
+  const SLOW = {
+    ...GROUP, conv_id: "conv-slow", name: "慢结果",
+    messages: [{ msg_id: "s0", sender_id: "p1", sender_name: "小布", kind: "text", content: "慢响应", ts: 1 }],
+  };
+  const FAST = {
+    ...GROUP, conv_id: "conv-fast", name: "快结果",
+    messages: [{ msg_id: "f0", sender_id: "p1", sender_name: "小布", kind: "text", content: "快响应", ts: 1 }],
+  };
+  await cdp.eval(`(async () => {
+    const m = await import('/src/api/index.ts');
+    const real = m.api.searchChatHistory;
+    m.api.searchChatHistory = async (p) => {
+      if (p.keyword === "慢") {
+        await new Promise((r) => setTimeout(r, 700));
+        return ${JSON.stringify([SLOW])};
+      }
+      if (p.keyword === "快") {
+        await new Promise((r) => setTimeout(r, 50));
+        return ${JSON.stringify([FAST])};
+      }
+      return real(p);
+    };
+  })()`);
+  await cdp.eval("window.__probe.setOpen(false)");
+  await cdp.eval("window.__probe.setOpen(true)");
+  for (let i = 0; i < 40; i += 1) {
+    if (await cdp.eval(`!!document.querySelector('[role="dialog"] input')`)) break;
+    await sleep(50);
+  }
+  const typeNow = (text) => cdp.eval(`(() => {
+    const input = document.querySelector('[role="dialog"] input');
+    if (!input) return false;
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+    setter.call(input, ${JSON.stringify(text)});
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    return true;
+  })()`);
+  const typedSlow = await typeNow("慢");
+  await sleep(300); // 防抖 150 + 慢请求已发出（700ms 后才回）
+  const typedFast = await typeNow("快");
+  await sleep(1_100); // 快请求已回；慢响应也已晚到并写进它自己的缓存键
+  const outOfOrder = await cdp.eval(`(() => {
+    const text = document.body.innerText || '';
+    return {
+      fast: text.includes("快结果"), slow: text.includes("慢结果"),
+      input: (document.querySelector('[role="dialog"] input') || {}).value,
+    };
+  })()`);
+  check("乱序响应不跨关键词回填：「慢」晚到后页面仍是「快」的结果",
+    typedSlow === true && typedFast === true
+      && outOfOrder.fast === true && outOfOrder.slow === false && outOfOrder.input === "快",
+    "对照两次输入都成功 / fast=true / slow=false / input=快",
+    JSON.stringify({ typedSlow, typedFast, outOfOrder }));
 }
 
 /**
@@ -4175,6 +4414,411 @@ async function runGroupFiles(cdp, url) {
   check("关掉面板：事件订阅成对摘除（subs === unsub）",
     s.subs > 0 && s.unsub === s.subs, `subs=${s.subs} / unsub=${s.unsub}`,
     JSON.stringify({ subs: s.subs, unsub: s.unsub }));
+}
+
+/**
+ * 共享目录：Query 模式推广到第二个纯读面板，重点照「慢的 A 后到」与「下载归属」。
+ */
+async function runShareDirectory(cdp, url) {
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+  await cdp.eval("window.__probe.shareBus()");
+  const mounted = await cdp.eval("window.__probe.install('/src/components/ShareDirectory.vue', '', '')");
+  await sleep(200);
+
+  const info = () => cdp.eval(`(() => {
+    const dlg = document.querySelector('[role="dialog"]');
+    return {
+      dialog: !!dlg,
+      text: dlg ? dlg.innerText : '',
+      calls: window.__share.calls.slice(),
+      downloads: window.__share.downloads.slice(),
+      pending: Object.keys(window.__share.pending),
+    };
+  })()`);
+
+  check("共享目录装得上（QueryClient 与 chat store 都在）",
+    mounted && mounted.ok === true && (await info()).dialog === false,
+    "mount ok / 关着不渲染", JSON.stringify(mounted));
+
+  await cdp.eval("window.__probe.setConv('A')");
+  await cdp.eval("window.__probe.setOpen(true)");
+  await sleep(400);
+  let s = await info();
+  check("打开：只向当前好友请求一次，A 未返回前不显示别的树",
+    s.dialog && s.calls.join(",") === "A" && !s.text.includes("b.txt"),
+    "calls=[A] / 无 b.txt", JSON.stringify({ calls: s.calls, text: s.text.slice(0, 60) }));
+
+  await cdp.eval("window.__probe.setConv('B')");
+  await sleep(300);
+  await cdp.eval("window.__probe.resolveShare('B', ['b.txt'])");
+  await sleep(400);
+  s = await info();
+  check("切好友：新 key 拉 B 的树并渲染",
+    s.calls.join(",") === "A,B" && s.text.includes("b.txt"),
+    "calls=[A,B] / b.txt", JSON.stringify({ calls: s.calls, text: s.text.slice(0, 80) }));
+
+  await cdp.eval("window.__probe.resolveShare('A', ['a.txt'])");
+  await sleep(400);
+  s = await info();
+  check("A 的慢响应后到：不会覆盖当前显示的 B 的树",
+    s.text.includes("b.txt") && !s.text.includes("a.txt"),
+    "只有 b.txt", JSON.stringify({ text: s.text.slice(0, 80) }));
+
+  await cdp.eval(`(() => {
+    const dlg = document.querySelector('[role="dialog"]');
+    const name = dlg && dlg.querySelector('[title="b.txt"]');
+    if (!name) return false;
+    name.closest('div').querySelector('button').click();
+    return true;
+  })()`);
+  await sleep(250);
+  s = await info();
+  check("下载归属来自树的快照：向 B 要 B 的文件",
+    s.downloads.length === 1 && s.downloads[0][0] === "B" && s.downloads[0][1] === "B/b.txt",
+    'downloads=[["B","B/b.txt"]]', JSON.stringify(s.downloads));
+
+  await cdp.eval("window.__probe.setConv('A')");
+  await sleep(350);
+  s = await info();
+  check("切回已缓存的好友：旧快照立刻可见，同时按 staleTime 0 重新请求",
+    s.text.includes("a.txt") && s.calls.filter((x) => x === "A").length >= 2,
+    "a.txt 在 / calls 里 A≥2", JSON.stringify({ calls: s.calls, text: s.text.slice(0, 80) }));
+}
+
+/**
+ * 图片预览浮层的焦点语义（--only=lightbox）。
+ *
+ * 迁移前这里只有"打开时 focus 容器、关闭时手动 focus 回去"：Tab 会直接跑到背景页面
+ * （不构成焦点陷阱），且关闭归还与卸载时机都由我们自己维护。现在 Tab 环、逃逸拉回、
+ * 卸载归还都交给 Reka FocusScope —— 本段读的是真按键 / 真焦点，不是源码里有没有 import。
+ */
+async function runLightbox(cdp, url) {
+  await cdp.send("Page.bringToFront").catch(() => {});
+  await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: true }).catch(() => {});
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+  const mounted = await cdp.eval("window.__probe.lightboxMount()");
+  await sleep(350);
+  if (!mounted || mounted.ok !== true) {
+    check("图片预览装得上（pinia 用的是页面那一份）", false, "mount ok", JSON.stringify(mounted));
+    return;
+  }
+  const read = () => cdp.eval(`(() => {
+    const dlg = document.querySelector('[role="dialog"]');
+    const ae = document.activeElement;
+    const scope = dlg ? dlg.firstElementChild : null;
+    const btns = dlg ? [...dlg.querySelectorAll('button')] : [];
+    const img = dlg ? dlg.querySelector('img') : null;
+    return {
+      open: !!dlg,
+      modal: dlg ? dlg.getAttribute('aria-modal') : null,
+      buttons: btns.length,
+      focusIndex: btns.indexOf(ae),
+      focusInScope: !!(scope && ae && (scope === ae || scope.contains(ae))),
+      focusIsScope: !!(scope && ae === scope),
+      focusId: ae ? (ae.id || ae.tagName) : 'null',
+      alt: img ? img.getAttribute('alt') : null,
+      index: window.__lbState ? window.__lbState.index : -1,
+    };
+  })()`);
+
+  let s = await read();
+  check("打开后是 dialog + aria-modal，焦点被接进浮层容器（不是留在 opener 上）",
+    s.open && s.modal === "true" && s.focusInScope && s.focusIsScope,
+    "open / aria-modal=true / activeElement 是焦点容器",
+    JSON.stringify(s));
+
+  await cdp.key("Tab", "Tab", "", 9);
+  s = await read();
+  check("Tab 从容器流到第一颗按钮（保存）",
+    s.focusInScope && s.focusIndex === 0,
+    "focusIndex=0", JSON.stringify(s));
+
+  // 焦点陷阱的判据：从**最后一颗**按钮再按 Tab，必须回到第一颗；
+  // 没有 FocusScope 时这里会离开浮层（落到背景页面 / 浏览器 chrome）。
+  await cdp.eval(`(() => {
+    const dlg = document.querySelector('[role="dialog"]');
+    const btns = dlg ? [...dlg.querySelectorAll('button')] : [];
+    if (btns.length) btns[btns.length - 1].focus();
+    return btns.length;
+  })()`);
+  await cdp.key("Tab", "Tab", "", 9);
+  s = await read();
+  check("Tab 环：从最后一颗按钮再 Tab 回到第一颗（旧实现会逃出浮层）",
+    s.focusInScope && s.focusIndex === 0,
+    "focusInScope 且 focusIndex=0", JSON.stringify(s));
+
+  // Shift+Tab 反向环：从第一颗回到最后一颗。
+  await cdp.eval(`(() => {
+    const dlg = document.querySelector('[role="dialog"]');
+    const btns = dlg ? [...dlg.querySelectorAll('button')] : [];
+    if (btns.length) btns[0].focus();
+    return btns.length;
+  })()`);
+  await cdp.send("Input.dispatchKeyEvent", {
+    type: "keyDown", key: "Tab", code: "Tab", windowsVirtualKeyCode: 9, nativeVirtualKeyCode: 9, modifiers: 8,
+  });
+  await cdp.send("Input.dispatchKeyEvent", {
+    type: "keyUp", key: "Tab", code: "Tab", windowsVirtualKeyCode: 9, nativeVirtualKeyCode: 9, modifiers: 8,
+  });
+  await sleep(120);
+  s = await read();
+  check("Shift+Tab 反向环：从第一颗回到最后一颗",
+    s.focusInScope && s.buttons > 1 && s.focusIndex === s.buttons - 1,
+    "focusIndex=buttons-1", JSON.stringify(s));
+
+  // trapped：程序化把焦点扔到背景按钮上，FocusScope 必须把它拉回来。
+  await cdp.eval("document.getElementById('opener').focus()");
+  await sleep(120);
+  s = await read();
+  check("焦点被程序化扔到背景后会被拉回浮层（trapped 生效，不只是 loop）",
+    s.focusInScope === true,
+    "focusInScope=true", JSON.stringify(s));
+
+  // 业务键仍然归组件：ArrowRight 切到第二张。
+  await cdp.key("ArrowRight", "ArrowRight", "", 39);
+  await sleep(150);
+  s = await read();
+  check("ArrowRight 仍然切到下一张（业务按键没被焦点层接管）",
+    s.index === 1 && s.alt === "two.gif",
+    "index=1 / alt=two.gif", JSON.stringify(s));
+
+  // 关闭后焦点归还，DOM 撤净（leave 过渡 100ms）。
+  await cdp.key("Escape", "Escape", "", 27);
+  await sleep(650);
+  s = await read();
+  const focusBack = await cdp.eval("document.activeElement && document.activeElement.id");
+  check("Esc 关闭：浮层 DOM 撤净且焦点回到 opener（FocusScope 的卸载归还）",
+    s.open === false && focusBack === "opener",
+    "dialog=0 且 activeElement=#opener", JSON.stringify({ s, focusBack }));
+}
+
+/**
+ * Toast HUD 那一段（--only=toast）。
+ *
+ * 迁移前是 store 里一个数组 + 每条一个 setTimeout：无上限、无去重、屏幕可能被叠满。
+ * 现在数组/停留计时/堆叠/限流/live region 都归 Reka Toast，这里读真 DOM 与真按键：
+ * 去重后只剩一条、超过 limit 的置 data-limited + inert 且不可见、Esc 按库默认收起 toast 栈
+ * 且不吞按键、duration 到点自动移除（用 80ms 的短计时，不等 3/6 秒）。
+ */
+async function runToast(cdp, url) {
+  await cdp.send("Page.bringToFront").catch(() => {});
+  await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: true }).catch(() => {});
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+  const mounted = await cdp.eval("window.__probe.install('/src/components/ToastHud.vue', '', '')");
+  await sleep(300);
+  await cdp.eval(`(async () => {
+    const m = await import('/src/utils/toastManager.ts');
+    window.__pushToast = m.pushToast;
+    window.__toastManager = m.toastManager;
+    return true;
+  })()`);
+
+  const read = () => cdp.eval(`(() => {
+    const nodes = [...document.querySelectorAll('li[data-status]')];
+    const visible = nodes.filter((n) => n.getClientRects().length > 0);
+    return {
+      total: nodes.length,
+      visible: visible.length,
+      texts: visible.map((n) => String(n.textContent || '').trim()),
+      statuses: visible.map((n) => n.getAttribute('data-status')),
+      limited: nodes.filter((n) => n.hasAttribute('data-limited')).length,
+      inertLimited: nodes.filter((n) => n.hasAttribute('data-limited')).every((n) => n.hasAttribute('inert')),
+      alerts: document.querySelectorAll('[role="alert"]').length,
+      viewport: !!document.querySelector('[role="region"][aria-label] ol'),
+    };
+  })()`);
+
+  let s = await read();
+  check("ToastHud 挂出 Reka 的 viewport（ol + aria-label），初始没有 toast",
+    mounted && mounted.ok === true && s.viewport === true && s.total === 0,
+    "viewport 存在 / total=0", JSON.stringify({ mounted, s }));
+
+  await cdp.eval("window.__pushToast('重复失败', 'error'); window.__pushToast('重复失败', 'error')");
+  await sleep(200);
+  s = await read();
+  check("同一 kind+文案连推两次只留一条（id 去重，不再叠两遍同一句失败）",
+    s.visible === 1 && s.texts[0] === "重复失败" && s.statuses[0] === "error",
+    "visible=1 / 重复失败 / error", JSON.stringify(s));
+  check("失败提示有 live region（role=alert 的 announce 节点）",
+    s.alerts >= 1, "role=alert >= 1", "alerts=" + s.alerts);
+
+  // 一条一条推（每条之间留一帧）：Reka 的 stack 序号按**挂载顺序**分配，
+  // 一次性批量插入会让 v-for 的挂载顺序与"最新在前"相反，limit 会藏错那一条。
+  for (const text of ["信息一", "信息二", "信息三", "信息四"]) {
+    await cdp.eval(`window.__pushToast(${JSON.stringify(text)}, 'info')`);
+    await sleep(80);
+  }
+  await sleep(250);
+  s = await read();
+  check("超过 limit=3 的旧条目被置 data-limited 且 inert，并且真的不可见",
+    s.visible === 3 && s.limited >= 1 && s.inertLimited === true && s.texts.includes("信息四"),
+    "visible=3 / limited>=1 / inert / 最新一条在",
+    JSON.stringify(s));
+
+  // Esc 走 Reka 默认：关掉 toast 栈。这里真正要钉的回归是**不许 preventDefault** ——
+  // Reka 的 ToastRoot 在 window 上监听 Escape，一旦在回调里 preventDefault，同一次按键就会被
+  // 判定为"已被处理"，Dialog / Menu / Select 的 Esc 全部失效（--only=select 会因此变红）。
+  await cdp.eval(`(() => {
+    const b = document.createElement('button');
+    b.id = 'toast-outside';
+    b.textContent = '外面';
+    document.body.appendChild(b);
+    b.focus();
+    window.__escPrevented = null;
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') window.__escPrevented = e.defaultPrevented;
+    });
+    return true;
+  })()`);
+  const beforeEsc = s.visible;
+  await cdp.key("Escape", "Escape", "", 27);
+  await sleep(500);
+  s = await read();
+  const escPrevented = await cdp.eval("window.__escPrevented");
+  check("Esc 按库默认收起 toast 栈，且不吞按键（defaultPrevented=false）",
+    beforeEsc === 3 && s.visible === 0 && escPrevented === false,
+    "Esc 前 3 条 / 后 0 条 / 未被 preventDefault",
+    JSON.stringify({ beforeEsc, s, escPrevented }));
+
+  await cdp.eval("window.__toastManager.add({ id: 'short-lived', title: '短命', status: 'info', duration: 80, type: 'background', data: { kind: 'info' } })");
+  await sleep(450);
+  s = await read();
+  check("duration 到点自动移除（80ms 的短计时，不靠肉眼等 3/6 秒）",
+    s.texts.includes("短命") === false,
+    "短命已移除", JSON.stringify(s));
+}
+
+/**
+ * 设置页下拉（--only=select）。
+ *
+ * 5 处原生 <select> 已全部换成 Reka Select 的薄适配层；本段读真 DOM / 真鼠标 / 真按键：
+ * 触发器文案、listbox/option 语义、当前项勾选、↓+Enter 选中后回写受控值、Esc 收起并归还焦点、
+ * 鼠标点条目。另钉一条"组件 DOM 里不得再出现原生 select"——原生弹层在暗夜里由系统绘制，
+ * 配色不归我们管（这正是这次迁移的起因）。
+ */
+async function runSelect(cdp, url) {
+  await cdp.send("Page.bringToFront").catch(() => {});
+  await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: true }).catch(() => {});
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+  const mounted = await cdp.eval("window.__probe.selectMount()");
+  await sleep(250);
+  if (!mounted || mounted.ok !== true) {
+    check("设置下拉装得上", false, "mount ok", JSON.stringify(mounted));
+    return;
+  }
+
+  const read = () => cdp.eval(`(() => {
+    const trigger = document.querySelector('#probe-host [role="combobox"]');
+    const list = document.querySelector('[role="listbox"]');
+    const opts = list ? [...list.querySelectorAll('[role="option"]')] : [];
+    const active = document.activeElement;
+    const activeOpt = active && active.closest ? active.closest('[role="option"]') : null;
+    return {
+      triggerText: trigger ? String(trigger.textContent || '').trim() : null,
+      expanded: trigger ? trigger.getAttribute('aria-expanded') : null,
+      ariaLabel: trigger ? trigger.getAttribute('aria-label') : null,
+      activeIsTrigger: document.activeElement === trigger,
+      activeOption: activeOpt ? String(activeOpt.textContent || '').trim().replace(/^✓\\s*/, '') : null,
+      list: !!list,
+      contentClass: list ? String(list.className || '') : '',
+      optionCount: opts.length,
+      labels: opts.map((o) => String(o.textContent || '').trim().replace(/^✓\\s*/, '')),
+      checked: opts.filter((o) => o.getAttribute('data-state') === 'checked')
+        .map((o) => String(o.textContent || '').trim().replace(/^✓\\s*/, '')),
+      indicators: opts.filter((o) => o.querySelector('[data-state="checked"]')).length,
+      nativeSelects: document.querySelectorAll('select').length,
+      value: window.__st.selectValue,
+      updates: window.__probe.events.filter((e) => e[0] === 'update').map((e) => e[1]),
+    };
+  })()`);
+
+  let s = await read();
+  check("受控下拉初始：combobox 有 aria-label、显示当前项、DOM 里没有原生 select",
+    s.ariaLabel === "测试选择" && s.triggerText === "Beta" && s.expanded === "false" && s.nativeSelects === 0,
+    "aria-label=测试选择 / 文案=Beta / 无原生 select",
+    JSON.stringify(s));
+
+  // 用键盘打开（a11y 用户实际走的路径）：Reka 的 trigger 在 ↓ 上打开并聚焦当前项。
+  // 不用合成鼠标做键盘用例的前提：重载下 mouseup 的 click 会晚到并抢走焦点（真机不会），
+  // 那会把"库的键盘导航坏了"和"探针时序"混成同一个红。
+  await cdp.eval("(() => { const t = document.querySelector('#probe-host [role=\"combobox\"]'); t && t.focus(); return true; })()");
+  await cdp.key("ArrowDown", "ArrowDown", "", 40);
+  await sleep(700);
+  s = await read();
+  check("键盘打开：listbox 3 项、当前项有勾选指示、焦点在 Beta、面板吃 .gosslan-menu",
+    s.list && s.optionCount === 3 && s.labels.join(",") === "Alpha,Beta,Gamma"
+      && s.checked.length === 1 && s.checked[0] === "Beta" && s.indicators === 1
+      && s.contentClass.includes("gosslan-menu") && s.activeOption === "Beta",
+    "3 项 / 选中 Beta / 1 个 ✓ / .gosslan-menu / 焦点 Beta",
+    JSON.stringify(s));
+
+  await cdp.key("ArrowDown", "ArrowDown", "", 40);
+  await sleep(180);
+  const afterDown = await read();
+  await cdp.key("Enter", "Enter", "\r", 13);
+  // 等退场动画彻底卸载：DismissableLayer 在关闭动画期间仍占着层级，
+  // 过快重开会让旧的最高层吃掉 Esc（探针时距，不是产品行为）。
+  await sleep(800);
+  s = await read();
+  check("键盘 ↓ 走到下一项、Enter 选中：受控值改成 c、触发器文案跟着变、面板收起、焦点回触发器",
+    afterDown.activeOption === "Gamma"
+      && s.value === "c" && s.triggerText === "Gamma" && s.list === false
+      && s.expanded === "false" && s.activeIsTrigger,
+    "↓ 后焦点 Gamma / value=c / Gamma / 收起 / 焦点回触发器",
+    JSON.stringify({ s, afterDown }));
+  check("选择只抬一个新值（v-model 仍是单一来源）",
+    s.updates.join(",") === "c", "updates=[c]", JSON.stringify({ updates: s.updates }));
+
+  await cdp.eval("(() => { const t = document.querySelector('#probe-host [role=\"combobox\"]'); t && t.focus(); return true; })()");
+  await cdp.key("ArrowDown", "ArrowDown", "", 40);
+  await sleep(700);
+  const reopened = await read();
+  await cdp.eval(`(() => {
+    window.__esc = [];
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') window.__esc.push([e.target.tagName, e.defaultPrevented]);
+    });
+    return { layers: document.querySelectorAll('[data-dismissable-layer]').length };
+  })()`);
+  await cdp.key("Escape", "Escape", "", 27);
+  await sleep(600);
+  s = await read();
+  check("Esc 收起面板并把焦点还给触发器",
+    reopened.list === true && s.list === false && s.activeIsTrigger,
+    "打开后 Esc ⇒ 面板消失 + 焦点回触发器",
+    JSON.stringify({ reopened: reopened.list, after: s }));
+
+  const pt = await cdp.eval(`(() => {
+    const r = document.querySelector('#probe-host [role="combobox"]').getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  })()`);
+  await cdp.click(pt.x, pt.y);
+  await sleep(700);
+  const mouseOpened = await read();
+  const optPt = await cdp.eval(`(() => {
+    const o = [...document.querySelectorAll('[role="option"]')]
+      .find((n) => String(n.textContent || '').trim().includes('Alpha'));
+    if (!o) return null;
+    const r = o.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  })()`);
+  if (optPt) {
+    await cdp.click(optPt.x, optPt.y);
+    await sleep(300);
+  }
+  s = await read();
+  check("鼠标真点开、真命中条目也能选中（不是合成 click）",
+    mouseOpened.list === true && !!optPt && s.value === "a" && s.triggerText === "Alpha" && s.list === false,
+    "鼠标打开 / value=a / Alpha / 收起",
+    JSON.stringify({ mouseOpened: mouseOpened.list, optPt, s }));
 }
 
 async function runSegmented(cdp, url) {

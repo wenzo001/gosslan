@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
-import { ref, watch } from "vue";
+import { computed } from "vue";
+import { useQuery } from "@tanstack/vue-query";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { api } from "@/api";
@@ -8,7 +9,7 @@ import BaseModal from "@/components/BaseModal.vue";
 import { Download, Folder, RefreshCw } from "lucide-vue-next";
 import { formatBytes } from "@/utils/format";
 import { reportError } from "@/utils/errors";
-import { StaleGuard } from "@/utils/staleGuard";
+import { shareTreeQueryOptions } from "@/utils/shareTreeQuery";
 import type { ShareEntry } from "@/types";
 
 const props = defineProps<{ open: boolean }>();
@@ -16,11 +17,8 @@ const emit = defineEmits<{ (e: "close"): void }>();
 
 const app = useAppStore();
 const chat = useChatStore();
-const entries = ref<ShareEntry[]>([]);
-const loading = ref(false);
-const error = ref<string | null>(null);
 
-const friendId = () => chat.activeConv ?? "";
+const friendId = computed(() => chat.activeConv ?? "");
 const friendName = () => chat.activeConversation?.name ?? "";
 
 function depth(p: string) {
@@ -28,42 +26,38 @@ function depth(p: string) {
 }
 
 /**
- * 树是为哪个好友拉来的 ⇒ `download` 用它，而不是"点击那一刻的 activeConv"。
- * 与下面的 `loadGuard` 一起构成同一条不变量的两面：显示的那棵树，只有它自己的主人能下载。
+ * 树的缓存按好友分键（见 utils/shareTreeQuery）：切会话时旧树只会写回旧好友的 key，
+ * 不再需要手写 `StaleGuard`；`snapshot.friendId` 随数据一起缓存，是「这棵树是谁的」的唯一答案。
  */
-const loadedFor = ref<string | null>(null);
-/** 后发先至守卫（审计阶段 4 · 4.2）：见 `utils/staleGuard`。 */
-const loadGuard = new StaleGuard();
+const treeQuery = useQuery(
+  computed(() => {
+    // 捕获调用时的好友 id：即便 queryFn 延后执行，数据也只会写回它自己的 key。
+    const fid = friendId.value;
+    return {
+      ...shareTreeQueryOptions(fid, api.requestShareTree),
+      enabled: props.open && !!fid,
+    };
+  }),
+);
+const snapshot = computed(() => treeQuery.data.value ?? null);
+const entries = computed<ShareEntry[]>(() => snapshot.value?.entries ?? []);
+const loading = computed(
+  () => !!friendId.value && (treeQuery.isPending.value || treeQuery.isFetching.value),
+);
+const error = computed(() =>
+  treeQuery.error.value ? reportError(treeQuery.error.value, t("share.loadFail")) : null,
+);
 
-async function load() {
-  const tok = loadGuard.begin("tree");
-  const forId = friendId();
-  loading.value = true;
-  error.value = null;
-  entries.value = [];
-  loadedFor.value = null;
-  try {
-    const tree = await api.requestShareTree(forId);
-    // 期间切了会话、或有更晚发起的一次在飞 ⇒ 这份树已经不是当前会话的，整个丢弃
-    if (!loadGuard.isCurrent("tree", tok)) return;
-    entries.value = tree;
-    loadedFor.value = forId;
-  } catch (e) {
-    // catch/finally 同样要过闸：旧请求的报错会把新会话的正常界面变成"加载失败"
-    if (!loadGuard.isCurrent("tree", tok)) return;
-    // 不把 Rust 的 Err(String) 原样丢给用户（项目其它路径都走 reportError 出可读文案）；
-    // 同时给读屏一个 role="alert" 的提示（见模板）。
-    error.value = reportError(e, t("share.loadFail"));
-  } finally {
-    if (loadGuard.isCurrent("tree", tok)) loading.value = false;
-  }
+function load() {
+  void treeQuery.refetch();
 }
 
 async function download(e: ShareEntry) {
-  // ⚠️ 用 `loadedFor` 而不是当场 `friendId()`：弹窗开着时 activeConv 会被**程序化路径**换掉
-  // （点系统通知 → `openConversation`），那一刻点下载会把"A 的树里的一行"发给 B ——
-  // 后端按 B 的共享目录校验路径，结果是莫名"下载失败"，或更糟：拿到 B 上同名的另一个文件。
-  const owner = loadedFor.value;
+  // ⚠️ 用数据自带的 `friendId`，不是点击那一刻的 `chat.activeConv`：
+  // 弹窗开着时 activeConv 会被**程序化路径**换掉（点系统通知 → `openConversation`），
+  // 那一刻点下载会把"A 的树里的一行"发给 B —— 后端按 B 的共享目录校验路径，
+  // 结果是莫名"下载失败"，或更糟：拿到 B 上同名的另一个文件。
+  const owner = snapshot.value?.friendId;
   if (!owner) return;
   try {
     await api.downloadSharedFile(owner, e.path);
@@ -74,20 +68,6 @@ async function download(e: ShareEntry) {
   }
 }
 
-watch(
-  () => props.open,
-  (v) => {
-    if (v) load();
-  },
-);
-// 面板开着时换会话 ⇒ 重拉（与 GroupFilesPanel 的 groupId watch 同一条口径）。
-// 只靠 loadGuard 的话，旧树会一直挂在当前好友名下 —— 守卫挡住了错数据，也挡住了刷新。
-watch(
-  () => chat.activeConv,
-  () => {
-    if (props.open) load();
-  },
-);
 </script>
 
 <template>

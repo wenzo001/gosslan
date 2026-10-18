@@ -25,6 +25,7 @@ import {
   type LanguagePreference,
 } from "@/i18n";
 import { isMac } from "@/utils/platform";
+import { pushToast, type ToastKind } from "@/utils/toastManager";
 import type { AppSettings, ChannelStatus, DeviceInfo, InterfaceInfo, RelayPolicy, RuntimeSnapshot } from "@/types";
 
 export type { AppearanceMode };
@@ -219,25 +220,9 @@ export const useAppStore = defineStore("app", () => {
     void persistSettings();
   }
 
-  // 轻量 toast
-  interface Toast {
-    id: number;
-    text: string;
-    type: "success" | "error" | "info";
-  }
-  const toasts = ref<Toast[]>([]);
-  let toastId = 0;
-  /**
-   * 停留时长：错误要留够"读 + 听"的时间（读屏播报比扫一眼慢得多），
-   * 成功/信息类短一些免得挡住界面。原实现一律 3000ms，错误常常没看完就消失了。
-   */
-  const TOAST_MS: Record<Toast["type"], number> = { success: 3000, info: 3000, error: 6000 };
-  function toast(text: string, type: Toast["type"] = "info") {
-    const id = ++toastId;
-    toasts.value.push({ id, text, type });
-    setTimeout(() => {
-      toasts.value = toasts.value.filter((t) => t.id !== id);
-    }, TOAST_MS[type]);
+  // 轻量 toast：渲染/计时/去重/限流交给 Reka Toast（见 utils/toastManager 与 ToastHud）。
+  function toast(text: string, type: ToastKind = "info") {
+    pushToast(text, type);
   }
 
   /**
@@ -1050,7 +1035,6 @@ export const useAppStore = defineStore("app", () => {
     setChatStyle,
     applyPeerStyle,
     resetDefaults,
-    toasts,
     toast,
     toastError,
   };

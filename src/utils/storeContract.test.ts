@@ -422,12 +422,13 @@ test("useAppStore 的直写面冻在已知四处：长出第五处或新 ref 即
   );
 });
 
-test("组件侧的四个回填点必须各自过闸（旧形状一旦复现即红）", () => {
+test("组件侧的回填点必须各自过闸（旧形状一旦复现即红）", () => {
   const cases: [string, string, string][] = [
     // [文件, 必须出现的闸, 必须不出现的旧形状]
     ["components/message/ImageLightbox.vue", "resolveGuard.isCurrent", "apply(await "],
     ["components/MessageItem.vue", "summaryGuard.isCurrent", "deliverySummary.value = await invoke("],
-    ["components/ShareDirectory.vue", "loadGuard.isCurrent", "downloadSharedFile(friendId()"],
+    // 共享目录已交给按好友分键的 Query：守卫从 StaleGuard 换成「归属随数据一起缓存」。
+    ["components/ShareDirectory.vue", "snapshot.value?.friendId", "downloadSharedFile(friendId()"],
   ];
   for (const [rel, need, forbidden] of cases) {
     const src = stripComments(readFileSync(join(ROOT, rel), "utf8"));

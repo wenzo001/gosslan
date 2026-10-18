@@ -1,6 +1,6 @@
 import { acceptHMRUpdate, defineStore } from "pinia";
 import { computed, ref, watch } from "vue";
-import { api, bindEvents } from "@/api";
+import { api, bindEvents, emitAction, NAVIGATE_TO_CONTACTS } from "@/api";
 import {
   applyConversationSnapshot,
   applyIncomingToConversations,
@@ -620,7 +620,7 @@ export const useChatStore = defineStore("chat", () => {
     if (type === "friend_request") {
       // 唤起窗口后再切视图：窗口还在托盘里时切，用户会在浮出瞬间看到一次跳变。
       void api.focusWindow().then(() => {
-        window.dispatchEvent(new CustomEvent("navigate-to-contacts"));
+        emitAction(NAVIGATE_TO_CONTACTS);
       });
       return;
     }

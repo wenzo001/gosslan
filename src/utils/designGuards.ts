@@ -1201,7 +1201,7 @@ export function checkSelectionContract(s: SelectionContractSources): GuardIssue[
  * 三条判据（缺一不可）：
  * 1. 全局 `:focus-visible` 的选择器里**不得**出现文本输入类；
  * 2. 必须有规则把 `input` / `textarea` / `select` 的焦点提示画在**边线**上（与应用既有的
- *    `.gosslan-select:focus`、`focus:border-[var(--gosslan-primary)]` 同一套观感）；
+ *    `focus:border-[var(--gosslan-primary)]` 同一套观感）；
  * 3. 消息输入框的卡片必须带上 `gosslan-composer` 钩子（`:focus-within` 变边框色）——
  *    编辑区自己不能画框，少了这条消息输入框就完全没有焦点提示。
  */
@@ -2106,3 +2106,52 @@ export function findHandWrittenSolidDangerButtons(src: string): GuardIssue[] {
   }
   return out.sort((a, b) => a.line - b.line);
 }
+
+/**
+ * 原生 `<select>` 已整体迁到 Reka（`components/ui/SettingsSelect.vue`）。
+ * 原生控件的弹出层由 WebView 绘制：不跟随主题、键盘/焦点行为各端不一，
+ * 且无法统一 `.gosslan-menu` 外观。只扫 `<template>` 里真正写出的标签；
+ * script 里说明"为什么不用 `<select>`"的文档不算。
+ */
+export function findNativeSelect(src: string): GuardIssue[] {
+  const start = src.indexOf("<template");
+  const end = src.lastIndexOf("</template>");
+  if (start < 0 || end <= start) return [];
+  const tpl = src.slice(start, end).replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, " "));
+  const out: GuardIssue[] = [];
+  for (const m of tpl.matchAll(/<select\b/g)) {
+    out.push({
+      line: lineAt(src, start + (m.index ?? 0)),
+      message:
+        "模板里不许再出现原生 `<select>`：统一用 `components/ui/SettingsSelect.vue`（Reka Select，" +
+        "主题化浮层 + 键盘/焦点/无障碍由库负责）。",
+    });
+  }
+  return out;
+}
+
+/**
+ * `v-html` 的允许清单：三处都是**构造即转义**，没有"把对端原文直接塞进 HTML"的路径。
+ *
+ * - `ChatSearchDialog`：`highlightText`（先在原文上匹配、再逐段 `escHtml`，只注入 `<mark>`）；
+ * - `LogViewer`：同一份 `highlightText` 生成的四段 `row.*`；
+ * - `CodeBlock`：highlight.js 的转义输出，plaintext 走 `escapeHtml(props.code)`。
+ *
+ * 新增 `v-html` 必须先证明输入已转义（或接 DOMPurify），再把文件登记到这里；
+ * 这条清单是给"以后顺手写一个 v-html"的人看的，不是运行时安全边界本身。
+ */
+export const V_HTML_ALLOWED = [
+  "components/search/ChatSearchDialog.vue",
+  "components/LogViewer.vue",
+  "components/CodeBlock.vue",
+] as const;
+
+/** 读出模板里每一处 `v-html` 的表达式与行号（只认静态写法，便于清单对账）。 */
+export function findVHtmlSinks(src: string): { line: number; expr: string }[] {
+  const out: { line: number; expr: string }[] = [];
+  for (const m of src.matchAll(/v-html="([^"]*)"/g)) {
+    out.push({ line: lineAt(src, m.index ?? 0), expr: m[1] });
+  }
+  return out;
+}
+

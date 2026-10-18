@@ -3,7 +3,7 @@ import { t } from "@/i18n";
 import { computed, ref, onMounted, onUnmounted, watch, watchEffect } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
-import { api, APP_ACTION, bindMenuEvents } from "@/api";
+import { api, APP_ACTION, bindMenuEvents, NAVIGATE_TO_CONTACTS, onAction } from "@/api";
 import { launchAuxWindow, useWindowOpening } from "@/composables/useWindowLauncher";
 import { useShortcuts } from "@/composables/useShortcuts";
 import { useBackLayer } from "@/composables/useBackLayer";
@@ -417,19 +417,22 @@ watchEffect(() => {
     );
 });
 
+let disposeAppActions: (() => void)[] = [];
 onMounted(() => {
-  window.addEventListener("navigate-to-contacts", onNavigateToContacts);
-  window.addEventListener(APP_ACTION.openSettings, openSettings);
-  window.addEventListener(APP_ACTION.addFriend, onAddFriendAction);
-  window.addEventListener(APP_ACTION.openLogs, openLogs);
+  // mitt 不自动清理：订阅返回的解绑函数必须在卸载时全部调掉，
+  // 否则组件重建后一次菜单/快捷键会执行多遍（旧 window 监听是 removeEventListener 对称解绑）。
+  disposeAppActions = [
+    onAction(NAVIGATE_TO_CONTACTS, onNavigateToContacts),
+    onAction(APP_ACTION.openSettings, openSettings),
+    onAction(APP_ACTION.addFriend, onAddFriendAction),
+    onAction(APP_ACTION.openLogs, openLogs),
+  ];
   // 原生菜单（仅 macOS）；非 macOS 平台该 Promise 仍会 resolve，只是收不到事件
   void bindMenuEvents().then((fns) => (unlistenMenu = fns));
 });
 onUnmounted(() => {
-  window.removeEventListener("navigate-to-contacts", onNavigateToContacts);
-  window.removeEventListener(APP_ACTION.openSettings, openSettings);
-  window.removeEventListener(APP_ACTION.addFriend, onAddFriendAction);
-  window.removeEventListener(APP_ACTION.openLogs, openLogs);
+  disposeAppActions.forEach((dispose) => dispose());
+  disposeAppActions = [];
   unlistenMenu?.forEach((fn) => fn());
 });
 

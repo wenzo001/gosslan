@@ -7,6 +7,7 @@ import BaseModal from "@/components/BaseModal.vue";
 import { avatarSeedFor } from "@/utils/avatarSeed";
 import { Check } from "@/components/ui/icons";
 import { useSubmitGuard } from "@/composables/useSubmitGuard";
+import { groupNameSchema } from "@/utils/validation";
 
 const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<{ (e: "close"): void }>();
@@ -36,7 +37,8 @@ function toggle(id: string) {
 }
 
 async function create() {
-  if (!name.value.trim()) {
+  const parsed = groupNameSchema.safeParse(name.value);
+  if (!parsed.success) {
     app.toast(t("group.toast.nameEmpty"), "error");
     return;
   }
@@ -47,7 +49,7 @@ async function create() {
   // 双击/重复点击只会发一次 createGroup（校验在拿到提交权之前做，不占着 busy）。
   await runCreate(async () => {
     try {
-      const g = await chat.createGroup(name.value.trim(), selected.value);
+      const g = await chat.createGroup(parsed.data, selected.value);
       app.toast(t("group.toast.created", { name: g.name }), "success");
       emit("close");
       chat.openConversation(`group:${g.id}`);

@@ -5,7 +5,8 @@
    ⇒ 按 `designGuards` ⑦ 的约定，用文件级逃生阀显式声明，而不是靠"没人发现"。 */
 import { clampScale, pinchScale, swipeDirection } from "@/utils/lightboxGestures";
 import { t } from "@/i18n";
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { FocusScope } from "reka-ui";
 import { ChevronLeft, ChevronRight, Save } from "lucide-vue-next";
 import { RotateCcw, X } from "@/components/ui/icons";
 import { useAppStore } from "@/stores/useAppStore";
@@ -289,25 +290,19 @@ watch(
 );
 
 /**
- * 打开时把焦点移进浮层（HIG：模态浮层要有 dialog 语义且焦点在其中）。
- * 本组件没有引入 headlessui Dialog（它是自绘的全屏预览），所以至少做到：
- * `role="dialog" aria-modal="true"` + 打开即聚焦容器（Tab 之后在浮层内流转），
- * 关闭后把焦点还给触发元素。
+ * 打开时把焦点接进浮层，关闭后还给触发元素 —— 这两件（连同 Tab 环、焦点逃逸拉回）
+ * 都交给 Reka `FocusScope`，本组件只保留图片预览自己的手势与业务出口。
+ *
+ * 为什么 mount 时阻止默认：FocusScope 默认聚焦第一颗可 Tab 元素（保存按钮），
+ * 预览一打开就出现按钮焦点环；旧行为聚焦容器（`outline-none`），这里保持逐字一致。
+ * 容器拿到焦点后 FocusScope 仍会记录 lastFocused，Tab 仍从容器流向第一颗按钮。
  */
 const dialogRef = ref<HTMLElement | null>(null);
-let restoreFocus: HTMLElement | null = null;
-watch(
-  () => props.open,
-  (open) => {
-    if (open) {
-      restoreFocus = document.activeElement as HTMLElement | null;
-      void nextTick(() => dialogRef.value?.focus());
-    } else {
-      restoreFocus?.focus?.();
-      restoreFocus = null;
-    }
-  },
-);
+
+function onMountAutoFocus(event: Event) {
+  event.preventDefault();
+  dialogRef.value?.focus();
+}
 
 onMounted(() => window.addEventListener("keydown", onKey));
 onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
@@ -323,9 +318,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
     >
       <div
         v-if="open"
-        ref="dialogRef"
-        tabindex="-1"
-        class="glass fixed inset-x-0 bottom-0 top-[var(--gosslan-window-safe-top,0px)] z-[80] flex items-center justify-center outline-none"
+        class="glass fixed inset-x-0 bottom-0 top-[var(--gosslan-window-safe-top,0px)] z-[80] outline-none"
         :style="{
           background: 'rgba(0, 0, 0, 0.45)',
           // 让开自绘 caption。**两层口径**，不要只留一层：
@@ -343,6 +336,12 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
         @click="emit('close')"
         @wheel="onWheel"
       >
+        <!-- FocusScope 只包**内容层**（全屏命中与遮罩仍是外面那一层 fixed 外壳，
+             这样「Teleport 根节点是 fixed」的判据与几何都不动）：
+             `as-child` 把容器落在下一颗 div 上（不新增包装层），`loop` + `trapped`
+             负责 Tab 环与焦点逃逸拉回；关闭卸载时由它把焦点还给打开前的元素。 -->
+        <FocusScope :trapped="open" loop as-child @mount-auto-focus="onMountAutoFocus">
+        <div ref="dialogRef" tabindex="-1" class="flex h-full w-full items-center justify-center outline-none">
         <!-- 右上操作区：保存 + 关闭（与其它弹窗一致的样式） -->
         <!-- 移动端让开状态栏/挖孔（`safe-area-inset-top`）：用户 2026-09-12 实测
              「安卓端图片预览右上角的保存和叉叉与状态栏重叠」。
@@ -460,6 +459,8 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
           <template v-if="hasMultiple">{{ t("msg.lightbox.multiHint", { i: index + 1, n: images.length }) }}</template>
           <template v-else>{{ t("msg.lightbox.singleHint") }}</template>
         </div>
+        </div>
+        </FocusScope>
       </div>
     </Transition>
   </Teleport>

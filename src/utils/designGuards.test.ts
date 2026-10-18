@@ -38,6 +38,9 @@ import {
   findLiteralRadiusClasses,
   findDirectSemanticIconImports,
   findHandWrittenSolidDangerButtons,
+  findNativeSelect,
+  findVHtmlSinks,
+  V_HTML_ALLOWED,
 } from "./designGuards.ts";
 
 // ---------------- ⓪ 选中态/原生控件颜色必须吃主题变量（#35-N7） ----------------
@@ -872,6 +875,69 @@ test("src 下所有 .vue 的截断文本都带了 title / aria-label", () => {
     }
   }
   assert.deepEqual(bad, [], `发现被截断却没有 title 的文本：\n${bad.join("\n")}`);
+});
+
+// 原生 <select> 已迁到 Reka。正控用**真实组件**注入，证明扫描器确实读的是模板：
+// 只判一句假字符串的话，模板抽取写错了也照样绿。
+test("原生 <select> 不得回到模板；真实组件注入必须报（正控）", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const real = readFileSync(join(srcDir, "components", "settings", "AppearanceSection.vue"), "utf8");
+  const mutated = real.replace("<template>", '<template>\n  <select v-model="x" />');
+  assert.equal(findNativeSelect(mutated).length, 1, "往真实组件模板里塞一个原生 select 必须被报出");
+
+  const commentOnly = `<script setup>
+/** 为什么不用原生 \`<select>\`：弹出层不受主题控制 */
+</script>
+<template>
+  <SettingsSelect />
+</template>`;
+  assert.deepEqual(findNativeSelect(commentOnly), [], "script 里的说明文字不算标签");
+
+  const files = collectVueFiles(srcDir);
+  assert.ok(files.length > 20, `应扫描到全部组件，实际 ${files.length} 个`);
+  const bad: string[] = [];
+  for (const f of files) {
+    for (const issue of findNativeSelect(readFileSync(f, "utf8"))) {
+      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
+    }
+  }
+  assert.deepEqual(bad, [], `模板里还有原生 select：\n${bad.join("\n")}`);
+});
+
+// v-html 是唯一的 HTML 注入面：只允许三处"构造即转义"的渲染器。
+// 正控用真实组件注入，证明扫描器读的是模板；实现侧的转义锚点也必须还在。
+test("v-html 只出现在构造即转义的三处；新增位置必须登记（正控）", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const files = collectVueFiles(srcDir);
+  const hits: { file: string; line: number; expr: string }[] = [];
+  for (const f of files) {
+    const rel = f.replace(srcDir + "/", "");
+    for (const s of findVHtmlSinks(readFileSync(f, "utf8"))) hits.push({ file: rel, ...s });
+  }
+  const filesWith = [...new Set(hits.map((h) => h.file))].sort();
+  assert.deepEqual(
+    filesWith,
+    [...V_HTML_ALLOWED].sort(),
+    `v-html 出现位置变了（新增必须证明输入已转义并登记）：\n${JSON.stringify(hits, null, 2)}`,
+  );
+  for (const h of hits) {
+    if (h.file.endsWith("ChatSearchDialog.vue")) {
+      assert.match(h.expr, /^highlightText\(/, `搜索结果必须经 highlightText：${h.expr}`);
+    } else if (h.file.endsWith("LogViewer.vue")) {
+      assert.match(h.expr, /^v\.row\./, `日志行必须是 highlightText 生成的 row.*：${h.expr}`);
+    } else if (h.file.endsWith("CodeBlock.vue")) {
+      assert.equal(h.expr, "html", "代码块只允许渲染 hljs/escapeHtml 生成的 html");
+    }
+  }
+  // 转义锚点少一个，上面那份清单就只是"文件名对上了"，这里把实现也钉住。
+  assert.match(readFileSync(join(srcDir, "utils", "highlight.ts"), "utf8"), /escHtml\(part\)/);
+  assert.match(readFileSync(join(srcDir, "components", "CodeBlock.vue"), "utf8"), /escapeHtml\(props\.code\)/);
+  assert.match(readFileSync(join(srcDir, "components", "LogViewer.vue"), "utf8"), /highlightText\(l\.message/);
+
+  // 正控：往真实组件模板里注入一个未登记的 v-html，必须被读出来
+  const injected = readFileSync(join(srcDir, "components", "TitleBar.vue"), "utf8")
+    .replace("</template>", '<div v-html="content"></div></template>');
+  assert.deepEqual(findVHtmlSinks(injected).map((s) => s.expr), ["content"]);
 });
 
 test("文本气泡排版与虚拟列表高度度量一致（leading-* ↔ TEXT_LINE_RATIO / py-* ↔ TEXT_BUBBLE_PADDING）", () => {

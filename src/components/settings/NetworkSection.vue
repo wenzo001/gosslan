@@ -7,6 +7,7 @@ import { useChatStore } from "@/stores/useChatStore";
 import SettingsGroup from "@/components/settings/SettingsGroup.vue";
 import SettingsRow from "@/components/settings/SettingsRow.vue";
 import SettingsToggle from "@/components/settings/SettingsToggle.vue";
+import SettingsSelect from "@/components/ui/SettingsSelect.vue";
 import { t } from "@/i18n";
 import type {RelayConfig, RelayPolicy, RelayProbe, RoutedEndpoint} from "@/types";
 
@@ -27,8 +28,14 @@ const channels = computed(() => app.channels ?? []);
 const btStatus = computed(() => channels.value.find((c) => c.channel === "bluetooth"));
 const lanStatus = computed(() => channels.value.find((c) => c.channel === "lan"));
 const interfaceOptions = computed(() => [
-  { value: "0.0.0.0", label: "settings.network.interface.auto" },
+  { value: "0.0.0.0", label: t("settings.network.interface.auto") },
   ...app.interfaces.map((i) => ({ value: i.ip, label: `${i.name}（${i.ip}）` })),
+]);
+const relayPolicyOptions = computed(() => [
+  { value: "all", label: t("settings.relay.policy.all") },
+  { value: "friends", label: t("settings.relay.policy.friends") },
+  { value: "allowlist", label: t("settings.relay.policy.allowlist") },
+  { value: "off", label: t("settings.relay.policy.off") },
 ]);
 
 /** 当前策略的一句话说明（放在行描述里，用户不用猜 off/friends 到底转发给谁）。 */
@@ -97,6 +104,14 @@ async function toggleLan() {
     app.toastError(e, t("settings.network.toast.lanFail"));
     await loadChannels();
   }
+}
+
+function onInterfacePicked(value: string | number) {
+  const ip = String(value);
+  // 原生 select 只在值真的变了才发 change；Reka 选中当前项也会发 update，这里对齐回原语义。
+  if (ip === selectedIp.value) return;
+  selectedIp.value = ip;
+  void onInterfaceChange();
 }
 
 /** 选择网卡：未开启 → 直接以该网卡开启并扫描；已开启 → 切换到新网卡重新扫描。 */
@@ -301,15 +316,13 @@ async function removeEndpoint(address: string) {
     </SettingsRow>
 
     <SettingsRow :label="t('settings.network.interface')">
-      <span class="gosslan-select-wrap max-w-[200px]">
-        <select
-          v-model="selectedIp"
-          class="gosslan-select max-w-[200px]"
-          @change="onInterfaceChange"
-        >
-          <option v-for="o in interfaceOptions" :key="o.value" :value="o.value">{{ t(o.label) }}</option>
-        </select>
-      </span>
+      <SettingsSelect
+        :model-value="selectedIp"
+        :options="interfaceOptions"
+        :select-label="t('settings.network.interface')"
+        trigger-class="max-w-[200px]"
+        @update:model-value="onInterfacePicked"
+      />
     </SettingsRow>
 
     <SettingsRow
@@ -476,19 +489,12 @@ async function removeEndpoint(address: string) {
     <!-- 中继授权（P2 / M4）——「我愿不愿意替别人转发消息」是本机策略，不读远端自报 -->
     <SettingsGroup :title="t('settings.relay.title')" :footer="t('settings.relay.footer')">
       <SettingsRow :label="t('settings.relay.policy')" :description="policyDescription">
-        <span class="gosslan-select-wrap">
-          <select
-            :aria-label="t('settings.relay.policy')"
-            class="gosslan-select"
-            :value="app.relayPolicy"
-            @change="app.setRelayPolicy(($event.target as HTMLSelectElement).value as RelayPolicy)"
-          >
-            <option value="all">{{ t("settings.relay.policy.all") }}</option>
-            <option value="friends">{{ t("settings.relay.policy.friends") }}</option>
-            <option value="allowlist">{{ t("settings.relay.policy.allowlist") }}</option>
-            <option value="off">{{ t("settings.relay.policy.off") }}</option>
-          </select>
-        </span>
+        <SettingsSelect
+          :model-value="app.relayPolicy"
+          :options="relayPolicyOptions"
+          :select-label="t('settings.relay.policy')"
+          @update:model-value="(v) => app.setRelayPolicy(v as RelayPolicy)"
+        />
       </SettingsRow>
 
       <!-- 白名单：只在 allowlist 模式下出现，平时不占地方 -->
