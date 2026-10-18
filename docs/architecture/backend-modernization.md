@@ -216,6 +216,9 @@
 - 边界：失败收尾 `finalize_file_failure` 调 `upsert_transfer` 时传的 `size=0` 是"不知道"，
   现在先读台账已知 size 再写 —— 否则新同步逻辑会把失败单抹成 0。单测
   `a_failure_finalize_keeps_the_known_transfer_size` 先红后绿。
+- 影响面复核（逐个生产调用点现读）：除 finalize 外，其余调用传的都是实际字节数
+  （`size` / `gf.size` / `r.size` / `expected_size` / `gap.size`），没有第二个
+  "0 = 不知道"的调用点；`upsert_transfer` 的错误仍由调用方按原语义处理。
 - **实测（2026-10-19，5.0.31）**：单测先红后绿三条；Rust **989 通过 + 1 ignored**，
   基线 987→990（Windows 970→973）；`src-shrunk` **26/26 ×3**（A 气泡/A 台账/B 台账均 4096），
   默认轮 **18/18**，`recv-readonly` **24/24**（失败收尾路径）。
