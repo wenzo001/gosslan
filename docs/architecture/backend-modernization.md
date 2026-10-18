@@ -244,6 +244,42 @@
 - 未知未来版本：`current > DB_VERSION` 在**任何写入前**拒绝，已有测试 `downgrade_refusal_writes_nothing`。
 - 迁移失败：每步 `unchecked_transaction` 回滚，`user_version` 不前进；备份保留。
 
+### 4.1 真实数据库资产清单（2026-10-19 只读现读）
+- 位置（macOS）：`~/Library/Application Support/com.gosslan.app/gosslan.db`；多开实例为
+  `gosslan-<N>.db`；Windows/Linux 走 Tauri `app_data_dir()`。应用启用单实例插件，正常运行
+  只有一份库；`--instance N` 只用于开发/E2E（独立库 + 端口）。
+- 真实库读数：`user_version=11`、`integrity_check=ok`、**19 表 / 20 个显式索引**、
+  **0 触发器 / 0 视图 / 0 外键**（一致性由业务写入次序 + 迁移/级联测试守，不靠 SQLite FK）。
+  行数（只读）：messages 56、friends 3、groups 1、settings 34、file_transfers 12、
+  content_transfers 35、file_outbox/outbox 0。
+- 表：`content_transfers`、`conversation_clocks`、`conversations`、`favorites`、`file_outbox`、
+  `file_transfers`、`friends`、`group_file_recipients`、`group_files`、`group_members`、
+  `group_outbox`、`group_reads`、`group_recalled_messages`、`groups`、`messages`、`outbox`、
+  `pending_group_reads`、`pending_reads`、`settings`。
+- 索引：`idx_content_transfers_peer/status`、`idx_favorites_msg/time`、
+  `idx_file_outbox_created/peer_due`、`idx_file_transfers_created`、
+  `idx_group_file_recipients_recipient/status`、`idx_group_files_group`、
+  `idx_group_outbox_created/group/peer`、`idx_group_recalled_msg`、
+  `idx_messages_conv/conv_kind/conv_seq`、`idx_outbox_created/peer`、
+  `idx_pending_group_reads_peer`；其余主键唯一索引为 SQLite autoindex。
+- 数据分级：
+  - **不可丢失**：`settings`（设备 id/身份密钥/偏好）、`messages`、`friends`、`groups`、
+    `group_members`、`conversations`、`conversation_clocks`、`group_reads`、
+    `pending_group_reads`、`favorites`、`group_recalled_messages`、`group_files`、
+    `file_transfers`。
+  - **可重同步但身份/关联必须保留**：`outbox`、`group_outbox`、`pending_reads`、
+    `content_transfers`、`group_file_recipients`（丢了会重投，关联 id 不能重编号）。
+  - **可重建**：`cache/`（预览等派生数据）、`.window-state.json`（窗口几何）。
+  - **必须保留的用户文件**：`downloads/`（实收文件，现 72 MiB）、`favorites/media/`
+    （收藏副本）——不是缓存，清理工具不得按名字删。
+  - **无密钥/源数据则不可恢复**：身份私钥/群密钥只在本机 `settings`；丢失后历史密封内容
+    与仅存于本机的文件无法恢复；对端未保留源文件时亦不可恢复。
+- 非 DB 资产：`logs/` 与 `*-crash.log`（诊断，含 peer id/IP/文件名，需 0600）、`cache/`、
+  `downloads/`、`favorites/media/`、迁移备份 `<db>.pre-vX-to-vY.<ts>.db`。
+- 当前真实安装仍是旧权限（库 **0644**、目录 **0755**）：5.0.x 尚未在这份真实库上启动过；
+  下次启动由 B6/B11 自动收紧到 `0600/0700`。**未手工改真实库或目录**。
+- 未覆盖：真实 4.x 库实迁移（本机真实库已是 v11；副本演练只把它置回 v10）。
+
 ## 5. 边界
 
 - 不改消息编码、消息 ID、签名输入、加密格式、确认语义与 SQLite 字段含义。
