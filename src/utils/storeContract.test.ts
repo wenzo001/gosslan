@@ -790,3 +790,44 @@ test("群历史按钮的 emit 必须有调用方接住，一路到命令名", ()
     "摘掉之后必须看不见那一行 ⇒ 否则判据是恒过的",
   );
 });
+
+/**
+ * 群任务窗口的实时订阅：快速切群时 `api.onMessageReceived` 的返回顺序没有保证。
+ *
+ * 旧实现是「await 之后直接 `groupTodosUnlisten = unlisten`」——两次切群交错时，
+ * 先发起但后返回的那次会把新群的监听顶掉，自己却没有任何人持有 ⇒ 旧监听永远留在
+ * 事件总线上（每条消息多一次全表重读），而且共享的 150ms 定时器还可能被旧清理清掉。
+ * 本仓的 `StaleGuard` 已由单测覆盖语义；这里只钉**接线**：store 真的用了它，
+ * 且过期分支真的把监听摘掉、清理真的不再碰新群的定时器。
+ */
+test("群任务订阅：切群竞态必须让旧监听作废并摘除（接线判据）", () => {
+  const st = stripComments(readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8"));
+  const start = st.indexOf("async function watchGroupTodos(");
+  assert.ok(start >= 0, "找不到 watchGroupTodos：改名要同步这条守卫");
+  const end = st.indexOf("async function send(", start);
+  assert.ok(end > start, "找不到 watchGroupTodos 的结束锚点（下一个函数 send）");
+  const body = st.slice(start, end);
+
+  assert.ok(
+    body.includes('groupTodosWatchGuard.begin("groupTodos")'),
+    "订阅开始必须先拿令牌（没有令牌就挡不住交错返回）",
+  );
+  const checks = [...body.matchAll(/groupTodosWatchGuard\.isCurrent\("groupTodos", token\)/g)];
+  assert.ok(checks.length >= 3, `令牌校验应覆盖监听体/过期分支/清理三处，实际 ${checks.length}`);
+
+  const stale = body.slice(body.indexOf("if (!groupTodosWatchGuard.isCurrent"));
+  assert.ok(
+    /unlisten\(\);\s*\n\s*return \(\) => \{\};/.test(stale),
+    "过期分支必须立刻 unlisten 并返回空清理：只判断不摘 = 监听仍然漏在总线上",
+  );
+
+  const cleanup = body.slice(body.lastIndexOf("return () => {"));
+  const guardAt = cleanup.indexOf("groupTodosWatchGuard.isCurrent");
+  const clearAt = cleanup.indexOf("window.clearTimeout(groupTodosTimer)");
+  assert.ok(guardAt >= 0 && clearAt > guardAt, "清理里的 clearTimeout 必须在 isCurrent 之后（否则旧群会清掉新群的定时器）");
+
+  // 非空转对照：把过期分支整段摘掉 ⇒ 上面的 unlisten 判据必须不再成立。
+  const mutated = body.replace(/if \(!groupTodosWatchGuard\.isCurrent\("groupTodos", token\)\) \{[\s\S]*?return \(\) => \{\};\n    \}/, "");
+  assert.notEqual(mutated, body, "对照替换没生效 ⇒ 这条对照什么都没测");
+  assert.ok(!/unlisten\(\);\s*\n\s*return \(\) => \{\};/.test(mutated), "摘掉过期分支后必须看不见那条摘除 ⇒ 否则判据恒过");
+});

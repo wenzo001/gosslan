@@ -6,7 +6,9 @@
  *   ConversationList / ChatWindow / GroupTasksBoard / GroupMemberPanel /
  *   FriendProfile / MessageItem / StorageSection / ResetSection / FavoritePanel。
  *
- * 三种尺寸同 PrimaryBtn。hover 统一为 `hover:bg-[var(--gosslan-danger-hover)]`（color-mix 派生），
+ * 三种尺寸同 PrimaryBtn；`large` 按真实确认弹窗的写法校准为 `px-4 py-1.5 text-sm`
+ * （此前写成 `py-2 font-medium`，与实际 14 处手写按钮没有一个对得上）。
+ * hover 统一为 `hover:bg-[var(--gosslan-danger-hover)]`（color-mix 派生），
  * 消除了之前的自引用 `hover:bg-[var(--gosslan-danger)]`（无效）+ `opacity-90`（暗化）两种错误。
  */
 
@@ -32,7 +34,7 @@ withDefaults(
       shrink ? 'shrink-0' : '',
       size === 'dense' ? 'px-3 py-2 text-[13px]' : '',
       size === 'default' ? 'px-3 py-1.5 text-[13px]' : '',
-      size === 'large' ? 'px-4 py-2 text-sm font-medium' : '',
+      size === 'large' ? 'px-4 py-1.5 text-sm' : '',
     ]"
   >
     <slot />

@@ -40,31 +40,11 @@ import { mergeItemLine, mergeSummary, parseMergePayload } from "@/utils/mergeCar
 import { isForwardableKind, isKnownKind, kindClass, UNSUPPORTED_KIND_LABEL } from "@/utils/messageKinds";
 import { cardCopyText } from "@/utils/cardText";
 import {
-  TODO_STATUS_LABEL_KEY,
-  TODO_STATUS_PILL,
-  isTodoStatus,
-  type TodoImage,
-  type TodoStatus,
-} from "@/utils/todos";
+  TODO_STATUS_LABEL_KEY, TODO_STATUS_PILL, isTodoStatus, type TodoImage, type TodoStatus, } from "@/utils/todos";
 import TodoImageThumb from "@/components/TodoImageThumb.vue";
 import {
-  AlignLeft,
-  BarChart3,
-  Code,
-  Copy,
-  CornerUpLeft,
-  Download,
-  FolderOpen,
-  Image as ImageIcon,
-  ListTodo,
-  Loader2,
-  Megaphone,
-  MoreHorizontal,
-  ScrollText,
-  Share2,
-  Trash2,
-  X,
-} from "lucide-vue-next";
+  AlignLeft, BarChart3, Code, Copy, CornerUpLeft, Download, FolderOpen, Image as ImageIcon, ListTodo, Megaphone, MoreHorizontal, ScrollText, Share2 } from "lucide-vue-next";
+import { Loader2, Trash2, X } from "@/components/ui/icons";
 import type { FavoriteEntry, FileMeta, MsgKind } from "@/types";
 import { api } from "@/api";
 
@@ -322,8 +302,10 @@ function kindStyle(f: FavoriteEntry) {
     const accent = app.dark ? c.dark : c.light;
     return { backgroundColor: rgba(accent, 0.12), color: accent };
   }
-  const accent = app.dark ? "#a1a1aa" : "#71717a";
-  return { backgroundColor: rgba(accent, 0.12), color: accent };
+  return {
+    backgroundColor: "color-mix(in srgb, var(--gosslan-text-2) 12%, transparent)",
+    color: "var(--gosslan-text-2)",
+  };
 }
 
 function senderName(f: FavoriteEntry): string {

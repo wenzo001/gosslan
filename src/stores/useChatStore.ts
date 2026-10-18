@@ -1518,6 +1518,12 @@ export const useChatStore = defineStore("chat", () => {
 
   let groupTodosUnlisten: (() => void) | null = null;
   let groupTodosTimer: number | null = null;
+  /**
+   * 切群竞态的唯一裁决者：`api.onMessageReceived` 是异步的，两次快速切群时
+   * **先返回的那次会覆盖后返回的那次**，把新群的监听顶掉（每条消息多一次 reload，
+   * 且旧群的监听永远留在总线上）。`StaleGuard` 同时挡住"切到别的群"与"同一个群连订两次"。
+   */
+  const groupTodosWatchGuard = new StaleGuard();
 
   /**
    * 只订阅**本会话**的 `message-received`，让窗口里的任务随远端改动实时刷新
@@ -1531,23 +1537,40 @@ export const useChatStore = defineStore("chat", () => {
    */
   async function watchGroupTodos(groupId: string): Promise<() => void> {
     const convId = `group:${groupId}`;
+    const token = groupTodosWatchGuard.begin("groupTodos");
     groupTodosUnlisten?.();
+    groupTodosUnlisten = null;
+    if (groupTodosTimer !== null) {
+      window.clearTimeout(groupTodosTimer);
+      groupTodosTimer = null;
+    }
     const unlisten = await api.onMessageReceived((rec) => {
       if (rec.conv_id !== convId) return;
+      // 订阅已过期（切群了）就不再为旧群排重读；监听本身会在下面立刻摘掉。
+      if (!groupTodosWatchGuard.isCurrent("groupTodos", token)) return;
       if (groupTodosTimer !== null) window.clearTimeout(groupTodosTimer);
       groupTodosTimer = window.setTimeout(() => {
         groupTodosTimer = null;
         void reloadGroupTodoRows(groupId);
       }, 150);
     });
+    if (!groupTodosWatchGuard.isCurrent("groupTodos", token)) {
+      // 更晚的一次切换已经开始 ⇒ 本次结果整个丢弃，并立刻摘掉监听。
+      // 不摘的话它会一直留在事件总线上，而且清理函数也再没人持有。
+      unlisten();
+      return () => {};
+    }
     groupTodosUnlisten = unlisten;
     return () => {
-      if (groupTodosTimer !== null) {
-        window.clearTimeout(groupTodosTimer);
-        groupTodosTimer = null;
+      // 已被更晚的一次订阅取代时，共享的 timer 属于新群 —— 旧清理不许碰它。
+      if (groupTodosWatchGuard.isCurrent("groupTodos", token)) {
+        if (groupTodosTimer !== null) {
+          window.clearTimeout(groupTodosTimer);
+          groupTodosTimer = null;
+        }
+        groupTodosUnlisten = null;
       }
       unlisten();
-      groupTodosUnlisten = null;
     };
   }
 

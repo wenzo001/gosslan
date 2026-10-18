@@ -95,7 +95,6 @@ export default defineConfig(async () => ({
         manualChunks(id) {
           if (!id.includes("node_modules")) return undefined;
           if (id.includes("highlight.js")) return "highlight";
-          if (id.includes("vue-easy-lightbox")) return "lightbox";
           if (id.includes("lucide-vue-next")) return "icons";
           if (id.includes("@tauri-apps")) return "tauri";
           if (

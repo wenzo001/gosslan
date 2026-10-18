@@ -11,8 +11,10 @@ import { ref } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import BaseModal from "@/components/BaseModal.vue";
+import DangerBtn from "@/components/ui/DangerBtn.vue";
 import SettingsGroup from "@/components/settings/SettingsGroup.vue";
-import { RotateCcw, Trash2 } from "lucide-vue-next";
+import { RotateCcw } from "lucide-vue-next";
+import { Trash2 } from "@/components/ui/icons";
 import { t } from "@/i18n";
 
 const emit = defineEmits<{ (e: "restored"): void }>();
@@ -103,10 +105,9 @@ async function doClearAllData() {
             class="rounded-[var(--gosslan-radius-md)] px-4 py-1.5 text-sm transition hover:bg-[var(--gosslan-hover)]"
             @click="confirmRestore = false"
           >{{ t("common.cancel") }}</button>
-          <button
-            class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-1.5 text-sm text-white transition hover:bg-[var(--gosslan-danger-hover)]"
-            @click="restoreDefaults"
-          >{{ t("settings.reset.restore") }}</button>
+          <DangerBtn size="large" @click="restoreDefaults">
+            {{ t("settings.reset.restore") }}
+          </DangerBtn>
         </div>
       </div>
     </BaseModal>
@@ -134,10 +135,9 @@ async function doClearAllData() {
             class="rounded-[var(--gosslan-radius-md)] px-4 py-1.5 text-sm transition hover:bg-[var(--gosslan-hover)]"
             @click="clearConfirmOpen = false"
           >{{ t("common.cancel") }}</button>
-          <button
-            class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-1.5 text-sm text-white transition hover:bg-[var(--gosslan-danger-hover)]"
-            @click="doClearAllData"
-          >{{ t("common.clear") }}</button>
+          <DangerBtn size="large" @click="doClearAllData">
+            {{ t("common.clear") }}
+          </DangerBtn>
         </div>
       </div>
     </BaseModal>

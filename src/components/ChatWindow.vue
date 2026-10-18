@@ -31,7 +31,8 @@ import { foldTodos, todoLiveMap, type TodoLive } from "@/utils/todos";
 import { isRenderedInTimeline } from "@/utils/messageKinds";
 import { activePopupKey } from "@/utils/popupRegistry";
 import { previewText } from "@/utils/messages";
-import { ArrowDown, Bluetooth, Layers, X, Pin, Megaphone, Trash2, Share2, Star, ShieldAlert, KeyRound, Loader2 } from "lucide-vue-next";
+import { ArrowDown, Bluetooth, Layers, Pin, Megaphone, Share2, Star, ShieldAlert, KeyRound } from "lucide-vue-next";
+import { Loader2, Trash2, X } from "@/components/ui/icons";
 import {
   isAnnounceDismissed,
   readAnnounceSeen,

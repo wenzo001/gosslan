@@ -14,29 +14,10 @@ import TodoImageThumb from "@/components/TodoImageThumb.vue";
 import TodoPickField from "@/components/TodoPickField.vue";
 import TodoIconPicker from "@/components/TodoIconPicker.vue";
 import {
-  TODO_CATEGORIES,
-  TODO_CATEGORY_LABEL_KEY,
-  TODO_CATEGORY_PILL,
-  TODO_CUSTOM_CATEGORY_MAX_LEN,
-  TODO_PRIORITIES,
-  TODO_PRIORITY_LABEL_KEY,
-  TODO_PRIORITY_PILL,
-  TODO_STATUSES,
-  TODO_STATUS_LABEL_KEY,
-  TODO_STATUS_PILL,
-  isTodoTerminalStatus,
-  todoCode,
-  type TodoHistoryChange,
-  type TodoHistoryEntry,
-  type TodoCategory,
-  type TodoItem,
-  type TodoPriority,
-  type TodoStatus,
-  TODO_CUSTOM_ICON_DEFAULT,
-  type TodoCustomIcon,
-} from "@/utils/todos";
+  TODO_CATEGORIES, TODO_CATEGORY_LABEL_KEY, TODO_CATEGORY_PILL, TODO_CUSTOM_CATEGORY_MAX_LEN, TODO_PRIORITIES, TODO_PRIORITY_LABEL_KEY, TODO_PRIORITY_PILL, TODO_STATUSES, TODO_STATUS_LABEL_KEY, TODO_STATUS_PILL, isTodoTerminalStatus, todoCode, type TodoHistoryChange, type TodoHistoryEntry, type TodoCategory, type TodoItem, type TodoPriority, type TodoStatus, TODO_CUSTOM_ICON_DEFAULT, type TodoCustomIcon, } from "@/utils/todos";
 import { fmtConversationTime } from "@/utils/time";
-import { Archive, Check, Pencil, RotateCcw, Tag, Trash2, UserPlus } from "lucide-vue-next";
+import { Archive, Pencil, Tag, UserPlus } from "lucide-vue-next";
+import { Check, RotateCcw, Trash2 } from "@/components/ui/icons";
 import { t } from "@/i18n";
 
 const props = defineProps<{
@@ -309,7 +290,7 @@ const fullCode = computed(() =>
         <span class="text-xs text-[var(--gosslan-text-2)]">{{ t("todo.claimHint") }}</span>
         <button
           type="button"
-          class="tap-safe inline-flex h-7 items-center gap-1 rounded-md border border-[var(--gosslan-primary)] px-2.5 text-[12px] text-[var(--gosslan-accent-ink)] transition hover:opacity-80"
+          class="tap-safe inline-flex h-7 items-center gap-1 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-primary)] px-2.5 text-[12px] text-[var(--gosslan-accent-ink)] transition hover:opacity-80"
           :aria-label="t('todo.claim')"
           @click="emit('claim')"
         >

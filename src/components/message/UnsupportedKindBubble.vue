@@ -38,7 +38,7 @@ const expanded = ref(false);
       <pre
         class="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap break-all rounded-[var(--gosslan-radius-sm)] bg-[var(--gosslan-hover)] p-2 font-mono text-[11px]"
       >{{ content }}</pre>
-      <div class="mt-1 font-mono text-[10px] opacity-60">type: {{ kind }}</div>
+      <div class="mt-1 font-mono text-[11px] opacity-60">type: {{ kind }}</div>
     </template>
   </div>
 </template>

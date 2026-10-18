@@ -692,13 +692,6 @@ progress {
   transition: none !important;
 }
 
-/* 图片预览遮罩：也是弹框，用半透明黑 + 轻毛玻璃 */
-.vel-modal {
-  background: rgba(0, 0, 0, 0.45) !important;
-  -webkit-backdrop-filter: saturate(130%) blur(6px) !important;
-  backdrop-filter: saturate(130%) blur(6px) !important;
-}
-
 .elevated {
   box-shadow: var(--gosslan-shadow);
 }
@@ -1061,12 +1054,6 @@ html:not(.is-mobile) {
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
     background: rgba(0, 0, 0, 0.62);
-  }
-  /* 图片预览遮罩同理（vue-easy-lightbox 自带类名） */
-  .vel-modal {
-    -webkit-backdrop-filter: none !important;
-    backdrop-filter: none !important;
-    background: rgba(0, 0, 0, 0.78) !important;
   }
 }
 

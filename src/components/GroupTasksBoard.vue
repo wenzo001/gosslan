@@ -33,47 +33,15 @@ import TodoImageThumb from "@/components/TodoImageThumb.vue";
 import TodoPickField from "@/components/TodoPickField.vue";
 import TodoIconPicker from "@/components/TodoIconPicker.vue";
 import {
-  TODO_CATEGORIES,
-  TODO_CATEGORY_LABEL_KEY,
-  TODO_CATEGORY_ICON_CLASS,
-  TODO_CATEGORY_PILL,
-  TODO_CUSTOM_CATEGORY_MAX_LEN,
-  TODO_PRIORITIES,
-  TODO_PRIORITY_LABEL_KEY,
-  TODO_PRIORITY_ICON_CLASS,
-  TODO_PRIORITY_PILL,
-  TODO_STATUSES,
-  TODO_STATUS_BAR,
-  TODO_STATUS_CLASS,
-  TODO_STATUS_DEFAULT,
-  TODO_STATUS_LABEL_KEY,
-  TODO_STATUS_PILL,
-  buildTodoHistory,
-  canArchiveOrReopenTodo,
-  canEditAssignees,
-  canUpdateTodo,
-  foldTodos,
-  isEffectivelyArchived,
-  isTodoTerminalStatus,
-  parseTodo,
-  todoCategoryName,
-  todoCode,
-  type TodoHistoryEntry,
-  type TodoImage,
-  type TodoItem,
-  type TodoCategory,
-  type TodoPriority,
-  type TodoStatus,
-  TODO_CUSTOM_ICON_DEFAULT,
-  type TodoCustomIcon,
-} from "@/utils/todos";
+  TODO_CATEGORIES, TODO_CATEGORY_LABEL_KEY, TODO_CATEGORY_ICON_CLASS, TODO_CATEGORY_PILL, TODO_CUSTOM_CATEGORY_MAX_LEN, TODO_PRIORITIES, TODO_PRIORITY_LABEL_KEY, TODO_PRIORITY_ICON_CLASS, TODO_PRIORITY_PILL, TODO_STATUSES, TODO_STATUS_BAR, TODO_STATUS_CLASS, TODO_STATUS_DEFAULT, TODO_STATUS_LABEL_KEY, TODO_STATUS_PILL, buildTodoHistory, canArchiveOrReopenTodo, canEditAssignees, canUpdateTodo, foldTodos, isEffectivelyArchived, isTodoTerminalStatus, parseTodo, todoCategoryName, todoCode, type TodoHistoryEntry, type TodoImage, type TodoItem, type TodoCategory, type TodoPriority, type TodoStatus, TODO_CUSTOM_ICON_DEFAULT, type TodoCustomIcon, } from "@/utils/todos";
 import { TODO_CUSTOM_ICON_COMPONENTS } from "@/utils/todoCustomIcons";
 import { api } from "@/api";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
 import { popupLeft, popupPlacement, popupWidth } from "@/utils/popupPosition";
 import { MAX_TODO_IMAGE_BYTES, TODO_IMAGE_LIMIT_MB } from "@/utils/imageBytes";
 import { t } from "@/i18n";
-import { Archive, Bug, Check, CheckCircle2, ChevronDown, ChevronsDown, Circle, CircleDot, Clock, ImagePlus, Lightbulb, ListTodo, Loader2, Minus, Plus, RotateCcw, Tag, X, XCircle, Zap } from "lucide-vue-next";
+import { Archive, Bug, CheckCircle2, ChevronDown, ChevronsDown, Circle, CircleDot, Clock, ImagePlus, Lightbulb, ListTodo, Minus, Plus, Tag, XCircle, Zap } from "lucide-vue-next";
+import { Check, Loader2, RotateCcw, X } from "@/components/ui/icons";
 
 const props = defineProps<{
   groupId: string | null;

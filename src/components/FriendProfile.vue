@@ -24,6 +24,7 @@ import { useClipboard } from "@/composables/useClipboard";
 import { Copy, MessageCircle, UserMinus } from "lucide-vue-next";
 import BaseModal from "@/components/BaseModal.vue";
 import BackArrow from "@/components/ui/BackArrow.vue";
+import DangerBtn from "@/components/ui/DangerBtn.vue";
 import { avatarSeedFor } from "@/utils/avatarSeed";
 import type { Friend } from "@/types";
 
@@ -289,10 +290,9 @@ const confirmRemove = ref(false);
             class="rounded-[var(--gosslan-radius-md)] px-4 py-1.5 text-sm transition hover:bg-[var(--gosslan-hover)]"
             @click="confirmRemove = false"
           >{{ t("common.cancel") }}</button>
-          <button
-            class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] px-4 py-1.5 text-sm text-white transition hover:bg-[var(--gosslan-danger-hover)]"
-            @click="confirmRemove = false; emit('remove', friend)"
-          >{{ t("common.delete") }}</button>
+          <DangerBtn size="large" @click="confirmRemove = false; emit('remove', friend)">
+            {{ t("common.delete") }}
+          </DangerBtn>
         </div>
       </div>
     </BaseModal>
