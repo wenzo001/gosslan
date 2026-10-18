@@ -25,10 +25,13 @@
   直接发送没有队列行时 no-op；删除失败照旧留痕）。`flush_pending_files` 原有调用点保留。
 - 加强源码守卫：成功收尾函数必须包含 `drop_sent_outbox_row(`；Rust **985 通过 + 1 ignored**。
   E2E `sender-kill-mid` 复跑见该轮读数；E2E/真机其余项仍按 NOT RUN 标注。
-- E2E 扩展（隔离 HOME，release 5.0.29）：**12 轮 / 327 断言全绿** —— default、
+- E2E 扩展（隔离 HOME，release 5.0.29）：**14 轮 / 375 断言全绿** —— default、
   contentpull 40MB/300MB、kill-mid、peer-freeze、multi-file、gossip3、sender-kill、
-  recv-readonly、group、gfile、ghsync；group 用 AX 读到 `[有人@我]`/6 未读。
-  `gfile` 首跑为 `cargo build --example e2e_peer` 的 toolchain 环境噪声，复跑绿。
+  recv-readonly、group、gfile、ghsync、recv-dir-rotted、src-shrunk；
+  group 用 AX 读到 `[有人@我]`/6 未读。`gfile` 首跑为
+  `cargo build --example e2e_peer` 的 toolchain 环境噪声，复跑绿。
+- `src-shrunk` 已知展示差异：A 入队台账/气泡仍记 1048576，B 台账/盘上 4096；
+  内容、sha、两侧终态均正确，属 UI 尺寸展示口径，不影响数据完整性。
 
 ## [5.0.28] - 2026-10-19
 
