@@ -19,7 +19,7 @@ import FriendContextMenu from "@/components/conversation/FriendContextMenu.vue";
 import ConversationContextMenu from "@/components/conversation/ConversationContextMenu.vue";
 import ConfirmDialog from "@/components/ui/ConfirmDialog.vue";
 import UnreadBadge from "@/components/UnreadBadge.vue";
-import { APP_ACTION } from "@/api";
+import { APP_ACTION, onAction } from "@/api";
 import { groupByInitial } from "@/utils/nameGroup";
 import { isSelfConversation } from "@/utils/selfChat";
 import { Plus, Search, UserPlus, UsersRound } from "lucide-vue-next";
@@ -162,8 +162,14 @@ function onSearchEnter(e: KeyboardEvent) {
   if (kw) emit("search-history", kw);
 }
 
-onMounted(() => window.addEventListener(APP_ACTION.focusSearch, focusSearch));
-onUnmounted(() => window.removeEventListener(APP_ACTION.focusSearch, focusSearch));
+let disposeFocusSearch: (() => void) | null = null;
+onMounted(() => {
+  disposeFocusSearch = onAction(APP_ACTION.focusSearch, focusSearch);
+});
+onUnmounted(() => {
+  disposeFocusSearch?.();
+  disposeFocusSearch = null;
+});
 
 /** 对端在线状态：群聊返回 null（无在线概念）；单聊查好友表。 */
 function isOnline(id: string): boolean | null {

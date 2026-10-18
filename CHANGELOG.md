@@ -13,6 +13,170 @@
 
 ## [Unreleased]
 
+## [5.0.21] - 2026-10-19
+
+### 修复：开发环境日志窗口白屏（虚拟列表 TDZ + 滚动容器漏 ref）
+
+- 根因 1（dev-only）：`LogViewer` 的 `useVirtualizer` options 是 computed，Vue dev 构建会在
+  setup 期间立即求值 `count: mergedRows.value.length`，而 `mergedRows` 声明在后面 ⇒
+  `Cannot access 'mergedRows' before initialization`（TDZ），LogViewer 子树退化成注释节点；
+  生产构建晚一步求值，所以只在开发环境白屏。把 `rows` / `mergedRows` 移到 `useVirtualizer` 之前。
+- 根因 2（dev+prod）：独立窗分支的滚动容器漏了 `ref="logScroll"`（只有移动端分支有）⇒
+  virtualizer 拿不到滚动元素，工具栏显示"N 条"而列表区永远为空。补上 ref。
+- 回归：`logViewerVirtual.test.ts` 新增声明顺序与两个 `logScroll` 的源码判据；UI 探针新增
+  `--only=logs` **3 条**（standalone 有虚拟行 / 只渲染视口附近 / 滚到底换页）。单点变异摘掉
+  standalone 的 ref ⇒ **0/3 红**，恢复 **3/3**；全量探针 **341/341**；`npm test` **1060/1060**。
+- 真实 Tauri dev 验证：日志窗口 136 → 226 条实时增长、列表可滚到底、关闭后从左侧栏
+  「… → 日志」重开正常。
+
+## [5.0.20] - 2026-10-19
+
+### 重构：自研 i18n 引擎迁 vue-i18n
+
+- 新增 `vue-i18n@11.4.16`（MIT，peer Vue 3）：`i18n/index.ts` 的 150 行手写「字典 + `{name}` 插值」
+  引擎改走 vue-i18n composition 模式；本模块只保留产品级策略（偏好三态、系统语言检测、
+  localStorage 快路径、`document.lang`）。`t()` 的调用点零改动。
+- 迁移前对 **1003×2 条消息逐字对账**：998 条完全一致；5 条字面 `@` 触发 vue-i18n 的链接语法，
+  词典改写为 `{'@'}`；`t()` 对缺失参数保留 `{name}` 占位（与旧实现及既有判据一致）。
+- 新增 `i18n/compile.test.ts`：两种语言全部消息逐一编译 + 字面 `@` 文本断言；
+  `i18n/index.test.ts` 17 条继续通过。`npm test` 1059/1059；全量 UI 探针 338/338。
+- 体积代价：vendor 266.48 → 323.99 kB（gzip 80.78 → 99.62，**+18.84 gzip**）；main 不变。
+  主要成本是 vue-i18n 的消息编译器；若后续要省回，可接 `@intlify/unplugin-vue-i18n` 预编译消息。
+
+## [5.0.19] - 2026-10-19
+
+### 重构：同窗口事件总线迁 mitt + v-html 安全清单
+
+- 新增 `mitt@3.0.1`（MIT，自带类型）：`utils/appActions.ts` 从 `window.dispatchEvent(new Event(...))`
+  改为类型安全的事件表 `appBus`；`APP_ACTION` 四处 + `navigate-to-contacts` 全部走 `emitAction`，
+  订阅端改用 `onAction` 返回的解绑函数（组件卸载必须调用，避免重建后一次动作执行多遍）。
+  Tauri 菜单事件仍由 `bindMenuEvents` 转成同一批动作，跨窗口/Rust 继续走 `@tauri-apps/api/event`。
+- 新增 v-html 允许清单判据 `findVHtmlSinks` / `V_HTML_ALLOWED`：全仓只允许
+  `ChatSearchDialog`（highlightText）、`LogViewer`（highlightText 生成的 row.*）、`CodeBlock`
+  （hljs/escapeHtml）三处；测试同时钉住转义实现锚点与真实组件正控。审计确认 4 处 v-html
+  全部按构造转义，未引入 DOMPurify（没有"渲染对端原文 HTML"的路径）。
+- `shortcuts.matchAppShortcut` 返回类型收紧为 `AppAction | null`；`appActions.test.ts` 2 条钉
+  投递/不串线/解绑；`npm test` 1058/1058；build main 308.65 / gzip 93.33、vendor 266.48 / gzip 80.78。
+
+## [5.0.18] - 2026-10-18
+
+### 加固：搜索结果的 IPC 返回纳入 Zod 校验
+
+- `utils/validation.ts` 新增 `chatSearchGroupSchema` / `chatSearchMessageSchema`：会话分组 +
+  嵌套命中消息逐字段校验；`kind` 刻意收任意字符串（对端可能比本机新，未知 kind 由
+  `UnsupportedKindBubble` 渲染占位 —— 校验层不许把它判成坏行）。
+- `api.searchChatHistory` 从 `invoke<ChatSearchGroup[]>` 编译期断言改为 `invoke<unknown>` +
+  `parseIpcList(..., "search_chat_history")`；坏行抛错并带 `@ 0.messages.0.ts` 这类字段路径，
+  查询进入既有错误态。
+- `validation.test.ts` 新增 1 条（合法嵌套 / 未知 kind 放行 / 负 total / 缺字段 / 嵌套路径报错）；
+  接线判据从三个入口扩到四个。`npm test` 1055/1055；`--only=search` 16/16 复跑。
+
+## [5.0.17] - 2026-10-18
+
+### 重构：搜索聊天记录迁 TanStack Query
+
+- `ChatSearchDialog` 删掉手写的 `seq` 竞态守卫、`searching` / `searchError` 状态、150ms 防抖
+  与两个筛选 watcher，改 `useQuery`：关键词 / 发送人 / 日期三件都进 query key，
+  旧响应只会写回它自己的键；`enabled` 跟弹窗开关与空关键词，关着时不打 IPC。
+- 新增 `utils/chatSearchQuery.ts`：`retry 0`（失败立刻给重试出口）、`refetchOnWindowFocus/Reconnect`
+  关闭（本地 SQL 检索，不是远端缓存）、`keepPreviousData`（换筛选时旧结果继续显示）；
+  发送人候选只从"当前键 + 非占位数据 + 无发送人筛选"的结果里汇总，避免把筛选后的结果
+  误记成候选来源。
+- 新增 `utils/chatSearchQuery.test.ts` 5 条：三键隔离、staleTime 0 重扫、并发合并、
+  失败只尝试一次、占位数据可识别。
+- UI 探针 `--only=search` 新增 1 条（共 16 条）：给 `searchChatHistory` 装上"慢/快"两档延迟，
+  确认「慢」的响应晚到后页面仍是「快」的结果。单点变异（把关键词从 query key 里摘掉）
+  实测 3 条红（含这条），恢复后 16/16。
+- 行为保持：打开弹窗只发一次检索、输入 150ms 防抖、回车（已出结果 ⇒ 打开高亮项；未出 ⇒
+  立刻重搜）、清空关键词保留筛选、失败空屏给错误 + 重试。
+
+## [5.0.16] - 2026-10-18
+
+### 重构：原生下拉全部迁 Reka Select
+
+- 新增 `components/ui/SettingsSelect.vue`（Reka `SelectRoot/Trigger/Content/Item` 的薄适配）：
+  触发器是 `button[role=combobox]`，面板吃 `.gosslan-menu`；当前项、勾选指示、键盘导航与焦点归还
+  由库负责；不传 `name` ⇒ 不渲染隐藏的原生 `<select>`。
+- 四处真实调用点（外观字体、网络网卡、网络中继策略、存储保留天数与配额）全部替换；
+  `style.css` 删除已无消费者的 `.gosslan-select-wrap` / `.gosslan-select` / `.gosslan-select:focus`。
+- 新增设计判据 `findNativeSelect`：扫描全仓 `.vue` 模板，模板里再出现原生 `<select>` 即失败；
+  正控是往真实组件模板里注入一个 `<select>`（证明扫描器读的是模板，而不是一句假字符串）。
+- 顺手修掉一条真实缺陷：`ToastList` 的全局 Esc 守卫经 Reka `ToastRoot` 的 **window** 监听对任何
+  Escape 调 `preventDefault`，于是屏幕上有 toast 时 Dialog / Menu / Select 的 Esc 全部失效
+  （探针栈实测 `ToastList.vue` 的 `onEscapeKeyDown`）。改回库默认语义：Esc 关闭 toast。
+- UI 探针新增 `--only=select` 6 条：键盘 ↓ 打开、焦点落当前项、↓ 换项、Enter 选中且只抬一个新值、
+  Esc 收起并归还焦点、鼠标真点开真命中（不是合成 click）。
+- `npm test` 1049 通过 / 0 失败；`npm run build` 退出 0（main 308.24 kB / gzip 93.12；
+  vendor 266.14 kB / gzip 80.65）。
+
+## [5.0.15] - 2026-10-18
+
+### 重构：应用内 Toast 迁 Reka Toast
+
+- `useAppStore` 里手写的 `toasts` 数组 + 每条 `setTimeout` 删除；`toast()` 改经
+  `utils/toastManager.ts` 调 Reka `createToastManager`，渲染由 `ToastProvider/Viewport/Root` 接管。
+- 行为补齐：同一 kind + 文案按 id 去重并重置计时（连续失败不再叠一屏）；`limit=3`
+  （超出条目 `data-limited` + `inert` 且隐藏）；停留时长仍是 success/info 3s、error 6s。
+- 保留 Gosslan 的配色/图标/顶部安全区定位与 Tauri 系统通知通道；Esc 只在焦点位于某条 toast
+  时放行，避免关弹窗/菜单时顺手抹掉失败提示。
+- 新增 `--only=toast` 7 条；两次单点变异：摘 `limit` ⇒ 3 红、摘 Esc 守卫 ⇒ 2 红；还原后 7/7。
+- `npm test` 1048 通过 / 0 失败；`npm run build` 退出 0（main 308.24 kB / gzip 93.12；
+  vendor 240.72 kB / gzip 74.33 —— Reka Toast 原语进 vendor）。
+
+## [5.0.14] - 2026-10-18
+
+### 重构：图片预览的焦点语义交给 Reka FocusScope
+
+- `ImageLightbox.vue` 删除手写的「打开时 focus 容器 / 关闭时手动还焦点」；Tab 环、焦点逃逸
+  拉回、卸载归还改由 Reka `FocusScope`（`loop` + `trapped`）承担，业务手势 / 方向键 / Esc 出口不变。
+- 顺带修掉一处真实缺陷：旧实现只把焦点移进容器，**Tab 会直接跑到背景页面**，并不是焦点陷阱。
+- 新增 UI 探针 `--only=lightbox` 7 条：dialog 语义、Tab 进内容、正向/反向环、程序化逃逸拉回、
+  ArrowRight 业务键、Esc 后 DOM 撤净且焦点回到 opener。两次单点变异证明判据会咬（摘 `loop`
+  ⇒ 2 条红；摘 `trapped` ⇒ 1 条红；还原后 7/7）。
+- `npm test` 1048 通过 / 0 失败；`npm run build` 退出 0（main 308.24 kB / gzip 93.12）。
+
+## [5.0.13] - 2026-10-18
+
+### 重构：日期/时间格式化收敛到 dayjs 单一入口
+
+- `utils/time.ts` 新增 `fmtDateTime`（`YYYY-MM-DD HH:mm:ss`）、`fmtClock`（`HH:mm:ss`）与
+  `fmtDateStamp`（导出文件名）；`LogViewer`、`DevDiagPanel`、`StorageSection` 三处手写实现删除。
+- 诊断面板不再用 `toLocaleTimeString()`：它随 WebView 区域设置变化（12/24 小时、分隔符），
+  同一份日志在 Windows/macOS/Android/iOS 上会长得不一样。
+- 新增 `src/utils/time.test.ts` 2 条：固定形状（本地时区构造）与「三个消费点必须走统一入口」。
+- `npm test` 1048 通过 / 0 失败；`npm run build` 退出 0（main 308.24 kB / gzip 93.12）。
+
+## [5.0.12] - 2026-10-18
+
+### 重构：表单与 IPC 边界运行时校验迁 Zod（mini 构建）
+
+- 新增 `zod@4.6.7`（MIT），使用 `zod/mini` 摇树构建：同样的 schema 能力，打包增量
+  vendor +6.85 kB gzip（完整版实测 +25.56 kB gzip，故不采用）。
+- 新增 `utils/validation.ts`：群名/昵称 schema（trim 后非空、长度按 Unicode 码点，与后端
+  `chars().count()` 同口径）、`GroupFileEntry` / `ShareEntry` 的 IPC 形状 schema，以及
+  `parseIpcList()`（坏行抛出带命令名与字段路径的错误，让查询进入可读的 error 态）。
+- `GroupCreateModal` / `ProfileSection` 改用 schema；`externalLinks` 的名称/网址校验改由同一个
+  Zod 对象 schema 产出错误码，原表驱动用例不变。
+- `api.listGroupFiles` / `api.requestShareTree` 从 `invoke<T>` 断言改为**真校验**：
+  Rust 改字段而前端手写类型没跟上时，不再把坏数据塞进界面。
+- 新增 `src/utils/validation.test.ts` 5 条（码点口径、IPC 行合法性、坏行报错、三个入口接线）。
+- `npm test` 1046 通过 / 0 失败；`npm run build` 退出 0（main 308.24 kB / gzip 93.12，
+  vendor 221.86 kB / gzip 68.32）。
+
+## [5.0.11] - 2026-10-18
+
+### 重构：共享目录迁 TanStack Query（Query 模式推广到第二个纯读面板）
+
+- 抽出 `utils/panelQuery.ts`：按主体 id 分键的只读面板共用 `staleTime 0 / retry 1 / gcTime 5min`
+  与失效半径；群文件面板改为复用同一策略，不再各写一份。
+- `ShareDirectory.vue` 去掉手写的 `entries/loading/error`、`StaleGuard` 与两个 watch，
+  改为按好友分键的 `useQuery`：切会话时旧树只会写回旧好友的 key；打开仍重拉；失败保留旧树。
+- 树的归属随数据一起缓存（`snapshot.friendId`）：下载时不再读「点击那一刻的 activeConv」，
+  切会话竞态在结构上无法把 A 的路径发给 B。
+- 新增 `src/utils/shareTreeQuery.test.ts` 2 条（分键 + 快照归属、慢 A 后到不覆盖 B）；
+  新增 `--only=share` 6 条真渲染判据（打开、切好友、慢响应后到、下载归属、切回缓存快照）。
+- `npm test` 1041 通过 / 0 失败；`npm run build` 退出 0（main 308.01 kB / gzip 92.99）。
+
 ## [5.0.10] - 2026-10-18
 
 ### 重构：异步数据层试点 TanStack Query（群文件面板）

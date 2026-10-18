@@ -4,6 +4,7 @@ import { useAppStore, type AppearanceMode } from "@/stores/useAppStore";
 import SettingsGroup from "@/components/settings/SettingsGroup.vue";
 import SettingsRow from "@/components/settings/SettingsRow.vue";
 import SegmentedControl from "@/components/ui/SegmentedControl.vue";
+import SettingsSelect from "@/components/ui/SettingsSelect.vue";
 import { t } from "@/i18n";
 
 const app = useAppStore();
@@ -31,6 +32,7 @@ const appearanceOptions = computed(() => [
   { value: "light", label: t("settings.appearance.light") },
   { value: "dark", label: t("settings.appearance.dark") },
 ]);
+const fontOptions = computed(() => fonts.map((f) => ({ value: f.value, label: t(f.label) })));
 </script>
 
 <template>
@@ -79,17 +81,13 @@ const appearanceOptions = computed(() => [
     </SettingsRow>
 
     <SettingsRow :label="t('settings.appearance.font')" last>
-      <!-- 外壳 + `.gosslan-select`：跨平台高度与箭头一致（见 style.css 说明） -->
-      <span class="gosslan-select-wrap max-w-[180px]">
-        <select
-          :aria-label="t('settings.appearance.font.aria')"
-          class="gosslan-select max-w-[180px]"
-          :value="app.fontFamily"
-          @change="(e) => app.setFontFamily((e.target as HTMLSelectElement).value)"
-        >
-          <option v-for="f in fonts" :key="f.value" :value="f.value">{{ t(f.label) }}</option>
-        </select>
-      </span>
+      <SettingsSelect
+        :model-value="app.fontFamily"
+        :options="fontOptions"
+        :select-label="t('settings.appearance.font.aria')"
+        trigger-class="max-w-[180px]"
+        @update:model-value="(v) => app.setFontFamily(String(v))"
+      />
     </SettingsRow>
   </SettingsGroup>
 </template>

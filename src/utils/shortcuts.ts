@@ -1,4 +1,4 @@
-import { APP_ACTION } from "./appActions.ts";
+import { APP_ACTION, type AppAction } from "./appActions.ts";
 
 /**
  * 应用级快捷键判定（纯函数，便于单测）。
@@ -20,7 +20,7 @@ export interface ShortcutInput {
 }
 
 /** 命中则返回应用级动作名，否则返回 null（不处理该按键）。 */
-export function matchAppShortcut(input: ShortcutInput): string | null {
+export function matchAppShortcut(input: ShortcutInput): AppAction | null {
   if (input.isComposing) return null;
   if (!input.mod || input.alt || input.shift) return null;
   const key = input.key.toLowerCase();

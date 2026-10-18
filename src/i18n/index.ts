@@ -1,18 +1,21 @@
 /**
- * 轻量 i18n 机制：字典 + 响应式 locale + t()。
+ * 多语言：**vue-i18n（composition 模式）**负责消息编译、命名插值、缺失回退与响应式 locale；
+ * 本模块只保留产品级策略：语言偏好三态、系统语言检测、localStorage 快路径、document.lang。
  *
- * 为什么自写而非引入 vue-i18n：本项目文案量有限、无复数/日期等复杂需求，
- * 自写一个「字典 + 插值 t()」足够，避免新增依赖与 bundle 体积。
+ * 为什么换掉自研引擎（2026-10-19 全仓指令）：旧实现是 150 行手写「字典 + `{name}` 替换」，
+ * 属于通用基础设施；消息编译/回退/响应式本来就应该由成熟库承担。迁移前用 1003×2 条消息
+ * 做了逐字对账：998 条完全一致，5 条字面 `@` 触发 vue-i18n 的链接语法，已在词典里写成
+ * `{'@'}`；其余差异只有「缺参时占位符是否保留」（见下方 `t` 的 Proxy）。
  *
  * 语言偏好三态（LanguagePreference）：
  *   - "system"：跟随系统语言（默认）。系统 zh* → 中文，其余（含 en* 与非中英）→ 英文。
  *   - "zh-CN" / "en-US"：显式指定，覆盖系统语言。
  *
- * 响应式：`t()` 内部读取 `dict`（computed，依赖 preference / systemLocale 两个 ref）。
- * 组件在模板里调用 `t()` 会建立依赖，切换语言时自动重渲染；事件处理器里的 toast 等
- * 一次性文案取「当前时刻」的语言，无需响应式。
+ * 响应式：`t()` 读 vue-i18n 的 locale ref，组件在模板里调用会随切换重渲染；
+ * 事件处理器里的 toast 等一次性文案取「当前时刻」的语言，无需响应式。
  */
 import { computed, ref } from "vue";
+import { createI18n } from "vue-i18n";
 import { zhCN, enUS, type MessageDict } from "./locales.ts";
 
 export type Locale = "zh-CN" | "en-US";
@@ -86,28 +89,52 @@ const systemLocale = ref<Locale>(detectSystemLocale());
 const locale = computed<Locale>(() =>
   preference.value === "system" ? systemLocale.value : preference.value,
 );
-const dict = computed(() => MESSAGES[locale.value]);
 
-/** 翻译：t('key') 或 t('key', { name: '张三' }) → 替换 {name} 占位。 */
+const i18n = createI18n({
+  legacy: false,
+  locale: locale.value,
+  fallbackLocale: "en-US",
+  messages: MESSAGES,
+  missingWarn: false,
+  fallbackWarn: false,
+  warnHtmlMessage: false,
+});
+
+/**
+ * 翻译：`t('key')` 或 `t('key', { name: '张三' })`。
+ *
+ * vue-i18n 默认把**缺失的命名值**替换成空串（"聊天， 条未读"），会把调用点漏参的 bug
+ * 藏起来；旧实现与 `i18n/index.test.ts` 的契约是**保留 `{name}`**。这里先从当前语言的
+ * 消息里取出占位符名，缺的补成 `{name}` 再交给 vue-i18n 编译/插值 —— 消息语法与回退仍归库。
+ * （只读 Proxy 不行：vue-i18n 会先归一化 values，`get` 陷阱拦不住它的存在性判断。）
+ */
 export function t(key: string, params?: Record<string, string | number>): string {
-  const template = dict.value[key] ?? key;
-  if (!params) return template;
-  return template.replace(/\{(\w+)\}/g, (_, k: string) => {
-    const v = params[k];
-    return v == null ? `{${k}}` : String(v);
-  });
+  const template = MESSAGES[locale.value][key] ?? MESSAGES["en-US"][key];
+  if (!template) return key;
+  const values: Record<string, string | number> = {};
+  for (const m of template.matchAll(/\{(\w+)\}/g)) {
+    const name = m[1];
+    values[name] = params?.[name] ?? `{${name}}`;
+  }
+  return i18n.global.t(key, values);
 }
 
 function syncDocumentLang() {
   if (typeof document !== "undefined") document.documentElement.lang = locale.value;
 }
 
+/** 把解析后的 locale 同步给 vue-i18n；必须**同步**调用（事件处理器里的 t() 不等人）。 */
+function syncI18nLocale() {
+  i18n.global.locale.value = locale.value;
+}
+
 /**
- * 应用语言偏好并落地（localStorage 快路径 + document.lang）。
+ * 应用语言偏好并落地（localStorage 快路径 + vue-i18n + document.lang）。
  * 后端持久化（settings.language）由 store 负责。
  */
 export function applyPreference(p: LanguagePreference) {
   preference.value = p;
+  syncI18nLocale();
   try {
     localStorage.setItem(STORAGE_KEY, p);
   } catch {
@@ -119,6 +146,7 @@ export function applyPreference(p: LanguagePreference) {
 /** 重新检测系统语言（languagechange 监听与测试共用）。 */
 export function refreshSystemLocale() {
   systemLocale.value = detectSystemLocale();
+  syncI18nLocale();
   syncDocumentLang();
 }
 
@@ -127,8 +155,9 @@ if (typeof window !== "undefined" && "onlanguagechange" in window) {
   window.addEventListener("languagechange", refreshSystemLocale);
 }
 
-// 模块加载即同步一次 document.lang：覆盖 index.html 的静态 `lang="zh-CN"`，
-// 让首帧（store init 读后端之前的这段时间）的无障碍/字体/拼写语言就是正确的。
+// 模块加载即同步一次：vue-i18n 的 locale 与 document.lang 都跟上首帧，
+// 覆盖 index.html 的静态 `lang="zh-CN"`，让 store init 之前的时间窗口也正确。
+syncI18nLocale();
 syncDocumentLang();
 
 /** 判断一个值是否为合法 locale（后端脏值校验用）。 */

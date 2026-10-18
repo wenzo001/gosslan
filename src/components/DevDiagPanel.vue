@@ -20,6 +20,7 @@ import { Bluetooth, RefreshCw, Wifi } from "lucide-vue-next";
 import BaseModal from "@/components/BaseModal.vue";
 import { api } from "@/api";
 import { friendlyError } from "@/utils/errors";
+import { fmtClock } from "@/utils/time";
 import type { DiscoveryDiag, PeerVersionDiag } from "@/types";
 
 defineProps<{ open: boolean }>();
@@ -64,7 +65,8 @@ const btCadenceKey = computed(() =>
 
 function fmtTs(ts: number): string {
   if (!ts) return t("diag.btScanNever");
-  return new Date(ts).toLocaleTimeString();
+  // 固定 24 小时制：跨 WebView 的区域设置不同，toLocaleTimeString 会给出不同形状。
+  return fmtClock(ts);
 }
 
 /** 候选链路的图标：蓝牙 / 网卡。 */

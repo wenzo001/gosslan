@@ -16,6 +16,7 @@
  * 不引入微信的具体色值 —— 这是用户明确要求「按本项目约束标准」的部分。
  */
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { useQuery } from "@tanstack/vue-query";
 import {
   DropdownMenuContent,
   DropdownMenuItem,
@@ -42,6 +43,7 @@ import {
   type SearchDatePreset,
   type SenderOption,
 } from "@/utils/chatSearch";
+import { chatSearchQueryOptions, type ChatSearchParams } from "@/utils/chatSearchQuery";
 import StateBlock from "@/components/ui/StateBlock.vue";
 import { friendlyError } from "@/utils/errors";
 import type { ChatSearchGroup, ChatSearchMessage } from "@/types";
@@ -76,10 +78,11 @@ const app = useAppStore();
 const ime = useImeEnterGuard();
 
 const keyword = ref("");
-const groups = ref<ChatSearchGroup[]>([]);
-const searching = ref(false);
-/** 检索失败的可见出口；有结果时保持结果，空屏时换成错误+重试。 */
-const searchError = ref("");
+/**
+ * 防抖后的关键词 —— 它才是 query key 的一部分：
+ * 输入连打时不会每个字符都扫一遍库，回车 / 打开弹窗则直接跳到当前值（不经过防抖）。
+ */
+const debouncedKeyword = ref("");
 const activeConvId = ref<string | null>(null);
 
 /** 筛选条件。筛选项与日期都走后端（命中总数必须按当前筛选算，不能只筛已加载的那几条）。 */
@@ -99,19 +102,66 @@ const senderName = computed(
   () => senderOptions.value.find((o) => o.id === senderFilter.value)?.name ?? null,
 );
 
+/**
+ * 检索结果交给 TanStack Query（旧实现手写 `seq` + `searching` + `searchError` + 防抖）：
+ * · 关键词 / 发送人 / 日期三件都在 key 里 ⇒ 旧响应只会写回它自己的键，连打时不可能覆盖新结果；
+ * · `enabled` 跟 open + 非空关键词 ⇒ 关着或不搜时不打 IPC；
+ * · 换筛选时旧结果继续显示（keepPreviousData），失败有 error 状态可渲染。
+ */
+const searchParams = computed<ChatSearchParams>(() => ({
+  keyword: debouncedKeyword.value,
+  senderId: senderFilter.value,
+  preset: datePreset.value,
+}));
+
+const searchQuery = useQuery(
+  computed(() => ({
+    ...chatSearchQueryOptions(searchParams.value, (p) => {
+      const range = dateRangeFor(p.preset);
+      return api.searchChatHistory({
+        keyword: p.keyword,
+        senderId: p.senderId,
+        sinceMs: range.sinceMs,
+        untilMs: range.untilMs,
+      });
+    }),
+    enabled: props.open && debouncedKeyword.value.length > 0,
+  })),
+);
+
+/** 渲染用的结果：关着 / 关键词空 / 检索失败都不铺旧数据（旧实现失败时会清空 groups）。 */
+const groups = computed<ChatSearchGroup[]>(() => {
+  if (!props.open || !keyword.value.trim() || !debouncedKeyword.value) return [];
+  if (searchQuery.isError.value) return [];
+  return searchQuery.data.value ?? [];
+});
+
+/** 搜索中提示：首轮（isPending）和"换条件重拉"（isFetching）都要显示。 */
+const searching = computed(
+  () =>
+    props.open &&
+    !!debouncedKeyword.value &&
+    (searchQuery.isPending.value || searchQuery.isFetching.value),
+);
+
+/** 检索失败的可见出口；有结果时保持结果，空屏时换成错误+重试。 */
+const searchError = computed(() =>
+  searchQuery.isError.value
+    ? friendlyError(searchQuery.error.value, t("search.fail"))
+    : "",
+);
+
 const activeGroup = computed(
   () => groups.value.find((g) => g.conv_id === activeConvId.value) ?? groups.value[0] ?? null,
 );
 
 /**
- * 键盘选结果（原生感走查 N2）。⚠️ 这里**只缺方向键**：Esc / 点遮罩关闭是 `BaseModal`
- * 用的 HeadlessUI `Dialog` 自带的，再写一遍就是两套状态（那种"看着更保险"的重复实现
- * 正是本仓反复反对的那类）。
- * `activeIdx` 是当前高亮的那一条命中；回车打开它 —— 关键词还没搜过时回车仍是"立刻重搜"
- * （保留原来的语义：输入时 150ms 防抖，回车是"我确定现在就查"）。
+ * 键盘选结果（原生感走查 N2）。Esc / 点遮罩关闭是 `BaseModal` 用的 Reka `Dialog` 自带的，
+ * 这里不重复实现。`activeIdx` 是当前高亮的那一条命中；回车打开它 —— 关键词还没搜过时
+ * 回车仍是"立刻重搜"（保留原语义：输入时 150ms 防抖，回车是"我确定现在就查"）。
  */
 const activeIdx = ref(0);
-/** 已经发过请求的那个关键词；与 `keyword` 不等 ⇒ 输入还没落成结果，此时回车=重搜。 */
+/** 已出结果的那个关键词（trim 后）；与输入框当前值不等 ⇒ 回车=立刻重搜。 */
 const searched = ref("");
 const listRef = ref<HTMLDivElement | null>(null);
 
@@ -126,56 +176,53 @@ function stepHit(d: number) {
 const total = computed(() => totalHits(groups.value));
 const inputRef = ref<HTMLInputElement | null>(null);
 
-let seq = 0;
-/** 正在做打开时的状态复位：这期间 keyword/筛选的 watcher 不该再发请求。 */
+/** 正在做打开时的状态复位：这期间 keyword watcher 不该再排防抖。 */
 const opening = ref(false);
-/** 是否把本次结果记为「发送人候选项的来源」（只在无发送人筛选时记）。 */
-async function runSearch(keepSenderOptions = false) {
+
+/**
+ * 每次成功拿到**当前键**的结果时同步交互状态。
+ * 占位数据（上一个键的结果）不算：否则选完发送人再切回"全部"时，
+ * 会把筛选后的结果误记成发送人候选来源。
+ */
+watch(
+  () => [searchQuery.data.value, searchQuery.isPlaceholderData.value, searchQuery.status.value] as const,
+  ([data, isPlaceholder, status]) => {
+    if (!props.open || !debouncedKeyword.value) return;
+    if (status !== "success" || isPlaceholder || !data) return;
+    // `searched` 记的是**这份数据对应的**关键词：用户继续打字后回车应当重新检索，
+    // 而不是打开上一轮的高亮项。
+    searched.value = debouncedKeyword.value;
+    activeIdx.value = 0;
+    // 选中态：保持当前选中；若它已不在结果里，落到第一条
+    if (!data.some((g) => g.conv_id === activeConvId.value)) {
+      activeConvId.value = data[0]?.conv_id ?? null;
+    }
+    if (senderFilter.value === null) senderOptions.value = senderOptionsFrom(data);
+  },
+  { immediate: true },
+);
+
+/** 立即检索（回车 / 重试）：已出结果的关键词也要重扫一次（原语义保留）。 */
+function forceSearch() {
   const kw = keyword.value.trim();
-  if (!kw) {
-    groups.value = [];
-    searchError.value = "";
-    searchActive();
+  if (!kw) return;
+  clearDebounce();
+  if (debouncedKeyword.value !== kw) {
+    debouncedKeyword.value = kw; // key 一变，Query 自己发请求
     return;
   }
-  const mine = ++seq;
-  searching.value = true;
-  try {
-    const range = dateRangeFor(datePreset.value);
-    const result = await api.searchChatHistory({
-      keyword: kw,
-      senderId: senderFilter.value,
-      sinceMs: range.sinceMs,
-      untilMs: range.untilMs,
-    });
-    if (mine !== seq) return; // 只接受最后一次请求的结果（连打时会有多个在途）
-    groups.value = result;
-    searchError.value = "";
-    searched.value = keyword.value;
-    activeIdx.value = 0;
-    if (keepSenderOptions) senderOptions.value = senderOptionsFrom(result);
-    // 选中态：保持当前选中；若它已不在结果里，落到第一条
-    if (!result.some((g) => g.conv_id === activeConvId.value)) {
-      activeConvId.value = result[0]?.conv_id ?? null;
-    }
-  } catch (e) {
-    if (mine === seq) {
-      groups.value = [];
-      searchError.value = friendlyError(e, t("search.fail"));
-    }
-  } finally {
-    if (mine === seq) searching.value = false;
-  }
+  void searchQuery.refetch();
 }
 
-/** 回车：关键词已经落成结果 ⇒ 打开高亮那一条；还没搜过 ⇒ 立刻重搜（原语义保留）。 */
+/** 回车：关键词已经落成结果 ⇒ 打开高亮那一条；还没搜过 ⇒ 立刻重搜。 */
 function onEnter(e: KeyboardEvent) {
   if (ime.isIme(e)) return;
-  if (searched.value === keyword.value && activeGroup.value?.messages.length) {
+  const kw = keyword.value.trim();
+  if (searched.value === kw && activeGroup.value?.messages.length) {
     openHit(activeIdx.value);
     return;
   }
-  void runSearch(senderFilter.value === null);
+  forceSearch();
 }
 
 function openHit(idx: number) {
@@ -186,32 +233,39 @@ function openHit(idx: number) {
   emit("close");
 }
 
-function searchActive() {
-  // 关键词清空 ⇒ 结果清空，但筛选条件保留（用户清掉关键词只是想换个词）
-  activeConvId.value = null;
+/** 失败出口上的重试：当前键重拉（与旧 `runSearch()` 同一语义）。 */
+function retrySearch() {
+  void searchQuery.refetch();
 }
 
 /** 关键词防抖：输入即搜（微信也是输入就出结果），150ms 足够合并连打又不觉得延迟。 */
 let debounce: ReturnType<typeof setTimeout> | null = null;
-watch(keyword, () => {
-  // 任何一次关键词变化都先丢掉上一次待发的请求（关闭/打开复位也不会留下旧定时器）。
+function clearDebounce() {
   if (debounce) {
     clearTimeout(debounce);
     debounce = null;
   }
-  // 关闭时也会改 keyword（重置状态），打开复位期间也会改：两处都不该再发请求。
+}
+
+watch(keyword, () => {
+  clearDebounce();
   if (!props.open || opening.value) return;
-  debounce = setTimeout(() => void runSearch(senderFilter.value === null), 150);
+  const kw = keyword.value.trim();
+  if (!kw) {
+    // 清空关键词：结果与选中立即清掉，筛选条件保留（用户只是想换个词）
+    debouncedKeyword.value = "";
+    searched.value = "";
+    activeConvId.value = null;
+    activeIdx.value = 0;
+    return;
+  }
+  debounce = setTimeout(() => {
+    debounce = null;
+    if (props.open) debouncedKeyword.value = kw;
+  }, 150);
 });
 
-watch([senderFilter, datePreset], () => {
-  if (!props.open || opening.value) return;
-  void runSearch(senderFilter.value === null);
-});
-
-onBeforeUnmount(() => {
-  if (debounce) clearTimeout(debounce);
-});
+onBeforeUnmount(clearDebounce);
 
 /** 打开时：带入关键词并立即检索一次（回车进来应马上看到结果）。 */
 watch(
@@ -220,28 +274,35 @@ watch(
     if (!open) {
       // 关闭即清空：下次打开是干净的一次（也顺带避免残留关键词/筛选影响判断）
       keyword.value = "";
+      debouncedKeyword.value = "";
       senderFilter.value = null;
       datePreset.value = "all";
-      groups.value = [];
       senderOptions.value = [];
       activeConvId.value = null;
+      activeIdx.value = 0;
+      searched.value = "";
       senderMenuOpen.value = false;
       dateMenuOpen.value = false;
+      clearDebounce();
       return;
     }
-    // 复位这三个值会触发上面的 watcher。打开时的检索由下面这一次 `runSearch` 负责，
-    // 复位期间先挂起 watcher，否则每次打开都白跑一次额外的全表扫描（实测两个在途请求）。
+    // 复位这几个值会触发 keyword watcher。打开时的检索由下面这一次 `debouncedKeyword`
+    // 赋值负责，复位期间先挂起 watcher，否则每次打开都白排一次防抖、多打一次全表扫描。
     opening.value = true;
     try {
       keyword.value = (props.initialKeyword ?? "").trim();
       senderFilter.value = null;
       datePreset.value = "all";
+      debouncedKeyword.value = keyword.value;
+      senderOptions.value = [];
+      activeConvId.value = null;
+      activeIdx.value = 0;
+      searched.value = "";
       await nextTick();
     } finally {
       opening.value = false;
     }
     inputRef.value?.focus();
-    await runSearch(true);
   },
 );
 
@@ -403,7 +464,7 @@ function showSender(group: ChatSearchGroup): boolean {
           :title="t('search.fail')"
           :detail="searchError"
           :retry-label="t('common.retry')"
-          @retry="runSearch()"
+          @retry="retrySearch"
         />
         <p v-else-if="!groups.length" class="px-3 py-6 text-center text-xs text-[var(--gosslan-text-2)]">
           {{ t("search.empty") }}

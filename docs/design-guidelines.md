@@ -111,7 +111,7 @@ Tab），于是每次点击输入框都会冒出一个 2px 的外圈方框。消
 | 消息输入框（`div[contenteditable]`） | **卡片边框**变主题色 | `.gosslan-composer:focus-within { border-color: … }` |
 
 - 文本输入类**不得**出现在全局 `:focus-visible` 选择器里（含 `:where()` 的写法也算）。
-- 焦点提示一律画在**边线**上，与既有的 `.gosslan-select:focus`、`focus:border-[var(--gosslan-primary)]` 同一套观感。
+- 焦点提示一律画在**边线**上，与既有的 `focus:border-[var(--gosslan-primary)]` 同一套观感。
 - **本来没有边框**的字段（弹窗输入框、过滤条那种自带底色的）自己补一个**常驻的**
   `border border-transparent`，就能吃到上面那条全局规则 ——
   不要等聚焦时才加边框（会改尺寸、文字跳一下），也不要再画外圈方框。

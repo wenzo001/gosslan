@@ -8,6 +8,7 @@ import { AVATAR_INPUT_LIMIT_MB, AVATAR_INPUT_MAX_BYTES, AVATAR_SIZE, pickAvatarJ
 import { Camera } from "lucide-vue-next";
 import { t } from "@/i18n";
 import { useSubmitGuard } from "@/composables/useSubmitGuard";
+import { nicknameSchema } from "@/utils/validation";
 
 const props = defineProps<{ active: boolean; reloadToken?: number }>();
 
@@ -53,13 +54,13 @@ async function persistProfile(name: string) {
 
 /** 昵称：失焦或回车即保存（即点即存，无「保存」按钮）。 */
 async function saveProfileNow() {
-  const name = nickname.value.trim();
-  if (!name) {
+  const parsed = nicknameSchema.safeParse(nickname.value);
+  if (!parsed.success) {
     app.toast(t("settings.profile.toast.nicknameEmpty"), "error");
     nickname.value = app.device?.nickname ?? "";
     return;
   }
-  await persistProfile(name);
+  await persistProfile(parsed.data);
 }
 
 function onNicknameKeydown(e: KeyboardEvent) {

@@ -2,8 +2,9 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppSettings, CacheInfo, ChatSearchGroup, CleanupReport, ContentAudience, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, FriendKeyRotation, Group, GroupFileEntry, GroupHistoryProgress, GroupReadInfo, InterfaceInfo, LinkState, LogEntry, MessageRecord, Peer, PeerReadInfo, PendingRequest, RelayConfig, RelayProbe, RoutedEndpoint, RuntimeSnapshot, ShareEntry, TransferInfo } from "@/types";
+import type { AppSettings, CacheInfo, CleanupReport, ContentAudience, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, FriendKeyRotation, Group, GroupHistoryProgress, GroupReadInfo, InterfaceInfo, LinkState, LogEntry, MessageRecord, Peer, PeerReadInfo, PendingRequest, RelayConfig, RelayProbe, RoutedEndpoint, RuntimeSnapshot, TransferInfo } from "@/types";
 import type { TodoImage } from "@/utils/todos";
+import { chatSearchGroupSchema, groupFileEntrySchema, parseIpcList, shareEntrySchema } from "@/utils/validation";
 import type { PreviewGallery, PreviewImage } from "@/types";
 export const api = {
   /**
@@ -204,7 +205,9 @@ export const api = {
       ...(mentions ? { mentions } : {}),
     }),
   listGroupFiles: (groupId: string) =>
-    invoke<GroupFileEntry[]>("list_group_files", { groupId }),
+    invoke<unknown>("list_group_files", { groupId }).then((v) =>
+      parseIpcList(groupFileEntrySchema, v, "list_group_files"),
+    ),
   /** 发布群公告（仅群主；上限 500 字）。 */
   sendGroupAnnouncement: (groupId: string, text: string) =>
     invoke<MessageRecord>("send_group_announcement", { groupId, text }),
@@ -397,7 +400,10 @@ export const api = {
   getDownloadsDir: () => invoke<string>("get_downloads_dir"),
   setDownloadsDir: (path: string) => invoke<void>("set_downloads_dir", { path }),
   openDownloadsDir: () => invoke<void>("open_downloads_dir"),
-  requestShareTree: (friendId: string) => invoke<ShareEntry[]>("request_share_tree", { friendId }),
+  requestShareTree: (friendId: string) =>
+    invoke<unknown>("request_share_tree", { friendId }).then((v) =>
+      parseIpcList(shareEntrySchema, v, "request_share_tree"),
+    ),
   downloadSharedFile: (friendId: string, remotePath: string) =>
     invoke<string>("download_shared_file", { friendId, remotePath }),
 
@@ -474,12 +480,12 @@ export const api = {
     sinceMs?: number | null;
     untilMs?: number | null;
   }) =>
-    invoke<ChatSearchGroup[]>("search_chat_history", {
+    invoke<unknown>("search_chat_history", {
       keyword: p.keyword,
       senderId: p.senderId ?? null,
       sinceMs: p.sinceMs ?? null,
       untilMs: p.untilMs ?? null,
-    }),
+    }).then((v) => parseIpcList(chatSearchGroupSchema, v, "search_chat_history")),
   getLogs: (sinceSecs?: number | null) => invoke<LogEntry[]>("get_logs", { sinceSecs: sinceSecs ?? null }),
   clearLogs: () => invoke<void>("clear_logs"),
   /** 桌面端：打开独立日志窗口；移动端不要调用（用页面跳转）。 */
@@ -700,15 +706,16 @@ export async function bindEvents(h: EventHandlers): Promise<UnlistenFn[]> {
 // 动作名与 emitAction 抽到 utils/appActions.ts：useShortcuts / shortcuts 这类纯逻辑也要用，
 // 而纯逻辑会被 node:test 直接 import（Node 无法解析 @/ 别名）。这里继续 re-export，
 // 保证既有的 `import { APP_ACTION } from "@/api"` 调用处无需改动。
-import { APP_ACTION, emitAction } from "../utils/appActions";
-export { APP_ACTION, emitAction };
+import { APP_ACTION, emitAction, onAction, NAVIGATE_TO_CONTACTS } from "../utils/appActions";
+import type { AppAction } from "../utils/appActions";
+export { APP_ACTION, emitAction, onAction, NAVIGATE_TO_CONTACTS };
 
 /**
  * 监听 macOS 原生菜单栏的自定义项 → 转成应用级动作。
  * 菜单只在 macOS 建立（见 src-tauri/src/menu.rs），非 macOS 平台 listen 静默无事件。
  */
 export async function bindMenuEvents(): Promise<UnlistenFn[]> {
-  const to = (action: string) => () => emitAction(action);
+  const to = (action: AppAction) => () => emitAction(action);
   return Promise.all([
     listen("menu://settings", to(APP_ACTION.openSettings)),
     listen("menu://add-friend", to(APP_ACTION.addFriend)),

@@ -453,6 +453,7 @@ export const zhCN: MessageDict = {
   // 导致这个按钮的悬浮提示与无障碍标签在两种语言下都显示裸 key "common.close"
   // （2026-10-03 由「t() 调用点必须命中词典」那条护栏抓出来）。
   "common.close": "关闭",
+  "common.toastLabel": "通知",
   "common.resetZoom": "还原缩放",
   "common.prev": "上一张 (←)",
   "common.next": "下一张 (→)",
@@ -568,7 +569,7 @@ export const zhCN: MessageDict = {
   "msg.reactionPlus": "等 {n} 人",
   "msg.reactionFail": "发送回应失败",
   "msg.noMessage": "暂无消息",
-  "msg.mentioned": "[有人@我]",
+  "msg.mentioned": "[有人{'@'}我]",
   "msg.sending": "发送中…",
   "msg.delivered": "对方已收到，未读",
   "msg.read": "对方已读",
@@ -699,8 +700,8 @@ export const zhCN: MessageDict = {
   // （打开群任务列表并直达这条任务），见 TodoCardBubble.vue 的命中区②注释。
   "todo.viewMoreImages": "查看更多",
   "todo.openForMe": "{n} 个与我相关的未完成任务",
-  "mention.self": "@你",
-  "todo.mentionYou": "[任务@你]",
+  "mention.self": "{'@'}你",
+  "todo.mentionYou": "[任务{'@'}你]",
   "todo.completedNotice": "任务已完成：{title}",
   "todo.completedNoticeNoTitle": "你创建的任务已完成",
   "todo.impossibleNotice": "任务被标记为做不了：{title}",

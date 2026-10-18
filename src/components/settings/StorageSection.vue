@@ -6,7 +6,9 @@ import { useAppStore } from "@/stores/useAppStore";
 import ConfirmDialog from "@/components/ui/ConfirmDialog.vue";
 import SettingsGroup from "@/components/settings/SettingsGroup.vue";
 import SettingsRow from "@/components/settings/SettingsRow.vue";
+import SettingsSelect from "@/components/ui/SettingsSelect.vue";
 import { formatBytes } from "@/utils/format";
+import { fmtDateStamp } from "@/utils/time";
 import { Download } from "lucide-vue-next";
 import { Trash2 } from "@/components/ui/icons";
 import { t } from "@/i18n";
@@ -35,11 +37,23 @@ const quotas = [
 ];
 // 旧版本可能存了预设之外的数值，补一个回显选项避免下拉框空白
 const quotaOptions = computed(() => {
-  if (maxQuotaMb.value > 0 && !quotas.some((q) => q.value === maxQuotaMb.value)) {
-    return [...quotas, { value: maxQuotaMb.value, label: `${maxQuotaMb.value} MB` }];
-  }
-  return quotas;
+  const list = maxQuotaMb.value > 0 && !quotas.some((q) => q.value === maxQuotaMb.value)
+    ? [...quotas, { value: maxQuotaMb.value, label: `${maxQuotaMb.value} MB` }]
+    : quotas;
+  return list.map((q) => ({ value: q.value, label: t(q.label) }));
 });
+const retentionOptions = computed(() => [
+  { value: 0, label: t("settings.storage.retention.forever") },
+  ...[3, 7, 30].map((n) => ({ value: n, label: t("settings.storage.retention.days", { n }) })),
+]);
+
+function setRetentionDays(value: string | number) {
+  retentionDays.value = Number(value);
+}
+
+function setMaxQuotaMb(value: string | number) {
+  maxQuotaMb.value = Number(value);
+}
 
 async function loadCache() {
   cacheInfo.value = await api.getCacheInfo();
@@ -105,9 +119,7 @@ async function applyCachePolicy(silent = false) {
  */
 async function exportChat() {
   const now = new Date();
-  const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}${String(
-    now.getDate(),
-  ).padStart(2, "0")}`;
+  const stamp = fmtDateStamp(now.getTime());
   let destination: string | null;
   try {
     destination = await saveDialog({ defaultPath: `gosslan-${t("settings.storage.export.filename")}-${stamp}.md` });
@@ -175,25 +187,24 @@ watch(
       :label="t('settings.storage.retention')"
       :description="t('settings.storage.retention.desc')"
     >
-      <span class="gosslan-select-wrap">
-        <select v-model="retentionDays" class="gosslan-select">
-          <option :value="0">{{ t("settings.storage.retention.forever") }}</option>
-          <option :value="3">{{ t("settings.storage.retention.days", { n: 3 }) }}</option>
-          <option :value="7">{{ t("settings.storage.retention.days", { n: 7 }) }}</option>
-          <option :value="30">{{ t("settings.storage.retention.days", { n: 30 }) }}</option>
-        </select>
-      </span>
+      <SettingsSelect
+        :model-value="retentionDays"
+        :options="retentionOptions"
+        :select-label="t('settings.storage.retention')"
+        @update:model-value="setRetentionDays"
+      />
     </SettingsRow>
 
     <SettingsRow
       :label="t('settings.storage.quota')"
       :description="t('settings.storage.quota.desc')"
     >
-      <span class="gosslan-select-wrap">
-        <select v-model.number="maxQuotaMb" class="gosslan-select">
-          <option v-for="q in quotaOptions" :key="q.value" :value="q.value">{{ t(q.label) }}</option>
-        </select>
-      </span>
+      <SettingsSelect
+        :model-value="maxQuotaMb"
+        :options="quotaOptions"
+        :select-label="t('settings.storage.quota')"
+        @update:model-value="setMaxQuotaMb"
+      />
     </SettingsRow>
 
     <SettingsRow
