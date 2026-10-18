@@ -278,6 +278,10 @@ impl Logger {
         // 把路径交给独立写入器（若 bootstrap 更早绑过，这条就是 no-op；只认第一次）
         bind_crash_file(&logger.crash_path());
         logger.write_startup_marker();
+        // 启动前就存在的日志（含历史 .old.log）也要立刻收紧：
+        // 只靠“下次写入时再 chmod”会让不再轮转的旧文件永久保持 0644。
+        restrict_to_owner(&logger.current_path());
+        restrict_to_owner(&logger.old_path());
         logger
     }
 
@@ -1456,14 +1460,23 @@ mod tests {
 
         let dir = std::env::temp_dir().join(format!("gosslan-log-mode-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // 预置历史安装留下的 0644 当前日志与轮转日志：构造时就必须收紧，
+        // 不能依赖“下一次写入”或“下一次轮转”。
+        for name in ["t.log", "t.old.log"] {
+            let p = dir.join(name);
+            std::fs::write(&p, "old\n").unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
         let logger = Logger::new(dir.clone(), "t", "[dev:test]".to_string());
         logger.info("test", "mode");
 
         let crash = dir.join("t-crash.log");
         assert!(crash.exists(), "Logger::new 必须写启动路标");
         assert_eq!(mode(&crash), 0o600, "崩溃现场必须收紧到 0600");
-        let cur = dir.join("t.log");
-        assert_eq!(mode(&cur), 0o600, "运行日志必须收紧到 0600");
+        for name in ["t.log", "t.old.log"] {
+            assert_eq!(mode(&dir.join(name)), 0o600, "{name} 必须在构造时收紧");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
