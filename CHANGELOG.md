@@ -13,6 +13,18 @@
 
 ## [Unreleased]
 
+## [5.0.1] - 2026-10-18
+
+### 重构：另存图片收敛为一个状态机
+
+- 新增 `utils/saveImageCore.ts`：对话框 → 归一化目的地 → 取字节 → 落盘的唯一实现；
+  桌面返回 null 与 Android reject 的取消都归一化为 `cancelled`。
+- `ImageLightbox` / `MessageItem` 的 `saveImage` 改为薄接线；移除两份重复的
+  `saveDestinationOf` / `urlToBase64` 逻辑与不再使用的 import。
+- 新增 6 条单测：成功顺序 / 桌面取消 / Android 取消 / SAF `{file}` 对象 / 空值 / 非取消错误。
+- `npm test` 1007 通过 / 0 失败；`npm run build` 退出 0；`main` 311.68→311.41 kB
+  （gzip 93.37→93.23）。
+
 ## [5.0.0] - 2026-10-18
 
 ### 5.0.0 — 前端重构基线（设计系统、依赖治理与一处可靠性修复）

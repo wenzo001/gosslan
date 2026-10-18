@@ -100,6 +100,7 @@
 | B3 | 未使用依赖与死代码清理（lightbox / clsx / tailwind-merge / cn） | 低 | 完成（生产依赖 13→10；`npm test` 998/998；`npm run build` 退出 0） |
 | B4 | 可靠性小修（watchGroupTodos 竞态；先补测试） | 中 | 完成（StaleGuard 令牌；`npm test` 1001/1001；build 退出 0；接线判据含非空转对照） |
 | B5 | 完整回归 + 性能/体积读数 + 最终报告 | 无 | 进行中（5.0.0 tip 上跑 `verify:full`；报告见 `refactor-5.0-report.md`） |
+| B6 | 另存图片去重（`saveImageWith` 纯核心 + 薄接线） | 低 | 完成（5.0.1；`npm test` 1007/1007、build 退出 0；新增 6 条路径单测） |
 | 后续 | SegmentedControl 状态色适配、saveImage 去重、字节格式统一、事件风暴合并 | 中 | 登记，不阻塞 5.0 |
 
 ## 6. 门禁与证据纪律
