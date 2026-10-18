@@ -18,7 +18,7 @@ import { parseQuote, stripQuoteMsgId } from "@/utils/quote";
 import { QUOTE_BG, QUOTE_TEXT_STYLE } from "@/utils/quoteStyle";
 import { parseFileMeta } from "@/utils/fileMeta";
 import { openLocalFile } from "@/utils/localFile";
-import { isDialogCancelled, saveDestinationOf } from "@/utils/saveDestination";
+import { saveImageAs } from "@/utils/saveImageAs";
 import { haptic } from "@/utils/haptics";
 import { shouldStartLongPress, shouldSwallowLongPressRelease } from "@/utils/longPress";
 import { t } from "@/i18n";
@@ -43,7 +43,6 @@ import { BellRing, Copy, CornerUpLeft, ImageOff, ListChecks, Pin, Save, Share2, 
 import { Check } from "@/components/ui/icons";
 import type { MessageRecord, MsgKind } from "@/types";
 import type { ReminderPhase, ReminderState } from "@/utils/reminders";
-import { urlToBase64 } from "@/utils/imageBytes";
 import { StaleGuard } from "@/utils/staleGuard";
 import { api } from "@/api";
 
@@ -743,16 +742,8 @@ async function saveImage() {
   const url = imageDataUrl.value;
   if (!url) return;
   try {
-    const { save } = await import("@tauri-apps/plugin-dialog");
-    const picked: unknown = await save({ defaultPath: `${t("common.image")}-${Date.now()}.png` });
-    const destination = saveDestinationOf(picked);
-    if (!destination) return; // 用户取消
-    // 取字节 + base64 收在 utils/imageBytes（与 ImageLightbox 的「另存图片」共用一份）
-    const base64Data = await urlToBase64(url);
-    await api.saveDataFile(base64Data, destination);
-    app.toast(t("msg.imageSaved"), "success");
+    if ((await saveImageAs(url)) === "saved") app.toast(t("msg.imageSaved"), "success");
   } catch (e) {
-    if (isDialogCancelled(e)) return; // Android 取消是 reject，不是返回 null
     app.toastError(e, t("msg.saveImageFail"));
   }
 }

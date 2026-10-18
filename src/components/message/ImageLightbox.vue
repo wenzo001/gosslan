@@ -10,11 +10,9 @@ import { ChevronLeft, ChevronRight, Save } from "lucide-vue-next";
 import { RotateCcw, X } from "@/components/ui/icons";
 import { useAppStore } from "@/stores/useAppStore";
 import { loadContentPreview, loadFilePreview, type PreviewResult } from "@/utils/filePreview";
-import { isDialogCancelled, saveDestinationOf } from "@/utils/saveDestination";
+import { saveImageAs } from "@/utils/saveImageAs";
 import { StaleGuard } from "@/utils/staleGuard";
-import { urlToBase64 } from "@/utils/imageBytes";
 import { useBackLayer } from "@/composables/useBackLayer";
-import { api } from "@/api";
 
 /**
  * 相册里的一张图 —— 三种来源，按下面的优先级取字节：
@@ -132,20 +130,12 @@ function go(delta: number) {
   emit("update:index", next);
 }
 
-/** 保存当前图片：fetch 源(支持 dataURL 与 blob URL) → base64 → rust save_data_file 落盘 */
+/** 保存当前图片：对话框 / 取字节 / 落盘收在 utils/saveImageAs（与 MessageItem 共用一份）。 */
 async function saveImage() {
   if (!src.value) return;
   try {
-    const { save } = await import("@tauri-apps/plugin-dialog");
-    const picked: unknown = await save({ defaultPath: `${t("common.image")}-${Date.now()}.png` });
-    const destination = saveDestinationOf(picked);
-    if (!destination) return; // 用户取消
-    // 取字节 + base64 收在 utils/imageBytes（与 MessageItem 的「另存图片」共用一份）
-    const base64Data = await urlToBase64(src.value);
-    await api.saveDataFile(base64Data, destination);
-    app.toast(t("msg.imageSaved"), "success");
+    if ((await saveImageAs(src.value)) === "saved") app.toast(t("msg.imageSaved"), "success");
   } catch (e) {
-    if (isDialogCancelled(e)) return; // Android 取消是 reject，不是返回 null
     app.toastError(e, t("msg.saveImageFail"));
   }
 }
