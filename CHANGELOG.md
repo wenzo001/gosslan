@@ -41,6 +41,9 @@
   其余 E2E 轮次与真机仍按 **NOT RUN**。
 - 汇总口径更正：24 个门禁 E2E 步骤逐轮现算 **647** 断言（旧写法 661 多计 14），
   加互操作 216 = **32 轮 / 863**；24 轮已在 5.0.31 终态 release 上全部重跑。
+- Windows 交叉编译打通：官方 LLVM 18.1.8（macOS ARM64）提供 `llvm-rc`/`llvm-lib`/
+  `lld-link`，`cargo xwin 0.23.1` 下 check 42.6s、release 2m39s 均 exit 0，产物
+  `gosslan.exe` 9.6MB（PE32+ GUI x86-64）。**运行时仍 NOT RUN**（无 Windows 主机/Wine）。
 - 真实数据副本：本机真实安装库的只读 `.backup` 副本用 5.0.31 启动 7s，前后
   `user_version=11`/`integrity_check=ok`、8 张主表行数与 6 组语义聚合逐项相等，
   目录/库权限收紧为 **0700/0600**；源库未写。该库已是 v11，**不是**真实 4.x
