@@ -244,6 +244,11 @@
   记录原版本、备份路径、校验结果。
 - 未知未来版本：`current > DB_VERSION` 在**任何写入前**拒绝，已有测试 `downgrade_refusal_writes_nothing`。
 - 迁移失败：每步 `unchecked_transaction` 回滚，`user_version` 不前进；备份保留。
+- 迁移步骤登记口径：`MIGRATIONS` 数组的每个 `Migration { from, to, description, run }`
+  就是一个独立、有名字、有起止版本的步骤（当前 11 步，每步一个事务），迁移测试按
+  `from` 逐个重放。**没有拆成 `vN.sql` 文件**：多数步骤含列/索引条件判断与数据回填
+  （Rust 逻辑），拆文件会把逻辑与 SQL 分家，收益不抵风险；后续新增步骤仍必须是一条
+  独立 `Migration` 条目 + 对应迁移判据。这是有意保留的边界，不是遗漏。
 
 ### 4.1 真实数据库资产清单（2026-10-19 只读现读）
 - 位置（macOS）：`~/Library/Application Support/com.gosslan.app/gosslan.db`；多开实例为
