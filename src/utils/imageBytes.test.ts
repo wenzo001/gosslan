@@ -155,8 +155,11 @@ test("放行的任务图必须能原分辨率显示（体积闸 < 预览读取�
     join(import.meta.dirname, "..", "..", "src-tauri", "src", "commands", "favorites.rs"),
     "utf8",
   );
-  const at = rs.indexOf("pub fn read_content_preview");
-  assert.ok(at > 0, "favorites.rs 里找不到 read_content_preview —— 这条判据的锚点断了");
+  // 2026-10-19：预览读盘改为 spawn_blocking 后函数签名是 `pub async fn`；
+  // 判据只认函数名，形态（sync/async）不参与，否则一次线程归属重构就会把守卫打成假红。
+  const fnMatch = /pub (?:async )?fn read_content_preview\b/.exec(rs);
+  assert.ok(fnMatch, "favorites.rs 里找不到 read_content_preview —— 这条判据的锚点断了");
+  const at = fnMatch.index;
   // 只看函数开头那一段：那道夹取是 `let max_bytes = max_bytes.min(...)`，在两个点查之前
   const head = rs.slice(at, at + 1500);
   const m = /max_bytes\.min\(([^)]+)\)/.exec(head);
