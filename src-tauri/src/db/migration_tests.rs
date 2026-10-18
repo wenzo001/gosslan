@@ -1720,3 +1720,192 @@ fn init_error_display_is_actionable_and_names_the_backup_file() {
         "备份错误必须点名文件与原因：{text}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 4.x 全实体语义保留：身份 / 好友 / 会话 / 消息 / 群 / 群成员 / 群文件 /
+// 单聊与群聊离线队列 / 文件任务 / 文件队列 / 收藏 / 逻辑时钟 / 已读位置
+// ---------------------------------------------------------------------------
+
+/// 这条补的是"只验消息/身份"留下的盲区：从 v7（4.x 已有群与文件任务的时期）
+/// 重放到 v11，逐实体断言关键字段与关联键原样保留，而不是只数行数。
+///
+/// v10 的群孤儿清理是这里最危险的步骤：它按 group_id + conv_id 双锚删群侧行，
+/// 所以夹具同时建了 `groups` 行与 `group:<id>` 会话 —— 在册群的数据一条都不许少。
+#[test]
+fn every_4x_entity_survives_the_v7_to_current_replay_with_its_semantics() {
+    let path = temp_db_path();
+    let conn = init(&path).expect("fresh db");
+
+    let secret = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    conn.execute(
+        "INSERT INTO settings(key, value) VALUES ('device_id','dev-local'),('x25519_secret',?1),('ed25519_secret',?1)",
+        [secret],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO friends(device_id,nickname,avatar,x25519_pubkey,ed25519_pubkey,added_at)
+         VALUES ('dev-friend','好友甲','a.png','x-pub','e-pub',1700000000)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO conversations(id,kind,name,unread,pinned,last_ts) VALUES
+         ('dev-friend','single','好友甲',3,1,1700000100),
+         ('group:g1','group','测试群',0,0,1700000200)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO messages(msg_id,conv_id,sender_id,receiver_id,kind,content,ts,seq,status)
+         VALUES ('m-dm','dev-friend','dev-local','dev-friend','text','单聊正文',1700000100,1,'sent'),
+                ('m-group','group:g1','dev-friend','dev-local','text','群聊正文',1700000200,2,'sent')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO groups(id,name,creator,created_at) VALUES ('g1','测试群','dev-local',1700000000)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO group_members(group_id,device_id) VALUES ('g1','dev-local'),('g1','dev-friend')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO group_reads(group_id,reader_id,last_read_ts) VALUES ('g1','dev-friend',1700000200)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO group_files(transfer_id,group_id,sender_id,name,size,sha256,status,created_at,scope,todo_id)
+         VALUES ('gf-1','g1','dev-local','群文件.bin',4096,'aa11','completed',1700000300,'chat','')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO outbox(msg_id,peer_id,payload,created_at) VALUES ('m-dm','dev-friend','{\"type\":\"chat\"}',1700000100)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO group_outbox(msg_id,group_id,peer_id,payload,created_at)
+         VALUES ('m-group','g1','dev-friend','{\"type\":\"group_chat\"}',1700000200)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO file_transfers(id,peer_id,name,size,direction,status,path,progress,created_at)
+         VALUES ('ft-1','dev-friend','大文件.bin',1048576,'receive','done','/tmp/大文件.bin',1.0,1700000400)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO file_outbox(transfer_id,peer_id,group_id,local_path,name,size,status,attempts,next_attempt_at,created_at)
+         VALUES ('fo-1','dev-friend',NULL,'/tmp/待发.bin','待发.bin',8192,'pending',2,1700000500,1700000400)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO favorites(id,msg_id,conv_id,sender_id,kind,content,ts,favorited_at,media_path,media_size)
+         VALUES ('fav-1','m-dm','dev-friend','dev-friend','text','收藏正文',1700000100,1700000600,NULL,0)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO conversation_clocks(conv_id,seq) VALUES ('group:g1',2)",
+        [],
+    )
+    .unwrap();
+
+    let before_tables = count_tables(&conn);
+    conn.pragma_update(None, "user_version", 7).unwrap();
+    drop(conn);
+
+    let conn = init(&path).expect("v7 4.x 数据应能迁移到当前版本");
+    assert_eq!(read_user_version(&conn), DB_VERSION);
+
+    let scalar = |sql: &str| -> String {
+        conn.query_row(sql, [], |r| r.get(0))
+            .unwrap_or_else(|e| panic!("{sql} 读失败：{e}"))
+    };
+    assert_eq!(
+        scalar("SELECT value FROM settings WHERE key='device_id'"),
+        "dev-local"
+    );
+    assert_eq!(
+        scalar("SELECT value FROM settings WHERE key='x25519_secret'"),
+        secret
+    );
+    assert_eq!(
+        scalar("SELECT nickname || '|' || x25519_pubkey || '|' || ed25519_pubkey FROM friends WHERE device_id='dev-friend'"),
+        "好友甲|x-pub|e-pub"
+    );
+    assert_eq!(
+        scalar("SELECT CAST(COUNT(*) AS TEXT) FROM conversations WHERE id IN ('dev-friend','group:g1')"),
+        "2"
+    );
+    assert_eq!(
+        scalar("SELECT content FROM messages WHERE msg_id='m-group'"),
+        "群聊正文"
+    );
+    assert_eq!(
+        scalar("SELECT name || '|' || creator FROM groups WHERE id='g1'"),
+        "测试群|dev-local"
+    );
+    assert_eq!(
+        scalar("SELECT CAST(COUNT(*) AS TEXT) FROM group_members WHERE group_id='g1'"),
+        "2"
+    );
+    assert_eq!(
+        scalar(
+            "SELECT CAST(last_read_ts AS TEXT) FROM group_reads WHERE group_id='g1' AND reader_id='dev-friend'"
+        ),
+        "1700000200"
+    );
+    assert_eq!(
+        scalar("SELECT name || '|' || sha256 || '|' || status FROM group_files WHERE transfer_id='gf-1'"),
+        "群文件.bin|aa11|completed"
+    );
+    assert_eq!(
+        scalar("SELECT payload FROM outbox WHERE msg_id='m-dm'"),
+        "{\"type\":\"chat\"}"
+    );
+    assert_eq!(
+        scalar("SELECT payload FROM group_outbox WHERE msg_id='m-group'"),
+        "{\"type\":\"group_chat\"}"
+    );
+    assert_eq!(
+        scalar("SELECT name || '|' || status || '|' || path FROM file_transfers WHERE id='ft-1'"),
+        "大文件.bin|done|/tmp/大文件.bin"
+    );
+    assert_eq!(
+        scalar("SELECT local_path || '|' || attempts FROM file_outbox WHERE transfer_id='fo-1'"),
+        "/tmp/待发.bin|2"
+    );
+    assert_eq!(
+        scalar("SELECT content FROM favorites WHERE id='fav-1'"),
+        "收藏正文"
+    );
+    assert_eq!(
+        scalar("SELECT CAST(seq AS TEXT) FROM conversation_clocks WHERE conv_id='group:g1'"),
+        "2"
+    );
+    assert_eq!(scalar("PRAGMA integrity_check"), "ok");
+    assert_eq!(
+        conn.prepare("PRAGMA foreign_key_check")
+            .unwrap()
+            .query_map([], |_| Ok(()))
+            .unwrap()
+            .count(),
+        0,
+        "迁移后不应出现悬空外键"
+    );
+
+    let backups = backup_paths(&path);
+    assert_eq!(backups.len(), 1, "v7→v11 必须先备份");
+    assert_backup_is_snapshot(&backups[0], 7, before_tables);
+
+    drop(conn);
+    cleanup_db_and_backups(&path);
+}

@@ -55,6 +55,10 @@
   - 真实库只读核对：`user_version=11`、19 表、WAL、`integrity_check=ok`；本批**未对真实库执行迁移**。
   - 回滚：删除新增备份/恢复原库即可回到旧行为；备份是独立文件，不改原库。
 - 护栏：更新「数表必须早于 SCHEMA」注入锚点并单跑该护栏（改坏即 FAIL、恢复即 PASS）。
+- **5.0.25 追加**：`every_4x_entity_survives_the_v7_to_current_replay_with_its_semantics`
+  从 v7 重放到 v11，逐字段校验身份/好友/会话/消息/群+成员/群文件/单聊与群聊队列/文件任务/
+  文件队列/收藏/逻辑时钟/已读 13 类实体，并要求 `integrity_check=ok`、无悬空外键、
+  备份快照表数一致；Rust 基线 980 → **981**。真实用户库仍**只读核对、未执行迁移**。
 
 ### B2（已落地，5.0.23）：启动期错误改用 `thiserror`
 - `thiserror@2.0.21`（MIT OR Apache-2.0，MSRV 1.77；依赖树里已有）。
