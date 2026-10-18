@@ -20,9 +20,10 @@
 //!      被取代的冗余索引走迁移删掉（且 `outbox.msg_id` 唯一性必须还在）、
 //!      热表索引数量封顶（写放大的确定性代理，不用计时断言）。
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OpenFlags};
 use std::env;
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use super::{ensure_post_schema_shape, init, run_migrations, InitError, DB_VERSION, SCHEMA};
 
@@ -1427,4 +1428,275 @@ fn corrupted_mention_targets_column_reads_as_unknown_not_empty() {
             "{id}：坏落点不许连累正文（§8 字节不变量）"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// 2026-10-19 数据安全：迁移前一致性快照 + busy_timeout
+// ---------------------------------------------------------------------------
+
+fn count_tables(conn: &Connection) -> i64 {
+    conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+        [],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+fn backup_paths(path: &Path) -> Vec<PathBuf> {
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    let prefix = format!("{stem}.pre-v");
+    fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with(&prefix))
+        })
+        .collect()
+}
+
+fn assert_backup_is_snapshot(path: &Path, version: u32, tables: i64) {
+    let c = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .expect("备份必须能只读打开");
+    let integrity: String = c
+        .query_row("PRAGMA integrity_check", [], |r| r.get(0))
+        .expect("备份 integrity_check");
+    assert_eq!(integrity, "ok", "备份必须通过 integrity_check");
+    assert_eq!(read_user_version(&c), version, "备份必须停在迁移前版本");
+    assert_eq!(count_tables(&c), tables, "备份必须保留迁移前的业务表数量");
+}
+
+fn cleanup_db_and_backups(path: &Path) {
+    for p in backup_paths(path) {
+        let _ = fs::remove_file(p);
+    }
+    let _ = fs::remove_file(path);
+    let _ = fs::remove_file(path.with_extension("db-wal"));
+    let _ = fs::remove_file(path.with_extension("db-shm"));
+}
+
+#[test]
+fn pre_migration_backup_is_a_verified_snapshot_with_the_same_rows() {
+    let path = temp_db_path();
+    let conn = Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE probe (id INTEGER PRIMARY KEY, v TEXT NOT NULL);
+         INSERT INTO probe(v) VALUES ('keep-me');
+         PRAGMA user_version = 3;",
+    )
+    .unwrap();
+    let tables = count_tables(&conn);
+
+    super::backup_before_migration(&conn, &path, 3, tables).expect("备份应成功");
+
+    let backups = backup_paths(&path);
+    assert_eq!(backups.len(), 1, "恰好一份备份");
+    assert_backup_is_snapshot(&backups[0], 3, tables);
+    let kept: String = Connection::open(&backups[0])
+        .unwrap()
+        .query_row("SELECT v FROM probe", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(kept, "keep-me", "备份必须包含迁移前的真实数据行");
+    drop(conn);
+    cleanup_db_and_backups(&path);
+}
+
+#[test]
+fn init_backs_up_an_old_version_before_migrating_and_keeps_the_rows() {
+    let path = temp_db_path();
+    let conn = init(&path).expect("fresh db");
+    conn.execute(
+        "INSERT INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status)
+         VALUES ('m-keep','c1','A','B','text','保留我',1,1,'sent')",
+        [],
+    )
+    .unwrap();
+    let tables = count_tables(&conn);
+    drop(conn);
+    // 同一形状上把版本拨回旧版：只测迁移前保护/重放，不伪造历史 schema。
+    let raw = Connection::open(&path).unwrap();
+    raw.pragma_update(None, "user_version", 2).unwrap();
+    drop(raw);
+
+    let conn = init(&path).expect("旧版本应被备份后迁移");
+    assert_eq!(read_user_version(&conn), DB_VERSION);
+    let backups = backup_paths(&path);
+    assert_eq!(backups.len(), 1, "需要迁移的库必须先留一份备份");
+    assert_backup_is_snapshot(&backups[0], 2, tables);
+    let kept: String = conn
+        .query_row(
+            "SELECT content FROM messages WHERE msg_id='m-keep'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(kept, "保留我", "迁移后原有消息必须一字节不变");
+    drop(conn);
+    cleanup_db_and_backups(&path);
+}
+
+#[test]
+fn fresh_or_already_current_db_creates_no_backup() {
+    let path = temp_db_path();
+    let conn = init(&path).expect("fresh db");
+    assert!(backup_paths(&path).is_empty(), "全新库不应备份");
+    drop(conn);
+    let conn = init(&path).expect("reopen current db");
+    assert!(backup_paths(&path).is_empty(), "已是最新版本的库不应备份");
+    drop(conn);
+    cleanup_db_and_backups(&path);
+}
+
+#[test]
+fn downgrade_refusal_creates_no_backup_and_writes_nothing() {
+    let path = temp_db_path();
+    let conn = init(&path).expect("fresh db");
+    drop(conn);
+    let raw = Connection::open(&path).unwrap();
+    raw.pragma_update(None, "user_version", DB_VERSION + 1)
+        .unwrap();
+    drop(raw);
+
+    let err = init(&path).expect_err("未来版本必须拒绝打开");
+    assert!(
+        matches!(err, InitError::Downgrade { .. }),
+        "必须是带类型的 Downgrade，实际 {err:?}"
+    );
+    assert!(
+        backup_paths(&path).is_empty(),
+        "降级判定在任何写入/备份之前 ⇒ 不应产生备份文件"
+    );
+    cleanup_db_and_backups(&path);
+}
+
+#[test]
+fn init_sets_a_bounded_busy_timeout() {
+    let path = temp_db_path();
+    let conn = init(&path).expect("fresh db");
+    let ms: i64 = conn
+        .query_row("PRAGMA busy_timeout", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        ms, 5_000,
+        "连接必须有 5s 的有界等待，而不是立即 SQLITE_BUSY"
+    );
+    drop(conn);
+    cleanup_db_and_backups(&path);
+}
+
+#[test]
+fn every_supported_starting_version_replays_to_current_and_preserves_the_sentinel() {
+    for from in 1..DB_VERSION {
+        let path = temp_db_path();
+        let conn = init(&path).expect("fresh db");
+        conn.execute(
+            "INSERT INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status)
+             VALUES ('m-sentinel','c1','A','B','text','跨版本保留',1,1,'sent')",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        let raw = Connection::open(&path).unwrap();
+        raw.pragma_update(None, "user_version", from).unwrap();
+        drop(raw);
+
+        let conn = init(&path).unwrap_or_else(|e| panic!("v{from} 应能迁移到 v{DB_VERSION}：{e}"));
+        assert_eq!(read_user_version(&conn), DB_VERSION, "v{from} 的终态版本");
+        let kept: String = conn
+            .query_row(
+                "SELECT content FROM messages WHERE msg_id='m-sentinel'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(kept, "跨版本保留", "v{from} 重放后哨兵消息必须还在");
+        let backups = backup_paths(&path);
+        assert_eq!(backups.len(), 1, "v{from} 需要迁移 ⇒ 必须有一份备份");
+        assert_backup_is_snapshot(&backups[0], from, count_tables(&conn));
+        drop(conn);
+        cleanup_db_and_backups(&path);
+    }
+}
+
+#[test]
+fn a_corrupt_database_is_rejected_and_left_byte_for_byte_untouched() {
+    let path = temp_db_path();
+    let junk = b"this is not a sqlite database, do not replace it";
+    fs::write(&path, junk).unwrap();
+
+    let err = init(&path).expect_err("损坏文件必须拒绝，不能静默初始化成空库");
+    assert!(
+        matches!(err, InitError::Sqlite(_)),
+        "损坏文件应是带类型的 Sqlite 错误，实际 {err:?}"
+    );
+    assert_eq!(
+        fs::read(&path).unwrap(),
+        junk,
+        "拒绝打开时原文件必须一字节不变（不许被当成新库覆盖）"
+    );
+    assert!(backup_paths(&path).is_empty(), "损坏库不应产生备份");
+    cleanup_db_and_backups(&path);
+}
+
+#[test]
+fn a_backup_can_be_restored_and_migrated_again_without_losing_rows() {
+    let path = temp_db_path();
+    let conn = init(&path).expect("fresh db");
+    conn.execute(
+        "INSERT INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status)
+         VALUES ('m-restore','c1','A','B','text','可从备份恢复',1,1,'sent')",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+    let raw = Connection::open(&path).unwrap();
+    raw.pragma_update(None, "user_version", 2).unwrap();
+    drop(raw);
+    let conn = init(&path).expect("备份并迁移");
+    drop(conn);
+    let backup = backup_paths(&path)
+        .into_iter()
+        .next()
+        .expect("迁移前必须有备份");
+
+    // 演练：把备份当作一份 4.x 数据恢复到另一个路径，读取 + 再迁移一次。
+    let restored_path = path.with_file_name(format!(
+        "{}-restored.db",
+        path.file_stem().unwrap().to_string_lossy()
+    ));
+    fs::copy(&backup, &restored_path).unwrap();
+    let restored = Connection::open(&restored_path).unwrap();
+    assert_eq!(
+        read_user_version(&restored),
+        2,
+        "恢复出来的必须是迁移前版本"
+    );
+    let kept: String = restored
+        .query_row(
+            "SELECT content FROM messages WHERE msg_id='m-restore'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(kept, "可从备份恢复", "恢复出来的备份必须含原数据");
+    drop(restored);
+
+    let migrated = init(&restored_path).expect("恢复出的 4.x 数据应能再次迁移");
+    assert_eq!(read_user_version(&migrated), DB_VERSION);
+    let kept: String = migrated
+        .query_row(
+            "SELECT content FROM messages WHERE msg_id='m-restore'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(kept, "可从备份恢复", "再次迁移后数据必须还在");
+    drop(migrated);
+    cleanup_db_and_backups(&restored_path);
+    cleanup_db_and_backups(&path);
 }

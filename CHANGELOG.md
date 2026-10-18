@@ -13,6 +13,19 @@
 
 ## [Unreleased]
 
+## [5.0.22] - 2026-10-19
+
+### 加固：数据库迁移前一致性备份 + busy_timeout
+
+- `db::init()` 在**任何 schema 写入之前**，对"需要迁移的已有库"执行 `VACUUM INTO` 一致性快照；
+  随后以只读连接校验 `integrity_check=ok`、迁移前 `user_version`、业务表数量，任一不符即以
+  `InitError::Backup` 中止（原库一个字节不改，备份保留供诊断）。fresh / 已最新 / 降级拒绝均不备份。
+- 连接设置 `busy_timeout=5s`：备份、VACUUM 或其它短暂持锁时排队等待有上界，超时仍进入错误态。
+- 新增 8 条迁移测试（快照完整性/数据保留、init 备份后迁移、fresh/current 不备份、降级不备份、
+  `busy_timeout=5000`、每个起始版本重放保数据、损坏库拒绝且原文件不变、备份恢复后再次迁移）；
+  Rust 测试基线 968 → 976。方案与分批见 `docs/architecture/backend-modernization.md`。
+  E2E/真机 **NOT RUN**。
+
 ## [5.0.21] - 2026-10-19
 
 ### 修复：开发环境日志窗口白屏（虚拟列表 TDZ + 滚动容器漏 ref）
