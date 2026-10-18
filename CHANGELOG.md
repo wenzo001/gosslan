@@ -34,7 +34,7 @@
   复跑 **26/26 ×3**：入队 1048576 → 实发 4096，A 气泡/A 台账/B 台账均 4096；
   默认轮 **18/18**（文件链回归）、失败路径 `recv-readonly` **24/24**；同一终态 release
   回归受 size 同步影响的文件链：`kill-mid` 25/25、`sender-kill-mid` 26/26、
-  `peer-freeze` 24/24、`multi-file` 24/24、`poison-part` 22/22、`resume-prefix` 23/23、
+  `peer-freeze` 24/24、`multi-file` 29/29（含两发送者→一接收者的三实例同名并发）、`poison-part` 22/22、`resume-prefix` 23/23、
   `recv-dir-rotted` 24/24、`gfile` 28/28（首跑为 cargo 默认 toolchain 环境噪声，显式
   `RUSTUP_TOOLCHAIN` 复跑绿）；干净 worktree `verify:local` **22/22**（64.4s）。
   其余 E2E 轮次与真机仍按 **NOT RUN**。
