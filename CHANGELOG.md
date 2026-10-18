@@ -36,7 +36,8 @@
   回归受 size 同步影响的文件链：`kill-mid` 25/25、`sender-kill-mid` 26/26、
   `peer-freeze` 24/24、`multi-file` 29/29（含两发送者→一接收者的三实例同名并发）、`poison-part` 22/22、`resume-prefix` 23/23、
   `recv-dir-rotted` 24/24、`gfile` 28/28（首跑为 cargo 默认 toolchain 环境噪声，显式
-  `RUSTUP_TOOLCHAIN` 复跑绿）；干净 worktree `verify:local` **22/22**（64.4s）。
+  `RUSTUP_TOOLCHAIN` 复跑绿）；contentpull 增 A-16 受众闸（非好友同群仍按 cid 服务）
+  **36/36**；干净 worktree `verify:local` **22/22**（64.4s）。
   其余 E2E 轮次与真机仍按 **NOT RUN**。
 
 ## [5.0.30] - 2026-10-19

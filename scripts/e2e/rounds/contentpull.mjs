@@ -483,4 +483,92 @@ export async function run() {
       `杀前 accept < ${batch.length} 单，且杀前 + 新连接 accept ≥ ${batch.length}、超时 0 行`,
       `杀前 accept ${preAcc} 行 · 新连接 accept ${newAcc} 行 · 超时 ${newTmo} 行`);
   });
+
+  // A-16：受众闸的「非好友、同群」那一臂此前只有纯函数单测，跨实例零判据。
+  // 造法按路线图最便宜的那条：A 侧删掉 B 的好友行、只留共同群身份；B 仍保留 A 的好友行
+  // （它只影响 B 的拨号/密钥解析，不影响 A 侧的授权判定）。内容行必须带 group_id，
+  // 否则闸门拿不到"所属群"这件事实，测的就退化成"陌生人不许取"。
+  step("内容服务受众闸：请求方不是好友、但同群 ⇒ 必须服务（A-16）", async () => {
+    await stopAll();
+    const token = Math.random().toString(36).slice(2, 8);
+    const gid = `g-a16-${token}`;
+    const tid = eid("q", token);
+    const srcDir = path.join(RUN_DIR, "src", "a16");
+    const dlB = path.join(RUN_DIR, "recv", "B-a16");
+    fs.mkdirSync(srcDir, { recursive: true });
+    fs.mkdirSync(dlB, { recursive: true });
+    const bytes = 1024 * 1024;
+    const buf = Buffer.alloc(bytes, 0x7b);
+    const src = path.join(srcDir, `${tid}.bin`);
+    fs.writeFileSync(src, buf);
+    const cid = createHash("sha256").update(buf).digest("hex");
+    const ts = nowMs();
+    seed(INSTANCES[0].db, (db) => {
+      db.prepare("DELETE FROM friends WHERE device_id=?1").run(S.idB.runtimeId);
+      db.prepare("INSERT OR REPLACE INTO groups(id,name,creator,created_at) VALUES(?1,?2,?3,?4)")
+        .run(gid, `a16-${token}`, S.idA.runtimeId, ts);
+      db.prepare("DELETE FROM group_members WHERE group_id=?1").run(gid);
+      for (const m of [S.idA.runtimeId, S.idB.runtimeId]) {
+        db.prepare("INSERT INTO group_members(group_id,device_id) VALUES(?1,?2)").run(gid, m);
+      }
+      db.prepare("DELETE FROM content_transfers WHERE cid=?1").run(cid);
+      db.prepare(
+        `INSERT INTO content_transfers(cid,transfer_id,peer_id,group_id,name,size,direction,status,
+           received,attempts,next_attempt_at,last_error,path,created_at,updated_at)
+         VALUES(?1,NULL,?2,?3,?4,?5,'send','complete',?5,0,0,NULL,?6,?7,?7)`,
+      ).run(cid, S.idB.runtimeId, gid, `${tid}.bin`, bytes, src, ts);
+    });
+    seed(INSTANCES[1].db, (db) => {
+      db.prepare("INSERT OR REPLACE INTO groups(id,name,creator,created_at) VALUES(?1,?2,?3,?4)")
+        .run(gid, `a16-${token}`, S.idA.runtimeId, ts);
+      db.prepare("DELETE FROM group_members WHERE group_id=?1").run(gid);
+      for (const m of [S.idA.runtimeId, S.idB.runtimeId]) {
+        db.prepare("INSERT INTO group_members(group_id,device_id) VALUES(?1,?2)").run(gid, m);
+      }
+      db.prepare("DELETE FROM content_transfers WHERE cid=?1").run(cid);
+      db.prepare("DELETE FROM file_transfers WHERE id=?1").run(tid);
+      db.prepare(
+        `INSERT INTO content_transfers(cid,transfer_id,peer_id,group_id,name,size,direction,status,
+           received,attempts,next_attempt_at,last_error,path,created_at,updated_at)
+         VALUES(?1,?2,?3,?4,?5,?6,'receive','incomplete',0,0,0,NULL,NULL,?7,?7)`,
+      ).run(cid, tid, S.idA.runtimeId, gid, `${tid}.bin`, bytes, ts);
+      db.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES('downloads_dir',?1)").run(dlB);
+    });
+    const friendGone = (() => {
+      const db = openDb(INSTANCES[0].db, true);
+      const n = db.prepare("SELECT COUNT(*) c FROM friends WHERE device_id=?1").get(S.idB.runtimeId).c;
+      const m = db.prepare("SELECT COUNT(*) c FROM group_members WHERE group_id=?1").get(gid).c;
+      db.close();
+      return { n, m };
+    })();
+    for (const inst of INSTANCES) {
+      launch(inst);
+      await waitFor(() => tcpOpen(inst.port), 60_000, `A-16：实例 ${inst.label} 的 TCP 可连`);
+      await waitFor(() => bootReady(inst.log, bootBaseOf.get(inst.n), BOOT_LINE), 30_000,
+        `A-16：实例 ${inst.label} 打出 boot 完成行`);
+    }
+    let got = null;
+    await waitFor(() => {
+      const db = openDb(INSTANCES[1].db, true);
+      const row = db.prepare("SELECT status,path FROM content_transfers WHERE cid=?1").get(cid);
+      db.close();
+      if (row?.status === "complete" && row.path) got = row;
+      return !!got;
+    }, 120_000, "A-16：非好友同群的内容必须被服务并落盘");
+    const fileSha = got?.path && fs.existsSync(got.path)
+      ? createHash("sha256").update(fs.readFileSync(got.path)).digest("hex") : null;
+    const denied = countLinesWith(INSTANCES[0], "ContentRequest：请求方无权限", cid);
+    const offered = countLinesWith(INSTANCES[0], "[FILE] offer SENT", tid);
+    check("前置：A 侧确实不再把 B 当好友，但两人仍是同一个群的成员（否则测的不是这一臂）",
+      friendGone.n === 0 && friendGone.m === 2, "好友 0 行 / 群成员 2 行",
+      `好友 ${friendGone.n} 行 / 群成员 ${friendGone.m} 行`);
+    check("非好友、同群 ⇒ 内容必须被服务：B 的台账到 complete 且写入了 path",
+      got?.status === "complete" && !!got?.path, "complete + path 非空",
+      JSON.stringify({ status: got?.status, path: got?.path }));
+    check("取回的字节必须逐份等于 cid（授权放行不等于可以给错内容）",
+      fileSha === cid, cid.slice(0, 12) + "…", fileSha ? fileSha.slice(0, 12) + "…" : "未落盘");
+    check("A 侧必须真的走出服务分支：有 offer SENT，且没有针对这个 cid 的“无权限”拒绝",
+      offered > 0 && denied === 0, "offer ≥1 行 / 拒绝 0 行",
+      `offer ${offered} 行 / 拒绝 ${denied} 行`);
+  });
 }
