@@ -44,6 +44,9 @@
 - Windows 交叉编译打通：官方 LLVM 18.1.8（macOS ARM64）提供 `llvm-rc`/`llvm-lib`/
   `lld-link`，`cargo xwin 0.23.1` 下 check 42.6s、release 2m39s 均 exit 0，产物
   `gosslan.exe` 9.6MB（PE32+ GUI x86-64）。**运行时仍 NOT RUN**（无 Windows 主机/Wine）。
+- 真实数据副本 v10→v11：真实库只读副本置 v10 后跑迁移演练，备份校验 tables=19/
+  integrity=ok，迁移后 19 表/208 行保留、`integrity_check=ok`；副本列已存在 ⇒
+  `ALTER` 幂等跳过（真正加列由逐字 v10 DDL 夹具覆盖）。真实 4.x 用户库仍 **NOT RUN**。
 - 真实数据副本：本机真实安装库的只读 `.backup` 副本用 5.0.31 启动 7s，前后
   `user_version=11`/`integrity_check=ok`、8 张主表行数与 6 组语义聚合逐项相等，
   目录/库权限收紧为 **0700/0600**；源库未写。该库已是 v11，**不是**真实 4.x
