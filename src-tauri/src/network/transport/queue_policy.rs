@@ -113,7 +113,19 @@ async fn writer_loop(
                         Ok(()) => WriteOutcome::Ok,
                         Err(WriteError::Local(why)) => WriteOutcome::Local(why),
                         // 真 socket 写失败 ⇒ 这条连接已经不可信，照旧走下面的判死+拆链。
-                        Err(WriteError::Socket(_)) => WriteOutcome::Failed,
+                        // ⚠️ 这一格以前把 `e` 整个丢掉（`Err(WriteError::Socket(_))`）⇒
+                        // "回执进了 mpsc 但没上链路"与"回执压根没发"两种现场在日志里长一样，
+                        // J2 四轮 0 条 `stage=ack-*` 就是被这一格挡住读不下去。
+                        Err(WriteError::Socket(e)) => {
+                            if let Some(note) = crate::network::file::ack_writer_failure_note(
+                                &msg,
+                                "socket",
+                                &e.to_string(),
+                            ) {
+                                state.logger.error("file", note);
+                            }
+                            WriteOutcome::Failed
+                        }
                     }
                 };
                 if matches!(outcome, WriteOutcome::Ok) {
@@ -136,6 +148,13 @@ async fn writer_loop(
                          {why} —— 这是本机 bug，换链路也会同样失败，别当网络问题查",
                         msg.wire_kind()
                     );
+                    if let Some(note) =
+                        crate::network::file::ack_writer_failure_note(&msg, "local", &why)
+                    {
+                        // eprintln 进的是 stdout 捕获，本轮 J2 的判据读的是应用日志 ⇒ 两处都要有，
+                        // 否则"回执没写成"又会变成一个只有翻 stdout 才看得见的现场。
+                        state.logger.error("file", note);
+                    }
                     continue;
                 }
                 {

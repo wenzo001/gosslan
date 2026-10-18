@@ -36,11 +36,24 @@
  *     否则这里会假绿。升 edition 是全局大事，届时这条注释就是唯一的地图。
  *  C. **覆盖率不许作假**：A 类找不到块结束行 ⇒ **直接 FAIL**（不是跳过）。否则这个脚本会
  *     因为"看不懂"而静默变绿，那正是本仓库最忌讳的失效方式。
+ *  D. **持锁期间不许调用"自锁 helper"**（`db 自死锁`，真机 2026-10-18 J2 21 连红的根因）：
+ *     `AppState.db` 是 `std::sync::Mutex`，**不可重入** ⇒ 守卫活着时调用一个内部还会
+ *     `state.db.lock()` 的函数 = 同一线程二次取锁 = 永久 park。它比锁内 emit 狠一个量级：
+ *     emit 只是冻一下，这一条把整进程的接收侧读循环停住，**只有重启才恢复**。
+ *     判法：先全仓**第一遍**收集"函数体内出现 db 取锁"的函数名（自锁 helper 集合，条数每次实算打印），
+ *     **第二遍**在每个 A 类守卫的存活期（同样认 `drop(NAME)`）内找 `NAME(` 形式的调用。
+ *     修法与本仓既有先例一致：`drop(dbc);` → 调用 → 需要时再 `let dbc = …`（见 `group_file.rs` 那段注释）。
  *
  * ## ⚠️ 本脚本守不住的事（别把它当完整的数据流分析）
  *
  * · **跨函数的 emit**：锁内调了一个内部会 emit 的函数，而函数名不带 `emit` ⇒ 看不见。
  *   缓解靠命名纪律：**会 emit 的一律叫 `emit*`**（现状如此 —— `emit_failed` 是唯一 helper）。
+ * · **D 类认不出"把守卫当参数传下去后再调自锁 helper"**：存活期只算到当前函数的当前块，
+ *   跨函数把 `&dbc` 交出去、被调方在自己的作用域里再调自锁 helper ⇒ 看不见。
+ * · **D 类的自锁集合按"函数体里有没有 db 取锁"认**：内部取锁但字段名不叫 `db*`
+ *   （例如把 `&DbLock` 改名成别的）⇒ 漏收；宏展开里取锁 ⇒ 漏收。
+ * · **D 类只判 A 类守卫**：B 类语句临时量在本语句结束就析构，本语句内的调用按 Rust 求值顺序
+ *   理论上仍可能撞上，实测本仓 0 例 ⇒ 未纳入，升 edition 2024 时要重判。
  * · **别的 Mutex**（`peers` / `file_receivers` / `relay`）：本脚本只管 db 那把，因为只有它
  *   被前端 IPC 抢。把规则推广到全部锁需要逐个论证"谁在抢它"，属另一轮。
  * · **宏生成的代码**：不扫，行级分析分不清展开后的作用域。
@@ -72,6 +85,10 @@ const LOCK_RE = /\.lock\s*\(\s*\)/;
 const DB_LOCK_RE = /\bdb\w*\s*\.\s*lock\s*\(/;
 /** 事件发射点：`state.app.emit(` / `emit_to(` / `emit_failed(` 都算。 */
 const EMIT_RE = /\.emit\b|\bemit_\w+\s*\(/;
+/** 函数定义头（含 `pub(crate)` / `async` / `unsafe` / `const` / 泛型名）。 */
+const FN_RE = /^(\s*)(?:[^=()]*?\bfn\s+)([A-Za-z_]\w*)\b/;
+/** 只有声明没有体的trait 方法：本行到语句结束是 `;` ⇒ 不当函数体处理。 */
+const NO_BODY_RE = /^\s*(?:[^=]*?\bfn\s+[A-Za-z_]\w*\b[^{};]*)?;\s*$/;
 
 function collectRs(dir, acc = []) {
   for (const e of readdirSync(dir)) {
@@ -135,6 +152,42 @@ function dbLockChain(lines, i) {
 }
 
 /**
+ * 第一遍（D 类用）：收集"函数体内出现 db 取锁"的函数名 = 自锁 helper 集合。
+ * 体范围沿用 A 类那套缩进判据：`fn` 头缩进 I，体结束 = 第一条"缩进恰为 I 且以 `}` 开头"的行；
+ * 只有声明没有体的 trait 方法跳过。嵌套 `fn` 不跳过外层，各自算一次。
+ */
+function collectSelfLockers(lines, set) {
+  for (let i = 0; i < lines.length; i++) {
+    const c = code(lines[i]);
+    if (NO_BODY_RE.test(c)) continue;
+    const m = FN_RE.exec(c);
+    if (!m) continue;
+    const closeRe = new RegExp(`^ {${m[1].length}}}`);
+    let end = -1;
+    for (let j = i + 1; j < lines.length; j++) {
+      if (closeRe.test(lines[j])) {
+        end = j;
+        break;
+      }
+    }
+    if (end < 0) continue;
+    for (let j = i; j <= end; j++) {
+      if (DB_LOCK_RE.test(code(lines[j]))) {
+        set.add(m[2]);
+        break;
+      }
+    }
+  }
+}
+
+/** 单文件自锁集合（只在省略 `scanFile` 第二参时用，即夹具自证）。 */
+function collectInto(lines) {
+  const s = new Set();
+  collectSelfLockers(lines, s);
+  return s;
+}
+
+/**
  * `lines[i]`（缩进 ind 的一条语句）所在块的结束行下标。
  * 判据：第一条"缩进正好 ind-4 且以 `}` 开头"的行。找不到返回 -1（= 无法判定）。
  */
@@ -159,13 +212,16 @@ function stmtEnd(lines, i) {
 }
 
 /**
- * 扫描单个文件源码。返回 { guardSites, tempSites, violations, undecidable }。
- * violations: { line, emitLine, name, kind }
+ * 扫描单个文件源码。返回 { guardSites, tempSites, violations, undecidable, reentries }。
+ * violations: { line, emitLine, name, kind }；reentries: { line, callLine, name, helper }
+ * @param selfLockers 全仓自锁 helper 名集合；省略时按本文件自建（供夹具自证用）。
  */
-function scanFile(text) {
+function scanFile(text, selfLockers) {
   const lines = text.split("\n");
+  const helpers = selfLockers ?? new Set(collectInto(lines));
   const violations = [];
   const undecidable = [];
+  const reentries = [];
   const seen = new Set();
   let guardSites = 0;
   let tempSites = 0;
@@ -204,6 +260,16 @@ function scanFile(text) {
           break;
         }
       }
+      // D 类：同一个存活期内调用自锁 helper = 同线程二次取锁 ⇒ 永久 park。
+      outer: for (let j = chain.head + 1; j < aliveTo; j++) {
+        const c = code(lines[j]);
+        for (const h of helpers) {
+          if (new RegExp(`(?<![\\w:])${h}\\s*\\(`).test(c)) {
+            reentries.push({ line: chain.head + 1, callLine: j + 1, name, helper: h });
+            break outer;
+          }
+        }
+      }
       continue;
     }
 
@@ -222,19 +288,21 @@ function scanFile(text) {
       }
     }
   }
-  return { guardSites, tempSites, violations, undecidable };
+  return { guardSites, tempSites, violations, undecidable, reentries };
 }
 
-/** 打印人话报告；返回是否通过。 */
-function report(results) {
+/** 打印人话报告；返回是否通过。`helperCount` = 全仓自锁 helper 名条数（分母，现算打印）。 */
+function report(results, helperCount = 0) {
   let guard = 0;
   let temp = 0;
   const all = [];
+  const re = [];
   const und = [];
   for (const [rel, r] of results) {
     guard += r.guardSites;
     temp += r.tempSites;
     for (const v of r.violations) all.push([rel, v]);
+    for (const x of r.reentries) re.push([rel, x]);
     for (const u of r.undecidable) und.push([rel, u]);
   }
   if (und.length > 0) {
@@ -242,6 +310,20 @@ function report(results) {
     for (const [rel, u] of und) console.error(`    · ${rel}:${u.line} —— ${u.why}`);
     console.error("  通常是缩进异常（忘了 `cargo fmt`）或链式换行超过回看深度。");
     console.error("  改成「`let dbc = state.db.lock()…;` 独占一行、外面用 `{ }` 圈住写库」就又能判了。");
+    return false;
+  }
+  if (re.length > 0) {
+    console.error(
+      `✗ db 守卫活着时调用自锁 helper（同线程二次取锁 ⇒ std Mutex 永久 park）：${re.length} 处`,
+    );
+    for (const [rel, x] of re) {
+      console.error(
+        `    · ${rel}:${x.line} ${x.name} 存活期内，第 ${x.callLine} 行调用 ${x.helper}()（它内部也取 db 锁）`,
+      );
+    }
+    console.error("  为什么要紧：这不是「冻一下」，是那条电路整个停住 —— 收不到帧、不回执、");
+    console.error("           发送侧台账永不收口，只有重启才恢复（真机 2026-10-18 J2 的根因）。");
+    console.error("  修法：`drop(dbc);` 后再调用，需要继续写库就重新 `let dbc = …`（先例见 group_file.rs）。");
     return false;
   }
   if (all.length > 0) {
@@ -258,7 +340,7 @@ function report(results) {
   }
   console.log(
     `✓ db 锁作用域：${guard} 个 guard 绑定 + ${temp} 个语句临时量全部判过，` +
-      "没有一处锁活着时 emit",
+      `没有一处锁活着时 emit；自锁 helper ${helperCount} 个名字，持锁调用它们 0 处`,
   );
   return true;
 }
@@ -326,28 +408,88 @@ const FIX_UNDECIDABLE = ["    let dbc = state.db.lock().unwrap();", "    db::ups
   "\n",
 );
 
+/** D 类正例：守卫活着时调用"内部也取 db 锁"的 helper ⇒ 同线程二次取锁，必须被抓。 */
+const FIX_REENTER = [
+  "fn nickname(state: &AppState) -> String {",
+  "    let dbc = state.db.lock().unwrap();",
+  "    String::new()",
+  "}",
+  "fn f(state: &AppState) {",
+  "    let dbc = state.db.lock().unwrap();",
+  "    db::upsert(&dbc);",
+  "    let nm = nickname(state);",
+  "    db::touch(&dbc, &nm);",
+  "}",
+].join("\n");
+
+/** D 类反证：先 `drop(dbc)` 再调用同一个人 ⇒ 放过（这条就是本仓 group_file.rs 的先例形状）。 */
+const FIX_REENTER_DROP = [
+  "fn nickname(state: &AppState) -> String {",
+  "    let dbc = state.db.lock().unwrap();",
+  "    String::new()",
+  "}",
+  "fn f(state: &AppState) {",
+  "    let dbc = state.db.lock().unwrap();",
+  "    db::upsert(&dbc);",
+  "    drop(dbc);",
+  "    let nm = nickname(state);",
+  "}",
+].join("\n");
+
 function selfTest() {
   const cases = [
-    ["guard 绑定后立刻 emit → 抓", FIX_GUARD_EMIT, { violations: 1, undecidable: 0 }],
-    ["`{ }` 出锁 → 放", FIX_BLOCK, { violations: 0, undecidable: 0 }],
-    ["`drop(dbc)` 出锁 → 放", FIX_DROP, { violations: 0, undecidable: 0 }],
-    ["实参临时量、emit 在下一条语句 → 放", FIX_ARGTEMP, { violations: 0, undecidable: 0 }],
-    ["if let 条件临时量（edition 2021）→ 放", FIX_IFLET, { violations: 0, undecidable: 0 }],
-    ["临时量存活期内（同一条语句）emit → 抓", FIX_ARGTEMP_EMIT, { violations: 1, undecidable: 0 }],
-    ["判不出块结束 → 报无法判定", FIX_UNDECIDABLE, { violations: 0, undecidable: 1 }],
+    ["guard 绑定后立刻 emit → 抓", FIX_GUARD_EMIT, { violations: 1, undecidable: 0, reentries: 0 }],
+    ["`{ }` 出锁 → 放", FIX_BLOCK, { violations: 0, undecidable: 0, reentries: 0 }],
+    ["`drop(dbc)` 出锁 → 放", FIX_DROP, { violations: 0, undecidable: 0, reentries: 0 }],
+    [
+      "实参临时量、emit 在下一条语句 → 放",
+      FIX_ARGTEMP,
+      { violations: 0, undecidable: 0, reentries: 0 },
+    ],
+    [
+      "if let 条件临时量（edition 2021）→ 放",
+      FIX_IFLET,
+      { violations: 0, undecidable: 0, reentries: 0 },
+    ],
+    [
+      "临时量存活期内（同一条语句）emit → 抓",
+      FIX_ARGTEMP_EMIT,
+      { violations: 1, undecidable: 0, reentries: 0 },
+    ],
+    [
+      "判不出块结束 → 报无法判定",
+      FIX_UNDECIDABLE,
+      { violations: 0, undecidable: 1, reentries: 0 },
+    ],
+    [
+      "持锁调用自锁 helper → 抓（D 类）",
+      FIX_REENTER,
+      { violations: 0, undecidable: 0, reentries: 1 },
+    ],
+    [
+      "drop(dbc) 后调用自锁 helper → 放（D 类反证）",
+      FIX_REENTER_DROP,
+      { violations: 0, undecidable: 0, reentries: 0 },
+    ],
   ];
   let ok = true;
   for (const [name, src, want] of cases) {
     const got = scanFile(src);
-    if (got.violations.length !== want.violations || got.undecidable.length !== want.undecidable) {
+    if (
+      got.violations.length !== want.violations ||
+      got.undecidable.length !== want.undecidable ||
+      got.reentries.length !== want.reentries
+    ) {
       ok = false;
       console.error(
-        `✗ 自证失败：「${name}」期望 抓${want.violations}/判不了${want.undecidable}，` +
-          `实得 抓${got.violations.length}/判不了${got.undecidable.length}`,
+        `✗ 自证失败：「${name}」期望 抓${want.violations}/判不了${want.undecidable}/自锁调用${want.reentries}，` +
+          `实得 抓${got.violations.length}/判不了${got.undecidable.length}/自锁调用${got.reentries.length}`,
       );
     }
   }
-  const caught = cases.filter((c) => c[2].violations + c[2].undecidable > 0).length;
+  const caught = cases.filter(
+    (c) => c[2].violations + c[2].undecidable + c[2].reentries > 0,
+  ).length;
   if (ok) {
     console.log(
       `✓ 判据自证：${cases.length} 段夹具全部符合预期（抓 ${caught} / 放 ${cases.length - caught}）`,
@@ -360,9 +502,10 @@ if (process.argv.includes("--self-test")) {
   process.exit(selfTest() ? 0 : 1);
 }
 
-const results = collectRs(SOURCE_ROOT).map((f) => [
-  path.relative(ROOT, f),
-  scanFile(readFileSync(f, "utf8")),
-]);
+const texts = collectRs(SOURCE_ROOT).map((f) => [path.relative(ROOT, f), readFileSync(f, "utf8")]);
+// D 类要跨文件知道"哪些函数内部取 db 锁"⇒ 先整遍收集名字（分母现算打印），再逐文件判存活期。
+const helpers = new Set();
+for (const [, t] of texts) collectSelfLockers(t.split("\n"), helpers);
+const results = texts.map(([rel, text]) => [rel, scanFile(text, helpers)]);
 
-process.exit(selfTest() && report(results) ? 0 : 1);
+process.exit(selfTest() && report(results, helpers.size) ? 0 : 1);

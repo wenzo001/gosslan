@@ -625,6 +625,40 @@ pub struct DiscoveryDiag {
     pub app_version: String,
     /// 各对端在 Hello 里声明的版本（按 device_id 排序）
     pub peer_versions: Vec<PeerVersionDiag>,
+    /// 按**连接**（不是按 peer）列出的收发活性读数（按 device_id + endpoint 排序）。
+    ///
+    /// 为什么必须按连接：同一对 peer 之间可以同时挂着多条 socket（LAN / Routed / BLE），
+    /// 而"对端整段没帧"这一类故障是**逐连接**发生的（2026-10-17 实测：一个 peer 的两条连接里
+    /// 只有一条被判死）。把 peer 聚合起来看，坏的那条会被好的那条盖掉。
+    pub conn_health: Vec<ConnHealthDiag>,
+}
+
+/// 诊断面板的一行「这条连接最后一次把字节读进来 / 写出去是什么时候」。
+///
+/// ⚠️ 两个时间戳的语义**不可互换**，也不许拿一个冒充另一个（`mesh::ConnectionHealth`）：
+/// · `last_write_seen_ms` = 本端 writer **写出成功**的时刻。半开 TCP 上它会一直前进
+///   （内核收下字节 ≠ 对端活着），所以它**不参与** `is_healthy`。
+/// · `last_read_seen_ms` = 本端**读到并解析出一个完整帧**的时刻 —— 唯一"对端活着"的证据。
+///   注意它量的是"成帧"，**不是**"socket 读到字节"：读循环是 `read_frame` 一次拿一整帧，
+///   字节级与成帧级之间现有状态没有第三个读数。
+/// · `None` = 这条连接建立以来从未发生过那件事（不是 0，0 会被读成"很久以前"）。
+#[derive(Serialize, Clone, Debug)]
+pub struct ConnHealthDiag {
+    pub device_id: String,
+    /// 进程内唯一连接 id（路由表/日志用的那份，原样带出以便与日志对齐）。
+    pub conn_id: String,
+    /// 端点的一行文本（TCP 是 `ip:port`，BLE 是 `ble:<地址>`）。
+    pub endpoint: String,
+    /// `lan` / `routed` / `relay` / `bluetooth`。
+    pub path_kind: String,
+    pub last_write_seen_ms: Option<i64>,
+    pub last_read_seen_ms: Option<i64>,
+    /// 距今多少毫秒（现算，`None` 时也是 `None`）。面板上一眼能看出"还在不在动"。
+    pub write_age_ms: Option<i64>,
+    pub read_age_ms: Option<i64>,
+    /// 与选路/看门狗同判据的健康结论（只认读活性）。
+    pub healthy: bool,
+    pub consecutive_failures: u32,
 }
 
 /// 诊断面板的一行「对端声明了什么版本」。

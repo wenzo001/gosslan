@@ -285,12 +285,26 @@ CASES: list[Case] = [
         "     check-lock-scope.mjs 必须报「存活期内在 emit」。",
         file=TAURI / "src" / "network" / "file.rs",
         injections=[(
-            "    }\n"
-            "    emit_failed(state, transfer_id, reason);\n"
-            "}",
-            "        emit_failed(state, transfer_id, reason);\n"
-            "    }\n"
-            "}",
+            # 锁块尾这三行是那条唯一 SQLite 连接的存活区间：
+            # needle = 现状（emit 在 `};` 之后、锁已释放），lie = 把 emit 塞回锁还握着的时候。
+            # ⚠️ 2026-10-17 这条曾经飘到 `for note in fail_notes` 的收尾花括号上 ——
+            # 那个假 emit 落在没有锁的位置，检查器照实通过 ⇒ 护栏空转了一整轮。
+            """        notes
+    };
+    for note in fail_notes {
+        state.logger.error("file", note);
+    }
+    emit_failed(state, transfer_id, reason);
+""",
+            """        // 注入：把 emit 挪回锁存活期内（dbc 还握着，`notes` 仍是块尾 ⇒ 照样能编译）
+        emit_failed(state, transfer_id, reason);
+        notes
+    };
+    for note in fail_notes {
+        state.logger.error("file", note);
+    }
+    emit_failed(state, transfer_id, reason);
+""",
         )],
         cmd=["node", "scripts/check-lock-scope.mjs"],
         cwd=ROOT,
@@ -485,15 +499,25 @@ CASES: list[Case] = [
                         // 这里静默，发送端收不到任何帧只能干等静默窗口超时。立刻拿到
                         // 失败终态才不会白等；发送端只认 file_transfers 里登记的
                         // peer_id，伪造面不变。
-                        let _ = try_send(
+                        if let Err(se) = try_send(
                             state,
                             peer_id,
                             &Message::FileCompleteAck {
-                                transfer_id,
+                                transfer_id: transfer_id.clone(),
                                 success: false,
                             },
                         )
-                        .await;
+                        .await
+                        {
+                            state.logger.error(
+                                "file",
+                                file::ack_send_failure_note(
+                                    file::ACK_STAGE_NO_RECEIVER,
+                                    &transfer_id,
+                                    &se,
+                                ),
+                            );
+                        }
                     }
 """,
             # 只留 `if already_done { … }` 的收尾花括号 —— 就是修好之前的形状。

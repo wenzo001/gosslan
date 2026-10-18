@@ -180,8 +180,11 @@
             body.contains("Err(WriteError::Local(why)) => WriteOutcome::Local(why)"),
             "writer_loop 不再接 WriteError 的分型 ⇒ 分流点丢了"
         );
+        // 2026-10-17：Socket 那一支的臂体现在多带了留痕（要把错误类别读出来），
+        // 所以不再钉 `Socket(_) => Failed` 这个字面形状，改钉两半**同时在场**：
+        // 折成 Local（lie ②）时 `WriteOutcome::Failed` 在 writer_loop 体内一处不剩 ⇒ 照样红。
         assert!(
-            body.contains("Err(WriteError::Socket(_)) => WriteOutcome::Failed"),
+            body.contains("Err(WriteError::Socket(e))") && body.contains("WriteOutcome::Failed"),
             "真 socket 失败必须仍然走 Failed 那一支（拆链）"
         );
 

@@ -2384,6 +2384,424 @@ mod tests {
         );
     }
 
+    /// 发送侧收口那三笔写的注入夹具：从生产 `SCHEMA` 出发，**只准"缺一张表"这一种坏法**
+    /// （与接收侧 `db_missing_*` 同一思路 —— 错误必须是真实 rusqlite 错误，不手搓错误变体）。
+    fn db_missing_one_table(table: &str) -> crate::db_hold::DbLock<rusqlite::Connection> {
+        let db = crate::db_hold::DbLock::new(rusqlite::Connection::open_in_memory().unwrap());
+        db.lock()
+            .unwrap()
+            .execute_batch(crate::db::SCHEMA)
+            .unwrap();
+        db.lock()
+            .unwrap()
+            .execute_batch(&format!("DROP TABLE {table};"))
+            .unwrap();
+        db
+    }
+
+    /// 一张"发送中"的现场：`file_transfers` 行 active/0 + 那条 `file-<tid>` 气泡 + 队列行。
+    fn seed_send_in_progress(db: &crate::db_hold::DbLock<rusqlite::Connection>, tid: &str) {
+        let dbc = db.lock().unwrap();
+        crate::db::upsert_transfer(&dbc, tid, "peer-1", &format!("{tid}.bin"), 10, "send", "active", None, 0.0)
+            .unwrap();
+        dbc.execute(
+            "INSERT INTO messages(msg_id,conv_id,sender_id,receiver_id,kind,content,ts,seq,status)
+             VALUES(?1,?2,'me','peer-1','file','{}',1,1,'sending')",
+            rusqlite::params![format!("file-{tid}"), "peer-1"],
+        )
+        .unwrap();
+        crate::db::insert_file_outbox(&dbc, tid, "peer-1", None, "/tmp/x.bin", &format!("{tid}.bin"), 10)
+            .unwrap();
+    }
+
+    fn read_send_row(
+        db: &crate::db_hold::DbLock<rusqlite::Connection>,
+        tid: &str,
+    ) -> (String, f64) {
+        db.lock()
+            .unwrap()
+            .query_row(
+                "SELECT status, progress FROM file_transfers WHERE id = ?1",
+                rusqlite::params![tid],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, f64>(1)?)),
+            )
+            .unwrap()
+    }
+
+    /// ① 正常收口：三笔写都落地，且**一条痕都不留**（绿路径不产噪声，与接收侧同口径）。
+    #[test]
+    fn send_finalize_closes_the_send_ledger() {
+        use super::{drop_sent_outbox_row, send_finalize_rows};
+        let db = crate::db_hold::DbLock::new(rusqlite::Connection::open_in_memory().unwrap());
+        db.lock()
+            .unwrap()
+            .execute_batch(crate::db::SCHEMA)
+            .unwrap();
+        seed_send_in_progress(&db, "s1");
+        let _ = db.take_summary();
+
+        let notes = send_finalize_rows(&db, "s1", "peer-1", "s1.bin", 10, "file-s1");
+        assert!(notes.is_empty(), "两张表都在 ⇒ 不该有痕，实得 {notes:?}");
+        assert_eq!(
+            db.take_summary().takes,
+            1,
+            "收尾那两笔写共用一次取锁，且必须经带计时的锁"
+        );
+        assert_eq!(
+            read_send_row(&db, "s1"),
+            ("done".to_string(), 1.0),
+            "对方已确认收下 ⇒ 终态必须是 done/1"
+        );
+        let msg: String = db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT status FROM messages WHERE msg_id='file-s1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(msg, "delivered");
+
+        assert_eq!(drop_sent_outbox_row(&db, "s1"), None, "队列行删除不该留痕");
+        let left: i64 = db
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM file_outbox WHERE transfer_id='s1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(left, 0, "投递成功后队列行必须被收掉");
+        // 删队列行那一次同样要经带计时的锁（前面那些读各算各的，这里单独量）
+        let _ = db.take_summary();
+        assert_eq!(drop_sent_outbox_row(&db, "s1"), None);
+        assert_eq!(
+            db.take_summary().takes,
+            1,
+            "队列行收尾也走这把锁；计到 0 就是那条路又是裸 Mutex"
+        );
+    }
+
+    /// ② 传输终态写坏了：不许再是"静默"。一条痕、stage 认得出来、正文不含文件名与路径。
+    #[test]
+    fn send_transfer_terminal_failure_is_not_silent() {
+        use super::send_finalize_rows;
+        let db = db_missing_one_table("file_transfers");
+        let notes = send_finalize_rows(&db, "s2", "peer-1", "s2.bin", 10, "file-s2");
+        assert_eq!(notes.len(), 1, "只该有传输那一笔的痕，实得 {notes:?}");
+        assert!(
+            notes[0].contains("stage=send-transfer-done id=s2"),
+            "实得：{}",
+            notes[0]
+        );
+        assert!(
+            !notes[0].contains("send-message-delivered"),
+            "两个 stage 混了：{}",
+            notes[0]
+        );
+        assert!(!notes[0].contains("s2.bin"), "文件名不许进日志：{}", notes[0]);
+    }
+
+    /// ③ 消息记录那一笔单独失败：stage 必须是它自己，且不许冒充传输那一笔。
+    #[test]
+    fn send_message_status_failure_has_its_own_stage() {
+        use super::send_finalize_rows;
+        let db = db_missing_one_table("messages");
+        let notes = send_finalize_rows(&db, "s3", "peer-1", "s3.bin", 10, "file-s3");
+        assert_eq!(notes.len(), 1, "传输那一笔成了 ⇒ 只该有消息的痕，实得 {notes:?}");
+        assert!(
+            notes[0].contains("stage=send-message-delivered id=s3"),
+            "实得：{}",
+            notes[0]
+        );
+        assert!(
+            !notes[0].contains("send-transfer-done"),
+            "两个 stage 混了：{}",
+            notes[0]
+        );
+    }
+
+    /// ④ 队列行删不掉：单独一个 stage。留着它 = 同一单会被清扫器再投一次。
+    #[test]
+    fn send_outbox_drop_failure_has_its_own_stage() {
+        use super::drop_sent_outbox_row;
+        let db = db_missing_one_table("file_outbox");
+        let note = drop_sent_outbox_row(&db, "s4").expect("表被删掉了 ⇒ 必须有痕");
+        assert!(
+            note.contains("stage=send-outbox-dropped id=s4"),
+            "实得：{note}"
+        );
+    }
+
+    /// ⑤ 终态降级保护在这条路上照样有效：重复收尾不产痕，之后的 active 也压不回 done。
+    #[test]
+    fn send_finalize_is_idempotent_and_done_is_never_downgraded() {
+        use super::send_finalize_rows;
+        let db = crate::db_hold::DbLock::new(rusqlite::Connection::open_in_memory().unwrap());
+        db.lock()
+            .unwrap()
+            .execute_batch(crate::db::SCHEMA)
+            .unwrap();
+        seed_send_in_progress(&db, "s5");
+        assert!(send_finalize_rows(&db, "s5", "peer-1", "s5.bin", 10, "file-s5").is_empty());
+        assert!(
+            send_finalize_rows(&db, "s5", "peer-1", "s5.bin", 10, "file-s5").is_empty(),
+            "第二次收尾不该报错，也不该留痕"
+        );
+        assert_eq!(read_send_row(&db, "s5"), ("done".to_string(), 1.0));
+        let dbc = db.lock().unwrap();
+        crate::db::upsert_transfer(&dbc, "s5", "peer-1", "s5.bin", 10, "send", "active", None, 0.0)
+            .unwrap();
+        drop(dbc);
+        assert_eq!(
+            read_send_row(&db, "s5"),
+            ("done".to_string(), 1.0),
+            "INV-P26：done 不许被晚到的进度写回 active"
+        );
+    }
+
+    /// 接线判据：三个 stage 各有调用点、那三处 `.ok()` 不许长回来。
+    /// 上面五条都直接驱动生产函数，但**调用点被摘掉时它们照样绿** ⇒ 这一条补那一格。
+    #[test]
+    fn the_three_send_side_swallow_points_are_closed() {
+        let send = include_str!("file/send.rs");
+        for (name, value) in [
+            ("LEDGER_STAGE_SEND_TRANSFER_DONE", "send-transfer-done"),
+            ("LEDGER_STAGE_SEND_MESSAGE_DELIVERED", "send-message-delivered"),
+            ("LEDGER_STAGE_SEND_OUTBOX_DROP", "send-outbox-dropped"),
+        ] {
+            assert!(
+                send.contains(&format!("\"{value}\"")),
+                "{name} 的取值字面量不在源码里"
+            );
+            assert!(
+                send.match_indices(name).count() >= 2,
+                "{name} 只有定义、没有调用点"
+            );
+        }
+        let at = send
+            .find("fn finalize_send_accepted(")
+            .expect("找不到 finalize_send_accepted ⇒ 这条判据失去落点");
+        // `\n}\n`（第 0 列）只在函数结尾出现：块内缩进的 `}` 不算 ⇒ 切出来的就是这个函数的体
+        let end = send[at..]
+            .find("\n}\n")
+            .map(|e| at + e + 3)
+            .unwrap_or(send.len());
+        let body = &send[at..end];
+        assert!(
+            body.contains("send_finalize_rows("),
+            "收尾函数不再走那两笔带的留痕 ⇒ 又回到 .ok() 吞错"
+        );
+        assert_eq!(
+            body.matches(".ok();").count(),
+            0,
+            "收尾函数里还剩 `.ok()` —— 库写失败又会变静默"
+        );
+        let files = include_str!("../commands/files.rs");
+        assert_eq!(
+            files.matches("delete_file_outbox(&dbc").count(),
+            0,
+            "删队列行那一处又回到锁内 `.ok()`"
+        );
+        assert_eq!(
+            files.matches("drop_sent_outbox_row(").count(),
+            1,
+            "队列行收尾的调用点只许一处，且必须走带留痕的那个"
+        );
+        // 两个调用点都得走这一份收尾：少一个就是"AlreadyHave 那一路又静默停在 active"
+        assert!(
+            send.matches("finalize_send_accepted(").count() >= 3,
+            "收尾函数只剩一个调用点 ⇒ AlreadyHave 快路或成功回执那一路被摘掉了"
+        );
+        let have = send
+            .find("接收端已完整收下该文件，直接完成")
+            .expect("AlreadyHave 那条留痕不在了 ⇒ 这条判据失去落点");
+        assert!(
+            send[have..have + 600].contains("finalize_send_accepted("),
+            "AlreadyHave 快路没有接上这份收尾"
+        );
+    }
+
+    /// 回执出口的留痕形状（生产函数 `ack_send_failure_note` 本身）：分支 stage、`transfer_id`
+    /// 和 `try_send` 的**错误类别**要同时在场 —— 现场要分的正是"未建立连接"还是"队列已满"。
+    /// 五个 stage 取值互不相同，不许两条分支冒充同一格。
+    #[test]
+    fn ack_send_note_carries_the_branch_stage_and_error_category() {
+        let note = super::ack_send_failure_note(super::ACK_STAGE_COMPLETED, "t-1", "  未建立连接 ");
+        assert!(
+            note.contains("stage=ack-completed id=t-1: 未建立连接"),
+            "实得：{note}"
+        );
+
+        let all = [
+            (super::ACK_STAGE_CHUNK_ABORTED, "ack-chunk-aborted"),
+            (super::ACK_STAGE_FINISH_FAILED, "ack-finish-failed"),
+            (super::ACK_STAGE_DUP_DONE, "ack-duplicate-done"),
+            (super::ACK_STAGE_NO_RECEIVER, "ack-no-receiver"),
+            (super::ACK_STAGE_COMPLETED, "ack-completed"),
+        ];
+        for (stage, expected) in all.iter() {
+            let n = super::ack_send_failure_note(stage, "t-9", "连接已关闭");
+            assert!(n.contains(&format!("stage={expected} id=t-9")), "实得：{n}");
+            assert!(n.contains("连接已关闭"), "错误类别被丢了：{n}");
+        }
+        for (i, (stage, _)) in all.iter().enumerate() {
+            for (other, _) in all[i + 1..].iter() {
+                assert_ne!(stage, other, "两条回执分支共用一个 stage ⇒ 现场读不出是哪一条");
+            }
+        }
+    }
+
+    /// 错误文本上界与台账那几条同口径（SQLite / 队列原文长度不可控），且类别前缀仍留在开头。
+    #[test]
+    fn ack_send_note_bounds_the_error_text() {
+        let long = format!("no such column: {}", "x".repeat(400));
+        let note = super::ack_send_failure_note(super::ACK_STAGE_NO_RECEIVER, "t-2", &long);
+        let tail = note
+            .split_once("id=t-2: ")
+            .map(|(_, rest)| rest)
+            .expect("留痕里没有错误文本那段");
+        assert!(
+            tail.starts_with("no such column:") && tail.ends_with('…'),
+            "截断把开头或结尾吃掉了：{tail}"
+        );
+        assert!(
+            tail.chars().count() <= 241,
+            "实得长度 {}",
+            tail.chars().count()
+        );
+    }
+
+    /// 接线判据：五处回执出口真的各带自己的 stage，且 `let _ = try_send(FileCompleteAck)`
+    /// 那个吞错形状一处都不许留。上面两条直接驱动生产函数，但**调用点被摘掉时它们照样绿**
+    /// ⇒ 这一条补那一格：吞错形状、留痕调用次数、每个 stage 的引用次数各钉一刀。
+    #[test]
+    fn the_five_ack_send_points_are_all_wired_to_their_stage() {
+        let src = include_str!("transport/handle_file.rs");
+        let flat: String = src.chars().filter(|c| !c.is_whitespace()).collect();
+        assert_eq!(
+            flat.matches("let_=try_send(state,peer_id,&Message::FileCompleteAck")
+                .count(),
+            0,
+            "又出现了吞掉回执发送结果的写法 ⇒ 发送失败重新变回无痕"
+        );
+        assert_eq!(
+            flat.matches("ifletErr(se)=try_send(state,peer_id,&Message::FileCompleteAck")
+                .count(),
+            5,
+            "五处回执出口各自要接一次失败处理"
+        );
+        let names = [
+            "ACK_STAGE_CHUNK_ABORTED",
+            "ACK_STAGE_FINISH_FAILED",
+            "ACK_STAGE_DUP_DONE",
+            "ACK_STAGE_NO_RECEIVER",
+            "ACK_STAGE_COMPLETED",
+        ];
+        for name in names {
+            assert_eq!(
+                src.matches(&format!("file::{name}")).count(),
+                1,
+                "{name} 在 transport 这册里的调用点只许恰好一处（0＝被摘掉，≥2＝两条分支共用一格）"
+            );
+            assert_eq!(
+                include_str!("file/receive.rs")
+                    .matches(&format!("pub(crate) const {name}: &str"))
+                    .count(),
+                1,
+                "{name} 的定义只许一处"
+            );
+        }
+        assert_eq!(
+            src.matches("file::ack_send_failure_note(").count(),
+            5,
+            "留痕调用点少一处就是一处新的静默"
+        );
+    }
+
+    /// writer 出口的留痕（生产函数 `ack_writer_failure_note`）：只有这一帧确实是
+    /// `FileCompleteAck` 才记 —— writer 同时扛着心跳、群消息和几百万条分片，
+    /// 把别人的写失败报成"回执故障"会把归因指错地方。两种出口要分得开。
+    #[test]
+    fn ack_writer_note_fires_only_for_the_complete_ack_frame() {
+        use crate::protocol::Message;
+        let ack = Message::FileCompleteAck {
+            transfer_id: "t-7".into(),
+            success: true,
+        };
+        let n = super::ack_writer_failure_note(&ack, "socket", " Broken pipe (os error 32) ")
+            .expect("回执帧必须留痕");
+        assert!(
+            n.contains("stage=ack-writer id=t-7 success=true 出口=socket: Broken pipe (os error 32)"),
+            "实得：{n}"
+        );
+        let local = super::ack_writer_failure_note(&ack, "local", "长度超过 MAX_FRAME")
+            .expect("本机写不出去那一支也要留痕");
+        assert!(local.contains("出口=local") && !local.contains("出口=socket"), "实得：{local}");
+
+        for other in [
+            Message::Heartbeat {
+                device_id: "dev-x".into(),
+            },
+            Message::FileDone {
+                transfer_id: "t-7".into(),
+                attempt: Some(1),
+            },
+            Message::FileAccept {
+                transfer_id: "t-7".into(),
+            },
+        ] {
+            assert!(
+                super::ack_writer_failure_note(&other, "socket", "boom").is_none(),
+                "非回执帧不得冒用 ack-writer 这一格：{:?}",
+                other
+            );
+        }
+        let long = format!("no such column: {}", "x".repeat(400));
+        let bounded = super::ack_writer_failure_note(&ack, "socket", &long).unwrap();
+        let tail = bounded
+            .split_once("出口=socket: ")
+            .map(|(_, r)| r)
+            .unwrap();
+        assert!(
+            tail.ends_with('…') && tail.chars().count() <= 241,
+            "实得长度 {}",
+            tail.chars().count()
+        );
+    }
+
+    /// 接线判据：writer 那两条出口（Local / Socket）各自真的接上留痕，且 `Socket` 的错误对象
+    /// 不许再被 `_` 丢掉 —— 丢掉就等于"进了 mpsc 还是上了链路"两种现场在日志里长一样。
+    /// `queue_policy.rs` 里 writer 循环吃 `Arc<AppState>`（单测造不出真 tauri `AppHandle`），
+    /// 所以这一格只能按调用点判，与仓里既有的 `writer_loop` 源码护栏同一口径。
+    #[test]
+    fn the_ack_writer_egress_is_wired_on_both_outcomes() {
+        let raw = include_str!("transport/queue_policy.rs");
+        // 先去注释再数：这一族的注释本来就会复述被断言的那句字面量（本次写完就被自己的注释
+        // 判红过一次），留下注释当"代码"等于把尺子架在散文上。
+        let src: String = raw
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let flat: String = src.chars().filter(|c| !c.is_whitespace()).collect();
+        assert_eq!(
+            flat.matches("crate::network::file::ack_writer_failure_note(&msg,").count(),
+            2,
+            "Local 与 Socket 两支出口各要接一次留痕"
+        );
+        assert!(src.contains("\"socket\""), "Socket 出口的类型标记不见了");
+        assert!(src.contains("\"local\""), "Local 出口的类型标记不见了");
+        assert_eq!(
+            src.match_indices("WriteError::Socket(_)").count(),
+            0,
+            "又回到把 socket 错误整个丢掉的 `_` ⇒ 错误类别无从读出"
+        );
+        assert_eq!(
+            flat.matches("Err(WriteError::Socket(e))").count(),
+            1,
+            "socket 错误的绑定点只许一处（两处说明分流被复制）"
+        );
+    }
+
     /// 接线判据：每个 stage 常量除定义外都要有调用点。
     #[test]
     fn every_declared_ledger_stage_has_a_real_call_site() {

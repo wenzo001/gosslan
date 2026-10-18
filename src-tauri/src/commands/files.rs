@@ -436,8 +436,11 @@ pub async fn flush_pending_files(state: &Arc<AppState>, peer_id: &str) {
             .await
             {
                 Ok(()) => {
-                    let dbc = st.db.lock().unwrap_or_else(|e| e.into_inner());
-                    db::delete_file_outbox(&dbc, &transfer_id).ok();
+                    // 队列行删不掉必须留痕：那一行还在 = 清扫器会把同一单再投一次，
+                    // 而界面上已经显示"已送达"。留痕在出锁之后写（helper 返回时就放了锁）。
+                    if let Some(note) = file::drop_sent_outbox_row(&st.db, &transfer_id) {
+                        st.logger.error("file", note);
+                    }
                 }
                 Err(e) => {
                     // 判据只有一份（`file::send_retry_verdict`，纯函数 + 单测）：

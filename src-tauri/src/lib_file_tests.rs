@@ -246,7 +246,20 @@
             "两个出口各回一帧 Ack：已收完回成功、没收下也必须回失败（静默 = 发送端白等一整个静默窗口）"
         );
         assert!(
-            flat.contains("Message::FileCompleteAck{transfer_id,success:false,}"),
+            flat.contains("Message::FileCompleteAck{transfer_id,success:false,}")
+                || {
+                    // 2026-10-17：ack 出口要留痕之后，那一支的 `transfer_id` 必须 `.clone()`
+                    // （错误文本还要同一个 id），简写字面量因此不再存在。判据改按**位置**读契约：
+                    // `if already_done { … } else { … }` 的 else 段里那一帧必须是失败回执。
+                    // 比原来那条更紧：原文只证"这句字面量在场"，这条证"失败帧在 else 那一支"。
+                    let else_at = flat
+                        .find("}else{")
+                        .expect("重复 FileDone 那一臂里 if already_done 的 else 支不见了");
+                    let tail = &flat[else_at..];
+                    tail.matches("Message::FileCompleteAck{").count() == 1
+                        && tail.contains("success:false")
+                        && !tail.contains("success:true")
+                },
             "「本机没这份文件」的出口必须回**失败** Ack；写成功会让发送端把没收下的文件标成已送达"
         );
     }

@@ -468,7 +468,9 @@ async fn handle_relay_chunk(
                         format!("中继收齐后的文件卡片落库失败 msg={}：{e}", rec.msg_id),
                     );
                 }
+                drop(dbc);
                 let nm = resolve_nickname(state, &from);
+                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                 db::touch_conversation(
                     &dbc,
                     &from,

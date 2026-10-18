@@ -578,6 +578,72 @@ async fn stream_file(
     Ok(())
 }
 
+/// 发送侧收口的三个 stage（与接收侧那套同一口径：只有 stage / `transfer_id` / 有界的 SQLite 文本，
+/// 不带文件名、路径、内容、密钥）。取值各自唯一，判据按"三个 stage 互不混淆"钉。
+pub(crate) const LEDGER_STAGE_SEND_TRANSFER_DONE: &str = "send-transfer-done";
+pub(crate) const LEDGER_STAGE_SEND_MESSAGE_DELIVERED: &str = "send-message-delivered";
+pub(crate) const LEDGER_STAGE_SEND_OUTBOX_DROP: &str = "send-outbox-dropped";
+
+/// 发送侧收口的那两笔库写（纯 db，不要 `AppHandle` ⇒ 单测能驱动**生产码本身**，
+/// 形状与 #25 拆 `finish_receiver_into` 的理由一样）。
+///
+/// 返回要留痕的失败；日志由调用方在**出锁之后**写。这两笔写此前各是一个 `.ok()`：
+/// 写坏了屏幕上什么都没有，于是"发送端台账停在 active"这一族只能靠猜。
+/// 本函数**不改**发送成功/失败的判定（那要动 `SendFileError` 与重试状态机，不在本轮授权范围）。
+pub(crate) fn send_finalize_rows(
+    db_lock: &crate::db_hold::DbLock<rusqlite::Connection>,
+    transfer_id: &str,
+    peer_id: &str,
+    name: &str,
+    size: u64,
+    msg_id: &str,
+) -> Vec<String> {
+    let dbc = db_lock.lock().unwrap_or_else(|e| e.into_inner());
+    let mut notes: Vec<String> = Vec::new();
+    if let Err(e) = db::upsert_transfer(
+        &dbc,
+        transfer_id,
+        peer_id,
+        name,
+        size,
+        "send",
+        "done",
+        None,
+        1.0,
+    ) {
+        notes.push(terminal_ledger_failure_note(
+            LEDGER_STAGE_SEND_TRANSFER_DONE,
+            transfer_id,
+            &e,
+            None,
+        ));
+    }
+    // 接收方已确认完成，此时推进 delivered 才是真实的。
+    if let Err(e) = db::set_message_status(&dbc, msg_id, "delivered") {
+        notes.push(terminal_ledger_failure_note(
+            LEDGER_STAGE_SEND_MESSAGE_DELIVERED,
+            transfer_id,
+            &e,
+            None,
+        ));
+    }
+    notes
+}
+
+/// 投递成功后删掉 `file_outbox` 那一行；写坏了同样必须说出来。
+///
+/// 为什么这一笔不能 silently：这一行还在 = 清扫器会把**同一单**再投一次，而界面上已经
+/// 显示"已送达"——那是"看起来成功了两次"，比停在发送中更难解释。
+pub(crate) fn drop_sent_outbox_row(
+    db_lock: &crate::db_hold::DbLock<rusqlite::Connection>,
+    transfer_id: &str,
+) -> Option<String> {
+    let dbc = db_lock.lock().unwrap_or_else(|e| e.into_inner());
+    db::delete_file_outbox(&dbc, transfer_id)
+        .err()
+        .map(|e| terminal_ledger_failure_note(LEDGER_STAGE_SEND_OUTBOX_DROP, transfer_id, &e, None))
+}
+
 /// 发送端拿到"对方已完整收下"的证据后统一的收尾：落 `done` + 推进 `delivered` + 三个事件。
 ///
 /// 必须只有一份，两个调用点共用：`stream_file` 收到成功 `FileCompleteAck` 之后，以及
@@ -591,22 +657,17 @@ fn finalize_send_accepted(
     size: u64,
     path: &std::path::Path,
 ) {
-    {
-        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::upsert_transfer(
-            &dbc,
-            transfer_id,
-            peer_id,
-            name,
-            size,
-            "send",
-            "done",
-            None,
-            1.0,
-        )
-        .ok();
-        // 接收方已确认完成，此时推进 delivered 才是真实的。
-        db::set_message_status(&dbc, &format!("file-{transfer_id}"), "delivered").ok();
+    let notes = send_finalize_rows(
+        &state.db,
+        transfer_id,
+        peer_id,
+        name,
+        size,
+        &format!("file-{transfer_id}"),
+    );
+    // 上面那个函数已经在返回时释放 db 锁 ⇒ 落盘不加长持锁区间。
+    for note in notes {
+        state.logger.error("file", note);
     }
     // 通知前端发送方文件消息已完成（前端 onMessageAcked 会把 spinner 切为空圆框）
     let _ = state

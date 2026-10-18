@@ -1023,6 +1023,17 @@ export const zhCN: MessageDict = {
   "diag.peerNotDeclared": "未声明版本（老版本）",
   "diag.peerVersionLine": "协议 {p} · 应用 {a}",
   "diag.peerNewer": "对端协议更高",
+  "diag.connHealth": "连接活性（按连接，不是按节点）",
+  "diag.connHealthHint":
+    "「写出」那列是本端把字节写进 socket 成功，半开的链路上它会一直前进，不等于对端活着；" +
+    "「读到」那列的量的是**解析出一个完整帧**（读循环一帧一次，字节级没有单独读数）。" +
+    "从没发生过才是空，0 会被读成「很久以前」。",
+  "diag.connHealthEmpty": "当前一条已登记的连接都没有",
+  "diag.connWrite": "写出",
+  "diag.connRead": "读到完整帧",
+  "diag.connHealthy": "判健康",
+  "diag.connUnhealthy": "判不健康",
+  "diag.connNever": "从没",
 
   // ---- 发送 / 通知 / 文件操作 ----
   "send.fileFail": "文件发送失败",
