@@ -235,25 +235,29 @@ pub fn remove_favorite(state: State<'_, Arc<AppState>>, id: String) -> Result<()
 
 /// 读取收藏副本的预览字节（图片）。契约与 [`read_file_preview`] 一致：
 /// 超限返回 "TOO_LARGE"，副本不在返回 "文件不存在"。
-#[tauri::command(async)]
-pub fn read_favorite_preview(
+#[tauri::command]
+pub async fn read_favorite_preview(
     state: State<'_, Arc<AppState>>,
     id: String,
     max_bytes: u64,
 ) -> Result<tauri::ipc::Response, String> {
-    let s = state.inner();
-    let max_bytes = max_bytes.min(15 * 1024 * 1024);
-    let file = match resolve_favorite_media_path(s, &id) {
-        MediaPath::Present(p) => *p,
-        MediaPath::Unknown(e) => return Err(e),
-        MediaPath::Gone => return Err("文件不存在".to_string()),
-    };
-    let meta = std::fs::metadata(&file).map_err(|e| e.to_string())?;
-    if meta.len() > max_bytes {
-        return Err("TOO_LARGE".to_string());
-    }
-    let bytes = std::fs::read(&file).map_err(|e| e.to_string())?;
-    Ok(tauri::ipc::Response::new(bytes))
+    let s = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<tauri::ipc::Response, String> {
+        let max_bytes = max_bytes.min(15 * 1024 * 1024);
+        let file = match resolve_favorite_media_path(&s, &id) {
+            MediaPath::Present(p) => *p,
+            MediaPath::Unknown(e) => return Err(e),
+            MediaPath::Gone => return Err("文件不存在".to_string()),
+        };
+        let meta = std::fs::metadata(&file).map_err(|e| e.to_string())?;
+        if meta.len() > max_bytes {
+            return Err("TOO_LARGE".to_string());
+        }
+        let bytes = std::fs::read(&file).map_err(|e| e.to_string())?;
+        Ok(tauri::ipc::Response::new(bytes))
+    })
+    .await
+    .map_err(|e| format!("预览读取任务失败：{e}"))?
 }
 
 /// 一次批量删除的条数上限。
@@ -299,14 +303,15 @@ pub fn delete_messages(
  * （downloads 下或本机自发内容）—— 覆盖“发送侧待办图片还在用户原始路径”的场景。
  * 安全边界与 `read_file_preview`/`resolve_media_path` 同口径。
  */
-#[tauri::command(async)]
-pub fn read_content_preview(
+#[tauri::command]
+pub async fn read_content_preview(
     state: State<'_, Arc<AppState>>,
     cid: String,
     max_bytes: u64,
 ) -> Result<tauri::ipc::Response, String> {
-    let s = state.inner();
-    let max_bytes = max_bytes.min(15 * 1024 * 1024);
+    let s = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<tauri::ipc::Response, String> {
+        let max_bytes = max_bytes.min(15 * 1024 * 1024);
     // db 锁内只做两个点查（find_local_path / find_source，索引查微秒级）；
     // canonicalize 是文件系统操作（网络盘/慢盘可挂任意久），绝不放在锁持有期间
     // —— 旧形状持 db 锁等 IO，还构成 db → downloads_dir 的锁序耦合（审计 2.1d）。
@@ -354,6 +359,9 @@ pub fn read_content_preview(
     }
     let bytes = std::fs::read(&file).map_err(|e| e.to_string())?;
     Ok(tauri::ipc::Response::new(bytes))
+    })
+    .await
+    .map_err(|e| format!("预览读取任务失败：{e}"))?
 }
 
 /// 导出全部聊天文字到用户指定文件（Markdown 单文件）。

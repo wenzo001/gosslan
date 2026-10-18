@@ -233,25 +233,31 @@ pub fn media_present(state: State<'_, Arc<AppState>>, msg_id: String) -> Result<
 /// 或代码（→TextDecoder）。安全边界见 [`resolve_media_path`]。
 /// 超过 `max_bytes` 返回 "TOO_LARGE"，由前端回退文件卡片；文件已被清理返回
 /// "文件不存在"，由前端渲染成「已清理」占位。
-#[tauri::command(async)]
-pub fn read_file_preview(
+#[tauri::command]
+pub async fn read_file_preview(
     state: State<'_, Arc<AppState>>,
     msg_id: String,
     max_bytes: u64,
 ) -> Result<tauri::ipc::Response, String> {
-    let s = state.inner();
-    let max_bytes = max_bytes.min(15 * 1024 * 1024);
-    let file = match resolve_media_path(s, &msg_id) {
-        MediaPath::Present(p) => *p,
-        MediaPath::Unknown(e) => return Err(e),
-        MediaPath::Gone => return Err("文件不存在".to_string()),
-    };
-    let meta = std::fs::metadata(&file).map_err(|e| e.to_string())?;
-    if meta.len() > max_bytes {
-        return Err("TOO_LARGE".to_string());
-    }
-    let bytes = std::fs::read(&file).map_err(|e| e.to_string())?;
-    Ok(tauri::ipc::Response::new(bytes))
+    let s = state.inner().clone();
+    // 预览最大 15MiB：`canonicalize` 与 `read` 可能落在慢盘/网络盘上，
+    // 必须离开 async worker（与导出、整份哈希同一条规矩）。
+    tauri::async_runtime::spawn_blocking(move || -> Result<tauri::ipc::Response, String> {
+        let max_bytes = max_bytes.min(15 * 1024 * 1024);
+        let file = match resolve_media_path(&s, &msg_id) {
+            MediaPath::Present(p) => *p,
+            MediaPath::Unknown(e) => return Err(e),
+            MediaPath::Gone => return Err("文件不存在".to_string()),
+        };
+        let meta = std::fs::metadata(&file).map_err(|e| e.to_string())?;
+        if meta.len() > max_bytes {
+            return Err("TOO_LARGE".to_string());
+        }
+        let bytes = std::fs::read(&file).map_err(|e| e.to_string())?;
+        Ok(tauri::ipc::Response::new(bytes))
+    })
+    .await
+    .map_err(|e| format!("预览读取任务失败：{e}"))?
 }
 
 // ---------------- peer 投递槽位闸门 ----------------

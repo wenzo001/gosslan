@@ -367,3 +367,54 @@
             );
         }
     }
+
+    /// 预览读取（每格上限 15 MiB）必须整体离开 async worker：`canonicalize` 与 `read`
+    /// 落在慢盘/网络盘上可挂任意久，而同一 runtime 上还排着所有开窗与网络命令。
+    ///
+    /// 旧形状是 `#[tauri::command(async)] + 同步 fn` ⇒ 宏把它投进 `async_runtime::spawn`
+    /// （见 INV-P34 登记的那两行 tauri 源码），跑在 tokio worker 上。这条按**函数体形状**
+    /// 判三件事：① 在 `spawn_blocking` 里；② 读盘点之前最近的 `spawn_blocking` 与它之间
+    /// 没有 `.await`；③ 15 MiB 上限还在（没有上限的读盘不能进这条法的登记范围）。
+    #[test]
+    fn preview_reads_run_off_the_async_worker() {
+        let helpers = include_str!("commands/helpers.rs");
+        let favorites = include_str!("commands/favorites.rs");
+        for (file, src, sig) in [
+            (
+                "commands/helpers.rs",
+                helpers,
+                "pub async fn read_file_preview(",
+            ),
+            (
+                "commands/favorites.rs",
+                favorites,
+                "pub async fn read_favorite_preview(",
+            ),
+            (
+                "commands/favorites.rs",
+                favorites,
+                "pub async fn read_content_preview(",
+            ),
+        ] {
+            let body = rust_fn_body(src, sig);
+            let flat = code_flat(&body);
+            assert!(
+                flat.contains("spawn_blocking("),
+                "{file}::{sig} 必须把读盘交给 spawn_blocking —— 留在 async worker 上会钉住一个 worker"
+            );
+            assert!(
+                flat.contains("max_bytes.min(15*1024*1024)"),
+                "{file}::{sig} 的 15 MiB 上限不见了 —— 有界性是该格进这条法的前提"
+            );
+            let read = flat
+                .find("std::fs::read(")
+                .unwrap_or_else(|| panic!("{file}::{sig} 里找不到读盘点 —— 护栏需要同步更新"));
+            let blk = flat[..read]
+                .rfind("spawn_blocking(")
+                .unwrap_or_else(|| panic!("{file}::{sig} 的读盘点不在 spawn_blocking 之后"));
+            assert!(
+                !flat[blk..read].contains(".await"),
+                "{file}::{sig} 的读盘与 spawn_blocking 之间出现了 .await —— 读盘回到了当前 worker 上"
+            );
+        }
+    }
