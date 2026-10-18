@@ -164,6 +164,10 @@
   `gossip-late` **23/23**（晚加入群的 gossip 收敛）、`stall-mid` **25/25**（中途停滞）、
   `disk` **18/18**（磁盘/队列）。
   标准轮合计 **24 轮 / 650 断言**；加互操作 **8 轮/216**，共 **32 轮 / 866 断言全绿**。
+- **反向自证（证明正向断言非空转）**：`--negative`（幽灵收件人）投递断言如期
+  超时红、进程 exit 0（自证通过）；`kill-mid-lie`（期望字节 +1、sha 换成错值）
+  两条断言如期红（`6291457 vs 6291456`、sha 不符）——这是该轮的 **EXPECTED RED**，
+  不是产品失败。正向 `kill-mid` 的 25/25 因此不是空转。
 - **依赖安全审计**：`cargo audit --file src-tauri/Cargo.lock` **exit 0、0 个漏洞**；
   10 条 allowed warnings（unmaintained/unsound，均为传递依赖）：`proc-macro-error`、
   `unic-*`（6 个未维护）、`zbus_names`/`zvariant`/`zvariant_derive`（Linux D-Bus，未维护）、

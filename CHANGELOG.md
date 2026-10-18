@@ -46,6 +46,9 @@
 - 续传/崩溃扩展：`poison-part` **22/22**、`resume-prefix` **23/23**、
   `groupcrash` **26/26**、`gossip-late` **23/23**、`stall-mid` **25/25**、`disk` **18/18**。
   标准轮合计 **24 轮 / 650 断言**，加互操作共 **32 轮 / 866 断言全绿**。
+- 反向自证：`--negative`（幽灵收件人）投递断言如期红、进程 exit 0；
+  `kill-mid-lie` 两条断言按设计红（期望 6291457/实际 6291456、sha 不符）——
+  EXPECTED RED，不是产品失败，证明正向 `kill-mid` 25/25 非空转。
 - 依赖安全审计：`cargo audit --file src-tauri/Cargo.lock` **exit 0、0 个漏洞**；
   10 条 allowed warnings（unmaintained/unsound，传递依赖：proc-macro-error、unic-*、
   zbus/zvariant、glib 0.18.5；glib 仅 Linux GTK 路径）。Linux 运行时未验证。
