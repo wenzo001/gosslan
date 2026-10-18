@@ -19,6 +19,9 @@
 | 搜索筛选菜单 | `ChatSearchDialog.vue` 发送人/日期两处手写 `role=menu` + 绝对定位 + 按钮开关 | Reka `DropdownMenuRoot/Trigger/Portal/Content/Item` | **B（已落地）** | `src/components/search/ChatSearchDialog.vue` | 互斥收进 `onSenderOpen/onDateOpen`；`:modal="false"` 防止焦点陷阱抢走搜索框；Portal 后用 `z-[80]`；`--only=search` **14/14**，新增「嵌套 Dialog 的 aria-hidden/pointer-events 下仍可命中」判据 |
 | 锚定菜单（其余四处） | `ConversationList`「+」、`NavRail`「更多」、`TodoPickField` 三格下拉、`GroupTasksBoard` 行内状态 | Reka `DropdownMenuRoot/Trigger/Content/Item`；看板用虚拟锚点 | **B（已落地）** | `ConversationList.vue`、`NavRail.vue`、`TodoPickField.vue`、`GroupTasksBoard.vue` | 开关/点外部/Esc/↑↓/Home/End 交给库；`useExclusivePopup` 互斥保留；看板不再手算 top/bottom。聚合判据「全 src 无手写 role=menuitem」；`--only=todopick` 4/4、`--only=tasksrt` 14/14 |
 | 设置开关 | `SettingsToggle.vue` 自绘 `button role=switch`（9 个调用点） | Reka `SwitchRoot/SwitchThumb`（Vue 版 `modelValue/update:modelValue`） | **B（已落地）** | `src/components/settings/SettingsToggle.vue` | 保留必填 `label`、尺寸/配色/pending；`rekaPrimitives.test.ts` 钉住入参与无手写 role；`--only=switch` 4/4。迁移中实测：Radix 的 `checked/update:checked` 在 Reka Vue 上静默无效 |
+| 单选分段控件 | `SegmentedControl.vue` 手写 `role=radiogroup/radio` + 按钮（多处分段切换） | Reka `RadioGroupRoot/RadioGroupItem` | **B（已落地）** | `src/components/ui/SegmentedControl.vue` | roving focus/方向键/禁用交给 RovingFocus；保留尺寸/配色/徽标。探针实测：组本身是 Tab 停点、项 `tabindex=-1`（不是 Radix 记忆里的选中项为停点）；`--only=segmented` 8/8 |
+| 字号滑杆 | `ChatStyleSection.vue` 手写 pointerdown/move + 键盘处理 + 五档圆点 | Reka `SliderRoot/Track/Range/Thumb` | **B（已落地）** | `src/components/settings/ChatStyleSection.vue` | 保留五档视觉与 `setChatStyle` 落库；`aria-valuetext` 现读 `px · 文案`；`--only=slider` 8/8 |
+| 异步查询/缓存 | `GroupFilesPanel.vue` 的 `files/loading/failed/loadError` + 两个 watch + `gid !== props.groupId` 过期守卫 | `@tanstack/vue-query@5.104.4`（每个窗口一份 QueryClient） | **B（试点已落地）** | `src/boot/boot.ts`、`src/utils/groupFilesQuery.ts`、`src/components/GroupFilesPanel.vue`、`src/api/index.ts` | 按群分键 ⇒ 旧响应结构上写不进新群；`staleTime 0` ⇒ 每次打开重拉；并发合并/失败保留/重试交给库；`onGroupFileActivity` 窄订阅只失效当前群、关面板成对退订。单测 5 条 + `--only=files` 8/8。边界：Pinia/SQLite/可靠投递仍是事实源，Query 只接管"纯读可过期面板" |
 
 ## 2. 本轮评估、尚未迁移
 
@@ -31,7 +34,7 @@
 | 原生下拉选择 | 4 个文件：`NetworkSection.vue`、`StorageSection.vue`、`AppearanceSection.vue`、`TodoPickField.vue` | Reka `Select` | C（当前保留） | 原生 `<select>` 在 iOS/Android 打开系统选择器，是平台原生行为；换成自绘弹层会丢失移动端原生选择器与系统无障碍。桌面端也没有证据表明 Reka 更优 | 若出现"桌面端需要复杂选项渲染（图标/多列）"的真实需求，再只在桌面端替换 |
 | 消息列表虚拟化 | `VirtualList.vue`（525 行；前缀和 + 二分 + 实测高度覆盖 + prepend 锚定 + pending jump + pinned 贴底） | `@tanstack/vue-virtual` | C（当前保留） | P7 实测：20k 条 `calib()` 1.3 ms/遍，滚动 p95 17.5/16.8 ms，`longFramesOver50ms=0`；产品缓存上界 `PAGE_SIZE(100) × MAX_PAGES(10) = 1000 条/会话`。替换会重写 0.5px 白缝、prepend 不跳动、未读跳转二次落定这些已被真机/守恒判据钉住的行为 | 若产品上界被抬高到 1 万条/会话，或需要横向虚拟化/多列，再试迁移 |
 | 日志长列表 | 已迁：`LogViewer.vue` 的 `useVirtualizer` | `@tanstack/vue-virtual` | **B（已落地）** | 见第 1 节；真实业务页（日志窗口）已切换，不是空封装 | 真机长日志滚动读数尚未采集（NOT RUN） |
-| 异步请求/缓存 | Pinia stores + `StaleGuard` + 单飞 + 事件驱动更新（`useChatStore.ensureGroupTodoRows` 等） | TanStack Query | C（当前保留） | 数据源是 SQLite + 事件流；离线队列、可靠投递、加密传输、事务语义不能用普通查询缓存替代。存储层迁移会把"谁拥有事实"变成两份 | 若出现纯读、可过期、可后台刷新的独立面板（如远端目录列表），可在该模块试点 Query |
+| 消息/会话/任务的异步状态 | Pinia stores + `StaleGuard` + 单飞 + 事件驱动更新（`useChatStore.ensureGroupTodoRows` 等） | TanStack Query | C（当前保留） | 数据源是 SQLite + 事件流；离线队列、可靠投递、加密传输、事务语义不能用普通查询缓存替代。存储层迁移会把"谁拥有事实"变成两份。**纯读面板已另起试点**（群文件，见第 1 节），两者边界：Query 不管消息状态机 | 若再出现纯读、可过期、可后台刷新的独立面板（远端目录、诊断快照），按群文件模式逐面板迁移；会话/消息主链不迁 |
 | 表单 | 原生 `<form>`/事件 + i18n 校验；`TodoPickField` 等 | TanStack Form / vee-validate | D（当前） | 现有表单纯 UI 状态 + 少量校验；没有复杂字段数组/异步校验的调用点。引入 Form 只增加依赖与心智，不减少业务代码 | 出现多步、动态字段数组、跨字段异步校验的真实表单时 |
 | 路由 | 应用内 hash/窗口分层，无 Vue Router | TanStack Router | D（当前） | 路由与多窗口/Tauri 启动参数耦合；替换不会降低现有复杂度，反而要重做窗口路由 | 若引入真正的 URL 路由需求（Web 端独立部署） |
 | 图标 | `lucide-vue-next` + `components/ui/icons.ts` 统一入口；4 个文件仍有内联 SVG（平台/产品专属） | Lucide | A（已统一） | 旧的前端正则曾跨 import 吞行造成 12 处假绿，P3 已修；内联 SVG 逐处判定为平台/产品图形保留 | 新增常规图标一律走 `components/ui/icons.ts` |
@@ -48,17 +51,19 @@
 - 删除：`@headlessui/vue`（唯一消费者已全部迁到 Reka）。
 - 新增：`reka-ui@^2.11.0`（MIT；peer Vue >= 3.4；本机安装版本 2.11.0）。
 - 新增：`@tanstack/vue-virtual@^3.13.47`（MIT；peer Vue ^2.7 || ^3；本机安装 3.13.47）。
-- 现存生产依赖：`@tauri-apps/api`、`@tauri-apps/plugin-dialog`、`@tauri-apps/plugin-notification`、`@tauri-apps/plugin-opener`、`dayjs`、`highlight.js`、`lucide-vue-next`、`pinia`、`reka-ui`、`vue`。
+- 新增：`@tanstack/vue-query@^5.104.4`（MIT；peer Vue ^2.6 || ^3.x；本机安装 5.104.4，含 query-core 5.104.4）。使用面只有群文件面板与每窗口的 QueryClient。
+- 新增：`@vueuse/core@^14.4.0`（MIT；Vue 3）。使用面：`useClipboard({ legacy: true })`（复制链去掉手写 `execCommand` 回退）。
+- 现存生产依赖：`@tanstack/vue-virtual`、`@tanstack/vue-query`、`@tauri-apps/api`、`@tauri-apps/plugin-dialog`、`@tauri-apps/plugin-notification`、`@tauri-apps/plugin-opener`、`@vueuse/core`、`dayjs`、`highlight.js`、`lucide-vue-next`、`pinia`、`reka-ui`、`vue`。
 - 已确认**不在** `package.json`：`vue-easy-lightbox`、`clsx`、`tailwind-merge`（上一轮清理后无残留）。
 
 ## 4. 验证口径（每次批次都现算）
 
 | 层 | 命令 | 本轮读数 |
 |---|---|---|
-| 单测 | `npm test` | 1030 / 1030，0 失败 |
-| 构建 | `npm run build` | 退码 0；`main` 307.27 kB / gzip 92.55（TanStack 在 vendor 分块，vendor 75.20 kB / gzip 24.51） |
+| 单测 | `npm test` | 1039 / 1039，0 失败 |
+| 构建 | `npm run build` | 退码 0；`main` 307.80 kB / gzip 92.90（vendor 200.45 kB / gzip 61.47 —— 增量来自 TanStack Query；Virtual 仍在 vendor） |
 | Rust | `cargo check --lib` / `cargo fmt --check` | 均退出 0；helpers 过滤用例 8/8 |
-| UI 运行时 | `node scripts/check-ui-runtime.mjs` | 全量 **287/287，退出码 0**。段读数：ctxmenu 12/12、search 14/14、todopick 4/4、switch 4/4、tasksrt 14/14、overlay 41/41、search+roster 58/58、emoji+search 41/41、winsafe+search 33/33。两处夹具时序已修（页面 hidden 时转场动画时钟冻在 0；长昵称未种进名字表），详见报告 6.11 |
+| UI 运行时 | `node scripts/check-ui-runtime.mjs` | 本批新增段：**files 8/8**（开关重拉、切群隔离、事件失效、失败保留、恢复、退订）、segmented 8/8、slider 8/8、search 15/15、switch 4/4。全量 **295 条尚未在本 tip 复跑（NOT RUN）**；上一基线为 287/287、退出码 0 |
 | 快速/本地门禁 | `npm run verify:local` | **22/22、退出码 0、59.0s**（最终 tip 复跑；唯一跳过「护栏非空转」） |
 | 真实多实例 / 真机 | E2E / Windows/macOS 移动端 | **NOT RUN**（需用户授权与真机） |
 
@@ -66,7 +71,8 @@
 
 - Reka 的 Tooltip/Popover/Select/Checkbox/Radio/Switch/Tabs/Accordion/Collapsible/Command 尚未迁移；当前代码没有对应的通用调用面，或属于平台原生控件（Select）。
 - 自研 `ContextMenu.vue`、四个业务右键菜单、`ChatSearchDialog` 两个筛选菜单与其余四处锚定菜单已全部迁到 Reka DropdownMenu；全 `src/components/**/*.vue` 不再出现手写 `role="menuitem"`。
-- TanStack Query/Table/Router/Form 未引入；Reason 见第 2 节。TanStack Virtual 只在日志页试点，消息列表仍保留自研实现。
+- TanStack Query 已在一个真实面板（群文件）落地；会话/消息/群任务主链仍是 Pinia + SQLite + 事件流，Reason 见第 2 节。
+  TanStack Table/Router/Form 未引入（当前无对应调用面）；TanStack Virtual 只在日志页试点，消息列表仍保留自研实现。
 - P6 的**预览链**已走原始字节，但 Android/iOS 的真机行为未验证；保存链已去 base64，回退路径仍保留。
 - 全量 UI 探针已拿到最终读数 **287/287**（含 reaction 长名字与 search 筛选菜单两处夹具时序修复）；
   E2E、Windows/Android/iOS 真机、长日志实机滚动读数仍未跑。
