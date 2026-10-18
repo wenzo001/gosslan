@@ -44,6 +44,9 @@ use tokio::net::TcpStream;
 use crate::protocol::MAX_FRAME;
 use crate::transport::relay_seal::{OpenPipe, SealPipe};
 
+/// 合并长度头与载荷的阈值：小控制帧一次写；超过它就分两次，避免复制整个分块。
+const COALESCE_MAX: usize = 8 * 1024;
+
 /// 写入一帧：`4 字节大端长度 + payload`。
 pub async fn write_bytes<W: AsyncWrite + Unpin>(w: &mut W, payload: &[u8]) -> std::io::Result<()> {
     if payload.is_empty() || payload.len() > MAX_FRAME || payload.len() > u32::MAX as usize {
@@ -51,6 +54,15 @@ pub async fn write_bytes<W: AsyncWrite + Unpin>(w: &mut W, payload: &[u8]) -> st
             std::io::ErrorKind::InvalidData,
             "非法载荷长度",
         ));
+    }
+    // 小控制帧合成一次写：两次小写会被 Nagle + 延迟 ACK 卡住最多 ~40ms，
+    // 而这条链路上全是心跳/回执。大帧（文件分块）保持两次写，不为省一次调用复制载荷。
+    if payload.len() <= COALESCE_MAX {
+        let mut frame = [0u8; 4 + COALESCE_MAX];
+        frame[..4].copy_from_slice(&(payload.len() as u32).to_be_bytes());
+        frame[4..4 + payload.len()].copy_from_slice(payload);
+        w.write_all(&frame[..4 + payload.len()]).await?;
+        return Ok(());
     }
     w.write_all(&(payload.len() as u32).to_be_bytes()).await?;
     w.write_all(payload).await?;
@@ -336,6 +348,65 @@ impl AsyncRead for TcpReceiver {
 mod tests {
     use super::*;
     use crate::protocol::Message;
+    use std::io;
+
+    /// 只统计 `poll_write` 次数并原样收下字节 —— 用来钉住“长度头与载荷是否合并”。
+    #[derive(Default)]
+    struct CountingWriter {
+        bytes: Vec<u8>,
+        polls: usize,
+    }
+
+    impl AsyncWrite for CountingWriter {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            let me = self.get_mut();
+            me.polls += 1;
+            me.bytes.extend_from_slice(buf);
+            Poll::Ready(Ok(buf.len()))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    /// 小帧（控制帧/回执）必须把 4 字节长度头与载荷合成**一次** `poll_write`：
+    /// 两次小写会被 Nagle + 延迟 ACK 卡住最多 ~40ms，而这条链路上全是心跳/回执。
+    #[tokio::test]
+    async fn small_frames_are_written_in_a_single_poll() {
+        let payload = vec![9u8; 100];
+        let mut w = CountingWriter::default();
+        write_bytes(&mut w, &payload).await.unwrap();
+
+        assert_eq!(w.polls, 1, "小帧不许拆成两次写");
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        expected.extend_from_slice(&payload);
+        assert_eq!(w.bytes, expected, "合并写不得改变线上字节");
+    }
+
+    /// 大帧（文件分块）保持“长度头 + 载荷”两次写，避免为省一次 syscall 复制整个分块；
+    /// 线上字节仍必须与合并路径完全一致。
+    #[tokio::test]
+    async fn large_frames_keep_two_polls_and_the_same_bytes() {
+        let payload = vec![3u8; COALESCE_MAX + 1];
+        let mut w = CountingWriter::default();
+        write_bytes(&mut w, &payload).await.unwrap();
+
+        assert_eq!(w.polls, 2, "大帧不应为合并而复制整个载荷");
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        expected.extend_from_slice(&payload);
+        assert_eq!(w.bytes, expected);
+    }
 
     /// 帧头必须是 4 字节大端长度。
     #[tokio::test]

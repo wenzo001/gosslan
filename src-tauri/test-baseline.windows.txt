@@ -946,8 +946,10 @@ transport::relay_seal::tests::wrap_rejects_unbound_peer_key
 transport::tcp::tests::capped_read_rejects_oversized_length_prefix
 transport::tcp::tests::empty_payload_is_rejected_on_write
 transport::tcp::tests::illegal_length_is_rejected_on_read
+transport::tcp::tests::large_frames_keep_two_polls_and_the_same_bytes
 transport::tcp::tests::oversized_payload_is_rejected_on_write
 transport::tcp::tests::roundtrip_large_payload
+transport::tcp::tests::small_frames_are_written_in_a_single_poll
 transport::tcp::tests::split_halves_send_receive_raw_bytes
 transport::tcp::tests::split_halves_work_with_legacy_frame_helpers
 transport::tcp::tests::tcp_transport_roundtrip_over_loopback

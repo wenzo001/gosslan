@@ -1,6 +1,6 @@
 # Gosslan 后端基础设施现代化（5.0）——基线与迁移方案
 
-> 分支 `feat/5.0` · 版本 5.0.23 · Rust 1.98.1 · 目标平台 macOS/Windows/Linux/Android/iOS
+> 分支 `feat/5.0` · 版本 5.0.24 · Rust 1.98.1 · 目标平台 macOS/Windows/Linux/Android/iOS
 > 真实库（只读核对）：`~/Library/Application Support/com.gosslan.app/gosslan.db`，
 > `user_version=11`、19 张业务表、`journal_mode=wal`、`PRAGMA integrity_check=ok`。
 > 本文是阶段 B 的选型/迁移方案；每批实施后回填读数，不把"计划"当"完成"。
@@ -11,7 +11,7 @@
 |---|---|---|---|
 | 数据库 | `rusqlite 0.31`（bundled），单一 `DbLock<Connection>`；`PRAGMA user_version` + `MIGRATIONS` 11 步 | 迁移链、每步事务、降级拒绝、失败回滚、重复启动、热查询索引、孤儿清理均有测试 | **无 `busy_timeout`**；**迁移前无备份/校验**；错误仍以字符串为主 |
 | 并发/阻塞 | Tokio；慢活（哈希/落盘/重组）已用 `spawn_blocking` 并有源码判据 | `db_hold` 持锁观测、`check-lock-scope`、`lib_relay_data_tests` 慢活清单 | DB 长事务/备份/恢复仍会占住唯一连接；需逐路径量化 |
-| 网络 | 自研 `network/transport`（1465 行）、discovery、mesh、gossip、relay、BLE | Tokio、socket2、现有协议与去重/可靠投递不变量 | 未用 `tokio-util`/`bytes`；帧解析/缓冲/关闭仍自研（B 类，需原型） |
+| 网络 | 自研 `network/transport`（1465 行）、discovery、mesh、gossip、relay、BLE | Tokio、socket2、现有协议与去重/可靠投递不变量 | 分帧评估后保留自研（约 30 行 + 12 条字节判据），小帧已合并写（5.0.24）；`tokio-util`/`bytes` 不引入 |
 | 加密/身份 | x25519-dalek、ed25519-dalek、chacha20poly1305、sha2、rand_core | 成熟 crate；身份/签名/密钥格式已有判据 | 不更换算法/格式；只审计随机源与日志泄露面 |
 | 系统集成 | Tauri 官方 notification/dialog/fs/opener/window-state/single-instance 已在用 | 官方插件优先原则已落实 | Windows 文件剪贴板等平台专用实现需逐项核对；移动端 API 差异 |
 | 日志/诊断 | 自研 `logging.rs`（1439 行）+ 运行日志窗口 | 文件日志、前端异常上报、`db_hold` 观测 | 未用 `tracing`；缺稳定 span/关联 id（C/B 类，迁移成本高） |
@@ -67,9 +67,21 @@
   其余 `Result<_, String>` 边界仍留待后续批次，避免一次性扫全仓。
 - 回滚：删除 `thiserror` 依赖并恢复手写 `impl` 即可，错误文案与类型不变。
 
-### B3–B5（未开工）
-- B3 网络帧与缓冲（`tokio-util`/`bytes` 原型）——未开工；必须做字节级协议对照与断连/半包测试，
-  且当前无 E2E 授权，不整体替换。
+### B3（已落地，5.0.24）：TCP 小帧合并写（`tokio-util`/`bytes` 评估为不替换）
+- 现状审计：分帧只有「4 字节大端长度 + payload」约 30 行，已有 12 条字节级判据
+  （往返、非法长度、预认证上限、大载荷、真实回环、seal 拆半）；读写循环已可被
+  shutdown/cancel 打断，队列有字节预算。**真正的延迟缺口是每帧固定两次 `write_all`**：
+  心跳/回执这类小帧会触发 Nagle + 延迟 ACK，最多卡 ~40ms。
+- 改动：`transport::tcp::write_bytes` 对 ≤8KiB 的帧合并成一次 `poll_write`；
+  大帧保持两次写，不复制整个分块。线上字节逐字不变。
+- **实测（2026-10-19，5.0.24）**：先写判据并跑到红（小帧实测 2 次 `poll_write`），
+  实施后 `transport::tcp::tests::` **12/12**、全量 Rust **979/979**；
+  基线 977 → **979**（macOS 979 / Windows 967）；`cargo fmt --check` 与 gate 形状的
+  `cargo clippy --features bluetooth -- -D warnings` 均退出 0。E2E/真机 **NOT RUN**。
+- 选型：`tokio-util::codec` + `bytes` 不引入。`Framed` 只是把同一段分帧逻辑搬进新依赖，
+  不会消除两次写；当前分层（业务序列化 / 字节分帧 / seal）也因此保持不变。
+
+### B4–B5（未开工）
 - B4 `tracing`/span 关联 id——未开工；保留现有 logger，先评估。
 - B5 系统插件/跨平台逐项核对——未开工；notification/dialog/fs/opener/window-state/single-instance
   已在用；移动端真机为 **NOT RUN**。
