@@ -1312,6 +1312,8 @@ impl AppState {
     pub fn init(app: AppHandle) -> Result<Arc<AppState>, Box<dyn std::error::Error>> {
         let app_data = app.path().app_data_dir()?;
         std::fs::create_dir_all(&app_data).ok();
+        // 专用数据目录也只允许属主进入/列出：文件 0600 挡得住读，挡不住 ls 出文件名。
+        crate::private_fs::restrict_dir_to_owner(&app_data);
         let default_downloads = app_data.join("downloads");
         std::fs::create_dir_all(&default_downloads).ok();
         let cache_dir = app_data.join("cache");
