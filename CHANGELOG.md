@@ -23,7 +23,7 @@
   累计持有、超阈值次数；不含 SQL、参数、文件名或正文。
 - 判据 `db_hold_summary_has_exactly_one_production_reader` 钉住唯一读者、唯一启动点、
   阈值来源与日志出口；Rust **990 通过 + 1 ignored**，基线 990→991（Windows 973→974）。
-- 不改锁语义、DB、协议；E2E/真机 **NOT RUN**。
+- 不改锁语义、DB、协议；干净 worktree `verify:local` **22/22**（165.0s）；E2E/真机 **NOT RUN**。
 
 ## [5.0.31] - 2026-10-19
 

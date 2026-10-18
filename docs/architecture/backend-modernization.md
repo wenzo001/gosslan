@@ -419,7 +419,7 @@
 
 | 命令 | 退出码 | 读数 |
 |---|---|---|
-| `npm run verify:local`（干净 worktree，5.0.31） | **0** | **22/22，64.4s** |
+| `npm run verify:local`（干净 worktree，5.0.32） | **0** | **22/22，165.0s** |
 | `cargo xwin build --release --target x86_64-pc-windows-msvc --features bluetooth` | 0 | **2m39s**，`gosslan.exe` 9.6MB（PE32+ GUI x86-64） |
 | `cargo test --lib --features bluetooth` | 0 | **990 通过 + 1 ignored** |
 | 迁移测试 | 0 | **38 通过 + 1 ignored** |
