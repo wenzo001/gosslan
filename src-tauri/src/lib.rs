@@ -48,6 +48,7 @@ mod notifications;
 /// Android 用 FileProvider + ACTION_VIEW（opener 只发 file:// 会被系统拒绝）、
 /// Windows/Linux 走 opener。
 mod open_path;
+mod private_fs;
 pub mod protocol;
 mod state;
 mod storage;
