@@ -401,7 +401,7 @@
 |---|---|
 | macOS arm64 | **PASS**：fmt/clippy/Rust/前端/Android 编译、32 轮 E2E |
 | Android aarch64 | **PASS（仅编译）**：默认与 bluetooth 两档 0 warning |
-| Windows | **BLOCKED（环境）**：`cargo xwin` 用本地 `llvm-ar` shim 过了 C 归档，卡在 `tauri-winres` 需要 `llvm-rc`；未装系统 LLVM；运行时 **NOT RUN** |
+| Windows x86_64 | **PASS（仅交叉编译）**：官方 LLVM 18.1.8 macOS ARM64 包提供 `llvm-rc`/`llvm-lib`/`lld-link`，`cargo xwin 0.23.1` 下 `cargo xwin check --target x86_64-pc-windows-msvc --features bluetooth` **exit 0 / 42.6s**，`cargo xwin build --release` **exit 0 / 2m39s**，产物 `gosslan.exe` **9.6MB**、`PE32+ executable (GUI) x86-64`（SHA-256 前缀 `bcb10edc…`）。未装系统 LLVM、工具只在 `/tmp`；**Windows 运行时 NOT RUN** |
 | Linux | 运行时 **NOT RUN**；audit 警告集中在 Linux GTK/D-Bus 传递依赖 |
 | iOS | **BLOCKED（环境）**：本机无 iOS SDK/完整 Xcode；运行时 **NOT RUN** |
 
@@ -412,6 +412,7 @@
 | 命令 | 退出码 | 读数 |
 |---|---|---|
 | `npm run verify:local`（干净 worktree，5.0.31） | **0** | **22/22，64.4s** |
+| `cargo xwin build --release --target x86_64-pc-windows-msvc --features bluetooth` | 0 | **2m39s**，`gosslan.exe` 9.6MB（PE32+ GUI x86-64） |
 | `cargo test --lib --features bluetooth` | 0 | **989 通过 + 1 ignored** |
 | 迁移测试 | 0 | **38 通过 + 1 ignored** |
 | E2E（32 轮，隔离 HOME） | 0 | **863/863 断言** |
@@ -420,7 +421,8 @@
 
 ### 6.8 剩余风险
 
-- **高**：真实 4.x 用户库迁移未执行；Windows/iOS/Linux 运行时与真机未验证。
+- **高**：真实 4.x 用户库迁移未执行；Windows/iOS/Linux 运行时与真机未验证
+  （Windows 已过交叉编译，仍无 Windows 主机/Wine 跑行为）。
 - **中**：单一 SQLite 连接串行化读写；入站 handler 单链路串行；
   Windows ACL 未处理；audit 的 glib/zbus 警告仅 Linux 路径。
 - **低**：迁移备份只按数量清扫、无时间保留策略；`gfile` 首跑曾遇 toolchain 环境噪声（复跑绿）；目录权限仅在
@@ -442,8 +444,9 @@
   **734ms** 可开（5.0.29 实测）；5.0.31 补测单 PID RSS 峰值 **126.1 MiB**、low 队列
   8 MiB/链路、服务队列 8/对端，无整份文件入内存迹象。5.0.31 未重跑窗口交互探针。
 - **哪些平台真正通过了测试？** macOS arm64 **PASS**（fmt/clippy/Rust/前端/Android 编译、
-  E2E）；Android aarch64 **PASS（仅编译）**；Windows **BLOCKED**（`llvm-rc`）；
-  Linux/iOS 运行时 **NOT RUN**（iOS 无 SDK）。
+  E2E）；Android aarch64 **PASS（仅编译）**；Windows x86_64 **PASS（仅交叉编译）**：
+  `cargo xwin build --release` exit 0、产物为 PE32+ GUI x86-64；Windows 运行时
+  **NOT RUN**；Linux/iOS 运行时 **NOT RUN**（iOS 无 SDK）。
 - **哪些问题仍然存在？** 真实 4.x 用户库 schema 迁移、真机/跨平台运行时、单一 SQLite
   连接串行化、Windows ACL、Linux GTK/D-Bus 传递依赖告警；另有 A-9/A-10/A-13 等
   已登记未修项（见 `docs/stability-roadmap.md`）。
