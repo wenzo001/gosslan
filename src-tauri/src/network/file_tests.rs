@@ -2590,6 +2590,11 @@ mod tests {
             body.contains("send_finalize_rows("),
             "收尾函数不再走那两笔带的留痕 ⇒ 又回到 .ok() 吞错"
         );
+        assert!(
+            body.contains("drop_sent_outbox_row("),
+            "成功收尾必须同时清掉 file_outbox 行：AlreadyHave/重启续传/内容拉取等路径\
+             都可能绕过 flush_pending_files 的 Ok 分支；行还在 = 清扫器会再投一次"
+        );
         assert_eq!(
             body.matches(".ok();").count(),
             0,
