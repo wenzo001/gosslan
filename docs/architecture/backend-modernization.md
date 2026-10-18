@@ -64,6 +64,10 @@
   逐表行数与 messages/friends/groups/settings/file_transfers 的关键字段聚合完全一致；
   副本与备份已删除，**源库未被修改**。这是真实数据体量/形状的演练，
   **不等于真实 4.x schema 的迁移**（真实 4.x 库不在此机器上）。
+- **真实 v10 原始 DDL 判据（5.0.28）**：`src-tauri/src/db/fixtures/v10_schema.sql` 逐字取自
+  `git show 0b84f11^:src-tauri/src/db.rs`（v11 引入提交的父提交，DB_VERSION=10），
+  18 张历史表建库后插入身份/好友/会话/消息/群/文件/队列/收藏数据，跑当前 `init()`：
+  v10→v11 补齐 `mention_targets`，逐字段保留、`integrity_check=ok`、备份快照表数一致。
 
 ### B2（已落地，5.0.23）：启动期错误改用 `thiserror`
 - `thiserror@2.0.21`（MIT OR Apache-2.0，MSRV 1.77；依赖树里已有）。
