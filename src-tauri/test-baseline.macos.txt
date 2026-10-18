@@ -172,6 +172,7 @@ db::migration_tests::migration_success_preserves_data_and_adds_columns
 db::migration_tests::migration_v1_to_v6_full_chain
 db::migration_tests::migration_zero_version_with_zero_tables_is_fresh
 db::migration_tests::pre_migration_backup_is_a_verified_snapshot_with_the_same_rows
+db::migration_tests::real_data_copy_replays_migration_without_losing_rows
 db::migration_tests::schema_alone_repairs_a_current_database
 db::migration_tests::superseded_indexes_are_dropped_and_uniquity_survives
 db::migration_tests::tables_are_counted_before_the_schema_is_applied

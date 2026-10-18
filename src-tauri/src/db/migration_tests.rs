@@ -1996,3 +1996,125 @@ fn init_tightens_historical_backups_but_not_unrelated_files() {
     let _ = fs::remove_file(&unrelated);
     cleanup_db_and_backups(&path);
 }
+
+// ---------------------------------------------------------------------------
+// 真实数据副本演练（手动、#[ignore]）
+// ---------------------------------------------------------------------------
+
+/// 用**真实安装库的只读副本**跑一次生产 `init`，逐表比对行数与关键字段聚合，
+/// 并校验迁移前备份可用。它不是“真实 4.x schema”的替代品，但能证明真实数据
+/// 体量/形状在当前迁移链下不丢行、不改关键字段。
+///
+/// 跑法：
+/// ```text
+/// cp/vacuum 一份副本 → sqlite3 copy.db 'PRAGMA user_version=10'
+/// GOSSLAN_DRILL_DB=/tmp/.../copy.db \
+///   cargo test --lib --features bluetooth real_data_copy_replays_migration \
+///   -- --ignored --nocapture
+/// ```
+/// 副本与备份都在 `/tmp`，只读源库；跑完由执行者删除。
+#[cfg(unix)]
+#[ignore = "真实数据副本演练：显式设置 GOSSLAN_DRILL_DB 指向一份副本"]
+#[test]
+fn real_data_copy_replays_migration_without_losing_rows() {
+    let path = std::env::var("GOSSLAN_DRILL_DB").expect("GOSSLAN_DRILL_DB 未设置");
+    let path = PathBuf::from(path);
+    assert!(path.exists(), "演练副本不存在：{}", path.display());
+
+    let snapshot = |conn: &Connection| -> (Vec<String>, Vec<(String, i64)>, Vec<(String, String)>) {
+        let mut stmt = conn
+            .prepare(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+            )
+            .unwrap();
+        let tables: Vec<String> = stmt
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect();
+        let mut counts = Vec::new();
+        for t in &tables {
+            let n: i64 = conn
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM \"{}\"", t.replace('"', "\"\"")),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            counts.push((t.clone(), n));
+        }
+        // 关键字段聚合：只比长度/时间/行数，不读正文、不落日志。
+        let mut semantic = Vec::new();
+        for (t, expr) in [
+            (
+                "messages",
+                "COUNT(*) || ':' || COALESCE(SUM(LENGTH(content)),0) || ':' || COALESCE(SUM(ts),0)",
+            ),
+            (
+                "friends",
+                "COUNT(*) || ':' || COALESCE(SUM(LENGTH(device_id)),0) || ':' || COALESCE(SUM(added_at),0)",
+            ),
+            (
+                "groups",
+                "COUNT(*) || ':' || COALESCE(SUM(LENGTH(name)),0) || ':' || COALESCE(SUM(created_at),0)",
+            ),
+            (
+                "settings",
+                "COUNT(*) || ':' || COALESCE(SUM(LENGTH(key)),0) || ':' || COALESCE(SUM(LENGTH(value)),0)",
+            ),
+            (
+                "file_transfers",
+                "COUNT(*) || ':' || COALESCE(SUM(size),0) || ':' || COALESCE(SUM(created_at),0)",
+            ),
+        ] {
+            let exists: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                    [t],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            if exists == 0 {
+                continue;
+            }
+            let v: String = conn
+                .query_row(&format!("SELECT {expr} FROM \"{t}\""), [], |r| r.get(0))
+                .unwrap();
+            semantic.push((t.to_string(), v));
+        }
+        (tables, counts, semantic)
+    };
+
+    let raw = Connection::open(&path).unwrap();
+    assert_eq!(
+        read_user_version(&raw),
+        10,
+        "演练前请把副本 user_version 置为 10"
+    );
+    let before = snapshot(&raw);
+    drop(raw);
+
+    let conn = init(&path).expect("真实数据副本必须能迁移");
+    assert_eq!(read_user_version(&conn), DB_VERSION);
+    let after = snapshot(&conn);
+    assert_eq!(
+        before, after,
+        "表集合/逐表行数/关键字段聚合在迁移前后必须完全一致"
+    );
+
+    let integrity: String = conn
+        .query_row("PRAGMA integrity_check", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(integrity, "ok");
+    let backups = backup_paths(&path);
+    assert_eq!(backups.len(), 1, "v10→v11 必须先产生一份备份");
+    assert_backup_is_snapshot(&backups[0], 10, before.0.len() as i64);
+
+    println!(
+        "drill ok: tables={} total_rows={} backup={}",
+        before.0.len(),
+        before.1.iter().map(|(_, n)| n).sum::<i64>(),
+        backups[0].display()
+    );
+    drop(conn);
+}
