@@ -474,7 +474,7 @@
 |---|---|
 | macOS arm64 | **PASS**：fmt/clippy/Rust/前端/Android 编译、32 轮 E2E |
 | Android aarch64 | **PASS（仅编译）**：默认与 bluetooth 两档 0 warning |
-| Windows x86_64 | **PASS（仅交叉编译，5.0.32 代码）**：官方 LLVM 18.1.8 macOS ARM64 包提供 `llvm-rc`/`llvm-lib`/`lld-link`，`cargo xwin 0.23.1` 下 `cargo xwin build --release --target x86_64-pc-windows-msvc --features bluetooth` **exit 0 / 8m38s（冷 target）**，产物 `gosslan.exe` **9.6MB**、`PE32+ executable (GUI) x86-64`。此前 5.0.31 冷/暖读数：check **42.6s**、release **2m39s**。未装系统 LLVM、工具只在 `/tmp`；**Windows 运行时 NOT RUN** |
+| Windows x86_64 | **PASS（仅交叉编译，5.0.33 代码）**：官方 LLVM 18.1.8 macOS ARM64 包提供 `llvm-rc`/`llvm-lib`/`lld-link`，`cargo xwin 0.23.1` 下 `cargo xwin build --release --target x86_64-pc-windows-msvc --features bluetooth` **exit 0 / 14m27s（冷 target）**，产物 `gosslan.exe` **9.6MB**、`PE32+ executable (GUI) x86-64`。此前 5.0.31/5.0.32 读数：check **42.6s**、release **2m39s / 8m38s**。未装系统 LLVM、工具只在 `/tmp`；**Windows 运行时 NOT RUN** |
 | Linux | 运行时 **NOT RUN**；audit 警告集中在 Linux GTK/D-Bus 传递依赖 |
 | iOS | **BLOCKED（环境）**：本机无 iOS SDK/完整 Xcode；运行时 **NOT RUN** |
 
@@ -485,7 +485,7 @@
 | 命令 | 退出码 | 读数 |
 |---|---|---|
 | `npm run verify:local`（干净 worktree，5.0.33） | **0** | **22/22，1089.0s（冷 target）** |
-| `cargo xwin build --release --target x86_64-pc-windows-msvc --features bluetooth` | 0 | **5.0.32 冷 target 8m38s**；`gosslan.exe` 9.6MB（PE32+ GUI x86-64） |
+| `cargo xwin build --release --target x86_64-pc-windows-msvc --features bluetooth` | 0 | **5.0.33 冷 target 14m27s**；`gosslan.exe` 9.6MB（PE32+ GUI x86-64） |
 | `cargo test --lib --features bluetooth` | 0 | **990 通过 + 1 ignored** |
 | 护栏定点（文件气泡不整文件扫描 / outbox 终态门控 / transport 锁抗中毒） | 0 | **3/3 改坏即 FAIL、恢复即 PASS**（干净 worktree 5.0.32） |
 | 迁移测试 | 0 | **38 通过 + 1 ignored** |
