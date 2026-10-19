@@ -245,7 +245,9 @@
   文件队列保留自己的 attempts/退避/5 次上限，不进入这个循环。
 - 判据 `outbox_retrier_is_wired_and_covers_both_queues`（唯一接线/周期/按链路筛选/
   两队列）；Rust **991 通过 + 1 ignored**，基线 992（Windows 975）。
-- **5.0.33 release 的 contentpull ×3 复跑**：**3/3 全绿（36 断言/次）**，未再出现文本 Ack 超时，
+- **5.0.33 release 的回归**：contentpull **×3 全绿（36/36）**、default **18/18**、group **37/37**、
+  posttext **39/39**；重放未引入重复消息，也未顶掉会话。
+- **contentpull ×3**：**3/3 全绿（36 断言/次）**，未再出现文本 Ack 超时，
   也未出现重复消息（该轮自身判「B 侧恰好一条」）。A-17 转 **FIXED（观察项）**：原 1/4 抖动
   未被定向复现，5s 重放覆盖"建链窗口漏发"这一失败形状。
 
