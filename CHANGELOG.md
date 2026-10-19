@@ -25,6 +25,8 @@
   阈值来源与日志出口；两次单点变异（摘启动调用 / 摘唯一读取点）均报红、还原后绿；
   Rust **990 通过 + 1 ignored**，基线 990→991（Windows 973→974）。
 - 不改锁语义、DB、协议；干净 worktree `verify:local` **22/22**（165.0s）；E2E/真机 **NOT RUN**。
+- 定点护栏 3/3：文件气泡不整文件扫描 / outbox 终态写库门控 / transport 锁抗中毒，
+  均改坏即 FAIL、恢复即 PASS（干净 worktree 5.0.32）。
 - 旧/新互操作在 5.0.32 上重跑（4.44.4 从 tag 本地构建，冷 target 7m57s）：
   default 18/18×2、group 37/37×2、gfile 28/28×2、gossip3 25/25×2，
   合计 **8 轮 / 216 断言全绿**；两侧 DB_VERSION=11。
