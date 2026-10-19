@@ -943,6 +943,8 @@ export const enUS: MessageDict = {
   "layout.toast.accepted": "Accepted {name}'s friend request",
   "layout.toast.rejected": "Rejected the friend request",
   "layout.selectConversation": "Select a conversation to start LAN chat",
+  "layout.selectContact": "Select a contact to view their profile",
+  "layout.contactHint": "Pick a contact from the list on the left, or add a new friend",
   "layout.linksTitle": "External Links",
   "layout.linksHint": "Pick a link on the left to open it in its own window",
   "layout.tagline": "Serverless · Pure P2P · End-to-end encrypted · Data stays on device",

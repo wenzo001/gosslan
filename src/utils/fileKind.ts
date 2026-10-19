@@ -57,6 +57,18 @@ export function fileExt(name: string): string {
   return i > 0 ? name.slice(i + 1).toLowerCase() : "";
 }
 
+/**
+ * 文件角标文案：扩展名大写、**最多 4 个字符**，无扩展名回落到调用方给的那句「文件」。
+ *
+ * 三处角标（群文件面板 / 消息文件气泡 / 收藏详情）以前各写一遍这三行，漂移是真的：
+ * 收藏那一处既不截断也不兜底 —— 一个没有扩展名的文件在那儿渲染成空串，
+ * 后面跟着一个孤零零的「 · 大小」。收口到这里，`fallback` 由调用方传（本文件不碰 i18n）。
+ */
+export function extBadgeLabel(name: string, fallback: string): string {
+  const e = fileExt(name);
+  return e ? e.toUpperCase().slice(0, 4) : fallback;
+}
+
 /** 文件名 → 文件类型。未知扩展名归 `doc`（通用文档图标）。 */
 export function fileKindOf(name: string): FileKind {
   switch (fileExt(name)) {
@@ -128,10 +140,4 @@ export function fileKindOf(name: string): FileKind {
     default:
       return "doc";
   }
-}
-
-/** 当前主题下的强调色（失败态由调用方自行改走红档）。 */
-export function fileKindColor(name: string, dark: boolean): string {
-  const c = FILE_KIND_COLORS[fileKindOf(name)];
-  return dark ? c.dark : c.light;
 }

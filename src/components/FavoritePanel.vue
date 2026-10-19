@@ -38,7 +38,7 @@ import { useClipboard } from "@/composables/useClipboard";
 import { fmtConversationTime } from "@/utils/time";
 import { rgba } from "@/utils/color";
 import { formatBytes } from "@/utils/format";
-import { FILE_KIND_COLORS, FILE_KIND_ICONS, fileExt, fileKindOf } from "@/utils/fileKind";
+import { FILE_KIND_COLORS, FILE_KIND_ICONS, extBadgeLabel, fileKindOf } from "@/utils/fileKind";
 import { openLocalFile, saveLocalFile } from "@/utils/localFile";
 import { dropFavoritePreview, loadFavoritePreview, clearFavoritePreviews } from "@/utils/favoritePreview";
 import { mergeItemLine, mergeSummary, parseMergePayload } from "@/utils/mergeCard";
@@ -61,8 +61,8 @@ const chat = useChatStore();
 const preview = useImagePreviewStore();
 const { copyContent } = useClipboard();
 
-/** 头部标题：选中某条收藏时显示该条名称，否则显示收藏总数/标题。 */
-const favTitle = computed(() => (active.value ? displayName(active.value) : headerTitle.value));
+/** 头部标题：选中某条收藏时显示该条标题（文本也要给正文，不能一律落到「文件」），否则显示收藏总数/标题。 */
+const favTitle = computed(() => (active.value ? rowTitle(active.value) : headerTitle.value));
 
 /** 统一返回：详情态先退回列表，列表态再关闭整个收藏层（与框架返回键一致）。 */
 function onFavBack() {
@@ -72,6 +72,12 @@ function onFavBack() {
   if (active.value) active.value = null;
   else emit("close");
 }
+
+/** 右侧详情当前看的那条（null = 未选中）。移动端用它切换两级视图。
+ *  ⚠️ 必须声明在下面两个 `useBackLayer` **之前**：它们用 `watch(..., { immediate: true })`
+ *  在 setup 里就同步求值，移动端 `app.isMobile` 为真时会立刻读 `active`；声明在后就是
+ *  TDZ 崩溃（实测：移动端打开收藏页直接 `Cannot access 'active' before initialization`）。 */
+const active = ref<FavoriteEntry | null>(null);
 
 // 移动端两层返回（与框架返回键一致）：
 //   —— 详情态（active）先退回列表；列表态（tab）再关掉整个收藏 tab（回到 chats）。
@@ -103,8 +109,6 @@ const loadError = ref("");
 /** 搜索关键词（在标题 / 正文 / 文件名里找）。 */
 const keyword = ref("");
 const filterKind = ref<FilterKey>("all");
-/** 右侧详情当前看的那条（null = 未选中）。移动端用它切换两级视图。 */
-const active = ref<FavoriteEntry | null>(null);
 /** 图片缩略图：收藏 id → objectURL（按需加载；删除时释放）。 */
 const thumbs = ref<Record<string, string>>({});
 const menu = ref<{ x: number; y: number; item: FavoriteEntry } | null>(null);
@@ -809,7 +813,7 @@ async function confirmDelete() {
                 {{ displayName(active) }}
               </div>
               <div class="mt-1 text-[11px] text-[var(--gosslan-text-2)]">
-                {{ fileExt(displayName(active)).toUpperCase() }} ·
+                {{ extBadgeLabel(displayName(active), t("common.file")) }} ·
                 {{ formatBytes(metaOf(active)?.size ?? active.media_size) }}
               </div>
             </div>

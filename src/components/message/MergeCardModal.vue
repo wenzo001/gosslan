@@ -18,7 +18,7 @@ import { t } from "@/i18n";
 import BaseModal from "@/components/BaseModal.vue";
 import { useImagePreviewStore } from "@/stores/useImagePreview";
 import { api } from "@/api";
-import { imageMime } from "@/utils/filePreview";
+import { imageMime } from "@/utils/imageMime";
 import { fmtConversationTime } from "@/utils/time";
 import { mediaCid, mediaName, mergeItemLine, parseMergePayload, type MergedItem } from "@/utils/mergeCard";
 

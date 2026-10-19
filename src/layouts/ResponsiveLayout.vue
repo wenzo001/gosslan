@@ -696,8 +696,11 @@ function onResizeEnd() {
           v-else
           class="flex h-full select-none flex-col items-center justify-center gap-3 text-[var(--gosslan-text-2)]"
         >
-          <MessageCircle class="h-16 w-16 opacity-25" />
-          <div class="text-base">{{ t("layout.selectConversation") }}</div>
+          <UserCircle v-if="navState === 'contacts'" class="h-16 w-16 opacity-25" />
+          <MessageCircle v-else class="h-16 w-16 opacity-25" />
+          <div class="text-base">
+            {{ navState === "contacts" ? t("layout.selectContact") : t("layout.selectConversation") }}
+          </div>
           <div class="text-xs opacity-70">{{ t("layout.tagline") }}</div>
           <!-- 空态要给**下一步**，不只陈述状态（HIG：empty state should guide）。
                用户 2026-09-12 晚 #13：「聊天界面如果没有聊天信息的话，这一块左右两边有点割裂。
@@ -705,21 +708,32 @@ function onResizeEnd() {
                2. 如果你没有好友列表，就只有一个『添加好友』的按钮。这个按钮在会话框页面和
                聊天列表页面，你可以做一个文字说明兜底，或者在样式上做一个空状态就行了。」
                ⇒ 与左侧会话列表**同一口径**：有好友 → 发起聊天（跳通讯录选人）；
-                 无好友 → 添加好友；两种情况都配同一句说明文字。 -->
-          <PrimaryBtn
-            v-if="chat.friends.length"
-            size="large"
-            class="mt-1"
-            @click="navState = 'contacts'"
-          >
-            {{ t("conv.startChat") }}
-          </PrimaryBtn>
-          <PrimaryBtn v-else size="large" class="mt-1" @click="addFriendOpen = true">
-            {{ t("common.addFriend") }}
-          </PrimaryBtn>
-          <div class="text-xs opacity-70">
-            {{ chat.friends.length ? t("conv.emptyHintHasFriends") : t("conv.emptyHintNoFriends") }}
-          </div>
+                 无好友 → 添加好友；两种情况都配同一句说明文字。
+               ⚠️ 通讯录页不能用「发起聊天」：那里 `navState` 已经是 contacts，
+                 点它等于把同一个值再赋一次，按钮看起来活着、实际什么都不发生。
+                 通讯录的空态给「添加好友」，这是这一页真正可执行的下一步。 -->
+          <template v-if="navState === 'contacts'">
+            <PrimaryBtn size="large" class="mt-1" @click="addFriendOpen = true">
+              {{ t("common.addFriend") }}
+            </PrimaryBtn>
+            <div class="text-xs opacity-70">{{ t("layout.contactHint") }}</div>
+          </template>
+          <template v-else>
+            <PrimaryBtn
+              v-if="chat.friends.length"
+              size="large"
+              class="mt-1"
+              @click="navState = 'contacts'"
+            >
+              {{ t("conv.startChat") }}
+            </PrimaryBtn>
+            <PrimaryBtn v-else size="large" class="mt-1" @click="addFriendOpen = true">
+              {{ t("common.addFriend") }}
+            </PrimaryBtn>
+            <div class="text-xs opacity-70">
+              {{ chat.friends.length ? t("conv.emptyHintHasFriends") : t("conv.emptyHintNoFriends") }}
+            </div>
+          </template>
         </div>
       </div>
     </main>

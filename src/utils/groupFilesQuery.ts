@@ -7,15 +7,13 @@
  */
 import type { QueryClient } from "@tanstack/vue-query";
 import type { GroupFileEntry } from "@/types";
-import { invalidatePanels, panelKey, panelQueryOptions, PANEL_QUERY_POLICY } from "./panelQuery.ts";
+import { invalidatePanels, panelKey, panelQueryOptions } from "./panelQuery.ts";
 
 export const GROUP_FILES_QUERY = "groupFiles";
 
 export const groupFilesKey = (groupId: string) => panelKey(GROUP_FILES_QUERY, groupId);
 
 export type GroupFilesFetcher = (groupId: string) => Promise<GroupFileEntry[]>;
-
-export const GROUP_FILES_QUERY_POLICY = PANEL_QUERY_POLICY;
 
 export function groupFilesQueryOptions(groupId: string, fetcher: GroupFilesFetcher) {
   return panelQueryOptions(GROUP_FILES_QUERY, groupId, fetcher);

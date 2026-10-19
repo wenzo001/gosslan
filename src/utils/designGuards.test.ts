@@ -22,7 +22,6 @@ import {
   checkTextFieldFocusRing,
   checkSelectionContract,
   findNestedThemeRuleIssues,
-  findFloatingLayerWithoutEscape,
   findTopInsetWithoutBottomInset,
   findFixedOverlayWithoutWindowSafeTop,
   findMessageImageWithoutFetchHint,
@@ -33,7 +32,6 @@ import {
   findRawPlatformCheckInViewLayer,
   countCommonLayerPlatformImports,
   findImgTags,
-  teleportedRootClasses,
   checkTodoCardImageLimit,
   findLiteralRadiusClasses,
   findDirectSemanticIconImports,
@@ -2310,157 +2308,6 @@ test("看板行首的优先级与类型图标三档一律画，不许给缺省�
   );
 });
 
-// ---------------- 浮层必须 escape 出裁切容器（用户 2026-10-07 那句「被内部 DOM overflow 裁掉」） ----------------
-
-test("复现历史缺陷：自己算坐标、根本没 Teleport → 报缺 Teleport 那一条", () => {
-  const buggy = `<script setup>
-import { useHoverCard } from "@/composables/useHoverCard";
-const { style, open } = useHoverCard({ maxWidth: 256 });
-</script>
-<template>
-  <div class="relative flex">
-    <div class="absolute z-[70] border p-1.5" :style="style">名单</div>
-  </div>
-</template>`;
-  const issues = findFloatingLayerWithoutEscape(buggy);
-  assert.equal(issues.length, 1, `没有 Teleport 时先报这一半，实报 ${issues.map((i) => i.message).join(" / ")}`);
-  assert.match(issues[0].message, /Teleport/);
-  assert.equal(issues[0].line, 3, "行号要指到那次 useHoverCard( 调用（import 那行没有括号，不该被算成分母）");
-});
-
-test("只缺 Teleport（已经 fixed 但还在容器里）→ 只报缺 Teleport 那一条", () => {
-  const half = `<script setup>
-const { style } = useHoverCard();
-</script>
-<template>
-  <div class="absolute z-[70] p-1"><div class="fixed border" :style="style">浮层</div></div>
-</template>`;
-  const issues = findFloatingLayerWithoutEscape(half);
-  assert.equal(issues.length, 1, `只该报缺 Teleport，实报 ${issues.length} 条`);
-  assert.match(issues[0].message, /Teleport/);
-});
-
-test("Teleport 到 body + fixed → 通过", () => {
-  const ok = `<script setup>
-const { style } = useHoverCard();
-</script>
-<template>
-  <Teleport to="body">
-    <div class="fixed z-[70] border p-1.5" :style="style">浮层</div>
-  </Teleport>
-</template>`;
-  assert.deepEqual(findFloatingLayerWithoutEscape(ok), []);
-});
-
-test("Teleport 了但根节点是 absolute → 必须报根节点那一半（旧写法会被别处的 fixed 蒙过去）", () => {
-  const sneaky = `<script setup>
-const { style } = useHoverCard();
-</script>
-<template>
-  <div class="fixed inset-0" />
-  <Teleport to="body">
-    <div class="absolute z-[70] border p-1.5" :style="style">浮层</div>
-  </Teleport>
-</template>`;
-  const issues = findFloatingLayerWithoutEscape(sneaky);
-  assert.equal(issues.length, 1, `同文件别处那枚 fixed 不许替浮层顶掉这一格，实报 ${issues.length} 条`);
-  assert.match(issues[0].message, /根节点要用 fixed/);
-  assert.equal(issues[0].line, 6, "行号要指到那个 Teleport");
-});
-
-test("根元素属性里带 >（v-if=list.length > 0）也要读得到 —— 解析器自己的阳性对照", () => {
-  const gt = `<script setup>
-const { style } = useHoverCard();
-</script>
-<template>
-  <Teleport to="body">
-    <div
-      v-if="chips.length > 0 && pos"
-      :ref="setEl"
-      class="fixed z-[70] border p-1.5"
-      :style="style"
-    >浮层</div>
-  </Teleport>
-</template>`;
-  assert.deepEqual(teleportedRootClasses(gt).map((r) => r.cls), ["fixed z-[70] border p-1.5"]);
-  assert.deepEqual(findFloatingLayerWithoutEscape(gt), []);
-});
-
-test("中间套一层 <Transition> 也要认（图片预览就是这个形状）", () => {
-  const wrapped = `<script setup>
-const { style } = useHoverCard();
-</script>
-<template>
-  <Teleport to="body">
-    <Transition enter-active-class="duration-150">
-      <div v-if="open" class="glass fixed inset-0 z-[80]">浮层</div>
-    </Transition>
-  </Teleport>
-</template>`;
-  assert.deepEqual(findFloatingLayerWithoutEscape(wrapped), []);
-});
-
-test("读不出 Teleport 里的根元素 → 报错而不是静默放行（夹具两种形状）", () => {
-  const empty = `<script setup>
-const { style } = useHoverCard();
-</script>
-<template>
-  <Teleport to="body"></Teleport>
-</template>`;
-  assert.deepEqual(teleportedRootClasses(empty).map((r) => r.cls), [null]);
-  assert.match(findFloatingLayerWithoutEscape(empty)[0].message, /读不出/);
-
-  const onlyComment = `<script setup>
-const { style } = useHoverCard();
-</script>
-<template>
-  <Teleport to="body"><!-- 注释也算读不出 --></Teleport>
-</template>`;
-  assert.deepEqual(teleportedRootClasses(onlyComment).map((r) => r.cls), [null]);
-});
-
-test("不自己算摆位的组件不归这条管（分母不能被放大）", () => {
-  const unrelated = `<template>
-  <div class="absolute inset-y-0 left-0 w-0.5 bg-black" />
-</template>`;
-  assert.deepEqual(findFloatingLayerWithoutEscape(unrelated), []);
-});
-
-test("src 下每个 Teleport 到 body 的根元素自己都是 fixed（不只那条 escape 判据的消费者）", () => {
-  const srcDir = join(import.meta.dirname, "..");
-  const files = collectVueFiles(srcDir);
-  const sites: string[] = [];
-  const bad: string[] = [];
-  for (const f of files) {
-    for (const r of teleportedRootClasses(readFileSync(f, "utf8"))) {
-      const rel = f.replace(srcDir + "/", "");
-      sites.push(`${rel}:${r.line}`);
-      if (r.cls === null) bad.push(`${rel}:${r.line} 读不出根元素（形状不认识 ⇒ 不许静默放行）`);
-      else if (!/\bfixed\b/.test(r.cls)) bad.push(`${rel}:${r.line} 根节点不是 fixed：${r.cls.slice(0, 40)}`);
-    }
-  }
-  sites.sort();
-  bad.sort();
-  assert.deepEqual(bad, [], `有 Teleport 出去的层用非 fixed 定位：\n${bad.join("\n")}`);
-  // 分母自己打印：数到 0 就是尺子坏了，要比"全绿"先响
-  assert.ok(sites.length >= 4, `现读的 Teleport 根元素只有 ${sites.length} 处，尺子大概失效了：\n${sites.join("\n")}`);
-});
-
-test("src 下每个自算坐标的浮层都 escape 到 body（分母现算）", () => {
-  const srcDir = join(import.meta.dirname, "..");
-  const files = collectVueFiles(srcDir);
-  const consumers = files.filter((f) => /\b(useHoverCard|popupLeft|popupPlacement)\s*\(/.test(readFileSync(f, "utf8")));
-  assert.ok(consumers.length >= 3, `这条判据的分母不能是空的，现数 ${consumers.length} 个消费者`);
-  const bad: string[] = [];
-  for (const f of consumers) {
-    for (const issue of findFloatingLayerWithoutEscape(readFileSync(f, "utf8"))) {
-      bad.push(`${f.replace(srcDir + "/", "")}:${issue.line}  ${issue.message}`);
-    }
-  }
-  bad.sort();
-  assert.deepEqual(bad, [], `有浮层被搬回裁切容器里了（消费者：\n${consumers.map((c) => c.replace(srcDir + "/", "")).join("\n")}）\n${bad.join("\n")}`);
-});
-
 // ---------------- ㉛ 整屏形态写了顶部安全区就必须也写底部（roadmap N16） ----------------
 
 test("N16 形状：只写 pt-[env(safe-area-inset-top)] 的整屏形态要报出来", () => {
@@ -3051,7 +2898,26 @@ test("㊴ 真实树：全 src 的 .vue 没有字面圆角（分母现算）", ()
 
 // ---------------- ㊵ 高频语义图标只从 ui/icons.ts 引 ----------------
 
-const SEMANTIC_ICON_NAMES = ["Check", "Loader2", "RotateCcw", "Trash2", "X"];
+/**
+ * 分母**从入口自己解析**，不在测试里手抄名单。
+ *
+ * 真实教训：入口 `ui/icons.ts` 导出 7 个名字，而这里原先手抄了 5 个 ——
+ * `ImageOff`/`AlertCircle` 从此不在网内，`MessageItem.vue` 与 `MessageImageBubble.vue`
+ * 两处直连 `lucide-vue-next` 的 `ImageOff` 一直漏报，而判据照旧打「直连 0 处」。
+ * 手抄清单每加一个入口名字都要记得回来补，这条迟早再漂一次。
+ */
+const ICON_BARREL_PATH = join(import.meta.dirname, "..", "components", "ui", "icons.ts");
+const SEMANTIC_ICON_NAMES = (
+  readFileSync(ICON_BARREL_PATH, "utf8").match(/export \{([^}]+)\} from "lucide-vue-next"/)?.[1] ?? ""
+)
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+// 非空转下限：入口一旦被清空，上面的解析会得到空数组 ⇒ "全库 0 处违规"会假绿。
+assert.ok(
+  SEMANTIC_ICON_NAMES.length >= 5,
+  `只从 ui/icons.ts 解析出 ${SEMANTIC_ICON_NAMES.length} 个名字 ⇒ 分母塌了，这条判据不再成立`,
+);
 
 test("㊵ 高频语义图标直连 lucide → 报；走入口 → 放行（夹具）", () => {
   const buggy = `<script setup lang="ts">\nimport { Loader2, X } from "lucide-vue-next";\n</script>`;
@@ -3131,4 +2997,79 @@ test("㊶ 真实树：实底危险按钮只剩 DangerBtn（分母现算）", () 
   }
   assert.deepEqual(bad, [], `以下位置仍在手写实底危险按钮：\n${bad.join("\n")}`);
   console.log(`· ㊶ 分母：扫 ${files.length} 份 .vue（排除 DangerBtn 自身），手写实底危险按钮 0 处`);
+});
+
+test("通讯录空态必须有专属文案与可执行动作（不能复用聊天空态的『发起聊天』）", () => {
+  const src = readFileSync(join(import.meta.dirname, "..", "layouts", "ResponsiveLayout.vue"), "utf8");
+  assert.match(src, /layout\.selectContact/, "通讯录空态没有专属标题");
+  assert.match(src, /layout\.contactHint/, "通讯录空态没有专属说明");
+  const at = src.indexOf("layout.selectContact");
+  assert.ok(at > 0, "专属标题锚点不在 ⇒ 判据失去目标");
+  const end = src.indexOf("</template>", at);
+  assert.ok(end > at, "通讯录空态分支没有正常闭合");
+  const block = src.slice(at, end);
+  assert.match(block, /addFriendOpen = true/, "通讯录空态的主按钮必须真的能打开『添加好友』");
+  assert.doesNotMatch(block, /navState = 'contacts'/, "通讯录页再把 navState 赋成 contacts 等于点了没反应");
+});
+
+test("收藏页 active 必须先于 useBackLayer 声明（immediate watch 在 setup 里同步求值）", () => {
+  const src = readFileSync(
+    join(import.meta.dirname, "..", "components", "FavoritePanel.vue"), "utf8");
+  const decl = src.indexOf("const active = ref<FavoriteEntry | null>(null)");
+  const hook = src.indexOf("useBackLayer(");
+  assert.ok(decl > 0 && hook > 0, "锚点缺失：收藏页的 active 声明或 useBackLayer 调用被改名");
+  assert.ok(decl < hook,
+    "useBackLayer 用 immediate watch 在 setup 里同步读 active；声明在后会在移动端 TDZ 崩溃");
+});
+
+test("字体默认档不得用空串 option value（Reka SelectItem 不渲染空串）", () => {
+  const src = readFileSync(
+    join(import.meta.dirname, "..", "components", "settings", "AppearanceSection.vue"), "utf8");
+  const at = src.indexOf("const fonts = [");
+  const end = src.indexOf("];", at);
+  assert.ok(at > 0 && end > at, "锚点缺失：字体选项表被改名");
+  const fonts = src.slice(at, end);
+  assert.doesNotMatch(fonts, /value:\s*""/,
+    "空串 option value 会被 Reka 吞掉 ⇒ 菜单少掉「系统默认」且触发器空白");
+  assert.match(fonts, /value:\s*SYSTEM_FONT/, "默认档必须用非空哨兵");
+  assert.match(src, /app\.fontFamily === "" \? SYSTEM_FONT/,
+    "存储值到哨兵的映射必须存在（否则默认档匹配不到）");
+  assert.match(src, /value === SYSTEM_FONT \? "" : value/,
+    "落库前必须把哨兵映射回空串（不许把哨兵写进设置）");
+});
+
+test("文件角标只有一处实现：组件里不许裸用 fileExt( 自己拼", () => {
+  // 真实缺陷：收藏详情那处 `fileExt(name).toUpperCase()` 既不截断也不兜底，
+  // 没有扩展名的文件在那里渲染成空串 + 一个孤零零的「 · 大小」。
+  const dir = join(import.meta.dirname, "..", "components");
+  const hits: string[] = [];
+  (function walk(d: string) {
+    for (const e of readdirSync(d, { withFileTypes: true })) {
+      const p = join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.name.endsWith(".vue") && readFileSync(p, "utf8").includes("fileExt(")) hits.push(p);
+    }
+  })(dir);
+  assert.equal(
+    hits.length,
+    0,
+    `扩展名角标必须走 utils/fileKind.ts 的 extBadgeLabel（无扩展名兜底、超长截断只有一份）：${hits.join(", ")}`,
+  );
+});
+
+test("catch 里的错误提示必须走 toastError：不许把 String(e) 直接甩给用户", () => {
+  // `app.toast(String(e), "error")` 有两处损失：用户看到 `Error: [object Object]` 这类原始串，
+  // 而且**不进日志**（toastError 走 reportError）。GroupTasksBoard 同一文件里
+  // 8 处 catch 有 4 处走了这条路 —— 同一条 updateTodo 失败，两种表现。
+  const dir = join(import.meta.dirname, "..");
+  const hits: string[] = [];
+  (function walk(d: string) {
+    for (const e of readdirSync(d, { withFileTypes: true })) {
+      const p = join(d, e.name);
+      if (e.isDirectory()) { if (e.name !== "node_modules") walk(p); continue; }
+      if (!/\.(vue|ts)$/.test(e.name) || e.name.endsWith(".test.ts")) continue;
+      if (readFileSync(p, "utf8").includes("toast(String(e)")) hits.push(p);
+    }
+  })(dir);
+  assert.equal(hits.length, 0, `错误出口必须统一走 app.toastError(e, 前缀)：${hits.join(", ")}`);
 });

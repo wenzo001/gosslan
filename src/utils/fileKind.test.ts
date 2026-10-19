@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { FILE_KIND_COLORS, FILE_KIND_ICONS, fileExt, fileKindOf } from "./fileKind.ts";
+import { FILE_KIND_COLORS, FILE_KIND_ICONS, extBadgeLabel, fileExt, fileKindOf } from "./fileKind.ts";
 
 test("fileExt：常规扩展名取小写", () => {
   assert.equal(fileExt("report.PDF"), "pdf");
@@ -55,4 +55,14 @@ test("配色表每个类型都有明暗两档（深色模式不能缺档）", ()
     assert.match(c.dark, /^#[0-9a-f]{6}$/i, `${k}.dark 不是 hex`);
     assert.notEqual(c.light, c.dark, `${k} 明暗档相同，深色模式下会看不清`);
   }
+});
+
+test("extBadgeLabel：无扩展名兜底、超长截断（收藏那处以前两样都不做）", () => {
+  assert.equal(extBadgeLabel("report.PDF", "文件"), "PDF");
+  // 真实缺陷：`fileExt(name).toUpperCase()` 在"没有扩展名"时渲染成空串，
+  // 收藏详情里就剩下一个孤零零的「 · 大小」。
+  assert.equal(extBadgeLabel("无扩展名", "文件"), "文件");
+  assert.equal(extBadgeLabel(".gitignore", "文件"), "文件", "点开头的名字整段是文件名，不是扩展名");
+  // 真实缺陷的另一半：不截断时一长串扩展名会把角标撑破。
+  assert.equal(extBadgeLabel("archive.verylongext", "文件"), "VERY");
 });

@@ -20,7 +20,7 @@ import BaseModal from "@/components/BaseModal.vue";
 import { fmtConversationTime } from "@/utils/time";
 import { rgba } from "@/utils/color";
 import { formatBytes } from "@/utils/format";
-import { FILE_KIND_COLORS, FILE_KIND_ICONS, fileExt, fileKindOf } from "@/utils/fileKind";
+import { FILE_KIND_COLORS, FILE_KIND_ICONS, extBadgeLabel, fileKindOf } from "@/utils/fileKind";
 import { openLocalFile } from "@/utils/localFile";
 import { RotateCw } from "lucide-vue-next";
 import { Loader2 } from "@/components/ui/icons";
@@ -28,10 +28,10 @@ import StateBlock from "@/components/ui/StateBlock.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
 import { friendlyError } from "@/utils/errors";
 import {
-  GROUP_FILES_QUERY_POLICY,
   groupFilesKey,
   invalidateGroupFiles,
 } from "@/utils/groupFilesQuery";
+import { PANEL_QUERY_POLICY } from "@/utils/panelQuery";
 import { createInitScope, type InitScope } from "@/utils/initScope";
 import type { GroupFileEntry } from "@/types";
 
@@ -55,7 +55,7 @@ const filesQuery = useQuery(
       queryKey: groupFilesKey(gid ?? ""),
       queryFn: () => api.listGroupFiles(gid as string),
       enabled: props.open && !!gid,
-      ...GROUP_FILES_QUERY_POLICY,
+      ...PANEL_QUERY_POLICY,
     };
   }),
 );
@@ -121,8 +121,7 @@ function kindStyle(name: string) {
   return { backgroundColor: rgba(accent, 0.12), color: accent };
 }
 function extLabel(name: string) {
-  const e = fileExt(name);
-  return e ? e.toUpperCase().slice(0, 4) : t("common.file");
+  return extBadgeLabel(name, t("common.file"));
 }
 
 /** 本机持有状态 → 可读文案。与 sender 无关：这是**我能不能打开它**。 */

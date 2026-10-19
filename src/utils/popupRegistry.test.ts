@@ -125,7 +125,11 @@ test("浮层协议：每个 `const X = useExclusivePopup(...)` 都必须 watch(X
     )) {
       seen += 1;
       const v = m[1];
-      if (!new RegExp(`watch\\(\\s*${v}\\b`).test(src)) {
+      // 两种等价的"被抢 ⇒ 收起"接法：① 自己 watch；② 直接把它绑成受控浮层的 `:open`
+      // （Reka Popover 在 open=false 时自己卸载，等价于 watch 里调 close()）。
+      const reacts = new RegExp(`watch\\(\\s*${v}\\b`).test(src)
+        || new RegExp(`:open="${v}(?:\\.isActive)?"`).test(src);
+      if (!reacts) {
         missing.push(`${where} → ${v}（解构出的 isActive）`);
       }
     }

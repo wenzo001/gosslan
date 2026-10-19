@@ -14,7 +14,8 @@
 // 原先只有"删单条收藏"才会释放，**关面板不释放**是这份独立缓存的主要泄漏面。
 
 import { api } from "@/api";
-import { imageMime, PREVIEW_CACHE_MAX_BYTES } from "@/utils/filePreview";
+import { PREVIEW_CACHE_MAX_BYTES } from "@/utils/filePreview";
+import { imageMime } from "@/utils/imageMime";
 import { previewFailureResult, type PreviewResult } from "@/utils/mediaAvailability";
 import { createBlobLru } from "@/utils/blobLru";
 
@@ -81,9 +82,4 @@ export function dropFavoritePreview(id: string) {
 export function clearFavoritePreviews() {
   cache.clear();
   inflight.clear();
-}
-
-/** 当前收藏预览缓存的累计字节数（诊断/测试用）。 */
-export function favoritePreviewCacheBytes(): number {
-  return cache.bytes();
 }

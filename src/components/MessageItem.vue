@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { useClipboard } from "@/composables/useClipboard";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
-import { useHoverCard } from "@/composables/useHoverCard";
 import { useMessageDisplay } from "@/composables/useMessageDisplay";
+import { PopoverContent, PopoverPortal, PopoverRoot, PopoverTrigger } from "reka-ui";
 import { useMessageFile } from "@/composables/useMessageFile";
 import { useMemberProfile } from "@/composables/useMemberProfile";
 import { IMAGE_PLACEHOLDER_HEIGHT, textNeedsClamp } from "@/utils/previewMetrics";
@@ -39,8 +39,8 @@ import UnsupportedKindBubble from "@/components/message/UnsupportedKindBubble.vu
 import MessageContextMenu from "@/components/message/MessageContextMenu.vue";
 import RemindAudienceDialog from "@/components/RemindAudienceDialog.vue";
 import ActionSheet from "@/components/ActionSheet.vue";
-import { BellRing, Copy, CornerUpLeft, ImageOff, ListChecks, Pin, Save, Share2, Smile, Star, TextSelect, Undo2 } from "lucide-vue-next";
-import { Check } from "@/components/ui/icons";
+import { BellRing, Copy, CornerUpLeft, ListChecks, Pin, Save, Share2, Smile, Star, TextSelect, Undo2 } from "lucide-vue-next";
+import { Check, ImageOff } from "@/components/ui/icons";
 import type { MessageRecord, MsgKind } from "@/types";
 import type { ReminderPhase, ReminderState } from "@/utils/reminders";
 import { StaleGuard } from "@/utils/staleGuard";
@@ -627,40 +627,17 @@ async function viewQuoted() {
  * 滚动/改窗口大小时直接收起（比跟着飘更稳）。
  */
 const reactionPickerOpen = ref(false);
-const reactionBtnRef = ref<HTMLElement | null>(null);
 const reactionPopup = useExclusivePopup(`reaction-picker:${String(props.message.msg_id ?? props.message.id ?? "")}`);
-/**
- * 摆位与"一滚就收"走通用那一套（`composables/useHoverCard` → `utils/hoverCard.placeCard`），
- * 与表情名单、已读成员弹层同一个家。
- *
- * ⚠️ 这里 `maxWidth: 360` 只是**夹位用的上限**，不是写进布局的宽度：面板本体在
- * `EmojiPicker` 里，是 `absolute` + 自带 `w-[min(360px,…)]`，而这个 Teleport 壳**没有高度**
- * （它的子元素全是绝对定位）。所以 placeCard 在"往上弹"那一支发 `bottom`、与壳内
- * `bottom-full` 复合出来的落点，和旧写法发 `top` 是同一个位置 —— 壳是零高度，top == bottom。
- * 动这处之前先确认这一点，否则会误以为自己在改垂直位置。
- */
-const {
-  pos: reactionPickerPos,
-  style: reactionPickerStyle,
-  setEl: setReactionPickerEl,
-  open: openReactionPickerCard,
-  close: closeReactionPickerCard,
-} = useHoverCard({ maxWidth: 360 });
 
-function toggleReactionPicker() {
-  if (reactionPickerOpen.value) {
-    closeReactionPicker();
-    return;
-  }
-  const btn = reactionBtnRef.value;
-  if (btn) openReactionPickerCard(btn);
-  reactionPickerOpen.value = true;
-  reactionPopup.claim();
+/** Reka Popover 的受控开关：定位/翻转/外点/Esc 由 floating-ui + DismissableLayer 接管。 */
+function onReactionPickerOpenChange(open: boolean) {
+  reactionPickerOpen.value = open;
+  if (open) reactionPopup.claim();
+  else reactionPopup.release();
 }
 function closeReactionPicker() {
   reactionPopup.release();
   reactionPickerOpen.value = false;
-  closeReactionPickerCard();
 }
 /**
  * 被别的浮层抢走展开权 ⇒ 收起自己。
@@ -672,23 +649,6 @@ function closeReactionPicker() {
  */
 watch(reactionPopup.isActive, (mine) => {
   if (!mine && reactionPickerOpen.value) closeReactionPicker();
-});
-function onDocClickForReactionPicker() {
-  closeReactionPicker();
-}
-// 滚动 / 改尺寸就收起。"忽略选择器自己的内部滚动"那条判断（用户 2026-09-21：
-// 「我拉滚动条，弹框怎么没了」）现在住在 useHoverCard 里，不再各写一遍。
-onMounted(() => document.addEventListener("click", onDocClickForReactionPicker));
-onBeforeUnmount(() => document.removeEventListener("click", onDocClickForReactionPicker));
-/**
- * 滚动/改窗口只清得掉**坐标**（收起住在 useHoverCard 里）⇒ 坐标一空就把开态与展开权
- * 一起收掉。不补这一条的话 `reactionPickerOpen` 与 `aria-expanded` 会停在 true，
- * 而面板根本不在屏幕上。
- */
-watch(reactionPickerPos, (p) => {
-  if (p || !reactionPickerOpen.value) return;
-  reactionPopup.release();
-  reactionPickerOpen.value = false;
 });
 function onReactionPick(emoji: string) {
   closeReactionPicker();
@@ -1215,8 +1175,9 @@ async function copyFileToClipboard() {
       >
         <!-- 表情回应入口（飞书式）：悬停本条消息 ⇒ **气泡外侧**出现笑脸按钮，
              点开 = 完整表情选择器（见下方 EmojiPicker），选中即作为表情回应发送/取消。
-             ⚠️ 按钮与选择器都 **absolute 脱离文档流**：悬停/选表情不改变本条消息的高度
+             ⚠️ 按钮 **absolute 脱离文档流**：悬停/选表情不改变本条消息的高度
              （上一版把一排快捷表情挂在流内，一悬停整条长高 ⇒ 「鼠标划过跳来跳去」）。
+             选择器由 Reka Popover 传送到 body，位置/翻转/越界由 floating-ui 接管。
              位置：别人的消息在**气泡右侧**（`-right-11`）、自己的消息在**气泡左侧**（`-left-11`），
              竖向**与气泡底边对齐**（`bottom-0`）—— 用户 2026-09-30：「按钮位置在视觉观感上应该与
              聊天内容最下边对齐」。以前是 `top-1/2 -translate-y-1/2` 居中线，单行消息上看着像
@@ -1225,38 +1186,42 @@ async function copyFileToClipboard() {
              `display:none` 会**连可聚焦性一起去掉** ⇒ 键盘用户 Tab 跳不到这颗入口。现在它常驻布局
              （本来就 absolute ⇒ 不影响本条高度），悬停本条（组名在 `.group/msg` 上，本列在其内 ✓）、
              键盘聚焦到自己、或选择器开着（`kb-reveal-on`）时才显形。桌面端"悬停才现"那句要求没变。 -->
-        <button
-          ref="reactionBtnRef"
-          data-reaction-entry
+        <PopoverRoot
           v-if="canReact && !selectMode"
-          class="tap-safe kb-reveal absolute -right-11 bottom-0 z-20 flex h-6 w-6 items-center justify-center rounded-full border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] shadow-sm transition"
-          :class="[mine ? '-left-11' : '-right-11', reactionPickerOpen ? 'kb-reveal-on' : '']"
-          :title="t('msg.reactionAddEntry')"
-          :aria-label="t('msg.reactionAddEntry')"
-          @click.stop="toggleReactionPicker"
+          :open="reactionPickerOpen"
+          @update:open="onReactionPickerOpenChange"
         >
-          <Smile class="h-3.5 w-3.5 text-[var(--gosslan-text-2)]" :stroke-width="1.75" />
-        </button>
-        <!-- 完整表情选择器：**Teleport 到 body + fixed 坐标**（坐标由入口按钮的矩形现算，
-             规则见 utils/hoverCard.placeCard）。挂在消息里会被列表的 `overflow-y: auto`
-             裁掉 —— 这就是"弹出位置不对"的原因。 -->
-        <Teleport to="body">
-          <div
-            v-if="reactionPickerOpen && reactionPickerPos"
-            :ref="setReactionPickerEl"
-            data-reaction-picker
-            class="fixed z-[70] w-[min(360px,calc(100vw-2rem))]"
-            :style="reactionPickerStyle"
-            @click.stop
-          >
-            <EmojiPicker
-              :open="reactionPickerOpen"
-              :placement="reactionPickerPos.placement"
-              @select="onReactionPick"
-              @close="closeReactionPicker"
-            />
-          </div>
-        </Teleport>
+          <PopoverTrigger as-child>
+            <button
+              data-reaction-entry
+              class="tap-safe kb-reveal absolute -right-11 bottom-0 z-20 flex h-6 w-6 items-center justify-center rounded-full border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] shadow-sm transition"
+              :class="[mine ? '-left-11' : '-right-11', reactionPickerOpen ? 'kb-reveal-on' : '']"
+              :title="t('msg.reactionAddEntry')"
+              :aria-label="t('msg.reactionAddEntry')"
+            >
+              <Smile class="h-3.5 w-3.5 text-[var(--gosslan-text-2)]" :stroke-width="1.75" />
+            </button>
+          </PopoverTrigger>
+          <PopoverPortal>
+            <PopoverContent
+              data-reaction-picker
+              side="top"
+              align="center"
+              :side-offset="8"
+              :collision-padding="8"
+              hide-when-detached
+              class="gosslan-popover-in z-[80] border-0 bg-transparent p-0 shadow-none"
+              @open-auto-focus.prevent
+              @close-auto-focus.prevent
+            >
+              <EmojiPicker
+                :open="reactionPickerOpen"
+                @select="onReactionPick"
+                @close="closeReactionPicker"
+              />
+            </PopoverContent>
+          </PopoverPortal>
+        </PopoverRoot>
         <!-- 引用块：挂在**气泡外面、正文下方**（微信同款：先自己的话，紧接着被引用的消息）。
              点击 = **直接查看**被引用的内容（用户 2026-09-21：「能直接查看的要能直接查看，不要跳转」）：
              图片→相册大图、合并卡片→卡片详情、文本/代码→全文弹窗、文件→系统打开；

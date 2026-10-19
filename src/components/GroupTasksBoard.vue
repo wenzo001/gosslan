@@ -899,7 +899,7 @@ async function setPriority(item: TodoItem, p: TodoPriority) {
     await chat.updateTodo(gid, item, { priority: p });
     app.toast(t("todo.updateDone"), "success");
   } catch (e) {
-    app.toast(String(e), "error");
+    app.toastError(e, t("todo.updateFail"));
   }
 }
 /**
@@ -920,7 +920,7 @@ async function setCategory(item: TodoItem, c: TodoCategory, customName?: string)
     });
     app.toast(t("todo.updateDone"), "success");
   } catch (e) {
-    app.toast(String(e), "error");
+    app.toastError(e, t("todo.updateFail"));
   }
 }
 async function setIcon(item: TodoItem, icon: TodoCustomIcon) {
@@ -931,7 +931,7 @@ async function setIcon(item: TodoItem, icon: TodoCustomIcon) {
     await chat.updateTodo(gid, item, { customIcon: icon });
     app.toast(t("todo.updateDone"), "success");
   } catch (e) {
-    app.toast(String(e), "error");
+    app.toastError(e, t("todo.updateFail"));
   }
 }
 
@@ -947,7 +947,7 @@ async function claim(item: TodoItem) {
     await chat.updateTodo(gid, item, { assignees: [...item.assignees, myId.value] });
     app.toast(t("todo.claimed", { name: memberProfile(myId.value).name }), "success");
   } catch (e) {
-    app.toast(String(e), "error");
+    app.toastError(e, t("todo.updateFail"));
   }
 }
 

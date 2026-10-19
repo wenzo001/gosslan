@@ -586,6 +586,16 @@ progress {
 /* ---------------- 窗口抖动（强提醒到达时的视觉表达） ----------------
    收到强提醒且用户正在看该会话时，给聊天窗口一个短促的横向摆幅（挂在整块聊天容器上，
    含头部/列表/输入区），纯 transform、不参与布局。由 `prefers-reduced-motion` 统一关闭。 */
+/* 锚定浮层的入场：只做 opacity，不改几何 —— 几何动画会让 floating-ui 的
+   首帧测量与探针的贴边判据互相打架，而"出现得硬"只需要一层淡入就能改善。 */
+@keyframes gosslan-popover-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.gosslan-popover-in {
+  animation: gosslan-popover-fade-in 120ms ease-out;
+}
+
 @keyframes gosslan-shake {
   0%,
   100% {
@@ -883,6 +893,15 @@ html:not(.is-mobile) {
    若要再放大，务必用同样方式复测三档字号下的气泡高度，别凭感觉——一旦撑高行盒，
    相邻消息就会错位。也**不要**顺手改气泡内边距：那会改所有文本气泡高度，
    必须同步 previewMetrics.TEXT_BUBBLE_PADDING。 */
+/* 全局禁掉"拖图片"：浏览器默认允许把任意 `<img>` 拖出去，在桌面端既是"网页壳"味道
+  （原生应用的图片拖不出去），又会**打断划选** —— 划过头像/图片气泡时选区立刻变成拖图。
+  这个缺陷 2026-09-13 只在表情上修过（用户「鼠标一划，刚选中立马就取消选中了」），
+  而全仓 26 个 `<img>` 里只有 2 个自己写了 `draggable="false"` ⇒ 收口到元素选择器一份。
+  ⚠️ 只禁拖拽：不要顺手加 `user-select:none`（会连带丢掉图片 alt 的复制）。 */
+img {
+  -webkit-user-drag: none;
+}
+
 .emoji-img {
   display: inline-block;
   width: 1.3em;

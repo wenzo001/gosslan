@@ -4,7 +4,7 @@ import { computed, type CSSProperties } from "vue";
 import type { FileMeta } from "@/types";
 import { rgba } from "@/utils/color";
 import { formatBytes } from "@/utils/format";
-import { FILE_KIND_COLORS, FILE_KIND_ICONS, fileExt, fileKindOf } from "@/utils/fileKind";
+import { FILE_KIND_COLORS, FILE_KIND_ICONS, extBadgeLabel, fileKindOf } from "@/utils/fileKind";
 import { useAppStore } from "@/stores/useAppStore";
 import { Download, RotateCw } from "lucide-vue-next";
 import { Loader2, X } from "@/components/ui/icons";
@@ -42,7 +42,6 @@ const emit = defineEmits<{
 }>();
 const app = useAppStore();
 
-const ext = computed(() => fileExt(props.meta.name));
 const kind = computed(() => fileKindOf(props.meta.name));
 const icon = computed(() => FILE_KIND_ICONS[kind.value]);
 /** 强调色：失败态统一走红，其余按类型取明/暗档。 */
@@ -55,7 +54,7 @@ const iconWellStyle = computed(() => ({
   backgroundColor: rgba(accent.value, 0.12),
   color: accent.value,
 }));
-const extLabel = computed(() => (ext.value ? ext.value.toUpperCase().slice(0, 4) : t("common.file")));
+const extLabel = computed(() => extBadgeLabel(props.meta.name, t("common.file")));
 /** 传输中按钮上的百分比（微信下载按钮同款：下载中显示进度数字）。 */
 const pct = computed(() => Math.round((props.progress ?? 0) * 100));
 /** 整卡是否可点：就绪 + 允许点。Android 自己发的文件 tappable=false ⇒ 鼠标手型/title/键盘都不给。 */

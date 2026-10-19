@@ -6,6 +6,7 @@ import { MAX_PASTED_IMAGE_BYTES, PASTED_IMAGE_LIMIT_MB } from "@/utils/imageByte
 import EmojiPicker from "@/components/EmojiPicker.vue";
 import { QUOTE_BORDER, QUOTE_BG, QUOTE_TEXT_STYLE } from "@/utils/quoteStyle";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
+import { PopoverContent, PopoverPortal, PopoverRoot, PopoverTrigger } from "reka-ui";
 import { haptic } from "@/utils/haptics";
 import { mentionHighlightColor, resolveChatColors } from "@/utils/chatStyle";
 import { avatarSeedFor } from "@/utils/avatarSeed";
@@ -485,13 +486,11 @@ watch(emojiPopup.isActive, (mine) => {
   if (!mine) emojiOpen.value = false;
 });
 
-function toggleEmoji() {
-  if (emojiOpen.value) {
-    closeEmoji();
-    return;
-  }
-  emojiOpen.value = true;
-  emojiPopup.claim();
+/** Reka Popover 的受控开关：外点/Esc/触发键都由库管，这里只同步全局浮层互斥。 */
+function onEmojiOpenChange(open: boolean) {
+  emojiOpen.value = open;
+  if (open) emojiPopup.claim();
+  else emojiPopup.release();
 }
 
 function closeEmoji() {
@@ -499,10 +498,6 @@ function closeEmoji() {
   emojiOpen.value = false;
 }
 
-/** 点击面板外关闭（面板自身已 @click.stop，触发按钮也 stop） */
-function onDocClickForEmoji() {
-  closeEmoji();
-}
 /** @ 成员选择：点击输入卡以外任意处关闭（卡内点击交给 updateMentionState 按光标推断） */
 function onDocClickForMention(e: MouseEvent) {
   if (composerCard.value?.contains(e.target as Node)) return;
@@ -510,12 +505,10 @@ function onDocClickForMention(e: MouseEvent) {
 }
 const composerCard = ref<HTMLElement | null>(null);
 onMounted(() => {
-  document.addEventListener("click", onDocClickForEmoji);
   document.addEventListener("click", onDocClickForMention);
   document.addEventListener("selectionchange", onSelectionChange);
 });
 onUnmounted(() => {
-  document.removeEventListener("click", onDocClickForEmoji);
   document.removeEventListener("click", onDocClickForMention);
   document.removeEventListener("selectionchange", onSelectionChange);
   if (shakeTimer) clearTimeout(shakeTimer);
@@ -562,6 +555,11 @@ function insertEmoji(e: string) {
   // 直接改 DOM 不会触发 input 事件 → 必须手动同步，否则「只有表情时发送键是灰的」
   syncDraftState();
   autoResize();
+  // EmojiPicker 的 open watcher 是 pre-flush：它会在下一拍把焦点还给触发按钮。
+  // 选完表情后必须再抢回编辑器一次，否则用户还要手动点一下输入框才能接着打字。
+  void nextTick(() => {
+    if (document.activeElement !== el) el.focus();
+  });
 }
 
 async function onPaste(e: ClipboardEvent) {
@@ -759,17 +757,31 @@ async function onPaste(e: ClipboardEvent) {
            发送键改为**实心主按钮**（有草稿才点亮）：微信 4.0 的观感，
            无草稿时是低对比的占位态，不抢视觉。 -->
       <div class="-mx-1 mt-1 flex h-8 items-center gap-2">
-        <div class="relative">
-          <button
-            class="tap-safe flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-md)] transition"
-            :class="emojiOpen ? 'text-[var(--gosslan-primary)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
-            :title="t('chat.composer.emoji')" :aria-label="t('chat.composer.emoji')"
-            @click.stop="toggleEmoji"
-          >
-            <Smile class="h-5 w-5" :stroke-width="1.75" />
-          </button>
-          <EmojiPicker :open="emojiOpen" @select="insertEmoji" @close="closeEmoji" />
-        </div>
+        <PopoverRoot :open="emojiOpen" @update:open="onEmojiOpenChange">
+          <PopoverTrigger as-child>
+            <button
+              class="tap-safe flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-md)] transition"
+              :class="emojiOpen ? 'text-[var(--gosslan-primary)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
+              :title="t('chat.composer.emoji')" :aria-label="t('chat.composer.emoji')"
+            >
+              <Smile class="h-5 w-5" :stroke-width="1.75" />
+            </button>
+          </PopoverTrigger>
+          <PopoverPortal>
+            <PopoverContent
+              data-composer-emoji
+              side="top"
+              align="start"
+              :side-offset="8"
+              :collision-padding="8"
+              class="gosslan-popover-in z-[80] border-0 bg-transparent p-0 shadow-none"
+              @open-auto-focus.prevent
+              @close-auto-focus.prevent
+            >
+              <EmojiPicker :open="emojiOpen" @select="insertEmoji" @close="closeEmoji" />
+            </PopoverContent>
+          </PopoverPortal>
+        </PopoverRoot>
         <!-- 窗口抖动（仿 QQ）：仅单聊显示。点一下 ⇒ 对会话里最近一条已发出的消息发起强提醒，
              对方窗口随即抖动。冷却期置灰防连抖；@mousedown.prevent 保持编辑器焦点。 -->
         <button

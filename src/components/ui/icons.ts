@@ -8,7 +8,8 @@
  * 映射表 —— 那会把整套图标打进包，直接毁掉 tree-shaking（vite 的 icons chunk
  * 就是靠静态 import 才能只装用到的那些）。
  *
- * 迁移纪律：这 5 个名字只许从本模块 import；其余图标继续直接从
- * `lucide-vue-next` 引。判据在 `src/utils/designGuards.test.ts`。
+ * 迁移纪律：本文件导出的这些名字只许从本模块 import；其余图标继续直接从
+ * `lucide-vue-next` 引。判据在 `src/utils/designGuards.test.ts`（㊵），
+ * 它**从下面这行 export 现解析分母** —— 加名字不用再改判据。
  */
 export { AlertCircle, Check, ImageOff, Loader2, RotateCcw, Trash2, X } from "lucide-vue-next";

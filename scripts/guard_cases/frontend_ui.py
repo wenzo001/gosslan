@@ -391,9 +391,12 @@ CASES: list[Case] = [
         "自动隐藏，因为它会跳转到界面内去操作聊天」。不在 ActionSheet 面板层统一收，就得每个"
         "入口各写一遍（漏一个：点『保存图片』这类也一样挂着），而且跳转后的界面会被它挡住",
         file=ROOT / "src" / "components" / "ActionSheet.vue",
+        # 锚点必须盯 DialogContent 开标签（8/6 空格缩进）。旧锚点（12/10）实际命中
+        # 的是面板里的「取消」按钮 —— 注入把它删掉，面板的 @click 还在，
+        # 测试当然照绿；2026-10-19 全量护栏跑出的正是这条空转。
         injections=[(
-            "            @click=\"emit('close')\"\n          >",
-            "          >",
+            "        @click=\"emit('close')\"\n      >",
+            "      >",
         )],
         cmd=npm("test"),
         cwd=ROOT,
@@ -624,17 +627,18 @@ CASES: list[Case] = [
         tags=["frontend", "group", "stability", "new-guards", "mention-identity"],
     ),
     Case(
-        name="浮层搬回裁切容器里必须被 escape 守卫抓住（fixed ⇒ absolute 那一半）",
-        why="2026-10-07 用户那句「悬浮窗被内部的 DOM overflow hidden 裁掉」修完四处之后，"
-        "     新立的 `findFloatingLayerWithoutEscape` 只有一张夹具证明 ⇒ 按本仓库规矩"
-        "     （v4.22.31 之后：新守卫必须证明「改坏一定 FAIL」）这里把它接到真实文件上："
-        "     注入 = 把已读成员弹层的 `fixed` 改回 `absolute`（= 修之前名单的形状，"
-        "     坐标算得再对也会被那层 overflow 裁），必须被那条全库扫描抓住。",
+        name="已读名单拆掉 Reka Portal 必须被接线判据抓住（escape 的那一半）",
+        why="2026-10-19 把已读名单从手写 Teleport 迁到 Reka Popover 后，"
+        "     旧「fixed→absolute」与「拆 Teleport」两条真实文件注入随实现一起删除；"
+        "     新契约由 `rekaPrimitives.test.ts` 的接线判据守着：必须有 PopoverRoot / "
+        "     PopoverTrigger / PopoverContent / PopoverPortal。"
+        "     注入 = 把 PopoverPortal 换成普通 div（= 搬回消息行，overflow 会裁它），"
+        "     必须被那条接线判据抓住。",
         file=ROOT / "src" / "components" / "message" / "MessageReceipt.vue",
-        injections=[('class="frost fixed z-[70]', 'class="frost absolute z-[70]')],
+        injections=[('<PopoverPortal>', '<div>'), ('</PopoverPortal>', '</div>')],
         cmd=npm("test"),
         cwd=ROOT,
-        expect_fail_hint="浮层根节点要用 fixed 定位",
+        expect_fail_hint="已读名单没有在模板里使用 Reka PopoverPortal",
         tags=["frontend", "new-guards", "floating-layer"],
     ),
     Case(
@@ -664,20 +668,6 @@ CASES: list[Case] = [
         cwd=ROOT,
         expect_fail_hint="图片必须来自 app.device.avatar",
         tags=["frontend", "avatar", "new-guards"],
-    ),
-    Case(
-        name="已读弹层被搬回消息行里（拆掉 Teleport）必须被抓住（escape 判据的另一半）",
-        why="`findFloatingLayerWithoutEscape` 判两半：Teleport 在不在、被挂出去的根元素自己是不是 fixed。"
-        "     上一册只登记了后一半（fixed → absolute）的真实文件证明，前一半只有夹具 ⇒ 按同一条立场补上："
-        "     注入 = 把已读弹层那层 Teleport 拆掉、让它回到消息行那个 overflow 滚动容器里面"
-        "     （= 真机「已读列表靠右被裁一半」当时的形状）。",
-        file=ROOT / "src" / "components" / "message" / "MessageReceipt.vue",
-        injections=[('<Teleport to="body">', '<div class="readers-slot">'),
-                    ('</Teleport>', '</div>')],
-        cmd=npm("test"),
-        cwd=ROOT,
-        expect_fail_hint="必须 Teleport 到 body",
-        tags=["frontend", "new-guards", "floating-layer"],
     ),
     Case(
         name="搜索结果行退回「直接铺载荷」必须被抓住（六种认识的卡片 kind 那一半）",

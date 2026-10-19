@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
 import { onUnmounted, ref, watch } from "vue";
-import { ImageOff, ImageIcon } from "lucide-vue-next";
+import { ImageIcon } from "lucide-vue-next";
+import { ImageOff } from "@/components/ui/icons";
 import { IMAGE_BUBBLE_HEIGHT, IMAGE_PLACEHOLDER_HEIGHT } from "@/utils/previewMetrics";
 
 const props = defineProps<{ src: string }>();

@@ -443,7 +443,7 @@
 | `mitt` | S | 5 个同窗口 `window` 事件 | **已落地 5.0.19** |
 | `@tanstack/vue-virtual` | S | 日志两条外壳；消息列表 | 日志已落地；消息列表 C（P7 读数见 6.9） |
 | `zod` | S | 3 个 IPC 返回 + 群名/昵称/链接 | **已落地** |
-| `reka-ui` | S | 8 类原语、19 个 `.vue` | **已落地** |
+| `reka-ui` | S | 10 类原语（含 HoverCard/Popover）、23 个 `.vue` | **已落地（5.0.23 补齐锚定浮层）** |
 | `lucide-vue-next` / `dayjs` | 已有 S | 图标入口 / 时间 helper | **已落地** |
 | `vue-i18n` | A | 自研 i18n 150 行 + 2263 行词典 | **已落地 5.0.20** |
 | `vue-sonner` | A | Toast 已由 Reka Toast 接管 | 不引入：避免第二套 Toast；Reka 已承担去重/limit/live region |
@@ -471,12 +471,12 @@
 
 ### 6.7 统一率与替换率（给出分母，不造单一指标）
 
-- 可替换候选（A+B）**22 项唯一能力全部落地** ⇒ 可替换面替换率 **22/22 = 100%**。
-- 全量矩阵（唯一 35 项）：已迁移 22、按证据保留 13 ⇒ 全量迁移率 **22/35 ≈ 62.9%**；
-  保留项中 8 项为业务/平台语义（C）、5 项无调用面或技术不适用（D）。
+- 可替换候选（A+B）**23 项唯一能力全部落地** ⇒ 可替换面替换率 **23/23 = 100%**。
+- 全量矩阵（唯一 35 项）：已迁移 23、按证据保留 12 ⇒ 全量迁移率 **23/35 ≈ 65.7%**；
+  保留项中 7 项为业务/平台语义（C）、5 项无调用面或技术不适用（D）。
 - 常规图标统一率：**100%**（按“高频语义图标必须走入口”口径，真实树直连 0 处）。
-- 公共交互原语：有真实调用面的 8 类（Dialog、Menu/ContextMenu、Switch、RadioGroup、Slider、Select、
-  Focus、Toast）**8/8 由库承担**；Virtual / Query / Zod / dayjs 四个通用层也由成熟库承担。
+- 公共交互原语：有真实调用面的 10 类（Dialog、Menu/ContextMenu、Switch、RadioGroup、Slider、Select、
+  Focus、Toast、HoverCard、Popover）**10/10 由库承担**；Virtual / Query / Zod / dayjs 四个通用层也由成熟库承担。
 
 ### 6.8 业务层复杂度、重复实现与适配层数量
 
@@ -543,7 +543,7 @@
 
 1. 发版/推送前跑 `verify:full`（含最长护栏步）与 E2E（需授权）；全量 UI 探针已复跑到 **338/338**。
 2. 真机验收：Android `content://` 另存、raw IPC 预览、iOS 文件路径；Windows 弹层/窗口行为。
-3. 锚定 Popover 三处保持 C；若表情面板改版使内容不再零高度，再整批迁 Reka 并删除 `useHoverCard`。
+3. ~~锚定 Popover 三处保持 C~~ **已在 5.0.23 整批迁 Reka**（回应名单 HoverCard，其余三处 Popover），`useHoverCard`/`hoverCard`/`popupPosition` 已删除，见 §6.13。
 4. 已评估但当前不引入（都有具体理由，见矩阵）：PrimeVue/Naive UI（第二套主题体系）、
    shadcn-vue（源码副本）、vee-validate（单字段表单 + zod 已覆盖）、motion-v（现有 CSS 过渡已足够）、
    vue-draggable-plus（无拖拽排序业务）、fuse.js/minisearch（SQLite 搜索为主，客户端过滤是简单 includes）、
@@ -551,3 +551,482 @@
 5. 测试体系保持 `node:test` + 自研 CDP 探针：它已在真实 Chrome 里覆盖 338 条渲染/交互判据，
    并承担 Tauri 夹具；引入 vitest/Playwright 会是第二套并行执行器，除非要补组件级交互测试再评估。
 6. 保持边界：**不 tag、不发 release、不并 main、不 push**，直到用户判断“所有要求完成”。
+
+### 6.13 2026-10-19 锚定浮层收口：三处自研摆位 → Reka HoverCard/Popover
+
+**为什么做这一批**：审计时前端仍有四个真实浮层在走自研摆位 —— 回应名单、已读名单、消息表情选择器、
+输入框表情面板。它们共用 `useHoverCard` + `utils/hoverCard.placeCard` + `utils/popupPosition`，
+每处再手写 Teleport / fixed / 外点 / Esc / 滚动收起；这正是"通用能力留在业务代码里"的最后一族。
+`reka-ui@2.11.0` 已安装且已被 Dialog/Menu/Switch/Select/Slider/RadioGroup/Focus/Toast 使用，
+库内自带 `HoverCard`（hover/focus/触摸 + grace area）与 `Popover`（受控开关 + floating-ui 碰撞/翻转），
+因此不再需要第二套摆位实现。
+
+**落地**
+
+| 位置 | 迁移后 | 删除的动作 |
+|---|---|---|
+| `MessageReactionBar.vue` | 每颗胶囊一棵 `HoverCardRoot`；`HoverCardTrigger` 负责 hover/focus，`HoverCardContent` 负责定位/外点/Esc；触屏长按仍由业务状态控制 | `useHoverCard`、手写 `pos/style/setEl/open/close`、`watch(pos)`、`@mouseleave/@blur/@keydown.esc` 手动收起 |
+| `MessageReceipt.vue` | 已读入口 `PopoverTrigger`，名单 `PopoverContent`；`useExclusivePopup` 仍是全局互斥事实源（`:open="readersOpen"` 直接受控） | `useHoverCard`、`readersBtnRef`、`toggleReaders`、document click、两条 watch |
+| `MessageItem.vue` | 表情入口 `PopoverTrigger`，`EmojiPicker` 进 `PopoverPortal/PopoverContent`；`@open-auto-focus.prevent` + `@close-auto-focus.prevent` 把焦点语义留给 EmojiPicker 自己的键盘逻辑 | `useHoverCard`、`reactionBtnRef`、零高度 Teleport 壳、document click、`watch(reactionPickerPos)` |
+| `MessageComposer.vue` | 输入框表情按钮 `PopoverTrigger`，面板 `PopoverContent`；面板不再挂在输入卡片里 | `toggleEmoji`/`onDocClickForEmoji`/document click；选完表情后用 `nextTick` 把焦点抢回编辑器 |
+| `EmojiPicker.vue` | 只剩内容（网格/键盘/Esc/焦点归还），去掉 `placement` prop 与 `absolute` 定位 | 自绘方向类与 `left-0/z-50` 等定位类 |
+
+**删除的非业务代码（现算）**：`utils/hoverCard.ts` 89 行 + `composables/useHoverCard.ts` 57 行 +
+`utils/popupPosition.ts` 42 行 = **188 行**；`designGuards.ts` 的旧 Teleport/浮层摆位守卫 **126 行**；
+四个组件净 **−72 行**。生产代码合计净 **−386 行**。测试侧删除过时的 hoverCard/popupPosition/
+浮层 escape 判据（-250 行），新增 Reka 接线判据与焦点回归探针。全仓 diff（含探针/文档改造、
+不含并行会话的后端文件）净 **−496 行**。
+
+**验证（本 tip 实跑）**
+
+- `npm test`：**1042 / 1042，0 失败**（条数以命令自打印为准；旧实现的判据已随代码删除，
+  另修了并行 Rust 提交造成的 `favorites.rs` `pub async fn` 锚点误红 —— 只认函数名，不放宽上限）。
+- `npm run build`：退出 0；`main` 307.56 kB / gzip 92.88，vendor 344.39 kB / gzip 103.34
+  （Reka HoverCard/Popover 进 vendor，raw +20.40 / gzip +3.72；main raw −1.09 / gzip −0.46）。
+- UI 运行时定向：`--only=reaction,roster` **62/62**、`--only=inputpanel` **22/22**（含"选完表情
+  焦点回编辑器且 token 进草稿"）、`--only=search,overlay,toast,select,ctxmenu` **81/81**。
+  浮层探针已适配 Reka 的 `data-reka-popper-content-wrapper`：从包装层之上查裁切祖先，
+  反面对照仍会把"搬回裁切容器 / 推出视口 / wrapper 被推走"判红（不是放宽）。
+- 全量 UI 探针：**343/343、退出码 0**（最终树实跑；新增 roster 反面对照仍会判红，不是放宽）。
+- `npm run verify:local`：**22/22、退出码 0、95.1s**（最终树；唯一跳过「护栏非空转」，按用户策略留发版/CI）。
+
+**仍未完成 / 明确保留**
+
+- `VirtualList.vue` 仍保留自研：P7 实测 20k 条 p95 17.5/16.8 ms、长帧 0，产品上界 1000 条/会话；
+  替换会重写 0.5px 白缝、prepend 不跳动、未读跳转二次落定等已被真机/守恒判据钉住的行为。
+  这不是"没做"，是按证据保留；上界抬高或需要多列/横向虚拟化时再迁 TanStack Virtual。
+- EmojiPicker 的**二维网格键盘导航**、长按手势、轻触反馈保留业务实现（Reka RovingFocus 是 1D，
+  没有现成的二维网格语义）。
+- 原生 `title`（274 处）仍是平台原生反馈；无富内容 tooltip 的真实需求。
+- E2E 多实例、Windows/Android/iOS 真机、Tauri WebView2/WKWebView 内的浮层行为 **NOT RUN**；
+  本轮只在 Chrome 运行时探针与本机生产构建上验证。
+- 未 commit、未 push、未 tag、未改版本号；并行会话仍在改 Rust/后端文件，本批没有触碰它们的未暂存改动。
+
+### 6.14 2026-10-19 通讯录空态修正（可见的无效按钮）
+
+- **真实缺陷**：通讯录页右侧空态复用了聊天空态，标题是「选择会话，开始局域网聊天」，
+  主按钮「发起聊天」执行 `navState = 'contacts'` —— 而这一页的 `navState` 已经是 `contacts`，
+  点它等于把同一个值再赋一次，**按钮可见、可点、却什么都不发生**。
+- **修法**：通讯录空态给专属 `UserCircle` 图标、标题「选择联系人，查看资料」与说明
+  「从左侧通讯录选择一位联系人，或添加新的好友」；主按钮改为「添加好友」（`addFriendOpen`），
+  这是这一页真正可执行的下一步。聊天空态（有好友 → 发起聊天；无好友 → 添加好友）保持不变。
+  新增 i18n key `layout.selectContact` / `layout.contactHint`（中英各一份）。
+- **验证**：真实浏览器 1440×900 实图确认文案/图标/按钮；点击「添加好友」真实打开
+  `AddFriendModal`（列出附近节点）；源码锁 `designGuards.test.ts`
+  「通讯录空态必须有专属文案与可执行动作」防止回退；`npm test` **1043/1043、0 失败**；
+  `npm run build` 退出 0（`main` 307.97 kB / gzip 92.96）。
+
+### 6.15 2026-10-19 零引用通用导出清理
+
+- 全仓（`src/` + `scripts/` + 测试）复核后删除 5 个只有定义、零调用的导出：
+  `favoritePreviewCacheBytes`、`filePreviewCacheBytes`、`fileKindColor`、`ICON_WELL_BG`、
+  `__resetWindowLauncherForTest`。它们原先登记在 §10 的"待 push 后清"清单里；本轮在
+  不改变行为的前提下直接删除，避免继续以"诊断用"的名义保留第二套死代码。
+- 未动仍在使用的 `FILE_KIND_COLORS`、`opening/lastLaunchAt`、`StaleGuard`（store 的会话/群任务
+  刷新仍在用）。
+- `npm test` **1043/1043、0 失败**；`npm run build` 退出 0；`npm run verify:local`
+  **22/22、退出码 0、89.3s**（最终树）。
+
+### 6.16 2026-10-19 真实 Tauri 主窗与日志窗取证
+
+- **真实 Tauri dev（隔离环境）**：用 `HOME=/tmp/gosslan-ui-home.*`、保留真实
+  `RUSTUP_HOME/CARGO_HOME` 启动 `npm run tauri dev`，加载的是当前工作树前端（5.0.28）与
+  全新隔离数据库；主窗 WKWebView **真实渲染成功**（截图：左栏/搜索/空态/主区完整，未见白屏或样式裸奔）。
+  没有读写用户真实数据库；临时 HOME 在退出后删除。`tauri dev` 的 Rust watcher 随后被并行会话的
+  `src-tauri` 改动触发重建/重启，**设置窗口与日志独立窗的交互验证 NOT RUN**；不把主窗渲染外推成
+  “所有 Tauri 浮层已验”。
+- **日志独立窗**：用现有 `--only=logs` 夹具在真实 Chrome 中挂载 `LogViewer`（standalone、200 条），
+  **3/3 通过**：虚拟行真实渲染、视口内只渲染少量行、滚到底换页；同时留存视觉取证帧
+  （时间/级别/目标/正文、筛选、搜索、自动刷新/刷新/清空/复制均可见，无裁切或重叠）。
+  这次给 `check-ui-runtime.mjs --shot` 增加了 logs 段的取证截图，后续可重复。
+- **第二次尝试**：并行会话的干净树校验仍占着 Cargo build lock，`tauri dev` 停在 432/434；
+  已停止并清理隔离 HOME，没有把它记成 PASS。
+- **仍未验证**：Tauri 设置/日志**独立窗**的点击路径、WKWebView 下的 Reka 浮层、Windows/Android/iOS 真机、
+  E2E 多实例；这些都保持 NOT RUN，不因主窗渲染或 Chrome 探针改写状态。
+
+### 6.17 2026-10-19 锚定浮层入场淡入
+
+- 四个锚定浮层（回应名单 / 已读名单 / 消息表情 / 输入框表情）此前是**瞬间出现**。新增
+  `.gosslan-popover-in`：120ms `opacity` 淡入，**只动 opacity、不动几何** —— 几何动画会让
+  floating-ui 首帧测量与探针的贴边判据互相打架；淡入已能消掉"硬切"的观感。
+  全局 `prefers-reduced-motion: reduce` 会把它压到 0.01ms，不新增例外。
+- 定向 UI 探针 `--only=reaction,roster,inputpanel` **84/84、退出 0**（几何/点击/焦点判据不受动画影响）。
+- `npm test` **1043/1043、0 失败**；`npm run build` 退 0，`main` 308.05 kB / gzip 92.99；
+  `npm run verify:local` **22/22、退出 0、81.0s**。
+- 全量 UI 探针：**343/343、退出码 0**（动画最终树实跑；无跨段回归）。
+
+### 6.18 2026-10-19 消息列表 VirtualList 首次运行时验收
+
+- 给 `check-ui-runtime.mjs` 新增 `--only=vlist`：用真实 Chrome 挂载 `VirtualList` 200 条，
+  验证的是列表本身而不是夹具：
+  - 200 条只渲染视口附近的少量行；滚动根 `role=log` / `aria-live=polite` 真的挂着；
+  - `scrollToIndex(150)` / 从底部 `scrollToIndex(100)` 都准确落到目标且贴顶（目标行实测 top≈8px，
+    即组件内 `pendingJump` 的二次 DOM 校正真的生效；overscan 的前一行不算“可见”）；
+  - 贴底 `nearBottom=true`、离开底部 `nearBottom=false`（父组件“回到最新”按钮的依据）；
+  - **prepend 20 条后同一 key 留在视口同一位置**（向上加载历史不跳动），且仍只渲染少量行；
+  - 触顶真的发 `loadMore`。
+- 读数：**12/12、退出码 0**。这组是“保留自研 `VirtualList`”的**运行时证据**，不是只引用
+  P7 性能读数：在 1000 条/会话的产品上界下，未发现需要迁移 TanStack Virtual 的行为缺口；
+  迁移会重写这些已被钉住的语义，收益未证。若产品上界抬高或需要多列/横向虚拟化，再按本探针
+  的同一组判据重新评估。
+- 全量 UI 探针（含本段）：**355/355、退出码 0**（最终树实跑；顺序跑无串味）。
+
+### 6.19 2026-10-19 移动端长按回应名单运行时验收
+
+- 迁移后的最大风险是触屏长按：Reka `HoverCardTrigger` 的 focus/pointer 自动开启必须被业务守卫挡住，
+  否则「点一下胶囊」会既切回应又弹名单。新增 `--only=touchroster`，在触摸仿真（`canHover=false`）下：
+  - 按下的前 150ms 名单**不**自动出现（focus 自动开启被忽略）；
+  - 约 450ms 长按后名单展开；
+  - 松手后名单**不**收起（长按这一按的 release 不许误关）；
+  - 点名单外收起。
+- 读数：**6/6、退出码 0**。这条补上了上一批 Chrome 桌面 hover 探针没有覆盖的触屏路径；
+  WKWebView/Android WebView 真机仍是 NOT RUN。
+- 含本段的全量 UI 探针：**361/361、退出码 0**（最终树实跑；触摸段在最后并已复位仿真）。
+
+### 6.20 2026-10-19 群文件 / 群任务面板视觉复核
+
+- 给 `--only=files,tasksrt` 的群面板段加了 `--shot` 取证帧，实跑 **22/22、退出码 0**：
+  - 群文件面板（`-files.png`）：标题「群文件 (1)」、汇总「共 1 个文件 · 1.0 KB」、行 `g2.bin`
+    （BIN · 1.0 KB · 未知成员）对齐，空槽/上传按钮与行高正常，无裁切或重叠；
+  - 群任务面板（`-tasks.png`）：标题「0/1 已完成」、筛选胶囊「全部 1 / 给我的 1 / 我创建的 0 /
+    已归档 0」、任务行「写周报」与发起/指派元信息在同一行簇内，无溢出。
+- 结论：两张实图均未发现布局/信息层级缺陷，本轮不为了"有改动"而改样式。
+  群文件/群任务的交互判据已在同一段内覆盖（打开、筛选、行点击、关闭）。
+- 聊天搜索也补了视觉帧（`-search.png`，`--only=search` 仍 **16/16**）：搜索框、发送人/日期筛选、
+  会话卡片、3 条命中（文本 / 任务 / 图片）与高亮都正常；截图里的「1970年1月1日」是夹具 `ts=1`
+  的产物，不是产品缺陷。
+- 群任务详情也补了视觉帧（`-taskdetail.png`，`--only=tasksrt` 由 14 条扩到 **15/15**）：
+  矮窗口下内容区可滚到底，描述与操作记录能完整露出，footer 的「完成 / 编辑」不被遮住。
+  至此前述列出的重点面板都已有实图或真实 Tauri 读数。
+- 移动端日志页（390×844，Chrome 触摸仿真，`--only=logs` 由 3 条扩到 **5/5**）：
+  返回/标题/计数/图标工具栏/复制/时间窗口/筛选/虚拟行全部在视口内，
+  `scrollWidth == innerWidth`（无横向溢出）且滚动容器有真实高度；取证帧 `-logsmobile.png`。
+- 移动端设置（390×844，`--only=settingsmobile` **4/4**）：一级分组列表、一级→「外观」二级页、
+  6 个预设色 + 自定义色完整可见（预设宽 ≥20、自定义色 ≥24，且都在行内）、返回一级都通过；
+  取证帧 `-settingsmobile.png`。
+- 移动端群任务（390×844，`--only=tasksmobile` **2/2**）：任务行渲染、无横向溢出/越界按钮，
+  点行打开的详情弹窗整个在视口内；取证帧 `-tasksmobile.png`。
+- 移动端群文件（390×844，`--only=files` **10/10**，其中移动端 2 条）：文件行渲染、
+  无横向溢出/越界按钮、面板宽度不超过视口；取证帧 `-filesmobile.png`。
+- 移动端输入框（390×844，`--only=composermobile` **2/2**）：表情/代码/附件/发送都在视口内，
+  编辑器宽度 ≥100，无横向溢出；取证帧 `-composermobile.png`。
+- 移动端搜索（390×844，`--only=search` **18/18**，其中移动端 2 条）：弹窗不超视口、
+  无越界按钮、结果仍渲染；取证帧 `-searchmobile.png`。
+
+### 6.21 2026-10-19 收藏页移动端崩溃与详情标题修正
+
+- **真实缺陷 1（崩溃）**：`useBackLayer` 内部是 `watch(..., { immediate: true })`，在 setup 里**同步**求值；
+  收藏页把 `const active = ref(...)` 声明在两个 `useBackLayer(...)` **之后**。桌面端 `app.isMobile`
+  为假时被短路掩盖，移动端一打开收藏页就 `Cannot access 'active' before initialization`（TDZ）。
+  真实 Chrome 触摸视口实测复现；修法是把 `active` 声明移到两个 `useBackLayer` 之前，并加
+  `designGuards.test.ts` 顺序判据防回退。
+- **真实缺陷 2（错误标题）**：移动端详情头部用的是 `displayName(active)`，文本收藏没有文件名，
+  于是标题显示「文件」。改为 `rowTitle(active)`：文本显示正文摘要、卡片显示标题、文件才显示文件名。
+- **新增运行时验收** `--only=favorites`（8 条）：真实 store + 真实 Query 无关，只替 `listFavorites`：
+  三条列表与搜索、五个筛选（含空结果提示）、详情正文与四条操作、移动端两级覆盖层与返回；
+  截图 `-favorites.png` / `-favorites-mobile.png` 复核了列表/详情/底部操作条（操作条铺满详情宽度）。
+- **新增运行时验收** `--only=links`（5 条）：标题/行/编辑删除按钮、点行发 open、添加表单为空、
+  编辑预填、取消恢复；截图 `-links.png` 复核窄栏布局。
+- 备注：探针宿主原先把组件当 `display:flex` 的**非增长**子项（桌面详情只剩 690px 宽），
+  那是夹具自己的量具错误；改成 `display:block` 后详情铺满、操作条正确分布。
+- 读数：定向 **13/13、退出 0**；全量 UI 探针 **374/374、退出 0**；`npm test` **1044/1044、0 失败**；
+  `npm run build` 退出 0（`main` 308.05 kB / gzip 93.00）；`npm run verify:local` **22/22、74.4s**。
+
+### 6.22 2026-10-19 真实 Tauri：设置窗 / 日志窗复验
+
+- 环境：隔离 `HOME=/tmp/gosslan-ui-home-*`，显式 `RUSTUP_HOME=/Users/wendongfu/.rustup`、
+  `CARGO_HOME=/Users/wendongfu/.cargo`；真实 `tauri dev` 编译并启动当前工作树前端。退出后已停止进程并删除临时 HOME。
+- **主窗**：真实 WKWebView 渲染成功；在输入框真实键入 `uiprobe-`（系统自动更正弹层也出现），
+  证明键鼠事件确实进入 WebView。
+- **设置窗**：`Cmd+,` 从真实菜单打开「设置」窗（780×600），
+  左栏（个人资料/通用/通知/外观/网络与连接/文件与共享/存储/安全/关于/重置与数据）与个人资料卡片完整渲染。
+- **日志窗**：菜单「帮助 → 打开日志窗口」打开「运行日志」窗（760×560）：标题「运行日志 N 条」、
+  `自动刷新 / 刷新 / 清空 / 复制`、窗口筛选、`30s / 1分钟 / 2分钟`、`合并重复`、搜索框与虚拟行全部可见；
+  运行中日志条数从 65 实时增长到 74（自动刷新真实生效）。用真实鼠标点击「合并重复」：
+  按钮退为未激活、行尾的 `×2` 分组标记消失、条数从 71 变为 74 ⇒ WKWebView 内按钮状态与列表重算真实可用。
+- **键盘导航**：设置左栏用 Tab 移动时焦点环可见，Enter 从「通用」切到「外观」，说明键盘可达。
+- **Reka Select（真实 WKWebView 浮层）**：在外观页真实点击「字体」下拉，Portal 菜单在触发按钮下方展开
+  （苹方/微软雅黑、思源黑体、等宽字体）；按 ↓ + Enter 选中「思源黑体」后菜单收起、触发器文案变为
+  「思源黑体」。这直接验证了 Reka 的 Portal + popper 定位 + 键盘选中在 WKWebView 内可用。
+- **Reka Slider**：点击字号滑杆第 4 档，滑块移动、标签从「14px · 标准」变为「16px · 大」、预览气泡同步放大。
+- **输入框表情 Popover（真实 WKWebView）**：用「通讯录 → 自己 → 发消息」进入自聊（不依赖任何对端），
+  点击输入框的表情按钮，Reka Popover Portal 在输入框上方展开（常用 / 全部表情，无裁切）；
+  这补齐了「WKWebView 内至少一处业务锚定浮层」的读数。同一条自聊里用 Cmd+Enter 与
+  「Tab 聚焦发送键 + Enter」都真的发出了消息；代码模式按钮点击后进入代码模式，消息以
+  `[代码]` 卡片渲染。鼠标直接点「发送」在 WKWebView 的自动化坐标下没有稳定命中
+  （Chromium 的鼠标出口已由 `--only=inputpanel` **23/23** 证明；键盘激活在 Tauri 也已证明），
+  不据此判成产品缺陷。
+- **消息行浮层（真实 WKWebView）**：在隔离 HOME 的 `gosslan.db` 里种一个 `group:probe` 群 +
+  一条文本 + 一条 `kind='reaction'` 记录（不接任何对端），真实 Tauri 渲染出群会话、气泡和
+  「[赞] 1」胶囊；点击气泡外侧笑脸打开 Reka Popover 表情面板，悬停胶囊打开 Reka HoverCard
+  名单（显示 Noble Falcon JGI）。消息行的 Popover 与 HoverCard 两条都拿到了真实读数。
+  已读名单 Popover 没有单独点，但它与已验证的回应选择器是同一个 Reka Popover 原语。
+- **仍未验证**：Windows/Android/iOS 真机、E2E 仍 **NOT RUN**。
+- 注意：该 dev 实例与局域网里的并行 E2E 进程互相发现并收到过对端消息；隔离数据库已随临时 HOME 删除，
+  没有读写用户真实数据，也没有把这次运行当作 E2E 证据。
+
+### 6.23 2026-10-19 接线判据空转修复（护栏注入实测抓出）
+
+- **发现**：`verify-guards.py --only 已读名单` 首次实跑报「改坏之后测试仍然通过」。
+  根因是 `rekaPrimitives.test.ts` 只用 `src.includes("PopoverPortal")` 做接线断言 ——
+  **`import { PopoverPortal } from "reka-ui"` 本身就满足它**；把模板里的 `<PopoverPortal>`
+  换成 `<div>` 后，测试仍然绿。这正是「存在性断言只是半个守卫」的现场复现。
+- **修法**：四组组件（回应名单 / 已读名单 / 消息表情 / 输入框表情）的断言全部改成只认**模板标签**
+  （`<HoverCardRoot` / `<PopoverTrigger` / `<PopoverPortal` …），并同步了护栏声明的 fail-hint。
+- **验证**：`verify-guards.py --only 已读名单` **退出 0**：注入态必红且由声明的那条判据报出，
+  还原态必 PASS（改坏即 FAIL、恢复即 PASS 两半都成立）。这比 `--list` 的锚点核对强一层：
+  证明这条判据真的会失败。
+- 这条修复只动测试/护栏与文档，不改生产代码。
+- **全量前端护栏（86 条）**也跑了一遍：首跑 **85/86**，唯一失败的是
+  「操作面板：点任何一项都要收起」。根因不是测试弱，而是**注入锚点指错了元素**：
+  旧锚点（12/10 空格缩进）实际命中 `ActionSheet.vue` 里的「取消」按钮，
+  面板 `DialogContent` 的 `@click` 仍在，所以删掉按钮后测试照绿。
+  把锚点改成面板开标签真实的 8/6 空格缩进后，单条复跑 **1/1、退出 0**
+  （注入态必红且报 `必须在点击时收起`，还原态必 PASS）；其余 85 条在同一源码树上已通过。
+- 结论：这两条空转都不是「测试没写」，而是**判据/锚点没有真的指到被守的语义**；
+  它们只有在真正注入并观察失败时才会暴露。完整 231 条仍留给发版/CI（本地只跑了前端族 86 条）。
+
+### 6.24 2026-10-19 字体「系统默认」档被 Reka Select 吞掉
+
+- **发现**：真实 Tauri 打开「外观 → 字体」下拉时，菜单只有三档（苹方/微软雅黑、思源黑体、等宽字体），
+  「系统默认」不见了，触发器也是一片空白。根因是默认档的 option value 写成空串 `""`，
+  而 Reka 的 `SelectItem` 不渲染空串值；触发器又按值匹配标签，于是空值匹配不到任何选项。
+  这同时意味着用户**无法把字体切回系统默认**。
+- **修法**：默认档改用非空哨兵 `__gosslan_system__`，`fontModel` 把存储里的空串映射成哨兵，
+  `onFont` 再把哨兵落库回空串；存储格式不变，哨兵不外泄。
+- **验证**：新增 `--only=fontsel` **4/4、退出 0**：默认触发器显示「系统默认」、菜单四项齐全、
+  ↓+Enter 选中苹方后触发器与落库字体栈同步、再切回默认后 `localStorage` 为空串；
+  取证帧 `-font.png` 可见菜单四项。另加 `designGuards.test.ts` 源码判据锁住
+  「不许空串 option / 必须有哨兵互映」，防止 CI 看不到 UI 探针时静默回退。
+  全量 UI 探针 **396/396、退出 0**（含群任务详情滚动判据、「发送」按钮鼠标出口、
+  回执入口与回应入口的命中区不重叠，以及移动端日志/设置/群任务/群文件/输入框/搜索
+  390 宽无横向溢出）。首跑一次在 overlay 段后 renderer 的 CDP 调用 45s 未回包
+  （255/256，判的是探针自身没跑完，不是产品红）；第二次跑时残留的 probe Chrome/profile
+  让端口检查当场判红（这正是那条检查的用途），清掉后 **396/396**。
+  `npm test` **1045/1045、0 失败**；
+  `npm run build` 退 0（`main` 308.05 kB / gzip 93.00）；`npm run verify:local` **22/22、75.7s**。
+  生产代码改动未提交、未 bump 版本号。
+
+### 6.25 2026-10-19 已读名单弹层的真实 WKWebView 点击验收（顺带修掉 AX 探针的一个盲区）
+
+- 这一格补的是 §6.22 留下的那句「已读 Popover 未单独点」：此前它只有 Chromium 探针，
+  没有真实 WKWebView 上的点击证据。按下走**系统无障碍 `AXPress`**（不是合成鼠标，
+  上一轮合成鼠标在回执/回应入口上判不准）。
+- 做法：隔离 `HOME` + `GOSSLAN_INSTANCE=88` 直接起已有的 dev 产物（**不重编 Rust**，
+  避开并行会话的 cargo 锁），vite dev 端口 1420；用 `node:sqlite` 往隔离库塞一个 5 人群
+  （我 + 4 名已读者）、3 条消息、`group_reads` 4 行，再 `AXPress` 回执入口。
+- ★ **抓出探针自己的盲区**（改前）：`scripts/ax-tree.mjs` 的 `collect()` 与 `listPressables()`
+  只认 `AXButton / AXLink / AXCheckBox / AXMenuItem`，而**真实 WKWebView 会把带 `aria-haspopup`
+  的 `<button>` 映射成 `AXPopUpButton`** —— Reka 的 PopoverTrigger / SelectTrigger /
+  DropdownMenuTrigger 全是这一类。后果不是"少一条读数"，而是**界面上明明渲染了
+  `desc="已读 4 人，查看已读成员"`，探针却报「没有可点元素」**：每一个锚定浮层入口
+  在这条取证路上都不可用。把 `AXPopUpButton` 加进两处可点集合后，同一棵树当场列出
+  `8 AXPopUpButton | 已读 4 人，查看已读成员`、`7 AXPopUpButton | 添加表情回复`、
+  `6 AXPopUpButton | 表情`（可点元素 17 → 25）。
+- ★ 另一条取证坑（记进判读口径）：`GOSSLAN_INSTANCE=n` 时运行时 device_id 是
+  `<settings.device_id>-i<n>`（`src-tauri/src/state.rs:1424`）。种子若直接写 `settings.device_id`，
+  那些消息会被判成**别人发的** —— 表现是自己的消息左对齐、带昵称、没有回执，
+  看着像"回执功能坏了"。改指 `-i88` 后回执与弹层全部正常。
+- 读数（真实窗口截图 + 像素采样，`/tmp/gosslan-receipt-*.png`）：
+  - 浅色：弹层标题「已读成员（4）」+ 4 行头像与昵称（琥珀/蔷薇/青瓷/紫罗兰），锚在触发器下方、
+    右缘与气泡列对齐，圆角/描边/磨砂底都正常。
+  - 深色：同一弹层正常渲染，没有残留浅色底。
+  - **Esc（真实键盘 `key code 53`）收起**，且焦点回到触发器并显出 `:focus-visible` 描边
+    ⇒ Reka 的 DismissableLayer 与焦点归还在 WKWebView 里成立，不只是 Chromium 里成立。
+  - 顺手用像素采样否掉一句凭截图产生的怀疑：深色下「我的气泡」实测 `#513f99`（luma 79，
+    设计目标 74）、文字 `#d4d4d4`（luma 212 = 目标 212）⇒ `softenMineForDark` 生效，
+    **不是**"暗色分支没接上"，因此不改（`src/utils/chatStyle.ts:123`）。
+- 边界：只有 macOS / WKWebView 这一条腿。Windows WebView2、Android/iOS 真机、E2E 仍 **NOT RUN**
+  （本机无 AVD/system-image/iOS 模拟器/iOS Rust target，见 §7）。
+  取证期间一次 `set frontmost` 没生效，那次 Esc 落到了前台的另一个应用（无破坏性动作）。
+  隔离 HOME 与那份库已删；用户真实 `gosslan-1/2/3.db` 的数据 mtime 仍是 10-13 / 10-16，未被动过。
+
+### 6.26 2026-10-19 划选打断、假空态、假错误出口与两处间接层（只读审计 + 变异证明）
+
+- 这一批的来源是一次**只读**全仓审计（重复实现 / 死导出 / 无意义包装层三类），
+  逐条自己复跑到行之后才动码。审计给的 195 条"无用导出"候选里，
+  真正零引用的值导出只有 `useBackLayer.ts::backLayerDepth` 一条，而它自己的注释写着"诊断用"
+  ⇒ 判为**故意留的排障出口**，不删。模块层没有死文件（每个 utils/composables/ui 文件都有 ≥1 个生产 import 方）。
+- **① 划选被图片打断（真实交互缺陷，桌面端还能把图片拖出窗口）**：
+  `-webkit-user-drag: none` 2026-09-13 那次只加在 `.emoji-img` 上（当时判的是"划过表情选区中断"），
+  而全仓 26 个 `<img>` 只有 2 处自己写了 `draggable="false"` ⇒ 划过**头像 / 图片气泡 / 文件图标**
+  依旧会变成拖图片。收口成一条全局 `img` 规则（`src/style.css`），
+  并把这条不变量加进已有判据 `checkSelectionContract` 的 ⑤-b（`src/utils/designGuards.ts`）。
+  只禁拖拽，**没有**加 `user-select:none` —— 那会连带丢掉图片 alt 的复制。
+- **② 文件角标三处各写一遍，漂移已经变成假空态**：
+  `GroupFilesPanel` 与 `MessageFileBubble` 是 `ext.toUpperCase().slice(0,4) : t("common.file")`，
+  而 `FavoritePanel` 那处是裸的 `fileExt(name).toUpperCase()` —— 既不截断也不兜底，
+  **没有扩展名的文件在收藏详情里渲染成空串 + 一个孤零零的「 · 大小」**。
+  新增 `utils/fileKind.ts::extBadgeLabel(name, fallback)` 一份，三处调用点收口
+  （`fallback` 由调用方传，本文件继续不碰 i18n）。
+- **③ 群任务的错误出口有两种表现**：`GroupTasksBoard.vue` 同一文件里 8 处 `catch`，
+  4 处走 `app.toastError(e, …)`、4 处走 `app.toast(String(e), "error")`。
+  后者既把原始异常串（`Error: [object Object]` 这类）直接甩给用户，又**不进日志**
+  （`toastError` 才走 `reportError`）—— 而 `useAppStore.ts:230` 的注释早就写明
+  "所有 catch 里的错误提示都应走这里"。四条统一到 `toastError(e, t("todo.updateFail"))`
+  （同一个 `updateTodo` 动作，前缀沿用既有那句，不新增文案）。
+- **④ 两处零语义间接层删除**：`filePreview.ts` 里为"不动 import 点"留的
+  `export { imageMime }` 转出（它把刚做出来的断环方向又写模糊了，两个消费者改指
+  `utils/imageMime.ts`）；`GROUP_FILES_QUERY_POLICY = PANEL_QUERY_POLICY` 别名
+  （1 个消费者改指 `panelQuery` 本体）。
+- **判据不是写完就算**：三条新判据各做了一次**单点变异证明**（注入→必红且由点名那条报出、
+  还原→必绿），实测 A/B/C 三次注入分别 `exit=1` 并打印
+  `扩展名角标必须走 …extBadgeLabel`、`错误出口必须统一走 app.toastError`、
+  `全局 \`img\` 规则缺少 -webkit-user-drag: none`，随后逐条还原。
+- **明确否掉的两条审计建议**（记下来免得下一轮又被"发现"）：
+  ① 14 处内联头像片并进 `MessageAvatar.vue`（审计估 −60 行）—— 这些点在
+  `h-4…h-14`、`rounded-full` vs `--gosslan-avatar-radius`、离线灰度、
+  以及 `SelfAvatar`/`ConversationListItem` 的多格拼图结构上**各不相同**，
+  而默认头像是设计过的功能；一次 14 文件的视觉重构换 60 行，
+  尺寸档写错的表现是视觉回归而不是测试红 ⇒ 不做。
+  ② `useDeferredRef`/`useSearchKeyword` 换成 `@vueuse/core` 的 `refDebounced`——
+  现值只有约 50 行、带 `onBeforeUnmount` 取消待执行提交，且 `defer.test.ts` 里有
+  三处**接线判据**按名字钉着它（"建了镜像却仍读原值"那种骗不过）；
+  换库要连带重写判据，收益只是行数 ⇒ 不做（"确有收益再迁移"这一档没过）。
+- **实测读数（当前树）**：`npm test` **1048/1048、0 失败、退出 0**；
+  `node scripts/check-ui-runtime.mjs` **396/396、退出 0**（第一次跑在 overlay 段之后 CDP eval 45s 未回包，
+  停在 254/256；单独跑挂起点那两段 `--only=imgskel` 两次 7/7 ⇒ 判为并行 cargo 抢 CPU 下的冷编译超预算，
+  不是产品红 —— 这条与 §6.24 那次是同一族，探针的预算守卫把它响亮地报了出来）；
+  `npm run verify:local` **22/22、退出 0、532.0s**（耗时被并行会话抢 `src-tauri/target` 的 cargo 锁放大，
+  无抢锁时同层 75.7s）；两份文档门禁 **退出码 0**。
+- **行数账要按口径说清**（复跑：`git diff HEAD --numstat -- src` 分别按"排除测试与 i18n"和"再排除
+  `designGuards.ts`"各算一次）：`designGuards.ts` **只有测试引用**（应用码里零 import），
+  所以它是量具不是产品码。修正口径后累计**应用码净 −234**（+354 −588）；
+  本轮这一批本身是**应用码小幅净增**（新增一条全局 CSS 规则 + 一个 `extBadgeLabel` 出口），
+  换来的是三处重复实现收口成一处、两处零语义间接层删除、三条新判据（都已做变异证明）。
+  ⇒ 不把这一批写成"非业务代码又少了多少"。
+- 取证边界：本批想再在真实窗口里点一次已读名单弹层做回归确认，但那一刻并行会话起了 3 个实例
+  （我的实例已被 E2E 网格发现并建链）⇒ 按"不扰动别人在跑的轮次"处理，**只按 pid 停掉自己那一台**，
+  多实例下 WKWebView 控件树读不到（只有第一台建得起来）这条限制照旧记着，不拿它当产品结论。
+  真实窗口的弹层点击证据仍归 §6.25（那一次是本批改动之前、单实例状态下取的）。
+- **另外两条审计建议也按实测否掉**（都复读到行才判）：
+  ① `utils/color.ts` 的 `mix` 与 `mixHex` 不是同一个活：一个出 `rgb(...)` 供 CSS 直接用、
+  一个出 hex 供继续参与混合链，且 **`mixHex` 带 0-255 钳位而 `mix` 不带**。合并省下约 5 行，
+  代价是给所有派生色加一次钳位 ⇒ 不做。
+  ② `ChatSearchDialog.vue:242` 那个手写 `setTimeout` 不是 `utils/defer.ts::debounce` 的重复实现：
+  它的 watch 里"清空关键词"那一支要**立即**清结果、只有非空词才走 150ms 合并。
+  换成通用 debounce 会连带改掉那一支的触发时机（搜索是热路径）⇒ 不做。
+- **本轮欠的一格（不是没做，是被并行轮次挡住）**：真实 WKWebView 下的**移动端布局**
+  （把窗口收到 390 宽看 `is-mobile` 那一套）—— 本机此刻并行会话的 3 个 E2E 实例正在跑，
+  再起一台会被它们的网格发现并建链（本轮已经实测到这条：我那台起来后立刻
+  `link peer=gosslan-…-i2`），会改动别人那一轮的邻居数 ⇒ 停了自己的实例、把这一格留给
+  并行轮次结束之后再取。此前移动端布局只有 Chromium 390 宽的探针读数（`settingsmobile`
+  `tasksmobile` `files` `composermobile` `search` `logs` 六段），真 WebView 那一半仍未证。
+
+### 6.27 2026-10-19 真实 WKWebView 下的移动端布局（把窗口拖窄，不碰并行轮次）
+
+- 这一格补的是 §6.26 末尾登记的那条欠账。做法：隔离库先把 `settings.lan_enabled` 置 `0` 再起实例
+  （启动日志里 `discovery` 行数 **0** ⇒ 它没有加入局域网，不会改动并行会话那一轮的邻居数——
+  这条前置是必须的，因为并行 E2E 当时就在跑）。窗口用系统无障碍收到 **390×768 点**
+  （`tauri.conf.json` 的 `minWidth: 360` 本来就允许拖窄，所以这是受支持状态，不是畸形窗口）。
+- 读数（按窗口真实边界裁图后判，不看整屏缩略图）：
+  - 列表页：**单列**（搜索框 + 会话行 + 底部 TabBar 四项），无横向溢出；
+  - `AXPress` 会话行 → 聊天页**整页推入**：左上出现 `AXButton | 返回`、TabBar 依 `showMobileTabBar` 收起、
+    头部四个动作（成员/文件/任务/补历史）都在，**已读回执头像栈在移动端同样渲染**；
+  - `AXPress` 「返回」→ 回到列表、TabBar 回来 ⇒ 移动端的 push/pop 与 TabBar 显隐规则在真实
+    WKWebView 里成立（此前只有 Chromium 390 宽的探针读数）。
+  - 可点元素账：列表页 6 个、聊天页 14 个（含 2 个 `AXPopUpButton | 已读 4 人，查看已读成员`、
+    3 个「添加表情回复」）——第一次读仍是 0（WebKit 懒建 AX 树），重试一次才挂上。
+- ★ **一条判读教训（记进取证口径）**：第一次判"移动布局没生效、聊天被裁成两栏"是**看整屏缩略图**看出来的，
+  按窗口 bounds 裁出来再看是正常单列。本机截图像素/点的比例**不是常数**（这张屏是 2.0，
+  此前另一台记录里是 1.342）⇒ 几何结论必须每次从 `position`+`size` 现算，不能拿上一次的换算系数。
+  这次没有据此改任何代码——**"看起来不对"先怀疑自己的尺子**。
+- 边界：桌面端窄窗触发的是 `resolveMobileLayout` 的**宽度兜底**那一支；Android/iOS 真机
+  （平台优先那一支 + 触摸/安全区/权限弹框时序）仍 **NOT RUN**，按分工归用户。
+
+### 6.28 2026-10-19 判据 ㊵ 的分母是手抄的，漂移已经漏掉两处真违规
+
+- **发现方式**：量"图标入口有没有被绕开"时，先看入口自己导出什么，再看判据守什么。
+  `src/components/ui/icons.ts` 具名导出 **7** 个
+  （`AlertCircle, Check, ImageOff, Loader2, RotateCcw, Trash2, X`），
+  而守它的判据 ㊵ 用的是**手抄清单** `SEMANTIC_ICON_NAMES = ["Check","Loader2","RotateCcw","Trash2","X"]` —— 只有 5 个。
+- **漂移不是理论风险，已经漏了**：只读干跑（用判据自己的函数、不改任何文件）量化过：
+  ```
+  从入口现算出的分母: 7  AlertCircle,Check,ImageOff,Loader2,RotateCcw,Trash2,X
+  扫描 202 份源码 ⇒ 直连命中 2 处
+     src/components/MessageItem.vue:42
+     src/components/message/MessageImageBubble.vue:4
+  对照：旧手抄清单（5 个）命中 0 处
+  ```
+  ⇒ 判据一直打的「直连 lucide 0 处」是**分母少抄两个名字**换来的绿；
+  那两处 `ImageOff` 违规真实存在，而同一个图标在 `StateBlock.vue` 是走入口的 —— 两种来源并存。
+- **修法（按"分母要从那个家现解析"这条口径）**：
+  ① 判据的名单改成从 `icons.ts` 那行 `export { … } from "lucide-vue-next"` **现解析**；
+  ② 配一条 `>= 5` 的**非空转下限** —— 否则"把入口导出清空"会让分母塌成 0，
+     于是"全库 0 处违规"变成一条永远绿的判据（这是现解析本身带进来的新失败模式，必须一起堵）；
+  ③ 两处 `ImageOff` 改走入口（纯 import 改动，组件与图标本体都没动）；
+  ④ 入口注释里写死的「这 **5** 个名字」去掉，改成"判据从本文件现解析分母"。
+- **两条变异证明**（各改完即还原）：
+  - 把 `MessageImageBubble.vue` 的 `ImageOff` 改回直连 ⇒ `exit=1`，
+    且报的就是那条新消息：`components/message/MessageImageBubble.vue:4 高频语义图标 \`ImageOff\` 必须从 @/components/ui/icons 引`；
+  - 把入口导出砍成一个名字 ⇒ `exit=1`，报 `只从 ui/icons.ts 解析出 1 个名字 ⇒ 分母塌了，这条判据不再成立`；
+  - 还原后 `exit=0`，判据自报 `· ㊵ 分母：扫 202 份源码，高频语义图标直连 lucide 0 处`。
+- **读数**：`npm test` **1048/1048、0 失败、exit 0**；`npm run verify`（快速层，含 vue-tsc 与构建）
+  **17/17、46.1s、exit 0**。
+  另外一条过程账：§6.26 那一批落地后先把前端护栏族**整族**跑过一遍 —— **86/86 通过非空转验证、exit 0**
+  （耗时 39 分钟，因为并行会话同时在冷编 `src-tauri/target`；平时这一族 13–15 分钟）。
+  本轮这批（只动 import 与判据）之后又在最终树上复跑一次同一族。
+- 顺带否掉的两条（同 §6.26 的口径，都不做）：`shareTreeKey` 是生产零引用但删它要连带删在过的断言，
+  换 1 行源码不值；字号 `text-[Npx]` 265 处裸写里 4 档占 258 处、10px 只在开发者诊断面板，
+  没有实测缺陷支撑就不做 token 化。
+
+### 6.29 2026-10-19 同一族第二个"手抄分母"：窗口登记表比磁盘少一扇就全绿
+
+- §6.28 那一条修完，按同一个失败形状去查别的判据：`src/utils/windowEntries.test.ts` 里
+  **同一批窗口被手抄了两处**（`WINDOWS` 表 + 另一段入口清单），而它所有"每个窗口都必须有骨架/主题脚本"
+  的循环**只遍历这张表** ⇒ 新增一扇窗忘了登记，这些判据全部照绿。
+  实测今天没漂（`src/entries/` 5 个入口 = 表里 5 行），但注释里两个数量都是旧的
+  （文件头写「三个窗口（主/设置/日志）」、表上方写「四个窗口」、断言消息写「三个窗口必须是三个不同的入口」，
+  实际 5 扇：主 / 设置 / 日志 / 群任务 / 图片预览）。
+- **修法**：加一条**从 `readdirSync("src/entries")` 现算**的集合相等断言（新增窗口没登记就当场红），
+  并把三处写死的数量改成不依赖条数的说法。
+- **变异证明**（一次单点注入，用完即删）：往 `src/entries/` 放一个 `zz-guard-probe.ts` ⇒
+  `exit=1` 且报 `窗口登记表与 src/entries/ 的实际入口不一致 ⇒ 新窗口没在这里登记，按表循环的判据全都覆盖不到它`；
+  删掉后同一文件 **13/13、exit 0**，`ls src/entries` 回到 5 个入口（临时文件没有留下）。
+- **读数**：`npm test` **1048/1048、exit 0**；`npm run verify` 快速层 **17/17、23.2s、exit 0**。
+  §6.28 那一批的**前端护栏族整族复跑也已通过：86/86、exit 0**（在最终树上；这一次是补 §6.26/6.27
+  那批的账，之后按用户口径本地不再起整族 —— 长门禁归发版前与远端 CI）。
+- **判据族小结（本轮三处"绿不等于守住"）**：① 存在性断言命中 import 行（§6.23）；
+  ② 注入锚点指到同文件另一个元素（§6.23）；③ **分母手抄、且与它要守的那个家漂移**（§6.28 图标、§6.29 窗口）。
+  三条都是"跑得很绿、覆盖面却比声称的小"，只有真注入或现算分母才会暴露。
+
+### 6.30 2026-10-19 提交前双轴审查：两条被顺手删掉的变异证明 + 名单的第二条状态源
+
+- 用户授权提交前按「标准轴 / 规格轴」把 44 个文件的未提交批次重读了一遍。**两条都是本轮自己造出来的问题**，
+  不是历史欠账，所以都在提交前修掉而不是记账。
+
+- **① 两条非空转用例被连带删除（严重）**。§6.23 把「浮层 escape」两条真实文件注入换成一条 Reka 接线注入时，
+  同一个 `Case(...)` 块里**相邻的两条 SelfAvatar 用例也一起没了**——它们守的是
+  「三处都走 `<SelfAvatar>`」和「图片那一支只有 `app.device.avatar` 一个取值口」，
+  与浮层迁移毫无关系。取证：两条断言今天还在 `designGuards.test.ts:2147 / :2161`，
+  两个注入锚点在真树里仍**逐字命中一次**（`ResponsiveLayout.vue:619`、`SelfAvatar.vue:42`）
+  ⇒ 删它们没有客观理由，属于"重构判据册时误伤"。按本仓库口径这就是**删断言**，目标里明令禁止。
+  **修法**：原样恢复两条用例（正文一字未改），总数 231→**233**、前端族 86→**88**，
+  `docs/ARCHITECTURE-MAP.html` 那个现算数同批改 233（判据 E 对账）。
+  **读数**：`verify-guards.py --only 本人头像那一处不再渲染` **1/1、exit 0**（改坏即 FAIL、恢复即 PASS，
+  红由声明的那条 fail-hint 报出）；`--only "SelfAvatar 的图片改回"` **1/1、exit 0**。
+  跑完 `git status` 复核两个被注入的文件没有残留（`UserCircle class="h-14 w-14` 命中 0 次）。
+
+- **② `MessageReactionBar` 的"开着哪一颗"有第二条状态源（真实缺陷，桌面端可复现形状）**。
+  §6.23 迁移到 Reka `HoverCard` 时，把旧的 `@mouseleave`/`@keydown.esc` 关闭出口交给了库，
+  但 `@mouseenter → reveal()` 里那句 `openEmoji.value = emoji` 被留下 —— 而名单**真的**展开要等
+  `open-delay=120ms` 之后库回写。于是指针在 120ms 内进出（横向扫过一排胶囊是日常动作）：
+  名单从未出现，`aria-expanded` 与 `data-open-emoji` 却停在 `true`。这正是旧实现用
+  `watch(pos)` 反向同步堵过的那个形态，迁移时把它重新引入了。
+  **修法（同时减一个状态源）**：`openEmoji` 改为 `computed(() => canHover ? hoverOpenEmoji : touchOpenEmoji)`，
+  `reveal()` 只算 `align`、桌面不再点亮状态；`isOpen()` 这个函数整个删掉（它与派生值同一件事），
+  触屏一支仍由 `reveal()` 唯一开启、由库回写关闭。三 ref + 一个函数 ⇒ **两 ref + 一个派生值**。
+  **判据**：`reactionRoster.test.ts` 加两条 ——`const openEmoji = computed(` 必须在、
+  `openEmoji.value = ` 必须不在（派生值被直接写就是第二条状态源）。
+  **不加**运行时探针那条：结构上赋值口已经封死（源码判据会红），而探针只能靠合成 `mouseenter`
+  制造 120ms 窗口——§6.19 那册明确写过"刻意不再留合成 mouseenter 兜底"，为了这一条把它请回来不划算。
+  **读数**：`npm test` **1048/1048、exit 0**；`npm run verify` 快速层 **17/17、18.5s、exit 0**；
+  UI 探针 `--only=reaction,roster,touchroster` **70/70、exit 0**（含 hover 名单展开/贴边夹取、
+  移动端长按 450ms 展开、松手不收起、点外收起）。
+
+- **规格轴**（目标五条逐条对）：①剩余验证——已读回执 Popover 的真实 WKWebView 点击已补（§6.25），
+  Windows/Android/iOS/E2E 只登记不伪报；②真实 UI 差距——§6.26/6.27 的划选、假空态、移动端窄窗；
+  ③通用自研清理——`hoverCard`/`popupPosition`/`useHoverCard` 三个家已删干净（`git grep` 现在只剩
+  **禁止它们复活**的断言），本轮再加两条：`GROUP_FILES_QUERY_POLICY` 与 `filePreview` 里的 `imageMime` 转出；
+  ④可读性——§6.28/6.29 两个手抄分母改现算，本轮 ② 又减一个状态源；⑤验证持续推进——见上面读数。
+  **没做到的**：预览窗口（`PreviewWindow.vue`）的真实 WKWebView 点击仍 NOT RUN；真机观感判断归用户。
