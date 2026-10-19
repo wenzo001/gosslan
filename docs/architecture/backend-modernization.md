@@ -171,7 +171,8 @@
   2026-10-19 在 5.0.32 上整套重跑：23 步首跑绿；contentpull 首跑在步骤 5
   「A 侧 outbox 被 Ack 删除」**30.1s 超时红（1/4）**，同二进制连续 3 次复跑
   **36/36 绿**。失败轮 A 侧同时有 **LAN×2 + Routed 三条到 B 的链路** ⇒ 登记
-  **A-17（OPEN，未根因）**；不把 863 读成无条件稳定。
+  **A-17**；5.0.33 起每 5s 重放 outbox/group_outbox，contentpull ×3 全绿，转 FIXED（观察项）；
+  不把 863 读成无条件稳定。
   （647 = 24 个门禁 E2E 步骤逐轮打印之和，2026-10-19 终态 release 全部重跑；含默认轮
   在 1 KB / 10 MB 两档各一次。此前后缀曾写 661/877，逐轮现算多计 14，已按现算值更正。
   互操作 216 为 5.0.32 ↔ 4.44.4 双向 8 轮读数。）
@@ -244,7 +245,9 @@
   文件队列保留自己的 attempts/退避/5 次上限，不进入这个循环。
 - 判据 `outbox_retrier_is_wired_and_covers_both_queues`（唯一接线/周期/按链路筛选/
   两队列）；Rust **991 通过 + 1 ignored**，基线 992（Windows 975）。
-- **5.0.33 release 的 contentpull ×3 复跑结果**：见下方读数（成功才把 A-17 标 FIXED）。
+- **5.0.33 release 的 contentpull ×3 复跑**：**3/3 全绿（36 断言/次）**，未再出现文本 Ack 超时，
+  也未出现重复消息（该轮自身判「B 侧恰好一条」）。A-17 转 **FIXED（观察项）**：原 1/4 抖动
+  未被定向复现，5s 重放覆盖"建链窗口漏发"这一失败形状。
 
 ### B13（已落地，5.0.32）：SQLite 锁观测摘要进运行日志
 - `DbLock` 早已逐次量 wait/hold，但 `take_summary()` 只有测试在读 ⇒ 现场看不到锁竞争。
@@ -494,7 +497,7 @@
   Windows/iOS/Linux 运行时与真机未验证
   （Windows 已过交叉编译，仍无 Windows 主机/Wine 跑行为）。
 - **中**：单一 SQLite 连接串行化读写；入站 handler 单链路串行；
-  **A-17：多链路下文本 Ack 偶发 30s 超时（1/4，3 次复跑绿；失败轮 LAN×2+Routed，未根因）**；
+  **A-17（已修，观察项）：多链路文本 Ack 1/4 抖动；5.0.33 每 5s 重放后 contentpull ×3 绿**；
   Windows ACL 未处理；audit 的 glib/zbus 警告仅 Linux 路径。
 - **低**：迁移备份只按数量清扫、无时间保留策略；`gfile` 首跑曾遇 toolchain 环境噪声（复跑绿）；目录权限仅在
   Unix 生效。
@@ -521,8 +524,7 @@
   `cargo xwin build --release` exit 0、产物为 PE32+ GUI x86-64；Windows 运行时
   **NOT RUN**；Linux/iOS 运行时 **NOT RUN**（iOS 无 SDK）。
 - **哪些问题仍然存在？** 用户直接提供的 v10 现场、真机/跨平台运行时、单一 SQLite
-  连接串行化、Windows ACL、Linux GTK/D-Bus 传递依赖告警；**A-17 多链路文本 Ack
-  偶发超时（OPEN）**；另有 A-9/A-10/A-13 等已登记未修项（见 `docs/stability-roadmap.md`）。
+  连接串行化、Windows ACL、Linux GTK/D-Bus 传递依赖告警；**A-17 已修（观察项，5.0.33 contentpull ×3 绿）**；另有 A-9/A-10/A-13 等已登记未修项（见 `docs/stability-roadmap.md`）。
 - 未 push、未 tag、未 release、未 merge main；目标不标记完成。
 
 ### 6.10 可观测性覆盖（第九阶段）
