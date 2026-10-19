@@ -255,6 +255,37 @@
     /// `DbLock` 量了 wait/hold，但摘要必须真的接到生产日志 —— 只测 `summary_line`
     /// 不够：没人读 `take_summary()` 时，现场依旧看不到"谁握了多久、排队多久"。
     /// 同时钉住唯一读者：两个读者会互相清计数，读到的都是残缺窗口。
+    /// A-17：`flush_outbox` 只在建链/Hello 触发，多链路并发窗口里没发出去的消息会停在
+    /// `sending`；必须有一个**按周期对当前有链路的 peer 重放**的接线点，且覆盖群队列。
+    #[test]
+    fn outbox_retrier_is_wired_and_covers_both_queues() {
+        let lib = include_str!("lib.rs");
+        let state = include_str!("state.rs");
+        assert_eq!(
+            lib.matches("AppState::spawn_outbox_retrier(").count(),
+            1,
+            "离线队列重放必须恰好接一处（多一处会重复跑）",
+        );
+        assert_eq!(
+            state.matches("pub fn spawn_outbox_retrier(").count(),
+            1,
+            "重放器只能有一份"
+        );
+        let body = rust_fn_body(state, "pub fn spawn_outbox_retrier(");
+        for needle in [
+            "tauri::async_runtime::spawn",
+            "OUTBOX_RETRY_SECS",
+            "st.links.lock().await",
+            "flush_outbox(",
+            "flush_group_outbox(",
+        ] {
+            assert!(
+                body.contains(needle),
+                "重放器缺 {needle} —— 不重放/只重放一半/不按链路筛选都会让 A-17 复发"
+            );
+        }
+    }
+
     #[test]
     fn db_hold_summary_has_exactly_one_production_reader() {
         let lib = include_str!("lib.rs");
