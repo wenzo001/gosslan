@@ -120,7 +120,7 @@ pub async fn stop(state: &AppState) {
         // 必须等：旧的 TCP listener 只有 accept 任务退出后才真正释放。
         // 不等就继续走（同进程切换网卡 / 重新开启通道，或 `app.restart()`
         // 起来的新进程）都可能撞上 AddrInUse，Windows 上表现为重启后永久掉线。
-        await_tasks(handle.tasks).await;
+        await_tasks(handle.tasks, Some(&state.logger)).await;
     }
     *state.probe.lock().unwrap_or_else(|e| e.into_inner()) = None;
     state.links.lock().await.clear();
@@ -159,7 +159,7 @@ pub(crate) async fn start_in_order(
         Err(e) => {
             // 收回已经启动的 transport，再向上报错，绝不留下半启动状态
             let _ = shutdown.send(true);
-            await_tasks(tasks).await;
+            await_tasks(tasks, None).await;
             Err(e)
         }
     }
@@ -172,23 +172,53 @@ pub(crate) async fn start_in_order(
 const STOP_TASK_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// 依次等待后台任务结束，最长 [`STOP_TASK_TIMEOUT`]；超时即打日志放行。
-async fn await_tasks(tasks: Vec<tokio::task::JoinHandle<()>>) {
+///
+/// `logger` 是 `Option`：`stop()` 有 `AppState` 拿得到日志器，而 `start_in_order()`
+/// 的失败分支只有 future —— 那一条的失败原因本来就要作为 `Err(String)` 报给上层，
+/// 再塞一个日志器进来只会多一条没人看的通道。
+///
+/// 为什么 `JoinError` 不许再被 `let _ =` 丢掉：release 开着 `panic = "abort"`，
+/// 任务里 panic 会连进程一起带走 ⇒ 这里能收到的 `Err` 只剩**被取消/被 abort/执行器关停**
+/// 这三类。它们恰好是"界面照常、网络却不再推进"那类故障的唯一物证，丢掉就等于丢掉线索。
+async fn await_tasks(
+    tasks: Vec<tokio::task::JoinHandle<()>>,
+    logger: Option<&crate::logging::Logger>,
+) {
     if tasks.is_empty() {
         return;
     }
+    // 计数器要被 async 块**移走**，所以放 Arc 里，超时那一支才读得到。
+    let failed = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let failed_in = failed.clone();
     let joined = async move {
         for t in tasks {
-            let _ = t.await;
+            if let Err(e) = t.await {
+                failed_in.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if let Some(lg) = logger {
+                    lg.warn("net_task", format!("后台网络任务未正常收尾: {e}"));
+                }
+            }
         }
     };
     if tokio::time::timeout(STOP_TASK_TIMEOUT, joined)
         .await
         .is_err()
     {
-        eprintln!(
-            "[lan] 等待网络后台任务退出超时（{}s），强制继续",
-            STOP_TASK_TIMEOUT.as_secs()
-        );
+        let n = failed.load(std::sync::atomic::Ordering::Relaxed);
+        if let Some(lg) = logger {
+            lg.warn(
+                "net_task",
+                format!(
+                    "等待网络后台任务退出超时（{}s），强制继续；已报失败的有 {n} 个",
+                    STOP_TASK_TIMEOUT.as_secs()
+                ),
+            );
+        } else {
+            eprintln!(
+                "[lan] 等待网络后台任务退出超时（{}s），强制继续",
+                STOP_TASK_TIMEOUT.as_secs()
+            );
+        }
     }
 }
 
@@ -484,5 +514,77 @@ mod lan_autostart_tests {
         // 库里说关 ⇒ 收手，不得替用户联网
         assert!(!should_keep_retrying_lan_autostart(false, false));
         assert!(!should_keep_retrying_lan_autostart(true, false));
+    }
+}
+
+// `await_tasks` 的失败留痕判据（2026-10-20）。
+//
+// ⚠️ 单独开一个模块而不是塞进上面的 `mod tests`：`whole_file_slow_work_never_runs_on_an_async_worker`
+// 那条分母守卫按**形状**扫整个 `src/`，而它给 `async fn` 定边界用的是"下一个第 0 列 `}`" ——
+// `mod tests` 里那几条 `#[tokio::test]` 的体因此一路延伸到 `}` 收册那一行，
+// 测试里清理临时目录的 `std::fs::remove_dir_all(` 会被**每个** async 段各数一遍
+// （实测一条用例把分母从 18 顶到 26）。这条守卫的判据和阈值都不该为一条测试动，
+// 所以这里不用 `async fn`：`#[test]` + 自建 current-thread runtime + `block_on(async { … })`，
+// 块不是 `async fn`，量具看不见，用例照跑。
+#[cfg(test)]
+mod shutdown_tests {
+    use super::*;
+
+    /// 后台网络任务失败必须留下痕迹；干净退出的那条**不许**留。
+    ///
+    /// 为什么单独立一条：`await_tasks` 原先写的是 `let _ = t.await` —— `JoinError` 被原地丢掉，
+    /// 而这条 warn 常常是进程收尾前唯一能看出"某个后台任务没好死"的证据。
+    /// 只测"有 warn"不够：没有正控（干净任务不产生记录），这条判据在任何实现下都绿。
+    #[test]
+    fn failed_background_task_leaves_one_named_warning_while_a_clean_one_leaves_none() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("current-thread runtime");
+        let dir = std::env::temp_dir().join(format!("gosslan-nettask-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        rt.block_on(async {
+            let logger =
+                crate::logging::Logger::new(dir.clone(), "nettask", "[dev:test]".to_string());
+
+            // 正控：正常结束的任务 ⇒ 一条 `net_task` 记录都不许有
+            await_tasks(vec![tokio::spawn(async {})], Some(&logger)).await;
+            assert_eq!(
+                logger
+                    .snapshot(None)
+                    .iter()
+                    .filter(|e| e.target == "net_task")
+                    .count(),
+                0,
+                "干净退出的任务不该产生 net_task 记录"
+            );
+
+            // 反例：任务内部 panic ⇒ 必须留下恰好一条具名 warn
+            await_tasks(
+                vec![tokio::spawn(async {
+                    panic!("后台任务模拟失败");
+                })],
+                Some(&logger),
+            )
+            .await;
+            let hits: Vec<_> = logger
+                .snapshot(None)
+                .into_iter()
+                .filter(|e| e.target == "net_task")
+                .collect();
+            assert_eq!(
+                hits.len(),
+                1,
+                "失败的后台任务必须留下恰好一条 net_task 记录（实测 {} 条）",
+                hits.len()
+            );
+            assert!(
+                hits[0].message.contains("后台网络任务未正常收尾"),
+                "记录要报出它是谁、为什么：{}",
+                hits[0].message
+            );
+            assert_eq!(hits[0].level, "warn", "级别必须是 warn");
+        });
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

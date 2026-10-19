@@ -342,6 +342,7 @@ logging::tests::days_from_civil_inverts_civil_from_days
 logging::tests::diag_fold_table_is_bounded_by_restarting_not_growing
 logging::tests::diag_folds_only_on_identical_text_in_the_same_second
 logging::tests::diag_warn_and_error_are_never_folded
+logging::tests::exit_marker_lets_next_run_read_previous_as_clean_and_absence_as_abnormal
 logging::tests::first_startup_without_any_history_seeds_nothing
 logging::tests::format_utc_epoch_and_known_dates
 logging::tests::log_wire_actually_folds_the_diag_flood
@@ -351,10 +352,12 @@ logging::tests::logger_persists_to_file_and_rotates
 logging::tests::non_diag_info_is_not_folded
 logging::tests::only_the_panic_target_writes_a_crash_block
 logging::tests::parse_log_line_roundtrips_and_rejects_foreign_or_malformed_lines
+logging::tests::previous_exit_is_classified_by_presence_and_absence
 logging::tests::previous_run_log_and_crash_scene_are_seeded_before_this_runs_lines
 logging::tests::previous_run_seed_is_bounded_and_keeps_the_newest_lines
 logging::tests::previous_run_seed_is_wired_at_startup
 logging::tests::previous_run_seed_writes_nothing_to_disk_however_many_times_it_is_called
+logging::tests::startup_marker_carries_the_run_id
 mesh::connection::tests::congestion_can_be_recovered
 mesh::connection::tests::congestion_does_not_affect_is_healthy_at_all
 mesh::connection::tests::congestion_expires_after_window
@@ -602,6 +605,7 @@ network::group_history::group_history_engine_tests::the_progress_event_name_is_o
 network::group_history::group_history_engine_tests::the_waiter_is_registered_before_the_request_is_sent
 network::lan_autostart_tests::lan_autostart_backoff_grows_then_caps_at_thirty_seconds
 network::lan_autostart_tests::lan_autostart_stops_when_running_or_switched_off
+network::shutdown_tests::failed_background_task_leaves_one_named_warning_while_a_clean_one_leaves_none
 network::tests::discovery_failure_rolls_back_started_transport
 network::tests::transport_bind_failure_never_starts_discovery
 network::tests::transport_success_starts_discovery_and_merges_handles

@@ -816,6 +816,23 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
     app.run(|app_handle, event| {
+        // 正常退出路标。为什么必须有它：现场文件此前只有两种行（"启动"与"崩溃现场"），
+        // 于是"最后一条是启动"被当成"上次不是 panic 死的" —— 但这句话把两种完全不同的事
+        // 混成了一个：**用户自己正常退了** 和 **被 kill -9 / OOM / 看门狗强杀**。
+        // 有了这条退出路标，下一轮就能按在场/缺席分开（`logging::classify_previous_exit`）。
+        //
+        // ⚠️ 它覆盖不到的三类，如实写在这里：`panic = "abort"` 的硬崩走 panic 钩子那条臂；
+        //   `kill -9`、OOM killer、拔电**在进程内部不可能留痕**，只能靠"有启动、无退出、
+        //   无崩溃块"这个缺席推断；单实例守卫那条 `exit(0)` 走的是插件里的退出，
+        //   由"bootstrap 注册在守卫之前" + 启动留痕兜住（判据 ④）。
+        if matches!(event, tauri::RunEvent::Exit) {
+            {
+                use tauri::Manager as _;
+                if let Some(st) = app_handle.try_state::<std::sync::Arc<crate::state::AppState>>() {
+                    st.logger.write_exit_marker();
+                }
+            }
+        }
         // macOS：点击 Dock 图标且无可见窗口时恢复主窗口（避免「程序没反应」的错觉）
         #[cfg(all(desktop, target_os = "macos"))]
         if let tauri::RunEvent::Reopen {

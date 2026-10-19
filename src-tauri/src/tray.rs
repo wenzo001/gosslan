@@ -460,6 +460,15 @@ fn build_tray<R: tauri::Runtime>(
                     .state::<std::sync::Arc<crate::state::AppState>>()
                     .logger
                     .info("app", "托盘「退出」被点击：开始收尾");
+                // 退出路标要打在**最早这一点**，不能只依赖 `RunEvent::Exit`：
+                // 下面那条 1.5s 守护线程会直接 `process::exit(0)`，那种走法不经过事件循环
+                // ⇒ 只打在这里，"用户主动退"与"被强杀/崩"才分得开（判定见
+                // `logging::classify_previous_exit`）。`RunEvent::Exit` 那条臂仍然保留，
+                // 它覆盖的是 `app.exit(0)` 走到收尾的路径。
+                handle
+                    .state::<std::sync::Arc<crate::state::AppState>>()
+                    .logger
+                    .write_exit_marker();
                 std::thread::spawn(|| {
                     std::thread::sleep(std::time::Duration::from_millis(1500));
                     eprintln!("[gosslan][app] 正常退出路径未在 1.5s 内完成，强制退出");
