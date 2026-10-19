@@ -7,7 +7,8 @@
 // 而且这类错误只在特定加载顺序下才现形（dev 好、prod 炸那一类）。
 // `imageMime` 是**纯函数、零依赖**，把它放到最底层是最小、最没有副作用的断环方式。
 //
-// `filePreview.ts` 仍然 `export { imageMime }` 转出，既有的全部 import 点不用动。
+// 本文件是这一列的唯一出口：`filePreview.ts` 曾短暂 `export { imageMime }` 转出以省去改
+// import 点，那层转出已删（它让"谁依赖谁"又变得看不出方向）。
 
 /**
  * 扩展名 → MIME。

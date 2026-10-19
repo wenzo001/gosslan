@@ -154,7 +154,11 @@ func collect(_ el: AXUIElement, _ depth: Int, _ out: inout [String], _ hits: ino
     if depth > 80 { return }
     let role = str(el, "AXRole")
     let lab = label(el)
-    let clickable = role == "AXButton" || role == "AXLink" || role == "AXCheckBox" || role == "AXMenuItem"
+    // ★ AXPopUpButton 必须在列：真实 WKWebView 会把带 aria-haspopup 的 button 映射成
+    // PopUpButton（Reka 的 PopoverTrigger / SelectTrigger 全都是）⇒ 只认 AXButton 时，
+    // 每一个锚定浮层入口都不在树里（2026-10-19 验已读名单弹层时实测踩到）。
+    let clickable = role == "AXButton" || role == "AXLink" || role == "AXCheckBox" ||
+        role == "AXMenuItem" || role == "AXPopUpButton"
     if clickable && !lab.isEmpty {
         out.append("\(depth) \(role) | \(lab)")
         if !listOnly && !needle.isEmpty && lab.contains(needle) { hits.append(el) }
@@ -223,7 +227,7 @@ export function listPressables(pid) {
   } catch (e) {
     text = `${e.stdout ?? ""}\n(exec 退码 ${e.status ?? "?"}：${e.message.split("\n")[0]})`;
   }
-  return { text, items: text.split("\n").filter((l) => /^\s+\d+ AX(Button|Link|CheckBox|MenuItem)/.test(l)), helper };
+  return { text, items: text.split("\n").filter((l) => /^\s+\d+ AX(Button|Link|CheckBox|MenuItem|PopUpButton)/.test(l)), helper };
 }
 
 /**

@@ -65,9 +65,3 @@ export async function launchAuxWindow(
     opening.delete(label);
   }
 }
-
-/** 仅供测试：重置模块级状态（真实运行时不调用）。 */
-export function __resetWindowLauncherForTest(): void {
-  opening.clear();
-  lastLaunchAt.clear();
-}

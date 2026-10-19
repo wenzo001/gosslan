@@ -50,3 +50,41 @@ test("字号滑块走 Reka Slider，不再自写 pointer/键盘步进", () => {
   assert.ok(!src.includes("@keydown.left="), "仍自写方向键步进（应交给 Reka Slider）");
   assert.ok(src.includes(":aria-valuetext="), "滑块必须有可读的 aria-valuetext");
 });
+
+test("锚定浮层走 Reka：表情名单用 HoverCard，已读/表情选择器/输入框表情用 Popover", () => {
+  // ⚠️ 必须钉**模板标签**（带 `<`），不能只 includes 组件名：
+  // `import { PopoverPortal } from "reka-ui"` 本身就包含那个名字，所以
+  // 「把 <PopoverPortal> 换成 <div>」的注入会照样绿 —— 护栏就成了空转的
+  // （2026-10-19 由 `verify-guards.py --only 已读名单` 实测抓出）。
+  const roster = read("components/message/MessageReactionBar.vue");
+  assert.ok(roster.includes("<HoverCardRoot"), "回应名单没有在模板里使用 Reka HoverCardRoot");
+  assert.ok(roster.includes("<HoverCardTrigger"), "回应名单没有在模板里使用 Reka HoverCardTrigger");
+  assert.ok(roster.includes("<HoverCardContent"), "回应名单没有在模板里使用 Reka HoverCardContent");
+  assert.ok(!roster.includes("useHoverCard"), "仍在使用自研 useHoverCard 摆位");
+  assert.ok(!roster.includes("<Teleport"), "仍手写 Teleport（Reka Portal 已接管）");
+
+  const receipt = read("components/message/MessageReceipt.vue");
+  assert.ok(receipt.includes("<PopoverRoot"), "已读名单没有在模板里使用 Reka PopoverRoot");
+  assert.ok(receipt.includes("<PopoverTrigger"), "已读名单没有在模板里使用 Reka PopoverTrigger");
+  assert.ok(receipt.includes("<PopoverContent"), "已读名单没有在模板里使用 Reka PopoverContent");
+  assert.ok(receipt.includes("<PopoverPortal"), "已读名单没有在模板里使用 Reka PopoverPortal");
+  assert.ok(!receipt.includes("useHoverCard"), "仍在使用自研 useHoverCard 摆位");
+  assert.ok(!receipt.includes("<Teleport"), "仍手写 Teleport（Reka Portal 已接管）");
+
+  const item = read("components/MessageItem.vue");
+  assert.ok(item.includes("<PopoverRoot"), "表情选择器没有在模板里使用 Reka PopoverRoot");
+  assert.ok(item.includes("<PopoverTrigger"), "表情选择器没有在模板里使用 Reka PopoverTrigger");
+  assert.ok(item.includes("<PopoverContent"), "表情选择器没有在模板里使用 Reka PopoverContent");
+  assert.ok(!item.includes("useHoverCard"), "仍在使用自研 useHoverCard 摆位");
+  assert.ok(!item.includes("<Teleport to=\"body\">\n          <div\n            v-if=\"reactionPickerOpen"), "表情选择器仍手写 Teleport 壳");
+
+  const composer = read("components/chat/MessageComposer.vue");
+  assert.ok(composer.includes("<PopoverRoot"), "输入框表情面板没有在模板里使用 Reka PopoverRoot");
+  assert.ok(composer.includes("<PopoverTrigger"), "输入框表情面板没有在模板里使用 Reka PopoverTrigger");
+  assert.ok(composer.includes("<PopoverContent"), "输入框表情面板没有在模板里使用 Reka PopoverContent");
+
+  const picker = read("components/EmojiPicker.vue");
+  assert.ok(!picker.includes("placement"), "EmojiPicker 仍保留自绘方向 prop");
+  assert.ok(!picker.includes("absolute left-0"), "EmojiPicker 仍自己 absolute 定位");
+  assert.ok(picker.includes("data-emoji-panel"), "EmojiPicker 的内容根缺少稳定钩子");
+});

@@ -90,8 +90,13 @@ test("揭示方式两端都有出口：hover 只在有指针的设备启用", ()
   assert.doesNotMatch(src, /matchMedia\s*\(/, "组件里不许再自己算 hover 能力（㉟ 同一条口径）");
   // 键盘必须走得到同一条路（只给 mouse 的浮层对键盘用户等于没有）
   assert.match(src, /@focus="canHover && reveal\(c\.emoji, \$event\.currentTarget\)"/);
-  assert.match(src, /@keydown\.esc="hide\(c\.emoji\)"/, "开着要有关闭出口");
+  assert.match(src, /HoverCardContent/, "Esc/外点由 Reka DismissableLayer 接管（不再手写 keydown.esc）");
   assert.match(src, /aria-expanded="openEmoji === c\.emoji"/);
+  // ⚠️ "开着哪一颗"必须是**库回写那两份 ref 的派生值**，组件不许自己另记一份：
+  // 上一版在 mouseenter 那一拍就把 openEmoji 点亮，而 Reka 要等 open-delay(120ms) 才真展开 ⇒
+  // 指针快速进出后名单从未出现，`aria-expanded` 与 `data-open-emoji` 却停在 true。
+  assert.match(src, /const openEmoji = computed\(/, "展开状态必须从库回写的 ref 派生");
+  assert.doesNotMatch(src, /openEmoji\.value = /, "不许直接写 openEmoji（它是派生值，写它就是第二条状态源）");
 });
 
 test("名单只按追加先后逐行列出，不再单标「最新」（用户 2026-10-07：「最新的那个标签去掉」）", () => {
@@ -103,7 +108,7 @@ test("名单只按追加先后逐行列出，不再单标「最新」（用户 2
   // （还写着"不截位"），那正好把**真 bug** 固化成契约 —— 全量列 actor、末行又挂「等 N 人」
   // ⇒ 4 个名字 + "还有 1 人"自相矛盾。正确口径是"列到上限为止，其余折进 +N"，
   // 且上限必须与 +N 用同一个数（都来自 ROSTER_VISIBLE）。
-  assert.match(src, /v-for="id in rosterIds\(activeChip\)"/, "名单按 rosterIds 列，不是全量 actor");
+  assert.match(src, /v-for="id in rosterIds\(c\)"/, "名单按 rosterIds 列，不是全量 actor");
   assert.doesNotMatch(src, /v-for="id in activeChip\.actors"/, "不许全量列 actor 又挂 +N");
   assert.match(src, /c\.actors\.slice\(0, Math\.max\(1, ROSTER_VISIBLE\)\)/, "列出的上限就是 ROSTER_VISIBLE 那一个数");
 });

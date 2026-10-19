@@ -67,11 +67,6 @@ export function clearFilePreviews() {
   inflight.clear();
 }
 
-/** 当前预览缓存的累计字节数（诊断/测试用）。 */
-export function filePreviewCacheBytes(): number {
-  return cache.bytes();
-}
-
 /** 代码预览上限：超过则回退文件卡片并提示，避免把巨大文件读进前端。 */
 const CODE_MAX_BYTES = 512 * 1024;
 /** 图片预览上限：远大于常见截图/照片，仍远低于协议 MAX_FRAME。 */
@@ -169,10 +164,6 @@ export function dropThumbPreview(msgId: string) {
   thumbInflight.delete(`thumb:${msgId}`);
 }
 
-// `imageMime` 原本定义在这里，现搬到 `utils/imageMime.ts`（纯函数、零依赖）——
-// `imageThumbnail.ts` 也要用它，而 `imageThumbnail.ts` 又被本文件依赖，两边互相 import
-// 就是模块循环（详见那份文件头）。这里**转出**是为不动任何既有 import 点。
-export { imageMime } from "@/utils/imageMime";
 /** 加载指定 file 消息的预览；失败/超限返回 `{}` 或 `{note}`，调用方据此回退文件卡片。 */
 export function loadFilePreview(
   msgId: string,

@@ -13,6 +13,36 @@
 
 ## [Unreleased]
 
+## [5.0.34] - 2026-10-19
+
+### 前端：三处锚定浮层收进 Reka、划选/空态/错误出口三处真实缺陷、两个手抄分母改现算
+
+- **通用自研实现删除**：`utils/hoverCard.ts`、`utils/popupPosition.ts`、`composables/useHoverCard.ts`
+  连同各自测试整册移除（−286 行），表情名单 / 已读名单 / 表情选择器 / 输入框表情面板四处改由
+  Reka `HoverCard` + `Popover`（floating-ui 定位、DismissableLayer 管 Esc 与外点）托管；
+  `EmojiPicker` 不再自己 `absolute` 摆位，方向 prop 一起删掉。
+  仓内现在只剩**禁止这些写法复活**的断言，没有实现残留。
+- **三处真实缺陷（都来自真实窗口/真浏览器读数，不是探针通过率）**：
+  ① 划选文字划过头像或图片气泡会被浏览器改成"拖图片"⇒ `style.css` 全局
+  `img { -webkit-user-drag: none }`（此前全仓 26 个 `<img>` 只有 2 个自己写了 `draggable="false"`）；
+  ② 通讯录页空态复用聊天空态的「发起聊天」⇒ 点下去只是把 `navState` 再赋一次，按钮活着而什么都不发生，
+  改为通讯录专属文案 + 「添加好友」；
+  ③ 字体「系统默认」档用空串当 `SelectItem` value ⇒ Reka 直接吞掉这一项，菜单少一档、触发器一片空白，
+  改为非空哨兵并在落库前映射回空串。另外群任务看板 4 处 `toast(String(e), "error")` 统一走
+  `toastError`（原始串不再甩给用户，且进日志）。
+- **判据侧两处"绿但不守住"**：图标白名单与窗口登记表都是**手抄分母** —— 前者比入口少两个名字，
+  已漏掉两处直连 `lucide-vue-next` 的真实违规；后者只要新增一扇窗没登记就整批照绿。
+  两处改为从 `ui/icons.ts` / `src/entries/` 现算，并各配一次单点变异证明。
+- **提交前双轴审查又捞出两条**（报告 §6.30）：恢复两条被误删的 `SelfAvatar` 非空转用例（231→**233**）；
+  `MessageReactionBar` 的"开着哪一颗"原有第二条状态源 ⇒ 指针在 `open-delay` 内快速进出时
+  `aria-expanded`/`data-open-emoji` 会停在 true 而名单从未渲染，改为纯派生（三 ref + 一个函数 → 两 ref + 一个 computed）。
+- **读数**：`npm test` **1048/1048、exit 0**；`npm run verify` 快速层 **17/17、18.5s、exit 0**；
+  UI 探针 `--only=reaction,roster,touchroster` **70/70、exit 0**（全量 396/396 在同批次早前树上跑过）；
+  恢复的两条用例各 `--only <名片段>` **1/1、exit 0**；真实 WKWebView 已补已读名单 `AXPress` 点开/收起与
+  390×768 窄窗移动端布局，并修掉 `ax-tree.mjs` 不认 `AXPopUpButton` 的取证盲区。
+  Windows / Android / iOS / E2E 与预览窗口真机点击 **NOT RUN**。明细见
+  `docs/architecture/refactor-5.0-report.md` §6.22–§6.30 与 `open-source-replacement-matrix.md` 第 4 节。
+
 ## [5.0.33] - 2026-10-19
 
 ### 修复：多链路建链窗口内离线消息不重试（A-17）

@@ -3,7 +3,7 @@
 > 口径：先扫真实调用点，再按 A（直接替换）/ B（适配后替换）/ C（保留业务核心）/ D（暂不迁移，附证据与重评估条件）归档。
 > 本文件随批次更新；未落地的条目一律标 **未迁移**，不把选型写成完成。
 > 证据来源：`package.json` / `package-lock.json`、真实 `src/**` 调用点、`npm test`、`npm run build`、`node scripts/check-ui-runtime.mjs`。
-> 最近更新：2026-10-18（Reka Dialog 批次落地的同一天）。
+> 最近更新：2026-10-19（收藏/链接面板运行时验收与移动端收藏崩溃修复）。
 
 ## 1. 已落地的迁移
 
@@ -21,7 +21,7 @@
 | 设置开关 | `SettingsToggle.vue` 自绘 `button role=switch`（9 个调用点） | Reka `SwitchRoot/SwitchThumb`（Vue 版 `modelValue/update:modelValue`） | **B（已落地）** | `src/components/settings/SettingsToggle.vue` | 保留必填 `label`、尺寸/配色/pending；`rekaPrimitives.test.ts` 钉住入参与无手写 role；`--only=switch` 4/4。迁移中实测：Radix 的 `checked/update:checked` 在 Reka Vue 上静默无效 |
 | 单选分段控件 | `SegmentedControl.vue` 手写 `role=radiogroup/radio` + 按钮（多处分段切换） | Reka `RadioGroupRoot/RadioGroupItem` | **B（已落地）** | `src/components/ui/SegmentedControl.vue` | roving focus/方向键/禁用交给 RovingFocus；保留尺寸/配色/徽标。探针实测：组本身是 Tab 停点、项 `tabindex=-1`（不是 Radix 记忆里的选中项为停点）；`--only=segmented` 8/8 |
 | 字号滑杆 | `ChatStyleSection.vue` 手写 pointerdown/move + 键盘处理 + 五档圆点 | Reka `SliderRoot/Track/Range/Thumb` | **B（已落地）** | `src/components/settings/ChatStyleSection.vue` | 保留五档视觉与 `setChatStyle` 落库；`aria-valuetext` 现读 `px · 文案`；`--only=slider` 8/8 |
-| 设置/表单下拉 | 5 处原生 `<select>`：`AppearanceSection.vue`（字体）、`NetworkSection.vue`（网卡、中继策略）、`StorageSection.vue`（保留天数、配额） | Reka `SelectRoot/Trigger/Portal/Content/Viewport/Item/ItemText/ItemIndicator` | **B（已落地）** | `src/components/ui/SettingsSelect.vue` + 上述三个设置页 | 触发器 `button[role=combobox]`、面板吃 `.gosslan-menu`；不传 `name` ⇒ 不渲染隐藏原生 select；`style.css` 删除 `.gosslan-select*`。全仓判据 `findNativeSelect`（正控＝真实组件注入）零命中；`--only=select` 6/6（键盘 ↓/Enter/Esc + 鼠标真点）。迁移中修掉 `ToastList` 全局 Esc `preventDefault` 吞掉所有弹层 Esc 的真实缺陷 |
+| 设置/表单下拉 | 5 处原生 `<select>`：`AppearanceSection.vue`（字体）、`NetworkSection.vue`（网卡、中继策略）、`StorageSection.vue`（保留天数、配额） | Reka `SelectRoot/Trigger/Portal/Content/Viewport/Item/ItemText/ItemIndicator` | **B（已落地）** | `src/components/ui/SettingsSelect.vue` + 上述三个设置页 | 触发器 `button[role=combobox]`、面板吃 `.gosslan-menu`；不传 `name` ⇒ 不渲染隐藏原生 select；`style.css` 删除 `.gosslan-select*`。全仓判据 `findNativeSelect`（正控＝真实组件注入）零命中；`--only=select` 6/6（键盘 ↓/Enter/Esc + 鼠标真点）。迁移中修掉 `ToastList` 全局 Esc `preventDefault` 吞掉所有弹层 Esc 的真实缺陷。**Reka `SelectItem` 不渲染空串 value**：字体默认档改用非空哨兵（真实 Tauri 实测菜单少了「系统默认」），`--only=fontsel` 4/4 |
 | 日期/时间格式化 | `LogViewer` 手写 `padStart`；`DevDiagPanel` 用 `toLocaleTimeString()`；`StorageSection` 手写日期戳 | `dayjs` 统一 helpers（`utils/time.ts`） | **A（已统一）** | `src/utils/time.ts`、`LogViewer.vue`、`DevDiagPanel.vue`、`StorageSection.vue` | 固定 `YYYY-MM-DD HH:mm:ss` / `HH:mm:ss` / `YYYYMMDD`；不再受 WebView 区域设置影响；`time.test.ts` 2 条（形状 + 接线） |
 | 浮层焦点陷阱 | `ImageLightbox` 手写「打开 focus 容器 / 关闭手动还焦点」，实际 Tab 会逃到背景页 | Reka `FocusScope`（`loop` + `trapped` + 卸载 auto-focus） | **B（已落地）** | `src/components/message/ImageLightbox.vue` | 预览外壳/手势/保存链仍是业务实现；焦点环、逃逸拉回、卸载归还交给库。`--only=lightbox` 7/7；摘 `loop` ⇒ 2 红、摘 `trapped` ⇒ 1 红（两次单点变异） |
 | 表单与 IPC 运行时校验 | 手写 `trim`/长度判断；`invoke<T>` 只做编译期断言（Rust 改字段 TS 不会红） | `zod/mini@4.6.7`（MIT） | **B（已落地）** | `src/utils/validation.ts`、`externalLinks.ts`、`GroupCreateModal.vue`、`ProfileSection.vue`、`src/api/index.ts` | 群名/昵称/链接共用 schema（字符数按码点）；`list_group_files` / `request_share_tree` / `search_chat_history` 的返回数组经 `parseIpcList` 真校验，坏行带命令名与字段路径抛错；搜索结果做**嵌套校验**（会话 → messages），`kind` 收任意字符串以保住未知 kind 的前向兼容。单测 6 条（含接线判据）。mini 构建 vendor +6.85 kB gzip（完整版 +25.56，实测后弃用） |
@@ -29,16 +29,17 @@
 | 同窗口事件总线 | `utils/appActions.ts` 的 `window.dispatchEvent(new Event(...))` + 各组件字符串事件监听；`navigate-to-contacts` 是裸串 | `mitt@3.0.1`（MIT，自带类型） | **B（已落地）** | `src/utils/appActions.ts`、`api/index.ts`、`ResponsiveLayout.vue`、`ConversationList.vue`、`stores/useChatStore.ts` | 类型安全事件表 `appBus`；`APP_ACTION` 四处 + `navigate-to-contacts` 全走 `emitAction`；`onAction` 返回解绑函数，组件卸载必须调用（mitt 不自动清理）；Tauri 菜单事件仍由 `bindMenuEvents` 转成同一批动作，跨窗口/Rust 继续走 `@tauri-apps/api/event`。`appActions.test.ts` 2 条（投递/不串线/解绑） |
 | 多语言 i18n | 自研 150 行「字典 + `{name}` 插值」引擎；`t()` 在 78 个文件里调用 | `vue-i18n@11.4.16`（MIT，peer Vue 3） | **B（已落地）** | `src/i18n/index.ts`、`src/i18n/locales/*.ts`、`src/i18n/compile.test.ts` | 消息编译/插值/回退交给库；本模块只留偏好三态、系统语言检测、localStorage 快路径、`document.lang`。迁移前 **1003×2 条逐字对账**：998 条一致，5 条字面 `@` 改写 `{'@'}`；缺参保留 `{name}` 的既有语义由 `t()` 适配。`i18n/index.test.ts` 17 条 + `compile.test.ts` 1 条；全量探针 338/338。体积：vendor gzip +18.84（消息编译器） |
 
+| 锚定浮层（表情名单 / 已读名单 / 表情选择器 / 输入框表情） | `useHoverCard` + `utils/hoverCard.placeCard/cardStyle` + `utils/popupPosition`（**188 行**）；`MessageItem` / `MessageReceipt` / `MessageReactionBar` / `MessageComposer` 各自手写 Teleport、fixed 坐标、外点/Esc/滚动收起 | Reka `HoverCardRoot/Trigger/Portal/Content`（回应名单）+ `PopoverRoot/Trigger/Portal/Content`（其余三处） | **B（已落地 2026-10-19）** | `MessageReactionBar.vue`、`MessageReceipt.vue`、`MessageItem.vue`、`MessageComposer.vue`、`EmojiPicker.vue` | 定位/翻转/夹边/悬停宽限/外点/Esc 交给 floating-ui + DismissableLayer；`EmojiPicker` 去掉自绘 `absolute` 与 `placement`，面板由 Portal 挂 body（不再被输入卡片圆角/overflow 裁切）。`--only=reaction,roster` **62/62**、`--only=inputpanel` **22/22**（含"选完表情焦点回编辑器"）、`--only=search,overlay,toast,select,ctxmenu` **81/81**、`--only=touchroster` **6/6**；全量复跑见报告 §6.13。删除 3 个自研摆位文件（188 行）、2 条旧护栏（126 行）与 250 行过时测试；生产代码净 **−386 行** |
+
 ## 2. 本轮评估、尚未迁移
 
 | 能力 | 原实现 / 调用点 | 候选 | 判定 | 证据 / 原因 | 重评估条件 |
 |---|---|---|---|---|---|
 | Tooltip（图标按钮悬停提示） | 原生 `title` 属性 **274 处**（现算）；无自绘 tooltip | Reka `TooltipProvider/Root/Trigger/Content` | C（当前保留） | `title` 是平台原生反馈（桌面悬停、读屏命名、触控长按由系统给）；引入 Reka 需要全局 Provider、延迟/碰撞与每颗按钮改触发结构，且移动端无悬停语义。逐处替换 274 个 `title` 会改变现有原生反馈，收益未证 | 出现富内容提示（快捷键组合/多行说明/触控长按引导）的真实需求时，只在需要的按钮上接 Reka Tooltip |
-| Popover（锚定浮层） | `useHoverCard` + `utils/hoverCard.placeCard/cardStyle`（手写摆位/四向翻转/滚动收起）：`MessageItem` 表情选择器、`MessageReactionBar` 表情名单、`MessageReceipt` 已读名单 | Reka `PopoverRoot/Trigger/Portal/Content` | C（当前保留，已有真实调用面） | 三处都是「贴着消息元素弹 + 四个方向翻 + 列表一滚就收」。迁移的两个硬点：① 表情选择器的面板本体在 `EmojiPicker` 里是 `absolute`、外层壳零高度，直接塞进 `PopoverContent` 会让 floating-ui 量到 0×0（与 ContextMenu 的 `fixed` 坑同形）；② 表情名单由 hover / focus / 长按三种触发共同驱动，Popover 只有受控开关可接。收益未证、风险高于本批 | 表情面板改版（内容不再零高度）或需要富内容/焦点管理时，三处整批迁 Reka 并删除 `hoverCard` |
 | Tabs / Accordion / Collapsible | 全 `src` 无自研调用面（`role="tab"/"tablist"` 0 处） | Reka 对应原语 | D（当前不引入） | 界面没有这些通用控件；为"将来可能用"引入只增加依赖面与代码面 | 出现设置分页或多段折叠的真实需求时，直接用 Reka 原语实现 |
 | Checkbox / Radio | `type="checkbox"/"radio"` 0 处；设置开关已由 Reka Switch 承担 | Reka `Checkbox/RadioGroup` | D（当前不引入） | 没有多选/单选表单调用面 | 出现多选/单选表单时 |
 | 命令面板 / 快捷搜索 | `ChatSearchDialog` 是产品搜索（SQLite 命中 + 发送人/日期筛选），不是通用命令注册表 | Reka 2.11.0 无 `CommandRoot` 导出（现查 `require('reka-ui')`） | C（保留业务核心） | 搜索语义、命中分组、跳转与消息定位都是业务；通用 command 库无法接 SQLite 与消息协议 | 若将来出现"全局命令/动作注册表"的真实需求，再评估 cmdk 类实现 |
-| 消息列表虚拟化 | `VirtualList.vue`（525 行；前缀和 + 二分 + 实测高度覆盖 + prepend 锚定 + pending jump + pinned 贴底） | `@tanstack/vue-virtual` | C（当前保留） | P7 实测：20k 条 `calib()` 1.3 ms/遍，滚动 p95 17.5/16.8 ms，`longFramesOver50ms=0`；产品缓存上界 `PAGE_SIZE(100) × MAX_PAGES(10) = 1000 条/会话`。替换会重写 0.5px 白缝、prepend 不跳动、未读跳转二次落定这些已被真机/守恒判据钉住的行为 | 若产品上界被抬高到 1 万条/会话，或需要横向虚拟化/多列，再试迁移 |
+| 消息列表虚拟化 | `VirtualList.vue`（525 行；前缀和 + 二分 + 实测高度覆盖 + prepend 锚定 + pending jump + pinned 贴底） | `@tanstack/vue-virtual` | C（当前保留） | P7 实测：20k 条 `calib()` 1.3 ms/遍，滚动 p95 17.5/16.8 ms、`longFramesOver50ms=0`；产品缓存上界 `PAGE_SIZE(100) × MAX_PAGES(10) = 1000 条/会话`。2026-10-19 新增 `--only=vlist` **12/12**：虚拟化、live region、`scrollToIndex` 贴顶、`nearBottom` 两态、prepend 锚定、触顶 `loadMore` 均真实通过 ⇒ 在 1000 条上界下没有迁移收益证据；替换会重写 0.5px 白缝、prepend 不跳动、未读跳转二次落定这些已被真机/守恒判据钉住的行为 | 若产品上界被抬高到 1 万条/会话，或需要横向虚拟化/多列，再试迁移 |
 | 日志长列表 | 已迁：`LogViewer.vue` 的 `useVirtualizer` | `@tanstack/vue-virtual` | **B（已落地）** | 见第 1 节；真实业务页（日志窗口）已切换，不是空封装 | 真机长日志滚动读数尚未采集（NOT RUN） |
 | 消息/会话/任务的异步状态 | Pinia stores + `StaleGuard` + 单飞 + 事件驱动更新（`useChatStore.ensureGroupTodoRows` 等） | TanStack Query | C（当前保留） | 数据源是 SQLite + 事件流；离线队列、可靠投递、加密传输、事务语义不能用普通查询缓存替代。存储层迁移会把"谁拥有事实"变成两份。**纯读面板已另起试点**（群文件 / 共享目录 / 搜索聊天记录，见第 1 节），两者边界：Query 不管消息状态机 | 若再出现纯读、可过期、可后台刷新的独立面板（远端目录、诊断快照），按群文件模式逐面板迁移；会话/消息主链不迁 |
 | 表单 | 原生 `<form>`/事件 + i18n 校验；`TodoPickField` 等 | TanStack Form / vee-validate | D（当前） | 现有表单纯 UI 状态 + 少量校验；没有复杂字段数组/异步校验的调用点。引入 Form 只增加依赖与心智，不减少业务代码 | 出现多步、动态字段数组、跨字段异步校验的真实表单时 |
@@ -66,18 +67,21 @@
 
 | 层 | 命令 | 本轮读数 |
 |---|---|---|
-| 单测 | `npm test` | 1060 / 1060，0 失败（相对 5.0.18 的 1055：搜索查询策略 5、搜索 IPC 校验 1、mitt 2、i18n 全量编译 1、日志窗口回归 1） |
-| 构建 | `npm run build` | 退码 0；`main` 308.65 kB / gzip 93.34（vendor 323.99 kB / gzip 99.62 —— TanStack Query + zod/mini + Reka Toast/Select + mitt + vue-i18n 消息编译器；Virtual 仍在 vendor） |
+| 单测 | `npm test` | **1048 / 1048，0 失败**（2026-10-19；本轮新增 3 条源码判据（角标单一出口 / 错误出口统一 / 全局禁拖）与 `extBadgeLabel` 4 条行为断言；条数以命令自打印为准） |
+| 构建 | `npm run build` | 退码 0；`main` **308.05 kB / gzip 93.00**；vendor **344.39 kB / gzip 103.34**（Reka HoverCard/Popover 进 vendor；main raw 较 5.0.20 +0.49 / gzip −0.35） |
 | Rust | `cargo check --lib` / `cargo fmt --check` | 均退出 0；helpers 过滤用例 8/8 |
-| UI 运行时 | `node scripts/check-ui-runtime.mjs` | **全量 341/341 条判据绿、退出码 0**（本 tip 实跑）。本批新增 **logs 3/3**（standalone 有虚拟行 / 200 条只渲染视口附近 / 滚到底换页；单点变异摘掉独立窗 `logScroll` ref ⇒ 0/3 红，恢复 3/3）。其余段：search 16/16、select 6/6、toast 6/6、files 8/8、share 6/6、lightbox 7/7、segmented 8/8、slider 8/8、switch 4/4、ctxmenu 12/12 等均在本次全量内 |
-| 快速/本地门禁 | `npm run verify:local` | **22/22、退出码 0**（本 tip 实测见报告 §6.11；唯一跳过「护栏非空转」，按用户策略留给发版/CI） |
-| 真实多实例 / 真机 | E2E / Windows/macOS 移动端 | **NOT RUN**（需用户授权与真机） |
+| UI 运行时 | `node scripts/check-ui-runtime.mjs` | **全量 396/396 条判据绿、退出码 0**（同日两轮各在 overlay 段之后遇到一次 CDP eval 45s 未回包（255/256、254/256）：单独跑挂起点那两段 `--only=imgskel` 两次 **7/7** ⇒ 判为并行 cargo 抢 CPU 下的冷编译 eval 超预算（另有残留 probe Chrome/profile 让端口检查当场判红），两条都是量具/环境账，不是产品红；清干净后全量 396/396）。本批新增 **favorites 8/8**、**links 5/5**、**fontsel 4/4**（Reka Select 空串默认档修复）、**tasksrt 15/15**、**inputpanel 23/23**（鼠标点「发送」按钮）、**reaction 20/20**（回执/回应不抢命中区）、**logs 5/5**（独立窗 + 390 宽移动端）、**settingsmobile 4/4**、**tasksmobile 2/2**、**files 10/10**（含 390 宽移动端 2 条）、**composermobile 2/2** 与 **search 18/18**（含 390 宽移动端 2 条）；此前新增 vlist 12/12、touchroster 6/6 仍在同一全量内。其余段：select 6/6、toast 6/6、share 6/6、lightbox 7/7、segmented 8/8、slider 8/8、switch 4/4、ctxmenu 12/12 等均在本次全量内 |
+| 快速/本地门禁 | `npm run verify:local` / `npm run verify` | 本地层 **22/22、退出码 0、532.0s**（耗时是并行会话同时用同一个 `src-tauri/target` 跑 Rust 护栏抢 cargo 锁所致，无抢锁时同层 75.7s；唯一跳过「护栏非空转」，按用户策略留给发版/CI）。§6.28 那一批（只动 import 与判据）跑的是快速层：**17/17、46.1s、退出码 0** |
+| 护栏非空转（前端族） | `python3 scripts/verify-guards.py --only frontend` | 首跑 **85/86**，唯一失败是 ActionSheet 注入锚点指到「取消」按钮；改成面板开标签缩进后单条 **1/1、退出 0**，其余 85 条同树通过。另修复 Reka 接线判据的空串存在性断言（`--only 已读名单` 1/1）。§6.26 与 §6.28 两批之后又各整族复跑一次：**86/86、退出 0**（第一次耗时 39 分钟，被并行会话冷编 target 拖慢）。**按用户 2026-10-19 口径：本地批次不再起整族**，判绿用 `npm test` + 快速层 + 名片段单点变异证明；整族与全部用例（§6.30 恢复两条被误删的 SelfAvatar 变异证明后 **231→233**，`verify-guards.py --list` 现算头部读数）归发版前/远端 CI |
+| 真实桌面（Tauri） | 隔离 HOME 的 `tauri dev` | **主窗/设置窗/日志窗已渲染**；日志「合并重复」点击生效（71→74 条、×2 消失）；设置页 Tab/Enter 键盘导航可用；Reka Select 在 WKWebView 内展开并用 ↓+Enter 选中（触发器文案更新），Reka Slider 点击后标签 14px→16px；**自聊输入框表情 Popover、自聊消息发送、群消息回应 Popover 与回应名单 HoverCard（隔离库里种群+消息+reaction，不接对端）均已验**；**已读名单 Popover 已在真实 WKWebView 里用系统无障碍 `AXPress` 点开并收起**（浅色/深色两档都正常，Esc 收起后焦点回到触发器并显出 `:focus-visible`；深色「我的气泡」像素实测 `#513f99`/luma 79，设计目标 74 ⇒ 暗色派生生效，不是缺陷）；通讯录/收藏/链接三页空态同轮截图复核；取证时发现仓内 `scripts/ax-tree.mjs` 不认 `AXPopUpButton` ⇒ **Reka 全部浮层入口在真窗口取证路上不可见**，已把该角色加进两处可点集合（报告 §6.25）；**桌面窄窗 390×768 下的移动端布局已验**（单列列表 + 底部 TabBar、`AXPress` 进聊天整页推入并显出「返回」、返回后 TabBar 复位；起实例前先把隔离库 `lan_enabled` 置 0，不参与局域网、不扰动并行 E2E）。见报告 §6.22、§6.25、§6.27；Windows/Android/iOS 与 E2E **NOT RUN**（需用户授权与真机） |
 
 ## 5. 明确未做
 
 - Reka 的 Tooltip/Checkbox/Radio/Tabs/Accordion/Collapsible/Command 尚未迁移；这些当前没有调用面。
-  例外是锚定 Popover：`useHoverCard` 有三处真实调用点（表情选择器/表情名单/已读名单），因零高度
-  `absolute` 面板与 hover/长按触发判 C（保留），见第 2 节。`Select` 已落地（见第 1 节）。
+  锚定浮层已全部迁 Reka（回应名单 HoverCard，其余三处 Popover）；自研 `useHoverCard` /
+  `utils/hoverCard` / `utils/popupPosition` 已删除，见第 1 节。`Select` 已落地。
+- 仍然保留的自研通用实现只剩消息列表 `VirtualList`（有 P7 实测与业务锚定语义，见第 2 节）；
+  EmojiPicker 的键盘二维网格、长按手势与轻触反馈仍按业务语义保留（库没有直接对应的二维网格原语）。
 - 自研 `ContextMenu.vue`、四个业务右键菜单、`ChatSearchDialog` 两个筛选菜单与其余四处锚定菜单已全部迁到 Reka DropdownMenu；全 `src/components/**/*.vue` 不再出现手写 `role="menuitem"`。
 - TanStack Query 已在三个真实面板（群文件、共享目录、搜索聊天记录）落地；会话/消息/群任务主链仍是 Pinia + SQLite + 事件流，Reason 见第 2 节。
   TanStack Table/Router/Form 未引入（当前无对应调用面）；TanStack Virtual 只在日志页试点，消息列表仍保留自研实现。

@@ -22,11 +22,11 @@
 | 候选 | 结论 | 依据 |
 |---|---|---|
 | ReUI | 仅模式参考 | React/shadcn 生态，不能作为 Vue 依赖 |
-| reka-ui | 暂不引入 | 现有 Headless UI 覆盖 Dialog；引入会形成第二套无样式原语；本期先用公共状态块与既有组件收口 |
+| reka-ui | **已引入（5.0）** | Dialog/Menu/ContextMenu/Switch/RadioGroup/Slider/Select/Focus/Toast/HoverCard/Popover 共 10 类原语、23 个 `.vue`；`@headlessui/vue` 已删除。取代了自研浮层摆位与多套无样式控件；证据见 `open-source-replacement-matrix.md` 第 1 节 |
 | shadcn-vue | 不引入 | 生成源码体系与现有 token/组件并行，迁移成本大于收益 |
 | Lucide | 保留为唯一图标源 | 现有 `ui/icons.ts` 静态入口；P3 把剩余手写 SVG 收口 |
-| TanStack Query | 不引入 | 数据来自 Tauri 事件 + SQLite + Pinia，无 HTTP 缓存语义 |
-| TanStack Virtual | 不引入 | 现有 `VirtualList` 有专属语义；P5 只做前缀和增量更新并实测 |
+| TanStack Query | **已引入（5.0，仅纯读面板）** | 群文件/共享目录/搜索聊天记录三个真实面板；Pinia/SQLite 仍是消息状态机事实源。边界见 `open-source-replacement-matrix.md` 第 2 节 |
+| TanStack Virtual | **已引入（日志页）** | `LogViewer` 两条外壳已迁 `useVirtualizer`；消息列表 `VirtualList` 按 P7 实测与业务锚定语义保留（C），见矩阵第 2 节 |
 | TanStack Table/Router/Form | 不引入 | 无复杂表格；多窗口 HTML 入口 + 手写导航 |
 | 第三方媒体查看器 | 暂不引入 | 现有 `ImageLightbox` 已覆盖缩放/拖动/多图/Esc；替换需重新验证手势与焦点，收益未证明 |
 

@@ -1098,9 +1098,17 @@ window.__probe = (() => {
     const isClipper = (st) => (st.overflowX !== 'visible' || st.overflowY !== 'visible');
     const name = (x) => (x === document.body ? 'body'
       : x === document.documentElement ? 'html' : String(x.className || x.tagName).slice(0, 40));
-    const position = getComputedStyle(el).position;
+    // Reka 的 Portal 会在内容外面套一层 [data-reka-popper-content-wrapper]：
+    // 它是库自己的 fixed 定位层（内含 floating-ui 的 transform），挂在 body 下。
+    // 判"逃出裁切容器"时必须从**这一层之上**开始查祖先；把包装层自己的 transform
+    // 当成应用容器会把干净的浮层误判成被裁（position 也要读包装层的，才有意义）。
+    let popperWrapper = null;
+    for (let n = el.parentElement; n; n = n.parentElement) {
+      if (n.hasAttribute('data-reka-popper-content-wrapper')) popperWrapper = n;
+    }
+    const position = getComputedStyle(popperWrapper ?? el).position;
     const anc = [];
-    for (let n = el.parentElement; n; n = n.parentElement) anc.push(n);
+    for (let n = popperWrapper ? popperWrapper.parentElement : el.parentElement; n; n = n.parentElement) anc.push(n);
     const breakers = [];
     const clipped = [];
     anc.forEach((n) => {
@@ -1117,7 +1125,8 @@ window.__probe = (() => {
     return {
       ok: true,
       position: position,
-      parentIsBody: el.parentElement === document.body,
+      parentIsBody: (popperWrapper ? popperWrapper.parentElement : el.parentElement) === document.body,
+      portaled: !!popperWrapper,
       clipped: clipped,
       breakers: breakers,
       escapes: clipped.length === 0 && breakers.length === 0,
@@ -1274,16 +1283,21 @@ window.__probe = (() => {
   H.forceLegacyRoster = (on) => {
     const r = document.querySelector('[data-reaction-roster]');
     if (!r) return false;
+    // Reka 把真正定位的 fixed 层放在 [data-reka-popper-content-wrapper] 上；
+    // 推坐标必须推那一层，推内容元素只会改它在包装层里的局部位置。
+    const box = r.closest('[data-reka-popper-content-wrapper]') || r;
     if (on) {
-      r._origPos = { left: r.style.left, right: r.style.right };
+      box._origPos = { left: box.style.left, right: box.style.right, transform: box.style.transform };
       // 往左长那一支发的是 CSS right ⇒ 不一起清掉，left/right 双锚会把盒子拉成
       // "按可用宽度撑开"，测出来的就不是"越界"而是"被压窄"了。
-      r.style.right = 'auto';
-      r.style.left = (window.innerWidth - 20) + 'px';
+      box.style.right = 'auto';
+      box.style.left = (window.innerWidth - 20) + 'px';
+      box.style.transform = 'none';
     } else {
-      r.style.left = r._origPos?.left ?? '';
-      r.style.right = r._origPos?.right ?? '';
-      delete r._origPos;
+      box.style.left = box._origPos?.left ?? '';
+      box.style.right = box._origPos?.right ?? '';
+      box.style.transform = box._origPos?.transform ?? '';
+      delete box._origPos;
     }
     return true;
   };
@@ -1797,6 +1811,126 @@ window.__probe = (() => {
     i.focus();
     return document.activeElement === i;
   };
+  /**
+   * 消息列表 VirtualList 专用夹具：需要组件 ref 与可变 items，通用 install 不够。
+   * 不碰任何 store；只用 props 驱动，验证的是列表本身的虚拟化/锚定/跳转。
+   */
+  H.vlistMount = async (count) => {
+    // 不要用 H.install 来"借" Vue：它会用通用 props 挂载 VirtualList，
+    // 而本组件没有 items 就会在 computed 里立刻抛错。直接从页面已加载的 vue 模块取。
+    let V = window.__probe.vue;
+    if (!V) {
+      const u = performance.getEntriesByType('resource').map((e) => e.name || '')
+        .find((x) => x.includes('/node_modules/.vite/deps/vue.js?v='));
+      if (!u) return { ok: false, why: 'no-vue' };
+      V = await import(u);
+      window.__probe.vue = V;
+    }
+    const mod = await import('/src/components/VirtualList.vue');
+    document.body.innerHTML = '';
+    const host = document.createElement('div');
+    host.id = 'vlist-host';
+    host.style.cssText = 'height:400px;width:600px;position:relative;';
+    document.body.appendChild(host);
+    const n = count || 200;
+    const st = V.reactive({
+      items: Array.from({ length: n }, (_, i) => ({ id: 'row-' + i, text: 'row ' + i })),
+      nearBottom: null,
+      loadMore: 0,
+      live: true,
+    });
+    // ⚠️ 不能把 ref 放进 reactive：reactive 会自动解包，st.list 读出来是 null，
+    // 组件 ref 就永远绑不上。列表 ref 单独放在 window 上。
+    const listRef = V.ref(null);
+    window.__vlist = st;
+    window.__vlistList = listRef;
+    const Root = {
+      setup() {
+        return () => V.h('div', { style: 'height:400px;width:600px;' }, [
+          V.h(mod.default, {
+            ref: listRef,
+            items: st.items,
+            estimateHeight: () => 40,
+            live: st.live,
+            onNearBottom: (v) => { st.nearBottom = v; },
+            onLoadMore: () => { st.loadMore += 1; },
+          }, {
+            default: ({ item, index }) => V.h('div', {
+              'data-vrow': index,
+              style: 'height:40px;line-height:40px;',
+            }, item.text),
+          }),
+        ]);
+      },
+    };
+    const app = V.createApp(Root);
+    if (window.__pinia) app.use(window.__pinia);
+    app.mount(host);
+    await V.nextTick(); await V.nextTick();
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    return { ok: true, count: n };
+  };
+  H.vlistScroll = () => {
+    const row = document.querySelector('#vlist-host [data-vlist-index]');
+    const sc = row ? row.closest('.overflow-y-auto') : null;
+    return sc;
+  };
+  H.vlistRead = () => {
+    const sc = H.vlistScroll();
+    const rows = Array.from(document.querySelectorAll('#vlist-host [data-vlist-index]'));
+    const sr = sc ? sc.getBoundingClientRect() : null;
+    const visible = sr ? rows.find((r) => {
+      const b = r.getBoundingClientRect();
+      return b.bottom > sr.top + 0.5 && b.top < sr.bottom - 0.5;
+    }) : null;
+    return {
+      rows: rows.length,
+      keys: rows.map((r) => r.getAttribute('data-vlist-key')),
+      scrollTop: sc ? Math.round(sc.scrollTop) : -1,
+      scrollHeight: sc ? sc.scrollHeight : -1,
+      clientHeight: sc ? sc.clientHeight : -1,
+      firstVisible: visible ? visible.getAttribute('data-vlist-key') : null,
+      firstTop: visible && sr ? Math.round(visible.getBoundingClientRect().top - sr.top) : null,
+      loadMore: window.__vlist.loadMore,
+      nearBottom: window.__vlist.nearBottom,
+      role: sc ? sc.getAttribute('role') : null,
+      live: sc ? sc.getAttribute('aria-live') : null,
+    };
+  };
+  H.vlistRow = (key) => {
+    const sc = H.vlistScroll();
+    const row = Array.from(document.querySelectorAll('#vlist-host [data-vlist-key]'))
+      .find((r) => r.getAttribute('data-vlist-key') === key);
+    if (!sc || !row) return { present: false, top: null };
+    return { present: true, top: Math.round(row.getBoundingClientRect().top - sc.getBoundingClientRect().top) };
+  };
+  H.vlistGoBottom = () => {
+    const sc = H.vlistScroll();
+    if (!sc) return false;
+    sc.scrollTop = sc.scrollHeight;
+    sc.dispatchEvent(new Event('scroll', { bubbles: true }));
+    return true;
+  };
+  H.vlistGoTop = () => {
+    const sc = H.vlistScroll();
+    if (!sc) return false;
+    sc.scrollTop = 0;
+    sc.dispatchEvent(new Event('scroll', { bubbles: true }));
+    return true;
+  };
+  H.vlistJump = (i) => {
+    const l = window.__vlistList && window.__vlistList.value;
+    if (!l || typeof l.scrollToIndex !== 'function') return false;
+    l.scrollToIndex(i, 'top');
+    return true;
+  };
+  H.vlistPrepend = (n) => {
+    const st = window.__vlist;
+    if (!st) return false;
+    const add = Array.from({ length: n || 20 }, (_, i) => ({ id: 'new-' + i, text: 'new ' + i }));
+    st.items = add.concat(st.items);
+    return true;
+  };
   return H;
 })();
 true;
@@ -2068,6 +2202,14 @@ async function main() {
     const inputpanel = want("inputpanel");
     const winsafe = want("winsafe");
     const logs = want("logs");
+    const vlist = want("vlist");
+    const favorites = want("favorites");
+    const links = want("links");
+    const fontsel = want("fontsel");
+    const settingsmobile = want("settingsmobile");
+    const composermobile = want("composermobile");
+    const tasksmobile = want("tasksmobile");
+    const touchroster = want("touchroster");
     if (emoji) await runEmoji(cdp, url);
     if (search) await runSearch(cdp, url);
     if (ctxmenu) await runCtxMenu(cdp, url);
@@ -2093,6 +2235,14 @@ async function main() {
     if (inputpanel) await runInputPanels(cdp, url);
     if (winsafe) await runWindowSafe(cdp, url);
     if (logs) await runLogs(cdp, url);
+    if (vlist) await runVirtualList(cdp, url);
+    if (favorites) await runFavorites(cdp, url);
+    if (links) await runLinks(cdp, url);
+    if (fontsel) await runFontSelect(cdp, url);
+    if (settingsmobile) await runSettingsMobile(cdp, url);
+    if (composermobile) await runComposerMobile(cdp, url);
+    if (tasksmobile) await runTasksMobile(cdp, url);
+    if (touchroster) await runTouchRoster(cdp, url);
     process.exitCode = results.every((r) => r.ok) ? 0 : 1;
     exitCode = process.exitCode;
   } catch (e) {
@@ -2143,9 +2293,17 @@ async function runReaction(cdp, url) {
     ts: 1700000000000, conv_id: "group:g1", seq: 1,
   };
   const mounted = await cdp.eval("window.__probe.install('/src/components/MessageItem.vue', '', "
-    + JSON.stringify(JSON.stringify({ message: MSG, canReact: true, isGroup: true, senderName: "测试者" })) + ")");
+    + JSON.stringify(JSON.stringify({
+      message: MSG, canReact: true, isGroup: true, senderName: "测试者",
+      groupReaderIds: ["r-1"],
+    })) + ")");
   check("消息行挂出来了（表情入口那颗才有得量）", !!mounted && mounted.ok === true,
     "install ok", JSON.stringify(mounted));
+  // 这条消息要判成「我发的」：回执与回应入口都在气泡左外侧，只有 mine 时才会同框。
+  const seeded = await cdp.eval("window.__probe.seedDevice('dev-me')");
+  await sleep(250);
+  check("夹具设备 = dev-me（mine 成立，回执才会挂出来）",
+    !!seeded && seeded.ok === true && seeded.at === "dev-me", "device=dev-me", JSON.stringify(seeded));
   // 读数期间冻掉那颗入口的 transition（headless 的动画时钟不推帧 ⇒ opacity 会停在起点，见 helper 注释）
   const frozen = await cdp.eval("window.__probe.freezeReactionTransition()");
   check("冻掉了那颗入口的过渡（否则整段跑时读到的 opacity 是动画起点）",
@@ -2173,6 +2331,31 @@ async function runReaction(cdp, url) {
     "|btn.bottom - col.bottom| <= 1", "btn=" + a.bottom + " col=" + a.colBottom);
   check("触屏热区没被这次收窄弄丢（tap-safe 仍在：h-6 靠它扩到 40px）",
     a.ok === true && a.tapSafe === true, "class 里有 tap-safe", JSON.stringify(a));
+
+  // 群消息自己的回执（左侧头像）与「添加回应」入口都挂在气泡左外侧：
+  // 悬停显形后若后者盖住前者，用户点「谁读了」会开成表情面板。量矩形 + 命中测试，不靠肉眼。
+  const geom = await cdp.eval(`(() => {
+    const receipt = document.querySelector('button.-space-x-1');
+    const entry = document.querySelector('[data-reaction-entry]');
+    if (!receipt || !entry) return { ok: false, hasReceipt: !!receipt, hasEntry: !!entry };
+    const rr = receipt.getBoundingClientRect();
+    const er = entry.getBoundingClientRect();
+    const cx = rr.left + rr.width / 2;
+    const cy = rr.top + rr.height / 2;
+    const top = document.elementFromPoint(cx, cy);
+    return {
+      ok: true,
+      overlap: !(rr.right <= er.left || rr.left >= er.right || rr.bottom <= er.top || rr.top >= er.bottom),
+      receiptHit: !!(top && (receipt === top || receipt.contains(top))),
+      entryHit: !!(top && entry.contains(top)),
+      topTag: top ? top.tagName + '.' + String(top.className || '').slice(0, 36) : null,
+      rr: { l: +rr.left.toFixed(1), r: +rr.right.toFixed(1), t: +rr.top.toFixed(1), b: +rr.bottom.toFixed(1) },
+      er: { l: +er.left.toFixed(1), r: +er.right.toFixed(1), t: +er.top.toFixed(1), b: +er.bottom.toFixed(1) },
+    };
+  })()`);
+  check("群消息：回执入口与回应入口不抢命中区（悬停时点回执中心必须命中回执）",
+    geom.ok === true && geom.overlap === false && geom.receiptHit === true && geom.entryHit === false,
+    "两矩形不重叠且回执中心命中回执", JSON.stringify(geom));
 
   // tooltip / 可访问名：换成自己那句"添加表情回复"，不再是借输入框那颗的「表情」。
   const names = await cdp.eval(`(async () => {
@@ -3019,16 +3202,20 @@ async function rosterChecks(cdp, url) {
       + " 宽=" + (pp.rect.r - pp.rect.l) + " 高=" + (pp.rect.bo - pp.rect.t));
   // 反面对照：把壳的 fixed 坐标推到视口右缘外 ⇒ 里面那块面板必须跟着出去
   await cdp.eval("(function(){var el=document.querySelector('[data-reaction-picker]');"
-    + "if(!el)return false;el._o={left: el.style.left, right: el.style.right};"
-    + "el.style.right='auto';el.style.left=(window.innerWidth - 20) + 'px';return true;})()");
+    + "if(!el)return false;"
+    + "var box=el.closest('[data-reka-popper-content-wrapper]')||el;"
+    + "box._o={left: box.style.left, right: box.style.right, transform: box.style.transform};"
+    + "box.style.right='auto';box.style.left=(window.innerWidth - 20) + 'px';box.style.transform='none';return true;})()");
   const ppOut = await cdp.eval("window.__probe.floatLayer('[data-reaction-picker] [role=dialog]')");
   check("对照：把选择器那层壳推到视口右缘外 ⇒ 面板必须落到视口外（证明那条视口判据会咬）",
     ppOut.ok === true && ppOut.inViewport === false,
     "inViewport === false",
     "rect=" + JSON.stringify(ppOut.rect) + " 视口=" + ppOut.vw);
   await cdp.eval("(function(){var el=document.querySelector('[data-reaction-picker]');"
-    + "if(!el||!el._o)return false;el.style.left=el._o.left;el.style.right=el._o.right;"
-    + "delete el._o;return true;})()");
+    + "if(!el)return false;"
+    + "var box=el.closest('[data-reka-popper-content-wrapper]')||el;"
+    + "if(!box._o)return false;box.style.left=box._o.left;box.style.right=box._o.right;"
+    + "box.style.transform=box._o.transform;delete box._o;return true;})()");
   const ppBack = await cdp.eval("window.__probe.floatLayer('[data-reaction-picker] [role=dialog]')");
   check("对照可逆：壳换回原来的锚点之后，面板又整个回到视口内（对照自己不留残留）",
     ppBack.ok === true && ppBack.inViewport === true,
@@ -3067,15 +3254,19 @@ async function rosterChecks(cdp, url) {
       + " 包含块破坏者=" + JSON.stringify(fr.breakers)
       + " rect=" + JSON.stringify(fr.rect) + " 视口=" + fr.vw + "x" + fr.vh);
   await cdp.eval("(function(){var el=document.querySelector('[data-readers-popover]');"
-    + "if(!el)return false;el._o={left: el.style.left, right: el.style.right};"
-    + "el.style.right='auto';el.style.left=(window.innerWidth - 20) + 'px';return true;})()");
+    + "if(!el)return false;"
+    + "var box=el.closest('[data-reka-popper-content-wrapper]')||el;"
+    + "box._o={left: box.style.left, right: box.style.right, transform: box.style.transform};"
+    + "box.style.right='auto';box.style.left=(window.innerWidth - 20) + 'px';box.style.transform='none';return true;})()");
   const frOut = await cdp.eval("window.__probe.floatLayer('[data-readers-popover]')");
   check("对照：把已读弹层的 fixed 坐标推到视口右缘外 ⇒ 它必须落到视口外（证明那条判据会咬）",
     frOut.ok === true && frOut.inViewport === false,
     "inViewport === false", "rect=" + JSON.stringify(frOut.rect) + " 视口=" + frOut.vw);
   await cdp.eval("(function(){var el=document.querySelector('[data-readers-popover]');"
-    + "if(!el||!el._o)return false;el.style.left=el._o.left;el.style.right=el._o.right;"
-    + "delete el._o;return true;})()");
+    + "if(!el)return false;"
+    + "var box=el.closest('[data-reka-popper-content-wrapper]')||el;"
+    + "if(!box._o)return false;box.style.left=box._o.left;box.style.right=box._o.right;"
+    + "box.style.transform=box._o.transform;delete box._o;return true;})()");
   const frBack = await cdp.eval("window.__probe.floatLayer('[data-readers-popover]')");
   check("对照可逆：换回原锚点后整块又回到视口内",
     frBack.ok === true && frBack.inViewport === true, "inViewport === true",
@@ -3894,6 +4085,133 @@ async function runEmoji(cdp, url) {
  *     工具栏能显示"N 条"但列表区永远为空。
  * 判据只看可观察结局：standalone 挂载后必须有虚拟行、只渲染视口附近、滚到底换成旧日志。
  */
+async function runTouchRoster(cdp, url) {
+  // 触摸仿真必须在**页面加载前**开：`canHover` 是 utils/platform 的模块级常量。
+  // 这里只验证长按名单这一条，不改变其它段（本段放在最后，结束即关浏览器）。
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 390, height: 844, deviceScaleFactor: 2, mobile: true,
+    screenWidth: 390, screenHeight: 844,
+  });
+  await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 1 });
+  try {
+    await cdp.send("Page.bringToFront").catch(() => {});
+    await cdp.send("Page.navigate", { url });
+    await sleep(3_000);
+    await cdp.eval(PAGE_FIXTURE);
+    const props = {
+      message: {
+        msg_id: "m-touch-roster", sender_id: "peer-a", kind: "text",
+        content: "移动端长按这条回应胶囊，应该展开名单。",
+        ts: 1700000000000, conv_id: "group:g1", seq: 1,
+      },
+      canReact: true, isGroup: true, senderName: "测试者",
+      reactions: [{ emoji: "[赞]", count: 2, mine: false, actors: ["peer-a", "peer-b"], latest: "peer-b" }],
+    };
+    const mounted = await cdp.eval("window.__probe.install('/src/components/MessageItem.vue', '', "
+      + JSON.stringify(JSON.stringify(props)) + ")");
+    check("移动端触摸：消息行挂载成功", !!mounted && mounted.ok === true, "install ok", JSON.stringify(mounted));
+    const chip = await cdp.eval(`(() => {
+      const b = document.querySelector('[data-reaction-chip]');
+      if (!b) return null;
+      const r = b.getBoundingClientRect();
+      return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2),
+        hover: b.getAttribute('data-hover-capable') };
+    })()`);
+    check("移动端触摸：触摸仿真下 canHover=false（长按分支才会启用）",
+      !!chip && chip.hover === "false", "data-hover-capable=false", JSON.stringify(chip));
+    if (!chip) return;
+    const touch = (type, points) => cdp.send("Input.dispatchTouchEvent", {
+      type, touchPoints: points.map((p, i) => ({ x: p.x, y: p.y, radiusX: 1, radiusY: 1, force: 1, id: i + 1 })),
+    });
+    await touch("touchStart", [chip]);
+    await sleep(150);
+    const early = await cdp.eval("!!document.querySelector('[data-reaction-roster]')");
+    check("移动端触摸：按下的前 150ms 不自动弹（focus/enter 的自动开启被忽略）",
+      early === false, "名单未出现", "early=" + early);
+    await sleep(500);
+    const opened = await cdp.eval("!!document.querySelector('[data-reaction-roster]')");
+    check("移动端触摸：长按约 450ms 后名单展开（不是只能靠鼠标 hover）",
+      opened === true, "名单出现", "opened=" + opened);
+    await touch("touchEnd", []);
+    await sleep(350);
+    const afterUp = await cdp.eval("!!document.querySelector('[data-reaction-roster]')");
+    check("移动端触摸：松手后名单不收起（长按那一按的 release 不许误关）",
+      afterUp === true, "名单仍在", "afterUp=" + afterUp);
+    await touch("touchStart", [{ x: 12, y: 12 }]);
+    await touch("touchEnd", []);
+    await sleep(300);
+    const closed = await cdp.eval("!!document.querySelector('[data-reaction-roster]')");
+    check("移动端触摸：点名单外收起（有明确关闭出口）", closed === false, "名单消失", "closed=" + closed);
+  } finally {
+    await cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
+    await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: false }).catch(() => {});
+  }
+}
+
+async function runVirtualList(cdp, url) {
+  await cdp.send("Page.bringToFront").catch(() => {});
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+  const mounted = await cdp.eval("window.__probe.vlistMount(200)");
+  check("VirtualList：200 条挂载成功", !!mounted && mounted.ok === true, "mount ok", JSON.stringify(mounted));
+  const read = () => cdp.eval("window.__probe.vlistRead()");
+  let s = await read();
+  check("VirtualList：只渲染视口附近的行（虚拟化生效，且有真实滚动高度）",
+    s.rows > 0 && s.rows < 60 && s.scrollHeight > s.clientHeight,
+    "0 < rows < 60 且 scrollHeight > clientHeight", JSON.stringify(s));
+  check("VirtualList：live region 真的挂在滚动根上（role=log / aria-live=polite）",
+    s.role === "log" && s.live === "polite", "role=log 且 aria-live=polite", JSON.stringify({ role: s.role, live: s.live }));
+
+  // 先从顶部直接跳，避开"刚滚到底的 rAF/贴底"与新跳转抢同一帧。
+  const jumped = await cdp.eval("window.__probe.vlistJump(150)");
+  check("VirtualList：scrollToIndex 从组件 ref 暴露且可调用", jumped === true, "调用返回 true", JSON.stringify(jumped));
+  await sleep(700);
+  s = await read();
+  const row150 = await cdp.eval("window.__probe.vlistRow('row-150')");
+  check("VirtualList：scrollToIndex(150) 落到目标且贴顶（真实 DOM 二次校正）",
+    row150.present === true && row150.top >= -2 && row150.top <= 20,
+    "row-150 存在且 0..20px", JSON.stringify({ row150, top: s.scrollTop, firstVisible: s.firstVisible }));
+  check("VirtualList：离开底部后 nearBottom=false", s.nearBottom === false, "nearBottom === false", JSON.stringify(s.nearBottom));
+
+  await cdp.eval("window.__probe.vlistGoBottom()");
+  await sleep(700);
+  s = await read();
+  check("VirtualList：滚到底渲染末条（不是只换了个 scrollTop）",
+    s.scrollTop > 0 && s.keys.includes("row-199"),
+    "scrollTop>0 且包含 row-199", JSON.stringify({ top: s.scrollTop, keys: s.keys.slice(-4) }));
+  check("VirtualList：贴底时 nearBottom=true（父组件的『回到最新』按钮据此隐藏）",
+    s.nearBottom === true, "nearBottom === true", JSON.stringify(s.nearBottom));
+
+  // 再从底部跳回中间，作为 prepend 锚定的起点。
+  await cdp.eval("window.__probe.vlistJump(100)");
+  await sleep(700);
+  s = await read();
+  const row100 = await cdp.eval("window.__probe.vlistRow('row-100')");
+  check("VirtualList：从底部 scrollToIndex(100) 也能落到目标",
+    row100.present === true && row100.top >= -2 && row100.top <= 20,
+    "row-100 存在且 0..20px", JSON.stringify({ row100, top: s.scrollTop, firstVisible: s.firstVisible }));
+  const before = s;
+  await cdp.eval("window.__probe.vlistPrepend(20)");
+  await sleep(650);
+  s = await read();
+  check("VirtualList：prepend 20 条后同一 key 留在视口同一位置（向上加载不跳动）",
+    s.firstVisible === before.firstVisible && Math.abs(s.firstTop - before.firstTop) <= 2
+      && s.scrollTop > before.scrollTop,
+    "同一 firstVisible、|Δtop|<=2、scrollTop 增大",
+    JSON.stringify({ before: { k: before.firstVisible, top: before.firstTop, st: before.scrollTop },
+      after: { k: s.firstVisible, top: s.firstTop, st: s.scrollTop } }));
+  check("VirtualList：prepend 后仍只渲染视口附近（没有退化成整表）",
+    s.rows > 0 && s.rows < 60, "0 < rows < 60", "rows=" + s.rows);
+
+  const lmBefore = s.loadMore;
+  await cdp.eval("window.__probe.vlistGoTop()");
+  await sleep(350);
+  s = await read();
+  check("VirtualList：触顶真的发 loadMore（父组件据此拉更早历史）",
+    s.loadMore > lmBefore, "loadMore 增加", "before=" + lmBefore + " after=" + s.loadMore);
+}
+
 async function runLogs(cdp, url) {
   await cdp.send("Page.bringToFront").catch(() => {});
   await cdp.send("Page.navigate", { url });
@@ -3925,6 +4243,12 @@ async function runLogs(cdp, url) {
     };
   })()`);
   let s = await read();
+  if (SHOT_PATH) {
+    const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
+    const p = SHOT_PATH.replace(/\.png$/, "-logs.png");
+    fs.writeFileSync(p, Buffer.from(shot.data, "base64"));
+    console.log("  📷 日志取证帧 → " + p);
+  }
   check("日志独立窗：standalone 挂载后渲染出虚拟行（不再是空白/注释节点）",
     mounted && mounted.ok === true && s.hasTitle === true && s.rows > 0,
     "挂载成功 / 有标题 / rows>0", JSON.stringify({ mounted, s }));
@@ -3945,6 +4269,55 @@ async function runLogs(cdp, url) {
   check("日志独立窗：滚到底后渲染换到另一批旧日志（滚动 + 虚拟窗口换页）",
     s.rows > 0 && s.scrollTop > 0 && s.first !== before,
     "scrollTop>0 且首行变化", JSON.stringify({ before, s }));
+
+  // 移动端日志页（非 standalone）：390 宽下工具栏标签会收起，但按钮本身与虚拟列表不许横向溢出。
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 390, height: 844, deviceScaleFactor: 2, mobile: true,
+  });
+  try {
+    await cdp.send("Page.navigate", { url });
+    await sleep(2_000);
+    await cdp.eval(PAGE_FIXTURE);
+    await cdp.eval(`window.__probe.stubApi('getLogs', ${JSON.stringify(LOGS)})`);
+    const mm = await cdp.eval(
+      `window.__probe.install('/src/components/LogViewer.vue', '', ${JSON.stringify(JSON.stringify({ standalone: false }))})`,
+    );
+    await sleep(800);
+    const mob = await cdp.eval(`(() => {
+      const buttons = [...document.querySelectorAll('button')].filter((b) => b.getClientRects().length > 0);
+      const outside = buttons.filter((b) => {
+        const r = b.getBoundingClientRect();
+        return r.right > innerWidth + 1 || r.left < -1;
+      });
+      const scroll = (document.querySelector('[data-index]') || {}).closest
+        ? document.querySelector('[data-index]').closest('.overflow-y-auto')
+        : null;
+      return {
+        vw: innerWidth,
+        scrollW: document.documentElement.scrollWidth,
+        buttons: buttons.length,
+        outside: outside.map((b) => String(b.getAttribute('aria-label') || b.textContent || '').trim().slice(0, 24)),
+        rows: document.querySelectorAll('[data-index]').length,
+        scrollH: scroll ? scroll.scrollHeight : -1,
+        clientH: scroll ? scroll.clientHeight : -1,
+        title: (document.body.innerText || '').includes('运行日志'),
+      };
+    })()`);
+    check("移动端日志页：390 宽下没有横向溢出，所有可见按钮都在视口内",
+      mm && mm.ok === true && mob.scrollW <= mob.vw + 1 && mob.outside.length === 0,
+      "scrollWidth<=vw 且 outside=0", JSON.stringify({ mounted: mm, ...mob }));
+    check("移动端日志页：仍渲染虚拟行，滚动容器有真实高度",
+      mob.rows > 0 && mob.scrollH > mob.clientH,
+      "rows>0 且 scrollHeight>clientHeight", JSON.stringify(mob));
+    if (SHOT_PATH) {
+      const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
+      const p = SHOT_PATH.replace(/\.png$/, "-logsmobile.png");
+      fs.writeFileSync(p, Buffer.from(shot.data, "base64"));
+      console.log("  📷 移动端日志取证帧 → " + p);
+    }
+  } finally {
+    await cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
+  }
 }
 
 async function runSearch(cdp, url) {
@@ -4043,6 +4416,11 @@ async function runSearch(cdp, url) {
     pageText.includes("[任务] 命中 待办") && pageText.includes("[图片]")
       && !pageText.includes("不支持的消息"),
     "出现「[任务] 命中 待办」与「[图片]」", JSON.stringify(pageText.slice(0, 260)));
+  if (SHOT_PATH) {
+    const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
+    fs.writeFileSync(SHOT_PATH.replace(/\.png$/, "-search.png"), Buffer.from(shot.data, "base64"));
+    console.log("  📷 聊天搜索取证帧 → " + SHOT_PATH.replace(/\.png$/, "-search.png"));
+  }
 
   // 筛选菜单的底：`.gosslan-menu` 自己不带背景，底在 `.frost` 上 —— 少挂一个类零报错，
   // 而坏法是"文字叠在底下的结果行上"。这里读计算后的 background-color，不读 class 列表
@@ -4156,6 +4534,58 @@ async function runSearch(cdp, url) {
       && outOfOrder.fast === true && outOfOrder.slow === false && outOfOrder.input === "快",
     "对照两次输入都成功 / fast=true / slow=false / input=快",
     JSON.stringify({ typedSlow, typedFast, outOfOrder }));
+
+  // 移动端：390 宽下搜索弹窗本身、输入框、结果行与按钮都不许横向溢出。
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 390, height: 844, deviceScaleFactor: 2, mobile: true,
+  });
+  try {
+    await cdp.send("Page.navigate", { url });
+    await sleep(2_000);
+    await cdp.eval(PAGE_FIXTURE);
+    await cdp.eval(`window.__probe.stubApi('searchChatHistory', ${JSON.stringify([GROUP])})`);
+    await cdp.eval(
+      `window.__probe.install('/src/components/search/ChatSearchDialog.vue', '', ${JSON.stringify(JSON.stringify({ initialKeyword: "初" }))})`,
+    );
+    await cdp.eval("window.__probe.setOpen(true)");
+    for (let i = 0; i < 40; i += 1) {
+      if (await cdp.eval(`!!document.querySelector('[role="dialog"] input')`)) break;
+      await sleep(50);
+    }
+    await typeNow("初");
+    await sleep(500);
+    const mob = await cdp.eval(`(() => {
+      const dlg = document.querySelector('[role="dialog"]');
+      if (!dlg) return { ok: false };
+      const buttons = [...dlg.querySelectorAll('button')].filter((b) => b.getClientRects().length > 0);
+      const outside = buttons.filter((b) => {
+        const r = b.getBoundingClientRect();
+        return r.right > innerWidth + 1 || r.left < -1;
+      });
+      const r = dlg.getBoundingClientRect();
+      const text = dlg.innerText || '';
+      return {
+        ok: true,
+        vw: innerWidth,
+        scrollW: document.documentElement.scrollWidth,
+        dlgW: +r.width.toFixed(1),
+        outside: outside.map((b) => String(b.getAttribute('aria-label') || b.textContent || '').trim().slice(0, 24)),
+        hasResults: text.includes('探针会话') || text.includes('命中'),
+      };
+    })()`);
+    check("移动端搜索：390 宽下弹窗不超视口、无越界按钮",
+      mob.ok === true && mob.dlgW <= mob.vw && mob.scrollW <= mob.vw + 1 && mob.outside.length === 0,
+      "dlg.width<=vw + scrollWidth<=vw + outside=0", JSON.stringify(mob));
+    check("移动端搜索：结果仍渲染（不是只摆了一个空壳）",
+      mob.ok === true && mob.hasResults === true, "结果文本可见", JSON.stringify(mob));
+    if (SHOT_PATH) {
+      const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
+      fs.writeFileSync(SHOT_PATH.replace(/\.png$/, "-searchmobile.png"), Buffer.from(shot.data, "base64"));
+      console.log("  📷 移动端搜索取证帧 → " + SHOT_PATH.replace(/\.png$/, "-searchmobile.png"));
+    }
+  } finally {
+    await cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
+  }
 }
 
 /**
@@ -4381,6 +4811,11 @@ async function runGroupFiles(cdp, url) {
   check("面板开着时换群：立刻请求新群，旧群文件不再出现在面板里",
     s.calls.join(",") === "g1,g1,g2" && s.files.includes("g2.bin") && !s.files.includes("g1.bin"),
     "calls=[g1,g1,g2] / 只有 g2.bin", JSON.stringify({ calls: s.calls, files: s.files }));
+  if (SHOT_PATH) {
+    const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
+    fs.writeFileSync(SHOT_PATH.replace(/\.png$/, "-files.png"), Buffer.from(shot.data, "base64"));
+    console.log("  📷 群文件取证帧 → " + SHOT_PATH.replace(/\.png$/, "-files.png"));
+  }
 
   const before = s.calls.length;
   await fire();
@@ -4414,6 +4849,647 @@ async function runGroupFiles(cdp, url) {
   check("关掉面板：事件订阅成对摘除（subs === unsub）",
     s.subs > 0 && s.unsub === s.subs, `subs=${s.subs} / unsub=${s.unsub}`,
     JSON.stringify({ subs: s.subs, unsub: s.unsub }));
+
+  // 移动端：同一面板 390 宽，文件行与操作按钮都不许横向溢出。
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 390, height: 844, deviceScaleFactor: 2, mobile: true,
+  });
+  try {
+    await cdp.send("Page.navigate", { url });
+    await sleep(2_000);
+    await cdp.eval(PAGE_FIXTURE);
+    await cdp.eval("window.__probe.groupFilesBus()");
+    await cdp.eval("window.__probe.install('/src/components/GroupFilesPanel.vue', '', '')");
+    await group("g1");
+    await open(true);
+    const mob = await cdp.eval(`(() => {
+      const dlg = document.querySelector('[role="dialog"]');
+      if (!dlg) return { ok: false };
+      const buttons = [...dlg.querySelectorAll('button')].filter((b) => b.getClientRects().length > 0);
+      const outside = buttons.filter((b) => {
+        const r = b.getBoundingClientRect();
+        return r.right > innerWidth + 1 || r.left < -1;
+      });
+      const r = dlg.getBoundingClientRect();
+      return {
+        ok: true,
+        vw: innerWidth,
+        scrollW: document.documentElement.scrollWidth,
+        dlgW: +r.width.toFixed(1),
+        files: [...dlg.querySelectorAll('[title$=".bin"]')].map((el) => el.getAttribute('title')),
+        outside: outside.map((b) => String(b.getAttribute('aria-label') || b.textContent || '').trim().slice(0, 24)),
+      };
+    })()`);
+    check("移动端群文件：390 宽下列表渲染，且无横向溢出/越界按钮",
+      mob.ok === true && mob.files.includes("g1.bin")
+        && mob.scrollW <= mob.vw + 1 && mob.outside.length === 0,
+      "g1.bin + scrollWidth<=vw + outside=0", JSON.stringify(mob));
+    check("移动端群文件：面板宽度不超出视口",
+      mob.ok === true && mob.dlgW !== null && mob.dlgW <= mob.vw,
+      "dialog.width <= vw", JSON.stringify({ dlgW: mob.dlgW, vw: mob.vw }));
+    if (SHOT_PATH) {
+      const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
+      fs.writeFileSync(SHOT_PATH.replace(/\.png$/, "-filesmobile.png"), Buffer.from(shot.data, "base64"));
+      console.log("  📷 移动端群文件取证帧 → " + SHOT_PATH.replace(/\.png$/, "-filesmobile.png"));
+    }
+  } finally {
+    await cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
+  }
+}
+
+/**
+ * 收藏面板（--only=favorites）：只替 api.listFavorites 一条 IPC，store/面板逻辑全真实。
+ * 判据是可观察结局：行数、搜索/筛选后的剩余行、详情正文与操作条、移动端两级下钻与返回。
+ */
+async function runFavorites(cdp, url) {
+  const now = Date.now();
+  const favs = [
+    { id: "f1", msg_id: "m1", conv_id: "conv-1", sender_id: "peer-1", kind: "text",
+      content: "收藏的文本：这是一条用来核对收藏列表与详情排版的消息。", ts: now - 90_000, favorited_at: now - 60_000,
+      media_path: null, media_size: 0, available: true },
+    { id: "f2", msg_id: "m2", conv_id: "conv-1", sender_id: "peer-1", kind: "file",
+      content: JSON.stringify({ name: "季度报告.pdf", path: "/tmp/季度报告.pdf", size: 20480, subtype: "file" }),
+      ts: now - 120_000, favorited_at: now - 120_000,
+      media_path: "/tmp/季度报告.pdf", media_size: 20480, available: true },
+    { id: "f3", msg_id: "m3", conv_id: "conv-1", sender_id: "self", kind: "code",
+      content: "const answer = 42;", ts: now - 180_000, favorited_at: now - 180_000,
+      media_path: null, media_size: 0, available: true },
+  ];
+  const mount = async (width, height) => {
+    await cdp.send("Page.navigate", { url });
+    await sleep(3_000);
+    await cdp.eval(PAGE_FIXTURE);
+    await cdp.eval(`window.__probe.stubApi('listFavorites', ${JSON.stringify(favs)})`);
+    const mounted = await cdp.eval("window.__probe.install('/src/components/FavoritePanel.vue', '', '')");
+    await cdp.eval(`(() => {
+      const h = document.getElementById('probe-host');
+      h.style.width = '${width}px';
+      h.style.height = '${height}px';
+      h.style.display = 'block';
+      return true;
+    })()`);
+    await sleep(400);
+    return mounted;
+  };
+  const info = () => cdp.eval(`(() => {
+    const txt = document.body.innerText;
+    const rowTexts = [...document.querySelectorAll('button')]
+      .map((b) => (b.innerText || '').trim())
+      .filter((x) => x.includes('收藏的文本') || x.includes('季度报告.pdf') || x.includes('const answer'));
+    const actions = [...document.querySelectorAll('button')]
+      .map((b) => (b.innerText || '').trim())
+      .filter((x) => ['复制', '转发', '跳回原消息', '删除收藏', '查看图片', '另存为', '打开'].includes(x));
+    const detail = [...document.querySelectorAll('div')].find((d) => {
+      const st = getComputedStyle(d);
+      return st.position === 'fixed' && (d.innerText || '').includes('收藏的文本');
+    });
+    return {
+      txt, rows: rowTexts.length, rowTexts, actions,
+      vw: innerWidth,
+      headerText: (document.querySelector('header') || {}).innerText || '',
+      search: !!document.querySelector('input[placeholder*="搜索收藏"]'),
+      chips: [...document.querySelectorAll('button[aria-pressed]')].map((b) => b.innerText.trim()),
+      chipsPressed: [...document.querySelectorAll('button[aria-pressed="true"]')].map((b) => b.innerText.trim()),
+      picked: txt.includes('从左侧选一条收藏查看详情'),
+      noMatch: txt.includes('没有匹配的收藏'),
+      detailFixed: detail ? { fixed: true, width: Math.round(detail.getBoundingClientRect().width) } : null,
+      back: !!document.querySelector('button[aria-label="返回"]'),
+    };
+  })()`);
+  const rectOf = (needle, sel) => cdp.eval(`(() => {
+    const el = [...document.querySelectorAll(${JSON.stringify(sel || "button")})]
+      .find((b) => ((b.innerText || '') + ' ' + (b.getAttribute('aria-label') || '')).includes(${JSON.stringify(needle)}));
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  })()`);
+  const clickText = async (needle, sel) => {
+    const pt = await rectOf(needle, sel);
+    if (!pt) return false;
+    await cdp.click(pt.x, pt.y);
+    await sleep(300);
+    return true;
+  };
+
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 1400, height: 900, deviceScaleFactor: 1, mobile: false,
+  });
+  try {
+    const mounted = await mount(1200, 820);
+    let s = await info();
+    check("收藏面板：真实 store 拉取并渲染三条，搜索 / 五个筛选 / 空详情提示齐全",
+      mounted && mounted.ok === true && s.rows === 3
+        && s.search && s.chips.length === 5 && s.picked,
+      "3 行 / 5 chips / 空详情提示",
+      JSON.stringify({ rows: s.rows, chips: s.chips, search: s.search, picked: s.picked }));
+
+    const searchPt = await cdp.eval(`(() => {
+      const i = document.querySelector('input[placeholder*="搜索收藏"]');
+      if (!i) return null;
+      const r = i.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    })()`);
+    if (searchPt) await cdp.click(searchPt.x, searchPt.y);
+    await cdp.send("Input.insertText", { text: "季度" });
+    await sleep(300);
+    s = await info();
+    check("搜索『季度』只剩文件行（标题与正文都参与匹配）",
+      s.rows === 1 && s.rowTexts.join("|").includes("季度报告.pdf"),
+      "1 行且是季度报告.pdf", JSON.stringify(s.rowTexts));
+
+    await clickText("图片");
+    s = await info();
+    check("筛选『图片』在没有图片收藏时给出空结果提示（不是一片空白）",
+      s.rows === 0 && s.noMatch && s.chipsPressed.includes("图片"),
+      "0 行 + 没有匹配的收藏 + 图片激活",
+      JSON.stringify({ rows: s.rows, noMatch: s.noMatch, pressed: s.chipsPressed }));
+
+    await cdp.eval(`(() => {
+      const i = document.querySelector('input[placeholder*="搜索收藏"]');
+      if (i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); }
+      return true;
+    })()`);
+    for (let i = 0; i < 2; i += 1) {
+      await cdp.send("Input.dispatchKeyEvent", {
+        type: "keyDown", key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8, nativeVirtualKeyCode: 8,
+      });
+      await cdp.send("Input.dispatchKeyEvent", {
+        type: "keyUp", key: "Backspace", code: "Backspace", windowsVirtualKeyCode: 8, nativeVirtualKeyCode: 8,
+      });
+    }
+    await sleep(200);
+    await clickText("全部");
+    s = await info();
+    check("清空搜索 + 回到『全部』：三条恢复（筛选是真状态，不是一次性渲染）",
+      s.rows === 3 && s.chipsPressed.includes("全部") && !s.noMatch,
+      "3 行 + 全部激活", JSON.stringify({ rows: s.rows, pressed: s.chipsPressed }));
+
+    const clicked = await clickText("收藏的文本");
+    s = await info();
+    check("点文本收藏：右栏显示全文与底部操作条，空详情提示消失",
+      clicked && s.txt.includes("这是一条用来核对收藏列表与详情排版的消息")
+        && ["复制", "转发", "跳回原消息", "删除收藏"].every((x) => s.actions.includes(x)) && !s.picked,
+      "全文 + 复制/转发/跳回/删除 + 空提示消失",
+      JSON.stringify({ actions: s.actions, picked: s.picked }));
+    if (SHOT_PATH) {
+      const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
+      fs.writeFileSync(SHOT_PATH.replace(/\.png$/, "-favorites.png"), Buffer.from(shot.data, "base64"));
+      console.log("  📷 收藏面板取证帧 → " + SHOT_PATH.replace(/\.png$/, "-favorites.png"));
+    }
+
+    // ── 移动端两级（列表 ↔ 详情覆盖层）：视口必须在 store 创建**之前**变窄 ──
+    await cdp.send("Emulation.setDeviceMetricsOverride", {
+      width: 390, height: 844, deviceScaleFactor: 2, mobile: true, screenWidth: 390, screenHeight: 844,
+    });
+    const mMounted = await mount(390, 844);
+    s = await info();
+    check("移动端收藏：列表一列渲染（桌面空详情提示不出现），列表态没有返回键",
+      mMounted && mMounted.ok === true && s.rows === 3 && s.vw < 768 && !s.picked && !s.back,
+      "3 行 / 窄视口 / 无桌面空详情提示 / 列表态无返回键",
+      JSON.stringify({ rows: s.rows, vw: s.vw, picked: s.picked, back: s.back }));
+
+    await clickText("收藏的文本");
+    s = await info();
+    check("移动端点收藏：全屏 fixed 覆盖层（宽度=视口）、标题取正文而不是一律「文件」、带返回键",
+      s.detailFixed && s.detailFixed.fixed && Math.abs(s.detailFixed.width - s.vw) <= 2 && s.back
+        && s.headerText.includes("收藏的文本") && !s.headerText.includes("文件"),
+      "fixed / width=vw / 标题含正文 / 返回键在",
+      JSON.stringify({ detail: s.detailFixed, vw: s.vw, back: s.back, header: s.headerText }));
+    if (SHOT_PATH) {
+      const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
+      fs.writeFileSync(SHOT_PATH.replace(/\.png$/, "-favorites-mobile.png"), Buffer.from(shot.data, "base64"));
+      console.log("  📷 收藏移动端取证帧 → " + SHOT_PATH.replace(/\.png$/, "-favorites-mobile.png"));
+    }
+
+    await clickText("返回");
+    s = await info();
+    check("移动端返回：覆盖层收起回到列表，三条都还在",
+      !s.detailFixed && s.rows === 3,
+      "覆盖层消失 + 3 行", JSON.stringify({ detail: s.detailFixed, rows: s.rows }));
+  } finally {
+    await cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
+  }
+}
+
+/**
+ * 外部链接左栏（--only=links）：真实组件 + 一条 listExternalLinks 夹具。
+ * 重点照增/改草稿的内联表单、编辑预填、行点击真的把链接交给父级。
+ */
+async function runLinks(cdp, url) {
+  const links = [
+    { id: "l1", name: "公司内网", url: "https://intra.example.com" },
+    { id: "l2", name: "产品文档", url: "https://docs.example.com" },
+  ];
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 1400, height: 900, deviceScaleFactor: 1, mobile: false,
+  });
+  try {
+    await cdp.send("Page.navigate", { url });
+    await sleep(3_000);
+    await cdp.eval(PAGE_FIXTURE);
+    await cdp.eval(`window.__probe.stubApi('listExternalLinks', ${JSON.stringify(links)})`);
+    const mounted = await cdp.eval("window.__probe.install('/src/components/LinksList.vue', '', '')");
+    await cdp.eval(`(() => {
+      const h = document.getElementById('probe-host');
+      h.style.width = '360px';
+      h.style.height = '640px';
+      h.style.display = 'block';
+      return true;
+    })()`);
+    await sleep(400);
+
+    const info = () => cdp.eval(`(() => {
+      const txt = document.body.innerText;
+      const inputs = [...document.querySelectorAll('input')].map((i) => ({
+        ph: i.placeholder, value: i.value,
+      }));
+      return {
+        txt, inputs,
+        add: !!document.querySelector('button[aria-label="添加链接"]'),
+        edits: [...document.querySelectorAll('button[aria-label="编辑链接"]')].length,
+        removes: [...document.querySelectorAll('button[aria-label="删除链接"]')].length,
+        rowTitles: [...document.querySelectorAll('button[title]')]
+          .map((b) => b.getAttribute('title'))
+          .filter((t) => t === 'https://intra.example.com' || t === 'https://docs.example.com'),
+        events: window.__probe.events.slice(),
+      };
+    })()`);
+    const rectOf = (needle) => cdp.eval(`(() => {
+      const el = [...document.querySelectorAll('button')]
+        .find((b) => ((b.innerText || '') + ' ' + (b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('title') || '')).includes(${JSON.stringify(needle)}));
+      if (!el) return null;
+      const r = el.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    })()`);
+    const clickText = async (needle) => {
+      const pt = await rectOf(needle);
+      if (!pt) return false;
+      await cdp.click(pt.x, pt.y);
+      await sleep(300);
+      return true;
+    };
+
+    let s = await info();
+    check("链接左栏：标题 / 两条链接 / 常显编辑与删除按钮齐全",
+      mounted && mounted.ok === true && s.txt.includes("外部链接") && s.rowTitles.length === 2
+        && s.edits === 2 && s.removes === 2 && s.add,
+      "2 行 + 2 编辑 + 2 删除 + 添加", JSON.stringify({ rows: s.rowTitles, edits: s.edits, removes: s.removes, add: s.add }));
+
+    const opened = await clickText("https://intra.example.com");
+    s = await info();
+    check("点链接行：把该条交给父级开独立窗口（open 事件真的发出）",
+      opened && s.events.some((e) => e[0] === "open-id"), "事件表出现 open-id",
+      JSON.stringify(s.events));
+
+    await clickText("添加链接");
+    s = await info();
+    check("点右上角添加：内联表单出现两个输入（显示名称 / 网址）且为空",
+      s.inputs.length === 2 && s.inputs.some((i) => i.ph === "显示名称" && i.value === "")
+        && s.inputs.some((i) => i.ph === "https://example.com" && i.value === ""),
+      "两个空输入", JSON.stringify(s.inputs));
+
+    await clickText("编辑链接");
+    s = await info();
+    check("点编辑：同一份表单预填该条名称与网址（不是空表单）",
+      s.inputs.some((i) => i.value === "公司内网") && s.inputs.some((i) => i.value === "https://intra.example.com"),
+      "公司内网 / https://intra.example.com", JSON.stringify(s.inputs));
+
+    await clickText("取消");
+    s = await info();
+    check("取消：表单收起，两行链接不受影响",
+      s.inputs.length === 0 && s.rowTitles.length === 2,
+      "0 输入 + 2 行", JSON.stringify({ inputs: s.inputs.length, rows: s.rowTitles.length }));
+    if (SHOT_PATH) {
+      const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
+      fs.writeFileSync(SHOT_PATH.replace(/\.png$/, "-links.png"), Buffer.from(shot.data, "base64"));
+      console.log("  📷 链接左栏取证帧 → " + SHOT_PATH.replace(/\.png$/, "-links.png"));
+    }
+  } finally {
+    await cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
+  }
+}
+
+/**
+ * 设置页字体下拉（--only=fontsel）：Reka Select 不渲染空串 option。
+ * 判据是"默认档到底存不存在"：触发器文案、菜单四项、选中第二档后的落库值、再切回默认。
+ */
+async function runFontSelect(cdp, url) {
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+  await cdp.eval("window.__probe.stubApi('saveSettings', null)");
+  const mounted = await cdp.eval("window.__probe.install('/src/components/settings/AppearanceSection.vue', '', "
+    + JSON.stringify(JSON.stringify({ isolated: true })) + ")");
+  await cdp.eval(`(() => {
+    const h = document.getElementById('probe-host');
+    h.style.width = '760px';
+    h.style.display = 'block';
+    return true;
+  })()`);
+  await sleep(400);
+
+  const info = () => cdp.eval(`(() => {
+    const trigger = document.querySelector('button[aria-label="界面字体"]');
+    return {
+      trigger: trigger ? (trigger.innerText || '').trim() : null,
+      items: [...document.querySelectorAll('.gosslan-menu-item')].map((b) => (b.innerText || '').trim()),
+      stored: localStorage.getItem('gosslan.fontFamily'),
+    };
+  })()`);
+  const openMenu = async () => {
+    const pt = await cdp.eval(`(() => {
+      const b = document.querySelector('button[aria-label="界面字体"]');
+      if (!b) return null;
+      const r = b.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    })()`);
+    if (!pt) return false;
+    await cdp.click(pt.x, pt.y);
+    await sleep(300);
+    return true;
+  };
+
+  let s = await info();
+  check("字体下拉默认档：触发器显示「系统默认」（不是空白）",
+    mounted && mounted.ok === true && s.trigger === "系统默认",
+    "触发器=系统默认", JSON.stringify({ trigger: s.trigger }));
+
+  await openMenu();
+  s = await info();
+  check("菜单包含四个字体档，且「系统默认」没有被 Reka 的空串值吞掉",
+    s.items.length === 4 && s.items.includes("系统默认") && s.items.includes("思源黑体"),
+    "4 项且含系统默认", JSON.stringify(s.items));
+  if (SHOT_PATH) {
+    const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
+    fs.writeFileSync(SHOT_PATH.replace(/\.png$/, "-font.png"), Buffer.from(shot.data, "base64"));
+    console.log("  📷 字体下拉取证帧 → " + SHOT_PATH.replace(/\.png$/, "-font.png"));
+  }
+
+  await cdp.key("ArrowDown", "ArrowDown", "", 40);
+  await cdp.key("Enter", "Enter", "\r", 13);
+  await sleep(300);
+  s = await info();
+  check("↓+Enter 选中第二档：触发器显示苹方 / 微软雅黑，落库值是字体栈（不是哨兵）",
+    s.trigger === "苹方 / 微软雅黑" && String(s.stored || "").includes("PingFang SC"),
+    "触发器=苹方 / 微软雅黑 + 落库字体栈",
+    JSON.stringify({ trigger: s.trigger, stored: s.stored }));
+
+  await openMenu();
+  await cdp.key("ArrowUp", "ArrowUp", "", 38);
+  await cdp.key("Enter", "Enter", "\r", 13);
+  await sleep(300);
+  s = await info();
+  check("再切回系统默认：触发器恢复、落库值为空串（哨兵没有泄漏到设置里）",
+    s.trigger === "系统默认" && s.stored === "",
+    "触发器=系统默认 + stored=''", JSON.stringify({ trigger: s.trigger, stored: s.stored }));
+}
+
+/**
+ * 移动端输入框（--only=composermobile）：390 宽下工具栏与发送键的布局。
+ * 发送/表情的行为由 --only=inputpanel 覆盖，这里只量移动端视口。
+ */
+async function runComposerMobile(cdp, url) {
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 390, height: 844, deviceScaleFactor: 2, mobile: true,
+  });
+  try {
+    await cdp.send("Page.navigate", { url });
+    await sleep(3_000);
+    await cdp.eval(PAGE_FIXTURE);
+    await cdp.eval("window.__probe.stubApi('saveSettings', null)");
+    const mounted = await cdp.eval("window.__probe.install('/src/components/chat/MessageComposer.vue', '', "
+      + JSON.stringify(JSON.stringify({
+        convId: "group:composer-mobile",
+        mentionMembers: [{ id: "p1", name: "小布" }],
+      })) + ")");
+    await sleep(600);
+    const m = await cdp.eval(`(() => {
+      const card = document.querySelector('.gosslan-composer');
+      const editor = card ? card.querySelector('[role="textbox"]') : null;
+      if (!card || !editor) return { ok: false, hasCard: !!card, hasEditor: !!editor };
+      const buttons = [...card.querySelectorAll('button')].filter((b) => b.getClientRects().length > 0);
+      const outside = buttons.filter((b) => {
+        const r = b.getBoundingClientRect();
+        return r.right > innerWidth + 1 || r.left < -1;
+      });
+      const send = buttons.find((b) => (b.textContent || '').trim() === '发送');
+      const er = editor.getBoundingClientRect();
+      return {
+        ok: true,
+        vw: innerWidth,
+        scrollW: document.documentElement.scrollWidth,
+        buttons: buttons.length,
+        outside: outside.map((b) => String(b.getAttribute('aria-label') || b.textContent || '').trim().slice(0, 20)),
+        editorW: +er.width.toFixed(1),
+        hasSend: !!send,
+        hasEmoji: buttons.some((b) => (b.getAttribute('aria-label') || '').includes('表情')),
+      };
+    })()`);
+    check("移动端输入框：工具栏与发送键都在视口内，编辑器没有被挤没",
+      mounted && mounted.ok === true && m.ok === true && m.scrollW <= m.vw + 1
+        && m.outside.length === 0 && m.editorW >= 100 && m.hasSend === true && m.hasEmoji === true,
+      "无横向溢出 + outside=0 + editorW>=100 + 发送/表情在", JSON.stringify({ mounted, ...m }));
+    check("移动端输入框：发送键与表情入口都可见（不是被 390 宽挤掉）",
+      m.ok === true && m.hasSend === true && m.hasEmoji === true,
+      "send + emoji", JSON.stringify({ hasSend: m.hasSend, hasEmoji: m.hasEmoji }));
+    if (SHOT_PATH) {
+      const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
+      fs.writeFileSync(SHOT_PATH.replace(/\.png$/, "-composermobile.png"), Buffer.from(shot.data, "base64"));
+      console.log("  📷 移动端输入框取证帧 → " + SHOT_PATH.replace(/\.png$/, "-composermobile.png"));
+    }
+  } finally {
+    await cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
+  }
+}
+
+/**
+ * 移动端设置（--only=settingsmobile）：390 宽下一级列表、二级「外观」与返回。
+ * 只判布局与导航，不重复控件段已经量过的 Select/Slider 行为。
+ */
+async function runSettingsMobile(cdp, url) {
+  await cdp.send("Page.bringToFront").catch(() => {});
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 390, height: 844, deviceScaleFactor: 2, mobile: true,
+  });
+  try {
+    await cdp.send("Page.navigate", { url });
+    await sleep(3_000);
+    await cdp.eval(PAGE_FIXTURE);
+    await cdp.eval("window.__probe.stubApi('saveSettings', null)");
+    const mounted = await cdp.eval("window.__probe.install('/src/components/SettingsPanel.vue', '', "
+      + JSON.stringify(JSON.stringify({ open: true, isolated: true })) + ")");
+    await sleep(600);
+    const read = () => cdp.eval(`(() => {
+      const buttons = [...document.querySelectorAll('button')].filter((b) => b.getClientRects().length > 0);
+      const outside = buttons.filter((b) => {
+        const r = b.getBoundingClientRect();
+        return r.right > innerWidth + 1 || r.left < -1;
+      });
+      const text = document.body.innerText || '';
+      const input = document.querySelector('input[type=color]');
+      const row = input ? input.closest('[class*="px-4"][class*="py-3"]') : null;
+      const rowR = row ? row.getBoundingClientRect() : null;
+      const inR = input ? input.getBoundingClientRect() : null;
+      const presets = row ? [...row.querySelectorAll('button[aria-pressed]')] : [];
+      const presetRects = presets.map((b) => b.getBoundingClientRect()).filter((r) => r.width > 0);
+      return {
+        vw: innerWidth,
+        scrollW: document.documentElement.scrollWidth,
+        buttons: buttons.length,
+        outside: outside.map((b) => String(b.getAttribute('aria-label') || b.textContent || '').trim().slice(0, 24)),
+        hasList: text.includes('外观') && text.includes('通用设置') && text.includes('关于'),
+        hasFont: text.includes('系统默认'),
+        colorPresets: presets.length,
+        colorPresetWidths: presetRects.map((r) => +r.width.toFixed(1)),
+        colorInputRight: inR ? +inR.right.toFixed(1) : null,
+        colorInputWidth: inR ? +inR.width.toFixed(1) : null,
+        colorLastPresetRight: presetRects.length ? +Math.max(...presetRects.map((r) => r.right)).toFixed(1) : null,
+        colorRowRight: rowR ? +rowR.right.toFixed(1) : null,
+      };
+    })()`);
+    let s = await read();
+    check("移动端设置：一级列表渲染，390 宽下无横向溢出、按钮都在视口内",
+      mounted && mounted.ok === true && s.hasList && s.scrollW <= s.vw + 1 && s.outside.length === 0,
+      "列表可见 + scrollWidth<=vw + outside=0", JSON.stringify({ mounted, s }));
+
+    const clicked = await cdp.eval(`(() => {
+      const b = [...document.querySelectorAll('button')]
+        .find((x) => (x.textContent || '').trim().includes('外观'));
+      if (!b) return false;
+      b.click();
+      return true;
+    })()`);
+    await sleep(500);
+    s = await read();
+    check("移动端设置：进入「外观」二级页，字体默认档可见且无横向溢出",
+      clicked === true && s.hasFont && s.scrollW <= s.vw + 1 && s.outside.length === 0,
+      "外观页含系统默认 + 无溢出", JSON.stringify(s));
+    const colorsOk = s.colorPresets === 6
+      && s.colorPresetWidths.length === 6 && s.colorPresetWidths.every((w) => w >= 20)
+      && s.colorInputWidth >= 24
+      && s.colorRowRight !== null
+      && s.colorInputRight <= s.colorRowRight - 1
+      && s.colorLastPresetRight <= s.colorRowRight - 1;
+    check("移动端外观：6 个预设色与自定义色都完整可见（没有把最后一个色块挤没/裁掉）",
+      colorsOk,
+      "6 个预设宽度≥20 + 自定义色≥24 且在行内",
+      JSON.stringify({ presets: s.colorPresets, widths: s.colorPresetWidths,
+        inputW: s.colorInputWidth, inputRight: s.colorInputRight,
+        lastRight: s.colorLastPresetRight, rowRight: s.colorRowRight }));
+    if (SHOT_PATH) {
+      const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
+      const p = SHOT_PATH.replace(/\.png$/, "-settingsmobile.png");
+      fs.writeFileSync(p, Buffer.from(shot.data, "base64"));
+      console.log("  📷 移动端设置取证帧 → " + p);
+    }
+
+    const back = await cdp.eval(`(() => {
+      const b = [...document.querySelectorAll('button')].find((x) => {
+        const a = x.getAttribute('aria-label') || '';
+        return a.includes('返回') || /\\bBack\\b/i.test(a);
+      });
+      if (!b) return false;
+      b.click();
+      return true;
+    })()`);
+    await sleep(400);
+    s = await read();
+    check("移动端设置：返回键回到一级列表（二级页不是死路）",
+      back === true && s.hasList === true, "返回后列表重新出现", JSON.stringify(s));
+  } finally {
+    await cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
+  }
+}
+
+/**
+ * 移动端群任务（--only=tasksmobile）：390 宽下看板行与详情弹窗的布局。
+ * 行为（实时同步、筛选、详情内容）由 --only=tasksrt 覆盖，这里只量移动端视口。
+ */
+async function runTasksMobile(cdp, url) {
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 390, height: 844, deviceScaleFactor: 2, mobile: true,
+  });
+  try {
+    await cdp.send("Page.navigate", { url });
+    await sleep(3_000);
+    await cdp.eval(PAGE_FIXTURE);
+    await cdp.eval(`(async () => {
+      window.GID = 'g1';
+      window.CONV = 'group:g1';
+      window.ME = 'probe-me';
+      window.OTHER = 'probe-other';
+      window.__mk = (id, seq, kind, def, ts) => ({
+        msg_id: 'm-' + id + '-' + seq,
+        sender_id: window.OTHER,
+        conv_id: window.CONV,
+        kind, seq, ts,
+        status: 'read',
+        content: JSON.stringify(Object.assign({
+          todo_id: id, title: id, assignees: [window.ME], status: 'todo',
+          creator: window.OTHER, deleted: false, description: '', images: [],
+          archived: false, done_at: null, number: 0, priority: 'normal', category: 'task',
+        }, def)),
+      });
+      return true;
+    })()`);
+    await cdp.eval("window.__probe.todoBus()");
+    const now = Date.now();
+    await cdp.eval(`window.__probe.todoRows([
+      window.__mk('A', 1, 'todo', { title: '很长的移动端任务标题用来测试换行和右侧操作按钮', number: 1, priority: 'high', description: '移动端描述' }, ${now}),
+      window.__mk('B', 2, 'todo', { title: '第二条任务', number: 2 }, ${now + 1}),
+    ])`);
+    await cdp.eval(`window.__probe.install('/src/components/GroupTasksBoard.vue', '', ${JSON.stringify(JSON.stringify({ groupId: "g1", open: true }))})`);
+    await cdp.eval("window.__probe.seedDevice('probe-me')");
+    await sleep(900);
+    const read = () => cdp.eval(`(() => {
+      const buttons = [...document.querySelectorAll('button')].filter((b) => b.getClientRects().length > 0);
+      const outside = buttons.filter((b) => {
+        const r = b.getBoundingClientRect();
+        return r.right > innerWidth + 1 || r.left < -1;
+      });
+      return {
+        vw: innerWidth,
+        scrollW: document.documentElement.scrollWidth,
+        rows: document.querySelectorAll('button.min-w-0.flex-1').length,
+        outside: outside.map((b) => String(b.getAttribute('aria-label') || b.textContent || '').trim().slice(0, 24)),
+      };
+    })()`);
+    let s = await read();
+    check("移动端群任务：390 宽下任务行渲染，且无横向溢出/越界按钮",
+      s.rows >= 2 && s.scrollW <= s.vw + 1 && s.outside.length === 0,
+      "rows>=2 + scrollWidth<=vw + outside=0", JSON.stringify(s));
+
+    const clicked = await cdp.eval(`(() => {
+      const b = [...document.querySelectorAll('button.min-w-0.flex-1')]
+        .find((x) => (x.textContent || '').includes('很长的移动端'));
+      if (!b) return false;
+      b.click();
+      return true;
+    })()`);
+    await sleep(500);
+    const dlg = await cdp.eval(`(() => {
+      const d = document.querySelector('[role="dialog"]');
+      if (!d) return { ok: false };
+      const r = d.getBoundingClientRect();
+      return {
+        ok: true,
+        inViewport: r.left >= -1 && r.right <= innerWidth + 1
+          && r.top >= -1 && r.bottom <= innerHeight + 1,
+        w: +r.width.toFixed(1), h: +r.height.toFixed(1),
+      };
+    })()`);
+    check("移动端群任务：点行打开的详情弹窗整个在视口内",
+      clicked === true && dlg.ok === true && dlg.inViewport === true,
+      "dialog 在视口内", JSON.stringify(dlg));
+    if (SHOT_PATH) {
+      const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
+      const p = SHOT_PATH.replace(/\.png$/, "-tasksmobile.png");
+      fs.writeFileSync(p, Buffer.from(shot.data, "base64"));
+      console.log("  📷 移动端群任务取证帧 → " + p);
+    }
+  } finally {
+    await cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
+  }
 }
 
 /**
@@ -5521,7 +6597,10 @@ async function runTasksRealtime(cdp, url) {
   await cdp.eval(`(async () => {
     const now = Date.now();
     window.__probe.todoRows([
-      window.__mk('A', 1, 'todo', { title: '写周报', number: 1 }, now),
+      window.__mk('A', 1, 'todo', {
+        title: '写周报', number: 1, priority: 'high',
+        description: '本周进展与下周计划：完成登录链路的断线重连与文件续传验证。',
+      }, now),
     ]);
     return window.__probe.todoRows.length;
   })()`);
@@ -5536,6 +6615,11 @@ async function runTasksRealtime(cdp, url) {
       && v0.pills[1].pressed === true,
     "行=" + JSON.stringify(v0.uniqTitles) + " pills=" + JSON.stringify(v0.pills), JSON.stringify(v0.pills));
   const reads0 = (await cdp.eval("window.__probe.todoStats()")).reads;
+  if (SHOT_PATH) {
+    const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
+    fs.writeFileSync(SHOT_PATH.replace(/\.png$/, "-tasks.png"), Buffer.from(shot.data, "base64"));
+    console.log("  📷 群任务看板取证帧 → " + SHOT_PATH.replace(/\.png$/, "-tasks.png"));
+  }
   check("首屏只发一次全表读取（ensure 已加载不重复打 IPC）",
     reads0 === 1, "reads=1", "reads=" + reads0);
 
@@ -5561,6 +6645,34 @@ async function runTasksRealtime(cdp, url) {
   const vDetail0 = await view();
   check("点行打开了任务详情弹窗", vDetail0.dialogs === 1 && vDetail0.dialogText.includes("写周报"),
     "dialog 含旧标题", "dialogs=" + vDetail0.dialogs);
+
+  // 矮窗口下详情内容会超出可视高度：footer 在滚动区之外（设计如此），
+  // 但要证明内容区真的能滚到底、描述不是被 footer 永久盖住。
+  const scrollInfo = await cdp.eval(`(() => {
+    const dlg = document.querySelector('[role="dialog"]');
+    if (!dlg) return { found: false };
+    const sc = [...dlg.querySelectorAll('*')].find((e) => {
+      const st = getComputedStyle(e);
+      return /(auto|scroll)/.test(st.overflowY) && e.scrollHeight > e.clientHeight + 1;
+    });
+    if (!sc) return { found: false, why: '没有可滚动内容区' };
+    sc.scrollTop = sc.scrollHeight;
+    return {
+      found: true,
+      top: Math.round(sc.scrollTop),
+      max: sc.scrollHeight - sc.clientHeight,
+      text: dlg.innerText,
+    };
+  })()`);
+  check("任务详情内容区可滚到底（描述在 footer 之上可完整到达，不是被永久遮住）",
+    scrollInfo.found === true && scrollInfo.top > 0 && scrollInfo.top === scrollInfo.max
+      && String(scrollInfo.text || "").includes("本周进展与下周计划"),
+    "scrollTop=max 且描述存在", JSON.stringify({ found: scrollInfo.found, top: scrollInfo.top, max: scrollInfo.max }));
+  if (SHOT_PATH) {
+    const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
+    fs.writeFileSync(SHOT_PATH.replace(/\.png$/, "-taskdetail.png"), Buffer.from(shot.data, "base64"));
+    console.log("  📷 群任务详情取证帧 → " + SHOT_PATH.replace(/\.png$/, "-taskdetail.png"));
+  }
 
   // —— 对端一批变更（模拟另一个成员连发）：A 改成完成并改名、新增 B、新增 C 后完成并归档。
   //    同步推 5 个事件，其中 B 的创建事件重复一次 —— 150ms 去抖后只许重读一次。 ——
@@ -5744,10 +6856,14 @@ async function runInputPanels(cdp, url) {
     !!emojiBtn, "找得到一颗 button", JSON.stringify(emojiBtn));
   if (!emojiBtn) return;
   await realClick(emojiBtn);
-  const SEL_DLG = '.gosslan-composer [role="dialog"]';
+  // Reka Popover 把面板 Portal 到 body（不再挂在输入卡片里），所以选择器要跟着走。
+  // 这正是迁移要的：卡片以后加圆角/overflow 也裁不到面板。
+  const SEL_DLG = '[data-composer-emoji] [role="dialog"]';
   const dlg = await cdp.eval("window.__probe.floatLayer(" + JSON.stringify(SEL_DLG) + ")");
-  check("真点之后表情面板挂在**输入框卡片里面**（不是单独挂的那一份 ⇒ 锚定路径被走全）",
-    !!dlg && dlg.ok === true, "卡片内有 role=dialog", JSON.stringify(dlg && dlg.why));
+  check("真点之后表情面板由 Reka Portal 挂到 body（不是还塞在输入卡片里）",
+    !!dlg && dlg.ok === true && dlg.parentIsBody === true && dlg.escapes === true,
+    "挂在 body 且没有应用祖先裁得到它",
+    JSON.stringify(dlg && { why: dlg.why, parentIsBody: dlg.parentIsBody, escapes: dlg.escapes }));
   check("表情面板整个在视口内（往上长 ⇒ 上边缘才是真实风险，这条量的就是它）",
     !!dlg && dlg.ok === true && dlg.inViewport === true,
     "inViewport=true", JSON.stringify([dlg && dlg.rect, dlg && dlg.vh]));
@@ -5772,26 +6888,59 @@ async function runInputPanels(cdp, url) {
   check("面板中心那一点归面板自己接（既不『看不见却接得住』，也不反过来被别层盖住）",
     hitDlg === true, "elementFromPoint 落在面板内部", "hit=" + hitDlg);
 
-  // ★ 这条变异专门证「中间层裁切」这一型缺陷**只有这条判据看得见**：把输入框卡片自己改成
-  // `overflow:hidden`（真实缺陷的形状：外壳加了圆角 + 裁切，面板往上长就被齐根切掉）。
+  // ★ 这条变异专门证「中间层裁切」这一型缺陷**只有这条判据看得见**：把 Reka 的
+  // popper 层搬回输入卡片里、并给卡片 `overflow:hidden`（旧实现的真实形状）。
   // 注意此时面板的矩形与 inViewport **都不变**（它照样画在视口里、只是被祖先剪掉一块）⇒
   // 只判视口那条会放它过去。没有这一格，上面那条裁切判据等于没被证明会咬。
-  await cdp.eval(`(() => { const c = document.querySelector('.gosslan-composer'); if (c) c.style.overflow = "hidden"; })()`);
+  await cdp.eval(`(() => {
+    const el = document.querySelector(${JSON.stringify(SEL_DLG)});
+    if (!el) return false;
+    const box = el.closest('[data-reka-popper-content-wrapper]') || el;
+    const card = document.querySelector('.gosslan-composer');
+    if (!card) return false;
+    window.__emojiHome = { parent: box.parentElement, next: box.nextSibling,
+      pos: box.style.position, transform: box.style.transform, left: box.style.left, top: box.style.top };
+    card.style.overflow = "hidden";
+    const h = box.getBoundingClientRect().height;
+    box.style.position = "absolute";
+    box.style.transform = "none";
+    box.style.left = "0px";
+    // 放到卡片顶边之上，让矩形留在视口里：这一格要证的是"被祖先裁"，不是"跑出视口"。
+    box.style.top = (-h) + "px";
+    card.appendChild(box);
+    return true;
+  })()`);
   const cut = await cdp.eval("window.__probe.floatLayer(" + JSON.stringify(SEL_DLG) + ")");
   const cutters = ((cut && cut.clipped) || []).filter((x) => !shellRoot(x));
-  check("变异：输入框卡片改成 overflow:hidden ⇒ 中间层裁切必须被报出来（且 inViewport 仍为真 ⇒ 证明这条不是视口那条的别名）",
+  check("变异：把面板搬回输入卡片并 overflow:hidden ⇒ 中间层裁切必须被报出来（且 inViewport 仍为真 ⇒ 证明这条不是视口那条的别名）",
     !!cut && cut.ok === true && cutters.length > 0 && cut.inViewport === true,
     "非壳层裁切祖先 ≥ 1 且 inViewport 仍 true",
     JSON.stringify([cut && cut.clipped, cut && cut.inViewport, cut && cut.rect]));
-  await cdp.eval(`(() => { const c = document.querySelector('.gosslan-composer'); if (c) c.style.removeProperty("overflow"); })()`);
+  await cdp.eval(`(() => {
+    const el = document.querySelector(${JSON.stringify(SEL_DLG)});
+    if (!el) return false;
+    const box = el.closest('[data-reka-popper-content-wrapper]') || el;
+    const h = window.__emojiHome;
+    if (h && h.parent) h.parent.insertBefore(box, h.next);
+    const card = document.querySelector('.gosslan-composer');
+    if (card) card.style.removeProperty("overflow");
+    if (h) { box.style.position = h.pos; box.style.transform = h.transform;
+      box.style.left = h.left; box.style.top = h.top; }
+    delete window.__emojiHome;
+    return true;
+  })()`);
   const cutBack = await cdp.eval("window.__probe.floatLayer(" + JSON.stringify(SEL_DLG) + ")");
-  check("变异可逆：撤掉那行 overflow 后裁切祖先回到只剩壳层（对照自己不留残留）",
+  check("变异可逆：搬回 body 后裁切祖先回到只剩壳层（对照自己不留残留）",
     !!cutBack && ((cutBack.clipped) || []).filter((x) => !shellRoot(x)).length === 0,
     "非壳层裁切祖先为空", JSON.stringify(cutBack && cutBack.clipped));
 
   await cdp.eval(`(() => {
     const el = document.querySelector(${JSON.stringify(SEL_DLG)});
-    if (el) { el.style.bottom = "auto"; el.style.top = "180vh"; }
+    if (!el) return false;
+    const box = el.closest('[data-reka-popper-content-wrapper]') || el;
+    box._o = { left: box.style.left, top: box.style.top, transform: box.style.transform };
+    box.style.left = "0px"; box.style.top = "180vh"; box.style.transform = "none";
+    return true;
   })()`);
   const pushed = await cdp.eval("window.__probe.floatLayer(" + JSON.stringify(SEL_DLG) + ")");
   check("变异：把面板整块推到视口下方外 ⇒ inViewport 必须翻假（证明那条不是恒真）",
@@ -5799,7 +6948,12 @@ async function runInputPanels(cdp, url) {
     "inViewport=false", JSON.stringify(pushed && pushed.rect));
   await cdp.eval(`(() => {
     const el = document.querySelector(${JSON.stringify(SEL_DLG)});
-    if (el) { el.style.removeProperty("bottom"); el.style.removeProperty("top"); }
+    if (!el) return false;
+    const box = el.closest('[data-reka-popper-content-wrapper]') || el;
+    if (!box._o) return false;
+    box.style.left = box._o.left; box.style.top = box._o.top;
+    box.style.transform = box._o.transform; delete box._o;
+    return true;
   })()`);
   const back = await cdp.eval("window.__probe.floatLayer(" + JSON.stringify(SEL_DLG) + ")");
   check("变异可逆：撤掉那两行内联样式后它又整个回到视口内（没把页面改坏一次）",
@@ -5810,6 +6964,32 @@ async function runInputPanels(cdp, url) {
   const closed = await cdp.eval(`!!document.querySelector(${JSON.stringify(SEL_DLG)})`);
   check("再点一次那颗按钮面板就收起（DOM 撤净，不留看不见的一层）",
     closed === false, "role=dialog 为 0 个", "还在=" + closed);
+
+  // 选中一个表情：焦点必须回到编辑器，token 必须真的进了草稿。
+  // 这条守的是 Reka Popover 的 closeAutoFocus 与 EmojiPicker 自己的焦点归还
+  // 不再互相抢 —— 选完表情还要再点一下输入框才能接着打字，是肉眼很容易漏掉的回归。
+  await realClick(emojiBtn);
+  await sleep(250);
+  const pick = await cdp.eval(`(() => {
+    const b = document.querySelector('[data-emoji-panel] button');
+    if (!b) return null;
+    const r = b.getBoundingClientRect();
+    return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+  })()`);
+  check("表情面板里拿得到一格真实表情的落点", !!pick, "格子非空", JSON.stringify(pick));
+  if (pick) await realClick(pick);
+  await sleep(300);
+  const afterPick = await cdp.eval(`(() => {
+    const ed = document.querySelector('.gosslan-composer [contenteditable="true"]');
+    return { focused: document.activeElement === ed, text: ed ? ed.innerText : null,
+      open: !!document.querySelector('[data-emoji-panel]') };
+  })()`);
+  check("选完表情：面板收起、焦点回到编辑器、token 进了草稿（选完能直接接着打字）",
+    afterPick.open === false && afterPick.focused === true && typeof afterPick.text === "string"
+      && afterPick.text.includes("["),
+    "open=false 且 activeElement=编辑器 且草稿含 token", JSON.stringify(afterPick));
+  await cdp.eval(`(() => { const ed = document.querySelector('.gosslan-composer [contenteditable="true"]');
+    if (ed) { ed.innerHTML = ''; ed.dispatchEvent(new InputEvent('input', { bubbles: true })); } })()`);
 
   // ── ② @ 候选列表 ────────────────────────────────────────────
   const edPoint = await cdp.eval(`(() => {
@@ -5885,6 +7065,28 @@ async function runInputPanels(cdp, url) {
         || document.querySelector('.gosslan-composer [data-focus-ring-ok]');
       return !!(e && !e.textContent.trim()) && !document.querySelector(${JSON.stringify(SEL_LIST)});
     })()`) === true, "编辑器空、列表不在", "读到的仍是残留");
+
+  // 鼠标出口：点击「发送」按钮也必须真的 emit。此前探针只走过 Enter，
+  // 而按钮上有 `@mousedown.prevent`（保持编辑器焦点）；这条单独证明那个 prevent
+  // 没有顺带把 click 吃掉。
+  await cdp.eval("window.__probe.reset()");
+  await realClick(edPoint);
+  await cdp.send("Input.insertText", { text: "按钮发送" });
+  await sleep(300);
+  const sendBtn = await cdp.eval(`(async () => {
+    const { t } = await import('/src/i18n/index.ts');
+    const label = t("common.send");
+    const b = Array.from(document.querySelectorAll('.gosslan-composer button'))
+      .find((x) => (x.textContent || '').trim() === label);
+    if (!b) return null;
+    const r = b.getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2, disabled: !!b.disabled };
+  })()`);
+  if (sendBtn) await realClick(sendBtn);
+  const clickSent = await cdp.eval(`(window.__probe.events || []).filter((e) => e[0] === "send").length`);
+  check("真点『发送』按钮也 emit send（不是只有回车这一条出口；mousedown.prevent 不许吃掉 click）",
+    !!sendBtn && sendBtn.disabled === false && clickSent > 0,
+    "按钮可用且 send 事件 ≥1", JSON.stringify({ sendBtn, clickSent }));
 }
 
 

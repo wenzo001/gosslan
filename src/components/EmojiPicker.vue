@@ -10,17 +10,7 @@ import {
 } from "@/utils/emojiUsage";
 import { t } from "@/i18n";
 
-const props = withDefaults(
-  defineProps<{
-    open: boolean;
-    /**
-     * 相对**定位父级**展开的方向：`above` 向上（输入框上方的表情按钮用），
-     * `below` 向下（消息上的表情回应入口用 —— 它在视口上半部分时要往下弹，否则会被顶出屏幕）。
-     */
-    placement?: "above" | "below";
-  }>(),
-  { placement: "above" },
-);
+const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<{
   /** 选中表情 → 输出 token 语法（如 "[微笑]"），由输入框插入。 */
   (e: "select", displayName: string): void;
@@ -128,11 +118,12 @@ watch(
        面板高度本轮**没有**跟着加高（300 不动）—— 加高会改"输入框上方要留多少空间"那个
        已知边界（验收矩阵 §19 缺口④：那一支从来没有挂载态的运行时测量），
        所以行数少了多少留给真人与肉眼判，不在这里猜。 -->
+  <!-- 面板只负责内容，不再自己定位：外层由 Reka Popover 的 floating-ui 决定上/下/夹边。 -->
   <div
     v-if="open"
     ref="panelRef"
-    class="frost absolute left-0 z-50 w-[min(360px,calc(100vw-2rem))] select-none rounded-[var(--gosslan-radius-lg)] border border-[var(--gosslan-border)] shadow-xl"
-    :class="placement === 'below' ? 'top-full mt-2' : 'bottom-full mb-2'"
+    data-emoji-panel
+    class="frost w-[min(360px,calc(100vw-2rem))] select-none rounded-[var(--gosslan-radius-lg)] border border-[var(--gosslan-border)] shadow-xl"
     role="dialog"
     :aria-label="t('chat.composer.emoji')"
     tabindex="-1"

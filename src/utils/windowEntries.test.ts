@@ -1,5 +1,5 @@
 /**
- * 窗口架构守卫：三个窗口（主 / 设置 / 日志）必须**各是一个文档 + 一个入口**。
+ * 窗口架构守卫：每一扇窗口（主 / 设置 / 日志 / 群任务 / 图片预览）必须**各是一个文档 + 一个入口**。
  *
  * ## 为什么要有这层守卫（用户 2026-09-12 实测的三个现象）
  * 旧结构是「一个 index.html + 一个 Vue 应用」，由 `App.vue` 按窗口 label 决定渲染哪一屏：
@@ -11,7 +11,7 @@
  * 现在：`index.html` / `settings.html` / `logs.html` 各自一个入口。这类"退化"肉眼很难发现
  * （功能都还在，只是慢、只是闪一下），所以用静态守卫钉住下面这些结构性事实。
  */
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -31,7 +31,7 @@ const codeOnly = (src: string) =>
     .replace(/\/\*[\s\S]*?\*\//g, "")
     .replace(/(?:^|(?<=\s))\/\/[^\n]*/gm, "");
 
-/** 四个窗口：HTML 文件 ↔ 入口模块 ↔ 自己的骨架 id ↔ `<html>` 上的骨架类。 */
+/** 每一扇窗口：HTML 文件 ↔ 入口模块 ↔ 自己的骨架 id ↔ `<html>` 上的骨架类。 */
 const WINDOWS = [
   { html: "index.html", entry: "src/entries/main.ts", skeleton: "boot", htmlClass: null },
   {
@@ -68,7 +68,21 @@ test("每个窗口都有自己的 HTML 与入口（不再共用一个 index.html
   }
   // 反向：入口文件不能互相复用（否则又回到"一个入口按 label 分支"的老路）
   const entries = WINDOWS.map((w) => w.entry);
-  assert.equal(new Set(entries).size, entries.length, "三个窗口必须是三个不同的入口");
+  assert.equal(new Set(entries).size, entries.length, "各窗口的入口不许互相复用");
+
+  // ★ 分母**从磁盘现算**：上面所有"每个窗口都…"的循环只遍历这张手抄表，
+  // 所以新增一扇窗却忘了登记时，它们会全部照绿 —— 新文档没骨架、没主题脚本都看不见。
+  // （同一族缺陷 2026-10-19 在 `designGuards.test.ts` ㊵ 上真发生过：手抄清单比入口少两个名字，
+  //  于是两处直连 lucide 的违规一直漏网。）
+  const onDiskEntries = readdirSync(join(root, "src", "entries"))
+    .filter((f) => f.endsWith(".ts"))
+    .map((f) => `src/entries/${f}`)
+    .sort();
+  assert.deepEqual(
+    [...entries].sort(),
+    onDiskEntries,
+    "窗口登记表与 `src/entries/` 的实际入口不一致 ⇒ 新窗口没在这里登记，按表循环的判据全都覆盖不到它",
+  );
 });
 
 test("每个窗口的 HTML 都必须带上主题脚本与骨架样式（否则该窗口首帧会闪白/闪错外观）", () => {

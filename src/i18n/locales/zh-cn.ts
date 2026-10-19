@@ -969,6 +969,8 @@ export const zhCN: MessageDict = {
   "layout.toast.accepted": "已同意 {name} 的好友申请",
   "layout.toast.rejected": "已拒绝该好友申请",
   "layout.selectConversation": "选择会话，开始局域网聊天",
+  "layout.selectContact": "选择联系人，查看资料",
+  "layout.contactHint": "从左侧通讯录选择一位联系人，或添加新的好友",
   "layout.linksTitle": "外部链接",
   "layout.linksHint": "在左侧选择一个链接，将在独立窗口中打开",
   "layout.tagline": "无服务器 · 纯 P2P · 端到端加密 · 数据仅存本机",
