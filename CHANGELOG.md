@@ -13,6 +13,35 @@
 
 ## [Unreleased]
 
+## [5.0.35] - 2026-10-19
+
+### 后端：三处收尾事务补上耗时出口（B15），全量护栏首次接进 CI
+
+- 事务观测：`db_hold::note_tx` 给群文件收尾 / 单聊收尾 / 群台账补账三处生产事务各记一行
+  `tx <阶段> transfer_id=… ms=… ok=…`；阈值沿用 `DbLock::slow_threshold_ms`（500ms，同一个家，
+  不另造常数），**只在超阈值或失败时留痕** —— 既有不变量
+  `network::file_tests::normal_completion_writes_no_ledger_note` 钉的是正常收尾一行都不许写，
+  这条没有为了通过而被改；快且成功的事务耗时本来已在 60s 锁摘要（最长持有/累计）里。
+  出口不取锁、不重试、不碰 commit/rollback 与错误语义；行内没有 SQL、参数、正文、文件名或密钥。
+- 判据两条：行为 `db_hold::tests::note_tx_stays_quiet_unless_slow_or_failed`；接线
+  `tests::production_transaction_sites_are_all_timed`（每册 `.transaction()` 调用点数=1、
+  `note_tx` 调用数=1、必须有计时起点、阈值必须取自 `slow_threshold_ms()`，并钉住出口那一句的
+  `format!` 形状）。单点变异实测：把 `receive.rs` 的埋点改成合法但不匹配的写法 ⇒ 接线判据
+  **exit 101** 并指名那一册；还原后与备份逐字节相同 ⇒ 两条判据各自 **exit 0**。
+  Rust **993 通过 + 1 ignored**（macOS 基线 994，`check-test-manifest --only rust` ✓）。
+- CI：`.github/workflows/verify.yml` 新增 `guards` job，直接执行
+  `python3 scripts/verify-guards.py`（**不带 `--only`**，条数由该工具自己打印）。此前全量护栏
+  非空转**没有任何自动触发点** —— CI 三个 job 走 `--group frontend/rust/android`，而护栏那一步
+  在这些路径上传的都是 `--only frontend`。同一批加入 `schedule`（UTC 19:20），其余三个 job 在
+  schedule 事件下跳过以免夜间重跑；不设 `continue-on-error`，红就是红。
+  ⚠️ GitHub 的定时工作流只按**默认分支**上的定义运行 ⇒ 这条要等进 main 才按夜持续生效。
+- 领域边补声明：`network/transport.rs` 显式 `use crate::db_hold::note_tx;`，`docs/domains.data.mjs`
+  把 `observability` 加进「传输」域的 `consumes`。起因是 `check-domain-deps.mjs` 的第 13 步当场红
+  ——内联 `crate::db_hold::…` 让"判据看不见的内联跨域引用"从 6 对涨到 7 对；按该判据自己给的
+  修法改成声明出来的 use，**棘轮上限没有调大**（复跑 exit 0 / 6 对）。
+- 文档：`docs/architecture/backend-modernization.md` §6.10 的 B15 由"待开工"改为已落地，
+  §6.7 加本批实测读数与变异自证，§6.8/§7 把"全量护栏无人跑"改判为"已接入、远端首跑待读"。
+
 ## [5.0.34] - 2026-10-19
 
 ### 前端：三处锚定浮层收进 Reka、划选/空态/错误出口三处真实缺陷、两个手抄分母改现算

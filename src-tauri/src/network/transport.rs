@@ -28,6 +28,7 @@ use x25519_dalek::StaticSecret;
 use crate::commands::{is_virtual_ip, MAX_GROUP_NAME_LEN};
 use crate::crypto;
 use crate::db;
+use crate::db_hold::note_tx;
 use crate::discovery::routed::{parse_endpoints, ROUTED_ENDPOINTS_KEY};
 use crate::mesh::router::{ForwardDecision, MeshDestination, MeshFrame, MeshFrameKind};
 use crate::mesh::{

@@ -73,6 +73,12 @@ on:
   # PR 上仍跑（合并前的关卡）。与上面的 push 事件可能同时触发，由 concurrency 去重。
   pull_request:
   workflow_dispatch:
+  # 定时：每晚只付「护栏非空转（全量）」这一条腿 —— 其余三个 job 用 job 级 `if` 在
+  # schedule 事件下跳过，免得每晚把前端/Rust/Android 重跑一遍。
+  # ⚠️ GitHub 的 scheduled 工作流**只按默认分支（main）上的这份定义**运行 ⇒ 在 feat/* 上改
+  #   cron 不会生效，这条要等它进 main 才持续跑；本分支随时可以用 workflow_dispatch 手动拉。
+  schedule:
+    - cron: "20 19 * * *" # UTC 19:20 = 北京 03:20
 
 # 同一分支去重：push 事件用 `ref_name`、PR 事件用 `head_ref`，两者都取到**分支名**，
 # 所以「推分支」与「开/更新 PR」会落进同一个并发组 —— 后启动的取消先启动的，不会双跑。
@@ -114,6 +120,8 @@ jobs:
     name: 前端测试 / 清单 / 构建
     runs-on: macos-latest
     timeout-minutes: 20
+    # 定时事件只为了全量护栏 ⇒ 这条腿不在夜间重付。
+    if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -160,6 +168,8 @@ jobs:
     name: Rust 单测 / 清单（${{ matrix.os }}）
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
+    # 定时事件只为了全量护栏 ⇒ 这两条腿不在夜间重付。
+    if: github.event_name != 'schedule'
     strategy:
       fail-fast: false
       matrix:
@@ -230,6 +240,8 @@ jobs:
     name: Android 编译门禁（aarch64-linux-android）
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    # 定时事件只为了全量护栏 ⇒ 这条腿不在夜间重付。
+    if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@v4
 
@@ -280,3 +292,55 @@ jobs:
       - name: 移动端编译门禁（默认 feature + --features bluetooth，各自 0 warning）
         # 清单只有一份：见 verify.mjs 的 group=android（内部就是 check-mobile.sh --bluetooth）。
         run: bash scripts/ci-run.sh "verify android 组" node scripts/verify.mjs --group android
+
+  # ---------------------------------------------------------------------------
+  #  护栏非空转（全量）—— 2026-10-19 之前**没有任何自动触发点**
+  #
+  #  为什么必须有这条腿（现读口径，不是猜）：`scripts/verify.mjs` 的护栏步按 `full` 分档 ——
+  #  CI 三个 job 分别跑 `--group frontend` / `rust` / `android`，护栏那一格挂在 group=frontend，
+  #  而这些路径都不带 `--full-gate` ⇒ 传给工具的是 `--only frontend`（只扫前端标签那一批）。
+  #  全量扫描（含 Rust 用例，每条都要"改坏 → 重编译 → 跑 → 还原"）此前只有人手动
+  #  `npm run verify:full -- --full` 才会执行；本地日常批次按用户口径跳过最长那一步
+  #  （`verify:local --skip-guard-sweep`）⇒ 于是它实际上没人跑。
+  #
+  #  ⚠️ 这一条**不许退化成子集**：命令就是 `python3 scripts/verify-guards.py`，不带 `--only`。
+  #  条数与耗时由该工具自己打印（写死在别处的数字一定腐烂）；不设 `continue-on-error`，
+  #  红就是红 —— 失败诊断走 `scripts/ci-run.sh` 的注解通道（唯一可匿名读取的渠道）。
+  #
+  #  为什么不用 `needs`：`needs` 会让定时事件下被跳过的上游把这条也拖成 skipped；
+  #  这条本来就是最慢的一腿，和另外三条并行跑不会互相抢 Cargo lock（各自独立 runner）。
+  #  定时只在夜间跑这一腿，见文件顶部 `on.schedule` 与其余三个 job 的 `if`。
+  # ---------------------------------------------------------------------------
+  guards:
+    name: 护栏非空转（全量，不带 --only）
+    runs-on: macos-latest
+    # 每条 Rust 用例都要重编译一次：给足时间，宁可慢也不要静默截断成"看起来没跑完"。
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+
+      # 护栏里既有前端用例（跑 `npm test`）也有 Rust 用例（跑 `cargo test`），
+      # 而 Tauri 的 build.rs 需要 dist/ ⇒ 两样都得先备好，否则整批用例会以"编译不过"的形状红掉。
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: npm
+
+      - name: 安装依赖并构建前端
+        run: |
+          npm ci
+          npm run build
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: 护栏非空转（全量）
+        shell: bash
+        run: bash scripts/ci-run.sh "护栏非空转（全量）" python3 scripts/verify-guards.py

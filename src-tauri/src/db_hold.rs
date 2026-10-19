@@ -57,6 +57,30 @@ pub fn summary_line(s: &DbHoldSummary, threshold_ms: u64) -> Option<String> {
     ))
 }
 
+/// 一条事务收尾观测（B15）。**只量不改**：调用点把 `.transaction()`（或只含它的那次收口调用）
+/// 的结果原样传进来，本函数不取锁、不重试、不碰 commit/rollback 与错误语义。
+/// 内容只有阶段名、关联键、毫秒与成败 —— 没有 SQL、参数、正文、文件名或密钥。
+///
+/// 只在**超阈值**或**失败**时留一行：`finish_receiver_into` 那条既有不变量
+/// 「正常路径不留痕」（`network::file_tests::normal_completion_writes_no_ledger_note`）钉的是
+/// 正常收尾**一行都不许写**，而快且成功的事务读数本来就在 60s 锁摘要里（`summary_line` 的
+/// 最长持有/累计）⇒ 这里补的是"到底慢在哪一格、失败那次的耗时"，不是给每条正常事务加噪声。
+/// 阈值沿用 [`DbLock::slow_threshold_ms`]（同一个家，不另造常数）。
+pub fn note_tx(
+    logger: &crate::logging::Logger,
+    stage: &'static str,
+    key: &str,
+    started: std::time::Instant,
+    slow_ms: u64,
+    ok: bool,
+) {
+    let ms = started.elapsed().as_millis() as u64;
+    if ok && ms < slow_ms.max(1) {
+        return;
+    }
+    logger.warn("db", format!("tx {stage} {key} ms={ms} ok={ok}"));
+}
+
 /// `Mutex<T>` 的替身：既有的 `db.lock().unwrap_or_else(|e| e.into_inner())` 一字不改地继续成立
 /// （返回同样的 `Result<_, PoisonError<_>>`），另外把每次持锁区间量出来。
 pub struct DbLock<T> {
@@ -210,6 +234,50 @@ impl<T> Drop for DbGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn note_tx_stays_quiet_unless_slow_or_failed() {
+        let dir = std::env::temp_dir().join(format!("gosslan-tx-note-{}", std::process::id()));
+        let logger = crate::logging::Logger::new(dir.clone(), "t", "[dev:test]".to_string());
+        let now = std::time::Instant::now();
+        // ① 快且成功 ⇒ **一行都不写**（`normal_completion_writes_no_ledger_note` 钉的就是这一格）
+        note_tx(&logger, "unit_ok", "transfer_id=t1", now, 10_000, true);
+        assert!(
+            logger.snapshot(None).is_empty(),
+            "正常且不够慢的事务不该留痕，实得 {:?}",
+            logger
+                .snapshot(None)
+                .iter()
+                .map(|e| e.message.clone())
+                .collect::<Vec<_>>()
+        );
+        let back = now
+            .checked_sub(std::time::Duration::from_millis(50))
+            .expect("Instant 可以往回取 50ms");
+        // ② 超阈值 ⇒ warn，且耗时可读
+        note_tx(&logger, "unit_slow", "transfer_id=t2", back, 10, true);
+        // ③ 失败 ⇒ warn，且必须写清 ok=false
+        note_tx(&logger, "unit_fail", "transfer_id=t3", now, 10_000, false);
+        let entries = logger.snapshot(None);
+        let line_of = |stage: &str| -> (String, String) {
+            entries
+                .iter()
+                .find(|e| e.message.starts_with(&format!("tx {stage} ")))
+                .map(|e| (e.level.clone(), e.message.clone()))
+                .expect("这一格必须有出口")
+        };
+        let (level, msg) = line_of("unit_slow");
+        assert_eq!(level, "warn", "超阈值的事务必须转 warn：{msg}");
+        assert!(
+            msg.contains("transfer_id=t2") && msg.contains("ms=") && msg.ends_with("ok=true"),
+            "{msg}"
+        );
+        let (level, msg) = line_of("unit_fail");
+        assert_eq!(level, "warn", "失败的事务不许静默无声：{msg}");
+        assert!(msg.ends_with("ok=false"), "{msg}");
+        assert_eq!(entries.len(), 2, "只有慢/失败两格留痕");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn short_hold_is_counted_but_not_slow() {

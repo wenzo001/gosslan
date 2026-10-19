@@ -1016,6 +1016,7 @@ fn finish_receiver_into(
     {
         let mut dbc = db_lock.lock().unwrap_or_else(|e| e.into_inner());
         let path_str = r.final_path.to_string_lossy().to_string();
+        let tx_started = std::time::Instant::now();
         let both = dbc.transaction().and_then(|tx| {
             db::upsert_transfer(
                 &tx,
@@ -1041,6 +1042,14 @@ fn finish_receiver_into(
             )?;
             tx.commit()
         });
+        crate::db_hold::note_tx(
+            logger,
+            "dm_finalize",
+            &format!("transfer_id={transfer_id}"),
+            tx_started,
+            db_lock.slow_threshold_ms(),
+            both.is_ok(),
+        );
         let done_note = match both {
             // 补偿写成功：file_transfers 收口，content_transfers 留给下次建链补（状态仍正确）。
             Err(primary) => match db::upsert_transfer(

@@ -325,6 +325,7 @@ export default {
         "routing", // network/transport.rs + ble.rs 用 mesh::*
         "presence", // network/transport.rs 用 discovery::routed
         "platform", // transport/ble_android.rs 用 jni_method::kotlin_method
+        "observability", // 5.0.35 B15：transport/group_file.rs 的收尾事务耗时出口走 db_hold::note_tx（与 files 域同一条依赖）
       ],
       notes:
         "⚠️ **两个同名 transport.rs**：network/transport.rs（活；主文件 + include! 分册合计约 1 万行）与 transport/{mod,tcp}.rs（新栈）。「传输」这一个关注点今天有**三个家**：TCP 数据面走 network/、BLE 数据面走 transport/bluetooth.rs::driver + 三个外设模块、状态聚合走 transport/mod.rs（2026-09-24 0-A2 起它只剩状态汇总，**分流从来不在那里**：真分流是 dispatch.rs::message_priority + mesh/selection.rs::pick_link）。这是「改完这个 bug 又冒那个」的结构性来源，逐条证据见 docs/migration-ledger.md。BLE 载荷预算已收敛为单一事实来源（INV-P23，Phase 3/4）。",

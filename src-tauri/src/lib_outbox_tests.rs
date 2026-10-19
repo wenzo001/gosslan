@@ -318,3 +318,46 @@
             );
         }
     }
+
+#[test]
+fn production_transaction_sites_are_all_timed() {
+    // B15 的接线判据：分母按"生产事务调用点"数，不按文件角色猜。三处收尾事务各有一条耗时观测，
+    // 少一条就是"编译得过、门禁全绿，而那一格永远没有读数"的形状。
+    let sites = [
+        ("group_file.rs", include_str!("network/transport/group_file.rs")),
+        ("receive.rs", include_str!("network/file/receive.rs")),
+        ("ledger_backfill.rs", include_str!("network/file/ledger_backfill.rs")),
+    ];
+    for (name, src) in sites {
+        assert_eq!(
+            src.matches(".transaction()").count(),
+            1,
+            "{name} 的生产事务调用点数变了 ⇒ 分母要重数，别把没埋点的漏在外"
+        );
+        assert_eq!(
+            src.matches("note_tx(").count(),
+            1,
+            "{name} 的收尾事务必须有且只有一条耗时观测"
+        );
+        assert!(
+            src.contains("std::time::Instant::now()"),
+            "{name} 缺计时起点（只有 note_tx 没有 Instant 就是量了个假的）"
+        );
+        assert!(
+            src.contains("slow_threshold_ms()"),
+            "{name} 的阈值要沿用 DbLock 那个家，不许另造常数"
+        );
+    }
+    // 领域依赖方向那把棘轮认的是**声明出来的 use**，不是 consumes 名单：transport 域必须显式
+    // import 这条出口，否则它又被数成一对"判据看不见的内联耦合"，第 13 步当场红。
+    assert!(
+        include_str!("network/transport.rs").contains("use crate::db_hold::note_tx;"),
+        "transport 域的耗时出口必须是声明出来的 use（内联 crate::db_hold::… 会让领域棘轮长一对）"
+    );
+    let hold = include_str!("db_hold.rs");
+    assert_eq!(hold.matches("pub fn note_tx(").count(), 1, "出口只许有一份");
+    assert!(
+        hold.contains("format!(\"tx {stage} {key} ms={ms} ok={ok}\")"),
+        "这一行只许含阶段名/关联键/毫秒/成败 —— 塞进 SQL、参数、正文或文件名就是把隐私写进日志"
+    );
+}
