@@ -580,9 +580,11 @@
 
 ### 6.9 最终结论
 
-- **是否达到本轮重构目标？** **未全部达到**。数据安全、迁移保护、权限、网络可靠性、
-  兼容性、E2E 与 macOS 验收已落地并有实测证据（B1–B12、Rust 990+1、E2E 32 轮/863、
-  互操作 8 轮/216）；真实 4.x 用户库 schema 迁移与真实设备/平台运行时仍未验证。
+- **是否达到本轮重构目标？** **未全部达到，但这一轮把最后两格欠账补上了**。数据安全、迁移保护、
+  权限、网络可靠性、兼容性、E2E 与 macOS 验收早有实测证据；本轮再补 **B15 事务耗时出口**
+  （§9 那格从"未做"变"已落地"）与**全量护栏的自动触发点**（`guards` job）；
+  Rust **993 通过 + 1 ignored**、E2E 32 轮/863、互操作 8 轮/216、verify:local 22/22。
+  仍然没绿的两格照实留着：真 v10 现场库（BLOCKED，缺文件）、GUI 真机/平台运行时（NOT RUN）。
 - **用户数据是否经过真实迁移验证？** **部分是 PASS、最后一格是 BLOCKED**。
   v0–v11 合成迁移、逐字 v10 DDL 夹具均通过；**真实安装数据**（当天最新，93 条消息/340 行）
   的副本置回 v10 后跑生产 `init`：exit 0，逐表行数、5 组语义聚合、9 种 kind 分布、
@@ -590,20 +592,28 @@
   自动备份单独以只读方式可开（v10/19 表/integrity ok）。
   **仍未证明的只有一件事**：本机不存在"停在 v10 未迁移"的用户现场库
   （已装的 4.44.4 自身就是 v11），所以真 v10 现场标 **BLOCKED**，需用户另供文件。
-- **是否确认没有破坏已有业务功能？** **在已跑范围内确认**：Rust 990+1、E2E 32 轮/863、
-  4.44.4↔5.0.33 互操作 8 轮/216、迁移 38+1、cargo audit 0 漏洞；未跑的真机与
-  Windows/iOS/Linux 运行时不能据此确认。
+- **是否确认没有破坏已有业务功能？** **在已跑范围内确认**：Rust **993 通过 + 1 ignored**
+  （macOS 与 Windows 两条远端腿各自 success）、E2E 32 轮/863、4.44.4↔5.0.33 互操作 8 轮/216、
+  迁移 38+1、cargo audit 0 漏洞、护栏定点与分族非空转自证；未跑的真机与
+  Windows/Linux/iOS **GUI 运行时**不能据此确认。
 - **大文件传输期间应用仍可响应？** **通过（有边界）**：5.0.32 release 在 **600MB**
   contentpull 传输中，接收端设置窗口 **397ms** 可开（System Events 实测；探测后停轮，
   只证响应性）；300MB 下 5.0.29 读数为 **734ms**。5.0.31 补测单 PID RSS 峰值
   **126.1 MiB**、low 队列 8 MiB/链路、服务队列 8/对端，无整份文件入内存迹象。
-- **哪些平台真正通过了测试？** macOS arm64 **PASS**（fmt/clippy/Rust/前端/Android 编译、
-  E2E）；Android aarch64 **PASS（仅编译）**；Windows x86_64 **PASS（仅交叉编译）**：
-  `cargo xwin build --release` exit 0、产物为 PE32+ GUI x86-64；Windows 运行时
-  **NOT RUN**；Linux/iOS 运行时 **NOT RUN**（iOS 无 SDK）。
-- **哪些问题仍然存在？** 用户直接提供的 v10 现场、真机/跨平台运行时、单一 SQLite
-  连接串行化、Windows ACL、Linux GTK/D-Bus 传递依赖告警；**A-17 已修（观察项，5.0.33 contentpull ×3 绿）**；另有 A-9/A-10/A-13 等已登记未修项（见 `docs/stability-roadmap.md`）。
-- 未 push、未 tag、未 release、未 merge main；目标不标记完成。
+- **哪些平台真正通过了测试？** macOS arm64 **PASS**（fmt/clippy/Rust/前端/Android 编译、32 轮 E2E、
+  远端 `Rust 单测（macos-latest）` success）；**Windows x86_64 今轮升级为"真 runner 上跑过测试"**：
+  远端 `Rust 单测 / 清单（windows-latest）` **success**（07:18:22→07:23:19），且 B15 那两条判据
+  **没有平台门控**、两边基线都已登记 ⇒ 它们在真 Windows runner 上执行过；加上本机
+  `cargo xwin build --release` exit 0 的 PE32+ 产物。**Windows 的 GUI 应用运行时仍 NOT RUN**
+  （没有 Windows 桌面主机）。Android aarch64 **PASS（仅编译，ubuntu runner 真跑 cargo）**；
+  桌面 Linux 运行时 NOT RUN；iOS **NOT RUN 且当前没有可跑它的地方**（无任何 iOS 工作流、无 SDK/签名）。
+- **哪些问题仍然存在？** 真 v10 现场库（BLOCKED）、GUI 真机与 Windows/Linux/iOS 运行时、
+  单一 SQLite 连接串行化、Windows ACL、Linux GTK/D-Bus 传递依赖告警、`busy_timeout` 无专门一行、
+  跨进程统一 trace 仍靠 id 人工串；**A-17 已修（观察项）**；另有 A-9/A-10/A-13 等已登记未修项
+  （见 `docs/stability-roadmap.md`）。
+- 本轮**已按授权把 `feat/5.0` 推到远端**（`3de6dd9` 及以下未动）；**未推 main、未 merge、未 tag、
+  未发 release**。全量护栏 CI job 的首跑结果在读到之前一律标 in_progress，不写成通过；
+  目标不标记完成。
 
 ### 6.10 可观测性覆盖（第九阶段）
 
