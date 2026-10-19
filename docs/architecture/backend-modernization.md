@@ -414,7 +414,8 @@
   逐表行数与关键聚合一致；源库未改。2026-10-19 5.0.32 复跑两遍：① 副本列已存在 ⇒
   `ALTER` 幂等跳过；② 按逐字 v10 DDL 重建 `messages`（无 `mention_targets`）⇒ 迁移
   真加列、56/56 行为 NULL、19 表/208 行保留、备份与 integrity 均 ok。
-- **未完成**：真实 4.x 用户库不在本机，真实用户数据迁移 **NOT RUN**。
+- **未完成**：用户直接提供的真实 v10 现场 **NOT RUN**（本机没有）；真实数据 +
+  逐字 v10 schema 的 v10→v11 演练已通过（见 §4）。
 
 ### 6.5 网络与文件传输
 
@@ -452,7 +453,7 @@
 |---|---|
 | macOS arm64 | **PASS**：fmt/clippy/Rust/前端/Android 编译、32 轮 E2E |
 | Android aarch64 | **PASS（仅编译）**：默认与 bluetooth 两档 0 warning |
-| Windows x86_64 | **PASS（仅交叉编译）**：官方 LLVM 18.1.8 macOS ARM64 包提供 `llvm-rc`/`llvm-lib`/`lld-link`，`cargo xwin 0.23.1` 下 `cargo xwin check --target x86_64-pc-windows-msvc --features bluetooth` **exit 0 / 42.6s**，`cargo xwin build --release` **exit 0 / 2m39s**，产物 `gosslan.exe` **9.6MB**、`PE32+ executable (GUI) x86-64`（SHA-256 前缀 `bcb10edc…`）。未装系统 LLVM、工具只在 `/tmp`；**Windows 运行时 NOT RUN** |
+| Windows x86_64 | **PASS（仅交叉编译；构建于 5.0.31 代码，5.0.32 只加平台无关的锁摘要定时器）**：官方 LLVM 18.1.8 macOS ARM64 包提供 `llvm-rc`/`llvm-lib`/`lld-link`，`cargo xwin 0.23.1` 下 `cargo xwin check --target x86_64-pc-windows-msvc --features bluetooth` **exit 0 / 42.6s**，`cargo xwin build --release` **exit 0 / 2m39s**，产物 `gosslan.exe` **9.6MB**、`PE32+ executable (GUI) x86-64`（SHA-256 前缀 `bcb10edc…`）。未装系统 LLVM、工具只在 `/tmp`；**Windows 运行时 NOT RUN** |
 | Linux | 运行时 **NOT RUN**；audit 警告集中在 Linux GTK/D-Bus 传递依赖 |
 | iOS | **BLOCKED（环境）**：本机无 iOS SDK/完整 Xcode；运行时 **NOT RUN** |
 
@@ -472,7 +473,8 @@
 
 ### 6.8 剩余风险
 
-- **高**：真实 4.x 用户库迁移未执行；Windows/iOS/Linux 运行时与真机未验证
+- **高**：用户直接提供的真实 v10 现场未执行（真实数据 + 逐字 v10 schema 演练已过）；
+  Windows/iOS/Linux 运行时与真机未验证
   （Windows 已过交叉编译，仍无 Windows 主机/Wine 跑行为）。
 - **中**：单一 SQLite 连接串行化读写；入站 handler 单链路串行；
   Windows ACL 未处理；audit 的 glib/zbus 警告仅 Linux 路径。
