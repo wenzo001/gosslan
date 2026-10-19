@@ -552,14 +552,14 @@
 | `cargo test --lib --features bluetooth` | 0 | **993 通过 + 1 ignored**（B15 两条新判据；`check-test-manifest --only rust` 基线 994 全部在跑） |
 | `cargo clippy --features bluetooth -- -D warnings` | 0 | B15 之后复跑，**0 warning** |
 | B15 接线的单点变异自证 | 101 → 0 | 把 `receive.rs` 的 `crate::db_hold::note_tx(` 改成合法但不匹配的 `note_tx /*B15 变异*/ (` ⇒ 接线判据报"receive.rs 的收尾事务必须有且只有一条耗时观测"；还原后与备份逐字节相同，两条判据各自 exit 0 |
-| 全量护栏 CI job（`verify.yml` 的 `guards`） | **已配置，远端结果待读** | 命令是 `python3 scripts/verify-guards.py`（不带 `--only`，Ruby psych 解析确认 `has_only_flag=false`、无 `continue-on-error`）；push/PR/dispatch/schedule 四个触发器都在；定时那条约等于该定义进 main 才持续生效 |
+| 全量护栏 CI job（`verify.yml` 的 `guards`） | **已配置，两次远端全量跑都红（run 39215124440 / 39235279878，同样 3 条标记）** | 命令是 `python3 scripts/verify-guards.py`（不带 `--only`，Ruby psych 解析确认 `has_only_flag=false`、无 `continue-on-error`）；push/PR/dispatch/schedule 四个触发器都在；定时那条约等于该定义进 main 才持续生效 |
 | 护栏定点（文件气泡不整文件扫描 / outbox 终态门控 / transport 锁抗中毒） | 0 | **3/3 改坏即 FAIL、恢复即 PASS**（干净 worktree 5.0.32） |
 | 迁移测试 | 0 | **38 通过 + 1 ignored** |
 | `GOSSLAN_DRILL_DB=<4.44.4 真实库快照> cargo test --lib --features bluetooth real_data_copy_replays_migration -- --ignored --nocapture` | 0 | **1 通过**；`drill ok: tables=19 total_rows=340`（第一次未置 v10 时该测试按设计 **exit 101** 拒跑，前置门有效） |
 | E2E（32 轮，隔离 HOME） | 0 | **863/863 断言** |
 | B15 之后重跑的相关三轮（本机 release 二进制 + 隔离 HOME，5.0.35） | 0 | 默认轮 **18/18** + 群文件轮 **28/28** + 内容拉取轮 **36/36** = **82 条断言全绿**；群文件轮首跑红的 1 条是驱动缺 `RUSTUP_TOOLCHAIN` 的环境噪声（详见 §6.5） |
 | `cargo audit --file src-tauri/Cargo.lock` | 0 | **0 漏洞，10 allowed warnings** |
-| GitHub Actions run **39215124440** @ `d42003f`（push `feat/5.0`，本轮） | 4/5 job **success**，**`guards` job 退码 1** | `前端测试 / 清单 / 构建` **success**（07:18:27→07:38:24）⇒ 上一轮那条「操作面板」护栏红在本次不再出现，由并行前端会话的 `3de6dd9` 带过来；`Rust 单测 / 清单（macos-latest）` **success**（→07:22:44）；`Rust 单测 / 清单（windows-latest）` **success**（→07:23:19）⇒ **B15 两条无平台门控的判据在真 Windows runner 上跑过**；`Android 编译门禁` **success**（→07:20:01，ubuntu runner 真跑 cargo）；**`护栏非空转（全量，不带 --only）` 退码 1**（job 117937069342，07:18 起，约 85 分钟）⇒ 这是这 233 条扫描**历史上第一次被自动执行**。匿名可读的 check 注解逐字给出 `❌ 3 条不符合预期`：①「改坏之后测试**仍然通过** ⇒ 这条护栏是空转的（没在守东西）」②「验证过程出错：注入锚点在 friends.rs 里出现 2 次（要求恰好 1 次）」③「恢复源码之后测试**仍然失败** ⇒ 源码或环境已被破坏：`signal: null`」；且它跑到 `[231/233]` 才收 ⇒ 覆盖面是真的、`continue-on-error` 确实没设、红也确实报出来了。**哪三条定不了名**：job 日志页与 `/logs` 匿名 403（要登录/管理员），注解只留关键行 ⇒ 靠下一次跑或本地复现定位 |
+| GitHub Actions run **39215124440** @ `d42003f`（push `feat/5.0`，本轮） | 4/5 job **success**，**`guards` job 退码 1** | `前端测试 / 清单 / 构建` **success**（07:18:27→07:38:24）⇒ 上一轮那条「操作面板」护栏红在本次不再出现，由并行前端会话的 `3de6dd9` 带过来；`Rust 单测 / 清单（macos-latest）` **success**（→07:22:44）；`Rust 单测 / 清单（windows-latest）` **success**（→07:23:19）⇒ **B15 两条无平台门控的判据在真 Windows runner 上跑过**；`Android 编译门禁` **success**（→07:20:01，ubuntu runner 真跑 cargo）；**`护栏非空转（全量，不带 --only）` 退码 1**（job 117937069342，07:18 起约 85 分钟；**第二次 run 39235279878 同样退码 1、同样 3 条标记**）⇒ 这是这 233 条扫描**历史上第一次被自动执行**。匿名可读的 check 注解逐字给出 `❌ 3 条不符合预期`：①「改坏之后测试**仍然通过** ⇒ 这条护栏是空转的（没在守东西）」②「验证过程出错：注入锚点在 friends.rs 里出现 2 次（要求恰好 1 次）」③「恢复源码之后测试**仍然失败** ⇒ 源码或环境已被破坏：`signal: null`」；且它跑到 `[231/233]` 才收 ⇒ 覆盖面是真的、`continue-on-error` 确实没设、红也确实报出来了。**哪三条定不了名**：job 日志页与 `/logs` 匿名 403（要登录/管理员），注解只留关键行 ⇒ 靠下一次跑或本地复现定位 |
 | 本地全量护栏**整跑**（独占 target，2026-10-19 10:03Z 收） | 退码 1，**233/233 全部执行** | 同一份码在 `/tmp/gosslan-b15-verify`（HEAD `4a722b7`）以独占 `CARGO_TARGET_DIR` 从第 1 条跑到第 233 条：**232 条判过「改坏即 FAIL、恢复即 PASS」，恰好 1 条异常** —— `[114/233] 解除好友关系必须同时解除内存身份绑定（否则重装后只能重启）`，报「注入锚点在 friends.rs 里出现 2 次（要求恰好 1 次）」。**根因两条都在量具侧，不在产品侧**：① 这条 Case 声明的 `file=src/commands.rs` 是 `include!` 壳（壳里 0 次命中），解析后进 `commands/friends.rs` 分册，而那行 `forget_peer_identity(s, &peer_id)` 在分册里有两处（`remove_friend` 那一处正是用例要钉的；另一处是换钥同步路径，已被 `[63/233]` 用带注释的唯一锚点钉住）⇒ commands 拆册之后锚点失去唯一性；② **起跑前核对只查存在性**（`_resolve_anchor_file` 不做唯一化断言），唯一性只在真注入那一步才 assert ⇒ 起跑打印那句「233 条锚点都恰好命中一次」是**过度声明**，于是这条要白等约 75 分钟才暴露。修法（交护栏负责人，本轮不动它的语义）：把锚点扩成 118-121 行那段带「// ⚠️ 同时解除内存里的身份绑定」注释的整块，或给两条解除路径各起一条用例；并把起跑核对改成与注入同一个唯一性口径。 |
 | `version:check` / Change Budget / CHANGELOG / 文档硬数字 | 0 | 全部通过 |
 
@@ -573,7 +573,7 @@
 - **中**：B15 已落地（3 处收尾事务都有耗时出口，两条判据 + 一次单点变异自证）。仍欠两格：
   `busy_timeout` 触发没有专门一行（只能从等待时长与失败串间接看）；快且成功的事务不产行
   （设计取舍，理由见 §6.10：正常路径"不留痕"那条不变量在测试里钉着，摘要侧已有最长持有/累计）。
-  **全量护栏已接进 CI 且两端都跑完**：远端 `guards` job（run 39215124440）退码 1、覆盖到 `[231/233]`，注解报 3 条标记；本地独占 target 整跑 233/233 只有 **1 条**异常且已点名牌名（`解除好友关系必须同时解除内存身份绑定`，锚点在 `commands/friends.rs` 里出现 2 次，根因与修法见 §6.7 末）。**CI 另外两条（一条判「空转」、一条判「恢复后仍失败 `signal: null`」）在本地不复现** ⇒ 标 **待复现**：下一次 push 让 CI 再跑一遍，用来判它是稳定缺陷还是 runner 抖动（那次跑带着 macOS runner 容量告警注解）。本轮不改护栏本身：不放宽判据、不动阈值、不给 job 加 `continue-on-error`。定时那一条要等这份定义进默认分支（main）才会按夜持续跑。
+  **全量护栏已接进 CI 且两端都跑完**：远端 `guards` job（run 39215124440）退码 1、覆盖到 `[231/233]`，注解报 3 条标记；本地独占 target 整跑 233/233 只有 **1 条**异常且已点名牌名（`解除好友关系必须同时解除内存身份绑定`，锚点在 `commands/friends.rs` 里出现 2 次，根因与修法见 §6.7 末）。**CI 另外两条（一条判「空转」、一条判「恢复后仍失败 `signal: null`」）本地不复现、远端却稳定复现**：第二次全量跑（run **39235279878**，job 118002738402，10:08Z 起跑）报的是**同样那 3 条标记** ⇒ 不是 runner 抖动，三条都要人处理。剩下 2 条只能在 runner 环境下定位（本地与 CI 的已知差别：用例命令带 `cargo test --offline`、target 由 rust-cache 预热、`npm test` 清单随树不同），而 job 日志匿名读不到（`/logs` 与网页都要登录）⇒ 交护栏负责人本地整跑或登录后读日志。本轮不改护栏本身：不放宽判据、不动阈值、不给 job 加 `continue-on-error`。定时那一条要等这份定义进默认分支（main）才会按夜持续跑。
 - **中**：远端 CI @`519d473` 的 Verify 因**前端**“操作面板”护栏空转红（1 条，非后端腿；本地复现，手工注入能让 `npm test` 红，判定仍在 runner/CI 路径）；
   单一 SQLite 连接串行化读写；入站 handler 单链路串行；
   **A-17（已修，观察项）：多链路文本 Ack 1/4 抖动；5.0.33 每 5s 重放后 contentpull ×3 绿**；
@@ -615,7 +615,7 @@
   跨进程统一 trace 仍靠 id 人工串；**A-17 已修（观察项）**；另有 A-9/A-10/A-13 等已登记未修项
   （见 `docs/stability-roadmap.md`）。
 - 本轮**已按授权把 `feat/5.0` 推到远端**（`3de6dd9` 及以下未动）；**未推 main、未 merge、未 tag、
-  未发 release**。全量护栏 CI job 的首跑结果在读到之前一律标 in_progress，不写成通过；
+  未发 release**。全量护栏 job 已跑两次、两次都红（同样 3 条标记，其中 1 条本地点名并 RCA）——红是结论，不是我没读；
   目标不标记完成。
 
 ### 6.10 可观测性覆盖（第九阶段）
