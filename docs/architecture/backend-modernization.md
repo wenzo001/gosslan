@@ -468,6 +468,7 @@
 | `npm run verify:local`（干净 worktree，5.0.32） | **0** | **22/22，165.0s** |
 | `cargo xwin build --release --target x86_64-pc-windows-msvc --features bluetooth` | 0 | **5.0.32 冷 target 8m38s**；`gosslan.exe` 9.6MB（PE32+ GUI x86-64） |
 | `cargo test --lib --features bluetooth` | 0 | **990 通过 + 1 ignored** |
+| 护栏定点（文件气泡不整文件扫描 / outbox 终态门控 / transport 锁抗中毒） | 0 | **3/3 改坏即 FAIL、恢复即 PASS**（干净 worktree 5.0.32） |
 | 迁移测试 | 0 | **38 通过 + 1 ignored** |
 | E2E（32 轮，隔离 HOME） | 0 | **863/863 断言** |
 | `cargo audit --file src-tauri/Cargo.lock` | 0 | **0 漏洞，10 allowed warnings** |
@@ -544,7 +545,7 @@
 | §9 可观测性 | **PARTIAL** | B13 锁观测 + §6.10 覆盖表；事务级耗时/统一 trace 仍未做 |
 | §10 IPC/事件/调用链 | **PASS** | 边界与事件判据；未改前端契约 |
 | §11 架构重组 | **PASS** | 模块职责/依赖方向；未为行数继续切分 |
-| §12.1 代码质量 | **PASS**（完整护栏步除外） | fmt/clippy/Rust 990+1/audit/Android/Windows 交叉编译；`verify:full` 的最长护栏步按本地策略未跑 |
+| §12.1 代码质量 | **PASS**（完整护栏步除外） | fmt/clippy/Rust 990+1/audit/Android/Windows 交叉编译；定点护栏 3/3 改坏即 FAIL；`verify:full` 的完整护栏族按本地策略未跑完 |
 | §12.2 数据完整性 | **PASS** | 迁移 38+1、实体逐字段、备份恢复、v10 真实数据 |
 | §12.3 网络与可靠性 | **PASS** | 24 轮 E2E（含 kill/freeze/readonly/rotted/shrink/断链补拉） |
 | §12.4 大文件/UI 响应 | **PASS** | 600MB 传输中设置窗 397ms（5.0.32）；RSS 126.1 MiB；队列 8 MiB/链路 |
