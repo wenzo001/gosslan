@@ -32,6 +32,8 @@
   其余 E2E/真机 **NOT RUN**；干净 worktree `verify:local` **22/22**（1089.0s，冷 target）；
 - 远端 CI @`519d473`：macOS 构建、Windows x64+ARM64 构建、Android APK、Rust 双平台单测
   全 success；Verify 唯一红是**前端**“操作面板”护栏空转（1 条，前端范围，非后端腿）。
+  本地复现同一 Case：手工摘 `@click` 后 `npm test` 确实失败 ⇒ 测试非空转，问题在 guard
+  runner/CI 对该用例的注入/判定路径，待前端负责人查。
   Windows 5.0.33 交叉编译 exit 0（**14m27s**，冷 target，PE32+ GUI x86-64 9.6MB）。
 
 ## [5.0.32] - 2026-10-19
