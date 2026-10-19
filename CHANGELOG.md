@@ -27,6 +27,9 @@
 - 不改锁语义、DB、协议；干净 worktree `verify:local` **22/22**（165.0s）；E2E/真机 **NOT RUN**。
 - 定点护栏 3/3：文件气泡不整文件扫描 / outbox 终态写库门控 / transport 锁抗中毒，
   均改坏即 FAIL、恢复即 PASS（干净 worktree 5.0.32）。
+- E2E 全套在 5.0.32 上复跑发现 **A-17（OPEN）**：contentpull 首跑步骤 5 文本 Ack
+  **30.1s 超时（1/4）**，同二进制连续 3 次复跑 36/36 绿；失败轮 A 侧有
+  LAN×2 + Routed 三条链路；未根因、未改产品码。
 - 旧/新互操作在 5.0.32 上重跑（4.44.4 从 tag 本地构建，冷 target 7m57s）：
   default 18/18×2、group 37/37×2、gfile 28/28×2、gossip3 25/25×2，
   合计 **8 轮 / 216 断言全绿**；两侧 DB_VERSION=11。

@@ -168,6 +168,10 @@
   `gossip-late` **23/23**（晚加入群的 gossip 收敛）、`stall-mid` **25/25**（中途停滞）、
   `disk` **18/18**（磁盘/队列）。
   标准轮合计 **24 轮 / 647 断言**；加互操作 **8 轮/216**，共 **32 轮 / 863 断言全绿**。
+  2026-10-19 在 5.0.32 上整套重跑：23 步首跑绿；contentpull 首跑在步骤 5
+  「A 侧 outbox 被 Ack 删除」**30.1s 超时红（1/4）**，同二进制连续 3 次复跑
+  **36/36 绿**。失败轮 A 侧同时有 **LAN×2 + Routed 三条到 B 的链路** ⇒ 登记
+  **A-17（OPEN，未根因）**；不把 863 读成无条件稳定。
   （647 = 24 个门禁 E2E 步骤逐轮打印之和，2026-10-19 终态 release 全部重跑；含默认轮
   在 1 KB / 10 MB 两档各一次。此前后缀曾写 661/877，逐轮现算多计 14，已按现算值更正。
   互操作 216 为 5.0.32 ↔ 4.44.4 双向 8 轮读数。）
@@ -480,6 +484,7 @@
   Windows/iOS/Linux 运行时与真机未验证
   （Windows 已过交叉编译，仍无 Windows 主机/Wine 跑行为）。
 - **中**：单一 SQLite 连接串行化读写；入站 handler 单链路串行；
+  **A-17：多链路下文本 Ack 偶发 30s 超时（1/4，3 次复跑绿；失败轮 LAN×2+Routed，未根因）**；
   Windows ACL 未处理；audit 的 glib/zbus 警告仅 Linux 路径。
 - **低**：迁移备份只按数量清扫、无时间保留策略；`gfile` 首跑曾遇 toolchain 环境噪声（复跑绿）；目录权限仅在
   Unix 生效。
@@ -505,9 +510,9 @@
   E2E）；Android aarch64 **PASS（仅编译）**；Windows x86_64 **PASS（仅交叉编译）**：
   `cargo xwin build --release` exit 0、产物为 PE32+ GUI x86-64；Windows 运行时
   **NOT RUN**；Linux/iOS 运行时 **NOT RUN**（iOS 无 SDK）。
-- **哪些问题仍然存在？** 真实 4.x 用户库 schema 迁移、真机/跨平台运行时、单一 SQLite
-  连接串行化、Windows ACL、Linux GTK/D-Bus 传递依赖告警；另有 A-9/A-10/A-13 等
-  已登记未修项（见 `docs/stability-roadmap.md`）。
+- **哪些问题仍然存在？** 用户直接提供的 v10 现场、真机/跨平台运行时、单一 SQLite
+  连接串行化、Windows ACL、Linux GTK/D-Bus 传递依赖告警；**A-17 多链路文本 Ack
+  偶发超时（OPEN）**；另有 A-9/A-10/A-13 等已登记未修项（见 `docs/stability-roadmap.md`）。
 - 未 push、未 tag、未 release、未 merge main；目标不标记完成。
 
 ### 6.10 可观测性覆盖（第九阶段）
