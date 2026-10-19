@@ -49,7 +49,7 @@
 - E2E 全套在 5.0.32 上复跑发现 **A-17（OPEN）**：contentpull 首跑步骤 5 文本 Ack
   **30.1s 超时（1/4）**，同二进制连续 3 次复跑 36/36 绿；失败轮 A 侧有
   LAN×2 + Routed 三条链路；未根因、未改产品码。
-- 旧/新互操作在 5.0.32 上重跑（4.44.4 从 tag 本地构建，冷 target 7m57s）：
+- 旧/新互操作在 5.0.33 上重跑（4.44.4 从 tag 本地构建，暖 target 3m47s；冷 7m57s）：
   default 18/18×2、group 37/37×2、gfile 28/28×2、gossip3 25/25×2，
   合计 **8 轮 / 216 断言全绿**；两侧 DB_VERSION=11。
 - Windows 交叉编译在 5.0.32 代码上复跑：`cargo xwin build --release` exit 0 / **8m38s（冷 target）**，产物仍为 PE32+ GUI x86-64 9.6MB；运行时 **NOT RUN**。
