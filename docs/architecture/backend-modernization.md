@@ -493,7 +493,7 @@
 | 迁移测试 | 0 | **38 通过 + 1 ignored** |
 | E2E（32 轮，隔离 HOME） | 0 | **863/863 断言** |
 | `cargo audit --file src-tauri/Cargo.lock` | 0 | **0 漏洞，10 allowed warnings** |
-| GitHub Actions @ `519d473`（main） | 4/5 job success | macOS 构建、Windows x64+ARM64 构建、Android APK、Rust 单测（macOS/Windows）全 **success**；Verify 的**前端护栏子集 FAIL**：1 条「操作面板」注入后仍通过（前端范围，并行会话负责；后端各腿均绿） |
+| GitHub Actions @ `519d473`（main） | 4/5 job success | macOS 构建、Windows x64+ARM64 构建、Android APK、Rust 单测（macOS/Windows）全 **success**；Verify 的**前端护栏子集 FAIL**：1 条「操作面板」注入后仍通过（前端范围；本地复现同一 Case，手工摘 `@click` 后 `npm test` 确实失败 ⇒ 测试本身非空转，问题在 guard runner/CI 对该用例的注入/判定路径，待前端负责人查；后端各腿均绿） |
 | `version:check` / Change Budget / CHANGELOG / 文档硬数字 | 0 | 全部通过 |
 
 ### 6.8 剩余风险
@@ -501,7 +501,7 @@
 - **高**：用户直接提供的真实 v10 现场未执行（真实数据 + 逐字 v10 schema 演练已过）；
   Windows/iOS/Linux 运行时与真机未验证
   （Windows 已过交叉编译，仍无 Windows 主机/Wine 跑行为）。
-- **中**：远端 CI @`519d473` 的 Verify 因**前端**“操作面板”护栏空转红（1 条，非后端腿）；
+- **中**：远端 CI @`519d473` 的 Verify 因**前端**“操作面板”护栏空转红（1 条，非后端腿；本地复现，手工注入能让 `npm test` 红，判定仍在 runner/CI 路径）；
   单一 SQLite 连接串行化读写；入站 handler 单链路串行；
   **A-17（已修，观察项）：多链路文本 Ack 1/4 抖动；5.0.33 每 5s 重放后 contentpull ×3 绿**；
   Windows ACL 未处理；audit 的 glib/zbus 警告仅 Linux 路径。
