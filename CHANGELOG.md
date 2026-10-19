@@ -26,7 +26,8 @@
   文件队列不在此重放（自有 attempts/退避/5 次上限）。
 - 判据 `outbox_retrier_is_wired_and_covers_both_queues` 钉唯一接线、周期、按链路筛选、
   两个队列都覆盖；Rust **991 通过 + 1 ignored**，基线 992（Windows 975）。
-- 5.0.33 release 上 contentpull **×3** 复跑见报告 §3；其余 E2E/真机 **NOT RUN**。
+- 5.0.33 release 上 contentpull **×3 全部 36/36 绿**，未再出现文本 Ack 超时、未出现重复消息；
+  其余 E2E/真机 **NOT RUN**。
 
 ## [5.0.32] - 2026-10-19
 
