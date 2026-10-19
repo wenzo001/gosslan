@@ -354,6 +354,33 @@
 | `content/store` | 内容寻址、拉取台账 | SQLite + 事务 | 丢片、假 complete、残留 | contentpull/ghsync E2E | 保留 |
 | 系统插件 | 通知/对话框/fs/opener/window-state/single-instance | Tauri 官方插件 | 平台差异 | 编译/代码审计 | 官方优先 |
 
+#### 6.1.1 调用链 / 数据 / 迁移风险补充
+
+| 模块 | 调用链 | 读写的数据 | 迁移风险 |
+|---|---|---|---|
+| `db.rs` + `db/*` | `state`/`commands`/`network`/`transport` → `db::*`；启动 `init` → 备份 → SCHEMA → MIGRATIONS | 19 张业务表；`settings` 里的身份/偏好；WAL/侧车/迁移备份文件 | schema 版本、备份可用性、未知版本拒绝；改动必须带迁移与实体保留判据 |
+| `network/transport` | `lib.rs`/`state` → dial/listen → handlers；出站队列 → 写循环 | 线帧、有界队列（low 8 MiB/链路）、peers/links 内存表 | 帧格式与队列语义不能变；改协议先做新旧互操作 |
+| `network/file` | `commands/files` / `flush_*` → `send`/`receive`/`relay`；收尾写台账 | `file_outbox`、`file_transfers`、`content_transfers`、盘上 `.part`/终名 | transfer_id/cid/路径语义；断点续传与 rename 契约 |
+| discovery/mesh/gossip/relay | `state` → discovery/mesh → transport；中继策略来自 settings | peers/links/路由与 gossip 去重表（内存）；`routed_endpoints` 等 settings | TTL/去重/中继权限；新旧端的广播与转发兼容 |
+| `crypto`/`device` | 发送/接收/群密钥分发 → `crypto`；`device` 提供本机身份 | `settings` 内的私钥、好友公钥、群密钥 | 算法/密钥格式/签名输入不可静默更换；丢失密钥=历史密封内容不可恢复 |
+| `commands`/`state` | Tauri IPC → `commands` → 业务/基础设施；事件 emit | 通过服务层间接读写所有实体；窗口/任务内存态 | IPC 契约变化要先列影响面并提供兼容层；前端不得绕过业务层 |
+| `logging`/`private_fs` | 所有模块 → `Logger`；启动/落盘 → `private_fs` | 运行日志、崩溃现场、启动路标、DB/备份/目录权限 | 日志格式与权限口径；不得写密钥/正文；权限失败不阻断启动 |
+| `content/store` | `commands`/`network` → content store；按 cid 查找/登记/补账 | `content_transfers`、磁盘内容、cid↔path 关系 | cid 即内容地址；complete 必须与真实文件/哈希一致 |
+| 系统插件 | `lib.rs`/`state` → Tauri 插件与平台分支 | `.window-state.json`、通知、对话框/文件选择、单实例锁 | 平台差异与 capability 最小权限；移动端不得套桌面 API |
+
+#### 6.1.2 业务功能清单（不可破坏行为）
+
+- **身份/好友**：设备 id、x25519/ed25519 密钥、好友关系与公钥解析；密钥格式与安全码口径不变。
+- **单聊/群聊**：消息落库、会话未读/摘要、撤回物化、@ 名单三态（`mentions`/`mention_targets`）。
+- **可靠投递**：先落库再发送、Ack 回收、重试/退避、断连恢复、重复帧去重、`done` 不可降级。
+- **群组同步**：建群、成员关系、GroupKey 分发、群历史/群任务同步、晚加入成员的补递。
+- **发现/路由/传播**：LAN/Routed/BLE 选路、Gossip TTL/去重、中继权限与降级。
+- **文件**：流式分块、断点续传、SHA/大小校验、rename 后完成、取消/失败/残留清理。
+- **加密**：AEAD 密封、身份签名、群密钥封装；不改算法/封装/签名输入。
+- **持久化/恢复**：迁移备份、降级拒绝、崩溃恢复（outbox `sending`→`pending`）、重启续传。
+- **系统集成**：托盘/窗口状态/通知/单实例/文件选择/打开路径；平台能力不足时不伪装成功。
+- **多端兼容**：4.44.4 ↔ 5.0 的默认/群/群文件/gossip 双向互操作；DB/协议版本兼容路径。
+
 ### 6.2 依赖选型
 
 | 依赖 | 结论 | 理由 |
