@@ -318,6 +318,14 @@ jobs:
     timeout-minutes: 240
     steps:
       - uses: actions/checkout@v4
+        with:
+          # ★ 必须全量历史 —— `actions/checkout` 默认 `fetch-depth: 1` 是浅克隆。
+          #   有一条用例的跑法是 `node scripts/check-change-budget.mjs --range 73d9e20~1..73d9e20`
+          #   （`scripts/guard_cases/toolchain.py:435`，它特意不用 `--from-json`，因为要守的那段带
+          #   `!fromJson` 条件）。浅克隆里 `73d9e20~1` 这个对象根本不存在 ⇒ git 当场报错
+          #   ⇒ 注入态与还原态**都**红，报出来的形状是「恢复源码之后测试仍然失败」，
+          #   看着像护栏坏，其实是这条 CI 腿少给历史。pack 现读 21 MiB ⇒ 全量克隆代价可接受。
+          fetch-depth: 0
 
       # 护栏里既有前端用例（跑 `npm test`）也有 Rust 用例（跑 `cargo test`），
       # 而 Tauri 的 build.rs 需要 dist/ ⇒ 两样都得先备好，否则整批用例会以"编译不过"的形状红掉。
