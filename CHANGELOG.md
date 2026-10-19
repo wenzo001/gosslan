@@ -24,6 +24,10 @@
 - 判据 `db_hold_summary_has_exactly_one_production_reader` 钉住唯一读者、唯一启动点、
   阈值来源与日志出口；Rust **990 通过 + 1 ignored**，基线 990→991（Windows 973→974）。
 - 不改锁语义、DB、协议；干净 worktree `verify:local` **22/22**（165.0s）；E2E/真机 **NOT RUN**。
+- 真实数据 + 真 v10 schema 迁移演练：把真实库副本的 `messages` 按逐字 v10 DDL 重建
+  （无 `mention_targets`）后跑生产 `init`：迁移前备份 tables=19/integrity=ok，
+  迁移后 v11、列新增、56/56 行为 NULL（不回填）、19 表/208 行保留、integrity=ok。
+  边界：数据来自真实库、schema 是逐字 v10 DDL，但**不是用户直接提供的 v10 现场**。
 
 ## [5.0.31] - 2026-10-19
 
