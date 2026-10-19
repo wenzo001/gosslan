@@ -25,6 +25,7 @@
   阈值来源与日志出口；两次单点变异（摘启动调用 / 摘唯一读取点）均报红、还原后绿；
   Rust **990 通过 + 1 ignored**，基线 990→991（Windows 973→974）。
 - 不改锁语义、DB、协议；干净 worktree `verify:local` **22/22**（165.0s）；E2E/真机 **NOT RUN**。
+- Windows 交叉编译在 5.0.32 代码上复跑：`cargo xwin build --release` exit 0 / **8m38s（冷 target）**，产物仍为 PE32+ GUI x86-64 9.6MB；运行时 **NOT RUN**。
 - UI 响应性复测（5.0.32 release）：600MB contentpull 传输中，接收端设置窗口 **397ms**
   可开（System Events 激活 + Cmd+,，窗口名 `设置`/`Gosslan`；探测后立即停轮，
   只证响应性）。历史 300MB 读数为 734ms（5.0.29）。
