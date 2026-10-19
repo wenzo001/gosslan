@@ -52,6 +52,10 @@
 - 实测（release 二进制 + 隔离 HOME）：`kill -9` 后下一轮日志文件里出现
   `warn [boot] 上次收尾判定：异常终止 —— 只有启动路标…`；把在用库截断后同一文件里出现
   `error [file] … database disk image is malformed`（生产构建的 Rust 失败确实落盘）；
+  同一份 release 二进制里**前端那一跳也实测到了**：主窗口入口用一次性探针抛一条未捕获异常 + 一条未处理
+  rejection，日志文件里出现 `warn [ui] [前端 error] Error: DIAG-PROBE-5036 未捕获异常`（行尾带 `@ tauri://localhost/assets/main-*.js:26:33282`） 与 `warn [ui] [前端 rejection] …` ⇒ §3 那条验收底线两端都闭合（只注册 hook 不算，
+  这次是文件里有行）。**探针没有入库**：跑完按字节还原（`cmp` + `git diff --quiet` 各证一次）⇒ 这一格的形状是
+  "实测过的链路"，还不是"界面上可复现的按钮"，后者仍是 §6.11.1 那 5 件收尾。
   启动路标实测带 `版本 5.0.36 · macos-aarch64 · release · … · 运行 dc7085`（三条 run 各自不同 id）。
   **SIGTERM 也接不住**：`kill -TERM` 之后下一轮同样读成「异常终止」⇒ 退出路标只由应用内收尾
   （托盘「退出」/ `RunEvent::Exit`）写，凡外部信号杀进程都归到缺席那一类 —— 这条边界是实测出来的，

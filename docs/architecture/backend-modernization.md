@@ -726,10 +726,18 @@
   `com.gosslan.app/logs` **`drwxr-xr-x`** —— 日志层只给文件设 0600，`logs` 目录没设过。
   别人读不到内容靠的是父目录那一层。修法是一行 `restrict_to_owner(&self.dir)`；本轮**不动行为**，
   把实测与欠账一起写清楚（既有判据 `log_and_crash_files_are_owner_only` 钉的是文件那两把）。
-- **前端那一半本轮没在 release 里跑通**：`SIGTERM`/外部 kill 不经过收尾（这正是"异常终止"判定的依据，实测计数为 0 条退出路标），
-  而 WKWebView 在 release 下没有可注入通道，界面按钮又因文件被并行会话占用没接 ⇒ 该半边的状态是
-  **PARTIAL**：链路两端各自有证（Rust 端命令与落盘已实测；JS 端 hook 与 `log_frontend_error` 是既有实现且被既有判据钉着），
-  **中间那一跳（真机 WKWebView 里抛异常 ⇒ 落盘）未实测**。要在真机上按一次"必抛"按钮才算闭合。
+- **前端那一跳也实测到了（18:55，release 二进制 + 隔离 HOME）**：用一个**一次性探针**在主窗口入口
+  （`src/entries/main.ts`，本轮唯一临时动过的前端文件）在 8s/9s 各抛一条未捕获异常与一条未处理 rejection，
+  重新 `npm run build && cargo build --release` 后跑真二进制，`gosslan.log` 第 18/21 行逐字是：
+  `warn [ui] [前端 error] Error: DIAG-PROBE-5036 未捕获异常 @ tauri://localhost/assets/main-C03aaf90.js:26:33282` 与
+  `warn [ui] [前端 rejection] DIAG-PROBE-5036 未处理 rejection` ⇒ **走的就是 shipped 那条链**
+  （`window error`/`unhandledrejection` → `reportFrontendError` → `logFrontendError` → `commands::log_frontend_error`
+  → `logger.warn("ui")` → 落盘），文件与行号都带出来了。
+  ⚠️ 边界要说清：**探针没有入库** —— 跑完立刻按字节还原（`git diff --quiet src/entries/main.ts` 与 `cmp` 各证一次），
+  所以这条读数的形状是"临时插桩的一次真实性能跑"，不是"界面上有一个能复现它的按钮"。
+  要把这一格变成可复用的能力，仍然需要 §6.11.1 说的那 5 件收尾（命令面 + 按钮 + 语言包）。
+  另外这条也顺带证明了**栈/位置在 WebKit 里同样能拿到**（`main-C03aaf90.js:26:33282`），
+  与旧那条"WKWebView 的 `error.stack` 不含消息行"的教训不冲突 —— 消息与位置来自 `e.message`/`e.filename`，不是 stack。
 
 **内存（§4）先测不猜**：新增 `scripts/mem-sample.mjs`——分别采主进程与 `com.apple.WebKit.WebContent` 的内容进程
 （`ps` 的 RSS，能取到 `footprint` 就用 physical footprint；`usedFootprint` 如实记），每点带 pid 序列以便区分
