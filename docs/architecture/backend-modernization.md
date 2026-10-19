@@ -304,6 +304,35 @@
      `integrity_check=ok`。
   **边界**：② 的数据来自真实安装库、schema 是逐字 v10 DDL，但**不是用户直接提供的
   v10 现场**；真实 4.x v10 用户库仍 **NOT RUN**（本机没有这样的库）。
+- **第二次真实副本演练（2026-10-19 14:29，5.0.33，数据已增长）**：用户指定安装目录
+  `~/Library/Application Support/com.gosslan.app` 就是本机全部 4.x 资料——里面是
+  `gosslan.db`（正被**已安装的 4.44.4**、PID 56481 读写）+ 三个开发多开实例
+  `gosslan-1/-2/-3.db`，**四份的 `user_version` 全是 11**，没有任何一份是未迁移的 v10 现场。
+  取证方式：对运行中的源库 `VACUUM INTO` 一份只读一致性快照（源库 mtime 前后不变，
+  仍 `Oct 19 09:24`），快照置 `user_version=10` 后跑
+  `real_data_copy_replays_migration_without_losing_rows`（见
+  `src/db/migration_tests.rs:2019`）：
+  退出 0，`drill ok: tables=19 total_rows=340`，迁移前自动落备份
+  `gosslan-copy.pre-v10-to-v11-<pid>-<ts>.db`（**v10/19 表/integrity=ok**）。
+  **迁移前后逐表独立复算完全一致**：messages 93、friends 3、groups 1、group_members 4、
+  conversations 3、group_reads 1、pending_reads 1、conversation_clocks 75、
+  group_outbox 70、content_transfers 35、file_transfers 12、group_files 2、
+  group_file_recipients 6、favorites 0、outbox 0、file_outbox 0、pending_group_reads 0、
+  group_recalled_messages 0、settings 34（合计 340 行）。语义聚合逐项相等，格式
+  `行数:长度和:时间和`：messages `93:48209:166687383475780`、friends `3:63:5376106593919`、
+  groups `1:4:1792329496228`、settings `34:834:1140`、file_transfers
+  `12:88273400:21507826111856`；`mention_targets` 非空 17 行迁移后仍 17 行；
+  迁移后 `user_version=11`、`integrity_check=ok`、`pragma_foreign_key_check` **0 行**。
+  消息 9 种 kind 分布迁移前后逐项一致（text 43 / todo_update 18 / remind_ack 9 / image 7 /
+  remind 6 / reaction 3 / code 4 / file 2 / todo 1，合计 93）。
+  **关联关系另用独立查询复算**（不靠测试自证）：迁移后指向不存在会话的消息 **0** 行、
+  指向不存在群组的成员行 **0** 行。
+  **备份可独立读取**（`mode=ro`）：`user_version=10`、19 表、`integrity_check=ok`、messages
+  仍 93 行 ⇒ 回滚素材是真的，不是"文件存在"而已。
+  **快照与备份用完已删除**；源库 `gosslan.db` mtime 前后均为 `Oct 19 09:24`、权限未变。
+  **仍然不能声称的**：这台机器上不存在未迁移的 4.x v10 现场库（4.44.4 自身已带 v11），
+  所以"用户手上那份真在 v10 的库"这一条只能靠**逐字 v10 DDL 夹具**证明，实用户库
+  **BLOCKED**——需要用户提供一份 v10 时期的库文件，不是路径猜错。
 - 迁移步骤登记口径：`MIGRATIONS` 数组的每个 `Migration { from, to, description, run }`
   就是一个独立、有名字、有起止版本的步骤（当前 11 步，每步一个事务），迁移测试按
   `from` 逐个重放。**没有拆成 `vN.sql` 文件**：多数步骤含列/索引条件判断与数据回填
@@ -314,10 +343,14 @@
 - 位置（macOS）：`~/Library/Application Support/com.gosslan.app/gosslan.db`；多开实例为
   `gosslan-<N>.db`；Windows/Linux 走 Tauri `app_data_dir()`。应用启用单实例插件，正常运行
   只有一份库；`--instance N` 只用于开发/E2E（独立库 + 端口）。
-- 真实库读数：`user_version=11`、`integrity_check=ok`、**19 表 / 20 个显式索引**、
-  **0 触发器 / 0 视图 / 0 外键**（一致性由业务写入次序 + 迁移/级联测试守，不靠 SQLite FK）。
-  行数（只读）：messages 56、friends 3、groups 1、settings 34、file_transfers 12、
-  content_transfers 35、file_outbox/outbox 0。
+- 真实库读数（2026-10-19 14:29 只读现读，源库未写）：`user_version=11`、`integrity_check=ok`、
+  **19 表 / 20 个显式索引**、**0 触发器 / 0 视图**；一致性由业务写入次序 + 迁移/级联测试守
+  （本机这份库无外键声明，`pragma_foreign_key_check` 无对象可查 ⇒ 关联完整性用
+  "指向不存在会话/群组的行数"两条独立查询量，实测均为 **0**）。
+  行数（只读）：messages 93、friends 3、groups 1、group_members 4、conversations 3、
+  conversation_clocks 75、group_outbox 70、content_transfers 35、file_transfers 12、
+  group_file_recipients 6、group_files 2、group_reads 1、pending_reads 1、settings 34、
+  favorites/outbox/file_outbox/pending_group_reads/group_recalled_messages 0（合计 340）。
 - 表：`content_transfers`、`conversation_clocks`、`conversations`、`favorites`、`file_outbox`、
   `file_transfers`、`friends`、`group_file_recipients`、`group_files`、`group_members`、
   `group_outbox`、`group_reads`、`group_recalled_messages`、`groups`、`messages`、`outbox`、
@@ -342,9 +375,14 @@
     与仅存于本机的文件无法恢复；对端未保留源文件时亦不可恢复。
 - 非 DB 资产：`logs/` 与 `*-crash.log`（诊断，含 peer id/IP/文件名，需 0600）、`cache/`、
   `downloads/`、`favorites/media/`、迁移备份 `<db>.pre-vX-to-vY.<ts>.db`。
-- 当前真实安装仍是旧权限（库 **0644**、目录 **0755**）：5.0.x 尚未在这份真实库上启动过；
-  下次启动由 B6/B11 自动收紧到 `0600/0700`。**未手工改真实库或目录**。
-- 未覆盖：真实 4.x 库实迁移（本机真实库已是 v11；副本演练只把它置回 v10）。
+- 当前真实安装权限（2026-10-19 现读）：目录 **0700**（`drwx------`，B11 已在这份真实目录上生效过），
+  库文件仍是 **0644** —— 因为**装在 `/Applications` 的还是 4.44.4**（PID 56481 正在读写
+  `gosslan.db`），4.x 没有收紧代码。⇒ 库 `0600` 只能等 5.0.x 正式装机后由 B6 生效，
+  **本轮未手工改真实库或目录**。
+- 未覆盖：真实 **v10 现场**用户库实迁移。本机四份库（主库 + 3 个多开实例）全为 v11，
+  4.44.4 自身已带 v11 schema ⇒ **不存在**未迁移的 v10 文件可取；已由"真实数据 + 置回 v10"
+  与"真实数据 + 逐字 v10 DDL"两条副本演练覆盖（见上一节），
+  真正的 v10 现场库标 **BLOCKED**（需要用户提供一份 v10 时期的库文件）。
 
 ## 5. 边界
 
@@ -437,8 +475,16 @@
   逐表行数与关键聚合一致；源库未改。2026-10-19 5.0.32 复跑两遍：① 副本列已存在 ⇒
   `ALTER` 幂等跳过；② 按逐字 v10 DDL 重建 `messages`（无 `mention_targets`）⇒ 迁移
   真加列、56/56 行为 NULL、19 表/208 行保留、备份与 integrity 均 ok。
-- **未完成**：用户直接提供的真实 v10 现场 **NOT RUN**（本机没有）；真实数据 +
-  逐字 v10 schema 的 v10→v11 演练已通过（见 §4）。
+- **第三次（2026-10-19 14:29，5.0.33，取的是当天最新数据）**：`VACUUM INTO` 快照 → 置 v10 →
+  同一测试 **exit 0**，`tables=19 total_rows=340`；19 张表逐表行数与 5 组语义聚合迁移前后
+  **逐项相等**（messages `93:48209:166687383475780` 等，见 §4），9 种 kind 分布相等，
+  `mention_targets` 非空 17 行不变；另用独立查询复算"指向不存在会话/群组的行"均为 **0**；
+  备份单独以 `mode=ro` 读取：v10/19 表/integrity ok/93 条消息。快照与备份已删，源库 mtime 不变。
+- **未完成**：用户手上的**真 v10 现场库**标 **BLOCKED** —— 不是没找，是本机四份库
+  （主库 + 3 个多开实例）`user_version` 全为 11，且装在 `/Applications` 的 4.44.4 自身
+  就带 v11 schema（`git show v4.44.4:src-tauri/src/db.rs` 里 `DB_VERSION = 11`），
+  这台机器上不存在未迁移的 v10 文件；该条只能由用户另供一份 v10 时期库文件，
+  或以逐字 v10 DDL 夹具（已通过）为替代证据。
 
 ### 6.5 网络与文件传输
 
@@ -491,6 +537,7 @@
 | `cargo test --lib --features bluetooth` | 0 | **990 通过 + 1 ignored** |
 | 护栏定点（文件气泡不整文件扫描 / outbox 终态门控 / transport 锁抗中毒） | 0 | **3/3 改坏即 FAIL、恢复即 PASS**（干净 worktree 5.0.32） |
 | 迁移测试 | 0 | **38 通过 + 1 ignored** |
+| `GOSSLAN_DRILL_DB=<4.44.4 真实库快照> cargo test --lib --features bluetooth real_data_copy_replays_migration -- --ignored --nocapture` | 0 | **1 通过**；`drill ok: tables=19 total_rows=340`（第一次未置 v10 时该测试按设计 **exit 101** 拒跑，前置门有效） |
 | E2E（32 轮，隔离 HOME） | 0 | **863/863 断言** |
 | `cargo audit --file src-tauri/Cargo.lock` | 0 | **0 漏洞，10 allowed warnings** |
 | GitHub Actions @ `519d473`（main） | 4/5 job success | macOS 构建、Windows x64+ARM64 构建、Android APK、Rust 单测（macOS/Windows）全 **success**；Verify 的**前端护栏子集 FAIL**：1 条「操作面板」注入后仍通过（前端范围；本地复现同一 Case，手工摘 `@click` 后 `npm test` 确实失败 ⇒ 测试本身非空转，问题在 guard runner/CI 对该用例的注入/判定路径，待前端负责人查；后端各腿均绿） |
@@ -498,9 +545,13 @@
 
 ### 6.8 剩余风险
 
-- **高**：用户直接提供的真实 v10 现场未执行（真实数据 + 逐字 v10 schema 演练已过）；
-  Windows/iOS/Linux 运行时与真机未验证
-  （Windows 已过交叉编译，仍无 Windows 主机/Wine 跑行为）。
+- **高**：用户手上的真 v10 现场库 **BLOCKED**（本机四份库全为 v11、4.44.4 自身带 v11 schema，
+  不存在未迁移文件；已用"真实数据 + 置回 v10"和"真实数据 + 逐字 v10 DDL"两条副本演练覆盖）。
+  Windows/iOS/Linux 运行时与真机未验证 —— 2026-10-19 用户口径：**其他设备无法交叉编译 PASS
+  的先不管**，故 iOS（本机无 SDK，交叉编译也过不去）与 Linux/Windows 运行时本轮
+  **DEFERRED**，不再继续装工具链；交叉编译 PASS ≠ 运行时 PASS 的边界保持不变。
+- **中**：**事务级耗时出口（B15）未开工**，分母已数完 = 生产 `.transaction()` **3 处**，
+  方案与红线见 §6.10 末。
 - **中**：远端 CI @`519d473` 的 Verify 因**前端**“操作面板”护栏空转红（1 条，非后端腿；本地复现，手工注入能让 `npm test` 红，判定仍在 runner/CI 路径）；
   单一 SQLite 连接串行化读写；入站 handler 单链路串行；
   **A-17（已修，观察项）：多链路文本 Ack 1/4 抖动；5.0.33 每 5s 重放后 contentpull ×3 绿**；
@@ -513,11 +564,13 @@
 - **是否达到本轮重构目标？** **未全部达到**。数据安全、迁移保护、权限、网络可靠性、
   兼容性、E2E 与 macOS 验收已落地并有实测证据（B1–B12、Rust 990+1、E2E 32 轮/863、
   互操作 8 轮/216）；真实 4.x 用户库 schema 迁移与真实设备/平台运行时仍未验证。
-- **用户数据是否经过真实迁移验证？** **部分（已到“真实数据 + 逐字 v10 schema”）**。
-  v0–v11 合成迁移、逐字 v10 DDL 夹具均通过；真实安装库副本 ① 直接打开（v11，
-  8 表行数与 6 组聚合一致）、② 置 v10 幂等迁移、③ 把 `messages` 按逐字 v10 DDL
-  重建后迁移：列新增、56/56 行为 NULL、19 表/208 行保留、备份与 integrity 均 ok。
-  **用户直接提供的 v10 现场仍 NOT RUN**（本机没有这样的库）。
+- **用户数据是否经过真实迁移验证？** **部分是 PASS、最后一格是 BLOCKED**。
+  v0–v11 合成迁移、逐字 v10 DDL 夹具均通过；**真实安装数据**（当天最新，93 条消息/340 行）
+  的副本置回 v10 后跑生产 `init`：exit 0，逐表行数、5 组语义聚合、9 种 kind 分布、
+  `mention_targets` 非空行数迁移前后**逐项相等**，关联关系独立查询 0 断链，
+  自动备份单独以只读方式可开（v10/19 表/integrity ok）。
+  **仍未证明的只有一件事**：本机不存在"停在 v10 未迁移"的用户现场库
+  （已装的 4.44.4 自身就是 v11），所以真 v10 现场标 **BLOCKED**，需用户另供文件。
 - **是否确认没有破坏已有业务功能？** **在已跑范围内确认**：Rust 990+1、E2E 32 轮/863、
   4.44.4↔5.0.33 互操作 8 轮/216、迁移 38+1、cargo audit 0 漏洞；未跑的真机与
   Windows/iOS/Linux 运行时不能据此确认。
@@ -541,7 +594,19 @@
 | 文件 | `[FILE] offer-sending` / `offer SENT` / `accept RECEIVED` / `COMPLETED ok=`；接收侧初始化/ SHA / fsync / rename 失败留痕 | `transfer_id` | 无单条"总耗时分解"（accept→首片→末片→Ack 分散在多行） |
 | 内容拉取 | `ContentRequest：本机没有该内容 cid=` / `请求方无权限 cid=`；服务队列溢出留痕 | `cid` / `tid` | — |
 | 发现/链路 | `diag/announce_verified`、`建链 peer=`、`DialOutcome::Failed` 阶段名 | peer id | 成功路径缺分阶段耗时 |
-| DB | 新增 `db 持锁观测：…`（60s 窗口，慢锁才 warn；含取锁次数/最长持有/最长等待/累计/超阈值次数） | 无（全局单锁） | 事务级耗时与锁等待原因仍不可见；`busy_timeout` 触发无专门行 |
+| DB | 新增 `db 持锁观测：…`（60s 窗口，慢锁才 warn；含取锁次数/最长持有/最长等待/累计/超阈值次数） | 无（全局单锁） | **事务级耗时仍无出口**；`busy_timeout` 触发无专门行 |
+
+- **B15（下一批，已把分母数完，不是待调研）**：事务耗时 trace。生产代码里的
+  `.transaction()` 调用点现算 **只有 3 处** ——
+  `src/network/transport/group_file.rs`、`src/network/file/receive.rs`、
+  `src/network/file/ledger_backfill.rs`（其余命中都在测试分册）。因此不需要连接池代理、
+  不需要新 trait、也不给 `DbGuard` 加 `transaction()` 包装层：按这 3 处各记一行
+  `tx <阶段名> tid/peer=<关联键> ms=<耗时> ok=<true|false>`，超过阈值走 `warn`、正常走既有
+  日志级别；**不写 SQL、不写参数、不写正文/文件名/密钥**。语义红线：不改变
+  commit/rollback 位置、不额外持锁、不在事务里问几何。判据要与 B13 同形：
+  一条"唯一生产读者/调用点次数"接线判据 + 一次单点变异证明改坏即红。
+  本轮未开工的原因：剩余轮次不足以实现+跑 `verify:local`+补版本清单，宁可留一条带分母的
+  欠账，也不留一个"编译得过但没人读"的半截出口。
 | 后台任务 | 清扫器/队列失败留痕 | 任务名 | 任务退出/取消没有统一一行 |
 | 工具决策 | 不引 `tracing`/OpenTelemetry：同步落盘是崩溃现场与最后一条日志的证据前提（B4）；外部遥测需隐私评估 | — | — |
 
@@ -560,7 +625,7 @@
 | §5.1 数据库资产清单 | **PASS** | §4.1（19 表/20 索引/0 FK/数据分级/非 DB 资产） |
 | §5.2 统一迁移机制 | **PASS** | `user_version` + 11 个独立 `Migration` 条目；边界见 §4 |
 | §5.3 迁移前保护 | **PASS** | `VACUUM INTO` 备份 + 只读校验 + 失败中止；B1/B6/B9 |
-| §5.4 迁移验证 | **PASS（合成 + 真实数据）** | v0–v11 重放、逐字 v10 DDL、真实数据 + 逐字 v10 schema；用户直接提供的 v10 现场 **NOT RUN** |
+| §5.4 迁移验证 | **PASS（合成 + 真实数据）** | v0–v11 重放、逐字 v10 DDL、真实数据（93 消息/340 行）置 v10 重放 exit 0 且逐表逐项相等；真 v10 现场库本机不存在 ⇒ **BLOCKED**（需用户供文件） |
 | §5.5 回滚/未来兼容 | **PASS** | 降级拒绝、备份恢复、未知版本写入前拒绝 |
 | §6 网络/文件/可靠语义 | **PASS** | 协议未变；队列有界；24 轮 E2E/647 + 互操作 216 |
 | §7 系统集成/插件 | **PASS（代码/构建）** | 官方插件优先、平台 cfg 收口；运行时见下 |
