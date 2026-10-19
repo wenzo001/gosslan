@@ -13,6 +13,21 @@
 
 ## [Unreleased]
 
+## [5.0.33] - 2026-10-19
+
+### 修复：多链路建链窗口内离线消息不重试（A-17）
+
+- 5.0.32 标准 E2E 全套复跑中，contentpull 首跑步骤 5「A 侧 outbox 被 Ack 删除」
+  **30.1s 超时（1/4）**；失败轮 B 库零消息、A 气泡仍 `sending`，A 侧同时有
+  LAN×2 + Routed 三条到 B 的链路。`flush_outbox` 只在建链/Hello 触发，且
+  `try_send` 的错误被忽略 ⇒ 那个窗口里没真正发出去的消息会一直等下一次链路事件。
+- 新增 `AppState::spawn_outbox_retrier`：每 **5s** 对**当前有链路**的 peer 重放
+  `flush_outbox` + `flush_group_outbox`；收端按 `msg_id` 幂等，Ack/GroupAck 才删行。
+  文件队列不在此重放（自有 attempts/退避/5 次上限）。
+- 判据 `outbox_retrier_is_wired_and_covers_both_queues` 钉唯一接线、周期、按链路筛选、
+  两个队列都覆盖；Rust **991 通过 + 1 ignored**，基线 992（Windows 975）。
+- 5.0.33 release 上 contentpull **×3** 复跑见报告 §3；其余 E2E/真机 **NOT RUN**。
+
 ## [5.0.32] - 2026-10-19
 
 ### 可观测性：SQLite 锁等待/持有时长进入运行日志

@@ -1983,6 +1983,30 @@ impl AppState {
         });
     }
 
+    /// 周期性重放单聊/群聊离线队列。
+    ///
+    /// A-17（2026-10-19）：`flush_outbox` 只在建链/Hello 触发，且 `try_send` 的错误被忽略；
+    /// 多链路并发建链时那一窗口里没真正发出去的消息，会一直停在 `sending`/outbox 里，
+    /// 直到下一次链路事件——实测 30s 内没有。这里每 5s 对**当前有链路**的 peer 重放一次；
+    /// 收端按 `msg_id` 幂等去重，只有 Ack/GroupAck 才删行，所以重复发送不会重复入库/通知。
+    /// 文件队列不在这里重放：它有自己的 attempts/退避与 5 次上限（`flush_pending_files`）。
+    pub fn spawn_outbox_retrier(state: &Arc<AppState>) {
+        let st = state.clone();
+        tauri::async_runtime::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(OUTBOX_RETRY_SECS)).await;
+                let peers: Vec<String> = {
+                    let links = st.links.lock().await;
+                    links.keys().cloned().collect()
+                };
+                for peer in peers {
+                    crate::network::transport::flush_outbox(&st, &peer).await;
+                    crate::network::transport::flush_group_outbox(&st, &peer).await;
+                }
+            }
+        });
+    }
+
     /// 周期性把 SQLite 锁观测摘要写进运行日志。
     ///
     /// `DbLock` 已经逐次量了 wait/hold，但 `take_summary()` 此前只有测试在读 ⇒ 现场
@@ -2006,6 +2030,9 @@ impl AppState {
 
 /// 锁观测摘要的周期（秒）。只在有慢持锁时产出一行，正常窗口零噪声。
 const DB_HOLD_REPORT_SECS: u64 = 60;
+
+/// 离线队列重放周期（秒），与心跳同量级；A-17。
+const OUTBOX_RETRY_SECS: u64 = 5;
 
 /// 解析多开实例号：优先 `--instance N` / `-i N` 启动参数，其次 `GOSSLAN_INSTANCE` 环境变量。
 /// 返回 0 表示默认单实例。

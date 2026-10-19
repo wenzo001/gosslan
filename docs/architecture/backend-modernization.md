@@ -236,6 +236,16 @@
   环境噪声，`RUSTUP_TOOLCHAIN=stable-aarch64-apple-darwin` 复跑绿，非产品失败）。
   未跑：group/gossip/互操作/真机。
 
+### B14（已落地，5.0.33）：多链路建链窗口内离线消息周期重放（A-17）
+- 5.0.32 E2E 失败轮证据：contentpull 首跑步骤 5 文本 Ack **30.1s 超时（1/4）**；
+  B 库零消息、A 气泡仍 `sending`，A 侧同时有 LAN×2 + Routed 三链路。
+- 修复：`AppState::spawn_outbox_retrier` 每 **5s** 对当前有链路的 peer 重放
+  `flush_outbox` + `flush_group_outbox`；收端按 `msg_id` 幂等，Ack 才删行；
+  文件队列保留自己的 attempts/退避/5 次上限，不进入这个循环。
+- 判据 `outbox_retrier_is_wired_and_covers_both_queues`（唯一接线/周期/按链路筛选/
+  两队列）；Rust **991 通过 + 1 ignored**，基线 992（Windows 975）。
+- **5.0.33 release 的 contentpull ×3 复跑结果**：见下方读数（成功才把 A-17 标 FIXED）。
+
 ### B13（已落地，5.0.32）：SQLite 锁观测摘要进运行日志
 - `DbLock` 早已逐次量 wait/hold，但 `take_summary()` 只有测试在读 ⇒ 现场看不到锁竞争。
 - 新增 `AppState::spawn_db_hold_reporter`：60s 周期、`DbLock` 的唯一生产读者；空窗口
