@@ -92,8 +92,16 @@ def _resolve_anchor_file(root_file: Path, anchor: str) -> Path:
     """
     # 先看根文件自己
     root_text = read_source(root_file)
-    if anchor in root_text:
+    root_count = root_text.count(anchor)
+    if root_count == 1:
         return root_file
+    if root_count > 1:
+        # 这里以前只判「在不在」，不判「几次」：同一个文件里出现多次也照样返回去注入，
+        # 于是唯一性只能等到真注入那一步的 assert 才暴出来 —— 而真注入是整跑 75~90 分钟的事。
+        raise AssertionError(
+            f"注入锚点在 {root_file.name} 里出现 {root_count} 次（要求恰好 1 次）："
+            f"请加更长的锚点或按 `extra_injections` 逐处点名 ⇒ {anchor[:80]!r}"
+        )
 
     # 再搜所有 include! 子模块
     candidates = _list_includes(root_file)
@@ -117,6 +125,12 @@ def _resolve_anchor_file(root_file: Path, anchor: str) -> Path:
         raise AssertionError(
             f"注入锚点在多个文件里都出现了：{detail} —— 请明确指定 file="
             f"或加更长的锚点"
+        )
+    if hits[0][1] != 1:
+        raise AssertionError(
+            f"注入锚点在 {hits[0][0].name} 里出现 {hits[0][1]} 次（要求恰好 1 次）："
+            f"include! 拆册后同一形状可能落在好几个对称路径里 ⇒ 加更长的锚点（带各自上文）"
+            f"，或把每一处拆成独立用例 ⇒ {anchor[:80]!r}"
         )
     return hits[0][0]
 
@@ -239,8 +253,13 @@ def verify(case: Case) -> tuple[bool, str]:
         for old, new in injections:
             try:
                 target = _resolve_anchor_file(root_path, old)
-            except AssertionError:
-                # 兼容：如果不是 commands.rs/db.rs 这类 include! 根，就当作普通文件
+            except AssertionError as e:
+                # 兼容：如果不是 commands.rs/db.rs 这类 include! 根，就当作普通文件。
+                # 但**根文件里一次都没有**时不能吞掉原因：吞了就会报
+                # 「锚点在 commands.rs 里出现 0 次」这种假线索，而真原因是它在某个
+                # include! 分册里出现多次 —— 原样上抛，让这条用例报出真话。
+                if read_source(root_path).count(old) == 0:
+                    raise
                 target = root_path
             if target not in per_file:
                 per_file[target] = []
@@ -335,6 +354,7 @@ def main() -> int:
     # （实测：189 条整跑只报 1 条异常，就是那条 `中继收文件的哈希`，而静态核对 1 秒就给同一结论）。
     # 这一段只做**存在性/唯一性**核对，一条测试都不跑；非空转仍然要靠后面的逐条真注入。
     dead_anchors: list[str] = []
+    ambiguous_anchors: list[str] = []
     for c in cases:
         pairs: list[tuple[Path, str]] = [(c.file, old) for old, _new in c.injections]
         pairs += [(p, old) for (p, old, _new) in c.extra_injections]
@@ -344,7 +364,12 @@ def main() -> int:
             try:
                 _resolve_anchor_file(path, old)
             except AssertionError as e:
-                dead_anchors.append(f"{c.name}\n      文件 {Path(path).name}: {e}")
+                msg = str(e)
+                line = f"{c.name}\n      文件 {Path(path).name}: {msg}"
+                # 「找不到」与「出现多次」不是一回事：前者说明这批锚点整体不可信 ⇒ 中止，省整轮；
+                # 后者只坏那一条用例 ⇒ 只点名不中止，否则一条坏锚点会把其余 232 条的读数一起挡掉
+                # （它们仍会在自己那一步抛同一个错，末尾汇总照样判红，不丢计数）。
+                (ambiguous_anchors if ("要求恰好 1 次" in msg or "多个文件" in msg) else dead_anchors).append(line)
     if dead_anchors:
         print(
             f"❌ 起跑前核对：{len(dead_anchors)} 处注入锚点已失效（一条测试都没跑，省下整轮时间）：",
@@ -357,6 +382,14 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
+    if ambiguous_anchors:
+        print(
+            f"⚠️ 起跑前核对：{len(ambiguous_anchors)} 处锚点**不唯一** —— 只点名不中止，"
+            f"这些用例会在自己那一步报错，其余照跑：",
+            file=sys.stderr,
+        )
+        for a in ambiguous_anchors:
+            print(f"   - {a}", file=sys.stderr)
     # 2026-10-07：`expect_fail_hint` 已经是判据（不匹配就 FAIL），于是"某条 Case 干脆不声明 hint"
     # 就成了这条判据唯一的绕过口 —— 不声明等于不检查，而成功那行照旧打印"且红由声明的那条判据报出"。
     # 现算今天 202/202 条都声明了 ⇒ 把它钉成起跑前核对，别让" convention "退化成"可空字段"。
@@ -369,7 +402,12 @@ def main() -> int:
         for n in no_hint:
             print(f"   - {n}", file=sys.stderr)
         return 1
-    print(f"· 起跑前核对：{len(cases)} 条用例的注入锚点都在各自文件里恰好命中一次，且每条都声明了 fail-hint\n")
+    uniq = len(cases) - len({a.splitlines()[0] for a in ambiguous_anchors})
+    print(
+        f"· 起跑前核对：{len(cases)} 条用例里锚点**存在且唯一**的 {uniq} 条"
+        + f"（不唯一 {len(ambiguous_anchors)} 处已在上面点名）；fail-hint 全部已声明"
+    )
+
     if args.list:
         for c in cases:
             print(f"  [{','.join(c.tags)}] {c.name}\n      {c.why}")
