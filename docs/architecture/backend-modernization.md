@@ -520,13 +520,23 @@
 
 | 平台 | 结果 |
 |---|---|
-| macOS arm64 | **PASS**：fmt/clippy/Rust/前端/Android 编译、32 轮 E2E |
-| Android aarch64 | **PASS（仅编译）**：默认与 bluetooth 两档 0 warning |
-| Windows x86_64 | **PASS（仅交叉编译，5.0.33 代码）**：官方 LLVM 18.1.8 macOS ARM64 包提供 `llvm-rc`/`llvm-lib`/`lld-link`，`cargo xwin 0.23.1` 下 `cargo xwin build --release --target x86_64-pc-windows-msvc --features bluetooth` **exit 0 / 14m27s（冷 target）**，产物 `gosslan.exe` **9.6MB**、`PE32+ executable (GUI) x86-64`。此前 5.0.31/5.0.32 读数：check **42.6s**、release **2m39s / 8m38s**。未装系统 LLVM、工具只在 `/tmp`；**Windows 运行时 NOT RUN** |
-| Linux | 运行时 **NOT RUN**；audit 警告集中在 Linux GTK/D-Bus 传递依赖 |
-| iOS | **BLOCKED（环境）**：本机无 iOS SDK/完整 Xcode；运行时 **NOT RUN** |
+| macOS arm64 | **PASS**：fmt/clippy/Rust/前端/Android 编译、32 轮 E2E；远端 `Rust 单测 / 清单（macos-latest）` **success**（run 39215124440） |
+| Android aarch64 | **PASS（仅编译）**：默认与 bluetooth 两档 0 warning；远端 `Android 编译门禁` **success**（在 ubuntu runner 上真跑 cargo，不是桌面代跑） |
+| Windows x86_64 | **PASS（远端真跑测试 + 交叉编译产物）**：① 远端 `Rust 单测 / 清单（windows-latest）` **success** ⇒ 977+20 条基线（含 B15 两条**无平台门控**的新判据，两边基线都已登记）在真 Windows runner 上执行并通过 —— 这一格从今天起不再只是"编译得过"；② 本机交叉编译 `cargo xwin build --release --target x86_64-pc-windows-msvc --features bluetooth` exit 0 / 14m27s、产物 `gosslan.exe` 9.6MB `PE32+ executable (GUI) x86-64`（工具只在 `/tmp`，未装系统 LLVM）。**Windows 上的 GUI 应用运行时仍 NOT RUN**（没有 Windows 桌面主机/真机） |
+| Linux | **部分**：ubuntu runner 上真跑的是 Android 编译门禁（cargo 构建）。**桌面 Linux 运行时 NOT RUN**；audit 警告集中在 Linux GTK/D-Bus 传递依赖 |
+| iOS | **DEFERRED（环境）**：本机无 iOS SDK/完整 Xcode，交叉编译也过不去 ⇒ 按用户 2026-10-19 口径"其他设备无法交叉编译 PASS 的先不管"；运行时 **NOT RUN** |
 
 系统插件与 `open_path` 平台分派已核对；Windows ACL 未在本轮处理。
+
+**远端 CI 到底由谁执行（2026-10-19 逐文件现读，别再靠猜）**：
+
+| 工作流 | 触发 | runner | 实际执行什么 |
+|---|---|---|---|
+| `verify.yml` | push 任意分支 / PR / dispatch /（本轮新加）schedule | macos-latest、macos+windows 矩阵、ubuntu-latest、macos-latest(`guards`) | 前端组、Rust fmt/clippy/单测/清单（**macOS 与 Windows 两条腿真跑测试**）、Android 编译、**全量护栏非空转** |
+| `build.yml` / `build-macos.yml` / `build-android.yml` | push main、tag `v*`、dispatch | windows-latest / macos-15 / ubuntu | 出包与产物上传，不跑行为测试 |
+| `build-windows-webview2.yml` | tag `v*`、dispatch | windows-latest | 内置 WebView2 的打包；该文件自己写明"跑绿只说明包打出来了"，真机那一格仍是人工项 |
+| iOS | **没有任何工作流** | 无 | 既没有构建也没有测试 ⇒ iOS 只能标 NOT RUN，且**当前没有可以跑它的地方**（无 runner、无签名、无 SDK） |
+
 
 ### 6.7 自动化测试
 
@@ -545,7 +555,8 @@
 | `GOSSLAN_DRILL_DB=<4.44.4 真实库快照> cargo test --lib --features bluetooth real_data_copy_replays_migration -- --ignored --nocapture` | 0 | **1 通过**；`drill ok: tables=19 total_rows=340`（第一次未置 v10 时该测试按设计 **exit 101** 拒跑，前置门有效） |
 | E2E（32 轮，隔离 HOME） | 0 | **863/863 断言** |
 | `cargo audit --file src-tauri/Cargo.lock` | 0 | **0 漏洞，10 allowed warnings** |
-| GitHub Actions @ `519d473`（main） | 4/5 job success | macOS 构建、Windows x64+ARM64 构建、Android APK、Rust 单测（macOS/Windows）全 **success**；Verify 的**前端护栏子集 FAIL**：1 条「操作面板」注入后仍通过（前端范围；本地复现同一 Case，手工摘 `@click` 后 `npm test` 确实失败 ⇒ 测试本身非空转，问题在 guard runner/CI 对该用例的注入/判定路径，待前端负责人查；后端各腿均绿） |
+| GitHub Actions run **39215124440** @ `d42003f`（push `feat/5.0`，本轮） | 4/5 job **success**，1 在跑 | `前端测试 / 清单 / 构建` **success**（07:18:27→07:38:24）⇒ 上一轮那条「操作面板」护栏红在本次不再出现，由并行前端会话的 `3de6dd9` 带过来；`Rust 单测 / 清单（macos-latest）` **success**（→07:22:44）；`Rust 单测 / 清单（windows-latest）` **success**（→07:23:19）⇒ **B15 两条无平台门控的判据在真 Windows runner 上跑过**；`Android 编译门禁` **success**（→07:20:01，ubuntu runner 真跑 cargo）；`护栏非空转（全量，不带 --only）` **in_progress**（07:18:26 起）⇒ 这条的结果**没读到就不写成通过** |
+| 本地全量护栏（分族自证，2026-10-19 08:08Z） | 0 | 在一次性工作树 `/tmp/gosslan-b15-verify`（HEAD `d42003f`，主工作树未被注入污染）按族跑：`--only db` **8/8**、`--only terminal-state` **5/5**、`--only transport` 全族 ⇒ 每条都是「改坏 FAIL、恢复 PASS」，整段 **exit 0**；完整 233 条另起一份在跑 |
 | `version:check` / Change Budget / CHANGELOG / 文档硬数字 | 0 | 全部通过 |
 
 ### 6.8 剩余风险
@@ -669,7 +680,7 @@
 | §12.2 数据完整性 | **PASS** | 迁移 38+1、实体逐字段、备份恢复、v10 真实数据 |
 | §12.3 网络与可靠性 | **PASS** | 24 轮 E2E（含 kill/freeze/readonly/rotted/shrink/断链补拉） |
 | §12.4 大文件/UI 响应 | **PASS** | 600MB 传输中设置窗 397ms（5.0.32）；RSS 126.1 MiB；队列 8 MiB/链路 |
-| §12.5 跨平台 | **PARTIAL** | macOS PASS；Android 仅编译；Windows 交叉编译 PASS；Linux/iOS 与所有运行时 **NOT RUN** |
+| §12.5 跨平台 | **PARTIAL（比上一轮多一格真证据）** | macOS PASS；**Windows 真 runner 上 Rust 单测 success**（含 B15 两条无门控判据）+ 交叉编译产物 PASS，GUI 运行时 NOT RUN；Android 仅编译 PASS（ubuntu runner 真跑 cargo）；iOS 无 SDK ⇒ DEFERRED；桌面 Linux 运行时 NOT RUN |
 | §13 自主执行工作流 | **PASS** | 分批提交、失败先 RCA、未绕过门禁 |
 | §14 Git/工作区保护 | **PASS（有一笔需要交代的越界）** | 未覆盖并行改动内容、未 tag/release/merge、未推 main；本轮按授权把 `feat/5.0` 推上远端（连带公开并行会话那笔 `3de6dd9`）。两处如实入账：① 为让判据 4 落地（声明 patch 必须四个版本清单文件同批），我用 temp-index plumbing 把**自己**刚造的两笔未推提交重建成 `d42003f` 一笔，`3de6dd9` 及其以下一字未动；② 刷新索引时用了能捞到 `docs/` 的宽 scope，把 `docs/ARCHITECTURE-MAP.html` 的**已 stage 状态**重置成 HEAD（文件内容未被改写，需前端会话重新 `git add` 那一个文件） |
 | §15 九节最终报告 | **PASS** | §6.1–§6.10 + 本表 |
