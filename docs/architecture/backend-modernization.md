@@ -244,7 +244,9 @@
   `flush_outbox` + `flush_group_outbox`；收端按 `msg_id` 幂等，Ack 才删行；
   文件队列保留自己的 attempts/退避/5 次上限，不进入这个循环。
 - 判据 `outbox_retrier_is_wired_and_covers_both_queues`（唯一接线/周期/按链路筛选/
-  两队列）；Rust **991 通过 + 1 ignored**，基线 992（Windows 975）。
+  两队列）；**两次单点变异**：摘掉 `lib.rs` 的启动调用 ⇒ 红在“恰好接一处”；
+  摘掉 `flush_group_outbox` ⇒ 红在“只重放一半”；还原后绿。
+  Rust **991 通过 + 1 ignored**，基线 992（Windows 975）。
 - **5.0.33 release 的回归**：contentpull **×3 全绿（36/36）**、default **18/18**、group **37/37**、
   posttext **39/39**；重放未引入重复消息，也未顶掉会话。
 - **contentpull ×3**：**3/3 全绿（36 断言/次）**，未再出现文本 Ack 超时，
