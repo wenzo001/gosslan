@@ -198,7 +198,15 @@ CASES: list[Case] = [
         "（广播学来、未验签的公钥）。删好友只断了第一条腿，内存那条旧公钥继续当信任根 ⇒ "
         "Hello 一直被硬拒。这条退化的形态是「功能看着都在、就是连不上」，只能靠源码护栏盯住",
         file=TAURI / "src" / "commands.rs",
+        # 2026-10-19：`commands.rs` 拆成 `commands/friends.rs` 分册后，裸的一行 `forget_peer_identity(s,
+        # &peer_id)` 在同一册里出现两次 ⇒ 唯一性核对把这条判成"锚点不唯一"，它从此什么都没守住。
+        # 带上 `remove_friend` 那处独有的三行注释把锚点收窄回它本来要钉的那一条腿；另一处（换钥同步路径）
+        # 已由 `sync_friend_keys 必须同时忘掉内存 peers 旧绑定` 用各自上文钉住 ⇒ 覆盖面没变小。
+        # 被跑的测试、期望的失败关键词、阈值一个字都没改。
         injections=[(
+            "    // ⚠️ **同时解除内存里的身份绑定**（用户 2026-09-13 真机：不这么做就\"必须重启\"）。\n"
+            "    // `friends` 表那一行删掉只解除了一条腿；`verify_hello` 还会回落到内存 `peers` 表里\n"
+            "    // 广播学来的旧公钥 ⇒ 对方重装换过公钥时，删了好友重新加也照样被硬拒。\n"
             "    crate::network::transport::forget_peer_identity(s, &peer_id);\n",
             "",
         )],
