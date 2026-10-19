@@ -301,6 +301,7 @@ db::todo_reads_tests::todo_read_returns_only_todo_kinds
 db_hold::tests::a_long_hold_on_an_idle_lock_is_the_slow_one
 db_hold::tests::counters_do_not_bleed_across_threads_or_across_locks
 db_hold::tests::hold_over_threshold_produces_exactly_one_line
+db_hold::tests::note_tx_stays_quiet_unless_slow_or_failed
 db_hold::tests::poisoning_still_reaches_the_caller_with_its_guard
 db_hold::tests::quiet_window_emits_nothing
 db_hold::tests::short_hold_is_counted_but_not_slow
@@ -901,6 +902,7 @@ tests::pending_requests_exclude_existing_friends
 tests::peripheral_reconnect_hello_replaces_the_stale_route
 tests::peripheral_subscribe_resets_that_centrals_reassembler
 tests::preview_reads_run_off_the_async_worker
+tests::production_transaction_sites_are_all_timed
 tests::receive_finalize_slow_work_happens_outside_the_receiver_lock
 tests::receiver_abort_notifies_the_sender_inside_the_loop
 tests::relay_circuit_is_tagged_relay_not_routed

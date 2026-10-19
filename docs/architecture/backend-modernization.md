@@ -468,7 +468,7 @@
 - 机制：`user_version` 单调迁移链（v0–v11）+ 每步事务 + 降级拒绝；迁移前
   `VACUUM INTO` + `integrity_check`/版本/表数校验，失败以 `InitError::Backup` 中止；
   `busy_timeout=5s`。
-- 判据：迁移测试 **38 通过 + 1 ignored**、Rust **990 通过 + 1 ignored**；
+- 判据：迁移测试 **38 通过 + 1 ignored**、Rust **993 通过 + 1 ignored**（B15 两条新判据已入基线 994）；
   覆盖 v0 legacy、1..10 每个起始版本、损坏库原文件逐字节不变、备份恢复再迁移。
 - 真实 v10 DDL 夹具（`0b84f11^`）18 张历史表 + 各实体数据迁移后逐字段保留。
 - 真实数据副本演练：只读副本置 v10 → 生产 `init`：19 表/208 行、备份 integrity ok、
@@ -534,7 +534,10 @@
 |---|---|---|
 | `npm run verify:local`（干净 worktree，5.0.33） | **0** | **22/22，1089.0s（冷 target）** |
 | `cargo xwin build --release --target x86_64-pc-windows-msvc --features bluetooth` | 0 | **5.0.33 冷 target 14m27s**；`gosslan.exe` 9.6MB（PE32+ GUI x86-64） |
-| `cargo test --lib --features bluetooth` | 0 | **990 通过 + 1 ignored** |
+| `cargo test --lib --features bluetooth` | 0 | **993 通过 + 1 ignored**（B15 两条新判据；`check-test-manifest --only rust` 基线 994 全部在跑） |
+| `cargo clippy --features bluetooth -- -D warnings` | 0 | B15 之后复跑，**0 warning** |
+| B15 接线的单点变异自证 | 101 → 0 | 把 `receive.rs` 的 `crate::db_hold::note_tx(` 改成合法但不匹配的 `note_tx /*B15 变异*/ (` ⇒ 接线判据报"receive.rs 的收尾事务必须有且只有一条耗时观测"；还原后与备份逐字节相同，两条判据各自 exit 0 |
+| 全量护栏 CI job（`verify.yml` 的 `guards`） | **已配置，远端结果待读** | 命令是 `python3 scripts/verify-guards.py`（不带 `--only`，Ruby psych 解析确认 `has_only_flag=false`、无 `continue-on-error`）；push/PR/dispatch/schedule 四个触发器都在；定时那条约等于该定义进 main 才持续生效 |
 | 护栏定点（文件气泡不整文件扫描 / outbox 终态门控 / transport 锁抗中毒） | 0 | **3/3 改坏即 FAIL、恢复即 PASS**（干净 worktree 5.0.32） |
 | 迁移测试 | 0 | **38 通过 + 1 ignored** |
 | `GOSSLAN_DRILL_DB=<4.44.4 真实库快照> cargo test --lib --features bluetooth real_data_copy_replays_migration -- --ignored --nocapture` | 0 | **1 通过**；`drill ok: tables=19 total_rows=340`（第一次未置 v10 时该测试按设计 **exit 101** 拒跑，前置门有效） |
@@ -550,8 +553,11 @@
   Windows/iOS/Linux 运行时与真机未验证 —— 2026-10-19 用户口径：**其他设备无法交叉编译 PASS
   的先不管**，故 iOS（本机无 SDK，交叉编译也过不去）与 Linux/Windows 运行时本轮
   **DEFERRED**，不再继续装工具链；交叉编译 PASS ≠ 运行时 PASS 的边界保持不变。
-- **中**：**事务级耗时出口（B15）未开工**，分母已数完 = 生产 `.transaction()` **3 处**，
-  方案与红线见 §6.10 末。
+- **中**：B15 已落地（3 处收尾事务都有耗时出口，两条判据 + 一次单点变异自证）。仍欠两格：
+  `busy_timeout` 触发没有专门一行（只能从等待时长与失败串间接看）；快且成功的事务不产行
+  （设计取舍，理由见 §6.10：正常路径"不留痕"那条不变量在测试里钉着，摘要侧已有最长持有/累计）。
+  **全量护栏的自动触发是本轮新加的**（`verify.yml` 的 `guards` job）⇒ 它的远端实际结果必须在
+  推送后读，不能写成"CI 已通过"；定时那一条要等这份定义进默认分支（main）才会按夜持续跑。
 - **中**：远端 CI @`519d473` 的 Verify 因**前端**“操作面板”护栏空转红（1 条，非后端腿；本地复现，手工注入能让 `npm test` 红，判定仍在 runner/CI 路径）；
   单一 SQLite 连接串行化读写；入站 handler 单链路串行；
   **A-17（已修，观察项）：多链路文本 Ack 1/4 抖动；5.0.33 每 5s 重放后 contentpull ×3 绿**；
@@ -594,21 +600,41 @@
 | 文件 | `[FILE] offer-sending` / `offer SENT` / `accept RECEIVED` / `COMPLETED ok=`；接收侧初始化/ SHA / fsync / rename 失败留痕 | `transfer_id` | 无单条"总耗时分解"（accept→首片→末片→Ack 分散在多行） |
 | 内容拉取 | `ContentRequest：本机没有该内容 cid=` / `请求方无权限 cid=`；服务队列溢出留痕 | `cid` / `tid` | — |
 | 发现/链路 | `diag/announce_verified`、`建链 peer=`、`DialOutcome::Failed` 阶段名 | peer id | 成功路径缺分阶段耗时 |
-| DB | 新增 `db 持锁观测：…`（60s 窗口，慢锁才 warn；含取锁次数/最长持有/最长等待/累计/超阈值次数） | 无（全局单锁） | **事务级耗时仍无出口**；`busy_timeout` 触发无专门行 |
-
-- **B15（下一批，已把分母数完，不是待调研）**：事务耗时 trace。生产代码里的
-  `.transaction()` 调用点现算 **只有 3 处** ——
-  `src/network/transport/group_file.rs`、`src/network/file/receive.rs`、
-  `src/network/file/ledger_backfill.rs`（其余命中都在测试分册）。因此不需要连接池代理、
-  不需要新 trait、也不给 `DbGuard` 加 `transaction()` 包装层：按这 3 处各记一行
-  `tx <阶段名> tid/peer=<关联键> ms=<耗时> ok=<true|false>`，超过阈值走 `warn`、正常走既有
-  日志级别；**不写 SQL、不写参数、不写正文/文件名/密钥**。语义红线：不改变
-  commit/rollback 位置、不额外持锁、不在事务里问几何。判据要与 B13 同形：
-  一条"唯一生产读者/调用点次数"接线判据 + 一次单点变异证明改坏即红。
-  本轮未开工的原因：剩余轮次不足以实现+跑 `verify:local`+补版本清单，宁可留一条带分母的
-  欠账，也不留一个"编译得过但没人读"的半截出口。
+| DB | 新增 `db 持锁观测：…`（60s 窗口，慢锁才 warn；含取锁次数/最长持有/最长等待/累计/超阈值次数）+ B15 的 `tx <阶段> transfer_id=… ms=… ok=…` | 三条收尾事务用 `transfer_id`；锁摘要无键（全局单锁） | `busy_timeout` 触发仍无专门一行；快且成功的事务不产行（其耗时在 60s 锁摘要里） |
 | 后台任务 | 清扫器/队列失败留痕 | 任务名 | 任务退出/取消没有统一一行 |
 | 工具决策 | 不引 `tracing`/OpenTelemetry：同步落盘是崩溃现场与最后一条日志的证据前提（B4）；外部遥测需隐私评估 | — | — |
+
+- **B15（已落地，2026-10-19）**：事务级耗时出口。分母按"生产事务调用点"现算 = **3 处**
+  （`src/network/transport/group_file.rs` 群文件收尾、`src/network/file/receive.rs` 单聊收尾、
+  `src/network/file/ledger_backfill.rs` 群台账补账 —— 后者计时含取锁等待，因为它包住
+  `gfile_ledger_repair` 那一次调用，册内只有那一个事务）。统一出口是 `db_hold::note_tx`
+  （**只量不改**：不取锁、不重试、不碰 commit/rollback 与错误语义），一行里只有
+  `tx <阶段> transfer_id=<键> ms=<耗时> ok=<成败>` —— 没有 SQL、参数、正文、文件名或密钥。
+  阈值沿用 `DbLock::slow_threshold_ms`（500ms，同一个家，不另造常数）。
+  **只在超阈值或失败时留一行**：既有不变量
+  `network::file_tests::normal_completion_writes_no_ledger_note` 钉的是正常收尾**一行都不许写**
+  （`logger.snapshot(None).is_empty()`），而快且成功的事务耗时本来已在 60s 锁摘要里
+  （`summary_line` 的最长持有/累计）⇒ 这一格补的是"慢在哪一步、失败那次花了多久"，
+  不是给每条正常事务加噪声。**没有为了通过而改那条不变量**。
+  判据两条：`db_hold::tests::note_tx_stays_quiet_unless_slow_or_failed`（行为：快成功不留痕、
+  慢留 warn、失败留 warn 且 `ok=false`、总共恰好 2 行）与
+  `tests::production_transaction_sites_are_all_timed`（接线：每册事务调用点数=1、
+  `note_tx` 调用数=1、必须有 `Instant::now()` 起点、阈值必须取自 `slow_threshold_ms()`，
+  并钉住出口那一句的 `format!` 形状）。单点变异实测：把 `receive.rs` 的
+  `crate::db_hold::note_tx(` 改成合法但不匹配的 `note_tx /*B15 变异*/ (` ⇒
+  该判据 **exit 101** 且报"receive.rs 的收尾事务必须有且只有一条耗时观测"；
+  还原后逐字节相同、两条判据各自 **exit 0**。
+  **领域依赖方向那把棘轮把这一批顶回来过一次**（现量）：三处出口最初都写成内联
+  `crate::db_hold::note_tx(`，第 13 步 `check-domain-deps.mjs` 当场红
+  ——「内联跨域引用对数 7 超过棘轮上限 6」，新增那对是 `transport→observability`。
+  按它自己给的修法① 处理：`network/transport.rs` 改成声明出来的
+  `use crate::db_hold::note_tx;`，并把 `observability` 加进「传输」域的 `consumes`
+  （`docs/domains.data.mjs`；「文件」域早就声明过这条边，所以那两处内联不计新增对）。
+  复跑 **exit 0 / 6 对**。**上限没有调大**（它 2026-10-07 从 13 收到 6，比原来严）。
+  ⚠️ 一个只有读实现才知道的事实：这把棘轮按**领域是否有 `use`** 判可见，光把域名写进
+  `consumes` 不减少配对数 —— 接线判据因此多钉一条"transport.rs 必须有那条 use"。
+  ⚠️ 本批带 **5.0.35** 版本清单与 CHANGELOG 条目 —— 并行前端会话的 5.0.34 已经提交
+  （`3de6dd9`），版本号这次是空的，才敢动那五个文件。
 
 - 新增锁摘要的**唯一生产读者**与唯一启动点由
   `db_hold_summary_has_exactly_one_production_reader` 钉住；数字行不含 SQL、参数、
@@ -633,7 +659,7 @@
 | §9 可观测性 | **PARTIAL** | B13 锁观测 + §6.10 覆盖表；事务级耗时/统一 trace 仍未做 |
 | §10 IPC/事件/调用链 | **PASS** | 边界与事件判据；未改前端契约 |
 | §11 架构重组 | **PASS** | 模块职责/依赖方向；未为行数继续切分 |
-| §12.1 代码质量 | **PASS**（完整护栏步除外） | fmt/clippy/Rust 991+1/audit/Android/Windows 交叉编译；定点护栏 3/3 改坏即 FAIL；远端 CI 的后端各腿 success，唯一红是前端“操作面板”护栏（不在后端范围）；`verify:full` 的完整护栏族按本地策略未跑完 |
+| §12.1 代码质量 | **PASS**（完整护栏族的远端首跑待读） | fmt/clippy/Rust 993+1（基线 994）/audit/Android/Windows 交叉编译；定点护栏 3/3 改坏即 FAIL；B15 接线判据的单点变异 exit 101→0；本轮把「护栏非空转（全量）」接进 `verify.yml` 的 `guards` job（不带 `--only`），此前它没有任何自动触发点；远端 CI 的后端各腿 success，唯一红是前端“操作面板”护栏（不在后端范围） |
 | §12.2 数据完整性 | **PASS** | 迁移 38+1、实体逐字段、备份恢复、v10 真实数据 |
 | §12.3 网络与可靠性 | **PASS** | 24 轮 E2E（含 kill/freeze/readonly/rotted/shrink/断链补拉） |
 | §12.4 大文件/UI 响应 | **PASS** | 600MB 传输中设置窗 397ms（5.0.32）；RSS 126.1 MiB；队列 8 MiB/链路 |

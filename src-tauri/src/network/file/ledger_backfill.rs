@@ -275,10 +275,21 @@ pub async fn run_group_ledger_backfill(state: &Arc<AppState>) -> GfileLedgerBack
         })
         .await
         .unwrap_or_else(|e| Err(format!("补账哈希任务被中断: {e}")));
+        let tx_started = std::time::Instant::now();
+        // 计时含取锁等待（这一段在 gap 循环里，每条一次）；`gfile_ledger_repair` 内部只有
+        // 那一个事务，另两个分支是纯比较就直接返回，所以这一行覆盖的就是"收尾事务"本身。
         let outcome = {
             let mut dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
             gfile_ledger_repair(&mut dbc, &gap, &state.device_id, local)
         };
+        crate::db_hold::note_tx(
+            &state.logger,
+            "gfile_ledger_repair",
+            &format!("transfer_id={}", gap.transfer_id),
+            tx_started,
+            state.db.slow_threshold_ms(),
+            outcome.is_ok(),
+        );
         match &outcome {
             Ok(GfileLedgerOutcome::Repaired) => {
                 stats.repaired += 1;

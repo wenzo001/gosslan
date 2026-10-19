@@ -396,10 +396,19 @@ async fn handle_group_file_done(
         // 闭包末尾必须 `tx.commit()`：rusqlite 的 `Transaction` 默认 drop 行为是 Rollback
         // （锁定版 0.31.0 `transaction.rs:127`），少这一步就是「三张表一起回滚、而 wrote 仍是 Ok」
         // ⇒ 下面那条 Err 分支永不触发，界面看着成功、台账一句都没落库。
+        let tx_started = std::time::Instant::now();
         let wrote = dbc.transaction().and_then(|tx| {
             write_ledgers(&tx)?;
             tx.commit()
         });
+        note_tx(
+            &state.logger,
+            "gfile_finalize",
+            &format!("transfer_id={transfer_id}"),
+            tx_started,
+            state.db.slow_threshold_ms(),
+            wrote.is_ok(),
+        );
         if let Err(e) = wrote {
             // 事务失败 ⇒ 三张表一起没动。这里**退回今天的形状**逐句补写，不选「整体不动」：
             // 收件方与 `file_transfers` 不收口会把气泡停在「文件确实已在盘上但永不完成」那一格
