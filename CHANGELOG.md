@@ -13,6 +13,63 @@
 
 ## [Unreleased]
 
+## [5.0.36] - 2026-10-20
+
+### 生产诊断补齐：落盘失败可见、上次退出可判、后台任务不再丢证据
+
+- 落盘不再静默：`Logger::append_file` 由「IO 失败一律 `let _ =` 掉」改成返回 `Err(原因)`，
+  调用方计数 + 第一次把降级说明送进内存环（`warn [boot] 日志落盘已降级：…`）。盘满类错误
+  （ENOSPC `28` / Windows `112`/`3900` / EDQUOT `122`）进入 **256 行退避窗口**，窗口内不再试写。
+  为什么不做「每条查一次可用空间」：`statvfs`/`GetDiskFreeSpaceExW` 要么要新依赖、要么只在
+  `bluetooth` feature 的 Windows 构建里才有 `windows` crate，而**第一次写失败就是最准的信号**。
+  裸 OS 码而不是 `ErrorKind::StorageFull`：后者稳定于 1.83，本仓 `rust-version = 1.77`，
+  clippy 的 `incompatible_msrv` 会直接把它判成 error。
+- 上次怎么结束的现在可判：新增 `----- 正常退出 <时间> 运行 <id> -----` 路标（托盘「退出」与
+  `RunEvent::Exit` 两处），加 `classify_previous_exit` 四态判定（正常 / panic 现场 / **异常终止** / 无历史）。
+  判定行**同时写进日志文件**，只发文件的用户也拿得到结论。边界如实写着：`kill -9`、OOM、掉电
+  这三类在进程内部不可能留痕，只能按「有启动、无退出、无崩溃块」的缺席归类，**不许**细分成哪一种。
+- 每条日志的关联：`Logger` 新增 `run_id`（本轮进程标识），写进「启动」与「正常退出」两条路标，
+  多实例 + 快速重启的现场文件能按 run 切开。
+- 后台网络任务不再丢证据：`await_tasks` 原先 `let _ = t.await`（`JoinError` 直接消失）、
+  超时只 `eprintln!`；现在两者都进日志（`warn [net_task]`）。
+- 「查看最近错误 / 导出脱敏诊断包」这一格**本轮不交付命令面**（写成做过就是假字段）。原因不是没实现，
+  是接不完：契约判据 `mapContract.test.ts` 要求每条 `invoke` 既有注册、又有**真实调用方**，
+  而能放按钮的 `LogViewer.vue` / `DevDiagPanel.vue` / `ResponsiveLayout.vue` 与两份语言包此刻全是
+  并行前端会话在飞的 `M` 文件 —— 本轮不覆盖别人的文件，也不留一条没人调的 API。
+  当下可用的替代路径写在 `docs/notes/diagnostics-where-logs-are-2026-10-20.md`：
+  界面里「运行日志」窗看最近错误（内存环 500 条）+ 按文档给的目录手工取那三份文件。
+  下一步由那条前端线的负责人一次做齐：命令注册 + 契约图 IPC 行 + 按钮 + 两份语言包键。
+- 新增 5 条 Rust 用例把这几格各自钉住（998 条全绿，基线按平台重同步）：
+  `previous_exit_is_classified_by_presence_and_absence`、
+  `exit_marker_lets_next_run_read_previous_as_clean_and_absence_as_abnormal`（正控 + 反控 + 落盘核对）、
+  `disk_write_failure_is_counted_and_noted_in_memory`（`0500` 目录逼出真实写失败：计数、降级只进一次、
+  两条日志都还在环里）、`startup_marker_carries_the_run_id`、
+  `failed_background_task_leaves_one_named_warning_while_a_clean_one_leaves_none`
+  （正控 = 干净退出的任务**不许**产生 `net_task` 记录，否则这条判据在任何实现下都绿）。
+  其中"退出路标写了却没加进 `is_crash_native_line` 过滤器 ⇒ 永远判成异常终止"这一条是**用例抓出来的真缺陷**，
+  不是先修好再补测试。`net_task` 那条做过单点变异：把 warn 那一支摘掉 ⇒ 判据红（实测「0 条」），
+  原样写回 ⇒ 判据绿，`diff -q` 证复原。
+- 实测（release 二进制 + 隔离 HOME）：`kill -9` 后下一轮日志文件里出现
+  `warn [boot] 上次收尾判定：异常终止 —— 只有启动路标…`；把在用库截断后同一文件里出现
+  `error [file] … database disk image is malformed`（生产构建的 Rust 失败确实落盘）；
+  启动路标实测带 `版本 5.0.36 · macos-aarch64 · release · … · 运行 dc7085`（三条 run 各自不同 id）。
+  **SIGTERM 也接不住**：`kill -TERM` 之后下一轮同样读成「异常终止」⇒ 退出路标只由应用内收尾
+  （托盘「退出」/ `RunEvent::Exit`）写，凡外部信号杀进程都归到缺席那一类 —— 这条边界是实测出来的，
+  不是推测。权限现读：两份日志文件 `-rw-------`、`com.gosslan.app` `drwx------`，
+  而 `logs/` 目录本身 `drwxr-xr-x`（日志层只给文件设 0600；保护来自父目录那一层，已写进用户文档）。
+  内存侧新增 `scripts/mem-sample.mjs`（主进程与 `com.apple.WebKit.WebContent` 分开采，**按 pid 记轨迹** + 写覆盖率）。
+  单实例长跑实测（1 Hz，227/227 点全覆盖，活 235 s）：主进程 104,688 → 峰 104,752 → 末 101,776 KB
+  （后半段均值 − 前半段 = **−667 KB**）、两个 WebContent 分别 −1,932 与 −4,069 KB ⇒ 这一窗口内两侧都不回涨。
+  ⚠️ 这不等于"没有泄漏"：RSS 不是 JS 堆（**JS 堆 NOT RUN**，WKWebView 无 CDP），4 分钟也不是数小时。
+  传输负载下的轨迹**采不到**（群文件那轮实例只活几秒，两轮分别只覆盖 1/83 与 0/457 个采样点 ⇒ BLOCKED）、
+  界面卡死**没复现**（release 下没有可注入通道 ⇒ NOT RUN）、十处无界增长点逐个容量核对**没做** ⇒ NOT RUN。
+  第一版量具的坑也记进文档：分组求和的 `baseline/final` 会被"两端恰好没进程"污染成 `0/0/0`，
+  看着像"已恢复"—— 修的是量具，不是读数。
+- 护栏一条诊断修正：`发现 socket 必须收得到广播` 那条用例的 `cmd` 补 `-- --nocapture`。
+  cargo 不打印**通过**测试的 stdout ⇒ 测试自证的 `GUARD_ENV_SKIP` 传不到 runner，
+  真机才有效的护栏在 CI 上被误判成「空转」。断言/阈值/锚点一字未动，这条 job 仍然红（runner
+  对两种形状都判 False），差的只是诊断说不说真话。
+
 ## [5.0.35] - 2026-10-19
 
 ### 后端：三处收尾事务补上耗时出口（B15），全量护栏首次接进 CI

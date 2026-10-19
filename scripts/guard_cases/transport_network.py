@@ -197,7 +197,14 @@ CASES: list[Case] = [
             "pub fn discovery_recv_bind_ip() -> Ipv4Addr {\n    Ipv4Addr::UNSPECIFIED\n}",
             "pub fn discovery_recv_bind_ip() -> Ipv4Addr {\n    Ipv4Addr::LOCALHOST\n}",
         )],
-        cmd=cargo("test", "--lib", "discovery_recv_socket_actually_receives_broadcast"),
+        # ★ `-- --nocapture` 是被迫加的（2026-10-19，run 39279799140 的读数）：这条测试在
+        #   「无 LAN 接口」/「收不到自己的广播」时靠 eprintln!("GUARD_ENV_SKIP…") 说话，
+        #   而 cargo **不打印通过的测试的 stdout** ⇒ 那句话到不了 runner，runner 的
+        #   「环境不支持（不等于空转）」分支永远不触发，只能报成「改坏之后仍然通过 ⇒ 空转」。
+        #   跳过判定在 discovery.rs:1253-1272，早于 1274 那次真绑定 ⇒ 注入态也一样静默通过。
+        #   加了它，CI 上会改报成真的那句「因环境不支持而跳过」——**job 仍然红**（runner 对
+        #   两种形状都判 False），差别只在诊断说真话。断言/阈值/锚点一字未动。
+        cmd=cargo("test", "--lib", "discovery_recv_socket_actually_receives_broadcast", "--", "--nocapture"),
         cwd=TAURI,
         expect_fail_hint="收不到 255.255.255.255 广播",
         tags=["rust", "network", "discovery"],

@@ -687,6 +687,93 @@
   `db_hold_summary_has_exactly_one_production_reader` 钉住；数字行不含 SQL、参数、
   正文或文件名。
 
+### 6.11 生产诊断补齐（2026-10-20，5.0.36）
+
+**先审计再动手**：现读 `src-tauri/src/logging.rs`、`lib.rs:237-268`、`boot/boot.ts:45-63,124-127`、
+`commands/settings.rs:238` 之后确认——**日志层、panic 钩子、分配失败留痕、启动路标、前端三条 hook
+→ `log_frontend_error` 这条链本来就在**，`tauri-plugin-log`/`tracing` 一个都没装也不需要装
+（再引一套只会多一个漂移点）。这一批只补审计查出来的四个 MISSING 格：
+
+| 补的那格 | 实现 | 实测读数 |
+|---|---|---|
+| 落盘失败静默 | `append_file` 返回 `Err(原因)`；调用方计数（`write_fails`）+ 第一次把降级说明送进**内存环**（不再走 `log()`，避免回环）；ENOSPC/`EDQUOT(122)`/Windows `112`/`3900` ⇒ 置降级位，256 行退避窗口 | `disk_write_failure_is_counted_and_noted_in_memory`：目录改 0500 后 ⇒ 计数 >0、内存环里有「日志落盘已降级」**恰好一条**（反例靠第二条之后**重读快照**判，不是拿旧快照数）、两条日志本身都还在环里 |
+| 上次怎么结束的分不开 | 新增 `----- 正常退出 … 运行 <id> -----` 路标（托盘「退出」这一点 + `RunEvent::Exit` 那一臂）与 `classify_previous_exit` 四态；**判定行写进 `gosslan.log`** | `previous_exit_is_classified_by_presence_and_absence`（四态）+ `exit_marker_lets_next_run_read_previous_as_clean_and_absence_as_abnormal`（正控 + 反控）。⚠️ 这条测试第一次就抓出真缺陷：**写了路标却没加进 `is_crash_native_line`** ⇒ 读不到，永远判成「异常终止」 |
+| 一次运行没有标识 | `Logger` 带 `run_id`（6 位十六进制，wrapping 哈希），写进「启动」与「正常退出」两条路标 | `startup_marker_carries_the_run_id`。⚠️ 第一版写 `a * 131` 在 debug 溢出 panic ⇒ 改 `wrapping_mul`；`ErrorKind::StorageFull` 稳定于 1.83 > 本仓 MSRV 1.77 ⇒ 只用裸 OS 码 |
+| 后台任务失败无证据 | `await_tasks` 的 `let _ = t.await` 与超时的 `eprintln!` 都改成经 `logger`（`warn [net_task]`）；`start_in_order` 那条无 logger 的臂显式传 `None` | `failed_background_task_leaves_one_named_warning_while_a_clean_one_leaves_none`：正控（干净任务）**0 条** + 反例（任务内 panic）**恰好 1 条**、级别 warn。做过单点变异：摘掉 warn 那一支 ⇒ 红（报「实测 0 条」），原样写回 ⇒ 绿，`diff -q` 证复原。**量具形状坑**：这条原先写在 `mod tests` 里、`#[tokio::test]` ⇒ `whole_file_slow_work_never_runs_on_an_async_worker` 的分母从 18 顶到 26（那条守卫给 `async fn` 定边界用「下一个第 0 列 `}`」，测试体里清理临时目录的 `std::fs::remove_dir_all(` 被每个 async 段各数一遍）。没动那条守卫的判据与阈值，改成 `#[test]` + 自建 current-thread runtime + `block_on(async { … })`（async **块**不是 `async fn`）⇒ 两条都绿 |
+| 诊断包导出命令面 | **本轮不交付**（详见 §6.11.1） | 一度做完（命令 + api 包装 + 注册 + 契约图行），被自家契约判据 `mapContract.test.ts` 判成「包装全仓没人引用」⇒ 按「做不完的新字段整轮还原」撤干净；现算「这两个命令名在 `src/` 与 `src-tauri/src/` 里各出现几次」= **0 处残留** |
+
+**生产构建验收（不是"注册了钩子"，是文件里有行）**：`target/release/gosslan` + 隔离 `HOME=/tmp/gosslan-diag-home2`：
+
+- `kill -9` 之后下一轮日志文件第 16 行 = `warn [boot] 上次收尾判定：异常终止 —— 只有启动路标，既无正常退出路标也无崩溃现场…`；
+- 把在用的库文件截断（`truncate -s 64`）后，同一文件里出现 `error [file] 群文件台账补账：候选扫描失败… database disk image is malformed` ⇒ **生产构建的 Rust 侧失败确实落盘**；
+- 同一份文件里启动路标实测带 `版本 5.0.36 · macos-aarch64 · release · 设备 [dev:Mac-wendon] · 运行 dc7085`，
+  三次启动三个不同 run id（`dc7085` / `49d2e1` / `f3846a`）⇒ `run_id` 在生产里真的把每一轮切开了；
+- **`kill -TERM` 与 `kill -9` 在这一格同形**（2026-10-19 18:33 现读）：两种杀法之后下一轮都读成
+  `warn [boot] 上次收尾判定：异常终止…`，文件里 `----- 正常退出 ` 条数 = 0 ⇒ **外部信号杀进程一律接不住**，
+  退出路标只由应用内收尾写。这条把"哪些收尾臂真的接得到"从推测变成读数（Clean 那一支目前只有单测 + 代码路径，
+  真机点托盘「退出」那一次仍未做 ⇒ 该支状态 **NOT RUN**）；
+- 权限现读：`gosslan.log`/`gosslan-crash.log` `-rw-------`、`com.gosslan.app` `drwx------`、
+  `com.gosslan.app/logs` **`drwxr-xr-x`** —— 日志层只给文件设 0600，`logs` 目录没设过。
+  别人读不到内容靠的是父目录那一层。修法是一行 `restrict_to_owner(&self.dir)`；本轮**不动行为**，
+  把实测与欠账一起写清楚（既有判据 `log_and_crash_files_are_owner_only` 钉的是文件那两把）。
+- **前端那一半本轮没在 release 里跑通**：`SIGTERM`/外部 kill 不经过收尾（这正是"异常终止"判定的依据，实测计数为 0 条退出路标），
+  而 WKWebView 在 release 下没有可注入通道，界面按钮又因文件被并行会话占用没接 ⇒ 该半边的状态是
+  **PARTIAL**：链路两端各自有证（Rust 端命令与落盘已实测；JS 端 hook 与 `log_frontend_error` 是既有实现且被既有判据钉着），
+  **中间那一跳（真机 WKWebView 里抛异常 ⇒ 落盘）未实测**。要在真机上按一次"必抛"按钮才算闭合。
+
+**内存（§4）先测不猜**：新增 `scripts/mem-sample.mjs`——分别采主进程与 `com.apple.WebKit.WebContent` 的内容进程
+（`ps` 的 RSS，能取到 `footprint` 就用 physical footprint；`usedFootprint` 如实记），每点带 pid 序列以便区分
+"同一进程单调涨"与"多开了一个进程"。60s 空闲基线（14 点，RSS 口径）：主进程 104,848 → 峰 104,896 → 末 102,112 KB；
+WebContent 119,728 → 119,728 → 100,384 KB ⇒ **空闲态没有增长**。**JS 堆 NOT RUN**：WKWebView 没有 CDP，
+本机也没有可用快照通道 ⇒ 不许拿 RSS 冒充 JS 堆。
+
+⚠️ **第一轮压力测量的读数是废的，而且废在量具上**：同一份采样脚本对 `--round=gfile`（8 子轮、约 422 s）
+采到 83 个点，但**被测实例只在其中 1 个点里存在**（每个 pid 只有 1 个采样点），于是分组求和的
+`baseline=0 / final=0 / delta=0` 会被读成「内存完全恢复」，真实含义是「采样窗口两端没有进程在跑」。
+这条形状和历史上「整批同幅偏移 = 尺子坏了」是同一类：**先修量具，再读数**。`mem-sample.mjs` 改成按 pid 记轨迹、
+并把覆盖率（`seen/total`）一起写出来，覆盖不足时基线/终值一律 `null` + 一句「采不到轨迹」。
+压力轮的可用读数与结论见 §6.11.2。
+
+### 6.11.1 「导出脱敏诊断包」为什么这轮没交付
+
+判据不允许半成品：`src/utils/mapContract.test.ts` 三条一起判 —— 每条 `invoke("x")` 要在
+`generate_handler!` 里注册、注册集合要与 `docs/ARCHITECTURE-MAP.html` 的 IPC 表双向一致、
+**api 包装若既不在界面也不在 store 里就是多余面**。命令本体是好的，缺的是「有人按它」。
+而能放按钮的 `LogViewer.vue` / `DevDiagPanel.vue` / `ResponsiveLayout.vue` 与 `src/api/index.ts`、
+`src-tauri/src/lib.rs`、`src/i18n/locales/*` 此刻全是并行前端会话的未提交 `M` 文件 ⇒
+本轮不覆盖别人在飞的文件，也不留一条没人调的 API（台账里那条「做不完的新字段要整轮还原」）。
+
+**当下真实可用的路径**（用户文档 `docs/notes/diagnostics-where-logs-are-2026-10-20.md`）：
+界面「更多 → 运行日志」看最近错误（内存环 ≤500 条，**不读** `.old.log` 与 `-crash.log`）+
+按文档里的目录手工取那三份文件。**下一次闭合的顺序**（交前端线负责人，一次做齐 5 件）：
+命令注册 → 契约图 IPC 行 → 按钮 → 两份语言包键 → `check-doc-citations`/`npm test` 复跑。
+
+### 6.11.2 内存（§4）：这一轮能说到哪、不能说到哪
+
+**能说的（单实例长跑，1 Hz，227/227 点全覆盖，`/tmp/mem-long.json`）**：同一个 pid 活 235 s 的轨迹 ——
+
+| 那一条链 | 首 | 峰 | 末 | 后半段均值 − 前半段均值 |
+|---|---|---|---|---|
+| 主进程 pid 22365（Rust/Tao） | 104,688 | 104,752 | 101,776 KB | **−667 KB** |
+| WebContent pid 22369（界面 1） | 73,808 | 73,824 | 64,384 KB | **−1,932 KB** |
+| WebContent pid 22391（界面 2） | 52,608 | 52,608 | 37,168 KB | **−4,069 KB** |
+
+两侧都是**不回涨**（末值低于首值、峰 ≈ 首值）⇒ 这一窗口内没有"单调增长"的形状可指。
+读数口径写死在脚本里：`ps` 的 RSS（`footprint` 本机取不到 ⇒ `usedFootprint:false`），
+**不是 JS 堆**；`jsHeap: NOT RUN`（WKWebView 无 CDP）⇒ 「分配器没归还」与「JS 侧真泄漏」这两种形状
+在这套量具下**分不开**，不许把 RSS 回落读成"没有泄漏"，也不许把 4 分钟读成"长跑没问题"。
+
+**不能说的**：① 用户报的"图片/大文件收发期间界面卡死"**没复现**——本轮没有可驱动界面的注入通道
+（release 下 WKWebView 没有 CDP，UI 自动化那一路在本仓属于"能跑但不在本批"）⇒ **NOT RUN**；
+② 传输负载下的轨迹采不到：群文件那轮的实例只活几秒，`--round=gfile` 两轮（1 Hz 与 5 s 间隔）
+各自只覆盖到 `app` 组 `0/457` 与 `1/83` 个采样点 ⇒ 峰值/恢复那一格 **BLOCKED**（量具窗口比实例寿命粗一个量级，
+不是"测出来没涨"）；③ 数小时级的驻留曲线没有跑 ⇒ 无读数。
+
+**无界增长点这一轴的处理**：本轮只做了"看得见形状"的那一半（按 pid 分组的轨迹 + 覆盖率），
+监听器/定时器/组件卸载/图片解码/分片缓冲/队列/缓存/SQLite 结果集/Tokio 任务/通道 这十处
+**逐个的容量核对没有做**（其中已有上限的是日志环 500、`MAX_LOG_FILE_BYTES` 512 KiB、崩溃现场 2 MiB、
+diag 折叠表 512 键、blob 缓存按字节封顶——那些是既有实现既有的判据，本轮没动）。⇒ 该项状态 **NOT RUN**。
+
 ## 7. 任务书逐项对照（完成审计）
 
 | 任务书要求 | 状态 | 证据 / 边界 |
@@ -703,7 +790,7 @@
 | §6 网络/文件/可靠语义 | **PASS** | 协议未变；队列有界；24 轮 E2E/647 + 互操作 216 |
 | §7 系统集成/插件 | **PASS（代码/构建）** | 官方插件优先、平台 cfg 收口；运行时见下 |
 | §8 加密/敏感数据 | **PASS（审计）** | 算法/格式未换；私钥边界判据；日志/DB 权限 0600/0700 |
-| §9 可观测性 | **PASS（有明确边界）** | B13 锁观测进日志（60s 摘要）+ B15 三处收尾事务耗时出口（慢或失败各一行，`transfer_id` 关联）+ §6.10 覆盖表；仍欠：跨进程统一 trace（只有 `msg_id`/`transfer_id`/`cid` 人工串）、`busy_timeout` 专门一行、快且成功的事务不产行（设计取舍，见 §6.10） |
+| §9 可观测性 | **PASS（有明确边界）** | 5.0.36 再补四格（见 §6.11）：落盘失败可见（计数 + 一行降级说明 + 盘满退避 256 行）、上次退出四态判定并且**判定行写进日志文件**、每条 run 有 `run_id`、`await_tasks` 不再丢 `JoinError`；诊断包导出命令面**本轮未交付**（判据不许留无人接线的 API，见 §6.11.1）。B13 锁观测进日志（60s 摘要）+ B15 三处收尾事务耗时出口（慢或失败各一行，`transfer_id` 关联）+ §6.10 覆盖表；仍欠：跨进程统一 trace（只有 `msg_id`/`transfer_id`/`cid` 人工串）、`busy_timeout` 专门一行、快且成功的事务不产行（设计取舍，见 §6.10） |
 | §10 IPC/事件/调用链 | **PASS** | 边界与事件判据；未改前端契约 |
 | §11 架构重组 | **PASS** | 模块职责/依赖方向；未为行数继续切分 |
 | §12.1 代码质量 | **PASS**（全量护栏已在 CI 跑完 **233/233**；首跑暴露的 3 条标记**全部定名并 RCA**：1 条用例锚点唯一性、1 条 CI 浅克隆 `fetch-depth`、1 条 `GUARD_ENV_SKIP` 被 cargo 吞掉的误判） | fmt/clippy/Rust 993+1（基线 994）/audit/Android/Windows 交叉编译；定点护栏 3/3 改坏即 FAIL；B15 接线判据单点变异 exit 101→0。**本轮把「护栏非空转（全量）」接进 `verify.yml` 的 `guards` job 并跑完两端**：远端 4/5 job success（前端护栏子集本轮不再红：上一轮的「操作面板」红已由并行会话的 `3de6dd9` 消掉）、`guards` 退码 1 覆盖 231/233；本地独占 target 整跑 233/233，**232 条通过、1 条锚点失效已点名**（`解除好友关系必须同时解除内存身份绑定`：commands 拆册后锚点在 `commands/friends.rs` 出现 2 次；起跑核对只查存在性 ⇒ 那句"恰好命中一次"是过度声明）。修法见 §6.7 末，交护栏负责人，本轮不改其语义 |

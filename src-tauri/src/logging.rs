@@ -128,6 +128,14 @@ mod logcat {
 }
 
 const MAX_MEM_LOGS: usize = 500;
+/// 落盘遇到"盘满"类错误后的**退避窗口**（行）：这段时间内不再试写文件（内存环照常），
+/// 窗口到点再试一次。为什么不"每条日志查一次可用空间"：查可用空间要 `statvfs` /
+/// `GetDiskFreeSpaceExW`，前者需要新依赖（本仓默认构建零新增第三方 crate，ADR-0015 §2），
+/// 后者只在 `bluetooth` feature 的 Windows 构建里才有 `windows` crate ⇒ 为一条日志
+/// 加一次系统调用 + 一个依赖不值。**盘真满时第一次写失败就会带 `StorageFull` /
+/// `ENOSPC(28)` / `ERROR_DISK_FULL(112)` / `ERROR_HANDLE_DISK_FULL(3900)`**，
+/// 那个信号比任何预防性查询都准，因为它量的就是我们要做的这次写。
+const LOG_RETRY_BACKOFF_LINES: u64 = 256;
 /// 单个日志文件大小上限（字节），超出即轮转。
 const MAX_LOG_FILE_BYTES: u64 = 512 * 1024;
 /// 崩溃现场文件的磁盘上界（字节）：超了就**整份重开**，不做多代归档、也绝不无限增长。
@@ -263,10 +271,89 @@ pub struct Logger {
     diag_fold: Mutex<HashMap<(String, String), i64>>,
     /// `seed_previous_run` 是否已跑过，用来保证它自身幂等。
     seed_ran: std::sync::atomic::AtomicBool,
+    /// 本轮进程的运行标识（6 位十六进制）：写进"启动"与"正常退出"两条路标，
+    /// 让一份被多实例、多次启动写混的现场文件能按 run 切开。
+    run_id: String,
+    /// 落盘失败累计次数（含磁盘不足被主动跳过的）。内存环照常，计数用来"看得见"。
+    write_fails: std::sync::atomic::AtomicU64,
+    /// 已探测到的磁盘不足状态：为真时跳过落盘，直到下一次探测节流窗口到点再复查。
+    disk_low: std::sync::atomic::AtomicBool,
+    /// 降级说明是否已经进过内存环（只记第一次，避免刷爆 500 条环）。
+    degrade_noted: std::sync::atomic::AtomicBool,
+    /// 落盘行计数，用于 [`LOG_RETRY_BACKOFF_LINES`] 的退避窗口节流。
+    append_lines: std::sync::atomic::AtomicU64,
+}
+
+/// 这个 IO 错误是不是"盘满"类。
+///
+/// ⚠️ 只用裸 OS 码，不用 `ErrorKind::StorageFull`：那个变体稳定于 Rust 1.83，
+/// 而本仓 `rust-version = 1.77`（clippy 的 `incompatible_msrv` 直接把它判成 error，
+/// 2026-10-20 第一次跑 clippy 就是这么红的）。裸码是各平台事实上的定义：
+/// `28` = ENOSPC（macOS/Linux/Android）、`112`/`3900` = Windows 的
+/// `ERROR_DISK_FULL`/`ERROR_HANDLE_DISK_FULL`；再加一条按错误文本兜底，
+/// 免得某个平台既给不出这些码又确实写不下。
+fn is_disk_full(e: &std::io::Error) -> bool {
+    if matches!(
+        e.raw_os_error(),
+        Some(28) | Some(112) | Some(3900) | Some(122)
+    ) {
+        return true;
+    }
+    let t = e.to_string().to_lowercase();
+    t.contains("no space") || t.contains("not enough space") || t.contains("quota")
+}
+
+/// 上一轮是怎么结束的。**判定依据是"缺席"**：进程被 `kill -9`、OOM killer、
+/// 看门狗强杀、拔电源这几类死法在进程内部**永远留不下任何东西**，能区分它们的
+/// 只有"有没有崩溃现场块"与"有没有正常退出路标"这两个在场/缺席的组合。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PreviousExit {
+    /// 现场文件里什么都没有（首次运行或被清档）
+    NoHistory,
+    /// 最后一条路标是"正常退出" ⇒ 上一次走到收尾
+    Clean,
+    /// 有崩溃现场块 ⇒ 上一次是 Rust panic（或分配失败留痕）
+    Panic,
+    /// 只有"启动"、没有退出、也没有崩溃块 ⇒ **按异常终止处理**
+    /// （强杀 / OOM / 原生代码 abort / 掉电 —— 这一类无法再细分，也不许假装能细分）
+    SilentKill,
+}
+
+/// 按现场文件的原生路标序列判定上一轮的结束方式。输入应是**已剔掉本轮"启动"行**
+/// 的那一段（见 [`Logger::seed_previous_run`]）。
+pub fn classify_previous_exit(native_lines: &[String]) -> PreviousExit {
+    if native_lines.is_empty() {
+        return PreviousExit::NoHistory;
+    }
+    if native_lines.iter().any(|l| l.starts_with("===== 崩溃现场")) {
+        return PreviousExit::Panic;
+    }
+    match native_lines.last() {
+        Some(l) if l.starts_with("----- 正常退出 ") => PreviousExit::Clean,
+        Some(l) if l.starts_with("----- 启动 ") => PreviousExit::SilentKill,
+        _ => PreviousExit::NoHistory,
+    }
 }
 
 impl Logger {
+    /// 本轮进程的运行标识：6 位十六进制，取启动纳秒时刻的低 bits 再与设备指纹混合。
+    /// 不需要全局唯一，只需要**在同一份现场文件里能把两次启动分开**（多实例 + 快速重启）。
+    fn new_run_id(fingerprint: &str) -> String {
+        // 全部用 wrapping_*：这是标识哈希，溢出本来就是设计的一部分；
+        // debug 构建开着溢出检查，写成 `a * 131` 会在真机上直接 panic（本仓的测试第一次就撞了）。
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos() as u64 + d.as_secs().wrapping_mul(31))
+            .unwrap_or(0);
+        let mixed = nanos
+            ^ fingerprint
+                .bytes()
+                .fold(0u64, |a, b| a.wrapping_mul(131).wrapping_add(b as u64));
+        format!("{:06x}", mixed & 0xff_ffff)
+    }
+
     pub fn new(dir: PathBuf, stem: &str, fingerprint: String) -> Logger {
+        let run_id = Self::new_run_id(&fingerprint);
         let logger = Logger {
             entries: Mutex::new(VecDeque::with_capacity(MAX_MEM_LOGS)),
             dir,
@@ -274,6 +361,11 @@ impl Logger {
             fingerprint,
             diag_fold: Mutex::new(HashMap::new()),
             seed_ran: std::sync::atomic::AtomicBool::new(false),
+            run_id,
+            write_fails: std::sync::atomic::AtomicU64::new(0),
+            disk_low: std::sync::atomic::AtomicBool::new(false),
+            degrade_noted: std::sync::atomic::AtomicBool::new(false),
+            append_lines: std::sync::atomic::AtomicU64::new(0),
         };
         // 把路径交给独立写入器（若 bootstrap 更早绑过，这条就是 no-op；只认第一次）
         bind_crash_file(&logger.crash_path());
@@ -305,7 +397,7 @@ impl Logger {
             restrict_to_owner(&self.crash_path());
             let _ = writeln!(
                 f,
-                "----- 启动 {} 版本 {} · {}-{} · {} · 设备 {} -----",
+                "----- 启动 {} 版本 {} · {}-{} · {} · 设备 {} · 运行 {} -----",
                 format_utc(now_ms()),
                 env!("CARGO_PKG_VERSION"),
                 std::env::consts::OS,
@@ -316,8 +408,53 @@ impl Logger {
                     "release"
                 },
                 self.fingerprint,
+                self.run_id,
             );
         }
+    }
+
+    /// 写一条**正常退出**路标（与"启动"同一份现场文件）。
+    ///
+    /// 为什么必须有它：现在这份文件只有两种行 —— "启动"和"崩溃现场"。于是
+    /// **最后一条是"启动"这件事被当成"上次不是 panic 死的"，但它其实有两种完全不同的成因**：
+    /// 用户自己正常退了（有路标才分得出来）／被系统强杀（OOM killer、`kill -9`、看门狗、
+    /// 电量耗尽）—— 后者在进程内部**永远不会留任何东西**，只能靠"上一轮有启动、没有退出、
+    /// 也没有崩溃现场"这一**缺席**推断出来。这正是 [`classify_previous_exit`] 干的事。
+    ///
+    /// ⚠️ 这条只声明"走到了收尾"，不声明"收尾成功"：调用点在 `RunEvent::Exit`（见 lib.rs），
+    /// 而 `panic = "abort"` 的硬崩、`_exit` 级别的退出根本走不到这里 —— 那两类由崩溃现场
+    /// 与"缺席推断"分别接住。
+    pub fn write_exit_marker(&self) {
+        use std::io::Write;
+        let _ = std::fs::create_dir_all(&self.dir);
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.crash_path())
+        {
+            restrict_to_owner(&self.crash_path());
+            let _ = writeln!(
+                f,
+                "----- 正常退出 {} 运行 {} -----",
+                format_utc(now_ms()),
+                self.run_id,
+            );
+        }
+    }
+
+    /// 本轮运行标识：写在"启动"与"正常退出"两条路标里。
+    /// 只给测试读 —— 生产里没有界面消费它，加公开面就是"未接线的 API"（契约门禁会拒）。
+    #[cfg(test)]
+    pub fn run_id(&self) -> &str {
+        &self.run_id
+    }
+
+    /// 落盘失败累计次数（含磁盘不足主动跳过的）。
+    /// 面向用户的降级证据是内存环里那条 `日志落盘已降级`；这个计数留给测试与日志自检，
+    /// 之所以不导出成命令 —— 没有界面读它的现在，加了就是无人接线的面（契约门禁会直接拒）。
+    #[cfg(test)]
+    pub fn write_fails(&self) -> u64 {
+        self.write_fails.load(Ordering::Relaxed)
     }
 
     pub fn info(&self, target: &str, message: impl Into<String>) {
@@ -420,7 +557,11 @@ impl Logger {
         }
 
         // 3) 落盘（追加写，超限轮转）。失败静默：日志本身不能反过来拖垮主流程。
-        self.append_file(ts, level, target, &message);
+        if let Err(reason) = self.append_file(ts, level, target, &message) {
+            // 失败必须可见：计数 + 第一次进内存环（不再走 log()，否则会重试落盘形成回环）。
+            self.write_fails.fetch_add(1, Ordering::Relaxed);
+            self.note_degraded_once(&reason);
+        }
 
         // 4) **崩溃那一条额外单独落盘**。
         //
@@ -558,34 +699,94 @@ impl Logger {
         false
     }
 
-    fn append_file(&self, ts: i64, level: Level, target: &str, message: &str) {
-        let _ = std::fs::create_dir_all(&self.dir);
-        let path = self.current_path();
-
-        // 惰性轮转：当前文件超限时，把旧内容挪到 `.old.log`（覆盖上一份旧文件）。
-        if let Ok(meta) = std::fs::metadata(&path) {
-            if meta.len() > MAX_LOG_FILE_BYTES {
-                let _ = std::fs::remove_file(self.old_path());
-                let _ = std::fs::rename(&path, self.old_path());
-            }
+    /// 追加一行到 `<stem>.log`（超单文件上限先惰性轮转到 `.old.log`）。
+    ///
+    /// ⚠️ 返回 `Result`，不像原先那样把 IO 错误全 `let _ =` 吞掉（2026-10-20 补）：
+    /// "写失败不能拖垮主流程"是对的，**错的是连"这次没写进去"也没人知道**。
+    /// 盘满时用户拿到的会是一份**看起来正常、末尾却短了一截**的日志 —— 那正是
+    /// 这次要防的形状。这里只回报原因（调用方计数 + 首次降级留痕），仍不 panic、不回环重试。
+    ///
+    /// 磁盘空间保护 = **写失败信号 + 退避窗口**，不是预防性查可用空间：
+    /// 见 [`LOG_RETRY_BACKOFF_LINES`] 上面那段（要 `statvfs` 就得加依赖，而构建零新增是既有约束）。
+    fn append_file(
+        &self,
+        ts: i64,
+        level: Level,
+        target: &str,
+        message: &str,
+    ) -> Result<(), String> {
+        let seen = self.append_lines.fetch_add(1, Ordering::Relaxed) + 1;
+        // 已判定盘紧 ⇒ 每 LOG_RETRY_BACKOFF_LINES 行才复查一次（内存环照常，日志一条不丢）。
+        if self.disk_low.load(Ordering::Relaxed) && seen % LOG_RETRY_BACKOFF_LINES != 0 {
+            return Err("磁盘不足退避窗口内跳过落盘".to_string());
         }
 
+        let line = format!(
+            "{} {} {} [{}] {}",
+            self.fingerprint,
+            format_utc(ts),
+            level.as_str(),
+            target,
+            message
+        );
+        let path = self.current_path();
         use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-        {
+        let wrote = (|| -> std::io::Result<()> {
+            std::fs::create_dir_all(&self.dir)?;
+            // 惰性轮转：当前文件超限时，把旧内容挪到 `.old.log`（覆盖上一份旧文件）。
+            if let Ok(meta) = std::fs::metadata(&path) {
+                if meta.len() > MAX_LOG_FILE_BYTES {
+                    let _ = std::fs::remove_file(self.old_path());
+                    let _ = std::fs::rename(&path, self.old_path());
+                }
+            }
+            let mut f = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)?;
             restrict_to_owner(&path);
-            let line = format!(
-                "{} {} {} [{}] {}",
-                self.fingerprint,
-                format_utc(ts),
-                level.as_str(),
-                target,
-                message
-            );
-            let _ = writeln!(f, "{line}");
+            writeln!(f, "{line}")?;
+            Ok(())
+        })();
+
+        match wrote {
+            // 写得进去就说明上一轮的"盘紧"判断已经过期（用户清了空间），解除退避。
+            Ok(()) => {
+                self.disk_low.store(false, Ordering::Relaxed);
+                Ok(())
+            }
+            Err(e) => {
+                let os = e
+                    .raw_os_error()
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "无".to_string());
+                if is_disk_full(&e) {
+                    self.disk_low.store(true, Ordering::Relaxed);
+                }
+                Err(format!("{e}（kind={:?} OS码={os}）", e.kind()))
+            }
+        }
+    }
+
+    /// 落盘失败要**看得见**，但降级说明只准进环一次：内存环只有 [`MAX_MEM_LOGS`] 条，
+    /// 每条失败都补一句会把它刷满，于是"写不进去"会把真正要留的日志挤出去。
+    ///
+    /// ⚠️ 这里直接进环，**不走 `Logger::log`** —— 那条会再试一次落盘、再失败、再降级，形成回环。
+    fn note_degraded_once(&self, reason: &str) {
+        if self.degrade_noted.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let mut q = self.entries.lock().unwrap_or_else(|e| e.into_inner());
+        q.push_back(LogEntry {
+            ts: now_ms(),
+            level: Level::Warn.as_str().to_string(),
+            target: "boot".to_string(),
+            message: format!(
+                "日志落盘已降级：{reason} —— 之后的日志只留在内存环（≤{MAX_MEM_LOGS} 条）里，界面还能看到，文件不再增长。"
+            ),
+        });
+        while q.len() > MAX_MEM_LOGS {
+            q.pop_front();
         }
     }
 
@@ -688,6 +889,34 @@ impl Logger {
                 body.push('\n');
             }
             let has_block = native.iter().any(|l| l.starts_with("===== 崩溃现场"));
+            // 上次收尾判定：把"在场/缺席"两个信号合成一句结论写进同一块文本里。
+            // 级别沿用旧规则（有崩溃块 ⇒ error），新信息只加文本，不动既有判据的形状。
+            let verdict_kind = classify_previous_exit(&native);
+            let verdict = match verdict_kind {
+                PreviousExit::Clean => "上次收尾判定：正常退出（有退出路标）",
+                PreviousExit::Panic => "上次收尾判定：panic 现场（见上面的崩溃现场块）",
+                PreviousExit::SilentKill => concat!(
+                    "上次收尾判定：异常终止 —— 只有启动路标，既无正常退出路标也无崩溃现场。",
+                    "可能是强杀（kill -9 / 看门狗 / 拔电）或 OOM；这几类死法在进程内部留不下任何东西，",
+                    "只能这样按缺席归类"
+                ),
+                PreviousExit::NoHistory => "上次收尾判定：现场文件里没有可判定的路标",
+            };
+            body.push_str(verdict);
+            body.push('\n');
+            // 判定也要**落到日志文件里**。为什么：`seed_previous_run` 灌进去的那批行只进内存环
+            // （它刻意不走 `log()`，免得污染折叠表与磁盘），于是"只发日志文件"的用户
+            // 永远拿不到这句结论 —— 2026-10-20 用 release 二进制实测就是这样：文件里有
+            // 三条原始路标，判定只在界面上。补这一行让离线读文件的人也能直接看到。
+            let v_level = match verdict_kind {
+                PreviousExit::Panic | PreviousExit::SilentKill => Level::Warn,
+                _ => Level::Info,
+            };
+            if let Err(r) = self.append_file(now_ms(), v_level, "boot", verdict) {
+                // 判定行自己都写不进去 ⇒ 这是磁盘/权限层面的硬失败，退回 stderr 留个字面证据，
+                // 不能静默（`let _ =` 会让"为什么文件里没有这句结论"变成新一轮猜谜）。
+                eprintln!("[gosslan] 收尾判定未能写入日志文件：{r}");
+            }
             out.push(LogEntry {
                 ts: head_ts,
                 level: if has_block {
@@ -776,11 +1005,15 @@ fn parse_utc_to_ms(text: &str) -> Option<i64> {
     Some((days * 86_400 + h * 3_600 + mi * 60 + s) * 1_000)
 }
 
-/// 崩溃现场文件独有的三类行：独立通道留痕、启动路标、崩溃块头。
+/// 崩溃现场文件独有的四类行：独立通道留痕、启动路标、**正常退出路标**、崩溃块头。
 /// 指纹开头的行是运行日志的副本，由 `<stem>.log` 负责，不重复搬。
+///
+/// ⚠️ "正常退出"这一类必须一起加进来：写而不读等于没写 —— 2026-10-19 第一次跑测试就
+/// 抓到这个（路标写进文件了，但那三类过滤器把它挡在外面 ⇒ 下一轮永远读成"异常终止"）。
 fn is_crash_native_line(line: &str) -> bool {
     line.starts_with(">>> ")
         || line.starts_with("----- 启动 ")
+        || line.starts_with("----- 正常退出 ")
         || line.starts_with("===== 崩溃现场")
 }
 
@@ -858,6 +1091,131 @@ mod tests {
         assert_eq!(format_utc(ms), "2026-09-11 13:20:54");
         // 一个带毫秒的：秒以下被截断，不影响 HH:MM:SS
         assert_eq!(format_utc(999), "1970-01-01 00:00:00");
+    }
+
+    #[test]
+    fn previous_exit_is_classified_by_presence_and_absence() {
+        let mk = |s: &[&str]| -> Vec<String> { s.iter().map(|x| x.to_string()).collect() };
+        // 什么都没有 ⇒ 无可判定
+        assert_eq!(classify_previous_exit(&mk(&[])), PreviousExit::NoHistory);
+        // 有崩溃块 ⇒ panic（优先级高于路标）
+        assert_eq!(
+            classify_previous_exit(&mk(&["----- 启动 a", "===== 崩溃现场 b"])),
+            PreviousExit::Panic
+        );
+        // 最后一条是退出路标 ⇒ 正常收尾
+        assert_eq!(
+            classify_previous_exit(&mk(&["----- 启动 a", "----- 正常退出 b"])),
+            PreviousExit::Clean
+        );
+        // 只有启动、既无退出也无崩溃块 ⇒ **按异常终止**（这就是新能力：旧代码把这一格
+        // 读成"上次不是 panic 死的"，于是正常退出和被 kill -9 分不开）
+        assert_eq!(
+            classify_previous_exit(&mk(&["----- 启动 a"])),
+            PreviousExit::SilentKill
+        );
+    }
+
+    #[test]
+    fn exit_marker_lets_next_run_read_previous_as_clean_and_absence_as_abnormal() {
+        // 正控：写了退出路标 ⇒ 下一轮 seed 出来的那块文本必须是"正常退出"
+        let clean = std::env::temp_dir().join(format!("gosslan-exit-ok-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&clean);
+        let lg1 = Logger::new(clean.clone(), "ok", "[dev:ok]".to_string());
+        lg1.write_exit_marker();
+        let lg2 = Logger::new(clean.clone(), "ok", "[dev:ok]".to_string());
+        lg2.seed_previous_run();
+        let text: String = lg2
+            .snapshot(None)
+            .iter()
+            .map(|e| e.message.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("上次收尾判定：正常退出"), "实际文本：{text}");
+        // 判定还必须落到**日志文件**里：用户崩溃后能发出来的只有文件，不是界面内存环。
+        let on_disk = std::fs::read_to_string(lg2.current_path()).unwrap_or_default();
+        assert!(
+            on_disk.contains("上次收尾判定：正常退出"),
+            "判定没进日志文件，用户只发文件时读不到：{on_disk}"
+        );
+
+        // 反控：同一条路径不写退出路标 ⇒ 必须读成"异常终止"。
+        // 没有这一半，上面那句可以靠"文本里恰好有那句话"蒙过去。
+        let kill = std::env::temp_dir().join(format!("gosslan-exit-kill-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&kill);
+        let _ = Logger::new(kill.clone(), "kill", "[dev:kill]".to_string());
+        let lg3 = Logger::new(kill.clone(), "kill", "[dev:kill]".to_string());
+        lg3.seed_previous_run();
+        let text3: String = lg3
+            .snapshot(None)
+            .iter()
+            .map(|e| e.message.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text3.contains("异常终止"), "实际文本：{text3}");
+        let _ = std::fs::remove_dir_all(&clean);
+        let _ = std::fs::remove_dir_all(&kill);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn disk_write_failure_is_counted_and_noted_in_memory() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("gosslan-log-ro-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let logger = Logger::new(dir.clone(), "ro", "[dev:ro]".to_string());
+        // 目录改成"不可写"：文件能打开失败 ⇒ 落盘必须失败，但日志不能因此消失
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+        logger.error("test", "这条只能进内存");
+        assert!(
+            logger.write_fails() > 0,
+            "落盘失败必须被计数（实测 {} 次）",
+            logger.write_fails()
+        );
+        let snap = logger.snapshot(None);
+        assert!(
+            snap.iter().any(|e| e.message.contains("日志落盘已降级")),
+            "降级必须进内存环，否则用户只看到「日志里什么都没有」"
+        );
+        assert!(
+            snap.iter().any(|e| e.message == "这条只能进内存"),
+            "内存环照常，不能因为写失败就把日志丢掉"
+        );
+        let before = logger.write_fails();
+        logger.error("test", "第二条");
+        assert!(logger.write_fails() > before, "持续失败要持续计数");
+        // 只记一次：降级说明不许把 500 条环刷满。反例必须在**第二条之后**重读快照 ——
+        // 拿第一次的快照数条数是自证式读数，证不出"第二条没有再记一条"。
+        let after: Vec<LogEntry> = logger.snapshot(None);
+        assert_eq!(
+            after
+                .iter()
+                .filter(|e| e.message.contains("日志落盘已降级"))
+                .count(),
+            1,
+            "降级说明只能进一次内存环"
+        );
+        assert!(
+            after.iter().any(|e| e.message == "第二条"),
+            "第二条也得照常进内存"
+        );
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn startup_marker_carries_the_run_id() {
+        let dir = std::env::temp_dir().join(format!("gosslan-log-runid-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let logger = Logger::new(dir.clone(), "rid", "[dev:rid]".to_string());
+        let body = std::fs::read_to_string(logger.crash_path()).unwrap();
+        assert!(body.contains("----- 启动 "), "启动路标丢了：{body}");
+        assert!(
+            body.contains(&format!("· 运行 {}", logger.run_id())),
+            "启动路标必须带本轮运行标识，实际：{body}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
