@@ -435,7 +435,10 @@ def main() -> int:
             ok, detail = verify(case)
         except Exception as exc:  # 锚点过期、超时、断言等 —— 报告出来，别让整个脚本崩
             ok, detail = False, f"验证过程出错：{exc}"
-        print(f"      {'✅' if ok else '❌'} {detail}")
+        # ★ 失败时把**用例名和形状放在同一行**：CI 那条注解只挑含 `❌` 的关键行
+        # （`scripts/ci-run.sh` 的 grep），上一轮三条标记全都读得出形状、读不出是谁 ——
+        # 名字落在上一行 `[i/233] 名字`，被过滤掉了，而 job 日志匿名 403，只能等下次跑。
+        print(f"      {'✅' if ok else '❌ ' + case.name + ' ⇒'} {detail}")
         if not ok:
             bad.append(case.name)
         print()
