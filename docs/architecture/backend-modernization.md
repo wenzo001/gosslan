@@ -493,6 +493,7 @@
 | 迁移测试 | 0 | **38 通过 + 1 ignored** |
 | E2E（32 轮，隔离 HOME） | 0 | **863/863 断言** |
 | `cargo audit --file src-tauri/Cargo.lock` | 0 | **0 漏洞，10 allowed warnings** |
+| GitHub Actions @ `519d473`（main） | 4/5 job success | macOS 构建、Windows x64+ARM64 构建、Android APK、Rust 单测（macOS/Windows）全 **success**；Verify 的**前端护栏子集 FAIL**：1 条「操作面板」注入后仍通过（前端范围，并行会话负责；后端各腿均绿） |
 | `version:check` / Change Budget / CHANGELOG / 文档硬数字 | 0 | 全部通过 |
 
 ### 6.8 剩余风险
@@ -500,7 +501,8 @@
 - **高**：用户直接提供的真实 v10 现场未执行（真实数据 + 逐字 v10 schema 演练已过）；
   Windows/iOS/Linux 运行时与真机未验证
   （Windows 已过交叉编译，仍无 Windows 主机/Wine 跑行为）。
-- **中**：单一 SQLite 连接串行化读写；入站 handler 单链路串行；
+- **中**：远端 CI @`519d473` 的 Verify 因**前端**“操作面板”护栏空转红（1 条，非后端腿）；
+  单一 SQLite 连接串行化读写；入站 handler 单链路串行；
   **A-17（已修，观察项）：多链路文本 Ack 1/4 抖动；5.0.33 每 5s 重放后 contentpull ×3 绿**；
   Windows ACL 未处理；audit 的 glib/zbus 警告仅 Linux 路径。
 - **低**：迁移备份只按数量清扫、无时间保留策略；`gfile` 首跑曾遇 toolchain 环境噪声（复跑绿）；目录权限仅在
@@ -566,7 +568,7 @@
 | §9 可观测性 | **PARTIAL** | B13 锁观测 + §6.10 覆盖表；事务级耗时/统一 trace 仍未做 |
 | §10 IPC/事件/调用链 | **PASS** | 边界与事件判据；未改前端契约 |
 | §11 架构重组 | **PASS** | 模块职责/依赖方向；未为行数继续切分 |
-| §12.1 代码质量 | **PASS**（完整护栏步除外） | fmt/clippy/Rust 990+1/audit/Android/Windows 交叉编译；定点护栏 3/3 改坏即 FAIL；`verify:full` 的完整护栏族按本地策略未跑完 |
+| §12.1 代码质量 | **PASS**（完整护栏步除外） | fmt/clippy/Rust 991+1/audit/Android/Windows 交叉编译；定点护栏 3/3 改坏即 FAIL；远端 CI 的后端各腿 success，唯一红是前端“操作面板”护栏（不在后端范围）；`verify:full` 的完整护栏族按本地策略未跑完 |
 | §12.2 数据完整性 | **PASS** | 迁移 38+1、实体逐字段、备份恢复、v10 真实数据 |
 | §12.3 网络与可靠性 | **PASS** | 24 轮 E2E（含 kill/freeze/readonly/rotted/shrink/断链补拉） |
 | §12.4 大文件/UI 响应 | **PASS** | 600MB 传输中设置窗 397ms（5.0.32）；RSS 126.1 MiB；队列 8 MiB/链路 |
