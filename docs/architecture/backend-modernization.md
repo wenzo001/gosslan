@@ -482,7 +482,7 @@
 
 | 命令 | 退出码 | 读数 |
 |---|---|---|
-| `npm run verify:local`（干净 worktree，5.0.32） | **0** | **22/22，165.0s** |
+| `npm run verify:local`（干净 worktree，5.0.33） | **0** | **22/22，1089.0s（冷 target）** |
 | `cargo xwin build --release --target x86_64-pc-windows-msvc --features bluetooth` | 0 | **5.0.32 冷 target 8m38s**；`gosslan.exe` 9.6MB（PE32+ GUI x86-64） |
 | `cargo test --lib --features bluetooth` | 0 | **990 通过 + 1 ignored** |
 | 护栏定点（文件气泡不整文件扫描 / outbox 终态门控 / transport 锁抗中毒） | 0 | **3/3 改坏即 FAIL、恢复即 PASS**（干净 worktree 5.0.32） |
