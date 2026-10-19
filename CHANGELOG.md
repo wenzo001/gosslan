@@ -27,6 +27,7 @@
 - 判据 `outbox_retrier_is_wired_and_covers_both_queues` 钉唯一接线、周期、按链路筛选、
   两个队列都覆盖；Rust **991 通过 + 1 ignored**，基线 992（Windows 975）。
 - 5.0.33 release 上 contentpull **×3 全部 36/36 绿**，未再出现文本 Ack 超时、未出现重复消息；
+  5.0.33 回归：default **18/18**、group **37/37**、posttext **39/39**（重放未引入重复消息/会话覆写）；
   其余 E2E/真机 **NOT RUN**；干净 worktree `verify:local` **22/22**（1089.0s，冷 target）。
 
 ## [5.0.32] - 2026-10-19
