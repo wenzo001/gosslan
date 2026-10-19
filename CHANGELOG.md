@@ -22,7 +22,8 @@
   空窗口不产行；慢持锁（默认 ≥500ms）时 warn 一行，含取锁次数、最长持有、最长等待、
   累计持有、超阈值次数；不含 SQL、参数、文件名或正文。
 - 判据 `db_hold_summary_has_exactly_one_production_reader` 钉住唯一读者、唯一启动点、
-  阈值来源与日志出口；Rust **990 通过 + 1 ignored**，基线 990→991（Windows 973→974）。
+  阈值来源与日志出口；两次单点变异（摘启动调用 / 摘唯一读取点）均报红、还原后绿；
+  Rust **990 通过 + 1 ignored**，基线 990→991（Windows 973→974）。
 - 不改锁语义、DB、协议；干净 worktree `verify:local` **22/22**（165.0s）；E2E/真机 **NOT RUN**。
 - UI 响应性复测（5.0.32 release）：600MB contentpull 传输中，接收端设置窗口 **397ms**
   可开（System Events 激活 + Cmd+,，窗口名 `设置`/`Gosslan`；探测后立即停轮，

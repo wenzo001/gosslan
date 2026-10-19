@@ -238,7 +238,9 @@
   不产行，慢持锁（默认 ≥500ms）才 warn 一行（取锁次数/最长持有/最长等待/累计/
   超阈值次数），不含 SQL、参数、正文或文件名。
 - 判据 `db_hold_summary_has_exactly_one_production_reader` 钉住唯一读者、唯一启动点、
-  阈值来源与日志出口；Rust **990 通过 + 1 ignored**，基线 991（Windows 974）；
+  阈值来源与日志出口；**两次单点变异**：摘掉 `lib.rs` 的启动调用 ⇒ 红在“启动点必须
+  恰好一处”；把 `st.db.take_summary()` 换成默认摘要 ⇒ 红在“只许这一个读者”；
+  还原后绿。Rust **990 通过 + 1 ignored**，基线 991（Windows 974）；
   干净 worktree `verify:local` **22/22 / 165.0s**。
 - 未改锁语义、DB、协议；E2E/真机 **NOT RUN**（本批只加日志出口）。
 
