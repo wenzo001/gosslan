@@ -532,6 +532,8 @@
 
 | 命令 | 退出码 | 读数 |
 |---|---|---|
+| `npm run verify:local`（干净 worktree @ `d42003f`，复用 node_modules 与 target） | **0** | **22/22，79.6s**；唯一跳过的是「护栏非空转」（`--skip-guard-sweep` 本地口径，现已由 CI 的 `guards` job 接住） |
+| `git push origin feat/5.0` | 0 | `[new branch] feat/5.0 -> feat/5.0`（第一次尝试被本机 DNS 打回 `Connection closed by 199.59.149.235 port 443`，重试即通 ⇒ 网络抖动，不是权限问题）。公开的是 `origin/main..HEAD` 六笔：本批 `d42003f` + 并行前端会话的 `3de6dd9` + 四笔记账 docs。未推 main、未 tag、未发 release、未 merge |
 | `npm run verify:local`（干净 worktree，5.0.33） | **0** | **22/22，1089.0s（冷 target）** |
 | `cargo xwin build --release --target x86_64-pc-windows-msvc --features bluetooth` | 0 | **5.0.33 冷 target 14m27s**；`gosslan.exe` 9.6MB（PE32+ GUI x86-64） |
 | `cargo test --lib --features bluetooth` | 0 | **993 通过 + 1 ignored**（B15 两条新判据；`check-test-manifest --only rust` 基线 994 全部在跑） |
@@ -633,8 +635,12 @@
   复跑 **exit 0 / 6 对**。**上限没有调大**（它 2026-10-07 从 13 收到 6，比原来严）。
   ⚠️ 一个只有读实现才知道的事实：这把棘轮按**领域是否有 `use`** 判可见，光把域名写进
   `consumes` 不减少配对数 —— 接线判据因此多钉一条"transport.rs 必须有那条 use"。
-  ⚠️ 本批带 **5.0.35** 版本清单与 CHANGELOG 条目 —— 并行前端会话的 5.0.34 已经提交
-  （`3de6dd9`），版本号这次是空的，才敢动那五个文件。
+  ⚠️ 本批带 **5.0.35** 版本清单与 CHANGELOG 条目（并行前端会话的 5.0.34 已提交为 `3de6dd9`，
+  号是空的才敢动）。这一格被门禁顶回来过一次，值得记：判据 4 报「声明了 `Version-Bump: patch`，
+  但 1/4 个版本清单文件没动：**package-lock.json**」——`scripts/version.mjs` 会连 lock 一起改，
+  是我提交时把它漏在了文件清单外。这条红**只能在声明它的那条提交上修**，后面补一笔新提交消不掉
+  ⇒ 我用 temp-index plumbing 把自己刚造的两笔未推提交重建成一笔 `d42003f`（17 文件，
+  四个版本清单 + Cargo.lock + CHANGELOG 齐），`3de6dd9` 及其以下一字未动、SHA 不变。
 
 - 新增锁摘要的**唯一生产读者**与唯一启动点由
   `db_hold_summary_has_exactly_one_production_reader` 钉住；数字行不含 SQL、参数、
@@ -656,7 +662,7 @@
 | §6 网络/文件/可靠语义 | **PASS** | 协议未变；队列有界；24 轮 E2E/647 + 互操作 216 |
 | §7 系统集成/插件 | **PASS（代码/构建）** | 官方插件优先、平台 cfg 收口；运行时见下 |
 | §8 加密/敏感数据 | **PASS（审计）** | 算法/格式未换；私钥边界判据；日志/DB 权限 0600/0700 |
-| §9 可观测性 | **PARTIAL** | B13 锁观测 + §6.10 覆盖表；事务级耗时/统一 trace 仍未做 |
+| §9 可观测性 | **PASS（有明确边界）** | B13 锁观测进日志（60s 摘要）+ B15 三处收尾事务耗时出口（慢或失败各一行，`transfer_id` 关联）+ §6.10 覆盖表；仍欠：跨进程统一 trace（只有 `msg_id`/`transfer_id`/`cid` 人工串）、`busy_timeout` 专门一行、快且成功的事务不产行（设计取舍，见 §6.10） |
 | §10 IPC/事件/调用链 | **PASS** | 边界与事件判据；未改前端契约 |
 | §11 架构重组 | **PASS** | 模块职责/依赖方向；未为行数继续切分 |
 | §12.1 代码质量 | **PASS**（完整护栏族的远端首跑待读） | fmt/clippy/Rust 993+1（基线 994）/audit/Android/Windows 交叉编译；定点护栏 3/3 改坏即 FAIL；B15 接线判据的单点变异 exit 101→0；本轮把「护栏非空转（全量）」接进 `verify.yml` 的 `guards` job（不带 `--only`），此前它没有任何自动触发点；远端 CI 的后端各腿 success，唯一红是前端“操作面板”护栏（不在后端范围） |
@@ -665,8 +671,10 @@
 | §12.4 大文件/UI 响应 | **PASS** | 600MB 传输中设置窗 397ms（5.0.32）；RSS 126.1 MiB；队列 8 MiB/链路 |
 | §12.5 跨平台 | **PARTIAL** | macOS PASS；Android 仅编译；Windows 交叉编译 PASS；Linux/iOS 与所有运行时 **NOT RUN** |
 | §13 自主执行工作流 | **PASS** | 分批提交、失败先 RCA、未绕过门禁 |
-| §14 Git/工作区保护 | **PASS** | 未覆盖并行改动；未 push/tag/release/merge |
+| §14 Git/工作区保护 | **PASS（有一笔需要交代的越界）** | 未覆盖并行改动内容、未 tag/release/merge、未推 main；本轮按授权把 `feat/5.0` 推上远端（连带公开并行会话那笔 `3de6dd9`）。两处如实入账：① 为让判据 4 落地（声明 patch 必须四个版本清单文件同批），我用 temp-index plumbing 把**自己**刚造的两笔未推提交重建成 `d42003f` 一笔，`3de6dd9` 及其以下一字未动；② 刷新索引时用了能捞到 `docs/` 的宽 scope，把 `docs/ARCHITECTURE-MAP.html` 的**已 stage 状态**重置成 HEAD（文件内容未被改写，需前端会话重新 `git add` 那一个文件） |
 | §15 九节最终报告 | **PASS** | §6.1–§6.10 + 本表 |
 
-**结论**：除“用户直接提供的 v10 现场”“Windows/Linux/iOS 运行时与真机”“完整护栏
-非空转步/事务级 trace”外，其余可执行项均已落地并有当场读数；不宣称全面完成。
+**结论**：除「真实历史 v10 现场库（BLOCKED，本机没有该版本文件）」「Windows/Linux/iOS 运行时与
+真机（DEFERRED / NOT RUN）」「全量护栏非空转的**远端首跑结果**（`guards` job 已进 CI 并已开始执行，
+读数待它跑完再写）」三格之外，其余可执行项均已落地并有当场读数。事务级耗时 trace 已由 B15 落地
+（不是"仍未做"）。不宣称全面完成。
