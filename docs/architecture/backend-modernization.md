@@ -876,6 +876,16 @@ release 二进制 `src-tauri/target/release/gosslan`，双实例 A=`…-i1` / B=
    - 或把注入形状改成 runner 上也能证的东西（不走真广播）⇒ 但那就不再证明"绑 0.0.0.0 才收得到"这句话，属于换命题/放宽。
    本轮按指令**两条都没做**：断言、阈值、锚点、`expect_fail_hint` 一字未动。
 
+**两个分支上的终态都是同一句**（等到底之后现读的，不是引用昨晚那次）：`200f40a` 在 `feat/5.0`（run 39307378114，
+guards job 118250285332）与在 `main`（run 39347517334，guards job 118383992293，00:26:27→02:10:42 跑完 1h44m）
+两条 run 上都判 **completed / failure**，而两份 check-run 注解的**关键行逐字相同**：
+输出同为 1168 行、同一条 `发现 socket 必须收得到广播 … GUARD_ENV_SKIP …`、同为 `❌ 1 条不符合预期`，
+其余 232 条（含 229–233 那五条 Change Budget）都打"✅ 改坏即 FAIL、恢复即 PASS"。
+⇒ 这不是抖动，是**确定性**的环境依赖：同一份码在任何一台 macOS runner 上都会红在这一格。
+同一条 run 的另外四条 job 终态：Rust macos / Rust windows / Android 编译门禁 全 **success**，
+"前端测试 / 清单 / 构建" 是 **cancelled**（它 6 个 step 全 success，作业级结论却是 cancelled —— 这一格读数自相矛盾，
+按 NOT 采信处理）。
+
 ## 7. 任务书逐项对照（完成审计）
 
 | 任务书要求 | 状态 | 证据 / 边界 |
