@@ -373,6 +373,15 @@ function registeredCommands(): string[] {
  * 真要留一条隐形接口，就得在这里写清"为什么不能接界面"，并想清楚谁为它负责。
  */
 const DEAD_COMMANDS: Record<string, string> = {
+  // 5.0.37 的两条**后端出口**：本轮只交付到命令面，界面那一格由并行的前端会话接
+  // （能放按钮的 SettingsWindow.vue / LogViewer.vue 与两份语言包此刻正被那条线改着，
+  // 本轮不覆盖别人在飞的文件）。接口形状、归属与验收条件写在
+  // `docs/notes/diagnostics-where-logs-are-2026-10-20.md` 第 4 节。
+  // 这条挂账会自己过期：前端一旦真的 invoke，上面 `resurrected` 那格就把条目判红逼你删。
+  get_log_locations:
+    "诊断闭环的后端出口（目录/本轮日志/崩溃现场三条真实路径，给「复制日志路径」用）；UI 由前端会话接，见该文档第 4 节。",
+  export_diagnostics_bundle:
+    "诊断闭环的后端出口（把 logs/ 那三份脱敏后写到用户在保存对话框里选好的路径）；UI 由前端会话接，见同一节。",
   get_topology:
     "保留为应用内只读诊断接口；前端消费者随 TopologyBar 在 5.0.3 删除，暂无 UI 入口。",
 };

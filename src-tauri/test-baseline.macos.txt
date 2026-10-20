@@ -313,6 +313,11 @@ device::tests::empty_attributes_still_yield_valid_distinct_ids
 device::tests::generated_id_keeps_the_one_prefix_and_length
 device::tests::identical_attributes_still_produce_different_ids
 device::tests::legacy_dev_prefix_is_stripped_exactly_once
+diagnostics::tests::bundle_covers_the_three_files_and_says_what_is_missing
+diagnostics::tests::bundle_takes_the_tail_not_the_whole_file
+diagnostics::tests::redact_keeps_the_triage_signal
+diagnostics::tests::redact_masks_the_four_shapes_seen_in_real_logs
+diagnostics::tests::write_bundle_rejects_an_empty_destination_and_writes_the_summary
 discovery::routed::tests::device_id_is_optional_and_backward_compatible
 discovery::routed::tests::endpoints_serialize_roundtrip
 discovery::routed::tests::malformed_endpoints_json_yields_empty
@@ -350,6 +355,7 @@ logging::tests::exit_marker_lets_next_run_read_previous_as_clean_and_absence_as_
 logging::tests::first_startup_without_any_history_seeds_nothing
 logging::tests::format_utc_epoch_and_known_dates
 logging::tests::log_and_crash_files_are_owner_only
+logging::tests::log_dir_is_tightened_at_startup_and_covers_stale_logs
 logging::tests::log_wire_actually_folds_the_diag_flood
 logging::tests::logger_clear_empties_memory
 logging::tests::logger_memory_ring_buffer_is_bounded
@@ -362,6 +368,7 @@ logging::tests::previous_run_log_and_crash_scene_are_seeded_before_this_runs_lin
 logging::tests::previous_run_seed_is_bounded_and_keeps_the_newest_lines
 logging::tests::previous_run_seed_is_wired_at_startup
 logging::tests::previous_run_seed_writes_nothing_to_disk_however_many_times_it_is_called
+logging::tests::rotated_logs_keep_owner_only_permissions
 logging::tests::startup_marker_carries_the_run_id
 macos_bookmark::tests::bookmark_to_a_deleted_directory_fails_cleanly
 macos_bookmark::tests::create_then_resolve_returns_the_same_directory
@@ -761,6 +768,7 @@ nickname::tests::legacy_defaults_are_recognised_but_chosen_names_are_not
 notifications::tests::notify_enabled_defaults_on_and_uses_the_same_key_as_the_frontend
 notifications::tests::platform_hint_is_never_empty
 notifications::tests::windows_only_branch_is_source_checkable_for_pattern_bounds
+private_fs::tests::create_private_dir_makes_0700_and_leaves_an_existing_dir_alone
 private_fs::tests::restrict_dir_to_owner_sets_0700
 protocol::tests::announce_rejects_forged_signature_with_victim_pubkey
 protocol::tests::announce_rejects_signed_but_incomplete_packets

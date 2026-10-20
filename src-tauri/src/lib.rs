@@ -20,6 +20,8 @@ pub mod crypto;
 mod db;
 mod db_hold;
 mod device;
+/// 用户可导出的脱敏诊断包（`logs/` 里那三份文件 → 纯文本），见该文件模块注释。
+mod diagnostics;
 pub mod discovery;
 /// 聊天记录导出（纯文字单文件）：磁盘满 / 换机时的自救手段。
 pub mod export;
@@ -794,6 +796,8 @@ pub fn run() {
             commands::check_relay_server,
             commands::get_logs,
             commands::clear_logs,
+            commands::get_log_locations,
+            commands::export_diagnostics_bundle,
             commands::open_log_window,
             commands::open_settings_window,
             commands::close_settings_window,

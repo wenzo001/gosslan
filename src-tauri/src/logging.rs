@@ -40,7 +40,7 @@ use std::sync::{Mutex, OnceLock};
 
 use serde::Serialize;
 
-use crate::private_fs::restrict_to_owner;
+use crate::private_fs::{create_private_dir, restrict_dir_to_owner, restrict_to_owner};
 
 /// 内存保留的日志条数上限。
 /// Android 的 logcat 镜像：**合批 + 单线程 fork**（见 `Logger::log` 里的说明）。
@@ -225,7 +225,7 @@ pub fn crash_note_to(path: &std::path::Path, text: &str) {
         return; // 再入：正在写现场时又触发分配失败，直接放弃这条（否则无限递归）
     }
     if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
+        let _ = create_private_dir(dir);
     }
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
@@ -374,6 +374,23 @@ impl Logger {
         // 只靠“下次写入时再 chmod”会让不再轮转的旧文件永久保持 0644。
         restrict_to_owner(&logger.current_path());
         restrict_to_owner(&logger.old_path());
+        // 目录本身同理，而且要**整个目录里**的 .log 一起收：真机实测
+        // `…/com.gosslan.app` 是 0700 而它下面的 `logs/` 是 0755（umask 022 建出来的），
+        // 同机其他用户能直接列出所有实例的日志名；而已停跑的旧实例留下的
+        // `gosslan-3.log`/`gosslan-3-crash.log` 还停在 0644 —— 上面那两条只认本轮的 stem。
+        restrict_dir_to_owner(&logger.dir);
+        if let Ok(rd) = std::fs::read_dir(&logger.dir) {
+            for entry in rd.flatten() {
+                let name_is_log = entry
+                    .path()
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.ends_with(".log"));
+                if entry.file_type().map(|t| t.is_file()).unwrap_or(false) && name_is_log {
+                    restrict_to_owner(&entry.path());
+                }
+            }
+        }
         logger
     }
 
@@ -388,7 +405,7 @@ impl Logger {
     /// 刻意不用设备指纹开头 ⇒ 崩溃现场里"上下条文数"那条计数判据不受它影响。
     fn write_startup_marker(&self) {
         use std::io::Write;
-        let _ = std::fs::create_dir_all(&self.dir);
+        let _ = create_private_dir(&self.dir);
         if let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -426,7 +443,7 @@ impl Logger {
     /// 与"缺席推断"分别接住。
     pub fn write_exit_marker(&self) {
         use std::io::Write;
-        let _ = std::fs::create_dir_all(&self.dir);
+        let _ = create_private_dir(&self.dir);
         if let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -443,18 +460,27 @@ impl Logger {
     }
 
     /// 本轮运行标识：写在"启动"与"正常退出"两条路标里。
-    /// 只给测试读 —— 生产里没有界面消费它，加公开面就是"未接线的 API"（契约门禁会拒）。
-    #[cfg(test)]
+    /// 5.0.37 起有了真实消费者 —— 诊断包头部要带它，用来把包里的日志段与崩溃现场里
+    /// 那两条路标对上（同一份现场文件里可能混着两三台实例的启动记录）。
     pub fn run_id(&self) -> &str {
         &self.run_id
     }
 
     /// 落盘失败累计次数（含磁盘不足主动跳过的）。
-    /// 面向用户的降级证据是内存环里那条 `日志落盘已降级`；这个计数留给测试与日志自检，
-    /// 之所以不导出成命令 —— 没有界面读它的现在，加了就是无人接线的面（契约门禁会直接拒）。
-    #[cfg(test)]
+    /// 面向用户的降级证据是内存环里那条 `日志落盘已降级`；这个计数进了诊断包头部，
+    /// 让"日志文件怎么这么短"这件事在对方机器上也能被读出来。
     pub fn write_fails(&self) -> u64 {
         self.write_fails.load(Ordering::Relaxed)
+    }
+
+    /// 日志目录（`<app data>/logs`）。路径只从这一处出，不让调用方按 stem 自己拼。
+    pub(crate) fn log_dir(&self) -> PathBuf {
+        self.dir.clone()
+    }
+
+    /// 设备指纹（`[dev:xxx]`），诊断包脱敏时要按它整串替换。
+    pub(crate) fn fingerprint(&self) -> &str {
+        &self.fingerprint
     }
 
     pub fn info(&self, target: &str, message: impl Into<String>) {
@@ -603,14 +629,14 @@ impl Logger {
         let _ = std::fs::remove_file(self.old_path());
     }
 
-    fn current_path(&self) -> PathBuf {
+    pub(crate) fn current_path(&self) -> PathBuf {
         self.dir.join(format!("{}.log", self.stem))
     }
-    fn old_path(&self) -> PathBuf {
+    pub(crate) fn old_path(&self) -> PathBuf {
         self.dir.join(format!("{}.old.log", self.stem))
     }
     /// 崩溃现场文件（**不参与轮转**）：`logs/gosslan-crash.log`，多实例是 `gosslan-1-crash.log`。
-    fn crash_path(&self) -> PathBuf {
+    pub(crate) fn crash_path(&self) -> PathBuf {
         crash_file_for(&self.dir, &self.stem)
     }
 
@@ -732,7 +758,7 @@ impl Logger {
         let path = self.current_path();
         use std::io::Write;
         let wrote = (|| -> std::io::Result<()> {
-            std::fs::create_dir_all(&self.dir)?;
+            create_private_dir(&self.dir)?;
             // 惰性轮转：当前文件超限时，把旧内容挪到 `.old.log`（覆盖上一份旧文件）。
             if let Ok(meta) = std::fs::metadata(&path) {
                 if meta.len() > MAX_LOG_FILE_BYTES {
@@ -943,7 +969,7 @@ impl Logger {
     }
 }
 
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
@@ -953,7 +979,7 @@ fn now_ms() -> i64 {
 /// 把 Unix 毫秒时间戳格式化为 UTC `YYYY-MM-DD HH:MM:SS`（落盘文件用，可读）。
 ///
 /// 不引入 chrono：标准库没有本地时区，这里给 UTC 时间，配合毫秒戳足够定位。
-fn format_utc(ms: i64) -> String {
+pub(crate) fn format_utc(ms: i64) -> String {
     let secs = ms.div_euclid(1000);
     let days = secs.div_euclid(86_400);
     let sod = secs.rem_euclid(86_400);
@@ -1201,6 +1227,105 @@ mod tests {
             "第二条也得照常进内存"
         );
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn log_dir_is_tightened_at_startup_and_covers_stale_logs() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!(
+            "gosslan-log-perm-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        // 复刻真机那副样子：app data 已经 0700，但它下面的 logs/ 是 umask 建出来的 0755，
+        // 里面还躺着一个早停跑的实例留下的 0644 日志。
+        let dir = root.join("logs");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let stale = dir.join("gosslan-9.log");
+        std::fs::write(&stale, b"stale log from an instance that stopped running").unwrap();
+        std::fs::set_permissions(&stale, std::fs::Permissions::from_mode(0o644)).unwrap();
+        // 同目录里一个**不是日志**的文件：不许被顺手改（用户可能把导出包放在这儿）
+        let other = dir.join("note.txt");
+        std::fs::write(&other, b"not a log").unwrap();
+        std::fs::set_permissions(&other, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let logger = Logger::new(dir.clone(), "pm", "[dev:pm]".to_string());
+        logger.error("test", "权限判据用的这一条");
+
+        let mode_of = |p: &std::path::Path| -> u32 {
+            std::fs::metadata(p).unwrap().permissions().mode() & 0o777
+        };
+        assert_eq!(
+            mode_of(&dir),
+            0o700,
+            "logs 目录必须收到仅属主可进入（实测 {:o}）",
+            mode_of(&dir)
+        );
+        for p in [logger.current_path(), logger.old_path(), stale] {
+            // old_path 本轮没写过也要在属主手里：它可能还是上一轮那份
+            if !p.exists() {
+                continue;
+            }
+            assert_eq!(
+                mode_of(&p),
+                0o600,
+                "{} 必须收紧到 0600（实测 {:o}）",
+                p.display(),
+                mode_of(&p)
+            );
+        }
+        assert_eq!(
+            mode_of(&other),
+            0o644,
+            "只认 .log，别的文件不许动（越界改权限比漏改更糟）"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// 轮转那一下是 `rename`（不是重建）⇒ 权限跟着走；轮转后新开的当前文件由
+    /// `restrict_to_owner` 兜住。这两格在"目录 0700"之后仍然要各自成立：
+    /// 目录挡的是**别人进不来**，文件挡的是**别人读得到内容**。
+    #[cfg(unix)]
+    #[test]
+    fn rotated_logs_keep_owner_only_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("gosslan-log-rotperm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let logger = Logger::new(dir.clone(), "rp", "[dev:rp]".to_string());
+        let cur = logger.current_path();
+        let old = logger.old_path();
+
+        // 洪水：与 crash_block_survives_rotation 同一形状，保证真的翻过一代（否则空转）
+        let n = MAX_MEM_LOGS + 60;
+        for i in 0..n {
+            logger.info("diag", format!("rotperm {i} {}", "q".repeat(900)));
+        }
+        assert!(
+            std::fs::metadata(&old).is_ok(),
+            "前置条件不成立：日志根本没轮转，这一条就成了空转"
+        );
+
+        let mode_of = |p: &std::path::Path| -> u32 {
+            std::fs::metadata(p).unwrap().permissions().mode() & 0o777
+        };
+        assert_eq!(mode_of(&dir), 0o700, "轮转之后目录仍是 0700");
+        assert_eq!(
+            mode_of(&old),
+            0o600,
+            "被 rename 走的 .old.log 必须仍是 0600"
+        );
+        assert_eq!(
+            mode_of(&cur),
+            0o600,
+            "轮转后新开的那份必须 0600，不能靠 umask"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
