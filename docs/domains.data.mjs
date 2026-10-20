@@ -439,11 +439,18 @@ export default {
       name: "可观测性",
       tier: "L2",
       // 只认领后端：它的 UI（LogViewer / DevDiagPanel）物理上住在 presentation 的地盘（src/components）
-      paths: ["src-tauri/src/logging.rs", "src-tauri/src/db_hold.rs"],
+      paths: [
+        "src-tauri/src/logging.rs",
+        "src-tauri/src/db_hold.rs",
+        // 5.0.37 的诊断包出口：它只做一件事 —— 把 logging.rs 落在磁盘上的那三份文件
+        // 脱敏之后交出去，所以归属在本域，不在 commands 那一域。
+        "src-tauri/src/diagnostics.rs",
+      ],
       invariants: ["INV-P16"],
       activeHome: "src-tauri/src/logging.rs",
       enforce: false,
-      consumes: [], // 叶子域：logging.rs / db_hold.rs 在 src-tauri/src 内无 use crate::xxx（被 state.rs / commands.rs / lib.rs 引用）
+      // 仍是叶子域：diagnostics.rs 只 `use crate::logging`（同域 self），不跨出去。
+      consumes: [],
       notes:
         "本项目最强项（结构化日志 + 日志窗口 + 诊断面板 + CHANGELOG 里大量「真机日志定位」）。Phase 8 要补的是**按 msg_id 串起一条消息的生命周期**（Trace）。另有 logs.html 作为独立日志窗口入口。",
     },

@@ -310,6 +310,11 @@ device::tests::empty_attributes_still_yield_valid_distinct_ids
 device::tests::generated_id_keeps_the_one_prefix_and_length
 device::tests::identical_attributes_still_produce_different_ids
 device::tests::legacy_dev_prefix_is_stripped_exactly_once
+diagnostics::tests::bundle_covers_the_three_files_and_says_what_is_missing
+diagnostics::tests::bundle_takes_the_tail_not_the_whole_file
+diagnostics::tests::redact_keeps_the_triage_signal
+diagnostics::tests::redact_masks_the_four_shapes_seen_in_real_logs
+diagnostics::tests::write_bundle_rejects_an_empty_destination_and_writes_the_summary
 discovery::routed::tests::device_id_is_optional_and_backward_compatible
 discovery::routed::tests::endpoints_serialize_roundtrip
 discovery::routed::tests::malformed_endpoints_json_yields_empty

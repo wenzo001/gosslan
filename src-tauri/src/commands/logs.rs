@@ -23,6 +23,43 @@ pub fn clear_logs(state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> 
     Ok(())
 }
 
+/// 日志文件的**真实位置**（目录 / 本轮那份 / 崩溃现场）。
+///
+/// 为什么单独一条命令：内存环里的行不带路径，而用户要"把日志发给别人"时第一件事就是
+/// 知道文件在哪、怎么复制到剪贴板。三条路径都由本轮解析出的 stem 给（多实例是
+/// `gosslan-1.log`），前端不许自己拼 —— 差一个数字就是别人的日志。
+#[tauri::command(async)]
+pub fn get_log_locations(state: tauri::State<'_, Arc<AppState>>) -> crate::diagnostics::LogLocations {
+    crate::diagnostics::locations(&state.logger)
+}
+
+/// 导出**脱敏**诊断包到用户选好的路径（纯文本；形状与边界见 `crate::diagnostics`）。
+///
+/// - 落点由界面保存对话框给（`dialog:allow-save` 已在能力表里）：Rust 不替用户决定写到哪，
+///   也不在后台生成第二份副本 —— 本仓不做遥测，"发不发"必须由人决定。
+/// - 读三份文件 + 脱敏 + 写盘整块放 `spawn_blocking` 并且**等它**（INV-P34：同步长活
+///   不许占 tokio worker；这份包的读盘上界不到 1 MiB，但写盘可能落在慢盘/NAS 上）。
+/// - ⚠️ 本轮没接上的一格：`commands::open_local_path` 那条刻意只肯打开**托管目录**里的
+///   文件，日志目录不在其中 ⇒ "在文件夹中显示"要么给它加一条日志目录分支、要么由前端
+///   走 `opener` 的 reveal。归属与验收条件写在
+///   `docs/notes/diagnostics-where-logs-are-2026-10-20.md`。
+#[tauri::command(async)]
+pub async fn export_diagnostics_bundle(
+    state: tauri::State<'_, Arc<AppState>>,
+    destination: String,
+) -> Result<crate::diagnostics::BundleSummary, String> {
+    let s = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        // 家目录只做"整串替换"用：拿不到就少脱一类，不影响导出成功
+        let home = std::env::var("HOME")
+            .ok()
+            .or_else(|| std::env::var("USERPROFILE").ok());
+        crate::diagnostics::write_bundle(&s.logger, &destination, home.as_deref())
+    })
+    .await
+    .map_err(|e| format!("诊断包导出任务失败：{e}"))?
+}
+
 /// **默认策略**：辅助窗口关闭时**销毁**。目前只剩设置与日志走这一条。
 ///
 /// 为什么这两个仍然是销毁（用户 2026-09-24 定的口径："除了设置日志关闭就销毁，其他新窗口

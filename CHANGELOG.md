@@ -13,6 +13,55 @@
 
 ## [Unreleased]
 
+## [5.0.37] - 2026-10-20
+
+### 有限范围验收收尾：`logs/` 目录权限收紧 + 诊断包的后端出口
+
+- **`logs/` 目录不再是 0755**（§2 那一格）。真机现读的旧形状：`com.gosslan.app` 是 `drwx------`，
+  但它下面的 `logs/` 是 `drwxr-xr-x` —— 同机其他用户能**列出所有实例的日志名**（文件名里带实例号，
+  列表本身就是一份"这台机器上有谁在跑"的清单）；而早停跑的那个实例留下的 `gosslan-3.log` 还停在
+  `0644`，因为启动时那两条 `restrict_to_owner` 只认本轮的 stem。改法是两件，各管一头：
+  1. 新建目录走 `private_fs::create_private_dir`（`DirBuilder::recursive(true).mode(0o700)`）——
+     mkdir 就把位带上，不留"先 0755 建出来再 chmod"之间那段能被列出的窗口；
+  2. 启动时 `Logger::new` 补一次 `restrict_dir_to_owner(dir)` + 扫一遍目录里所有 `*.log` 收成 0600
+     （只认 `.log`，别的文件一个都不碰 —— 用户可能把导出包放在同一个目录里，越界改权限比漏改更糟）。
+  ⚠️ `create_private_dir` 对**已存在**的目录刻意不改写：`logging::tests::disk_write_failure_is_counted_and_noted_in_memory`
+  靠"把目录调成只读"制造落盘失败，如果建目录时顺手 chmod 回去，那条判据的失败机制会被产品代码静默修好。
+  Windows 侧不做任何事（app data 在 `%APPDATA%` 用户 profile 下，ACL 本来就只授该用户与 SYSTEM）；
+  Android 走 `cfg(unix)` 这条路，私有目录由系统给 0700。MSRV 1.77：用到的 `DirBuilderExt::mode` 远早于它。
+  判据：`private_fs::tests::create_private_dir_makes_0700_and_leaves_an_existing_dir_alone`（两格分开证）、
+  `logging::tests::log_dir_is_tightened_at_startup_and_covers_stale_logs`（含"不是日志的文件不许动"那格）、
+  `logging::tests::rotated_logs_keep_owner_only_permissions`（轮转后两份都 0600，前置条件自己断言"真的翻过一代"）。
+  非空转：三处各做一次单点改坏（摘掉启动 chmod / 摘掉 mkdir 的 mode / 摘掉 append 里的文件 chmod），
+  三条判据分别 FAIL，原样恢复后全绿，两个文件的 SHA-256 逐字节核对一致。
+
+- **脱敏诊断包的后端出口**（§3）。新增 `src-tauri/src/diagnostics.rs`（纯函数 + 自己的单测）与两条命令：
+  `get_log_locations`（目录 / 本轮那份 / 崩溃现场三条真实路径，供界面显示与"复制路径"）、
+  `export_diagnostics_bundle(destination)`（读那三份 → 逐行脱敏 → 写到**用户在保存对话框里选好**的路径，
+  整块在 `spawn_blocking` 里并且等它）。脱敏的五类形状不是猜的，是 2026-10-20 从真机
+  `…/com.gosslan.app/logs/*.log` 里现读出来的：设备指纹 `[dev:…]`（含机器名）→ `[本机]`、
+  IPv4 `192.168.31.229` → `192.*.*.229`（**留首尾两段**是刻意的：`send_bind` 与组播 `…255` 只差最后一段，
+  全糊掉就查不动"广播发到哪"，一位不糊就把网段交出去）、对端 id `gosslan-044bb98f6d33b-i1` →
+  `gosslan-044b…-i1`、BLE 端点 `ep=ble:312FF2DD-5BC5-…` → `ep=ble:312F…`（CoreBluetooth 给外围设备的
+  **稳定**标识 —— 对端换了随机蓝牙地址它也不变，留着它等于交出"这台机器见过哪台手机"；这一条是
+  写完前四条之后回头翻真机日志补上的第五个形状）、家目录 → `~`。反向那一格也钉住了：版本号 `4.44.0`、
+  `bytes=379`、不足 16 位的短 hex 段都不许被啃（只产纯文本，理由与 `export.rs` 同一口径 ——
+  日志里可能带着对端送来的内容，渲染成 HTML 等于自己造 XSS 通道）。空指纹 / `HOME=/` 这类退化输入必须跳过替换，
+  否则 `replace("")` 会在每个字符之间插值 —— 那不是脱敏，是销毁证据。
+  **本轮没接上的是界面那一格**：能放按钮的 `SettingsWindow.vue` / `LogViewer.vue` / 两份语言包
+  此刻正被另一条工作线改着，按"不覆盖别人在飞的文件"的口径，两条命令按 `src/api/events.test.ts`
+  自己留的那个出口挂进 `DEAD_COMMANDS` 并写明归属（那条判据会**自动过期**：前端一旦真 invoke，
+  `resurrected` 那一格就判红逼着删条目）。接口、归属与验收条件写在
+  `docs/notes/diagnostics-where-logs-are-2026-10-20.md` 第 4 节。
+
+- **200 MB 传输期间的界面应答（§4 那一格的真实读数）**：`E2E_FREEZE_MB=200 E2E_FREEZE_S=60 node scripts/e2e-multi-instance.mjs --fault=peer-freeze`
+  全绿 24 条断言；发送端 `Cmd+,` 之后 687 ms 出现设置窗，冻结窗口内三次 AX 往返 210 / 176 / 171 ms ⇒ 主线程应答正常；
+  内存按 pid 算的 `driftSecondMinusFirstHalfKb` 全部为负（主进程 −4,358 / −8,173 KB，WebContent −381…−5,989 KB），
+  组峰值 203,232 / 287,280 KB 是 `ps` 的 rss 且一组里 pid 会换 ⇒ **不许读成"同一条曲线涨到 281 MB 又跌回来"**。
+  **接收端 UI 卡死这一格本轮既没复现也没排除**（那一次的形状是"对端正常但慢"，这一轮的接收端是被 `SIGSTOP` 冻住的注入设定）；
+  JS 堆 NOT RUN（WKWebView 无 CDP）；"切换会话"点击发出去了但没有可判读数 ⇒ NOT RUN（缺判据，不谎报）。
+  同一次跑还顺带读到 §2 的后效：`logs/` 变 `drwx------`，目录里每一份 `.log`（含 10-18 起没人写过的 `gosslan-3.log`）都是 `-rw-------`。
+
 ## [5.0.36] - 2026-10-20
 
 ### 生产诊断补齐：落盘失败可见、上次退出可判、后台任务不再丢证据
