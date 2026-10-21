@@ -159,9 +159,22 @@ function ensureLocalKeystore() {
   return abs;
 }
 
-const storePassword = process.env.ANDROID_KEYSTORE_PASSWORD ?? "";
-const keyAlias = process.env.ANDROID_KEY_ALIAS ?? "";
-const keyPassword = process.env.ANDROID_KEY_PASSWORD ?? storePassword;
+// ⚠️ 这里必须把「**空串**」和「未设置」一视同仁（2026-10-21 实测踩到）：
+//   GitHub Actions 把**未配置**的 secret 传成空字符串 ""（不是 undefined），
+//   而 `??` 只对 undefined/null 回退 ⇒ `ANDROID_KEY_PASSWORD` 留空时
+//   keyPassword 会变成 ""（而不是回退到 storePassword）⇒ Gradle 在**签名阶段**
+//   才报 "keystore password was incorrect"（store 密码是对的、keystore 也能打开，
+//   所以这个错极难定位）。
+//   所以统一走 `envOr`：空串/纯空白一律当"没配"。
+const envOr = (value, fallback) => {
+  const v = (value ?? "").trim();
+  return v.length > 0 ? v : fallback;
+};
+const storePassword = envOr(process.env.ANDROID_KEYSTORE_PASSWORD, "");
+const keyAlias = envOr(process.env.ANDROID_KEY_ALIAS, "");
+// KEY_PASSWORD 不填就沿用 store password（绝大多数 keystore 两者相同），
+// 但**显式填**时以填的为准（允许 store/key 密码不同的 keystore）。
+const keyPassword = envOr(process.env.ANDROID_KEY_PASSWORD, storePassword);
 
 text = stripPreviousInjection(text);
 
@@ -182,8 +195,24 @@ if (base64Keystore) {
     process.exit(1);
   }
   fs.writeFileSync(keystorePath, decoded);
+  // 密码/alias 缺失必须**在这里**说清楚：等到 Gradle 报
+  // "keystore password was incorrect"，没人想得到是 secret 没配全。
+  const missing = [];
+  if (!storePassword) missing.push("ANDROID_KEYSTORE_PASSWORD");
+  if (!keyAlias) missing.push("ANDROID_KEY_ALIAS");
+  if (missing.length > 0) {
+    console.error(
+      `[android-signing] 已有 ANDROID_KEYSTORE_BASE64，但缺少 ${missing.join(" / ")}` +
+        " ⇒ 无法签名。补齐这两个 Secret（alias 用 keytool -list 查到的那个）。",
+    );
+    process.exit(1);
+  }
   text = injectReleaseSigning(text, storePassword, keyAlias, keyPassword);
-  console.log("[android-signing] 已注入 release 签名配置。");
+  console.log(
+    `[android-signing] 已注入 release 签名配置（alias=${keyAlias}，${
+      keyPassword === storePassword ? "key 密码同 store 密码" : "key 密码独立"
+    }）。`,
+  );
 } else if (allowDebugSigning) {
   text = injectDebugFallback(text);
   console.warn(

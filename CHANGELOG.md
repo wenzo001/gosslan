@@ -13,6 +13,24 @@
 
 ## [Unreleased]
 
+### Android 签名 Secret：把「空串」和「未设置」一视同仁（少填一个也能跑）
+
+- 根因：GitHub Actions 把**未配置**的 secret 传成**空字符串**（不是 undefined），
+  而脚本写的是 `?? storePassword` ⇒ `??` 只对 undefined/null 回退 ⇒
+  `ANDROID_KEY_PASSWORD` 留空时 keyPassword 变成 ""（**并没有**回退到 store 密码）
+  ⇒ Gradle 在**签名阶段**才报 "keystore password was incorrect"；此时 store 密码是对的、
+  keystore 也能正常打开 ⇒ 这个错极难定位。
+- 改法：统一走 `envOr()`（空串/纯空白一律当"没配"）⇒ KEY_PASSWORD 不填就沿用 store 密码；
+  并且"有 BASE64 但缺 STORE_PASSWORD / KEY_ALIAS"时**在注入脚本里就明确报错、退出码 1**，
+  不再让 Gradle 报一个看不懂的错。
+- 证据：六个场景本地实测 —— ①四项全填 ②不填 KEY_PASSWORD（正确回退）
+  ③KEY_PASSWORD=空串（正确回退）④缺 ALIAS（拒发，退出码 1）⑤缺 STORE_PASSWORD（拒发，退出码 1）
+  ⑥完全不配 secret（落开发版钥匙）。变异证明：把 `envOr` 改回 `??` 语义
+  ⇒ keyPassword 变 ""（错误真实存在），还原后复绿。
+- 端到端：走**发行版 secret 路径**跑完整 Android 构建 **exit 0**（5m59s，双 ABI APK 都出），
+  产物 APK 的证书 SHA-256 = `05ecd540…3dc1`，与发行版 keystore 指纹**逐位一致**
+  （DN `CN=Gosslan`，不是开发版的 `CN=Gosslan Dev`）⇒ 配好 secret 后 CI 出的就是发行版签名的包。
+
 ### Android 签名：从「每次现生成」改成两把固定钥匙
 
 - 根因：`scripts/android/keystore/` 在 .gitignore 里 ⇒ CI 上永远没有本地 keystore
