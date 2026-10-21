@@ -15,6 +15,19 @@
 
 ## [5.0.42] - 2026-10-21
 
+### Android 签名：注入阶段自检 —— 密码打不开钥匙时 5 秒内失败并点名
+
+- 根因：2026-10-21 的 Android CI 红的真因是
+  `KeytoolException: keystore password was incorrect` ⇒ **alias 与密码都非空**（不是少填），
+  而是 `ANDROID_KEYSTORE_PASSWORD` 与这把 keystore 的真实密码对不上
+  （base64 与密码不是同一把钥匙，或密码本身填错）。
+- 为什么会"找不到原因"：Gradle 要等**编译完 5 分钟**才报这一句，而那句话在 runner 的
+  step log 里；私有仓库 + 无 token 时外部读不到（403）⇒ 外面只剩 "exit code 1"。
+- 改法：注入阶段（拿到 keystore 的第一秒）用 `keytool -list` **自检 store 密码** ——
+  通过则继续；失败则**立刻** `::error::` 点名（密码打不开 / base64 与密码必须来自同一把
+  钥匙 / 本地自查命令 / 换钥匙要三样一起换）并以退出码 1 结束。
+  没有 keytool 的环境只警告跳过，不硬失败。
+
 ### CI：Android 失败的原因要能被别人读到（注解是私有仓库下唯一的通道）
 
 - 根因：2026-10-21 的 Android 构建红了，外部只看得到一句
