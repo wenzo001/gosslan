@@ -13,7 +13,9 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash, createCipheriv, createPrivateKey, randomBytes, randomUUID, sign } from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
+import os from "node:os";
 import path from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import { DatabaseSync } from "node:sqlite";
 import { BOOT_LINE, bootBaseline, bootReady, countLog, readLogTail, selfcheckLogtail, stashLogs } from "../e2e-logtail.mjs";
 import { captureShot, captureWindowShot, describeShotDir, screenBlockedReason, selfcheckShot } from "../e2e-shot.mjs";
@@ -127,14 +129,29 @@ export function citedRunIds() {
   const listed = spawnSync("git", ["ls-files", "-z", "--", "*.md", "*.html"], { cwd: ROOT, encoding: "utf8" });
   if (listed.status !== 0) return null;
   const set = new Set();
+  // run id 是 ASCII；跨块的 id 最多几十字符。留 128 字符的尾巴，下一块拼上还能匹配。
+  const keep = 128;
   for (const rel of listed.stdout.split("\0").filter(Boolean)) {
-    let txt;
+    let fd;
     try {
-      txt = fs.readFileSync(path.join(ROOT, rel), "utf8");
+      fd = fs.openSync(path.join(ROOT, rel), "r");
+      const decoder = new StringDecoder("utf8");
+      const buf = Buffer.alloc(64 * 1024);
+      let carry = "";
+      for (;;) {
+        const n = fs.readSync(fd, buf, 0, buf.length, null);
+        if (n <= 0) break;
+        const text = carry + decoder.write(buf.subarray(0, n));
+        for (const m of text.matchAll(/run-2026-\d\d-\d\dT[\d-]+Z/g)) set.add(m[0]);
+        carry = text.slice(-keep);
+      }
+      const tail = carry + decoder.end();
+      for (const m of tail.matchAll(/run-2026-\d\d-\d\dT[\d-]+Z/g)) set.add(m[0]);
     } catch {
       continue; // 台账里点过名、文件已经不在了 ⇒ 不构成对现场的引用
+    } finally {
+      if (fd !== undefined) fs.closeSync(fd);
     }
-    for (const m of txt.matchAll(/run-2026-\d\d-\d\dT[\d-]+Z/g)) set.add(m[0]);
   }
   return set;
 }
@@ -150,7 +167,7 @@ export function classifyRun(dir) {
     return "unknown";
   }
 }
-export function prunePlan({ runs, keep, negative, cited, redMaxAgeDays }) {
+export function prunePlan({ runs, keep, negative, cited, redMaxAgeDays, unknownMaxAgeDays }) {
   if (negative) return [];
   if (!Number.isFinite(keep) || keep < 0) return [];
   if (!cited) return []; // fail-closed：引用名单拿不到 ⇒ 一个都不删（和"自证不过就不删"同一立场）
@@ -170,7 +187,67 @@ export function prunePlan({ runs, keep, negative, cited, redMaxAgeDays }) {
       if (Number.isFinite(r.ageDays) && r.ageDays > redMaxAgeDays) doomed.add(r.name);
     }
   }
+  // ★ `unknown` 的第三条出口（2026-10-21 拍板 6A）：崩在半路的现场**保留 30 天**
+  //   （从目录 mtime 算龄）。旧行为是"永不删"——历史实测曾有 153 个 / 约 5 GB。
+  //   仍然守住的立场：被文档点名的不删、天数没给/写坏的不删、缺 ageDays 的不删。
+  //   体积那条（单次 > 2 GB）不在这里整目录删，而是由 `planRunTrim` **先删最大的文件、
+  //   保留最近修改的**（见 `pruneOldRuns`）—— 整目录删会把最新证据一起带走。
+  if (Number.isFinite(unknownMaxAgeDays) && unknownMaxAgeDays >= 0) {
+    for (const r of runs) {
+      if (r.outcome !== "unknown" || cited.has(r.name)) continue;
+      if (Number.isFinite(r.ageDays) && r.ageDays > unknownMaxAgeDays) doomed.add(r.name);
+    }
+  }
   return [...doomed].sort();
+}
+
+/// 一次超大崩溃现场的**安全清理计划**：先删最大的文件，**永不删最近修改的那一个**。
+///
+/// 为什么不是整目录删：`unknown` 的价值就在"崩在半路"的现场（日志、部分产物），
+/// 最新修改的文件最可能说明问题。所以体积规则只清大文件，保留最新证据；
+/// 哪怕最新那个自己就超过预算，也留着（宁可不达标，也不把现场清成空的）。
+export function planRunTrim(files, maxBytes) {
+  if (!Number.isFinite(maxBytes) || maxBytes <= 0) return [];
+  const present = (files || []).filter((f) => f && Number.isFinite(f.size) && f.size > 0);
+  if (present.length === 0) return [];
+  let total = present.reduce((n, f) => n + f.size, 0);
+  if (total <= maxBytes) return [];
+  const newest = present.reduce((a, b) => (b.mtimeMs > a.mtimeMs ? b : a), present[0]);
+  const rest = present
+    .filter((f) => f !== newest)
+    .sort((a, b) => b.size - a.size || String(a.path).localeCompare(String(b.path)));
+  const doomed = [];
+  for (const f of rest) {
+    if (total <= maxBytes) break;
+    doomed.push(f.path);
+    total -= f.size;
+  }
+  return doomed.sort();
+}
+
+/// 递归列出目录里的文件（`planRunTrim` 的输入）。结构不完整/中途消失的文件跳过，
+/// 不让"清理"因为半截目录报错。
+function listFiles(dir) {
+  const out = [];
+  const walk = (d) => {
+    let entries;
+    try {
+      entries = fs.readdirSync(d, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const p = path.join(d, e.name);
+      try {
+        if (e.isDirectory()) walk(p);
+        else if (e.isFile()) out.push({ path: p, size: fs.statSync(p).size, mtimeMs: fs.statSync(p).mtimeMs });
+      } catch {
+        continue;
+      }
+    }
+  };
+  walk(dir);
+  return out;
 }
 /// 目录字节数（递归）。收尾报表与"本轮内部清理"共用这一份，别再各写一遍 du 的形状。
 export function dirBytes(d) {
@@ -188,13 +265,26 @@ export function retentionLimits() {
   return {
     keep: Number(process.env.GOSSLAN_KEEP_RUNS || 30),
     redMaxAgeDays: Number(process.env.GOSSLAN_KEEP_RED_DAYS || 7),
+    // 崩溃现场（没有 summary.json / verdict 读不出来）：保留 30 天；单次超 2 GB 时
+    // 只清大文件、保留最近修改的那一个（拍板 6A，见 `planRunTrim`）。
+    unknownMaxAgeDays: Number(process.env.GOSSLAN_KEEP_UNKNOWN_DAYS || 30),
+    unknownMaxBytes: Number(process.env.GOSSLAN_KEEP_UNKNOWN_BYTES || 2 * 1024 ** 3),
   };
 }
 /// 按 `prunePlan` 给的名单删历史轮次 —— **删目录不可逆，所以这四条硬约束跟着这份实现走**：
 /// ① 只允许碰 `root/run-*`，且跳过 `cur`（本轮自己）；② 被文档点名的不进删除名额；
 /// ③ 引用名单拿不到 ⇒ 一个都不删；④ 反向模式 ⇒ 一趟都不删。调用侧只负责先自证、再转达结果。
-export function pruneOldRuns({ root, cur, negative, keep, redMaxAgeDays, cited }) {
-  if (!fs.existsSync(root)) return { deleted: [], bytes: 0, left: 0, spared: 0, missingCited: 0, citedAvailable: !!cited };
+export function pruneOldRuns({
+  root,
+  cur,
+  negative,
+  keep,
+  redMaxAgeDays,
+  unknownMaxAgeDays,
+  unknownMaxBytes,
+  cited,
+}) {
+  if (!fs.existsSync(root)) return { deleted: [], bytes: 0, trimmed: [], trimmedBytes: 0, left: 0, spared: 0, missingCited: 0, citedAvailable: !!cited };
   const dirs = fs.readdirSync(root, { withFileTypes: true })
     .filter((e) => e.isDirectory() && e.name.startsWith("run-"))
     .map((e) => e.name);
@@ -206,7 +296,7 @@ export function pruneOldRuns({ root, cur, negative, keep, redMaxAgeDays, cited }
       // 目录名本身就是 ISO 时间戳，但**按 mtime 算龄**：目录名在拷动/还原时会骗人，mtime 不会。
       ageDays: (Date.now() - fs.statSync(path.join(root, n)).mtimeMs) / 86400000,
     }));
-  const doomed = prunePlan({ runs, keep, negative, cited, redMaxAgeDays });
+  const doomed = prunePlan({ runs, keep, negative, cited, redMaxAgeDays, unknownMaxAgeDays });
   // `spared` = 被文档点名且还在盘上的目录数（它是"证据正被保护"的分母，不等于"这一趟多救下几个"）。
   // `missingCited` = 文档点名但盘上找不到 ⇒ 只报数，不改判。
   const spared = cited ? dirs.filter((n) => cited.has(n)).length : 0;
@@ -220,9 +310,47 @@ export function pruneOldRuns({ root, cur, negative, keep, redMaxAgeDays, cited }
     fs.rmSync(dir, { recursive: true, force: true });
     gone.push(name);
   }
+  // 体积规则（拍板 6A）：整目录删完之后，剩下的 `unknown` 单次 > 2 GB 时**只清大文件**：
+  // 先删最大的、保留最近修改的那个。被文档点名的整轮不动；结构不完整的文件跳过
+  // （异常退出留下的半截目录不能让清理本身报错）。
+  const trimmed = [];
+  let trimmedBytes = 0;
+  // `keep` 写坏 = 保留策略配置不成立 ⇒ 与 `prunePlan` 的 fail-closed 同一立场：
+  // 整目录不删，大文件也不许清（否则"配置写坏就一个都不删"只守住了半条路）。
+  if (
+    !negative &&
+    cited &&
+    Number.isFinite(keep) &&
+    keep >= 0 &&
+    Number.isFinite(unknownMaxBytes) &&
+    unknownMaxBytes > 0
+  ) {
+    const survivors = fs.readdirSync(root, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && e.name.startsWith("run-") && e.name !== cur)
+      .map((e) => e.name);
+    for (const name of survivors) {
+      if (cited.has(name)) continue;
+      const dir = path.join(root, name);
+      if (!dir.startsWith(root + path.sep)) continue;
+      if (classifyRun(dir) !== "unknown") continue;
+      const files = listFiles(dir);
+      const total = files.reduce((n, f) => n + f.size, 0);
+      if (total <= unknownMaxBytes) continue;
+      for (const p of planRunTrim(files, unknownMaxBytes)) {
+        try {
+          const sz = fs.statSync(p).size;
+          fs.rmSync(p, { force: true });
+          trimmed.push(p);
+          trimmedBytes += sz;
+        } catch {
+          continue;
+        }
+      }
+    }
+  }
   const left = fs.readdirSync(root, { withFileTypes: true })
     .filter((e) => e.isDirectory() && e.name.startsWith("run-")).length;
-  return { deleted: gone, bytes, left, spared, missingCited, citedAvailable: !!cited };
+  return { deleted: gone, bytes, trimmed, trimmedBytes, left, spared, missingCited, citedAvailable: !!cited };
 }
 export function selfcheckPrune() {
   const fails = [];
@@ -258,8 +386,62 @@ export function selfcheckPrune() {
   eq("没给 N（未设上限）⇒ 红轮一个都不删", prunePlan({ runs: oldRed, keep: 30, negative: false, cited: NONE }), []);
   eq("N 写坏了（NaN/负数）⇒ 红轮不删", prunePlan({ runs: oldRed, keep: 30, negative: false, cited: NONE, redMaxAgeDays: Number.NaN }), []);
   eq("取不到年龄（缺 ageDays）⇒ 红轮不删", prunePlan({ runs: [mk("old", "red")], keep: 30, negative: false, cited: NONE, redMaxAgeDays: 7 }), []);
-  eq("崩在半路（没有 summary=unknown）⇒ 超龄也不删", prunePlan({ runs: [mk("u", "unknown", 30)], keep: 30, negative: false, cited: NONE, redMaxAgeDays: 7 }), []);
+  eq("崩在半路（没有 summary=unknown）⇒ 不给崩溃留存天数就永不删", prunePlan({ runs: [mk("u", "unknown", 30)], keep: 30, negative: false, cited: NONE, redMaxAgeDays: 7 }), []);
+  // ★ 拍板 6A（2026-10-21）：崩溃现场单独一条规则 —— 保留 30 天。
+  eq("崩溃现场超过 30 天且没被点名 ⇒ 删", prunePlan({ runs: [mk("u", "unknown", 31)], keep: 30, negative: false, cited: NONE, unknownMaxAgeDays: 30 }), ["run-u"]);
+  eq("崩溃现场没超 30 天 ⇒ 保留", prunePlan({ runs: [mk("u", "unknown", 29)], keep: 30, negative: false, cited: NONE, unknownMaxAgeDays: 30 }), []);
+  eq("被点名的崩溃现场 ⇒ 超 30 天也不删", prunePlan({ runs: [mk("u", "unknown", 31)], keep: 30, negative: false, cited: new Set(["run-u"]), unknownMaxAgeDays: 30 }), []);
+  eq("崩溃现场缺年龄 ⇒ 不删", prunePlan({ runs: [mk("u", "unknown")], keep: 30, negative: false, cited: NONE, unknownMaxAgeDays: 30 }), []);
+  // ★ 体积规则：单次 > 2 GB 时只清大文件 —— 先删最大的，**最近修改的那个永不删**。
+  const f = (p, size, mtimeMs) => ({ path: p, size, mtimeMs });
+  eq("超预算 ⇒ 先删最大的那个就够", planRunTrim([f("a", 3e9, 1), f("b", 1e9, 2), f("c", 0.5e9, 3)], 2e9), ["a"]);
+  eq("没超预算 ⇒ 一个不删", planRunTrim([f("a", 1e9, 1)], 2e9), []);
+  eq("最新修改的那个哪怕最大也保留", planRunTrim([f("old", 3e9, 1), f("new", 3e9, 2)], 2e9), ["old"]);
+  eq("预算写坏 ⇒ 不删", planRunTrim([f("a", 3e9, 1)], Number.NaN), []);
+  {
+    // 异常退出遗留目录：没有 summary.json ⇒ unknown；清理路径用 `force`，缺文件也不报错。
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), "gosslan-e2e-core-"));
+    fs.writeFileSync(path.join(d, "partial.log"), "x");
+    eq("异常退出遗留目录（无 summary.json）⇒ unknown", classifyRun(d), "unknown");
+    fs.rmSync(d, { recursive: true, force: true });
+  }
   eq("绿轮超限与红轮超龄同时发生 ⇒ 两个都进名单", prunePlan({ runs: [mk("a", "green"), ...oldRed], keep: 0, negative: false, cited: NONE, redMaxAgeDays: 7 }), ["run-a", "run-old"]);
+  // ★ 真盘面（不是纯函数）：30 天规则整目录删、被点名的不删；体积规则只删大文件、
+  //   最新修改的留下；目录里没有 summary.json 也不能让清理报错。
+  {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "gosslan-e2e-retention-"));
+    const old = path.join(root, "run-2026-01-01T00-00-00-000Z");
+    fs.mkdirSync(old);
+    fs.writeFileSync(path.join(old, "partial.log"), "x".repeat(2048));
+    fs.utimesSync(old, new Date(2000, 0, 1), new Date(2000, 0, 1)); // 远超 30 天
+    const big = path.join(root, "run-2026-02-01T00-00-00-000Z");
+    fs.mkdirSync(big);
+    fs.writeFileSync(path.join(big, "old-big.bin"), Buffer.alloc(3 * 1024 * 1024, 1));
+    fs.writeFileSync(path.join(big, "new.log"), Buffer.alloc(512 * 1024, 2));
+    fs.utimesSync(path.join(big, "old-big.bin"), new Date(2026, 1, 1), new Date(2026, 1, 1));
+    fs.utimesSync(path.join(big, "new.log"), new Date(2026, 1, 2), new Date(2026, 1, 2));
+    // 配置写坏（keep = NaN）⇒ 整目录不删，体积裁剪也必须一个都不动。
+    const prBroken = pruneOldRuns({
+      root, cur: "", negative: false, keep: Number.NaN, redMaxAgeDays: 7,
+      unknownMaxAgeDays: 30, unknownMaxBytes: 1024 * 1024, cited: new Set(),
+    });
+    eq("保留策略写坏 ⇒ 体积裁剪一个都不删（fail-closed）", prBroken.trimmed, []);
+    eq("保留策略写坏 ⇒ 整目录也不删", prBroken.deleted, []);
+    const pr = pruneOldRuns({
+      root, cur: "", negative: false, keep: 0, redMaxAgeDays: 7,
+      unknownMaxAgeDays: 30, unknownMaxBytes: 1024 * 1024, cited: new Set([path.basename(old)]),
+    });
+    eq("30 天规则：被点名的老崩溃现场不删", fs.existsSync(old), true);
+    eq("体积规则：只删最大的文件", pr.trimmed.map((p) => path.basename(p)), ["old-big.bin"]);
+    eq("体积规则：最新修改的文件留下", fs.existsSync(path.join(big, "new.log")), true);
+    const pr2 = pruneOldRuns({
+      root, cur: "", negative: false, keep: 0, redMaxAgeDays: 7,
+      unknownMaxAgeDays: 30, unknownMaxBytes: 0, cited: new Set(),
+    });
+    eq("30 天规则：没人引用的老崩溃现场整目录删", pr2.deleted, [path.basename(old)]);
+    eq("缺文件/incomplete 目录不阻断清理", fs.existsSync(old), false);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
   // ★ 格数由判据自己数着印 —— 写死在调用侧的那句"8 格"在加到 16 格那天就变成假话了（同一族见
   //   本仓「账表型工具只存观测值／分母自打印」那条纪律）。
   return { fails, total };
@@ -493,11 +675,18 @@ export function launch(inst) {
   stashLogs(inst.log, RUN_DIR, `${inst.label}-${++S.stashSeq}`);
   bootBaseOf.set(inst.n, bootBaseline(inst.log, BOOT_LINE));
   const out = fs.openSync(path.join(RUN_DIR, `instance-${inst.label}.stdout.log`), "a");
-  const p = spawn(BIN, [], {
-    env: { ...process.env, GOSSLAN_INSTANCE: String(inst.n), GOSSLAN_AUTOSTART: "1" },
-    stdio: ["ignore", out, out],
-    detached: false,
-  });
+  let p;
+  try {
+    p = spawn(BIN, [], {
+      env: { ...process.env, GOSSLAN_INSTANCE: String(inst.n), GOSSLAN_AUTOSTART: "1" },
+      stdio: ["ignore", out, out],
+      detached: false,
+    });
+  } finally {
+    // 子进程已经继承了自己的副本；父进程这份必须在 spawn 后关掉。
+    // 不关会随每次 launch() 单调增长（SC-P3-01，28 个调用点 × 多轮）。
+    fs.closeSync(out);
+  }
   procs.set(inst.n, p);
   return p;
 }

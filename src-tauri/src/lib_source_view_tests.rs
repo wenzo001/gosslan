@@ -10,103 +10,104 @@
 // 恒等判据当场降级成"我读过觉得没变"。同目录先例：`protocol_tests.rs`。
 // ⚠️ 册名以 `_tests.rs` 结尾也是被判据选定的：`transport_src_for_guards()` 那份"生产码全集"视图
 // 只许装生产码，而登记对账守卫按 `_tests.rs` 后缀豁免测试分册（并进视图是最顺手却假绿的消红办法）。
-    /// **0-A1：五份"守卫用的源码全集"必须等于编译器实际 `include!` 进来的分册集合。**
-    ///
-    /// 为什么要这条（架构复审 2026-09-24 P10）：`include!` 只做编译期拼接，`include_str!`
-    /// 看不见展开后的结果 ⇒ 守卫用的视图是**手工登记的第二份清单**。它已经漂移过两次：
-    /// `commands/relay.rs` 与 `transport/relay.rs` 在 4.25.0 接线时都只登记了 `include!` 与领域图、
-    /// 漏了这里（现场注释见 `all_commands_src()` 内与 `network/mod.rs:229`）。
-    /// **漏登记的后果不是报错而是假绿** —— 以"全部命令面"为判据的守卫扫不到那个分册，
-    /// 于是永远通过。假红至少逼人来看，假绿会一直骗下去。
-    ///
-    /// 两个方向都钉住：
-    ///   · 编译器有、视图没有 ⇒ 假绿（最危险），红；
-    ///   · 视图有、编译器没有 ⇒ 守卫会去扫根本不在这个模块里的代码（假红的来源），也红。
-    ///
-    /// `*_tests.rs` 分册是**故意**不进视图的（测试文本会把生产模式扫描带偏），
-    /// 所以判据是"闭包减去测试分册"，并把这件事写在断言消息里而不是靠沉默。
-    #[test]
-    fn guard_source_views_register_every_include_subfile() {
-        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        // 承载 `fn all_commands_src()` / `fn all_db_src()` 的文件：2026-09-28 起测试整段在
-        // `lib_tests.rs`（lib.rs 只留生产码）⇒ 要找的是**本文件**，不是 lib.rs。
-        // 刻意不把测试文本并进那两个视图：视图是"生产码全集"，掺进测试字面量会让
-        // 所有以它为判据的守卫多看见一堆字符串常量（那是假绿的形状）。
-        let this_file = include_str!("lib_tests.rs");
-        let mod_file = include_str!("network/mod.rs");
-        // 第五列是**每个用例自己的 canary**：一个"必须出现在闭包里"的分册。
-        // 为什么不能只写一条"闭包 ≥ N"：四个视图的分册数差一个量级（现算：
-        //   `python3 -c` 数 `fn all_commands_src()` / `fn all_db_src()` / `fn transport_src_for_guards()`
-        //   / `fn file_src_for_guards()` 各自函数体里的 `include_str!(` 出现次数），
-        //   同一个阈值套下去要么松到没有意义、要么把最小的那个直接判成"解析器失效"（第一版就是这么红的）。
-        // canary 挑的都是历史上真漂移过的那批（4.25.0 接线时 relay 漏登记过两次），
-        // `file/send.rs` 是 2026-10-07 那一刀的第一册。
-        let cases: [(&str, &str, &str, &str, &str); 5] = [
-            (
-                "commands.rs",
-                "fn all_commands_src()",
-                this_file,
-                "all_commands_src()",
-                "commands/relay.rs",
-            ),
-            (
-                "db.rs",
-                "fn all_db_src()",
-                this_file,
-                "all_db_src()",
-                "db/recalls.rs",
-            ),
-            (
-                "network/transport.rs",
-                "fn transport_src_for_guards()",
-                mod_file,
-                "network::transport_src_for_guards()",
-                "transport/relay.rs",
-            ),
-            (
-                "network/file.rs",
-                "fn file_src_for_guards()",
-                mod_file,
-                "network::file_src_for_guards()",
-                "file/send.rs",
-            ),
-            (
-                "network/ble.rs",
-                "fn ble_src_for_guards()",
-                mod_file,
-                "network::ble_src_for_guards()",
-                "ble/central.rs",
-            ),
-        ];
-        // ★ 用例数必须等于**实际存在的视图数**，而视图数从 holder 源码里现找：
-        //   上面那个数组是手写的名单 —— 以后再加一份 `xxx_src_for_guards()` 却忘了配用例，
-        //   那这份视图就从此没人对账，正是本文件点名的"漏登记 = 假绿"形状。
-        //   按行首形状认定义（`fn 名字(`），所以 cases 数组里那些签名字符串不会被误算成视图。
-        fn count_guard_views(holder: &str) -> usize {
-            holder
-                .split('\n')
-                .filter(|l| {
-                    let t = l.trim_start()
-                        .trim_start_matches("pub(crate) ")
-                        .trim_start_matches("pub ")
-                        .trim_start_matches("async ");
-                    match t.strip_prefix("fn ") {
-                        Some(rest) => {
-                            let name: String = rest
-                                .chars()
-                                .take_while(|c| c.is_alphanumeric() || *c == '_')
-                                .collect();
-                            rest[name.len()..].starts_with('(')
-                                && (name.ends_with("_src_for_guards")
-                                    || (name.starts_with("all_") && name.ends_with("_src")))
-                        }
-                        None => false,
+/// **0-A1：五份"守卫用的源码全集"必须等于编译器实际 `include!` 进来的分册集合。**
+///
+/// 为什么要这条（架构复审 2026-09-24 P10）：`include!` 只做编译期拼接，`include_str!`
+/// 看不见展开后的结果 ⇒ 守卫用的视图是**手工登记的第二份清单**。它已经漂移过两次：
+/// `commands/relay.rs` 与 `transport/relay.rs` 在 4.25.0 接线时都只登记了 `include!` 与领域图、
+/// 漏了这里（现场注释见 `all_commands_src()` 内与 `network/mod.rs:229`）。
+/// **漏登记的后果不是报错而是假绿** —— 以"全部命令面"为判据的守卫扫不到那个分册，
+/// 于是永远通过。假红至少逼人来看，假绿会一直骗下去。
+///
+/// 两个方向都钉住：
+///   · 编译器有、视图没有 ⇒ 假绿（最危险），红；
+///   · 视图有、编译器没有 ⇒ 守卫会去扫根本不在这个模块里的代码（假红的来源），也红。
+///
+/// `*_tests.rs` 分册是**故意**不进视图的（测试文本会把生产模式扫描带偏），
+/// 所以判据是"闭包减去测试分册"，并把这件事写在断言消息里而不是靠沉默。
+#[test]
+fn guard_source_views_register_every_include_subfile() {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    // 承载 `fn all_commands_src()` / `fn all_db_src()` 的文件：2026-09-28 起测试整段在
+    // `lib_tests.rs`（lib.rs 只留生产码）⇒ 要找的是**本文件**，不是 lib.rs。
+    // 刻意不把测试文本并进那两个视图：视图是"生产码全集"，掺进测试字面量会让
+    // 所有以它为判据的守卫多看见一堆字符串常量（那是假绿的形状）。
+    let this_file = include_str!("lib_tests.rs");
+    let mod_file = include_str!("network/mod.rs");
+    // 第五列是**每个用例自己的 canary**：一个"必须出现在闭包里"的分册。
+    // 为什么不能只写一条"闭包 ≥ N"：四个视图的分册数差一个量级（现算：
+    //   `python3 -c` 数 `fn all_commands_src()` / `fn all_db_src()` / `fn transport_src_for_guards()`
+    //   / `fn file_src_for_guards()` 各自函数体里的 `include_str!(` 出现次数），
+    //   同一个阈值套下去要么松到没有意义、要么把最小的那个直接判成"解析器失效"（第一版就是这么红的）。
+    // canary 挑的都是历史上真漂移过的那批（4.25.0 接线时 relay 漏登记过两次），
+    // `file/send.rs` 是 2026-10-07 那一刀的第一册。
+    let cases: [(&str, &str, &str, &str, &str); 5] = [
+        (
+            "commands.rs",
+            "fn all_commands_src()",
+            this_file,
+            "all_commands_src()",
+            "commands/relay.rs",
+        ),
+        (
+            "db.rs",
+            "fn all_db_src()",
+            this_file,
+            "all_db_src()",
+            "db/recalls.rs",
+        ),
+        (
+            "network/transport.rs",
+            "fn transport_src_for_guards()",
+            mod_file,
+            "network::transport_src_for_guards()",
+            "transport/relay.rs",
+        ),
+        (
+            "network/file.rs",
+            "fn file_src_for_guards()",
+            mod_file,
+            "network::file_src_for_guards()",
+            "file/send.rs",
+        ),
+        (
+            "network/ble.rs",
+            "fn ble_src_for_guards()",
+            mod_file,
+            "network::ble_src_for_guards()",
+            "ble/central.rs",
+        ),
+    ];
+    // ★ 用例数必须等于**实际存在的视图数**，而视图数从 holder 源码里现找：
+    //   上面那个数组是手写的名单 —— 以后再加一份 `xxx_src_for_guards()` 却忘了配用例，
+    //   那这份视图就从此没人对账，正是本文件点名的"漏登记 = 假绿"形状。
+    //   按行首形状认定义（`fn 名字(`），所以 cases 数组里那些签名字符串不会被误算成视图。
+    fn count_guard_views(holder: &str) -> usize {
+        holder
+            .split('\n')
+            .filter(|l| {
+                let t = l
+                    .trim_start()
+                    .trim_start_matches("pub(crate) ")
+                    .trim_start_matches("pub ")
+                    .trim_start_matches("async ");
+                match t.strip_prefix("fn ") {
+                    Some(rest) => {
+                        let name: String = rest
+                            .chars()
+                            .take_while(|c| c.is_alphanumeric() || *c == '_')
+                            .collect();
+                        rest[name.len()..].starts_with('(')
+                            && (name.ends_with("_src_for_guards")
+                                || (name.starts_with("all_") && name.ends_with("_src")))
                     }
-                })
-                .count()
-        }
-        let discovered = count_guard_views(this_file) + count_guard_views(mod_file);
-        assert_eq!(
+                    None => false,
+                }
+            })
+            .count()
+    }
+    let discovered = count_guard_views(this_file) + count_guard_views(mod_file);
+    assert_eq!(
             discovered,
             cases.len(),
             "`lib_tests.rs` 与 `network/mod.rs` 里现数到 {discovered} 份守卫视图，本用例只配了 {} 份 ⇒ \
@@ -114,307 +115,329 @@
             cases.len()
         );
 
-        for (entry_name, signature, holder_src, label, canary) in cases {
-            let entry = manifest.join("src").join(entry_name);
-            let mut closure = Vec::new();
-            include_closure(&entry, &mut closure);
-            let expected: Vec<String> = closure
-                .iter()
-                .filter(|p| {
-                    !p.file_name()
-                        // `_tests.rs` 与本仓唯一一份恰好叫 `tests.rs` 的 transport 分册都不算生产码：
-                        // 视图里没有它们，这里若还要求登记就会逼着别人把测试文本并进去（假绿形状）。
-                        .map_or(false, |n| {
-                            let n = n.to_string_lossy();
-                            n.ends_with("_tests.rs") || n == "tests.rs"
-                        })
-                })
-                .map(|p| p.to_string_lossy().into_owned())
-                .collect();
-
-            // 登记项是相对"持有该函数的文件"的，按同一规则解析成绝对路径再比集合。
-            let holder_dir = entry.parent().unwrap();
-            let registered: Vec<String> =
-                scan_macro_paths(slice_fn_body(holder_src, signature), "include_str")
-                    .into_iter()
-                    .map(|rel| {
-                        std::path::PathBuf::from(
-                            holder_dir.join(rel).to_string_lossy().replace('\\', "/"),
-                        )
-                        .to_string_lossy()
-                        .into_owned()
+    for (entry_name, signature, holder_src, label, canary) in cases {
+        let entry = manifest.join("src").join(entry_name);
+        let mut closure = Vec::new();
+        include_closure(&entry, &mut closure);
+        let expected: Vec<String> = closure
+            .iter()
+            .filter(|p| {
+                !p.file_name()
+                    // `_tests.rs` 与本仓唯一一份恰好叫 `tests.rs` 的 transport 分册都不算生产码：
+                    // 视图里没有它们，这里若还要求登记就会逼着别人把测试文本并进去（假绿形状）。
+                    .map_or(false, |n| {
+                        let n = n.to_string_lossy();
+                        n.ends_with("_tests.rs") || n == "tests.rs"
                     })
-                    .filter(|p| !p.ends_with(entry_name))
-                    .collect();
+            })
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
 
-            let missing: Vec<&String> = expected
-                .iter()
-                .filter(|p| !registered.contains(p))
+        // 登记项是相对"持有该函数的文件"的，按同一规则解析成绝对路径再比集合。
+        let holder_dir = entry.parent().unwrap();
+        let registered: Vec<String> =
+            scan_macro_paths(slice_fn_body(holder_src, signature), "include_str")
+                .into_iter()
+                .map(|rel| {
+                    std::path::PathBuf::from(
+                        holder_dir.join(rel).to_string_lossy().replace('\\', "/"),
+                    )
+                    .to_string_lossy()
+                    .into_owned()
+                })
+                .filter(|p| !p.ends_with(entry_name))
                 .collect();
-            let extra: Vec<&String> = registered
-                .iter()
-                .filter(|p| !expected.contains(p))
-                .collect();
-            assert!(
+
+        let missing: Vec<&String> = expected
+            .iter()
+            .filter(|p| !registered.contains(p))
+            .collect();
+        let extra: Vec<&String> = registered
+            .iter()
+            .filter(|p| !expected.contains(p))
+            .collect();
+        assert!(
                 missing.is_empty(),
                 "`{label}` 少登记了 {} 个分册（编译器 include! 了它，守卫却看不见 ⇒ **假绿**）：{missing:?}\n\
                  新增分册时要在 `{label}` 里同步登记一行 include_str!。",
                 missing.len()
             );
-            assert!(
+        assert!(
                 extra.is_empty(),
                 "`{label}` 多登记了 {} 个不在 include! 闭包里的文件（守卫会扫根本不在这个模块里的代码 ⇒ 假红）：{extra:?}",
                 extra.len()
             );
-            // 反向自检：解析器如果整体失效（两边都空 / 都少），上面两条会同时通过 ⇒ 空转。
-            // 所以每个用例点一枚 canary：它必须**同时在闭包与登记清单里**。
-            let in_closure = expected.iter().any(|p| p.ends_with(canary));
-            let in_registered = registered.iter().any(|p| p.ends_with(canary));
-            assert!(
+        // 反向自检：解析器如果整体失效（两边都空 / 都少），上面两条会同时通过 ⇒ 空转。
+        // 所以每个用例点一枚 canary：它必须**同时在闭包与登记清单里**。
+        let in_closure = expected.iter().any(|p| p.ends_with(canary));
+        let in_registered = registered.iter().any(|p| p.ends_with(canary));
+        assert!(
                 in_closure && in_registered,
                 "`{label}` 的 canary `{canary}` 没同时出现在两侧（闭包 {in_closure} / 登记 {in_registered}）\
                  ⇒ 解析器或清单坏了，这条守卫正在空转"
             );
-        }
     }
+}
 
-    /// 把源码切成"顶层条目"，返回 `(条目名, 条目体)`；`#[cfg(test)]` 的 `mod` 整块跳过。
-    ///
-    /// 只做顶层：本仓 rustfmt 下 `fn` / `mod` 的声明都在第 0 列，函数体内的嵌套函数有缩进，
-    /// 因此"以 `fn `/`mod ` 开头且无缩进"就是唯一的条目边界。不数大括号 ⇒ 不受字符串干扰。
-    fn top_level_fns(src: &str) -> Vec<(String, String)> {
-        let lines: Vec<&str> = src.split('\n').collect();
-        // 每个条目的起始行 + 名字 + 是不是测试块
-        let mut items: Vec<(usize, String, bool)> = Vec::new();
-        let mut i = 0usize;
-        while i < lines.len() {
-            let l = lines[i];
-            let is_cfg_test = l.trim_end() == "#[cfg(test)]";
-            if let Some(name) = item_name(l) {
-                // 往前看一眼属性行，判断是否测试专用
-                let mut test = false;
-                let mut k = i;
-                while k > 0 {
-                    k -= 1;
-                    let prev = lines[k].trim_end();
-                    if prev == "#[cfg(test)]" {
-                        test = true;
-                        break;
-                    }
-                    if !prev.starts_with('#') && !prev.is_empty() {
-                        break;
-                    }
+/// 把源码切成"顶层条目"，返回 `(条目名, 条目体)`；`#[cfg(test)]` 的 `mod` 整块跳过。
+///
+/// 只做顶层：本仓 rustfmt 下 `fn` / `mod` 的声明都在第 0 列，函数体内的嵌套函数有缩进，
+/// 因此"以 `fn `/`mod ` 开头且无缩进"就是唯一的条目边界。不数大括号 ⇒ 不受字符串干扰。
+fn top_level_fns(src: &str) -> Vec<(String, String)> {
+    let lines: Vec<&str> = src.split('\n').collect();
+    // 每个条目的起始行 + 名字 + 是不是测试块
+    let mut items: Vec<(usize, String, bool)> = Vec::new();
+    let mut i = 0usize;
+    while i < lines.len() {
+        let l = lines[i];
+        let is_cfg_test = l.trim_end() == "#[cfg(test)]";
+        if let Some(name) = item_name(l) {
+            // 往前看一眼属性行，判断是否测试专用
+            let mut test = false;
+            let mut k = i;
+            while k > 0 {
+                k -= 1;
+                let prev = lines[k].trim_end();
+                if prev == "#[cfg(test)]" {
+                    test = true;
+                    break;
                 }
-                items.push((i, name, test || is_cfg_test));
+                if !prev.starts_with('#') && !prev.is_empty() {
+                    break;
+                }
             }
-            i += 1;
+            items.push((i, name, test || is_cfg_test));
         }
-        let mut out = Vec::new();
-        for (n, (start, name, is_test)) in items.iter().enumerate() {
-            if *is_test {
-                continue;
-            }
-            let end = items.get(n + 1).map(|x| x.0).unwrap_or(lines.len());
-            let body = lines[*start..end].join("\n");
-            out.push((format!("{name}（第 {} 行）", start + 1), body));
-        }
-        out
+        i += 1;
     }
-
-    /// 这一行是不是一个顶层 `fn` / `mod` 声明？是的话给出它的名字。
-    fn item_name(line: &str) -> Option<String> {
-        let re = regex_for_item(line)?;
-        Some(re)
-    }
-
-    fn regex_for_item(line: &str) -> Option<String> {
-        // 手写判定，避免为一条守卫引入 regex 依赖
-        if line.starts_with(' ') || line.starts_with('\t') || line.is_empty() {
-            return None;
+    let mut out = Vec::new();
+    for (n, (start, name, is_test)) in items.iter().enumerate() {
+        if *is_test {
+            continue;
         }
-        let rest = line
-            .strip_prefix("pub(crate) ")
-            .or_else(|| line.strip_prefix("pub(super) "))
-            .or_else(|| line.strip_prefix("pub "))
-            .or_else(|| line.strip_prefix("async "))
-            .unwrap_or(line);
-        let rest = rest.strip_prefix("async ").unwrap_or(rest);
-        let (kw, tail) = rest.split_once(' ')?;
-        if kw != "fn" && kw != "mod" {
-            return None;
-        }
-        let name: String = tail
-            .chars()
-            .take_while(|c| c.is_alphanumeric() || *c == '_')
-            .collect();
-        if name.is_empty() {
-            return None;
-        }
-        Some(format!("{kw} {name}"))
+        let end = items.get(n + 1).map(|x| x.0).unwrap_or(lines.len());
+        let body = lines[*start..end].join("\n");
+        out.push((format!("{name}（第 {} 行）", start + 1), body));
     }
+    out
+}
 
-    /// 取一个顶层函数的函数体（从签名起到第 0 列的 `}` 为止）。
-    ///
-    /// 用它做"接线守卫"：这类性质（窗口走单例 helper、URL 指向自己的入口）
-    /// 编译器管不着，而退化后**功能看起来仍然正常**，只有连点/开窗慢才暴露。
-    ///
-    /// ⚠️ **必须先归一化行尾**（2026-09-13）：本仓库在 Windows 上会被 git
-    /// （`core.autocrlf`）检出成 **CRLF**，此时函数结尾的字节是 `\n}\r\n`，
-    /// **不含**锚点 `"\n}\n"`。旧实现直接在原文上 `find` ⇒ 永远找不到锚点 ⇒
-    /// 静默退化成 `&rest[..]`（**整个文件剩余部分**），于是：
-    ///   · `assert!(body.contains(..))` 全部"通过"（假绿）；
-    ///   · `assert!(!body.contains(..))` 全部**误报失败**（真缺陷在别处也会报到这里）。
-    /// 这正是本项目最该防的那类问题：护栏还在跑，却既盯不住真缺陷、又误报无关代码。
-    ///
-    /// 返回 `Cow`：LF 检出（macOS/Linux）零拷贝借用原文，CRLF 检出才复制一份。
-    fn rust_fn_body<'a>(src: &'a str, signature: &str) -> std::borrow::Cow<'a, str> {
-        let normalized = if src.contains('\r') {
-            std::borrow::Cow::Owned(src.replace("\r\n", "\n"))
-        } else {
-            std::borrow::Cow::Borrowed(src)
-        };
-        let start = normalized
-            .find(signature)
-            .unwrap_or_else(|| panic!("源码里找不到 `{signature}` —— 护栏需要同步更新"));
-        let rest = &normalized[start..];
-        // 找不到收尾锚点时返回剩余全部：**这是刻意的**（宁可多看一点，也不要 panic
-        // 让护栏本身变成构建阻塞），但上面那段注释说明了它为什么会掩盖问题。
-        let end = rest.find("\n}\n").map(|i| i + 3).unwrap_or(rest.len());
-        match normalized {
-            // 借用原文时可以直接切原文（偏移一致）
-            std::borrow::Cow::Borrowed(_) => std::borrow::Cow::Borrowed(&src[start..start + end]),
-            std::borrow::Cow::Owned(s) => {
-                std::borrow::Cow::Owned(s[start..start + end].to_string())
-            }
-        }
+/// 这一行是不是一个顶层 `fn` / `mod` 声明？是的话给出它的名字。
+fn item_name(line: &str) -> Option<String> {
+    let re = regex_for_item(line)?;
+    Some(re)
+}
+
+fn regex_for_item(line: &str) -> Option<String> {
+    // 手写判定，避免为一条守卫引入 regex 依赖
+    if line.starts_with(' ') || line.starts_with('\t') || line.is_empty() {
+        return None;
     }
-
-    /// 把源码字符串里的**所有空白**（空格 / 换行 / 制表 / CR）都去掉。
-    ///
-    /// 护栏用 `include_str!` 读源码然后 `.contains()` 搜特定调用格式；
-    /// `cargo fmt` 会把单行调用拆成多行（`fn(a, b, c)` → 每行一个参数），
-    /// 带空格的 `.contains("fn(a, b")` 就会误报。
-    /// 先 flatten 再搜，让 fmt 怎么拆都不怕。
-    fn code_flat(src: &str) -> String {
-        src.chars().filter(|c| !c.is_whitespace()).collect()
+    let rest = line
+        .strip_prefix("pub(crate) ")
+        .or_else(|| line.strip_prefix("pub(super) "))
+        .or_else(|| line.strip_prefix("pub "))
+        .or_else(|| line.strip_prefix("async "))
+        .unwrap_or(line);
+    let rest = rest.strip_prefix("async ").unwrap_or(rest);
+    let (kw, tail) = rest.split_once(' ')?;
+    if kw != "fn" && kw != "mod" {
+        return None;
     }
+    let name: String = tail
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .collect();
+    if name.is_empty() {
+        return None;
+    }
+    Some(format!("{kw} {name}"))
+}
 
-    /// 形状守卫（2026-10-14 负责人报「Windows 开着不动，过会儿自己就关了」）：
-    /// transport 生产码全集里任何一处都不许整读盘。老守卫是按文件锚定的，
-    /// 所以 4.38.0 在新分册里重新引入同一形状时全绿通过 —— 按形状扫视图才管得到以后新增的文件。
-    /// 只剥整行注释；行尾注释里出现这个字面量仍会报红（刻意的严，宁可换个说法）。
-    #[test]
-    fn transport_src_never_whole_file_read() {
-        let src = crate::network::transport_src_for_guards();
-        let hits: Vec<&str> = src
-            .lines()
-            .map(str::trim_start)
-            .filter(|t| !(t.starts_with("//") || t.starts_with("/*") || t.starts_with('*')))
-            .filter(|t| t.contains("std::fs::read("))
-            .collect();
-        // 阳性对照：视图里必须有合规的流式读盘样本，否则"零命中"可能只是尺子读空了。
-        let compliant = src
-            .lines()
-            .filter(|l| l.contains("std::fs::File::open("))
-            .count();
-        assert!(
+/// 取一个顶层函数的函数体（从签名起到第 0 列的 `}` 为止）。
+///
+/// 用它做"接线守卫"：这类性质（窗口走单例 helper、URL 指向自己的入口）
+/// 编译器管不着，而退化后**功能看起来仍然正常**，只有连点/开窗慢才暴露。
+///
+/// ⚠️ **必须先归一化行尾**（2026-09-13）：本仓库在 Windows 上会被 git
+/// （`core.autocrlf`）检出成 **CRLF**，此时函数结尾的字节是 `\n}\r\n`，
+/// **不含**锚点 `"\n}\n"`。旧实现直接在原文上 `find` ⇒ 永远找不到锚点 ⇒
+/// 静默退化成 `&rest[..]`（**整个文件剩余部分**），于是：
+///   · `assert!(body.contains(..))` 全部"通过"（假绿）；
+///   · `assert!(!body.contains(..))` 全部**误报失败**（真缺陷在别处也会报到这里）。
+/// 这正是本项目最该防的那类问题：护栏还在跑，却既盯不住真缺陷、又误报无关代码。
+///
+/// 返回 `Cow`：LF 检出（macOS/Linux）零拷贝借用原文，CRLF 检出才复制一份。
+fn rust_fn_body<'a>(src: &'a str, signature: &str) -> std::borrow::Cow<'a, str> {
+    let normalized = if src.contains('\r') {
+        std::borrow::Cow::Owned(src.replace("\r\n", "\n"))
+    } else {
+        std::borrow::Cow::Borrowed(src)
+    };
+    let start = normalized
+        .find(signature)
+        .unwrap_or_else(|| panic!("源码里找不到 `{signature}` —— 护栏需要同步更新"));
+    let rest = &normalized[start..];
+    // 找不到收尾锚点时返回剩余全部：**这是刻意的**（宁可多看一点，也不要 panic
+    // 让护栏本身变成构建阻塞），但上面那段注释说明了它为什么会掩盖问题。
+    let end = rest.find("\n}\n").map(|i| i + 3).unwrap_or(rest.len());
+    match normalized {
+        // 借用原文时可以直接切原文（偏移一致）
+        std::borrow::Cow::Borrowed(_) => std::borrow::Cow::Borrowed(&src[start..start + end]),
+        std::borrow::Cow::Owned(s) => std::borrow::Cow::Owned(s[start..start + end].to_string()),
+    }
+}
+
+/// 把源码字符串里的**所有空白**（空格 / 换行 / 制表 / CR）都去掉。
+///
+/// 护栏用 `include_str!` 读源码然后 `.contains()` 搜特定调用格式；
+/// `cargo fmt` 会把单行调用拆成多行（`fn(a, b, c)` → 每行一个参数），
+/// 带空格的 `.contains("fn(a, b")` 就会误报。
+/// 先 flatten 再搜，让 fmt 怎么拆都不怕。
+fn code_flat(src: &str) -> String {
+    src.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+/// 形状守卫（2026-10-14 负责人报「Windows 开着不动，过会儿自己就关了」）：
+/// transport 生产码全集里任何一处都不许整读盘。老守卫是按文件锚定的，
+/// 所以 4.38.0 在新分册里重新引入同一形状时全绿通过 —— 按形状扫视图才管得到以后新增的文件。
+/// 只剥整行注释；行尾注释里出现这个字面量仍会报红（刻意的严，宁可换个说法）。
+#[test]
+fn transport_src_never_whole_file_read() {
+    let src = crate::network::transport_src_for_guards();
+    let hits: Vec<&str> = src
+        .lines()
+        .map(str::trim_start)
+        .filter(|t| !(t.starts_with("//") || t.starts_with("/*") || t.starts_with('*')))
+        .filter(|t| t.contains("std::fs::read("))
+        .collect();
+    // 阳性对照：视图里必须有合规的流式读盘样本，否则"零命中"可能只是尺子读空了。
+    let compliant = src
+        .lines()
+        .filter(|l| l.contains("std::fs::File::open("))
+        .count();
+    assert!(
             compliant >= 1,
             "`std::fs::File::open(` 命中 {compliant} ⇒ 尺子的分母空了，先确认视图还读得到 transport 分册"
         );
-        assert!(
+    assert!(
             hits.is_empty(),
             "transport 生产码不许整读盘（空闲 tick 上一个几百 MB 的文件会让进程瞬间占用 ≈ 文件大小，\
              分配失败是 abort 不是 panic ⇒ 无声消失）。改用 File::open + 定长缓冲循环。命中 {} 处：\n{}",
             hits.len(),
             hits.join("\n")
         );
-    }
+}
 
-    /// 30s 清扫器里那次**整文件哈希**必须落在 `spawn_blocking` 里
-    /// （2026-10-14 Windows 真机：Mac 往 Windows 传 3.x GB，收尾 + 对账那一段
-    /// 「点设置没窗、拖窗口没反应」）。
-    ///
-    /// 为什么单独钉这一格：`content_file_matches` 已经是**分块**喂哈希器（不整读进内存，
-    /// 见上一条判据），所以"不许整读进内存"那条守卫**看不见**这个问题 ——
-    /// 它慢在占着 async worker 跑几十秒，而同一个 runtime 上还跑着所有 async 命令
-    /// （开设置窗就是其中之一）。字节预算与"跳过在途那份 .part（mtime 还新鲜的）"是第二道界，
-    /// 这条钉的是线程归属。
-    #[test]
-    fn sweeper_whole_file_hash_runs_off_the_async_worker() {
-        let src = crate::network::transport_src_for_guards();
-        let body = rust_fn_body(&src, "pub fn spawn_outbox_sweeper(");
-        let flat = code_flat(&body);
-        assert!(
+/// 30s 清扫器里那次**整文件哈希**必须落在 `spawn_blocking` 里
+/// （2026-10-14 Windows 真机：Mac 往 Windows 传 3.x GB，收尾 + 对账那一段
+/// 「点设置没窗、拖窗口没反应」）。
+///
+/// 为什么单独钉这一格：`content_file_matches` 已经是**分块**喂哈希器（不整读进内存，
+/// 见上一条判据），所以"不许整读进内存"那条守卫**看不见**这个问题 ——
+/// 它慢在占着 async worker 跑几十秒，而同一个 runtime 上还跑着所有 async 命令
+/// （开设置窗就是其中之一）。字节预算与"跳过在途那份 .part（mtime 还新鲜的）"是第二道界，
+/// 这条钉的是线程归属。
+#[test]
+fn sweeper_whole_file_hash_runs_off_the_async_worker() {
+    let src = crate::network::transport_src_for_guards();
+    let body = rust_fn_body(&src, "pub fn spawn_outbox_sweeper(");
+    let flat = code_flat(&body);
+    assert!(
             flat.contains("tokio::task::spawn_blocking(move||{content_file_matches("),
             "清扫器的整文件哈希必须交给 spawn_blocking：留在 async 执行路径上 = 钉住一个 tokio worker，\
              而开辅助窗的 async 命令排在同一个 runtime 上（2026-10-14 Windows 真机的形状）"
         );
-        // 反例形状：直接 `let ok = content_file_matches(..)` 就地跑（写回成这个样子必须红）
+    // 反例形状：直接 `let ok = content_file_matches(..)` 就地跑（写回成这个样子必须红）
+    assert!(
+        !flat.contains("letok=content_file_matches("),
+        "清扫器里又出现了**就地**的 content_file_matches 调用：慢活回到 async worker 上了"
+    );
+    // 另外两道界（条数 + 字节）与"跳过在途"必须都还在，不许被"顺手简化"掉
+    for kept in [
+        "CONTENT_RECONCILE_PER_TICK",
+        "CONTENT_RECONCILE_TICK_BYTE_BUDGET",
+        "part_is_being_written(",
+        "reconcile_take_next(",
+    ] {
         assert!(
-            !flat.contains("letok=content_file_matches("),
-            "清扫器里又出现了**就地**的 content_file_matches 调用：慢活回到 async worker 上了"
+            body.contains(kept),
+            "清扫器少了 {kept} —— 它是这一轮有界性的一部分（条数界、字节界、在途跳过）"
         );
-        // 另外两道界（条数 + 字节）与"跳过在途"必须都还在，不许被"顺手简化"掉
-        for kept in [
-            "CONTENT_RECONCILE_PER_TICK",
-            "CONTENT_RECONCILE_TICK_BYTE_BUDGET",
-            "part_is_being_written(",
-            "reconcile_take_next(",
-        ] {
-            assert!(
-                body.contains(kept),
-                "清扫器少了 {kept} —— 它是这一轮有界性的一部分（条数界、字节界、在途跳过）"
-            );
-        }
     }
+}
 
-    /// 预览读取（每格上限 15 MiB）必须整体离开 async worker：`canonicalize` 与 `read`
-    /// 落在慢盘/网络盘上可挂任意久，而同一 runtime 上还排着所有开窗与网络命令。
-    ///
-    /// 旧形状是 `#[tauri::command(async)] + 同步 fn` ⇒ 宏把它投进 `async_runtime::spawn`
-    /// （见 INV-P34 登记的那两行 tauri 源码），跑在 tokio worker 上。这条按**函数体形状**
-    /// 判三件事：① 在 `spawn_blocking` 里；② 读盘点之前最近的 `spawn_blocking` 与它之间
-    /// 没有 `.await`；③ 15 MiB 上限还在（没有上限的读盘不能进这条法的登记范围）。
-    #[test]
-    fn preview_reads_run_off_the_async_worker() {
-        let helpers = include_str!("commands/helpers.rs");
-        let favorites = include_str!("commands/favorites.rs");
-        for (file, src, sig) in [
-            (
-                "commands/helpers.rs",
-                helpers,
-                "pub async fn read_file_preview(",
-            ),
-            (
-                "commands/favorites.rs",
-                favorites,
-                "pub async fn read_favorite_preview(",
-            ),
-            (
-                "commands/favorites.rs",
-                favorites,
-                "pub async fn read_content_preview(",
-            ),
-        ] {
-            let body = rust_fn_body(src, sig);
-            let flat = code_flat(&body);
-            assert!(
-                flat.contains("spawn_blocking("),
-                "{file}::{sig} 必须把读盘交给 spawn_blocking —— 留在 async worker 上会钉住一个 worker"
-            );
-            assert!(
-                flat.contains("max_bytes.min(15*1024*1024)"),
-                "{file}::{sig} 的 15 MiB 上限不见了 —— 有界性是该格进这条法的前提"
-            );
-            let read = flat
-                .find("std::fs::read(")
-                .unwrap_or_else(|| panic!("{file}::{sig} 里找不到读盘点 —— 护栏需要同步更新"));
-            let blk = flat[..read]
-                .rfind("spawn_blocking(")
-                .unwrap_or_else(|| panic!("{file}::{sig} 的读盘点不在 spawn_blocking 之后"));
-            assert!(
-                !flat[blk..read].contains(".await"),
-                "{file}::{sig} 的读盘与 spawn_blocking 之间出现了 .await —— 读盘回到了当前 worker 上"
-            );
-        }
+/// 预览读取（每格上限 15 MiB）必须整体离开 async worker：`canonicalize` 与 `read`
+/// 落在慢盘/网络盘上可挂任意久，而同一 runtime 上还排着所有开窗与网络命令。
+///
+/// 旧形状是 `#[tauri::command(async)] + 同步 fn` ⇒ 宏把它投进 `async_runtime::spawn`
+/// （见 INV-P34 登记的那两行 tauri 源码），跑在 tokio worker 上。这条按**函数体形状**
+/// 判三件事：① 在 `spawn_blocking` 里；② 读盘点之前最近的 `spawn_blocking` 与它之间
+/// 没有 `.await`；③ 15 MiB 上限还在（没有上限的读盘不能进这条法的登记范围）。
+#[test]
+fn preview_reads_run_off_the_async_worker() {
+    let helpers = include_str!("commands/helpers.rs");
+    let favorites = include_str!("commands/favorites.rs");
+    for (file, src, sig) in [
+        (
+            "commands/helpers.rs",
+            helpers,
+            "pub async fn read_file_preview(",
+        ),
+        (
+            "commands/favorites.rs",
+            favorites,
+            "pub async fn read_favorite_preview(",
+        ),
+        (
+            "commands/favorites.rs",
+            favorites,
+            "pub async fn read_content_preview(",
+        ),
+    ] {
+        let body = rust_fn_body(src, sig);
+        let flat = code_flat(&body);
+        assert!(
+            flat.contains("spawn_blocking("),
+            "{file}::{sig} 必须把读盘交给 spawn_blocking —— 留在 async worker 上会钉住一个 worker"
+        );
+        assert!(
+            flat.contains("max_bytes.min(15*1024*1024)"),
+            "{file}::{sig} 的 15 MiB 上限不见了 —— 有界性是该格进这条法的前提"
+        );
+        let read = flat
+            .find("std::fs::read(")
+            .unwrap_or_else(|| panic!("{file}::{sig} 里找不到读盘点 —— 护栏需要同步更新"));
+        let blk = flat[..read]
+            .rfind("spawn_blocking(")
+            .unwrap_or_else(|| panic!("{file}::{sig} 的读盘点不在 spawn_blocking 之后"));
+        assert!(
+            !flat[blk..read].contains(".await"),
+            "{file}::{sig} 的读盘与 spawn_blocking 之间出现了 .await —— 读盘回到了当前 worker 上"
+        );
     }
+}
+
+/// P2-03：帧读取不得按 4 字节头声明的长度一次性预分配。
+///
+/// 4 字节长度头是攻击者可控的；`vec![0u8; len]` 会让每条连接在数据到达之前
+/// 就吃下 64 MiB（`MAX_FRAME`），128 条入站连接最坏 ~8 GiB。这里钉两件事：
+/// 没有按声明长度预分配、确实走增量读取。
+#[test]
+fn frame_reader_does_not_preallocate_the_declared_length() {
+    let src = include_str!("transport/tcp.rs");
+    let at = src
+        .find("pub async fn read_bytes_capped")
+        .expect("帧读取函数改名/搬家了 ⇒ 同步改这条判据");
+    let rest = &src[at..];
+    let end = rest.find("\n}\n").map(|i| i + 3).unwrap_or(rest.len());
+    let body = code_flat(&rest[..end]);
+    assert!(
+        !body.contains("vec![0u8;len]"),
+        "按声明长度一次性分配 = 4 字节头就能让每条连接先吃 64 MiB（P2-03 回归）"
+    );
+    assert!(
+        body.contains("read_to_end"),
+        "必须按实际到达的数据增量读取（take + read_to_end）"
+    );
+}

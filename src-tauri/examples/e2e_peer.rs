@@ -889,6 +889,8 @@ async fn main() {
                 // 普通群文件（进聊天时间线）；todo_id 仅 scope == "todo" 时使用
                 scope: "chat".into(),
                 todo_id: String::new(),
+                // 模拟**旧端**发送：不带轮次 ⇒ 接收端走 attempt=None 的兼容老路。
+                attempt: None,
             },
         )
         .await;
@@ -905,6 +907,7 @@ async fn main() {
                     sender_id: PEER_ID.into(),
                     seq: gimg_seq,
                     data: STANDARD.encode(sealed_chunk),
+                    attempt: None,
                 },
             )
             .await;
@@ -916,6 +919,7 @@ async fn main() {
                 transfer_id: GROUP_IMAGE_TRANSFER_ID.into(),
                 group_id: GROUP_ID.into(),
                 sender_id: PEER_ID.into(),
+                attempt: None,
             },
         )
         .await;

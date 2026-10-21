@@ -299,7 +299,10 @@ pub async fn send_group_file(
     s.group_file_keys
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .insert(transfer_id.clone(), file_key);
+        .insert(
+            transfer_id.clone(),
+            crate::state::GroupFileKey::new(file_key),
+        );
     // 密封 file_key 持久化（群密钥封装，非明文）：重启后离线 pending
     // 群文件的投递仍能恢复 file_key（群密钥 gk:% 本身保留）
     {
@@ -409,11 +412,12 @@ pub async fn send_group_file(
             sealed_file_key: sealed_file_key.clone(),
             scope: scope.clone(),
             todo_id: todo_id.clone(),
+            attempt: None,
         };
-        if try_send(s, m, &msg).await.is_ok() {
-            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-            let _ = db::update_group_file_recipient(&dbc, &transfer_id, m, "sending", 0.0);
-        }
+        // 这里**不写 `sending`**：投递任务可能还在并发闸（`group_file_permits`）后面排队，
+        // 提前写 sending 会让 10 分钟的 stale-sending 清扫器把排队成员当卡死重投
+        // ⇒ 同一 (transfer, recipient) 出现两个任务。状态由 dispatch 拿到许可后自己写。
+        let _ = try_send(s, m, &msg).await;
     }
 
     // 逐可达成员并行投递（每个 recipient 独立任务：Offer → Chunk → Done）。
@@ -446,7 +450,8 @@ pub async fn send_group_file(
                     &s3,
                     &format!(
                         "group-file dispatch {tid3} -> {m3} failed: {} 终态={:?}",
-                        group_file_send_err_reason(&e), status
+                        group_file_send_err_reason(&e),
+                        status
                     ),
                 );
             }

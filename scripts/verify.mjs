@@ -260,8 +260,8 @@ const steps = [
   },
   {
     group: "frontend",
-    name: "文档 file:line 引用对账",
-    why: "挡住「文档里的 file:line 指向不存在的文件或早已超出文件范围」——实测 2026-10-03：台账引 `transport/mod.rs:122`（该文件只有 118 行）、`lib.rs:1920`（全文 560 行），全部照亮通过。与上一条同一立场（能被现算的东西不许留第二份手抄），只是那条管「数字」、这条管「指向」",
+    name: "文档引用对账（file:line + 裸路径存在性）",
+    why: "挡住两类「文档指向了不存在的东西」：① `file:line` 指向不存在的文件或早已超出文件范围（实测 2026-10-03：台账引 `transport/mod.rs:122`（该文件只有 118 行）、`lib.rs:1920`（全文 560 行），全部照亮通过）；② **裸路径**（`docs/notes/x.md`、`src/components/x.vue`）指向已被改名/搬家/删除的文件 —— 实测 2026-10-21 归档历史文档后，14 份文档留下 44 处这类断裂引用而门禁全绿。与上一条同一立场（能被现算的东西不许留第二份手抄），只是那条管「数字」、这条管「指向」",
     cwd: ROOT,
     cmd: NODE_EXE,
     args: ["scripts/check-doc-citations.mjs"],
@@ -1190,7 +1190,16 @@ for (const [i, s] of active.entries()) {
   // 拉起 `.cmd`（npm 在 Windows 上就是 `npm.cmd`），否则报 `EINVAL` —— 本脚本的
   // 第 7/8 步（`npm run version:changelog`、`npm test`、`npm run build`）会全部"未能执行"。
   // 只对 Windows 打开：POSIX 上 npm 是普通可执行文件，多一层 shell 只会引入额外的引号语义。
-  const r = spawnSync(s.cmd, s.args, { cwd: s.cwd, stdio: "inherit", shell: WIN });
+  // 上限只是兜底：本地/全量最慢一步约 21 min；E2E 轮次可能几十分钟 ⇒ 默认 60 min。
+  // 单步可用 `timeoutMs` 覆盖（以后有更长的步骤就显式写出来，别把默认抬到 GitHub 的 6 小时）。
+  // 没有这一层时，一个卡住的步骤会吃满整个 job 预算，且归因只剩“job 超时”。
+  const timeoutMs = s.timeoutMs ?? 60 * 60_000;
+  const r = spawnSync(s.cmd, s.args, {
+    cwd: s.cwd,
+    stdio: "inherit",
+    shell: WIN,
+    timeout: timeoutMs,
+  });
   const secs = ((Date.now() - start) / 1000).toFixed(1);
 
   // status 为 null 表示被信号杀掉（或命令没跑起来）。
@@ -1203,7 +1212,11 @@ for (const [i, s] of active.entries()) {
   if (!ok) {
     console.error(
       `\n❌ 第 ${i + 1} 步失败：${s.name}（${secs}s）` +
-        (r.status === null ? `（未能执行：${r.error?.message ?? "未知原因"}）` : ""),
+        (r.status === null
+          ? r.error?.code === "ETIMEDOUT"
+            ? `（超时：${Math.round(timeoutMs / 60_000)} min）`
+            : `（未能执行：${r.error?.message ?? "未知原因"}）`
+          : ""),
     );
     if (KEEP_GOING) {
       // 独立轮次：继续跑后面的，最后一起汇总。红**不会**被这样洗白 —— 见结尾的退出码。

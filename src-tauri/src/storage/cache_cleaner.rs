@@ -30,10 +30,19 @@ pub struct CacheEntry {
 }
 
 /// 清理结果。
-#[derive(Clone, Copy, Debug, Default, Serialize)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct CleanupReport {
     pub removed: usize,
     pub freed_bytes: u64,
+    /// **数据库整理**的结局（机器可读）：`None` = 这一轮没做整理；
+    /// `"done"` = 做完了；`"aborted"` = 超预算被**我们自己**中止（**库完好，只是没压缩**）；
+    /// `"failed"` = 真出错了。
+    ///
+    /// 为什么是机器码而不是一句话：这个字段要回到界面上，而界面有中英两套文案
+    /// （`src/i18n/locales/`）—— 句子由前端按码本地化，后端只负责说清"发生了什么"。
+    /// 人类可读的那句留在日志里（`commands/channel.rs`）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub db_compact_state: Option<String>,
 }
 
 /// 计算需要删除的条目索引（纯函数，便于测试）。

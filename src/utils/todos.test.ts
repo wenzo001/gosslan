@@ -24,6 +24,7 @@ import {
   todoMentionsMe,
   openTodosForMe,
   putTodoRows,
+  MAX_TODO_ROWS_PER_CONV,
   TODO_PRIORITIES,
   TODO_PRIORITY_DEFAULT,
   resolveTodoNumbers,
@@ -744,6 +745,24 @@ test("putTodoRows：整表读覆盖旧值，重复行不许累加", () => {
   assert.equal(todoRowsFor(again, "group:g1").length, 1, "同一份读重复落两次只有一份行");
   const cleared = putTodoRows(again, ["group:g1"], []);
   assert.deepEqual(todoRowsFor(cleared, "group:g1"), [], "后端说不存在 ⇒ 必须清空，不能留住旧行");
+});
+
+test("putTodoRows：每个会话的任务行有上限，保留最新一段（P2-13）", () => {
+  const all = Array.from({ length: MAX_TODO_ROWS_PER_CONV + 5 }, (_, i) => def(`t${i}`, i + 1));
+  const out = putTodoRows({}, ["group:g1"], all);
+  const rows = todoRowsFor(out, "group:g1");
+  assert.equal(rows.length, MAX_TODO_ROWS_PER_CONV, "行数封顶");
+  assert.equal(rows[0].msg_id, all[5].msg_id, "丢掉最旧的 5 条");
+  assert.equal(rows[rows.length - 1].msg_id, all[all.length - 1].msg_id, "最新的保留");
+});
+
+test("mergeIncomingTodoRows：增量追加后仍受同一上限约束（P2-13）", () => {
+  const base = Array.from({ length: MAX_TODO_ROWS_PER_CONV }, (_, i) => def(`t${i}`, i + 1));
+  const out = mergeIncomingTodoRows({ "group:g1": base }, [def("new", MAX_TODO_ROWS_PER_CONV + 1)]);
+  const rows = todoRowsFor(out, "group:g1");
+  assert.equal(rows.length, MAX_TODO_ROWS_PER_CONV, "追加不越界");
+  assert.equal(rows[0].msg_id, base[1].msg_id, "最旧的一条被挤掉");
+  assert.equal(rows[rows.length - 1].msg_id, `m-new-${MAX_TODO_ROWS_PER_CONV + 1}`, "新事件在尾部");
 });
 
 test("乐观更新落在同一份源上：只刷已加载的会话，未加载的不建键", () => {

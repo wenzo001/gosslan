@@ -160,6 +160,29 @@ pub fn list_expired_group_outbox(
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
+/// 群 outbox 的**逐行**放弃判定：只按该成员自己的可达性算。
+///
+/// 不能把一条消息的所有行 `all()` 成一个结论（P1-04）：群里只要有一个成员长期离线，
+/// 在线成员的行也会被一起保留 ⇒ 每 5s 重发一次、最长 7 天。逐行判定后，在线成员
+/// 30 分钟就独立放弃，离线成员仍按 7 天保留（INV-P04 不受影响）。
+pub fn group_outbox_row_expired(peer_reachable: bool, age_ms: i64) -> bool {
+    should_fail_expired(
+        peer_reachable,
+        age_ms,
+        GROUP_OUTBOX_FAIL_DEADLINE_MS,
+        OUTBOX_OFFLINE_HOLD_MS,
+    )
+}
+
+/// 删掉一条消息里**指定成员**的待发行（逐行放弃时用；不影响其它成员的行）。
+pub fn delete_group_outbox_row(conn: &Connection, msg_id: &str, peer_id: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM group_outbox WHERE msg_id = ?1 AND peer_id = ?2",
+        params![msg_id, peer_id],
+    )?;
+    Ok(())
+}
+
 /// 按 msg_id 删除**所有** peer 的 group_outbox 行。
 pub fn delete_group_outbox_by_msg_id(conn: &Connection, msg_id: &str) -> Result<()> {
     conn.execute(
@@ -264,6 +287,47 @@ mod group_outbox_removal_tests {
         assert_eq!(
             delete_group_outbox_for_peer_in_group(&conn, "g", "peer-b").unwrap(),
             0
+        );
+    }
+
+    /// P1-04 回归：群 outbox 必须**逐行**判死。
+    ///
+    /// 旧实现 `rows.iter().all(...)` 把结论聚合到消息级：一条消息里只要有一个成员离线，
+    /// 在线成员的行也被保留 ⇒ 每 5s 重发一次、最长 7 天。
+    #[test]
+    fn group_outbox_expiry_is_per_row_not_per_message() {
+        let min = 60_000i64;
+        assert!(
+            group_outbox_row_expired(true, 40 * min),
+            "在线成员 40min 必须独立放弃"
+        );
+        assert!(
+            !group_outbox_row_expired(false, 40 * min),
+            "离线成员 40min 必须保留（INV-P04）"
+        );
+        assert!(
+            !group_outbox_row_expired(true, 10 * min),
+            "在线成员未到 30min 不放弃"
+        );
+        assert!(
+            group_outbox_row_expired(false, OUTBOX_OFFLINE_HOLD_MS + 1),
+            "离线成员超过 7 天才是僵尸行"
+        );
+    }
+
+    /// 逐行放弃只删指定成员那一行，不碰同消息的其它成员。
+    #[test]
+    fn deleting_one_expired_row_keeps_the_other_members() {
+        let conn = db();
+        seed_msg(&conn, "m1", "sending");
+        seed_row(&conn, "m1", "online");
+        seed_row(&conn, "m1", "offline");
+        delete_group_outbox_row(&conn, "m1", "online").unwrap();
+        assert_eq!(rows_of(&conn, "m1"), 1);
+        assert_eq!(
+            status(&conn, "m1"),
+            "sending",
+            "还有离线成员没收到 ⇒ 消息不许被判死"
         );
     }
 }

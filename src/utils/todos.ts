@@ -917,6 +917,24 @@ export function buildTodoHistory(todoId: string, records: MessageRecord[]): Todo
  *  这两件事必须分得开，否则"没有任务"与"还没数据"画成同一个样子，看板每次打开都要重读一遍。 */
 export type TodoRowsByConv = Record<string, MessageRecord[]>;
 
+/**
+ * 每个会话最多保留多少条任务消息行（决策 5，拍板 5A(500)）。
+ *
+ * 后端只限会话数、不限行数（`get_todo_messages_for_conns` 的 `ORDER BY seq ASC`），
+ * 而看板/徽标折的是这份全表读 ⇒ 不封顶会随任务事件单调增长；`foldTodos` 还会
+ * 在每个新事件上把整份重解析一遍。取最末尾的 N 条（后端升序返回、增量事件追加在尾部）
+ * ⇒ 最近的任务状态优先保留。
+ *
+ * ⚠️ **只裁前端运行态缓存，不碰数据库**：被裁掉的老任务仍在 `messages` 表里，
+ * 需要时仍可从库里取回（拍板明确禁止为了省内存永久删除任务历史）。
+ */
+export const MAX_TODO_ROWS_PER_CONV = 500;
+
+function capTodoRows(rows: MessageRecord[]): MessageRecord[] {
+  // `bounded.ts::trimOldest` 只接受 Map/Set；这里是按插入序的数组，等价地保留末尾 N 条。
+  return rows.length > MAX_TODO_ROWS_PER_CONV ? rows.slice(-MAX_TODO_ROWS_PER_CONV) : rows;
+}
+
 /** 整表读的结果落进那份源：`convIds` 是这次读**点到**的全部会话（后端只回有任务的会话）。 */
 export function putTodoRows(
   prev: TodoRowsByConv,
@@ -930,7 +948,7 @@ export function putTodoRows(
     else byConv[r.conv_id] = [r];
   }
   const next: TodoRowsByConv = { ...prev };
-  for (const cid of convIds) next[cid] = byConv[cid] ?? [];
+  for (const cid of convIds) next[cid] = capTodoRows(byConv[cid] ?? []);
   return next;
 }
 
@@ -982,7 +1000,8 @@ export function mergeIncomingTodoRows(
     if (!isTodoRowsLoaded(next, m.conv_id)) continue;
     const existing = next[m.conv_id];
     const i = existing.findIndex((x) => x.msg_id === m.msg_id);
-    next[m.conv_id] = i >= 0 ? existing.map((x, j) => (j === i ? m : x)) : [...existing, m];
+    const merged = i >= 0 ? existing.map((x, j) => (j === i ? m : x)) : [...existing, m];
+    next[m.conv_id] = capTodoRows(merged);
     changed = true;
   }
   return changed ? next : rows;

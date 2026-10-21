@@ -10,6 +10,9 @@
 //! 2026-09-24 架构复审 0-A2 删除：留着它的代价不是几十行代码，是"下一个人以为分流在这里改"。
 
 pub mod ble_framing;
+// 三平台共用的外设事件队列硬上限 + 溢出信号（拍板 3B，见该文件注释）。
+#[cfg(feature = "bluetooth")]
+pub mod ble_pending;
 pub mod bluetooth;
 // BLE 外设（GATT server）角色：只有 macOS + `--features bluetooth` 才编译。
 #[cfg(all(feature = "bluetooth", target_os = "macos"))]

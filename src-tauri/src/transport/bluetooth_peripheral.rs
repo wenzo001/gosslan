@@ -279,7 +279,9 @@ async fn wait_or_nap(signal: &mut watch::Receiver<u64>, max: Duration) {
 /// 已启动的外设角色。持有它 = 保持广播；`stop()` 或 drop 都会停止广播。
 pub struct PeripheralServer {
     /// 对端发来的帧（`recv()` 返回 `None` 表示驱动已退出）。
-    pub events: mpsc::UnboundedReceiver<PeripheralEvent>,
+    pub events: mpsc::Receiver<PeripheralEvent>,
+    /// 事件队列溢出的带外信号（拍板 3B）：消费侧据此**受控断链** + 冷却，不静默丢帧。
+    pub overflow: watch::Receiver<u64>,
     /// 往对端发帧的句柄。
     pub writer: PeripheralWriter,
     manager: SendObj<CBPeripheralManager>,
@@ -359,7 +361,8 @@ pub fn start() -> Result<PeripheralStart, String> {
         unsafe { service.setCharacteristics(Some(&chars)) };
     }
 
-    let (event_tx, event_rx) = mpsc::unbounded_channel::<PeripheralEvent>();
+    let (event_tx, event_rx, overflow_rx) =
+        crate::transport::ble_pending::channel::<PeripheralEvent>();
     let (signal_tx, signal_rx) = watch::channel(0u64);
     let (state_tx, state_rx) = oneshot::channel::<Result<(), String>>();
     let state = Arc::new(Mutex::new(CentralState::default()));
@@ -384,6 +387,7 @@ pub fn start() -> Result<PeripheralStart, String> {
     Ok(PeripheralStart {
         server: PeripheralServer {
             events: event_rx,
+            overflow: overflow_rx,
             writer: PeripheralWriter {
                 manager: SendObj(manager.clone()),
                 tx: SendObj(tx_char),
@@ -407,7 +411,7 @@ pub fn start() -> Result<PeripheralStart, String> {
 /// 全部是 `Send + Sync` 的普通数据（通道 + 锁），**唯独** CoreBluetooth 对象走 [`SendObj`]；
 /// 回调只做"拷字节 + 查表 + 发通道"，重活（验签、写库、加解密）都在 tokio 侧。
 struct DelegateIvars {
-    events: mpsc::UnboundedSender<PeripheralEvent>,
+    events: crate::transport::ble_pending::PeripheralEventSender<PeripheralEvent>,
     signal: watch::Sender<u64>,
     state: Arc<Mutex<CentralState>>,
     service: SendObj<CBMutableService>,
@@ -465,7 +469,7 @@ define_class!(
                 .unwrap_or_else(|e| e.into_inner())
                 .clear();
             for central in &victims {
-                let _ = self.ivars().events.send(PeripheralEvent::Unlinked {
+                let _ = self.ivars().events.try_push(PeripheralEvent::Unlinked {
                     central: central.clone(),
                 });
             }
@@ -542,7 +546,7 @@ define_class!(
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .remove(&id);
-            let _ = self.ivars().events.send(PeripheralEvent::Unlinked {
+            let _ = self.ivars().events.try_push(PeripheralEvent::Unlinked {
                 central: id.clone(),
             });
             let _ = self.ivars().signal.send(1);
@@ -634,7 +638,7 @@ impl Delegate {
     }
 
     fn new(
-        events: mpsc::UnboundedSender<PeripheralEvent>,
+        events: crate::transport::ble_pending::PeripheralEventSender<PeripheralEvent>,
         signal: watch::Sender<u64>,
         state: Arc<Mutex<CentralState>>,
         service: SendObj<CBMutableService>,
@@ -653,12 +657,12 @@ impl Delegate {
 
     /// 诊断信息（上层记 info）。
     fn notice(&self, text: String) {
-        let _ = self.ivars().events.send(PeripheralEvent::Notice(text));
+        let _ = self.ivars().events.try_push(PeripheralEvent::Notice(text));
     }
 
     /// 需要用户知道的问题（上层记 warn）。
     fn warn(&self, text: String) {
-        let _ = self.ivars().events.send(PeripheralEvent::Warning(text));
+        let _ = self.ivars().events.try_push(PeripheralEvent::Warning(text));
     }
 
     /// 分片 ⇒ 完整帧 ⇒ 事件。半截消息由 `BleReassembler` 自己带 TTL 回收。
@@ -681,7 +685,7 @@ impl Delegate {
             out
         };
         if let PushOutcome::Complete(frame) = outcome {
-            let _ = self.ivars().events.send(PeripheralEvent::Frame {
+            let _ = self.ivars().events.try_push(PeripheralEvent::Frame {
                 central: central.to_string(),
                 bytes: frame,
             });

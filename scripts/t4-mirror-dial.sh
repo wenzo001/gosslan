@@ -48,6 +48,16 @@ rm -f "$LOG"
 echo "==> [2/3] 启动实例（--instance 1，TCP ${TCP_PORT}，GOSSLAN_AUTOSTART=1）"
 GOSSLAN_AUTOSTART=1 "$BIN" --instance 1 > "$LOG" 2>&1 &
 APP_PID=$!
+# 任何退出路径（Ctrl-C、peer 命令非零、脚本被杀）都要带走实例；旧写法只在两条显式路径 kill。
+# 先摘直接子进程（WebKit helper 是应用的子进程），再停应用。SC-P2-07。
+cleanup_app() {
+  if [ -n "${APP_PID:-}" ] && kill -0 "$APP_PID" 2>/dev/null; then
+    pkill -P "$APP_PID" 2>/dev/null || true
+    kill "$APP_PID" 2>/dev/null || true
+    wait "$APP_PID" 2>/dev/null || true
+  fi
+}
+trap cleanup_app EXIT
 READY=0
 for _ in $(seq 1 30); do
   if nc -z 127.0.0.1 "$TCP_PORT" 2>/dev/null; then READY=1; break; fi

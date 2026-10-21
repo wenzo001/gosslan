@@ -156,26 +156,46 @@ fn gossip_trust_for_unpeer_sender(
     )
 }
 
+/// 本机可继续转发时，转发信封应带的 TTL；`None` = 不再转发。
+///
+/// 唯一真相是 [`MeshRouter::on_receive`] 的 Forward 决策（`max_ttl` 裁剪 + 递减）。
+/// TTL 不在 Ed25519 签名范围内，绝不能拿信封自报的 `env.ttl` 直接减一 ——
+/// 对端自报 255 时那就是一条能跨 254 跳扩散的信封（设计上限 6）。
+fn forward_ttl_from(decision: &ForwardDecision) -> Option<u8> {
+    match decision {
+        ForwardDecision::Forward { frame, .. } => Some(frame.ttl),
+        _ => None,
+    }
+}
+
 async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope) {
     // Gossip 可经第三方转发，不能仅凭信封内自报的 Ed25519 公钥建立身份。
     // 公钥必须先由 Discovery/Hello 绑定到同一个 device_id；若已知 X25519
     // 公钥也发生变化，同样拒绝，避免冒充好友或污染 E2EE 密钥缓存。
+    // peers 快照必须在 db 锁**之前**取完并放锁：`peers` 与 `db` 是两把独立的
+    // std Mutex，而下面 None 分支要读 friends 表（db）。本函数在每条 Gossip 的接收
+    // 热路径上，若持 peers 求 db，就与 Hello 路径的 db→peers 构成 ABBA ——
+    // 重启后 `peers` 为空，第一封 Gossip 必走 None 分支，正是最容易撞上的时刻。
+    let peer_anchor = {
+        let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
+        peers
+            .get(&env.sender_id)
+            .map(|p| (p.ed25519_pubkey.clone(), p.x25519_pubkey.clone()))
+    };
     let sender_trusted = {
         if env.sender_id == state.device_id {
             false
         } else {
-            let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
-            match peers.get(&env.sender_id) {
+            match peer_anchor {
                 // 已认识：公钥必须匹配（无论是直连还是跨跳转发），防冒充。
-                Some(p) => {
+                Some((ed25519, x25519)) => {
                     let direct_peer = peer_id == env.sender_id;
-                    (p.ed25519_pubkey.as_deref() == Some(env.sender_ed25519.as_str())
-                        || (direct_peer && p.ed25519_pubkey.is_none()))
-                        && (p
-                            .x25519_pubkey
+                    (ed25519.as_deref() == Some(env.sender_ed25519.as_str())
+                        || (direct_peer && ed25519.is_none()))
+                        && (x25519
                             .as_deref()
                             .map_or(true, |key| key == env.sender_pubkey)
-                            || (direct_peer && p.x25519_pubkey.is_none()))
+                            || (direct_peer && x25519.is_none()))
                 }
                 // 未认识（peers 里查不到）。⚠️ peers 是**内存态**，进程重启后为空、
                 // 好友恰好不在线时也会缺席 —— 「不在 peers」不等于「陌生节点」。
@@ -214,7 +234,8 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
     }
     // 1. 先验签，再进入去重缓存。否则攻击者可以用伪造的唯一 message_id
     // 污染 Bloom/LRU，甚至抢先占用真实消息的 id 造成合法消息被丢弃。
-    {
+    // 块返回值 = 本机可继续转发的 TTL（None = 不再转发），供第 4 步使用。
+    let mesh_forward_ttl = {
         let gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
         if !gossip.verify_envelope(&env) {
             return;
@@ -231,7 +252,11 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
         // 转发路径（默认关闭、生产从不调用），2026-09-12 已删除 ——
         // **中继授权的唯一真相是 `settings.relay_policy`**（ADR-0016），
         // 接 BLE 时不要再复制第二份转发记账。
-        {
+        //
+        // 转发出去的信封 TTL **只能取自这里的 Forward 决策**（`max_ttl` 裁剪 + 递减）。
+        // TTL 不参与 Ed25519 签名（`protocol.rs` 的 signing_bytes），对端可自报 255；
+        // 旧写法用 `env.ttl - 1` 重建信封 ⇒ 一条 Gossip 能跨 254 跳扩散（设计上限 6）。
+        let mesh_ttl = {
             let mut router = state.mesh_router.lock().unwrap_or_else(|e| e.into_inner());
             let frame = MeshFrame {
                 frame_id: env.message_id.clone(),
@@ -242,31 +267,41 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                 // 转发在别处做，这里只需要元数据（MeshRouter 不解析载荷，P-A03）
                 payload: Vec::new(),
             };
-            if let ForwardDecision::Drop(_) = router.on_receive(frame, &state.device_id) {
+            let decision = router.on_receive(frame, &state.device_id);
+            if let ForwardDecision::Drop(_) = decision {
                 return;
             }
-        }
+            forward_ttl_from(&decision)
+        };
         // 业务层去重（Mesh 之后的第二道防线）
         let mut gossip = state.gossip.lock().unwrap_or_else(|e| e.into_inner());
         if !gossip.is_new(&env.message_id) {
             return;
         }
-    }
+        mesh_ttl
+    };
     // 2. 同步发送方公钥：GossipEnvelope 已携带 x25519_pubkey 用于解密，
     //    但此前未写入 peers/friends，导致后续 outbox 重发的直发 ChatMessage
     //    在 open_direct_content() 中因缺 pubkey 被丢弃。此处仅更新已有 peer
     //    条目（不做 insert，避免为未通过 Discovery 的节点创建残缺记录），
     //    同时用 COALESCE 安全地补充 friends 表的 NULL pubkey。
     if env.encrypted && matches!(env.kind, GossipKind::Chat) {
-        let mut peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(p) = peers.get_mut(&env.sender_id) {
-            if p.x25519_pubkey.is_none() {
-                p.x25519_pubkey = Some(env.sender_pubkey.clone());
-                p.last_seen = db::now_ms();
-                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                db::update_friend_pubkeys(&dbc, &env.sender_id, Some(&env.sender_pubkey), None)
-                    .ok();
+        // 先在 peers 锁内完成内存更新并**立刻放锁**，再取 db 写：见上方 peer_anchor
+        // 的锁序说明（gossip 的另一条路径就是 peers→db，本处不能反向嵌套）。
+        let learned = {
+            let mut peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
+            match peers.get_mut(&env.sender_id) {
+                Some(p) if p.x25519_pubkey.is_none() => {
+                    p.x25519_pubkey = Some(env.sender_pubkey.clone());
+                    p.last_seen = db::now_ms();
+                    true
+                }
+                _ => false,
             }
+        };
+        if learned {
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+            db::update_friend_pubkeys(&dbc, &env.sender_id, Some(&env.sender_pubkey), None).ok();
         }
     }
     // 3. 解包：E2EE 关闭时载荷为明文 JSON；开启时按单聊 ECDH / 群密钥解密
@@ -349,18 +384,29 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
     let is_target = env.target.as_deref() == Some(state.device_id.as_str());
     let sender_is_me = env.sender_id == state.device_id;
     let relay_cfg = state.relay_policy_config();
-    let may_forward = crate::mesh::relay_policy::decide_forward(
-        &relay_cfg,
-        is_target,
-        env.ttl,
-        sender_is_me,
-        &env.sender_id,
-        || {
-            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-            db::get_friend(&dbc, &env.sender_id).is_some()
-        },
-    );
-    if may_forward {
+    // 只有 MeshRouter 判了“可以继续转发”的信封才进入授权判定。
+    // 授权判据仍喂**信封自报的 ttl**（`decide_forward` 的 `ttl <= 1` 是“别再转发”的语义，
+    // 与路由器 Deliver 一致）；真正写给下一跳的 TTL 用路由器**裁剪并递减后**的值。
+    // 不能把递减后的 1 喂给 `decide_forward`：那会把 `env.ttl=2`（还能再走一跳）提前停掉。
+    let forward_ttl = match mesh_forward_ttl {
+        Some(fwd_ttl)
+            if crate::mesh::relay_policy::decide_forward(
+                &relay_cfg,
+                is_target,
+                env.ttl,
+                sender_is_me,
+                &env.sender_id,
+                || {
+                    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                    db::get_friend(&dbc, &env.sender_id).is_some()
+                },
+            ) =>
+        {
+            Some(fwd_ttl)
+        }
+        _ => None,
+    };
+    if let Some(fwd_ttl) = forward_ttl {
         // 定向帧（FriendRequest/FriendAccept/ChatAck/ChatReadReceipt）优先精确定向：
         // target 是本机直连就只发它；无直连路径时洪泛兜底（第一版无路由表）。广播帧保持 fan-out。
         let targets: Vec<String> = match env.target.as_deref() {
@@ -388,7 +434,8 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
             }
         };
         let mut fwd = env.clone();
-        fwd.ttl -= 1;
+        // TTL 的唯一真相是 MeshRouter（`max_ttl` 裁剪 + 递减），不是在信封自报值上再减一。
+        fwd.ttl = fwd_ttl;
         // 记下这条**准备转发出去的原样信封**（#77）：窗口内新建成链路的成员由
         // `replay_group_frames_to` 补递一次。只记 Group + 成员表非空的（口径同
         // `group_envelope_consumable`）。

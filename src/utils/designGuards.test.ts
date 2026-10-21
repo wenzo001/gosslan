@@ -4351,3 +4351,25 @@ test("52 弹窗列表三态走 StateBlock：不允许再各写一段内联 div",
     );
   }
 });
+
+/// P2-12：收藏预览不能把 objectURL 当永久值 —— blobLru 逐出时会 revoke，
+/// 死字符串仍是 truthy；灯箱必须向缓存现取，缩略图坏了要能重载。
+test("收藏预览不缓存裸 objectURL：灯箱现取、缩略图坏了重载", () => {
+  const src = readFileSync(new URL("../components/FavoritePanel.vue", import.meta.url), "utf8");
+  assert.match(src, /favoritePreviewUrl\(f\.id\)\s*\?\?/, "灯箱必须先向缓存要当前 URL");
+  assert.match(src, /@error="refreshThumb\(/, "缩略图加载失败要触发重载");
+  assert.doesNotMatch(
+    src,
+    /const url = thumbs\.value\[f\.id\] \?\?/,
+    "不许直接信任可能已被 LRU revoke 的字符串",
+  );
+});
+
+/// P3-15：待办缩略图的退避重试不能无限续命 —— 一份永远不会到的字节会让每个缩略图
+/// 每 ≤30s 发 2 次 IPC，直到组件卸载。
+test("待办缩略图退避重试有次数上限，用尽后落到「已被清理」", () => {
+  const src = readFileSync(new URL("../components/TodoImageThumb.vue", import.meta.url), "utf8");
+  assert.match(src, /MAX_RETRY_ATTEMPTS\s*=\s*10/, "必须有明确的次数上限");
+  assert.match(src, /attempts\s*>=\s*MAX_RETRY_ATTEMPTS/, "到上限必须停止安排下一次");
+  assert.match(src, /msg\.imageCleaned/, "用尽后要给出终态文案，而不是永远「同步中」");
+});

@@ -76,7 +76,9 @@ pub struct PeripheralWriter;
 
 /// 已启动的外设角色。
 pub struct PeripheralServer {
-    pub events: mpsc::UnboundedReceiver<PeripheralEvent>,
+    pub events: mpsc::Receiver<PeripheralEvent>,
+    /// 事件队列溢出的带外信号（拍板 3B）：消费侧据此**受控断链** + 冷却。
+    pub overflow: tokio::sync::watch::Receiver<u64>,
     pub writer: PeripheralWriter,
 }
 
@@ -112,8 +114,10 @@ pub struct PeripheralStart {
 // 全局状态
 // ---------------------------------------------------------------------------
 
-/// 回调线程把事件投进来的通道（`start()` 时建立）。
-static EVENTS: Mutex<Option<mpsc::UnboundedSender<PeripheralEvent>>> = Mutex::new(None);
+/// 回调线程把事件投进来的通道（`start()` 时建立；**有界**，拍板 3B）。
+static EVENTS: Mutex<
+    Option<crate::transport::ble_pending::PeripheralEventSender<PeripheralEvent>>,
+> = Mutex::new(None);
 /// `BlePeripheral` 类的全局引用 —— 只在 `nativeBootstrap`（有 App 类加载器在栈上）里取。
 static KOTLIN_CLASS: OnceLock<Global<JClass<'static>>> = OnceLock::new();
 /// JVM 句柄。
@@ -130,7 +134,8 @@ fn now_ms() -> i64 {
 
 fn send_event(ev: PeripheralEvent) {
     if let Some(tx) = EVENTS.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
-        let _ = tx.send(ev);
+        // JNI 回调线程不能阻塞。队满时 try_push 带外发溢出信号，由消费侧受控断链。
+        let _ = tx.try_push(ev);
     }
 }
 
@@ -186,7 +191,7 @@ pub fn start() -> Result<PeripheralStart, String> {
                 .to_string(),
         );
     }
-    let (tx, rx) = mpsc::unbounded_channel();
+    let (tx, rx, overflow_rx) = crate::transport::ble_pending::channel::<PeripheralEvent>();
     *EVENTS.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
     *REASSEMBLERS.lock().unwrap_or_else(|e| e.into_inner()) = Some(HashMap::new());
     send_event(PeripheralEvent::Notice(
@@ -206,6 +211,7 @@ pub fn start() -> Result<PeripheralStart, String> {
     Ok(PeripheralStart {
         server: PeripheralServer {
             events: rx,
+            overflow: overflow_rx,
             writer: PeripheralWriter,
         },
         state: state_rx,

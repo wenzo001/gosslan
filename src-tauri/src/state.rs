@@ -891,6 +891,12 @@ pub const MAX_CONCURRENT_DIALS: usize = 16;
 /// 同时保持的入站连接上限（见 `AppState::inbound_permits`）。
 pub const MAX_INBOUND_CONNECTIONS: usize = 128;
 
+/// 同时进行的群文件投递上限（见 `AppState::group_file_permits`）。
+/// 取 8：每个在途成员约 1.2 MB 读缓冲 + AEAD/base64 副本，而每条链路的 Low 队列预算
+/// 是 8 MiB（`network/transport/queue_policy.rs`）；200 成员无闸时 = 200 条链路、约
+/// 1.6 GB 队列。8 并发既不让内存随群人数线性涨，也不把吞吐压成单线程。
+pub const MAX_CONCURRENT_GROUP_FILE_SENDS: usize = 8;
+
 /// 拨号在途标记的 RAII 守卫：Drop 即释放（任何提前 return / panic 都不会漏放）。
 pub struct DialGuard {
     state: Arc<AppState>,
@@ -925,6 +931,57 @@ impl Drop for DialGuard {
     }
 }
 
+/// 群文件轮次号的启动种子：**纳秒级**的 epoch 时间。
+///
+/// 为什么必须是纳秒而不是 0/毫秒：接收端把"当前轮次"存在内存里，用
+/// `attempt < 当前轮次 ⇒ 丢弃` 隔离上一轮的残留帧。发送端重启后如果从 0 重新数，
+/// 新轮次会**小于**接收端记住的旧值 ⇒ 新 Offer 被当成残留直接丢掉，重启后永远续不上。
+/// 取纳秒是因为它远大于"一个进程里 dispatch 的次数"：后启动的进程必然拿到更大的种子。
+pub(crate) fn group_file_round_seed() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(1)
+}
+
+/// 群文件投递在途守卫（键 = `(transfer, recipient)`，RAII）。
+///
+/// 为什么需要它：fan-out 与离线补发（Hello / 心跳 / 拨号 / BLE 建链都会触发）是**两条**
+/// 入口。旧形状靠"一进 dispatch 就把行写成 `sending`"去重；但并发闸（`group_file_permits`）
+/// 让任务可能在闸后**排队**，排队期间行必须保持 `pending`（否则 10 分钟的 stale-sending
+/// 清扫器会把排队当卡死重投）⇒ 去重不能再靠状态行。这道内存闸补回那个不变量：
+/// 同一 (transfer, recipient) 同时只许一个任务，排队中的也算一个。
+pub struct GroupFileDispatchGuard {
+    set: Arc<Mutex<std::collections::HashSet<String>>>,
+    key: String,
+}
+
+impl GroupFileDispatchGuard {
+    /// 已有同键任务 ⇒ `None`（调用方直接返回：不写状态、不重复投递）。
+    pub fn try_acquire(
+        set: &Arc<Mutex<std::collections::HashSet<String>>>,
+        key: String,
+    ) -> Option<Self> {
+        let inserted = set
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(key.clone());
+        inserted.then(|| Self {
+            set: set.clone(),
+            key,
+        })
+    }
+}
+
+impl Drop for GroupFileDispatchGuard {
+    fn drop(&mut self) {
+        self.set
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.key);
+    }
+}
+
 /// 预览窗口里的一张图 —— 字段名与前端 `PreviewImage` 一一对应（camelCase 上线）。
 ///
 /// ⚠️ 刻意**只带引用**（`msg_id` / `cid`）或自包含的 `data_src`：
@@ -948,6 +1005,21 @@ pub struct PreviewItem {
 pub struct PreviewGallery {
     pub items: Vec<PreviewItem>,
     pub index: usize,
+}
+
+/// 群文件会话密钥条目（内存态）。**不派生 Debug**：密钥不许被 `{:?}` 带进日志。
+pub struct GroupFileKey {
+    pub key: [u8; 32],
+    pub at_ms: i64,
+}
+
+impl GroupFileKey {
+    pub fn new(key: [u8; 32]) -> Self {
+        Self {
+            key,
+            at_ms: crate::db::now_ms(),
+        }
+    }
 }
 
 pub struct AppState {
@@ -982,6 +1054,12 @@ pub struct AppState {
     /// 与 `dial_permits` 对称：一个管"我拨出去"，一个管"别人拨进来"。
     /// 128 对 3 台设备绰绰有余，而伪造 announce/洪水连接会被它挡在 accept 之后立刻丢弃。
     pub inbound_permits: Arc<tokio::sync::Semaphore>,
+    /// 群文件投递的**全局并发闸**（传输调度层，不是命令层）。
+    ///
+    /// 群发对每个可达成员各 `spawn` 一个任务；闸放在这里才能同时约束"任务数"和
+    /// "每条链路队列里的字节"。`acquire().await` 是**无损等待**：排队成员保持
+    /// `pending`，不放宽、不丢文件（拍板：可靠性/完整性不得为省资源静默降级）。
+    pub group_file_permits: Arc<tokio::sync::Semaphore>,
     /// 蓝牙运行时句柄（`feature = "bluetooth"` 才有；见 `network/ble.rs`）。
     ///
     /// 与 LAN 的 `network` 字段同思路：句柄在 AppState 里，`start/stop` 由命令层驱动。
@@ -1194,14 +1272,38 @@ pub struct AppState {
     /// RelayFileOffer 中以我方公钥 E2EE 封装，解封后仅存内存；
     /// 中继节点不持有密钥、不参与解密与校验，只透传密文切片。
     pub relay_file_keys: Mutex<HashMap<String, RelayFileReceive>>,
-    /// 群文件会话密钥：transfer_id -> file_key（仅内存，不落库、不进日志）。
+    /// 群文件会话密钥：transfer_id -> {file_key, 登记时刻}（仅内存，不落库、不进日志）。
     /// 发送侧：send_group_file 生成后暂存，供后续 GroupFileChunk 加密使用；
     /// 接收侧：GroupFileOffer 解封后保存，供后续解密使用。
     /// 同一 transfer 全体成员使用同一个 file_key（经群密钥封装分发）。
-    pub group_file_keys: Mutex<HashMap<String, [u8; 32]>>,
+    /// `at_ms` 供 TTL 清扫：只发 Offer 不发分片、或死单的密钥不落库，留着会无界增长（P3-06）。
+    pub group_file_keys: Mutex<HashMap<String, GroupFileKey>>,
+    /// 群文件接收侧当前轮次：transfer_id -> attempt（P1-03 真续传的轮次隔离）。
+    /// 旧端不带 attempt ⇒ 查不到也按"当前轮次"处理（与旧行为一致）。
+    pub group_file_rounds: Mutex<HashMap<String, u64>>,
+    /// 发送侧等待的续传回执：`file_peer_key(transfer, recipient)` -> oneshot<received>。
+    /// 群文件是扇出的，各成员的断点各不相同 ⇒ 必须按 (transfer, recipient) 分键。
+    pub group_file_resume_waiters: Mutex<HashMap<String, tokio::sync::oneshot::Sender<u64>>>,
+    /// 群文件发送轮次号（按 (transfer, recipient) 写进 Offer/Chunk/Done）。
+    ///
+    /// **种子取启动时刻的纳秒**，之后原子递增：① 同一进程内两个成员/两次重试不撞号；
+    /// ② **跨进程重启也单调** —— 接收端把轮次存在内存里，若发送端重启后从 0 重数，
+    /// 接收端会把它判成"落后轮次"直接丢掉（发送端重启后永远续不上）。
+    /// 比较只在接收端做（`prev < cur ⇒ 忽略`），所以这里只需要"后启动的种子更大"。
+    pub group_file_round_seq: std::sync::atomic::AtomicU64,
     /// 群文件离线投递进行中标记：同一 peer 同时最多一个投递任务
     /// （顺序发送其 pending 群文件）；不同 peer 之间并行。
     pub group_file_sending: Mutex<std::collections::HashSet<String>>,
+    /// 是否还没做过"开机第一拍"的群文件 `sending` 回收（见 `sweep_stale_group_sending`）。
+    ///
+    /// 进程刚起时任何 `sending` 行都是**上一次进程的孤儿**（投递任务不可能活过进程）。
+    /// 第一拍用不设下界的回收把它们立刻改回 `pending`，对端一上线就能续传，
+    /// 不必等 10 分钟的 stale 阈值（否则"发送方重启后续传"要用户盯着转圈十分钟）。
+    pub group_file_boot_sweep_pending: std::sync::atomic::AtomicBool,
+    /// 群文件"在途投递"集合（键 = `file_peer_key(transfer_id, recipient)`，RAII 守卫）。
+    /// 与 `group_file_sending`（按 peer 串行补发）不同：这一份按**单个成员**去重，
+    /// 覆盖 fan-out 与离线补发两条入口，且包含还在并发闸后**排队**的任务。
+    pub group_file_dispatching: Arc<Mutex<std::collections::HashSet<String>>>,
     /// 群文件「进度条分母」快照：transfer_id -> **发送时在线的** recipient 集合。
     ///
     /// 用户口径（2026-09-12 反馈）：进度条只按**当前在线成员**算 —— 所有在线成员都收到
@@ -1505,6 +1607,19 @@ fn persist_identity(conn: &Connection, id: &Identity) -> Result<(), StartupError
 }
 
 impl AppState {
+    /// 取群文件会话密钥并**刷新 TTL**：有分片/Offer 活动就说明这一单还活着，
+    /// 不该被 2h 的清扫器中途收走（大文件经 BLE 或多轮重试可能超过 2h）。
+    pub fn touch_group_file_key(&self, transfer_id: &str) -> Option<[u8; 32]> {
+        let mut keys = self
+            .group_file_keys
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        keys.get_mut(transfer_id).map(|k| {
+            k.at_ms = crate::db::now_ms();
+            k.key
+        })
+    }
+
     /// 初始化应用状态：解析目录、打开数据库、加载/生成设备指纹与身份密钥。
     pub fn init(app: AppHandle) -> Result<Arc<AppState>, Box<dyn std::error::Error>> {
         let app_data = app.path().app_data_dir()?;
@@ -1890,6 +2005,9 @@ impl AppState {
             task_window_group: Mutex::new(None),
             dial_permits: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_DIALS)),
             inbound_permits: Arc::new(tokio::sync::Semaphore::new(MAX_INBOUND_CONNECTIONS)),
+            group_file_permits: Arc::new(tokio::sync::Semaphore::new(
+                MAX_CONCURRENT_GROUP_FILE_SENDS,
+            )),
             pending_out_requests: Mutex::new(std::collections::HashMap::new()),
             pending_out_accepts: Mutex::new(std::collections::HashMap::new()),
             group_keys: Mutex::new(HashMap::new()),
@@ -1907,8 +2025,15 @@ impl AppState {
             pending_file_complete: Mutex::new(HashMap::new()),
             relay_file_keys: Mutex::new(HashMap::new()),
             group_file_keys: Mutex::new(HashMap::new()),
+            group_file_rounds: Mutex::new(HashMap::new()),
+            group_file_resume_waiters: Mutex::new(HashMap::new()),
+            // 种子 = 启动时刻纳秒（理由见 `group_file_round_seed`：发送端重启后轮次
+            // 必须仍大于接收端记住的旧值）
+            group_file_round_seq: std::sync::atomic::AtomicU64::new(group_file_round_seed()),
             group_file_receivers: Mutex::new(HashMap::new()),
             group_file_sending: Mutex::new(std::collections::HashSet::new()),
+            group_file_dispatching: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            group_file_boot_sweep_pending: std::sync::atomic::AtomicBool::new(true),
             group_file_online_targets: Mutex::new(HashMap::new()),
             file_sending: Mutex::new(std::collections::HashSet::new()),
             file_send_cancels: Mutex::new(HashMap::new()),

@@ -37,8 +37,15 @@ function send(method, params = {}) {
   const mid = ++id;
   ws.send(JSON.stringify({ id: mid, method, params }));
   return new Promise((resolve, reject) => {
-    pending.set(mid, (m) => (m.error ? reject(new Error(JSON.stringify(m.error))) : resolve(m.result)));
-    setTimeout(() => pending.has(mid) && (pending.delete(mid), reject(new Error(`${method} 超时`))), 180000);
+    // 定时器句柄必须存下来并在回应到达时清掉：旧写法每发一帧就留一个 180s 定时器，
+    // 结果打印完进程还会被它们钉住约 3 分钟（SC-P2-03）。
+    const timer = setTimeout(() => {
+      if (pending.delete(mid)) reject(new Error(`${method} 超时`));
+    }, 180000);
+    pending.set(mid, (m) => {
+      clearTimeout(timer);
+      m.error ? reject(new Error(JSON.stringify(m.error))) : resolve(m.result);
+    });
   });
 }
 async function evalJs(expression) {
@@ -275,3 +282,6 @@ const result = await evalJs(`(async () => {
 
 console.log(JSON.stringify(result, null, 2));
 ws.close();
+// 结果已打完 ⇒ 明确退出。定时器清掉后本应自然退出，但 WebSocket/CDP 的收尾
+// 不该把包装脚本（`&&` 链 / 计时器）多挂几分钟（SC-P2-03）。
+process.exit(0);

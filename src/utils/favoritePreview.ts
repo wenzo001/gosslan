@@ -58,6 +58,11 @@ export function loadFavoritePreview(id: string, name: string): Promise<PreviewRe
   });
 }
 
+/** 当前缓存里可用的 objectURL（不触发加载）。 */
+export function favoritePreviewUrl(id: string): string | undefined {
+  return cache.get(id)?.url;
+}
+
 /**
  * 丢掉某条收藏的预览缓存，并**释放 objectURL**。
  *

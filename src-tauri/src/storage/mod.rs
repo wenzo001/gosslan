@@ -6,3 +6,4 @@
 //! - 后台闲置时自动清理过期缓存，并对 SQLite 执行 `VACUUM` 整理碎片。
 
 pub mod cache_cleaner;
+pub mod vacuum;

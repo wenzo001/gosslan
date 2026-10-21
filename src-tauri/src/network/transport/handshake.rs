@@ -130,10 +130,12 @@ fn bound_ed25519_from_peer(peer: Option<&Peer>) -> Option<String> {
         .and_then(|p| p.ed25519_pubkey.clone())
 }
 
-/// `peers` 里这对钥匙是不是**被证明过**的 —— 只有验签通过的 Hello 能打上 `keys_verified`
-/// （见 `mark_peer_keys_verified`），未签名的 UDP announce 带来的不算。
+/// 成为好友那一刻要绑的公钥快照（两把钥匙 + `peers` 里“是否验签过”的读数）。
 ///
-/// 这是"能不能拿它当身份锚点"的**唯一**判据。此前只有 `upsert_peer` 问它，而三条
+/// 只有验签通过的 Hello 能打上 `keys_verified`（见 `mark_peer_keys_verified`），
+/// 未签名的 UDP announce 带来的不算。
+///
+/// `verified` 是"能不能拿它当身份锚点"的**唯一**判据。此前只有 `upsert_peer` 问它，而三条
 /// 成为好友的路径（直连 FriendAccept / 跨跳 Gossip FriendAccept / 本机点同意）读的是
 /// **同一张 `peers` 表**却不过这道闸 —— 同一个概念两处规矩，就是本仓库反复付钱的那类缺陷。
 /// 收紧的理由：`friends.ed25519_pubkey` 此后既是 Hello 的验签锚点（INV-P21），又是
@@ -144,19 +146,39 @@ fn bound_ed25519_from_peer(peer: Option<&Peer>) -> Option<String> {
 /// 留 NULL 不是死路：验签通过的 Hello 会经 `handle_message` 的 Hello 分支打上
 /// `keys_verified`（见 `mark_peer_keys_verified` 那条 ⚠️），下一条 announce 就补得进来 ——
 /// 而 `update_friend_pubkeys` 只填空、不覆盖，所以"晚一点绑"安全，"绑错"永久。
-fn peer_keys_trusted(state: &AppState, device_id: &str) -> bool {
-    state
-        .peers
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(device_id)
-        .map(|p| p.keys_verified)
-        .unwrap_or(false)
+///
+/// **必须在取 `state.db` 锁之前**用 [`FriendKeySnapshot::capture`] 取好，再把快照传下来：
+/// `peers` 与 `db` 是两把独立的 `std::sync::Mutex`，而 gossip 接收热路径是
+/// `peers → db`。若本函数在 db 锁内再去求 peers，两条热路径就构成 ABBA
+///（重启后 `peers` 为空时 gossip 必走 None 分支，最容易撞上）。
+pub(crate) struct FriendKeySnapshot {
+    x25519: Option<String>,
+    ed25519: Option<String>,
+    verified: bool,
+}
+
+impl FriendKeySnapshot {
+    /// 一次取锁读齐“两把钥匙 + 是否验签过”。条目不存在 ⇒ 全空、未验证。
+    pub(crate) fn capture(state: &AppState, device_id: &str) -> Self {
+        let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
+        match peers.get(device_id) {
+            Some(p) => Self {
+                x25519: p.x25519_pubkey.clone(),
+                ed25519: p.ed25519_pubkey.clone(),
+                verified: p.keys_verified,
+            },
+            None => Self {
+                x25519: None,
+                ed25519: None,
+                verified: false,
+            },
+        }
+    }
 }
 
 /// 这一刻允许绑哪些钥匙（纯函数 —— 把"两列两套规矩"这条判据单独钉住，不必造 AppState）。
 ///
-/// `verified` 来自 `peer_keys_trusted`：**加密钥匙照绑，身份锚点只认被证明过的来源**。
+/// `verified` 来自 [`FriendKeySnapshot`]：**加密钥匙照绑，身份锚点只认被证明过的来源**。
 /// 未 verified 时把 `ed25519` 收成 `None` 不是"漏了一步"，而是刻意留 NULL 等一次验签通过的
 /// Hello 来补（`upsert_peer` 那条路本来就做这件事）—— 因为 `update_friend_pubkeys` 只填空、
 /// 首写者永久胜出，"晚一点绑"安全，"绑错"永久。
@@ -179,20 +201,14 @@ fn acceptable_friend_keys(
 ///     只填空、首写者永久胜出 ⇒ 一次伪造广播就能把它永久钉死。
 ///
 /// 未 verified 时留 NULL 不是死路：任何一次验签通过的 Hello 都会经 `upsert_peer` 补上。
-/// 调用方必须**已经持有** `state.db` 的锁（本函数不再取锁 —— 同锁重入会当场死锁）。
+/// 调用方必须**已经持有** `state.db` 的锁。本函数**只碰 `conn` 与快照**，不再取任何锁 ——
+/// 同锁重入会当场死锁，而反过来在 db 锁内存取 `peers` 会与 gossip 热路径构成 ABBA。
 pub(crate) fn bind_friend_keys_on_accept(
-    state: &AppState,
     conn: &rusqlite::Connection,
     friend_id: &str,
+    keys: FriendKeySnapshot,
 ) {
-    let (x, e) = {
-        let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
-        peers
-            .get(friend_id)
-            .map(|p| (p.x25519_pubkey.clone(), p.ed25519_pubkey.clone()))
-            .unwrap_or((None, None))
-    };
-    let (x, e) = acceptable_friend_keys(peer_keys_trusted(state, friend_id), x, e);
+    let (x, e) = acceptable_friend_keys(keys.verified, keys.x25519, keys.ed25519);
     if x.is_some() || e.is_some() {
         db::update_friend_pubkeys(conn, friend_id, x.as_deref(), e.as_deref()).ok();
     }
@@ -289,6 +305,8 @@ async fn auto_accept_if_already_friend(state: &Arc<AppState>, peer_id: &str) -> 
 /// 只按"这一次是否真的从不是好友变成好友"决定要不要通知；`add_friend` 本身是幂等的。
 pub(crate) fn apply_friend_accept(state: &Arc<AppState>, from: &str, trace: &str) {
     let name = resolve_nickname(state, from);
+    // 公钥快照在 db 锁**之外**取好：db 锁内再求 peers 会与 gossip 的 peers→db 构成 ABBA。
+    let key_snapshot = FriendKeySnapshot::capture(state, from);
     let was_friend = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         let seen = db::get_friend(&dbc, from).is_some();
@@ -296,7 +314,7 @@ pub(crate) fn apply_friend_accept(state: &Arc<AppState>, from: &str, trace: &str
         // 同步公钥：x25519 照旧早绑，ed25519 只认 verified 来源
         // （跨跳到达的那一份尤其要紧 —— 它允许 TOFU，`peers` 里那对钥匙
         //  可能来自未签名广播，判据在 `bind_friend_keys_on_accept` 里）。
-        bind_friend_keys_on_accept(state, &dbc, from);
+        bind_friend_keys_on_accept(&dbc, from, key_snapshot);
         seen
     };
     // 已经是好友了 ⇒ 这条申请必须消失（否则「新朋友」里会留着一条永远处理不掉的申请）。

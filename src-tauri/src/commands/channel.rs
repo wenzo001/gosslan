@@ -379,10 +379,25 @@ const VACUUM_SKIPPED_NOTE: &str = "跳过（释放量未达阈值）";
 /// **等锁**与**执行**是两个数，不许合成一个"用时"：合成之后读不出"这一下慢是别人还
 /// 握着那条连接，还是 VACUUM 自己慢"——而这两件事的处置完全相反（前者去看持锁观测里
 /// 谁握得久，后者去查 db 体量）。执行时长严格从**取得锁之后**起算。
-fn format_vacuum_note(wait_ms: u64, exec_ms: u64, failure: Option<String>) -> String {
-    match failure {
-        None => format!("已做，执行 {exec_ms}ms（等锁 {wait_ms}ms）"),
-        Some(err) => format!("失败，执行 {exec_ms}ms（等锁 {wait_ms}ms）: {err}"),
+///
+/// 三种结局必须分开说（决策 2）：
+/// - **做完了** ⇒ "已做"；
+/// - **超预算被我们自己中止** ⇒ "已中止……数据库未压缩、内容完好"（这是预期内的行为，
+///   不是故障；混进"失败"会让用户以为数据库坏了）；
+/// - **真出错了** ⇒ "失败: 原因"。
+fn format_vacuum_note(wait_ms: u64, outcome: &crate::storage::vacuum::VacuumOutcome) -> String {
+    use crate::storage::vacuum::VacuumOutcome;
+    match outcome {
+        VacuumOutcome::Completed { exec_ms } => {
+            format!("已做，执行 {exec_ms}ms（等锁 {wait_ms}ms）")
+        }
+        VacuumOutcome::Aborted { exec_ms } => format!(
+            "已中止（超 {}ms 预算，执行 {exec_ms}ms，等锁 {wait_ms}ms）：数据库未压缩、内容完好",
+            crate::storage::vacuum::DEFAULT_VACUUM_BUDGET_MS
+        ),
+        VacuumOutcome::Failed { exec_ms, reason } => {
+            format!("失败，执行 {exec_ms}ms（等锁 {wait_ms}ms）: {reason}")
+        }
     }
 }
 
@@ -406,14 +421,19 @@ pub fn spawn_cache_auto_clean(s: &std::sync::Arc<crate::state::AppState>) {
                 // 两个数分开报：`wait_ms` 是**排队等这把锁**，`exec_ms` 是拿到锁之后 VACUUM
                 // 自己跑了多久。合成一个"用时"就读不出"这一下慢是因为别人握着，还是因为它真慢"。
                 let vacuum_note = if vacuumed {
-                    let (wait_ms, exec_ms, failure) = {
+                    // 取锁 → 读等锁数 → **在这把锁里**跑带预算的 VACUUM → 出锁才拼话。
+                    // 计时起点在 `vacuum_with_budget` 内部（它自己起表），所以它天然落在
+                    // "已经拿到锁"之后 —— 这条不变量由本模块的源码形状判据钉住。
+                    let (wait_ms, outcome) = {
                         let dbc = st2.db.lock().unwrap_or_else(|e| e.into_inner());
                         let wait_ms = dbc.wait_ms();
-                        let started = std::time::Instant::now();
-                        let failure = dbc.execute_batch("VACUUM").err().map(|e| e.to_string());
-                        (wait_ms, started.elapsed().as_millis() as u64, failure)
+                        let outcome = crate::storage::vacuum::vacuum_with_budget(
+                            &dbc,
+                            crate::storage::vacuum::DEFAULT_VACUUM_BUDGET_MS,
+                        );
+                        (wait_ms, outcome)
                     };
-                    format_vacuum_note(wait_ms, exec_ms, failure)
+                    format_vacuum_note(wait_ms, &outcome)
                 } else {
                     VACUUM_SKIPPED_NOTE.to_string()
                 };
@@ -497,7 +517,7 @@ pub async fn clean_cache_now(state: State<'_, Arc<AppState>>) -> Result<CleanupR
     // 文件遍历/删除不碰 db：放 spawn_blocking（大缓存/慢盘上秒级起步）。
     // ⚠️ 绝不能持全局 db 锁做这件事（审计 2.1a 的旧形状）：期间全 App 的消息落库/
     // 发送/写好友全在排队等这把锁 —— 用户点一下"立即清理"，整个应用冻住。
-    let report = match tauri::async_runtime::spawn_blocking(move || {
+    let mut report = match tauri::async_runtime::spawn_blocking(move || {
         cache_cleaner::clean_files(&dirs, policy)
     })
     .await
@@ -511,9 +531,23 @@ pub async fn clean_cache_now(state: State<'_, Arc<AppState>>) -> Result<CleanupR
     };
     // VACUUM 只在真的删了文件时做，且锁只在 VACUUM 期间持有（与 6h 自动清理同纪律：
     // VACUUM 本身可能秒~分钟级，没删文件却空转一次等于白冻全 App 一次）。
+    //
+    // 决策 2：手动路径**同样有 3 秒预算** —— 用户按了按钮，界面照样不该被冻住。
+    // 结局必须回到界面上（用户点了却看不到库变小会困惑）⇒ 塞进 `db_compact_state`，
+    // 前端按码本地化一句话告诉他"整理完成"还是"超时已取消、内容完好、下次自动再试"。
     if report.removed > 0 {
-        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        let _ = dbc.execute_batch("VACUUM");
+        let outcome = {
+            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+            crate::storage::vacuum::vacuum_with_budget(
+                &dbc,
+                crate::storage::vacuum::DEFAULT_VACUUM_BUDGET_MS,
+            )
+        };
+        report.db_compact_state = Some(outcome.state_code().to_string());
+        if !outcome.is_completed() {
+            s.logger
+                .warn("cache", format!("手动清理：数据库整理未完成 —— {}", outcome.note()));
+        }
     }
     Ok(report)
 }
@@ -537,14 +571,21 @@ mod cache_clean_schedule_tests {
     /// 那句话必须把"等锁"与"执行"报成两个数：合成一个"用时"就读不出慢的是别人还是 VACUUM。
     #[test]
     fn vacuum_note_keeps_wait_and_execution_apart() {
-        let done = format_vacuum_note(900, 20, None);
+        use crate::storage::vacuum::VacuumOutcome;
+        let done = format_vacuum_note(900, &VacuumOutcome::Completed { exec_ms: 20 });
         assert!(done.contains("执行 20ms"), "实得：{done}");
         assert!(done.contains("等锁 900ms"), "实得：{done}");
         assert!(
             !done.contains("920"),
             "两个数又被加成一个了：它把排队算进了 VACUUM 自己。实得：{done}"
         );
-        let failed = format_vacuum_note(5, 800, Some("disk I/O error".to_string()));
+        let failed = format_vacuum_note(
+            5,
+            &VacuumOutcome::Failed {
+                exec_ms: 800,
+                reason: "disk I/O error".to_string(),
+            },
+        );
         assert!(
             failed.contains("执行 800ms") && failed.contains("等锁 5ms") && failed.contains("失败"),
             "实得：{failed}"
@@ -555,34 +596,48 @@ mod cache_clean_schedule_tests {
         );
     }
 
+    /// 决策 2：被**我们自己**中止的那一档，措辞不许混进"失败"。
+    ///
+    /// 为什么要分开：用户点「立即清理」看到"失败"会以为数据库坏了；实际上库完好、
+    /// 只是这次没压缩。"已中止……内容完好"才是该给用户的那句话。
+    #[test]
+    fn an_aborted_vacuum_never_reads_as_a_failure() {
+        use crate::storage::vacuum::VacuumOutcome;
+        let aborted = format_vacuum_note(12, &VacuumOutcome::Aborted { exec_ms: 3001 });
+        assert!(aborted.contains("已中止"), "实得：{aborted}");
+        assert!(aborted.contains("完好"), "实得：{aborted}");
+        assert!(!aborted.contains("失败"), "实得：{aborted}");
+        assert!(
+            aborted.contains("3000ms"),
+            "中止那一档必须报出预算上限，用户才知道下次还会不会再被中止。实得：{aborted}"
+        );
+    }
+
     /// 执行计时的**起点**必须排在取得锁之后、等待读数必须来自这把锁本身。
+    ///
     /// 这条是按源码文本判形状（这里造不出真 VACUUM 的慢），把两行调回原位就当场红。
+    /// 计时本身现在住在 `storage::vacuum::vacuum_with_budget` 内部（它自己起表），
+    /// 所以这里要钉的是"**调用它的时候已经拿着锁**"。
     #[test]
     fn vacuum_execution_timer_starts_after_the_lock_is_held() {
         let src = include_str!("channel.rs");
         let at = src
-            .find("let (wait_ms, exec_ms, failure) = {")
+            .find("let (wait_ms, outcome) = {")
             .expect("自动清理那段 VACUUM 的计时形状变了 ⇒ 这条判据要跟着改");
         let body = &src[at..src[at..].find("};").map(|e| e + at).unwrap_or(src.len())];
         let lock_at = body.find("st2.db.lock()").expect("函数里没有取锁");
         let wait_from_guard = body.find("dbc.wait_ms()").expect("等待没读这把锁自己的读数");
-        let started_at = body.find("Instant::now()").expect("执行耗时没计时");
-        let exec_at = body.find("execute_batch(\"VACUUM\")").expect("没有 VACUUM 那一句");
-        assert!(
-            lock_at < started_at && started_at < exec_at,
-            "执行计时又从头算起包含了排队：取锁 {} · 起表 {} · 执行 {}",
-            lock_at,
-            started_at,
-            exec_at
-        );
+        let vacuum_at = body
+            .find("vacuum_with_budget(")
+            .expect("没有调带预算的 VACUUM");
         assert!(
             lock_at < wait_from_guard,
             "等锁的读数排在取锁之前 ⇒ 它量的不是这把锁的排队"
         );
-        assert_eq!(
-            body.matches("Instant::now()").count(),
-            1,
-            "这一格只该有一个计时起点（多出来那个就是把等待又算进执行）"
+        assert!(
+            lock_at < vacuum_at,
+            "VACUUM 排在取锁之前 ⇒ 它没在这把锁里跑（预算会管错对象，\
+             而且「执行时长」会把别人的排队算进来）"
         );
     }
 

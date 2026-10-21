@@ -89,23 +89,24 @@ pub fn relay_epoch_day(now_ms: i64) -> u64 {
 /// - `connected`：已有任意链路（LAN / 手动跨网段 / 别的电路）⇒ 不必绕公网。
 ///   这条是"局域网能连上时中转自然闲置"在**建立侧**的保证；选路侧另有 `pick_link` 的
 ///   LAN 恒优先兜着（`mesh/selection.rs`）。两边都成立才叫"闲置"。
-/// - `via_relay`：已在本服务器上有电路 ⇒ 不重复开，且计入上限（否则每轮突破上限越开越多）。
+/// - `via_relay`：已在本服务器上有电路 **或正在拨号** ⇒ 不重复开，且计入上限
+///   （只计数不跳过会让同一个对端每轮都被重新选中，把配额耗在重复拨号上）。
 /// - 没有绑定 Ed25519 公钥的好友根本不进候选（见 `db::list_bound_friend_identities`）：
 ///   不给陌生人走公网是 ADR-0020 D4 —— 今天"TOFU 未验证也能拿链路"在局域网可接受，公网不可。
 pub fn pick_relay_targets(
     identities: &[(String, String)],
     my_id: &str,
     connected: &HashSet<String>,
-    via_relay: &HashSet<String>,
+    held: &HashSet<String>,
     cap: usize,
 ) -> Vec<(String, String)> {
     let mut out = Vec::new();
     for (id, pk) in identities {
-        if id == my_id || connected.contains(id) {
+        if id == my_id || connected.contains(id) || held.contains(id) {
             continue;
         }
-        // 已有电路也算进配额：本函数只决定"本轮还想新增几条"。
-        if out.len() + via_relay.len() >= cap {
+        // 已有电路/在途也算进配额：本函数只决定"本轮还想新增几条"。
+        if out.len() + held.len() >= cap {
             break;
         }
         out.push((id.clone(), pk.clone()));
@@ -163,6 +164,24 @@ async fn drop_relay_circuits(state: &Arc<AppState>, server: SocketAddr) -> usize
     victims.len()
 }
 
+/// 在途拨号名额的 RAII 守卫：正常结束、提前 return、panic 展开、任务 abort 都会摘掉。
+///
+/// 只用 `JoinSet` 的返回值回收不够 —— 任务 panic 时拿不到 peer，那一格会永久占着
+/// `MAX_RELAY_CIRCUITS` 配额 ⇒ 节点再也建立不了新电路（只能重启恢复）。
+struct InflightGuard {
+    set: std::sync::Arc<std::sync::Mutex<HashSet<String>>>,
+    peer: String,
+}
+
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        self.set
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.peer);
+    }
+}
+
 /// 会合循环。仿 `routed_task`：每轮重读配置 ⇒ 运行时改配置免重启即生效。
 pub async fn relay_rendezvous_task(state: Arc<AppState>, mut shutdown: watch::Receiver<bool>) {
     let mut tick = tokio::time::interval(Duration::from_secs(RELAY_RENDEZVOUS_SECS));
@@ -177,11 +196,13 @@ pub async fn relay_rendezvous_task(state: Arc<AppState>, mut shutdown: watch::Re
     // 是同一类缺陷：反相的东西从计数器换成了节奏。
     // ⚠️ 排空本身是必要的教训（`JoinSet` 被 drop 会 abort 未完成任务），所以这里把集合
     // 提到循环**外面**持有，而不是删掉排空了事：外面这份永远活着，只有任务退出时才被摘掉。
-    let mut dials: tokio::task::JoinSet<String> = tokio::task::JoinSet::new();
+    let mut dials: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
     // 已拨出、还没回来的对端。`relay_link_snapshot` 只看得见**已建成**的链路，少了这一份，
     // 上一条还没成的时候下一轮就会把同一个对端再拨一次（`DialGuard` 会挡住真正的第二条
     // socket，但`pick_relay_targets` 的上限判据会失守 ⇒ 电路上限被突破成 2×N）。
-    let mut inflight: HashSet<String> = HashSet::new();
+    // 共享给拨号任务：名额由 `InflightGuard` 在任务退出（含 panic/abort）时归还。
+    let inflight: std::sync::Arc<std::sync::Mutex<HashSet<String>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(HashSet::new()));
 
     loop {
         tokio::select! {
@@ -190,22 +211,15 @@ pub async fn relay_rendezvous_task(state: Arc<AppState>, mut shutdown: watch::Re
             _ = tick.tick() => {}
         }
 
-        // 非阻塞回收（`try_join_next` 不等待）：完成的把名字从在途里摘掉。
+        // 非阻塞回收（`try_join_next` 不等待）：名额已由任务里的 `InflightGuard` 归还，
+        // 这里只记录异常退出（panic/abort），不再靠返回值猜 peer。
         while let Some(done) = dials.try_join_next() {
-            match done {
-                Ok(peer) => {
-                    inflight.remove(&peer);
-                }
-                // 任务 panic 时拿不到 peer ⇒ 那一格会一直占着配额。兜底在下面那条不变式里。
-                Err(e) => state
-                    .logger
-                    .warn("relay", format!("拨号任务异常退出，不回收其在途名额: {e}")),
+            if let Err(e) = done {
+                state.logger.warn(
+                    "relay",
+                    format!("拨号任务异常退出（在途名额已由守卫回收）: {e}"),
+                );
             }
-        }
-        // 不变式：没有在跑的任务 ⇒ 不可能有在途拨号。它同时兜住上面那个 panic 分支，
-        // 也保证这里不会误摘掉"还在跑"的条目（有任务在跑时一个都不清）。
-        if dials.is_empty() {
-            inflight.clear();
         }
 
         let cfg = {
@@ -245,9 +259,11 @@ pub async fn relay_rendezvous_task(state: Arc<AppState>, mut shutdown: watch::Re
             }
         };
         let (connected, via_relay) = relay_link_snapshot(&state, cfg.addr).await;
-        // 在途的与"已有电路"同等对待：`pick_relay_targets` 那条判据的本意就是"不重复开 +
-        // 计入上限"，而在途的那条既不该重开、也确实占着一个名额。
-        let held: HashSet<String> = via_relay.union(&inflight).cloned().collect();
+        // 在途的与"已有电路"同等对待：既不该重开、也确实占着一个名额。
+        let held: HashSet<String> = {
+            let inflight = inflight.lock().unwrap_or_else(|e| e.into_inner());
+            via_relay.iter().chain(inflight.iter()).cloned().collect()
+        };
         let targets = pick_relay_targets(
             &identities,
             &state.device_id,
@@ -266,8 +282,7 @@ pub async fn relay_rendezvous_task(state: Arc<AppState>, mut shutdown: watch::Re
         // 并发拨号：一条卡住不能把同一轮里其他好友一起拖住（同 routed_task 的理由）。
         // `dials` 是外面那份**跨轮持有**的集合，这里只往里加，轮尾不排空（理由见其声明处）。
         for (peer_id, peer_pk) in targets {
-            let channel =
-                relay_seal::channel_hash(&my_pk, &peer_pk, &my_id, &peer_id, day);
+            let channel = relay_seal::channel_hash(&my_pk, &peer_pk, &my_id, &peer_id, day);
             let dial = RelayDial {
                 server: cfg.addr,
                 token: cfg.token.clone(),
@@ -278,8 +293,17 @@ pub async fn relay_rendezvous_task(state: Arc<AppState>, mut shutdown: watch::Re
             let state = state.clone();
             let shutdown = shutdown.clone();
             let (my_id, my_signing) = (my_id.clone(), my_signing.clone());
-            inflight.insert(dial.peer_id.clone());
+            let peer_for_guard = dial.peer_id.clone();
+            let inflight_set = std::sync::Arc::clone(&inflight);
+            inflight
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(peer_for_guard.clone());
             dials.spawn(async move {
+                let _inflight_guard = InflightGuard {
+                    set: inflight_set,
+                    peer: peer_for_guard,
+                };
                 let peer = dial.peer_id.clone();
                 let outcome = connect_to_peer(
                     &state,
@@ -312,8 +336,7 @@ pub async fn relay_rendezvous_task(state: Arc<AppState>, mut shutdown: watch::Re
                             .warn("relay", format!("建链未成功 peer={}：{}", peer, e));
                     }
                 }
-                // 把 peer 交回去：外面那份在途集合要摘掉这一格，否则它会永久占着配额。
-                peer
+                // 名额由 `_inflight_guard` 在任务退出时归还（含 panic/abort）。
             });
         }
         // ⚠️ 这里**刻意不排空** `dials`。排空（旧写法）会让一轮的耗时等于协商窗口，于是
@@ -400,9 +423,12 @@ pub async fn relay_negotiate(
 
     // ① 服务器准入。首行之后服务器不再解析任何字节，所以写完就往下走 —— 它没有回复协议。
     let preamble = relay_preamble(&dial.token, &dial.channel_hex);
-    w.write_all(preamble.as_bytes())
-        .await
-        .map_err(|e| (RelayProbeKind::Unreachable, format!("中继首行写入失败: {e}")))?;
+    w.write_all(preamble.as_bytes()).await.map_err(|e| {
+        (
+            RelayProbeKind::Unreachable,
+            format!("中继首行写入失败: {e}"),
+        )
+    })?;
 
     // ② 协商线：**双向同时发**，因此不存在"谁先谁后"的死锁，也不依赖谁先连上服务器。
     let kp = relay_seal::generate_eph_keypair();
@@ -448,11 +474,10 @@ pub async fn relay_negotiate(
         Ok(Ok(line)) => line,
     };
 
-    let peer_offer =
-        relay_seal::WrapOffer::parse_line(&line).ok_or((
-            RelayProbeKind::PeerIdentity,
-            "对端协商线格式非法".to_string(),
-        ))?;
+    let peer_offer = relay_seal::WrapOffer::parse_line(&line).ok_or((
+        RelayProbeKind::PeerIdentity,
+        "对端协商线格式非法".to_string(),
+    ))?;
     let session = relay_seal::accept_wrap_offer(
         &peer_offer,
         my_device_id,
@@ -501,8 +526,9 @@ async fn read_bounded_line(r: &mut TcpReceiver) -> std::io::Result<String> {
             ));
         }
         if byte[0] == b'\n' {
-            return String::from_utf8(buf)
-                .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "协商线不是 UTF-8"));
+            return String::from_utf8(buf).map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::InvalidData, "协商线不是 UTF-8")
+            });
         }
         buf.push(byte[0]);
         if buf.len() > LINE_MAX {
@@ -576,8 +602,10 @@ mod relay_wiring_tests {
         )
         .to_line();
         // 最长合法口令（128 字符）时的首行，与真拨完全同形
-        let preamble =
-            relay_preamble(&"x".repeat(crate::commands::RELAY_TOKEN_MAX_LEN), &dial.channel_hex);
+        let preamble = relay_preamble(
+            &"x".repeat(crate::commands::RELAY_TOKEN_MAX_LEN),
+            &dial.channel_hex,
+        );
         let written = (preamble.len() + offer.len()) as u64;
         // 留 100 倍余量：不是"今天没超"，是"以后顺手加一点也不会悄悄变成假指控"
         assert!(
@@ -589,7 +617,8 @@ mod relay_wiring_tests {
         );
     }
 
-    fn id_set(ids: &[&str]) -> HashSet<String> {        ids.iter().map(|s| s.to_string()).collect()
+    fn id_set(ids: &[&str]) -> HashSet<String> {
+        ids.iter().map(|s| s.to_string()).collect()
     }
 
     fn ident() -> (SigningKey, String) {
@@ -628,7 +657,10 @@ mod relay_wiring_tests {
             .map(|i| (format!("gosslan-i{}", i), format!("pk{}", i)))
             .collect();
         let empty = HashSet::new();
-        assert_eq!(pick_relay_targets(&identities, "me", &empty, &empty, 8).len(), 8);
+        assert_eq!(
+            pick_relay_targets(&identities, "me", &empty, &empty, 8).len(),
+            8
+        );
         assert_eq!(
             pick_relay_targets(
                 &identities,
@@ -642,6 +674,46 @@ mod relay_wiring_tests {
             "已有 3 条时本轮最多再补 5 条"
         );
         assert!(pick_relay_targets(&identities, "me", &empty, &empty, 0).is_empty());
+    }
+
+    /// 在途的对端必须**跳过**，不是只把它算进配额：只计数会让同一个 peer 每轮被重新选中，
+    /// 把 8 个名额耗在重复拨号上（P3-18）。旧实现只做 `held.len()`，这条会红。
+    #[test]
+    fn in_flight_peers_are_skipped_not_just_counted() {
+        let identities = vec![
+            ("a".to_string(), "pkA".to_string()),
+            ("b".to_string(), "pkB".to_string()),
+        ];
+        let out = pick_relay_targets(&identities, "me", &HashSet::new(), &id_set(&["a"]), 8);
+        assert_eq!(
+            out.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+            vec!["b"],
+            "已在途的 a 不许被再次选中（否则每轮都在重复拨同一个对端）"
+        );
+    }
+
+    /// 在途名额的 RAII 守卫：任务 panic/abort 时也必须归还，否则 8 格会被永久占满。
+    #[test]
+    fn inflight_guard_removes_the_peer_on_drop() {
+        let set = std::sync::Arc::new(std::sync::Mutex::new(id_set(&["peer-a"])));
+        {
+            let _guard = InflightGuard {
+                set: set.clone(),
+                peer: "peer-a".to_string(),
+            };
+            assert!(
+                set.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .contains("peer-a"),
+                "守卫存活期间名额在表里"
+            );
+        }
+        assert!(
+            !set.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains("peer-a"),
+            "离开作用域（含 panic 展开）必须把名额还回去"
+        );
     }
 
     /// epoch 必须按天稳定：写成任何带毫秒抖动的形式，两端就会各算各的通道，
@@ -721,19 +793,21 @@ mod relay_wiring_tests {
         let (sk_a, pk_a) = ident();
         let (sk_b, pk_b) = ident();
         let (id_a, id_b) = ("gosslan-aaa", "gosslan-bbb");
-        let ch = relay_seal::channel_hex(&relay_seal::channel_hash(
-            &pk_a, &pk_b, id_a, id_b, 1,
-        ));
+        let ch = relay_seal::channel_hex(&relay_seal::channel_hash(&pk_a, &pk_b, id_a, id_b, 1));
         let (mut sa, mut sb, relay) = wire();
         let da = dial_for(&ch, id_b, &pk_b);
         let db = dial_for(&ch, id_a, &pk_a);
 
         let ha = tokio::spawn(async move {
-            relay_negotiate(&mut sa.w, &mut sa.r, id_a, &sk_a, &da).await.unwrap();
+            relay_negotiate(&mut sa.w, &mut sa.r, id_a, &sk_a, &da)
+                .await
+                .unwrap();
             (sa.w, sa.r)
         });
         let hb = tokio::spawn(async move {
-            relay_negotiate(&mut sb.w, &mut sb.r, id_b, &sk_b, &db).await.unwrap();
+            relay_negotiate(&mut sb.w, &mut sb.r, id_b, &sk_b, &db)
+                .await
+                .unwrap();
             (sb.w, sb.r)
         });
         let (mut aw, mut ar) = ha.await.unwrap();
@@ -772,19 +846,19 @@ mod relay_wiring_tests {
         let (_sk_evil, pk_evil) = ident(); // 谁也不是的第三把钥
         let (id_a, id_b) = ("gosslan-aaa", "gosslan-bbb");
         // 通道哈希按"pk_a ↔ pk_evil"算：B 的真实公钥与 A 绑定的 evil 值都不符
-        let ch = relay_seal::channel_hex(&relay_seal::channel_hash(
-            &pk_a, &pk_evil, id_a, id_b, 1,
-        ));
+        let ch = relay_seal::channel_hex(&relay_seal::channel_hash(&pk_a, &pk_evil, id_a, id_b, 1));
         let (mut sa, mut sb, relay) = wire();
         let da = dial_for(&ch, id_b, &pk_evil);
         let db = dial_for(&ch, id_a, &pk_evil);
 
-        let ha = tokio::spawn(async move {
-            relay_negotiate(&mut sa.w, &mut sa.r, id_a, &sk_a, &da).await
-        });
-        let hb = tokio::spawn(async move {
-            relay_negotiate(&mut sb.w, &mut sb.r, id_b, &sk_b, &db).await
-        });
+        let ha =
+            tokio::spawn(
+                async move { relay_negotiate(&mut sa.w, &mut sa.r, id_a, &sk_a, &da).await },
+            );
+        let hb =
+            tokio::spawn(
+                async move { relay_negotiate(&mut sb.w, &mut sb.r, id_b, &sk_b, &db).await },
+            );
         let ra = ha.await.unwrap();
         let rb = hb.await.unwrap();
         assert!(ra.is_err(), "A 侧必须失败：{:?}", ra.ok());
@@ -808,7 +882,11 @@ mod relay_wiring_tests {
         let (sk_a, pk_a) = ident();
         let (_sk_b, pk_b) = ident();
         let ch = relay_seal::channel_hex(&relay_seal::channel_hash(
-            &pk_a, &pk_b, "gosslan-aaa", "gosslan-bbb", 1,
+            &pk_a,
+            &pk_b,
+            "gosslan-aaa",
+            "gosslan-bbb",
+            1,
         ));
         let (cli_a, mut srv_a) = duplex(1024);
         let (ar, aw) = split(cli_a);

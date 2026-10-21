@@ -309,7 +309,7 @@ CI 有独立 `guards` job 跑**不带 `--only`** 的整链（`.github/workflows/
 - **已修**：`docs/architecture/frontend-inventory.md` 的机器生成段与代码漂移 —— `--check` 原本 exit 1，
   重新生成后 exit 0（生产 203 份 / 43,057 行；测试 95 份 / 20,423 行）。
 - **未删**：本轮没有删除任何测试、脚本或组件。没有"确认无引用且删除不降低防回归能力"的证据，
-  按规矩不拿删除换绿色；`src/composables/useDeferredRef.ts` 的删除是**并行会话已暂存**的改动，本轮未动。
+  按规矩不拿删除换绿色；`useDeferredRef.ts`（原 `src/composables/` 下）的删除是**并行会话**的改动，本轮未动（该删除随后随 5.0.38 提交）。
 - **仍存的重复形状**：3 处手写 `loading`/`loadError` 三件套（`FavoritePanel.vue`、`GroupTodosWindow.vue`、
   `LogViewer.vue` 的局部状态）+ 1 处内联错误块（`DevDiagPanel.vue`）。四处都在 §C 登记了"为什么不迁"，
   不是遗忘项。
@@ -367,7 +367,7 @@ CI 有独立 `guards` job 跑**不带 `--only`** 的整链（`.github/workflows/
 
 **回滚方案**：本轮改动全部在工作区/未提交，`git checkout -- <file>` 或 `git stash` 即可回到 `e66e500`；
 若已生成 tag，删 tag（本地 `git tag -d`，远端 `git push origin :refs/tags/vX`）并重新发版。
-**注意**：`src/composables/useDeferredRef.ts` 的删除是**并行会话已暂存**的改动，回滚时不要把它一起 checkout 回来。
+**注意**：`useDeferredRef.ts`（原 `src/composables/` 下）的删除是**并行会话**的改动，回滚时不要把它一起 checkout 回来。
 
 ---
 
@@ -378,7 +378,7 @@ CI 有独立 `guards` job 跑**不带 `--only`** 的整链（`.github/workflows/
 | 分支 / HEAD | `feat/5.0` / `e66e500`（与 `origin/main`、`origin/feat/5.0` 同点） |
 | 已修改 | **165** 个（后端 30 / 前端 100+ / 文档 5 / 脚本 6 / 基线 2） |
 | 未跟踪 | **14** 个（新增 utils/测试/`NavIcon`/`CharCounter`/`startup_safety_tests`/清单脚本/本报告等） |
-| 已暂存 | **1** 个：`src/composables/useDeferredRef.ts`（删除）—— **并行会话的改动，本轮不碰** |
+| 已暂存 | **1** 个：`useDeferredRef.ts`（删除，原 `src/composables/` 下）—— **并行会话的改动，本轮不碰**（该删除随后随 5.0.38 提交） |
 | 本轮新增/改动 | `gossip_tests.rs`（结构护栏）、两份测试基线各 +1 行、`docs/protocol-invariants.md`（INV-P35）、`CHANGELOG.md`、`docs/architecture/frontend-inventory.md`（重新生成）、`network/transport/group_file.rs`（clippy 一处，1 行）、本报告 |
 | 未提交 | 全部未提交（按用户要求，不 commit / 不 push / 不打 tag） |
 

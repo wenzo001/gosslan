@@ -20,6 +20,7 @@ env:
 jobs:
   build-android:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -129,6 +130,8 @@ jobs:
           path: |
             release-artifacts/android/*.apk
             release-artifacts/android/*.sha256
+          if-no-files-found: error
+          retention-days: 14
 
   # 一个 workflow 一个收尾发布 job：所有 matrix 腿打完包、产物也上传成功之后，
   # 由这**唯一一条**任务把文件挂到 Release 上。
@@ -147,6 +150,7 @@ jobs:
     needs: build-android
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: write
     steps:

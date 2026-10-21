@@ -141,6 +141,12 @@ pub const CONTENT_FEATURE_FLEX_DM_KIND: u32 = 1 << 3;
  */
 pub const CONTENT_FEATURE_GROUP_HISTORY: u32 = 1 << 4;
 
+/// 能力位：**能参与群文件断点续传握手**（收到重复 Offer 时能回 `GroupFileResume`，
+/// 发送方能在发 Offer 后等这个回执）。不复用 `CONTENT_FEATURE_FILE_EPOCH`：
+/// 那位管"能解析轮次号"，这一位管"能应答偏移"，是两件事。
+/// 只用于门控等待：对端没声明这一位 ⇒ 发送方**不等待**、走今天的老路（零延迟变化）。
+pub const CONTENT_FEATURE_GROUP_FILE_RESUME: u32 = 1 << 5;
+
 /// 群历史一页的**条数**上限（服务端一页最多交几条消息）。
 /// 与下面那个字节上限同住 `protocol.rs`：一条页的预算只有一个家（INV-P23），
 /// 收发两侧都从这里取，不许在调用点各写一遍字面量。
@@ -161,6 +167,7 @@ pub fn content_features() -> u32 {
         | CONTENT_FEATURE_FILE_EPOCH
         | CONTENT_FEATURE_FLEX_DM_KIND
         | CONTENT_FEATURE_GROUP_HISTORY
+        | CONTENT_FEATURE_GROUP_FILE_RESUME
 }
 
 /// 「哪个 kind 需要对端具备哪一点能力」的**唯一**答案。`None` = V1 词表内、对所有对端安全。
@@ -1820,6 +1827,11 @@ pub enum Message {
         /// `scope == "todo"` 时关联的 `todo_id`；其余场景为空。
         #[serde(default)]
         todo_id: String,
+        /// 第几次发送尝试（轮次号）。群文件是扇出的，轮次按 (transfer, recipient) 各自生成；
+        /// 接收端据此把上一轮还堵在链路队列里的残留分片安静丢掉。
+        /// `None` = 旧端 / 本字段上线前的发送方 ⇒ 接收端按"当前轮次"处理（与旧行为一致）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attempt: Option<u64>,
     },
     /// 群文件分片。`data` = Base64(nonce || AEAD(file_key, plaintext))，
     /// file_key 仅存在于收发双方内存（AppState.group_file_keys），
@@ -1830,6 +1842,9 @@ pub enum Message {
         sender_id: String,
         seq: u32,
         data: String,
+        /// 与 `GroupFileOffer.attempt` 同源：接收端据此丢掉上一轮的残留分片。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attempt: Option<u64>,
     },
     /// 群文件发送完毕（发送方全部分片已发出）。
     /// 接收端据此做最终校验（size + SHA-256）并落盘正式文件；
@@ -1838,6 +1853,9 @@ pub enum Message {
         transfer_id: String,
         group_id: String,
         sender_id: String,
+        /// 同上；上一轮的 Done 不能把这一轮刚开头判成"未完成"。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        attempt: Option<u64>,
     },
     /// 群文件接收完成确认（receiver → 原始 sender）。
     /// `sender_id` = ACK 发送者（即原 recipient），发送方必须校验
@@ -1848,6 +1866,17 @@ pub enum Message {
         group_id: String,
         sender_id: String,
         success: bool,
+    },
+    /// 群文件续传回执（接收端 → 原始 sender）：我已有 `received` 字节，请从那里继续。
+    /// 只有声明了 `CONTENT_FEATURE_GROUP_FILE_RESUME` 的发送方会等待它；旧端把它当
+    /// `Unknown` 忽略（链路保持，INV-P24 第 1 条）。
+    GroupFileResume {
+        transfer_id: String,
+        group_id: String,
+        /// 原始 sender（本帧的收件人）；用于无直连时借一跳中继送回。
+        to_sender: String,
+        /// 接收端磁盘上**实际可用**的前缀字节数（接收端是权威）。
+        received: u64,
     },
     /// 群名变更广播（创建者改名后通知各成员同步本地群名）
     GroupRename {

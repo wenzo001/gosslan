@@ -18,7 +18,7 @@ pub fn ensure_group_file_key(
         .unwrap_or_else(|e| e.into_inner())
         .get(transfer_id)
     {
-        return Some(*k);
+        return Some(k.key);
     }
     let sealed_b64 = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -32,7 +32,10 @@ pub fn ensure_group_file_key(
         .group_file_keys
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .insert(transfer_id.to_string(), key);
+        .insert(
+            transfer_id.to_string(),
+            crate::state::GroupFileKey::new(key),
+        );
     Some(key)
 }
 

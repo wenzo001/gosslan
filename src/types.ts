@@ -501,6 +501,16 @@ export interface CacheInfo {
 export interface CleanupReport {
   removed: number;
   freed_bytes: number;
+  /**
+   * 数据库整理的结局（机器码，缺省 = 这一轮没做整理）：
+   * - `done` —— 整理完成；
+   * - `aborted` —— **超时被主动取消**：数据库**内容完好**，只是这次没压缩（下次自动再试）；
+   * - `failed` —— 真的出错了。
+   *
+   * 为什么要单独一个字段：用户点「立即清理」后如果库没变小却什么都不说，会以为功能坏了。
+   * 这三个结局对用户是三件不同的事，必须说得清。
+   */
+  db_compact_state?: "done" | "aborted" | "failed";
 }
 
 /** 聊天记录导出结果 */
