@@ -2731,6 +2731,14 @@ mod tests {
         let msg = StartupError::IdentityCorrupt.user_message(std::path::Path::new("/data/gosslan"));
         assert!(msg.contains("IDENTITY_CORRUPT"), "{msg}");
         assert!(msg.contains("没有覆盖旧密钥"), "{msg}");
-        assert!(msg.contains("/data/gosslan/logs"), "{msg}");
+        // ⚠️ 路径分隔符必须**按平台算**（2026-10-21 CI 抓到的真实跨平台红）：
+        // 消息里那段是用 `Path::join("logs")` 拼的（Windows 上是 `\logs`），
+        // 而断言写死了 POSIX 形状 ⇒ 只有 Windows 那一腿红，本机永远绿。
+        // 断言必须用**同一个拼法**，否则这条判据在 Windows 上是假红。
+        let logs_dir = std::path::Path::new("/data/gosslan").join("logs");
+        assert!(
+            msg.contains(&logs_dir.to_string_lossy().to_string()),
+            "{msg}"
+        );
     }
 }
