@@ -101,6 +101,10 @@ pub fn spawn_outbox_sweeper(state: Arc<AppState>) -> tauri::async_runtime::JoinH
             tick.tick().await;
 
             let now = db::now_ms();
+            // 群文件 ACK 账本重放：上一轮（**或上一次进程**）收到 ACK 却没落终态 ⇒ 在这里补上。
+            // 账本在 DB 里 ⇒ 进程重启后照样能恢复 ⇒ 这就是"跨进程恢复"的出口。
+            // 平时没有待重放行 ⇒ 只是一次空查询（走 idx_group_file_acks_received）。
+            replay_pending_group_file_acks(&state);
             let deadline_single = now - crate::db::OUTBOX_FAIL_DEADLINE_MS;
             let deadline_group = now - crate::db::GROUP_OUTBOX_FAIL_DEADLINE_MS;
             let deadline_file = now - crate::db::FILE_OUTBOX_FAIL_DEADLINE_MS;

@@ -593,6 +593,276 @@ pub(crate) fn group_file_bubble(statuses: &[&str], success: bool) -> Option<&'st
 ///    的 ACK 才会被处理，B 发给 A 的 transfer 的 ACK 到 C 手上会被拒绝）；
 /// 4. ACK 发送者必须是该 transfer 的 recipient（update 不命中即拒绝）。
 ///
+/// 一条群文件 ACK 的收尾结果。
+#[derive(Debug, PartialEq)]
+pub(crate) enum GroupFileAckOutcome {
+    /// 已落终态。`bubble` = 新的发送端气泡状态；`None` 表示**还有成员在途**（气泡保持原样）。
+    Applied { bubble: Option<&'static str> },
+    /// 幂等：该 recipient 已是 `completed`，又来了一条失败 ACK ⇒ 不降级、不动任何行。
+    NoChange,
+    /// 这条 ACK 的发送者不是该 transfer 的 recipient（伪造/串台）⇒ 拒绝，**不该重放**。
+    NotRecipient,
+}
+
+/// 群文件 ACK 的**状态收尾（纯 DB 层）**：一次事务里做三件必须同生共死的事。
+///
+/// ① 该 recipient 的投递状态落终态；② 读全体 recipient 聚出发送端气泡；③ 把气泡写回 `messages`。
+/// 少做任何一件都会留下"账本说完成、界面还 sending"这种半状态 —— 这正是本轮要根治的形状。
+///
+/// 拆成纯函数是为了**能在单测里注入 DB 故障**（用触发器让 UPDATE 失败），
+/// 而不是只能靠源码形状判据说"这里应该会回滚"。
+///
+/// `Err` = **可重试的失败**（DB 忙/写错/磁盘满）；调用方要保留账本行让清扫器重放。
+pub(crate) fn apply_group_file_ack_db(
+    conn: &rusqlite::Connection,
+    transfer_id: &str,
+    recipient_id: &str,
+    success: bool,
+) -> Result<GroupFileAckOutcome, String> {
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    // ① 这个 recipient 存在吗？（存在性要单独查：`query_row` 把"没有这行"和"查询出错"混成一个错）
+    let current: Option<String> = {
+        let mut stmt = tx
+            .prepare(
+                "SELECT status FROM group_file_recipients WHERE transfer_id = ?1 AND recipient_id = ?2",
+            )
+            .map_err(|e| e.to_string())?;
+        let mut rows = stmt
+            .query(params![transfer_id, recipient_id])
+            .map_err(|e| e.to_string())?;
+        match rows.next().map_err(|e| e.to_string())? {
+            Some(r) => Some(r.get::<_, String>(0).map_err(|e| e.to_string())?),
+            None => None,
+        }
+    };
+    let Some(current) = current else {
+        // 不是 recipient ⇒ 拒绝。不写任何行（事务回滚），调用方要**丢掉账本行**。
+        let _ = tx.rollback();
+        return Ok(GroupFileAckOutcome::NotRecipient);
+    };
+    // ② 幂等保护：completed 是终态，迟到的失败 ACK 不许把它降级成 failed。
+    if !success && current == "completed" {
+        let _ = tx.rollback();
+        return Ok(GroupFileAckOutcome::NoChange);
+    }
+    let (status, progress) = if success {
+        ("completed", 1.0)
+    } else {
+        ("failed", 0.0)
+    };
+    tx.execute(
+        "UPDATE group_file_recipients SET status = ?3, progress = ?4, updated_at = ?5
+         WHERE transfer_id = ?1 AND recipient_id = ?2",
+        params![transfer_id, recipient_id, status, progress, db::now_ms()],
+    )
+    .map_err(|e| e.to_string())?;
+    // ③ 聚合：读全体 recipient ⇒ 决定发送端气泡。空集合绝不能判 failed（见 group_file_bubble）。
+    let statuses: Vec<String> = {
+        let mut stmt = tx
+            .prepare("SELECT status FROM group_file_recipients WHERE transfer_id = ?1")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![transfer_id], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?;
+        let mut v = Vec::new();
+        for row in rows {
+            v.push(row.map_err(|e| e.to_string())?);
+        }
+        v
+    };
+    let refs: Vec<&str> = statuses.iter().map(|s| s.as_str()).collect();
+    let bubble = group_file_bubble(&refs, success);
+    // ④ 气泡写回（只有聚合能决定时才写；"还有成员在途"就保持原状态）
+    if let Some(b) = bubble {
+        db::set_message_status(&tx, &format!("gfile-{transfer_id}"), b).map_err(|e| e.to_string())?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(GroupFileAckOutcome::Applied { bubble })
+}
+
+/// 把一条 ACK 落到"发送端可见"的终态：DB 收尾 + 发送端镜像行 + 前端事件。
+///
+/// `Err` = 可重试失败（调用方要**保留账本行**）；`Ok` = 已经落终态或无需动作（**可以删账本行**）。
+pub(crate) fn apply_group_file_ack(
+    state: &Arc<AppState>,
+    transfer_id: &str,
+    group_id: &str,
+    peer_id: &str,
+    success: bool,
+) -> Result<GroupFileAckOutcome, String> {
+    let outcome = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        apply_group_file_ack_db(&dbc, transfer_id, peer_id, success)?
+    };
+    let GroupFileAckOutcome::Applied { bubble } = outcome else {
+        return Ok(outcome);
+    };
+    // 发送端镜像行（file_transfers）：它是**进度镜像**，不是事实来源 ⇒ 失败只留日志，
+    // 不影响上面的终态（也不该因此把 ACK 当成没落终态）。
+    let tf_status = if bubble == Some("delivered") {
+        "done"
+    } else {
+        "failed"
+    };
+    let (path, name, size) = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        let path = db::list_transfers(&dbc)
+            .unwrap_or_default()
+            .into_iter()
+            .find(|t| t.id == transfer_id)
+            .and_then(|t| t.path);
+        // name/size 必须取自 group_files（发送端事实来源）：填空会把镜像行写坏。
+        let (name, size) = db::get_group_file(&dbc, transfer_id)
+            .map(|gf| (gf.name, gf.size))
+            .unwrap_or_else(|| (String::new(), 0));
+        (path, name, size)
+    };
+    // ⚠️ `group_file_online_progress` 内部取 db 锁：必须先放掉本段持有的锁，否则同锁重入即死锁。
+    let tf_progress = crate::commands::group_file_online_progress(state, transfer_id, 0.0);
+    {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        if let Err(e) = db::upsert_transfer(
+            &dbc,
+            transfer_id,
+            group_id,
+            &name,
+            size,
+            "send",
+            tf_status,
+            path.as_deref(),
+            tf_progress,
+        ) {
+            state.logger.error(
+                "group_file",
+                format!(
+                    "code=GFILE_TRANSFER_MIRROR_FAILED transfer_id={transfer_id} err={e} —— \
+                     终态已落库，只是进度镜像没更新"
+                ),
+            );
+        }
+    }
+    if bubble == Some("delivered") {
+        let _ = state.app.emit("message-acked", &format!("gfile-{transfer_id}"));
+    }
+    Ok(outcome)
+}
+
+/// 重放"收到过、但没落终态"的群文件 ACK —— **跨进程恢复的出口**。
+///
+/// 场景：ACK 帧是**一次性**的，而落库可能失败（DB 忙/磁盘满/进程被杀）。
+/// 旧形状下这类失败 ⇒ 一条已经送达的群文件**永远停在 sending**。
+/// 现在 ACK 收到时先落 `group_file_acks` 账本，收尾失败就由本函数按 tick 重放；
+/// 进程重启后账本还在 ⇒ 跨进程也能恢复。
+///
+/// 放弃策略：同一行重放超过 [`GROUP_FILE_ACK_MAX_ATTEMPTS`] 次仍失败 ⇒ 用"失败"语义收尾
+/// （把该 recipient 置 `failed`），**不留永久挂起**。
+pub(crate) fn replay_pending_group_file_acks(state: &Arc<AppState>) -> usize {
+    const BATCH: i64 = 32;
+    let pending = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::list_group_file_acks(&dbc, BATCH)
+    };
+    let pending = match pending {
+        Ok(v) => v,
+        Err(e) => {
+            state.logger.error(
+                "group_file",
+                format!("code=GFILE_ACK_LEDGER_READ_FAILED err={e} —— 本轮跳过重放，下轮重试"),
+            );
+            return 0;
+        }
+    };
+    let mut settled = 0usize;
+    for ack in pending {
+        let outcome = apply_group_file_ack(
+            state,
+            &ack.transfer_id,
+            &ack.group_id,
+            &ack.recipient_id,
+            ack.success,
+        );
+        match outcome {
+            Ok(_) => {
+                // 落终态（或幂等/拒绝）⇒ 账本行删掉。
+                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                if db::delete_group_file_ack(&dbc, &ack.transfer_id, &ack.recipient_id).is_ok() {
+                    settled += 1;
+                }
+            }
+            Err(e) => {
+                let give_up = ack.attempts + 1 >= GROUP_FILE_ACK_MAX_ATTEMPTS;
+                {
+                    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                    if let Err(err) = db::bump_group_file_ack_attempt(
+                        &dbc,
+                        &ack.transfer_id,
+                        &ack.recipient_id,
+                        &e,
+                    ) {
+                        state.logger.error(
+                            "group_file",
+                            format!(
+                                "code=GFILE_ACK_LEDGER_BUMP_FAILED transfer_id={} peer={} err={err}",
+                                ack.transfer_id, ack.recipient_id
+                            ),
+                        );
+                    }
+                }
+                state.logger.warn(
+                    "group_file",
+                    format!(
+                        "code=GFILE_ACK_REPLAY_FAILED transfer_id={} peer={} attempts={} \
+                         age_ms={} last_error={} err={e}",
+                        ack.transfer_id,
+                        ack.recipient_id,
+                        ack.attempts + 1,
+                        db::now_ms().saturating_sub(ack.received_at),
+                        ack.last_error,
+                    ),
+                );
+                if give_up {
+                    // 放弃重试：用"失败"语义收尾（明确的终态，不许永久挂起）。
+                    let forced = apply_group_file_ack(
+                        state,
+                        &ack.transfer_id,
+                        &ack.group_id,
+                        &ack.recipient_id,
+                        false,
+                    );
+                    match forced {
+                        Ok(_) => {
+                            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                            let _ = db::delete_group_file_ack(&dbc, &ack.transfer_id, &ack.recipient_id);
+                            state.logger.error(
+                                "group_file",
+                                format!(
+                                    "code=GFILE_ACK_GAVE_UP transfer_id={} peer={} attempts={} err={e} \
+                                     —— 已按失败收尾（明确终态），账本行已清理",
+                                    ack.transfer_id, ack.recipient_id, ack.attempts + 1
+                                ),
+                            );
+                        }
+                        Err(e2) => {
+                            state.logger.error(
+                                "group_file",
+                                format!(
+                                    "code=GFILE_ACK_GIVEUP_FAILED transfer_id={} peer={} err={e2} \
+                                     —— 连失败收尾都写不进去（DB 可能整体不可用），账本行保留，下轮再试",
+                                    ack.transfer_id, ack.recipient_id
+                                ),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    settled
+}
+
+/// 同一行群文件 ACK 最多重放几次；超过就按"失败"收尾（明确终态，不留永久挂起）。
+const GROUP_FILE_ACK_MAX_ATTEMPTS: i64 = 5;
+
 /// 幂等：重复 ACK 重复 UPDATE 同状态，无副作用、不报错。
 async fn handle_group_file_complete_ack(
     state: &Arc<AppState>,
@@ -616,161 +886,66 @@ async fn handle_group_file_complete_ack(
     if gf.sender_id != state.device_id || gf.group_id != group_id {
         return;
     }
-    // 幂等保护：completed 是终态。该 recipient 已 completed 时，
-    // 后续 success=false ACK（重放/异常）不得把 completed 降级为 failed；
-    // success=true ACK 重复到达则是无害的幂等更新。
-    if !success {
-        // ⚠️ 这里原来是 `list_…(...).unwrap_or_default()`：读库失败 ⇒ 空集合 ⇒
-        // `already_completed=false` ⇒ 一个**迟到的 failure ACK 就能把 completed 降级成 failed**。
-        // 读失败时我们无法证明幂等，唯一正确的动作是**不改**（账本保持原样，等下一条 ACK）。
-        let already_completed = {
-            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-            match db::list_group_file_recipients(&dbc, &transfer_id) {
-                Ok(v) => v
-                    .into_iter()
-                    .any(|r| r.recipient_id == peer_id && r.status == "completed"),
-                Err(e) => {
-                    state.logger.error(
-                        "group_file",
-                        format!(
-                            "code=GFILE_ACK_READ_FAILED transfer_id={transfer_id} peer={peer_id} \
-                             phase=idempotency err={e} —— 无法确认是否已 completed，这次不改账本"
-                        ),
-                    );
-                    return;
-                }
-            }
-        };
-        if already_completed {
-            return;
-        }
+
+    // ④ **先落持久化账本**：这一行是"跨进程还能恢复"的全部依据。
+    //    ACK 帧是一次性的（对端不会为同一条 transfer 再发第二遍），落库失败就没有第二次机会
+    //    ⇒ 必须先留下"收到过"的痕迹，再去做状态收尾。
+    //    这一步本身失败 ⇒ 连"记得住"都没有 ⇒ 只留日志，绝不假装已经收尾。
+    let ledger = retry_ack_write(|| {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::insert_group_file_ack(&dbc, &transfer_id, peer_id, &group_id, success)
+    })
+    .await;
+    if let Err(e) = ledger {
+        state.logger.error(
+            "group_file",
+            format!(
+                "code=GFILE_ACK_LEDGER_FAILED transfer_id={transfer_id} peer={peer_id} err={e} \
+                 —— 这条 ACK 没有 durable 记录，此刻若进程被杀就再也补不回来"
+            ),
+        );
+        return;
     }
-    // 4. ACK 发送者必须是该 transfer 的 recipient，且状态按 success 迁移；
-    //    只修改该 recipient，不影响其他成员。不命中（非 recipient）→ 拒绝。
-    let (status, progress) = if success {
-        ("completed", 1.0)
-    } else {
-        ("failed", 0.0)
-    };
-    // 发送端气泡 = 全体 recipient 结果的聚合（v0.12 最小语义），
-    // 避免最后一个 ACK 直接覆盖之前更准确的总体状态：
-    // - success ACK → delivered（有人收到即算；mixed 亦然，且不回退）
-    // - failure ACK → 全部 recipient 都到终态（completed/failed）时：
-    //     有人 completed → delivered；全部 failed → failed；
-    //   仍有 pending/sending → 气泡保持当前状态（sending），等后续 ACK。
-    let bubble;
-    {
-        // 终态写入：**有界重试**（3 次 / 25ms，重试之间**释放全局 DB 锁**）。
-        //
-        // 为什么要重试而不是一次定生死：这条 ACK 是**一次性**的（对端不会为同一条
-        // transfer 再发一遍），而这里最常见的失败是 SQLITE_BUSY —— 另一条写事务恰好占着
-        // 连接。一次 BUSY 就把一条成功送达的群文件记成"永远 sending"，代价远大于 50ms 重试。
-        // 仍然失败 ⇒ 不决定气泡、不改账本，留 `code=GFILE_ACK_PERSIST_FAILED`。
-        let outcome = retry_ack_write(|| {
-            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-            db::update_group_file_recipient(&dbc, &transfer_id, peer_id, status, progress)
-        })
-        .await;
-        if let Err(e) = outcome {
-            // 0 行命中 = 这条 ACK 的发送者不是该 transfer 的 recipient（伪造/串台）：
-            // 按文档语义**拒绝**，不当作数据库故障刷 error。
-            if matches!(e, rusqlite::Error::InvalidParameterName(_)) {
-                return;
+
+    // ⑤ 状态收尾：可能失败（DB 忙/写错/磁盘满）⇒ **账本行留着**，由进程级清扫器重放；
+    //    进程重启后账本还在 ⇒ 跨进程也能恢复（这正是旧形状最缺的一环）。
+    match apply_group_file_ack(state, &transfer_id, &group_id, peer_id, success) {
+        Ok(GroupFileAckOutcome::Applied { bubble }) => {
+            // 本 transfer 已到终态 ⇒ 进度条口径快照用完即弃（避免无界增长）。
+            if bubble == Some("delivered") || bubble == Some("failed") {
+                state
+                    .group_file_online_targets
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&transfer_id);
             }
+            // ⑥ 已落终态 ⇒ 账本行删掉（"不需要再重放"的事实标记）。
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+            if let Err(e) = db::delete_group_file_ack(&dbc, &transfer_id, peer_id) {
+                state.logger.error(
+                    "group_file",
+                    format!(
+                        "code=GFILE_ACK_LEDGER_DELETE_FAILED transfer_id={transfer_id} \
+                         peer={peer_id} err={e} —— 下轮重放会再算一遍（幂等，不会重复收尾）"
+                    ),
+                );
+            }
+        }
+        Ok(_) => {
+            // 幂等（已是 completed 又来失败 ACK）或被拒（不是 recipient）⇒ 同样不需要重放。
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+            let _ = db::delete_group_file_ack(&dbc, &transfer_id, peer_id);
+        }
+        Err(e) => {
             state.logger.error(
                 "group_file",
                 format!(
                     "code=GFILE_ACK_PERSIST_FAILED transfer_id={transfer_id} peer={peer_id} \
-                     status={status} attempts=3 err={e} —— 账本仍是旧状态、气泡不推进；\
-                     等重发/重放的 ACK 再收尾"
+                     status={} err={e} —— 账本行已留存，清扫器会重放（跨进程也能恢复）",
+                    if success { "completed" } else { "failed" }
                 ),
             );
-            return;
         }
-        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        if success {
-            bubble = "delivered";
-        } else {
-            // 读失败**绝不能**折成空集合：空集合会让 `all_terminal` 恒真 ⇒
-            // 一次成功的群文件被写成 failed（2026-10-20 审计：真实误判路径）。
-            let recipients = match db::list_group_file_recipients(&dbc, &transfer_id) {
-                Ok(v) => v,
-                Err(e) => {
-                    state.logger.error(
-                        "group_file",
-                        format!(
-                            "code=GFILE_AGGREGATE_READ_FAILED transfer_id={transfer_id} err={e} \
-                             —— 不猜终态，气泡保持 sending"
-                        ),
-                    );
-                    return;
-                }
-            };
-            let statuses: Vec<&str> = recipients.iter().map(|r| r.status.as_str()).collect();
-            match group_file_bubble(&statuses, status == "completed") {
-                Some(b) => bubble = b,
-                // 还有成员在途：保持当前状态，等后续 ACK（与旧行为一致）。
-                None => return,
-            }
-        }
-        if let Err(e) = db::set_message_status(&dbc, &format!("gfile-{transfer_id}"), bubble) {
-            // 气泡写失败 ⇒ 不 emit（前端不会以为它成功了）；下次启动的孤儿恢复会兜住。
-            state.logger.error(
-                "group_file",
-                format!(
-                    "code=GFILE_BUBBLE_PERSIST_FAILED transfer_id={transfer_id} bubble={bubble} \
-                     err={e} —— 不 emit，等启动孤儿恢复"
-                ),
-            );
-            return;
-        }
-        // sender 的 transfer 记录随聚合结果推进。
-        // 状态：delivered → done，否则 failed（保留原有语义）。
-        // 进度：按**在线成员**口径算，而不是「delivered 就写 1.0」——
-        // 否则「在线成员全到了、但离线成员还 pending」时进度条会提前满格，
-        // 与用户口径（离线不计入分母，在线全到才算完）相冲突。
-        // ⚠️ `group_file_online_progress` 内部取 db 锁：必须先 drop 本段持有的锁，
-        // 否则 std Mutex 同锁重入即死锁。
-        let tf_status = if bubble == "delivered" {
-            "done"
-        } else {
-            "failed"
-        };
-        let path = db::list_transfers(&dbc)
-            .unwrap_or_default()
-            .into_iter()
-            .find(|t| t.id == transfer_id)
-            .and_then(|t| t.path);
-        drop(dbc);
-        let tf_progress = crate::commands::group_file_online_progress(state, &transfer_id, 0.0);
-        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::upsert_transfer(
-            &dbc,
-            &transfer_id,
-            &gf.group_id,
-            &gf.name,
-            gf.size,
-            "send",
-            tf_status,
-            path.as_deref(),
-            tf_progress,
-        )
-        .ok();
-        // 本 transfer 已到终态（delivered/failed）→ 进度条口径快照用完即弃，
-        // 避免无界增长；注意**不能**只在 `tf_progress >= 1.0` 时清 ——
-        // 「发送时无人在线」的 transfer 进度恒 0，那样就永远清不掉。
-        if bubble == "delivered" || bubble == "failed" {
-            state
-                .group_file_online_targets
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .remove(&transfer_id);
-        }
-    }
-    if bubble == "delivered" {
-        let _ = state
-            .app
-            .emit("message-acked", &format!("gfile-{transfer_id}"));
     }
 }
 
@@ -987,5 +1162,229 @@ async fn handle_group_file_chunk(
             "sending",
             progress,
         );
+    }
+}
+
+
+#[cfg(test)]
+mod group_file_ack_recovery_tests {
+    use super::{apply_group_file_ack_db, GroupFileAckOutcome};
+    use rusqlite::{params, Connection};
+
+    fn mem_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(crate::db::SCHEMA).unwrap();
+        conn
+    }
+
+    /// 造一个"两个成员都在途"的群文件 + 它的发送端气泡。
+    fn seed(conn: &Connection) {
+        conn.execute(
+            "INSERT INTO group_files(transfer_id, group_id, sender_id, name, size, sha256, status, created_at)
+             VALUES('t1', 'g1', 'me', 'a.bin', 10, 'deadbeef', 'sending', 1)",
+            [],
+        )
+        .unwrap();
+        for peer in ["peer-a", "peer-b"] {
+            conn.execute(
+                "INSERT INTO group_file_recipients(transfer_id, recipient_id, status, progress, updated_at)
+                 VALUES('t1', ?1, 'sending', 0.5, 1)",
+                params![peer],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status)
+             VALUES('gfile-t1', 'group:g1', 'me', 'g1', 'file', '{}', 1, 1, 'sending')",
+            [],
+        )
+        .unwrap();
+    }
+
+    fn recipient_status(conn: &Connection, peer: &str) -> String {
+        conn.query_row(
+            "SELECT status FROM group_file_recipients WHERE transfer_id='t1' AND recipient_id=?1",
+            params![peer],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    fn bubble_status(conn: &Connection) -> String {
+        conn.query_row("SELECT status FROM messages WHERE msg_id='gfile-t1'", [], |r| {
+            r.get(0)
+        })
+        .unwrap()
+    }
+
+    /// ★ 真故障注入：写失败 ⇒ **一个字节都不能改**（事务回滚），且不能把气泡写成 failed。
+    ///
+    /// 旧形状（两条独立写 + 吞错）在这里会留下"账本说完成、界面还 sending"或反过来
+    /// "界面说 failed、账本还是 sending"的半状态。
+    #[test]
+    fn a_failed_write_rolls_back_completely_and_leaves_no_half_state() {
+        let conn = mem_db();
+        seed(&conn);
+        // 让 recipient 的 UPDATE 必然失败（真实 DB 故障的最小注入）
+        conn.execute_batch(
+            "CREATE TRIGGER block_recipient_update BEFORE UPDATE ON group_file_recipients
+             BEGIN SELECT RAISE(ABORT, 'injected write failure'); END;",
+        )
+        .unwrap();
+
+        let outcome = apply_group_file_ack_db(&conn, "t1", "peer-a", true);
+        assert!(outcome.is_err(), "写失败必须报错，不许假装成功：{outcome:?}");
+        assert_eq!(
+            recipient_status(&conn, "peer-a"),
+            "sending",
+            "写失败后 recipient 必须原样（事务回滚，不许半写）"
+        );
+        assert_eq!(
+            bubble_status(&conn),
+            "sending",
+            "写失败后气泡必须原样（绝不能出现「收尾失败却把界面写成 failed」）"
+        );
+
+        // 故障消失后再来一次 ⇒ 正常落终态（这正是清扫器重放要走的路）
+        conn.execute_batch("DROP TRIGGER block_recipient_update").unwrap();
+        let ok = apply_group_file_ack_db(&conn, "t1", "peer-a", true).unwrap();
+        assert_eq!(
+            ok,
+            GroupFileAckOutcome::Applied {
+                bubble: Some("delivered")
+            }
+        );
+        assert_eq!(recipient_status(&conn, "peer-a"), "completed");
+        assert_eq!(bubble_status(&conn), "delivered");
+    }
+
+    /// ★★ 原子性：失败发生在**后一步**（写气泡）时，前一步（recipient 落终态）必须被**回滚**。
+    ///
+    /// 这是"事务"与"两条独立写"的唯一可观察差别：
+    /// 没有事务时，这里会留下「账本说 completed、界面还 sending」的半状态 ——
+    /// 而这正是上一轮审计里"ACK 非原子收尾"那个形状。
+    #[test]
+    fn a_failure_after_the_recipient_write_rolls_the_whole_thing_back() {
+        let conn = mem_db();
+        seed(&conn);
+        // 让**气泡**那一步失败（recipient 那一步会先成功 ⇒ 正好卡在中间）
+        conn.execute_batch(
+            "CREATE TRIGGER block_bubble_update BEFORE UPDATE ON messages
+             BEGIN SELECT RAISE(ABORT, 'injected bubble write failure'); END;",
+        )
+        .unwrap();
+
+        let outcome = apply_group_file_ack_db(&conn, "t1", "peer-a", true);
+        assert!(outcome.is_err(), "气泡写失败必须整体报错：{outcome:?}");
+        assert_eq!(
+            recipient_status(&conn, "peer-a"),
+            "sending",
+            "气泡写失败 ⇒ 前一步的 recipient 更新必须被回滚（不许留下半状态）"
+        );
+        assert_eq!(bubble_status(&conn), "sending");
+    }
+
+    /// ★ 跨进程恢复：ACK 账本必须**真的持久**（换个连接还在），否则"跨进程恢复"是空话。
+    #[test]
+    fn the_ack_ledger_survives_a_new_connection() {
+        let conn = mem_db();
+        seed(&conn);
+        crate::db::insert_group_file_ack(&conn, "t1", "peer-a", "g1", true).unwrap();
+        // 同一进程内的另一个连接看不到内存库 ⇒ 用**文件库**才验得了"持久"
+        let dir = std::env::temp_dir().join(format!(
+            "gosslan-ack-ledger-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("gosslan.db");
+        {
+            let c = crate::db::init(&path).unwrap();
+            crate::db::insert_group_file_ack(&c, "t1", "peer-a", "g1", true).unwrap();
+        } // 连接关闭 ⇒ 模拟"进程结束"
+        {
+            // 新连接 = 新进程视角
+            let c = crate::db::init(&path).unwrap();
+            let rows = crate::db::list_group_file_acks(&c, 10).unwrap();
+            assert_eq!(rows.len(), 1, "ACK 账本必须活过一次进程");
+            assert_eq!(rows[0].transfer_id, "t1");
+            assert!(rows[0].success);
+            // 重放 ⇒ 落终态 ⇒ 账本清空
+            seed(&c);
+            let out = apply_group_file_ack_db(&c, "t1", "peer-a", true).unwrap();
+            assert_eq!(out, GroupFileAckOutcome::Applied { bubble: Some("delivered") });
+            crate::db::delete_group_file_ack(&c, "t1", "peer-a").unwrap();
+            assert!(
+                crate::db::list_group_file_acks(&c, 10).unwrap().is_empty(),
+                "落终态后账本必须清空（否则每 tick 都会重放一遍）"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 老库兼容：**没有这张表的旧库**，升级后启动一次就自动补齐（历史数据一行不动）。
+    #[test]
+    fn an_old_database_gains_the_ledger_table_on_next_start() {
+        let dir = std::env::temp_dir().join(format!(
+            "gosslan-ack-old-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("gosslan.db");
+        {
+            let c = crate::db::init(&path).unwrap();
+            c.execute_batch("DROP TABLE group_file_acks").unwrap();
+        } // 模拟"旧版本装过的库"
+        {
+            let c = crate::db::init(&path).unwrap();
+            let n: i64 = c
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='group_file_acks'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 1, "升级后启动一次就该把账本表补齐（SCHEMA 每次启动都跑）");
+            // 老数据不受影响
+            let rows: i64 = c
+                .query_row("SELECT COUNT(*) FROM group_file_recipients", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(rows, 0, "新表不许动历史数据");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 迟到的**失败** ACK 不许把已 completed 的 recipient 降级（completed 是终态）。
+    #[test]
+    fn a_late_failure_ack_never_downgrades_a_completed_recipient() {
+        let conn = mem_db();
+        seed(&conn);
+        conn.execute(
+            "UPDATE group_file_recipients SET status='completed', progress=1.0
+             WHERE transfer_id='t1' AND recipient_id='peer-a'",
+            [],
+        )
+        .unwrap();
+        let out = apply_group_file_ack_db(&conn, "t1", "peer-a", false).unwrap();
+        assert_eq!(out, GroupFileAckOutcome::NoChange, "已 completed 不许降级");
+        assert_eq!(recipient_status(&conn, "peer-a"), "completed");
+    }
+
+    /// 不是该 transfer 的 recipient ⇒ 拒绝，**不写任何行**（伪造/串台不许碰到账本）。
+    #[test]
+    fn an_ack_from_a_stranger_is_rejected_without_touching_anything() {
+        let conn = mem_db();
+        seed(&conn);
+        let out = apply_group_file_ack_db(&conn, "t1", "peer-z", true).unwrap();
+        assert_eq!(out, GroupFileAckOutcome::NotRecipient);
+        assert_eq!(recipient_status(&conn, "peer-a"), "sending");
+        assert_eq!(bubble_status(&conn), "sending");
     }
 }

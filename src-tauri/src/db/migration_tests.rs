@@ -572,6 +572,13 @@ fn hot_queries_use_their_indexes() {
             3,
             "idx_messages_conv_seq",
         ),
+        // db/group_files.rs `list_group_file_acks` —— 清扫器**每个 tick** 都跑
+        // （群文件 ACK 账本重放；没有待重放行时也要走索引，不能全表扫）
+        (
+            "SELECT transfer_id FROM group_file_acks ORDER BY received_at ASC LIMIT ?1",
+            1,
+            "idx_group_file_acks_received",
+        ),
     ];
 
     for (sql, n, index) in cases {
