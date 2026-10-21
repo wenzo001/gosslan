@@ -413,11 +413,14 @@ CASES: list[Case] = [
         "根因是链路一断就删节点条目，而 BLE 上「连上→被对端退让→断开」是常态，"
         "「添加好友」列表里只闪一下、用户点不到。反向的坑是复核抓到过的 High 缺陷："
         "若保留条目却仍按「在 peers 表里 = 在线」判定，就变成「连过又掉线 ⇒ 永久在线」。"
-        "两件事必须一起成立：条目保留 + 在线看 last_seen 新鲜度",
-        file=TAURI / "src" / "commands.rs",
+        "两件事必须一起成立：条目保留 + 在线看 last_seen 新鲜度。"
+        "注入方式：把 `friend_is_online(...)` 换成 `peer_snapshot.contains_key(...)` —— "
+        "`peers` 在 ABBA 快照重构后已不在该作用域，而 `peer_snapshot` 就是 peers 表的快照，"
+        "语义正是旧的「在表里=在线」；这条变异必须可编译，并由具名用例的源码断言红。",
+        file=TAURI / "src" / "commands" / "friends.rs",
         injections=[(
             "        f.online = friend_is_online(last_seen, now, active_links.contains(&f.device_id));",
-            "        f.online = peers.contains_key(&f.device_id) || active_links.contains(&f.device_id);",
+            "        f.online = peer_snapshot.contains_key(&f.device_id) || active_links.contains(&f.device_id);",
         )],
         cmd=cargo("test", "--lib", "offline_peer_stays_listed_but_is_not_online"),
         cwd=TAURI,
