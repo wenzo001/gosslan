@@ -1643,7 +1643,7 @@ dependencies = [
 
 [[package]]
 name = "gosslan"
-version = "5.1.1"
+version = "5.1.2"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1676,10 +1676,13 @@ dependencies = [
  "tauri-plugin-opener",
  "tauri-plugin-single-instance",
  "tauri-plugin-window-state",
+ "tempfile",
  "thiserror 2.0.20",
+ "time",
  "tokio",
  "url",
  "uuid",
+ "walkdir",
  "windows 0.62.2",
  "windows-future 0.3.2",
  "x25519-dalek",

@@ -1425,6 +1425,7 @@ Use engineering judgment.
 npm run verify          快速层：不碰 cargo（结构门禁 + 前端断言 + vue-tsc 类型检查），秒级
 npm run verify:local    **本地日常重门禁**：只跳过「护栏非空转」，其余照跑（2026-10-18 实测 64.0s）
 npm run verify:full     完整重门禁：加 cargo fmt/clippy/test、Rust 清单、护栏非空转扫描、Android 交叉编译
+npm run lint            静态检查：ruff（Python）+ shellcheck + markdownlint（CI 的 lint job 每次 push 跑）
 ```
 
 `verify:local` 只省掉最长的一步（「护栏非空转」2026-10-18 实测 843.1s，占 23 步总耗时 922.2s
@@ -1435,7 +1436,7 @@ npm run verify:full     完整重门禁：加 cargo fmt/clippy/test、Rust 清�
 别把本地的绿当成全绿，也别把这一行的省略当成"检查变松了"：
 
 ```text
-只改了文档 / 注释 / 前端文案样式   → npm run verify 足够，push 交给 CI 全跑
+只改了文档 / 注释 / 前端文案样式   → npm run verify 足够，push 交给 CI 跑三条腿
 改过 Rust 代码 / Cargo.* / 构建配置 → npm run verify:local（22 步）；完整链留给发版前/CI
 发版、打 tag、给用户出安装包        → npm run verify:full（必要时再加 -- --full）
 ```
@@ -1444,9 +1445,25 @@ npm run verify:full     完整重门禁：加 cargo fmt/clippy/test、Rust 清�
 （177s 冷编译测试产物 + 43s clippy 按另一 profile 重编同一个 crate + 168s 护栏扫描）。
 慢的一直是**编译**，而改一行注释不该付编译税。拆完：日常 7.4s，攒着跑全量 82s（热缓存）。
 
-**为什么安全**：`.github/workflows/verify.yml` 在**任意分支每次 push** 跑全套
-（前端 job + Rust job × macOS/Windows 矩阵 + Android job）。所以"本地不编译"的兜底是 CI，
+**为什么安全**：`.github/workflows/verify.yml` 在**任意分支每次 push** 跑三条腿
+（前端 job + Rust job × macOS/Windows 矩阵 + Android job）；最长的那条「护栏非空转全量」
+只在定时与手动触发时跑（见下一小节）。所以"本地不编译"的兜底是 CI，
 不是运气。**没装 CI 覆盖不到的东西时（例如自己开个不进 CI 的分支），必须本地 `verify:full`。**
+
+### 最长门禁必须经本人确认才跑（2026-10-21 用户口径）
+
+以下命令单次耗时 **15 分钟以上**，未经用户明确确认**不要跑**：
+
+```text
+python3 scripts/verify-guards.py                 # 护栏非空转全量（CI 实测 1h36m）
+npm run verify:full -- --full                    # 本地等价物（实测 843–1262s）
+npm run verify:full                              # 含 cargo fmt/clippy/test + 护栏扫描
+npm run verify:release                           # release 组强制跑全量护栏
+```
+
+日常用 `npm run verify`（秒级）与 `npm run verify:local`（实测 64.0s，只跳过护栏非空转）。
+CI 侧已同步：`.github/workflows/verify.yml` 的 `guards` job 改为**只在定时与手动触发**时跑，
+push / PR 不再自动付这 1.5 小时。需要跑全量护栏时，先问用户，或用 workflow_dispatch 手动拉。
 
 ## 37.2 完成判据
 

@@ -1,13 +1,14 @@
 # =============================================================================
 #  构建 Android APK（Debug 用于本机+手机直连调试，Release 用于压测分发）
 #  用法：项目根目录执行
-#    .\scripts\build-android.ps1            # Debug APK
-#    .\scripts\build-android.ps1 -Release   # Release APK
+#    .\scripts\archive\build-android.ps1            # Debug APK
+#    .\scripts\archive\build-android.ps1 -Release   # Release APK
 # =============================================================================
 param([switch]$Release)
 
 $ErrorActionPreference = "Stop"
-$root = Split-Path -Parent $PSScriptRoot
+# 归档后比常规脚本多一层目录（scripts/archive/）⇒ 仓库根要上溯两级。
+$root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Set-Location $root
 
 # 前置自检：Android 环境

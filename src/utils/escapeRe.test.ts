@@ -1,7 +1,18 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { escapeRe } from "./escapeRe.ts";
+
+const SRC_DIR = join(import.meta.dirname, "..");
+
+/** `src/` 下全部 .ts/.vue（含测试）—— 判据要能看见任何一份新副本，不限 utils。 */
+function allSources(): string[] {
+  return readdirSync(SRC_DIR, { recursive: true, encoding: "utf8" })
+    .filter((p) => /\.(ts|vue)$/.test(String(p)))
+    .map((p) => String(p).replaceAll("\\", "/"))
+    .sort();
+}
 
 /**
  * 这个函数的使用场景全是「把用户给的字符串嵌进正则」：表情名、成员昵称、@ 对象。
@@ -33,10 +44,25 @@ test("真实场景：带元字符的名字不会把分组搞坏", () => {
   assert.equal(loose.exec("[axb]")?.[1], "axb", "反控成立：不转义时它匹配到了别的串");
 });
 
-test("只有一份定义：emoji.ts 与 linkify.ts 都不再各自私有一份", () => {
-  for (const rel of ["emoji.ts", "linkify.ts"]) {
+test("正则转义只有一份定义：任何文件都不许再内联一份字符类", () => {
+  // 旧的判据只查 `function escapeRe(` 这种**函数形状**，查不到内联副本 ——
+  // highlight.ts 与 platform.test.ts 曾各有一份逐字相同的字符类，长期没被守住。
+  // 所以判据改成查**字符类字面量本身**，并且扫全 src（不只是 utils）。
+  // ⚠️ 这段注释里刻意不写那个字面量：否则本文件自己就会成为持有者。
+  const ESCAPE_CLASS = "[.*+?^${}()|[\\]\\\\]";
+  const owners = allSources().filter((rel) =>
+    readFileSync(join(SRC_DIR, rel), "utf8").includes(ESCAPE_CLASS),
+  );
+  assert.deepEqual(
+    owners,
+    ["utils/escapeRe.ts"],
+    `只许 utils/escapeRe.ts 持有正则转义字符类，实际持有者：${owners.join(", ")}`,
+  );
+});
+
+test("用 escapeRe 的每个文件都从公共份导入（不再各自私有一份）", () => {
+  for (const rel of ["emoji.ts", "linkify.ts", "messages.ts", "highlight.ts", "platform.test.ts"]) {
     const src = readFileSync(new URL(`./${rel}`, import.meta.url), "utf8");
     assert.match(src, /from "\.\/escapeRe\.ts"/, `${rel} 必须从公共份导入`);
-    assert.doesNotMatch(src, /function escapeRe\s*\(/, `${rel} 里又出现了私有副本`);
   }
 });

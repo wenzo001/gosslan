@@ -81,15 +81,8 @@ mod tests {
     fn restrict_dir_to_owner_sets_0700() {
         use std::os::unix::fs::PermissionsExt;
 
-        let dir = std::env::temp_dir().join(format!(
-            "gosslan-private-dir-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
+        let root = tempfile::TempDir::new().unwrap();
+        let dir = root.path().join("private");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
 
@@ -99,7 +92,6 @@ mod tests {
             0o700,
             "app data 目录必须收紧到 0700"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// `create_private_dir` 的两格必须分开证：**新建**时 mkdir 就带 0700，
@@ -109,17 +101,9 @@ mod tests {
     #[test]
     fn create_private_dir_makes_0700_and_leaves_an_existing_dir_alone() {
         use std::os::unix::fs::PermissionsExt;
-        let root = std::env::temp_dir().join(format!(
-            "gosslan-privdir-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        ));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
-        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o755)).unwrap();
         let mode_of = |p: &std::path::Path| -> u32 {
             std::fs::metadata(p).unwrap().permissions().mode() & 0o777
         };
@@ -142,6 +126,5 @@ mod tests {
             0o500,
             "已存在的目录不能被 create_private_dir 改回去，否则只读目录那条落盘失败判据会被静默修好"
         );
-        let _ = std::fs::remove_dir_all(&root);
     }
 }

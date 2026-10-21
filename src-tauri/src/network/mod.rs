@@ -534,8 +534,8 @@ mod shutdown_tests {
             .enable_all()
             .build()
             .expect("current-thread runtime");
-        let dir = std::env::temp_dir().join(format!("gosslan-nettask-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().to_path_buf();
         rt.block_on(async {
             let logger =
                 crate::logging::Logger::new(dir.clone(), "nettask", "[dev:test]".to_string());

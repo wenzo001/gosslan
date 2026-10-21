@@ -261,7 +261,8 @@ pub const MAX_FILE_OUTBOX_RETRIES: i64 = 5;
 
 /// 文件发送失败分类：`retryable = true` 表示链路/超时等可恢复错误，
 /// 应保留在 `file_outbox` 等待重试；`false` 表示文件缺失、非好友、缺公钥等永久错误。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("{message}")]
 pub struct SendFileError {
     pub retryable: bool,
     pub message: String,
@@ -282,14 +283,6 @@ impl SendFileError {
         }
     }
 }
-
-impl std::fmt::Display for SendFileError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.message)
-    }
-}
-
-impl std::error::Error for SendFileError {}
 
 /// 一次投递失败之后，这条 `file_outbox` 行该怎么办。
 #[derive(Debug, PartialEq, Eq)]

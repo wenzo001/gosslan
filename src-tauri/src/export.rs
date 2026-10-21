@@ -121,42 +121,22 @@ fn human_size(bytes: u64) -> String {
 
 /// epoch 毫秒 + UTC 偏移（分钟）→ `YYYY-MM-DD HH:MM`。
 ///
-/// 不引入时区库（`AI_RULES §25` 依赖审慎）：偏移由前端 `getTimezoneOffset()` 给出。
+/// 偏移由前端 `getTimezoneOffset()` 给出；`time` 只做 UTC 算术，不读机器时区。
 /// 代价是**跨夏令时切换的历史消息可能有 1 小时偏差**——对一个"先把文字抢救出来"的
 /// 导出功能可以接受，但必须在文档里写明，不能假装精确。
 pub fn format_local_time(ms: i64, utc_offset_minutes: i64) -> String {
-    let (y, mo, d, h, mi) = civil_from_ms(ms, utc_offset_minutes);
-    format!("{y:04}-{mo:02}-{d:02} {h:02}:{mi:02}")
-}
-
-/// epoch 毫秒 + UTC 偏移（分钟）→ (年, 月, 日, 时, 分)。
-fn civil_from_ms(ms: i64, utc_offset_minutes: i64) -> (i64, u32, u32, u32, u32) {
-    let local = ms + utc_offset_minutes * 60_000;
-    let days = local.div_euclid(86_400_000);
-    let ms_of_day = local.rem_euclid(86_400_000);
-    let (y, mo, d) = civil_from_days(days);
-    (
-        y,
-        mo,
-        d,
-        (ms_of_day / 3_600_000) as u32,
-        ((ms_of_day % 3_600_000) / 60_000) as u32,
+    let local_secs = (ms + utc_offset_minutes * 60_000).div_euclid(1_000);
+    let Ok(dt) = time::OffsetDateTime::from_unix_timestamp(local_secs) else {
+        return format!("{ms}");
+    };
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}",
+        dt.year(),
+        dt.month() as u8,
+        dt.day(),
+        dt.hour(),
+        dt.minute()
     )
-}
-
-/// Howard Hinnant 的 `civil_from_days`：自 1970-01-01 起的天数 → 公历年月日。
-/// 纯整数运算，对负数天数（1970 年之前）也正确。
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097; // [0, 146096]
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
-    let mp = (5 * doy + 2) / 153; // [0, 11]
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32; // [1, 12]
-    (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
 /// 渲染整份导出文件。

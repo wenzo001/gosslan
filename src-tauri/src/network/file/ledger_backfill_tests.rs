@@ -80,7 +80,11 @@ mod gfile_ledger_backfill_tests {
 
     fn first_gap(conn: &Connection) -> GfileLedgerGap {
         let (gaps, orphan) = list_gfile_ledger_gaps(conn, DEVICE).unwrap();
-        assert_eq!(gaps.len(), 1, "这条预置必须被认成候选（否则正例判的是空集）");
+        assert_eq!(
+            gaps.len(),
+            1,
+            "这条预置必须被认成候选（否则正例判的是空集）"
+        );
         assert_eq!(orphan, 0, "预置里不该有对不回身份的卡片");
         gaps.into_iter().next().unwrap()
     }
@@ -114,7 +118,13 @@ mod gfile_ledger_backfill_tests {
         let sha = hex_of(&bytes);
         let file = temp_file("positive", &bytes);
         let conn = mem();
-        seed_gap_rows(&conn, "t1", &file.to_string_lossy(), &sha, bytes.len() as u64);
+        seed_gap_rows(
+            &conn,
+            "t1",
+            &file.to_string_lossy(),
+            &sha,
+            bytes.len() as u64,
+        );
 
         let gap = first_gap(&conn);
         assert_eq!(gap.sha256, sha, "候选得带 group_files 那份声明值");
@@ -140,8 +150,14 @@ mod gfile_ledger_backfill_tests {
         )
         .unwrap()
         .expect("content_transfers 那一行必须被构造出来（这一格原本就是没兜底的那一格）");
-        assert_eq!(content.path.as_deref(), Some(file.to_string_lossy().as_ref()));
-        assert_eq!(content.status, crate::content::model::TransferStatus::Complete);
+        assert_eq!(
+            content.path.as_deref(),
+            Some(file.to_string_lossy().as_ref())
+        );
+        assert_eq!(
+            content.status,
+            crate::content::model::TransferStatus::Complete
+        );
 
         // 补完再扫一次：三张台账都收口 ⇒ 不该再是候选
         let (again, orphan) = list_gfile_ledger_gaps(&conn, DEVICE).unwrap();
@@ -158,7 +174,13 @@ mod gfile_ledger_backfill_tests {
         let sha = hex_of(&bytes);
         let file = temp_file("mismatch", &bytes);
         let conn = mem();
-        seed_gap_rows(&conn, "t1", &file.to_string_lossy(), &sha, bytes.len() as u64);
+        seed_gap_rows(
+            &conn,
+            "t1",
+            &file.to_string_lossy(),
+            &sha,
+            bytes.len() as u64,
+        );
         let gap = first_gap(&conn);
 
         // 把盘上那份改掉一个字节（大小不变 ⇒ 只看 name/size 的话完全认不出来）
@@ -174,7 +196,11 @@ mod gfile_ledger_backfill_tests {
             GfileLedgerOutcome::SkippedHashMismatch { declared, actual } => {
                 assert_eq!(declared, sha, "声明值要带的是 group_files 那份");
                 assert_ne!(actual, sha, "实测值必须确实是另一份");
-                assert_eq!(actual, hex_of(&tampered), "带出来的实测值要等于盘上那份的真哈希");
+                assert_eq!(
+                    actual,
+                    hex_of(&tampered),
+                    "带出来的实测值要等于盘上那份的真哈希"
+                );
             }
             other => panic!("哈希对不上时只许报 SkippedHashMismatch，实际 {other:?}"),
         }
@@ -190,9 +216,8 @@ mod gfile_ledger_backfill_tests {
     fn absent_file_writes_not_a_single_cell() {
         let sha = hex_of(b"whatever");
         let conn = mem();
-        let gone = std::env::temp_dir()
-            .join(format!("gosslan-gfile-backfill-gone-{}", std::process::id()))
-            .join("a.bin");
+        let tmp = tempfile::TempDir::new().unwrap();
+        let gone = tmp.path().join("a.bin");
         seed_gap_rows(&conn, "t1", &gone.to_string_lossy(), &sha, 8);
         let gap = first_gap(&conn);
 
@@ -220,7 +245,13 @@ mod gfile_ledger_backfill_tests {
         let sha = hex_of(&bytes);
         let file = temp_file("idempotent", &bytes);
         let conn = mem();
-        seed_gap_rows(&conn, "t1", &file.to_string_lossy(), &sha, bytes.len() as u64);
+        seed_gap_rows(
+            &conn,
+            "t1",
+            &file.to_string_lossy(),
+            &sha,
+            bytes.len() as u64,
+        );
         let gap = first_gap(&conn);
         let local = || sha256_file_hex(&file);
 
@@ -246,7 +277,13 @@ mod gfile_ledger_backfill_tests {
         let file = temp_file("gate-healthy", &bytes);
         {
             let mut conn = mem();
-            seed_gap_rows(&conn, "t1", &file.to_string_lossy(), &sha, bytes.len() as u64);
+            seed_gap_rows(
+                &conn,
+                "t1",
+                &file.to_string_lossy(),
+                &sha,
+                bytes.len() as u64,
+            );
             let gap = first_gap(&conn);
             let local = sha256_file_hex(&file);
             gfile_ledger_repair(&mut conn, &gap, DEVICE, local).unwrap();
@@ -289,7 +326,10 @@ mod gfile_ledger_backfill_tests {
             db::insert_message(&conn, &rec).unwrap();
             let (again, orphan) = list_gfile_ledger_gaps(&conn, DEVICE).unwrap();
             assert!(again.is_empty(), "发送方那半本作业不管");
-            assert_eq!(orphan, 0, "发送方那条是「不该管」，不是「对不回身份」⇒ 不许计入孤儿");
+            assert_eq!(
+                orphan, 0,
+                "发送方那条是「不该管」，不是「对不回身份」⇒ 不许计入孤儿"
+            );
         }
         // ③ 卡片里还没有 path（还在收 / 失败 / 从未落盘）⇒ 没有任何证据，不猜
         {
@@ -416,8 +456,9 @@ mod gfile_ledger_backfill_tests {
         assert_eq!(
             flat.matches("tx.commit()").count(),
             1,
-            "事务闭包里现数到 {n} 处 `tx.commit()`（登记 1 处）：0 处就是三张表一起回滚那一格"
-        , n = flat.matches("tx.commit()").count());
+            "事务闭包里现数到 {n} 处 `tx.commit()`（登记 1 处）：0 处就是三张表一起回滚那一格",
+            n = flat.matches("tx.commit()").count()
+        );
     }
     /// **接线判据**：这一格作业今天只有"库里缺行 + 盘上有文件 + 跑得起来"三件事同时成立才有意义，
     /// 而**删掉 `lib.rs` 里那一格 spawn，878 条用例全绿、补账从此再也不跑**（静默失效那一类）。
@@ -512,7 +553,6 @@ mod gfile_ledger_backfill_tests {
             "那一格作业刻意**晚一点**再动（首屏 / 局域网自启 / .part 清扫排在同一段）；把它挪成开机就跑 ⇒ 补账跟首帧抢盘"
         );
     }
-
 
     /// **执行计划现读**（用应用里那台引擎，不是本机 CLI）。
     ///

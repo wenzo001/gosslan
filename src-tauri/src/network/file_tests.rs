@@ -293,9 +293,8 @@ mod tests {
     #[test]
     fn unique_path_never_returns_existing_path() {
         use std::fs;
-        let dir = std::env::temp_dir().join(format!("gosslan-uniquepath-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().to_path_buf();
 
         // 无冲突：原样返回
         assert_eq!(unique_path(&dir, "a.txt"), dir.join("a.txt"));
@@ -316,8 +315,6 @@ mod tests {
         }
         let got2 = unique_path(&dir, "README");
         assert!(!got2.exists(), "返回了已存在的路径：{got2:?}");
-
-        let _ = fs::remove_dir_all(&dir);
     }
 
     // ---------- 文件传输 E2EE（协议层模拟，不依赖 AppState） ----------
@@ -717,12 +714,11 @@ mod tests {
     /// sha256_file_hex：流式分块结果必须与一次性内存计算一致（发送端正确性）。
     #[test]
     fn sha256_file_hex_matches_in_memory_hash() {
-        let path =
-            std::env::temp_dir().join(format!("gosslan-test-sha-{}.bin", std::process::id()));
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("sha.bin");
         std::fs::write(&path, b"gosslan sha-256 streaming test body").unwrap();
         let got = sha256_file_hex(&path).unwrap();
         let want = hex_of(b"gosslan sha-256 streaming test body");
-        let _ = std::fs::remove_file(&path);
         assert_eq!(got, want);
         assert_eq!(got.len(), 64, "hex 表示必须为 64 字符");
     }
@@ -748,11 +744,10 @@ mod tests {
     /// 空文件边界：SHA-256 已知值 + sha256_file_hex 对 0 字节文件正确。
     #[test]
     fn empty_file_sha256_matches_known_value() {
-        let path =
-            std::env::temp_dir().join(format!("gosslan-test-empty-{}.bin", std::process::id()));
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("empty.bin");
         std::fs::write(&path, b"").unwrap();
         let got = sha256_file_hex(&path).unwrap();
-        let _ = std::fs::remove_file(&path);
         assert_eq!(
             got, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
             "空文件 SHA-256 必须是标准已知值"

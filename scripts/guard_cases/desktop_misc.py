@@ -493,17 +493,17 @@ CASES: list[Case] = [
         why="缓存目录是远端输入可达面（收到的文件名/目录名不受信）。旧实现用 e.path().metadata()\n"
         "     判类型——它**跟随软链**：缓存里一个指向任意位置的软链会让其目标被收集进清理列表并\n"
         "     remove_file 永久删除，报告里只算「清理了多少缓存」—— 全仓唯一确认的数据丢失点。\n"
-        "     注入方式：把 DirEntry::file_type()（不跟随链接）换回「path().metadata().map(|m|\n"
-        "     m.file_type())」（类型对得上、仍可编译，语义回到跟随链接），\n"
-        "     守卫 cache_cleaner_walk_never_follows_symlinks 扫到 e.path().metadata() 必须红。",
+        "     2026-10-21 改用 walkdir 后，注入方式改为把 `.follow_links(false)` 改成 `true`\n"
+        "     （类型对得上、仍可编译，语义回到跟随链接）：软链文件本身与软链目录下的文件都会\n"
+        "     进入清理列表，运行时用例 walk_files_never_follows_symlinks 必须红。",
         file=TAURI / "src" / "storage" / "cache_cleaner.rs",
         injections=[(
-            "            let Ok(ft) = e.file_type() else {",
-            "            let Ok(ft) = e.path().metadata().map(|m| m.file_type()) else {",
+            "        .follow_links(false)",
+            "        .follow_links(true)",
         )],
-        cmd=cargo("test", "--lib", "cache_cleaner_walk_never_follows_symlinks"),
+        cmd=cargo("test", "--lib", "walk_files_never_follows_symlinks"),
         cwd=TAURI,
-        expect_fail_hint="不跟随软链",
+        expect_fail_hint="软链（文件/目录）都不得进入清理列表",
         tags=["rust", "storage", "stability", "data-loss", "new-guards"],
     ),
     Case(

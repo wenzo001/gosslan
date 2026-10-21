@@ -1416,71 +1416,32 @@ pub struct PendingKeyRotation {
 /// **一次 SQLITE_BUSY / I/O 错误就生成新密钥并写回旧库**。现在所有身份与设备标识
 /// 的读取都走 `get_setting_checked`，任何失败都返回这里的错误并中止启动；
 /// 原数据库一个字节都不改，由用户在提示里选择恢复/导出诊断。
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum StartupError {
-    IdentityRead {
-        source: rusqlite::Error,
-    },
-    IdentityIncomplete {
-        detail: String,
-    },
+    #[error("身份密钥读取失败（读库错误）：{source}")]
+    IdentityRead { source: rusqlite::Error },
+    #[error("身份密钥不完整：{detail}")]
+    IdentityIncomplete { detail: String },
+    #[error("身份密钥损坏/截断，无法解析")]
     IdentityCorrupt,
-    IdentityPersist {
-        source: rusqlite::Error,
-    },
-    DeviceIdRead {
-        source: rusqlite::Error,
-    },
+    #[error("身份密钥写入失败：{source}")]
+    IdentityPersist { source: rusqlite::Error },
+    #[error("设备标识读取失败（读库错误）：{source}")]
+    DeviceIdRead { source: rusqlite::Error },
+    #[error("已有安装的数据库里缺少设备标识")]
     DeviceIdMissing,
-    DeviceIdPersist {
-        source: rusqlite::Error,
-    },
+    #[error("设备标识写入失败：{source}")]
+    DeviceIdPersist { source: rusqlite::Error },
+    #[error("设置 {key} 读取失败（读库错误）：{source}")]
     SettingRead {
         key: &'static str,
         source: rusqlite::Error,
     },
-    BusinessDataProbe {
-        source: rusqlite::Error,
-    },
-    RecoverableBackup {
-        backup: PathBuf,
-    },
+    #[error("启动数据探测失败（读库错误）：{source}")]
+    BusinessDataProbe { source: rusqlite::Error },
+    #[error("主库为空但发现可恢复的迁移备份：{}", .backup.display())]
+    RecoverableBackup { backup: PathBuf },
 }
-
-impl std::fmt::Display for StartupError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            StartupError::IdentityRead { source } => {
-                write!(f, "身份密钥读取失败（读库错误）：{source}")
-            }
-            StartupError::IdentityIncomplete { detail } => {
-                write!(f, "身份密钥不完整：{detail}")
-            }
-            StartupError::IdentityCorrupt => write!(f, "身份密钥损坏/截断，无法解析"),
-            StartupError::IdentityPersist { source } => {
-                write!(f, "身份密钥写入失败：{source}")
-            }
-            StartupError::DeviceIdRead { source } => {
-                write!(f, "设备标识读取失败（读库错误）：{source}")
-            }
-            StartupError::DeviceIdMissing => write!(f, "已有安装的数据库里缺少设备标识"),
-            StartupError::DeviceIdPersist { source } => {
-                write!(f, "设备标识写入失败：{source}")
-            }
-            StartupError::SettingRead { key, source } => {
-                write!(f, "设置 {key} 读取失败（读库错误）：{source}")
-            }
-            StartupError::BusinessDataProbe { source } => {
-                write!(f, "启动数据探测失败（读库错误）：{source}")
-            }
-            StartupError::RecoverableBackup { backup } => {
-                write!(f, "主库为空但发现可恢复的迁移备份：{}", backup.display())
-            }
-        }
-    }
-}
-
-impl std::error::Error for StartupError {}
 
 impl StartupError {
     /// 日志与原生弹窗共用的错误码（支持人员按码检索）。

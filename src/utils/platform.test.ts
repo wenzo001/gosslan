@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { escapeRe } from "./escapeRe.ts";
 import {
   canHoverByMedia,
   isAndroidUA,
@@ -23,7 +24,7 @@ function productionSources(): string[] {
 
 /** 数一段文本里出现了多少次**裸的**媒体查询串（缺席型判据的正控靠它）。 */
 function rawQueryHits(text: string, query: string): string[] {
-  return [...text.matchAll(new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"))].map(
+  return [...text.matchAll(new RegExp(escapeRe(query), "g"))].map(
     (m) => m[0],
   );
 }

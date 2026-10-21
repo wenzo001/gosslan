@@ -1,0 +1,64 @@
+# cargo-deny 配置（2026-10-21 首次接入）。
+#
+# 目标：对"依赖树本身"设一道可执行的门槛 —— 漏洞、yanked、许可证、来源。
+# 尺度刻意保守：本仓有多平台目标（macOS / Windows / Linux / Android），
+# 其中一部分 crate 只在特定 target 上编译；这里**不按 target 裁剪**，
+# 让审计看到完整的依赖图，避免"在 Linux CI 上看不到 Windows 依赖"的假绿。
+#
+# 已知告警（cargo-audit 实测 2026-10-21，均为上游 transitive 依赖的
+# unmaintained / unsound 提示，不是漏洞）：zvariant / zvariant_derive（unmaintained）、
+# glib 0.18（unsound）。这些不是本仓直接依赖，升级路径跟随 tauri/btleplug 上游；
+# 先用 warn 级别保留可见性，等上游升级后再收紧成 deny。
+
+[graph]
+targets = []
+all-features = false
+no-default-features = false
+
+[advisories]
+yanked = "deny"
+# 漏洞（vulnerability）永远是 error；unmaintained / unsound 只对**本工作区**升级成
+# error，外部 transitive 依赖仍以告警呈现。理由：zvariant / glib 这类上游告警的
+# 修复路径是跟随 tauri/btleplug 升级，不能在本仓用一条 deny 规则逼出大范围红。
+unmaintained = "workspace"
+unsound = "workspace"
+
+[licenses]
+# 本仓是私有工作区（不发布到 crates.io），`gosslan` 自身没有 license 字段；
+# 只对 workspace 私有包豁免，第三方依赖仍然逐个查许可证。
+private = { ignore = true }
+# 允许列表里预留了暂时没遇到的常见许可证（OpenSSL / bzip2 / NCSA 等），
+# 它们不是错误；真遇到时不必再改一次配置。
+unused-allowed-license = "allow"
+allow = [
+  "MIT",
+  "MIT-0",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "0BSD",
+  "BSL-1.0",
+  "ISC",
+  "Unicode-3.0",
+  "Unicode-DFS-2016",
+  "Zlib",
+  "MPL-2.0",
+  "CC0-1.0",
+  "Unlicense",
+  "OpenSSL",
+  "bzip2-1.0.6",
+  "NCSA",
+]
+confidence-threshold = 0.8
+
+[bans]
+# 多版本共存是 tauri 生态的常态（不同上游锁在不同 major）；先只要求"来源可解释"，
+# 不在首次接入时用 duplicate 规则制造大范围红。
+multiple-versions = "allow"
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

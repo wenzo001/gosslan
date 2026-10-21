@@ -51,7 +51,7 @@ if ! rustup target list --installed 2>/dev/null | grep -qx "$TARGET"; then
   exit 2
 fi
 
-cd "$ROOT/src-tauri"
+cd "$ROOT/src-tauri" || exit 1
 export CC_aarch64_linux_android="$CLANG"
 export AR_aarch64_linux_android="$TOOLCHAIN/llvm-ar"
 export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$CLANG"

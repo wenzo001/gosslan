@@ -1074,57 +1074,44 @@ pub(crate) fn now_ms() -> i64 {
 
 /// 把 Unix 毫秒时间戳格式化为 UTC `YYYY-MM-DD HH:MM:SS`（落盘文件用，可读）。
 ///
-/// 不引入 chrono：标准库没有本地时区，这里给 UTC 时间，配合毫秒戳足够定位。
+/// 不引入本地时区：这里给 UTC 时间，配合毫秒戳足够定位。
 pub(crate) fn format_utc(ms: i64) -> String {
     let secs = ms.div_euclid(1000);
-    let days = secs.div_euclid(86_400);
-    let sod = secs.rem_euclid(86_400);
-    let (h, m, s) = (sod / 3600, (sod % 3600) / 60, sod % 60);
-    let (y, mo, d) = civil_from_days(days);
-    format!("{y:04}-{mo:02}-{d:02} {h:02}:{m:02}:{s:02}")
-}
-
-/// Howard Hinnant 的 civil_from_days：Unix 天数 → (年, 月, 日)，纯函数、无时区依赖。
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    (if m <= 2 { y + 1 } else { y }, m, d)
-}
-
-/// [`civil_from_days`] 的逆：(年, 月, 日) → Unix 天数。
-fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let mp = if m > 2 { m - 3 } else { m + 9 };
-    let doy = (153 * mp as i64 + 2) / 5 + d as i64 - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
+    let Ok(dt) = time::OffsetDateTime::from_unix_timestamp(secs) else {
+        // 超出 time 可表示范围（实际只可能是损坏的日志/测试输入）：原样给出秒数，不 panic。
+        return format!("{secs}");
+    };
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+        dt.year(),
+        dt.month() as u8,
+        dt.day(),
+        dt.hour(),
+        dt.minute(),
+        dt.second()
+    )
 }
 
 /// UTC `YYYY-MM-DD HH:MM:SS` → Unix 毫秒。解析不出来返回 `None`，不拿当前时间凑。
 fn parse_utc_to_ms(text: &str) -> Option<i64> {
-    let (date, time) = text.split_once(' ')?;
+    let (date, clock) = text.split_once(' ')?;
     let mut d = date.split('-');
-    let y: i64 = d.next()?.parse().ok()?;
-    let mo: i64 = d.next()?.parse().ok()?;
-    let dd: i64 = d.next()?.parse().ok()?;
-    let mut t = time.split(':');
-    let h: i64 = t.next()?.parse().ok()?;
-    let mi: i64 = t.next()?.parse().ok()?;
-    let s: i64 = t.next()?.parse().ok()?;
-    if !(1..=12).contains(&mo) || !(1..=31).contains(&dd) || h > 23 || mi > 59 || s > 60 {
-        return None;
-    }
-    let days = days_from_civil(y, mo as u32, dd as u32);
-    Some((days * 86_400 + h * 3_600 + mi * 60 + s) * 1_000)
+    let y: i32 = d.next()?.parse().ok()?;
+    let mo: u8 = d.next()?.parse().ok()?;
+    let dd: u8 = d.next()?.parse().ok()?;
+    let mut t = clock.split(':');
+    let h: u8 = t.next()?.parse().ok()?;
+    let mi: u8 = t.next()?.parse().ok()?;
+    let s: u8 = t.next()?.parse().ok()?;
+    let month = time::Month::try_from(mo).ok()?;
+    let date = time::Date::from_calendar_date(y, month, dd).ok()?;
+    let time = time::Time::from_hms(h, mi, s).ok()?;
+    Some(
+        time::PrimitiveDateTime::new(date, time)
+            .assume_utc()
+            .unix_timestamp()
+            * 1_000,
+    )
 }
 
 /// 崩溃现场文件独有的四类行：独立通道留痕、启动路标、**正常退出路标**、崩溃块头。
@@ -1900,18 +1887,21 @@ mod tests {
     }
 
     #[test]
-    fn days_from_civil_inverts_civil_from_days() {
-        for days in [-719_468i64, 0, 20_545, 25_500, 100_000] {
-            let (y, m, d) = civil_from_days(days);
+    fn utc_format_and_parse_roundtrip_across_eras() {
+        // 1970 之前 / 纪元 / 2026 年：format 与 parse 必须互逆（整秒）。
+        for ms in [
+            -719_468i64 * 86_400_000,
+            0,
+            20_545 * 86_400_000,
+            25_500 * 86_400_000,
+            1_789_132_854_000,
+        ] {
             assert_eq!(
-                days_from_civil(y, m, d),
-                days,
-                "civil_from_days({days}) 的逆不成立"
+                parse_utc_to_ms(&format_utc(ms)),
+                Some(ms),
+                "format_utc({ms}) 解析不回来"
             );
         }
-        // 与 format_utc 互逆（整秒）
-        let ms = 1_789_132_854_000i64;
-        assert_eq!(parse_utc_to_ms(&format_utc(ms)), Some(ms));
         // 解不出来返回 None：凑当前时间会把上一轮的行排到本轮之后
         assert_eq!(parse_utc_to_ms("2026-13-01 00:00:00"), None);
         assert_eq!(parse_utc_to_ms("2026-10-17"), None);

@@ -98,36 +98,27 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// 递归列出目录下的所有文件（深度栈遍历，不跟随符号链接）。
+/// 递归列出目录下的所有文件（walkdir 深度遍历，不跟随符号链接）。
 ///
 /// 为什么必须递归（2026-09-19 审计）：媒体按 `todo-paste/`、按日子目录等分层落盘，
 /// 旧的单层 read_dir 让这些子树**既不被统计也不被清理** —— 配额判的是假数，
 /// 「30 天后自动清」对子目录文件形同虚设。
 ///
-/// ⚠️ 符号链接一律跳过（`DirEntry::file_type()` 不跟随链接，与 `path.metadata()`
-/// 相反）：缓存目录是**远端输入可达面**（收到的文件名/目录名不受信），一个指向
-/// 任意位置的软链若被跟随，其目标文件会被收集进清理列表并 `remove_file` 永久删除
-/// —— 那是数据丢失，不是清理（2026-09-23 审计 1.1）。
+/// ⚠️ 符号链接一律跳过（`WalkDir::follow_links(false)` + `filter_entry` 排除软链，
+/// 与会跟随链接的 `path().metadata()` 相反）：缓存目录是**远端输入可达面**（收到的
+/// 文件名/目录名不受信），一个指向任意位置的软链若被跟随，其目标文件会被收集进
+/// 清理列表并 `remove_file` 永久删除 —— 那是数据丢失，不是清理（2026-09-23 审计 1.1）。
 pub fn walk_files(dir: &Path) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    let mut stack = vec![dir.to_path_buf()];
-    while let Some(d) = stack.pop() {
-        let Ok(rd) = std::fs::read_dir(&d) else {
-            continue;
-        };
-        for e in rd.flatten() {
-            let Ok(ft) = e.file_type() else {
-                continue;
-            };
-            if ft.is_dir() {
-                stack.push(e.path());
-            } else if ft.is_file() {
-                out.push(e.path());
-            }
-            // 软链 / 套接字 / 其他特殊文件：既不收集也不递归
-        }
-    }
-    out
+    walkdir::WalkDir::new(dir)
+        .follow_links(false)
+        .into_iter()
+        // 软链（文件或目录）一律不进结果、也不往下递归：缓存目录是远端输入可达面，
+        // 跟随软链会把任意位置的目标文件收进清理列表并永久删除。
+        .filter_entry(|e| !e.file_type().is_symlink())
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().is_file())
+        .map(|e| e.into_path())
+        .collect()
 }
 
 /// 自动调度用：只删文件、**不 VACUUM**。
