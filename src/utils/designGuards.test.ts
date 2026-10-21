@@ -929,7 +929,13 @@ test("v-html 只出现在构造即转义的三处；新增位置必须登记（�
   }
   // 转义锚点少一个，上面那份清单就只是"文件名对上了"，这里把实现也钉住。
   assert.match(readFileSync(join(srcDir, "utils", "highlight.ts"), "utf8"), /escHtml\(part\)/);
-  assert.match(readFileSync(join(srcDir, "components", "CodeBlock.vue"), "utf8"), /escapeHtml\(props\.code\)/);
+  const codeBlock = readFileSync(join(srcDir, "components", "CodeBlock.vue"), "utf8");
+  assert.match(
+    codeBlock,
+    /import \{ escHtml \} from "@\/utils\/highlight"/,
+    "CodeBlock 的纯文本回退必须用公共 escHtml（不许再私有一份只转 &<> 的副本）",
+  );
+  assert.match(codeBlock, /escHtml\(props\.code\)/);
   assert.match(readFileSync(join(srcDir, "components", "LogViewer.vue"), "utf8"), /highlightText\(l\.message/);
 
   // 正控：往真实组件模板里注入一个未登记的 v-html，必须被读出来
