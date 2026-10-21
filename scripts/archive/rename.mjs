@@ -1,4 +1,5 @@
-// 一次性项目改名脚本：node scripts/rename.mjs <old> <new>
+// 一次性项目改名脚本：node scripts/archive/rename.mjs <old> <new>
+// 必须在仓库根目录执行（它按当前工作目录遍历）。
 // 按「全小写 / 首字母大写 / 全大写」三种形态替换所有文本文件中的项目名，
 // 跳过 node_modules / target / .git / dist / .workbuddy 与二进制资源。
 import { readdirSync, statSync, readFileSync, writeFileSync } from "node:fs";

@@ -1,3 +1,5 @@
+import { escapeRe } from "./escapeRe.ts";
+
 /** 文本 HTML 转义：搜索结果高亮只拼转义后的字符串，不做 HTML 解析。 */
 export function escHtml(s: string): string {
   return s
@@ -20,7 +22,7 @@ const MARK_OPEN =
  */
 export function highlightText(text: string, kw: string): string {
   if (!kw) return escHtml(text);
-  const regex = new RegExp(`(${kw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "gi");
+  const regex = new RegExp(`(${escapeRe(kw)})`, "gi");
   // split 带捕获组时，奇数下标恰好就是命中的那些片段
   return text
     .split(regex)

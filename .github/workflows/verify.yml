@@ -73,8 +73,8 @@ on:
   # PR 上仍跑（合并前的关卡）。与上面的 push 事件可能同时触发，由 concurrency 去重。
   pull_request:
   workflow_dispatch:
-  # 定时：每晚只付「护栏非空转（全量）」这一条腿 —— 其余三个 job 用 job 级 `if` 在
-  # schedule 事件下跳过，免得每晚把前端/Rust/Android 重跑一遍。
+  # 定时：每晚跑「护栏非空转（全量）」+「静态检查」+「供应链审计」三条腿 ——
+  # 其余三个 job 用 job 级 `if` 在 schedule 事件下跳过，免得每晚把前端/Rust/Android 重跑一遍。
   # ⚠️ GitHub 的 scheduled 工作流**只按默认分支（main）上的这份定义**运行 ⇒ 在 feat/* 上改
   #   cron 不会生效，这条要等它进 main 才持续跑；本分支随时可以用 workflow_dispatch 手动拉。
   schedule:
@@ -320,6 +320,13 @@ jobs:
   guards:
     name: 护栏非空转（全量，不带 --only）
     runs-on: macos-latest
+    # ⚠️ 只在定时与手动触发时跑（2026-10-21）：这条腿实测 1h36m，而它**原本没有 if** ⇒
+    # 每次 push / PR 都自动付 1.5 小时，与本文件顶部「定时：每晚只付这一条腿」的原意相反
+    # （另外三个 job 都有 `if: github.event_name != 'schedule'`，只有它漏了）。
+    # 用户口径：最长的门禁必须经本人确认才跑 ⇒ workflow_dispatch 就是那个确认入口。
+    # 覆盖不削弱：push / PR 仍有前端 + Rust(macOS/Windows 矩阵) + Android 三条腿
+    # （编译 + 单测 + 清单守卫），全量护栏扫描由 nightly 与手动触发兜底。
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     # 每条 Rust 用例都要重编译一次：给足时间，宁可慢也不要静默截断成"看起来没跑完"。
     timeout-minutes: 240
     steps:
@@ -358,3 +365,65 @@ jobs:
       - name: 护栏非空转（全量）
         shell: bash
         run: bash scripts/ci-run.sh "护栏非空转（全量）" python3 scripts/verify-guards.py
+
+  # ---------------------------------------------------------------------------
+  #  静态检查（2026-10-21 首次接入）：ruff / shellcheck / markdownlint
+  #
+  #  这三样在本仓此前**全为 0**。规则集刻意从"最小可守"开始（见 ruff.toml 与
+  #  .markdownlint-cli2.jsonc 顶部），先让判据本身可信，再按批次加严 ——
+  #  与 docs/architecture/backend-modernization.md "不一次性扫全仓"的既有口径一致。
+  #  这一条腿很快（约 1 分钟），不占 push 的大头，所以每次 push / PR 都跑。
+  # ---------------------------------------------------------------------------
+  lint:
+    name: 静态检查（ruff / shellcheck / markdownlint）
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+
+      - name: Python（ruff，固定版本）
+        run: |
+          python3 -m pip install --user pipx
+          python3 -m pipx run ruff==0.17.1 check scripts
+
+      - name: Shell（shellcheck）
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+          shellcheck -S warning --exclude=SC2034 $(git ls-files '*.sh')
+
+      - name: Markdown（markdownlint-cli2，固定版本）
+        run: npx --yes markdownlint-cli2@0.18.1
+
+  # ---------------------------------------------------------------------------
+  #  供应链审计：cargo-deny（许可证 / 禁用项 / 来源）+ cargo-audit（RustSec）
+  #
+  #  与护栏全量同档：**只在定时与手动触发时跑**。理由是它要下载两套工具与
+  #  RustSec 数据库，单次分钟级；而 push 的兜底已由前端 / Rust / Android / 静态检查
+  #  四条腿承担。发版前手动 dispatch 一次即可把这份证据补齐。
+  #  cargo-audit 本机已有、cargo-deny 在 CI 用 taiki-e/install-action 装二进制（不编译）。
+  # ---------------------------------------------------------------------------
+  supply-chain:
+    name: 供应链审计（cargo-deny + cargo-audit）
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny,cargo-audit
+
+      - name: cargo-deny（advisories / bans / licenses / sources）
+        working-directory: src-tauri
+        run: cargo deny check
+
+      - name: cargo-audit（RustSec 漏洞库）
+        working-directory: src-tauri
+        run: cargo audit

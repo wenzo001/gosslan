@@ -17,6 +17,7 @@ import typescript from "highlight.js/lib/languages/typescript";
 import yaml from "highlight.js/lib/languages/yaml";
 import { useAppStore } from "@/stores/useAppStore";
 import { CODE_SURFACE } from "@/utils/previewMetrics";
+import { escHtml } from "@/utils/highlight";
 import darkCss from "highlight.js/styles/github-dark.css?raw";
 import lightCss from "highlight.js/styles/github.css?raw";
 
@@ -56,10 +57,6 @@ hljs.registerLanguage("html", xml);
 
 const lineCount = computed(() => props.code.split("\n").length);
 
-function escapeHtml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
 const AUTO_LANGS = [
   "rust", "javascript", "typescript", "python", "java", "go", "json", "bash", "shell",
   "sql", "html", "css", "xml", "yaml", "markdown",
@@ -91,7 +88,7 @@ const html = computed(() => {
       return hljs.highlight(props.code, { language: lang }).value;
     }
   } catch { /* 忽略 */ }
-  return escapeHtml(props.code);
+  return escHtml(props.code);
 });
 </script>
 

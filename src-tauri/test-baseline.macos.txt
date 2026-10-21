@@ -361,7 +361,7 @@ logging::tests::bootstrap_and_logger_point_at_the_same_crash_file
 logging::tests::crash_block_survives_rotation_and_carries_version_and_context
 logging::tests::crash_file_is_capped_by_reopening_not_growing_forever
 logging::tests::crash_note_writes_without_a_logger_and_survives_the_reentry_guard
-logging::tests::days_from_civil_inverts_civil_from_days
+logging::tests::utc_format_and_parse_roundtrip_across_eras
 logging::tests::diag_fold_table_is_bounded_by_restarting_not_growing
 logging::tests::diag_folds_only_on_identical_text_in_the_same_second
 logging::tests::diag_warn_and_error_are_never_folded

@@ -1,0 +1,24 @@
+{
+  "config": {
+    "default": false,
+    "MD009": true,
+    "MD010": true,
+    "MD018": true,
+    "MD019": true,
+    "MD020": true,
+    "MD021": true,
+    "MD023": true,
+    "MD047": true
+  },
+  "globs": ["**/*.md"],
+  "ignores": [
+    "node_modules/**",
+    "dist/**",
+    "src-tauri/target/**",
+    "src-tauri/vendor/**",
+    "docs/archive/**",
+    ".aoci/**",
+    ".workbuddy/**",
+    "test-results/**"
+  ]
+}

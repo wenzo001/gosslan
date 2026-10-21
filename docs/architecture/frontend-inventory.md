@@ -23,17 +23,17 @@
 <!-- BEGIN:generated (node scripts/frontend-inventory.mjs) -->
 
 > 复跑：`node scripts/frontend-inventory.mjs`（本段与 `--check` 对账，手改本段数字没有意义）。
-> 现读：`src/` 共 313 份源码 = 生产 212 份 / 43,453 行 + 测试 101 份 / 21,079 行（不含 `src/assets/` 里的 214 个表情图）。
+> 现读：`src/` 共 313 份源码 = 生产 212 份 / 43,523 行 + 测试 101 份 / 21,147 行（不含 `src/assets/` 里的 214 个表情图）。
 
 ### 1.1 按职责分类（生产码，机器现算）
 
 | 类 | 文件 | 行 |
 |---|---:|---:|
-| D-业务组件 | 68 | 19,343 |
-| B-utils | 75 | 10,027 |
+| D-业务组件 | 68 | 19,372 |
+| B-utils | 75 | 10,053 |
 | C-状态层 | 3 | 4,162 |
-| B-国际化 | 5 | 2,450 |
-| D-数据表 | 3 | 1,850 |
+| B-国际化 | 5 | 2,455 |
+| D-数据表 | 3 | 1,860 |
 | A-公共UI | 21 | 1,762 |
 | B-composables | 15 | 1,009 |
 | A-布局 | 2 | 989 |
@@ -41,25 +41,25 @@
 | E-平台适配 | 11 | 640 |
 | E-入口/启动 | 7 | 444 |
 | 其他 | 1 | 7 |
-| **合计** | **212** | **43,453** |
+| **合计** | **212** | **43,523** |
 
 ### 1.2 已装库在生产码里的实际使用面（装了不等于用了）
 
 | 依赖 | 生产文件 | 行 |
 |---|---:|---:|
-| `vue` | 91 | 26,742 |
-| `lucide-vue-next` | 47 | 16,537 |
-| `reka-ui` | 24 | 8,578 |
+| `vue` | 91 | 26,771 |
+| `lucide-vue-next` | 47 | 16,559 |
+| `reka-ui` | 24 | 8,590 |
 | `@vueuse/core` | 17 | 9,459 |
 | `@tanstack/vue-query` | 9 | 1,956 |
 | `@tauri-apps/api` | 7 | 4,876 |
-| `@tauri-apps/plugin-dialog` | 5 | 3,778 |
+| `@tauri-apps/plugin-dialog` | 5 | 3,788 |
 | `pinia` | 4 | 4,367 |
 | `@tauri-apps/plugin-opener` | 3 | 462 |
 | `@tauri-apps/plugin-notification` | 2 | 4,032 |
 | `dayjs` | 2 | 202 |
 | `zod` | 2 | 198 |
-| `highlight.js` | 1 | 130 |
+| `highlight.js` | 1 | 127 |
 | `@tanstack/vue-virtual` | 1 | 671 |
 | `vue-i18n` | 1 | 176 |
 | `mitt` | 1 | 51 |
@@ -78,7 +78,7 @@
 | `src/components/chat/ChatHeader.vue` | D-业务组件 | 208 | `lucide-vue-next` `vue` |
 | `src/components/chat/MessageComposer.vue` | D-业务组件 | 839 | `@vueuse/core` `lucide-vue-next` `reka-ui` `vue` |
 | `src/components/ChatWindow.vue` | D-业务组件 | 1736 | `@tauri-apps/api` `@tauri-apps/plugin-dialog` `@vueuse/core` `lucide-vue-next` `vue` |
-| `src/components/CodeBlock.vue` | D-业务组件 | 130 | `highlight.js` `vue` |
+| `src/components/CodeBlock.vue` | D-业务组件 | 127 | `highlight.js` `vue` |
 | `src/components/ContextMenu.vue` | A-公共UI | 92 | `reka-ui` `vue` |
 | `src/components/conversation/ConversationContextMenu.vue` | D-业务组件 | 43 | `lucide-vue-next` `reka-ui` |
 | `src/components/conversation/ConversationListItem.vue` | D-业务组件 | 270 | `lucide-vue-next` `vue` |
@@ -88,7 +88,7 @@
 | `src/components/ConversationList.vue` | D-业务组件 | 590 | `@vueuse/core` `lucide-vue-next` `reka-ui` `vue` |
 | `src/components/DevDiagPanel.vue` | D-业务组件 | 393 | `@tanstack/vue-query` `lucide-vue-next` `vue` |
 | `src/components/EmojiPicker.vue` | D-业务组件 | 177 | `vue` |
-| `src/components/FavoritePanel.vue` | D-业务组件 | 938 | `lucide-vue-next` `reka-ui` `vue` |
+| `src/components/FavoritePanel.vue` | D-业务组件 | 950 | `lucide-vue-next` `reka-ui` `vue` |
 | `src/components/FriendProfile.vue` | D-业务组件 | 297 | `lucide-vue-next` `vue` |
 | `src/components/GroupCreateModal.vue` | D-业务组件 | 122 | `vue` |
 | `src/components/GroupFilesPanel.vue` | D-业务组件 | 297 | `@tanstack/vue-query` `lucide-vue-next` `vue` |
@@ -133,7 +133,7 @@
 | `src/components/settings/SettingsGroup.vue` | D-业务组件 | 19 | — |
 | `src/components/settings/SettingsRow.vue` | D-业务组件 | 24 | — |
 | `src/components/settings/SettingsToggle.vue` | D-业务组件 | 63 | `reka-ui` |
-| `src/components/settings/StorageSection.vue` | D-业务组件 | 263 | `@tauri-apps/plugin-dialog` `lucide-vue-next` `vue` |
+| `src/components/settings/StorageSection.vue` | D-业务组件 | 273 | `@tauri-apps/plugin-dialog` `lucide-vue-next` `vue` |
 | `src/components/SettingsPanel.vue` | D-业务组件 | 223 | `lucide-vue-next` `vue` |
 | `src/components/SettingsWindow.vue` | D-业务组件 | 153 | `@vueuse/core` `lucide-vue-next` `vue` |
 | `src/components/ShareDirectory.vue` | D-业务组件 | 138 | `@tanstack/vue-query` `lucide-vue-next` `vue` |
@@ -143,7 +143,7 @@
 | `src/components/TodoCardBubble.vue` | D-业务组件 | 303 | `lucide-vue-next` `vue` |
 | `src/components/TodoDetailDialog.vue` | D-业务组件 | 453 | `lucide-vue-next` `vue` |
 | `src/components/TodoIconPicker.vue` | D-业务组件 | 70 | — |
-| `src/components/TodoImageThumb.vue` | D-业务组件 | 174 | `vue` |
+| `src/components/TodoImageThumb.vue` | D-业务组件 | 184 | `vue` |
 | `src/components/TodoPickField.vue` | D-业务组件 | 112 | `lucide-vue-next` `reka-ui` `vue` |
 | `src/components/ui/BackArrow.vue` | A-公共UI | 30 | `lucide-vue-next` |
 | `src/components/ui/CharCounter.vue` | A-公共UI | 27 | `vue` |
@@ -186,13 +186,13 @@
 | `src/i18n/index.ts` | B-国际化 | 176 | `vue` `vue-i18n` |
 | `src/i18n/locales.ts` | B-国际化 | 16 | — |
 | `src/i18n/locales/dict.ts` | B-国际化 | 7 | — |
-| `src/i18n/locales/en-us.ts` | B-国际化 | 1108 | — |
-| `src/i18n/locales/zh-cn.ts` | B-国际化 | 1143 | — |
+| `src/i18n/locales/en-us.ts` | B-国际化 | 1111 | — |
+| `src/i18n/locales/zh-cn.ts` | B-国际化 | 1145 | — |
 | `src/layouts/ResponsiveLayout.vue` | A-布局 | 857 | `lucide-vue-next` `vue` |
 | `src/stores/useAppStore.ts` | C-状态层 | 1067 | `@tauri-apps/plugin-notification` `@vueuse/core` `pinia` `vue` |
 | `src/stores/useChatStore.ts` | C-状态层 | 2965 | `@tauri-apps/plugin-notification` `pinia` `vue` |
 | `src/stores/useImagePreview.ts` | C-状态层 | 130 | `pinia` `vue` |
-| `src/types.ts` | D-数据表 | 661 | — |
+| `src/types.ts` | D-数据表 | 671 | — |
 | `src/utils/a11yLabels.ts` | B-utils | 131 | — |
 | `src/utils/announcementDismiss.ts` | B-utils | 73 | — |
 | `src/utils/appActions.ts` | B-utils | 51 | `mitt` |
@@ -217,7 +217,7 @@
 | `src/utils/errors.ts` | B-utils | 106 | — |
 | `src/utils/escapeRe.ts` | B-utils | 13 | — |
 | `src/utils/externalLinks.ts` | E-平台适配 | 66 | `zod` |
-| `src/utils/favoritePreview.ts` | B-utils | 76 | — |
+| `src/utils/favoritePreview.ts` | B-utils | 81 | — |
 | `src/utils/fileKind.ts` | B-utils | 161 | `lucide-vue-next` `vue` |
 | `src/utils/fileMeta.ts` | B-utils | 36 | — |
 | `src/utils/filePreview.ts` | B-utils | 238 | — |
@@ -226,7 +226,7 @@
 | `src/utils/friendRequests.ts` | B-utils | 18 | — |
 | `src/utils/groupFilesQuery.ts` | B-utils | 25 | `@tanstack/vue-query` |
 | `src/utils/haptics.ts` | E-平台适配 | 55 | — |
-| `src/utils/highlight.ts` | B-utils | 29 | — |
+| `src/utils/highlight.ts` | B-utils | 31 | — |
 | `src/utils/imageBytes.ts` | B-utils | 114 | — |
 | `src/utils/imageMime.ts` | B-utils | 44 | — |
 | `src/utils/imageThumb.ts` | B-utils | 128 | — |
@@ -274,7 +274,7 @@
 | `src/utils/time.ts` | B-utils | 89 | `dayjs` |
 | `src/utils/toastManager.ts` | B-utils | 27 | `reka-ui` |
 | `src/utils/todoCustomIcons.ts` | B-utils | 53 | `lucide-vue-next` `vue` |
-| `src/utils/todos.ts` | B-utils | 989 | — |
+| `src/utils/todos.ts` | B-utils | 1008 | — |
 | `src/utils/tokenContrast.ts` | B-utils | 226 | — |
 | `src/utils/transferState.ts` | B-utils | 49 | — |
 | `src/utils/validation.ts` | B-utils | 132 | `zod` |
@@ -283,7 +283,7 @@
 
 ### 1.4 测试码（分列，不计进业务成果）
 
-共 101 份 / 21,079 行；由 `npm test` 的清单自己打印条数。
+共 101 份 / 21,147 行；由 `npm test` 的清单自己打印条数。
 <!-- END:generated -->
 
 ## 2. 能力域 × 替换结论
@@ -317,7 +317,7 @@
 | 浮层全局互斥 | `utils/popupRegistry.ts`(47) + `composables/useExclusivePopup.ts`(32) | 不用库 | **保留自研** | Reka `DismissableLayer` 管的是**栈内**外点/Esc，不提供"不同浮层之间同一时刻只开一个"（`contextmenu` 不触发 click，历史缺陷就是两个菜单并存）。纯状态机、可 Node 直测 |
 | 请求缓存 / 去重 / 失效 | `utils/panelQuery.ts`(40) + `utils/groupFilesQuery.ts`(25) + `utils/shareTreeQuery.ts`(28)，消费者 `GroupFilesPanel`、`ShareDirectory`、`ChatSearchDialog` | `@tanstack/vue-query` | **组合替换（已完成）** | 只读面板交给库；消息状态机**刻意不进 Query**（可靠投递/离线队列是业务状态，不是服务端缓存 —— 目标 C 档那条边界） |
 | 预览字节缓存 + inflight 去重 | 字节那份：`utils/blobLru.ts`(一个家)。在途去重那份：**已收到** `utils/singleFlight.ts`(一个家)，现 **5 处**在飞取数口各调 `run()`（`filePreview` 3 + `favoritePreview` 1 + `useChatStore.ensureGroupTodoRows` 1）—— 原来自抄 **五份**（预览那 4 份里，`loadThumbPreview` 一度被本行漏数，它是唯一用 `p.finally(...)` 那种**会在同键重新登记后误删别人记录**的写法；第 5 份是群任务补读） | 不用库 | **组合替换（已完成，P1 #3 / #3b）** | Query 不管「按字节封顶的 blob + objectURL 生命周期」⇒ 缓存那层保留自研；去重那 6 行是纯通用逻辑 ⇒ 共用一个 helper。⚠️ 唯一留下的同形状手写在 `useChatStore.loadingMore`（`new Map<string, Promise<void>>`）：它有两处被注释保护的偏离 —— 容量闸门 `pages >= MAX_PAGES` 夹在"并入在飞"与"登记"之间、摘除用 `page.finally(...)` **挂在链上**（让 `page` 始终带处理器，reject 不变成 unhandled rejection，同时所有 await 方各拿同一次结果），这两条都没有判据兜着 ⇒ **保留自研**，判定与实测见 §6.38 **§6.62 又并一层：单条预览上限 `15 MiB` 曾在前端抄三份、Rust 另有三处 `.min(15*1024*1024)`；前端收成 `filePreview.ts` 的 `IMAGE_PREVIEW_MAX_BYTES` 一个家，跨语言同值由 `imageBytes.test.ts` 现读两侧源码对账（那句「与后端同一口径」从此有机凭据）。**
-| 防抖 / 节流 | 现算 `grep -ro clearTimeout src --include="*.vue"` = **15 处 / 12 本**生产 `.vue`（§6.40 记的 19 处/13 本是当时的现算，本批与 §6.43 各又去掉了几处手写计时器 ⇒ 两个数别互抄）；通用的那一格已归库，`utils/defer.ts`(93 → **59** 行，现算 `wc -l src/utils/defer.ts`) 只剩 `INPUT_DEFER_MS` + `shouldRunThrottled`；后者现在有 **4 个调用点 / 3 本生产文件**（`windowLaunch` + `useChatStore` 的抖动与群历史重查 + `MessageComposer` 的草稿已满提示）—— §6.55 把散在外面的 5 份手写闸门并进来，并新增一条"手写时间差闸门不许长回第二份"的现扫判据 | `@vueuse/core@14.4.0` 的 `useDebounceFn` + `refDebounced`（**已用四格**：剪贴板 / 监听器 / 防抖 / 延迟镜像） | **直接替换（2026-10-19 完成，§6.44；队列 11① 同批关掉）** | 动手前在本仓那套假定时器下把库的语义逐条量过，六条一致（§6.44）：尾沿只执行一次且取最后一次参数、`cancel` 丢弃待执行、`flush` 立即执行且之后不再补、无待执行时 `flush` 是空操作、延迟镜像初始读原值且窗口后落新值、作用域关闭后不再回写。删掉的旧实现 = `defer.ts` 里的 `Debounced` + `debounce` 与整册 `composables/useDeferredRef.ts`(31)；`useSearchKeyword`/`AddFriendModal`/`ForwardModal`/`LogViewer` 四格直接叫 `refDebounced(x, INPUT_DEFER_MS)`（库的默认窗口是 200ms，实测值是 120 ⇒ 每格显式传常量，常量只有 `defer.ts` 一个家），`useAppStore.persistSoon` 与 `ChatSearchDialog` 的输入防抖直接叫 `useDebounceFn`。真值表留在 `defer.test.ts` 前半 —— 现在钉的是**库契约**，升级改了哪条语义会当场红。⚠️ §6.40 那句「`useDebounceFn` 换不掉两档这一层」**把库的能力记少了**：两档里"延迟镜像"那一档就是 `refDebounced` ⇒ 已在 §6.44 更正。其余五族（长按 4 家、重试 2 家、连点冷却 2 家、反馈复位 3 家、VirtualList 内部收敛 2 制）语义各不同 ⇒ 仍**只登记不并** **§6.61 又并一次：「等一会儿」（`sleep`）这一族曾有 2 份手抄（`MergeCardModal` 私有 helper、`useAppStore` 蓝牙重试内联），库里没有对应物（`@vueuse/core` 14.4.0 与 `@vueuse/shared` 两份 d.ts grep `sleep` 各 0），故收进 `defer.ts` 一个家；`setTimeout(fn, 0)` 当「等这一拍」用的 2 处（`StorageSection`）换回 Vue 自己的 `nextTick`，第 3 处（`useChatStore` 的批量冲刷）判成宏任务边界另一件事、保留。** 
+| 防抖 / 节流 | 现算 `grep -ro clearTimeout src --include="*.vue"` = **15 处 / 12 本**生产 `.vue`（§6.40 记的 19 处/13 本是当时的现算，本批与 §6.43 各又去掉了几处手写计时器 ⇒ 两个数别互抄）；通用的那一格已归库，`utils/defer.ts`(93 → **59** 行，现算 `wc -l src/utils/defer.ts`) 只剩 `INPUT_DEFER_MS` + `shouldRunThrottled`；后者现在有 **4 个调用点 / 3 本生产文件**（`windowLaunch` + `useChatStore` 的抖动与群历史重查 + `MessageComposer` 的草稿已满提示）—— §6.55 把散在外面的 5 份手写闸门并进来，并新增一条"手写时间差闸门不许长回第二份"的现扫判据 | `@vueuse/core@14.4.0` 的 `useDebounceFn` + `refDebounced`（**已用四格**：剪贴板 / 监听器 / 防抖 / 延迟镜像） | **直接替换（2026-10-19 完成，§6.44；队列 11① 同批关掉）** | 动手前在本仓那套假定时器下把库的语义逐条量过，六条一致（§6.44）：尾沿只执行一次且取最后一次参数、`cancel` 丢弃待执行、`flush` 立即执行且之后不再补、无待执行时 `flush` 是空操作、延迟镜像初始读原值且窗口后落新值、作用域关闭后不再回写。删掉的旧实现 = `defer.ts` 里的 `Debounced` + `debounce` 与整册 `composables/useDeferredRef.ts`(31)；`useSearchKeyword`/`AddFriendModal`/`ForwardModal`/`LogViewer` 四格直接叫 `refDebounced(x, INPUT_DEFER_MS)`（库的默认窗口是 200ms，实测值是 120 ⇒ 每格显式传常量，常量只有 `defer.ts` 一个家），`useAppStore.persistSoon` 与 `ChatSearchDialog` 的输入防抖直接叫 `useDebounceFn`。真值表留在 `defer.test.ts` 前半 —— 现在钉的是**库契约**，升级改了哪条语义会当场红。⚠️ §6.40 那句「`useDebounceFn` 换不掉两档这一层」**把库的能力记少了**：两档里"延迟镜像"那一档就是 `refDebounced` ⇒ 已在 §6.44 更正。其余五族（长按 4 家、重试 2 家、连点冷却 2 家、反馈复位 3 家、VirtualList 内部收敛 2 制）语义各不同 ⇒ 仍**只登记不并** **§6.61 又并一次：「等一会儿」（`sleep`）这一族曾有 2 份手抄（`MergeCardModal` 私有 helper、`useAppStore` 蓝牙重试内联），库里没有对应物（`@vueuse/core` 14.4.0 与 `@vueuse/shared` 两份 d.ts grep `sleep` 各 0），故收进 `defer.ts` 一个家；`setTimeout(fn, 0)` 当「等这一拍」用的 2 处（`StorageSection`）换回 Vue 自己的 `nextTick`，第 3 处（`useChatStore` 的批量冲刷）判成宏任务边界另一件事、保留。**
 | 剪贴板 | `composables/useClipboard.ts` 一个家（VueUse 的 copy + 按 key 的已复制态 + 复位）；`utils/clipboard.ts` 是**粘贴意图分类**（图片/文件/文本三条分支），与复制不是同一件事 ⇒ 不算第二份 | `@vueuse/core` | **组合替换（已完成，P2 #4）** | 写入与老 WebView 的 `legacy` 回退交给 VueUse，本仓只留「按 key 复用同一枚已复制勾」。原第二份在 `LogViewer.vue`（直连 VueUse + 手写 setTimeout，复位时长 2000ms 与组合式的 1500ms 不一致、卸载清理也不一致），现已并回并由 `componentImports.test.ts` 的接线判据钉住。⚠️ 但**唯一家自己也撒过一次谎**：`copyContent` 原本返回 `Promise<boolean>`、实现恒为 `true`（@vueuse/core 14.4.0 的 `copy()` 吞掉 async 写失败、`legacyCopy` 丢掉 `execCommand` 的返回值，之后无条件 `copied=true`）⇒ 5 个组件里 7 处 `ok ? 已复制 : 复制失败` 的失败半边**永远跑不到**，真没写进去时界面还说"已复制"。现在签名改成 `Promise<void>`，假分支由编译器逼着清掉（行为与今天完全一致：今天本来就只显示成功），AboutSection 那第二份"就地反馈 + 自备 1500ms 定时器"也一并并回 `copiedKey`。见 §6.40 |
 | 快捷键 | `utils/shortcuts.ts`(40 纯函数) + `composables/useShortcuts.ts`(66) | 不用库 | **保留自研** | 命中表是**应用动作**（与 `appActions` 同源），要躲 IME 组合态；`useMagicKeys` 给的是键名，不是动作 |
 | 长按 / 手势 | `utils/longPress.ts`(84) + `utils/lightboxGestures.ts`(81) | 不用库 | **保留自研** | 450ms + 位移阈值 + "松手吞掉紧随的 click"是移动端实测出来的；pinch 缩放 VueUse 没有 |
@@ -397,7 +397,7 @@
 | 17 | ~~P0/P1~~ **已完成（见 §6.47）** | 首帧语言那一格：脚本那份 `detectSystemLocale` 与 `i18n` 补**逐例对照**，顺带修掉抓到的一处真实分歧（`languages` 全不命中时脚本不再看 `navigator.language` ⇒ 中文系统骨架先英文） | 这一族的漂移只在启动那一瞬可见，编译期与探针都看不见；而它是"保留自研的第二份实现"最该有判据的一格 | `appearance.test.ts` 13 → **16/16**（九例语言矩阵 + 标题两支 + 五份窗口 HTML 的 `data-title-*` 齐备；期望值全走 i18n 公开 API）；两次单点变异各红一次（摘兜底 ⇒ 点名 `languages=["ja-JP"] language=zh-CN → 脚本=en-US，i18n=zh-CN`；标题只取中文支 ⇒ 红）；`npm test` **1078/1078**、`npm run build`（含 vue-tsc）exit 0。⚠️ 这批**第一版判据是空转的**：脚本与 i18n 共用同一个替身 `el`，先跑脚本、后调 i18n、再读 `el.lang` ⇒ 读到的一定是 i18n 自己写的值；改成"跑完脚本立刻取快照"才红。快速层第 9 步当时被并行会话的 `verify-guards.py` 语法错误挡住（不是本轮代码） |
 | 18 | ~~P3~~ **已完成（见 §6.48）** | 把"延迟镜像"三格挂载段合用一套时间阶梯（`mirrorLadder` + 种 store 前置 `mirrorSeed`），补上 `ForwardModal` 与 `ConversationList` 通讯录过滤两格 | §6.44 换的四件组件里还有两件只有静态证据；而"共用同一件能力"正是单点退化最容易漏的一型 —— 一格接线坏了，另两格照绿 | 探针段数 37 → **39**（现算 `grep -c 'want("' `）；`--only=friendfilter,forwardfilter,contactfilter` 改前 **12/12**、复原后 **12/12**；**一次改三格**（派生都改回读原值）⇒ **恰好 6 条红、每段红的都是那两条时间判据**，三处 `diff -q` 核对复原；收尾全量探针 **424/424、exit 0** |
 | 19 | ~~P1~~ **已完成（见 §6.49）** | 主题色三档派生（hover / active / light）从「JS 算一份 + CSS 硬编一份兜底」收敛成 CSS `color-mix()` 一份；`applyTheme` 只写主色与字体，`lighten`/`darken`/`mix` 随本批删除 | 两份实现连比例都不一样，而首屏脚本只写得到主色 ⇒ store 起来之前「按钮已是用户色、hover 与半透明选中底还是出厂蓝」——真实的第一帧缺陷，不是整洁偏好 | `npm test` **1078/1078**、新增探针段 `--only=accent` **6/6**（含取色器自身的合成正控）、快速层 **17/17、39.8s**、`npm run build` exit 0；三次单点变异各红一次（兜底改回硬编 `#2563eb` ⇒ 探针 active 条红；`applyTheme` 重新 inline 写 hover ⇒ 单测那条红；active 混向改成朝白 ⇒ 真实样式表契约红并印出 `= 2.98 < 4.5`）；两次判据空转都被自己抓出来（`color-mix` 的 computed 回的是 `color(srgb …)` 不是 `rgb()`；「inline 里没有派生档」在没有 Tauri 的探针页里恒绿） |
-| 20 | ~~P1~~ **已完成（见 §6.50）** | 字体接进首帧：首屏脚本读 `FONT_KEY` 并写 `--gosslan-font-family`，骨架改 `var(--gosslan-font-family, <兜底栈>)`，`applyTheme` 删掉 JS 兜底串（默认档清内联） | 这与 2026-09-21 那条"骨架永远蓝色"是**同一族**缺陷，当年只修了主色那一半；默认栈原本四处各抄一份 （token / JS 兜底 / 骨架写死 / 选项字面量）| `npm test` **1080/1080**（+2）；探针 `accent` 段 6 → **7 条、7/7**；快速层 **17/17、59.9s**；build exit 0；文档门与 change-budget 各 exit 0。**一次改三处 ⇒ 恰好 3 条红**（首屏不写 / 骨架写死 / JS 又抄兜底），三处 `diff -q` 复原。⚠️ 第一版把两次 `applyTheme` 放在同一个 `try/finally` 外，第二次跑在没有 `document` 的环境 ⇒ 红得像产品坏了，其实是替身生命周期写错 | 
+| 20 | ~~P1~~ **已完成（见 §6.50）** | 字体接进首帧：首屏脚本读 `FONT_KEY` 并写 `--gosslan-font-family`，骨架改 `var(--gosslan-font-family, <兜底栈>)`，`applyTheme` 删掉 JS 兜底串（默认档清内联） | 这与 2026-09-21 那条"骨架永远蓝色"是**同一族**缺陷，当年只修了主色那一半；默认栈原本四处各抄一份 （token / JS 兜底 / 骨架写死 / 选项字面量）| `npm test` **1080/1080**（+2）；探针 `accent` 段 6 → **7 条、7/7**；快速层 **17/17、59.9s**；build exit 0；文档门与 change-budget 各 exit 0。**一次改三处 ⇒ 恰好 3 条红**（首屏不写 / 骨架写死 / JS 又抄兜底），三处 `diff -q` 复原。⚠️ 第一版把两次 `applyTheme` 放在同一个 `try/finally` 外，第二次跑在没有 `document` 的环境 ⇒ 红得像产品坏了，其实是替身生命周期写错 |
 | 21 | ~~P1~~ **已完成（见 §6.51）** | 查清「两处长按容差不一致」这条待办：**不是缺陷**（两处用的是不同的取消路径，各自成立），代码不动；把它那条隐含前提补成判据 —— 胶囊长按的 `pointerup` / `pointercancel` / `pointerleave` 三个取消出口必须成对在位、起点数与 cancel 数一对一、卸载摘表 | 第二种方案靠浏览器发 `pointercancel` 才成立；少一个出口的失效形状是「在胶囊上竖向滑动 ⇒ 450ms 后名单自己弹出来」，只有真机看得见，而此前没有任何判据（⚠️ §6.53 实测更正：这个形状要 `pointercancel` 与 `pointerleave` 两个出口**一起少**才成立，只摘一个时真浏览器里结果不变） | `longPress.test.ts` 8 → **9/9**（含合成正控）；删掉 `@pointercancel` 那一行 ⇒ 该条红并点名出口，`diff -q` 复原后复绿；`npm test` **1081/1081**、快速层 **17/17 exit 0**；§6.50 收尾全量探针 **431/431、exit 0**（40 段） |
 | 22 | ~~P1/P3~~ **已完成（见 §6.52）** | 动效族里唯一 CSS 管不着的那个出口（桌面 `api.shakeWindow()` —— Rust 连发 7 次 `set_position` 搬整扇 OS 窗口）补上系统「减弱动态效果」闸；顺带把这条媒体查询从 `haptics.ts` 的私有实现收进 `utils/platform.ts` 一个家，两家共用 | 同一个 OS 开关原来只接住了四处里的三处（CSS 全局降级、骨架呼吸、触觉），最响的那一处不接 ⇒ 对动效敏感的用户按一下别人的「抖动」按钮，整扇窗自己被搬走，而编译、门禁、探针全都不说话 | `npm test` **1081 → 1085/1085**（新增 4 条：纯函数两方向、查询串只有一个家、触觉两方向、抖窗闸在调用之前）；快速层 **17/17、32.1s**（含 vue-tsc + build）；**收尾全量探针复跑 **431/431、exit 0**（40 段，跑的是本批之后的树）；三次单点变异各红一次**（摘掉 store 的闸 ⇒ 那条接线判据红；haptics 改回自己手抄查询串 ⇒ 「只有一个家」红并点名文件；`prefersReducedMotionByMedia` 判成恒 false ⇒ 触觉与纯函数两条一起红），三处 `diff -q` 核对复原。⚠️ 第一次跑变异用 `NODE="node --test …"` 变量代替整条命令，zsh 不拆词 ⇒ 三次全是 exit 127（command not found），**看着像"没红"其实是根本没跑**；改成每条命令写全才有上面那三份读数 |
 | 23 | ~~P0/P3~~ **已完成（见 §6.53）** | 先更正 §6.51 写下的一句错话（「本仓探针没有 CDP 触摸能力」——`check-ui-runtime.mjs:4350` 一直在派发真触摸），再把那句里「只能真机验」的那一格补成运行时判据：从胶囊起手竖向滑动 ⇒ 长按计时器必须被取消、名单不许弹；三条里含**前提自证**（这台浏览器确实发了 cancel）与**反控**（同坐标按住不动仍会弹） | 那条隐含前提是「滚动会抢走这次触摸」；它此前被判成无判据，其实是我自己没去读探针就下的结论 —— 判据能加在原地上，不该欠着 | `--only=touchroster` **9/9、exit 0**（段内 6 → 9）；**两轮变异各证一次**：只摘 `@pointercancel` ⇒ 静态那条红、**运行时那条照绿**；把 `@pointercancel` 与 `@pointerleave` 一起摘 ⇒ 运行时那条**当场红**并印出 `afterScroll=true cancel={"pointer":1,"touch":0}`；`diff -q` 复原后 9/9。⚠️ 由此**推翻 §6.51 写的失效形状**：这条用户可见结果由**两个冗余出口共守**，少一个不成立；应用码一字未动；本批没跑全量探针，**§6.55 收尾那次全量实测 434/434、exit 0（= 431 + 本段 3 条）** |

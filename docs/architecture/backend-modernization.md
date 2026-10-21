@@ -279,6 +279,35 @@
 - **真实启动验证**：隔离 HOME 预置 app data 目录 `0755`，启动 5.0.30 release 后目录
   变为 **`0700`**，生成的 `gosslan-1.db` 与 crash 日志均为 **`0600`**；随后停止实例。
 
+### B15（已落地，2026-10-21）：重复基础设施减冗（thiserror / walkdir / time / tempfile）
+
+来源：减冗审计 §B.8 第 1、2 批。四个 crate **都早已在 Cargo.lock 里**
+（thiserror 2.0.20 / walkdir 2.5.0 / time 0.3.55 / tempfile 3.27.0），本次只是变成直接依赖，
+没有新增任何需要下载的版本。
+
+- **thiserror**：`state.rs::StartupError` 与 `network/file.rs::SendFileError` 的手写
+  `Display` + `Error` 改成 derive。所有错误文案逐字保留；`source` 字段由 derive 自动接上
+  `Error::source()`。这是 B2（`InitError`）的同类扩展，不改变对外文案与错误类型。
+- **walkdir**：`storage/cache_cleaner.rs::walk_files` 的手写深度栈换成
+  `WalkDir::follow_links(false)` + `filter_entry` 排除软链。软链不跟随、不收集的安全语义不变，
+  既有 `walk_files_never_follows_symlinks` 判据继续守这一格。
+- **time**：`logging.rs` 的 `format_utc` / `parse_utc_to_ms` 与 `export.rs` 的
+  `format_local_time` 改用 `time` 的 UTC 算术，删掉三份手写 `civil_from_days`
+  （logging 两份、export 一份）。**只做 UTC 算术，不读机器时区**；导出仍由前端
+  `getTimezoneOffset()` 给偏移，因此原来"跨夏令时可能有 1 小时偏差"的已知代价不变。
+  这是对早期"不引 chrono/time"口径的**有意更新**：旧口径的目的是不引入时区库做本地时区，
+  而 `time` 早已在依赖树里，且这里只用它做纯 UTC 换算。
+- **tempfile**：仅 dev-dependency。把"目录生命周期天然覆盖整个用例"的测试夹具换成
+  `TempDir`（`macos_bookmark` / `private_fs` / `outbox_sweep` / `group_file` /
+  `ledger_backfill` / `network::mod` / `network::file`）。**返回裸 `PathBuf` 的 helper
+  没有改签名**：`TempDir` 在函数返回时就会删目录，强行改会把"文件存在"变成"文件已删"，
+  那属于假修复；这类 helper 保留原来的 pid + 纳秒命名。
+- **验证（本地，2026-10-21）**：`cargo test --lib --no-run --offline` 退出 0；
+  受影响测试组 logging 29、export 6、cache_cleaner 4、state 10、macos_bookmark 4、
+  private_fs 2、ledger_backfill 8、net task 1，以及被改夹具的 6 条具名用例全部通过。
+  全量 Rust / 护栏 / Android 留给远端门禁（本地按用户口径不跑全量门禁）。
+- 回滚：恢复各文件的旧实现并从 `Cargo.toml` 移除直接依赖即可；错误文案与导出格式不变。
+
 ## 4. 4.x → 5.0 数据迁移与恢复
 
 - 现有迁移链已是 `user_version` 单调版本 + 每步事务 + 降级拒绝；本批补的是**迁移前快照**。

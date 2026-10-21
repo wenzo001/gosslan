@@ -1681,7 +1681,7 @@ export const useChatStore = defineStore("chat", () => {
     // 乐观消息先占一个很大的逻辑序号，保证它出现在会话底部；后端返回真实记录后会替换为权威 seq。
     const optimistic: MessageRecord = {
       id: -1,
-      msg_id: `tmp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      msg_id: `tmp-${crypto.randomUUID()}`,
       conv_id: convId,
       sender_id: myId,
       receiver_id: convId,

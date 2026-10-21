@@ -12,7 +12,10 @@
  * ## 用法
  * 重新生成图标后（`npm run tauri icon src-tauri/icons/icon-source.png`）跑一次：
  *
- *     node scripts/flatten-ios-icons.mjs
+ *     node scripts/archive/flatten-ios-icons.mjs
+ *
+ * ⚠️ 本脚本已归档到 `scripts/archive/`，但**上线前仍需执行**：重新生成 iOS 图标后
+ * 必须跑一次，否则 App Store Connect 会因为 alpha 通道拒收。
  *
  * 它只做两件事：解 PNG（8 位、非交错）→ 白底合成 → 写成不透明 RGB PNG。
  * 尺寸与像素颜色都不变（alpha≥254 时合成结果与原色几乎逐位相同），
@@ -27,7 +30,8 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { deflateSync, inflateSync } from "node:zlib";
 
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+// 归档后比常规脚本多一层目录（scripts/archive/）⇒ 仓库根要上溯两级。
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const IO_DIR = join(ROOT, "src-tauri", "icons", "ios");
 
 const PNG_SIG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);

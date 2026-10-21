@@ -12,8 +12,8 @@
  *   · `bluetooth` 是**非默认 feature**（`src-tauri/Cargo.toml` 的 `[features]`）。
  *     漏掉 `--features bluetooth` ⇒ BLE 相关模块根本不编译 ⇒ 那 20 条用例
  *     连同被测代码一起消失，而 `cargo test` **全绿**。
- *   · 前端 `npm test` 的脚本里是**手工枚举**的 48 条路径。新增测试文件若忘了
- *     加进那串字符串，新文件不会跑，而 `npm test` 依然**全绿**。
+ *   · 前端 `npm test` 用的是 **glob 模式**（`src` 下任意深度的 `.test.ts`）。新增测试文件天然
+ *     被覆盖；剩下的风险是"glob 被改窄"，由 `checkFrontend()` 反向判。
  *
  * 两种都是「退出码 0 的空转」——最危险的那类故障：没有任何信号。
  *
@@ -66,7 +66,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, globSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -120,27 +120,47 @@ function collectFrontendTests(dir, acc = []) {
 }
 
 /**
- * 前端：`npm test` 脚本里手工枚举的路径 ⋈ 磁盘上真实存在的测试文件。
+ * 前端：`package.json` 的 test 脚本里的 glob 模式 ⋈ 磁盘上真实存在的测试文件。
  *
- * 只报「磁盘有、脚本没列」（会被静默跳过）。反向（脚本列了但文件不存在）
+ * 2026-10-21 从「登记制」翻成「覆盖制」：`npm test` 以前是**手工枚举**的一长串路径，
+ * 新增 .test.ts 忘了加进去就不会被执行、而 npm test 依然全绿（退出码 0 的空转）。
+ * Node 22 起 `node --test` 原生支持 glob 参数 ⇒ 枚举这整类故障从机制上消失。
+ * 剩下的反向风险是「glob 被改窄」：某人把 `src` 全深度收成 `src/utils`，
+ * 磁盘上的文件就静静不跑了。所以判据反过来 —— **磁盘上每个 .test.ts 都必须被
+ * scripts.test 里的某个 glob 覆盖**。
+ *
+ * 只报「磁盘有、没被覆盖」（会被静默跳过）。反向（glob 写了但匹配不到文件）
  * `node --test` 自己会报错，不必在这里重复拦。
  */
 function checkFrontend() {
   const pkg = JSON.parse(readFileSync(path.join(ROOT, "package.json"), "utf8"));
-  const listed = new Set(
-    pkg.scripts.test.split(/\s+/).filter((t) => t.endsWith(".test.ts")),
-  );
-  const onDisk = collectFrontendTests(path.join(ROOT, "src"));
-  const skipped = onDisk.filter((f) => !listed.has(f));
+  // 只取 glob 形状的 token，并剥掉 shell 引号 —— package.json 里写成
+  // `"src/**/*.test.ts"`（带引号，防止 sh 自己展开后与 node 的 glob 语义分叉）。
+  const patterns = pkg.scripts.test
+    .split(/\s+/)
+    .map((t) => t.replace(/^["']|["']$/g, ""))
+    .filter((t) => t.includes("*"));
+  // ⚠️ 必须转成正斜杠再比：Windows 上 `fs.globSync` 给反斜杠、而 glob 模式里是
+  // 正斜杠 ⇒ 直接比对会把**每一个**文件都判成"未覆盖"（2026-09-17 同一个坑，
+  // 见 collectFrontendTests 里的注释）。
+  const covered = new Set();
+  for (const p of patterns) {
+    for (const m of globSync(p, { cwd: ROOT })) covered.add(posix(String(m)));
+  }
+  const onDisk = [
+    ...collectFrontendTests(path.join(ROOT, "src")),
+    ...collectFrontendTests(path.join(ROOT, "scripts")),
+  ];
+  const skipped = onDisk.filter((f) => !covered.has(f));
 
   if (skipped.length === 0) {
-    console.log(`✓ 前端测试清单：磁盘 ${onDisk.length} 个文件全部已登记（不会静默跳过）`);
+    console.log(`✓ 前端测试清单：磁盘 ${onDisk.length} 个文件全部被 glob 覆盖（不会静默跳过）`);
     return true;
   }
-  console.error(`✗ 前端有 ${skipped.length} 个测试文件存在但未登记进 package.json 的 test 脚本；`);
+  console.error(`✗ 前端有 ${skipped.length} 个测试文件在磁盘上，但没被 package.json 的 test 脚本覆盖；`);
   console.error("  它们不会被执行，而 `npm test` 依然全绿：");
   for (const f of skipped) console.error(`    · ${f}`);
-  console.error("  修法：把上面每个路径追加进 package.json 的 scripts.test。");
+  console.error("  修法：把 scripts.test 里的 glob 模式放宽到覆盖它们（例如 src/**/*.test.ts）。");
   return false;
 }
 

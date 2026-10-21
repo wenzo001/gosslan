@@ -987,8 +987,8 @@ mod content_reconcile_tests {
             "判定窗口比 tick 还短的话，一轮没写完的文件会被当成品去哈希"
         );
 
-        let dir = std::env::temp_dir().join(format!("gosslan-part-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path();
         let now = crate::db::now_ms();
         let fresh = dir.join("live.part");
         let aged = dir.join("named-as-part.part"); // 用户真的把文件叫这个名字，且早已收完
@@ -1019,6 +1019,5 @@ mod content_reconcile_tests {
             !part_is_being_written(dir.join("gone.part").to_str().unwrap(), now),
             "文件不在盘上不算「正在写」（该走原来那条读不到内容的分支）"
         );
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -13,6 +13,24 @@
 
 ## [Unreleased]
 
+## [5.1.2] - 2026-10-21
+
+### 减冗重构（Batch 1）：测试清单 / 正则 / CI / 归档 + Rust 基础设施 + lint 工具链
+
+- `npm test` 从 104 条手工枚举改为 Node 22 的 glob 覆盖制（`src/**/*.test.ts` + `scripts/*.test.ts`）；
+  清单守卫反向判「磁盘上每个 `.test.ts` 都被某个 glob 覆盖」，防止 glob 被改窄后测试静默不跑。
+- 正则转义只剩 `src/utils/escapeRe.ts` 一份定义；守卫从「查函数形状」升级为「查字符类字面量 + 扫全 src」。
+- `CodeBlock.vue` 的本地 `escapeHtml` 统一到 `utils/highlight.ts` 的 `escHtml`；乐观消息临时 ID 改用
+  `crypto.randomUUID()`。
+- CI：「护栏非空转（全量）」只在定时与手动触发时跑；新增每次 push 跑的 `lint` 腿
+  （ruff / shellcheck / markdownlint）与只在定时/手动触发的 `supply-chain` 腿（cargo-deny / cargo-audit）。
+- 4 个一次性脚本移入 `scripts/archive/`（含说明 README）；`flatten-ios-icons.mjs` 仍标注
+  「上线前仍需执行」，并修正了归档后的仓库根推导。
+- Rust：`StartupError` / `SendFileError` 改 thiserror；`cache_cleaner::walk_files` 改 walkdir
+  （仍不跟随软链）；logging / export 三份手写 `civil_from_days` 改 `time` 的 UTC 算术；
+  测试夹具改用 `tempfile::TempDir`。
+- `CHANGELOG.md` 纳入文档引用守卫，并修正 3 处外部 crate 源码引用（rusqlite / mio / tauri-macros）。
+
 ## [5.1.1] - 2026-10-21
 
 ### 测试：VACUUM 预算用例在满载下不再因计时抖动假红
@@ -1426,7 +1444,7 @@
 
 `network/transport/group_file.rs` 群接收收尾把三张台账收进了 `dbc.transaction().and_then(|tx| write_ledgers(&tx))`，
 但闭包末尾**没有 `tx.commit()`**。rusqlite 的 `Transaction::new_unchecked` 把 `drop_behavior` 初始化成 `Rollback`
-（锁定版 0.31.0 `src/transaction.rs:127`，`finish_()` 在 `!is_autocommit()` 时按该行为回滚）⇒ `tx` 在闭包结束即整段回滚，
+（锁定版 0.31.0 `rusqlite-0.31.0/src/transaction.rs:127`，`finish_()` 在 `!is_autocommit()` 时按该行为回滚）⇒ `tx` 在闭包结束即整段回滚，
 而 `and_then` 拿到的是 `write_ledgers` 的 `Ok(())` ⇒ `wrote` 永远是 Ok ⇒ 那条"失败留痕 + 逐句补写"的 Err 分支
 **结构上不可能触发**。净效果比 4.40.8 修之前更糟：改前三处各写各的、至少常态能落库；改后名义上"同一事务"、
 实际上三张表一句都没写，而 UI 与 `GroupFileCompleteAck` 都按成功走。单聊那一家 `network/file/receive.rs:876`
@@ -1719,7 +1737,7 @@ Windows 的 `canonicalize` 返回 `\\?\C:\…` verbatim 形式，而这条链在
 | --- | --- |
 | 队列 1 条：`accept()` 报 errno 24（EMFILE） | 之后 poll **不再报可读**；腾出 fd 再 accept 得 **errno 35（EAGAIN）** ⇒ 那条已建好的连接被这次失败的 accept **吃掉**了 |
 | 队列 2 / 4 / 8 条 | 就绪次数 **1 / 3 / 7**（每失败一次吃掉一条）、cpu/wall **0 / 2 / 15 / 1%** ⇒ **不是空转** |
-| 锁定版本源码核对 | mio 1.2.3 `sys/unix/selector/kqueue.rs:127` 注册带 `EV_CLEAR`（边缘）；tokio 1.53.1 `TcpListener::poll_accept` 对非 `WouldBlock` 的错误直接 `Poll::Ready(Err)` ⇒ 既不重唤醒也不自旋 |
+| 锁定版本源码核对 | mio 1.2.3 `mio-1.2.3/sys/unix/selector/kqueue.rs:127` 注册带 `EV_CLEAR`（边缘）；tokio 1.53.1 `TcpListener::poll_accept` 对非 `WouldBlock` 的错误直接 `Poll::Ready(Err)` ⇒ 既不重唤醒也不自旋 |
 
 ⇒ 结论反过来用：**这一格不加退避、不改循环结构**（量具否证了假想危害，写上去的就是没被测过的东西），只补
 「分类 + 节流 warn」。`accept_failed` 带 `kind` 与 `raw_os_error`：Windows 上句柄耗尽的错误码要和 macOS 的 24

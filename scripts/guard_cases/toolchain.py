@@ -177,18 +177,20 @@ CASES: list[Case] = [
         tags=["frontend", "version", "docs"],
     ),
     Case(
-        name="测试清单：磁盘上的测试文件没登记进 package.json 必须报出来",
-        why="`npm test` 的脚本里是**手工枚举**的 48 条路径。新增一个 .test.ts 时若忘了把它加进"
-            "那串字符串，新文件不会被执行，而 `npm test` 依然**全绿** —— 与「漏 --features」"
-            "是完全同类的东西：退出码 0 的空转。",
+        name="测试清单：磁盘上的测试文件没被 glob 覆盖必须报出来",
+        why="`npm test` 以前是**手工枚举**的一长串路径，新增 .test.ts 忘了登记就不会跑、而 "
+            "npm test 依然全绿（退出码 0 的空转）。2026-10-21 起 `node --test` 改用 glob "
+            "（`src/**/*.test.ts`）⇒ 「忘了登记」这一类从机制上消失；剩下的反向风险是"
+            "「glob 被改窄」：把 src/** 收成 src/utils/**，src/api、src/i18n、src/data 那 "
+            "4 个测试文件就静静不跑了。本用例注入的正是最可能的那次误改。",
         file=ROOT / "package.json",
         injections=[(
-            "src/utils/selfChat.test.ts src/utils/todos.test.ts ",
-            "src/utils/selfChat.test.ts ",
+            "src/**/*.test.ts",
+            "src/utils/**/*.test.ts",
         )],
         cmd=["node", "scripts/check-test-manifest.mjs", "--only", "frontend"],
         cwd=ROOT,
-        expect_fail_hint="未登记",
+        expect_fail_hint="没被 package.json 的 test 脚本覆盖",
         tags=["manifest", "frontend"],
     ),
     Case(

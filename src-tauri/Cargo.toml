@@ -1,10 +1,13 @@
 [package]
 name = "gosslan"
-version = "5.1.1"
+version = "5.1.2"
 description = "Gosslan — 无服务器 P2P 局域网即时通讯"
 authors = ["wd.f"]
 edition = "2021"
 rust-version = "1.77"
+# 这是 Tauri 应用的库/二进制 crate，不发布到 crates.io；cargo-deny 的
+# `[licenses].private.ignore` 靠这个标记识别"工作区私有包"（2026-10-21）。
+publish = false
 
 # 库目标供 Tauri 加载，同时保留二进制入口
 [lib]
@@ -40,6 +43,12 @@ async-trait = "0.1"
 # 启动期边界错误用 derive 生成 Display/Error/From（MIT OR Apache-2.0，MSRV 1.77 与本仓一致；
 # 已在依赖树里）。决策记录与分批：docs/architecture/backend-modernization.md §2（B2）。
 thiserror = "2"
+# 目录递归遍历 / UTC 日期：两件事标准库都没有省心的等价物，而这两个 crate 早在依赖树里
+# （walkdir 是 tauri 的间接依赖、time 是 notify-rust 的间接依赖）。2026-10-21 减冗批：
+# `storage/cache_cleaner.rs` 的手写深度栈换成 walkdir（仍不跟随软链），`logging.rs` 的
+# 手写 civil_from_days 换成 time。决策记录：docs/architecture/backend-modernization.md §B8。
+walkdir = "2"
+time = { version = "0.3", default-features = false, features = ["std"] }
 socket2 = { version = "0.5", features = ["all"] }
 # `hooks` feature：给 SQLite 装 `sqlite3_progress_handler`（决策 2 的 VACUUM 时间预算靠它
 # 在语句执行途中中止）。它是 `hooks = []` —— 不引入任何新依赖，Cargo.lock 不变。
@@ -130,6 +139,10 @@ objc2-core-bluetooth = { version = "0.3", optional = true }
 # 交给别的应用，见 OpenWith.kt）。非 Android 目标不会编译本依赖。
 [target.'cfg(target_os = "android")'.dependencies]
 jni = { version = "0.22" }
+
+[dev-dependencies]
+# 测试夹具的临时目录：drop 即清理，避免手写 `temp_dir().join(format!("…pid…nanos"))`。
+tempfile = "3"
 
 [features]
 # 默认启用自定义协议；可扩展为自定义 deep-link 唤醒

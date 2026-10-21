@@ -1936,15 +1936,8 @@ mod group_file_ack_recovery_tests {
         seed(&conn);
         crate::db::insert_group_file_ack(&conn, "t1", "peer-a", "g1", true).unwrap();
         // 同一进程内的另一个连接看不到内存库 ⇒ 用**文件库**才验得了"持久"
-        let dir = std::env::temp_dir().join(format!(
-            "gosslan-ack-ledger-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path();
         let path = dir.join("gosslan.db");
         {
             let c = crate::db::init(&path).unwrap();
@@ -1972,21 +1965,13 @@ mod group_file_ack_recovery_tests {
                 "落终态后账本必须清空（否则每 tick 都会重放一遍）"
             );
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 老库兼容：**没有这张表的旧库**，升级后启动一次就自动补齐（历史数据一行不动）。
     #[test]
     fn an_old_database_gains_the_ledger_table_on_next_start() {
-        let dir = std::env::temp_dir().join(format!(
-            "gosslan-ack-old-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path();
         let path = dir.join("gosslan.db");
         {
             let c = crate::db::init(&path).unwrap();
@@ -2013,7 +1998,6 @@ mod group_file_ack_recovery_tests {
                 .unwrap();
             assert_eq!(rows, 0, "新表不许动历史数据");
         }
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 迟到的**失败** ACK 不许把已 completed 的 recipient 降级（completed 是终态）。
