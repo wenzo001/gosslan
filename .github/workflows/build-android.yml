@@ -92,6 +92,14 @@ jobs:
         # AGP 禁止它与 splits.abi 并存（见脚本头部注释）。脚本对每个 ABI 各构建一次，
         # 天然只有那一个 ABI 的 .so 进包，并落到 release-artifacts/android/。
         # 脚本还会校验签名与 ABI（未签名的 APK 手机上装不上，宁可在 CI 里红掉）。
+        #
+        # ⚠️ `continue-on-error` + 后面单独一步转注解：这一步失败时，**根因只在
+        # runner 的 /tmp/gosslan-android-*.log 里**；而私有仓库 + 无 token 时外部
+        # 读不到 step log（实测 `GET /actions/jobs/{id}/logs` 匿名访问 403
+        # "Must have admin rights"）⇒ 注解是唯一能被别人读到的通道。
+        # 不这么做的话，CI 失败对外面只剩一句 "Process completed with exit code 1"。
+        id: build_apk
+        continue-on-error: true
         env:
           # 发行版签名（**私有**：GitHub Actions Secrets 加密存储，别人看不到，
           # 含 fork 的 PR 也读不到）。没配时脚本会用入库的**开发版**钥匙（公开但固定）。
@@ -100,6 +108,19 @@ jobs:
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: bash scripts/build-android-releases.sh
+
+      - name: 把失败原因变成注解（否则根因只留在 runner 的 /tmp 里）
+        if: steps.build_apk.outcome == 'failure'
+        run: |
+          set +e
+          for f in /tmp/gosslan-android-*.log; do
+            [ -f "$f" ] || continue
+            echo "::group::$(basename "$f")"
+            grep -E "FAILURE:|What went wrong|Execution failed|Caused by:|Could not |Unable to |A problem occurred|error:|Error:|Exception|Out of memory|No space left|❌" "$f" 2>/dev/null | head -20 | cut -c1-400
+            echo "::endgroup::"
+          done
+          echo "::error::Android 构建失败（上面是 Gradle 关键行；完整日志在 runner 的 /tmp/gosslan-android-*.log）"
+          exit 1
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
