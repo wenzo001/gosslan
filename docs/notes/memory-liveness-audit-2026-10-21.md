@@ -1667,7 +1667,7 @@ node scripts/e2e-multi-instance.mjs --round=gfile → **28 条断言全绿**（r
 - 两个新端之间的 **Offer → Resume(0) → Chunk → Done → CompleteAck** 全程：接收侧成员行 `completed`、
   文件 SHA 与源一致、气泡按 `gfile-{tid}` 只落群会话、无 `.part` 残留、发送侧不停在 `pending/sending`。
 - 同时真实跑了决策 6 的轮末保留路径（输出里含 `崩溃现场 30 天 … 另清超大现场 N 个大文件`）。
-- 首跑发现一个**编译期影响面**：`examples/e2e_peer.rs` 没补 `attempt`（E0063）⇒ 已补 `attempt: None`
+- 首跑发现一个**编译期影响面**：`src-tauri/examples/e2e_peer.rs` 没补 `attempt`（E0063）⇒ 已补 `attempt: None`
   （它模拟的是**旧端**发送，正好把 `attempt=None` 的兼容老路也走了一遍）。
 
 **标准轴审查补丁（2026-10-21，提交前）**：独立审查确认**无 ABBA 死锁**，但抓到 1 条确定性回归 + 4 条建议，
