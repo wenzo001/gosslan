@@ -13,6 +13,20 @@
 
 ## [Unreleased]
 
+## [5.0.40] - 2026-10-21
+
+### 跨平台：那条"用户提示可操作"的断言写死了 POSIX 分隔符
+
+- 根因：5.0.38 那批加的 `state::tests::startup_error_message_is_actionable_and_names_the_code`
+  把日志目录**写死成 POSIX 形状**（`/data/gosslan/logs`），而消息里那段是用
+  `Path::join("logs")` 拼的 ⇒ Windows 上实际是 `/data/gosslan\logs` ⇒ **只有 Windows 那一腿红**，
+  macOS 与本地永远绿。2026-10-21 的 CI 在 Windows 腿上抓到（Verify 的 Rust job 失败：
+  1024 passed / 1 failed，失败点正是这条断言的第三句）。这是**跨平台盲区**：
+  判据在本机全绿，容易误以为跨平台也绿。
+- 改法：断言改用**同一个拼法**（`Path::new("/data/gosslan").join("logs")`）⇒ 两个平台都对。
+  顺带扫了全仓同类"写死 POSIX 路径的断言"（只剩测试数据里的 `/tmp/…`，不是路径拼接）。
+- **产品代码一行未动**：消息里那段路径本来就是对的，错的是判据。
+
 ## [5.0.39] - 2026-10-21
 
 ### 群文件 ACK 的跨进程恢复：持久化账本 + 事务化收尾
