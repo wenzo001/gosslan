@@ -385,9 +385,13 @@ mod tests {
             matches!(outcome, VacuumOutcome::Aborted { .. }),
             "小预算必须中止，实得 {outcome:?}"
         );
+        // 决定性判据是上一条 `Aborted`：预算没生效时会一路跑完并得到 `Completed`。
+        // 这里的耗时上界只防"跑完整库才停"，不能卡成 5× 预算 —— 满载跑全量测试时，
+        // 2ms 的检查间隔会被线程调度拖到十几毫秒（2026-10-21 全量门禁实测 14ms），
+        // 而 3 秒预算对应的用户感知仍然是"约 3 秒"，不是"跑到底"。
         assert!(
-            elapsed < BUDGET_MS * 5,
-            "中止离预算太远（预算 {BUDGET_MS}ms、实际 {elapsed}ms）⇒ 3 秒预算实际会卡更久"
+            elapsed < 250,
+            "中止离预算太远（预算 {BUDGET_MS}ms、实际 {elapsed}ms）⇒ 预算机制可能没生效"
         );
         // 中止后库仍然完好
         let integrity: String = c
