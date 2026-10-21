@@ -12,13 +12,13 @@
 | 位置 | **GitHub Actions Secrets**（`ANDROID_KEYSTORE_BASE64` 等 4 个）；本机留一份 `scripts/android/keystore/gosslan-release.keystore`（**不入库**） | **入库**：`scripts/android/keystore/gosslan-dev.keystore` |
 | 谁能用 | 只有能改 Actions 的你；**含 fork 的 PR 也读不到** | 任何人（它是公开钥匙） |
 | 用途 | 正式对外发版（tag 触发的 Release） | CI 的日常构建、开发者本地构建 |
-| 凭据 | 你自己定（别用仓库里的默认值） | alias `gosslan` / 密码 `gosslan-dev`（**故意公开**） |
+| 凭据 | **必须与这把钥匙实际的一致**（已存在的钥匙密码是既定的，不能另定；新生成的那把才由你定） | alias `gosslan` / 密码 `gosslan-dev`（**故意公开**） |
 
 > ⚠️ **正式发版只能用发行版钥匙**：公开钥匙签的包，任何人都能伪造一个同签名的"升级包"
 > 顶替你的应用（Android 只认签名、不认发布者）。CI 的发布 job 有守卫：
 > 没有 `ANDROID_KEYSTORE_BASE64` 就**拒绝发布**（不是 warning）。
 
-## 你要做的三步（一次性）
+## 你要做的四步（一次性）
 
 1. **准备发行版 keystore**（如果还没有，就用本机那份）：
 
@@ -53,6 +53,34 @@
    | `ANDROID_KEY_PASSWORD` | 你的 key 密码（与 store 相同就填同一个） |
 
    配完不用改代码：CI 的构建步骤已经读这 4 个变量（见 `.github/workflows/build-android.yml`）。
+
+### 第 4 步：配对自查（**30 秒，必做**）
+
+那 4 个 Secret 是**成对**的：`base64` / `密码` / `alias` 必须来自**同一把钥匙**。
+最常见的错是：base64 取自 A 钥匙、密码填的是 B 钥匙的 ⇒ CI 会报
+`KeytoolException: keystore password was incorrect`（而且要等**编译完 5 分钟**才报）。
+
+```bash
+cd <仓库根>
+# ① 把 base64 解回文件（macOS 用 -i；Linux 去掉 -i）
+base64 -d -i /tmp/gosslan-ks.b64 > /tmp/ks-check.keystore
+# ② 用**你填进 Secret 的那个密码**打开它
+keytool -list -keystore /tmp/ks-check.keystore -storepass '<你填的密码>' | head -3
+```
+
+**能列出条目 ⇒ 配对正确**；报 `keystore password was incorrect` ⇒ 密码与这把钥匙对不上。
+
+### CI 报签名错时的排查表
+
+| 症状 | 含义 | 怎么办 |
+|---|---|---|
+| `keystore password was incorrect` | 密码与 base64 那把钥匙对不上 | 回到第 4 步自查；确认 base64 与密码来自同一把钥匙 |
+| `缺少 ANDROID_KEYSTORE_PASSWORD / ANDROID_KEY_ALIAS` | Secret 没配全（名字拼错也会这样） | 名字必须**逐字**是这 4 个；`KEY_ALIAS` 用 `keytool -list` 查到的那个 |
+| `签名自检通过` 但 Gradle 仍报错 | store 密码对、**key 密码**不对 | `ANDROID_KEY_PASSWORD` 填成与 store 不同的那个（或干脆不填，会自动沿用） |
+| `Keystore file … not found` | 注入路径不对 | 复制到 `src-tauri/gen/android/app/release.keystore`（脚本负责，名字必须是这个） |
+
+> CI 侧现在有**自动自检**：注入阶段就会用 `keytool` 验密码，失败立刻红并把原因写进
+> **Annotations 面板**（不是只留一句 exit code 1）—— 私有仓库读不到 step log，注解是唯一通道。
 
 ## CI 现在的行为
 
