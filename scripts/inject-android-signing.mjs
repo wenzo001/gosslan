@@ -201,10 +201,14 @@ if (base64Keystore) {
   if (!storePassword) missing.push("ANDROID_KEYSTORE_PASSWORD");
   if (!keyAlias) missing.push("ANDROID_KEY_ALIAS");
   if (missing.length > 0) {
-    console.error(
-      `[android-signing] 已有 ANDROID_KEYSTORE_BASE64，但缺少 ${missing.join(" / ")}` +
-        " ⇒ 无法签名。补齐这两个 Secret（alias 用 keytool -list 查到的那个）。",
-    );
+    // ⚠️ 必须同时发 `::error::`：**私有仓库 + 无 token 时外部读不到 step log**
+    // （实测 `GET /actions/jobs/{id}/logs` 匿名访问返回 403 "Must have admin rights"），
+    // 注解是唯一能被别人读到的通道 ⇒ 不发它就又变成"只看到 exit code 1"。
+    const msg =
+      `已有 ANDROID_KEYSTORE_BASE64，但缺少 ${missing.join(" / ")}` +
+      " ⇒ 无法签名。补齐这两个 Secret（alias 用 keytool -list 查到的那个）。";
+    console.error(`[android-signing] ${msg}`);
+    console.error(`::error::android-signing: ${msg}`);
     process.exit(1);
   }
   text = injectReleaseSigning(text, storePassword, keyAlias, keyPassword);

@@ -15,6 +15,18 @@
 
 ## [5.0.42] - 2026-10-21
 
+### CI：Android 失败的原因要能被别人读到（注解是私有仓库下唯一的通道）
+
+- 根因：2026-10-21 的 Android 构建红了，外部只看得到一句
+  "Process completed with exit code 1" —— 根因留在 runner 的 `/tmp/gosslan-android-*.log` 里，
+  而**私有仓库 + 无 token 时读不到 step log**（实测 `GET /actions/jobs/{id}/logs`
+  匿名访问返回 403 "Must have admin rights"）⇒ 注解是唯一能被别人读到的通道。
+- 改法（两处）：
+  - 签名守卫缺项时**直接发 `::error::`**（点名缺哪个 Secret）—— 不再只留在 step 输出里。
+  - Android 构建 step 改为 `continue-on-error` + **另起一步把 Gradle 关键行转成注解**
+    （`FAILURE:` / `What went wrong` / `Execution failed` / `❌` 等），
+    失败时 job 仍然红，但根因这次**能被别人看到**。
+
 ### CI：前端门禁的 20 分钟上限太紧，慢 runner 被掐成 `cancelled`
 
 - 根因：Verify 的「前端测试 / 清单 / 构建」这条腿在 GitHub 的 macos runner 上要 **19m41s**
