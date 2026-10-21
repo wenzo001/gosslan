@@ -45,8 +45,15 @@ src-tauri/gen/schemas
 # 仓库根目录随手放置的安装包（构建脚本复制出来的那一份，不入库）
 /*.exe
 
-# 本地固定签名 keystore（**绝不入库**；丢了就只能卸载重装）
-/scripts/android/keystore/
+# 签名 keystore：
+#   · **发行版**（`gosslan-release.keystore`）**绝不入库** —— 它是私有发行钥匙，
+#     正式发版走 GitHub Actions Secrets（ANDROID_KEYSTORE_BASE64 等，别人看不到）。
+#     丢了就得让用户卸载重装（签名对不上）。
+#   · **开发版**（`gosslan-dev.keystore`）**入库** —— 它是公开的开发钥匙，
+#     作用是让 CI/开发机在没有发行版 secret 时也有**固定**的签名
+#     （否则每次构建现生成一把 ⇒ 覆盖安装必失败）。
+/scripts/android/keystore/*
+!/scripts/android/keystore/gosslan-dev.keystore
 # 注入脚本从上面那份**解出来的副本**（AGP 实际用它签名）。
 # 它同样是私钥 ⇒ 必须忽略，否则一次 `git add -A` 就会把签名密钥提交上去
 # （`git check-ignore` 之前对它返回"未忽略"，2026-09-13 审计发现）。
