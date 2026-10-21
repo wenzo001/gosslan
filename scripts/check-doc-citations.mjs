@@ -66,6 +66,9 @@ const LIVE_DOCS = [
   "docs/migration-ledger.md",
   "docs/protocol-invariants.md",
   "docs/large-file-split-plan.md",
+  // 2026-10-21：CHANGELOG 是用户与接手者最先读的版本记录，里面的归档路径腐烂过一次
+  // （C5.3 的 6 处 `docs/archive/...` 指向不存在的文件），此前不在任何判据视野里。
+  "CHANGELOG.md",
 ];
 
 /**
@@ -79,7 +82,9 @@ const SOURCE_ROOTS = ["src-tauri/src", "src", "scripts", "docs", "."];
 
 /** 外部 / 本仓之外：显式列出，不靠"解析不到就当外部"（那会让判据 A 形同虚设）。 */
 const EXTERNAL = [
-  /^tauri-\d[\w.-]*\//, // 外部 crate 的源码引用
+  /^tauri-[\w-]*\d[\w.-]*\//, // 外部 crate 的源码引用：tauri-2.x / tauri-macros-2.x
+  /^rusqlite-[\d.]+\//, // 锁定版 rusqlite 的源码（事务 drop 行为那段引用）
+  /^mio-[\d.]+\//, // 锁定版 mio 的 kqueue 实现
   /^\.\.\//, // 明确的父目录引用
 ];
 
@@ -217,6 +222,11 @@ const PATH_ALLOW = new Map([
   ["docs/acceptance/native-experience-round-1.md", "2026-10-21 已归档到 docs/archive/acceptance/"],
   // 已删除、但报告里作为"当时的暂存状态"被点名（该删除已随 5.0.38 提交）
   ["src/composables/useDeferredRef.ts", "该文件已随 5.0.38 删除；rc-5.0-report 记的是当时的暂存状态"],
+  // 签名钥匙按最新要求**绝不入库**（`.gitignore` 明确排除）：发行版钥匙只存在于
+  // GitHub Actions Secrets 与本机；CI 的 `release.keystore` 是构建时注入/复制出来的。
+  // 文档里的人眼路径是操作说明，不是"仓库里应该有这个文件"的断言 ⇒ 属于门禁不适用。
+  ["scripts/android/keystore/gosslan-release.keystore", "发行版钥匙按设计不入库；本机/Secrets 才有一份"],
+  ["src-tauri/gen/android/app/release.keystore", "CI 构建时注入/复制；仓库按设计不含签名钥匙"],
   // 示例占位（不是真引用）
   ["docs/xxx.md", "文档里的示例占位"],
   ["scripts/x.mjs", "文档里的示例占位"],
