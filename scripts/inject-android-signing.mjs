@@ -195,6 +195,35 @@ if (base64Keystore) {
     process.exit(1);
   }
   fs.writeFileSync(keystorePath, decoded);
+
+  // ★ 签名自检：用填的密码**立刻**验证这把 keystore 能不能打开。
+  //
+  // 为什么必须提前验（2026-10-21 CI 实测）：密码填错时，Gradle 要等**编译完 5 分钟**
+  // 才报 `KeytoolException: keystore password was incorrect` —— 而且那句话在
+  // runner 的 step log 里，私有仓库 + 无 token 时外部读不到（403）⇒ 只能看到
+  // "exit code 1"。这里提前 5 秒失败，并把「怎么自己验」写进注解。
+  try {
+    execFileSync(
+      "keytool",
+      ["-list", "-keystore", keystorePath, "-storepass", storePassword],
+      { stdio: "ignore" },
+    );
+    console.log("[android-signing] 签名自检通过：填的密码能打开这把 keystore。");
+  } catch (e) {
+    if (e && e.code === "ENOENT") {
+      // 没有 keytool（某些环境）⇒ 不做硬失败，只提示。
+      console.warn("[android-signing] 未找到 keytool，跳过签名自检。");
+    } else {
+      const msg =
+        "ANDROID_KEYSTORE_PASSWORD 打不开这把 keystore（keytool 自检失败）" +
+        " ⇒ base64 与密码**必须来自同一把钥匙**。" +
+        "本地自查：keytool -list -keystore <你的.keystore> -storepass <你填的密码>；" +
+        "换新钥匙请三样一起换：base64(新钥匙) + 密码(新钥匙) + alias(新钥匙)。";
+      console.error(`[android-signing] ${msg}`);
+      console.error(`::error::android-signing: ${msg}`);
+      process.exit(1);
+    }
+  }
   // 密码/alias 缺失必须**在这里**说清楚：等到 Gradle 报
   // "keystore password was incorrect"，没人想得到是 secret 没配全。
   const missing = [];
