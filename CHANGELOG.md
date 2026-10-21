@@ -13,6 +13,20 @@
 
 ## [Unreleased]
 
+## [5.0.42] - 2026-10-21
+
+### CI：前端门禁的 20 分钟上限太紧，慢 runner 被掐成 `cancelled`
+
+- 根因：Verify 的「前端测试 / 清单 / 构建」这条腿在 GitHub 的 macos runner 上要 **19m41s**
+  —— 正好卡在 `timeout-minutes: 20` 下面 ⇒ 后两轮都被这条上限掐成 `cancelled`。
+  而 GitHub 对**超时**给的结论是 `cancelled` 而不是 `failure` ⇒ job 注解里只剩一句
+  "Process completed with exit code 1"，极易被读成"产品红"，实际是"慢"
+  （本机同一组只要约 2.5 分钟，差的是 runner 算力）。
+- 改法：这条腿的上限从 20 分钟提到 45 分钟。**检查强度一字未动**
+  （步骤、断言、护栏都没变），只是让"慢"与"红"彻底分开。
+
+## [5.0.41] - 2026-10-21
+
 ### Android 签名 Secret：把「空串」和「未设置」一视同仁（少填一个也能跑）
 
 - 根因：GitHub Actions 把**未配置**的 secret 传成**空字符串**（不是 undefined），
