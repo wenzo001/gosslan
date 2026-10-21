@@ -7,7 +7,7 @@ import { join, relative, resolve } from "node:path";
 
 const [, , oldName, newName] = process.argv;
 if (!oldName || !newName) {
-  console.error("用法: node scripts/rename.mjs <old> <new>");
+  console.error("用法: node scripts/archive/rename.mjs <old> <new>");
   process.exit(1);
 }
 if (oldName === newName) {
