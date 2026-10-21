@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import SettingsGroup from "@/components/settings/SettingsGroup.vue";
 import { useClipboard } from "@/composables/useClipboard";
@@ -9,16 +9,18 @@ import { t } from "@/i18n";
 const emit = defineEmits<{ (e: "dev-open"): void }>();
 const app = useAppStore();
 const fullId = computed(() => app.device?.device_id ?? "");
-const { copyContent } = useClipboard();
+const { copiedKey, copyContent } = useClipboard();
 
 /**
- * 复制结果的就地反馈（`"" | "ok" | "fail"`，1.5s 后复位）。
+ * 复制结果的就地反馈：**用 `useClipboard` 那份 `copiedKey`**（复位时长与卸载摘表都由那个家管）。
  *
  * ⚠️ 用"就地提示"而不是 toast：指尖就在这一行上，弹 toast 反而是噪音
  * （同一取舍见 `MessageItem` 的复制按钮注释）。
+ * ⚠️ 这里原先自己另起了一枚 ref + 一份 1500ms `setTimeout`（没有卸载清理），
+ *    而且按 `copyContent` 的返回值分「ok / fail」—— 那个返回值恒为 true，
+ *    所以 fail 是永远走不到的分支（见 `composables/useClipboard.ts` 的说明）。
  */
-const copyState = ref<"" | "ok" | "fail">("");
-let copyTimer: ReturnType<typeof setTimeout> | null = null;
+const copied = computed(() => copiedKey.value === "device-id");
 
 /** 隐藏开发者诊断面板：连续点击设备指纹 7 次（2.5 秒窗口）。 */
 const DEV_TAP_TARGET = 7;
@@ -36,14 +38,7 @@ let tapTimer: ReturnType<typeof setTimeout> | null = null;
  * 复制之后照旧累加计数：7 连点仍然打开诊断面板，只是现在每次点击都看得见。
  */
 async function onFingerprintTap() {
-  if (fullId.value) {
-    const ok = await copyContent("device-id", fullId.value);
-    copyState.value = ok ? "ok" : "fail";
-    if (copyTimer) clearTimeout(copyTimer);
-    copyTimer = setTimeout(() => {
-      copyState.value = "";
-    }, 1500);
-  }
+  if (fullId.value) await copyContent("device-id", fullId.value);
   tapCount++;
   if (tapTimer) clearTimeout(tapTimer);
   tapTimer = setTimeout(() => {
@@ -82,12 +77,8 @@ async function onFingerprintTap() {
         >
           {{ fullId }}
         </div>
-        <span
-          v-if="copyState"
-          class="shrink-0 text-[11px]"
-          :class="copyState === 'ok' ? 'text-[var(--gosslan-primary)]' : 'text-[var(--gosslan-danger-ink)]'"
-        >
-          {{ copyState === "ok" ? t("common.copied") : t("msg.copyFail") }}
+        <span v-if="copied" class="shrink-0 text-caption text-[var(--gosslan-primary)]">
+          {{ t("common.copied") }}
         </span>
       </div>
     </div>

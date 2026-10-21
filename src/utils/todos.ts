@@ -211,6 +211,12 @@ export const TODO_CATEGORY_LETTER: Record<TodoCategory, string> = {
 /** 自定义类型名上限 —— 必须与 Rust `TODO_CUSTOM_CATEGORY_MAX_LEN` 同一个数。 */
 export const TODO_CUSTOM_CATEGORY_MAX_LEN = 20;
 
+/** 任务标题上限（Rust `group_files.rs::MAX_TODO_TITLE_LEN`）。 */
+export const MAX_TODO_TITLE_CHARS = 200;
+
+/** 任务描述上限（Rust `group_files.rs::MAX_TODO_DESC_LEN`）。 */
+export const MAX_TODO_DESC_CHARS = 4000;
+
 /**
  * 一条任务当前该显示的**类型名**：custom 档显示用户输入的名字，其余档显示枚举的 i18n key
  * （调用方再 `t()`）。custom 名字缺失（旧载荷/异常）时退回枚举文案，不留空白胶囊。

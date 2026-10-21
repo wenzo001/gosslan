@@ -286,18 +286,25 @@ def verify(case: Case) -> tuple[bool, str]:
         if code == 0:
             # 环境不支持该用例时测试会打印 GUARD_ENV_SKIP 并以 0 退出。这与
             # 「注入没被守住」是两回事：前者要换支持环境重跑，后者才是护栏空转。
-            # 两种情况都不能判通过，但诊断必须分开（2026-10-10 曾因此误报过一次）。
+            # 两种情况过去都判 False ⇒ CI 被"环境限制"长期顶红、真空转被淹掉（2026-10-21 修）。
+            # 现在分成两个 verdict，且**只有用例显式声明了理由**才允许走 ENV_SKIP：
+            # 不声明 = 仍然失败（见 Case.env_skip 的三层防线）。
             if "GUARD_ENV_SKIP" in out:
                 env_line = next(
                     (ln.strip() for ln in out.splitlines() if "GUARD_ENV_SKIP" in ln),
                     "",
                 )
-                return False, (
-                    "改坏之后测试因**环境不支持而跳过**（GUARD_ENV_SKIP），\
-非空转在此环境无法证明（不等于护栏空转），请换真机/支持环境重跑：\n"
+                if not case.env_skip:
+                    return "FAIL", (
+                        "改坏之后测试因**环境不支持而跳过**（GUARD_ENV_SKIP），而这条用例"
+                        "**没有声明** `env_skip` 理由 ⇒ 按失败处理（不允许免检）：\n"
+                        f"  {env_line}"
+                    )
+                return "ENV_SKIP", (
+                    f"环境不支持，非空转在本机无法证明（不等于护栏空转）：{case.env_skip}\n"
                     f"  {env_line}"
                 )
-            return False, "改坏之后测试**仍然通过** ⇒ 这条护栏是空转的（没在守东西）"
+            return "FAIL", "改坏之后测试**仍然通过** ⇒ 这条护栏是空转的（没在守东西）"
         # ★ 2026-10-07：`expect_fail_hint` 从"只附一句提示"改成**判据**（不匹配就 FAIL）。
         # 为什么：注入后红了不代表红的是我声明的那一格。真实形状：local 层那条 hint 永远匹配不上
         # （第 15 趟抓到、e9cdd32 换成判据真会打印的那句），而 advisory 的写法让这种过期
@@ -310,15 +317,15 @@ def verify(case: Case) -> tuple[bool, str]:
         _CURRENT = []
         code2, out2 = run(case.cmd, case.cwd, extra_env=case.env)
         if code2 != 0:
-            return False, f"恢复源码之后测试**仍然失败** ⇒ 源码或环境已被破坏：\n{out2[-800:]}"
+            return "FAIL", f"恢复源码之后测试**仍然失败** ⇒ 源码或环境已被破坏：\n{out2[-800:]}"
         if hint_missing:
-            return False, (
+            return "FAIL", (
                 f"注入后是红了，但失败输出里**没有**声明的那句判据关键词 `{case.expect_fail_hint}`\n"
                 f"  ⇒ 两种可能，都得人来分：① 那条判据的措辞改了（声明过期 ⇒ 换成它真会打印的那句）；"
                 f"② 红的是别的东西（这条注入其实没被那一格守住）。\n"
                 f"  实际失败输出尾部（挑新 hint 用）：\n{out[-2500:]}"
             )
-        return True, "改坏即 FAIL、恢复即 PASS，且红由声明的那条判据报出"
+        return "PASS", "改坏即 FAIL、恢复即 PASS，且红由声明的那条判据报出"
     finally:
         # 无论上面发生什么（断言失败/超时/异常），内容级恢复现场
         for path, original in originals:
@@ -335,6 +342,11 @@ def main() -> int:
         "--strict-platform",
         action="store_true",
         help="把「平台不适用而跳过」也算失败（默认跳过只提示，见 Case.platforms）",
+    )
+    ap.add_argument(
+        "--strict-env",
+        action="store_true",
+        help="把「环境不支持而未证明」也算失败（默认只提示，见 Case.env_skip）",
     )
     args = ap.parse_args()
 
@@ -420,6 +432,8 @@ def main() -> int:
     print(f"当前平台：{this_platform}\n")
     bad: list[str] = []
     skipped: list[tuple[str, str]] = []
+    #: 因**环境**不支持而未证明的（与平台跳过分开：它换台机器就能证明，护栏本身没坏）
+    env_skipped: list[tuple[str, str]] = []
     for i, case in enumerate(cases, 1):
         if case.platforms is not None and this_platform not in case.platforms:
             # 目标代码在这个平台上根本不编译 ⇒ "改坏也不会失败"是**必然**的，不是缺陷。
@@ -432,15 +446,18 @@ def main() -> int:
         print(f"[{i}/{len(cases)}] {case.name}")
         print(f"      {case.why}")
         try:
-            ok, detail = verify(case)
+            verdict, detail = verify(case)
         except Exception as exc:  # 锚点过期、超时、断言等 —— 报告出来，别让整个脚本崩
-            ok, detail = False, f"验证过程出错：{exc}"
+            verdict, detail = "FAIL", f"验证过程出错：{exc}"
         # ★ 失败时把**用例名和形状放在同一行**：CI 那条注解只挑含 `❌` 的关键行
         # （`scripts/ci-run.sh` 的 grep），上一轮三条标记全都读得出形状、读不出是谁 ——
         # 名字落在上一行 `[i/233] 名字`，被过滤掉了，而 job 日志匿名 403，只能等下次跑。
-        print(f"      {'✅' if ok else '❌ ' + case.name + ' ⇒'} {detail}")
-        if not ok:
+        mark = {"PASS": "✅", "ENV_SKIP": "⏭️ "}.get(verdict, "❌ " + case.name + " ⇒")
+        print(f"      {mark} {detail}")
+        if verdict == "FAIL":
             bad.append(case.name)
+        elif verdict == "ENV_SKIP":
+            env_skipped.append((case.name, case.env_skip))
         print()
 
     if skipped:
@@ -448,18 +465,29 @@ def main() -> int:
         for name, plats in skipped:
             print(f"   - {name}（只适用于 {plats}）")
         print()
+    if env_skipped:
+        print(f"⏭️  {len(env_skipped)} 条因**环境**不支持而未证明（护栏本身没坏，换支持环境重跑即可）：")
+        for name, reason in env_skipped:
+            print(f"   - {name}")
+            print(f"     理由：{reason}")
+        print()
     if bad:
         print(f"❌ {len(bad)} 条不符合预期：")
         for name in bad:
             print(f"   - {name}")
-        if skipped and args.strict_platform:
-            print("（--strict-platform：上述跳过也算失败）")
-            return 1
         return 1
-    if skipped and args.strict_platform:
-        print(f"❌ --strict-platform：{len(skipped)} 条被跳过，不算全绿")
+    if (skipped and args.strict_platform) or (env_skipped and args.strict_env):
+        parts = []
+        if skipped:
+            parts.append(f"平台 {len(skipped)}")
+        if env_skipped:
+            parts.append(f"环境 {len(env_skipped)}")
+        print(f"❌ --strict-platform/--strict-env：{'、'.join(parts)} 条被跳过，不算全绿")
         return 1
-    print(f"✅ 其余 {len(cases) - len(skipped)} 条护栏都通过了非空转验证（改坏即 FAIL、恢复即 PASS）")
+    proven = len(cases) - len(skipped) - len(env_skipped)
+    print(f"✅ {proven} 条护栏通过非空转验证（改坏即 FAIL、恢复即 PASS）")
+    if env_skipped:
+        print(f"⚠️  另有 {len(env_skipped)} 条只因环境未证明（见上）—— 别把这一行读成「全都验过了」")
     return 0
 
 

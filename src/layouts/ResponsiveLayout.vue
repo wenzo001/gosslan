@@ -7,7 +7,7 @@ import { api, APP_ACTION, bindMenuEvents, NAVIGATE_TO_CONTACTS, onAction } from 
 import { launchAuxWindow, useWindowOpening } from "@/composables/useWindowLauncher";
 import { useShortcuts } from "@/composables/useShortcuts";
 import { useBackLayer } from "@/composables/useBackLayer";
-import type { UnlistenFn } from "@tauri-apps/api/event";
+import { createInitScope } from "@/utils/initScope";
 import NavRail from "@/components/NavRail.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
 import SelfAvatar from "@/components/SelfAvatar.vue";
@@ -18,6 +18,7 @@ import UnreadBadge from "@/components/UnreadBadge.vue";
 import FriendProfile from "@/components/FriendProfile.vue";
 import FriendRequestList from "@/components/conversation/FriendRequestList.vue";
 import SettingsPanel from "@/components/SettingsPanel.vue";
+import NavIcon from "@/components/ui/NavIcon.vue";
 import AddFriendModal from "@/components/AddFriendModal.vue";
 import ChatSearchDialog from "@/components/search/ChatSearchDialog.vue";
 import GroupCreateModal from "@/components/GroupCreateModal.vue";
@@ -30,8 +31,9 @@ import { useImagePreviewStore } from "@/stores/useImagePreview";
 import LinksList from "@/components/LinksList.vue";
 import MobilePageFrame from "@/components/MobilePageFrame.vue";
 import ProfileSection from "@/components/settings/ProfileSection.vue";
-import { Compass, MessageCircle, ScrollText, Settings, Star, UserCircle, Users } from "lucide-vue-next";
+import { ScrollText, Settings, UserCircle } from "lucide-vue-next";
 import type { ExternalLink, Friend, PendingRequest } from "@/types";
+import { storageGet, storageSet } from "../utils/safeStorage.ts";
 const app = useAppStore();
 const chat = useChatStore();
 /** 全局图片预览的宿主（实例只有一个，见模板末尾那处 `<ImageLightbox>`）。 */
@@ -106,8 +108,10 @@ const logsOpen = ref(false);
 
 /**
  * 移动端底部 TabBar 是否显示 —— **单一事实来源**，模板里的 TabBar `v-if`
- * 与主内容区的 `pb-[calc(4rem+…)]` 占位都读它（两处各写一份就会漂移：
+ * 与主内容区那条「底部占位」padding 都读它（两处各写一份就会漂移：
  * 一边隐藏、另一边还留着内边距 → 底部空一大截，用户 2026-09-19）。
+ * ⚠️ 占位的**高度**另有单一事实来源 = `--gosslan-mobile-tabbar-h`（定义在 `src/style.css`），
+ * 条件与尺寸是两件事，别把其中一个的收敛当成另一个也收敛了。
  *
  * 只在**四个一级 tab** 上显示：聊天 / 通讯录列表（`mobileView === 'list'`）、收藏、我的。
  * 进 Chat 详情、设置、日志、链接 等二级页时整个隐藏。收藏必须保留（用户 2026-09-20）。
@@ -400,7 +404,7 @@ useBackLayer(
   },
 );
 
-let unlistenMenu: UnlistenFn[] | null = null;
+const appActionScope = createInitScope();
 
 // 这些"整页内容"里的任何一个盖上来，聊天就不再可见 ⇒ 同步给 store（判已读/发回执要用）。
 // 为什么放在这里、且必须是 watchEffect：它立即执行一次，所以**必须**在所有浮层 ref 声明之后
@@ -417,31 +421,29 @@ watchEffect(() => {
     );
 });
 
-let disposeAppActions: (() => void)[] = [];
 onMounted(() => {
-  // mitt 不自动清理：订阅返回的解绑函数必须在卸载时全部调掉，
-  // 否则组件重建后一次菜单/快捷键会执行多遍（旧 window 监听是 removeEventListener 对称解绑）。
-  disposeAppActions = [
-    onAction(NAVIGATE_TO_CONTACTS, onNavigateToContacts),
-    onAction(APP_ACTION.openSettings, openSettings),
-    onAction(APP_ACTION.addFriend, onAddFriendAction),
-    onAction(APP_ACTION.openLogs, openLogs),
-  ];
+  // mitt 不自动清理，而菜单那 4 条 `listen()` 要等一次 IPC 往返 ⇒ 两半都登记进 initScope。
+  // 手写句柄漏的是后半：往返回来时本轮已拆，`unlistenMenu` 还停在 null ⇒ 4 条监听永久挂着。
+  appActionScope.onDispose(onAction(NAVIGATE_TO_CONTACTS, onNavigateToContacts));
+  appActionScope.onDispose(onAction(APP_ACTION.openSettings, openSettings));
+  appActionScope.onDispose(onAction(APP_ACTION.addFriend, onAddFriendAction));
+  appActionScope.onDispose(onAction(APP_ACTION.openLogs, openLogs));
   // 原生菜单（仅 macOS）；非 macOS 平台该 Promise 仍会 resolve，只是收不到事件
-  void bindMenuEvents().then((fns) => (unlistenMenu = fns));
+  void bindMenuEvents().then((fns) => {
+    for (const fn of fns) appActionScope.onDispose(fn);
+  });
 });
-onUnmounted(() => {
-  disposeAppActions.forEach((dispose) => dispose());
-  disposeAppActions = [];
-  unlistenMenu?.forEach((fn) => fn());
-});
+onUnmounted(() => appActionScope.dispose());
 
 // ---------------- 桌面端：列表栏宽度拖拽（rail 64px 固定，列表 200~420px，持久化） ----------------
 const RAIL_W = 64;
 const LIST_W_MIN = 200;
 const LIST_W_MAX = 420;
+// 键名要具名：散在调用里的裸字面量没有任何判据能看到它（appearance.test.ts 只
+// 交叉核对首屏脚本与 `*_KEY` 常量两边），改名/打错会静默丢掉用户的栏宽偏好。
+const LIST_W_KEY = "gosslan-list-w";
 const listW = ref(
-  Math.min(LIST_W_MAX, Math.max(LIST_W_MIN, Number(localStorage.getItem("gosslan-list-w")) || 250)),
+  Math.min(LIST_W_MAX, Math.max(LIST_W_MIN, Number(storageGet(LIST_W_KEY)) || 250)),
 );
 const resizing = ref(false);
 
@@ -467,7 +469,7 @@ function onResizeEnd() {
   resizing.value = false;
   document.body.style.cursor = "";
   document.body.style.userSelect = "";
-  localStorage.setItem("gosslan-list-w", String(listW.value));
+  storageSet(LIST_W_KEY, String(listW.value));
 }
 </script>
 
@@ -589,12 +591,14 @@ function onResizeEnd() {
       ]"
       :inert="app.isMobile && app.mobileView === 'list' && !favoritesOpen"
     >
-      <!-- pb-[calc(4rem+safe-area)] 是给 fixed 定位的 TabBar 留的占位，只有 TabBar 真正**显示**时才需要。
+      <!-- 这条底部 padding 是给 fixed 定位的 TabBar 留的占位，只有 TabBar 真正**显示**时才需要。
            ⚠️ 这里与下面 TabBar 的 v-if **共用同一个 `showMobileTabBar`**（不要再各写一份条件）：
-           两边一旦不一致，TabBar 已隐藏时 pb 还白留着 → 底部空一大截（用户 2026-09-19）。 -->
+           两边一旦不一致，TabBar 已隐藏时 pb 还白留着 → 底部空一大截（用户 2026-09-19）。
+           ⚠️ 条高读 `--gosslan-mobile-tabbar-h`，**不许在这里手写字面量**：`ConversationList` 的列表占位读同一个令牌，
+           两处各抄一份就会漂移（改一处、最后一行被压住），判据 ㊻ 守着这一条。 -->
       <div
         class="min-h-0 flex flex-1 flex-col desktop:md:pb-0"
-        :class="showMobileTabBar ? 'pb-[calc(4rem+env(safe-area-inset-bottom))]' : ''"
+        :class="showMobileTabBar ? 'pb-[calc(var(--gosslan-mobile-tabbar-h)+env(safe-area-inset-bottom))]' : ''"
         :style="app.isMobile && app.keyboardInset > 0
           ? { paddingBottom: `${app.keyboardInset + 8}px` }
           : undefined"
@@ -636,7 +640,7 @@ function onResizeEnd() {
                    塞进 button 是非法 HTML。 -->
               <div class="ml-12 h-px shrink-0 bg-[var(--gosslan-divider)]"></div>
               <button class="flex items-center gap-3 px-4 py-3.5 text-left transition hover:bg-[var(--gosslan-list-hover)]" @click="selectMobileTab('links', 'chat')">
-                <Compass class="h-5 w-5 text-[var(--gosslan-text-2)]" />
+                <NavIcon name="links" size-class="h-5 w-5" class="text-[var(--gosslan-text-2)]" />
                 <span class="flex-1 text-sm">{{ t("nav.links") }}</span>
               </button>
               <div class="ml-12 h-px shrink-0 bg-[var(--gosslan-divider)]"></div>
@@ -658,7 +662,7 @@ function onResizeEnd() {
           v-else-if="!app.isMobile && isLinksView"
           class="flex h-full select-none flex-col items-center justify-center gap-3 text-[var(--gosslan-text-2)]"
         >
-          <Compass class="h-16 w-16 opacity-25" />
+          <NavIcon name="links" size-class="h-16 w-16 opacity-25" />
           <div class="text-base">{{ t("layout.linksTitle") }}</div>
           <div class="max-w-[280px] text-center text-xs leading-relaxed opacity-70">
             {{ t("layout.linksHint") }}
@@ -667,7 +671,7 @@ function onResizeEnd() {
         <!-- 新的朋友页：右侧展示好友申请列表（微信式） -->
         <div v-else-if="navState === 'contacts' && showRequests" class="flex h-full flex-col">
           <div class="flex shrink-0 items-center border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-chat)] px-4" :style="{ height: 'var(--gosslan-header-h)' }">
-            <span class="text-[15px] font-medium">{{ t("conv.newFriends") }}</span>
+            <span class="text-title font-medium">{{ t("conv.newFriends") }}</span>
           </div>
           <div class="min-h-0 flex-1 overflow-y-auto bg-[var(--gosslan-chat)] p-2">
             <FriendRequestList
@@ -696,8 +700,8 @@ function onResizeEnd() {
           v-else
           class="flex h-full select-none flex-col items-center justify-center gap-3 text-[var(--gosslan-text-2)]"
         >
-          <UserCircle v-if="navState === 'contacts'" class="h-16 w-16 opacity-25" />
-          <MessageCircle v-else class="h-16 w-16 opacity-25" />
+          <NavIcon v-if="navState === 'contacts'" name="contacts" size-class="h-16 w-16 opacity-25" />
+          <NavIcon v-else name="chats" size-class="h-16 w-16 opacity-25" />
           <div class="text-base">
             {{ navState === "contacts" ? t("layout.selectContact") : t("layout.selectConversation") }}
           </div>
@@ -754,14 +758,14 @@ function onResizeEnd() {
         @click="selectMobileTab('chats', 'list')"
       >
         <span class="relative">
-          <MessageCircle class="h-5 w-5" />
+          <NavIcon name="chats" :active="navState === 'chats'" size-class="h-5 w-5" />
           <UnreadBadge
             v-if="chat.totalUnread > 0"
             :count="chat.totalUnread"
             class="absolute -right-2.5 -top-1"
           />
         </span>
-        <span class="text-[11px]">{{ t("nav.chats") }}</span>
+        <span class="text-caption">{{ t("nav.chats") }}</span>
       </button>
       <button
         class="relative flex flex-1 flex-col items-center gap-0.5 py-2.5"
@@ -769,14 +773,14 @@ function onResizeEnd() {
         @click="selectMobileTab('contacts', 'list')"
       >
         <span class="relative">
-          <Users class="h-5 w-5" />
+          <NavIcon name="contacts" :active="navState === 'contacts'" size-class="h-5 w-5" />
           <UnreadBadge
             v-if="chat.pendingRequests.length"
             :count="chat.pendingRequests.length"
             class="absolute -right-2.5 -top-1"
           />
         </span>
-        <span class="text-[11px]">{{ t("nav.contacts") }}</span>
+        <span class="text-caption">{{ t("nav.contacts") }}</span>
       </button>
       <!-- 收藏：移动端 rail hidden desktop:md:flex（看不到），TabBar 保留入口。
            桌面端 NavRail 也有星标按钮，风格一致。 -->
@@ -785,8 +789,8 @@ function onResizeEnd() {
         :class="navState === 'favorites' ? 'text-[var(--gosslan-primary)]' : 'text-[var(--gosslan-text-2)]'"
         @click="selectMobileTab('favorites', 'chat')"
       >
-        <Star class="h-5 w-5" />
-        <span class="text-[11px]">{{ t("nav.favorites") }}</span>
+        <NavIcon name="favorites" :active="navState === 'favorites'" size-class="h-5 w-5" />
+        <span class="text-caption">{{ t("nav.favorites") }}</span>
       </button>
       <!-- 我的：设置 / 链接 / 运行日志收进「我的」页的菜单（TabBar 最多 4 项）。
            本分支用「我的」tab 取代了旧的「更多」弹出 sheet（用户 2026-09-20 的改版：
@@ -797,7 +801,7 @@ function onResizeEnd() {
         @click="selectMobileTab('me', 'chat')"
       >
         <UserCircle class="h-5 w-5" />
-        <span class="text-[11px]">{{ t("nav.me") }}</span>
+        <span class="text-caption">{{ t("nav.me") }}</span>
       </button>
     </nav>
 

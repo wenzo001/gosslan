@@ -208,6 +208,12 @@ CASES: list[Case] = [
         cwd=TAURI,
         expect_fail_hint="收不到 255.255.255.255 广播",
         tags=["rust", "network", "discovery"],
+        # 本机/CI 容器有 LAN 接口但收不到本机 255.255.255.255 广播（该测试自己 3 次探测 0 包后
+        # 打印 GUARD_ENV_SKIP）⇒ "改坏后会红"这一半在本环境**无法证明**。这不是护栏空转：
+        # 有效场景是真机与本地开发（见上面 why）。声明后 runner 把它单列成 ENV_SKIP 而不是失败；
+        # 不声明的话仍按失败处理（Case.env_skip 的三层防线）。
+        env_skip="本机/CI 容器收不到本机 255.255.255.255 广播（测试自身 3 次探测 0 包 ⇒ GUARD_ENV_SKIP），"
+        "非空转需在能收到广播的真机/本地开发环境重跑；护栏语义本身未动",
     ),
     Case(
         name="好友同意回执必须有界补发（否则一次丢帧 = 永久单边好友）",
@@ -705,4 +711,22 @@ CASES: list[Case] = [
         cwd=TAURI,
         expect_fail_hint="gossip_plaintext_empty_mentions_is_an_explicit_answer_not_absence",
         tags=["rust", "group", "stability", "new-guards", "mention-identity"],
+    ),
+    # ---------------- 群聊 / 单聊的会话归属（v5 发版前 P0 · 群消息串进单聊） ----------------
+    Case(
+        name="群信封缺群目标时会话键会「猜」—— 拒绝判定一放宽，群内容就可能落到别处",
+        why="群聊的会话键只能来自 `group_id`；`sender_id` 是「谁说的」，不是「说在哪个会话」。\n"
+        "     旧写法 `format!(\"group:{}\", group_id.unwrap_or_default())` 在目标缺失时静默造出\n"
+        "     一个空群会话（更差的实现会回退到 `sender_id` ⇒ 群内容直接写进那个人的单聊）。\n"
+        "     注入 = 把「缺/空白目标 ⇒ None」换回「猜一个目标」：纯函数真值表必须当场红。\n"
+        "     这条要永久留着 —— 它挡的是「顺手把 ? 改成 unwrap_or(发送者)」这种一行回归。",
+        file=TAURI / "src" / "network" / "transport" / "gossip.rs",
+        injections=[(
+            "            let gid = group_id.filter(|g| !g.trim().is_empty())?;",
+            "            let gid = group_id.unwrap_or(sender_id);",
+        )],
+        cmd=cargo("test", "--lib", "inbound_conversation"),
+        cwd=TAURI,
+        expect_fail_hint="inbound_conversation_rejects_missing_or_blank_group_target",
+        tags=["rust", "group", "stability", "new-guards", "group-isolation"],
     ),]

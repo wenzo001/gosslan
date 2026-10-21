@@ -60,7 +60,7 @@ pub async fn start(state: Arc<AppState>, bind_ip: String) -> Result<(), String> 
             state.clone(),
             ip,
             tcp_port,
-            shutdown_rx.clone(), // clone 一份留给 sweeper（下一个 discovery::spawn 会 move 原始值）
+            shutdown_rx,
             probe_rx,
         )),
     )
@@ -84,21 +84,12 @@ pub async fn start(state: Arc<AppState>, bind_ip: String) -> Result<(), String> 
         tasks,
     });
 
-    // Outbox 超时清扫：独立于 transport/discovery 的后台任务，
-    // 每 30s 扫一次 outbox，把 created_at > 120s 无 Ack 的消息置 failed。
-    // 必须在 NetworkHandle 创建之后 spawn — JoinHandle 要 push 进 tasks。
     // README 承诺的「自动缓存清理」接线（2026-09-19 审计：此前只有设置页手动按钮）。
     // 不进 tasks：它是 to_infinity 的周期任务，随进程退出自然结束。
     crate::commands::spawn_cache_auto_clean(&state);
-    let sweeper = transport::spawn_outbox_sweeper(state.clone(), shutdown_rx);
-    if let Some(handle) = state
-        .network
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .as_mut()
-    {
-        handle.tasks.push(sweeper);
-    }
+    // ⚠️ Outbox 清扫器**不在这里**：它已在 `AppState` 启动时进程级常驻（见 lib.rs）。
+    // 绑在网络生命周期上会让"局域网没起来 / 用户关了局域网"变成无终态出口，
+    // 且停网清理 links/peers 时把唯一的兜底一起带走。
 
     Ok(())
 }

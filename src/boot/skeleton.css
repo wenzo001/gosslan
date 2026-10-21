@@ -51,7 +51,9 @@
       body {
         background: var(--boot-app-bg);
         color: var(--boot-ink);
-        font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+        /* 跟随用户的字体选择：theme-boot.js 在骨架样式之前就把它写成内联（与上面 --boot-primary
+           同一族做法）。兜底栈只在用户没选过字体（存空串）时用。 */
+        font-family: var(--gosslan-font-family, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif);
         -webkit-font-smoothing: antialiased;
         overflow: hidden;
       }

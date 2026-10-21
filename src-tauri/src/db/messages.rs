@@ -294,6 +294,219 @@ pub fn set_message_status(conn: &Connection, msg_id: &str, status: &str) -> Resu
     Ok(())
 }
 
+/// Ack 的**原子收尾**：验证 Ack 确实命中"我发给这个 peer 且仍在队列里"的那一行，
+/// 置 `delivered`，再删 outbox 行 —— 三步在**同一个事务**里完成。
+///
+/// 为什么必须是事务（2026-10-20 P0「消息永久发送中」）：
+/// 旧实现是 `set_message_status(...).ok(); DELETE ... .ok();` 两条独立写、错误全吞。
+/// 只要第一条失败、第二条成功，就留下「outbox 行没了、状态还是 sending」的孤儿：
+/// sweeper 只扫 outbox 表 ⇒ 再也看不见它；flush 也没有可重发的行 ⇒ 界面永久发送中。
+/// 事务保证要么 delivered+删行、要么两者都不动；失败时 outbox 行保留，下一次补发
+/// 会再次收到 Ack 并重试收尾。
+///
+/// 返回 `Ok(false)` = 没有命中期望 peer 的队列行（不是给我的 Ack / 已收尾过），
+/// 调用方不得据此 emit `message-acked`。
+pub fn ack_delivered(conn: &Connection, msg_id: &str, peer_id: &str) -> Result<bool> {
+    let tx = conn.unchecked_transaction()?;
+    let expected = tx
+        .query_row(
+            "SELECT 1 FROM outbox WHERE msg_id = ?1 AND peer_id = ?2",
+            params![msg_id, peer_id],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    if !expected {
+        return Ok(false);
+    }
+    tx.execute(
+        "UPDATE messages SET status = 'delivered'
+          WHERE msg_id = ?1
+            AND status NOT IN ('read', 'delivered', 'recalled')",
+        params![msg_id],
+    )?;
+    tx.execute("DELETE FROM outbox WHERE msg_id = ?1", params![msg_id])?;
+    tx.commit()?;
+    Ok(true)
+}
+
+#[cfg(test)]
+mod ack_delivery_tests {
+    use super::*;
+
+    fn db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(crate::db::SCHEMA).unwrap();
+        conn
+    }
+
+    fn seed(conn: &Connection, msg_id: &str, peer: &str) {
+        conn.execute(
+            "INSERT INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status)
+             VALUES(?1, ?2, 'me', ?2, 'text', 'x', 1, 1, 'sending')",
+            params![msg_id, peer],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO outbox(msg_id, peer_id, payload, created_at) VALUES(?1, ?2, '{}', 1)",
+            params![msg_id, peer],
+        )
+        .unwrap();
+    }
+
+    fn status(conn: &Connection, msg_id: &str) -> String {
+        conn.query_row(
+            "SELECT status FROM messages WHERE msg_id = ?1",
+            params![msg_id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    fn outbox_rows(conn: &Connection, msg_id: &str) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM outbox WHERE msg_id = ?1",
+            params![msg_id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    fn seed_group(conn: &Connection, msg_id: &str, peer: &str) {
+        conn.execute(
+            "INSERT INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status)
+             VALUES(?1, 'group:g', 'me', 'g', 'text', 'x', 1, 1, 'sending')",
+            params![msg_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO group_outbox(msg_id, group_id, peer_id, payload, created_at)
+             VALUES(?1, 'g', ?2, '{}', 1)",
+            params![msg_id, peer],
+        )
+        .unwrap();
+    }
+
+    fn group_outbox_rows(conn: &Connection, msg_id: &str) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM group_outbox WHERE msg_id = ?1",
+            params![msg_id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn ack_marks_delivered_and_clears_only_the_expected_peer_row() {
+        let conn = db();
+        seed(&conn, "m1", "peer-a");
+        assert!(ack_delivered(&conn, "m1", "peer-a").unwrap());
+        assert_eq!(status(&conn, "m1"), "delivered");
+        assert_eq!(outbox_rows(&conn, "m1"), 0);
+
+        // 不匹配的 peer ⇒ 什么都不动（防伪造 Ack 探测/误删）
+        seed(&conn, "m2", "peer-a");
+        assert!(!ack_delivered(&conn, "m2", "peer-b").unwrap());
+        assert_eq!(status(&conn, "m2"), "sending");
+        assert_eq!(outbox_rows(&conn, "m2"), 1);
+
+        // 群聊同一纪律：状态与 group_outbox 行同事务收尾，且只认命中的成员。
+        seed_group(&conn, "gm1", "peer-a");
+        assert!(ack_group_delivered(&conn, "gm1", "peer-a").unwrap());
+        assert_eq!(status(&conn, "gm1"), "delivered");
+        assert_eq!(group_outbox_rows(&conn, "gm1"), 0);
+
+        seed_group(&conn, "gm2", "peer-a");
+        assert!(!ack_group_delivered(&conn, "gm2", "peer-b").unwrap());
+        assert_eq!(status(&conn, "gm2"), "sending");
+        assert_eq!(group_outbox_rows(&conn, "gm2"), 1);
+    }
+
+    /// 重复 Ack / 迟到 Ack 必须**幂等且不改判**（2026-10-20 验收补）。
+    ///
+    /// 调用方只在 `Ok(true)` 时 emit `message-acked`，所以"第二次 Ack 返回 false"
+    /// 就是"前端不会收到第二条已送达事件"的唯一保证；这里把它钉在 DB 层。
+    /// 场景覆盖：重复 Ack（同 peer）、群聊重复 Ack、以及**已被清扫判失败**的消息收到迟到 Ack
+    /// —— 队列行已随终态一起删掉 ⇒ 没有任何证据能把它改回 delivered，也不会触发重发。
+    #[test]
+    fn duplicate_and_late_acks_are_idempotent_and_never_change_the_verdict() {
+        let conn = db();
+        // ① 重复 Ack（1:1）：第二次没有队列行可命中 ⇒ false，状态不回退、不重复 emit。
+        seed(&conn, "m1", "peer-a");
+        assert!(ack_delivered(&conn, "m1", "peer-a").unwrap());
+        assert!(!ack_delivered(&conn, "m1", "peer-a").unwrap(), "重复 Ack 必须返回 false");
+        assert_eq!(status(&conn, "m1"), "delivered");
+        assert_eq!(outbox_rows(&conn, "m1"), 0);
+
+        // ② 重复 GroupAck：群语义是"任一成员首个 Ack 推进 delivered"，后续成员/重复都幂等。
+        seed_group(&conn, "gm1", "peer-a");
+        assert!(ack_group_delivered(&conn, "gm1", "peer-a").unwrap());
+        assert!(!ack_group_delivered(&conn, "gm1", "peer-a").unwrap());
+        assert_eq!(status(&conn, "gm1"), "delivered");
+        assert_eq!(group_outbox_rows(&conn, "gm1"), 0);
+
+        // ③ 迟到 Ack：清扫器已判 failed 并删队列行（见 outbox_sweep 的顺序），
+        //    此时再来的 Ack 既不能改判、也不该被当成"还能重发"。
+        seed(&conn, "m4", "peer-a");
+        conn.execute(
+            "UPDATE messages SET status = 'failed' WHERE msg_id = 'm4'",
+            [],
+        )
+        .unwrap();
+        conn.execute("DELETE FROM outbox WHERE msg_id = 'm4'", [])
+            .unwrap();
+        assert!(
+            !ack_delivered(&conn, "m4", "peer-a").unwrap(),
+            "队列行已随终态删除 ⇒ 迟到 Ack 没有命中对象"
+        );
+        assert_eq!(
+            status(&conn, "m4"),
+            "failed",
+            "没有队列行的迟到 Ack 不许把已判失败的消息改回送达"
+        );
+        assert_eq!(outbox_rows(&conn, "m4"), 0);
+    }
+
+    /// 半状态回归：删队列行失败时，**状态绝不能已经前进**。
+    ///
+    /// 用 SQLite 触发器让 DELETE 必然 ABORT，模拟"I/O 错误发生在第二步"。
+    /// 旧实现下这里会留下 delivered + outbox 还在；更糟的失败组合（第一步失败、
+    /// 第二步成功）会留下 sending + 无队列行 —— 那正是"永久发送中"的形状。
+    #[test]
+    fn ack_rolls_back_the_status_when_outbox_delete_fails() {
+        let conn = db();
+        seed(&conn, "m3", "peer-a");
+        conn.execute_batch(
+            "CREATE TRIGGER block_outbox_delete BEFORE DELETE ON outbox
+             BEGIN SELECT RAISE(ABORT, 'simulated io failure'); END;",
+        )
+        .unwrap();
+
+        assert!(ack_delivered(&conn, "m3", "peer-a").is_err());
+        assert_eq!(
+            status(&conn, "m3"),
+            "sending",
+            "删行失败却把状态写成 delivered（或任何前进值）= 收尾半状态"
+        );
+        assert_eq!(outbox_rows(&conn, "m3"), 1, "失败时队列行必须保留可重试");
+
+        // 群聊反控：group_outbox 删行失败时，事务必须把 delivered 一起回滚。
+        seed_group(&conn, "gm3", "peer-a");
+        conn.execute_batch(
+            "CREATE TRIGGER block_group_outbox_delete BEFORE DELETE ON group_outbox
+             BEGIN SELECT RAISE(ABORT, 'simulated io failure'); END;",
+        )
+        .unwrap();
+        assert!(ack_group_delivered(&conn, "gm3", "peer-a").is_err());
+        assert_eq!(
+            status(&conn, "gm3"),
+            "sending",
+            "群聊删行失败却写了 delivered = 同一种收尾半状态"
+        );
+        assert_eq!(group_outbox_rows(&conn, "gm3"), 1);
+    }
+}
+
 /// 回填消息内容与状态（群文件接收完成时用）：content 需随传输完成补上本地 `path`，
 /// 状态同时前进到 delivered。与 `set_message_status` 不同，这里会改写 content——
 /// `read_file_preview` 按 msg_id 反查 content 定位本地文件，群文件 Offer 阶段先落库

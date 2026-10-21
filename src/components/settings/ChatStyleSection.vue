@@ -80,7 +80,7 @@ const previewOtherStyle = computed(() => {
     <div class="px-4 py-3">
       <div class="mb-2 flex items-baseline justify-between">
         <div class="text-sm text-[var(--gosslan-text)]">{{ t("settings.chatStyle.fontSize") }}</div>
-        <div class="text-[11px] text-[var(--gosslan-text-2)]">
+        <div class="text-caption text-[var(--gosslan-text-2)]">
           {{ currentFontPx }}px · {{ t(CHAT_FONT_SIZES[fontIndex]?.label ?? "chatStyle.fontSize.md") }}
         </div>
       </div>
@@ -150,7 +150,7 @@ const previewOtherStyle = computed(() => {
           :aria-pressed="app.chatStyle.preset === p.key"
           @click="app.setChatStyle({ preset: p.key })"
         >
-          <div class="mb-1 text-center text-[11px] text-[var(--gosslan-text-2)]">{{ t(p.label) }}</div>
+          <div class="mb-1 text-center text-caption text-[var(--gosslan-text-2)]">{{ t(p.label) }}</div>
           <div class="flex items-center gap-1">
             <span class="h-4 flex-1 rounded-[var(--gosslan-radius-xs)]" :style="{ background: swatchOf(p).mineBubble }"></span>
             <span

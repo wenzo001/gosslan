@@ -15,31 +15,24 @@
 
 ---
 
-## 🤖 AI 开发必读（约束文档索引）
+## 🤖 AI 开发必读
 
-> **任何 AI 编程助手在修改本项目代码前，必须先阅读以下文档。**
-> **当前目标：把 Gosslan 做成稳定、可达、可解释的去中心化 mesh 聊天与协作工具（v1.0）。**
+> **AI 编程助手改代码前先读这一份入口**：[AI_PROJECT_HANDOFF.md](AI_PROJECT_HANDOFF.md)
+> （文档地图 / 核心机制 / 命令 / 验证口径 / Frozen Core / 常见坑）。
 
 | 优先级 | 文档 | 内容 |
 |---|---|---|
-| **★★★ 必读** | [AI_RULES.md](AI_RULES.md) | **AI 工程宪法**：核心不变量 INV-001~008、任务复杂度分级 L1/L2/L3、既有代码优先、协议/DB 规则、**跨版本兼容（§12）**、状态机、Bug 修复流程、范围边界（§3 当前不做）、Definition of Done |
-| **★★★ 必读** | [docs/acceptance/1.0-release.md](docs/acceptance/1.0-release.md) | **v1.0 验收标准**：P0 地基 + mesh 本体清单（含跨版本降级）、禁止事项、必须运行的验证命令 |
-| **★★★ 必读** | [AI_PROJECT_HANDOFF.md](AI_PROJECT_HANDOFF.md) | **项目全景**：完整功能清单、架构与代码导读、E2EE 状态机、工程约定、测试口径 |
-| **★★★ 必读** | [docs/stability-roadmap.md](docs/stability-roadmap.md) | **稳定版工作地图（当前阶段的地图）**：审计结论、10 条风险、26 条在途任务的 A/B/C/D 重判与保留/修复/优化/延后/删除理由、自动化 vs 人工覆盖边界、8 条高风险旅程、执行顺序与每阶段退出判据。**做任何稳定性工作前先在这里定位自己在哪一格** |
-| **★★ 参考** | [docs/protocol-invariants.md](docs/protocol-invariants.md) | **协议不变量明细**（INV-P01 起；**上界与条数只认现算** `node scripts/check-invariant-hooks.mjs`，那里同时判每条有没有绑定可跑的钩子。举例：INV-P24 跨版本优雅降级、INV-P26 终态不可降级、INV-P29 群任务编号规则、INV-P32 一台机器正常使用只许一个实例）+ 必须覆盖的测试矩阵：改协议/网络核心前必读 |
-| **★★ 参考** | [docs/AI_ENGINEERING_INDEX.md](docs/AI_ENGINEERING_INDEX.md) | 约束文档导航索引 + 文档与代码冲突时的处理规则 |
-| **★★ 参考** | [docs/adr/](docs/adr/) | **架构决策记录**：协议版本化（ADR-0007，2026-09-20 Accepted）、状态机边界、Rust/TS 契约、多路径选路、BLE、中继授权、故障注入测试 |
-| **★★ 参考** | [CHANGELOG.md](CHANGELOG.md) | **版本历史**：每个版本改了什么、为什么改（含所有已修 bug 的根因） |
-| **★★ 参考** | [docs/ARCHITECTURE-REVIEW-2026-09-24.md](docs/ARCHITECTURE-REVIEW-2026-09-24.md) | **架构复审（2026-09-24）**：12 条结构性问题的根因（全部带 file:line）、保持/收缩/拆分/解耦/延后的判断、8 步安全改造路线。**动核心链路前先看这份**，它同时是「为什么现在不做 X」的记录 |
-| **★★ 参考** | [docs/final-architecture-review.md](docs/final-architecture-review.md) | **第二阶段架构复审（2026-09-27）**：基线现算值、Large File Audit、11 问四态结论、Release 判定与「已有锁别再重做」清单 |
-| **★★ 参考** | [docs/ARCHITECTURE-MAP.html](docs/ARCHITECTURE-MAP.html) | **架构与接口契约图**（单文件，浏览器直接打开）：分层大图 + IPC 命令的「输入 → 输出」规则表（**条数不在这里抄**：图里那张表由页头 `CMDS.length` 现数，与后端注册表逐条双向核对由 `mapContract.test.ts` 判；权威口径 = `node scripts/check-key-boundary.mjs` 自己打印的那行"注册表 N 条"。此处曾长期手抄一个数、而注册表后来变了 ⇒ 这正是图自己改口要消灭的形状） + 事件/表结构/流程穿透 + 已核出的漂移清单。判「方向对不对」不用读代码 |
-| **★ 按需** | [docs/templates/BUG_FIX.md](docs/templates/BUG_FIX.md) | Bug 修复报告模板（复现 / 根因 / 影响 / 修复 / 回归） |
-| **★ 按需** | [docs/templates/ADR.md](docs/templates/ADR.md) | 新增架构决策记录模板 |
-| **★ 按需** | [docs/aoci-usage.md](docs/aoci-usage.md) | **AOCI 仓库认知层使用手册**：哪些文件入库、换机器怎么接宿主、谁在什么时候必须调它、9 个 MCP 工具与 CLI 只读命令速查、一条 Entry 的格式与 `S` 的两层配额、收尾三件套（verify→check→guide）、**§8 重新索引该走哪条路**（日常补条目 / 刷新基线 / 推倒重来的代价与回退性，外加本仓实测会被拒的六条命令与报错原话）。文中的配额上限与实况数字**都挂着现算命令**，别抄数字 |
-| **★ 按需** | [docs/large-file-split-plan.md](docs/large-file-split-plan.md) | **大文件拆分计划（>3000 行）**：现算出真正超阈值的 6 个文件、transport.rs 的 15 节构成、**26/202 条护栏锚点指着它**这一静默风险、行为不变的恒等判据与下刀顺序。动大文件前先读它 |
-| **★★ 参考** | [docs/strong-reminder-plan.md](docs/strong-reminder-plan.md) | **聊天强提醒：需求登记 + 第 0 阶段设计（尚未实现，别读成已交付）**：六态与各自唯一写入点（传输 Ack ≠ 用户确认 ≠ 事情已完成）、可复用的三个现成"引用一条消息带自己状态"的家（reaction / pin / recall）、最小变更方案（2 个 kind，不加表不迁移）与它的真实登记面、兼容策略（`DM_LEGACY_KINDS` 冻结 + 1:1 门控方向）、风险清单、每平台「自动化 / 真机 / 未验证」三档矩阵。★ 里面有一条**结构性缺口**（全仓以 `device_id` 为身份 ⇒ 没有"同一人多台设备"的状态同步机制）和一条**必做实测**（未知 kind 的降级形状），两者都还没结论 |
+| **★★★ 必读** | [AI_PROJECT_HANDOFF.md](AI_PROJECT_HANDOFF.md) | **唯一入口**：文档地图、技术栈、核心机制速览、命令、验证口径、红线、常见坑 |
+| **★★★ 必读** | [AI_RULES.md](AI_RULES.md) | **工程宪法**：核心不变量 INV-001~008、任务分级 L1/L2/L3、协议/DB/加密规则、Bug 修复流程、何时必须停、Definition of Done |
+| **★★ 参考** | [docs/protocol-invariants.md](docs/protocol-invariants.md) | 协议不变量明细（INV-P01 起；条数只认 `node scripts/check-invariant-hooks.mjs` 现算）+ 测试矩阵 |
+| **★★ 参考** | [docs/AI_ENGINEERING_INDEX.md](docs/AI_ENGINEERING_INDEX.md) | 文档地图备查索引 + 文档与代码冲突时的处理规则 |
+| **★★ 参考** | [docs/migration-ledger.md](docs/migration-ledger.md) | 迁移台账：改一个关注点前先确认"哪个家在跑数据" |
+| **★★ 参考** | [docs/ARCHITECTURE-MAP.html](docs/ARCHITECTURE-MAP.html) | 架构与接口契约图（单文件浏览器直接打开；数字现算） |
+| **★★ 参考** | [CHANGELOG.md](CHANGELOG.md) | 版本历史与所有已修 bug 的根因 |
+| **★ 按需** | [docs/VERSIONING.md](docs/VERSIONING.md) · [docs/design-guidelines.md](docs/design-guidelines.md) · [docs/adr/](docs/adr/) · [docs/acceptance/stability-smoke-matrix.md](docs/acceptance/stability-smoke-matrix.md) · [docs/large-file-split-plan.md](docs/large-file-split-plan.md) · [docs/templates/](docs/templates/) | 发版规则 / UI 规范 / 架构决策 / 验证覆盖矩阵 / 大文件拆分 / 模板 |
 
-**阅读顺序**：`AI_RULES.md`（约束）→ `docs/acceptance/1.0-release.md`（目标与验收）→ `AI_PROJECT_HANDOFF.md`（项目全貌）→ 涉及网络/协议时读 `docs/protocol-invariants.md` 与相关 ADR → 代码。
+**阅读顺序**：`AI_PROJECT_HANDOFF.md`（入口）→ `AI_RULES.md`（约束）→ 涉及协议时读
+`docs/protocol-invariants.md` 与相关 ADR → 代码。
 
 ---
 

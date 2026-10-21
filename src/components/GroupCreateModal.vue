@@ -7,7 +7,8 @@ import BaseModal from "@/components/BaseModal.vue";
 import { avatarSeedFor } from "@/utils/avatarSeed";
 import { Check } from "@/components/ui/icons";
 import { useSubmitGuard } from "@/composables/useSubmitGuard";
-import { groupNameSchema } from "@/utils/validation";
+import { groupNameSchema, MAX_GROUP_NAME_CHARS } from "@/utils/validation";
+import CharCounter from "@/components/ui/CharCounter.vue";
 
 const props = defineProps<{ open: boolean }>();
 const emit = defineEmits<{ (e: "close"): void }>();
@@ -39,7 +40,9 @@ function toggle(id: string) {
 async function create() {
   const parsed = groupNameSchema.safeParse(name.value);
   if (!parsed.success) {
-    app.toast(t("group.toast.nameEmpty"), "error");
+    // 报**实际违反的那条**：超长过去也被说成"请输入群名称"（原因说错了）。
+    const issue = parsed.error.issues[0];
+    app.toast(t(issue ? issue.message : "group.toast.nameEmpty", { max: MAX_GROUP_NAME_CHARS }), "error");
     return;
   }
   if (selected.value.length === 0) {
@@ -63,12 +66,15 @@ async function create() {
 <template>
   <BaseModal :open="open" :title="t('group.create.title')" @close="emit('close')">
     <div class="mb-4">
-      <div class="mb-1.5 text-sm">{{ t("group.name") }}</div>
+      <div class="mb-1.5 flex items-baseline justify-between gap-2">
+        <span class="text-sm">{{ t("group.name") }}</span>
+        <CharCounter :text="name" :max="MAX_GROUP_NAME_CHARS" />
+      </div>
       <input
         v-model="name"
         class="w-full rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none transition focus:border-transparent"
         :placeholder="t('group.namePlaceholder')"
-        maxlength="40"
+        :maxlength="MAX_GROUP_NAME_CHARS"
       />
     </div>
 

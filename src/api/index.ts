@@ -488,6 +488,22 @@ export const api = {
     }).then((v) => parseIpcList(chatSearchGroupSchema, v, "search_chat_history")),
   getLogs: (sinceSecs?: number | null) => invoke<LogEntry[]>("get_logs", { sinceSecs: sinceSecs ?? null }),
   clearLogs: () => invoke<void>("clear_logs"),
+  /**
+   * 日志文件的**真实位置**（目录 / 本轮那份 / 崩溃现场那份）。
+   *
+   * 三条路径都由后端按本轮解析出的 stem 给 ⇒ 前端**不许自己拼**：多实例时
+   * `gosslan-1.log` 与 `gosslan.log` 只差一个数字，拼错就是让用户去复制别人的那一份。
+   */
+  getLogLocations: () => invoke<LogLocations>("get_log_locations"),
+  /**
+   * 导出**脱敏**诊断包到用户选好的落点（纯文本）。
+   *
+   * ⚠️ `destination` 必须是**用户**在系统保存对话框里选的那条路径：后端对空串判错，
+   * 也不替用户决定写到哪（本仓不做遥测，"发不发"由人决定）。落点形状先过
+   * `saveDestinationOf` 归一化（Android 的 SAF 返回的是 `{ file: "content://…" }` 对象）。
+   */
+  exportDiagnosticsBundle: (destination: string) =>
+    invoke<DiagnosticsBundleSummary>("export_diagnostics_bundle", { destination }),
   /** 桌面端：打开独立日志窗口；移动端不要调用（用页面跳转）。 */
   openLogWindow: () => invoke<void>("open_log_window"),
   /**
@@ -578,6 +594,35 @@ export const api = {
   listActiveGroupAnnouncements: () =>
     invoke<{ groupId: string; msgId: string; text: string }[]>("list_active_group_announcements"),
 };
+
+// ---------------- 诊断出口（命令返回值） ----------------
+
+/**
+ * `get_log_locations` 的返回（Rust `diagnostics::LogLocations`）。
+ *
+ * ⚠️ 那个结构体**没有 serde rename**，字段本来就是全小写单词 ⇒ JS 侧同名；
+ * 后端加新字段时这里要跟着加，否则界面上读不到。
+ */
+export interface LogLocations {
+  /** 日志目录。 */
+  dir: string;
+  /** **本轮**正在写的那份（多实例时带序号）。 */
+  current: string;
+  /** 崩溃现场那份。 */
+  crash: string;
+}
+
+/** `export_diagnostics_bundle` 的成功摘要（Rust `diagnostics::BundleSummary`，同样未 rename）。 */
+export interface DiagnosticsBundleSummary {
+  /** 实际落盘字节数。 */
+  bytes: number;
+  /** 真正读到的文件份数（本轮 / 上一代 / 崩溃现场；没有就是 0）。 */
+  files: number;
+  /** 脱敏命中处数（用户据此知道自己发出去的是什么）。 */
+  redactions: number;
+  /** 实际落盘路径。 */
+  path: string;
+}
 
 // ---------------- 事件监听 ----------------
 

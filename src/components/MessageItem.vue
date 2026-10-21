@@ -209,8 +209,8 @@ const { copiedKey, copyContent } = useClipboard();
  * 气泡内联的复制按钮仍只靠自身勾选反馈（就在指尖，无需 toast 打扰）。
  */
 async function copyTextWithToast(key: string, text: string) {
-  const ok = await copyContent(key, copyOut(text));
-  app.toast(ok ? t("common.copied") : t("msg.copyFail"), ok ? "success" : "error");
+  await copyContent(key, copyOut(text));
+  app.toast(t("common.copied"), "success");
 }
 
 /**
@@ -1076,7 +1076,8 @@ async function copyFileToClipboard() {
            时间戳只该在选中块**外面**（微信同样是白底的时间行）。 -->
     <div
       v-if="showTimeDivider"
-      class="bg-[var(--gosslan-chat)] pt-3.5 pb-2 text-center text-[11px] text-[var(--gosslan-text-2)]"
+      data-time-divider
+      class="bg-[var(--gosslan-chat)] pt-3.5 pb-2 text-center text-caption text-[var(--gosslan-text-2)]"
     >
       {{ timeDividerText }}
     </div>
@@ -1089,7 +1090,7 @@ async function copyFileToClipboard() {
       class="mt-3 mb-1.5 flex items-center gap-2 bg-[var(--gosslan-chat)] px-3"
     >
       <div class="h-px flex-1 bg-[var(--gosslan-primary-soft)]"></div>
-      <span class="rounded-full bg-[var(--gosslan-primary-light)] px-2 py-0.5 text-[11px] text-[var(--gosslan-accent-ink)]">{{ t("msg.unreadDivider") }}</span>
+      <span class="rounded-full bg-[var(--gosslan-primary-light)] px-2 py-0.5 text-caption text-[var(--gosslan-accent-ink)]">{{ t("msg.unreadDivider") }}</span>
       <div class="h-px flex-1 bg-[var(--gosslan-primary-soft)]"></div>
     </div>
 
@@ -1229,7 +1230,7 @@ async function copyFileToClipboard() {
              （`quotedMsgId` 的说明 + 菜单项「定位到引用的消息」）。 -->
         <button
           v-if="quoteHeader"
-          class="mt-1 block w-full cursor-pointer rounded-[var(--gosslan-radius-sm)] px-2 py-1 text-left text-[12px] leading-4 transition hover:brightness-110"
+          class="mt-1 block w-full cursor-pointer rounded-[var(--gosslan-radius-sm)] px-2 py-1 text-left text-meta leading-4 transition hover:brightness-110"
           :style="{ background: QUOTE_BG }"
           @click="viewQuoted"
         >
@@ -1237,14 +1238,14 @@ async function copyFileToClipboard() {
         </button>
         <!-- 群聊发送者昵称。
              视觉对齐：外层 flex 没有 items-*，所以**头像顶边 = 本行行盒顶边**。
-             原先 `mb-0.5 text-[11px]`（行高 1.5 → 16.5px）会把墨迹往下推半行距约 3.7px，
+             原先 `mb-0.5 text-caption`（行高 1.5 → 16.5px）会把墨迹往下推半行距约 3.7px，
              看起来名字比头像"低一点"（中英文都一样，实测 3.5px）。
              改成 `leading-none`（行盒 = 11px）+ `mb-[7px]`：墨迹贴到行盒顶（≈0.5px），
              与头像顶边齐平；且 **11 + 7 = 18px 与原来的 16.5 + 2 = 18.5 基本一致**，
              正好等于 messageHeight.NICKNAME_ROW(18)，虚拟列表估算不受影响。 -->
         <div
           v-if="showNickname"
-          class="mb-[7px] px-1 text-[11px] leading-none text-[var(--gosslan-text-2)]"
+          class="mb-[7px] px-1 text-caption leading-none text-[var(--gosslan-text-2)]"
         >
           {{ senderName || chat.nicknameOf(message.sender_id) }}
         </div>
@@ -1315,7 +1316,7 @@ async function copyFileToClipboard() {
           <button
             v-else-if="message.kind === 'image' && attachmentMissing"
             type="button"
-            class="flex w-52 cursor-pointer flex-col items-center justify-center gap-1 rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-hover)] text-[11px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-pressed)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary "
+            class="flex w-52 cursor-pointer flex-col items-center justify-center gap-1 rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-hover)] text-caption text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-pressed)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary "
             :style="{ height: `${IMAGE_PLACEHOLDER_HEIGHT}px` }"
             @click="refetchContent"
           >
@@ -1423,7 +1424,7 @@ async function copyFileToClipboard() {
   >
     <span
       :class="[
-        'inline-flex items-center gap-1 rounded-full px-2 py-[1px] text-[12px] font-medium',
+        'inline-flex items-center gap-1 rounded-full px-2 py-[1px] text-meta font-medium',
         reminderBadgeClass,
       ]"
       :title="reminderRosterTitle || undefined"
@@ -1433,7 +1434,7 @@ async function copyFileToClipboard() {
     </span>
     <button
       v-if="canConfirm"
-      class="tap-safe rounded-full bg-[var(--gosslan-primary)] px-2.5 py-[1px] text-[12px] font-medium text-white transition hover:opacity-90"
+      class="tap-safe rounded-full bg-[var(--gosslan-primary)] px-2.5 py-[1px] text-meta font-medium text-white transition hover:opacity-90"
       @click="doConfirmReminder"
     >
       {{ t("remind.gotIt") }}
@@ -1516,7 +1517,7 @@ async function copyFileToClipboard() {
     <div class="flex flex-col">
       <button
         v-if="copyableText"
-        class="flex items-center gap-3 px-4 py-3 text-left text-[15px] text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
+        class="flex items-center gap-3 px-4 py-3 text-left text-title text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
         @click="closeActionSheet(); copyFromMenu()"
       >
         <Copy class="h-5 w-5 text-[var(--gosslan-text-2)]" />
@@ -1529,7 +1530,7 @@ async function copyFileToClipboard() {
            给个点了没反应的入口比不给更糟。 -->
       <button
         v-if="message.kind === 'text'"
-        class="flex items-center gap-3 px-4 py-3 text-left text-[15px] text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
+        class="flex items-center gap-3 px-4 py-3 text-left text-title text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
         @click="enterTextSelect"
       >
         <TextSelect class="h-5 w-5 text-[var(--gosslan-text-2)]" />
@@ -1537,14 +1538,14 @@ async function copyFileToClipboard() {
       </button>
       <template v-if="message.kind === 'image'">
         <button
-          class="flex items-center gap-3 px-4 py-3 text-left text-[15px] text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
+          class="flex items-center gap-3 px-4 py-3 text-left text-title text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
           @click="copyImage"
         >
           <Copy class="h-5 w-5 text-[var(--gosslan-text-2)]" />
           {{ t("common.copyImage") }}
         </button>
         <button
-          class="flex items-center gap-3 px-4 py-3 text-left text-[15px] text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
+          class="flex items-center gap-3 px-4 py-3 text-left text-title text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
           @click="saveImage"
         >
           <Save class="h-5 w-5 text-[var(--gosslan-text-2)]" />
@@ -1553,14 +1554,14 @@ async function copyFileToClipboard() {
       </template>
       <template v-if="message.kind === 'file'">
         <button
-          class="flex items-center gap-3 px-4 py-3 text-left text-[15px] text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
+          class="flex items-center gap-3 px-4 py-3 text-left text-title text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
           @click="saveFileTo"
         >
           <Save class="h-5 w-5 text-[var(--gosslan-text-2)]" />
           {{ t("common.save") }}
         </button>
         <button
-          class="flex items-center gap-3 px-4 py-3 text-left text-[15px] text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
+          class="flex items-center gap-3 px-4 py-3 text-left text-title text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
           @click="copyFileToClipboard"
         >
           <Copy class="h-5 w-5 text-[var(--gosslan-text-2)]" />
@@ -1568,7 +1569,7 @@ async function copyFileToClipboard() {
         </button>
       </template>
       <button
-        class="flex items-center gap-3 px-4 py-3 text-left text-[15px] text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
+        class="flex items-center gap-3 px-4 py-3 text-left text-title text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
         @click="doQuote"
       >
         <CornerUpLeft class="h-5 w-5 text-[var(--gosslan-text-2)]" />
@@ -1578,7 +1579,7 @@ async function copyFileToClipboard() {
       <!-- 置顶：任意群成员都能置（可逆、低风险），与撤回不同 -->
       <button
         v-if="isGroup && message.kind !== 'recalled'"
-        class="flex items-center gap-3 px-4 py-3 text-left text-[15px] text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
+        class="flex items-center gap-3 px-4 py-3 text-left text-title text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
         @click="closeActionSheet(); emit('pin')"
       >
         <Pin class="h-5 w-5 text-[var(--gosslan-text-2)]" />
@@ -1590,7 +1591,7 @@ async function copyFileToClipboard() {
            而后端只实现了群撤回 ⇒ 点了确认后什么都不发生。 -->
       <button
         v-if="canRecall"
-        class="flex items-center gap-3 px-4 py-3 text-left text-[15px] text-[var(--gosslan-danger-ink)] transition active:bg-[var(--gosslan-hover)]"
+        class="flex items-center gap-3 px-4 py-3 text-left text-title text-[var(--gosslan-danger-ink)] transition active:bg-[var(--gosslan-hover)]"
         @click="doRecall"
       >
         <Undo2 class="h-5 w-5" />
@@ -1598,7 +1599,7 @@ async function copyFileToClipboard() {
       </button>
       <button
         v-if="forwardable(message.kind)"
-        class="flex items-center gap-3 px-4 py-3 text-left text-[15px] text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
+        class="flex items-center gap-3 px-4 py-3 text-left text-title text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
         @click="doForward"
       >
         <Share2 class="h-5 w-5 text-[var(--gosslan-text-2)]" />
@@ -1609,7 +1610,7 @@ async function copyFileToClipboard() {
            只加一处的结果是"桌面能收藏、手机不能"（这类漂移在项目里已发生过多次）。 -->
       <button
         v-if="favoritable(message.kind)"
-        class="flex items-center gap-3 px-4 py-3 text-left text-[15px] text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
+        class="flex items-center gap-3 px-4 py-3 text-left text-title text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
         @click="doFavorite"
       >
         <Star class="h-5 w-5 text-[var(--gosslan-text-2)]" />
@@ -1618,7 +1619,7 @@ async function copyFileToClipboard() {
       <!-- 强提醒：与桌面菜单同源（canRemindEntry）；两套独立模板都必须有 -->
       <button
         v-if="canRemindEntry"
-        class="flex items-center gap-3 px-4 py-3 text-left text-[15px] text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
+        class="flex items-center gap-3 px-4 py-3 text-left text-title text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
         @click="doRemind"
       >
         <BellRing class="h-5 w-5 text-[var(--gosslan-text-2)]" />
@@ -1628,7 +1629,7 @@ async function copyFileToClipboard() {
            与引用块上的点击同一条 emit（`locate`）。 -->
       <button
         v-if="quotedMsgId"
-        class="flex items-center gap-3 px-4 py-3 text-left text-[15px] text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
+        class="flex items-center gap-3 px-4 py-3 text-left text-title text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
         @click="closeActionSheet(); emit('locate', quotedMsgId)"
       >
         <CornerUpLeft class="h-5 w-5 text-[var(--gosslan-text-2)]" />
@@ -1638,7 +1639,7 @@ async function copyFileToClipboard() {
            待办卡片不给（见 isMultiSelectable）。 -->
       <button
         v-if="isMultiSelectable(message.kind)"
-        class="flex items-center gap-3 border-t border-[var(--gosslan-divider)] px-4 py-3 text-left text-[15px] text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
+        class="flex items-center gap-3 border-t border-[var(--gosslan-divider)] px-4 py-3 text-left text-title text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
         @click="doMultiSelect"
       >
         <ListChecks class="h-5 w-5 text-[var(--gosslan-text-2)]" />

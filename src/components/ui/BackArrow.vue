@@ -14,22 +14,17 @@
  *
  * 只画箭头本身，不带按钮：热区/圆角/间距由各头部自己给（它们略有差异，
  * 但箭头造型从此只有这一份）。
+ *
+ * 两档造型都来自 lucide，本文件不再出现手写路径（用户 2026-10-20 专项 §三）：
+ * iOS 那档此前是把 `chevron-left` 的 path **逐字抄进模板**（`m15 18-6-6 6-6`），
+ * 描边还从库默认的 2 改成 1.9 —— 库里已有的东西不必再画一遍。
  */
-import { ArrowLeft } from "lucide-vue-next";
+import { ArrowLeft, ChevronLeft } from "lucide-vue-next";
 import { isIOS } from "@/utils/platform";
 </script>
 
 <template>
   <!-- iOS 用 chevron；其余平台（含桌面）用 Material 左箭头。 -->
-  <svg
-    v-if="isIOS"
-    viewBox="0 0 24 24"
-    class="h-5 w-5"
-    fill="none"
-    stroke="currentColor"
-    stroke-width="1.9"
-  >
-    <path d="m15 18-6-6 6-6" />
-  </svg>
+  <ChevronLeft v-if="isIOS" class="h-5 w-5" />
   <ArrowLeft v-else class="h-5 w-5" />
 </template>

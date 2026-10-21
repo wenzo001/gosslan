@@ -295,7 +295,17 @@
         let at = src
             .find("tauri_plugin_single_instance::init(")
             .expect("上面已判过");
-        let around = &src[at.saturating_sub(1_200)..(at + 600).min(src.len())];
+        // 按**字节**切片会把中文注释劈成两半（`is_char_boundary` panic）。源码上下文
+        // 只是给人看的窗口，先向内对齐到合法字符边界，再切。
+        let mut start = at.saturating_sub(1_200);
+        while start > 0 && !src.is_char_boundary(start) {
+            start -= 1;
+        }
+        let mut end = (at + 600).min(src.len());
+        while end < src.len() && !src.is_char_boundary(end) {
+            end += 1;
+        }
+        let around = &src[start..end];
         assert!(
             around.contains("allow_second_instance_launch("),
             "守卫必须走那个纯函数出口判定（开发/测试双实例靠它），不许无条件注册"

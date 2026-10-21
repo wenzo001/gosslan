@@ -13,12 +13,12 @@
 // 不要由消费者就地 revoke。
 //
 // ## 容量：按**累计字节数**封顶，不按条数（2026-10-10 负责人决策 + N23 实测）
-// 条数这个维度管不住内存：`IMAGE_MAX_BYTES` 是**单条**上限，取 K 条的最坏情况是 K × 15 MiB。
+// 条数这个维度管不住内存：`IMAGE_PREVIEW_MAX_BYTES` 是**单条**上限，取 K 条的最坏情况是 K × 15 MiB。
 // 实测（`docs/stability-roadmap.md` N23）又证了缓存条目的 V8 侧成本与喂进去的字节数无关
 // （200 条只 +35 KB），大头那坨是 Blob 的外部内存 ⇒ 只能按字节封顶。
 // **初始上限 60 MiB**：这是负责人 2026-10-10 一次答完五项里的原话（见 CHANGELOG 该日小节
 // 「预览缓存按累计字节封顶初始 60 MiB」），管的就是**这一份内存缓存**，不是磁盘。
-// 单条上限仍是 15 MiB（= `IMAGE_MAX_BYTES`，与后端 `read_file_preview` 同一口径）。
+// 单条上限仍是 15 MiB（= `IMAGE_PREVIEW_MAX_BYTES`，与后端 `read_file_preview` 同一口径，有对账判据）。
 // ⚠️ 别把它当成"磁盘预览缓存"的口径混用：磁盘侧的清理是另一套（存储清理），与此无关。
 //
 // ## 逐出会改变可观察行为
@@ -28,6 +28,7 @@
 import { api } from "@/api";
 import { previewFailureResult, type PreviewResult } from "@/utils/mediaAvailability";
 import { createBlobLru } from "@/utils/blobLru";
+import { createSingleFlight } from "@/utils/singleFlight";
 import { bubbleImageBytes } from "@/utils/imageThumbnail";
 import { imageMime } from "@/utils/imageMime";
 
@@ -48,7 +49,7 @@ export const PREVIEW_CACHE_MAX_BYTES = 60 * 1024 * 1024;
  */
 export function invalidateFilePreview(msgId: string) {
   cache.delete(msgId);
-  inflight.delete(msgId);
+  inflight.remove(msgId);
   // 缩略图那份也要一起失效：字节刚落盘时气泡拿的是缩略图，只让原图失效的话
   // 气泡会继续用"失效前那一份"（甚至是在途失败时留下的回退），表现为
   // "原图好了但气泡还是不出来" —— 正是这条失效机制当年要修的那个缺陷的缩略图版。
@@ -58,19 +59,25 @@ export function invalidateFilePreview(msgId: string) {
 /** 丢掉某条消息的预览缓存并释放 objectURL（删消息 / 清会话时调用）。 */
 export function dropFilePreview(msgId: string) {
   cache.delete(msgId);
-  inflight.delete(msgId);
+  inflight.remove(msgId);
 }
 
 /** 释放**全部**预览缓存（清空数据 / 退出登录这类入口调用）。 */
 export function clearFilePreviews() {
   cache.clear();
-  inflight.clear();
+  inflight.reset();
 }
 
 /** 代码预览上限：超过则回退文件卡片并提示，避免把巨大文件读进前端。 */
 const CODE_MAX_BYTES = 512 * 1024;
-/** 图片预览上限：远大于常见截图/照片，仍远低于协议 MAX_FRAME。 */
-const IMAGE_MAX_BYTES = 15 * 1024 * 1024;
+/**
+ * 图片预览上限：远大于常见截图/照片，仍远低于协议 MAX_FRAME。**这一族只有一个家** ——
+ * 收藏预览（`favoritePreview.ts`）与合并转发卡片（`MergeCardModal.vue`）都从这里取，
+ * 不再各抄一份 15 MiB。后端 `read_file_preview` / `read_favorite_preview` 的
+ * `.min(15 * 1024 * 1024)` 与它同值，由 `imageBytes.test.ts` 现读两侧对账
+ * ——「与后端同一口径」这句注释从此有机器凭据，不再只靠人眼。
+ */
+export const IMAGE_PREVIEW_MAX_BYTES = 15 * 1024 * 1024;
 
 /**
  * 两份预览共用的那条 LRU。
@@ -82,11 +89,11 @@ const IMAGE_MAX_BYTES = 15 * 1024 * 1024;
  */
 const cache = createBlobLru<PreviewResult & { bytes?: number }>({
   maxBytes: PREVIEW_CACHE_MAX_BYTES,
-  maxEntryBytes: IMAGE_MAX_BYTES,
+  maxEntryBytes: IMAGE_PREVIEW_MAX_BYTES,
   revoke: (url) => URL.revokeObjectURL(url),
 });
 
-const inflight = new Map<string, Promise<PreviewResult>>();
+const inflight = createSingleFlight<PreviewResult>();
 
 /** 气泡缩略图缓存的字节上限。 */
 const THUMB_CACHE_MAX_BYTES = 8 * 1024 * 1024;
@@ -111,7 +118,7 @@ const thumbCache = createBlobLru<PreviewResult & { bytes?: number }>({
   maxBytes: THUMB_CACHE_MAX_BYTES,
   revoke: (url) => URL.revokeObjectURL(url),
 });
-const thumbInflight = new Map<string, Promise<PreviewResult>>();
+const thumbInflight = createSingleFlight<PreviewResult>();
 
 /**
  * 加载某条图片消息的**气泡缩略图**。
@@ -128,10 +135,8 @@ export function loadThumbPreview(msgId: string, name: string): Promise<PreviewRe
   const key = `thumb:${msgId}`;
   const hit = thumbCache.get(key);
   if (hit) return Promise.resolve(hit);
-  const fly = thumbInflight.get(key);
-  if (fly) return fly;
 
-  const p = (async (): Promise<PreviewResult> => {
+  return thumbInflight.run(key, async (): Promise<PreviewResult> => {
     const orig = await loadFilePreview(msgId, "image", name);
     // 原图都拿不到（在途/已清理/过大）：原样把失败态透传，气泡据此显示骨架或失败态。
     if (!orig.url) return orig;
@@ -151,20 +156,16 @@ export function loadThumbPreview(msgId: string, name: string): Promise<PreviewRe
       // 这里兜的是 fetch 那一步）。
       return orig;
     }
-  })();
-
-  thumbInflight.set(key, p);
-  void p.finally(() => thumbInflight.delete(key));
-  return p;
+  });
 }
 
 /** 丢掉某条消息的缩略图缓存（原图失效时一并调用）。 */
 export function dropThumbPreview(msgId: string) {
   thumbCache.delete(`thumb:${msgId}`);
-  thumbInflight.delete(`thumb:${msgId}`);
+  thumbInflight.remove(`thumb:${msgId}`);
 }
 
-/** 加载指定 file 消息的预览；失败/超限返回 `{}` 或 `{note}`，调用方据此回退文件卡片。 */
+/** 加载指定 file 消息的预览；失败/超限返回 `{}` 或 `{failure}`，调用方据此回退文件卡片并按词典键上屏。 */
 export function loadFilePreview(
   msgId: string,
   subtype: "image" | "code",
@@ -172,11 +173,9 @@ export function loadFilePreview(
 ): Promise<PreviewResult> {
   const hit = cache.get(msgId);
   if (hit) return Promise.resolve(hit);
-  const fly = inflight.get(msgId);
-  if (fly) return fly;
 
-  const max = subtype === "code" ? CODE_MAX_BYTES : IMAGE_MAX_BYTES;
-  const p = (async (): Promise<PreviewResult> => {
+  const max = subtype === "code" ? CODE_MAX_BYTES : IMAGE_PREVIEW_MAX_BYTES;
+  return inflight.run(msgId, async (): Promise<PreviewResult> => {
     try {
       const raw = await api.readFilePreview(msgId, max);
       // 后端 raw bytes 在 macOS(WKWebView) 上经 JSON 序列化回传为 number[]，
@@ -203,15 +202,10 @@ export function loadFilePreview(
       // 只在**确定性**失败时缓存（已被清理 / 文件过大）。
       // "仍在接收"这类未知失败**绝不缓存** —— 否则文件落盘后也不会重读，
       // 表现为"图片时好时坏、要重发才出来"（真机 2026-09-14）。
-      if (r.missing || r.note === "文件过大，无法预览") cache.put(msgId, r);
+      if (r.failure) cache.put(msgId, r);
       return r;
-    } finally {
-      inflight.delete(msgId);
     }
-  })();
-
-  inflight.set(msgId, p);
-  return p;
+  });
 }
 
 /** 按内容指纹（sha256）加载待办描述图片的预览。
@@ -224,12 +218,10 @@ export function loadFilePreview(
 export function loadContentPreview(cid: string, name: string): Promise<PreviewResult> {
   const hit = cache.get(cid);
   if (hit) return Promise.resolve(hit);
-  const fly = inflight.get(cid);
-  if (fly) return fly;
 
-  const p = (async (): Promise<PreviewResult> => {
+  return inflight.run(cid, async (): Promise<PreviewResult> => {
     try {
-      const raw = await api.readContentPreview(cid, IMAGE_MAX_BYTES);
+      const raw = await api.readContentPreview(cid, IMAGE_PREVIEW_MAX_BYTES);
       const bytes = new Uint8Array(raw);
       const url = URL.createObjectURL(new Blob([bytes], { type: imageMime(name) }));
       const r: PreviewResult & { bytes?: number } = { url, bytes: bytes.length };
@@ -239,13 +231,8 @@ export function loadContentPreview(cid: string, name: string): Promise<PreviewRe
       const msg = String(e);
       console.error(`[filePreview] content preview failed (cid=${cid}, name=${name}): ${msg}`);
       // 确定性失败（文件过大）可以缓存；「内容不存在/路径越权」是暂时态，不缓存。
-      if (msg.includes("文件过大")) return { note: "文件过大，无法预览" };
+      if (msg.includes("文件过大")) return { failure: "tooLarge" };
       return {};
-    } finally {
-      inflight.delete(cid);
     }
-  })();
-
-  inflight.set(cid, p);
-  return p;
+  });
 }

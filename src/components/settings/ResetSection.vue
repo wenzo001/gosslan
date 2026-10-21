@@ -81,7 +81,7 @@ async function doClearAllData() {
         {{ t("settings.reset.clearChat") }}
       </button>
     </SettingsGroup>
-    <p class="px-1 text-center text-[11px] leading-relaxed text-[var(--gosslan-text-2)]">
+    <p class="px-1 text-center text-caption leading-relaxed text-[var(--gosslan-text-2)]">
       {{ t("settings.reset.footnote") }}
     </p>
 

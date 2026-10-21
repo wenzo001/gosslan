@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
-import { computed, onUnmounted } from "vue";
+import { computed } from "vue";
 import { avatarSeedFor } from "@/utils/avatarSeed";
-import { haptic } from "@/utils/haptics";
+import { usePressMenu } from "@/composables/usePressMenu";
 import LinkIcon from "@/components/ui/LinkIcon.vue";
 import { linkIconName, linkLabelKey } from "@/utils/peerConnectionInfo";
 import type { Friend } from "@/types";
@@ -67,61 +67,17 @@ function onContextMenu(friend: Friend, e: MouseEvent) {
   emit("context", friend, e.clientX, e.clientY);
 }
 
-// 移动端没有 contextmenu：长按 500ms 视为「删除好友」入口
-const LONG_PRESS_MS = 500;
-/** 手指抖动容差（px）：小于它不算"滑动"，不取消长按（否则轻微抖动就长按不出来）。 */
-const PRESS_MOVE_TOLERANCE = 10;
-let pressTimer: ReturnType<typeof setTimeout> | null = null;
-let pressStart: { x: number; y: number } | null = null;
 /**
- * 本次手势已经触发过长按 ⇒ 抑制随之而来的 click。
- * 不抑制的话同一次长按会「一边弹出菜单、一边把会话/资料页打开」，菜单刚出来就被盖住。
- * 只在**同一次手势内**生效：下一次 touchstart 会复位，所以不会吃掉用户的下一次点击。
+ * 移动端没有 contextmenu：长按 500ms 视为「删除好友」入口。
+ * 计时器/容差/click 抑制只有一份实现（`composables/usePressMenu`）。
  */
-let suppressClick = false;
+const press = usePressMenu<Friend>((friend, x, y) => emit("context", friend, x, y));
 
-function clearPress() {
-  if (pressTimer) {
-    clearTimeout(pressTimer);
-    pressTimer = null;
-  }
-  pressStart = null;
-}
-
-/** 位移超阈值才取消长按（横向滑动列表 / 纵向滚动时不误弹菜单）。 */
-function onPressMove(e: TouchEvent) {
-  const t = e.touches[0];
-  if (!t || !pressStart) return;
-  if (Math.hypot(t.clientX - pressStart.x, t.clientY - pressStart.y) > PRESS_MOVE_TOLERANCE) {
-    clearPress();
-  }
-}
-
-function onTouchStart(friend: Friend, e: TouchEvent) {
-  const t = e.touches[0];
-  if (!t) return;
-  clearPress();
-  suppressClick = false; // 新手势开始：复位上一次的抑制标记
-  pressStart = { x: t.clientX, y: t.clientY };
-  pressTimer = setTimeout(() => {
-    pressTimer = null;
-    suppressClick = true;
-    // 长按菜单弹出时给一次"重"触觉（对应 iOS 的 impact(.heavy) at menu appear）
-    haptic("heavy");
-    emit("context", friend, t.clientX, t.clientY);
-  }, LONG_PRESS_MS);
-}
-
-/** 打开资料页；吃掉"长按那次手势"遗留的 click（见 suppressClick）。 */
+/** 打开资料页；吃掉"长按那次手势"遗留的 click（见 usePressMenu 的说明）。 */
 function openFriend(friend: Friend) {
-  if (suppressClick) {
-    suppressClick = false;
-    return;
-  }
+  if (press.consumeSuppressedClick()) return;
   emit("open", friend);
 }
-
-onUnmounted(clearPress);
 </script>
 
 <template>
@@ -140,10 +96,10 @@ onUnmounted(clearPress);
     @keydown.enter.prevent="openFriend(friend)"
     @keydown.space.prevent="openFriend(friend)"
     @contextmenu="onContextMenu(friend, $event)"
-    @touchstart.passive="onTouchStart(friend, $event)"
-    @touchmove.passive="onPressMove"
-    @touchend.passive="clearPress"
-    @touchcancel.passive="clearPress"
+    @touchstart.passive="press.onStart(friend, $event)"
+    @touchmove.passive="press.onMove"
+    @touchend.passive="press.clear"
+    @touchcancel.passive="press.clear"
   >
     <!-- 微信式行间细分隔线：从文本列起（头像后缩进） -->
     <div
@@ -177,7 +133,7 @@ onUnmounted(clearPress);
           <LinkIcon :name="linkIcon" class="h-3.5 w-3.5" />
         </span>
         <div
-          class="truncate text-[13px] leading-5"
+          class="truncate text-body leading-5"
           :class="active ? 'font-medium text-[var(--gosslan-text)]' : 'text-[var(--gosslan-text)]'"
           :title="displayName"
         >

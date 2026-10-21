@@ -1,4 +1,4 @@
-// 主题色工具：由主色派生 hover/active/浅色背景，并注入 CSS 变量。
+// 颜色工具：hex/HSL 解析、感知亮度与 WCAG 对比度；主题色的 hover/active/浅底三档交给 CSS color-mix。
 
 export function hexToRgb(hex: string): [number, number, number] {
   let h = hex.replace("#", "").trim();
@@ -7,25 +7,9 @@ export function hexToRgb(hex: string): [number, number, number] {
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
 }
 
-function mix(hex: string, target: [number, number, number], ratio: number): string {
-  const [r, g, b] = hexToRgb(hex);
-  const mr = Math.round(r + (target[0] - r) * ratio);
-  const mg = Math.round(g + (target[1] - g) * ratio);
-  const mb = Math.round(b + (target[2] - b) * ratio);
-  return `rgb(${mr}, ${mg}, ${mb})`;
-}
-
 export function rgba(hex: string, alpha: number): string {
   const [r, g, b] = hexToRgb(hex);
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-}
-
-export function lighten(hex: string, ratio: number): string {
-  return mix(hex, [255, 255, 255], ratio);
-}
-
-export function darken(hex: string, ratio: number): string {
-  return mix(hex, [0, 0, 0], ratio);
 }
 
 /** 与 mix 同逻辑，但返回 hex（可继续参与后续混合链）。 */
@@ -126,15 +110,19 @@ export function contrastRatio(a: string, b: string): number {
   return (hi + 0.05) / (lo + 0.05);
 }
 
-/** 将主题色与字体注入 CSS 变量 */
+/**
+ * 把主题色与字体注入 CSS 变量。
+ *
+ * 只写这两件事：`hover/active/light` 三档由 `style.css` 用 `color-mix()` 从
+ * `--gosslan-primary` 现派生（同一家里 `--gosslan-primary-soft/-ring/--gosslan-accent-ink`
+ * 本来就是这么做的）。以前 JS 也算一份、CSS 又硬编一份近似值，两份比例不同 ⇒
+ * 首屏脚本只来得及写主色，那三档还留在出厂蓝上（按钮已换色、hover 与浅底还是蓝色）。
+ */
 export function applyTheme(color: string, fontFamily: string) {
   const root = document.documentElement;
   root.style.setProperty("--gosslan-primary", color);
-  root.style.setProperty("--gosslan-primary-hover", lighten(color, 0.08));
-  root.style.setProperty("--gosslan-primary-active", darken(color, 0.08));
-  root.style.setProperty("--gosslan-primary-light", rgba(color, 0.12));
-  root.style.setProperty(
-    "--gosslan-font-family",
-    fontFamily || "-apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif",
-  );
+  // 默认档不在 JS 里抄一份兜底栈：清掉内联，让 style.css 的 --gosslan-font-family 生效
+  //（首屏脚本与骨架走的是同一个 token ⇒ 两边不可能再算出两个不同的"系统默认"）。
+  if (fontFamily) root.style.setProperty("--gosslan-font-family", fontFamily);
+  else root.style.removeProperty("--gosslan-font-family");
 }

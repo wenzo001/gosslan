@@ -12,7 +12,7 @@ defineProps<{ title: string; footer?: string }>();
     >
       <slot />
     </div>
-    <p v-if="footer" class="mt-2 px-1 text-[11px] leading-relaxed text-[var(--gosslan-text-2)]">
+    <p v-if="footer" class="mt-2 px-1 text-caption leading-relaxed text-[var(--gosslan-text-2)]">
       {{ footer }}
     </p>
   </section>

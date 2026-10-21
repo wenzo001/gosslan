@@ -70,10 +70,18 @@ test("最大化/全屏状态必须订阅窗口尺寸变化（否则图标永远�
     /onResized\(\(\) => \{[\s\S]*?refreshMaximized\(\);[\s\S]*?refreshFullscreen\(\);/.test(script),
     "onResized 回调里要同时刷 maximized 与 fullscreen",
   );
-  // 退订必须成对出现（漏退订 = 组件反复挂载后监听器堆积）
+  // 退订必须成对出现（漏退订 = 组件反复挂载后监听器堆积）。
+  // ⚠️ 2026-10-20 换了形状：卸载函数不再存局部变量，而是登记进 `utils/initScope` 的 scope ——
+  // 旧写法有一条真实漏口：`listen()` 要等一次 IPC 往返才拿到卸载函数，卸载若发生在往返途中，
+  // 那次赋值就发生在 `onBeforeUnmount` **之后**，那份取消函数永远没人调用（监听真的留下了）。
+  // 所以两条都要在：注册进 scope ＋ 卸载时拆 scope（少任一条都拦不住堆积）。
   assert.ok(
-    /onBeforeUnmount\(\(\) => \{[\s\S]*?unlistenResize\?\.\(\);[\s\S]*?unlistenResize = null;/.test(script),
-    "onBeforeUnmount 必须退订 onResized",
+    /listenerScope\.onDispose\(\s*await w\.onResized\(/.test(script),
+    "onResized 的卸载函数必须登记进 initScope（不登记 = 迟到的注册永远没人取消）",
+  );
+  assert.ok(
+    /onBeforeUnmount\(\(\) => \{[\s\S]*?listenerScope\.dispose\(\);/.test(script),
+    "onBeforeUnmount 必须拆掉 initScope（漏 dispose = 组件反复挂载后监听器堆积）",
   );
 });
 

@@ -70,7 +70,7 @@ function pick(value: string) {
         <DropdownMenuTrigger as-child>
           <button
             type="button"
-            class="tap-safe inline-flex h-6 items-center justify-center gap-1 rounded-full px-2.5 text-[12px] font-medium leading-none transition hover:opacity-80"
+            class="tap-safe inline-flex h-6 items-center justify-center gap-1 rounded-full px-2.5 text-meta font-medium leading-none transition hover:opacity-80"
             :class="currentClass"
             :title="hint ?? label"
             :aria-label="hint ?? label"
@@ -102,7 +102,7 @@ function pick(value: string) {
       </DropdownMenuRoot>
       <span
         v-else
-        class="inline-flex h-6 items-center justify-center rounded-full px-2.5 text-[12px] font-medium leading-none"
+        class="inline-flex h-6 items-center justify-center rounded-full px-2.5 text-meta font-medium leading-none"
         :class="currentClass"
       >
         {{ current }}

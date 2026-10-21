@@ -90,7 +90,7 @@ watch(
       >
         <div class="flex min-w-0 flex-col items-end gap-1">
           <span
-            class="max-w-[240px] truncate text-[11px] text-[var(--gosslan-text-2)]"
+            class="max-w-[240px] truncate text-caption text-[var(--gosslan-text-2)]"
             :title="downloadsDir || t('settings.storage.dir.default')"
           >
             {{ downloadsDir || t("settings.storage.dir.default") }}

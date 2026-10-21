@@ -12,7 +12,7 @@ import { t } from "@/i18n";
       :description="t('settings.security.e2ee.desc')"
       last
     >
-      <span class="flex items-center gap-1 rounded-full bg-[var(--gosslan-success-soft)] px-2.5 py-1 text-[11px] text-[var(--gosslan-success-ink)]">
+      <span class="flex items-center gap-1 rounded-full bg-[var(--gosslan-success-soft)] px-2.5 py-1 text-caption text-[var(--gosslan-success-ink)]">
         <Lock class="h-3 w-3" />
         {{ t("settings.security.enabled") }}
       </span>

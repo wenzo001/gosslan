@@ -2,7 +2,8 @@
 import { t } from "@/i18n";
 import { addressText, linkLabelKey, linkLabelParams } from "@/utils/peerConnectionInfo";
 import { computed, onUnmounted, ref, watch } from "vue";
-import { useDeferredRef } from "@/composables/useDeferredRef";
+import { INPUT_DEFER_MS } from "@/utils/defer";
+import { refDebounced } from "@vueuse/core";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import type { ChannelStatus, Peer } from "@/types";
@@ -10,6 +11,7 @@ import { api } from "@/api";
 import SettingsToggle from "@/components/settings/SettingsToggle.vue";
 import BaseModal from "@/components/BaseModal.vue";
 import { avatarSeedFor } from "@/utils/avatarSeed";
+import { MAX_SEARCH_KEYWORD_CHARS } from "@/utils/validation";
 import { UserPlus } from "lucide-vue-next";
 import { Check } from "@/components/ui/icons";
 import { X } from "@/components/ui/icons";
@@ -26,7 +28,7 @@ const keyword = ref("");
  * 连发粘贴时关键词每秒变十几次，而每次变化都要重算并重渲染候选列表 ⇒
  * 输入框自己的 caret 会掉帧。原值即时、列表延迟，输入就始终跟手。
  */
-const query = useDeferredRef(keyword);
+const query = refDebounced(keyword, INPUT_DEFER_MS);
 
 // 大规模局域网（设计规模 500–1000 节点）下最多渲染多少行。
 //
@@ -347,7 +349,7 @@ async function add(peerId: string) {
     <template v-else>
       <input
         v-model="keyword"
-        maxlength="100"
+        :maxlength="MAX_SEARCH_KEYWORD_CHARS"
         autocomplete="off"
         autocorrect="off"
         autocapitalize="off"

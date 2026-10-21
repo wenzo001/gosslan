@@ -538,6 +538,54 @@ async fn send_group_file_complete_ack(
 
 /// 处理接收完成确认（sender 侧）：更新对应 recipient 的 completed/failed 状态。
 ///
+/// 群文件 ACK 终态写入的**有界重试**：最多 3 次、间隔 25ms，全失败才返回 `Err`。
+///
+/// 抽成独立函数是为了能用"前两次失败、第三次成功"的闭包把**真实重试策略**测穿
+/// （不是源码文本断言）。调用方每次重试之间会释放全局 DB 锁，所以这里的 sleep
+/// 不会把等待塞进锁里。
+pub(crate) async fn retry_ack_write<F, E>(mut attempt_write: F) -> Result<(), E>
+where
+    F: FnMut() -> Result<(), E>,
+{
+    const ACK_WRITE_ATTEMPTS: u32 = 3;
+    let mut last: Option<E> = None;
+    for i in 0..ACK_WRITE_ATTEMPTS {
+        match attempt_write() {
+            Ok(()) => return Ok(()),
+            Err(e) => last = Some(e),
+        }
+        if i + 1 < ACK_WRITE_ATTEMPTS {
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    }
+    Err(last.expect("至少尝试过一次"))
+}
+
+/// 发送气泡的聚合判定（纯函数：把"空集合 ≠ 全部失败"这条边界钉在真值表上）。
+///
+/// 返回 `None` = **不决定**（还有成员在途 / 账本里一行都没有）—— 调用方必须保持原状态、
+/// 不 emit、不写终态。空集合**不是** failed：`unwrap_or_default()` 时代，一次读库失败
+/// 就会让 `all_terminal` 恒真，把一批成功送达的群文件写成 failed（2026-10-20 审计）。
+pub(crate) fn group_file_bubble(statuses: &[&str], success: bool) -> Option<&'static str> {
+    if success {
+        return Some("delivered");
+    }
+    if statuses.is_empty() {
+        return None;
+    }
+    let all_terminal = statuses
+        .iter()
+        .all(|status| *status == "completed" || *status == "failed");
+    if !all_terminal {
+        return None;
+    }
+    Some(if statuses.contains(&"completed") {
+        "delivered"
+    } else {
+        "failed"
+    })
+}
+
 /// 身份验证（防伪造）：
 /// 1. ACK.sender_id == TCP peer_id（不能只相信消息字段）；
 /// 2. sender_id != 本机；
@@ -572,12 +620,26 @@ async fn handle_group_file_complete_ack(
     // 后续 success=false ACK（重放/异常）不得把 completed 降级为 failed；
     // success=true ACK 重复到达则是无害的幂等更新。
     if !success {
+        // ⚠️ 这里原来是 `list_…(...).unwrap_or_default()`：读库失败 ⇒ 空集合 ⇒
+        // `already_completed=false` ⇒ 一个**迟到的 failure ACK 就能把 completed 降级成 failed**。
+        // 读失败时我们无法证明幂等，唯一正确的动作是**不改**（账本保持原样，等下一条 ACK）。
         let already_completed = {
             let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-            db::list_group_file_recipients(&dbc, &transfer_id)
-                .unwrap_or_default()
-                .into_iter()
-                .any(|r| r.recipient_id == peer_id && r.status == "completed")
+            match db::list_group_file_recipients(&dbc, &transfer_id) {
+                Ok(v) => v
+                    .into_iter()
+                    .any(|r| r.recipient_id == peer_id && r.status == "completed"),
+                Err(e) => {
+                    state.logger.error(
+                        "group_file",
+                        format!(
+                            "code=GFILE_ACK_READ_FAILED transfer_id={transfer_id} peer={peer_id} \
+                             phase=idempotency err={e} —— 无法确认是否已 completed，这次不改账本"
+                        ),
+                    );
+                    return;
+                }
+            }
         };
         if already_completed {
             return;
@@ -598,25 +660,70 @@ async fn handle_group_file_complete_ack(
     //   仍有 pending/sending → 气泡保持当前状态（sending），等后续 ACK。
     let bubble;
     {
+        // 终态写入：**有界重试**（3 次 / 25ms，重试之间**释放全局 DB 锁**）。
+        //
+        // 为什么要重试而不是一次定生死：这条 ACK 是**一次性**的（对端不会为同一条
+        // transfer 再发一遍），而这里最常见的失败是 SQLITE_BUSY —— 另一条写事务恰好占着
+        // 连接。一次 BUSY 就把一条成功送达的群文件记成"永远 sending"，代价远大于 50ms 重试。
+        // 仍然失败 ⇒ 不决定气泡、不改账本，留 `code=GFILE_ACK_PERSIST_FAILED`。
+        let outcome = retry_ack_write(|| {
+            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+            db::update_group_file_recipient(&dbc, &transfer_id, peer_id, status, progress)
+        })
+        .await;
+        if let Err(e) = outcome {
+            // 0 行命中 = 这条 ACK 的发送者不是该 transfer 的 recipient（伪造/串台）：
+            // 按文档语义**拒绝**，不当作数据库故障刷 error。
+            if matches!(e, rusqlite::Error::InvalidParameterName(_)) {
+                return;
+            }
+            state.logger.error(
+                "group_file",
+                format!(
+                    "code=GFILE_ACK_PERSIST_FAILED transfer_id={transfer_id} peer={peer_id} \
+                     status={status} attempts=3 err={e} —— 账本仍是旧状态、气泡不推进；\
+                     等重发/重放的 ACK 再收尾"
+                ),
+            );
+            return;
+        }
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        let _ = db::update_group_file_recipient(&dbc, &transfer_id, peer_id, status, progress);
         if success {
             bubble = "delivered";
         } else {
-            let recipients = db::list_group_file_recipients(&dbc, &transfer_id).unwrap_or_default();
-            let all_terminal = recipients
-                .iter()
-                .all(|r| r.status == "completed" || r.status == "failed");
-            if !all_terminal {
-                return; // 仍有进行中的 recipient：气泡保持当前，等后续 ACK
-            }
-            bubble = if recipients.iter().any(|r| r.status == "completed") {
-                "delivered"
-            } else {
-                "failed"
+            // 读失败**绝不能**折成空集合：空集合会让 `all_terminal` 恒真 ⇒
+            // 一次成功的群文件被写成 failed（2026-10-20 审计：真实误判路径）。
+            let recipients = match db::list_group_file_recipients(&dbc, &transfer_id) {
+                Ok(v) => v,
+                Err(e) => {
+                    state.logger.error(
+                        "group_file",
+                        format!(
+                            "code=GFILE_AGGREGATE_READ_FAILED transfer_id={transfer_id} err={e} \
+                             —— 不猜终态，气泡保持 sending"
+                        ),
+                    );
+                    return;
+                }
             };
+            let statuses: Vec<&str> = recipients.iter().map(|r| r.status.as_str()).collect();
+            match group_file_bubble(&statuses, status == "completed") {
+                Some(b) => bubble = b,
+                // 还有成员在途：保持当前状态，等后续 ACK（与旧行为一致）。
+                None => return,
+            }
         }
-        let _ = db::set_message_status(&dbc, &format!("gfile-{transfer_id}"), bubble).ok();
+        if let Err(e) = db::set_message_status(&dbc, &format!("gfile-{transfer_id}"), bubble) {
+            // 气泡写失败 ⇒ 不 emit（前端不会以为它成功了）；下次启动的孤儿恢复会兜住。
+            state.logger.error(
+                "group_file",
+                format!(
+                    "code=GFILE_BUBBLE_PERSIST_FAILED transfer_id={transfer_id} bubble={bubble} \
+                     err={e} —— 不 emit，等启动孤儿恢复"
+                ),
+            );
+            return;
+        }
         // sender 的 transfer 记录随聚合结果推进。
         // 状态：delivered → done，否则 failed（保留原有语义）。
         // 进度：按**在线成员**口径算，而不是「delivered 就写 1.0」——
@@ -664,6 +771,81 @@ async fn handle_group_file_complete_ack(
         let _ = state
             .app
             .emit("message-acked", &format!("gfile-{transfer_id}"));
+    }
+}
+
+#[cfg(test)]
+mod group_file_bubble_tests {
+    use super::{group_file_bubble, retry_ack_write};
+
+    /// 真值表：把"空集合 ≠ 全部失败"和"有成员在途 ⇒ 不决定"两条边界钉住。
+    /// 这两条正是 2026-10-20 审计里两个真实误判的形状（读失败被折成空集合）。
+    #[test]
+    fn bubble_is_decided_only_when_every_recipient_is_terminal() {
+        // 成功 ACK：有人收到即算 delivered，不看其他人
+        assert_eq!(
+            group_file_bubble(&[], true),
+            Some("delivered"),
+            "success ACK 必须直接推进，不能因为账本空就卡住"
+        );
+        // **核心**：空账本 + 失败 ACK ⇒ 不决定（旧实现会判 failed）
+        assert_eq!(
+            group_file_bubble(&[], false),
+            None,
+            "空集合不许判 failed —— 那是「读不到」不是「全都失败」"
+        );
+        // 有成员在途 ⇒ 不决定
+        assert_eq!(
+            group_file_bubble(&["completed", "sending"], false),
+            None,
+            "还有人在途时不许提前定终态"
+        );
+        // 全部终态：有人成功 ⇒ delivered；全失败 ⇒ failed
+        assert_eq!(
+            group_file_bubble(&["completed", "failed"], false),
+            Some("delivered")
+        );
+        assert_eq!(
+            group_file_bubble(&["failed", "failed"], false),
+            Some("failed")
+        );
+        assert_eq!(
+            group_file_bubble(&["completed", "completed"], false),
+            Some("delivered")
+        );
+    }
+
+    /// **重试策略**：前两次失败、第三次成功 ⇒ `Ok` 且恰好 3 次；一直失败 ⇒ `Err` 且**有界**（3 次）。
+    /// 这条钉的是"一次性 ACK 遇到瞬时 BUSY 不该把消息判死"，也是"不许无限重试"的上界。
+    #[test]
+    fn ack_write_retries_are_bounded_and_stop_on_first_success() {
+        let mut calls = 0u32;
+        let ok = tauri::async_runtime::block_on(retry_ack_write(|| {
+            calls += 1;
+            if calls < 3 {
+                Err("busy")
+            } else {
+                Ok(())
+            }
+        }));
+        assert!(ok.is_ok(), "第三次成功必须返回 Ok");
+        assert_eq!(calls, 3, "前两次失败后应当在第三次成功并停止");
+
+        let mut calls2 = 0u32;
+        let bad: Result<(), &str> = tauri::async_runtime::block_on(retry_ack_write(|| {
+            calls2 += 1;
+            Err("busy")
+        }));
+        assert!(bad.is_err(), "一直失败必须返回 Err（不许假装成功）");
+        assert_eq!(calls2, 3, "重试必须有界：最多 3 次");
+
+        let mut calls3 = 0u32;
+        let first: Result<(), &str> = tauri::async_runtime::block_on(retry_ack_write(|| {
+            calls3 += 1;
+            Ok(())
+        }));
+        assert!(first.is_ok());
+        assert_eq!(calls3, 1, "一次就成功时不许再重试");
     }
 }
 

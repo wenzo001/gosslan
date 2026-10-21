@@ -96,6 +96,112 @@ test("所有 t() 字面量调用点的 key 都存在于中英词典（防裸 key
   );
 });
 
+// ---------------- 反向护栏：词典里不留「全仓引不到」的死文案 ----------------
+/**
+ * 引用面用的字面量提取器：把一条源码里出现的字符串字面量抠出来。
+ *
+ * ⚠️ **三种引号各扫一遍**，不是"任一起任一种收尾"的合成一条。两版都踩过：
+ * · 合成版会把 `:title="t('logs.title')"` 里那个 `'` 当成外层 `"` 的收尾吃掉；
+ * · 只认同种引号成对的单遍版仍漏 —— 它扫到 `"t('logs.title')"` 整条后从**闭合引号
+ *   之后**继续走，被它包住的那对 `'…'` 永远不会再成为一次"起"。
+ * 分引号各扫一遍才吃得到**嵌套**：本仓模板里 `:aria-label="t('nav.me.online')"` 这类
+ * 外层双引号属性裹内层单引号 key 是主流写法，漏了就是把**在用的文案**判成死文案。
+ * 每一遍都不跨行（`[^…]` 里排除换行），`\\.` 放行转义引号；每种引号内部允许出现
+ * 别的引号，所以会产生一些拼出来的假字面量 —— 假字面量只会让 key 显得"还在用"，
+ * 方向是安全的（这条宁可漏杀，不可误杀）。
+ */
+const QUOTES = ['"', "'", "`"] as const;
+const literalsIn = (src: string): string[] => {
+  const out: string[] = [];
+  for (const q of QUOTES) {
+    // 内容：不许出现该引号本身、不许换行、不许裸反斜杠；`\\.` 让 `\"` 这种转义过关
+    const re = new RegExp(`${q}((?:\\\\.|[^${q}\\\\\n]){2,240})${q}`, "g");
+    for (const m of src.matchAll(re)) out.push(m[1]);
+  }
+  return out;
+};
+
+test("死文案量具的引用面夹具：嵌套引号里的 key 也必须抠得出来", () => {
+  // 正控 —— 只被外层双引号属性包住的那一条：单遍扫描永远扫不到它（扫完外层已经从闭引号后走开了），
+  // 认不出就是把**在用的**文案判成死文案。本仓主流写法：:aria-label="t('nav.me.online')"
+  const onlyNested = literalsIn(`<v-btn :aria-label="t('nav.me.online')" />`);
+  assert.ok(
+    onlyNested.includes("nav.me.online"),
+    `嵌套单引号里的 key 没进引用面（会误杀在用文案）：${JSON.stringify(onlyNested)}`,
+  );
+  assert.deepEqual(literalsIn(`ct(zo, "group.toast.nameEmpty", fallback)`), ["group.toast.nameEmpty"]);
+  assert.deepEqual(literalsIn("const k = `favorite.cardKind.${k}`;"), ["favorite.cardKind.${k}"]);
+  // 反控 —— 不许跨行连坐（跨行模板不该把后面几百行吃成一条"字面量"）
+  assert.deepEqual(literalsIn('const s = `x.y\n  z.w`;'), []);
+});
+
+/**
+ * 上面那条判据查的是「调用点 → 词典」（引了不存在的 key ⇒ 裸 key 上屏）。这一条查反向：
+ * 「词典 → 调用点」—— 定义了、但全仓再也引不到的文案。
+ *
+ * 为什么值得守：本批删掉 **41 条**，来源全是改名与删功能留下的尾巴（字号五档一度从
+ * `settings.chatStyle.fontSize.*` 改叫 `chatStyle.fontSize.*`，旧那 5 条留在册子里没人删；
+ * `diag.*` 里 5 条是那块面板删过行）。它们不影响运行，但**每条都要在中英两册各占一行**，
+ * 于是"这条还在用吗"从此没有答案 —— 词典越留越不敢删。
+ *
+ * 口径（三条都是为了不误杀，别改回去）：
+ * 1. **引用面 = 全仓任意字符串字面量**，不限 `t(...)` 调用点。把 key 放进查表常量再交给
+ *    `t()` 是本仓真写法（`ct(zo, "group.toast.nameEmpty", …)`、`return "diag.notCompiled"`），
+ *    只扫 `t("…")` 会把它们判成死文案。
+ * 2. **模板与拼接前缀算可达**：真动态点是 `t(\`favorite.cardKind.${"${"}active.kind}\`)` 与
+ *    `t("search.date." + f)` 这一族 ⇒ 任何以 `.` 结尾的字面量、以及模板里 `${` 之前那段都按
+ *    前缀展开。⚠️ 这段注释**原先举的例子是 `diag.${…}`**，于是判据自己的文档造出了一个
+ *    `diag.` 前缀，把整族 `diag.*` 全洗白 —— 注释里的字面量也算引用面，量具会读自己的说明。
+ *    已知边界：前缀规则偏松，`mu${seq}` 那种非 i18n 拼接同样留下前缀。本批 41 条里有 8 条
+ *    （`chat.selfChat`、`chat.selfChatHint`、`multi.forward`、`diag.networkStatus/name/
+ *    selected/lanPeers/btInterval`）就是被这种垃圾前缀判成"可达"的，逐条按**精确引号**复核
+ *    全仓 0 引用才删。⇒ 方向是漏杀不误杀，删文案仍要自己复核。
+ * 3. **测试码也进引用面**（与上一条判据刻意相反）：上一条必须跳过测试才容得下
+ *    `t("no.such.key")` 那种回落夹具；这一条问的是"还有没有任何东西需要它"，
+ *    只有测试在引的 key 删掉会红在测试上 ⇒ 按"仍在用"处理。
+ *    注释里的字面量同样算引用面 —— 这条宁可漏杀，不可误杀。
+ */
+test("词典里不留全仓引不到的死文案（反向：定义了却没人用）", () => {
+  const root = join(import.meta.dirname, "../..");
+  const skipDirs = new Set(["node_modules", "dist", "target", ".git", ".workbuddy", "test-results"]);
+  const lits = new Set<string>();
+  const prefixes: string[] = [];
+  const walk = (dir: string) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      if (skipDirs.has(e.name)) continue;
+      const p = join(dir, e.name);
+      if (e.isDirectory()) { walk(p); continue; }
+      if (!/\.(?:vue|ts)$/.test(e.name)) continue;
+      // 两册词典自己不算引用面（那里每个 key 都是字面量）
+      if (/i18n[\\/]locales/.test(p)) continue;
+      for (const s of literalsIn(readFileSync(p, "utf8"))) {
+        lits.add(s);
+        if (s.endsWith(".")) prefixes.push(s);
+        const cut = s.indexOf("${");
+        if (cut > 1) prefixes.push(s.slice(0, cut));
+      }
+    }
+  };
+  walk(join(root, "src"));
+
+  // 只查 zhCN：中英 key 集合一致由上面那条判据保证，两册不可能一边死一边活。
+  const dead = Object.keys(zhCN).filter(
+    (k) => !lits.has(k) && !prefixes.some((p) => p.length > 1 && k.startsWith(p)),
+  );
+  assert.deepEqual(
+    dead,
+    [],
+    `中英两册里留了全仓引不到的死文案（每条各占两行，改名/删功能留下的尾巴）：\n${dead.join("\n")}`,
+  );
+  // 扫描有效性下限：词典与引用面都必须真扫到东西，否则"0 条"是空扫出来的
+  assert.ok(Object.keys(zhCN).length >= 900, `只读到 ${Object.keys(zhCN).length} 条 key ⇒ 量具失效`);
+  assert.ok(lits.size >= 700, `引用面只扫到 ${lits.size} 个字面量 ⇒ 量具失效（目录或正则变了？）`);
+  console.log(
+    `· 死文案护栏：词典 ${Object.keys(zhCN).length} 键 / 引用面 ${lits.size} 个字面量 / `
+      + `可达前缀 ${new Set(prefixes).size} 个 / 死文案 0`,
+  );
+});
+
 // ---------------- 系统语言检测（纯函数） ----------------
 
 test("detectSystemLocale：zh* → 中文，en* → 英文，非中英 → 英文", () => {

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
+import { safeStorageBackend } from "../utils/safeStorage.ts";
 import { EMOJIS, type EmojiDef } from "@/utils/emoji";
 import {
   readEmojiUsage,
@@ -45,7 +46,8 @@ let restoreFocusTo: HTMLElement | null = null;
  * 计数记在**面板自己**的选中出口上：两处入口（输入框插入、消息表情回应）用的是同一个组件，
  * 在这一层记一次就够，不用调用点各写一遍（那样必然会漏掉其中一个）。
  */
-const storage = typeof localStorage === "undefined" ? null : localStorage;
+// 存储的"会不会抛"不在这里判（§6.80 那个家），这里只留"没有表就是空"这一件事
+const storage = safeStorageBackend;
 const usage = ref<EmojiUsage>(readEmojiUsage(storage));
 const grid = computed(() => pickerCells(EMOJIS, usage.value));
 const cells = computed(() => grid.value.items);
@@ -143,14 +145,14 @@ watch(
            没有为它另起一支遍历。 -->
       <div
         v-if="grid.frequentCount"
-        class="col-span-8 border-b border-[var(--gosslan-divider)] pb-1 text-[11px] leading-none text-[var(--gosslan-text-2)]"
+        class="col-span-8 border-b border-[var(--gosslan-divider)] pb-1 text-caption leading-none text-[var(--gosslan-text-2)]"
       >
         {{ t("emoji.frequent") }}
       </div>
       <template v-for="(e, i) in cells" :key="cellKey(e, i)">
         <div
           v-if="i === grid.frequentCount"
-          class="col-span-8 text-[11px] leading-none text-[var(--gosslan-text-2)]"
+          class="col-span-8 text-caption leading-none text-[var(--gosslan-text-2)]"
         >
           {{ t("emoji.all") }}
         </div>

@@ -8,7 +8,9 @@ import { AVATAR_INPUT_LIMIT_MB, AVATAR_INPUT_MAX_BYTES, AVATAR_SIZE, pickAvatarJ
 import { Camera } from "lucide-vue-next";
 import { t } from "@/i18n";
 import { useSubmitGuard } from "@/composables/useSubmitGuard";
-import { nicknameSchema } from "@/utils/validation";
+import { useImeEnterGuard } from "@/composables/useImeEnterGuard";
+import { nicknameSchema, MAX_NICKNAME_CHARS } from "@/utils/validation";
+import CharCounter from "@/components/ui/CharCounter.vue";
 
 const props = defineProps<{ active: boolean; reloadToken?: number }>();
 
@@ -56,18 +58,25 @@ async function persistProfile(name: string) {
 async function saveProfileNow() {
   const parsed = nicknameSchema.safeParse(nickname.value);
   if (!parsed.success) {
-    app.toast(t("settings.profile.toast.nicknameEmpty"), "error");
+    const issue = parsed.error.issues[0];
+    app.toast(
+      t(issue ? issue.message : "settings.profile.toast.nicknameEmpty", { max: MAX_NICKNAME_CHARS }),
+      "error",
+    );
     nickname.value = app.device?.nickname ?? "";
     return;
   }
   await persistProfile(parsed.data);
 }
 
+const ime = useImeEnterGuard();
 function onNicknameKeydown(e: KeyboardEvent) {
-  if (e.key === "Enter") {
-    e.preventDefault();
-    (e.target as HTMLInputElement).blur();
-  }
+  // 输入法的回车是把候选落字，不是"这个名字改完了"。判据不能只看 `e.key === "Enter"`：
+  // macOS WKWebView 上 compositionend 先于 keydown，那一刻 isComposing 已经是 false
+  // （同一条坑的来龙去脉见 `composables/useImeEnterGuard`）。
+  if (ime.isIme(e)) return;
+  e.preventDefault();
+  (e.target as HTMLInputElement).blur(); // blur 触发 @blur 的保存
 }
 
 /**
@@ -195,13 +204,20 @@ function processAvatar(file: File): Promise<string> {
              以及全局焦点环那条外圈方框都已去掉。 -->
         <input
           v-model="nickname"
-          maxlength="40"
+          :maxlength="MAX_NICKNAME_CHARS"
           :aria-busy="savingProfile"
           class="w-full rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none transition focus:border-transparent"
           :placeholder="t('settings.profile.nickname.placeholder')"
           @blur="saveProfileNow"
-          @keydown="onNicknameKeydown"
+          @keydown.enter="onNicknameKeydown"
+          @compositionstart="ime.onStart"
+          @compositionend="ime.onEnd"
         />
+        <!-- 静默截断要有可见读数（读数件见 ui/CharCounter）。外层 div 常驻：
+             否则第一个字打进去时下面那一排控件会跟着往下跳。 -->
+        <div class="mt-1 flex justify-end">
+          <CharCounter :text="nickname" :max="MAX_NICKNAME_CHARS" />
+        </div>
         <div class="mt-2.5 flex items-center justify-between">
           <button
             class="rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3 py-1.5 text-xs transition hover:bg-[var(--gosslan-hover)]"

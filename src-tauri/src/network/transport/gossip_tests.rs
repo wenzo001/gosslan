@@ -58,6 +58,207 @@
         ));
     }
 
+    /// 群会话键只能来自群目标；同一群换发送者，归属不变（`sender_id` 不是会话键）。
+    #[test]
+    fn inbound_conversation_group_never_uses_sender() {
+        let a = inbound_conversation(&GossipKind::Group, Some("g1"), "dev-a").unwrap();
+        let b = inbound_conversation(&GossipKind::Group, Some("g1"), "dev-b").unwrap();
+        assert_eq!(a.conv_id, "group:g1");
+        assert_eq!(b.conv_id, "group:g1");
+        assert_ne!(a.conv_id, "dev-a");
+        assert_ne!(b.conv_id, "dev-b");
+        assert_eq!(a.kind, "group");
+    }
+
+    /// 缺目标/空白目标必须拒绝 —— 不许回退成 `group:`，更不许回退成单聊。
+    #[test]
+    fn inbound_conversation_rejects_missing_or_blank_group_target() {
+        assert!(inbound_conversation(&GossipKind::Group, None, "dev-a").is_none());
+        assert!(inbound_conversation(&GossipKind::Group, Some(""), "dev-a").is_none());
+        assert!(inbound_conversation(&GossipKind::Group, Some("   "), "dev-a").is_none());
+    }
+
+    /// 单聊与群聊的会话键恒不相交；控制帧不产生会话归属。
+    #[test]
+    fn inbound_conversation_chat_and_group_are_disjoint() {
+        let dm = inbound_conversation(&GossipKind::Chat, Some("g1"), "dev-a").unwrap();
+        let group = inbound_conversation(&GossipKind::Group, Some("g1"), "dev-a").unwrap();
+        assert_eq!((dm.conv_id.as_str(), dm.kind), ("dev-a", "single"));
+        assert_eq!((group.conv_id.as_str(), group.kind), ("group:g1", "group"));
+        assert_ne!(dm.conv_id, group.conv_id);
+        assert!(inbound_conversation(&GossipKind::Presence, None, "dev-a").is_none());
+        assert!(inbound_conversation(&GossipKind::ChatAck, None, "dev-a").is_none());
+    }
+
+    /// 真实 schema + 真实落库/历史/离线队列函数：群文本、图片、群文件卡片只进群会话，
+    /// 重复投递不改归属，群改元数据不生成消息，单聊完全不受影响。
+    #[test]
+    fn real_db_keeps_group_and_dm_conversations_isolated() {
+        use crate::protocol::{GroupHistoryItem, GroupHistoryPage};
+        use crate::state::MessageRecord;
+        use rusqlite::Connection;
+
+        fn rec(id: &str, conv: &str, kind: &str, content: &str, seq: i64) -> MessageRecord {
+            MessageRecord {
+                id: 0,
+                msg_id: id.to_string(),
+                conv_id: conv.to_string(),
+                sender_id: "dev-a".to_string(),
+                receiver_id: "me".to_string(),
+                kind: kind.to_string(),
+                content: content.to_string(),
+                ts: 1000 + seq,
+                seq,
+                status: "delivered".to_string(),
+                mention_targets: None,
+            }
+        }
+
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(crate::db::SCHEMA).unwrap();
+        crate::db::upsert_group(
+            &conn,
+            "g1",
+            "群一",
+            "dev-a",
+            &["dev-a".to_string(), "me".to_string()],
+        )
+        .unwrap();
+        crate::db::upsert_group(
+            &conn,
+            "g2",
+            "群二",
+            "dev-a",
+            &["dev-a".to_string(), "me".to_string()],
+        )
+        .unwrap();
+
+        for m in [
+            rec("g-text", "group:g1", "text", "群文本", 1),
+            rec("g-img", "group:g1", "image", r#"{"name":"a.png","path":"/tmp/a"}"#, 2),
+            rec("gfile-t1", "group:g1", "file", r#"{"name":"big.bin","size":100}"#, 3),
+            rec("g2-text", "group:g2", "text", "另一个群", 1),
+            rec("dm-text", "dev-b", "text", "单聊", 1),
+        ] {
+            assert!(crate::db::insert_message_if_new(&conn, &m).unwrap(), "{}", m.msg_id);
+        }
+
+        let g1 = crate::db::get_messages(&conn, "group:g1", 100, 0).unwrap();
+        let g2 = crate::db::get_messages(&conn, "group:g2", 100, 0).unwrap();
+        let dm = crate::db::get_messages(&conn, "dev-b", 100, 0).unwrap();
+        assert_eq!(g1.len(), 3);
+        assert_eq!(g2.len(), 1);
+        assert_eq!(dm.len(), 1);
+        assert!(g1.iter().all(|m| m.conv_id == "group:g1"));
+        assert!(dm.iter().all(|m| m.conv_id == "dev-b"));
+        assert_eq!(crate::db::get_messages(&conn, "dev-a", 100, 0).unwrap().len(), 0);
+
+        // 重复投递：库内仍是 3 条，归属不变。
+        assert!(!crate::db::insert_message_if_new(&conn, &rec("g-text", "group:g1", "text", "群文本", 1)).unwrap());
+        assert_eq!(crate::db::count_messages(&conn, "group:g1"), 3);
+        assert_eq!(crate::db::count_messages(&conn, "dev-b"), 1);
+
+        crate::db::touch_conversation(&conn, "group:g1", "group", "群一", None, "群文本", 1).ok();
+        crate::db::touch_conversation(&conn, "group:g2", "group", "群二", None, "另一个群", 1).ok();
+        crate::db::touch_conversation(&conn, "dev-b", "single", "B", None, "单聊", 1).ok();
+        assert_eq!(crate::db::get_conversation(&conn, "group:g1").unwrap().unread, 1);
+        assert_eq!(crate::db::get_conversation(&conn, "group:g2").unwrap().unread, 1);
+        assert_eq!(crate::db::get_conversation(&conn, "dev-b").unwrap().unread, 1);
+        assert!(crate::db::get_conversation(&conn, "dev-a").is_none());
+
+        // 群已读只清本群，不串单聊/别的群。
+        crate::db::mark_read(&conn, "group:g1").unwrap();
+        assert_eq!(crate::db::get_conversation(&conn, "group:g1").unwrap().unread, 0);
+        assert_eq!(crate::db::get_conversation(&conn, "dev-b").unwrap().unread, 1);
+        assert_eq!(crate::db::get_conversation(&conn, "group:g2").unwrap().unread, 1);
+
+        // 群元数据同步/改名：会话标题跟着变，但不凭空生成消息。
+        crate::db::rename_group(&conn, "g1", "更名后的群").unwrap();
+        assert_eq!(
+            crate::db::get_conversation(&conn, "group:g1").unwrap().name,
+            "更名后的群"
+        );
+        assert_eq!(crate::db::count_messages(&conn, "group:g1"), 3);
+        assert_eq!(crate::db::count_messages(&conn, "dev-b"), 1);
+
+        // 群历史同步写进同一个群键；重复页只计 duplicate。
+        crate::db::upsert_group(
+            &conn,
+            "g3",
+            "群三",
+            "dev-a",
+            &["dev-a".to_string(), "me".to_string()],
+        )
+        .unwrap();
+        let page = GroupHistoryPage {
+            items: vec![
+                GroupHistoryItem {
+                    msg_id: "h1".into(),
+                    sender_id: "dev-a".into(),
+                    kind: "text".into(),
+                    content: "历史一".into(),
+                    ts: 2000,
+                    seq: 10,
+                    mention_targets: None,
+                },
+                GroupHistoryItem {
+                    msg_id: "h2".into(),
+                    sender_id: "dev-b".into(),
+                    kind: "image".into(),
+                    content: r#"{"name":"h.png"}"#.into(),
+                    ts: 2001,
+                    seq: 11,
+                    mention_targets: None,
+                },
+            ],
+            files: vec![],
+        };
+        let first =
+            crate::db::apply_group_history_page(&conn, "g3", "me", "群三", &page).unwrap();
+        assert_eq!(first.inserted, 2);
+        assert_eq!(crate::db::count_messages(&conn, "group:g3"), 2);
+        assert_eq!(crate::db::count_messages(&conn, "dev-b"), 1);
+        assert!(crate::db::get_messages(&conn, "group:g3", 100, 0)
+            .unwrap()
+            .iter()
+            .all(|m| m.conv_id == "group:g3"));
+        let again =
+            crate::db::apply_group_history_page(&conn, "g3", "me", "群三", &page).unwrap();
+        assert_eq!(again.inserted, 0);
+        assert_eq!(again.duplicate, 2);
+        assert_eq!(crate::db::count_messages(&conn, "group:g3"), 2);
+
+        // 离线补发队列里的帧仍是 Group + 原 group_id（重放不改归属）。
+        let env = crate::gossip_engine::GossipEngine::new(100, 10, 2, 4)
+            .build_envelope(
+                &crate::crypto::Identity::generate(),
+                "dev-a",
+                GossipKind::Group,
+                Some("g1".to_string()),
+                Some("群一".to_string()),
+                "cipher",
+                1000,
+                1,
+            );
+        let frame = Message::Gossip { envelope: env.clone() };
+        crate::db::insert_group_outbox(
+            &conn,
+            &env.message_id,
+            "g1",
+            "dev-b",
+            &serde_json::to_string(&frame).unwrap(),
+        )
+        .unwrap();
+        let rows = crate::db::list_group_outbox(&conn, "dev-b").unwrap();
+        assert_eq!(rows.len(), 1);
+        let Message::Gossip { envelope } = serde_json::from_str(&rows[0].1).unwrap() else {
+            panic!("群队列必须是 Gossip 帧");
+        };
+        assert_eq!(envelope.kind, GossipKind::Group);
+        assert_eq!(envelope.group_id.as_deref(), Some("g1"));
+        assert_eq!(envelope.message_id, env.message_id);
+    }
+
     /// **非成员中继必须转发群消息**（结构护栏）：`handle_gossip` 里那句早期 `return` 一旦
     /// 被加回来，BLE-only 多跳的群聊就又断了 —— 而它**不会让任何测试失败**，
     /// 只会让真机上的群聊静默不通。所以用源码断言把"只记判据、不 return"钉住。
@@ -84,6 +285,52 @@
             ),
             "不能恢复『非成员直接 return』的旧写法 —— 那会让非成员中继不再转发群消息，\
              多跳（BLE-only 手机↔电脑↔手机）群聊永远不通"
+        );
+    }
+
+    /// **结构护栏：入站会话归属只有 `inbound_conversation` 一个定义点。**
+    ///
+    /// 上面那三条真值表只证明"那个函数本身判得对"。一旦有人把归属逻辑重新内联回
+    /// `handle_gossip`（最可能的那一种：`conv_id = env.sender_id`，即群消息按发送者
+    /// 归到单聊 —— 2026-10-20 修的正是这个形状），三条纯函数判据会**全绿**，
+    /// 而真机上群消息又开始污染个人聊天。判据与被验对象必须住在同一条路径上。
+    ///
+    /// 为什么不用端到端用例：`handle_gossip` 要 `&Arc<AppState>`（tauri AppHandle +
+    /// 真数据库 + 网络），本仓没有这层夹具；能在这层钉住"归属从哪来"的就是源码形状。
+    #[test]
+    fn handle_gossip_takes_conversation_only_from_the_single_definition() {
+        let src = crate::network::transport_src_for_guards();
+        let start = src
+            .find("\nasync fn handle_gossip(")
+            .map(|i| i + 1)
+            .expect("必须还有 handle_gossip");
+        let body = &src[start..];
+        let end = body.find("\n}\n").unwrap_or(body.len());
+        let body = &body[..end];
+
+        assert_eq!(
+            body.matches("inbound_conversation(").count(),
+            1,
+            "handle_gossip 必须恰好调用一次 `inbound_conversation` —— \
+             改成就地拼会话键等于开出第二个定义点，群/单聊的归属从此可以漂移"
+        );
+        // ⚠️ 这几条都在**原文**上搜（不 `code_flat`）：带空格的 Rust 语句一旦去空白
+        // 就变成 `letconv_id=env.sender_id;`，断言会永远为真 ⇒ 判据自等。
+        assert!(
+            body.contains("let conv_id = target.conv_id;"),
+            "会话键必须原样取自 `inbound_conversation` 的结论（`target.conv_id`）"
+        );
+        for forbidden in ["conv_id = env.sender_id", "conv_id: env.sender_id"] {
+            assert!(
+                !body.contains(forbidden),
+                "handle_gossip 里又出现 `{forbidden}` —— 群信封会被写成发送者的单聊，\
+                 这正是 2026-10-20 修掉的串会话根因"
+            );
+        }
+        assert!(
+            !body.contains("format!(\"group:\")"),
+            "群会话键不许在 handle_gossip 里就地拼：`group:{{gid}}` 的唯一定义点在 \
+             `inbound_conversation`（另有一处 `member_notices` 只用于系统提示）"
         );
     }
 

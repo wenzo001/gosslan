@@ -73,7 +73,7 @@ export const isIOS =
  *
  * ⚠️ **平台优先，宽度兜底** —— 这个顺序是事故换来的：
  * 真实事故（用户 2026-09-21，Android 首次启动）：启动时的系统权限弹框盖在 WebView 的
- * **首次布局**上，此刻 `matchMedia("(max-width: 767px)")` 会读到**兜底视口宽度**（980px 那档）
+ * **首次布局**上，此刻 `matchMedia(NARROW_LAYOUT_QUERY)` 会读到**兜底视口宽度**（980px 那档）
  * ⇒ `isMobile = false` ⇒ **手机上渲染出桌面三栏布局**，首页样式整个"崩"。
  *
  * 安卓 / iOS 都是**竖屏锁定**的手机/平板（`screenOrientation="portrait"`），压根不存在
@@ -84,6 +84,21 @@ export const isIOS =
 export function resolveMobileLayout(o: { android: boolean; ios: boolean; narrow: boolean }): boolean {
   return o.android || o.ios || o.narrow;
 }
+
+/**
+ * 「窄窗口」这一档的唯一取值。**767 不是随手写的**：它必须恰好等于 Tailwind `md`（现算 768px）
+ * 的前一档 —— 全仓的结构级断点都写成 `desktop:md:*` 叠加，两边重叠或留缝的那一刻，
+ * `html.is-mobile` 与 `md:` 会同时亮或同时灭（导航栏与抽屉各来一份）。
+ *
+ * 为什么要有家（判据见 platform.test.ts 末尾）：这个数原来有三份手抄 —— 建 store 时判初值、
+ * init 里那条活着的 `matchMedia`、以及 `src/boot/skeleton.css` 的 `@media`。改一份编译得过、
+ * 构建得过、探针也过，症状只是首帧按另一档渲染 ⇒ 静默。CSS 那份接不进这个常量（媒体查询
+ * 读不了自定义属性），只能靠判据两边现读对账。
+ */
+export const MOBILE_MAX_WIDTH_PX = 767;
+
+/** 由 `MOBILE_MAX_WIDTH_PX` 现拼的媒体查询 —— 生产码里不许再出现手抄的宽度查询串。 */
+export const NARROW_LAYOUT_QUERY = `(max-width: ${MOBILE_MAX_WIDTH_PX}px)`;
 
 /**
  * 输入能力：这台设备**有没有真指针悬停**（纯函数，便于单测）。
@@ -109,3 +124,27 @@ export const canHover =
   typeof window !== "undefined" && typeof window.matchMedia === "function"
     ? canHoverByMedia((q) => window.matchMedia(q))
     : false;
+
+/**
+ * 系统有没有开"减弱动态效果"（纯函数，便于单测）。
+ *
+ * 为什么需要一个家：这条查询本仓已经有两处 JS 要问（触觉、桌面抖窗），而 CSS 那两处
+ * （`style.css` 的全局动画降级、骨架的呼吸动画）表达不了"别调那个 IPC 命令"。
+ * 两处各写一遍 = 早晚只有一处跟着改（2026-10-19 实测：触觉接了，抖窗没接）。
+ */
+export function prefersReducedMotionByMedia(
+  mm: (query: string) => { matches: boolean },
+): boolean {
+  return mm("(prefers-reduced-motion: reduce)").matches;
+}
+
+/**
+ * 运行时读数。**每次调用现读**，不在模块加载时快照 ——
+ * 用户在系统设置里打开/关掉这个开关不该要求重启应用，而触觉和抖窗都是"事件发生时才问"
+ * 的低频调用，现读的代价是一次 `matchMedia`（不注册监听，也就不需要摘）。
+ */
+export function prefersReducedMotion(): boolean {
+  return typeof window !== "undefined" && typeof window.matchMedia === "function"
+    ? prefersReducedMotionByMedia((q) => window.matchMedia(q))
+    : false;
+}

@@ -2,13 +2,28 @@
 //
 // 单独成文件的原因有两条：
 // 1. 这里决定用户看到的是「已被清理」提示还是一个裂开的图片框，必须有单测；
+//    本模块只给**原因**不给文案（文案在词典里，渲染处 t()）。
 // 2. `filePreview.ts` / `useMessageFile.ts` 都要引入 Tauri IPC，Node 侧跑不了
 //   （测试用 `node --test`，不认 Vite 的 `@/` 别名），纯函数必须与它们分离。
+
+/**
+ * 预览失败的**确定性原因**：这是机器判据，不是文案。
+ * 「这条失败能不能进缓存」读它 —— 原先写的是拿上屏字串做相等比较，
+ * 一旦那句文案接进 i18n，两处缓存判断会当场静默失效（2026-10-19 全量盘点发现）。
+ */
+export type PreviewFailure = "gone" | "tooLarge";
+
+/** 原因 → 词典键。上屏的地方一律取键再翻译，本模块不写死任何一种语言。 */
+export const PREVIEW_FAILURE_KEYS: Record<PreviewFailure, string> = {
+  gone: "msg.cleaned",
+  tooLarge: "media.tooLarge",
+};
 
 export type PreviewResult = {
   url?: string;
   text?: string;
-  note?: string;
+  /** 确定性失败的原因；缺省表示「只是这次没查到」—— 暂时态，不许进缓存。 */
+  failure?: PreviewFailure;
   /** 本地媒体已被「存储清理」删除（不是坏文件，也不是对端没发）。 */
   missing?: boolean;
 };
@@ -19,8 +34,8 @@ export function previewFailureResult(err: string): PreviewResult {
   // `commands::resolve_media_path` 的 `Gone` 分支，文案固定为"文件不存在"）。
   // "消息不存在"/"元数据缺少路径"/"路径越权"都是"查不到"，属于未知而非已删除——
   // 在途消息会落到这些分支，误判会把正在发送的图片标成"已清理"。
-  if (err.includes("文件不存在")) return { missing: true, note: "已被清理" };
-  if (err.includes("TOO_LARGE")) return { note: "文件过大，无法预览" };
+  if (err.includes("文件不存在")) return { missing: true, failure: "gone" };
+  if (err.includes("TOO_LARGE")) return { failure: "tooLarge" };
   return {};
 }
 

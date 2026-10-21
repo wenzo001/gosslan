@@ -166,19 +166,19 @@ function onSettingsBack() {
       <!-- 一级页：分组列表 -->
       <div v-if="mobileNav === null" class="min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-4">
         <div v-for="g in GROUPS" :key="g.key" class="mb-5">
-          <div class="pb-1 text-[11px] font-medium uppercase tracking-wider text-[var(--gosslan-text-3)]">
+          <div class="pb-1 text-caption font-medium uppercase tracking-wider text-[var(--gosslan-text-2)]">
             {{ t(g.titleKey) }}
           </div>
           <div class="overflow-hidden rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)]">
             <button
               v-for="(item, idx) in g.items"
               :key="item.key"
-              class="tap-safe flex w-full items-center gap-3 px-3 py-3 text-left text-[14px] transition hover:bg-[var(--gosslan-hover)]"
+              class="tap-safe flex w-full items-center gap-3 px-3 py-3 text-left text-emphasis transition hover:bg-[var(--gosslan-hover)]"
               :class="idx > 0 ? 'border-t border-[var(--gosslan-divider)]' : ''"
               @click="mobileNav = item.key"
             >
               <span class="flex-1 text-[var(--gosslan-text)]">{{ t(item.titleKey) }}</span>
-              <ChevronRight class="h-4 w-4 text-[var(--gosslan-text-3)]" />
+              <ChevronRight class="h-4 w-4 text-[var(--gosslan-text-2)]" />
             </button>
           </div>
         </div>

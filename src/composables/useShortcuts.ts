@@ -1,4 +1,4 @@
-import { onBeforeUnmount, onMounted } from "vue";
+import { useEventListener } from "@vueuse/core";
 import { emitAction } from "@/utils/appActions";
 import { isMac } from "@/utils/platform";
 import { matchAppShortcut } from "@/utils/shortcuts";
@@ -61,6 +61,5 @@ export function useShortcuts() {
     emitAction(action);
   }
 
-  onMounted(() => window.addEventListener("keydown", onKeydown));
-  onBeforeUnmount(() => window.removeEventListener("keydown", onKeydown));
+  useEventListener(window, "keydown", onKeydown);
 }

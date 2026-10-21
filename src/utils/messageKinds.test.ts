@@ -16,6 +16,7 @@ import {
   isRenderedInTimeline,
   countsTowardUnread,
   kindClass,
+  shouldShowNickname,
 } from "./messageKinds.ts";
 import {
   TODO_CATEGORIES,
@@ -261,7 +262,7 @@ test("对照：解析器看得见人为造的漂移（判据不空转）", () =>
  * `kind === "system"` 时，`recalled` 就被漏掉：群聊里一条"对方撤回"会多估 18px，
  * 虚拟列表把下面那条推偏、两条消息互相遮挡 —— 而这只在群里、有对方撤回时现形。
  */
-test("提示行的判定只有一个来源（MessageItem 与 messageHeight 都走 isTipKind）", () => {
+test("提示行的判定只有一个来源；昵称行判定渲染端与估算端共用一个函数（§6.64）", () => {
   const read = (p: string) => readFileSync(join(here, p), "utf8");
   const messageItem = read("../../src/components/MessageItem.vue");
   const messageHeight = read("./messageHeight.ts");
@@ -269,19 +270,53 @@ test("提示行的判定只有一个来源（MessageItem 与 messageHeight 都�
   assert.ok(TIP_KINDS.includes("system") && TIP_KINDS.includes("recalled"), "系统消息与撤回都算提示行");
   assert.ok(isTipKind("system") && isTipKind("recalled") && !isTipKind("text"));
 
-  for (const [name, src] of [["MessageItem.vue", messageItem], ["messageHeight.ts", messageHeight]] as const) {
-    assert.match(src, /isTipKind\(/, `${name} 必须用 isTipKind 判定提示行（不要自己比 kind 字面量）`);
+  /*
+   * §6.64 之后这一半改了口径，**不是放宽**：原先这里要求 `messageHeight` 自己出现 `isTipKind(`，
+   * 那是"估算端把提示行规则又抄一遍"的抄本 —— 现在它不该再抄，规则收在 `shouldShowNickname` 里。
+   * 所以"必须出现 isTipKind(" 只对**渲染分支**（MessageItem）仍然成立，
+   * 而"估算端有没有把提示行算进昵称行"这件事，改由下面那张**真值表**直接跑函数来证 ——
+   * 它比"源码里有没有那个字面量"强：摘掉规则里任何一角，表里就有一行翻转。
+   * "不许自己比 kind 字面量"这条对三本文件都还留着（漏掉 recalled 就是那条老 bug 的成因）。
+   */
+  assert.match(messageItem, /isTipKind\(/, "MessageItem 必须用 isTipKind 判定提示行（不要自己比 kind 字面量）");
+  for (const [name, src] of [
+    ["MessageItem.vue", messageItem],
+    ["messageHeight.ts", messageHeight],
+    ["useMessageDisplay.ts", read("../../src/composables/useMessageDisplay.ts")],
+  ] as const) {
     assert.ok(
       !/kind === "system"/.test(src),
       `${name} 不得再自己写 kind === "system" —— 那样会漏掉 recalled（两边漂移即高度估算出错）`,
     );
   }
-  // 提示行没有昵称行 ⇒ 高度估算必须跟着排除（渲染侧整支都在头像行之外）
-  assert.match(
-    messageHeight,
-    /showNickname =[\s\S]{0,120}isTipKind\(m\.kind\)/,
-    "提示行不计昵称行 —— 不排除就与渲染对不上",
-  );
+  // 昵称行的判定（§6.64）：提示行没有昵称行这条规则现在写在 `shouldShowNickname` 里，
+  // 而它**占 18px** ⇒ 渲染端与估高端必须共用，不能各写一半（此前正是估算端带 `!isTipKind`、
+  // 渲染端不带，靠 MessageItem 的 v-if/v-else 结构差持平）。
+  // 真值表跑的是函数本身（本文件零 `@/` 依赖才跑得动）：摘掉那条 `!isTipKind` 当场红在
+  // `system` / `recalled` 两行上，不需要靠"读源码里有没有那个字面量"来推断。
+  const NICK_CASES: Array<{ input: { isGroup: boolean; mine: boolean; kind: string }; want: boolean }> = [
+    { input: { isGroup: true, mine: false, kind: "text" }, want: true }, // 群里别人发的
+    { input: { isGroup: true, mine: true, kind: "text" }, want: false }, // 自己发的没有昵称行
+    { input: { isGroup: false, mine: false, kind: "text" }, want: false }, // 单聊没有昵称行
+    { input: { isGroup: true, mine: false, kind: "system" }, want: false }, // 提示行没有
+    { input: { isGroup: true, mine: false, kind: "recalled" }, want: false }, // 撤回也没有（旧写法漏的就是它）
+  ];
+  for (const c of NICK_CASES) {
+    assert.equal(shouldShowNickname(c.input), c.want, `昵称行判据与预期不符：${JSON.stringify(c.input)}`);
+  }
+  // 至少有一行是 true，否则上面那张表会因为"恒 false"全绿（那是另一种空转）
+  assert.ok(NICK_CASES.some((c) => c.want && shouldShowNickname(c.input)), "真值表里必须有会亮的格子");
+
+  for (const [name, src] of [
+    ["useMessageDisplay.ts（渲染端）", read("../../src/composables/useMessageDisplay.ts")],
+    ["messageHeight.ts（估算端）", messageHeight],
+  ] as const) {
+    assert.match(src, /shouldShowNickname\(/, `${name} 必须走那个共用的判定函数`);
+    assert.ok(
+      !/isTipKind\(/.test(src),
+      `${name} 里又出现 isTipKind( ⇒ 昵称行的规则被拆回两边各写一份了（要合并进 shouldShowNickname）`,
+    );
+  }
 });
 
 // ── §30 那条回归：「自己创建的群任务在聊天里看不见」（2026-09-26 用户实测报出，#82 已修）──

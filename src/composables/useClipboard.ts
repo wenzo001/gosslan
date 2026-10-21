@@ -1,4 +1,4 @@
-import { ref } from "vue";
+import { onScopeDispose, ref } from "vue";
 import { useClipboard as useVueClipboard } from "@vueuse/core";
 
 export type CopyKey = string | null;
@@ -13,21 +13,30 @@ export type CopyKey = string | null;
 export function useClipboard(resetMs = 1500) {
   const copiedKey = ref<CopyKey>(null);
   const { copy } = useVueClipboard({ legacy: true });
+  let timer = 0;
+  // 连点两次要以后一次为准（旧表不摘会把新一次的"已复制"提前抹掉）。
+  // 作用域销毁（组件卸载）时同样摘表 —— 原来那条裸 setTimeout 会在卸载后回写 ref。
+  onScopeDispose(() => clearTimeout(timer));
 
   /**
-   * 复制文本。**返回是否成功** —— 调用方需要据此给用户反馈：
-   * 移动端「长按 → 底部操作面板」点完面板就关了，若没有额外提示，
-   * 用户根本不知道复制成功没有（气泡上的"已复制"勾只在长文本操作条里渲染）。
+   * 复制文本；成功与否**不承诺**（见下）。移动端「长按 → 底部操作面板」点完面板就关了，
+   * 靠调用方补一句 toast，别指望这里返回值。
+   *
+   * ⚠️ 原先这里返回 `Promise<boolean>`，而实现恒为 `true` ⇒ 五个组件里
+   *    `ok ? 已复制 : 复制失败` 的失败半边是**永远不会跑的分支**，
+   *    真写不进剪贴板时界面照样说"已复制"。签名改成 `void` 后，编译器会把每一处
+   *    假分支点出来（本仓数影响面一向按编译器数，不按"我觉得哪几个文件"）。
+   *    为什么给不了真布尔：@vueuse/core 14.4.0 的 `copy()` 里 async 分支 `catch` 后
+   *    直接转 legacy、`legacyCopy` 把 `execCommand("copy")` 的返回值丢掉，
+   *    然后**无条件** `copied.value = true` —— 库里就没有这个信号。
    */
-  async function copyContent(key: string, text: string): Promise<boolean> {
-    // VueUse 的 copy 会自行捕获写失败并回退 legacy；它不返回布尔值（v14 返回 void）。
-    // 这里保持"调用即视为已尝试"的旧语义，复制反馈不阻塞业务。
+  async function copyContent(key: string, text: string): Promise<void> {
     await copy(text);
     copiedKey.value = key;
-    setTimeout(() => {
+    clearTimeout(timer);
+    timer = window.setTimeout(() => {
       if (copiedKey.value === key) copiedKey.value = null;
     }, resetMs);
-    return true;
   }
 
   return { copiedKey, copyContent };

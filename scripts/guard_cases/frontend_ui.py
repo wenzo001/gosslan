@@ -376,9 +376,12 @@ CASES: list[Case] = [
         "移动端选中文字后不弹「复制」工具条、头像能被拖进选区。这些都是"
         "「代码看着对、用户一用就不对」，改坏了不会报错，只能靠护栏盯住",
         file=ROOT / "src" / "App.vue",
+        # 2026-10-19 锚点跟着形状改过一次：那四条监听从 `onMounted` 里的手写 add
+        # 换成 `useEventListener`（VueUse，按组件作用域自动解绑）之后，选区判断
+        # 从 `onMounted` 的闭包里搬进了具名函数 `suppressContextMenu`，缩进 4→2 空格。
         injections=[(
-            "    const sel = window.getSelection();",
-            "    // 回归：不再检查选区（有选中文字时也 preventDefault）",
+            "  const sel = window.getSelection();",
+            "  // 回归：不再检查选区（有选中文字时也 preventDefault）",
         )],
         cmd=npm("test"),
         cwd=ROOT,
@@ -625,6 +628,85 @@ CASES: list[Case] = [
         cwd=ROOT,
         expect_fail_hint="① 输入框没把名单随 send 交出去",
         tags=["frontend", "group", "stability", "new-guards", "mention-identity"],
+    ),
+    Case(
+        name="校验层又把中文写回 message（换语言就留下没人管的死文案）必须被抓住",
+        why="zod schema 是模块级常量，import 那一刻就把 message 定死了。把中文写回这里 ⇒ "
+            "英文界面要么显示中文、要么显示一个没人翻译的串，而且它看起来像 UI 文案、"
+            "实则没有任何一处会读它（两处调用点自己 t()）。回归形状就是有人在这里补人话。",
+        file=ROOT / "src" / "utils" / "validation.ts",
+        injections=[("z.minLength(1, emptyKey),", 'z.minLength(1, `${emptyKey}（必填）`),')],
+        cmd=["node", "--test", "--experimental-strip-types", "--disable-warning=ExperimentalWarning",
+             "src/utils/validation.test.ts"],
+        cwd=ROOT,
+        expect_fail_hint="message 里还有中文",
+        tags=["frontend", "new-guards", "i18n"],
+    ),
+    Case(
+        name="复制反馈又长出第二份实现（组件绕过组合式直连 VueUse）必须被拦下",
+        why="`copied 状态 + 自动复位 + 写入` 这套形状原来有两份：组合式一份、LogViewer 自己抄一份，"
+            "两份的复位时长与卸载清理并不一致（组合式那条裸 setTimeout 卸载后还会回写 ref）。"
+            "合并成一份后，回归的形状是「有人再把 VueUse 直接接回组件里」"
+            "⇒ 钉的是这条接线，不是文案。",
+        file=ROOT / "src" / "components" / "LogViewer.vue",
+        injections=[(
+            'import { useClipboard } from "@/composables/useClipboard";',
+            'import { useClipboard as useVueClipboard } from "@vueuse/core";\n'
+            'const _unused = useVueClipboard;',
+        )],
+        cmd=["node", "--test", "--experimental-strip-types", "--disable-warning=ExperimentalWarning",
+             "src/utils/componentImports.test.ts"],
+        cwd=ROOT,
+        expect_fail_hint="useClipboard",
+        tags=["frontend", "new-guards"],
+    ),
+    Case(
+        name="单飞跑完不摘除在途记录（第一次结果被永久钉住）必须被抓住",
+        why="utils/singleFlight.ts 是四处预览入口共用的在途去重。它的价值全在**settles 后摘除**这一步："
+            "谁把它抄掉或改错，同一个键就永久复用第一次的 Promise —— 预览第一次读失败（字节还没落盘）"
+            "之后，文件落地也不会再读（真机那条「图片时好时坏」的形状）。",
+        file=ROOT / "src" / "utils" / "singleFlight.ts",
+        injections=[(
+            "        try {\n          return await make();\n        } finally {\n"
+            "          // \u5148\u6458\u518d\u843d\uff1a`make` \u91cc\u82e5\u53c8\u53d1\u8d77\u540c\u952e\u4efb\u52a1\uff0c\u8fd9\u91cc\u4e0d\u8be5\u628a\u5b83\u4e00\u8d77\u5220\u6389\u3002\n"
+            "          inflight.delete(key);\n        }",
+            "        return await make();",
+        )],
+        cmd=["node", "--test", "--experimental-strip-types", "--disable-warning=ExperimentalWarning",
+             "src/utils/singleFlight.test.ts"],
+        cwd=ROOT,
+        expect_fail_hint="永久",
+        tags=["frontend", "new-guards"],
+    ),
+    Case(
+        name="通知的隐私开关失效（正文关掉了还把消息内容写进锁屏通知）必须被抓到",
+        why="notificationBody 同时受「条数」与「显示正文」两个维度影响，而关掉正文后那两条文案"
+            "**不含任何参数**是隐私不变量的机器表达。把开关那一格改成恒真，锁屏/通知中心就会"
+            "直接泄出对端正文（本仓把它列在模块头注释里的那条写错形状）。",
+        file=ROOT / "src" / "utils" / "notifications.ts",
+        injections=[(
+            "  if (input.showContent) {",
+            "  if (true) {",
+        )],
+        cmd=["node", "--test", "--experimental-strip-types", "--disable-warning=ExperimentalWarning",
+             "src/utils/notifications.test.ts"],
+        cwd=ROOT,
+        expect_fail_hint="notify.one",
+        tags=["frontend", "new-guards", "i18n"],
+    ),
+    Case(
+        name="时间列把文案注入丢掉（界面会退回裸 key / 硬编码中文）必须被单口判据抓住",
+        why="2026-10-19 全量盘点发现「今天/昨天/一周内」这套判断在 chatStyle 与 utils/time 各写一遍，"
+        "     而且星期表与「昨天」是硬编码中文 ⇒ 英文界面每条时间分割线都是中文。收口成单口之后，"
+        "     12 处调用点都必须把 vue-i18n 的 t 注入进来（判据按**次数**比，不是按文件出现过一次，"
+        "     第一版写成存在性断言时本用例当场被判成空转）。\n"
+        "     注入 = 把收藏时间列的 `, t` 摘掉 ⇒ 现读数 12 处里只剩 11 处，必须被那条接线判据抓住。",
+        file=ROOT / "src" / "components" / "FavoritePanel.vue",
+        injections=[('fmtConversationTime(f.favorited_at, t)', 'fmtConversationTime(f.favorited_at)')],
+        cmd=npm("test"),
+        cwd=ROOT,
+        expect_fail_hint="时间格式化没走 vue-i18n 文案",
+        tags=["frontend", "new-guards", "i18n"],
     ),
     Case(
         name="已读名单拆掉 Reka Portal 必须被接线判据抓住（escape 的那一半）",

@@ -6,9 +6,10 @@ import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { api } from "@/api";
 import BaseModal from "@/components/BaseModal.vue";
+import StateBlock from "@/components/ui/StateBlock.vue";
 import { Download, Folder, RefreshCw } from "lucide-vue-next";
 import { formatBytes } from "@/utils/format";
-import { reportError } from "@/utils/errors";
+import { errorText } from "@/composables/useErrorText";
 import { shareTreeQueryOptions } from "@/utils/shareTreeQuery";
 import type { ShareEntry } from "@/types";
 
@@ -45,7 +46,7 @@ const loading = computed(
   () => !!friendId.value && (treeQuery.isPending.value || treeQuery.isFetching.value),
 );
 const error = computed(() =>
-  treeQuery.error.value ? reportError(treeQuery.error.value, t("share.loadFail")) : null,
+  treeQuery.error.value ? errorText(treeQuery.error.value, t("share.loadFail"), { log: true }) : null,
 );
 
 function load() {
@@ -85,10 +86,34 @@ async function download(e: ShareEntry) {
     </div>
 
     <div class="max-h-80 overflow-y-auto">
-      <div v-if="error" class="py-4 text-sm text-[var(--gosslan-danger-ink)]" role="alert">{{ error }}</div>
-      <div v-else-if="entries.length === 0 && !loading" class="py-8 text-center text-sm text-[var(--gosslan-text-2)]">
-        {{ t("share.empty") }}
-      </div>
+      <!-- 首次读取：此前这里**什么都不画**，弹窗里一片空白 ⇒ 用户分不清"在读"与"对方没有文件"。
+           有旧清单时不换成整块状态（保留仍可用的数据，只在上面提示一行）。 -->
+      <StateBlock
+        v-if="loading && entries.length === 0"
+        compact
+        kind="loading"
+        :title="t('share.loading')"
+      />
+      <div
+        v-else-if="error && entries.length > 0"
+        class="py-4 text-sm text-[var(--gosslan-danger-ink)]"
+        role="alert"
+      >{{ error }}</div>
+      <StateBlock
+        v-else-if="error"
+        compact
+        kind="error"
+        :title="t('share.loadFail')"
+        :detail="error"
+        :retry-label="t('common.retry')"
+        @retry="load()"
+      />
+      <StateBlock
+        v-else-if="entries.length === 0"
+        compact
+        kind="empty"
+        :title="t('share.empty')"
+      />
 
       <div
         v-for="e in entries"
@@ -98,7 +123,7 @@ async function download(e: ShareEntry) {
       >
         <Folder v-if="e.is_dir" class="h-4 w-4 shrink-0 text-[var(--gosslan-warning-ink)]" />
         <span class="flex-1 truncate text-sm" :title="e.name">{{ e.name }}</span>
-        <span v-if="!e.is_dir" class="text-[11px] text-[var(--gosslan-text-2)]">{{ formatBytes(e.size) }}</span>
+        <span v-if="!e.is_dir" class="text-caption text-[var(--gosslan-text-2)]">{{ formatBytes(e.size) }}</span>
         <button
           v-if="!e.is_dir"
           class="tap-safe flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-primary)] transition hover:bg-[var(--gosslan-hover)]"

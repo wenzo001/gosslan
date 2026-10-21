@@ -157,3 +157,35 @@ test("MessageItem：面板展开期间必须在 window 捕获阶段吞掉抬手�
     "组件卸载必须摘掉 window 监听（它不随组件销毁）",
   );
 });
+
+/**
+ * 两处长按**故意**用不同的取消路径：
+ *  · `MessageItem` 自己绑 `@touchmove` 判，所以必须有抖动容差（"手指动 1px 就取消"= 长按十次九次不灵，
+ *    用户 2026-09-13 实测，见上面那条真值表）；
+ *  · `MessageReactionBar` 的"长按胶囊看名单"不绑 move，靠 `pointercancel`（浏览器把这一串手势
+ *    判给滚动时发出）+ `pointerup` / `pointerleave` 清定时器。
+ * 第二种能成立的前提是"那三个出口都在"。少一个（尤其是 `pointercancel`）就变成
+ * "在胶囊上开始竖向滑动 ⇒ 450ms 后名单自己弹出来" —— 而这条只在真机上看得见。
+ */
+test("第二家长按（回应胶囊看名单）的取消出口必须成对接好", () => {
+  const bar = read("components/message/MessageReactionBar.vue");
+  const starts = (bar.match(/@pointerdown="onPressStart/g) ?? []).length;
+  assert.ok(starts >= 1, "没认出胶囊长按的起点，下面这组成对判据就是空转");
+  for (const ev of ["pointerup", "pointercancel", "pointerleave"]) {
+    assert.ok(
+      new RegExp(`@${ev}="clearPress"`).test(bar),
+      `胶囊长按缺 @${ev}="clearPress" —— 定时器会在手指已经离开之后自己把名单弹开`,
+    );
+  }
+  assert.equal(
+    starts,
+    (bar.match(/@pointercancel="clearPress"/g) ?? []).length,
+    "起点数与 cancel 出口数不是一对一：新增一处长按却漏了取消路径",
+  );
+  assert.match(bar, /onUnmounted\(clearPress\)/, "组件卸载必须摘掉这根定时器（它不随组件销毁）");
+  // 正控：成对判据要真的会为一处缺失而红，否则"三个出口都在"可能只是匹配器坏了。
+  const synthetic = '<button @pointerdown="onPressStart(e)" @pointerup="clearPress" @pointerleave="clearPress" />';
+  assert.ok(!/@pointercancel="clearPress"/.test(synthetic), "正控失效：合成样本缺 cancel 却被判成有");
+  // ⚠️ 没有读数的一维：真机上"从胶囊起手竖向滑动"到底发不发 `pointercancel`（各家 WebView 不同）。
+  // UI 探针那一段走的是 hover 路径（`canHover` 为真时这条长按分支直接 return）⇒ 这里只钉形状，不声称行为已验。
+});

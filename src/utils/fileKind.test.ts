@@ -1,6 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { FILE_KIND_COLORS, FILE_KIND_ICONS, extBadgeLabel, fileExt, fileKindOf } from "./fileKind.ts";
+import { readFileSync } from "node:fs";
+import {
+  FILE_KIND_COLORS,
+  FILE_KIND_ICONS,
+  extBadgeLabel,
+  fileExt,
+  fileKindOf,
+  fileKindStyle,
+} from "./fileKind.ts";
 
 test("fileExt：常规扩展名取小写", () => {
   assert.equal(fileExt("report.PDF"), "pdf");
@@ -65,4 +73,27 @@ test("extBadgeLabel：无扩展名兜底、超长截断（收藏那处以前两�
   assert.equal(extBadgeLabel(".gitignore", "文件"), "文件", "点开头的名字整段是文件名，不是扩展名");
   // 真实缺陷的另一半：不截断时一长串扩展名会把角标撑破。
   assert.equal(extBadgeLabel("archive.verylongext", "文件"), "VERY");
+});
+
+test("fileKindStyle：亮/暗各取对应强调色，底色是 12% 混底", () => {
+  const light = fileKindStyle("a.pdf", false);
+  assert.equal(light.color, FILE_KIND_COLORS.pdf.light);
+  // #dc2626 = rgb(220, 38, 38)；0.12 是徽标底色的既有比例，改它等于改观感
+  assert.equal(light.backgroundColor, "rgba(220, 38, 38, 0.12)");
+  const dark = fileKindStyle("a.pdf", true);
+  assert.equal(dark.color, FILE_KIND_COLORS.pdf.dark);
+  assert.equal(dark.backgroundColor, "rgba(248, 113, 113, 0.12)");
+});
+
+test("fileKindStyle：未知扩展名落到 doc 那一档（不是凭空新颜色）", () => {
+  assert.equal(fileKindStyle("x.zzz", false).color, FILE_KIND_COLORS.doc.light);
+  assert.equal(fileKindStyle("x.zzz", true).color, FILE_KIND_COLORS.doc.dark);
+});
+
+test("徽标配色只有一份：群文件面板与收藏页都调 fileKindStyle，且不再各自混 0.12", () => {
+  for (const rel of ["../components/GroupFilesPanel.vue", "../components/FavoritePanel.vue"]) {
+    const src = readFileSync(new URL(rel, import.meta.url), "utf8");
+    assert.match(src, /fileKindStyle\(/, `${rel} 必须用共享的徽标配色`);
+    assert.doesNotMatch(src, /rgba\([^)]*0\.12\)/, `${rel} 里又手抄了一份 12% 混底`);
+  }
 });

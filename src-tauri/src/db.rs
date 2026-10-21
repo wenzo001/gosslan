@@ -70,6 +70,49 @@ fn downgrade_display(current: u32) -> String {
 }
 
 impl InitError {
+    /// 给用户看的错误码（日志与原生弹窗共用；便于支持人员按码检索）。
+    pub fn code(&self) -> &'static str {
+        match self {
+            InitError::Downgrade { .. } => "DB_DOWNGRADE",
+            InitError::Backup { .. } => "DB_BACKUP_FAILED",
+            InitError::Sqlite(_) => "DB_OPEN_FAILED",
+        }
+    }
+
+    /// 启动失败时给人看的完整说明。**每一种都以"原文件未被删除/覆盖"为边界**，
+    /// 并把数据目录、日志目录写进去 —— 此刻应用还没有可用的后端状态，
+    /// 用户唯一能做的就是把这两处保留下来。
+    pub fn user_message(&self, app_data: &Path) -> String {
+        let code = self.code();
+        let body = match self {
+            InitError::Downgrade { current } => Self::downgrade_message(*current),
+            InitError::Backup { path, reason } => format!(
+                "数据库升级前的备份失败，已中止启动。\n\
+                 原数据库没有被修改。\n\
+                 备份文件：{path}\n\
+                 原因：{reason}\n\
+                 \n\
+                 ---\n\
+                 Gosslan could not create/verify a pre-migration backup, so it stopped \
+                 BEFORE writing anything. Your original database is unchanged."
+            ),
+            InitError::Sqlite(e) => format!(
+                "无法打开或初始化本地数据库，已停止启动：{e}\n\
+                 原数据库文件没有被删除，也没有被替换。\n\
+                 \n\
+                 ---\n\
+                 Gosslan could not open or initialize its local database and stopped. \
+                 The original database file was NOT deleted or replaced."
+            ),
+        };
+        format!(
+            "{body}\n\n错误码：{code}\n数据目录：{}\n日志目录：{}\n\
+             请先把整个数据目录复制一份保留，再导出诊断信息，不要删除或覆盖其中的文件。",
+            app_data.display(),
+            app_data.join("logs").display()
+        )
+    }
+
     /// **只有降级这一种情况**给人看的那句话（启动期原生对话框与日志共用这一份文案）。
     ///
     /// 刻意不做成"每种错误各自配一句人话"的形状：其它 SQLite 错误没有
@@ -95,6 +138,84 @@ impl InitError {
                  Install a Gosslan version at least as new as the one that created this data."
         )
     }
+}
+
+/// 启动期业务数据计数（只用于诊断：日志/诊断包，不参与任何功能判断）。
+///
+/// 为什么必须留这个读数：2026-10-20 的 P0 是「崩溃后变成默认新用户、好友丢失」。
+/// 下一次现场要能一眼分开两种成因 —— ① 还是原来那份库（计数在、身份读失败）；
+/// ② 换了一份空库（计数全 0、路径不同）。没有这行读数，两者在日志里长得一样。
+pub fn boot_data_counts(conn: &Connection) -> Result<(i64, i64, i64, i64)> {
+    conn.query_row(
+        "SELECT
+            (SELECT COUNT(*) FROM messages),
+            (SELECT COUNT(*) FROM friends),
+            (SELECT COUNT(*) FROM conversations),
+            (SELECT COUNT(*) FROM groups)",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+    )
+}
+
+/// 找同目录下**最近的**迁移前备份（`<stem>.pre-v…-to-v….db`）。
+///
+/// 用途：主库看起来是空的（文件不存在 / 0 字节）时，若旁边还有一份可用的
+/// 迁移备份，**绝不能把它当成首次安装去生成新身份** —— 那正好会把"崩溃后
+/// 主库丢失、备份还在"变成一次不可逆的身份切换。调用方应中止启动并提示恢复。
+pub fn find_recovery_backup(db_path: &Path) -> Option<std::path::PathBuf> {
+    let parent = db_path.parent()?;
+    let stem = db_path.file_stem()?.to_str()?;
+    let prefix = format!("{stem}.pre-v");
+    let mut best: Option<(SystemTime, std::path::PathBuf)> = None;
+    for entry in std::fs::read_dir(parent).ok()?.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        // 先做纯字符串匹配再 stat：同目录可能有大量缓存文件。
+        if !name.starts_with(&prefix) || !name.contains("-to-v") || !name.ends_with(".db") {
+            continue;
+        }
+        if !path.is_file() {
+            continue;
+        }
+        let mtime = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(UNIX_EPOCH);
+        if best.as_ref().map(|(t, _)| mtime > *t).unwrap_or(true) {
+            best = Some((mtime, path));
+        }
+    }
+    best.map(|(_, p)| p)
+}
+
+/// 启动恢复：把**既不在单聊 outbox、也不在群 outbox** 的 `sending` 消息落终态。
+///
+/// 覆盖的是崩溃窗口，不是正常发送：`insert_message_and_outbox` 是同一事务，
+/// 正常入队不会出现"有消息没队列行"；只有进程在极窄窗口里死掉、或历史版本
+/// 的收尾顺序把队列行先删了，才会留下这种行。没有这一步，它们会永远显示"发送中"
+/// 且没有任何清扫器能再看见（sweeper 只扫 outbox 表）。
+///
+/// ⚠️ **文件管线的消息必须排除**：`file-{transfer_id}`（1:1）与 `gfile-{transfer_id}`
+/// （群文件）的 `sending` 由 `file_transfers` / `group_files` 表管理，**从不写**这两张
+/// outbox 表。不排除就会在每次启动把"正在传/待补发的文件"误判成失败（群文件发送与
+/// 接收两侧的卡片都以 sending 起步）。前缀是 `commands/files.rs` 与
+/// `network/transport/group_file.rs` 的建记录口径，改动那边要同步这条谓词。
+///
+/// 置 `failed` 而不是 `sent`：没有 Ack/队列行就没有送达证据，诚实地说"这次没成"。
+/// 接收端按 `msg_id` 幂等，用户重发也不会重复入库。
+pub fn recover_orphan_sending_messages(conn: &Connection) -> Result<usize> {
+    let changed = conn.execute(
+        "UPDATE messages SET status = 'failed'
+          WHERE status = 'sending'
+            AND msg_id NOT LIKE 'file-%'
+            AND msg_id NOT LIKE 'gfile-%'
+            AND NOT EXISTS (SELECT 1 FROM outbox o WHERE o.msg_id = messages.msg_id)
+            AND NOT EXISTS (SELECT 1 FROM group_outbox g WHERE g.msg_id = messages.msg_id)",
+        [],
+    )?;
+    Ok(changed)
 }
 
 /// 执行迁移（**只在 `current <= DB_VERSION` 时**被调用，见 `init` 里唯一的降级判定）。
@@ -849,6 +970,9 @@ pub fn init(path: &Path) -> std::result::Result<Connection, InitError> {
     conn.pragma_update(None, "foreign_keys", "ON").ok();
     Ok(conn)
 }
+
+#[cfg(test)]
+mod startup_safety_tests;
 
 include!("db/settings.rs");
 

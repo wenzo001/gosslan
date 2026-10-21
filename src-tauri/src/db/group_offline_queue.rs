@@ -27,7 +27,49 @@ pub fn list_group_outbox(conn: &Connection, peer_id: &str) -> Result<Vec<(i64, S
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
+/// GroupAck 的**原子收尾**：验证该成员确实还有待发记录 → 置 delivered → 删这一行。
+///
+/// 与 1:1 的 [`ack_delivered`] 同一条纪律（2026-10-20 永久发送中 P0）：
+/// 旧写法先 `delete_group_outbox`、再 `set_message_status(...).ok()`，删行成功而
+/// 状态写失败时留下「队列行没了、消息还是 sending/sent」的孤儿 —— 清扫器只扫
+/// group_outbox，补发也没有行可发，界面永久发送中。事务保证要么两者都成，要么都不动。
+///
+/// 群语义与 1:1 一致：**任一成员的第一个 Ack 就推进 delivered**（后续成员 Ack 幂等，
+/// `set_message_status` 的 WHERE 保证不把 read 退回 delivered）。
+///
+/// 返回 `Ok(false)` = 没有命中该成员的待发行（伪造/重复 Ack），调用方不得 emit。
+pub fn ack_group_delivered(conn: &Connection, msg_id: &str, peer_id: &str) -> Result<bool> {
+    let tx = conn.unchecked_transaction()?;
+    let expected = tx
+        .query_row(
+            "SELECT 1 FROM group_outbox WHERE msg_id = ?1 AND peer_id = ?2",
+            params![msg_id, peer_id],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    if !expected {
+        return Ok(false);
+    }
+    tx.execute(
+        "UPDATE messages SET status = 'delivered'
+          WHERE msg_id = ?1
+            AND status NOT IN ('read', 'delivered', 'recalled')",
+        params![msg_id],
+    )?;
+    tx.execute(
+        "DELETE FROM group_outbox WHERE msg_id = ?1 AND peer_id = ?2",
+        params![msg_id, peer_id],
+    )?;
+    tx.commit()?;
+    Ok(true)
+}
+
 /// 收到 GroupAck 后删除指定成员、指定消息的待发记录。
+///
+/// 生产收尾已改用 [`ack_group_delivered`]（状态 + 删行同事务）；这个低层原语只剩
+/// 测试与将来的维护路径在用，保留它是为了不在测试里复制一份 DELETE。
+#[allow(dead_code)]
 pub fn delete_group_outbox(conn: &Connection, msg_id: &str, peer_id: &str) -> Result<()> {
     conn.execute(
         "DELETE FROM group_outbox WHERE msg_id = ?1 AND peer_id = ?2",
@@ -45,17 +87,51 @@ pub fn delete_group_outbox_for_group(conn: &Connection, group_id: &str) -> Resul
     Ok(())
 }
 
-/// 删除指定成员在指定群中的待发记录（移人出群时使用）。
+/// 删除指定成员在指定群中的待发记录，并把**因此失去最后一条队列行**的消息落终态。
+///
+/// 为什么删行本身不够（2026-10-20 永久发送中 P0 的第三个入口，与 Ack 那条同型）：
+/// 移人出群 / 主动退群会删掉指向他的 `group_outbox` 行，但消息自己还是 `sending`。
+/// 若那条消息只剩这一行（两人群，或其余成员都已经收尾），删完就变成
+/// 「队列行 0 行、状态 sending」—— 清扫器只扫 `group_outbox`、补发也没有行可发，
+/// 界面永久"发送中"，直到下一次启动才被 `db::recover_orphan_sending_messages` 收掉。
+///
+/// 这里在**同一个事务**里做两件事：删掉该成员的行，然后把「没有任何剩余行、且仍是
+/// `sending`」的消息落 `failed`。置 failed 而不是 sent：没有 Ack 就没有送达证据；
+/// 已经 `delivered`/`read` 的行一个都不碰（`WHERE status = 'sending'`），所以
+/// **任一成员 Ack 过**的消息不会被这里改写。接收端按 msg_id 幂等，重发安全。
+///
+/// 返回被落终态的消息条数（0 = 这条消息还有别的成员的行，仍可补发）。
 pub fn delete_group_outbox_for_peer_in_group(
     conn: &Connection,
     group_id: &str,
     peer_id: &str,
-) -> Result<()> {
-    conn.execute(
+) -> Result<usize> {
+    let tx = conn.unchecked_transaction()?;
+    // 先记下会被这次删除影响到的 msg_id，删完再按它们判"是否还有剩余行"。
+    // 反过来做（先删再按 msg_id 反查）就拿不到被影响集合了。
+    let ids: Vec<String> = {
+        let mut stmt = tx.prepare(
+            "SELECT DISTINCT msg_id FROM group_outbox WHERE group_id = ?1 AND peer_id = ?2",
+        )?;
+        let rows = stmt.query_map(params![group_id, peer_id], |r| r.get::<_, String>(0))?;
+        rows.collect::<Result<Vec<_>>>()?
+    };
+    tx.execute(
         "DELETE FROM group_outbox WHERE group_id = ?1 AND peer_id = ?2",
         params![group_id, peer_id],
     )?;
-    Ok(())
+    let mut settled = 0usize;
+    for msg_id in ids {
+        settled += tx.execute(
+            "UPDATE messages SET status = 'failed'
+              WHERE msg_id = ?1
+                AND status = 'sending'
+                AND NOT EXISTS (SELECT 1 FROM group_outbox g WHERE g.msg_id = messages.msg_id)",
+            params![msg_id],
+        )?;
+    }
+    tx.commit()?;
+    Ok(settled)
 }
 
 /// 列出**超时未 GroupAck**的群 outbox 候选行。
@@ -91,4 +167,103 @@ pub fn delete_group_outbox_by_msg_id(conn: &Connection, msg_id: &str) -> Result<
         params![msg_id],
     )?;
     Ok(())
+}
+
+#[cfg(test)]
+mod group_outbox_removal_tests {
+    use super::*;
+
+    fn db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(crate::db::SCHEMA).unwrap();
+        conn
+    }
+
+    fn seed_msg(conn: &Connection, msg_id: &str, status: &str) {
+        conn.execute(
+            "INSERT INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status)
+             VALUES(?1, 'group:g', 'me', 'g', 'text', 'x', 1, 1, ?2)",
+            params![msg_id, status],
+        )
+        .unwrap();
+    }
+
+    fn seed_row(conn: &Connection, msg_id: &str, peer: &str) {
+        conn.execute(
+            "INSERT INTO group_outbox(msg_id, group_id, peer_id, payload, created_at)
+             VALUES(?1, 'g', ?2, '{}', 1)",
+            params![msg_id, peer],
+        )
+        .unwrap();
+    }
+
+    fn status(conn: &Connection, msg_id: &str) -> String {
+        conn.query_row(
+            "SELECT status FROM messages WHERE msg_id = ?1",
+            params![msg_id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    fn rows_of(conn: &Connection, msg_id: &str) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM group_outbox WHERE msg_id = ?1",
+            params![msg_id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    /// 移人出群删掉的是**队列行**，不是"这条消息的终态"。
+    ///
+    /// 旧实现只删行：当那条消息只剩这一行时，删完就变成「0 行 + sending」—— 清扫器
+    /// 只扫 group_outbox、补发也没有行可发 ⇒ 界面永久"发送中"（直到下次启动被孤儿恢复
+    /// 收掉）。这条用例把三个方向分开钉：
+    ///   ① 还有别的成员在队列里 ⇒ 消息不许被判死（否则会误伤"等别人上线补发"）；
+    ///   ② 删掉最后一行 ⇒ 必须落 failed（诚实终态，不是继续挂 sending）；
+    ///   ③ 已经 delivered 的行 ⇒ 一个都不许被改写。
+    #[test]
+    fn removing_a_member_settles_only_messages_that_lose_their_last_row() {
+        let conn = db();
+        // m1 两个收件人；m2 只有 peer-a；m3 只有 peer-a 但已经 delivered。
+        seed_msg(&conn, "m1", "sending");
+        seed_row(&conn, "m1", "peer-a");
+        seed_row(&conn, "m1", "peer-b");
+        seed_msg(&conn, "m2", "sending");
+        seed_row(&conn, "m2", "peer-a");
+        seed_msg(&conn, "m3", "delivered");
+        seed_row(&conn, "m3", "peer-a");
+
+        // ① + ③：删 peer-a 的行 —— m1 还有 peer-b 的行，m3 已经不是 sending。
+        assert_eq!(
+            delete_group_outbox_for_peer_in_group(&conn, "g", "peer-a").unwrap(),
+            1,
+            "只有 m2 失去最后一行，才该被判终态"
+        );
+        assert_eq!(status(&conn, "m1"), "sending", "还有别的成员的行 ⇒ 不许判死");
+        assert_eq!(rows_of(&conn, "m1"), 1, "peer-b 的行必须留着补发");
+        assert_eq!(status(&conn, "m2"), "failed", "失去最后一行 ⇒ 落终态");
+        assert_eq!(rows_of(&conn, "m2"), 0);
+        assert_eq!(status(&conn, "m3"), "delivered", "已送达不许被删行改回失败");
+        assert_eq!(rows_of(&conn, "m3"), 0);
+
+        // ②：再删 peer-b 的行 ⇒ m1 失去最后一行，必须落终态。
+        assert_eq!(
+            delete_group_outbox_for_peer_in_group(&conn, "g", "peer-b").unwrap(),
+            1
+        );
+        assert_eq!(
+            status(&conn, "m1"),
+            "failed",
+            "最后一个收件人被移出 ⇒ 队列行 0 行，继续 sending 就是永久发送中"
+        );
+        assert_eq!(rows_of(&conn, "m1"), 0);
+
+        // 幂等：没有行可删、没有消息可判 ⇒ 0，且不报错。
+        assert_eq!(
+            delete_group_outbox_for_peer_in_group(&conn, "g", "peer-b").unwrap(),
+            0
+        );
+    }
 }

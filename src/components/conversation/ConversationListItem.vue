@@ -2,11 +2,12 @@
 import { t } from "@/i18n";
 import { fmtConversationTime } from "@/utils/time";
 import { avatarSeedFor, type AvatarSeed } from "@/utils/avatarSeed";
-import { computed, onUnmounted } from "vue";
+import { computed } from "vue";
 import { useChatStore } from "@/stores/useChatStore";
 import { useAppStore } from "@/stores/useAppStore";
 import { isSelfConversation } from "@/utils/selfChat";
 import { useMemberProfile } from "@/composables/useMemberProfile";
+import { usePressMenu } from "@/composables/usePressMenu";
 import { haptic } from "@/utils/haptics";
 import UnreadBadge from "@/components/UnreadBadge.vue";
 import { ListChecks, Megaphone, Pin } from "lucide-vue-next";
@@ -61,10 +62,7 @@ const hasAnnouncement = computed(() =>
  */
 function openConv(conv: Conversation) {
   // 长按刚弹出菜单的那一次 click 要吃掉：否则同一次手势会「弹菜单 + 开会话」同时发生
-  if (suppressClick) {
-    suppressClick = false;
-    return;
-  }
+  if (press.consumeSuppressedClick()) return;
   haptic("selection");
   emit("open", conv);
 }
@@ -112,51 +110,12 @@ function onContextMenu(conv: Conversation, e: MouseEvent) {
   emit("context", conv, e.clientX, e.clientY);
 }
 
-// 移动端没有 contextmenu：长按 500ms 视为同一个菜单入口（与 FriendListItem 一致）
-const LONG_PRESS_MS = 500;
-/** 手指抖动容差（px）：小于它不算"滑动"，不取消长按（否则轻微抖动就长按不出来）。 */
-const PRESS_MOVE_TOLERANCE = 10;
-let pressTimer: ReturnType<typeof setTimeout> | null = null;
-let pressStart: { x: number; y: number } | null = null;
 /**
- * 本次手势已经触发过长按 ⇒ 抑制随之而来的 click。
- * 不抑制的话同一次长按会「一边弹出菜单、一边把会话/资料页打开」，菜单刚出来就被盖住。
- * 只在**同一次手势内**生效：下一次 touchstart 会复位，所以不会吃掉用户的下一次点击。
+ * 移动端没有 contextmenu：长按 500ms 视为同一个菜单入口。
+ * 计时器/容差/click 抑制只有一份实现（`composables/usePressMenu`），
+ * 原来这里与 `FriendListItem` 各抄了一份逐字相同的状态机。
  */
-let suppressClick = false;
-
-function clearPress() {
-  if (pressTimer) {
-    clearTimeout(pressTimer);
-    pressTimer = null;
-  }
-  pressStart = null;
-}
-
-/** 位移超阈值才取消长按（横向滑动列表 / 纵向滚动时不误弹菜单）。 */
-function onPressMove(e: TouchEvent) {
-  const t = e.touches[0];
-  if (!t || !pressStart) return;
-  if (Math.hypot(t.clientX - pressStart.x, t.clientY - pressStart.y) > PRESS_MOVE_TOLERANCE) {
-    clearPress();
-  }
-}
-
-function onTouchStart(conv: Conversation, e: TouchEvent) {
-  const t = e.touches[0];
-  if (!t) return;
-  clearPress();
-  suppressClick = false; // 新手势开始：复位上一次的抑制标记
-  pressStart = { x: t.clientX, y: t.clientY };
-  pressTimer = setTimeout(() => {
-    pressTimer = null;
-    suppressClick = true;
-    haptic("heavy");
-    emit("context", conv, t.clientX, t.clientY);
-  }, LONG_PRESS_MS);
-}
-
-onUnmounted(clearPress);
+const press = usePressMenu<Conversation>((conv, x, y) => emit("context", conv, x, y));
 
 /** 群头像九宫格成员（微信式 2x2）：资料解析统一走 useMemberProfile（本机/好友/节点，
  *  离线好友照常显示）。必须保持响应式：好友/群数据是异步加载的，非响应式会在
@@ -197,10 +156,10 @@ const gridTiles = computed(() => {
     @keydown.enter.prevent="openConv(conv)"
     @keydown.space.prevent="openConv(conv)"
     @contextmenu="onContextMenu(conv, $event)"
-    @touchstart.passive="onTouchStart(conv, $event)"
-    @touchmove.passive="onPressMove"
-    @touchend.passive="clearPress"
-    @touchcancel.passive="clearPress"
+    @touchstart.passive="press.onStart(conv, $event)"
+    @touchmove.passive="press.onMove"
+    @touchend.passive="press.clear"
+    @touchcancel.passive="press.clear"
   >
     <div class="relative shrink-0">
       <!-- 群聊：微信式 2x2 九宫格头像；单聊：单头像 -->
@@ -242,7 +201,7 @@ const gridTiles = computed(() => {
              整行的 aria-label 只服务读屏，不产生 tooltip。 -->
         <span
           data-conv-name
-          class="truncate text-[13px] leading-5"
+          class="truncate text-body leading-5"
           :class="active ? 'font-medium text-[var(--gosslan-list-active-text)]' : 'text-[var(--gosslan-text)]'"
           :title="displayName"
         >
@@ -283,16 +242,16 @@ const gridTiles = computed(() => {
             <UnreadBadge :count="openTasks" tone="info" />
           </span>
           <span
-            class="shrink-0 whitespace-nowrap text-[11px]"
+            class="shrink-0 whitespace-nowrap text-caption"
             :class="active ? 'text-[var(--gosslan-list-active-text)] opacity-90' : 'text-[var(--gosslan-text-2)]'"
           >
-            {{ fmtConversationTime(conv.last_ts) }}
+            {{ fmtConversationTime(conv.last_ts, t) }}
           </span>
         </span>
       </div>
       <div class="mt-0.5 flex items-center justify-between gap-2">
         <span
-          class="truncate text-[12px] leading-5"
+          class="truncate text-meta leading-5"
           :class="active ? 'text-[var(--gosslan-list-active-text)] opacity-90' : 'text-[var(--gosslan-text-2)]'"
           :title="conv.last_msg || t('msg.noMessage')"
         >

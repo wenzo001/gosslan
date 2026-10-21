@@ -208,6 +208,56 @@ test("活跃会话收到消息不计未读，非活跃会话累计未读", () =>
   assert.equal(f2.last_ts, 20);
 });
 
+test("群消息只更新群会话：文本/图片/文件都不碰同发送者的单聊", () => {
+  const g = conv("group:g1", 0, 0);
+  g.kind = "group";
+  const cs = [g, conv("dev-a", 0, 0)];
+  const byConv = new Map([
+    [
+      "group:g1",
+      [
+        msg({ msg_id: "gt", conv_id: "group:g1", sender_id: "dev-a", ts: 10, content: "群文本" }),
+        msg({ msg_id: "gi", conv_id: "group:g1", sender_id: "dev-a", ts: 11, kind: "image", content: '{"name":"a.png"}' }),
+        msg({ msg_id: "gf", conv_id: "group:g1", sender_id: "dev-a", ts: 12, kind: "file", content: '{"name":"b.bin"}' }),
+      ],
+    ],
+  ]);
+  const out = applyIncomingToConversations(cs, null, byConv, "me");
+  const group = out.find((c) => c.id === "group:g1")!;
+  const dm = out.find((c) => c.id === "dev-a")!;
+  assert.equal(group.unread, 3);
+  assert.equal(group.last_ts, 12);
+  assert.equal(dm.unread, 0, "群消息不得给同发送者的单聊加未读");
+  assert.equal(dm.last_msg, null, "群消息不得改写单聊预览");
+  assert.equal(dm.last_ts, 0, "群消息不得顶起单聊排序");
+});
+
+test("多个群 + 单聊同批到达：未读与预览各归各的会话键", () => {
+  const g1 = conv("group:g1", 0, 0);
+  g1.kind = "group";
+  const g2 = conv("group:g2", 0, 0);
+  g2.kind = "group";
+  const cs = [g1, g2, conv("dev-a", 0, 0)];
+  const byConv = new Map([
+    ["group:g1", [msg({ msg_id: "g1m", conv_id: "group:g1", sender_id: "dev-a", ts: 10, content: "一号群" })]],
+    ["group:g2", [msg({ msg_id: "g2m", conv_id: "group:g2", sender_id: "dev-b", ts: 20, content: "二号群" })]],
+    ["dev-a", [msg({ msg_id: "dm", conv_id: "dev-a", sender_id: "dev-a", ts: 30, content: "单聊" })]],
+  ]);
+  const out = applyIncomingToConversations(cs, null, byConv, "me");
+  const got = (id: string) => out.find((c) => c.id === id)!;
+  assert.deepEqual(
+    out.map((c) => [c.id, c.unread, c.last_msg]),
+    [
+      ["dev-a", 1, "单聊"],
+      ["group:g2", 1, "二号群"],
+      ["group:g1", 1, "一号群"],
+    ],
+  );
+  assert.equal(got("group:g1").last_ts, 10);
+  assert.equal(got("group:g2").last_ts, 20);
+  assert.equal(got("dev-a").last_ts, 30);
+});
+
 test("自己发的消息不给会话加未读，但预览与 last_ts 照更新（后端 touch_conversation 记的是 0）", () => {
   // 场景是真的会走到的：主窗口在任务窗/公告那条链上会收到自己发的 `message-received`
   // （`commands/group_announcements.rs` 早就在自 emit，补上群发送内核的自 emit 后每次群发都走这里）。

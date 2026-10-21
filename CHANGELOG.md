@@ -13,6 +13,91 @@
 
 ## [Unreleased]
 
+## [5.0.38] - 2026-10-21
+
+### 启动早期 panic 的现场留痕：真因是「路径分裂」，不是「没装钩子」
+
+- 根因：bootstrap 插件把现场文件绑成 `<app_data>/<stem>-crash.log`，而 `Logger` 绑的是
+  `<app_data>/logs/<stem>-crash.log`；`CRASH_FILE` 是 `OnceLock`（先到先得）⇒ Logger 那次
+  **权威绑定被静默丢弃**，独立通道从此一直写错文件；而用户被指引去发的、诊断包读的、
+  下一轮启动判定读的，全都是 `logs/` 那份 ⇒ 现场文件里**一行 `>>>` 都没有**，
+  "打开就闪退"永远被读成"异常终止/强杀"。
+- 改法：唯一计算点 `logging::log_dir_in` / `crash_file_in`（bootstrap 与 `Logger::new` 同源）；
+  绑定分**权威/早期两槽**（权威优先，两个都是无锁读，panic 钩子里不会抢锁）；
+  `crash_note_to` 改为返回 `bool`（超 2MB **整份重开**、写失败退 stderr、不再假装写成了）；
+  `classify_previous_exit` 新认 `>>> panic @ …`（原来只认 `===== 崩溃现场`）。
+- 真机证据（隔离 HOME 起真实 release 二进制）：早期通道落进 `logs/`、`<app_data>/` 下不再产生野文件；
+  注入 setup 期 panic ⇒ 进程 **exit 134** 且现场文件里有 `>>> panic @ src/lib.rs:…`；
+  下一轮启动判 **`BOOT_PREV_PANIC`**（修复前是 `BOOT_PREV_SILENT_KILL`）。
+
+### 群文件 ACK：终态写失败不再被吞，聚合不再被读失败带偏
+
+- 三个真实误判：① `let _ = update_group_file_recipient(...)`（终态写失败被吞，却继续用内存里的
+  结论算气泡）；② `list_group_file_recipients(...).unwrap_or_default()`（**读失败 ⇒ 空集合 ⇒
+  `all_terminal` 恒真 ⇒ 一批成功送达的群文件被判 `failed`**）；③ 幂等检查那处同型
+  （读失败会让**迟到的 failure ACK 把 completed 降级**）。
+- 改法：写入走 `retry_ack_write`（最多 3 次 / 间隔 25ms，**每次之间释放全局 DB 锁**）；
+  两处读改为 `match`，失败留 `GFILE_ACK_READ_FAILED` / `GFILE_AGGREGATE_READ_FAILED` 且**不决定终态**；
+  聚合抽成纯函数 `group_file_bubble`（**空集合返回 `None` 而不是 `failed`**）；
+  气泡写失败留 `GFILE_BUBBLE_PERSIST_FAILED` 且不 emit。
+- 判据：真值表 6 格 + 重试策略 3 格（用真实闭包跑出来，不是源码文本断言）。
+- 边界（明说，不假装已根治）：持久写失败后账本仍在旧状态，**跨进程恢复仍依赖重放的 ACK** ——
+  根治需要加 schema/协议字段，本轮按"不改 ACK 协议与消息格式"的约束没有动。
+
+### 护栏非空转：把「环境不支持」与「护栏空转」分成两个 verdict
+
+- 过去两者走同一个 `False` ⇒ CI 的 Verify 连着红在一条 `GUARD_ENV_SKIP` 上（**真缺陷，
+  但诊断是环境限制**：macOS runner 收不到本机 255.255.255.255 广播）。
+- 改法：`Case.env_skip`（必须写理由）+ **三层防线** —— ① 不声明的用例遇到环境跳过**仍然判失败**
+  （不许免检）；② 声明了的单列成 `ENV_SKIP`、带名字与理由，汇总里**不允许静默**；
+  ③ `--strict-env` 可把它重新算回失败（发版/CI 想要"全绿才算过"时用）。
+- 证据：同一条用例 **改前 exit 1**（`❌ 1 条不符合预期`）→ **改后 exit 0**
+  （`⏭️` 单列 + 理由 + `⚠️ 另有 1 条只因环境未证明`）；`--strict-env` ⇒ exit 1；
+  另用真实 `verify()` 验过「不声明仍 FAIL / 声明才 ENV_SKIP / 注入后现场恢复」三条。
+
+### 前端批次（本轮一并入库）：手势去重 / 三态统一 / 图标配色去重
+
+- 长按手势：`ConversationListItem` 与 `FriendListItem` 各有一份逐字相同的状态机 ⇒ 收成
+  `composables/usePressMenu.ts`（事件/计时）+ `utils/pressGesture.ts`（纯判据）。
+- 三态统一：`StateBlock` 增 `compact` 档，`GroupFilesPanel` / `DevDiagPanel` / `ShareDirectory` 统一走它。
+- 图标配色：新增 `utils/fileKind.ts` 的 `fileKindStyle(name, dark)`，群文件面板与收藏页不再各抄一份。
+- 另新增 `utils/{singleFlight,safeStorage,escapeRe,textLimits}.ts`、`components/ui/{CharCounter,NavIcon}.vue`
+  与对应单测；`scripts/frontend-inventory.mjs` + `docs/architecture/frontend-inventory.md` 是配套盘点。
+
+### 群聊/单聊会话归属收口
+
+- `handle_gossip` 的会话键解析收成唯一实现 `inbound_conversation`：群聊只认非空的 `group_id`
+  （`group:{gid}`），单聊才用 `sender_id`；`conv_id` / `conv_kind` / 会话名不再各自 match 一遍。
+  **修掉的真实形状是幽灵群键**：旧写法 `format!("group:{}", group_id.unwrap_or_default())` 在目标缺失/空白时
+  生成 `group:` —— 消息写进一个没有 id 的群会话、真正的群看不到它，会话列表还多一条空名会话。
+  `sender_id` 回退这条路径在 HEAD 并不存在（逐条核对 8 条入站路径 + 前端 `applyIncomingToConversations`
+  后确认），所以下面那条变异是**防回归**，不是"修好了一个已经发生的串单聊"。
+- 回归：3 条纯函数真值表 + 1 条真实 schema/真实 DB 函数集成用例（群文本/图片/群文件卡片、两群一单聊、
+  重复投递、群改名、群历史页、`group_outbox` 帧保真）+ 2 条前端会话摘要隔离用例；单点变异
+  （缺目标回退 `sender_id`+`single`）实测转红后逐字还原复绿。
+
+### 群聊归属：把「只有一个定义点」钉成结构护栏
+
+- 上一批收口之后剩下的风险是**函数对、接线错**：真值表只证明 `inbound_conversation` 判得对，
+  没有任何东西挡住把归属逻辑重新内联回 `handle_gossip`（最短形状 `conv_id = env.sender_id` ⇒ 群消息进单聊）。
+  新增 `handle_gossip_takes_conversation_only_from_the_single_definition`：`inbound_conversation(` 恰好一次、
+  会话键必须取自 `target.conv_id`、禁止 `conv_id = env.sender_id` 与就地 `format!("group:")`。
+  三条字面量都在**原文**上搜 —— 去空白（`code_flat`）后带空格的语句恒不命中，那是判据自等。
+- 非空转：把 `let conv_id = target.conv_id;` 单点改坏 ⇒ 该用例 FAIL（exit 101，报「会话键必须原样取自 …」），
+  逐字还原后 SHA-256 与改前一致、复绿。用例已登记进两份平台基线（macos 1032 / windows 1011）。
+- `docs/protocol-invariants.md` 新增 **INV-P35**（会话归属只来自目标，不来自发送者），
+  钩子把后端 5 条 + 前端 2 条一起挂上（`check-invariant-hooks` 现读 35 条全部可解析）。
+- 历史数据只读复核（把本机 `gosslan.db` 连同 `-wal` 拷到临时目录后查，不改原库）：`conversations.kind`
+  与键前缀 0 冲突、孤儿消息 0 条、群专属 kind 落进单聊 0 条。单聊里那 6 条 `remind` 是 1:1 抖动功能
+  （`commands/chat.rs` 同名分支，载荷带 `shake:true`），不是串会话 ⇒ **不改写任何历史行**。
+
+### 字号令牌收口
+
+- 生产码 `text-[NNpx]` 由 **266 处 / 56 文件** 收成六档语义令牌：`micro`(10)、`caption`(11)、
+  `meta`(12)、`body`(13)、`emphasis`(14)、`title`(15)，像素逐档不变；令牌显式 `line-height: inherit`，
+  避免 Tailwind 默认行高改变版式。生产码现算 0 处任意像素字号。
+- 新增判据 `designGuards.test.ts::㊿ 字号只走令牌`：扫生产码缺席型断言 + 正/反控 + config 六档像素对账。
+
 ## [5.0.37] - 2026-10-20
 
 ### 有限范围验收收尾：`logs/` 目录权限收紧 + 诊断包的后端出口

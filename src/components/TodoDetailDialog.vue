@@ -13,12 +13,14 @@ import MentionText from "@/components/message/MentionText.vue";
 import TodoImageThumb from "@/components/TodoImageThumb.vue";
 import TodoPickField from "@/components/TodoPickField.vue";
 import TodoIconPicker from "@/components/TodoIconPicker.vue";
+import CharCounter from "@/components/ui/CharCounter.vue";
 import {
   TODO_CATEGORIES, TODO_CATEGORY_LABEL_KEY, TODO_CATEGORY_PILL, TODO_CUSTOM_CATEGORY_MAX_LEN, TODO_PRIORITIES, TODO_PRIORITY_LABEL_KEY, TODO_PRIORITY_PILL, TODO_STATUSES, TODO_STATUS_LABEL_KEY, TODO_STATUS_PILL, isTodoTerminalStatus, todoCode, type TodoHistoryChange, type TodoHistoryEntry, type TodoCategory, type TodoItem, type TodoPriority, type TodoStatus, TODO_CUSTOM_ICON_DEFAULT, type TodoCustomIcon, } from "@/utils/todos";
 import { fmtConversationTime } from "@/utils/time";
 import { Archive, Pencil, Tag, UserPlus } from "lucide-vue-next";
 import { Check, RotateCcw, Trash2 } from "@/components/ui/icons";
 import { t } from "@/i18n";
+import { useImeEnterGuard } from "@/composables/useImeEnterGuard";
 
 const props = defineProps<{
   open: boolean;
@@ -127,6 +129,8 @@ function onCategoryPick(v: string) {
   }
   emit("category", v as TodoCategory);
 }
+const ime = useImeEnterGuard();
+
 function applyCustomCategory() {
   const name = customDraft.value.trim();
   if (!name) return;
@@ -262,13 +266,16 @@ const fullCode = computed(() =>
           <input
             v-model="customDraft"
             :maxlength="TODO_CUSTOM_CATEGORY_MAX_LEN"
-            class="min-w-0 flex-1 rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-bg)] px-2.5 py-1.5 text-[13px] outline-none transition focus:border-transparent"
+            class="min-w-0 flex-1 rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-bg)] px-2.5 py-1.5 text-body outline-none transition focus:border-transparent"
             :placeholder="t('todo.categoryCustomPlaceholder')"
-            @keydown.enter.prevent="applyCustomCategory"
+            @keydown.enter.prevent="ime.enter(applyCustomCategory)"
+            @compositionstart="ime.onStart"
+            @compositionend="ime.onEnd"
           />
+          <CharCounter :text="customDraft" :max="TODO_CUSTOM_CATEGORY_MAX_LEN" />
           <button
             type="button"
-            class="tap-safe shrink-0 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-2.5 py-1.5 text-[12px] text-white transition hover:opacity-90 disabled:opacity-40"
+            class="tap-safe shrink-0 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-2.5 py-1.5 text-meta text-white transition hover:opacity-90 disabled:opacity-40"
             :disabled="!customDraft.trim()"
             @click="applyCustomCategory"
           >
@@ -290,7 +297,7 @@ const fullCode = computed(() =>
         <span class="text-xs text-[var(--gosslan-text-2)]">{{ t("todo.claimHint") }}</span>
         <button
           type="button"
-          class="tap-safe inline-flex h-7 items-center gap-1 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-primary)] px-2.5 text-[12px] text-[var(--gosslan-accent-ink)] transition hover:opacity-80"
+          class="tap-safe inline-flex h-7 items-center gap-1 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-primary)] px-2.5 text-meta text-[var(--gosslan-accent-ink)] transition hover:opacity-80"
           :aria-label="t('todo.claim')"
           @click="emit('claim')"
         >
@@ -314,13 +321,13 @@ const fullCode = computed(() =>
         @update:model-value="(v: string) => emit('status', v as TodoStatus)"
       />
       <!-- 元信息：创建时间 / 创建人 / 指派 / 完成时间（用户 2026-09-17：时间要回显） -->
-      <div class="space-y-1 text-[12px] text-[var(--gosslan-text-2)]">
-        <div v-if="item.createdAt">{{ t("todo.createdAt", { time: fmtConversationTime(item.createdAt) }) }}</div>
+      <div class="space-y-1 text-meta text-[var(--gosslan-text-2)]">
+        <div v-if="item.createdAt">{{ t("todo.createdAt", { time: fmtConversationTime(item.createdAt, t) }) }}</div>
         <div v-if="creator">{{ t("todo.creator", { name: creator }) }}</div>
         <div v-if="assignees" :title="assignees">{{ t("todo.assigneesInline", { names: assignees }) }}</div>
         <!-- 终态时间：完成显示「完成时间」，做不了显示「标记时间」（同一个后端权威时间戳 done_at）。 -->
-        <div v-if="item.doneAt && item.status === 'done'">{{ t("todo.doneAt", { time: fmtConversationTime(item.doneAt) }) }}</div>
-        <div v-else-if="item.doneAt && item.status === 'impossible'">{{ t("todo.impossibleAt", { time: fmtConversationTime(item.doneAt) }) }}</div>
+        <div v-if="item.doneAt && item.status === 'done'">{{ t("todo.doneAt", { time: fmtConversationTime(item.doneAt, t) }) }}</div>
+        <div v-else-if="item.doneAt && item.status === 'impossible'">{{ t("todo.impossibleAt", { time: fmtConversationTime(item.doneAt, t) }) }}</div>
       </div>
 
       <!-- 描述（全文，不截断） -->
@@ -328,7 +335,7 @@ const fullCode = computed(() =>
         <div class="mb-1.5 text-xs text-[var(--gosslan-text-2)]">{{ t("todo.description") }}</div>
         <p
           v-if="item.description"
-          class="whitespace-pre-wrap break-words text-[12px] leading-relaxed text-[var(--gosslan-text)]"
+          class="whitespace-pre-wrap break-words text-meta leading-relaxed text-[var(--gosslan-text)]"
         >
           <!-- 与聊天里的同一条 @ 走同一份渲染件（§9）：判定单源在 utils/linkify。 -->
           <MentionText
@@ -337,7 +344,7 @@ const fullCode = computed(() =>
             :self-mention="selfMention"
           />
         </p>
-        <p v-else class="text-[12px] text-[var(--gosslan-text-2)]">{{ t("todo.noDescription") }}</p>
+        <p v-else class="text-meta text-[var(--gosslan-text-2)]">{{ t("todo.noDescription") }}</p>
       </div>
 
       <!-- 图片：点缩略图看大图（交给全局那一份预览实例，见 script 里的说明） -->
@@ -365,9 +372,9 @@ const fullCode = computed(() =>
           <li
             v-for="(entry, i) in [...historyEntries].reverse()"
             :key="entry.msgId + ':' + i"
-            class="flex items-baseline gap-2 text-[12px] leading-relaxed"
+            class="flex items-baseline gap-2 text-meta leading-relaxed"
           >
-            <span class="shrink-0 tabular-nums text-[var(--gosslan-text-2)]">{{ fmtConversationTime(entry.ts) }}</span>
+            <span class="shrink-0 tabular-nums text-[var(--gosslan-text-2)]">{{ fmtConversationTime(entry.ts, t) }}</span>
             <span class="shrink-0 font-medium text-[var(--gosslan-text)]">{{ nameOf(entry.actor) }}</span>
             <span class="min-w-0 flex-1 text-[var(--gosslan-text-2)]">
               <span v-for="(c, j) in entry.changes" :key="c.kind + j">
@@ -389,7 +396,7 @@ const fullCode = computed(() =>
         <button
           v-if="canChangeStatus && !isTodoTerminalStatus(item.status)"
           type="button"
-          class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-3 py-1.5 text-[13px] text-white transition hover:bg-[var(--gosslan-primary-hover)]"
+          class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-3 py-1.5 text-body text-white transition hover:bg-[var(--gosslan-primary-hover)]"
           @click="emit('complete')"
         >
           <Check class="mr-1 inline h-3.5 w-3.5" />{{ t("todo.complete") }}
@@ -401,7 +408,7 @@ const fullCode = computed(() =>
         <button
           v-else-if="canArchive && isTodoTerminalStatus(item.status) && !archived"
           type="button"
-          class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-hover)] px-3 py-1.5 text-[13px] text-[var(--gosslan-text-2)] transition hover:text-[var(--gosslan-text)]"
+          class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-hover)] px-3 py-1.5 text-body text-[var(--gosslan-text-2)] transition hover:text-[var(--gosslan-text)]"
           @click="emit('archive')"
         >
           <Archive class="h-3.5 w-3.5" />{{ t("todo.archive") }}
@@ -410,7 +417,7 @@ const fullCode = computed(() =>
         <button
           v-if="archived && canRestore"
           type="button"
-          class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-hover)] px-3 py-1.5 text-[13px] text-[var(--gosslan-text-2)] transition hover:text-[var(--gosslan-text)]"
+          class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-hover)] px-3 py-1.5 text-body text-[var(--gosslan-text-2)] transition hover:text-[var(--gosslan-text)]"
           @click="emit('restore')"
         >
           <RotateCcw class="h-3.5 w-3.5" />{{ t("todo.restore") }}

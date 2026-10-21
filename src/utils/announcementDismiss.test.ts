@@ -69,8 +69,12 @@ test("横幅只经『可见性』那一个家，收起按钮存在且真的落�
   const src = chatWindow();
   assert.match(src, /v-if="isGroup && announcementVisible"/, "横幅必须走可见性判定，不是裸公告");
   assert.doesNotMatch(src, /v-if="isGroup && announcement"/, "绕过判定的那条 v-if 是第二个家");
-  assert.match(src, /writeAnnounceSeen\(localStorage, next\)/, "收起必须写盘，否则重启就回来了");
-  assert.match(src, /const announceSeen = ref<AnnounceSeenMap>\(readAnnounceSeen\(localStorage\)\)/);
+  // 原来这两条钉的是**形状**（`localStorage` 这个字面量），§6.81 把存储出口并进 safeStorage 那个家之后
+  // 形状变了就红 —— 这里顺势换成贴语义的两条：① 收起必须真的把表写出去（调用点还在、且把家传进去），
+  // ② 不许再直连全局（那才是原来那条真正想防的事：绕过兜底）。落盘语义本身由本文件上面的假表用例判。
+  assert.match(src, /writeAnnounceSeen\(safeStorageBackend, next\)/, "收起必须写盘，否则重启就回来了");
+  assert.match(src, /const announceSeen = ref<AnnounceSeenMap>\(readAnnounceSeen\(safeStorageBackend\)\)/);
+  assert.doesNotMatch(src, /(?:read|write)AnnounceSeen\(localStorage/, "公告收起表不许直连全局存储（要走 utils/safeStorage 那个家）");
 });
 
 test("群管理在聊天头部只剩一个入口；改名能力收在弹窗里", () => {

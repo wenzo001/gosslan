@@ -14,33 +14,29 @@
 // 原先只有"删单条收藏"才会释放，**关面板不释放**是这份独立缓存的主要泄漏面。
 
 import { api } from "@/api";
-import { PREVIEW_CACHE_MAX_BYTES } from "@/utils/filePreview";
+import { IMAGE_PREVIEW_MAX_BYTES, PREVIEW_CACHE_MAX_BYTES } from "@/utils/filePreview";
 import { imageMime } from "@/utils/imageMime";
 import { previewFailureResult, type PreviewResult } from "@/utils/mediaAvailability";
 import { createBlobLru } from "@/utils/blobLru";
+import { createSingleFlight } from "@/utils/singleFlight";
 
 export type { PreviewResult };
 
-/** 图片预览上限：与消息预览同值，避免"气泡里能看、收藏里看不了"这种不一致。 */
-const IMAGE_MAX_BYTES = 15 * 1024 * 1024;
-
 const cache = createBlobLru<PreviewResult & { bytes?: number }>({
   maxBytes: PREVIEW_CACHE_MAX_BYTES,
-  maxEntryBytes: IMAGE_MAX_BYTES,
+  maxEntryBytes: IMAGE_PREVIEW_MAX_BYTES,
   revoke: (url) => URL.revokeObjectURL(url),
 });
-const inflight = new Map<string, Promise<PreviewResult>>();
+const inflight = createSingleFlight<PreviewResult>();
 
-/** 加载某个收藏副本的图片预览。失败/超限返回 `{note}`，调用方据此回退成文件卡片。 */
+/** 加载某个收藏副本的图片预览。失败/超限返回 `{failure}`，调用方据此回退成文件卡片。 */
 export function loadFavoritePreview(id: string, name: string): Promise<PreviewResult> {
   const hit = cache.get(id);
   if (hit) return Promise.resolve(hit);
-  const fly = inflight.get(id);
-  if (fly) return fly;
 
-  const p = (async (): Promise<PreviewResult> => {
+  return inflight.run(id, async (): Promise<PreviewResult> => {
     try {
-      const raw = await api.readFavoritePreview(id, IMAGE_MAX_BYTES);
+      const raw = await api.readFavoritePreview(id, IMAGE_PREVIEW_MAX_BYTES);
       // 后端 raw bytes 在 macOS(WKWebView) 上经 JSON 序列化回传为 number[]，
       // 其余平台是 ArrayBuffer。`new Uint8Array` 同时接受两者，一处归一
       // （直接 `new Blob([number[]])` 会把数组强转成 "137,80,…" 字符串，图片就坏了）。
@@ -56,15 +52,10 @@ export function loadFavoritePreview(id: string, name: string): Promise<PreviewRe
       console.error(`[favoritePreview] 预览失败 (id=${id}, name=${name}): ${msg}`);
       const r = previewFailureResult(msg);
       // 只缓存确定性失败（副本已不在 / 文件过大）：未知失败缓存了会永久显示失败态。
-      if (r.missing || r.note === "文件过大，无法预览") cache.put(id, r);
+      if (r.failure) cache.put(id, r);
       return r;
-    } finally {
-      inflight.delete(id);
     }
-  })();
-
-  inflight.set(id, p);
-  return p;
+  });
 }
 
 /**
@@ -75,11 +66,11 @@ export function loadFavoritePreview(id: string, name: string): Promise<PreviewRe
  */
 export function dropFavoritePreview(id: string) {
   cache.delete(id);
-  inflight.delete(id);
+  inflight.remove(id);
 }
 
 /** 释放**整份**收藏预览缓存（收藏面板关闭时调用）。 */
 export function clearFavoritePreviews() {
   cache.clear();
-  inflight.clear();
+  inflight.reset();
 }

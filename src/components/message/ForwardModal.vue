@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
 import { computed, ref, watch } from "vue";
-import { useDeferredRef } from "@/composables/useDeferredRef";
+import { INPUT_DEFER_MS } from "@/utils/defer";
+import { refDebounced } from "@vueuse/core";
 import { useChatStore } from "@/stores/useChatStore";
 import { avatarSeedFor } from "@/utils/avatarSeed";
+import { MAX_LIST_FILTER_KEYWORD_CHARS } from "@/utils/validation";
 import BaseModal from "@/components/BaseModal.vue";
 import type { MsgKind } from "@/types";
 
@@ -53,8 +55,8 @@ function onPickConversation(id: string) {
 
 const chat = useChatStore();
 const keyword = ref("");
-/** 延迟镜像：过滤会话列表用（连发粘贴时避免每个字符重渲染整列，见 useDeferredRef）。 */
-const query = useDeferredRef(keyword);
+/** 延迟镜像：过滤会话列表用（连发粘贴时避免每个字符重渲染整列，见 utils/defer.ts 说明）。 */
+const query = refDebounced(keyword, INPUT_DEFER_MS);
 
 const filtered = computed(() => {
   const kw = query.value.trim().toLowerCase();
@@ -100,20 +102,20 @@ const kindLabel = computed(() => KIND_LABELS[props.kind] ?? t("msg.message"));
           <span class="align-middle">{{ t("multi.forwardPreview", { n: props.count ?? 0 }) }}</span>
         </template>
         <template v-else>
-          <span class="mr-1 rounded-[var(--gosslan-radius-xs)] bg-[var(--gosslan-panel)] px-1.5 py-0.5 text-[11px] text-[var(--gosslan-text)]">{{ kindLabel }}</span>
+          <span class="mr-1 rounded-[var(--gosslan-radius-xs)] bg-[var(--gosslan-panel)] px-1.5 py-0.5 text-caption text-[var(--gosslan-text)]">{{ kindLabel }}</span>
           <span class="align-middle">{{ snippet }}</span>
         </template>
       </div>
 
       <input
         v-model="keyword"
-        maxlength="50"
+        :maxlength="MAX_LIST_FILTER_KEYWORD_CHARS"
         autocomplete="off"
         autocorrect="off"
         autocapitalize="off"
         spellcheck="false"
         :placeholder="t('msg.searchConversation')"
-        class="w-full rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-transparent px-3 py-2 text-[13px] outline-none placeholder:text-[var(--gosslan-text-2)] focus:border-transparent"
+        class="w-full rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-transparent px-3 py-2 text-body outline-none placeholder:text-[var(--gosslan-text-2)] focus:border-transparent"
       />
 
       <div class="max-h-64 select-none overflow-y-auto">
@@ -146,7 +148,7 @@ const kindLabel = computed(() => KIND_LABELS[props.kind] ?? t("msg.message"));
             <img loading="lazy" decoding="async" alt="" v-if="c.avatar" :src="c.avatar" class="h-full w-full object-cover" />
             <span v-else class="gosslan-avatar-emoji" aria-hidden="true">{{ avatarSeedFor(c.id)?.emoji }}</span>
           </span>
-          <span class="min-w-0 flex-1 truncate text-[13px] text-[var(--gosslan-text)]" :title="c.name">{{ c.name }}</span>
+          <span class="min-w-0 flex-1 truncate text-body text-[var(--gosslan-text)]" :title="c.name">{{ c.name }}</span>
         </button>
         <div v-if="filtered.length === 0" class="py-8 text-center text-sm text-[var(--gosslan-text-2)]">{{ t("msg.noMatch") }}</div>
       </div>

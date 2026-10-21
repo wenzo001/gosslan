@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { useEventListener } from "@vueuse/core";
 import { trimOldest } from "@/utils/bounded";
 
 // 基于"估算高度"的虚拟滚动列表：适合消息列表（高度可变但有上限）。
@@ -419,17 +420,17 @@ watch(
   { flush: "post" },
 );
 
+// resize 交给库（组件作用域自动摘挂）；首帧测量仍在 onMounted 里显式做，那部分时序一字未动。
+useEventListener(window, "resize", onResize);
 onMounted(() => {
   prevFirstKey = props.items.length > 0 ? itemKey(props.items[0]) : null;
   onResize();
   observeContainerSize();
-  window.addEventListener("resize", onResize);
   scheduleRemeasure();
 });
 onBeforeUnmount(() => {
   rowResizeObserver?.disconnect();
   containerResizeObserver?.disconnect();
-  window.removeEventListener("resize", onResize);
   if (raf) cancelAnimationFrame(raf);
   if (remeasureRaf) cancelAnimationFrame(remeasureRaf);
   if (settleTimer) window.clearTimeout(settleTimer);

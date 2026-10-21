@@ -286,6 +286,141 @@
         }
     }
 
+    /// 2026-10-20 永久发送中 P0 的接线判据：
+    /// - 清扫器必须**进程级**恰好接一处，且不再绑在 `network::start` 的生命周期上；
+    /// - "可达"必须同时认 TCP 链路与发现层在线（`peers.last_seen`），不能只看 links。
+    #[test]
+    fn outbox_sweeper_is_process_lifetime_and_reachability_includes_discovery() {
+        let lib = include_str!("lib.rs");
+        assert_eq!(
+            lib.matches("spawn_outbox_sweeper(").count(),
+            1,
+            "清扫器必须恰好接一处（多一处会双扫，少一处 = 无终态出口）"
+        );
+        let net = include_str!("network/mod.rs");
+        assert!(
+            !net.contains("spawn_outbox_sweeper("),
+            "清扫器不许再绑在 network::start 上：局域网起不来/被关掉时它就没了"
+        );
+
+        let src = crate::network::transport_src_for_guards();
+        let body = rust_fn_body(&src, "pub fn spawn_outbox_sweeper(");
+        let flat = code_flat(&body);
+        assert!(
+            flat.contains("state.peers.lock()") && flat.contains("peer.last_seen"),
+            "可达性快照必须并入发现层在线（peers.last_seen）—— 只看 links 会把\"在线但对端链路刚断\"按离线挂 7 天"
+        );
+        assert!(
+            flat.contains("outbox_peer_reachable("),
+            "可达判据必须走那个纯函数（单测钉边界；内联一份就会漂）"
+        );
+        assert!(
+            !flat.contains("shutdown.changed()"),
+            "清扫器是进程级常驻，不许再随网络 shutdown 退出"
+        );
+        // 2026-10-20 双实例 E2E 实测：从 `lib.rs` setup 里调这个函数时，`tokio::spawn` 会 panic
+        // 「there is no reactor running」⇒ 应用启动即崩（release panic=abort）。setup 跑在主线程、
+        // 没有 Tokio 上下文，只有 `tauri::async_runtime::spawn` 能从任意线程惰性建 runtime。
+        // 单测不跑 setup，所以这条**形状判据**是唯一的静态防线（行为证据见该轮 E2E）。
+        assert!(
+            flat.contains("tauri::async_runtime::spawn(") && !flat.contains("tokio::spawn("),
+            "清扫器必须用 `tauri::async_runtime::spawn`：`tokio::spawn` 在 setup 线程里没有 reactor，\
+             会 panic 并把启动带崩"
+        );
+        assert_eq!(
+            flat.matches("OUTBOX_SWEEP_READ_FAILED").count(),
+            3,
+            "单聊/群/文件三条过期队列的读失败必须各自留 code=OUTBOX_SWEEP_READ_FAILED，\
+             不许折成\"没有过期行\"静默跳过"
+        );
+        assert_eq!(
+            flat.matches("OUTBOX_OFFLINE_HELD").count(),
+            3,
+            "对端离线时的\"保留\"必须三条队列各留一次可见读数（code=OUTBOX_OFFLINE_HELD），\
+             否则用户看到的长期发送中在日志里没有解释"
+        );
+    }
+
+    /// Ack 的「状态前进 + 删队列行」必须走同一个事务出口。
+    ///
+    /// 旧写法是两条独立写、错误全吞：状态写失败 + 删行成功 = 永久发送中（队列行没了，
+    /// 清扫器与补发都看不见）。行为判据在 `db::messages::ack_delivery_tests`（含删行
+    /// 失败必须回滚状态），这条只钉**调用点没有再长出第二份内联实现**。
+    #[test]
+    fn ack_commit_uses_the_single_transaction_helper() {
+        let src = crate::network::transport_src_for_guards();
+        let body = rust_fn_body(&src, "async fn handle_messaging_arm(");
+        let flat = code_flat(&body);
+        assert_eq!(
+            flat.matches("ack_delivered(").count(),
+            1,
+            "Ack 收尾必须走 `db::ack_delivered` 这一处事务出口"
+        );
+        // ⚠️ 这一格必须看**原文**（`body`），不能看 `flat`：`code_flat` 把空白全删了
+        // ⇒ `DELETE FROM outbox …` 变成 `DELETEFROMoutbox…`，`!flat.contains("DELETE FROM …")`
+        // 恒为真 —— 那是判据自等（源码里真长出内联删行它也照绿）。2026-10-20 复核查出。
+        assert!(
+            !body.contains("DELETE FROM outbox WHERE msg_id"),
+            "Ack 臂里又出现了内联删行 ⇒ 状态与删行重新变成两条独立写"
+        );
+
+        // 群聊同一纪律：GroupAck 也必须走事务出口，不许再出现"先删后写、错误全吞"。
+        let group_body = rust_fn_body(&src, "async fn handle_group_messages(");
+        let group_flat = code_flat(&group_body);
+        assert_eq!(
+            group_flat.matches("ack_group_delivered(").count(),
+            1,
+            "GroupAck 收尾必须走 `db::ack_group_delivered` 这一处事务出口"
+        );
+        assert!(
+            !group_body.contains("DELETE FROM group_outbox WHERE msg_id"),
+            "GroupAck 臂里又出现了内联删行 ⇒ 状态与删行重新变成两条独立写"
+        );
+
+        // 跨跳 `GossipKind::ChatAck` 是同一件事的**第三个**入口（2026-10-20 补齐）：
+        // 它此前仍是 `set_message_status(...).ok()` + 内联 `DELETE ... .ok()` 两条独立写，
+        // 与刚修掉的那两处完全同型。这条钉住它也不许再退回去。
+        let gossip_body = rust_fn_body(&src, "async fn handle_gossip(");
+        let gossip_flat = code_flat(&gossip_body);
+        assert_eq!(
+            gossip_flat.matches("ack_delivered(").count(),
+            1,
+            "跨跳 ChatAck 收尾必须走 `db::ack_delivered` 同一个事务出口"
+        );
+        assert!(
+            !gossip_body.contains("DELETE FROM outbox WHERE msg_id"),
+            "跨跳 ChatAck 臂里又出现了内联删行 ⇒ 状态与删行重新变成两条独立写"
+        );
+    }
+
+    /// 运行态快照的接线判据：只测纯函数不够，必须真的有人每 5 分钟读 WebView 数与队列数。
+    #[test]
+    fn runtime_diag_reporter_is_wired_once_and_covers_webviews_and_queues() {
+        let lib = include_str!("lib.rs");
+        assert_eq!(
+            lib.matches("AppState::spawn_runtime_diag_reporter(").count(),
+            1,
+            "运行态快照必须恰好接一处"
+        );
+        let state = include_str!("state.rs");
+        let body = rust_fn_body(state, "pub fn spawn_runtime_diag_reporter(");
+        for needle in [
+            "webview_windows(",
+            "RUNTIME_DIAG_SECS",
+            "logger.info(",
+            "\"runtime\"",
+            "status = 'sending'",
+            "FROM outbox",
+            "FROM group_outbox",
+            "FROM file_outbox",
+        ] {
+            assert!(
+                body.contains(needle),
+                "运行态快照缺 {needle} —— 窗口泄漏/队列积压就又没有现场读数了"
+            );
+        }
+    }
+
     #[test]
     fn db_hold_summary_has_exactly_one_production_reader() {
         let lib = include_str!("lib.rs");

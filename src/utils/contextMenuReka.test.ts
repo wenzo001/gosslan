@@ -130,3 +130,64 @@ test("全 src 的 .vue 里不再手写 role=menuitem", () => {
   );
   assert.deepEqual(bad, [], "仍有手写菜单条目；请改用库的 DropdownMenuItem");
 });
+
+/**
+ * 「菜单往视口里收」这件事只有一个 owner（§6.85 新增）。
+ *
+ * 外壳 `ContextMenu.vue` 把鼠标点做成**零尺寸虚拟锚点**，量尺寸、翻转、贴边内收都由 Reka 的
+ * popper wrapper 做（外壳注释里写死了这条）。可 `ConversationList.onFriendContext` 之前还自己按
+ * `mw=150 / mh=90` 两个**猜出来的菜单尺寸**向内收了一遍 —— 那是迁到 Reka 之前的手算残留：
+ * 菜单条目增减时这两个数就漂，而漂了不报错，只是弹开的落点偏离用户点的位置。同文件里的
+ * `onConvContext` 早就把坐标原样传下去了 ⇒ 一个文件里两种口径，这才是本轮要收的。
+ *
+ * ⚠️ 缺席型判据的三件零件：正控（这个 matcher 认得出那种写法）、分母下限（扫描面缩水到
+ *    判据自己失效时不许当绿）、**反向钉名单**（剩下那一处必须点名是哪本文件、它限的是宽不是收边）。
+ */
+test("菜单的视口收边只剩一个 owner：父级不许再猜菜单尺寸", async () => {
+  const { readFileSync, readdirSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const SRC = join(import.meta.dirname, "..");
+  const CLAMP = /Math\.max\(\s*\d+\s*,\s*Math\.min\([^)]*window\.inner(?:Width|Height)/g;
+  // 正控：先证明这个 matcher 认得出那种写法，否则下面的"只剩一处"可能只是正则坏了。
+  assert.equal(
+    CLAMP.test("friendMenu.value = { x: Math.max(8, Math.min(x, window.innerWidth - 158)) };"),
+    true,
+    "matcher 认不出手算收边，后面的名单判据是空转",
+  );
+  CLAMP.lastIndex = 0;
+
+  const files = readdirSync(SRC, { recursive: true, encoding: "utf8" })
+    .filter((p) => p.endsWith(".vue") || (p.endsWith(".ts") && !p.endsWith(".test.ts")))
+    .map((p) => p.replaceAll("\\", "/"));
+  assert.ok(files.length >= 180, `扫描面只有 ${files.length} 份生产文件，扫描本身可能已失效`);
+  const hits = new Set<string>();
+  for (const r of files) {
+    const code = readFileSync(join(SRC, r), "utf8")
+      .split("\n")
+      .filter((l) => !/^\s*(\/\/|\*|\/\*|<!--)/.test(l))
+      .join("\n");
+    for (const m of code.matchAll(CLAMP)) {
+      void m;
+      hits.add(r);
+    }
+  }
+  assert.deepEqual(
+    [...hits],
+    ["components/GroupTasksBoard.vue"],
+    "手算视口收边这一族又长出了新成员（坐标收边归 Reka 的 popper，父级只该传裸坐标）",
+  );
+  const board = readFileSync(join(SRC, "components/GroupTasksBoard.vue"), "utf8");
+  assert.match(
+    board,
+    /Math\.max\(96, Math\.min\(ROW_MENU_W, window\.innerWidth - 16\)\)/,
+    "留着的那一处是**限菜单自己的宽**（Reka 不会替内容缩宽），换形状时要一起判它该不该留",
+  );
+
+  // 反向钉：这两个菜单都必须原样传坐标，且那个外壳契约不能被拆掉。
+  const conv = readFileSync(join(SRC, "components/ConversationList.vue"), "utf8");
+  assert.match(conv, /friendMenu\.value = \{ x, y, friend: f \}/, "好友菜单不该再自己收边");
+  assert.match(conv, /convMenu\.value = \{ x, y, conv \}/, "会话菜单不该再自己收边");
+  const shell = readFileSync(join(SRC, "components/ContextMenu.vue"), "utf8");
+  assert.match(shell, /getBoundingClientRect/, "外壳的虚拟锚点没了 —— 那 Reka 就量不到锚点，收边无人负责");
+  console.log(`· 手算收边这一族现读 ${hits.size} 本文件（名单：${[...hits].join(" ") || "空"}）`);
+});

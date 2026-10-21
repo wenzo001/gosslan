@@ -119,10 +119,16 @@ function onOpenChange(value: boolean) {
            被 caption 吃掉）。让开之后 Win/Linux 让 38px、macOS 让 28px（跟着
            `--gosslan-title-h` 的 `.platform-mac` 覆盖自动切），**移动端该变量为 0 ⇒ 零变化**。
            变量的定义与判据（`html:not(.is-mobile)`）见 `style.css` 的窗口显示安全区那一节。
+           2026-10-20 补：**卡片形态**读的是合并后的 `--gosslan-safe-top`（桌面=caption、移动端=
+           刘海/状态栏），因为移动端那枚 window 变量是 0，卡片只剩 `p-4` 那 16px，正被状态区压住
+           （用户实测）。整屏面板里那句自己加的 `pt-[env(safe-area-inset-top)]` 同时删掉——外壳已经
+           让开了，两层都让就是**双计**（那半句顶部内距的类名不再逐字写在这里 —— 判据按代码文本读，
+           注释里留一份字面引文只会让下一个人分不清"还有没有人写"）。而遮罩**故意**继续读 window 那一枚：
+           遮罩是压暗背景用的，移动端要让刘海区也落在暗层底下，读合并值反而会在状态栏下留一条没压暗的缝。
            ⚠️ 动画类挂在 `DialogContent` 自己身上：Reka 的 Presence 只观察这个元素，
            挂在里面的 panel 上会让关闭动画在卸载时被截断。 -->
       <DialogContent
-        class="fixed inset-x-0 bottom-0 top-[var(--gosslan-window-safe-top)] z-[65] font-gosslan focus:outline-none"
+        class="fixed inset-x-0 bottom-0 top-[var(--gosslan-safe-top)] z-[65] font-gosslan focus:outline-none"
         :class="fullscreen
           ? 'gosslan-dialog-page overflow-y-auto overflow-x-hidden'
           : 'gosslan-dialog-card'"
@@ -143,7 +149,7 @@ function onOpenChange(value: boolean) {
         >
           <div
             v-if="fullscreen"
-            class="flex h-full w-full flex-col bg-[var(--gosslan-app-bg)] pt-[env(safe-area-inset-top)] text-left text-[var(--gosslan-text)]"
+            class="flex h-full w-full flex-col bg-[var(--gosslan-app-bg)] text-left text-[var(--gosslan-text)]"
           >
             <header
               class="flex shrink-0 items-center gap-2 border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-panel)] px-3"
@@ -156,7 +162,7 @@ function onOpenChange(value: boolean) {
               >
                 <BackArrow />
               </button>
-              <DialogTitle v-if="title" as="h2" class="text-[15px] font-medium">{{ title }}</DialogTitle>
+              <DialogTitle v-if="title" as="h2" class="text-title font-medium">{{ title }}</DialogTitle>
               <!-- Reka 要求每份 DialogContent 都有可访问名称；整页形态允许不传 title，
                    这里补一个只给读屏的兜底，避免 aria-labelledby 指向不存在的节点。 -->
               <DialogTitle v-if="!title" class="sr-only">{{ t("common.dialog") }}</DialogTitle>
@@ -171,7 +177,7 @@ function onOpenChange(value: boolean) {
           </div>
           <div
             v-else
-            class="elevated pointer-events-auto my-auto flex max-h-[calc(100vh-var(--gosslan-window-safe-top)-2rem)] w-full flex-col rounded-[var(--gosslan-radius-xl)] bg-[var(--gosslan-panel)] p-5 text-left align-middle text-[var(--gosslan-text)]"
+            class="elevated pointer-events-auto my-auto flex max-h-[calc(100vh-var(--gosslan-safe-top)-2rem)] w-full flex-col rounded-[var(--gosslan-radius-xl)] bg-[var(--gosslan-panel)] p-5 text-left align-middle text-[var(--gosslan-text)]"
             :class="width"
           >
             <!-- ⚠️ 标题栏 `shrink-0` + 内容区 `min-h-0 flex-1` 是**一对**，缺一不可：

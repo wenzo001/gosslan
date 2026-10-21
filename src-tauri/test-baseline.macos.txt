@@ -96,6 +96,9 @@ crypto::tests::safety_number_is_symmetric
 crypto::tests::safety_number_separates_concatenated_fields
 crypto::tests::seal_open_roundtrip
 crypto::tests::signature_verifies
+db::ack_delivery_tests::ack_marks_delivered_and_clears_only_the_expected_peer_row
+db::ack_delivery_tests::ack_rolls_back_the_status_when_outbox_delete_fails
+db::ack_delivery_tests::duplicate_and_late_acks_are_idempotent_and_never_change_the_verdict
 db::cascade_tests::a_cancelled_group_file_marks_its_own_bubble
 db::cascade_tests::a_completed_transfer_row_is_never_downgraded
 db::cascade_tests::a_done_transfer_is_not_announced_failed_yet_its_queue_row_closes
@@ -115,6 +118,7 @@ db::cascade_tests::transfer_progress_upsert_never_erases_the_known_path
 db::cascade_tests::transfer_upsert_keeps_size_in_sync_until_done
 db::clock_contention_tests::concurrent_writers_keep_seq_contiguous_and_lose_nothing
 db::clock_contention_tests::long_batch_transaction_does_not_wedge_plain_writers
+db::config_bool_tests::checked_get_distinguishes_missing_key_from_read_failure
 db::config_bool_tests::config_bool_accepts_both_spelling_families
 db::config_bool_tests::config_bool_rejects_unknown_literals
 db::config_bool_tests::get_config_bool_uses_the_given_default_for_missing_and_invalid
@@ -141,6 +145,7 @@ db::group_history_db_tests::served_kind_is_not_folded_by_display_kind
 db::group_history_db_tests::summary_counts_by_logical_seq_not_wall_clock
 db::group_history_db_tests::todo_floor_only_raises_and_ignores_a_missing_field
 db::group_history_db_tests::zero_limit_answers_summary_only
+db::group_outbox_removal_tests::removing_a_member_settles_only_messages_that_lose_their_last_row
 db::group_rename_tests::group_relation_sync_refreshes_title_but_never_creates_a_conversation
 db::group_rename_tests::rename_group_of_missing_group_leaves_conversation_row_untouched
 db::group_rename_tests::rename_group_updates_both_group_row_and_its_conversation_title
@@ -190,6 +195,9 @@ db::read_receipts_tests::read_receipt_does_not_promote_a_failed_message
 db::read_receipts_tests::read_receipt_heals_a_stuck_sending_row
 db::read_receipts_tests::read_receipt_leaves_recalled_rows_alone
 db::read_receipts_tests::read_receipt_stays_inside_its_window_conversation_and_sender
+db::startup_safety_tests::backup_detection_picks_the_newest_migration_backup_and_ignores_the_main_db
+db::startup_safety_tests::boot_counts_ignore_default_settings_but_see_real_rows
+db::startup_safety_tests::orphan_sending_is_recovered_but_queued_and_terminal_rows_are_untouched
 db::tests::ack_from_non_recipient_is_rejected
 db::tests::ack_sender_check_uses_group_file_owner
 db::tests::bt_enabled_defaults_on_and_keeps_explicit_value
@@ -343,6 +351,7 @@ gossip_engine::tests::envelope_ttl_is_preserved
 gossip_engine::tests::fanout_excludes_sender
 gossip_engine::tests::group_envelope_message_id_stable_after_resign
 gossip_engine::tests::group_envelope_resign_covers_creator_and_members
+logging::tests::bootstrap_and_logger_point_at_the_same_crash_file
 logging::tests::crash_block_survives_rotation_and_carries_version_and_context
 logging::tests::crash_file_is_capped_by_reopening_not_growing_forever
 logging::tests::crash_note_writes_without_a_logger_and_survives_the_reentry_guard
@@ -362,6 +371,7 @@ logging::tests::logger_memory_ring_buffer_is_bounded
 logging::tests::logger_persists_to_file_and_rotates
 logging::tests::non_diag_info_is_not_folded
 logging::tests::only_the_panic_target_writes_a_crash_block
+logging::tests::panic_note_from_the_independent_channel_is_classified_as_panic
 logging::tests::parse_log_line_roundtrips_and_rejects_foreign_or_malformed_lines
 logging::tests::previous_exit_is_classified_by_presence_and_absence
 logging::tests::previous_run_log_and_crash_scene_are_seeded_before_this_runs_lines
@@ -646,7 +656,11 @@ network::transport::file_service_tests::merges_only_the_same_cid_of_the_same_pee
 network::transport::file_service_tests::overflow_is_bounded_and_recovers
 network::transport::file_service_tests::same_peer_jobs_are_serial_and_fifo
 network::transport::file_service_tests::worker_exits_and_unregisters_after_shutdown_and_panic
+network::transport::group_file_bubble_tests::ack_write_retries_are_bounded_and_stop_on_first_success
+network::transport::group_file_bubble_tests::bubble_is_decided_only_when_every_recipient_is_terminal
 network::transport::mesh_sync_tests::socket_addr_from_accepts_v4_and_bare_v6
+network::transport::outbox_reachability_tests::discovery_online_counts_as_reachable_even_without_a_live_link
+network::transport::outbox_reachability_tests::online_window_comes_from_the_discovery_timeout
 network::transport::relay_wiring_tests::cap_counts_existing_relay_circuits
 network::transport::relay_wiring_tests::epoch_day_is_day_granular
 network::transport::relay_wiring_tests::negotiate_times_out_when_peer_never_speaks
@@ -698,6 +712,7 @@ network::transport::tests::gossip_trust_for_known_friend_never_tofus
 network::transport::tests::group_envelope_consumption_rule
 network::transport::tests::group_ids_containing_picks_only_actual_members
 network::transport::tests::handle_gossip_does_not_bail_out_for_non_members
+network::transport::tests::handle_gossip_takes_conversation_only_from_the_single_definition
 network::transport::tests::hello_auth_accepts_bound_identity
 network::transport::tests::hello_auth_rejects_attacker_declaring_own_key
 network::transport::tests::hello_auth_rejects_forged_sig_with_victim_pubkey
@@ -705,6 +720,9 @@ network::transport::tests::hello_auth_rejects_missing_signature_and_tampering
 network::transport::tests::hello_auth_tofu_requires_self_consistent_signature
 network::transport::tests::hello_avatar_is_capped_for_the_handshake_frame
 network::transport::tests::hello_binding_ignores_unverified_announced_keys
+network::transport::tests::inbound_conversation_chat_and_group_are_disjoint
+network::transport::tests::inbound_conversation_group_never_uses_sender
+network::transport::tests::inbound_conversation_rejects_missing_or_blank_group_target
 network::transport::tests::inbound_dedup_truth_table
 network::transport::tests::inbound_rejects_are_logged_not_silent
 network::transport::tests::insert_outcome_maps_to_side_effect_and_ack_policy
@@ -732,6 +750,7 @@ network::transport::tests::read_frame_tolerates_unknown_wire_type
 network::transport::tests::read_receipt_db_update_zero_when_already_read
 network::transport::tests::read_receipt_marks_messages_as_read
 network::transport::tests::read_status_never_regresses_to_delivered
+network::transport::tests::real_db_keeps_group_and_dm_conversations_isolated
 network::transport::tests::rebind_after_accepted_connection_matches_platform_semantics
 network::transport::tests::redistribute_failure_registers_pending
 network::transport::tests::repeated_flush_failure_keeps_max_timestamp
@@ -832,13 +851,21 @@ protocol::tests::remind_payload_shake_flag_roundtrip
 protocol::tests::unknown_message_kind_still_decodes_as_a_chat_message
 protocol::tests::unknown_message_type_is_a_hard_parse_error
 protocol::tests::wire_kind_matches_the_serde_tag
+state::tests::corrupt_keys_abort_without_overwriting_them
+state::tests::existing_install_never_regenerates_missing_or_partial_keys
+state::tests::first_install_generates_identity_once_and_later_loads_the_same_keys
+state::tests::identity_failure_leaves_the_database_file_byte_for_byte_unchanged
 state::tests::incoming_message_flattens_the_record_and_carries_three_state_mentions
+state::tests::persist_failure_aborts_instead_of_running_with_an_ephemeral_identity
+state::tests::read_failure_is_not_mistaken_for_a_first_install
+state::tests::startup_error_message_is_actionable_and_names_the_code
 state::tests::ui_language_hint_states_are_distinct
 state::tests::ui_language_prefers_preference_then_frontend_hint_then_env
 storage::cache_cleaner::tests::no_policy_removes_nothing
 storage::cache_cleaner::tests::quota_removes_oldest_first
 storage::cache_cleaner::tests::retention_removes_expired_only
 storage::cache_cleaner::tests::walk_files_never_follows_symlinks
+tests::ack_commit_uses_the_single_transaction_helper
 tests::already_have_shortcut_shares_the_send_finalization
 tests::android_jni_signatures_match_kotlin
 tests::android_peripheral_paces_its_notifications
@@ -909,6 +936,7 @@ tests::notifications_are_observable_and_respect_the_switch
 tests::offline_peer_stays_listed_but_is_not_online
 tests::outbox_retrier_is_wired_and_covers_both_queues
 tests::outbox_sweeper_emits_only_after_db_write_succeeds
+tests::outbox_sweeper_is_process_lifetime_and_reachability_includes_discovery
 tests::peer_version_is_declared_not_signed_and_reclaimed
 tests::pending_key_rotation_cleared_on_both_friend_removal_paths
 tests::pending_requests_exclude_existing_friends
@@ -929,6 +957,7 @@ tests::release_keeps_every_kotlin_method_called_from_rust
 tests::remind_audience_follows_group_membership_removal
 tests::removing_a_friend_also_drops_the_in_memory_identity_binding
 tests::resume_prefix_hash_runs_off_the_async_worker
+tests::runtime_diag_reporter_is_wired_once_and_covers_webviews_and_queues
 tests::runtime_snapshot_reports_real_bluetooth_runtime
 tests::runtime_state_has_a_single_source
 tests::scan_results_are_not_filtered_by_unconnected_services

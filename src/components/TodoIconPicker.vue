@@ -37,7 +37,7 @@ function pick(key: TodoCustomIcon) {
 
 <template>
   <div class="flex flex-wrap items-center gap-1">
-    <span class="mr-0.5 text-[11px] text-[var(--gosslan-text-2)]">{{ translate("todo.pickIcon") }}</span>
+    <span class="mr-0.5 text-caption text-[var(--gosslan-text-2)]">{{ translate("todo.pickIcon") }}</span>
     <!-- 无权限时只回显当前那一枚：给一排按不动的按钮会让人以为是自己点坏了 -->
     <template v-if="props.disabled">
       <component

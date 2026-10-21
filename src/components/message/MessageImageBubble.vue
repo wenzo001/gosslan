@@ -125,7 +125,7 @@ onUnmounted(clearTimer);
       <ImageOff v-if="state === 'failed'" class="size-6 opacity-50" />
       <ImageIcon v-else class="size-6 animate-pulse opacity-40" />
     </div>
-    <span v-if="state === 'failed'" class="absolute inset-x-0 bottom-1 text-center text-[11px] opacity-70">
+    <span v-if="state === 'failed'" class="absolute inset-x-0 bottom-1 text-center text-caption opacity-70">
       {{ t("msg.imageLoadFailed") }}
     </span>
     <!-- img-eager-ok：这张图必须 eager，不许加 loading="lazy"。

@@ -196,59 +196,119 @@ pub struct LogEntry {
 /// `handle_alloc_error` → abort，**根本不经过 panic 钩子**，产生的异常码却和 panic 一模一样
 /// （`0xc0000409`）⇒ 不留痕就永远分不开这两种死法。
 ///
-/// 路径由 [`bind_crash_file`] 尽早绑定（见 lib.rs 那个 bootstrap 插件）。
+/// 崩溃现场文件的**权威**路径（由 `Logger::new` 绑定）。
 static CRASH_FILE: OnceLock<PathBuf> = OnceLock::new();
+/// bootstrap 的**早期**绑定（logger 还不存在时的那几毫秒用）。
+///
+/// 为什么要两个槽（2026-10-20 隔离实例实证，不是假想）：bootstrap 跑在 `Logger::new` 之前，
+/// 它拿到的是 `app_data_dir()`，而 Logger 拿到的是 `<app_data>/logs`。过去只有一个
+/// `OnceLock`、bootstrap 先绑 ⇒ Logger 那次（唯一正确的那次）被**静默丢弃**，于是独立通道
+/// 连续几天都在写 `com.gosslan.app/gosslan-N-crash.log`，而用户被指引去发的、诊断包读的、
+/// 下次启动判定读的都是 `logs/gosslan-N-crash.log` —— 现场文件里因此**一行 `>>>` 都没有**，
+/// "打开就闪退"永远读成"异常终止/强杀"。
+/// 现在：路径统一由 [`crash_file_in`] 计算（两处必然相等），**并且**分成两槽 ——
+/// 权威绑定永远能生效，早期绑定只在权威缺失时兜底。两个 `OnceLock` 都是无锁读，
+/// panic 钩子里不会因为抢锁而死锁。
+static EARLY_CRASH_FILE: OnceLock<PathBuf> = OnceLock::new();
 /// 防再入：分配失败时写这一行本身还要申请内存，可能再次打进分配器。
 static NOTE_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
-/// 把现场文件路径交给独立写入器。**只认第一次绑定**（后来的 `Logger::new` 用的是同一个路径）。
+/// 唯一的**日志目录**计算点：`<app_data>/logs`。
+///
+/// 谁都不许自己拼 `join("logs")`：这个字面量一旦在某一处漂移，就会出现
+/// "写在一处、读在另一处"的静默丢证据（2026-10-20 的现场就是这种形状）。
+pub fn log_dir_in(app_data: &std::path::Path) -> PathBuf {
+    app_data.join("logs")
+}
+
+/// 唯一的**崩溃现场文件**计算点：`<app_data>/logs/<stem>-crash.log`。
+///
+/// bootstrap（早）与 `Logger::new`（稍后）都必须走这里 —— 见 [`EARLY_CRASH_FILE`] 的说明。
+pub fn crash_file_in(app_data: &std::path::Path, stem: &str) -> PathBuf {
+    crash_file_for(&log_dir_in(app_data), stem)
+}
+
+/// 把现场文件路径交给独立写入器（权威绑定，`Logger::new` 用）。只认第一次。
 pub fn bind_crash_file(path: &std::path::Path) {
     let _ = CRASH_FILE.set(path.to_path_buf());
 }
 
-/// 进程要消失之前都能调的一行留痕。目录没绑定 ⇒ 退回 stderr（不假装写成了）。
+/// 早期绑定（bootstrap 用）。权威绑定出现后**以权威为准**，这里不会把它顶掉。
+pub fn bind_early_crash_file(path: &std::path::Path) {
+    let _ = EARLY_CRASH_FILE.set(path.to_path_buf());
+}
+
+/// 进程要消失之前都能调的一行留痕。写不进去 ⇒ 退回 stderr（不假装写成了）。
 ///
 /// ⚠️ 与 `write_crash_block` 的分工：那条带"崩之前 300 条"上下文（要靠内存环，只有 logger 在时做得到）；
 /// 这条只保证**一定写得出**，用在还没有 logger、或压根不会经过 panic 钩子的路径上。
 pub fn crash_note(text: &str) {
-    match CRASH_FILE.get() {
-        Some(path) => crash_note_to(path, text),
-        None => eprintln!("[gosslan] (现场文件未绑定，只能打到 stderr) {text}"),
+    match CRASH_FILE.get().or_else(|| EARLY_CRASH_FILE.get()) {
+        Some(path) if crash_note_to(path, text) => {}
+        _ => eprintln!("[gosslan] (现场文件写不进去，这条只在 stderr) {text}"),
     }
 }
 
-/// 真正写那一行的部分。**拆成显式路径**是为了可测：`CRASH_FILE` 是进程级 OnceLock，
-/// 单元测试之间共享，直接测全局那条会互相抢绑定。
-pub fn crash_note_to(path: &std::path::Path, text: &str) {
+/// 真正写那一行的部分。返回 `true` = 真的落盘了。
+///
+/// **拆成显式路径**是为了可测：`CRASH_FILE` 是进程级 OnceLock，单元测试之间共享，
+/// 直接测全局那条会互相抢绑定。
+///
+/// 三条必须在这里守住的边界（它跑在 panic 钩子里，任何一条做错都会把"留痕"变成"二次崩溃"）：
+/// 1. **不 panic**：任何 IO 失败都折成 `false`，由 [`crash_note`] 退到 stderr；
+/// 2. **有上界**：这条通道不轮转（它必须在任何子系统坏掉时也能写），所以超过
+///    [`MAX_CRASH_FILE_BYTES`] 就整份重开 —— 与 `write_crash_block` 同一口径，
+///    否则"反复启动失败"会把现场文件长到没有边；
+/// 3. **不再入**：写这一行本身要申请内存，分配失败时可能再次打进分配器。
+pub fn crash_note_to(path: &std::path::Path, text: &str) -> bool {
     use std::io::Write;
     if NOTE_IN_PROGRESS.swap(true, Ordering::SeqCst) {
-        return; // 再入：正在写现场时又触发分配失败，直接放弃这条（否则无限递归）
+        return false; // 再入：正在写现场时又触发分配失败，直接放弃这条（否则无限递归）
     }
     if let Some(dir) = path.parent() {
         let _ = create_private_dir(dir);
     }
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
-        restrict_to_owner(path);
-        let _ = writeln!(
-            f,
-            ">>> {text}  @{} 版本 {} · {}-{} · {}",
-            format_utc(now_ms()),
-            env!("CARGO_PKG_VERSION"),
-            std::env::consts::OS,
-            std::env::consts::ARCH,
-            if cfg!(debug_assertions) {
-                "debug"
-            } else {
-                "release"
-            },
-        );
-        let _ = f.flush();
+    // 先看大小再决定 open 模式：append 不会截断，超上界时必须显式 truncate。
+    let over_cap = matches!(std::fs::metadata(path), Ok(m) if m.len() > MAX_CRASH_FILE_BYTES);
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).write(true);
+    if over_cap {
+        opts.truncate(true);
+    } else {
+        opts.append(true);
     }
+    let ok = match opts.open(path) {
+        Ok(mut f) => {
+            restrict_to_owner(path);
+            let mut ok = true;
+            if over_cap {
+                ok &= writeln!(
+                    f,
+                    "（现场文件超过 {} 字节，已整份重开；更早的行不在本文件里）",
+                    MAX_CRASH_FILE_BYTES
+                )
+                .is_ok();
+            }
+            ok &= writeln!(
+                f,
+                ">>> {text}  @{} 版本 {} · {}-{} · {}",
+                format_utc(now_ms()),
+                env!("CARGO_PKG_VERSION"),
+                std::env::consts::OS,
+                std::env::consts::ARCH,
+                if cfg!(debug_assertions) {
+                    "debug"
+                } else {
+                    "release"
+                },
+            )
+            .is_ok();
+            ok && f.flush().is_ok()
+        }
+        Err(_) => false,
+    };
     NOTE_IN_PROGRESS.store(false, Ordering::SeqCst);
+    ok
 }
 
 /// 现场文件路径（供 bootstrap 与测试用）。
@@ -314,6 +374,9 @@ pub enum PreviousExit {
     Clean,
     /// 有崩溃现场块 ⇒ 上一次是 Rust panic（或分配失败留痕）
     Panic,
+    /// 上一次是**被安全中止的启动**（身份/数据库校验失败）：进程没崩，但也没起来。
+    /// 这条由 `crash_note("code=BOOT_FAILED …")` 留下，下一轮必须与"正常退出"分开。
+    StartupFailed,
     /// 只有"启动"、没有退出、也没有崩溃块 ⇒ **按异常终止处理**
     /// （强杀 / OOM / 原生代码 abort / 掉电 —— 这一类无法再细分，也不许假装能细分）
     SilentKill,
@@ -327,6 +390,26 @@ pub fn classify_previous_exit(native_lines: &[String]) -> PreviousExit {
     }
     if native_lines.iter().any(|l| l.starts_with("===== 崩溃现场")) {
         return PreviousExit::Panic;
+    }
+    // **没有 logger 的 panic** 走的是独立通道，形状是 `>>> panic @ file:line:col：…`，
+    // 而不是 `===== 崩溃现场`（那条要 logger 的"崩之前 300 条"上下文）。
+    // 旧分类只认后者 ⇒ setup 期 panic 被读成"异常终止/强杀"：2026-10-20 的真实现场里
+    // 文件明明有 `>>> panic @ …outbox_sweep.rs:89`，下一轮却判 `BOOT_PREV_SILENT_KILL`。
+    // 只扫**最后一次启动之后**的行：更早那几轮里的 panic 不能按到这一次头上。
+    if native_lines
+        .iter()
+        .rev()
+        .take_while(|l| !l.starts_with("----- 启动 "))
+        .any(|l| l.starts_with(">>> ") && l.contains("panic @ "))
+    {
+        return PreviousExit::Panic;
+    }
+    // 只看**最后一条**：更早的 BOOT_FAILED 后面若已经有正常退出路标，那是后来恢复过了。
+    if native_lines
+        .last()
+        .is_some_and(|l| l.contains("code=BOOT_FAILED"))
+    {
+        return PreviousExit::StartupFailed;
     }
     match native_lines.last() {
         Some(l) if l.starts_with("----- 正常退出 ") => PreviousExit::Clean,
@@ -921,6 +1004,9 @@ impl Logger {
             let verdict = match verdict_kind {
                 PreviousExit::Clean => "上次收尾判定：正常退出（有退出路标）",
                 PreviousExit::Panic => "上次收尾判定：panic 现场（见上面的崩溃现场块）",
+                PreviousExit::StartupFailed => {
+                    "上次收尾判定：启动被安全中止（身份/数据库校验失败；数据库未被修改）"
+                }
                 PreviousExit::SilentKill => concat!(
                     "上次收尾判定：异常终止 —— 只有启动路标，既无正常退出路标也无崩溃现场。",
                     "可能是强杀（kill -9 / 看门狗 / 拔电）或 OOM；这几类死法在进程内部留不下任何东西，",
@@ -928,17 +1014,27 @@ impl Logger {
                 ),
                 PreviousExit::NoHistory => "上次收尾判定：现场文件里没有可判定的路标",
             };
-            body.push_str(verdict);
+            let verdict_code = match verdict_kind {
+                PreviousExit::Clean => "BOOT_PREV_CLEAN",
+                PreviousExit::Panic => "BOOT_PREV_PANIC",
+                PreviousExit::StartupFailed => "BOOT_PREV_STARTUP_FAILED",
+                PreviousExit::SilentKill => "BOOT_PREV_SILENT_KILL",
+                PreviousExit::NoHistory => "BOOT_PREV_NO_HISTORY",
+            };
+            let verdict_line = format!("{verdict} code={verdict_code}");
+            body.push_str(&verdict_line);
             body.push('\n');
             // 判定也要**落到日志文件里**。为什么：`seed_previous_run` 灌进去的那批行只进内存环
             // （它刻意不走 `log()`，免得污染折叠表与磁盘），于是"只发日志文件"的用户
             // 永远拿不到这句结论 —— 2026-10-20 用 release 二进制实测就是这样：文件里有
             // 三条原始路标，判定只在界面上。补这一行让离线读文件的人也能直接看到。
             let v_level = match verdict_kind {
-                PreviousExit::Panic | PreviousExit::SilentKill => Level::Warn,
+                PreviousExit::Panic | PreviousExit::SilentKill | PreviousExit::StartupFailed => {
+                    Level::Warn
+                }
                 _ => Level::Info,
             };
-            if let Err(r) = self.append_file(now_ms(), v_level, "boot", verdict) {
+            if let Err(r) = self.append_file(now_ms(), v_level, "boot", &verdict_line) {
                 // 判定行自己都写不进去 ⇒ 这是磁盘/权限层面的硬失败，退回 stderr 留个字面证据，
                 // 不能静默（`let _ =` 会让"为什么文件里没有这句结论"变成新一轮猜谜）。
                 eprintln!("[gosslan] 收尾判定未能写入日志文件：{r}");
@@ -1140,6 +1236,20 @@ mod tests {
             classify_previous_exit(&mk(&["----- 启动 a"])),
             PreviousExit::SilentKill
         );
+        // 启动被安全中止（身份/DB 校验失败）是一条独立的收尾方式：进程没崩，
+        // 但也没有"正常退出"。不能把它归进 NoHistory/SilentKill。
+        assert_eq!(
+            classify_previous_exit(&mk(&[
+                "----- 启动 a",
+                ">>> code=BOOT_FAILED 启动失败：IDENTITY_CORRUPT @2026-10-20",
+            ])),
+            PreviousExit::StartupFailed
+        );
+        // 反向：更早的 BOOT_FAILED 之后已经有正常退出路标 ⇒ 那是后来恢复过了。
+        assert_eq!(
+            classify_previous_exit(&mk(&[">>> code=BOOT_FAILED old", "----- 正常退出 b",])),
+            PreviousExit::Clean
+        );
     }
 
     #[test]
@@ -1158,6 +1268,10 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(text.contains("上次收尾判定：正常退出"), "实际文本：{text}");
+        assert!(
+            text.contains("code=BOOT_PREV_CLEAN"),
+            "收尾判定必须带可检索错误码，实际文本：{text}"
+        );
         // 判定还必须落到**日志文件**里：用户崩溃后能发出来的只有文件，不是界面内存环。
         let on_disk = std::fs::read_to_string(lg2.current_path()).unwrap_or_default();
         assert!(
@@ -1179,6 +1293,10 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(text3.contains("异常终止"), "实际文本：{text3}");
+        assert!(
+            text3.contains("code=BOOT_PREV_SILENT_KILL"),
+            "异常终止也要有可检索错误码，实际文本：{text3}"
+        );
         let _ = std::fs::remove_dir_all(&clean);
         let _ = std::fs::remove_dir_all(&kill);
     }
@@ -1671,7 +1789,85 @@ mod tests {
             "通道被再入闸永久卡死了"
         );
         assert!(!after.contains("第二条"), "被拦掉的那条不该出现在文件里");
+
+        // ③ 上界：超 2MB 必须整份重开（这条通道不轮转，否则会无限长）
+        let capped = crash_file_for(&dir, "cap");
+        std::fs::write(&capped, vec![b'x'; MAX_CRASH_FILE_BYTES as usize + 1]).unwrap();
+        assert!(crash_note_to(&capped, "超限之后的新一条"));
+        let cap_body = std::fs::read_to_string(&capped).unwrap();
+        assert!(
+            cap_body.len() < 4096,
+            "超上界必须整份重开，实测仍有 {} 字节",
+            cap_body.len()
+        );
+        assert!(cap_body.contains("已整份重开"), "重开要留一句可判读的说明");
+        assert!(
+            cap_body.contains("超限之后的新一条"),
+            "重开不能把当前这条弄丢"
+        );
+
+        // ④ 写不进去必须返回 false（由 crash_note 退到 stderr），绝不许 panic：
+        //    它跑在 panic 钩子里，二次 panic 会把"留痕"变成"二次崩溃"。
+        let blocker = dir.join("blocker");
+        std::fs::write(&blocker, b"x").unwrap();
+        assert!(
+            !crash_note_to(&blocker.join("sub").join("x-crash.log"), "写不进去"),
+            "写失败必须返回 false，不许假装写成了"
+        );
+
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **bootstrap 与 Logger 必须指同一份现场文件**（2026-10-20 真机事故的判据）。
+    ///
+    /// 事故形状：bootstrap 用 `crash_file_for(app_data, stem)` ⇒ `com.gosslan.app/x-crash.log`；
+    /// Logger 用 `app_data/logs` ⇒ `com.gosslan.app/logs/x-crash.log`。两个 OnceLock 先到先得，
+    /// 于是独立通道**一直写错文件**，用户发出来的 `logs/*-crash.log` 里一行 `>>>` 都没有。
+    /// 这条不比对源码文本，而是真的把 Logger 建出来再比路径。
+    #[test]
+    fn bootstrap_and_logger_point_at_the_same_crash_file() {
+        let app_data = fresh_dir("crash-path");
+        let stem = "gosslan-2";
+        let logger = Logger::new(log_dir_in(&app_data), stem, "[dev:t]".to_string());
+        assert_eq!(
+            crash_file_in(&app_data, stem),
+            logger.crash_path(),
+            "两处算出来的现场文件不是同一个 ⇒ 独立通道写在一处、用户/诊断包/下一轮判定读另一处"
+        );
+        assert!(
+            logger.crash_path().starts_with(log_dir_in(&app_data)),
+            "现场文件必须在 logs/ 里（诊断包只读这里）"
+        );
+        let _ = std::fs::remove_dir_all(&app_data);
+    }
+
+    /// 独立通道**有上界** + 写不进去必须**返回 false**（不许 panic、不许假装写成）。
+    ///
+    /// ⚠️ 这两条断言**必须并进** `crash_note_writes_without_a_logger_and_survives_the_reentry_guard`
+    /// 那一条测试里顺序跑：再入闸是进程级 `AtomicBool`，拆成独立测试会被 libtest 的线程池
+    /// 并发执行 —— 一条把闸置起来，另一条的写入被吃掉（本仓已实测过这种假红）。
+
+    /// `>>> panic @ …` 必须判成 panic，而不是"异常终止/强杀"。
+    /// 反向那一格钉住"更早那一轮的 panic 不能按到这一轮头上"。
+    #[test]
+    fn panic_note_from_the_independent_channel_is_classified_as_panic() {
+        let mk = |v: &[&str]| -> Vec<String> { v.iter().map(|s| s.to_string()).collect() };
+        assert_eq!(
+            classify_previous_exit(&mk(&[
+                "----- 启动 a",
+                ">>> panic @ src/network/transport/outbox_sweep.rs:89:5：there is no reactor running",
+            ])),
+            PreviousExit::Panic
+        );
+        assert_eq!(
+            classify_previous_exit(&mk(&[
+                ">>> panic @ src/old.rs:1:1：上一轮的",
+                "----- 启动 b",
+                "----- 正常退出 b",
+            ])),
+            PreviousExit::Clean,
+            "更早那一轮的 panic 不许按到这一轮头上"
+        );
     }
 
     // ---------------- 上一轮故障现场进内存（`seed_previous_run`）----------------

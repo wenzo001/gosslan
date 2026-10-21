@@ -1496,7 +1496,7 @@ mesh 没有服务器也没有强制升级 ⇒ 混合版本是常态，不是边�
 **边界（如实写下，别当成已解决）**：十二处家今天都在池子里了，但**这条法仍有两处买不到的地方**，都由 4.40.4 那次变异实测确认、不是推测：
 ① 分母判据认的是**名字** —— 以后新增一类"同步 helper 里藏着整份慢活"（新的函数名），不在那份清单里就看不见 ⇒ 加名字时要连同台账第 13 行一起说一句；
 ② "包进了池子但不等它"（丢掉 JoinHandle）分母**判绿**，只有按格点名那条判据红 —— 两次单点变异各红一条，正是为了把这个差别留在纸面上。
-登记项 ⑦ 的形状**已由 crate 源码判定，不再标"未证实"**：预览那一族实际是**三格一家**，不是 `read_file_preview` 单独一格——`commands/helpers.rs:189`（`read_file_preview`）、`commands/favorites.rs:239`（`read_favorite_preview`）、`commands/favorites.rs:303`（`read_content_preview`），三格同一条 15 MiB 封顶，现算 `grep -rn "max_bytes.min(15 \* 1024 \* 1024)" src-tauri/src --include="*.rs"`。**后端那一半**归本条管：体在 worker 上跑、且被同一体内的 15 MiB 上限管住 ⇒ 不是"界面线程上的整份慢活"这一形状（尺子按形状不数 `std::fs::read(`，见台账第 13 行第 ③ 条盲区）。**前端那一半**由 tauri 2.11.5 那份 ipc 下的 protocol.rs 第 392 到 405 行判定：响应体是原始字节时，macOS 与 iOS **无条件**走"把响应序列化进一段 JS 源码再 eval"那条道，序列化形状由同那份 crate 的 ipc 下 mod.rs 第 133 到 140 行决定（**一字节一个十进制数**），只有非 mac/ios 且自定义协议未被前端上报为 blocked 时才走 Channel、前端直接拿 ArrayBuffer；所以前端必须在 `src/utils/filePreview.ts:148`、`src/utils/filePreview.ts:196`、`src/utils/filePreview.ts:242` **三个归一点**各写一遍 `new Uint8Array(raw)`。本机 V8 的量级下界读数记在 CHANGELOG 4.40.5 的审计第六轮那一节。**这一格还剩两半没量**：① 真机 JavaScriptCore 的同一读数；② 那段源串被交给 webview 的那一步在主线程花多久（本轮既没证实也没推翻）。别把本条读成"全仓再无慢活钉在界面线程或 worker 上"。
+登记项 ⑦ 的形状**已由 crate 源码判定，不再标"未证实"**：预览那一族实际是**三格一家**，不是 `read_file_preview` 单独一格——`commands/helpers.rs:189`（`read_file_preview`）、`commands/favorites.rs:239`（`read_favorite_preview`）、`commands/favorites.rs:303`（`read_content_preview`），三格同一条 15 MiB 封顶，现算 `grep -rn "max_bytes.min(15 \* 1024 \* 1024)" src-tauri/src --include="*.rs"`。**后端那一半**归本条管：体在 worker 上跑、且被同一体内的 15 MiB 上限管住 ⇒ 不是"界面线程上的整份慢活"这一形状（尺子按形状不数 `std::fs::read(`，见台账第 13 行第 ③ 条盲区）。**前端那一半**由 tauri 2.11.5 那份 ipc 下的 protocol.rs 第 392 到 405 行判定：响应体是原始字节时，macOS 与 iOS **无条件**走"把响应序列化进一段 JS 源码再 eval"那条道，序列化形状由同那份 crate 的 ipc 下 mod.rs 第 133 到 140 行决定（**一字节一个十进制数**），只有非 mac/ios 且自定义协议未被前端上报为 blocked 时才走 Channel、前端直接拿 ArrayBuffer；所以前端必须在 `src/utils/filePreview.ts:142`、`src/utils/filePreview.ts:180`、`src/utils/filePreview.ts:219` **三个归一点**各写一遍 `new Uint8Array(raw)`。本机 V8 的量级下界读数记在 CHANGELOG 4.40.5 的审计第六轮那一节。**这一格还剩两半没量**：① 真机 JavaScriptCore 的同一读数；② 那段源串被交给 webview 的那一步在主线程花多久（本轮既没证实也没推翻）。别把本条读成"全仓再无慢活钉在界面线程或 worker 上"。
 
 - 钩子：`tests::receive_finalize_slow_work_happens_outside_the_receiver_lock` `tests::group_receive_finalize_slow_work_runs_off_the_async_worker` `tests::resume_prefix_hash_runs_off_the_async_worker` `tests::relay_file_lifecycle_slow_work_runs_off_the_async_worker` `tests::whole_file_slow_work_never_runs_on_an_async_worker`
 - 反向：把任一处写回成就地调用 ⇒ 对应那条红；把交出的动作挪到别的臂/别的函数 ⇒ 位置那格红；
@@ -1504,3 +1504,24 @@ mesh 没有服务器也没有强制升级 ⇒ 混合版本是常态，不是边�
   包了却不 `.await` ⇒ 按格点名那条红、分母那条绿（盲区，实测）；在已登记的册里新增一处没包的慢活 ⇒ 分母红在处数与 offenders 两处；在一台同步命令（挂 `command(async)`）里新增整份复制/哈希 ⇒ 分母红在 offenders 那一格（4.40.5 实测：把 `copy_file` 退回旧形状，只红 1 处且点名 `commands/helpers.rs [std::fs::copy(`）。
   ⚠️ **不许**为了消红去改这三条判据的锚点形状，也不许去改 Change Budget 的领域映射或窗口大小 ——
   这条不变量存在的意义就是"下一个家必须被同一族判据当场抓住"，而不是让窗口清掉。
+
+---
+
+## 31. Conversation Ownership（群聊 / 单聊的归属）
+
+### INV-P35 — 会话归属只来自目标，不来自发送者
+
+群信封的会话键只能由 `group_id` 决定（`group:{gid}`）；`sender_id` 是「谁说的」，不是「说在哪个会话」。
+只有单聊才用 `sender_id` 做会话键。目标缺失或空白时必须**丢弃并留痕**，不许回退成 `group:` 空群会话，
+也不许回退成发送者的单聊。
+
+为什么它是协议级的：同一条群消息会经直连 Gossip、第三方转发、离线补发、历史同步四条路径到达，
+四条都必须落到同一个 `conversations.id`。其中任意一条按发送者归属，用户就会在**个人聊天**里看到
+本来只属于群的内容（2026-10-20 修的就是这个形状），而且 `unread` / `last_msg` / 列表排序会一起被改写 ——
+那不是渲染问题，是数据写错了会话。
+
+- 唯一定义点：`network/transport/gossip.rs::inbound_conversation`（`member_notices` 另有一处只用于群系统提示文本）。
+- 钩子：`network::transport::tests::inbound_conversation_group_never_uses_sender` `network::transport::tests::inbound_conversation_rejects_missing_or_blank_group_target` `network::transport::tests::inbound_conversation_chat_and_group_are_disjoint` `network::transport::tests::real_db_keeps_group_and_dm_conversations_isolated` `network::transport::tests::handle_gossip_takes_conversation_only_from_the_single_definition` `src/utils/messages.test.ts#群消息只更新群会话` `src/utils/messages.test.ts#多个群 + 单聊同批到达`
+- 反向：把群分支改成 `conv_id = sender_id`、或缺目标时回退单聊 ⇒ 前两条真值表红；把 `handle_gossip` 里的
+  `let conv_id = target.conv_id;` 换成 `env.sender_id` ⇒ 结构那条红（实测 exit 101，报「会话键必须原样取自 …」）。
+  三条一起才管住"函数对、接线错"这种最危险的形状。

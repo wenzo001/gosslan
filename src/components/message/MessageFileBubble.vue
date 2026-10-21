@@ -82,9 +82,9 @@ const canOpen = computed(() => props.ready && props.tappable !== false);
         <X v-else class="h-5 w-5" />
       </div>
       <div class="min-w-0 flex-1">
-        <div class="line-clamp-2 break-all text-[13px] font-medium leading-snug">{{ meta.name }}</div>
-        <div v-if="failed" class="mt-0.5 text-[11px] text-[var(--gosslan-danger-ink)]">{{ t("msg.sendFailed") }}</div>
-        <div v-else class="mt-0.5 flex items-center gap-1 text-[11px] opacity-70">
+        <div class="line-clamp-2 break-all text-body font-medium leading-snug">{{ meta.name }}</div>
+        <div v-if="failed" class="mt-0.5 text-caption text-[var(--gosslan-danger-ink)]">{{ t("msg.sendFailed") }}</div>
+        <div v-else class="mt-0.5 flex items-center gap-1 text-caption opacity-70">
           <span>{{ extLabel }}</span>
           <span>·</span>
           <span>{{ formatBytes(meta.size) }}</span>
@@ -100,7 +100,7 @@ const canOpen = computed(() => props.ready && props.tappable !== false);
       <div v-if="!failed && !ready && !missing" class="flex shrink-0 items-center">
         <span
           v-if="progress !== null"
-          class="flex h-7 items-center gap-1 text-[11px] tabular-nums opacity-70"
+          class="flex h-7 items-center gap-1 text-caption tabular-nums opacity-70"
           :title="t('msg.receiving')"
         >
           <Loader2 class="h-3.5 w-3.5 animate-spin" />
@@ -121,7 +121,7 @@ const canOpen = computed(() => props.ready && props.tappable !== false);
     <!-- 群文件成员投递状态：独立成底栏，用一条极淡分隔线与文件信息区隔开（微信式卡片层次） -->
     <div
       v-if="delivery"
-      class="flex items-center gap-1.5 border-t border-current/10 pt-1.5 text-[11px] opacity-70"
+      class="flex items-center gap-1.5 border-t border-current/10 pt-1.5 text-caption opacity-70"
     >
       <span>{{ t("msg.sentTo", { n: delivery.completed }) }}</span>
       <span v-if="delivery.waiting > 0">· {{ t("msg.waitingOnline", { n: delivery.waiting }) }}</span>
@@ -136,7 +136,7 @@ const canOpen = computed(() => props.ready && props.tappable !== false);
         ></div>
       </div>
     </template>
-    <div v-if="statusText" class="text-[11px] opacity-70">{{ statusText }}</div>
+    <div v-if="statusText" class="text-caption opacity-70">{{ statusText }}</div>
     <span aria-hidden="true" class="bubble-tail" :class="mine ? 'tail-mine' : 'tail-other'"></span>
   </div>
 </template>

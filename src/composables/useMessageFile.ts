@@ -6,7 +6,7 @@ import { api } from "@/api";
 import { loadThumbPreview } from "@/utils/filePreview";
 import { parseFileMeta } from "@/utils/fileMeta";
 import { openLocalFile, saveLocalFile } from "@/utils/localFile";
-import { shouldProbePresence } from "@/utils/mediaAvailability";
+import { PREVIEW_FAILURE_KEYS, shouldProbePresence } from "@/utils/mediaAvailability";
 import { isAndroid } from "@/utils/platform";
 import {
   transferDisplayKind,
@@ -120,7 +120,8 @@ export function useMessageFile(
       // await 期间该气泡可能已不满足预览条件（切换/失败）→ 丢弃，避免贴到错误气泡。
       if (previewSubtype.value !== sub) return;
       attachmentUrl.value = r.url ?? null;
-      previewNote.value = r.note ?? null;
+      // 失败原因 → 词典键：文案不在 util 里写死，切语言时这里跟着变（zh / en 两档都由 t 决定）。
+      previewNote.value = r.failure ? $t(PREVIEW_FAILURE_KEYS[r.failure]) : null;
       attachmentMissing.value = r.missing === true;
       return;
     }

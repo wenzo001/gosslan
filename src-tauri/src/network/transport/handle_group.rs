@@ -67,25 +67,35 @@ async fn handle_group_messages(state: &Arc<AppState>, peer_id: &str, msg: Messag
             }
             // 只清除该 peer 在该群中的待发记录；不存在时删除是安全的 no-op。
             // 命中失败不向外暴露，避免用伪造 Ack 探测本地 outbox。
-            {
+            //
+            // 状态推进与删行必须在**同一个事务**里（2026-10-20 永久发送中 P0）：
+            // 旧写法先删 `group_outbox`、再 `set_message_status(...).ok()`，删行成功而
+            // 状态写失败就留下「队列行没了、消息还是 sending」的孤儿 —— 清扫器只扫
+            // group_outbox，补发也没有行可发。与 1:1 的 `ack_delivered` 同一纪律。
+            let applied = {
                 let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                let _ = db::delete_group_outbox(&dbc, &msg_id, &from);
-                // ⚠️ 同一次锁里还必须把这条消息的**终态落库**（2026-10-13 真机第 7 条的另一半）。
-                // 口径逐字照抄 1:1 那一臂（`handle_messaging.rs` 的 `Message::Ack`）：
-                // `db::set_message_status(..., "delivered")`，它的 WHERE 自带"只前进不回退"
-                // （`status NOT IN ('read','delivered','recalled')`），所以后到的第二个成员 Ack
-                // 不会把已经 `read` 的行退回 `delivered`。
-                // 为什么过去只 emit 不够：前端的 `onMessageAcked` 只在内存里 advance 一次，
-                // 而本仓的不变量是「状态的唯一真相源是 messages.status」。真机现场（用户 10-12 那份库，
-                // 只读现算）：`group_outbox` 0 行、16 条群消息却永远 `sent`，而对端的已读标记
-                // 已经落在这批消息之后 ⇒ 队列行是被 Ack 删的（清扫器判失败会同时写 `failed`），
-                // 也就是**对面收到了**，只有本机没记下这个事实 ⇒ 一重启就退回"未送达"的观感。
-                let _ = db::set_message_status(&dbc, &msg_id, "delivered");
+                db::ack_group_delivered(&dbc, &msg_id, &from)
+            };
+            match applied {
+                Ok(true) => {
+                    let _ = state.app.emit(
+                        "group-message-acked",
+                        &serde_json::json!({ "group_id": group_id, "msg_id": msg_id }),
+                    );
+                }
+                Ok(false) => {
+                    // 伪造 / 重复 / 已收尾的 GroupAck：与旧行为一致，静默丢弃。
+                }
+                Err(e) => {
+                    state.logger.error(
+                        "ack",
+                        format!(
+                            "code=GROUP_ACK_COMMIT_FAILED msg_id={msg_id} group_id={group_id} \
+                             peer={peer_id} err={e} —— 队列行与状态都保留，等待重发后再收尾"
+                        ),
+                    );
+                }
             }
-            let _ = state.app.emit(
-                "group-message-acked",
-                &serde_json::json!({ "group_id": group_id, "msg_id": msg_id }),
-            );
         }
         // 「1:1 文件收发」6 个变体的处理体在 `transport/handle_file.rs::handle_file_messages`
         // （2026-10-07 拆出；分发臂用 `{ .. }` 不绑字段，绑定留在分册里那条同形状的模式上）。

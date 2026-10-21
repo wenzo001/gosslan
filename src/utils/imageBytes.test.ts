@@ -174,3 +174,51 @@ test("放行的任务图必须能原分辨率显示（体积闸 < 预览读取�
     `任务图上限 ${MAX_TODO_IMAGE_BYTES} 不低于预览读取上限 ${cap} ⇒ 会出现"发得出去但看不了"的图`,
   );
 });
+
+/**
+ * 「单条预览上限 15 MiB」这一族跨语言只有一个口径。
+ *
+ * 真实形状（2026-10-20 实测）：这个值在前端被抄成三份（`filePreview.ts`、`favoritePreview.ts`、
+ * `MergeCardModal.vue`），Rust 侧另有三处 `.min(15 * 1024 * 1024)` 的钳制，而前端注释写着
+ * 「与后端 `read_file_preview` 同一口径」—— 那句话**原先没有任何机器凭据**。两侧都改成本文件
+ * 现读现算（不 import 被测模块：`filePreview.ts` 要 `@/api`，`node --test` 解析不了 `@/` 别名），
+ * 于是任何一侧单独改动都会在这里红，而不是等"前端要 20MB、后端悄悄截到 15MB"再复盘。
+ */
+test("15 MiB 单条预览上限：前端只许一个家，且必须与 Rust 侧钳制同值", () => {
+  const MiB = 1024 * 1024;
+  const mul = (expr: string): number => expr.split("*").reduce((acc, part) => acc * Number(part.trim()), 1);
+  const PROD = /export const IMAGE_PREVIEW_MAX_BYTES = ([\d\s*]+);/;
+
+  const tsHome = readFileSync(new URL("./filePreview.ts", import.meta.url), "utf8");
+  const m = PROD.exec(tsHome);
+  assert.ok(m, "读不到 IMAGE_PREVIEW_MAX_BYTES 的定义 ⇒ 家被改名或删了，这条判据不作数");
+  const tsBytes = mul(m[1]);
+  assert.ok(tsBytes > 0 && Number.isFinite(tsBytes), `现算失败：[${m[1]}] 不是一段可算的乘法`);
+
+  // 分母现算：Rust 侧三条 `.min(N * 1024 * 1024)` 一条都不许漏（少一条 ⇒ 写法变了或 matcher 坏了）
+  const RUST = /\.min\(\s*([\d][\d\s*]*1024\s*\*\s*1024)\s*\)/g;
+  const rustHits: number[] = [];
+  for (const rel of ["../../src-tauri/src/commands/helpers.rs", "../../src-tauri/src/commands/favorites.rs"]) {
+    const src = readFileSync(new URL(rel, import.meta.url), "utf8");
+    for (const hit of src.matchAll(RUST)) rustHits.push(mul(hit[1]));
+  }
+  assert.ok(rustHits.length >= 3, `Rust 侧只认出 ${rustHits.length} 处 .min(N * 1024 * 1024) 钳制（实测 3）⇒ 分母掉了，下面的相等断言没有意义`);
+  const bad = [...new Set(rustHits)].filter((v) => v !== tsBytes);
+  assert.deepEqual(bad, [], `后端钳制与前端上限不再同值：TS ${tsBytes} vs Rust ${bad.join(", ")}`);
+
+  // 前端不许再长出第二份手抄：`15 * 1024 * 1024` 这个字面量在剥掉注释后的生产码里只许出现在那个家
+  const LIT = /\b15\s*\*\s*1024\s*\*\s*1024\b/g;
+  for (const probe of ["const X = 15 * 1024 * 1024;", "await api.readContentPreview(cid, 15*1024*1024);"]) {
+    assert.ok(new RegExp(LIT.source).test(probe), `matcher 认不出手抄字面量 ⇒ 下面的判定不作数：${probe}`);
+  }
+  const dupes: string[] = [];
+  for (const rel of ["./filePreview.ts", "./favoritePreview.ts", "../components/message/MergeCardModal.vue"]) {
+    const src = readFileSync(new URL(rel, import.meta.url), "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/^\s*\/\/.*$/gm, "");
+    const hits = [...src.matchAll(new RegExp(LIT.source, "g"))].length;
+    if (hits > (rel === "./filePreview.ts" ? 1 : 0)) dupes.push(`${rel} ×${hits}`);
+  }
+  assert.deepEqual(dupes, [], `单条预览上限被各抄一份（应只由 filePreview.ts 导出）：${dupes.join(", ")}`);
+  assert.equal(tsBytes, 15 * MiB, "上限值本身被改动 ⇒ 三处消费方与后端钳制都要重新核");
+});

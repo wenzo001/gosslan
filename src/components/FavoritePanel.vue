@@ -33,12 +33,12 @@ import ForwardModal from "@/components/message/ForwardModal.vue";
 import BackArrow from "@/components/ui/BackArrow.vue";
 import DangerBtn from "@/components/ui/DangerBtn.vue";
 import StateBlock from "@/components/ui/StateBlock.vue";
-import { friendlyError } from "@/utils/errors";
+import { errorText } from "@/composables/useErrorText";
 import { useClipboard } from "@/composables/useClipboard";
 import { fmtConversationTime } from "@/utils/time";
-import { rgba } from "@/utils/color";
+import { MAX_LIST_FILTER_KEYWORD_CHARS } from "@/utils/validation";
 import { formatBytes } from "@/utils/format";
-import { FILE_KIND_COLORS, FILE_KIND_ICONS, extBadgeLabel, fileKindOf } from "@/utils/fileKind";
+import { FILE_KIND_ICONS, extBadgeLabel, fileKindOf, fileKindStyle } from "@/utils/fileKind";
 import { openLocalFile, saveLocalFile } from "@/utils/localFile";
 import { dropFavoritePreview, loadFavoritePreview, clearFavoritePreviews } from "@/utils/favoritePreview";
 import { mergeItemLine, mergeSummary, parseMergePayload } from "@/utils/mergeCard";
@@ -130,7 +130,7 @@ async function load() {
     loadError.value = "";
   } catch (e) {
     failed.value = true;
-    loadError.value = friendlyError(e, t("favorite.loadFail"));
+    loadError.value = errorText(e, t("favorite.loadFail"));
   } finally {
     loading.value = false;
   }
@@ -310,9 +310,8 @@ function kindIcon(f: FavoriteEntry) {
 
 function kindStyle(f: FavoriteEntry) {
   if (f.kind === "image" || f.kind === "file") {
-    const c = FILE_KIND_COLORS[fileKindOf(displayName(f))];
-    const accent = app.dark ? c.dark : c.light;
-    return { backgroundColor: rgba(accent, 0.12), color: accent };
+    // 与群文件面板同一份配色实现（`utils/fileKind::fileKindStyle`）
+    return fileKindStyle(displayName(f), app.dark);
   }
   return {
     backgroundColor: "color-mix(in srgb, var(--gosslan-text-2) 12%, transparent)",
@@ -366,8 +365,8 @@ async function copyItem(f: FavoriteEntry) {
   menu.value = null;
   try {
     if (f.kind === "text" || f.kind === "code") {
-      const ok = await copyContent("favorite", f.content);
-      app.toast(t(ok ? "common.copied" : "favorite.copyFail"), ok ? "success" : "error");
+      await copyContent("favorite", f.content);
+      app.toast(t("common.copied"), "success");
       return;
     }
     if (f.kind === "merge") {
@@ -376,8 +375,8 @@ async function copyItem(f: FavoriteEntry) {
       const text = p
         ? [p.title, ...p.items.map((i) => `${i.sender}：${mergeItemLine(i)}`)].join("\n")
         : mergeSummary(f.content);
-      const ok = await copyContent("favorite", text);
-      app.toast(t(ok ? "common.copied" : "favorite.copyFail"), ok ? "success" : "error");
+      await copyContent("favorite", text);
+      app.toast(t("common.copied"), "success");
       return;
     }
     if (kindClass(f.kind) === "card") {
@@ -387,8 +386,8 @@ async function copyItem(f: FavoriteEntry) {
         app.toast(t("favorite.copyFail"), "error");
         return;
       }
-      const ok = await copyContent("favorite", text);
-      app.toast(t(ok ? "common.copied" : "favorite.copyFail"), ok ? "success" : "error");
+      await copyContent("favorite", text);
+      app.toast(t("common.copied"), "success");
       return;
     }
     if (!f.media_path || !f.available) {
@@ -597,10 +596,10 @@ async function confirmDelete() {
           <div class="flex shrink-0 flex-col gap-2 px-2 pt-2">
             <input
               v-model="keyword"
-              maxlength="50"
+              :maxlength="MAX_LIST_FILTER_KEYWORD_CHARS"
               autocomplete="off"
               :placeholder="t('favorite.searchPlaceholder')"
-              class="w-full rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-field)] px-3 py-2 text-[13px] outline-none placeholder:text-[var(--gosslan-text-2)] focus:border-transparent"
+              class="w-full rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-field)] px-3 py-2 text-body outline-none placeholder:text-[var(--gosslan-text-2)] focus:border-transparent"
             />
             <!-- 类型筛选：独立胶囊 chips，与「群任务过滤 / 日志时间窗口」同款
                  （此前激活态写了不存在的 `bg-primary` 类导致选中没底色，用户 2026-09-20；
@@ -641,18 +640,18 @@ async function confirmDelete() {
                 <component :is="kindIcon(f)" class="h-4 w-4" />
               </span>
               <span class="min-w-0 flex-1" :class="app.isMobile ? 'pr-7' : ''">
-                <span class="block truncate text-[13px] text-[var(--gosslan-text)]" :title="rowTitle(f)">
+                <span class="block truncate text-body text-[var(--gosslan-text)]" :title="rowTitle(f)">
                   {{ rowTitle(f) }}
                 </span>
                 <span
                   v-if="rowSubtitle(f)"
-                  class="mt-0.5 block truncate text-[11px] text-[var(--gosslan-text-2)]"
+                  class="mt-0.5 block truncate text-caption text-[var(--gosslan-text-2)]"
                   :title="rowSubtitle(f)"
                 >
                   {{ rowSubtitle(f) }}
                 </span>
-                <span class="mt-0.5 block text-[11px] text-[var(--gosslan-text-2)]">
-                  {{ fmtConversationTime(f.favorited_at) }}
+                <span class="mt-0.5 block text-caption text-[var(--gosslan-text-2)]">
+                  {{ fmtConversationTime(f.favorited_at, t) }}
                   <template v-if="!f.available"> · {{ t("favorite.mediaGone") }}</template>
                 </span>
               </span>
@@ -707,19 +706,19 @@ async function confirmDelete() {
             >
               <BackArrow />
             </button>
-            <span class="min-w-0 truncate text-[15px] font-medium text-[var(--gosslan-text)]" :title="favTitle">{{ favTitle }}</span>
+            <span class="min-w-0 truncate text-title font-medium text-[var(--gosslan-text)]" :title="favTitle">{{ favTitle }}</span>
           </header>
 
           <div class="min-h-0 flex-1 overflow-y-auto p-3 pb-[max(env(safe-area-inset-bottom),0.75rem)]">
-            <div class="mb-2 flex items-center gap-2 text-[11px] text-[var(--gosslan-text-2)]">
+            <div class="mb-2 flex items-center gap-2 text-caption text-[var(--gosslan-text-2)]">
               <span class="truncate" :title="senderName(active)">{{ senderName(active) }}</span>
               <span>·</span>
-              <span>{{ t("favorite.from", { time: fmtConversationTime(active.favorited_at) }) }}</span>
+              <span>{{ t("favorite.from", { time: fmtConversationTime(active.favorited_at, t) }) }}</span>
             </div>
 
             <div
               v-if="active.kind === 'text' || active.kind === 'code'"
-              class="gosslan-selectable break-words whitespace-pre-wrap rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-panel)] p-3 text-[13px] text-[var(--gosslan-text)]"
+              class="gosslan-selectable break-words whitespace-pre-wrap rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-panel)] p-3 text-body text-[var(--gosslan-text)]"
             >
               {{ active.content }}
             </div>
@@ -740,8 +739,8 @@ async function confirmDelete() {
               <div class="text-xs text-[var(--gosslan-text-2)]">{{ mergeSummary(active.content) }}</div>
               <div class="space-y-1.5">
                 <div v-for="(it, i) in activeMergeItems" :key="i" class="space-y-0.5">
-                  <div class="text-[11px] text-[var(--gosslan-text-2)]">{{ it.sender }}</div>
-                  <div class="break-words whitespace-pre-wrap text-[13px] text-[var(--gosslan-text)]">
+                  <div class="text-caption text-[var(--gosslan-text-2)]">{{ it.sender }}</div>
+                  <div class="break-words whitespace-pre-wrap text-body text-[var(--gosslan-text)]">
                     <template v-if="it.kind === 'text' || it.kind === 'code'">{{ it.content }}</template>
                     <template v-else>{{ mergeItemLine(it) }}</template>
                   </div>
@@ -763,13 +762,13 @@ async function confirmDelete() {
                   aria-hidden="true"
                 />
                 <div class="min-w-0 flex-1">
-                  <div class="break-words whitespace-pre-wrap text-[13px] leading-relaxed text-[var(--gosslan-text)]">
+                  <div class="break-words whitespace-pre-wrap text-body leading-relaxed text-[var(--gosslan-text)]">
                     {{ activeCardText }}
                   </div>
                   <!-- 待办的描述（卡片信息补全：之前只渲染了标题） -->
                   <p
                     v-if="activeCardDesc"
-                    class="mt-1 whitespace-pre-wrap break-words text-[12px] leading-relaxed text-[var(--gosslan-text-2)]"
+                    class="mt-1 whitespace-pre-wrap break-words text-meta leading-relaxed text-[var(--gosslan-text-2)]"
                   >
                     {{ activeCardDesc }}
                   </p>
@@ -778,7 +777,7 @@ async function confirmDelete() {
                     <li
                       v-for="(o, i) in activePollOptions"
                       :key="i"
-                      class="break-words text-[12px] leading-relaxed text-[var(--gosslan-text-2)]"
+                      class="break-words text-meta leading-relaxed text-[var(--gosslan-text-2)]"
                     >
                       {{ o }}
                     </li>
@@ -796,7 +795,7 @@ async function confirmDelete() {
                   </div>
                 </div>
               </div>
-              <div class="mt-1.5 flex items-center gap-2 text-[11px] text-[var(--gosslan-text-2)]">
+              <div class="mt-1.5 flex items-center gap-2 text-caption text-[var(--gosslan-text-2)]">
                 <span
                   v-if="activeCardStatus"
                   class="inline-flex h-5 items-center justify-center rounded-full px-2 font-medium leading-none"
@@ -809,10 +808,10 @@ async function confirmDelete() {
             </div>
 
             <div v-else class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-panel)] p-3">
-              <div class="truncate text-[13px] font-medium text-[var(--gosslan-text)]" :title="displayName(active)">
+              <div class="truncate text-body font-medium text-[var(--gosslan-text)]" :title="displayName(active)">
                 {{ displayName(active) }}
               </div>
-              <div class="mt-1 text-[11px] text-[var(--gosslan-text-2)]">
+              <div class="mt-1 text-caption text-[var(--gosslan-text-2)]">
                 {{ extBadgeLabel(displayName(active), t("common.file")) }} ·
                 {{ formatBytes(metaOf(active)?.size ?? active.media_size) }}
               </div>
@@ -824,7 +823,7 @@ async function confirmDelete() {
                min-w-14 保证字不挤压截断；真放不下时横向滚动兜底，绝不折行。 -->
           <div class="mt-2 flex shrink-0 items-stretch gap-0.5 overflow-x-auto border-t border-[var(--gosslan-divider)] px-2 pb-2 pt-1">
             <button
-              class="tap-safe flex min-w-14 flex-1 flex-col items-center gap-0.5 rounded-[var(--gosslan-radius-sm)] py-1.5 text-[11px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+              class="tap-safe flex min-w-14 flex-1 flex-col items-center gap-0.5 rounded-[var(--gosslan-radius-sm)] py-1.5 text-caption text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
               @click="copyItem(active)"
             >
               <Copy class="h-4 w-4" aria-hidden="true" />
@@ -832,7 +831,7 @@ async function confirmDelete() {
             </button>
             <button
               v-if="isForwardableKind(active.kind)"
-              class="tap-safe flex min-w-14 flex-1 flex-col items-center gap-0.5 rounded-[var(--gosslan-radius-sm)] py-1.5 text-[11px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+              class="tap-safe flex min-w-14 flex-1 flex-col items-center gap-0.5 rounded-[var(--gosslan-radius-sm)] py-1.5 text-caption text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
               @click="startForward(active)"
             >
               <Share2 class="h-4 w-4" aria-hidden="true" />
@@ -840,7 +839,7 @@ async function confirmDelete() {
             </button>
             <button
               v-if="active.kind === 'image'"
-              class="tap-safe flex min-w-14 flex-1 flex-col items-center gap-0.5 rounded-[var(--gosslan-radius-sm)] py-1.5 text-[11px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+              class="tap-safe flex min-w-14 flex-1 flex-col items-center gap-0.5 rounded-[var(--gosslan-radius-sm)] py-1.5 text-caption text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
               @click="previewImage(active)"
             >
               <ImageIcon class="h-4 w-4" aria-hidden="true" />
@@ -848,7 +847,7 @@ async function confirmDelete() {
             </button>
             <button
               v-if="active.kind === 'file'"
-              class="tap-safe flex min-w-14 flex-1 flex-col items-center gap-0.5 rounded-[var(--gosslan-radius-sm)] py-1.5 text-[11px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+              class="tap-safe flex min-w-14 flex-1 flex-col items-center gap-0.5 rounded-[var(--gosslan-radius-sm)] py-1.5 text-caption text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
               @click="openItem(active)"
             >
               <FolderOpen class="h-4 w-4" aria-hidden="true" />
@@ -856,21 +855,21 @@ async function confirmDelete() {
             </button>
             <button
               v-if="active.kind === 'image' || active.kind === 'file'"
-              class="tap-safe flex min-w-14 flex-1 flex-col items-center gap-0.5 rounded-[var(--gosslan-radius-sm)] py-1.5 text-[11px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+              class="tap-safe flex min-w-14 flex-1 flex-col items-center gap-0.5 rounded-[var(--gosslan-radius-sm)] py-1.5 text-caption text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
               @click="saveItem(active)"
             >
               <Download class="h-4 w-4" aria-hidden="true" />
               <span class="whitespace-nowrap">{{ t("favorite.saveAs") }}</span>
             </button>
             <button
-              class="tap-safe flex min-w-14 flex-1 flex-col items-center gap-0.5 rounded-[var(--gosslan-radius-sm)] py-1.5 text-[11px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+              class="tap-safe flex min-w-14 flex-1 flex-col items-center gap-0.5 rounded-[var(--gosslan-radius-sm)] py-1.5 text-caption text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
               @click="locate(active)"
             >
               <CornerUpLeft class="h-4 w-4" aria-hidden="true" />
               <span class="whitespace-nowrap">{{ t("favorite.locate") }}</span>
             </button>
             <button
-              class="tap-safe flex min-w-14 flex-1 flex-col items-center gap-0.5 rounded-[var(--gosslan-radius-sm)] py-1.5 text-[11px] text-[var(--gosslan-danger-ink)] transition hover:bg-[var(--gosslan-danger-soft)]"
+              class="tap-safe flex min-w-14 flex-1 flex-col items-center gap-0.5 rounded-[var(--gosslan-radius-sm)] py-1.5 text-caption text-[var(--gosslan-danger-ink)] transition hover:bg-[var(--gosslan-danger-soft)]"
               @click="askDelete(active)"
             >
               <Trash2 class="h-4 w-4" aria-hidden="true" />

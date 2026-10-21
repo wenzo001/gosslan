@@ -27,6 +27,7 @@ import {
   type PreviewGalleryView,
 } from "@/utils/previewGalleryState";
 import { t } from "@/i18n";
+import { createInitScope } from "@/utils/initScope";
 
 const view = ref<PreviewGalleryView>({ ...INITIAL_PREVIEW_VIEW });
 const index = computed({
@@ -81,9 +82,10 @@ async function pull() {
   }
 }
 
-let unlisten: (() => void) | null = null;
-let unlistenClose: (() => void) | null = null;
+// `disposed` 仍然管着 `pull()` 的迟到回写；两条订阅的卸载改交给 scope
+// （`listen()` 要等一次 IPC 往返，窗口在那之前就被关掉时取消函数会永远没人调用）。
 let disposed = false;
+const listenerScope = createInitScope();
 
 /**
  * 关闭时把这个文档自己持有的相册放掉。
@@ -103,14 +105,7 @@ onMounted(() => {
   void pull();
   api
     .onImagePreviewChanged(() => void pull())
-    .then((fn) => {
-      // 窗口被秒关时 onUnmounted 可能已经跑完 ⇒ 拿到 unlisten 就立刻补一次取消
-      if (disposed) {
-        fn();
-        return;
-      }
-      unlisten = fn;
-    })
+    .then((fn) => listenerScope.onDispose(fn))
     .catch(() => {
       /* 订阅失败只影响"窗口已开着时再点图"这一条路（内容会停在上一次） */
     });
@@ -124,23 +119,14 @@ onMounted(() => {
       event.preventDefault();
       releaseAlbum();
     })
-    .then((fn) => {
-      if (disposed) {
-        fn();
-        return;
-      }
-      unlistenClose = fn;
-    })
+    .then((fn) => listenerScope.onDispose(fn))
     .catch(() => {
       /* 订阅失败最多退回"隐藏时留着上一份相册"，不影响看图本身 */
     });
 });
 onUnmounted(() => {
   disposed = true;
-  unlisten?.();
-  unlisten = null;
-  unlistenClose?.();
-  unlistenClose = null;
+  listenerScope.dispose();
 });
 
 function closeSelf() {
@@ -162,7 +148,6 @@ function closeSelf() {
       :images="view.images"
       v-model:index="index"
       :open="true"
-      top-inset="var(--gosslan-title-h)"
       hide-close
       @close="closeSelf()"
     />

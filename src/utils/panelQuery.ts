@@ -19,6 +19,7 @@ export const PANEL_QUERY_POLICY = {
   retryDelay: 0,
 } as const;
 
+/** 键的家：读侧与「写成功把整份数据写回」共用这一个，别在组件里手抄 `["root","id"]`。 */
 export const panelKey = (root: string, id: string) => [root, id] as const;
 
 export function panelQueryOptions<TData>(

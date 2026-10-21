@@ -186,25 +186,35 @@ async fn handle_messaging_arm(state: &Arc<AppState>, peer_id: &str, msg: Message
             };
             match original_sender {
                 Some(sender) if sender == state.device_id => {
-                    // 情况 1：Ack 对应的原始消息是我发的 → 正常处理
-                    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                    // Ack 没有可伪造的 sender 字段，必须同时命中本连接对应的
+                    // 情况 1：Ack 对应的原始消息是我发的 → 正常处理。
+                    // Ack 没有可伪造的 sender 字段，`ack_delivered` 会同时校验本连接对应的
                     // outbox 目标，避免任意 LAN 节点猜到 msg_id 后伪造送达。
-                    let is_expected_peer: bool = dbc
-                        .query_row(
-                            "SELECT 1 FROM outbox WHERE msg_id = ?1 AND peer_id = ?2",
-                            params![msg_id, peer_id],
-                            |_| Ok(()),
-                        )
-                        .is_ok();
-                    if !is_expected_peer {
-                        return;
+                    //
+                    // 状态前进与删行必须在**一个事务**里（2026-10-20 永久发送中 P0）：
+                    // 旧写法两条写各自 `.ok()`，第一条失败、第二条成功就留下
+                    // 「队列行没了、状态还是 sending」—— 清扫器与补发都再也看不见它。
+                    let applied = {
+                        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                        db::ack_delivered(&dbc, &msg_id, peer_id)
+                    };
+                    match applied {
+                        Ok(true) => {
+                            let _ = state.app.emit("message-acked", &msg_id);
+                        }
+                        Ok(false) => {
+                            // 不是发给这个 peer 的 Ack / 已经收尾过：与旧行为一致，静默丢弃。
+                        }
+                        Err(e) => {
+                            // 失败时事务已回滚：outbox 行还在，下一次补发会再次收到 Ack 并重试。
+                            state.logger.error(
+                                "ack",
+                                format!(
+                                    "code=ACK_COMMIT_FAILED msg_id={msg_id} peer={peer_id} err={e} \
+                                     —— 队列行与 sending 状态都保留，等待重发后再收尾"
+                                ),
+                            );
+                        }
                     }
-                    db::set_message_status(&dbc, &msg_id, "delivered").ok();
-                    dbc.execute("DELETE FROM outbox WHERE msg_id = ?1", params![msg_id])
-                        .ok();
-                    drop(dbc);
-                    let _ = state.app.emit("message-acked", &msg_id);
                 }
                 Some(sender) => {
                     // 情况 2：中继节点 → 转发 Ack 给原始发送方

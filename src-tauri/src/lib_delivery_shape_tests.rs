@@ -493,13 +493,13 @@
         // 校验必须在出帧之前
         assert!(ack_parse < kernel, "必须先验回执再出帧");
 
-        // 传输层 GroupAck 臂：只清 outbox，不碰 remind 状态。
+        // 传输层 GroupAck 臂：只清 outbox（现在与状态推进同事务），不碰 remind 状态。
         let group = code_flat(include_str!("network/transport/handle_group.rs"));
         assert!(
             group.contains("Message::GroupAck{group_id,msg_id,from,}")
-                && group.contains("db::delete_group_outbox(&dbc,&msg_id,&from)")
+                && group.contains("db::ack_group_delivered(&dbc,&msg_id,&from)")
                 && group.contains("\"group-message-acked\""),
-            "GroupAck 臂的既有形状（删 outbox + emit acked）找不到了"
+            "GroupAck 臂的既有形状（事务收尾 + emit acked）找不到了"
         );
         assert!(
             !group.contains("remind"),
@@ -589,14 +589,31 @@
     fn group_ack_advances_sender_message_status_like_dm_ack_does() {
         let dm = code_flat(include_str!("network/transport/handle_messaging.rs"));
         let group = code_flat(include_str!("network/transport/handle_group.rs"));
+        // 2026-10-20：1:1 那边把"置 delivered + 删队列行"收进了同一个事务出口
+        // `db::ack_delivered`（删行失败必须回滚状态）。判据跟着挪到新出口，
+        // 并单独钉住那个出口**确实**写 delivered —— 不是放宽，是把对照指向更强的证据。
         assert!(
-            dm.contains("db::set_message_status(&dbc,&msg_id,\"delivered\")"),
-            "1:1 Ack 臂那次持久化写入不见了 ⇒ 本判据的对照失效（先去核对口径，别把群侧改成跟着错）"
+            dm.contains("db::ack_delivered(&dbc,&msg_id,peer_id)"),
+            "1:1 Ack 臂必须走 `db::ack_delivered` 事务收尾（旧的两条独立写 + 吞错已删除）"
+        );
+        // SQL 字面量里的空格有意义，这里看**原文**而不是 `code_flat`（后者会把
+        // `DELETE FROM outbox` 压成 `DELETEFROMoutbox`）。
+        let ack_body = rust_fn_body(include_str!("db/messages.rs"), "pub fn ack_delivered(");
+        assert!(
+            ack_body.contains("SET status = 'delivered'") && ack_body.contains("DELETE FROM outbox"),
+            "1:1 Ack 的事务出口必须真的把状态写成 delivered 并删 outbox 行"
         );
         assert!(
-            group.contains("db::set_message_status(&dbc,&msg_id,\"delivered\")"),
+            group.contains("db::ack_group_delivered(&dbc,&msg_id,&from)"),
             "GroupAck 臂只删队列 + emit 前端事件 ⇒ 送达事实不落库（INV-006 被破），\
              重启后那批群消息永远显示未送达（真机 16 行 stuck at sent 就是这个形状）。\
-             口径照抄 1:1 Ack 那一臂：`db::set_message_status(&dbc, &msg_id, \\\"delivered\\\")`"
+             现在口径与 1:1 一致：走同一个事务出口 `db::ack_group_delivered`"
+        );
+        let group_ack_body =
+            rust_fn_body(include_str!("db/group_offline_queue.rs"), "pub fn ack_group_delivered(");
+        assert!(
+            group_ack_body.contains("SET status = 'delivered'")
+                && group_ack_body.contains("DELETE FROM group_outbox"),
+            "群 Ack 的事务出口必须真的把状态写成 delivered 并删对应成员的队列行"
         );
     }

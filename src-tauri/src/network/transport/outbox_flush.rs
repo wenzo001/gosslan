@@ -12,14 +12,46 @@
 pub async fn flush_outbox(state: &AppState, peer_id: &str) {
     let pending = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::list_outbox(&dbc, peer_id).unwrap_or_default()
+        db::list_outbox(&dbc, peer_id)
     };
-    for (_id, payload) in pending {
-        let Ok(msg) = serde_json::from_str::<Message>(&payload) else {
-            continue;
+    let pending = match pending {
+        Ok(v) => v,
+        Err(e) => {
+            // 读失败不许折成"没有待发消息"：那会让这一轮补发静默缺席、也没有任何读数。
+            state.logger.error(
+                "outbox",
+                format!("code=OUTBOX_FLUSH_READ_FAILED peer={peer_id} err={e} —— 本轮补发跳过"),
+            );
+            return;
+        }
+    };
+    for (id, payload) in pending {
+        let msg = match serde_json::from_str::<Message>(&payload) {
+            Ok(m) => m,
+            Err(e) => {
+                // 坏载荷永远发不出去；不删行，交给清扫器按超时落 failed（行还在 = 可见）。
+                state.logger.error(
+                    "outbox",
+                    format!(
+                        "code=OUTBOX_PAYLOAD_CORRUPT peer={peer_id} outbox_id={id} err={e} \
+                         —— 保留行，等清扫器落终态"
+                    ),
+                );
+                continue;
+            }
         };
         let msg = reseal_for_send(state, msg);
-        let _ = try_send(state, peer_id, &msg).await;
+        if let Err(e) = try_send(state, peer_id, &msg).await {
+            if log_throttled("outbox_resend_fail", 30_000) {
+                state.logger.warn(
+                    "outbox",
+                    format!(
+                        "code=OUTBOX_RESEND_FAILED peer={peer_id} outbox_id={id} err={e} \
+                         —— 保留队列行，等待下一次建链/心跳"
+                    ),
+                );
+            }
+        }
     }
 }
 
@@ -30,12 +62,49 @@ pub async fn flush_outbox(state: &AppState, peer_id: &str) {
 pub async fn flush_group_outbox(state: &AppState, peer_id: &str) {
     let pending = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::list_group_outbox(&dbc, peer_id).unwrap_or_default()
+        db::list_group_outbox(&dbc, peer_id)
     };
-    for (_id, payload) in pending {
-        let Ok(Message::Gossip { envelope }) = serde_json::from_str::<Message>(&payload) else {
-            continue;
+    let pending = match pending {
+        Ok(v) => v,
+        Err(e) => {
+            state.logger.error(
+                "outbox",
+                format!("code=GROUP_OUTBOX_FLUSH_READ_FAILED peer={peer_id} err={e} —— 本轮补发跳过"),
+            );
+            return;
+        }
+    };
+    for (id, payload) in pending {
+        let envelope = match serde_json::from_str::<Message>(&payload) {
+            Ok(Message::Gossip { envelope }) => envelope,
+            Ok(_) => {
+                state.logger.error(
+                    "outbox",
+                    format!("code=GROUP_OUTBOX_PAYLOAD_NOT_GOSSIP peer={peer_id} outbox_id={id}"),
+                );
+                continue;
+            }
+            Err(e) => {
+                state.logger.error(
+                    "outbox",
+                    format!(
+                        "code=GROUP_OUTBOX_PAYLOAD_CORRUPT peer={peer_id} outbox_id={id} err={e} \
+                         —— 保留行，等清扫器落终态"
+                    ),
+                );
+                continue;
+            }
         };
-        let _ = try_send(state, peer_id, &Message::Gossip { envelope }).await;
+        if let Err(e) = try_send(state, peer_id, &Message::Gossip { envelope }).await {
+            if log_throttled("group_outbox_resend_fail", 30_000) {
+                state.logger.warn(
+                    "outbox",
+                    format!(
+                        "code=GROUP_OUTBOX_RESEND_FAILED peer={peer_id} outbox_id={id} err={e} \
+                         —— 保留队列行，等待下一次建链/心跳"
+                    ),
+                );
+            }
+        }
     }
 }

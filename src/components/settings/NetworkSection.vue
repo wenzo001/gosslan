@@ -8,6 +8,7 @@ import SettingsGroup from "@/components/settings/SettingsGroup.vue";
 import SettingsRow from "@/components/settings/SettingsRow.vue";
 import SettingsToggle from "@/components/settings/SettingsToggle.vue";
 import SettingsSelect from "@/components/ui/SettingsSelect.vue";
+import { useImeEnterGuard } from "@/composables/useImeEnterGuard";
 import { t } from "@/i18n";
 import type {RelayConfig, RelayPolicy, RelayProbe, RoutedEndpoint} from "@/types";
 
@@ -203,6 +204,8 @@ const relayDirty = computed(
     JSON.stringify(relayLoaded.value) !== JSON.stringify({ ...relayCfg }),
 );
 
+const ime = useImeEnterGuard();
+
 async function saveRelayConfig() {
   relayBusy.value = true;
   try {
@@ -361,7 +364,7 @@ async function removeEndpoint(address: string) {
       :key="ep.address"
       class="flex items-center gap-2 px-4 py-2.5"
     >
-      <span class="min-w-0 flex-1 truncate font-mono text-[13px] text-[var(--gosslan-text)]" :title="ep.address">
+      <span class="min-w-0 flex-1 truncate font-mono text-body text-[var(--gosslan-text)]" :title="ep.address">
         {{ ep.address }}
       </span>
       <button
@@ -386,11 +389,13 @@ async function removeEndpoint(address: string) {
         v-model="newAddress"
         type="text"
         :placeholder="t('settings.network.routed.placeholder')"
-        class="min-w-0 flex-1 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-transparent px-3 py-1.5 text-[13px] outline-none placeholder:text-[var(--gosslan-text-2)] focus:border-transparent"
-        @keyup.enter="addEndpoint"
+        class="min-w-0 flex-1 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-transparent px-3 py-1.5 text-body outline-none placeholder:text-[var(--gosslan-text-2)] focus:border-transparent"
+        @keyup.enter="ime.enter(addEndpoint)"
+        @compositionstart="ime.onStart"
+        @compositionend="ime.onEnd"
       />
       <button
-        class="shrink-0 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-3.5 py-1.5 text-[13px] font-medium text-white transition hover:bg-[var(--gosslan-primary-hover)]"
+        class="shrink-0 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-3.5 py-1.5 text-body font-medium text-white transition hover:bg-[var(--gosslan-primary-hover)]"
         @click="addEndpoint"
       >
         {{ t("settings.network.routed.add") }}
@@ -421,8 +426,10 @@ async function removeEndpoint(address: string) {
         autocomplete="off"
         spellcheck="false"
         :placeholder="t('settings.network.relayServer.serverPlaceholder')"
-        class="w-44 min-w-0 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-transparent px-3 py-1.5 text-right font-mono text-[13px] outline-none placeholder:text-[var(--gosslan-text-2)] focus:border-transparent"
-        @keyup.enter="saveRelayConfig"
+        class="w-44 min-w-0 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-transparent px-3 py-1.5 text-right font-mono text-body outline-none placeholder:text-[var(--gosslan-text-2)] focus:border-transparent"
+        @keyup.enter="ime.enter(saveRelayConfig)"
+        @compositionstart="ime.onStart"
+        @compositionend="ime.onEnd"
       />
     </SettingsRow>
 
@@ -445,11 +452,13 @@ async function removeEndpoint(address: string) {
           spellcheck="false"
           :aria-label="t('settings.network.relayServer.token')"
           :placeholder="t('settings.network.relayServer.tokenPlaceholder')"
-          class="w-44 min-w-0 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-transparent px-3 py-1.5 text-right font-mono text-[13px] outline-none placeholder:text-[var(--gosslan-text-2)] focus:border-transparent"
-          @keyup.enter="saveRelayConfig"
+          class="w-44 min-w-0 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-transparent px-3 py-1.5 text-right font-mono text-body outline-none placeholder:text-[var(--gosslan-text-2)] focus:border-transparent"
+          @keyup.enter="ime.enter(saveRelayConfig)"
+          @compositionstart="ime.onStart"
+          @compositionend="ime.onEnd"
         />
         <button
-          class="shrink-0 rounded-[var(--gosslan-radius-sm)] px-1.5 py-1 text-[12px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-surface-2)]"
+          class="shrink-0 rounded-[var(--gosslan-radius-sm)] px-1.5 py-1 text-meta text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
           :aria-pressed="tokenVisible"
           :aria-label="tokenVisible
             ? t('settings.network.relayServer.token.hide')
@@ -467,7 +476,7 @@ async function removeEndpoint(address: string) {
     >
       <div class="flex items-center gap-2">
         <button
-          class="shrink-0 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-3.5 py-1.5 text-[13px] font-medium text-white transition hover:bg-[var(--gosslan-primary-hover)] disabled:opacity-40"
+          class="shrink-0 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-3.5 py-1.5 text-body font-medium text-white transition hover:bg-[var(--gosslan-primary-hover)] disabled:opacity-40"
           :disabled="relayBusy || !relayDirty"
           @click="saveRelayConfig"
         >
@@ -476,7 +485,7 @@ async function removeEndpoint(address: string) {
         <!-- 「测一下」：服务器可能是**后**部署的，所以重测不该要求用户先改一遍字段。 -->
         <button
           v-if="relayCfg.enabled"
-          class="shrink-0 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3.5 py-1.5 text-[13px] font-medium text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-surface-2)] disabled:opacity-40"
+          class="shrink-0 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3.5 py-1.5 text-body font-medium text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-40"
           :disabled="relayProbing || !relayCfg.server.trim() || !relayCfg.token.trim()"
           @click="runRelayProbe(true)"
         >

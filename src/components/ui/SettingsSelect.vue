@@ -38,7 +38,7 @@ function pick(value: unknown) {
   <SelectRoot :model-value="modelValue" @update:model-value="pick">
     <SelectTrigger
       :aria-label="selectLabel"
-      class="tap-safe inline-flex h-8 max-w-full items-center justify-between gap-2 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-bg)] px-2.5 text-[13px] text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)] focus-visible:border-[var(--gosslan-primary)] data-[state=open]:border-[var(--gosslan-primary)]"
+      class="tap-safe inline-flex h-8 max-w-full items-center justify-between gap-2 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-bg)] px-2.5 text-body text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)] focus-visible:border-[var(--gosslan-primary)] data-[state=open]:border-[var(--gosslan-primary)]"
       :class="triggerClass"
     >
       <SelectValue class="min-w-0 truncate" :title="currentLabel" />

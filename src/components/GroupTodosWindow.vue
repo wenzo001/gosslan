@@ -30,8 +30,9 @@ import { api } from "@/api";
 import AuxWindowShell from "@/components/window/AuxWindowShell.vue";
 import StateBlock from "@/components/ui/StateBlock.vue";
 import GroupTasksBoard from "@/components/GroupTasksBoard.vue";
-import { friendlyError } from "@/utils/errors";
+import { errorText } from "@/composables/useErrorText";
 import { currentLocale, t } from "@/i18n";
+import { createInitScope } from "@/utils/initScope";
 
 const chat = useChatStore();
 
@@ -93,7 +94,7 @@ async function applyTarget(next: string | null) {
     await chat.loadGroupTodos(next);
   } catch (e) {
     // 读失败必须留下可见出口：替换成错误态 + 重试，而不是让看板停在“暂无任务”。
-    loadError.value = friendlyError(e, t("todo.loadFail"));
+    loadError.value = errorText(e, t("todo.loadFail"));
   }
   const id = await api.takeGroupTodoFocus(next).catch(() => null);
   if (!id) return;
@@ -115,9 +116,7 @@ watch(
   },
 );
 
-let unlistenTarget: (() => void) | null = null;
-let unlistenFocus: (() => void) | null = null;
-let disposed = false;
+const listenerScope = createInitScope();
 onMounted(() => {
   // 两条路都要：预热过 / 新建的窗口靠挂载这次取上下文；已经存在的那扇靠定向事件被叫醒。
   void api
@@ -131,14 +130,7 @@ onMounted(() => {
       if (!payload?.groupId) return;
       void applyTarget(payload.groupId);
     })
-    .then((fn) => {
-      // 窗口被秒关时 `onUnmounted` 可能已经跑完 ⇒ 拿到 unlisten 就立刻补一次取消
-      if (disposed) {
-        fn();
-        return;
-      }
-      unlistenTarget = fn;
-    })
+    .then((fn) => listenerScope.onDispose(fn))
     .catch(() => {
       /* 订阅失败只影响"窗口已存在时再点卡片"那一条路：挂载那条路仍会取一次上下文 */
     });
@@ -153,21 +145,14 @@ onMounted(() => {
         if (focused && groupId.value) void applyTarget(groupId.value);
       });
       // 与上面同一条理由：窗口被秒关时 onUnmounted 可能已经跑完
-      if (disposed) fn();
-      else unlistenFocus = fn;
+      listenerScope.onDispose(fn);
     } catch (e) {
       // 只影响"唤回时不重读"这一条兜底，不影响任何功能 —— 但要说出来，别静默降级
       console.error("[todos] 焦点兜底注册失败：从任务栏唤回这扇窗时不会重读列表", e);
     }
   })();
 });
-onUnmounted(() => {
-  disposed = true;
-  unlistenTarget?.();
-  unlistenTarget = null;
-  unlistenFocus?.();
-  unlistenFocus = null;
-});
+onUnmounted(() => listenerScope.dispose());
 </script>
 
 <template>

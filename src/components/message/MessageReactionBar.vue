@@ -201,7 +201,7 @@ onUnmounted(clearPress);
             data-reaction-chip
             :data-reaction-emoji="c.emoji"
             :data-hover-capable="String(canHover)"
-            class="tap-safe flex h-7 items-center gap-1 rounded-full border px-1.5 text-[12px] leading-none transition"
+            class="tap-safe flex h-7 items-center gap-1 rounded-full border px-1.5 text-meta leading-none transition"
             :class="c.mine
               ? 'border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)] text-[var(--gosslan-primary)]'
               : 'border-transparent bg-[var(--gosslan-hover)] text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-border)] hover:text-[var(--gosslan-text)]'"
@@ -224,7 +224,7 @@ onUnmounted(clearPress);
               alt=""
               class="h-[18px] w-[18px] shrink-0"
             />
-            <span v-else class="text-[14px] leading-none">{{ c.emoji }}</span>
+            <span v-else class="text-emphasis leading-none">{{ c.emoji }}</span>
             <span class="tabular-nums font-medium">{{ c.count }}</span>
           </button>
         </HoverCardTrigger>
@@ -240,7 +240,7 @@ onUnmounted(clearPress);
             :align="align"
             :side-offset="6"
             :collision-padding="8"
-            class="gosslan-popover-in z-[80] w-max max-w-[256px] rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-2.5 py-1.5 text-[11px] leading-relaxed text-[var(--gosslan-text-2)] shadow-md"
+            class="gosslan-popover-in z-[80] w-max max-w-[256px] rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-panel)] px-2.5 py-1.5 text-caption leading-relaxed text-[var(--gosslan-text-2)] shadow-md"
             @click.stop
           >
             <span

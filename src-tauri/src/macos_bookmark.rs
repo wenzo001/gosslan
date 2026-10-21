@@ -193,7 +193,17 @@ mod tests {
     /// （这样 `share_dir::load` 才会清掉坏书签、退回数据库里的路径）。
     #[test]
     fn bookmark_to_a_deleted_directory_fails_cleanly() {
-        let doomed = std::env::temp_dir().join("gosslan-bookmark-probe-dir");
+        // 固定名字会让**并行跑测试的另一个 cargo 进程**（多会话共用工作树是常态）
+        // 删掉本进程刚建好的目录 ⇒ 书签创建报 "doesn't exist"，本用例假红。
+        // 加 pid + 纳秒让每个测试进程独占一个路径。
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let doomed = std::env::temp_dir().join(format!(
+            "gosslan-bookmark-probe-dir-{}-{unique}",
+            std::process::id()
+        ));
         // 先确保不存在，再创建一个空目录并立刻删掉
         let _ = std::fs::remove_dir_all(&doomed);
         std::fs::create_dir_all(&doomed).unwrap();

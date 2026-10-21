@@ -11,12 +11,14 @@
  * - `showMaximize` / `showMinimize`：小窗口不给最大化（OS 层也设了 `.maximizable(false)`）；
  * - `isMobile`：移动端不画这条（由调用方传入，避免共享组件反向依赖 app store）。
  */
-import { onBeforeUnmount, onMounted, ref } from "vue";
+import { onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { useEventListener } from "@vueuse/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api } from "@/api";
 import { X } from "@/components/ui/icons";
 import { isMac } from "@/utils/platform";
 import { t } from "@/i18n";
+import { createInitScope } from "@/utils/initScope";
 
 const props = withDefaults(
   defineProps<{
@@ -35,6 +37,25 @@ const props = withDefaults(
 );
 
 const maximized = ref(false);
+
+/**
+ * 「这一扇窗口顶部有自绘 caption」由**画它的人**宣布 —— CSS 的 `--gosslan-window-safe-top`
+ * 挂在这个类上，整屏浮层（图片预览遮罩、`BaseModal` 的遮罩与滚动层）据此决定顶边。
+ *
+ * 为什么这里要写全局类，而不是让 CSS 自己判（2026-10-20 实测到的缺陷）：caption 画不画由
+ * 本组件的 `isMobile` **prop** 决定，而 prop 是宿主给的 —— 主窗传 `app.isMobile`，
+ * 辅助窗的宿主（`AuxWindowShell`、`LogViewer`）**不传**（默认 false ⇒ 永远画）。
+ * 于是「桌面但窄」的辅助窗（`resolveMobileLayout` 的宽度兜底 ≤767px 也算移动布局；
+ * 日志窗默认就是 760×560）**画着 caption，却按布局档被 CSS 判成"没有 caption"**：
+ * 顶边算成 0，预览遮罩连右上角工具条一起压进标题栏那条底下。
+ * ⇒ 同一个事实不许有两处各判一次；写的人就是画的人。
+ */
+watch(
+  () => props.isMobile,
+  (mobile) => document.documentElement.classList.toggle("has-caption", !mobile),
+  { immediate: true },
+);
+onBeforeUnmount(() => document.documentElement.classList.remove("has-caption"));
 
 async function refreshMaximized() {
   if (!props.showMaximize) return; // 不可最大化 ⇒ 不必问（也避开无意义的 IPC）
@@ -63,9 +84,9 @@ async function toggleMaximize() {
  * 主窗口失焦），两套摆在一起就明显不像。
  */
 const focused = ref(true);
-let unlistenFocus: (() => void) | null = null;
-/** 窗口尺寸变化监听（刷新最大化字形），卸载时退订。 */
-let unlistenResize: (() => void) | null = null;
+// 焦点与尺寸两条 Tauri 订阅的卸载句柄都交给同一个 scope：`listen()` 要等一次 IPC 往返才拿到
+// 卸载函数，而这段时间里组件可能已经卸载 —— 直接赋给局部变量就等于**永远没人调用它**。
+const listenerScope = createInitScope();
 
 /** macOS 绿灯的 Option-click → 全屏（HIG：缩放按钮按住 Option 进入/退出全屏）。 */
 const fullscreen = ref(false);
@@ -181,18 +202,21 @@ function onKeydown(e: KeyboardEvent) {
   }
 }
 
+// 窗口级快捷键：挂载即终身、无条件摘挂 ⇒ 交给库（组件作用域自动解绑）。
+useEventListener(window, "keydown", onKeydown);
 onMounted(() => {
   refreshMaximized();
   refreshFullscreen();
-  window.addEventListener("keydown", onKeydown);
   // 焦点跟踪：失败（非 Tauri 环境 / 权限）就保持"聚焦"外观，不影响任何功能。
   void (async () => {
     try {
       const w = getCurrentWindow();
       focused.value = await w.isFocused();
-      unlistenFocus = await w.onFocusChanged(({ payload }) => {
-        focused.value = payload;
-      });
+      listenerScope.onDispose(
+        await w.onFocusChanged(({ payload }) => {
+          focused.value = payload;
+        }),
+      );
     } catch {
       /* 忽略：非 Tauri 环境（纯 vite dev） */
     }
@@ -205,21 +229,19 @@ onMounted(() => {
   void (async () => {
     try {
       const w = getCurrentWindow();
-      unlistenResize = await w.onResized(() => {
-        void refreshMaximized();
-        void refreshFullscreen();
-      });
+      listenerScope.onDispose(
+        await w.onResized(() => {
+          void refreshMaximized();
+          void refreshFullscreen();
+        }),
+      );
     } catch {
       /* 忽略：非 Tauri 环境 */
     }
   })();
 });
 onBeforeUnmount(() => {
-  window.removeEventListener("keydown", onKeydown);
-  unlistenFocus?.();
-  unlistenFocus = null;
-  unlistenResize?.();
-  unlistenResize = null;
+  listenerScope.dispose();
 });
 </script>
 
@@ -322,7 +344,7 @@ onBeforeUnmount(() => {
     <!-- 功能名：辅助窗口传 `title`；主窗口不传 ⇒ 空占位（把 Win/Linux 的按钮推到最右）。
          拖拽区本身不接收点击，这里是纯文字，不影响拖拽。 -->
     <div
-      class="min-w-0 flex-1 truncate px-3 text-[13px] font-medium text-[var(--gosslan-text-2)]"
+      class="min-w-0 flex-1 truncate px-3 text-body font-medium text-[var(--gosslan-text-2)]"
       :title="title || undefined"
     >
       {{ title }}
