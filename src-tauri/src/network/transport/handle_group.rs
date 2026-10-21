@@ -151,6 +151,7 @@ async fn handle_group_messages(state: &Arc<AppState>, peer_id: &str, msg: Messag
             sealed_file_key,
             scope,
             todo_id,
+            attempt,
         } => {
             handle_group_file_offer(
                 state,
@@ -164,6 +165,7 @@ async fn handle_group_messages(state: &Arc<AppState>, peer_id: &str, msg: Messag
                 sealed_file_key,
                 scope,
                 todo_id,
+                attempt,
             )
             .await;
         }
@@ -173,16 +175,27 @@ async fn handle_group_messages(state: &Arc<AppState>, peer_id: &str, msg: Messag
             sender_id,
             seq,
             data,
+            attempt,
         } => {
-            handle_group_file_chunk(state, peer_id, transfer_id, group_id, sender_id, seq, data)
-                .await;
+            handle_group_file_chunk(
+                state,
+                peer_id,
+                transfer_id,
+                group_id,
+                sender_id,
+                seq,
+                data,
+                attempt,
+            )
+            .await;
         }
         Message::GroupFileDone {
             transfer_id,
             group_id,
             sender_id,
+            attempt,
         } => {
-            handle_group_file_done(state, peer_id, transfer_id, group_id, sender_id).await;
+            handle_group_file_done(state, peer_id, transfer_id, group_id, sender_id, attempt).await;
         }
         Message::GroupFileCompleteAck {
             transfer_id,
@@ -200,6 +213,15 @@ async fn handle_group_messages(state: &Arc<AppState>, peer_id: &str, msg: Messag
             )
             .await;
         }
+        Message::GroupFileResume {
+            transfer_id,
+            group_id,
+            to_sender,
+            received,
+        } => {
+            handle_group_file_resume(state, peer_id, transfer_id, group_id, to_sender, received)
+                .await;
+        }
         // 群历史同步（2026-10-16 需求）：臂体只做搬运，判定与取数都在 `network/group_history.rs`
         // —— 那一个家同时管着"该不该给/给哪一页"与"拿到一页怎么落库"，
         // 拆在两处就会各写一遍授权（本仓为"同一开关的另一个面"付过学费）。
@@ -213,15 +235,7 @@ async fn handle_group_messages(state: &Arc<AppState>, peer_id: &str, msg: Messag
             limit,
         } => {
             crate::network::group_history::handle_request(
-                state,
-                peer_id,
-                request_id,
-                from,
-                to,
-                group_id,
-                after_seq,
-                after_id,
-                limit,
+                state, peer_id, request_id, from, to, group_id, after_seq, after_id, limit,
             )
             .await;
         }
@@ -231,7 +245,9 @@ async fn handle_group_messages(state: &Arc<AppState>, peer_id: &str, msg: Messag
             to,
             reply,
         } => {
-            crate::network::group_history::handle_reply(state, peer_id, request_id, from, to, reply);
+            crate::network::group_history::handle_reply(
+                state, peer_id, request_id, from, to, reply,
+            );
         }
         _ => {}
     }

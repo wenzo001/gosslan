@@ -237,7 +237,7 @@ pub async fn upsert_peer(
     // 若不加这道闸，局域网内一个伪造 announce 就能把攻击者的公钥写进持久化的 friends 表，
     // 覆盖好友的真实公钥：此后我发给该好友的消息都用攻击者公钥加密，而消息是广播给
     // 所有已连接节点的 ⇒ 攻击者用自己的私钥即可解开（E2EE 被击穿，且重启不恢复）。
-    let verified = peer_keys_trusted(state, device_id);
+    let verified = FriendKeySnapshot::capture(state, device_id).verified;
     if key_changed && verified {
         let (x, e) = {
             let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());

@@ -353,7 +353,7 @@ Java 对象），所以两侧必须通过 JNI 对接。要点：
 **当时仍未做（已于同日补齐，见 §7.10）**：Windows 的 peripheral 角色
 （WinRT `GattServiceProvider`）。上面那句"**Windows 不能被连**"在 §7.10 之后**不再成立**。
 **真机判据**（用户 2026-09-13 选定 Windows + Android 手机）：见
-`docs/notes/ble-audit-2026-09-13.md` §7 的 Test A~F，把 Mac 换成 Windows。
+`docs/archive/notes/ble-audit-2026-09-13.md` §7 的 Test A~F，把 Mac 换成 Windows。
 
 ---
 

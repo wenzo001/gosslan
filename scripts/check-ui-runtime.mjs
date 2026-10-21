@@ -2210,23 +2210,39 @@ true;
 `;
 
 async function waitForVite(child, timeoutMs = 90_000) {
-  const t0 = nowMs();
   let buf = "";
+  let onData;
+  let onExit;
+  let timer;
   const p = new Promise((res, rej) => {
     // vite 6 把启动横幅（含 "Local:"）打到 **stderr**：只听 stdout 会在 90s 后假超时。
     // 两个流都认。
-    const onData = (d) => {
+    onData = (d) => {
       // vite 6 的横幅带 ANSI 码："Local\x1b[22m:"，直接匹配 /Local:/ 永远不成立。
-      // 累积原文（exit 排障要看），判定前剥掉 ANSI。
+      // 累积原文（exit 排障要看），判定前剥掉 ANSI；只保留末尾一段，避免随 vite
+      // 持续输出无界增长（SC-P3-05）。
       const text = d.toString();
-      buf += text;
+      buf = (buf + text).slice(-64 * 1024);
       if (/Local:/.test(buf.replace(/\x1b\[[0-9;]*m/g, ""))) res(true);
     };
+    onExit = (c) => rej(new Error(`vite 提前退出 ${c}：\n${buf.slice(-800)}`));
     child.stdout.on("data", onData);
     child.stderr.on("data", onData);
-    child.on("exit", (c) => rej(new Error(`vite 提前退出 ${c}：\n${buf.slice(-800)}`)));
+    child.on("exit", onExit);
   });
-  await Promise.race([p, sleep(timeoutMs).then(() => { throw new Error(`vite ${timeoutMs}ms 没起来：\n${buf.slice(-800)}`); })]);
+  const timeout = new Promise((_, rej) => {
+    timer = setTimeout(() => rej(new Error(`vite ${timeoutMs}ms 没起来：\n${buf.slice(-800)}`)), timeoutMs);
+  });
+  try {
+    await Promise.race([p, timeout]);
+  } finally {
+    // 成功/失败/超时都要摘掉监听器与定时器：vite 是长跑进程，留着监听器会让
+    // `buf` 在整个测试 run 里继续增长（SC-P3-05）。
+    clearTimeout(timer);
+    child.stdout.off("data", onData);
+    child.stderr.off("data", onData);
+    child.off("exit", onExit);
+  }
   return `http://127.0.0.1:${VITE_PORT}/`;
 }
 

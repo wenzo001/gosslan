@@ -561,7 +561,8 @@ async fn connect_to_peer(
         return DialOutcome::Failed(format!("握手失败: {reason}"));
     }
     // 验签通过 ⇒ 这对钥匙已被证明由该 device_id 的持有者使用 —— 与入站首帧同一个升级点。
-    // 此前只有入站那条打标：出站与 BLE 两条**同样验过签**的路径不打标，`peer_keys_trusted`
+    // 此前只有入站那条打标：出站与 BLE 两条**同样验过签**的路径不打标，那道"是否验签过"
+    // 的闸（旧名 `peer_keys_trusted`，2026-10-21 P0-01 起改名 `FriendKeySnapshot::capture`）
     // 就永远为假 ⇒ 只靠拨号或蓝牙连上的好友，`friends.ed25519` 再也补不上（`upsert_peer`
     // 与 accept 两侧都要求 verified）⇒ 安全码算不出、公网中继永不准入。收紧绑定来源
     // 必须同时把这三条补齐，否则就是把安全改动做成可用性回退。

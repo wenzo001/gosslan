@@ -764,6 +764,33 @@ async fn try_one_page(
     }
 }
 
+/// 释放某群的"在飞"名额（守卫与单测共用的唯一出口）。
+fn release_group_history_active(
+    active: &std::sync::Mutex<std::collections::HashSet<String>>,
+    group_id: &str,
+) {
+    active
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(group_id);
+}
+
+/// 在飞闸的 RAII 释放：同步体 panic 时也要把该群摘掉。
+///
+/// 旧写法在 `run_group_history_sync(...).await` 之后手写 remove；一旦同步体 panic，
+/// 这一行永远走不到，`group_history_active` 里就留下一个**永久在飞**的群 ——
+/// 自动清扫与手动路径都被 `spawn_sync` 的 insert 挡住，该群再也无法同步历史（P3-04）。
+struct GroupHistoryActiveGuard {
+    state: Arc<AppState>,
+    group_id: String,
+}
+
+impl Drop for GroupHistoryActiveGuard {
+    fn drop(&mut self) {
+        release_group_history_active(&self.state.group_history_active, &self.group_id);
+    }
+}
+
 /// 起跑一趟后台同步的**唯一**出口：在飞则不再排第二个，跑完释放那一格。
 ///
 /// 为什么要有这一格而不是"谁想起来就 spawn"：入群钩子、群消息顺手建群那一路、清扫任务
@@ -784,11 +811,12 @@ pub fn spawn_sync(state: &Arc<AppState>, group_id: &str) -> bool {
     // async 上下文里，但这是约定、不是类型保证 —— 一旦有人从 setup/同步命令里调它，
     // `tokio::spawn` 就会 panic「no reactor running」并把进程带崩（同类事故 2026-10-20 已发生一次）。
     tauri::async_runtime::spawn(async move {
+        // 名额由守卫归还在**所有**出口（正常/提前 return/panic 展开），不再手写 remove。
+        let _active_guard = GroupHistoryActiveGuard {
+            state: st.clone(),
+            group_id: gid.clone(),
+        };
         let outcome = run_group_history_sync(&st, &gid).await;
-        st.group_history_active
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&gid);
         st.logger.info(
             "group",
             format!("群历史同步这一趟结束 group={gid}：{outcome:?}"),
@@ -1572,11 +1600,13 @@ mod group_history_engine_tests {
             f.contains("group_history_active.lock()"),
             "起跑必须过在飞闸：没有它，同一个群会被排两三趟、各要一遍同样的历史"
         );
-        assert_eq!(
-            f.matches(".remove(&gid)").count(),
-            1,
-            "跑完要释放那一格（现数到 {} 处）：0 = 这一群以后再也起不来",
-            f.matches(".remove(&gid)").count()
+        assert!(
+            f.contains("GroupHistoryActiveGuard") && f.contains("state:st.clone()"),
+            "跑完/panic 都要靠 RAII 守卫释放那一格；找不到守卫 = 这一群以后再也起不来"
+        );
+        assert!(
+            !f.contains(".remove(&gid)"),
+            "不许退回手写 remove —— 同步体 panic 时它走不到，名额永久占住"
         );
     }
 
@@ -1637,7 +1667,7 @@ mod group_history_engine_tests {
         );
         let proto = code_flat(include_str!("../protocol.rs"));
         assert!(
-            proto.contains("pubfncontent_features()->u32{CONTENT_FEATURE_PULL|CONTENT_FEATURE_MERGE|CONTENT_FEATURE_FILE_EPOCH|CONTENT_FEATURE_FLEX_DM_KIND|CONTENT_FEATURE_GROUP_HISTORY}"),
+            proto.contains("pubfncontent_features()->u32{CONTENT_FEATURE_PULL|CONTENT_FEATURE_MERGE|CONTENT_FEATURE_FILE_EPOCH|CONTENT_FEATURE_FLEX_DM_KIND|CONTENT_FEATURE_GROUP_HISTORY|CONTENT_FEATURE_GROUP_FILE_RESUME}"),
             "本机没把群历史这一位声明出去 ⇒ 别人选源时永远问不到这台（能力位必须与门控同批改）"
         );
     }
@@ -1737,5 +1767,34 @@ mod group_history_engine_tests {
             !groups.contains("\"ghsync:group:"),
             "删除处手抄了那个键的字面量 ⇒ 必须改成认 `group_history_state_key` 这个名字"
         );
+    }
+
+    /// P3-04：在飞名额必须在**所有**出口归还（含 panic 展开），不能只写在 await 之后。
+    #[test]
+    fn sync_task_releases_the_active_slot_via_guarded_drop() {
+        let prod = engine_body();
+        assert!(
+            prod.contains("structGroupHistoryActiveGuard"),
+            "同步任务的在飞名额必须有 RAII 守卫（panic 时手写 remove 走不到）"
+        );
+        assert!(
+            prod.contains("GroupHistoryActiveGuard{state:st.clone(),group_id:gid.clone(),}"),
+            "守卫必须真的装进 spawn_sync 的任务里（定义存在不等于被接上）"
+        );
+        assert!(
+            !prod.contains(".remove(&gid);"),
+            "旧的手写 remove 必须删掉，否则会误导后来者以为清理只在那一处"
+        );
+    }
+
+    /// 守卫与单测共用的释放出口：只摘指定群，不碰别人。
+    #[test]
+    fn release_helper_removes_only_the_target_group() {
+        let active =
+            std::sync::Mutex::new(["g1".to_string(), "g2".to_string()].into_iter().collect());
+        release_group_history_active(&active, "g1");
+        let got = active.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(!got.contains("g1"), "目标群必须被摘掉");
+        assert!(got.contains("g2"), "别的群不受影响");
     }
 }

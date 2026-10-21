@@ -9,7 +9,7 @@
 | macOS（**安装版**，App Sandbox） | `~/Library/Containers/com.gosslan.app/Data/Library/Application Support/com.gosslan.app/logs/` | 未在本轮重装验证（DEFERRED：本轮不重装安装包）；沙箱容器化这一条来自 `src-tauri/tauri.conf.json` 的 `app.macOSPrivateApi`/沙箱配置与既有安装版读数 |
 | macOS（**开发/裸二进制**，未沙箱） | `~/Library/Application Support/com.gosslan.app/logs/` | **PASS**：2026-10-20 用 `target/release/gosslan`（5.0.36）+ 隔离 `HOME` 实跑，产出 `gosslan.log` 与 `gosslan-crash.log`。**现读权限（5.0.36 那次）**：日志文件 `-rw-------`、`com.gosslan.app` 目录 `drwx------`，但它下面的 `logs/` 本身是 `drwxr-xr-x`（0755）—— 别人读不到内容靠的是父目录那一层，不是 `logs` 自己；而 10-18 之后没人写过的 `gosslan-3.log` 还停在 `0644`。
   **5.0.37 修后（同一台机器、同一个 release 二进制跑完一轮 E2E 之后重读）**：`logs/` = `drwx------`，目录里**每一份** `.log`（含那份 `gosslan-3.log`）= `-rw-------`。新建目录时 `mkdir` 直接带 `0700`，启动时再补一次收紧（包括扫旧文件）。复跑：`ls -ldT "$HOME/Library/Application Support/com.gosslan.app/logs" && ls -lT 同一目录` |
-| Windows | `%APPDATA%\com.gosslan.app\logs\gosslan.log` | **NOT RUN**（本轮无 Windows 设备/运行环境；路径取自 `docs/notes/windows-ble-diagnosis-2026-09-13.md`、崩溃现场文件见 `windows-crash-capture-2026-10-16.md`） |
+| Windows | `%APPDATA%\com.gosslan.app\logs\gosslan.log` | **NOT RUN**（本轮无 Windows 设备/运行环境；路径取自 `docs/archive/notes/windows-ble-diagnosis-2026-09-13.md`、崩溃现场文件见 `windows-crash-capture-2026-10-16.md`） |
 | Linux | `~/.local/share/com.gosslan.app/logs/` | **NOT RUN**（按 `app.path().app_data_dir()` 的 `com.gosslan.app` 推得；本轮无 Linux 运行环境） |
 | Android | 应用目录下的同一份日志 + **logcat 镜像**：`adb logcat -s gosslan` | **NOT RUN**（镜像写码在 `src-tauri/src/logging.rs` 的 `logcat` 模块，本轮未上真机；这是"闪退时拿不到文件"的那条兜底通道） |
 | iOS | 代码里没有 iOS 专属日志路径分支 | **NOT RUN / 不可用**（本轮未验证；如需要，只能走系统级诊断，不在本轮范围） |

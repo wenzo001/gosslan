@@ -1,8 +1,12 @@
 # Gosslan 后端基础设施现代化（5.0）——基线与迁移方案
 
-> 分支 `feat/5.0` · 版本 5.0.30 · Rust 1.98.1 · 目标平台 macOS/Windows/Linux/Android/iOS
+> 版本与分支**现读**（`npm run version:show` / `git rev-parse --abbrev-ref HEAD`）· Rust 1.98.1 ·
+> 目标平台 macOS/Windows/Linux/Android/iOS
 > 真实库（只读核对）：`~/Library/Application Support/com.gosslan.app/gosslan.db`，
-> `user_version=11`、19 张业务表、`journal_mode=wal`、`PRAGMA integrity_check=ok`。
+> `user_version=11`、**20 张业务表**（`grep -rhoE "CREATE TABLE IF NOT EXISTS ([a-z_]+)" src-tauri/src --include='*.rs' | awk '{print $NF}' | sort -u | wc -l`）、
+> `journal_mode=wal`、`PRAGMA integrity_check=ok`。
+> ⚠️ **下面各节的"19 张表"是 2026-10-19（5.0.32/5.0.33）那次演练的历史读数**，那之后
+> 群文件 ACK 持久化账本（`group_file_acks` / `group_file_recipients`）落地 ⇒ 如今是 20 张。
 > 本文是阶段 B 的选型/迁移方案；每批实施后回填读数，不把"计划"当"完成"。
 
 ## 1. 现状基线（只读审计）
@@ -64,7 +68,7 @@
   逐表行数与 messages/friends/groups/settings/file_transfers 的关键字段聚合完全一致；
   副本与备份已删除，**源库未被修改**。这是真实数据体量/形状的演练，
   **不等于真实 4.x schema 的迁移**（真实 4.x 库不在此机器上）。
-- **真实 v10 原始 DDL 判据（5.0.28）**：`src-tauri/src/db/fixtures/v10_schema.sql` 逐字取自
+- **真实 v10 原始 DDL 判据（5.0.28）**：`docs/architecture/fixtures/v10_schema.sql` 逐字取自
   `git show 0b84f11^:src-tauri/src/db.rs`（v11 引入提交的父提交，DB_VERSION=10），
   18 张历史表建库后插入身份/好友/会话/消息/群/文件/队列/收藏数据，跑当前 `init()`：
   v10→v11 补齐 `mention_targets`，逐字段保留、`integrity_check=ok`、备份快照表数一致。
@@ -658,8 +662,8 @@
 | 工具决策 | 不引 `tracing`/OpenTelemetry：同步落盘是崩溃现场与最后一条日志的证据前提（B4）；外部遥测需隐私评估 | — | — |
 
 - **B15（已落地，2026-10-19）**：事务级耗时出口。分母按"生产事务调用点"现算 = **3 处**
-  （`src/network/transport/group_file.rs` 群文件收尾、`src/network/file/receive.rs` 单聊收尾、
-  `src/network/file/ledger_backfill.rs` 群台账补账 —— 后者计时含取锁等待，因为它包住
+  （`src-tauri/src/network/transport/group_file.rs` 群文件收尾、`src-tauri/src/network/file/receive.rs` 单聊收尾、
+  `src-tauri/src/network/file/ledger_backfill.rs` 群台账补账 —— 后者计时含取锁等待，因为它包住
   `gfile_ledger_repair` 那一次调用，册内只有那一个事务）。统一出口是 `db_hold::note_tx`
   （**只量不改**：不取锁、不重试、不碰 commit/rollback 与错误语义），一行里只有
   `tx <阶段> transfer_id=<键> ms=<耗时> ok=<成败>` —— 没有 SQL、参数、正文、文件名或密钥。

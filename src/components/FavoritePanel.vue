@@ -40,7 +40,7 @@ import { MAX_LIST_FILTER_KEYWORD_CHARS } from "@/utils/validation";
 import { formatBytes } from "@/utils/format";
 import { FILE_KIND_ICONS, extBadgeLabel, fileKindOf, fileKindStyle } from "@/utils/fileKind";
 import { openLocalFile, saveLocalFile } from "@/utils/localFile";
-import { dropFavoritePreview, loadFavoritePreview, clearFavoritePreviews } from "@/utils/favoritePreview";
+import { dropFavoritePreview, favoritePreviewUrl, loadFavoritePreview, clearFavoritePreviews } from "@/utils/favoritePreview";
 import { mergeItemLine, mergeSummary, parseMergePayload } from "@/utils/mergeCard";
 import { isForwardableKind, isKnownKind, kindClass, UNSUPPORTED_KIND_LABEL } from "@/utils/messageKinds";
 import { cardCopyText } from "@/utils/cardText";
@@ -406,12 +406,23 @@ function favSource(id: string) {
   return `fav:${id}`;
 }
 
+/** 缩略图加载失败：多半是 blobLru 逐出时 revoke 了这个 URL（P2-12）。
+ *  删掉死字符串，下面的 watch 会看到"没有缩略图"并按缓存未命中重新加载。 */
+function refreshThumb(f: FavoriteEntry) {
+  if (!thumbs.value[f.id]) return;
+  const next = { ...thumbs.value };
+  delete next[f.id];
+  thumbs.value = next;
+}
+
 async function previewImage(f: FavoriteEntry) {
   if (!f.available) {
     app.toast(t("favorite.mediaGone"), "error");
     return;
   }
-  const url = thumbs.value[f.id] ?? (await loadFavoritePreview(f.id, displayName(f))).url;
+  // 不能直接信 `thumbs[f.id]`：blobLru 逐出时会 revoke 那个 URL，死字符串仍是 truthy。
+  // 先向缓存要"现在有效的 URL"，没有才重新加载（灯箱同理）。
+  const url = favoritePreviewUrl(f.id) ?? (await loadFavoritePreview(f.id, displayName(f))).url;
   if (!url) {
     app.toast(t("favorite.mediaGone"), "error");
     return;
@@ -731,6 +742,7 @@ async function confirmDelete() {
               :title="t('favorite.viewImage')"
               role="button"
               tabindex="0"
+              @error="refreshThumb(active)"
               @click="previewImage(active)"
               @keydown.enter.prevent="previewImage(active)"
             />

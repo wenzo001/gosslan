@@ -261,11 +261,18 @@
              2026-09-28：直连与跨跳那两条已收进 `apply_friend_accept` 一个家 ⇒ 视图里\
              从 4 降到 3（定义 1 + 这个家 1 + 第三条路 1）。这一格**只许因为又有人绕开家而变大**"
         );
+        // 2026-10-21 P0-01：闸的读取从“函数内再锁 peers”改成“调用方在 db 锁外取快照”。
+        // 语义没放松：快照读取仍只有一份实现，且三个写入前调用点全都必须经过它。
         assert_eq!(
-            src.matches("peer_keys_trusted(").count(),
+            src.matches("fn capture(state: &AppState").count(),
+            1,
+            "peers 快照读取只许一份实现（原 `peer_keys_trusted` 的那道闸）"
+        );
+        assert_eq!(
+            src.matches("FriendKeySnapshot::capture(state").count(),
             3,
-            "这道闸只许一份定义，被 `upsert_peer` 与 accept helper 各复用一次\
-             （名字刻意不含 `mark_peer_keys_verified` 的子串，否则计数会被骗）"
+            "取快照只许三个写入前调用点：upsert_peer / apply_friend_accept / maybe_update_friend。\
+             这三处都必须在 **db 锁之外**取快照 —— 持 db 再求 peers 会与 gossip 的 peers→db 构成 ABBA"
         );
         // "哪一列能绑"这条判据只许一份定义、且只被 accept helper 用一次。
         // （不能用全文出现次数：新加的单测也会调用它，那会把计数骗成"重复定义"。）
@@ -283,8 +290,8 @@
             "accept helper 必须把判据委托给那一份定义，而不是自己再算一遍"
         );
         assert!(
-            code_flat(&helper).contains("peer_keys_trusted(state,friend_id)"),
-            "accept helper 必须现问这道闸（不缓存 verified 结果，也不绕过）"
+            code_flat(&helper).contains("keys.verified"),
+            "accept helper 必须消费调用方在 db 锁外取好的快照（keys.verified），不得自己再去求 peers"
         );
         assert_eq!(
             src.matches("mark_peer_keys_verified(").count(),
@@ -325,7 +332,7 @@
             "`upsert_peer` 只许一处写钥匙"
         );
         assert!(
-            code_flat(&upsert).contains("peer_keys_trusted(state,device_id)"),
+            code_flat(&upsert).contains("FriendKeySnapshot::capture(state,device_id).verified"),
             "`upsert_peer` 那道闸不许拆 —— 它和 accept helper 问的是同一个判据"
         );
         let gossip = code_flat(include_str!("network/transport/gossip.rs"));

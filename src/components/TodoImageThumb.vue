@@ -47,13 +47,18 @@ const chat = useChatStore();
 
 const url = ref<string | null>(null);
 const loading = ref(true);
-const failed = ref(false);
+/** 退避重试次数用尽后的终态：不再发 IPC，界面明确说"已被清理"而不是永远"同步中"。 */
+const gaveUp = ref(false);
 
 const RETRY_BASE_MS = 1500;
 const RETRY_MAX_MS = 30_000;
+/// 退避到 30s 后再试几次就放弃（总窗口约 3 分钟）。不设上限时，一份永远不会到的字节
+/// 会让每个缩略图在挂载期间每 ≤30s 发 2 次 IPC，直到组件卸载（P3-15）。
+const MAX_RETRY_ATTEMPTS = 10;
 
 let timer: number | null = null;
 let delay = RETRY_BASE_MS;
+let attempts = 0;
 
 function cancelRetry() {
   if (timer !== null) {
@@ -62,13 +67,17 @@ function cancelRetry() {
   }
 }
 
-function scheduleRetry(cid: string, name: string) {
+/** 安排下一次重试；返回 false = 次数用尽，调用方据此落到终态。 */
+function scheduleRetry(cid: string, name: string): boolean {
   cancelRetry();
+  if (attempts >= MAX_RETRY_ATTEMPTS) return false;
+  attempts += 1;
   timer = window.setTimeout(() => {
     timer = null;
     void load(cid, name);
   }, delay);
   delay = Math.min(delay * 2, RETRY_MAX_MS);
+  return true;
 }
 
 /**
@@ -95,7 +104,7 @@ async function pullFromPeers(cid: string, name: string) {
 
 async function load(cid: string, name: string) {
   loading.value = true;
-  failed.value = false;
+  gaveUp.value = false;
   try {
     const r: PreviewResult = await loadContentPreview(cid, name);
     if (r.url) {
@@ -103,13 +112,12 @@ async function load(cid: string, name: string) {
       loading.value = false;
       return; // 成功 ⇒ 不再重试
     }
-    failed.value = true;
   } catch {
-    failed.value = true;
+    /* 失败走下面的退避；错误内容不进界面 */
   }
   loading.value = false;
   void pullFromPeers(cid, name);
-  scheduleRetry(cid, name);
+  gaveUp.value = !scheduleRetry(cid, name);
 }
 
 watch(
@@ -118,6 +126,8 @@ watch(
     // 只清引用，**不 revoke**（URL 归缓存所有，见文件头说明）
     url.value = null;
     delay = RETRY_BASE_MS;
+    attempts = 0;
+    gaveUp.value = false;
     cancelRetry();
     if (cid) void load(cid, props.image.name);
   },
@@ -149,7 +159,7 @@ function open(e: Event) {
   <div
     class="relative h-20 w-20 shrink-0 overflow-hidden rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-bg)] transition"
     :class="clickable ? 'cursor-pointer hover:opacity-90' : ''"
-    :title="clickable ? t('todo.viewImage') : url ? image.name : t('todo.imageSyncing')"
+    :title="clickable ? t('todo.viewImage') : url ? image.name : gaveUp ? t('msg.imageCleaned') : t('todo.imageSyncing')"
     :role="clickable ? 'button' : undefined"
     :tabindex="clickable ? 0 : undefined"
     :aria-label="clickable ? t('todo.viewImage') : undefined"
@@ -168,7 +178,7 @@ function open(e: Event) {
       v-else
       class="flex h-full w-full items-center justify-center px-1 text-center text-caption text-[var(--gosslan-text-2)]"
     >
-      {{ loading ? "…" : t("todo.imageSyncing") }}
+      {{ loading ? "…" : gaveUp ? t("msg.imageCleaned") : t("todo.imageSyncing") }}
     </div>
   </div>
 </template>

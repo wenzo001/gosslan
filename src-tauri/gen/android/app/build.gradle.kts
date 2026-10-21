@@ -25,9 +25,9 @@ android {
     signingConfigs {
         create("release") {
             storeFile = file("release.keystore")
-            storePassword = "gosslan-local"
+            storePassword = "gosslan-dev"
             keyAlias = "gosslan"
-            keyPassword = "gosslan-local"
+            keyPassword = "gosslan-dev"
         }
     }
     // GOSSLAN_SIGNING_END

@@ -2,6 +2,140 @@
 // 从 transport.rs 搬出：`include!` 回同一模块 ⇒ 模块路径、可见性、测试全名一字不变。
 // 大文件拆分第三批；守卫视图与领域图的分册清单一同登记。
 
+/// 接收器至少静默这么久，才把重复 Offer 当成“发送方在重试”而不是网络重复。
+///
+/// 发送侧的停滞判据是 15s 告警 / 60s 中止，重试一定发生在接收器已经停喂之后；
+/// 而网络层重复送达的 Offer 往往落在正在收的那一段里（`fed_at_ms` 是新鲜的）。
+const GROUP_FILE_RETRY_RESET_MIN_IDLE_MS: i64 = 5_000;
+
+/// 收到重复 GroupFileOffer 时该怎么办（纯函数，便于单测钉住三种结局）。
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum GroupOfferRetry {
+    /// 本地已收完 ⇒ 只重发完成 ACK（发送端可能丢了上一条），绝不重传文件。
+    ReAck,
+    /// 会话还在、但接收段已经停了 ⇒ 按 transfer_id 截断 `.part`，从 seq 0 重来。
+    Reset,
+    /// 会话还在、而且刚刚还在收 ⇒ 网络重复，忽略。
+    /// 也用于“接收器不在”（收尾中/刚被清扫）：不在 Offer 时抢 `.part`。
+    Ignore,
+}
+
+pub(crate) fn group_offer_retry_action(
+    already_completed: bool,
+    receiver_idle_ms: Option<i64>,
+) -> GroupOfferRetry {
+    if already_completed {
+        return GroupOfferRetry::ReAck;
+    }
+    match receiver_idle_ms {
+        Some(idle) if idle < GROUP_FILE_RETRY_RESET_MIN_IDLE_MS => GroupOfferRetry::Ignore,
+        // 接收器不在 = 可能正在 `spawn_blocking` 收尾（receiver 已摘、key 还在）。
+        // 这时候按 Offer 截断 `.part` 会与收尾线程抢同一个文件 ⇒ 只忽略；
+        // 重试的分片到达时 `handle_group_file_chunk` 会自己建一份新接收器。
+        None => GroupOfferRetry::Ignore,
+        _ => GroupOfferRetry::Reset,
+    }
+}
+
+/// 这一帧属于当前轮次吗（P1-03 真续传的轮次隔离）。
+///
+/// `None`（旧端/本字段上线前的帧）⇒ 恒真，保持旧行为；`Some` 必须等于该 transfer 的
+/// 当前轮次；查不到当前轮次也恒真（没有 Offer 的旧帧不该因为本机没记轮次而被丢）。
+fn group_frame_is_current(state: &AppState, transfer_id: &str, attempt: Option<u64>) -> bool {
+    let cur = state
+        .group_file_rounds
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(transfer_id)
+        .copied();
+    file::group_frame_round_is_current(attempt, cur)
+}
+
+/// 收到接收端的续传回执：把 `received` 交给正在等这个成员回执的发送任务。
+async fn handle_group_file_resume(
+    state: &Arc<AppState>,
+    peer_id: &str,
+    transfer_id: String,
+    group_id: String,
+    to_sender: String,
+    received: u64,
+) {
+    if to_sender != state.device_id {
+        return;
+    }
+    let gf = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::get_group_file(&dbc, &transfer_id)
+    };
+    let Some(gf) = gf else {
+        return;
+    };
+    if gf.sender_id != state.device_id || gf.group_id != group_id {
+        return;
+    }
+    let key = file::file_peer_key(&transfer_id, peer_id);
+    let tx = state
+        .group_file_resume_waiters
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&key);
+    if let Some(tx) = tx {
+        let _ = tx.send(received);
+    }
+}
+
+/// 确保接收侧的 `group_files` / recipient 行存在（续传/接收端重启后内存丢了、
+/// 但会话行可能还在）。只写库，不建接收器。
+#[allow(clippy::too_many_arguments)]
+fn ensure_group_file_row(
+    state: &AppState,
+    transfer_id: &str,
+    group_id: &str,
+    sender_id: &str,
+    name: &str,
+    size: u64,
+    sha256: &str,
+    scope: &str,
+    todo_id: &str,
+) -> bool {
+    let gf = crate::state::GroupFile {
+        transfer_id: transfer_id.to_string(),
+        group_id: group_id.to_string(),
+        sender_id: sender_id.to_string(),
+        name: name.to_string(),
+        size,
+        sha256: sha256.to_string(),
+        status: "sending".to_string(),
+        created_at: db::now_ms(),
+        scope: scope.to_string(),
+        todo_id: todo_id.to_string(),
+    };
+    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+    db::upsert_group_file_receive(&dbc, &gf, &state.device_id).is_ok()
+}
+
+/// 给发送端回一条续传偏移（接收端是权威）。
+async fn send_group_file_resume(
+    state: &Arc<AppState>,
+    transfer_id: &str,
+    group_id: &str,
+    sender_id: &str,
+    received: u64,
+) {
+    let msg = Message::GroupFileResume {
+        transfer_id: transfer_id.to_string(),
+        group_id: group_id.to_string(),
+        to_sender: sender_id.to_string(),
+        received,
+    };
+    if let Err(e) = try_send(state, sender_id, &msg).await {
+        state.logger.warn(
+            "group_file",
+            format!("续传回执发送失败 transfer={transfer_id} peer={sender_id}：{e}"),
+        );
+    }
+}
+
 /// 处理群文件发起（Offer → 验证 → file_key 解封 → 保存会话状态）。
 /// 本阶段不写文件、不创建 `.part`、不自动 FileAccept——分片传输在下一阶段。
 #[allow(clippy::too_many_arguments)]
@@ -17,22 +151,14 @@ async fn handle_group_file_offer(
     sealed_file_key: String,
     scope: String,
     todo_id: String,
+    attempt: Option<u64>,
 ) {
     // 链路上报的 sender 必须与 Offer 声明一致，且不能是自己
     if sender_id != peer_id || sender_id == state.device_id {
         return;
     }
-    // 幂等：会话已激活（内存有 file_key）→ 重复 Offer 忽略。
-    // 注意不能因为「group_files 里有记录」就跳过：重启后内存 key 丢失但记录还在，
-    // 跳过会让离线补发永远无法重建会话（接收卡死）。改为下方「已完成则跳过」+「幂等重建」。
-    if state
-        .group_file_keys
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .contains_key(&transfer_id)
-    {
-        return;
-    }
+    // ⚠️ 重复 Offer 的处置必须排在权限校验**之后**（下面）：重试会重置接收段，
+    // 若不过在群/成员校验，任何群成员都能拿一个已知 transfer_id 打断别人的接收。
     // 权限：本地群存在，且 sender ∈ group_members（防群外 peer 伪造 Offer）
     let (group_exists, sender_is_member) = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -42,6 +168,338 @@ async fn handle_group_file_offer(
         }
     };
     if !group_exists || !sender_is_member {
+        return;
+    }
+    // 已有的 transfer 必须仍由同一个 sender 发往同一个群 —— 否则任何群成员都能拿一个
+    // 已知 transfer_id 发重复 Offer，触发下面的接收段重置，打断别人的接收。
+    let existing_gf = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::get_group_file(&dbc, &transfer_id)
+    };
+    if let Some(gf) = &existing_gf {
+        if gf.sender_id != sender_id || gf.group_id != group_id {
+            return;
+        }
+    }
+    // 轮次：只有同一发送者的**新**轮次才推进；落后轮次忽略，同轮次重复 Offer 不重置接收段。
+    let mut is_new_round = false;
+    if let Some(a) = attempt {
+        let mut rounds = state
+            .group_file_rounds
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let prev = rounds.get(&transfer_id).copied();
+        if prev.is_some_and(|cur| a < cur) {
+            return;
+        }
+        is_new_round = prev != Some(a);
+        rounds.insert(transfer_id.clone(), a);
+    }
+    // 已收完 / 会话还在 = 重复 Offer（发送方重试，或网络重复）。这两条都不需要解封群密钥。
+    let already_done = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::get_group_file_recipient_status(&dbc, &transfer_id, &state.device_id).as_deref()
+            == Some("completed")
+    };
+    // 命中即刷新 TTL：续传/重试也是活动，2h 的清扫器不该把大文件中途收走。
+    let existing_key = state.touch_group_file_key(&transfer_id);
+    // ── 真续传（S2）：带轮次的 Offer 说明发送端**确实在等**回执（我方宣告了能力位）──
+    // `attempt` 不是"发送端支持"的声明，而是"这一轮发送端会等 Resume"的握手标记；
+    // 发送端只在看到我方能力位时才带它 ⇒ 这里不需要再查对端的 feature 位，避免双方
+    // feature 表不同步时"一边等、一边不回"的死等。
+    if attempt.is_some() {
+        if !is_new_round {
+            // 同轮的重复 Offer：发送方已经在收/在等第一份回执，绝不能重置接收段。
+            return;
+        }
+        // 取现有 key；接收端重启后 key 丢了 ⇒ 用 Offer 的 sealed_file_key 现解封并回填。
+        let key = match existing_key {
+            Some(k) => k,
+            None => {
+                let Some(group_key) = get_group_key(state, &group_id).await else {
+                    return;
+                };
+                let Ok(sealed) = STANDARD.decode(&sealed_file_key) else {
+                    return;
+                };
+                let Some(file_key) =
+                    crypto::open_symmetric(&group_key, &sealed).and_then(|k| k.try_into().ok())
+                else {
+                    return;
+                };
+                state
+                    .group_file_keys
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(
+                        transfer_id.clone(),
+                        crate::state::GroupFileKey::new(file_key),
+                    );
+                file_key
+            }
+        };
+        if already_done {
+            send_group_file_complete_ack(state, &transfer_id, &group_id, &sender_id, true).await;
+            // 让发送方别干等一个不会来的 Resume：已收完 = received 等于总长。
+            send_group_file_resume(state, &transfer_id, &group_id, &sender_id, size).await;
+            return;
+        }
+        if !ensure_group_file_row(
+            state,
+            &transfer_id,
+            &group_id,
+            &sender_id,
+            &name,
+            size,
+            &sha256,
+            &scope,
+            &todo_id,
+        ) {
+            return;
+        }
+        // 续传分支也必须建气泡（幂等）：否则接收端整段传输期间没有文件卡片。
+        create_group_file_receive_bubble(
+            state,
+            &transfer_id,
+            &group_id,
+            &sender_id,
+            &name,
+            size,
+            &sha256,
+            &scope,
+        );
+        let usable = existing_gf
+            .as_ref()
+            .map(|gf| file::prefix_usable(size, &sha256, gf.size, &gf.sha256))
+            .unwrap_or(true);
+        if !usable {
+            state.logger.warn(
+                "group_file",
+                format!("群文件续传前缀身份不符，回退整份 transfer={transfer_id}"),
+            );
+        }
+        let (has_active, active_received, active_path) = {
+            let recv = state
+                .group_file_receivers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            match recv.get(&transfer_id) {
+                Some(r) => (true, r.received, Some(r.tmp_path.clone())),
+                None => (false, 0, None),
+            }
+        };
+        let downloads = state
+            .downloads_dir
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let part_path = active_path
+            .clone()
+            .unwrap_or_else(|| downloads.join(format!("{transfer_id}.part")));
+        let disk_len = std::fs::metadata(&part_path).map(|m| m.len()).unwrap_or(0);
+        let decision = if usable {
+            file::decide_group_offer(false, has_active, active_received, disk_len, size)
+        } else {
+            file::GroupOfferDecision::Restart
+        };
+        match decision {
+            file::GroupOfferDecision::AlreadyHave => {
+                send_group_file_complete_ack(state, &transfer_id, &group_id, &sender_id, true)
+                    .await;
+                send_group_file_resume(state, &transfer_id, &group_id, &sender_id, size).await;
+            }
+            file::GroupOfferDecision::Resume(n) => {
+                // 活跃接收器与磁盘一致 ⇒ 只重置段号；否则丢掉旧句柄、按磁盘前缀重建。
+                if has_active && active_received != n {
+                    state
+                        .group_file_receivers
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .remove(&transfer_id);
+                }
+                let prepared = if has_active && active_received == n {
+                    let mut recv = state
+                        .group_file_receivers
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    match recv.get_mut(&transfer_id) {
+                        Some(r) => {
+                            r.next_seq = 0;
+                            r.fed_at_ms = db::now_ms();
+                            true
+                        }
+                        None => false,
+                    }
+                } else {
+                    let built = {
+                        let (downloads, tid, peer, name2, sha2) = (
+                            downloads.clone(),
+                            transfer_id.clone(),
+                            sender_id.clone(),
+                            name.clone(),
+                            sha256.clone(),
+                        );
+                        tokio::task::spawn_blocking(move || {
+                            file::build_group_resume_receiver(
+                                &downloads, &tid, &peer, &name2, size, key, sha2,
+                            )
+                        })
+                        .await
+                    };
+                    match built {
+                        Ok(Ok(r)) => {
+                            state
+                                .group_file_receivers
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .insert(transfer_id.clone(), r);
+                            true
+                        }
+                        Ok(Err(why)) => {
+                            state.logger.warn(
+                                "group_file",
+                                format!("群文件重建续传接收器失败 transfer={transfer_id}：{why}"),
+                            );
+                            false
+                        }
+                        Err(e) => {
+                            state.logger.warn(
+                                "group_file",
+                                format!("群文件续传重建任务被中断 transfer={transfer_id}：{e}"),
+                            );
+                            false
+                        }
+                    }
+                };
+                if !prepared {
+                    state
+                        .group_file_receivers
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .remove(&transfer_id);
+                    {
+                        // 锁只在写库这一格活着；下面 send 的 await 不能跨 std MutexGuard。
+                        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                        let _ = db::update_group_file_recipient(
+                            &dbc,
+                            &transfer_id,
+                            &state.device_id,
+                            "sending",
+                            0.0,
+                        );
+                    }
+                    send_group_file_resume(state, &transfer_id, &group_id, &sender_id, 0).await;
+                    return;
+                }
+                let progress = n as f64 / size as f64;
+                {
+                    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                    let _ = db::update_group_file_recipient(
+                        &dbc,
+                        &transfer_id,
+                        &state.device_id,
+                        "sending",
+                        progress,
+                    );
+                    let final_path = state
+                        .group_file_receivers
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .get(&transfer_id)
+                        .map(|r| r.final_path.clone())
+                        .unwrap_or_else(|| part_path.clone());
+                    let _ = db::upsert_transfer(
+                        &dbc,
+                        &transfer_id,
+                        &sender_id,
+                        &name,
+                        size,
+                        "receive",
+                        "active",
+                        Some(final_path.to_string_lossy().as_ref()),
+                        progress,
+                    );
+                }
+                send_group_file_resume(state, &transfer_id, &group_id, &sender_id, n).await;
+            }
+            file::GroupOfferDecision::Restart => {
+                state
+                    .group_file_receivers
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&transfer_id);
+                // 走到 Restart = 磁盘上没有可用前缀（0 字节 / ≥声明总长 / 身份不符）。
+                // 旧 `.part` 必须一起删：否则下一次 Offer 会把"旧字节 + 新字节"当成
+                // 可续前缀，最终 SHA 永远不符，陷入"续传→失败→再续传"的循环。
+                let _ = std::fs::remove_file(&part_path);
+                {
+                    // 同上：guard 不能跨下面的 await。
+                    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                    let _ = db::update_group_file_recipient(
+                        &dbc,
+                        &transfer_id,
+                        &state.device_id,
+                        "sending",
+                        0.0,
+                    );
+                }
+                send_group_file_resume(state, &transfer_id, &group_id, &sender_id, 0).await;
+            }
+        }
+        return;
+    }
+    if let Some(key) = existing_key {
+        let idle_ms = {
+            let now = db::now_ms();
+            state
+                .group_file_receivers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&transfer_id)
+                .map(|r| now - r.fed_at_ms)
+        };
+        match group_offer_retry_action(already_done, idle_ms) {
+            GroupOfferRetry::ReAck => {
+                // 本机早已收完，只是上一条完成 ACK 丢了 ⇒ 再回一条（幂等，不重传文件）。
+                send_group_file_complete_ack(state, &transfer_id, &group_id, &sender_id, true)
+                    .await;
+            }
+            GroupOfferRetry::Reset => {
+                // 发送侧每次重试都从 seq 0 重发；接收器的 next_seq 还停在上一段末尾。
+                // `begin_group_receive → make_receiver` 会按 transfer_id 截断同一个 `.part`
+                // 并从零建接收器（单聊重试共用这一份实现）⇒ 新段分片不会被判 Duplicate 丢掉，
+                // Done 时 `received == size`。
+                if let Err(why) = file::begin_group_receive(
+                    state,
+                    &transfer_id,
+                    &sender_id,
+                    &name,
+                    size,
+                    key,
+                    sha256.clone(),
+                ) {
+                    state.logger.warn(
+                        "group_file",
+                        format!("群文件重试重置接收段失败 transfer={transfer_id}：{why}"),
+                    );
+                } else {
+                    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                    let _ = db::update_group_file_recipient(
+                        &dbc,
+                        &transfer_id,
+                        &state.device_id,
+                        "sending",
+                        0.0,
+                    );
+                }
+            }
+            GroupOfferRetry::Ignore => {}
+        }
+        return;
+    }
+    if already_done {
+        // 内存 key 随重启丢失，但本地确实收完过 ⇒ 只补 ACK，别重建会话。
+        send_group_file_complete_ack(state, &transfer_id, &group_id, &sender_id, true).await;
         return;
     }
     // 本地 GroupKey 解封 file_key（GroupKey 不离开设备；群外无法解开）
@@ -56,16 +514,6 @@ async fn handle_group_file_offer(
     else {
         return;
     };
-
-    // 已完成的 transfer → 忽略（避免重复接收 / 重复 emit）
-    let already_done = {
-        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::get_group_file_recipient_status(&dbc, &transfer_id, &state.device_id).as_deref()
-            == Some("completed")
-    };
-    if already_done {
-        return;
-    }
 
     // 幂等建立/重建接收会话（重启后内存 file_key 丢失，这里回填 key + 复位 recipient）
     {
@@ -86,71 +534,108 @@ async fn handle_group_file_offer(
             return;
         }
     }
-    // `scope == "todo"`：待办描述图片，仅走传输管线把字节投递给全员，
-    // 不进聊天时间线、不弹气泡、不改会话预览（与发送端对称）。
-    if scope != "todo" {
-        // 接收气泡：与发送端同一 msg_id（gfile-{transfer_id}），前端据 file-progress
-        // 之外的状态事件推进。此处 status=sending，Done 校验通过后转 delivered。
-        // 图片文件保持 kind="image"，业务语义不降级。
-        let subtype = file::classify_file_subtype(&name);
-        // 同口径收敛（见单聊 FileOffer 处的说明）
-        let kind = if subtype == "image" { "image" } else { "file" };
-        let conv_id = format!("group:{group_id}");
-        let seq = {
-            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-            db::next_clock(&dbc, &conv_id).unwrap_or(1)
-        };
-        let rec = crate::state::MessageRecord {
-            id: 0,
-            msg_id: format!("gfile-{transfer_id}"),
-            conv_id: conv_id.clone(),
-            sender_id: sender_id.clone(),
-            receiver_id: state.device_id.clone(),
-            kind: kind.to_string(),
-            content: serde_json::json!({
-                "name": name,
-                "size": size,
-                "sha256": sha256,
-                "subtype": subtype,
-                "progress": 0.0,
-            })
-            .to_string(),
-            ts: db::now_ms(),
-            seq,
-            status: "sending".to_string(),
-            // 群文件这条没有 @ 落点这回事（发送侧从来不算 mention_targets）⇒ NULL = 不知道。
-            mention_targets: None,
-        };
-        {
-            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-            // 落库失败必须留痕（审计 2026-10-16）：这一格是"卡片类"消息，吞掉后界面没有那张卡
-            // 而日志一字不记 ⇒ 现场无从归因。不改行为：仍然继续往下走（文件已在盘上是事实），
-            // 只是不再静默。
-            if let Err(e) = db::insert_message(&dbc, &rec) {
+    create_group_file_receive_bubble(
+        state,
+        &transfer_id,
+        &group_id,
+        &sender_id,
+        &name,
+        size,
+        &sha256,
+        &scope,
+    );
+    // 会话密钥仅存内存，供下一阶段解密 GroupFileChunk
+    state
+        .group_file_keys
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(transfer_id, crate::state::GroupFileKey::new(file_key));
+}
+
+/// 接收侧建群文件气泡（Offer 与续传分支共用）。
+///
+/// `insert_message` 是 `INSERT OR IGNORE` ⇒ 幂等。续传分支（`attempt.is_some()`）**也必须**
+/// 建一次气泡：旧路径只在 `attempt=None` 的老路里建，若续传分支跳过，接收端在整段
+/// 传输期间没有气泡，完成时 `update_message_content` 也会因为行不存在而落空。
+#[allow(clippy::too_many_arguments)] // 与同文件其它处理器同形：帧字段直传
+fn create_group_file_receive_bubble(
+    state: &Arc<AppState>,
+    transfer_id: &str,
+    group_id: &str,
+    sender_id: &str,
+    name: &str,
+    size: u64,
+    sha256: &str,
+    scope: &str,
+) {
+    if scope == "todo" {
+        return;
+    }
+    // 接收气泡：与发送端同一 msg_id（gfile-{transfer_id}），前端据 file-progress
+    // 之外的状态事件推进。此处 status=sending，Done 校验通过后转 delivered。
+    // 图片文件保持 kind="image"，业务语义不降级。
+    let subtype = file::classify_file_subtype(name);
+    // 同口径收敛（见单聊 FileOffer 处的说明）
+    let kind = if subtype == "image" { "image" } else { "file" };
+    let conv_id = format!("group:{group_id}");
+    let seq = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::next_clock(&dbc, &conv_id).unwrap_or(1)
+    };
+    let rec = crate::state::MessageRecord {
+        id: 0,
+        msg_id: format!("gfile-{transfer_id}"),
+        conv_id: conv_id.clone(),
+        sender_id: sender_id.to_string(),
+        receiver_id: state.device_id.clone(),
+        kind: kind.to_string(),
+        content: serde_json::json!({
+            "name": name,
+            "size": size,
+            "sha256": sha256,
+            "subtype": subtype,
+            "progress": 0.0,
+        })
+        .to_string(),
+        ts: db::now_ms(),
+        seq,
+        status: "sending".to_string(),
+        // 群文件这条没有 @ 落点这回事（发送侧从来不算 mention_targets）⇒ NULL = 不知道。
+        mention_targets: None,
+    };
+    {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        // 落库失败必须留痕（审计 2026-10-16）：这一格是"卡片类"消息，吞掉后界面没有那张卡
+        // 而日志一字不记 ⇒ 现场无从归因。不改行为：仍然继续往下走（文件已在盘上是事实），
+        // 只是不再静默。
+        let inserted = match db::insert_message_if_new(&dbc, &rec) {
+            Ok(inserted) => inserted,
+            Err(e) => {
                 state.logger.error(
                     "group_file",
                     format!("群文件卡片落库失败 msg={}：{e}", rec.msg_id),
                 );
+                false
             }
+        };
+        // ⚠️ 未读只在**真的插入新行**时 +1。本函数现在被两条入口调用（fan-out 的
+        // `attempt=None` pre-Offer 与 dispatch 的带轮次 Offer），无条件 touch 会让
+        // 同一个群文件把群未读 +2，重试每轮再 +1（标准轴审查 2026-10-21 的回归）。
+        if inserted {
             db::touch_conversation(
                 &dbc,
                 &format!("group:{group_id}"),
                 "group",
-                &name,
+                name,
                 None,
                 &format!("[群文件] {name}"),
                 1,
             )
             .ok();
         }
-        let _ = state.app.emit("message-received", &rec);
     }
-    // 会话密钥仅存内存，供下一阶段解密 GroupFileChunk
-    state
-        .group_file_keys
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(transfer_id, file_key);
+    // 重复 Offer 也重发一次（幂等 upsert）：重试时让前端把气泡从 failed 刷回 sending。
+    let _ = state.app.emit("message-received", &rec);
 }
 
 /// 失败收尾：删除 `.part`、移除接收状态与会话密钥、recipient 置 failed。
@@ -225,8 +710,13 @@ async fn handle_group_file_done(
     transfer_id: String,
     group_id: String,
     sender_id: String,
+    attempt: Option<u64>,
 ) {
     if sender_id != peer_id || sender_id == state.device_id {
+        return;
+    }
+    // 上一轮的 Done 不能把这一轮刚开头判成"未完成并删掉 .part"。
+    if !group_frame_is_current(state, &transfer_id, attempt) {
         return;
     }
     // 幂等 / 无 session：已完成或从未建立 Offer session → 安全忽略
@@ -309,14 +799,13 @@ async fn handle_group_file_done(
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clone();
-    let finalized = match tokio::task::spawn_blocking(move || {
-        file::finish_group_receive_into(r, &downloads)
-    })
-    .await
-    {
-        Ok(res) => res,
-        Err(e) => Err(format!("群文件收尾任务被中断: {e}")),
-    };
+    let finalized =
+        match tokio::task::spawn_blocking(move || file::finish_group_receive_into(r, &downloads))
+            .await
+        {
+            Ok(res) => res,
+            Err(e) => Err(format!("群文件收尾任务被中断: {e}")),
+        };
     let final_path = match finalized {
         Ok(p) => p,
         Err(why) => {
@@ -368,7 +857,13 @@ async fn handle_group_file_done(
         // （`network/file/receive.rs`），群这一处是同一个形状的第二家。
         // 三处写只写**一份**（闭包），事务与失败补写共用同一段 ⇒ 补写那半边不会和事务里那半边漂开。
         let write_ledgers = |conn: &rusqlite::Connection| -> rusqlite::Result<()> {
-            db::update_group_file_recipient(conn, &transfer_id, &state.device_id, "completed", 1.0)?;
+            db::update_group_file_recipient(
+                conn,
+                &transfer_id,
+                &state.device_id,
+                "completed",
+                1.0,
+            )?;
             db::upsert_transfer(
                 conn,
                 &transfer_id,
@@ -423,11 +918,6 @@ async fn handle_group_file_done(
             let _ = write_ledgers(&dbc);
         }
     }
-    state
-        .group_file_keys
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .remove(&transfer_id);
     state
         .group_file_keys
         .lock()
@@ -490,10 +980,7 @@ async fn handle_group_file_done(
                 // 行为一字不改：仍然继续往下 emit。
                 state.logger.error(
                     "group_file",
-                    format!(
-                        "群文件 path 回填失败 msg={}：{e}",
-                        done_rec.msg_id
-                    ),
+                    format!("群文件 path 回填失败 msg={}：{e}", done_rec.msg_id),
                 );
             }
         }
@@ -674,7 +1161,8 @@ pub(crate) fn apply_group_file_ack_db(
     let bubble = group_file_bubble(&refs, success);
     // ④ 气泡写回（只有聚合能决定时才写；"还有成员在途"就保持原状态）
     if let Some(b) = bubble {
-        db::set_message_status(&tx, &format!("gfile-{transfer_id}"), b).map_err(|e| e.to_string())?;
+        db::set_message_status(&tx, &format!("gfile-{transfer_id}"), b)
+            .map_err(|e| e.to_string())?;
     }
     tx.commit().map_err(|e| e.to_string())?;
     Ok(GroupFileAckOutcome::Applied { bubble })
@@ -742,9 +1230,156 @@ pub(crate) fn apply_group_file_ack(
         }
     }
     if bubble == Some("delivered") {
-        let _ = state.app.emit("message-acked", &format!("gfile-{transfer_id}"));
+        let _ = state
+            .app
+            .emit("message-acked", &format!("gfile-{transfer_id}"));
     }
     Ok(outcome)
+}
+
+/// 群文件会话密钥的保留上限：正常发送期限最多 1h；2h 还没收尾的只可能是
+/// 「只发了 Offer 没发分片」或死单 —— 密钥不落库，留着会随对端行为增长（P3-06）。
+pub(crate) const GROUP_FILE_KEY_TTL_MS: i64 = 2 * 60 * 60 * 1000;
+
+/// 密钥是否已超过保留上限（纯函数，便于单测钉住边界）。
+pub(crate) fn group_file_key_is_stale(at_ms: i64, now: i64) -> bool {
+    now.saturating_sub(at_ms) >= GROUP_FILE_KEY_TTL_MS
+}
+
+/// 清掉过期密钥。发送/接收两侧共用同一张表；只按登记时刻判，不额外看传输状态：
+/// 2h 已超过最大发送期限，活着的传输不可能还在等这把钥匙。
+pub(crate) fn sweep_stale_group_file_keys(state: &AppState) -> usize {
+    let now = db::now_ms();
+    let removed = {
+        let mut keys = state
+            .group_file_keys
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let before = keys.len();
+        keys.retain(|_, k| !group_file_key_is_stale(k.at_ms, now));
+        before - keys.len()
+    };
+    if removed > 0 {
+        state.logger.info(
+            "group_file",
+            format!(
+                "code=GFILE_KEY_TTL_EXPIRED removed={removed} —— 只发 Offer/死单的会话密钥已清"
+            ),
+        );
+    }
+    // 轮次表只保留还有密钥的 transfer（密钥在终态/兜底 TTL 时被清 ⇒ 轮次一起回收）。
+    let live: std::collections::HashSet<String> = state
+        .group_file_keys
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .keys()
+        .cloned()
+        .collect();
+    state
+        .group_file_rounds
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .retain(|tid, _| live.contains(tid));
+    removed
+}
+
+/// 卡住的群文件投递清扫（P2-01）。
+///
+/// `sending` 行 10 分钟没有任何进度更新 ⇒ 回 `pending`，由建链/心跳重投；
+/// 超过 7 天 ⇒ 用 ACK 失败同一份事务收尾（recipient + 气泡 + 镜像），
+/// 不让一行永远停在“发送中”。正常发送时 dispatch 每 250ms 刷一次 `updated_at`，
+/// 所以扫到的行不可能是还在跑的任务。
+pub(crate) fn sweep_stale_group_sending(state: &Arc<AppState>) -> usize {
+    let now = db::now_ms();
+    // 开机第一拍：`sending` 只可能是上一次进程遗留的孤儿（任务活不过进程）⇒ 不设下界，
+    // 全部回 `pending`，对端一上线就能续传。之后按 10 分钟的 stale 阈值正常收敛。
+    let boot = state
+        .group_file_boot_sweep_pending
+        .swap(false, std::sync::atomic::Ordering::Relaxed);
+    let before = if boot {
+        i64::MAX
+    } else {
+        now - crate::db::GROUP_FILE_SENDING_STALE_MS
+    };
+    let max_age_before = now - crate::db::GROUP_FILE_SENDING_MAX_AGE_MS;
+    let rows = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::list_stale_group_file_sending(&dbc, before, max_age_before, &state.device_id)
+    };
+    let rows = match rows {
+        Ok(v) => v,
+        Err(e) => {
+            state.logger.error(
+                "group_file",
+                format!("code=GFILE_STALE_READ_FAILED err={e} —— 本轮跳过，下轮重试"),
+            );
+            return 0;
+        }
+    };
+    let mut changed = 0usize;
+    for row in rows {
+        let age_ms = now.saturating_sub(row.updated_at);
+        if row.expired {
+            // dispatch 的最长期限是 1h，7 天没更新绝不可能是活跃任务 ⇒ 直接按失败收尾。
+            match apply_group_file_ack(
+                state,
+                &row.transfer_id,
+                &row.group_id,
+                &row.recipient_id,
+                false,
+            ) {
+                Ok(_) => {
+                    state.logger.warn(
+                        "group_file",
+                        format!(
+                            "code=GFILE_SENDING_STALE transfer_id={} peer={} age_ms={age_ms} action=failed",
+                            row.transfer_id, row.recipient_id
+                        ),
+                    );
+                    changed += 1;
+                }
+                Err(e) => state.logger.error(
+                    "group_file",
+                    format!(
+                        "code=GFILE_SENDING_STALE_FAILED transfer_id={} peer={} err={e} —— 行仍是 sending，下轮重试",
+                        row.transfer_id, row.recipient_id
+                    ),
+                ),
+            }
+        } else {
+            // 条件 UPDATE（同一个 stale 谓词）：查出来之后任务刚好刷新进度 ⇒ 不改。
+            let requeued = {
+                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                db::requeue_stale_group_file_sending(
+                    &dbc,
+                    &row.transfer_id,
+                    &row.recipient_id,
+                    before,
+                )
+            };
+            match requeued {
+                Ok(true) => {
+                    state.logger.info(
+                        "group_file",
+                        format!(
+                            "code=GFILE_SENDING_STALE transfer_id={} peer={} age_ms={age_ms} action=retry",
+                            row.transfer_id, row.recipient_id
+                        ),
+                    );
+                    changed += 1;
+                }
+                Ok(false) => {} // 期间被发送任务刷新了
+                Err(e) => state.logger.error(
+                    "group_file",
+                    format!(
+                        "code=GFILE_SENDING_REQUEUE_FAILED transfer_id={} peer={} err={e}",
+                        row.transfer_id, row.recipient_id
+                    ),
+                ),
+            }
+        }
+    }
+    changed
 }
 
 /// 重放"收到过、但没落终态"的群文件 ACK —— **跨进程恢复的出口**。
@@ -832,7 +1467,11 @@ pub(crate) fn replay_pending_group_file_acks(state: &Arc<AppState>) -> usize {
                     match forced {
                         Ok(_) => {
                             let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                            let _ = db::delete_group_file_ack(&dbc, &ack.transfer_id, &ack.recipient_id);
+                            let _ = db::delete_group_file_ack(
+                                &dbc,
+                                &ack.transfer_id,
+                                &ack.recipient_id,
+                            );
                             state.logger.error(
                                 "group_file",
                                 format!(
@@ -1026,6 +1665,7 @@ mod group_file_bubble_tests {
 
 /// 处理群文件分片（E2EE 解密 → seq/size 校验 → 增量哈希 → 写 `.part`）。
 /// 无 GroupFileDone / 无 rename / 不标 completed——完成确认在下一阶段。
+#[allow(clippy::too_many_arguments)] // 与同文件另外两个处理器同形：帧字段全量直传，打包反而多一层
 async fn handle_group_file_chunk(
     state: &Arc<AppState>,
     peer_id: &str,
@@ -1034,9 +1674,14 @@ async fn handle_group_file_chunk(
     sender_id: String,
     seq: u32,
     data: String,
+    attempt: Option<u64>,
 ) {
     // 权限：链路 sender 与声明一致、不能是自己、群存在、sender 是群成员
     if sender_id != peer_id || sender_id == state.device_id {
+        return;
+    }
+    // 轮次隔离：上一轮还堵在链路队列里的高 seq 分片不能把这一轮判成"跳号"打死。
+    if !group_frame_is_current(state, &transfer_id, attempt) {
         return;
     }
     let (group_exists, sender_is_member) = {
@@ -1050,13 +1695,8 @@ async fn handle_group_file_chunk(
         return;
     }
     // 会话必须已经由合法 GroupFileOffer 建立；无 key 直接丢弃（不尝试其他密钥）
-    let Some(file_key) = state
-        .group_file_keys
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(&transfer_id)
-        .copied()
-    else {
+    // 每片都刷新 TTL：长传输（BLE / 多轮重试）不应在 2h 被清扫掉。
+    let Some(file_key) = state.touch_group_file_key(&transfer_id) else {
         return;
     };
     // 本地群文件记录（Offer 阶段建立）提供 name/size/sha256
@@ -1165,7 +1805,6 @@ async fn handle_group_file_chunk(
     }
 }
 
-
 #[cfg(test)]
 mod group_file_ack_recovery_tests {
     use super::{apply_group_file_ack_db, GroupFileAckOutcome};
@@ -1211,9 +1850,11 @@ mod group_file_ack_recovery_tests {
     }
 
     fn bubble_status(conn: &Connection) -> String {
-        conn.query_row("SELECT status FROM messages WHERE msg_id='gfile-t1'", [], |r| {
-            r.get(0)
-        })
+        conn.query_row(
+            "SELECT status FROM messages WHERE msg_id='gfile-t1'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap()
     }
 
@@ -1233,7 +1874,10 @@ mod group_file_ack_recovery_tests {
         .unwrap();
 
         let outcome = apply_group_file_ack_db(&conn, "t1", "peer-a", true);
-        assert!(outcome.is_err(), "写失败必须报错，不许假装成功：{outcome:?}");
+        assert!(
+            outcome.is_err(),
+            "写失败必须报错，不许假装成功：{outcome:?}"
+        );
         assert_eq!(
             recipient_status(&conn, "peer-a"),
             "sending",
@@ -1246,7 +1890,8 @@ mod group_file_ack_recovery_tests {
         );
 
         // 故障消失后再来一次 ⇒ 正常落终态（这正是清扫器重放要走的路）
-        conn.execute_batch("DROP TRIGGER block_recipient_update").unwrap();
+        conn.execute_batch("DROP TRIGGER block_recipient_update")
+            .unwrap();
         let ok = apply_group_file_ack_db(&conn, "t1", "peer-a", true).unwrap();
         assert_eq!(
             ok,
@@ -1315,7 +1960,12 @@ mod group_file_ack_recovery_tests {
             // 重放 ⇒ 落终态 ⇒ 账本清空
             seed(&c);
             let out = apply_group_file_ack_db(&c, "t1", "peer-a", true).unwrap();
-            assert_eq!(out, GroupFileAckOutcome::Applied { bubble: Some("delivered") });
+            assert_eq!(
+                out,
+                GroupFileAckOutcome::Applied {
+                    bubble: Some("delivered")
+                }
+            );
             crate::db::delete_group_file_ack(&c, "t1", "peer-a").unwrap();
             assert!(
                 crate::db::list_group_file_acks(&c, 10).unwrap().is_empty(),
@@ -1351,10 +2001,15 @@ mod group_file_ack_recovery_tests {
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert_eq!(n, 1, "升级后启动一次就该把账本表补齐（SCHEMA 每次启动都跑）");
+            assert_eq!(
+                n, 1,
+                "升级后启动一次就该把账本表补齐（SCHEMA 每次启动都跑）"
+            );
             // 老数据不受影响
             let rows: i64 = c
-                .query_row("SELECT COUNT(*) FROM group_file_recipients", [], |r| r.get(0))
+                .query_row("SELECT COUNT(*) FROM group_file_recipients", [], |r| {
+                    r.get(0)
+                })
                 .unwrap();
             assert_eq!(rows, 0, "新表不许动历史数据");
         }
@@ -1386,5 +2041,137 @@ mod group_file_ack_recovery_tests {
         assert_eq!(out, GroupFileAckOutcome::NotRecipient);
         assert_eq!(recipient_status(&conn, "peer-a"), "sending");
         assert_eq!(bubble_status(&conn), "sending");
+    }
+}
+
+/// 重复 Offer 的三种结局（P1-03 / P2-01 的判据）。
+#[cfg(test)]
+mod group_offer_retry_tests {
+    use super::{
+        group_file_key_is_stale, group_offer_retry_action, GroupOfferRetry, GROUP_FILE_KEY_TTL_MS,
+        GROUP_FILE_RETRY_RESET_MIN_IDLE_MS,
+    };
+
+    /// 已收完：只补 ACK，**绝不**重传文件。
+    #[test]
+    fn completed_offer_only_reacks() {
+        assert_eq!(
+            group_offer_retry_action(true, Some(60_000)),
+            GroupOfferRetry::ReAck,
+            "已收完 + 发送方重发 Offer ⇒ 重发 ACK，不重传文件"
+        );
+        assert_eq!(
+            group_offer_retry_action(true, None),
+            GroupOfferRetry::ReAck,
+            "重启后接收器不在，但本地已收完 ⇒ 仍只补 ACK"
+        );
+    }
+
+    /// 刚刚还在收：网络重复，忽略（重置会打断正在收的那一单）。
+    #[test]
+    fn active_receiver_ignores_a_network_duplicate() {
+        assert_eq!(
+            group_offer_retry_action(false, Some(GROUP_FILE_RETRY_RESET_MIN_IDLE_MS - 1)),
+            GroupOfferRetry::Ignore,
+            "接收器还在被喂片 ⇒ 这是网络重复，不是发送方重试"
+        );
+    }
+
+    /// 接收器静默：发送方在重试，必须从 seq 0 重建；接收器不在则留给分片自己重建。
+    #[test]
+    fn stalled_receiver_restarts_but_absent_receiver_is_left_to_chunks() {
+        assert_eq!(
+            group_offer_retry_action(false, Some(GROUP_FILE_RETRY_RESET_MIN_IDLE_MS)),
+            GroupOfferRetry::Reset,
+            "接收器已静默 ⇒ 发送方在重试，必须从 seq 0 重建接收段"
+        );
+        assert_eq!(
+            group_offer_retry_action(false, None),
+            GroupOfferRetry::Ignore,
+            "接收器不在（可能正在 spawn_blocking 收尾）⇒ 不许在 Offer 时截断 .part"
+        );
+    }
+
+    /// 接线判据：三种结局必须真的被 handler 使用（纯函数绿 ≠ 被接上）。
+    ///
+    /// 这条路径要造 AppState 才能跑行为测试（本仓没有夹具）；所以钉的是**生产码文本**：
+    /// Reset 必须落到 `begin_group_receive`（截断同一个 `.part`），
+    /// ReAck 必须真的再发一条成功 ACK。删掉任一行，这条红。
+    #[test]
+    fn offer_handler_wires_reset_and_reack() {
+        let src = crate::network::transport_src_for_guards();
+        let at = src
+            .find("async fn handle_group_file_offer(")
+            .expect("群文件 Offer handler 改名/搬家了 ⇒ 同步改这条判据");
+        let rest = &src[at..];
+        let end = rest.find("\n}\n").map(|i| i + 3).unwrap_or(rest.len());
+        let flat: String = rest[..end].chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(
+            flat.contains("GroupOfferRetry::Reset=>"),
+            "重复 Offer 的 Reset 分支被删了 ⇒ 重试会继续把新段分片判成 Duplicate"
+        );
+        assert!(
+            flat.contains("file::begin_group_receive(state,&transfer_id,&sender_id,&name,size,key,sha256.clone(),)"),
+            "Reset 必须走 begin_group_receive（按 transfer_id 截断 .part、从 seq 0 重建接收器）"
+        );
+        assert!(
+            flat.contains("GroupOfferRetry::ReAck=>"),
+            "已完成时的 ReAck 分支被删了 ⇒ 丢了 ACK 的发送侧只能无限重投"
+        );
+        assert!(
+            flat.contains(
+                "send_group_file_complete_ack(state,&transfer_id,&group_id,&sender_id,true)"
+            ),
+            "ReAck 必须真的再发一条成功 ACK"
+        );
+    }
+
+    /// 接线判据：后台清扫器每个 tick 必须**恰好**调一次卡死清扫。
+    /// 0 次 = 逻辑全绿但永远不会跑；>1 次 = 同一 tick 重复扫。
+    #[test]
+    fn outbox_sweeper_calls_the_stale_group_sweep_once() {
+        let src = crate::network::transport_src_for_guards();
+        let at = src
+            .find("pub fn spawn_outbox_sweeper(")
+            .expect("清扫器改名/搬家了 ⇒ 同步改这条判据");
+        let rest = &src[at..];
+        let end = rest.find("\n}\n").map(|i| i + 3).unwrap_or(rest.len());
+        let flat: String = rest[..end].chars().filter(|c| !c.is_whitespace()).collect();
+        assert_eq!(
+            flat.matches("sweep_stale_group_sending(&state)").count(),
+            1,
+            "卡死清扫必须由后台清扫器驱动且只调一次（接线判据，不钉存在性）"
+        );
+    }
+
+    /// P3-06：密钥 TTL 是 2h，边界取“到点即过期”。
+    #[test]
+    fn group_file_key_ttl_expires_at_the_boundary() {
+        assert!(
+            !group_file_key_is_stale(0, GROUP_FILE_KEY_TTL_MS - 1),
+            "差 1ms 不删"
+        );
+        assert!(
+            group_file_key_is_stale(0, GROUP_FILE_KEY_TTL_MS),
+            "到点必须删（闭区间上限，与其它长度/时限判据一致）"
+        );
+        assert!(group_file_key_is_stale(0, GROUP_FILE_KEY_TTL_MS + 1));
+    }
+
+    /// 接线判据：后台清扫器每个 tick 必须**恰好**调一次密钥 TTL 清扫。
+    #[test]
+    fn outbox_sweeper_calls_the_key_ttl_sweep_once() {
+        let src = crate::network::transport_src_for_guards();
+        let at = src
+            .find("pub fn spawn_outbox_sweeper(")
+            .expect("清扫器改名/搬家了 ⇒ 同步改这条判据");
+        let rest = &src[at..];
+        let end = rest.find("\n}\n").map(|i| i + 3).unwrap_or(rest.len());
+        let flat: String = rest[..end].chars().filter(|c| !c.is_whitespace()).collect();
+        assert_eq!(
+            flat.matches("sweep_stale_group_file_keys(&state)").count(),
+            1,
+            "密钥 TTL 清扫必须由后台清扫器驱动且只调一次（0 次 = 永不淘汰）"
+        );
     }
 }

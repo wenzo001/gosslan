@@ -339,9 +339,12 @@ import * as ghsync from "./e2e/rounds/ghsync.mjs";
       negative: false,
       keep: lim.keep,
       redMaxAgeDays: lim.redMaxAgeDays,
+      unknownMaxAgeDays: lim.unknownMaxAgeDays,
+      unknownMaxBytes: lim.unknownMaxBytes,
       cited: citedRunIds(),
     });
-    console.log(`一次性清账：绿轮留 ${lim.keep} 个、红轮超 ${lim.redMaxAgeDays} 天且未被点名才删` +
+    console.log(`一次性清账：绿轮留 ${lim.keep} 个、红轮超 ${lim.redMaxAgeDays} 天且未被点名才删、` +
+      `崩溃现场留 ${lim.unknownMaxAgeDays} 天 / 单次超 ${(lim.unknownMaxBytes / 1073741824).toFixed(1)} GB 只清大文件` +
       ` ⇒ 删 ${pr.deleted.length} 个，释放 ${(pr.bytes / 1048576).toFixed(1)} MB，现存 ${pr.left} 个 run-*`);
     console.log(`被文档点名且仍在盘上 ${pr.spared} 个 · 点名但已缺失 ${pr.missingCited} 个 · ` +
       `引用名单${pr.citedAvailable ? "可用" : "拿不到（那就一个都没删）"}`);
@@ -885,8 +888,14 @@ try {
   // 上限的默认值与读法都在 `retentionLimits()` 那一处（轮末收尾与 `--prune-only` 共用）。
   // ★ 失败轮的第二条出口（2026-10-14 负责人拍板）：原来红轮一个都不删 ⇒ 实测 346 轮 1.72 GB，
   //    而在库文档点名的只有 22 个 —— "只涨不收"的那一半从来没有上限。这里给它按**天数**收：
-  //    超过 N 天**且没被文档点名**的红轮才删，`unknown`（崩在半路、没有 verdict）永远不删。
-  const { keep: KEEP_GREEN_RUNS, redMaxAgeDays: KEEP_RED_AGE_DAYS } = retentionLimits();
+  //    超过 N 天**且没被文档点名**的红轮才删；`unknown`（崩在半路、没有 verdict）另有一条
+  //    30 天规则（拍板 6A：超龄才删；单次 > 2 GB 时先删最大文件、保留最新修改的那个）。
+  const {
+    keep: KEEP_GREEN_RUNS,
+    redMaxAgeDays: KEEP_RED_AGE_DAYS,
+    unknownMaxAgeDays: KEEP_UNKNOWN_DAYS,
+    unknownMaxBytes: KEEP_UNKNOWN_BYTES,
+  } = retentionLimits();
   // `prunePlan` / `selfcheckPrune` / `citedRunIds` / `classifyRun` / `pruneOldRuns` 全在 core.mjs
   // （连同 `--prune-selfcheck` 与 `--prune-only` 两条秒级入口）—— 判据与"怎么删"都只留一个家，
   // 收尾这里只负责先自证、再把结果转达给用户。
@@ -901,11 +910,16 @@ try {
       negative: NEGATIVE,
       keep: KEEP_GREEN_RUNS,
       redMaxAgeDays: KEEP_RED_AGE_DAYS,
+      unknownMaxAgeDays: KEEP_UNKNOWN_DAYS,
+      unknownMaxBytes: KEEP_UNKNOWN_BYTES,
       cited: citedRunIds(),
     });
-    console.log(`跨轮保留：绿轮上限 ${KEEP_GREEN_RUNS}、红轮上限 ${KEEP_RED_AGE_DAYS} 天 ⇒ 本轮删 ${pr.deleted.length} 个` +
-      `（释放 ${(pr.bytes / 1024 / 1024).toFixed(1)} MB），现存 ${pr.left} 个 run-*；` +
-      `被文档点名的、以及没有 summary.json（崩在半路）的轮次一个都不删（GOSSLAN_KEEP_RUNS / GOSSLAN_KEEP_RED_DAYS 可调）`);
+    console.log(`跨轮保留：绿轮上限 ${KEEP_GREEN_RUNS}、红轮上限 ${KEEP_RED_AGE_DAYS} 天、` +
+      `崩溃现场 ${KEEP_UNKNOWN_DAYS} 天 ⇒ 本轮删 ${pr.deleted.length} 个` +
+      `（释放 ${(pr.bytes / 1024 / 1024).toFixed(1)} MB，另清超大现场 ${pr.trimmed.length} 个大文件 ` +
+      `${(pr.trimmedBytes / 1024 / 1024).toFixed(1)} MB），现存 ${pr.left} 个 run-*；` +
+      `被文档点名的轮次一律不删，崩溃现场单次超 ${(KEEP_UNKNOWN_BYTES / 1073741824).toFixed(1)} GB 只清大文件、保留最新修改的那个` +
+      `（GOSSLAN_KEEP_RUNS / GOSSLAN_KEEP_RED_DAYS / GOSSLAN_KEEP_UNKNOWN_DAYS / GOSSLAN_KEEP_UNKNOWN_BYTES 可调）`);
     console.log(pr.citedAvailable
       ? `  引用保护：文档点名且仍在盘上的 run-* ${pr.spared} 个一律不删，只有名单外的绿轮才进删除名额` +
         (pr.missingCited ? `；⚠️ 另有 ${pr.missingCited} 个被文档点名的 id 在 test-results 里已经找不到` : "")

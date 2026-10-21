@@ -94,7 +94,6 @@ pub fn bump_group_file_ack_attempt(
     Ok(())
 }
 
-
 /// 插入群文件记录。校验：群必须存在、sender 必须是群成员。
 // 传输流程在后续 GroupFileOffer 步骤启用；本步骤仅 DB 层 + 测试调用。
 #[allow(dead_code)]
@@ -330,6 +329,70 @@ pub fn update_group_file_recipient(
     Ok(())
 }
 
+/// 群文件 recipient 行在 `sending` 上多久没有任何进度更新就算卡住。
+///
+/// 正常发送时 dispatch 每 250ms 刷新一次 `updated_at`；10 分钟不动只可能是
+/// “任务已结束、但完成 ACK 丢了”或“任务死了没写终态” —— 两种都不该永远挂着。
+pub const GROUP_FILE_SENDING_STALE_MS: i64 = 10 * 60 * 1000;
+
+/// 卡住的投递行最多重试到群文件创建后 7 天（与离线补发同一个僵尸上限）。
+pub const GROUP_FILE_SENDING_MAX_AGE_MS: i64 = 7 * 24 * 3600 * 1000;
+
+/// 一行卡住的群文件投递（清扫器的输入）。
+pub struct StaleGroupSending {
+    pub transfer_id: String,
+    pub group_id: String,
+    pub recipient_id: String,
+    pub updated_at: i64,
+    /// 已经超过最长重试年龄 ⇒ 不再回 pending，直接判 failed。
+    pub expired: bool,
+}
+
+/// 列出**本机发出的**群文件里 `status='sending'` 且 `updated_at < before_ms` 的投递行。
+///
+/// 只读候选；真正的改状态用下面的条件 UPDATE，避免“查出来之后发送任务刚好刷新了进度”
+/// 被误重置。`local_sender_id` 过滤掉接收端自己的那一行（接收端也会把 recipient 写成
+/// sending，但那条由 `sweep_stalled_receives` 管，不该走发送侧的放弃语义）。
+pub fn list_stale_group_file_sending(
+    conn: &Connection,
+    before_ms: i64,
+    max_age_before_ms: i64,
+    local_sender_id: &str,
+) -> Result<Vec<StaleGroupSending>> {
+    let mut stmt = conn.prepare(
+        "SELECT r.transfer_id, f.group_id, r.recipient_id, r.updated_at, f.created_at
+         FROM group_file_recipients r
+         JOIN group_files f ON f.transfer_id = r.transfer_id
+         WHERE r.status = 'sending' AND r.updated_at < ?1 AND f.sender_id = ?2",
+    )?;
+    let rows = stmt.query_map(params![before_ms, local_sender_id], |r| {
+        let created_at: i64 = r.get(4)?;
+        Ok(StaleGroupSending {
+            transfer_id: r.get(0)?,
+            group_id: r.get(1)?,
+            recipient_id: r.get(2)?,
+            updated_at: r.get(3)?,
+            expired: created_at <= max_age_before_ms,
+        })
+    })?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// 把一条**仍然卡住**的行改回 `pending`；返回 false = 期间已被发送任务刷新/改状态。
+pub fn requeue_stale_group_file_sending(
+    conn: &Connection,
+    transfer_id: &str,
+    recipient_id: &str,
+    before_ms: i64,
+) -> Result<bool> {
+    let n = conn.execute(
+        "UPDATE group_file_recipients SET status = 'pending', progress = 0.0, updated_at = ?3
+         WHERE transfer_id = ?1 AND recipient_id = ?2 AND status = 'sending' AND updated_at < ?4",
+        params![transfer_id, recipient_id, now_ms(), before_ms],
+    )?;
+    Ok(n > 0)
+}
+
 /// 取单个 recipient 的投递状态（用于「已完成则跳过重建」判断）。不存在返回 None。
 pub fn get_group_file_recipient_status(
     conn: &Connection,
@@ -392,7 +455,10 @@ pub fn upsert_group_file_receive(
 // 模块名刻意不叫 tests：本文件被 db.rs 用 include! 贴进 db 命名空间，名字要全局唯一。
 #[cfg(test)]
 mod group_file_delivery_tests {
-    use super::get_group_file_delivery_summary;
+    use super::{
+        get_group_file_delivery_summary, list_stale_group_file_sending,
+        requeue_stale_group_file_sending,
+    };
     use crate::db::SCHEMA;
     use rusqlite::{params, Connection};
 
@@ -431,7 +497,10 @@ mod group_file_delivery_tests {
         assert_eq!(s.total, 4, "四个人四行台账");
         assert_eq!(s.completed, 1, "只有 b 完成");
         assert_eq!(s.failed, 1, "只有 c 失败");
-        assert_eq!(s.waiting, 2, "sending 与 pending 都算「还没到」（漏掉 sending 会把在途中报成零）");
+        assert_eq!(
+            s.waiting, 2,
+            "sending 与 pending 都算「还没到」（漏掉 sending 会把在途中报成零）"
+        );
         assert_eq!(
             s.completed + s.failed + s.waiting,
             s.total,
@@ -455,6 +524,99 @@ mod group_file_delivery_tests {
         seed(&conn, "t1", "b", "completed");
         seed(&conn, "t2", "c", "failed");
         let s = get_group_file_delivery_summary(&conn, "t1").expect("t1 存在");
-        assert_eq!((s.total, s.completed, s.failed, s.waiting), (1, 1, 0, 0), "别人的行不许串进来");
+        assert_eq!(
+            (s.total, s.completed, s.failed, s.waiting),
+            (1, 1, 0, 0),
+            "别人的行不许串进来"
+        );
+    }
+
+    fn recipient_status(conn: &Connection, tid: &str, rid: &str) -> String {
+        conn.query_row(
+            "SELECT status FROM group_file_recipients WHERE transfer_id = ?1 AND recipient_id = ?2",
+            params![tid, rid],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    /// P2-01：只有**真的卡住**的 sending 行才会被回 pending，新鲜行原样不动。
+    #[test]
+    fn stale_sending_is_requeued_and_fresh_sending_is_left_alone() {
+        let conn = mem();
+        seed(&conn, "t1", "stale", "sending");
+        seed(&conn, "t1", "fresh", "sending");
+        conn.execute(
+            "UPDATE group_file_recipients SET updated_at = 100 WHERE recipient_id = 'fresh'",
+            [],
+        )
+        .unwrap();
+
+        let rows = list_stale_group_file_sending(&conn, 50, 0, "me").unwrap();
+        assert_eq!(rows.len(), 1, "只捞 updated_at < 50 的那一行");
+        assert_eq!(rows[0].recipient_id, "stale");
+        assert!(!rows[0].expired, "创建才 1ms，远没到 7 天");
+
+        // 别人发起的 transfer 里同形的行不许被本机清扫器碰（接收端自己的那一行）。
+        seed(&conn, "t2", "foreign", "sending");
+        conn.execute(
+            "UPDATE group_files SET sender_id = 'other' WHERE transfer_id = 't2'",
+            [],
+        )
+        .unwrap();
+        let rows = list_stale_group_file_sending(&conn, 50, 0, "me").unwrap();
+        assert_eq!(rows.len(), 1, "只扫本机作为 sender 的 transfer");
+
+        assert!(requeue_stale_group_file_sending(&conn, "t1", "stale", 50).unwrap());
+        assert_eq!(recipient_status(&conn, "t1", "stale"), "pending");
+        assert_eq!(
+            recipient_status(&conn, "t1", "fresh"),
+            "sending",
+            "新鲜行不许被扫到"
+        );
+        assert!(
+            !requeue_stale_group_file_sending(&conn, "t1", "stale", 50).unwrap(),
+            "已经不是 sending ⇒ 条件更新命中 0 行"
+        );
+    }
+
+    /// 开机第一拍用不设下界的 `before` 回收**所有**本机发送中的行（发送方重启后立刻可续传，
+    /// 不用等 10 分钟 stale 阈值）。别人发起的 transfer 仍然不许碰。
+    #[test]
+    fn boot_sweep_requeues_every_local_sending_row() {
+        let conn = mem();
+        seed(&conn, "t1", "fresh", "sending");
+        conn.execute(
+            "UPDATE group_file_recipients SET updated_at = 100 WHERE recipient_id = 'fresh'",
+            [],
+        )
+        .unwrap();
+        seed(&conn, "t2", "foreign", "sending");
+        conn.execute(
+            "UPDATE group_files SET sender_id = 'other' WHERE transfer_id = 't2'",
+            [],
+        )
+        .unwrap();
+        let rows = list_stale_group_file_sending(&conn, i64::MAX, 0, "me").unwrap();
+        assert_eq!(rows.len(), 1, "只收本机作为 sender 的行");
+        assert_eq!(rows[0].recipient_id, "fresh", "开机第一拍连新鲜行也要收");
+        assert!(!rows[0].expired);
+        assert!(requeue_stale_group_file_sending(&conn, "t1", "fresh", i64::MAX).unwrap());
+        assert_eq!(recipient_status(&conn, "t1", "fresh"), "pending");
+    }
+
+    /// P2-01：超过 7 天的卡住行要标成 expired（清扫器据此直接按失败收尾）。
+    #[test]
+    fn over_age_stale_sending_is_marked_expired() {
+        let conn = mem();
+        seed(&conn, "t1", "old", "sending");
+        let rows = list_stale_group_file_sending(&conn, 50, 1, "me").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(
+            rows[0].expired,
+            "created_at=1 <= max_age_before=1 ⇒ 已过最长重试年龄"
+        );
+        let not_expired = list_stale_group_file_sending(&conn, 50, 0, "me").unwrap();
+        assert!(!not_expired[0].expired, "max_age_before=0 时同一行没过期");
     }
 }

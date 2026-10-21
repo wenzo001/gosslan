@@ -189,7 +189,7 @@ find .aoci/transactions -mindepth 1 -maxdepth 1 -type d ! -name history -exec sh
 
 `next_action=blocked` 时先分类再动手——一堆 `code_skipped` 能把「N 项 finding」撑得很大却没人要干活。
 另注：`aoci scope preview` 的 `drift.*` 与 `check` 的 `findings` 口径不同，同一个文件在两处可能归成不同类
-（实测 `docs/notes/changelog-archive.md` 在 preview 的 `unbaselined` 里、在 check 里是 `code_skipped/oversize`），
+（实测 `docs/archive/notes/changelog-archive.md` 在 preview 的 `unbaselined` 里、在 check 里是 `code_skipped/oversize`），
 **提交门禁认 `check`**。
 
 ### 8.4 写条目被拒时看这张（配额与格式的细节见 §5）

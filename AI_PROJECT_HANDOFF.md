@@ -17,16 +17,17 @@ X25519+ChaCha20-Poly1305+Ed25519 强制 E2EE + SQLite 持久化 + Vue 3 桌面/�
 设备用**设备指纹/ID** 识别（ADR-0021：首启随机生成 + 属性混合，此后只认持久化值），
 无账号体系、无中央服务器，数据只存本机。
 
-当前状态：**v5.0.37**（五处版本号一致，`npm run version:show` 为准）。
-5.0 已完成一次前端重构与收口；自动化门禁 22/22、UI 探针 496/496（Brave）、群聊 E2E 37/37。
-未关闭的只有"真机冒烟 + 护栏全量 + 冻树复跑"三件（见 `docs/architecture/rc-5.0-report.md` §J.6）。
+当前状态：版本号**不要抄在文档里**（会漂）—— 现读 `npm run version:show`；
+分支读 `git rev-parse --abbrev-ref HEAD`；最近在干什么读 `CHANGELOG.md` 的 `[Unreleased]` 与最新小节。
+5.0 时期已完成一次前端重构与收口（自动化门禁 22/22、UI 探针 496/496、群聊 E2E 37/37 的读数见
+`docs/architecture/rc-5.0-report.md`）。剩余未关闭项以该报告 §J.6 与最新 CHANGELOG 为准。
 
 ## 1. 技术栈
 
 | 层 | 技术 | 说明 |
 |---|---|---|
 | 桌面/移动壳 | Tauri 2（Rust 1.98 / tokio） | **只有一个 tokio runtime**；慢活必须 `spawn_blocking` |
-| 前端 | Vue 3.5 + Vite + TypeScript | 单入口 `src/main.ts`；多窗口按 `getCurrentWindow().label` 分流 |
+| 前端 | Vue 3.5 + Vite + TypeScript | 单入口 `src/entries/main.ts`；多窗口按 `getCurrentWindow().label` 分流 |
 | 状态 | Pinia（`useChatStore` / `useAppStore`） | 会话/消息/群/传输归 chat，设置/主题/语言/视口归 app |
 | 数据请求 | TanStack Query 5（5 个面板） | 键与失效语义见 `src/utils/panelQuery.ts` 族 |
 | UI 原语 | Reka UI（Dialog/Menu/Toast）+ VueUse + lucide-vue-next | **禁止引入 Ant Design Vue 等第二套组件库** |
@@ -40,7 +41,7 @@ src/                    前端（components/ composables/ stores/ utils/ api/ i1
 src-tauri/src/          Rust：network/（transport/ble/mesh/file…）、commands/、db/、state.rs、lib.rs
 scripts/                门禁与工具（verify.mjs 是"跑哪些检查"的唯一定义；guard_cases/ 是护栏注入用例）
 docs/                   规范/台账/ADR（见下节文档地图；archive/ 是历史）
-examples/               对连验证用的 e2e_peer / mirror_dial 等示例
+src-tauri/examples/   对连验证示例（e2e_peer / mirror_dial / dual_link）
 test-results/           跑测产物（gitignore）；.workbuddy/ 是任务档案（gitignore，禁 commit）
 ```
 
@@ -77,6 +78,7 @@ test-results/           跑测产物（gitignore）；.workbuddy/ 是任务档�
 | `docs/stability-roadmap.md` | 稳定版工作地图 + 漂移事故台账（**按节查**，不要通读） |
 | `docs/version-ledger.md` | 分类台账（`npm run version:ledger` 生成，**别手改**） |
 | `docs/audit/` `docs/notes/` | 带日期的审计证据与排障记录 |
+| `docs/architecture/` | 5.0 时期的重构报告与清单（`refactor-5.0-report` 43 万字是取证细节，`rc-5.0-report` 是验收结论；`frontend-inventory` 是生成件） |
 | `docs/archive/` | 已归档的架构复审、旧计划、旧验收记录（只作证据） |
 
 ### 已删除（2026-10-21 清理，勿再找）
@@ -132,6 +134,12 @@ GOSSLAN_CHROME="/Applications/Brave Browser.app/Contents/MacOS/Brave Browser" \
 ⚠️ `npm run build` 在 WorkBuddy 沙箱里会假红（宿主批量删除守卫拦 `dist/assets`）⇒ 取真实读数用
 `CODEBUDDY_SAFE_DELETE_ENABLED=0`。CI 无此守卫。
 
+⚠️ **2026-10-21 清理过构建缓存**：`src-tauri/target/`（57G）、`src-tauri/target-android/`（3G）、
+`release-artifacts/`、`dist/`、`node_modules/.vite/`、旧的 `test-results/run-*` 全部删除
+（都是 gitignore 的可再生件）。**首次 `cargo build` / `cargo test` 会是全量重编（数分钟）**，
+这不是坏了。E2E 需要二进制：`cd src-tauri && cargo build --features bluetooth` 后再
+`GOSSLAN_E2E_BIN=…/target/debug/gosslan npm run test:e2e:group`。
+
 ## 7. Frozen Core（红线，改之前必须停下来问）
 
 1. `msg_id` 生成语义
@@ -169,5 +177,8 @@ GOSSLAN_CHROME="/Applications/Brave Browser.app/Contents/MacOS/Brave Browser" \
 1. 自审：改动是否超出任务范围、是否引入重复实现
 2. `npm test` + 相关 `cargo test`；改动大就跑 `npm run verify:local`
 3. 更新 `CHANGELOG.md` 的 `[Unreleased]`（每个条目挂在 `### ` 标题下）
+3b. **同步描述了这次改动的文档**（路径/文件搬动/"已实现↔未实现"/面板数与表数这类状态声明）：
+   门禁只钉得住硬数字与路径存在性，**语义状态机器判不了** ⇒ 这一步只能靠人做
+   （判据：`node scripts/check-doc-citations.mjs` 全绿 + 自查"有没有哪份文档还在讲旧状态"）
 4. 涉及协议/DB → 补 `docs/protocol-invariants.md` 的 INV 条目 + 钩子
 5. 不 commit / 不 push / 不打 tag，除非用户明确要求

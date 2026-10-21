@@ -78,10 +78,16 @@ pub async fn read_bytes<R: AsyncRead + Unpin>(r: &mut R) -> std::io::Result<Vec<
 ///
 /// ⚠️ 顺序很重要：**先校验长度前缀、再分配缓冲**。当前实现即是如此 ——
 /// 反过来的话，一个 4 字节的"声明 64MiB"就足以让对端在本机先拿到一大块内存。
+/// 校验之后也**不按声明长度一次性分配**：长度头是攻击者可控的 4 字节，真正的载荷
+/// 可能一个都不来。这里只预留一个小的起始容量，随后按实际到达的字节增量扩容；
+/// 64 MiB 的合法大帧仍能读，但 4 字节头不再等于 64 MiB 的常驻内存（P2-03）。
 pub async fn read_bytes_capped<R: AsyncRead + Unpin>(
     r: &mut R,
     max: usize,
 ) -> std::io::Result<Vec<u8>> {
+    /// 起始预留上限：声明再大也只先拿这么多，剩下的按实际到达增长。
+    const PREALLOC_CAP: usize = 64 * 1024;
+
     let mut len_buf = [0u8; 4];
     r.read_exact(&mut len_buf).await?;
     let len = u32::from_be_bytes(len_buf) as usize;
@@ -91,8 +97,16 @@ pub async fn read_bytes_capped<R: AsyncRead + Unpin>(
             "非法帧长度",
         ));
     }
-    let mut buf = vec![0u8; len];
-    r.read_exact(&mut buf).await?;
+    let mut buf = Vec::with_capacity(len.min(PREALLOC_CAP));
+    // `take` 把总读取量钉死在声明长度；`read_to_end` 按实际到达的数据增长，
+    // 不会在数据到达之前按 `len` 预留。
+    r.take(len as u64).read_to_end(&mut buf).await?;
+    if buf.len() != len {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "帧载荷不完整",
+        ));
+    }
     Ok(buf)
 }
 
@@ -458,6 +472,17 @@ mod tests {
 
         let mut reader = &buf[..];
         assert_eq!(read_bytes(&mut reader).await.unwrap(), payload);
+    }
+
+    /// 声明很大、实际只来一点点就 EOF：必须报 `UnexpectedEof`，不能把半帧当成功。
+    #[tokio::test]
+    async fn truncated_payload_is_rejected_not_returned_as_a_short_frame() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&(1u32 << 20).to_be_bytes());
+        data.extend_from_slice(&[9u8; 1024]);
+        let mut r = &data[..];
+        let err = read_bytes(&mut r).await.unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::UnexpectedEof);
     }
 
     #[tokio::test]

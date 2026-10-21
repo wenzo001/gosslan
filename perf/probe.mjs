@@ -8,6 +8,9 @@ if (!page) throw new Error("找不到 vlist.html 目标页");
 const ws = new WebSocket(page.webSocketDebuggerUrl);
 let id = 0;
 const pending = new Map();
+// CDP 目标卡死/页面冻结时 `Runtime.evaluate` 可能永不回应。没有这一层超时，
+// 下面的 `await evalJs(...)` 会永久 pending，迭代次数上限管不住单次耗时 ⇒ 进程既不退出也不打印（SC-P2-02）。
+const EVAL_TIMEOUT_MS = 30_000;
 ws.addEventListener("message", (ev) => {
   const m = JSON.parse(ev.data);
   if (m.id && pending.has(m.id)) (pending.get(m.id)(m), pending.delete(m.id));
@@ -16,8 +19,16 @@ await new Promise((r) => ws.addEventListener("open", r));
 const evalJs = (expression) =>
   new Promise((resolve, reject) => {
     const mid = ++id;
+    const timer = setTimeout(() => {
+      if (pending.delete(mid)) {
+        reject(new Error(`Runtime.evaluate 超时（${EVAL_TIMEOUT_MS}ms）：${String(expression).slice(0, 80)}`));
+      }
+    }, EVAL_TIMEOUT_MS);
+    pending.set(mid, (m) => {
+      clearTimeout(timer);
+      m.error ? reject(new Error(JSON.stringify(m.error))) : resolve(m.result?.result?.value);
+    });
     ws.send(JSON.stringify({ id: mid, method: "Runtime.evaluate", params: { expression, awaitPromise: true, returnByValue: true } }));
-    pending.set(mid, (m) => (m.error ? reject(new Error(JSON.stringify(m.error))) : resolve(m.result?.result?.value)));
   });
 
 for (let i = 0; i < 40; i++) {

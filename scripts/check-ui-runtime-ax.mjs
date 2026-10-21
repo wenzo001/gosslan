@@ -91,21 +91,45 @@ if (FIXTURE && dbPreExisted) {
 }
 let pid = Number(TARGET_PID);
 let child = null;
+// 任何提前退出（含 process.exit(2)、环境失败、夹具写库抛错）都必须带走自己起的实例/前置启动。
+// detached 子进程在自己的进程组里，父进程退出后不会自动消失 —— 只靠成功路径那一次 kill
+// 会让失败路径留下孤儿（SC-P2-04）。
+const spawned = new Set();
+const reapSpawned = () => {
+  for (const p of spawned) {
+    try {
+      process.kill(-p, "SIGTERM");
+    } catch {
+      /* 已经退了 */
+    }
+  }
+  spawned.clear();
+};
+process.on("exit", reapSpawned);
+for (const sig of ["SIGINT", "SIGTERM"]) {
+  process.on(sig, () => {
+    reapSpawned();
+    process.exit(sig === "SIGINT" ? 130 : 143);
+  });
+}
 if (FIX && !TARGET_PID) {
   // 库表是应用第一次启动时建的（迁移在 Rust 侧）⇒ 夹具只能"先起一次让它建表、停下、写行、再起"。
   const boot = spawn(BIN, [], {
     env: { ...process.env, GOSSLAN_INSTANCE: String(INSTANCE) }, stdio: "ignore", detached: true,
   });
   boot.unref();
+  spawned.add(boot.pid);
   note(`夹具前置：先起一次让应用建表（pid ${boot.pid}）`);
   for (let i = 0; i < 30 && !existsSync(dbPath); i += 1) await sleep(1000);
   if (!existsSync(dbPath)) {
     console.error(`✗ 起了 30 s 还没出现 gosslan-${INSTANCE}.db ⇒ 应用没建库，夹具不做第二次猜测`);
     try { process.kill(-boot.pid, "SIGTERM"); } catch { /* 已经没了 */ }
+    spawned.delete(boot.pid);
     process.exit(2);
   }
   await sleep(3000);
   try { process.kill(-boot.pid, "SIGTERM"); } catch { /* 已经没了 */ }
+  spawned.delete(boot.pid);
   await sleep(2500);
   const db = new DatabaseSync(dbPath);
   try {
@@ -128,6 +152,7 @@ if (!TARGET_PID) {
   });
   child.unref();
   pid = child.pid;
+  spawned.add(pid);
   console.log(`· 起隔离实例 GOSSLAN_INSTANCE=${INSTANCE}（pid ${pid}），只读它的控件树`);
 }
 
@@ -194,6 +219,7 @@ if (parsed.count("AXButton") + parsed.count("AXTextField") >= 5) {
 // 收尾：只停**自己起的**那个实例、只删**自己建的**那个库
 if (child) {
   try { process.kill(-pid, "SIGTERM"); } catch { /* 已经退了 */ }
+  spawned.delete(pid);
   execFileSync("/bin/sleep", ["2"]);
   note(`已停自己起的实例 ${pid}`);
   for (const suffix of ["", "-shm", "-wal"]) {

@@ -262,6 +262,9 @@ export const enUS: MessageDict = {
   "settings.storage.toast.nothing": "Nothing to clean up (no deletion needed under the current period/limit)",
   "settings.storage.toast.cleaned": "Cleaned {n} images/files, freed {bytes}",
   "settings.storage.toast.cleanFail": "Cleanup failed",
+  "settings.storage.toast.compactAborted":
+    "Database compaction timed out and was cancelled: your data is intact, it just wasn't compacted this time (it will retry automatically)",
+  "settings.storage.toast.compactFailed": "Database compaction failed (your chat history is unaffected)",
   "settings.storage.export.filename": "chat history",
   "settings.storage.confirm.keepDays": "keep only the last {n} days",
   "settings.storage.confirm.keepForever": "keep forever",

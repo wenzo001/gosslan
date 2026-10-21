@@ -12,7 +12,7 @@
 //      （SemVer 标准做法）—— 用于真正发版，也是 `check` 那半条「版本落后」的取档口径。
 // 为什么不用 ① 定版本：184 个提交里有 23 个大功能，逐条累加会得到 25.1.2 这种数字，
 // 它既不表达"这次发布有多大"，也和后端/前端/安装包的版本语义脱节。
-import { execFileSync, execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 
 export const LEVEL_RANK = { patch: 1, minor: 2, major: 3 };
@@ -193,29 +193,37 @@ export function parseBumpTrailer(message) {
 }
 
 // ---------------- CLI ----------------
+// 参数一律走数组、绝不拼进 shell 字符串：tag / 分支名 / `--since` 都可能含 `;` `$` `()`
+//（git 允许这些字符出现在 ref 名里），字符串插值进 `execSync` 就是一条命令注入原语。
+// `--end-of-options` 再把“以 `-` 开头的 revision”钉成位置参数，避免被当成 git 选项。
 function git(args) {
-  return execSync(`git ${args}`, { encoding: "utf8", maxBuffer: 64 << 20 });
+  return execFileSync("git", args, { encoding: "utf8", maxBuffer: 64 << 20 });
 }
 
 function currentVersion() {
-  const pkg = JSON.parse(require$read("package.json"));
+  const pkg = JSON.parse(readFileSync("package.json", "utf8"));
   return pkg.version;
-}
-function require$read(p) {
-  return execSync(`cat ${p}`, { encoding: "utf8" });
 }
 
 /** 取 `since..HEAD` 的提交（含 subject / 改动规模 / 提交信息）。 */
 export function collectCommits(since) {
   const range = since ? `${since}..HEAD` : "HEAD";
-  const raw = git(`log --no-merges --reverse --pretty=format:%H%x1f%h%x1f%ad%x1f%s%x1f%B%x1e --date=short ${range}`);
+  const raw = git([
+    "log",
+    "--no-merges",
+    "--reverse",
+    "--pretty=format:%H%x1f%h%x1f%ad%x1f%s%x1f%B%x1e",
+    "--date=short",
+    "--end-of-options",
+    range,
+  ]);
   return raw
     .split("\x1e")
     .map((b) => b.trim())
     .filter(Boolean)
     .map((block) => {
       const [hash, short, date, subject, ...rest] = block.split("\x1f");
-      const numstat = git(`show --numstat --format= ${hash}`);
+      const numstat = git(["show", "--numstat", "--format=", hash]);
       let churn = 0, files = 0, touchesCode = false;
       for (const line of numstat.split("\n")) {
         const parts = line.split("\t");
@@ -232,7 +240,7 @@ export function collectCommits(since) {
 
 function latestTag() {
   try {
-    return git("describe --tags --abbrev=0").trim();
+    return git(["describe", "--tags", "--abbrev=0"]).trim();
   } catch {
     return "";
   }
@@ -248,9 +256,12 @@ function lastVersionBump() {
   // 逐个看"改过 package.json"的最近提交，取第一个**真的改了 version 值**的。
   // 不用 `-S`（pickaxe 按字符串出现次数计数，`"2.1.2"`→`"3.0.0"` 次数不变、匹配不到，
   // 我第一版就踩了这个），也不用 `-G`（跨 shell 的转义很容易写错）。
-  const hashes = git(`log -n 50 --format=%H -- package.json`).trim().split("\n").filter(Boolean);
+  const hashes = git(["log", "-n", "50", "--format=%H", "--", "package.json"])
+    .trim()
+    .split("\n")
+    .filter(Boolean);
   for (const h of hashes) {
-    const diff = git(`show --format= --unified=0 ${h} -- package.json`);
+    const diff = git(["show", "--format=", "--unified=0", h, "--", "package.json"]);
     if (/^[+-]\s*"version":/m.test(diff)) return h;
   }
   return latestTag();
@@ -507,10 +518,15 @@ function main() {
   let pushedShorts = new Set();
   let unpushedCount = 0;
   try {
-    const upstream = git("rev-parse --abbrev-ref --symbolic-full-name @{u}").trim();
+    const upstream = git([
+      "rev-parse",
+      "--abbrev-ref",
+      "--symbolic-full-name",
+      "@{u}",
+    ]).trim();
     if (upstream) {
       const unpushedHashes = new Set(
-        git(`rev-list ${upstream}..HEAD`)
+        git(["rev-list", "--end-of-options", `${upstream}..HEAD`])
           .split("\n")
           .filter(Boolean),
       );
@@ -592,7 +608,7 @@ function main() {
       return;
     }
     console.log(`按最高档 ${owed} 提升：${cur} -> ${owedTarget}`);
-    execSync(`node scripts/version.mjs ${owed}`, { stdio: "inherit" });
+    execFileSync(process.execPath, ["scripts/version.mjs", owed], { stdio: "inherit" });
     return;
   }
 

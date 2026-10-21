@@ -105,6 +105,12 @@ pub fn spawn_outbox_sweeper(state: Arc<AppState>) -> tauri::async_runtime::JoinH
             // 账本在 DB 里 ⇒ 进程重启后照样能恢复 ⇒ 这就是"跨进程恢复"的出口。
             // 平时没有待重放行 ⇒ 只是一次空查询（走 idx_group_file_acks_received）。
             replay_pending_group_file_acks(&state);
+            // 群文件投递卡死收敛（P2-01）：ACK 丢了/任务死了留下的 `sending` 行
+            // 10 分钟后回 pending 重投，7 天后按失败收尾 —— 不再永久转圈。
+            sweep_stale_group_sending(&state);
+            // 群文件会话密钥 TTL（P3-06）：只发 Offer 不发分片/死单的密钥不落库，
+            // 2h 后清掉，避免随对端行为无界增长。
+            sweep_stale_group_file_keys(&state);
             let deadline_single = now - crate::db::OUTBOX_FAIL_DEADLINE_MS;
             let deadline_group = now - crate::db::GROUP_OUTBOX_FAIL_DEADLINE_MS;
             let deadline_file = now - crate::db::FILE_OUTBOX_FAIL_DEADLINE_MS;
@@ -225,17 +231,52 @@ pub fn spawn_outbox_sweeper(state: Arc<AppState>) -> tauri::async_runtime::JoinH
                     .push((peer_id, created_at));
             }
             for (msg_id, (group_id, rows)) in per_msg {
-                let all_give_up = rows.iter().all(|(peer, created)| {
-                    // 群走**自己的**窗口（30min，见 `GROUP_OUTBOX_FAIL_DEADLINE_MS` 的理由）：
-                    // 群 outbox 行是群消息唯一的补发载体，删早了就是永久丢。
-                    db::should_fail_expired(
-                        is_reachable(peer),
-                        now - created,
-                        crate::db::GROUP_OUTBOX_FAIL_DEADLINE_MS,
-                        crate::db::OUTBOX_OFFLINE_HOLD_MS,
-                    )
-                });
+                // 逐行判定（P1-04）：每一行只看**自己那个成员**的可达性。
+                // 旧写法 `rows.iter().all(...)` 把结论聚合到消息级 ⇒ 群里只要一个成员离线，
+                // 在线成员的行也被一起保留 ⇒ 每 5s 重发一次、最长 7 天（≈12 万次重复信封）。
+                let expired_peers: Vec<&String> = rows
+                    .iter()
+                    .filter(|(peer, created)| {
+                        db::group_outbox_row_expired(is_reachable(peer), now - created)
+                    })
+                    .map(|(peer, _)| peer)
+                    .collect();
+                let all_give_up = expired_peers.len() == rows.len();
                 if !all_give_up {
+                    // 在线成员的行独立放弃；离线成员的行继续按 7 天保留（INV-P04）。
+                    // 消息本身仍是 sending（还有成员没收到），不 emit、不改状态。
+                    if !expired_peers.is_empty() {
+                        let failures = {
+                            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                            let mut failures = 0usize;
+                            for peer in &expired_peers {
+                                if db::delete_group_outbox_row(&dbc, &msg_id, peer.as_str())
+                                    .is_err()
+                                {
+                                    failures += 1;
+                                }
+                            }
+                            failures
+                        };
+                        if failures > 0 {
+                            state.logger.warn(
+                                "outbox",
+                                format!(
+                                    "code=OUTBOX_ROW_DROP_FAILED kind=group msg_id={msg_id} \
+                                     group_id={group_id} rows={failures} —— 保留这些行下轮重试"
+                                ),
+                            );
+                        } else if log_throttled("outbox_row_expired", 300_000) {
+                            state.logger.info(
+                                "outbox",
+                                format!(
+                                    "code=OUTBOX_EXPIRED kind=group msg_id={msg_id} \
+                                     group_id={group_id} recipients={} action=row-dropped",
+                                    expired_peers.len()
+                                ),
+                            );
+                        }
+                    }
                     if log_throttled("outbox_hold_offline", 300_000) {
                         if let Some((peer, created)) =
                             rows.iter().find(|(peer, _)| !is_reachable(peer))
@@ -286,7 +327,9 @@ pub fn spawn_outbox_sweeper(state: Arc<AppState>) -> tauri::async_runtime::JoinH
                 Err(e) => {
                     state.logger.error(
                         "outbox",
-                        format!("code=OUTBOX_SWEEP_READ_FAILED kind=file err={e} —— 本轮跳过，下轮重试"),
+                        format!(
+                            "code=OUTBOX_SWEEP_READ_FAILED kind=file err={e} —— 本轮跳过，下轮重试"
+                        ),
                     );
                     Vec::new()
                 }
@@ -324,7 +367,15 @@ pub fn spawn_outbox_sweeper(state: Arc<AppState>) -> tauri::async_runtime::JoinH
                             now - created_at
                         ),
                     );
-                    let _ = state.app.emit("file-failed", &transfer_id);
+                    // 载荷必须是 `FileFailedInfo`（`{transfer_id, reason}`）：前端按这个形状取值。
+                    // 曾经这里发的是裸字符串 ⇒ toast 显示「undefined」、气泡永远停在发送中（N-01）。
+                    let _ = state.app.emit(
+                        "file-failed",
+                        &FileFailedInfo {
+                            transfer_id: transfer_id.clone(),
+                            reason: "文件发送超时：超过重发期限仍未送达".to_string(),
+                        },
+                    );
                 } else {
                     state.logger.warn(
                         "outbox",
@@ -363,7 +414,8 @@ pub fn spawn_outbox_sweeper(state: Arc<AppState>) -> tauri::async_runtime::JoinH
             let mut byte_budget = CONTENT_RECONCILE_TICK_BYTE_BUDGET;
             let mut scanned = 0usize;
             for c in cands {
-                if inflight.contains(&c.transfer_id) || part_is_being_written(&c.path, db::now_ms()) {
+                if inflight.contains(&c.transfer_id) || part_is_being_written(&c.path, db::now_ms())
+                {
                     state.logger.info(
                         "content",
                         format!(
@@ -392,7 +444,8 @@ pub fn spawn_outbox_sweeper(state: Arc<AppState>) -> tauri::async_runtime::JoinH
                 let ok = match tokio::task::spawn_blocking(move || {
                     content_file_matches(&cid, &path, size)
                 })
-                .await {
+                .await
+                {
                     Ok(v) => v,
                     // 阻塞任务被中断（panic / 运行时关闭）⇒ **不写回、不谎报**，那一行留在可恢复态，
                     // 下一 tick 自然重来。写 `false` 会把"我没验过"说成"文件坏了"。
@@ -414,7 +467,10 @@ pub fn spawn_outbox_sweeper(state: Arc<AppState>) -> tauri::async_runtime::JoinH
                 if ok && !wrote {
                     state.logger.warn(
                         "content",
-                        format!("内容台账对账写回失败，保留可恢复状态下轮再试 cid={} from={}", c.cid, c.peer_id),
+                        format!(
+                            "内容台账对账写回失败，保留可恢复状态下轮再试 cid={} from={}",
+                            c.cid, c.peer_id
+                        ),
                     );
                 } else if !ok && log_throttled("content_reconcile_invalid", 30_000) {
                     state.logger.warn(
@@ -665,8 +721,8 @@ mod outbox_reachability_tests {
 #[cfg(test)]
 mod content_reconcile_tests {
     use super::{
-        content_file_matches, finish_reconcile, is_inflight_reconcile_path, part_is_being_written,
-        list_reconcilable_content, reconcile_take_next, ReconcileCandidate,
+        content_file_matches, finish_reconcile, is_inflight_reconcile_path,
+        list_reconcilable_content, part_is_being_written, reconcile_take_next, ReconcileCandidate,
         CONTENT_RECONCILE_PER_TICK, CONTENT_RECONCILE_TICK_BYTE_BUDGET, RECONCILE_PART_ACTIVE_MS,
     };
     use crate::content::model::{Direction, TransferRecord, TransferStatus};
@@ -686,14 +742,23 @@ mod content_reconcile_tests {
     }
 
     fn temp_file(tag: &str, bytes: &[u8]) -> std::path::PathBuf {
-        let p = std::env::temp_dir().join(format!("gosslan-reconcile-{tag}-{}.bin", std::process::id()));
+        let p = std::env::temp_dir().join(format!(
+            "gosslan-reconcile-{tag}-{}.bin",
+            std::process::id()
+        ));
         let _ = std::fs::remove_file(&p);
         std::fs::write(&p, bytes).unwrap();
         p
     }
 
     /// 内容层的一行（默认 receive/incomplete、无 path，就是"还在等对端给"的形状）。
-    fn seed_content(c: &rusqlite::Connection, cid: &str, tid: &str, status: TransferStatus, path: Option<&str>) {
+    fn seed_content(
+        c: &rusqlite::Connection,
+        cid: &str,
+        tid: &str,
+        status: TransferStatus,
+        path: Option<&str>,
+    ) {
         let now = crate::db::now_ms();
         crate::content::store::upsert(
             c,
@@ -752,7 +817,11 @@ mod content_reconcile_tests {
 
         let cands = list_reconcilable_content(&c, 8).unwrap();
         assert_eq!(cands.len(), 1, "执一词的那一行必须被找出来，实得 {cands:?}");
-        assert!(content_file_matches(&cid, &cands[0].path, bytes.len() as u64));
+        assert!(content_file_matches(
+            &cid,
+            &cands[0].path,
+            bytes.len() as u64
+        ));
         assert!(finish_reconcile(&c, &cands[0], crate::db::now_ms(), true));
 
         let rec = crate::content::store::get(&c, &cid, "dev-a", Direction::Receive)
@@ -762,7 +831,10 @@ mod content_reconcile_tests {
         assert_eq!(rec.path.as_deref(), Some(p.to_str().unwrap()));
         assert_eq!(rec.received, 2048);
         let resumable = crate::content::store::list_resumable_for_peer(&c, "dev-a").unwrap();
-        assert!(resumable.is_empty(), "收口之后不许再被重投，实得 {resumable:?}");
+        assert!(
+            resumable.is_empty(),
+            "收口之后不许再被重投，实得 {resumable:?}"
+        );
     }
 
     /// ② 盘上那份摘要不等于 cid（被换过/半截）⇒ **绝不**标记完成，且仍可恢复。
@@ -778,7 +850,10 @@ mod content_reconcile_tests {
 
         let cands = list_reconcilable_content(&c, 8).unwrap();
         assert_eq!(cands.len(), 1);
-        assert!(!content_file_matches(&cid, &cands[0].path, 2048), "摘要不符必须判不可用");
+        assert!(
+            !content_file_matches(&cid, &cands[0].path, 2048),
+            "摘要不符必须判不可用"
+        );
         assert!(finish_reconcile(&c, &cands[0], crate::db::now_ms(), false));
         let rec = crate::content::store::get(&c, &cid, "dev-a", Direction::Receive)
             .unwrap()
@@ -816,7 +891,13 @@ mod content_reconcile_tests {
     fn candidates_exclude_every_healthy_or_unprovable_shape() {
         let c = db_both();
         // (a) 内容层已 Complete ⇒ 不动它
-        seed_content(&c, "cid-done", "xa", TransferStatus::Complete, Some("/tmp/whatever.bin"));
+        seed_content(
+            &c,
+            "cid-done",
+            "xa",
+            TransferStatus::Complete,
+            Some("/tmp/whatever.bin"),
+        );
         seed_file(&c, "xa", "done", Some("/tmp/whatever.bin"));
         // (b) 文件层还没 done（还在收）⇒ 不能当完成
         seed_content(&c, "cid-partial", "xb", TransferStatus::Incomplete, None);
@@ -843,10 +924,20 @@ mod content_reconcile_tests {
         let c = db_both();
         for i in 0..12 {
             let tid = format!("t{i}");
-            seed_content(&c, &format!("cid{i:02}"), &tid, TransferStatus::Incomplete, None);
+            seed_content(
+                &c,
+                &format!("cid{i:02}"),
+                &tid,
+                TransferStatus::Incomplete,
+                None,
+            );
             seed_file(&c, &tid, "done", Some("/tmp/none.bin"));
         }
-        assert_eq!(list_reconcilable_content(&c, 8).unwrap().len(), 8, "单轮上限必须生效");
+        assert_eq!(
+            list_reconcilable_content(&c, 8).unwrap().len(),
+            8,
+            "单轮上限必须生效"
+        );
         assert_eq!(list_reconcilable_content(&c, 1).unwrap().len(), 1);
         let _: ReconcileCandidate; // 类型被用到（避免未使用告警）
     }
@@ -891,7 +982,8 @@ mod content_reconcile_tests {
 
         // 窗口至少覆盖一轮 tick，否则一次慢写入会被当成「已收完」而去哈希半截文件
         assert!(
-            RECONCILE_PART_ACTIVE_MS as u64 >= crate::network::transport::OUTBOX_SWEEPER_INTERVAL_MS,
+            RECONCILE_PART_ACTIVE_MS as u64
+                >= crate::network::transport::OUTBOX_SWEEPER_INTERVAL_MS,
             "判定窗口比 tick 还短的话，一轮没写完的文件会被当成品去哈希"
         );
 

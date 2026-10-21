@@ -76,6 +76,76 @@ pub fn begin_group_receive(
     Ok(final_path)
 }
 
+/// 保留前缀重建群接收器（真续传 S2）：校验 `.part`、**分块**喂哈希器、append 打开。
+///
+/// 只做阻塞 I/O ⇒ 调用方必须放 `spawn_blocking`。返回 `Err` = 前缀不可用
+/// （长度/年龄/读盘失败），调用方回 `GroupFileResume(0)` 并记录原因，整份重来。
+/// 与单聊 `resume_receive` 的区别：那份注册进 `file_receivers` 且自己取下载目录；
+/// 这份只构造 `FileReceiver`，注册与收尾仍由群侧调用方负责（单聊的收尾不能直接复用）。
+pub fn build_group_resume_receiver(
+    downloads: &Path,
+    transfer_id: &str,
+    peer_id: &str,
+    name: &str,
+    size: u64,
+    file_key: [u8; 32],
+    expected_sha256: String,
+) -> Result<FileReceiver, String> {
+    use sha2::Digest;
+    use std::io::Read;
+
+    let safe_name = safe_file_name(name).ok_or("文件名非法")?;
+    let transfer_id = safe_transfer_id(transfer_id).ok_or("传输标识非法")?;
+    let tmp_path = downloads.join(format!("{transfer_id}.part"));
+    let meta = std::fs::metadata(&tmp_path).map_err(|e| format!("找不到可续传的前缀：{e}"))?;
+    let retained = meta.len();
+    if retained == 0 || (size > 0 && retained >= size) {
+        return Err("前缀长度不可续传".to_string());
+    }
+    if let Ok(modified) = meta.modified() {
+        if let Ok(age) = std::time::SystemTime::now().duration_since(modified) {
+            if age.as_millis() as i64 >= GROUP_RESUME_PART_MAX_AGE_MS {
+                return Err("前缀已超过 24h 续传窗口".to_string());
+            }
+        }
+    }
+    let final_path = unique_path(downloads, &safe_name);
+    let mut reader = std::fs::File::open(&tmp_path).map_err(|e| format!("打开前缀失败：{e}"))?;
+    let mut hasher = sha2::Sha256::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    loop {
+        let n = reader
+            .read(&mut buf)
+            .map_err(|e| format!("读取前缀失败：{e}"))?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    drop(reader);
+    let file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&tmp_path)
+        .map_err(|e| format!("以追加模式打开前缀失败：{e}"))?;
+    Ok(FileReceiver {
+        file,
+        name: safe_name,
+        size,
+        received: retained,
+        next_seq: 0,
+        attempt: 0,
+        stale_dropped: 0,
+        tmp_path,
+        final_path,
+        peer_id: peer_id.to_string(),
+        last_report_ms: 0,
+        fed_at_ms: crate::db::now_ms(),
+        file_key,
+        expected_sha256,
+        hasher,
+    })
+}
+
 /// 群文件接收失败：删除 `.part` 并移除接收状态（不 rename、不标 done）。
 pub fn fail_group_receive(state: &AppState, transfer_id: &str) {
     if let Some(r) = state
@@ -157,10 +227,7 @@ pub fn fail_taken_group_receive(state: &AppState, r: &FileReceiver) {
 /// 四个 `Err` 出口都清 `.part`，且调用方必须把每一格都停在终态：
 /// ① 字节数与声明的 `size` 不等（丢片/截断）；② 实际 SHA-256 与发送方声明不符
 /// （**含**"发送方没声明"—— 空期望值不通过，fail-closed）；③ fsync 失败；④ rename 失败。
-pub fn finish_group_receive_into(
-    mut r: FileReceiver,
-    downloads: &Path,
-) -> Result<PathBuf, String> {
+pub fn finish_group_receive_into(mut r: FileReceiver, downloads: &Path) -> Result<PathBuf, String> {
     if r.received != r.size {
         let _ = std::fs::remove_file(&r.tmp_path);
         return Err("文件传输未完成".to_string());

@@ -71,6 +71,17 @@ echo "==> [4/5] 清理上一轮 e2e-peer 身份绑定 + 启动实例 1（GOSSLAN
 sqlite3 "$DB" "DELETE FROM friends WHERE device_id='e2e-peer';" >/dev/null 2>&1
 GOSSLAN_AUTOSTART=1 "$BIN" --instance 1 >/tmp/gosslan-dev.log 2>&1 &
 APP_PID=$!
+# 失败/中断/任何非正常退出都要带走自己起的实例（含直接子进程），不只是成功路径那一次 kill。
+# --keep 是显式豁免（让人留着现场）。SC-P2-06。
+cleanup_app() {
+  [ "${KEEP:-}" = "--keep" ] && return 0
+  if [ -n "${APP_PID:-}" ] && kill -0 "$APP_PID" 2>/dev/null; then
+    pkill -P "$APP_PID" 2>/dev/null || true
+    kill "$APP_PID" 2>/dev/null || true
+    wait "$APP_PID" 2>/dev/null || true
+  fi
+}
+trap cleanup_app EXIT
 READY=0
 for _ in $(seq 1 30); do
   if nc -z 127.0.0.1 60002 2>/dev/null; then READY=1; break; fi

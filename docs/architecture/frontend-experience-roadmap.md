@@ -22,10 +22,10 @@
 | 候选 | 结论 | 依据 |
 |---|---|---|
 | ReUI | 仅模式参考 | React/shadcn 生态，不能作为 Vue 依赖 |
-| reka-ui | **已引入（5.0）** | Dialog/Menu/ContextMenu/Switch/RadioGroup/Slider/Select/Focus/Toast/HoverCard/Popover 共 10 类原语、23 个 `.vue`；`@headlessui/vue` 已删除。取代了自研浮层摆位与多套无样式控件；证据见 `open-source-replacement-matrix.md` 第 1 节 |
+| reka-ui | **已引入（5.0）** | 实际接入 **10 类原语**：Dialog / DropdownMenu / FocusScope / Switch / RadioGroup / Slider / Select / Toast / HoverCard / Popover，**23 个 `.vue`** 直接 import（复跑：`grep -rlE "from \"reka-ui\"" src --include='*.vue' \| wc -l`）。⚠️ 此前这里把 `ContextMenu` 算成 reka 原语——**不是**：右键菜单走的是 reka 的 `DropdownMenu`，`ContextMenu.vue` 是我们自己的公共壳。`@headlessui/vue` 已删除。证据见 `open-source-replacement-matrix.md` 第 1 节 |
 | shadcn-vue | 不引入 | 生成源码体系与现有 token/组件并行，迁移成本大于收益 |
 | Lucide | 保留为唯一图标源 | 现有 `ui/icons.ts` 静态入口；P3 把剩余手写 SVG 收口 |
-| TanStack Query | **已引入（5.0，仅纯读面板）** | 群文件/共享目录/搜索聊天记录三个真实面板；Pinia/SQLite 仍是消息状态机事实源。边界见 `open-source-replacement-matrix.md` 第 2 节 |
+| TanStack Query | **已引入（5.0，面板级）** | **5 个真实面板**：群文件 / 共享目录 / 搜索聊天记录 / 诊断快照（以上纯读）+ **外部链接（读+写**，`LinksList` 用 mutation 写回同一个键**）**；Pinia/SQLite 仍是消息状态机事实源。复跑：`grep -rl "useQuery" src --include='*.vue'`。边界见 `open-source-replacement-matrix.md` 第 2 节与 §6.90/§6.98 |
 | TanStack Virtual | **已引入（日志页）** | `LogViewer` 两条外壳已迁 `useVirtualizer`；消息列表 `VirtualList` 按 P7 实测与业务锚定语义保留（C），见矩阵第 2 节 |
 | TanStack Table/Router/Form | 不引入 | 无复杂表格；多窗口 HTML 入口 + 手写导航 |
 | 第三方媒体查看器 | 暂不引入 | 现有 `ImageLightbox` 已覆盖缩放/拖动/多图/Esc；替换需重新验证手势与焦点，收益未证明 |
@@ -63,7 +63,7 @@
 | `npm run verify` | **17/17 通过，退出码 0，18.4s** |
 | `node scripts/check-ui-runtime.mjs` | 262/265（退出码 1）；3 条与基线同集合（多颗回应长昵称） |
 | `cargo fmt --check --all` | 退出 0 |
-| `cargo clippy --features bluetooth -- -D warnings` | 退出 0（**门禁原形**；另跑的 `--all-targets` 会点出 `examples/e2e_peer.rs` 既有 lint，那不是门禁命令，不计入） |
+| `cargo clippy --features bluetooth -- -D warnings` | 退出 0（**门禁原形**；另跑的 `--all-targets` 会点出 `src-tauri/examples/e2e_peer.rs` 既有 lint，那不是门禁命令，不计入） |
 | `cargo test --features bluetooth` | **968 通过 / 0 失败** |
 | `node scripts/check-change-budget.mjs` | 退出 0（presentation 2 次） |
 | `npm run version:check` | 退出 0（5.0.4） |

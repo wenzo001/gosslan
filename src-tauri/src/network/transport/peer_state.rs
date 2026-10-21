@@ -16,12 +16,15 @@ pub(crate) fn maybe_update_friend(
     nickname: &str,
     avatar: Option<String>,
 ) {
+    // 快照在 db 锁之前取：本函数在 Hello/announce 热路径上，若持 db 再求 peers，
+    // 就与 gossip 的 peers→db 构成 ABBA（见 `FriendKeySnapshot` 的锁序说明）。
+    let key_snapshot = FriendKeySnapshot::capture(state, device_id);
     let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
     if db::get_friend(&dbc, device_id).is_some() {
         db::add_friend(&dbc, device_id, nickname, avatar.as_deref()).ok();
         // 好友行常在公钥落库之后才创建（好友申请通过才 add_friend），此处每次补一次绑定：
         // x25519 保证 E2EE 取得到对方公钥，ed25519 只认被证明过的来源（见 helper 的注释）。
-        bind_friend_keys_on_accept(state, &dbc, device_id);
+        bind_friend_keys_on_accept(&dbc, device_id, key_snapshot);
     }
 }
 

@@ -349,6 +349,8 @@ pub(crate) fn file_src_for_guards() -> String {
     src.push('\n');
     src.push_str(include_str!("file/group_receive.rs"));
     src.push('\n');
+    src.push_str(include_str!("file/group_resume.rs"));
+    src.push('\n');
     src.push_str(include_str!("file/ledger_backfill.rs"));
     src.push('\n');
     src.push_str(include_str!("file/share_walk.rs"));

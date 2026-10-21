@@ -2,6 +2,47 @@
 // - 群文件 Offer→Chunk→Done 投递核心（dispatch_group_file_to_peer）
 // - 失败诊断日志（app_handle_log）
 
+/// 续传回执槽位的 RAII 守卫：登记之后无论从哪条路径离开（Offer 发送失败 / 15s 超时 /
+/// 外层 deadline / 取消 / panic），都必须把 `(transfer, recipient)` 的 oneshot 槽位摘掉。
+///
+/// 旧写法在两个正常出口手写 `remove`；而外层 `timeout(deadline, …)` 在等回执期间触发时
+/// future 直接被 drop，那两行都走不到 ⇒ 槽位永久残留（每次重投多一个）。与 P2-02 的
+/// `PendingCompleteGuard` 同一条纪律：登记即武装，离开作用域就回收。
+struct ResumeWaiterGuard<'a> {
+    state: &'a std::sync::Arc<crate::state::AppState>,
+    key: String,
+}
+
+impl Drop for ResumeWaiterGuard<'_> {
+    fn drop(&mut self) {
+        self.state
+            .group_file_resume_waiters
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.key);
+    }
+}
+
+/// 取消登记槽位的 RAII 守卫（与 `PendingCompleteGuard` 同一条纪律）。
+///
+/// 登记**必须在并发闸之前**：任务可能排队几十秒甚至更久，用户在这期间点"取消发送"
+/// 时，槽位若还没登记，`send(())` 会失败、取消被静默丢掉，排到队后照样把文件发出去。
+/// 守卫保证任何退出路径（取消 / 超时 / 提前 return / panic）都摘掉槽位。
+struct CancelSlotGuard<'a> {
+    state: &'a std::sync::Arc<crate::state::AppState>,
+    key: String,
+}
+
+impl Drop for CancelSlotGuard<'_> {
+    fn drop(&mut self) {
+        self.state
+            .file_send_cancels
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.key);
+    }
+}
+
 /// 向单个 recipient 执行完整群文件投递：Offer → 流式 Chunk → Done。
 /// 元数据/源路径/密钥均从 DB 与运行态恢复，支持离线 pending 的延迟投递。
 /// 群文件投递失败的种类 —— 它决定这个 recipient 行接下来落到哪个状态。
@@ -53,6 +94,53 @@ async fn dispatch_group_file_to_peer(
     // `transfer_id`，按 id 记会让甲的写出把乙的"最近有写出"一直刷新（真卡死的成员
     // 判不出停滞），按 id 收更会让先收尾的甲删掉还在写的乙的记录。
     let _wire_ledger = file::WireLedger::install(state, transfer_id, recipient);
+    // 同一 (transfer, recipient) 只许一个任务在途 —— 排队中的也算。
+    // 为什么不能只靠状态行：排队期间行必须保持 `pending`（见下），而离线补发会在
+    // Hello/心跳/建链时捞 `pending` ⇒ 没有这道内存闸，同一成员会出现两个任务
+    // （两个轮次、两份读缓冲），在并发闸后叠起来。
+    let Some(_dispatch_gate) = crate::state::GroupFileDispatchGuard::try_acquire(
+        &state.group_file_dispatching,
+        file::file_peer_key(transfer_id, recipient),
+    ) else {
+        return Ok(());
+    };
+    // ---- cancel 登记（H3 fix：群文件也支持用户取消）----
+    // 必须在并发闸**之前**登记：任务可能排队很久，用户在这期间点"取消发送"时，
+    // 槽位若还没登记，取消信号会静默丢掉，排到队后照样把文件发出去。
+    // 键必须带 recipient：本函数是**每个成员各 spawn 一个任务、共用同一个 transfer_id**
+    // （group_announcements.rs 的 fan-out 循环）。只按 transfer_id 登记时，后注册的任务会
+    // 把前一个的 Sender 挤掉 ⇒ 前者的 cancel_rx 以 Err(RecvError) 完成 ⇒ 被取消分支当成
+    // 「用户取消发送」，N 个成员里只有最后一个发得完（真机三成员群必现）。
+    let cancel_key = file::file_cancel_key(transfer_id, recipient);
+    let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel::<()>();
+    state
+        .file_send_cancels
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(cancel_key.clone(), cancel_tx);
+    let _cancel_slot = CancelSlotGuard {
+        state,
+        key: cancel_key,
+    };
+    // 全局并发闸（拍板 4A(8)）：群发是"每可达成员一个任务"，无闸时 200 成员会同时
+    // 占住 200 份读缓冲（每份约 1.2 MB）与 200 条链路的队列（每条预算 8 MiB）。
+    // 闸放在**传输调度层**（本函数是群发与离线补发的唯一投递入口），才同时管住
+    // 任务数与队列内存。`acquire().await` 是**无损等待**：排队不丢文件、不降级。
+    // 排队期间该成员仍是 `pending`（状态由拿到许可后自己写）⇒ stale-sending 清扫器
+    // 不会把排队误判成卡死而重复投递。
+    let _slot = state
+        .group_file_permits
+        .acquire()
+        .await
+        .map_err(|_| GroupFileSendErr::Retryable("群文件并发闸已关闭".into()))?;
+    // 排队期间用户可能已经点了取消：拿到许可后先看这一格，别把已取消的文件真发出去。
+    // （槽位在闸前登记 ⇒ 排队时的取消也能在这里被看到。）
+    match cancel_rx.try_recv() {
+        Ok(()) | Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+            return Err(GroupFileSendErr::Cancelled);
+        }
+        Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
+    }
     let gf = db::get_group_file(
         &state.db.lock().unwrap_or_else(|e| e.into_inner()),
         transfer_id,
@@ -63,11 +151,10 @@ async fn dispatch_group_file_to_peer(
         .ok_or_else(|| GroupFileSendErr::Retryable("群密钥缺失".into()))?;
     let file_key = ensure_group_file_key(state, transfer_id, group_id, &group_key)
         .ok_or_else(|| GroupFileSendErr::Retryable("文件会话密钥缺失".into()))?;
-    let sealed_file_key =
-        STANDARD.encode(
-            crypto::seal_symmetric(&group_key, &file_key)
-                .ok_or_else(|| GroupFileSendErr::Retryable("封装文件密钥失败".into()))?,
-        );
+    let sealed_file_key = STANDARD.encode(
+        crypto::seal_symmetric(&group_key, &file_key)
+            .ok_or_else(|| GroupFileSendErr::Retryable("封装文件密钥失败".into()))?,
+    );
 
     // 源文件必须仍存在：不存在则该 recipient 置 failed（明确状态变化，
     // 不允许数据库停留在 pending 却永远无法投递）
@@ -95,6 +182,37 @@ async fn dispatch_group_file_to_peer(
     let link = crate::network::transport::resolve_stream_link(state, recipient)
         .await
         .ok_or_else(|| GroupFileSendErr::Retryable("未建立连接".into()))?;
+    // 续传：对端声明了能力位才注册回执槽位并等待；否则保持"发完 Offer 直接分片"的旧路。
+    let sender_can_resume = state
+        .peer_content_features
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(recipient)
+        .is_some_and(|f| f & crate::protocol::CONTENT_FEATURE_GROUP_FILE_RESUME != 0);
+    let round = state
+        .group_file_round_seq
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        .wrapping_add(1);
+    // 只有"这一轮确实会等 Resume"时才带 attempt：接收端把 attempt 当作握手标记，
+    // 不带它就走旧路。否则会出现"发送端没等、接收端却按偏移准备好了追加"的错位。
+    let send_attempt = sender_can_resume.then_some(round);
+    let waiter_key = file::file_peer_key(transfer_id, recipient);
+    let mut resume_rx = if sender_can_resume {
+        let (tx, rx) = tokio::sync::oneshot::channel::<u64>();
+        state
+            .group_file_resume_waiters
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(waiter_key.clone(), tx);
+        Some(rx)
+    } else {
+        None
+    };
+    // 槽位与守卫同生共死：下面任何提前返回（含外层 timeout 丢 future）都会摘掉它。
+    let _resume_slot = sender_can_resume.then(|| ResumeWaiterGuard {
+        state,
+        key: waiter_key.clone(),
+    });
     let offer = Message::GroupFileOffer {
         transfer_id: transfer_id.to_string(),
         group_id: group_id.to_string(),
@@ -105,30 +223,12 @@ async fn dispatch_group_file_to_peer(
         sealed_file_key,
         scope: gf.scope.clone(),
         todo_id: gf.todo_id.clone(),
+        attempt: send_attempt,
     };
-    crate::network::transport::send_on_link(&link, &offer)
-        .await
-        .map_err(|e| GroupFileSendErr::Retryable(format!("Offer 发送失败：{e}")))?;
-
-    // ---- cancel + timeout 注册（H3 fix: 群文件也支持用户取消 + 整体 deadline）----
-    // 键必须带 recipient：本函数是**每个成员各 spawn 一个任务、共用同一个 transfer_id**
-    // （group_announcements.rs 的 fan-out 循环）。只按 transfer_id 登记时，后注册的任务会
-    // 把前一个的 Sender 挤掉 ⇒ 前者的 cancel_rx 以 Err(RecvError) 完成 ⇒ 被取消分支当成
-    // 「用户取消发送」，N 个成员里只有最后一个发得完（真机三成员群必现）。
-    let cancel_key = file::file_cancel_key(transfer_id, recipient);
-    let (cancel_tx, mut cancel_rx) = tokio::sync::oneshot::channel::<()>();
-    state
-        .file_send_cancels
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(cancel_key.clone(), cancel_tx);
-    let cancel_cleanup = || {
-        state
-            .file_send_cancels
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&cancel_key);
-    };
+    if let Err(e) = crate::network::transport::send_on_link(&link, &offer).await {
+        // Offer 没发出去 ⇒ 不会有回执（槽位由 `_resume_slot` 在返回时摘掉）。
+        return Err(GroupFileSendErr::Retryable(format!("Offer 发送失败：{e}")));
+    }
 
     // 期限按体积自适应（与单聊同一口径，见 `file::send_deadline_for`）：
     // 固定 10min 窗口下 500-600MB 的视频在群发里必被误判超时。
@@ -144,13 +244,47 @@ async fn dispatch_group_file_to_peer(
         //
         // 分块大小读**这条已钉住的链路**的 path_kind（BLE 上必须 4KiB，见 chunk_size_for_path）。
         let chunk_size = file::chunk_size_for_path(link.path_kind.as_str());
+        // 对端声明了能力位 ⇒ 等它给出可用前缀（接收端是权威）。
+        // 超时/非法偏移一律按可重试处理，**绝不从头重发**：接收端可能已经按 n 准备好追加了，
+        // 这时再从 0 发会把前缀重复写一遍（单聊为这一类付过学费）。
+        let resume_from = match resume_rx.as_mut() {
+            Some(rx) => {
+                let wait_ms = file::group_resume_wait_ms(size);
+                match tokio::time::timeout(std::time::Duration::from_millis(wait_ms), &mut *rx)
+                    .await
+                {
+                    Ok(Ok(n)) if n <= size => n,
+                    Ok(Ok(_)) => {
+                        return Err(GroupFileSendErr::Retryable(
+                            "对端报的续传偏移超过文件大小".into(),
+                        ))
+                    }
+                    _ => return Err(GroupFileSendErr::Retryable("等待群文件续传回执超时".into())),
+                }
+            }
+            None => 0,
+        };
+        let resume_from = match file::send_start_from(resume_from, size) {
+            Ok(file::GroupSendStart::From(n)) => n,
+            Ok(file::GroupSendStart::AlreadyHave) => {
+                // 对端已完整持有：不重传。它已发完成 ACK；万一下一轮 ACK 丢了，P2-01 的
+                // stale-sending 清扫器会重新投递 Offer，对端会再回一次 ACK。
+                return Ok(());
+            }
+            Err(why) => return Err(GroupFileSendErr::Retryable(why.into())),
+        };
         let mut f = tokio::fs::File::open(&src)
             .await
             .map_err(|e| GroupFileSendErr::Retryable(format!("打开源文件失败：{e}")))?;
-        use tokio::io::AsyncReadExt;
+        use tokio::io::{AsyncReadExt, AsyncSeekExt};
+        if resume_from > 0 {
+            f.seek(std::io::SeekFrom::Start(resume_from))
+                .await
+                .map_err(|e| GroupFileSendErr::Retryable(format!("定位续传偏移失败：{e}")))?;
+        }
         let mut buf = vec![0u8; chunk_size];
         let mut seq: u32 = 0;
-        let mut sent: u64 = 0;
+        let mut sent: u64 = resume_from;
         // 本次投递的起点 + 停滞提示状态（与单聊共用 `file::stall_tick`）
         let stream_started_ms = db::now_ms();
         let mut stalled_shown = false;
@@ -168,13 +302,8 @@ async fn dispatch_group_file_to_peer(
             if n == 0 {
                 break;
             }
-            let Some(key) = state
-                .group_file_keys
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .get(transfer_id)
-                .copied()
-            else {
+            // 每片刷新 TTL：大文件/慢链路超过 2h 也不该中途丢 key。
+            let Some(key) = state.touch_group_file_key(transfer_id) else {
                 return Err(GroupFileSendErr::Retryable("文件会话密钥丢失".into()));
             };
             let sealed = crypto::seal_symmetric(&key, &buf[..n])
@@ -186,6 +315,7 @@ async fn dispatch_group_file_to_peer(
                 sender_id: state.device_id.clone(),
                 seq,
                 data,
+                attempt: send_attempt,
             };
             // 投到**钉住的这条**链路：队列满时原地等背压，绝不换链路（换路 = 分片失序）；
             // 等待期间做停滞检查（与单聊同一套 `file::stall_tick`）。
@@ -258,10 +388,20 @@ async fn dispatch_group_file_to_peer(
             seq += 1;
         }
         // Done：分片全部发出，接收端据此做最终校验
+        // 本轮实际补传字节数：S5 的"没有整份重传"就靠这一行现算。
+        state.logger.info(
+            "group_file",
+            format!(
+                "群文件本轮发送完成 transfer={transfer_id} peer={recipient} from={resume_from} \
+                 sent_this_round={} size={size}",
+                sent.saturating_sub(resume_from)
+            ),
+        );
         let done = Message::GroupFileDone {
             transfer_id: transfer_id.to_string(),
             group_id: group_id.to_string(),
             sender_id: state.device_id.clone(),
+            attempt: send_attempt,
         };
         // Done 也必须排在**自己那串分片之后**：走 `try_send` 时队列满会 failover 到另一条
         // 空闲连接，完成帧超过仍在路上的分片先到 ⇒ 接收端判"未完成"打死整条传输。
@@ -290,7 +430,7 @@ async fn dispatch_group_file_to_peer(
     })
     .await;
 
-    cancel_cleanup();
+    // 取消槽位由 `_cancel_slot` 在返回时摘掉（手写 remove 在 timeout 丢 future 时走不到）。
 
     // 外层只区分"内层自己报了错"与"到期限"两种：内层的类型化错误原样透传；
     // 到期限必然是"没在期限内发完" ⇒ 按可重试处理（下一次建链 / 心跳会重新投递，

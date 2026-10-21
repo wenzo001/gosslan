@@ -79,22 +79,21 @@ gosslan/
 ├── AI_PROJECT_HANDOFF.md     # ★ 项目全景与代码导读
 ├── CHANGELOG.md              # 版本历史
 ├── docs/
-│   ├── AI_ENGINEERING_INDEX.md   # 约束文档导航
+│   ├── AI_ENGINEERING_INDEX.md   # 文档地图备查索引（入口是根目录 AI_PROJECT_HANDOFF.md）
 │   ├── ARCHITECTURE-MAP.html     # ★ 单文件交互架构 + 接口契约图（浏览器直接打开）
-│   ├── stability-roadmap.md      # ★★★ 稳定版工作地图：风险/任务重判/覆盖边界/执行顺序
-│   ├── ARCHITECTURE-REVIEW-2026-09-24.md  # ★ 架构复审：根因 + 8 步路线
-│   ├── final-architecture-review.md  # ★ 第二阶段复审：现算基线 + 巨型文件审计 + 四态结论
-│   ├── protocol-invariants.md    # 协议不变量明细（INV-P 的条数与上界由 check-invariant-hooks 现打印，别抄）
+│   ├── protocol-invariants.md    # 协议不变量明细（INV-P 条数由 check-invariant-hooks 现打印，别抄）
+│   ├── migration-ledger.md       # 迁移台账：同一关注点有几个家、哪个在跑数据
 │   ├── VERSIONING.md             # ★ 版本号强制规则：每个提交声明档位 + 同一个提交把版本提上去
 │   ├── design-guidelines.md      # UI 规范（动界面必读：圆角 / hover / 配色 / 窗口边界）
-│   ├── migration-ledger.md       # 迁移台账：同一关注点有几个家、哪个在跑数据
 │   ├── domains.data.mjs          # 领域图数据（check-domain-map.mjs 读的就是这份）
-│   ├── ARCHITECTURE-EXPLAINED.md # 架构图解（新人版）⚠️ 自带 v4.2.7 快照戳，行号早已漂
-│   ├── acceptance/               # 验收标准 1.0-release + 稳定版验证覆盖矩阵（冒烟矩阵）
-│   │                             #   + 原生体验首轮建设报告（native-experience-round-1.md，
-│   │                             #     那份报告里的数字都是定稿时现算的，复跑命令逐条挂在正文）
-│   ├── notes/                    # 历史审计笔记（"当时发现了什么"，不是约束）
+│   ├── large-file-split-plan.md  # 大文件拆分计划（护栏锚点风险、下刀顺序）
+│   ├── stability-roadmap.md      # 稳定版工作地图 + 漂移事故台账（按节查，不要通读）
+│   ├── version-ledger.md         # 版本分类台账（npm run version:ledger 生成，别手改）
+│   ├── acceptance/               # 活文档：1.0-release（门禁对账）+ 稳定版验证覆盖矩阵
+│   ├── architecture/             # 架构报告与清单（rc-5.0-report / frontend-inventory…）
+│   ├── notes/                    # 近期排障记录（"当时发现了什么"，不是约束）
 │   ├── adr/                      # 架构决策记录（含 ADR-0020 公网哑管道中继）
+│   ├── archive/                  # 历史档案：旧架构复审 / 旧验收 / 旧审计（只作证据）
 │   └── templates/                # Bug 修复 / ADR 模板
 ├── src/                      # Vue 3 前端
 │   ├── main.ts

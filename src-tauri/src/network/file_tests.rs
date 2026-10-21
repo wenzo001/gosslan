@@ -6,8 +6,9 @@
 #[cfg(test)]
 mod tests {
     use super::{
-        chunk_exceeds_declared, chunk_seq_decision, classify_file_subtype, clear_file_wire_progress_in, derive_file_name,
-        file_peer_key, finish_group_receive_into, receive_is_stale, safe_file_name, safe_transfer_id, unique_path,
+        build_group_resume_receiver, chunk_exceeds_declared, chunk_seq_decision,
+        classify_file_subtype, clear_file_wire_progress_in, derive_file_name, file_peer_key,
+        finish_group_receive_into, receive_is_stale, safe_file_name, safe_transfer_id, unique_path,
         wire_progress_bytes, ChunkSeq, WireLedger, FILE_RECEIVE_IDLE_ABORT_MS,
         MAX_FILE_OUTBOX_RETRIES,
     };
@@ -16,7 +17,8 @@ mod tests {
     fn throwaway_logger() -> &'static crate::logging::Logger {
         static L: std::sync::OnceLock<crate::logging::Logger> = std::sync::OnceLock::new();
         L.get_or_init(|| {
-            let dir = std::env::temp_dir().join(format!("gosslan-recv-throwaway-{}", std::process::id()));
+            let dir =
+                std::env::temp_dir().join(format!("gosslan-recv-throwaway-{}", std::process::id()));
             crate::logging::Logger::new(dir, "t-throwaway", "[dev:test]".to_string())
         })
     }
@@ -995,6 +997,127 @@ mod tests {
         assert!(crypto::open_symmetric(&k2, &sealed).is_none());
     }
 
+    /// P1-03 S2：保留前缀重建接收器 —— 只读现有 `.part`、append 打开、哈希包含前缀。
+    #[test]
+    fn group_resume_receiver_keeps_the_prefix_and_hashes_it() {
+        use sha2::Digest;
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("gosslan-group-resume-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let prefix = b"hello-prefix";
+        std::fs::write(dir.join("t1.part"), prefix).unwrap();
+        let mut r = build_group_resume_receiver(
+            &dir,
+            "t1",
+            "peer",
+            "a.bin",
+            100,
+            [7u8; 32],
+            "deadbeef".into(),
+        )
+        .unwrap();
+        assert_eq!(r.received, prefix.len() as u64, "接收进度必须等于磁盘前缀");
+        assert_eq!(r.next_seq, 0, "新段序号从 0 重编");
+        let got: String = r
+            .hasher
+            .clone()
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        // 直接写 file 不会喂哈希器（真实分片路径由 write_chunk 负责）；这里只证前缀被哈希进去。
+        let want: String = sha2::Sha256::digest(prefix.as_slice())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert_eq!(got, want, "哈希器必须包含磁盘前缀，否则最终 SHA 校验必失败");
+        r.file.write_all(b"-suffix").unwrap();
+        r.file.sync_all().unwrap();
+        assert_eq!(
+            std::fs::metadata(&r.tmp_path).unwrap().len(),
+            (prefix.len() + 7) as u64,
+            "append 模式必须接在前缀之后，而不是截断重写"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// P1-03 S5：断点续传的落盘完整性 —— 磁盘前缀 + 后续分片拼起来必须与整份 SHA 一致。
+    #[test]
+    fn group_resume_prefix_plus_suffix_finishes_with_the_original_sha() {
+        use sha2::Digest;
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("gosslan-resume-e2e-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let payload: Vec<u8> = (0..10_000).map(|i| (i % 251) as u8).collect();
+        let split = 3_700; // 故意不是分片边界：覆盖“部分写入”的磁盘长度
+        let sha: String = sha2::Sha256::digest(&payload)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        std::fs::write(dir.join("t1.part"), &payload[..split]).unwrap();
+        let mut r = build_group_resume_receiver(
+            &dir,
+            "t1",
+            "peer",
+            "a.bin",
+            payload.len() as u64,
+            [7u8; 32],
+            sha,
+        )
+        .unwrap();
+        assert_eq!(r.received, split as u64, "前缀进度取磁盘实际长度");
+        // 模拟后续 write_chunk：写盘 + 喂哈希 + 更新 received（真实路径由 write_chunk 做）。
+        r.file.write_all(&payload[split..]).unwrap();
+        r.hasher.update(&payload[split..]);
+        r.received += (payload.len() - split) as u64;
+        let final_path = finish_group_receive_into(r, &dir).unwrap();
+        assert_eq!(
+            std::fs::read(&final_path).unwrap(),
+            payload,
+            "续传拼起来的字节必须与原件逐字节一致（最终 SHA 已由 finish 校验）"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// S5 第 2 项（发送方重启）：接收端把"当前轮次"存在内存里，`attempt < 当前` 的 Offer
+    /// 会被当成上一轮残留丢掉。所以轮次种子必须是**纳秒级 epoch 时间**，不能从 0 数：
+    /// 否则发送端一重启，新轮次就永远小于接收端记住的旧值，续传永远接不上。
+    #[test]
+    fn group_file_round_seed_is_epoch_nanos_so_a_sender_restart_stays_ahead() {
+        let first = crate::state::group_file_round_seed();
+        let second = crate::state::group_file_round_seed();
+        assert!(
+            first > 1_700_000_000_000_000_000,
+            "种子必须是纳秒级 epoch（毫秒=1.7e12、从 0 数=小整数，都会让重启后的轮次变小）"
+        );
+        assert!(second >= first, "后取到的种子不能变小");
+    }
+
+    /// 拍板 4A(8) 的配套不变量：并发闸让任务**排队**，而排队期间行保持 `pending`
+    /// ⇒ 离线补发可能捞到同一行。内存闸必须按 (transfer, recipient) 去重，
+    /// 且用 RAII 在所有退出路径（含取消/超时/panic）自动释放。
+    #[test]
+    fn group_file_dispatch_gate_is_per_member_and_releases_on_drop() {
+        use std::collections::HashSet;
+        use std::sync::{Arc, Mutex};
+        let set = Arc::new(Mutex::new(HashSet::new()));
+        let first = crate::state::GroupFileDispatchGuard::try_acquire(&set, "t1|p1".into());
+        assert!(first.is_some(), "第一个任务应当拿到闸");
+        assert!(
+            crate::state::GroupFileDispatchGuard::try_acquire(&set, "t1|p1".into()).is_none(),
+            "同一 (transfer, recipient) 的第二个任务必须被拒（否则排队 + 补发 = 两个任务）"
+        );
+        let other = crate::state::GroupFileDispatchGuard::try_acquire(&set, "t1|p2".into());
+        assert!(other.is_some(), "不同成员互不阻塞");
+        drop(first);
+        assert!(
+            crate::state::GroupFileDispatchGuard::try_acquire(&set, "t1|p1".into()).is_some(),
+            "任务结束后（守卫 Drop）必须能重新投递"
+        );
+    }
+
     // ---------- GroupFileChunk（协议 + 接收语义） ----------
 
     use crate::protocol::Message;
@@ -1008,6 +1131,7 @@ mod tests {
             sender_id: "dev-a".into(),
             seq: 7,
             data: "bm9uY2UrY2lwaGVydGV4dA==".into(),
+            attempt: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(
@@ -1026,6 +1150,7 @@ mod tests {
                 sender_id,
                 seq,
                 data,
+                attempt: _,
             } => {
                 assert_eq!(transfer_id, "gf-1");
                 assert_eq!(group_id, "g-1");
@@ -1185,7 +1310,10 @@ mod tests {
         ));
         // 重复 0 ⇒ 忽略：不写盘、不报错、next_seq 不动
         assert_eq!(receive_group_chunk(&mut r, 0, &c0), ChunkOutcome::Ignored);
-        assert_eq!(r.next_seq, 1, "重复片不许推进序号（否则下一片会被判成跳号）");
+        assert_eq!(
+            r.next_seq, 1,
+            "重复片不许推进序号（否则下一片会被判成跳号）"
+        );
         // 紧接着的 1 必须照常收下 —— 只忽略不可恢复的话，这一行会红
         assert!(matches!(
             receive_group_chunk(&mut r, 1, &c1),
@@ -1273,6 +1401,7 @@ mod tests {
             transfer_id: "gf-1".into(),
             group_id: "g-1".into(),
             sender_id: "dev-a".into(),
+            attempt: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert!(
@@ -1288,6 +1417,7 @@ mod tests {
                 transfer_id,
                 group_id,
                 sender_id,
+                attempt: _,
             } => {
                 assert_eq!(transfer_id, "gf-1");
                 assert_eq!(group_id, "g-1");
@@ -1377,7 +1507,8 @@ mod tests {
         let sealed = crypto::seal_symmetric(&file_key, b"data").unwrap();
         must_write(receive_group_chunk(&mut r, 0, &sealed));
 
-        let missing = std::env::temp_dir().join(format!("gosslan-missing-dir-{}", std::process::id()));
+        let missing =
+            std::env::temp_dir().join(format!("gosslan-missing-dir-{}", std::process::id()));
         r.final_path = missing.join("x.bin");
 
         let part = r.tmp_path.clone();
@@ -1604,7 +1735,12 @@ mod tests {
 
     /// Offer 到达时生产登记的那一行 Active（`transport/handle_file.rs` 的接收臂同形状）。
     /// 只造"开始收"的状态，**不**碰完成态 —— 完成态必须由被测的生产码自己写出来。
-    fn seed_active_content(db: &crate::db_hold::DbLock<rusqlite::Connection>, cid: &str, tid: &str, size: u64) {
+    fn seed_active_content(
+        db: &crate::db_hold::DbLock<rusqlite::Connection>,
+        cid: &str,
+        tid: &str,
+        size: u64,
+    ) {
         let now = crate::db::now_ms();
         let dbc = db.lock().unwrap();
         crate::content::store::upsert(
@@ -1659,9 +1795,13 @@ mod tests {
         seed_active_content(&db, &cid, "xfer-b1", bytes.len() as u64);
 
         let r = receiver_holding("b1-ok", &bytes, bytes.len() as u64, &cid);
-        let (name, size, final_path, peer) = finish_receiver_into(&db, &throwaway_logger(), "xfer-b1", r)
-            .expect("字节齐、SHA 对、rename 成 ⇒ 生产收尾必须成功");
-        assert_eq!((name.as_str(), size, peer.as_str()), ("b1-ok.bin", 5000, "dev-a"));
+        let (name, size, final_path, peer) =
+            finish_receiver_into(&db, &throwaway_logger(), "xfer-b1", r)
+                .expect("字节齐、SHA 对、rename 成 ⇒ 生产收尾必须成功");
+        assert_eq!(
+            (name.as_str(), size, peer.as_str()),
+            ("b1-ok.bin", 5000, "dev-a")
+        );
 
         // ① 完成的前提是实物：成品真在盘上、字节与源逐字节相同、摘要就是那个 cid
         let on_disk = std::fs::read(&final_path).expect("rename 之后成品必须存在");
@@ -1678,7 +1818,10 @@ mod tests {
             TransferStatus::Complete,
             "单聊收尾必须把内容台账收成 Complete，否则 `list_resumable_for_peer` 会永远再投它"
         );
-        assert_eq!(rec.received, size, "收口时 received 要等于 size（断点续传的起点就是它）");
+        assert_eq!(
+            rec.received, size,
+            "收口时 received 要等于 size（断点续传的起点就是它）"
+        );
         assert_eq!(
             rec.path.as_deref(),
             Some(final_path.to_string_lossy().as_ref()),
@@ -1751,9 +1894,16 @@ mod tests {
 
         let r = receiver_holding("b1-dberr", &bytes, bytes.len() as u64, &cid);
         let out = finish_receiver_into(&db, &throwaway_logger(), "xfer-b1-dberr", r);
-        assert!(out.is_ok(), "台账写不进去不该把一次真实成功的接收判成失败，实得 {out:?}");
+        assert!(
+            out.is_ok(),
+            "台账写不进去不该把一次真实成功的接收判成失败，实得 {out:?}"
+        );
         let final_path = out.as_ref().unwrap().2.clone();
-        assert_eq!(std::fs::read(&final_path).unwrap(), bytes, "成品必须真在盘上");
+        assert_eq!(
+            std::fs::read(&final_path).unwrap(),
+            bytes,
+            "成品必须真在盘上"
+        );
 
         let dbc = db.lock().unwrap();
         let st: String = dbc
@@ -1767,7 +1917,9 @@ mod tests {
         // 没有这张表 ⇒ 结构上不可能有假 Complete；这里显式把"没有完成态"读出来，
         // 以免将来有人把兜底改成"吞掉错误继续往下走"而没人发现。
         let tables: Vec<String> = dbc
-            .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='content_transfers'")
+            .prepare(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='content_transfers'",
+            )
             .unwrap()
             .query_map([], |r| r.get(0))
             .unwrap()
@@ -2273,7 +2425,10 @@ mod tests {
         assert_eq!(notes.len(), 1, "主写失败应恰好一条痕，实得 {notes:?}");
         let note = &notes[0];
         assert!(note.contains("stage=done-tx-repaired"), "实得：{note}");
-        assert!(note.contains("xfer-note-primary"), "痕里要带传输 id：{note}");
+        assert!(
+            note.contains("xfer-note-primary"),
+            "痕里要带传输 id：{note}"
+        );
         assert!(note.contains("content_transfers"), "错误原因要进来：{note}");
         assert!(!note.contains("note-primary.bin"), "痕里不带文件名：{note}");
         assert!(
@@ -2388,10 +2543,7 @@ mod tests {
     /// （与接收侧 `db_missing_*` 同一思路 —— 错误必须是真实 rusqlite 错误，不手搓错误变体）。
     fn db_missing_one_table(table: &str) -> crate::db_hold::DbLock<rusqlite::Connection> {
         let db = crate::db_hold::DbLock::new(rusqlite::Connection::open_in_memory().unwrap());
-        db.lock()
-            .unwrap()
-            .execute_batch(crate::db::SCHEMA)
-            .unwrap();
+        db.lock().unwrap().execute_batch(crate::db::SCHEMA).unwrap();
         db.lock()
             .unwrap()
             .execute_batch(&format!("DROP TABLE {table};"))
@@ -2402,16 +2554,34 @@ mod tests {
     /// 一张"发送中"的现场：`file_transfers` 行 active/0 + 那条 `file-<tid>` 气泡 + 队列行。
     fn seed_send_in_progress(db: &crate::db_hold::DbLock<rusqlite::Connection>, tid: &str) {
         let dbc = db.lock().unwrap();
-        crate::db::upsert_transfer(&dbc, tid, "peer-1", &format!("{tid}.bin"), 10, "send", "active", None, 0.0)
-            .unwrap();
+        crate::db::upsert_transfer(
+            &dbc,
+            tid,
+            "peer-1",
+            &format!("{tid}.bin"),
+            10,
+            "send",
+            "active",
+            None,
+            0.0,
+        )
+        .unwrap();
         dbc.execute(
             "INSERT INTO messages(msg_id,conv_id,sender_id,receiver_id,kind,content,ts,seq,status)
              VALUES(?1,?2,'me','peer-1','file','{}',1,1,'sending')",
             rusqlite::params![format!("file-{tid}"), "peer-1"],
         )
         .unwrap();
-        crate::db::insert_file_outbox(&dbc, tid, "peer-1", None, "/tmp/x.bin", &format!("{tid}.bin"), 10)
-            .unwrap();
+        crate::db::insert_file_outbox(
+            &dbc,
+            tid,
+            "peer-1",
+            None,
+            "/tmp/x.bin",
+            &format!("{tid}.bin"),
+            10,
+        )
+        .unwrap();
     }
 
     fn read_send_row(
@@ -2433,10 +2603,7 @@ mod tests {
     fn send_finalize_closes_the_send_ledger() {
         use super::{drop_sent_outbox_row, send_finalize_rows};
         let db = crate::db_hold::DbLock::new(rusqlite::Connection::open_in_memory().unwrap());
-        db.lock()
-            .unwrap()
-            .execute_batch(crate::db::SCHEMA)
-            .unwrap();
+        db.lock().unwrap().execute_batch(crate::db::SCHEMA).unwrap();
         seed_send_in_progress(&db, "s1");
         let _ = db.take_summary();
 
@@ -2467,7 +2634,11 @@ mod tests {
         let left: i64 = db
             .lock()
             .unwrap()
-            .query_row("SELECT COUNT(*) FROM file_outbox WHERE transfer_id='s1'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM file_outbox WHERE transfer_id='s1'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(left, 0, "投递成功后队列行必须被收掉");
         // 删队列行那一次同样要经带计时的锁（前面那些读各算各的，这里单独量）
@@ -2497,7 +2668,11 @@ mod tests {
             "两个 stage 混了：{}",
             notes[0]
         );
-        assert!(!notes[0].contains("s2.bin"), "文件名不许进日志：{}", notes[0]);
+        assert!(
+            !notes[0].contains("s2.bin"),
+            "文件名不许进日志：{}",
+            notes[0]
+        );
     }
 
     /// ③ 消息记录那一笔单独失败：stage 必须是它自己，且不许冒充传输那一笔。
@@ -2506,7 +2681,11 @@ mod tests {
         use super::send_finalize_rows;
         let db = db_missing_one_table("messages");
         let notes = send_finalize_rows(&db, "s3", "peer-1", "s3.bin", 10, "file-s3");
-        assert_eq!(notes.len(), 1, "传输那一笔成了 ⇒ 只该有消息的痕，实得 {notes:?}");
+        assert_eq!(
+            notes.len(),
+            1,
+            "传输那一笔成了 ⇒ 只该有消息的痕，实得 {notes:?}"
+        );
         assert!(
             notes[0].contains("stage=send-message-delivered id=s3"),
             "实得：{}",
@@ -2536,10 +2715,7 @@ mod tests {
     fn send_finalize_is_idempotent_and_done_is_never_downgraded() {
         use super::send_finalize_rows;
         let db = crate::db_hold::DbLock::new(rusqlite::Connection::open_in_memory().unwrap());
-        db.lock()
-            .unwrap()
-            .execute_batch(crate::db::SCHEMA)
-            .unwrap();
+        db.lock().unwrap().execute_batch(crate::db::SCHEMA).unwrap();
         seed_send_in_progress(&db, "s5");
         assert!(send_finalize_rows(&db, "s5", "peer-1", "s5.bin", 10, "file-s5").is_empty());
         assert!(
@@ -2548,8 +2724,10 @@ mod tests {
         );
         assert_eq!(read_send_row(&db, "s5"), ("done".to_string(), 1.0));
         let dbc = db.lock().unwrap();
-        crate::db::upsert_transfer(&dbc, "s5", "peer-1", "s5.bin", 10, "send", "active", None, 0.0)
-            .unwrap();
+        crate::db::upsert_transfer(
+            &dbc, "s5", "peer-1", "s5.bin", 10, "send", "active", None, 0.0,
+        )
+        .unwrap();
         drop(dbc);
         assert_eq!(
             read_send_row(&db, "s5"),
@@ -2565,7 +2743,10 @@ mod tests {
         let send = include_str!("file/send.rs");
         for (name, value) in [
             ("LEDGER_STAGE_SEND_TRANSFER_DONE", "send-transfer-done"),
-            ("LEDGER_STAGE_SEND_MESSAGE_DELIVERED", "send-message-delivered"),
+            (
+                "LEDGER_STAGE_SEND_MESSAGE_DELIVERED",
+                "send-message-delivered",
+            ),
             ("LEDGER_STAGE_SEND_OUTBOX_DROP", "send-outbox-dropped"),
         ] {
             assert!(
@@ -2650,7 +2831,10 @@ mod tests {
         }
         for (i, (stage, _)) in all.iter().enumerate() {
             for (other, _) in all[i + 1..].iter() {
-                assert_ne!(stage, other, "两条回执分支共用一个 stage ⇒ 现场读不出是哪一条");
+                assert_ne!(
+                    stage, other,
+                    "两条回执分支共用一个 stage ⇒ 现场读不出是哪一条"
+                );
             }
         }
     }
@@ -2735,12 +2919,17 @@ mod tests {
         let n = super::ack_writer_failure_note(&ack, "socket", " Broken pipe (os error 32) ")
             .expect("回执帧必须留痕");
         assert!(
-            n.contains("stage=ack-writer id=t-7 success=true 出口=socket: Broken pipe (os error 32)"),
+            n.contains(
+                "stage=ack-writer id=t-7 success=true 出口=socket: Broken pipe (os error 32)"
+            ),
             "实得：{n}"
         );
         let local = super::ack_writer_failure_note(&ack, "local", "长度超过 MAX_FRAME")
             .expect("本机写不出去那一支也要留痕");
-        assert!(local.contains("出口=local") && !local.contains("出口=socket"), "实得：{local}");
+        assert!(
+            local.contains("出口=local") && !local.contains("出口=socket"),
+            "实得：{local}"
+        );
 
         for other in [
             Message::Heartbeat {
@@ -2762,10 +2951,7 @@ mod tests {
         }
         let long = format!("no such column: {}", "x".repeat(400));
         let bounded = super::ack_writer_failure_note(&ack, "socket", &long).unwrap();
-        let tail = bounded
-            .split_once("出口=socket: ")
-            .map(|(_, r)| r)
-            .unwrap();
+        let tail = bounded.split_once("出口=socket: ").map(|(_, r)| r).unwrap();
         assert!(
             tail.ends_with('…') && tail.chars().count() <= 241,
             "实得长度 {}",
@@ -2789,7 +2975,8 @@ mod tests {
             .join("\n");
         let flat: String = src.chars().filter(|c| !c.is_whitespace()).collect();
         assert_eq!(
-            flat.matches("crate::network::file::ack_writer_failure_note(&msg,").count(),
+            flat.matches("crate::network::file::ack_writer_failure_note(&msg,")
+                .count(),
             2,
             "Local 与 Socket 两支出口各要接一次留痕"
         );
@@ -3011,7 +3198,11 @@ mod group_receive_atomicity_tests {
         let at = src
             .find("fn apply_group_file_ack_db")
             .expect("群文件 ACK 收尾改名/搬家了 ⇒ 同步改这条判据");
-        let body = &src[at..at + 3000];
+        // 不能按固定字节数切：函数会因为日志/注释增长，切在多字节字符中间会直接 panic，
+        // 切短了又会把被断言的那段漏掉。取到函数自己的收尾 `}` 为止。
+        let rest = &src[at..];
+        let end = rest.find("\n}\n").map(|i| i + 3).unwrap_or(rest.len());
+        let body = &rest[..end];
         assert!(
             body.contains(
                 "SELECT status FROM group_file_recipients WHERE transfer_id = ?1 AND recipient_id = ?2"
@@ -3025,3 +3216,32 @@ mod group_receive_atomicity_tests {
     }
 }
 
+/// 发送侧完成登记的清理语义（P2-02）。
+#[cfg(test)]
+mod send_complete_guard_tests {
+    /// 完成登记必须在**所有**退出路径回收（含 `?`、提前 return、panic 展开）。
+    ///
+    /// 旧写法只在“接收端否定确认”和“成功拿到 ACK”两条路径手工 `remove`，其余七条早退
+    /// 都把 `oneshot::Sender` 留在表里 ⇒ 表单调增长，且残留项会吞掉迟到的 `FileCompleteAck`。
+    /// `PendingCompleteGuard` 是唯一清理点；这里直接钉它的 Drop 语义。
+    #[test]
+    fn pending_complete_guard_clears_the_registration_on_every_exit() {
+        let table: std::sync::Mutex<
+            std::collections::HashMap<String, tokio::sync::oneshot::Sender<bool>>,
+        > = std::sync::Mutex::new(std::collections::HashMap::new());
+        let (tx, _rx) = tokio::sync::oneshot::channel::<bool>();
+        table.lock().unwrap().insert("t1".to_string(), tx);
+
+        {
+            let _guard = crate::network::file::PendingCompleteGuard::install(&table, "t1");
+            assert!(
+                table.lock().unwrap().contains_key("t1"),
+                "登记必须在守卫存活期内可见"
+            );
+        }
+        assert!(
+            !table.lock().unwrap().contains_key("t1"),
+            "守卫离开作用域后登记必须被摘除（覆盖 ? / 提前 return / panic）"
+        );
+    }
+}

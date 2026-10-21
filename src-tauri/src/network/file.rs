@@ -395,6 +395,7 @@ include!("file/send.rs");
 include!("file/relay_push.rs");
 include!("file/receive.rs");
 include!("file/group_receive.rs");
+include!("file/group_resume.rs");
 include!("file/ledger_backfill.rs");
 include!("file/share_walk.rs");
 include!("file_tests.rs");

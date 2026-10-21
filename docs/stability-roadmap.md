@@ -1,5 +1,9 @@
 # Gosslan 稳定版工作地图（stability-roadmap）
 
+> ⏱ **读法（2026-10-21 注）**：本文 34 万字，是**稳定版阶段的工作地图 + 漂移事故台账**，
+> 里面的行号与数字大量是"当时读数"。**不要通读**：按 § 目录跳到你要的那一格，
+> 引用前先按格内的复跑命令现算。接手上下文读 `AI_PROJECT_HANDOFF.md`，不要从本文开始。
+>
 > 本文件是「最终稳定版」阶段的**唯一工作地图**。它的用途不是描述愿景，而是回答三个问题：
 > **现在真正被机器证明到哪一步／接下来按什么顺序做／每一项做完的判据是什么。**
 >
@@ -190,7 +194,7 @@ Windows 基线曾烂到只有 mac 并集的一部分（487 vs 690）。
 ① ② ③ 三条引的是 `HANDOFF §0 / §4-A / §13` —— 现读 `grep -n "^## " AI_PROJECT_HANDOFF.md`：
 这份文件最大只到 `## 11 文档索引`，**被引的 §13 从来不存在**，而那几句转述（"正在查机制""下一批从这里开始""等用户拍板"）
 全文 0 命中 ⇒ 这三条不是"两份文档互相矛盾"，是**引用形状本身的病**（把转述当成了出处）。
-④ `review` 文档里 P1 已不再标 ⬜（复跑 `grep -n "P1" docs/final-architecture-review.md` 再筛 `⬜`，无命中）。
+④ `review` 文档里 P1 已不再标 ⬜（复跑 `grep -n "P1" docs/archive/final-architecture-review.md` 再筛 `⬜`，无命中）。
 ⑤ `1.0-release.md` 第 21 条今天写的是「跨版本优雅降级（INV-P24）」，那句"收到未知帧 ⇒ 今天会拆链、属必修"
 已不在该文件里（全文搜「未知」0 命中）⇒ 被 `4dfe93f` 推翻的那处确实改口了。
 **仍成立的是后半句**：该文件那串 P0 一条 checkbox 都没有（复跑 `grep -c '^- \[ \]' docs/acceptance/1.0-release.md` 打 0）
@@ -200,7 +204,7 @@ Windows 基线曾烂到只有 mac 并集的一部分（487 vs 690）。
 
 ## 3. Existing Tasks Audit（现有任务逐条重判）
 
-> 来源：`HANDOFF.md`（§0/§3/§4/§9/§12/§13）、`docs/ARCHITECTURE-REVIEW-2026-09-24.md`（P1–P12 + 8 步路线）、
+> 来源：`HANDOFF.md`（§0/§3/§4/§9/§12/§13）、`docs/archive/ARCHITECTURE-REVIEW-2026-09-24.md`（P1–P12 + 8 步路线）、
 > `docs/acceptance/1.0-release.md`、`docs/adr/0010`、本地任务号 `#NN`（**注意：仓库没有 GitHub issue，
 > `#NN` 全是本地任务 id**）、CHANGELOG。共 **26 条真开着的** + 下述新增。
 > **不机械接受**：判定列是本轮重新给的，与原计划不一致的地方都写明理由。
@@ -556,7 +560,7 @@ grep -n "pub const DB_VERSION" src-tauri/src/db.rs
 |---|---|---|---|
 | **L-A 预置状态** | 实例**停机时**写它的 SQLite，把"用户点了发送"变成"已入队的事实" | 发消息（`outbox`+`messages` 双行）、发文件（`file_outbox`+磁盘真源文件）、清空数据、旧库迁移（预置 `user_version`） | **零** |
 | **L-B 进程级操纵** | `SIGKILL`/`SIGTERM`/重启、TCP 探测、日志与磁盘断言 | 断链、杀进程、重启恢复、崩溃后 `sending→pending` | **零** |
-| **L-C 协议级注入** | 复用 `examples/e2e_peer.rs` 已实现的 17 种消息面，harness 扮演第三个真实对端 | ~~重复帧、乱序 Chunk、错 hash、错 size、旧 attempt、重复 FileDone~~ ⇒ **2026-09-26 重判：这六格早已有 L2 点名证据，再造一遍是重复覆盖**（`file_relay.rs:337` 重复 Chunk 不重复计数、`network/file.rs:2983` 旧 attempt 帧被过滤而 legacy 帧永不、`file.rs:3819` 完成的 transfer 拒重复 offer、`lib.rs:3210` 重复 FileDone 仍回 Ack、`ble_framing.rs:461/470` 乱序仍可完工 / 重复与残缺不许完工、`db/favorites_tests.rs:1675` 重复 transfer_id offer 幂等）。<br>⚠️ **这句里「错 size」那一格当时是被顺手算进去的**（上面六条锚点没有一条判 size）：本轮实测只有 `finish_receiver_into` 的"字节数与声明不符 ⇒ 不算成功"（那格 ②），而**写盘之前的 chunk 级上限** —— `plaintext_len > size - received` —— 一直内联在吃 `&AppState` 的 `write_chunk` 里，从来没有行为测试。现已按仓内先例抽成纯函数 `chunk_exceeds_declared` 并补 `chunk_length_may_fill_declared_size_but_must_not_exceed_it`（四条边界：恰好填满=放行 / 单片即整份=放行 / 超一字节=拒 / 已收满再来片=拒 / size=0 不许写字）。<br>★ **接线为什么不再加一条文本守卫**：`chunk_exceeds_declared` 是 `pub(crate)`，删掉 `write_chunk` 里那一行之后，不带 `--test` 的 `cargo check` 就打 `warning: function ... is never used`（实测），而 CI 的 clippy 是 `-D warnings` ⇒ **调用点存在性由编译器兜住**，符合 §十四"不要无意义增加 guard 数量"。变异也各自跑过：把 `>` 写成 `>=` ⇒ 新用例在"最后一片正好补到 size 必须放行"那句红（这条就是防「过度加固」的）。<br>★ **同一天补掉最后半格**：零字节文件走**单聊**收尾原先只有群路径有
+| **L-C 协议级注入** | 复用 `src-tauri/examples/e2e_peer.rs` 已实现的 17 种消息面，harness 扮演第三个真实对端 | ~~重复帧、乱序 Chunk、错 hash、错 size、旧 attempt、重复 FileDone~~ ⇒ **2026-09-26 重判：这六格早已有 L2 点名证据，再造一遍是重复覆盖**（`file_relay.rs:337` 重复 Chunk 不重复计数、`network/file.rs:2983` 旧 attempt 帧被过滤而 legacy 帧永不、`file.rs:3819` 完成的 transfer 拒重复 offer、`lib.rs:3210` 重复 FileDone 仍回 Ack、`ble_framing.rs:461/470` 乱序仍可完工 / 重复与残缺不许完工、`db/favorites_tests.rs:1675` 重复 transfer_id offer 幂等）。<br>⚠️ **这句里「错 size」那一格当时是被顺手算进去的**（上面六条锚点没有一条判 size）：本轮实测只有 `finish_receiver_into` 的"字节数与声明不符 ⇒ 不算成功"（那格 ②），而**写盘之前的 chunk 级上限** —— `plaintext_len > size - received` —— 一直内联在吃 `&AppState` 的 `write_chunk` 里，从来没有行为测试。现已按仓内先例抽成纯函数 `chunk_exceeds_declared` 并补 `chunk_length_may_fill_declared_size_but_must_not_exceed_it`（四条边界：恰好填满=放行 / 单片即整份=放行 / 超一字节=拒 / 已收满再来片=拒 / size=0 不许写字）。<br>★ **接线为什么不再加一条文本守卫**：`chunk_exceeds_declared` 是 `pub(crate)`，删掉 `write_chunk` 里那一行之后，不带 `--test` 的 `cargo check` 就打 `warning: function ... is never used`（实测），而 CI 的 clippy 是 `-D warnings` ⇒ **调用点存在性由编译器兜住**，符合 §十四"不要无意义增加 guard 数量"。变异也各自跑过：把 `>` 写成 `>=` ⇒ 新用例在"最后一片正好补到 size 必须放行"那句红（这条就是防「过度加固」的）。<br>★ **同一天补掉最后半格**：零字节文件走**单聊**收尾原先只有群路径有
 `group_done_empty_file_creates_zero_byte_file`，1:1 的 `finish_receiver_into` 没有 ⇒ 新增
 `empty_file_finishes_done_on_the_one_to_one_path_too`（正：done + 真实 0 字节成品 + 路径可读 + 不留 `.part`；
 反：**`size = 0` 不是免检通行证**，摘要不符必须 failed 且不许改名 —— 反面才是让这条用例能咬人的那一半，
@@ -1615,7 +1619,7 @@ A 台账 `active`、**A 队列行仍是 1**；A 重启后 **12.6 s** 从盘上�
 
 > 触发：用户下达「最终稳定版 · 第二阶段总执行指令」（36 节）。本轮**不新增功能**，
 > 全部动作都是"把已存在的东西做完整 / 把说满了的话改准 / 把抓不到的判据补成抓得到"。
-> 复审正文见 `docs/final-architecture-review.md`；这一节只管**按风险重排后的账**。
+> 复审正文见 `docs/archive/final-architecture-review.md`；这一节只管**按风险重排后的账**。
 
 ### 13.1 本轮已清零的（都带非空转或反向证据）
 
@@ -1625,7 +1629,7 @@ A 台账 `active`、**A 队列行仍是 1**；A 重启后 **12.6 s** 从盘上�
 | §12 的第二面 + §9 任务侧 @（2026-09-27 深夜） | ① 聊天时间线那张任务卡的缩略图**点不动**（同一个 `clickable` 默认 false，上一轮只改了收藏）⇒ 卡片改走统一预览（来源标记 `task-card:<id>`，与详情的 `task:` 互不让位）；② 任务描述里的 @ 完全不渲染 ⇒ 新增 `MentionText.vue` + `useMentionContext.ts`，会话窗口那份判定输入改为消费同一个 composable | `b3e635e` / `f2e020e`；两条护栏的 RED 都是拿**真缺陷态**跑出来的（修复前分别点名 `TodoCardBubble.vue` 与「卡片 + 详情」两处裸插值），并各登记成可重跑注入用例；`designGuards` 那条判据的分母今天也从 88 涨到新的条数（**88 是当时那一次的历史读数，不回改**） |
 | §11 日志合并缺"target 不同不许误合并"的反例 | 补 1 条（现 15 条） | 三步实测：加锁绿 → 把 `logMergeKey` 里的 target 摘掉 ⇒ **恰好这条红、其余 14 条全绿** ⇒ 复原绿 |
 | §23 徽标单一事实源靠人自觉 | 补两条锁：组件层不得出现 `openTodosForMe(`；两处消费点必须真引用 `chat.openTodoByConv[` | `3a577e0`，正反夹具走同一台解析器自证 |
-| §13 契约图取数戳手抄且无守卫（漂到 129 条命令 / 19 张表） | 换成当天现算值并**每格写口径**（130 条 / 27 个字面量事件名 / 20 张表 / 6 扇窗 / 11 领域）；决定**不加相等判据** | `794e9ff` + `docs/final-architecture-review.md` 第一节 |
+| §13 契约图取数戳手抄且无守卫（漂到 129 条命令 / 19 张表） | 换成当天现算值并**每格写口径**（130 条 / 27 个字面量事件名 / 20 张表 / 6 扇窗 / 11 领域）；决定**不加相等判据** | `794e9ff` + `docs/archive/final-architecture-review.md` 第一节 |
 | #96 注入腿在本 tip 唯一那格红（死锚点） | 查清死因＝**守卫变强后旧坏法写不出来了**，换成今天可编译的退化形状 | 手动注入后 `error[E` 计数 0 且报的是断言原文 ⇒ 判据红不是编译红；复原后官方 runner 单跑 ✅ |
 | #107 死锚点要跑到那一条才抛错（白等 70+ 分钟） | 加**起跑前**锚点全量核对（复用 runner 自己那套 `include!` 语义） | 一正一反：故意写坏 ⇒ 1 秒拦住并点名用例；复原 ⇒ 打印"恰好命中一次"并照常跑绿 |
 | §22/§28/§27 任务轮缺的三条腿（发起方换向 / 重启后状态不退 / 发送端崩溃）+ 图片引用跨进程过线 | 全部加在既有 `--round=task` 里（**不新增轮次名 ⇒ 不碰那四处登记**，只改矩阵那一处轮次账） | 正向全绿；`task-lie` 的红只落在任务判据那一步；lie 判不到的那些条另用"只换期望值"的变异跑分两次证；反向还照出一处 `every` 对空集合恒真的空转（补"非空"后反向多一条红） |

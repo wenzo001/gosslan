@@ -162,6 +162,16 @@ async function cleanNow() {
     } else {
       app.toast(t("settings.storage.toast.cleaned", { n: r.removed, bytes: formatBytes(r.freed_bytes) }), "success");
     }
+    // 数据库整理的结局**单独说一句**（决策 2）：
+    // · `aborted` = 超时被主动取消 —— 库**内容完好**，只是这次没压缩。用户点完按钮
+    //   看不到任何关于库的反馈会以为功能坏了，所以必须说清"取消"而不是"失败"。
+    // · `failed` 才是真出错。
+    // `done` 不额外弹（成功提示已经在了，再弹一条是噪声）。
+    if (r.db_compact_state === "aborted") {
+      app.toast(t("settings.storage.toast.compactAborted"), "info");
+    } else if (r.db_compact_state === "failed") {
+      app.toast(t("settings.storage.toast.compactFailed"), "error");
+    }
   } catch (e) {
     app.toastError(e, t("settings.storage.toast.cleanFail"));
   } finally {

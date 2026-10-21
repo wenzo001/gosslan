@@ -257,6 +257,8 @@ export const zhCN: MessageDict = {
   "settings.storage.toast.nothing": "没有需要清理的图片或文件（当前保留时长 / 上限下无需删除）",
   "settings.storage.toast.cleaned": "已清理 {n} 个图片/文件，释放 {bytes}",
   "settings.storage.toast.cleanFail": "清理失败",
+  "settings.storage.toast.compactAborted": "数据库整理超时已取消：内容完好，只是这次没有压缩（会自动再试）",
+  "settings.storage.toast.compactFailed": "数据库整理失败（聊天记录未受影响）",
   "settings.storage.export.filename": "聊天记录",
   "settings.storage.confirm.keepDays": "只保留 {n} 天内",
   "settings.storage.confirm.keepForever": "永久保留",

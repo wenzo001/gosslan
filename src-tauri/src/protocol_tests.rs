@@ -1002,15 +1002,25 @@ mod tests {
             dm_allowed_by_features, dm_required_features, CONTENT_FEATURE_FLEX_DM_KIND,
             CONTENT_FEATURE_MERGE, CONTENT_FEATURE_PULL,
         };
-        assert_eq!(dm_required_features("text"), 0, "V1 词表内的 kind 不该被 1:1 门控挡住");
-        assert!(dm_allowed_by_features("text", 0), "对端什么都没声明时，普通文本仍然要发得出去");
+        assert_eq!(
+            dm_required_features("text"),
+            0,
+            "V1 词表内的 kind 不该被 1:1 门控挡住"
+        );
+        assert!(
+            dm_allowed_by_features("text", 0),
+            "对端什么都没声明时，普通文本仍然要发得出去"
+        );
 
         assert_eq!(
             dm_required_features("reaction"),
             CONTENT_FEATURE_FLEX_DM_KIND,
             "1:1 发回应必须等对端声明过「能吃任意 kind」"
         );
-        assert!(!dm_allowed_by_features("reaction", 0), "没握过手 / 已离线 ⇒ 不许发");
+        assert!(
+            !dm_allowed_by_features("reaction", 0),
+            "没握过手 / 已离线 ⇒ 不许发"
+        );
         assert!(
             !dm_allowed_by_features("reaction", CONTENT_FEATURE_PULL),
             "按位判定：只带 pull 位推不出解析方式，不许放行"
@@ -1069,7 +1079,10 @@ mod tests {
             "legacy 清单是 v4.22.34 之前那份枚举的词表，改动它 = 断言老端认得某个 kind"
         );
         for k in DM_LEGACY_KINDS {
-            assert!(is_known_kind(k), "legacy 清单里的 {k} 不在 wire 词表里：两份清单已经漂了");
+            assert!(
+                is_known_kind(k),
+                "legacy 清单里的 {k} 不在 wire 词表里：两份清单已经漂了"
+            );
         }
     }
 
@@ -1086,8 +1099,14 @@ mod tests {
         for (label, body) in [
             ("不是 JSON", "not-json"),
             ("缺 target", r#"{ "emoji": "[赞]", "add": true }"#),
-            ("target 是空白", r#"{ "target": "  ", "emoji": "[赞]", "add": true }"#),
-            ("表情不是 [名字] 形态", r#"{ "target": "m1", "emoji": "赞", "add": true }"#),
+            (
+                "target 是空白",
+                r#"{ "target": "  ", "emoji": "[赞]", "add": true }"#,
+            ),
+            (
+                "表情不是 [名字] 形态",
+                r#"{ "target": "m1", "emoji": "赞", "add": true }"#,
+            ),
         ] {
             let e = parse_reaction_payload(body);
             assert!(e.is_err(), "{label} 必须被当场拒掉，实际通过：{body}");
@@ -1389,12 +1408,20 @@ mod tests {
     fn remind_payload_parse_and_defaults() {
         let p = parse_remind_payload(r#"{"target":"m1"}"#).unwrap();
         assert_eq!(p.target, "m1");
-        assert!(p.actors.is_empty(), "缺 actors 必须按空名单，不是缺字段报错");
+        assert!(
+            p.actors.is_empty(),
+            "缺 actors 必须按空名单，不是缺字段报错"
+        );
 
         let p = parse_remind_payload(r#"{"target":"m1","actors":["d2","d3"]}"#).unwrap();
         assert_eq!(p.actors, vec!["d2".to_string(), "d3".to_string()]);
 
-        for bad in [r#"{}"#, r#"{"target":"  "}"#, r#"not json"#, r#"{"target":7}"#] {
+        for bad in [
+            r#"{}"#,
+            r#"{"target":"  "}"#,
+            r#"not json"#,
+            r#"{"target":7}"#,
+        ] {
             assert!(parse_remind_payload(bad).is_err(), "必须拒：{bad}");
         }
     }
@@ -1418,7 +1445,10 @@ mod tests {
             shake: false,
         })
         .unwrap();
-        assert_eq!(plain, r#"{"target":"m1","actors":[]}"#, "普通提醒不许多出 shake 键");
+        assert_eq!(
+            plain, r#"{"target":"m1","actors":[]}"#,
+            "普通提醒不许多出 shake 键"
+        );
 
         let shook = serde_json::to_string(&RemindPayload {
             target: "m1".to_string(),
@@ -1432,10 +1462,7 @@ mod tests {
     /// 确认载荷：stage 只收 alerted / confirmed 两档；target 空挡。
     #[test]
     fn remind_ack_payload_stage_is_validated() {
-        let p = parse_remind_ack_payload(
-            r#"{"target":"r1","stage":"confirmed"}"#,
-        )
-        .unwrap();
+        let p = parse_remind_ack_payload(r#"{"target":"r1","stage":"confirmed"}"#).unwrap();
         assert_eq!(p.target, "r1");
         assert_eq!(p.stage, REMIND_STAGE_CONFIRMED);
         assert!(parse_remind_ack_payload(r#"{"target":"r1","stage":"alerted"}"#).is_ok());
@@ -1484,5 +1511,57 @@ mod tests {
         let (good, bad) = partition_remind_actors(&actors, &known);
         assert_eq!(good, vec!["d1", "d2"]);
         assert_eq!(bad, vec!["ghost"]);
+    }
+
+    /// P1-03 真续传 S1：新帧往返；旧端没有 `attempt` 的 Offer 必须继续可解析。
+    #[test]
+    fn group_file_resume_frame_and_attempt_compat() {
+        let resume = Message::GroupFileResume {
+            transfer_id: "t1".into(),
+            group_id: "g1".into(),
+            to_sender: "me".into(),
+            received: 1234,
+        };
+        let json = serde_json::to_string(&resume).unwrap();
+        assert!(
+            json.contains("\"group_file_resume\""),
+            "帧 tag 不对：{json}"
+        );
+        match serde_json::from_str::<Message>(&json).unwrap() {
+            Message::GroupFileResume {
+                transfer_id,
+                group_id,
+                to_sender,
+                received,
+            } => {
+                assert_eq!(transfer_id, "t1");
+                assert_eq!(group_id, "g1");
+                assert_eq!(to_sender, "me");
+                assert_eq!(received, 1234);
+            }
+            other => panic!("期望 GroupFileResume，实得 {other:?}"),
+        }
+
+        // 旧端发出的 Offer 没有 attempt 键 ⇒ 必须按 None 解析，不能拒收。
+        let old_offer = serde_json::json!({
+            "type": "group_file_offer",
+            "transfer_id": "t1",
+            "group_id": "g1",
+            "sender_id": "peer",
+            "name": "a.bin",
+            "size": 10,
+            "sha256": "x",
+            "sealed_file_key": "k",
+        });
+        match serde_json::from_value::<Message>(old_offer).unwrap() {
+            Message::GroupFileOffer { attempt, .. } => assert_eq!(attempt, None),
+            other => panic!("期望 GroupFileOffer，实得 {other:?}"),
+        }
+
+        assert_ne!(
+            content_features() & CONTENT_FEATURE_GROUP_FILE_RESUME,
+            0,
+            "本机必须声明群文件续传能力，否则对端永远不会等 GroupFileResume"
+        );
     }
 }

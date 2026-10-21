@@ -94,6 +94,23 @@ function tally(rows) {
 
 const series = [];
 let child = null;
+// 采样/写盘任何一步抛出（磁盘满、路径无效、snapshot 失败）都不能把被测应用留成孤儿：
+// detached 子进程有自己的进程组，父进程退出后不会自动消失（SC-P2-05）。
+const reapChild = () => {
+  if (!child?.pid) return;
+  try {
+    process.kill(-child.pid, "SIGTERM");
+  } catch {
+    /* 已经自己退了 */
+  }
+};
+process.on("exit", reapChild);
+for (const sig of ["SIGINT", "SIGTERM"]) {
+  process.on(sig, () => {
+    reapChild();
+    process.exit(sig === "SIGINT" ? 130 : 143);
+  });
+}
 if (!ATTACH_ONLY && LAUNCH.length) {
   child = spawn(LAUNCH[0], LAUNCH.slice(1), { stdio: "ignore", detached: true });
 }

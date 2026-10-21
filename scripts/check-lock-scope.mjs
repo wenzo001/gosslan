@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * db 锁作用域守卫（lock-scope guard）—— 挡住「emit 发生在 db 锁还活着的时候」。
+ * db 锁作用域守卫（lock-scope guard）—— 挡住「emit 发生在 db 锁还活着的时候」，
+ * 以及 **peers 与 db 的跨锁嵌套**（2026-10-21 P0-01：ABBA 永久 park）。
  *
  * ## 为什么要有这个脚本
  *
@@ -44,6 +45,15 @@
  *     **第二遍**在每个 A 类守卫的存活期（同样认 `drop(NAME)`）内找 `NAME(` 形式的调用。
  *     修法与本仓既有先例一致：`drop(dbc);` → 调用 → 需要时再 `let dbc = …`（见 `group_file.rs` 那段注释）。
  *
+ *  E. **peers 与 db 不得跨锁嵌套**（2026-10-21 P0-01）：
+ *     两把都是非公平、不可重入的 `std::sync::Mutex`。gossip 接收热路径是 `peers → db`
+ *     （`handle_gossip` 的 Unknown 分支），而 Hello / 好友接受曾是 `db → peers`；
+ *     两条同时存在时，重启后 `peers` 为空、第一封 Gossip 必走前一条 ⇒ 双方永久 park。
+ *     判法：任一方向的 A 类守卫存活期内，出现另一把锁的取锁点、或调用“内部会取另一把锁”的
+ *     helper ⇒ FAIL。方法 helper 按 `Type::name` 认（`FriendKeySnapshot::capture`）；
+ *     自由函数只认裸调用，避免与其它模块的同名函数混淆（`db::ensure_conversation`）。
+ *     修法：把 peers 需要的数据克隆成快照、**先放 peers 锁**，再取 db。
+ *
  * ## ⚠️ 本脚本守不住的事（别把它当完整的数据流分析）
  *
  * · **跨函数的 emit**：锁内调了一个内部会 emit 的函数，而函数名不带 `emit` ⇒ 看不见。
@@ -54,8 +64,9 @@
  *   （例如把 `&DbLock` 改名成别的）⇒ 漏收；宏展开里取锁 ⇒ 漏收。
  * · **D 类只判 A 类守卫**：B 类语句临时量在本语句结束就析构，本语句内的调用按 Rust 求值顺序
  *   理论上仍可能撞上，实测本仓 0 例 ⇒ 未纳入，升 edition 2024 时要重判。
- * · **别的 Mutex**（`peers` / `file_receivers` / `relay`）：本脚本只管 db 那把，因为只有它
- *   被前端 IPC 抢。把规则推广到全部锁需要逐个论证"谁在抢它"，属另一轮。
+ * · **别的 Mutex**（`file_receivers` / `relay` / `group_file_keys` …）：本脚本只判 **db** 与
+ *   **peers** 这两把。E 类覆盖了 peers↔db 的 ABBA；其余锁的争用关系需要逐个论证，属另一轮。
+ *   `peers` 自己的同锁重入也只判 A 类守卫里的方法/函数调用（B 类语句临时量未纳入）。
  * · **宏生成的代码**：不扫，行级分析分不清展开后的作用域。
  * · **测试代码为什么不用排除**：测试里确实也有 `db.lock()` 形状，但那里的"emit"全是源码守卫
  *   探针里的**字符串字面量**（`body.find("state.app.emit")`）—— 判据先把字符串抹掉再找发射点，
@@ -83,10 +94,17 @@ const BIND_RE = /^(\s*)let\s+(?:mut\s+)?([A-Za-z_]\w*)\s*=/;
 const LOCK_RE = /\.lock\s*\(\s*\)/;
 /** 被 lock 的那个字段是不是 db 那把锁（`state.db.lock()` / `self.db.lock()` / `s.db.lock()`）。 */
 const DB_LOCK_RE = /\bdb\w*\s*\.\s*lock\s*\(/;
+/** 被 lock 的那个字段是不是 peers 表（`state.peers.lock()` / `s.peers.lock()`）。 */
+const PEERS_LOCK_RE = /\bpeers\s*\.\s*lock\s*\(/;
 /** 事件发射点：`state.app.emit(` / `emit_to(` / `emit_failed(` 都算。 */
 const EMIT_RE = /\.emit\b|\bemit_\w+\s*\(/;
-/** 函数定义头（含 `pub(crate)` / `async` / `unsafe` / `const` / 泛型名）。 */
-const FN_RE = /^(\s*)(?:[^=()]*?\bfn\s+)([A-Za-z_]\w*)\b/;
+/**
+ * 函数定义头（含 `pub(crate)` / `async` / `unsafe` / `const` / 泛型名）。
+ * 前缀只禁 `; { } =`，**允许括号** —— 旧写法 `[^=()]*?` 遇到 `pub(crate) fn` 就失配，
+ * 于是所有 `pub(crate)` 的取锁 helper 从来没进过集合（实测 `FriendKeySnapshot::capture`
+ * 就是这样漏掉的）。带上 `=` 禁令是为了不把 `let x = foo(...)` 误认成定义。
+ */
+const FN_RE = /^(\s*)(?:[^;{}=]*?\bfn\s+)([A-Za-z_]\w*)\b/;
 /** 只有声明没有体的trait 方法：本行到语句结束是 `;` ⇒ 不当函数体处理。 */
 const NO_BODY_RE = /^\s*(?:[^=]*?\bfn\s+[A-Za-z_]\w*\b[^{};]*)?;\s*$/;
 
@@ -128,14 +146,37 @@ function lockParenDepth(text) {
 }
 
 /**
+ * `let x = …lock()…` 绑定的到底是不是**守卫**本身。
+ *
+ * `.lock()` 之后只允许本仓的守卫包装（`unwrap` / `expect` / `unwrap_or_else(|e| e.into_inner())`）；
+ * 再接 `.len()` / `.get()` 之类，绑定的就是值，守卫只是语句临时量
+ *（`let peer_count = s.peers.lock()…len();` 实测被旧判据误判成 guard 存活到块尾）。
+ */
+function bindsGuard(text) {
+  const at = text.lastIndexOf(".lock()");
+  if (at < 0) return false;
+  const tail = text
+    .slice(at + ".lock()".length)
+    .replace(/\s+/g, "")
+    .replace(/;$/, "");
+  return (
+    tail === "" ||
+    tail === ".unwrap()" ||
+    /^\.expect\("[^"]*"\)$/.test(tail) ||
+    /^\.unwrap_or_else\(\|e\|e\.into_inner\(\)\)$/.test(tail)
+  );
+}
+
+/**
  * 把 `lines[i]` 归并进它所在的**取锁链**：rustfmt 会把长链拆成
  * `let dbc = state` / `    .db` / `    .lock()` 三行，所以单看一行会漏判。
  * 向上回看最多 4 行，只要上一行"以 `.` 开头（链式续行）"或"以 `=` / `(` 收尾（链的头）"就继续。
  *
+ * @param fieldRe 要认的字段锁（db 或 peers）
  * @returns {{head: number, text: string}|null} 链的起始行下标与拼接后的文本；
- *          这一行不含 db 取锁时返回 null。
+ *          这一行不含该字段取锁时返回 null。
  */
-function dbLockChain(lines, i) {
+function lockChain(lines, i, fieldRe) {
   if (!LOCK_RE.test(code(lines[i]))) return null;
   let head = i;
   for (let k = 1; k <= 4; k++) {
@@ -148,7 +189,15 @@ function dbLockChain(lines, i) {
   const text = [];
   for (let j = head; j <= i; j++) text.push(code(lines[j]).trim());
   const joined = text.join("");
-  return DB_LOCK_RE.test(joined) ? { head, text: joined } : null;
+  return fieldRe.test(joined) ? { head, text: joined } : null;
+}
+
+function dbLockChain(lines, i) {
+  return lockChain(lines, i, DB_LOCK_RE);
+}
+
+function peersLockChain(lines, i) {
+  return lockChain(lines, i, PEERS_LOCK_RE);
 }
 
 /**
@@ -156,7 +205,25 @@ function dbLockChain(lines, i) {
  * 体范围沿用 A 类那套缩进判据：`fn` 头缩进 I，体结束 = 第一条"缩进恰为 I 且以 `}` 开头"的行；
  * 只有声明没有体的 trait 方法跳过。嵌套 `fn` 不跳过外层，各自算一次。
  */
-function collectSelfLockers(lines, set) {
+/**
+ * 收集文件里所有 `impl TYPE { … }` 的行区间。方法名必须带类型限定（`Type::capture`），
+ * 否则会与另一个模块里的同名自由函数混淆 —— 实测 `db::ensure_conversation`（不取锁）
+ * 与 `commands::chat::ensure_conversation`（取 peers）同名，只按名字认会把前者误判。
+ */
+function implRanges(lines) {
+  const ranges = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = /^\s*impl(?:<[^>]*>)?\s+([A-Za-z_]\w*)[^{]*\{\s*$/.exec(code(lines[i]));
+    if (!m) continue;
+    const ind = lines[i].length - lines[i].trimStart().length;
+    const end = blockEnd(lines, i, ind + 4);
+    if (end > i) ranges.push({ start: i, end, type: m[1] });
+  }
+  return ranges;
+}
+
+function collectLockers(lines, set, fieldRe) {
+  const impls = implRanges(lines);
   for (let i = 0; i < lines.length; i++) {
     const c = code(lines[i]);
     if (NO_BODY_RE.test(c)) continue;
@@ -172,18 +239,29 @@ function collectSelfLockers(lines, set) {
     }
     if (end < 0) continue;
     for (let j = i; j <= end; j++) {
-      if (DB_LOCK_RE.test(code(lines[j]))) {
-        set.add(m[2]);
+      if (fieldRe.test(code(lines[j]))) {
+        const owner = impls
+          .filter((r) => r.start < i && i < r.end)
+          .sort((a, b) => b.start - a.start)[0];
+        set.add(owner ? `${owner.type}::${m[2]}` : m[2]);
         break;
       }
     }
   }
 }
 
-/** 单文件自锁集合（只在省略 `scanFile` 第二参时用，即夹具自证）。 */
-function collectInto(lines) {
+function collectSelfLockers(lines, set) {
+  collectLockers(lines, set, DB_LOCK_RE);
+}
+
+function collectPeerLockers(lines, set) {
+  collectLockers(lines, set, PEERS_LOCK_RE);
+}
+
+/** 单文件自锁集合（只在省略 `scanFile` 的 helper 参数时用，即夹具自证）。 */
+function collectInto(lines, fieldRe = DB_LOCK_RE) {
   const s = new Set();
-  collectSelfLockers(lines, s);
+  collectLockers(lines, s, fieldRe);
   return s;
 }
 
@@ -211,20 +289,50 @@ function stmtEnd(lines, i) {
   return lines.length - 1;
 }
 
+/** 区间 `[from, to)` 内第一次出现某把字段锁的行号（1-based）；没有返回 -1。 */
+function findLockInRange(lines, from, to, chainFn) {
+  for (let j = from; j < to; j++) {
+    if (chainFn(lines, j)) return j + 1;
+  }
+  return -1;
+}
+
+/** 区间 `[from, to)` 内第一次调用“内部会取某把字段锁”的 helper；没有返回 null。 */
+function findHelperCallInRange(lines, from, to, set) {
+  for (let j = from; j < to; j++) {
+    const c = code(lines[j]);
+    for (const h of set) {
+      // 方法 helper 的名字已带类型（`FriendKeySnapshot::capture`），这里精确匹配限定名；
+      // 自由函数只认裸调用，避免把 `db::ensure_conversation` 误认成同名的取 peers 命令。
+      if (new RegExp(`(?<![\\w:])${h}\\s*\\(`).test(c)) {
+        return { line: j + 1, helper: h };
+      }
+    }
+  }
+  return null;
+}
+
 /**
- * 扫描单个文件源码。返回 { guardSites, tempSites, violations, undecidable, reentries }。
+ * 扫描单个文件源码。返回 { guardSites, tempSites, peerGuardSites, peerTempSites,
+ * violations, undecidable, reentries, cross }。
  * violations: { line, emitLine, name, kind }；reentries: { line, callLine, name, helper }
- * @param selfLockers 全仓自锁 helper 名集合；省略时按本文件自建（供夹具自证用）。
+ * cross: { line, otherLine, name, direction } —— peers 与 db 的跨锁嵌套（任一方向都是 ABBA）
+ * @param selfLockers 全仓“内部取 db 锁”的 helper 名集合；省略时按本文件自建（供夹具自证用）。
+ * @param peerLockers 全仓“内部取 peers 锁”的 helper 名集合；同上。
  */
-function scanFile(text, selfLockers) {
+function scanFile(text, selfLockers, peerLockers) {
   const lines = text.split("\n");
   const helpers = selfLockers ?? new Set(collectInto(lines));
+  const peerHelpers = peerLockers ?? new Set(collectInto(lines, PEERS_LOCK_RE));
   const violations = [];
   const undecidable = [];
   const reentries = [];
+  const cross = [];
   const seen = new Set();
   let guardSites = 0;
   let tempSites = 0;
+  let peerGuardSites = 0;
+  let peerTempSites = 0;
 
   for (let i = 0; i < lines.length; i++) {
     const chain = dbLockChain(lines, i);
@@ -235,7 +343,7 @@ function scanFile(text, selfLockers) {
     const headLine = lines[chain.head];
     const bind = BIND_RE.exec(code(headLine));
     // A 类：绑定值就是这把锁本身（`.lock()` 在括号深度 0）。
-    if (bind && lockParenDepth(chain.text) === 0) {
+    if (bind && lockParenDepth(chain.text) === 0 && bindsGuard(chain.text)) {
       guardSites++;
       const ind = bind[1].length;
       const name = bind[2];
@@ -261,14 +369,29 @@ function scanFile(text, selfLockers) {
         }
       }
       // D 类：同一个存活期内调用自锁 helper = 同线程二次取锁 ⇒ 永久 park。
-      outer: for (let j = chain.head + 1; j < aliveTo; j++) {
-        const c = code(lines[j]);
-        for (const h of helpers) {
-          if (new RegExp(`(?<![\\w:])${h}\\s*\\(`).test(c)) {
-            reentries.push({ line: chain.head + 1, callLine: j + 1, name, helper: h });
-            break outer;
-          }
-        }
+      const dbReentry = findHelperCallInRange(lines, chain.head + 1, aliveTo, helpers);
+      if (dbReentry) {
+        reentries.push({
+          line: chain.head + 1,
+          callLine: dbReentry.line,
+          name,
+          helper: dbReentry.helper,
+        });
+      }
+      // E 类：db 守卫存活期内又取 peers（或调用内部取 peers 的 helper）⇒ db→peers。
+      // gossip 热路径是 peers→db，两条同时存在就是 ABBA；std Mutex 非公平不可重入 ⇒ 永久 park。
+      const peerAt = findLockInRange(lines, chain.head + 1, aliveTo, peersLockChain);
+      if (peerAt > 0) {
+        cross.push({ line: chain.head + 1, otherLine: peerAt, name, direction: "db→peers" });
+      }
+      const peerHelper = findHelperCallInRange(lines, chain.head + 1, aliveTo, peerHelpers);
+      if (peerHelper) {
+        cross.push({
+          line: chain.head + 1,
+          otherLine: peerHelper.line,
+          name,
+          direction: `db→peers(${peerHelper.helper})`,
+        });
       }
       continue;
     }
@@ -287,29 +410,125 @@ function scanFile(text, selfLockers) {
         break;
       }
     }
+    // 同一条语句里两把锁同时在场 ⇒ 求值期间必然嵌套（与绑定方式无关）。
+    const peerAt = findLockInRange(lines, chain.head, end + 1, peersLockChain);
+    if (peerAt > 0) {
+      cross.push({
+        line: chain.head + 1,
+        otherLine: peerAt,
+        name: "(语句临时量)",
+        direction: "db→peers",
+      });
+    }
   }
-  return { guardSites, tempSites, violations, undecidable, reentries };
+
+  // E 类反向：peers 守卫存活期内取 db / 调“内部取 db 的 helper” ⇒ peers→db。
+  const seenPeer = new Set();
+  for (let i = 0; i < lines.length; i++) {
+    const chain = peersLockChain(lines, i);
+    if (!chain || seenPeer.has(chain.head)) continue;
+    seenPeer.add(chain.head);
+    const bind = BIND_RE.exec(code(lines[chain.head]));
+    if (bind && lockParenDepth(chain.text) === 0 && bindsGuard(chain.text)) {
+      peerGuardSites++;
+      const ind = bind[1].length;
+      const name = bind[2];
+      const end = blockEnd(lines, chain.head, ind);
+      if (end < 0) {
+        undecidable.push({
+          line: chain.head + 1,
+          why: `判不出 ${name} 所在块的结束行（缩进 ${ind}）`,
+        });
+        continue;
+      }
+      let aliveTo = end;
+      for (let j = chain.head + 1; j < end; j++) {
+        if (new RegExp(`\\bdrop\\(\\s*${name}\\s*\\)`).test(code(lines[j]))) {
+          aliveTo = j;
+          break;
+        }
+      }
+      const dbAt = findLockInRange(lines, chain.head + 1, aliveTo, dbLockChain);
+      if (dbAt > 0) {
+        cross.push({ line: chain.head + 1, otherLine: dbAt, name, direction: "peers→db" });
+      }
+      const dbHelper = findHelperCallInRange(lines, chain.head + 1, aliveTo, helpers);
+      if (dbHelper) {
+        cross.push({
+          line: chain.head + 1,
+          otherLine: dbHelper.line,
+          name,
+          direction: `peers→db(${dbHelper.helper})`,
+        });
+      }
+      // peers 守卫里再调“内部取 peers”的 helper = 同锁重入（与 D 类同形，只是换了一把锁）。
+      const peerHelper = findHelperCallInRange(lines, chain.head + 1, aliveTo, peerHelpers);
+      if (peerHelper) {
+        cross.push({
+          line: chain.head + 1,
+          otherLine: peerHelper.line,
+          name,
+          direction: `peers→peers(${peerHelper.helper})`,
+        });
+      }
+      continue;
+    }
+    peerTempSites++;
+    const end = stmtEnd(lines, chain.head);
+    const dbAt = findLockInRange(lines, chain.head, end + 1, dbLockChain);
+    if (dbAt > 0) {
+      cross.push({
+        line: chain.head + 1,
+        otherLine: dbAt,
+        name: "(语句临时量)",
+        direction: "peers→db",
+      });
+    }
+  }
+
+  return { guardSites, tempSites, peerGuardSites, peerTempSites, violations, undecidable, reentries, cross };
 }
 
 /** 打印人话报告；返回是否通过。`helperCount` = 全仓自锁 helper 名条数（分母，现算打印）。 */
-function report(results, helperCount = 0) {
+function report(results, helperCount = 0, peerHelperCount = 0) {
   let guard = 0;
   let temp = 0;
+  let peerGuard = 0;
+  let peerTemp = 0;
   const all = [];
   const re = [];
   const und = [];
+  const cross = [];
   for (const [rel, r] of results) {
     guard += r.guardSites;
     temp += r.tempSites;
+    peerGuard += r.peerGuardSites;
+    peerTemp += r.peerTempSites;
     for (const v of r.violations) all.push([rel, v]);
     for (const x of r.reentries) re.push([rel, x]);
     for (const u of r.undecidable) und.push([rel, u]);
+    for (const x of r.cross) cross.push([rel, x]);
   }
   if (und.length > 0) {
     console.error(`✗ 有 ${und.length} 处 db 取锁**判不出**作用域（判据 C 不许静默放过）：`);
     for (const [rel, u] of und) console.error(`    · ${rel}:${u.line} —— ${u.why}`);
     console.error("  通常是缩进异常（忘了 `cargo fmt`）或链式换行超过回看深度。");
     console.error("  改成「`let dbc = state.db.lock()…;` 独占一行、外面用 `{ }` 圈住写库」就又能判了。");
+    return false;
+  }
+  if (cross.length > 0) {
+    console.error(
+      `✗ peers 与 db 跨锁嵌套：${cross.length} 处（任一方向的 ABBA 都会永久 park）：`,
+    );
+    for (const [rel, x] of cross) {
+      console.error(
+        `    · ${rel}:${x.line} ${x.name} 的存活期内，第 ${x.otherLine} 行又取另一把锁 —— ${x.direction}`,
+      );
+    }
+    console.error("  为什么要紧：`peers` 与 `db` 都是非公平、不可重入的 std Mutex。");
+    console.error("           gossip 接收热路径是 peers→db，Hello / 好友接受是 db→peers；");
+    console.error("           重启后 peers 为空，第一封 Gossip 必走前一条 ⇒ 两条同时存在时几秒内即可能双方 park。");
+    console.error("  修法：把 peers 需要的数据克隆成快照、**先放 peers 锁**，再取 db（先例：FriendKeySnapshot）。");
     return false;
   }
   if (re.length > 0) {
@@ -339,8 +558,10 @@ function report(results, helperCount = 0) {
     return false;
   }
   console.log(
-    `✓ db 锁作用域：${guard} 个 guard 绑定 + ${temp} 个语句临时量全部判过，` +
-      `没有一处锁活着时 emit；自锁 helper ${helperCount} 个名字，持锁调用它们 0 处`,
+    `✓ 锁作用域：db ${guard} 个 guard 绑定 + ${temp} 个语句临时量；` +
+      `peers ${peerGuard} 个 guard 绑定 + ${peerTemp} 个语句临时量 —— 全部判过，` +
+      `没有一处锁活着时 emit；自锁 helper ${helperCount} 个（db）/ ${peerHelperCount} 个（peers）持锁调用 0 处；` +
+      `peers↔db 跨锁嵌套 0 处`,
   );
   return true;
 }
@@ -436,6 +657,87 @@ const FIX_REENTER_DROP = [
   "}",
 ].join("\n");
 
+/** E 类正例：peers 守卫活着时取 db（gossip 旧形状）⇒ 必须被抓。 */
+const FIX_PEERS_THEN_DB = [
+  "fn f(state: &AppState) {",
+  "    let peers = state.peers.lock().unwrap();",
+  "    let dbc = state.db.lock().unwrap();",
+  "    db::upsert(&dbc);",
+  "}",
+].join("\n");
+
+/** E 类反向正例：db 守卫活着时取 peers（好友接受旧形状）⇒ 必须被抓。 */
+const FIX_DB_THEN_PEERS = [
+  "fn f(state: &AppState) {",
+  "    let dbc = state.db.lock().unwrap();",
+  "    let peers = state.peers.lock().unwrap();",
+  "    db::upsert(&dbc);",
+  "}",
+].join("\n");
+
+/** E 类反证：peers 先在块内取快照并放锁，再取 db ⇒ 放过。 */
+const FIX_PEERS_SNAPSHOT = [
+  "fn f(state: &AppState) {",
+  "    let n = {",
+  "        let peers = state.peers.lock().unwrap();",
+  "        peers.len()",
+  "    };",
+  "    let dbc = state.db.lock().unwrap();",
+  "    db::upsert(&dbc, &n);",
+  "}",
+].join("\n");
+
+/** E 类 helper 正例：db 守卫活着时调用“内部取 peers”的函数 ⇒ 必须被抓。 */
+const FIX_DB_THEN_PEER_HELPER = [
+  "fn peer_count(state: &AppState) -> usize {",
+  "    let peers = state.peers.lock().unwrap();",
+  "    peers.len()",
+  "}",
+  "fn f(state: &AppState) {",
+  "    let dbc = state.db.lock().unwrap();",
+  "    let n = peer_count(state);",
+  "    db::upsert(&dbc, &n);",
+  "}",
+].join("\n");
+
+/** E 类 helper 反证：先取 peers 快照（函数返回后锁已放），再取 db ⇒ 放过。 */
+const FIX_PEER_HELPER_THEN_DB = [
+  "fn peer_count(state: &AppState) -> usize {",
+  "    let peers = state.peers.lock().unwrap();",
+  "    peers.len()",
+  "}",
+  "fn f(state: &AppState) {",
+  "    let n = peer_count(state);",
+  "    let dbc = state.db.lock().unwrap();",
+  "    db::upsert(&dbc, &n);",
+  "}",
+].join("\n");
+
+/** E 类方法形状：取锁 helper 是 `Type::capture(`，也必须被抓（旧判据漏了这种）。 */
+const FIX_DB_THEN_QUALIFIED_PEER_HELPER = [
+  "struct S;",
+  "impl S {",
+  "    fn capture(state: &AppState) -> usize {",
+  "        let peers = state.peers.lock().unwrap();",
+  "        peers.len()",
+  "    }",
+  "}",
+  "fn f(state: &AppState) {",
+  "    let dbc = state.db.lock().unwrap();",
+  "    let n = S::capture(state);",
+  "    db::upsert(&dbc, &n);",
+  "}",
+].join("\n");
+
+/** E 类反证：绑定的是 `.len()` 而不是守卫（守卫只是语句临时量）⇒ 后面取 db 放过。 */
+const FIX_PEERS_LEN_TEMP = [
+  "fn f(state: &AppState) {",
+  "    let peer_count = state.peers.lock().unwrap().len();",
+  "    let dbc = state.db.lock().unwrap();",
+  "    db::upsert(&dbc, &peer_count);",
+  "}",
+].join("\n");
+
 function selfTest() {
   const cases = [
     ["guard 绑定后立刻 emit → 抓", FIX_GUARD_EMIT, { violations: 1, undecidable: 0, reentries: 0 }],
@@ -471,24 +773,61 @@ function selfTest() {
       FIX_REENTER_DROP,
       { violations: 0, undecidable: 0, reentries: 0 },
     ],
+    [
+      "peers 守卫内取 db → 抓（E 类）",
+      FIX_PEERS_THEN_DB,
+      { violations: 0, undecidable: 0, reentries: 0, cross: 1 },
+    ],
+    [
+      "db 守卫内取 peers → 抓（E 类反向）",
+      FIX_DB_THEN_PEERS,
+      { violations: 0, undecidable: 0, reentries: 0, cross: 1 },
+    ],
+    [
+      "peers 快照先放锁再取 db → 放（E 类反证）",
+      FIX_PEERS_SNAPSHOT,
+      { violations: 0, undecidable: 0, reentries: 0, cross: 0 },
+    ],
+    [
+      "db 守卫内调用取 peers 的 helper → 抓（E 类）",
+      FIX_DB_THEN_PEER_HELPER,
+      { violations: 0, undecidable: 0, reentries: 0, cross: 1 },
+    ],
+    [
+      "先调取 peers 的 helper 再取 db → 放（E 类反证）",
+      FIX_PEER_HELPER_THEN_DB,
+      { violations: 0, undecidable: 0, reentries: 0, cross: 0 },
+    ],
+    [
+      "db 守卫内调用 `Type::capture(` 形式的取 peers 方法 → 抓",
+      FIX_DB_THEN_QUALIFIED_PEER_HELPER,
+      { violations: 0, undecidable: 0, reentries: 0, cross: 1 },
+    ],
+    [
+      "绑定 .len() 而非守卫 → 后面取 db 放过（不误报）",
+      FIX_PEERS_LEN_TEMP,
+      { violations: 0, undecidable: 0, reentries: 0, cross: 0 },
+    ],
   ];
   let ok = true;
   for (const [name, src, want] of cases) {
     const got = scanFile(src);
+    const wantCross = want.cross ?? 0;
     if (
       got.violations.length !== want.violations ||
       got.undecidable.length !== want.undecidable ||
-      got.reentries.length !== want.reentries
+      got.reentries.length !== want.reentries ||
+      got.cross.length !== wantCross
     ) {
       ok = false;
       console.error(
-        `✗ 自证失败：「${name}」期望 抓${want.violations}/判不了${want.undecidable}/自锁调用${want.reentries}，` +
-          `实得 抓${got.violations.length}/判不了${got.undecidable.length}/自锁调用${got.reentries.length}`,
+        `✗ 自证失败：「${name}」期望 抓${want.violations}/判不了${want.undecidable}/自锁调用${want.reentries}/跨锁${wantCross}，` +
+          `实得 抓${got.violations.length}/判不了${got.undecidable.length}/自锁调用${got.reentries.length}/跨锁${got.cross.length}`,
       );
     }
   }
   const caught = cases.filter(
-    (c) => c[2].violations + c[2].undecidable + c[2].reentries > 0,
+    (c) => c[2].violations + c[2].undecidable + c[2].reentries + (c[2].cross ?? 0) > 0,
   ).length;
   if (ok) {
     console.log(
@@ -503,9 +842,14 @@ if (process.argv.includes("--self-test")) {
 }
 
 const texts = collectRs(SOURCE_ROOT).map((f) => [path.relative(ROOT, f), readFileSync(f, "utf8")]);
-// D 类要跨文件知道"哪些函数内部取 db 锁"⇒ 先整遍收集名字（分母现算打印），再逐文件判存活期。
+// D/E 类要跨文件知道“哪些函数内部取 db / peers 锁”⇒ 先整遍收集名字（分母现算打印），再逐文件判存活期。
 const helpers = new Set();
-for (const [, t] of texts) collectSelfLockers(t.split("\n"), helpers);
-const results = texts.map(([rel, text]) => [rel, scanFile(text, helpers)]);
+const peerHelpers = new Set();
+for (const [, t] of texts) {
+  const lines = t.split("\n");
+  collectSelfLockers(lines, helpers);
+  collectPeerLockers(lines, peerHelpers);
+}
+const results = texts.map(([rel, text]) => [rel, scanFile(text, helpers, peerHelpers)]);
 
-process.exit(selfTest() && report(results, helpers.size) ? 0 : 1);
+process.exit(selfTest() && report(results, helpers.size, peerHelpers.size) ? 0 : 1);

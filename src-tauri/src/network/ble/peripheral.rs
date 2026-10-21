@@ -1,8 +1,8 @@
 // BLE **外设角色**那一半：起广播 → 收 central → 首帧判路由 → 握手 → 建链与顶替旧链。
-// 
+//
 // 为什么单独一册：这一半带三张表（routes / handshaking / RouteCtl 通道）和一个"同一 central 地址
 // 被复用"的顶替问题 —— 与 central 侧那半的登记表完全不同，混在一起最容易把事件循环灌成洪水。
-// 
+//
 // 恒等判据（与 transport / file 两刀同一套）：`cargo test --features bluetooth --lib -- --list` 用例名差集 0 行、
 //   `verify-guards.py --list` 每条锚点恰好命中一次（锚点由 runner 沿 include! 树自动解析 ⇒ 不动 Case 的 file=）、
 //   clippy `-D warnings`、`cargo fmt --check`。
@@ -156,14 +156,58 @@ async fn peripheral_accept_loop(
     let mut routes: HashMap<String, mpsc::Sender<Vec<u8>>> = HashMap::new();
     let mut handshaking: HashSet<String> = HashSet::new();
     let (route_tx, mut route_rx) = mpsc::channel::<RouteCtl>(16);
+    // 事件队列溢出的带外信号（拍板 3B）：队列满时回调线程只能靠它送达消费侧。
+    // `latched_until` 是溢出后的冷却窗口 —— 期间收到的帧**计数后丢弃**（不是静默：
+    // 断链本身 + 冷却结束的日志会说明丢了多少）。
+    let mut overflow = server.overflow.clone();
+    let mut latched_until: Option<tokio::time::Instant> = None;
+    let mut dropped_while_latched = 0u64;
 
     loop {
         let ev = tokio::select! {
             biased;
             _ = shutdown.changed() => break,
+            res = overflow.changed() => {
+                if res.is_err() {
+                    break;
+                }
+                // 受控断链：拆掉全部外设路由（链路任务随之收尾），进入带抖动的冷却。
+                let backoff_ms = crate::transport::ble_pending::overflow_backoff_ms(
+                    crate::db::now_ms() as u64,
+                );
+                let n = *overflow.borrow_and_update();
+                let dropped_links = routes.len();
+                routes.clear();
+                handshaking.clear();
+                latched_until =
+                    Some(tokio::time::Instant::now() + Duration::from_millis(backoff_ms));
+                dropped_while_latched = 0;
+                state.logger.warn(
+                    "ble",
+                    format!(
+                        "code=BLE_PERIPHERAL_EVENT_QUEUE_OVERFLOW overflow_n={n} \
+                         dropped_links={dropped_links} action=disconnect_all \
+                         cooldown_ms={backoff_ms} —— 外设事件队列积压（硬上限 {} 条），\
+                         已断开全部外设链路并冷却；冷却期帧计数丢弃，不静默丢帧",
+                        crate::transport::ble_pending::PERIPHERAL_EVENT_QUEUE_CAP
+                    ),
+                );
+                continue;
+            }
             Some(ctl) = route_rx.recv() => {
                 match ctl {
                     RouteCtl::Add { central, tx } => {
+                        if latched_until.is_some() {
+                            // 冷却期拒绝新路由：掉落的 `tx` 让刚建的链路立刻收尾，
+                            // 避免"断链 → 立刻重连 → 再积压"的风暴。
+                            state.logger.info(
+                                "ble",
+                                format!(
+                                    "外设事件队列冷却中，拒绝新链路 central={central}（等冷却结束再握手）"
+                                ),
+                            );
+                            continue;
+                        }
                         handshaking.remove(&central);
                         routes.insert(central, tx);
                     }
@@ -182,6 +226,21 @@ async fn peripheral_accept_loop(
 
         match ev {
             PeripheralEvent::Frame { central, bytes } => {
+                if let Some(until) = latched_until {
+                    if tokio::time::Instant::now() < until {
+                        dropped_while_latched += 1;
+                        continue;
+                    }
+                    latched_until = None;
+                    state.logger.info(
+                        "ble",
+                        format!(
+                            "外设事件队列冷却结束（期间丢弃 {dropped_while_latched} 帧；\
+                             链路已断开，等对端重连）"
+                        ),
+                    );
+                    dropped_while_latched = 0;
+                }
                 // 先判「投旧链路 还是 重新握手」（判据与理由见 `peripheral_route_action`）：
                 // 同一个 central 地址的**重连**发来的 Hello 绝不能被投给旧链路的管道,
                 // 否则新连接永远收不到 Hello 回应（对端表现为"握手超时"/"首帧不是 Hello"）。

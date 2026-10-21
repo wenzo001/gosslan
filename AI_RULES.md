@@ -1,12 +1,16 @@
 # Gosslan AI Development Rules
 
-> Version: 1.1（2026-09-20：定位、范围与跨版本兼容三节按现实重写）
+> Version: 1.2（2026-10-21：加时效性入口说明，正文规则未动）
 > Status: Release track / Decentralized mesh chat & team collaboration
 > Project type: Tauri v2 + Vue 3 + TypeScript + Rust + SQLite
 > Primary goal: 稳定 · 速度 · 可达 · 安全 · 可解释（见 §1）
 >
 > This document is the primary engineering rule for AI-assisted development.
 > When a task conflicts with this document, stop and resolve the conflict before coding.
+>
+> **入口与时效**：接手上下文（技术栈 / 文档地图 / 命令 / 常见坑）读 `AI_PROJECT_HANDOFF.md`。
+> 本文里 "v1.0" 是**范围登记**（§2 的 P0/P1 清单）而不是当前版本号 ——
+> 当前版本读 `npm run version:show`。功能有没有交付、最近改了什么，一律读 `CHANGELOG.md`。
 
 ---
 
@@ -1458,7 +1462,16 @@ No obvious regression
 Existing invariants remain valid
 +
 No unnecessary architecture was introduced
++
+Docs that describe this area were synced in the same change
 ```
+
+**最后那一条（2026-10-21 加）**：**改了功能/结构，就必须同步描述它的那几份文档** ——
+路径改了、文件搬了、状态变了（"已实现"↔"未实现"、面板从 3 个变 5 个、表从 19 张变 20 张），
+都要在**同一个提交里**改掉；否则下一个 AI 读到的是假的现状，就按它动手。
+机器已经把最容易漏的两面钉住了：`check-doc-numbers.mjs`（硬数字）、`check-doc-citations.mjs`
+（`file:line` + **裸路径存在性**，2026-10-21 加的判据 D）—— 但**语义状态声明**
+（"已接线"/"未接线"/"已删除"）机器判不了，只能靠人同步。
 
 For core networking tasks:
 

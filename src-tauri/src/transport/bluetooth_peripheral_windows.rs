@@ -91,17 +91,15 @@ pub enum PeripheralEvent {
 struct Shared {
     /// 每个对端的分片重组器（带 30s TTL，与 macOS/Android 同一个实现）。
     reassemblers: Mutex<HashMap<String, BleReassembler>>,
-    /// 事件通道（回调线程 → 网络层）。
-    events: mpsc::UnboundedSender<PeripheralEvent>,
+    /// 事件通道（回调线程 → 网络层；**有界**，拍板 3B）。
+    events: crate::transport::ble_pending::PeripheralEventSender<PeripheralEvent>,
 }
 
 impl Shared {
     fn emit(&self, ev: PeripheralEvent) {
-        // 接收端还在 ⇒ 非阻塞投递即可（回调线程上绝不能 await）
-        if self.events.send(ev).is_err() {
-            // 通道关闭 = 网络层已经不听了（通道被关掉）；此时静默是**错**的，
-            // 但也没别的地方可报，所以在下一层（`PeripheralServer` 被 drop）体现。
-        }
+        // 回调线程上绝不能 await/阻塞。队满时 try_push 会带外发溢出信号，
+        // 由消费侧受控断链 —— 不在这里静默丢弃后继续。
+        let _ = self.events.try_push(ev);
     }
 
     fn notice(&self, msg: impl Into<String>) {
@@ -122,7 +120,9 @@ pub struct PeripheralWriter {
 
 /// 已启动的外设角色。**必须持有 `server`** —— 它被 drop 就停止广播/撤掉服务。
 pub struct PeripheralServer {
-    pub events: mpsc::UnboundedReceiver<PeripheralEvent>,
+    pub events: mpsc::Receiver<PeripheralEvent>,
+    /// 事件队列溢出的带外信号（拍板 3B）：消费侧据此**受控断链** + 冷却。
+    pub overflow: tokio::sync::watch::Receiver<u64>,
     pub writer: PeripheralWriter,
     /// 持有 GATT server 的生命周期（drop = 停止广播并撤服务）。
     server: GattServiceProvider,
@@ -162,7 +162,7 @@ pub struct PeripheralStart {
 /// 失败就返回 `Err`：上层（`network/ble/peripheral.rs::start_peripheral`）只记 warn 并继续做 central，
 /// **绝不影响局域网**。
 pub fn start() -> Result<PeripheralStart, String> {
-    let (tx, rx) = mpsc::unbounded_channel();
+    let (tx, rx, overflow_rx) = crate::transport::ble_pending::channel::<PeripheralEvent>();
     let shared = Arc::new(Shared {
         reassemblers: Mutex::new(HashMap::new()),
         events: tx,
@@ -278,6 +278,7 @@ pub fn start() -> Result<PeripheralStart, String> {
     Ok(PeripheralStart {
         server: PeripheralServer {
             events: rx,
+            overflow: overflow_rx,
             writer: PeripheralWriter { tx_char, shared },
             server: provider,
         },

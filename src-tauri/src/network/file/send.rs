@@ -85,10 +85,9 @@ pub async fn send_file_from_path_at(
         let size_changed = match db::fill_message_size(&dbc, &msg_id, size) {
             Ok(b) => b,
             Err(e) => {
-                state.logger.error(
-                    "file",
-                    format!("发送行 size 回填失败 msg={}：{e}", msg_id),
-                );
+                state
+                    .logger
+                    .error("file", format!("发送行 size 回填失败 msg={}：{e}", msg_id));
                 false
             }
         };
@@ -296,6 +295,13 @@ pub async fn send_file_from_path_at(
     // 无论成功、失败还是 timeout，都从 state 里移除 cancel sender。
     // timeout 时内部 stream_file/Offer 循环被 drop，但 sender 已注册 —— 必须显式清理。
     cancel_cleanup();
+    // 同一件事对 accept 等待者：外层 timeout 丢掉内层 future 时，Offer 循环自己的
+    // remove 分支根本走不到 ⇒ 这里无条件再摘一次（键是 transfer_id，下一次重投会重建）。
+    state
+        .pending_file_accept
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(transfer_id);
 
     match result {
         Ok(inner) => {
@@ -343,6 +349,41 @@ pub(crate) struct WireLedger<'a> {
 impl Drop for WireLedger<'_> {
     fn drop(&mut self) {
         clear_file_wire_progress_in(self.table, &self.wire_key);
+    }
+}
+
+/// `pending_file_complete` 的登记守卫：离开作用域（含 `?`、提前 return、panic 展开）即摘除。
+///
+/// 旧写法只在“接收端否定确认”和“成功拿到 ACK”两条路径手工 `remove`；其余七条早退
+/// （取消 / 打开失败 / 建链失败 / 读错 / 加密失败 / 投递失败 / 期限）都把 `oneshot::Sender`
+/// 留在表里：表单调增长，且残留项会让迟到的 `FileCompleteAck` 命中一个没人等的 channel。
+/// 与 `WireLedger` 同一模式 —— 只留一个“什么时候删”的家。
+pub(crate) struct PendingCompleteGuard<'a> {
+    table:
+        &'a std::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<bool>>>,
+    transfer_id: String,
+}
+
+impl<'a> PendingCompleteGuard<'a> {
+    fn install(
+        table: &'a std::sync::Mutex<
+            std::collections::HashMap<String, tokio::sync::oneshot::Sender<bool>>,
+        >,
+        transfer_id: &str,
+    ) -> Self {
+        Self {
+            table,
+            transfer_id: transfer_id.to_string(),
+        }
+    }
+}
+
+impl Drop for PendingCompleteGuard<'_> {
+    fn drop(&mut self) {
+        self.table
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.transfer_id);
     }
 }
 
@@ -424,6 +465,8 @@ async fn stream_file(
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .insert(transfer_id.to_string(), tx);
+    // 登记即武装：此后每一条退出路径都由守卫摘除（见 `PendingCompleteGuard`）。
+    let _complete_guard = PendingCompleteGuard::install(&state.pending_file_complete, transfer_id);
 
     {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -451,11 +494,6 @@ async fn stream_file(
                 // 接收端已对某一片判死并回了否定确认 ⇒ 立刻停手，别再把剩余字节灌进一条
                 // 已经死掉的传输。旧行为：整份发完 → FileDone 无人应答 → 干等一个
                 // FILE_ACK_IDLE → 判"可重试" → 再整发 5 次（真机：两边都显示失败）。
-                state
-                    .pending_file_complete
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .remove(transfer_id);
                 return Err(SendFileError::retryable(
                     "接收端提前终止该传输（分片校验失败/超出声明大小），下次按对端已收字节续传",
                 ));
@@ -578,12 +616,7 @@ async fn stream_file(
         _ = &mut *cancel_rx => return Err(SendFileError::permanent("用户取消发送")),
         done = wait_complete_ack(state, transfer_id, peer_id, ack_rx) => done,
     };
-    state
-        .pending_file_complete
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .remove(transfer_id);
-    // 进展记录由 `_wire_ledger` 在离开作用域时回收（成功与所有失败路径同一处）。
+    // 进展记录与完成登记都由各自的守卫在离开作用域时回收（成功与所有失败路径同一处）。
     if !completed {
         return Err(SendFileError::retryable("接收方未确认文件完成"));
     }

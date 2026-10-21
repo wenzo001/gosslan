@@ -64,7 +64,6 @@ pub fn get_safety_number(state: State<'_, Arc<AppState>>, peer_id: String) -> Op
 #[tauri::command(async)]
 pub fn get_friends(state: State<'_, Arc<AppState>>) -> Vec<Friend> {
     let s = state.inner();
-    let peers = s.peers.lock().unwrap_or_else(|e| e.into_inner());
     // 同时检查活跃 TCP 链接：链路存活但 peer 已被 discovery sweep 清掉时，
     // 仍应显示在线，避免「实际可通信但 UI 显示离线」。
     // ⚠️ 只算**非空** Vec（与 `sweep_peers` / `has_link` 同一口径）：
@@ -80,6 +79,15 @@ pub fn get_friends(state: State<'_, Arc<AppState>>) -> Vec<Friend> {
         })
         .unwrap_or_default();
     let now = crate::db::now_ms();
+    // peers 的在线判定快照：**先取完并放锁**，下面才取 db。
+    // 持 peers 求 db 会与 Hello 路径的 db→peers 构成 ABBA（这条 IPC 恰恰是前端常调的）。
+    let peer_snapshot: std::collections::HashMap<String, (i64, String)> = {
+        let peers = s.peers.lock().unwrap_or_else(|e| e.into_inner());
+        peers
+            .iter()
+            .map(|(id, p)| (id.clone(), (p.last_seen, p.device_type.clone())))
+            .collect()
+    };
     // 对端版本快照：与 device_type 同一个"读时富化"套路（`peer_versions` 只在验签后的
     // Hello 里写入）。先取快照再拿 db 锁 —— 不为省事在持 db 锁期间再去锁别的表。
     let versions: std::collections::HashMap<String, crate::state::PeerVersion> = s
@@ -90,13 +98,13 @@ pub fn get_friends(state: State<'_, Arc<AppState>>) -> Vec<Friend> {
     let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
     let mut friends = db::list_friends(&dbc).unwrap_or_default();
     for f in friends.iter_mut() {
-        let last_seen = peers.get(&f.device_id).map(|p| p.last_seen).unwrap_or(0);
+        let (last_seen, device_type) = peer_snapshot
+            .get(&f.device_id)
+            .cloned()
+            .unwrap_or((0, String::new()));
         f.online = friend_is_online(last_seen, now, active_links.contains(&f.device_id));
         // 设备类型从 peers 表现场读取（Hello/UserInfo/Presence 都会更新它）。
-        f.device_type = peers
-            .get(&f.device_id)
-            .map(|p| p.device_type.clone())
-            .unwrap_or_default();
+        f.device_type = device_type;
         // 版本：判定放在唯一的 `peer_protocol_is_newer` 里，前端只消费结论。
         let declared = versions.get(&f.device_id);
         f.peer_app_version = declared.and_then(|v| v.app_version.clone());

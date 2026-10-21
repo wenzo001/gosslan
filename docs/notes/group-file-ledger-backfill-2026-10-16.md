@@ -1,7 +1,7 @@
 # 群文件台账补账：可行性与那一格启动陷阱（2026-10-16）
 
 **背景**：群收尾那一格曾把三张台账包进一个**忘了 `tx.commit()`** 的事务（`2de9264`，
-判据后补在 `lib_file_tests.rs`，见 `docs/audit/ledger-2026-10-16.md` 第 1 节）⇒ 三张一起回滚：文件在盘上、
+判据后补在 `lib_file_tests.rs`，见 `docs/archive/audit/ledger-2026-10-16.md` 第 1 节）⇒ 三张一起回滚：文件在盘上、
 `group_file_recipients` 不 completed、`file_transfers` 没有 done 行、`content_transfers` 那一行根本没被构造。
 后果是那台**不算种子**，别人再也拉不到这个文件；而对账扫描器捞不到它（谓词要求“已有一行且 path IS NULL”）。
 
@@ -143,7 +143,7 @@
 `2de9264` 是同一个形状，而它被我自己刚写下的正向用例当场抓出来。记在这里的原因：这条判据族的
 价值第一次是在**作者自己身上**验证的（不是"我读过觉得它对"），也正是 INV-P34 那一族说的
 「下一格必须被同一族判据当场抓住」。修完当时整册 877 条全绿。
-⚠️ 本册这一节随后又被两路只读审查推着改了三次（评审详见 `docs/audit/ledger-2026-10-16.md` §5 第 14~18 行）：① 完成标记原来**无条件写** ⇒ 加 `incomplete` 门（一次 SQLITE_BUSY 不该把这台永久钉成不再补账）；② 接线那条用例原本落在 `mod` 外面 ⇒ 没有 `#[cfg(test)]`、会被编进 release；③ 候选扫描原来在 async worker 上握着全局 db 锁做全索引扫 ⇒ 整段进 `spawn_blocking`。最终整册现读 **880 通过 / 0 失败**，`fmt`/`clippy -D warnings`/`verify-guards --list`/快速层 17 步/测试清单守卫各退 0。
+⚠️ 本册这一节随后又被两路只读审查推着改了三次（评审详见 `docs/archive/audit/ledger-2026-10-16.md` §5 第 14~18 行）：① 完成标记原来**无条件写** ⇒ 加 `incomplete` 门（一次 SQLITE_BUSY 不该把这台永久钉成不再补账）；② 接线那条用例原本落在 `mod` 外面 ⇒ 没有 `#[cfg(test)]`、会被编进 release；③ 候选扫描原来在 async worker 上握着全局 db 锁做全索引扫 ⇒ 整段进 `spawn_blocking`。最终整册现读 **880 通过 / 0 失败**，`fmt`/`clippy -D warnings`/`verify-guards --list`/快速层 17 步/测试清单守卫各退 0。
 
 仍然没验的（如实登记）：
 
