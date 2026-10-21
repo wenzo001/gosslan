@@ -1,5 +1,6 @@
 import type { Conversation, MessageRecord } from "@/types";
-import { MENTION_AFTER, MENTION_BEFORE, escapeRe } from "./linkify.ts";
+import { MENTION_AFTER, MENTION_BEFORE } from "./linkify.ts";
+import { escapeRe } from "./escapeRe.ts";
 import {
   countsTowardUnread,
   isKnownKind,

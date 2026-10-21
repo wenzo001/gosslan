@@ -1,7 +1,7 @@
 //! 应用全局状态与前端交互类型。
 
 use std::collections::{HashMap, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -1307,6 +1307,203 @@ pub struct PendingKeyRotation {
     pub ts: i64,
 }
 
+/// 启动期**数据完整性**错误：这一族绝不允许降级成"新建一份"。
+///
+/// 2026-10-20 P0（Windows 崩溃后变成默认新用户、好友丢失）的代码根因就在旧路径：
+/// `get_setting` 把读库错误折成 `None`，身份加载把 `None` 当"首次安装"，于是
+/// **一次 SQLITE_BUSY / I/O 错误就生成新密钥并写回旧库**。现在所有身份与设备标识
+/// 的读取都走 `get_setting_checked`，任何失败都返回这里的错误并中止启动；
+/// 原数据库一个字节都不改，由用户在提示里选择恢复/导出诊断。
+#[derive(Debug)]
+pub enum StartupError {
+    IdentityRead {
+        source: rusqlite::Error,
+    },
+    IdentityIncomplete {
+        detail: String,
+    },
+    IdentityCorrupt,
+    IdentityPersist {
+        source: rusqlite::Error,
+    },
+    DeviceIdRead {
+        source: rusqlite::Error,
+    },
+    DeviceIdMissing,
+    DeviceIdPersist {
+        source: rusqlite::Error,
+    },
+    SettingRead {
+        key: &'static str,
+        source: rusqlite::Error,
+    },
+    BusinessDataProbe {
+        source: rusqlite::Error,
+    },
+    RecoverableBackup {
+        backup: PathBuf,
+    },
+}
+
+impl std::fmt::Display for StartupError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StartupError::IdentityRead { source } => {
+                write!(f, "身份密钥读取失败（读库错误）：{source}")
+            }
+            StartupError::IdentityIncomplete { detail } => {
+                write!(f, "身份密钥不完整：{detail}")
+            }
+            StartupError::IdentityCorrupt => write!(f, "身份密钥损坏/截断，无法解析"),
+            StartupError::IdentityPersist { source } => {
+                write!(f, "身份密钥写入失败：{source}")
+            }
+            StartupError::DeviceIdRead { source } => {
+                write!(f, "设备标识读取失败（读库错误）：{source}")
+            }
+            StartupError::DeviceIdMissing => write!(f, "已有安装的数据库里缺少设备标识"),
+            StartupError::DeviceIdPersist { source } => {
+                write!(f, "设备标识写入失败：{source}")
+            }
+            StartupError::SettingRead { key, source } => {
+                write!(f, "设置 {key} 读取失败（读库错误）：{source}")
+            }
+            StartupError::BusinessDataProbe { source } => {
+                write!(f, "启动数据探测失败（读库错误）：{source}")
+            }
+            StartupError::RecoverableBackup { backup } => {
+                write!(f, "主库为空但发现可恢复的迁移备份：{}", backup.display())
+            }
+        }
+    }
+}
+
+impl std::error::Error for StartupError {}
+
+impl StartupError {
+    /// 日志与原生弹窗共用的错误码（支持人员按码检索）。
+    pub fn code(&self) -> &'static str {
+        match self {
+            StartupError::IdentityRead { .. } => "IDENTITY_READ_FAILED",
+            StartupError::IdentityIncomplete { .. } => "IDENTITY_INCOMPLETE",
+            StartupError::IdentityCorrupt => "IDENTITY_CORRUPT",
+            StartupError::IdentityPersist { .. } => "IDENTITY_PERSIST_FAILED",
+            StartupError::DeviceIdRead { .. } => "DEVICE_ID_READ_FAILED",
+            StartupError::DeviceIdMissing => "DEVICE_ID_MISSING",
+            StartupError::DeviceIdPersist { .. } => "DEVICE_ID_PERSIST_FAILED",
+            StartupError::SettingRead { .. } => "SETTING_READ_FAILED",
+            StartupError::BusinessDataProbe { .. } => "DB_DATA_PROBE_FAILED",
+            StartupError::RecoverableBackup { .. } => "DB_RECOVERABLE_BACKUP_FOUND",
+        }
+    }
+
+    /// 给人看的完整说明。核心承诺写在每一句里：**没有生成新身份、没有覆盖旧数据**。
+    pub fn user_message(&self, app_data: &Path) -> String {
+        let code = self.code();
+        let body = match self {
+            StartupError::IdentityRead { .. }
+            | StartupError::DeviceIdRead { .. }
+            | StartupError::SettingRead { .. }
+            | StartupError::BusinessDataProbe { .. } => format!(
+                "读取本地数据库时发生错误，Gosslan 已停止启动。\n\
+                 为了避免把一次临时读库失败误判成『首次安装』，本次**没有生成新身份、也没有覆盖旧数据**。\n\
+                 常见原因是另一个 Gosslan 进程仍持有数据库、磁盘/权限异常。\n\
+                 请关闭其它 Gosslan 实例后重试；若仍失败，请保留数据目录并导出诊断信息。\n\n技术信息：{self}"
+            ),
+            StartupError::IdentityIncomplete { .. } => format!(
+                "数据库里已有安装数据，但身份密钥不完整（{self}）。\n\
+                 Gosslan 已停止启动：**没有生成新身份，也没有覆盖任何旧密钥**。\n\
+                 这通常意味着数据库被部分损坏或被外部工具改写过。\n\
+                 请保留数据目录，优先从同目录的迁移备份恢复，再导出诊断信息。"
+            ),
+            StartupError::IdentityCorrupt => {
+                "数据库里的身份密钥无法解析（损坏/截断）。\n\
+                 Gosslan 已停止启动：**没有覆盖旧密钥**。\n\
+                 覆盖它会让好友绑定与历史加密消息永久失配。\n\
+                 请保留数据目录，优先从迁移备份恢复，再导出诊断信息。"
+                    .to_string()
+            }
+            StartupError::IdentityPersist { .. } => format!(
+                "新身份密钥写不进数据库（{self}）。\n\
+                 Gosslan 已停止启动：**不会在内存里临时使用一套无法持久化的新身份**。\n\
+                 请检查磁盘空间/权限，保留数据目录后重试。"
+            ),
+            StartupError::DeviceIdMissing => {
+                "数据库里已有安装数据，但缺少设备标识。\n\
+                 Gosslan 已停止启动：**没有生成新设备标识**（换了它，好友会看到一个陌生人）。\n\
+                 请保留数据目录，优先从迁移备份恢复，再导出诊断信息。"
+                    .to_string()
+            }
+            StartupError::DeviceIdPersist { .. } => format!(
+                "设备标识写不进数据库（{self}）。Gosslan 已停止启动，避免每次启动都换一个身份。\n\
+                 请检查磁盘空间/权限，保留数据目录后重试。"
+            ),
+            StartupError::RecoverableBackup { backup } => format!(
+                "主数据库看起来是空的，但同目录下有一份可恢复的迁移备份：\n{}\n\n\
+                 为防止崩溃后误生成新身份，Gosslan 已停止启动。\n\
+                 请先把整个数据目录复制保留，再由你决定是否用这份备份恢复；\n\
+                 在恢复前不要删除备份，也不要用当前版本新建身份。",
+                backup.display()
+            ),
+        };
+        format!(
+            "{body}\n\n错误码：{code}\n数据目录：{}\n日志目录：{}\n\
+             本次启动没有删除或覆盖数据库、备份与日志。",
+            app_data.display(),
+            app_data.join("logs").display()
+        )
+    }
+}
+
+/// 加载持久化身份；**只在空库首次安装时**生成一次。
+///
+/// 返回 `(identity, generated)`：`generated=false` 表示来自已存密钥。
+/// 任何"看起来像损坏/读失败"的形状都返回错误，绝不落新密钥。
+fn load_or_create_identity(
+    conn: &Connection,
+    existing_install: bool,
+) -> Result<(Identity, bool), StartupError> {
+    let xs = db::get_setting_checked(conn, "x25519_secret")
+        .map_err(|source| StartupError::IdentityRead { source })?;
+    let es = db::get_setting_checked(conn, "ed25519_secret")
+        .map_err(|source| StartupError::IdentityRead { source })?;
+    match (xs, es) {
+        (Some(xs), Some(es)) => Identity::from_secrets(&xs, &es)
+            .map(|id| (id, false))
+            .ok_or(StartupError::IdentityCorrupt),
+        (None, None) if !existing_install => {
+            let id = Identity::generate();
+            persist_identity(conn, &id)?;
+            Ok((id, true))
+        }
+        (None, None) => Err(StartupError::IdentityIncomplete {
+            detail: "两条私钥都不存在（库中已有业务数据，拒绝按首次安装处理）".to_string(),
+        }),
+        (x, e) => Err(StartupError::IdentityIncomplete {
+            detail: format!(
+                "只有一条私钥存在（x25519={}, ed25519={}）——部分写入或损坏",
+                x.is_some(),
+                e.is_some()
+            ),
+        }),
+    }
+}
+
+/// 两条私钥的写入必须在**同一事务**里：否则中途失败会留下"只有一条"的形状，
+/// 下次启动会被判成损坏（比现在更糟的是用它去覆盖另一条）。
+fn persist_identity(conn: &Connection, id: &Identity) -> Result<(), StartupError> {
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|source| StartupError::IdentityPersist { source })?;
+    db::set_setting(&tx, "x25519_secret", &id.x25519_secret_b64())
+        .map_err(|source| StartupError::IdentityPersist { source })?;
+    db::set_setting(&tx, "ed25519_secret", &id.ed25519_secret_b64())
+        .map_err(|source| StartupError::IdentityPersist { source })?;
+    tx.commit()
+        .map_err(|source| StartupError::IdentityPersist { source })?;
+    Ok(())
+}
+
 impl AppState {
     /// 初始化应用状态：解析目录、打开数据库、加载/生成设备指纹与身份密钥。
     pub fn init(app: AppHandle) -> Result<Arc<AppState>, Box<dyn std::error::Error>> {
@@ -1330,19 +1527,12 @@ impl AppState {
             "gosslan.db".to_string()
         };
         let db_path = app_data.join(db_name);
+        // 必须在 `db::init` **之前**取：init 会把不存在的文件创建出来，之后再 stat
+        // 就无法区分「已有安装的库」与「刚建的空库」—— 而身份加载的安全性依赖这个判断。
+        let db_preexisting = std::fs::metadata(&db_path)
+            .map(|m| m.len() > 0)
+            .unwrap_or(false);
         let conn = db::init(&db_path)?;
-
-        // 🟦 崩溃恢复：把所有 sending 状态的 file_outbox 重置回 pending。
-        // 进程可能在 mark sending 后、delete 前崩溃 —— 这些条目会永远卡在 sending，
-        // list_pending_file_outbox 只捞 pending 的，它们就被彻底遗忘了。
-        // 重置后下次 Hello 触发 flush_pending_files 会重新捞出来重试；
-        // 重复传输由对端的幂等 FileOffer 处理。
-        match crate::db::reset_sending_to_pending(&conn) {
-            Ok(n) if n > 0 => {
-                eprintln!("[gosslan] 崩溃恢复：{n} 条文件 outbox 从 sending 重置为 pending");
-            }
-            _ => {}
-        }
 
         // 运行日志：多开实例用独立文件（gosslan-1.log），避免测试实例互相覆盖。
         let log_stem = if instance > 0 {
@@ -1366,7 +1556,12 @@ impl AppState {
                 .unwrap_or_else(|_| "unknown".to_string());
             format!("[dev:{plat}-{host}]")
         };
-        let logger = Logger::new(app_data.join("logs"), &log_stem, dev_fingerprint);
+        // 日志目录必须走唯一计算点（与 bootstrap 的现场文件同源，见 logging::crash_file_in）。
+        let logger = Logger::new(
+            crate::logging::log_dir_in(&app_data),
+            &log_stem,
+            dev_fingerprint,
+        );
         // 把上一轮留在盘上的记录读进内存环：get_logs 只读内存，不补这一步，
         // 崩溃重启后界面里看不见刚发生的那次故障。
         // 必须紧跟 Logger::new、排在本轮第一条日志之前；接线点只许一处。
@@ -1378,6 +1573,85 @@ impl AppState {
                     "上一轮记录已载入内存：{seeded} 条（只读，盘上原件不动；内存环有上界会淘汰）"
                 ),
             );
+        }
+
+        // ---- 启动数据完整性快照（2026-10-20 P0 的现场证据）----
+        // 这一行必须早于身份加载：下一次"崩溃后变成默认新用户"的现场，要能一眼分开
+        // 「还是原来那份库（计数在）」与「换了一份空库（计数全 0、路径不同）」。
+        let (messages, friends, conversations, groups) = match db::boot_data_counts(&conn) {
+            Ok(v) => v,
+            Err(source) => {
+                logger.error(
+                    "boot",
+                    format!("code=DB_DATA_PROBE_FAILED db={} err={source} —— 无法确认库内数据，停止启动", db_path.display()),
+                );
+                crate::logging::crash_note(&format!(
+                    "code=DB_DATA_PROBE_FAILED 数据库探测失败，停止启动：{source}（未写入任何业务数据）"
+                ));
+                return Err(Box::new(StartupError::BusinessDataProbe { source }));
+            }
+        };
+        let existing_install = db_preexisting || messages + friends + conversations + groups > 0;
+        let db_bytes = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
+        logger.info(
+            "boot",
+            format!(
+                "code=BOOT_DB_STATE data_dir={} db={} existed={db_preexisting} bytes={db_bytes} \
+                 install={existing_install} messages={messages} friends={friends} \
+                 conversations={conversations} groups={groups}",
+                app_data.display(),
+                db_path.display()
+            ),
+        );
+        // 主库看起来是空库、旁边却有迁移备份 ⇒ 绝不按首次安装生成新身份。
+        if !existing_install {
+            if let Some(backup) = db::find_recovery_backup(&db_path) {
+                logger.error(
+                    "boot",
+                    format!(
+                        "code=DB_RECOVERABLE_BACKUP_FOUND backup={} —— 主库为空，拒绝生成新身份",
+                        backup.display()
+                    ),
+                );
+                crate::logging::crash_note(&format!(
+                    "code=DB_RECOVERABLE_BACKUP_FOUND 主库为空但存在迁移备份：{}（未生成新身份）",
+                    backup.display()
+                ));
+                return Err(Box::new(StartupError::RecoverableBackup { backup }));
+            }
+        }
+
+        // 🟦 崩溃恢复：把所有 sending 状态的 file_outbox 重置回 pending。
+        // 进程可能在 mark sending 后、delete 前崩溃 —— 这些条目会永远卡在 sending，
+        // list_pending_file_outbox 只捞 pending 的，它们就被彻底遗忘了。
+        // 重置后下次 Hello 触发 flush_pending_files 会重新捞出来重试；
+        // 重复传输由对端的幂等 FileOffer 处理。
+        match db::reset_sending_to_pending(&conn) {
+            Ok(n) if n > 0 => logger.info(
+                "outbox",
+                format!("code=FILE_OUTBOX_RECOVERED count={n} action=sending→pending"),
+            ),
+            Ok(_) => {}
+            Err(e) => logger.error(
+                "outbox",
+                format!("code=FILE_OUTBOX_RECOVER_FAILED err={e} —— 文件队列可能停在 sending，需人工关注"),
+            ),
+        }
+        // 消息队列的崩溃窗口：`sending` 但两张 outbox 表都没有行 ⇒ 清扫器与补发都看不见它。
+        // 落 failed 是诚实的终态（没有 Ack 就没有送达证据）；接收端按 msg_id 幂等，重发安全。
+        match db::recover_orphan_sending_messages(&conn) {
+            Ok(n) if n > 0 => logger.warn(
+                "outbox",
+                format!(
+                    "code=OUTBOX_ORPHAN_RECOVERED count={n} action=sending→failed —— \
+                     这些消息没有 outbox 行（崩溃窗口/历史收尾顺序），否则会永久显示发送中"
+                ),
+            ),
+            Ok(_) => {}
+            Err(e) => logger.error(
+                "outbox",
+                format!("code=OUTBOX_ORPHAN_RECOVER_FAILED err={e} —— 孤儿 sending 行可能仍会永久显示发送中"),
+            ),
         }
 
         // 文件接收目录：默认 app_data/downloads，允许用户在设置里改（持久化到 settings）。
@@ -1397,27 +1671,64 @@ impl AppState {
         // "检测到同 ID 不同密钥 ⇒ 提示换新 ID"那一条路，而它**还没实现**（ADR-0021 的切片 2；
         // 换 ID 的口径用户 2026-09-22 已拍板：好友重加、旧会话只读、聊天记录不迁移）。
         // 在那之前，已经撞上的两台只能靠下面那个 `dev-` 前缀迁移之外的手工路径（清应用数据）。
-        let base_device = match db::get_setting(&conn, "device_id") {
-            Some(stored) => {
+        // 设备标识与身份密钥同一道安全边界：**读失败/已有库缺失都不许重建**。
+        // 换了设备 id，好友会看到一个陌生人（旧 id 的会话与密钥绑定全部对不上）。
+        let base_device = match db::get_setting_checked(&conn, "device_id") {
+            Ok(Some(stored)) => {
                 // ⚠️ **历史值迁移**（2026-09-13 合并评审补）：那时的兜底路径多套了一层前缀，
                 // 已装的安卓库里存的是 `dev-gosslan-…`。光改生成代码治不了已装设备 —— 它们的
                 // id 还是"三端里恒最小、永远不主动拨号"的那个值，除非清一次应用数据（丢聊天与
                 // 好友）。所以这里把废弃前缀**就地剥掉**再写回。
                 match crate::device::strip_legacy_dev_prefix(&stored) {
                     Some(migrated) => {
-                        db::set_setting(&conn, "device_id", migrated).ok();
+                        if let Err(e) = db::set_setting(&conn, "device_id", migrated) {
+                            // 写失败不会导致身份变化：下次启动仍会重试同一段迁移。
+                            logger.warn(
+                                "identity",
+                                format!("code=DEVICE_ID_MIGRATION_WRITE_FAILED err={e} —— 本次仍使用迁移后的 id"),
+                            );
+                        }
                         migrated.to_string()
                     }
                     None => stored,
                 }
             }
-            None => {
+            Ok(None) if !existing_install => {
                 // ⚠️ 生成函数自己带 `gosslan-` 前缀，这里**不能再套一层**：真机 2026-09-13 那轮
                 // 多套了个 `dev-`，于是 `'d' < 'g'` ⇒ 安卓在三端里恒为最小 id，而镜像规则是
                 // 「大 id 拨、小 id 只接受」⇒ 那台设备永远不主动拨任何人，只能等别人来连它。
                 let fresh = generate_device_id(&collect_device_attrs());
-                db::set_setting(&conn, "device_id", &fresh).ok();
+                if let Err(source) = db::set_setting(&conn, "device_id", &fresh) {
+                    logger.error(
+                        "identity",
+                        format!("code=DEVICE_ID_PERSIST_FAILED err={source} —— 停止启动，避免每次启动换身份"),
+                    );
+                    crate::logging::crash_note(&format!(
+                        "code=DEVICE_ID_PERSIST_FAILED 设备标识写入失败，停止启动：{source}（未生成新身份/标识）"
+                    ));
+                    return Err(Box::new(StartupError::DeviceIdPersist { source }));
+                }
                 fresh
+            }
+            Ok(None) => {
+                logger.error(
+                    "boot",
+                    "code=DEVICE_ID_MISSING 已有安装的数据库里没有 device_id —— 拒绝生成新标识",
+                );
+                crate::logging::crash_note(
+                    "code=DEVICE_ID_MISSING 已有安装缺少 device_id，停止启动（未生成新身份）",
+                );
+                return Err(Box::new(StartupError::DeviceIdMissing));
+            }
+            Err(source) => {
+                logger.error(
+                    "boot",
+                    format!("code=DEVICE_ID_READ_FAILED err={source} —— 停止启动，避免生成新标识"),
+                );
+                crate::logging::crash_note(&format!(
+                    "code=DEVICE_ID_READ_FAILED 设备标识读取失败，停止启动：{source}（未生成新标识）"
+                ));
+                return Err(Box::new(StartupError::DeviceIdRead { source }));
             }
         };
         // 多开时给不同实例不同 device_id，使其成为互相可发现的独立节点
@@ -1426,9 +1737,6 @@ impl AppState {
         } else {
             base_device.clone()
         };
-        if instance == 0 {
-            db::set_setting(&conn, "device_id", &base_device).ok();
-        }
 
         // 多开时偏移 TCP 端口（UDP 端口保持共享的发现通道，配合 SO_REUSEADDR 多实例共存）
         let tcp_port: u16 = if instance > 0 {
@@ -1445,22 +1753,40 @@ impl AppState {
         let hostname_now = hostname::get()
             .map(|h| h.to_string_lossy().to_string())
             .unwrap_or_default();
-        let nickname = match db::get_setting(&conn, "nickname") {
-            Some(n) => {
+        let nickname = match db::get_setting_checked(&conn, "nickname") {
+            Ok(Some(n)) => {
                 // 一次性迁移：旧的默认名（空 / 旧字面值 / 恰好是 hostname）换成新规则。
                 // 用户自己取过的名字一律不动 —— 判据是"精确等于旧默认的产物"。
                 if crate::nickname::is_legacy_default(&n, &hostname_now) {
                     let fresh = crate::nickname::default_nickname(&device_id);
-                    db::set_setting(&conn, "nickname", &fresh).ok();
+                    if let Err(e) = db::set_setting(&conn, "nickname", &fresh) {
+                        logger.warn(
+                            "identity",
+                            format!("code=NICKNAME_MIGRATION_WRITE_FAILED err={e}"),
+                        );
+                    }
                     fresh
                 } else {
                     n
                 }
             }
-            None => {
+            Ok(None) => {
                 let fresh = crate::nickname::default_nickname(&device_id);
-                db::set_setting(&conn, "nickname", &fresh).ok();
+                if let Err(e) = db::set_setting(&conn, "nickname", &fresh) {
+                    logger.warn("identity", format!("code=NICKNAME_PERSIST_FAILED err={e}"));
+                }
                 fresh
+            }
+            Err(source) => {
+                // 昵称读失败同样说明库不可信；继续启动会拿默认名覆盖或让界面状态漂移。
+                logger.error(
+                    "identity",
+                    format!("code=SETTING_READ_FAILED key=nickname err={source} —— 停止启动"),
+                );
+                return Err(Box::new(StartupError::SettingRead {
+                    key: "nickname",
+                    source,
+                }));
             }
         };
         let avatar = db::get_setting(&conn, "avatar");
@@ -1477,26 +1803,37 @@ impl AppState {
             }
         }
 
-        // 加载或生成身份密钥（X25519 + Ed25519）
-        let identity = match (
-            db::get_setting(&conn, "x25519_secret"),
-            db::get_setting(&conn, "ed25519_secret"),
-        ) {
-            (Some(xs), Some(es)) => Identity::from_secrets(&xs, &es).unwrap_or_else(|| {
-                // 损坏/截断的密钥不能只在内存中临时修复；否则每次重启都会
-                // 生成另一套身份，导致好友公钥与历史 E2EE 消息永久失配。
-                let id = Identity::generate();
-                db::set_setting(&conn, "x25519_secret", &id.x25519_secret_b64()).ok();
-                db::set_setting(&conn, "ed25519_secret", &id.ed25519_secret_b64()).ok();
-                id
-            }),
-            _ => {
-                let id = Identity::generate();
-                db::set_setting(&conn, "x25519_secret", &id.x25519_secret_b64()).ok();
-                db::set_setting(&conn, "ed25519_secret", &id.ed25519_secret_b64()).ok();
-                id
+        // 加载或生成身份密钥（X25519 + Ed25519）。
+        //
+        // ⚠️ 2026-10-20 P0：旧实现在这里 `unwrap_or_else` 生成新密钥并覆盖旧值，
+        // 且把"读库失败"与"键不存在"混为一谈。现在任何读失败/缺一条/解析失败都
+        // **中止启动**；只有空库首次安装才允许生成一次，且写入失败也中止。
+        let (identity, identity_generated) = match load_or_create_identity(&conn, existing_install)
+        {
+            Ok(v) => v,
+            Err(e) => {
+                logger.error(
+                    "identity",
+                    format!("code={} {e} —— 停止启动，未生成/覆盖任何密钥", e.code()),
+                );
+                crate::logging::crash_note(&format!(
+                    "code={} 身份加载失败，停止启动：{e}（未生成/覆盖任何密钥）",
+                    e.code()
+                ));
+                return Err(Box::new(e));
             }
         };
+        logger.info(
+            "identity",
+            format!(
+                "code=IDENTITY_LOADED source={} existing_install={existing_install}",
+                if identity_generated {
+                    "generated_first_install"
+                } else {
+                    "persisted"
+                }
+            ),
+        );
 
         // 中继授权（P2 / M4）：启动时读一次，之后由 save_settings 更新内存缓存。
         // 缺失/脏值 → 默认 `All`（= 今天的行为，见 mesh/relay_policy.rs 顶部说明）。
@@ -2007,6 +2344,72 @@ impl AppState {
         });
     }
 
+    /// 周期性运行态快照：**这是"拖垮其它 WebView 应用"那类故障的现场取样器**。
+    ///
+    /// 没有它，用户说"开久了把别的程序也带崩了"时，我们手上只有崩溃那一刻的空文件：
+    /// 无法回答窗口是不是在泄漏、链路/队列是不是在增长。这里每 5 分钟留一行**有界、脱敏**
+    /// 的读数：WebView 窗口数/隐藏数、在线节点、连接数、sending 消息数、三张 outbox 行数。
+    /// 只记数字与 label，不记消息正文、文件名、密钥或地址。
+    ///
+    /// ⚠️ 刻意不在这一行里读 RSS：跨平台读进程内存需要新增平台依赖/外部命令，
+    /// 而 `ps`/`tasklist` 本身会干扰被测进程。内存趋势仍由 E2E 内存量具按 pid 采样；
+    /// 这条负责回答"是不是窗口/队列结构在无界增长"。
+    pub fn spawn_runtime_diag_reporter(state: &Arc<AppState>) {
+        let st = state.clone();
+        tauri::async_runtime::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(RUNTIME_DIAG_SECS));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tick.tick().await;
+                let windows: Vec<(String, bool)> = st
+                    .app
+                    .webview_windows()
+                    .into_iter()
+                    .map(|(label, win)| {
+                        let visible = win.is_visible().unwrap_or(false);
+                        (label, visible)
+                    })
+                    .collect();
+                let hidden = windows.iter().filter(|(_, visible)| !*visible).count();
+                let labels = windows
+                    .iter()
+                    .map(|(label, visible)| {
+                        format!("{label}:{}", if *visible { "shown" } else { "hidden" })
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let peer_count = st.peers.lock().unwrap_or_else(|e| e.into_inner()).len();
+                let link_count: usize = st
+                    .links
+                    .lock()
+                    .await
+                    .values()
+                    .filter(|v| !v.is_empty())
+                    .count();
+                let (sending, outbox, group_outbox, file_outbox) = {
+                    let dbc = st.db.lock().unwrap_or_else(|e| e.into_inner());
+                    let one =
+                        |sql: &str| -> i64 { dbc.query_row(sql, [], |r| r.get(0)).unwrap_or(-1) };
+                    (
+                        one("SELECT COUNT(*) FROM messages WHERE status = 'sending'"),
+                        one("SELECT COUNT(*) FROM outbox"),
+                        one("SELECT COUNT(*) FROM group_outbox"),
+                        one("SELECT COUNT(*) FROM file_outbox"),
+                    )
+                };
+                st.logger.info(
+                    "runtime",
+                    format!(
+                        "code=RUNTIME_SNAPSHOT windows={} hidden={hidden} labels=[{labels}] \
+                         peers={peer_count} links={link_count} sending_msgs={sending} \
+                         outbox={outbox} group_outbox={group_outbox} file_outbox={file_outbox}",
+                        windows.len()
+                    ),
+                );
+            }
+        });
+    }
+
     /// 周期性把 SQLite 锁观测摘要写进运行日志。
     ///
     /// `DbLock` 已经逐次量了 wait/hold，但 `take_summary()` 此前只有测试在读 ⇒ 现场
@@ -2034,6 +2437,9 @@ const DB_HOLD_REPORT_SECS: u64 = 60;
 /// 离线队列重放周期（秒），与心跳同量级；A-17。
 const OUTBOX_RETRY_SECS: u64 = 5;
 
+/// 运行态快照周期（秒）。5 分钟一行，日志轮转上界（512 KiB）下可保留数天趋势。
+const RUNTIME_DIAG_SECS: u64 = 300;
+
 /// 解析多开实例号：优先 `--instance N` / `-i N` 启动参数，其次 `GOSSLAN_INSTANCE` 环境变量。
 /// 返回 0 表示默认单实例。
 pub(crate) fn instance_id() -> u32 {
@@ -2054,7 +2460,11 @@ pub(crate) fn instance_id() -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_is_zh, UI_LANG_EN, UI_LANG_UNKNOWN, UI_LANG_ZH};
+    use super::{
+        load_or_create_identity, resolve_is_zh, StartupError, UI_LANG_EN, UI_LANG_UNKNOWN,
+        UI_LANG_ZH,
+    };
+    use rusqlite::Connection;
 
     /// 界面语言判定的优先级：**显式偏好 > 前端推来的解析结果 > 环境变量兜底**。
     ///
@@ -2135,5 +2545,192 @@ mod tests {
             none.get("content").and_then(|v| v.as_str()),
             Some("@周工 看下")
         );
+    }
+
+    // ---------------- 身份加载安全边界（2026-10-20 P0 回归） ----------------
+
+    fn settings_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '')",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn secret(conn: &Connection, key: &str) -> Option<String> {
+        crate::db::get_setting_checked(conn, key).unwrap()
+    }
+
+    /// 正控：空库首次安装只生成一次；第二次加载必须拿回**同一套**密钥。
+    #[test]
+    fn first_install_generates_identity_once_and_later_loads_the_same_keys() {
+        let conn = settings_db();
+        let (id, generated) = load_or_create_identity(&conn, false).unwrap();
+        assert!(generated, "空库首次安装应当生成身份");
+        assert!(secret(&conn, "x25519_secret").is_some());
+        assert!(secret(&conn, "ed25519_secret").is_some());
+
+        let (again, generated_again) = load_or_create_identity(&conn, true).unwrap();
+        assert!(!generated_again, "已有密钥时必须走持久化加载");
+        assert_eq!(id.x25519_secret_b64(), again.x25519_secret_b64());
+        assert_eq!(
+            id.ed25519_signing.to_bytes(),
+            again.ed25519_signing.to_bytes()
+        );
+    }
+
+    /// **核心回归**：已有安装 + 密钥缺失/只有一条 ⇒ 中止，且一个字节都不写。
+    #[test]
+    fn existing_install_never_regenerates_missing_or_partial_keys() {
+        let none = settings_db();
+        match load_or_create_identity(&none, true) {
+            Err(StartupError::IdentityIncomplete { .. }) => {}
+            Ok(_) => panic!("两条密钥都缺失时必须中止，实得 Ok"),
+            Err(e) => panic!("两条密钥都缺失时必须中止，实得 {e:?}"),
+        }
+        assert_eq!(secret(&none, "x25519_secret"), None, "不许偷偷写入新密钥");
+        assert_eq!(secret(&none, "ed25519_secret"), None);
+
+        let partial = settings_db();
+        crate::db::set_setting(&partial, "x25519_secret", "kept-x").unwrap();
+        match load_or_create_identity(&partial, true) {
+            Err(StartupError::IdentityIncomplete { .. }) => {}
+            Ok(_) => panic!("只有一条密钥时必须中止，实得 Ok"),
+            Err(e) => panic!("只有一条密钥时必须中止，实得 {e:?}"),
+        }
+        assert_eq!(
+            secret(&partial, "x25519_secret"),
+            Some("kept-x".to_string()),
+            "残缺时必须保留原件，不许覆盖"
+        );
+        assert_eq!(secret(&partial, "ed25519_secret"), None);
+    }
+
+    /// 密钥损坏 ⇒ 中止且保留原值；绝不用新身份覆盖（否则好友绑定与历史密文永久失配）。
+    #[test]
+    fn corrupt_keys_abort_without_overwriting_them() {
+        let conn = settings_db();
+        crate::db::set_setting(&conn, "x25519_secret", "not-base64!!").unwrap();
+        crate::db::set_setting(&conn, "ed25519_secret", "also-bad!!").unwrap();
+        match load_or_create_identity(&conn, true) {
+            Err(StartupError::IdentityCorrupt) => {}
+            Ok(_) => panic!("损坏密钥必须报 IdentityCorrupt，实得 Ok"),
+            Err(e) => panic!("损坏密钥必须报 IdentityCorrupt，实得 {e:?}"),
+        }
+        assert_eq!(
+            secret(&conn, "x25519_secret"),
+            Some("not-base64!!".to_string())
+        );
+        assert_eq!(
+            secret(&conn, "ed25519_secret"),
+            Some("also-bad!!".to_string())
+        );
+    }
+
+    /// 读库失败（没有 settings 表）必须报 `IdentityRead`，**不是**"键不存在 ⇒ 生成新身份"。
+    /// 这条就是旧实现最致命的那个折返点，用真实 SQL 错误钉住。
+    #[test]
+    fn read_failure_is_not_mistaken_for_a_first_install() {
+        let broken = Connection::open_in_memory().unwrap();
+        match load_or_create_identity(&broken, true) {
+            Err(StartupError::IdentityRead { .. }) => {}
+            Ok(_) => panic!("读库失败必须报 IdentityRead，实得 Ok"),
+            Err(e) => panic!("读库失败必须报 IdentityRead，实得 {e:?}"),
+        }
+        // 即便 existing_install=false（例如文件刚被创建但读不了），也不许把读失败当首次安装
+        match load_or_create_identity(&broken, false) {
+            Err(StartupError::IdentityRead { .. }) => {}
+            Ok(_) => panic!("读库失败在首次安装分支同样必须中止，实得 Ok"),
+            Err(e) => panic!("读库失败在首次安装分支同样必须中止，实得 {e:?}"),
+        }
+    }
+
+    /// 新密钥写不进库 ⇒ 中止，不许"内存里先用一套、下次启动再换一套"。
+    #[test]
+    fn persist_failure_aborts_instead_of_running_with_an_ephemeral_identity() {
+        let conn = settings_db();
+        conn.execute_batch(
+            "CREATE TRIGGER block_secret_write BEFORE INSERT ON settings
+             BEGIN SELECT RAISE(ABORT, 'simulated io failure'); END;",
+        )
+        .unwrap();
+        match load_or_create_identity(&conn, false) {
+            Err(StartupError::IdentityPersist { .. }) => {}
+            Ok(_) => panic!("写入失败必须中止，实得 Ok"),
+            Err(e) => panic!("写入失败必须中止，实得 {e:?}"),
+        }
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM settings", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0, "失败后不许留下半套密钥");
+    }
+
+    /// 文件级判据：**已有安装 + 身份损坏 ⇒ 数据库文件逐字节不变**。
+    ///
+    /// 上面几条证明的是"设置表里还是原值"；这一条直接对**磁盘上的真实库**取 SHA-256。
+    /// 为什么值得单独一条：失败路径里除密钥之外还有别的写（孤儿 sending 落终态、文件队列
+    /// 重置、昵称/设备标识迁移），值级断言看不见那些；而哈希能证明这次失败**一个字节都没动**。
+    /// 用的是真实 `db::init`（真 schema + WAL），不是内存库。
+    #[test]
+    fn identity_failure_leaves_the_database_file_byte_for_byte_unchanged() {
+        use sha2::{Digest, Sha256};
+        let dir = std::env::temp_dir().join(format!(
+            "gosslan-identity-hash-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("gosslan.db");
+        {
+            let conn = crate::db::init(&path).unwrap();
+            crate::db::set_setting(&conn, "device_id", "gosslan-keepme01").unwrap();
+            crate::db::set_setting(&conn, "x25519_secret", "not-base64!!").unwrap();
+            crate::db::set_setting(&conn, "ed25519_secret", "also-bad!!").unwrap();
+        } // 关闭连接 ⇒ 收尾 checkpoint 在这一行结束前完成（哈希在它之后取）
+        let digest = |p: &std::path::Path| -> String {
+            let bytes = std::fs::read(p).unwrap();
+            let mut h = Sha256::new();
+            h.update(&bytes);
+            format!("{:x}", h.finalize())
+        };
+        let before = digest(&path);
+        {
+            let conn = Connection::open(&path).unwrap();
+            match load_or_create_identity(&conn, true) {
+                Err(StartupError::IdentityCorrupt) => {}
+                Ok(_) => panic!("损坏密钥必须中止，实得 Ok"),
+                Err(e) => panic!("损坏密钥必须报 IdentityCorrupt，实得 {e:?}"),
+            }
+        }
+        assert_eq!(
+            digest(&path),
+            before,
+            "身份加载失败后数据库文件被改写了 —— 这类改动正是「崩溃后变成新用户」的起点"
+        );
+        // 自证：哈希必须能看见一次**真实写入**，否则上面那条在"根本没读到文件"时也会绿
+        // （这就是判据自等：一个永远相等的比较等于没断言）。
+        {
+            let conn = Connection::open(&path).unwrap();
+            crate::db::set_setting(&conn, "device_id", "gosslan-changed").unwrap();
+        }
+        assert_ne!(
+            digest(&path),
+            before,
+            "哈希看不见一次真实写入 ⇒ 上面那条『逐字节不变』是空转"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 用户提示必须写清"没有生成/覆盖"与错误码，且路径可操作。
+    #[test]
+    fn startup_error_message_is_actionable_and_names_the_code() {
+        let msg = StartupError::IdentityCorrupt.user_message(std::path::Path::new("/data/gosslan"));
+        assert!(msg.contains("IDENTITY_CORRUPT"), "{msg}");
+        assert!(msg.contains("没有覆盖旧密钥"), "{msg}");
+        assert!(msg.contains("/data/gosslan/logs"), "{msg}");
     }
 }

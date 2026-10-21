@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import { api } from "@/api";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { useAppStore } from "@/stores/useAppStore";
@@ -59,9 +59,10 @@ async function loadCache() {
   cacheInfo.value = await api.getCacheInfo();
   suppressAutoSave = true;
   retentionDays.value = cacheInfo.value?.retention_days ?? 0;
-  maxQuotaMb.value = Math.round((cacheInfo.value?.max_bytes ?? 0) / 1048576);
-  // 等 watch 同步跳过这一轮由「回显赋值」触发的回调
-  setTimeout(() => (suppressAutoSave = false), 0);
+  maxQuotaMb.value = Math.round((cacheInfo.value?.max_bytes ?? 0) / (1024 * 1024));
+  // 等这一轮 watch 的回调跑完再放行：`nextTick` 就是「本次视图更新周期结束」那个点
+  await nextTick();
+  suppressAutoSave = false;
 }
 
 watch([retentionDays, maxQuotaMb], (_nv, ov) => {
@@ -99,13 +100,13 @@ function cancelPolicyChange() {
   suppressAutoSave = true;
   retentionDays.value = p.prev[0];
   maxQuotaMb.value = p.prev[1];
-  setTimeout(() => (suppressAutoSave = false), 0);
+  void nextTick(() => (suppressAutoSave = false));
 }
 
 async function applyCachePolicy(silent = false) {
   await api.setCachePolicy(
     retentionDays.value === 0 ? null : retentionDays.value,
-    maxQuotaMb.value === 0 ? null : maxQuotaMb.value * 1048576,
+    maxQuotaMb.value === 0 ? null : maxQuotaMb.value * (1024 * 1024),
   );
   if (!silent) app.toast(t("settings.storage.toast.saved"), "success");
   await loadCache();

@@ -222,7 +222,15 @@ fn crash_bootstrap_plugin<R: tauri::Runtime>() -> tauri::plugin::TauriPlugin<R> 
                     } else {
                         "gosslan".to_string()
                     };
-                    crate::logging::bind_crash_file(&crate::logging::crash_file_for(&dir, &stem));
+                    // ⚠️ 必须走 `crash_file_in`（= `<app_data>/logs/<stem>-crash.log`）：
+                    // 这个插件的 setup 跑在 `Logger::new` 之前，过去在这里用
+                    // `crash_file_for(&app_data, …)` 少了一层 `logs/`，而 `bind_crash_file`
+                    // 是先到先得的 OnceLock ⇒ Logger 那次权威绑定被静默丢弃，独立通道
+                    // 从此一直写错文件（用户/诊断包/下一轮判定读的都是 logs/ 那份）。
+                    // 2026-10-20 用隔离 HOME 实跑定位。详细说明见 `logging::EARLY_CRASH_FILE`。
+                    crate::logging::bind_early_crash_file(&crate::logging::crash_file_in(
+                        &dir, &stem,
+                    ));
                     crate::logging::crash_note(
                         "启动尝试：进程已起，logger 尚未建立（bootstrap 已绑定现场路径）",
                     );
@@ -342,52 +350,61 @@ pub fn run() {
             let state = match state::AppState::init(app.handle().clone()) {
                 Ok(state) => state,
                 Err(e) => {
-                    // 数据来自**更新**的版本 ⇒ 拒绝打开（"能升不能毁"红线），但"拒绝"
-                    // 必须是用户看得懂、知道该干什么的一句话，而不是一个悄悄消失的窗口：
-                    // setup 返回 Err 会被 Tauri 变成 panic，而 Windows 发布版是
-                    // `windows_subsystem = "windows"`（无控制台）⇒ stderr 无处可去 = 用户
-                    // 看到窗口闪一下就没了，什么提示都没有。
+                    // 启动失败必须**看得见、留得下、说得清**：
+                    // - setup 返回 Err 会被 Tauri 变成 panic，而 Windows 发布版没有控制台
+                    //   ⇒ 用户只看到窗口闪一下，什么提示都没有；
+                    // - 2026-10-20 的身份/数据库安全边界要求：凡是数据完整性问题，
+                    //   这次启动**没有生成新身份、没有覆盖旧库**，用户需要拿到这句话与日志位置。
                     //
-                    // 按**类型**分支而不是错误字符串：协议层已经因为"按前缀分类"吞过一整条
-                    // 消息（INV-P24 第 2 条，v4.22.34 才修掉）。
-                    if let Some(db::InitError::Downgrade { current }) =
-                        e.downcast_ref::<db::InitError>()
+                    // 按**类型**取文案而不是按错误字符串猜（协议层曾因前缀分类吞过整条消息）。
+                    let data_dir = app.path().app_data_dir().unwrap_or_default();
+                    let msg = if let Some(init) = e.downcast_ref::<db::InitError>() {
+                        init.user_message(&data_dir)
+                    } else if let Some(startup) = e.downcast_ref::<state::StartupError>() {
+                        startup.user_message(&data_dir)
+                    } else {
+                        format!(
+                            "Gosslan 启动失败：{e}\n\n错误码：BOOT_FAILED\n数据目录：{}\n日志目录：{}\n\
+                             本次启动没有删除或覆盖你的数据。",
+                            data_dir.display(),
+                            data_dir.join("logs").display()
+                        )
+                    };
+                    state_mark("boot", &format!("启动失败：{e}"));
+                    // 即便 logger 还没建好，也要在崩溃现场文件里留一行 durable 证据；
+                    // 下一轮 `seed_previous_run` 会把这条带进「上次收尾判定」那块文本。
+                    crate::logging::crash_note(&format!("code=BOOT_FAILED 启动失败：{e}"));
+                    eprintln!("[gosslan]{msg}");
+                    // 弹窗**只在桌面端**做。移动端不是"顺手也弹一下"：那个时点原生对话框
+                    // 到底能不能显示，我在这里没有任何实测手段，而"弹出来了但没有 state"
+                    // 与"压根没弹"在 Android 上的分别是**崩溃 vs 永久白屏** —— 后者更糟。
+                    // 宁可让移动端保持现状（panic + logcat 一行），也不把未验证的行为写进
+                    // 移动端启动路径。
+                    #[cfg(desktop)]
                     {
-                        let msg = db::InitError::downgrade_message(*current);
-                        state_mark("boot", "数据库版本比本机程序新，拒绝启动");
-                        eprintln!("[gosslan]{msg}");
-                        // 弹窗**只在桌面端**做。移动端不是"顺手也弹一下"：那个时点原生对话框
-                        // 到底能不能显示，我在这里没有任何实测手段，而"弹出来了但没有 state"
-                        // 与"压根没弹"在 Android 上的分别是**崩溃 vs 永久白屏** —— 后者更糟。
-                        // 宁可让移动端保持现状（panic + logcat 一行），也不把未验证的行为写进
-                        // 移动端启动路径。
-                        #[cfg(desktop)]
-                        {
-                            use tauri_plugin_dialog::DialogExt as _;
-                            let handle = app.handle().clone();
-                            // ⚠️ **只能非阻塞 `show` + 提前 `return Ok(())`**。
-                            // 插件的桌面实现是 `run_on_main_thread(...)`
-                            // （tauri-plugin-dialog-2.7.3/src/desktop.rs:222），而 setup 正跑在
-                            // 主线程上 ⇒ 阻塞版 API 的 `rx.recv()` 会钉住主线程，排在队列
-                            // 里的弹窗任务永远执行不到 = 开机自锁（与 v4.22.30 修掉的 Windows
-                            // 开窗卡死同一个形状）。让主线程回到事件循环，弹窗才会出现。
-                            handle
-                                .dialog()
-                                .message(msg)
-                                .title("Gosslan")
-                                .show(move |_| {
-                                    // 用户点掉提示之后才退出（exit 走事件循环代理，跨线程安全）
-                                    handle.exit(1);
-                                });
-                            // 提前返回 ⇒ 不 `manage(state)`、不建托盘：前端所有命令都会拿到
-                            // "state not found" 的 IPC 错误（不 panic），界面停在空白 ——
-                            // 这比"半死的界面"诚实，而且原生弹窗盖在上面。
-                            return Ok(());
-                        }
+                        use tauri_plugin_dialog::DialogExt as _;
+                        let handle = app.handle().clone();
+                        // ⚠️ **只能非阻塞 `show` + 提前 `return Ok(())`**。
+                        // 插件的桌面实现是 `run_on_main_thread(...)`
+                        // （tauri-plugin-dialog-2.7.3/src/desktop.rs:222），而 setup 正跑在
+                        // 主线程上 ⇒ 阻塞版 API 的 `rx.recv()` 会钉住主线程，排在队列
+                        // 里的弹窗任务永远执行不到 = 开机自锁（与 v4.22.30 修掉的 Windows
+                        // 开窗卡死同一个形状）。让主线程回到事件循环，弹窗才会出现。
+                        handle
+                            .dialog()
+                            .message(msg)
+                            .title("Gosslan — 启动失败")
+                            .show(move |_| {
+                                // 用户点掉提示之后才退出（exit 走事件循环代理，跨线程安全）
+                                handle.exit(1);
+                            });
+                        // 提前返回 ⇒ 不 `manage(state)`、不建托盘：前端所有命令都会拿到
+                        // "state not found" 的 IPC 错误（不 panic），界面停在空白 ——
+                        // 这比"半死的界面"诚实，而且原生弹窗盖在上面。
+                        return Ok(());
                     }
-                    // 非降级的启动错误、以及移动端（上面那段 cfg(desktop) 不参与编译）
-                    // 都走原路：Err → 框架 panic → 退出。文案已经进 stderr，
-                    // 安卓上 `state_mark` 还会把它送进 logcat。
+                    // 移动端：保持原路（Err → 框架 panic → 退出），文案已进 stderr/logcat。
+                    #[cfg(not(desktop))]
                     return Err(e);
                 }
             };
@@ -397,9 +414,23 @@ pub fn run() {
             // 拿到 AppHandle 之后**重装** panic hook：这次的 hook 会把 panic 同时写进
             // 「运行日志」页（安卓上这是唯一能拿到的诊断路径，见 `install_panic_hook`）。
             install_panic_hook(Some(app.handle().clone()));
+            // ---- 测试钩子（默认完全不执行）----
+            // 用来验证"hook 已装、但 `state` 还没 `manage`"这个窗口里的 panic 真的能落进
+            // 现场文件（`app.try_state::<Arc<AppState>>()` 此刻是 None ⇒ 走 crash_note）。
+            // 只有环境变量精确等于 "1" 才触发；这是**唯一**能在真实 release 二进制里
+            // 复现 setup 期 panic 的办法（单测跑不到 setup）。
+            if std::env::var("GOSSLAN_TEST_PANIC_AFTER_HOOK").as_deref() == Ok("1") {
+                panic!("GOSSLAN_TEST_PANIC_AFTER_HOOK 注入：setup 期早期 panic（仅用于验证留痕通道）");
+            }
             state::AppState::spawn_peer_emitter(&state);
             state::AppState::spawn_db_hold_reporter(&state);
+            state::AppState::spawn_runtime_diag_reporter(&state);
             state::AppState::spawn_outbox_retrier(&state);
+            // Outbox 终态清扫必须**进程级常驻**：它不能依赖局域网是否成功启动。
+            // 旧接线在 `network::start` 里，局域网自启失败 / 用户关掉局域网时根本没有
+            // 清扫器 ⇒ 队列里的 sending 永远没有终态（2026-10-20 永久发送中 P0）。
+            // 网络停止时也不回收它：重新连上之前，旧队列同样需要一个有界的终态出口。
+            crate::network::transport::spawn_outbox_sweeper(state.clone());
             app.manage(state.clone());
             // 系统托盘：关闭主窗口仅隐藏到托盘，退出需走托盘菜单
             // ⚠️ 三条语句必须一起包进 `#[cfg(desktop)]` 块：属性只作用于**紧跟其后的那一条**，

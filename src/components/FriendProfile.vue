@@ -77,11 +77,8 @@ const { copyContent } = useClipboard();
 
 async function copySafetyNumber() {
   if (!safetyNumber.value) return;
-  const ok = await copyContent("safety", safetyNumber.value);
-  app.toast(
-    ok ? t("friend.profile.safetyCopied") : t("friend.profile.safetyFail"),
-    ok ? "success" : "error",
-  );
+  await copyContent("safety", safetyNumber.value);
+  app.toast(t("friend.profile.safetyCopied"), "success");
 }
 /** 中继跳数：与聊天头部那颗链路徽标**同一来源**（`get_conv_link`），不另造一份。 */
 const convLink = ref<LinkState | null>(null);
@@ -130,7 +127,7 @@ const confirmRemove = ref(false);
       >
         <BackArrow />
       </button>
-      <span class="truncate text-[15px] font-medium" :title="friend.nickname">{{ friend.nickname }}</span>
+      <span class="truncate text-title font-medium" :title="friend.nickname">{{ friend.nickname }}</span>
     </div>
 
     <div class="flex-1 overflow-y-auto px-6 py-6">
@@ -151,7 +148,7 @@ const confirmRemove = ref(false);
             <div class="flex items-center gap-2">
               <span class="truncate text-lg font-semibold" :title="friend.nickname">{{ friend.nickname }}</span>
               <span
-                class="inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[11px]"
+                class="inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-caption"
                 :class="friend.online
                   ? 'bg-[var(--gosslan-success-soft)] text-[var(--gosslan-success-ink)]'
                   : 'bg-[var(--gosslan-hover)] text-[var(--gosslan-text-2)]'"
@@ -165,7 +162,7 @@ const confirmRemove = ref(false);
               <!-- 发消息按钮：primary，跟在昵称后面，一抬头就能点；
                    shrink-0 whitespace-nowrap：长昵称时不被挤得换行（移动端窄屏最容易撞此问题）。 -->
               <button
-                class="tap-safe ml-auto inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-primary px-3 text-[12px] font-medium text-white transition hover:bg-primary-hover"
+                class="tap-safe ml-auto inline-flex h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-primary px-3 text-meta font-medium text-white transition hover:bg-primary-hover"
                 @click="emit('send-message', friend.device_id)"
               >
                 <MessageCircle class="h-3.5 w-3.5" />
@@ -173,7 +170,7 @@ const confirmRemove = ref(false);
               </button>
             </div>
             <!-- 次行：连接方式 + 安全码首段（一行，不再两行） -->
-            <div v-if="!isSelf" class="mt-1 flex items-center gap-3 truncate text-[12px] leading-relaxed text-[var(--gosslan-text-2)]" :title="safetyFirstGroup ? `${address} · ${safetyFirstGroup}` : address">
+            <div v-if="!isSelf" class="mt-1 flex items-center gap-3 truncate text-meta leading-relaxed text-[var(--gosslan-text-2)]" :title="safetyFirstGroup ? `${address} · ${safetyFirstGroup}` : address">
               <span class="truncate" :title="address">{{ t("peer.link.label") }}：<span class="font-mono">{{ address }}</span></span>
               <span class="h-3 w-px shrink-0 bg-[var(--gosslan-divider)]"></span>
               <span>{{ t("friend.profile.safetyFirst") }}：<span class="font-mono">{{ safetyFirstGroup ?? t("common.notSet") }}</span><span v-if="safetyFirstGroup" class="opacity-60">…</span></span>            </div>
@@ -202,12 +199,12 @@ const confirmRemove = ref(false);
                 </div>
                 <div
                   v-if="safetyNumber"
-                  class="mt-0.5 font-mono text-[14px] tracking-wide text-[var(--gosslan-text)]"
+                  class="mt-0.5 font-mono text-emphasis tracking-wide text-[var(--gosslan-text)]"
                   :title="safetyNumber"
                 >
                   {{ safetyNumber }}
                 </div>
-                <div v-else class="mt-0.5 text-[12px] text-[var(--gosslan-text-2)]">
+                <div v-else class="mt-0.5 text-meta text-[var(--gosslan-text-2)]">
                   {{ safetyFailed ? t("friend.profile.safetyFail") : t("friend.profile.safetyUnavailable") }}
                 </div>
               </div>
@@ -266,7 +263,7 @@ const confirmRemove = ref(false);
         <div class="mt-4 flex justify-center pb-4">
           <button
             v-if="!isSelf"
-            class="tap-safe inline-flex items-center gap-1.5 rounded-full border border-[var(--gosslan-border)] px-4 py-1.5 text-[12px] text-[var(--gosslan-danger-ink)] transition hover:bg-[var(--gosslan-danger-soft)]"
+            class="tap-safe inline-flex items-center gap-1.5 rounded-full border border-[var(--gosslan-border)] px-4 py-1.5 text-meta text-[var(--gosslan-danger-ink)] transition hover:bg-[var(--gosslan-danger-soft)]"
             @click="confirmRemove = true"
           >
             <UserMinus class="h-3.5 w-3.5" />

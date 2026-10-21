@@ -14,6 +14,8 @@
 //
 // 因此本模块的定位是"在支持的平台上给一点节奏感"，缺平台不会报错、也不影响任何主流程。
 
+import { prefersReducedMotion } from "./platform.ts";
+
 /** 与 iOS 触觉词汇对应的语义（Android 侧用时长/节奏近似表达）。 */
 export type HapticKind =
   | "light" // 轻点：普通按钮按下
@@ -37,22 +39,14 @@ const PATTERN: Record<HapticKind, number | number[]> = {
   error: [22, 60, 22, 60, 22],
 };
 
-/** 是否尊重"减弱动态效果"：这类用户对感官刺激更敏感，触觉一并关掉。 */
-function reduceMotion(): boolean {
-  return (
-    typeof window !== "undefined" &&
-    typeof window.matchMedia === "function" &&
-    window.matchMedia("(prefers-reduced-motion: reduce)").matches
-  );
-}
-
 /**
  * 触发一次触觉反馈。不支持的平台（iOS / 桌面）与失败情况都静默返回——
  * 触觉永远不能影响主流程。
  */
 export function haptic(kind: HapticKind = "light"): void {
   if (typeof navigator === "undefined" || typeof navigator.vibrate !== "function") return;
-  if (reduceMotion()) return;
+  // 这类用户对感官刺激更敏感，触觉一并关掉（判据见 platform.ts 的 prefersReducedMotion）
+  if (prefersReducedMotion()) return;
   try {
     navigator.vibrate(PATTERN[kind]);
   } catch {

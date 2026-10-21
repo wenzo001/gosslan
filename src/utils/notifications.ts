@@ -5,6 +5,7 @@
  * 分支一旦写错（例如隐私开关只挡了单条、没挡多条）会在锁屏上泄内容。
  */
 
+import type { Translate } from "./time";
 import type { MessageRecord } from "@/types";
 
 /** 通知去抖队列里的一项：同一会话在窗口期内合并成一条。 */
@@ -50,12 +51,17 @@ export interface NotificationBodyInput {
   preview: string;
 }
 
-export function notificationBody(input: NotificationBodyInput): string {
+export function notificationBody(
+  input: NotificationBodyInput,
+  tr: Translate,
+): string {
   if (input.showContent) {
+    // 多条时只报"某人等 N 条"，不逐条铺正文（通知中心会把它拉成一长串）。
     return input.count > 1
-      ? `${input.sender} 等 ${input.count} 条新消息`
+      ? tr("notify.senderCount", { sender: input.sender, n: input.count })
       : input.preview;
   }
-  // 隐私：关掉正文后只提示「收到新消息」，锁屏 / 通知中心不泄内容
-  return input.count > 1 ? `你收到 ${input.count} 条新消息` : "你收到一条新消息";
+  // 隐私：关掉正文后只提示「收到新消息」，锁屏 / 通知中心不泄内容 ——
+  // 这两个键**不含**任何参数，所以 sender/preview 没有第二条路能进通知正文。
+  return input.count > 1 ? tr("notify.count", { n: input.count }) : tr("notify.one");
 }

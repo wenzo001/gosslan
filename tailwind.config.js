@@ -1,7 +1,14 @@
 /** @type {import('tailwindcss').Config} */
 export default {
   darkMode: "class",
-  content: ["./index.html", "./src/**/*.{vue,ts,tsx}"],
+  // ⚠️ 这一栏必须排掉 `*.test.*`：Tailwind 扫的是**原始文本**，不做语义判断。
+  // 判据夹具里那些"故意写坏的示例 class"（`z-[7]`、`pb-[calc(56px+8px)]`、
+  // `text-[var(--gosslan-x)]`…）会被当成真在用过的样式，直接生成进生产 CSS ——
+  // 2026-10-19 现数 13 条死规则，全部来自 `src/utils/designGuards.test.ts`。
+  // 夹具只会越加越多，所以修的是这一栏，不是某个夹具的写法。
+  // extglob `!(*.test)` 覆盖四种扩展名（`.vue/.ts/.tsx` 都排得掉）；现算核对：303 → 206 份，
+  // 差的 97 份全是 `*.test.ts`，非测试文件少 0 份 ⇒ 生产样式一条也没被排掉。
+  content: ["./index.html", "./src/**/!(*.test).{vue,ts,tsx}"],
   theme: {
     extend: {
       colors: {
@@ -14,6 +21,19 @@ export default {
       },
       fontFamily: {
         gosslan: "var(--gosslan-font-family, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif)",
+      },
+      /**
+       * 字号令牌：像素值与原来逐点一致，只把「散落的 text-[NNpx]」收成语义名。
+       * `line-height: inherit` 是承重件 —— Tailwind 的任意字号只设 font-size，行高靠继承；
+       * 若这里改用默认行高，整站排版会在替换后整体变紧。
+       */
+      fontSize: {
+        micro: ["10px", { lineHeight: "inherit" }],
+        caption: ["11px", { lineHeight: "inherit" }],
+        meta: ["12px", { lineHeight: "inherit" }],
+        body: ["13px", { lineHeight: "inherit" }],
+        emphasis: ["14px", { lineHeight: "inherit" }],
+        title: ["15px", { lineHeight: "inherit" }],
       },
     },
   },

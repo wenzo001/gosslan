@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted, watch } from "vue";
+import { useEventListener } from "@vueuse/core";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { api } from "@/api";
@@ -57,23 +58,34 @@ function reportActivity() {
   void api.setAppActive(active).catch(() => {});
 }
 
+/**
+ * 屏蔽 WebView 默认右键菜单（返回 / 刷新 / 另存为等），改为应用自定义交互：
+ * 有功能的元素自行绑定右键菜单（见 MessageItem 的复制菜单），无功能的区域右键无效果。
+ *
+ * ⚠️ 例外（用户 2026-09-13）：「选中文本之后，没有弹出『复制』等选项」。
+ * 一刀切 preventDefault 会把**有选区时**的系统菜单也吃掉 —— 桌面端右键选区拿不到
+ * 原生「复制」，Android WebView 的选择工具条同样依赖 contextmenu 的默认行为。
+ * 所以：**有非空选区时放行系统菜单**，其余情况维持原来的屏蔽。
+ */
+function suppressContextMenu(e: MouseEvent) {
+  const sel = window.getSelection();
+  if (sel && !sel.isCollapsed && sel.toString().trim().length > 0) return;
+  e.preventDefault();
+}
+
+/*
+ * 这四条挂法交给 VueUse：`useEventListener` 在**组件作用域**上注册并自动解绑。
+ * 原来是 `onMounted` 里四行手写 add —— 一句 add 配一句 remove 这件事每个组件都要
+ * 自己记一遍，而 `contextmenu` 那半甚至写成匿名函数（**摘不掉**：没有句柄可传，
+ * HMR 换掉本组件时上一轮的回调会一直留在 window 上）。前台/焦点这半是
+ * 「蓝牙扫描节奏」的输入（后端自适应，见 reportActivity），多挂一份就多打一次 IPC。
+ */
+useEventListener(window, "contextmenu", suppressContextMenu);
+useEventListener(document, "visibilitychange", reportActivity);
+useEventListener(window, "focus", reportActivity);
+useEventListener(window, "blur", reportActivity);
+
 onMounted(async () => {
-  // 屏蔽 WebView 默认右键菜单（返回 / 刷新 / 另存为等），改为应用自定义交互：
-  // 有功能的元素自行绑定右键菜单（见 MessageItem 的复制菜单），无功能的区域右键无效果。
-  //
-  // ⚠️ 例外（用户 2026-09-13）：「选中文本之后，没有弹出『复制』等选项」。
-  // 一刀切 preventDefault 会把**有选区时**的系统菜单也吃掉 —— 桌面端右键选区拿不到
-  // 原生「复制」，Android WebView 的选择工具条同样依赖 contextmenu 的默认行为。
-  // 所以：**有非空选区时放行系统菜单**，其余情况维持原来的屏蔽。
-  window.addEventListener("contextmenu", (e) => {
-    const sel = window.getSelection();
-    if (sel && !sel.isCollapsed && sel.toString().trim().length > 0) return;
-    e.preventDefault();
-  });
-  // 前台/焦点变化 → 调整蓝牙扫描节奏（后端自适应，见 reportActivity）
-  document.addEventListener("visibilitychange", reportActivity);
-  window.addEventListener("focus", reportActivity);
-  window.addEventListener("blur", reportActivity);
   try {
     // `app.init()`：只读偏好/设备/网卡（两个窗口都要）。
     // `chat.init()`：会话、好友、网络事件监听 —— **只在主窗口**跑，

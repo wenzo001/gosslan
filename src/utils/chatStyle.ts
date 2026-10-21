@@ -2,7 +2,6 @@
 // 本机偏好持久化（后端 settings.chat_style），同时经 ChatStyle 消息广播给
 // 已连接节点：对方设备持久化后按「我的偏好」渲染我发出的消息气泡。
 
-import dayjs from "dayjs";
 import { adjustHsl, contrastRatio, hslToHex, mixToLuma, toHsl } from "./color.ts";
 
 export interface ChatPresetColors {
@@ -194,20 +193,6 @@ export function mentionHighlightColor(
   return "";
 }
 
-const WEEKDAYS = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
-
-/** 时间分割线文案（微信式智能格式）：
- *  今天只报时分；昨天报「昨天 HH:mm」；一周内报星期；今年内报「M月D日 HH:mm」；跨年带年份。 */
-export function formatTimeDivider(ts: number, now: number = Date.now()): string {
-  const d = dayjs(ts);
-  const n = dayjs(now);
-  const hm = d.format("HH:mm");
-  if (d.isSame(n, "day")) return hm;
-  if (d.isSame(n.subtract(1, "day"), "day")) return `昨天 ${hm}`;
-  if (n.diff(d, "day") < 7) return `${WEEKDAYS[d.day()]} ${hm}`;
-  if (d.isSame(n, "year")) return `${d.format("M月D日")} ${hm}`;
-  return `${d.format("YYYY年M月D日")} ${hm}`;
-}
 
 /** 解析对端广播来的样式 JSON（坏数据回退默认）。 */
 export function parsePeerStyle(raw: string): ChatStyleConfig {

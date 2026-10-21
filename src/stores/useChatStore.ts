@@ -20,10 +20,14 @@ import {
   syncProfileFromPeers,
   unreadAnchorIndex,
 } from "@/utils/messages";
+import { safeStorageBackend, storageGet, storageSet } from "../utils/safeStorage.ts";
 import { useAppStore } from "@/stores/useAppStore";
 import { trimOldest } from "@/utils/bounded";
+import { prefersReducedMotion } from "@/utils/platform";
+import { shouldRunThrottled } from "@/utils/defer";
 import { createInitScope, type InitScope } from "@/utils/initScope";
 import { StaleGuard } from "@/utils/staleGuard";
+import { createSingleFlight } from "@/utils/singleFlight";
 import { EMPTY_STRING_LIST } from "@/utils/emptyList";
 import { actionableRequests } from "@/utils/friendRequests";
 import { resolveMemberName } from "@/utils/memberName";
@@ -111,7 +115,7 @@ export const useChatStore = defineStore("chat", () => {
    * `utils/memberNameCache.ts` 的文件头。
    */
   const memberNames = ref<MemberNameCache>(
-    readMemberNames(typeof localStorage === "undefined" ? null : localStorage),
+    readMemberNames(safeStorageBackend),
   );
   /** 后端给的**原始**好友申请列表（可能含已经过期的：对方已同意 / 我已把他加上了）。 */
   const rawPendingRequests = ref<PendingRequest[]>([]);
@@ -185,7 +189,7 @@ export const useChatStore = defineStore("chat", () => {
     const next = observeMemberNames(memberNames.value, list);
     if (!next) return;
     memberNames.value = next;
-    writeMemberNames(typeof localStorage === "undefined" ? null : localStorage, next);
+    writeMemberNames(safeStorageBackend, next);
   }
 
   function nicknameOf(id: string): string {
@@ -364,12 +368,15 @@ export const useChatStore = defineStore("chat", () => {
       // （与「有人@我」徽标同口径：被指派人 = 被 @）。
       preview = `${t("todo.mentionYou")} ${preview}`;
     }
-    return notificationBody({
-      showContent: app.notifyShowContent,
-      count,
-      sender: nicknameOf(last.sender_id),
-      preview,
-    });
+    return notificationBody(
+      {
+        showContent: app.notifyShowContent,
+        count,
+        sender: nicknameOf(last.sender_id),
+        preview,
+      },
+      t,
+    );
   }
 
   /** 已提示过的「任务完成」msg_id：同一事件经多条投递路径反复 emit 时不重复提示创建人。 */
@@ -464,13 +471,23 @@ export const useChatStore = defineStore("chat", () => {
    * 用计数而非布尔 —— 连续收到强提醒时只有值变化才能让 `watch` 每次都重放动画。
    */
   const shakeSignal = ref(0);
-  /** 抖动动画节流（ms）：防连发强提醒把窗口抖个不停。 */
+  /** 抖动节流（ms）：防连发强提醒把窗口抖个不停。 */
   const SHAKE_ANIM_MIN_INTERVAL_MS = 1200;
   let lastShakeAt = 0;
-  function triggerRemindShake() {
+  /**
+   * 抢占这一次抖动额度。**移动端的 CSS 抖与桌面搬 OS 窗口的抖共用同一份预算** ——
+   * 所以判据只有一处（`shouldRunThrottled`，间隔规则与边界都在那个家里），
+   * 两条分支各写一遍时间差比较是这一族的旧写法：常量虽然同源，比较方向与
+   * 「什么时候把 last 推到 now」却各自定义，改一处就悄悄分成两种预算。
+   */
+  function claimShakeSlot(): boolean {
     const now = Date.now();
-    if (now - lastShakeAt < SHAKE_ANIM_MIN_INTERVAL_MS) return;
+    if (!shouldRunThrottled(now, lastShakeAt, SHAKE_ANIM_MIN_INTERVAL_MS)) return false;
     lastShakeAt = now;
+    return true;
+  }
+  function triggerRemindShake() {
+    if (!claimShakeSlot()) return;
     shakeSignal.value += 1;
   }
 
@@ -491,9 +508,12 @@ export const useChatStore = defineStore("chat", () => {
       triggerRemindShake();
       return;
     }
-    const now = Date.now();
-    if (now - lastShakeAt < SHAKE_ANIM_MIN_INTERVAL_MS) return;
-    lastShakeAt = now;
+    // 桌面抖的是**整扇 OS 窗口**（Rust 连发 7 次 `set_position`，实测约 315ms），CSS 那条
+    // 全局降级管不着它 —— 动效族里只有这一个出口是"JS 不调，系统开关就没人接"。
+    // 系统开了「减弱动态效果」时不再搬窗口；提醒本身没丢：上面两行已经把窗口拉到前台、
+    // 会话切过去，声音/通知/Dock·任务栏仍在原来的分支上。
+    if (prefersReducedMotion()) return;
+    if (!claimShakeSlot()) return;
     void api.shakeWindow().catch(() => {});
   }
 
@@ -928,8 +948,8 @@ export const useChatStore = defineStore("chat", () => {
   const groupTodoRows = ref<TodoRowsByConv>({});
   /** 任务行读失败的原因（键存在 = 这一次首屏读失败且还没有成功过）。 */
   const groupTodoRowsErrors = ref<Record<string, string>>({});
-  /** 同一会话的单飞表：三个界面同时要求补读时只打一次 IPC。 */
-  const groupTodoRowsInflight = new Map<string, Promise<void>>();
+  /** 同一会话的单飞表：三个界面同时要求补读时只打一次 IPC（通用形状走 utils/singleFlight）。 */
+  const groupTodoRowsInflight = createSingleFlight<void>();
   /** 读成功（无论走哪条取数口）就清掉这几个会话的失败记录。 */
   function clearGroupTodoRowsErrors(convIds: string[]) {
     let changed = false;
@@ -984,10 +1004,8 @@ export const useChatStore = defineStore("chat", () => {
    *  「暂无任务」—— 与"假空态"是同一个缺陷。 */
   async function ensureGroupTodoRows(convId: string): Promise<void> {
     if (!convId || isTodoRowsLoaded(groupTodoRows.value, convId)) return;
-    const flying = groupTodoRowsInflight.get(convId);
-    if (flying) return flying;
-    const tok = refreshGuard.begin(`todoRows:${convId}`);
-    const task = (async () => {
+    return groupTodoRowsInflight.run(convId, async () => {
+      const tok = refreshGuard.begin(`todoRows:${convId}`);
       try {
         const rows = await api.getGroupTodoMessages([convId]);
         if (!refreshGuard.isCurrent(`todoRows:${convId}`, tok)) return;
@@ -999,12 +1017,8 @@ export const useChatStore = defineStore("chat", () => {
           ...groupTodoRowsErrors.value,
           [convId]: e instanceof Error ? e.message : String(e),
         };
-      } finally {
-        groupTodoRowsInflight.delete(convId);
       }
-    })();
-    groupTodoRowsInflight.set(convId, task);
-    return task;
+    });
   }
 
   /**
@@ -1220,11 +1234,7 @@ export const useChatStore = defineStore("chat", () => {
     activeConv.value = id;
     // 记住上次会话：重启后恢复（HIG State Restoration；localStorage 只作 UI 状态，
     // 失败不影响打开聊天）。
-    try {
-      localStorage.setItem(LAST_CONV_KEY, id);
-    } catch {
-      /* localStorage 不可用则跳过，不影响本次打开 */
-    }
+    storageSet(LAST_CONV_KEY, id);
     // 标记为最近使用，并在加载完成后收缩缓存（活跃会话始终保留）
     touchCacheOrder(id);
     // 打开即视为看到 → [有人@我] 标志随之清除
@@ -1284,6 +1294,14 @@ export const useChatStore = defineStore("chat", () => {
   /**
    * 正在翻历史页的会话 → 那一次的 Promise。同一会话同时只允许一个在飞，
    * 但**后来者必须并入这一次**（见 `loadMoreMessages` 的 ⚠️）而不是被直接弹回。
+   *
+   * ⚠️ 这一处**刻意没有**改用 `utils/singleFlight`（那边已收四处预览 + 上面那个补读），
+   *    因为它有两处被注释保护着的偏离：① 容量闸门（`pages >= MAX_PAGES`）夹在
+   *    "并入在飞" 与 "登记" 之间 —— 走 helper 就得把它挪进 `make` 体内，早退时会多留一个
+   *    瞬间存在的条目；② 摘除是 `page.finally(...)` **挂在链上**而不是在体内，
+   *    目的是让 `page` 始终带着处理器、reject 不会变成 unhandled rejection，
+   *    同时所有 await 方各自拿到同一次结果（2026-09-23 评审那条"别把正在翻误判成翻到头"）。
+   *    这两条都没有判据兜着 ⇒ 强并是拿实测过的行为去换"少 6 行"。
    */
   const loadingMore = new Map<string, Promise<void>>();
   /**
@@ -2465,6 +2483,8 @@ export const useChatStore = defineStore("chat", () => {
 
   /** 群历史同步期间重查当前会话的节流时刻（见 `onGroupHistoryProgress` 里第 ② 条）。 */
   let historyReloadAt = 0;
+  /** 同一场同步里两次重查之间的最小间隔（每页都重查是纯浪费：预览由聊天活动驱动）。 */
+  const HISTORY_RELOAD_MIN_INTERVAL_MS = 1500;
 
   /**
    * 后端每搬完一页群历史喊一声（事件 `group-history-progress`；需求原话
@@ -2496,7 +2516,11 @@ export const useChatStore = defineStore("chat", () => {
     // 中间每页都刷是纯浪费（标题只由聊天活动驱动，页内不会变）。
     if (!wasTracking || p.phase !== "running") void refreshConversations();
     const now = Date.now();
-    if (activeConv.value === convId && (p.phase !== "running" || now - historyReloadAt >= 1500)) {
+    if (
+      activeConv.value === convId &&
+      (p.phase !== "running" ||
+        shouldRunThrottled(now, historyReloadAt, HISTORY_RELOAD_MIN_INTERVAL_MS))
+    ) {
       historyReloadAt = now;
       void loadMessages(convId);
     }
@@ -2731,13 +2755,9 @@ export const useChatStore = defineStore("chat", () => {
 
     // 恢复上次打开的会话（若仍存在）。HIG State Restoration：重启后回到上次离开的地方。
     // 用 void 触发：不阻塞 init，也避免其异步失败拖垮启动。
-    try {
-      const last = localStorage.getItem(LAST_CONV_KEY);
-      if (last && conversations.value.some((c) => c.id === last)) {
-        void openConversation(last);
-      }
-    } catch {
-      /* localStorage 不可用则跳过恢复 */
+    const last = storageGet(LAST_CONV_KEY);
+    if (last && conversations.value.some((c) => c.id === last)) {
+      void openConversation(last);
     }
 
     // 移动端注册通知动作类别（「标记已读」按钮）。桌面端无此能力（Web Notification 不支持按钮），

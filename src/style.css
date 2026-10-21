@@ -8,11 +8,15 @@
      是"主题没关联上"最典型的破绽。改主题时这一条必须成对出现。 */
   color-scheme: light;
 
-  /* 品牌色：出厂默认值（设计规范强调/按钮色 #3B82F6），用户在设置里改色后由 applyTheme 覆盖 */
+  /* 品牌色：出厂默认值（设计规范强调/按钮色 #3B82F6）。用户在设置里改色时 `applyTheme`
+     只往 <html> 写 --gosslan-primary 这一个变量，下面三档由 CSS 现派生（与 --soft/--ring/accent-ink
+     同一套做法）。以前这里是两份实现：:root 硬编一份出厂蓝的近似值、utils/color.ts 的
+     lighten/darken 按另一个比例再算一份 ⇒ 首屏会出现"主色已换成用户的、hover/浅底还是出厂蓝"的分裂。 */
   --gosslan-primary: #3b82f6;
-  --gosslan-primary-hover: #60a5fa;
-  --gosslan-primary-active: #2563eb;
-  --gosslan-primary-light: rgba(59, 130, 246, 0.12);
+  --gosslan-primary-hover: color-mix(in srgb, var(--gosslan-primary) 92%, #ffffff);
+  /* 承载白字的填充档：过 4.5 由 tokenContrast.test.ts 判（同一族里 danger 也是为这条压深的）。 */
+  --gosslan-primary-active: color-mix(in srgb, var(--gosslan-primary) 85%, #000000);
+  --gosslan-primary-light: color-mix(in srgb, var(--gosslan-primary) 12%, transparent);
   /* 主题色半透明版（color-mix 运行时派生，跟随 applyTheme 换色自动变）。
      /25 用于拖拽条 hover / unread 分隔线；/50 用于 ring/highlight 描边 */
   --gosslan-primary-soft: color-mix(in srgb, var(--gosslan-primary) 25%, transparent);
@@ -64,9 +68,13 @@
 
   /* ---------------- 布局尺寸 ----------------
      Header 高度由 TitleBar 的 padding + 图标大小决定，
-     移动端 TabBar 高度 64px（py-2.5 + icon h-5 + text-[11px] + border-t）。 */
+     移动端 TabBar 高度 = 4rem（64px @ 根字号 16px：py-2.5 + icon h-5 + text-[11px] + border-t）。 */
   --gosslan-header-h: 44px;
-  --gosslan-mobile-tabbar-h: 64px;
+  /* ⚠️ 这一档**必须写 rem，不许改成 64px**：TabBar 自己的几何（`py-2.5` / `h-5`）也是 rem，
+     Android WebView 的 textZoom 会连根字号一起放大 ⇒ 条子变高时，rem 的占位跟着变高，
+     写死 px 会让占位不够、最后一行被固定条压住（这条只有真机能验，故按单位形状钉死）。
+     家在这里，两处占位（`ResponsiveLayout` 主内容区、`ConversationList` 列表）都读它。 */
+  --gosslan-mobile-tabbar-h: 4rem;
 
   /* 主面板三档灰阶（Slate 系，对应设计规范）：rail/顶栏 #E2E8F0、列表 #F1F5F9、聊天 #F8FAFC，
      由深到浅拉开层次，面板圆角交界。 */
@@ -179,6 +187,13 @@
      移动端 = 0：移动端没有 caption（`TitleBar` 的 `v-if="!isMobile"`），
      整屏形态走的是 `env(safe-area-inset-*)`，这套变量在那边必须**不产生任何影响**。 */
   --gosslan-window-safe-top: 0px;
+  /* 顶部让位的**唯一出口**：桌面 = 自绘 caption（上面那枚 window 变量），移动端 = 刘海/
+     状态栏安全区（`env(safe-area-inset-top)`，只在 `viewport-fit=cover` 下才是真值，现读 5 个
+     HTML 入口全都带）。
+     为什么是 `max()` 而不是相加：两个世界里各有一半恒为 0，相加等于把**同一个物理避让读两遍**
+     （图片预览右上工具条正是这样被推到 2×caption + 16px，2026-10-20 用真几何量出来：钉 44px
+     时 delta=60 而不是 16）；真机上万一两者同时不为 0，该让开的也是较大的那一个，不是它们的和。 */
+  --gosslan-safe-top: max(var(--gosslan-window-safe-top, 0px), env(safe-area-inset-top, 0px));
   /* 滚动条留白（滚动层 / 内容区与滚动条之间）。
      Win/Linux 用 706 行那条**常显 6px 细滚动条**，内容贴着滚动条没有呼吸感；
      macOS 是系统 overlay（`.platform-mac ::-webkit-scrollbar { width: auto }`，不占布局宽）
@@ -783,11 +798,14 @@ progress {
   --gosslan-title-h: 28px;
 }
 
-/* 桌面：窗口内容区的上边界 = 自绘 caption 的高度（移动端保持 0，见 `:root` 里的说明）。
-   ⚠️ 选择器是 `html:not(.is-mobile)` 而不是 `.platform-mac`：Windows / Linux 也有 caption，
-   `.platform-mac` 只覆盖 macOS。这一条与 tailwind 的 `desktop:` 变体（`html:not(.is-mobile) &`）
-   同一个判据 —— 全仓只有 `is-mobile` 这一个"本机是移动布局吗"的口径。 */
-html:not(.is-mobile) {
+/* 「这一扇窗口顶部有自绘 caption」⇒ 内容区的上边界 = caption 高度。
+   ⚠️ 键是 `html.has-caption` 而**不是** `html:not(.is-mobile)`（2026-10-20 改的，改前是后者）：
+   `is-mobile` 是**布局档**（平台优先、宽度兜底，窄起来的桌面窗也算移动布局），而 caption 画不画
+   由 `TitleBar` 的 `isMobile` prop 决定 —— 辅助窗的宿主不传它 ⇒ 日志窗（默认 760×560）和任何
+   拖窄的预览/设置/任务窗都**画着 caption 却按布局档被判成"没有 caption"**，遮罩顶边算成 0、
+   工具条压进标题栏。这个类由画 caption 的那个人（`TitleBar.vue`）自己写：事实只有一个来源。
+   与 tailwind 的 `desktop:` 变体（仍按 `is-mobile` 判**布局**）是两件事，不要并成一个。 */
+html.has-caption {
   --gosslan-window-safe-top: var(--gosslan-title-h);
 }
 

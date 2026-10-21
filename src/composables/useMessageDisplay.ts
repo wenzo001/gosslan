@@ -1,14 +1,13 @@
-import { t } from "@/i18n";
+import { currentLocale, t } from "@/i18n";
 import { computed, toValue, type CSSProperties, type MaybeRefOrGetter } from "vue";
-import dayjs from "dayjs";
 import { useAppStore } from "@/stores/useAppStore";
-import { findPreset, formatTimeDivider, parsePeerStyle, resolveChatColors } from "@/utils/chatStyle";
+import { findPreset, parsePeerStyle, resolveChatColors } from "@/utils/chatStyle";
+import { fmtDateTime, fmtTimeDivider } from "@/utils/time";
+import { shouldShowTimeDivider } from "@/utils/previewMetrics";
+import { shouldShowNickname } from "@/utils/messageKinds";
 import type { MessageRecord } from "@/types";
 
 export type SendState = "sending" | "sent" | "delivered" | "read" | "failed";
-
-/** 时间分割线阈值：与上一条间隔 ≥ 5 分钟。 */
-const TIME_DIVIDER_GAP = 5 * 60 * 1000;
 
 /**
  * 消息外观与版面判定（气泡配色、时间行、发送状态）。
@@ -73,14 +72,18 @@ export function useMessageDisplay(opts: {
       }) as CSSProperties,
   );
 
-  /** 每条消息独立完整渲染（不再合并连续消息）：时间行恒显示。 */
-  const showTimeDivider = computed(
-    () => !prev.value || message.value.ts - prev.value.ts >= TIME_DIVIDER_GAP,
+  /** 这一条前面要不要插时间分割行。阈值与判定都取自 `previewMetrics` ——
+   *  估算端（`messageHeight`）用的是同一个函数，因为分割行自己占 32px，
+   *  两边判得不一致就会让相邻消息互相遮挡。 */
+  const showTimeDivider = computed(() =>
+    shouldShowTimeDivider(message.value.ts, prev.value?.ts),
   );
-  const showNickname = computed(() => isGroup.value && !mine.value);
+  const showNickname = computed(() =>
+    shouldShowNickname({ isGroup: isGroup.value, mine: mine.value, kind: message.value.kind }),
+  );
 
-  const fullTime = computed(() => dayjs(message.value.ts).format("YYYY-MM-DD HH:mm:ss"));
-  const timeDividerText = computed(() => formatTimeDivider(message.value.ts));
+  const fullTime = computed(() => fmtDateTime(message.value.ts));
+  const timeDividerText = computed(() => fmtTimeDivider(message.value.ts, t, currentLocale()));
 
   const sendState = computed(() => message.value.status as SendState);
   const receiptTitle = computed(() => {

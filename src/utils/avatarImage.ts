@@ -19,6 +19,7 @@
  * 512px 见方的高质量 JPEG 通常在百 KB 量级，所以"≤1MB"这个目标几乎总在最高档就满足。
  */
 import { dataUrlBase64 } from "./imageBytes.ts";
+import { MessageKeyError } from "./errors.ts";
 
 /** 允许用户**选进来**的原始文件上限（预处理之前判，用户 2026-09-29 说现在是 2MB、太小）。 */
 export const AVATAR_INPUT_MAX_BYTES = 10 * 1024 * 1024;
@@ -53,7 +54,7 @@ export const AVATAR_QUALITY_LADDER = [0.95, 0.9, 0.85, 0.8, 0.72, 0.65];
  */
 export function dataUrlByteLength(url: string): number {
   const b64 = dataUrlBase64(url);
-  if (b64 === null) throw new Error("编码结果不是 base64 data URL，无法判断体积");
+  if (b64 === null) throw new MessageKeyError("errors.avatar.notBase64");
   const pad = b64.endsWith("==") ? 2 : b64.endsWith("=") ? 1 : 0;
   // base64 每 4 个字符 = 3 字节，再扣掉填充（toDataURL 的产出一定是 4 的倍数）
   return (b64.length / 4) * 3 - pad;
@@ -73,5 +74,5 @@ export function pickAvatarJpeg(encode: (quality: number) => string): string {
     const url = encode(q);
     if (dataUrlByteLength(url) <= AVATAR_OUTPUT_MAX_BYTES) return url;
   }
-  throw new Error("头像压缩后仍超过 1MB，请换一张更小的图");
+  throw new MessageKeyError("errors.avatar.stillTooLarge");
 }

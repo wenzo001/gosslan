@@ -1,9 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   hexToRgb,
-  lighten,
-  darken,
   rgba,
     mixHex,
   luma,
@@ -12,6 +12,7 @@ import {
   adjustHsl,
   toHsl,
   hslToHex,
+  applyTheme,
     } from "./color.ts";
 
 test("hexToRgb 解析 6 位与 3 位 hex", () => {
@@ -20,21 +21,93 @@ test("hexToRgb 解析 6 位与 3 位 hex", () => {
   assert.deepEqual(hexToRgb("#fff"), [255, 255, 255]);
 });
 
-test("lighten 向白混合、darken 向黑混合", () => {
-  assert.equal(lighten("#000000", 1), "rgb(255, 255, 255)");
-  assert.equal(darken("#ffffff", 1), "rgb(0, 0, 0)");
-});
-
 test("rgba 输出带透明度", () => {
   assert.equal(rgba("#3b82f6", 0.12), "rgba(59, 130, 246, 0.12)");
 });
 
-test("主题色派生链：hover 比主色浅、active 比主色深", () => {
-  const base = [59, 130, 246];
-  const hv = (lighten("#3b82f6", 0.08).match(/\d+/g) ?? []).map(Number);
-  const av = (darken("#3b82f6", 0.08).match(/\d+/g) ?? []).map(Number);
-  assert.ok(hv[0] >= base[0]);
-  assert.ok(av[0] <= base[0]);
+test("applyTheme 只管主色与字体：派生档不许在 JS 里重算，默认档不留内联", () => {
+  // 这条钉的是"一份实现"。以前 JS 按 8% 算一份、style.css 又硬编一份近似值，两份比例不同；
+  // 首屏脚本只来得及写主色 ⇒ 按钮已换色而 hover/浅底还是蓝色。现在派生只有 CSS 一处。
+  // 默认档（空串）同样不在 JS 里抄兜底栈 —— 清掉内联，让 style.css 的 token 当唯一来源。
+  const set: Array<[string, string]> = [];
+  const removed: string[] = [];
+  const saved = (globalThis as { document?: unknown }).document;
+  (globalThis as { document?: unknown }).document = {
+    documentElement: {
+      style: {
+        setProperty: (k: string, v: string) => {
+          set.push([k, v]);
+        },
+        removeProperty: (k: string) => {
+          removed.push(k);
+        },
+      },
+    },
+  };
+  const picked = "'JetBrains Mono', Consolas, monospace";
+  try {
+    applyTheme("#d43d43", picked);
+  } finally {
+    if (saved === undefined) delete (globalThis as { document?: unknown }).document;
+    else (globalThis as { document?: unknown }).document = saved;
+  }
+  assert.deepEqual(
+    set.map(([k]) => k),
+    ["--gosslan-primary", "--gosslan-font-family"],
+    `applyTheme 多写或少写了变量：${JSON.stringify(set)}`,
+  );
+  assert.equal(set[0][1], "#d43d43");
+  assert.equal(set[1][1], picked);
+
+  set.length = 0;
+  removed.length = 0;
+  (globalThis as { document?: unknown }).document = {
+    documentElement: {
+      style: {
+        setProperty: (k: string, v: string) => {
+          set.push([k, v]);
+        },
+        removeProperty: (k: string) => {
+          removed.push(k);
+        },
+      },
+    },
+  };
+  try {
+    applyTheme("#d43d43", "");
+  } finally {
+    if (saved === undefined) delete (globalThis as { document?: unknown }).document;
+    else (globalThis as { document?: unknown }).document = saved;
+  }
+  assert.deepEqual(set.map(([k]) => k), ["--gosslan-primary"], `默认档不该再写一份兜底栈：${JSON.stringify(set)}`);
+  assert.deepEqual(removed, ["--gosslan-font-family"], "默认档必须清掉内联，让 style.css 的 token 生效");
+});
+
+test("hover/active/light 由主色 color-mix 派生，且混合方向正确", () => {
+  const css = readFileSync(join(import.meta.dirname, "..", "style.css"), "utf8").replace(
+    /\/\*[\s\S]*?\*\//g,
+    "",
+  );
+  const decl = (token: string) => {
+    const m = new RegExp(`--gosslan-${token}:\\s*([^;]+);`).exec(css);
+    return m ? m[1].trim() : "";
+  };
+  // 正控：解析面先要认得出真实声明，否则下面的断言全绿只是因为正则坏了。
+  assert.ok(decl("primary-light").length > 0, "没解析到 --gosslan-primary-light");
+  const toward: Record<string, string> = {
+    "primary-hover": "#ffffff",
+    "primary-active": "#000000",
+    "primary-light": "transparent",
+  };
+  for (const [token, target] of Object.entries(toward)) {
+    const v = decl(token);
+    assert.match(
+      v,
+      /^color-mix\(in srgb,\s*var\(--gosslan-primary\)\s+\d+(?:\.\d+)?%,\s*\S+\)$/,
+      `${token} 必须是从 --gosslan-primary 现派生的 color-mix（写回硬编色值 = 又开第二份实现）`,
+    );
+    assert.ok(v.includes(target), `${token} 应朝 ${target} 混：方向反了白字更看不见`);
+  }
 });
 
 test("luma: 黑白两端为 0/255，中间色介于其间", () => {

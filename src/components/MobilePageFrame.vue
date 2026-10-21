@@ -78,7 +78,7 @@ const backAria = () => props.backLabel ?? t("common.back");
       </button>
       <span
         v-if="title"
-        class="min-w-0 truncate text-[15px] font-medium text-[var(--gosslan-text)]"
+        class="min-w-0 truncate text-title font-medium text-[var(--gosslan-text)]"
         :title="title"
         >{{ title }}</span
       >

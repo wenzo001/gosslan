@@ -58,7 +58,7 @@ function confirm() {
 
 <template>
   <BaseModal :open="open" :title="t('remind.audienceTitle')" @close="emit('close')">
-    <p class="mb-2 text-xs text-[var(--gosslan-text-3)]">
+    <p class="mb-2 text-xs text-[var(--gosslan-text-2)]">
       {{ t("remind.audienceHint") }}
     </p>
     <div class="-mx-1 max-h-72 overflow-y-auto">
@@ -86,7 +86,7 @@ function confirm() {
       </button>
     </div>
     <div class="mt-5 flex items-center justify-between gap-2">
-      <span class="text-xs text-[var(--gosslan-text-3)]">
+      <span class="text-xs text-[var(--gosslan-text-2)]">
         {{ t("remind.audienceCount", { n: selected.size }) }}
       </span>
       <div class="flex gap-2">

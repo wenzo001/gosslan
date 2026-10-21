@@ -19,6 +19,8 @@ import BaseModal from "@/components/BaseModal.vue";
 import { useImagePreviewStore } from "@/stores/useImagePreview";
 import { api } from "@/api";
 import { imageMime } from "@/utils/imageMime";
+import { IMAGE_PREVIEW_MAX_BYTES } from "@/utils/filePreview";
+import { sleep } from "@/utils/defer";
 import { fmtConversationTime } from "@/utils/time";
 import { mediaCid, mediaName, mergeItemLine, parseMergePayload, type MergedItem } from "@/utils/mergeCard";
 
@@ -36,8 +38,6 @@ const items = computed(() => parsed.value?.items ?? []);
 const hasMediaWithoutCid = computed(() =>
   items.value.some((i) => (i.kind === "image" || i.kind === "file") && !mediaCid(i)),
 );
-
-const IMAGE_MAX_BYTES = 15 * 1024 * 1024;
 
 type ImagePhase = "loading" | "ready" | "absent" | "pulling" | "failed";
 interface ImageSlot {
@@ -94,19 +94,36 @@ function releaseUrl(url?: string) {
   if (url) URL.revokeObjectURL(url);
 }
 
+/**
+ * objectURL 的**唯一入账出口**：创建之后必须在这里决定"留下还是当场回收"。
+ *
+ * ⚠️ 为什么必须有这一个出口（§6.66）：这两条链（本机探测 `probe`、向对端回源 `pull`）都要先
+ * `await` 一次 IPC 才能拿到字节，而**取消发生在 await 期间** —— 弹窗一关，`onBeforeUnmount`
+ * 已经清空并回收过 `objectUrls`，之后才回来的那条 URL 如果再直接 push，就永远没人回收
+ * （一张上限 `IMAGE_PREVIEW_MAX_BYTES` 的图留在文档里）。所以"问一次取消"必须落在
+ * **await 之后**，而且落在**入账之前**；这句原先只在 `probe` 里有，`pull` 少了它。
+ */
+function adoptUrl(url: string, stale = false): string | null {
+  if (closed || stale) {
+    releaseUrl(url);
+    return null;
+  }
+  objectUrls.push(url);
+  return url;
+}
+
 async function probe(i: number, item: MergedItem) {
   const cid = mediaCid(item);
   if (!cid) return;
   imageSlots[i] = { phase: "loading" };
   try {
-    const raw = await api.readContentPreview(cid, IMAGE_MAX_BYTES);
+    const raw = await api.readContentPreview(cid, IMAGE_PREVIEW_MAX_BYTES);
     const bytes = new Uint8Array(raw);
-    const url = URL.createObjectURL(new Blob([bytes], { type: imageMime(mediaName(item)) }));
-    objectUrls.push(url);
-    if (closed || items.value[i] !== item) {
-      releaseUrl(url);
-      return;
-    }
+    const url = adoptUrl(
+      URL.createObjectURL(new Blob([bytes], { type: imageMime(mediaName(item)) })),
+      items.value[i] !== item,
+    );
+    if (!url) return;
     imageSlots[i] = { phase: "ready", url };
   } catch (e) {
     const msg = String(e);
@@ -115,10 +132,6 @@ async function probe(i: number, item: MergedItem) {
       note: msg.includes("TOO_LARGE") ? t("merge.tooLarge") : undefined,
     };
   }
-}
-
-function sleep(ms: number) {
-  return new Promise((r) => setTimeout(r, ms));
 }
 
 async function pull(i: number, item: MergedItem) {
@@ -140,10 +153,15 @@ async function pull(i: number, item: MergedItem) {
     await sleep(1500);
     if (imageSlots[i]?.phase !== "pulling" || closed) return;
     try {
-      const raw = await api.readContentPreview(cid, IMAGE_MAX_BYTES);
+      const raw = await api.readContentPreview(cid, IMAGE_PREVIEW_MAX_BYTES);
       const bytes = new Uint8Array(raw);
-      const url = URL.createObjectURL(new Blob([bytes], { type: imageMime(mediaName(item)) }));
-      objectUrls.push(url);
+      // 这一路**必须**走 `adoptUrl`：上面那次 `closed` 问的是"进入这一轮之前"，而
+      // `readContentPreview` 自己是一次往返 ⇒ 弹窗关在这次 await 之后的话，
+      // `onBeforeUnmount` 早回收完了，这一条就得在这里当场回收（见 `adoptUrl` 的说明）。
+      const url = adoptUrl(
+        URL.createObjectURL(new Blob([bytes], { type: imageMime(mediaName(item)) })),
+      );
+      if (!url) return;
       imageSlots[i] = { phase: "ready", url };
       return;
     } catch {
@@ -199,9 +217,9 @@ onBeforeUnmount(() => {
 
       <div class="max-h-80 space-y-2 overflow-y-auto">
         <div v-for="(it, i) in items" :key="i" class="space-y-0.5">
-          <div class="flex items-baseline gap-1.5 text-[11px] text-[var(--gosslan-text-2)]">
+          <div class="flex items-baseline gap-1.5 text-caption text-[var(--gosslan-text-2)]">
             <span class="truncate font-medium" :title="it.sender">{{ it.sender }}</span>
-            <span v-if="it.ts" class="shrink-0">{{ fmtConversationTime(it.ts) }}</span>
+            <span v-if="it.ts" class="shrink-0">{{ fmtConversationTime(it.ts, t) }}</span>
           </div>
 
           <!-- 图片：有 cid 就按需回源渲染大图；没有就退回占位行 -->
@@ -230,7 +248,7 @@ onBeforeUnmount(() => {
               v-else
               class="flex items-center justify-between gap-2 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-hover)] px-3 py-2"
             >
-              <span class="min-w-0 flex-1 truncate text-[13px] text-[var(--gosslan-text)]" :title="mediaName(it)">
+              <span class="min-w-0 flex-1 truncate text-body text-[var(--gosslan-text)]" :title="mediaName(it)">
                 {{ mergeItemLine(it) }}
               </span>
               <button
@@ -245,17 +263,17 @@ onBeforeUnmount(() => {
                 {{ t("merge.pulling") }}
               </span>
             </div>
-            <div v-if="imageSlots[i]?.note" class="text-[11px] text-[var(--gosslan-danger-ink)]">
+            <div v-if="imageSlots[i]?.note" class="text-caption text-[var(--gosslan-danger-ink)]">
               {{ imageSlots[i]?.note }}
             </div>
           </template>
 
           <!-- 文本/代码给**全文**（详情页再截断就没有意义了）；媒体走占位行 -->
           <template v-else-if="it.kind === 'text' || it.kind === 'code'">
-            <div class="break-words whitespace-pre-wrap text-[13px] text-[var(--gosslan-text)]">{{ it.content }}</div>
+            <div class="break-words whitespace-pre-wrap text-body text-[var(--gosslan-text)]">{{ it.content }}</div>
           </template>
           <template v-else>
-            <div class="break-words whitespace-pre-wrap text-[13px] text-[var(--gosslan-text)]">{{ mergeItemLine(it) }}</div>
+            <div class="break-words whitespace-pre-wrap text-body text-[var(--gosslan-text)]">{{ mergeItemLine(it) }}</div>
           </template>
         </div>
       </div>

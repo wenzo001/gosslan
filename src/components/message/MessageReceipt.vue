@@ -71,7 +71,7 @@ function readerAvatar(id: string): string | null {
           <span
             v-for="id in visibleReaders"
             :key="id"
-            class="gosslan-avatar-box flex h-4 w-4 items-center justify-center overflow-hidden rounded-full border border-[var(--gosslan-panel)] text-[11px] text-white"
+            class="gosslan-avatar-box flex h-4 w-4 items-center justify-center overflow-hidden rounded-full border border-[var(--gosslan-panel)] text-caption text-white"
             :style="{ backgroundColor: avatarSeedFor(id)?.bg }"
           >
             <img loading="lazy" decoding="async" alt="" v-if="readerAvatar(id)" :src="readerAvatar(id) ?? undefined" class="h-full w-full object-cover" />
@@ -79,7 +79,7 @@ function readerAvatar(id: string): string | null {
           </span>
           <span
             v-if="extraReaders.length > 0"
-            class="ml-1 rounded-full bg-[var(--gosslan-hover)] px-1 text-[11px] text-[var(--gosslan-text-2)]"
+            class="ml-1 rounded-full bg-[var(--gosslan-hover)] px-1 text-caption text-[var(--gosslan-text-2)]"
           >
             +{{ extraReaders.length }}
           </span>
@@ -105,7 +105,7 @@ function readerAvatar(id: string): string | null {
               class="flex items-center gap-2 rounded-[var(--gosslan-radius-xs)] px-2 py-1 hover:bg-[var(--gosslan-hover)]"
             >
               <span
-                class="gosslan-avatar-box flex h-5 w-5 items-center justify-center overflow-hidden rounded-full text-[11px] text-white"
+                class="gosslan-avatar-box flex h-5 w-5 items-center justify-center overflow-hidden rounded-full text-caption text-white"
                 :style="{ backgroundColor: avatarSeedFor(id)?.bg }"
               >
                 <img loading="lazy" decoding="async" alt="" v-if="readerAvatar(id)" :src="readerAvatar(id) ?? undefined" class="h-full w-full object-cover" />
@@ -145,7 +145,7 @@ function readerAvatar(id: string): string | null {
            TG 用的是纯 spinner，但纯 spinner 在气泡上很不显眼（小 + 灰）；
            加一个勾让用户一眼就知道这不是空状态。 -->
       <template v-if="state === 'sending'">
-        <Check class="h-3.5 w-3.5 text-[var(--gosslan-text-3)]" />
+        <Check class="h-3.5 w-3.5 text-[var(--gosslan-text-2)]" />
         <Loader2 class="absolute -right-1 -bottom-0.5 h-2.5 w-2.5 animate-spin text-[var(--gosslan-text-2)]" />
       </template>
       <!-- sent：单勾（灰色）—— 已经发出但还没到对方设备。我们 P2P 链路下 sent 到 delivered

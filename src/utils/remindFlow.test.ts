@@ -247,3 +247,28 @@ test("工具栏「抖动」入口 + 收到强提醒时把窗口拉到前台并�
     "抖动帧只抖不弹：shake 标记必须抑制强提醒的系统通知（用户 2026-10-15「不要接强提醒的弹窗通知」）",
   );
 });
+
+/**
+ * 桌面抖窗是**整个动效族里唯一 CSS 管不着**的出口（Rust 直接 `set_position` 搬 OS 窗口），
+ * 所以系统「减弱动态效果」这一个开关必须由 JS 在调用它之前接住。
+ * 2026-10-19 实测到的缺陷形状：CSS 全局降级、骨架呼吸、触觉三家都接了，只有这一家没接
+ * ⇒ 同一条系统开关，四种感官里三种守约、一种最响的不守约，且不会有任何报错。
+ */
+test("桌面抖窗必须查在减弱动态这条系统开关之后（CSS 降级管不到 OS 窗口）", () => {
+  const store = read("stores/useChatStore.ts");
+  const at = store.indexOf("function raiseAndShakeOnRemind");
+  assert.notEqual(at, -1, "raiseAndShakeOnRemind 不见了 ⇒ 这条判据失去锚点");
+  const end = store.indexOf("\n  }", at);
+  assert.notEqual(end, -1, "raiseAndShakeOnRemind 的函数体没有正常闭合");
+  const body = store.slice(at, end);
+  // 正控：切片里必须真的看得见那句调用 —— 否则"开关在调用之前"会退化成空转
+  assert.match(body, /void api\.shakeWindow\(\)\.catch/, "切片里必须含桌面抖窗的调用");
+  const gateAt = body.indexOf("prefersReducedMotion()");
+  assert.notEqual(gateAt, -1, "桌面抖窗这条路径没查系统「减弱动态效果」开关");
+  assert.ok(
+    gateAt < body.indexOf("api.shakeWindow("),
+    "开关必须查在调用**之前**（写在后面一样不报错，但窗口照抖）",
+  );
+  // 移动端那一路退回 CSS 动画，由 style.css 的全局降级接住 ⇒ 这里不该长出第二份判断
+  assert.equal(body.split("prefersReducedMotion()").length - 1, 1, "同一个函数里只该查一次");
+});

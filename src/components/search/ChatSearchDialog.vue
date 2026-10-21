@@ -17,6 +17,7 @@
  */
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { useQuery } from "@tanstack/vue-query";
+import { useDebounceFn } from "@vueuse/core";
 import {
   DropdownMenuContent,
   DropdownMenuItem,
@@ -29,11 +30,11 @@ import { X } from "@/components/ui/icons";
 import { api } from "@/api";
 import { useAppStore } from "@/stores/useAppStore";
 import { useImeEnterGuard } from "@/composables/useImeEnterGuard";
-import { t } from "@/i18n";
+import { currentLocale, t } from "@/i18n";
 import BaseModal from "@/components/BaseModal.vue";
 import MessageAvatar from "@/components/message/MessageAvatar.vue";
 import { highlightText } from "@/utils/highlight";
-import { formatTimeDivider } from "@/utils/chatStyle";
+import { fmtTimeDivider } from "@/utils/time";
 import {
   SEARCH_DATE_PRESETS,
   dateRangeFor,
@@ -44,8 +45,9 @@ import {
   type SenderOption,
 } from "@/utils/chatSearch";
 import { chatSearchQueryOptions, type ChatSearchParams } from "@/utils/chatSearchQuery";
+import { MAX_SEARCH_KEYWORD_CHARS } from "@/utils/validation";
 import StateBlock from "@/components/ui/StateBlock.vue";
-import { friendlyError } from "@/utils/errors";
+import { errorText } from "@/composables/useErrorText";
 import type { ChatSearchGroup, ChatSearchMessage } from "@/types";
 import { previewBody } from "@/utils/messages";
 
@@ -147,7 +149,7 @@ const searching = computed(
 /** 检索失败的可见出口；有结果时保持结果，空屏时换成错误+重试。 */
 const searchError = computed(() =>
   searchQuery.isError.value
-    ? friendlyError(searchQuery.error.value, t("search.fail"))
+    ? errorText(searchQuery.error.value, t("search.fail"))
     : "",
 );
 
@@ -206,7 +208,7 @@ watch(
 function forceSearch() {
   const kw = keyword.value.trim();
   if (!kw) return;
-  clearDebounce();
+  pushKeyword.cancel();
   if (debouncedKeyword.value !== kw) {
     debouncedKeyword.value = kw; // key 一变，Query 自己发请求
     return;
@@ -239,16 +241,13 @@ function retrySearch() {
 }
 
 /** 关键词防抖：输入即搜（微信也是输入就出结果），150ms 足够合并连打又不觉得延迟。 */
-let debounce: ReturnType<typeof setTimeout> | null = null;
-function clearDebounce() {
-  if (debounce) {
-    clearTimeout(debounce);
-    debounce = null;
-  }
-}
+const pushKeyword = useDebounceFn((kw: string) => {
+  // 到点时复查一次：这 150ms 里弹窗可能已经被关掉（关窗会清空关键词）
+  if (props.open) debouncedKeyword.value = kw;
+}, 150);
 
 watch(keyword, () => {
-  clearDebounce();
+  pushKeyword.cancel();
   if (!props.open || opening.value) return;
   const kw = keyword.value.trim();
   if (!kw) {
@@ -259,13 +258,10 @@ watch(keyword, () => {
     activeIdx.value = 0;
     return;
   }
-  debounce = setTimeout(() => {
-    debounce = null;
-    if (props.open) debouncedKeyword.value = kw;
-  }, 150);
+  pushKeyword(kw);
 });
 
-onBeforeUnmount(clearDebounce);
+onBeforeUnmount(() => pushKeyword.cancel());
 
 /** 打开时：带入关键词并立即检索一次（回车进来应马上看到结果）。 */
 watch(
@@ -283,7 +279,7 @@ watch(
       searched.value = "";
       senderMenuOpen.value = false;
       dateMenuOpen.value = false;
-      clearDebounce();
+      pushKeyword.cancel();
       return;
     }
     // 复位这几个值会触发 keyword watcher。打开时的检索由下面这一次 `debouncedKeyword`
@@ -356,7 +352,7 @@ function showSender(group: ChatSearchGroup): boolean {
         <input
           ref="inputRef"
           v-model="keyword"
-          maxlength="100"
+          :maxlength="MAX_SEARCH_KEYWORD_CHARS"
           enterkeyhint="search"
           autocomplete="off"
           autocorrect="off"
@@ -364,7 +360,7 @@ function showSender(group: ChatSearchGroup): boolean {
           spellcheck="false"
           :placeholder="t('search.placeholder')"
           :aria-label="t('search.placeholder')"
-          class="w-full bg-transparent text-[13px] placeholder:text-[var(--gosslan-text-2)] outline-none focus:border-transparent"
+          class="w-full bg-transparent text-body placeholder:text-[var(--gosslan-text-2)] outline-none focus:border-transparent"
           @keydown.enter.prevent="onEnter"
           @keydown.down.prevent="stepHit(1)"
           @keydown.up.prevent="stepHit(-1)"
@@ -481,15 +477,15 @@ function showSender(group: ChatSearchGroup): boolean {
           <MessageAvatar :id="g.conv_id" :name="g.name" :avatar="g.avatar" />
           <span class="min-w-0 flex-1">
             <span class="flex items-baseline gap-2">
-              <span class="min-w-0 flex-1 truncate text-[13px] font-medium text-[var(--gosslan-text)]" :title="g.name">{{ g.name }}</span>
-              <span class="shrink-0 text-[11px] text-[var(--gosslan-text-2)]">{{ formatTimeDivider(g.latest_ts) }}</span>
+              <span class="min-w-0 flex-1 truncate text-body font-medium text-[var(--gosslan-text)]" :title="g.name">{{ g.name }}</span>
+              <span class="shrink-0 text-caption text-[var(--gosslan-text-2)]">{{ fmtTimeDivider(g.latest_ts, t, currentLocale()) }}</span>
             </span>
             <span
               class="mt-0.5 block truncate text-xs text-[var(--gosslan-text-2)]"
               :title="cellText(g.messages[0])"
               v-html="highlightText(hitSnippet(cellText(g.messages[0]), keyword), keyword)"
             ></span>
-            <span class="mt-0.5 block text-[11px] text-[var(--gosslan-text-2)]">
+            <span class="mt-0.5 block text-caption text-[var(--gosslan-text-2)]">
               {{ t("search.groupCount", { n: g.total }) }}
             </span>
           </span>
@@ -500,14 +496,14 @@ function showSender(group: ChatSearchGroup): boolean {
       <div class="flex min-w-0 flex-1 flex-col bg-[var(--gosslan-chat)]">
         <div class="flex h-10 shrink-0 items-center gap-2 border-b border-[var(--gosslan-divider)] px-4">
           <span
-            class="min-w-0 flex-1 truncate text-[13px] text-[var(--gosslan-text)]"
+            class="min-w-0 flex-1 truncate text-body text-[var(--gosslan-text)]"
             :title="keyword.trim() ? t('search.header', { n: total, kw: keyword.trim() }) : t('search.hint')"
           >
             {{ keyword.trim() ? t("search.header", { n: total, kw: keyword.trim() }) : t("search.hint") }}
           </span>
           <button
             v-if="activeGroup"
-            class="tap-safe flex shrink-0 items-center gap-1 text-[13px] text-[var(--gosslan-link-ink,var(--gosslan-primary))] transition hover:opacity-80"
+            class="tap-safe flex shrink-0 items-center gap-1 text-body text-[var(--gosslan-primary)] transition hover:opacity-80"
             @click="enterChat"
           >
             {{ t("search.enterChat") }}
@@ -533,17 +529,17 @@ function showSender(group: ChatSearchGroup): boolean {
                 >
                   {{ m.sender_name }}
                 </span>
-                <span class="ml-auto shrink-0 text-[11px] text-[var(--gosslan-text-2)]">{{ formatTimeDivider(m.ts) }}</span>
+                <span class="ml-auto shrink-0 text-caption text-[var(--gosslan-text-2)]">{{ fmtTimeDivider(m.ts, t, currentLocale()) }}</span>
               </div>
               <div
-                class="mt-0.5 gosslan-selectable whitespace-pre-wrap break-words text-[13px] leading-relaxed text-[var(--gosslan-text)]"
+                class="mt-0.5 gosslan-selectable whitespace-pre-wrap break-words text-body leading-relaxed text-[var(--gosslan-text)]"
                 v-html="highlightText(cellText(m), keyword)"
               ></div>
             </div>
           </div>
           <p
             v-if="activeGroup && activeGroup.total > activeGroup.messages.length"
-            class="py-3 text-center text-[11px] text-[var(--gosslan-text-2)]"
+            class="py-3 text-center text-caption text-[var(--gosslan-text-2)]"
           >
             {{ t("search.more", { n: activeGroup.total - activeGroup.messages.length }) }}
           </p>

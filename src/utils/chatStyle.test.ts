@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { contrastRatio, luma, toHsl } from "./color.ts";
-import { CHAT_PRESETS, formatTimeDivider, mentionHighlightColor, resolveChatColors } from "./chatStyle.ts";
+import { CHAT_PRESETS, mentionHighlightColor, resolveChatColors } from "./chatStyle.ts";
 
 /** 覆盖冷暖、高/低饱和的代表性主题色：任何人选的自定义色都应安全。 */
 const THEME_COLORS = [
@@ -98,22 +98,6 @@ test("全部预设：明暗两套配色的正文对比度都达 AA", () => {
   }
 });
 
-test("时间分割线：微信式智能格式（今天/昨天/一周内/今年/跨年）", () => {
-  // now = 2026-09-09（周三）16:00
-  const now = new Date(2026, 8, 9, 16, 0, 0).getTime();
-  const t = (month: number, day: number, h: number, m: number, year = 2026) =>
-    new Date(year, month - 1, day, h, m, 0).getTime();
-
-  assert.equal(formatTimeDivider(t(9, 9, 10, 5), now), "10:05", "今天只报时分");
-  assert.equal(formatTimeDivider(t(9, 8, 23, 5), now), "昨天 23:05", "昨天带「昨天」前缀");
-  assert.equal(formatTimeDivider(t(9, 5, 8, 0), now), "周六 08:00", "一周内报星期");
-  assert.equal(formatTimeDivider(t(8, 30, 12, 0), now), "8月30日 12:00", "今年更早报月日");
-  assert.equal(
-    formatTimeDivider(t(12, 31, 18, 30, 2025), now),
-    "2025年12月31日 18:30",
-    "跨年带年份",
-  );
-});
 
 // ---------------- mention 高亮色：@提及 蓝字在任意气泡底上都得能看清 ----------------
 

@@ -1360,7 +1360,7 @@ export function findTopInsetWithoutBottomInset(src: string): GuardIssue[] {
  *  "移动端分支"靠 `:class` 三元里出现的移动判据判（见 `MOBILE_BRANCH_RE`）。
  *  不靠 `aria-hidden` 文本单独一条 —— 见测试里那几条正反面夹具。
  */
-const WINDOW_SAFE_TOP_RE = /top-\[var\(--gosslan-window-safe-top\)\]/;
+const WINDOW_SAFE_TOP_RE = /top-\[var\(--gosslan-(?:window-)?safe-top/;
 /** 四边都铺满的写法：`inset-0`，或 `inset-x-0 bottom-0` + 顶到某个值。 */
 const FULL_BLEED_RE = /\binset-0\b/;
 /**

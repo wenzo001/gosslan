@@ -10,7 +10,10 @@ import { useMemberProfile } from "@/composables/useMemberProfile";
 import { avatarSeedFor } from "@/utils/avatarSeed";
 import {
   TODO_STATUSES, TODO_STATUS_CLASS, TODO_STATUS_LABEL_KEY, foldTodos, isEffectivelyArchived, todoRowsLoadState, } from "@/utils/todos";
-import { friendlyError } from "@/utils/errors";
+import { errorText } from "@/composables/useErrorText";
+import { useImeEnterGuard } from "@/composables/useImeEnterGuard";
+import { MAX_ANNOUNCEMENT_CHARS, MAX_GROUP_NAME_CHARS } from "@/utils/validation";
+import CharCounter from "@/components/ui/CharCounter.vue";
 import { ArrowRightLeft, Crown, ListChecks, LogOut, Plus, UserMinus } from "lucide-vue-next";
 import { Loader2, X } from "@/components/ui/icons";
 import type { Friend } from "@/types";
@@ -100,6 +103,8 @@ watch(
   },
   { immediate: true },
 );
+
+const ime = useImeEnterGuard();
 
 async function saveName() {
   const gid = props.groupId;
@@ -225,14 +230,20 @@ async function confirmAction() {
       <!-- 群名称：群主可改（用户 2026-09-17：改名并入本弹窗）。
            非群主**只读文本** —— 没权限就不给一个灰掉的输入框（改不了还长得像能改）。 -->
       <div>
-        <div class="mb-1.5 text-xs text-[var(--gosslan-text-2)]">{{ t("group.rename.title") }}</div>
+        <div class="mb-1.5 flex items-baseline justify-between gap-2">
+          <span class="text-xs text-[var(--gosslan-text-2)]">{{ t("group.rename.title") }}</span>
+          <!-- 只读那一档不给读数：非群主改不了，报"多少/上限"是凭空噪声。 -->
+          <CharCounter v-if="isOwner" :text="nameDraft" :max="MAX_GROUP_NAME_CHARS" />
+        </div>
         <div v-if="isOwner" class="flex items-center gap-2">
           <input
             v-model="nameDraft"
-            maxlength="40"
+            :maxlength="MAX_GROUP_NAME_CHARS"
             class="w-full rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none transition focus:border-transparent"
             :placeholder="t('group.namePlaceholder')"
-            @keydown.enter.prevent="saveName"
+            @keydown.enter.prevent="ime.enter(saveName)"
+            @compositionstart="ime.onStart"
+            @compositionend="ime.onEnd"
           />
           <PrimaryBtn
             size="dense"
@@ -250,11 +261,16 @@ async function confirmAction() {
            "群详情中可查看公告"）。以前整段挂在 `isOwner` 下 ⇒ 普通成员进这个面板
            什么都看不到，只能顺着聊天记录往回翻那条公告消息。 -->
       <div>
-        <div class="mb-1.5 text-xs text-[var(--gosslan-text-2)]">{{ t("group.announce") }}</div>
+        <div class="mb-1.5 flex items-baseline justify-between gap-2">
+          <span class="text-xs text-[var(--gosslan-text-2)]">{{ t("group.announce") }}</span>
+          <!-- 公告是会被**整段替换**的字段：粘一条超长的进来、maxlength 静默砍掉尾巴，
+               发出去的公告就少了半段而人不知道。读数只在编辑那一档出现。 -->
+          <CharCounter v-if="isOwner" :text="announceDraft" :max="MAX_ANNOUNCEMENT_CHARS" />
+        </div>
         <template v-if="isOwner">
           <textarea
             v-model="announceDraft"
-            maxlength="500"
+            :maxlength="MAX_ANNOUNCEMENT_CHARS"
             rows="3"
             class="w-full resize-none rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none transition focus:border-transparent"
             :placeholder="t('group.announcePlaceholder')"
@@ -302,7 +318,7 @@ async function confirmAction() {
             <div class="flex items-center gap-1.5">
               <span class="truncate text-sm font-medium" :title="memberProfile(id).name">{{ memberProfile(id).name }}</span>
               <Crown v-if="group.creator === id" class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-warning-ink)]" :title="t('group.owner')" />
-              <span v-if="id === myId" class="shrink-0 text-[11px] text-[var(--gosslan-text-2)]">{{ t("group.me") }}</span>
+              <span v-if="id === myId" class="shrink-0 text-caption text-[var(--gosslan-text-2)]">{{ t("group.me") }}</span>
             </div>
             <div class="text-xs text-[var(--gosslan-text-2)]">
               {{ memberProfile(id).online ? t("common.online") : t("common.offline") }}
@@ -335,15 +351,15 @@ async function confirmAction() {
            （成员面板已经装了成员列表 + 添加成员，再塞一张任务清单会把两个用途挤在一起） -->
       <div class="rounded-[var(--gosslan-radius-lg)] border border-[var(--gosslan-border)] p-2.5">
         <div class="flex items-center justify-between gap-2">
-          <div class="flex min-w-0 items-center gap-1.5 text-[13px] font-medium">
+          <div class="flex min-w-0 items-center gap-1.5 text-body font-medium">
             <ListChecks class="h-4 w-4 shrink-0 text-[var(--gosslan-text-2)]" aria-hidden="true" />
             <span class="truncate" :title="t('todo.title')">{{ t("todo.title") }}</span>
-            <span v-if="todoSummary.total" class="shrink-0 text-[11px] font-normal text-[var(--gosslan-text-2)]">
+            <span v-if="todoSummary.total" class="shrink-0 text-caption font-normal text-[var(--gosslan-text-2)]">
               {{ t("todo.doneCount", { n: todoSummary.done, total: todoSummary.total }) }}
             </span>
           </div>
           <button
-            class="tap-safe flex shrink-0 items-center gap-1 rounded-[var(--gosslan-radius-md)] px-2 py-1 text-[12px] text-[var(--gosslan-primary)] transition hover:bg-[var(--gosslan-hover)]"
+            class="tap-safe flex shrink-0 items-center gap-1 rounded-[var(--gosslan-radius-md)] px-2 py-1 text-meta text-[var(--gosslan-primary)] transition hover:bg-[var(--gosslan-hover)]"
             :aria-busy="tasksOpening || undefined"
             @click="emit('open-tasks')"
           >
@@ -353,7 +369,7 @@ async function confirmAction() {
             {{ todoSummary.total ? t("todo.viewAll") : t("todo.create") }}
           </button>
         </div>
-        <div v-if="todoSummary.total" class="mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[11px]">
+        <div v-if="todoSummary.total" class="mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-caption">
           <span
             v-for="s in TODO_STATUSES"
             v-show="todoSummary.byStatus[s]"
@@ -363,10 +379,10 @@ async function confirmAction() {
             {{ t(TODO_STATUS_LABEL_KEY[s]) }} {{ todoSummary.byStatus[s] }}
           </span>
         </div>
-        <div v-else class="mt-1.5 text-[11px] text-[var(--gosslan-text-2)]">
+        <div v-else class="mt-1.5 text-caption text-[var(--gosslan-text-2)]">
           <template v-if="todoRowsLoaded">{{ t("todo.empty") }}</template>
           <template v-else-if="todoRowsError">
-            {{ friendlyError(todoRowsError, t("todo.loadFail")) }}
+            {{ errorText(todoRowsError, t("todo.loadFail")) }}
             <button
               type="button"
               class="tap-safe ml-1 inline-flex items-center rounded-[var(--gosslan-radius-sm)] px-1 text-[var(--gosslan-primary)] hover:bg-[var(--gosslan-hover)]"
@@ -437,10 +453,10 @@ async function confirmAction() {
         <LogOut class="h-4 w-4" />
         {{ t("group.leave") }}
       </button>
-      <p v-if="!isOwner" class="text-[11px] text-[var(--gosslan-text-2)]">
+      <p v-if="!isOwner" class="text-caption text-[var(--gosslan-text-2)]">
         {{ t("group.manageHint") }}
       </p>
-      <p v-else class="text-[11px] text-[var(--gosslan-text-2)]">
+      <p v-else class="text-caption text-[var(--gosslan-text-2)]">
         {{ t("group.leaveHint") }}
       </p>
     </div>

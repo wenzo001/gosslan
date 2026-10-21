@@ -166,7 +166,7 @@ function open(e: Event) {
     />
     <div
       v-else
-      class="flex h-full w-full items-center justify-center px-1 text-center text-[11px] text-[var(--gosslan-text-2)]"
+      class="flex h-full w-full items-center justify-center px-1 text-center text-caption text-[var(--gosslan-text-2)]"
     >
       {{ loading ? "…" : t("todo.imageSyncing") }}
     </div>

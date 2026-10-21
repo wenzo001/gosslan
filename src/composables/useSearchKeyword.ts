@@ -1,5 +1,6 @@
 import { ref, type Ref } from "vue";
-import { useDeferredRef } from "@/composables/useDeferredRef";
+import { INPUT_DEFER_MS } from "@/utils/defer";
+import { refDebounced } from "@vueuse/core";
 
 /**
  * 搜索框的**纯输入状态**：`keyword` 绑输入框，`query` 是它的延迟镜像。
@@ -13,12 +14,13 @@ import { useDeferredRef } from "@/composables/useDeferredRef";
  *
  * ## 为什么保留延迟镜像
  * 姓名过滤会让整张联系人列表重渲染；按住 Ctrl+V 连发粘贴时关键词每秒变十几次，
- * 用原值会把主线程占满、输入框自己的 caret 掉帧（见 `useDeferredRef` 注释）。
+ * 用原值会把主线程占满、输入框自己的 caret 掉帧（见 `utils/defer.ts` 说明）。
  */
-const DEFER_MS = 120;
-
-export function useSearchKeyword(): { keyword: Ref<string>; query: Ref<string> } {
+export function useSearchKeyword(): {
+  keyword: Ref<string>;
+  query: Readonly<Ref<string>>;
+} {
   const keyword = ref("");
-  const query = useDeferredRef(keyword as Ref<string>, DEFER_MS);
+  const query = refDebounced(keyword, INPUT_DEFER_MS);
   return { keyword, query };
 }

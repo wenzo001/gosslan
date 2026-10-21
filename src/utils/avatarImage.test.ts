@@ -31,8 +31,8 @@ test("dataUrlByteLength 算的是解码后的字节数（含三种填充）", ()
 
 /** 反例那一面：不是 base64 载荷就不能拿来比体积，必须抛而不是给个近似值。 */
 test("dataUrlByteLength 拒绝非 base64 的 data URL 与其它 URL", () => {
-  assert.throws(() => dataUrlByteLength("data:text/plain,hello"), /不是 base64/);
-  assert.throws(() => dataUrlByteLength("blob:http://localhost/abc"), /不是 base64/);
+  assert.throws(() => dataUrlByteLength("data:text/plain,hello"), /errors\.avatar\.notBase64/);
+  assert.throws(() => dataUrlByteLength("blob:http://localhost/abc"), /errors\.avatar\.notBase64/);
 });
 
 // ---------------- pickAvatarJpeg ----------------
@@ -72,7 +72,7 @@ test("全都够小时用最高档（不为了省体积提前压质量）", () =>
 test("没有一档装得下时报错，不静默产出超限头像", () => {
   assert.throws(
     () => pickAvatarJpeg(() => urlOfBytes(AVATAR_OUTPUT_MAX_BYTES + 1)),
-    /超过 1MB/,
+    /errors\.avatar\.stillTooLarge/,
   );
 });
 

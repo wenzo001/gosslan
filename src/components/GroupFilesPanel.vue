@@ -18,15 +18,14 @@ import { useAppStore } from "@/stores/useAppStore";
 import { useMemberProfile } from "@/composables/useMemberProfile";
 import BaseModal from "@/components/BaseModal.vue";
 import { fmtConversationTime } from "@/utils/time";
-import { rgba } from "@/utils/color";
 import { formatBytes } from "@/utils/format";
-import { FILE_KIND_COLORS, FILE_KIND_ICONS, extBadgeLabel, fileKindOf } from "@/utils/fileKind";
+import { FILE_KIND_ICONS, extBadgeLabel, fileKindOf, fileKindStyle } from "@/utils/fileKind";
 import { openLocalFile } from "@/utils/localFile";
 import { RotateCw } from "lucide-vue-next";
 import { Loader2 } from "@/components/ui/icons";
 import StateBlock from "@/components/ui/StateBlock.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
-import { friendlyError } from "@/utils/errors";
+import { errorText } from "@/composables/useErrorText";
 import {
   groupFilesKey,
   invalidateGroupFiles,
@@ -68,7 +67,7 @@ const loading = computed(
 const failed = computed(() => filesQuery.isError.value);
 const loadError = computed(() =>
   filesQuery.error.value
-    ? friendlyError(filesQuery.error.value, t("group.files.loadFail"))
+    ? errorText(filesQuery.error.value, t("group.files.loadFail"))
     : "",
 );
 
@@ -115,10 +114,9 @@ onBeforeUnmount(stopActivityWatch);
 function kindIcon(name: string) {
   return FILE_KIND_ICONS[fileKindOf(name)];
 }
+/** 徽标配色只有一份实现（`utils/fileKind`）：此前与收藏页各抄了一遍 12% 混底。 */
 function kindStyle(name: string) {
-  const c = FILE_KIND_COLORS[fileKindOf(name)];
-  const accent = app.dark ? c.dark : c.light;
-  return { backgroundColor: rgba(accent, 0.12), color: accent };
+  return fileKindStyle(name, app.dark);
 }
 function extLabel(name: string) {
   return extBadgeLabel(name, t("common.file"));
@@ -212,13 +210,18 @@ function stateText(state: GroupFileEntry["local_state"]): string {
         </PrimaryBtn>
       </div>
 
-      <div v-if="loading && files.length === 0" class="flex items-center justify-center gap-2 py-8 text-sm text-[var(--gosslan-text-2)]">
-        <Loader2 class="h-4 w-4 animate-spin" />
-        {{ t("group.files.loading") }}
-      </div>
+      <!-- 三态同一出口（`StateBlock` 的 compact 形态）：此前只有错误态走它，
+           加载/空态各写一段内联 div —— 同一个弹窗里三套写法，改一处另两处就漂。 -->
+      <StateBlock
+        v-if="loading && files.length === 0"
+        compact
+        kind="loading"
+        :title="t('group.files.loading')"
+      />
 
       <StateBlock
         v-else-if="failed && files.length === 0"
+        compact
         kind="error"
         :title="t('group.files.loadFail')"
         :detail="loadError"
@@ -226,9 +229,12 @@ function stateText(state: GroupFileEntry["local_state"]): string {
         @retry="load()"
       />
 
-      <div v-else-if="files.length === 0" class="py-8 text-center text-sm text-[var(--gosslan-text-2)]">
-        {{ t("group.files.empty") }}
-      </div>
+      <StateBlock
+        v-else-if="files.length === 0"
+        compact
+        kind="empty"
+        :title="t('group.files.empty')"
+      />
 
       <div v-else class="max-h-80 space-y-0.5 overflow-y-auto">
         <div
@@ -251,15 +257,15 @@ function stateText(state: GroupFileEntry["local_state"]): string {
           </div>
 
           <div class="min-w-0 flex-1">
-            <div class="truncate text-[13px] font-medium" :title="f.name">{{ f.name }}</div>
-            <div class="mt-0.5 flex items-center gap-1 text-[11px] text-[var(--gosslan-text-2)]">
+            <div class="truncate text-body font-medium" :title="f.name">{{ f.name }}</div>
+            <div class="mt-0.5 flex items-center gap-1 text-caption text-[var(--gosslan-text-2)]">
               <span>{{ extLabel(f.name) }}</span>
               <span>·</span>
               <span>{{ formatBytes(f.size) }}</span>
               <span>·</span>
               <span class="truncate" :title="senderLabel(f.sender_id)">{{ senderLabel(f.sender_id) }}</span>
               <span>·</span>
-              <span class="shrink-0">{{ fmtConversationTime(f.created_at) }}</span>
+              <span class="shrink-0">{{ fmtConversationTime(f.created_at, t) }}</span>
               <template v-if="deliveryText(f)">
                 <span>·</span>
                 <span class="shrink-0">{{ deliveryText(f) }}</span>
@@ -270,7 +276,7 @@ function stateText(state: GroupFileEntry["local_state"]): string {
           <!-- 右侧状态：已在本机 / 传输中 / 未取到（可点重取）/ 失败 -->
           <span
             v-if="f.local_state !== 'local'"
-            class="flex shrink-0 items-center gap-1 text-[11px] text-[var(--gosslan-text-2)]"
+            class="flex shrink-0 items-center gap-1 text-caption text-[var(--gosslan-text-2)]"
           >
             <Loader2 v-if="f.local_state === 'receiving'" class="h-3 w-3 animate-spin" />
             {{ stateText(f.local_state) }}

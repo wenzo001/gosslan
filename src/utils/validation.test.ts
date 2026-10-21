@@ -10,6 +10,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
+  charCount,
   chatSearchGroupSchema,
   groupFileEntrySchema,
   groupNameSchema,
@@ -102,4 +103,98 @@ test("接线判据：四个真实入口必须使用 schema，而不是另写一�
   assert.match(api, /parseIpcList\(shareEntrySchema, v, "request_share_tree"\)/);
   assert.match(api, /parseIpcList\(chatSearchGroupSchema, v, "search_chat_history"\)/);
   assert.match(read("utils/externalLinks.ts"), /linkInputSchema\.safeParse\(/);
+});
+
+// —— 以下三条钉的是"校验层只出键、翻译在渲染处"这条口径（§6.36）——
+test("校验层的 message 是词典键而不是人话：换语言不许留下中文", () => {
+  for (const [schema, value] of [
+    [groupNameSchema, "   "],
+    [groupNameSchema, "字".repeat(41)],
+    [nicknameSchema, ""],
+    [nicknameSchema, "字".repeat(41)],
+  ] as const) {
+    const parsed = schema.safeParse(value);
+    assert.equal(parsed.success, false);
+    const msg = parsed.error.issues[0].message;
+    assert.ok(!/[\u3400-\u9FFF]/u.test(msg), `message 里还有中文 ⇒ 换语言不会跟着换：${msg}`);
+    assert.match(msg, /^[a-z][A-Za-z0-9.]*$/, `message 不是词典键的形状：${msg}`);
+  }
+});
+
+test("schema 引用的键两头齐全：缺一种语言界面就显示裸 key", () => {
+  const keys = new Set<string>();
+  for (const [schema, value] of [[groupNameSchema, "   "], [nicknameSchema, "字".repeat(41)]] as const) {
+    for (const issue of schema.safeParse(value).error!.issues) keys.add(issue.message);
+  }
+  assert.equal(keys.size, 2, `只认出 ${keys.size} 个键：${[...keys]}`);
+  const srcFile = (rel: string) =>
+    fs.readFileSync(path.join(fileURLToPath(new URL("..", import.meta.url)), rel), "utf8");
+  for (const dict of ["zh-cn", "en-us"]) {
+    const d = srcFile(`i18n/locales/${dict}.ts`);
+    for (const k of keys) assert.ok(d.includes(`"${k}":`), `${dict} 缺 ${k}`);
+  }
+});
+
+test("有 schema 常量做后盾的输入框不许再手抄数字：两处 :maxlength 都绑常量", () => {
+  // 长度这条规则在本仓有三份可能的落点（输入框 maxlength / 前端 trim+判长 / 后端 chars()）。
+  // 前端那两份必须读同一个数，否则会出现"输得进去、提交被拒"或反过来。
+  for (const [file, constant] of [
+    ["components/GroupCreateModal.vue", "MAX_GROUP_NAME_CHARS"],
+    ["components/settings/ProfileSection.vue", "MAX_NICKNAME_CHARS"],
+  ] as const) {
+    const src = fs.readFileSync(path.join(fileURLToPath(new URL("..", import.meta.url)), file), "utf8");
+    assert.ok(src.includes(`:maxlength="${constant}"`), `${file} 的输入框没绑常量`);
+    assert.doesNotMatch(src, /maxlength="\d+"/, `${file} 还手抄着写死的长度上限`);
+  }
+});
+
+test("计数器那把尺与 schema 同一把：charCount 数码点，且全仓只此一处写法", () => {
+  // `maxlength` 已经在那里**静默**截断（粘 60 字只剩 40 字，无半句说明）。要把它说给用户，
+  // 读数就必须与判据同一把尺 —— 否则「计数器说 40、提交被拒」或反过来（两把尺各数一遍）。
+  assert.equal(charCount("团队"), 2);
+  assert.equal(charCount("🐱".repeat(40)), 40, "40 个 emoji 就是 40 个字符");
+  assert.notEqual(charCount("🐱".repeat(40)), "🐱".repeat(40).length, ".length 会给 80 ⇒ 不许拿它当尺");
+  // 码点口径只许住在 charCount 里（别处再手写一遍就是第二个家）。
+  // 剥注释再数：这个口径的**说明**本来就该出现在文档里，把它算成"第二处实现"是假红。
+  const src = fs
+    .readFileSync(path.join(ROOT, "utils/validation.ts"), "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^\s*\/\/.*$/gm, "");
+  const handRolled = src.match(/\[\s*\.\.\.\w+\s*\]\s*\.length/g) ?? [];
+  assert.equal(handRolled.length, 1, `码点数法有 ${handRolled.length} 处，应只剩 charCount 那一处`);
+});
+
+test("绑了长度上限的输入框必须给出可见读数，且读数只有 CharCounter 一个家", () => {
+  // `maxlength` 到顶时是**静默**截断的：粘 60 个字的群名只剩 40 个，界面不给半句说明。
+  // 判据口径是失败关闭的：凡把上限绑到 `:maxlength` 上的框，除非它的值只做过滤、不回写，
+  // 就必须同时有一枚同常量的 CharCounter 读数 ⇒ 新增上限默认要求读数，想豁免要在这里显式登记。
+  const ephemeral = new Set([
+    "MAX_SEARCH_KEYWORD_CHARS", // 搜索词：只当查询条件用
+    "MAX_LIST_FILTER_KEYWORD_CHARS", // 转发弹窗 / 收藏面板的列表内过滤
+    "MAX_LOG_FILTER_CHARS", // 运行日志过滤框
+  ]);
+  const capped: string[] = [];
+  const vueFiles = fs
+    .readdirSync(path.join(ROOT, "components"), { recursive: true })
+    .filter((f): f is string => typeof f === "string" && f.endsWith(".vue"));
+  for (const rel of vueFiles) {
+    const src = fs.readFileSync(path.join(ROOT, "components", rel), "utf8");
+    for (const [, name] of src.matchAll(/:maxlength="([A-Z0-9_]+)"/g)) {
+      if (ephemeral.has(name)) continue;
+      capped.push(`${rel}:${name}`);
+      assert.ok(
+        src.includes(`:max="${name}"`) && /<CharCounter\b/.test(src),
+        `${rel} 把 ${name} 绑成了上限却没有同常量的可见读数`,
+      );
+    }
+  }
+  assert.ok(capped.length >= 8, `只扫到 ${capped.length} 格上限绑定 ⇒ 分母变小，先确认是不是被改掉了`);
+
+  // 第二把尺不许存在：`{{ x.length }}/{{ N }}` 数的是 UTF-16 单元，与 schema/后端数码点不同尺。
+  const handRolled = vueFiles.filter((rel) =>
+    /\{\{\s*[\w.]+\.length\s*\}\}\/\{\{/.test(
+      fs.readFileSync(path.join(ROOT, "components", rel), "utf8"),
+    ),
+  );
+  assert.deepEqual(handRolled, [], "计数器只许住 components/ui/CharCounter.vue");
 });

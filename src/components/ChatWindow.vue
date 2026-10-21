@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
+import { safeStorageBackend } from "../utils/safeStorage.ts";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { useEventListener } from "@vueuse/core";
 import { api } from "@/api";
 import { useAppStore } from "@/stores/useAppStore";
 import StateBlock from "@/components/ui/StateBlock.vue";
@@ -44,6 +46,7 @@ import {
   type AnnounceSeenMap,
 } from "@/utils/announcementDismiss";
 import type { LinkState, MessageRecord, MsgKind } from "@/types";
+import { createInitScope } from "@/utils/initScope";
 
 const emit = defineEmits<{ (e: "open-share"): void }>();
 
@@ -513,7 +516,7 @@ const canPublishAnnouncement = computed(
  * 整份表读进**一个** ref（不是"每次切会话重读一次 localStorage"）：这样收起后横幅立刻消失
  * 靠的是响应式，而切会话时不需要同步任何东西 —— 少一处"读时机"就少一处会漏的地方。
  */
-const announceSeen = ref<AnnounceSeenMap>(readAnnounceSeen(localStorage));
+const announceSeen = ref<AnnounceSeenMap>(readAnnounceSeen(safeStorageBackend));
 
 /** 横幅可见性 = 有公告 **且** 这条没在本机收起过。 */
 const announcementVisible = computed(() => {
@@ -535,7 +538,7 @@ function dismissAnnouncement() {
   if (!ann || !gid) return;
   const next = withAnnounceDismissed(announceSeen.value, gid, ann.msgId);
   announceSeen.value = next;
-  writeAnnounceSeen(localStorage, next);
+  writeAnnounceSeen(safeStorageBackend, next);
   app.toast(t("group.announceDismissed"), "info");
 }
 
@@ -954,8 +957,9 @@ function onGlobalKey(e: KeyboardEvent) {
   exitMultiSelect();
 }
 
-onMounted(() => window.addEventListener("keydown", onGlobalKey));
-onBeforeUnmount(() => window.removeEventListener("keydown", onGlobalKey));
+// 键盘挂法交给 VueUse（组件作用域自动解绑）：这条是"挂载即终身、气泡相位、无条件摘挂"那一类，
+// 手写配对少一处 ⇒ 见报告 §6.72 的三条边界。
+useEventListener(window, "keydown", onGlobalKey);
 
 function toggleSelect(msgId: string) {
   const next = new Set(selectedIds.value);
@@ -1133,8 +1137,7 @@ async function attachFile() {
 // （File 对象没有 path），而 Tauri 的 drag-drop 直接给绝对路径，正好接上 sendPastedFiles。
 const chatAreaRef = ref<HTMLElement | null>(null);
 const fileDragOver = ref(false);
-let unlistenDragDrop: (() => void) | null = null;
-let dragDropDisposed = false;
+const dragDropScope = createInitScope();
 
 /** 拖拽位置是否落在消息区上（Tauri 给的是物理像素，除以 DPR 才能跟 DOM 坐标比）。 */
 function isOverChatArea(pos: { x: number; y: number }) {
@@ -1171,17 +1174,10 @@ onMounted(() => {
       }
       fileDragOver.value = false; // leave
     })
-    .then((un) => {
-      // 组件可能已卸载：那时立刻退订，避免监听泄漏
-      if (dragDropDisposed) un();
-      else unlistenDragDrop = un;
-    });
+    .then((un) => dragDropScope.onDispose(un));
 });
 
-onBeforeUnmount(() => {
-  dragDropDisposed = true;
-  unlistenDragDrop?.();
-});
+onBeforeUnmount(() => dragDropScope.dispose());
 
 /** 输入框粘贴文件（资源管理器复制后 Ctrl+V，微信式）：按真实路径直接走发送链路。 */
 async function sendPastedFiles(paths: string[]) {
@@ -1256,13 +1252,13 @@ function onLoadMore() {
     >
       <ShieldAlert class="mt-0.5 h-4 w-4 shrink-0 text-[var(--gosslan-warning-ink)]" aria-hidden="true" />
       <div class="min-w-0 flex-1">
-        <p class="text-[12px] leading-snug text-[var(--gosslan-text)]">
+        <p class="text-meta leading-snug text-[var(--gosslan-text)]">
           {{ t("friend.keyRotated.banner", { name: keyRotation.nickname }) }}
         </p>
         <div class="mt-1.5 flex flex-wrap gap-2">
           <button
             type="button"
-            class="tap-safe inline-flex items-center gap-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-2.5 py-1 text-[12px] text-white transition hover:bg-[var(--gosslan-primary-hover)]"
+            class="tap-safe inline-flex items-center gap-1 rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-2.5 py-1 text-meta text-white transition hover:bg-[var(--gosslan-primary-hover)]"
             @click="syncKeysOpen = true"
           >
             <KeyRound class="h-3 w-3" aria-hidden="true" />
@@ -1270,7 +1266,7 @@ function onLoadMore() {
           </button>
           <button
             type="button"
-            class="tap-safe inline-flex items-center gap-1 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-2.5 py-1 text-[12px] text-[var(--gosslan-danger-ink)] transition hover:bg-[var(--gosslan-hover)]"
+            class="tap-safe inline-flex items-center gap-1 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-2.5 py-1 text-meta text-[var(--gosslan-danger-ink)] transition hover:bg-[var(--gosslan-hover)]"
             @click="removeKeyPeerOpen = true"
           >
             <Trash2 class="h-3 w-3" aria-hidden="true" />
@@ -1295,7 +1291,7 @@ function onLoadMore() {
         aria-hidden="true"
       />
       <p
-        class="min-w-0 flex-1 truncate text-[12px] leading-snug text-[var(--gosslan-text-2)]"
+        class="min-w-0 flex-1 truncate text-meta leading-snug text-[var(--gosslan-text-2)]"
         :title="groupHistoryText"
       >
         {{ groupHistoryText }}
@@ -1311,7 +1307,7 @@ function onLoadMore() {
     >
       <Megaphone class="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--gosslan-warning-ink)]" aria-hidden="true" />
       <button
-        class="tap-safe min-w-0 flex-1 truncate rounded-[var(--gosslan-radius-sm)] px-1.5 py-0.5 text-left text-[12px] text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
+        class="tap-safe min-w-0 flex-1 truncate rounded-[var(--gosslan-radius-sm)] px-1.5 py-0.5 text-left text-meta text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
         :title="announcement?.text"
         @click="announceViewOpen = true"
       >
@@ -1341,7 +1337,7 @@ function onLoadMore() {
         <div
           v-for="p in visiblePinned"
           :key="p.id"
-          class="group/pin flex min-w-0 flex-1 items-center gap-1 rounded-[var(--gosslan-radius-sm)] px-1.5 text-left text-[12px] transition hover:bg-[var(--gosslan-hover)]"
+          class="group/pin flex min-w-0 flex-1 items-center gap-1 rounded-[var(--gosslan-radius-sm)] px-1.5 text-left text-meta transition hover:bg-[var(--gosslan-hover)]"
         >
           <button
             type="button"
@@ -1369,7 +1365,7 @@ function onLoadMore() {
         </div>
         <button
           v-if="pinnedItems.length > visiblePinned.length"
-          class="tap-safe shrink-0 rounded-[var(--gosslan-radius-sm)] px-1.5 py-0.5 text-[11px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]"
+          class="tap-safe shrink-0 rounded-[var(--gosslan-radius-sm)] px-1.5 py-0.5 text-caption text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]"
           @click="pinsExpanded = !pinsExpanded"
         >
           {{ pinsExpanded ? t("msg.pinCollapse") : `+${pinnedItems.length - visiblePinned.length}` }}
@@ -1380,7 +1376,7 @@ function onLoadMore() {
         <div
           v-for="p in pinnedItems"
           :key="`all-${p.id}`"
-          class="flex w-full items-center gap-2 rounded-[var(--gosslan-radius-sm)] px-1.5 text-left text-[12px] transition hover:bg-[var(--gosslan-hover)]"
+          class="flex w-full items-center gap-2 rounded-[var(--gosslan-radius-sm)] px-1.5 text-left text-meta transition hover:bg-[var(--gosslan-hover)]"
         >
           <button
             type="button"
@@ -1411,7 +1407,7 @@ function onLoadMore() {
          就有预期，而不是看着进度条一直不动以为卡死。可关闭，切换会话后重新提示。 -->
     <div
       v-if="btLink && !btHintDismissed"
-      class="flex shrink-0 items-center gap-2 border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-warning-soft)] px-4 py-1.5 text-[12px] leading-[18px] text-[var(--gosslan-warning-ink)]"
+      class="flex shrink-0 items-center gap-2 border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-warning-soft)] px-4 py-1.5 text-meta leading-[18px] text-[var(--gosslan-warning-ink)]"
     >
       <Bluetooth class="h-3.5 w-3.5 shrink-0" />
       <span class="min-w-0 flex-1">{{ t("chat.bt.slowHint") }}</span>
@@ -1435,7 +1431,7 @@ function onLoadMore() {
         class="pointer-events-none absolute inset-2 z-30 flex items-center justify-center rounded-[var(--gosslan-radius-lg)] border-2 border-dashed border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)]"
       >
         <span
-          class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-panel)] px-3 py-2 text-[13px] text-[var(--gosslan-text)] shadow-lg"
+          class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-panel)] px-3 py-2 text-body text-[var(--gosslan-text)] shadow-lg"
         >
           {{ isGroup ? t("chat.dropToGroup") : t("chat.dropToSend") }}
         </span>
@@ -1540,17 +1536,17 @@ function onLoadMore() {
         class="flex h-16 items-center justify-between gap-2 rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-panel)] px-3"
       >
         <button
-          class="tap-safe rounded-[var(--gosslan-radius-md)] px-3 py-1.5 text-[13px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+          class="tap-safe rounded-[var(--gosslan-radius-md)] px-3 py-1.5 text-body text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
           @click="exitMultiSelect"
         >
           {{ t("common.cancel") }}
         </button>
-        <span class="text-[13px] text-[var(--gosslan-text-2)]">
+        <span class="text-body text-[var(--gosslan-text-2)]">
           {{ t("multi.selected", { n: selectedCount }) }}
         </span>
         <div class="flex items-center gap-1">
           <button
-            class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] px-2.5 py-1.5 text-[13px] text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-40"
+            class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] px-2.5 py-1.5 text-body text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-40"
             :disabled="!selectedCount"
             :title="t('multi.forwardPerMessage')"
             :aria-label="t('multi.forwardPerMessage')"
@@ -1560,7 +1556,7 @@ function onLoadMore() {
             <span class="hidden sm:inline">{{ t("multi.forwardPerMessage") }}</span>
           </button>
           <button
-            class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] px-2.5 py-1.5 text-[13px] text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-40"
+            class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] px-2.5 py-1.5 text-body text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-40"
             :disabled="!selectedCount"
             :title="t('multi.forwardMerged')"
             :aria-label="t('multi.forwardMerged')"
@@ -1570,7 +1566,7 @@ function onLoadMore() {
             <span class="hidden sm:inline">{{ t("multi.forwardMerged") }}</span>
           </button>
           <button
-            class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] px-2.5 py-1.5 text-[13px] text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-40"
+            class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] px-2.5 py-1.5 text-body text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-40"
             :disabled="!selectedCount"
             @click="batchFavorite"
           >
@@ -1578,7 +1574,7 @@ function onLoadMore() {
             {{ t("multi.favorite") }}
           </button>
           <button
-            class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] px-2.5 py-1.5 text-[13px] text-[var(--gosslan-danger-ink)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-40"
+            class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] px-2.5 py-1.5 text-body text-[var(--gosslan-danger-ink)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-40"
             :disabled="!selectedCount"
             @click="confirmBatchDelete = true"
           >
@@ -1603,7 +1599,7 @@ function onLoadMore() {
       />
       <div
         v-else
-        class="flex min-h-16 items-center justify-center rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-panel)] px-4 text-center text-[13px] text-[var(--gosslan-text-2)]"
+        class="flex min-h-16 items-center justify-center rounded-[var(--gosslan-bubble-radius)] bg-[var(--gosslan-panel)] px-4 text-center text-body text-[var(--gosslan-text-2)]"
       >
         {{ t("chat.notFriend") }}
       </div>
@@ -1636,16 +1632,16 @@ function onLoadMore() {
         <div v-if="canPublishAnnouncement" class="mt-5 flex items-center justify-end gap-2 border-t border-[var(--gosslan-divider)] pt-3">
           <button
             v-if="!announceDeleteArmed"
-            class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] px-3 py-1.5 text-[13px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-danger-soft)] hover:text-[var(--gosslan-danger-ink)]"
+            class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-md)] px-3 py-1.5 text-body text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-danger-soft)] hover:text-[var(--gosslan-danger-ink)]"
             @click="announceDeleteArmed = true"
           >
             <Trash2 class="h-3.5 w-3.5" />
             {{ t("group.announceDeleteTitle") }}
           </button>
           <template v-else>
-            <span class="mr-auto text-[12px] text-[var(--gosslan-danger-ink)]">{{ t("group.announceDeleteBody") }}</span>
+            <span class="mr-auto text-meta text-[var(--gosslan-danger-ink)]">{{ t("group.announceDeleteBody") }}</span>
             <button
-              class="tap-safe rounded-[var(--gosslan-radius-md)] px-3 py-1.5 text-[13px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+              class="tap-safe rounded-[var(--gosslan-radius-md)] px-3 py-1.5 text-body text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
               @click="announceDeleteArmed = false"
             >
               {{ t("common.cancel") }}

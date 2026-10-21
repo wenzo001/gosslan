@@ -99,6 +99,41 @@ pub(crate) fn group_envelope_consumable(
     members.iter().any(|m| m == me) && members.iter().any(|m| m == sender)
 }
 
+/// 入站信封的会话归属（唯一定义点）。
+///
+/// 群聊的会话键只能来自 `group_id`；`sender_id` 是「谁说的」，不是「说在哪个会话」。
+/// 目标缺失/空白时返回 `None`，由调用方丢弃并留痕 —— **不许**回退到 `group:` 或单聊。
+pub(crate) struct InboundConversation {
+    pub conv_id: String,
+    pub kind: &'static str,
+    /// 仅群聊有值；供群名/边界等后续步骤复用，避免再从 `sender_id` 猜。
+    pub group_id: Option<String>,
+}
+
+pub(crate) fn inbound_conversation(
+    kind: &GossipKind,
+    group_id: Option<&str>,
+    sender_id: &str,
+) -> Option<InboundConversation> {
+    match kind {
+        GossipKind::Chat => Some(InboundConversation {
+            conv_id: sender_id.to_string(),
+            kind: "single",
+            group_id: None,
+        }),
+        GossipKind::Group => {
+            // 只判空白，不改写目标本身：群 id 是身份，不是展示文本。
+            let gid = group_id.filter(|g| !g.trim().is_empty())?;
+            Some(InboundConversation {
+                conv_id: format!("group:{gid}"),
+                kind: "group",
+                group_id: Some(gid.to_string()),
+            })
+        }
+        _ => None,
+    }
+}
+
 /// peers 里查不到的发送方，能否按 kind 建立信任。
 ///
 /// 唯一判定点（`handle_gossip` 的 sender_trusted 与回归测试共用）：
@@ -530,23 +565,40 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                     if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&pt) {
                         if let Some(msg_id) = v.get("msg_id").and_then(|m| m.as_str()) {
                             // 只有「我发给 sender、且仍在 outbox」的 msg_id 才接受：
-                            // msg_id 随机不可预测 + 必须命中 outbox 目标，双重防伪造送达。
-                            let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                            let is_expected = dbc
-                                .query_row(
-                                    "SELECT 1 FROM outbox WHERE msg_id = ?1 AND peer_id = ?2",
-                                    params![msg_id, env.sender_id],
-                                    |_| Ok(()),
-                                )
-                                .is_ok();
-                            if !is_expected {
-                                return;
+                            // msg_id 随机不可预测 + 必须命中 outbox 目标，双重防伪造送达
+                            // —— 这条校验现在由 `db::ack_delivered` 在事务里做（见下）。
+                            //
+                            // ⚠️ 与直连 `Message::Ack` / 群 `GroupAck` 走**同一处**事务出口
+                            // （2026-10-20 永久发送中 P0 的第四个入口）：这里旧写法是
+                            // `set_message_status(...).ok()` + 内联 `DELETE ... .ok()` 两条独立写，
+                            // 状态写失败而删行成功就留下「队列行没了、消息还是 sending」——
+                            // 清扫器只扫 outbox、补发也没有行可发，界面永久发送中。
+                            // `ack_delivered` 把「校验命中 + 置 delivered + 删行」放进一个事务，
+                            // 失败全回滚（队列行与 sending 都保留，等下一次补发再收尾）。
+                            let applied = {
+                                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                                db::ack_delivered(&dbc, msg_id, &env.sender_id)
+                            };
+                            match applied {
+                                Ok(true) => {
+                                    let _ = state.app.emit("message-acked", msg_id);
+                                }
+                                Ok(false) => {
+                                    // 不是发给这个发送方的 / 已经收尾过的 Ack：
+                                    // 与旧行为一致，静默丢弃（不 emit、不动任何行）。
+                                }
+                                Err(e) => {
+                                    state.logger.error(
+                                        "ack",
+                                        format!(
+                                            "code=ACK_COMMIT_FAILED via=gossip msg_id={msg_id} \
+                                             peer={} err={e} —— 队列行与 sending 状态都保留，\
+                                             等下一次补发后再收尾",
+                                            env.sender_id
+                                        ),
+                                    );
+                                }
                             }
-                            db::set_message_status(&dbc, msg_id, "delivered").ok();
-                            dbc.execute("DELETE FROM outbox WHERE msg_id = ?1", params![msg_id])
-                                .ok();
-                            drop(dbc);
-                            let _ = state.app.emit("message-acked", msg_id);
                         }
                     }
                 }
@@ -698,24 +750,25 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                         return;
                     }
                 }
-                let conv_id = match &env.kind {
-                    GossipKind::Chat => env.sender_id.clone(),
-                    GossipKind::Group => {
-                        format!("group:{}", env.group_id.clone().unwrap_or_default())
+                let Some(target) =
+                    inbound_conversation(&env.kind, env.group_id.as_deref(), &env.sender_id)
+                else {
+                    if env.kind == GossipKind::Group {
+                        state.logger.warn(
+                            "group",
+                            format!(
+                                "丢弃缺少群目标的群信封 msg={} sender={} —— 会话归属不猜、不回退到单聊",
+                                env.message_id, env.sender_id
+                            ),
+                        );
                     }
-                    _ => return,
+                    return;
                 };
-                let conv_kind = match &env.kind {
-                    GossipKind::Chat => "single",
-                    GossipKind::Group => "group",
-                    _ => return,
-                };
-                let name = match &env.kind {
-                    GossipKind::Chat => resolve_nickname(state, &env.sender_id),
-                    GossipKind::Group => {
-                        resolve_group_name(state, env.group_id.as_deref().unwrap_or(""))
-                    }
-                    _ => return,
+                let conv_id = target.conv_id;
+                let conv_kind = target.kind;
+                let name = match conv_kind {
+                    "single" => resolve_nickname(state, &env.sender_id),
+                    _ => resolve_group_name(state, target.group_id.as_deref().unwrap_or("")),
                 };
                 // 群聊删除边界：本机清除过该群（seq ≤ boundary）的旧历史不得回灌。
                 // 逻辑序号不依赖墙上时钟，也不猜测发送方时钟。

@@ -9,7 +9,8 @@
  * 只有外壳不同（这里是窗口内的左右两栏，那里是移动端整页/卡片弹窗）。
  * 这样「设置长什么样」只有一份实现，不会三处漂移。
  */
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, ref } from "vue";
+import { useEventListener } from "@vueuse/core";
 import AuxWindowShell from "@/components/window/AuxWindowShell.vue";
 import DevDiagPanel from "@/components/DevDiagPanel.vue";
 import ProfileSection from "@/components/settings/ProfileSection.vue";
@@ -91,8 +92,7 @@ function onKeydown(e: KeyboardEvent) {
   if (document.querySelector("[role='dialog']")) return;
   void api.closeSettingsWindow().catch(() => {});
 }
-onMounted(() => window.addEventListener("keydown", onKeydown));
-onUnmounted(() => window.removeEventListener("keydown", onKeydown));
+useEventListener(window, "keydown", onKeydown);
 </script>
 
 <template>
@@ -109,7 +109,7 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
       <button
         v-for="item in navItems"
         :key="item.key"
-        class="tap-safe flex h-8 w-full items-center gap-2 rounded-[var(--gosslan-radius-md)] px-2.5 text-left text-[13px] transition"
+        class="tap-safe flex h-8 w-full items-center gap-2 rounded-[var(--gosslan-radius-md)] px-2.5 text-left text-body transition"
         :aria-current="section === item.key ? 'true' : undefined"
         :class="section === item.key
           ? 'bg-[var(--gosslan-list-active)] font-medium text-[var(--gosslan-text)]'

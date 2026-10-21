@@ -7,6 +7,7 @@
  * 加一个扩展名时也只改一处、不会漏改另一处（§32 一条清晰路径）。
  */
 import type { Component } from "vue";
+import { rgba } from "./color.ts";
 import {
   FileArchive,
   FileAudio,
@@ -70,6 +71,23 @@ export function extBadgeLabel(name: string, fallback: string): string {
 }
 
 /** 文件名 → 文件类型。未知扩展名归 `doc`（通用文档图标）。 */
+/**
+ * 文件类型徽标的强调色（图标色 + 12% 混底）。
+ *
+ * 为什么放在这个文件：群文件面板与收藏页各写过一份**逐字相同**的算法（取 light/dark 再混 12%），
+ * 连 `0.12` 都是手抄的 —— 改一处另一处就漂，而漂了不报错，只是"同一类文件在两个页面颜色不同"。
+ *
+ * @param dark 当前主题（暗色取 `FILE_KIND_COLORS[kind].dark`）。
+ */
+export function fileKindStyle(
+  name: string,
+  dark: boolean,
+): { backgroundColor: string; color: string } {
+  const c = FILE_KIND_COLORS[fileKindOf(name)];
+  const accent = dark ? c.dark : c.light;
+  return { backgroundColor: rgba(accent, 0.12), color: accent };
+}
+
 export function fileKindOf(name: string): FileKind {
   switch (fileExt(name)) {
     case "xls":

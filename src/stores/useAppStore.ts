@@ -3,10 +3,11 @@ import { computed, ref } from "vue";
 import { api, type SettingsChanged } from "@/api";
 import { isPermissionGranted, requestPermission } from "@tauri-apps/plugin-notification";
 import { applyTheme } from "@/utils/color";
-import { reportError } from "@/utils/errors";
-import { debounce } from "@/utils/defer";
+import { sleep } from "@/utils/defer";
+import { errorText } from "@/composables/useErrorText";
+import { useDebounceFn } from "@vueuse/core";
 import { createInitScope, type InitScope } from "@/utils/initScope";
-import { isAndroid, isIOS, resolveMobileLayout } from "@/utils/platform";
+import { NARROW_LAYOUT_QUERY, isAndroid, isIOS, resolveMobileLayout } from "@/utils/platform";
 import {
   APPEARANCE_STORAGE_KEY,
   LEGACY_DARK_STORAGE_KEY,
@@ -27,6 +28,7 @@ import {
 import { isMac } from "@/utils/platform";
 import { pushToast, type ToastKind } from "@/utils/toastManager";
 import type { AppSettings, ChannelStatus, DeviceInfo, InterfaceInfo, RelayPolicy, RuntimeSnapshot } from "@/types";
+import { safeStorageBackend, storageGet, storageRemove, storageSet } from "../utils/safeStorage.ts";
 
 export type { AppearanceMode };
 
@@ -36,12 +38,8 @@ const CHAT_STYLE_KEY = "gosslan.chatStyle";
 
 /** 从 localStorage 读取聊天样式（启动先本地，后端返回后覆盖）。 */
 function loadLocalChatStyle(): ChatStyleConfig {
-  try {
-    const raw = localStorage.getItem(CHAT_STYLE_KEY);
-    if (raw) return parsePeerStyle(raw);
-  } catch {
-    /* ignore */
-  }
+  const raw = storageGet(CHAT_STYLE_KEY);
+  if (raw) return parsePeerStyle(raw);
   return { ...DEFAULT_CHAT_STYLE };
 }
 
@@ -72,7 +70,7 @@ export const useAppStore = defineStore("app", () => {
   const shareDir = ref<string | null>(null);
 
   /** 外观模式（用户意图）。跟随系统时 dark 由系统偏好解析而来。 */
-  const appearance = ref<AppearanceMode>(readStoredAppearance(localStorage));
+  const appearance = ref<AppearanceMode>(readStoredAppearance(safeStorageBackend));
   /**
    * 系统当前是否为深色。**在 store 创建时就同步取值**，而不是等到 init —— 
    * 这样第一次 applyDarkNow()（可能发生在 init 之前）就已经拿到正确的系统值。
@@ -89,8 +87,8 @@ export const useAppStore = defineStore("app", () => {
    * 写入则统一走 applyAppearance()。
    */
   const dark = computed<boolean>(() => resolveDark(appearance.value, systemDark.value));
-  const themeColor = ref<string>(localStorage.getItem(THEME_KEY) || "#3b82f6");
-  const fontFamily = ref<string>(localStorage.getItem(FONT_KEY) || "");
+  const themeColor = ref<string>(storageGet(THEME_KEY) || "#3b82f6");
+  const fontFamily = ref<string>(storageGet(FONT_KEY) || "");
 
   /** 本机聊天显示样式（气泡配色 / 字号 / 紧凑模式），即点即存并广播同步。 */
   const chatStyle = ref<ChatStyleConfig>(loadLocalChatStyle());
@@ -230,7 +228,7 @@ export const useAppStore = defineStore("app", () => {
    * 所有 `catch` 里的错误提示都应走这里，不要自己拼 `：${e}`（见 utils/errors.ts）。
    */
   function toastError(e: unknown, prefix: string) {
-    toast(reportError(e, prefix), "error");
+    toast(errorText(e, prefix, { log: true }), "error");
   }
 
   /**
@@ -245,7 +243,7 @@ export const useAppStore = defineStore("app", () => {
       : resolveMobileLayout({
           android: isAndroid,
           ios: isIOS,
-          narrow: window.matchMedia("(max-width: 767px)").matches,
+          narrow: window.matchMedia(NARROW_LAYOUT_QUERY).matches,
         }),
   );
   const mobileView = ref<"list" | "chat">("list");
@@ -420,7 +418,7 @@ export const useAppStore = defineStore("app", () => {
           applyRuntimeSnapshot(await api.setChannelEnabled("bluetooth", true));
           return;
         } catch {
-          await new Promise((r) => setTimeout(r, 2000));
+          await sleep(2000);
         }
       }
     } catch {
@@ -511,16 +509,12 @@ export const useAppStore = defineStore("app", () => {
    *
    * 读者注意：`persistSettings` 在**执行时**读当前 store 值，所以即使它与其它
    * 直接调用交错，后写的那一次总是最新值，不会把旧值写回去。
+   *
+   * `useDebounceFn` 的 `flush()` 只在真有待写入时执行（无待执行是空操作）——
+   * 下面 `beforeunload`/`visibilitychange` 那两条落库出口吃的就是这一条，
+   * 已由 `defer.test.ts` 的真值表钉住（库换语义 ⇒ 测试红）。
    */
-  const persistSoon = debounce(() => void persistSettings(), 300);
-
-  /** 窗口卸载/隐藏前把待写入的偏好落库（去抖窗口内退出也不丢最后一次改动）。 */
-  if (typeof window !== "undefined") {
-    window.addEventListener("beforeunload", () => persistSoon.flush());
-    document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "hidden") persistSoon.flush();
-    });
-  }
+  const persistSoon = useDebounceFn(() => void persistSettings(), 300);
 
   /**
    * 切换外观的**唯一**写入口：改模式 → 落 localStorage → 应用到 DOM → 持久化。
@@ -528,7 +522,7 @@ export const useAppStore = defineStore("app", () => {
    */
   function applyAppearance(mode: AppearanceMode) {
     appearance.value = mode;
-    localStorage.setItem(APPEARANCE_STORAGE_KEY, mode);
+    storageSet(APPEARANCE_STORAGE_KEY, mode);
     const root = document.documentElement;
     root.classList.add("theme-switching");
     applyDarkNow();
@@ -578,7 +572,7 @@ export const useAppStore = defineStore("app", () => {
    */
   function setThemeColor(c: string, continuous = false) {
     themeColor.value = c;
-    localStorage.setItem(THEME_KEY, c);
+    storageSet(THEME_KEY, c);
     applyThemeNow();
     if (continuous) persistSoon();
     else void persistSettings();
@@ -586,7 +580,7 @@ export const useAppStore = defineStore("app", () => {
 
   function setFontFamily(f: string) {
     fontFamily.value = f;
-    localStorage.setItem(FONT_KEY, f);
+    storageSet(FONT_KEY, f);
     applyThemeNow();
     void persistSettings();
   }
@@ -594,7 +588,7 @@ export const useAppStore = defineStore("app", () => {
   /** 聊天样式即点即改：立即生效 → 本地 + 后端持久化 → 广播给已连接节点。 */
   function setChatStyle(patch: Partial<ChatStyleConfig>) {
     chatStyle.value = { ...chatStyle.value, ...patch };
-    localStorage.setItem(CHAT_STYLE_KEY, JSON.stringify(chatStyle.value));
+    storageSet(CHAT_STYLE_KEY, JSON.stringify(chatStyle.value));
     applyChatStyleNow();
     void persistSettings();
     void api.broadcastChatStyle(JSON.stringify(chatStyle.value)).catch(() => {
@@ -633,10 +627,10 @@ export const useAppStore = defineStore("app", () => {
       // 外观：优先用「用户意图」(appearanceMode)；旧记录只有布尔 darkMode → 视为一次显式选择。
       if (has("appearanceMode") && isAppearanceMode(s.appearanceMode)) {
         appearance.value = s.appearanceMode;
-        localStorage.setItem(APPEARANCE_STORAGE_KEY, s.appearanceMode);
+        storageSet(APPEARANCE_STORAGE_KEY, s.appearanceMode);
       } else if (has("darkMode") && s.darkMode != null) {
         appearance.value = s.darkMode ? "dark" : "light";
-        localStorage.setItem(APPEARANCE_STORAGE_KEY, appearance.value);
+        storageSet(APPEARANCE_STORAGE_KEY, appearance.value);
       }
       // 通知偏好（null = 未设置，按默认 true 处理）
       if (s.notifyEnabled != null) notifyEnabled.value = s.notifyEnabled;
@@ -738,7 +732,7 @@ export const useAppStore = defineStore("app", () => {
     if (typeof document !== "undefined") {
       document.documentElement.classList.toggle("platform-mac", isMac);
     }
-    const mq = window.matchMedia("(max-width: 767px)");
+    const mq = window.matchMedia(NARROW_LAYOUT_QUERY);
     /**
      * 布局是否走移动端 —— 判据见 `platform.ts::resolveMobileLayout`（**平台优先，宽度兜底**）。
      *
@@ -747,6 +741,12 @@ export const useAppStore = defineStore("app", () => {
      * ⇒ 手机上判成"桌面" ⇒ 首页渲染成三栏布局，而且**一直错下去**（"变窄"那次过渡早于监听注册）。
      * 所以：① 平台优先（安卓/iOS 恒为移动布局，它们是竖屏锁定的）；② 再把 change / resize
      * （首次布局落定、转屏、拖窗口都会触发）与首帧后的一次重判挂上兜底。
+     *
+     * ⚠️ 为什么这条不用 VueUse 的 `useMediaQuery`（2026-10-19 读了 14.4.0 的实现再判）：它只把
+     * `change` 事件接成一个布尔 `ComputedRef`，**没有 resize 兜底、也没有首帧后重判** —— 而那两条
+     * 正是上面那个事故要求的；它内部用 `useEventListener`，只在**有活动 effectScope** 时才自动摘，
+     * 而 `init()` 是 store setup 之外再跑的函数（可以重复调用，靠 `appInitScope` 手工配对），
+     * 接进去等于每重跑一次 init 就多一份永不摘的监听。 ⇒ **保留自研**。
      */
     const applyIsMobile = () => {
       isMobile.value = resolveMobileLayout({ android: isAndroid, ios: isIOS, narrow: mq.matches });
@@ -763,6 +763,22 @@ export const useAppStore = defineStore("app", () => {
       window.removeEventListener("resize", applyIsMobile);
     });
     requestAnimationFrame(applyIsMobile);
+    /*
+     * 窗口卸载/隐藏前把待写入的偏好落库（去抖窗口内退出也不丢最后一次改动）。
+     * 这两条原来写在 **store setup** 里且用匿名函数 ⇒ 永远摘不掉：`init()` 重跑、
+     * HMR 换 store 都会往上叠一份，而每一份的闭包绑的是各自那一份 `persistSoon`
+     * （旧那份的 debounce 计时器已经没人管了）。挪进本轮 scope，和上面那两条 DOM 监听同一个口径。
+     */
+    const flushOnHide = () => {
+      if (document.visibilityState === "hidden") persistSoon.flush();
+    };
+    const flushOnUnload = () => persistSoon.flush();
+    window.addEventListener("beforeunload", flushOnUnload);
+    document.addEventListener("visibilitychange", flushOnHide);
+    scope.onDispose(() => {
+      window.removeEventListener("beforeunload", flushOnUnload);
+      document.removeEventListener("visibilitychange", flushOnHide);
+    });
     // 从后端恢复持久化偏好（外观 / 网卡 / 聊天样式），优先于 localStorage
     const s = await api.getSettings();
     applySettingsSnapshot(s);
@@ -843,11 +859,11 @@ export const useAppStore = defineStore("app", () => {
     boundIp.value = null;
     chatStyle.value = { ...DEFAULT_CHAT_STYLE };
     peerStyles.value = {};
-    localStorage.removeItem(THEME_KEY);
-    localStorage.removeItem(FONT_KEY);
-    localStorage.removeItem(APPEARANCE_STORAGE_KEY);
-    localStorage.removeItem(LEGACY_DARK_STORAGE_KEY);
-    localStorage.removeItem(CHAT_STYLE_KEY);
+    storageRemove(THEME_KEY);
+    storageRemove(FONT_KEY);
+    storageRemove(APPEARANCE_STORAGE_KEY);
+    storageRemove(LEGACY_DARK_STORAGE_KEY);
+    storageRemove(CHAT_STYLE_KEY);
     applyThemeNow();
     applyDarkNow();
     applyChatStyleNow();

@@ -14,13 +14,17 @@ pub const OUTBOX_SWEEPER_INTERVAL_MS: u64 = 30_000;
 /// 又把它发出去 = 重复投递（"我以为失败了的消息又发出去了"）。返回 `false` 时调用方**保留行、
 /// 不 emit、留一条 warn**，下一 tick 重试。`group` 决定删哪张 outbox 表（单聊 / 群是两张表）。
 fn finalize_expired_message(dbc: &rusqlite::Connection, msg_id: &str, group: bool) -> bool {
-    let status_ok = db::set_message_status(dbc, msg_id, "failed").is_ok();
-    let deleted = if group {
+    // 顺序是语义：状态写失败时**不许**删行。旧写法两条写都执行再取 &&，
+    // 一旦状态写失败、删行成功，就留下「行没了、状态还是 sending」的孤儿 ——
+    // 清扫器与补发都再也看不见它（2026-10-20 永久发送中 P0 的第二个入口）。
+    if db::set_message_status(dbc, msg_id, "failed").is_err() {
+        return false;
+    }
+    if group {
         db::delete_group_outbox_by_msg_id(dbc, msg_id).is_ok()
     } else {
         db::delete_outbox_by_msg_id(dbc, msg_id).is_ok()
-    };
-    status_ok && deleted
+    }
 }
 
 /// 把一条过期的**文件** outbox 落终态（审计 A3 同型）：两个消息前缀（`file-` / `gfile-`）
@@ -37,7 +41,31 @@ fn finalize_expired_file(dbc: &rusqlite::Connection, transfer_id: &str) -> bool 
     db::finalize_file_failure(dbc, transfer_id, db::FileJobEnd::Expired).unwrap_or(false)
 }
 
-/// 启动 outbox 超时清扫后台任务。
+/// 「发现层在线」的有效窗口：与 discovery 回收跨跳节点的 45s 同源。
+///
+/// 为什么清扫器的可达性不能只看 `links`（2026-10-20 永久发送中 P0）：
+/// 链路断开后 `links` 会立刻被移除，而对端仍在每 5s 广播 announce、仍显示在线。
+/// 旧判据把这种对端当"离线" ⇒ 消息按 7 天离线保留窗口挂着，界面就是长期"发送中"。
+/// 用户说的"双方局域网在线"对应的是**发现层在线**，这里必须认它。
+pub(crate) const OUTBOX_PEER_ONLINE_WINDOW_MS: i64 =
+    crate::protocol::RELAY_PEER_TIMEOUT_SECS * 1000;
+
+/// 一个 peer 在清扫器眼里是否"可达"。纯函数：链路与发现层在线两条证据任一成立。
+///
+/// `last_seen_ms` 是**本机收到 announce/Presence 的时刻**（不是对端时钟），
+/// 因此不受设备间时钟偏差影响；窗口按本机时钟算。
+pub(crate) fn outbox_peer_reachable(
+    has_live_link: bool,
+    last_seen_ms: Option<i64>,
+    now_ms: i64,
+) -> bool {
+    if has_live_link {
+        return true;
+    }
+    last_seen_ms.is_some_and(|seen| seen >= now_ms - OUTBOX_PEER_ONLINE_WINDOW_MS)
+}
+
+/// 启动 outbox 超时清扫后台任务。**进程级常驻**，不再绑定 `network::start`。
 ///
 /// 每 `OUTBOX_SWEEPER_INTERVAL_MS` 扫一次：单聊 outbox 和群 outbox 里
 /// created_at + OUTBOX_FAIL_DEADLINE < now 的条目 → 删 outbox 行 + 置
@@ -51,34 +79,52 @@ fn finalize_expired_file(dbc: &rusqlite::Connection, transfer_id: &str) -> bool 
 /// - 这个任务打破"无限等待"：对端**可达**却等不到 Ack 的条目 120s 判 failed；
 ///   对端**离线**的条目不是失败，保留到 `OUTBOX_OFFLINE_HOLD_MS`（上线补发承诺，
 ///   见 `db::should_fail_expired_outbox`）
-pub fn spawn_outbox_sweeper(
-    state: Arc<AppState>,
-    mut shutdown: watch::Receiver<bool>,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
+///
+/// ⚠️ 两个"必须常驻"的理由（旧实现只在 `network::start` 成功后 spawn，`stop` 时随
+/// 网络任务一起退出）：
+/// ① 局域网自启失败 / 用户关掉局域网 ⇒ 根本没有清扫器，队列里的 sending 永远不会终态；
+/// ② 停网后 `links`/`peers` 被清空，若清扫器也跟着消失，重连前的窗口没有任何兜底。
+/// 进程退出会自然结束它，不需要按网络生命周期回收。
+///
+/// ⚠️ **必须用 `tauri::async_runtime::spawn`，不能用 `tokio::spawn`**（2026-10-20 真机/双实例
+/// E2E 抓到）：这个函数现在从 `lib.rs` 的 setup 钩子里调用，而 setup 跑在**主线程、没有进入任何
+/// Tokio runtime 上下文**。`tokio::spawn` 在那种上下文里会直接 panic：
+/// `there is no reactor running, must be called from the context of a Tokio 1.x runtime`
+/// ⇒ 应用**启动即崩**（release 是 panic=abort），两个实例都死，E2E 连握手都到不了。
+/// `tauri::async_runtime::spawn` 会在需要时惰性建 runtime，从任意线程都可调用。
+/// 单测与源码形状判据都看不出这一层（它们不跑 setup），只有真起进程才会暴露。
+pub fn spawn_outbox_sweeper(state: Arc<AppState>) -> tauri::async_runtime::JoinHandle<()> {
+    tauri::async_runtime::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_millis(OUTBOX_SWEEPER_INTERVAL_MS));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            tokio::select! {
-                biased;
-                _ = shutdown.changed() => break,
-                _ = tick.tick() => {}
-            }
+            tick.tick().await;
 
             let now = db::now_ms();
             let deadline_single = now - crate::db::OUTBOX_FAIL_DEADLINE_MS;
             let deadline_group = now - crate::db::GROUP_OUTBOX_FAIL_DEADLINE_MS;
             let deadline_file = now - crate::db::FILE_OUTBOX_FAIL_DEADLINE_MS;
-            // 可达性快照：每 tick 取一次 links 键集，三条队列复用。
+            // 可达性快照：每 tick 取一次，三条队列复用。
             // 此前每个候选行各抢一次 links 锁（500 离线行 = 500 次/tick，自审建议#4）；
             // 非空判定与 `has_link` 同口径（残留空 Vec 不算可达）。
+            //
+            // 2026-10-20 P0：**links ∪ 发现层在线**。链路刚断、announce 还在的对端
+            // 仍算可达 ⇒ 120s 无 Ack 必须落 failed，而不是按"离线"挂 7 天。
             let reachable: std::collections::HashSet<String> = {
                 let links = state.links.lock().await;
-                links
+                let mut set: std::collections::HashSet<String> = links
                     .iter()
                     .filter(|(_, v)| !v.is_empty())
                     .map(|(k, _)| k.clone())
-                    .collect()
+                    .collect();
+                drop(links);
+                let peers = state.peers.lock().unwrap_or_else(|e| e.into_inner());
+                for (device_id, peer) in peers.iter() {
+                    if outbox_peer_reachable(false, Some(peer.last_seen), now) {
+                        set.insert(device_id.clone());
+                    }
+                }
+                set
             };
             let is_reachable = |peer: &str| reachable.contains(peer);
 
@@ -87,18 +133,41 @@ pub fn spawn_outbox_sweeper(
             // 对端**离线**不是失败理由 —— 产品承诺「对方离线暂存、上线后自动补发」
             //（INV-P04），保留到 OUTBOX_OFFLINE_HOLD_MS 才当僵尸清理。
             // 2026-09-19 P0：此前离线 2 分钟即删行置 failed，离线补发被 sweeper 自己击穿。
-            let candidates: Vec<(String, String, i64)> = {
+            let listed = {
                 // 锁中毒也要可见地继续（into_inner）：这个清扫器是"无链路消息"唯一的终态出口，
                 // `else { continue }` 静默跳过整个 tick = 消息永久停在 sending（审计 A3）。
                 let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
                 db::list_expired_outbox(&dbc, deadline_single)
-                    .unwrap_or_default()
+            };
+            let candidates: Vec<(String, String, i64)> = match listed {
+                Ok(rows) => rows
                     .into_iter()
                     .map(|(_, mid, peer, created)| (mid, peer, created))
-                    .collect()
+                    .collect(),
+                Err(e) => {
+                    // 读失败不许折成"没有过期条目"：那会让这一轮静默跳过、且没有任何读数。
+                    state.logger.error(
+                        "outbox",
+                        format!("code=OUTBOX_SWEEP_READ_FAILED kind=single err={e} —— 本轮跳过，下轮重试"),
+                    );
+                    Vec::new()
+                }
             };
             for (msg_id, peer_id, created_at) in candidates {
-                if !db::should_fail_expired_outbox(is_reachable(&peer_id), now - created_at) {
+                let reachable = is_reachable(&peer_id);
+                if !db::should_fail_expired_outbox(reachable, now - created_at) {
+                    // 离线保留是产品承诺（INV-P04），但它必须**可见**：否则用户看到
+                    // 长期"发送中"时，日志里没有任何一句解释。每 5 分钟最多一行。
+                    if !reachable && log_throttled("outbox_hold_offline", 300_000) {
+                        state.logger.info(
+                            "outbox",
+                            format!(
+                                "code=OUTBOX_OFFLINE_HELD kind=single msg_id={msg_id} peer={peer_id} \
+                                 age_ms={} reason=peer_offline(hold_7d)",
+                                now - created_at
+                            ),
+                        );
+                    }
                     continue;
                 }
                 // 写库（置 failed + 删行）成功才 emit；锁只在这块作用域内持有，不跨 emit（审计 B1）。
@@ -107,12 +176,20 @@ pub fn spawn_outbox_sweeper(
                     finalize_expired_message(&dbc, &msg_id, false)
                 };
                 if finalized {
+                    state.logger.warn(
+                        "outbox",
+                        format!(
+                            "code=OUTBOX_EXPIRED kind=single msg_id={msg_id} peer={peer_id} \
+                             age_ms={} reachable={reachable} action=failed",
+                            now - created_at
+                        ),
+                    );
                     let _ = state.app.emit("message-failed", &msg_id);
                 } else {
                     // 不 emit、不删行 ⇒ 下一 tick 重试；留痕便于排障（绝不"界面说失败、行还在、又重发"）
                     state.logger.warn(
                         "outbox",
-                        format!("过期单聊消息终态落库失败，保留 outbox 行下轮重试 msg={msg_id}"),
+                        format!("code=OUTBOX_FINALIZE_FAILED msg_id={msg_id} peer={peer_id} —— 保留 outbox 行下轮重试"),
                     );
                 }
             }
@@ -120,9 +197,19 @@ pub fn spawn_outbox_sweeper(
             // --- 群 outbox：行级分类 + msg 粒度放弃（2026-09-19 自审建议#5）---
             // 一条群消息按成员各一行；某成员离线 ⇒ 他的行保留（上线补发），
             // 只有**所有行都该放弃**时整条消息才置 failed。
-            let group_rows: Vec<(String, String, String, i64)> = {
+            let listed_group = {
                 let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                db::list_expired_group_outbox(&dbc, deadline_group).unwrap_or_default()
+                db::list_expired_group_outbox(&dbc, deadline_group)
+            };
+            let group_rows: Vec<(String, String, String, i64)> = match listed_group {
+                Ok(rows) => rows,
+                Err(e) => {
+                    state.logger.error(
+                        "outbox",
+                        format!("code=OUTBOX_SWEEP_READ_FAILED kind=group err={e} —— 本轮跳过，下轮重试"),
+                    );
+                    Vec::new()
+                }
             };
             let mut per_msg: std::collections::HashMap<String, (String, Vec<(String, i64)>)> =
                 std::collections::HashMap::new();
@@ -133,7 +220,7 @@ pub fn spawn_outbox_sweeper(
                     .1
                     .push((peer_id, created_at));
             }
-            for (msg_id, (_group_id, rows)) in per_msg {
+            for (msg_id, (group_id, rows)) in per_msg {
                 let all_give_up = rows.iter().all(|(peer, created)| {
                     // 群走**自己的**窗口（30min，见 `GROUP_OUTBOX_FAIL_DEADLINE_MS` 的理由）：
                     // 群 outbox 行是群消息唯一的补发载体，删早了就是永久丢。
@@ -145,6 +232,20 @@ pub fn spawn_outbox_sweeper(
                     )
                 });
                 if !all_give_up {
+                    if log_throttled("outbox_hold_offline", 300_000) {
+                        if let Some((peer, created)) =
+                            rows.iter().find(|(peer, _)| !is_reachable(peer))
+                        {
+                            state.logger.info(
+                                "outbox",
+                                format!(
+                                    "code=OUTBOX_OFFLINE_HELD kind=group msg_id={msg_id} \
+                                     peer={peer} age_ms={} reason=peer_offline(hold_7d)",
+                                    now - created
+                                ),
+                            );
+                        }
+                    }
                     continue;
                 }
                 let finalized = {
@@ -152,11 +253,19 @@ pub fn spawn_outbox_sweeper(
                     finalize_expired_message(&dbc, &msg_id, true)
                 };
                 if finalized {
+                    state.logger.warn(
+                        "outbox",
+                        format!(
+                            "code=OUTBOX_EXPIRED kind=group msg_id={msg_id} group_id={group_id} \
+                             recipients={} action=failed",
+                            rows.len()
+                        ),
+                    );
                     let _ = state.app.emit("message-failed", &msg_id);
                 } else {
                     state.logger.warn(
                         "outbox",
-                        format!("过期群消息终态落库失败，保留 outbox 行下轮重试 msg={msg_id}"),
+                        format!("code=OUTBOX_FINALIZE_FAILED kind=group msg_id={msg_id} group_id={group_id} —— 保留 outbox 行下轮重试"),
                     );
                 }
             }
@@ -164,17 +273,38 @@ pub fn spawn_outbox_sweeper(
             // --- 文件 outbox：与消息队列同一离线判据（窗口用文件自己的 30min）---
             // 自审建议#5：离线接收方的文件此前 30min 一律判 failed ——
             // 「关机一晚回来收不到大文件」与被修的 P0#2 同型。
-            let expired_files: Vec<(String, String, Option<String>, i64)> = {
+            let listed_files = {
                 let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                db::list_expired_file_outbox(&dbc, deadline_file).unwrap_or_default()
+                db::list_expired_file_outbox(&dbc, deadline_file)
+            };
+            let expired_files: Vec<(String, String, Option<String>, i64)> = match listed_files {
+                Ok(rows) => rows,
+                Err(e) => {
+                    state.logger.error(
+                        "outbox",
+                        format!("code=OUTBOX_SWEEP_READ_FAILED kind=file err={e} —— 本轮跳过，下轮重试"),
+                    );
+                    Vec::new()
+                }
             };
             for (transfer_id, peer_id, _group_id, created_at) in expired_files {
+                let reachable = is_reachable(&peer_id);
                 if !db::should_fail_expired(
-                    is_reachable(&peer_id),
+                    reachable,
                     now - created_at,
                     crate::db::FILE_OUTBOX_FAIL_DEADLINE_MS,
                     crate::db::OUTBOX_OFFLINE_HOLD_MS,
                 ) {
+                    if !reachable && log_throttled("outbox_hold_offline", 300_000) {
+                        state.logger.info(
+                            "outbox",
+                            format!(
+                                "code=OUTBOX_OFFLINE_HELD kind=file transfer_id={transfer_id} \
+                                 peer={peer_id} age_ms={} reason=peer_offline(hold_7d)",
+                                now - created_at
+                            ),
+                        );
+                    }
                     continue;
                 }
                 let finalized = {
@@ -182,11 +312,19 @@ pub fn spawn_outbox_sweeper(
                     finalize_expired_file(&dbc, &transfer_id)
                 };
                 if finalized {
+                    state.logger.warn(
+                        "outbox",
+                        format!(
+                            "code=FILE_OUTBOX_EXPIRED transfer_id={transfer_id} peer={peer_id} \
+                             age_ms={} reachable={reachable} action=failed",
+                            now - created_at
+                        ),
+                    );
                     let _ = state.app.emit("file-failed", &transfer_id);
                 } else {
                     state.logger.warn(
                         "outbox",
-                        format!("过期文件终态落库失败，保留 file_outbox 行下轮重试 transfer={transfer_id}"),
+                        format!("code=FILE_OUTBOX_FINALIZE_FAILED transfer_id={transfer_id} —— 保留 file_outbox 行下轮重试"),
                     );
                 }
             }
@@ -477,6 +615,47 @@ pub(crate) fn finish_reconcile(
         now_ms,
     )
     .is_ok()
+}
+
+#[cfg(test)]
+mod outbox_reachability_tests {
+    use super::{outbox_peer_reachable, OUTBOX_PEER_ONLINE_WINDOW_MS};
+
+    /// 2026-10-20 永久发送中 P0 的判据：**链路没了但发现层还在线，也算可达**。
+    ///
+    /// 旧实现只看 `links`：链路一断就按"离线"保留 7 天，用户看到的就是长期"发送中"。
+    /// 这里把三种证据分开钉：活链路、发现层在线（窗口内）、两者都没有。
+    #[test]
+    fn discovery_online_counts_as_reachable_even_without_a_live_link() {
+        let now = 10_000_000i64;
+        // 活链路：不看 last_seen
+        assert!(outbox_peer_reachable(true, None, now));
+        // 无链路，但 45s 内还在广播 ⇒ 可达（窗口边界取 >=）
+        assert!(outbox_peer_reachable(
+            false,
+            Some(now - OUTBOX_PEER_ONLINE_WINDOW_MS),
+            now
+        ));
+        // 再老 1ms ⇒ 不再算在线
+        assert!(!outbox_peer_reachable(
+            false,
+            Some(now - OUTBOX_PEER_ONLINE_WINDOW_MS - 1),
+            now
+        ));
+        // 从没发现过 ⇒ 不可达
+        assert!(!outbox_peer_reachable(false, None, now));
+        // 本机时钟回拨（last_seen 在未来）不许把在线读成离线
+        assert!(outbox_peer_reachable(false, Some(now + 1_000), now));
+    }
+
+    /// 窗口必须与 discovery 回收跨跳节点的 45s 同源，不许在清扫器里另造一个数。
+    #[test]
+    fn online_window_comes_from_the_discovery_timeout() {
+        assert_eq!(
+            OUTBOX_PEER_ONLINE_WINDOW_MS,
+            crate::protocol::RELAY_PEER_TIMEOUT_SECS * 1000
+        );
+    }
 }
 
 #[cfg(test)]

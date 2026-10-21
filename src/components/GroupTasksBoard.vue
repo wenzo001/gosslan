@@ -18,7 +18,8 @@
  * **权限**：与后端 `commands::may_change_todo` 一致（`canUpdateTodo` / `canEditAssignees` /
  * `canArchiveOrReopenTodo` 是显示用的镜像）—— 界面只是"不给按钮"，真正的拦截在后端命令里。
  */
-import { computed, onMounted, onBeforeUnmount, onUnmounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onUnmounted, ref, watch } from "vue";
+import { useEventListener } from "@vueuse/core";
 import {
   DropdownMenuContent,
   DropdownMenuItem,
@@ -39,11 +40,18 @@ import TodoDetailDialog from "@/components/TodoDetailDialog.vue";
 import TodoImageThumb from "@/components/TodoImageThumb.vue";
 import TodoPickField from "@/components/TodoPickField.vue";
 import TodoIconPicker from "@/components/TodoIconPicker.vue";
+import CharCounter from "@/components/ui/CharCounter.vue";
 import {
   TODO_CATEGORIES, TODO_CATEGORY_LABEL_KEY, TODO_CATEGORY_ICON_CLASS, TODO_CATEGORY_PILL, TODO_CUSTOM_CATEGORY_MAX_LEN, TODO_PRIORITIES, TODO_PRIORITY_LABEL_KEY, TODO_PRIORITY_ICON_CLASS, TODO_PRIORITY_PILL, TODO_STATUSES, TODO_STATUS_BAR, TODO_STATUS_CLASS, TODO_STATUS_DEFAULT, TODO_STATUS_LABEL_KEY, TODO_STATUS_PILL, buildTodoHistory, canArchiveOrReopenTodo, canEditAssignees, canUpdateTodo, foldTodos, isEffectivelyArchived, isTodoTerminalStatus, parseTodo, todoCategoryName, todoCode, type TodoHistoryEntry, type TodoImage, type TodoItem, type TodoCategory, type TodoPriority, type TodoStatus, TODO_CUSTOM_ICON_DEFAULT, type TodoCustomIcon, } from "@/utils/todos";
-import { isTodoRowsLoaded, todoRowsLoadState } from "@/utils/todos";
+import {
+  isTodoRowsLoaded,
+  todoRowsLoadState,
+  MAX_TODO_DESC_CHARS,
+  MAX_TODO_TITLE_CHARS,
+} from "@/utils/todos";
 import { TODO_CUSTOM_ICON_COMPONENTS } from "@/utils/todoCustomIcons";
-import { friendlyError } from "@/utils/errors";
+import { errorText } from "@/composables/useErrorText";
+import { useImeEnterGuard } from "@/composables/useImeEnterGuard";
 import { api } from "@/api";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
 import { MAX_TODO_IMAGE_BYTES, TODO_IMAGE_LIMIT_MB } from "@/utils/imageBytes";
@@ -51,6 +59,7 @@ import { t } from "@/i18n";
 import DangerBtn from "@/components/ui/DangerBtn.vue";
 import { Archive, Bug, CheckCircle2, ChevronDown, ChevronsDown, Circle, CircleDot, Clock, ImagePlus, Lightbulb, ListTodo, Minus, Plus, Tag, XCircle, Zap } from "lucide-vue-next";
 import { Check, RotateCcw, X } from "@/components/ui/icons";
+import { createInitScope, type InitScope } from "@/utils/initScope";
 
 const props = defineProps<{
   groupId: string | null;
@@ -235,13 +244,11 @@ watch(rowMenuOpen, (mine) => {
 function onScrollOrResize() {
   if (rowMenuId.value) closeRowMenu();
 }
-onMounted(() => {
-  window.addEventListener("scroll", onScrollOrResize, true);
-  window.addEventListener("resize", onScrollOrResize);
-});
+// 这两条交给库（组件作用域自动摘挂）：`scroll` 不冒泡 ⇒ 必须 capture，`resize` 不需要 ——
+// 一真一假这一对正是手写时最容易只改一侧的地方，而库把同一个 options 用于注册与注销。
+useEventListener(window, "scroll", onScrollOrResize, true);
+useEventListener(window, "resize", onScrollOrResize);
 onUnmounted(() => {
-  window.removeEventListener("scroll", onScrollOrResize, true);
-  window.removeEventListener("resize", onScrollOrResize);
   closeRowMenu();
 });
 
@@ -320,7 +327,7 @@ const firstScreenLoading = computed(
 /** 首屏读失败的可读文案（成功读到过就不会有这条；失败重试成功时 store 会清掉）。 */
 const rowsErrorText = computed(() =>
   rowsState.value.status === "error"
-    ? friendlyError(rowsState.value.error, t("todo.loadFail"))
+    ? errorText(rowsState.value.error, t("todo.loadFail"))
     : "",
 );
 
@@ -658,7 +665,10 @@ const dropZoneRef = ref<HTMLElement | null>(null);
 const pasteArmed = ref(false);
 /** 拖拽正悬停在图片区上（决定高亮与那句提示）。 */
 const imageDragOver = ref(false);
-let unlistenImageDrop: (() => void) | null = null;
+// 草稿开/关各起一轮订阅；用 scope 而不是裸变量，是为了让「退订发生在 IPC 往返途中」时
+// 迟到的卸载函数仍会被执行（否则拖放监听留在 webview 上，继续翻 boardDropActive，
+// 而 ChatWindow 正是读那个标志决定「拖进来的文件算任务还是算聊天附件」）。
+let dropScope: InitScope | null = null;
 
 /** 图片区提示：桌面端**粘贴 + 拖入**（点击不再弹选择器，只把这一块点亮）；**Android 只有点击**
  *  （粘贴与拖放都不订阅，见下方 watch）。
@@ -752,9 +762,11 @@ function onDocPaste(e: ClipboardEvent) {
  * （不可撤回），而不是"只加进任务"。
  */
 async function subscribeImageDrop() {
-  if (unlistenImageDrop) return;
+  if (dropScope) return;
+  const scope = createInitScope();
+  dropScope = scope;
   try {
-    unlistenImageDrop = await getCurrentWebview().onDragDropEvent((event) => {
+    const un = await getCurrentWebview().onDragDropEvent((event) => {
       if (!draft.value) return;
       const p = event.payload;
       if (p.type === "enter" || p.type === "over") {
@@ -773,13 +785,15 @@ async function subscribeImageDrop() {
       app.boardDropActive = false; // leave
       imageDragOver.value = false;
     });
+    scope.onDispose(un);
   } catch {
     /* 非 Tauri 环境（纯 vite dev）忽略 */
+    dropScope = null;
   }
 }
 function unsubscribeImageDrop() {
-  unlistenImageDrop?.();
-  unlistenImageDrop = null;
+  dropScope?.dispose();
+  dropScope = null;
   app.boardDropActive = false;
   imageDragOver.value = false;
 }
@@ -812,6 +826,8 @@ function removeImage(idx: number) {
   // 只有"本次新加"的图片有本地路径；删掉已有图片时这里没有对应键，delete 是空操作。
   if (img) delete d.imagePaths[img.sha256];
 }
+
+const ime = useImeEnterGuard();
 
 async function saveDraft() {
   // 保存按钮与标题框 Enter 共用这一条：在途时重入会重复建/改同一条任务。
@@ -1016,7 +1032,7 @@ watch(
       </div>
       <button
         v-if="!draft"
-        class="tap-safe flex shrink-0 items-center gap-1 rounded-[var(--gosslan-radius-md)] px-2.5 py-1.5 text-[13px] text-[var(--gosslan-accent-ink)] transition hover:bg-[var(--gosslan-hover)]"
+        class="tap-safe flex shrink-0 items-center gap-1 rounded-[var(--gosslan-radius-md)] px-2.5 py-1.5 text-body text-[var(--gosslan-accent-ink)] transition hover:bg-[var(--gosslan-hover)]"
         @click="startCreate"
       >
         <Plus class="h-4 w-4" />
@@ -1040,7 +1056,7 @@ watch(
         {{ t(f.labelKey) }}
         <span
           v-if="counts[f.key] !== undefined"
-          class="ml-1 rounded-full px-1 text-[11px] leading-4 tabular-nums opacity-70"
+          class="ml-1 rounded-full px-1 text-caption leading-4 tabular-nums opacity-70"
         >{{ counts[f.key] }}</span>
       </button>
     </div>
@@ -1075,7 +1091,7 @@ watch(
       >
       <!-- 已归档：扁平列表 + 说明；恢复在详情里 -->
       <template v-if="filter === 'archived'">
-        <p class="border-b border-[var(--gosslan-divider)] px-3 py-2 text-[11px] leading-relaxed text-[var(--gosslan-text-2)]">
+        <p class="border-b border-[var(--gosslan-divider)] px-3 py-2 text-caption leading-relaxed text-[var(--gosslan-text-2)]">
           {{ t("todo.archivedHint") }}
         </p>
         <div
@@ -1090,16 +1106,16 @@ watch(
             aria-hidden="true"
           ></span>
           <span
-            class="w-9 shrink-0 font-mono text-[11px] tabular-nums text-[var(--gosslan-text-2)]"
+            class="w-9 shrink-0 font-mono text-caption tabular-nums text-[var(--gosslan-text-2)]"
             :title="codeTip(x)"
           >{{ codeLabel(x) }}</span>
           <button type="button" class="min-w-0 flex-1 text-left" @click="openDetail(x)">
-            <div class="truncate text-[13px] font-medium text-[var(--gosslan-text-2)]" :title="x.title">
+            <div class="truncate text-body font-medium text-[var(--gosslan-text-2)]" :title="x.title">
               {{ x.title }}
             </div>
             <!-- 已归档那一档用**同一套**层级（名字加字重、标签退次级），只是标题整行本来就压暗：
                  一条规则两处写，不留"活动行改了、归档行没改"这种第二份真相。 -->
-            <div class="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-[11px] text-[var(--gosslan-text-2)]">
+            <div class="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-caption text-[var(--gosslan-text-2)]">
               <span v-if="x.creator">
                 {{ t("todo.rowCreator") }}
                 <span class="font-medium text-[var(--gosslan-text)]">{{ memberProfile(x.creator).name }}</span>
@@ -1116,7 +1132,7 @@ watch(
                实际结果是**反向的**：没有标签那一档才是最难认的，扫一眼只能靠猜。
                「任务」用中性档（hover 底 + text-2），彩色只留给需求/缺陷 ⇒ 噪声没有涨上去。 -->
           <span
-            class="shrink-0 inline-flex max-w-[7rem] items-center gap-1 truncate h-5 rounded-full px-2 text-[11px] leading-none"
+            class="shrink-0 inline-flex max-w-[7rem] items-center gap-1 truncate h-5 rounded-full px-2 text-caption leading-none"
             :class="TODO_CATEGORY_PILL[x.category]"
             :title="categoryText(x)"
           >
@@ -1129,7 +1145,7 @@ watch(
             />
             <span class="truncate" :title="categoryText(x)">{{ categoryText(x) }}</span>
           </span>
-          <span class="shrink-0 inline-flex h-5 items-center justify-center rounded-full px-2 text-[11px] font-medium leading-none" :class="TODO_STATUS_PILL[x.status]">
+          <span class="shrink-0 inline-flex h-5 items-center justify-center rounded-full px-2 text-caption font-medium leading-none" :class="TODO_STATUS_PILL[x.status]">
             {{ statusText(x.status) }}
           </span>
           <!-- 快捷「还原」：以前只在详情里（用户 2026-09-24：归档要有还原按钮，
@@ -1164,8 +1180,8 @@ watch(
               :class="TODO_STATUS_CLASS[g.status]"
               :stroke-width="1.9"
             />
-            <span class="text-[12px] font-medium text-[var(--gosslan-text)]">{{ statusText(g.status) }}</span>
-            <span class="text-[11px] text-[var(--gosslan-text-2)]">{{ g.items.length }}</span>
+            <span class="text-meta font-medium text-[var(--gosslan-text)]">{{ statusText(g.status) }}</span>
+            <span class="text-caption text-[var(--gosslan-text-2)]">{{ g.items.length }}</span>
           </div>
 
           <!-- 任务行：固定编号 + 标题/元信息（点开详情）+ 状态 + 快捷完成 -->
@@ -1209,7 +1225,7 @@ watch(
               </span>
             </span>
             <span
-              class="w-9 shrink-0 font-mono text-[11px] tabular-nums text-[var(--gosslan-text-2)]"
+              class="w-9 shrink-0 font-mono text-caption tabular-nums text-[var(--gosslan-text-2)]"
               :title="codeTip(x)"
             >{{ codeLabel(x) }}</span>
             <button type="button" class="min-w-0 flex-1 text-left" @click="openDetail(x)">
@@ -1217,7 +1233,7 @@ watch(
                    完成是这条任务的结论，划掉会让它读成"作废"。状态由左缘色条 + 右侧胶囊 +
                    分组头三处一起说清楚，不靠划线。 -->
               <div
-                class="truncate text-[13px] font-medium text-[var(--gosslan-text)]"
+                class="truncate text-body font-medium text-[var(--gosslan-text)]"
                 :title="x.title"
               >
                 {{ x.title }}
@@ -1226,7 +1242,7 @@ watch(
                    其他文字弱化」）：**名字**用主文本色 + 中等字重，**标签**留在次级色。
                    行内不写整句（「由 X 发起」那种）—— 11px 下整句读不出主次，标签+名字两段才分得开。
                    详情弹窗里仍用完整句子（那里字号够，读得出）⇒ 同一件事两处写法不同是刻意的。 -->
-              <div class="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-[11px] text-[var(--gosslan-text-2)]">
+              <div class="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-caption text-[var(--gosslan-text-2)]">
                 <span v-if="x.creator">
                   {{ t("todo.rowCreator") }}
                   <span class="font-medium text-[var(--gosslan-text)]">{{ memberProfile(x.creator).name }}</span>
@@ -1243,7 +1259,7 @@ watch(
               <button
                 v-if="canChangeStatus(x)"
                 type="button"
-                class="tap-safe inline-flex h-5 shrink-0 items-center justify-center gap-1 rounded-full px-2 text-[11px] font-medium leading-none transition hover:opacity-80"
+                class="tap-safe inline-flex h-5 shrink-0 items-center justify-center gap-1 rounded-full px-2 text-caption font-medium leading-none transition hover:opacity-80"
                 :class="TODO_STATUS_PILL[x.status]"
                 :title="t('todo.statusLabel')"
                 :aria-label="t('todo.statusLabel')"
@@ -1256,7 +1272,7 @@ watch(
               </button>
               <span
                 v-else
-                class="inline-flex h-5 shrink-0 items-center justify-center rounded-full px-2 text-[11px] font-medium leading-none"
+                class="inline-flex h-5 shrink-0 items-center justify-center rounded-full px-2 text-caption font-medium leading-none"
                 :class="TODO_STATUS_PILL[x.status]"
               >
                 {{ statusText(x.status) }}
@@ -1336,14 +1352,19 @@ watch(
     <div v-if="draft" class="space-y-4">
       <!-- 标题 -->
       <div>
-        <div class="mb-1.5 text-xs text-[var(--gosslan-text-2)]">{{ t("todo.titleLabel") }}</div>
+        <div class="mb-1.5 flex items-baseline justify-between gap-2">
+          <span class="text-xs text-[var(--gosslan-text-2)]">{{ t("todo.titleLabel") }}</span>
+          <CharCounter :text="draft.title" :max="MAX_TODO_TITLE_CHARS" />
+        </div>
         <input
           v-model="draft.title"
-          maxlength="200"
+          :maxlength="MAX_TODO_TITLE_CHARS"
           :disabled="!draftCanEditTitle"
           class="w-full rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none transition focus:border-transparent disabled:opacity-60"
           :placeholder="t('todo.titlePlaceholder')"
-          @keydown.enter.prevent="saveDraft"
+          @keydown.enter.prevent="ime.enter(saveDraft)"
+          @compositionstart="ime.onStart"
+          @compositionend="ime.onEnd"
         />
       </div>
 
@@ -1356,7 +1377,7 @@ watch(
             v-for="s in TODO_STATUSES"
             :key="s"
             type="button"
-            class="tap-safe flex-1 whitespace-nowrap rounded-[var(--gosslan-radius-sm)] py-1.5 text-[12px] transition"
+            class="tap-safe flex-1 whitespace-nowrap rounded-[var(--gosslan-radius-sm)] py-1.5 text-meta transition"
             :class="
               draft.status === s
                 ? 'bg-[var(--gosslan-panel)] font-medium text-[var(--gosslan-text)] shadow-sm'
@@ -1395,12 +1416,10 @@ watch(
           <input
             v-model="draft.customCategory"
             :maxlength="TODO_CUSTOM_CATEGORY_MAX_LEN"
-            class="min-w-0 flex-1 rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-bg)] px-2.5 py-1.5 text-[13px] outline-none transition focus:border-transparent"
+            class="min-w-0 flex-1 rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-bg)] px-2.5 py-1.5 text-body outline-none transition focus:border-transparent"
             :placeholder="t('todo.categoryCustomPlaceholder')"
           />
-          <span class="shrink-0 text-[11px] text-[var(--gosslan-text-2)]">
-            {{ draft.customCategory.length }}/{{ TODO_CUSTOM_CATEGORY_MAX_LEN }}
-          </span>
+          <CharCounter :text="draft.customCategory" :max="TODO_CUSTOM_CATEGORY_MAX_LEN" />
         </div>
         <!-- 图标那一格与名字同一档展开（用户 2026-10-14 同一条需求的两半）。
              与详情弹窗共用 `TodoIconPicker`：两份编辑器不许各写一排按钮。 -->
@@ -1411,10 +1430,13 @@ watch(
 
       <!-- 描述 -->
       <div>
-        <div class="mb-1.5 text-xs text-[var(--gosslan-text-2)]">{{ t("todo.descriptionLabel") }}</div>
+        <div class="mb-1.5 flex items-baseline justify-between gap-2">
+          <span class="text-xs text-[var(--gosslan-text-2)]">{{ t("todo.descriptionLabel") }}</span>
+          <CharCounter :text="draft.description" :max="MAX_TODO_DESC_CHARS" />
+        </div>
         <textarea
           v-model="draft.description"
-          maxlength="4000"
+          :maxlength="MAX_TODO_DESC_CHARS"
           rows="3"
           class="w-full resize-y rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none transition focus:border-transparent"
           :placeholder="t('todo.descriptionPlaceholder')"
@@ -1429,7 +1451,7 @@ watch(
           <span class="text-xs text-[var(--gosslan-text-2)]">{{ t("todo.imagesLabel") }}</span>
           <button
             type="button"
-            class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-sm)] px-1.5 py-0.5 text-[11px] text-[var(--gosslan-accent-ink)] transition hover:bg-[var(--gosslan-hover)]"
+            class="tap-safe flex items-center gap-1 rounded-[var(--gosslan-radius-sm)] px-1.5 py-0.5 text-caption text-[var(--gosslan-accent-ink)] transition hover:bg-[var(--gosslan-hover)]"
             @click="onAddImageButton"
           >
             <ImagePlus class="h-3.5 w-3.5" />
@@ -1452,7 +1474,7 @@ watch(
           <button
             v-if="draft.images.length === 0"
             type="button"
-            class="w-full cursor-pointer rounded-[var(--gosslan-radius-md)] px-3 py-6 text-center text-[11px] leading-relaxed text-[var(--gosslan-text-2)] transition hover:text-[var(--gosslan-text)]"
+            class="w-full cursor-pointer rounded-[var(--gosslan-radius-md)] px-3 py-6 text-center text-caption leading-relaxed text-[var(--gosslan-text-2)] transition hover:text-[var(--gosslan-text)]"
             @click="armImageZone"
           >
             {{ imageHintText }}
@@ -1481,7 +1503,7 @@ watch(
             v-for="id in group?.members ?? []"
             :key="id"
             type="button"
-            class="flex items-center gap-1.5 rounded-[var(--gosslan-radius-md)] border px-2 py-1 text-[12px] transition"
+            class="flex items-center gap-1.5 rounded-[var(--gosslan-radius-md)] border px-2 py-1 text-meta transition"
             :class="
               draft.assignees.includes(id)
                 ? 'border-[var(--gosslan-primary)] text-[var(--gosslan-accent-ink)]'
@@ -1499,13 +1521,13 @@ watch(
       <!-- 操作 -->
       <div class="flex items-center justify-end gap-2 border-t border-[var(--gosslan-divider)] pt-3">
           <button
-            class="tap-safe rounded-[var(--gosslan-radius-md)] px-3 py-1.5 text-[13px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+            class="tap-safe rounded-[var(--gosslan-radius-md)] px-3 py-1.5 text-body text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
             @click="closeDraft()"
           >
             {{ t("common.cancel") }}
           </button>
         <button
-          class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-3 py-1.5 text-[13px] text-white transition hover:opacity-90 disabled:opacity-50"
+          class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-primary)] px-3 py-1.5 text-body text-white transition hover:opacity-90 disabled:opacity-50"
           :disabled="saving"
           @click="saveDraft"
         >
@@ -1526,7 +1548,7 @@ watch(
     </p>
     <div class="mt-5 flex justify-end gap-2">
       <button
-        class="tap-safe rounded-[var(--gosslan-radius-md)] px-3 py-1.5 text-[13px] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+        class="tap-safe rounded-[var(--gosslan-radius-md)] px-3 py-1.5 text-body text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
         @click="pendingDelete = null"
       >
         {{ t("common.cancel") }}

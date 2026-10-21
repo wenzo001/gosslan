@@ -17,6 +17,7 @@
 import { computed, ref } from "vue";
 import { createI18n } from "vue-i18n";
 import { zhCN, enUS, type MessageDict } from "./locales.ts";
+import { storageGet, storageSet } from "../utils/safeStorage.ts";
 
 export type Locale = "zh-CN" | "en-US";
 /** 语言偏好：跟随系统 / 显式中文 / 显式英文。 */
@@ -31,12 +32,8 @@ const STORAGE_KEY = "gosslan.locale";
 
 /** 从 localStorage 读上次偏好（启动首帧快路径；真值在后端 settings.language）。 */
 function readStoredPreference(): LanguagePreference {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw === "system" || raw === "zh-CN" || raw === "en-US") return raw;
-  } catch {
-    /* localStorage 不可用 → 跟随系统 */
-  }
+  const raw = storageGet(STORAGE_KEY);
+  if (raw === "system" || raw === "zh-CN" || raw === "en-US") return raw;
   return "system";
 }
 
@@ -123,7 +120,11 @@ function syncDocumentLang() {
   if (typeof document !== "undefined") document.documentElement.lang = locale.value;
 }
 
-/** 把解析后的 locale 同步给 vue-i18n；必须**同步**调用（事件处理器里的 t() 不等人）。 */
+/**
+ * 把解析后的 locale 同步给两件事：vue-i18n（我们的词典）与 dayjs（星期名 / 月份名这类
+ * 库自带的 locale 数据）。必须**同步**调用（事件处理器里的 t() 不等人）。
+ * 语言只有这一个事实源 —— `utils/time.ts` 不自己判断该用哪套本地化数据。
+ */
 function syncI18nLocale() {
   i18n.global.locale.value = locale.value;
 }
@@ -135,11 +136,7 @@ function syncI18nLocale() {
 export function applyPreference(p: LanguagePreference) {
   preference.value = p;
   syncI18nLocale();
-  try {
-    localStorage.setItem(STORAGE_KEY, p);
-  } catch {
-    /* 忽略 */
-  }
+  storageSet(STORAGE_KEY, p);
   syncDocumentLang();
 }
 

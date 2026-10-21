@@ -5,16 +5,15 @@ import {
   CLAMPED_CODE_BLOCK_HEIGHT,
   IMAGE_BUBBLE_HEIGHT,
   codeBlockHeight,
+  shouldShowTimeDivider,
   textBubbleHeight,
 } from "@/utils/previewMetrics";
 // 可见图片数的唯一家（卡片画几张、这里按几行估高，同一个常量）
 import { TODO_CARD_IMAGE_VISIBLE } from "@/utils/todos";
 import type { FontSizeKey } from "@/utils/chatStyle";
-import { isKnownKind, isTipKind } from "@/utils/messageKinds";
+// 昵称行的判定与渲染端共用（提示行没有昵称行这条规则写在那个函数里）
+import { isKnownKind, shouldShowNickname } from "@/utils/messageKinds";
 import type { MessageRecord } from "@/types";
-
-/** 时间分割线阈值（≥5 分钟）。 */
-const TIME_DIVIDER_GAP = 5 * 60 * 1000;
 
 /** MessageItem: py-1.5（同发方连续消息间距 12px，学微信的呼吸感） */
 const ROW_PADDING = 12;
@@ -182,12 +181,16 @@ export function estimateMessageHeight(
 
   const bubble = bubbleHeightCached(m, ctx.fontSize);
 
-  // 每条消息独立完整渲染（无合并）：时间行恒有；群聊非本人显示昵称
-  const showDivider = !prev || m.ts - prev.ts >= TIME_DIVIDER_GAP;
-  // 提示行没有昵称行（`MessageItem` 里提示行整支都在头像行之外）—— 这里必须同步，
-  // 否则群聊里一条"对方撤回"会多估 18px。
-  const showNickname =
-    ctx.isGroup && m.sender_id !== ctx.selfId && !isTipKind(m.kind);
+  // 分割行的**判定**与渲染端共用 `shouldShowTimeDivider`（阈值也在那里）：分割行自己占
+  // TIME_DIVIDER 那 32px，两边判得不一致就是"相邻消息互相遮挡"本文件顶部那条契约。
+  const showDivider = shouldShowTimeDivider(m.ts, prev?.ts);
+  // 昵称行同族（占 NICKNAME_ROW 那 18px）：「提示行没有昵称行」这条规则现在写在判定函数里，
+  // 不再靠 MessageItem 的 v-if/v-else 结构差持平 ⇒ 两边不可能各走一半。
+  const showNickname = shouldShowNickname({
+    isGroup: ctx.isGroup,
+    mine: m.sender_id === ctx.selfId,
+    kind: m.kind,
+  });
 
   return (
     bubble +

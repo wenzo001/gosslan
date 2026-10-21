@@ -9,6 +9,7 @@
  * 尾随标点要把它剥掉。只做后一半是不够的 —— 正则先把「。然后呢」整段吃进来，
  * 剥尾标点时又只认 ASCII，于是整句都成了链接（2026-09-16 修的缺陷）。
  */
+import { escapeRe } from "./escapeRe.ts";
 
 export type LinkSegment =
   | { kind: "text"; value: string }
@@ -83,10 +84,6 @@ export const MENTION_BEFORE = `(^|${MENTION_LEAD})`;
 const MENTION_LEAD_ONLY_RE = new RegExp(`^${MENTION_LEAD}$`);
 export function isMentionLead(ch: string): boolean {
   return ch === "" || MENTION_LEAD_ONLY_RE.test(ch);
-}
-
-export function escapeRe(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 /** 成员名 → @提及 正则（长名优先，防短名吃掉长名前缀；无有效名字返回 null）。 */

@@ -49,7 +49,7 @@ const previewLines = computed(() =>
   >
     <div class="flex items-center gap-1.5">
       <ScrollText class="h-4 w-4 shrink-0 opacity-60 text-[var(--gosslan-card-ink)]" aria-hidden="true" />
-      <span class="truncate text-[13px] font-medium text-[var(--gosslan-card-ink)]" :title="title">
+      <span class="truncate text-body font-medium text-[var(--gosslan-card-ink)]" :title="title">
         {{ title }}
       </span>
     </div>
@@ -57,13 +57,13 @@ const previewLines = computed(() =>
       <div
         v-for="(line, i) in previewLines"
         :key="i"
-        class="flex items-center gap-1 text-[11px] leading-[15px] text-[var(--gosslan-card-ink)] opacity-70"
+        class="flex items-center gap-1 text-caption leading-[15px] text-[var(--gosslan-card-ink)] opacity-70"
       >
         <span class="shrink-0 truncate" :title="line.sender">{{ line.sender }}：</span>
         <span class="truncate" :title="line.text">{{ line.text }}</span>
       </div>
     </div>
-    <div class="shrink-0 text-[11px] leading-[15px] text-[var(--gosslan-card-ink)] opacity-70">
+    <div class="shrink-0 text-caption leading-[15px] text-[var(--gosslan-card-ink)] opacity-70">
       {{ t("merge.viewCount", { n: count }) }}
     </div>
     <!-- 指向发送者头像的小尖角（与文本/代码气泡同款 .bubble-tail）：卡片无描边，

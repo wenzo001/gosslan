@@ -780,7 +780,10 @@ pub fn spawn_sync(state: &Arc<AppState>, group_id: &str) -> bool {
     }
     let st = state.clone();
     let gid = group_id.to_string();
-    tokio::spawn(async move {
+    // ⚠️ 必须 `tauri::async_runtime::spawn`：`spawn_sync` 是**同步函数**，调用方今天都在
+    // async 上下文里，但这是约定、不是类型保证 —— 一旦有人从 setup/同步命令里调它，
+    // `tokio::spawn` 就会 panic「no reactor running」并把进程带崩（同类事故 2026-10-20 已发生一次）。
+    tauri::async_runtime::spawn(async move {
         let outcome = run_group_history_sync(&st, &gid).await;
         st.group_history_active
             .lock()
@@ -1560,10 +1563,10 @@ mod group_history_engine_tests {
             .unwrap_or(body.len() - start);
         let f = &body[start..start + end];
         assert_eq!(
-            f.matches("tokio::spawn(").count(),
+            f.matches("tauri::async_runtime::spawn(").count(),
             1,
             "`spawn_sync` 体内现数到 {} 处 `tokio::spawn(`（登记 1 处）：0 = 根本没起跑",
-            f.matches("tokio::spawn(").count()
+            f.matches("tauri::async_runtime::spawn(").count()
         );
         assert!(
             f.contains("group_history_active.lock()"),

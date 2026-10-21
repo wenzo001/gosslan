@@ -21,6 +21,8 @@
  * 的风险大于收益，因此这里只收敛浪费、不改传输形状。
  */
 
+import { MessageKeyError } from "./errors.ts";
+
 /** 一次 `Function.prototype.apply` 能安全吞下的字符数上限（引擎相关，8KiB 保守可靠）。 */
 const B64_CHUNK = 8192;
 
@@ -62,7 +64,7 @@ export function fileToDataUrl(f: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const r = new FileReader();
     r.onload = () => resolve(r.result as string);
-    r.onerror = () => reject(r.error ?? new Error("读取图片失败"));
+    r.onerror = () => reject(r.error ?? new MessageKeyError("errors.image.readFail"));
     r.readAsDataURL(f);
   });
 }
@@ -107,6 +109,6 @@ export async function urlToBase64(url: string): Promise<string> {
   const inline = dataUrlBase64(url);
   if (inline !== null) return inline;
   const res = await fetch(url);
-  if (!res.ok) throw new Error(`读取图片失败：HTTP ${res.status}`);
+  if (!res.ok) throw new MessageKeyError("errors.image.httpFail", { status: res.status });
   return bytesToBase64(new Uint8Array(await res.arrayBuffer()));
 }

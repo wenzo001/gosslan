@@ -58,3 +58,46 @@ test("触觉：vibrate 内部抛错（无 VIBRATE 权限/被策略拦截）也�
     },
   );
 });
+
+/**
+ * 临时给一个带 `matchMedia` 的 `window`（Node 里没有，用完摘掉）。
+ * 只有 `prefers-reduced-motion` 那条查询返回指定值，其余查询一律 false。
+ */
+function withReducedMotion(matches: boolean, fn: () => void) {
+  const prev = Object.getOwnPropertyDescriptor(globalThis, "window");
+  Object.defineProperty(globalThis, "window", {
+    value: { matchMedia: (q: string) => ({ matches: matches && q.includes("prefers-reduced-motion") }) },
+    configurable: true,
+    writable: true,
+  });
+  try {
+    fn();
+  } finally {
+    if (prev) Object.defineProperty(globalThis, "window", prev);
+    else delete (globalThis as { window?: unknown }).window;
+  }
+}
+
+/**
+ * 无障碍开关要两个方向都有读数：
+ * 只钉"开了不震"，那么整条 vibrate 路径坏掉时这条同样是 0 —— 判不出开关到底有没有生效。
+ */
+test("触觉：系统开了「减弱动态效果」就不震，没开时照常震", () => {
+  const vibrated = (matches: boolean) => {
+    const calls: VibrateCall[] = [];
+    withReducedMotion(matches, () =>
+      withNavigator(
+        {
+          vibrate: (p: VibrateCall) => {
+            calls.push(p);
+            return true;
+          },
+        },
+        () => haptic("light"),
+      ),
+    );
+    return calls.length;
+  };
+  assert.equal(vibrated(true), 0, "开了减弱动态还震 = 这个开关在触觉这一路没接上");
+  assert.equal(vibrated(false), 1, "没开时必须照常震（否则上一条的 0 可能只是路径本身坏了）");
+});

@@ -22,7 +22,7 @@ const emit = defineEmits<{
   <div v-if="open" class="mb-1">
     <div v-if="requests.length" class="rounded-[var(--gosslan-radius-lg)]">
       <div
-        class="flex items-center justify-between px-2 pb-1 pt-0.5 text-[11px] font-medium uppercase tracking-wide text-[var(--gosslan-text-2)]"
+        class="flex items-center justify-between px-2 pb-1 pt-0.5 text-caption font-medium uppercase tracking-wide text-[var(--gosslan-text-2)]"
       >
         <span>{{ t("friend.request.title") }}</span>
         <button

@@ -192,3 +192,27 @@ export function isRemindableKind(kind: string): boolean {
     kind === "announcement"
   );
 }
+
+/**
+ * 群聊昵称行要不要占位 —— **渲染端与估高端共用这一个判定**（§6.64）。
+ *
+ * 为什么连判定都要共用：昵称行占 18px（`messageHeight.NICKNAME_ROW`），所以「有没有这一行」
+ * **同时**决定渲染与估算。此前两边各写一套 —— 估算端 `isGroup && sender !== self && !isTipKind(kind)`，
+ * 渲染端 `isGroup && !mine`，**少一条 `!isTipKind`**；能持平靠的是 `MessageItem` 的模板结构
+ * （提示行走 `v-if="isTip"`、正文块在 `v-else` 里，昵称行在正文块内）。结构一变（比如哪天提示行
+ * 也要标来源）两边就各走一半 ⇒ 群里一条「对方撤回」多估 18px、下面那条被推偏、两条互相遮挡。
+ * 现在把「提示行没有昵称行」这条业务规则写进判定本身，模板那一层继续只管渲染分支。
+ *
+ * 家放在这个文件而不是 `previewMetrics`（那条成对判定的另一个家）：本文件**零 import**，
+ * `node --test` 能直接跑真值表；`previewMetrics` 要 `@/utils/chatStyle`，那个runner 解析不了 `@/` 别名。
+ *
+ * `mine` 由两侧各自已有的口径传入（渲染端比 `device.device_id`、估算端比 `ctx.selfId`）——
+ * 这里不新增第三个 self-id 来源。
+ */
+export function shouldShowNickname(input: {
+  isGroup: boolean;
+  mine: boolean;
+  kind: string;
+}): boolean {
+  return input.isGroup && !input.mine && !isTipKind(input.kind);
+}

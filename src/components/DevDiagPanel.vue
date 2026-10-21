@@ -15,36 +15,45 @@
  * 布局用卡片/列表而不是宽表：桌面与手机（三端）都能读，窄屏不会横向滚动。
  */
 import { t } from "@/i18n";
-import { computed, onMounted, ref } from "vue";
+import { computed } from "vue";
+import { useQuery } from "@tanstack/vue-query";
 import { Bluetooth, RefreshCw, Wifi } from "lucide-vue-next";
 import BaseModal from "@/components/BaseModal.vue";
+import StateBlock from "@/components/ui/StateBlock.vue";
 import { api } from "@/api";
-import { friendlyError } from "@/utils/errors";
+import { errorText } from "@/composables/useErrorText";
+import { panelQueryOptions } from "@/utils/panelQuery";
 import { fmtClock } from "@/utils/time";
 import type { DiscoveryDiag, PeerVersionDiag } from "@/types";
 
 defineProps<{ open: boolean }>();
 const emit = defineEmits<{ (e: "close"): void }>();
 
-const diag = ref<DiscoveryDiag | null>(null);
-const loading = ref(false);
-/** 首屏读失败的可读原因；有旧快照时不显示（保留上一次读数，不把内容换成错误页）。 */
-const loadError = ref("");
+/**
+ * 诊断快照就是「打开拉一份、点刷新再拉一份」的纯读面板 ⇒ 交给 Query（策略见 utils/panelQuery）。
+ * 旧写法自己维护 `loading`/`loadError` 两个 ref 加 try/finally；现在单飞、失败补一次、
+ * 重开重拉都由库管，本组件只留「错误什么时候该说出口」这条业务口径。
+ *
+ * 全局只有一份读数、没有可分键的主体 ⇒ id 传空串，键就是 `["diag", ""]`。
+ * 一次命令拿全（通道 + 候选）：避免两个命令各拿一份、数据对不上。
+ */
+const diagQuery = useQuery(
+  panelQueryOptions<DiscoveryDiag>("diag", "", () => api.getDiscoveryDiag()),
+);
+const diag = computed(() => diagQuery.data.value ?? null);
+/** 首帧与每次刷新都算「加载中」（按钮禁用 + 图标转），与旧实现的 `loading` 同义。 */
+const loading = computed(() => diagQuery.isFetching.value);
+/** 首屏读失败才说「读失败」；有旧快照时保留上一次读数，不把整屏换成错误页。 */
+const loadError = computed(() =>
+  diagQuery.error.value && !diag.value
+    ? errorText(diagQuery.error.value, t("diag.loadFail"))
+    : "",
+);
 
-async function refresh() {
-  loading.value = true;
-  try {
-    // 一次命令拿全（通道 + 候选）：避免两个命令各拿一份、数据对不上
-    diag.value = await api.getDiscoveryDiag();
-    loadError.value = "";
-  } catch (e) {
-    if (!diag.value) loadError.value = friendlyError(e, t("diag.loadFail"));
-  } finally {
-    loading.value = false;
-  }
+function refresh() {
+  // refetch 自带单飞：连点两次不会发出两条命令（旧实现会）。
+  void diagQuery.refetch();
 }
-
-onMounted(refresh);
 
 /** 局域网是否在跑（只有它决定"局域网发现"那一块显不显示）。 */
 const lanOn = computed(() => !!diag.value && diag.value.mode !== "offline");
@@ -124,15 +133,15 @@ function ageText(ms: number | null): string {
       <template v-if="diag">
         <!-- ① 通道状态：一条通道一张卡（蓝牙用户不再被判 offline） -->
         <section>
-          <h4 class="mb-1.5 font-semibold text-[13px]">{{ t("diag.channels") }}</h4>
+          <h4 class="mb-1.5 font-semibold text-body">{{ t("diag.channels") }}</h4>
           <div class="grid gap-2 desktop:sm:grid-cols-2">
             <!-- 局域网 -->
             <div class="rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] p-3">
-              <div class="mb-2 flex items-center gap-1.5 text-[13px] font-medium">
+              <div class="mb-2 flex items-center gap-1.5 text-body font-medium">
                 <Wifi class="h-3.5 w-3.5 opacity-70" />
                 {{ t("diag.lan") }}
                 <span
-                  class="ml-auto rounded-full px-2 py-0.5 text-[10px]"
+                  class="ml-auto rounded-full px-2 py-0.5 text-micro"
                   :class="lanOn
                     ? 'bg-[var(--gosslan-success-soft)] text-[var(--gosslan-success-ink)]'
                     : 'bg-[var(--gosslan-hover)] text-[var(--gosslan-text-2)]'"
@@ -170,11 +179,11 @@ function ageText(ms: number | null): string {
 
             <!-- 蓝牙 -->
             <div class="rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] p-3">
-              <div class="mb-2 flex items-center gap-1.5 text-[13px] font-medium">
+              <div class="mb-2 flex items-center gap-1.5 text-body font-medium">
                 <Bluetooth class="h-3.5 w-3.5 opacity-70" />
                 {{ t("diag.bt") }}
                 <span
-                  class="ml-auto max-w-[60%] truncate rounded-full px-2 py-0.5 text-[10px]"
+                  class="ml-auto max-w-[60%] truncate rounded-full px-2 py-0.5 text-micro"
                   :class="bt?.running
                     ? 'bg-[var(--gosslan-success-soft)] text-[var(--gosslan-success-ink)]'
                     : 'bg-[var(--gosslan-hover)] text-[var(--gosslan-text-2)]'"
@@ -215,7 +224,7 @@ function ageText(ms: number | null): string {
 
         <!-- ② 候选链路：网卡 + 蓝牙同一张表，按 kind 各自渲染 -->
         <section>
-          <h4 class="mb-1.5 font-semibold text-[13px]">{{ t("diag.candidates") }}</h4>
+          <h4 class="mb-1.5 font-semibold text-body">{{ t("diag.candidates") }}</h4>
           <div class="space-y-1">
             <div
               v-for="c in diag.candidates"
@@ -229,14 +238,14 @@ function ageText(ms: number | null): string {
               <div class="min-w-0 flex-1">
                 <div class="flex flex-wrap items-center gap-x-2 gap-y-0.5">
                   <span class="font-medium">{{ c.name }}</span>
-                  <span class="rounded-full bg-[var(--gosslan-hover)] px-1.5 py-0.5 text-[10px] text-[var(--gosslan-text-2)]">
+                  <span class="rounded-full bg-[var(--gosslan-hover)] px-1.5 py-0.5 text-micro text-[var(--gosslan-text-2)]">
                     {{ c.kind === "bluetooth" ? t("diag.kindBt") : t("diag.kindLan") }}
                   </span>
-                  <span v-if="c.selected" class="text-[10px] font-medium text-[var(--gosslan-primary)]">
+                  <span v-if="c.selected" class="text-micro font-medium text-[var(--gosslan-primary)]">
                     {{ t("diag.chosen") }}
                   </span>
                 </div>
-                <div class="mt-0.5 break-all font-mono text-[11px] text-[var(--gosslan-text-2)]">
+                <div class="mt-0.5 break-all font-mono text-caption text-[var(--gosslan-text-2)]">
                   <template v-if="c.kind === 'bluetooth'">{{ c.detail }}</template>
                   <template v-else>
                     {{ c.ip }}
@@ -253,7 +262,7 @@ function ageText(ms: number | null): string {
 
         <!-- ③ 局域网发现（局域网没开就不占地方，明确说清"不影响蓝牙"） -->
         <section>
-          <h4 class="mb-1.5 font-semibold text-[13px]">{{ t("diag.discovery") }}</h4>
+          <h4 class="mb-1.5 font-semibold text-body">{{ t("diag.discovery") }}</h4>
           <div v-if="lanOn" class="space-y-0.5">
             <div class="flex justify-between gap-3">
               <span class="opacity-60">{{ t("diag.broadcastTarget") }}</span>
@@ -291,11 +300,11 @@ function ageText(ms: number | null): string {
 
         <!-- ④ 蓝牙失败退避明细（"为什么这一轮没拨它"的唯一可查之处） -->
         <section v-if="bt?.feature_compiled">
-          <h4 class="mb-1.5 font-semibold text-[13px]">
+          <h4 class="mb-1.5 font-semibold text-body">
             {{ t("diag.btBackoffList", { n: bt.backoff.length }) }}
           </h4>
           <p v-if="bt.backoff.length === 0" class="opacity-50">{{ t("diag.btBackoffEmpty") }}</p>
-          <div v-else class="max-h-48 space-y-0.5 overflow-y-auto font-mono text-[11px]">
+          <div v-else class="max-h-48 space-y-0.5 overflow-y-auto font-mono text-caption">
             <div v-for="b in bt.backoff" :key="b.id" class="flex gap-3">
               <span class="min-w-0 flex-1 truncate opacity-70" :title="b.id">{{ b.id }}</span>
               <span class="shrink-0">{{ t("diag.btBackoffItem", { n: b.failures, s: Math.round(b.remaining_ms / 1000) }) }}</span>
@@ -308,14 +317,14 @@ function ageText(ms: number | null): string {
 
         <!-- ⑤ 版本互通：跨版本问题时第一眼要看"谁老、谁根本没报版本" -->
         <section>
-          <h4 class="mb-1.5 font-semibold text-[13px]">{{ t("diag.versions") }}</h4>
+          <h4 class="mb-1.5 font-semibold text-body">{{ t("diag.versions") }}</h4>
           <div class="opacity-70">
             {{ t("diag.localVersion", { p: diag.protocol_version, a: diag.app_version }) }}
           </div>
           <p v-if="diag.peer_versions.length === 0" class="mt-1 opacity-50">
             {{ t("diag.peerVersionsEmpty") }}
           </p>
-          <div v-else class="mt-1 max-h-48 space-y-0.5 overflow-y-auto font-mono text-[11px]">
+          <div v-else class="mt-1 max-h-48 space-y-0.5 overflow-y-auto font-mono text-caption">
             <div v-for="p in diag.peer_versions" :key="p.device_id" class="flex gap-3">
               <span class="min-w-0 flex-1 truncate opacity-70" :title="p.device_id">
                 {{ peerLabel(p) }}
@@ -333,12 +342,12 @@ function ageText(ms: number | null): string {
 
         <!-- ⑥ 连接活性：按连接两列各说各话（写出成功 ≠ 读到帧），排查"对端整段没帧"这一类的第一现场 -->
         <section>
-          <h4 class="mb-1.5 font-semibold text-[13px]">{{ t("diag.connHealth") }}</h4>
+          <h4 class="mb-1.5 font-semibold text-body">{{ t("diag.connHealth") }}</h4>
           <p class="mb-1 opacity-60">{{ t("diag.connHealthHint") }}</p>
           <p v-if="diag.conn_health.length === 0" class="opacity-50">
             {{ t("diag.connHealthEmpty") }}
           </p>
-          <div v-else class="max-h-48 space-y-1 overflow-y-auto font-mono text-[11px]">
+          <div v-else class="max-h-48 space-y-1 overflow-y-auto font-mono text-caption">
             <div
               v-for="c in diag.conn_health"
               :key="c.conn_id"
@@ -368,17 +377,17 @@ function ageText(ms: number | null): string {
         </section>
       </template>
 
-      <div v-else-if="loading" class="py-4 text-center opacity-50">{{ t("diag.loading") }}</div>
-      <div v-else-if="loadError" role="alert" class="space-y-2 py-4 text-center">
-        <p class="text-[var(--gosslan-danger-ink)]">{{ loadError }}</p>
-        <button
-          type="button"
-          class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2.5 py-1 text-[var(--gosslan-primary)] transition hover:bg-[var(--gosslan-hover)]"
-          @click="refresh"
-        >
-          {{ t("common.retry") }}
-        </button>
-      </div>
+      <!-- 三态同一出口：这两格此前是本文件里唯一手写的加载块与错误块（错误文案自带
+           "读取失败"前缀，所以整句进 title，不再拆 detail，避免同一句话出现两次）。 -->
+      <StateBlock v-else-if="loading" compact kind="loading" :title="t('diag.loading')" />
+      <StateBlock
+        v-else-if="loadError"
+        compact
+        kind="error"
+        :title="loadError"
+        :retry-label="t('common.retry')"
+        @retry="refresh"
+      />
     </div>
   </BaseModal>
 </template>

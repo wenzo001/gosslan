@@ -64,6 +64,24 @@ pub fn get_setting(conn: &Connection, key: &str) -> Option<String> {
     .flatten()
 }
 
+/// 严格读取：把「键不存在」（`Ok(None)`）与「读失败」（`Err`）分开。
+///
+/// 为什么需要它（2026-10-20 P0）：`get_setting` 把 `SQLITE_BUSY` / I/O 错误 /
+/// 表损坏都折成 `None`。身份与设备标识的加载路径把 `None` 当成"首次安装"，
+/// 于是**一次临时读库失败就会生成一套新密钥并写回旧库** —— 好友绑定、历史
+/// E2EE 消息全部永久失配。这类键必须用严格读取：读失败就停止启动，
+/// 绝不重建、绝不覆盖。
+pub fn get_setting_checked(conn: &Connection, key: &str) -> Result<Option<String>> {
+    let value = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = ?1",
+            params![key],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?;
+    Ok(value)
+}
+
 pub fn set_setting(conn: &Connection, key: &str, value: &str) -> Result<()> {
     conn.execute(
         "INSERT INTO settings(key, value) VALUES(?1, ?2)
@@ -124,6 +142,35 @@ mod config_bool_tests {
             get_config_bool(&conn, "lan_enabled", true),
             "非法值要落回默认，且这一步必须走可见日志（下面那条用例钉日志）"
         );
+    }
+
+    /// 严格读取的核心：**「键不存在」不是「读失败」**。
+    ///
+    /// 这条是 2026-10-20 身份丢失 P0 的判据：`get_setting` 把读库错误折成 `None`，
+    /// 身份加载据此生成新密钥并覆盖旧值。这里用"表都不存在"制造真实读失败，
+    /// 三个方向都钉住：缺失键 = Ok(None)、存在 = Ok(Some)、库不可读 = Err。
+    #[test]
+    fn checked_get_distinguishes_missing_key_from_read_failure() {
+        let conn = conn_with_settings();
+        assert_eq!(
+            get_setting_checked(&conn, "x25519_secret").unwrap(),
+            None,
+            "键不存在必须是 Ok(None)，不能与读失败混在一起"
+        );
+        set_setting(&conn, "x25519_secret", "persisted").unwrap();
+        assert_eq!(
+            get_setting_checked(&conn, "x25519_secret").unwrap(),
+            Some("persisted".to_string())
+        );
+
+        let broken = Connection::open_in_memory().unwrap();
+        // 没有 settings 表 ⇒ 查询必然失败。严格读取必须**报错**，不许返回 Ok(None)。
+        assert!(
+            get_setting_checked(&broken, "x25519_secret").is_err(),
+            "读库失败被折成 None ⇒ 上层会生成并覆盖新身份"
+        );
+        // 同一形状下旧口径确实折成了 None —— 这条负控证明上面的 Err 不是环境噪声。
+        assert_eq!(get_setting(&broken, "x25519_secret"), None);
     }
 
     /// 反向对照：非法值**不许**被当成"关"（今天 `== "1"` 那种写法就是这个行为）

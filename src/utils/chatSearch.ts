@@ -5,6 +5,7 @@
  * 而它们的错误表现是"看起来对、其实筛错了"（搜漏了/筛多了），靠肉眼回归发现不了。
  * 组件（`ChatSearchDialog.vue`）只负责渲染与交互。
  */
+import dayjs from "dayjs";
 import type { ChatSearchGroup } from "@/types";
 
 /** 「日期」筛选预设（对应微信搜索页的日期筛选，粒度比日历简单但语义一致）。 */
@@ -26,22 +27,27 @@ export interface SearchDateRange {
  * 语义按**本地日历日**算（不是"最近 24 小时"）：用户说"今天"指的是今天这一天，
  * 不是过去 86400 秒 —— 否则早上搜"今天"会漏掉昨天深夜的消息、把今天零点前的算进来。
  * `all` 返回全 `null`（不过滤）。
+ *
+ * ⚠️ 「N 天前」必须用 dayjs 的**日历减法**，不能用 `零点 - N × 86_400_000`：
+ * 实行夏令时的地区里"一天"不是常数 —— 回拨日 25 小时、拨前日 23 小时，于是切换日的**次日**
+ * 往前推 24 小时会落在 01:00（或 23:00），边界把那天头一小时的消息筛掉（或多算一小时）。
+ * 同一套减法在 `utils/time.ts` 的「昨天」标签那里用的就是日历法 ⇒ 两处必须同法，
+ * 否则列表标着「昨天」的那条消息在搜索里选「昨天」会找不到。
  */
 export function dateRangeFor(preset: SearchDatePreset, now: number = Date.now()): SearchDateRange {
   if (preset === "all") return { sinceMs: null, untilMs: null };
-  const d = new Date(now);
-  const startOfToday = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-  const DAY = 86_400_000;
+  const startOfToday = dayjs(now).startOf("day");
+  const todayMs = startOfToday.valueOf();
   switch (preset) {
     case "today":
-      return { sinceMs: startOfToday, untilMs: null };
+      return { sinceMs: todayMs, untilMs: null };
     case "yesterday":
-      return { sinceMs: startOfToday - DAY, untilMs: startOfToday - 1 };
+      return { sinceMs: startOfToday.subtract(1, "day").valueOf(), untilMs: todayMs - 1 };
     case "week":
       // 近 7 天：含今天 ⇒ 从 6 天前的零点开始（"最近 7 天"的通行口径）
-      return { sinceMs: startOfToday - 6 * DAY, untilMs: null };
+      return { sinceMs: startOfToday.subtract(6, "day").valueOf(), untilMs: null };
     case "month":
-      return { sinceMs: startOfToday - 29 * DAY, untilMs: null };
+      return { sinceMs: startOfToday.subtract(29, "day").valueOf(), untilMs: null };
     default:
       return { sinceMs: null, untilMs: null };
   }

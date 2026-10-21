@@ -85,22 +85,22 @@ CASES: list[Case] = [
         "只会永远看不见那句提示，所以只能机器拦",
         file=TAURI / "src" / "lib.rs",
         injections=[(
-            "                            handle\n"
-            "                                .dialog()\n"
-            "                                .message(msg)\n"
-            "                                .title(\"Gosslan\")\n"
-            "                                .show(move |_| {\n"
-            "                                    // 用户点掉提示之后才退出（exit 走事件循环代理，跨线程安全）\n"
-            "                                    handle.exit(1);\n"
-            "                                });",
-            "                            if handle\n"
-            "                                .dialog()\n"
-            "                                .message(msg)\n"
-            "                                .title(\"Gosslan\")\n"
-            "                                .blocking_show()\n"
-            "                            {\n"
-            "                                std::process::exit(1);\n"
-            "                            }",
+            "                        handle\n"
+            "                            .dialog()\n"
+            "                            .message(msg)\n"
+            "                            .title(\"Gosslan — 启动失败\")\n"
+            "                            .show(move |_| {\n"
+            "                                // 用户点掉提示之后才退出（exit 走事件循环代理，跨线程安全）\n"
+            "                                handle.exit(1);\n"
+            "                            });",
+            "                        if handle\n"
+            "                            .dialog()\n"
+            "                            .message(msg)\n"
+            "                            .title(\"Gosslan — 启动失败\")\n"
+            "                            .blocking_show()\n"
+            "                        {\n"
+            "                            std::process::exit(1);\n"
+            "                        }",
         )],
         cmd=cargo(
             "test", "--lib", "boot_downgrade_refusal_is_typed_precedes_writes_and_non_blocking"

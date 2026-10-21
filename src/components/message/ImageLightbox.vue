@@ -5,12 +5,14 @@
    ⇒ 按 `designGuards` ⑦ 的约定，用文件级逃生阀显式声明，而不是靠"没人发现"。 */
 import { clampScale, pinchScale, swipeDirection } from "@/utils/lightboxGestures";
 import { t } from "@/i18n";
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
+import { useEventListener } from "@vueuse/core";
 import { FocusScope } from "reka-ui";
 import { ChevronLeft, ChevronRight, Save } from "lucide-vue-next";
 import { RotateCcw, X } from "@/components/ui/icons";
 import { useAppStore } from "@/stores/useAppStore";
 import { loadContentPreview, loadFilePreview, type PreviewResult } from "@/utils/filePreview";
+import { PREVIEW_FAILURE_KEYS } from "@/utils/mediaAvailability";
 import { saveImageAs } from "@/utils/saveImageAs";
 import { StaleGuard } from "@/utils/staleGuard";
 import { useBackLayer } from "@/composables/useBackLayer";
@@ -32,16 +34,6 @@ const props = defineProps<{
   images: GalleryImage[];
   index: number;
   open: boolean;
-  /**
-   * 覆盖层顶部要让出来的高度（一个 CSS 长度，默认 0 = 铺满整窗）。
-   *
-   * 为什么需要（用户 2026-09-24 要求"各个端都要能正常使用"）：独立预览窗口用的是
-   * `decorations:false` + 自绘标题栏，而**那条 caption 是整扇窗唯一的拖拽区**（`startDragging`
-   * 挂在它的 mousedown 上）与 ✕ 所在。本组件是 `fixed inset-0 z-[80]`，直接铺满就会把
-   * 标题栏连按钮一起盖住 —— 窗口打不开也移不动，等于"功能没实现"。传 `var(--gosslan-title-h)`
-   * 就把那一条让出来；主窗口与移动端不传，行为与以前逐字相同。
-   */
-  topInset?: string;
   /**
    * 隐藏组件内部那颗 ✕（用户 2026-09-29：「独立窗口调用图片预览时，隐藏预览组件内部的关闭按钮，
    * 避免和窗口外部关闭按钮重复；同一窗口内调用时可以显示」）。
@@ -83,7 +75,7 @@ const resolving = ref(false);
 
 function apply(r: PreviewResult) {
   src.value = r.url ?? "";
-  note.value = r.note ?? null;
+  note.value = r.failure ? t(PREVIEW_FAILURE_KEYS[r.failure]) : null;
 }
 
 /** 字节拿到了但浏览器解不出图（损坏 / 非图片）：清掉 src 走可见的错误出口，而不是留一张裂图。 */
@@ -304,8 +296,7 @@ function onMountAutoFocus(event: Event) {
   dialogRef.value?.focus();
 }
 
-onMounted(() => window.addEventListener("keydown", onKey));
-onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
+useEventListener(window, "keydown", onKey);
 </script>
 
 <template>
@@ -318,18 +309,8 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
     >
       <div
         v-if="open"
-        class="glass fixed inset-x-0 bottom-0 top-[var(--gosslan-window-safe-top,0px)] z-[80] outline-none"
-        :style="{
-          background: 'rgba(0, 0, 0, 0.45)',
-          // 让开自绘 caption。**两层口径**，不要只留一层：
-          //  · class 里那句 `top-[var(--gosslan-window-safe-top)]` 是**默认**（主窗那条路径）——
-          //    主窗那个全局实例（`ResponsiveLayout.vue`）从来不传 `topInset`，改造前它整层
-          //    滑到 caption（z-[85]）底下，右上角保存/关闭被压住；
-          //  · 这里再让显式的 `topInset` prop（独立预览窗 `PreviewWindow.vue` 在传）
-          //    优先覆盖默认值 —— 那条既有口径不动。
-          // 移动端该变量为 0 ⇒ 与改造前逐字相同。
-          ...(topInset ? { top: topInset } : {}),
-        }"
+        class="glass fixed inset-x-0 bottom-0 top-[var(--gosslan-safe-top,0px)] z-[80] outline-none"
+        :style="{ background: 'rgba(0, 0, 0, 0.45)' }"
         role="dialog"
         aria-modal="true"
         :aria-label="t('common.image')"
@@ -343,22 +324,23 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onKey));
         <FocusScope :trapped="open" loop as-child @mount-auto-focus="onMountAutoFocus">
         <div ref="dialogRef" tabindex="-1" class="flex h-full w-full items-center justify-center outline-none">
         <!-- 右上操作区：保存 + 关闭（与其它弹窗一致的样式） -->
-        <!-- 移动端让开状态栏/挖孔（`safe-area-inset-top`）：用户 2026-09-12 实测
-             「安卓端图片预览右上角的保存和叉叉与状态栏重叠」。
-             ⚠️ **桌面端不能只靠 `topInset` prop**（2026-10-12 修）：那个 prop 只有独立预览窗
-             （`PreviewWindow.vue`）在传，而**主窗**那个全局实例（`ResponsiveLayout.vue`）
-             一个都没传 ⇒ 桌面端 `env()` 恒为 0，操作区落在 `top: 1rem`，被自绘 caption
-             （z-[85]，Win 38px / macOS 28px）**压住** —— 用户要的"所有窗口统一做好显示安全区"
-             漏的就是这一格。现在统一读 `--gosslan-window-safe-top`：
-             桌面 = caption 高度、移动端 = 0，且 `env()` 那半照旧保留（真机上两者可能同时不为 0）。
-             写成相加而不是取其一：移动端这个变量是 0 ⇒ 结果与改造前逐字相同（零回归）。 -->
+        <!-- 右上操作区的竖直位置：**让位只由外壳那一层做**，这一层只留自己 1rem 的视觉边距。
+             历史三步都在这里加码，所以把它写清楚免得有人再加回来：
+             · 2026-09-12 用户实测「安卓端图片预览右上角的保存和叉叉与状态栏重叠」⇒ 这里加了
+               `env(safe-area-inset-top)`；
+             · 2026-10-12 桌面主窗那一份没让开自绘 caption ⇒ 这里又加了 `--gosslan-window-safe-top`
+               （同一天外壳也加了让位，两处就叠成了两遍）；
+             · 2026-10-20 把「谁让开顶部」收成一个出口 `--gosslan-safe-top`（桌面=caption、移动端=
+               刘海/状态栏，取 max 不是相加）挂在**外壳**上，这一层的两个补丁一起删。
+             真浏览器量过：钉 44px 时旧写法 delta=60（44+16），现在 delta=16。
+             ⚠️ 那颗 ✕ 是否在，由宿主决定（`hideClose`），与本条无关。 -->
         <div
           class="absolute right-4 z-10 flex items-center gap-1"
-          :style="{ top: 'calc(var(--gosslan-window-safe-top, 0px) + env(safe-area-inset-top, 0px) + 1rem)' }"
+          :style="{ top: '1rem' }"
         >
           <!-- 加 drop-shadow 让白字在白色图片上也可见（问题修复：白背景白字→隐形） -->
           <button
-            class="flex h-9 items-center gap-1.5 rounded-full px-3 text-[13px] text-white/90 transition hover:bg-white/15"
+            class="flex h-9 items-center gap-1.5 rounded-full px-3 text-body text-white/90 transition hover:bg-white/15"
             style="text-shadow: 0 1px 2px rgba(0,0,0,0.55); filter: drop-shadow(0 1px 2px rgba(0,0,0,0.35));"
             :title="t('common.saveImage')"
             @click.stop="saveImage"

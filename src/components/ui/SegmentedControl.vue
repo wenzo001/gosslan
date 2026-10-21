@@ -46,9 +46,9 @@ const emit = defineEmits<{
 }>();
 
 const sizeClasses: Record<string, string> = {
-  xs: "px-2 py-0.5 text-[11px]",
+  xs: "px-2 py-0.5 text-caption",
   sm: "px-2.5 py-1 text-xs",
-  default: "py-1.5 text-[12px]",
+  default: "py-1.5 text-meta",
 };
 </script>
 
@@ -72,7 +72,7 @@ const sizeClasses: Record<string, string> = {
       {{ opt.label }}
       <span
         v-if="opt.badge !== undefined"
-        class="rounded-full px-1.5 text-[11px] leading-4 tabular-nums"
+        class="rounded-full px-1.5 text-caption leading-4 tabular-nums"
         :class="
           modelValue === opt.value
             ? 'bg-white/25 text-white'

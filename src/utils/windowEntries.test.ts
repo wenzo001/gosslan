@@ -344,6 +344,22 @@ test("骨架主色必须跟随主题色（写死默认蓝 = 换了主题色还�
   );
 });
 
+test("骨架字体必须跟随 --gosslan-font-family（写死默认栈 = 选了字体的用户先看到系统栈再整屏翻）", () => {
+  // 与上面那条同族：theme-boot.js 现在也在骨架样式生效之前把用户字体写成内联，
+  // 骨架引用同一个 token 就行；兜底栈只在用户没选过字体（存空串）时用。
+  const css = read("src/boot/skeleton.css");
+  assert.match(
+    css,
+    /font-family:\s*var\(--gosslan-font-family,\s*-apple-system/,
+    "骨架的 font-family 必须写成 var(--gosslan-font-family, <兜底栈>)，不能只写死一份",
+  );
+  assert.match(
+    read("src/boot/theme-boot.js"),
+    /setProperty\("--gosslan-font-family"/,
+    "theme-boot.js 必须把用户字体落到 --gosslan-font-family —— 骨架跟随它靠的就是这一步",
+  );
+});
+
 /**
  * 常驻窗口的自愈兜底（架构复审第 5 步 · 判据）。
  *

@@ -1,19 +1,29 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { useEventListener } from "@vueuse/core";
 import { useVirtualizer } from "@tanstack/vue-virtual";
-import { useClipboard as useVueClipboard } from "@vueuse/core";
-import { Copy, RefreshCw, Search } from "lucide-vue-next";
+import { useClipboard } from "@/composables/useClipboard";
+import { Copy, FileDown, RefreshCw, ScrollText, Search } from "lucide-vue-next";
 import { Trash2, X } from "@/components/ui/icons";
 import TitleBar from "@/components/TitleBar.vue";
 import MobilePageFrame from "@/components/MobilePageFrame.vue";
 import { api } from "@/api";
 import { t } from "@/i18n";
 import StateBlock from "@/components/ui/StateBlock.vue";
-import { friendlyError } from "@/utils/errors";
+import { errorText } from "@/composables/useErrorText";
+import { useAppStore } from "@/stores/useAppStore";
+import { isDialogCancelled, saveDestinationOf } from "@/utils/saveDestination";
+import { formatBytes } from "@/utils/format";
 import { highlightText } from "@/utils/highlight";
-import { useDeferredRef } from "@/composables/useDeferredRef";
+import { INPUT_DEFER_MS } from "@/utils/defer";
+import { refDebounced } from "@vueuse/core";
 import { useBackLayer } from "@/composables/useBackLayer";
-import { LOG_LEVEL_TEXT, filterLogLines, mergeLogRows } from "@/utils/logFilter";
+import {
+  LOG_LEVEL_TEXT,
+  MAX_LOG_FILTER_CHARS,
+  filterLogLines,
+  mergeLogRows,
+} from "@/utils/logFilter";
 import { fmtClock, fmtDateTime } from "@/utils/time";
 import type { LogEntry } from "@/types";
 
@@ -28,6 +38,11 @@ import type { LogEntry } from "@/types";
  */
 const props = defineProps<{ standalone?: boolean }>();
 const emit = defineEmits<{ (e: "back"): void }>();
+/**
+ * toast 出口（复制路径 / 导出诊断包的结果提示）。
+ * 日志窗口的文档里 ToastHud 是**显式挂上**的（见 `src/entries/logs.ts`），否则这里点了没反馈。
+ */
+const app = useAppStore();
 
 /**
  * 移动端全屏日志页参与分层返回：系统返回键回上一步，而不是退出应用。
@@ -41,13 +56,17 @@ useBackLayer(
 /** 时间正序（旧 → 新）的原始日志；展示与复制都从它派生。 */
 const logs = ref<LogEntry[]>([]);
 /** 剪贴板写入交给 VueUse（legacy 会回退 execCommand），本组件只管"已复制"提示。 */
-const { copy: copyText } = useVueClipboard({ legacy: true });
+const { copiedKey, copyContent } = useClipboard(2000);
 /** 首屏读失败且有没内容可展示时，明确区分“没有日志”和“读不到日志”。 */
 const loadError = ref("");
 /** 展示用：最新在上（倒序），打开即见最近的错误。 */
 const displayLogs = computed(() => [...logs.value].reverse());
 const autoRefresh = ref(true);
-const copied = ref(false);
+const copied = computed(() => copiedKey.value === "all");
+/** 「复制日志路径」的已复制态：与「复制全部」共用同一枚 copiedKey（同一时刻只亮一颗）。 */
+const pathCopied = computed(() => copiedKey.value === "logPath");
+/** 导出诊断包在途：只用来挡住连点（第二次点击会再开一扇系统对话框）。 */
+const exporting = ref(false);
 
 /** 时间窗口过滤：null = 全部；30 / 60 / 120 = 近 N 秒。 */
 const timeWindow = ref<number | null>(null);
@@ -65,7 +84,7 @@ const filter = ref("");
  * 日志动辄上千行，`rows` 每次重算都要重建上千个 `v-html` 节点；连发粘贴时若每个
  * 字符都算一遍，主线程会被占满 ⇒ 过滤框打字/粘贴一顿一顿（见 utils/defer.ts 说明）。
  */
-const deferredFilter = useDeferredRef(filter);
+const deferredFilter = refDebounced(filter, INPUT_DEFER_MS);
 const trimmedFilter = computed(() => deferredFilter.value.trim());
 
 /**
@@ -144,7 +163,7 @@ async function load() {
     loadError.value = "";
   } catch (e) {
     // 有旧内容时保持现状（下次轮询重试）；一屏都没有才把“读失败”说出来。
-    if (logs.value.length === 0) loadError.value = friendlyError(e, t("logs.loadFail"));
+    if (logs.value.length === 0) loadError.value = errorText(e, t("logs.loadFail"));
   }
 }
 
@@ -162,16 +181,14 @@ function syncTimer() {
 onMounted(() => {
   void load();
   syncTimer();
-  // 窗口重新可见时立刻补一次（否则要等下一个 2s 周期，看到的是过期日志）
-  document.addEventListener("visibilitychange", onVisibility);
 });
+// 窗口重新可见时立刻补一次（否则要等下一个 2s 周期，看到的是过期日志）。挂载即终身 ⇒ 交给库。
+useEventListener(document, "visibilitychange", onVisibility);
 function onVisibility() {
   if (!document.hidden) void load();
 }
 onUnmounted(() => {
-  window.clearTimeout(copyTimer);
   window.clearTimeout(confirmTimer);
-  document.removeEventListener("visibilitychange", onVisibility);
   if (timer) clearInterval(timer);
 });
 
@@ -180,15 +197,64 @@ async function copyAll() {
   const text = logs.value
     .map((l) => `[${fmtDateTime(l.ts)}] [${LOG_LEVEL_TEXT[l.level] ?? l.level}] [${l.target}] ${l.message}`)
     .join("\n");
-  // 写入/回退都交给 VueUse；它不返回布尔值，失败也不打断用户。
-  await copyText(text);
-  copied.value = true;
-  window.clearTimeout(copyTimer);
-  copyTimer = window.setTimeout(() => (copied.value = false), 2000);
+  await copyContent("all", text);
 }
 
-/** 「已复制」与"再点一次确认清空"的自动复位定时器（卸载时要清，见 onUnmounted）。 */
-let copyTimer = 0;
+/**
+ * 「复制日志路径」：把**本轮那一份**的真实路径写进剪贴板。
+ * 路径只能由后端给（多实例时文件名带序号，前端自己拼 = 让用户去复制别人的日志）；
+ * 拿不到路径必须说出来 —— 剪贴板那一步没有可信的布尔返回（见 useClipboard 的说明），
+ * 所以可反馈的部分只有"取路径失败"这一头。
+ */
+async function copyLogPath() {
+  let path = "";
+  try {
+    path = (await api.getLogLocations()).current;
+  } catch (e) {
+    app.toast(errorText(e, t("logs.pathCopyFail")), "error");
+    return;
+  }
+  if (!path) {
+    app.toast(t("logs.pathCopyFail"), "error");
+    return;
+  }
+  await copyContent("logPath", path);
+  app.toast(t("logs.pathCopied"), "success");
+}
+
+/**
+ * 「导出诊断包」：先把落点交给**用户**（系统保存对话框），再让后端脱敏落盘。
+ *
+ * Rust 不替用户决定写到哪、空串直接判错 ⇒ 没有落点就没有导出这一步。
+ * 取消**不算失败**：桌面 `save()` 返回 null，Android 是 reject("FilePicker cancelled")，
+ * 两种形状都由 `saveDestinationOf` / `isDialogCancelled` 认（见 utils/saveDestination.ts）。
+ */
+async function exportBundle() {
+  if (exporting.value) return;
+  exporting.value = true;
+  try {
+    const { save } = await import("@tauri-apps/plugin-dialog");
+    const picked = await save({ defaultPath: `gosslan-diagnostics-${Date.now()}.txt` });
+    const destination = saveDestinationOf(picked);
+    if (!destination) return;
+    const r = await api.exportDiagnosticsBundle(destination);
+    app.toast(
+      t("logs.exportDone", {
+        files: r.files,
+        redactions: r.redactions,
+        size: formatBytes(r.bytes),
+      }),
+      "success",
+    );
+  } catch (e) {
+    if (isDialogCancelled(e)) return;
+    app.toast(errorText(e, t("logs.exportFail")), "error");
+  } finally {
+    exporting.value = false;
+  }
+}
+
+/** 「再点一次确认清空」的自动复位定时器（卸载时要清，见 onUnmounted）。 */
 let confirmTimer = 0;
 
 function onClear() {
@@ -246,7 +312,7 @@ const rowLevelBg = (lv: string) =>
       :style="{ height: 'var(--gosslan-header-h)' }"
     >
       <div class="flex min-w-0 items-baseline gap-2">
-        <span class="truncate text-[15px] font-medium" :title="t('logs.title')">{{ t("logs.title") }}</span>
+        <span class="truncate text-title font-medium" :title="t('logs.title')">{{ t("logs.title") }}</span>
         <span class="shrink-0 text-xs text-[var(--gosslan-text-2)]">
           {{ t("logs.count", { n: logs.length }) }}
         </span>
@@ -284,10 +350,32 @@ const rowLevelBg = (lv: string) =>
           <Trash2 class="h-3.5 w-3.5" />
           <span class="hidden sm:inline">{{ confirmClear ? t("logs.clearConfirm") : t("logs.clear") }}</span>
         </button>
+        <!-- 日志路径与诊断包：都只读后端给的真实落点，前端不拼路径、不猜目录。 -->
+        <button
+          type="button"
+          class="tap-safe flex h-8 items-center gap-1.5 rounded-[var(--gosslan-radius-sm)] px-2 text-xs text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+          :title="t('logs.copyPath')"
+          :aria-label="t('logs.copyPath')"
+          @click="copyLogPath"
+        >
+          <ScrollText class="h-3.5 w-3.5" />
+          <span class="hidden sm:inline">{{ pathCopied ? t("logs.copied") : t("logs.copyPath") }}</span>
+        </button>
+        <button
+          type="button"
+          class="tap-safe flex h-8 items-center gap-1.5 rounded-[var(--gosslan-radius-sm)] px-2 text-xs text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-60"
+          :title="exporting ? t('logs.exporting') : t('logs.export')"
+          :aria-label="t('logs.export')"
+          :disabled="exporting"
+          @click="exportBundle"
+        >
+          <FileDown class="h-3.5 w-3.5" />
+          <span class="hidden sm:inline">{{ exporting ? t("logs.exporting") : t("logs.export") }}</span>
+        </button>
         <!-- 读屏播报：只播「用户动作的结果」（复制成功 / 清空待确认）。
              日志正文**刻意不加 aria-live**：它是持续追加的，实时区会把读屏刷屏。 -->
         <span class="sr-only" role="status" aria-live="polite">
-          {{ copied ? t("logs.copied") : confirmClear ? t("logs.clearConfirm") : "" }}
+          {{ copied || pathCopied ? t("logs.copied") : confirmClear ? t("logs.clearConfirm") : "" }}
         </span>
         <button
           class="tap-safe flex h-8 items-center gap-1.5 rounded-[var(--gosslan-radius-sm)] px-2 text-xs text-white transition"
@@ -307,32 +395,32 @@ const rowLevelBg = (lv: string) =>
     <div
       class="flex shrink-0 items-center gap-1 border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-caption)] px-3 py-1"
     >
-      <span class="shrink-0 text-[11px] text-[var(--gosslan-text-2)]">窗口</span>
+      <span class="shrink-0 text-caption text-[var(--gosslan-text-2)]">窗口</span>
       <button
-        class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-[11px] transition"
+        class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-caption transition"
         :class="timeWindow === null ? 'border border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)] font-medium text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
         @click="timeWindow = null; void load()"
       >全部</button>
       <button
-        class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-[11px] transition"
+        class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-caption transition"
         :class="timeWindow === 30 ? 'border border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)] font-medium text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
         @click="timeWindow = 30; void load()"
       >30s</button>
       <button
-        class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-[11px] transition"
+        class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-caption transition"
         :class="timeWindow === 60 ? 'border border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)] font-medium text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
         @click="timeWindow = 60; void load()"
       >1 分钟</button>
       <button
-        class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-[11px] transition"
+        class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-caption transition"
         :class="timeWindow === 120 ? 'border border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)] font-medium text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
         @click="timeWindow = 120; void load()"
       >2 分钟</button>
       <span class="mx-1 h-3 w-px shrink-0 bg-[var(--gosslan-divider)]"></span>
       <button
-        class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-[11px] transition"
+        class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-caption transition"
         :class="mergeDup ? 'border border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)] font-medium text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
-        :title="mergeDup ? '展开相同日志' : '合并相同日志'"
+        :title="mergeDup ? t('logs.mergeDup') : t('logs.merge')"
         @click="mergeDup = !mergeDup"
       >合并重复</button>
     </div>
@@ -343,12 +431,12 @@ const rowLevelBg = (lv: string) =>
       <input
         v-model="filter"
         type="text"
-        maxlength="200"
+        :maxlength="MAX_LOG_FILTER_CHARS"
         enterkeyhint="search"
         autocapitalize="off"
         autocorrect="off"
         spellcheck="false"
-        class="min-w-0 flex-1 rounded-[var(--gosslan-radius-sm)] border border-transparent bg-transparent text-[13px] placeholder:text-[var(--gosslan-text-2)] outline-none transition focus:border-transparent"
+        class="min-w-0 flex-1 rounded-[var(--gosslan-radius-sm)] border border-transparent bg-transparent text-body placeholder:text-[var(--gosslan-text-2)] outline-none transition focus:border-transparent"
         :placeholder="t('logs.filterPlaceholder')"
         :aria-label="t('logs.filter')"
       />
@@ -367,7 +455,7 @@ const rowLevelBg = (lv: string) =>
     </div>
 
     <!-- 日志列表 -->
-    <div ref="logScroll" class="min-h-0 flex-1 overflow-y-auto px-3 py-2 font-mono text-[13px] leading-relaxed">
+    <div ref="logScroll" class="min-h-0 flex-1 overflow-y-auto px-3 py-2 font-mono text-body leading-relaxed">
       <StateBlock
         v-if="logs.length === 0 && loadError"
         kind="error"
@@ -408,8 +496,8 @@ const rowLevelBg = (lv: string) =>
             </span>
             <span
               v-if="v.row.count > 1"
-              class="ml-1 shrink-0 text-[11px] font-medium text-[var(--gosslan-text-2)]"
-              :title="`已合并 ${v.row.count} 条相同日志`"
+              class="ml-1 shrink-0 text-caption font-medium text-[var(--gosslan-text-2)]"
+              :title="t('logs.mergedCount', { n: v.row.count })"
             >
               ×{{ v.row.count }}
             </span>
@@ -475,32 +563,32 @@ const rowLevelBg = (lv: string) =>
       <div
         class="flex shrink-0 items-center gap-1 border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-caption)] px-3 py-1"
       >
-        <span class="shrink-0 text-[11px] text-[var(--gosslan-text-2)]">窗口</span>
+        <span class="shrink-0 text-caption text-[var(--gosslan-text-2)]">窗口</span>
         <button
-          class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-[11px] transition"
+          class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-caption transition"
           :class="timeWindow === null ? 'border border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)] font-medium text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
           @click="timeWindow = null; void load()"
         >全部</button>
         <button
-          class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-[11px] transition"
+          class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-caption transition"
           :class="timeWindow === 30 ? 'border border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)] font-medium text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
           @click="timeWindow = 30; void load()"
         >30s</button>
         <button
-          class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-[11px] transition"
+          class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-caption transition"
           :class="timeWindow === 60 ? 'border border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)] font-medium text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
           @click="timeWindow = 60; void load()"
         >1 分钟</button>
         <button
-          class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-[11px] transition"
+          class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-caption transition"
           :class="timeWindow === 120 ? 'border border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)] font-medium text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
           @click="timeWindow = 120; void load()"
         >2 分钟</button>
         <span class="mx-1 h-3 w-px shrink-0 bg-[var(--gosslan-divider)]"></span>
         <button
-          class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-[11px] transition"
+          class="tap-safe rounded-[var(--gosslan-radius-sm)] px-2 py-0.5 text-caption transition"
           :class="mergeDup ? 'border border-[var(--gosslan-primary)] bg-[var(--gosslan-primary-light)] font-medium text-[var(--gosslan-accent-ink)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
-          :title="mergeDup ? '展开相同日志' : '合并相同日志'"
+          :title="mergeDup ? t('logs.mergeDup') : t('logs.merge')"
           @click="mergeDup = !mergeDup"
         >合并重复</button>
       </div>
@@ -510,12 +598,12 @@ const rowLevelBg = (lv: string) =>
         <input
           v-model="filter"
           type="text"
-          maxlength="200"
+          :maxlength="MAX_LOG_FILTER_CHARS"
           enterkeyhint="search"
           autocapitalize="off"
           autocorrect="off"
           spellcheck="false"
-          class="min-w-0 flex-1 rounded-[var(--gosslan-radius-sm)] border border-transparent bg-transparent text-[13px] placeholder:text-[var(--gosslan-text-2)] outline-none transition focus:border-transparent"
+          class="min-w-0 flex-1 rounded-[var(--gosslan-radius-sm)] border border-transparent bg-transparent text-body placeholder:text-[var(--gosslan-text-2)] outline-none transition focus:border-transparent"
           :placeholder="t('logs.filterPlaceholder')"
           :aria-label="t('logs.filter')"
         />
@@ -533,7 +621,7 @@ const rowLevelBg = (lv: string) =>
         </button>
       </div>
 
-      <div ref="logScroll" class="min-h-0 flex-1 overflow-y-auto px-3 py-2 font-mono text-[13px] leading-relaxed">
+      <div ref="logScroll" class="min-h-0 flex-1 overflow-y-auto px-3 py-2 font-mono text-body leading-relaxed">
         <StateBlock
           v-if="logs.length === 0 && loadError"
           kind="error"
@@ -569,8 +657,8 @@ const rowLevelBg = (lv: string) =>
               </span>
               <span
                 v-if="v.row.count > 1"
-                class="ml-1 shrink-0 text-[11px] font-medium text-[var(--gosslan-text-2)]"
-                :title="`已合并 ${v.row.count} 条相同日志`"
+                class="ml-1 shrink-0 text-caption font-medium text-[var(--gosslan-text-2)]"
+                :title="t('logs.mergedCount', { n: v.row.count })"
               >
                 ×{{ v.row.count }}
               </span>

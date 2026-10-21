@@ -55,7 +55,7 @@ function onOpenChange(value: boolean) {
           </p>
           <slot />
           <button
-            class="mt-2 w-full rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-hover)] py-3 text-center text-[15px] font-medium text-[var(--gosslan-text)] transition active:opacity-70"
+            class="mt-2 w-full rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-hover)] py-3 text-center text-title font-medium text-[var(--gosslan-text)] transition active:opacity-70"
             @click="emit('close')"
           >
             <slot name="cancel">{{ t("common.cancel") }}</slot>

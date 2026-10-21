@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, onUnmounted, ref, watch } from "vue";
+import { useEventListener } from "@vueuse/core";
 import { useAppStore } from "@/stores/useAppStore";
 import { MAX_PASTED_IMAGE_BYTES, PASTED_IMAGE_LIMIT_MB } from "@/utils/imageBytes";
 import EmojiPicker from "@/components/EmojiPicker.vue";
@@ -8,6 +9,7 @@ import { QUOTE_BORDER, QUOTE_BG, QUOTE_TEXT_STYLE } from "@/utils/quoteStyle";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
 import { PopoverContent, PopoverPortal, PopoverRoot, PopoverTrigger } from "reka-ui";
 import { haptic } from "@/utils/haptics";
+import { shouldRunThrottled } from "@/utils/defer";
 import { mentionHighlightColor, resolveChatColors } from "@/utils/chatStyle";
 import { avatarSeedFor } from "@/utils/avatarSeed";
 import { classifyPaste } from "@/utils/clipboard";
@@ -90,7 +92,7 @@ let lastFullWarnAt = 0;
 /** 草稿已满时提示一次（3 秒内不重复）。 */
 function warnDraftFull() {
   const now = Date.now();
-  if (now - lastFullWarnAt < FULL_WARN_INTERVAL_MS) return;
+  if (!shouldRunThrottled(now, lastFullWarnAt, FULL_WARN_INTERVAL_MS)) return;
   lastFullWarnAt = now;
   app.toast(t("chat.composer.tooLong", { max: MAX_INPUT_LENGTH }), "error");
 }
@@ -504,13 +506,10 @@ function onDocClickForMention(e: MouseEvent) {
   mention.value = null;
 }
 const composerCard = ref<HTMLElement | null>(null);
-onMounted(() => {
-  document.addEventListener("click", onDocClickForMention);
-  document.addEventListener("selectionchange", onSelectionChange);
-});
+// @ 候选列表的「点别处收起」与选区变化：挂载即终身、无条件摘挂 ⇒ 交给库（卸载自动摘）。
+useEventListener(document, "click", onDocClickForMention);
+useEventListener(document, "selectionchange", onSelectionChange);
 onUnmounted(() => {
-  document.removeEventListener("click", onDocClickForMention);
-  document.removeEventListener("selectionchange", onSelectionChange);
   if (shakeTimer) clearTimeout(shakeTimer);
 });
 watch(emojiOpen, () => {
@@ -663,11 +662,11 @@ async function onPaste(e: ClipboardEvent) {
         v-if="mention && mentionFiltered.length > 0"
         class="frost absolute bottom-full left-2 right-2 z-30 mb-2 max-h-44 overflow-y-auto rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] p-1 shadow-lg"
       >
-        <div class="px-2 py-1 text-[11px] text-[var(--gosslan-text-2)]">{{ t("chat.composer.remind") }}</div>
+        <div class="px-2 py-1 text-caption text-[var(--gosslan-text-2)]">{{ t("chat.composer.remind") }}</div>
         <button
           v-for="(m, i) in mentionFiltered"
           :key="m.id"
-          class="tap-safe flex w-full items-center gap-2 rounded-[var(--gosslan-radius-sm)] px-2 py-1.5 text-left text-[13px] transition"
+          class="tap-safe flex w-full items-center gap-2 rounded-[var(--gosslan-radius-sm)] px-2 py-1.5 text-left text-body transition"
           :class="i === mentionActive ? 'bg-[var(--gosslan-list-active)]' : 'hover:bg-[var(--gosslan-hover)]'"
           @mousedown.prevent
           @click="applyMention(m)"
@@ -692,7 +691,7 @@ async function onPaste(e: ClipboardEvent) {
       <!-- 引用预览条：右键"引用"后出现在输入框上方，可取消 -->
       <div
         v-if="quote"
-        class="mb-1.5 flex items-center gap-2 rounded-[var(--gosslan-radius-sm)] border-l-2 px-2 py-1 text-[12px]"
+        class="mb-1.5 flex items-center gap-2 rounded-[var(--gosslan-radius-sm)] border-l-2 px-2 py-1 text-meta"
         :style="{ borderColor: QUOTE_BORDER, background: QUOTE_BG, color: 'var(--gosslan-text)' }"
       >
         <span
@@ -731,7 +730,7 @@ async function onPaste(e: ClipboardEvent) {
         :autocapitalize="codeMode ? 'off' : 'sentences'"
         data-focus-ring-ok
         class="min-h-10 w-full overflow-y-auto bg-transparent px-0.5 py-0.5 leading-normal whitespace-pre-wrap break-words outline-none"
-        :class="codeMode ? 'font-mono text-[13px]' : ''"
+        :class="codeMode ? 'font-mono text-body' : ''"
         :style="{ fontSize: 'var(--gosslan-msg-size, 14px)', overflowWrap: 'anywhere', wordBreak: 'break-word' }"
         @keydown="onKeydown"
         @compositionstart="onCompositionStart"
@@ -743,7 +742,7 @@ async function onPaste(e: ClipboardEvent) {
       <!-- 工具栏行（2026-09-12 按用户反馈重做：对齐 + 统一规格 + 去掉"网页感"）。
            三条硬性约定，改这一行时必须同时满足：
            ① **对齐**：行用 `items-center`，左右两组**同高（h-7 = 28px）**。原先右侧发送键
-              是 `h-7 + px-4 + text-[13px]`，而左侧图标按钮 28px 见方、图标 18px ——
+              是 `h-7 + px-4 + text-body`，而左侧图标按钮 28px 见方、图标 18px ——
               两者行盒不同（图标按钮的 flex 行盒 vs 文本基线），`items-center` 居中的
               是两个不同高度的行盒 ⇒ 视觉上看不出在同一条中线上。
            ② **两侧留白一致**：卡片是 `px-4`（16px），编辑器滚到左边缘 ⇒ 工具栏左右各加
@@ -824,7 +823,7 @@ async function onPaste(e: ClipboardEvent) {
           <Folder class="h-5 w-5" :stroke-width="1.75" />
         </button>
         <button
-          class="tap-safe ml-auto flex h-8 shrink-0 items-center rounded-[var(--gosslan-radius-sm)] px-3.5 text-[13px] font-medium transition"
+          class="tap-safe ml-auto flex h-8 shrink-0 items-center rounded-[var(--gosslan-radius-sm)] px-3.5 text-body font-medium transition"
           :class="hasDraft
             ? 'bg-[var(--gosslan-primary)] text-white hover:bg-[var(--gosslan-primary-hover)]'
             : 'cursor-default bg-[var(--gosslan-hover)] text-[var(--gosslan-text-2)]'"

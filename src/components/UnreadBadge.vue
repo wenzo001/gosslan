@@ -50,7 +50,7 @@ const props = withDefaults(
 
 <template>
   <span
-    class="flex h-4 min-w-4 items-center justify-center rounded-full px-1 pb-[1.5px] text-[11px] font-medium leading-none text-white"
+    class="flex h-4 min-w-4 items-center justify-center rounded-full px-1 pb-[1.5px] text-caption font-medium leading-none text-white"
     :class="
       props.tone === 'info'
         ? 'bg-[var(--gosslan-primary-active)]'

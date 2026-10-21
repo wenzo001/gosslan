@@ -5,6 +5,9 @@
  * 改成模糊/分词匹配，过滤器会开始返回用户没预期的行 —— 但界面看不出来，只有测试能拦住。
  */
 
+/** 过滤框关键词上限：本地过滤、后端无对应规则，只是"别把整篇日志粘进过滤框"的输入护栏。 */
+export const MAX_LOG_FILTER_CHARS = 200;
+
 /** 日志级别 → 展示文本（对应后端 `Level{Info,Warn,Error}`）。 */
 export const LOG_LEVEL_TEXT: Record<string, string> = {
   info: "INFO",

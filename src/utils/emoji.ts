@@ -4,6 +4,7 @@
 // - splitEmoji 把正文按「[名字]」切成 text/emoji 段，文本段再交给 linkify 切链接/提及。
 // - 只匹配已知表情名，绝不误吞正文里的其它方括号（如 [图片] / [代码] 占位）。
 
+import { escapeRe } from "./escapeRe.ts";
 import { EMOJI_META } from "@/data/emojis";
 
 /** 表情图片：文件名 → 打包后 URL。 */
@@ -35,10 +36,6 @@ export const EMOJIS: EmojiDef[] = EMOJI_META.map((m) => ({
 
 const byName = new Map(EMOJIS.map((e) => [e.name, e]));
 const byDisplayName = new Map(EMOJIS.map((e) => [e.displayName, e]));
-
-function escapeRe(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
 
 // 名字按长度降序，保证长名优先匹配（同名前缀不会抢在长名前）。
 const NAMES = EMOJIS.map((e) => e.name).sort((a, b) => b.length - a.length);

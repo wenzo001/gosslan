@@ -77,7 +77,7 @@ export function textNeedsClamp(content: string, fontSize: FontSizeKey): boolean 
   return visualLineCount(quoteBody(content), textColumns(fontSize)) > PREVIEW_LINES;
 }
 
-/** 引用块排版：`text-[12px] leading-4`（行高 16px）+ `py-1`(8) + `mb-1.5`(6)。
+/** 引用块排版：`text-meta leading-4`（行高 16px）+ `py-1`(8) + `mb-1.5`(6)。
  *  ⚠️ 与 MessageTextBubble 引用块的类名成对，改一类必须改另一类。 */
 const QUOTE_LINE_HEIGHT = 16;
 const QUOTE_CHROME = 8 + 6;
@@ -164,3 +164,31 @@ export const IMAGE_BUBBLE_HEIGHT = 288;
  * 不遮挡（本文件顶部那条契约说的就是方向）。
  */
 export const IMAGE_PLACEHOLDER_HEIGHT = 128;
+
+// ---------------- 消息行的成对判定 ----------------
+
+/**
+ * 时间分割行的间隔阈值（与上一条相差 ≥ 5 分钟才插一行时间）—— **这一族只有一个家**。
+ *
+ * 为什么连**判定**都要共用、而不是各引一个数：分割行自己占 `messageHeight.TIME_DIVIDER`(32px)，
+ * 所以「这一条带不带分割行」同时决定渲染与估算。本文件顶部那条契约（两边必须来自
+ * 同一套常量与同一个判断函数）点的就是这一格 —— 两边各写一遍
+ * `!prev || ts - prev.ts >= 阈值` 时，任何一边改阈值或改空值口径都会让相邻消息互相遮挡，
+ * 而且只在"间隔恰好跨过阈值"的那几条消息上出现，是最难复现的一种。
+ *
+ * 空值口径收在 `shouldShowTimeDivider` 里：只有 `prevTs == null` 才算首条。
+ * **不许**写成 `!prevTs` —— 那会把 `ts === 0` 的消息当成首条，少画一行也少估 32px。
+ */
+export const TIME_DIVIDER_GAP = 5 * 60 * 1000;
+
+/** 这一条前面要不要放时间分割行：没有上一条，或与上一条间隔达到阈值。 */
+export function shouldShowTimeDivider(ts: number, prevTs: number | null | undefined): boolean {
+  return prevTs == null || ts - prevTs >= TIME_DIVIDER_GAP;
+}
+
+/*
+ * 昵称行的判定（`shouldShowNickname`）不在这里，在 `utils/messageKinds.ts`。
+ * 理由是量具：本文件要 `@/utils/chatStyle` 与 `@/utils/quote`，而 `node --test
+ * --experimental-strip-types` 解析不了 `@/` 别名 ⇒ 放这儿就只能做文本判据，
+ * 放 messageKinds（零 import）就能真跑一张行为真值表。两条都是"渲染端与估高端共用"的成对判定。
+ */

@@ -97,7 +97,7 @@ function linkIcon(path: string, hop: number): { icon: LinkIconName; label: strin
              挂点由调用方给 —— 组件自己的注释明令不要把定位写进去。 -->
         <UnreadBadge v-if="unreadOutside > 0" :count="unreadOutside" class="absolute -right-1.5 -top-1" />
       </button>
-      <span class="truncate text-[15px] font-medium leading-6" :title="conv?.name || t('chat.header.conversation')">{{ conv?.name || t("chat.header.conversation") }}<template v-if="isGroup && memberCount > 0"> ({{ memberCount }})</template></span>
+      <span class="truncate text-title font-medium leading-6" :title="conv?.name || t('chat.header.conversation')">{{ conv?.name || t("chat.header.conversation") }}<template v-if="isGroup && memberCount > 0"> ({{ memberCount }})</template></span>
       <span
         v-if="!isGroup && deviceType"
         class="inline-flex shrink-0 items-center text-[var(--gosslan-text-2)]"
@@ -130,7 +130,7 @@ function linkIcon(path: string, hop: number): { icon: LinkIconName; label: strin
         :aria-label="linkIcon(linkState.path, linkState.hop).label"
       >
         <LinkIcon :name="linkIcon(linkState.path, linkState.hop).icon" class="h-4 w-4" />
-        <span v-if="linkState.hop > 0" class="text-[11px] font-medium leading-none">{{ linkState.hop }}</span>
+        <span v-if="linkState.hop > 0" class="text-caption font-medium leading-none">{{ linkState.hop }}</span>
       </span>
     </div>
     <div class="flex shrink-0 items-center gap-0.5">

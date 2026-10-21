@@ -35,8 +35,8 @@ withDefaults(
     class="tap-safe rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-danger)] text-white transition hover:bg-[var(--gosslan-danger-hover)] disabled:opacity-50"
     :class="[
       shrink ? 'shrink-0' : '',
-      size === 'dense' ? 'px-3 py-2 text-[13px]' : '',
-      size === 'default' ? 'px-3 py-1.5 text-[13px]' : '',
+      size === 'dense' ? 'px-3 py-2 text-body' : '',
+      size === 'default' ? 'px-3 py-1.5 text-body' : '',
       size === 'large' ? 'px-4 py-1.5 text-sm' : '',
     ]"
   >

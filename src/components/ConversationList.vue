@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, onUnmounted, ref, watch } from "vue";
+import { useEventListener } from "@vueuse/core";
 import {
   DropdownMenuContent,
   DropdownMenuItem,
@@ -22,6 +23,8 @@ import UnreadBadge from "@/components/UnreadBadge.vue";
 import { APP_ACTION, onAction } from "@/api";
 import { groupByInitial } from "@/utils/nameGroup";
 import { isSelfConversation } from "@/utils/selfChat";
+import { MAX_SEARCH_KEYWORD_CHARS } from "@/utils/validation";
+import { createInitScope } from "@/utils/initScope";
 import { Plus, Search, UserPlus, UsersRound } from "lucide-vue-next";
 import type { Conversation, Friend } from "@/types";
 
@@ -162,14 +165,10 @@ function onSearchEnter(e: KeyboardEvent) {
   if (kw) emit("search-history", kw);
 }
 
-let disposeFocusSearch: (() => void) | null = null;
-onMounted(() => {
-  disposeFocusSearch = onAction(APP_ACTION.focusSearch, focusSearch);
-});
-onUnmounted(() => {
-  disposeFocusSearch?.();
-  disposeFocusSearch = null;
-});
+// 本组件在桌面端切到「链接」视图时会被 `v-else` 拆掉重挂 ⇒ 订阅必须成对，交给 initScope
+const actionScope = createInitScope();
+actionScope.onDispose(onAction(APP_ACTION.focusSearch, focusSearch));
+onUnmounted(() => actionScope.dispose());
 
 /** 对端在线状态：群聊返回 null（无在线概念）；单聊查好友表。 */
 function isOnline(id: string): boolean | null {
@@ -221,18 +220,20 @@ watch(friendMenuPopup.isActive, (mine) => {
   if (!mine && friendMenu.value) friendMenu.value = null;
 });
 
-/** 右键（桌面）/ 长按（移动端）触发：菜单定位贴近屏幕边缘时向内收，避免溢出。 */
+/**
+ * 右键（桌面）/ 长按（移动端）触发。
+ *
+ * 坐标**原样交给外壳**：`ContextMenu.vue` 用的是 Reka 的零尺寸虚拟锚点，量尺寸、翻转、贴边内收
+ * 都由它的 popper wrapper 做（外壳注释里写明了这件事）。原来这里自己按 `mw=150 / mh=90` 两个
+ * **猜出来的菜单尺寸**向内收了一遍 —— 那是迁移到 Reka 之前的手算残留，和同文件里
+ * `onConvContext`（直接把 x,y 传下去）不一致，而且菜单条目增减时那两个数就漂了
+ * （漂了不报错，只是菜单弹开的落点偏离用户点的位置）。
+ */
 function onFriendContext(f: Friend, x: number, y: number) {
   // 「自己」不弹好友右键菜单：那些动作（删除好友/改备注）对自己无意义；
   // 看资料 = 直接点这一行（与好友一致）。
   if (f.device_id && f.device_id === app.device?.device_id) return;
-  const mw = 150;
-  const mh = 90;
-  friendMenu.value = {
-    x: Math.max(8, Math.min(x, window.innerWidth - mw - 8)),
-    y: Math.max(8, Math.min(y, window.innerHeight - mh - 8)),
-    friend: f,
-  };
+  friendMenu.value = { x, y, friend: f };
   friendMenuPopup.claim();
 }
 
@@ -324,8 +325,7 @@ function closeFriendMenu() {
   friendMenuPopup.release();
   friendMenu.value = null;
 }
-onMounted(() => document.addEventListener("click", closeFriendMenu));
-onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
+useEventListener(document, "click", closeFriendMenu);
 </script>
 
 <template>
@@ -351,13 +351,13 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
         <input
           ref="searchInput"
           v-model="keyword"
-          maxlength="100"
+          :maxlength="MAX_SEARCH_KEYWORD_CHARS"
           enterkeyhint="search"
           autocomplete="off"
           autocorrect="off"
           autocapitalize="off"
           spellcheck="false"
-          class="w-full bg-transparent text-[13px] placeholder:text-[var(--gosslan-text-2)] outline-none focus:border-transparent"
+          class="w-full bg-transparent text-body placeholder:text-[var(--gosslan-text-2)] outline-none focus:border-transparent"
           :placeholder="view === 'chats' ? t('common.search') : t('common.searchContacts')"
           @keydown.enter.prevent="onSearchEnter"
           @compositionstart="ime.onStart"
@@ -405,10 +405,12 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
 
     <!-- 底部内边距：移动端底部导航是 `fixed bottom-0`，不给列表留位就会永久盖住最后一行，
          而且滚到底也露不出来（聊天区早有同样的补偿，这里此前漏了）。
-         键盘弹出时导航收起，补偿随之换成键盘补量（由外层容器负责）。 -->
+         键盘弹出时导航收起，补偿随之换成键盘补量（由外层容器负责）。
+         ⚠️ 条高读 `--gosslan-mobile-tabbar-h`（家 = `src/style.css`），与 `ResponsiveLayout` 主内容区
+         那份占位同源 —— 这里再抄一个字面量，改一处就会让另一处的最后一行被压住（判据 ㊻）。 -->
     <div
       class="flex-1 select-none overflow-y-auto"
-      :class="app.isMobile && !app.keyboardOpen ? 'pb-[calc(4rem+env(safe-area-inset-bottom))]' : ''"
+      :class="app.isMobile && !app.keyboardOpen ? 'pb-[calc(var(--gosslan-mobile-tabbar-h)+env(safe-area-inset-bottom))]' : ''"
     >
       <template v-if="view === 'chats'">
         <ConversationListItem
@@ -446,7 +448,7 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
             >
               {{ t("common.addFriend") }}
             </button>
-            <span class="max-w-[220px] text-[11px] leading-relaxed">
+            <span class="max-w-[220px] text-caption leading-relaxed">
               {{ chat.friends.length ? t("conv.emptyHintHasFriends") : t("conv.emptyHintNoFriends") }}
             </span>
           </template>
@@ -471,8 +473,8 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
             />
           </span>
           <span class="min-w-0 flex-1 text-left">
-            <span class="block truncate text-[13px] leading-5 text-[var(--gosslan-text)]" :title="t('conv.newFriends')">{{ t("conv.newFriends") }}</span>
-            <span class="block truncate text-[12px] leading-5 text-[var(--gosslan-text-2)]" :title="chat.pendingRequests.length ? t('conv.pendingRequests', { n: chat.pendingRequests.length }) : t('friend.request.empty')">
+            <span class="block truncate text-body leading-5 text-[var(--gosslan-text)]" :title="t('conv.newFriends')">{{ t("conv.newFriends") }}</span>
+            <span class="block truncate text-meta leading-5 text-[var(--gosslan-text-2)]" :title="chat.pendingRequests.length ? t('conv.pendingRequests', { n: chat.pendingRequests.length }) : t('friend.request.empty')">
               {{ chat.pendingRequests.length ? t("conv.pendingRequests", { n: chat.pendingRequests.length }) : t("friend.request.empty") }}
             </span>
           </span>
@@ -499,7 +501,7 @@ onUnmounted(() => document.removeEventListener("click", closeFriendMenu));
         <template v-else>
           <template v-for="g in friendGroups" :key="g.letter">
             <div
-              class="sticky top-0 z-10 bg-[var(--gosslan-list)] px-3 py-1 text-[11px] font-medium text-[var(--gosslan-text-2)]"
+              class="sticky top-0 z-10 bg-[var(--gosslan-list)] px-3 py-1 text-caption font-medium text-[var(--gosslan-text-2)]"
             >
               {{ g.letter }}
             </div>
