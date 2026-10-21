@@ -119,7 +119,13 @@ jobs:
   frontend:
     name: 前端测试 / 清单 / 构建
     runs-on: macos-latest
-    timeout-minutes: 20
+    # ⚠️ 20 分钟**太紧**（2026-10-21 实测）：这条腿在 GitHub 的 macos runner 上要 **19m41s**
+    # （e66e500 那轮）—— 正好卡在 20 分钟下面。后面两轮（3961fcd / c31dda2）都被这条上限
+    # 掐成 `cancelled`（GitHub 对超时给的是 cancelled，不是 failure ⇒ 注解里只剩一句
+    # "Process completed with exit code 1"，很容易被误读成产品红）。
+    # 本机跑同一组只要 ~2.5 分钟，差的是 runner 的算力 ⇒ 这里给足余量，
+    # 让"慢"与"红"彻底分开（不降低任何检查强度，只是别把慢当红）。
+    timeout-minutes: 45
     # 定时事件只为了全量护栏 ⇒ 这条腿不在夜间重付。
     if: github.event_name != 'schedule'
     steps:
