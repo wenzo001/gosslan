@@ -739,6 +739,26 @@ CREATE INDEX IF NOT EXISTS idx_group_file_recipients_status
 CREATE INDEX IF NOT EXISTS idx_group_file_recipients_recipient
     ON group_file_recipients(recipient_id, status);
 
+-- 群文件 ACK 的**持久化账本**（2026-10-21）。
+-- 为什么需要这张表：ACK 帧是**一次性**的（对端不会为同一条 transfer 再发第二遍），
+-- 而落库可能失败（SQLITE_BUSY / 磁盘满 / 进程被杀）⇒ 一条**已经送达**的群文件会永远停在 sending。
+-- 现在先把"收到过这条 ACK"落一行，再做状态收尾；收尾失败 ⇒ 这一行留着，
+-- 由进程级清扫器（network/transport/outbox_sweep.rs）重放 ⇒ **跨进程也能恢复**。
+-- 老库没有这张表：SCHEMA 每次启动都会跑一遍（IF NOT EXISTS）⇒ 自动补齐，历史数据一行不动；
+-- 协议帧与消息格式**一个字都没改** ⇒ 老 peer 与新版本互操作不变。
+CREATE TABLE IF NOT EXISTS group_file_acks (
+    transfer_id  TEXT NOT NULL,
+    recipient_id TEXT NOT NULL,
+    group_id     TEXT NOT NULL,
+    success      INTEGER NOT NULL DEFAULT 0,   -- 1 = 对端收成功，0 = 对端失败
+    received_at  INTEGER NOT NULL,
+    attempts     INTEGER NOT NULL DEFAULT 0,   -- 重放次数（超上界 ⇒ 落 failed 终态，不许永久挂起）
+    last_error   TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (transfer_id, recipient_id)
+);
+-- 重放查询：按收到时间取最早的一小批（每 tick 一批，不做全表扫）
+CREATE INDEX IF NOT EXISTS idx_group_file_acks_received ON group_file_acks(received_at);
+
 -- 待发已读回执：进程重启后从 DB 恢复，避免 ReadReceipt 丢失
 CREATE TABLE IF NOT EXISTS pending_reads (
     peer_id       TEXT PRIMARY KEY,

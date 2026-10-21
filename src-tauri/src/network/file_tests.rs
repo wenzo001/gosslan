@@ -3004,13 +3004,23 @@ mod group_receive_atomicity_tests {
     #[test]
     fn completed_guard_reads_recipient_status_in_the_handler() {
         let src = crate::network::transport_src_for_guards();
+        // 2026-10-21：这段"completed 终态保护"随**事务化收尾**一起搬进了
+        // `apply_group_file_ack_db`（同一次事务里落 recipient 终态 + 聚合并写回气泡），
+        // 并新增了持久化 ACK 账本 ⇒ 判据同步搬锚点，**语义一点没放宽**：
+        // 仍然要求"真去 DB 读该收件人的 status"，而且要拿它判终态。
         let at = src
-            .find("async fn handle_group_file_complete_ack")
-            .expect("群文件 complete ACK 处理改名了 ⇒ 同步改这条判据");
-        let body = &src[at..at + 2600];
+            .find("fn apply_group_file_ack_db")
+            .expect("群文件 ACK 收尾改名/搬家了 ⇒ 同步改这条判据");
+        let body = &src[at..at + 3000];
         assert!(
-            body.contains(r#".any(|r| r.recipient_id == peer_id && r.status == "completed")"#),
-            "failure ACK 不再读该收件人的 completed 状态 ⇒ 终态保护只剩测试里那份抄本"
+            body.contains(
+                "SELECT status FROM group_file_recipients WHERE transfer_id = ?1 AND recipient_id = ?2"
+            ),
+            "failure ACK 不再真读该收件人的 completed 状态 ⇒ 终态保护只剩测试里那份抄本"
+        );
+        assert!(
+            body.contains(r#"current == "completed""#),
+            "读到了状态却不拿它判终态 ⇒ completed 的终态保护没了"
         );
     }
 }

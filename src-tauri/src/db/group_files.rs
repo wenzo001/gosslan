@@ -2,6 +2,99 @@
 // - 群文件 per-recipient 投递状态（每群文件每行一个 recipient）
 // ---------------- 群文件（per-recipient 投递状态） ----------------
 
+// ---------------- 群文件 ACK 持久化账本 ----------------
+
+/// 一条"收到过、但可能还没落终态"的群文件 ACK。
+///
+/// 为什么要有它：ACK 帧是**一次性**的，而落库可能失败（SQLITE_BUSY / 磁盘满 / 进程被杀）。
+/// 旧形状下这类失败 ⇒ 一条已经送达的群文件**永远停在 sending**（用户能看见，对端不会再说第二遍）。
+/// 现在：先落这行账本，再做状态收尾；收尾失败 ⇒ 行留着，由进程级清扫器重放 ⇒ 跨进程也能恢复。
+pub struct GroupFileAck {
+    pub transfer_id: String,
+    pub recipient_id: String,
+    pub group_id: String,
+    pub success: bool,
+    pub received_at: i64,
+    pub attempts: i64,
+    pub last_error: String,
+}
+
+/// 记一条"收到过的 ACK"。幂等：同一 `(transfer_id, recipient_id)` 覆盖旧行
+/// （重放的 ACK 不会把尝试次数清零 —— 次数是"这条卡了多久"的证据）。
+pub fn insert_group_file_ack(
+    conn: &Connection,
+    transfer_id: &str,
+    recipient_id: &str,
+    group_id: &str,
+    success: bool,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO group_file_acks(transfer_id, recipient_id, group_id, success, received_at, attempts, last_error)
+         VALUES(?1, ?2, ?3, ?4, ?5, 0, '')
+         ON CONFLICT(transfer_id, recipient_id) DO UPDATE SET
+           group_id = excluded.group_id,
+           success = excluded.success,
+           received_at = excluded.received_at",
+        params![
+            transfer_id,
+            recipient_id,
+            group_id,
+            if success { 1i64 } else { 0i64 },
+            now_ms()
+        ],
+    )?;
+    Ok(())
+}
+
+/// 列出待重放的 ACK（最早收到的先放；每 tick 只取一小批）。
+pub fn list_group_file_acks(conn: &Connection, limit: i64) -> Result<Vec<GroupFileAck>> {
+    let mut stmt = conn.prepare(
+        "SELECT transfer_id, recipient_id, group_id, success, received_at, attempts, last_error
+         FROM group_file_acks ORDER BY received_at ASC LIMIT ?1",
+    )?;
+    let rows = stmt.query_map(params![limit], |r| {
+        Ok(GroupFileAck {
+            transfer_id: r.get(0)?,
+            recipient_id: r.get(1)?,
+            group_id: r.get(2)?,
+            success: r.get::<_, i64>(3)? != 0,
+            received_at: r.get(4)?,
+            attempts: r.get(5)?,
+            last_error: r.get(6)?,
+        })
+    })?;
+    rows.collect()
+}
+
+/// ACK 已经落终态 ⇒ 账本行删掉（"收尾成功"的事实标记）。
+pub fn delete_group_file_ack(
+    conn: &Connection,
+    transfer_id: &str,
+    recipient_id: &str,
+) -> Result<()> {
+    conn.execute(
+        "DELETE FROM group_file_acks WHERE transfer_id = ?1 AND recipient_id = ?2",
+        params![transfer_id, recipient_id],
+    )?;
+    Ok(())
+}
+
+/// 重放失败：记一次尝试与错误原因（下一轮还能看见"卡在哪、卡了几次"）。
+pub fn bump_group_file_ack_attempt(
+    conn: &Connection,
+    transfer_id: &str,
+    recipient_id: &str,
+    err: &str,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE group_file_acks SET attempts = attempts + 1, last_error = ?3
+         WHERE transfer_id = ?1 AND recipient_id = ?2",
+        params![transfer_id, recipient_id, err],
+    )?;
+    Ok(())
+}
+
+
 /// 插入群文件记录。校验：群必须存在、sender 必须是群成员。
 // 传输流程在后续 GroupFileOffer 步骤启用；本步骤仅 DB 层 + 测试调用。
 #[allow(dead_code)]
