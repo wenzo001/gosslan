@@ -114,9 +114,23 @@ const allowDebugSigning = process.argv.includes("--allow-debug-signing");
 // 仓库内**固定路径**的本地 keystore：路径与凭据都写死在这里 ⇒ 与 HOME/ANDROID_USER_HOME
 // 无关，任何会话/任何机器上打的包签名一致（这正是"配死"的目的）。
 const LOCAL_KEYSTORE_REL = "scripts/android/keystore/gosslan-release.keystore";
+// 开发版 keystore：**入库、公开**（它是开发钥匙，不是发行钥匙）。
+// 为什么要有它（2026-10-21 用户要求 + CI 真实事故）：
+//   发行版钥匙存在 GitHub Actions Secrets（别人看不到、含 fork 的 PR 也读不到），
+//   而 CI 的 main 推送构建**未必**配了 secret ⇒ 没有它就会走到"现生成一把"那条路，
+//   于是**每次 CI 跑出来的 APK 签名都不一样** ⇒ 用户覆盖安装必失败
+//   （INSTALL_FAILED_UPDATE_INCOMPATIBLE），而且已发出去的包再也升不上。
+//   有了固定的开发版钥匙 ⇒ 至少签名稳定、行为可预期；正式对外发版仍必须用发行版 secret。
+const DEV_KEYSTORE_REL = "scripts/android/keystore/gosslan-dev.keystore";
 const LOCAL_KEY_ALIAS = "gosslan";
 const LOCAL_STORE_PASSWORD = "gosslan-local";
 const LOCAL_KEY_PASSWORD = "gosslan-local";
+// 开发版钥匙的凭据**故意公开**（它就是公开钥匙，藏起来没有意义）。
+const DEV_STORE_PASSWORD = "gosslan-dev";
+const DEV_KEY_PASSWORD = "gosslan-dev";
+// 正式发版（tag 触发的发布 job）必须用**私有发行版钥匙**：
+// 拿公开的开发钥匙出正式包 ⇒ 任何人都能伪造一个"升级包"顶替你的应用。
+const requireReleaseSigning = process.argv.includes("--require-release-signing");
 
 /** 本地固定 keystore：不存在就用 keytool 生成一次（之后永远复用）。 */
 function ensureLocalKeystore() {
@@ -177,16 +191,56 @@ if (base64Keystore) {
       "覆盖安装会失败（INSTALL_FAILED_UPDATE_INCOMPATIBLE）。仅用于一次性内测。",
   );
 } else {
-  const abs = ensureLocalKeystore();
+  // ---- 没有发行版 secret ----
+  // ⚠️ 正式发版（--require-release-signing）时**必须在这里就停**：
+  //   不能因为"仓库里有公开的开发版钥匙"就拿它出正式包 ——
+  //   公开钥匙签的包任何人都能伪造同签名的"升级包"顶替你的应用（Android 只认签名）。
+  if (requireReleaseSigning) {
+    console.error(
+      "[android-signing] 正式发版必须用**私有发行版钥匙**：" +
+        "请在 GitHub Actions Secrets 里配置 ANDROID_KEYSTORE_BASE64 / ANDROID_KEYSTORE_PASSWORD / " +
+        "ANDROID_KEY_ALIAS / ANDROID_KEY_PASSWORD（别人看不到，含 fork 的 PR 也读不到）。" +
+        "本次已拒绝出包（不拿公开的开发版钥匙发正式版）。",
+    );
+    process.exit(1);
+  }
+  // 按"开发版（公开·入库）→ 本机副本 → 现生成"三档退
+  const devAbs = path.join(root, DEV_KEYSTORE_REL);
+  const localAbs = path.join(root, LOCAL_KEYSTORE_REL);
+  let abs;
+  let storePw;
+  let keyPw;
+  let which;
+  if (fs.existsSync(devAbs)) {
+    abs = devAbs;
+    storePw = DEV_STORE_PASSWORD;
+    keyPw = DEV_KEY_PASSWORD;
+    which = `**开发版**签名（公开·入库：${DEV_KEYSTORE_REL}）`;
+  } else if (fs.existsSync(localAbs)) {
+    abs = localAbs;
+    storePw = LOCAL_STORE_PASSWORD;
+    keyPw = LOCAL_KEY_PASSWORD;
+    which = `本机发行版副本（${LOCAL_KEYSTORE_REL}）`;
+  } else {
+    abs = ensureLocalKeystore();
+    storePw = LOCAL_STORE_PASSWORD;
+    keyPw = LOCAL_KEY_PASSWORD;
+    which = `⚠️ **现生成**的一把临时钥匙（${LOCAL_KEYSTORE_REL}）`;
+  }
   // 注入到 gen 工程（gradle 里 storeFile 是相对 app 目录的路径）
   // 文件名必须与 `injectReleaseSigning` 里写的 `file("release.keystore")` 一致
   // （踩过一次：复制成 gosslan-release.keystore ⇒ Gradle 报 "Keystore file ... not found"）。
   const gradleKeystore = path.join(root, "src-tauri", "gen", "android", "app", "release.keystore");
   fs.copyFileSync(abs, gradleKeystore);
-  text = injectReleaseSigning(text, LOCAL_STORE_PASSWORD, LOCAL_KEY_ALIAS, LOCAL_KEY_PASSWORD);
-  console.log(
-    `[android-signing] 已注入**固定本地 release 签名**（${LOCAL_KEYSTORE_REL}）—— 所有构建共用同一把钥匙。`,
-  );
+  text = injectReleaseSigning(text, storePw, LOCAL_KEY_ALIAS, keyPw);
+  console.log(`[android-signing] 已注入${which}。`);
+  if (which.startsWith("⚠️")) {
+    console.warn(
+      "[android-signing] ⚠️ 这把钥匙是**现生成**的 ⇒ 下次构建签名就变了，" +
+        "覆盖安装会失败（INSTALL_FAILED_UPDATE_INCOMPATIBLE）。" +
+        "正式发版请配置发行版 secret；日常构建请用入库的开发版钥匙。",
+    );
+  }
 }
 
 // ---- btleplug 的 Android Java 部分必须编译进 App ----

@@ -145,7 +145,15 @@ fi
 #   - release 少了签名会产出**装不上**的未签名 APK，少了 R8 keep 会让蓝牙在真机上
 #     NoSuchMethodError，所以这一步失败必须直接中止。
 echo "==> 注入签名 / 权限清单 / 竖屏 / R8 keep …"
-if ! node scripts/inject-android-signing.mjs; then
+# 正式发版（tag 触发的发布 job）要求**私有发行版钥匙**：
+# 没有 ANDROID_KEYSTORE_BASE64 就直接拒绝出包 —— 拿公开的开发钥匙发正式版
+# 等于任何人都能伪造一个"升级包"顶替你的应用。
+SIGN_ARGS=""
+if [ "${GOSSLAN_REQUIRE_RELEASE_SIGNING:-0}" = "1" ]; then
+  SIGN_ARGS="--require-release-signing"
+fi
+
+if ! node scripts/inject-android-signing.mjs ${SIGN_ARGS:-}; then
   echo "    ❌ 工程注入失败，中止（否则产出的包可能装不上或蓝牙失效）。"
   exit 1
 fi
@@ -165,14 +173,31 @@ for ABI in aarch64 armv7; do
     continue
   fi
 
-  LOG="/tmp/gosslan-android-$ABI.log"
+  # 失败时把**真错误**打出来。
+#
+# 为什么必须改（2026-10-21 CI 实测踩到）：原来失败只打 `tail -8`，而 Gradle 的报错
+# （"FAILURE: … / * What went wrong: / Execution failed for task …"）在**中间**，
+# 尾巴只剩帮助文本 ⇒ CI 注解里是 "Get more help at https://help.gradle.org."，
+# 根因留在 runner 的 /tmp 里、外部根本读不到（私有仓库 + 无 token 读不到 job 日志）。
+#
+# 现在：把关键行**逐字**打出来，并给每行加 "❌" 前缀 ——
+# scripts/ci-run.sh 的注解 grep 认 "❌" ⇒ 这些行会原样进 GitHub 注解，下一轮就能直接定位。
+print_gradle_failure() {
+  local log="$1"
+  echo "    ❌ 失败，日志关键行（这几行会进 CI 注解）："
+  grep -E "FAILURE:|What went wrong|Execution failed|Caused by:|Could not |Unable to |A problem occurred|error:|Error:|Exception|Out of memory|No space left" "$log" 2>/dev/null \
+    | head -20 | cut -c1-200 | sed 's/^/    ❌ /'
+  echo "    ❌ 日志尾部（逐字，最后 12 行）："
+  tail -12 "$log" 2>/dev/null | cut -c1-200 | sed 's/^/    /'
+}
+
+LOG="/tmp/gosslan-android-$ABI.log"
   MARKER="/tmp/gosslan-android-$ABI.marker"
   : >"$MARKER"   # 早于本次构建的产物一律不算
 
   echo "==> 构建 ${ABI}（${MODE}）…"
   if ! "${CMD[@]}" --features bluetooth --target "$ABI" >"$LOG" 2>&1; then
-    echo "    ❌ 失败，日志尾部："
-    tail -8 "$LOG"
+    print_gradle_failure "$LOG"
     FAIL=1
     continue
   fi
@@ -189,8 +214,8 @@ for ABI in aarch64 armv7; do
     REUSED=1
   fi
   if [ -z "$SRC" ] || [ ! -f "$SRC" ]; then
-    echo "    ❌ 没找到任何 APK（日志尾部）："
-    tail -8 "$LOG"
+    echo "    ❌ 没找到任何 APK（日志关键行）："
+    print_gradle_failure "$LOG"
     FAIL=1
     continue
   fi

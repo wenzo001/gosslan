@@ -13,6 +13,25 @@
 
 ## [Unreleased]
 
+### Android 签名：从「每次现生成」改成两把固定钥匙
+
+- 根因：`scripts/android/keystore/` 在 .gitignore 里 ⇒ CI 上永远没有本地 keystore
+  ⇒ 走"现生成一把"那条路 ⇒ **每次构建出来的 APK 签名都不一样** ⇒ 用户覆盖安装必失败
+  （`INSTALL_FAILED_UPDATE_INCOMPATIBLE`），已发出去的包再也升不上。
+- 改法（两把固定钥匙）：
+  - **发行版**（私有）：`ANDROID_KEYSTORE_BASE64` 等 4 个 GitHub Actions Secrets
+    （加密存储，别人看不到，含 fork 的 PR 也读不到）—— 正式对外发版用它。
+  - **开发版**（公开·入库）：`scripts/android/keystore/gosslan-dev.keystore`
+    —— CI 日常构建与开发者本地用它 ⇒ 签名固定、可覆盖安装。
+  - 正式发版（tag → Release）**必须**有发行版 secret：没有就**拒绝发布**
+    （workflow 守卫 + 脚本 `--require-release-signing` 双保险）——
+    公开钥匙签的正式包，任何人都能伪造同签名的"升级包"顶替你的应用。
+- ⚠️ **用户侧一次性代价**：之前那些 APK 是"每次现生成"签的，彼此签名不同 ⇒
+  升级到本版起需要**先卸载旧包再装**（报"签名不一致"）；此后就能一直覆盖安装了。
+- 顺带：Android 构建失败时把 **Gradle 的真错误**打进 CI 注解（原来只打 `tail -8`，
+  注解里只剩帮助文本，根因留在 runner 的 /tmp 里、外部根本读不到）。
+- 操作步骤见 `docs/notes/android-signing.md`（含 base64 取法与 4 个 Secret 的填法）。
+
 ## [5.0.40] - 2026-10-21
 
 ### 跨平台：那条"用户提示可操作"的断言写死了 POSIX 分隔符
