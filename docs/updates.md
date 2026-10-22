@@ -67,6 +67,18 @@
 6. 重复发布/版本冲突：`publish-release-assets.sh` 幂等创建/补附件；
    `latest.json` 上传用 `--clobber`；同版本重复发 tag 会覆盖旧资产，**不要**这么做。
 
+### 3.1 发不出去时的三种真形状（2026-10-22 实测，都踩过）
+
+| 现象 | 真实原因 | 现在怎么被挡住/自动处理 |
+|---|---|---|
+| 四条发布 job 全红，日志只说 `already exists`，而按 tag 查 Release 又是 404 | **网页上有人建了草稿 Release**：草稿对 `releases/tags/<tag>` 返回 404 | `publish-release-assets.sh` 用列表 API 兜底判"存在"，并在上传完成后 **`release edit --draft=false` 主动发布**（判据：`publishRelease.test.ts` 的 draft 场景） |
+| tag 构建跑到签名那一步才红，日志只有 `exit code 1` | `TAURI_SIGNING_PRIVATE_KEY` **填成了文件路径**或被截断（本机同命令 + 本机 key 是能过的） | tag 构建开头的预检会 **base64 解码**并要求解出来以 `untrusted comment:` 开头；不是就**立刻具名报错**（两条腿同口径） |
+| 重发同一个版本号 | tag 已存在且指向旧提交，新提交的修复**不会**被带上 | 换新版本号重发（`npm run version:patch` → 新 tag），不要复用旧 tag |
+
+> 排查口诀：**先看公开侧**（`releases/latest` 指向哪个 tag、`latest.json` 是否 404、
+> `releases.atom` 最新条目的作者是 `github-actions[bot]` 还是真人）—— 作者是真人
+> 就说明那是人工草稿，跟构建无关。
+
 ## 4. 更新清单与产物一致性
 
 `scripts/updater-manifest.mjs`：
