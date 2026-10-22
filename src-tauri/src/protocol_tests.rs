@@ -1564,4 +1564,38 @@ mod tests {
             "本机必须声明群文件续传能力，否则对端永远不会等 GroupFileResume"
         );
     }
+
+    #[test]
+    fn recall_verdict_covers_author_conversation_and_window() {
+        let now = 1_000_000;
+        assert!(recall_verdict("me", "me", "peer", "peer", now - 1, now).is_ok());
+        assert!(
+            recall_verdict("peer", "me", "peer", "peer", now - 1, now).is_err(),
+            "非作者必须拒绝"
+        );
+        assert!(
+            recall_verdict("me", "me", "other", "peer", now - 1, now).is_err(),
+            "目标不属于该会话必须拒绝"
+        );
+        assert!(
+            recall_verdict("me", "me", "peer", "peer", now - RECALL_WINDOW_MS, now).is_ok(),
+            "正好 5 分钟仍在窗口内"
+        );
+        assert!(
+            recall_verdict(
+                "me",
+                "me",
+                "peer",
+                "peer",
+                now - RECALL_WINDOW_MS - 1,
+                now
+            )
+            .is_err(),
+            "超过 5 分钟必须拒绝"
+        );
+        assert!(
+            recall_verdict("me", "me", "peer", "peer", 0, now).is_ok(),
+            "ts=0 的历史行只跳过时间判据，作者/会话仍是硬门槛"
+        );
+    }
 }

@@ -13,6 +13,22 @@
 
 ## [Unreleased]
 
+## [5.5.12] - 2026-10-23
+
+### 撤回：单聊与群统一 5 分钟，过期不再显示入口
+
+- 新增单聊命令 `recall_message`：仅原作者、目标必须属于该单聊、5 分钟窗口；复用
+  `send_message(..., "recall")` 的 E2EE / outbox 管道，先发可靠事件再物化本地。
+- 群撤回改用 `protocol::recall_verdict`，并补上“目标消息必须属于该群”的校验；
+  `RECALL_WINDOW_MS` 收敛到 `protocol.rs` 的唯一常量。
+- 前端 `canRecallNow()` 用函数而非 computed 现算窗口；桌面右键菜单与移动 ActionSheet
+  共用同一判据，超过 5 分钟入口直接消失；确认后按 `group:` / 单聊分流。
+- 判据：`protocol` 的 `recall_verdict` 真值表；`recall.test.ts` 的常量对账、窗口边界与
+  `MessageItem` 接线；`ARCHITECTURE-MAP.html` 登记 `recall_message`；`defer.test.ts`
+  白名单注明这是“窗口判定”不是限流。
+- 本地 `verify:local` 22/22、`npm test` 1251/1251、`npm run build`、`cargo fmt --check` 通过。
+  **双实例撤回/真机未跑**；发版前需补这一层。
+
 ## [5.5.11] - 2026-10-22
 
 ### 传输面板：排队原因、取消入口与孤儿发送台账对账

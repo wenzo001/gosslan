@@ -886,6 +886,7 @@ protocol::tests::peer_protocol_newer_only_when_declared_higher
 protocol::tests::preview_text_hides_payload_for_unknown_kind
 protocol::tests::reaction_payload_is_validated_before_sending
 protocol::tests::reaction_payload_roundtrips
+protocol::tests::recall_verdict_covers_author_conversation_and_window
 protocol::tests::remind_ack_payload_stage_is_validated
 protocol::tests::remind_actor_partition_against_membership
 protocol::tests::remind_kinds_are_silent

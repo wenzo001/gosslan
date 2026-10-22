@@ -22,6 +22,7 @@ import { saveImageAs } from "@/utils/saveImageAs";
 import { haptic } from "@/utils/haptics";
 import { shouldStartLongPress, shouldSwallowLongPressRelease } from "@/utils/longPress";
 import { shouldPreventContextMenu } from "@/utils/contextMenu";
+import { isWithinRecallWindow } from "@/utils/recall";
 import { t } from "@/i18n";
 import MessageAvatar from "@/components/message/MessageAvatar.vue";
 import MessageTextBubble from "@/components/message/MessageTextBubble.vue";
@@ -774,19 +775,20 @@ const emit = defineEmits<{
 }>();
 
 /**
- * 能否撤回：**只有自己发的、且未被撤回的**消息才给入口。
+ * 能否撤回：自己的消息、未被撤回、且在 5 分钟窗口内。
  *
- * 后端也只在 `sender_id == 自己` 时才接受撤回 —— 前端隐藏入口不是为了安全
- * （安全由签名保证），而是不让用户白点一次再收到报错。
+ * 用函数而不是 computed：`Date.now()` 不会进入 Vue 的依赖，computed 一旦算过就不会
+ * 随真实时间推进；右键菜单 / 移动 ActionSheet 打开时会触发一次渲染，这里在那一刻现算。
+ * `mine` 是 ComputedRef，script 内必须写 `.value`（裸写恒真值，曾导致群里任何人的消息
+ * 都出现撤回入口）。
  */
-// ⚠️ 必须判 isGroup：单聊没有撤回（后端只实现了群撤回），
-// 否则入口可见、点了确认后 `confirmRecall` 里静默 return —— 用户看到的是"什么都没发生"。
-// ⚠️ `mine` 是从 composable 解构出来的 **ComputedRef**（本文件其它地方都写 `mine.value`）。
-// 在模板里 Vue 自动解包，但在 script 的 computed 内部**不会** —— 裸写 `mine` 是个对象、
-// 恒为真值，于是群聊里对**任何人的消息**都会显示「撤回」（用户真机反馈的那个 bug）。
-const canRecall = computed(
-  () => !!props.isGroup && mine.value && props.message.kind !== "recalled",
-);
+function canRecallNow(): boolean {
+  return (
+    mine.value &&
+    props.message.kind !== "recalled" &&
+    isWithinRecallWindow(props.message.ts)
+  );
+}
 
 /** 文件消息正在发送中 —— 显示"取消发送"菜单项。
  * 条件：自己发的 + 文件类 + status 是 sending。
@@ -830,9 +832,8 @@ function doRecall() {
 async function confirmRecall() {
   confirmingRecall.value = false;
   const convId = props.message.conv_id;
-  if (!convId.startsWith("group:")) return;
   try {
-    await chat.recallMessage(convId.slice(6), props.message.msg_id);
+    await chat.recallMessage(convId, props.message.msg_id);
     app.toast(t("msg.recallDone"), "success");
   } catch (e) {
     app.toastError(e, t("msg.recallFail"));
@@ -1540,7 +1541,7 @@ async function copyFileToClipboard() {
     @save-file="saveFileTo"
     @copy-file="copyFileToClipboard"
     @quote="doQuote"
-    :can-recall="canRecall"
+    :can-recall="canRecallNow()"
     :can-pin="isGroup && message.kind !== 'recalled'"
     :pinned="!!pinned"
     :can-cancel-send="canCancelSend"
@@ -1632,7 +1633,7 @@ async function copyFileToClipboard() {
            此前这里是内联条件且漏了 isGroup，导致单聊长按也出现「撤回」，
            而后端只实现了群撤回 ⇒ 点了确认后什么都不发生。 -->
       <button
-        v-if="canRecall"
+        v-if="canRecallNow()"
         class="flex items-center gap-3 px-4 py-3 text-left text-title text-[var(--gosslan-danger-ink)] transition active:bg-[var(--gosslan-hover)]"
         @click="doRecall"
       >
