@@ -727,7 +727,7 @@ async function confirmDelete() {
         <div
           v-if="active"
           :class="app.isMobile
-            ? 'fixed inset-0 z-[60] flex flex-col bg-[var(--gosslan-bg)] pt-[env(safe-area-inset-top)]'
+            ? 'fixed inset-x-0 top-0 bottom-[calc(var(--gosslan-mobile-tabbar-h)+env(safe-area-inset-bottom))] z-[60] flex flex-col bg-[var(--gosslan-bg)] pt-[env(safe-area-inset-top)]'
             : 'flex min-h-0 flex-1 flex-col'"
         >
           <!-- 移动端详情头部：与 MobilePageFrame **完全一致**的框架返回键
@@ -750,7 +750,7 @@ async function confirmDelete() {
             <span class="min-w-0 truncate text-title font-medium text-[var(--gosslan-text)]" :title="favTitle">{{ favTitle }}</span>
           </header>
 
-          <div class="min-h-0 flex-1 overflow-y-auto p-3 pb-[max(env(safe-area-inset-bottom),0.75rem)]">
+          <div class="scrollbar-both min-h-0 flex-1 overflow-y-auto p-3 pb-[max(env(safe-area-inset-bottom),0.75rem)]">
             <div class="mb-2 flex items-center gap-2 text-caption text-[var(--gosslan-text-2)]">
               <span class="truncate" :title="senderName(active)">{{ senderName(active) }}</span>
               <span>·</span>

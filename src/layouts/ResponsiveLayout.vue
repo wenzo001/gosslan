@@ -632,7 +632,7 @@ function onResizeEnd() {
         （亮色 #edf1f6 ≈ 白），表现为「窗口角上有一道白缝」，关闭键 hover 成红色后尤其刺眼，
         最大化时四角全会出现。圆角交给系统 = 曲线唯一、严丝合缝。 -->
     <div
-    class="flex w-full flex-col overflow-hidden bg-[var(--gosslan-caption)] font-gosslan text-[var(--gosslan-text)]"
+    class="relative flex w-full flex-col overflow-hidden bg-[var(--gosslan-caption)] font-gosslan text-[var(--gosslan-text)]"
     :class="app.isMobile
       ? 'h-dvh'
       : 'h-screen ring-1 ring-inset ring-[var(--gosslan-window-ring)]'"
@@ -902,7 +902,7 @@ function onResizeEnd() {
          ⚠️ 收藏 tab 必须**保留** TabBar（用户 2026-09-20 明确要求，「收藏 tab 不要新开页面」）。 -->
     <nav
       v-if="showMobileTabBar"
-      class="safe-bottom fixed bottom-0 left-0 right-0 z-40 flex items-center justify-around border-t border-[var(--gosslan-border)] bg-[var(--gosslan-panel)]"
+      class="safe-bottom absolute bottom-0 left-0 right-0 z-40 flex items-center justify-around border-t border-[var(--gosslan-border)] bg-[var(--gosslan-panel)]"
     >
       <button
         class="relative flex flex-1 flex-col items-center gap-0.5 py-2.5"
@@ -986,7 +986,7 @@ function onResizeEnd() {
     </nav>
 
     <!-- 弹窗 -->
-    <SettingsPanel :open="settingsOpen" @close="closeSettings" />
+    <SettingsPanel :open="settingsOpen" :route-driven="app.isMobile" @close="closeSettings" />
     <!-- 搜索聊天记录结果页（会话列表搜索框回车打开） -->
     <ChatSearchDialog
       :open="searchOpen"

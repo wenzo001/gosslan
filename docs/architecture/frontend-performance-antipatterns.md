@@ -26,6 +26,7 @@
 | 9 | 公告每次消息变动扫整段历史 `JSON.parse` | `src/components/ChatWindow.vue` | 改读 store 的 `activeAnnouncements` 缓存（后端 SQL 已折公告+墓碑） | 旧 `m.kind !== "announcement"` 全量扫描已删 |
 | 10 | 收藏行每行 8 次 `rowTitle`/`rowSubtitle`/`kindStyle`/`kindIcon`，且集合无上界 | `src/components/FavoritePanel.vue`、`src/stores/useChatStore.ts` | `rows` computed 一次算好；`MAX_FAVORITES` 上限 + 提示 | 行内只读 `row.*`；超限 toast |
 | 11 | `vendor` 单块过大（motion-v 引入后 >500 KB） | `vite.config.ts` | `motion` 拆独立 chunk（motion-v / framer-motion / motion-dom / motion-utils / hey-listen） | 构建后 `motion` 独立 chunk；vendor 回到约 114 KB gzip |
+| 12 | 滚动条时隐时现 / 内容因滚动条出现而横跳 | `src/style.css` | 原生 CSS 8px 细滚动条 + `scrollbar-gutter: stable`；居中内容 `.scrollbar-both` | 无 JS 滚动条；`offsetWidth-clientWidth` 可量 |
 
 ## 3. 未做（按收益 / 风险排序）
 

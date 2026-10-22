@@ -23,36 +23,36 @@
 <!-- BEGIN:generated (node scripts/frontend-inventory.mjs) -->
 
 > 复跑：`node scripts/frontend-inventory.mjs`（本段与 `--check` 对账，手改本段数字没有意义）。
-> 现读：`src/` 共 316 份源码 = 生产 215 份 / 44,279 行 + 测试 101 份 / 21,252 行（不含 `src/assets/` 里的 214 个表情图）。
+> 现读：`src/` 共 318 份源码 = 生产 217 份 / 44,390 行 + 测试 101 份 / 21,252 行（不含 `src/assets/` 里的 214 个表情图）。
 
 ### 1.1 按职责分类（生产码，机器现算）
 
 | 类 | 文件 | 行 |
 |---|---:|---:|
-| D-业务组件 | 68 | 19,689 |
-| B-utils | 76 | 10,104 |
+| D-业务组件 | 68 | 19,745 |
+| B-utils | 77 | 10,124 |
 | C-状态层 | 3 | 4,177 |
 | B-国际化 | 5 | 2,459 |
 | D-数据表 | 3 | 1,860 |
-| A-公共UI | 21 | 1,734 |
+| A-公共UI | 22 | 1,769 |
 | A-布局 | 2 | 1,169 |
 | B-composables | 15 | 1,009 |
 | E-IPC/事件 | 1 | 770 |
 | E-平台适配 | 11 | 640 |
 | E-入口/启动 | 7 | 450 |
 | 其他 | 3 | 218 |
-| **合计** | **215** | **44,279** |
+| **合计** | **217** | **44,390** |
 
 ### 1.2 已装库在生产码里的实际使用面（装了不等于用了）
 
 | 依赖 | 生产文件 | 行 |
 |---|---:|---:|
-| `vue` | 93 | 27,498 |
-| `lucide-vue-next` | 48 | 17,061 |
+| `vue` | 93 | 27,554 |
+| `lucide-vue-next` | 48 | 17,117 |
 | `reka-ui` | 24 | 8,778 |
-| `@vueuse/core` | 18 | 10,714 |
+| `@vueuse/core` | 18 | 10,750 |
 | `@tanstack/vue-query` | 9 | 1,961 |
-| `vue-router` | 8 | 5,106 |
+| `vue-router` | 9 | 5,385 |
 | `@tauri-apps/api` | 7 | 4,935 |
 | `@tauri-apps/plugin-dialog` | 5 | 3,844 |
 | `pinia` | 4 | 4,382 |
@@ -64,8 +64,8 @@
 | `@tanstack/vue-virtual` | 1 | 674 |
 | `vue-i18n` | 1 | 176 |
 | `mitt` | 1 | 51 |
+| `motion-v` | 1 | 20 |
 | `@pinia/colada` | **0** | 0 ← 装了但生产码没用到，要么接上要么卸掉 |
-| `motion-v` | **0** | 0 ← 装了但生产码没用到，要么接上要么卸掉 |
 
 ### 1.3 全量生产文件索引
 
@@ -137,8 +137,8 @@
 | `src/components/settings/SettingsRow.vue` | D-业务组件 | 24 | — |
 | `src/components/settings/SettingsToggle.vue` | D-业务组件 | 63 | `reka-ui` |
 | `src/components/settings/StorageSection.vue` | D-业务组件 | 273 | `@tauri-apps/plugin-dialog` `lucide-vue-next` `vue` |
-| `src/components/SettingsPanel.vue` | D-业务组件 | 223 | `lucide-vue-next` `vue` |
-| `src/components/SettingsWindow.vue` | D-业务组件 | 182 | `@vueuse/core` `lucide-vue-next` `vue` `vue-router` |
+| `src/components/SettingsPanel.vue` | D-业务组件 | 243 | `lucide-vue-next` `vue` `vue-router` |
+| `src/components/SettingsWindow.vue` | D-业务组件 | 218 | `@vueuse/core` `lucide-vue-next` `vue` `vue-router` |
 | `src/components/ShareDirectory.vue` | D-业务组件 | 140 | `@tanstack/vue-query` `lucide-vue-next` `vue` |
 | `src/components/TitleBar.vue` | A-公共UI | 402 | `@tauri-apps/api` `@vueuse/core` `vue` |
 | `src/components/ToastHud.vue` | A-公共UI | 26 | `reka-ui` |
@@ -159,6 +159,7 @@
 | `src/components/ui/PrimaryBtn.vue` | A-公共UI | 42 | — |
 | `src/components/ui/SegmentedControl.vue` | A-公共UI | 86 | `reka-ui` |
 | `src/components/ui/SettingsSelect.vue` | A-公共UI | 73 | `lucide-vue-next` `reka-ui` `vue` |
+| `src/components/ui/Spinner.vue` | A-公共UI | 35 | — |
 | `src/components/ui/StateBlock.vue` | A-公共UI | 80 | `vue` |
 | `src/components/UnreadBadge.vue` | D-业务组件 | 62 | — |
 | `src/components/VirtualList.vue` | D-业务组件 | 541 | `@vueuse/core` `vue` |
@@ -251,6 +252,7 @@
 | `src/utils/messageHeight.ts` | B-utils | 201 | — |
 | `src/utils/messageKinds.ts` | B-utils | 218 | — |
 | `src/utils/messages.ts` | B-utils | 600 | — |
+| `src/utils/motion/index.ts` | B-utils | 20 | `motion-v` |
 | `src/utils/nameGroup.ts` | B-utils | 93 | — |
 | `src/utils/notifications.ts` | E-平台适配 | 67 | — |
 | `src/utils/notifyUrgency.ts` | E-平台适配 | 37 | — |

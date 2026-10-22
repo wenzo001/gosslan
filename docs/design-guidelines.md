@@ -1047,3 +1047,18 @@ node scripts/check-ui-runtime.mjs --only=lightbox
 - 滚动锚定五类交互：`docs/archive/audit/evidence-2026-10-16/smooth-native-ux.md`。
 - 长按 / 骨架 / lightbox：`docs/architecture/frontend-inventory.md`、§4、同上。
 - 角标口径：`docs/archive/acceptance/strong-reminder-final.md`。
+
+### 14.14 滚动容器与滚动条
+
+- **原生 CSS 滚动条**：8px 轨道 + 4px 实际滑块，颜色走 `--gosslan-text-2`；
+  不在 macOS 恢复系统 overlay（overlay 默认滚动才浮出，用户会以为没有滚动条）。
+  Chromium / Android / Windows / Linux 常显；iOS WKWebView 的系统 overlay 策略不由页面 CSS 决定
+  （不做 JS 自绘滚动条换取性能）。
+- **不用 JS 自绘滚动条**：原生滚动条由合成器处理，长列表滚动不产生额外 JS 工作。
+- 列表/消息/面板滚动容器统一 `scrollbar-gutter: stable`，滚动条出现时内容不横向跳；
+  居中内容（设置/资料/移动整页）加 `.scrollbar-both`（`stable both-edges`），
+  视觉中心不被右侧滚动条推偏。
+- 禁止 `scrollbar-width: none` / `::-webkit-scrollbar { display: none }` 之类"藏滚动条"的写法；
+  要弱化只能调低滑块对比度，不能让它消失。
+- 页面转场退场中的壳必须 `pointer-events: none`：否则它还在 240ms 滑出时，
+  底下已出现的 TabBar 会接不到点击（移动端「点底栏没反应」的根因之一）。

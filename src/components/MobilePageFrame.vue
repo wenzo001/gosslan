@@ -96,7 +96,7 @@ const backAria = () => props.backLabel ?? t("common.back");
          inline 形态（桌面内嵌）不写 ⇒ 不占空间，行为与改前一致。 -->
     <div
       :class="[
-        scroll ? 'min-h-0 flex-1 flex flex-col overflow-y-auto' : 'min-h-0 flex-1 flex flex-col',
+        scroll ? 'scrollbar-both min-h-0 flex-1 flex flex-col overflow-y-auto' : 'min-h-0 flex-1 flex flex-col',
         mode === 'overlay' ? 'safe-bottom' : '',
       ]"
     >
