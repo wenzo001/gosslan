@@ -6284,6 +6284,8 @@ async function runAvatar(cdp, url) {
     const rect = dlg.getBoundingClientRect();
     const apply = dlg.querySelector('[data-avatar-apply]');
     const ar = apply ? apply.getBoundingClientRect() : null;
+    const opts = dlg.querySelector('[data-avatar-options]');
+    const flexes = opts ? [...opts.querySelectorAll('.flex.flex-wrap')] : [];
     return {
       ok: true,
       emojis: emojiBtns.length,
@@ -6301,7 +6303,10 @@ async function runAvatar(cdp, url) {
       vw: innerWidth,
       sw: document.documentElement.scrollWidth,
       dlg: { l: +rect.left.toFixed(1), r: +rect.right.toFixed(1), w: +rect.width.toFixed(1), h: +rect.height.toFixed(1) },
-      gridOverflow: [...dlg.querySelectorAll('.grid')].map((g) => g.scrollWidth - g.clientWidth),
+      options: opts ? { scrollW: opts.scrollWidth, clientW: opts.clientWidth } : null,
+      flexes: flexes.map((g) => ({ justify: getComputedStyle(g).justifyContent, display: getComputedStyle(g).display })),
+      selectedEmojiInset: pe.length === 1 ? getComputedStyle(pe[0]).boxShadow.includes('inset') : false,
+      selectedBgHasCheck: pb.length === 1 ? !!pb[0].querySelector('svg') : false,
       apply: ar ? { l: +ar.left.toFixed(1), r: +ar.right.toFixed(1), h: +ar.height.toFixed(1) } : null,
       inputs: dlg.querySelectorAll('input').length,
       hasRandom: !!dlg.querySelector('[data-avatar-random]'),
@@ -6377,18 +6382,65 @@ async function runAvatar(cdp, url) {
     "pressedBg=被点的那个，预览背景=色块计算样式",
     JSON.stringify({ want: nextBg, got: s3.pressedBg, previewBg: s3.previewBg, swatchBg }));
 
-  check("默认头像：390 宽下弹窗/网格不横向溢出，确认键留在视口内",
+  check("默认头像：390 宽下弹窗/选项不横向溢出，两组选项居中换行，确认键留在视口内",
     s3.ok === true && s3.sw <= s3.vw + 1
       && s3.dlg.l >= -1 && s3.dlg.r <= s3.vw + 1
-      && s3.gridOverflow.every((n) => n <= 1)
+      && s3.options !== null && s3.options.scrollW <= s3.options.clientW + 1
+      && s3.flexes.length === 2 && s3.flexes.every((f) => f.display === "flex" && f.justify === "center")
       && s3.apply !== null && s3.apply.l >= -1 && s3.apply.r <= s3.vw + 1 && s3.apply.h >= 24,
-    "scrollWidth<=vw、dialog 左右不越界、两组 grid 无横向滚动、apply 可见且高度>=24",
-    JSON.stringify({ vw: s3.vw, sw: s3.sw, dlg: s3.dlg, overflow: s3.gridOverflow, apply: s3.apply }));
+    "scrollWidth<=vw、dialog 左右不越界、选项无横向滚动、两个 flex 都是 justifyContent=center、apply 可见且高度>=24",
+    JSON.stringify({ vw: s3.vw, sw: s3.sw, dlg: s3.dlg, options: s3.options, flexes: s3.flexes, apply: s3.apply }));
+
+  check("默认头像：选中环画在按钮内部、色块选中带勾（左右边缘不会被滚动区裁掉）",
+    s3.ok === true && s3.selectedEmojiInset === true && s3.selectedBgHasCheck === true,
+    "选中表情的 box-shadow 含 inset、选中色块内有勾",
+    JSON.stringify({ inset: s3.selectedEmojiInset, check: s3.selectedBgHasCheck }));
 
   check("默认头像：选择器里没有自由输入框，也没有把随机键做成非按钮",
     s3.ok === true && s3.inputs === 0 && s3.hasRandom === true,
     "inputs=0 且 random 按钮存在",
     JSON.stringify({ inputs: s3.inputs, hasRandom: s3.hasRandom }));
+
+  // 预览固定：矮窗口里只允许选项区滚；滚动前后预览的 top 不许动。
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 390, height: 600, deviceScaleFactor: 2, mobile: true,
+  });
+  await sleep(400);
+  const fixed = await cdp.eval(`(() => {
+    const dlg = document.querySelector('[role="dialog"]');
+    if (!dlg) return { ok: false };
+    const preview = dlg.querySelector('.gosslan-avatar-box');
+    const opts = dlg.querySelector('[data-avatar-options]');
+    if (!preview || !opts) return { ok: false };
+    const scrollers = [...dlg.querySelectorAll('*')].filter((el) => {
+      const st = getComputedStyle(el);
+      return /auto|scroll/.test(st.overflowY) && el.scrollHeight > el.clientHeight + 1;
+    });
+    let sc = opts;
+    while (sc && !scrollers.includes(sc)) sc = sc.parentElement;
+    if (!sc) return { ok: false, scrollers: scrollers.length };
+    const before = preview.getBoundingClientRect().top;
+    sc.scrollTop = 240;
+    const after = preview.getBoundingClientRect().top;
+    return {
+      ok: true,
+      scrollers: scrollers.length,
+      scrollTop: Math.round(sc.scrollTop),
+      moved: +(before - after).toFixed(1),
+      previewTop: +before.toFixed(1),
+      optionsScrollH: sc.scrollHeight,
+      optionsClientH: sc.clientHeight,
+    };
+  })()`);
+  check("默认头像：矮窗口里预览固定不动，只有选项区在滚（且全弹窗只有一个滚动区）",
+    fixed.ok === true && fixed.scrollers === 1 && fixed.scrollTop > 0
+      && Math.abs(fixed.moved) <= 1 && fixed.optionsScrollH > fixed.optionsClientH,
+    "唯一滚动区 scrollTop>0、预览 top 位移<=1px",
+    JSON.stringify(fixed));
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 390, height: 844, deviceScaleFactor: 2, mobile: true,
+  });
+  await sleep(300);
 
   // 确认：emit 的组合必须等于屏幕上选中的那一组。
   await cdp.eval("document.querySelector('[data-avatar-apply]').click()");
@@ -6431,6 +6483,56 @@ async function runAvatar(cdp, url) {
     art.loaded === true && art.w === 512 && art.h === 512 && art.other > 100,
     "naturalSize=512、非背景像素>100",
     JSON.stringify(art));
+
+  // ── 资料页布局（桌面 1200 宽）：头像框与右侧字段顶/底对齐；入口文案按用户口径。 ──
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 1200, height: 800, deviceScaleFactor: 1, mobile: false,
+  });
+  await cdp.send("Page.reload");
+  await sleep(2_000);
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 1200, height: 800, deviceScaleFactor: 1, mobile: false,
+  });
+  await sleep(500);
+  await cdp.eval(PAGE_FIXTURE);
+  const mountedProfileDesktop = await cdp.eval(
+    `window.__probe.install('/src/components/settings/ProfileSection.vue', '', ${JSON.stringify(JSON.stringify({ active: true }))})`,
+  );
+  await cdp.eval("window.__probe.seedDevice('probe-me')");
+  await sleep(400);
+  const align = await cdp.eval(`(() => {
+    const av = document.querySelector('[data-profile-avatar]');
+    const fields = document.querySelector('[data-profile-fields]');
+    if (!av || !fields) return { ok: false };
+    const a = av.getBoundingClientRect();
+    const f = fields.getBoundingClientRect();
+    const labels = [...document.querySelectorAll('button')].map((b) => String(b.innerText || '').trim());
+    return {
+      ok: true,
+      avatar: { t: +a.top.toFixed(1), b: +a.bottom.toFixed(1), h: +a.height.toFixed(1) },
+      fields: { t: +f.top.toFixed(1), b: +f.bottom.toFixed(1), h: +f.height.toFixed(1) },
+      hasUpload: labels.includes('上传头像'),
+      hasEmoji: labels.includes('自定义 emoji 头像'),
+      vw: innerWidth,
+      sw: document.documentElement.scrollWidth,
+    };
+  })()`);
+  check("资料页：头像框与右侧字段上下对齐，两个入口按用户口径命名",
+    mountedProfileDesktop && mountedProfileDesktop.ok === true && align.ok === true
+      && Math.abs(align.avatar.t - align.fields.t) <= 2.5
+      && Math.abs(align.avatar.b - align.fields.b) <= 2.5
+      && align.avatar.h >= 62 && align.avatar.h <= 66
+      && align.hasUpload === true && align.hasEmoji === true
+      && align.sw <= align.vw + 1,
+    "头像 top/bottom 与右侧字段差 <=2.5px、头像高 62~66、按钮文案=上传头像/自定义 emoji 头像、无横向溢出",
+    JSON.stringify(align));
+  if (SHOT_PATH) {
+    const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
+    fs.writeFileSync(SHOT_PATH.replace(/\.png$/, "-profile.png"), Buffer.from(shot.data, "base64"));
+    console.log("  📷 资料页布局取证帧 → " + SHOT_PATH.replace(/\.png$/, "-profile.png"));
+  }
 
   // ── 资料页入口 → 选择器 → 既有 updateProfile 的整条链（组件级，不是只看弹窗） ──
   // 重新导航一次：上一段留着开着的弹窗，别在同一个页面里叠第二个浮层。

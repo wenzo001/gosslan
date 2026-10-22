@@ -348,9 +348,9 @@ export const enUS: MessageDict = {
   "settings.network.toast.btFail": "Failed to switch Bluetooth channel",
 
   // ---- Profile ----
-  "settings.profile.changeAvatar": "Change Avatar",
-  "settings.profile.defaultAvatar": "Default Avatar",
-  "settings.profile.avatar.title": "Default Avatar",
+  "settings.profile.changeAvatar": "Upload Avatar",
+  "settings.profile.defaultAvatar": "Custom Emoji Avatar",
+  "settings.profile.avatar.title": "Custom Emoji Avatar",
   "settings.profile.avatar.hint": "Pick an emoji and a background color, or shuffle one.",
   "settings.profile.avatar.random": "Shuffle",
   "settings.profile.avatar.emoji": "Emoji",

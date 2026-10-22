@@ -209,6 +209,9 @@ function processAvatar(file: File): Promise<string> {
 
 <template>
   <SettingsGroup :title="t('settings.group.profile')">
+    <!-- 头像与右侧字段**视觉同高**（用户 2026-10-22：「头像缩一下，上下左右要对齐」）：
+         头像 64px；右侧 = 输入行 34 + 间距 4 + 按钮行 30 = 68px，居中后上下各差 2px，
+         肉眼看是一条水平带。头像再大（80）就会比按钮行高出一截。 -->
     <div class="flex items-center gap-4 p-4">
       <!-- 头像本体交给 SelfAvatar：与导航栏、"我的"页同一数据源、同一张默认脸。
            换头像的入口从"整块红色蒙版"改成右下角标，两个理由：
@@ -219,6 +222,7 @@ function processAvatar(file: File): Promise<string> {
            角标做成**兄弟节点**而不是塞进 SelfAvatar：那层根节点带 overflow-hidden，
            负偏移会被裁掉。`preview-src` 传的是本地那份乐观预览（失败会回滚）。 -->
       <button
+        data-profile-avatar
         class="relative shrink-0"
         :title="t('settings.profile.changeAvatar')"
         :aria-label="t('settings.profile.changeAvatar')"
@@ -232,29 +236,30 @@ function processAvatar(file: File): Promise<string> {
         </span>
       </button>
 
-      <div class="min-w-0 flex-1">
+      <div data-profile-fields class="min-w-0 flex-1">
         <!-- 焦点提示**透明**（与应用其它字段同一套：`focus:border-transparent`）。
              `border border-transparent` 是常驻的 1px 边框（静止时透明）——不能等聚焦时才加边框，
              否则聚焦那一下字段尺寸会变、里面的文字跟着跳。
              用户 2026-09-16 明确不要聚焦色，原本的 `focus:ring-2 focus:ring-primary` 实心方框、
-             以及全局焦点环那条外圈方框都已去掉。 -->
-        <input
-          v-model="nickname"
-          :maxlength="MAX_NICKNAME_CHARS"
-          :aria-busy="savingProfile"
-          class="w-full rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-bg)] px-3 py-2 text-sm outline-none transition focus:border-transparent"
-          :placeholder="t('settings.profile.nickname.placeholder')"
-          @blur="saveProfileNow"
-          @keydown.enter="onNicknameKeydown"
-          @compositionstart="ime.onStart"
-          @compositionend="ime.onEnd"
-        />
-        <!-- 静默截断要有可见读数（读数件见 ui/CharCounter）。外层 div 常驻：
-             否则第一个字打进去时下面那一排控件会跟着往下跳。 -->
-        <div class="mt-1 flex justify-end">
-          <CharCounter :text="nickname" :max="MAX_NICKNAME_CHARS" />
+             以及全局焦点环那条外圈方框都已去掉。
+             计数与输入同排：给读数留固定宽，第一个字打进去时输入框不会横向跳。 -->
+        <div class="flex items-center gap-2">
+          <input
+            v-model="nickname"
+            :maxlength="MAX_NICKNAME_CHARS"
+            :aria-busy="savingProfile"
+            class="min-w-0 flex-1 rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-bg)] px-3 py-1.5 text-sm outline-none transition focus:border-transparent"
+            :placeholder="t('settings.profile.nickname.placeholder')"
+            @blur="saveProfileNow"
+            @keydown.enter="onNicknameKeydown"
+            @compositionstart="ime.onStart"
+            @compositionend="ime.onEnd"
+          />
+          <span class="w-12 shrink-0 text-right">
+            <CharCounter :text="nickname" :max="MAX_NICKNAME_CHARS" />
+          </span>
         </div>
-        <div class="mt-2.5 flex flex-wrap items-center gap-2">
+        <div class="mt-1 flex flex-wrap items-center gap-2">
           <button
             class="tap-safe rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3 py-1.5 text-xs transition hover:bg-[var(--gosslan-hover)]"
             @click="avatarInput?.click()"

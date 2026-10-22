@@ -349,9 +349,9 @@ export const zhCN: MessageDict = {
   "settings.network.toast.btFail": "切换蓝牙通道失败",
 
   // ---- 个人资料 ----
-  "settings.profile.changeAvatar": "更换头像",
-  "settings.profile.defaultAvatar": "默认头像",
-  "settings.profile.avatar.title": "默认头像",
+  "settings.profile.changeAvatar": "上传头像",
+  "settings.profile.defaultAvatar": "自定义 emoji 头像",
+  "settings.profile.avatar.title": "自定义 emoji 头像",
   "settings.profile.avatar.hint": "选一个表情和背景色，或者随机一个。",
   "settings.profile.avatar.random": "随机一个",
   "settings.profile.avatar.emoji": "表情",
