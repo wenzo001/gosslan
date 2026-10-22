@@ -13,6 +13,24 @@
 
 ## [Unreleased]
 
+## [5.5.5] - 2026-10-22
+
+### 常驻 worker 有了看门狗（审计 R-05 —— 34 条里此前唯一完全没做的一条）
+
+- 五个进程级常驻 worker（`peer_emitter` / `outbox_retrier` / `runtime_diag_reporter` /
+  `db_hold_reporter` / `outbox_sweeper`）此前都是 spawn 完就把句柄丢掉，全仓 `is_finished`
+  **0 命中**。其中 outbox 清扫器一死，`sending` 行就再也没有终态出口 —— 界面一切正常，
+  用户看到的是「消息永远发送中直到重启」。
+- 现在统一由 `worker_supervisor` 拉起：名单只有一份（`RESIDENT_WORKERS`），每 10s 判活，
+  死了就重启并留一行 warn；同一个 worker 最多重启 5 次，超过只留 error（防「每 10s 重启
+  一次」把 CPU 打满）。
+- 接线判据三条：① 名单恰好 5 个且名字唯一；② `lib.rs` 里 `start(` 恰好一处、五条老的
+  直接 `spawn_*` 一条都不许留（留着 = 同一个 worker 跑两份）；③ 「句柄已结束」这个输入
+  信号用真实 tokio 任务正反两向证明。
+- 刻意**不收编**的两类写在模块注释里：`network::start` 管的那批（有显式 stop 生命周期，
+  重启一个已停的任务会把"用户关了局域网"变成"它又自己起来了"），以及挂在延迟启动作业里的
+  `group_history_sweeper`（时序要单独确认）。
+
 ## [5.5.4] - 2026-10-22
 
 ### 应用内更新：两处「看着守住了、其实没有」

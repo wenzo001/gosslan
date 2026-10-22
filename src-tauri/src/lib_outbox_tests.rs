@@ -10,6 +10,21 @@
 // 恒等判据当场降级成"我读过觉得没变"。同目录先例：`protocol_tests.rs`。
 // ⚠️ 册名以 `_tests.rs` 结尾也是被判据选定的：`transport_src_for_guards()` 那份"生产码全集"视图
 // 只许装生产码，而登记对账守卫按 `_tests.rs` 后缀豁免测试分册（并进视图是最顺手却假绿的消红办法）。
+
+/// 常驻 worker 的**启动面**：`worker_supervisor.rs`（唯一的名单 `RESIDENT_WORKERS`）
+/// + `lib.rs`（唯一的 `start` 调用点）。
+///
+/// 下面几条「恰好接一处」的接线判据都按这两份**合起来**数，理由与 `db_hold.rs` 里那条
+/// 跨文件计数相同：只看 `lib.rs` 会因为我 2026-10-22 把启动点搬进 `worker_supervisor`
+/// 而变成 0（判据误红），只看名单文件又会放过"某人在 `lib.rs` 里又直接 `spawn_*` 一份"
+/// （同一个 worker 跑两份，推送频率翻倍，比死掉更难查）。
+fn resident_startup_src() -> String {
+    format!(
+        "{}\n{}",
+        include_str!("lib.rs"),
+        include_str!("worker_supervisor.rs")
+    )
+}
 /// 出站清扫器的「失败终态」必须**由写库成功门控**（审计 A3）。
 ///
 /// 旧缺陷：三处 `emit("message-failed"/"file-failed")` 都写在 `if let Ok(dbc){ 写库 }` **之外**，
@@ -268,7 +283,7 @@ fn hourly_sweep_covers_parts_relay_and_stalled_receivers() {
 /// `sending`；必须有一个**按周期对当前有链路的 peer 重放**的接线点，且覆盖群队列。
 #[test]
 fn outbox_retrier_is_wired_and_covers_both_queues() {
-    let lib = include_str!("lib.rs");
+    let lib = resident_startup_src();
     let state = include_str!("state.rs");
     assert_eq!(
         lib.matches("AppState::spawn_outbox_retrier(").count(),
@@ -300,7 +315,7 @@ fn outbox_retrier_is_wired_and_covers_both_queues() {
 /// - "可达"必须同时认 TCP 链路与发现层在线（`peers.last_seen`），不能只看 links。
 #[test]
 fn outbox_sweeper_is_process_lifetime_and_reachability_includes_discovery() {
-    let lib = include_str!("lib.rs");
+    let lib = resident_startup_src();
     assert_eq!(
         lib.matches("spawn_outbox_sweeper(").count(),
         1,
@@ -405,7 +420,7 @@ fn ack_commit_uses_the_single_transaction_helper() {
 /// 运行态快照的接线判据：只测纯函数不够，必须真的有人每 5 分钟读 WebView 数与队列数。
 #[test]
 fn runtime_diag_reporter_is_wired_once_and_covers_webviews_and_queues() {
-    let lib = include_str!("lib.rs");
+    let lib = resident_startup_src();
     assert_eq!(
         lib.matches("AppState::spawn_runtime_diag_reporter(")
             .count(),
@@ -433,7 +448,7 @@ fn runtime_diag_reporter_is_wired_once_and_covers_webviews_and_queues() {
 
 #[test]
 fn db_hold_summary_has_exactly_one_production_reader() {
-    let lib = include_str!("lib.rs");
+    let lib = resident_startup_src();
     let state = include_str!("state.rs");
     assert_eq!(
         lib.matches("AppState::spawn_db_hold_reporter(").count(),
