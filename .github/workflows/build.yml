@@ -56,7 +56,7 @@ jobs:
           PASS: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           if ([string]::IsNullOrWhiteSpace($env:KEY)) {
-            Write-Error "::error title=tag 构建缺 TAURI_SIGNING_PRIVATE_KEY::自动更新产物（NSIS + .sig）需要签名。去仓库 Settings → Secrets and variables → Actions 添加 TAURI_SIGNING_PRIVATE_KEY 与 TAURI_SIGNING_PRIVATE_KEY_PASSWORD（见 docs/updates.md §2）。"
+            Write-Host "::error title=tag 构建缺 TAURI_SIGNING_PRIVATE_KEY::自动更新产物（NSIS + .sig）需要签名。去仓库 Settings → Secrets and variables → Actions 添加 TAURI_SIGNING_PRIVATE_KEY 与 TAURI_SIGNING_PRIVATE_KEY_PASSWORD（见 docs/updates.md §2）。"
             exit 1
           }
           # ⚠️ 只查"非空"不够：把私钥按 base64 解一次，确认它真的是 minisign 私钥 ——
@@ -64,12 +64,12 @@ jobs:
           $keyNorm = ($env:KEY -replace '\s', '')
           try { $bytes = [Convert]::FromBase64String($keyNorm) }
           catch {
-            Write-Error "::error title=TAURI_SIGNING_PRIVATE_KEY 不是合法 base64::值里混了非 base64 字符，或粘贴时被截断。正确值是 ~/.tauri/gosslan-updater.key 的**完整内容**。"
+            Write-Host "::error title=TAURI_SIGNING_PRIVATE_KEY 不是合法 base64::值里混了非 base64 字符，或粘贴时被截断。正确值是 ~/.tauri/gosslan-updater.key 的**完整内容**。"
             exit 1
           }
           $text = [Text.Encoding]::UTF8.GetString($bytes)
           if (-not $text.StartsWith('untrusted comment:')) {
-            Write-Error "::error title=TAURI_SIGNING_PRIVATE_KEY 不是 minisign 私钥::解出来不是以 'untrusted comment:' 开头 —— 多半是把**文件路径**填进去了，或复制时截断。"
+            Write-Host "::error title=TAURI_SIGNING_PRIVATE_KEY 不是 minisign 私钥::解出来不是以 'untrusted comment:' 开头 —— 多半是把**文件路径**填进去了，或复制时截断。"
             exit 1
           }
           if ([string]::IsNullOrEmpty($env:PASS)) {
@@ -133,7 +133,7 @@ jobs:
             Write-Host ("进程已退出 code=0x{0:X8}" -f $code)
             # 0xC0000139 = 入口点缺失；0xC0000135 = DLL 缺失；0xC0000142 = DLL 初始化失败
             if ($code -in @(0xC0000139, 0xC0000135, 0xC0000142)) {
-              Write-Error ("exe 在**加载期**就死了（0x{0:X8}）⇒ 这个安装包发出去用户也打不开" -f $code)
+              Write-Host ("::error title=发行版 exe 加载期就死::0x{0:X8} ⇒ 这个安装包发出去用户也打不开" -f $code)
               exit 1
             }
             Write-Host "不是加载期失败（GUI 无桌面会话下提前退出属正常）"
