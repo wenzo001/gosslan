@@ -48,11 +48,21 @@ pub async fn update_profile(
         }
     }
     {
-        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::set_setting(&dbc, "nickname", &nickname).map_err(|e| e.to_string())?;
-        if let Some(a) = &avatar {
-            db::set_setting(&dbc, "avatar", a).map_err(|e| e.to_string())?;
-        }
+        // 落库那一段进阻塞池（审计 R-18）：`update_profile` 是"保存资料"按钮那条链，
+        // 昵称/头像（头像可以是 2 MB base64）写的就是那条唯一的 db 连接。
+        let s2 = s.clone();
+        let nick = nickname.clone();
+        let av = avatar.clone();
+        tokio::task::spawn_blocking(move || -> Result<(), String> {
+            let dbc = s2.db.lock().unwrap_or_else(|e| e.into_inner());
+            db::set_setting(&dbc, "nickname", &nick).map_err(|e| e.to_string())?;
+            if let Some(a) = &av {
+                db::set_setting(&dbc, "avatar", a).map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| format!("资料写入被线程池中断: {e}"))??;
     }
     *s.nickname.lock().unwrap_or_else(|e| e.into_inner()) = nickname.clone();
     *s.avatar.lock().unwrap_or_else(|e| e.into_inner()) = avatar.clone();
@@ -142,7 +152,16 @@ pub fn is_virtual_ip(ip: &Ipv4Addr) -> bool {
 }
 
 #[tauri::command(async)]
-pub fn list_interfaces() -> Vec<InterfaceInfo> {
+pub async fn list_interfaces() -> Result<Vec<InterfaceInfo>, String> {
+    // `get_if_addrs` 是一次 `getifaddrs(3)` 系统调用（VPN/容器网卡多的时候可以慢），
+    // 而这条挂在设置的"网卡选择器"上 ⇒ 搬进阻塞池（审计 R-18）。
+    // 回 Result 而不是把失败摊成空列表：空列表在界面上读起来就是"这块机器没有网卡"。
+    tokio::task::spawn_blocking(list_interfaces_blocking)
+        .await
+        .map_err(|e| format!("网卡枚举被线程池中断: {e}"))
+}
+
+fn list_interfaces_blocking() -> Vec<InterfaceInfo> {
     let mut out = Vec::new();
     if let Ok(ifs) = if_addrs::get_if_addrs() {
         for i in &ifs {

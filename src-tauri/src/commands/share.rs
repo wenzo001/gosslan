@@ -3,7 +3,7 @@
 // ---------------- 共享目录 ----------------
 
 #[tauri::command(async)]
-pub fn set_share_dir(
+pub async fn set_share_dir(
     state: State<'_, Arc<AppState>>,
     window: tauri::WebviewWindow,
     path: String,
@@ -11,15 +11,22 @@ pub fn set_share_dir(
     if !PathBuf::from(&path).is_dir() {
         return Err("目录不存在".to_string());
     }
-    let s = state.inner();
-    {
-        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        // 路径 +（macOS）安全作用域书签一起落库：沙盒里书签是重启后唯一还带权限的来源。
-        // 书签建不出来不能让这个动作失败（未沙盒构建会失败，而那时路径本来就能用）。
-        crate::user_dirs::store(&dbc, crate::user_dirs::SHARE, &path)?;
-    }
-    *s.share_dir.lock().unwrap_or_else(|e| e.into_inner()) = Some(path);
+    let s = state.inner().clone();
+    // 落库（含 macOS 安全作用域书签）与那份内存值都在持锁/文件段里 ⇒ 进阻塞池（审计 R-18）。
+    tokio::task::spawn_blocking(move || -> Result<(), String> {
+        {
+            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+            // 路径 +（macOS）安全作用域书签一起落库：沙盒里书签是重启后唯一还带权限的来源。
+            // 书签建不出来不能让这个动作失败（未沙盒构建会失败，而那时路径本来就能用）。
+            crate::user_dirs::store(&dbc, crate::user_dirs::SHARE, &path)?;
+        }
+        *s.share_dir.lock().unwrap_or_else(|e| e.into_inner()) = Some(path);
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("共享目录写入被线程池中断: {e}"))??;
     // 目录是"解析后的路径"，不是 `Settings` 里的值 ⇒ patch 不带值，接收方定向重拉一次。
+    // 广播留在 await 之后：它不该占着 db 锁做。
     state.notify_settings_changed(&["shareDir"], Some(window.label()), json!({}));
     Ok(())
 }
@@ -48,7 +55,7 @@ pub fn get_downloads_dir(state: State<'_, Arc<AppState>>) -> String {
 
 /// 修改文件接收目录：校验目录存在后持久化，后续新接收的文件落到新目录。
 #[tauri::command(async)]
-pub fn set_downloads_dir(
+pub async fn set_downloads_dir(
     state: State<'_, Arc<AppState>>,
     window: tauri::WebviewWindow,
     path: String,
@@ -57,28 +64,38 @@ pub fn set_downloads_dir(
     if !p.is_dir() {
         return Err("目录不存在".to_string());
     }
-    let s = state.inner();
-    {
-        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        // 与共享目录同一套处理：接收目录也是"用户自选的目录"，沙盒里同样需要书签
-        crate::user_dirs::store(&dbc, crate::user_dirs::RECEIVE, &path)?;
-    }
-    *s.downloads_dir.lock().unwrap_or_else(|e| e.into_inner()) = p;
+    let s = state.inner().clone();
+    tokio::task::spawn_blocking(move || -> Result<(), String> {
+        {
+            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+            // 与共享目录同一套处理：接收目录也是"用户自选的目录"，沙盒里同样需要书签
+            crate::user_dirs::store(&dbc, crate::user_dirs::RECEIVE, &path)?;
+        }
+        *s.downloads_dir.lock().unwrap_or_else(|e| e.into_inner()) = p;
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("接收目录写入被线程池中断: {e}"))??;
     state.notify_settings_changed(&["downloadsDir"], Some(window.label()), json!({}));
     Ok(())
 }
 
 /// 在系统资源管理器中打开文件接收目录。
 #[tauri::command(async)]
-pub fn open_downloads_dir(state: State<'_, Arc<AppState>>) -> Result<(), String> {
-    let p = state
-        .inner()
-        .downloads_dir
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone();
-    std::fs::create_dir_all(&p).map_err(|e| e.to_string())?;
-    open_in_file_manager(&p)
+pub async fn open_downloads_dir(state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    let s = state.inner().clone();
+    // `create_dir_all` + 打开文件管理器都是文件系统/进程活（审计 R-18）。
+    tokio::task::spawn_blocking(move || -> Result<(), String> {
+        let p = s
+            .downloads_dir
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        std::fs::create_dir_all(&p).map_err(|e| e.to_string())?;
+        open_in_file_manager(&p)
+    })
+    .await
+    .map_err(|e| format!("打开接收目录被线程池中断: {e}"))?
 }
 
 /// 跨平台在系统文件管理器里打开指定目录。

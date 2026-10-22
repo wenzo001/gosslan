@@ -32,9 +32,18 @@ fn normalize_routed_address(input: &str) -> Result<String, String> {
 
 /// 列出手动配置的跨子网端点（Tailscale / VPN / 跨网段）。
 #[tauri::command(async)]
-pub fn list_routed_endpoints(state: tauri::State<'_, Arc<AppState>>) -> Vec<RoutedEndpoint> {
-    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-    parse_endpoints(&db::get_setting(&dbc, ROUTED_ENDPOINTS_KEY).unwrap_or_default())
+pub async fn list_routed_endpoints(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<Vec<RoutedEndpoint>, String> {
+    let s = state.inner().clone();
+    tokio::task::spawn_blocking(move || -> Result<Vec<RoutedEndpoint>, String> {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(parse_endpoints(
+            &db::get_setting(&dbc, ROUTED_ENDPOINTS_KEY).unwrap_or_default(),
+        ))
+    })
+    .await
+    .map_err(|e| format!("跨子网端点读取被线程池中断: {e}"))?
 }
 
 /// 添加一个跨子网端点。
@@ -47,7 +56,7 @@ pub fn list_routed_endpoints(state: tauri::State<'_, Arc<AppState>>) -> Vec<Rout
 /// 地址接受 `ip` 或 `ip:port`（省略端口按标准 [`TCP_PORT`] 补全），目前仅 IPv4：
 /// TCP 监听侧绑的是 `Ipv4Addr`，IPv6 端点拨出去也连不上。
 #[tauri::command(async)]
-pub fn add_routed_endpoint(
+pub async fn add_routed_endpoint(
     state: tauri::State<'_, Arc<AppState>>,
     device_id: Option<String>,
     address: String,
@@ -56,19 +65,23 @@ pub fn add_routed_endpoint(
     let device_id = device_id
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
-    let address = normalize_routed_address(&address)?;
-    let candidate = RoutedEndpoint::new(device_id, address);
-
-    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-    let mut list =
-        parse_endpoints(&db::get_setting(&dbc, ROUTED_ENDPOINTS_KEY).unwrap_or_default());
-    // 同一个**地址**不重复添加，无论是否带 device_id —— 一个地址只对应一个端点。
-    if !list.iter().any(|e| e.address == candidate.address) {
-        list.push(candidate);
-    }
-    db::set_setting(&dbc, ROUTED_ENDPOINTS_KEY, &encode_endpoints(&list))
-        .map_err(|e| format!("保存失败: {e}"))?;
-    Ok(list)
+    let candidate = RoutedEndpoint::new(device_id, normalize_routed_address(&address)?);
+    let s = state.inner().clone();
+    // 读-改-写这一整段都在同一把 db 锁里 ⇒ 不许留在 worker 上（审计 R-18）。
+    tokio::task::spawn_blocking(move || -> Result<Vec<RoutedEndpoint>, String> {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        let mut list =
+            parse_endpoints(&db::get_setting(&dbc, ROUTED_ENDPOINTS_KEY).unwrap_or_default());
+        // 同一个**地址**不重复添加，无论是否带 device_id —— 一个地址只对应一个端点。
+        if !list.iter().any(|e| e.address == candidate.address) {
+            list.push(candidate);
+        }
+        db::set_setting(&dbc, ROUTED_ENDPOINTS_KEY, &encode_endpoints(&list))
+            .map_err(|e| format!("保存失败: {e}"))?;
+        Ok(list)
+    })
+    .await
+    .map_err(|e| format!("跨子网端点写入被线程池中断: {e}"))?
 }
 
 /// 移除一个跨子网端点（只按**地址**匹配）。
@@ -81,25 +94,30 @@ pub fn add_routed_endpoint(
 /// 用户的真实反馈：UI 看着有 `100.101.221.60`，删的时候 normalize 成
 /// `100.101.221.60:59992`，而库里存的就是裸 `100.101.221.60`，字符串不相等。
 #[tauri::command(async)]
-pub fn remove_routed_endpoint(
+pub async fn remove_routed_endpoint(
     state: tauri::State<'_, Arc<AppState>>,
     address: String,
 ) -> Result<Vec<RoutedEndpoint>, String> {
     let address = normalize_routed_address(&address)?;
-    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-    let mut list =
-        parse_endpoints(&db::get_setting(&dbc, ROUTED_ENDPOINTS_KEY).unwrap_or_default());
-    let before = list.len();
-    list.retain(|e| {
-        // 库里的历史脏数据可能未归一化（裸 IP / 裸 IP 带非标准端口），按当前规则再过一遍
-        // 归一化后比较。归一化失败的条目（语法错乱）保守地按字符串相等判，免得误删。
-        let stored_norm =
-            normalize_routed_address(&e.address).unwrap_or_else(|_| e.address.clone());
-        stored_norm != address
-    });
-    if list.len() != before {
-        db::set_setting(&dbc, ROUTED_ENDPOINTS_KEY, &encode_endpoints(&list))
-            .map_err(|e| format!("保存失败: {e}"))?;
-    }
-    Ok(list)
+    let s = state.inner().clone();
+    tokio::task::spawn_blocking(move || -> Result<Vec<RoutedEndpoint>, String> {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        let mut list =
+            parse_endpoints(&db::get_setting(&dbc, ROUTED_ENDPOINTS_KEY).unwrap_or_default());
+        let before = list.len();
+        list.retain(|e| {
+            // 库里的历史脏数据可能未归一化（裸 IP / 裸 IP 带非标准端口），按当前规则再过一遍
+            // 归一化后比较。归一化失败的条目（语法错乱）保守地按字符串相等判，免得误删。
+            let stored_norm =
+                normalize_routed_address(&e.address).unwrap_or_else(|_| e.address.clone());
+            stored_norm != address
+        });
+        if list.len() != before {
+            db::set_setting(&dbc, ROUTED_ENDPOINTS_KEY, &encode_endpoints(&list))
+                .map_err(|e| format!("保存失败: {e}"))?;
+        }
+        Ok(list)
+    })
+    .await
+    .map_err(|e| format!("跨子网端点写入被线程池中断: {e}"))?
 }

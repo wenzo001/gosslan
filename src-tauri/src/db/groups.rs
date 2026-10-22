@@ -137,6 +137,27 @@ pub fn remove_group_member(conn: &Connection, group_id: &str, device_id: &str) -
     Ok(())
 }
 
+/// 用权威成员表**替换**本地集合。
+///
+/// `upsert_group` 对成员是 `INSERT OR IGNORE`（只增不减）：离线期间漏收
+/// `GroupMemberLeft` 的客户端会永久保留已退群成员（群任务指派仍能选中他们）。
+/// 只给发送方已被证明是群主的路径用：`handle_group_key`（上方已拒绝 `from != creator`）
+/// 与群主签名且自称群主的群 Gossip 信封；普通成员的成员表仍走只增不减。
+pub fn replace_group_members(conn: &Connection, group_id: &str, members: &[String]) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "DELETE FROM group_members WHERE group_id = ?1",
+        params![group_id],
+    )?;
+    for m in members {
+        tx.execute(
+            "INSERT OR IGNORE INTO group_members(group_id, device_id) VALUES(?1, ?2)",
+            params![group_id, m],
+        )?;
+    }
+    tx.commit()
+}
+
 /// 取单个群（含成员）。不存在返回 None。
 pub fn get_group(conn: &Connection, group_id: &str) -> Option<Group> {
     let row = conn
@@ -259,7 +280,7 @@ pub fn delete_group(conn: &Connection, group_id: &str) -> Result<()> {
 // 同名模块会和 `favorites_tests.rs` 里的 `mod tests` 撞成 E0428。
 #[cfg(test)]
 mod group_rename_tests {
-    use super::{rename_group, upsert_group};
+    use super::{get_group, rename_group, replace_group_members, upsert_group};
     use crate::db::{ensure_conversation, SCHEMA};
     use rusqlite::Connection;
 
@@ -330,6 +351,22 @@ mod group_rename_tests {
     ///   `ensure_conversation`，用户重装后群聊会自己冒回聊天列表）；
     /// · **正**：已经因聊天活动建过会话 ⇒ 群资料与会话行**必须是同一个名字**，
     ///   否则就是 #22 那个缺陷本身（群详情新名、列表旧名，两处用户都直接看得见）。
+    /// 权威成员表替换必须真的**删掉**已退群的人；只增不减会让离线漏收退群帧的客户端
+    /// 永久保留旧成员（群任务指派 bug 的根因）。
+    #[test]
+    fn replace_group_members_drops_members_who_left() {
+        let conn = mem();
+        let members = vec!["me".to_string(), "old".to_string(), "keep".to_string()];
+        upsert_group(&conn, "g1", "群", "me", &members).unwrap();
+
+        replace_group_members(&conn, "g1", &["me".to_string(), "keep".to_string()]).unwrap();
+
+        let mut got = get_group(&conn, "g1").unwrap().members;
+        got.sort();
+        assert_eq!(got, vec!["keep".to_string(), "me".to_string()]);
+        assert!(!got.contains(&"old".to_string()), "已退群成员必须被删掉");
+    }
+
     #[test]
     fn group_relation_sync_refreshes_title_but_never_creates_a_conversation() {
         let conn = mem();

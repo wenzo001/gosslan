@@ -874,6 +874,14 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                         let display_name: String =
                             display_name.chars().take(MAX_GROUP_NAME_LEN).collect();
                         db::upsert_group(&dbc, &gid, &display_name, &creator, &all).ok();
+                        // 只有「发送者自称群主且与本地已知群主一致（首次接触按 TOFU）」的成员表
+                        // 才当权威表整体替换；普通成员的成员表仍只增不减，避免一条伪造的
+                        // group_members 把别人从本地成员视图里抹掉。
+                        let authoritative_members = is_self_declared_creator
+                            && known.as_ref().map_or(true, |g| g.creator == creator);
+                        if authoritative_members {
+                            db::replace_group_members(&dbc, &gid, &all).ok();
+                        }
                         drop(dbc);
                         let _ = state.app.emit("groups-updated", &gid);
                         // 这一路也是"第一次成为成员"（有些人只收到过群消息、从没收到 GroupKey，

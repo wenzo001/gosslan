@@ -1323,6 +1323,16 @@ pub struct AppState {
     /// 群文件接收端 `.part` 状态：transfer_id -> 接收状态。
     /// 与一对一 `file_receivers` 生命周期独立；复用 FileReceiver 结构
     /// （file_key/next_seq/hasher 语义相同），不写 file_transfers 表。
+    /// 缓存自动清理器**是否已经起过**（10-22 审计 R-07）。
+    ///
+    /// 那条 loop 挂在 `network::start()` 末尾、且不进 `tasks`（所以 `stop()` 也收不掉它），
+    /// 而 `start()` 有多个生产入口：前端 `start_network`、`set_channel_enabled("lan", true)`、
+    /// 启动时的自动重试。没有这根闩，用户每拨一次 LAN 开关就**多一个永久清理器**，
+    /// 它们都排在同一条唯一 SQLite 连接上做 VACUUM ⇒「反复开关通道之后 App 周期性冻一下」。
+    /// 最近一次「慢持锁」摘要原文（由唯一读者 `spawn_db_hold_reporter` 写入，供诊断面板读）。
+    /// 面板读的是这份**留档**，不是 `take_summary()` —— 第二个读者会把计数吞掉。
+    pub db_hold_note: Mutex<Option<String>>,
+    pub cache_clean_started: AtomicBool,
     pub group_file_receivers: Mutex<HashMap<String, FileReceiver>>,
     /// 正在接收的文件：transfer_id -> FileReceiver
     pub file_receivers: Mutex<HashMap<String, FileReceiver>>,
@@ -1729,6 +1739,21 @@ impl AppState {
                 format!("code=OUTBOX_ORPHAN_RECOVER_FAILED err={e} —— 孤儿 sending 行可能仍会永久显示发送中"),
             ),
         }
+        // 🟦 崩溃恢复第三件（10-22 审计 R-14）：上面两条都管不到 `file_transfers` 的 `active` 行
+        // （第二条那段 SQL 还显式排除 `file-%`/`gfile-%`），于是被强杀的那次接收会留下
+        // 一张永远「接收中 X%」的卡片。这里把它落 failed —— 续传不受影响（判据在磁盘 `.part`，
+        // 对端重来时 upsert 会把状态写回去）。
+        match db::fail_interrupted_transfers_on_startup(&conn) {
+            Ok(n) if n > 0 => logger.info(
+                "file",
+                format!("code=TRANSFER_INTERRUPTED_RECOVERED count={n} action=active→failed"),
+            ),
+            Ok(_) => {}
+            Err(e) => logger.warn(
+                "file",
+                format!("code=TRANSFER_INTERRUPTED_RECOVER_FAILED err={e} —— 上次中断的接收卡片可能仍显示接收中"),
+            ),
+        }
 
         // 文件接收目录：默认 app_data/downloads，允许用户在设置里改（持久化到 settings）。
         // 与共享目录同理：用户自选的目录在沙盒里重启后会失访，必须靠书签把权限带回来，
@@ -1991,6 +2016,8 @@ impl AppState {
             // 种子 = 启动时刻纳秒（理由见 `group_file_round_seed`：发送端重启后轮次
             // 必须仍大于接收端记住的旧值）
             group_file_round_seq: std::sync::atomic::AtomicU64::new(group_file_round_seed()),
+            db_hold_note: Mutex::new(None),
+            cache_clean_started: AtomicBool::new(false),
             group_file_receivers: Mutex::new(HashMap::new()),
             group_file_sending: Mutex::new(std::collections::HashSet::new()),
             group_file_dispatching: Arc::new(Mutex::new(std::collections::HashSet::new())),
@@ -2472,17 +2499,13 @@ impl AppState {
                     .values()
                     .filter(|v| !v.is_empty())
                     .count();
-                let (sending, outbox, group_outbox, file_outbox) = {
-                    let dbc = st.db.lock().unwrap_or_else(|e| e.into_inner());
-                    let one =
-                        |sql: &str| -> i64 { dbc.query_row(sql, [], |r| r.get(0)).unwrap_or(-1) };
-                    (
-                        one("SELECT COUNT(*) FROM messages WHERE status = 'sending'"),
-                        one("SELECT COUNT(*) FROM outbox"),
-                        one("SELECT COUNT(*) FROM group_outbox"),
-                        one("SELECT COUNT(*) FROM file_outbox"),
-                    )
-                };
+                let counts = st.runtime_counts();
+                let (sending, outbox, group_outbox, file_outbox) = (
+                    counts.sending_msgs,
+                    counts.outbox,
+                    counts.group_outbox,
+                    counts.file_outbox,
+                );
                 st.logger.info(
                     "runtime",
                     format!(
@@ -2494,6 +2517,42 @@ impl AppState {
                 );
             }
         });
+    }
+
+    /// 队列与在途读数：全仓**唯一一份**取这几个计数的地方（10-22 审计 R-30）。
+    ///
+    /// 之前这组 SQL 只活在 `RUNTIME_SNAPSHOT` 那行日志里 ⇒ 界面零入口：
+    /// 用户说"卡住了"的时候，没有任何自助办法区分「队列积压」「链路没了」「db 在排队」。
+    /// 新命令 `get_runtime_diag` 与那行日志都读这一个方法 —— 抄第二份 SQL 就是
+    /// 第二条会各自漂移的平行实现（本仓在 BLE 常量上为这个付过连续四版的学费）。
+    ///
+    /// 一次持 db 锁读完四条，不逐条抢锁；读失败返回 -1（"不知道"而不是"0 条积压"）。
+    pub fn runtime_counts(&self) -> RuntimeCounts {
+        let dbc = self.db.lock().unwrap_or_else(|e| e.into_inner());
+        let one = |sql: &str| -> i64 { dbc.query_row(sql, [], |r| r.get(0)).unwrap_or(-1) };
+        RuntimeCounts {
+            sending_msgs: one("SELECT COUNT(*) FROM messages WHERE status = 'sending'"),
+            outbox: one("SELECT COUNT(*) FROM outbox"),
+            group_outbox: one("SELECT COUNT(*) FROM group_outbox"),
+            file_outbox: one("SELECT COUNT(*) FROM file_outbox"),
+        }
+    }
+
+    /// 好友 device_id 集合 —— "是不是好友"这件事的唯一读出口。
+    ///
+    /// 为什么要有这个方法（审计 R-04）：超时清扫需要按好友豁免，而 `db::list_friends`
+    /// 那份口径在 `get_pending_requests` 里已经有一份了。判据是同一个判断就必须收在同一个家，
+    /// 否则两张"好友名单"会各自漂移；同时把 network 域对 persistence 的一次内联跨域引用
+    /// 收回成 `state` 上的一次方法调用（领域依赖方向棘轮会盯着内联 `crate::` 的那条路）。
+    ///
+    /// 返回 `Option`：读不出来是 `None` 而**不是空集合** —— 空集合在调用方那儿读起来是
+    /// "这台机器一个好友都没有"，会让清扫把好友的身份信任根一起打掉。
+    pub fn friend_ids(&self) -> Option<std::collections::HashSet<String>> {
+        let dbc = self.db.lock().unwrap_or_else(|e| e.into_inner());
+        match db::list_friends(&dbc) {
+            Ok(list) => Some(list.into_iter().map(|f| f.device_id).collect()),
+            Err(_) => None,
+        }
     }
 
     /// 周期性把 SQLite 锁观测摘要写进运行日志。
@@ -2510,7 +2569,11 @@ impl AppState {
                 if let Some(line) =
                     crate::db_hold::summary_line(&summary, st.db.slow_threshold_ms())
                 {
-                    st.logger.warn("db", line);
+                    st.logger.warn("db", line.clone());
+                    // 同一行留一份给界面读数（R-30 / D-16 的「DB 锁」那一节）。
+                    // ⚠️ 这里必须是**唯一读者的下游**：诊断面板不许自己再 `take_summary()` ——
+                    // 两个读者互相吞计数就是今天刚摘掉的那条（判据见 `db_hold.rs`）。
+                    *st.db_hold_note.lock().unwrap_or_else(|e| e.into_inner()) = Some(line);
                 }
             }
         });
@@ -2525,6 +2588,19 @@ const OUTBOX_RETRY_SECS: u64 = 5;
 
 /// 运行态快照周期（秒）。5 分钟一行，日志轮转上界（512 KiB）下可保留数天趋势。
 const RUNTIME_DIAG_SECS: u64 = 300;
+
+/// 队列与在途计数（见 `AppState::runtime_counts`）。
+///
+/// 字段名与前端 `RuntimeDiag` 一一对应（serde 转 camelCase）—— 快照类结构体的口径
+/// 一直靠"逐字对应"这条约定，改字段必须同批改 `src/types.ts`，否则界面读到 `undefined`。
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeCounts {
+    pub sending_msgs: i64,
+    pub outbox: i64,
+    pub group_outbox: i64,
+    pub file_outbox: i64,
+}
 
 /// 解析多开实例号：优先 `--instance N` / `-i N` 启动参数，其次 `GOSSLAN_INSTANCE` 环境变量。
 /// 返回 0 表示默认单实例。

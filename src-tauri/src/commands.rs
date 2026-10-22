@@ -143,3 +143,6 @@ include!("commands/external_links.rs");
 
 // ---- logs.rs ----
 include!("commands/logs.rs");
+
+// ---- updater.rs（桌面更新；移动端为命令桩） ----
+include!("commands/updater.rs");

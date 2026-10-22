@@ -193,6 +193,16 @@ let prevScrollTop = 0;
 let lastScrollUpAt = 0;
 let suppressNearBottomUntil = 0;
 let settleTimer = 0;
+/**
+ * 切换会话后的「禁止逐次贴底」窗口。
+ *
+ * 实测用户 2026-10-22（5.1.2）：切到群聊时滚动区小幅快速抖动一阵才停。根因是切换后
+ * 可见行一批批实测 → `totalHeight` 每变一次就写一次 `scrollTop = scrollHeight`；
+ * 估算与实测来回修正时，滚动条被反复拽动。这里在切换后的静默窗口内不逐次贴底，
+ * 由 `settleTimer` 结束时统一贴一次；追加新消息/图片加载不受影响（它们不设这个窗口）。
+ */
+let pinHoldUntil = 0;
+let pinRaf = 0;
 /** 置位：下一次 computeScrollState 把 scrollTop 下降视为程序化滚动，不计用户上滚。 */
 let programmaticTop = false;
 
@@ -209,6 +219,18 @@ function setScrollTop(v: number) {
 
 function suppressTransient() {
   suppressNearBottomUntil = Math.max(suppressNearBottomUntil, Date.now() + 300);
+}
+
+/** 贴底也按帧合并：一次重测风暴只写一次 scrollTop。 */
+function schedulePin() {
+  if (pinRaf) return;
+  pinRaf = requestAnimationFrame(() => {
+    pinRaf = 0;
+    const el = container.value;
+    if (!el) return;
+    if (pinned && !recentScrollUp()) setScrollTop(el.scrollHeight);
+    computeScrollState();
+  });
 }
 
 /** 近 ms 毫秒内用户是否向上滚动过（父组件贴底前应检查）。 */
@@ -240,6 +262,7 @@ function computeScrollState() {
     if (!settleTimer) {
       settleTimer = window.setTimeout(() => {
         settleTimer = 0;
+        pinHoldUntil = 0;
         pinToBottom();
         computeScrollState();
       }, suppressNearBottomUntil - Date.now() + 30);
@@ -311,6 +334,7 @@ function scrollToBottom() {
     pinned = true;
     emit("nearBottom", true);
   }
+  pinHoldUntil = 0;
   suppressTransient();
   setScrollTop(el.scrollHeight);
 }
@@ -434,6 +458,7 @@ onBeforeUnmount(() => {
   if (raf) cancelAnimationFrame(raf);
   if (remeasureRaf) cancelAnimationFrame(remeasureRaf);
   if (settleTimer) window.clearTimeout(settleTimer);
+  if (pinRaf) cancelAnimationFrame(pinRaf);
   // 落定窗口的轮询也必须在这里停：`applyJump` 开头就是 `if (!j || !el) return;`，
   // 卸载后容器 ref 已是 null ⇒ 那条"过窗自动清表"的分支永远走不到 ⇒ 不显式清就是 10Hz 常驻。
   if (jumpTimer) {
@@ -462,6 +487,15 @@ watch(
     prevLastKey = newLastKey;
     scheduleRemeasure();
     if (isSwap && props.autoScrollOnSwap) {
+      // 切换后先贴一次估算底部；随后的重测收敛期间不再逐次贴底（见 pinHoldUntil），
+      // 由静默期结束统一贴一次，避免滚动条被估算/实测来回拽出小幅快速抖动。
+      // 若上一个瞬态窗口的 settleTimer 还在，必须按新的 300ms 边界重排，否则它会提前
+      // 触发、把 pinHold 清零，抖动又回来。
+      if (settleTimer) {
+        window.clearTimeout(settleTimer);
+        settleTimer = 0;
+      }
+      pinHoldUntil = Date.now() + 300;
       // post flush：DOM 已是新会话内容，此刻按真实 scrollHeight 贴底，比 pre-flush
       // 阶段对着旧高度滚的那次准确（修「定位到合并消息首行」）
       void nextTick(() => {
@@ -482,12 +516,9 @@ watch(
 // 防误伤交给两个条件：用户上滚豁免（recentScrollUp）+ 外部显式 setPinned(false)
 // （未读跳转 / 引用定位后由父组件解除贴底）。
 watch(totalHeight, () => {
-  void nextTick(() => {
-    const el = container.value;
-    if (!el) return;
-    if (pinned && !recentScrollUp()) setScrollTop(el.scrollHeight);
-    computeScrollState();
-  });
+  // 切换会话后的收敛窗口：只允许 settleTimer 在窗口结束贴一次，不能每变一次高度就拽一次。
+  if (Date.now() < pinHoldUntil) return;
+  schedulePin();
 });
 
 /** 外部显式设定贴底态（未读跳转/引用定位后置 false，点击回到最新置 true）。 */

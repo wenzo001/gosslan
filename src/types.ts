@@ -390,6 +390,28 @@ export interface RuntimeSnapshot {
   relay: { enabled: boolean; connected: boolean };
 }
 
+/**
+ * 一次性运行时读数（与 Rust `commands::RuntimeDiag` 逐字对应；serde camelCase）。
+ *
+ * 这是 10-22 审计 R-30 / D-16 那条「后端早就算好了，界面零入口」的出口：
+ * 队列积压、窗口/链路数量、最近一次慢持锁原文。按需读，不轮询。
+ * 计数读不出来时后端交回 -1（"不知道"），界面必须把负数如实显示成未知而不是"0 条积压"。
+ */
+export interface RuntimeDiag {
+  sendingMsgs: number;
+  outbox: number;
+  groupOutbox: number;
+  fileOutbox: number;
+  links: number;
+  peers: number;
+  windows: number;
+  hiddenWindows: number;
+  dbHoldNote: string | null;
+  /** 在飞的「等点击」通知线程数与上限（审计 R-08）。上限由后端给，前端不许抄常数。 */
+  notifyWaiters: number;
+  notifyWaitersMax: number;
+}
+
 export interface ChannelStatus {
   channel: "lan" | "bluetooth";
   enabled: boolean;
@@ -419,6 +441,20 @@ export interface ExternalLink {
   name: string;
   url: string;
 }
+
+/** 应用内更新：检查结果（时间戳为 Unix 秒，文案/格式化留给界面）。 */
+export interface UpdaterInfo {
+  currentVersion: string;
+  version: string;
+  notes?: string | null;
+  publishedAt?: number | null;
+}
+
+/** `updater_download` 的进度通道载荷（与 Rust `commands/updater.rs` 同形）。 */
+export type UpdaterDownloadEvent =
+  | { event: "Started"; data?: { contentLength?: number | null } }
+  | { event: "Progress"; data?: { chunkLength?: number } }
+  | { event: "Finished"; data?: undefined };
 
 /** 外链 JSON 导入的合并结果（`links` 是导入后的完整列表）。 */
 export interface ExternalLinkImportResult {

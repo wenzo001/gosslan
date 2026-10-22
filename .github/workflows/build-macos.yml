@@ -56,13 +56,29 @@ jobs:
         #   静音成绿（v4.31.37 就是这么丢的 Windows x64）。三次仍失败 ⇒ 判红，不装成功。
         env:
           TARGET: ${{ matrix.target }}
+          LABEL: ${{ matrix.label }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
           rel="src-tauri/target/$TARGET/release"
           dmg_dir="$rel/bundle/dmg"
+          # 只有 tag 构建生成/签名 updater 产物：main 的日常构建不需要私钥，也不会因为
+          # 还没配 Secrets 而整条 CI 变红；正式发版缺 Secrets 则当场红（不静默降级）。
+          # ⚠️ macOS runner 的 /bin/bash 是 3.2：`set -u` 下展开**空数组** `"${arr[@]}"`
+          # 会报 unbound variable ⇒ main 分支（不带 --config）的每一次构建都会红。
+          # 这里按分支写两条完整命令，不依赖空数组展开。
+          do_build() {
+            if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+              npm run tauri -- build --target "$TARGET" --features bluetooth \
+                --config src-tauri/tauri.updater.conf.json
+            else
+              npm run tauri -- build --target "$TARGET" --features bluetooth
+            fi
+          }
           attempt=0
           while :; do
-            if npm run tauri -- build --target "$TARGET" --features bluetooth; then
+            if do_build; then
               break
             fi
             attempt=$((attempt + 1))
@@ -90,6 +106,42 @@ jobs:
         with:
           name: gosslan-macos-${{ matrix.label }}
           path: src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+          retention-days: 14
+
+      # updater 的 macOS 产物是 .app.tar.gz + .sig（不是 .dmg）。两腿同名，
+      # 这里按 label 改成 `Gosslan-<label>.app.tar.gz`，否则 release 上后一腿会覆盖前一腿。
+      - name: Prepare updater artifacts (tag only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          TARGET: ${{ matrix.target }}
+          LABEL: ${{ matrix.label }}
+        run: |
+          set -euo pipefail
+          mkdir -p updater-assets
+          shopt -s nullglob
+          n=0
+          for f in "src-tauri/target/$TARGET/release/bundle/macos/"*.app.tar.gz; do
+            cp "$f" "updater-assets/Gosslan-$LABEL.app.tar.gz"
+            if [ ! -f "$f.sig" ]; then
+              echo "缺少 $f.sig ⇒ 签名没有生成（检查 TAURI_SIGNING_PRIVATE_KEY）" >&2
+              exit 1
+            fi
+            cp "$f.sig" "updater-assets/Gosslan-$LABEL.app.tar.gz.sig"
+            n=$((n + 1))
+          done
+          if [ "$n" -eq 0 ]; then
+            echo "没有 .app.tar.gz ⇒ updater 产物没有生成（检查 --config 与 createUpdaterArtifacts）" >&2
+            exit 1
+          fi
+          ls -l updater-assets
+
+      - name: Upload updater artifacts (tag only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: gosslan-macos-updater-${{ matrix.label }}
+          path: updater-assets/*
           if-no-files-found: error
           retention-days: 14
 

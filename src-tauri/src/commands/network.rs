@@ -125,37 +125,46 @@ pub async fn search_nearby_peers(state: State<'_, Arc<AppState>>) -> Result<Vec<
 ///
 /// 从后台变回前台时额外 **wake** 一次扫描，立刻补一轮，而不是等完当前慢周期。
 #[tauri::command(async)]
-pub fn set_app_active(state: State<'_, Arc<AppState>>, active: bool) {
+pub async fn set_app_active(state: State<'_, Arc<AppState>>, active: bool) -> Result<(), String> {
     use std::sync::atomic::Ordering;
-    let s = state.inner();
+    let s = state.inner().clone();
     // 只在状态**真的翻转**时做事。注意不能写成「相同就提前 return」：无 bluetooth
     // 特性时下面的块整体被 cfg 掉，return 会成为函数末语句，新 clippy（1.98）在
     // 非 bluetooth 构建下以 needless_return 挂门禁。把工作放进「翻转」分支，两种
     // 特性配置都干净，行为一字不变。
     if s.app_active.swap(active, Ordering::Relaxed) != active {
-        #[cfg(feature = "bluetooth")]
-        {
-            crate::network::ble::wake_scan(s);
-            s.logger.info(
-                "ble",
-                format!(
-                    "[SCAN] 应用{} ⇒ 扫描节奏切换为 {}",
-                    if active {
-                        "回到前台/聚焦"
-                    } else {
-                        "进入后台/失焦"
-                    },
-                    if active { "5s" } else { "30s" }
-                ),
-            );
-        }
+        // 这条**每次窗口聚焦都会打一次**（最热的一批命令之一）：唤醒扫描 + 那条留痕日志
+        // （日志落盘是同步 append，见 `logging.rs` 的 `append_file`）搬进阻塞池（审计 R-18）。
+        // 原子交换本身留在 await 侧 —— 它是判据，也不能被排到池子后面去。
+        tokio::task::spawn_blocking(move || -> Result<(), String> {
+            #[cfg(feature = "bluetooth")]
+            {
+                crate::network::ble::wake_scan(&s);
+                s.logger.info(
+                    "ble",
+                    format!(
+                        "[SCAN] 应用{} ⇒ 扫描节奏切换为 {}",
+                        if active {
+                            "回到前台/聚焦"
+                        } else {
+                            "进入后台/失焦"
+                        },
+                        if active { "5s" } else { "30s" }
+                    ),
+                );
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| format!("前台状态切换被线程池中断: {e}"))??;
     }
+    Ok(())
 }
 
 /// 从后台唤起并聚焦主窗口（冷启动首显 / 点击系统通知 / 消息点击唤起）。
 #[cfg(desktop)]
 #[tauri::command(async)]
-pub fn focus_window(app: tauri::AppHandle, state: State<'_, Arc<AppState>>) -> Result<(), String> {
+pub async fn focus_window(app: tauri::AppHandle, state: State<'_, Arc<AppState>>) -> Result<(), String> {
     let Some(win) = app.get_webview_window("main") else {
         return Err("主窗口不存在".to_string());
     };
@@ -164,10 +173,15 @@ pub fn focus_window(app: tauri::AppHandle, state: State<'_, Arc<AppState>>) -> R
     // 底色改成跟随主题（浅 #edf1f6 / 深 #0b1220，与 body 的 --gosslan-app-bg 一致），
     // 第一帧即正确底色而非浅色。dark_mode 是"解析后的结果"（跟随系统时已按系统偏好算好），
     // 冷启动直接可用。
-    let dark = {
-        let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
-        db::get_config_bool(&dbc, "dark_mode", false)
-    };
+    // 只有那次 db 读进阻塞池（审计 R-18）；窗口那四步是 Tauri 自己的线程模型负责，
+    // 搬进阻塞线程反而会把它们推到错误的线程上。
+    let s = state.inner().clone();
+    let dark = tokio::task::spawn_blocking(move || -> Result<bool, String> {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(db::get_config_bool(&dbc, "dark_mode", false))
+    })
+    .await
+    .map_err(|e| format!("主题底色读取被线程池中断: {e}"))??;
     let color = if dark {
         tauri::window::Color(11, 18, 32, 255) // #0b1220
     } else {
@@ -403,7 +417,7 @@ pub struct DesktopNotificationOpts {
 /// `conv_id` = 这条通知属于哪个会话：用户**点通知**时（由 notify-rust 的
 /// handle 捕获）后端唤起主窗口并把这个 id 发给前端，前端据此直接定位过去。
 #[tauri::command(async)]
-pub fn notify_desktop(
+pub async fn notify_desktop(
     app: tauri::AppHandle,
     state: State<'_, Arc<AppState>>,
     title: String,
@@ -419,33 +433,40 @@ pub fn notify_desktop(
     let s = state.inner().clone();
     let click_app = app.clone();
     let click_msg_id = msg_id.clone();
-    let mut extra = std::collections::HashMap::new();
-    // 前端没显式给按钮文案（普通消息路径）时，按本机语言设置补：macOS 的 action 按钮
-    // 是点击捕获的承重件，文案不能空。"跟随系统/未设置"一律回落中文（应用缺省语言）。
-    let label = action_label.unwrap_or_else(|| {
-        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        if crate::db::get_setting(&dbc, "language").as_deref() == Some("en-US") {
-            "View".to_string()
-        } else {
-            "查看".to_string()
-        }
-    });
-    extra.insert("action_label".to_string(), label);
-    crate::notifications::show_click_if_enabled(
-        &s,
-        &title,
-        &body,
-        extra,
-        sound,
-        move || {
-            crate::notifications::on_notification_clicked(
-                &click_app,
-                "chat",
-                Some(conv_id),
-                click_msg_id,
-            )
-        },
-    )
+    // 整段进阻塞池（审计 R-18）：读语言设置要抢那条唯一的 db 连接，而 `show*` 是真的
+    // 系统通知调用（Windows toast / macOS NSUserNotificationCenter / Linux D-Bus）——
+    // 这类 API 会等系统组件，正是"消息一到就卡住别的命令"的形状。
+    tokio::task::spawn_blocking(move || -> Result<bool, String> {
+        let mut extra = std::collections::HashMap::new();
+        // 前端没显式给按钮文案（普通消息路径）时，按本机语言设置补：macOS 的 action 按钮
+        // 是点击捕获的承重件，文案不能空。"跟随系统/未设置"一律回落中文（应用缺省语言）。
+        let label = action_label.unwrap_or_else(|| {
+            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+            if crate::db::get_setting(&dbc, "language").as_deref() == Some("en-US") {
+                "View".to_string()
+            } else {
+                "查看".to_string()
+            }
+        });
+        extra.insert("action_label".to_string(), label);
+        crate::notifications::show_click_if_enabled(
+            &s,
+            &title,
+            &body,
+            extra,
+            sound,
+            move || {
+                crate::notifications::on_notification_clicked(
+                    &click_app,
+                    "chat",
+                    Some(conv_id),
+                    click_msg_id,
+                )
+            },
+        )
+    })
+    .await
+    .map_err(|e| format!("系统通知发送被线程池中断: {e}"))?
 }
 
 /// 设置页「发送测试通知」：忽略总开关（用户显式要试），但**如实返回失败原因**。
@@ -454,22 +475,29 @@ pub fn notify_desktop(
 /// 系统里把 Gosslan 的通知关了）。没有这个入口，用户只能描述"收不到"，我们无法判断是
 /// 应用链路问题还是系统设置问题。
 #[tauri::command(async)]
-pub fn send_test_notification(state: State<'_, Arc<AppState>>) -> Result<String, String> {
-    let s = state.inner();
-    match crate::notifications::show(
-        &s.app,
-        "Gosslan 测试通知",
-        "如果你看到这条系统通知，说明通知链路正常。",
-    ) {
-        Ok(()) => {
-            s.logger.info("notify", "测试通知已发送");
-            Ok(crate::notifications::platform_hint().to_string())
+pub async fn send_test_notification(state: State<'_, Arc<AppState>>) -> Result<String, String> {
+    let s = state.inner().clone();
+    // 系统通知 API + 那条留痕的日志（落盘是同步 append）都在阻塞段里 ⇒ 进池（审计 R-18）。
+    // 原来返回的是 `Result<String,String>`，搬池子后"被线程池中断"与"发送失败"两种错
+    // 都仍然以 reject 回到前端，JS 侧形状不变。
+    tokio::task::spawn_blocking(move || -> Result<String, String> {
+        match crate::notifications::show(
+            &s.app,
+            "Gosslan 测试通知",
+            "如果你看到这条系统通知，说明通知链路正常。",
+        ) {
+            Ok(()) => {
+                s.logger.info("notify", "测试通知已发送");
+                Ok(crate::notifications::platform_hint().to_string())
+            }
+            Err(e) => {
+                s.logger.warn("notify", format!("测试通知发送失败：{e}"));
+                Err(format!("{e}。{}", crate::notifications::platform_hint()))
+            }
         }
-        Err(e) => {
-            s.logger.warn("notify", format!("测试通知发送失败：{e}"));
-            Err(format!("{e}。{}", crate::notifications::platform_hint()))
-        }
-    }
+    })
+    .await
+    .map_err(|e| format!("测试通知被线程池中断: {e}"))?
 }
 
 /// 网络拓扑摘要：节点数、中继数、平均时延。

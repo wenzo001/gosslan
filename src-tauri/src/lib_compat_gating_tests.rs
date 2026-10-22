@@ -237,9 +237,19 @@
             "自动重试也必须走能力协商（旧端不发新帧）"
         );
         let cmds = all_commands_src();
+        // 这条原来钉的是 `pub fn get_content_transfers(` 那个**签名形状**。2026-10-22（审计 R-18）
+        // 把它的 db 读挪进 spawn_blocking ⇒ 变成 `pub async fn`，形状一变判据就红，
+        // 而它真正要守的是「前端有一处统一的状态查询命令可拿」。换成两条更贴语义的：
+        // ① 命令存在（`fn` / `async fn` 都算 —— 用不用阻塞池不是这件事的重点）；
+        // ② 它必须注册进 lib.rs 的 `generate_handler!`：名字没注册时前端一调就
+        //    "command not found"，那才是这条真正要防的事故（`mapContract.test.ts` 在前端侧钉的是同一条）。
         assert!(
-            cmds.contains("pub fn get_content_transfers("),
+            cmds.contains("fn get_content_transfers("),
             "必须有统一状态查询命令（前端气泡据此显示）"
+        );
+        assert!(
+            include_str!("lib.rs").contains("commands::get_content_transfers,"),
+            "命令存在但没注册进 generate_handler! ⇒ 前端 invoke 必然 command not found"
         );
         let model = include_str!("content/model.rs");
         assert!(

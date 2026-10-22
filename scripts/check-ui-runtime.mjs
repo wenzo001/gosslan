@@ -2132,7 +2132,7 @@ window.__probe = (() => {
           }, {
             default: ({ item, index }) => V.h('div', {
               'data-vrow': index,
-              style: 'height:40px;line-height:40px;',
+              style: 'height:' + (item.h || 40) + 'px;line-height:' + (item.h || 40) + 'px;',
             }, item.text),
           }),
         ]);
@@ -2206,6 +2206,41 @@ window.__probe = (() => {
     st.items = add.concat(st.items);
     return true;
   };
+  /** 模拟切会话：整表换 key，且行高与估算值（40）不同，逼出重测收敛。 */
+  H.vlistSwap = (n) => {
+    const st = window.__vlist;
+    if (!st) return false;
+    st.items = Array.from({ length: n || 120 }, (_, i) => ({
+      id: 'swap-' + i,
+      text: 'swap ' + i,
+      h: 28 + ((i * 7) % 5) * 9,
+    }));
+    return true;
+  };
+  /** 切换后让行高在估算值两侧来回变几拍，模拟图片/字体把实测高度分批修正。 */
+  H.vlistWobble = (waves, interval) => {
+    const st = window.__vlist;
+    if (!st) return false;
+    let k = 0;
+    const timer = setInterval(() => {
+      st.items = st.items.map((it, i) => ({ ...it, h: ((i + k) % 2 ? 46 : 28) }));
+      k += 1;
+      if (k >= (waves || 6)) clearInterval(timer);
+    }, interval || 35);
+    return true;
+  };
+  /** 连续采样滚动位置：用来看切换后是否来回抖。 */
+  H.vlistSampleScroll = (ms) => new Promise((resolve) => {
+    const out = [];
+    const t0 = performance.now();
+    const tick = () => {
+      const sc = H.vlistScroll();
+      if (sc) out.push(Math.round(sc.scrollTop));
+      if (performance.now() - t0 < ms) requestAnimationFrame(tick);
+      else resolve(out);
+    };
+    tick();
+  });
   return H;
 })();
 true;
@@ -2641,6 +2676,7 @@ async function main() {
     const favorites = want("favorites");
     const links = want("links");
     const diag = want("diag");
+    const updater = want("updater");
     const avatar = want("avatar");
     const fontsel = want("fontsel");
     const layoutstore = want("layoutstore");
@@ -2693,6 +2729,7 @@ async function main() {
     if (navicon) await runNavIcon(cdp, url);
     if (menufit) await runMenuFit(cdp, url);
     if (diag) await runDiag(cdp, url);
+    if (updater) await runUpdater(cdp, url);
     if (avatar) await runAvatar(cdp, url);
     if (links) await runLinks(cdp, url);
     if (fontsel) await runFontSelect(cdp, url);
@@ -5043,6 +5080,28 @@ async function runVirtualList(cdp, url) {
   s = await read();
   check("VirtualList：触顶真的发 loadMore（父组件据此拉更早历史）",
     s.loadMore > lmBefore, "loadMore 增加", "before=" + lmBefore + " after=" + s.loadMore);
+
+  // 切会话：整表换 key + 行高与估算不同，逼出估算→实测收敛。切换后的静默窗口内
+  // 不允许每改一次总高度就写一次 scrollTop（那会表现为小幅快速抖动）。
+  await cdp.eval("window.__probe.vlistSwap(120)");
+  await cdp.eval("window.__probe.vlistWobble(6, 35)");
+  const samples = await cdp.eval("window.__probe.vlistSampleScroll(650)");
+  await sleep(200);
+  const afterSwap = await read();
+  let reversals = 0;
+  let prevSign = 0;
+  for (let i = 1; i < samples.length; i++) {
+    const d = samples[i] - samples[i - 1];
+    if (Math.abs(d) < 2) continue;
+    const sign = Math.sign(d);
+    if (prevSign !== 0 && sign !== prevSign) reversals += 1;
+    prevSign = sign;
+  }
+  check("VirtualList：切换会话后滚动位置收敛，不来回快速抖动",
+    reversals <= 3 && afterSwap.scrollHeight > afterSwap.clientHeight
+      && afterSwap.scrollHeight - afterSwap.scrollTop - afterSwap.clientHeight < 150,
+    "方向反转<=3 且最终贴底",
+    JSON.stringify({ reversals, samples: samples.slice(0, 30), final: { top: afterSwap.scrollTop, h: afterSwap.scrollHeight, c: afterSwap.clientHeight } }));
 }
 
 async function runLogs(cdp, url) {
@@ -6309,6 +6368,8 @@ async function runAvatar(cdp, url) {
       selectedBgHasCheck: pb.length === 1 ? !!pb[0].querySelector('svg') : false,
       apply: ar ? { l: +ar.left.toFixed(1), r: +ar.right.toFixed(1), h: +ar.height.toFixed(1) } : null,
       inputs: dlg.querySelectorAll('input').length,
+      colorInputs: dlg.querySelectorAll('input[type="color"]').length,
+      textInputs: dlg.querySelectorAll('input:not([type="color"])').length,
       hasRandom: !!dlg.querySelector('[data-avatar-random]'),
     };
   })()`);
@@ -6396,10 +6457,10 @@ async function runAvatar(cdp, url) {
     "选中表情的 box-shadow 含 inset、选中色块内有勾",
     JSON.stringify({ inset: s3.selectedEmojiInset, check: s3.selectedBgHasCheck }));
 
-  check("默认头像：选择器里没有自由输入框，也没有把随机键做成非按钮",
-    s3.ok === true && s3.inputs === 0 && s3.hasRandom === true,
-    "inputs=0 且 random 按钮存在",
-    JSON.stringify({ inputs: s3.inputs, hasRandom: s3.hasRandom }));
+  check("默认头像：没有自由文本输入，唯一的 input 是自定义取色器；随机键是按钮",
+    s3.ok === true && s3.colorInputs === 1 && s3.textInputs === 0 && s3.hasRandom === true,
+    "colorInputs=1、textInputs=0、random 按钮存在",
+    JSON.stringify({ inputs: s3.inputs, colorInputs: s3.colorInputs, textInputs: s3.textInputs, hasRandom: s3.hasRandom }));
 
   // 预览固定：矮窗口里只允许选项区滚；滚动前后预览的 top 不许动。
   await cdp.send("Emulation.setDeviceMetricsOverride", {
@@ -6422,6 +6483,13 @@ async function runAvatar(cdp, url) {
     const before = preview.getBoundingClientRect().top;
     sc.scrollTop = 240;
     const after = preview.getBoundingClientRect().top;
+    // 再滚到真正的最大值：最后一颗色块（含自定义色）与确认键都必须完整落在可视区。
+    sc.scrollTop = sc.scrollHeight;
+    const lastOption = [...dlg.querySelectorAll('[data-avatar-bg], [data-avatar-custom-color]')].pop();
+    const apply = dlg.querySelector('[data-avatar-apply]');
+    const scRect = sc.getBoundingClientRect();
+    const lastRect = lastOption ? lastOption.getBoundingClientRect() : null;
+    const applyRect = apply ? apply.getBoundingClientRect() : null;
     return {
       ok: true,
       scrollers: scrollers.length,
@@ -6430,6 +6498,12 @@ async function runAvatar(cdp, url) {
       previewTop: +before.toFixed(1),
       optionsScrollH: sc.scrollHeight,
       optionsClientH: sc.clientHeight,
+      maxScroll: Math.round(sc.scrollTop + sc.clientHeight) >= Math.round(sc.scrollHeight) - 1,
+      lastBottom: lastRect ? +lastRect.bottom.toFixed(1) : null,
+      scrollerBottom: +scRect.bottom.toFixed(1),
+      applyTop: applyRect ? +applyRect.top.toFixed(1) : null,
+      applyBottom: applyRect ? +applyRect.bottom.toFixed(1) : null,
+      vh: innerHeight,
     };
   })()`);
   check("默认头像：矮窗口里预览固定不动，只有选项区在滚（且全弹窗只有一个滚动区）",
@@ -6437,6 +6511,13 @@ async function runAvatar(cdp, url) {
       && Math.abs(fixed.moved) <= 1 && fixed.optionsScrollH > fixed.optionsClientH,
     "唯一滚动区 scrollTop>0、预览 top 位移<=1px",
     JSON.stringify(fixed));
+  check("默认头像：滚到最底部后，最后一颗色块与确认键都完整可见",
+    fixed.ok === true && fixed.maxScroll === true && fixed.lastBottom !== null
+      && fixed.lastBottom <= fixed.scrollerBottom + 1
+      && fixed.applyTop !== null && fixed.applyTop >= 0
+      && fixed.applyBottom !== null && fixed.applyBottom <= fixed.vh + 1,
+    "maxScroll + 最后一颗色块底边≤滚动区底边 + 确认键完整在视口内",
+    JSON.stringify({ maxScroll: fixed.maxScroll, lastBottom: fixed.lastBottom, scrollerBottom: fixed.scrollerBottom, apply: [fixed.applyTop, fixed.applyBottom], vh: fixed.vh }));
   await cdp.send("Emulation.setDeviceMetricsOverride", {
     width: 390, height: 844, deviceScaleFactor: 2, mobile: true,
   });
@@ -6452,6 +6533,37 @@ async function runAvatar(cdp, url) {
     Array.isArray(applied) && applied[1] === s3.pressedEmoji && applied[2] === s3.pressedBg,
     "apply 事件载荷 = 选中组合",
     JSON.stringify({ event: applied, selected: [s3.pressedEmoji, s3.pressedBg] }));
+
+  // 自定义色：取色器写入后预览必须立即变，且选中环落到自定义那颗上。
+  const customSet = await cdp.eval(`(() => {
+    const dlg = document.querySelector('[role="dialog"]');
+    if (!dlg) return { ok: false };
+    const input = dlg.querySelector('input[type="color"]');
+    const btn = dlg.querySelector('[data-avatar-custom-color]');
+    if (!input || !btn) return { ok: false };
+    input.value = '#123456';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    return { ok: true };
+  })()`);
+  await sleep(200);
+  const customRead = await cdp.eval(`(() => {
+    const dlg = document.querySelector('[role="dialog"]');
+    if (!dlg) return { ok: false };
+    const btn = dlg.querySelector('[data-avatar-custom-color]');
+    const preview = dlg.querySelector('.gosslan-avatar-box');
+    return {
+      ok: true,
+      pressed: btn ? btn.getAttribute('aria-pressed') : null,
+      previewBg: preview ? getComputedStyle(preview).backgroundColor : null,
+      palettePressed: dlg.querySelectorAll('[data-avatar-bg][aria-pressed="true"]').length,
+    };
+  })()`);
+  check("默认头像：自定义颜色写入后预览生效，选中态落在自定义色块上",
+    customSet.ok === true && customRead.ok === true
+      && customRead.pressed === "true" && customRead.palettePressed === 0
+      && customRead.previewBg === "rgb(18, 52, 86)",
+    "aria-pressed=true、调色板无选中、预览=#123456",
+    JSON.stringify({ set: customSet, read: customRead }));
 
   // SVG 真的画出了 emoji：画进 canvas 数非背景像素。只画背景色 ⇒ 图标位置是一整块纯色，
   // 对端看到的就是"没有脸的色块"，而界面这边所有字符串判据仍然全绿。
@@ -6611,6 +6723,92 @@ async function runAvatar(cdp, url) {
     JSON.stringify({ want: pick, saved }));
 
   await cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
+}
+
+
+/**
+ * 应用更新面板（--only=updater）：纯展示组件 + 四态夹具，不碰 Tauri。
+ * 量的是“发现更新/下载中/下载完成/移动端不支持”在真浏览器里的可见性与用户确认门槛。
+ */
+async function runUpdater(cdp, url) {
+  const base = {
+    phase: "available",
+    info: { currentVersion: "5.4.1", version: "5.5.0", notes: "修复若干问题", publishedAt: 1_700_000_000 },
+    currentVersion: "5.4.1",
+    downloaded: 0,
+    total: null,
+    error: null,
+    checkedAt: null,
+    dismissedVersion: null,
+  };
+  const mount = async (state, supported = true) => {
+    const ok = await cdp.eval(
+      `window.__probe.install('/src/components/settings/UpdatePanel.vue', '', ${
+        JSON.stringify(JSON.stringify({ state, supported }))
+      })`,
+    );
+    await sleep(350);
+    return ok;
+  };
+  const text = () => cdp.eval("document.body.innerText");
+  const hasDialog = () => cdp.eval("!!document.querySelector('[role=\"dialog\"]')");
+
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+
+  await mount(base);
+  const t1 = await text();
+  check("应用更新：发现更新时显示版本/说明/下载与稍后，且没有启动弹窗",
+    t1.includes("5.5.0") && t1.includes("下载更新") && t1.includes("稍后") && (await hasDialog()) === false,
+    "含 5.5.0/下载更新/稍后；无 role=dialog",
+    JSON.stringify({ head: String(t1).slice(0, 180), dialog: await hasDialog() }));
+
+  await mount({ ...base, phase: "downloading", downloaded: 40, total: 100 });
+  const t2 = await text();
+  const bar = await cdp.eval(`(() => {
+    const el = document.querySelector('[role="progressbar"]');
+    return el ? { now: el.getAttribute('aria-valuenow'), max: el.getAttribute('aria-valuemax') } : null;
+  })()`);
+  check("应用更新：下载中显示真实进度条与取消入口",
+    t2.includes("取消下载") && bar && bar.now === "40" && bar.max === "100",
+    "含取消下载，progressbar 40/100",
+    JSON.stringify({ bar, hasCancel: t2.includes("取消下载") }));
+
+  await mount({ ...base, phase: "ready" });
+  await cdp.eval(`(() => {
+    const b = [...document.querySelectorAll('button')].find((x) => (x.innerText || '').includes('安装并重启'));
+    if (b) b.click();
+    return !!b;
+  })()`);
+  await sleep(200);
+  const t3 = await text();
+  check("应用更新：安装必须先出现二次确认（不点确认不安装）",
+    t3.includes("安装会退出应用并重启") && t3.includes("确认安装"),
+    "出现确认文案与确认键",
+    JSON.stringify({ head: String(t3).slice(0, 200) }));
+
+  await mount({ ...base, info: null, phase: "idle" }, false);
+  const t4 = await text();
+  const checkBtn = await cdp.eval(`(() => [...document.querySelectorAll('button')]
+    .some((b) => (b.innerText || '').trim() === '检查更新'))()`);
+  check("应用更新：移动端不支持时只给手动渠道说明，不给检查按钮",
+    t4.includes("移动端不支持应用内更新") && checkBtn === false,
+    "含移动端说明且没有文案为「检查更新」的按钮",
+    JSON.stringify({ head: String(t4).slice(0, 180), checkBtn }));
+
+  const geom = await cdp.eval(`(() => ({
+    vw: innerWidth,
+    sw: document.documentElement.scrollWidth,
+    host: (() => { const h = document.getElementById('probe-host'); return h ? Math.round(h.getBoundingClientRect().width) : 0; })(),
+  }))()`);
+  check("应用更新：390 宽下不横向溢出",
+    geom.sw <= geom.vw + 1,
+    "scrollWidth<=vw",
+    JSON.stringify(geom));
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 390, height: 844, deviceScaleFactor: 2, mobile: true,
+  });
 }
 
 async function runFavorites(cdp, url) {

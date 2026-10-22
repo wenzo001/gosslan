@@ -28,6 +28,22 @@ let ifaceToastShown = false;
 const channels = computed(() => app.channels ?? []);
 const btStatus = computed(() => channels.value.find((c) => c.channel === "bluetooth"));
 const lanStatus = computed(() => channels.value.find((c) => c.channel === "lan"));
+/**
+ * 局域网那一行的状态文案（10-22 审计 D-10：连接建立缺中间态）。
+ *
+ * 原来只有两档：`app.online ? "{n} 个节点在线" : "未开启"`。而 `online` 说的是"绑定成功没有"，
+ * 用户刚把开关拨到开、`start_network` 还在跑的那一段里它是 false ⇒ **开关已经是开的，
+ * 旁边写着「未开启」**。这不是"晚一点更新"，是同一秒里说两件矛盾的事，
+ * 也正是"我开了怎么显示没开？再点一下试试"这类操作的来源。
+ * 中间档判据用两份事实的并集：通道偏好已启用（用户要它开）或这一次启停还在飞行中。
+ */
+const lanStateText = computed(() => {
+  if (app.online) return t("settings.network.lan.peers", { n: lanStatus.value?.peers ?? 0 });
+  if (lanStatus.value?.enabled || app.isChannelPending("lan")) {
+    return t("settings.network.lan.connecting");
+  }
+  return t("settings.network.lan.off");
+});
 const interfaceOptions = computed(() => [
   { value: "0.0.0.0", label: t("settings.network.interface.auto") },
   ...app.interfaces.map((i) => ({ value: i.ip, label: `${i.name}（${i.ip}）` })),
@@ -115,8 +131,77 @@ function onInterfacePicked(value: string | number) {
   void onInterfaceChange();
 }
 
+const rebinding = ref(false);
+
+/**
+ * 重绑实时事件（10-22 审计 R-33 / D-29 的脱困出口）。
+ *
+ * 这颗按钮是**真的有用**的，不是装饰：`chat.init()` 开头就是
+ * 「先 `chatInitScope?.dispose()`、再注册这一轮」的重复初始化守卫（原本为 HMR 准备），
+ * 所以连点不会堆出两套监听 —— 与文件类那颗「看着能点、点了没反应」的红叉正好相反
+ * （R-27，同一天改成不可点的失败指示）。
+ */
+async function rebindEvents() {
+  if (rebinding.value) return;
+  rebinding.value = true;
+  try {
+    await chat.init();
+    app.toast(
+      chat.eventBridgeOk ? t("chat.eventBridgeRetryDone") : t("chat.eventBindFail"),
+      chat.eventBridgeOk ? "success" : "error",
+    );
+  } catch (e) {
+    app.toast(
+      `${t("chat.eventBindFail")}：${e instanceof Error ? e.message : String(e)}`,
+      "error",
+    );
+  } finally {
+    rebinding.value = false;
+  }
+}
+
+/**
+ * 网络启停的唯一在飞闸（10-22 审计 D-12）。
+ *
+ * 「换网卡」与「重新连接」走的是**同一条**真 stop→start 路径，所以它们共用一个闸，
+ * 不是各自一个 —— 两个布尔会允许"换网卡进行中同时点重连"，而那正是要防的交叠。
+ */
+const netBusy = ref(false);
+
+/**
+ * 原地重启网络（10-22 审计 D-11：设置面板此前没有任何幂等的「重连 / 重启 / 重扫」入口，
+ * 用户遇到"对方在线却连不上"只能关开开关或重启应用）。
+ *
+ * 幂等靠两层：上面的 `netBusy` 挡交叠，绑定地址沿用**这一行选择器当前选中的网卡**
+ * （默认 0.0.0.0 = 自动），不改变用户的任何偏好 —— 它不是"重新配置"，是"照原样再来一次"。
+ */
+async function reconnectNetwork() {
+  if (netBusy.value) return;
+  netBusy.value = true;
+  try {
+    await app.stopNetwork();
+    // 不在这里另立一份"该用哪个 IP"的判断：store 的自动拉起那边已经有 `boundIp ?? preferredIp`
+    // （`useAppStore.ts:493`），再抄一遍就是第二个会各自漂移的平行判据。
+    await app.startNetwork(selectedIp.value);
+    await chat.refreshPeers();
+    app.toast(t("settings.network.toast.reconnected"), "success");
+  } catch (e) {
+    app.toastError(e, t("settings.network.toast.interfaceFail"));
+  }
+  try {
+    await loadChannels();
+  } finally {
+    netBusy.value = false;
+  }
+}
+
 /** 选择网卡：未开启 → 直接以该网卡开启并扫描；已开启 → 切换到新网卡重新扫描。 */
 async function onInterfaceChange() {
+  // 必须串行：下面那条「换网卡」是真的 `stopNetwork()` → `startNetwork(ip)`。
+  // 连点两次会交叠成 stop₁→stop₂→start₁→start₂，而 `bind_with_retry` 只重试 6×250ms、
+  // 盖不住 TIME_WAIT ⇒ 观感就是"网络时好时坏 / 点了没反应"（10-22 审计 D-12）。
+  if (netBusy.value) return;
+  netBusy.value = true;
   const ip = selectedIp.value;
   try {
     if (app.online) {
@@ -132,7 +217,11 @@ async function onInterfaceChange() {
   } catch (e) {
     app.toastError(e, t("settings.network.toast.interfaceFail"));
   }
-  await loadChannels();
+  try {
+    await loadChannels();
+  } finally {
+    netBusy.value = false;
+  }
 }
 
 /**
@@ -306,7 +395,7 @@ async function removeEndpoint(address: string) {
     <SettingsRow :label="t('settings.network.lan')" :description="t('settings.network.lan.desc')">
       <div class="flex items-center gap-2">
         <span class="text-xs" :class="app.online ? 'text-[var(--gosslan-success-ink)]' : 'text-[var(--gosslan-text-2)]'">
-          {{ app.online ? t("settings.network.lan.peers", { n: lanStatus?.peers ?? 0 }) : t("settings.network.lan.off") }}
+          {{ lanStateText }}
         </span>
         <!-- 开关值取通道状态（唯一真相源），与「添加好友」页同一份 -->
         <SettingsToggle
@@ -326,6 +415,43 @@ async function removeEndpoint(address: string) {
         trigger-class="max-w-[200px]"
         @update:model-value="onInterfacePicked"
       />
+    </SettingsRow>
+
+    <!-- 幂等的「重新连接」入口（10-22 审计 D-11）：此前设置页只有开关，
+         "对方显示在线却连不上"这种局面唯一的自救办法是关开开关或重启应用。
+         这颗按钮与换网卡共用同一个在飞闸（`netBusy`），连点只会有一次真的跑。 -->
+    <SettingsRow
+      :label="t('settings.network.reconnect')"
+      :description="t('settings.network.reconnect.desc')"
+    >
+      <button
+        type="button"
+        class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-hover)] px-3 py-1.5 text-caption text-[var(--gosslan-text)] transition"
+        :aria-busy="netBusy ? 'true' : 'false'"
+        :disabled="netBusy"
+        @click="reconnectNetwork"
+      >
+        {{ t("settings.network.reconnect.action") }}
+      </button>
+    </SettingsRow>
+
+    <!-- 实时事件链路（10-22 审计 R-33 / D-29）。这类故障过去**只在坏的那一瞬间可见**：
+         bindEvents 失败只弹一次性 toast，之后这个界面与一切正常的界面完全一样，
+         用户分不清"对方没发"和"我这收不到"。状态常驻在这里，出口也常驻在这里。
+         文案本身就在 description 里（不靠颜色/符号单独表达状态，无障碍口径 §14.3）。 -->
+    <SettingsRow
+      :label="t('settings.network.eventBridge')"
+      :description="chat.eventBridgeOk ? t('chat.eventBridgeOk') : t('chat.eventBridgeDown')"
+    >
+      <button
+        type="button"
+        class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-hover)] px-3 py-1.5 text-caption text-[var(--gosslan-text)] transition"
+        :aria-busy="rebinding ? 'true' : 'false'"
+        :disabled="rebinding"
+        @click="rebindEvents"
+      >
+        {{ t("chat.eventBridgeRetry") }}
+      </button>
     </SettingsRow>
 
     <SettingsRow

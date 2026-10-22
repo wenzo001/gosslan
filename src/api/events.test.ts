@@ -31,8 +31,10 @@ const API_FILE = join(ROOT, "src", "api", "index.ts");
 const ALLOWED_EMIT_WITHOUT_LISTENER: Record<string, string> = {
   "group-key-received":
     "紧邻 `groups-updated` 一起发（同一条路径），前端只处理后者 —— 冗余事件，可后续删除",
-  "group-file-log":
-    "DevDiag 面板目前走 `get_discovery_diag` 轮询拿数据，该事件暂无消费者（保留待接）",
+  // `group-file-log` 已于 2026-10-22 接上消费者（诊断面板，见 api/index.ts 的 bindEvents），
+  // 按下面那条「例外表不许挂着已监听事件」的判据当场从表里删掉。
+  // 它此前挂着的理由是"暂无消费者（保留待接）"——而那两条真缺口（群文件失败原因看不见）
+  // 就藏在这句"待接"里：例外表能容纳一条**没人打算接**的事件而不报错。
 };
 
 /** 只发给特定窗口、由该窗口自己监听的事件不算漏接（这里是菜单事件，前端已监听）。 */
@@ -419,4 +421,43 @@ test("注册表与前端调用面必须逐条对账（新增不接界面的命�
   // 前端调用了一定要注册：漏注册是运行期才炸的错
   const unregistered = [...invoked].filter((n) => !registered.includes(n)).sort();
   assert.deepEqual(unregistered, [], `前端调用了但没注册的命令：${unregistered.join(", ")}`);
+});
+
+/**
+ * `RuntimeDiag` 的字段面两侧必须逐字对得上（10-22 审计 R-30 那条"注释里写着逐字对应、
+ * 却没有任何机器凭据"的补票）。
+ *
+ * 为什么这条值得有：Rust 侧 `#[serde(rename_all = "camelCase")]` 是唯一的重命名处，
+ * TS 那份 interface 是手抄的。少一个字段 ⇒ 面板读到 `undefined`，`undefined / undefined`
+ * 在界面上和"0 条积压"长得一样 —— 属于"量具说谎"那一族，靠类型检查抓不到（Rust 不看 TS）。
+ */
+function toCamelCase(name: string): string {
+  return name.replace(/_([a-z0-9])/g, (_, c: string) => c.toUpperCase());
+}
+
+/** 从 Rust 源码里抠出一个 struct 的 `pub` 字段名（不做 AST：这个文件只需要"两边是不是同一批名字"）。 */
+function rustPubFields(src: string, structName: string): string[] {
+  const at = src.indexOf(`pub struct ${structName} {`);
+  assert.ok(at >= 0, `Rust 里找不到 \`pub struct ${structName}\` ⇒ 它改名或挪走了，这条判据要跟着改`);
+  const body = src.slice(at, src.indexOf("}", at));
+  return [...body.matchAll(/^\s*pub\s+([a-z0-9_]+)\s*:/gm)].map((m) => m[1]);
+}
+
+/** 同样从 TS 里抠 interface 的键名。 */
+function tsInterfaceKeys(src: string, iface: string): string[] {
+  const at = src.indexOf(`export interface ${iface} {`);
+  assert.ok(at >= 0, `TS 里找不到 \`export interface ${iface}\` ⇒ 同上`);
+  const body = src.slice(at, src.indexOf("}", at));
+  return [...body.matchAll(/^\s{2}([A-Za-z][A-Za-z0-9]*)\s*:/gm)].map((m) => m[1]);
+}
+
+test("RuntimeDiag：Rust 字段与 TS interface 必须逐字对应（camelCase 换算现算）", () => {
+  assert.equal(toCamelCase("db_hold_note"), "dbHoldNote", "换算器自己的正控");
+  assert.equal(toCamelCase("notify_waiters_max"), "notifyWaitersMax");
+
+  const rust = rustPubFields(stripRustComments(readCommandsSrc()), "RuntimeDiag").map(toCamelCase).sort();
+  const ts = tsInterfaceKeys(readFileSync(join(ROOT, "src", "types.ts"), "utf8"), "RuntimeDiag").sort();
+  // 分母下限：任何一侧解析失败都会给出空数组，而"两边都空"是相等的 ⇒ 必须另钉一条下限。
+  assert.ok(rust.length >= 10, `Rust 侧只解析到 ${rust.length} 个字段 ⇒ 解析器没吃到东西`);
+  assert.deepEqual(ts, rust, `TS 的 RuntimeDiag 与 Rust 那份不一致（缺 ${rust.filter((f) => !ts.includes(f))} / 多 ${ts.filter((f) => !rust.includes(f))}）`);
 });

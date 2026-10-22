@@ -401,16 +401,24 @@ pub async fn get_conv_link(
 }
 
 #[tauri::command(async)]
-pub fn get_messages(
+pub async fn get_messages(
     state: State<'_, Arc<AppState>>,
     conv_id: String,
     limit: Option<i64>,
     offset: Option<i64>,
-) -> Vec<MessageRecord> {
-    let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
-    let safe_limit = limit.unwrap_or(100).clamp(1, 500);
-    let safe_offset = offset.unwrap_or(0).max(0);
-    db::get_messages(&dbc, &conv_id, safe_limit, safe_offset).unwrap_or_default()
+) -> Result<Vec<MessageRecord>, String> {
+    let s = state.inner().clone();
+    // 整段进阻塞池：这条是"打开会话/翻页"的主读，持的又是**那唯一一条** db 连接。
+    // 标了 `(async)` 的同步 `fn` 仍然跑在 tokio worker 上（INV-P34），留在 worker 里等锁
+    // 就是拿稀缺的 worker 去换本来就该排队的位置。
+    tokio::task::spawn_blocking(move || -> Result<Vec<MessageRecord>, String> {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        let safe_limit = limit.unwrap_or(100).clamp(1, 500);
+        let safe_offset = offset.unwrap_or(0).max(0);
+        Ok(db::get_messages(&dbc, &conv_id, safe_limit, safe_offset).unwrap_or_default())
+    })
+    .await
+    .map_err(|e| format!("消息页读取被线程池中断: {e}"))?
 }
 
 /// 一次拿到**所有群会话**的任务行，供前端折叠出「与我相关的未完成任务」蓝色徽标。
@@ -420,22 +428,37 @@ pub fn get_messages(
 /// —— 那是**假状态**，比不显示更糟。这一条只把 `kind IN ('todo','todo_update')` 的原始行取回来，
 /// 折叠与判定仍然只有前端 `utils/todos.ts::foldTodos` 那一份（理由见 `db::get_todo_messages_for_conns`）。
 #[tauri::command(async)]
-pub fn get_group_todo_messages(
+pub async fn get_group_todo_messages(
     state: State<'_, Arc<AppState>>,
     conv_ids: Vec<String>,
-) -> Vec<MessageRecord> {
-    let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
-    // 群数量上限是个护栏而不是功能：调用方是会话列表，正常量级是几十；
-    // 截断方向是"少算几个群的徽标"，不会算错已经算出来的那些。
-    const MAX_CONVS: usize = 400;
-    db::get_todo_messages_for_conns(&dbc, &conv_ids[..conv_ids.len().min(MAX_CONVS)])
-        .unwrap_or_default()
+) -> Result<Vec<MessageRecord>, String> {
+    let s = state.inner().clone();
+    tokio::task::spawn_blocking(move || -> Result<Vec<MessageRecord>, String> {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        // 群数量上限是个护栏而不是功能：调用方是会话列表，正常量级是几十；
+        // 截断方向是"少算几个群的徽标"，不会算错已经算出来的那些。
+        const MAX_CONVS: usize = 400;
+        Ok(
+            db::get_todo_messages_for_conns(&dbc, &conv_ids[..conv_ids.len().min(MAX_CONVS)])
+                .unwrap_or_default(),
+        )
+    })
+    .await
+    .map_err(|e| format!("群任务徽标读取被线程池中断: {e}"))?
 }
 
 #[tauri::command(async)]
-pub fn get_message_count(state: State<'_, Arc<AppState>>, conv_id: String) -> i64 {
-    let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
-    db::count_messages(&dbc, &conv_id)
+pub async fn get_message_count(
+    state: State<'_, Arc<AppState>>,
+    conv_id: String,
+) -> Result<i64, String> {
+    let s = state.inner().clone();
+    tokio::task::spawn_blocking(move || -> Result<i64, String> {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(db::count_messages(&dbc, &conv_id))
+    })
+    .await
+    .map_err(|e| format!("消息计数读取被线程池中断: {e}"))?
 }
 
 /// 一次拿到会话的**最新一页**（打开聊天时的冷加载）。
@@ -445,82 +468,119 @@ pub fn get_message_count(state: State<'_, Arc<AppState>>, conv_id: String) -> i6
 /// 判"还有没有更早历史"的依据，不是顺手拿来算 offset 的）。
 /// 返回正序，前端整表覆盖时不需要再倒一遍。
 #[tauri::command(async)]
-pub fn get_latest_messages(
+pub async fn get_latest_messages(
     state: State<'_, Arc<AppState>>,
     conv_id: String,
     limit: Option<i64>,
-) -> Vec<MessageRecord> {
-    let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
-    let safe_limit = limit.unwrap_or(100).clamp(1, 500);
-    db::get_latest_messages(&dbc, &conv_id, safe_limit).unwrap_or_default()
+) -> Result<Vec<MessageRecord>, String> {
+    let s = state.inner().clone();
+    tokio::task::spawn_blocking(move || -> Result<Vec<MessageRecord>, String> {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        let safe_limit = limit.unwrap_or(100).clamp(1, 500);
+        Ok(db::get_latest_messages(&dbc, &conv_id, safe_limit).unwrap_or_default())
+    })
+    .await
+    .map_err(|e| format!("冷加载一页读取被线程池中断: {e}"))?
 }
 
 #[tauri::command(async)]
-pub fn get_conversations(state: State<'_, Arc<AppState>>) -> Vec<Conversation> {
-    let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
-    db::list_conversations(&dbc).unwrap_or_default()
+pub async fn get_conversations(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<Conversation>, String> {
+    let s = state.inner().clone();
+    tokio::task::spawn_blocking(move || -> Result<Vec<Conversation>, String> {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(db::list_conversations(&dbc).unwrap_or_default())
+    })
+    .await
+    .map_err(|e| format!("会话列表读取被线程池中断: {e}"))?
 }
 
 /// 打开与好友的会话时确保会话行存在（新加好友尚未发过消息时，
 /// 会话列表无对应项 → 左侧无法高亮选中态）。
 #[tauri::command(async)]
-pub fn ensure_conversation(
+pub async fn ensure_conversation(
     state: State<'_, Arc<AppState>>,
     friend_id: String,
 ) -> Result<Conversation, String> {
-    let s = state.inner();
-    // 「和自己聊天」：名字/头像取**本机**的，否则 `resolve_nickname` 会回落到 device_id 原文，
-    // 会话列表里就成了一串 gosslan-xxxx。
-    let (name, avatar) = if friend_id == s.device_id {
-        (s.self_display_name(), s.self_avatar())
-    } else {
-        let name = resolve_nickname(s, &friend_id);
-        let avatar = {
-            let peers = s.peers.lock().unwrap_or_else(|e| e.into_inner());
-            peers.get(&friend_id).and_then(|p| p.avatar.clone())
+    let s = state.inner().clone();
+    // 整段进阻塞池：里面是 peers 快照 + db 的 ensure/回读两次，全同步且**不跨 await 持锁**
+    // （原来就是一段一段取锁，形状没变，只是搬离 worker —— 审计 R-18）。
+    tokio::task::spawn_blocking(move || -> Result<Conversation, String> {
+        // 「和自己聊天」：名字/头像取**本机**的，否则 `resolve_nickname` 会回落到 device_id 原文，
+        // 会话列表里就成了一串 gosslan-xxxx。
+        let (name, avatar) = if friend_id == s.device_id {
+            (s.self_display_name(), s.self_avatar())
+        } else {
+            let name = resolve_nickname(&s, &friend_id);
+            let avatar = {
+                let peers = s.peers.lock().unwrap_or_else(|e| e.into_inner());
+                peers.get(&friend_id).and_then(|p| p.avatar.clone())
+            };
+            (name, avatar)
         };
-        (name, avatar)
-    };
-    {
-        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::ensure_conversation(&dbc, &friend_id, "single", &name, avatar.as_deref())
-            .map_err(|e| e.to_string())?;
-        // 回读已存在的行：会话可能早已建立且被置顶，凭空造一个 pinned=false
-        // 会让前端把它当成「未置顶」从而覆盖掉用户的置顶状态。
-        if let Some(conv) = db::get_conversation(&dbc, &friend_id) {
-            return Ok(conv);
+        {
+            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+            db::ensure_conversation(&dbc, &friend_id, "single", &name, avatar.as_deref())
+                .map_err(|e| e.to_string())?;
+            // 回读已存在的行：会话可能早已建立且被置顶，凭空造一个 pinned=false
+            // 会让前端把它当成「未置顶」从而覆盖掉用户的置顶状态。
+            if let Some(conv) = db::get_conversation(&dbc, &friend_id) {
+                return Ok(conv);
+            }
         }
-    }
-    Ok(Conversation {
-        id: friend_id.clone(),
-        kind: "single".to_string(),
-        name,
-        avatar,
-        last_msg: None,
-        last_ts: None,
-        unread: 0,
-        pinned: false,
+        Ok(Conversation {
+            id: friend_id.clone(),
+            kind: "single".to_string(),
+            name,
+            avatar,
+            last_msg: None,
+            last_ts: None,
+            unread: 0,
+            pinned: false,
+        })
     })
+    .await
+    .map_err(|e| format!("会话建行被线程池中断: {e}"))?
 }
 
 /// 设置会话置顶（纯本地偏好，不广播、不同步）。
 #[tauri::command(async)]
-pub fn set_conversation_pinned(
+pub async fn set_conversation_pinned(
     state: State<'_, Arc<AppState>>,
     conv_id: String,
     pinned: bool,
 ) -> Result<(), String> {
-    let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
-    db::set_conversation_pinned(&dbc, &conv_id, pinned).map_err(|e| e.to_string())
+    let s = state.inner().clone();
+    tokio::task::spawn_blocking(move || -> Result<(), String> {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::set_conversation_pinned(&dbc, &conv_id, pinned).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("会话置顶写入被线程池中断: {e}"))?
 }
+
+/// 群已读批查的一行：`(成员 id, (该成员最近一条消息 id, 它的 ts))`。
+/// 起名字是为了给下面那个阻塞池闭包的返回类型签名用 —— 内联写 `Result<Vec<(String, (String, i64))>, String>`
+/// 会被 clippy 的 `type_complexity` 判红（形状本身不改，只是别再让签名读三遍括号）。
+type MemberLastRead = (String, (String, i64));
 
 /// 标记会话已读；单聊时向对方发送已读回执（触发对方界面的「已读绿勾」）。
 #[tauri::command(async)]
 pub async fn mark_read(state: State<'_, Arc<AppState>>, conv_id: String) -> Result<(), String> {
-    let s = state.inner();
+    let s = state.inner().clone();
+    // 这条命令里 6 段 db 读写各自进阻塞池（审计 R-18）。逐段搬而不是整函数搬：
+    // 中间那些 `try_send(...).await` / `send_read_receipt_route(...).await` 是网络等待，
+    // 把它们和 db 读写合成一段就等于"持锁跨 await"（本仓 A-14 那一族自死锁的反面教材）。
     {
-        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::mark_read(&dbc, &conv_id).map_err(|e| e.to_string())?;
+        let s = s.clone();
+        let cid = conv_id.clone();
+        tokio::task::spawn_blocking(move || -> Result<(), String> {
+            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+            db::mark_read(&dbc, &cid).map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|e| format!("已读写入被线程池中断: {e}"))??;
     }
     if !conv_id.starts_with("group:") {
         // 自聊（会话 id == 自己）：本机既是发送方也是接收方，没有"对方"可收回执。
@@ -534,8 +594,14 @@ pub async fn mark_read(state: State<'_, Arc<AppState>>, conv_id: String) -> Resu
         // 落库时被时钟钳制过，直接回传 ts 会让对方用自己的原始时间戳匹配不上。
         // 回传 msg_id，由发送方换算成自己的本地时间戳。
         let last = {
-            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-            db::last_message_from_sender(&dbc, &conv_id, &conv_id)
+            let s = s.clone();
+            let cid = conv_id.clone();
+            tokio::task::spawn_blocking(move || -> Result<Option<(String, i64)>, String> {
+                let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+                Ok(db::last_message_from_sender(&dbc, &cid, &cid))
+            })
+            .await
+            .map_err(|e| format!("已读定位读取被线程池中断: {e}"))??
         };
         if let Some((msg_id, ts)) = last {
             // 同网段走直连 ReadReceipt，跨跳走定向 Gossip ChatReadReceipt。
@@ -543,7 +609,7 @@ pub async fn mark_read(state: State<'_, Arc<AppState>>, conv_id: String) -> Resu
             // 真正 write_frame 成功——writer_loop 可能随后发现链路已断而丢弃。
             // 因此无论结果都保留 pending：下一次心跳/建链时 flush 重发。
             let _ =
-                crate::network::transport::send_read_receipt_route(s, &conv_id, Some(msg_id), ts)
+                crate::network::transport::send_read_receipt_route(&s, &conv_id, Some(msg_id), ts)
                     .await;
             {
                 let mut pending = s.pending_reads.lock().unwrap_or_else(|e| e.into_inner());
@@ -553,50 +619,78 @@ pub async fn mark_read(state: State<'_, Arc<AppState>>, conv_id: String) -> Resu
             // 持久化到 DB：进程重启后 pending_reads 内存丢失时可从 DB 恢复。
             // 使用 max 语义（upsert_pending_read）保证较旧 timestamp 不覆盖较新。
             {
-                let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-                db::upsert_pending_read(&dbc, &conv_id, ts).ok();
+                let s = s.clone();
+                let cid = conv_id.clone();
+                tokio::task::spawn_blocking(move || -> Result<(), String> {
+                    let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+                    db::upsert_pending_read(&dbc, &cid, ts).ok();
+                    Ok(())
+                })
+                .await
+                .map_err(|e| format!("待发已读持久化被线程池中断: {e}"))??;
             }
         }
     } else if let Some(group_id) = conv_id.strip_prefix("group:") {
+        let gid = group_id.to_string();
         let group = {
-            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-            db::get_group(&dbc, group_id)
+            let s = s.clone();
+            let gid = gid.clone();
+            tokio::task::spawn_blocking(move || -> Result<Option<Group>, String> {
+                let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+                Ok(db::get_group(&dbc, &gid))
+            })
+            .await
+            .map_err(|e| format!("群成员读取被线程池中断: {e}"))??
         };
         if let Some(group) = group {
             // 单次锁内查齐全部成员的最近消息（审计 2.1h）：旧形状每成员 2 次抢锁，
             // 200 人群打开/滚动一次 = 400 次锁往返；查询本身是索引点查，一次锁持有
             // 内批查即可。发送（await）绝不持锁（全仓纪律），回执持久化再合并成一次锁。
             let lasts = {
-                let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-                group
-                    .members
-                    .iter()
-                    .filter(|m| **m != s.device_id)
-                    .filter_map(|member| {
-                        // 群回执同样按「该成员最近一条消息」发送，避免跨设备时钟偏差。
-                        db::last_message_from_sender(&dbc, &conv_id, member)
-                            .map(|last| (member.clone(), last))
-                    })
-                    .collect::<Vec<_>>()
+                let s = s.clone();
+                let cid = conv_id.clone();
+                let mine = s.device_id.clone();
+                tokio::task::spawn_blocking(move || -> Result<Vec<MemberLastRead>, String> {
+                    let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+                    Ok(group
+                        .members
+                        .iter()
+                        .filter(|m| **m != mine)
+                        .filter_map(|member| {
+                            // 群回执同样按「该成员最近一条消息」发送，避免跨设备时钟偏差。
+                            db::last_message_from_sender(&dbc, &cid, member)
+                                .map(|last| (member.clone(), last))
+                        })
+                        .collect::<Vec<_>>())
+                })
+                .await
+                .map_err(|e| format!("群已读定位读取被线程池中断: {e}"))??
             };
             let mut to_persist: Vec<(String, i64)> = Vec::new();
             for (member, (msg_id, last_read_ts)) in lasts {
                 let msg = Message::GroupReadReceipt {
                     from: s.device_id.clone(),
-                    group_id: group_id.to_string(),
+                    group_id: gid.clone(),
                     last_read_ts,
                     last_read_msg_id: Some(msg_id),
                 };
-                let _ = crate::network::transport::try_send(s, &member, &msg).await;
+                let _ = crate::network::transport::try_send(&s, &member, &msg).await;
                 to_persist.push((member, last_read_ts));
             }
             // 无论即时发送是否成功都持久化待发记录，由建链/Hello/心跳补发；
             // 接收端按 (group_id, reader_id) 单调去重，重复送达无副作用。
             if !to_persist.is_empty() {
-                let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-                for (member, ts) in &to_persist {
-                    db::upsert_pending_group_read(&dbc, group_id, member, *ts).ok();
-                }
+                let s = s.clone();
+                let gid = gid.clone();
+                tokio::task::spawn_blocking(move || -> Result<(), String> {
+                    let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+                    for (member, ts) in &to_persist {
+                        db::upsert_pending_group_read(&dbc, &gid, member, *ts).ok();
+                    }
+                    Ok(())
+                })
+                .await
+                .map_err(|e| format!("群待发已读持久化被线程池中断: {e}"))??;
             }
         }
     }
@@ -607,16 +701,23 @@ pub async fn mark_read(state: State<'_, Arc<AppState>>, conv_id: String) -> Resu
 /// 仅删本地：不影响对方、不广播；前端负责二次确认弹窗。
 /// 群聊同样支持（删除 group:xxx 会话及全部消息）。
 #[tauri::command(async)]
-pub fn delete_conversation(state: State<'_, Arc<AppState>>, conv_id: String) -> Result<(), String> {
-    let s = state.inner();
-    // 群会话删除时写删除边界：其他成员保留的历史重放不得回灌本机。
-    // 边界记录当前逻辑序号，而非墙上时钟。
-    if let Some(gid) = conv_id.strip_prefix("group:") {
+pub async fn delete_conversation(
+    state: State<'_, Arc<AppState>>,
+    conv_id: String,
+) -> Result<(), String> {
+    let s = state.inner().clone();
+    tokio::task::spawn_blocking(move || -> Result<(), String> {
+        // 群会话删除时写删除边界：其他成员保留的历史重放不得回灌本机。
+        // 边界记录当前逻辑序号，而非墙上时钟。
+        if let Some(gid) = conv_id.strip_prefix("group:") {
+            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+            let boundary = db::get_clock(&dbc, &conv_id);
+            db::set_clear_boundary(&dbc, gid, boundary).map_err(|e| e.to_string())?;
+        }
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        let boundary = db::get_clock(&dbc, &conv_id);
-        db::set_clear_boundary(&dbc, gid, boundary).map_err(|e| e.to_string())?;
-    }
-    let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-    db::delete_conversation(&dbc, &conv_id).map_err(|e| e.to_string())
+        db::delete_conversation(&dbc, &conv_id).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("会话删除被线程池中断: {e}"))?
 }
 

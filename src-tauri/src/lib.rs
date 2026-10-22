@@ -306,7 +306,9 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
-        .plugin(tauri_plugin_opener::init());
+        .plugin(tauri_plugin_opener::init())
+        // 更新会话状态：桌面端持有官方 Update/已下载字节；移动端是空壳（命令桩用）。
+        .manage(commands::UpdaterSession::default());
 
     // 桌面端记住窗口尺寸/位置（HIG：重开应用恢复窗口状态，macOS/Windows 一致）。
     // 只保存 SIZE/POSITION/MAXIMIZED/FULLSCREEN，**刻意排除 VISIBLE**：
@@ -314,6 +316,7 @@ pub fn run() {
     // 重启就可能不再显示窗口。DECORATIONS 也排除——自绘标题栏由本项目自己管理。
     #[cfg(desktop)]
     {
+        builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
         builder = builder.plugin(
             tauri_plugin_window_state::Builder::default()
                 .with_state_flags(
@@ -576,22 +579,12 @@ pub fn run() {
                     }
                 });
             }
-            // db 持锁观测：每分钟读走一次计数，只有真出现慢持锁才产一行。
-            // 读者必须只有这一处（take_summary 会清零，两个读者会互相吞计数）。
-            {
-                let st = state.clone();
-                tauri::async_runtime::spawn(async move {
-                    loop {
-                        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
-                        let summary = st.db.take_summary();
-                        if let Some(line) =
-                            db_hold::summary_line(&summary, st.db.slow_threshold_ms())
-                        {
-                            st.logger.info("db", line);
-                        }
-                    }
-                });
-            }
+            // db 持锁观测：**这里不再自己读一份**（10-22 审计 R-06）。
+            // `take_summary()` 是"消费即清零"的读法，而下面 `spawn_db_hold_reporter` 也在读同一份摘要，
+            // 两个读者互相把对方的窗口清空 ⇒ 慢持锁事件被算进"谁先到谁报"的那一行里，
+            // 计数被吞、60s 窗口被切成两段、日志级别随谁先 tick 而变。
+            // 唯一生产读者是 `state::AppState::spawn_db_hold_reporter`（下面第 426 行那一处启动点，
+            // warn 级、带阈值、空窗口不产行）；跨文件数总量的那条判据在 `db_hold.rs`。
             // 定期清扫过期的 .part 断点前缀（审计 §7 风险 2）：启动后立即一次，之后每小时一次。
             {
                 let st = state.clone();
@@ -818,6 +811,7 @@ pub fn run() {
             commands::export_chat_text,
             commands::clear_all_data,
             commands::get_discovery_diag,
+            commands::get_runtime_diag,
             commands::set_app_active,
             commands::list_routed_endpoints,
             commands::add_routed_endpoint,
@@ -848,6 +842,11 @@ pub fn run() {
             commands::cleanup_external_links_export,
             commands::import_external_links_file,
             commands::import_external_links_from_url,
+            commands::updater_check,
+            commands::updater_download,
+            commands::updater_cancel,
+            commands::updater_install,
+            commands::updater_close,
             commands::save_todo_image_bytes,
             commands::delete_group_announcement,
             commands::list_active_group_announcements,

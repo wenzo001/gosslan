@@ -194,6 +194,7 @@ const {
   fileTappable,
   fileProgress,
   fileStatusText,
+  fileStatusTone,
   attachmentUrl,
   attachmentMissing,
   previewNote,
@@ -1282,6 +1283,7 @@ async function copyFileToClipboard() {
             :is-group="isGroup"
             :reader-ids="groupReaderIds"
             :msg-key="message.msg_id ?? message.id"
+            :retryable="message.kind !== 'file'"
             @retry="retrySend"
           />
 
@@ -1359,6 +1361,7 @@ async function copyFileToClipboard() {
             :bubble-style="cardStyle"
             :progress="fileProgress"
             :status-text="fileStatusText"
+            :status-tone="fileStatusTone"
             :failed="sendState === 'failed'"
             :note="previewNote"
             :missing="attachmentMissing"
@@ -1367,6 +1370,7 @@ async function copyFileToClipboard() {
             :ready="fileReady"
             :tappable="fileTappable"
             :content-retry="!!retryableContent"
+            @cancel="doCancelSend"
             @open="openFile"
             @save="saveAs"
             @download="onFileDownload"

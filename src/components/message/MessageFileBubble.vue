@@ -9,6 +9,7 @@ import { FILE_KIND_COLORS, FILE_KIND_ICONS, extBadgeLabel, fileKindOf } from "@/
 import { useAppStore } from "@/stores/useAppStore";
 import { Download, RotateCw } from "lucide-vue-next";
 import { X } from "@/components/ui/icons";
+import type { TransferStatusTone } from "@/utils/transferState";
 
 const props = defineProps<{
   meta: FileMeta;
@@ -16,6 +17,8 @@ const props = defineProps<{
   /** 0~1；null 表示不显示进度条（历史消息 / 已完成）。 */
   progress: number | null;
   statusText: string | null;
+  /** 状态行的视觉档位（D-4）；不传按普通说明处理。 */
+  statusTone?: TransferStatusTone;
   failed: boolean;
   note: string | null;
   /** 群文件（gfile-）专用：按成员聚合的投递状态（单聊为 null 不显示）。 */
@@ -40,6 +43,11 @@ const emit = defineEmits<{
   (e: "download"): void;
   /** 未完成 / 校验失败：按 cid 向对端重新拉取（ADR-0019）。 */
   (e: "refetch"): void;
+  /**
+   * 活动传输期间的常驻取消（10-22 审计 D-13）。
+   * 父组件交回**同一个** `doCancelSend`，这里不另立第二条取消路径。
+   */
+  (e: "cancel"): void;
 }>();
 const app = useAppStore();
 
@@ -49,6 +57,22 @@ const icon = computed(() => FILE_KIND_ICONS[kind.value]);
 const accent = computed(() => {
   const c = props.failed ? FILE_KIND_COLORS.pdf : FILE_KIND_COLORS[kind.value];
   return app.dark ? c.dark : c.light;
+});
+
+/**
+ * 状态行的视觉档位（10-22 审计 D-4）。原来「网络停滞」「发送失败」「已取消」
+ * 全是同一种 `opacity-70` 灰色小字，扫一眼分不出"还在但慢"与"已经坏了"。
+ * ⚠️ 颜色只是**加强**，语义仍在文字里（§14.3：不许只靠颜色表达状态）。
+ */
+const statusToneClass = computed(() => {
+  switch (props.statusTone) {
+    case "error":
+      return "text-[var(--gosslan-danger-ink)]";
+    case "warn":
+      return "text-[var(--gosslan-warning-ink)]";
+    default:
+      return "opacity-70";
+  }
 });
 /** 图标井：底色＝强调色 12% 的超淡调，图标＝强调色实色（lucide 取 currentColor）。 */
 const iconWellStyle = computed(() => ({
@@ -107,6 +131,22 @@ const canOpen = computed(() => props.ready && props.tappable !== false);
           <Spinner size-class="h-3.5 w-3.5" decorative />
           {{ pct }}%
         </span>
+        <!-- 进度在跑就常驻一个取消入口（10-22 审计 D-13）：取消此前只在右键/长按菜单里，
+             而"进度停住了 / 传得太慢"恰恰是最想立刻停、又最容易找不到按钮的时刻。
+             `@click.stop` 是必须的：整卡在就绪时是可点的（打开文件），不能因为点取消顺带打开。 -->
+        <!-- 取消只属于**发送方**：接收方的传输由对端驱动，这里给一个「取消发送」
+             按钮既是错文案、也会走到 `doCancelSend` 去取消一条自己没在发的记录。
+             接收方保留上面的转圈与百分比即可。 -->
+        <button
+          v-if="progress !== null && mine"
+          type="button"
+          class="tap-safe ml-1 flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] transition hover:bg-[var(--gosslan-hover)]"
+          :title="t('msg.cancelSend')"
+          :aria-label="t('msg.cancelSend')"
+          @click.stop="emit('cancel')"
+        >
+          <X class="h-3.5 w-3.5" />
+        </button>
         <button
           v-else
           class="tap-safe flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] transition hover:bg-[var(--gosslan-hover)]"
@@ -130,15 +170,30 @@ const canOpen = computed(() => props.ready && props.tappable !== false);
     </div>
     <!-- 进度条只在活动传输时出现；状态文案独立一行 —— 进度停下来之后那句话还得说得出失败/取消 -->
     <template v-if="progress !== null">
-      <div class="h-1 overflow-hidden rounded-full bg-[var(--gosslan-divider)]">
+      <div
+        class="h-1 overflow-hidden rounded-full bg-[var(--gosslan-divider)]"
+        role="progressbar"
+        :aria-valuemin="0"
+        :aria-valuemax="100"
+        :aria-valuenow="Math.round(Math.min(1, Math.max(0, progress)) * 100)"
+        :aria-label="statusText || t('msg.receiving')"
+      >
         <!-- 用 scaleX 而不是 width：进度更新只触发合成层，不参与布局（长列表里尤其重要）。 -->
         <div
-          class="h-full origin-left rounded-full bg-[var(--gosslan-primary)] transition-transform duration-300 ease-out"
+          class="h-full origin-left rounded-full bg-[var(--gosslan-primary)] transition-transform duration-300 ease-[var(--gosslan-ease)]"
           :style="{ transform: `scaleX(${Math.min(1, Math.max(0, progress ?? 0))})` }"
         ></div>
       </div>
     </template>
-    <div v-if="statusText" class="text-caption opacity-70">{{ statusText }}</div>
+    <!-- 状态行必须是一条**常驻** live region（10-22 审计 D-25 / R-32）：
+         「接收中 62%」→「网络停滞」→「已取消」这几下切换此前对读屏完全不可见 ——
+         进度条本身没有 `role=progressbar`，文案换了也没人播报。
+         外层不能 v-if：ARIA 的 live region 要在内容变化**之前**就存在于 DOM 里才可靠，
+         所以让它一直在、空的时候用 `empty:hidden` 收掉高度（Vue 的 v-if 假分支留的是注释节点，
+         不算 :empty 的子节点 ⇒ 收起成立）。 -->
+    <div class="empty:hidden" aria-live="polite">
+      <div v-if="statusText" class="text-caption" :class="statusToneClass">{{ statusText }}</div>
+    </div>
     <span aria-hidden="true" class="bubble-tail" :class="mine ? 'tail-mine' : 'tail-other'"></span>
   </div>
 </template>

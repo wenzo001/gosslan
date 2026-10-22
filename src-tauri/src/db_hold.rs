@@ -514,15 +514,27 @@ mod tests {
             "state.rs 里还留着旧的字段类型"
         );
         let lib = include_str!("lib.rs");
+        // 2026-10-22（审计 R-06）这两条原来**只数 lib.rs 一个文件**，而被钉的那第二个读者
+        // 恰恰就住在 lib.rs 里：`state.rs` 的 `spawn_db_hold_reporter` 也在读同一份摘要，
+        // 于是两条断言各自绿着、"两个读者互相吞计数"这件事在结构上永远看不见。
+        // 现在按**跨文件总量**判。这不是放宽，反而更严：
+        // 留着两处 ⇒ 2 ⇒ 红；把两处都删掉 ⇒ 0 ⇒ 红；只有"恰好一个消费者"这一种形状能过。
         assert_eq!(
-            lib.matches(".db.take_summary()").count(),
+            lib.matches(".db.take_summary()").count() + state.matches(".db.take_summary()").count(),
             1,
-            "读者只能有一处：两个读者会互相吞计数"
+            "读者全仓只能有一处：两处会互相吞计数，一处都没有等于锁观测整个下线"
         );
         assert_eq!(
-            lib.matches("db_hold::summary_line").count(),
+            lib.matches("summary_line(").count() + state.matches("summary_line(").count(),
             1,
-            "摘要的产日志点只能有一处"
+            "摘要的产日志点全仓只能有一处"
+        );
+        // 接线的另一半：那唯一一处必须由启动点带起来 ——
+        // 没有这条，上面两条可以靠「把读者整个删掉」一起变绿（0 == 0 也算一种"只有一处"）。
+        assert_eq!(
+            lib.matches("AppState::spawn_db_hold_reporter(").count(),
+            1,
+            "唯一的读者必须由 lib.rs 这个启动点带起来，否则「计数只有一处」是靠下线达成的"
         );
     }
 }

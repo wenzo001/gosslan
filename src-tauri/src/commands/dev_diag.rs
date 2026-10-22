@@ -313,42 +313,50 @@ fn collect_conn_health(s: &Arc<AppState>) -> Vec<crate::state::ConnHealthDiag> {
 /// 独立描述。纯蓝牙用户不会再看到"整机 offline"（用户 2026-09-13 的反馈）。
 /// 「最近事件」已合并进运行日志，这里不再返回（见 `AppState::push_diag_event`）。
 #[tauri::command(async)]
-pub fn get_discovery_diag(state: State<'_, Arc<AppState>>) -> crate::state::DiscoveryDiag {
-    let s = state.inner();
-    let mut result = s.diag.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    {
-        let net = s.network.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(ref h) = *net {
-            result.mode = if h.bound_ip == "0.0.0.0" {
-                "auto".into()
+pub async fn get_discovery_diag(
+    state: State<'_, Arc<AppState>>,
+) -> Result<crate::state::DiscoveryDiag, String> {
+    let s = state.inner().clone();
+    // 六个 mutex 快照 + 蓝牙事实采集 + 数据库文件读数 ⇒ 面板每条判据都是"此刻"的，
+    // 但采集本身不许占住 worker（审计 R-18；诊断面板是手动刷新的，不在热路上但会卡住别人）。
+    tokio::task::spawn_blocking(move || -> Result<crate::state::DiscoveryDiag, String> {
+        let mut result = s.diag.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        {
+            let net = s.network.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(ref h) = *net {
+                result.mode = if h.bound_ip == "0.0.0.0" {
+                    "auto".into()
+                } else {
+                    "manual".into()
+                };
+                // auto 模式下 Discovery 实际绑定的是真实 LAN IP，而不是 0.0.0.0。
+                // tcp_listen 仍使用用户配置的地址（TCP 监听地址）。
+                result.bound_ip = if h.actual_bound_ip.is_empty() {
+                    h.bound_ip.clone()
+                } else {
+                    h.actual_bound_ip.clone()
+                };
+                result.tcp_listen = format!("{}:{}", h.bound_ip, h.tcp_port);
+                result.udp_port = crate::protocol::UDP_PORT;
             } else {
-                "manual".into()
-            };
-            // auto 模式下 Discovery 实际绑定的是真实 LAN IP，而不是 0.0.0.0。
-            // tcp_listen 仍使用用户配置的地址（TCP 监听地址）。
-            result.bound_ip = if h.actual_bound_ip.is_empty() {
-                h.bound_ip.clone()
-            } else {
-                h.actual_bound_ip.clone()
-            };
-            result.tcp_listen = format!("{}:{}", h.bound_ip, h.tcp_port);
-            result.udp_port = crate::protocol::UDP_PORT;
-        } else {
-            result.mode = "offline".into();
+                result.mode = "offline".into();
+            }
         }
-    }
-    // 候选链路（网卡 + 蓝牙）一次给全：面板只调一个命令，不会出现"两个命令数据不一致"。
-    // 蓝牙事实只采集一次，候选表与蓝牙卡片共用同一份（保证同一时刻的状态）。
-    let bt = collect_ble_diag(s);
-    result.candidates = collect_candidates(&bt);
-    result.bluetooth = bt;
-    // 版本互通：每次现取（本机版本是编译期常量，对端版本随 Hello 变），不留默认值 ——
-    // `DiscoveryDiag::default()` 里 protocol_version 是 0，那是"还没采过"而不是"版本 0"。
-    result.protocol_version = crate::protocol::PROTOCOL_VERSION;
-    result.app_version = crate::protocol::current_app_version().to_string();
-    result.peer_versions = collect_peer_versions(s);
-    // 按连接的收发活性：现取，不缓存 —— 这一格存在的意义就是"此刻还在不在动"，
-    // 留一份旧快照就等于把它变成第二条日志。
-    result.conn_health = collect_conn_health(s);
-    result
+        // 候选链路（网卡 + 蓝牙）一次给全：面板只调一个命令，不会出现"两个命令数据不一致"。
+        // 蓝牙事实只采集一次，候选表与蓝牙卡片共用同一份（保证同一时刻的状态）。
+        let bt = collect_ble_diag(&s);
+        result.candidates = collect_candidates(&bt);
+        result.bluetooth = bt;
+        // 版本互通：每次现取（本机版本是编译期常量，对端版本随 Hello 变），不留默认值 ——
+        // `DiscoveryDiag::default()` 里 protocol_version 是 0，那是"还没采过"而不是"版本 0"。
+        result.protocol_version = crate::protocol::PROTOCOL_VERSION;
+        result.app_version = crate::protocol::current_app_version().to_string();
+        result.peer_versions = collect_peer_versions(&s);
+        // 按连接的收发活性：现取，不缓存 —— 这一格存在的意义就是"此刻还在不在动"，
+        // 留一份旧快照就等于把它变成第二条日志。
+        result.conn_health = collect_conn_health(&s);
+        Ok(result)
+    })
+    .await
+    .map_err(|e| format!("发现诊断采集被线程池中断: {e}"))?
 }

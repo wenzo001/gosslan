@@ -266,9 +266,16 @@
             "notify-rust 的错误必须返回出来，不能吞"
         );
         let commands = all_commands_src();
+        // 锚点只到 `fn 名字(`（这条现在是 `async fn` + spawn_blocking，审计 R-18）：
+        // 光看签名会在"换形状而语义没变"时红，而真正要防的事故是**没注册进 generate_handler!**
+        // —— 那才是前端一调就 command not found 的形状（与 mapContract 在前端侧钉的是同一条）。
         assert!(
-            commands.contains("pub fn send_test_notification("),
+            commands.contains("fn send_test_notification("),
             "必须有设置页可调用的测试通知命令"
+        );
+        assert!(
+            include_str!("lib.rs").contains("commands::send_test_notification,"),
+            "测试通知命令必须注册进 generate_handler! —— 前一条只证明它存在，不证明前端调得到"
         );
     }
 

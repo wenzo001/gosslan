@@ -2,7 +2,8 @@
 import { t } from "@/i18n";
 import Spinner from "@/components/ui/Spinner.vue";
 import { safeStorageBackend } from "../utils/safeStorage.ts";
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, onScopeDispose, ref, watch } from "vue";
+import { progressAdvanced, progressHasStalled } from "@/utils/transferProgressWatch";
 import { useRouter } from "vue-router";
 import { useEventListener } from "@vueuse/core";
 import { api } from "@/api";
@@ -225,6 +226,71 @@ const groupHistory = computed(() => {
   return chat.groupHistorySync[id.slice("group:".length)] ?? null;
 });
 /**
+ * 群历史同步「已经多久没有进展」的观察（10-22 审计 D-9 的一半）。
+ *
+ * 阈值不是拍的：后端每取一页自带期限 `GROUP_HISTORY_PAGE_TIMEOUT_MS = 20_000`
+ * （`src-tauri/src/network/group_history.rs:51`），所以**两个页期限 = 40s** 里 `synced`
+ * 一次都没动，就意味着按后端自己的界它也推进不下去了 —— 这时说"没进展"是诚实的。
+ * 这条跨语言关系由 `utils/transferProgressWatch.test.ts` 现读两侧源码文本对账钉住
+ * （"与后端同一口径"这种话不能只写在注释里）。
+ *
+ * ⚠️ 另一半「停止」这轮**没做**：协议里没有 cancel 帧（`group_file.rs` 那段注释记着），
+ * 本地一停只是丢掉后续页，对方仍会把这一段发完 —— 那是半个功能，要先定语义再动。
+ */
+const GROUP_HISTORY_NO_PROGRESS_MS = 40_000;
+const lastHistorySyncAt = ref(0);
+const historyNoProgress = ref(false);
+let historyWatchTimer: ReturnType<typeof setInterval> | null = null;
+
+function stopHistoryWatch() {
+  if (historyWatchTimer !== null) {
+    clearInterval(historyWatchTimer);
+    historyWatchTimer = null;
+  }
+}
+
+watch(
+  // 三个都要进键：换群 ⇒ 重新起表；`synced` 变 ⇒ 一次进展；`phase` 离 running ⇒ 收表。
+  () => {
+    const p = groupHistory.value;
+    return p ? `${p.group_id}|${p.synced}|${p.phase}` : "";
+  },
+  (next, prev) => {
+    if (!next || next.split("|")[2] !== "running") {
+      stopHistoryWatch();
+      lastHistorySyncAt.value = 0;
+      historyNoProgress.value = false;
+      return;
+    }
+    const [gid, syncedRaw] = next.split("|");
+    const prevParts = prev ? prev.split("|") : [];
+    const prevSynced = prevParts[1] === undefined ? null : Number(prevParts[1]);
+    const changedGroup = !prevParts.length || prevParts[0] !== gid;
+    const advanced = progressAdvanced(
+      prevSynced === null || Number.isNaN(prevSynced) ? null : prevSynced,
+      Number(syncedRaw),
+    );
+    if (changedGroup || advanced || lastHistorySyncAt.value === 0) {
+      lastHistorySyncAt.value = Date.now();
+      historyNoProgress.value = false;
+    }
+    if (historyWatchTimer === null) {
+      historyWatchTimer = setInterval(() => {
+        historyNoProgress.value = progressHasStalled(
+          Date.now(),
+          lastHistorySyncAt.value,
+          GROUP_HISTORY_NO_PROGRESS_MS,
+        );
+      }, 5_000);
+    }
+  },
+  { immediate: true },
+);
+
+// 视图层组件会被路由换掉（移动端整页切换就是这个组件重建）⇒ 计时器必须跟着走
+onScopeDispose(stopHistoryWatch);
+
+/**
  * 提示条那句话的**唯一**写法。正文与 `title` 必须同源：`truncate` 把句子截掉时，
  * 全文要能在 `title` 里读到 —— 那是 `utils/designGuards.test.ts` 里
  * 「被截断的文本必须有 title」那条判据，写两份就会有一份漂移。
@@ -232,9 +298,15 @@ const groupHistory = computed(() => {
 const groupHistoryText = computed(() => {
   const p = groupHistory.value;
   if (!p) return "";
-  return p.total > 0
-    ? t("chat.groupHistory.syncing", { synced: p.synced, total: p.total })
-    : t("chat.groupHistory.syncingUnknown", { synced: p.synced });
+  const base =
+    p.total > 0
+      ? t("chat.groupHistory.syncing", { synced: p.synced, total: p.total })
+      : t("chat.groupHistory.syncingUnknown", { synced: p.synced });
+  // 没进展时把这句话追加在后面（不是替换）：`synced/total` 那两个数仍然是有用信息，
+  // 用户需要同时看到"停在哪"和"停了多久"。
+  return historyNoProgress.value
+    ? `${base} · ${t("chat.groupHistory.noProgress", { secs: Math.round(GROUP_HISTORY_NO_PROGRESS_MS / 1000) })}`
+    : base;
 });
 /** 有总数才画进度条；未知总数只保留转圈，不编一个假百分比。 */
 const groupHistoryPercent = computed<number | null>(() => {
@@ -1421,8 +1493,8 @@ function onLoadMore() {
           :aria-label="groupHistoryText"
         >
           <div
-            class="h-full rounded-full bg-[var(--gosslan-primary)] transition-[width] duration-200 ease-out"
-            :style="{ width: `${groupHistoryPercent}%` }"
+            class="h-full origin-left rounded-full bg-[var(--gosslan-primary)] transition-transform duration-200 ease-[var(--gosslan-ease)]"
+            :style="{ transform: `scaleX(${(groupHistoryPercent ?? 0) / 100})` }"
           ></div>
         </div>
       </div>

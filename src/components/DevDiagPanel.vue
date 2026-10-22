@@ -22,13 +22,36 @@ import { Bluetooth, RefreshCw, Wifi } from "lucide-vue-next";
 import BaseModal from "@/components/BaseModal.vue";
 import StateBlock from "@/components/ui/StateBlock.vue";
 import { api } from "@/api";
+import { useChatStore } from "@/stores/useChatStore";
 import { errorText } from "@/composables/useErrorText";
 import { panelQueryOptions } from "@/utils/panelQuery";
 import { fmtClock } from "@/utils/time";
-import type { DiscoveryDiag, PeerVersionDiag } from "@/types";
+import type { DiscoveryDiag, PeerVersionDiag, RuntimeDiag } from "@/types";
 
 defineProps<{ open: boolean }>();
 const emit = defineEmits<{ (e: "close"): void }>();
+
+/**
+ * 群文件投递诊断走**事件**不走轮询（10-22 审计 R-28 / D-3）：后端在投递失败时 emit
+ * `group-file-log`，内容由 store 留最近 50 行（见 useChatStore 的 groupFileDiag）。
+ * 这条快照查询是 `get_discovery_diag` 的同步读数，拿不到那一行失败原因 ——
+ * 以前它就挂在「后端发了、前端没接」的例外表上写着"暂无消费者"。
+ */
+const chat = useChatStore();
+
+/**
+ * 运行时读数（队列积压 / 链路 / 窗口 / 最近一次慢持锁，10-22 审计 R-30 / D-16）。
+ * 与主快照分开取：这四张表的 COUNT 要持 db 锁，只在面板打开与点刷新时读一次。
+ */
+const runtimeQuery = useQuery(
+  panelQueryOptions<RuntimeDiag>("runtime", "", () => api.getRuntimeDiag()),
+);
+const runtime = computed(() => runtimeQuery.data.value ?? null);
+
+/** -1 = 后端没数出来（读失败），界面必须说"未知"而不是"0 条积压"。 */
+function rtCount(n: number): string {
+  return n < 0 ? "—" : String(n);
+}
 
 /**
  * 诊断快照就是「打开拉一份、点刷新再拉一份」的纯读面板 ⇒ 交给 Query（策略见 utils/panelQuery）。
@@ -376,6 +399,61 @@ function ageText(ms: number | null): string {
               </span>
             </div>
           </div>
+        </section>
+
+        <!-- ⑦ 群文件投递诊断（10-22 审计 R-28 / D-3）：后端一直有 emit，前端此前没人接 ⇒
+             界面上只有「K 人失败」这个数，原因永远看不到。 -->
+        <section>
+          <h4 class="mb-1.5 font-semibold text-body">{{ t("diag.groupFileLog") }}</h4>
+          <p v-if="chat.groupFileDiag.length === 0" class="opacity-50">
+            {{ t("diag.groupFileLogEmpty") }}
+          </p>
+          <div v-else class="mt-1 max-h-48 space-y-0.5 overflow-y-auto font-mono text-caption">
+            <div v-for="(d, i) in chat.groupFileDiag" :key="`${d.ts}-${i}`" class="flex gap-3">
+              <span class="shrink-0 opacity-60">{{ fmtClock(d.ts) }}</span>
+              <span class="min-w-0 flex-1 break-all">{{ d.line }}</span>
+            </div>
+          </div>
+        </section>
+
+        <!-- ⑧ 运行时队列与 DB 锁（10-22 审计 R-30 / D-16）：这几项后端一直算得出来，
+             此前只活在 `RUNTIME_SNAPSHOT` 那行日志里 ⇒ 用户说"卡住了"时界面零入口，
+             分不清是队列积压、链路没了还是 db 在排队。按需读一次，不轮询。 -->
+        <section>
+          <h4 class="mb-1.5 font-semibold text-body">{{ t("diag.runtime") }}</h4>
+          <p v-if="!runtime" class="opacity-50">{{ t("diag.runtimeUnavailable") }}</p>
+          <dl v-else class="grid grid-cols-[1fr_auto] gap-x-4 gap-y-0.5 text-caption">
+            <dt class="opacity-70">{{ t("diag.rtSending") }}</dt>
+            <dd class="text-right tabular-nums">{{ rtCount(runtime.sendingMsgs) }}</dd>
+            <dt class="opacity-70">{{ t("diag.rtOutbox") }}</dt>
+            <dd class="text-right tabular-nums">{{ rtCount(runtime.outbox) }}</dd>
+            <dt class="opacity-70">{{ t("diag.rtGroupOutbox") }}</dt>
+            <dd class="text-right tabular-nums">{{ rtCount(runtime.groupOutbox) }}</dd>
+            <dt class="opacity-70">{{ t("diag.rtFileOutbox") }}</dt>
+            <dd class="text-right tabular-nums">{{ rtCount(runtime.fileOutbox) }}</dd>
+            <dt class="opacity-70">{{ t("diag.rtLinks") }}</dt>
+            <dd class="text-right tabular-nums">{{ rtCount(runtime.links) }}</dd>
+            <dt class="opacity-70">{{ t("diag.rtPeers") }}</dt>
+            <dd class="text-right tabular-nums">{{ rtCount(runtime.peers) }}</dd>
+            <dt class="opacity-70">{{ t("diag.rtWindows") }}</dt>
+            <dd class="text-right tabular-nums">
+              {{ t("diag.rtHidden", { n: runtime.hiddenWindows }) }} / {{ runtime.windows }}
+            </dd>
+            <!-- 在飞"等点击"线程 / 上限（审计 R-08）：贴上限说明用户的通知正在积压，
+                 到顶后新通知仍会发、只是不再挂线程等点击跳转。 -->
+            <dt class="opacity-70">{{ t("diag.rtNotifyWaiters") }}</dt>
+            <dd class="text-right tabular-nums">
+              {{ runtime.notifyWaiters }} / {{ runtime.notifyWaitersMax }}
+            </dd>
+          </dl>
+          <!-- 慢持锁那行由后端锁观测的唯一读者留档；没有 = 本轮确实没出现过 ≥阈值的持锁。 -->
+          <p
+            v-if="runtime?.dbHoldNote"
+            class="mt-1 font-mono text-caption text-[var(--gosslan-danger-ink)]"
+          >
+            {{ runtime.dbHoldNote }}
+          </p>
+          <p v-else-if="runtime" class="mt-1 opacity-50">{{ t("diag.rtNoSlowHold") }}</p>
         </section>
       </template>
 

@@ -32,30 +32,42 @@ pub async fn copy_file(source: String, destination: String) -> Result<(), String
 /// 把文件本体写入系统剪贴板（Windows CF_HDROP）。
 /// 之后既可在资源管理器 / 桌面 Ctrl+V 粘贴出文件，也可粘贴回聊天框直接发送（微信式）。
 #[tauri::command(async)]
-pub fn copy_file_to_clipboard(path: String) -> Result<(), String> {
-    #[cfg(target_os = "windows")]
-    {
-        use clipboard_win::Setter;
-        if !std::path::Path::new(&path).is_file() {
-            return Err(format!("文件不存在或不可访问：{path}"));
+pub async fn copy_file_to_clipboard(path: String) -> Result<(), String> {
+    // 剪贴板是**系统级独占资源**：别的程序正开着它时这里会等（Windows 还带 10 次重试）⇒ 必须在阻塞池。
+    tokio::task::spawn_blocking(move || -> Result<(), String> {
+        #[cfg(target_os = "windows")]
+        {
+            use clipboard_win::Setter;
+            if !std::path::Path::new(&path).is_file() {
+                return Err(format!("文件不存在或不可访问：{path}"));
+            }
+            let _clip = clipboard_win::Clipboard::new_attempts(10)
+                .map_err(|e| format!("无法访问系统剪贴板：{e}"))?;
+            clipboard_win::formats::FileList
+                .write_clipboard(&[path.as_str()])
+                .map_err(|e| format!("复制文件到剪贴板失败：{e}"))
         }
-        let _clip = clipboard_win::Clipboard::new_attempts(10)
-            .map_err(|e| format!("无法访问系统剪贴板：{e}"))?;
-        clipboard_win::formats::FileList
-            .write_clipboard(&[path.as_str()])
-            .map_err(|e| format!("复制文件到剪贴板失败：{e}"))
-    }
-    #[cfg(not(target_os = "windows"))]
-    {
-        let _ = path;
-        Err("当前平台暂不支持复制文件到剪贴板".into())
-    }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = path;
+            Err("当前平台暂不支持复制文件到剪贴板".into())
+        }
+    })
+    .await
+    .map_err(|e| format!("剪贴板写入被线程池中断: {e}"))?
 }
 
 /// 读取剪贴板里的文件路径列表（CF_HDROP）。空列表表示剪贴板里没有真实文件
 /// （截图 / 网页图片是位图数据，不是文件）。供输入框粘贴时区分「粘贴文件」与「粘贴图片」。
 #[tauri::command(async)]
-pub fn read_clipboard_file_paths() -> Vec<String> {
+pub async fn read_clipboard_file_paths() -> Result<Vec<String>, String> {
+    // 同 `copy_file_to_clipboard`：读剪贴板也可能被别的程序占住（这条在粘贴路径上，每按一次 Ctrl+V 打一次）。
+    tokio::task::spawn_blocking(read_clipboard_file_paths_blocking)
+        .await
+        .map_err(|e| format!("剪贴板读取被线程池中断: {e}"))
+}
+
+fn read_clipboard_file_paths_blocking() -> Vec<String> {
     #[cfg(target_os = "windows")]
     {
         // 读不到（格式不符 / 被占用）一律按"无文件"处理，前端回退到图片粘贴分支。
@@ -70,8 +82,17 @@ pub fn read_clipboard_file_paths() -> Vec<String> {
 }
 
 /// 将 base64 数据写入目标路径（用于图片消息"另存为"：前端把 dataURL 解出 base64 传回）。
+///
+/// 解码 + 整文件写盘都不许留在 tokio worker 上（10-22 审计 R-18 同族；`copy_file` 已按这条改过，
+/// 推导见上面那段 INV-P34）。这条的体积**没有上限**：前端解多大我们就写多大。
 #[tauri::command(async)]
-pub fn save_data_file(base64_data: String, destination: String) -> Result<(), String> {
+pub async fn save_data_file(base64_data: String, destination: String) -> Result<(), String> {
+    tokio::task::spawn_blocking(move || save_data_file_blocking(base64_data, destination))
+        .await
+        .unwrap_or_else(|e| Err(format!("另存写入被线程池中断: {e}")))
+}
+
+fn save_data_file_blocking(base64_data: String, destination: String) -> Result<(), String> {
     use base64::Engine as _;
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(base64_data.as_bytes())
@@ -222,9 +243,14 @@ fn resolve_media_path(s: &AppState, msg_id: &str) -> MediaPath {
 /// 会让人误以为是对端发来的文件本身有问题。只有能确定「文件已被删除」时才返回 `false`；
 /// 查不到消息（例如尚未落库的乐观消息）一律按"存在"处理，绝不能把在途消息误标成已清理。
 #[tauri::command(async)]
-pub fn media_present(state: State<'_, Arc<AppState>>, msg_id: String) -> Result<bool, String> {
-    let s = state.inner();
-    Ok(!matches!(resolve_media_path(s, &msg_id), MediaPath::Gone))
+pub async fn media_present(state: State<'_, Arc<AppState>>, msg_id: String) -> Result<bool, String> {
+    let s = state.inner().clone();
+    // 每一条媒体气泡渲染都可能问到它 ⇒ 这次 stat 不该留在 worker 上（审计 R-18）。
+    tokio::task::spawn_blocking(move || -> Result<bool, String> {
+        Ok(!matches!(resolve_media_path(&s, &msg_id), MediaPath::Gone))
+    })
+    .await
+    .map_err(|e| format!("媒体副本检查被线程池中断: {e}"))?
 }
 
 /// 读取附件预览内容（原始字节，不走 base64 IPC）。

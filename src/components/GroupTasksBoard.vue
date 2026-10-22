@@ -43,7 +43,7 @@ import TodoPickField from "@/components/TodoPickField.vue";
 import TodoIconPicker from "@/components/TodoIconPicker.vue";
 import CharCounter from "@/components/ui/CharCounter.vue";
 import {
-  TODO_CATEGORIES, TODO_CATEGORY_LABEL_KEY, TODO_CATEGORY_ICON_CLASS, TODO_CATEGORY_PILL, TODO_CUSTOM_CATEGORY_MAX_LEN, TODO_PRIORITIES, TODO_PRIORITY_LABEL_KEY, TODO_PRIORITY_ICON_CLASS, TODO_PRIORITY_PILL, TODO_STATUSES, TODO_STATUS_BAR, TODO_STATUS_CLASS, TODO_STATUS_DEFAULT, TODO_STATUS_LABEL_KEY, TODO_STATUS_PILL, buildTodoHistory, canArchiveOrReopenTodo, canEditAssignees, canUpdateTodo, foldTodos, isEffectivelyArchived, isTodoTerminalStatus, parseTodo, todoCategoryName, todoCode, type TodoHistoryEntry, type TodoImage, type TodoItem, type TodoCategory, type TodoPriority, type TodoStatus, TODO_CUSTOM_ICON_DEFAULT, type TodoCustomIcon, } from "@/utils/todos";
+  TODO_CATEGORIES, TODO_CATEGORY_LABEL_KEY, TODO_CATEGORY_ICON_CLASS, TODO_CATEGORY_PILL, TODO_CUSTOM_CATEGORY_MAX_LEN, TODO_PRIORITIES, TODO_PRIORITY_LABEL_KEY, TODO_PRIORITY_ICON_CLASS, TODO_PRIORITY_PILL, TODO_STATUSES, TODO_STATUS_BAR, TODO_STATUS_CLASS, TODO_STATUS_DEFAULT, TODO_STATUS_LABEL_KEY, TODO_STATUS_PILL, assigneesInGroup, buildTodoHistory, canArchiveOrReopenTodo, canEditAssignees, canUpdateTodo, foldTodos, isEffectivelyArchived, isTodoTerminalStatus, parseTodo, todoCategoryName, todoCode, type TodoHistoryEntry, type TodoImage, type TodoItem, type TodoCategory, type TodoPriority, type TodoStatus, TODO_CUSTOM_ICON_DEFAULT, type TodoCustomIcon, } from "@/utils/todos";
 import {
   isTodoRowsLoaded,
   todoRowsLoadState,
@@ -90,6 +90,14 @@ const group = computed(() => chat.groups.find((g) => g.id === props.groupId) ?? 
 const groupCreator = computed(() => group.value?.creator ?? "");
 /** 本群成员名单（归档/还原那条窄档的判据：只给本群成员，见 `canArchiveOrReopenTodo`）。 */
 const groupMembers = computed<string[]>(() => group.value?.members ?? []);
+/**
+ * 可指派 = 当前群成员。已退群的历史指派人不进候选；保存时再兜底过滤一次。
+ *
+ * ⚠️ 空表 = **群资料还没加载**，不是"这个群没有成员"：此时候选区为空（用户选不到人），
+ * 而 `assigneesInGroup` 对空表是 fail-open（原样返回）—— 两件事刻意不同：
+ * 前者是"不给你乱选"，后者是"别把历史指派误删光"。真要收缩成员表，等资料到位再说。
+ */
+const assignableMembers = computed<string[]>(() => groupMembers.value);
 
 /** 折叠出全部任务（按创建版本从新到旧），再拆成「活动」与「已归档」。 */
 /** 取数口：那份**全表读**的任务行，不是有上界的消息缓存（`#154-9`；语义见 store 里 groupTodoRows 的注释）。 */
@@ -126,7 +134,11 @@ async function loadTodoRows() {
 watch(
   [() => props.groupId, () => props.open],
   ([id, open]) => {
-    if (id && open !== false) void loadTodoRows();
+    if (id && open !== false) {
+      // 成员可能在别处/离线期间退群：打开看板时拉一次最新群资料，指派人候选不拿旧名单。
+      void chat.refreshGroups().catch(() => {});
+      void loadTodoRows();
+    }
   },
   { immediate: true },
 );
@@ -542,10 +554,11 @@ function startCreate() {
   };
 }
 function startEdit(x: TodoItem) {
+  // 已退群的历史指派人不进草稿（不编辑原数据不受影响；保存时还会再过滤一次）。
   draft.value = {
     todoId: x.todoId,
     title: x.title,
-    assignees: [...x.assignees],
+    assignees: assigneesInGroup(x.assignees, assignableMembers.value),
     status: x.status,
     category: x.category,
     customCategory: x.customCategory ?? "",
@@ -591,7 +604,7 @@ function editFromDetail(x: TodoItem) {
 }
 function toggleAssignee(id: string) {
   const d = draft.value;
-  if (!d) return;
+  if (!d || !assignableMembers.value.includes(id)) return;
   d.assignees = d.assignees.includes(id) ? d.assignees.filter((a) => a !== id) : [...d.assignees, id];
 }
 
@@ -843,7 +856,9 @@ async function saveDraft() {
     app.toast(t("todo.needTitle"), "error");
     return;
   }
-  if (d.assignees.length === 0) {
+  // 历史指派里可能有已退群者：保存是显式编辑，按当前成员表收口；全被剔掉则不落库。
+  const assignees = assigneesInGroup(d.assignees, assignableMembers.value);
+  if (assignees.length === 0) {
     app.toast(t("todo.needAssignee"), "error");
     return;
   }
@@ -862,9 +877,9 @@ async function saveDraft() {
       const cur = todos.value.find((x) => x.todoId === d.todoId);
       await chat.updateTodo(
         props.groupId,
-        cur ?? { todoId: d.todoId, title, assignees: d.assignees, status: d.status, description: d.description, images: d.images },
+        cur ?? { todoId: d.todoId, title, assignees, status: d.status, description: d.description, images: d.images },
         {
-          title, assignees: d.assignees, status: d.status, description: d.description, images: d.images,
+          title, assignees, status: d.status, description: d.description, images: d.images,
           priority: d.priority, category: d.category, customCategory, customIcon,
         },
       );
@@ -872,7 +887,7 @@ async function saveDraft() {
       app.toast(t("todo.updateDone"), "success");
     } else {
       const rec = await chat.createTodo(
-        props.groupId, title, d.assignees, d.description, d.images, d.category, customCategory, customIcon,
+        props.groupId, title, assignees, d.description, d.images, d.category, customCategory, customIcon,
       );
       const parsed = parseTodo(rec);
       todoId = parsed?.todoId ?? "";
@@ -964,7 +979,9 @@ async function claim(item: TodoItem) {
   const gid = props.groupId;
   if (!gid || !myId.value) return;
   try {
-    await chat.updateTodo(gid, item, { assignees: [...item.assignees, myId.value] });
+    // 认领也是一次显式指派编辑：沿用当前成员表，不把已退群的历史指派继续写回去。
+    const assignees = assigneesInGroup(item.assignees, assignableMembers.value).concat(myId.value);
+    await chat.updateTodo(gid, item, { assignees });
     app.toast(t("todo.claimed", { name: memberProfile(myId.value).name }), "success");
   } catch (e) {
     app.toastError(e, t("todo.updateFail"));
@@ -1507,7 +1524,7 @@ watch(
         <div class="mb-1.5 text-xs text-[var(--gosslan-text-2)]">{{ t("todo.pickMembers") }}</div>
         <div class="flex flex-wrap gap-1.5">
           <button
-            v-for="id in group?.members ?? []"
+            v-for="id in assignableMembers"
             :key="id"
             type="button"
             class="flex items-center gap-1.5 rounded-[var(--gosslan-radius-md)] border px-2 py-1 text-meta transition"

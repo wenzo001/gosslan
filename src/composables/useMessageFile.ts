@@ -1,5 +1,10 @@
 import { t as $t } from "@/i18n";
-import { computed, ref, toValue, watch, type MaybeRefOrGetter } from "vue";
+import { computed, onScopeDispose, ref, toValue, watch, type MaybeRefOrGetter } from "vue";
+import {
+  NO_PROGRESS_TIMEOUT_MS,
+  progressAdvanced,
+  progressHasStalled,
+} from "@/utils/transferProgressWatch";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { api } from "@/api";
@@ -12,6 +17,7 @@ import {
   transferDisplayKind,
   transferShowsProgress,
   transferStatusTextKey,
+  transferStatusTone,
 } from "@/utils/transferState";
 import { codeNeedsClamp } from "@/utils/previewMetrics";
 import type { FileMeta, MessageRecord } from "@/types";
@@ -63,6 +69,51 @@ export function useMessageFile(
     if (!t || !transferShowsProgress(t.status)) return null;
     return t.progress;
   });
+
+  /* ---------------- 前端自己的"没有进展"观察（审计 D-27，判定在 utils/transferProgressWatch） ----------------
+     每行一个计时器，而且**只在进度条还在画的时候**跑：进度交出 null（终态/等待态）就立刻收掉，
+     行被虚拟列表回收时由 `onScopeDispose` 兜底。刻意不开全局轮询 —— 那是"没人看也在扫"，
+     而这件事只在"用户正盯着这一行"时才需要答案。 */
+  const lastProgressChangeAt = ref(0);
+  const progressStalledByClient = ref(false);
+  let progressWatchTimer: ReturnType<typeof setInterval> | null = null;
+
+  function stopProgressWatch() {
+    if (progressWatchTimer !== null) {
+      clearInterval(progressWatchTimer);
+      progressWatchTimer = null;
+    }
+  }
+
+  watch(
+    fileProgress,
+    (next, prev) => {
+      if (next === null) {
+        // 不画进度了（终态、等待态、或记录被换掉）：观察收回，留一个空转计时器没有意义。
+        stopProgressWatch();
+        lastProgressChangeAt.value = 0;
+        progressStalledByClient.value = false;
+        return;
+      }
+      // 第一个读数起表；此后**只有值真的变了**才重置 ——
+      // 后端重发同一个百分比不算进展（否则判据会被永远按住）。
+      if (progressAdvanced(prev ?? null, next) || lastProgressChangeAt.value === 0) {
+        lastProgressChangeAt.value = Date.now();
+        progressStalledByClient.value = false;
+      }
+      if (progressWatchTimer === null) {
+        progressWatchTimer = setInterval(() => {
+          progressStalledByClient.value = progressHasStalled(
+            Date.now(),
+            lastProgressChangeAt.value,
+          );
+        }, 5_000);
+      }
+    },
+    { immediate: true },
+  );
+
+  onScopeDispose(stopProgressWatch);
   const fileStatusText = computed(() => {
     const t = transfer.value;
     if (!t) return null;
@@ -70,12 +121,34 @@ export function useMessageFile(
     if (chat.isTransferStalled(t.id) && transferDisplayKind(t.status) !== "done") {
       return chat.transferStallReason(t.id) ?? $t("send.stalled");
     }
+    // 后端没说停滞、可这一行已经 `NO_PROGRESS_TIMEOUT_MS` 一个字节都没动过 ——
+    // 那正是"常驻 worker 静默死亡、连 `file-stalled` 都没人来发"那一格（审计 R-05 / D-27）。
+    // 界面上原来是一条**永远停在 84% 的进度条**：不报错、不动、只能重启应用。
+    // 现在把沉默换成一句话（判定与阈值的家在 `utils/transferProgressWatch`）。
+    if (progressStalledByClient.value) {
+      return $t("send.noProgress", { secs: Math.round(NO_PROGRESS_TIMEOUT_MS / 1000) });
+    }
     if (transferShowsProgress(t.status)) {
       const pct = Math.round((t.progress ?? 0) * 100);
       return t.direction === "send" ? $t("send.sendingPct", { pct }) : $t("send.receivingPct", { pct });
     }
     const key = transferStatusTextKey(t.status);
     return key ? $t(key) : null;
+  });
+
+  /**
+   * 状态行的视觉档位（10-22 审计 D-4：停滞与失败原来只差一行同色小字）。
+   *
+   * "没在动"有两个来源，都要算进来：后端按 writer 实发报的停滞，和前端自己那条 60s 无进展观察。
+   * **分类本身不在这里重写** —— 交给 `utils/transferState` 那一份（加一态只改 `STATUS_KINDS`）。
+   */
+  const fileStatusTone = computed(() => {
+    const t = transfer.value;
+    if (!t) return "muted" as const;
+    const notMoving =
+      (chat.isTransferStalled(t.id) && transferDisplayKind(t.status) !== "done") ||
+      progressStalledByClient.value;
+    return transferStatusTone(t.status, { notProgressing: notMoving });
   });
 
   const attachmentUrl = ref<string | null>(null);
@@ -230,6 +303,7 @@ export function useMessageFile(
     fileTappable,
     fileProgress,
     fileStatusText,
+    fileStatusTone,
     attachmentUrl,
     attachmentMissing,
     previewNote,

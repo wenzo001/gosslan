@@ -9,18 +9,33 @@
 /// `since_secs = Some(N)` 只返回最近 N 秒内的日志；None / 0 = 返回全部。
 /// 例：since_secs = Some(30) → 近 30 秒；Some(60) → 近 1 分钟。
 #[tauri::command(async)]
-pub fn get_logs(state: tauri::State<'_, Arc<AppState>>, since_secs: Option<i64>) -> Vec<LogEntry> {
-    let since_ms = since_secs
-        .filter(|&s| s > 0)
-        .map(|s| crate::db::now_ms() - s * 1000);
-    state.logger.snapshot(since_ms)
+pub async fn get_logs(
+    state: tauri::State<'_, Arc<AppState>>,
+    since_secs: Option<i64>,
+) -> Result<Vec<LogEntry>, String> {
+    let s = state.inner().clone();
+    // 快照要把环形缓冲整段 clone 出来（日志页一次可以拉全量）⇒ 不在 worker 上做（审计 R-18）。
+    tokio::task::spawn_blocking(move || -> Result<Vec<LogEntry>, String> {
+        let since_ms = since_secs
+            .filter(|&x| x > 0)
+            .map(|x| crate::db::now_ms() - x * 1000);
+        Ok(s.logger.snapshot(since_ms))
+    })
+    .await
+    .map_err(|e| format!("运行日志读取被线程池中断: {e}"))?
 }
 
 /// 清空运行日志（内存 + 落盘文件）。
 #[tauri::command(async)]
-pub fn clear_logs(state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
-    state.logger.clear();
-    Ok(())
+pub async fn clear_logs(state: tauri::State<'_, Arc<AppState>>) -> Result<(), String> {
+    let s = state.inner().clone();
+    // 清空是文件系统动作（截断/重建当前日志）⇒ 进阻塞池（审计 R-18）。
+    tokio::task::spawn_blocking(move || -> Result<(), String> {
+        s.logger.clear();
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("运行日志清空被线程池中断: {e}"))?
 }
 
 /// 日志文件的**真实位置**（目录 / 本轮那份 / 崩溃现场）。

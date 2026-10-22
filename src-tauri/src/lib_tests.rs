@@ -73,6 +73,7 @@ mod tests {
             // 与领域图），后果不是报错而是**假绿**：任何以"全部命令面"为判据的守卫都看不见
             // 中继那三个命令。补登记，让下面那条口令守卫能覆盖到它。
             include_str!("commands/relay.rs"),
+            include_str!("commands/updater.rs"),
         )
     }
 

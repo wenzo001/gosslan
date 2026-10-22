@@ -20,6 +20,18 @@ const props = defineProps<{
   readerIds?: string[];
   /** 消息唯一键：作为全局展开互斥的键。 */
   msgKey?: string | number;
+  /**
+   * 失败态这颗红叉**是否真的能重发**（缺省视为可，老调用点不必改）。
+   *
+   * 文件类消息交回 false：本仓没有任何发送侧文件重试通道（`retry_file` / `resend_file`
+   * 这类命令在 `src-tauri/src/commands` 里零命中），而 `retrySend` 第一行就
+   * `msg.kind === "file"` 直接 return ⇒ 按钮对所有 kind 都渲染、点了静默无反应
+   * （10-22 审计 R-27 / D-2）。这不是"少个功能"，是**界面在撒谎**：一个看起来能点的
+   * 修复入口，点了什么都不发生，用户只会再点一次。
+   * 这里不删图标 —— 它是这条消息**失败**的唯一可见指示，删掉等于把失败藏起来；
+   * 改成静态 `role="img"` + 可访问名，失败照样看得见，只是不再假装可点。
+   */
+  retryable?: boolean;
 }>();
 const emit = defineEmits<{ (e: "retry"): void }>();
 
@@ -134,13 +146,23 @@ function readerAvatar(id: string): string | null {
          之前用 RefreshCw 单独当"失败"图标，但 RefreshCw 的语义是「刷新/重试」，
          而不是「这条消息失败了」—— 用户需要的是明确的失败感 + 可修复入口。 -->
     <button
-      v-if="state === 'failed'"
+      v-if="state === 'failed' && retryable !== false"
       class="tap-safe flex h-5 w-5 items-center justify-center rounded-[var(--gosslan-radius-xs)] text-[var(--gosslan-danger-ink)] transition hover:bg-[var(--gosslan-danger-soft)]"
       :title="t('msg.resend')" :aria-label="t('msg.resend')"
       @click="emit('retry')"
     >
       <X class="h-4 w-4" stroke-width="2.5" />
     </button>
+    <!-- 不可重发的失败（文件类）：同一个 X 退化成**纯指示**，读屏仍能报出"发送失败"。 -->
+    <span
+      v-else-if="state === 'failed'"
+      class="flex h-5 w-5 items-center justify-center text-[var(--gosslan-danger-ink)]"
+      role="img"
+      :title="title"
+      :aria-label="title"
+    >
+      <X class="h-4 w-4" stroke-width="2.5" />
+    </span>
     <span v-else class="relative flex items-center" role="img" :title="title" :aria-label="title">
       <!-- 状态切换给一次短促的弹入：单勾→双勾→主题色双勾是聊天里最常盯的一处，
            硬切会让人怀疑"到底有没有送到"。 -->

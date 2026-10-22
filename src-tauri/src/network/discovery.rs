@@ -847,6 +847,19 @@ fn should_keep_peer(last_seen: i64, now: i64, has_active_link: bool) -> bool {
     has_active_link || last_seen >= now - RELAY_PEER_TIMEOUT_SECS * 1000
 }
 
+/// 超时清扫之后，这条设备的**身份**（`peer_manager` 里那两份公钥 + 端点集合）能不能一起忘掉。
+///
+/// 审计 R-04 的修法与文档给的差别就在这一格：文档说"`sweep_peers` 唯独漏了 peer_manager"，
+/// 事实成立（`remove_peer` 生产路径此前 0 调用 ⇒ 见过一次的设备永留表内），
+/// 但**照抄同一句 retain 会打掉好友**：好友离线超过 45s 会先离开 `peers` 表，
+/// 于是它的身份跟着被忘，下次给它发密封消息就只能等对方重新 Hello ——
+/// 而那份公钥是"这台设备=这身份"的信任根（INV-P11 那条链）。
+/// 所以这里只忘**不是好友**的设备：无界性照样收口（陌生设备的进出节奏由 `peers` 表 45s 超时界定），
+/// 好友只由"解除关系"那一条路径清（`forget_identity` / 删好友）。
+fn should_forget_peer_identity(is_friend: bool) -> bool {
+    !is_friend
+}
+
 /// 清理超过超时阈值的节点：
 /// - **有活跃 TCP 链接**的节点：直接豁免（避免「TCP 能通信但 UI 显示离线」）。
 /// - **无活跃链接**的节点（跨跳节点，靠 Presence 经中继保活）：用更长的
@@ -855,6 +868,14 @@ fn should_keep_peer(last_seen: i64, now: i64, has_active_link: bool) -> bool {
 ///   在线状态「一会儿绿一会儿灰」。
 fn sweep_peers(state: &AppState) {
     let now = now_ms();
+    // 好友豁免名单（审计 R-04）：走 `AppState::friend_ids()` 这一个读出口，
+    // 不在这里内联 `crate::db::…`（领域依赖方向棘轮盯的就是这种看不见的耦合）。
+    // 取在任何表锁**之前** —— `db → peers` 是本仓既有的顺序，反过来会与 Hello 路径构成 ABBA。
+    // 读不出来 ⇒ 本轮**一律不回收身份**：宁可多留一轮陌生设备的缓存，
+    // 也不能因为一次查询失败就把好友的密封信任根打掉。
+    let friends_snapshot = state.friend_ids();
+    let reclaim_identities = friends_snapshot.is_some();
+    let friend_ids = friends_snapshot.unwrap_or_default();
     // try_lock 非阻塞：锁被占用时跳过本轮清理（下轮会补上），绝不阻塞广播循环。
     // ⚠️ 只把**非空** Vec 算作「有活跃链路」：`empty()==true` 的 key 曾经会残留
     // （reader_loop 只 retain 不删 key，已在 transport 侧修掉），而 `keys()` 不区分
@@ -893,6 +914,7 @@ fn sweep_peers(state: &AppState) {
             format!("超时清理 {} 个节点：{}", removed.len(), removed.join(",")),
         );
     }
+    let mut identities_forgotten = 0usize;
     for id in removed {
         crate::network::transport::clear_conv_link(state, &id);
         // 连带清掉按 device_id 索引的内存表：它们原先只在「删好友」时清，
@@ -915,6 +937,30 @@ fn sweep_peers(state: &AppState) {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&id);
+        // `peer_manager` 的回收点（审计 R-04 的正主）：它原先**完全不在**这张回收名单里，
+        // 于是"见过一次的设备永留表内"（`remove_peer` 生产路径 0 调用）。
+        if !reclaim_identities {
+            continue; // 好友名单没读出来 ⇒ 这轮只清别的表，不动身份（fail-closed）
+        }
+        // 好友先跳过 —— 判据与理由见 `should_forget_peer_identity`。
+        if !should_forget_peer_identity(friend_ids.contains(&id)) {
+            continue;
+        }
+        if state
+            .peer_manager
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove_peer(&id)
+            .is_some()
+        {
+            identities_forgotten += 1;
+        }
+    }
+    if identities_forgotten > 0 {
+        state.logger.info(
+            "link",
+            format!("超时清理连带忘掉 {identities_forgotten} 台非好友设备的身份缓存"),
+        );
     }
     if changed {
         state.emit_peers();
@@ -924,6 +970,71 @@ fn sweep_peers(state: &AppState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 审计 R-04：`peer_manager` 必须进超时回收名单，但**好友除外**。
+    /// 判据只有一格 ⇒ 给它真值表，并把它最容易写反的那一面钉住（照抄 retain 会忘好友）。
+    #[test]
+    fn peer_identity_is_forgotten_only_for_non_friends() {
+        assert!(should_forget_peer_identity(false), "陌生设备超时后必须忘掉");
+        assert!(
+            !should_forget_peer_identity(true),
+            "好友绝不能被超时忘掉 —— 那份公钥是密封的信任根"
+        );
+        // 反向钉：这条判据若被写成恒 `true`（= 文档原方案），好友那格必须炸。
+        assert_ne!(
+            should_forget_peer_identity(true),
+            should_forget_peer_identity(false),
+            "两格同值 ⇒ 这条判据已经不看是不是好友了"
+        );
+    }
+
+    /// 接线判据（本仓踩过两次"逻辑全绿但没接上"）：清扫循环里必须真的调 `remove_peer`，
+    /// 且**好友快照在任何表锁之前**取（`db → peers` 是既有取锁顺序，反过来就是 ABBA）。
+    #[test]
+    fn sweep_peers_reclaims_peer_manager_after_the_friends_snapshot() {
+        let src = include_str!("discovery.rs");
+        // 只取测试册之前的生产码：下面这些 needle 在本用例里还会各出现一次。
+        let prod = src
+            .split_once("\n#[cfg(test)]")
+            .map(|(head, _)| head)
+            .unwrap_or(src);
+        let body = {
+            let start = prod
+                .find("fn sweep_peers(")
+                .expect("sweep_peers 改名/挪走了 ⇒ 这条判据已经不知道自己在读什么");
+            let rest = &prod[start..];
+            // 函数结尾 = 第一个**顶格**的 `}`（嵌套块的收尾都带缩进，不会误命中）。
+            let end = rest[1..].find("\n}").map(|i| i + 1).unwrap_or(rest.len());
+            &rest[..end]
+        };
+        let forget_needle = concat!("should_forget_peer_identity(", "friend_ids.contains(&id))");
+        let remove_needle = concat!("remove_peer(&", "id)");
+        assert_eq!(body.matches(forget_needle).count(), 1, "回收点只能有一处");
+        assert_eq!(body.matches(remove_needle).count(), 1);
+        // 字段访问会被 rustfmt 拆行（`state\n.peer_manager`）⇒ needle 只认带点的那一段。
+        assert_eq!(body.matches(concat!(".", "peer_manager")).count(), 1);
+        // 读出口也必须只有一处、且是 `AppState::friend_ids()`（不是内联 `crate::db::…`）：
+        // 后者正是领域依赖方向棘轮会点名新增的那类"看不见的跨域耦合"。
+        assert_eq!(body.matches(concat!(".", "friend_ids()")).count(), 1);
+        assert!(!body.contains(concat!("crate::", "db::list_friends")));
+        // fail-closed 那一格必须在：名单读不出来时不许动身份。
+        assert_eq!(body.matches("if !reclaim_identities").count(), 1);
+        // 顺序判据：好友快照必须在 `state.peers.lock()` **之前**取到（同一函数体内比偏移）。
+        let friends_at = body
+            .find("let friends_snapshot")
+            .expect("好友快照没了 ⇒ 好友豁免形同虚设");
+        let peers_lock_at = body
+            .find("state.peers.lock()")
+            .expect("peers 表锁锚点没命中");
+        assert!(
+            friends_at < peers_lock_at,
+            "取锁顺序被改成 peers→db ⇒ 与 Hello 路径的 db→peers 构成 ABBA"
+        );
+        // 非空转对照：把豁免判据摘掉（= 文档原方案）后，needle 必须看不见 ⇒ 说明它盯的是真东西。
+        let mutated = body.replace(forget_needle, "if true");
+        assert_ne!(mutated, body, "对照替换没生效 ⇒ 这条对照什么都没测");
+        assert!(!mutated.contains(forget_needle));
+    }
 
     /// 跨跳节点离线判定：45s 超时 + 直连节点豁免（护栏非空转的关键判据）。
     ///

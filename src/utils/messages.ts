@@ -212,6 +212,63 @@ export function applyReplacements(
 }
 
 /**
+ * 这批消息**涉及到的那些会话**里，各 msg_id 当前的送达状态。
+ *
+ * `touched` 必须是这批自己的 conv_id 集合：整份缓存遍历是每帧一次的开销，
+ * 而一条消息的对照状态只可能来自它自己那条会话。跨会话重名（理论上不该发生，
+ * msg_id 由后端哈希生成）时，全表那份 Map 取的是**对象遍历顺序里最后胜出的那个**，
+ * 本身就是不确定的；按会话取才是确定答案。
+ */
+export function statusSnapshotFor(
+  messages: Record<string, MessageRecord[]>,
+  touched: Iterable<string>,
+): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const cid of touched) {
+    for (const m of messages[cid] ?? []) out.set(m.msg_id, m.status);
+  }
+  return out;
+}
+
+/** 同上，按会话给出「这条会话里已经有哪些 msg_id」——未读增量只统计本地真正新增的消息。 */
+export function existingIdsFor(
+  messages: Record<string, MessageRecord[]>,
+  touched: Iterable<string>,
+): Map<string, Set<string>> {
+  const out = new Map<string, Set<string>>();
+  for (const cid of touched) {
+    out.set(cid, new Set((messages[cid] ?? []).map((m) => m.msg_id)));
+  }
+  return out;
+}
+
+/**
+ * 把一个**已经由后端落库**的终态盖到所有缓存了这条消息的会话上（含没在看的会话）。
+ *
+ * 为什么原地改而不回库查：调用方是那种「事件本身就带终态事实」的监听（`message-failed`
+ * —— outbox 清扫先把 `messages.status` 写成 failed 再 emit）。为一条状态行重拉一整页
+ * 是一次 IPC + 整列表重建，而事实已经在参数里了。
+ * 不改会话列表的 `unread`/预览：那一行讲的不是"来了一条新消息"。
+ *
+ * @returns 被改动了几行（0 = 本地没有这条消息的缓存，什么都不做）
+ */
+export function markStatusInCache(
+  messages: Record<string, MessageRecord[]>,
+  msgId: string,
+  status: string,
+): number {
+  let changed = 0;
+  for (const list of Object.values(messages)) {
+    for (const m of list) {
+      if (m.msg_id !== msgId || m.status === status) continue;
+      m.status = status;
+      changed++;
+    }
+  }
+  return changed;
+}
+
+/**
  * 从 peers 列表同步好友昵称/头像到 friends 和单聊 conversations。
  * 纯函数，便于测试；调用方为 useChatStore.onPeers。
  */

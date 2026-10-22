@@ -2,15 +2,15 @@
 /**
  * 默认头像选择器：一个表情 + 一个背景色，可手动搭配，也可随机。
  *
- * 选项集**全部从 `AVATAR_PAIRS` 派生**（`AVATAR_EMOJIS` / `AVATAR_BACKGROUNDS`），
- * 与 `avatarSeedFor` 的随机脸是同一批数据 —— 用户不会在这里看到"系统随机永远不会抽到"
- * 的选项，也不会被允许自由输入任意 emoji / 颜色（用户 2026-10-22：「不要太开放」）。
+ * 表情/调色板网格读 `avatarSeed.ts` 的清单常量（不在模板里手抄第二份）；随机仍从
+ * `AVATAR_PAIRS` 取。颜色除了调色板还提供一个原生取色器的自定义色；emoji 仍不允许
+ * 自由文本输入（用户 2026-10-22 的原话是「不要太开放」，自定义色是后来明确追加的）。
  *
  * 预览用 HTML 的 emoji 字体渲染（与 SelfAvatar 同一种画法）；确认后落库的是一张
  * SVG data URL，仍走 `avatar` 原有图片通道，见 `utils/avatarSeed.ts`。
  */
 import { computed, ref, watch } from "vue";
-import { Shuffle } from "lucide-vue-next";
+import { Palette, Shuffle } from "lucide-vue-next";
 import { Check } from "@/components/ui/icons";
 import BaseModal from "@/components/BaseModal.vue";
 import { t } from "@/i18n";
@@ -35,6 +35,9 @@ const emit = defineEmits<{
 
 const emoji = ref(props.initial.emoji);
 const bg = ref(props.initial.bg);
+const customColorInput = ref<HTMLInputElement | null>(null);
+/** 当前颜色不在调色板里（用户用取色器选的）⇒ 自定义那颗显示当前色。 */
+const customSelected = computed(() => !AVATAR_BACKGROUNDS.includes(bg.value));
 
 watch(
   () => props.open,
@@ -53,6 +56,11 @@ function randomize() {
   const next = randomAvatarPair(selection.value);
   emoji.value = next.emoji;
   bg.value = next.bg;
+}
+
+function onCustomColor(e: Event) {
+  const value = (e.target as HTMLInputElement).value;
+  if (/^#[0-9a-f]{6}$/i.test(value)) bg.value = value.toLowerCase();
 }
 </script>
 
@@ -90,7 +98,7 @@ function randomize() {
       </div>
     </template>
 
-    <div data-avatar-options>
+    <div data-avatar-options class="pb-2">
       <p class="mb-1.5 text-xs font-medium text-[var(--gosslan-text-2)]">
         {{ t("settings.profile.avatar.emoji") }}
       </p>
@@ -136,6 +144,37 @@ function randomize() {
             aria-hidden="true"
           />
         </button>
+        <!-- 自定义色：任何 6 位 hex 都放行；选中态沿用调色板那颗的环，取色器本身隐藏。 -->
+        <button
+          type="button"
+          data-avatar-custom-color
+          class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition"
+          :class="customSelected ? 'ring-2 ring-inset ring-white' : ''"
+          :style="customSelected
+            ? { backgroundColor: bg }
+            : { background: 'conic-gradient(from 0deg, #cd5951, #cda751, #51cd85, #51cdc8, #4284b3, #a269d3, #cd518f, #cd5951)' }"
+          :aria-pressed="customSelected"
+          :aria-label="t('settings.profile.avatar.customColor')"
+          :title="t('settings.profile.avatar.customColor')"
+          @click="customColorInput?.click()"
+        >
+          <Check
+            v-if="customSelected"
+            class="h-4 w-4 text-white drop-shadow"
+            :stroke-width="3"
+            aria-hidden="true"
+          />
+          <Palette v-else class="h-4 w-4 text-white drop-shadow" :stroke-width="2" aria-hidden="true" />
+        </button>
+        <input
+          ref="customColorInput"
+          type="color"
+          class="sr-only"
+          :value="bg"
+          tabindex="-1"
+          aria-hidden="true"
+          @input="onCustomColor"
+        />
       </div>
     </div>
 

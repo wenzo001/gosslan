@@ -706,6 +706,16 @@ export function canUpdateTodo(
 }
 
 /**
+ * 把指派收敛到当前群成员。成员表为空（群资料尚未加载）时原样返回，不能把历史指派误删光。
+ * 用于新增/编辑/认领三条会显式写 `assignees` 的路径。
+ */
+export function assigneesInGroup(assignees: readonly string[], members: readonly string[]): string[] {
+  if (members.length === 0) return [...assignees];
+  const allowed = new Set(members);
+  return assignees.filter((id) => allowed.has(id));
+}
+
+/**
  * 我能不能**改指派人**（用户 2026-09-17：被 @ 的人也能转派/加人）。
  * 创建者 / 群主 / 当前被指派人 都行；与后端 `edits_assignees` 分支一致。
  */

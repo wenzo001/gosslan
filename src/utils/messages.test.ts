@@ -23,6 +23,9 @@ import {
   syncProfileFromPeers,
   textMentionsName,
   unreadAnchorIndex,
+  existingIdsFor,
+  markStatusInCache,
+  statusSnapshotFor,
 } from "./messages.ts";
 import type { Conversation, MessageRecord } from "../types";
 
@@ -1252,4 +1255,94 @@ test("promoteOnPeerRead：别人发的与超出回执时间的都不动", () => 
 test("promoteOnPeerRead：没有可推进的项时返回同一个数组（不许白刷一次响应式）", () => {
   const list = [dr("a", "read"), dr("b", "failed")];
   assert.equal(promoteOnPeerRead(list, "me", 999), list);
+});
+
+/* ---------------- 每批快照只读这一批涉及的会话（2026-10-22 审计 R-17） ----------------
+   这两份快照以前遍历**全部缓存会话的全部消息**，而 `applyIncoming` 在事件风暴/传文件回填时
+   每帧跑一次 ⇒ 每帧上万次 Map/Set 写入。用 getter 把"读了哪几个会话"变成可观测读数：
+   谁要是把它改回全表遍历，`reads` 立刻从 1 变成 40，这条当场红（不是靠读代码保证的）。 */
+
+/** 造一份 n 个会话 × m 条消息的缓存，并记录每个会话被读了多少次。 */
+function countedCache(convCount: number, msgCount: number) {
+  const reads: string[] = [];
+  const messages: Record<string, MessageRecord[]> = {};
+  for (let c = 0; c < convCount; c++) {
+    const cid = `c${c}`;
+    const list = Array.from({ length: msgCount }, (_, i) =>
+      msg({ msg_id: `${cid}-m${i}`, conv_id: cid, status: "sent" }),
+    );
+    Object.defineProperty(messages, cid, {
+      get() {
+        reads.push(cid);
+        return list;
+      },
+      enumerable: true,
+      configurable: true,
+    });
+  }
+  return { messages, reads };
+}
+
+test("statusSnapshotFor：只碰这批涉及的会话，读到的状态以它自己的会话为准", () => {
+  const { messages, reads } = countedCache(40, 200);
+  const out = statusSnapshotFor(messages, ["c7"]);
+  assert.deepEqual(reads, ["c7"], "不许为了 1 个会话去读另外 39 个");
+  assert.equal(out.size, 200);
+  assert.equal(out.get("c7-m3"), "sent");
+  assert.equal(out.has("c8-m3"), false, "批外会话的 msg_id 不该进这份快照");
+});
+
+test("existingIdsFor：同样只碰这批涉及的会话，且未涉及的键干脆不存在", () => {
+  const { messages, reads } = countedCache(40, 200);
+  const out = existingIdsFor(messages, ["c1", "c2"]);
+  assert.deepEqual(reads, ["c1", "c2"]);
+  assert.equal(out.size, 2);
+  assert.equal(out.get("c1")?.has("c1-m199"), true);
+  assert.equal(out.get("c3"), undefined, "批外会话不建集合（调用方 ?? 空集合 兜住）");
+});
+
+test("两份快照与旧的全表写法在这一批涉及的数据上给同一个答案", () => {
+  const messages: Record<string, MessageRecord[]> = {
+    c1: [msg({ msg_id: "x1", conv_id: "c1", status: "delivered" })],
+    c2: [msg({ msg_id: "x2", conv_id: "c2", status: "read" })],
+  };
+  const touched = ["c1"];
+  const oldWay = new Map<string, string>();
+  for (const list of Object.values(messages)) for (const m of list) oldWay.set(m.msg_id, m.status);
+  assert.deepEqual([...statusSnapshotFor(messages, touched)], [...oldWay].filter(([k]) => k === "x1"));
+});
+
+test("跨会话重名时按会话取是确定答案（旧全表写法取的是遍历顺序里最后那个）", () => {
+  const messages: Record<string, MessageRecord[]> = {
+    // 同一条 msg_id 出现在两条会话里（理论不该有，但以前那种 Map 遇时会静默覆盖）
+    c1: [msg({ msg_id: "dup", conv_id: "c1", status: "failed" })],
+    c2: [msg({ msg_id: "dup", conv_id: "c2", status: "sent" })],
+  };
+  assert.equal(statusSnapshotFor(messages, ["c2"]).get("dup"), "sent");
+  assert.equal(statusSnapshotFor(messages, ["c1"]).get("dup"), "failed");
+});
+
+/* ---------------- message-failed 直接盖缓存（2026-10-22 审计 R-29） ---------------- */
+
+test("markStatusInCache：盖所有缓存了这条消息的会话，含没在看的", () => {
+  const messages: Record<string, MessageRecord[]> = {
+    c1: [msg({ msg_id: "m1", conv_id: "c1", status: "sending" }), msg({ msg_id: "m2", conv_id: "c1" })],
+    c2: [msg({ msg_id: "m1", conv_id: "c2", status: "sending" })],
+  };
+  assert.equal(markStatusInCache(messages, "m1", "failed"), 2);
+  assert.equal(messages.c1[0].status, "failed");
+  assert.equal(messages.c2[0].status, "failed");
+  assert.equal(messages.c1[1].status, "sent", "同会话里的别条消息不许被顺带动到");
+});
+
+test("markStatusInCache：本地没缓存这条就返回 0 且什么都不建（不凭空造气泡）", () => {
+  const messages: Record<string, MessageRecord[]> = { c1: [msg({ msg_id: "m1" })] };
+  assert.equal(markStatusInCache(messages, "nope", "failed"), 0);
+  assert.deepEqual(Object.keys(messages), ["c1"]);
+  assert.equal(messages.c1.length, 1);
+});
+
+test("markStatusInCache：已经是那个状态就不算改动（重复事件不反复刷响应式）", () => {
+  const messages: Record<string, MessageRecord[]> = { c1: [msg({ msg_id: "m1", status: "failed" })] };
+  assert.equal(markStatusInCache(messages, "m1", "failed"), 0);
 });

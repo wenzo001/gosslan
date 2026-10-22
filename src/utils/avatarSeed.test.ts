@@ -9,6 +9,7 @@ import {
   AVATAR_PAIRS,
   avatarPresetDataUrl,
   avatarSeedFor,
+  isAvatarSeed,
   parseAvatarPreset,
   randomAvatarPair,
 } from "./avatarSeed.ts";
@@ -115,7 +116,7 @@ test("随机出来的组合永远落在表内，且不会原地重复（点了�
   assert.ok(seen.size >= 20, `300 次只随机出 ${seen.size} 种组合`);
 });
 
-test("任意手动搭配（36×40）都能编码再原样解回来", () => {
+test("全部表情×颜色（数量现算）都能编码再原样解回来", () => {
   for (const emoji of AVATAR_EMOJIS) {
     for (const bg of AVATAR_BACKGROUNDS) {
       const url = avatarPresetDataUrl({ emoji, bg });
@@ -153,7 +154,7 @@ test("解析只认本机生成的预设：普通图片、坏 base64、表外组�
   assert.equal(parseAvatarPreset(""), null);
   assert.equal(parseAvatarPreset("data:image/jpeg;base64,AAAA"), null, "普通上传图片不该被当成预设");
   assert.equal(parseAvatarPreset("data:image/svg+xml;base64,!!!"), null, "坏 base64 不该抛");
-  assert.equal(parseAvatarPreset(marked("🦄", "#4284b3")), null, "表外表情必须拒绝");
+  assert.equal(parseAvatarPreset(marked("🧠", "#4284b3")), null, "表外表情必须拒绝");
   assert.equal(parseAvatarPreset(marked("🦊", "red")), null, "非 #rrggbb 必须拒绝");
   assert.equal(
     parseAvatarPreset(
@@ -166,7 +167,22 @@ test("解析只认本机生成的预设：普通图片、坏 base64、表外组�
   assert.deepEqual(parseAvatarPreset(marked("🦊", "#4284b3")), { emoji: "🦊", bg: "#4284b3" });
 });
 
-test("编码入口拒绝表外组合（不许绕过选择器塞任意 emoji/颜色）", () => {
+test("编码入口拒绝非法 emoji / 非 hex；自定义 hex 放行", () => {
   assert.throws(() => avatarPresetDataUrl({ emoji: "<script>", bg: "#4284b3" }));
-  assert.throws(() => avatarPresetDataUrl({ emoji: "🦊", bg: "#ffffff" }));
+  assert.throws(() => avatarPresetDataUrl({ emoji: "🦊", bg: "red" }));
+  assert.throws(() => avatarPresetDataUrl({ emoji: "🦊", bg: "#12345" }));
+  assert.match(
+    avatarPresetDataUrl({ emoji: "🦊", bg: "#ffffff" }),
+    /^data:image\/svg\+xml;base64,/,
+  );
+});
+
+test("自定义颜色：任意合法 hex 可往返，非 hex 一律拒绝", () => {
+  for (const bg of ["#123456", "#ffffff", "#000000", "#7a5a3a", "#5aa0c0"]) {
+    assert.equal(isAvatarSeed({ emoji: "🦊", bg }), true, `${bg} 应该被接受`);
+    assert.deepEqual(parseAvatarPreset(avatarPresetDataUrl({ emoji: "🦊", bg })), { emoji: "🦊", bg });
+  }
+  for (const bg of ["red", "#12345", "#GGGGGG", "rgb(1,2,3)"]) {
+    assert.equal(isAvatarSeed({ emoji: "🦊", bg }), false, `${bg} 应该被拒绝`);
+  }
 });

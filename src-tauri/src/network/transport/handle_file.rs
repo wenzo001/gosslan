@@ -357,12 +357,32 @@ async fn handle_file_messages(state: &Arc<AppState>, peer_id: &str, msg: Message
             data,
             attempt,
         } => {
-            match STANDARD
-                .decode(&data)
-                .map_err(|e| e.to_string())
-                .and_then(|bytes| {
-                    file::write_chunk(state, &transfer_id, peer_id, seq, &bytes, attempt)
-                }) {
+            // base64 解码 + AEAD 解密 + 增量 SHA-256 + 同步 `write_all`：整段离开 tokio worker
+            // （10-22 审计 R-01 的一半）。`reader_loop` 与各条链路的入站帧读取共用这批 worker，
+            // 慢盘上一个 256KB 分块的同步写就把这个 worker 按住 —— 表现是"传文件时整个界面一顿一顿"，
+            // 连开窗一类的 IPC 也会排队（同一条 runtime）。
+            //
+            // ⚠️ 顺序没有被改掉：这条连接的分片本来就是**逐条 await** 处理的，这里只是把
+            //    "在 worker 上同步做"换成"在阻塞池里做完再取下一条"，不是 fire-and-forget；
+            //    所以「同一传输的分片必须串行」这条判据照旧成立（拆成并发才会丢块/乱序）。
+            //    `file_receivers` 那把进程级锁**仍在**（那是另一半：改它要动 59+27 个引用点，
+            //    且只有跨进程 E2E 能证，见审计报告 §E.2）。
+            let st = state.clone();
+            let tid = transfer_id.clone();
+            let peer_owned = peer_id.to_string();
+            let written = tokio::task::spawn_blocking(move || {
+                STANDARD
+                    .decode(&data)
+                    .map_err(|e| e.to_string())
+                    .and_then(|bytes| {
+                        file::write_chunk(&st, &tid, &peer_owned, seq, &bytes, attempt)
+                    })
+            })
+            .await
+            // 阻塞池把这个任务丢掉（panic/取消）不能当"没发生"：那等于悄悄放弃这一单接收。
+            // 交回 Err 走下面既有的失败分支 —— 判死接收器 + 回否定确认，发送端立刻知道。
+            .unwrap_or_else(|e| Err(format!("文件分片处理任务被线程池中断: {e}")));
+            match written {
                 Ok(received) => {
                     // 节流：每 250ms 至多上报一次进度，避免大文件 IPC 事件风暴
                     let (total, should_emit) = {

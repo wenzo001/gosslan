@@ -44,17 +44,36 @@ const SEARCH_HISTORY_MAX_HITS: i64 = 2000;
 /// （曾经还有一条更粗的 `search_messages`：只回"哪些会话命中"。它没有任何调用点，
 ///   已于 4.29.41 删除 —— 两份搜索查询共用 `escape_like`，留着就是第二条会漂移的平行实现。）
 ///
-/// 为什么标 `(async)`：这是一次带 LIKE 的全表扫描（可能几千行），
-/// 同步命令会在 macOS 主线程上跑（见 `heavy_commands_run_off_the_main_thread` 守卫）。
+/// 为什么是 `async` + `spawn_blocking`（10-22 审计 R-18 的一处，与 `helpers.rs::copy_file` 同一条修法）：
+/// `#[tauri::command(async)]` 挂在**同步 fn** 上不是豁免 —— 宏把整个函数体放进
+/// `async_runtime::spawn` 的 future 里，跑的是 tokio **worker**（`blocking_commands_run_off_the_main_thread`
+/// 那条规则式守卫的自述也是这句）。而这条命令是**一次带 LIKE 的全表扫描**（最多 2000 命中）
+/// 再加一轮批量点查，两段都持 db 那唯一一条连接的锁。
+/// 搜索框每敲一个字就打一次它 ⇒ 它同时是两种症状的来源：**打字发涩**（前端等回）与
+/// **全应用等锁**（其它读排在同一条 db 锁后面）。修法只换执行线程，签名与错误出口一字未改。
 #[tauri::command(async)]
-pub fn search_chat_history(
+pub async fn search_chat_history(
     state: State<'_, Arc<AppState>>,
     keyword: String,
     sender_id: Option<String>,
     since_ms: Option<i64>,
     until_ms: Option<i64>,
 ) -> Result<Vec<ChatSearchGroup>, String> {
-    let s = state.inner();
+    let s = state.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        search_chat_history_blocking(s, keyword, sender_id, since_ms, until_ms)
+    })
+    .await
+    .unwrap_or_else(|e| Err(format!("聊天记录检索被线程池中断: {e}")))
+}
+
+fn search_chat_history_blocking(
+    s: Arc<AppState>,
+    keyword: String,
+    sender_id: Option<String>,
+    since_ms: Option<i64>,
+    until_ms: Option<i64>,
+) -> Result<Vec<ChatSearchGroup>, String> {
     // 关键词长度保护（UTF-8 安全截断）
     let keyword: String = keyword.chars().take(MAX_SEARCH_LEN).collect();
     if keyword.trim().is_empty() {
@@ -99,7 +118,7 @@ pub fn search_chat_history(
         .take(SEARCH_HISTORY_MAX_CONVS as usize)
         .cloned()
         .collect();
-    let meta = SearchMeta::prefetch(s, &conv_list, &sender_ids);
+    let meta = SearchMeta::prefetch(&s, &conv_list, &sender_ids);
 
     let mut out = Vec::new();
     for conv_id in order.into_iter().take(SEARCH_HISTORY_MAX_CONVS as usize) {
