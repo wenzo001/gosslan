@@ -17,7 +17,7 @@ grep -c '^  "' src/router/settings.ts
 |---|---|---|
 | 路由库 | `vue-router@5.4.0`（精确版本） | 体积小、Vue 官方维护；5.x 合并了 unplugin-vue-router，无破坏性变更 |
 | 主窗口 history | `createWebHistory()` | 产生真实历史条目，保住 wry 的 Android 物理返回链（`canGoBack()`） |
-| 自定义协议降级 | `createWebHashHistory()` | `tauri://` 下 `pushState` 探测失败时自动退化；同样产生真实历史条目 |
+| 自定义协议降级 | `createWebHashHistory()` | `tauri:` / `asset:` 的文档路径不是 SPA 服务器，pushState 与刷新行为未真机验证 ⇒ **直接走 hash**；http(s) 下探测失败也 hash。两者都产生真实历史条目 |
 | 设置窗口 | `createWebHashHistory()` | 窗口 URL 是 `settings.html`，path 模式刷新会落到不存在的文档路径 |
 | 状态管理 | Pinia 继续做事实源 | 路由只承载「哪一层被打开」；会话 / 消息 / 传输状态仍在 store |
 
@@ -122,6 +122,8 @@ grep -c '^  "' src/router/settings.ts
 | 设置窗口 | `settings.html#/settings/profile` 深链；点「外观」→ `#/settings/appearance`；返回 → `#/settings/profile` |
 
 **未验证**：真实 Tauri WebView（`tauri://` 与 `http://tauri.localhost`）下的 `pushState` / `popstate` 行为、Android 物理返回、iOS 边缘滑动。纯浏览器环境没有 Tauri IPC，本次只验证路由与返回栈本身；真机项必须按 `docs/design-guidelines.md` §11.5 的口径登记为 NOT RUN。
+
+> 防御性决定（2026-10-22）：`tauri:` / `asset:` 下不赌 `pushState`，直接走 hash。该分支在 macOS/Linux 的生产 WebView 上生效，需真机复核刷新与物理返回；`http://tauri.localhost`（Windows/Android）仍走 web history。
 
 ## 9. 回归命令
 
