@@ -153,6 +153,9 @@ pub const CONTENT_FEATURE_GROUP_FILE_RESUME: u32 = 1 << 5;
 /// 处理（甚至弹通知）。所以发送侧必须先看这一位，没声明就不发。
 pub const CONTENT_FEATURE_NUDGE: u32 = 1 << 6;
 
+/// 能力位：**能接收代码/文本消息的渲染切换（`kind=render`）**。
+pub const CONTENT_FEATURE_RENDER: u32 = 1 << 7;
+
 /// 群历史一页的**条数**上限（服务端一页最多交几条消息）。
 /// 与下面那个字节上限同住 `protocol.rs`：一条页的预算只有一个家（INV-P23），
 /// 收发两侧都从这里取，不许在调用点各写一遍字面量。
@@ -175,6 +178,7 @@ pub fn content_features() -> u32 {
         | CONTENT_FEATURE_GROUP_HISTORY
         | CONTENT_FEATURE_GROUP_FILE_RESUME
         | CONTENT_FEATURE_NUDGE
+        | CONTENT_FEATURE_RENDER
 }
 
 /// 「哪个 kind 需要对端具备哪一点能力」的**唯一**答案。`None` = V1 词表内、对所有对端安全。
@@ -184,6 +188,7 @@ pub fn content_features() -> u32 {
 pub fn kind_required_feature(kind: &str) -> Option<u32> {
     match kind {
         "merge" => Some(CONTENT_FEATURE_MERGE),
+        "render" => Some(CONTENT_FEATURE_RENDER),
         _ => None,
     }
 }
@@ -365,6 +370,8 @@ pub enum MsgKind {
     RemindAck,
     /// 撤回自己发的一条消息（1:1 与群共用；群侧沿用 `KIND_RECALL` 的可靠管道）。
     Recall,
+    /// 切换一条自己发的代码/文本消息的渲染方式（静默事件，不产生新气泡）。
+    Render,
 }
 
 impl MsgKind {
@@ -380,6 +387,7 @@ impl MsgKind {
             MsgKind::Remind => "remind",
             MsgKind::RemindAck => "remind_ack",
             MsgKind::Recall => "recall",
+            MsgKind::Render => "render",
         }
     }
 
@@ -394,6 +402,7 @@ impl MsgKind {
             "remind" => MsgKind::Remind,
             "remind_ack" => MsgKind::RemindAck,
             "recall" => MsgKind::Recall,
+            "render" => MsgKind::Render,
             _ => MsgKind::Text,
         }
     }
@@ -430,6 +439,8 @@ pub const WIRE_KINDS: &[(&str, KindClass)] = &[
     // 阶段 1：表情回应 / 撤回
     ("reaction", KindClass::Silent),
     ("recall", KindClass::Silent),
+    // 代码/文本消息的渲染切换：静默状态事件，只改目标消息的 kind。
+    ("render", KindClass::Silent),
     // 撤回后的消息本体：仍在时间线上占位（居中灰条「消息已撤回」），故是 Bubble。
     // 它的 content 已被清空 —— 搜索、导出、已读水位因此自动正确，无需各自过滤。
     ("recalled", KindClass::Bubble),
@@ -1364,6 +1375,28 @@ pub const KIND_ANNOUNCEMENT_DELETE: &str = "announcement_delete";
 
 /// 撤回事件本身的 `kind`。
 pub const KIND_RECALL: &str = "recall";
+
+/// 渲染切换事件本身的 `kind`。
+pub const KIND_RENDER: &str = "render";
+
+/// 渲染切换载荷：`mode` 只允许 code / text。
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct RenderPayload {
+    pub target: String,
+    pub mode: String,
+}
+
+pub fn parse_render_payload(content: &str) -> Result<RenderPayload, String> {
+    let p: RenderPayload =
+        serde_json::from_str(content).map_err(|e| format!("渲染切换载荷解析失败：{e}"))?;
+    if p.target.trim().is_empty() {
+        return Err("渲染切换缺少目标消息".to_string());
+    }
+    if p.mode != "code" && p.mode != "text" {
+        return Err("不支持的渲染方式".to_string());
+    }
+    Ok(p)
+}
 
 /// 共享目录条目
 #[derive(Serialize, Deserialize, Clone, Debug)]

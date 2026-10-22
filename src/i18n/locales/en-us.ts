@@ -83,7 +83,7 @@ export const enUS: MessageDict = {
   "settings.item.storage": "Storage",
   "settings.item.security": "Privacy & Security",
   "settings.item.about": "About",
-  "settings.item.reset": "Reset",
+  "settings.item.reset": "Reset & Restore",
   // ---- Chat history search (results page) ----
   "search.title": "Search Chat History",
   "search.placeholder": "Search",
@@ -608,6 +608,9 @@ export const enUS: MessageDict = {
   "msg.recallConfirm": "Recall this message? Others will see \"Message recalled\"; it cannot be undone.",
   "msg.recallDone": "Recalled",
   "msg.recallFail": "Failed to recall",
+  "msg.renderAsText": "Show as plain text",
+  "msg.renderAsCode": "Show as code block",
+  "msg.renderFail": "Failed to switch rendering",
   "msg.reactionToggle": "Toggle reaction {emoji}",
   "msg.reactionWho": "{n} reaction(s)",
   "msg.reactionMore": "More emoji",

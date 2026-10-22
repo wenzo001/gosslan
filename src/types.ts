@@ -87,7 +87,9 @@ export type MsgKind =
   | "merge"
   /** 强提醒发起 / 回执（Silent 类：不进时间线、不计未读、不弹普通通知）。 */
   | "remind"
-  | "remind_ack";
+  | "remind_ack"
+  /** 代码/文本渲染切换（Silent 类）。 */
+  | "render";
 
 /** 表情回应的事件载荷（kind = "reaction" 时 content 的 JSON 形态）。 */
 export interface ReactionPayload {

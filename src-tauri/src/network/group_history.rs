@@ -1667,7 +1667,7 @@ mod group_history_engine_tests {
         );
         let proto = code_flat(include_str!("../protocol.rs"));
         assert!(
-            proto.contains("pubfncontent_features()->u32{CONTENT_FEATURE_PULL|CONTENT_FEATURE_MERGE|CONTENT_FEATURE_FILE_EPOCH|CONTENT_FEATURE_FLEX_DM_KIND|CONTENT_FEATURE_GROUP_HISTORY|CONTENT_FEATURE_GROUP_FILE_RESUME|CONTENT_FEATURE_NUDGE}"),
+            proto.contains("pubfncontent_features()->u32{CONTENT_FEATURE_PULL|CONTENT_FEATURE_MERGE|CONTENT_FEATURE_FILE_EPOCH|CONTENT_FEATURE_FLEX_DM_KIND|CONTENT_FEATURE_GROUP_HISTORY|CONTENT_FEATURE_GROUP_FILE_RESUME|CONTENT_FEATURE_NUDGE|CONTENT_FEATURE_RENDER}"),
             "本机没把群历史这一位声明出去 ⇒ 别人选源时永远问不到这台（能力位必须与门控同批改）"
         );
     }

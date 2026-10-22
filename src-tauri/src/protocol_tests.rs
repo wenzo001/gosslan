@@ -1304,6 +1304,16 @@ mod tests {
             0,
             "NUDGE 不能复用 FILE_EPOCH 的 bit"
         );
+        assert_ne!(
+            content_features() & CONTENT_FEATURE_RENDER,
+            0,
+            "渲染切换依赖 RENDER 能力位；不 advertise 会被门控锁死"
+        );
+        assert_eq!(
+            CONTENT_FEATURE_RENDER & CONTENT_FEATURE_NUDGE,
+            0,
+            "RENDER 与 NUDGE 必须是两个独立 bit"
+        );
         // 新位必须独占一个 bit（撞车的表现是"两个门控互相误开"，编译器不会报）
         assert_eq!(
             CONTENT_FEATURE_FILE_EPOCH & (CONTENT_FEATURE_PULL | CONTENT_FEATURE_MERGE),

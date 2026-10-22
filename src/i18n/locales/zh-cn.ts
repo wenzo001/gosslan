@@ -524,7 +524,7 @@ export const zhCN: MessageDict = {
   "chat.composer.codeDetected": "已识别为 {lang} 代码",
   "chat.composer.codeUndo": "撤销",
   "chat.composer.sendFile": "发送文件（自动选择最优路线）",
-  // 窗口抖动（仿 QQ）：仅单聊可用；底层是对最近一条已发消息发起强提醒
+  // 窗口抖动（仿 QQ）：仅单聊可用；独立 nudge 事件，不锚定消息
   "chat.composer.shake": "抖动窗口",
   "chat.nudge.sent": "已向对方发送窗口抖动",
   "chat.nudge.received": "{name} 向你发送了一个窗口抖动",
@@ -619,6 +619,9 @@ export const zhCN: MessageDict = {
   "msg.recallConfirm": "撤回这条消息？对方会看到「消息已撤回」，且无法恢复。",
   "msg.recallDone": "已撤回",
   "msg.recallFail": "撤回失败",
+  "msg.renderAsText": "以纯文本显示",
+  "msg.renderAsCode": "以代码块显示",
+  "msg.renderFail": "切换渲染失败",
   "msg.cancelSend": "取消发送",
   "msg.canceled": "已取消发送",
   // 取消发送的三条结果提示。此前 MessageItem.vue 的 doCancelSend 把它们硬编码成中文，

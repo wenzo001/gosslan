@@ -320,7 +320,7 @@ async function importFromUrl() {
         <div class="flex justify-end">
           <button
             class="tap-safe rounded-[var(--gosslan-radius-md)] px-3 py-1 text-meta text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-            @click="urlImportOpen = false; urlImport = ''"
+            @click="closeDialog"
           >
             {{ t("common.cancel") }}
           </button>

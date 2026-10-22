@@ -245,6 +245,19 @@ pub fn list_transfers(conn: &Connection) -> Result<Vec<TransferInfo>> {
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
+/// 发送侧仍在排队/传输中的 transfer id（删除会话/好友前要逐条取消）。
+pub fn list_open_send_transfer_ids_for_peer(
+    conn: &Connection,
+    peer_id: &str,
+) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT id FROM file_transfers
+         WHERE peer_id = ?1 AND direction = 'send' AND status IN ('pending','active')",
+    )?;
+    let rows = stmt.query_map(params![peer_id], |r| r.get::<_, String>(0))?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
 /// 建行后至少留这么久才允许判成“孤儿”：`send_file` 先建 transfer、再写 outbox，
 /// 中间那几毫秒不能被对账误杀。
 pub const ORPHAN_PENDING_TRANSFER_GRACE_MS: i64 = 120_000;

@@ -1801,14 +1801,6 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   /**
-   * 工具栏「抖动」按钮（仿 QQ 窗口抖动）：对会话里**最近一条已成功发出的消息**发起强提醒。
-   *
-   * 为什么锚定消息而不是发一个独立帧：本项目没有"无目标抖动"这种协议 —— 强提醒（`remind`）
-   * 本来就要求指向一条真实消息（否则对方点通知会定位到"幽灵消息"）。所以一次点击 = 对最近
-   * 一条可提醒的消息发起强提醒，对方窗口随即抖动（复用 handleIncomingRemind 的那条路）。
-   * 最近一条可提醒的消息都没有（会话空 / 全在发送中）⇒ 明确报错，不静默。
-   */
-  /**
    * 工具栏「抖动」按钮（仿 QQ 窗口抖动）：**独立事件**，不锚定任何消息、不发强提醒。
    * 复用 `remind` 帧的可靠管道（`nudge=true`），接收端只抖 + 灰字；旧端由能力位挡住。
    */
@@ -1945,7 +1937,7 @@ export const useChatStore = defineStore("chat", () => {
   }
 
   /**
-   * 撤回自己发的一条群消息（仅原作者，窗口 2 分钟）。
+   * 撤回自己发的一条消息（群/单聊统一，仅原作者，窗口 5 分钟）。
    *
    * 不做乐观更新：先在服务端成功（事件已发出）才改本地 —— 顺序反了会出现
    * 「本地显示已撤回、对端根本没收到」。事件回来会走 `onMessageRecalled` 统一改本地形态。
@@ -1957,6 +1949,11 @@ export const useChatStore = defineStore("chat", () => {
       return;
     }
     await api.recallDirectMessage(convId, msgId);
+  }
+
+  /** 切换自己发的代码/文本消息渲染；本地更新统一等后端 LWW 后的 `message-render-changed`。 */
+  async function setMessageRender(convId: string, msgId: string, mode: "code" | "text") {
+    await api.setMessageRender(convId, msgId, mode);
   }
 
   /** 发布群公告（仅群主）。正常入时间线（计未读、可通知），只是不随清空历史消失。 */
@@ -2580,8 +2577,20 @@ export const useChatStore = defineStore("chat", () => {
    * 与后端的物化视图保持一致：`kind` 改 `recalled`、`content` 清空 ——
    * 这样搜索、预览、复制等所有读 content 的地方**一处都不用改**就自动正确。
    */
-  function onMessageRecalled(msgId: string) {
+  /** 渲染切换：只改目标消息的 kind；虚拟列表由 ResizeObserver 重测高度。 */
+  function onMessageRenderChanged(msgId: string, kind: "code" | "text") {
     for (const [convId, list] of Object.entries(messages.value)) {
+      const idx = list.findIndex((m) => m.msg_id === msgId);
+      if (idx < 0) continue;
+      if (list[idx].kind === kind) return;
+      const next = [...list];
+      next[idx] = { ...next[idx], kind };
+      messages.value = { ...messages.value, [convId]: next };
+      return;
+    }
+  }
+
+  function onMessageRecalled(msgId: string) {    for (const [convId, list] of Object.entries(messages.value)) {
       const idx = list.findIndex((m) => m.msg_id === msgId);
       if (idx < 0) continue;
       if (list[idx].kind === "recalled") return; // 幂等：重复事件不再改动
@@ -2793,6 +2802,7 @@ export const useChatStore = defineStore("chat", () => {
       },
       onGroupRead,
       onMessageRecalled,
+      onMessageRenderChanged,
       onFileProgress: (p) => {
         // 进度由事件载荷直接更新，不再全量刷新传输列表（避免大文件 IPC 风暴卡死界面）
         updateTransferProgress(p);
@@ -3102,6 +3112,7 @@ export const useChatStore = defineStore("chat", () => {
     sendReaction,
     sendDmReaction,
     recallMessage,
+    setMessageRender,
     pinMessage,
     publishAnnouncement,
     deleteAnnouncement,

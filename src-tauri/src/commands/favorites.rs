@@ -528,6 +528,7 @@ pub async fn clear_all_data(
     let mut cleared: u64 = 0;
     for table in [
         "messages",
+        "message_render",
         "conversations",
         "outbox",
         "group_outbox",
