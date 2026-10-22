@@ -115,6 +115,13 @@ export function buildManifest({
     if (signature.length < 20) {
       throw new Error(`${hit.sig} 是空的/过短，拒绝生成清单`);
     }
+    if (minAssetBytes > 0) {
+      // 0 字节安装包 + 非空签名是真实出现过的形状：清单看起来完全正常，客户端下完打不开。
+      const size = fs.statSync(path.join(dir, hit.file)).size;
+      if (size < minAssetBytes) {
+        throw new Error(`${hit.file} 只有 ${size} 字节（要求 ≥ ${minAssetBytes}）⇒ 拒绝生成清单`);
+      }
+    }
     platforms[platform] = {
       signature,
       url: `https://github.com/${repo}/releases/download/${tag}/${encodeURIComponent(hit.file)}`,
@@ -148,7 +155,17 @@ function main(argv) {
   const changelogPath = arg("changelog", "CHANGELOG.md");
   const notes = fs.existsSync(changelogPath) ? notesForVersion(fs.readFileSync(changelogPath, "utf8"), tag.replace(/^v/, "")) : "";
   try {
-    const manifest = buildManifest({ dir, files, tag, repo, version: pkg.version, notes });
+    const manifest = buildManifest({
+      dir,
+      files,
+      tag,
+      repo,
+      version: pkg.version,
+      notes,
+      // 纯函数单测默认不查字节数（它们只造文件名）；CLI 这条真实路径必须查 ——
+      // 否则这个"防 0 字节安装包"的开关就只是个没人用的形参。
+      minAssetBytes: 1024,
+    });
     if (checkOnly) {
       console.log(`✓ 四个桌面平台齐全：${Object.keys(manifest.platforms).join(", ")}`);
       return;
