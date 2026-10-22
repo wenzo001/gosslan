@@ -420,6 +420,14 @@ export interface ExternalLink {
   url: string;
 }
 
+/** 外链 JSON 导入的合并结果（`links` 是导入后的完整列表）。 */
+export interface ExternalLinkImportResult {
+  links: ExternalLink[];
+  added: number;
+  skipped: number;
+  invalid: number;
+}
+
 /** 应用偏好设置（外观 / 网卡选择 / 聊天样式，持久化到本地 SQLite）。
  *  E2EE 自 v0.11.0 起恒开且不可关闭，不再作为设置项。 */
 export interface AppSettings {

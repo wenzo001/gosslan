@@ -361,7 +361,6 @@ logging::tests::bootstrap_and_logger_point_at_the_same_crash_file
 logging::tests::crash_block_survives_rotation_and_carries_version_and_context
 logging::tests::crash_file_is_capped_by_reopening_not_growing_forever
 logging::tests::crash_note_writes_without_a_logger_and_survives_the_reentry_guard
-logging::tests::utc_format_and_parse_roundtrip_across_eras
 logging::tests::diag_fold_table_is_bounded_by_restarting_not_growing
 logging::tests::diag_folds_only_on_identical_text_in_the_same_second
 logging::tests::diag_warn_and_error_are_never_folded
@@ -386,6 +385,7 @@ logging::tests::previous_run_seed_is_wired_at_startup
 logging::tests::previous_run_seed_writes_nothing_to_disk_however_many_times_it_is_called
 logging::tests::rotated_logs_keep_owner_only_permissions
 logging::tests::startup_marker_carries_the_run_id
+logging::tests::utc_format_and_parse_roundtrip_across_eras
 macos_bookmark::tests::bookmark_to_a_deleted_directory_fails_cleanly
 macos_bookmark::tests::create_then_resolve_returns_the_same_directory
 macos_bookmark::tests::garbage_bookmark_is_an_error_not_a_panic
@@ -948,6 +948,7 @@ tests::duplicate_file_done_still_answers_with_an_ack
 tests::every_finalize_path_defers_the_destructive_write
 tests::every_friend_accept_path_forgets_the_pending_request
 tests::every_friend_request_path_notifies_only_on_first_sighting
+tests::external_link_cleanup_rejects_paths_outside_exports
 tests::external_link_rejects_non_http_schemes
 tests::file_attempt_epoch_is_wired_on_both_sides
 tests::file_send_progress_counts_wire_not_queue

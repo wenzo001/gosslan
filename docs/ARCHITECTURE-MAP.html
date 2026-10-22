@@ -656,6 +656,10 @@ const CMDS = [
   ["list_external_links", "external_links", "", "ExternalLink[]"],
   ["remove_external_link", "external_links", "id str", "ExternalLink[]|err"],
   ["update_external_link", "external_links", "id str; name str; url str", "ExternalLink[]|err"],
+  ["export_external_links", "external_links", "", "str|err"],
+  ["cleanup_external_links_export", "external_links", "path str", "()|err"],
+  ["import_external_links_file", "external_links", "path str", "ExternalLinkImportResult|err"],
+  ["import_external_links_from_url", "external_links", "url str", "ExternalLinkImportResult|err"],
   ["add_favorite", "favorites", "msg_id str; conv_id str", "Favorite|err"],
   ["clear_all_data", "favorites", "", "()|err"],
   ["delete_messages", "favorites", "msg_ids str[]", "int|err"],
@@ -796,6 +800,10 @@ const SEM = {
   add_external_link: { d: "新增。<b>每次都返回全量新列表</b>（前端直接覆盖本地状态，不做增量合并）。", w: "settings 键" },
   update_external_link: { d: "改名 / 改 URL，返回全量列表。" },
   remove_external_link: { d: "删除，返回全量列表。" },
+  export_external_links: { d: "导出 JSON 到缓存目录并返回真实路径；移动端再由系统保存对话框落盘。", w: "cache/exports" },
+  cleanup_external_links_export: { d: "只清理由导出命令生成、且位于 <code>cache/exports</code> 下的临时文件。" },
+  import_external_links_file: { d: "读取本地 JSON，按 URL 去重合并，返回完整列表 + added/skipped/invalid。", w: "settings 键" },
+  import_external_links_from_url: { d: "后端拉取 http(s) JSON（10s 超时、跟随 3 次、256 KiB 上限），绕开 WebView CORS。", w: "settings 键" },
 
   /* ── commands/favorites.rs ── */
   list_favorites: { d: "按 <code>favorited_at</code> 倒序；<code>available</code> 是<b>读时算</b>的（副本可能已被配额清理）。" },

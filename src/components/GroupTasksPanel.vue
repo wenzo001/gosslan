@@ -54,10 +54,11 @@ const count = computed(
   <BaseModal
     :open="open"
     :fullscreen="fullscreen"
+    :contained="fullscreen"
     :title="count ? t('todo.title') + ` (${count})` : t('todo.title')"
     width="max-w-lg"
     @close="emit('close')"
   >
-    <GroupTasksBoard :group-id="groupId" :open="open" :focus-todo-id="focusTodoId" />
+    <GroupTasksBoard :group-id="groupId" :open="open" :fill="fullscreen" :focus-todo-id="focusTodoId" />
   </BaseModal>
 </template>

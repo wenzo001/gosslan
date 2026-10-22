@@ -201,6 +201,9 @@ const logsOpen = computed(() => app.isMobile && route.name === "logs");
  * 进 Chat 详情、收藏详情、设置、日志、链接 等二级页时整个隐藏 —— 收藏不再开特例，
  * 它的列表态是普通 tab，详情态与别的下钻页同一条规则。
  */
+/** 搜索是整页覆盖层；底栏要被它盖住，不能还挂在下面接点击。 */
+const searchOpen = computed(() => route.name === "search");
+
 const showMobileTabBar = computed(
   () =>
     app.isMobile &&
@@ -208,7 +211,8 @@ const showMobileTabBar = computed(
     !app.multiSelectActive &&
     (mobileView.value === "list" || navState.value === "me") &&
     !settingsOpen.value &&
-    !logsOpen.value,
+    !logsOpen.value &&
+    !searchOpen.value,
 );
 
 /** 关闭收藏页。**回到 chats 而不是任意之前的值**——收藏是临时整页，
@@ -323,7 +327,6 @@ const logsOpening = useWindowOpening("logs");
 const linksOpening = useWindowOpening("link");
 
 /** 搜索聊天记录结果页：路由承载关键词，关闭即回到进入前那一页。 */
-const searchOpen = computed(() => route.name === "search");
 const searchSeed = computed(() => (typeof route.query.q === "string" ? route.query.q : ""));
 
 function openSearchHistory(keyword: string) {

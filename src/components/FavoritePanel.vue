@@ -661,7 +661,7 @@ async function confirmDelete() {
            ⚠️ 整页**铺满、外层不留外边距**：`p-3` 会在左栏（列表底）外露出一圈白边，
            且左栏顶部缩进 12px，左上角就不是圆角了（用户 2026-09-20）。
            搜索框 / 筛选自己留内边距，列表行仍满宽。 -->
-      <div class="flex min-h-0 flex-1">
+      <div class="flex min-h-0 min-w-0 flex-1">
         <!-- 左栏 = 列表底 `--gosslan-list`（与聊天/通讯录/搜索列表同族）：
              此前用 main 的白色 `--gosslan-chat` 打底，整栏发白，和其它列表不一致（用户 2026-09-20）。 -->
         <!-- ⚠️ `desktop:sm:flex-none` 不能省：`flex-1` 把 `flex-basis` 设成 0%，会让下面的 width 失效、
@@ -674,7 +674,7 @@ async function confirmDelete() {
         <!-- ⚠️ 这里**不加** `desktop:sm:border-r`：两栏靠底色分栏（列表底 vs 详情白），与聊天/通讯录页一致；
              加一条竖线反而是别的页面没有的东西（用户 2026-09-20：「收藏页两栏中间多个分割线」）。 -->
         <div
-          class="min-h-0 bg-[var(--gosslan-list)] desktop:sm:flex desktop:sm:w-[var(--gosslan-list-w)] desktop:sm:flex-none desktop:sm:flex-col"
+          class="min-h-0 min-w-0 bg-[var(--gosslan-list)] desktop:sm:flex desktop:sm:w-[var(--gosslan-list-w)] desktop:sm:flex-none desktop:sm:flex-col"
           :class="app.isMobile && active ? 'hidden' : 'flex flex-1 flex-col'"
         >
           <div class="flex shrink-0 flex-col gap-2 px-2 pt-2">
@@ -716,13 +716,13 @@ async function confirmDelete() {
               </button>
             </div>
           </div>
-          <div class="min-h-0 flex-1 overflow-y-auto">
+          <div class="min-h-0 min-w-0 flex-1 overflow-y-auto">
           <!-- 每行：行本身是 <button>（可聚焦、可回车），移动端的「⋯」放在**兄弟层**用绝对定位
                —— 不能嵌在行按钮里（<button> 套 <button> 是非法 HTML，浏览器会把它拆出去，
                表现是"⋯ 点了没反应"或整行都被点）。 -->
-          <div v-for="row in rows" :key="row.f.id" class="relative">
+          <div v-for="row in rows" :key="row.f.id" class="relative min-w-0 overflow-hidden">
             <button
-              class="flex w-full items-start gap-2.5 px-3 py-2.5 text-left transition"
+              class="flex w-full min-w-0 items-start gap-2.5 overflow-hidden px-3 py-2.5 text-left transition"
               :class="active?.id === row.f.id
                 ? 'bg-[var(--gosslan-list-active)] text-[var(--gosslan-list-active-text)]'
                 : 'hover:bg-[var(--gosslan-list-hover)]'"
@@ -735,8 +735,8 @@ async function confirmDelete() {
               >
                 <component :is="row.icon" class="h-4 w-4" />
               </span>
-              <span class="min-w-0 flex-1" :class="app.isMobile ? 'pr-7' : ''">
-                <span class="block truncate text-body text-[var(--gosslan-text)]" :title="row.title">
+              <span class="min-w-0 max-w-full flex-1" :class="app.isMobile ? 'pr-7' : ''">
+                <span class="block max-w-full truncate text-body text-[var(--gosslan-text)]" :title="row.title">
                   {{ row.title }}
                 </span>
                 <span
@@ -758,7 +758,7 @@ async function confirmDelete() {
             <button
               v-if="app.isMobile"
               type="button"
-              class="tap-safe absolute right-1 top-2 flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)]"
+              class="tap-safe absolute right-1 top-2 z-10 flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] bg-[var(--gosslan-list)] text-[var(--gosslan-text-2)]"
               :aria-label="t('favorite.more')"
               @click.stop="openMenuAt($event, row.f)"
             >
@@ -783,7 +783,7 @@ async function confirmDelete() {
           v-if="active"
           :class="app.isMobile
             ? 'fixed inset-0 z-[60] flex flex-col bg-[var(--gosslan-bg)] pt-[env(safe-area-inset-top)]'
-            : 'flex min-h-0 flex-1 flex-col'"
+            : 'flex min-h-0 min-w-0 flex-1 flex-col'"
         >
           <!-- 移动端详情头部：与 MobilePageFrame **完全一致**的框架返回键
                （同款 BackArrow / h-8 w-8 热区 / panel 底 / px-3）。
@@ -904,8 +904,8 @@ async function confirmDelete() {
               </div>
             </div>
 
-            <div v-else class="rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-panel)] p-3">
-              <div class="truncate text-body font-medium text-[var(--gosslan-text)]" :title="displayName(active)">
+            <div v-else class="min-w-0 overflow-hidden rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-panel)] p-3">
+              <div class="max-w-full truncate text-body font-medium text-[var(--gosslan-text)]" :title="displayName(active)">
                 {{ displayName(active) }}
               </div>
               <div class="mt-1 text-caption text-[var(--gosslan-text-2)]">

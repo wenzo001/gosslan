@@ -2,7 +2,16 @@
 // 跑法：node --test src/utils/avatarSeed.test.ts
 import test from "node:test";
 import assert from "node:assert/strict";
-import { AVATAR_PAIRS, avatarSeedFor } from "./avatarSeed.ts";
+import { readFileSync } from "node:fs";
+import {
+  AVATAR_BACKGROUNDS,
+  AVATAR_EMOJIS,
+  AVATAR_PAIRS,
+  avatarPresetDataUrl,
+  avatarSeedFor,
+  parseAvatarPreset,
+  randomAvatarPair,
+} from "./avatarSeed.ts";
 
 /** 相对亮度（WCAG 的那条），用来判"这个背景色既不至于亮到看不见 emoji、也不至于暗到吃字"。 */
 function relLuminance(hex: string): number {
@@ -73,4 +82,91 @@ test("结果只能取自表里的行，不能是拼出来的第三种东西", ()
     assert.ok(AVATAR_PAIRS.some((p) => p.emoji === s.emoji && p.bg === s.bg),
       `${id} 的结果不在表里`);
   }
+});
+
+// ---------------- 默认头像选择器（2026-10-22） ----------------
+
+test("选择器的选项集从组合表现推：手动能选的每个表情/颜色，随机算法也都认识", () => {
+  assert.ok(AVATAR_EMOJIS.length >= 30, `表情只有 ${AVATAR_EMOJIS.length} 个`);
+  assert.ok(AVATAR_BACKGROUNDS.length >= 20, `背景色只有 ${AVATAR_BACKGROUNDS.length} 个`);
+  assert.equal(new Set(AVATAR_EMOJIS).size, AVATAR_EMOJIS.length, "表情清单里有重复项");
+  assert.equal(new Set(AVATAR_BACKGROUNDS).size, AVATAR_BACKGROUNDS.length, "颜色清单里有重复项");
+  for (const e of AVATAR_EMOJIS) {
+    assert.ok(AVATAR_PAIRS.some((p) => p.emoji === e), `${e} 不在随机算法的组合表里`);
+  }
+  for (const bg of AVATAR_BACKGROUNDS) {
+    assert.ok(AVATAR_PAIRS.some((p) => p.bg === bg), `${bg} 不在随机算法的组合表里`);
+  }
+});
+
+test("随机出来的组合永远落在表内，且不会原地重复（点了「随机」像没反应）", () => {
+  const seen = new Set<string>();
+  let prev = randomAvatarPair();
+  for (let i = 0; i < 300; i++) {
+    const next = randomAvatarPair(prev);
+    assert.ok(
+      AVATAR_PAIRS.some((p) => p.emoji === next.emoji && p.bg === next.bg),
+      `随机出了表外的组合 ${next.emoji} ${next.bg}`,
+    );
+    assert.notDeepEqual(next, prev, "随机结果和上一张完全相同");
+    seen.add(`${next.emoji}|${next.bg}`);
+    prev = next;
+  }
+  assert.ok(seen.size >= 20, `300 次只随机出 ${seen.size} 种组合`);
+});
+
+test("任意手动搭配（36×40）都能编码再原样解回来", () => {
+  for (const emoji of AVATAR_EMOJIS) {
+    for (const bg of AVATAR_BACKGROUNDS) {
+      const url = avatarPresetDataUrl({ emoji, bg });
+      assert.deepEqual(parseAvatarPreset(url), { emoji, bg }, `${emoji} ${bg} 往返不一致`);
+    }
+  }
+});
+
+test("预设必须是 base64（后端按 base64 算字节数），且整串仍能进 Hello 的 2KB 闸门", () => {
+  // 上限从 Rust 现读：这里手抄一个 2048 的话，哪天闸门收紧/放宽，这条判据会说谎。
+  const rust = readFileSync(
+    new URL("../../src-tauri/src/network/transport/handshake.rs", import.meta.url),
+    "utf8",
+  );
+  const cap = Number(/pub const HELLO_AVATAR_MAX_BYTES: usize = (\d+);/.exec(rust)?.[1]);
+  assert.ok(cap > 0, "解析不到 HELLO_AVATAR_MAX_BYTES —— 判据的前提塌了");
+  for (const emoji of AVATAR_EMOJIS) {
+    for (const bg of AVATAR_BACKGROUNDS) {
+      const url = avatarPresetDataUrl({ emoji, bg });
+      assert.match(url, /^data:image\/svg\+xml;base64,[A-Za-z0-9+/]+={0,2}$/, "不是 base64 data URL");
+      assert.ok(url.length <= cap, `${emoji} ${bg} 生成 ${url.length} 字节 > Hello 上限 ${cap}`);
+    }
+  }
+});
+
+test("解析只认本机生成的预设：普通图片、坏 base64、表外组合一律 null", () => {
+  const marked = (emoji: string, bg: string) =>
+    "data:image/svg+xml;base64," +
+    Buffer.from(
+      `<svg data-gosslan-avatar-preset="1" data-emoji="${emoji}" data-bg="${bg}"></svg>`,
+    ).toString("base64");
+
+  assert.equal(parseAvatarPreset(null), null);
+  assert.equal(parseAvatarPreset(undefined), null);
+  assert.equal(parseAvatarPreset(""), null);
+  assert.equal(parseAvatarPreset("data:image/jpeg;base64,AAAA"), null, "普通上传图片不该被当成预设");
+  assert.equal(parseAvatarPreset("data:image/svg+xml;base64,!!!"), null, "坏 base64 不该抛");
+  assert.equal(parseAvatarPreset(marked("🦄", "#4284b3")), null, "表外表情必须拒绝");
+  assert.equal(parseAvatarPreset(marked("🦊", "red")), null, "非 #rrggbb 必须拒绝");
+  assert.equal(
+    parseAvatarPreset(
+      "data:image/svg+xml;base64," +
+        Buffer.from(`<svg data-emoji="🦊" data-bg="#4284b3"></svg>`).toString("base64"),
+    ),
+    null,
+    "没有本机标记的 SVG 不能被当成本机预设",
+  );
+  assert.deepEqual(parseAvatarPreset(marked("🦊", "#4284b3")), { emoji: "🦊", bg: "#4284b3" });
+});
+
+test("编码入口拒绝表外组合（不许绕过选择器塞任意 emoji/颜色）", () => {
+  assert.throws(() => avatarPresetDataUrl({ emoji: "<script>", bg: "#4284b3" }));
+  assert.throws(() => avatarPresetDataUrl({ emoji: "🦊", bg: "#ffffff" }));
 });

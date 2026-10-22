@@ -744,6 +744,8 @@ const emit = defineEmits<{
   (e: "toggle-select"): void;
   /** 点了任务卡片里的「查看任务」：打开群任务面板（由 ChatWindow 接住）。 */
   (e: "open-tasks", todoId?: string): void;
+  /** 点对方头像：进入好友资料（与通讯录同一个页面）。 */
+  (e: "open-profile", senderId: string): void;
 }>();
 
 /**
@@ -1139,8 +1141,17 @@ async function copyFileToClipboard() {
            裁掉上下内边距（⑥的误解：那样块与块之间会空 12px，与⑤⑦矛盾）。
            ⚠️ 不要加 `background-clip`、`-inset-*`、`w-fit`、`ring-*`，不要换回绝对定位的框，
            也不要把底色挪到这一行上（行盒 = 消息本身，挪过去就没有"头像上面/气泡下面"的间距了）。 -->
-      <!-- 头像：每条消息独立完整渲染 -->
-      <MessageAvatar :id="message.sender_id" :name="avatarName" :avatar="avatarSrc" />
+      <!-- 头像：每条消息独立完整渲染。点对方头像进好友资料；自己头像不参与（没有“我的资料”弹层）。 -->
+      <button
+        v-if="!mine"
+        type="button"
+        class="tap-safe shrink-0 rounded-[var(--gosslan-avatar-radius)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+        :aria-label="t('friend.openProfile', { name: avatarName })"
+        @click="emit('open-profile', message.sender_id)"
+      >
+        <MessageAvatar :id="message.sender_id" :name="avatarName" :avatar="avatarSrc" />
+      </button>
+      <MessageAvatar v-else :id="message.sender_id" :name="avatarName" :avatar="avatarSrc" />
 
       <!-- 勾选框（微信款）：18px 圆、未选 1px 细边、选中实底 + 细白勾。
            为什么不用 border-2：2px 的环在 16-18px 的圆里内孔只剩 12-14px，深色下是一圈

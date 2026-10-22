@@ -1,6 +1,6 @@
 [package]
 name = "gosslan"
-version = "5.3.3"
+version = "5.4.0"
 description = "Gosslan — 无服务器 P2P 局域网即时通讯"
 authors = ["wd.f"]
 edition = "2021"
@@ -39,6 +39,8 @@ tauri-plugin-window-state = "2"
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# 外部链接「从线上 JSON 导入」：后端拉取可绕开 WebView 的 CORS 限制。
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 async-trait = "0.1"
 # 启动期边界错误用 derive 生成 Display/Error/From（MIT OR Apache-2.0，MSRV 1.77 与本仓一致；
 # 已在依赖树里）。决策记录与分批：docs/architecture/backend-modernization.md §2（B2）。

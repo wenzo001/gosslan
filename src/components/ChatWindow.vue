@@ -236,6 +236,12 @@ const groupHistoryText = computed(() => {
     ? t("chat.groupHistory.syncing", { synced: p.synced, total: p.total })
     : t("chat.groupHistory.syncingUnknown", { synced: p.synced });
 });
+/** 有总数才画进度条；未知总数只保留转圈，不编一个假百分比。 */
+const groupHistoryPercent = computed<number | null>(() => {
+  const p = groupHistory.value;
+  if (!p || p.total <= 0) return null;
+  return Math.min(100, Math.round((p.synced / p.total) * 100));
+});
 async function confirmSyncKeys() {
   const id = chat.activeConv;
   if (!id || syncingKeys.value) return;
@@ -463,6 +469,20 @@ const taskFocusId = ref<string | null>(null);
  * 之所以这样：用户 2026-09-24 要"不传参数也能先把 WebView 建好、用时瞬间激活"，
  * 而每群一扇的动态 label 在预热时不知道该建哪一扇。
  */
+/**
+ * 点消息头像：好友 → 与通讯录同一个 `/contacts/:friendId` 资料页；
+ * 群里还没加好友的成员没有好友资料，退到群成员面板（那里有名字/在线/管理入口）。
+ */
+function openSenderProfile(senderId: string) {
+  if (!senderId || senderId === app.device?.device_id) return;
+  if (!chat.friends.some((f) => f.device_id === senderId)) {
+    if (isGroup.value) membersOpen.value = true;
+    return;
+  }
+  if (app.isMobile) app.mobileView = "chat";
+  void router.push({ name: "friend", params: { friendId: senderId } });
+}
+
 function openTasks(todoId?: string) {
   const gid = activeGroupId.value;
   if (!gid) return;
@@ -1384,12 +1404,28 @@ function onLoadMore() {
         size-class="h-3.5 w-3.5"
         decorative
       />
-      <p
-        class="min-w-0 flex-1 truncate text-meta leading-snug text-[var(--gosslan-text-2)]"
-        :title="groupHistoryText"
-      >
-        {{ groupHistoryText }}
-      </p>
+      <div class="min-w-0 flex-1">
+        <p
+          class="truncate text-meta leading-snug text-[var(--gosslan-text-2)]"
+          :title="groupHistoryText"
+        >
+          {{ groupHistoryText }}
+        </p>
+        <div
+          v-if="groupHistoryPercent !== null"
+          class="mt-1 h-1 overflow-hidden rounded-full bg-[var(--gosslan-hover)]"
+          role="progressbar"
+          :aria-valuemin="0"
+          :aria-valuemax="100"
+          :aria-valuenow="groupHistoryPercent"
+          :aria-label="groupHistoryText"
+        >
+          <div
+            class="h-full rounded-full bg-[var(--gosslan-primary)] transition-[width] duration-200 ease-out"
+            :style="{ width: `${groupHistoryPercent}%` }"
+          ></div>
+        </div>
+      </div>
     </div>
 
     <!-- 群公告条：**有公告且这条没在本机收起过**才出现（用户 2026-09-17 要"没有公告不该
@@ -1601,6 +1637,7 @@ function onLoadMore() {
             @locate="locateMessage"
             @open-image="openImageAt"
             @open-tasks="openTasks($event)"
+            @open-profile="openSenderProfile"
             :todo-live="todoLive"
           />
         </template>
