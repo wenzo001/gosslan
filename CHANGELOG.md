@@ -13,6 +13,13 @@
 
 ## [Unreleased]
 
+## [5.2.2] - 2026-10-22
+
+### 下拉菜单统一淡入
+
+- 附件「更多」、会话「+」、右键菜单、状态选择等所有 `.gosslan-menu` 共用一条 140ms
+  淡入（只动 opacity，不碰 floating-ui 的定位 transform）；`prefers-reduced-motion` 下关闭。
+
 ## [5.2.1] - 2026-10-22
 
 ### 路由历史模式：自定义协议防御性降级
