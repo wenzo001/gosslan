@@ -2452,6 +2452,16 @@ impl AppState {
                 for peer in peers {
                     crate::network::transport::flush_outbox(&st, &peer).await;
                     crate::network::transport::flush_group_outbox(&st, &peer).await;
+                    // 文件队列也必须**周期**补发（2026-10-22 e2e：14/27，红的全在异常/恢复路径）。
+                    //
+                    // 此前 `flush_pending_files` 只挂在"建链事件"上（Hello / 拨号成功 / BLE 连上），
+                    // 于是对端重启、冻结、或目录只读恢复之后，`file_outbox` 里已入队的行**没有任何
+                    // 东西**会再把它们送出去 —— 只能等下一次建链，或者等 30min 的
+                    // `FILE_OUTBOX_FAIL_DEADLINE_MS` 判死。用户看到的就是"传了一半，重启后永远不动"。
+                    //
+                    // 与上面两条同频（5s）：队列空时只是一次 `list_outbox` 级的读，开销与
+                    // `flush_outbox` 同一个量级；不能因为"怕 IO"再留一条只靠事件驱动的路。
+                    crate::commands::flush_pending_files(&st, &peer).await;
                 }
             }
         });
