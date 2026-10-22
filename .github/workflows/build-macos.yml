@@ -62,6 +62,19 @@ jobs:
             echo "::error title=tag 构建缺 TAURI_SIGNING_PRIVATE_KEY::自动更新产物（.app.tar.gz + .sig）需要签名。去仓库 Settings → Secrets and variables → Actions 添加 TAURI_SIGNING_PRIVATE_KEY（~/.tauri/gosslan-updater.key 的完整内容）与 TAURI_SIGNING_PRIVATE_KEY_PASSWORD（同名 .password 的完整内容）。步骤见 docs/updates.md §2。"
             exit 1
           fi
+          # ⚠️ 只查"非空"不够（2026-10-22 实测：secrets 配好后 tag 构建仍红在签名）：
+          # 把私钥按 base64 解一次，确认它真的是 minisign 私钥 —— 常见错法是**粘成文件路径**
+          # 或**被截断**，那样只会在编完 7 分钟后以一句 exit code 1 收场。
+          key_norm="$(printf '%s' "$KEY" | tr -d '[:space:]')"
+          if ! decoded="$(printf '%s' "$key_norm" | base64 --decode 2>/dev/null)"; then
+            echo "::error title=TAURI_SIGNING_PRIVATE_KEY 不是合法 base64::值里混了非 base64 字符，或粘贴时被截断。正确值是 ~/.tauri/gosslan-updater.key 的**完整内容**（本身是一段 base64）。"
+            exit 1
+          fi
+          case "$decoded" in
+            untrusted\ comment:*) echo "私钥可解码为 minisign 私钥（base64 长度 ${#key_norm}）" ;;
+            *) echo "::error title=TAURI_SIGNING_PRIVATE_KEY 不是 minisign 私钥::解出来不是以 'untrusted comment:' 开头 —— 多半是把**文件路径**填进去了，或复制时截断。"
+               exit 1 ;;
+          esac
           if [ -n "${PASS:-}" ]; then pstate="已配置"; else pstate="为空（仅当私钥未加密时才正确）"; fi
           echo "签名私钥已配置（长度 ${#KEY}），密码${pstate}"
 
