@@ -13,6 +13,21 @@
 
 ## [Unreleased]
 
+## [5.5.8] - 2026-10-22
+
+### 修复：安卓「另存为」写成功却报失败
+
+- `OpenWith.kt` 的 `saveWith` / `writeBytesWith` 此前写成
+  `openOutputStream(...)?.use { ...; null } ?: "无法写入所选位置"`。Kotlin 的 `use`
+  返回 block 的最后一个表达式，block 以 `null` 结尾 ⇒ 成功也走 Elvis 右侧：文件已经
+  写完、流也关了，界面仍提示“无法打开/保存”。这正是用户反馈的“其实保存成功了”。
+- 现在先判空流，再用 `use` 写完并显式 `return null`；两条路径的返回值重新与 Rust 侧
+  “null=成功、非空=原因”的约定一致。
+- 新增主机判据 `android_save_bridge_does_not_report_success_as_failure`：按函数体形状
+  剥注释后判“必须先 `if (out == null)`、再 `out.use {`、禁止 `use { …; null } ?: 失败串`”。
+  旧文件实测 0 个 `if (out == null)`、2 处旧 Elvis 形状 ⇒ 判据在旧代码上会红；新代码通过。
+- `cargo fmt --check --all` 通过。**Android 真机保存未跑**（需要设备），本次不把它写成绿。
+
 ## [5.5.7] - 2026-10-22
 
 ### R-10 的另一半：握手补全那次「回发 Hello」有了期限

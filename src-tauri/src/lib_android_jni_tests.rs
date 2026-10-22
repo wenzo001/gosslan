@@ -150,6 +150,55 @@
         }
     }
 
+    /// 安卓「另存为」桥：**成功也必须返回 null**。
+    ///
+    /// 真实缺陷：`openOutputStream(...)?.use { ...; null } ?: "无法写入所选位置"`
+    /// 里 `use` 返回 block 的最后一个表达式（null），于是成功也走 Elvis 右侧 ⇒
+    /// 文件已写完、界面却报“无法打开/保存”。这条判据在主机上跑，按函数体形状判：
+    /// 必须先判空流，再用 use 写完，最后显式返回 null；禁止把 `use` 的结果当成功标志。
+    #[test]
+    fn android_save_bridge_does_not_report_success_as_failure() {
+        let kotlin =
+            include_str!("../gen/android/app/src/main/java/com/gosslan/app/OpenWith.kt");
+        for name in ["saveWith", "writeBytesWith"] {
+            let at = kotlin
+                .find(&format!("fun {name}("))
+                .unwrap_or_else(|| panic!("OpenWith.kt 里找不到 fun {name}("));
+            let rest = &kotlin[at..];
+            let end = rest
+                .find("\n  /**")
+                .or_else(|| rest.find("\n  @JvmStatic"))
+                .unwrap_or(rest.len());
+            let body = &rest[..end];
+            // 注释里会转述旧写法（`use { ...; null } ?: 失败串`）；判形状前先剥注释，
+            // 否则这条判据会咬到自己的说明文字（本仓反复踩过的那一类）。
+            let code = body
+                .lines()
+                .filter(|l| {
+                    let s = l.trim();
+                    !s.starts_with("//") && !s.starts_with("*") && !s.starts_with("/*")
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(
+                code.contains("openOutputStream(uri, \"wt\")"),
+                "{name} 必须自己打开 content:// 输出流"
+            );
+            assert!(
+                code.contains("if (out == null)"),
+                "{name} 必须先把空流判成“无法写入所选位置”，不能拿 use 的返回值做 Elvis 判据"
+            );
+            assert!(
+                code.contains("out.use {"),
+                "{name} 必须在判空后用 use 关闭输出流"
+            );
+            assert!(
+                !code.contains("} ?: \"无法写入所选位置\""),
+                "{name} 仍在用 `use {{ ...; null }} ?: 失败串`：成功会被当成失败"
+            );
+        }
+    }
+
     /// **JNI 的 static / 实例形态必须与 Kotlin 声明的形态一致**。
     ///
     /// 真实缺陷（2026-09-12 真机实测的**启动闪退**，而且编译、单测、构建全绿）：
