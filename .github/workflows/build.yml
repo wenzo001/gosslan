@@ -106,6 +106,13 @@ jobs:
         run: |
           $exe = "src-tauri/target/$($env:TARGET)/release/gosslan.exe"
           if (-not (Test-Path $exe)) { Write-Error "找不到 $exe"; exit 1 }
+          # 把发行版 exe 的导入 DLL 名单打进**公开注解**：与 verify 里那条测试壳的名单一对比，
+          # 差集就是"只有测试壳才需要"的 DLL —— 那条腿 7 个假设都排除了，只剩这个入口可查。
+          $rawApp = & llvm-readobj --coff-imports $exe 2>&1 | Out-String
+          $appDlls = [regex]::Matches($rawApp, 'Name:\s*(\S+\.dll)') |
+                     ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
+          Write-Host "发行版 exe 导入 $($appDlls.Count) 个 DLL"
+          Write-Host "::notice title=Windows 发行版 exe 导入的 DLL（$($appDlls.Count) 个）::$($appDlls -join ', ')"
           $p = Start-Process -FilePath $exe -PassThru
           Start-Sleep -Seconds 8
           if ($p.HasExited) {
