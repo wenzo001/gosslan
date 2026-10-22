@@ -385,7 +385,12 @@ const steps = [
     why: "--features bluetooth 不能省：漏了会让整批 BLE 用例连同被测代码一起消失（清单守卫兜底）。条数交给 cargo test 与下一步的清单守卫打印",
     cwd: TAURI,
     cmd: "cargo",
-    args: ["test", "--features", "bluetooth"],
+    // ⚠️ Windows 跑 `--release`（2026-10-22）：debug 的测试壳在 runner 上**加载期就死**
+    // （`0xc0000139`），逐项比对导入表后发现它比发行版多带 `combase.dll` / `userenv.dll`
+    // —— 那是 `hostname`→`winapi` 的链接在 debug 下没被裁掉。而**发行版就是 release**，
+    // 冒烟证明它能正常加载 ⇒ 测试与发出去的那份同构，顺带绕开这个只在 debug 出现的导入。
+    // macOS 不变（debug 一直正常，改 profile 只会让本地单测慢一截）。
+    args: ["test", "--features", "bluetooth", ...(process.platform === "win32" ? ["--release"] : [])],
   },
   {
     group: "rust",
