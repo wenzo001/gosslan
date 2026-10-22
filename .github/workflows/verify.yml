@@ -198,8 +198,13 @@ jobs:
           npm ci
           npm run build
 
-      - uses: dtolnay/rust-toolchain@stable
+      # ⚠️ 2026-10-22 深夜临时钉版：Windows 的测试 exe 在加载期就死（0xc0000139），
+      # 依赖零漂移、冷编复现、两个镜像同红 ⇒ 最像**工具链漂移**：`@stable` 在 runner 上是浮动的，
+      # 新 stable 的 std 可能引用本机 UCRT 还没有的导出。钉到本地已验证可用的 1.98.1 做判别：
+      # 绿 ⇒ 确认漂移（随后全仓钉版 + 加 rust-toolchain.toml）；红 ⇒ 与工具链无关。
+      - uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.98.1"
           components: clippy
 
       # ⚠️ `key` 是**缓存盐**（2026-10-22 深夜加）：Windows 的测试 exe 在加载期就死
