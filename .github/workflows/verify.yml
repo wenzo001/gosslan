@@ -265,6 +265,41 @@ jobs:
           $flat = ($probe -replace '\s+', ' ')
           $verdict = if ($flat.Trim()) { $flat.Substring(0, [Math]::Min(700, $flat.Length)) } else { '(无输出)' }
           Write-Host "::error title=Windows 加载器错误原文::$verdict"
+
+          # 再解析一遍导入表，这次**不锚缩进**（上一版 `^\s{2}Name:` 一条都没匹配上）：
+          # `Name: xxx.dll` 开新的导入 DLL；其余 `Name: Symbol` 归当前 DLL。
+          # 然后对每个 (DLL, 符号) 真做一次 NativeLibrary.TryGetExport —— 缺的就是罪魁。
+          $pairs = New-Object System.Collections.Generic.List[object]
+          $cur = $null
+          foreach ($line in ($raw -split "`n")) {
+            if     ($line -match 'Name:\s*(\S+\.dll)\s*$') { $cur = $Matches[1] }
+            elseif ($line -match 'Name:\s*([A-Za-z_?@$][\w?@$]*)\s*$' -and $cur) {
+              $pairs.Add([pscustomobject]@{ Dll = $cur; Fn = $Matches[1] })
+            }
+          }
+          if ($pairs.Count -eq 0) {
+            Write-Host "::error title=Windows 缺的导出::导入项解析仍是 0 条（见日志里的 raw 输出）"
+          } else {
+            $handles = @{}
+            $missing = New-Object System.Collections.Generic.List[string]
+            foreach ($p in $pairs) {
+              if (-not $handles.ContainsKey($p.Dll)) {
+                try { $handles[$p.Dll] = [System.Runtime.InteropServices.NativeLibrary]::Load($p.Dll) }
+                catch { $handles[$p.Dll] = [IntPtr]::Zero }
+              }
+              $h = $handles[$p.Dll]
+              if ($h -eq [IntPtr]::Zero) { $missing.Add("$($p.Dll)!$($p.Fn)(DLL本身加载失败)"); continue }
+              $addr = [IntPtr]::Zero
+              if (-not [System.Runtime.InteropServices.NativeLibrary]::TryGetExport($h, $p.Fn, [ref]$addr)) {
+                $missing.Add("$($p.Dll)!$($p.Fn)")
+              }
+            }
+            if ($missing.Count -gt 0) {
+              Write-Host "::error title=Windows 缺的导出($($pairs.Count) 项里缺 $($missing.Count) 个)::$($missing -join '; ')"
+            } else {
+              Write-Host "::error title=Windows 缺的导出::静态导入 $($pairs.Count) 项全部可解析 —— 问题在延迟加载/清单/并行 DLL"
+            }
+          }
           $vc = Get-Item C:\Windows\System32\vcruntime140*.dll -ErrorAction SilentlyContinue |
                 ForEach-Object { "$($_.Name)=$($_.VersionInfo.FileVersion)" }
           $envs = (Get-ChildItem Env: | Where-Object { $_.Name -match 'CRT|VCRUNTIME|RUSTFLAGS' } |
