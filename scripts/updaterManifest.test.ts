@@ -61,6 +61,34 @@ test("只有带签名的产物才会被选中（没有 .sig 的文件不能冒�
   assert.deepEqual(picked, {});
 });
 
+test("0 字节安装包必须被拦下（minAssetBytes 不是装饰参数）", () => {
+  const { dir, names } = fixture();
+  // 现状（默认 0）：纯函数不查字节 ⇒ 单测不用落真实大文件。
+  assert.doesNotThrow(() =>
+    buildManifest({ dir, files: names, tag: "v5.5.0", repo: "a/b", version: "5.5.0" }),
+  );
+  // CLI 的真实口径：安装包必须 ≥1024 字节。
+  assert.throws(
+    () =>
+      buildManifest({
+        dir,
+        files: names,
+        tag: "v5.5.0",
+        repo: "a/b",
+        version: "5.5.0",
+        minAssetBytes: 1024,
+      }),
+    /只有 5 字节（要求 ≥ 1024）/,
+  );
+  // 反向：把产物写到阈值以上就必须放行（证明它拦的是字节数而不是文件名）。
+  for (const n of names) {
+    if (!n.endsWith(".sig")) fs.writeFileSync(path.join(dir, n), "x".repeat(2048));
+  }
+  assert.doesNotThrow(() =>
+    buildManifest({ dir, files: names, tag: "v5.5.0", repo: "a/b", version: "5.5.0", minAssetBytes: 1024 }),
+  );
+});
+
 test("发布收尾等待的产物名必须与两个构建矩阵的 label 一致", () => {
   const root = path.resolve(import.meta.dirname, "..");
   const read = (p: string) => fs.readFileSync(path.join(root, p), "utf8");

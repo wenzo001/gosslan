@@ -4520,6 +4520,51 @@ test("动效曲线只能来自令牌：transition/animation 里不许写 CSS 关
   console.log(`· 曲线令牌：扫 ${decls} 条 transition/animation 声明，关键字曲线 0 处`);
 });
 
+/**
+ * 「进度条不许用布局属性做动画」（§14.6）的**仓库级**判据。
+ *
+ * 为什么需要它（2026-10-22 当晚实测到的复发）：S-5 把 `ChatWindow` 那一块从
+ * `transition-[width]` 改成 `transform: scaleX`，但**只改了那一个组件、没留仓库级判据**；
+ * 几小时后「应用内更新」的进度条又把 `transition-[width]` + `width:%` 写了回来
+ * （`settings/UpdatePanel.vue`）。单点修复没有判据 = 下一个人重新犯一次。
+ *
+ * 分母从真实 `.vue` 文件现数，不手抄清单：遍历失效时这条会先报"扫到的文件太少"，
+ * 而不是安静地判零处违规。只扫模板（缺陷只可能出现在模板的 class 里）——
+ * 本测试文件自己就写着 `transition-[width]` 这几个字，把 `.ts` 也扫进来等于让判据咬自己。
+ */
+test("进度动画不许动布局属性：组件里的 transition-[width]/[height] 必须为 0", () => {
+  const LAYOUT_ANIM = /transition-\[(width|height|top|left|right|bottom)\]/;
+  // 正控：判据必须咬得住那种写法，否则「真实树 0 处」只是正则空转。
+  assert.equal(LAYOUT_ANIM.test('<div class="h-full transition-[width] duration-200">'), true);
+  assert.equal(LAYOUT_ANIM.test('<div class="transition-transform duration-200">'), false);
+  assert.equal(LAYOUT_ANIM.test('<div class="transition-[height]">'), true);
+
+  const root = join(import.meta.dirname, "..");
+  const offenders: string[] = [];
+  let scanned = 0;
+  (function walk(dir: string) {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, e.name);
+      if (e.isDirectory()) {
+        walk(p);
+      } else if (e.name.endsWith(".vue")) {
+        scanned += 1;
+        for (const [i, line] of readFileSync(p, "utf8").split("\n").entries()) {
+          if (LAYOUT_ANIM.test(line)) {
+            offenders.push(`${p.slice(root.length + 1)}:${i + 1}  ${line.trim().slice(0, 100)}`);
+          }
+        }
+      }
+    }
+  })(root);
+  assert.ok(scanned >= 80, `只扫到 ${scanned} 个 .vue ⇒ 遍历已失效，这条判据正在空转`);
+  assert.deepEqual(
+    offenders,
+    [],
+    `有 ${offenders.length} 处拿布局属性做动画（§14.6 要求 transform: scaleX/translateY）：\n${offenders.join("\n")}`,
+  );
+});
+
 test("浮层动效进出必须成对：只有 open 一条等于没有退场", () => {
   // 正控：缺一半的合成 CSS 必须被点名。
   assert.deepEqual(

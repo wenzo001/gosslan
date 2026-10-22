@@ -149,10 +149,12 @@ function formatDate(seconds: number | null | undefined): string {
           :aria-valuenow="progressPercent ?? undefined"
           :aria-label="t('settings.updates.downloading')"
         >
+          <!-- 进度用 scaleX 而不是动 width（§14.6）：width 每帧都要重排，
+               和同一屏里的其它传输进度条（ChatWindow / MessageFileBubble）口径一致。 -->
           <div
             v-if="progressPercent !== null"
-            class="h-full rounded-full bg-[var(--gosslan-primary)] transition-[width] duration-200 ease-out"
-            :style="{ width: `${progressPercent}%` }"
+            class="h-full origin-left rounded-full bg-[var(--gosslan-primary)] transition-transform duration-200 ease-[var(--gosslan-ease)]"
+            :style="{ transform: `scaleX(${progressPercent / 100})` }"
           ></div>
           <div v-else class="h-full w-1/3 animate-none rounded-full bg-[var(--gosslan-primary)] opacity-60"></div>
         </div>
