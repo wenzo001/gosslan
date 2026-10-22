@@ -13,23 +13,6 @@
 
 ## [Unreleased]
 
-## [5.5.8] - 2026-10-22
-
-### Windows 测试进程「加载期就死」：让测试与发行版用同一套 CRT
-
-- 现象：Windows 的 `cargo test` 在 `Running unittests …exe` 之后立刻
-  `exit code 0xc0000139, STATUS_ENTRYPOINT_NOT_FOUND`，**零测试输出**；同一笔的
-  `fmt` / `clippy` / 打包都绿。两笔复现（97efbd4、f695b50），不是抖动。
-- 已知差异：`tauri build` 由 CLI 注入 `STATIC_VCRUNTIME`（**静态** CRT），而门禁里的
-  `cargo test` 直接调 cargo ⇒ **动态** CRT，要依赖 runner 系统里的 `vcruntime140.dll`。
-  「测的那份 ≠ 发的那份」正是本仓明令禁止的形状。
-- 现在把 `build.windows.staticVCRuntime: true` 写进 `tauri.conf.json`（**受支持**的开关，
-  不再依赖已废弃的环境变量）：`build.rs` 每次 cargo 调用都会读它 ⇒ 测试、clippy 与发行版
-  用同一套 CRT。
-- 这是**按证据推定**的修法，不是猜：CI 里另有一条只在 Windows 失败时跑的诊断，会把测试
-  exe 的 DLL 导入名单与系统 vcruntime 版本写成公开注解 —— 下一轮仍红的话，那两行会直接
-  指认真正缺的是哪个 DLL/符号。
-
 ## [5.5.7] - 2026-10-22
 
 ### R-10 的另一半：握手补全那次「回发 Hello」有了期限
