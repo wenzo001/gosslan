@@ -259,7 +259,19 @@ async fn reader_loop(
                     );
                 }
             }
-            Err(_) => break,
+            Err(e) => {
+                // 读循环退出必须留痕：它是"链路为什么消失"的唯一现场证据。
+                //
+                // 2026-10-22 e2e（`--round=posttext`）：文件 `COMPLETED` 后 4 秒链路就没了，
+                // 日志里只有一行「掉线（链路断开）」，分不清是对端关了写侧、本地 read 出错、
+                // 还是被上面的 shutdown/cancel 分支打断（那两条也是静默 break）。
+                // 没有这一行，只能靠猜去动传输层 —— 而这一层猜错的代价是丢块/乱序。
+                state.logger.info(
+                    "link",
+                    format!("读循环结束 peer={peer_id} err={e:?}"),
+                );
+                break;
+            }
         }
     }
     // ⚠️ 这里**不再**清接收器（P1 故障隔离）。旧形状是"这条连接的读半一结束就按 peer 清"，
