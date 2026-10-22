@@ -614,3 +614,33 @@
             "DiscoveryDiag 必须有 conn_health 这一格，否则命令返回值没有落脚处"
         );
     }
+
+    /// vendored btleplug 的 CoreBluetooth 补丁不许被上游版本悄悄覆盖回来。
+    ///
+    /// 上游 `set_characteristics` 对 `services` 的查找直接 `expect`（消息大意：拿到了一个
+    /// 我们不知道的服务的特征）。CoreBluetooth 会在断链/重连竞态里为一个**已不在表里的旧服务**
+    /// 再投一次 `didDiscoverCharacteristicsForService` ⇒ 那句 expect 直接 panic；而 release 是
+    /// `panic = "abort"` ⇒ 整个应用被杀。
+    ///
+    /// 实测现场（2026-10-22 双实例 e2e `--fault=peer-freeze`，对端 SIGSTOP）：A 侧日志最后一行
+    /// 就是这句 panic，之后进程再没写过任何日志，正在等 FileAccept 的文件永久卡住。
+    /// 这条判据守的是"重新 vendor 时别把这个补丁丢了"。
+    ///
+    /// ⚠️ 判**代码形状**而不是判那句消息文本：补丁自己的注释里会转述上游那句话，
+    /// 按文本判会把注释咬成违规（本仓踩过同一个坑）。
+    #[test]
+    fn vendored_btleplug_tolerates_late_characteristic_callbacks() {
+        let src = include_str!("../vendor/btleplug/src/corebluetooth/internal.rs");
+        assert!(
+            src.contains("pub fn set_characteristics("),
+            "读到的不是那份 vendored 源（路径变了？）—— 这条判据会空转"
+        );
+        assert!(
+            !src.contains("get_mut(&service_uuid)\n            .expect("),
+            "vendored btleplug 又变回上游那句 expect 了：迟到的服务特征回调会 panic 掉整个应用"
+        );
+        assert!(
+            src.contains("get_mut(&service_uuid) else"),
+            "补丁要写成\"取不到就 return\"，不能换一种写法继续 panic"
+        );
+    }

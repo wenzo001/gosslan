@@ -13,6 +13,23 @@
 
 ## [Unreleased]
 
+## [5.5.6] - 2026-10-22
+
+### 修复：对端失联时 BLE 栈 panic 把整个应用打死
+
+- 现场（双实例 e2e `--fault=peer-freeze`，对端 SIGSTOP）：A 侧日志最后一行是
+  `panic @ vendor/btleplug/src/corebluetooth/internal.rs:268：Got characteristics for a service
+  we don't know about`，之后进程再没写过任何日志 —— 正在等 `FileAccept` 的文件永久卡住，
+  界面上看就是"对端回来以后这一单再也不动"。
+- 根因：CoreBluetooth 会在断链/重连竞态里，为一个**已不在 services 表里的旧服务**再投一次
+  `didDiscoverCharacteristicsForService`；vendored btleplug 上游那句 `expect` 直接 panic，
+  而 release 是 `panic = "abort"` ⇒ 整条进程被杀。
+- 修法：迟到的回调**丢掉**（服务已不在表里，特征无处挂载，下一次 service discovery 会重建），
+  不改任何正常路径。补一条判据钉住"重新 vendor 时别把补丁丢了"，且按**代码形状**判
+  （补丁注释里会转述上游那句话，按文本判会咬到自己的注释）。
+- 同一批里另外 5 条此前红的 e2e 轮次复跑**全绿**：`multi-file`、`sender-kill-mid`、
+  `recv-readonly`、`src-shrunk`、`contentpull`（`posttext` / `kill-mid` / `dmreact` 已在上一批转绿）。
+
 ## [5.5.5] - 2026-10-22
 
 ### 常驻 worker 有了看门狗（审计 R-05 —— 34 条里此前唯一完全没做的一条）
