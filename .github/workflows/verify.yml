@@ -278,7 +278,11 @@ jobs:
             }
           }
           if ($pairs.Count -eq 0) {
-            Write-Host "::error title=Windows 缺的导出::导入项解析仍是 0 条（见日志里的 raw 输出）"
+            # 把「Name:」行的**真实样子**打出来（最多 3 行）—— 解析器已经连着两版
+            # 因为猜格式而空转，这一次直接把样本摆在注解里，下一版照着改。
+            $nameLines = @($raw -split "`n" | Where-Object { $_ -match 'Name:' } | Select-Object -First 3)
+            $sample = ($nameLines -join ' ¦ ')
+            Write-Host "::error title=Windows 缺的导出::解析仍是 0 条；Name 行样本=[$sample]"
           } else {
             $handles = @{}
             $missing = New-Object System.Collections.Generic.List[string]
