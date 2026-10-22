@@ -13,6 +13,15 @@
 
 ## [Unreleased]
 
+## [5.2.1] - 2026-10-22
+
+### 路由历史模式：自定义协议防御性降级
+
+- `tauri://` / `asset:` 下直接使用 `createWebHashHistory()`：这两个协议的文档路径不是
+  SPA 服务器，`pushState` 与刷新行为未在真机验证。hash 同样产生真实历史条目，
+  Android 的 wry 物理返回链不受影响；Windows/Android 的 `http://tauri.localhost`
+  仍走 `createWebHistory()`。
+
 ## [5.2.0] - 2026-10-22
 
 ### 前端路由化 + 全端丝滑体验
