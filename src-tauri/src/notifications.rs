@@ -59,12 +59,18 @@ static CLICK_WAITERS: AtomicUsize = AtomicUsize::new(0);
 
 /// 判定：在飞 `current` 条时还能不能再占一格。单独拎出来是因为这条是**上限的全部含义**，
 /// 它得有真值表 —— 写成 `fetch_update` 里的内联三元式就没人测得到它。
+///
+/// ⚠️ 平台条件必须与调用点（三个桌面 `show_click_impl` 分支）一致：移动端的
+/// `show_click_impl` 走插件、根本没有"等点击的 OS 线程"，不限定平台会让
+/// `cargo check --target aarch64-linux-android` 报 dead_code —— 而项目铁律是 0 warning。
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn slot_allows(current: usize, max: usize) -> bool {
     current < max
 }
 
 /// 占一个在飞槽位；满了返回 `None`。
 /// 返回的 guard 被 drop（等待线程结束）时归还 ⇒ 提前 return、闭包 panic 都不会漏名额。
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn acquire_click_waiter() -> Option<ClickWaiterGuard> {
     CLICK_WAITERS
         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
@@ -88,8 +94,10 @@ pub fn click_waiters_max() -> usize {
     MAX_CLICK_WAITERS
 }
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 struct ClickWaiterGuard;
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 impl Drop for ClickWaiterGuard {
     fn drop(&mut self) {
         CLICK_WAITERS.fetch_sub(1, Ordering::Relaxed);

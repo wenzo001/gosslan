@@ -62,18 +62,26 @@ jobs:
         run: |
           set -euo pipefail
           rel="src-tauri/target/$TARGET/release"
-          dmg_dir="$rel/bundle/dmg"
+          app="$rel/bundle/macos/Gosslan.app"
           # 只有 tag 构建生成/签名 updater 产物：main 的日常构建不需要私钥，也不会因为
           # 还没配 Secrets 而整条 CI 变红；正式发版缺 Secrets 则当场红（不静默降级）。
+          #
           # ⚠️ macOS runner 的 /bin/bash 是 3.2：`set -u` 下展开**空数组** `"${arr[@]}"`
           # 会报 unbound variable ⇒ main 分支（不带 --config）的每一次构建都会红。
           # 这里按分支写两条完整命令，不依赖空数组展开。
+          #
+          # ⚠️ 不再让 Tauri 出 dmg（`--bundles app` 只出 .app + updater 产物）：
+          #     v5.5.0 的 tag 构建在 CI 上**两个 mac job 都红**在 `--bundles dmg` 的
+          #     bundle_dmg.sh —— 它在 `find_mount_dir` 里用 `grep -E` 匹配设备名，
+          #     BSD grep 报 "brackets not balanced" ⇒ 找不到挂载点 ⇒ 整个 job 红，
+          #     连带 updater 真正需要的 `.app.tar.gz` 都不生成。
+          #     dmg 改由下一步 `hdiutil create` 直接产出（无挂载、无 AppleScript）。
           do_build() {
             if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
-              npm run tauri -- build --target "$TARGET" --features bluetooth \
+              npm run tauri -- build --target "$TARGET" --features bluetooth --bundles app \
                 --config src-tauri/tauri.updater.conf.json
             else
-              npm run tauri -- build --target "$TARGET" --features bluetooth
+              npm run tauri -- build --target "$TARGET" --features bluetooth --bundles app
             fi
           }
           attempt=0
@@ -88,18 +96,43 @@ jobs:
               echo "第 $attempt 次失败且 $rel/gosslan 没产出 ⇒ 编译/链接问题，不是打包偶发，不重试" >&2
               exit 1
             fi
-            if ls "$dmg_dir"/*.dmg >/dev/null 2>&1; then
-              echo "第 $attempt 次失败但 .dmg 已经在 ⇒ 挂在打包之后那一步，重试没有意义" >&2
+            if [ -d "$app" ]; then
+              echo "第 $attempt 次失败但 .app 已经在 ⇒ 挂在打包之后那一步，重试没有意义" >&2
               exit 1
             fi
             if [ "$attempt" -ge 3 ]; then
-              echo "连试 $attempt 次都没打出 $TARGET 的 .dmg ⇒ 不再当偶发处理，判红" >&2
+              echo "连试 $attempt 次都没打出 $TARGET 的 .app ⇒ 不再当偶发处理，判红" >&2
               exit 1
             fi
-            echo "第 $attempt 次：.app 已出、.dmg 没出 ⇒ 20s 后重试整步（cargo 有缓存，主要重跑打包）"
+            echo "第 $attempt 次：二进制在、.app 没出 ⇒ 20s 后重试整步（cargo 有缓存）"
             sleep 20
           done
-          ls -l "$dmg_dir"
+          ls -l "$rel/bundle/macos"
+
+      - name: Package .dmg
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          app="src-tauri/target/$TARGET/release/bundle/macos/Gosslan.app"
+          out="src-tauri/target/$TARGET/release/bundle/dmg"
+          version=$(node -p "require('./src-tauri/tauri.conf.json').version")
+          case "$TARGET" in
+            aarch64-apple-darwin) arch=aarch64 ;;
+            x86_64-apple-darwin)  arch=x64 ;;
+            *) echo "未知 target：$TARGET" >&2; exit 1 ;;
+          esac
+          stage=$(mktemp -d)
+          # 拖拽安装的惯例：镜像根放 .app + Applications 快捷方式。
+          cp -R "$app" "$stage/"
+          ln -s /Applications "$stage/Applications"
+          dmg="$out/Gosslan_${version}_${arch}.dmg"
+          mkdir -p "$out"
+          rm -f "$dmg"
+          # `-srcfolder` 复制的是**该目录的内容**，所以传 stage（里面才是 .app）。
+          hdiutil create -volname "Gosslan" -srcfolder "$stage" -ov -format UDZO "$dmg"
+          rm -rf "$stage"
+          ls -lh "$dmg"
 
       - name: Upload .dmg artifact
         uses: actions/upload-artifact@v4
