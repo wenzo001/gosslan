@@ -9,11 +9,10 @@
  * 只有外壳不同（这里是窗口内的左右两栏，那里是移动端整页/卡片弹窗）。
  * 这样「设置长什么样」只有一份实现，不会三处漂移。
  */
-import { computed, onUnmounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useEventListener } from "@vueuse/core";
 import { SETTINGS_SECTIONS } from "@/router/settings";
-import BackArrow from "@/components/ui/BackArrow.vue";
 import AuxWindowShell from "@/components/window/AuxWindowShell.vue";
 import DevDiagPanel from "@/components/DevDiagPanel.vue";
 import ProfileSection from "@/components/settings/ProfileSection.vue";
@@ -27,10 +26,11 @@ import StorageSection from "@/components/settings/StorageSection.vue";
 import SecuritySection from "@/components/settings/SecuritySection.vue";
 import AboutSection from "@/components/settings/AboutSection.vue";
 import ResetSection from "@/components/settings/ResetSection.vue";
-import { UserRound, Palette, SlidersHorizontal, Wifi, HardDrive, Lock, Info, Bell, FolderOpen } from "lucide-vue-next";
-import { RotateCcw } from "@/components/ui/icons";
+import { SlidersHorizontal, Wifi, Lock, Info } from "lucide-vue-next";
 import { t } from "@/i18n";
 import { api } from "@/api";
+import { updater } from "@/updater/instance";
+import { storageGet, storageRemove } from "@/utils/safeStorage";
 
 type SectionKey =
   | "profile"
@@ -109,19 +109,49 @@ const devDiagOpen = ref(false);
  *   被搬到了这里）—— 标签说"与重置"、内容里没有重置，正是上面那条教训的翻版。
  *   现在标签也用**条目名**（`settings.item.about` / `settings.group.reset`，与移动端列表同一批键），
  *   与各自分区内的第一组标题一一对应（`settingsStructure` 守卫钉住）。
+ *
+ * 2026-10-23 用户要求桌面收敛为 4 类；上面的 10 类描述是历史教训，不再描述当前导航。
  */
 const navItems = computed<{ key: SectionKey; label: string; icon: unknown }[]>(() => [
-  { key: "profile", label: t("settings.group.profile"), icon: UserRound },
   { key: "general", label: t("settings.group.general"), icon: SlidersHorizontal },
-  { key: "notifications", label: t("settings.group.notifications"), icon: Bell },
-  { key: "appearance", label: t("settings.item.appearance"), icon: Palette },
-  { key: "network", label: t("settings.group.network"), icon: Wifi },
-  { key: "files", label: t("settings.group.files"), icon: FolderOpen },
-  { key: "storage", label: t("settings.group.storage"), icon: HardDrive },
+  { key: "network", label: t("settings.group.networkFiles"), icon: Wifi },
   { key: "security", label: t("settings.group.security"), icon: Lock },
   { key: "about", label: t("settings.item.about"), icon: Info },
-  { key: "reset", label: t("settings.group.reset"), icon: RotateCcw },
 ]);
+
+/** 4 个顶层容器；旧的 10 个深链键仍有效，只是映射到对应容器。 */
+const desktopSection = computed<"general" | "network" | "security" | "about">(() => {
+  switch (section.value) {
+    case "network":
+    case "files":
+      return "network";
+    case "security":
+      return "security";
+    case "about":
+      return "about";
+    default:
+      return "general";
+  }
+});
+
+/**
+ * 侧边栏升级按钮的一次性导航键：主窗口写入，本窗口 mount/focus 时消费。
+ * 只传一个导航意图，不跨 WebView 共享 updater 状态。
+ */
+const SETTINGS_SECTION_KEY = "gosslan:settings-section";
+function consumePendingSection() {
+  const key = storageGet(SETTINGS_SECTION_KEY);
+  if (!key) return;
+  storageRemove(SETTINGS_SECTION_KEY);
+  if (!(SETTINGS_SECTIONS as readonly string[]).includes(key)) return;
+  void router.push({ name: "settings-section", params: { key } });
+  if (key === "about" && updater.state.phase === "idle") void updater.check(true);
+}
+onMounted(() => {
+  consumePendingSection();
+  window.addEventListener("focus", consumePendingSection);
+});
+onUnmounted(() => window.removeEventListener("focus", consumePendingSection));
 
 /**
  * Esc 关闭设置窗口（桌面惯例）。
@@ -155,24 +185,13 @@ useEventListener(window, "keydown", onKeydown);
          左内边距与右侧留白/箭头位置不匹配。这里导航项为纯文字+图标（无展开箭头），
          一旦将来加展开子项，用同一个 `pr-2.5` 承接箭头即可保持对称。 -->
     <nav class="flex w-[176px] shrink-0 flex-col gap-0.5 border-r border-[var(--gosslan-divider)] bg-[var(--gosslan-panel)] px-2 py-3">
-      <!-- 可见的分区历史返回：Tauri 窗口没有地址栏，路由要"看得见"才算真的可返回。 -->
-      <button
-        v-if="canGoBack"
-        class="tap-safe mb-1 flex h-8 w-full items-center gap-2 rounded-[var(--gosslan-radius-md)] px-2.5 text-left text-body text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]"
-        :title="t('common.back')"
-        :aria-label="t('common.back')"
-        @click="goBackSection"
-      >
-        <BackArrow class="h-4 w-4 shrink-0" />
-        <span class="min-w-0 flex-1 truncate" :title="t('common.back')">{{ t("common.back") }}</span>
-      </button>
-      <div v-if="canGoBack" class="mx-2 mb-1 h-px bg-[var(--gosslan-divider)]"></div>
+      <!-- 桌面 4 类导航不需要可见返回；⌘[ / Alt+← 键盘返回仍保留。 -->
       <button
         v-for="item in navItems"
         :key="item.key"
         class="tap-safe flex h-8 w-full items-center gap-2 rounded-[var(--gosslan-radius-md)] px-2.5 text-left text-body transition"
-        :aria-current="section === item.key ? 'true' : undefined"
-        :class="section === item.key
+        :aria-current="desktopSection === item.key ? 'true' : undefined"
+        :class="desktopSection === item.key
           ? 'bg-[var(--gosslan-list-active)] font-medium text-[var(--gosslan-text)]'
           : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]'"
         @click="openSection(item.key)"
@@ -186,27 +205,23 @@ useEventListener(window, "keydown", onKeydown);
     <div class="scrollbar-both min-w-0 flex-1 overflow-y-auto px-5 py-4">
       <Transition name="settings-swap" mode="out-in">
       <div :key="section">
-      <ProfileSection v-if="section === 'profile'" :active="true" :reload-token="reloadToken" />
-      <div v-else-if="section === 'appearance'" class="space-y-5">
+      <div v-if="desktopSection === 'general'" class="space-y-5">
+        <ProfileSection :active="true" :reload-token="reloadToken" />
+        <GeneralSection />
         <AppearanceSection />
         <ChatStyleSection />
+        <NotificationSection />
+        <StorageSection :active="true" :reload-token="reloadToken" />
+        <ResetSection @restored="reloadToken++" />
       </div>
-      <!-- 「通用」= 语言与地区。**不含**重置：还原有自己的导航项（见下），
-           否则导航项写着「通用」、点开却带一段破坏性操作，与「标签即内容」相违。 -->
-      <div v-else-if="section === 'general'" class="space-y-5">
-        <GeneralSection />
+      <div v-else-if="desktopSection === 'network'" class="space-y-5">
+        <NetworkSection :active="true" :reload-token="reloadToken" />
+        <FilesSection :active="true" :reload-token="reloadToken" />
       </div>
-      <NotificationSection v-else-if="section === 'notifications'" />
-      <FilesSection v-else-if="section === 'files'" :active="true" :reload-token="reloadToken" />
-      <NetworkSection v-else-if="section === 'network'" :active="true" :reload-token="reloadToken" />
-      <StorageSection v-else-if="section === 'storage'" :active="true" :reload-token="reloadToken" />
-      <SecuritySection v-else-if="section === 'security'" />
-      <!-- 显式写 about 分支（不用兜底 v-else）：`SectionKey` 是闭合联合，且静态守卫要求
-           「每个导航项都有可被检索到的渲染分支」，兜底分支会让守卫漏检 -->
-      <div v-else-if="section === 'about'" class="space-y-5">
+      <SecuritySection v-else-if="desktopSection === 'security'" />
+      <div v-else-if="desktopSection === 'about'" class="space-y-5">
         <AboutSection @dev-open="devDiagOpen = true" />
       </div>
-      <ResetSection v-else-if="section === 'reset'" @restored="reloadToken++" />
       </div>
       </Transition>
     </div>

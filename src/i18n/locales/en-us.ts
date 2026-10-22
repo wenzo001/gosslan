@@ -38,6 +38,7 @@ export const enUS: MessageDict = {
   "nav.contacts.pending": "Contacts, {n} friend requests",
   "nav.logs": "Logs",
   "nav.more": "More",
+  "nav.updateAvailable": "Update v{version} available",
 
   // ---- Runtime logs page ----
   "logs.title": "Runtime Logs",
@@ -70,9 +71,8 @@ export const enUS: MessageDict = {
   "settings.title": "Settings",
   "settings.group.general": "General",
   "settings.group.appearance": "Appearance & Notifications",
-  "settings.group.data": "Data & Network",
+  "settings.group.networkFiles": "Network & Files",
   "settings.group.security": "Security",
-  "settings.group.about": "About & Reset",
   "settings.item.profile": "Profile",
   "settings.item.general": "General",
   "settings.item.appearance": "Appearance",
@@ -127,7 +127,7 @@ export const enUS: MessageDict = {
   "settings.group.notifications.footer":
     "Notify you of new messages when the app is in the background or you're viewing another conversation. Urgent alerts bounce the Dock / flash the taskbar even in Do Not Disturb",
   "settings.group.files.footer": "Where received files are stored, and the folder you share with friends",
-  "settings.group.reset": "Reset & Data",
+  "settings.group.reset": "Reset & Restore",
 
   "settings.notify.enabled": "Desktop Notifications",
   "settings.notify.enabled.desc": "When off, you won't receive notifications for new messages",

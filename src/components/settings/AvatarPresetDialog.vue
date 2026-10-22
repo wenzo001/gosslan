@@ -144,37 +144,41 @@ function onCustomColor(e: Event) {
             aria-hidden="true"
           />
         </button>
-        <!-- 自定义色：任何 6 位 hex 都放行；选中态沿用调色板那颗的环，取色器本身隐藏。 -->
-        <button
-          type="button"
-          data-avatar-custom-color
-          class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition"
-          :class="customSelected ? 'ring-2 ring-inset ring-white' : ''"
-          :style="customSelected
-            ? { backgroundColor: bg }
-            : { background: 'conic-gradient(from 0deg, #cd5951, #cda751, #51cd85, #51cdc8, #4284b3, #a269d3, #cd518f, #cd5951)' }"
-          :aria-pressed="customSelected"
-          :aria-label="t('settings.profile.avatar.customColor')"
-          :title="t('settings.profile.avatar.customColor')"
-          @click="customColorInput?.click()"
-        >
-          <Check
-            v-if="customSelected"
-            class="h-4 w-4 text-white drop-shadow"
-            :stroke-width="3"
+        <!-- 自定义色：原生 input 直接覆盖在色块上（用户点到的就是 input 本身）。
+             旧写法把 input 藏成 sr-only 再程序化 .click()，macOS WKWebView 下不弹系统取色器。 -->
+        <div class="relative h-9 w-9 shrink-0">
+          <button
+            type="button"
+            data-avatar-custom-color
+            tabindex="-1"
             aria-hidden="true"
+            class="flex h-9 w-9 items-center justify-center rounded-full transition"
+            :class="customSelected ? 'ring-2 ring-inset ring-white' : ''"
+            :style="customSelected
+              ? { backgroundColor: bg }
+              : { background: 'conic-gradient(from 0deg, #cd5951, #cda751, #51cd85, #51cdc8, #4284b3, #a269d3, #cd518f, #cd5951)' }"
+            :aria-pressed="customSelected"
+            :aria-label="t('settings.profile.avatar.customColor')"
+            :title="t('settings.profile.avatar.customColor')"
+          >
+            <Check
+              v-if="customSelected"
+              class="h-4 w-4 text-white drop-shadow"
+              :stroke-width="3"
+              aria-hidden="true"
+            />
+            <Palette v-else class="h-4 w-4 text-white drop-shadow" :stroke-width="2" aria-hidden="true" />
+          </button>
+          <input
+            ref="customColorInput"
+            type="color"
+            class="absolute inset-0 h-full w-full cursor-pointer rounded-full opacity-0"
+            :value="bg"
+            :aria-label="t('settings.profile.avatar.customColor')"
+            :title="t('settings.profile.avatar.customColor')"
+            @input="onCustomColor"
           />
-          <Palette v-else class="h-4 w-4 text-white drop-shadow" :stroke-width="2" aria-hidden="true" />
-        </button>
-        <input
-          ref="customColorInput"
-          type="color"
-          class="sr-only"
-          :value="bg"
-          tabindex="-1"
-          aria-hidden="true"
-          @input="onCustomColor"
-        />
+        </div>
       </div>
     </div>
 

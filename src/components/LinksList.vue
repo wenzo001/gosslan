@@ -14,6 +14,7 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useAppStore } from "@/stores/useAppStore";
 import { useBackLayer } from "@/composables/useBackLayer";
 import MobilePageFrame from "@/components/MobilePageFrame.vue";
+import BaseModal from "@/components/BaseModal.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import StateBlock from "@/components/ui/StateBlock.vue";
@@ -106,12 +107,19 @@ if (!props.routeDriven) {
 
 function startAdd() {
   draft.value = { id: null, name: "", url: "" };
+  dialogOpen.value = true;
 }
 function startEdit(l: ExternalLink) {
   draft.value = { id: l.id, name: l.name, url: l.url };
+  dialogOpen.value = true;
 }
-function cancelDraft() {
+/** 新增/编辑/线上导入/文件导入统一一个弹窗；关闭时把三种状态一起收掉。 */
+const dialogOpen = ref(false);
+function closeDialog() {
   draft.value = null;
+  urlImportOpen.value = false;
+  urlImport.value = "";
+  dialogOpen.value = false;
 }
 
 const ime = useImeEnterGuard();
@@ -135,6 +143,7 @@ function saveDraft() {
     {
       onSuccess: () => {
         draft.value = null;
+        dialogOpen.value = false;
       },
     },
   );
@@ -191,6 +200,7 @@ async function importFile() {
     transferBusy.value = "file";
     const localPath = await api.importPickedFile(String(rawPath), "links.json");
     applyImport(await api.importExternalLinksFile(localPath));
+    dialogOpen.value = false;
   } catch (e) {
     app.toastError(e, t("links.importReport"));
   } finally {
@@ -210,6 +220,7 @@ async function importFromUrl() {
     applyImport(await api.importExternalLinksFromUrl(url));
     urlImportOpen.value = false;
     urlImport.value = "";
+    dialogOpen.value = false;
   } catch (e) {
     app.toastError(e, t("links.importReport"));
   } finally {
@@ -235,7 +246,7 @@ async function importFromUrl() {
         :aria-label="t('links.importFile')"
         :disabled="!!transferBusy"
         :aria-busy="transferBusy === 'file' || undefined"
-        @click="importFile"
+        @click="dialogOpen = true"
       >
         <Spinner v-if="transferBusy === 'file'" size-class="h-4 w-4" decorative />
         <Upload v-else class="h-[18px] w-[18px]" />
@@ -246,11 +257,12 @@ async function importFromUrl() {
         :aria-label="t('links.importUrl')"
         :disabled="!!transferBusy"
         :aria-expanded="urlImportOpen"
-        @click="urlImportOpen = !urlImportOpen"
+        @click="urlImportOpen = true; dialogOpen = true"
       >
         <Link2 class="h-[18px] w-[18px]" />
       </button>
       <button
+        v-if="links.length > 0"
         class="tap-safe flex h-8 w-8 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-50"
         :title="t('links.export')"
         :aria-label="t('links.export')"
@@ -273,6 +285,17 @@ async function importFromUrl() {
     </template>
 
     <div class="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
+      <!-- 新增 / 编辑 / 线上导入 / 文件导入 统一走一个弹窗（用户 2026-10-22）。 -->
+      <BaseModal :open="dialogOpen" :title="t('links.title')" @close="closeDialog">
+        <div class="mb-2 flex justify-end">
+          <button
+            class="tap-safe rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3 py-1.5 text-meta text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-50"
+            :disabled="!!transferBusy"
+            @click="importFile"
+          >
+            {{ t("links.importFile") }}
+          </button>
+        </div>
       <!-- 线上 JSON 导入：后端拉取，避免 WebView CORS。 -->
       <div
         v-if="urlImportOpen"
@@ -334,7 +357,7 @@ async function importFromUrl() {
         <div class="flex justify-end gap-2">
           <button
             class="tap-safe rounded-[var(--gosslan-radius-md)] px-3 py-1.5 text-body text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
-            @click="cancelDraft"
+            @click="closeDialog"
           >
             {{ t("common.cancel") }}
           </button>
@@ -343,6 +366,7 @@ async function importFromUrl() {
           </PrimaryBtn>
         </div>
       </div>
+      </BaseModal>
 
       <p v-if="loading" class="px-2 py-3 text-xs text-[var(--gosslan-text-2)]">{{ t("links.loading") }}</p>
       <StateBlock

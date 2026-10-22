@@ -220,7 +220,7 @@
   /* 语义别名（保留旧名以免大范围改动；值统一来自上面的梯度） */
   --gosslan-avatar-radius: var(--gosslan-radius-sm);
   --gosslan-item-radius: var(--gosslan-radius-md);
-  --gosslan-bubble-radius: var(--gosslan-radius-sm);
+  --gosslan-bubble-radius: 18px;
 
   /* 窗口外圈描边线：窗口外缘一整圈细浅灰圆角描边（DWM 边框视觉），
      用 inset ring 画在最外层容器上，不占布局；深色下用微亮线 */
@@ -981,7 +981,8 @@ html.has-caption {
    子组件给根 div 加 position: relative（bubbleStyle 已设），直接挂类即可。 */
 .bubble-tail {
   position: absolute;
-  top: 10px;
+  top: auto;
+  bottom: 8px;
   width: 0;
   height: 0;
   border-style: solid;
