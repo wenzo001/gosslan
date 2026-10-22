@@ -13,6 +13,18 @@
 
 ## [Unreleased]
 
+## [5.5.9] - 2026-10-22
+
+### 安卓：点击收到的 APK 直接进系统安装器
+
+- 此前 `openLocalFile` 在 Android 一律走 SAF「另存为」，收到 APK 只能保存，不能安装。
+- 现在 `.apk` 走 `open_file_native` → `OpenWith.openWith`，`resolveMime` 明确返回
+  `application/vnd.android.package-archive`；Manifest 声明 `REQUEST_INSTALL_PACKAGES`。
+- 首次安装仍由系统弹「允许安装未知应用」，不是静默安装。
+- 判据 `apkInstall.test.ts`：`isApkName` 真值表 + 前端分流 / Kotlin MIME / Manifest 三处接线；
+  旧树三处均 0 命中（实测），新树 `npm test` 1245/1245 通过。
+- **Android 真机安装未跑**（需要设备）。
+
 ## [5.5.8] - 2026-10-22
 
 ### 修复：安卓「另存为」写成功却报失败

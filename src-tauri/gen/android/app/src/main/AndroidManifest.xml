@@ -6,6 +6,10 @@
          只用于按钮/长按等交互反馈，不做任何后台震动。 -->
     <uses-permission android:name="android.permission.VIBRATE" />
 
+    <!-- 安卓「点击收到的 APK → 直接安装」：Android 8+ 需要声明此权限；
+         首次安装仍由系统弹「允许安装未知应用」，这不是静默安装。 -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
     <!-- ============ 蓝牙（P3 / Phase 7 BLE Transport 的前置声明）============
          · Android 12+（API 31+）：BLUETOOTH_SCAN / BLUETOOTH_CONNECT 是**运行时**权限，
            代码没申请前不会弹窗（声明本身不影响现有功能）。

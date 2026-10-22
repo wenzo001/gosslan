@@ -127,6 +127,9 @@ object OpenWith {
   private fun resolveMime(path: String, hint: String?): String {
     hint?.trim()?.takeIf { it.isNotEmpty() && it != "*/*" }?.let { return it }
     val ext = path.substringAfterLast('.', "").lowercase()
+    // Android 8+ 的安装器认这个 MIME。不要只依赖 MimeTypeMap：部分 ROM 对 apk
+    // 返回 null，落到 */* 后系统只给“用其他应用打开”，看不到“安装”。
+    if (ext == "apk") return "application/vnd.android.package-archive"
     if (ext.isNotEmpty()) {
       MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext)?.let { return it }
     }
