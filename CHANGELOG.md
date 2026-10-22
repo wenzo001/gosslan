@@ -13,6 +13,21 @@
 
 ## [Unreleased]
 
+## [5.5.3] - 2026-10-22
+
+### 修复远端 CI 的两处红（本地全绿、远端全红的那一类）
+
+- **Rust 门禁**：`notifications.rs` 的点击等待槽位改用 CAS 循环，不再用
+  `AtomicUsize::fetch_update` —— 该方法在新 stable 上已废弃（改名 `try_update`），
+  CI 的 `clippy -D warnings` 因此整条 Rust 门禁红；而本机 rustc 1.98.1 还没废弃它，
+  所以本地 `cargo clippy` 是绿的。CAS 循环两个工具链都认（改写成 `try_update`
+  会反过来在本机编不过）。
+- **发布构建**：两个桌面 workflow 在 tag 上新增「签名 Secrets 预检」。缺
+  `TAURI_SIGNING_PRIVATE_KEY` 时第 5 秒就红并写明修法，而不是等整个 release
+  编完（约 7 分钟）之后只留下 `Process completed with exit code 1` —— v5.5.0/v5.5.1
+  的四个桌面 job 就是这么红的。签发链路本身已用本机密钥按 tag 形状验证：
+  `.app.tar.gz` + `.sig` 正常生成（`EXIT=0`）。
+
 ## [5.5.2] - 2026-10-22
 
 ### 文件队列的周期补发

@@ -70,18 +70,30 @@ fn slot_allows(current: usize, max: usize) -> bool {
 
 /// 占一个在飞槽位；满了返回 `None`。
 /// 返回的 guard 被 drop（等待线程结束）时归还 ⇒ 提前 return、闭包 panic 都不会漏名额。
+///
+/// ⚠️ 用 CAS 循环而不是 `fetch_update`：后者在 2026-10 的新 stable 上已**废弃**
+/// （改名为 `try_update`），CI 的 clippy `-D warnings` 当场报
+/// `use of deprecated method` —— 而本机 rustc 1.98.1 还没废弃，本地全绿。
+/// 也不能改写成 `try_update`：本地工具链上它还不存在，会变成反向的编译红。
+/// CAS 循环两边都认，且语义与原来逐字等价（满了返回 None、成功即 +1）。
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn acquire_click_waiter() -> Option<ClickWaiterGuard> {
-    CLICK_WAITERS
-        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
-            if slot_allows(v, MAX_CLICK_WAITERS) {
-                Some(v + 1)
-            } else {
-                None
-            }
-        })
-        .ok()
-        .map(|_| ClickWaiterGuard)
+    let mut current = CLICK_WAITERS.load(Ordering::Relaxed);
+    loop {
+        if !slot_allows(current, MAX_CLICK_WAITERS) {
+            return None;
+        }
+        match CLICK_WAITERS.compare_exchange_weak(
+            current,
+            current + 1,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => return Some(ClickWaiterGuard),
+            // 别人刚改过：拿它的现值重判一次（可能正好被占满 ⇒ 下一轮返回 None）。
+            Err(actual) => current = actual,
+        }
+    }
 }
 
 /// 当前在飞数（只给诊断读数用，不参与任何判断）。

@@ -46,6 +46,25 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      # 只在 tag 上跑；理由与 build-macos.yml 的同名步骤逐字相同（缺 Secret 时
+      # Tauri 要等整个 release 编完才报错，annotation 里只剩一句 exit code 1）。
+      - name: Preflight updater signing secrets (tag only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          PASS: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:KEY)) {
+            Write-Error "::error title=tag 构建缺 TAURI_SIGNING_PRIVATE_KEY::自动更新产物（NSIS + .sig）需要签名。去仓库 Settings → Secrets and variables → Actions 添加 TAURI_SIGNING_PRIVATE_KEY 与 TAURI_SIGNING_PRIVATE_KEY_PASSWORD（见 docs/updates.md §2）。"
+            exit 1
+          }
+          if ([string]::IsNullOrEmpty($env:PASS)) {
+            Write-Host "签名私钥已配置（长度 $($env:KEY.Length)），密码为空（仅当私钥未加密时才正确）"
+          } else {
+            Write-Host "签名私钥已配置（长度 $($env:KEY.Length)），密码已配置"
+          }
+
       - name: Build Windows installer (NSIS)
         # ⚠️ `--features bluetooth` 不能少：BLE 传输在 Cargo 里是**可选 feature**
         # （ADR-0015 §2：不开时依赖不下载、代码不编译）。漏了它打出来的包
