@@ -15,26 +15,43 @@ import { test } from "node:test";
 const srcDir = join(import.meta.dirname, "..");
 const read = (rel: string) => readFileSync(join(srcDir, rel), "utf8");
 
-/** 期望的导航结构：key → 标签键 → 点开后渲染的分区组件（`firstGroupKey` 见下）。 */
+/** 4 个顶层容器 → 标签键 → 该容器内渲染的分区组件（firstGroupKey 只对单组件容器生效）。 */
 const EXPECTED = [
-  { key: "profile", labelKey: "settings.group.profile", component: "ProfileSection", firstGroupKey: "settings.group.profile" },
-  // 「通用」是**容器**概念（iOS：通用里既有语言与地区也有还原）⇒ 不要求第一组标题同名
-  // ⚠️ 2026-09-21 起桌面的「通用」只剩语言与地区（还原独立成「重置」项）——它仍是容器型条目，
-  //    所以继续用 null 表达"不要求同名"。
-  { key: "general", labelKey: "settings.group.general", component: "GeneralSection", firstGroupKey: null },
-  { key: "notifications", labelKey: "settings.group.notifications", component: "NotificationSection", firstGroupKey: "settings.group.notifications" },
-  { key: "appearance", labelKey: "settings.item.appearance", component: "AppearanceSection", firstGroupKey: "settings.item.appearance" },
-  { key: "network", labelKey: "settings.group.network", component: "NetworkSection", firstGroupKey: "settings.group.network" },
-  { key: "files", labelKey: "settings.group.files", component: "FilesSection", firstGroupKey: "settings.group.files" },
-  { key: "storage", labelKey: "settings.group.storage", component: "StorageSection", firstGroupKey: "settings.group.storage" },
-  { key: "security", labelKey: "settings.group.security", component: "SecuritySection", firstGroupKey: "settings.group.security" },
-  // 「关于」/「重置」是两项（用户 2026-09-21：此前一项叫「关于与重置」却只渲染 AboutSection）。
-  // 标签统一用**条目名**，且各自与分区内第一组标题同名 —— 这就是本守卫要钉的"标签即内容"。
-  { key: "about", labelKey: "settings.item.about", component: "AboutSection", firstGroupKey: "settings.item.about" },
-  { key: "reset", labelKey: "settings.group.reset", component: "ResetSection", firstGroupKey: "settings.group.reset" },
+  {
+    key: "general",
+    labelKey: "settings.group.general",
+    components: [
+      "ProfileSection",
+      "GeneralSection",
+      "AppearanceSection",
+      "ChatStyleSection",
+      "NotificationSection",
+      "StorageSection",
+      "ResetSection",
+    ],
+    firstGroupKey: null,
+  },
+  {
+    key: "network",
+    labelKey: "settings.group.networkFiles",
+    components: ["NetworkSection", "FilesSection"],
+    firstGroupKey: null,
+  },
+  {
+    key: "security",
+    labelKey: "settings.group.security",
+    components: ["SecuritySection"],
+    firstGroupKey: "settings.group.security",
+  },
+  {
+    key: "about",
+    labelKey: "settings.item.about",
+    components: ["AboutSection"],
+    firstGroupKey: "settings.item.about",
+  },
 ] as const;
 
-test("每个导航项都渲染了与标签对应的分区组件（标签即内容）", () => {
+test("每个顶层导航项都渲染了它承诺的分区组件（标签即内容）", () => {
   const win = read("components/SettingsWindow.vue");
   for (const item of EXPECTED) {
     assert.match(
@@ -42,29 +59,30 @@ test("每个导航项都渲染了与标签对应的分区组件（标签即内�
       new RegExp(`\\{ key: "${item.key}", label: t\\("${item.labelKey.replace(/\./g, "\\.")}"\\)`),
       `导航项 ${item.key} 应使用标签键 ${item.labelKey}`,
     );
-    // 组件名可能在条件之前（`<ProfileSection v-if="section === 'profile'"`）
-    // 也可能之后（`<NotificationSection v-else-if="section === 'notifications'"`），
-    // 所以取条件**前后各 250 字符**的窗口来找组件名。
-    const at = win.indexOf(`section === '${item.key}'`);
+    // 4 个顶层容器：条件写作 `desktopSection === 'key'`；通用/网络容器内会渲染多个组件。
+    const at = win.indexOf(`desktopSection === '${item.key}'`);
     assert.ok(at >= 0, `SettingsWindow 里没有 ${item.key} 的渲染分支`);
-    const window_ = win.slice(Math.max(0, at - 250), at + 250);
-    assert.ok(
-      window_.includes(item.component),
-      `导航项 ${item.key} 点开后必须渲染 ${item.component}（否则"标签说 A、内容是 B"）`,
-    );
+    const window_ = win.slice(Math.max(0, at - 250), at + 2500);
+    for (const component of item.components) {
+      assert.ok(
+        window_.includes(component),
+        `导航项 ${item.key} 点开后必须渲染 ${component}（否则"标签说 A、内容是 B"）`,
+      );
+    }
   }
 });
 
-test("分区内第一组标题与导航标签同名（容器型分区除外）", () => {
+test("单组件容器的第一组标题与导航标签同名（通用/网络是容器，豁免）", () => {
   for (const item of EXPECTED) {
     if (!item.firstGroupKey) continue;
-    const src = read(`components/settings/${item.component}.vue`);
+    const component = item.components[0];
+    const src = read(`components/settings/${component}.vue`);
     const titles = [...src.matchAll(/:title="t\('([^']+)'\)"/g)].map((m) => m[1]);
-    assert.ok(titles.length > 0, `${item.component} 应有 SettingsGroup 标题`);
+    assert.ok(titles.length > 0, `${component} 应有 SettingsGroup 标题`);
     assert.equal(
       titles[0],
       item.firstGroupKey,
-      `${item.component} 的第一组标题是 ${titles[0]}，与导航标签 ${item.firstGroupKey} 不一致`,
+      `${component} 的第一组标题是 ${titles[0]}，与导航标签 ${item.firstGroupKey} 不一致`,
     );
   }
 });
@@ -80,7 +98,9 @@ test("每个设置分区组件都被两个外壳引用（没有孤儿分区）",
   }
   // 反向：外壳引用的分区组件都必须真实存在（改文件名时不会留死引用）
   for (const item of EXPECTED) {
-    assert.ok(files.includes(`${item.component}.vue`), `${item.component}.vue 不存在`);
+    for (const component of item.components) {
+      assert.ok(files.includes(`${component}.vue`), `${component}.vue 不存在`);
+    }
   }
 });
 

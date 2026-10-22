@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import {
   DropdownMenuContent,
   DropdownMenuItem,
@@ -10,12 +10,14 @@ import {
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
-import { MoreHorizontal, Moon, ScrollText, Settings, Sun } from "lucide-vue-next";
+import { MoreHorizontal, Moon, ScrollText, Settings, Sun, Download } from "lucide-vue-next";
 import { motion, useReducedMotion } from "@/utils/motion";
 import UnreadBadge from "@/components/UnreadBadge.vue";
 import NavIcon from "@/components/ui/NavIcon.vue";
 import SelfAvatar from "@/components/SelfAvatar.vue";
 import { t } from "@/i18n";
+import { updater } from "@/updater/instance";
+import { storageSet } from "@/utils/safeStorage";
 
 const NAV_STATES = ["chats", "contacts", "links", "favorites", "me"] as const;
 type NavState = (typeof NAV_STATES)[number];
@@ -42,6 +44,19 @@ const reducedMotion = useReducedMotion();
 // 惯用法与 ConversationList 的「+」菜单完全一致（useExclusivePopup 互斥）；键盘/焦点/外点交给 Reka。
 const morePopup = useExclusivePopup("rail-more");
 const moreOpen = ref(false);
+
+/** 主窗口启动时已做过一次后台检查；有可升级版本时在侧栏底部提示。 */
+const updateInfo = computed(() => {
+  const state = updater.state;
+  if (state.phase !== "available" && state.phase !== "ready") return null;
+  if (!state.info || state.dismissedVersion === state.info.version) return null;
+  return state.info;
+});
+
+function openUpdate() {
+  storageSet("gosslan:settings-section", "about");
+  emit("open-settings");
+}
 
 watch(morePopup.isActive, (mine) => {
   if (!mine && moreOpen.value) moreOpen.value = false;
@@ -174,6 +189,16 @@ function onMoreOpen(open: boolean) {
 
     <!-- 底部：深浅色切换 + 更多（设置/运行日志收进**二级菜单**，用户 2026-09-17） -->
     <div class="mt-auto flex flex-col items-center gap-2">
+      <button
+        v-if="updateInfo"
+        class="relative flex h-11 w-11 items-center justify-center rounded-[var(--gosslan-radius-lg)] text-[var(--gosslan-rail-text)] transition hover:bg-[var(--gosslan-rail-hover)]"
+        :title="t('nav.updateAvailable', { version: updateInfo.version })"
+        :aria-label="t('nav.updateAvailable', { version: updateInfo.version })"
+        @click="openUpdate"
+      >
+        <Download class="h-5 w-5" />
+        <span class="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-[var(--gosslan-primary)]"></span>
+      </button>
       <button
         class="flex h-11 w-11 items-center justify-center rounded-[var(--gosslan-radius-lg)] text-[var(--gosslan-rail-text)] transition hover:bg-[var(--gosslan-rail-hover)]"
         :title="app.dark ? t('nav.lightMode') : t('nav.darkMode')" :aria-label="app.dark ? t('nav.lightMode') : t('nav.darkMode')"

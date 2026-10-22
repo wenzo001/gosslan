@@ -258,6 +258,11 @@ function processAvatar(file: File): Promise<string> {
           <span class="w-12 shrink-0 text-right">
             <CharCounter :text="nickname" :max="MAX_NICKNAME_CHARS" />
           </span>
+          <!-- 在线状态与昵称同一行：窄屏时输入框收缩，不让它被 ml-auto 推到孤行。 -->
+          <span class="flex shrink-0 items-center gap-1.5 text-xs text-[var(--gosslan-text-2)]">
+            <span class="h-2 w-2 rounded-full" :class="app.present ? 'bg-[var(--gosslan-success)]' : 'bg-[var(--gosslan-status-offline)]'"></span>
+            {{ app.present ? t("settings.profile.online") : t("settings.profile.offline") }}
+          </span>
         </div>
         <div class="mt-1 flex flex-wrap items-center gap-2">
           <button
@@ -273,10 +278,6 @@ function processAvatar(file: File): Promise<string> {
           >
             {{ t("settings.profile.defaultAvatar") }}
           </button>
-          <span class="ml-auto flex items-center gap-1.5 text-xs text-[var(--gosslan-text-2)]">
-            <span class="h-2 w-2 rounded-full" :class="app.present ? 'bg-[var(--gosslan-success)]' : 'bg-[var(--gosslan-status-offline)]'"></span>
-            {{ app.present ? t("settings.profile.online") : t("settings.profile.offline") }}
-          </span>
         </div>
       </div>
     </div>

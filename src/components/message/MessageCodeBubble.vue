@@ -71,7 +71,8 @@ const tailBg = computed(() => surface.value);
    相邻色就是 toolbar 而不是卡片本体；直接用卡片色会比 toolbar 亮一档，仍能看出边界。
    蒙层与 CodeBlock 的 toolbarBg 保持同款（亮色 4% 黑 / 暗色 5% 白）。 */
 .bubble-tail {
-  top: 16px;
+  top: auto;
+  bottom: 12px;
 }
 .bubble-tail.tail-mine {
   border-left-color: color-mix(in srgb, var(--bubble-bg) 96%, #000);

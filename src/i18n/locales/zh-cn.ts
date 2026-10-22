@@ -38,7 +38,7 @@ export const zhCN: MessageDict = {
   "nav.contacts.pending": "通讯录，{n} 条好友申请",
   "nav.logs": "日志",
   "nav.more": "更多",
-
+  "nav.updateAvailable": "发现新版本 v{version}，点击升级",
   // ---- 运行日志页 ----
   "logs.title": "运行日志",
   "logs.empty": "暂无日志。应用只在关键事件或出错时记录，正常情况下保持安静。",
@@ -70,9 +70,8 @@ export const zhCN: MessageDict = {
   "settings.title": "设置",
   "settings.group.general": "通用",
   "settings.group.appearance": "外观与通知",
-  "settings.group.data": "数据与网络",
+  "settings.group.networkFiles": "网络与文件",
   "settings.group.security": "安全",
-  "settings.group.about": "关于与重置",
   "settings.item.profile": "个人资料",
   "settings.item.general": "通用设置",
   "settings.item.appearance": "外观",
@@ -83,7 +82,7 @@ export const zhCN: MessageDict = {
   "settings.item.storage": "存储",
   "settings.item.security": "隐私与安全",
   "settings.item.about": "关于",
-  "settings.item.reset": "还原与重置",
+  "settings.item.reset": "重置与恢复",
   // ---- 搜索聊天记录（结果页） ----
   "search.title": "搜索聊天记录",
   "search.placeholder": "搜索",
@@ -123,7 +122,7 @@ export const zhCN: MessageDict = {
   "settings.group.notifications": "通知",
   "settings.group.notifications.footer": "应用在后台、或正在看别的会话时，用系统通知提醒新消息。紧急通知会弹跳 Dock / 闪烁任务栏，系统勿扰不会阻止这一动作",
   "settings.group.files.footer": "接收好友发来的文件放这里；共享目录是你开放给好友浏览的文件夹",
-  "settings.group.reset": "重置与数据",
+  "settings.group.reset": "重置与恢复",
 
   "settings.notify.enabled": "桌面通知",
   "settings.notify.enabled.desc": "关闭后不再收到任何新消息通知",

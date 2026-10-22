@@ -139,40 +139,30 @@ const GROUPS: { key: string; titleKey: string; items: { key: string; titleKey: s
     items: [
       { key: "profile", titleKey: "settings.item.profile" },
       { key: "general", titleKey: "settings.item.general" },
-    ],
-  },
-  {
-    key: "appearance",
-    titleKey: "settings.group.appearance",
-    items: [
       { key: "appearance", titleKey: "settings.item.appearance" },
       { key: "chatStyle", titleKey: "settings.item.chatStyle" },
       { key: "notification", titleKey: "settings.item.notification" },
+      { key: "storage", titleKey: "settings.item.storage" },
+      { key: "reset", titleKey: "settings.item.reset" },
     ],
   },
   {
-    key: "data",
-    titleKey: "settings.group.data",
+    key: "network",
+    titleKey: "settings.group.networkFiles",
     items: [
       { key: "network", titleKey: "settings.item.network" },
       { key: "files", titleKey: "settings.item.files" },
-      { key: "storage", titleKey: "settings.item.storage" },
     ],
   },
   {
     key: "security",
     titleKey: "settings.group.security",
-    items: [
-      { key: "security", titleKey: "settings.item.security" },
-    ],
+    items: [{ key: "security", titleKey: "settings.item.security" }],
   },
   {
     key: "about",
-    titleKey: "settings.group.about",
-    items: [
-      { key: "about", titleKey: "settings.item.about" },
-      { key: "reset", titleKey: "settings.item.reset" },
-    ],
+    titleKey: "settings.item.about",
+    items: [{ key: "about", titleKey: "settings.item.about" }],
   },
 ];
 

@@ -1134,7 +1134,9 @@ function onResizeEnd() {
         :title="t('nav.profile')"
         @back="closeProfile"
       >
-        <ProfileSection :active="profileOpen" :reload-token="profileReloadToken" />
+        <div class="p-4">
+          <ProfileSection :active="profileOpen" :reload-token="profileReloadToken" />
+        </div>
       </MobilePageFrame>
     </Transition>
 
