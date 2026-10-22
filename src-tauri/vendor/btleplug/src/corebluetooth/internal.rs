@@ -262,10 +262,23 @@ impl PeripheralInternal {
         service_uuid: Uuid,
         characteristics: HashMap<Uuid, Retained<CBCharacteristic>>,
     ) {
-        let service = self
-            .services
-            .get_mut(&service_uuid)
-            .expect("Got characteristics for a service we don't know about");
+        // ⚠️ Gosslan 补丁（2026-10-22）：上游这里对 `services` 的查找直接 `expect`，
+        // 消息大意是「拿到了一个我们不知道的服务的特征」。
+        //
+        // CoreBluetooth 会在**断链/重连的竞态**里，为一个已经不在 `services` 表里的旧服务
+        // 再投一次 `didDiscoverCharacteristicsForService`。上游那句 expect 直接 panic，
+        // 而本应用 release 是 `panic = "abort"` ⇒ **整条进程被杀**。
+        //
+        // 实测现场（双实例 e2e `--fault=peer-freeze`，对端 SIGSTOP）：A 侧日志最后一行就是
+        //   `panic @ vendor/btleplug/src/corebluetooth/internal.rs:268:14：
+        //    Got characteristics for a service we don't know about`
+        // 之后进程再没写过任何日志，正在等的 FileAccept 永远不会返回。
+        //
+        // 迟到的回调本身没有可用信息（服务已不在表里，特征无处挂载）⇒ 丢掉它，
+        // 下一次 service discovery 会把表重建。不丢信息、不改任何正常路径。
+        let Some(service) = self.services.get_mut(&service_uuid) else {
+            return;
+        };
         for (characteristic_uuid, cb_characteristic) in characteristics {
             if let Some(existing) = service.characteristics.get_mut(&characteristic_uuid) {
                 // Update the CB object reference and properties, but preserve
