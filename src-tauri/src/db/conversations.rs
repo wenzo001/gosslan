@@ -197,6 +197,11 @@ pub fn delete_conversation(conn: &Connection, conv_id: &str) -> Result<()> {
         "DELETE FROM group_recalled_messages WHERE conv_id = ?1",
         params![conv_id],
     )?;
+    // 渲染切换的 LWW 状态随消息一起走（否则同名 msg_id 的迟到事件会命中墓碑之外的旧状态）。
+    tx.execute(
+        &format!("DELETE FROM message_render WHERE msg_id IN ({doomed})"),
+        params![conv_id],
+    )?;
     tx.execute(
         &format!("DELETE FROM messages WHERE conv_id = ?1 AND kind NOT IN ({keep})"),
         params![conv_id],

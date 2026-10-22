@@ -294,6 +294,9 @@ export const api = {
   /** 撤回自己发的一条单聊消息（仅原作者；服务端 5 分钟窗口）。 */
   recallDirectMessage: (friendId: string, target: string) =>
     invoke<void>("recall_message", { friendId, target }),
+  /** 切换自己发的代码/文本消息渲染（LWW，所有支持该能力位的成员生效）。 */
+  setMessageRender: (convId: string, target: string, mode: "code" | "text") =>
+    invoke<void>("set_message_render", { convId, target, mode }),
   /** 表情回应：一条**静默事件**（不计未读、不改预览、不弹通知）。 */
   sendGroupReaction: (groupId: string, target: string, emoji: string, add: boolean) =>
     invoke<MessageRecord>("send_group_reaction", { groupId, target, emoji, add }),
@@ -698,6 +701,8 @@ export type EventHandlers = {
   onGroupRead: (p: GroupReadInfo) => void;
   /** 某条消息被撤回（msg_id）。本地据此把该行改成「已撤回」形态。 */
   onMessageRecalled: (msgId: string) => void;
+  /** 某条消息的渲染方式被作者切换（LWW 已由后端裁决）。 */
+  onMessageRenderChanged: (msgId: string, kind: "code" | "text") => void;
   onFileProgress: (p: FileProgress) => void;
   onFileStalled: (p: FileStalledInfo) => void;
   onFileDone: (d: FileDoneInfo) => void;
@@ -793,6 +798,9 @@ export async function bindEvents(h: EventHandlers): Promise<UnlistenFn[]> {
     listen<PeerReadInfo>("peer-read", (e) => h.onPeerRead(e.payload)),
     listen<GroupReadInfo>("group-read", (e) => h.onGroupRead(e.payload)),
     listen<string>("message-recalled", (e) => h.onMessageRecalled(e.payload)),
+    listen<{ msg_id: string; kind: string }>("message-render-changed", (e) =>
+      h.onMessageRenderChanged(e.payload.msg_id, e.payload.kind === "code" ? "code" : "text"),
+    ),
     listen<FileProgress>("file-progress", (e) => h.onFileProgress(e.payload)),
     listen<FileStalledInfo>("file-stalled", (e) => h.onFileStalled(e.payload)),
     listen<FileDoneInfo>("file-done", (e) => h.onFileDone(e.payload)),

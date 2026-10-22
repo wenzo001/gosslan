@@ -67,6 +67,81 @@ pub async fn recall_message(
     Ok(())
 }
 
+/// 切换一条自己发的代码/文本消息的渲染方式（1:1 与群共用）。
+#[tauri::command(async)]
+pub async fn set_message_render(
+    state: State<'_, Arc<AppState>>,
+    conv_id: String,
+    target: String,
+    mode: String,
+) -> Result<(), String> {
+    let s = state.inner().clone();
+    if mode != "code" && mode != "text" {
+        return Err("不支持的渲染方式".to_string());
+    }
+    let s_db = s.clone();
+    let conv_db = conv_id.clone();
+    let target_db = target.clone();
+    let (is_group, peer) = tokio::task::spawn_blocking(move || -> Result<(bool, String), String> {
+        let dbc = s_db.db.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(msg) = db::get_message_record(&dbc, &target_db) else {
+            return Err("消息不存在".to_string());
+        };
+        if msg.sender_id != s_db.device_id {
+            return Err("只能切换自己发送的消息".to_string());
+        }
+        if msg.conv_id != conv_db {
+            return Err("消息不属于该会话".to_string());
+        }
+        if msg.kind != "code" && msg.kind != "text" {
+            return Err("只有文本/代码消息可以切换渲染".to_string());
+        }
+        if db::is_recalled(&dbc, &target_db) {
+            return Err("已撤回的消息不能切换".to_string());
+        }
+        let is_group = conv_db.starts_with("group:");
+        let peer = conv_db
+            .strip_prefix("group:")
+            .unwrap_or(&conv_db)
+            .to_string();
+        Ok((is_group, peer))
+    })
+    .await
+    .map_err(|e| format!("渲染切换校验被线程池中断: {e}"))??;
+
+    let payload = crate::protocol::RenderPayload {
+        target: target.clone(),
+        mode: mode.clone(),
+    };
+    let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
+    let rec = if is_group {
+        crate::commands::send_group_payload(
+            &s,
+            &peer,
+            crate::protocol::KIND_RENDER,
+            content,
+            None,
+        )
+        .await?
+    } else {
+        send_message(state, peer, content, "render".to_string()).await?
+    };
+    let applied = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::apply_message_render(&dbc, &target, rec.seq, &mode).unwrap_or(false)
+    };
+    if applied {
+        let _ = s.app.emit(
+            "message-render-changed",
+            &crate::state::RenderChangedInfo {
+                msg_id: target,
+                kind: mode,
+            },
+        );
+    }
+    Ok(())
+}
+
 #[tauri::command(async)]
 pub async fn send_message(
     state: State<'_, Arc<AppState>>,
@@ -120,6 +195,11 @@ pub async fn send_message(
             crate::protocol::parse_recall_payload(&content)?;
             MsgKind::Recall
         }
+        // 渲染切换：静默事件；目标/作者/会话归属在下面的 DB 块里再判。
+        "render" => {
+            crate::protocol::parse_render_payload(&content)?;
+            MsgKind::Render
+        }
         _ => return Err("不支持的消息类型".to_string()),
     };
 
@@ -167,6 +247,24 @@ pub async fn send_message(
                     msg.ts,
                     db::now_ms(),
                 )?;
+            }
+            "render" => {
+                let p = crate::protocol::parse_render_payload(&content)?;
+                let Some(msg) = db::get_message_record(&dbc, &p.target) else {
+                    return Err("要切换的消息不存在".to_string());
+                };
+                if msg.sender_id != s.device_id {
+                    return Err("只能切换自己发送的消息".to_string());
+                }
+                if msg.conv_id != friend_id {
+                    return Err("消息不属于该会话".to_string());
+                }
+                if msg.kind != "code" && msg.kind != "text" {
+                    return Err("只有文本/代码消息可以切换渲染".to_string());
+                }
+                if db::is_recalled(&dbc, &p.target) {
+                    return Err("已撤回的消息不能切换".to_string());
+                }
             }
             _ => {}
         }

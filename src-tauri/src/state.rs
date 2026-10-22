@@ -725,6 +725,13 @@ pub struct FileFailedInfo {
     pub reason: String,
 }
 
+/// 代码/文本消息渲染切换后的广播载荷。
+#[derive(Serialize, Clone, Debug)]
+pub struct RenderChangedInfo {
+    pub msg_id: String,
+    pub kind: String,
+}
+
 /// 文件传输状态
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct TransferInfo {

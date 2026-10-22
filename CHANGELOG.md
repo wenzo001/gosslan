@@ -13,6 +13,22 @@
 
 ## [Unreleased]
 
+## [5.5.17] - 2026-10-23
+
+### 代码/文本消息：发出后切换渲染（支持该能力位的成员生效）
+
+- 新增静默 `render` 事件（`{target, mode: code|text}`）与 `CONTENT_FEATURE_RENDER`；
+  作者可在右键菜单/移动 ActionSheet 把已发出的 code/text 消息切到另一种渲染。
+- 后端用 `message_render` 表做 per-msg LWW（`seq` 大者胜），`messages.kind` 是物化视图；
+  迟到/重投不会把渲染翻回旧状态。群发送只给声明了 RENDER 的成员写 outbox，
+  旧/离线成员保持原渲染，不产生“不支持的消息”占位。
+- 单聊/群共用 `set_message_render` 命令；1:1 走能力位门控，群侧按成员能力过滤。
+  `text → code` 只在 `codeDetect` 认为像代码时给入口。
+- 判据：Rust `render_lww_only_applies_newer_events`；`renderMessage.test.ts` 接线；
+  `ARCHITECTURE-MAP` 登记命令与 `message_render`。
+- `npm test` 1263/1263、`npm run build`、`cargo check`、LWW 单测通过。
+  **双实例渲染切换/真机未跑**；发版前需补这一层。
+
 ## [5.5.16] - 2026-10-23
 
 ### 聊天输入：代码自动识别与围栏剥离

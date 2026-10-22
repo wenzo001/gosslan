@@ -625,6 +625,14 @@ CREATE TABLE IF NOT EXISTS group_recalled_messages (
 -- ⇒ 每次群收件都要全表扫这张**只增不减**的 G-Set。这条索引在收件热路径上。
 CREATE INDEX IF NOT EXISTS idx_group_recalled_msg ON group_recalled_messages(msg_id);
 
+-- 代码/文本消息渲染切换的 LWW 状态：只存最后一次生效的 (seq, mode)。
+-- `messages.kind` 是它的物化视图；用独立表而不是给 messages 加列，避免老库迁移。
+CREATE TABLE IF NOT EXISTS message_render (
+    msg_id TEXT PRIMARY KEY,
+    seq    INTEGER NOT NULL,
+    mode   TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS groups (
     id         TEXT PRIMARY KEY,
     name       TEXT NOT NULL,

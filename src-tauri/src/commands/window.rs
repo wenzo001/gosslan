@@ -173,7 +173,7 @@ pub fn window_close(app: tauri::AppHandle) {
 /// 为什么必须只有一条：它们都要 E2EE、都要 outbox 兜底、都要 GroupAck、都要被四层幂等
 /// 去重覆盖。若各写一份，任何一处修 bug（历史上最典型的是「填完 group_creator/members
 /// 后忘了重算重签 → 群消息被静默丢弃」）都只会修到其中一条路径。
-async fn send_group_payload(
+pub(crate) async fn send_group_payload(
     s: &Arc<AppState>,
     group_id: &str,
     kind: &str,
@@ -208,6 +208,26 @@ async fn send_group_payload(
     if !group_members.contains(&s.device_id) {
         return Err("你已不在该群中".to_string());
     }
+    // 渲染切换只投给声明了 RENDER 的成员：旧端/离线端保持原渲染，不产生“不支持的消息”占位。
+    // 其它 kind 仍按全成员投递（不改既有语义）。
+    let outbox_members: Vec<String> = if kind == crate::protocol::KIND_RENDER {
+        let features = s
+            .peer_content_features
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        group_members
+            .iter()
+            .filter(|m| {
+                m.as_str() == s.device_id
+                    || (features.get(m.as_str()).copied().unwrap_or(0)
+                        & crate::protocol::CONTENT_FEATURE_RENDER)
+                        != 0
+            })
+            .cloned()
+            .collect()
+    } else {
+        group_members.clone()
+    };
     let key = get_group_key(s, group_id).await.ok_or("群密钥缺失")?;
     let preview = crate::protocol::preview_text(kind, &content);
 
@@ -296,7 +316,7 @@ async fn send_group_payload(
             db::touch_conversation(&tx, &conv_id, "group", &group_name, None, &preview, 0)
                 .map_err(|e| format!("会话写入失败：{e}"))?;
         }
-        for member in &group_members {
+        for member in &outbox_members {
             if member == &s.device_id {
                 continue;
             }
