@@ -149,11 +149,19 @@ object OpenWith {
         "文件不存在（可能已被清理）"
       } else {
         val uri = Uri.parse(uriString)
-        ctx.contentResolver.openOutputStream(uri, "wt")?.use { out ->
-          src.inputStream().use { input -> input.copyTo(out) }
-          out.flush()
+        // ⚠️ 不能写成 `openOutputStream(...)?.use { ...; null } ?: "无法写入所选位置"`：
+        // `use` 返回 block 的最后一个表达式，block 以 null 结尾 ⇒ 成功也走 Elvis 右侧，
+        // 文件写完却报“无法写入”。先判空流，再用 use 写完，最后显式返回 null。
+        val out = ctx.contentResolver.openOutputStream(uri, "wt")
+        if (out == null) {
+          "无法写入所选位置"
+        } else {
+          out.use { stream ->
+            src.inputStream().use { input -> input.copyTo(stream) }
+            stream.flush()
+          }
           null
-        } ?: "无法写入所选位置"
+        }
       }
     } catch (t: Throwable) {
       val detail = t.message?.takeIf { it.isNotBlank() }?.let { "：$it" } ?: ""
@@ -172,11 +180,17 @@ object OpenWith {
     val ctx = appContext ?: return "应用还没准备好，请稍后重试"
     return try {
       val uri = Uri.parse(uriString)
-      ctx.contentResolver.openOutputStream(uri, "wt")?.use { out ->
-        out.write(bytes)
-        out.flush()
+      // 同 [saveWith]：成功路径不能拿 `use` 的返回值做 Elvis 判据。
+      val out = ctx.contentResolver.openOutputStream(uri, "wt")
+      if (out == null) {
+        "无法写入所选位置"
+      } else {
+        out.use { stream ->
+          stream.write(bytes)
+          stream.flush()
+        }
         null
-      } ?: "无法写入所选位置"
+      }
     } catch (t: Throwable) {
       val detail = t.message?.takeIf { it.isNotBlank() }?.let { "：$it" } ?: ""
       "保存失败（${t.javaClass.simpleName}）$detail"
