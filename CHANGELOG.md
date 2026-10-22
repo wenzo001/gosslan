@@ -13,6 +13,19 @@
 
 ## [Unreleased]
 
+## [5.5.10] - 2026-10-22
+
+### 选字复制：消息行不再无条件吃掉系统菜单
+
+- `MessageItem` 的消息行此前写死 `@contextmenu.prevent`。组件级 `prevent` 在 handler
+  之前执行，即使 `openContextMenu` 在移动端提前返回，系统复制菜单也已经被阻止 ——
+  表现就是“有选区手柄、没有复制提示框”；桌面用鼠标选中正文同样吃不到系统菜单。
+- 现在统一走 `onContextMenu` + `shouldPreventContextMenu`：有非折叠选区 ⇒ 放行；
+  移动端选择模式 ⇒ 放行；其余才 prevent 并打开自定义消息菜单。
+- 判据 `contextMenu.test.ts`：三信号真值表 + `MessageItem` 接线（旧树 0 处
+  `@contextmenu="onContextMenu"`，会红）。`npm test` 1247/1247、`npm run build` 通过。
+- **安卓真机复制工具条未跑**（需要设备）。
+
 ## [5.5.9] - 2026-10-22
 
 ### 安卓：点击收到的 APK 直接进系统安装器
