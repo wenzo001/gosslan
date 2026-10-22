@@ -263,14 +263,12 @@ jobs:
           Write-Host "::error title=Windows 测试 exe 导入的 DLL（$($dlls.Count) 个）::$($dlls -join ', ')"
 
           # ⚠️ 只报 DLL 名单不够：`0xc0000139` 是"入口点找不到"——DLL 都在、**某个导出名缺**。
-          # 这里把每个 (DLL, 符号) 真的用 LoadLibrary+GetProcAddress 解析一遍，
-          # 解析不到的就是罪魁。API set 转发（api-ms-win-*）由 LoadLibrary 自己展开，不必特殊处理。
-          Add-Type -Namespace Win32 -Name N -MemberDefinition @'
-[DllImport("kernel32", SetLastError=true, CharSet=CharSet.Ansi)]
-public static extern IntPtr LoadLibrary(string p);
-[DllImport("kernel32", SetLastError=true, CharSet=CharSet.Ansi)]
-public static extern IntPtr GetProcAddress(IntPtr h, string p);
-'@
+          # 这里把每个 (DLL, 符号) 真的用 NativeLibrary.Load+TryGetExport 解析一遍，
+          # 解析不到的就是罪魁。API set 转发（api-ms-win-*）由加载器自己展开，不必特殊处理。
+          #
+          # ⚠️ 刻意**不用** `Add-Type -MemberDefinition @'...'@`：PowerShell 的 here-string
+          # 结束符 `'@` 必须顶格，而 YAML 的块标量要求每行都缩进 ⇒ 两者直接冲突，
+          # 上一次就是这样把整份 workflow 写成**非法 YAML**、Verify 一条都没跑的。
           $pairs = New-Object System.Collections.Generic.List[object]
           $cur = $null
           foreach ($line in ($raw -split "`n")) {
@@ -288,11 +286,16 @@ public static extern IntPtr GetProcAddress(IntPtr h, string p);
           $missing = New-Object System.Collections.Generic.List[string]
           foreach ($p in $pairs) {
             if (-not $handles.ContainsKey($p.Dll)) {
-              $handles[$p.Dll] = [Win32.N]::LoadLibrary($p.Dll)
+              try {
+                $handles[$p.Dll] = [System.Runtime.InteropServices.NativeLibrary]::Load($p.Dll)
+              } catch {
+                $handles[$p.Dll] = [IntPtr]::Zero
+              }
             }
             $h = $handles[$p.Dll]
             if ($h -eq [IntPtr]::Zero) { $missing.Add("$($p.Dll)!$($p.Fn)（DLL 本身加载失败）"); continue }
-            if ([Win32.N]::GetProcAddress($h, $p.Fn) -eq [IntPtr]::Zero) {
+            $addr = [IntPtr]::Zero
+            if (-not [System.Runtime.InteropServices.NativeLibrary]::TryGetExport($h, $p.Fn, [ref]$addr)) {
               $missing.Add("$($p.Dll)!$($p.Fn)")
             }
           }
