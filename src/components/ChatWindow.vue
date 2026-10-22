@@ -184,6 +184,15 @@ const online = computed(() => {
   if (!conv.value || conv.value.kind !== "single") return false;
   return chat.friends.some((f) => f.device_id === conv.value!.id && f.online);
 });
+
+/** 独立窗口抖动的会话内灰字：发送方看到「已发送」，接收方看到「谁发的」。 */
+const nudgeText = computed(() => {
+  const n = chat.nudgeNotice;
+  if (!n || n.convId !== chat.activeConv) return "";
+  return n.from === app.device?.device_id
+    ? t("chat.nudge.sent")
+    : t("chat.nudge.received", { name: chat.nicknameOf(n.from) });
+});
 /** 单聊对方的设备类型（"desktop"/"mobile"，空串 = 未知）。群聊不显示。 */
 const deviceType = computed(() => {
   if (!conv.value || conv.value.kind !== "single") return "";
@@ -1714,6 +1723,14 @@ function onLoadMore() {
           />
         </template>
       </VirtualList>
+
+      <!-- 窗口抖动：会话内临时灰字（不落库、不进虚拟列表，5s 后由 store 清掉） -->
+      <div
+        v-if="nudgeText"
+        class="pointer-events-none absolute bottom-16 left-1/2 z-10 -translate-x-1/2 rounded-full bg-[var(--gosslan-hover)] px-3 py-1.5 text-xs text-[var(--gosslan-text-2)] shadow-sm"
+      >
+        {{ nudgeText }}
+      </div>
 
       <!-- 回到最新（离开底部时出现） -->
       <button

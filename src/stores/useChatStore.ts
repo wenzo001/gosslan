@@ -26,6 +26,7 @@ import {
 import { safeStorageBackend, storageGet, storageSet } from "../utils/safeStorage.ts";
 import { useAppStore } from "@/stores/useAppStore";
 import { trimOldest } from "@/utils/bounded";
+import { isStaleNudge } from "@/utils/nudge";
 import { prefersReducedMotion } from "@/utils/platform";
 import { shouldRunThrottled } from "@/utils/defer";
 import { createInitScope, type InitScope } from "@/utils/initScope";
@@ -446,6 +447,22 @@ export const useChatStore = defineStore("chat", () => {
   // 已在本机处理过的 remind msg_id：多投递路径 / 重复帧只生效一次（不再回执、不再响）。
   const remindedIds = new Set<string>();
   const REMINDED_IDS_MAX = 512;
+  /** 独立抖动的去重集合（与强提醒分开：抖动不产生任何回执/折叠状态）。 */
+  const nudgedIds = new Set<string>();
+  /**
+   * 会话内临时抖动提示（不落库、不导出、不进虚拟列表）：
+   * `from` = 发起方 device_id；发送方自己也会收到一条「已向对方发送」。
+   */
+  const nudgeNotice = ref<{ convId: string; from: string; at: number } | null>(null);
+  let nudgeNoticeTimer: number | null = null;
+  function showNudgeNotice(convId: string, from: string) {
+    nudgeNotice.value = { convId, from, at: Date.now() };
+    if (nudgeNoticeTimer !== null) window.clearTimeout(nudgeNoticeTimer);
+    nudgeNoticeTimer = window.setTimeout(() => {
+      nudgeNotice.value = null;
+      nudgeNoticeTimer = null;
+    }, 5000);
+  }
 
   /**
    * Android 强提醒通知通道：High 重要级 = 横幅弹出 + 锁屏可见，声音/振动跟随通道设置。
@@ -540,6 +557,21 @@ export const useChatStore = defineStore("chat", () => {
    *    但仍尊重总开关 / 权限 / 「前台正查看该会话」的抑制；
    * 5. 声音由后端的系统通知通道处理（系统静音 / 勿扰时由系统决定）。
    */
+  /**
+   * 接收独立窗口抖动：**不 ack、不建强提醒、不弹普通通知**。
+   * 只做「按总开关聚焦/抖窗 + 一条会话内灰字」，60 秒以上的迟到帧直接丢。
+   */
+  function handleIncomingNudge(rec: MessageRecord) {
+    const myId = app.device?.device_id;
+    if (!myId || rec.sender_id === myId) return;
+    if (isStaleNudge(rec.ts)) return;
+    if (nudgedIds.has(rec.msg_id)) return;
+    nudgedIds.add(rec.msg_id);
+    trimOldest(nudgedIds, REMINDED_IDS_MAX); // Set 迭代保序 ⇒ FIFO
+    if (app.notifyEnabled) raiseAndShakeOnRemind(rec.conv_id);
+    showNudgeNotice(rec.conv_id, rec.sender_id);
+  }
+
   function handleIncomingRemind(rec: MessageRecord) {
     const myId = app.device?.device_id;
     if (!myId || rec.sender_id === myId) return;
@@ -1776,18 +1808,14 @@ export const useChatStore = defineStore("chat", () => {
    * 一条可提醒的消息发起强提醒，对方窗口随即抖动（复用 handleIncomingRemind 的那条路）。
    * 最近一条可提醒的消息都没有（会话空 / 全在发送中）⇒ 明确报错，不静默。
    */
+  /**
+   * 工具栏「抖动」按钮（仿 QQ 窗口抖动）：**独立事件**，不锚定任何消息、不发强提醒。
+   * 复用 `remind` 帧的可靠管道（`nudge=true`），接收端只抖 + 灰字；旧端由能力位挡住。
+   */
   async function shakeConversation(convId: string): Promise<void> {
     if (!convId || convId.startsWith("group:")) return;
-    const list = messages.value[convId] ?? [];
-    // 与 MessageItem 的 canRemindEntry 同口径：只认"已成功发出"的消息（sending/failed 会指向幽灵消息）。
-    const last = [...list]
-      .reverse()
-      .find((m) => m.status === "sent" || m.status === "delivered" || m.status === "read");
-    if (!last) throw new Error(t("chat.shake.noTarget"));
-    // 不做本机自抖：用户 2026-10-12「点抖动别弹自己」——只让对方窗口抖，
-    // 发送方这边靠消息上的强提醒标识（已提醒/已确认）反馈。
-    // 第 4 个参数 shake=true：接收端**只抖不弹**（用户 2026-10-15「不要接强提醒的弹窗通知」）。
-    await sendReminder(convId, last.msg_id, [], true);
+    await send(convId, buildRemindPayload("", [], true, true), "remind");
+    showNudgeNotice(convId, app.device?.device_id ?? "");
   }
 
   /**
@@ -2715,8 +2743,11 @@ export const useChatStore = defineStore("chat", () => {
       },
       onMessage: (rec) => {
         enqueueMessage(rec);
-        if (rec.kind === "remind") handleIncomingRemind(rec);
-        else maybeNotify(rec);
+        if (rec.kind === "remind") {
+          const p = parseRemind(rec);
+          if (p?.nudge) handleIncomingNudge(rec);
+          else handleIncomingRemind(rec);
+        } else maybeNotify(rec);
         // 公告发布/删除：刷新「会话列表 📢 标记」的数据源（一条 SQL 全量折叠，代价低）。
         if (rec.kind === "announcement" || rec.kind === "announcement_delete") {
           void refreshAnnouncements();
@@ -3061,6 +3092,7 @@ export const useChatStore = defineStore("chat", () => {
     sendReminder,
     shakeConversation,
     shakeSignal,
+    nudgeNotice,
     confirmReminder,
     sendFriendRequest,
     respondRequest,

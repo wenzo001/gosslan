@@ -14,12 +14,12 @@ import { test } from "node:test";
 const srcDir = join(import.meta.dirname, "..");
 const read = (p: string) => readFileSync(join(srcDir, p), "utf8");
 
-test("onMessage：remind 走专门通道，其它消息才走普通通知", () => {
+test("onMessage：remind 先分流 nudge，其余才走强提醒/普通通知", () => {
   const store = read("stores/useChatStore.ts");
   assert.match(
     store,
-    /if \(rec\.kind === "remind"\) handleIncomingRemind\(rec\);\s*\n\s*else maybeNotify\(rec\);/,
-    "remind 必须走 handleIncomingRemind；remind_ack/普通消息走 maybeNotify（ack 绝不能弹通知）",
+    /if \(rec\.kind === "remind"\) \{\s*const p = parseRemind\(rec\);\s*if \(p\?\.nudge\) handleIncomingNudge\(rec\);\s*else handleIncomingRemind\(rec\);\s*\} else maybeNotify\(rec\);/,
+    "remind 必须按 nudge 分流；remind_ack/普通消息走 maybeNotify（ack 绝不能弹通知）",
   );
 });
 
@@ -202,8 +202,7 @@ test("群受众弹窗：排除自己、至少 1 人才能确认", () => {
   assert.match(dlg, /:disabled="selected\.size === 0"/, "零选择不能确认（第一版不默认全群）");
 });
 
-test("工具栏「抖动」入口 + 收到强提醒时把窗口拉到前台并抖动", () => {
-  const store = read("stores/useChatStore.ts");
+test("工具栏「抖动」入口 + 收到强提醒时把窗口拉到前台并抖动", () => {  const store = read("stores/useChatStore.ts");
   const at = store.indexOf("function handleIncomingRemind");
   const body = store.slice(at, at + 2800);
   assert.match(
@@ -236,8 +235,8 @@ test("工具栏「抖动」入口 + 收到强提醒时把窗口拉到前台并�
   assert.match(win, /gosslan-shake/, "根容器必须挂抖动的动画类");
   assert.match(
     store,
-    /async function shakeConversation\([\s\S]{0,600}sendReminder\(convId, last\.msg_id, \[\], true\)/,
-    "shakeConversation 必须对最近一条可提醒的消息发起**带 shake 标记**的强提醒",
+    /async function shakeConversation\([\s\S]{0,600}send\(convId, buildRemindPayload\("", \[\], true, true\), "remind"\)/,
+    "shakeConversation 必须发独立 nudge，不再锚定最后一条消息",
   );
   // 抖动帧只抖不弹：shake 标记必须在"该不该弹系统通知"那一句里抑制掉普通通知，
   // 且 raiseAndShakeOnRemind 仍在它之前（抖不因抑制而丢）。用户 2026-10-15。
@@ -271,4 +270,21 @@ test("桌面抖窗必须查在减弱动态这条系统开关之后（CSS 降级�
   );
   // 移动端那一路退回 CSS 动画，由 style.css 的全局降级接住 ⇒ 这里不该长出第二份判断
   assert.equal(body.split("prefersReducedMotion()").length - 1, 1, "同一个函数里只该查一次");
+});
+
+test("nudge 独立处理：不 ack、不进强提醒，只抖窗 + 会话内灰字", () => {
+  const store = read("stores/useChatStore.ts");
+  assert.match(store, /if \(p\?\.nudge\) handleIncomingNudge\(rec\);/, "onMessage 必须分流 nudge");
+  const at = store.indexOf("function handleIncomingNudge");
+  assert.ok(at > 0, "handleIncomingNudge 必须存在");
+  const end = store.indexOf("function handleIncomingRemind", at);
+  assert.ok(end > at, "handleIncomingNudge 后面必须有下一个函数作为切片边界");
+  const body = store.slice(at, end);
+  assert.doesNotMatch(body, /buildRemindAckPayload/, "抖动不自动回执");
+  assert.doesNotMatch(body, /handleIncomingRemind\(/, "抖动不得复用强提醒处理");
+  assert.match(body, /raiseAndShakeOnRemind\(/, "抖动要拉窗口/抖窗");
+  assert.match(body, /showNudgeNotice\(/, "抖动要写会话内灰字");
+  const win = read("components/ChatWindow.vue");
+  assert.match(win, /chat\.nudgeNotice/, "ChatWindow 必须消费 nudgeNotice");
+  assert.match(win, /chat\.nudge\.received/, "灰字必须区分接收方文案");
 });

@@ -80,6 +80,14 @@ pub async fn send_message(
     // 放在最前面是有意的 —— 下面每一步（好友校验 / 公钥查找 / 加密 / outbox / gossip）
     // 对自己都不成立。
     if friend_id == s.device_id {
+        // 自聊没有"对方窗口"可抖；且自聊分流发生在 kind 校验之前，这里先挡住。
+        if kind == "remind" {
+            if let Ok(p) = crate::protocol::parse_remind_payload(&content) {
+                if p.nudge {
+                    return Err("不能对自己发起窗口抖动".to_string());
+                }
+            }
+        }
         return insert_self_message(s, &kind, content);
     }
 
@@ -127,11 +135,14 @@ pub async fn send_message(
         match kind.as_str() {
             "remind" => {
                 let p = crate::protocol::parse_remind_payload(&content)?;
-                let valid = db::get_message_record(&dbc, &p.target)
-                    .map(|m| m.conv_id == friend_id)
-                    .unwrap_or(false);
-                if !valid {
-                    return Err("要提醒的消息不存在".to_string());
+                // 独立抖动不指向任何消息，跳过目标真实性校验。
+                if !p.nudge {
+                    let valid = db::get_message_record(&dbc, &p.target)
+                        .map(|m| m.conv_id == friend_id)
+                        .unwrap_or(false);
+                    if !valid {
+                        return Err("要提醒的消息不存在".to_string());
+                    }
                 }
             }
             "remind_ack" => {
@@ -183,6 +194,23 @@ pub async fn send_message(
             .copied();
         if !crate::protocol::dm_allowed_by_features(&kind, peer_features.unwrap_or(0)) {
             return Err(crate::protocol::kind_blocked_hint(&kind, peer_features));
+        }
+    }
+
+    // 窗口抖动复用 remind 帧，但需要额外一位：老端不认 nudge，会把空 target 当普通强提醒。
+    if kind == "remind" {
+        let p = crate::protocol::parse_remind_payload(&content)?;
+        if p.nudge {
+            let features = s
+                .peer_content_features
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&friend_id)
+                .copied()
+                .unwrap_or(0);
+            if features & crate::protocol::CONTENT_FEATURE_NUDGE == 0 {
+                return Err("对方版本不支持窗口抖动".to_string());
+            }
         }
     }
 

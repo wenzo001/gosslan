@@ -35,11 +35,16 @@ export function parseRemind(rec: MessageRecord): RemindPayload | null {
   if (rec.kind !== "remind") return null;
   try {
     const p = JSON.parse(rec.content) as Partial<RemindPayload>;
-    if (typeof p?.target !== "string" || !p.target.trim()) return null;
+    const nudge = p.nudge === true;
+    const target = typeof p.target === "string" ? p.target : "";
+    // 独立抖动不锚定消息，允许空 target；普通强提醒仍必须指向一条真实消息。
+    if (!nudge && !target.trim()) return null;
     if (p.actors != null && !Array.isArray(p.actors)) return null;
     const actors = (p.actors ?? []).filter((x): x is string => typeof x === "string");
-    // 抖动标记：只认真布尔 true，其余（缺省/脏值）一律按普通强提醒处理。
-    return p.shake === true ? { target: p.target, actors, shake: true } : { target: p.target, actors };
+    const out: RemindPayload = { target, actors };
+    if (p.shake === true) out.shake = true;
+    if (nudge) out.nudge = true;
+    return out;
   } catch {
     return null;
   }
@@ -92,6 +97,8 @@ export function foldReminders(records: MessageRecord[]): Map<string, ReminderSta
   for (const rec of records) {
     const p = parseRemind(rec);
     if (!p) continue;
+    // 独立抖动不是强提醒：不建 target → state 的折叠项。
+    if (p.nudge || !p.target) continue;
     const base = deliveryPhase(rec.status);
     const actors = new Map<string, ReminderPhase>();
     for (const a of p.actors) actors.set(a, base);
@@ -187,10 +194,16 @@ export function foldReminders(records: MessageRecord[]): Map<string, ReminderSta
  * `shake=true` 时追加 `"shake":true` 标记（工具栏「抖动」按钮用）：复用同一条 remind 传输，
  * 但接收端**只抖不弹**。默认路径（普通强提醒）载荷逐字节不变 —— 有守卫钉住（reminders.test）。
  */
-export function buildRemindPayload(target: string, actors: string[] = [], shake = false): string {
-  return shake
-    ? JSON.stringify({ target, actors, shake: true })
-    : JSON.stringify({ target, actors });
+export function buildRemindPayload(
+  target: string,
+  actors: string[] = [],
+  shake = false,
+  nudge = false,
+): string {
+  const p: RemindPayload = { target, actors };
+  if (shake) p.shake = true;
+  if (nudge) p.nudge = true;
+  return JSON.stringify(p);
 }
 
 /** 回执载荷 builder（对应 Rust `RemindAckPayload`）。 */

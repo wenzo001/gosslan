@@ -180,6 +180,15 @@ async fn send_group_payload(
     content: String,
     mentions: Option<&[String]>,
 ) -> Result<MessageRecord, String> {
+    // 窗口抖动只支持单聊：群侧没有"独立抖动"的产品语义，且旧成员会收到空 target 的
+    // 普通强提醒。放在群发送内核最前面，所有入口一次挡住。
+    if kind == "remind" {
+        if let Ok(p) = crate::protocol::parse_remind_payload(&content) {
+            if p.nudge {
+                return Err("窗口抖动只支持单聊".to_string());
+            }
+        }
+    }
     let ts = db::now_ms();
     let conv_id = format!("group:{group_id}");
     let seq = {

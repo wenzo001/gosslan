@@ -513,7 +513,8 @@ export const enUS: MessageDict = {
   "chat.composer.sendFile": "Send file (auto route)",
   // Window shake (QQ-like): single chat only; sends a strong reminder to the latest sent message
   "chat.composer.shake": "Shake window",
-  "chat.shake.noTarget": "No message to shake yet — send one first",
+  "chat.nudge.sent": "Window shake sent",
+  "chat.nudge.received": "{name} shook the window",
   "chat.shake.failed": "Failed to send shake",
   "chat.composer.remind": "Choose people to notify",
   "chat.composer.cancelQuote": "Cancel quote",
