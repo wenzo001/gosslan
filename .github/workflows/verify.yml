@@ -252,6 +252,46 @@ jobs:
             exit 0
           }
           Write-Host "::error title=Windows 测试 exe 导入的 DLL（$($dlls.Count) 个）::$($dlls -join ', ')"
+
+          # ⚠️ 只报 DLL 名单不够：`0xc0000139` 是"入口点找不到"——DLL 都在、**某个导出名缺**。
+          # 这里把每个 (DLL, 符号) 真的用 LoadLibrary+GetProcAddress 解析一遍，
+          # 解析不到的就是罪魁。API set 转发（api-ms-win-*）由 LoadLibrary 自己展开，不必特殊处理。
+          Add-Type -Namespace Win32 -Name N -MemberDefinition @'
+[DllImport("kernel32", SetLastError=true, CharSet=CharSet.Ansi)]
+public static extern IntPtr LoadLibrary(string p);
+[DllImport("kernel32", SetLastError=true, CharSet=CharSet.Ansi)]
+public static extern IntPtr GetProcAddress(IntPtr h, string p);
+'@
+          $pairs = New-Object System.Collections.Generic.List[object]
+          $cur = $null
+          foreach ($line in ($raw -split "`n")) {
+            if     ($line -match '^\s{2}Name:\s*(\S+\.dll)\s*$') { $cur = $Matches[1] }
+            elseif ($line -match '^\s{6}Name:\s*(\S+)\s*$' -and $cur) {
+              $pairs.Add([pscustomobject]@{ Dll = $cur; Fn = $Matches[1] })
+            }
+          }
+          Write-Host "解析到 $($pairs.Count) 个导入项"
+          if ($pairs.Count -eq 0) {
+            Write-Host '::error title=Windows 加载失败诊断::导入项解析出 0 条 —— 是诊断脚本的缩进匹配失效，不是「全部都能解析」'
+            exit 0
+          }
+          $handles = @{}
+          $missing = New-Object System.Collections.Generic.List[string]
+          foreach ($p in $pairs) {
+            if (-not $handles.ContainsKey($p.Dll)) {
+              $handles[$p.Dll] = [Win32.N]::LoadLibrary($p.Dll)
+            }
+            $h = $handles[$p.Dll]
+            if ($h -eq [IntPtr]::Zero) { $missing.Add("$($p.Dll)!$($p.Fn)（DLL 本身加载失败）"); continue }
+            if ([Win32.N]::GetProcAddress($h, $p.Fn) -eq [IntPtr]::Zero) {
+              $missing.Add("$($p.Dll)!$($p.Fn)")
+            }
+          }
+          if ($missing.Count -gt 0) {
+            Write-Host "::error title=Windows 缺的导出（$($missing.Count) 个）::$($missing -join '; ')"
+          } else {
+            Write-Host "::error title=Windows 缺的导出::所有导入项都能解析 —— 失败不在静态导入表里（可能是延迟加载或清单/并行 DLL 问题）"
+          }
           $vc = Get-Item C:\Windows\System32\vcruntime140*.dll -ErrorAction SilentlyContinue |
                 ForEach-Object { "$($_.Name)=$($_.VersionInfo.FileVersion)" }
           $envs = (Get-ChildItem Env: | Where-Object { $_.Name -match 'CRT|VCRUNTIME|RUSTFLAGS' } |
