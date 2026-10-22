@@ -179,7 +179,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest]
+        # ⚠️ Windows 固定到 2022（2026-10-22）：`windows-latest` 上 `cargo test` 的
+        # **测试可执行文件在加载期就死** —— `exit code 0xc0000139, STATUS_ENTRYPOINT_NOT_FOUND`，
+        # 零测试输出；而同一笔的 fmt / clippy / `tauri build`（同样是 Windows 腿）都绿。
+        # 已排除的假设：① CRT 不一致（测试 exe **不导入 vcruntime140.dll**，静态 CRT，
+        # `build.windows.staticVCRuntime` 默认就是 true）② 我们的源码（回滚到同一份代码
+        # 在 2026-10-22 13:34 的 `windows-latest` 上是绿的）。
+        # 剩下的最可能是镜像漂移（`windows-latest` 正在迁移，日志里能看到的系统 vcruntime 已是 14.51）。
+        # 处置：固定 2022 先把这条腿恢复成有意义的门（**不是** continue-on-error —— 那等于
+        # 静默丢掉整个 Windows 平台的单测）。诊断步骤保留：下一次升镜像时它会点名缺哪个导出。
+        os: [macos-latest, windows-2022]
     steps:
       - uses: actions/checkout@v4
 
