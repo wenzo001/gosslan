@@ -13,6 +13,18 @@
 
 ## [Unreleased]
 
+## [5.3.2] - 2026-10-22
+
+### Review 收尾：旧口径清理与设置路由边界
+
+- `SettingsPanel` 改用可空注入获取 route/router：桌面窗口被拖窄成移动布局时，
+  分区路由不会因为条件 hook 失效；切换为路由驱动时清空本地二级状态。
+- 移动端返回快捷键在设置/日志深链没有历史条目时回落到 `/me`（不再误回 `/chats`）。
+- 修正 `NavRail.vue` 中仍指向已删除 `navIconPaths.ts` 的自绘注释。
+- 修正 `router/main.ts` 的 history 探测注释（不再按自定义协议分流）。
+- `open-source-replacement-matrix.md` 的导航图标行改为 lucide + `navIcons.ts` 的现状。
+- 重新生成 `frontend-inventory.md` 的资产清单段。
+
 ## [5.3.1] - 2026-10-22
 
 ### 移动端底栏 / 滚动条 / 设置路由修复

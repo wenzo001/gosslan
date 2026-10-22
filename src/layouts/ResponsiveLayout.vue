@@ -549,10 +549,11 @@ function onBackKey(e: KeyboardEvent) {
   const isBackKey = e.key === "Escape" || (mod && e.key === "[") || (e.altKey && e.key === "ArrowLeft");
   if (!isBackKey) return;
   if (e.key === "Escape" && isTypingTarget(e.target)) return;
-  const root = ["chats", "contacts", "favorites", "links", "me"].includes(String(route.name ?? ""));
+  const name = String(route.name ?? "");
+  const root = ["chats", "contacts", "favorites", "links", "me"].includes(name);
   if (root) return;
   e.preventDefault();
-  goBack("/chats");
+  goBack(name.startsWith("settings") || name === "logs" ? "/me" : "/chats");
 }
 useEventListener(window, "keydown", onBackKey);
 
