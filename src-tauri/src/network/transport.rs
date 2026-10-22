@@ -760,7 +760,26 @@ async fn handle_incoming(
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::get_clock(&dbc, &peer_id)
     };
-    let _ = high_tx.send(build_signed_hello(&state, conv_clock)).await;
+    // R-10（2026-10-22）：这一发是在 **reader_loop 起来之前** 做的，而 `send().await`
+    // 没有期限 —— 队列满（writer 被 bulk 压住 / 对端接受连接后不再读）时整条连接
+    // 永远到不了读循环，表现是「链路在表里、却一个入站帧都没有」。
+    // 用与拨号侧同一个握手期限兜住：超时只丢这一次身份补发（对端的 identity 由下一次
+    // Hello / announce 补），绝不把整条连接楔死。
+    match tokio::time::timeout(
+        HANDSHAKE_TIMEOUT,
+        high_tx.send(build_signed_hello(&state, conv_clock)),
+    )
+    .await
+    {
+        Ok(_) => {}
+        Err(_) => state.logger.warn(
+            "transport",
+            format!(
+                "回发 Hello 超时（{}s）peer={peer_id} —— 先让链路进读循环，身份等下一次 Hello/announce 补",
+                HANDSHAKE_TIMEOUT.as_secs()
+            ),
+        ),
+    }
     state.logger.info(
         "transport",
         format!("握手补全：已向对端回发本节点 Hello（peer={peer_id}）"),
