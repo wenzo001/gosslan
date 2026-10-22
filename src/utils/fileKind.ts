@@ -59,6 +59,15 @@ export function fileExt(name: string): string {
 }
 
 /**
+ * 安卓安装包：只有真正的 `.apk` 才交给系统安装器。
+ *
+ * 不要用 `includes("apk")` 之类的宽松判断：`a.apk.zip` 是压缩包，不是安装包。
+ */
+export function isApkName(name: string): boolean {
+  return fileExt(name.trim()) === "apk";
+}
+
+/**
  * 文件角标文案：扩展名大写、**最多 4 个字符**，无扩展名回落到调用方给的那句「文件」。
  *
  * 三处角标（群文件面板 / 消息文件气泡 / 收藏详情）以前各写一遍这三行，漂移是真的：

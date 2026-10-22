@@ -12,6 +12,7 @@
  */
 import { save } from "@tauri-apps/plugin-dialog";
 import { api } from "@/api";
+import { isApkName } from "@/utils/fileKind";
 import { isAndroid } from "@/utils/platform";
 import { isDialogCancelled, saveDestinationOf } from "@/utils/saveDestination";
 
@@ -20,10 +21,18 @@ export type LocalFileResult = "done" | "cancelled";
 /**
  * 用系统默认应用打开本地文件。
  * Android 上没有"打开"这一步，直接落到 `saveLocalFile`（见文件头说明）。
+ * 例外：`.apk` 是安装包，交给系统安装器（`OpenWith` 的 package-archive MIME），
+ * 不弹"另存为"。判断留在这一唯一入口，消息气泡与群文件面板不会各写一套。
  * @throws 后端/插件返回的真实错误（调用方负责提示）
  */
 export async function openLocalFile(path: string, name: string): Promise<LocalFileResult> {
-  if (isAndroid) return saveLocalFile(path, name);
+  if (isAndroid) {
+    if (isApkName(name) || isApkName(path)) {
+      await api.openFileNative(path);
+      return "done";
+    }
+    return saveLocalFile(path, name);
+  }
   // macOS 走 NSWorkspace（沙盒下 opener 的 /usr/bin/open 被拦），Windows/Linux 由后端回落 opener。
   // 文件不存在时后端返回明确错误。
   await api.openFileNative(path);
