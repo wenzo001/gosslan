@@ -911,6 +911,10 @@ pub async fn delete_conversation(
     conv_id: String,
 ) -> Result<(), String> {
     let s = state.inner().clone();
+    // 删单聊前先取消在途发送；群文件不走 file_transfers，跳过。
+    if !conv_id.starts_with("group:") {
+        crate::commands::cancel_send_transfers_for_peer(&s, &conv_id);
+    }
     tokio::task::spawn_blocking(move || -> Result<(), String> {
         // 群会话删除时写删除边界：其他成员保留的历史重放不得回灌本机。
         // 边界记录当前逻辑序号，而非墙上时钟。

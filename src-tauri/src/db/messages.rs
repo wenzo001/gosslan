@@ -349,14 +349,16 @@ pub fn apply_message_render(
          WHERE excluded.seq > message_render.seq",
         params![msg_id, event_seq, mode],
     )? > 0;
+    let mut updated = 0usize;
     if changed {
-        tx.execute(
+        updated = tx.execute(
             "UPDATE messages SET kind = ?2 WHERE msg_id = ?1 AND kind != 'recalled'",
             params![msg_id, mode],
         )?;
     }
     tx.commit()?;
-    Ok(changed)
+    // 只有 messages 真的改了才算“生效”：已撤回消息的 render 事件不得让前端把墓碑复活。
+    Ok(updated > 0)
 }
 
 #[cfg(test)]
@@ -407,6 +409,16 @@ mod message_render_tests {
             !apply_message_render(&conn, "r1", 12, "image").unwrap(),
             "只允许 code/text 两种渲染方式"
         );
+
+        // 已撤回的墓碑不能被 render 事件复活（UPDATE 0 行 ⇒ 不得 emit）。
+        conn.execute(
+            "INSERT INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status)
+             VALUES('r2', 'peer-a', 'me', 'peer-a', 'recalled', '', 1, 1, 'sent')",
+            [],
+        )
+        .unwrap();
+        assert!(!apply_message_render(&conn, "r2", 20, "code").unwrap());
+        assert_eq!(kind(&conn, "r2"), "recalled");
     }
 }
 

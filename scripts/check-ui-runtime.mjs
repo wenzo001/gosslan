@@ -7232,6 +7232,8 @@ async function runLinks(cdp, url) {
       s.inputs.length === 2 && s.inputs.some((i) => i.ph === "显示名称" && i.value === "")
         && s.inputs.some((i) => i.ph === "https://example.com" && i.value === ""),
       "两个空输入", JSON.stringify(s.inputs));
+    // 新增/编辑现在是同一个 BaseModal：先关掉新增弹窗，才能点到列表行上的编辑。
+    await clickText("取消");
 
     await clickText("编辑链接");
     s = await info();

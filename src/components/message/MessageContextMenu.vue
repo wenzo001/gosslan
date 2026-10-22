@@ -140,7 +140,7 @@ const hasCopyOps = computed(
       <component :is="pinned ? PinOff : Pin" />
       {{ pinned ? t("msg.unpin") : t("msg.pin") }}
     </DropdownMenuItem>
-    <DropdownMenuItem v-if="canRecall" class="gosslan-menu-item" @select="emit('recall')">
+    <DropdownMenuItem v-if="canRecall" class="gosslan-menu-item gosslan-menu-item--danger" @select="emit('recall')">
       <Undo2 />
       {{ t("msg.recall") }}
     </DropdownMenuItem>

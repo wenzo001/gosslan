@@ -959,7 +959,7 @@ async function onSendImage(file: File) {
 }
 
 // ---------------- 窗口抖动（仿 QQ） ----------------
-/** 工具栏抖动按钮：对会话里最近一条已发出的消息发起强提醒，对方窗口随即抖动。 */
+/** 工具栏抖动按钮：发独立 nudge，不锚定任何消息，对方窗口随即抖动。 */
 async function onShake() {
   const convId = chat.activeConv;
   if (!convId || !isPeerFriend.value || isGroup.value || isSelfChat.value) return;

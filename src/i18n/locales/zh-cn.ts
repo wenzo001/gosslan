@@ -524,7 +524,7 @@ export const zhCN: MessageDict = {
   "chat.composer.codeDetected": "已识别为 {lang} 代码",
   "chat.composer.codeUndo": "撤销",
   "chat.composer.sendFile": "发送文件（自动选择最优路线）",
-  // 窗口抖动（仿 QQ）：仅单聊可用；底层是对最近一条已发消息发起强提醒
+  // 窗口抖动（仿 QQ）：仅单聊可用；独立 nudge 事件，不锚定消息
   "chat.composer.shake": "抖动窗口",
   "chat.nudge.sent": "已向对方发送窗口抖动",
   "chat.nudge.received": "{name} 向你发送了一个窗口抖动",

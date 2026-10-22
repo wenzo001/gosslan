@@ -96,7 +96,7 @@ jobs:
               2>/dev/null || true)
             case "$failed" in
               *"Build macOS"*|*"Build Windows (x64"*)
-                echo "::error title=桌面构建已失败::不再等产物。失败的 workflow：${failed}（先看它的注解，签名问题的原因在那里）" >&2
+                echo "::error title=桌面构建已失败::不再等产物。失败的 workflow：$failed（先看它的注解，签名问题的原因在那里）" >&2
                 exit 1 ;;
             esac
             sleep 30

@@ -136,6 +136,8 @@ pub async fn get_friends(state: State<'_, Arc<AppState>>) -> Result<Vec<Friend>,
 #[tauri::command(async)]
 pub async fn remove_friend(state: State<'_, Arc<AppState>>, peer_id: String) -> Result<(), String> {
     let s = state.inner();
+    // 删好友前先取消在途发送；否则 outbox 删了、发送任务却可能把 transfer 写回 active。
+    crate::commands::cancel_send_transfers_for_peer(s, &peer_id);
     {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
         db::remove_friend(&dbc, &peer_id).map_err(|e| e.to_string())?;

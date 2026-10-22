@@ -83,7 +83,7 @@ export const enUS: MessageDict = {
   "settings.item.storage": "Storage",
   "settings.item.security": "Privacy & Security",
   "settings.item.about": "About",
-  "settings.item.reset": "Reset",
+  "settings.item.reset": "Reset & Restore",
   // ---- Chat history search (results page) ----
   "search.title": "Search Chat History",
   "search.placeholder": "Search",
