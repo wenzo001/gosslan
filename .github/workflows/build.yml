@@ -57,11 +57,18 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           TARGET: ${{ matrix.target }}
         run: |
-          $args = @("--features", "bluetooth", "--bundles", "nsis", "--target", $env:TARGET)
+          # ⚠️ 不要用 `$args` 当局部数组再 `@args` splatting：`$args` 是 PowerShell 的
+          # **自动变量**（脚本块里代表未绑定参数），赋值后能否按数组展开取决于宿主实现。
+          # 2026-10-22 v5.5.0 的两次 Windows 构建都"构建成功、上传安装包失败"——
+          # 上传路径按 `${{ matrix.target }}` 取，产物却不在那里，最可能就是
+          # `--target` 没真正传进去（落在默认 `target/release`）。改成按分支写两条
+          # 完整命令，参数一个都不过手；与 build-macos.yml 同一条口径。
           if ($env:GITHUB_REF -like "refs/tags/v*") {
-            $args += @("--config", "src-tauri/tauri.updater.conf.json")
+            npm run tauri -- build --features bluetooth --bundles nsis --target $env:TARGET `
+              --config src-tauri/tauri.updater.conf.json
+          } else {
+            npm run tauri -- build --features bluetooth --bundles nsis --target $env:TARGET
           }
-          npm run tauri -- build @args
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Verify the installer really contains Bluetooth
@@ -75,6 +82,22 @@ jobs:
             exit 1
           }
           Write-Host "Cargo.lock 含 btleplug —— 蓝牙 feature 已生效"
+
+      # 失败时最需要的读数：产物到底落在哪个目录。2026-10-22 v5.5.0 两次构建都是
+      # "构建成功、上传安装包失败"，而日志里看不到 target 目录树，只能猜参数有没有生效。
+      - name: List bundle output (diagnostic)
+        if: always()
+        shell: pwsh
+        run: |
+          $base = "src-tauri/target/${{ matrix.target }}/release/bundle"
+          if (Test-Path $base) {
+            Get-ChildItem -Recurse -File $base |
+              Select-Object -First 40 FullName, Length | Format-Table -AutoSize
+          } else {
+            Write-Host "MISSING: $base"
+            Get-ChildItem "src-tauri/target" -Directory -ErrorAction SilentlyContinue |
+              Select-Object -ExpandProperty Name
+          }
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4

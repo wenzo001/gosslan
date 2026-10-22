@@ -13,6 +13,26 @@
 
 ## [Unreleased]
 
+## [5.5.1] - 2026-10-22
+
+### 头像与名字对齐修复
+
+- 消息行改成顶部对齐：此前 flex 默认 `stretch` 会把头像按钮拉成整行高，头像在按钮里
+  按行高居中 ⇒ 多行文本、图片、任务卡这类长消息里头像沉到气泡中部，与上方的名字完全错开。
+
+### 发布链路修复（v5.5.0 的桌面产物没能出包）
+
+- macOS 不再走 Tauri 内置的 dmg 打包：`bundle_dmg.sh` 在 CI 的 `find_mount_dir` 里用
+  `grep -E` 匹配设备名，BSD grep 报 `brackets ([ ]) not balanced` ⇒ 找不到挂载点 ⇒
+  整个 job 红（两个 mac job 各重试三次全红），连带 updater 真正需要的 `.app.tar.gz`
+  也没生成。改成 `--bundles app` 先出 `.app` + `.app.tar.gz` + `.sig`，dmg 再用
+  `hdiutil create` 单独产出（无挂载、无 AppleScript）。
+- Windows 不再用 `$args` + `@args` splatting 传参：`$args` 是 PowerShell 的自动变量，
+  赋值后 `--target` 没真正生效 ⇒ 产物落在 `target/release` 而不是 `target/<triple>/release`
+  ⇒ "构建成功、上传安装包失败"。改成按分支写两条完整命令（与 WebView2 档同一条口径）。
+- Android 编译门禁的 3 条 dead-code warning：R-08 的点击等待槽位（`slot_allows` /
+  `acquire_click_waiter` / `ClickWaiterGuard`）只在桌面分支被调用，按调用平台补齐 cfg。
+
 ## [5.5.0] - 2026-10-22
 
 ### 头像选择器、群任务指派与群聊切换滚动

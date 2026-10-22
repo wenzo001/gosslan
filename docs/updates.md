@@ -50,9 +50,11 @@
 
 ## 3. 发布流程
 
-1. `npm run version:minor`（或 patch）把版本提到 `5.5.0`；确认 `CHANGELOG.md` 有该版本小节。
+1. `npm run version:minor`（或 patch）把版本提到目标版本（**本文件不抄具体号**，现读
+   `npm run version:show`）；确认 `CHANGELOG.md` 有该版本小节。tag 必须与 `package.json`
+   的版本逐字一致 —— 清单 workflow 会当场校验，不一致就拒绝生成 `latest.json`。
 2. 确认 GitHub Secrets 已配好（上节）；缺 Secrets 时 tag 构建会**红**，不会静默出无签名包。
-3. 推 `main` 与 `tag v5.5.0`。四个构建 workflow 分别在构建时：
+3. 推 `main` 与同名 tag（`v` + `package.json` 里的 version）。四个构建 workflow 分别在构建时：
    - macOS/Windows 基础档带 `--config src-tauri/tauri.updater.conf.json`（仅 tag）生成签名；
    - 上传 `.app.tar.gz`+`.sig` / `*.exe.sig`；
    - 现有 `publish-release-assets.sh` 把普通安装包和签名挂到同一个 Release。
@@ -78,9 +80,11 @@
 
 ## 5. 过渡版本与老用户
 
-- 当前线上最新 **v5.4.0** 及更早版本**没有 updater**，不会自动收到任何更新。
-- 第一个包含本代码的版本（建议 **5.5.0**）必须让老用户**手动下载安装一次**；从此以后才进入自动更新。
-- 5.5.0 的 `latest.json` 发布前，客户端检查会 404/网络失败 → 静默（符合离线零打扰）。
+- **本文件不抄版本号**：线上最新版本读
+  `https://github.com/wenzo001/gosslan/releases/latest`。它之前的所有版本**没有 updater**，
+  不会自动收到任何更新。
+- 第一个包含 updater 的版本必须让老用户**手动下载安装一次**；从此以后才进入自动更新。
+- 在它的 `latest.json` 生成之前，客户端检查会 404/网络失败 → 静默（符合离线零打扰）。
 - Windows 内置 WebView2 档（`-webview2-bundled.exe`）不进入清单：它接近 200MB，
   走官方 `Update::download` 会让客户端内存峰值过大；这一档用户需手动更新，或后续单开通道。
 
