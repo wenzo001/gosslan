@@ -253,56 +253,18 @@ jobs:
           }
           Write-Host "::error title=Windows 测试 exe 导入的 DLL（$($dlls.Count) 个）::$($dlls -join ', ')"
 
-          # ⚠️ 只报 DLL 名单不够：`0xc0000139` 是"入口点找不到"——DLL 都在、**某个导出名缺**。
-          # 这里把每个 (DLL, 符号) 真的用 NativeLibrary.Load+TryGetExport 解析一遍，
-          # 解析不到的就是罪魁。API set 转发（api-ms-win-*）由加载器自己展开，不必特殊处理。
-          #
-          # ⚠️ 刻意**不用** `Add-Type -MemberDefinition @'...'@`：PowerShell 的 here-string
-          # 结束符 `'@` 必须顶格，而 YAML 的块标量要求每行都缩进 ⇒ 两者直接冲突，
-          # 上一次就是这样把整份 workflow 写成**非法 YAML**、Verify 一条都没跑的。
-          $pairs = New-Object System.Collections.Generic.List[object]
-          $cur = $null
-          # ⚠️ 不按**缩进**解析：llvm-readobj 的缩进宽度/制表符随版本变，上一版用
-          # `^\s{2}Name:` 就一条都没匹配上（0 条）。这里按**结构**判：
-          #   `Name: xxx.dll`            → 新的导入 DLL
-          #   `Name: SomeSymbol`（无点）  → 属于当前 DLL 的导入符号
-          foreach ($line in ($raw -split "`n")) {
-            if     ($line -match 'Name:\s*(\S+\.dll)\s*$') { $cur = $Matches[1] }
-            elseif ($line -match 'Name:\s*([A-Za-z_?@$][\w?@$]*)\s*$' -and $cur) {
-              $pairs.Add([pscustomobject]@{ Dll = $cur; Fn = $Matches[1] })
-            }
-          }
-          Write-Host "解析到 $($pairs.Count) 个导入项"
-          if ($pairs.Count -eq 0) {
-            # 兜底：把原始输出前一段塞进注解 —— 下一次红就能直接看到真实格式，
-            # 不用再猜缩进（这一步已经猜错过一次）。
-            $flat = ($raw -replace '\s+', ' ')
-            $snip = $flat.Substring(0, [Math]::Min(1200, $flat.Length))
-            Write-Host "::error title=Windows 加载失败诊断::导入项解析出 0 条（诊断脚本的解析失效）。原始输出前段：$snip"
-            exit 0
-          }
-          $handles = @{}
-          $missing = New-Object System.Collections.Generic.List[string]
-          foreach ($p in $pairs) {
-            if (-not $handles.ContainsKey($p.Dll)) {
-              try {
-                $handles[$p.Dll] = [System.Runtime.InteropServices.NativeLibrary]::Load($p.Dll)
-              } catch {
-                $handles[$p.Dll] = [IntPtr]::Zero
-              }
-            }
-            $h = $handles[$p.Dll]
-            if ($h -eq [IntPtr]::Zero) { $missing.Add("$($p.Dll)!$($p.Fn)（DLL 本身加载失败）"); continue }
-            $addr = [IntPtr]::Zero
-            if (-not [System.Runtime.InteropServices.NativeLibrary]::TryGetExport($h, $p.Fn, [ref]$addr)) {
-              $missing.Add("$($p.Dll)!$($p.Fn)")
-            }
-          }
-          if ($missing.Count -gt 0) {
-            Write-Host "::error title=Windows 缺的导出（$($missing.Count) 个）::$($missing -join '; ')"
-          } else {
-            Write-Host "::error title=Windows 缺的导出::所有导入项都能解析 —— 失败不在静态导入表里（可能是延迟加载或清单/并行 DLL 问题）"
-          }
+          # ⚠️ 最可靠的一招放在最前面：**直接跑一次测试 exe**（带 `--list`，不真跑用例）。
+          # Windows 的控制台程序在加载期失败时，加载器会把
+          #   "The procedure entry point X could not be located in the dynamic link library Y.dll"
+          # 写进 stderr —— 这就是缺哪个导出/哪个 DLL 的**直接答案**，不用再解析导入表。
+          # （上一版用 llvm-readobj 解析 (DLL, 符号) 再逐个 GetProcAddress，结果解析 0 条；
+          #   解析器本身成了故障点，换成这条"让系统自己说"。）
+          Write-Host "== 直接运行（--list）捕获加载器错误"
+          $probe = & $hit.FullName --list 2>&1 | Out-String
+          Write-Host $probe
+          $flat = ($probe -replace '\s+', ' ')
+          $verdict = if ($flat.Trim()) { $flat.Substring(0, [Math]::Min(700, $flat.Length)) } else { '(无输出)' }
+          Write-Host "::error title=Windows 加载器错误原文::$verdict"
           $vc = Get-Item C:\Windows\System32\vcruntime140*.dll -ErrorAction SilentlyContinue |
                 ForEach-Object { "$($_.Name)=$($_.VersionInfo.FileVersion)" }
           $envs = (Get-ChildItem Env: | Where-Object { $_.Name -match 'CRT|VCRUNTIME|RUSTFLAGS' } |
