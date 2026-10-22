@@ -179,7 +179,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest]
+        # ⚠️ 2026-10-22 深夜临时实验：Windows 的测试 exe 在 `windows-latest` 与
+        # `windows-2022` 上**都在加载期就死**（0xc0000139，零测试输出），而 fmt/clippy/打包全绿。
+        # 导入表只由链接的 crate 决定 ⇒ 源码改动造不出"入口点缺失"，怀疑是镜像侧的
+        # VC redist / UCRT 更新。用更旧的 2019 做判别：绿 ⇒ 环境确认；红 ⇒ 回到源码面继续查。
+        os: [macos-latest, windows-2019]
     steps:
       - uses: actions/checkout@v4
 
