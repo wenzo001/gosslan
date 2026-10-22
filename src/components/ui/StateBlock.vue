@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import Spinner from "@/components/ui/Spinner.vue";
 /**
  * 公共异步状态块：加载 / 空 / 错误 + 重试。
  *
@@ -14,7 +15,7 @@
  */
 import { computed } from "vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
-import { AlertCircle, ImageOff, Loader2, RotateCcw } from "@/components/ui/icons";
+import { AlertCircle, ImageOff, RotateCcw } from "@/components/ui/icons";
 
 const props = withDefaults(
   defineProps<{
@@ -30,9 +31,7 @@ const props = withDefaults(
 
 defineEmits<{ retry: [] }>();
 
-const icon = computed(() =>
-  props.kind === "loading" ? Loader2 : props.kind === "empty" ? ImageOff : AlertCircle,
-);
+const icon = computed(() => (props.kind === "empty" ? ImageOff : AlertCircle));
 
 /** compact 不出空态图标（原来这些位置的空态就是一行字）；加载/错误仍给 16px 图标，别把告警降级成纯文字。 */
 const showIcon = computed(() => !props.compact || props.kind !== "empty");
@@ -52,10 +51,15 @@ const titleClass = computed(() => {
     :role="kind === 'error' ? 'alert' : 'status'"
     :aria-live="kind === 'loading' ? 'polite' : undefined"
   >
+    <Spinner
+      v-if="showIcon && kind === 'loading'"
+      :size-class="compact ? 'h-4 w-4' : 'h-8 w-8'"
+      class="text-[var(--gosslan-text-caption)]"
+    />
     <component
-      v-if="showIcon"
+      v-else-if="showIcon"
       :is="icon"
-      :class="[compact ? 'h-4 w-4' : 'h-8 w-8', kind === 'loading' ? 'animate-spin' : '']"
+      :class="compact ? 'h-4 w-4' : 'h-8 w-8'"
       class="text-[var(--gosslan-text-caption)]"
       aria-hidden="true"
     />

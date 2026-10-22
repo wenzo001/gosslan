@@ -145,13 +145,9 @@ function canPushState(): boolean {
 }
 
 function pickHistory(): RouterHistory {
-  // `tauri://`（macOS/Linux）与 `asset:` 的文档路径不是 SPA 服务器：
-  // pushState 能不能用、刷新会不会 404 都未在真机验证。稳定优先 ⇒ 自定义协议直接走 hash
-  // （hash 同样产生真实历史条目，Android 的 wry 返回链不受影响）。
-  // Windows/Android 的 `http://tauri.localhost` 仍走 web history（用户裁决 3）。
-  const customScheme =
-    window.location.protocol === "tauri:" || window.location.protocol === "asset:";
-  if (customScheme) return createWebHashHistory();
+  // 用户 2026-10-22 裁决：统一走 web history（`tauri://` / `asset:` 也走）。
+  // 只有 `pushState` 真的抛错（某些被沙箱化的 WebView）才退化到 hash —— 那是防崩溃，
+  // 不是按协议分流；两条都会产生真实历史条目，Android 的 wry 返回链不受影响。
   return canPushState() ? createWebHistory() : createWebHashHistory();
 }
 

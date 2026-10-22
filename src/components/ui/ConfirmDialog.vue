@@ -9,8 +9,8 @@
 import BaseModal from "@/components/BaseModal.vue";
 import DangerBtn from "@/components/ui/DangerBtn.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
-import { Loader2 } from "@/components/ui/icons";
 import { t } from "@/i18n";
+import Spinner from "@/components/ui/Spinner.vue";
 
 const props = withDefaults(
   defineProps<{
@@ -56,13 +56,13 @@ function onCancel() {
         </button>
         <DangerBtn v-if="danger" size="large" :disabled="busy" @click="emit('confirm')">
           <span class="inline-flex items-center gap-1.5">
-            <Loader2 v-if="busy" class="h-4 w-4 animate-spin" aria-hidden="true" />
+            <Spinner v-if="busy" size-class="h-4 w-4" decorative />
             {{ busy && busyLabel ? busyLabel : confirmLabel }}
           </span>
         </DangerBtn>
         <PrimaryBtn v-else size="large" :disabled="busy" @click="emit('confirm')">
           <span class="inline-flex items-center gap-1.5">
-            <Loader2 v-if="busy" class="h-4 w-4 animate-spin" aria-hidden="true" />
+            <Spinner v-if="busy" size-class="h-4 w-4" decorative />
             {{ busy && busyLabel ? busyLabel : confirmLabel }}
           </span>
         </PrimaryBtn>

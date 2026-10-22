@@ -13,6 +13,21 @@
 
 ## [Unreleased]
 
+## [5.3.0] - 2026-10-22
+
+### 交互升级：motion-v、Spinner 收敛与性能余项
+
+- 按用户裁决引入 `motion-v@2.8.0`（精确版本）：侧栏/底栏共享布局药丸、消息缩略图 → 灯箱
+  共享元素（`layoutId`）、群任务行 FLIP、灯箱手势 `useMotionValue`。业务组件统一从
+  `src/utils/motion/` 导入；每处 JS 动画带 `useReducedMotion()` 分支。
+- 历史模式统一 web history（`tauri:` / `asset:` 也走；仅 `pushState` 抛错时退 hash）。
+- 新增 `ui/Spinner.vue` 并迁移全部 `animate-spin`；reduce 档不再把加载指示器冻成静止帧；
+  新增「加载旋转只能在 Spinner」的静态护栏。
+- 性能：公告改读 `activeAnnouncements` 缓存（不再每次消息变动扫整段历史）；收藏行数据
+  一次算好并加上限；`motion` 拆独立 chunk，vendor 回到约 114 KB gzip。
+- 文档：`design-guidelines.md` 新增 §14 交互反馈规范；修正反模式文档 X1/X2；
+  `open-source-replacement-matrix.md` 登记 motion-v 的传递依赖、使用面与回滚点。
+
 ## [5.2.2] - 2026-10-22
 
 ### 下拉菜单统一淡入

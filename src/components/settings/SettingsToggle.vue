@@ -1,6 +1,6 @@
 <script setup lang="ts">
+import Spinner from "@/components/ui/Spinner.vue";
 import { SwitchRoot, SwitchThumb } from "reka-ui";
-import { Loader2 } from "@/components/ui/icons";
 
 withDefaults(
   defineProps<{
@@ -51,11 +51,11 @@ const emit = defineEmits<{ (e: "update:modelValue", v: boolean): void }>();
       ]"
     >
       <!-- 乐观更新期间的小转圈：开关已经按用户意图动了，这里只是"还在跑"的提示 -->
-      <Loader2
+      <Spinner
         v-if="pending"
-        class="animate-spin text-[var(--gosslan-text-2)]"
-        :class="size === 'md' ? 'h-3.5 w-3.5' : 'h-3 w-3'"
-        aria-hidden="true"
+        decorative
+        class="text-[var(--gosslan-text-2)]"
+        :size-class="size === 'md' ? 'h-3.5 w-3.5' : 'h-3 w-3'"
       />
       <slot />
     </SwitchThumb>

@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { ArrowUpCircle, CloudDownload, FolderOpen, ListChecks, Monitor, Smartphone, Users } from "lucide-vue-next";
-import { Loader2 } from "@/components/ui/icons";
 import BackArrow from "@/components/ui/BackArrow.vue";
 import UnreadBadge from "@/components/UnreadBadge.vue";
 import { computed } from "vue";
@@ -8,6 +7,7 @@ import LinkIcon from "@/components/ui/LinkIcon.vue";
 import { linkIconName, type LinkIconName } from "@/utils/peerConnectionInfo";
 import type { Conversation, LinkState } from "@/types";
 import { t } from "@/i18n";
+import Spinner from "@/components/ui/Spinner.vue";
 
 const props = defineProps<{
   conv: Conversation | null;
@@ -166,7 +166,7 @@ function linkIcon(path: string, hop: number): { icon: LinkIconName; label: strin
              几乎看不出来，而用户等的是"这一扇窗什么时候出来"（用户 2026-09-24：
              "弹窗弹出很慢，我还以为没点了，点了好几下一会才弹出来"）。
              连点会被启动器的单飞/防抖吃掉，所以"看起来没反应"必须靠这里补上。 -->
-        <Loader2 v-if="tasksOpening" class="h-[18px] w-[18px] animate-spin" />
+        <Spinner v-if="tasksOpening" size-class="h-[18px] w-[18px]" decorative />
         <ListChecks v-else class="h-[18px] w-[18px]" />
         <!-- 与我相关的未完成任务（蓝）。数字同时进 aria-label：只靠颜色区分"有活没干完"
              对读屏用户等于没有提醒。 -->
@@ -187,7 +187,7 @@ function linkIcon(path: string, hop: number): { icon: LinkIconName; label: strin
         :title="t('chat.header.syncHistory')" :aria-label="t('chat.header.syncHistory')"
         @click="emit('sync-history')"
       >
-        <Loader2 v-if="historySyncing" class="h-[18px] w-[18px] animate-spin" />
+        <Spinner v-if="historySyncing" size-class="h-[18px] w-[18px]" decorative />
         <CloudDownload v-else class="h-[18px] w-[18px]" />
       </button>
       <!-- 群管理只有一个入口（用户 2026-09-29 需求汇总四："右上角入口、编辑按钮的弹窗内容

@@ -464,6 +464,7 @@ export const zhCN: MessageDict = {
   "common.prev": "上一张 (←)",
   "common.next": "下一张 (→)",
   "common.lines": "{n} 行",
+  "common.loading": "加载中…",
 
   // ---- 聊天输入区 ----
   "chat.composer.inputAria": "消息输入框",
@@ -1108,6 +1109,7 @@ export const zhCN: MessageDict = {
   "favorite.saveFail": "保存失败",
   "favorite.saved": "已保存",
   "favorite.from": "收藏于 {time}",
+  "favorite.limitReached": "收藏已达到上限（{max} 条），请先清理一些",
 
   // ---- 合并转发（微信式「聊天记录」卡片） ----
   "merge.title": "聊天记录",

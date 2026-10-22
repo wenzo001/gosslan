@@ -702,7 +702,7 @@ CASES: list[Case] = [
         "     第一版写成存在性断言时本用例当场被判成空转）。\n"
         "     注入 = 把收藏时间列的 `, t` 摘掉 ⇒ 现读数 12 处里只剩 11 处，必须被那条接线判据抓住。",
         file=ROOT / "src" / "components" / "FavoritePanel.vue",
-        injections=[('fmtConversationTime(f.favorited_at, t)', 'fmtConversationTime(f.favorited_at)')],
+        injections=[('fmtConversationTime(row.f.favorited_at, t)', 'fmtConversationTime(row.f.favorited_at)')],
         cmd=npm("test"),
         cwd=ROOT,
         expect_fail_hint="时间格式化没走 vue-i18n 文案",

@@ -3,7 +3,7 @@
 > 口径：先扫真实调用点，再按 A（直接替换）/ B（适配后替换）/ C（保留业务核心）/ D（暂不迁移，附证据与重评估条件）归档。
 > 本文件随批次更新；未落地的条目一律标 **未迁移**，不把选型写成完成。
 > 证据来源：`package.json` / `package-lock.json`、真实 `src/**` 调用点、`npm test`、`npm run build`、`node scripts/check-ui-runtime.mjs`。
-> 最近更新：2026-10-22（引入 `vue-router@5.4.0`；Pinia 3 / Vite 7 / plugin-vue 6 升级；`@pinia/colada` 只装不接线；`motion-v` 实测产物增量后不采纳）。
+> 最近更新：2026-10-22（引入 `vue-router@5.4.0`；Pinia 3 / Vite 7 / plugin-vue 6 升级；`@pinia/colada` 只装不接线；按用户裁决引入 `motion-v@2.8.0`，只用于共享元素/FLIP/手势三类）。
 
 ## 1. 已落地的迁移
 
@@ -65,7 +65,7 @@
 - 升级：`pinia@^2.2.6` → `^3.0.4`（peer 仅 `vue ^3.5.11` + `typescript >=4.5`；4 个 store 无破坏，`npm test` 全绿）。
 - 升级：`vite@^6.0.3` → `^7.3.7`、`@vitejs/plugin-vue@^5.2.1` → `^6.0.10`（Vite 7 必须配 plugin-vue 6；`gosslan:inline-boot` 插件行为不变，build 退码 0）。
 - 新增：`@pinia/colada@^1.4.8`（MIT；**只装不接线**，产物无增量）。与 `@tanstack/vue-query` 职责重叠，迁移单独立项；在此之前 vue-query 保持唯一数据层。
-- 未采纳：`motion-v@2.8.0`（MIT）。共享布局药丸实测 vendor gzip 114.15 → 160.63（+46.48 KB），CSS `--gosslan-ease-spring` 已覆盖同类反馈 ⇒ 移除，不进 `package.json`。详见 `docs/architecture/frontend-performance-antipatterns.md` §5。
+- 新增：`motion-v@2.8.0`（MIT；**精确版本**，不用 `^`；peer `vue>=3.0.0` / `@vueuse/core>=10.0.0` 均满足）。传递依赖 `framer-motion` / `motion-dom` / `motion-utils` / `hey-listen`。使用面只限三类：侧栏/底栏共享布局药丸（`layoutId`）、消息缩略图 → 灯箱共享元素、群任务行 FLIP、灯箱手势 `useMotionValue`。业务组件**不得直接 import**，统一走 `src/utils/motion/`。同机 `npm run build`：`motion` 独立 chunk gzip 51.02；vendor 114.56（拆块后不再触发 500 KB 警告）。回滚点 = 移除首批使用提交 + 依赖两行；详见 `docs/architecture/frontend-performance-antipatterns.md` §5 与 `docs/design-guidelines.md` §11.3.6。
 - 新增：`reka-ui@^2.11.0`（MIT；peer Vue >= 3.4；本机安装版本 2.11.0）。
 - 新增：`@tanstack/vue-virtual@^3.13.47`（MIT；peer Vue ^2.7 || ^3；本机安装 3.13.47）。
 - 新增：`@tanstack/vue-query@^5.104.4`（MIT；peer Vue ^2.6 || ^3.x；本机安装 5.104.4，含 query-core 5.104.4）。使用面 = **5 个面板**（4 个纯读：`GroupFilesPanel` 群文件 / `ShareDirectory` 共享目录 / `ChatSearchDialog` 搜索聊天记录 / `DevDiagPanel` 诊断快照；外加 `LinksList` **读+写**，写侧 1 处 `useMutation`。现算：`grep -rl useQuery src/components` = 5、`grep -rl useMutation src/components` = 1）与每窗口各一份 QueryClient（`boot.ts` 装 `VueQueryPlugin`）。

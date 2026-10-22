@@ -2026,6 +2026,8 @@ export const useChatStore = defineStore("chat", () => {
   // 为什么放 store 而不是收藏面板的本地 ref：收藏**跨会话、全局可见**（面板只是一个视图），
   // 且"收藏 / 取消收藏"从消息菜单与面板两处发起 —— 状态藏在面板里，另一处就看不到变化。
   const favorites = ref<FavoriteEntry[]>([]);
+  /** 收藏是本机唯一没有天然上界的可变长集合；给一个宽松上限防止无限增长。 */
+  const MAX_FAVORITES = 1000;
 
   async function refreshFavorites() {
     // 「收藏 / 取消收藏」从消息菜单与面板两处发起 ⇒ 不加闸的话，先发起的后回来会把
@@ -2044,6 +2046,10 @@ export const useChatStore = defineStore("chat", () => {
    * （length 为 0），拿长度比会把重复收藏误报成新增。
    */
   async function addFavorite(msgId: string, convId: string): Promise<boolean> {
+    if (favorites.value.length >= MAX_FAVORITES) {
+      app.toast(t("favorite.limitReached", { max: MAX_FAVORITES }), "error");
+      return false;
+    }
     const rec = await api.addFavorite(msgId, convId);
     if (favorites.value.some((f) => f.id === rec.id)) return false;
     favorites.value = [rec, ...favorites.value];
@@ -2070,7 +2076,16 @@ export const useChatStore = defineStore("chat", () => {
     let added = 0;
     let already = 0;
     let failed = 0;
-    for (const id of msgIds) {
+    const room = MAX_FAVORITES - favorites.value.length;
+    if (room <= 0) {
+      app.toast(t("favorite.limitReached", { max: MAX_FAVORITES }), "error");
+      return { added, already, failed };
+    }
+    const ids = msgIds.slice(0, room);
+    if (ids.length < msgIds.length) {
+      app.toast(t("favorite.limitReached", { max: MAX_FAVORITES }), "error");
+    }
+    for (const id of ids) {
       try {
         if (await addFavorite(id, convId)) added += 1;
         else already += 1;

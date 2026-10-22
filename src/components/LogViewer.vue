@@ -9,6 +9,7 @@ import TitleBar from "@/components/TitleBar.vue";
 import MobilePageFrame from "@/components/MobilePageFrame.vue";
 import { api } from "@/api";
 import { t } from "@/i18n";
+import Spinner from "@/components/ui/Spinner.vue";
 import StateBlock from "@/components/ui/StateBlock.vue";
 import { errorText } from "@/composables/useErrorText";
 import { useAppStore } from "@/stores/useAppStore";
@@ -328,7 +329,8 @@ const rowLevelBg = (lv: string) =>
           :aria-pressed="autoRefresh"
           @click="autoRefresh = !autoRefresh; syncTimer()"
         >
-          <RefreshCw class="h-3.5 w-3.5" :class="autoRefresh ? 'animate-spin' : ''" />
+          <Spinner v-if="autoRefresh" size-class="h-3.5 w-3.5" decorative />
+          <RefreshCw v-else class="h-3.5 w-3.5" />
           <span class="hidden sm:inline">{{ t("logs.autoRefresh") }}</span>
         </button>
         <button
@@ -523,7 +525,8 @@ const rowLevelBg = (lv: string) =>
           :aria-pressed="autoRefresh"
           @click="autoRefresh = !autoRefresh; syncTimer()"
         >
-          <RefreshCw class="h-3.5 w-3.5" :class="autoRefresh ? 'animate-spin' : ''" />
+          <Spinner v-if="autoRefresh" size-class="h-3.5 w-3.5" decorative />
+          <RefreshCw v-else class="h-3.5 w-3.5" />
           <span class="hidden sm:inline">{{ t("logs.autoRefresh") }}</span>
         </button>
         <button

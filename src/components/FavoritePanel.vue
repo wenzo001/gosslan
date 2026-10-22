@@ -25,6 +25,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { DropdownMenuItem, DropdownMenuSeparator } from "reka-ui";
 import { t } from "@/i18n";
+import Spinner from "@/components/ui/Spinner.vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { useImagePreviewStore } from "@/stores/useImagePreview";
@@ -50,7 +51,7 @@ import {
 import TodoImageThumb from "@/components/TodoImageThumb.vue";
 import {
   AlignLeft, BarChart3, Code, Copy, CornerUpLeft, Download, FolderOpen, Image as ImageIcon, ListTodo, Megaphone, MoreHorizontal, ScrollText, Share2 } from "lucide-vue-next";
-import { Loader2, Trash2, X } from "@/components/ui/icons";
+import { Trash2, X } from "@/components/ui/icons";
 import type { FavoriteEntry, FileMeta, MsgKind } from "@/types";
 import { api } from "@/api";
 
@@ -321,6 +322,17 @@ function kindStyle(f: FavoriteEntry) {
   };
 }
 
+/** 行数据一次算好：旧模板每行要调 8 次 rowTitle/rowSubtitle/kindStyle/kindIcon。 */
+const rows = computed(() =>
+  filtered.value.map((f) => ({
+    f,
+    title: rowTitle(f),
+    subtitle: rowSubtitle(f),
+    icon: kindIcon(f),
+    style: kindStyle(f),
+  })),
+);
+
 function senderName(f: FavoriteEntry): string {
   return chat.nicknameOf(f.sender_id);
 }
@@ -569,7 +581,7 @@ async function confirmDelete() {
       v-if="loading"
       class="flex flex-1 items-center justify-center gap-2 text-sm text-[var(--gosslan-text-2)]"
     >
-      <Loader2 class="h-4 w-4 animate-spin" />
+      <Spinner size-class="h-4 w-4" decorative />
       {{ t("favorite.loading") }}
     </div>
 
@@ -653,35 +665,35 @@ async function confirmDelete() {
           <!-- 每行：行本身是 <button>（可聚焦、可回车），移动端的「⋯」放在**兄弟层**用绝对定位
                —— 不能嵌在行按钮里（<button> 套 <button> 是非法 HTML，浏览器会把它拆出去，
                表现是"⋯ 点了没反应"或整行都被点）。 -->
-          <div v-for="f in filtered" :key="f.id" class="relative">
+          <div v-for="row in rows" :key="row.f.id" class="relative">
             <button
               class="flex w-full items-start gap-2.5 px-3 py-2.5 text-left transition"
-              :class="active?.id === f.id
+              :class="active?.id === row.f.id
                 ? 'bg-[var(--gosslan-list-active)] text-[var(--gosslan-list-active-text)]'
                 : 'hover:bg-[var(--gosslan-list-hover)]'"
-              @click="selectItem(f)"
-              @contextmenu.prevent="openMenuAt($event, f)"
+              @click="selectItem(row.f)"
+              @contextmenu.prevent="openMenuAt($event, row.f)"
             >
               <span
                 class="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)]"
-                :style="kindStyle(f)"
+                :style="row.style"
               >
-                <component :is="kindIcon(f)" class="h-4 w-4" />
+                <component :is="row.icon" class="h-4 w-4" />
               </span>
               <span class="min-w-0 flex-1" :class="app.isMobile ? 'pr-7' : ''">
-                <span class="block truncate text-body text-[var(--gosslan-text)]" :title="rowTitle(f)">
-                  {{ rowTitle(f) }}
+                <span class="block truncate text-body text-[var(--gosslan-text)]" :title="row.title">
+                  {{ row.title }}
                 </span>
                 <span
-                  v-if="rowSubtitle(f)"
+                  v-if="row.subtitle"
                   class="mt-0.5 block truncate text-caption text-[var(--gosslan-text-2)]"
-                  :title="rowSubtitle(f)"
+                  :title="row.subtitle"
                 >
-                  {{ rowSubtitle(f) }}
+                  {{ row.subtitle }}
                 </span>
                 <span class="mt-0.5 block text-caption text-[var(--gosslan-text-2)]">
-                  {{ fmtConversationTime(f.favorited_at, t) }}
-                  <template v-if="!f.available"> · {{ t("favorite.mediaGone") }}</template>
+                  {{ fmtConversationTime(row.f.favorited_at, t) }}
+                  <template v-if="!row.f.available"> · {{ t("favorite.mediaGone") }}</template>
                 </span>
               </span>
             </button>
@@ -693,7 +705,7 @@ async function confirmDelete() {
               type="button"
               class="tap-safe absolute right-1 top-2 flex h-7 w-7 items-center justify-center rounded-[var(--gosslan-radius-sm)] text-[var(--gosslan-text-2)]"
               :aria-label="t('favorite.more')"
-              @click.stop="openMenuAt($event, f)"
+              @click.stop="openMenuAt($event, row.f)"
             >
               <MoreHorizontal class="h-4 w-4" />
             </button>

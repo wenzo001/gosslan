@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
+import Spinner from "@/components/ui/Spinner.vue";
 import { computed, ref, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
@@ -15,7 +16,7 @@ import { useImeEnterGuard } from "@/composables/useImeEnterGuard";
 import { MAX_ANNOUNCEMENT_CHARS, MAX_GROUP_NAME_CHARS } from "@/utils/validation";
 import CharCounter from "@/components/ui/CharCounter.vue";
 import { ArrowRightLeft, Crown, ListChecks, LogOut, Plus, UserMinus } from "lucide-vue-next";
-import { Loader2, X } from "@/components/ui/icons";
+import { X } from "@/components/ui/icons";
 import type { Friend } from "@/types";
 
 const props = defineProps<{
@@ -374,7 +375,7 @@ async function confirmAction() {
           >
             <!-- 与聊天头部那颗按钮同一份反馈：桌面端这一下是去开**独立窗口**，
                  窗口建出来之前必须让人看见"点到了、在开"（见 `ChatHeader.vue` 的说明）。 -->
-            <Loader2 v-if="tasksOpening" class="h-3.5 w-3.5 animate-spin" />
+            <Spinner v-if="tasksOpening" size-class="h-3.5 w-3.5" decorative />
             {{ todoSummary.total ? t("todo.viewAll") : t("todo.create") }}
           </button>
         </div>
@@ -401,7 +402,7 @@ async function confirmAction() {
             </button>
           </template>
           <template v-else>
-            <Loader2 class="mr-1 inline h-3 w-3 animate-spin" aria-hidden="true" />{{ t("todo.loading") }}
+            <Spinner class="mr-1" size-class="h-3 w-3" decorative />{{ t("todo.loading") }}
           </template>
         </div>
       </div>

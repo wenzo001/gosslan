@@ -15,6 +15,7 @@
  * 布局用卡片/列表而不是宽表：桌面与手机（三端）都能读，窄屏不会横向滚动。
  */
 import { t } from "@/i18n";
+import Spinner from "@/components/ui/Spinner.vue";
 import { computed } from "vue";
 import { useQuery } from "@tanstack/vue-query";
 import { Bluetooth, RefreshCw, Wifi } from "lucide-vue-next";
@@ -125,7 +126,8 @@ function ageText(ms: number | null): string {
           :disabled="loading"
           @click="refresh"
         >
-          <RefreshCw class="h-3.5 w-3.5" :class="loading ? 'animate-spin' : ''" />
+          <Spinner v-if="loading" size-class="h-3.5 w-3.5" decorative />
+          <RefreshCw v-else class="h-3.5 w-3.5" />
           {{ loading ? t("diag.refreshing") : t("diag.refresh") }}
         </button>
       </div>

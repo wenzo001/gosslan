@@ -13,8 +13,8 @@
  * 不带 cid 的旧载荷 / 文件（非图片）没有回源钥匙，只能显示 `[图片] 名字` / `[文件] 名字`。
  */
 import { computed, onBeforeUnmount, reactive, watch } from "vue";
-import { Loader2 } from "@/components/ui/icons";
 import { t } from "@/i18n";
+import Spinner from "@/components/ui/Spinner.vue";
 import BaseModal from "@/components/BaseModal.vue";
 import { useImagePreviewStore } from "@/stores/useImagePreview";
 import { api } from "@/api";
@@ -242,7 +242,7 @@ onBeforeUnmount(() => {
               v-else-if="imageSlots[i]?.phase === 'loading'"
               class="flex h-16 items-center justify-center rounded-[var(--gosslan-radius-md)] bg-[var(--gosslan-hover)] text-[var(--gosslan-text-2)]"
             >
-              <Loader2 class="h-4 w-4 animate-spin" aria-hidden="true" />
+              <Spinner size-class="h-4 w-4" decorative />
             </div>
             <div
               v-else
@@ -259,7 +259,7 @@ onBeforeUnmount(() => {
                 {{ imageSlots[i]?.phase === 'failed' ? t("merge.retry") : t("merge.pull") }}
               </button>
               <span v-else class="flex shrink-0 items-center gap-1 text-xs text-[var(--gosslan-text-2)]">
-                <Loader2 class="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                <Spinner size-class="h-3.5 w-3.5" decorative />
                 {{ t("merge.pulling") }}
               </span>
             </div>

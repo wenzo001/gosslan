@@ -94,6 +94,16 @@ export default defineConfig(async () => ({
       output: {
         manualChunks(id) {
           if (!id.includes("node_modules")) return undefined;
+          // motion-v 的传递依赖单独成块：不拆会把 vendor 顶过 500 KB，且它的升级频率
+          // 与其它库不同（缓存粒度更合理）。
+          if (
+            id.includes("motion-v") ||
+            id.includes("motion-dom") ||
+            id.includes("motion-utils") ||
+            id.includes("framer-motion") ||
+            id.includes("hey-listen")
+          )
+            return "motion";
           if (id.includes("highlight.js")) return "highlight";
           if (id.includes("lucide-vue-next")) return "icons";
           if (id.includes("@tauri-apps")) return "tauri";

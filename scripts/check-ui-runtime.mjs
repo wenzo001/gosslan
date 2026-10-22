@@ -7621,10 +7621,8 @@ async function runSelect(cdp, url) {
 }
 
 async function runNavIcon(cdp, url) {
-  // §6.92 导航图标单一家（NavIcon.vue + navIconPaths.ts）的运行时凭据。
-  // 文本判据只能证明"源码里 :active 接上了"，这里证明**渲染出来的 DOM**：
-  // 选中时 fill 真的是 currentColor、取消选中时真的回到 none、造型数据确实是那张表、
-  // 镂空标志只在该有的那一枚上。四发变异各自点破一种"看着接上、其实不驱动"的写法。
+  // 2026-10-22：导航图标已统一到 lucide（navIconPaths.ts 删除）。这里证明**渲染出来的 DOM**
+  // 真的是 lucide 图标、选中态只由 stroke-width / data-active 驱动、四枚语义各自映射正确。
   await cdp.send("Page.navigate", { url });
   await sleep(3_000);
   await cdp.eval(PAGE_FIXTURE);
@@ -7638,79 +7636,69 @@ async function runNavIcon(cdp, url) {
     const svg = document.querySelector('#probe-host svg');
     if (!svg) return { present: false };
     const path = svg.querySelector('path');
-    const d = path ? (path.getAttribute('d') || '') : '';
     return {
       present: true,
-      fill: svg.getAttribute('fill'),
+      cls: svg.getAttribute('class') || '',
       stroke: svg.getAttribute('stroke'),
       strokeWidth: svg.getAttribute('stroke-width'),
+      dataActive: svg.getAttribute('data-active'),
+      ariaHidden: svg.getAttribute('aria-hidden'),
       viewBox: svg.getAttribute('viewBox'),
-      fillRule: svg.getAttribute('fill-rule'),
-      paths: svg.querySelectorAll('path').length,
-      dHead: d.slice(0, 24),
-      dFull: d,
+      dHead: path ? (path.getAttribute('d') || '').slice(0, 24) : '',
       sizeClass: svg.getAttribute('class') || '',
     };
   })()`);
 
   await mount({ name: "contacts", active: true });
-  const on = await read();
+  const contactsOn = await read();
   await mount({ name: "contacts", active: false });
-  const off = await read();
-  check("导航图标选中态渲染到 DOM：fill=currentColor 且描边/描边宽按同一档（1.9）",
-    on.present === true && on.fill === "currentColor" && on.stroke === "currentColor"
-      && on.strokeWidth === "1.9" && on.viewBox === "0 0 24 24" && on.paths === 1,
-    "fill=currentColor / stroke=currentColor / stroke-width=1.9 / viewBox=0 0 24 24 / 单条 path",
-    JSON.stringify(on));
-  check("同一枚取消选中后 fill 回到 none，而造型数据一个字没变（:active 只驱动填充）",
-    off.present === true && off.fill === "none" && off.dHead === on.dHead,
-    "fill=none / d 不变",
-    JSON.stringify({ fill: off.fill, onHead: on.dHead, offHead: off.dHead }));
-  check("镂空标志落在该有的那一枚：通讯录（外框+人像）选中时 fill-rule=evenodd",
-    on.fillRule === "evenodd",
-    "fill-rule=evenodd", JSON.stringify({ fillRule: on.fillRule }));
+  const contactsOff = await read();
+  check("导航图标由 lucide 渲染（通讯录 = users-round）",
+    contactsOn.present === true && /lucide-users-round-icon/.test(contactsOn.cls)
+      && contactsOn.viewBox === "0 0 24 24" && contactsOn.ariaHidden === "true",
+    "svg.lucide-users-round-icon / viewBox=0 0 24 24 / aria-hidden=true",
+    JSON.stringify(contactsOn));
+  check("选中态只加粗描边并落 data-active（不从描边库硬填成实心）",
+    contactsOn.strokeWidth === "2.35" && contactsOn.dataActive === "true"
+      && contactsOff.strokeWidth === "1.9" && contactsOff.dataActive === "false",
+    "active: 2.35/true；inactive: 1.9/false",
+    JSON.stringify({ on: contactsOn.strokeWidth + "/" + contactsOn.dataActive,
+      off: contactsOff.strokeWidth + "/" + contactsOff.dataActive }));
 
   await mount({ name: "chats", active: true });
   const chats = await read();
-  check("非镂空那一族（聊天气泡）不带 fill-rule ⇒ 实心时不会把里面翻成洞",
-    chats.present === true && chats.fill === "currentColor" && chats.fillRule === null
-      && chats.dHead !== on.dHead,
-    "fill=currentColor / 无 fill-rule / d 与通讯录不同",
+  check("聊天语义映射到独立的 lucide 图标（不是抄通讯录的 path）",
+    chats.present === true && /lucide-message-circle-icon/.test(chats.cls)
+      && chats.dHead !== contactsOn.dHead,
+    "lucide-message-circle-icon / path 与通讯录不同",
     JSON.stringify(chats));
 
   await mount({ name: "favorites", active: true, sizeClass: "h-[22px] w-[22px]" });
   const pc = await read();
   await mount({ name: "favorites", active: true, sizeClass: "h-16 w-16 opacity-25" });
   const mob = await read();
-  check("PC 栏与移动端空状态尺寸档不同，但用的是同一份造型数据（同一语义 = 同一只图标）",
-    pc.present === true && mob.present === true
-      && pc.dHead === mob.dHead && pc.viewBox === mob.viewBox && pc.sizeClass !== mob.sizeClass,
-    "d 与 viewBox 相同 / class 不同",
-    JSON.stringify({ pcClass: pc.sizeClass, mobClass: mob.sizeClass }));
+  check("同一语义在 PC 栏与移动端是同一只图标，只换尺寸档",
+    pc.present === true && mob.present === true && /lucide-star-icon/.test(pc.cls)
+      && pc.dHead === mob.dHead && pc.cls !== mob.cls,
+    "lucide-star-icon / path 相同 / class 不同",
+    JSON.stringify({ pcClass: pc.cls, mobClass: mob.cls }));
 
   await mount({ name: "links", active: true });
   const links = await read();
-  // ★ 这一格才是"单一家"真正的运行时凭据：把 DOM 上那条 d 与 navIconPaths 表里那份**逐字**对账。
-  //   组件里私藏一份造型（前几格照样全绿，因为它们只比较 DOM 自己），或表里多塞一枚没人认领的，
-  //   都会在这里红。跑这段期间不要有人改 src —— 动态 import 读的是当时那份模块。
+  check("链接语义映射到 lucide compass",
+    links.present === true && /lucide-compass-icon/.test(links.cls),
+    "lucide-compass-icon", JSON.stringify(links));
+
+  // 唯一造型表还在、且恰好四枚：运行时不直接拿 path（lucide 是唯一来源），只对账键与导出形态。
   const table = await cdp.eval(`(async () => {
-    const M = await import('/src/components/ui/navIconPaths.ts');
-    const out = {};
-    for (const k of Object.keys(M.NAV_ICON_PATHS)) out[k] = M.NAV_ICON_PATHS[k].d;
-    return out;
+    const M = await import('/src/components/ui/navIcons.ts');
+    return { keys: Object.keys(M.NAV_ICONS), kinds: Object.values(M.NAV_ICONS).map((v) => typeof v) };
   })()`);
-  check("DOM 上的 path 与 navIconPaths 表逐字相等，且表里正好四枚（第 5 枚要先找 lucide）",
-    Object.keys(table).length === 4
-      && on.dFull === table.contacts && chats.dFull === table.chats
-      && mob.dFull === table.favorites && links.dFull === table.links,
-    "表 4 项 / 四枚 DOM 与表逐字相等",
-    JSON.stringify({
-      keys: Object.keys(table),
-      hits: {
-        contacts: on.dFull === table.contacts, chats: chats.dFull === table.chats,
-        favorites: mob.dFull === table.favorites, links: links.dFull === table.links,
-      },
-    }));
+  check("导航造型表仍是唯一入口且恰好四枚",
+    table.keys.length === 4 && table.keys.every((k) => ["chats", "contacts", "favorites", "links"].includes(k))
+      && table.kinds.every((k) => k === "object" || k === "function"),
+    "navIcons.NAV_ICONS 恰有 4 键，值为组件",
+    JSON.stringify(table));
 }
 
 async function runSegmented(cdp, url) {

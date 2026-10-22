@@ -3,6 +3,7 @@ import { t } from "@/i18n";
 import { computed, ref, onMounted, onUnmounted, watch, watchEffect } from "vue";
 import { useRoute, useRouter, type RouteLocationRaw } from "vue-router";
 import { navigationDirection } from "@/router/main";
+import { motion, useReducedMotion } from "@/utils/motion";
 import { useEventListener } from "@vueuse/core";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
@@ -84,6 +85,8 @@ function navOfRoute(): NavState {
     return "me";
   return "chats";
 }
+
+const reducedMotion = useReducedMotion();
 
 const navState = computed<NavState>(() =>
   route.meta.overlay ? lastNav.value : navOfRoute(),
@@ -907,6 +910,12 @@ function onResizeEnd() {
         @click="selectMobileTab('chats', 'list')"
       >
         <span class="nav-glyph-pill relative" :data-active="navState === 'chats'">
+          <motion.span
+            v-if="navState === 'chats'"
+            layout-id="tab-active"
+            class="pointer-events-none absolute inset-0 rounded-full bg-[color-mix(in_srgb,var(--gosslan-primary)_13%,transparent)]"
+            :transition="reducedMotion ? { duration: 0 } : { type: 'spring', stiffness: 480, damping: 36, mass: 0.7 }"
+          />
           <NavIcon name="chats" :active="navState === 'chats'" size-class="h-5 w-5" />
           <UnreadBadge
             v-if="chat.totalUnread > 0"
@@ -922,6 +931,12 @@ function onResizeEnd() {
         @click="selectMobileTab('contacts', 'list')"
       >
         <span class="nav-glyph-pill relative" :data-active="navState === 'contacts'">
+          <motion.span
+            v-if="navState === 'contacts'"
+            layout-id="tab-active"
+            class="pointer-events-none absolute inset-0 rounded-full bg-[color-mix(in_srgb,var(--gosslan-primary)_13%,transparent)]"
+            :transition="reducedMotion ? { duration: 0 } : { type: 'spring', stiffness: 480, damping: 36, mass: 0.7 }"
+          />
           <NavIcon name="contacts" :active="navState === 'contacts'" size-class="h-5 w-5" />
           <UnreadBadge
             v-if="chat.pendingRequests.length"
@@ -939,6 +954,12 @@ function onResizeEnd() {
         @click="selectMobileTab('favorites', 'chat')"
       >
         <span class="nav-glyph-pill relative" :data-active="navState === 'favorites'">
+          <motion.span
+            v-if="navState === 'favorites'"
+            layout-id="tab-active"
+            class="pointer-events-none absolute inset-0 rounded-full bg-[color-mix(in_srgb,var(--gosslan-primary)_13%,transparent)]"
+            :transition="reducedMotion ? { duration: 0 } : { type: 'spring', stiffness: 480, damping: 36, mass: 0.7 }"
+          />
           <NavIcon name="favorites" :active="navState === 'favorites'" size-class="h-5 w-5" />
         </span>
         <span class="text-caption">{{ t("nav.favorites") }}</span>
@@ -952,6 +973,12 @@ function onResizeEnd() {
         @click="selectMobileTab('me', 'chat')"
       >
         <span class="nav-glyph-pill relative" :data-active="navState === 'me'">
+          <motion.span
+            v-if="navState === 'me'"
+            layout-id="tab-active"
+            class="pointer-events-none absolute inset-0 rounded-full bg-[color-mix(in_srgb,var(--gosslan-primary)_13%,transparent)]"
+            :transition="reducedMotion ? { duration: 0 } : { type: 'spring', stiffness: 480, damping: 36, mass: 0.7 }"
+          />
           <UserCircle class="nav-glyph h-5 w-5" :stroke-width="navState === 'me' ? 2.35 : 1.9" />
         </span>
         <span class="text-caption">{{ t("nav.me") }}</span>

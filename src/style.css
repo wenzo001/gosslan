@@ -565,6 +565,18 @@ progress {
 :where(button:not(:disabled):not([data-no-press])):active {
   transform: scale(0.97);
 }
+/* 禁用 / 只读 / 忙碌三态的统一视觉出口（值由各组件自己决定，这里只兜底光标与可感知性）。 */
+:where(button:disabled) {
+  cursor: not-allowed;
+}
+:where(button[aria-busy="true"]) {
+  cursor: progress;
+}
+:where(input, textarea, select):disabled,
+:where(input, textarea, select)[readonly] {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
 
 /* 一级导航选中态：药丸底 + 主题色 + 弹簧缩放（PC rail 与移动底栏共用这一份） */
 .nav-glyph,
@@ -575,13 +587,10 @@ progress {
     background-color var(--gosslan-duration-fast) var(--gosslan-ease),
     color var(--gosslan-duration-fast) var(--gosslan-ease);
 }
-/* 选中态的药丸底：纯 CSS（motion-v 的共享布局动画实测 +46 KB gzip，只为一次药丸位移，
-   不划算 —— 见 docs/architecture/frontend-performance-antipatterns.md 的依赖决策）。 */
+/* 选中态：底色由 motion-v 的共享布局药丸绘制（见 NavRail / 底栏的 layout-id），
+   这里只保留颜色与缩放，避免两层底色叠加。 */
 .nav-glyph-btn[data-active="true"],
 .nav-glyph-pill[data-active="true"] {
-  background: color-mix(in srgb, var(--gosslan-primary) 13%, transparent);
-}
-.nav-glyph-btn[data-active="true"] {
   color: var(--gosslan-primary);
 }
 .nav-glyph-btn:active {
@@ -659,6 +668,9 @@ progress {
     transition: none;
   }
   .gosslan-menu[data-state="open"] {
+    animation: none;
+  }
+  .spinner-icon {
     animation: none;
   }
   /* 全局按压反馈也必须在减弱动态效果下关闭（否则 CSS 侧仍会缩放）。 */
@@ -1079,6 +1091,14 @@ img {
      .gosslan-menu-sep        分组分隔线
      .gosslan-menu-hint       条目下方的说明小字（如"只删除本机记录"）
    尺寸参照微信 macOS：面板内边距 6px、条目高 32px、图标 16px、条目字号 13px。 */
+/* 唯一加载指示器的旋转。reduce 档在文件末尾统一关掉（保留 role=status 的非动效通道）。 */
+@keyframes gosslan-spin {
+  to { transform: rotate(360deg); }
+}
+.spinner-icon {
+  animation: gosslan-spin 1s linear infinite;
+}
+
 /* 下拉/附件菜单统一淡入：只动 opacity —— transform 属于 floating-ui 的定位层，碰了会错位。 */
 @keyframes gosslan-menu-fade-in {
   from { opacity: 0; }
