@@ -6,7 +6,7 @@
  * 纯展示 + 意图上抛：真正的改状态/归档/编辑/删除都在 `GroupTasksBoard` 里
  * （那里已经握有折叠数据、权限判据与 API 调用），这里只渲染与 `emit`。
  */
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import BaseModal from "@/components/BaseModal.vue";
 import { useImagePreviewStore } from "@/stores/useImagePreview";
 import MentionText from "@/components/message/MentionText.vue";
@@ -98,35 +98,51 @@ const priorityOptions = computed(() =>
 const categoryOptions = computed(() =>
   TODO_CATEGORIES.map((c) => ({ value: c, label: t(TODO_CATEGORY_LABEL_KEY[c]) })),
 );
-/** 类型胶囊当前文案：custom 档显示用户输入的名字（没名字时退回「自定义…」菜单项文案）。 */
-const categoryCurrent = computed(() => {
-  const x = props.item;
-  if (!x) return "";
-  if (x.category === "custom") return x.customCategory || t(TODO_CATEGORY_LABEL_KEY.custom);
-  return t(TODO_CATEGORY_LABEL_KEY[x.category]);
-});
-
 /**
  * 自定义类型名的**编辑缓冲**：选「自定义…」只是把档位切到 custom，真正写入要等用户
  * 输完名字确认（与状态/优先级的"一点即写"刻意不同 —— custom 没有名字会被后端拒）。
  * 切到别的任务/打开弹窗时，用该任务当前的名字预填。
  */
 const customDraft = ref("");
+/** 本地“正在选自定义”档位：先让输入框出现并聚焦，不立刻写库。 */
+const categoryDraft = ref<TodoCategory | null>(null);
+const customInput = ref<HTMLInputElement | null>(null);
 watch(
   () => [props.open, props.item?.todoId] as const,
   ([open]) => {
-    if (open) customDraft.value = props.item?.category === "custom" ? (props.item.customCategory ?? "") : "";
+    if (open) {
+      customDraft.value = props.item?.category === "custom" ? (props.item.customCategory ?? "") : "";
+      categoryDraft.value = props.item?.category === "custom" ? "custom" : null;
+    }
   },
   { immediate: true },
 );
+
+/** 类型胶囊当前文案：custom 档（已落库或正在选）显示用户输入的名字。 */
+const categoryCurrent = computed(() => {
+  const x = props.item;
+  if (!x) return "";
+  if (categoryDraft.value === "custom" || x.category === "custom") {
+    return customDraft.value.trim() || x.customCategory || t(TODO_CATEGORY_LABEL_KEY.custom);
+  }
+  return t(TODO_CATEGORY_LABEL_KEY[x.category]);
+});
+/** 正在选自定义或已落库为自定义 —— 名字输入框与确认按钮的显示条件。 */
+const showCustomCategory = computed(
+  () => props.item?.category === "custom" || categoryDraft.value === "custom",
+);
+
 function onCategoryPick(v: string) {
   if (v === "custom") {
     // 已经是 custom 且有名字：再次点开菜单点它不产生写入（disabled 已挡住，这里兜底）。
     if (props.item?.category === "custom" && props.item.customCategory) return;
     // 第一次切到 custom：只展开输入框，不发请求（没名字，发了必被拒）。
     customDraft.value = props.item?.customCategory ?? "";
+    categoryDraft.value = "custom";
+    void nextTick(() => customInput.value?.focus());
     return;
   }
+  categoryDraft.value = null;
   emit("category", v as TodoCategory);
 }
 const ime = useImeEnterGuard();
@@ -254,16 +270,17 @@ const fullCode = computed(() =>
         <TodoPickField
           :label="t('todo.categoryLabel')"
           :hint="t('todo.categoryHint')"
-          :model-value="item.category ?? 'task'"
+          :model-value="categoryDraft ?? item.category ?? 'task'"
           :current="categoryCurrent"
-          :current-class="TODO_CATEGORY_PILL[item.category ?? 'task']"
+          :current-class="TODO_CATEGORY_PILL[categoryDraft ?? item.category ?? 'task']"
           :options="categoryOptions"
           :disabled="!canChangeStatus"
           @update:model-value="onCategoryPick"
         />
-        <div v-if="canChangeStatus && item.category === 'custom'" class="mt-2 flex items-center gap-2">
+        <div v-if="canChangeStatus && showCustomCategory" class="mt-2 flex items-center gap-2">
           <Tag class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-text-2)]" aria-hidden="true" />
           <input
+            ref="customInput"
             v-model="customDraft"
             :maxlength="TODO_CUSTOM_CATEGORY_MAX_LEN"
             class="min-w-0 flex-1 rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-bg)] px-2.5 py-1.5 text-body outline-none transition focus:border-transparent"

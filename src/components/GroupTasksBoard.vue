@@ -18,7 +18,7 @@
  * **权限**：与后端 `commands::may_change_todo` 一致（`canUpdateTodo` / `canEditAssignees` /
  * `canArchiveOrReopenTodo` 是显示用的镜像）—— 界面只是"不给按钮"，真正的拦截在后端命令里。
  */
-import { computed, onBeforeUnmount, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onUnmounted, ref, watch } from "vue";
 import { useEventListener } from "@vueuse/core";
 import {
   DropdownMenuContent,
@@ -499,6 +499,7 @@ const draft = ref<{
    *  用 sha256 而不是下标：删掉一张**已有**图片时，下标会与新图错位（把新图的待投递路径误删）。 */
   imagePaths: Record<string, string>;
 } | null>(null);
+const draftCustomInput = ref<HTMLInputElement | null>(null);
 const saving = ref(false);
 
 /**
@@ -569,11 +570,12 @@ function startEdit(x: TodoItem) {
     imagePaths: {},
   };
 }
-/** 草稿类型切换：选「自定义…」时若还没有名字，给输入框一个占位焦点；切走其它档不清名字，切回来还在。 */
+/** 草稿类型切换：选「自定义…」时展开并聚焦名字输入框；切走其它档不清名字，切回来还在。 */
 function setDraftCategory(c: TodoCategory) {
   const d = draft.value;
   if (!d) return;
   d.category = c;
+  if (c === "custom") void nextTick(() => draftCustomInput.value?.focus());
 }
 function setDraftPriority(p: TodoPriority) {
   const d = draft.value;
@@ -1438,6 +1440,7 @@ watch(
         <div v-if="draft.category === 'custom'" class="mt-2 flex items-center gap-2 pl-1">
           <Tag class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-text-2)]" aria-hidden="true" />
           <input
+            ref="draftCustomInput"
             v-model="draft.customCategory"
             :maxlength="TODO_CUSTOM_CATEGORY_MAX_LEN"
             class="min-w-0 flex-1 rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-bg)] px-2.5 py-1.5 text-body outline-none transition focus:border-transparent"

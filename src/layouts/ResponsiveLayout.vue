@@ -355,10 +355,17 @@ async function onOpenSearchHit(payload: { convId: string; msgId: string }) {
   if (r !== "found") app.toast(t("search.locateFail"), "error");
 }
 
+/** 添加好友页里点「发起聊天」：关掉弹窗，直接打开与该好友的单聊。 */
+function openChatFromFriend(peerId: string) {
+  addFriendOpen.value = false;
+  void chat.openConversation(peerId).catch((e: unknown) => {
+    app.toastError(e, t("common.operationFail"));
+  });
+}
+
 function openFriendProfile(f: Friend) {
   profileFriend.value = f;
-  if (app.isMobile) app.mobileView = "chat";
-  void router.push({ name: "friend", params: { friendId: f.device_id } });
+  if (app.isMobile) app.mobileView = "chat";  void router.push({ name: "friend", params: { friendId: f.device_id } });
 }
 
 /** 「新的朋友」页：右侧主区展示好友申请列表（微信式） */
@@ -1105,7 +1112,7 @@ function onResizeEnd() {
       @open-conversation="onOpenSearchHit"
     />
 
-    <AddFriendModal :open="addFriendOpen" @close="addFriendOpen = false" />
+    <AddFriendModal :open="addFriendOpen" @close="addFriendOpen = false" @chat="openChatFromFriend" />
     <GroupCreateModal :open="groupOpen" @close="groupOpen = false" />
     <ShareDirectory :open="shareOpen" @close="shareOpen = false" />
 

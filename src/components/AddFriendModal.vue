@@ -13,11 +13,16 @@ import BaseModal from "@/components/BaseModal.vue";
 import { avatarSeedFor } from "@/utils/avatarSeed";
 import { MAX_SEARCH_KEYWORD_CHARS } from "@/utils/validation";
 import { UserPlus } from "lucide-vue-next";
+import { MessageCircle } from "lucide-vue-next";
 import { Check } from "@/components/ui/icons";
 import { X } from "@/components/ui/icons";
 
 const props = defineProps<{ open: boolean }>();
-const emit = defineEmits<{ (e: "close"): void }>();
+const emit = defineEmits<{
+  (e: "close"): void;
+  /** 对方已在好友表：把这一行变成「发起聊天」，由父层打开会话。 */
+  (e: "chat", peerId: string): void;
+}>();
 
 const app = useAppStore();
 const chat = useChatStore();
@@ -379,13 +384,16 @@ async function add(peerId: string) {
               {{ peerAddress(p) }}
             </div>
           </div>
-          <span
+          <button
             v-if="friendIds.has(p.device_id)"
-            class="flex items-center gap-1 rounded-[var(--gosslan-radius-md)] px-3 py-1.5 text-xs font-medium text-[var(--gosslan-text-2)]"
+            class="tap-safe flex shrink-0 items-center gap-1 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3 py-1.5 text-xs font-medium text-[var(--gosslan-text)] transition hover:bg-[var(--gosslan-hover)]"
+            :title="t('friend.add.alreadyFriend')"
+            :aria-label="t('friend.add.alreadyFriend')"
+            @click="emit('chat', p.device_id)"
           >
-            <Check class="h-3.5 w-3.5" />
-            {{ t("friend.add.alreadyFriend") }}
-          </span>
+            <MessageCircle class="h-3.5 w-3.5" />
+            {{ t("conv.startChat") }}
+          </button>
           <!-- 对方已先申请加我 → 直接同意/拒绝（与「新朋友」页同一套动作） -->
           <span v-else-if="pendingFromIds.has(p.device_id)" class="flex shrink-0 items-center gap-1.5">
             <button
