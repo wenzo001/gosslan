@@ -9,10 +9,11 @@
  * 只有外壳不同（这里是窗口内的左右两栏，那里是移动端整页/卡片弹窗）。
  * 这样「设置长什么样」只有一份实现，不会三处漂移。
  */
-import { computed, ref, watch } from "vue";
+import { computed, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useEventListener } from "@vueuse/core";
 import { SETTINGS_SECTIONS } from "@/router/settings";
+import BackArrow from "@/components/ui/BackArrow.vue";
 import AuxWindowShell from "@/components/window/AuxWindowShell.vue";
 import DevDiagPanel from "@/components/DevDiagPanel.vue";
 import ProfileSection from "@/components/settings/ProfileSection.vue";
@@ -67,6 +68,22 @@ function openSection(key: SectionKey) {
   void router.push({ name: "settings-section", params: { key } });
 }
 
+/** 只有"上一跳仍在设置分区里"才显示/响应返回；从主窗口刚打开时 back 指向别处。 */
+const canGoBack = ref(false);
+function syncBackState() {
+  const back = (window.history.state as { back?: string | null } | null)?.back ?? "";
+  canGoBack.value =
+    typeof back === "string" &&
+    (back.includes("#/settings/") || back.includes("/settings/"));
+}
+function goBackSection() {
+  if (canGoBack.value) router.back();
+  else void router.replace({ name: "settings-section", params: { key: "profile" } });
+}
+const removeAfterEach = router.afterEach(syncBackState);
+onUnmounted(removeAfterEach);
+syncBackState();
+
 /** 各分区按需加载：恢复默认等改动后 bump 令牌触发重载（与 SettingsPanel 同一套语义）。 */
 const reloadToken = ref(0);
 const devDiagOpen = ref(false);
@@ -112,6 +129,13 @@ const navItems = computed<{ key: SectionKey; label: string; icon: unknown }[]>((
  * Esc 是用户预期存在的最短路径。失败（非 Tauri 环境）时静默忽略。
  */
 function onKeydown(e: KeyboardEvent) {
+  // 分区历史返回：Alt+← / ⌘[ / Ctrl+[。与主窗口同一套返回语义。
+  const mod = e.metaKey || e.ctrlKey;
+  if ((e.altKey && e.key === "ArrowLeft") || (mod && e.key === "[")) {
+    e.preventDefault();
+    goBackSection();
+    return;
+  }
   if (e.key !== "Escape") return;
   // 有弹层（如清除数据二次确认）时先让弹层处理，避免一层 Esc 连窗口一起关掉。
   if (document.querySelector("[role='dialog']")) return;
@@ -131,6 +155,18 @@ useEventListener(window, "keydown", onKeydown);
          左内边距与右侧留白/箭头位置不匹配。这里导航项为纯文字+图标（无展开箭头），
          一旦将来加展开子项，用同一个 `pr-2.5` 承接箭头即可保持对称。 -->
     <nav class="flex w-[176px] shrink-0 flex-col gap-0.5 border-r border-[var(--gosslan-divider)] bg-[var(--gosslan-panel)] px-2 py-3">
+      <!-- 可见的分区历史返回：Tauri 窗口没有地址栏，路由要"看得见"才算真的可返回。 -->
+      <button
+        v-if="canGoBack"
+        class="tap-safe mb-1 flex h-8 w-full items-center gap-2 rounded-[var(--gosslan-radius-md)] px-2.5 text-left text-body text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]"
+        :title="t('common.back')"
+        :aria-label="t('common.back')"
+        @click="goBackSection"
+      >
+        <BackArrow class="h-4 w-4 shrink-0" />
+        <span class="min-w-0 flex-1 truncate" :title="t('common.back')">{{ t("common.back") }}</span>
+      </button>
+      <div v-if="canGoBack" class="mx-2 mb-1 h-px bg-[var(--gosslan-divider)]"></div>
       <button
         v-for="item in navItems"
         :key="item.key"
@@ -147,7 +183,7 @@ useEventListener(window, "keydown", onKeydown);
     </nav>
 
     <!-- 右：内容区（独立滚动，切换导航不改变窗口尺寸） -->
-    <div class="min-w-0 flex-1 overflow-y-auto px-5 py-4">
+    <div class="scrollbar-both min-w-0 flex-1 overflow-y-auto px-5 py-4">
       <Transition name="settings-swap" mode="out-in">
       <div :key="section">
       <ProfileSection v-if="section === 'profile'" :active="true" :reload-token="reloadToken" />

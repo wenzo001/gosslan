@@ -31,9 +31,11 @@ grep -c '^  "' src/router/settings.ts
 |---|---|---|---|
 | 主窗口 | `index.html` / `src/entries/main.ts` | `src/router/main.ts` | 会话 / 通讯录 / 收藏 / 链接 / 我的 / 覆盖层 |
 | 设置窗口 | `settings.html` / `src/entries/settings.ts` | `src/router/settings.ts` | `#/settings/:key`（10 个分区） |
-| 日志 / 群任务 / 预览 | 单页入口 | 不需要 | — |
+| 日志 / 群任务 / 预览 | 单页入口 | **不需要** | 无可下钻的页面层级；筛选/任务详情是视图状态或浮层 |
 
 跨窗口跳转继续走 `launchAuxWindow` 的 IPC；router 不跨窗口。
+
+**为什么只有设置窗口需要 router**：它有 10 个可深链、可返回的分区；日志/群任务/预览都是单页工具，筛选与详情弹窗属于视图状态（R4），没有「整体换成一个新界面」的层级，强加路由只会制造空记录。
 
 ## 3. 主窗口路由表
 
@@ -49,9 +51,9 @@ grep -c '^  "' src/router/settings.ts
 | `links` | `/links` | — | `LinksList` | 双端 | `pane: detail` |
 | `me` | `/me` | — | 「我的」页 | 仅移动 | `pane: detail` |
 | `profile` | `/profile` | — | `ProfileSection` + `MobilePageFrame` | 仅移动 | `overlay` |
-| `settings` | `/settings` | — | 设置一级 | 仅移动 | `overlay` |
-| `settings-section` | `/settings/:key` | `key` | 对应分区 | 仅移动 | `overlay`, `depth: 2` |
-| `logs` | `/logs` | — | `LogViewer`（非 standalone） | 仅移动 | `overlay` |
+| `settings` | `/me/settings` | — | 设置一级 | 仅移动 | `overlay` |
+| `settings-section` | `/me/settings/:key` | `key` | 对应分区 | 仅移动 | `overlay`, `depth: 2` |
+| `logs` | `/me/logs` | — | `LogViewer`（非 standalone） | 仅移动 | `overlay` |
 | `search` | `/search` | `q` | `ChatSearchDialog` | 双端 | `overlay` |
 
 设置窗口的路由是 `#/settings/:key`，分区清单在 `src/router/settings.ts` 的 `SETTINGS_SECTIONS`。
@@ -104,7 +106,7 @@ grep -c '^  "' src/router/settings.ts
 | D-B | 桌面好友资料页无返回入口；点 rail「通讯录」不重置资料 | 资料页始终显示返回条；`/contacts` 会清 `profileFriend` |
 | D-C | 桌面收藏页无头部 / 关闭按钮 | 收藏页左栏加返回 + 标题 |
 | D-D | 移动端「新的朋友」返回只改 `mobileView`，不清 `showRequests` | `requests` 是路由；离开即清 |
-| D-E | `navState === 'me'` 在桌面不可达 | 桌面深链 `/me`、`/profile`、`/logs` 重定向到 `/chats` |
+| D-E | `navState === 'me'` 在桌面不可达 | 桌面深链 `/me`、`/profile`、`/me/logs` 重定向到 `/chats` |
 | D-F | 没有返回快捷键 | `Esc` / `⌘[` / `Ctrl+[` / `Alt+←` |
 
 ## 8. 验证记录
@@ -117,14 +119,22 @@ grep -c '^  "' src/router/settings.ts
 | 一级导航 | 点 rail 通讯录 / 收藏，URL 分别变为 `/contacts`、`/favorites` |
 | 路由返回 | `/favorites` → `history.back()` → `/contacts` |
 | 移动端我的 | `/me` 主面板可见，底栏「我的」高亮 |
-| 覆盖层 | `/me` → 设置 → `/settings`；返回 → `/me` |
+| 覆盖层 | `/me` → 设置 → `/me/settings` → 分区 `/me/settings/appearance`；两次返回 → `/me`，底栏可点 |
+| 收藏详情 | 移动端详情底边停在 TabBar 之上，详情页内仍可切换一级菜单 |
 | 两套历史共存 | 打开添加好友弹窗 → `history.back()` → 弹窗关闭、URL 仍为 `/contacts` |
-| 设置窗口 | `settings.html#/settings/profile` 深链；点「外观」→ `#/settings/appearance`；返回 → `#/settings/profile` |
+| 设置窗口 | `settings.html#/settings/profile` 深链；点「外观」→ `#/settings/appearance`；左侧「返回」与 `Alt+←` 回到 `#/settings/profile` |
 
 **未验证**：真实 Tauri WebView（`tauri://` 与 `http://tauri.localhost`）下的 `pushState` / `popstate` 行为、Android 物理返回、iOS 边缘滑动。纯浏览器环境没有 Tauri IPC，本次只验证路由与返回栈本身；真机项必须按 `docs/design-guidelines.md` §11.5 的口径登记为 NOT RUN。
 
 > 2026-10-22 用户裁决：统一走 web history（含 `tauri:` / `asset:`）；只有 `pushState` 真抛错才退 hash。
 > 真机仍需复核：自定义协议下刷新不会 404、物理返回能一路退到退出应用。
+
+## 8.1 桌面 / 移动分开实现
+
+桌面三栏（`NavRail` + 列表 + 主区）与移动抽屉/底栏是**显式的两条渲染分支**：
+`NavRail` 只在桌面出现；移动底栏是根节点内的 `absolute` 层（不走 `fixed`，避免 WebView 键盘/视觉视口
+造成的错位），列表↔详情用对称 `translate`，Tab 切换用 `paneAnimate` 关掉平移。
+路由/状态是共享的，但交互层不共用桌面专属控件。
 
 ## 9. 回归命令
 

@@ -198,11 +198,8 @@
      时 delta=60 而不是 16）；真机上万一两者同时不为 0，该让开的也是较大的那一个，不是它们的和。 */
   --gosslan-safe-top: max(var(--gosslan-window-safe-top, 0px), env(safe-area-inset-top, 0px));
   /* 滚动条留白（滚动层 / 内容区与滚动条之间）。
-     Win/Linux 用 706 行那条**常显 6px 细滚动条**，内容贴着滚动条没有呼吸感；
-     macOS 是系统 overlay（`.platform-mac ::-webkit-scrollbar { width: auto }`，不占布局宽）
-     ⇒ 两侧都按**留白**而不是"补滚动条宽度"来取值：这样 Mac 上不会因为多补 6px 而
-     与左侧p-5 明显不对称，Win 上那 6px 滚动条正好落进这段留白里。
-     取 8px：Win 下 6px 滚动条 + 2px 净空隙；Mac 下 8px 视觉留白（与 12px 圆角同量级）。 */
+     2026-10-22 起全端统一使用常显细滚动条（不再在 macOS 上恢复系统 overlay）：
+     8px 轨道 + 4px 实际滑块；`--gosslan-scroll-gutter` 供需要额外呼吸感的容器复用。 */
   --gosslan-scroll-gutter: 8px;
 
   /* ---------------- 圆角梯度（对齐 iOS HIG / WWDC25「Shape & Concentricity」） ----------------
@@ -353,10 +350,16 @@ html {
 body {
   overscroll-behavior: none;
 }
-/* 滚动容器（消息区 / 列表 / 弹层）：滚到头不要把整页带出去 */
+/* 滚动容器（消息区 / 列表 / 弹层）：滚到头不要把整页带出去。
+   `scrollbar-gutter: stable` 让滚动条出现/消失时不改变内容宽度（长列表不会抖一下）；
+   居中内容用 `.scrollbar-both` 在两侧各留同样宽的 gutter，视觉中心不偏。 */
 .overflow-y-auto,
 .overflow-auto {
   overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.scrollbar-both {
+  scrollbar-gutter: stable both-edges;
 }
 /* 搜索/筛选小胶囊（「发送人」「日期」这类开关）。
    与 `.gosslan-menu` 同族取值：圆角用统一 token、颜色全部走语义变量 —— 不写死微信色值。 */
@@ -906,25 +909,35 @@ progress {
   }
 }
 
-/* 细滚动条 */
+/* 细滚动条：**全端常显**（用户 2026-10-22：滚动面板要能看见位置）。
+   纯 CSS 原生滚动条，零 JS、零额外 DOM；8px 轨道 + 4px 实际滑块（2px 透明边），
+   颜色走主题 token，暗色自动跟随。不要改回 macOS overlay —— 系统 overlay 默认
+   滚动时才浮出，用户会以为"没有滚动条"。 */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 8px;
+  height: 8px;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(128, 128, 128, 0.3);
+  background: color-mix(in srgb, var(--gosslan-text-2) 50%, transparent);
+  border: 2px solid transparent;
+  background-clip: content-box;
   border-radius: var(--gosslan-radius-pill);
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(128, 128, 128, 0.5);
+  background: color-mix(in srgb, var(--gosslan-text-2) 70%, transparent);
+  border: 2px solid transparent;
+  background-clip: content-box;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
-
-/* macOS：恢复系统 overlay 滚动条（滚动时才浮出、不占布局宽度，符合 HIG）。
-   Windows/Android 保留上面的 6px 细滚动条（自绘标题栏/触屏语境下常显更明确）。
-   ⚠️ 必须写在上面全局滚动条样式**之后**：同优先级"后定义者胜"，写前面会被覆盖。 */
+/* Firefox：只在**不支持** ::-webkit-scrollbar 时启用标准属性，避免覆盖上面的细滑块。 */
+@supports not selector(::-webkit-scrollbar) {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in srgb, var(--gosslan-text-2) 50%, transparent) transparent;
+  }
+}
 /* macOS：标题栏高度对齐系统（28px）。自绘红绿灯的圆心位置、与窗口顶边的距离
    因此与原生窗口一致；配合 TitleBar 里的 12px 直径 / 8px 间距 / 13px 左边距，
    整组与系统视觉等价。 */
@@ -941,15 +954,6 @@ progress {
    与 tailwind 的 `desktop:` 变体（仍按 `is-mobile` 判**布局**）是两件事，不要并成一个。 */
 html.has-caption {
   --gosslan-window-safe-top: var(--gosslan-title-h);
-}
-
-.platform-mac ::-webkit-scrollbar {
-  width: auto;
-  height: auto;
-}
-.platform-mac ::-webkit-scrollbar-thumb,
-.platform-mac ::-webkit-scrollbar-thumb:hover {
-  background: initial;
 }
 
 /* 聊天气泡指向头像的小尖角（微信式）。颜色取气泡自身的 --bubble-bg，
@@ -1208,6 +1212,13 @@ img {
   transform: translateX(100%);
   opacity: 0.4;
 }
+/* 退场中的整页壳不再接点击：它还在 240ms 的滑出动画里，但底下的 TabBar/页面
+   已经可见。不摘掉命中会表现成「点了底栏没反应」（用户 2026-10-22 反馈）。 */
+.page-slide-leave-active,
+.page-slide-back-leave-active,
+.settings-swap-leave-active {
+  pointer-events: none;
+}
 
 /* 设置分区切换：轻微位移 + 淡入，`out-in` 避免两页同时占位。 */
 .settings-swap-enter-active,
@@ -1284,7 +1295,7 @@ img {
 .gosslan-dialog-card[data-state="open"] { animation: gosslan-dialog-pop-in var(--gosslan-duration) var(--gosslan-ease-spring); }
 .gosslan-dialog-card[data-state="closed"] { animation: gosslan-dialog-pop-out 160ms var(--gosslan-ease) forwards; }
 .gosslan-dialog-page[data-state="open"] { animation: gosslan-dialog-page-in var(--gosslan-duration) var(--gosslan-ease); }
-.gosslan-dialog-page[data-state="closed"] { animation: gosslan-dialog-page-out var(--gosslan-duration) var(--gosslan-ease) forwards; }
+.gosslan-dialog-page[data-state="closed"] { animation: gosslan-dialog-page-out var(--gosslan-duration) var(--gosslan-ease) forwards; pointer-events: none; }
 .gosslan-dialog-sheet[data-state="open"] { animation: gosslan-dialog-sheet-in 260ms var(--gosslan-ease-spring); }
 .gosslan-dialog-sheet[data-state="closed"] { animation: gosslan-dialog-sheet-out 180ms var(--gosslan-ease) forwards; }
 

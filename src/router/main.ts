@@ -103,19 +103,19 @@ export const MAIN_ROUTES: RouteRecordRaw[] = [
     meta: { pane: "detail", tab: "me", depth: 1, overlay: true },
   },
   {
-    path: "/settings",
+    path: "/me/settings",
     name: "settings",
     component: RouteView,
     meta: { pane: "detail", tab: "me", depth: 1, overlay: true },
   },
   {
-    path: "/settings/:key",
+    path: "/me/settings/:key",
     name: "settings-section",
     component: RouteView,
     meta: { pane: "detail", tab: "me", depth: 2, overlay: true },
   },
   {
-    path: "/logs",
+    path: "/me/logs",
     name: "logs",
     component: RouteView,
     meta: { pane: "detail", tab: "me", depth: 1, overlay: true },

@@ -13,6 +13,20 @@
 
 ## [Unreleased]
 
+## [5.3.1] - 2026-10-22
+
+### 移动端底栏 / 滚动条 / 设置路由修复
+
+- 移动底栏从 `fixed` 改为根节点内 `absolute`；页面转场退场壳 `pointer-events: none`，
+  修复「点底栏有时候不动」。
+- 全端常显 8px 原生 CSS 滚动条（4px 实际滑块）；滚动容器 `scrollbar-gutter: stable`，
+  居中内容 `.scrollbar-both`（`stable both-edges`）；移除 macOS overlay 覆盖。
+- 移动设置分区接入 `/me/settings/:key`；主窗口的移动设置/日志路径下沉到 `/me/settings`、
+  `/me/logs`，避免与 `settings.html` / `logs.html` 在 dev 下撞路径。
+- 收藏详情在移动端不再 `inset-0` 盖住底栏：底边抬到 TabBar 之上，详情页里也能直接切换菜单。
+- 桌面设置窗口新增可见「返回」与 `Alt+←` / `⌘[` / `Ctrl+[`；桌面三栏与移动抽屉/底栏
+  明确为两条渲染分支。
+
 ## [5.3.0] - 2026-10-22
 
 ### 交互升级：motion-v、Spinner 收敛与性能余项

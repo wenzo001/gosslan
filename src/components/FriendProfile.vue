@@ -139,7 +139,7 @@ const confirmRemove = ref(false);
       <span class="truncate text-title font-medium" :title="friend.nickname">{{ friend.nickname }}</span>
     </div>
 
-    <div class="flex-1 overflow-y-auto px-6 py-6">
+    <div class="scrollbar-both flex-1 overflow-y-auto px-6 py-6">
       <div class="mx-auto w-full max-w-[560px]">
         <!-- 头部（紧凑版）：头像 + 昵称行（含在线状态 + 发消息按钮一行内）
              信息密度翻倍：原来 mt-7 才到分组卡，现在 mt-3 就到了。

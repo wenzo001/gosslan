@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { useBackLayer } from "@/composables/useBackLayer";
+import { useRoute, useRouter } from "vue-router";
 import { ChevronRight } from "lucide-vue-next";
 import { computed, ref } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
@@ -19,27 +19,22 @@ import AboutSection from "@/components/settings/AboutSection.vue";
 import ResetSection from "@/components/settings/ResetSection.vue";
 import { t } from "@/i18n";
 
-const props = defineProps<{ open: boolean }>();
+const props = withDefaults(defineProps<{ open: boolean; routeDriven?: boolean }>(), {
+  routeDriven: false,
+});
 const emit = defineEmits<{ (e: "close"): void }>();
 
 const app = useAppStore();
+// 探针/桌面回退形态可以不装 router；只有主窗口移动端由路由驱动。
+const route = props.routeDriven ? useRoute() : null;
+const router = props.routeDriven ? useRouter() : null;
 
 /** 各分区按需加载：打开时刷新一次，恢复默认等外部改动后 bump 令牌触发重载。 */
 const reloadToken = ref(0);
 const devDiagOpen = ref(false);
 
-/** 移动端二级导航：null=一级列表；string=二级详情页 key。 */
-const mobileNav = ref<string | null>(null);
-
-/** 二级页打开时，系统返回键先回一级，再返回关闭整个设置层。 */
-useBackLayer(
-  () => props.open && mobileNav.value !== null,
-  () => (mobileNav.value = null),
-);
-useBackLayer(
-  () => props.open && mobileNav.value === null,
-  () => emit("close"),
-);
+/** 桌面回退形态用的本地二级导航；移动端以路由 `/me/settings/:key` 为准。 */
+const localMobileNav = ref<string | null>(null);
 
 /**
  * 二级页配置：key → 标题 + 渲染函数（用 h 避免模板里大 switch）。
@@ -97,6 +92,22 @@ const SECTIONS: Record<string, { titleKey: string; render: () => any }> = {
   },
 };
 
+/** 移动端分区 = 路由派生（可深链、可返回）；桌面回退形态仍用本地 ref。 */
+const routeSection = computed<string | null>(() => {
+  if (!props.routeDriven || !route || route.name !== "settings-section") return null;
+  const key = String(route.params.key ?? "");
+  return key && SECTIONS[key] ? key : null;
+});
+const mobileNav = computed<string | null>(() => routeSection.value ?? localMobileNav.value);
+
+function selectSection(key: string) {
+  if (props.routeDriven && router && String(route?.name ?? "").startsWith("settings")) {
+    void router.push({ name: "settings-section", params: { key } });
+    return;
+  }
+  localMobileNav.value = key;
+}
+
 /** 一级列表的分组结构：每组包含多个条目，每条对应一个二级页。 */
 const GROUPS: { key: string; titleKey: string; items: { key: string; titleKey: string }[] }[] = [
   {
@@ -148,8 +159,17 @@ const settingsTitle = computed(() =>
 );
 /** 移动端返回：二级先回一级，一级再关闭整个设置层。 */
 function onSettingsBack() {
-  if (mobileNav.value === null) emit("close");
-  else mobileNav.value = null;
+  if (mobileNav.value === null) {
+    emit("close");
+    return;
+  }
+  if (props.routeDriven && router && route?.name === "settings-section") {
+    const back = (window.history.state as { back?: string | null } | null)?.back;
+    if (back) router.back();
+    else void router.replace({ name: "settings" });
+    return;
+  }
+  localMobileNav.value = null;
 }
 </script>
 
@@ -164,7 +184,7 @@ function onSettingsBack() {
       @back="onSettingsBack"
     >
       <!-- 一级页：分组列表 -->
-      <div v-if="mobileNav === null" class="min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-4">
+      <div v-if="mobileNav === null" class="scrollbar-both min-h-0 flex-1 overflow-y-auto overflow-x-hidden p-4">
         <div v-for="g in GROUPS" :key="g.key" class="mb-5">
           <div class="pb-1 text-caption font-medium uppercase tracking-wider text-[var(--gosslan-text-2)]">
             {{ t(g.titleKey) }}
@@ -175,7 +195,7 @@ function onSettingsBack() {
               :key="item.key"
               class="tap-safe flex w-full items-center gap-3 px-3 py-3 text-left text-emphasis transition hover:bg-[var(--gosslan-hover)]"
               :class="idx > 0 ? 'border-t border-[var(--gosslan-divider)]' : ''"
-              @click="mobileNav = item.key"
+              @click="selectSection(item.key)"
             >
               <span class="flex-1 text-[var(--gosslan-text)]">{{ t(item.titleKey) }}</span>
               <ChevronRight class="h-4 w-4 text-[var(--gosslan-text-2)]" />
@@ -185,7 +205,7 @@ function onSettingsBack() {
       </div>
 
       <!-- 二级页：完整 Section 组件 -->
-      <div v-else class="min-h-0 flex-1 space-y-5 overflow-y-auto overflow-x-hidden p-4">
+      <div v-else class="scrollbar-both min-h-0 flex-1 space-y-5 overflow-y-auto overflow-x-hidden p-4">
         <ProfileSection v-if="mobileNav === 'profile'" :active="open" :reload-token="reloadToken" />
         <GeneralSection v-else-if="mobileNav === 'general'" />
         <AppearanceSection v-else-if="mobileNav === 'appearance'" />
@@ -203,7 +223,7 @@ function onSettingsBack() {
 
   <!-- 桌面端：卡片式弹窗（独立窗口见 `SettingsWindow.vue`；这里保留给「窗口不可用」的场景） -->
   <BaseModal v-else :open="open" :title="t('settings.title')" width="max-w-xl" @close="emit('close')">
-    <div class="-mx-5 -mb-5 max-h-[75vh] space-y-5 overflow-y-auto overflow-x-hidden rounded-b-[var(--gosslan-radius-xl)] bg-[var(--gosslan-bg)] p-5">
+    <div class="scrollbar-both -mx-5 -mb-5 max-h-[75vh] space-y-5 overflow-y-auto overflow-x-hidden rounded-b-[var(--gosslan-radius-xl)] bg-[var(--gosslan-bg)] p-5">
       <ProfileSection :active="open" :reload-token="reloadToken" />
       <GeneralSection />
       <NotificationSection />
