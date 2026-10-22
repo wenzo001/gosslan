@@ -179,16 +179,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # ⚠️ Windows 固定到 2022（2026-10-22）：`windows-latest` 上 `cargo test` 的
-        # **测试可执行文件在加载期就死** —— `exit code 0xc0000139, STATUS_ENTRYPOINT_NOT_FOUND`，
-        # 零测试输出；而同一笔的 fmt / clippy / `tauri build`（同样是 Windows 腿）都绿。
-        # 已排除的假设：① CRT 不一致（测试 exe **不导入 vcruntime140.dll**，静态 CRT，
-        # `build.windows.staticVCRuntime` 默认就是 true）② 我们的源码（回滚到同一份代码
-        # 在 2026-10-22 13:34 的 `windows-latest` 上是绿的）。
-        # 剩下的最可能是镜像漂移（`windows-latest` 正在迁移，日志里能看到的系统 vcruntime 已是 14.51）。
-        # 处置：固定 2022 先把这条腿恢复成有意义的门（**不是** continue-on-error —— 那等于
-        # 静默丢掉整个 Windows 平台的单测）。诊断步骤保留：下一次升镜像时它会点名缺哪个导出。
-        os: [macos-latest, windows-2022]
+        os: [macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -271,15 +262,23 @@ jobs:
           # 上一次就是这样把整份 workflow 写成**非法 YAML**、Verify 一条都没跑的。
           $pairs = New-Object System.Collections.Generic.List[object]
           $cur = $null
+          # ⚠️ 不按**缩进**解析：llvm-readobj 的缩进宽度/制表符随版本变，上一版用
+          # `^\s{2}Name:` 就一条都没匹配上（0 条）。这里按**结构**判：
+          #   `Name: xxx.dll`            → 新的导入 DLL
+          #   `Name: SomeSymbol`（无点）  → 属于当前 DLL 的导入符号
           foreach ($line in ($raw -split "`n")) {
-            if     ($line -match '^\s{2}Name:\s*(\S+\.dll)\s*$') { $cur = $Matches[1] }
-            elseif ($line -match '^\s{6}Name:\s*(\S+)\s*$' -and $cur) {
+            if     ($line -match 'Name:\s*(\S+\.dll)\s*$') { $cur = $Matches[1] }
+            elseif ($line -match 'Name:\s*([A-Za-z_?@$][\w?@$]*)\s*$' -and $cur) {
               $pairs.Add([pscustomobject]@{ Dll = $cur; Fn = $Matches[1] })
             }
           }
           Write-Host "解析到 $($pairs.Count) 个导入项"
           if ($pairs.Count -eq 0) {
-            Write-Host '::error title=Windows 加载失败诊断::导入项解析出 0 条 —— 是诊断脚本的缩进匹配失效，不是「全部都能解析」'
+            # 兜底：把原始输出前一段塞进注解 —— 下一次红就能直接看到真实格式，
+            # 不用再猜缩进（这一步已经猜错过一次）。
+            $flat = ($raw -replace '\s+', ' ')
+            $snip = $flat.Substring(0, [Math]::Min(1200, $flat.Length))
+            Write-Host "::error title=Windows 加载失败诊断::导入项解析出 0 条（诊断脚本的解析失效）。原始输出前段：$snip"
             exit 0
           }
           $handles = @{}
