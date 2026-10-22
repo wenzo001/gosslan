@@ -207,20 +207,223 @@ pub fn is_transfer_done(conn: &Connection, id: &str) -> Result<bool> {
 }
 
 pub fn list_transfers(conn: &Connection) -> Result<Vec<TransferInfo>> {
+    let now = now_ms();
     let mut stmt = conn.prepare(
-        "SELECT id, peer_id, name, size, direction, status, path, progress FROM file_transfers ORDER BY created_at DESC",
+        "SELECT t.id, t.peer_id, t.name, t.size, t.direction, t.status, t.path, t.progress,
+                CASE
+                  WHEN t.direction = 'send' AND t.status = 'pending' AND o.transfer_id IS NULL
+                    THEN 'queue_missing'
+                  WHEN t.direction = 'send' AND t.status = 'pending' AND o.status IN ('failed','cancelled')
+                    THEN 'queue_closed'
+                  WHEN t.direction = 'send' AND t.status = 'pending' AND o.status = 'pending'
+                       AND o.attempts >= ?2
+                    THEN 'retry_exhausted'
+                  WHEN t.direction = 'send' AND t.status = 'pending' AND o.next_attempt_at > ?1
+                    THEN 'waiting_retry'
+                  ELSE NULL
+                END
+         FROM file_transfers t
+         LEFT JOIN file_outbox o ON o.transfer_id = t.id
+         ORDER BY t.created_at DESC",
     )?;
-    let rows = stmt.query_map([], |r| {
-        Ok(crate::state::TransferInfo {
-            id: r.get(0)?,
-            peer_id: r.get(1)?,
-            name: r.get(2)?,
-            size: r.get(3)?,
-            direction: r.get(4)?,
-            status: r.get(5)?,
-            path: r.get(6)?,
-            progress: r.get(7)?,
-        })
-    })?;
+    let rows = stmt.query_map(
+        params![now, crate::network::file::MAX_FILE_OUTBOX_RETRIES],
+        |r| {
+            Ok(crate::state::TransferInfo {
+                id: r.get(0)?,
+                peer_id: r.get(1)?,
+                name: r.get(2)?,
+                size: r.get(3)?,
+                direction: r.get(4)?,
+                status: r.get(5)?,
+                path: r.get(6)?,
+                progress: r.get(7)?,
+                blocked_reason: r.get(8)?,
+            })
+        },
+    )?;
     Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// 建行后至少留这么久才允许判成“孤儿”：`send_file` 先建 transfer、再写 outbox，
+/// 中间那几毫秒不能被对账误杀。
+pub const ORPHAN_PENDING_TRANSFER_GRACE_MS: i64 = 120_000;
+
+/// 发送侧 pending、但 `file_outbox` 里**没有仍然活着的行**（pending/sending）的台账。
+///
+/// 这是“删会话/删好友只删 outbox、不清理 file_transfers”留下的可证孤儿；
+/// 只查 `direction='send'`：接收行本来就没有 outbox，绝不能当孤儿判死。
+pub fn list_orphan_pending_send_transfers(
+    conn: &Connection,
+    cutoff_ms: i64,
+) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT t.id FROM file_transfers t
+         WHERE t.direction = 'send'
+           AND t.status = 'pending'
+           AND t.created_at < ?1
+           AND NOT EXISTS (
+             SELECT 1 FROM file_outbox o
+             WHERE o.transfer_id = t.id AND o.status IN ('pending','sending')
+           )
+         ORDER BY t.created_at ASC",
+    )?;
+    let rows = stmt.query_map(params![cutoff_ms], |r| r.get::<_, String>(0))?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// 发送侧 pending、但 outbox 已经用完重试次数的台账（`list_pending_file_outbox`
+/// 只捞 `attempts < MAX`，这些行不会再被任何 worker 选中）。
+pub fn list_exhausted_pending_send_transfers(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT t.id FROM file_transfers t
+         JOIN file_outbox o ON o.transfer_id = t.id
+         WHERE t.direction = 'send'
+           AND t.status = 'pending'
+           AND o.status = 'pending'
+           AND o.attempts >= ?1
+         ORDER BY t.created_at ASC",
+    )?;
+    let rows = stmt.query_map(
+        params![crate::network::file::MAX_FILE_OUTBOX_RETRIES],
+        |r| r.get::<_, String>(0),
+    )?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// 启动 / 每轮清扫器共用的对账：把两种“不会再有人碰”的发送台账走唯一终态出口。
+///
+/// 返回真正被推进终态的 transfer_id（调用方据此 emit `file-failed`）。
+/// 单条失败不阻断其余：下一轮还会再看到它。
+pub fn reconcile_pending_send_transfers(conn: &Connection) -> Result<Vec<String>> {
+    let cutoff = now_ms().saturating_sub(ORPHAN_PENDING_TRANSFER_GRACE_MS);
+    let mut ids = list_orphan_pending_send_transfers(conn, cutoff)?;
+    ids.extend(list_exhausted_pending_send_transfers(conn)?);
+    ids.sort();
+    ids.dedup();
+    let mut changed = Vec::new();
+    for id in ids {
+        if finalize_file_failure(conn, &id, FileJobEnd::GiveUp).unwrap_or(false) {
+            changed.push(id);
+        }
+    }
+    Ok(changed)
+}
+
+#[cfg(test)]
+mod file_transfer_status_tests {
+    use super::*;
+    use crate::db::SCHEMA;
+    use rusqlite::{params, Connection};
+
+    fn mem() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn
+    }
+
+    fn transfer(conn: &Connection, id: &str, direction: &str, created_at: i64) {
+        conn.execute(
+            "INSERT INTO file_transfers(id,peer_id,name,size,direction,status,path,progress,created_at)
+             VALUES(?1,'peer-a','x.bin',10,?2,'pending',NULL,0.0,?3)",
+            params![id, direction, created_at],
+        )
+        .unwrap();
+    }
+
+    fn outbox(conn: &Connection, id: &str, status: &str, attempts: i64, next_attempt_at: i64) {
+        conn.execute(
+            "INSERT INTO file_outbox(transfer_id,peer_id,group_id,local_path,name,size,status,attempts,next_attempt_at,created_at)
+             VALUES(?1,'peer-a',NULL,'/tmp/x','x.bin',10,?2,?3,?4,0)",
+            params![id, status, attempts, next_attempt_at],
+        )
+        .unwrap();
+    }
+
+    fn reason(conn: &Connection, id: &str) -> Option<String> {
+        list_transfers(conn)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.id == id)
+            .unwrap_or_else(|| panic!("缺 transfer {id}"))
+            .blocked_reason
+    }
+
+    #[test]
+    fn blocked_reason_covers_missing_closed_exhausted_waiting_and_receive() {
+        let conn = mem();
+        let now = now_ms();
+        transfer(&conn, "missing", "send", now);
+        transfer(&conn, "closed", "send", now);
+        outbox(&conn, "closed", "failed", 0, now);
+        transfer(&conn, "exhausted", "send", now);
+        outbox(&conn, "exhausted", "pending", 99, now - 1);
+        transfer(&conn, "waiting", "send", now);
+        outbox(&conn, "waiting", "pending", 0, now + 60_000);
+        transfer(&conn, "receiving", "receive", now);
+
+        assert_eq!(reason(&conn, "missing").as_deref(), Some("queue_missing"));
+        assert_eq!(reason(&conn, "closed").as_deref(), Some("queue_closed"));
+        assert_eq!(
+            reason(&conn, "exhausted").as_deref(),
+            Some("retry_exhausted")
+        );
+        assert_eq!(
+            reason(&conn, "waiting").as_deref(),
+            Some("waiting_retry")
+        );
+        assert_eq!(
+            reason(&conn, "receiving"),
+            None,
+            "接收行本来就没有 file_outbox，绝不能被判成孤儿"
+        );
+    }
+
+    #[test]
+    fn reconcile_only_touches_old_orphan_or_exhausted_sends() {
+        let conn = mem();
+        let now = now_ms();
+        transfer(&conn, "old-orphan", "send", now - 180_000);
+        transfer(&conn, "fresh", "send", now);
+        transfer(&conn, "has-outbox", "send", now - 180_000);
+        outbox(&conn, "has-outbox", "pending", 0, now + 60_000);
+        transfer(&conn, "recv", "receive", now - 180_000);
+        transfer(&conn, "exhausted", "send", now);
+        outbox(&conn, "exhausted", "pending", 99, now);
+
+        let orphans = list_orphan_pending_send_transfers(
+            &conn,
+            now - ORPHAN_PENDING_TRANSFER_GRACE_MS,
+        )
+        .unwrap();
+        assert_eq!(orphans, vec!["old-orphan".to_string()]);
+        assert_eq!(
+            list_exhausted_pending_send_transfers(&conn).unwrap(),
+            vec!["exhausted".to_string()]
+        );
+
+        let changed = reconcile_pending_send_transfers(&conn).unwrap();
+        assert!(changed.contains(&"old-orphan".to_string()));
+        assert!(changed.contains(&"exhausted".to_string()));
+        for id in ["old-orphan", "exhausted"] {
+            let status: String = conn
+                .query_row(
+                    "SELECT status FROM file_transfers WHERE id = ?1",
+                    params![id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(status, "failed", "{id} 必须被推进终态");
+        }
+        for id in ["fresh", "has-outbox", "recv"] {
+            let status: String = conn
+                .query_row(
+                    "SELECT status FROM file_transfers WHERE id = ?1",
+                    params![id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(status, "pending", "{id} 不许被误杀");
+        }
+    }
 }

@@ -31,7 +31,8 @@ fn resident_startup_src() -> String {
 /// 且写库返回值被 `let _ =` 丢掉 ⇒ 锁中毒或写库失败时**界面照样报失败、而 outbox 行还在**
 /// ⇒ 下一次 `flush_outbox` 把它再发一遍 = 用户看到「我以为失败了的消息又发出去了」（重复投递）。
 /// 判据：① 三处终态各由 finalize 助手落库，emit 在 `if finalized {` 分支里（写库成功才发）；
-///      ② db 锁中毒不许 `else { continue }` 静默跳过整个 tick（消息会永久停在 sending）。
+///      ② 新增的孤儿/耗尽对账 emit 在 `Ok(ids) if !ids.is_empty()` 分支里（写库成功且有行才发）；
+///      ③ db 锁中毒不许 `else { continue }` 静默跳过整个 tick（消息会永久停在 sending）。
 /// 为什么是源码守卫：本仓没有能驱动这个清扫循环 + 捕获 emit 的异步夹具（同 4.25.7 打标顺序那条）。
 #[test]
 fn outbox_sweeper_emits_only_after_db_write_succeeds() {
@@ -62,8 +63,13 @@ fn outbox_sweeper_emits_only_after_db_write_succeeds() {
     let flat: String = body.split_whitespace().collect();
     assert_eq!(
         flat.matches("emit(\"file-failed\"").count(),
+        2,
+        "file-failed 两处：过期终态 + 孤儿/耗尽对账；两处都必须由写库成功分支门控"
+    );
+    assert_eq!(
+        flat.matches("Ok(ids)if!ids.is_empty()").count(),
         1,
-        "file-failed 仍恰好一处"
+        "新增的对账 emit 必须由 Ok 且非空门控 —— 没有写成功/没有行就不许 emit"
     );
     // N-01：载荷必须是 `FileFailedInfo`（前端 listen<FileFailedInfo> 按 {transfer_id, reason} 取值）。
     // 曾经发的是裸 `&transfer_id` ⇒ toast 显示 undefined、气泡永远停在发送中。

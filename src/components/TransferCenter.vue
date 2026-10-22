@@ -2,11 +2,13 @@
 import { computed, ref } from "vue";
 import BaseModal from "@/components/BaseModal.vue";
 import Spinner from "@/components/ui/Spinner.vue";
+import { api } from "@/api";
 import { t } from "@/i18n";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
-import { transferDisplayKind } from "@/utils/transferState";
+import { blockedReasonKey, transferDisplayKind } from "@/utils/transferState";
 import { aggregateTransferProgress, clampProgress, sortLiveTransfers } from "@/utils/transferSummary";
+import type { TransferInfo } from "@/types";
 
 /**
  * 全局「正在传输」入口（UI 审计 D-18：该专项最大的空白）。
@@ -42,6 +44,34 @@ function statusText(row: (typeof rows.value)[number]): string {
   return t(row.direction === "send" ? "send.sendingPct" : "send.receivingPct", {
     pct: percentOf(row.progress),
   });
+}
+
+/** 排队原因：后端只给稳定短码，未知码不上屏。 */
+function blockedText(row: TransferInfo): string {
+  const key = blockedReasonKey(row.blocked_reason);
+  return key ? t(key) : "";
+}
+
+const cancelling = ref<string | null>(null);
+
+/**
+ * 取消一条仍在排队/发送中的文件。
+ *
+ * 复用 `cancel_file_transfer`（它会发在途取消信号、走终态出口并 emit），
+ * 即使 `signalled=false` 也会把台账落 cancelled —— 用户按了取消，界面必须响应。
+ */
+async function cancelRow(row: TransferInfo) {
+  if (cancelling.value) return;
+  cancelling.value = row.id;
+  try {
+    await api.cancelFileTransfer(row.id);
+    await chat.refreshTransfers();
+    app.toast(t("transfer.cancelDone"), "success");
+  } catch (e) {
+    app.toastError(e, t("transfer.cancelFail"));
+  } finally {
+    cancelling.value = null;
+  }
 }
 </script>
 
@@ -103,6 +133,21 @@ function statusText(row: (typeof rows.value)[number]): string {
             class="h-full origin-left rounded-full bg-[var(--gosslan-primary)] transition-transform duration-200"
             :style="{ transform: `scaleX(${clampProgress(row.progress)})` }"
           />
+        </div>
+        <p v-if="blockedText(row)" class="mt-1 text-meta leading-relaxed text-[var(--gosslan-text-2)]">
+          {{ blockedText(row) }}
+        </p>
+        <div
+          v-if="row.direction === 'send' && (row.status === 'pending' || row.status === 'active')"
+          class="mt-2 flex justify-end"
+        >
+          <button
+            class="tap-safe rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-2.5 py-1 text-meta text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-50"
+            :disabled="cancelling === row.id"
+            @click="cancelRow(row)"
+          >
+            {{ t("transfer.cancel") }}
+          </button>
         </div>
       </li>
     </ul>

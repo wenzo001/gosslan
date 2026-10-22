@@ -293,6 +293,8 @@ export interface TransferInfo {
   status: string;
   path: string | null;
   progress: number;
+  /** 排队中为什么不动；稳定短码，前端映射文案。null = 没有额外阻塞信息。 */
+  blocked_reason: string | null;
 }
 
 export interface FileProgress {
