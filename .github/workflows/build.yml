@@ -90,6 +90,33 @@ jobs:
           }
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Smoke — the shipped exe must at least LOAD
+        shell: pwsh
+        # 为什么加这条（2026-10-22）：`verify` 的 Windows **单测**腿在测试 exe 加载期就死
+        # （`0xc0000139 STATUS_ENTRYPOINT_NOT_FOUND`），而发布链路一直是绿的 ——
+        # 但"能打包"不等于"能加载"。这条只回答一个业务问题：**发出去的 exe 起得来吗**。
+        # 判据只认"加载期死亡"：GUI 在无桌面会话下提前退出属于正常，不判红。
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          $exe = "src-tauri/target/$($env:TARGET)/release/gosslan.exe"
+          if (-not (Test-Path $exe)) { Write-Error "找不到 $exe"; exit 1 }
+          $p = Start-Process -FilePath $exe -PassThru
+          Start-Sleep -Seconds 8
+          if ($p.HasExited) {
+            $code = [uint32]$p.ExitCode
+            Write-Host ("进程已退出 code=0x{0:X8}" -f $code)
+            # 0xC0000139 = 入口点缺失；0xC0000135 = DLL 缺失；0xC0000142 = DLL 初始化失败
+            if ($code -in @(0xC0000139, 0xC0000135, 0xC0000142)) {
+              Write-Error ("exe 在**加载期**就死了（0x{0:X8}）⇒ 这个安装包发出去用户也打不开" -f $code)
+              exit 1
+            }
+            Write-Host "不是加载期失败（GUI 无桌面会话下提前退出属正常）"
+          } else {
+            Write-Host "exe 已稳定运行 8s（未在加载期崩溃）"
+            Stop-Process -Id $p.Id -Force
+          }
+
       - name: Verify the installer really contains Bluetooth
         shell: pwsh
         # 旁证：开了 bluetooth feature ⇒ btleplug 会被链进去，Cargo.lock 里必然出现它。
