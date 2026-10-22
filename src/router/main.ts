@@ -130,10 +130,9 @@ export const MAIN_ROUTES: RouteRecordRaw[] = [
 ];
 
 /**
- * 自定义协议（`tauri://`）下 `pushState` 并非处处可用。
- *
- * 主选仍是 `createWebHistory`（保住 Android 的 wry 返回链），只在探测失败时退到
- * hash 模式 —— 后者同样产生真实历史条目，物理返回键不会失效。
+ * 某些被沙箱化的 WebView 里 `pushState` 可能抛错；主选仍是 `createWebHistory`
+ * （保住 Android 的 wry 返回链），只在探测失败时退到 hash 模式 —— 后者同样产生
+ * 真实历史条目，物理返回键不会失效。这是防崩溃，不是按协议分流。
  */
 function canPushState(): boolean {
   try {

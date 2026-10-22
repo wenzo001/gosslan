@@ -80,15 +80,9 @@ function onMoreOpen(open: boolean) {
       ></span>
     </div>
 
-    <!-- 中部：聊天 / 通讯录（用户 2026-09-12 晚反馈：
-         「整体参考图就是微信最左侧栏里的图标风格。选中态是实心的，而不是框框变颜色。
-           现在上面的『聊天』和『通讯录』这两个图标不好看，参考微信。」）
-         ⇒ 两点改动：
-         ① **选中态改为实心**（图标本身 fill=currentColor + 主题色），不再用底色块；
-         ② 「聊天」「通讯录」改为**自绘 SVG**（微信式造型 + 统一 1.9 线宽 / 22px 视觉盒）：
-            · 聊天 = 带左下小尾巴的圆角气泡；
-            · 通讯录 = 圆角卡片内镂空一个人像。
-            造型数据与"这四枚为什么必须自绘"只有一个家：`components/ui/navIconPaths.ts`。 -->
+    <!-- 中部：聊天 / 通讯录 / 收藏 / 链接（用户 2026-10-22 裁决统一图标库）：
+         四枚全部来自 `lucide-vue-next`（映射在 `components/ui/navIcons.ts`），不再自绘；
+         选中态 = 描边加粗 + 药丸底 + 主题色，样式唯一出口是 `style.css` 的 `.nav-glyph*`。 -->
     <div class="mt-5 flex flex-col items-center gap-2">
       <button
         class="nav-glyph-btn relative flex h-11 w-11 items-center justify-center rounded-[var(--gosslan-radius-lg)] transition"

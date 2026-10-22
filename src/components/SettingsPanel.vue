@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { useRoute, useRouter } from "vue-router";
+import { routeLocationKey, routerKey } from "vue-router";
 import { ChevronRight } from "lucide-vue-next";
-import { computed, ref } from "vue";
+import { computed, inject, ref, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import BaseModal from "@/components/BaseModal.vue";
 import MobilePageFrame from "@/components/MobilePageFrame.vue";
@@ -25,9 +25,10 @@ const props = withDefaults(defineProps<{ open: boolean; routeDriven?: boolean }>
 const emit = defineEmits<{ (e: "close"): void }>();
 
 const app = useAppStore();
-// 探针/桌面回退形态可以不装 router；只有主窗口移动端由路由驱动。
-const route = props.routeDriven ? useRoute() : null;
-const router = props.routeDriven ? useRouter() : null;
+// 探针/桌面回退形态可以不装 router；用可空注入而不是条件调用 useRoute（
+// 桌面窗口被拖窄时 props.routeDriven 会翻转，条件 hook 不会重新取路由）。
+const route = inject(routeLocationKey, null);
+const router = inject(routerKey, null);
 
 /** 各分区按需加载：打开时刷新一次，恢复默认等外部改动后 bump 令牌触发重载。 */
 const reloadToken = ref(0);
@@ -35,6 +36,12 @@ const devDiagOpen = ref(false);
 
 /** 桌面回退形态用的本地二级导航；移动端以路由 `/me/settings/:key` 为准。 */
 const localMobileNav = ref<string | null>(null);
+watch(
+  () => props.routeDriven,
+  (driven) => {
+    if (driven) localMobileNav.value = null;
+  },
+);
 
 /**
  * 二级页配置：key → 标题 + 渲染函数（用 h 避免模板里大 switch）。
@@ -93,15 +100,18 @@ const SECTIONS: Record<string, { titleKey: string; render: () => any }> = {
 };
 
 /** 移动端分区 = 路由派生（可深链、可返回）；桌面回退形态仍用本地 ref。 */
+const routeIsSettings = computed(() => !!route && String(route.name ?? "").startsWith("settings"));
 const routeSection = computed<string | null>(() => {
-  if (!props.routeDriven || !route || route.name !== "settings-section") return null;
+  if (!props.routeDriven || !routeIsSettings.value || route?.name !== "settings-section") return null;
   const key = String(route.params.key ?? "");
   return key && SECTIONS[key] ? key : null;
 });
-const mobileNav = computed<string | null>(() => routeSection.value ?? localMobileNav.value);
+const mobileNav = computed<string | null>(() =>
+  props.routeDriven && routeIsSettings.value ? routeSection.value : localMobileNav.value,
+);
 
 function selectSection(key: string) {
-  if (props.routeDriven && router && String(route?.name ?? "").startsWith("settings")) {
+  if (props.routeDriven && routeIsSettings.value && router) {
     void router.push({ name: "settings-section", params: { key } });
     return;
   }
