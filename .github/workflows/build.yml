@@ -91,6 +91,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Smoke — the shipped exe must at least LOAD
+        # ⚠️ 只对**与 runner 同架构**的那条腿跑（`windows-latest` 是 x64）：
+        # arm64 是交叉编译产物，在 x64 Windows 上跑必然会以"入口点/架构不匹配"失败 ——
+        # 那是**冒烟自己**的问题，不是包坏了（2026-10-22 实测：arm64 腿红在 exit 1，
+        # x64 腿通过 ⇒ 发行版 exe 能正常加载）。
+        if: matrix.target == 'x86_64-pc-windows-msvc'
         shell: pwsh
         # 为什么加这条（2026-10-22）：`verify` 的 Windows **单测**腿在测试 exe 加载期就死
         # （`0xc0000139 STATUS_ENTRYPOINT_NOT_FOUND`），而发布链路一直是绿的 ——
