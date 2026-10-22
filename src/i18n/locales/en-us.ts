@@ -510,6 +510,8 @@ export const enUS: MessageDict = {
   "emoji.frequent": "Frequent",
   "emoji.all": "All emoji",
   "chat.composer.code": "Code message",
+  "chat.composer.codeDetected": "Detected {lang} code",
+  "chat.composer.codeUndo": "Undo",
   "chat.composer.sendFile": "Send file (auto route)",
   // Window shake (QQ-like): single chat only; sends a strong reminder to the latest sent message
   "chat.composer.shake": "Shake window",
