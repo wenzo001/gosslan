@@ -7,6 +7,7 @@ import { MAX_PASTED_IMAGE_BYTES, PASTED_IMAGE_LIMIT_MB } from "@/utils/imageByte
 import EmojiPicker from "@/components/EmojiPicker.vue";
 import { QUOTE_BORDER, QUOTE_BG, QUOTE_TEXT_STYLE } from "@/utils/quoteStyle";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
+import { clearComposerDraft, getComposerDraft, saveComposerDraft } from "@/utils/composerDrafts";
 import { PopoverContent, PopoverPortal, PopoverRoot, PopoverTrigger } from "reka-ui";
 import { haptic } from "@/utils/haptics";
 import { shouldRunThrottled } from "@/utils/defer";
@@ -131,10 +132,61 @@ function normalizeEmpty() {
 
 watch(codeMode, () => nextTick(() => autoResize()));
 
-// 打开会话即聚焦输入框（移动端不自动弹软键盘）
+// 切换会话：先存旧草稿，再恢复新草稿；输入框不再随会话卸载重挂。
+/**
+ * 草稿只允许编辑器自己产生的结构：文本、`<br>`/块边界、以及 @提及/表情的 token span。
+ * 恢复前按白名单重建（丢标签名/属性/样式，只留 token 的 data 属性与高亮色），
+ * 这样即使拖入或历史版本留下奇怪标记，也不会被当成 HTML 重新解析执行。
+ */
+const DRAFT_TAGS = new Set(["BR", "DIV", "P", "SPAN"]);
+function sanitizeDraftHtml(html: string): string {
+  const tpl = document.createElement("template");
+  tpl.innerHTML = html;
+  for (const el of Array.from(tpl.content.querySelectorAll("*"))) {
+    if (!DRAFT_TAGS.has(el.tagName)) {
+      el.replaceWith(...Array.from(el.childNodes));
+      continue;
+    }
+    for (const attr of Array.from(el.attributes)) {
+      const keep =
+        attr.name === "class" ||
+        attr.name === "contenteditable" ||
+        attr.name.startsWith("data-mention-");
+      if (!keep) el.removeAttribute(attr.name);
+    }
+    const color = (el as HTMLElement).style.color;
+    if (color) (el as HTMLElement).style.color = color;
+    else el.removeAttribute("style");
+  }
+  return tpl.innerHTML;
+}
+function currentDraftHtml(): string {
+  return sanitizeDraftHtml(editorRef.value?.innerHTML ?? "");
+}
+let draftTimer: ReturnType<typeof setTimeout> | null = null;
+function scheduleDraftSave() {
+  if (draftTimer) clearTimeout(draftTimer);
+  draftTimer = setTimeout(() => {
+    draftTimer = null;
+    saveComposerDraft(props.convId, currentDraftHtml());
+  }, 400);
+}
+function restoreDraft(convId: string | null) {
+  const el = editorRef.value;
+  if (!el) return;
+  el.innerHTML = sanitizeDraftHtml(getComposerDraft(convId));
+  syncDraftState();
+}
 watch(
   () => props.convId,
-  async () => {
+  async (next, prev) => {
+    if (prev) saveComposerDraft(prev, currentDraftHtml());
+    if (draftTimer) {
+      clearTimeout(draftTimer);
+      draftTimer = null;
+    }
+    await nextTick();
+    restoreDraft(next);
     await nextTick();
     if (!app.isMobile) focusEditor();
     autoResize();
@@ -201,6 +253,12 @@ function send(kind?: MsgKind, content?: string) {
   if (editorRef.value) editorRef.value.innerHTML = "";
   hasDraft.value = false;
   mention.value = null;
+  // 发出去的内容不再是草稿；旧草稿若不清，回来会"复活"已发送的文字。
+  clearComposerDraft(props.convId);
+  if (draftTimer) {
+    clearTimeout(draftTimer);
+    draftTimer = null;
+  }
   if (!kind) codeMode.value = false;
   if (props.quote) emit("close-quote");
   // 清空 + DOM 更新后重新聚焦并把 caret 放到末尾：连续发送/继续输入无缝衔接
@@ -466,6 +524,7 @@ function syncDraftState() {
 function onInput(e: Event) {
   syncDraftState();
   normalizeEmpty();
+  scheduleDraftSave();
   if (!(e as InputEvent).isComposing) updateMentionState();
 }
 
@@ -511,6 +570,8 @@ useEventListener(document, "click", onDocClickForMention);
 useEventListener(document, "selectionchange", onSelectionChange);
 onUnmounted(() => {
   if (shakeTimer) clearTimeout(shakeTimer);
+  if (draftTimer) clearTimeout(draftTimer);
+  saveComposerDraft(props.convId, currentDraftHtml());
 });
 watch(emojiOpen, () => {
   if (emojiOpen.value) autoResize();

@@ -443,8 +443,8 @@ CASES: list[Case] = [
         "而移动端靠 mobileView 平移切换，不切过去就还停在会话列表上",
         file=ROOT / "src" / "layouts" / "ResponsiveLayout.vue",
         injections=[(
-            '  if (app.isMobile) app.mobileView = "chat";\n}\n\n/** 收起「新的朋友」页',
-            "}\n\n/** 收起「新的朋友」页",
+            '  if (app.isMobile) app.mobileView = "chat";\n  void router.push({ name: "requests" });\n}',
+            '  void router.push({ name: "requests" });\n}',
         )],
         cmd=npm("test"),
         cwd=ROOT,

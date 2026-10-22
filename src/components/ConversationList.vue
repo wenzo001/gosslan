@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
 import { computed, onUnmounted, ref, watch } from "vue";
+import { useRouter } from "vue-router";
 import { useEventListener } from "@vueuse/core";
 import {
   DropdownMenuContent,
@@ -46,6 +47,7 @@ const emit = defineEmits<{
 }>();
 
 const app = useAppStore();
+const router = useRouter();
 const chat = useChatStore();
 /** 回车打开搜索页之前的输入法守卫（见 composable 注释） */
 const ime = useImeEnterGuard();
@@ -97,6 +99,12 @@ function isSelfRow(id: string): boolean {
 const peerLinkById = computed(() => {
   const m = new Map<string, string | null>();
   for (const p of chat.peers) m.set(p.device_id, p.link ?? null);
+  return m;
+});
+/** 好友表按 id 索引：`v-memo` 依赖里每行都会求值，O(1) 查表替代 O(F) 扫描。 */
+const friendById = computed(() => {
+  const m = new Map<string, Friend>();
+  for (const f of chat.friends) m.set(f.device_id, f);
   return m;
 });
 function linkOf(id: string): string | null {
@@ -176,7 +184,7 @@ function isOnline(id: string): boolean | null {
   // 「和自己聊天」：自己不是一个"在线/离线"的对端 —— 传 null 才不显示状态点、
   // 也不会把头像按离线灰掉（`ConversationListItem` 把 null 定义为"不显示状态点"）。
   if (isSelfConversation({ id }, app.device?.device_id)) return null;
-  return chat.friends.find((f) => f.device_id === id)?.online ?? false;
+  return friendById.value.get(id)?.online ?? false;
 }
 
 /**
@@ -188,7 +196,11 @@ function isOnline(id: string): boolean | null {
  */
 async function openConv(conv: Conversation) {
   if (app.isMobile) app.mobileView = "chat";
-  chat.openConversation(conv.id);
+  // 先同步写 activeConv（openConversation 第一行），再落路由：路由 watcher 看到已打开就跳过，
+  // 不会重复拉一次消息；点下去那一帧面板已经开始平移。
+  const opening = chat.openConversation(conv.id);
+  void router.push({ name: "conversation", params: { convId: conv.id } });
+  void opening;
 }
 /** 通讯录点击好友 → 打开资料页（发消息由资料页按钮触发，不再直接开会话） */
 function openFriend(f: Friend) {
@@ -205,8 +217,9 @@ function startChatWithFriend() {
   const f = friendMenu.value?.friend;
   closeFriendMenu();
   if (!f) return;
-  void chat.openConversation(f.device_id);
-  emit("update:view", "chats");
+  const opening = chat.openConversation(f.device_id);
+  void router.push({ name: "conversation", params: { convId: f.device_id } });
+  void opening;
   if (app.isMobile) app.mobileView = "chat";
 }
 

@@ -464,6 +464,7 @@ export default {
       tier: "L2",
       paths: [
         "src/App.vue",
+        "src/router",
         "src/stores",
         "src/components",
         "src/composables",

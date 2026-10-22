@@ -141,22 +141,28 @@ function readerAvatar(id: string): string | null {
       <X class="h-4 w-4" stroke-width="2.5" />
     </button>
     <span v-else class="relative flex items-center" role="img" :title="title" :aria-label="title">
-      <!-- sending：单勾右下角叠一个小 spinner —— 表达"已经在发但还没到位"。
-           TG 用的是纯 spinner，但纯 spinner 在气泡上很不显眼（小 + 灰）；
-           加一个勾让用户一眼就知道这不是空状态。 -->
-      <template v-if="state === 'sending'">
-        <Check class="h-3.5 w-3.5 text-[var(--gosslan-text-2)]" />
-        <Loader2 class="absolute -right-1 -bottom-0.5 h-2.5 w-2.5 animate-spin text-[var(--gosslan-text-2)]" />
-      </template>
-      <!-- sent：单勾（灰色）—— 已经发出但还没到对方设备。我们 P2P 链路下 sent 到 delivered
-           之间几乎没有停留（写出去 = 对方收到），所以这状态通常一闪而过。 -->
-      <Check v-else-if="state === 'sent'" class="h-3.5 w-3.5 text-[var(--gosslan-text-2)]" />
-      <!-- delivered：双勾灰色 —— 对方设备已收到但还没打开看。 -->
-      <CheckCheck v-else-if="state === 'delivered'" class="h-4 w-4 text-[var(--gosslan-text-2)]" />
-      <!-- read：双勾主题色 —— 对方已读（TG 是蓝色，我们用 app 主题色）。
-           用 primary 而不是 success：绿色在深色模式下容易跟"在线"状态混淆；
-           TG 选蓝色就是为了跟"送达灰色"形成明确对比。 -->
-      <CheckCheck v-else-if="state === 'read'" class="h-4 w-4 text-[var(--gosslan-primary)]" />
+      <!-- 状态切换给一次短促的弹入：单勾→双勾→主题色双勾是聊天里最常盯的一处，
+           硬切会让人怀疑"到底有没有送到"。 -->
+      <Transition name="receipt-swap" mode="out-in">
+        <span :key="state" class="relative flex items-center">
+          <!-- sending：单勾右下角叠一个小 spinner —— 表达"已经在发但还没到位"。
+               TG 用的是纯 spinner，但纯 spinner 在气泡上很不显眼（小 + 灰）；
+               加一个勾让用户一眼就知道这不是空状态。 -->
+          <template v-if="state === 'sending'">
+            <Check class="h-3.5 w-3.5 text-[var(--gosslan-text-2)]" />
+            <Loader2 class="absolute -right-1 -bottom-0.5 h-2.5 w-2.5 animate-spin text-[var(--gosslan-text-2)]" />
+          </template>
+          <!-- sent：单勾（灰色）—— 已经发出但还没到对方设备。我们 P2P 链路下 sent 到 delivered
+               之间几乎没有停留（写出去 = 对方收到），所以这状态通常一闪而过。 -->
+          <Check v-else-if="state === 'sent'" class="h-3.5 w-3.5 text-[var(--gosslan-text-2)]" />
+          <!-- delivered：双勾灰色 —— 对方设备已收到但还没打开看。 -->
+          <CheckCheck v-else-if="state === 'delivered'" class="h-4 w-4 text-[var(--gosslan-text-2)]" />
+          <!-- read：双勾主题色 —— 对方已读（TG 是蓝色，我们用 app 主题色）。
+               用 primary 而不是 success：绿色在深色模式下容易跟"在线"状态混淆；
+               TG 选蓝色就是为了跟"送达灰色"形成明确对比。 -->
+          <CheckCheck v-else-if="state === 'read'" class="h-4 w-4 text-[var(--gosslan-primary)]" />
+        </span>
+      </Transition>
     </span>
   </span>
 </template>

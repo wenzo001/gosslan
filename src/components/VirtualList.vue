@@ -496,7 +496,22 @@ function setPinned(v: boolean) {
   emit("nearBottom", pinned);
 }
 
-defineExpose({ scrollToBottom, scrollToIndex, recentScrollUp, setPinned });
+/** 当前滚动位置（按会话保存/恢复用；不是响应式值，调用方按需现读）。 */
+function getScrollTop(): number {
+  return container.value?.scrollTop ?? 0;
+}
+
+/** 恢复到保存的像素位置；夹在 [0, scrollHeight - clientHeight] 内，避免过度滚动。 */
+function scrollToOffset(offset: number) {
+  const el = container.value;
+  if (!el) return;
+  suppressTransient();
+  const max = Math.max(0, el.scrollHeight - el.clientHeight);
+  setScrollTop(Math.min(Math.max(0, offset), max));
+  computeScrollState();
+}
+
+defineExpose({ scrollToBottom, scrollToIndex, recentScrollUp, setPinned, getScrollTop, scrollToOffset });
 </script>
 
 <template>

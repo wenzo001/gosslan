@@ -146,6 +146,9 @@
         HIG 对"状态变化"给的是 300–500ms + 减速曲线；本应用是密集聊天界面，
         取更短的区间以免拖沓。 */
   --gosslan-ease: cubic-bezier(0.32, 0.72, 0, 1);
+  /* 轻微回弹：只用于"按下/选中/浮层出现"这类**短促**变化。
+     时长超过 300ms 或用于位移较大的页面转场时会晕，别扩用。 */
+  --gosslan-ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
   --gosslan-duration-fast: 150ms;
   --gosslan-duration: 240ms;
   /* 窗口抖动：一次提醒需要几下来回摆动才看得出是"抖动"，比结构性变化更长。
@@ -546,6 +549,122 @@ progress {
 .transition-transform,
 .transition-all {
   transition-timing-function: var(--gosslan-ease);
+}
+
+/* ---------------- 按压与选中反馈（全端统一） ----------------
+   所有按钮按下时给一个很小的缩放；`prefers-reduced-motion` 下完全关闭。
+   `:where()` 零特异性 ⇒ 组件自己的 transition/transform 工具类仍能覆盖，
+   但没有任何自定义过渡的普通按钮也自动获得"按下去有反应"的原生手感。 */
+:where(button:not(:disabled):not([data-no-press])) {
+  transition:
+    transform 110ms var(--gosslan-ease-spring),
+    background-color var(--gosslan-duration-fast) var(--gosslan-ease),
+    color var(--gosslan-duration-fast) var(--gosslan-ease),
+    opacity var(--gosslan-duration-fast) var(--gosslan-ease);
+}
+:where(button:not(:disabled):not([data-no-press])):active {
+  transform: scale(0.97);
+}
+
+/* 一级导航选中态：药丸底 + 主题色 + 弹簧缩放（PC rail 与移动底栏共用这一份） */
+.nav-glyph,
+.nav-glyph-btn,
+.nav-glyph-pill {
+  transition:
+    transform 220ms var(--gosslan-ease-spring),
+    background-color var(--gosslan-duration-fast) var(--gosslan-ease),
+    color var(--gosslan-duration-fast) var(--gosslan-ease);
+}
+/* 选中态的药丸底：纯 CSS（motion-v 的共享布局动画实测 +46 KB gzip，只为一次药丸位移，
+   不划算 —— 见 docs/architecture/frontend-performance-antipatterns.md 的依赖决策）。 */
+.nav-glyph-btn[data-active="true"],
+.nav-glyph-pill[data-active="true"] {
+  background: color-mix(in srgb, var(--gosslan-primary) 13%, transparent);
+}
+.nav-glyph-btn[data-active="true"] {
+  color: var(--gosslan-primary);
+}
+.nav-glyph-btn:active {
+  transform: scale(0.9);
+}
+.nav-glyph-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9999px;
+  padding: 3px 10px;
+}
+.nav-glyph-pill[data-active="true"] .nav-glyph {
+  transform: scale(1.08);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .nav-glyph,
+  .nav-glyph-btn,
+  .nav-glyph-pill {
+    transition: none;
+  }
+  .nav-glyph-pill[data-active="true"] .nav-glyph {
+    transform: none;
+  }
+}
+
+/* 消息回执状态切换（单勾 → 双勾 → 主题色双勾）：短促弹入，不改变行高。 */
+.receipt-swap-enter-active,
+.receipt-swap-leave-active {
+  transition:
+    opacity 120ms var(--gosslan-ease),
+    transform 200ms var(--gosslan-ease-spring);
+}
+.receipt-swap-enter-from {
+  opacity: 0;
+  transform: scale(0.55);
+}
+.receipt-swap-leave-to {
+  opacity: 0;
+  transform: scale(0.9);
+}
+
+/* Toast 进出场：Reka 负责生命周期，这里只补观感。 */
+@keyframes gosslan-toast-in {
+  from { opacity: 0; transform: translateY(-8px) scale(0.96); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes gosslan-toast-out {
+  from { opacity: 1; transform: translateY(0) scale(1); }
+  to { opacity: 0; transform: translateY(-6px) scale(0.97); }
+}
+.gosslan-toast[data-state="open"] {
+  animation: gosslan-toast-in var(--gosslan-duration) var(--gosslan-ease-spring);
+}
+.gosslan-toast[data-state="closed"] {
+  animation: gosslan-toast-out 160ms var(--gosslan-ease) forwards;
+}
+
+/* 未读徽标出现时弹一下（只在挂载时触发，数字变化不重复播）。 */
+@keyframes gosslan-badge-pop {
+  from { opacity: 0; transform: scale(0.6); }
+  to { opacity: 1; transform: scale(1); }
+}
+.unread-badge {
+  animation: gosslan-badge-pop 220ms var(--gosslan-ease-spring);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .receipt-swap-enter-active,
+  .receipt-swap-leave-active,
+  .gosslan-toast[data-state],
+  .unread-badge {
+    animation: none !important;
+    transition: none;
+  }
+  /* 全局按压反馈也必须在减弱动态效果下关闭（否则 CSS 侧仍会缩放）。 */
+  :where(button:not(:disabled):not([data-no-press])) {
+    transition: none;
+  }
+  :where(button:not(:disabled):not([data-no-press])):active {
+    transform: none;
+  }
 }
 
 /* 触屏上把过小的点按目标扩到 44px（Apple 最小点按目标）。
@@ -1034,15 +1153,44 @@ img {
   color: var(--gosslan-text-2);
 }
 
-/* 移动端详情页转场：从右滑入 / 滑出（统一框架返回图标的配套动效，用户 2026-09-20）。 */
+/* 移动端详情页转场：进入从右滑入，**返回时反向**（从左侧回位 / 向右滑出）。
+   方向由路由层级深度决定（`router/main.ts` 的 navigationDirection），不是按页面写死。 */
 .page-slide-enter-active,
-.page-slide-leave-active {
-  transition: transform 0.25s ease, opacity 0.25s ease;
+.page-slide-leave-active,
+.page-slide-back-enter-active,
+.page-slide-back-leave-active {
+  transition:
+    transform var(--gosslan-duration) var(--gosslan-ease),
+    opacity var(--gosslan-duration-fast) var(--gosslan-ease);
 }
 .page-slide-enter-from,
 .page-slide-leave-to {
   transform: translateX(100%);
   opacity: 0.4;
+}
+.page-slide-back-enter-from {
+  transform: translateX(-18%);
+  opacity: 0;
+}
+.page-slide-back-leave-to {
+  transform: translateX(100%);
+  opacity: 0.4;
+}
+
+/* 设置分区切换：轻微位移 + 淡入，`out-in` 避免两页同时占位。 */
+.settings-swap-enter-active,
+.settings-swap-leave-active {
+  transition:
+    opacity 140ms var(--gosslan-ease),
+    transform 180ms var(--gosslan-ease-spring);
+}
+.settings-swap-enter-from {
+  opacity: 0;
+  transform: translateY(6px) scale(0.995);
+}
+.settings-swap-leave-to {
+  opacity: 0;
+  transform: translateY(-4px) scale(0.995);
 }
 
 @media (prefers-reduced-transparency: reduce) {
@@ -1092,8 +1240,8 @@ img {
    --------------------------------------------------------------------------- */
 @keyframes gosslan-dialog-fade-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes gosslan-dialog-fade-out { from { opacity: 1; } to { opacity: 0; } }
-@keyframes gosslan-dialog-pop-in { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
-@keyframes gosslan-dialog-pop-out { from { opacity: 1; transform: scale(1); } to { opacity: 0; transform: scale(0.95); } }
+@keyframes gosslan-dialog-pop-in { from { opacity: 0; transform: translateY(8px) scale(0.96); } to { opacity: 1; transform: translateY(0) scale(1); } }
+@keyframes gosslan-dialog-pop-out { from { opacity: 1; transform: translateY(0) scale(1); } to { opacity: 0; transform: translateY(4px) scale(0.97); } }
 @keyframes gosslan-dialog-page-in { from { transform: translateX(100%); opacity: 0.4; } to { transform: translateX(0); opacity: 1; } }
 @keyframes gosslan-dialog-page-out { from { transform: translateX(0); opacity: 1; } to { transform: translateX(100%); opacity: 0.4; } }
 @keyframes gosslan-dialog-sheet-in { from { transform: translateY(100%); } to { transform: translateY(0); } }
@@ -1101,12 +1249,12 @@ img {
 
 .gosslan-dialog-overlay[data-state="open"] { animation: gosslan-dialog-fade-in 200ms ease-out; }
 .gosslan-dialog-overlay[data-state="closed"] { animation: gosslan-dialog-fade-out 150ms ease-in forwards; }
-.gosslan-dialog-card[data-state="open"] { animation: gosslan-dialog-pop-in 200ms ease-out; }
-.gosslan-dialog-card[data-state="closed"] { animation: gosslan-dialog-pop-out 150ms ease-in forwards; }
+.gosslan-dialog-card[data-state="open"] { animation: gosslan-dialog-pop-in var(--gosslan-duration) var(--gosslan-ease-spring); }
+.gosslan-dialog-card[data-state="closed"] { animation: gosslan-dialog-pop-out 160ms var(--gosslan-ease) forwards; }
 .gosslan-dialog-page[data-state="open"] { animation: gosslan-dialog-page-in var(--gosslan-duration) var(--gosslan-ease); }
 .gosslan-dialog-page[data-state="closed"] { animation: gosslan-dialog-page-out var(--gosslan-duration) var(--gosslan-ease) forwards; }
-.gosslan-dialog-sheet[data-state="open"] { animation: gosslan-dialog-sheet-in 200ms ease-out; }
-.gosslan-dialog-sheet[data-state="closed"] { animation: gosslan-dialog-sheet-out 150ms ease-in forwards; }
+.gosslan-dialog-sheet[data-state="open"] { animation: gosslan-dialog-sheet-in 260ms var(--gosslan-ease-spring); }
+.gosslan-dialog-sheet[data-state="closed"] { animation: gosslan-dialog-sheet-out 180ms var(--gosslan-ease) forwards; }
 
 /* 卡片形态的内容根铺满视口，只承担"居中 + 滚动"。Reka 的 DismissableLayer 会给它写
    内联 pointer-events:auto（顶层图层要接事件），普通类名压不过 ⇒ 这里用 !important 把
@@ -1121,5 +1269,13 @@ img {
   .gosslan-dialog-page[data-state],
   .gosslan-dialog-sheet[data-state] {
     animation: none !important;
+  }
+  .page-slide-enter-active,
+  .page-slide-leave-active,
+  .page-slide-back-enter-active,
+  .page-slide-back-leave-active,
+  .settings-swap-enter-active,
+  .settings-swap-leave-active {
+    transition: none;
   }
 }

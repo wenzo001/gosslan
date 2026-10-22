@@ -2,6 +2,7 @@
 import { t } from "@/i18n";
 import { safeStorageBackend } from "../utils/safeStorage.ts";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { useRouter } from "vue-router";
 import { useEventListener } from "@vueuse/core";
 import { api } from "@/api";
 import { useAppStore } from "@/stores/useAppStore";
@@ -22,6 +23,7 @@ import ForwardModal from "@/components/message/ForwardModal.vue";
 import MergeCardModal from "@/components/message/MergeCardModal.vue";
 import { useImagePreviewStore } from "@/stores/useImagePreview";
 import { estimateMessageHeight } from "@/utils/messageHeight";
+import { trimOldest } from "@/utils/bounded";
 import { launchAuxWindow, isWindowOpening } from "@/composables/useWindowLauncher";
 import { useMentionContext } from "@/composables/useMentionContext";
 import { fileToDataUrl } from "@/utils/imageBytes";
@@ -51,9 +53,50 @@ import { createInitScope } from "@/utils/initScope";
 const emit = defineEmits<{ (e: "open-share"): void }>();
 
 const app = useAppStore();
+const router = useRouter();
+
+/** 返回：先退一层路由（回到进入来源），深链进来的才回落到会话列表。 */
+function onBackToList() {
+  app.mobileView = "list";
+  const state = window.history.state as { back?: string | null } | null;
+  if (state?.back) router.back();
+  else void router.push({ name: "chats" });
+}
 const chat = useChatStore();
 
 const listRef = ref<InstanceType<typeof VirtualList> | null>(null);
+
+/**
+ * 每会话滚动位置（像素）。只服务"离开再回来"：切 tab（ChatWindow 卸载）、切会话、
+ * 从设置/资料覆盖层返回。不写进 store —— 它是纯视图状态，重启后群消息位置没有意义。
+ * 保存像素而不是消息 id：用户离开时看到的就是这条像素线，回来落在同一处最直观；
+ * 缓存上限与消息缓存同量级（50 个会话），不会无界增长。
+ */
+const scrollPositions = new Map<string, number>();
+const SCROLL_POSITION_MAX = 50;
+const restoreScrollTop = ref<number | null>(null);
+
+function saveScrollPosition(convId: string | null | undefined) {
+  if (!convId) return;
+  scrollPositions.set(convId, listRef.value?.getScrollTop() ?? 0);
+  trimOldest(scrollPositions, SCROLL_POSITION_MAX);
+}
+function restoreScrollFor(convId: string | null | undefined) {
+  const saved = convId ? scrollPositions.get(convId) : undefined;
+  // 有未读跳转时以未读为准（未读是用户最需要看到的位置）。
+  const unreadWins = !!chat.unreadJump && chat.unreadJump.convId === convId;
+  restoreScrollTop.value = unreadWins ? null : (saved ?? null);
+}
+async function applyRestoredScroll() {
+  if (restoreScrollTop.value === null) return;
+  const top = restoreScrollTop.value;
+  restoreScrollTop.value = null;
+  await nextTick();
+  await nextTick();
+  listRef.value?.scrollToOffset(top);
+  listRef.value?.setPinned(false);
+}
+onBeforeUnmount(() => saveScrollPosition(chat.activeConv));
 
 const conv = computed(() => chat.activeConversation);
 const isGroup = computed(() => chat.activeConv?.startsWith("group:") ?? false);
@@ -199,7 +242,7 @@ watch(
     // peers-updated 会带上新的 link，聊天头必须立刻改成「直连」，
     // 而不是等用户再发一条消息。
     const peerLink = chat.peers.find((p) => p.device_id === chat.activeConv)?.link ?? null;
-    return [chat.activeConv, messages.value.length, peerLink] as const;
+    return [chat.activeConv, peerLink] as const;
   },
   refreshLinkState,
   { immediate: true },
@@ -230,8 +273,8 @@ watch(
  * 为什么必须显式清：这两项只在"发送成功"或"用户点取消"时才被清空，
  * 切会话时留着就会出现 —— 在 B 会话看到 A 的引用条，发出去的消息还带着 A 的消息片段。
  * 这是会把内容发错会话的缺陷，不是观感问题。
- * 输入框里的**文字**由模板上的 `:key="chat.activeConv"` 让 MessageComposer 整体重建来清
- * （编辑器是 contenteditable，DOM 是唯一真相，没有"清空"之外的复位路径）。
+ * 输入框里的**文字**由 MessageComposer 自己按 convId 存取草稿（`composerDrafts`）：
+ * 切走时保存、切回时恢复，不再靠整体重建来清空（那会把用户写了一半的内容也清掉）。
  */
 watch(
   () => chat.activeConv,
@@ -696,12 +739,23 @@ watch(
   async ([convId], old) => {
     const [oldConvId, oldLen] = old ?? [null, 0];
     if (convId !== oldConvId) {
+      // 这里还是旧会话的 DOM（消息尚未换），是保存"离开时看到的那一屏"的唯一时机。
+      saveScrollPosition(oldConvId);
+      restoreScrollFor(convId);
       lastMsgId = messages.value.at(-1)?.msg_id ?? null;
+      // 有保存位置：等新消息到达后恢复；期间 VirtualList 的 swap 贴底被关掉。
+      if (restoreScrollTop.value !== null) return;
       // 首次加载（0→N）且没有未读跳转 → 打开即贴底；有未读则等 unreadJump 定位
       if (oldLen === 0 && !(chat.unreadJump && chat.unreadJump.convId === convId)) {
         await nextTick();
         listRef.value?.scrollToBottom();
       }
+      return;
+    }
+
+    if (restoreScrollTop.value !== null) {
+      lastMsgId = messages.value.at(-1)?.msg_id ?? null;
+      await applyRestoredScroll();
       return;
     }
 
@@ -729,6 +783,17 @@ watch(
       }
     }
   },
+);
+
+// 会话切换后消息可能以同样的条数被整体替换（length 不变）⇒ 上面那条按 length 的 watch 不触发。
+// 这里按**数组身份**补一条：只要有待恢复位置且新消息已经到了，就落到保存的像素处。
+watch(
+  () => [chat.activeConv, messages.value] as const,
+  async ([convId]) => {
+    if (!convId || restoreScrollTop.value === null || messages.value.length === 0) return;
+    await applyRestoredScroll();
+  },
+  { flush: "post" },
 );
 
 // ---------------- 发送 ----------------
@@ -1157,6 +1222,10 @@ function canDropInto() {
 }
 
 onMounted(() => {
+  // 从别的 tab / 覆盖层回来：组件重新挂载，消息可能已在缓存里（没有 length/数组变化）
+  // ⇒ 主动恢复一次保存的位置；没有保存位置就是普通首开。
+  restoreScrollFor(chat.activeConv);
+  if (messages.value.length > 0) void applyRestoredScroll();
   if (app.isMobile) return; // 拖拽是桌面端行为
   void getCurrentWebview()
     .onDragDropEvent((event) => {
@@ -1230,7 +1299,7 @@ function onLoadMore() {
       :member-count="memberCount"
       :show-back="app.isMobile"
       :unread-total="chat.totalUnread"
-      @back="app.mobileView = 'list'"
+      @back="onBackToList"
       @open-members="membersOpen = true"
       @open-files="filesOpen = true"
       :history-syncing="!!groupHistory"
@@ -1472,7 +1541,7 @@ function onLoadMore() {
         ref="listRef"
         :items="messages"
         live
-        :auto-scroll-on-swap="!(chat.unreadJump && chat.unreadJump.convId === chat.activeConv)"
+        :auto-scroll-on-swap="restoreScrollTop === null && !(chat.unreadJump && chat.unreadJump.convId === chat.activeConv)"
         :estimate-height="estimateHeight"
         @load-more="onLoadMore"
         @near-bottom="nearBottom = $event"
@@ -1585,7 +1654,6 @@ function onLoadMore() {
       </div>
       <MessageComposer
         v-else-if="isGroup || isPeerFriend || isSelfChat"
-        :key="chat.activeConv ?? 'none'"
         :conv-id="chat.activeConv"
         :quote="quote"
         :mention-members="mentionMembers"

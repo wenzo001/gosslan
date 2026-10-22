@@ -167,6 +167,8 @@ watch(
           <img
             :src="e.url"
             :alt="e.name"
+            loading="lazy"
+            decoding="async"
             class="h-full w-full object-contain"
             draggable="false"
           />

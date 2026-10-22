@@ -18,6 +18,7 @@ import {
   linkLabelParams,
 } from "@/utils/peerConnectionInfo";
 import { computed, ref, watch } from "vue";
+import { useRouter } from "vue-router";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { useClipboard } from "@/composables/useClipboard";
@@ -35,6 +36,15 @@ const emit = defineEmits<{
 }>();
 
 const app = useAppStore();
+const router = useRouter();
+
+/** 返回来源页；桌面端与移动端同一套（修 D-B：桌面资料页不再无路可退）。 */
+function goBack() {
+  app.mobileView = "list";
+  const state = window.history.state as { back?: string | null } | null;
+  if (state?.back) router.back();
+  else void router.push({ name: "contacts" });
+}
 const chat = useChatStore();
 /** 在线节点信息（IP / 端口 / 公钥），离线好友为 undefined */
 const peer = computed(() => chat.peers.find((p) => p.device_id === props.friend.device_id));
@@ -114,16 +124,15 @@ const confirmRemove = ref(false);
 
 <template>
   <div class="flex h-full flex-col bg-[var(--gosslan-chat)]">
-    <!-- 移动端返回条：资料页占据整个内容区，需显式返回列表 -->
+    <!-- 返回条：资料页占据整个内容区，**桌面端也必须有显式返回入口**（修 D-B） -->
     <div
-      v-if="app.isMobile"
       class="flex items-center gap-2 border-b border-[var(--gosslan-divider)] bg-[var(--gosslan-chat)] px-2"
       :style="{ height: 'var(--gosslan-header-h)' }"
     >
       <button
         class="tap-safe flex h-8 w-8 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
         :title="t('common.back')" :aria-label="t('common.back')"
-        @click="app.mobileView = 'list'"
+        @click="goBack"
       >
         <BackArrow />
       </button>

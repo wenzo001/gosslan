@@ -3,7 +3,7 @@
 > 口径：先扫真实调用点，再按 A（直接替换）/ B（适配后替换）/ C（保留业务核心）/ D（暂不迁移，附证据与重评估条件）归档。
 > 本文件随批次更新；未落地的条目一律标 **未迁移**，不把选型写成完成。
 > 证据来源：`package.json` / `package-lock.json`、真实 `src/**` 调用点、`npm test`、`npm run build`、`node scripts/check-ui-runtime.mjs`。
-> 最近更新：2026-10-20（日志诊断两颗按钮接上 `plugin-dialog` 的 `save()`；分层返回那三条运行时判据换维度，见报告 §6.96）。
+> 最近更新：2026-10-22（引入 `vue-router@5.4.0`；Pinia 3 / Vite 7 / plugin-vue 6 升级；`@pinia/colada` 只装不接线；`motion-v` 实测产物增量后不采纳）。
 
 ## 1. 已落地的迁移
 
@@ -36,6 +36,8 @@
 | 锚定浮层（表情名单 / 已读名单 / 表情选择器 / 输入框表情） | `useHoverCard` + `utils/hoverCard.placeCard/cardStyle` + `utils/popupPosition`（**188 行**）；`MessageItem` / `MessageReceipt` / `MessageReactionBar` / `MessageComposer` 各自手写 Teleport、fixed 坐标、外点/Esc/滚动收起 | Reka `HoverCardRoot/Trigger/Portal/Content`（回应名单）+ `PopoverRoot/Trigger/Portal/Content`（其余三处） | **B（已落地 2026-10-19）** | `MessageReactionBar.vue`、`MessageReceipt.vue`、`MessageItem.vue`、`MessageComposer.vue`、`EmojiPicker.vue` | 定位/翻转/夹边/悬停宽限/外点/Esc 交给 floating-ui + DismissableLayer；`EmojiPicker` 去掉自绘 `absolute` 与 `placement`，面板由 Portal 挂 body（不再被输入卡片圆角/overflow 裁切）。`--only=reaction,roster` **62/62**、`--only=inputpanel` **22/22**（含"选完表情焦点回编辑器"）、`--only=search,overlay,toast,select,ctxmenu` **81/81**、`--only=touchroster` **6/6**；全量复跑见报告 §6.13。删除 3 个自研摆位文件（188 行）、2 条旧护栏（126 行）与 250 行过时测试；生产代码净 **−386 行** |
 | 输入框里「回车 = 提交」的键盘行为 | 家已存在（`composables/useImeEnterGuard`），但 12 处可编辑绑定只有 3 处接上 | 自研判定 + 组合（`utils/ime` 三条互补判据；库里没有对应物） | 组合替换（家不变，加一个 `enter(fn)` 出口） | 9 处接线 + 删掉 ProfileSection 那份手写 `e.key === "Enter"` | 判据 53（按起始标签解析，全仓 0 例外）+ 探针 `--only=imecommit` 5/5；四发变异分别红 3 / 2 / 4 格与判据 1 条；真机 IME NOT RUN |
 
+| 页面路由 / 层级返回 | `ResponsiveLayout` 的 `navState` 组件内 ref + `mobileView` store + 页面级 `useBackLayer`；无 URL | `vue-router@5.4.0`（MIT；peer 硬要求只有 `vue ^3.5.34`，vite/pinia/colada/compiler-sfc 均为 optional） | **A（已落地，2026-10-22）** | `src/router/main.ts`、`src/router/settings.ts`、`src/entries/main.ts`、`src/entries/settings.ts`、`src/layouts/ResponsiveLayout.vue`、`src/components/SettingsWindow.vue` | 主窗口 14 条命名路由 + 设置窗口 `#/settings/:key`；`navState` / `mobileView` 改为路由派生态；页面级返回层退役、浮层 `useBackLayer` 保留；Chromium 实测前进/返回、覆盖层、弹窗与路由共存；Tauri WebView 真机 NOT RUN。详见 `docs/architecture/routing-and-navigation.md` |
+
 ## 2. 本轮评估、尚未迁移
 
 | 能力 | 原实现 / 调用点 | 候选 | 判定 | 证据 / 原因 | 重评估条件 |
@@ -48,7 +50,6 @@
 | 日志长列表 | 已迁：`LogViewer.vue` 的 `useVirtualizer` | `@tanstack/vue-virtual` | **B（已落地）** | 见第 1 节；真实业务页（日志窗口）已切换，不是空封装 | 真机长日志滚动读数尚未采集（NOT RUN） |
 | 消息/会话/任务的异步状态 | Pinia stores + `StaleGuard` + 单飞 + 事件驱动更新（`useChatStore.ensureGroupTodoRows` 等） | TanStack Query | C（当前保留） | 数据源是 SQLite + 事件流；离线队列、可靠投递、加密传输、事务语义不能用普通查询缓存替代。存储层迁移会把"谁拥有事实"变成两份。**面板已另起试点**（纯读：群文件 / 共享目录 / 搜索聊天记录 / 诊断快照；读+写：外部链接，见第 1 节与 §6.98），两者边界：Query 不管消息状态机 | 远端目录、诊断快照与外部链接已各自接入（见 §6.90、§6.98 与下面的行）；再出现纯读、可过期、可后台刷新的独立面板时按群文件模式逐面板迁移；会话/消息主链不迁 |
 | 表单 | 原生 `<form>`/事件 + i18n 校验；`TodoPickField` 等 | TanStack Form / vee-validate | D（当前） | 现有表单纯 UI 状态 + 少量校验；没有复杂字段数组/异步校验的调用点。引入 Form 只增加依赖与心智，不减少业务代码 | 出现多步、动态字段数组、跨字段异步校验的真实表单时 |
-| 路由 | 应用内 hash/窗口分层，无 Vue Router | TanStack Router | D（当前） | 路由与多窗口/Tauri 启动参数耦合；替换不会降低现有复杂度，反而要重做窗口路由 | 若引入真正的 URL 路由需求（Web 端独立部署） |
 | 图标 | `lucide-vue-next` + `components/ui/icons.ts` 统一入口；4 个文件仍有内联 SVG（平台/产品专属） | Lucide | A（已统一） | 旧的前端正则曾跨 import 吞行造成 12 处假绿，P3 已修；内联 SVG 逐处判定为平台/产品图形保留 | 新增常规图标一律走 `components/ui/icons.ts` |
 | Toast/通知 | `useAppStore` 手写数组 + 每条 `setTimeout`（无上限、无去重） | Reka `ToastProvider/Viewport/Root` + `createToastManager`（Tauri notification 仍是系统通知通道） | **B（已落地）** | `ToastHud.vue`、`ToastList.vue`、`utils/toastManager.ts`、`useAppStore.ts` | 同一 kind+文案按 id 去重；`limit=3`（超出 `data-limited`+`inert` 且隐藏）；错误 6s / 其余 3s；保留配色/图标/安全区；Esc 只在焦点位于 toast 时放行。`--only=toast` 7/7；摘 `limit` ⇒ 3 红、摘 Esc 守卫 ⇒ 2 红 |
 | 图片/媒体查看 | 自研 `ImageLightbox.vue` + `useImagePreview` 缓存 | 自研（焦点语义已拆出，见上一行） | C | 与消息 msg_id/cid、预览缓存、保存、缩放/滑动绑定；通用 lightbox 库无法接这些业务语义。焦点陷阱/归还已交 Reka `FocusScope`，剩下的自研部分只覆盖业务手势与取字节 | 若要视频/多格式，先评估 media viewer 的 API 是否能接 msg_id/cid |
@@ -60,6 +61,11 @@
 ## 3. 依赖与删除
 
 - 删除：`@headlessui/vue`（唯一消费者已全部迁到 Reka）。
+- 新增：`vue-router@5.4.0`（MIT；硬 peer 只有 `vue ^3.5.34`；`vite` / `pinia` / `@pinia/colada` / `@vue/compiler-sfc` 都是 optional peer）。使用面 = 主窗口 14 条命名路由 + 设置窗口 10 个分区；vendor gzip 从 104.92 → 114.15（同机 `npm run build`，2026-10-22）。
+- 升级：`pinia@^2.2.6` → `^3.0.4`（peer 仅 `vue ^3.5.11` + `typescript >=4.5`；4 个 store 无破坏，`npm test` 全绿）。
+- 升级：`vite@^6.0.3` → `^7.3.7`、`@vitejs/plugin-vue@^5.2.1` → `^6.0.10`（Vite 7 必须配 plugin-vue 6；`gosslan:inline-boot` 插件行为不变，build 退码 0）。
+- 新增：`@pinia/colada@^1.4.8`（MIT；**只装不接线**，产物无增量）。与 `@tanstack/vue-query` 职责重叠，迁移单独立项；在此之前 vue-query 保持唯一数据层。
+- 未采纳：`motion-v@2.8.0`（MIT）。共享布局药丸实测 vendor gzip 114.15 → 160.63（+46.48 KB），CSS `--gosslan-ease-spring` 已覆盖同类反馈 ⇒ 移除，不进 `package.json`。详见 `docs/architecture/frontend-performance-antipatterns.md` §5。
 - 新增：`reka-ui@^2.11.0`（MIT；peer Vue >= 3.4；本机安装版本 2.11.0）。
 - 新增：`@tanstack/vue-virtual@^3.13.47`（MIT；peer Vue ^2.7 || ^3；本机安装 3.13.47）。
 - 新增：`@tanstack/vue-query@^5.104.4`（MIT；peer Vue ^2.6 || ^3.x；本机安装 5.104.4，含 query-core 5.104.4）。使用面 = **5 个面板**（4 个纯读：`GroupFilesPanel` 群文件 / `ShareDirectory` 共享目录 / `ChatSearchDialog` 搜索聊天记录 / `DevDiagPanel` 诊断快照；外加 `LinksList` **读+写**，写侧 1 处 `useMutation`。现算：`grep -rl useQuery src/components` = 5、`grep -rl useMutation src/components` = 1）与每窗口各一份 QueryClient（`boot.ts` 装 `VueQueryPlugin`）。

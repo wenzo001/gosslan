@@ -1,6 +1,6 @@
 # Gosslan 视觉与交互规范（UI Design Guidelines）
 
-> Version: 1.0 · 2026-09-10  
+> Version: 1.1 · 2026-10-22  
 > 依据：Apple Human Interface Guidelines 与 WWDC25「Get to know the new design system」  
 > 的 **Shape & Concentricity**、语义色与交互态取向（iOS 26 / Liquid Glass 时代）。
 >
@@ -561,7 +561,7 @@ Apple 的计数徽标同样如此，属短数字+高强调的既有取舍」。*
 |---|---|---|
 | 降低透明度 | 毛玻璃退化为**不透明实底**并去掉 `backdrop-filter` | `style.css` 末尾的 `prefers-reduced-transparency` 块 |
 | 提高对比度 | **边界类** token 提档（`border` / `divider` / `hover` / `window-ring`） | `style.css` 末尾的 `prefers-contrast` 块 |
-| 减弱动态效果 | 关掉过渡与动画（已有） | `prefers-reduced-motion` 块 |
+| 减弱动态效果 | 关掉过渡与动画；**JS 驱动的动画必须自己读 `matchMedia` 判断**（CSS 块管不到 JS） | `prefers-reduced-motion` 块 + 动效代码 |
 
 两条注意：
 
@@ -705,24 +705,69 @@ Apple 的计数徽标同样如此，属短数字+高强调的既有取舍」。*
   同期那句"估算调用数 0 ⇒ 稳态滚动不重算 ✓"也是假的 —— **调用数为 0 是因为没滚过**。
   复跑：`node perf/probe.mjs 9223`（三步启动法见 `perf/README.md`）。
 
-### 11.3 动效：本应用的档位就是两个，不要为凑齐"标准档位"造没人用的 token
+### 11.3 动效：反馈要短、状态要真、动画不许改变布局
+
+#### 11.3.1 硬约束
+
+1. **反馈可以立刻画，状态必须等真实回执**：发送中的 spinner 可以立刻出现，
+   「已送达 / 已读」必须等后端事件；不许用动画掩盖失败（§9.3、§9.5）。
+2. **虚拟列表行内禁止入场动画与改变布局的动画**：消息行会被回收/复用，
+   行内动画会打断滚动与高度测量（`VirtualList` 的 `offset` 依赖真实 DOM 高度）。
+3. **动画不得改变可点击热区**：`transform: scale()` 只做视觉缩放，不改布局；
+   按下反馈不能改变行高或把相邻元素推开。
+4. **减弱动态效果必须双通道**：CSS 过渡由 `prefers-reduced-motion` 关；
+   JS 驱动的动画必须自己读 `matchMedia("(prefers-reduced-motion: reduce)")` 并按无动画路径执行。
+
+#### 11.3.2 档位令牌
 
 | token | 值 | 用在哪 |
 |---|---|---|
 | `--gosslan-ease` | 强 ease-out | 所有过渡的曲线（Tailwind `.transition` 由 `style.css` 统一覆盖） |
-| `--gosslan-duration-fast` | 150ms | 轻反馈（hover/press/小元素） |
-| `--gosslan-duration` | 240ms | 结构性变化（浮层、面板、尺寸） |
+| `--gosslan-ease-spring` | 轻回弹 cubic-bezier | 按下 / 选中 / 浮层出现这类**短促**变化 |
+| `--gosslan-duration-fast` | 150ms | 轻反馈（hover / press / 小元素） |
+| `--gosslan-duration` | 240ms | 结构性变化（浮层、面板、页面转场） |
 
-- **没有"页面切换 200–320ms"这一档，是有意的**：本应用是多窗口架构（§5），没有路由级过场，
-  造一个没人消费的 token 只会变成下一个"定义了但 0 处引用"（§10.3 那个真实事故）。
+仍然**只有两个时长档**。页面转场复用 `--gosslan-duration`，不新增「页面切换 200–320ms」档；
+`--gosslan-ease-spring` 只用于短促变化，禁止用在超过 300ms 或位移很大的页面转场上（会晕）。
+
+#### 11.3.3 取值上限
+
+- 按下反馈：100–140ms，缩放不小于 0.9（再小像"按塌了"）。
+- 浮层进出：160–260ms；遮罩淡入可以比卡片略慢。
+- 页面转场：240ms；只做 `transform` + `opacity`，不做 `width` / `height` / `top`。
+- 进度条：用 `transform: scaleX()`，不用 `width`；时长 200–300ms、`ease-out`。
+
+#### 11.3.4 reduced-motion 双通道
+
+CSS 侧：`src/style.css` 末尾的 `@media (prefers-reduced-motion: reduce)` 必须覆盖
+`.page-slide*`、`.settings-swap*`、`.gosslan-dialog-*`、`.receipt-swap*`、`.gosslan-toast`、
+`.unread-badge`、`.nav-glyph*`。
+
+JS 侧：任何 WAAPI / `requestAnimationFrame` / 库驱动的动画必须先读媒体查询；
+今天没有 JS 驱动的装饰性动画，新增时按这条执行。
+
+#### 11.3.5 跨端差异
+
+- 桌面：hover 有反馈、press 有缩放；键盘焦点用 `:focus-visible`。
+- 移动：没有 hover，press 必须即时；底部导航选中态用「图标 + 药丸底 + 主题色」，
+  不用仅靠颜色变化区分。
+- iOS 边缘侧滑尚未接管（见 `docs/architecture/routing-and-navigation.md` R7）；
+  Android 物理返回由路由历史驱动。
+
+#### 11.3.6 依赖政策
+
+**默认纯 CSS。** 要引动画库必须先给出「哪个具体交互 CSS 做不到」的证据 + 同机产物增量，
+一次只引一套。2026-10-22 实测：`motion-v@2.8.0` 的共享布局药丸让 vendor gzip 从 114.15 涨到 160.63
+（+46.48 KB），而同类反馈用 `--gosslan-ease-spring` 已够用 ⇒ **不采纳**，依赖已移除。
+现算：`node -e "const d=require('./package.json');console.log(Object.keys({...d.dependencies,...d.devDependencies}).filter(k=>/motion|gsap|anime|framer/i.test(k)))"` 应为空数组。
+
+其余两条仍然有效：
+
 - **主题色相关的规则必须写在顶层**（判据 ㉚ `findNestedThemeRuleIssues`）：`::selection` 与 `accent-color`
   一旦被写进别的规则的括号里（例如 `input,textarea,…{ … }`），原生 CSS 嵌套会把它们编译成**后代**选择器
   （`input ::selection` / `[contenteditable=""] progress`）⇒ 整条匹配不到任何东西。
   这种写法**源码里看得见、判据扫得到、界面上没有** ⇒ 这一族只能判**嵌套深度**，
   而且核对要读 `dist/assets/*.css`（读 `src/style.css` 不足以证明它生效）。
-- **动画系统零新增依赖**：Motion / GSAP / @vueuse/motion 都不在 `package.json` 里（现算：
-  `node -e "const d=require('./package.json');console.log(Object.keys({...d.dependencies,...d.devDependencies}).filter(k=>/motion|gsap|anime|framer/i.test(k)))"` ⇒ 应为空数组）。
-  要引入必须先给出"哪个具体交互靠 CSS transition 做不到"的证据，并且一次只引一套。
 - 动画完成 ≠ 业务完成：反馈可以立刻画，状态必须等真实回执（§9.3 乐观更新 + 失败回滚），
   不许用动效掩盖失败（§9.5 错误统一出口）。
 
@@ -821,4 +866,31 @@ Apple 的计数徽标同样如此，属短数字+高强调的既有取舍」。*
 
 **仍未尽的一半**：真机（WKWebView / WebView2 / Android）上"关闭那一刻窗口正好被遮挡 ⇒ rAF 停"
 会不会留下同样的中间态、以及窗口重新显示时它会不会自愈，**未实测**；人工步骤归 Smoke-11。
+
+## 12. 导航与层级（R1–R7）
+
+完整路由表、状态派生与验证记录见 `docs/architecture/routing-and-navigation.md`。这里只留必须记住的七条：
+
+- **R1 逐级下钻、逐级返回**：返回目标 = 进入来源（`router.back()`），不是硬编码页面。
+- **R2 上层界面一定能返回**：页内返回控件 / `Esc` / `⌘[` / `Ctrl+[` / `Alt+←` / Android 物理返回，至少有一条。
+- **R3 桌面端也要有「上一级」**：好友资料、收藏详情、设置二级在桌面端同样要有显式返回。
+- **R4 模态与下钻区分**：模态用「完成 / 取消 / 关闭」，不占用路由返回语义；下钻页用「返回」。
+- **R5 不跨级跳转；标题由路由 meta 提供**：移动端 `MobilePageFrame` 不再手传字面量标题。
+- **R6 返回时恢复离开时的状态**：每会话滚动位置、输入草稿、焦点。
+- **R7 平台差异显式声明**：iOS 边缘侧滑未接管靠页内返回；Android 物理返回必须能一路退到退出应用。
+
+**路由与浮层的边界**：页面级进 router；弹窗 / 菜单 / 灯箱继续用 `useBackLayer` 的手工栈。
+两套都听 `popstate`，顺序已在 Chromium 实测（开弹窗 → 返回 → 只关弹窗、路由不变）；
+Tauri WebView 真机仍未测。
+
+## 13. 性能编码禁令
+
+完整清单与已修/未做项见 `docs/architecture/frontend-performance-antipatterns.md`。三条铁律：
+
+1. **模板里不调 O(n) 函数**：`v-for` 行内最多一次查表；`memberProfile(id)`、`nicknameOf(id)`、`rowTitle(f)` 这类先在 `computed` 里算成行数据。
+2. **长列表必须有上界或虚拟化**：可变长集合要有 `MAX_*` 常量；虚拟列表行内禁止入场动画与改变布局的动画。
+3. **IPC 不在 `watch` 的数组 getter 里**：`watch(() => [a, b, c])` 的依赖一变就发一次请求；「消息条数」不许进链路查询的依赖。
+
+**依赖决策**：默认纯 CSS；引动画/UI 库必须给出「哪个具体交互现有方案做不到」的证据 + 同机产物增量。
+2026-10-22 实测 `motion-v` 为一次药丸位移多付 46.48 KB gzip ⇒ 已移除。
 

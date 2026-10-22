@@ -22,6 +22,7 @@
  * 会随页面一起卸载。
  */
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { useRouter } from "vue-router";
 import { DropdownMenuItem, DropdownMenuSeparator } from "reka-ui";
 import { t } from "@/i18n";
 import { useAppStore } from "@/stores/useAppStore";
@@ -56,6 +57,7 @@ import { api } from "@/api";
 const emit = defineEmits<{ (e: "close"): void }>();
 
 const app = useAppStore();
+const router = useRouter();
 const chat = useChatStore();
 /** 看图只有一个入口：统一的预览能力（桌面走单例窗口、移动走壳层覆盖层，让位逻辑在 store 里）。 */
 const preview = useImagePreviewStore();
@@ -524,7 +526,11 @@ async function locate(f: FavoriteEntry) {
   // 点一条收藏后收藏页原地卡住几轮读库；找不到时如实 toast，人已经在会话里。
   if (app.isMobile) app.mobileView = "chat";
   emit("close");
-  const r = await chat.locateMessageInConv(f.conv_id, f.msg_id);
+  // locateMessageInConv 内部会同步写 activeConv；先发起它再落路由，
+  // 路由 watcher 看到已打开就不会重复加载。
+  const locating = chat.locateMessageInConv(f.conv_id, f.msg_id);
+  void router.push({ name: "conversation", params: { convId: f.conv_id } });
+  const r = await locating;
   if (r !== "found") app.toast(t("favorite.msgGone"), "info");
 }
 
@@ -605,6 +611,18 @@ async function confirmDelete() {
           :class="app.isMobile && active ? 'hidden' : 'flex flex-1 flex-col'"
         >
           <div class="flex shrink-0 flex-col gap-2 px-2 pt-2">
+            <!-- 桌面端返回/关闭：收藏是整页，必须给显式出口（修 D-C；移动端用底部 tab 返回）。 -->
+            <div v-if="!app.isMobile" class="flex items-center gap-1.5">
+              <button
+                class="tap-safe flex h-8 w-8 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+                :title="t('common.back')"
+                :aria-label="t('common.back')"
+                @click="emit('close')"
+              >
+                <BackArrow />
+              </button>
+              <span class="text-title font-medium text-[var(--gosslan-text)]">{{ t("nav.favorites") }}</span>
+            </div>
             <input
               v-model="keyword"
               :maxlength="MAX_LIST_FILTER_KEYWORD_CHARS"

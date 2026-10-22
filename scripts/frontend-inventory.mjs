@@ -7,7 +7,7 @@
 // 用法：node scripts/frontend-inventory.mjs            # 重新生成
 //       node scripts/frontend-inventory.mjs --check    # 只核对，不一致退 1
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 const DOC = "docs/architecture/frontend-inventory.md";
 const BEGIN = "<!-- BEGIN:generated (node scripts/frontend-inventory.mjs) -->";
@@ -17,9 +17,11 @@ const git = (args) =>
   execFileSync("git", args, { encoding: "utf8" }).trim().split("\n").filter(Boolean);
 
 // 生产码 / 测试码分列：测试代码的删除不许算成业务简化（目标第二节明确要求）。
-const all = git(["ls-files", "src"]).filter(
-  (f) => /\.(ts|vue|js)$/.test(f) && !f.startsWith("src/assets/"),
-);
+// `git ls-files` 会列出「已删除但尚未提交」的文件；对生成器来说它已经不存在，
+// 读它会直接 ENOENT（本轮删 navIconPaths.ts 时踩到）。以工作树为准。
+const all = git(["ls-files", "src"])
+  .filter((f) => /\.(ts|vue|js)$/.test(f) && !f.startsWith("src/assets/"))
+  .filter((f) => existsSync(f));
 const isTest = (f) => /\.test\.ts$/.test(f);
 const locOf = (f) =>
   Number(execFileSync("wc", ["-l", f], { encoding: "utf8" }).trim().split(/\s+/)[0]);

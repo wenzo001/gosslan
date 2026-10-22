@@ -7,6 +7,7 @@
  *      不启动网络、不注册聊天事件；不跑它设置页会显示默认值或空白。
  */
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { settingsRouter } from "@/router/settings";
 import SettingsWindow from "@/components/SettingsWindow.vue";
 import { useAppStore } from "@/stores/useAppStore";
 import {
@@ -16,7 +17,9 @@ import {
 } from "@/boot/boot";
 
 installFrontendErrorReporting();
-void mountAuxWindow(createWindowApp(SettingsWindow), () => useAppStore().init()).then(() => {
+const app = createWindowApp(SettingsWindow);
+app.use(settingsRouter);
+void mountAuxWindow(app, () => useAppStore().init()).then(() => {
   // 焦点刷新是这个窗口的**补救通道**（每次重新显示都重拉一遍会变的环境数据），
   // 所以它必须在"挂载前初始化失败"时也注册上 —— 这正是 `mountAuxWindow` 不再外抛的理由。
   // 焦点重拉是**备用通道**：这扇窗今天不是常驻的（`AUX_WINDOWS_RESIDENT = false`，
