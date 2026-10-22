@@ -9,8 +9,10 @@
  * 只有外壳不同（这里是窗口内的左右两栏，那里是移动端整页/卡片弹窗）。
  * 这样「设置长什么样」只有一份实现，不会三处漂移。
  */
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import { useEventListener } from "@vueuse/core";
+import { SETTINGS_SECTIONS } from "@/router/settings";
 import AuxWindowShell from "@/components/window/AuxWindowShell.vue";
 import DevDiagPanel from "@/components/DevDiagPanel.vue";
 import ProfileSection from "@/components/settings/ProfileSection.vue";
@@ -41,7 +43,30 @@ type SectionKey =
   | "about"
   | "reset";
 
-const section = ref<SectionKey>("profile");
+const route = useRoute();
+const router = useRouter();
+
+/** 当前分区 = 路由参数（可深链、可返回），不再是组件内 ref。 */
+const section = computed<SectionKey>(() => {
+  const key = String(route.params.key ?? "profile");
+  return (SETTINGS_SECTIONS as readonly string[]).includes(key)
+    ? (key as SectionKey)
+    : "profile";
+});
+watch(
+  () => route.params.key,
+  (key) => {
+    if (key && !(SETTINGS_SECTIONS as readonly string[]).includes(String(key))) {
+      void router.replace("/settings/profile");
+    }
+  },
+  { immediate: true },
+);
+
+function openSection(key: SectionKey) {
+  void router.push({ name: "settings-section", params: { key } });
+}
+
 /** 各分区按需加载：恢复默认等改动后 bump 令牌触发重载（与 SettingsPanel 同一套语义）。 */
 const reloadToken = ref(0);
 const devDiagOpen = ref(false);
@@ -114,7 +139,7 @@ useEventListener(window, "keydown", onKeydown);
         :class="section === item.key
           ? 'bg-[var(--gosslan-list-active)] font-medium text-[var(--gosslan-text)]'
           : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)] hover:text-[var(--gosslan-text)]'"
-        @click="section = item.key"
+        @click="openSection(item.key)"
       >
         <component :is="item.icon" class="h-4 w-4 shrink-0" :stroke-width="1.9" />
         <span class="min-w-0 flex-1 truncate" :title="item.label">{{ item.label }}</span>
@@ -123,6 +148,8 @@ useEventListener(window, "keydown", onKeydown);
 
     <!-- 右：内容区（独立滚动，切换导航不改变窗口尺寸） -->
     <div class="min-w-0 flex-1 overflow-y-auto px-5 py-4">
+      <Transition name="settings-swap" mode="out-in">
+      <div :key="section">
       <ProfileSection v-if="section === 'profile'" :active="true" :reload-token="reloadToken" />
       <div v-else-if="section === 'appearance'" class="space-y-5">
         <AppearanceSection />
@@ -144,6 +171,8 @@ useEventListener(window, "keydown", onKeydown);
         <AboutSection @dev-open="devDiagOpen = true" />
       </div>
       <ResetSection v-else-if="section === 'reset'" @restored="reloadToken++" />
+      </div>
+      </Transition>
     </div>
   </div>
 

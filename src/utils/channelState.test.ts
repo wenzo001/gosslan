@@ -568,11 +568,19 @@ test("切会话的三处入口：翻页/收页必须排在读数据之前", () =
   };
 
   const layout = read("layouts/ResponsiveLayout.vue");
+  const send = body(layout, "async function sendMessageTo", "\nasync function removeFriend");
   mustComeFirst(
-    body(layout, "async function sendMessageTo", "\nasync function removeFriend"),
+    send,
     'app.mobileView = "chat"',
-    "await chat.openConversation",
+    "chat.openConversation",
     "「发消息」：翻页必须排在 openConversation 之前",
+  );
+  // 路由落库必须排在同步写 activeConv 之后：否则 route watcher 会再拉一次消息。
+  mustComeFirst(
+    send,
+    "const opening = chat.openConversation",
+    "router.push",
+    "「发消息」：先写 activeConv 再落路由，避免 watcher 重复加载",
   );
 
   const store = read("stores/useChatStore.ts");
@@ -584,11 +592,18 @@ test("切会话的三处入口：翻页/收页必须排在读数据之前", () =
   );
 
   const fav = read("components/FavoritePanel.vue");
+  const favLocate = body(fav, "async function locate(", "\nfunction askDelete");
   mustComeFirst(
-    body(fav, "async function locate(", "\nfunction askDelete"),
+    favLocate,
     'emit("close")',
-    "await chat.locateMessageInConv",
+    "chat.locateMessageInConv",
     "收藏跳转：先收起本页再逐页定位（定位最坏翻 10 页）",
+  );
+  mustComeFirst(
+    favLocate,
+    "const locating = chat.locateMessageInConv",
+    "router.push",
+    "收藏跳转：先写 activeConv 再落路由，避免 watcher 重复加载",
   );
 });
 

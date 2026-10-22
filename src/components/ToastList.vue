@@ -27,7 +27,7 @@ const toasts = toastStore.toasts;
       v-for="toast in toasts"
       :key="toast.id"
       :toast="toast"
-      class="pointer-events-auto flex max-w-[min(92vw,32rem)] items-center gap-2 rounded-[var(--gosslan-radius-md)] px-4 py-2 text-sm text-white shadow-lg backdrop-blur-sm transition data-[limited]:hidden data-[swipe=move]:translate-x-[var(--reka-toast-swipe-move-x,0px)]"
+      class="gosslan-toast pointer-events-auto flex max-w-[min(92vw,32rem)] items-center gap-2 rounded-[var(--gosslan-radius-md)] px-4 py-2 text-sm text-white shadow-lg backdrop-blur-sm transition data-[limited]:hidden data-[swipe=move]:translate-x-[var(--reka-toast-swipe-move-x,0px)]"
       :class="toast.data?.kind === 'error' ? 'bg-[var(--gosslan-danger)]' : 'bg-[var(--gosslan-hud)]'"
     >
       <CheckCircle2 v-if="toast.data?.kind === 'success'" class="h-4 w-4 shrink-0" aria-hidden="true" />

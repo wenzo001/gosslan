@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
 import { computed, ref, onMounted, onUnmounted, watch, watchEffect } from "vue";
+import { useRoute, useRouter, type RouteLocationRaw } from "vue-router";
+import { navigationDirection } from "@/router/main";
+import { useEventListener } from "@vueuse/core";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { api, APP_ACTION, bindMenuEvents, NAVIGATE_TO_CONTACTS, onAction } from "@/api";
 import { launchAuxWindow, useWindowOpening } from "@/composables/useWindowLauncher";
 import { useShortcuts } from "@/composables/useShortcuts";
-import { useBackLayer } from "@/composables/useBackLayer";
 import { createInitScope } from "@/utils/initScope";
 import NavRail from "@/components/NavRail.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
@@ -55,20 +57,84 @@ preview.overlayMounted = true;
  * 确保左中右三列始终同步。
  */
 type NavState = "chats" | "contacts" | "links" | "favorites" | "me";
-const navState = ref<NavState>("chats");
 
 /**
- * 喂给 `ConversationList` 的视图：它只认 chats / contacts。
- * `links` / `favorites` 时左列换成 `LinksList` / 整个隐藏，
- * 但 `ConversationList` 仍按 `chats` 挂着（不卸载 = 保留滚动位置与搜索框状态）。
+ * 导航状态 = **路由的派生态**（单一真相源从组件内 ref 移到 URL）。
+ *
+ * `lastNav` / `lastPane` 只服务整页覆盖层：设置、日志、资料、搜索盖上来时不改变
+ * 底层 tab 与面板，返回时回到进入前那一页（用户 2026-09-12 晚 #1 的硬要求）。
  */
-const listView = computed<"chats" | "contacts">(() => {
-  const s = navState.value;
-  return s === "contacts" ? "contacts" : "chats";
-});
+const route = useRoute();
+const router = useRouter();
+const lastNav = ref<NavState>("chats");
+const lastPane = ref<"list" | "chat">("list");
+
+function navOfRoute(): NavState {
+  const name = String(route.name ?? "");
+  if (name === "contacts" || name === "friend" || name === "requests") return "contacts";
+  if (name === "favorites" || name === "favorite") return "favorites";
+  if (name === "links") return "links";
+  if (
+    name === "me" ||
+    name === "profile" ||
+    name === "settings" ||
+    name === "settings-section" ||
+    name === "logs"
+  )
+    return "me";
+  return "chats";
+}
+
+const navState = computed<NavState>(() =>
+  route.meta.overlay ? lastNav.value : navOfRoute(),
+);
+watch(navState, (v) => (lastNav.value = v), { immediate: true });
+
+/** 移动端面板：详情路由 = chat，列表路由 = list；覆盖层沿用底层。 */
+const mobileView = computed<"list" | "chat">(() =>
+  route.meta.overlay ? lastPane.value : route.meta.pane === "detail" ? "chat" : "list",
+);
+watch(
+  mobileView,
+  (v) => {
+    lastPane.value = v;
+    app.mobileView = v;
+  },
+  { immediate: true },
+);
+
+/** 喂给 `ConversationList` 的视图：它只认 chats / contacts。 */
+const listView = computed<"chats" | "contacts">(() =>
+  navState.value === "contacts" ? "contacts" : "chats",
+);
 /** 收藏打开时左列隐藏（整页态），links 时换成 LinksList。 */
-const favoritesOpen = computed(() => navState.value === "favorites");
-const isLinksView = computed(() => navState.value === "links");
+const favoritesOpen = computed(
+  () => route.name === "favorites" || route.name === "favorite",
+);
+const isLinksView = computed(() => route.name === "links");
+
+/** 有历史条目才 back（否则深链进来会退出应用）；没有就走 fallback。 */
+function canGoBack(): boolean {
+  const state = window.history.state as { back?: string | null } | null;
+  return Boolean(state && state.back);
+}
+function goBack(fallback: string) {
+  if (canGoBack()) router.back();
+  else void router.push(fallback);
+}
+
+/** 一级 tab 的目标路由。桌面「聊天」保留当前会话，移动端回列表。 */
+function routeForTab(nav: NavState): RouteLocationRaw {
+  if (nav === "chats") {
+    return !app.isMobile && chat.activeConv
+      ? { name: "conversation", params: { convId: chat.activeConv } }
+      : { name: "chats" };
+  }
+  if (nav === "contacts") return { name: "contacts" };
+  if (nav === "links") return { name: "links" };
+  if (nav === "favorites") return { name: "favorites" };
+  return { name: "me" };
+}
 
 /**
  * 移动端「列表 ↔ 详情」平移动画开关。
@@ -91,20 +157,29 @@ const paneAnimate = ref(true);
  */
 function selectMobileTab(nav: NavState, mv: "list" | "chat") {
   paneAnimate.value = false;
-  navState.value = nav;
+  // 先写 store：底栏/主面板本帧就到位，路由随后落库（用户 2026-09-24 #29「切换要瞬间响应」）。
   app.mobileView = mv;
-  requestAnimationFrame(() => requestAnimationFrame(() => (paneAnimate.value = true)));
+  void router.push(routeForTab(nav)).finally(() => {
+    requestAnimationFrame(() => requestAnimationFrame(() => (paneAnimate.value = true)));
+  });
 }
 /** 正在查看资料的好友（通讯录点击好友 → 展示资料页，而非直接开会话） */
 const profileFriend = ref<Friend | null>(null);
-const settingsOpen = ref(false);
+/** 桌面端独立设置窗口开不出来时的应用内回退。 */
+const settingsFallbackOpen = ref(false);
+const settingsOpen = computed(
+  () =>
+    settingsFallbackOpen.value ||
+    (app.isMobile &&
+      (route.name === "settings" || route.name === "settings-section")),
+);
 /** 移动端资料页（可编辑资料，复用 ProfileSection）。桌面端无独立资料窗口，回落到设置。 */
-const profileOpen = ref(false);
+const profileOpen = computed(() => app.isMobile && route.name === "profile");
 const profileReloadToken = ref(0);
 const addFriendOpen = ref(false);
 const groupOpen = ref(false);
 const shareOpen = ref(false);
-const logsOpen = ref(false);
+const logsOpen = computed(() => app.isMobile && route.name === "logs");
 
 /**
  * 移动端底部 TabBar 是否显示 —— **单一事实来源**，模板里的 TabBar `v-if`
@@ -121,7 +196,7 @@ const showMobileTabBar = computed(
     app.isMobile &&
     !app.keyboardOpen &&
     !app.multiSelectActive &&
-    (app.mobileView === "list" || favoritesOpen.value || navState.value === "me") &&
+    (mobileView.value === "list" || favoritesOpen.value || navState.value === "me") &&
     !settingsOpen.value &&
     !logsOpen.value,
 );
@@ -130,23 +205,18 @@ const showMobileTabBar = computed(
  * 微信关闭收藏后默认回到聊天列表，不猜用户之前在哪个 tab。 */
 function closeFavorites() {
   // 收藏是 tab，关闭走 tab 选择：瞬时切回聊天列表，不做平移（见 `selectMobileTab`）。
-  selectMobileTab("chats", "list");
+  if (app.isMobile) selectMobileTab("chats", "list");
+  else void router.push({ name: "chats" });
 }
 
-/** NavRail 切换：直接设 navState（四选一枚举）。 */
+/** NavRail 切换：写入路由（一级 tab 的唯一出口）。 */
 function onUpdateNavState(v: NavState) {
-  navState.value = v;
-  // 移动端：切到发现页（links/favorites）→ 让 main 区全屏显示（aside 滑到左边）
-  // 切回 chats/contacts → 回到列表视图
   if (app.isMobile) {
-    if (v === "links" || v === "favorites") {
-      app.mobileView = "chat";
-    } else {
-      app.mobileView = "list";
-    }
+    selectMobileTab(v, v === "links" || v === "favorites" ? "chat" : "list");
+    return;
   }
-  // 切到聊天时也清掉会话打开状态——避免"左侧聊天列表，右侧还停着旧会话"
-  if (v === "chats" && chat.activeConv) void chat.openConversation(chat.activeConv);
+  // 桌面点「聊天」保留当前会话；点「通讯录」回到列表（修 D-B：不再停在旧资料页）。
+  void router.push(routeForTab(v));
 }
 
 /**
@@ -158,30 +228,39 @@ function onUpdateNavState(v: NavState) {
  */
 function openSettings() {
   if (app.isMobile) {
-    // ⚠️ **不要**在这里改 `app.mobileView`：设置是整页浮层，盖在当前页面之上；
-    // 一旦改成 "list"，用户从「聊天」里打开设置、返回时就会落到会话列表，
-    // 而不是回到进入前的页面（用户 2026-09-12 晚 #1：「点击返回的话，
-    // 就是返回到进入之前的上一个页面」）。保持底层视图不动，返回即还原。
-    settingsOpen.value = true;
+    // 覆盖层路由：不改变底层 tab / 面板（见 `navState` / `mobileView` 的 overlay 分支）。
+    void router.push({ name: "settings" });
     return;
   }
   // 独立窗口：单飞 + 连点防抖（`useWindowLauncher`）。窗口实例唯一性由后端保证。
   void launchAuxWindow("settings", () => api.openSettingsWindow()).catch(() => {
     // 独立窗口开不出来（能力缺失 / 创建失败）时回退到应用内设置页：
     // 「设置」在任何环境下都必须打得开，宁可退化成弹窗也不能点了没反应。
-    settingsOpen.value = true;
+    settingsFallbackOpen.value = true;
   });
+}
+
+function closeSettings() {
+  if (settingsFallbackOpen.value) {
+    settingsFallbackOpen.value = false;
+    return;
+  }
+  goBack("/me");
 }
 
 /** 打开运行日志：桌面端开独立窗口，移动端跳全屏页面（带返回）。 */
 function openLogs() {
   if (app.isMobile) {
-    logsOpen.value = true;
+    void router.push({ name: "logs" });
     return;
   }
   void launchAuxWindow("logs", () => api.openLogWindow()).catch((e) =>
     app.toastError(e, t("common.operationFail")),
   );
+}
+
+function closeLogs() {
+  goBack("/me");
 }
 
 /**
@@ -191,15 +270,19 @@ function openLogs() {
  */
 function openProfile() {
   if (app.isMobile) {
-    profileOpen.value = true;
+    void router.push({ name: "profile" });
     return;
   }
   openSettings();
 }
 
+function closeProfile() {
+  goBack("/me");
+}
+
 /** 移动端链接页返回：链接是从「我的」下钻进来的，返回即回到「我的」页。 */
 function onLinksBack() {
-  navState.value = "me";
+  goBack("/me");
 }
 
 /**
@@ -220,13 +303,16 @@ const settingsOpening = useWindowOpening("settings");
 const logsOpening = useWindowOpening("logs");
 const linksOpening = useWindowOpening("link");
 
-/** 搜索聊天记录结果页的开关与初始关键词（由会话列表搜索框回车触发）。 */
-const searchOpen = ref(false);
-const searchSeed = ref("");
+/** 搜索聊天记录结果页：路由承载关键词，关闭即回到进入前那一页。 */
+const searchOpen = computed(() => route.name === "search");
+const searchSeed = computed(() => (typeof route.query.q === "string" ? route.query.q : ""));
 
 function openSearchHistory(keyword: string) {
-  searchSeed.value = keyword;
-  searchOpen.value = true;
+  void router.push({ name: "search", query: { q: keyword } });
+}
+
+function closeSearch() {
+  goBack("/chats");
 }
 
 /**
@@ -235,37 +321,44 @@ function openSearchHistory(keyword: string) {
  * —— 用户点"进入聊天"就是想看那条，没跳到会以为功能坏了。
  */
 async function onOpenSearchHit(payload: { convId: string; msgId: string }) {
-  searchOpen.value = false;
   if (app.isMobile) app.mobileView = "chat";
+  // 先同步打开会话（activeConv 立刻写），路由 watcher 看到已打开就不会重复拉一次。
+  const opening = chat.openConversation(payload.convId);
+  await router.replace({ name: "conversation", params: { convId: payload.convId } });
+  await opening;
   const r = await chat.locateMessageInConv(payload.convId, payload.msgId);
   if (r !== "found") app.toast(t("search.locateFail"), "error");
 }
 
 function openFriendProfile(f: Friend) {
   profileFriend.value = f;
-  showRequests.value = false;
   if (app.isMobile) app.mobileView = "chat";
+  void router.push({ name: "friend", params: { friendId: f.device_id } });
 }
 
 /** 「新的朋友」页：右侧主区展示好友申请列表（微信式） */
-const showRequests = ref(false);
+const showRequests = computed(() => route.name === "requests");
 
 function openRequests() {
-  showRequests.value = true;
   profileFriend.value = null;
   // ⚠️ 移动端：申请页渲染在**右侧主面板**里，而移动端靠 `mobileView` 平移切换面板 ——
   // 不切过去的话用户还停在会话列表上，表现就是「点了『新的朋友』没反应」
   // （用户 2026-09-12 安卓实测）。与 `openFriendProfile` / `openSearchHistory` 同一处理。
   if (app.isMobile) app.mobileView = "chat";
+  void router.push({ name: "requests" });
 }
 
 /** 收起「新的朋友」页：有会话在聊时切回「聊天」tab，
  *  否则会出现右侧在聊、左侧还停在通讯录的错位。 */
 function closeRequests() {
-  showRequests.value = false;
-  if (chat.activeConv) navState.value = "chats";
   // 移动端返回会话列表（iOS push/pop 语义：申请页是从列表推进去的一层）
   if (app.isMobile) app.mobileView = "list";
+  if (app.isMobile) {
+    goBack("/chats");
+    return;
+  }
+  if (chat.activeConv) void router.push({ name: "conversation", params: { convId: chat.activeConv } });
+  else void router.push({ name: "contacts" });
 }
 
 async function acceptRequest(r: PendingRequest) {
@@ -288,7 +381,6 @@ async function rejectRequest(r: PendingRequest) {
 /** 资料页「发消息」：回到消息视图并打开与该好友的会话 */
 async function sendMessageTo(id: string) {
   profileFriend.value = null;
-  navState.value = "chats";
   // ⚠️ 视图切换排在一切 await 之前（用户 2026-09-24 #29「切换会话要瞬间响应，数据后台异步加载」）。
   // `openConversation` 第一行就同步写下 `activeConv`，其后才是骨架 + 异步拉消息；
   // 把 `mobileView` 写在 await 之后 ⇒ 移动端点「发消息」要等完两轮 IPC 才翻页，
@@ -297,7 +389,11 @@ async function sendMessageTo(id: string) {
   // 「自己」的会话行可能还不存在：先 ensure（后端有 self 分支，会用本机昵称/头像命名），
   // 否则列表里会显示成一串 gosslan-xxxx。
   if (id === app.device?.device_id) await api.ensureConversation(id);
-  await chat.openConversation(id);
+  // 先同步写 activeConv，再落路由：路由 watcher 看到已打开就不会重复拉一次，
+  // 同时地址栏/返回链立刻正确。
+  const opening = chat.openConversation(id);
+  void router.push({ name: "conversation", params: { convId: id } });
+  await opening;
 }
 
 async function removeFriend(f: Friend) {
@@ -305,25 +401,30 @@ async function removeFriend(f: Friend) {
   try {
     await chat.removeFriend(f.device_id);
     app.toast(t("conv.toast.friendRemoved", { name: f.nickname }), "info");
+    // 人已经从好友表删掉：留在 /contacts/:id 会是一张空资料页。
+    void router.push({ name: "contacts" });
   } catch (e) {
     app.toastError(e, t("common.deleteFail"));
   }
 }
 
-// 打开会话/切走时收起资料页与新朋友页，避免右侧同时出现多个内容区；
-// 会话一旦打开（接受好友申请自动开会话 / 通知点击跳转等），主视图切回「聊天」tab，
-// 否则右侧在聊、左侧 tab 还停在通讯录，布局与底部高亮都错位。
-// navState 设为 chats 自动意味着 favoritesOpen = false（computed 派生）。
+/** 启动时自动打开最近会话：用 replace 落路由，避免返回键多退一次到空列表。 */
+const autoOpenRecent = ref(false);
 watch(
   () => chat.activeConv,
   (convId) => {
     profileFriend.value = null;
-    showRequests.value = false;
     // 切到 links/favorites 时**不要**被强制拉回 chats——发现页是独立导航目标，
     // 即使有活跃会话也应该让用户继续看发现内容。
     if (convId && navState.value !== "links" && navState.value !== "favorites") {
-      navState.value = "chats";
+      const current = route.name === "conversation" ? String(route.params.convId ?? "") : "";
+      if (current !== convId) {
+        const target = { name: "conversation", params: { convId } } as const;
+        if (autoOpenRecent.value && route.name === "chats") void router.replace(target);
+        else void router.push(target);
+      }
     }
+    autoOpenRecent.value = false;
   },
 );
 
@@ -354,15 +455,18 @@ watch(
   () => chat.conversations,
   (convs) => {
     if (app.isMobile) return;
-    if (!chat.activeConv && convs.length > 0) void chat.openConversation(convs[0].id);
+    if (!chat.activeConv && convs.length > 0) {
+      autoOpenRecent.value = true;
+      void chat.openConversation(convs[0].id);
+    }
   },
   { immediate: true },
 );
 
 // 通知点击跳转：好友申请通知 → 切换到联系人视图
 function onNavigateToContacts() {
-  navState.value = "contacts";
   if (app.isMobile) app.mobileView = "list";
+  void router.push({ name: "contacts" });
 }
 
 // ---------------- 应用级动作：原生菜单与键盘快捷键共用 ----------------
@@ -375,34 +479,79 @@ function onAddFriendAction() {
 useShortcuts();
 
 /**
- * 移动端「聊天页」是一层：系统返回键 → 回到会话列表（而不是退出应用）。
- * 只在移动端且当前在聊天页时压历史条目；`inert` 那条平移面板同样是状态驱动的，
- * 两者一起保证"返回"和"侧滑"语义一致。
+ * 路由 → 会话/资料状态。
+ *
+ * 页面级层级现在由路由的历史条目承载（聊天页、我的页、资料页不再各压一条 `useBackLayer`），
+ * 所以系统返回键先退路由；只有浮层（弹窗/菜单/灯箱）仍走 `useBackLayer` 的手工栈。
+ * 深链进入 `/chats/:id` 时没有「点会话」那一下，这里负责补上打开动作。
  */
-useBackLayer(
-  () => app.isMobile && app.mobileView === "chat",
-  () => {
-    app.mobileView = "list";
+watch(
+  () => [
+    route.name,
+    route.params.convId,
+    route.params.friendId,
+    route.query.msgId,
+    chat.friends.length,
+  ],
+  async () => {
+    if (route.name === "conversation") {
+      const convId = String(route.params.convId ?? "");
+      if (convId && chat.activeConv !== convId) await chat.openConversation(convId);
+      const msgId = typeof route.query.msgId === "string" ? route.query.msgId : "";
+      if (convId && msgId) {
+        const r = await chat.locateMessageInConv(convId, msgId);
+        if (r !== "found") app.toast(t("search.locateFail"), "error");
+      }
+    } else if (route.name === "friend") {
+      const id = String(route.params.friendId ?? "");
+      const f = chat.friends.find((x) => x.device_id === id);
+      if (f) profileFriend.value = f;
+    } else if (route.name === "contacts") {
+      // 通讯录一级列表 = 没有打开任何资料页（修 D-B：点 rail「通讯录」不再停在上一个好友）。
+      profileFriend.value = null;
+    }
   },
+  { immediate: true },
 );
 
-// 「我的」页是一层：系统返回键先离开「我的」回到聊天列表（iOS push/pop 语义，与聊天页一致）。
-useBackLayer(
-  () => app.isMobile && navState.value === "me",
-  () => {
-    navState.value = "chats";
-    app.mobileView = "list";
+// 桌面没有「我的」页 / 资料页 / 全屏日志页（各自有独立窗口或设置入口）：
+// 深链落进来时回落到聊天，避免渲染一条桌面不可达的分支（修 D-E）。
+watch(
+  () => [app.isMobile, route.name] as const,
+  ([mobile, name]) => {
+    if (mobile) return;
+    if (name === "me" || name === "profile" || name === "logs") {
+      void router.replace({ name: "chats" });
+    } else if (name === "settings" || name === "settings-section") {
+      settingsFallbackOpen.value = true;
+      void router.replace({ name: "chats" });
+    }
   },
+  { immediate: true },
 );
 
-// 「资料」覆盖层（从「我的」下钻进来）是一层：系统返回键先关掉它，回到「我的」，
-// 再按一次才离开「我的」——层级关系与桌面侧"设置二级页"一致。
-useBackLayer(
-  () => app.isMobile && profileOpen.value,
-  () => {
-    profileOpen.value = false;
-  },
-);
+/**
+ * 返回快捷键（桌面）：Esc / ⌘[ / Ctrl+[ / Alt+←。
+ * 有弹层时让弹层先处理（Reka 自己听 Esc），这里不抢。
+ */
+function isTypingTarget(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null;
+  if (!el) return false;
+  return el.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName);
+}
+function onBackKey(e: KeyboardEvent) {
+  if (e.isComposing) return;
+  if (document.querySelector("[role='dialog'][data-state='open'], [role='menu'][data-state='open'], [data-reka-popper-content-wrapper]")) return;
+  const mod = e.metaKey || e.ctrlKey;
+  const isBackKey = e.key === "Escape" || (mod && e.key === "[") || (e.altKey && e.key === "ArrowLeft");
+  if (!isBackKey) return;
+  if (e.key === "Escape" && isTypingTarget(e.target)) return;
+  const root = ["chats", "contacts", "favorites", "links", "me"].includes(String(route.name ?? ""));
+  if (root) return;
+  e.preventDefault();
+  goBack("/chats");
+}
+useEventListener(window, "keydown", onBackKey);
 
 const appActionScope = createInitScope();
 
@@ -523,9 +672,9 @@ function onResizeEnd() {
       :class="app.isMobile
         ? 'absolute inset-y-0 left-0 z-10 w-full ' +
           (paneAnimate ? 'transition-transform duration-[var(--gosslan-duration)] ease-[var(--gosslan-ease)] ' : '') +
-          (app.mobileView === 'list' && !favoritesOpen ? 'translate-x-0' : '-translate-x-[30%]')
+          (mobileView === 'list' && !favoritesOpen ? 'translate-x-0' : '-translate-x-[30%]')
         : ''"
-      :inert="app.isMobile && app.mobileView === 'chat'"
+      :inert="app.isMobile && mobileView === 'chat'"
       :style="app.isMobile ? undefined : { width: `${listW}px` }"
     >
       <!-- 「链接」视图（仅桌面 rail 能切到）：整列换成链接列表；其余视图仍是会话列表。 -->
@@ -535,7 +684,7 @@ function onResizeEnd() {
         :view="listView"
         :active-friend-id="profileFriend?.device_id ?? null"
         :requests-active="showRequests"
-        @update:view="navState = $event"
+        @update:view="onUpdateNavState($event)"
         @open-add-friend="addFriendOpen = true"
         @open-group="groupOpen = true"
         @open-friend="openFriendProfile"
@@ -586,10 +735,10 @@ function onResizeEnd() {
         app.isMobile
           ? 'absolute inset-y-0 left-0 z-20 w-full ' +
             (paneAnimate ? 'transition-transform duration-[var(--gosslan-duration)] ease-[var(--gosslan-ease)] ' : '') +
-            (app.mobileView === 'chat' || favoritesOpen ? 'translate-x-0' : 'translate-x-full')
+            (mobileView === 'chat' || favoritesOpen ? 'translate-x-0' : 'translate-x-full')
           : '',
       ]"
-      :inert="app.isMobile && app.mobileView === 'list' && !favoritesOpen"
+      :inert="app.isMobile && mobileView === 'list' && !favoritesOpen"
     >
       <!-- 这条底部 padding 是给 fixed 定位的 TabBar 留的占位，只有 TabBar 真正**显示**时才需要。
            ⚠️ 这里与下面 TabBar 的 v-if **共用同一个 `showMobileTabBar`**（不要再各写一份条件）：
@@ -727,7 +876,7 @@ function onResizeEnd() {
               v-if="chat.friends.length"
               size="large"
               class="mt-1"
-              @click="navState = 'contacts'"
+              @click="onUpdateNavState('contacts')"
             >
               {{ t("conv.startChat") }}
             </PrimaryBtn>
@@ -757,7 +906,7 @@ function onResizeEnd() {
         :class="navState === 'chats' ? 'text-[var(--gosslan-primary)]' : 'text-[var(--gosslan-text-2)]'"
         @click="selectMobileTab('chats', 'list')"
       >
-        <span class="relative">
+        <span class="nav-glyph-pill relative" :data-active="navState === 'chats'">
           <NavIcon name="chats" :active="navState === 'chats'" size-class="h-5 w-5" />
           <UnreadBadge
             v-if="chat.totalUnread > 0"
@@ -772,7 +921,7 @@ function onResizeEnd() {
         :class="navState === 'contacts' ? 'text-[var(--gosslan-primary)]' : 'text-[var(--gosslan-text-2)]'"
         @click="selectMobileTab('contacts', 'list')"
       >
-        <span class="relative">
+        <span class="nav-glyph-pill relative" :data-active="navState === 'contacts'">
           <NavIcon name="contacts" :active="navState === 'contacts'" size-class="h-5 w-5" />
           <UnreadBadge
             v-if="chat.pendingRequests.length"
@@ -789,7 +938,9 @@ function onResizeEnd() {
         :class="navState === 'favorites' ? 'text-[var(--gosslan-primary)]' : 'text-[var(--gosslan-text-2)]'"
         @click="selectMobileTab('favorites', 'chat')"
       >
-        <NavIcon name="favorites" :active="navState === 'favorites'" size-class="h-5 w-5" />
+        <span class="nav-glyph-pill relative" :data-active="navState === 'favorites'">
+          <NavIcon name="favorites" :active="navState === 'favorites'" size-class="h-5 w-5" />
+        </span>
         <span class="text-caption">{{ t("nav.favorites") }}</span>
       </button>
       <!-- 我的：设置 / 链接 / 运行日志收进「我的」页的菜单（TabBar 最多 4 项）。
@@ -800,18 +951,20 @@ function onResizeEnd() {
         :class="navState === 'me' ? 'text-[var(--gosslan-primary)]' : 'text-[var(--gosslan-text-2)]'"
         @click="selectMobileTab('me', 'chat')"
       >
-        <UserCircle class="h-5 w-5" />
+        <span class="nav-glyph-pill relative" :data-active="navState === 'me'">
+          <UserCircle class="nav-glyph h-5 w-5" :stroke-width="navState === 'me' ? 2.35 : 1.9" />
+        </span>
         <span class="text-caption">{{ t("nav.me") }}</span>
       </button>
     </nav>
 
     <!-- 弹窗 -->
-    <SettingsPanel :open="settingsOpen" @close="settingsOpen = false" />
+    <SettingsPanel :open="settingsOpen" @close="closeSettings" />
     <!-- 搜索聊天记录结果页（会话列表搜索框回车打开） -->
     <ChatSearchDialog
       :open="searchOpen"
       :initial-keyword="searchSeed"
-      @close="searchOpen = false"
+      @close="closeSearch"
       @open-conversation="onOpenSearchHit"
     />
 
@@ -820,22 +973,22 @@ function onResizeEnd() {
     <ShareDirectory :open="shareOpen" @close="shareOpen = false" />
 
     <!-- 移动端运行日志页：全屏覆盖、带返回（桌面端走独立窗口，见 open_log_window） -->
-    <Transition name="page-slide">
-      <LogViewer v-if="app.isMobile && logsOpen" @back="logsOpen = false" />
+    <Transition :name="navigationDirection === 'back' ? 'page-slide-back' : 'page-slide'">
+      <LogViewer v-if="app.isMobile && logsOpen" @back="closeLogs" />
     </Transition>
 
     <!-- 移动端链接页：从「我的」下钻进来的全屏覆盖层（桌面端在左列渲染） -->
-    <Transition name="page-slide">
+    <Transition :name="navigationDirection === 'back' ? 'page-slide-back' : 'page-slide'">
       <LinksList v-if="app.isMobile && isLinksView" :opening="linksOpening" @open="openLink" @back="onLinksBack" />
     </Transition>
 
     <!-- 移动端资料页：可编辑资料，从「我的」下钻进来（桌面端回落到设置） -->
-    <Transition name="page-slide">
+    <Transition :name="navigationDirection === 'back' ? 'page-slide-back' : 'page-slide'">
       <MobilePageFrame
         v-if="app.isMobile && profileOpen"
         mode="overlay"
         :title="t('nav.profile')"
-        @back="profileOpen = false"
+        @back="closeProfile"
       >
         <ProfileSection :active="profileOpen" :reload-token="profileReloadToken" />
       </MobilePageFrame>

@@ -156,10 +156,19 @@ async function publishAnnouncement() {
 
 /** 成员资料解析统一走 useMemberProfile（本机/好友表/在线节点），此处不再重复实现。 */
 
+/**
+ * 成员行：每条成员 id 只解析一次资料。
+ * 旧模板在每行里调用 `memberProfile(id)` 11 次（头像、在线、名字、两个按钮的 title…），
+ * 每次内部还要扫好友表/节点表 ⇒ 50 人群 = 每帧几百次线性扫描。这里一次算好整表。
+ */
+const memberRows = computed(() =>
+  (group.value?.members ?? []).map((id) => ({ id, ...memberProfile(id) })),
+);
+
 /** 可用于加入该群的好友 = 好友 - 已是成员 - 自己 */
 const addableFriends = computed(() => {
-  const members = group.value?.members ?? [];
-  return chat.friends.filter((f) => !members.includes(f.device_id) && f.device_id !== myId.value);
+  const members = new Set(group.value?.members ?? []);
+  return chat.friends.filter((f) => !members.has(f.device_id) && f.device_id !== myId.value);
 });
 
 async function addMember(f: Friend) {
@@ -296,48 +305,48 @@ async function confirmAction() {
       <!-- 当前成员 -->
       <div class="max-h-56 overflow-y-auto">
         <div
-          v-for="id in group.members"
-          :key="id"
+          v-for="row in memberRows"
+          :key="row.id"
           class="flex items-center gap-2.5 rounded-[var(--gosslan-radius-md)] px-2 py-2"
         >
           <div class="relative shrink-0">
             <div
               class="gosslan-avatar-box flex h-9 w-9 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
-              :class="!memberProfile(id).online ? 'grayscale opacity-70' : ''"
-              :style="{ backgroundColor: avatarSeedFor(id)?.bg }"
+              :class="!row.online ? 'grayscale opacity-70' : ''"
+              :style="{ backgroundColor: avatarSeedFor(row.id)?.bg }"
             >
-              <img alt="" v-if="memberProfile(id).avatar" :src="memberProfile(id).avatar ?? undefined" class="h-full w-full object-cover" />
-              <span v-else class="gosslan-avatar-emoji" aria-hidden="true">{{ avatarSeedFor(id)?.emoji }}</span>
+              <img alt="" loading="lazy" decoding="async" v-if="row.avatar" :src="row.avatar ?? undefined" class="h-full w-full object-cover" />
+              <span v-else class="gosslan-avatar-emoji" aria-hidden="true">{{ avatarSeedFor(row.id)?.emoji }}</span>
             </div>
             <span
               class="absolute bottom-0 right-0 h-2.5 w-2.5 rounded-full border-2 border-[var(--gosslan-panel)]"
-              :class="memberProfile(id).online ? 'bg-[var(--gosslan-success)]' : 'bg-[var(--gosslan-status-offline)]'"
+              :class="row.online ? 'bg-[var(--gosslan-success)]' : 'bg-[var(--gosslan-status-offline)]'"
             ></span>
           </div>
           <div class="min-w-0 flex-1">
             <div class="flex items-center gap-1.5">
-              <span class="truncate text-sm font-medium" :title="memberProfile(id).name">{{ memberProfile(id).name }}</span>
-              <Crown v-if="group.creator === id" class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-warning-ink)]" :title="t('group.owner')" />
-              <span v-if="id === myId" class="shrink-0 text-caption text-[var(--gosslan-text-2)]">{{ t("group.me") }}</span>
+              <span class="truncate text-sm font-medium" :title="row.name">{{ row.name }}</span>
+              <Crown v-if="group.creator === row.id" class="h-3.5 w-3.5 shrink-0 text-[var(--gosslan-warning-ink)]" :title="t('group.owner')" />
+              <span v-if="row.id === myId" class="shrink-0 text-caption text-[var(--gosslan-text-2)]">{{ t("group.me") }}</span>
             </div>
             <div class="text-xs text-[var(--gosslan-text-2)]">
-              {{ memberProfile(id).online ? t("common.online") : t("common.offline") }}
+              {{ row.online ? t("common.online") : t("common.offline") }}
             </div>
           </div>
           <!-- 群主操作：转让群主 / 移除成员（不能操作自己/创建者本人） -->
           <button
-            v-if="isOwner && id !== myId"
+            v-if="isOwner && row.id !== myId"
             class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-warning-soft)] hover:text-[var(--gosslan-warning-ink)]"
-            :title="t('group.transferOwner', { name: memberProfile(id).name })" :aria-label="t('group.transferOwner', { name: memberProfile(id).name })"
-            @click="transferOwner(id)"
+            :title="t('group.transferOwner', { name: row.name })" :aria-label="t('group.transferOwner', { name: row.name })"
+            @click="transferOwner(row.id)"
           >
             <ArrowRightLeft class="h-4 w-4" />
           </button>
           <button
-            v-if="isOwner && id !== myId"
+            v-if="isOwner && row.id !== myId"
             class="tap-safe flex h-7 w-7 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-danger-soft)] hover:text-[var(--gosslan-danger-ink)]"
-            :title="t('group.removeMember', { name: memberProfile(id).name })" :aria-label="t('group.removeMember', { name: memberProfile(id).name })"
-            @click="askRemoveMember(id)"
+            :title="t('group.removeMember', { name: row.name })" :aria-label="t('group.removeMember', { name: row.name })"
+            @click="askRemoveMember(row.id)"
           >
             <UserMinus class="h-4 w-4" />
           </button>
@@ -431,7 +440,7 @@ async function confirmAction() {
                 class="gosslan-avatar-box flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white"
                 :style="{ backgroundColor: avatarSeedFor(f.device_id)?.bg }"
               >
-                <img alt="" v-if="f.avatar" :src="f.avatar" class="h-full w-full object-cover" />
+                <img alt="" loading="lazy" decoding="async" v-if="f.avatar" :src="f.avatar" class="h-full w-full object-cover" />
                 <span v-else class="gosslan-avatar-emoji" aria-hidden="true">{{ avatarSeedFor(f.device_id)?.emoji }}</span>
               </div>
               <span class="min-w-0 flex-1 truncate text-sm" :title="f.nickname">{{ f.nickname }}</span>

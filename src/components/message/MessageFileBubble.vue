@@ -130,9 +130,10 @@ const canOpen = computed(() => props.ready && props.tappable !== false);
     <!-- 进度条只在活动传输时出现；状态文案独立一行 —— 进度停下来之后那句话还得说得出失败/取消 -->
     <template v-if="progress !== null">
       <div class="h-1 overflow-hidden rounded-full bg-[var(--gosslan-divider)]">
+        <!-- 用 scaleX 而不是 width：进度更新只触发合成层，不参与布局（长列表里尤其重要）。 -->
         <div
-          class="h-full rounded-full bg-[var(--gosslan-primary)] transition-all duration-200"
-          :style="{ width: `${Math.round(progress * 100)}%` }"
+          class="h-full origin-left rounded-full bg-[var(--gosslan-primary)] transition-transform duration-300 ease-out"
+          :style="{ transform: `scaleX(${Math.min(1, Math.max(0, progress ?? 0))})` }"
         ></div>
       </div>
     </template>

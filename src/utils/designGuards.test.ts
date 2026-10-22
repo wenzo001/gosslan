@@ -1238,42 +1238,50 @@ test("浮层 z 序阶梯：整页框架 < 弹窗 < 右键菜单 < 图片预览�
   );
 });
 
-// ---------------- ⑬ 可选中导航项的图标必须有「选中 = 实心」的 fill 绑定 ----------------
+// ---------------- ⑬ 一级导航图标：统一图标库 + 唯一选中态出口 ----------------
 //
-// 真实缺陷（用户 2026-09-21）：「链接这个指南针为什么选中的时候不是实心选中变色的」——
-// 这一栏的选中态**不用底色块，而是把图标本身填成实心**（用户 2026-09-12 定的：参考微信）。
-// 聊天 / 通讯录 / 收藏 都是自绘 SVG + `:fill="navState === 'x' ? 'currentColor' : 'none'"`
-// （lucide 那种描边图标 fill 之后会变成墨团，所以必须自绘），唯独「链接」当时还是
-// `<Compass />` 原样 ⇒ 选中只变颜色不变实心。这类"漏一个"在界面上很不起眼，只能静态钉住。
-test("可选中导航项：图标必须有 :fill 的选中绑定（漏一个就只变颜色不变实心）", () => {
+// 用户 2026-10-22：「侧边栏那几个图标的选中状态我总觉得不满意，是不是自己画的？
+// 全部替换成统一图标库里标准风格一致的。」
+// ⇒ 自绘 path 退役；四枚图标统一来自 `lucide-vue-next`，选中态由 **一个家** 的
+// `.nav-glyph-btn[data-active]` / `.nav-glyph-pill[data-active]` 表达（药丸底 + 主题色 + 弹簧）。
+// 这条判据同时挡两种退化：① 某一枚又手绘回去；② 某个导航项忘了把 `active` 传下去。
+test("一级导航图标：全部走 lucide 唯一出口，选中态由 data-active 驱动", () => {
   const srcDir = join(import.meta.dirname, "..");
   const nav = readFileSync(join(srcDir, "components", "NavRail.vue"), "utf8");
-  // 与实际实现同步的清单：新增可选中项时**必须**在这里补一行（漏了会被下面的断言拦下）
   const selectable = ["chats", "contacts", "favorites", "links"];
   for (const key of selectable) {
-    // 2026-10-20 起，「填成实心」这件事住在 `ui/NavIcon.vue` 里（`:fill` 由 `props.active` 驱动），
-    // 业务组件这边必须**逐项**把选中态传进去 ⇒ 绑法从「每项一条 :fill」换成「每项一条 :active」，
-    // 覆盖面一字不缩（漏一项仍然红）；下面第 2 段再把「fill 真的按 active 算」钉在 NavIcon 身上。
     assert.ok(
       nav.includes(`<NavIcon name="${key}" :active="navState === '${key}'" />`),
-      `NavRail 的「${key}」缺少实心选中态：要写成 <NavIcon name="${key}" :active="navState === '${key}'" />`
+      `NavRail 的「${key}」没有把选中态传给 NavIcon：要写成 <NavIcon name="${key}" :active="navState === '${key}'" />`
+    );
+    assert.match(
+      nav,
+      new RegExp(`:data-active="navState === '${key}'"`),
+      `NavRail 的「${key}」缺少 data-active：选中态的底色与缩放不会生效`,
     );
   }
   const navIcon = readFileSync(join(srcDir, "components", "ui", "NavIcon.vue"), "utf8");
-  assert.ok(
-    navIcon.includes(":fill=\"props.active ? 'currentColor' : 'none'\""),
-    "NavIcon 没按 active 把图标填成实心：这条不在，上面那四条 :active 就是接了个空开关"
-  );
-  const paths = readFileSync(join(srcDir, "components", "ui", "navIconPaths.ts"), "utf8");
+  const navIcons = readFileSync(join(srcDir, "components", "ui", "navIcons.ts"), "utf8");
+  assert.match(navIcons, /from "lucide-vue-next"/, "导航图标必须来自统一图标库");
   for (const key of selectable) {
-    assert.ok(new RegExp(`^  ${key}:`, "m").test(paths), `造型表里少了「${key}」这一格`);
+    assert.match(navIcons, new RegExp(`\\b${key}:\\s*\\w+`), `图标表里少了「${key}」这一格`);
   }
+  assert.match(navIcon, /from "@\/components\/ui\/navIcons"/, "NavIcon 必须消费唯一造型表");
+  assert.match(
+    navIcon,
+    /:data-active="props\.active \? 'true' : 'false'"/,
+    "NavIcon 没把 active 落成 data-active：外层选中态样式接了个空开关",
+  );
+  assert.ok(!/d="M/.test(navIcon), "NavIcon 不该再自绘 path：造型统一交给图标库");
+  const css = readFileSync(join(srcDir, "style.css"), "utf8");
+  assert.match(css, /\.nav-glyph-btn\[data-active="true"\]/, "rail 选中态样式缺失");
+  assert.match(css, /\.nav-glyph-pill\[data-active="true"\]/, "底栏选中态样式缺失");
   // 两端同一个家：移动端那一侧也必须渲染同一批 name，且两边都不许再自己画导航图形
   const layout = readFileSync(join(srcDir, "layouts", "ResponsiveLayout.vue"), "utf8");
   for (const key of selectable) {
     assert.ok(layout.includes(`<NavIcon name="${key}"`), `移动端这一侧的「${key}」没走同一个图标出口`);
   }
-  assert.ok(!/<svg\b/.test(nav), "NavRail 不该再有内联 <svg>：造型只在 navIconPaths.ts");
+  assert.ok(!/<svg\b/.test(nav), "NavRail 不该再有内联 <svg>");
   assert.ok(!/<svg\b/.test(layout), "ResponsiveLayout 不该再有内联 <svg>");
   assert.ok(!/d="M/.test(nav) && !/d="M/.test(layout), "path 数据又出现抄本（同一造型会有两份）");
   // 反向：这四项之外不应再有别的 `navState === '<key>'` 图标高亮（否则清单就过期了）
@@ -4061,16 +4069,16 @@ test("㊿ 图片预览：外壳读出口、工具条只留 1rem、那个只为�
 });
 
 // ── 51. 图标单一家（专项 §三，§6.92）──────────────────────────────────
-// 「禁止自行绘制 SVG 图标、手写图标路径」这句要能被机器咬住，只有两种落点：
-//   · 造型数据的家 = components/ui/navIconPaths.ts（4 枚导航图标；lucide 没有填充档，
-//     而选中态要的是实心 ⇒ 这 4 枚登记为**例外**，新增第 5 枚前先找语义最近的库图标）；
+// 「禁止自行绘制 SVG 图标、手写图标路径」这句要能被机器咬住：
+//   · 导航图标已全部走 `lucide-vue-next`（用户 2026-10-22：统一到标准图标库），
+//     `navIconPaths.ts` 已删除 ⇒ 不再有"造型数据的家"这个例外；
 //   · 组件里内联 <svg> 元素只许在 TitleBar.vue（OS 窗口控件，造型必须逐平台贴着真实标题栏，
-//     不是应用功能图标）和 ui/NavIcon.vue（就是上面那唯一的家）。
+//     不是应用功能图标）。
 // BackArrow 此前把 lucide `chevron-left` 的 path **逐字抄进模板**（"m15 18-6-6 6-6"），
 // 本轮换成库组件 —— 所以这条判据里它属于"不许再长回去"的那一格。
 const SVG_ELEM_692 = /<svg[\s>][\s\S]*?<\/svg>/;
 const PATH_ATTR_692 = /d\s*[:=]\s*"M/;   // 两种写法都算：模板属性 d="M…" 与数据对象 d: "M…"
-const SVG_HOMES_692 = ["components/TitleBar.vue", "components/ui/NavIcon.vue"];
+const SVG_HOMES_692 = ["components/TitleBar.vue"];
 const listVue692 = (dir, acc = []) => {
   for (const e of readdirSync(dir, { withFileTypes: true })) {
     if (e.isDirectory()) listVue692(join(dir, e.name), acc);
@@ -4085,12 +4093,12 @@ test("51 分母：src 下的 .vue 数不许少于 60（分母塌了整条判据�
   assert.ok(n >= 60, "只扫到 " + n + " 个 .vue");
 });
 
-test("51 内联 <svg> 元素的家恰好是那两个具名家（多一个自绘图标 ⇒ 这里红）", () => {
+test("51 内联 <svg> 元素的家恰好是 TitleBar（多一个自绘图标 ⇒ 这里红）", () => {
   const hits = listVue692(srcDir691)
     .filter((f) => SVG_ELEM_692.test(code691(readFileSync(f, "utf8"))))
     .map(rel692)
     .sort();
-  assert.deepEqual(hits, [...SVG_HOMES_692].sort(), "内联 svg 的家不是登记的那两个：" + hits.join(","));
+  assert.deepEqual(hits, [...SVG_HOMES_692].sort(), "内联 svg 的家不是登记的那个：" + hits.join(","));
   // 正控：这条判据认的是**元素**，不是文本里出现 <svg 三个字。
   assert.ok(SVG_ELEM_692.test('<svg viewBox="0 0 1 1"><path d="M0 0z" /></svg>'), "正控没匹配上 ⇒ 量具坏了");
   // 反控：GroupTasksBoard 的注释里就写着 `<svg>`，它必须**不**被算成家（按元素解析，不按行）。
@@ -4098,16 +4106,15 @@ test("51 内联 <svg> 元素的家恰好是那两个具名家（多一个自绘�
   assert.ok(!SVG_ELEM_692.test(gt), "GroupTasksBoard 只有注释提到 svg，却被量具认成了家");
 });
 
-test("51 手写图标路径只许在造型数据家和 TitleBar（*.test.ts 里的是合成针，不算）", () => {
-  const files = [...listVue692(srcDir691), join(srcDir691, "components", "ui", "navIconPaths.ts")]
-    .filter((f) => !f.endsWith(".test.ts"));
+test("51 手写图标路径只许在 TitleBar（*.test.ts 里的是合成针，不算）", () => {
+  const files = listVue692(srcDir691).filter((f) => !f.endsWith(".test.ts"));
   const hits = files
     .filter((f) => PATH_ATTR_692.test(code691(readFileSync(f, "utf8"))))
     .map(rel692)
     .sort();
   assert.deepEqual(
     hits,
-    ["components/TitleBar.vue", "components/ui/navIconPaths.ts"].sort(),
+    ["components/TitleBar.vue"],
     "手写图标路径的落点变了：" + hits.join(","),
   );
 });

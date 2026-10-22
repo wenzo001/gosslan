@@ -89,10 +89,11 @@ function onMoreOpen(open: boolean) {
             造型数据与"这四枚为什么必须自绘"只有一个家：`components/ui/navIconPaths.ts`。 -->
     <div class="mt-5 flex flex-col items-center gap-2">
       <button
-        class="relative flex h-11 w-11 items-center justify-center rounded-[var(--gosslan-radius-lg)] transition"
+        class="nav-glyph-btn relative flex h-11 w-11 items-center justify-center rounded-[var(--gosslan-radius-lg)] transition"
         :class="navState === 'chats'
           ? 'text-[var(--gosslan-rail-text-active)]'
           : 'text-[var(--gosslan-rail-text)] hover:bg-[var(--gosslan-rail-hover)]'"
+        :data-active="navState === 'chats'"
         :title="t('nav.chats')"
         :aria-label="chat.totalUnread > 0 ? t('nav.chats.unread', { n: chat.totalUnread }) : t('nav.chats')"
         @click="emit('update:navState', 'chats')"
@@ -105,10 +106,11 @@ function onMoreOpen(open: boolean) {
         />
       </button>
       <button
-        class="relative flex h-11 w-11 items-center justify-center rounded-[var(--gosslan-radius-lg)] transition"
+        class="nav-glyph-btn relative flex h-11 w-11 items-center justify-center rounded-[var(--gosslan-radius-lg)] transition"
         :class="navState === 'contacts'
           ? 'text-[var(--gosslan-rail-text-active)]'
           : 'text-[var(--gosslan-rail-text)] hover:bg-[var(--gosslan-rail-hover)]'"
+        :data-active="navState === 'contacts'"
         :title="t('nav.contacts')"
         :aria-label="chat.pendingRequests.length ? t('nav.contacts.pending', { n: chat.pendingRequests.length }) : t('nav.contacts')"
         @click="emit('update:navState', 'contacts')"
@@ -122,10 +124,11 @@ function onMoreOpen(open: boolean) {
       </button>
       <!-- 收藏（微信最左侧栏就是这个位置）。 -->
       <button
-        class="relative flex h-11 w-11 items-center justify-center rounded-[var(--gosslan-radius-lg)] transition"
+        class="nav-glyph-btn relative flex h-11 w-11 items-center justify-center rounded-[var(--gosslan-radius-lg)] transition"
         :class="navState === 'favorites'
           ? 'text-[var(--gosslan-rail-text-active)]'
           : 'text-[var(--gosslan-rail-text)] hover:bg-[var(--gosslan-rail-hover)]'"
+        :data-active="navState === 'favorites'"
         :title="t('nav.favorites')"
         :aria-label="t('nav.favorites')"
         @click="emit('update:navState', navState === 'favorites' ? 'chats' : 'favorites')"
@@ -135,16 +138,16 @@ function onMoreOpen(open: boolean) {
       <!-- 外部链接：点开把左列切成「链接」列表（用户 2026-09-17）。图标用**指南针**造型
            （用户指定：链接入口要有"探索/发现"的指向感，而不是一条链子）。 -->
       <button
-        class="relative flex h-11 w-11 items-center justify-center rounded-[var(--gosslan-radius-lg)] transition"
+        class="nav-glyph-btn relative flex h-11 w-11 items-center justify-center rounded-[var(--gosslan-radius-lg)] transition"
         :class="navState === 'links'
           ? 'text-[var(--gosslan-rail-text-active)]'
           : 'text-[var(--gosslan-rail-text)] hover:bg-[var(--gosslan-rail-hover)]'"
+        :data-active="navState === 'links'"
         :title="t('nav.links')"
         :aria-label="t('nav.links')"
         @click="emit('update:navState', 'links')"
       >
         <!-- 指南针：链接入口要"探索/发现"的指向感（用户 2026-09-17 指定）。 -->
-
         <NavIcon name="links" :active="navState === 'links'" />
       </button>
     </div>

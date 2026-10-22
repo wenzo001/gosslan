@@ -112,7 +112,7 @@ function openFriend(friend: Friend) {
         :class="[compact ? 'h-8 w-8' : 'h-10 w-10', !friend.online ? 'grayscale opacity-70' : '']"
         :style="{ backgroundColor: avatarSeedFor(friend.device_id)?.bg }"
       >
-        <img alt="" v-if="friend.avatar" :src="friend.avatar" class="h-full w-full object-cover" />
+        <img alt="" loading="lazy" decoding="async" v-if="friend.avatar" :src="friend.avatar" class="h-full w-full object-cover" />
         <span v-else class="gosslan-avatar-emoji" aria-hidden="true">{{ avatarSeedFor(friend.device_id)?.emoji }}</span>
       </div>
       <span

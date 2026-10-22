@@ -6,6 +6,7 @@
  * （`src/entries/settings.ts` / `logs.ts`），不碰聊天状态、不注册聊天事件。
  */
 import App from "@/App.vue";
+import { mainRouter } from "@/router/main";
 import {
   createWindowApp,
   installFrontendErrorReporting,
@@ -13,4 +14,6 @@ import {
 } from "@/boot/boot";
 
 installFrontendErrorReporting();
-mountMainWindow(createWindowApp(App));
+const app = createWindowApp(App);
+app.use(mainRouter);
+mountMainWindow(app);
