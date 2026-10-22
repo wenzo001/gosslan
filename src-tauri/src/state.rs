@@ -2419,7 +2419,8 @@ impl AppState {
     }
 
     /// 启动节点表节流推送任务（合并高频更新，避免 IPC 风暴）。
-    pub fn spawn_peer_emitter(state: &Arc<AppState>) {
+    /// 返回句柄：交给 `worker_supervisor` 判活（R-05），别在这里丢弃。
+    pub fn spawn_peer_emitter(state: &Arc<AppState>) -> tauri::async_runtime::JoinHandle<()> {
         let st = state.clone();
         tauri::async_runtime::spawn(async move {
             loop {
@@ -2430,7 +2431,7 @@ impl AppState {
                     st.emit_peers_now();
                 }
             }
-        });
+        })
     }
 
     /// 周期性重放单聊/群聊离线队列。
@@ -2440,7 +2441,7 @@ impl AppState {
     /// 直到下一次链路事件——实测 30s 内没有。这里每 5s 对**当前有链路**的 peer 重放一次；
     /// 收端按 `msg_id` 幂等去重，只有 Ack/GroupAck 才删行，所以重复发送不会重复入库/通知。
     /// 文件队列不在这里重放：它有自己的 attempts/退避与 5 次上限（`flush_pending_files`）。
-    pub fn spawn_outbox_retrier(state: &Arc<AppState>) {
+    pub fn spawn_outbox_retrier(state: &Arc<AppState>) -> tauri::async_runtime::JoinHandle<()> {
         let st = state.clone();
         tauri::async_runtime::spawn(async move {
             loop {
@@ -2464,7 +2465,7 @@ impl AppState {
                     crate::commands::flush_pending_files(&st, &peer).await;
                 }
             }
-        });
+        })
     }
 
     /// 周期性运行态快照：**这是"拖垮其它 WebView 应用"那类故障的现场取样器**。
@@ -2477,7 +2478,9 @@ impl AppState {
     /// ⚠️ 刻意不在这一行里读 RSS：跨平台读进程内存需要新增平台依赖/外部命令，
     /// 而 `ps`/`tasklist` 本身会干扰被测进程。内存趋势仍由 E2E 内存量具按 pid 采样；
     /// 这条负责回答"是不是窗口/队列结构在无界增长"。
-    pub fn spawn_runtime_diag_reporter(state: &Arc<AppState>) {
+    pub fn spawn_runtime_diag_reporter(
+        state: &Arc<AppState>,
+    ) -> tauri::async_runtime::JoinHandle<()> {
         let st = state.clone();
         tauri::async_runtime::spawn(async move {
             let mut tick = tokio::time::interval(Duration::from_secs(RUNTIME_DIAG_SECS));
@@ -2526,7 +2529,7 @@ impl AppState {
                     ),
                 );
             }
-        });
+        })
     }
 
     /// 队列与在途读数：全仓**唯一一份**取这几个计数的地方（10-22 审计 R-30）。
@@ -2570,7 +2573,7 @@ impl AppState {
     /// `DbLock` 已经逐次量了 wait/hold，但 `take_summary()` 此前只有测试在读 ⇒ 现场
     /// 看不到"谁握了多久、排队多久"。这里做**唯一生产读者**（两个读者会互相吞计数）；
     /// 空窗口不产行，只有慢持锁（默认 ≥500ms）才 warn 一行，数字里不含 SQL/正文。
-    pub fn spawn_db_hold_reporter(state: &Arc<AppState>) {
+    pub fn spawn_db_hold_reporter(state: &Arc<AppState>) -> tauri::async_runtime::JoinHandle<()> {
         let st = state.clone();
         tauri::async_runtime::spawn(async move {
             loop {
@@ -2586,7 +2589,7 @@ impl AppState {
                     *st.db_hold_note.lock().unwrap_or_else(|e| e.into_inner()) = Some(line);
                 }
             }
-        });
+        })
     }
 }
 

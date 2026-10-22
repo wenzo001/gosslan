@@ -58,6 +58,7 @@ mod transport;
 #[cfg(desktop)]
 mod tray;
 mod user_dirs;
+mod worker_supervisor;
 
 use tauri::Manager;
 
@@ -425,15 +426,12 @@ pub fn run() {
             if std::env::var("GOSSLAN_TEST_PANIC_AFTER_HOOK").as_deref() == Ok("1") {
                 panic!("GOSSLAN_TEST_PANIC_AFTER_HOOK 注入：setup 期早期 panic（仅用于验证留痕通道）");
             }
-            state::AppState::spawn_peer_emitter(&state);
-            state::AppState::spawn_db_hold_reporter(&state);
-            state::AppState::spawn_runtime_diag_reporter(&state);
-            state::AppState::spawn_outbox_retrier(&state);
-            // Outbox 终态清扫必须**进程级常驻**：它不能依赖局域网是否成功启动。
-            // 旧接线在 `network::start` 里，局域网自启失败 / 用户关掉局域网时根本没有
-            // 清扫器 ⇒ 队列里的 sending 永远没有终态（2026-10-20 永久发送中 P0）。
-            // 网络停止时也不回收它：重新连上之前，旧队列同样需要一个有界的终态出口。
-            crate::network::transport::spawn_outbox_sweeper(state.clone());
+            // 常驻 worker 统一交给看门狗拉起并判活（审计 R-05）：
+            // 这五个全是 `loop { … }` 的无限任务，此前句柄在此处被丢弃 —— 一旦某个循环
+            // 提前结束，`outbox` 清扫器死掉意味着 `sending` 行再也没有终态出口（"永远发送中"），
+            // 而界面完全正常。名单只有一份（`worker_supervisor::RESIDENT_WORKERS`），
+            // 不要在这里再直接 `spawn_*`，否则同一个 worker 会跑两份。
+            worker_supervisor::start(&state, worker_supervisor::RESIDENT_WORKERS);
             app.manage(state.clone());
             // 系统托盘：关闭主窗口仅隐藏到托盘，退出需走托盘菜单
             // ⚠️ 三条语句必须一起包进 `#[cfg(desktop)]` 块：属性只作用于**紧跟其后的那一条**，

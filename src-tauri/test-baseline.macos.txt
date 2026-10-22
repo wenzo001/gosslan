@@ -1094,3 +1094,7 @@ user_dirs::tests::moved_directory_is_followed_through_the_bookmark
 user_dirs::tests::nothing_configured_stays_none
 user_dirs::tests::store_then_load_returns_the_same_directory_in_both_modes
 user_dirs::tests::the_two_user_directories_do_not_interfere
+worker_supervisor::tests::finished_signal_comes_from_the_real_handle
+worker_supervisor::tests::lib_rs_wires_the_supervisor_exactly_once
+worker_supervisor::tests::resident_worker_list_is_complete_and_unique
+worker_supervisor::tests::verdict_truth_table

@@ -80,6 +80,7 @@ export default {
     ["src-tauri/src/private_fs.rs", "跨领域文件权限原语（persistence 的 DB/侧车/备份 + observability 的日志/崩溃现场共用）；不归任一业务域，避免 platform↔persistence 反向依赖"],
     ["src-tauri/src/main.rs", "6 行，只有 tauri::Builder 的入口调用"],
     ["src-tauri/src/lib.rs", "560 行：模块注册 + 窗口管理 + 命令注册表（跨领域组装点，Phase 7）。2026-09-28 起测试整段搬进同目录的 lib_tests.rs ⇒ 本文件只剩生产码"],
+    ["src-tauri/src/worker_supervisor.rs", "常驻 worker 看门狗（审计 R-05）：名单里同时装着 state.rs 的四个上报器与 network::transport 的 outbox 清扫器 ⇒ 归任一业务域都会造出反向依赖（persistence/transport → 本文件）。与 lib.rs 同一条口径：跨领域组装点不归业务域"],
     ["src-tauri/src/lib_tests.rs", "分册（include! 回 lib.rs 同一模块）：源码守卫的三份「视图」+ 11 行 include! 壳，2026-10-06 从 4,009 行切出来"],
     // ↓ 同一刀的另外 11 册：**必须与 lib_tests.rs 同级平铺**，因为册内 `include_str!("commands.rs")` /
     //   `include_str!("../gen/android/…")` 是相对本文件的路径，换目录会整体偏移一位（编译器会拒，

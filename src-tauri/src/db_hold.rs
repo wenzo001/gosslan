@@ -531,10 +531,20 @@ mod tests {
         );
         // 接线的另一半：那唯一一处必须由启动点带起来 ——
         // 没有这条，上面两条可以靠「把读者整个删掉」一起变绿（0 == 0 也算一种"只有一处"）。
+        //
+        // 2026-10-22（R-05）：启动点从 `lib.rs` 直调搬进了 `worker_supervisor::RESIDENT_WORKERS`，
+        // 所以这里改数**两份合起来**（名单 + 唯一的 start 调用点）。仍要求"恰好一处"：
+        // 只在两个文件之间搬家 ⇒ 总数不变；多留一份 ⇒ 2 ⇒ 红；整个下线 ⇒ 0 ⇒ 红。
         assert_eq!(
-            lib.matches("AppState::spawn_db_hold_reporter(").count(),
+            include_str!("lib.rs")
+                .matches("AppState::spawn_db_hold_reporter(")
+                .count()
+                + include_str!("worker_supervisor.rs")
+                    .matches("AppState::spawn_db_hold_reporter(")
+                    .count(),
             1,
-            "唯一的读者必须由 lib.rs 这个启动点带起来，否则「计数只有一处」是靠下线达成的"
+            "唯一的读者必须由启动面（lib.rs 的 start 调用 / worker_supervisor 的名单）带起来，\
+             否则「计数只有一处」是靠下线达成的"
         );
     }
 }

@@ -93,7 +93,8 @@ pub(crate) fn outbox_peer_reachable(
 /// ⇒ 应用**启动即崩**（release 是 panic=abort），两个实例都死，E2E 连握手都到不了。
 /// `tauri::async_runtime::spawn` 会在需要时惰性建 runtime，从任意线程都可调用。
 /// 单测与源码形状判据都看不出这一层（它们不跑 setup），只有真起进程才会暴露。
-pub fn spawn_outbox_sweeper(state: Arc<AppState>) -> tauri::async_runtime::JoinHandle<()> {
+pub fn spawn_outbox_sweeper(state: &Arc<AppState>) -> tauri::async_runtime::JoinHandle<()> {
+    let state = state.clone();
     tauri::async_runtime::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_millis(OUTBOX_SWEEPER_INTERVAL_MS));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
