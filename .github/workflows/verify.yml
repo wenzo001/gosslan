@@ -240,7 +240,10 @@ jobs:
         shell: pwsh
         run: |
           $hit = $null
-          foreach ($dir in @('src-tauri\target\debug\deps', 'target\debug\deps')) {
+          # release 优先：verify.mjs 在 Windows 上跑的是 `cargo test --release`，
+          # 产物在 target\release\deps（2026-10-23 实测：只找 debug ⇒ 诊断自己先红「找不到 exe」）。
+          foreach ($dir in @('src-tauri\target\release\deps', 'target\release\deps',
+                             'src-tauri\target\debug\deps', 'target\debug\deps')) {
             $cand = Get-ChildItem "$dir\gosslan_lib-*.exe" -ErrorAction SilentlyContinue |
                     Sort-Object LastWriteTime -Descending | Select-Object -First 1
             if ($cand) { $hit = $cand; break }
@@ -273,14 +276,27 @@ jobs:
           $verdict = if ($flat.Trim()) { $flat.Substring(0, [Math]::Min(700, $flat.Length)) } else { '(无输出)' }
           Write-Host "::error title=Windows 加载器错误原文::$verdict"
 
-          # 再解析一遍导入表，这次**不锚缩进**（上一版 `^\s{2}Name:` 一条都没匹配上）：
-          # `Name: xxx.dll` 开新的导入 DLL；其余 `Name: Symbol` 归当前 DLL。
+          # 加载器报错不一定进 stderr（GUI 子系统 / 消息框会把它吞掉），但 Windows 会把
+          # 「应用程序错误 1000」写进事件日志，里面带出错模块名 —— 这是第二条独立通道。
+          $evs = Get-WinEvent -FilterHashtable @{LogName='Application'; Id=1000} -MaxEvents 20 -ErrorAction SilentlyContinue |
+                 Where-Object { $_.Message -match 'gosslan' } | Select-Object -First 3
+          if ($evs) {
+            $evText = ($evs | ForEach-Object { ($_.Message -replace '\s+', ' ') }) -join ' ¦ '
+            if ($evText.Length -gt 900) { $evText = $evText.Substring(0, 900) }
+            Write-Host "::error title=Windows 事件日志（应用程序错误 1000）::$evText"
+          } else {
+            Write-Host "::error title=Windows 事件日志（应用程序错误 1000）::最近 20 条里没有 gosslan 记录"
+          }
+
+          # 再解析一遍导入表，这次**不锚缩进**：
+          # `Name: xxx.dll` 开新的导入 DLL；函数行是 `Symbol: Foo (0)`（llvm-readobj 的
+          # 真实格式 —— 前一版按 `Name:` 抓函数，一条都抓不到，所以"缺的导出"那行从未生效）。
           # 然后对每个 (DLL, 符号) 真做一次 NativeLibrary.TryGetExport —— 缺的就是罪魁。
           $pairs = New-Object System.Collections.Generic.List[object]
           $cur = $null
           foreach ($line in ($raw -split "`n")) {
             if     ($line -match 'Name:\s*(\S+\.dll)\s*$') { $cur = $Matches[1] }
-            elseif ($line -match 'Name:\s*([A-Za-z_?@$][\w?@$]*)\s*$' -and $cur) {
+            elseif ($line -match 'Symbol:\s*(\S+)' -and $cur) {
               $pairs.Add([pscustomobject]@{ Dll = $cur; Fn = $Matches[1] })
             }
           }
