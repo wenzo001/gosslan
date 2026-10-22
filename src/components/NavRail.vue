@@ -11,6 +11,7 @@ import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
 import { MoreHorizontal, Moon, ScrollText, Settings, Sun } from "lucide-vue-next";
+import { motion, useReducedMotion } from "@/utils/motion";
 import UnreadBadge from "@/components/UnreadBadge.vue";
 import NavIcon from "@/components/ui/NavIcon.vue";
 import SelfAvatar from "@/components/SelfAvatar.vue";
@@ -35,6 +36,7 @@ const emit = defineEmits<{
 
 const app = useAppStore();
 const chat = useChatStore();
+const reducedMotion = useReducedMotion();
 
 // ---------------- 二级菜单（设置 / 运行日志 收进这里，用户 2026-09-17） ----------------
 // 惯用法与 ConversationList 的「+」菜单完全一致（useExclusivePopup 互斥）；键盘/焦点/外点交给 Reka。
@@ -98,6 +100,12 @@ function onMoreOpen(open: boolean) {
         :aria-label="chat.totalUnread > 0 ? t('nav.chats.unread', { n: chat.totalUnread }) : t('nav.chats')"
         @click="emit('update:navState', 'chats')"
       >
+        <motion.span
+          v-if="navState === 'chats'"
+          layout-id="rail-active"
+          class="pointer-events-none absolute inset-0 rounded-[var(--gosslan-radius-lg)] bg-[color-mix(in_srgb,var(--gosslan-primary)_13%,transparent)]"
+          :transition="reducedMotion ? { duration: 0 } : { type: 'spring', stiffness: 480, damping: 36, mass: 0.7 }"
+        />
         <NavIcon name="chats" :active="navState === 'chats'" />
         <UnreadBadge
           v-if="chat.totalUnread > 0"
@@ -115,6 +123,12 @@ function onMoreOpen(open: boolean) {
         :aria-label="chat.pendingRequests.length ? t('nav.contacts.pending', { n: chat.pendingRequests.length }) : t('nav.contacts')"
         @click="emit('update:navState', 'contacts')"
       >
+        <motion.span
+          v-if="navState === 'contacts'"
+          layout-id="rail-active"
+          class="pointer-events-none absolute inset-0 rounded-[var(--gosslan-radius-lg)] bg-[color-mix(in_srgb,var(--gosslan-primary)_13%,transparent)]"
+          :transition="reducedMotion ? { duration: 0 } : { type: 'spring', stiffness: 480, damping: 36, mass: 0.7 }"
+        />
         <NavIcon name="contacts" :active="navState === 'contacts'" />
         <UnreadBadge
           v-if="chat.pendingRequests.length"
@@ -133,6 +147,12 @@ function onMoreOpen(open: boolean) {
         :aria-label="t('nav.favorites')"
         @click="emit('update:navState', navState === 'favorites' ? 'chats' : 'favorites')"
       >
+        <motion.span
+          v-if="navState === 'favorites'"
+          layout-id="rail-active"
+          class="pointer-events-none absolute inset-0 rounded-[var(--gosslan-radius-lg)] bg-[color-mix(in_srgb,var(--gosslan-primary)_13%,transparent)]"
+          :transition="reducedMotion ? { duration: 0 } : { type: 'spring', stiffness: 480, damping: 36, mass: 0.7 }"
+        />
         <NavIcon name="favorites" :active="navState === 'favorites'" />
       </button>
       <!-- 外部链接：点开把左列切成「链接」列表（用户 2026-09-17）。图标用**指南针**造型
@@ -148,6 +168,12 @@ function onMoreOpen(open: boolean) {
         @click="emit('update:navState', 'links')"
       >
         <!-- 指南针：链接入口要"探索/发现"的指向感（用户 2026-09-17 指定）。 -->
+        <motion.span
+          v-if="navState === 'links'"
+          layout-id="rail-active"
+          class="pointer-events-none absolute inset-0 rounded-[var(--gosslan-radius-lg)] bg-[color-mix(in_srgb,var(--gosslan-primary)_13%,transparent)]"
+          :transition="reducedMotion ? { duration: 0 } : { type: 'spring', stiffness: 480, damping: 36, mass: 0.7 }"
+        />
         <NavIcon name="links" :active="navState === 'links'" />
       </button>
     </div>

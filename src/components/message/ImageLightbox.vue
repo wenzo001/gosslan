@@ -5,6 +5,7 @@
    ⇒ 按 `designGuards` ⑦ 的约定，用文件级逃生阀显式声明，而不是靠"没人发现"。 */
 import { clampScale, pinchScale, swipeDirection } from "@/utils/lightboxGestures";
 import { t } from "@/i18n";
+import Spinner from "@/components/ui/Spinner.vue";
 import { computed, ref, watch } from "vue";
 import { useEventListener } from "@vueuse/core";
 import { FocusScope } from "reka-ui";
@@ -16,6 +17,7 @@ import { PREVIEW_FAILURE_KEYS } from "@/utils/mediaAvailability";
 import { saveImageAs } from "@/utils/saveImageAs";
 import { StaleGuard } from "@/utils/staleGuard";
 import { useBackLayer } from "@/composables/useBackLayer";
+import { animate, motion, useMotionValue, useReducedMotion } from "@/utils/motion";
 
 /**
  * 相册里的一张图 —— 三种来源，按下面的优先级取字节：
@@ -56,6 +58,16 @@ const app = useAppStore();
 
 const current = computed(() => props.images[props.index] ?? null);
 const hasMultiple = computed(() => props.images.length > 1);
+const reducedMotion = useReducedMotion();
+
+/** 与聊天缩略图共享的 layoutId：只有可寻址的图（msg/cid）才有，dataSrc 单独无法跨视图对齐。 */
+const activeLayoutId = computed(() => {
+  const it = current.value;
+  if (!it) return undefined;
+  if (it.msgId) return `image:${it.msgId}`;
+  if (it.cid) return `content:${it.cid}`;
+  return undefined;
+});
 
 /**
  * 给图片预览自己注册返回栈层 —— 否则 Android 侧滑返回会把 ChatWindow 那层
@@ -162,6 +174,20 @@ async function saveImage() {
 const scale = ref(1);
 const tx = ref(0);
 const ty = ref(0);
+/** 连续手势的变换走 MotionValue：拖动/缩放不经过 Vue 渲染周期；ref 只保留给 UI 判据（复位按钮/光标）。 */
+const scaleMV = useMotionValue(1);
+const txMV = useMotionValue(0);
+const tyMV = useMotionValue(0);
+function setScale(v: number) {
+  scale.value = v;
+  scaleMV.set(v);
+}
+function setTranslate(x: number, y: number) {
+  tx.value = x;
+  ty.value = y;
+  txMV.set(x);
+  tyMV.set(y);
+}
 let dragging = false;
 let lastX = 0;
 let lastY = 0;
@@ -170,23 +196,30 @@ const pointers = new Map<number, { x: number; y: number }>();
 /** 双指手势的起点：两指距离与当时的倍率。 */
 let pinchStart: { distance: number; scale: number } | null = null;
 
-function reset() {
-  scale.value = 1;
-  tx.value = 0;
-  ty.value = 0;
+function reset(instant = false) {
   pointers.clear();
   pinchStart = null;
   dragging = false;
+  scale.value = 1;
+  tx.value = 0;
+  ty.value = 0;
+  if (instant || reducedMotion.value) {
+    scaleMV.set(1);
+    txMV.set(0);
+    tyMV.set(0);
+    return;
+  }
+  // 双击/点复位键：弹性回到原位；手势本身仍是直接跟手。
+  animate(scaleMV, 1, { type: "spring", stiffness: 420, damping: 40 });
+  animate(txMV, 0, { duration: 0.18 });
+  animate(tyMV, 0, { duration: 0.18 });
 }
 
 function onWheel(e: WheelEvent) {
   e.preventDefault();
   const next = clampScale(scale.value + (e.deltaY < 0 ? 0.2 : -0.2));
-  if (next === 1) {
-    tx.value = 0;
-    ty.value = 0;
-  }
-  scale.value = next;
+  if (next === 1) setTranslate(0, 0);
+  setScale(next);
 }
 
 function twoPointerDistance(): number | null {
@@ -220,18 +253,14 @@ function onPointerMove(e: PointerEvent) {
   // ① 双指缩放
   if (pointers.size >= 2 && pinchStart) {
     const d = twoPointerDistance();
-    if (d !== null) scale.value = pinchScale(pinchStart.distance, d, pinchStart.scale);
+    if (d !== null) setScale(pinchScale(pinchStart.distance, d, pinchStart.scale));
     // 缩回原始尺寸时把位移归零，否则图会停在屏幕外
-    if (scale.value <= 1) {
-      tx.value = 0;
-      ty.value = 0;
-    }
+    if (scale.value <= 1) setTranslate(0, 0);
     return;
   }
   // ② 单指：已放大 ⇒ 平移
   if (dragging) {
-    tx.value += e.clientX - lastX;
-    ty.value += e.clientY - lastY;
+    setTranslate(tx.value + e.clientX - lastX, ty.value + e.clientY - lastY);
     lastX = e.clientX;
     lastY = e.clientY;
     return;
@@ -278,7 +307,7 @@ function onKey(e: KeyboardEvent) {
 // 打开 / 关闭 / 切图时复位缩放与位移
 watch(
   () => [props.open, props.index] as const,
-  () => reset(),
+  () => reset(true),
 );
 
 /**
@@ -302,9 +331,9 @@ useEventListener(window, "keydown", onKey);
 <template>
   <Teleport to="body">
     <Transition
-      enter-active-class="duration-150 ease-out"
+      enter-active-class="duration-150 ease-out motion-reduce:transition-none"
       enter-from-class="opacity-0"
-      leave-active-class="duration-100 ease-in"
+      leave-active-class="duration-100 ease-in motion-reduce:transition-none"
       leave-to-class="opacity-0"
     >
       <div
@@ -356,7 +385,7 @@ useEventListener(window, "keydown", onKey);
             class="tap-safe flex h-9 w-9 items-center justify-center rounded-full text-white/90 transition hover:bg-white/15"
             style="text-shadow: 0 1px 2px rgba(0,0,0,0.55); filter: drop-shadow(0 1px 2px rgba(0,0,0,0.35));"
             :title="t('common.resetZoom')" :aria-label="t('common.resetZoom')"
-            @click.stop="reset"
+            @click.stop="reset()"
           >
             <RotateCcw class="h-4 w-4" />
           </button>
@@ -395,29 +424,40 @@ useEventListener(window, "keydown", onKey);
         <!-- img-eager-ok：这一支是用户**主动点开**、占满屏幕中央的那一张，不在虚拟列表里 ⇒
              懒加载只会让它更晚出现。designGuards ㉜ 靠这句标记整份跳过（例外写在该例外的旁边）。 -->
         <template v-if="src">
-          <img :alt="current?.name || t('msg.imagePreview')"
-            :src="src"
-            class="max-h-[85vh] max-w-[88vw] touch-none select-none rounded-[var(--gosslan-radius-lg)] shadow-2xl"
-            :style="{
-              transform: `translate(${tx}px, ${ty}px) scale(${scale})`,
-              cursor: scale > 1 ? (dragging ? 'grabbing' : 'grab') : 'zoom-in',
-            }"
-            draggable="false"
-            @click.stop
-            @dblclick="reset"
-            @pointerdown="onPointerDown"
-            @pointermove="onPointerMove"
-            @pointerup="onPointerUp"
-            @pointercancel="onPointerUp"
-            @error="onImageError"
-          />
+          <!-- 共享元素：缩略图与灯箱共用同一个 layoutId，打开时从气泡位置长成大图。
+               手势的 x/y/scale 走 MotionValue（在 Vue 渲染周期外执行），与 layout 变换分层。 -->
+          <motion.div
+            :layout="!reducedMotion"
+            :layout-id="reducedMotion ? undefined : activeLayoutId"
+            :transition="reducedMotion ? { duration: 0 } : { type: 'spring', stiffness: 420, damping: 38 }"
+            class="flex items-center justify-center"
+          >
+            <motion.img :alt="current?.name || t('msg.imagePreview')"
+              :src="src"
+              class="max-h-[85vh] max-w-[88vw] touch-none select-none rounded-[var(--gosslan-radius-lg)] shadow-2xl"
+              :style="{
+                x: txMV,
+                y: tyMV,
+                scale: scaleMV,
+                cursor: scale > 1 ? (dragging ? 'grabbing' : 'grab') : 'zoom-in',
+              }"
+              draggable="false"
+              @click.stop
+              @dblclick="reset()"
+              @pointerdown="onPointerDown"
+              @pointermove="onPointerMove"
+              @pointerup="onPointerUp"
+              @pointercancel="onPointerUp"
+              @error="onImageError"
+            />
+          </motion.div>
         </template>
         <div
           v-else
           class="flex h-48 flex-col items-center justify-center gap-3 px-8 text-center text-sm text-white/70"
         >
           <template v-if="resolving">
-            <span class="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white/80"></span>
+            <Spinner size-class="h-4 w-4" class="text-white/80" decorative />
             {{ t("msg.lightbox.loading") }}
           </template>
           <template v-else>

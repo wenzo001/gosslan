@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
+import Spinner from "@/components/ui/Spinner.vue";
 import { safeStorageBackend } from "../utils/safeStorage.ts";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
@@ -39,7 +40,7 @@ import { activePopupKey } from "@/utils/popupRegistry";
 import { previewText } from "@/utils/messages";
 import DangerBtn from "@/components/ui/DangerBtn.vue";
 import { ArrowDown, Bluetooth, Layers, Pin, Megaphone, Share2, Star, ShieldAlert, KeyRound } from "lucide-vue-next";
-import { Loader2, Trash2, X } from "@/components/ui/icons";
+import { Trash2, X } from "@/components/ui/icons";
 import {
   isAnnounceDismissed,
   readAnnounceSeen,
@@ -518,31 +519,12 @@ const todoLive = computed(() => {
 const announcement = computed(() => {
   const convId = chat.activeConv;
   if (!convId?.startsWith("group:")) return null;
-  const list = chat.messages[convId] ?? [];
-  let best: { seq: number; msgId: string; text: string } | null = null;
-  const tombstones = new Set<string>();
-  for (const m of list) {
-    if (m.kind === "announcement_delete") {
-      try {
-        const id = (JSON.parse(m.content) as { ann_id?: string }).ann_id;
-        if (id) tombstones.add(id);
-      } catch {
-        /* 畸形载荷忽略 */
-      }
-      continue;
-    }
-    if (m.kind !== "announcement") continue;
-    const newer = !best || m.seq > best.seq || (m.seq === best.seq && m.msg_id > best.msgId);
-    if (!newer) continue;
-    try {
-      const text = (JSON.parse(m.content) as { text?: string }).text ?? "";
-      best = { seq: m.seq, msgId: m.msg_id, text };
-    } catch {
-      /* 畸形载荷忽略 */
-    }
-  }
-  if (!best || tombstones.has(best.msgId)) return null;
-  return best;
+  // store 里的 `activeAnnouncements` 由后端一条 SQL 折好（公告 + 墓碑），前端不再每次
+  // 消息变动都把整段历史 JSON.parse 一遍。key 兼容带/不带 `group:` 前缀两种后端形态。
+  const a =
+    chat.activeAnnouncements.get(convId) ?? chat.activeAnnouncements.get(convId.slice(6));
+  if (!a) return null;
+  return { seq: 0, msgId: a.msgId, text: a.text };
 });
 
 /** 只有群主能发布/删除公告（后端同样校验；前端隐藏入口是为了不让用户白点一次）。
@@ -1355,9 +1337,10 @@ function onLoadMore() {
       role="status"
       aria-live="polite"
     >
-      <Loader2
-        class="h-3.5 w-3.5 shrink-0 animate-spin text-[var(--gosslan-primary)]"
-        aria-hidden="true"
+      <Spinner
+        class="text-[var(--gosslan-primary)]"
+        size-class="h-3.5 w-3.5"
+        decorative
       />
       <p
         class="min-w-0 flex-1 truncate text-meta leading-snug text-[var(--gosslan-text-2)]"

@@ -11,6 +11,7 @@
  *    所以本面板在清空聊天历史后依然完整。
  */
 import { t } from "@/i18n";
+import Spinner from "@/components/ui/Spinner.vue";
 import { computed, onBeforeUnmount, watch } from "vue";
 import { useQuery, useQueryClient } from "@tanstack/vue-query";
 import { api } from "@/api";
@@ -22,7 +23,6 @@ import { formatBytes } from "@/utils/format";
 import { FILE_KIND_ICONS, extBadgeLabel, fileKindOf, fileKindStyle } from "@/utils/fileKind";
 import { openLocalFile } from "@/utils/localFile";
 import { RotateCw } from "lucide-vue-next";
-import { Loader2 } from "@/components/ui/icons";
 import StateBlock from "@/components/ui/StateBlock.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
 import { errorText } from "@/composables/useErrorText";
@@ -278,7 +278,7 @@ function stateText(state: GroupFileEntry["local_state"]): string {
             v-if="f.local_state !== 'local'"
             class="flex shrink-0 items-center gap-1 text-caption text-[var(--gosslan-text-2)]"
           >
-            <Loader2 v-if="f.local_state === 'receiving'" class="h-3 w-3 animate-spin" />
+            <Spinner v-if="f.local_state === 'receiving'" size-class="h-3 w-3" decorative />
             {{ stateText(f.local_state) }}
           </span>
           <button

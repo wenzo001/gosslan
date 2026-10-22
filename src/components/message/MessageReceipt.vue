@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
+import Spinner from "@/components/ui/Spinner.vue";
 import { computed } from "vue";
 import { useChatStore } from "@/stores/useChatStore";
 import { useExclusivePopup } from "@/composables/useExclusivePopup";
@@ -8,7 +9,7 @@ import { avatarSeedFor } from "@/utils/avatarSeed";
 import type { SendState } from "@/composables/useMessageDisplay";
 import { CheckCheck } from "lucide-vue-next";
 import { Check } from "@/components/ui/icons";
-import { Loader2, X } from "@/components/ui/icons";
+import { X } from "@/components/ui/icons";
 
 const props = defineProps<{
   state: SendState;
@@ -150,7 +151,7 @@ function readerAvatar(id: string): string | null {
                加一个勾让用户一眼就知道这不是空状态。 -->
           <template v-if="state === 'sending'">
             <Check class="h-3.5 w-3.5 text-[var(--gosslan-text-2)]" />
-            <Loader2 class="absolute -right-1 -bottom-0.5 h-2.5 w-2.5 animate-spin text-[var(--gosslan-text-2)]" />
+            <Spinner class="absolute -right-1 -bottom-0.5 text-[var(--gosslan-text-2)]" size-class="h-2.5 w-2.5" decorative />
           </template>
           <!-- sent：单勾（灰色）—— 已经发出但还没到对方设备。我们 P2P 链路下 sent 到 delivered
                之间几乎没有停留（写出去 = 对方收到），所以这状态通常一闪而过。 -->

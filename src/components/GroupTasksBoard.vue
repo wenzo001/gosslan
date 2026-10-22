@@ -31,6 +31,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { isAndroid } from "@/utils/platform";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
+import { motion, useReducedMotion } from "@/utils/motion";
 import { useMemberProfile } from "@/composables/useMemberProfile";
 import { useMentionContext } from "@/composables/useMentionContext";
 import BaseModal from "@/components/BaseModal.vue";
@@ -74,6 +75,7 @@ const props = defineProps<{
 }>();
 
 const app = useAppStore();
+const reducedMotion = useReducedMotion();
 const chat = useChatStore();
 /** 全局图片预览（#40）：本组件只给数组与来源标记，渲染与切换在那唯一的一份实例里。 */
 const preview = useImagePreviewStore();
@@ -1185,9 +1187,12 @@ watch(
           </div>
 
           <!-- 任务行：固定编号 + 标题/元信息（点开详情）+ 状态 + 快捷完成 -->
-          <div
+          <motion.div
             v-for="x in g.items"
             :key="x.todoId"
+            :layout="!reducedMotion"
+            :layout-id="`todo:${x.todoId}`"
+            :transition="reducedMotion ? { duration: 0 } : { type: 'spring', stiffness: 500, damping: 40 }"
             class="relative flex items-center gap-2.5 border-b border-[var(--gosslan-divider)] px-3 py-2.5 transition last:border-b-0 hover:bg-[var(--gosslan-hover)]"
           >
             <!-- 状态色条：整行左缘一道 2px（判据与颜色都在 `TODO_STATUS_BAR` 一处，
@@ -1305,7 +1310,7 @@ watch(
             >
               <Archive class="h-4 w-4" />
             </button>
-          </div>
+          </motion.div>
         </div>
       </template>
       </div>

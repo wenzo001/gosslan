@@ -23,48 +23,49 @@
 <!-- BEGIN:generated (node scripts/frontend-inventory.mjs) -->
 
 > 复跑：`node scripts/frontend-inventory.mjs`（本段与 `--check` 对账，手改本段数字没有意义）。
-> 现读：`src/` 共 312 份源码 = 生产 211 份 / 43,862 行 + 测试 101 份 / 21,175 行（不含 `src/assets/` 里的 214 个表情图）。
+> 现读：`src/` 共 316 份源码 = 生产 215 份 / 44,279 行 + 测试 101 份 / 21,252 行（不含 `src/assets/` 里的 214 个表情图）。
 
 ### 1.1 按职责分类（生产码，机器现算）
 
 | 类 | 文件 | 行 |
 |---|---:|---:|
-| D-业务组件 | 68 | 19,606 |
-| B-utils | 75 | 10,053 |
-| C-状态层 | 3 | 4,162 |
-| B-国际化 | 5 | 2,455 |
+| D-业务组件 | 68 | 19,689 |
+| B-utils | 76 | 10,104 |
+| C-状态层 | 3 | 4,177 |
+| B-国际化 | 5 | 2,459 |
 | D-数据表 | 3 | 1,860 |
-| A-公共UI | 20 | 1,708 |
-| A-布局 | 2 | 1,142 |
+| A-公共UI | 21 | 1,734 |
+| A-布局 | 2 | 1,169 |
 | B-composables | 15 | 1,009 |
 | E-IPC/事件 | 1 | 770 |
 | E-平台适配 | 11 | 640 |
 | E-入口/启动 | 7 | 450 |
-| 其他 | 1 | 7 |
-| **合计** | **211** | **43,862** |
+| 其他 | 3 | 218 |
+| **合计** | **215** | **44,279** |
 
 ### 1.2 已装库在生产码里的实际使用面（装了不等于用了）
 
 | 依赖 | 生产文件 | 行 |
 |---|---:|---:|
-| `vue` | 91 | 27,158 |
-| `lucide-vue-next` | 47 | 16,929 |
-| `reka-ui` | 24 | 8,691 |
-| `@vueuse/core` | 18 | 10,655 |
-| `@tanstack/vue-query` | 9 | 1,956 |
-| `@tauri-apps/api` | 7 | 4,947 |
-| `vue-router` | 6 | 4,873 |
-| `@tauri-apps/plugin-dialog` | 5 | 3,856 |
-| `pinia` | 4 | 4,367 |
+| `vue` | 93 | 27,498 |
+| `lucide-vue-next` | 48 | 17,061 |
+| `reka-ui` | 24 | 8,778 |
+| `@vueuse/core` | 18 | 10,714 |
+| `@tanstack/vue-query` | 9 | 1,961 |
+| `vue-router` | 8 | 5,106 |
+| `@tauri-apps/api` | 7 | 4,935 |
+| `@tauri-apps/plugin-dialog` | 5 | 3,844 |
+| `pinia` | 4 | 4,382 |
 | `@tauri-apps/plugin-opener` | 3 | 462 |
-| `@tauri-apps/plugin-notification` | 2 | 4,032 |
+| `@tauri-apps/plugin-notification` | 2 | 4,047 |
 | `dayjs` | 2 | 202 |
 | `zod` | 2 | 198 |
 | `highlight.js` | 1 | 127 |
-| `@tanstack/vue-virtual` | 1 | 671 |
+| `@tanstack/vue-virtual` | 1 | 674 |
 | `vue-i18n` | 1 | 176 |
 | `mitt` | 1 | 51 |
 | `@pinia/colada` | **0** | 0 ← 装了但生产码没用到，要么接上要么卸掉 |
+| `motion-v` | **0** | 0 ← 装了但生产码没用到，要么接上要么卸掉 |
 
 ### 1.3 全量生产文件索引
 
@@ -79,7 +80,7 @@
 | `src/components/BaseModal.vue` | A-公共UI | 231 | `reka-ui` `vue` |
 | `src/components/chat/ChatHeader.vue` | D-业务组件 | 208 | `lucide-vue-next` `vue` |
 | `src/components/chat/MessageComposer.vue` | D-业务组件 | 900 | `@vueuse/core` `lucide-vue-next` `reka-ui` `vue` |
-| `src/components/ChatWindow.vue` | D-业务组件 | 1804 | `@tauri-apps/api` `@tauri-apps/plugin-dialog` `@vueuse/core` `lucide-vue-next` `vue` `vue-router` |
+| `src/components/ChatWindow.vue` | D-业务组件 | 1787 | `@tauri-apps/api` `@tauri-apps/plugin-dialog` `@vueuse/core` `lucide-vue-next` `vue` `vue-router` |
 | `src/components/CodeBlock.vue` | D-业务组件 | 127 | `highlight.js` `vue` |
 | `src/components/ContextMenu.vue` | A-公共UI | 92 | `reka-ui` `vue` |
 | `src/components/conversation/ConversationContextMenu.vue` | D-业务组件 | 43 | `lucide-vue-next` `reka-ui` |
@@ -88,20 +89,20 @@
 | `src/components/conversation/FriendListItem.vue` | D-业务组件 | 152 | `vue` |
 | `src/components/conversation/FriendRequestList.vue` | D-业务组件 | 78 | — |
 | `src/components/ConversationList.vue` | D-业务组件 | 603 | `@vueuse/core` `lucide-vue-next` `reka-ui` `vue` `vue-router` |
-| `src/components/DevDiagPanel.vue` | D-业务组件 | 393 | `@tanstack/vue-query` `lucide-vue-next` `vue` |
+| `src/components/DevDiagPanel.vue` | D-业务组件 | 395 | `@tanstack/vue-query` `lucide-vue-next` `vue` |
 | `src/components/EmojiPicker.vue` | D-业务组件 | 179 | `vue` |
-| `src/components/FavoritePanel.vue` | D-业务组件 | 968 | `lucide-vue-next` `reka-ui` `vue` `vue-router` |
+| `src/components/FavoritePanel.vue` | D-业务组件 | 980 | `lucide-vue-next` `reka-ui` `vue` `vue-router` |
 | `src/components/FriendProfile.vue` | D-业务组件 | 306 | `lucide-vue-next` `vue` `vue-router` |
 | `src/components/GroupCreateModal.vue` | D-业务组件 | 122 | `vue` |
 | `src/components/GroupFilesPanel.vue` | D-业务组件 | 297 | `@tanstack/vue-query` `lucide-vue-next` `vue` |
-| `src/components/GroupMemberPanel.vue` | D-业务组件 | 509 | `lucide-vue-next` `vue` |
-| `src/components/GroupTasksBoard.vue` | D-业务组件 | 1599 | `@tauri-apps/api` `@tauri-apps/plugin-dialog` `@vueuse/core` `lucide-vue-next` `reka-ui` `vue` |
+| `src/components/GroupMemberPanel.vue` | D-业务组件 | 510 | `lucide-vue-next` `vue` |
+| `src/components/GroupTasksBoard.vue` | D-业务组件 | 1604 | `@tauri-apps/api` `@tauri-apps/plugin-dialog` `@vueuse/core` `lucide-vue-next` `reka-ui` `vue` |
 | `src/components/GroupTasksPanel.vue` | D-业务组件 | 63 | `vue` |
 | `src/components/GroupTodosWindow.vue` | D-业务组件 | 176 | `@tauri-apps/api` `vue` |
 | `src/components/LinksList.vue` | D-业务组件 | 257 | `@tanstack/vue-query` `lucide-vue-next` `vue` |
-| `src/components/LogViewer.vue` | D-业务组件 | 671 | `@tanstack/vue-virtual` `@vueuse/core` `lucide-vue-next` `vue` |
+| `src/components/LogViewer.vue` | D-业务组件 | 674 | `@tanstack/vue-virtual` `@vueuse/core` `lucide-vue-next` `vue` |
 | `src/components/message/ForwardModal.vue` | D-业务组件 | 177 | `@vueuse/core` `vue` |
-| `src/components/message/ImageLightbox.vue` | D-业务组件 | 449 | `@vueuse/core` `lucide-vue-next` `reka-ui` `vue` |
+| `src/components/message/ImageLightbox.vue` | D-业务组件 | 489 | `@vueuse/core` `lucide-vue-next` `reka-ui` `vue` |
 | `src/components/message/MentionText.vue` | D-业务组件 | 84 | `@tauri-apps/plugin-opener` `vue` |
 | `src/components/message/MergeCard.vue` | D-业务组件 | 73 | `lucide-vue-next` `vue` |
 | `src/components/message/MergeCardModal.vue` | D-业务组件 | 283 | `vue` |
@@ -109,18 +110,18 @@
 | `src/components/message/MessageCodeBubble.vue` | D-业务组件 | 103 | `lucide-vue-next` `vue` |
 | `src/components/message/MessageContentModal.vue` | D-业务组件 | 129 | `@tauri-apps/plugin-opener` `lucide-vue-next` `vue` |
 | `src/components/message/MessageContextMenu.vue` | D-业务组件 | 180 | `lucide-vue-next` `reka-ui` `vue` |
-| `src/components/message/MessageFileBubble.vue` | D-业务组件 | 143 | `lucide-vue-next` `vue` |
-| `src/components/message/MessageImageBubble.vue` | D-业务组件 | 150 | `lucide-vue-next` `vue` |
+| `src/components/message/MessageFileBubble.vue` | D-业务组件 | 144 | `lucide-vue-next` `vue` |
+| `src/components/message/MessageImageBubble.vue` | D-业务组件 | 154 | `lucide-vue-next` `vue` |
 | `src/components/message/MessageLinkText.vue` | D-业务组件 | 30 | `vue` |
 | `src/components/message/MessageReactionBar.vue` | D-业务组件 | 263 | `reka-ui` `vue` |
-| `src/components/message/MessageReceipt.vue` | D-业务组件 | 168 | `lucide-vue-next` `reka-ui` `vue` |
+| `src/components/message/MessageReceipt.vue` | D-业务组件 | 169 | `lucide-vue-next` `reka-ui` `vue` |
 | `src/components/message/MessageTextBubble.vue` | D-业务组件 | 249 | `@tauri-apps/plugin-opener` `lucide-vue-next` `vue` |
 | `src/components/message/UnsupportedKindBubble.vue` | D-业务组件 | 44 | `vue` |
-| `src/components/MessageItem.vue` | D-业务组件 | 1650 | `lucide-vue-next` `reka-ui` `vue` |
+| `src/components/MessageItem.vue` | D-业务组件 | 1652 | `lucide-vue-next` `reka-ui` `vue` |
 | `src/components/MobilePageFrame.vue` | A-公共UI | 106 | — |
-| `src/components/NavRail.vue` | D-业务组件 | 207 | `lucide-vue-next` `reka-ui` `vue` |
+| `src/components/NavRail.vue` | D-业务组件 | 233 | `lucide-vue-next` `reka-ui` `vue` |
 | `src/components/RemindAudienceDialog.vue` | D-业务组件 | 109 | `vue` |
-| `src/components/search/ChatSearchDialog.vue` | D-业务组件 | 550 | `@tanstack/vue-query` `@vueuse/core` `lucide-vue-next` `reka-ui` `vue` |
+| `src/components/search/ChatSearchDialog.vue` | D-业务组件 | 551 | `@tanstack/vue-query` `@vueuse/core` `lucide-vue-next` `reka-ui` `vue` |
 | `src/components/SelfAvatar.vue` | D-业务组件 | 57 | `vue` |
 | `src/components/settings/AboutSection.vue` | D-业务组件 | 86 | `vue` |
 | `src/components/settings/AppearanceSection.vue` | D-业务组件 | 103 | `vue` |
@@ -138,7 +139,7 @@
 | `src/components/settings/StorageSection.vue` | D-业务组件 | 273 | `@tauri-apps/plugin-dialog` `lucide-vue-next` `vue` |
 | `src/components/SettingsPanel.vue` | D-业务组件 | 223 | `lucide-vue-next` `vue` |
 | `src/components/SettingsWindow.vue` | D-业务组件 | 182 | `@vueuse/core` `lucide-vue-next` `vue` `vue-router` |
-| `src/components/ShareDirectory.vue` | D-业务组件 | 138 | `@tanstack/vue-query` `lucide-vue-next` `vue` |
+| `src/components/ShareDirectory.vue` | D-业务组件 | 140 | `@tanstack/vue-query` `lucide-vue-next` `vue` |
 | `src/components/TitleBar.vue` | A-公共UI | 402 | `@tauri-apps/api` `@vueuse/core` `vue` |
 | `src/components/ToastHud.vue` | A-公共UI | 26 | `reka-ui` |
 | `src/components/ToastList.vue` | A-公共UI | 39 | `lucide-vue-next` `reka-ui` |
@@ -154,10 +155,11 @@
 | `src/components/ui/icons.ts` | A-公共UI | 15 | `lucide-vue-next` |
 | `src/components/ui/LinkIcon.vue` | A-公共UI | 28 | `lucide-vue-next` |
 | `src/components/ui/NavIcon.vue` | A-公共UI | 32 | — |
+| `src/components/ui/navIcons.ts` | A-公共UI | 22 | `lucide-vue-next` |
 | `src/components/ui/PrimaryBtn.vue` | A-公共UI | 42 | — |
 | `src/components/ui/SegmentedControl.vue` | A-公共UI | 86 | `reka-ui` |
 | `src/components/ui/SettingsSelect.vue` | A-公共UI | 73 | `lucide-vue-next` `reka-ui` `vue` |
-| `src/components/ui/StateBlock.vue` | A-公共UI | 76 | `vue` |
+| `src/components/ui/StateBlock.vue` | A-公共UI | 80 | `vue` |
 | `src/components/UnreadBadge.vue` | D-业务组件 | 62 | — |
 | `src/components/VirtualList.vue` | D-业务组件 | 541 | `@vueuse/core` `vue` |
 | `src/components/window/AuxWindowShell.vue` | A-公共UI | 56 | `vue` |
@@ -187,11 +189,13 @@
 | `src/i18n/index.ts` | B-国际化 | 176 | `vue` `vue-i18n` |
 | `src/i18n/locales.ts` | B-国际化 | 16 | — |
 | `src/i18n/locales/dict.ts` | B-国际化 | 7 | — |
-| `src/i18n/locales/en-us.ts` | B-国际化 | 1111 | — |
-| `src/i18n/locales/zh-cn.ts` | B-国际化 | 1145 | — |
-| `src/layouts/ResponsiveLayout.vue` | A-布局 | 1010 | `@vueuse/core` `lucide-vue-next` `vue` `vue-router` |
+| `src/i18n/locales/en-us.ts` | B-国际化 | 1113 | — |
+| `src/i18n/locales/zh-cn.ts` | B-国际化 | 1147 | — |
+| `src/layouts/ResponsiveLayout.vue` | A-布局 | 1037 | `@vueuse/core` `lucide-vue-next` `vue` `vue-router` |
+| `src/router/main.ts` | 其他 | 165 | `vue` `vue-router` |
+| `src/router/settings.ts` | 其他 | 46 | `vue` `vue-router` |
 | `src/stores/useAppStore.ts` | C-状态层 | 1067 | `@tauri-apps/plugin-notification` `@vueuse/core` `pinia` `vue` |
-| `src/stores/useChatStore.ts` | C-状态层 | 2965 | `@tauri-apps/plugin-notification` `pinia` `vue` |
+| `src/stores/useChatStore.ts` | C-状态层 | 2980 | `@tauri-apps/plugin-notification` `pinia` `vue` |
 | `src/stores/useImagePreview.ts` | C-状态层 | 130 | `pinia` `vue` |
 | `src/types.ts` | D-数据表 | 671 | — |
 | `src/utils/a11yLabels.ts` | B-utils | 131 | — |
@@ -209,9 +213,10 @@
 | `src/utils/chatStyle.ts` | B-utils | 211 | — |
 | `src/utils/clipboard.ts` | E-平台适配 | 52 | — |
 | `src/utils/color.ts` | B-utils | 128 | — |
+| `src/utils/composerDrafts.ts` | B-utils | 47 | — |
 | `src/utils/configBool.ts` | B-utils | 19 | — |
 | `src/utils/defer.ts` | B-utils | 71 | — |
-| `src/utils/designGuards.ts` | B-utils | 2041 | — |
+| `src/utils/designGuards.ts` | B-utils | 2045 | — |
 | `src/utils/emoji.ts` | B-utils | 68 | — |
 | `src/utils/emojiUsage.ts` | B-utils | 139 | — |
 | `src/utils/emptyList.ts` | B-utils | 26 | — |
@@ -284,7 +289,7 @@
 
 ### 1.4 测试码（分列，不计进业务成果）
 
-共 101 份 / 21,175 行；由 `npm test` 的清单自己打印条数。
+共 101 份 / 21,252 行；由 `npm test` 的清单自己打印条数。
 <!-- END:generated -->
 
 ## 2. 能力域 × 替换结论

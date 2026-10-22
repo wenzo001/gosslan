@@ -1329,6 +1329,7 @@ async function copyFileToClipboard() {
           <MessageImageBubble
             v-else-if="message.kind === 'image'"
             :src="imageDataUrl"
+            :layout-id="`image:${message.msg_id}`"
             @open="openImageLightbox"
             @refetch="refetchContent"
           />
@@ -1337,6 +1338,7 @@ async function copyFileToClipboard() {
           <MessageImageBubble
             v-else-if="message.kind === 'file' && attachmentUrl"
             :src="attachmentUrl"
+            :layout-id="`image:${message.msg_id}`"
             @open="openImageLightbox"
             @refetch="refetchContent"
           />

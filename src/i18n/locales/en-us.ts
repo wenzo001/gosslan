@@ -452,6 +452,7 @@ export const enUS: MessageDict = {
   "common.prev": "Previous (←)",
   "common.next": "Next (→)",
   "common.lines": "{n} lines",
+  "common.loading": "Loading…",
 
   // ---- Composer ----
   "chat.composer.inputAria": "Message input",
@@ -1074,6 +1075,7 @@ export const enUS: MessageDict = {
   "favorite.saveFail": "Failed to save",
   "favorite.saved": "Saved",
   "favorite.from": "Saved {time}",
+  "favorite.limitReached": "Favorites are full ({max} items). Remove some first.",
 
   // ---- Merged forward (WeChat-style "chat history" card) ----
   "merge.title": "Chat History",

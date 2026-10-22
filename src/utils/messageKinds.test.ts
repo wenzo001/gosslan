@@ -351,11 +351,19 @@ test("「不进时间线」的那两种 Card 各自有具名去处，不是没�
   const read = (p: string) => readFileSync(join(here, p), "utf8");
   // announcement → 聊天窗顶部的公告条（与时间线是两条路，所以它不进过滤结果）
   const chat = read("../../src/components/ChatWindow.vue");
+  // 2026-10-22：公告不再每次消息变动扫整段历史，而是读 store 里后端折好的
+  // `activeAnnouncements`（公告 + 墓碑一条 SQL 算完）。具名去处仍是聊天窗顶部横幅。
   assert.match(
     chat,
-    /m\.kind !== "announcement"/,
-    "公告条的挑选判据变了 —— 那意味着 announcement 没有了具名去处，先补呈现再改这条",
+    /const announcement = computed\(\(\) => \{/,
+    "公告条没有具名 computed 了 —— announcement 失去了呈现入口",
   );
+  assert.match(
+    chat,
+    /chat\.activeAnnouncements\.get\(convId\)/,
+    "公告条必须从 activeAnnouncements 缓存取，别退回逐条 JSON.parse",
+  );
+  assert.match(chat, /announcementVisible/, "公告横幅的可见性判据不见了");
   // poll → **本客户端今天发不出投票**：api 层没有任何发投票的包装。
   // 这条钉的是"发不出去"这个前提本身 —— 哪天真加上入口，它会红，逼着做一次决定，
   // 而不是让新种出来的 poll 静默落在时间线之外（= 复现 #82 的形状）。

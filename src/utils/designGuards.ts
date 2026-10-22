@@ -1540,14 +1540,18 @@ export function findImgTags(src: string): Array<{ start: number; text: string }>
   const out: Array<{ start: number; text: string }> = [];
   let i = 0;
   for (;;) {
-    const j = masked.indexOf("<img", i);
-    if (j === -1) break;
-    const nxt = masked[j + 4];
+    // `<motion.img>` 在运行时仍是 img：共享元素转场后它也必须继续受同一条 fetch-hint 判据管。
+    const a = masked.indexOf("<img", i);
+    const b = masked.indexOf("<motion.img", i);
+    if (a === -1 && b === -1) break;
+    const j = a === -1 ? b : b === -1 ? a : Math.min(a, b);
+    const tagLen = masked.startsWith("<motion.img", j) ? "<motion.img".length : "<img".length;
+    const nxt = masked[j + tagLen];
     if (nxt !== " " && nxt !== "\n" && nxt !== "\t" && nxt !== "\r" && nxt !== ">") {
-      i = j + 4;
+      i = j + tagLen;
       continue;
     }
-    let k = j + 4;
+    let k = j + tagLen;
     let q: string | null = null;
     for (; k < masked.length; k++) {
       const c = masked[k];

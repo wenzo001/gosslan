@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
+import Spinner from "@/components/ui/Spinner.vue";
 import { computed, type CSSProperties } from "vue";
 import type { FileMeta } from "@/types";
 import { rgba } from "@/utils/color";
@@ -7,7 +8,7 @@ import { formatBytes } from "@/utils/format";
 import { FILE_KIND_COLORS, FILE_KIND_ICONS, extBadgeLabel, fileKindOf } from "@/utils/fileKind";
 import { useAppStore } from "@/stores/useAppStore";
 import { Download, RotateCw } from "lucide-vue-next";
-import { Loader2, X } from "@/components/ui/icons";
+import { X } from "@/components/ui/icons";
 
 const props = defineProps<{
   meta: FileMeta;
@@ -103,7 +104,7 @@ const canOpen = computed(() => props.ready && props.tappable !== false);
           class="flex h-7 items-center gap-1 text-caption tabular-nums opacity-70"
           :title="t('msg.receiving')"
         >
-          <Loader2 class="h-3.5 w-3.5 animate-spin" />
+          <Spinner size-class="h-3.5 w-3.5" decorative />
           {{ pct }}%
         </span>
         <button

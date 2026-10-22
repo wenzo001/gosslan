@@ -1,6 +1,6 @@
 # Gosslan 视觉与交互规范（UI Design Guidelines）
 
-> Version: 1.1 · 2026-10-22  
+> Version: 1.2 · 2026-10-22  
 > 依据：Apple Human Interface Guidelines 与 WWDC25「Get to know the new design system」  
 > 的 **Shape & Concentricity**、语义色与交互态取向（iOS 26 / Liquid Glass 时代）。
 >
@@ -682,7 +682,7 @@ Apple 的计数徽标同样如此，属短数字+高强调的既有取舍」。*
 
 | 目标（做对了才算） | 非目标（明确不做） |
 |---|---|
-| 反馈即时：按下同帧变色（§2.3 两条铁律） | 换 UI 框架 / 引第二套动画系统 |
+| 反馈即时：按下同帧变色（§2.3 两条铁律） | 换 UI 框架 / **并行**引入两套互不相通的动画系统（按 §11.3.6 分界线引入 `motion-v` 属允许范畴） |
 | 滚动与列表不抖、不闪、不空（§11.2） | 复刻 iOS 外观（胶囊按钮、大圆角、玻璃拟态铺满） |
 | 触摸、鼠标、键盘三条输入路径都能走完（§2.4、§10.2、§10.3） | 为"原生感"加没有信息量的动效、粒子、视差 |
 | 平台习惯走系统开关（§10.1、§10.4），且这类判定只有一个家（§10.3.1），不要求用户改 App 设置 | 为视觉效果碰协议 / 加密 / DB / IPC / 消息状态机 |
@@ -756,10 +756,27 @@ JS 侧：任何 WAAPI / `requestAnimationFrame` / 库驱动的动画必须先读
 
 #### 11.3.6 依赖政策
 
-**默认纯 CSS。** 要引动画库必须先给出「哪个具体交互 CSS 做不到」的证据 + 同机产物增量，
-一次只引一套。2026-10-22 实测：`motion-v@2.8.0` 的共享布局药丸让 vendor gzip 从 114.15 涨到 160.63
-（+46.48 KB），而同类反馈用 `--gosslan-ease-spring` 已够用 ⇒ **不采纳**，依赖已移除。
-现算：`node -e "const d=require('./package.json');console.log(Object.keys({...d.dependencies,...d.devDependencies}).filter(k=>/motion|gsap|anime|framer/i.test(k)))"` 应为空数组。
+**默认纯 CSS；CSS 做不到的三类才用 `motion-v`。**
+
+用户 2026-10-22 裁决重新引入 `motion-v@2.8.0`（MIT；精确版本，不用 `^`）。同机
+`npm run build` 实测：`motion` 拆成独立 chunk 后 gzip 51.02 KB（vendor 从 114.15 回到 114.56）；
+这笔成本用户已明确接受。使用边界：
+
+1. **共享元素转场**：消息缩略图 → 图片灯箱（`layoutId`）。
+2. **列表 FLIP 重排**：群任务看板行在状态分组间移动（`layout` + `layoutId`）。
+3. **手势驱动的连续动画**：灯箱拖拽/缩放的 `useMotionValue`。
+
+其余全部继续用 CSS + 令牌（按钮、浮层、页面转场、Toast、徽标、回执、进度条）。
+
+**硬约束**：
+
+- 业务组件**不得直接 import `motion-v`**，统一走 `src/utils/motion/`（设计护栏扫描直连）。
+- 每处 JS 动画必须有 `useReducedMotion()` 分支；reduce 档退化为无动画或即时到位。
+- `VirtualList` 行内禁止 `layout` 与入场动画（会触发高度重算）。
+- 同屏 `motion` 组件数超过 50 时必须拆虚拟化。
+- 依赖登记在 `docs/architecture/open-source-replacement-matrix.md` §3；回滚点 = 移除两个首批使用提交 + 依赖两行。
+
+现算：`node -e "const d=require('./package.json');console.log(Object.keys({...d.dependencies,...d.devDependencies}).filter(k=>/motion|gsap|anime|framer/i.test(k)))"` 应得到 `["motion-v"]`（只允许这一套）。
 
 其余两条仍然有效：
 
@@ -892,5 +909,141 @@ Tauri WebView 真机仍未测。
 3. **IPC 不在 `watch` 的数组 getter 里**：`watch(() => [a, b, c])` 的依赖一变就发一次请求；「消息条数」不许进链路查询的依赖。
 
 **依赖决策**：默认纯 CSS；引动画/UI 库必须给出「哪个具体交互现有方案做不到」的证据 + 同机产物增量。
-2026-10-22 实测 `motion-v` 为一次药丸位移多付 46.48 KB gzip ⇒ 已移除。
+2026-10-22 用户裁决引入 `motion-v@2.8.0`：只用于共享元素转场、列表 FLIP、手势连续动画三类；
+同机产物增量见 §11.3.6。业务组件不得直连，必须走 `src/utils/motion/`。
 
+
+## 14. 交互反馈规范（按钮 / 浮层 / 转场 / 消息 / 表单 / 通知 / 手势）
+
+> 本节只收「用户操作 → 应该看到什么」这一层。令牌、红线、导航层级与性能禁令已分别在
+> §11.3 / §12 / §13；这里不重复，只把散落的交互口径收成可直接执行的条文。
+
+### 14.1 按钮与图标
+
+五态：rest / hover / press / focus / disabled / loading。
+
+- **press 统一 `scale(0.97)`**（全局 `:where(button…)`，见 `src/style.css`），100–140ms；
+  按下必须同帧有反馈，不能等异步。
+- **disabled**：`cursor: not-allowed`，不响应 press；**loading**：按钮保持原尺寸，
+  内部换 `Spinner`（`src/components/ui/Spinner.vue`）并带 `aria-busy`，禁止把按钮缩成一个转圈。
+- 图标按钮必须有 `aria-label`（§10.2）；热区不小于 44px（§2.3）。
+- 图标规格：rail 22px / 移动底栏 20px，线宽 1.9、选中 2.35；四枚导航图标只走
+  `src/components/ui/NavIcon.vue`（不直连 lucide）。
+- 发送（主按钮，实心）/ 附件（图标按钮）/ 更多（图标按钮 + 菜单）三档的禁用条件必须由
+  业务状态决定，不许只靠视觉置灰。
+
+### 14.2 页面与面板转场
+
+- 移动端进入：`gosslan-dialog-page-in`（`translateX(100%) + opacity 0.4 → 0`）。
+- **返回必须是相反过渡**：`gosslan-dialog-page-out` 向右退出；列表↔聊天由
+  `ResponsiveLayout` 的对称 `translate` 完成（两侧一起动，不露出底色）。
+- 桌面端页面切换：`.page-slide` / `.settings-swap`，只动 `transform` + `opacity`，240ms。
+- 面板内切换：设置分区用 `.settings-swap`；消息回执用 `.receipt-swap`。
+- 禁令：转场期间不得阻塞输入与发送；不得改变 `width/height/top/left` 等布局属性；
+  虚拟列表行内不得加转场。
+
+### 14.3 导航选中态（rail 与底栏共用一份）
+
+三通道同时成立：**图标描边加粗（1.9 → 2.35）+ 药丸底（`color-mix(primary 13%)`）+ 主色图标**。
+药丸由 `motion-v` 的共享布局动画在两项之间移动（`layout-id`），弹簧 220ms；reduce 档即时到位。
+不允许只用颜色变化区分选中。桌面 rail 与移动底栏必须走同一个 `NavIcon` 出口。
+
+### 14.4 浮层：弹窗 / 抽屉 / 菜单 / Tooltip / Popover
+
+- 居中弹窗：`gosslan-dialog-pop-in`（`translateY(8px) scale(0.96)`，240ms）。
+- 底部抽屉：`gosslan-dialog-sheet-in`（`translateY(100%)`，240ms）；关闭 180ms。
+- 菜单：`.gosslan-menu[data-state="open"]` 140ms 淡入；**只动 opacity**，不碰 floating-ui 的定位 transform。
+- Tooltip 继续用原生 `title`（平台原生反馈；不建自研 Tooltip）。
+- **关闭通道矩阵**：
+
+| 通道 | 弹窗 | 抽屉 | 菜单 | 灯箱 |
+|---|---|---|---|---|
+| ✕ / 取消 | 有 | 有 | — | 有 |
+| `Esc` | 有 | 有 | 有 | 有 |
+| 点击外部 | 有（遮罩可点） | 有（遮罩可点） | 有 | 有 |
+| Android 物理返回 | 先关浮层 | 先关浮层 | 先关菜单 | 先关灯箱 |
+| 页内返回 | 下钻页用 | — | — | — |
+
+遮罩可点击关闭；Toast / 拖拽提示层 `pointer-events-none`。z 阶梯沿用既有阶梯，新增浮层 ≤80
+（Toast 的 z 档是唯一例外，见 `ToastHud.vue`）。
+
+### 14.5 消息反馈
+
+- 发送五态：`sending`（单勾 + 小 spinner）/ `sent`（单勾灰）/ `delivered`（双勾灰）/
+  `read`（双勾主题色）/ `failed`（红叉 + 可点重发）。五态都必须在 `MessageReceipt.vue`，
+  不许在别的组件再画一套。
+- 状态切换用 `.receipt-swap`（120/200ms），不改变行高。
+- 新消息到达：未读徽标 `gosslan-badge-pop` 只在挂载时播放，数字变化不重播；
+  新消息本身不得在虚拟列表行内加入场动画。
+- 切换会话：同帧切换视图（§9.1），不等待转场；引用/转发草稿必须随会话清理。
+- 建群 / 重命名 / 删除：成功走 `app.toast`（success/info），失败走 `app.toastError`；
+  删除失败必须回滚（§9.3）。撤回/删除的提示行规范见 §8.1。
+- 每会话草稿与滚动位置恢复见 `docs/architecture/routing-and-navigation.md` §6。
+
+### 14.6 图片与文件传输
+
+- 缩略图：骨架屏 §4；长列表 `<img>` 必须 `loading="lazy" decoding="async"`（反模式 #1）；
+  例外只有灯箱大图与「自身 @load 前 display:none」的消息图（组件内有 `img-eager-ok` 标记）。
+- 灯箱：打开/关闭用 `gosslan-dialog-fade-*`；缩略图 → 大图用 `motion-v` 共享元素（`layoutId`）；
+  手势缩放/拖拽走 `useMotionValue`，reset 用 spring。
+- 进度条：`transform: scaleX()`（不用 width），200–300ms ease-out；六态映射的唯一家是
+  `src/utils/transferState.ts`，未知态绝不显示成完成。
+- 图片懒加载与灯箱 eager 的边界见 §13 与反模式文档 §4。
+
+### 14.7 表单与设置控件
+
+- 输入框聚焦 §2.4（透明焦点，不画外圈方框）；disabled / readonly 统一降透明度 + `not-allowed`。
+- 搜索三态：搜索中（`Spinner` + 文案）/ 空结果 / 失败（含重试入口）。
+- 开关 / 滑块 / 选择器：Reka 原语 + `aria-valuetext`；动效 150ms ease，不做弹性回弹。
+- 保存成功 / 失败 / 复制成功：走 `app.toast` / `app.toastError`；复制成功 1500ms 复位。
+
+### 14.8 通知与角标
+
+- Toast：错误 6s、其余 3s；同 kind + 文案复用 id；堆叠上限 3；退出 160ms。
+- 未读角标：唯一实现是 `UnreadBadge.vue`；数字去抖与单一事实源见既有判据。
+- 面板三态：loading / empty / error 统一走 `src/components/ui/StateBlock.vue`（`kind` 三态 + `compact`）；
+  loading 用 `Spinner`，empty/error 用对应图标与重试入口。
+
+### 14.9 移动端手势与反馈
+
+- 触摸基线 §2.3（`touch-action` / overscroll / tap-highlight / `:active` 归零）。
+- 长按 450ms + 位移阈值 + 吞 click；触觉不是唯一通道（必须有视觉反馈）。
+- 底部抽屉：下拉超过阈值关闭，否则回弹；回弹 ≤220ms，reduce 档即时。
+- Android 物理返回消费优先级：**路由 > 浮层手工栈 > 退出应用**。
+- iOS 边缘侧滑未接管（routing R7），靠页内返回。
+
+### 14.10 减弱动态效果
+
+CSS 侧：`src/style.css` 末尾的 `@media (prefers-reduced-motion: reduce)` 必须覆盖
+`.page-slide*`、`.settings-swap*`、`.gosslan-dialog-*`、`.receipt-swap*`、`.gosslan-toast`、
+`.unread-badge`、`.nav-glyph*`、`.spinner-icon`、全局按压。
+
+JS 侧：`motion-v` 动画必须用 `useReducedMotion()`；reduce 档把 spring 换成 `duration: 0`
+或直接 `set()`，不允许继续播放位移动画。
+
+**新增动效类名必须同步进 reduce 块**，否则本文件 §11.3.4 的承诺就是假的。
+
+### 14.11 与既有章节的边界（防第二个真源）
+
+令牌 / 取值上限 → §11.3；导航与层级 → §12；性能禁令 → §13；状态保持 → routing 文档 §6；
+系统辅助功能 → §10。本节只描述「操作 → 反馈」，不复制上述内容。
+
+### 14.12 回归与验收
+
+```bash
+npm test
+npm run build
+node scripts/check-ui-runtime.mjs --only=overlay
+node scripts/check-ui-runtime.mjs --only=lightbox
+```
+
+新增动效必须同时给出 reduce 档的非动效通道（文字 / 图标 / `aria-busy`），
+不能只靠 CSS 的 `animation: none` 把反馈一起关掉。
+
+### 14.13 历史规格出处（指针，不搬运）
+
+- 选中态演变与图标尺寸：`docs/archive/notes/changelog-archive.md`。
+- Tooltip 不迁的理由：`docs/architecture/refactor-5.0-report.md`。
+- 滚动锚定五类交互：`docs/archive/audit/evidence-2026-10-16/smooth-native-ux.md`。
+- 长按 / 骨架 / lightbox：`docs/architecture/frontend-inventory.md`、§4、同上。
+- 角标口径：`docs/archive/acceptance/strong-reminder-final.md`。

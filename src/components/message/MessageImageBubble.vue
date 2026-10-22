@@ -2,10 +2,12 @@
 import { t } from "@/i18n";
 import { onUnmounted, ref, watch } from "vue";
 import { ImageIcon } from "lucide-vue-next";
+import { motion, useReducedMotion } from "@/utils/motion";
 import { ImageOff } from "@/components/ui/icons";
 import { IMAGE_BUBBLE_HEIGHT, IMAGE_PLACEHOLDER_HEIGHT } from "@/utils/previewMetrics";
 
-const props = defineProps<{ src: string }>();
+const props = defineProps<{ src: string; layoutId?: string }>();
+const reducedMotion = useReducedMotion();
 const emit = defineEmits<{ (e: "open", src: string): void; (e: "refetch"): void }>();
 
 /** 加载失败时点一下：先本地重试，同时请对端按 cid 再发一份（ADR-0019 点击重取）。 */
@@ -95,7 +97,9 @@ onUnmounted(clearTimer);
        大小应该是固定的。」⇒ 用**定宽**让图片尺寸与兄弟节点无关（`max-w-full`
        仅作为窄窗口下的安全下限保留）。
        代价（已知并接受）：竖长图会在 13rem 的框内左右留白，换来「发出后尺寸恒定」。 -->
-  <div
+  <motion.div
+    :layout-id="reducedMotion ? undefined : props.layoutId"
+    :transition="reducedMotion ? { duration: 0 } : { type: 'spring', stiffness: 420, damping: 40 }"
     class="relative w-52 max-w-full cursor-pointer overflow-hidden rounded-[var(--gosslan-bubble-radius)]"
     :data-img-state="state"
     :role="state === 'loaded' ? 'button' : undefined"
@@ -146,5 +150,5 @@ onUnmounted(clearTimer);
       @load="clearTimer(); state = 'loaded'"
       @error="onError()"
     />
-  </div>
+  </motion.div>
 </template>

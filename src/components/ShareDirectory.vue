@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { t } from "@/i18n";
+import Spinner from "@/components/ui/Spinner.vue";
 import { computed } from "vue";
 import { useQuery } from "@tanstack/vue-query";
 import { useAppStore } from "@/stores/useAppStore";
@@ -81,7 +82,8 @@ async function download(e: ShareEntry) {
         :aria-label="t('share.refreshAria')"
         @click="load"
       >
-        <RefreshCw class="h-4 w-4" :class="loading ? 'animate-spin' : ''" />
+        <Spinner v-if="loading" size-class="h-4 w-4" decorative />
+        <RefreshCw v-else class="h-4 w-4" />
       </button>
     </div>
 

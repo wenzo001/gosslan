@@ -4386,3 +4386,72 @@ test("待办缩略图退避重试有次数上限，用尽后落到「已被清�
   assert.match(src, /attempts\s*>=\s*MAX_RETRY_ATTEMPTS/, "到上限必须停止安排下一次");
   assert.match(src, /msg\.imageCleaned/, "用尽后要给出终态文案，而不是永远「同步中」");
 });
+
+// ---------------- motion-v 唯一入口 ----------------
+//
+// 用户 2026-10-22 裁决重新引入 motion-v。引入不是「每个组件各自 import」：
+// 统一走 `src/utils/motion/index.ts`，升级/回滚只改一处；同时给所有 JS 动画
+// 留出统一的 reduced-motion 接入点。
+test("motion-v 只能从统一封装层导入（业务码不得直连）", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const walk = (dir: string, acc: string[] = []): string[] => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, e.name);
+      if (e.isDirectory()) walk(p, acc);
+      else if (/\.(ts|vue)$/.test(e.name) && !e.name.endsWith(".test.ts")) acc.push(p);
+    }
+    return acc;
+  };
+  const files = walk(srcDir);
+  assert.ok(files.length > 100, `只扫到 ${files.length} 份源码 ⇒ 遍历路径可能坏了`);
+  const wrapper = join(srcDir, "utils", "motion", "index.ts");
+  const re = /from\s+["']motion-v["']/;
+  const offenders = files
+    .filter((f) => f !== wrapper)
+    .filter((f) => re.test(readFileSync(f, "utf8")))
+    .map((f) => f.slice(srcDir.length + 1));
+  assert.deepEqual(offenders, [], `以下文件绕过封装层直接 import motion-v：\n${offenders.join("\n")}`);
+  // 正控：封装层自己必须真的在 re-export；否则上面那句「没人直连」可以靠删掉依赖也变绿。
+  assert.match(readFileSync(wrapper, "utf8"), re, "封装层没有 re-export motion-v");
+  assert.ok(re.test('import { motion } from "motion-v"'), "扫描正则没匹配上合成针 ⇒ 判据空转");
+  console.log(`· motion-v 唯一入口：扫 ${files.length} 份源码，直连 0 处`);
+});
+
+// ---------------- 共享元素 layoutId 同源 ----------------
+//
+// 缩略图与灯箱是两棵树：任何一边的 id 拼法漂了，共享元素转场就会静默失效
+// （看起来只是"没有动画"）。这里把两端 + 开关一起钉住。
+test("缩略图与灯箱使用同一套 layoutId，且 reduce 档会关掉共享转场", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const item = readFileSync(join(srcDir, "components", "MessageItem.vue"), "utf8");
+  const bubble = readFileSync(join(srcDir, "components", "message", "MessageImageBubble.vue"), "utf8");
+  const lightbox = readFileSync(join(srcDir, "components", "message", "ImageLightbox.vue"), "utf8");
+  assert.match(item, /:layout-id="`image:\$\{message\.msg_id\}`"/, "消息缩略图没有传 layoutId");
+  assert.match(bubble, /props\.layoutId/, "MessageImageBubble 没有消费 layoutId");
+  assert.match(lightbox, /return `image:\$\{it\.msgId\}`/, "灯箱的 layoutId 拼法必须与缩略图同源");
+  assert.match(lightbox, /useReducedMotion/, "灯箱没有 reduced-motion 分支");
+  assert.match(lightbox, /:layout-id="reducedMotion \? undefined : activeLayoutId"/,
+    "reduce 档必须关掉共享元素转场");
+});
+
+// ---------------- 加载旋转唯一入口 ----------------
+//
+// reduce 档下全局 `animation-iteration-count: 1` 会把所有 animate-spin 冻成静止帧
+// （"加载中"与"卡死"不可区分）。旋转收敛到 `ui/Spinner.vue` 的 `.spinner-icon`，
+// 其它组件不许再自己写 animate-spin。
+test("加载旋转只许在 Spinner.vue（全仓不得再出现 animate-spin 类）", () => {
+  const srcDir = join(import.meta.dirname, "..");
+  const offenders = listVue692(srcDir)
+    .filter((f) => !f.endsWith("components/ui/Spinner.vue"))
+    .filter((f) => {
+      const code = stripCommentsForTokens(readFileSync(f, "utf8"));
+      return /(?:^|\s)class="[^"]*\banimate-spin\b/.test(code) || /:class="[^"]*animate-spin/.test(code);
+    })
+    .map((f) => f.slice(srcDir.length + 1));
+  assert.deepEqual(offenders, [], `以下文件又自己写 animate-spin：\n${offenders.join("\n")}`);
+  const spinner = readFileSync(join(srcDir, "components", "ui", "Spinner.vue"), "utf8");
+  assert.match(spinner, /spinner-icon/, "Spinner 没有唯一的旋转类");
+  assert.ok(/(?:^|\s)class="[^"]*\banimate-spin\b/.test('<div class="x animate-spin">'), "扫描正则没匹配上合成针 ⇒ 判据空转");
+  assert.ok(!stripCommentsForTokens(`// animate-spin\nconst x = 1;`).includes("animate-spin"), "注释不算作用点");
+  console.log(`· 加载旋转：扫 ${listVue692(srcDir).length} 份 .vue，animate-spin 0 处（唯一入口 Spinner.vue）`);
+});
