@@ -205,7 +205,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.98.1"
-          components: clippy
+          # rustfmt 不能漏：门禁第 1 步就是 `cargo fmt --check --all`
+          #（上一轮只给了 clippy，两个平台都红在 "cargo-fmt is not installed"）。
+          components: clippy, rustfmt
 
       # ⚠️ `key` 是**缓存盐**（2026-10-22 深夜加）：Windows 的测试 exe 在加载期就死
       # （0xc0000139），而依赖零漂移、导入表只有系统 DLL ⇒ 最像"rust-cache 把在**更新镜像**
