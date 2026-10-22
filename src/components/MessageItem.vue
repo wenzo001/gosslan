@@ -1121,7 +1121,7 @@ async function copyFileToClipboard() {
          下间距统一由 `.group/msg` 的 `pb-1.5` 出（底色要包到那一层）。纵向总高与改动前一致。 -->
     <div
       v-else
-      class="relative flex gap-2 px-4 transition"
+      class="relative flex items-start gap-2 px-4 transition"
       :class="[
         needsTopPad ? 'pt-1.5' : '',
         mine ? 'flex-row-reverse' : '',
@@ -1249,7 +1249,10 @@ async function copyFileToClipboard() {
           <span class="quote-text" :style="QUOTE_TEXT_STYLE">{{ quoteHeader }}</span>
         </button>
         <!-- 群聊发送者昵称。
-             视觉对齐：外层 flex 没有 items-*，所以**头像顶边 = 本行行盒顶边**。
+             视觉对齐：外层行是 `items-start` ⇒ **头像顶边 = 本行行盒顶边**。
+             ⚠️ 不能省掉 `items-start`（2026-10-22 用户截图：头像在长消息里浮到中间）：
+             flex 默认 `stretch` 会把头像按钮拉成整行高，头像在按钮里按行高居中 ⇒
+             消息越长头像越往下沉，与名字完全错开。
              原先 `mb-0.5 text-caption`（行高 1.5 → 16.5px）会把墨迹往下推半行距约 3.7px，
              看起来名字比头像"低一点"（中英文都一样，实测 3.5px）。
              改成 `leading-none`（行盒 = 11px）+ `mb-[7px]`：墨迹贴到行盒顶（≈0.5px），
