@@ -222,30 +222,41 @@ jobs:
 
       # Windows 的测试进程在**加载期**就死了（`0xc0000139 STATUS_ENTRYPOINT_NOT_FOUND`，
       # 零测试输出）时，失败现场只有一行 exit code —— 看不到是哪个 DLL 的哪个符号缺。
-      # 这一步只在 Windows 且前面失败时跑，把**测试可执行文件的导入表**打出来：
-      # 下一次红就能直接指认是 vcruntime / api-ms-win-* / WebView2Loader 里的哪一个。
-      - name: Windows 加载失败诊断（导入表）
+      # 这一步只在 Windows 且前面失败时跑。
+      #
+      # ⚠️ 结论必须走 `::error::` 注解：**step 日志对匿名访问不可见**，而注释通道是公开的
+      #   （本仓 CI 诊断一直靠这个：`ci-run.sh` 把关键行塞进注解）。所以这里把
+      #   ① 测试 exe 的完整 DLL 导入名单 ② 系统 vcruntime 版本 ③ 静态 CRT 开关状态
+      #   压成两三行注解，而不是只往日志里打一百行。
+      - name: Windows 加载失败诊断（导入表 → 注解）
         if: failure() && runner.os == 'Windows'
         shell: pwsh
         run: |
-          $exe = Get-ChildItem target/debug/deps/gosslan_lib-*.exe -ErrorAction SilentlyContinue |
-                 Sort-Object LastWriteTime -Descending | Select-Object -First 1
-          Write-Host "workspace=$(Get-Location)  (rust 组在 src-tauri 里跑)"
+          $hit = $null
           foreach ($dir in @('src-tauri\target\debug\deps', 'target\debug\deps')) {
-            $hit = Get-ChildItem "$dir\gosslan_lib-*.exe" -ErrorAction SilentlyContinue |
-                   Sort-Object LastWriteTime -Descending | Select-Object -First 1
-            if ($hit) {
-              Write-Host "== 测试可执行文件：$($hit.FullName)（$($hit.Length) 字节）"
-              # llvm-readobj 随 Rust 工具链一起装；dumpbin 在 VS 环境里不一定在 PATH。
-              & llvm-readobj --coff-imports $hit.FullName 2>&1 | Select-Object -First 120
-            }
+            $cand = Get-ChildItem "$dir\gosslan_lib-*.exe" -ErrorAction SilentlyContinue |
+                    Sort-Object LastWriteTime -Descending | Select-Object -First 1
+            if ($cand) { $hit = $cand; break }
           }
-          Write-Host "== 系统里的 vcruntime / ucrtbase"
-          Get-ChildItem C:\Windows\System32\vcruntime140*.dll, C:\Windows\System32\ucrtbase.dll -ErrorAction SilentlyContinue |
-            Select-Object Name, Length, @{n='Ver';e={$_.VersionInfo.FileVersion}} | Format-Table | Out-String | Write-Host
-          Write-Host "== 是否开启了静态 CRT（tauri-build 的 STATIC_VCRUNTIME 已废弃但行为可能仍在）"
-          Get-ChildItem Env: | Where-Object { $_.Name -match 'CRT|VCRUNTIME|RUSTFLAGS' } | Format-Table | Out-String | Write-Host
-
+          if (-not $hit) {
+            Write-Host "::error title=Windows 加载失败诊断::找不到 gosslan_lib-*.exe（构建产物路径变了）"
+            exit 0
+          }
+          Write-Host "测试可执行文件：$($hit.FullName)（$($hit.Length) 字节）"
+          $raw = & llvm-readobj --coff-imports $hit.FullName 2>&1 | Out-String
+          Write-Host $raw
+          $dlls = [regex]::Matches($raw, 'Name:\s*(\S+\.dll)') |
+                  ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
+          if (-not $dlls) {
+            Write-Host "::error title=Windows 加载失败诊断::llvm-readobj 读不到导入表（工具缺失或 exe 损坏）"
+            exit 0
+          }
+          Write-Host "::error title=Windows 测试 exe 导入的 DLL（$($dlls.Count) 个）::$($dlls -join ', ')"
+          $vc = Get-Item C:\Windows\System32\vcruntime140*.dll -ErrorAction SilentlyContinue |
+                ForEach-Object { "$($_.Name)=$($_.VersionInfo.FileVersion)" }
+          $envs = (Get-ChildItem Env: | Where-Object { $_.Name -match 'CRT|VCRUNTIME|RUSTFLAGS' } |
+                   ForEach-Object { "$($_.Name)=$($_.Value)" })
+          Write-Host "::error title=Windows CRT 现场::vcruntime=[$($vc -join '; ')] env=[$($envs -join '; ')]"
   # ---------------------------------------------------------------------------
   #  Android 编译门禁（第三个平台）
   #
