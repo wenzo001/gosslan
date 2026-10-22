@@ -11,6 +11,7 @@
  */
 import { computed, ref, watch } from "vue";
 import { Shuffle } from "lucide-vue-next";
+import { Check } from "@/components/ui/icons";
 import BaseModal from "@/components/BaseModal.vue";
 import { t } from "@/i18n";
 import {
@@ -62,66 +63,80 @@ function randomize() {
     width="max-w-md"
     @close="emit('close')"
   >
-    <div class="flex items-center gap-4 rounded-[var(--gosslan-radius-lg)] bg-[var(--gosslan-bg)] p-3">
-      <div
-        class="gosslan-avatar-box flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white transition-colors duration-200"
-        :style="{ backgroundColor: bg }"
-        aria-hidden="true"
-      >
-        <span class="gosslan-avatar-emoji" aria-hidden="true">{{ emoji }}</span>
-      </div>
-      <div class="min-w-0 flex-1">
-        <p class="text-meta leading-snug text-[var(--gosslan-text-2)]">
-          {{ t("settings.profile.avatar.hint") }}
-        </p>
-        <button
-          type="button"
-          data-avatar-random
-          class="tap-safe mt-2 inline-flex items-center gap-1.5 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-2.5 py-1.5 text-xs transition hover:bg-[var(--gosslan-hover)]"
-          @click="randomize"
+    <!-- 预览固定：放在 BaseModal 的 header 插槽里，不跟下面的选项一起滚。 -->
+    <template #header>
+      <div class="flex items-center gap-4 rounded-[var(--gosslan-radius-lg)] bg-[var(--gosslan-bg)] p-3">
+        <div
+          class="gosslan-avatar-box flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-[var(--gosslan-avatar-radius)] text-white transition-colors duration-200"
+          :style="{ backgroundColor: bg }"
+          aria-hidden="true"
         >
-          <Shuffle class="h-3.5 w-3.5" :stroke-width="2" />
-          {{ t("settings.profile.avatar.random") }}
+          <span class="gosslan-avatar-emoji" aria-hidden="true">{{ emoji }}</span>
+        </div>
+        <div class="min-w-0 flex-1">
+          <p class="text-meta leading-snug text-[var(--gosslan-text-2)]">
+            {{ t("settings.profile.avatar.hint") }}
+          </p>
+          <button
+            type="button"
+            data-avatar-random
+            class="tap-safe mt-2 inline-flex items-center gap-1.5 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-2.5 py-1.5 text-xs transition hover:bg-[var(--gosslan-hover)]"
+            @click="randomize"
+          >
+            <Shuffle class="h-3.5 w-3.5" :stroke-width="2" />
+            {{ t("settings.profile.avatar.random") }}
+          </button>
+        </div>
+      </div>
+    </template>
+
+    <div data-avatar-options>
+      <p class="mb-1.5 text-xs font-medium text-[var(--gosslan-text-2)]">
+        {{ t("settings.profile.avatar.emoji") }}
+      </p>
+      <!-- 居中换行：最后一行不满时居中，而不是全部往左挤。
+           选中环画在按钮内部，不再画到按钮盒外 —— 第一/最后一列贴着滚动区边缘时不会被裁。 -->
+      <div class="flex flex-wrap justify-center gap-1.5">
+        <button
+          v-for="e in AVATAR_EMOJIS"
+          :key="e"
+          type="button"
+          class="flex h-10 w-10 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)] transition hover:bg-[var(--gosslan-hover)]"
+          :class="e === emoji ? 'bg-[var(--gosslan-hover)] ring-2 ring-inset ring-[var(--gosslan-primary)]' : ''"
+          :aria-pressed="e === emoji"
+          :aria-label="t('settings.profile.avatar.pickEmoji', { emoji: e })"
+          :data-avatar-emoji="e"
+          @click="emoji = e"
+        >
+          <span class="text-2xl leading-none" aria-hidden="true">{{ e }}</span>
         </button>
       </div>
-    </div>
 
-    <p class="mb-1.5 mt-4 text-xs font-medium text-[var(--gosslan-text-2)]">
-      {{ t("settings.profile.avatar.emoji") }}
-    </p>
-    <div class="grid grid-cols-6 gap-1.5 sm:grid-cols-8">
-      <button
-        v-for="e in AVATAR_EMOJIS"
-        :key="e"
-        type="button"
-        class="flex aspect-square w-full items-center justify-center rounded-[var(--gosslan-radius-md)] transition hover:bg-[var(--gosslan-hover)]"
-        :class="e === emoji ? 'bg-[var(--gosslan-hover)] ring-2 ring-[var(--gosslan-primary)]' : ''"
-        :aria-pressed="e === emoji"
-        :aria-label="t('settings.profile.avatar.pickEmoji', { emoji: e })"
-        :data-avatar-emoji="e"
-        @click="emoji = e"
-      >
-        <span class="text-2xl leading-none" aria-hidden="true">{{ e }}</span>
-      </button>
-    </div>
-
-    <p class="mb-1.5 mt-4 text-xs font-medium text-[var(--gosslan-text-2)]">
-      {{ t("settings.profile.avatar.color") }}
-    </p>
-    <div class="grid grid-cols-6 gap-1.5 sm:grid-cols-8">
-      <button
-        v-for="c in AVATAR_BACKGROUNDS"
-        :key="c"
-        type="button"
-        class="aspect-square w-full rounded-full transition"
-        :class="c === bg ? 'ring-2 ring-[var(--gosslan-text)] ring-offset-2 ring-offset-[var(--gosslan-panel)]' : ''"
-        :style="{ backgroundColor: c }"
-        :aria-pressed="c === bg"
-        :aria-label="t('settings.profile.avatar.pickColor', { color: c })"
-        :data-avatar-bg="c"
-        :title="c"
-        @click="bg = c"
-      />
+      <p class="mb-1.5 mt-4 text-xs font-medium text-[var(--gosslan-text-2)]">
+        {{ t("settings.profile.avatar.color") }}
+      </p>
+      <div class="flex flex-wrap justify-center gap-1.5">
+        <button
+          v-for="c in AVATAR_BACKGROUNDS"
+          :key="c"
+          type="button"
+          class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition"
+          :class="c === bg ? 'ring-2 ring-inset ring-white' : ''"
+          :style="{ backgroundColor: c }"
+          :aria-pressed="c === bg"
+          :aria-label="t('settings.profile.avatar.pickColor', { color: c })"
+          :data-avatar-bg="c"
+          :title="c"
+          @click="bg = c"
+        >
+          <Check
+            v-if="c === bg"
+            class="h-4 w-4 text-white drop-shadow"
+            :stroke-width="3"
+            aria-hidden="true"
+          />
+        </button>
+      </div>
     </div>
 
     <template #footer>

@@ -2222,8 +2222,23 @@ test("默认头像选择器：选项来自随机算法同一份表，确认走�
   assert.equal((dialog.match(/:aria-pressed=/g) ?? []).length, 2, "两组选项都要报告选中态");
   // "不要太开放"：选择器里没有可自由输入 emoji / 颜色的输入框。
   assert.doesNotMatch(dialog, /<input\b/, "选择器不该出现自由输入框");
+  // 预览固定、只滚选项（用户 2026-10-22）：预览必须在 BaseModal 的 header 插槽里，
+  // 不能和选项共用一条滚动区；否则往下翻选项时头像预览会被卷走。
+  const modal = readFileSync(join(root, "components", "BaseModal.vue"), "utf8");
+  assert.match(modal, /<slot name="header" \/>/, "BaseModal 必须提供固定 header 插槽");
+  assert.match(dialog, /<template #header>/, "预览必须放进 header 插槽");
+  assert.match(dialog, /data-avatar-options/, "选项区要有可定位的容器（探针也读它）");
+  // 选中环画在按钮内部：第一/最后一列贴着滚动区边缘时，外圈会被裁掉（用户截图）。
+  assert.equal((dialog.match(/ring-inset/g) ?? []).length, 2, "表情与色块的选中环都要 ring-inset");
+  assert.doesNotMatch(dialog, /ring-offset/, "选中环不许再用 ring-offset（会被滚动区裁）");
+  assert.match(dialog, /justify-center/, "不满一行的选项要居中，而不是整排往左挤");
 
   const profile = readFileSync(join(root, "components", "settings", "ProfileSection.vue"), "utf8");
+  // 资料页对齐（用户 2026-10-22）：头像收到 64px，与右侧「输入行 + 按钮行」视觉同高并居中。
+  assert.match(profile, /data-profile-avatar/, "头像框要有可量测的定位点");
+  assert.match(profile, /data-profile-fields/, "右侧字段要有可量测的定位点");
+  assert.match(profile, /flex items-center gap-4 p-4/, "头像与右侧必须垂直居中（两者高度已压到接近）");
+  assert.match(profile, /class="h-16 w-16/, "头像 64px 才与右侧两行同高");
   const at = profile.indexOf("async function onPresetApply");
   assert.ok(at > 0, "找不到 onPresetApply —— 资料页没有接上默认头像");
   const body = profile.slice(at, profile.indexOf("\n}", at));
