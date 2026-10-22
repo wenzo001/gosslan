@@ -21,6 +21,7 @@ import type { MsgKind } from "@/types";
 import { MENTION_ALL_TOKEN, textMentionsName } from "@/utils/messages";
 import { isMentionLead } from "@/utils/linkify";
 import { isSelfConversation } from "@/utils/selfChat";
+import { detectCode, stripCodeFence } from "@/utils/codeDetect";
 import { api } from "@/api";
 
 const props = defineProps<{
@@ -58,6 +59,40 @@ const isSelfChat = computed(() =>
   isSelfConversation({ id: props.convId ?? "" }, app.device?.device_id),
 );
 const codeMode = ref(false);
+/** 自动识别出来的代码模式：与手动开关分开，撤销只关自动那一次。 */
+const autoCode = ref(false);
+const autoCodeLang = ref<string | null>(null);
+const autoCodeSuppressed = ref(false);
+let codeDetectTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleCodeDetect() {
+  if (codeMode.value || autoCodeSuppressed.value) return;
+  if (codeDetectTimer) clearTimeout(codeDetectTimer);
+  codeDetectTimer = setTimeout(() => {
+    codeDetectTimer = null;
+    if (codeMode.value || autoCodeSuppressed.value) return;
+    const d = detectCode(serializeDraft());
+    if (!d.likely) return;
+    codeMode.value = true;
+    autoCode.value = true;
+    autoCodeLang.value = d.language;
+  }, 250);
+}
+function toggleCodeMode() {
+  codeMode.value = !codeMode.value;
+  autoCode.value = false;
+  autoCodeLang.value = null;
+  autoCodeSuppressed.value = true;
+}
+function undoAutoCode() {
+  codeMode.value = false;
+  autoCode.value = false;
+  autoCodeLang.value = null;
+  autoCodeSuppressed.value = true;
+}
+onUnmounted(() => {
+  if (codeDetectTimer) clearTimeout(codeDetectTimer);
+});
 
 /**
  * 抖动冷却（毫秒）：与 QQ 一致 —— 短时间不能连抖，避免刷屏打扰对方。
@@ -243,6 +278,10 @@ function draftMentionIds(text: string): string[] {
 function send(kind?: MsgKind, content?: string) {
   let text = content ?? serializeDraft();
   const k = kind ?? (codeMode.value ? "code" : "text");
+  // 围栏只是输入时的语法；落库的代码消息不带 ```lang。
+  if (content === undefined && k === "code") {
+    text = stripCodeFence(text).text;
+  }
   if (k === "text" && !text.trim()) return;
   if (k === "text" && props.quote && text.trim()) {
     const idSuffix = props.quote.msgId != null ? `|${props.quote.msgId}` : "";
@@ -260,6 +299,13 @@ function send(kind?: MsgKind, content?: string) {
     draftTimer = null;
   }
   if (!kind) codeMode.value = false;
+  autoCode.value = false;
+  autoCodeLang.value = null;
+  autoCodeSuppressed.value = false;
+  if (codeDetectTimer) {
+    clearTimeout(codeDetectTimer);
+    codeDetectTimer = null;
+  }
   if (props.quote) emit("close-quote");
   // 清空 + DOM 更新后重新聚焦并把 caret 放到末尾：连续发送/继续输入无缝衔接
   void nextTick(() => {
@@ -525,6 +571,7 @@ function onInput(e: Event) {
   syncDraftState();
   normalizeEmpty();
   scheduleDraftSave();
+  scheduleCodeDetect();
   if (!(e as InputEvent).isComposing) updateMentionState();
 }
 
@@ -780,6 +827,19 @@ async function onPaste(e: ClipboardEvent) {
            现连同 style.css 里的那条规则与两个 i18n key 一起删除，避免留死代码。
            `normalizeEmpty` 保留 —— 它现在只服务 `hasDraft`（空壳 div/br 会让"有草稿"误判）。 -->
       <div
+        v-if="autoCode && codeMode"
+        class="mb-1 flex items-center gap-2 text-meta text-[var(--gosslan-text-2)]"
+      >
+        <span>{{ t("chat.composer.codeDetected", { lang: autoCodeLang || t("chat.composer.code") }) }}</span>
+        <button
+          type="button"
+          class="tap-safe rounded-[var(--gosslan-radius-sm)] px-1 underline-offset-2 hover:underline"
+          @click="undoAutoCode"
+        >
+          {{ t("chat.composer.codeUndo") }}
+        </button>
+      </div>
+      <div
         ref="editorRef"
         contenteditable="true"
         role="textbox"
@@ -864,7 +924,7 @@ async function onPaste(e: ClipboardEvent) {
           :class="codeMode ? 'text-[var(--gosslan-primary)]' : 'text-[var(--gosslan-text-2)] hover:bg-[var(--gosslan-hover)]'"
           :title="t('chat.composer.code')" :aria-label="t('chat.composer.code')"
           @mousedown.prevent
-          @click="codeMode = !codeMode"
+          @click="toggleCodeMode"
         >
           <!-- 代码模式图标（用户 2026-09-12 晚二次反馈：「找一个和代码相关的图标，
                但是又和左右两边的图标是统一风格类型的。现在这个图标不像是发送代码」）。

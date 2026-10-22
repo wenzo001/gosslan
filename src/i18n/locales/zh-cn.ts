@@ -521,6 +521,8 @@ export const zhCN: MessageDict = {
   "emoji.frequent": "常用",
   "emoji.all": "全部表情",
   "chat.composer.code": "代码消息",
+  "chat.composer.codeDetected": "已识别为 {lang} 代码",
+  "chat.composer.codeUndo": "撤销",
   "chat.composer.sendFile": "发送文件（自动选择最优路线）",
   // 窗口抖动（仿 QQ）：仅单聊可用；底层是对最近一条已发消息发起强提醒
   "chat.composer.shake": "抖动窗口",
