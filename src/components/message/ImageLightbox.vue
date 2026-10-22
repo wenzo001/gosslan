@@ -60,15 +60,6 @@ const current = computed(() => props.images[props.index] ?? null);
 const hasMultiple = computed(() => props.images.length > 1);
 const reducedMotion = useReducedMotion();
 
-/** 与聊天缩略图共享的 layoutId：只有可寻址的图（msg/cid）才有，dataSrc 单独无法跨视图对齐。 */
-const activeLayoutId = computed(() => {
-  const it = current.value;
-  if (!it) return undefined;
-  if (it.msgId) return `image:${it.msgId}`;
-  if (it.cid) return `content:${it.cid}`;
-  return undefined;
-});
-
 /**
  * 给图片预览自己注册返回栈层 —— 否则 Android 侧滑返回会把 ChatWindow 那层
  * （ResponsiveLayout 的 useBackLayer #1）先关掉，聊天回到列表了但预览页还挂着
@@ -424,14 +415,9 @@ useEventListener(window, "keydown", onKey);
         <!-- img-eager-ok：这一支是用户**主动点开**、占满屏幕中央的那一张，不在虚拟列表里 ⇒
              懒加载只会让它更晚出现。designGuards ㉜ 靠这句标记整份跳过（例外写在该例外的旁边）。 -->
         <template v-if="src">
-          <!-- 共享元素：缩略图与灯箱共用同一个 layoutId，打开时从气泡位置长成大图。
-               手势的 x/y/scale 走 MotionValue（在 Vue 渲染周期外执行），与 layout 变换分层。 -->
-          <motion.div
-            :layout="!reducedMotion"
-            :layout-id="reducedMotion ? undefined : activeLayoutId"
-            :transition="reducedMotion ? { duration: 0 } : { type: 'spring', stiffness: 420, damping: 38 }"
-            class="flex items-center justify-center"
-          >
+          <!-- 手势的 x/y/scale 走 MotionValue（在 Vue 渲染周期外执行）。
+               ⚠️ 不再挂 layoutId：缩略图侧已经不做 layout 补间，单边保留只是一段死契约。 -->
+          <div class="flex items-center justify-center">
             <motion.img :alt="current?.name || t('msg.imagePreview')"
               :src="src"
               class="max-h-[85vh] max-w-[88vw] touch-none select-none rounded-[var(--gosslan-radius-lg)] shadow-2xl"
@@ -450,7 +436,7 @@ useEventListener(window, "keydown", onKey);
               @pointercancel="onPointerUp"
               @error="onImageError"
             />
-          </motion.div>
+          </div>
         </template>
         <div
           v-else

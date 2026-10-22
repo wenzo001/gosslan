@@ -2,12 +2,10 @@
 import { t } from "@/i18n";
 import { onUnmounted, ref, watch } from "vue";
 import { ImageIcon } from "lucide-vue-next";
-import { motion, useReducedMotion } from "@/utils/motion";
 import { ImageOff } from "@/components/ui/icons";
 import { IMAGE_BUBBLE_HEIGHT, IMAGE_PLACEHOLDER_HEIGHT } from "@/utils/previewMetrics";
 
-const props = defineProps<{ src: string; layoutId?: string }>();
-const reducedMotion = useReducedMotion();
+const props = defineProps<{ src: string }>();
 const emit = defineEmits<{ (e: "open", src: string): void; (e: "refetch"): void }>();
 
 /** 加载失败时点一下：先本地重试，同时请对端按 cid 再发一份（ADR-0019 点击重取）。 */
@@ -97,9 +95,10 @@ onUnmounted(clearTimer);
        大小应该是固定的。」⇒ 用**定宽**让图片尺寸与兄弟节点无关（`max-w-full`
        仅作为窄窗口下的安全下限保留）。
        代价（已知并接受）：竖长图会在 13rem 的框内左右留白，换来「发出后尺寸恒定」。 -->
-  <motion.div
-    :layout-id="reducedMotion ? undefined : props.layoutId"
-    :transition="reducedMotion ? { duration: 0 } : { type: 'spring', stiffness: 420, damping: 40 }"
+  <!-- ⚠️ 这里刻意**不用** layoutId / layout 动画：缩略图高度会随图片解码从骨架高度
+       变成真实高度，做 layout 补间就是「图片从底部往上拉伸」的来源。切会话时由
+       ChatWindow 对整列做一次短淡入；单张图只瞬时落定，不参与补间。 -->
+  <div
     class="relative w-52 max-w-full cursor-pointer overflow-hidden rounded-[var(--gosslan-bubble-radius)]"
     :data-img-state="state"
     :role="state === 'loaded' ? 'button' : undefined"
@@ -150,5 +149,5 @@ onUnmounted(clearTimer);
       @load="clearTimer(); state = 'loaded'"
       @error="onError()"
     />
-  </motion.div>
+  </div>
 </template>

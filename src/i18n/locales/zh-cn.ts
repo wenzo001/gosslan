@@ -969,6 +969,7 @@ export const zhCN: MessageDict = {
   "layout.contactHint": "从左侧通讯录选择一位联系人，或添加新的好友",
   "layout.linksTitle": "外部链接",
   "layout.linksHint": "在左侧选择一个链接，将在独立窗口中打开",
+  "layout.routeMissing": "内容不存在或已不可访问",
   "layout.tagline": "无服务器 · 纯 P2P · 端到端加密 · 数据仅存本机",
 
   // ---- 网络诊断（开发者） ----
@@ -1073,6 +1074,7 @@ export const zhCN: MessageDict = {
   "favorite.count": "收藏（{n}）",
   "favorite.loading": "正在读取收藏…",
   "favorite.loadFail": "收藏读取失败",
+  "favorite.notFound": "收藏不存在或已被删除",
   "favorite.empty": "还没有收藏任何内容（在消息上右键或长按即可收藏）",
   "favorite.add": "收藏",
   "favorite.added": "已收藏",

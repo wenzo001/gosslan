@@ -762,7 +762,7 @@ JS 侧：任何 WAAPI / `requestAnimationFrame` / 库驱动的动画必须先读
 `npm run build` 实测：`motion` 拆成独立 chunk 后 gzip 51.02 KB（vendor 从 114.15 回到 114.56）；
 这笔成本用户已明确接受。使用边界：
 
-1. **共享元素转场**：消息缩略图 → 图片灯箱（`layoutId`）。
+1. **共享布局指示器**：侧栏 / 底栏的选中药丸（`layoutId`）。
 2. **列表 FLIP 重排**：群任务看板行在状态分组间移动（`layout` + `layoutId`）。
 3. **手势驱动的连续动画**：灯箱拖拽/缩放的 `useMotionValue`。
 
@@ -909,7 +909,8 @@ Tauri WebView 真机仍未测。
 3. **IPC 不在 `watch` 的数组 getter 里**：`watch(() => [a, b, c])` 的依赖一变就发一次请求；「消息条数」不许进链路查询的依赖。
 
 **依赖决策**：默认纯 CSS；引动画/UI 库必须给出「哪个具体交互现有方案做不到」的证据 + 同机产物增量。
-2026-10-22 用户裁决引入 `motion-v@2.8.0`：只用于共享元素转场、列表 FLIP、手势连续动画三类；
+2026-10-22 用户裁决引入 `motion-v@2.8.0`：只用于共享布局指示器、列表 FLIP、手势连续动画三类；
+图片缩略图不做 layout 补间（解码后的高度变化只瞬时落定，切会话由消息列整列淡入）；
 同机产物增量见 §11.3.6。业务组件不得直连，必须走 `src/utils/motion/`。
 
 
@@ -984,7 +985,8 @@ Tauri WebView 真机仍未测。
 
 - 缩略图：骨架屏 §4；长列表 `<img>` 必须 `loading="lazy" decoding="async"`（反模式 #1）；
   例外只有灯箱大图与「自身 @load 前 display:none」的消息图（组件内有 `img-eager-ok` 标记）。
-- 灯箱：打开/关闭用 `gosslan-dialog-fade-*`；缩略图 → 大图用 `motion-v` 共享元素（`layoutId`）；
+- 灯箱：打开/关闭用 `gosslan-dialog-fade-*`；缩略图**不做 layout 补间**——图片解码后高度会从骨架高度变成真实高度，
+  补间会表现成「从底部往上拉伸」。切会话的动效统一交给消息列一次很短的整列淡入；
   手势缩放/拖拽走 `useMotionValue`，reset 用 spring。
 - 进度条：`transform: scaleX()`（不用 width），200–300ms ease-out；六态映射的唯一家是
   `src/utils/transferState.ts`，未知态绝不显示成完成。

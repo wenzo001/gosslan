@@ -16,7 +16,8 @@ import Spinner from "@/components/ui/Spinner.vue";
  * 配色/圆角/间距一律用项目 token（`--gosslan-*`）与 `.gosslan-menu*`/`SettingsGroup` 同族样式，
  * 不引入微信的具体色值 —— 这是用户明确要求「按本项目约束标准」的部分。
  */
-import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { computed, inject, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { routeLocationKey, routerKey } from "vue-router";
 import { useQuery } from "@tanstack/vue-query";
 import { useDebounceFn } from "@vueuse/core";
 import {
@@ -52,7 +53,7 @@ import { errorText } from "@/composables/useErrorText";
 import type { ChatSearchGroup, ChatSearchMessage } from "@/types";
 import { previewBody } from "@/utils/messages";
 
-const props = defineProps<{ open: boolean; initialKeyword?: string }>();
+const props = defineProps<{ open: boolean; initialKeyword?: string; routeDriven?: boolean }>();
 const emit = defineEmits<{
   (e: "close"): void;
   /** 跳到命中的那一条（父组件负责开会话 + 定位） */
@@ -77,8 +78,25 @@ function cellText(m?: ChatSearchMessage): string {
 }
 
 const app = useAppStore();
+const route = inject(routeLocationKey, null);
+const router = inject(routerKey, null);
 /** 输入法守卫：拼音候选里按回车是选字，不该被当成"重新搜索"（与发送键同一套判定） */
 const ime = useImeEnterGuard();
+
+/**
+ * 关键词是 `/search?q=` 的可恢复状态：刷新、分享、前进后退都应回到同一个查询。
+ * 用 replace 而不是 push —— 输入过程中的每次防抖落库都不该各占一条历史。
+ */
+function syncKeywordToRoute() {
+  if (!props.routeDriven || !router || route?.name !== "search") return;
+  const kw = keyword.value.trim();
+  const current = typeof route.query.q === "string" ? route.query.q : "";
+  if (current === kw) return;
+  const query = { ...route.query };
+  if (kw) query.q = kw;
+  else delete query.q;
+  void router.replace({ name: "search", query });
+}
 
 const keyword = ref("");
 /**
@@ -210,6 +228,7 @@ function forceSearch() {
   const kw = keyword.value.trim();
   if (!kw) return;
   pushKeyword.cancel();
+  syncKeywordToRoute();
   if (debouncedKeyword.value !== kw) {
     debouncedKeyword.value = kw; // key 一变，Query 自己发请求
     return;
@@ -233,7 +252,9 @@ function openHit(idx: number) {
   const msg = g?.messages[Math.max(0, Math.min((g?.messages.length ?? 1) - 1, idx))];
   if (!g) return;
   emit("open-conversation", { convId: g.conv_id, msgId: msg?.msg_id ?? "" });
-  emit("close");
+  // 路由驱动时，父级会把 /search 替换成 /chats/:id，关闭由那次导航完成。
+  // 这里再 emit close 会并发触发一次 router.back()，与 replace 抢历史（可能退回来源页）。
+  if (!props.routeDriven) emit("close");
 }
 
 /** 失败出口上的重试：当前键重拉（与旧 `runSearch()` 同一语义）。 */
@@ -245,6 +266,7 @@ function retrySearch() {
 const pushKeyword = useDebounceFn((kw: string) => {
   // 到点时复查一次：这 150ms 里弹窗可能已经被关掉（关窗会清空关键词）
   if (props.open) debouncedKeyword.value = kw;
+  syncKeywordToRoute();
 }, 150);
 
 watch(keyword, () => {
@@ -257,10 +279,39 @@ watch(keyword, () => {
     searched.value = "";
     activeConvId.value = null;
     activeIdx.value = 0;
+    syncKeywordToRoute();
     return;
   }
   pushKeyword(kw);
 });
+
+/**
+ * 外部 URL 变化（浏览器前进/后退、分享链接被再次导航）要反映到输入框与结果。
+ * 自己写 URL 时 `syncKeywordToRoute` 已经先比过值，这里会直接跳过，不会打成环。
+ * 筛选条件不写进 URL ⇒ 换关键词时重置，避免「地址栏只说 q，结果却还带着旧发送人筛选」。
+ */
+watch(
+  () => props.initialKeyword,
+  (raw) => {
+    if (!props.open || !props.routeDriven) return;
+    const next = (raw ?? "").trim();
+    if (next === keyword.value.trim()) return;
+    opening.value = true;
+    try {
+      keyword.value = next;
+      debouncedKeyword.value = next;
+      senderFilter.value = null;
+      datePreset.value = "all";
+      senderOptions.value = [];
+      activeConvId.value = null;
+      activeIdx.value = 0;
+      searched.value = "";
+      pushKeyword.cancel();
+    } finally {
+      opening.value = false;
+    }
+  },
+);
 
 onBeforeUnmount(() => pushKeyword.cancel());
 
@@ -341,6 +392,7 @@ function showSender(group: ChatSearchGroup): boolean {
     :open="open"
     :title="t('search.title')"
     :fullscreen="app.isMobile"
+    :back-layer="!props.routeDriven"
     width="max-w-3xl"
     @close="emit('close')"
   >

@@ -4417,21 +4417,41 @@ test("motion-v 只能从统一封装层导入（业务码不得直连）", () =>
   console.log(`· motion-v 唯一入口：扫 ${files.length} 份源码，直连 0 处`);
 });
 
-// ---------------- 共享元素 layoutId 同源 ----------------
+// ---------------- 图片不做 layout 补间 ----------------
 //
-// 缩略图与灯箱是两棵树：任何一边的 id 拼法漂了，共享元素转场就会静默失效
-// （看起来只是"没有动画"）。这里把两端 + 开关一起钉住。
-test("缩略图与灯箱使用同一套 layoutId，且 reduce 档会关掉共享转场", () => {
+// 缩略图高度会随解码从骨架高度变成真实高度；如果给它 layoutId/layout 补间，
+// 切会话时就会看到「图片从底部往上拉伸」。苹果消息的做法是整列短淡入、单图瞬时落定，
+// 所以这里反向钉住：缩略图这一侧**不许**再出现 layoutId。灯箱自己的 reduce 分支仍在。
+test("图片气泡与灯箱都不做 layout 补间，灯箱保留 reduced-motion 开关", () => {
   const srcDir = join(import.meta.dirname, "..");
   const item = readFileSync(join(srcDir, "components", "MessageItem.vue"), "utf8");
   const bubble = readFileSync(join(srcDir, "components", "message", "MessageImageBubble.vue"), "utf8");
   const lightbox = readFileSync(join(srcDir, "components", "message", "ImageLightbox.vue"), "utf8");
-  assert.match(item, /:layout-id="`image:\$\{message\.msg_id\}`"/, "消息缩略图没有传 layoutId");
-  assert.match(bubble, /props\.layoutId/, "MessageImageBubble 没有消费 layoutId");
-  assert.match(lightbox, /return `image:\$\{it\.msgId\}`/, "灯箱的 layoutId 拼法必须与缩略图同源");
+  assert.ok(!/layout-id=/.test(item), "消息缩略图又传了 layoutId（会重新引入图片拉伸）");
+  assert.ok(!/layout-id|layoutId/.test(bubble.replace(/<!--[\s\S]*?-->/g, "")),
+    "MessageImageBubble 又在模板/脚本里消费 layoutId");
+  assert.ok(!/layout-id|activeLayoutId/.test(lightbox.replace(/<!--[\s\S]*?-->/g, "")),
+    "灯箱还留着单边 layoutId（没有对端，属于死契约）");
   assert.match(lightbox, /useReducedMotion/, "灯箱没有 reduced-motion 分支");
-  assert.match(lightbox, /:layout-id="reducedMotion \? undefined : activeLayoutId"/,
-    "reduce 档必须关掉共享元素转场");
+});
+
+test("会话切换只做整列短淡入，不给消息/图片做逐项进场", () => {
+  const chat = readFileSync(join(import.meta.dirname, "..", "components", "ChatWindow.vue"), "utf8");
+  assert.match(chat, /const listSwitching = ref\(false\)/, "ChatWindow 没有会话切换的淡入状态");
+  assert.match(chat, /function revealListAfterLayout\(\)/, "ChatWindow 没有「布局落定后再揭示」的出口");
+  assert.match(chat, /:class="listSwitching \? 'opacity-0' : 'opacity-100'"/, "消息列表没有整列淡入");
+  assert.ok(!/<TransitionGroup/.test(chat), "消息行不该再逐项进场（会表现成从上往下铺）");
+});
+
+test("收藏列表是普通一级 tab，底栏显示条件不再为收藏开特例", () => {
+  const routes = readFileSync(join(import.meta.dirname, "..", "router", "mainRoutes.ts"), "utf8");
+  const layout = readFileSync(join(import.meta.dirname, "..", "layouts", "ResponsiveLayout.vue"), "utf8");
+  assert.match(routes, /path: "\/favorites",[\s\S]{0,180}meta: \{ pane: "list", tab: "favorites", depth: 0 \}/,
+    "/favorites 没有回到 list 一级 tab");
+  assert.ok(!/mobileView\.value === "list" \|\| favoritesOpen\.value/.test(layout),
+    "底栏显示条件又给收藏开了特例（收藏列表挡不住其它 tab 的根因）");
+  assert.match(layout, /\(mobileView\.value === "list" \|\| navState\.value === "me"\)/,
+    "一级 tab 的底栏条件必须只认 pane/me");
 });
 
 // ---------------- 加载旋转唯一入口 ----------------
@@ -4454,4 +4474,90 @@ test("加载旋转只许在 Spinner.vue（全仓不得再出现 animate-spin 类
   assert.ok(/(?:^|\s)class="[^"]*\banimate-spin\b/.test('<div class="x animate-spin">'), "扫描正则没匹配上合成针 ⇒ 判据空转");
   assert.ok(!stripCommentsForTokens(`// animate-spin\nconst x = 1;`).includes("animate-spin"), "注释不算作用点");
   console.log(`· 加载旋转：扫 ${listVue692(srcDir).length} 份 .vue，animate-spin 0 处（唯一入口 Spinner.vue）`);
+});
+
+// ---------------- 收藏详情 / 搜索返回 / 我的子页路径 ----------------
+//
+// 2026-10-22 路由审计发现的三类"路由表说有、实际没接"：
+// ① `/favorites/:favId` 是死路由（点收藏只改内部 ref）；
+// ② 搜索既是 route 又让 BaseModal 压一条返回层（Android 返回可能退两次）；
+// ③ 「我的」子页路径不统一（/profile、/links 与 /me/settings 混用）。
+test("收藏详情必须走 /favorites/:favId（不是死路由）", () => {
+  const src = readFileSync(join(import.meta.dirname, "..", "components", "FavoritePanel.vue"), "utf8");
+  assert.match(src, /params:\s*\{\s*favId:/, "选中收藏没有 push 到 /favorites/:favId");
+  assert.match(src, /route\.params\.favId/, "收藏详情没有从路由参数恢复选中项");
+  assert.match(src, /route\?\.name === "favorite"/, "详情返回没有识别 favorite 路由");
+  assert.match(src, /router\.back\(\)/, "详情返回没有走路由历史");
+});
+
+test("搜索模态在路由驱动时不重复压返回层", () => {
+  const base = readFileSync(join(import.meta.dirname, "..", "components", "BaseModal.vue"), "utf8");
+  assert.match(base, /backLayer\?: boolean/, "BaseModal 没有 backLayer 开关");
+  assert.match(base, /if \(props\.backLayer\)/, "BaseModal 仍无条件压返回层");
+  const search = readFileSync(
+    join(import.meta.dirname, "..", "components", "search", "ChatSearchDialog.vue"), "utf8");
+  assert.match(search, /:back-layer="!props\.routeDriven"/, "搜索没有把 routeDriven 传给 BaseModal");
+  const layout = readFileSync(join(import.meta.dirname, "..", "layouts", "ResponsiveLayout.vue"), "utf8");
+  assert.match(layout, /<ChatSearchDialog[\s\S]*?route-driven/, "主窗口没有把搜索标成路由驱动");
+});
+
+test("移动端「我的」子页统一在 /me/*（路径不许回退成顶层）", () => {
+  const src = readFileSync(join(import.meta.dirname, "..", "router", "mainRoutes.ts"), "utf8");
+  for (const path of ["/me/profile", "/me/links", "/me/settings", "/me/logs"]) {
+    assert.ok(src.includes(`path: "${path}"`), `路由表缺少 ${path}`);
+  }
+  // 顶层旧路径只允许作为兼容 redirect 存在，不能再挂 name（否则页面身份分叉）。
+  assert.ok(!/path: "\/profile",\s*\n\s*name: "profile"/.test(src), "/profile 又变回正式页面了");
+  assert.match(src, /path: "\/profile", redirect: "\/me\/profile"/, "旧 /profile 深链没有兼容落点");
+  assert.match(src, /path: "\/logs", redirect: "\/me\/logs"/, "旧 /logs 深链没有兼容落点");
+  assert.ok(!/path: "\/links",\s*\n\s*name: "me-links"/.test(src), "me-links 没有下沉到 /me/links");
+});
+
+test("路由驱动的日志页/链接页不再重复压返回层", () => {
+  const logs = readFileSync(join(import.meta.dirname, "..", "components", "LogViewer.vue"), "utf8");
+  assert.match(logs, /routeDriven\?: boolean/, "LogViewer 没有 routeDriven 开关");
+  assert.match(logs, /if \(!props\.standalone && !props\.routeDriven\)/, "LogViewer 仍无条件压返回层");
+  const links = readFileSync(join(import.meta.dirname, "..", "components", "LinksList.vue"), "utf8");
+  assert.match(links, /routeDriven\?: boolean/, "LinksList 没有 routeDriven 开关");
+  assert.match(links, /if \(!props\.routeDriven\)/, "LinksList 仍无条件压返回层");
+  const layout = readFileSync(join(import.meta.dirname, "..", "layouts", "ResponsiveLayout.vue"), "utf8");
+  assert.match(layout, /<LogViewer[^>]*route-driven/, "主窗口没有把日志页标成路由驱动");
+  assert.match(layout, /<LinksList[^>]*route-driven/, "主窗口没有把链接页标成路由驱动");
+});
+
+test("搜索关键词参与 URL，且外部前进后退能回灌输入框", () => {
+  const src = readFileSync(
+    join(import.meta.dirname, "..", "components", "search", "ChatSearchDialog.vue"), "utf8");
+  assert.match(src, /function syncKeywordToRoute\(\)/, "搜索没有把关键词写回 URL 的单一出口");
+  assert.match(src, /router\.replace\(\{ name: "search", query \}\)/, "搜索写 URL 没有走 replace（会堆历史）");
+  assert.match(src, /watch\(\s*\(\) => props\.initialKeyword/, "外部 URL 变化没有回灌搜索框");
+  assert.match(src, /if \(!props\.routeDriven\) emit\("close"\);/, "命中跳转在路由驱动时仍会并发关闭（双退）");
+});
+
+test("移动端 tab 切换不堆历史，深链无上一跳时用 replace 落安全目标", () => {
+  const layout = readFileSync(join(import.meta.dirname, "..", "layouts", "ResponsiveLayout.vue"), "utf8");
+  assert.match(layout, /void router\.replace\(routeForTab\(nav\)\)/, "tab 切换仍在 push（返回键会在 tab 间倒带）");
+  assert.match(layout, /void router\.replace\(fallback\)/, "goBack 无历史时仍 push（会形成返回循环）");
+  assert.match(layout, /function openMobileLinks\(\)[\s\S]{0,240}router\.push\(\{ name: "me-links" \}\)/, "移动端链接下钻没有 push（返回回不到「我的」）");
+  assert.match(layout, /@click="openMobileLinks"/, "「我的 → 链接」没有走下钻入口");
+  assert.match(layout, /if \(name === "links"\) void router\.replace\(\{ name: "me-links" \}\)/, "移动端 /links 没有归一");
+  assert.match(layout, /openSettings\(\);\s*\n\s*void router\.replace\(\{ name: "chats" \}\)/, "桌面设置深链没有映射成窗口动作");
+  assert.match(layout, /openLogs\(\);\s*\n\s*void router\.replace\(\{ name: "chats" \}\)/, "桌面日志深链没有映射成窗口动作");
+});
+
+test("无效路径参数有明确回退（不是 UI 空态挂着错 URL）", () => {
+  const layout = readFileSync(join(import.meta.dirname, "..", "layouts", "ResponsiveLayout.vue"), "utf8");
+  assert.match(layout, /function isKnownConversation\(/, "会话深链没有存在性判据");
+  assert.match(layout, /if \(!chat\.initialized\) return;/, "会话深链在首轮数据前就判/开");
+  assert.match(layout, /if \(!chat\.friendsLoaded\) return;/, "好友表失败时仍把深链判成不存在");
+  assert.match(layout, /const canJudge =/, "会话深链没有“两表都成功读过”的判据");
+  assert.match(layout, /chat\.conversationsLoaded && chat\.groupsLoaded/, "群深链没有要求会话+群表");
+  assert.match(layout, /chat\.conversationsLoaded && chat\.friendsLoaded/, "单聊深链没有要求会话+好友表");
+  assert.match(layout, /if \(current && current !== convId\) return;/, "后台 activeConv 变化会覆盖当前会话 URL");
+  assert.match(layout, /name === "friend"[\s\S]{0,400}router\.replace\(\{ name: "contacts" \}\)/, "无效好友没有回通讯录");
+  const fav = readFileSync(join(import.meta.dirname, "..", "components", "FavoritePanel.vue"), "utf8");
+  assert.match(fav, /loadedOnce/, "收藏无效参数判据没有等待首轮读取");
+  assert.match(fav, /t\("favorite\.notFound"\)[\s\S]{0,120}router\.replace\(\{ name: "favorites" \}\)/, "无效 favId 没有回列表");
+  const settings = readFileSync(join(import.meta.dirname, "..", "components", "SettingsPanel.vue"), "utf8");
+  assert.match(settings, /routeSection\.value !== null\) return;[\s\S]{0,160}router\.replace\(\{ name: "settings" \}\)/, "未知设置分区没有归一");
 });

@@ -31,8 +31,10 @@ const props = withDefaults(
      * 一处，才能保证「移动端整页」都带上安全区、关闭按钮与滚动容器，不会各写各的。
      */
     fullscreen?: boolean;
+    /** 是否注册 Android 返回层。路由驱动的模态传 false，由路由历史负责返回。 */
+    backLayer?: boolean;
   }>(),
-  { width: "max-w-md", fullscreen: false },
+  { width: "max-w-md", fullscreen: false, backLayer: true },
 );
 const emit = defineEmits<{ (e: "close"): void }>();
 
@@ -76,10 +78,13 @@ function onCloseAutoFocus(event: Event) {
  * （Android 上没有这层绑定的话，用户在"添加好友"弹窗里按返回会退出整个应用）。
  * 见 `composables/useBackLayer.ts`。
  */
-useBackLayer(
-  () => props.open,
-  () => emit("close"),
-);
+// 路由驱动的模态（如 /search）已经在路由历史里有一层；再压一条会变成"返回两次"。
+if (props.backLayer) {
+  useBackLayer(
+    () => props.open,
+    () => emit("close"),
+  );
+}
 
 /** Reka 的 `update:open`：Esc / 点遮罩 / 关闭按钮都汇到这里；受控 `open` 由父级翻。 */
 function onOpenChange(value: boolean) {

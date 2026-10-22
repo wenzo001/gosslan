@@ -133,6 +133,48 @@ const messagesLoading = computed(
 const messageLoadError = computed(() =>
   chat.activeConv ? (chat.messageLoadErrors[chat.activeConv] ?? "") : "",
 );
+
+/**
+ * 会话切换时的整列淡入。
+ *
+ * 虚拟列表要等 DOM 落定后才把 scrollTop 贴到底。这段时间里用户会看到
+ * 「消息从顶部往下铺」——那是布局在追赶，不是动画。参考 iOS 消息：切会话时
+ * 先让列表在正确位置落定，再用一次很短的整列淡入遮住这一帧；
+ * 图片自身不再做 layout 补间（见 MessageImageBubble），只瞬时落定。
+ */
+const listSwitching = ref(false);
+let listRevealRaf = 0;
+function revealListAfterLayout() {
+  if (listRevealRaf) cancelAnimationFrame(listRevealRaf);
+  listRevealRaf = requestAnimationFrame(() => {
+    listRevealRaf = requestAnimationFrame(() => {
+      listRevealRaf = 0;
+      listSwitching.value = false;
+    });
+  });
+}
+watch(
+  () => chat.activeConv,
+  () => {
+    listSwitching.value = true;
+    // 命中缓存时 messagesLoading 不会翻面，这里自己排一次揭示
+    if (!messagesLoading.value) revealListAfterLayout();
+  },
+);
+watch([messagesLoading, messageLoadError, () => messages.value.length], ([loading, error, count]) => {
+  if (loading) {
+    // 切到未缓存的会话：先压住，等数据真的到了再揭示（否则会在骨架阶段就把列表亮出来）
+    if (listRevealRaf) cancelAnimationFrame(listRevealRaf);
+    listRevealRaf = 0;
+    listSwitching.value = true;
+    return;
+  }
+  if (count > 0 || error) revealListAfterLayout();
+  else listSwitching.value = false;
+});
+onBeforeUnmount(() => {
+  if (listRevealRaf) cancelAnimationFrame(listRevealRaf);
+});
 function retryMessages() {
   if (chat.activeConv) void chat.loadMessages(chat.activeConv);
 }
@@ -1522,6 +1564,8 @@ function onLoadMore() {
       <VirtualList
         v-else
         ref="listRef"
+        class="transition-opacity duration-150 ease-out"
+        :class="listSwitching ? 'opacity-0' : 'opacity-100'"
         :items="messages"
         live
         :auto-scroll-on-swap="restoreScrollTop === null && !(chat.unreadJump && chat.unreadJump.convId === chat.activeConv)"

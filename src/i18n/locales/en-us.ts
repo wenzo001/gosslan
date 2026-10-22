@@ -944,6 +944,7 @@ export const enUS: MessageDict = {
   "layout.contactHint": "Pick a contact from the list on the left, or add a new friend",
   "layout.linksTitle": "External Links",
   "layout.linksHint": "Pick a link on the left to open it in its own window",
+  "layout.routeMissing": "This content no longer exists or is unavailable",
   "layout.tagline": "Serverless · Pure P2P · End-to-end encrypted · Data stays on device",
 
   // ---- Network diagnostics (developer) ----
@@ -1039,6 +1040,7 @@ export const enUS: MessageDict = {
   "favorite.count": "Favorites ({n})",
   "favorite.loading": "Loading favorites…",
   "favorite.loadFail": "Failed to load favorites",
+  "favorite.notFound": "This favorite no longer exists",
   "favorite.empty": "Nothing saved yet (right-click or long-press a message to save it)",
   "favorite.add": "Save",
   "favorite.added": "Saved",

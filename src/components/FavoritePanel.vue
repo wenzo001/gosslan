@@ -21,8 +21,8 @@
  * `ForwardModal` 必须写在页面根节点的**同级**：页面由 `v-if` 挂载，转发弹窗写进页面容器里
  * 会随页面一起卸载。
  */
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
-import { useRouter } from "vue-router";
+import { computed, inject, onMounted, onUnmounted, ref, watch } from "vue";
+import { routeLocationKey, routerKey } from "vue-router";
 import { DropdownMenuItem, DropdownMenuSeparator } from "reka-ui";
 import { t } from "@/i18n";
 import Spinner from "@/components/ui/Spinner.vue";
@@ -58,7 +58,8 @@ import { api } from "@/api";
 const emit = defineEmits<{ (e: "close"): void }>();
 
 const app = useAppStore();
-const router = useRouter();
+const route = inject(routeLocationKey, null);
+const router = inject(routerKey, null);
 const chat = useChatStore();
 /** 看图只有一个入口：统一的预览能力（桌面走单例窗口、移动走壳层覆盖层，让位逻辑在 store 里）。 */
 const preview = useImagePreviewStore();
@@ -72,6 +73,12 @@ function onFavBack() {
   // 预览开着时先收预览（与任务详情/合并卡片同一套「只收最上面那层」；
   // `closeIfFrom` 保证只有这份相册确实是收藏给出去的才收，不误伤别的入口）。
   if (active.value) preview.closeIfFrom(favSource(active.value.id));
+  if (router && route?.name === "favorite") {
+    const back = (window.history.state as { back?: string | null } | null)?.back;
+    if (back) router.back();
+    else void router.replace({ name: "favorites" });
+    return;
+  }
   if (active.value) active.value = null;
   else emit("close");
 }
@@ -82,19 +89,20 @@ function onFavBack() {
  *  TDZ 崩溃（实测：移动端打开收藏页直接 `Cannot access 'active' before initialization`）。 */
 const active = ref<FavoriteEntry | null>(null);
 
-// 移动端两层返回（与框架返回键一致）：
-//   —— 详情态（active）先退回列表；列表态（tab）再关掉整个收藏 tab（回到 chats）。
-//   两条 active 互斥（一条看 active、一条看 !active），不会同时压栈，层级天然正确。
-useBackLayer(
-  () => app.isMobile && active.value !== null,
-  () => {
-    active.value = null;
-  },
-);
-useBackLayer(
-  () => app.isMobile && active.value === null,
-  () => emit("close"),
-);
+// 主窗口有路由：详情/列表的返回由 router 承载（/favorites/:favId → /favorites → 来源 tab）。
+// 探针或没有 router 的挂载才保留手工栈；两条 active 互斥，层级天然正确。
+if (!router) {
+  useBackLayer(
+    () => app.isMobile && active.value !== null,
+    () => {
+      active.value = null;
+    },
+  );
+  useBackLayer(
+    () => app.isMobile && active.value === null,
+    () => emit("close"),
+  );
+}
 
 type FilterKey = "all" | "text" | "image" | "file" | "card";
 /** 类型筛选（与 PC 微信一致：全部 / 文本 / 图片 / 文件；卡片类是我们自己的：待办/投票/公告）。 */
@@ -108,6 +116,8 @@ const FILTERS: { key: FilterKey; label: string }[] = [
 
 const loading = ref(false);
 const failed = ref(false);
+/** 至少完成过一次读取（成败都算）：无效 favId 的判据必须等它，否则启动瞬间会误杀合法深链。 */
+const loadedOnce = ref(false);
 const loadError = ref("");
 /** 搜索关键词（在标题 / 正文 / 文件名里找）。 */
 const keyword = ref("");
@@ -119,6 +129,40 @@ const pendingDelete = ref<FavoriteEntry | null>(null);
 const forward = ref<FavoriteEntry | null>(null);
 
 const items = computed(() => chat.favorites);
+
+/** 收藏详情是页面级路由：/favorites/:favId。桌面与移动共用，返回由路由承载。 */
+const routeFavId = computed(() =>
+  route?.name === "favorite" ? String(route.params.favId ?? "") : "",
+);
+watch(
+  [routeFavId, items],
+  () => {
+    if (!route) return;
+    if (route.name === "favorites") {
+      active.value = null;
+      return;
+    }
+    if (route.name !== "favorite") return;
+    active.value = items.value.find((f) => f.id === routeFavId.value) ?? null;
+  },
+  { immediate: true },
+);
+
+/**
+ * 无效 / 已删除的 favId：读取完成后确认列表里没有它，就回收藏列表并说明原因。
+ * 不这么做的话 URL 停在 `/favorites/<不存在>`、界面却退回列表 = 地址与选中的真相分叉。
+ * 读取失败时不跳（保留重试入口），避免把「读不到」误判成「不存在」。
+ */
+watch(
+  [loadedOnce, failed, items, routeFavId],
+  () => {
+    if (!router || !route || route.name !== "favorite" || !loadedOnce.value || failed.value) return;
+    if (!routeFavId.value || items.value.some((f) => f.id === routeFavId.value)) return;
+    app.toast(t("favorite.notFound"), "info");
+    void router.replace({ name: "favorites" });
+  },
+  { immediate: true },
+);
 
 /** 页头标题（有收藏数时显示条数，否则显示「收藏」）。 */
 const headerTitle = computed(() =>
@@ -136,6 +180,7 @@ async function load() {
     loadError.value = errorText(e, t("favorite.loadFail"));
   } finally {
     loading.value = false;
+    loadedOnce.value = true;
   }
 }
 
@@ -370,9 +415,16 @@ function openMenuAt(e: MouseEvent, f: FavoriteEntry) {
     : { x: e.clientX, y: e.clientY, item: f };
 }
 
-/** 选中一条：桌面端同时更新右侧详情；移动端由模板切成详情视图。 */
+/** 选中一条：写入 /favorites/:favId（桌面右栏与移动详情都由路由恢复）。 */
 function selectItem(f: FavoriteEntry) {
   active.value = f;
+  if (router && route && String(route.name ?? "").startsWith("favorites")) {
+    const target = { name: "favorite", params: { favId: f.id } } as const;
+    // 列表→详情用 push（返回能回到列表）；详情内换一条用 replace，切几次都不会
+    // 在历史里留下「上一条、上上一条」，返回仍是干净的列表。
+    if (route.name === "favorite") void router.replace(target);
+    else void router.push(target);
+  }
 }
 
 async function copyItem(f: FavoriteEntry) {
@@ -537,11 +589,11 @@ async function locate(f: FavoriteEntry) {
   // **逐页翻到 MAX_PAGES** 才可能报"没找到"，把它整个 await 在翻页之前 =
   // 点一条收藏后收藏页原地卡住几轮读库；找不到时如实 toast，人已经在会话里。
   if (app.isMobile) app.mobileView = "chat";
-  emit("close");
+  if (!router) emit("close");
   // locateMessageInConv 内部会同步写 activeConv；先发起它再落路由，
   // 路由 watcher 看到已打开就不会重复加载。
   const locating = chat.locateMessageInConv(f.conv_id, f.msg_id);
-  void router.push({ name: "conversation", params: { convId: f.conv_id } });
+  void router?.push({ name: "conversation", params: { convId: f.conv_id } });
   const r = await locating;
   if (r !== "found") app.toast(t("favorite.msgGone"), "info");
 }
@@ -562,7 +614,10 @@ async function confirmDelete() {
     const rest = { ...thumbs.value };
     delete rest[f.id];
     thumbs.value = rest;
-    if (active.value?.id === f.id) active.value = null;
+    if (active.value?.id === f.id) {
+      active.value = null;
+      if (router && route?.name === "favorite") void router.replace({ name: "favorites" });
+    }
     app.toast(t("favorite.deleted"), "success");
   } catch (e) {
     app.toastError(e, t("favorite.deleteFail"));
@@ -720,14 +775,14 @@ async function confirmDelete() {
              操作条**钉在详情底部**而不是跟在正文后面：正文长短不一，跟排会忽上忽下；
              且旧版内联按钮排一半带图标一半不带，flex-wrap 一换行就参差不齐
              （用户 2026-09-17："这个操作的样式不行"）。
-             移动端：详情是「点具体收藏」才新开的一页 —— 用 fixed 全屏覆盖层（盖住底部 tab 栏），
-             顶部带框架式 chevron 返回（覆盖层自己带头部，不再依赖外部框架）。 -->
+             移动端：列表是普通一级 tab；点具体收藏才进详情，详情和聊天/联系人详情一样
+             是二级页（底栏隐藏），所以用 `inset-0` 整页覆盖，不再给底栏留缺口。 -->
         <!-- 转场：只有移动端详情是「新开的一页」，才走 page-slide；桌面端是内嵌右栏，不转场。 -->
         <Transition :name="app.isMobile ? 'page-slide' : ''">
         <div
           v-if="active"
           :class="app.isMobile
-            ? 'fixed inset-x-0 top-0 bottom-[calc(var(--gosslan-mobile-tabbar-h)+env(safe-area-inset-bottom))] z-[60] flex flex-col bg-[var(--gosslan-bg)] pt-[env(safe-area-inset-top)]'
+            ? 'fixed inset-0 z-[60] flex flex-col bg-[var(--gosslan-bg)] pt-[env(safe-area-inset-top)]'
             : 'flex min-h-0 flex-1 flex-col'"
         >
           <!-- 移动端详情头部：与 MobilePageFrame **完全一致**的框架返回键
