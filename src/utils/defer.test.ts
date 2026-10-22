@@ -270,6 +270,7 @@ test("距上次不足间隔就不执行，够间隔才执行", () => {
 const NOT_A_GATE = new Map<string, string>([
   ["utils/ime.ts", "输入法组合结束后的窗口内判定（要的是「还在 N ms 之内」）"],
   ["utils/recall.ts", "撤回窗口：要的是「还在 5 分钟内」的窗口判定，不是限流放行"],
+  ["utils/nudge.ts", "抖动迟到帧的年龄判定，不是限流放行"],
   ["components/TitleBar.vue", "双击标题栏检测：同样是「窗口之内」，不是限流"],
   ["components/VirtualList.vue", "「最近往上滚过」⇒ 暂停贴底（窗口判定）"],
   ["utils/messages.ts", "在线状态 TTL 清扫（过期判定）"],

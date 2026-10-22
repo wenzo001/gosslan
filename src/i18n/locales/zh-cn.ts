@@ -525,7 +525,8 @@ export const zhCN: MessageDict = {
   "chat.composer.sendFile": "发送文件（自动选择最优路线）",
   // 窗口抖动（仿 QQ）：仅单聊可用；底层是对最近一条已发消息发起强提醒
   "chat.composer.shake": "抖动窗口",
-  "chat.shake.noTarget": "还没有可抖动的消息，先发一条再抖动",
+  "chat.nudge.sent": "已向对方发送窗口抖动",
+  "chat.nudge.received": "{name} 向你发送了一个窗口抖动",
   "chat.shake.failed": "抖动发送失败",
   "chat.composer.remind": "选择提醒的人",
   "chat.composer.cancelQuote": "取消引用",

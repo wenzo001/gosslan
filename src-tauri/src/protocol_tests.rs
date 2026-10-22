@@ -1294,6 +1294,16 @@ mod tests {
             0,
             "声明了 FILE_EPOCH 门控却没 advertise ⇒ 对端永远收不到 attempt"
         );
+        assert_ne!(
+            content_features() & CONTENT_FEATURE_NUDGE,
+            0,
+            "窗口抖动依赖 NUDGE 能力位；不 advertise 就会永远被自己挡下"
+        );
+        assert_eq!(
+            CONTENT_FEATURE_NUDGE & CONTENT_FEATURE_FILE_EPOCH,
+            0,
+            "NUDGE 不能复用 FILE_EPOCH 的 bit"
+        );
         // 新位必须独占一个 bit（撞车的表现是"两个门控互相误开"，编译器不会报）
         assert_eq!(
             CONTENT_FEATURE_FILE_EPOCH & (CONTENT_FEATURE_PULL | CONTENT_FEATURE_MERGE),
@@ -1443,6 +1453,7 @@ mod tests {
             target: "m1".to_string(),
             actors: vec![],
             shake: false,
+            nudge: false,
         })
         .unwrap();
         assert_eq!(
@@ -1454,6 +1465,7 @@ mod tests {
             target: "m1".to_string(),
             actors: vec![],
             shake: true,
+            nudge: false,
         })
         .unwrap();
         assert_eq!(shook, r#"{"target":"m1","actors":[],"shake":true}"#);

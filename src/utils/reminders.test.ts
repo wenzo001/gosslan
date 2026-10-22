@@ -67,6 +67,26 @@ test("parseRemind：缺 actors 默认空名单；坏行返回 null", () => {
   assert.equal(parseRemind(rec({ kind: "remind", content: '{"target":""}' })), null);
 });
 
+test("parseRemind：nudge 允许空 target，普通 remind 仍拒绝", () => {
+  const p = parseRemind(
+    rec({ kind: "remind", content: buildRemindPayload("", [], true, true) }),
+  );
+  assert.deepEqual(p, { target: "", actors: [], shake: true, nudge: true });
+  assert.equal(
+    parseRemind(rec({ kind: "remind", content: '{"target":"","nudge":false}' })),
+    null,
+    "没有 nudge 的空 target 仍是坏载荷",
+  );
+});
+
+test("foldReminders：nudge 不建强提醒状态", () => {
+  const row = rec({
+    kind: "remind",
+    content: buildRemindPayload("", [], true, true),
+  });
+  assert.equal(foldReminders([row]).size, 0, "抖动不得在消息上挂强提醒徽标/确认按钮");
+});
+
 test("parseRemindAck：stage 两档；非法档返回 null", () => {
   assert.deepEqual(parseRemindAck(ackRow("a1", "r1", "confirmed")), {
     target: "r1",

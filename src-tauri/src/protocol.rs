@@ -147,6 +147,12 @@ pub const CONTENT_FEATURE_GROUP_HISTORY: u32 = 1 << 4;
 /// 只用于门控等待：对端没声明这一位 ⇒ 发送方**不等待**、走今天的老路（零延迟变化）。
 pub const CONTENT_FEATURE_GROUP_FILE_RESUME: u32 = 1 << 5;
 
+/// 能力位：**能接收独立窗口抖动（`remind.nudge=true`）**。
+///
+/// 复用 `remind` 帧、不新增 kind；但老端不认 `nudge` 字段，会把空 target 当成普通强提醒
+/// 处理（甚至弹通知）。所以发送侧必须先看这一位，没声明就不发。
+pub const CONTENT_FEATURE_NUDGE: u32 = 1 << 6;
+
 /// 群历史一页的**条数**上限（服务端一页最多交几条消息）。
 /// 与下面那个字节上限同住 `protocol.rs`：一条页的预算只有一个家（INV-P23），
 /// 收发两侧都从这里取，不许在调用点各写一遍字面量。
@@ -168,6 +174,7 @@ pub fn content_features() -> u32 {
         | CONTENT_FEATURE_FLEX_DM_KIND
         | CONTENT_FEATURE_GROUP_HISTORY
         | CONTENT_FEATURE_GROUP_FILE_RESUME
+        | CONTENT_FEATURE_NUDGE
 }
 
 /// 「哪个 kind 需要对端具备哪一点能力」的**唯一**答案。`None` = V1 词表内、对所有对端安全。
@@ -974,6 +981,10 @@ pub struct RemindPayload {
     /// 本模块自己序列化的那份）载荷逐字节不变。
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub shake: bool,
+    /// 独立窗口抖动：不锚定任何消息、不回执、不折叠强提醒。`target` 允许为空。
+    /// 缺省 = 普通强提醒；只有声明了 `CONTENT_FEATURE_NUDGE` 的对端才会收到。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub nudge: bool,
 }
 
 /// 强提醒回执载荷（`kind = "remind_ack"`）：S3（自动）与 S4（主动）共用一种帧，
@@ -993,7 +1004,8 @@ pub const REMIND_ACTORS_MAX: usize = 512;
 pub fn parse_remind_payload(content: &str) -> Result<RemindPayload, String> {
     let p: RemindPayload =
         serde_json::from_str(content).map_err(|e| format!("强提醒载荷解析失败：{e}"))?;
-    if p.target.trim().is_empty() {
+    // 独立抖动不锚定消息，target 允许为空；普通强提醒仍必须指向一条真实消息。
+    if !p.nudge && p.target.trim().is_empty() {
         return Err("强提醒缺少目标消息".to_string());
     }
     if p.actors.len() > REMIND_ACTORS_MAX {

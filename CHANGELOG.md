@@ -13,6 +13,21 @@
 
 ## [Unreleased]
 
+## [5.5.14] - 2026-10-23
+
+### 抖动窗口与强提醒分离
+
+- `RemindPayload` 新增 `nudge`：独立抖动不锚定任何消息、不自动回执、不折叠强提醒；
+  `target` 允许为空。新增 `CONTENT_FEATURE_NUDGE` 能力位，旧端不会收到；群发送显式拒绝。
+- 工具栏「抖动」改为发 `nudge=true` 的独立帧；接收端只按通知总开关聚焦/抖窗，并显示一条
+  会话内居中灰字（发送方「已发送」/ 接收方「谁发的」），60 秒以上的迟到帧丢弃。
+  强提醒链路（逐消息、alerted/confirmed、「我知道了」）原样保留。
+- 判据：`reminders.test.ts`（nudge 空 target/折叠）、`remindFlow.test.ts`（onMessage 分流、
+  shakeConversation 不再锚消息、nudge 不 ack）、`nudge.test.ts` 迟到边界；
+  `defer.test.ts` 白名单注明年龄判定不是限流。
+- `npm test` 1258/1258、`npm run build`、`cargo check --features bluetooth` 通过。
+  **双实例抖动/真机未跑**；发版前需补这一层。
+
 ## [5.5.13] - 2026-10-23
 
 ### 添加好友页「发起聊天」+ 任务类型自定义聚焦

@@ -111,6 +111,11 @@ export interface RemindPayload {
    * 缺省（普通强提醒）不写本字段，载荷保持逐字节不变。
    */
   shake?: boolean;
+  /**
+   * 独立窗口抖动：不锚定消息、不回执、不折叠强提醒；`target` 允许为空。
+   * 只有声明了 `CONTENT_FEATURE_NUDGE` 的对端才会收到。
+   */
+  nudge?: boolean;
 }
 
 /** 强提醒回执阶段：alerted=接收端自动（S3），confirmed=用户主动确认（S4）。 */
