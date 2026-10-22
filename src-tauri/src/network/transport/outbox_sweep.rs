@@ -385,6 +385,39 @@ pub fn spawn_outbox_sweeper(state: &Arc<AppState>) -> tauri::async_runtime::Join
                 }
             }
 
+            // --- 发送侧 pending 台账对账（孤儿 / 重试耗尽）---
+            // 与启动时同一个 DB 出口：只碰 direction='send'，每轮上限由查询自身决定。
+            // 这一步是“传输面板里那条永远排队”的兜底：即使删会话/删好友留下了孤儿，
+            // 2 分钟后也会被推进终态，而不是等用户重启或手动取消。
+            let reconciled = {
+                let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                db::reconcile_pending_send_transfers(&dbc)
+            };
+            match reconciled {
+                Ok(ids) if !ids.is_empty() => {
+                    for transfer_id in ids {
+                        state.logger.warn(
+                            "outbox",
+                            format!(
+                                "code=FILE_TRANSFER_ORPHAN_RECONCILED transfer_id={transfer_id} action=pending→failed"
+                            ),
+                        );
+                        let _ = state.app.emit(
+                            "file-failed",
+                            &FileFailedInfo {
+                                transfer_id,
+                                reason: "发送队列记录已丢失或重试次数已用尽，已停止重试".to_string(),
+                            },
+                        );
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => state.logger.warn(
+                    "outbox",
+                    format!("code=FILE_TRANSFER_ORPHAN_RECONCILE_FAILED err={e} —— 下一轮再试"),
+                ),
+            }
+
             // --- 内容台账对账（B2）：文件层说"done"、内容层却还不知道的那些行 ---
             // 见 `reconcile_completed_content` 的注释：这一格就是"每次建链整批重投"的永动来源。
             // 两相位：① 短锁取候选；② **不持锁**读盘算摘要（600MB 的哈希不能占着 db 锁）；

@@ -828,12 +828,25 @@ pub async fn get_transfers(
     state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<TransferInfo>, String> {
     let s = state.inner().clone();
-    tokio::task::spawn_blocking(move || -> Result<Vec<TransferInfo>, String> {
-        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+    let s_db = s.clone();
+    let mut list = tokio::task::spawn_blocking(move || -> Result<Vec<TransferInfo>, String> {
+        let dbc = s_db.db.lock().unwrap_or_else(|e| e.into_inner());
         Ok(db::list_transfers(&dbc).unwrap_or_default())
     })
     .await
-    .map_err(|e| format!("传输表读取被线程池中断: {e}"))?
+    .map_err(|e| format!("传输表读取被线程池中断: {e}"))??;
+    // 链路判据复用 `has_link`（就是 `flush_pending_files` 用的那一条），不另写一份：
+    // “对方离线”和“队列记录丢失/重试耗尽”是两件事，前者只有内存链路知道。
+    for row in &mut list {
+        if row.direction == "send"
+            && row.status == "pending"
+            && row.blocked_reason.is_none()
+            && !s.has_link(&row.peer_id).await
+        {
+            row.blocked_reason = Some("peer_offline".to_string());
+        }
+    }
+    Ok(list)
 }
 
 // ---------------- 测试 ----------------

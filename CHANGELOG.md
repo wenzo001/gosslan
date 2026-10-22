@@ -13,6 +13,22 @@
 
 ## [Unreleased]
 
+## [5.5.11] - 2026-10-22
+
+### 传输面板：排队原因、取消入口与孤儿发送台账对账
+
+- `TransferInfo` 新增 `blocked_reason`：`queue_missing` / `queue_closed` /
+  `retry_exhausted` / `waiting_retry` / `peer_offline`。面板对排队行显示原因，
+  并给发送行加「取消发送」按钮（复用 `cancel_file_transfer`，`signalled=false`
+  也会落终态）。
+- 启动与 outbox 清扫器每轮跑同一份对账：**只碰 `direction='send'` 的 pending**，
+  建行满 2 分钟、且没有活着的 outbox（pending/sending）或 attempts 已用尽 ⇒
+  走唯一终态出口 `finalize_file_failure(GiveUp)`。接收行没有 outbox，绝不参与。
+- 判据：`file_transfer_status_tests` 两条（接收行不误判；只杀老孤儿/耗尽，不碰新鲜行与
+  有活跃 outbox 的行）；`transferState` 的短码映射真值表。
+- 本地 `verify:local` 22/22、`npm test` 1248/1248、`npm run build` 通过。
+  **双实例/真机取消与对账未跑**；发版前需要补这一层。
+
 ## [5.5.10] - 2026-10-22
 
 ### 选字复制：消息行不再无条件吃掉系统菜单

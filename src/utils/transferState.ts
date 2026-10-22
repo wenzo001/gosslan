@@ -48,6 +48,29 @@ export function transferStatusTextKey(status?: string | null): string | null {
   }
 }
 
+/**
+ * 排队行的“为什么不动”短码 → i18n key。
+ *
+ * 后端只回稳定短码（`queue_missing` 等），文案在这里映射；未知短码返回 null，
+ * 不许把机器码直接上屏。
+ */
+export function blockedReasonKey(reason?: string | null): string | null {
+  switch (reason) {
+    case "queue_missing":
+      return "transfer.blocked.queueMissing";
+    case "queue_closed":
+      return "transfer.blocked.queueClosed";
+    case "retry_exhausted":
+      return "transfer.blocked.retryExhausted";
+    case "waiting_retry":
+      return "transfer.blocked.waitingRetry";
+    case "peer_offline":
+      return "transfer.blocked.peerOffline";
+    default:
+      return null;
+  }
+}
+
 /** 状态行的视觉档位（见 `transferStatusTone`）。 */
 export type TransferStatusTone = "muted" | "warn" | "error";
 

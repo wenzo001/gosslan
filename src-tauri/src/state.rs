@@ -736,6 +736,9 @@ pub struct TransferInfo {
     pub status: String,
     pub path: Option<String>,
     pub progress: f64,
+    /// 排队中为什么不动；只对发送侧的 pending 行有意义。`None` = 没有额外阻塞信息。
+    /// 取值由 `db::file_transfer::list_transfers` 与 `get_transfers` 的链路判据共同给出。
+    pub blocked_reason: Option<String>,
 }
 
 /// 本机这一群的**历史同步进度**（`settings` 里 `ghsync:group:<gid>` 那份 JSON）。
@@ -1752,6 +1755,25 @@ impl AppState {
             Err(e) => logger.warn(
                 "file",
                 format!("code=TRANSFER_INTERRUPTED_RECOVER_FAILED err={e} —— 上次中断的接收卡片可能仍显示接收中"),
+            ),
+        }
+        // 发送侧 pending 的两种“不会再有人碰”的台账：没有活着的 outbox（删会话/删好友留下的孤儿）
+        // 或 outbox 已用完重试次数。启动时先收口，避免用户一开机就看到一条永远排队。
+        // 只碰 direction='send'；接收行没有 outbox，绝不能进这个对账。
+        match db::reconcile_pending_send_transfers(&conn) {
+            Ok(ids) if !ids.is_empty() => logger.warn(
+                "file",
+                format!(
+                    "code=FILE_TRANSFER_ORPHAN_RECONCILED count={} ids={ids:?} action=pending→failed",
+                    ids.len()
+                ),
+            ),
+            Ok(_) => {}
+            Err(e) => logger.warn(
+                "file",
+                format!(
+                    "code=FILE_TRANSFER_ORPHAN_RECONCILE_FAILED err={e} —— 孤儿发送行下一轮清扫器再试"
+                ),
             ),
         }
 

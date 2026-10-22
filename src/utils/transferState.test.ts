@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  blockedReasonKey,
   transferDisplayKind,
   transferShowsProgress,
   transferStatusTextKey,
@@ -53,6 +54,17 @@ test("新增的两个 key 在中英词典里都在（防裸 key 上屏）", () =
       assert.ok(src.includes(`"${key}"`), `${file} 里缺 ${key}`);
     }
   }
+});
+
+test("排队原因短码只映射已知值；未知短码不许直接上屏", () => {
+  assert.equal(blockedReasonKey("queue_missing"), "transfer.blocked.queueMissing");
+  assert.equal(blockedReasonKey("queue_closed"), "transfer.blocked.queueClosed");
+  assert.equal(blockedReasonKey("retry_exhausted"), "transfer.blocked.retryExhausted");
+  assert.equal(blockedReasonKey("waiting_retry"), "transfer.blocked.waitingRetry");
+  assert.equal(blockedReasonKey("peer_offline"), "transfer.blocked.peerOffline");
+  assert.equal(blockedReasonKey(null), null);
+  assert.equal(blockedReasonKey(undefined), null);
+  assert.equal(blockedReasonKey("some_future_code"), null);
 });
 
 test("composable 与气泡都走这一份口径，旧的那道 done 闸门不许长回来", () => {
