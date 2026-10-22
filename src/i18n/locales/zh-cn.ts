@@ -277,6 +277,11 @@ export const zhCN: MessageDict = {
   "settings.network.lan.desc": "发现并连接同一局域网内的其他设备",
   "settings.network.lan.peers": "{n} 个节点在线",
   "settings.network.lan.off": "未开启",
+  "settings.network.lan.connecting": "正在连接…",
+  "settings.network.reconnect": "重新连接网络",
+  "settings.network.reconnect.desc": "不改任何设置：按当前选中的网卡停一次、再起一次。对方显示在线却连不上、或换了 Wi-Fi 之后可以用它。",
+  "settings.network.reconnect.action": "重新连接",
+  "settings.network.toast.reconnected": "已按原样重新连接",
   "settings.network.interface": "网卡",
   "settings.network.interface.auto": "自动（所有网卡）",
   "settings.network.bluetooth": "蓝牙通道",
@@ -352,10 +357,11 @@ export const zhCN: MessageDict = {
   "settings.profile.changeAvatar": "上传头像",
   "settings.profile.defaultAvatar": "自定义 emoji 头像",
   "settings.profile.avatar.title": "自定义 emoji 头像",
-  "settings.profile.avatar.hint": "选一个表情和背景色，或者随机一个。",
+  "settings.profile.avatar.hint": "选一个表情和背景色（也可以自定义颜色），或者随机一个。",
   "settings.profile.avatar.random": "随机一个",
   "settings.profile.avatar.emoji": "表情",
   "settings.profile.avatar.color": "背景色",
+  "settings.profile.avatar.customColor": "自定义颜色",
   "settings.profile.avatar.pickEmoji": "使用表情 {emoji}",
   "settings.profile.avatar.pickColor": "使用背景色 {color}",
   "settings.profile.avatar.apply": "使用这个头像",
@@ -378,6 +384,34 @@ export const zhCN: MessageDict = {
   // ---- 关于 ----
   "settings.about.fingerprint": "设备指纹",
   "settings.about.fingerprintCopy": "点击复制设备指纹",
+  "settings.updates.title": "应用更新",
+  "settings.updates.current": "当前版本 v{version}",
+  "settings.updates.check": "检查更新",
+  "settings.updates.checking": "正在检查更新…",
+  "settings.updates.idle": "可手动检查更新",
+  "settings.updates.available": "发现新版本 v{version}",
+  "settings.updates.published": "发布于 {date}",
+  "settings.updates.notes": "更新说明",
+  "settings.updates.downloading": "正在下载更新",
+  "settings.updates.ready": "更新已下载，可以安装",
+  "settings.updates.installing": "正在安装，应用即将重启…",
+  "settings.updates.uptodate": "已是最新版本",
+  "settings.updates.progress": "{done} / {total}",
+  "settings.updates.progressUnknown": "已下载 {done}",
+  "settings.updates.download": "下载更新",
+  "settings.updates.cancel": "取消下载",
+  "settings.updates.install": "安装并重启",
+  "settings.updates.later": "稍后",
+  "settings.updates.retry": "重试",
+  "settings.updates.confirmInstall": "安装会退出应用并重启，确定现在安装？",
+  "settings.updates.confirm": "确认安装",
+  "settings.updates.mobile": "移动端不支持应用内更新，请从 GitHub Releases 手动下载新版本。",
+  "settings.updates.error.timeout": "检查更新超时，请稍后重试",
+  "settings.updates.error.network": "网络不可用或更新服务器暂不可达",
+  "settings.updates.error.signature": "更新包签名校验未通过，已拒绝安装",
+  "settings.updates.error.manifest": "更新清单格式不正确",
+  "settings.updates.error.busy": "已有更新任务在进行，请稍后再试",
+  "settings.updates.error.unknown": "更新失败，请稍后重试",
 
   // ---- 窗口控制 ----
   "window.close": "关闭",
@@ -401,6 +435,7 @@ export const zhCN: MessageDict = {
   // 群历史同步（新成员入群后自动补群里的聊天与群任务）：细横幅里那条读数，随页数前进。
   "chat.groupHistory.syncing": "正在同步群消息，已收到 {synced} / {total} 条",
   "chat.groupHistory.syncingUnknown": "正在同步群消息，已收到 {synced} 条",
+  "chat.groupHistory.noProgress": "{secs} 秒没有进展",
   // 手动点那颗按钮时的三种"点了之后屏幕上什么都不动"的结局，每一种都要有一句解释。
   // `started` 刻意没有文案：按钮自己会变成转圈、横幅随进度动起来，再叠一条提示就吵了。
   "chat.groupHistory.started": "已开始向群里最全的成员要历史，稍后自动接上",
@@ -411,7 +446,13 @@ export const zhCN: MessageDict = {
   "chat.groupHistory.failed": "群消息同步未完成，有成员在线时会自动重试",
   // 事件监听绑定失败（实时消息/回执/在线状态全部不可用）：必须显式提示重启，
   // 否则界面"看起来正常"却永远收不到任何事件（2026-09-23 审计 1.6）
-  "chat.eventBindFail": "实时消息监听启动失败，新消息可能收不到；请重启应用",
+  "chat.eventBindFail": "实时消息监听启动失败，新消息可能收不到；请到「设置 · 网络」点「重新连接实时事件」",
+  "chat.eventBridgeOk": "实时事件链路正常",
+  "chat.eventBridgeDown": "实时事件链路已断开：新消息、在线状态与传输进度都不会实时到达",
+  "chat.eventBridgeRetry": "重新连接实时事件",
+  "chat.eventBridgeRetryDone": "实时事件已重新连接",
+  "chat.batchBacklog": "消息更新慢了，正在追赶（新消息可能会晚一点出现）",
+  "settings.network.eventBridge": "实时事件链路",
   // 自聊只支持文本（用户 2026-09-16）：粘贴/拖入图片或文件时给明确提示，不静默吞掉
   "chat.selfChatTextOnly": "和自己聊天暂不支持图片或文件",
   "chat.imageTooLarge": "图片太大（超过 {max}MB），请压缩后再粘贴",
@@ -1049,6 +1090,20 @@ export const zhCN: MessageDict = {
   "diag.peerVersionLine": "协议 {p} · 应用 {a}",
   "diag.peerNewer": "对端协议更高",
   "diag.connHealth": "连接活性（按连接，不是按节点）",
+  "diag.groupFileLog": "群文件投递诊断",
+  "diag.groupFileLogEmpty": "本次运行还没有群文件投递失败记录",
+  "diag.runtime": "运行时队列与 DB 锁",
+  "diag.runtimeUnavailable": "读数不可用（这条是一次性读取，点上方「刷新」再来一次）",
+  "diag.rtSending": "发送中的消息",
+  "diag.rtOutbox": "文本队列",
+  "diag.rtGroupOutbox": "群消息队列",
+  "diag.rtFileOutbox": "文件队列",
+  "diag.rtLinks": "在用的链路",
+  "diag.rtPeers": "在线节点",
+  "diag.rtNotifyWaiters": "等点击的通知线程（在飞 / 上限）",
+  "diag.rtWindows": "窗口（隐藏 / 总数）",
+  "diag.rtHidden": "隐藏 {n}",
+  "diag.rtNoSlowHold": "本轮没有出现过慢持锁（≥阈值）",
   "diag.connHealthHint":
     "「写出」那列是本端把字节写进 socket 成功，半开的链路上它会一直前进，不等于对端活着；" +
     "「读到」那列的量的是**解析出一个完整帧**（读循环一帧一次，字节级没有单独读数）。" +
@@ -1069,7 +1124,16 @@ export const zhCN: MessageDict = {
   "send.receivingPct": "接收中 {pct}%",
   // 对端长时间没再收任何一片（后端按 writer 实发判定）：进度条会冻住，必须说清是网络卡住
   "send.stalled": "网络停滞，等待恢复…",
+  "send.noProgress": "传输已停止：{secs} 秒没有任何进展，可以取消后重发",
   "send.queued": "排队中…",
+  // ---- 全局「正在传输」面板（UI 审计 D-18）----
+  // 复用 send.sendingPct / send.receivingPct / send.queued 作行内文案，
+  // 这里只补"入口 + 面板"需要的五条。
+  "transfer.pill": "正在传输 {n} 个",
+  "transfer.open": "查看正在传输的文件（{n} 个）",
+  "transfer.title": "正在传输",
+  "transfer.empty": "没有正在传输的文件",
+  "transfer.note": "切到其他会话不会中断传输",
   "send.unknownState": "状态未知，可重新发送",
   "msg.cleaned": "已被清理",
   // 预览失败的两种确定性原因之一（另一种复用上面的 msg.cleaned）。

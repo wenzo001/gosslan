@@ -1,0 +1,145 @@
+name: Publish updater manifest
+
+# 四个构建 workflow 各自创建/补充同一个 Release；本 workflow 在 tag 推上来之后
+# 轮询等待 updater 产物齐（macOS .app.tar.gz + .sig、Windows 安装包 + .sig），
+# 然后生成并上传 `latest.json`。少一个平台就超时红 —— 不生成"看起来能用"的残缺清单。
+#
+# ⚠️ 触发方式不能写 `on: release: types: [published]`（2026-10-22 review 抓到）：
+#    三个构建 workflow 用的都是 `${{ github.token }}`（GITHUB_TOKEN）创建 Release，
+#    而 GitHub 明确规定 **GITHUB_TOKEN 触发的事件不会再启动新的 workflow run**（防递归）。
+#    于是 `published` 永远等不到 ⇒ latest.json 永远不生成，而构建全绿、没人会发现。
+#    改成 tag push 触发，再轮询等 Release 与产物齐（Release 由构建 workflow 创建）。
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要补发清单的 tag（vX.Y.Z）"
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: updater-manifest-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  manifest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Validate tag
+        env:
+          RAW_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$RAW_TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "非法 tag：$RAW_TAG" >&2
+            exit 1
+          fi
+          echo "TAG=$RAW_TAG" >> "$GITHUB_ENV"
+
+      - name: Checkout release files
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+          sparse-checkout: |
+            scripts/updater-manifest.mjs
+            CHANGELOG.md
+            package.json
+          fetch-depth: 1
+
+      # 清单里的 version 来自 tag、url 来自 tag；tag 与 package.json 不一致时，
+      # 客户端会看到"版本 5.4.1 的更新说明配 5.5.0 的包"（或者干脆不认为有新版本）。
+      # 构建 workflow 不查这一条，所以必须在这里拦。
+      - name: Check tag matches package.json
+        run: |
+          set -euo pipefail
+          pkg=$(node -p "require('./package.json').version")
+          if [ "v$pkg" != "$TAG" ]; then
+            echo "tag $TAG 与 package.json $pkg 不一致 ⇒ 拒绝生成清单" >&2
+            exit 1
+          fi
+
+      - name: Wait for all desktop updater assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          deadline=$((SECONDS + 2700))
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            names=$(gh release view "$TAG" --repo "$REPO" --json assets --jq '.assets[].name' || true)
+            ok=1
+            # 签名与安装包由同一个 release job 一次上传；先等四个安装包齐，
+            # 签名是否成对交给 updater-manifest.mjs 做最后裁决（它会直接红）。
+            for needle in \
+              "Gosslan-arm64.app.tar.gz" "Gosslan-x86_64.app.tar.gz" \
+              "_x64-setup.exe" "_arm64-setup.exe"; do
+              if ! printf '%s\n' "$names" | grep -Fq -- "$needle"; then
+                echo "等待：$needle"
+                ok=0
+              fi
+            done
+            if [ "$ok" -eq 1 ]; then
+              echo "所有桌面 updater 产物已就绪"
+              exit 0
+            fi
+            sleep 30
+          done
+          echo "等待 updater 产物超时（45 分钟）；不生成 latest.json" >&2
+          exit 1
+
+      - name: Download updater assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir -p assets
+          gh release download "$TAG" --repo "$REPO" --dir assets --clobber \
+            --pattern "Gosslan-*.app.tar.gz" \
+            --pattern "*.sig" \
+            --pattern "*_x64-setup.exe" \
+            --pattern "*_arm64-setup.exe" \
+            --pattern "*.nsis.zip"
+
+      - name: Build latest.json
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # REPO 必须从 env 传进来：脚本默认值只是本地调试的兜底，
+          # fork 或改名后会把 url 指到别人的仓库。
+          node scripts/updater-manifest.mjs \
+            --dir assets --tag "$TAG" --repo "$REPO" \
+            --out latest.json --changelog CHANGELOG.md
+
+      - name: Upload latest.json
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: gh release upload "$TAG" latest.json --repo "$REPO" --clobber
+
+      - name: Verify public manifest
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          url="https://github.com/$REPO/releases/download/$TAG/latest.json"
+          for i in 1 2 3 4 5; do
+            if curl -fsSL "$url" -o /tmp/latest.json; then break; fi
+            sleep 10
+          done
+          node -e '
+            const fs=require("fs");
+            const m=JSON.parse(fs.readFileSync("/tmp/latest.json","utf8"));
+            const need=["darwin-aarch64","darwin-x86_64","windows-x86_64","windows-aarch64"];
+            for (const p of need) {
+              if (!m.platforms?.[p]?.url || !m.platforms[p].signature) throw new Error("缺平台 "+p);
+            }
+            if (m.version !== process.env.TAG.replace(/^v/,"")) throw new Error("版本与 tag 不一致");
+            console.log("latest.json 可公开访问，四个平台齐全，版本", m.version);
+          '

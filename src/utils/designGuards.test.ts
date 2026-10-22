@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import {
   checkBubbleMetricsCoupling,
@@ -2208,20 +2208,23 @@ test("SelfAvatar 的那个「唯一数据源」确实是 store，不是各自传
  * 默认头像选择器（用户 2026-10-22：「自己搭配就用你随机的算法里的数据列出来…不要太开放」）。
  *
  * 钉三件事：
- *   ① 选项集是 `avatarSeed.ts` 派生的两个常量，模板里不许再手抄一份清单；
+ *   ① 选项网格读 `avatarSeed.ts` 的清单常量，模板里不许再手抄一份清单；
  *   ② 随机走 `randomAvatarPair`（同一张组合表），不是模板里另写一个 Math.random；
  *   ③ 资料页确认后复用 `persistProfile`（既有 updateProfile 链路），不新开命令/字段。
+ * 另钉：自定义色只能走原生取色器（唯一 input），不许退化成自由文本输入。
  * 读的是真文件：改名/删文件会直接抛，不会"扫到 0 处所以恒真"。
  */
-test("默认头像选择器：选项来自随机算法同一份表，确认走既有资料保存链路", () => {
+test("默认头像选择器：选项网格来自派生清单（含自定义色），确认走既有资料保存链路", () => {
   const root = join(import.meta.dirname, "..");
   const dialog = readFileSync(join(root, "components", "settings", "AvatarPresetDialog.vue"), "utf8");
   assert.match(dialog, /v-for="e in AVATAR_EMOJIS"/, "表情网格必须遍历派生清单");
   assert.match(dialog, /v-for="c in AVATAR_BACKGROUNDS"/, "颜色网格必须遍历派生清单");
   assert.match(dialog, /randomAvatarPair\(selection\.value\)/, "随机必须走同一份组合表");
-  assert.equal((dialog.match(/:aria-pressed=/g) ?? []).length, 2, "两组选项都要报告选中态");
-  // "不要太开放"：选择器里没有可自由输入 emoji / 颜色的输入框。
-  assert.doesNotMatch(dialog, /<input\b/, "选择器不该出现自由输入框");
+  assert.equal((dialog.match(/:aria-pressed=/g) ?? []).length, 3, "表情/调色板/自定义色都要报告选中态");
+  // 仍然"不要太开放"：没有自由文本输入；唯一的 input 是浏览器原生取色器（自定义色）。
+  assert.equal((dialog.match(/<input\b/g) ?? []).length, 1, "只允许一个取色器 input");
+  assert.match(dialog, /type="color"/, "自定义色必须走原生取色器");
+  assert.doesNotMatch(dialog, /<input[^>]*type="(?:text|search|email|number)"/, "不许出现自由文本输入");
   // 预览固定、只滚选项（用户 2026-10-22）：预览必须在 BaseModal 的 header 插槽里，
   // 不能和选项共用一条滚动区；否则往下翻选项时头像预览会被卷走。
   const modal = readFileSync(join(root, "components", "BaseModal.vue"), "utf8");
@@ -2229,7 +2232,7 @@ test("默认头像选择器：选项来自随机算法同一份表，确认走�
   assert.match(dialog, /<template #header>/, "预览必须放进 header 插槽");
   assert.match(dialog, /data-avatar-options/, "选项区要有可定位的容器（探针也读它）");
   // 选中环画在按钮内部：第一/最后一列贴着滚动区边缘时，外圈会被裁掉（用户截图）。
-  assert.equal((dialog.match(/ring-inset/g) ?? []).length, 2, "表情与色块的选中环都要 ring-inset");
+  assert.equal((dialog.match(/ring-inset/g) ?? []).length, 3, "表情/色块/自定义色的选中环都要 ring-inset");
   assert.doesNotMatch(dialog, /ring-offset/, "选中环不许再用 ring-offset（会被滚动区裁）");
   assert.match(dialog, /justify-center/, "不满一行的选项要居中，而不是整排往左挤");
 
@@ -4461,6 +4464,125 @@ test("motion-v 只能从统一封装层导入（业务码不得直连）", () =>
   console.log(`· motion-v 唯一入口：扫 ${files.length} 份源码，直连 0 处`);
 });
 
+// ---------------- 浮层动效的进出对称 + 曲线唯一来源 ----------------
+//
+// 设计文档 §11.3.2「新增动效不另写曲线」与 §11.3.3「浮层进出 160–260ms」此前**没有任何机器判据**
+// （全文件此前搜不到一条时长/曲线/退场类断言）。实测后果就在 2026-10-22 之前：`src/style.css` 里
+// 菜单只有 `[data-state="open"]` 一条动画 ⇒ Reka 的 Presence 在关闭时等不到任何动画，
+// 菜单「唰」一下直接消失；这条漂移不会让任何东西变红，而它是用户说的"不丝滑"里最大的一条。
+// 两条判据的分母都从 CSS 自己解析，不手抄类名清单（手抄必漂）。
+const STYLE_CSS = join(import.meta.dirname, "..", "style.css");
+
+/** 剥掉 CSS 注释：规范里那句「用**强 ease-out**」是文档不是声明，不能算违规；
+ *  反过来，判据也不能被自己写在 CSS 里的注释喂出假绿。 */
+function stripCssComments(src: string): string {
+  return src.replace(/\/\*[\s\S]*?\*\//g, " ");
+}
+
+/** `transition:` / `animation:` 声明里出现的 CSS 关键字曲线（`--gosslan-ease*` 定义行本身不是声明，天然被排除）。 */
+function findRawEasingCurves(css: string): string[] {
+  const hits: string[] = [];
+  for (const m of stripCssComments(css).matchAll(/\b(?:transition|animation)\s*:\s*([^;{}]*)/g)) {
+    if (/\b(?:ease-out|ease-in-out|ease-in)\b/.test(m[1])) hits.push(m[1].trim().slice(0, 90));
+  }
+  return hits;
+}
+
+/** 出现过 `[data-state="open"]` 却没有任何 `[data-state="closed"]` 规则的类名 ⇒ 只有进没有出。 */
+function findOverlaysWithoutExit(css: string): string[] {
+  const opened = new Set<string>();
+  const closed = new Set<string>();
+  for (const m of stripCssComments(css).matchAll(/\.([A-Za-z0-9_-]+)\[data-state="(open|closed)"\]/g)) {
+    (m[2] === "open" ? opened : closed).add(m[1]);
+  }
+  return [...opened].filter((name) => !closed.has(name));
+}
+
+test("动效曲线只能来自令牌：transition/animation 里不许写 CSS 关键字曲线", () => {
+  // 正控：合成针必须被抓到 —— 否则"真实树 0 处"可能只是正则空转。
+  assert.deepEqual(findRawEasingCurves(".a { animation: x 120ms ease-out; }"), ["x 120ms ease-out"]);
+  assert.deepEqual(
+    findRawEasingCurves("/* 规范里写着 强 ease-out */\n.a { transition: opacity 150ms var(--gosslan-ease); }"),
+    [],
+    "注释里的曲线名被当成声明 ⇒ 判据会把文档算成违规",
+  );
+  assert.deepEqual(findRawEasingCurves(".a { animation: x 160ms var(--gosslan-ease); }"), []);
+
+  const css = readFileSync(STYLE_CSS, "utf8");
+  const decls = [...stripCssComments(css).matchAll(/\b(?:transition|animation)\s*:/g)].length;
+  assert.ok(decls > 20, `只扫到 ${decls} 条动效声明 ⇒ 遍历或正则已失效，这条判据正在空转`);
+  const offenders = findRawEasingCurves(css);
+  assert.deepEqual(
+    offenders,
+    [],
+    `style.css 有 ${offenders.length} 条动效声明绕开令牌曲线（§11.3.2「新增动效不另写曲线」）：\n${offenders.join("\n")}`,
+  );
+  console.log(`· 曲线令牌：扫 ${decls} 条 transition/animation 声明，关键字曲线 0 处`);
+});
+
+test("浮层动效进出必须成对：只有 open 一条等于没有退场", () => {
+  // 正控：缺一半的合成 CSS 必须被点名。
+  assert.deepEqual(
+    findOverlaysWithoutExit('.x[data-state="open"] {}\n.x[data-state="closed"] {}\n.y[data-state="open"] {}'),
+    ["y"],
+  );
+  // 反向钉：改动前的真实 CSS 就是这条的形状（菜单只有 open）⇒ 判据曾经抓得到真缺陷，不是摆设。
+  assert.ok(
+    findOverlaysWithoutExit('.gosslan-menu[data-state="open"] { animation: f 140ms; }').length === 1,
+    "还原到改动前的菜单形状时必须报出缺退场",
+  );
+
+  const css = readFileSync(STYLE_CSS, "utf8");
+  assert.ok(css.includes('[data-state="open"]'), "真实 CSS 里扫不到浮层状态选择器 ⇒ 判据已空转");
+  const missing = findOverlaysWithoutExit(css);
+  assert.deepEqual(missing, [], `以下浮层只有入场、没有退场动画：${missing.join("、")}`);
+  const opened = new Set(
+    [...stripCssComments(css).matchAll(/\.([A-Za-z0-9_-]+)\[data-state="open"\]/g)].map((m) => m[1]),
+  );
+  console.log(`· 浮层进出成对：${opened.size} 个带 open 态的浮层类全部有 closed 对应`);
+});
+
+// ---------------- 文件进度必须有可读的语义出口 ----------------
+//
+// 10-22 审计 D-25 / R-32：文件气泡的进度条此前只是一个 `h-1` 的 div —— 没有 `role="progressbar"`、
+// 没有 `aria-valuenow`，而「接收中 62% → 网络停滞 → 已取消」那行状态文案也不是 live region。
+// 这类缺失**永远不会响**：视觉上一切正常，读屏用户只知道有个百分比数字（还读不到），
+// 停滞与失败在无障碍通道上是同一句沉默。规范 §14 要「无障碍文本等价物」，这条是它的机器化。
+// 判据只走形状计数，不写死文案：文案换了不该红，语义掉了必须红。
+function countProgressbarContract(template: string): { role: number; valuenow: number; live: number } {
+  return {
+    role: (template.match(/role="progressbar"/g) ?? []).length,
+    valuenow: (template.match(/aria-valuenow/g) ?? []).length,
+    live: (template.match(/aria-live=/g) ?? []).length,
+  };
+}
+
+test("文件进度条必须成对给出 progressbar 语义，状态行必须落在常驻 live region 里", () => {
+  // 正控：缺一半的形状必须被数出来，否则"真实树全齐"可能只是正则空转。
+  assert.deepEqual(countProgressbarContract('<div role="progressbar"></div>'), {
+    role: 1,
+    valuenow: 0,
+    live: 0,
+  });
+  assert.deepEqual(
+    countProgressbarContract('<div role="progressbar" aria-valuenow="40"></div><div aria-live="polite"></div>'),
+    { role: 1, valuenow: 1, live: 1 },
+  );
+
+  const src = readFileSync(join(import.meta.dirname, "..", "components", "message", "MessageFileBubble.vue"), "utf8");
+  const { role, valuenow, live } = countProgressbarContract(src);
+  assert.ok(role >= 1, "文件进度条没有 role=\"progressbar\" ⇒ 读屏报不出这是一个进度");
+  // 出现次数而不是存在性：同一段模板里每有一个 progressbar 就必须有一个当前值。
+  assert.equal(valuenow, role, `progressbar ${role} 个但 aria-valuenow ${valuenow} 个 —— 有进度却没数值`);
+  assert.ok(live >= 1, "状态文案行没有 live region ⇒ 「网络停滞 / 已取消」这类切换无人播报");
+  // live region 必须常驻：`aria-live` 挂在带 v-if 的元素上 = 变化前节点还不在 DOM 里，播报不可靠。
+  assert.ok(
+    !/v-if="[^"]*"[^>]*aria-live=/.test(src),
+    "live region 不许挂在 v-if 元素上（内容变化之前它必须已经存在于 DOM）",
+  );
+  console.log(`· 文件进度语义：progressbar ${role} 个 / aria-valuenow ${valuenow} 个 / live region ${live} 处`);
+});
+
 // ---------------- 图片不做 layout 补间 ----------------
 //
 // 缩略图高度会随解码从骨架高度变成真实高度；如果给它 layoutId/layout 补间，
@@ -4657,4 +4779,86 @@ test("无效路径参数有明确回退（不是 UI 空态挂着错 URL）", () 
   assert.match(fav, /t\("favorite\.notFound"\)[\s\S]{0,120}router\.replace\(\{ name: "favorites" \}\)/, "无效 favId 没有回列表");
   const settings = readFileSync(join(import.meta.dirname, "..", "components", "SettingsPanel.vue"), "utf8");
   assert.match(settings, /routeSection\.value !== null\) return;[\s\S]{0,160}router\.replace\(\{ name: "settings" \}\)/, "未知设置分区没有归一");
+});
+
+// ---------------- 自动更新接线（Tauri Updater + GitHub Releases） ----------------
+//
+// 守“看起来有更新入口、实际没有任何东西被接上”的形状：配置/公钥、Rust 插件与命令、
+// 主窗口只调度一次、状态机单飞、取消不是假 loading、UI 不绕过用户确认、发布链带签名与清单。
+test("自动更新：端点/公钥/插件/命令/单飞/取消/发布链都真的接在源码上", () => {
+  const root = join(import.meta.dirname, "..");
+  const repo = join(root, "..");
+  const conf = JSON.parse(readFileSync(join(repo, "src-tauri", "tauri.conf.json"), "utf8"));
+  assert.equal(
+    conf.plugins?.updater?.endpoints?.[0],
+    "https://github.com/wenzo001/gosslan/releases/latest/download/latest.json",
+    "更新端点必须是 latest.json，且只托管在 GitHub Releases",
+  );
+  const pubkey = String(conf.plugins?.updater?.pubkey ?? "");
+  assert.ok(pubkey.length > 80, "pubkey 不能为空/占位");
+  assert.doesNotMatch(pubkey, /secret key|PRIVATE KEY/i, "配置里绝不能出现私钥");
+
+  const overlay = JSON.parse(readFileSync(join(repo, "src-tauri", "tauri.updater.conf.json"), "utf8"));
+  assert.equal(overlay.bundle?.createUpdaterArtifacts, true, "tag 构建必须开启 updater 产物");
+
+  const lib = readFileSync(join(repo, "src-tauri", "src", "lib.rs"), "utf8");
+  assert.match(lib, /tauri_plugin_updater::Builder::new\(\)\.build\(\)/, "Rust 桌面端没有注册 updater 插件");
+  assert.match(lib, /commands::updater_download/, "下载命令没有注册");
+  assert.match(lib, /commands::updater_cancel/, "取消命令没有注册");
+
+  const service = readFileSync(join(root, "updater", "service.ts"), "utf8");
+  assert.match(service, /let checkInFlight/, "检查必须单飞");
+  assert.match(service, /let downloadInFlight/, "下载必须单飞");
+  assert.match(service, /withTimeout/, "检查必须有硬超时");
+  assert.match(service, /UPDATER_CANCELLED/, "取消必须有明确的结局");
+  assert.doesNotMatch(service, /setInterval/, "更新不允许高频轮询");
+
+  const ui = readFileSync(join(root, "components", "settings", "UpdatePanel.vue"), "utf8");
+  assert.doesNotMatch(ui, /\binvoke\s*\(/, "UI 不许绕过 service 直接调 IPC");
+  assert.doesNotMatch(ui, /\brelaunch\b/, "UI 不许绕过用户确认直接重启");
+  assert.match(ui, /confirming = true/, "安装必须先经过确认");
+  assert.match(ui, /role="progressbar"/, "下载必须有 progressbar 语义");
+
+  const entry = readFileSync(join(root, "entries", "main.ts"), "utf8");
+  assert.equal((entry.match(/scheduleAutoUpdateCheck\(updater\)/g) ?? []).length, 1, "启动检查必须只在主入口调度一次");
+  assert.doesNotMatch(entry, /setInterval/, "启动检查不许轮询");
+
+  const workflows = ["build-macos.yml", "build.yml"]
+    .map((f) => readFileSync(join(repo, ".github", "workflows", f), "utf8"))
+    .join("\n");
+  assert.ok((workflows.match(/TAURI_SIGNING_PRIVATE_KEY/g) ?? []).length >= 2,
+    "macOS 与 Windows tag 构建都必须从 Secrets 注入签名私钥");
+  assert.match(workflows, /tauri\.updater\.conf\.json/, "tag 构建必须使用 updater 配置");
+  assert.match(workflows, /\.app\.tar\.gz/, "macOS updater 产物没有被上传");
+  assert.match(workflows, /\.sig/, "签名文件没有被上传");
+
+  const finalizer = readFileSync(join(repo, ".github", "workflows", "updater-manifest.yml"), "utf8");
+  assert.match(finalizer, /latest\.json/, "没有生成 latest.json 的 workflow");
+  assert.match(finalizer, /curl -fsSL/, "清单发布后必须做公开 URL 校验");
+  assert.ok(existsSync(join(repo, "scripts", "updater-manifest.mjs")), "缺少清单生成器");
+});
+
+/**
+ * 群任务指派（用户 2026-10-22）：新增/编辑时只显示当前群成员，保存时剔除已退群者。
+ * 前端的“当前”来自 `chat.groups`，而 `group_members` 原本只增不减 ⇒ 离线漏收退群帧的
+ * 客户端会永久保留旧成员。两条腿都要钉：
+ *   ① 看板候选/保存走 `assignableMembers` + `assigneesInGroup`；
+ *   ② 群主权威成员表（GroupKey / 群主签名的群消息）到达时**替换**本地集合。
+ */
+test("群任务指派：候选只取当前成员，权威成员表到达时能收敛旧成员", () => {
+  const root = join(import.meta.dirname, "..");
+  const board = readFileSync(join(root, "components", "GroupTasksBoard.vue"), "utf8");
+  assert.match(board, /v-for="id in assignableMembers"/, "指派候选必须遍历当前成员，不许遍历原始群成员数组");
+  assert.doesNotMatch(board, /v-for="id in group\?\.members/, "旧形状会把已退群成员继续列出来");
+  assert.match(board, /void chat\.refreshGroups\(\)/, "打开看板时要拉一次最新群资料");
+  assert.ok((board.match(/assigneesInGroup\(/g) ?? []).length >= 3, "开始编辑/保存/认领三处都要收敛指派");
+
+  const transport = readFileSync(join(root, "..", "src-tauri", "src", "network", "transport.rs"), "utf8");
+  assert.match(transport, /db::replace_group_members\(&dbc, &group_id, &all\)/,
+    "GroupKey 是群主权威成员表，接到后必须整体替换（否则只增不减）");
+  const gossip = readFileSync(join(root, "..", "src-tauri", "src", "network", "transport", "gossip.rs"), "utf8");
+  assert.match(gossip, /let authoritative_members = is_self_declared_creator/,
+    "群 Gossip 信封只有群主自称的成员表才可整体替换");
+  assert.match(gossip, /db::replace_group_members\(&dbc, &gid, &all\)/,
+    "群主权威成员表到达后没有调用替换");
 });

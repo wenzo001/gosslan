@@ -1,6 +1,6 @@
 [package]
 name = "gosslan"
-version = "5.4.1"
+version = "5.5.0"
 description = "Gosslan — 无服务器 P2P 局域网即时通讯"
 authors = ["wd.f"]
 edition = "2021"
@@ -88,6 +88,8 @@ tauri-plugin-single-instance = "2"
 # 移动端由上层回退为持久化 UUID / 主机名指纹（见 state.rs / device.rs）。
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 machine-uid = "0.5"
+# 桌面端应用内更新：插件只支持 Windows/macOS/Linux；移动端由命令桩返回不支持。
+tauri-plugin-updater = "2.14"
 
 # Windows 剪贴板文件列表（CF_HDROP）：文件消息「复制」＝复制文件本体，
 # 可在资源管理器粘贴、也可直接粘贴回聊天框发送（微信式）。

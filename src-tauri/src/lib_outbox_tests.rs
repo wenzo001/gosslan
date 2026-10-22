@@ -450,6 +450,9 @@ fn db_hold_summary_has_exactly_one_production_reader() {
         1,
         "take_summary() 消费即清零：生产代码里只许这一个读者"
     );
+    // 跨文件数总量的那条判据在 `db_hold.rs::timed_lock_is_wired_into_the_app`（锁观测的家）。
+    // 这里不再摆第二份同一条谓词 —— 同一个判据摆两处，摘掉任何一处都看不出来（等价变异），
+    // 而 10-22 审计 R-06 的教训恰恰是"每条都只数自己那个文件，合起来两个读者没人看得见"。
     for needle in [
         "tauri::async_runtime::spawn",
         "summary_line(",

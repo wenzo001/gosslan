@@ -470,6 +470,7 @@ export default {
         "src/composables",
         "src/api",
         "src/utils",
+        "src/updater", // 更新状态机与 Tauri 适配器（前端侧，IPC 仍走 src/api 门面）
       ],
       invariants: [
         // ↓ 2026-10-14 补登，口径 = 「本节正文或其钩子点名的实现/判据落在本域 paths 上」

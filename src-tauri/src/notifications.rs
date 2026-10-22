@@ -37,11 +37,64 @@
 //! 移动端不变（插件自带 actionPerformed）。
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use tauri::Emitter;
 
 use crate::state::AppState;
+
+/// 「等点击」线程的在飞上限（2026-10-22 审计 R-08）。
+///
+/// 为什么要封顶：一条带点击路由的通知 = 一条 OS 线程，它要等用户点正文或通知被划掉才结束。
+/// Windows 的 toast 会自动消失并回 `Dismissed` ⇒ 一般不留人；**macOS 的通知会留在通知中心里
+/// 等人去清** —— 一条都没点过的通知就挂着一条线程。去抖（普通消息 1.5s 合并）与强提醒按
+/// remind id 去重压住的是**速率**，没有任何东西压住**在飞数量** ⇒ 长会话里它是无界的。
+///
+/// 24 这个数是这么定的：点击路由的作用是"把主窗口带到那条会话"，用户手上压着 24 条没处理
+/// 的通知时，少一次跳转不丢任何东西（通知本身照发、照留在通知中心）；而反过来不封顶，
+/// 赌的是操作系统线程配额。**上限只砍等待，不砍通知。**
+const MAX_CLICK_WAITERS: usize = 24;
+static CLICK_WAITERS: AtomicUsize = AtomicUsize::new(0);
+
+/// 判定：在飞 `current` 条时还能不能再占一格。单独拎出来是因为这条是**上限的全部含义**，
+/// 它得有真值表 —— 写成 `fetch_update` 里的内联三元式就没人测得到它。
+fn slot_allows(current: usize, max: usize) -> bool {
+    current < max
+}
+
+/// 占一个在飞槽位；满了返回 `None`。
+/// 返回的 guard 被 drop（等待线程结束）时归还 ⇒ 提前 return、闭包 panic 都不会漏名额。
+fn acquire_click_waiter() -> Option<ClickWaiterGuard> {
+    CLICK_WAITERS
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+            if slot_allows(v, MAX_CLICK_WAITERS) {
+                Some(v + 1)
+            } else {
+                None
+            }
+        })
+        .ok()
+        .map(|_| ClickWaiterGuard)
+}
+
+/// 当前在飞数（只给诊断读数用，不参与任何判断）。
+pub fn click_waiters_used() -> usize {
+    CLICK_WAITERS.load(Ordering::Relaxed)
+}
+
+/// 槽位上限（诊断读数按它显示"n/上限"，前端不许自己抄一份 24）。
+pub fn click_waiters_max() -> usize {
+    MAX_CLICK_WAITERS
+}
+
+struct ClickWaiterGuard;
+
+impl Drop for ClickWaiterGuard {
+    fn drop(&mut self) {
+        CLICK_WAITERS.fetch_sub(1, Ordering::Relaxed);
+    }
+}
 
 /// 通知总开关（notify_enabled，缺省开）。
 ///
@@ -209,7 +262,14 @@ fn show_click_impl(
     let handle = build(&app, title, body, sound, &extra)
         .show()
         .map_err(|e| e.to_string())?;
+    // 槽位满了就**不挂等待线程**：通知上面已经发出去了，只是这一次点正文不会跳转。
+    // 见 [`MAX_CLICK_WAITERS`]：上限砍的是等待，不是通知。
+    let Some(waiter) = acquire_click_waiter() else {
+        return Ok(());
+    };
     std::thread::spawn(move || {
+        // guard 随线程结束 drop ⇒ 归还槽位（提前 return、闭包 panic 都不会漏名额）。
+        let _waiter = waiter;
         // 闭包参数必须写全类型：`wait_for_response` 收的是 `impl ResponseHandler`，
         // 编译器无法从 trait 约束反推出闭包的参数类型（E0282）。
         let _ = handle.wait_for_response(move |response: &notify_rust::NotificationResponse| {
@@ -239,7 +299,8 @@ fn show_click_impl(
 ///
 /// 代价（如实记录）：该线程会存活到通知被点击/自动消失；若通知长期留在通知中心，
 /// 线程也会长期挂住 —— 强提醒低频且按 remind id 去重，普通消息走 1.5s 去抖合并，
-/// 量级可接受，但不宣称已最优。
+/// 压住的是**速率**。**在飞数量**由 [`MAX_CLICK_WAITERS`] 封顶（审计 R-08）：满了之后
+/// 通知照发，只是那一条不再挂线程等点击。
 #[cfg(target_os = "macos")]
 fn show_click_impl(
     app: tauri::AppHandle,
@@ -252,7 +313,11 @@ fn show_click_impl(
     let handle = build(&app, title, body, sound, &extra)
         .show()
         .map_err(|e| e.to_string())?;
+    let Some(waiter) = acquire_click_waiter() else {
+        return Ok(());
+    };
     std::thread::spawn(move || {
+        let _waiter = waiter;
         let _ = handle.wait_for_response(move |response: &notify_rust::NotificationResponse| {
             let opened = response.is_default_action()
                 || matches!(response, notify_rust::NotificationResponse::Action(k) if k == "open");
@@ -287,7 +352,11 @@ fn show_click_impl(
     let handle = build(&app, title, body, sound, &extra)
         .show()
         .map_err(|e| e.to_string())?;
+    let Some(waiter) = acquire_click_waiter() else {
+        return Ok(());
+    };
     std::thread::spawn(move || {
+        let _waiter = waiter;
         let _ = handle.wait_for_response(move |response: &notify_rust::NotificationResponse| {
             if response.is_default_action() {
                 on_click();
@@ -455,6 +524,71 @@ mod tests {
         conn.execute_batch("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);")
             .unwrap();
         conn
+    }
+
+    /// 审计 R-08：等待点击的线程必须有在飞上限，且名额必须还得回来。
+    /// 上限的含义全在 `slot_allows` 那一格里 ⇒ 先给它真值表，再验占满/归还/可复用。
+    #[test]
+    fn click_waiter_slots_are_capped_and_released() {
+        // 判据先于机制：上限的含义就是这条谓词。
+        assert!(slot_allows(0, MAX_CLICK_WAITERS));
+        assert!(slot_allows(MAX_CLICK_WAITERS - 1, MAX_CLICK_WAITERS));
+        assert!(!slot_allows(MAX_CLICK_WAITERS, MAX_CLICK_WAITERS));
+        assert!(!slot_allows(MAX_CLICK_WAITERS + 9, MAX_CLICK_WAITERS));
+        // 0 上限 = 一格都不给（防"常数被误改成 0 后静默关掉点击路由"）
+        assert!(!slot_allows(0, 0));
+
+        let before = click_waiters_used();
+        let mut held: Vec<ClickWaiterGuard> = Vec::new();
+        while let Some(g) = acquire_click_waiter() {
+            held.push(g);
+        }
+        assert_eq!(
+            held.len(),
+            MAX_CLICK_WAITERS - before,
+            "占到的格数必须正好补满到上限，不能多也不能少"
+        );
+        assert_eq!(click_waiters_used(), MAX_CLICK_WAITERS);
+        // 满了就是满了：再来一次必须拿不到（这条就是"无界"与"有界"的分界）
+        assert!(acquire_click_waiter().is_none());
+        drop(held);
+        assert_eq!(
+            click_waiters_used(),
+            before,
+            "guard 全部 drop 后必须回到原值 —— 还得回来才叫上限，不叫一次性配额"
+        );
+        // 归还之后必须还能再占（否则等于把上限写成了"进程一共只发这么多条"）
+        assert!(acquire_click_waiter().is_some());
+    }
+
+    /// 接线判据：三处 `show_click_impl`（Win / macOS / Linux-BSD）各自都必须先占槽再挂线程。
+    /// 只钉"逻辑对"不钉"接上了"的话，删掉某平台那一格的占槽会让那条链静默回到无界。
+    ///
+    /// ⚠️ needle 一律用 `format!` 拼：这个判据读的是**自己所在的这份源文件**，
+    /// 字面量原样写在这里会被自己数进去（本仓踩过同一族坑）。
+    #[test]
+    fn every_click_waiter_thread_takes_a_slot_first() {
+        let src = include_str!("notifications.rs");
+        // 只数测试册**之前**的生产码：这几条 needle 在下面的用例里还会各出现一次，
+        // 连着测试册一起数就会把自己算进去（本仓踩过同一族坑）。
+        let prod = src
+            .split_once("\n#[cfg(test)]")
+            .map(|(head, _)| head)
+            .unwrap_or(src);
+        let spawn_needle = concat!("std::thread::", "spawn", "(");
+        let acquire_needle = concat!("= ", "acquire_click_waiter", "()");
+        let guard_needle = concat!("let _waiter = ", "waiter", ";");
+        assert_eq!(
+            prod.matches(spawn_needle).count(),
+            3,
+            "等点击的线程只有三处（Win/macOS/Linux），多出来说明有人绕过了上限"
+        );
+        assert_eq!(prod.matches(acquire_needle).count(), 3);
+        assert_eq!(
+            prod.matches(guard_needle).count(),
+            3,
+            "guard 必须被 move 进线程（线程结束才归还）；只占不还＝一次性配额"
+        );
     }
 
     #[test]

@@ -2,12 +2,17 @@
 import { computed } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import SettingsGroup from "@/components/settings/SettingsGroup.vue";
+import UpdatePanel from "@/components/settings/UpdatePanel.vue";
 import { useClipboard } from "@/composables/useClipboard";
 import { version } from "../../../package.json";
 import { t } from "@/i18n";
+import { isAndroid, isIOS } from "@/utils/platform";
+import { updater } from "@/updater/instance";
 
 const emit = defineEmits<{ (e: "dev-open"): void }>();
 const app = useAppStore();
+/** 应用内更新只支持桌面；移动端给出发布页手动更新的说明。 */
+const updatesSupported = !isAndroid && !isIOS;
 const fullId = computed(() => app.device?.device_id ?? "");
 const { copiedKey, copyContent } = useClipboard();
 
@@ -82,5 +87,17 @@ async function onFingerprintTap() {
         </span>
       </div>
     </div>
+  </SettingsGroup>
+
+  <SettingsGroup :title="t('settings.updates.title')" class="mt-5">
+    <UpdatePanel
+      :state="updater.state"
+      :supported="updatesSupported"
+      @check="updater.check(true)"
+      @download="updater.download()"
+      @cancel="updater.cancel()"
+      @install="updater.install()"
+      @dismiss="updater.dismiss()"
+    />
   </SettingsGroup>
 </template>

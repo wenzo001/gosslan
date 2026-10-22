@@ -247,30 +247,16 @@
         // `commands::logs::decorate_aux_window` 把 AppKit 调用单独投回主线程解决，
         // 不再需要任何例外。
 
-        // 重资源标记 → 人类可读的原因
-        // `tray::` 标记（审计 2.2j）：托盘更新 = 整张图标逐像素混合 + 平台角标重绘，
-        // 同步命令里内联跑等于在主线程 IPC 回调里做 CPU/平台活（macOS 主线程同时
-        // 驱动整个 UI 事件循环）。set_unread_badge 曾因此漏网——字面量 marker
-        // 匹配不到跨模块调用，本标记补上这个洞。
-        let markers: [(&str, &str); 10] = [
-            (".db", "访问 SQLite（可能等锁数秒）"),
-            ("db::", "访问 SQLite"),
-            ("std::fs", "文件系统 IO"),
-            ("logger.", "日志（含整份快照）"),
-            ("Clipboard", "系统剪贴板（可能被别的程序占着）"),
-            ("list_interfaces", "枚举网卡"),
-            ("if_addrs", "枚举网卡"),
-            ("thread::sleep", "阻塞睡眠"),
-            ("block_on", "阻塞等待异步任务"),
-            ("tray::", "托盘图标重绘（逐像素混合 + set_icon/badge）"),
-        ];
+        // 重资源标记 → 人类可读的原因（与下面「不许把 tokio worker 占住」那条判据**共用同一份**：
+        // 两条判的是同一个"什么算重活"的判定，抄两份就会有一份漂 ⇒ 见 `heavy_markers`）
+        let markers = heavy_markers();
 
         // 建窗命令单独判：`open_*_window` 的函数体里没有上面那些重资源标记（db 访问都在
         // 已 try_lock 的辅助函数里），光靠 markers 抓不到它 —— 而它恰恰是最不能同步的一条。
         let window_markers = ["ensure_aux_window(", "WebviewWindowBuilder::new("];
 
         let mut offenders: Vec<String> = Vec::new();
-        for (name, is_async, body) in command_bodies(src) {
+        for (name, is_async, _fn_is_async, body) in command_bodies(src) {
             if is_async {
                 continue;
             }
@@ -297,11 +283,113 @@
         );
     }
 
-    /// 拆出 `commands.rs` 里每个 `#[tauri::command…]` 的 `(名字, 是否 async, 函数体)`。
+    /// 「什么算重活」的标记表 —— **上面那条主线程判据与下面那条 worker 棘轮共用这一份**。
+    /// 抄两份的后果是既成事实：主线程那份后来加过 `tray::`，worker 那份如果另起炉灶就会漏。
+    fn heavy_markers() -> [(&'static str, &'static str); 10] {
+        // `tray::` 标记（审计 2.2j）：托盘更新 = 整张图标逐像素混合 + 平台角标重绘，
+        // 同步命令里内联跑等于在主线程 IPC 回调里做 CPU/平台活（macOS 主线程同时
+        // 驱动整个 UI 事件循环）。set_unread_badge 曾因此漏网——字面量 marker
+        // 匹配不到跨模块调用，本标记补上这个洞。
+        [
+            (".db", "访问 SQLite（可能等锁数秒）"),
+            ("db::", "访问 SQLite"),
+            ("std::fs", "文件系统 IO"),
+            ("logger.", "日志（含整份快照）"),
+            ("Clipboard", "系统剪贴板（可能被别的程序占着）"),
+            ("list_interfaces", "枚举网卡"),
+            ("if_addrs", "枚举网卡"),
+            ("thread::sleep", "阻塞睡眠"),
+            ("block_on", "阻塞等待异步任务"),
+            ("tray::", "托盘图标重绘（逐像素混合 + set_icon/badge）"),
+        ]
+    }
+
+    /// 棘轮（审计 R-18）：把重活**留在 tokio worker 上**的命令数只许降、不许升。
+    ///
+    /// 为什么上一条守卫挡不住这个：它只判"在不在主线程"，而 `#[tauri::command(async)]`
+    /// 贴在同步 `fn` 上就已经算"离开主线程"了 —— 宏的语义是**整段函数体进
+    /// `async_runtime::spawn`**（INV-P34；`tauri-macros` 里那个 `sync_threadpool` 只是
+    /// tracing 标签，不是阻塞池）。于是 76 条命令可以守卫全绿、却把 worker 一个个占死：
+    /// worker 数 = CPU 核数，而"打开辅助窗/设置窗"这些命令也要 worker ⇒ 传文件时点设置窗
+    /// 白等一下，就是这个半径。
+    ///
+    /// 判据口径：函数体里有重活标记 **且** 函数体里没有 `spawn_blocking(` ⇒ 算"占 worker"。
+    /// 只看函数体文本，不看它调用的 helper（helper 里进阻塞池的，命令体里通常只剩
+    /// 一次 `.await`；真接错了由行为层与 `check-lock-scope` 负责）。
+    #[test]
+    fn worker_bound_heavy_commands_do_not_grow() {
+        // ⚠️ 这是**棘轮上限**，不是"应该有的数量"。收敛轨迹（都按本判据现数）：
+        // 75（第一批之前）→ 66（第一批 9 条）→ 61（第二批 9 条里只有 5 条原本在集合内）
+        // → 51（第三批 10 条：写侧与广播前的持锁段，全部原本在集合内 ⇒ 差值恰好等于条数）
+        // → **47**（第四批 4 条：db 读写与网络 await 在同一条命令里交错的 mark_read + ensure/delete_conversation + save_settings；
+        //   mark_read 是逐段搬而不是整函数搬 —— 中间那些网络 await 绝不能和持锁段合成一段）。
+        // → **31**（第六批 9 条：焦点/通知/测试通知/激活窗口四条 + 好友密钥轮换 + 三条文件族 +
+        //   资料更新的写侧）。
+        //   每批都按"上限压到读数 −1 去探针 ⇒ 报出真实数 ⇒ 再钉住"走 ⇒ 差值必须等于改的条数，
+        //   对不上就说明有一条本来不在集合里（第二、三批就各抓到过一次），不许拿"大约"糊过去。
+        // 每再转一条就把这里调小，调小之后这条判据仍必须绿 ⇒ 见审计文档 E.0 的计数行。
+        // 如果新增/登记了分册导致这里变红：先按报错逐条把那条命令的重活搬进 `spawn_blocking`，
+        // **不要**调大上限 —— 调大就是承认倒退（真要倒退也得到这里写理由，让红有名字）。
+        //
+        // 这条判据是**下限而不是普查**：标记是函数体的字面文本，所以"重活藏在 helper 调用里"的
+        // 命令它看不见。同一批里 4 条（`media_present`/`read_clipboard_file_paths`/
+        // `get_cache_info`/`get_discovery_diag`）改造前根本不在集合内 —— 它们分别把 stat、
+        // 剪贴板读、目录递归 walk、蓝牙采集藏在 `resolve_media_path`/`clipboard_win::…`（小写，
+        // 不匹配 `Clipboard`）/`cache_cleaner::usage`/`collect_ble_diag` 后面。
+        // 想把那个洞堵上，得改成"沿调用图一跳看 helper 体"，那是另一件事，别靠加别名标记糊。
+        const CEILING: usize = 31;
+        let src = all_commands_src();
+        let markers = heavy_markers();
+        let mut bound: Vec<String> = Vec::new();
+        for (name, _off_main_thread, fn_is_async, body) in command_bodies(&src) {
+            if body.contains("spawn_blocking(") {
+                continue;
+            }
+            let hits: Vec<&str> = markers
+                .iter()
+                .filter(|(m, _)| body.contains(m))
+                .map(|(_, why)| *why)
+                .collect();
+            if !hits.is_empty() {
+                bound.push(format!(
+                    "  {name}（{}）: {}",
+                    if fn_is_async {
+                        "async fn 里直接阻塞"
+                    } else {
+                        "(async) 贴同步 fn ⇒ 整段在 worker 上"
+                    },
+                    hits.join("、")
+                ));
+            }
+        }
+        // 下限：只判上限时，"命令扫描器退化成一条都认不出"会让 `bound` 恒空 ⇒ 判据恒绿。
+        // 28 是给当前真实读数 31 留的余量；真收敛到更低时这条也要跟着调小
+        // （调小之前先确认扫描器还认得 `#[tauri::command]`，否则调小只是把假绿钉死）。
+        assert!(
+            bound.len() >= 28,
+            "重活命令现数到 {} 条，比下限 28 还少 —— 多半是扫描器退化（认不出命令属性），\
+             不是真的收敛了；先确认 `command_bodies()` 的解析，再谈调小上限",
+            bound.len()
+        );
+        assert!(
+            bound.len() <= CEILING,
+            "把重活留在 tokio worker 上的命令现数到 {} 条（棘轮上限 {CEILING}）。要么把新加的那条改成 \
+             `async fn` + `spawn_blocking`，要么按本轮真实收敛结果把上限调小 —— 调大就是承认倒退：\n{}",
+            bound.len(),
+            bound.join("\n")
+        );
+    }
+
+    /// 拆出 `commands.rs` 里每个 `#[tauri::command…]` 的
+    /// `(名字, 是否离开主线程, 函数本身是不是 async fn, 函数体)`。
+    ///
+    /// 两个布尔不合并成一条：`是否离开主线程` = 属性 `(async)` **或** `async fn`（宏两条路都不在主线程），
+    /// 而**占不占 tokio worker** 只看"函数本身是不是 `async fn` + 函数体里有没有 `spawn_blocking`" ——
+    /// `(async)` 贴在同步 `fn` 上只是把整段搬到 worker 上跑（INV-P34），阻塞活照样吃 worker。
     ///
     /// 手写扫描而不是上 syn：本测试只做文本判据，不引入新依赖；字符串/注释/生命周期都跳过，
     /// 否则函数体里的花括号（`format!("{}")` 之类）会让配对错位。
-    fn command_bodies(src: &str) -> Vec<(String, bool, String)> {
+    fn command_bodies(src: &str) -> Vec<(String, bool, bool, String)> {
         let bytes = src.as_bytes();
         let mut out = Vec::new();
         let mut i = 0usize;
@@ -328,6 +416,7 @@
                 .take_while(|c| c.is_alphanumeric() || *c == '_')
                 .collect();
             let is_async = attr_async || src[attr_end..fn_pos].contains("async");
+            let fn_is_async = src[attr_end..fn_pos].contains("async fn");
             // 花括号配对取函数体（跳过字符串/字符/注释）
             let mut depth = 0i32;
             let mut j = fn_pos;
@@ -379,7 +468,7 @@
                 }
                 j += 1;
             }
-            out.push((name, is_async, body));
+            out.push((name, is_async, fn_is_async, body));
             i = j.max(attr_end + 1);
         }
         out

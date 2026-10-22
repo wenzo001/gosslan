@@ -244,118 +244,133 @@ pub fn log_frontend_error(state: State<'_, Arc<AppState>>, kind: String, text: S
 }
 
 #[tauri::command(async)]
-pub fn get_settings(state: State<'_, Arc<AppState>>) -> Settings {
-    let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
-    Settings {
-        theme_color: db::get_setting(&dbc, "theme_color"),
-        font_family: db::get_setting(&dbc, "font_family"),
-        dark_mode: db::get_config_bool_opt(&dbc, "dark_mode"),
-        appearance_mode: db::get_setting(&dbc, "appearance_mode"),
-        // 通知默认开启、默认显示正文：缺省时按 `Some(true)`，旧记录与未设置都能有合理行为。
-        notify_enabled: db::get_config_bool_opt(&dbc, "notify_enabled").or(Some(true)),
-        notify_show_content: db::get_config_bool_opt(&dbc, "notify_show_content").or(Some(true)),
-        remind_sound: db::get_config_bool_opt(&dbc, "remind_sound").or(Some(true)),
-        remind_vibrate: db::get_config_bool_opt(&dbc, "remind_vibrate").or(Some(true)),
-        language: db::get_setting(&dbc, "language"),
-        relay_policy: db::get_setting(&dbc, "relay_policy"),
-        relay_allowlist: db::get_setting(&dbc, "relay_allowlist"),
-        bind_ip: db::get_setting(&dbc, "bind_ip"),
-        chat_style: db::get_setting(&dbc, "chat_style"),
-        peer_styles: db::get_setting(&dbc, "chat_peer_styles"),
-    }
+pub async fn get_settings(state: State<'_, Arc<AppState>>) -> Result<Settings, String> {
+    let s = state.inner().clone();
+    // 十三次单行查询 + 一次 db 锁：整段进阻塞池（审计 R-18；`(async)` 贴同步 `fn` 只是搬到 worker）。
+    tokio::task::spawn_blocking(move || -> Result<Settings, String> {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(Settings {
+            theme_color: db::get_setting(&dbc, "theme_color"),
+            font_family: db::get_setting(&dbc, "font_family"),
+            dark_mode: db::get_config_bool_opt(&dbc, "dark_mode"),
+            appearance_mode: db::get_setting(&dbc, "appearance_mode"),
+            // 通知默认开启、默认显示正文：缺省时按 `Some(true)`，旧记录与未设置都能有合理行为。
+            notify_enabled: db::get_config_bool_opt(&dbc, "notify_enabled").or(Some(true)),
+            notify_show_content: db::get_config_bool_opt(&dbc, "notify_show_content").or(Some(true)),
+            remind_sound: db::get_config_bool_opt(&dbc, "remind_sound").or(Some(true)),
+            remind_vibrate: db::get_config_bool_opt(&dbc, "remind_vibrate").or(Some(true)),
+            language: db::get_setting(&dbc, "language"),
+            relay_policy: db::get_setting(&dbc, "relay_policy"),
+            relay_allowlist: db::get_setting(&dbc, "relay_allowlist"),
+            bind_ip: db::get_setting(&dbc, "bind_ip"),
+            chat_style: db::get_setting(&dbc, "chat_style"),
+            peer_styles: db::get_setting(&dbc, "chat_peer_styles"),
+        })
+    })
+    .await
+    .map_err(|e| format!("设置读取被线程池中断: {e}"))?
 }
 
 #[tauri::command(async)]
-pub fn save_settings(
+pub async fn save_settings(
     state: State<'_, Arc<AppState>>,
     window: tauri::WebviewWindow,
     settings: Settings,
 ) -> Result<(), String> {
-    let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
-    // 一边写一边记"哪些键真的被这次调用写了" —— 事件只带这一小块（见 `SettingsPatch`）。
-    let mut changed: Vec<&str> = Vec::new();
-    if let Some(v) = settings.theme_color {
-        db::set_setting(&dbc, "theme_color", &v).map_err(|e| e.to_string())?;
-        changed.push("themeColor");
-    }
-    if let Some(v) = settings.font_family {
-        db::set_setting(&dbc, "font_family", &v).map_err(|e| e.to_string())?;
-        changed.push("fontFamily");
-    }
-    if let Some(v) = settings.dark_mode {
-        db::set_setting(&dbc, "dark_mode", if v { "1" } else { "0" }).map_err(|e| e.to_string())?;
-        changed.push("darkMode");
-    }
-    if let Some(v) = settings.appearance_mode {
-        if APPEARANCE_MODES.contains(&v.as_str()) {
-            db::set_setting(&dbc, "appearance_mode", &v).map_err(|e| e.to_string())?;
-            changed.push("appearanceMode");
+    let s = state.inner().clone();
+    // 写库 + 回读 patch + 回读 relay 缓存整段进阻塞池（审计 R-18：这条是"点设置保存"那一下，
+    // 而它一持就是十几次 `db::set_setting`）。广播留在 await 之后 —— 发事件不该占着 db 锁。
+    let (changed, patch) = tokio::task::spawn_blocking(move || -> Result<(Vec<&'static str>, serde_json::Value), String> {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        // 一边写一边记"哪些键真的被这次调用写了" —— 事件只带这一小块（见 `SettingsPatch`）。
+        let mut changed: Vec<&str> = Vec::new();
+        if let Some(v) = settings.theme_color {
+            db::set_setting(&dbc, "theme_color", &v).map_err(|e| e.to_string())?;
+            changed.push("themeColor");
         }
-    }
-    if let Some(v) = settings.notify_enabled {
-        db::set_setting(&dbc, "notify_enabled", if v { "1" } else { "0" })
-            .map_err(|e| e.to_string())?;
-        // 热路径缓存同步（is_zh/notify 同一套纪律，审计 2.1i）
-        state.inner().cache_notify_enabled(v);
-        changed.push("notifyEnabled");
-    }
-    if let Some(v) = settings.notify_show_content {
-        db::set_setting(&dbc, "notify_show_content", if v { "1" } else { "0" })
-            .map_err(|e| e.to_string())?;
-        changed.push("notifyShowContent");
-    }
-    if let Some(v) = settings.remind_sound {
-        db::set_setting(&dbc, "remind_sound", if v { "1" } else { "0" })
-            .map_err(|e| e.to_string())?;
-        changed.push("remindSound");
-    }
-    if let Some(v) = settings.remind_vibrate {
-        db::set_setting(&dbc, "remind_vibrate", if v { "1" } else { "0" })
-            .map_err(|e| e.to_string())?;
-        changed.push("remindVibrate");
-    }
-    if let Some(v) = settings.language {
-        if LANGUAGES.contains(&v.as_str()) {
-            db::set_setting(&dbc, "language", &v).map_err(|e| e.to_string())?;
-            // 热路径缓存同步（is_zh 零锁读，审计 2.1i）
-            state.inner().cache_lang_pref(&v);
-            changed.push("language");
+        if let Some(v) = settings.font_family {
+            db::set_setting(&dbc, "font_family", &v).map_err(|e| e.to_string())?;
+            changed.push("fontFamily");
         }
-    }
-    if let Some(v) = settings.bind_ip {
-        db::set_setting(&dbc, "bind_ip", &v).map_err(|e| e.to_string())?;
-        changed.push("bindIp");
-    }
-    if let Some(v) = settings.chat_style {
-        db::set_setting(&dbc, "chat_style", &v).map_err(|e| e.to_string())?;
-        changed.push("chatStyle");
-    }
-    // 中继授权：脏值一律忽略（宁可维持现状，也不要写进库让传播语义变得不可预期）
-    if let Some(v) = settings.relay_policy.as_deref() {
-        if RELAY_POLICIES.contains(&v) {
-            db::set_setting(&dbc, "relay_policy", v).map_err(|e| e.to_string())?;
-            changed.push("relayPolicy");
+        if let Some(v) = settings.dark_mode {
+            db::set_setting(&dbc, "dark_mode", if v { "1" } else { "0" })
+                .map_err(|e| e.to_string())?;
+            changed.push("darkMode");
         }
-    }
-    if let Some(v) = settings.relay_allowlist.as_deref() {
-        // 只接受合法 JSON 数组：写进脏值会让 RelayConfig::parse 静默退化成空表，
-        // 用户会看到"白名单明明填了却不生效"。
-        if serde_json::from_str::<Vec<String>>(v).is_ok() {
-            db::set_setting(&dbc, "relay_allowlist", v).map_err(|e| e.to_string())?;
-            changed.push("relayAllowlist");
+        if let Some(v) = settings.appearance_mode {
+            if APPEARANCE_MODES.contains(&v.as_str()) {
+                db::set_setting(&dbc, "appearance_mode", &v).map_err(|e| e.to_string())?;
+                changed.push("appearanceMode");
+            }
         }
-    }
-    // patch 在**持锁时**读好（见 settings_patch_values 的调用约定：那边不再自己加锁，
-    // 否则与这里仍持有的锁死锁）。
-    let patch = settings_patch_values(&dbc, &changed);
-    // 回读一遍写进内存缓存（转发路径热读，不能每次去锁 SQLite）。
-    // ⚠️ 先放掉 DB 锁再更新缓存：避免与转发路径形成锁顺序纠缠。
-    let relay = crate::mesh::relay_policy::RelayConfig::parse(
-        db::get_setting(&dbc, "relay_policy").as_deref(),
-        db::get_setting(&dbc, "relay_allowlist").as_deref(),
-    );
-    drop(dbc);
-    state.set_relay_policy_config(relay);
+        if let Some(v) = settings.notify_enabled {
+            db::set_setting(&dbc, "notify_enabled", if v { "1" } else { "0" })
+                .map_err(|e| e.to_string())?;
+            // 热路径缓存同步（is_zh/notify 同一套纪律，审计 2.1i）
+            s.cache_notify_enabled(v);
+            changed.push("notifyEnabled");
+        }
+        if let Some(v) = settings.notify_show_content {
+            db::set_setting(&dbc, "notify_show_content", if v { "1" } else { "0" })
+                .map_err(|e| e.to_string())?;
+            changed.push("notifyShowContent");
+        }
+        if let Some(v) = settings.remind_sound {
+            db::set_setting(&dbc, "remind_sound", if v { "1" } else { "0" })
+                .map_err(|e| e.to_string())?;
+            changed.push("remindSound");
+        }
+        if let Some(v) = settings.remind_vibrate {
+            db::set_setting(&dbc, "remind_vibrate", if v { "1" } else { "0" })
+                .map_err(|e| e.to_string())?;
+            changed.push("remindVibrate");
+        }
+        if let Some(v) = settings.language {
+            if LANGUAGES.contains(&v.as_str()) {
+                db::set_setting(&dbc, "language", &v).map_err(|e| e.to_string())?;
+                // 热路径缓存同步（is_zh 零锁读，审计 2.1i）
+                s.cache_lang_pref(&v);
+                changed.push("language");
+            }
+        }
+        if let Some(v) = settings.bind_ip {
+            db::set_setting(&dbc, "bind_ip", &v).map_err(|e| e.to_string())?;
+            changed.push("bindIp");
+        }
+        if let Some(v) = settings.chat_style {
+            db::set_setting(&dbc, "chat_style", &v).map_err(|e| e.to_string())?;
+            changed.push("chatStyle");
+        }
+        // 中继授权：脏值一律忽略（宁可维持现状，也不要写进库让传播语义变得不可预期）
+        if let Some(v) = settings.relay_policy.as_deref() {
+            if RELAY_POLICIES.contains(&v) {
+                db::set_setting(&dbc, "relay_policy", v).map_err(|e| e.to_string())?;
+                changed.push("relayPolicy");
+            }
+        }
+        if let Some(v) = settings.relay_allowlist.as_deref() {
+            // 只接受合法 JSON 数组：写进脏值会让 RelayConfig::parse 静默退化成空表，
+            // 用户会看到"白名单明明填了却不生效"。
+            if serde_json::from_str::<Vec<String>>(v).is_ok() {
+                db::set_setting(&dbc, "relay_allowlist", v).map_err(|e| e.to_string())?;
+                changed.push("relayAllowlist");
+            }
+        }
+        // patch 在**持锁时**读好（见 settings_patch_values 的调用约定：那边不再自己加锁，
+        // 否则与这里仍持有的锁死锁）。
+        let patch = settings_patch_values(&dbc, &changed);
+        // 回读一遍写进内存缓存（转发路径热读，不能每次去锁 SQLite）。
+        // ⚠️ 先放掉 DB 锁再更新缓存：避免与转发路径形成锁顺序纠缠。
+        let relay = crate::mesh::relay_policy::RelayConfig::parse(
+            db::get_setting(&dbc, "relay_policy").as_deref(),
+            db::get_setting(&dbc, "relay_allowlist").as_deref(),
+        );
+        drop(dbc);
+        s.set_relay_policy_config(relay);
+        Ok((changed, patch))
+    })
+    .await
+    .map_err(|e| format!("设置保存被线程池中断: {e}"))??;
     // 只把**变了的键**发给**另一个窗口**（发起窗口自己已经应用过了，不回发）。
     state.notify_settings_changed(&changed, Some(window.label()), patch);
     Ok(())

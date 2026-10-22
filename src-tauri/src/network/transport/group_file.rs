@@ -657,8 +657,18 @@ fn finalize_failed_group_receive(state: &Arc<AppState>, transfer_id: &str) {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .remove(transfer_id);
-    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-    let _ = db::update_group_file_recipient(&dbc, transfer_id, &state.device_id, "failed", 0.0);
+    {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = db::update_group_file_recipient(&dbc, transfer_id, &state.device_id, "failed", 0.0);
+    }
+    // 状态落了库，但**不发事件就没人知道**：前端只在收到终态事件时才动那一条气泡，
+    // 于是群文件失败永远显示「发送中」，要重开会话才看得见（10-22 审计 R-02；
+    // 前端那一半 `gfile-` 前缀漏匹配已同日修掉）。
+    // 复用已线的 `message-status-changed` 帧（载荷就是 msg_id 字符串，与 commands/files.rs
+    // 取消路径同一形状）⇒ 不新增协议消息类型。emit 必须在 db 锁**外**（锁内不许 emit）。
+    let _ = state
+        .app
+        .emit("message-status-changed", &format!("gfile-{transfer_id}"));
 }
 
 /// 回收"再也没被喂过片"的接收器（第 1 步 · 故障隔离 P1 的另一半）。
@@ -1194,11 +1204,10 @@ pub(crate) fn apply_group_file_ack(
     };
     let (path, name, size) = {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        let path = db::list_transfers(&dbc)
-            .unwrap_or_default()
-            .into_iter()
-            .find(|t| t.id == transfer_id)
-            .and_then(|t| t.path);
+        // 取某一条的 `path` 用按 id 的点查。原来这里是 `list_transfers()` 全表扫再 `find` ——
+        // 那是在**唯一那条 db 连接的持锁段里**按行数收费，而 `file_transfers` 是只增的历史表；
+        // 语义一字不差（就是要这一条的 path）。见 10-22 审计 D-23：这也是给那张表加界限的前置。
+        let path = db::get_transfer_path(&dbc, transfer_id);
         // name/size 必须取自 group_files（发送端事实来源）：填空会把镜像行写坏。
         let (name, size) = db::get_group_file(&dbc, transfer_id)
             .map(|gf| (gf.name, gf.size))
@@ -1733,12 +1742,24 @@ async fn handle_group_file_chunk(
         return;
     }
 
-    // 解密（AEAD 失败 → 失败收尾：删 `.part`、置 failed，不写错误明文）
-    let Ok(sealed) = STANDARD.decode(&data) else {
-        fail_group_file_chunk(state, &transfer_id);
-        return;
+    // 解码 + AEAD 解密：纯 CPU、不持任何锁、入参都是自有数据 ⇒ 先离开 tokio worker
+    // （10-22 审计 R-20 的一半，理由与单聊那条相同：这批 worker 也扛着别的链路的入站帧读取
+    //  和开窗一类 IPC）。**只搬这两步**：下面的 seq/写盘段手里有一把锁和五个提前返回，
+    //  把它整体搬进阻塞池就等于"在等待里持锁"，那正是本仓 A-14 那族同线程二次取锁死锁的反面教材。
+    // 两种失败（base64 解不开 / AEAD 验不过）原本走的是同一个收尾，合并成一个 Option 不改变行为；
+    // 阻塞池把任务丢了也当失败处理，不静默放弃这一单。
+    let plaintext = {
+        let key = file_key;
+        tokio::task::spawn_blocking(move || {
+            let Ok(sealed) = STANDARD.decode(&data) else {
+                return None;
+            };
+            crypto::open_symmetric(&key, &sealed)
+        })
+        .await
+        .unwrap_or(None)
     };
-    let Some(plaintext) = crypto::open_symmetric(&file_key, &sealed) else {
+    let Some(plaintext) = plaintext else {
         fail_group_file_chunk(state, &transfer_id);
         return;
     };

@@ -79,19 +79,24 @@ fn favorite_copy_name(id: &str, content: &str, src: &std::path::Path) -> String 
 /// `available` 在这里 stat 一次副本填好：前端据此把"副本不在了"渲染成「已清理」占位，
 /// 而不是让用户点开才发现打不开。纯文本/代码没有副本，按"可用"处理（它没有可丢的东西）。
 #[tauri::command(async)]
-pub fn list_favorites(state: State<'_, Arc<AppState>>) -> Result<Vec<Favorite>, String> {
-    let s = state.inner();
-    let mut rows = {
-        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::list_favorites(&dbc).map_err(|e| e.to_string())?
-    };
-    for f in &mut rows {
-        f.available = match f.media_path.as_deref() {
-            Some(p) => std::path::Path::new(p).is_file(),
-            None => true,
+pub async fn list_favorites(state: State<'_, Arc<AppState>>) -> Result<Vec<Favorite>, String> {
+    let s = state.inner().clone();
+    // 一次全表读 + **每行一次 stat**：收藏多起来时这段是纯磁盘活，留在 worker 上会饿死别的命令。
+    tokio::task::spawn_blocking(move || -> Result<Vec<Favorite>, String> {
+        let mut rows = {
+            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+            db::list_favorites(&dbc).map_err(|e| e.to_string())?
         };
-    }
-    Ok(rows)
+        for f in &mut rows {
+            f.available = match f.media_path.as_deref() {
+                Some(p) => std::path::Path::new(p).is_file(),
+                None => true,
+            };
+        }
+        Ok(rows)
+    })
+    .await
+    .map_err(|e| format!("收藏列表读取被线程池中断: {e}"))?
 }
 
 /// 收藏一条消息（幂等：同一条消息重复收藏不会产生第二条）。
@@ -203,34 +208,39 @@ pub async fn add_favorite(
 /// 顺序不能反：先删文件而删记录失败，会留下一条**打不开**的收藏（比"删了记录但文件没删掉"
 /// 差得多 —— 后者只占磁盘，用户看不见）。文件删除失败只记日志，不回滚记录。
 #[tauri::command(async)]
-pub fn remove_favorite(state: State<'_, Arc<AppState>>, id: String) -> Result<(), String> {
-    let s = state.inner();
-    let removed = {
-        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::delete_favorite(&dbc, &id).map_err(|e| e.to_string())?
-    };
-    let Some(fav) = removed else {
-        return Ok(()); // 已经不在收藏里了：幂等返回，不报错
-    };
-    if let Some(path) = fav.media_path {
-        let p = std::path::Path::new(&path);
-        // 只删收藏目录内的文件：同一套边界判断，防止脏行把删除操作引到库外
-        let under_favorites = std::fs::canonicalize(&s.favorites_dir)
-            .ok()
-            .zip(std::fs::canonicalize(p).ok())
-            .map(|(dir, f)| f.starts_with(dir))
-            .unwrap_or(false);
-        if under_favorites {
-            if let Err(e) = std::fs::remove_file(p) {
+pub async fn remove_favorite(state: State<'_, Arc<AppState>>, id: String) -> Result<(), String> {
+    let s = state.inner().clone();
+    // 删一行 + 删文件 + 两次 canonicalize（都是磁盘活）⇒ 进阻塞池（审计 R-18）。
+    tokio::task::spawn_blocking(move || -> Result<(), String> {
+        let removed = {
+            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+            db::delete_favorite(&dbc, &id).map_err(|e| e.to_string())?
+        };
+        let Some(fav) = removed else {
+            return Ok(()); // 已经不在收藏里了：幂等返回，不报错
+        };
+        if let Some(path) = fav.media_path {
+            let p = std::path::Path::new(&path);
+            // 只删收藏目录内的文件：同一套边界判断，防止脏行把删除操作引到库外
+            let under_favorites = std::fs::canonicalize(&s.favorites_dir)
+                .ok()
+                .zip(std::fs::canonicalize(p).ok())
+                .map(|(dir, f)| f.starts_with(dir))
+                .unwrap_or(false);
+            if under_favorites {
+                if let Err(e) = std::fs::remove_file(p) {
+                    s.logger
+                        .warn("favorite", format!("删除收藏副本失败 {path}: {e}"));
+                }
+            } else {
                 s.logger
-                    .warn("favorite", format!("删除收藏副本失败 {path}: {e}"));
+                    .warn("favorite", format!("跳过越权路径的副本删除：{path}"));
             }
-        } else {
-            s.logger
-                .warn("favorite", format!("跳过越权路径的副本删除：{path}"));
         }
-    }
-    Ok(())
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("收藏删除被线程池中断: {e}"))?
 }
 
 /// 读取收藏副本的预览字节（图片）。契约与 [`read_file_preview`] 一致：
@@ -272,11 +282,11 @@ const MAX_DELETE_BATCH: usize = 500;
 /// 为什么不复用"逐条删"的接口（假设前端循环调）：删 N 条要重算 N 次会话摘要、
 /// 开 N 个事务；批量接口在一个事务里按会话去重算一次就够。
 #[tauri::command(async)]
-pub fn delete_messages(
+pub async fn delete_messages(
     state: State<'_, Arc<AppState>>,
     msg_ids: Vec<String>,
 ) -> Result<usize, String> {
-    let s = state.inner();
+    let s = state.inner().clone();
     if msg_ids.len() > MAX_DELETE_BATCH {
         return Err(format!(
             "一次最多删除 {MAX_DELETE_BATCH} 条，当前 {} 条",
@@ -286,13 +296,18 @@ pub fn delete_messages(
     if msg_ids.is_empty() {
         return Ok(0);
     }
-    let removed = {
-        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::delete_messages(&dbc, &msg_ids).map_err(|e| e.to_string())?
-    };
-    s.logger
-        .info("chat", format!("本地删除消息 {removed} 条（不影响对方）"));
-    Ok(removed)
+    // 上限检查留在 await 侧（纯算术），真正持 db 锁的那一段进阻塞池（审计 R-18）。
+    tokio::task::spawn_blocking(move || -> Result<usize, String> {
+        let removed = {
+            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+            db::delete_messages(&dbc, &msg_ids).map_err(|e| e.to_string())?
+        };
+        s.logger
+            .info("chat", format!("本地删除消息 {removed} 条（不影响对方）"));
+        Ok(removed)
+    })
+    .await
+    .map_err(|e| format!("消息删除被线程池中断: {e}"))?
 }
 
 /**

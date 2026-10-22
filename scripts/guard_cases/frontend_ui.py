@@ -397,8 +397,10 @@ CASES: list[Case] = [
         # 锚点必须盯 DialogContent 开标签（8/6 空格缩进）。旧锚点（12/10）实际命中
         # 的是面板里的「取消」按钮 —— 注入把它删掉，面板的 @click 还在，
         # 测试当然照绿；2026-10-19 全量护栏跑出的正是这条空转。
+        # 2026-10-22：处理器由内联 `emit('close')` 改名成 `onContentClick`（下拉关闭要吞掉
+        # 拖拽末尾那次 click）。锚点跟着换形状，注入摘掉它之后被钉的语义仍然是"点一项不收起"。
         injections=[(
-            "        @click=\"emit('close')\"\n      >",
+            "        @click=\"onContentClick\"\n      >",
             "      >",
         )],
         cmd=npm("test"),

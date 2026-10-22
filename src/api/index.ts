@@ -1,11 +1,12 @@
 // Tauri 后端调用封装（invoke 参数使用 camelCase，后端自动转换为 snake_case）。
 
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppSettings, CacheInfo, CleanupReport, ContentAudience, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, ExternalLinkImportResult, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, FriendKeyRotation, Group, GroupHistoryProgress, GroupReadInfo, InterfaceInfo, LinkState, LogEntry, MessageRecord, Peer, PeerReadInfo, PendingRequest, RelayConfig, RelayProbe, RoutedEndpoint, RuntimeSnapshot, TransferInfo } from "@/types";
+import type { AppSettings, CacheInfo, CleanupReport, ContentAudience, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, ExternalLinkImportResult, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, FriendKeyRotation, Group, GroupHistoryProgress, GroupReadInfo, InterfaceInfo, LinkState, LogEntry, MessageRecord, Peer, PeerReadInfo, PendingRequest, RelayConfig, RelayProbe, RoutedEndpoint, RuntimeDiag, RuntimeSnapshot, TransferInfo } from "@/types";
 import type { TodoImage } from "@/utils/todos";
 import { chatSearchGroupSchema, groupFileEntrySchema, parseIpcList, shareEntrySchema } from "@/utils/validation";
 import type { PreviewGallery, PreviewImage } from "@/types";
+import type { UpdaterDownloadEvent, UpdaterInfo } from "@/types";
 export const api = {
   /**
    * 监听"**另一个窗口**改了设置"（外观 / 语言 / 资料 / 目录 / 缓存策略）。
@@ -462,6 +463,13 @@ export const api = {
   // 开发者诊断（隐藏面板用）
   getDiscoveryDiag: () => invoke<DiscoveryDiag>("get_discovery_diag"),
   /**
+   * 运行时读数一次性出口（队列积压 / 链路 / 窗口 / 最近一次慢持锁）。
+   *
+   * 只有诊断面板打开或点刷新时才读：这几项要持 db 锁数四张表，
+   * 挂到任何会轮询的出口上都是在给那条唯一连接加排队（10-22 审计 R-30 与诊断规范同一条理由）。
+   */
+  getRuntimeDiag: () => invoke<RuntimeDiag>("get_runtime_diag"),
+  /**
    * 上报「应用是否在前台且窗口聚焦」。
    *
    * 后端蓝牙扫描据此在快/慢节奏间切换（前台 5s、后台/失焦 30s，见 `network/ble.rs`），
@@ -580,6 +588,15 @@ export const api = {
   updateExternalLink: (id: string, name: string, url: string) =>
     invoke<ExternalLink[]>("update_external_link", { id, name, url }),
   removeExternalLink: (id: string) => invoke<ExternalLink[]>("remove_external_link", { id }),
+  updaterCheck: () => invoke<UpdaterInfo | null>("updater_check"),
+  updaterDownload: (onEvent: (event: UpdaterDownloadEvent) => void) => {
+    const channel = new Channel<UpdaterDownloadEvent>();
+    channel.onmessage = onEvent;
+    return invoke<void>("updater_download", { onEvent: channel });
+  },
+  updaterCancel: () => invoke<void>("updater_cancel"),
+  updaterInstall: () => invoke<void>("updater_install"),
+  updaterClose: () => invoke<void>("updater_close"),
   exportExternalLinks: () => invoke<string>("export_external_links"),
   cleanupExternalLinksExport: (path: string) =>
     invoke<void>("cleanup_external_links_export", { path }),
@@ -686,6 +703,11 @@ export type EventHandlers = {
   onFileCancelled: (transferId: string) => void;
   /** 某条消息状态变更（msg_id: file-{tid} / gfile-{tid} 等）。前端据此刷新气泡状态。 */
   onMessageStatusChanged: (msgId: string) => void;
+  /**
+   * 某条消息**判死**（msg_id）。与上面那条的区别是有没有带事实：outbox 清扫已经把库里
+   * 这行写成 failed 才发这个事件，所以事件名就是结论，前端不必回库查（也查不到新东西）。
+   */
+  onMessageFailed: (msgId: string) => void;
   onPeerStyle: (p: PeerStyleUpdate) => void;
   /** 群信息变更（群密钥建群 / 群改名 / 成员变更） */
   onGroupsUpdated: (groupId: string) => void;
@@ -705,11 +727,53 @@ export type EventHandlers = {
   onNotificationClicked: (p: NotificationClick) => void;
   /** 另一个窗口清空了聊天数据（本窗口必须重建本地视图） */
   onDataCleared: () => void;
+  /**
+   * 群文件投递诊断行（后端事件 `group-file-log`，载荷是一行诊断文本）。
+   *
+   * 后端在群文件投递失败时把原因（哪个收件人、卡在哪一步）emit 出来，此前**没有任何订阅者**，
+   * 只挂在一条例外清单上写"暂无消费者（保留待接）"⇒ 用户看得到"K 人失败"，
+   * 却永远看不到为什么（10-22 审计 R-28 / D-3）。接进诊断面板，不弹 toast ——
+   * 这是给排障看的细节，不是每个用户都该被打断的东西。
+   */
+  onGroupFileLog: (line: string) => void;
 };
+
+/** 逐个 settle 一批 `listen` 注册，成功的一律交回、失败的按错误文本交回。
+ *
+ *  为什么不能直接 `await Promise.all([listen(), listen(), …])`（这里此前就是那样写的）：
+ *  `Promise.all` 只要有一个 reject 就**永远不产出数组**，而其余二十几个监听此时**已经真的注册进
+ *  内核**了 —— 它们的 unlisten 句柄只随返回值交出。返回值一丢，这批句柄就永久失踪；
+ *  下一次 `init` 重连只做 `chatInitScope?.dispose()`，回收不到它们 ⇒ 新旧两套监听并存，
+ *  同一个事件被处理两遍，而旧闭包引用的是上一轮的 store 状态。界面**完全无症状**，
+ *  表现是「某个功能哪天起就再没反应了」。
+ *
+ *  事件名不许从这里的字面量形状搬走：`src/api/events.test.ts` 用「`listen` 后可选泛型 + 左括号 +
+ *  字符串字面量」现解析前端订阅集合，改成包装函数会让那条契约判据数到更少的订阅而**不报错**。
+ *  （顺带一条实测教训：那条提取器**会读注释** —— 本文件注释里出现上述形状的示例文本，
+ *  就会被数成一条真监听，并让「前端听、后端不发」那条判据报出一个名叫 `name` 的死监听。） */
+async function settleRegistrations(
+  registrations: Array<Promise<UnlistenFn>>,
+): Promise<{ unlisteners: UnlistenFn[]; errors: string[] }> {
+  const unlisteners: UnlistenFn[] = [];
+  const errors: string[] = [];
+  await Promise.all(
+    registrations.map((p) =>
+      p.then(
+        (u) => {
+          unlisteners.push(u);
+        },
+        (e: unknown) => {
+          errors.push(e instanceof Error ? e.message : String(e));
+        },
+      ),
+    ),
+  );
+  return { unlisteners, errors };
+}
 
 /** 注册所有后端事件监听，返回取消函数集合。 */
 export async function bindEvents(h: EventHandlers): Promise<UnlistenFn[]> {
-  const unlisteners = await Promise.all([
+  const registrations: Array<Promise<UnlistenFn>> = [
     listen<Peer[]>("peers-updated", (e) => h.onPeers(e.payload)),
     listen<PendingRequest>("friend-request", (e) => h.onFriendRequest(e.payload)),
     listen<string>("friend-accepted", (e) => h.onFriendAccepted(e.payload)),
@@ -733,9 +797,14 @@ export async function bindEvents(h: EventHandlers): Promise<UnlistenFn[]> {
     listen<string>("file-cancelled", (e) => h.onFileCancelled(e.payload)),
     listen<string>("message-status-changed", (e) => h.onMessageStatusChanged(e.payload)),
     // 后端改了这些消息的状态就发对应事件（sweeper 判失败 / Ack 到达 / 文件被取消）。
-    // 前端一律走「从 DB 重查该会话」：状态的唯一真相源是 messages.status（INV-006/P15），
-    // 不在内存里再维护一套失败/取消状态机。
-    listen<string>("message-failed", (e) => h.onMessageStatusChanged(e.payload)),
+    // 分两类，按**事件带不带结论**判：
+    // - 只给 id（`message-status-changed`）：结论得回库查 ⇒ 正在看的会话重查，
+    //   没在看的等下次打开重查（`openConversation` 每次都拉 DB，已实测）。
+    // - 事件名就是结论（`message-failed`，outbox 先写库再发）：直接把这个事实盖到缓存上，
+    //   包含没在看的会话。这不是"第二套状态机"——写的就是库里那一份的值（INV-006/P15），
+    //   `file-cancelled` 从来就是这么做的。以前它挂在重查那一类上，代价是一次 IPC + 整列表
+    //   重建，而**后台会话依然什么都不更新**。
+    listen<string>("message-failed", (e) => h.onMessageFailed(e.payload)),
     listen<PeerStyleUpdate>("peer-style-updated", (e) => h.onPeerStyle(e.payload)),
     listen<string>("groups-updated", (e) => h.onGroupsUpdated(e.payload)),
     // 群历史同步进度（新成员入群后后台自动补，见 Rust `network/group_history.rs`）。
@@ -750,7 +819,24 @@ export async function bindEvents(h: EventHandlers): Promise<UnlistenFn[]> {
     listen<NotificationClick>("notification-clicked", (e) => h.onNotificationClicked(e.payload)),
     // 「另一个窗口清了数据」：后端在 clear_all_data 末尾广播（见 state::EVENT_DATA_CLEARED）
     listen("data-cleared", () => h.onDataCleared()),
-  ]);
+    // 群文件投递诊断（后端 `commands/group_todo_media.rs::app_handle_log`）。
+    listen<string>("group-file-log", (e) => h.onGroupFileLog(e.payload)),
+  ];
+  const { unlisteners, errors } = await settleRegistrations(registrations);
+  if (errors.length > 0) {
+    // 「要么全接上、要么一套都不留」：留着半套交回去也没用 —— 调用方 reject 后会重连，
+    // 而重连只 dispose 它拿得到手的那份，剩下这些句柄就成了孤儿监听。
+    for (const u of unlisteners) {
+      try {
+        u();
+      } catch {
+        // 回收失败不去掩盖注册失败本身
+      }
+    }
+    throw new Error(
+      `${errors.length}/${registrations.length} 个事件监听注册失败：${errors.join("；")}`,
+    );
+  }
   return unlisteners;
 }
 
@@ -768,10 +854,19 @@ export { APP_ACTION, emitAction, onAction, NAVIGATE_TO_CONTACTS };
  */
 export async function bindMenuEvents(): Promise<UnlistenFn[]> {
   const to = (action: AppAction) => () => emitAction(action);
-  return Promise.all([
+  const registrations: Array<Promise<UnlistenFn>> = [
     listen("menu://settings", to(APP_ACTION.openSettings)),
     listen("menu://add-friend", to(APP_ACTION.addFriend)),
     listen("menu://search", to(APP_ACTION.focusSearch)),
     listen("menu://logs", to(APP_ACTION.openLogs)),
-  ]);
+  ];
+  const { unlisteners, errors } = await settleRegistrations(registrations);
+  if (errors.length > 0) {
+    // 这条**不抛**：调用方是 `void bindMenuEvents().then(…)`（ResponsiveLayout），抛出会变成
+    // unhandled rejection。菜单快捷键是锦上添花，注册失败留成功的部分继续用即可。
+    console.error(
+      `${errors.length}/${registrations.length} 个原生菜单事件注册失败：${errors.join("；")}`,
+    );
+  }
+  return unlisteners;
 }

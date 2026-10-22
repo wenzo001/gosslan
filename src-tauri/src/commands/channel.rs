@@ -401,11 +401,107 @@ fn format_vacuum_note(wait_ms: u64, outcome: &crate::storage::vacuum::VacuumOutc
     }
 }
 
+/// 一次性运行时读数（10-22 审计 R-30 / D-16：DevDiag 面板此前缺「队列 / 活跃任务 / DB 锁」三节）。
+///
+/// 为什么是一条**按需**命令，而不是往 `RuntimeSnapshot` 里加字段：那份快照每次通道开关、
+/// 每次 `runtime-changed` 都要重发给每个窗口，而这里要的是四条 COUNT ——
+/// 把 db 读数挂在高频出口上就是给那唯一一条连接加排队（诊断规范也写明不许 >1/min 轮询）。
+/// 诊断面板是手动打开、手动刷新的，正好是这类读数的唯一合理触发点。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeDiag {
+    pub sending_msgs: i64,
+    pub outbox: i64,
+    pub group_outbox: i64,
+    pub file_outbox: i64,
+    /// 非空链路条数（口径与 `RUNTIME_SNAPSHOT` 那行日志同一个判据：只数非空）。
+    pub links: usize,
+    pub peers: usize,
+    pub windows: usize,
+    pub hidden_windows: usize,
+    /// 最近一次「慢持锁」那行原文（由 `db_hold` 的**唯一读者**留档）。None = 本轮没有慢持锁。
+    /// 面板不许自己 `take_summary()` —— 那是第二个读者，会把计数吞掉。
+    pub db_hold_note: Option<String>,
+    /// 在飞的「等点击」通知线程数与它的上限（审计 R-08）。上限由后端给：
+    /// 前端抄一份常数就等于给这条约束判了死刑（改一侧另一侧不会红）。
+    pub notify_waiters: usize,
+    pub notify_waiters_max: usize,
+}
+
+#[tauri::command(async)]
+pub async fn get_runtime_diag(state: State<'_, Arc<AppState>>) -> Result<RuntimeDiag, String> {
+    let s = state.inner().clone();
+    // `links` 是 async 锁 ⇒ 只能在 await 侧读；四个 COUNT 进阻塞池
+    // （INV-P34：命令体即使标了 `(async)` 也跑在 tokio worker 上，db 读数不该留在 worker 里）。
+    let links: usize = s
+        .links
+        .lock()
+        .await
+        .values()
+        .filter(|v| !v.is_empty())
+        .count();
+    let peers = s.peers.lock().unwrap_or_else(|e| e.into_inner()).len();
+    let windows = s.app.webview_windows();
+    let hidden_windows = windows
+        .values()
+        .filter(|w| !w.is_visible().unwrap_or(false))
+        .count();
+    let windows_total = windows.len();
+    drop(windows);
+    let db_hold_note = s
+        .db_hold_note
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let counts = tokio::task::spawn_blocking(move || s.runtime_counts())
+        .await
+        .unwrap_or(crate::state::RuntimeCounts {
+            sending_msgs: -1,
+            outbox: -1,
+            group_outbox: -1,
+            file_outbox: -1,
+        });
+    Ok(RuntimeDiag {
+        sending_msgs: counts.sending_msgs,
+        outbox: counts.outbox,
+        group_outbox: counts.group_outbox,
+        file_outbox: counts.file_outbox,
+        links,
+        peers,
+        windows: windows_total,
+        hidden_windows,
+        db_hold_note,
+        notify_waiters: crate::notifications::click_waiters_used(),
+        notify_waiters_max: crate::notifications::click_waiters_max(),
+    })
+}
+
 /// 启动 [`CACHE_CLEAN_FIRST_DELAY_SECS`] 后跑第一轮，之后每 [`CACHE_CLEAN_INTERVAL_SECS`]；
 /// 清理走 `clean_files`，VACUUM 只在释放量过 [`CACHE_CLEAN_VACUUM_MIN_FREED_BYTES`] 时才做 ——
 /// 整段在 spawn_blocking 里做：文件遍历/删除与偶发 VACUUM 都不该占用 tokio worker，
 /// 更不跨 await 持 db 锁。手动那条（`clear_cache`）不受这个阈值约束：是用户按的，等得起。
 pub fn spawn_cache_auto_clean(s: &std::sync::Arc<crate::state::AppState>) {
+    // 只起一次（10-22 审计 R-07）。这条 loop 挂在 `network::start()` 末尾、且刻意不进 `tasks`
+    // （见 `network/mod.rs`，所以 `stop()` 也收不掉它），而 `start()` 有多个生产入口：
+    // 前端 `start_network`、`set_channel_enabled("lan", true)`、启动时的自动重试。
+    // 没有这根闩，用户每拨一次 LAN 开关就永久多出一个清理器，它们全都排在**那唯一一条**
+    // SQLite 连接上做 VACUUM ⇒ 症状是"反复开关通道之后，App 隔一会儿冻一下"。
+    // 用 compare_exchange 而不是"先读再写"：两个入口可以并发进来，读判写之间会都放行。
+    if s.cache_clean_started
+        .compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        )
+        .is_err()
+    {
+        s.logger.info(
+            "cache",
+            "code=CACHE_CLEAN_ALREADY_RUNNING —— 清理器已在跑，本次启动请求被合并",
+        );
+        return;
+    }
     let st = s.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_secs(CACHE_CLEAN_FIRST_DELAY_SECS)).await;
@@ -472,38 +568,49 @@ fn db_file_bytes(s: &AppState) -> u64 {
 
 /// 存储占用与当前清理策略。
 #[tauri::command(async)]
-pub fn get_cache_info(state: State<'_, Arc<AppState>>) -> CacheInfo {
-    let s = state.inner();
-    let policy = load_policy(s);
-    let (media_count, media_bytes) = cache_cleaner::usage(&media_dirs(s));
-    CacheInfo {
-        media_count,
-        media_bytes,
-        db_bytes: db_file_bytes(s),
-        retention_days: policy.retention_days,
-        max_bytes: policy.max_bytes,
-    }
+pub async fn get_cache_info(state: State<'_, Arc<AppState>>) -> Result<CacheInfo, String> {
+    let s = state.inner().clone();
+    // `usage()` 是对媒体目录的**递归 walk**，`db_file_bytes` 还 stat 数据库文件：
+    // 这条挂在设置页"缓存"那一行，打开设置就打 ⇒ 不能在 worker 上跑（审计 R-18）。
+    tokio::task::spawn_blocking(move || -> Result<CacheInfo, String> {
+        let policy = load_policy(&s);
+        let (media_count, media_bytes) = cache_cleaner::usage(&media_dirs(&s));
+        Ok(CacheInfo {
+            media_count,
+            media_bytes,
+            db_bytes: db_file_bytes(&s),
+            retention_days: policy.retention_days,
+            max_bytes: policy.max_bytes,
+        })
+    })
+    .await
+    .map_err(|e| format!("缓存用量统计被线程池中断: {e}"))?
 }
 
 /// 设置缓存清理策略（保留时长 / 磁盘配额；`None` 或 `0` 表示不限制）。
 #[tauri::command(async)]
-pub fn set_cache_policy(
+pub async fn set_cache_policy(
     state: State<'_, Arc<AppState>>,
     window: tauri::WebviewWindow,
     retention_days: Option<u32>,
     max_bytes: Option<u64>,
 ) -> Result<(), String> {
-    let s = state.inner();
-    let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-    let d = retention_days.unwrap_or(0);
-    db::set_setting(&dbc, RETENTION_KEY, &d.to_string()).map_err(|e| e.to_string())?;
-    let m = max_bytes.unwrap_or(0);
-    db::set_setting(&dbc, MAX_BYTES_KEY, &m.to_string()).map_err(|e| e.to_string())?;
-    // patch 在**持锁时**读好（见 settings_patch_values 的调用约定），再放锁、再广播
-    let changed = ["retentionDays", "maxBytes"];
-    let patch = settings_patch_values(&dbc, &changed);
-    drop(dbc);
-    state.notify_settings_changed(&changed, Some(window.label()), patch);
+    let s = state.inner().clone();
+    const CHANGED: [&str; 2] = ["retentionDays", "maxBytes"];
+    // 持锁段整块进阻塞池（审计 R-18）。`patch` 必须在**同一把锁里**读好
+    // （`settings_patch_values` 的调用约定：广播的值要和刚写进去的那一份同源）。
+    let patch = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, String> {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        let d = retention_days.unwrap_or(0);
+        db::set_setting(&dbc, RETENTION_KEY, &d.to_string()).map_err(|e| e.to_string())?;
+        let m = max_bytes.unwrap_or(0);
+        db::set_setting(&dbc, MAX_BYTES_KEY, &m.to_string()).map_err(|e| e.to_string())?;
+        Ok(settings_patch_values(&dbc, &CHANGED))
+    })
+    .await
+    .map_err(|e| format!("缓存策略写入被线程池中断: {e}"))??;
+    // 广播留在 await 之后：它给别的窗口发事件，不该占着 db 锁做。
+    state.notify_settings_changed(&CHANGED, Some(window.label()), patch);
     Ok(())
 }
 
@@ -536,12 +643,27 @@ pub async fn clean_cache_now(state: State<'_, Arc<AppState>>) -> Result<CleanupR
     // 结局必须回到界面上（用户点了却看不到库变小会困惑）⇒ 塞进 `db_compact_state`，
     // 前端按码本地化一句话告诉他"整理完成"还是"超时已取消、内容完好、下次自动再试"。
     if report.removed > 0 {
-        let outcome = {
-            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        // VACUUM 进阻塞池（10-22 审计 R-19 的**手动**那一半）。
+        // `s.db` 是那唯一一条连接的 `std::sync::Mutex`，而 `vacuum_with_budget` 是同步调用 ——
+        // 留在 `pub async fn` 里就是"一个 tokio worker 被按住最长 3 秒，同时全 App 的读写排队"。
+        // 上面 6h 自动那条早就走 spawn_blocking（同文件里就在旁边），手动这条是漏网的那个，
+        // 而"点立即清理"恰恰是用户主动等结果的动作，冻住一个 worker 还会连带饿死别的任务。
+        // 纪律与自动路径一致：锁只在 VACUUM 期间持有，拿到 outcome 立刻释放。
+        let st2 = s.clone();
+        let outcome = match tauri::async_runtime::spawn_blocking(move || {
+            let dbc = st2.db.lock().unwrap_or_else(|e| e.into_inner());
             crate::storage::vacuum::vacuum_with_budget(
                 &dbc,
                 crate::storage::vacuum::DEFAULT_VACUUM_BUDGET_MS,
             )
+        })
+        .await
+        {
+            Ok(o) => o,
+            Err(e) => crate::storage::vacuum::VacuumOutcome::Failed {
+                exec_ms: 0,
+                reason: format!("数据库整理任务被线程池中断: {e}"),
+            },
         };
         report.db_compact_state = Some(outcome.state_code().to_string());
         if !outcome.is_completed() {

@@ -10,6 +10,7 @@ import {
   TODO_STATUS_DEFAULT,
   TODO_STATUS_PILL,
   TODO_STATUSES,
+  assigneesInGroup,
   canArchiveOrReopenTodo,
   canEditAssignees,
   canUpdateTodo,
@@ -967,6 +968,13 @@ test("首屏三态：读到过 = ready；没读到有记录 = error；没读到�
   assert.equal(todoRowsLoadState({}, {}, "group:c").status, "loading");
   // 键存在即"读到过"：空数组是合法的"这个群确实没有任务"，不是还没读
   assert.equal(todoRowsLoadState({ "group:d": [] }, {}, "group:d").status, "ready");
+});
+
+test("群任务指派收敛：只保留当前成员；群资料未加载时不误删", () => {
+  assert.deepEqual(assigneesInGroup(["me", "gone", "keep"], ["me", "keep"]), ["me", "keep"]);
+  assert.deepEqual(assigneesInGroup(["me", "gone"], []), ["me", "gone"], "成员表未加载时不能把历史指派清空");
+  assert.deepEqual(assigneesInGroup(["me", "gone"], ["me"]), ["me"]);
+  assert.deepEqual(assigneesInGroup([], ["me"]), []);
 });
 
 test("首屏三态：成功读到过之后，残留的失败记录不能把内容盖成错误态", () => {

@@ -227,7 +227,9 @@
     #[test]
     fn pending_requests_exclude_existing_friends() {
         let commands = all_commands_src();
-        let body = rust_fn_body(commands, "pub fn get_pending_requests(");
+        // 锚点只到 `fn 名字(`：这条命令现在是 `async fn` + spawn_blocking（审计 R-18），
+        // 钉 `pub fn` 会在**换形状而语义没变**时红 —— 要守的是"列表必须按好友关系过滤"。
+        let body = rust_fn_body(commands, "fn get_pending_requests(");
         assert!(
             body.contains("is_actionable_request"),
             "列表必须按好友关系过滤 —— 否则「已经是好友了申请还挂着」只能靠每条路径都记得清"
@@ -439,7 +441,9 @@
         );
         // ④ 列表命令只返回**仍是好友**的候选（删好友后横幅必须立刻消失）。
         let cmd = all_commands_src();
-        let get = rust_fn_body(cmd, "pub fn get_friend_key_rotations(");
+        // 锚点只到 `fn 名字(`：这条现在已经是 `async fn` + spawn_blocking（审计 R-18），
+        // 钉 `pub fn` 会在"换形状而语义没变"时红。要守的是下面那三条判据，不是签名写法。
+        let get = rust_fn_body(cmd, "fn get_friend_key_rotations(");
         assert!(
             get.contains("db::get_friend(&dbc, &device_id)"),
             "候选列表必须按好友表现滤：删除好友后该候选不能再出现在聊天界面"

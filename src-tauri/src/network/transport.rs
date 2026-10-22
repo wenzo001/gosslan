@@ -1369,6 +1369,10 @@ async fn handle_group_key(
     {
         let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
         db::upsert_group(&dbc, &group_id, &display_name, &from, &all).ok();
+        // 本函数上方已拒绝 `from != known_group.creator`；首次接触也只有发送方能提供成员表。
+        // 因此这里是群主的权威成员表：整体替换，清掉离线期间漏收退群帧留下的旧成员。
+        // （`upsert_group` 的 INSERT OR IGNORE 只增不减，不能单独用来收敛。）
+        db::replace_group_members(&dbc, &group_id, &all).ok();
         // ★ 会话标题跟着群资料走（负责人 2026-10-10 拍板的 #22）：群主改名时**离线**的成员
         // 此前要等群主下次在群里说话才看得到新名 —— 而新名其实**早就到了他机器上**
         // （`pending_keys` 重递带的是当前名，本函数也已把它写进 `groups`），缺的只有这一格。

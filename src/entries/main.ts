@@ -12,8 +12,12 @@ import {
   installFrontendErrorReporting,
   mountMainWindow,
 } from "@/boot/boot";
+import { updater } from "@/updater/instance";
+import { scheduleAutoUpdateCheck } from "@/updater/schedule";
 
 installFrontendErrorReporting();
 const app = createWindowApp(App);
 app.use(mainRouter);
 mountMainWindow(app);
+// 主界面已可操作后再异步检查一次；失败静默、无弹窗、无重试（离线零打扰）。
+scheduleAutoUpdateCheck(updater);

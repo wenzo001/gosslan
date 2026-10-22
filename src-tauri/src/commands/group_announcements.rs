@@ -17,55 +17,61 @@ pub struct ActiveAnnouncement {
 }
 
 #[tauri::command(async)]
-pub fn list_active_group_announcements(
+pub async fn list_active_group_announcements(
     state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<ActiveAnnouncement>, String> {
-    use std::collections::{HashMap, HashSet};
-    let s = state.inner();
-    let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-    let mut stmt = dbc
-        .prepare(
-            "SELECT conv_id, msg_id, seq, content FROM messages \
+    let s = state.inner().clone();
+    // 整段进阻塞池：这是一次**跨全部会话的公告扫描**（不是点查），群聊历史一长就是几百行，
+    // 而它挂在会话打开那条刷新链上 ⇒ 留在 worker 上等于让公告扫描排队别的命令。
+    tokio::task::spawn_blocking(move || -> Result<Vec<ActiveAnnouncement>, String> {
+        use std::collections::{HashMap, HashSet};
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = dbc
+            .prepare(
+                "SELECT conv_id, msg_id, seq, content FROM messages \
              WHERE kind IN ('announcement', 'announcement_delete') AND conv_id LIKE 'group:%' \
              ORDER BY seq ASC, msg_id ASC",
-        )
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, i64>(2)?,
-                r.get::<_, String>(3)?,
-            ))
-        })
-        .map_err(|e| e.to_string())?;
-    // 按到达序处理：每群保留最后一条公告（= (seq, msg_id) 最大），墓碑进集合。
-    let mut best: HashMap<String, (i64, String, String)> = HashMap::new();
-    let mut tombstones: HashSet<(String, String)> = HashSet::new();
-    for row in rows.flatten() {
-        let (conv_id, msg_id, seq, content) = row;
-        let group_id = conv_id.trim_start_matches("group:").to_string();
-        if let Ok(p) = serde_json::from_str::<crate::protocol::AnnouncementPayload>(&content) {
-            best.insert(group_id.clone(), (seq, msg_id, p.text));
-        } else if let Ok(p) =
-            serde_json::from_str::<crate::protocol::AnnouncementDeletePayload>(&content)
-        {
-            tombstones.insert((group_id, p.ann_id));
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        // 按到达序处理：每群保留最后一条公告（= (seq, msg_id) 最大），墓碑进集合。
+        let mut best: HashMap<String, (i64, String, String)> = HashMap::new();
+        let mut tombstones: HashSet<(String, String)> = HashSet::new();
+        for row in rows.flatten() {
+            let (conv_id, msg_id, seq, content) = row;
+            let group_id = conv_id.trim_start_matches("group:").to_string();
+            if let Ok(p) = serde_json::from_str::<crate::protocol::AnnouncementPayload>(&content) {
+                best.insert(group_id.clone(), (seq, msg_id, p.text));
+            } else if let Ok(p) =
+                serde_json::from_str::<crate::protocol::AnnouncementDeletePayload>(&content)
+            {
+                tombstones.insert((group_id, p.ann_id));
+            }
         }
-    }
-    let mut out: Vec<ActiveAnnouncement> = Vec::new();
-    for (group_id, (_seq, msg_id, text)) in best {
-        if tombstones.contains(&(group_id.clone(), msg_id.clone())) {
-            continue;
+        let mut out: Vec<ActiveAnnouncement> = Vec::new();
+        for (group_id, (_seq, msg_id, text)) in best {
+            if tombstones.contains(&(group_id.clone(), msg_id.clone())) {
+                continue;
+            }
+            out.push(ActiveAnnouncement {
+                group_id,
+                msg_id,
+                text,
+            });
         }
-        out.push(ActiveAnnouncement {
-            group_id,
-            msg_id,
-            text,
-        });
-    }
-    Ok(out)
+        Ok(out)
+    })
+    .await
+    .map_err(|e| format!("群公告扫描被线程池中断: {e}"))?
 }
 
 /// 公告长度上限：与群名（40）同档量级 —— 公告是置顶横幅里的一段短文本，

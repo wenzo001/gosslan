@@ -26,13 +26,26 @@ CASES: list[Case] = [
         name="主线程守卫（同步命令碰数据库必须报出）",
         why="用户反馈的三个卡死现象就来自这条：同步命令在 macOS 主线程执行，长事务持锁时全部窗口冻住",
         file=TAURI / "src" / "commands.rs",
+        # 注入的是**合成出来的违规命令**，不是任何真实命令 —— 用真实命令当锚点，那条命令哪天
+        # 被搬进阻塞池，摘掉 `(async)` 就不再改变执行位置 ⇒ 注上去什么都没变、守卫静默空转。
+        # 本会话已经为这件事换过两次人（get_settings → save_settings → add_external_link），
+        # 第三版改成自己造违规形状：锚点是一条永久留在模块层的 doc 行，注入体自己带 db 访问。
         injections=[(
-            "#[tauri::command(async)]\npub fn get_settings",
-            "#[tauri::command]\npub fn get_settings",
+            "/// 导入并合并（按规范化后的 URL 去重；不覆盖已有条目的名字）。",
+            '''#[tauri::command]
+pub fn guard_case_fixture_db(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Vec<ExternalLink> {
+    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+    let _ = db::get_setting(&dbc, EXTERNAL_LINKS_KEY);
+    Vec::new()
+}
+
+/// 导入并合并（按规范化后的 URL 去重；不覆盖已有条目的名字）。''',
         )],
         cmd=cargo("test", "--lib", "blocking_commands_run_off_the_main_thread"),
         cwd=TAURI,
-        expect_fail_hint="get_settings",
+        expect_fail_hint="guard_case_fixture_db",
         tags=["rust", "perf"],
     ),
     Case(

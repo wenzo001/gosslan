@@ -87,21 +87,27 @@ pub fn save_outgoing_image(
 ///
 /// 用 canonicalize 比对，避免 `../` 或符号链接绕过前缀匹配。
 #[tauri::command(async)]
-pub fn delete_file(state: State<'_, Arc<AppState>>, path: String) -> Result<(), String> {
-    let s = state.inner();
-    let file = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
-    let dl = s
-        .downloads_dir
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone();
-    let under_downloads = std::fs::canonicalize(&dl)
-        .map(|dir| path_under_any(&file, &[dir]))
-        .unwrap_or(false);
-    if !under_downloads {
-        return Err("只能删除下载目录内的文件".to_string());
-    }
-    std::fs::remove_file(&file).map_err(|e| e.to_string())
+pub async fn delete_file(state: State<'_, Arc<AppState>>, path: String) -> Result<(), String> {
+    let s = state.inner().clone();
+    // 两次 canonicalize + remove：全是文件系统调用（审计 R-18）。安全闸（只能删下载目录内）
+    // 与判据顺序一字不动，只是整段换个线程跑。
+    tokio::task::spawn_blocking(move || -> Result<(), String> {
+        let file = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
+        let dl = s
+            .downloads_dir
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let under_downloads = std::fs::canonicalize(&dl)
+            .map(|dir| path_under_any(&file, &[dir]))
+            .unwrap_or(false);
+        if !under_downloads {
+            return Err("只能删除下载目录内的文件".to_string());
+        }
+        std::fs::remove_file(&file).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("文件删除被线程池中断: {e}"))?
 }
 
 /// 纯函数：`file` 是否落在 `roots` 里任意一个之下（**按路径分量**比，不是字符串前缀）。
@@ -183,12 +189,17 @@ pub fn apply_macos_window_shape(window: tauri::WebviewWindow, dark: bool) -> Res
 
 /// 群文件投递摘要（气泡成员状态文案用）：总数/completed/failed/待投递。
 #[tauri::command(async)]
-pub fn get_group_file_delivery_summary(
+pub async fn get_group_file_delivery_summary(
     state: State<'_, Arc<AppState>>,
     transfer_id: String,
-) -> Option<db::GroupFileDeliverySummary> {
-    let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
-    db::get_group_file_delivery_summary(&dbc, &transfer_id)
+) -> Result<Option<db::GroupFileDeliverySummary>, String> {
+    let s = state.inner().clone();
+    tokio::task::spawn_blocking(move || -> Result<Option<db::GroupFileDeliverySummary>, String> {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(db::get_group_file_delivery_summary(&dbc, &transfer_id))
+    })
+    .await
+    .map_err(|e| format!("投递统计读取被线程池中断: {e}"))?
 }
 
 /// 群文件列表里的一项（前端「群文件」面板）。
@@ -216,63 +227,69 @@ pub struct GroupFileEntry {
 /// （缓存清理会删掉媒体文件，见 `clean_cache_now`）。只信 DB 会让面板列出
 /// 一堆点了打不开的条目。
 #[tauri::command(async)]
-pub fn list_group_files(
+pub async fn list_group_files(
     state: State<'_, Arc<AppState>>,
     group_id: String,
 ) -> Result<Vec<GroupFileEntry>, String> {
-    let s = state.inner();
-    let me = s.device_id.clone();
-    // 先把 DB 该给的都取出来，**随即释放 db 锁** —— 下面的磁盘 stat 是阻塞 I/O，
-    // 持着全局 db 锁做 N 次 stat 会把整条消息链路的落库一起堵住。
-    type Row = (crate::state::GroupFile, i64, i64, String, Option<String>);
-    let rows: Vec<Row> = {
-        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        let files = db::list_group_files(&dbc, &group_id).map_err(|e| e.to_string())?;
-        files
+    let s = state.inner().clone();
+    // 整段进阻塞池（审计 R-18）：前半是每行 3~4 次持 db 锁的点查，后半是**每个文件一次磁盘
+    // stat** —— 群文件面板一打开就打这条，留在 worker 上等于让"打开面板"占住一个工作线程。
+    tokio::task::spawn_blocking(move || -> Result<Vec<GroupFileEntry>, String> {
+        let me = s.device_id.clone();
+        // 先把 DB 该给的都取出来，**随即释放 db 锁** —— 下面的磁盘 stat 是阻塞 I/O，
+        // 持着全局 db 锁做 N 次 stat 会把整条消息链路的落库一起堵住。
+        type Row = (crate::state::GroupFile, i64, i64, String, Option<String>);
+        let rows: Vec<Row> = {
+            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+            let files = db::list_group_files(&dbc, &group_id).map_err(|e| e.to_string())?;
+            files
+                .into_iter()
+                .map(|f| {
+                    let summary = db::get_group_file_delivery_summary(&dbc, &f.transfer_id);
+                    let (delivered, total) = match summary {
+                        Some(x) => (x.completed, x.total),
+                        None => (0, 0),
+                    };
+                    let my_status = db::get_group_file_recipient_status(&dbc, &f.transfer_id, &me)
+                        .unwrap_or_default();
+                    let path = db::get_transfer_path(&dbc, &f.transfer_id);
+                    (f, delivered, total, my_status, path)
+                })
+                .collect()
+        };
+        Ok(rows
             .into_iter()
-            .map(|f| {
-                let summary = db::get_group_file_delivery_summary(&dbc, &f.transfer_id);
-                let (delivered, total) = match summary {
-                    Some(x) => (x.completed, x.total),
-                    None => (0, 0),
+            .map(|(f, delivered, total, my_status, path)| {
+                let (local_state, local_path) = if f.sender_id == me {
+                    // 发送者不参与 recipients（见 send_group_file 的成员过滤），其 recipient 行
+                    // 恒为空 —— 按 my_status 判定会让自己发的文件永远显示"未取到"。
+                    // 本机是否还留着原件，只能看磁盘。
+                    local_path_state(path)
+                } else {
+                    match my_status.as_str() {
+                        "completed" => local_path_state(path),
+                        "sending" | "pending" => ("receiving".to_string(), None),
+                        "failed" => ("failed".to_string(), None),
+                        // 没有 recipient 行：该文件早于本机入群，尚未登记接收
+                        _ => ("remote".to_string(), None),
+                    }
                 };
-                let my_status = db::get_group_file_recipient_status(&dbc, &f.transfer_id, &me)
-                    .unwrap_or_default();
-                let path = db::get_transfer_path(&dbc, &f.transfer_id);
-                (f, delivered, total, my_status, path)
-            })
-            .collect()
-    };
-    Ok(rows
-        .into_iter()
-        .map(|(f, delivered, total, my_status, path)| {
-            let (local_state, local_path) = if f.sender_id == me {
-                // 发送者不参与 recipients（见 send_group_file 的成员过滤），其 recipient 行
-                // 恒为空 —— 按 my_status 判定会让自己发的文件永远显示"未取到"。
-                // 本机是否还留着原件，只能看磁盘。
-                local_path_state(path)
-            } else {
-                match my_status.as_str() {
-                    "completed" => local_path_state(path),
-                    "sending" | "pending" => ("receiving".to_string(), None),
-                    "failed" => ("failed".to_string(), None),
-                    // 没有 recipient 行：该文件早于本机入群，尚未登记接收
-                    _ => ("remote".to_string(), None),
+                GroupFileEntry {
+                    transfer_id: f.transfer_id,
+                    name: f.name,
+                    size: f.size,
+                    sender_id: f.sender_id,
+                    created_at: f.created_at,
+                    local_state,
+                    local_path,
+                    delivered,
+                    total,
                 }
-            };
-            GroupFileEntry {
-                transfer_id: f.transfer_id,
-                name: f.name,
-                size: f.size,
-                sender_id: f.sender_id,
-                created_at: f.created_at,
-                local_state,
-                local_path,
-                delivered,
-                total,
-            }
-        })
-        .collect())
+            })
+            .collect())
+    })
+    .await
+    .map_err(|e| format!("群文件列表读取被线程池中断: {e}"))?
 }
 
 /// 路径 → 持有状态：路径存在且**文件仍在磁盘上**才算 `local`，否则回落到 `remote`。
@@ -690,12 +707,20 @@ pub async fn request_content_by_cid(
 
 /// 统一的内容传输状态（ADR-0019 Phase 1）：前端据此在气泡上显示
 /// 发送中 / 等待对方在线 / 网络不佳 / 未完成·点击重试 / 完成。
+///
+/// 同 `get_transfers`：查询本身已有 `LIMIT 200`（不是一句"没界"的抱怨），
+/// 但它是持 db 锁的读，挂在同步 `fn` 上就占住 tokio worker（R-18 同族）⇒ 进阻塞池。
 #[tauri::command(async)]
-pub fn get_content_transfers(
+pub async fn get_content_transfers(
     state: State<'_, Arc<AppState>>,
-) -> Vec<crate::content::TransferRecord> {
-    let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
-    crate::content::store::list(&dbc, 200).unwrap_or_default()
+) -> Result<Vec<crate::content::TransferRecord>, String> {
+    let s = state.inner().clone();
+    tokio::task::spawn_blocking(move || -> Result<Vec<crate::content::TransferRecord>, String> {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(crate::content::store::list(&dbc, 200).unwrap_or_default())
+    })
+    .await
+    .map_err(|e| format!("内容传输表读取被线程池中断: {e}"))?
 }
 
 /// 单聊文件的真实实现。**不再是 IPC 入口**：界面上只有 `send_file_auto` 这一条门。
@@ -791,10 +816,24 @@ pub async fn send_file_auto(
     send_file(state, friend_id, path).await
 }
 
+/// 传输表快照（10-22 审计 R-18 的一处）：整读进阻塞池。
+///
+/// 前端每次文件活动后都会拉一回这条（`refreshTransfers`），而 `list_transfers` 是对
+/// `file_transfers` 这张**只增历史表**的全表读，且持着那唯一一条 db 连接的锁。
+/// 挂在同步 `fn` 上的 `#[tauri::command(async)]` 不是豁免 —— 宏把函数体投进
+/// `async_runtime::spawn`，跑的是 tokio worker（INV-P34 那段推导在 `helpers.rs`）。
+/// 本机现量 13 行 ⇒ 今天不快，但这条的代价随使用增长，先把线程挪对再说。
 #[tauri::command(async)]
-pub fn get_transfers(state: State<'_, Arc<AppState>>) -> Vec<TransferInfo> {
-    let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
-    db::list_transfers(&dbc).unwrap_or_default()
+pub async fn get_transfers(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<TransferInfo>, String> {
+    let s = state.inner().clone();
+    tokio::task::spawn_blocking(move || -> Result<Vec<TransferInfo>, String> {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(db::list_transfers(&dbc).unwrap_or_default())
+    })
+    .await
+    .map_err(|e| format!("传输表读取被线程池中断: {e}"))?
 }
 
 // ---------------- 测试 ----------------

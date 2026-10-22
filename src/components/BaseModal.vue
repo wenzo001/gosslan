@@ -155,7 +155,7 @@ function onOpenChange(value: boolean) {
         <div
           :class="fullscreen
             ? (contained ? 'flex h-full items-stretch justify-center' : 'flex min-h-full items-stretch justify-center')
-            : 'flex min-h-full justify-center p-4'"
+            : 'flex min-h-full justify-center p-4 pb-[max(env(safe-area-inset-bottom),1rem)]'"
         >
           <div
             v-if="fullscreen"
@@ -189,6 +189,9 @@ function onOpenChange(value: boolean) {
             v-else
             class="elevated pointer-events-auto my-auto flex max-h-[calc(100vh-var(--gosslan-safe-top)-2rem)] w-full flex-col rounded-[var(--gosslan-radius-xl)] bg-[var(--gosslan-panel)] p-5 text-left align-middle text-[var(--gosslan-text)]"
             :class="width"
+            :style="app.isMobile && app.keyboardInset > 0
+              ? { maxHeight: `calc(100vh - var(--gosslan-safe-top) - ${app.keyboardInset + 12}px - 2rem)` }
+              : undefined"
           >
             <!-- ⚠️ 标题栏 `shrink-0` + 内容区 `min-h-0 flex-1` 是**一对**，缺一不可：
                  2026-10-12 用户实测「窗口大时卡片完整，窗口一缩小头部就被缩上去一些」。

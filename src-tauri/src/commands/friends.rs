@@ -29,89 +29,107 @@ const FRIEND_ONLINE_GRACE_MS: i64 = 15_000;
 ///
 /// 对端公钥取 peers 优先、friends 回落（与 `resolve_member_x25519` 同一口径）。
 #[tauri::command(async)]
-pub fn get_safety_number(state: State<'_, Arc<AppState>>, peer_id: String) -> Option<String> {
-    let s = state.inner();
-    let (their_x, their_e) = {
-        let peers = s.peers.lock().unwrap_or_else(|e| e.into_inner());
-        let p = peers.get(&peer_id);
-        (
-            p.and_then(|p| p.x25519_pubkey.clone()),
-            p.and_then(|p| p.ed25519_pubkey.clone()),
-        )
-    };
-    let (their_x, their_e) = {
-        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        (
-            their_x.or_else(|| db::get_friend_x25519(&dbc, &peer_id)),
-            their_e.or_else(|| db::get_friend_ed25519(&dbc, &peer_id)),
-        )
-    };
-    let (their_x, their_e) = (their_x?, their_e?);
-    Some(crypto::safety_number(
-        &crypto::SafetyParty {
-            device_id: &s.device_id,
-            x25519_pubkey: &s.identity.x25519_public_b64(),
-            ed25519_pubkey: &s.identity.ed25519_public_b64(),
-        },
-        &crypto::SafetyParty {
-            device_id: &peer_id,
-            x25519_pubkey: &their_x,
-            ed25519_pubkey: &their_e,
-        },
-    ))
+pub async fn get_safety_number(
+    state: State<'_, Arc<AppState>>,
+    peer_id: String,
+) -> Result<Option<String>, String> {
+    let s = state.inner().clone();
+    // 两次锁快照 + 两次点查 + 一次安全码推导（哈希/编码）：设置页与对方资料卡都会打这条。
+    tokio::task::spawn_blocking(move || -> Result<Option<String>, String> {
+        let (their_x, their_e) = {
+            let peers = s.peers.lock().unwrap_or_else(|e| e.into_inner());
+            let p = peers.get(&peer_id);
+            (
+                p.and_then(|p| p.x25519_pubkey.clone()),
+                p.and_then(|p| p.ed25519_pubkey.clone()),
+            )
+        };
+        let (their_x, their_e) = {
+            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+            (
+                their_x.or_else(|| db::get_friend_x25519(&dbc, &peer_id)),
+                their_e.or_else(|| db::get_friend_ed25519(&dbc, &peer_id)),
+            )
+        };
+        // 拿不到任一份公钥 = "还没核实过对方身份"，界面显示空而不是报错（语义与改造前一致：
+        // 原来这条命令返回 Option，`?` 是在 Option 上；搬进返回 Result 的闭包后必须显式退 None）。
+        let (Some(their_x), Some(their_e)) = (their_x, their_e) else {
+            return Ok(None);
+        };
+        Ok(Some(crypto::safety_number(
+            &crypto::SafetyParty {
+                device_id: &s.device_id,
+                x25519_pubkey: &s.identity.x25519_public_b64(),
+                ed25519_pubkey: &s.identity.ed25519_public_b64(),
+            },
+            &crypto::SafetyParty {
+                device_id: &peer_id,
+                x25519_pubkey: &their_x,
+                ed25519_pubkey: &their_e,
+            },
+        )))
+    })
+    .await
+    .map_err(|e| format!("安全码计算被线程池中断: {e}"))?
 }
 
 #[tauri::command(async)]
-pub fn get_friends(state: State<'_, Arc<AppState>>) -> Vec<Friend> {
-    let s = state.inner();
-    // 同时检查活跃 TCP 链接：链路存活但 peer 已被 discovery sweep 清掉时，
-    // 仍应显示在线，避免「实际可通信但 UI 显示离线」。
-    // ⚠️ 只算**非空** Vec（与 `sweep_peers` / `has_link` 同一口径）：
-    // 残留的空 key 会让好友**永久显示在线**。根因已在 reader_loop 修掉，这里是防线。
-    let active_links: std::collections::HashSet<String> = s
-        .links
-        .try_lock()
-        .map(|l| {
-            l.iter()
-                .filter(|(_, v)| !v.is_empty())
-                .map(|(k, _)| k.clone())
+pub async fn get_friends(state: State<'_, Arc<AppState>>) -> Result<Vec<Friend>, String> {
+    let s = state.inner().clone();
+    // 整段进阻塞池：里面是 links/peers/peer_versions 三份快照 + 一次 `list_friends` 全表读 + 逐行富化，
+    // 全是同步动作（`links` 用的是 `try_lock`，在不认 async 的阻塞线程里同样合法）。
+    tokio::task::spawn_blocking(move || -> Result<Vec<Friend>, String> {
+        // 同时检查活跃 TCP 链接：链路存活但 peer 已被 discovery sweep 清掉时，
+        // 仍应显示在线，避免「实际可通信但 UI 显示离线」。
+        // ⚠️ 只算**非空** Vec（与 `sweep_peers` / `has_link` 同一口径）：
+        // 残留的空 key 会让好友**永久显示在线**。根因已在 reader_loop 修掉，这里是防线。
+        let active_links: std::collections::HashSet<String> = s
+            .links
+            .try_lock()
+            .map(|l| {
+                l.iter()
+                    .filter(|(_, v)| !v.is_empty())
+                    .map(|(k, _)| k.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let now = crate::db::now_ms();
+        // peers 的在线判定快照：**先取完并放锁**，下面才取 db。
+        // 持 peers 求 db 会与 Hello 路径的 db→peers 构成 ABBA（这条 IPC 恰恰是前端常调的）。
+        let peer_snapshot: std::collections::HashMap<String, (i64, String)> = {
+            let peers = s.peers.lock().unwrap_or_else(|e| e.into_inner());
+            peers
+                .iter()
+                .map(|(id, p)| (id.clone(), (p.last_seen, p.device_type.clone())))
                 .collect()
-        })
-        .unwrap_or_default();
-    let now = crate::db::now_ms();
-    // peers 的在线判定快照：**先取完并放锁**，下面才取 db。
-    // 持 peers 求 db 会与 Hello 路径的 db→peers 构成 ABBA（这条 IPC 恰恰是前端常调的）。
-    let peer_snapshot: std::collections::HashMap<String, (i64, String)> = {
-        let peers = s.peers.lock().unwrap_or_else(|e| e.into_inner());
-        peers
-            .iter()
-            .map(|(id, p)| (id.clone(), (p.last_seen, p.device_type.clone())))
-            .collect()
-    };
-    // 对端版本快照：与 device_type 同一个"读时富化"套路（`peer_versions` 只在验签后的
-    // Hello 里写入）。先取快照再拿 db 锁 —— 不为省事在持 db 锁期间再去锁别的表。
-    let versions: std::collections::HashMap<String, crate::state::PeerVersion> = s
-        .peer_versions
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone();
-    let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-    let mut friends = db::list_friends(&dbc).unwrap_or_default();
-    for f in friends.iter_mut() {
-        let (last_seen, device_type) = peer_snapshot
-            .get(&f.device_id)
-            .cloned()
-            .unwrap_or((0, String::new()));
-        f.online = friend_is_online(last_seen, now, active_links.contains(&f.device_id));
-        // 设备类型从 peers 表现场读取（Hello/UserInfo/Presence 都会更新它）。
-        f.device_type = device_type;
-        // 版本：判定放在唯一的 `peer_protocol_is_newer` 里，前端只消费结论。
-        let declared = versions.get(&f.device_id);
-        f.peer_app_version = declared.and_then(|v| v.app_version.clone());
-        f.peer_version_newer =
-            crate::protocol::peer_protocol_is_newer(declared.and_then(|v| v.protocol_version));
-    }
-    friends
+        };
+        // 对端版本快照：与 device_type 同一个"读时富化"套路（`peer_versions` 只在验签后的
+        // Hello 里写入）。先取快照再拿 db 锁 —— 不为省事在持 db 锁期间再去锁别的表。
+        let versions: std::collections::HashMap<String, crate::state::PeerVersion> = s
+            .peer_versions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        let mut friends = db::list_friends(&dbc).unwrap_or_default();
+        for f in friends.iter_mut() {
+            let (last_seen, device_type) = peer_snapshot
+                .get(&f.device_id)
+                .cloned()
+                .unwrap_or((0, String::new()));
+            f.online = friend_is_online(last_seen, now, active_links.contains(&f.device_id));
+            // 设备类型从 peers 表现场读取（Hello/UserInfo/Presence 都会更新它）。
+            f.device_type = device_type;
+            // 版本：判定放在唯一的 `peer_protocol_is_newer` 里，前端只消费结论。
+            let declared = versions.get(&f.device_id);
+            f.peer_app_version = declared.and_then(|v| v.app_version.clone());
+            f.peer_version_newer =
+                crate::protocol::peer_protocol_is_newer(declared.and_then(|v| v.protocol_version));
+        }
+        Ok(friends)
+    })
+    .await
+    .map_err(|e| format!("好友列表读取被线程池中断: {e}"))?
 }
 
 /// 删除好友（保留聊天记录；对方仍会出现在扫描列表，可重新添加）。
@@ -158,32 +176,37 @@ pub struct FriendKeyRotation {
 /// 候选只在内存里（见 `AppState::pending_key_rotations`），且只返回**仍是好友**的条目；
 /// 已经删除的好友自然消失。聊天界面据此显示「同步新密钥」横幅。
 #[tauri::command(async)]
-pub fn get_friend_key_rotations(
+pub async fn get_friend_key_rotations(
     state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<FriendKeyRotation>, String> {
-    let s = state.inner();
-    let pending = s
-        .pending_key_rotations
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone();
-    let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-    let mut out = Vec::new();
-    for (device_id, c) in pending {
-        // 只保留仍是好友的：删除好友后横幅必须立刻消失。
-        if let Some((nickname, _)) = db::get_friend(&dbc, &device_id) {
-            out.push(FriendKeyRotation {
-                device_id,
-                nickname,
-                x25519_pubkey: c.x25519_pubkey,
-                ed25519_pubkey: c.ed25519_pubkey,
-                ts: c.ts,
-            });
+    let s = state.inner().clone();
+    // 一次内存快照 + 每个候选一次好友点查（持 db 锁）⇒ 进阻塞池（审计 R-18）。
+    tokio::task::spawn_blocking(move || -> Result<Vec<FriendKeyRotation>, String> {
+        let pending = s
+            .pending_key_rotations
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        let mut out = Vec::new();
+        for (device_id, c) in pending {
+            // 只保留仍是好友的：删除好友后横幅必须立刻消失。
+            if let Some((nickname, _)) = db::get_friend(&dbc, &device_id) {
+                out.push(FriendKeyRotation {
+                    device_id,
+                    nickname,
+                    x25519_pubkey: c.x25519_pubkey,
+                    ed25519_pubkey: c.ed25519_pubkey,
+                    ts: c.ts,
+                });
+            }
         }
-    }
-    // 新观察到的候选排最前（Reverse ⇒ 按 ts 降序；clippy 要求 sort_by_key）。
-    out.sort_by_key(|r| std::cmp::Reverse(r.ts));
-    Ok(out)
+        // 新观察到的候选排最前（Reverse ⇒ 按 ts 降序；clippy 要求 sort_by_key）。
+        out.sort_by_key(|r| std::cmp::Reverse(r.ts));
+        Ok(out)
+    })
+    .await
+    .map_err(|e| format!("密钥轮换候选读取被线程池中断: {e}"))?
 }
 
 /// 用户确认「对方换密钥是本人操作（如重装应用）」后，把好友的身份密钥同步成新值。

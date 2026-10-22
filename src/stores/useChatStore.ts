@@ -6,8 +6,10 @@ import {
   applyIncomingToConversations,
   applyReplacements,
   appendLocalOnly,
+  existingIdsFor,
   furthestStatus,
   mergeMessages,
+  markStatusInCache,
   freshMentionedConvs,
   pickMediaContent,
   preserveDeliveryStatus,
@@ -17,6 +19,7 @@ import {
   pruneUnreadClears,
   selectCachedConversations,
   sortConversations,
+  statusSnapshotFor,
   syncProfileFromPeers,
   unreadAnchorIndex,
 } from "@/utils/messages";
@@ -27,6 +30,7 @@ import { prefersReducedMotion } from "@/utils/platform";
 import { shouldRunThrottled } from "@/utils/defer";
 import { createInitScope, type InitScope } from "@/utils/initScope";
 import { StaleGuard } from "@/utils/staleGuard";
+import { progressAdvanced, stallFlagAlive } from "@/utils/transferProgressWatch";
 import { createSingleFlight } from "@/utils/singleFlight";
 import { EMPTY_STRING_LIST } from "@/utils/emptyList";
 import { actionableRequests } from "@/utils/friendRequests";
@@ -706,11 +710,12 @@ export const useChatStore = defineStore("chat", () => {
 
   async function applyIncoming(raw: MessageRecord[]) {
     if (raw.length === 0) return;
+    // 这两份快照只统计**这一批涉及的会话**。以前它们每批遍历一次全部缓存会话的全部消息
+    //（缓存上限内约合每帧上万次 Map/Set 写入，而事件风暴、传文件回填时这个函数每帧跑一次），
+    // 换来的信息全部落在批外。判据见 utils/messages.test.ts 那几条真值表。
+    const touched = new Set(raw.map((m) => m.conv_id));
     // 快照当前各条目的送达状态，供 applyReplacements 做 furthestStatus 比较
-    const curStatus = new Map<string, string>();
-    for (const list of Object.values(messages.value)) {
-      for (const m of list) curStatus.set(m.msg_id, m.status);
-    }
+    const curStatus = statusSnapshotFor(messages.value, touched);
     const batch = applyReplacements(raw, pendingReplace, curStatus);
     const byConv = new Map<string, MessageRecord[]>();
     for (const m of batch) {
@@ -722,10 +727,7 @@ export const useChatStore = defineStore("chat", () => {
     // （直连 / outbox 补发 / Gossip 转发）反复 emit `message-received`，若按整批长度累加，
     // 重复投递会一次次 +1，导致「发几条、数字却几十」——未读数虚高的根因。
     // 按 msg_id 与内存已有消息比对后，再据此累加 unread。
-    const existingIdsByConv = new Map<string, Set<string>>();
-    for (const [cid, list] of Object.entries(messages.value)) {
-      existingIdsByConv.set(cid, new Set(list.map((m) => m.msg_id)));
-    }
+    const existingIdsByConv = existingIdsFor(messages.value, touched);
     const newByConv = new Map<string, MessageRecord[]>();
     for (const [cid, list] of byConv) {
       const known = existingIdsByConv.get(cid) ?? new Set<string>();
@@ -800,15 +802,33 @@ export const useChatStore = defineStore("chat", () => {
     if (batch.some((m) => m.kind === "todo" || m.kind === "todo_update")) void refreshOpenTodos();
   }
 
+  /** 批量队列堆积到这个量级就值得说一句（审计 1.7 的软上限）。 */
+  const BACKLOG_WARN_AT = 5000;
+  /** 同一件事 60s 内只说一次（日志同 key 每 60s 最多 1 行那条规矩，toast 更得守）。 */
+  const BACKLOG_NOTICE_MS = 60_000;
+  let lastBacklogNoticeAt = 0;
+
   function enqueueMessage(rec: MessageRecord) {
     pending.push(rec);
     // 批量队列软上限（审计 1.7）：正常情况下 rAF 一帧内就会清空；堆积到这个量级
     // 说明 flush 调度已经失灵（或事件风暴），必须留痕 —— 无告警时它只是安静地吃内存。
-    if (pending.length === 5000) {
-      console.error("[chat] 消息批量队列堆积 5000 条：flush 调度疑似失灵", {
-        flushScheduled,
-        hidden: document.hidden,
-      });
+    //
+    // 判据从 `=== 5000` 改成 `>= 5000`：等值只在那一刻恰好被第 5000 次入队命中才响，
+    // 而这条链上没有任何东西保证不会一次推进多行（重连补投那一类）。
+    // 配上 60s 限流之后，风暴期也不会变成每帧一行的日志。
+    if (pending.length >= BACKLOG_WARN_AT) {
+      const now = Date.now();
+      if (shouldRunThrottled(now, lastBacklogNoticeAt, BACKLOG_NOTICE_MS)) {
+        lastBacklogNoticeAt = now;
+        console.error(`[chat] 消息批量队列堆积 ${pending.length} 条：flush 调度疑似失灵`, {
+          flushScheduled,
+          hidden: document.hidden,
+        });
+        // 原来只有 `console.error` ⇒ 桌面端用户看不见（devtools 一般是关着的），
+        // 症状是"新消息要切一下会话才出来"而没有任何解释（10-22 审计 D-24）。
+        // 说一句就够：这一格限流与上面那条日志共用同一个时间戳，不会各说各的。
+        app.toast(t("chat.batchBacklog"), "error");
+      }
     }
     scheduleFlush();
   }
@@ -2407,21 +2427,46 @@ export const useChatStore = defineStore("chat", () => {
    * `refuse_reason_for_best_link`），那句原因必须落在同一个集合里 —— 分两处存就一定会有
    * 一边忘了清（表现为"停滞"标签一直挂着）。
    */
-  const stalledTransfers = ref<Map<string, string | undefined>>(new Map());
-  function isTransferStalled(id: string) {
-    return stalledTransfers.value.has(id);
+  const stalledTransfers = ref<Map<string, { reason?: string; flaggedAt: number }>>(new Map());
+  function isTransferStalled(id: string, nowMs: number = Date.now()) {
+    const rec = stalledTransfers.value.get(id);
+    if (!rec) return false;
+    return stallFlagAlive(nowMs, rec.flaggedAt);
   }
-  function transferStallReason(id: string): string | undefined {
-    return stalledTransfers.value.get(id);
+  function transferStallReason(id: string, nowMs: number = Date.now()): string | undefined {
+    const rec = stalledTransfers.value.get(id);
+    if (!rec || !stallFlagAlive(nowMs, rec.flaggedAt)) return undefined;
+    return rec.reason;
   }
-  function setTransferStalled(id: string, stalled: boolean, reason?: string) {
+  function setTransferStalled(
+    id: string,
+    stalled: boolean,
+    reason?: string,
+    nowMs: number = Date.now(),
+  ) {
     const next = reason ?? undefined;
-    // 幂等：后端在每次心跳 flush 都会重发这条（"只有蓝牙"是持续状态），值没变就不触发响应式
-    if (stalledTransfers.value.has(id) === stalled && (!stalled || stalledTransfers.value.get(id) === next))
+    const cur = stalledTransfers.value.get(id);
+    if (stalled) {
+      // **重发也要重新盖章**：持续性停滞（比如"只有蓝牙、等 LAN 回来"）后端每个心跳 flush
+      // 会重发一次，那是一次"这条链还在报告同一件事"的活证据。原实现把重发当幂等直接 return，
+      // 于是 TTL 一过标记就被判过期 —— 修 D-5 不能顺手把"持续停滞一直显示"这条真实行为弄丢。
+      // 值没变时只就地改时间戳、不换整个 Map：显示内容没变，换 Map 只是白白让所有订阅者重算。
+      if (cur && cur.reason === next && stallFlagAlive(nowMs, cur.flaggedAt)) {
+        cur.flaggedAt = nowMs;
+        return;
+      }
+      const m = new Map(stalledTransfers.value);
+      m.set(id, { reason: next, flaggedAt: nowMs });
+      // 顺手把过期的邻居带走：这套标记没有别的清扫点，攒着就是"漏一条永远挂着"那一族。
+      for (const [k, v] of m) {
+        if (!stallFlagAlive(nowMs, v.flaggedAt)) m.delete(k);
+      }
+      stalledTransfers.value = m;
       return;
+    }
+    if (!cur) return;
     const m = new Map(stalledTransfers.value);
-    if (stalled) m.set(id, next);
-    else m.delete(id);
+    m.delete(id);
     stalledTransfers.value = m;
   }
   function onFileStalled(p: FileStalledInfo) {
@@ -2431,7 +2476,14 @@ export const useChatStore = defineStore("chat", () => {
   function updateTransferProgress(p: FileProgress) {
     const t = transfers.value.find((x) => x.id === p.transfer_id);
     if (t) {
-      t.progress = p.total > 0 ? p.received / p.total : 0;
+      const next = p.total > 0 ? p.received / p.total : 0;
+      const advanced = progressAdvanced(typeof t.progress === "number" ? t.progress : null, next);
+      t.progress = next;
+      // 字节又动了，就是「停滞已经恢复」的正面证据 —— 不必等后端那条 `file-stalled:false`
+      // 的翻转事件（审计 D-5：那条一漏，标签就永远挂在一行还在走的进度上）。
+      if (advanced && stalledTransfers.value.has(p.transfer_id)) {
+        setTransferStalled(p.transfer_id, false);
+      }
       return;
     }
     // 找不到行**不能静默丢**：进度是节流发的（250ms 一次），丢掉一次就可能再也没有下一次。
@@ -2453,11 +2505,30 @@ export const useChatStore = defineStore("chat", () => {
     invalidateFilePreview(`file-${d.transfer_id}`);
     invalidateFilePreview(`gfile-${d.transfer_id}`);
   }
+  /**
+   * 群文件投递诊断行的最近留档（10-22 审计 R-28 / D-3）。
+   *
+   * 后端 `group-file-log` 说的正是「哪个收件人、卡在哪一步」，此前前端无人订阅 ⇒
+   * 界面上只有"K 人失败"这个数，原因永远看不到。这里只留**上界 50 行**的环形尾部，
+   * 给诊断面板看；不进消息列表、不打 toast（它是排障细节，不该打断每个用户）。
+   */
+  const groupFileDiag = ref<{ ts: number; line: string }[]>([]);
+  const GROUP_FILE_DIAG_MAX = 50;
+  function onGroupFileLog(line: string) {
+    groupFileDiag.value = [...groupFileDiag.value, { ts: Date.now(), line }].slice(
+      -GROUP_FILE_DIAG_MAX,
+    );
+  }
+
   function onFileFailed(d: FileFailedInfo) {
     setTransferStalled(d.transfer_id, false);
-    const msgId = `file-${d.transfer_id}`;
+    // **必须认双前缀**：群文件气泡的 msg_id 是 `gfile-${transfer_id}`（后端 group_file.rs 就这么拼），
+    // 而这里此前只拼 `file-` ⇒ 群文件失败时内存里那条永远不落状态，界面继续转圈。
+    // 同文件的 onFileCancelled 两个前缀都认、onFileDone 也两个都失效缓存 —— 三条里只有这条漏，
+    // 是「群文件永远发送中」的前端那一半（另一半在后端：失败分支不发终态事件）。
+    const failedIds = new Set([`file-${d.transfer_id}`, `gfile-${d.transfer_id}`]);
     for (const [convId, list] of Object.entries(messages.value)) {
-      const i = list.findIndex((m) => m.msg_id === msgId);
+      const i = list.findIndex((m) => failedIds.has(m.msg_id));
       if (i >= 0) {
         messages.value[convId] = [
           ...list.slice(0, i),
@@ -2555,6 +2626,15 @@ export const useChatStore = defineStore("chat", () => {
       app.toast(t("chat.groupHistory.failed"), "info");
     }
   }
+
+  /**
+   * 实时事件链路是否健康（10-22 审计 R-33 / D-29）。
+   *
+   * 此前 `bindEvents` 失败**只有一次性 toast**，之后界面与完全正常的界面没有任何区别 ——
+   * 用户不知道"收不到新消息"是链路断了而不是对方没发。设置页读这一份做常驻显示，
+   * 并提供真的重绑入口（`init()` 开头自带"先拆上一轮再注册这一轮"的守卫 ⇒ 重绑幂等）。
+   */
+  const eventBridgeOk = ref(true);
 
   async function init() {
     // 重复初始化守卫：先拆掉上一轮注册的资源，再注册这一轮的。
@@ -2706,6 +2786,14 @@ export const useChatStore = defineStore("chat", () => {
         }
         void refreshTransfers();
       },
+      onMessageFailed: (msgId) => {
+        // 事件本身带终态事实：`outbox_sweep` 先把 `messages.status` 写成 failed 再 emit。
+        // 所以这里**不回库查**，直接把这一事实盖到所有缓存了它的会话（含没在看的会话），
+        // 与 `onFileCancelled` 同一形状。
+        // 旧写法把它接到 `onMessageStatusChanged` 上，两头都不对：没在看的会话什么都不做
+        //（只能等下次打开重查），正在看的会话为了一行状态重拉一整页 + 整列表重建。
+        markStatusInCache(messages.value, msgId, "failed");
+      },
       onMessageStatusChanged: (msgId) => {
         // 后端 emit 的状态变更事件 —— 我们直接从数据库拉最新状态覆盖本地
         // 目前只在 cancel_file_transfer 里发（cancel 后 mark failed，前端同步一下）
@@ -2713,6 +2801,13 @@ export const useChatStore = defineStore("chat", () => {
         // 守卫丢弃（两次 IPC 纯浪费），而且切换回来时 openConversation 会重查。
         // （修复前它还会顺带把全局 loadSeq +1，取消活跃会话飞行中的加载 →
         //   骨架永久转圈，见 2026-09-23 审计 1.4。）
+        //
+        // ⚠️ 文件 / 群文件的状态变更同时是**一条传输行的终态**（群文件接收失败就只走这条）。
+        // 只重拉会话不动 `transfers` 的话，全局面板与气泡会继续显示「接收中 X%」——
+        // 正是 R-14 那一族"只能靠重启恢复"的残留。补拉是防抖的，多次事件不会放大 IPC。
+        if (msgId.startsWith("file-") || msgId.startsWith("gfile-")) {
+          scheduleTransfersRepair();
+        }
         const convId = activeConv.value;
         if (convId && messages.value[convId]?.some((m) => m.msg_id === msgId)) {
           void loadMessages(convId);
@@ -2739,16 +2834,20 @@ export const useChatStore = defineStore("chat", () => {
       onDataCleared: () => {
         void resetAfterDataCleared();
       },
+      onGroupFileLog,
       // 桌面端「点了系统通知」：后端已经唤起主窗口，这里只切界面（见 routeNotificationClick）。
       onNotificationClicked: (p) => {
         routeNotificationClick(p.type, p.conv_id, p.msg_id);
       },
     }).then((fns) => {
       for (const f of fns) scope.onDispose(f);
+      eventBridgeOk.value = true;
     }).catch((e) => {
       // 见 init 开头的说明：不兜底的话 init 会 reject，而骨架照常撤除 ——
       // 用户看到一个"正常"的界面，却永远收不到任何事件。必须留痕 + 可感知。
       console.error("[chat] bindEvents 失败：实时事件不可用", e);
+      // 留痕之外还要**常驻**可见（R-33）：toast 会自己消失，之后无从判断是不是已经断了。
+      eventBridgeOk.value = false;
       app.toast(t("chat.eventBindFail"), "error");
     });
 
@@ -2895,6 +2994,8 @@ export const useChatStore = defineStore("chat", () => {
     peers,
     friends,
     initialized,
+    eventBridgeOk,
+    groupFileDiag,
     friendsLoaded,
     conversationsLoaded,
     groupsLoaded,

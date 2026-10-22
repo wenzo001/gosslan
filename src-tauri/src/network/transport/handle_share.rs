@@ -221,7 +221,25 @@ async fn handle_share_and_relay_messages(state: &Arc<AppState>, peer_id: &str, m
                     .unwrap_or_else(|e| e.into_inner())
                     .clone();
                 match share {
-                    Some(dir) => file::walk_share_dir(Path::new(&dir)),
+                    Some(dir) => {
+                        // 递归遍历是同步文件系统调用，必须离开 tokio worker（10-22 审计 R-21）：
+                        // 这段跑在 reader_loop 所在的那个 worker 上，共享目录里项数一多就是**秒级**
+                        // 占住它，而同一个 worker 上还挂着别的链路的入站帧读取 —— 表现是"有人来浏览
+                        // 我的共享目录时，整个 App 的消息一起顿一下"。
+                        // `share_dir` 的守卫在 clone 之后就已经释放，这里不跨 await 持任何锁。
+                        match tokio::task::spawn_blocking(move || file::walk_share_dir(Path::new(&dir)))
+                            .await
+                        {
+                            Ok(entries) => entries,
+                            Err(e) => {
+                                state.logger.warn(
+                                    "share",
+                                    format!("code=SHARE_TREE_WALK_FAILED err={e} —— 本次共享目录树按空处理"),
+                                );
+                                Vec::new()
+                            }
+                        }
+                    }
                     None => Vec::new(),
                 }
             };

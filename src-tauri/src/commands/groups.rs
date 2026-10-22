@@ -139,22 +139,35 @@ pub async fn distribute_group_key(
 }
 
 #[tauri::command(async)]
-pub fn get_groups(state: State<'_, Arc<AppState>>) -> Vec<Group> {
-    let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
-    db::list_groups(&dbc).unwrap_or_default()
+pub async fn get_groups(state: State<'_, Arc<AppState>>) -> Result<Vec<Group>, String> {
+    let s = state.inner().clone();
+    tokio::task::spawn_blocking(move || -> Result<Vec<Group>, String> {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(db::list_groups(&dbc).unwrap_or_default())
+    })
+    .await
+    .map_err(|e| format!("群列表读取被线程池中断: {e}"))?
 }
 
 #[tauri::command(async)]
-pub fn get_group_reads(state: State<'_, Arc<AppState>>, group_id: String) -> Vec<GroupReadInfo> {
-    let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
-    db::list_group_reads(&dbc, &group_id)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|(reader_id, last_read_ts)| GroupReadInfo {
-            reader_id,
-            last_read_ts,
-        })
-        .collect()
+pub async fn get_group_reads(
+    state: State<'_, Arc<AppState>>,
+    group_id: String,
+) -> Result<Vec<GroupReadInfo>, String> {
+    let s = state.inner().clone();
+    tokio::task::spawn_blocking(move || -> Result<Vec<GroupReadInfo>, String> {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(db::list_group_reads(&dbc, &group_id)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(reader_id, last_read_ts)| GroupReadInfo {
+                reader_id,
+                last_read_ts,
+            })
+            .collect())
+    })
+    .await
+    .map_err(|e| format!("群已读名单读取被线程池中断: {e}"))?
 }
 
 /// 重命名群：仅创建者可操作。本地改名 + 同步会话标题后，广播给全部成员。

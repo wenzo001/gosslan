@@ -335,7 +335,7 @@ const MODS = [
   { id: "w-logs", l: "ui", n: "日志窗口", s: "logs.html · 常驻", cnt: "桌面端",
     role: "运行期日志查看器（轮询 <code>get_logs</code> 每 2s），配 <code>DevDiagPanel</code> 网络诊断。<b>刻意不套 AuxWindowShell</b>（结构不同、要兼移动端整页形态），所以它自己挂 <code>TitleBar</code> + <code>ToastHud</code>。",
     files: ["logs.html", "src/entries/logs.ts", "src/components/LogViewer.vue", "src/components/ui/DevDiagPanel.vue"],
-    in: ["LogEntry[] ← get_logs(sinceSecs)", "DiscoveryDiag ← get_discovery_diag()", "InterfaceCandidate[] ← get_interface_candidates()"],
+    in: ["LogEntry[] ← get_logs(sinceSecs)", "DiscoveryDiag ← get_discovery_diag()", "RuntimeDiag ← get_runtime_diag()", "InterfaceCandidate[] ← get_interface_candidates()", "group-file-log 事件行 ← chat.groupFileDiag（最近 50 行留档）"],
     out: ["clear_logs() → IPC", "log_frontend_error(kind,text) → IPC（前端异常上报）"],
     data: ["LogEntry{ts,level:info|warn|error,target,message}", "轮询 2s（不是事件：日志窗口关掉时不该有人往 IPC 灌日志）"] },
 
@@ -652,6 +652,7 @@ const CMDS = [
   ["set_conversation_pinned", "chat", "conv_id str; pinned bool", "()|err"],
   ["search_chat_history", "chat_search", "keyword str; sender_id str?; since_ms int?; until_ms int?", "ChatSearchGroup[]|err"],
   ["get_discovery_diag", "dev_diag", "", "DiscoveryDiag"],
+  ["get_runtime_diag", "dev_diag", "", "RuntimeDiag|err"],
   ["add_external_link", "external_links", "name str; url str", "ExternalLink[]|err"],
   ["list_external_links", "external_links", "", "ExternalLink[]"],
   ["remove_external_link", "external_links", "id str", "ExternalLink[]|err"],
@@ -660,6 +661,11 @@ const CMDS = [
   ["cleanup_external_links_export", "external_links", "path str", "()|err"],
   ["import_external_links_file", "external_links", "path str", "ExternalLinkImportResult|err"],
   ["import_external_links_from_url", "external_links", "url str", "ExternalLinkImportResult|err"],
+  ["updater_check", "updater", "", "UpdaterInfo|null|err"],
+  ["updater_download", "updater", "onEvent channel", "()|err"],
+  ["updater_cancel", "updater", "", "()|err"],
+  ["updater_install", "updater", "", "()|err"],
+  ["updater_close", "updater", "", "()|err"],
   ["add_favorite", "favorites", "msg_id str; conv_id str", "Favorite|err"],
   ["clear_all_data", "favorites", "", "()|err"],
   ["delete_messages", "favorites", "msg_ids str[]", "int|err"],
@@ -794,6 +800,7 @@ const SEM = {
 
   /* ── commands/dev_diag.rs ── */
   get_discovery_diag: { d: "网络诊断快照：模式 / 绑定网卡 / 广播目标 / 组播结果 / 最近一次收发 / BLE 详情 / 协议版本 / <b>对端版本表</b>。<b>不含任何口令</b>。" },
+  get_runtime_diag: { d: "运行时读数一次性出口（10-22 审计 R-30 / D-16）：发送中的消息、三张 outbox 队列、在用链路数、在线节点、窗口数（含隐藏）、最近一次「慢持锁」原文。四个 COUNT 要持 db 锁 ⇒ <b>只在面板打开/点刷新时读，不进任何轮询出口</b>。读数失败交回 -1（界面显示「—」= 不知道，不是 0 条积压）。" },
 
   /* ── commands/external_links.rs ── */
   list_external_links: { d: "外链书签列表。" },
@@ -804,6 +811,11 @@ const SEM = {
   cleanup_external_links_export: { d: "只清理由导出命令生成、且位于 <code>cache/exports</code> 下的临时文件。" },
   import_external_links_file: { d: "读取本地 JSON，按 URL 去重合并，返回完整列表 + added/skipped/invalid。", w: "settings 键" },
   import_external_links_from_url: { d: "后端拉取 http(s) JSON（10s 超时、跟随 3 次、256 KiB 上限），绕开 WebView CORS。", w: "settings 键" },
+  updater_check: { d: "官方 updater 检查 GitHub latest.json，返回版本/说明/发布时间（12s 超时）。", w: "plugins.updater" },
+  updater_download: { d: "官方 Update::download；可取消的下载，进度走 Channel（官方实现为内存缓冲）。" },
+  updater_cancel: { d: "通知下载 future drop（真停，不是只隐藏 loading）。" },
+  updater_install: { d: "官方 install；macOS/Linux 安装后重启，Windows 交给 NSIS。" },
+  updater_close: { d: "用户稍后：释放 Update 与已下载字节。" },
 
   /* ── commands/favorites.rs ── */
   list_favorites: { d: "按 <code>favorited_at</code> 倒序；<code>available</code> 是<b>读时算</b>的（副本可能已被配额清理）。" },
@@ -967,7 +979,7 @@ const EVENTS = [
   // <code>ALLOWED_EMIT_WITHOUT_LISTENER</code>（每条都必须写理由），所以它们不是漏接，
   // 但属于 §二 要的「已废弃但代码仍存在 / dead code」那一类 —— 图上不写就等于没登记。
   ["group-key-received", "group_id str", "与 <code>groups-updated</code> 同一条路径一起发（收到群密钥时）", "<b>无人监听</b>：前端只处理 groups-updated ⇒ 冗余事件，删除候选", "全体窗口"],
-  ["group-file-log", "msg str", "群任务图片落盘/投递那条链的诊断输出（commands/group_todo_media.rs）", "<b>无人监听</b>：DevDiag 面板改走 <code>get_discovery_diag</code> 轮询 ⇒ 保留待接", "全体窗口"],
+  ["group-file-log", "msg str", "群任务图片落盘/投递那条链的诊断输出（commands/group_todo_media.rs）", "<b>已接（10-22 审计 D-3）</b>：chat.groupFileDiag 留最近 50 行 ⇒ DevDiag 面板「群文件投递诊断」一节；不进消息列表、不打 toast", "全体窗口"],
   ["peers-updated", "Peer[]", "发现/建链/清扫改动后，由 300ms 合并窗口的 emitter 统一发（<code>try_lock</code>，抢不到就跳过，绝不卡网络）", "chat.refreshPeers", "全体窗口"],
   ["message-received", "MessageRecord", "对端帧解开并落库成功时；也用于自己发出的那一行的首帧", "chat.enqueueMessage（进时间线/计未读/通知）", "全体窗口"],
   ["message-acked", "msg_id str", "发送方收到对端 Ack，<b>且核过 outbox 里确有该行</b>", "onMessageAcked → 气泡转 delivered", "全体窗口"],

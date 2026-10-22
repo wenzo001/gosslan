@@ -68,6 +68,29 @@ pub fn mark_transfer_failed_if_active(conn: &Connection, id: &str) -> Result<boo
     Ok(n > 0)
 }
 
+/// 启动复位：把上一个进程留在途中的接收行落 `failed`（2026-10-22 审计 R-14）。
+///
+/// 为什么必须有：启动的两条崩溃恢复只碰 `file_outbox`（sending→pending）与
+/// `messages`（孤儿 sending→failed），而后者那段 SQL **显式排除** `file-%` / `gfile-%`。
+/// 于是 SIGKILL / 断电之后没有任何东西会把 `file_transfers` 的 `active` 行推进终态：
+/// 内存里的接收器随进程没了、`.part` 还在、对端也不一定会再来敲同一单，
+/// 而前端把 `status='active'` 直接画成进度条（不看年龄、也没有心跳）⇒ 卡片**永远**显示
+/// 「接收中 X%」，直到用户重启应用。这正是"只能靠重启恢复"那一族里最容易自己撞到的一条。
+///
+/// 只改 `active`：done/failed/cancelled 等既有终态不许被启动动作改写。
+/// **不碰 `content_transfers`**：那张表的 `queued/active/incomplete` 是
+/// `list_resumable_for_peer` 的续传队列（建链时自动重试），启动即判死会真的打掉断点续传。
+/// 本表也不影响续传：`resume_receive` 的闸门是磁盘上的 `.part` + 24h TTL，
+/// 而对端真的重来时，`:35` 的 upsert 会把这一行的 status 写回去。
+pub fn fail_interrupted_transfers_on_startup(conn: &Connection) -> Result<usize> {
+    let rows = conn.execute(
+        "UPDATE file_transfers SET status = 'failed', progress = 0.0
+         WHERE status = 'active'",
+        [],
+    )?;
+    Ok(rows)
+}
+
 /// 一单文件"从此不再重发"的三种原因 —— 落库形状相同、口径不同。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileJobEnd {

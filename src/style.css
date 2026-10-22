@@ -568,6 +568,13 @@ progress {
 :where(button:not(:disabled):not([data-no-press])):active {
   transform: scale(0.97);
 }
+/* 上面那条只认 `<button>`。本应用大量点击目标是**图标级 tap 区**（`.tap-safe`，46 个文件在用）
+   和 role 化的 div —— 它们按下去此前**没有任何反馈**。这里补一条底色通道而不是缩放：
+   这些元素的命中区靠 `::after` 扩到 44px，缩放会连命中区一起缩（§11.3.1 禁止动画改命中区）。
+   `:where()` 零特异性 ⇒ 组件自己的 `active:` 工具类仍能覆盖。 */
+:where(.tap-safe, [role="button"], [role="option"], [role="tab"], .gosslan-tappable):active {
+  background-color: var(--gosslan-pressed);
+}
 /* 禁用 / 只读 / 忙碌三态的统一视觉出口（值由各组件自己决定，这里只兜底光标与可感知性）。 */
 :where(button:disabled) {
   cursor: not-allowed;
@@ -670,8 +677,12 @@ progress {
     animation: none !important;
     transition: none;
   }
-  .gosslan-menu[data-state="open"] {
+  /* 进与退都要关：只关 open 时，减弱动态效果的用户仍然会看到 140ms 的淡出。 */
+  .gosslan-menu[data-state] {
     animation: none;
+  }
+  .gosslan-menu-item {
+    transition: none;
   }
   .spinner-icon {
     animation: none;
@@ -744,8 +755,18 @@ progress {
   from { opacity: 0; }
   to { opacity: 1; }
 }
+@keyframes gosslan-popover-fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
 .gosslan-popover-in {
-  animation: gosslan-popover-fade-in 120ms ease-out;
+  animation: gosslan-popover-fade-in var(--gosslan-duration-fast) var(--gosslan-ease);
+}
+/* 退场对称：这些浮层（表情面板、消息时间、回应明细、附件菜单…）都挂在 Reka 的 Presence 上，
+   Presence 只在**关闭态元素上存在动画**时才等它播完 ⇒ 补上 closed 才有退场。
+   元素若由 v-if 直接卸载，这条规则最多不被用到，不会留下半透明的残留。 */
+.gosslan-popover-in[data-state="closed"] {
+  animation: gosslan-popover-fade-out var(--gosslan-duration-fast) var(--gosslan-ease) forwards;
 }
 
 @keyframes gosslan-shake {
@@ -1103,13 +1124,22 @@ img {
   animation: gosslan-spin 1s linear infinite;
 }
 
-/* 下拉/附件菜单统一淡入：只动 opacity —— transform 属于 floating-ui 的定位层，碰了会错位。 */
+/* 下拉/附件菜单统一淡入淡出：只动 opacity —— transform 属于 floating-ui 的定位层，碰了会错位。
+   退场这条补在 2026-10-22：此前只有 `[data-state="open"]` 一条 ⇒ Reka 的 Presence 在关闭时
+   等不到任何动画，菜单「唰」一下就消失，只有进没有出。 */
 @keyframes gosslan-menu-fade-in {
   from { opacity: 0; }
   to { opacity: 1; }
 }
+@keyframes gosslan-menu-fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
 .gosslan-menu[data-state="open"] {
-  animation: gosslan-menu-fade-in 140ms var(--gosslan-ease);
+  animation: gosslan-menu-fade-in 160ms var(--gosslan-ease);
+}
+.gosslan-menu[data-state="closed"] {
+  animation: gosslan-menu-fade-out 140ms var(--gosslan-ease) forwards;
 }
 
 .gosslan-menu {
@@ -1131,7 +1161,9 @@ img {
   font-size: 13px;
   color: var(--gosslan-text);
   text-align: left;
-  transition: background-color 0.12s ease-out;
+  transition:
+    background-color var(--gosslan-duration-fast) var(--gosslan-ease),
+    color var(--gosslan-duration-fast) var(--gosslan-ease);
 }
 
 .gosslan-menu-item:hover {
@@ -1143,6 +1175,14 @@ img {
 .gosslan-menu-item[data-highlighted],
 .gosslan-menu-item:focus-visible {
   background: var(--gosslan-hover);
+}
+
+/* 按下去要有反应：全局那条按压规则是 `:where(button…):active`，菜单条目不是 <button> ⇒ 够不着，
+   于是「点了但什么都没发生，直到面板整体消失」才确认命中。只换底色、不加 scale ——
+   整行就是它的命中区，缩放会改命中区（§11.3.1 禁止），也会让 floating-ui 的贴边测量与动画打架。
+   放在 data-highlighted 之后：同一特异性、后者胜 ⇒ 按压色能盖过键盘高亮色。 */
+.gosslan-menu-item:active {
+  background: var(--gosslan-pressed);
 }
 
 .gosslan-menu-item[data-disabled],
@@ -1290,8 +1330,8 @@ img {
 @keyframes gosslan-dialog-sheet-in { from { transform: translateY(100%); } to { transform: translateY(0); } }
 @keyframes gosslan-dialog-sheet-out { from { transform: translateY(0); } to { transform: translateY(100%); } }
 
-.gosslan-dialog-overlay[data-state="open"] { animation: gosslan-dialog-fade-in 200ms ease-out; }
-.gosslan-dialog-overlay[data-state="closed"] { animation: gosslan-dialog-fade-out 150ms ease-in forwards; }
+.gosslan-dialog-overlay[data-state="open"] { animation: gosslan-dialog-fade-in 200ms var(--gosslan-ease); }
+.gosslan-dialog-overlay[data-state="closed"] { animation: gosslan-dialog-fade-out 150ms var(--gosslan-ease) forwards; }
 .gosslan-dialog-card[data-state="open"] { animation: gosslan-dialog-pop-in var(--gosslan-duration) var(--gosslan-ease-spring); }
 .gosslan-dialog-card[data-state="closed"] { animation: gosslan-dialog-pop-out 160ms var(--gosslan-ease) forwards; }
 .gosslan-dialog-page[data-state="open"] { animation: gosslan-dialog-page-in var(--gosslan-duration) var(--gosslan-ease); }

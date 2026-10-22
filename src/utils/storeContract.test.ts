@@ -619,10 +619,23 @@ test("「停滞」必须带得上原因：file-stalled 的 reason 要一路走�
     msg.includes("transferStallReason(t.id)"),
     "气泡必须优先显示原因、没有原因才回退通用「网络停滞」",
   );
-  // 单一集合：停滞标记与原因必须存在同一个 Map 里（分两处存就一定有一边忘清）
+  // 单一集合：停滞标记与原因必须存在同一个 Map 里（分两处存就一定有一边忘清）。
+  // 2026-10-22（审计 D-5）把值从 `string | undefined` 换成 `{ reason, flaggedAt }`（要加有效期），
+  // 这条原来钉的是**值类型的字面形状** —— 形状一变就红，而它真正要守的是语义。
+  // 现在钉三条贴语义的：① 那一份 Map 同时装着原因与盖章时间；② 两个读出口都从这一份取；
+  // ③ 不许退回 Set + 另立一张原因表。**这不是放宽**：三条里任何一条被破坏都会红，
+  // 而原来那一条对「另立第二张表」这种真正的事故形状是放过的（它只比对一个类型字面量）。
   assert.ok(
-    /const stalledTransfers = ref<Map<string, string \| undefined>>/.test(store),
-    "stalledTransfers 必须是「id → 原因」的 Map，不许退回 Set + 另一张原因表",
+    /const stalledTransfers = ref<Map<string,\s*\{[^}]*reason[^}]*flaggedAt[^}]*\}>>/.test(store),
+    "stalledTransfers 必须是「id → {原因 + 盖章时间}」的同一份 Map",
+  );
+  assert.ok(
+    (store.match(/stalledTransfers\.value\.get\(/g) ?? []).length >= 2,
+    "isTransferStalled 与 transferStallReason 必须都从这一份集合读（分成两处就有一边忘清）",
+  );
+  assert.ok(
+    !/const stalledTransfers = ref<Set</.test(store),
+    "不许退回 Set + 另一张原因表（就是「停滞一直挂着」那一族的成因）",
   );
 });
 
@@ -845,4 +858,62 @@ test("群任务订阅：切群竞态必须让旧监听作废并摘除（接线�
   const mutated = body.replace(/if \(!groupTodosWatchGuard\.isCurrent\("groupTodos", token\)\) \{[\s\S]*?return \(\) => \{\};\n    \}/, "");
   assert.notEqual(mutated, body, "对照替换没生效 ⇒ 这条对照什么都没测");
   assert.ok(!/unlisten\(\);\s*\n\s*return \(\) => \{\};/.test(mutated), "摘掉过期分支后必须看不见那条摘除 ⇒ 否则判据恒过");
+});
+
+/**
+ * 取一个函数体：从起始锚点到下一个函数锚点。两个锚点都必须命中，
+ * 命中不了就直接报错 —— 判据最怕的是"切片切空 ⇒ 什么都找不到 ⇒ 断言恒过"。
+ */
+function sliceFn(src: string, startAt: string, endAt: string, label: string): string {
+  const s = src.indexOf(startAt);
+  const e = src.indexOf(endAt);
+  assert.ok(s >= 0, `${label}：起始锚点没命中 ⇒ 这个判据已经不知道自己在读什么`);
+  assert.ok(e > s, `${label}：结束锚点没命中或顺序不对 ⇒ 同上`);
+  return src.slice(s, e);
+}
+
+/** 数一个子串出现几次（不是"存在性"——存在性挡不住第二处）。 */
+function count(hay: string, needle: string): number {
+  return hay.split(needle).length - 1;
+}
+
+test("每批快照只许读这一批涉及的会话，不许遍历整份消息缓存（审计 R-17）", () => {
+  const st = stripComments(readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8"));
+  const body = sliceFn(st, "async function applyIncoming(", "function enqueueMessage(", "applyIncoming");
+
+  // 全表遍历的两种写法：这条函数每帧可能跑一次，而缓存里是"全部会话 × 每会话上限"。
+  assert.equal(count(body, "Object.values("), 0, "applyIncoming 里不许再按全表取会话");
+  assert.equal(count(body, "Object.entries("), 0, "同上：Object.entries 也是一次全表遍历");
+  // 换成按批取之后，两个出口各自只准有一个调用点（多一处就多一次全表）。
+  assert.equal(count(body, "statusSnapshotFor("), 1, "送达状态快照必须且只能是那一份按批的");
+  assert.equal(count(body, "existingIdsFor("), 1, "未读去重集必须且只能是那一份按批的");
+  assert.equal(count(body, "const touched = new Set("), 1, " touched 只能算一次（两处算会漂）");
+
+  // 非空转对照 ①：扫描器确实看得见这两个 token（本文件别处就有真用法）。
+  assert.ok(count(st, "Object.entries(") >= 2, "对照失效：整份 store 里应当还有 Object.entries 的真用法");
+
+  // 非空转对照 ②：把旧的全表遍历注回来，上面那条"0 次"必须立刻不成立。
+  const mutated = body.replace(
+    "const curStatus = statusSnapshotFor(",
+    "const curStatus = (() => { const d = new Map<string, string>(); for (const l of Object.values(messages.value)) for (const m of l) d.set(m.msg_id, m.status); return d; })(); void statusSnapshotFor(",
+  );
+  assert.notEqual(mutated, body, "对照注入没生效 ⇒ 这条对照什么都没测");
+  assert.ok(count(mutated, "Object.values(") > 0, "注入后必须能看见全表遍历 ⇒ 看不见就说明判据盯的不是这个形状");
+});
+
+test("message-failed 用事件自带的事实盖缓存，不再退化成一次整页重查（审计 R-29）", () => {
+  const api = stripComments(readFileSync(join(ROOT, "api", "index.ts"), "utf8"));
+  const st = stripComments(readFileSync(join(ROOT, "stores", "useChatStore.ts"), "utf8"));
+
+  // 两条事件按"带不带结论"分家：各走各的处理器，出现次数钉死。
+  assert.equal(count(api, 'listen<string>("message-failed", (e) => h.onMessageFailed(e.payload))'), 1);
+  assert.equal(count(api, "h.onMessageStatusChanged(e.payload)"), 1, "重查那条只能剩 message-status-changed 一处");
+  assert.equal(count(st, "onMessageFailed:"), 1, "store 里这个处理器必须存在且只有一份");
+  assert.equal(count(st, 'markStatusInCache(messages.value, msgId, "failed")'), 1);
+
+  // 非空转对照：把 message-failed 再接回重查那个处理器 ⇒ 两条计数必须同时错。
+  const mutated = api.replace("h.onMessageFailed(e.payload)", "h.onMessageStatusChanged(e.payload)");
+  assert.notEqual(mutated, api, "对照替换没生效 ⇒ 这条对照什么都没测");
+  assert.equal(count(mutated, "h.onMessageFailed(e.payload)"), 0);
+  assert.equal(count(mutated, "h.onMessageStatusChanged(e.payload)"), 2, "接回去就是第二处重查");
 });

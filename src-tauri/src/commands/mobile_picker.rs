@@ -246,19 +246,28 @@ pub async fn import_picked_file(
 }
 
 #[tauri::command(async)]
-pub fn get_pending_requests(state: State<'_, Arc<AppState>>) -> Vec<PendingRequest> {
-    let s = state.inner();
-    let friend_ids: std::collections::HashSet<String> = {
-        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::list_friends(&dbc)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|f| f.device_id)
-            .collect()
-    };
-    let mut map = s.pending_requests.lock().unwrap_or_else(|e| e.into_inner());
-    map.retain(|_, req| is_actionable_request(req, &friend_ids));
-    map.values().cloned().collect()
+pub async fn get_pending_requests(
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<PendingRequest>, String> {
+    let s = state.inner().clone();
+    tokio::task::spawn_blocking(move || -> Result<Vec<PendingRequest>, String> {
+        let friend_ids: std::collections::HashSet<String> = {
+            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+            db::list_friends(&dbc)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|f| f.device_id)
+                .collect()
+        };
+        let mut map = s
+            .pending_requests
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        map.retain(|_, req| is_actionable_request(req, &friend_ids));
+        Ok(map.values().cloned().collect())
+    })
+    .await
+    .map_err(|e| format!("待处理好友申请读取被线程池中断: {e}"))?
 }
 
 /// 这条好友申请该不该出现在「新朋友」里？

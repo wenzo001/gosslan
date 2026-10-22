@@ -89,7 +89,14 @@ async function applyTarget(next: string | null) {
   const switched = groupId.value !== next;
   groupId.value = next;
   loadError.value = "";
-  if (switched) void chat.watchGroupTodos(next).catch(() => {});
+  if (switched)
+    void chat
+      .watchGroupTodos(next)
+      // 取消函数必须进本窗口的卸载作用域。此前调用方把返回的 cleanup 直接丢弃 ⇒ 这条
+      // `message-received` 监听只能靠「下一次切群」自我摘掉；关窗=隐藏、文档不重载，
+      // 于是它一直挂着，期间**每条消息**都为旧群打一次 reloadGroupTodoRows 的 IPC。
+      .then((unlisten) => listenerScope.onDispose(unlisten))
+      .catch(() => {});
   try {
     await chat.loadGroupTodos(next);
   } catch (e) {

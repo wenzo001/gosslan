@@ -225,9 +225,31 @@ async fn dispatch_group_file_to_peer(
         todo_id: gf.todo_id.clone(),
         attempt: send_attempt,
     };
-    if let Err(e) = crate::network::transport::send_on_link(&link, &offer).await {
-        // Offer 没发出去 ⇒ 不会有回执（槽位由 `_resume_slot` 在返回时摘掉）。
-        return Err(GroupFileSendErr::Retryable(format!("Offer 发送失败：{e}")));
+    // Offer 也要吃一个期限（10-22 审计 R-10）：下面整段流式发送被 `timeout(deadline, …)` 罩着，
+    // 而这一次 `send_on_link` 在罩外 —— 队列满（对端一直不收）时它没有上限地等下去，
+    // 表现就是那张卡片停在「发送中」而没人报错。
+    // ⚠️ 这不是把背压改掉：`send_on_link` 的背压是有意设计，
+    // 有两条单测钉着（`outbound_tests.rs::send_on_link_backpressures_when_queue_full` /
+    // `send_on_link_errs_immediately_when_closed`）。这里给的是**等待的上限**：
+    // 等不到就让这一步失败、交回 Retryable，由 `_resume_slot` 的守卫在返回时摘掉槽位
+    // （那句"槽位与守卫同生共死"上面已经写明，正是为这种提前返回准备的）。
+    // 10s 与预认证首帧那条同一档（`transport.rs` 的 `FIRST_FRAME_TIMEOUT_SECS`）：
+    // Offer 是小控制帧，正常链路里它连 1s 都用不到；等满 10s 说明这条链路本身已经不行了。
+    const OFFER_SEND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+    match tokio::time::timeout(
+        OFFER_SEND_TIMEOUT,
+        crate::network::transport::send_on_link(&link, &offer),
+    )
+    .await
+    {
+        Err(_) => {
+            return Err(GroupFileSendErr::Retryable(format!(
+                "Offer 发送等待超过 {}s（对端链路拥塞）",
+                OFFER_SEND_TIMEOUT.as_secs()
+            )))
+        }
+        Ok(Err(e)) => return Err(GroupFileSendErr::Retryable(format!("Offer 发送失败：{e}"))),
+        Ok(Ok(())) => {}
     }
 
     // 期限按体积自适应（与单聊同一口径，见 `file::send_deadline_for`）：

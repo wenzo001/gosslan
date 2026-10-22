@@ -296,14 +296,19 @@ pub async fn check_relay_server(
 
 /// 读取当前中继配置（供设置页显示）。
 #[tauri::command(async)]
-pub fn get_relay_config(state: State<'_, Arc<AppState>>) -> RelayConfigView {
-    let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
-    RelayConfigView {
-        // 缺省 = 关：这个功能必须用户显式开启（不填服务器就没有这条链路，行为与今天一致）。
-        enabled: db::get_config_bool(&dbc, RELAY_ENABLED_KEY, false),
-        server: db::get_setting(&dbc, RELAY_SERVER_KEY).unwrap_or_default(),
-        token: db::get_setting(&dbc, RELAY_TOKEN_KEY).unwrap_or_default(),
-    }
+pub async fn get_relay_config(state: State<'_, Arc<AppState>>) -> Result<RelayConfigView, String> {
+    let s = state.inner().clone();
+    tokio::task::spawn_blocking(move || -> Result<RelayConfigView, String> {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        Ok(RelayConfigView {
+            // 缺省 = 关：这个功能必须用户显式开启（不填服务器就没有这条链路，行为与今天一致）。
+            enabled: db::get_config_bool(&dbc, RELAY_ENABLED_KEY, false),
+            server: db::get_setting(&dbc, RELAY_SERVER_KEY).unwrap_or_default(),
+            token: db::get_setting(&dbc, RELAY_TOKEN_KEY).unwrap_or_default(),
+        })
+    })
+    .await
+    .map_err(|e| format!("中继配置读取被线程池中断: {e}"))?
 }
 
 /// 保存中继配置。
@@ -312,7 +317,7 @@ pub fn get_relay_config(state: State<'_, Arc<AppState>>) -> RelayConfigView {
 /// 最难排查的一类故障（routed 端点的注释里就写着那次）。开启状态下地址与口令都必须有效；
 /// 关闭状态下允许留空（用户可能只想暂时停用）。
 #[tauri::command(async)]
-pub fn save_relay_config(
+pub async fn save_relay_config(
     state: State<'_, Arc<AppState>>,
     window: tauri::WebviewWindow,
     enabled: bool,
@@ -337,26 +342,34 @@ pub fn save_relay_config(
         server: server_norm.clone(),
         token: token_norm.clone(),
     };
-    {
-        let dbc = state.inner().db.lock().unwrap_or_else(|e| e.into_inner());
-        db::set_setting(&dbc, RELAY_ENABLED_KEY, if enabled { "1" } else { "0" })
-            .map_err(|e| format!("保存失败: {e}"))?;
-        db::set_setting(&dbc, RELAY_SERVER_KEY, &server_norm)
-            .map_err(|e| format!("保存失败: {e}"))?;
-        db::set_setting(&dbc, RELAY_TOKEN_KEY, &token_norm)
-            .map_err(|e| format!("保存失败: {e}"))?;
-    }
-    // 留痕：这条链路的故障绝大多数出在"配错了"，日志里必须看得见配了什么。
-    // 口令**只记长度**，不记内容（日志会被导出、也可能被截图给别人看）。
-    state.logger.info(
-        "relay",
-        format!(
-            "配置已保存 enabled={} server={} token_len={}",
-            enabled,
-            server_norm,
-            token_norm.chars().count()
-        ),
-    );
+    let s = state.inner().clone();
+    // 三条 set_setting + 留痕都在持锁/写日志段里 ⇒ 进阻塞池（审计 R-18）；校验留在 await 之前，
+    // 让"配错了"这种输入错误**不排一次无谓的队**。
+    tokio::task::spawn_blocking(move || -> Result<(), String> {
+        {
+            let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+            db::set_setting(&dbc, RELAY_ENABLED_KEY, if enabled { "1" } else { "0" })
+                .map_err(|e| format!("保存失败: {e}"))?;
+            db::set_setting(&dbc, RELAY_SERVER_KEY, &server_norm)
+                .map_err(|e| format!("保存失败: {e}"))?;
+            db::set_setting(&dbc, RELAY_TOKEN_KEY, &token_norm)
+                .map_err(|e| format!("保存失败: {e}"))?;
+        }
+        // 留痕：这条链路的故障绝大多数出在"配错了"，日志里必须看得见配了什么。
+        // 口令**只记长度**，不记内容（日志会被导出、也可能被截图给别人看）。
+        s.logger.info(
+            "relay",
+            format!(
+                "配置已保存 enabled={} server={} token_len={}",
+                enabled,
+                server_norm,
+                token_norm.chars().count()
+            ),
+        );
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("中继配置写入被线程池中断: {e}"))??;
     // 刻意**不发** `settings-changed`：与 `routed_endpoints` 同一形状 —— 拨号循环每 10s
     // 重读一次库，运行时改配置免重启即生效；而事件会让另一个窗口去做一次全量重拉，
     // 换来的只是"界面上那一行早出现 10 秒"。

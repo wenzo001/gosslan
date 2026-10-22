@@ -89,10 +89,19 @@ test("操作面板：点任何一项都必须收起（引用/转发会跳到别�
   // ⚠️ 只看**开标签本身**：整个对话框里还含"取消"按钮，它自己也有 `@click=\"emit('close')\"`
   //    —— 用整段去断言的话，把面板上的收起删掉也测不出来（这个空转正是 `verify-guards.py` 抓出来的）。
   const panelOpenTag = sheet.slice(panelAt, sheet.indexOf(">", panelAt) + 1);
+  // 2026-10-22：面板级点击改走 `onContentClick`（下拉关闭要能吞掉拖拽末尾那次 click，
+  // 否则"手一滑、面板自己关了"）。**这不是放宽这条断言** —— 下面多出来的一条要求同一个函数体
+  // 里真的 `emit("close")`：原来只盯一行内联字面量，而那行可以挂着、函数却没人调它。
   assert.match(
     panelOpenTag,
-    /@click="emit\('close'\)"/,
+    /@click="onContentClick"/,
     "ActionSheet 的 DialogContent 开标签必须在点击时收起 —— 否则点完『引用/转发/保存图片』面板还挂在那儿",
+  );
+  assert.match(
+    sheet,
+    /function onContentClick\(\)[\s\S]{0,200}?if \(dragged\)[\s\S]{0,120}?emit\("close"\)/,
+    "onContentClick 必须同时做到两件事：拖拽过就吞掉这次点击（否则回弹后被误判成点击关闭）、" +
+      "没拖过就收起面板（否则点一项面板还挂着）",
   );
 
   // ② 引用 / 转发另加一道保险：它们是"跳到别处去操作"（引用草稿 / 转发弹窗），

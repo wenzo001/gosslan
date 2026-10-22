@@ -155,6 +155,7 @@ db::group_outbox_removal_tests::removing_a_member_settles_only_messages_that_los
 db::group_rename_tests::group_relation_sync_refreshes_title_but_never_creates_a_conversation
 db::group_rename_tests::rename_group_of_missing_group_leaves_conversation_row_untouched
 db::group_rename_tests::rename_group_updates_both_group_row_and_its_conversation_title
+db::group_rename_tests::replace_group_members_drops_members_who_left
 db::migration_tests::a_backup_can_be_restored_and_migrated_again_without_losing_rows
 db::migration_tests::a_corrupt_database_is_rejected_and_left_byte_for_byte_untouched
 db::migration_tests::a_failing_migration_step_rolls_back_completely_and_never_advances_the_version
@@ -485,6 +486,7 @@ network::discovery::tests::is_rfc1918_covers_private_ranges
 network::discovery::tests::is_virtual_interface_name_covers_common_patterns
 network::discovery::tests::is_virtual_ip_covers_non_lan_ranges
 network::discovery::tests::multicast_join_failure_propagates
+network::discovery::tests::peer_identity_is_forgotten_only_for_non_friends
 network::discovery::tests::recreated_interval_never_waits_but_deadline_sleep_does
 network::discovery::tests::relay_peer_kept_within_45s_direct_peer_always_kept
 network::discovery::tests::resolve_bind_ip_auto_uses_lan_ip
@@ -492,6 +494,7 @@ network::discovery::tests::resolve_bind_ip_manual_uses_user_ip
 network::discovery::tests::score_candidate_orders_correctly
 network::discovery::tests::score_candidate_rfc1918_boundary
 network::discovery::tests::send_egress_rebind_keeps_manual_dead_and_same_ip
+network::discovery::tests::sweep_peers_reclaims_peer_manager_after_the_friends_snapshot
 network::discovery::tests::vgate0_never_selected_as_bind_address
 network::dispatch::tests::ack_is_high_priority
 network::dispatch::tests::ble_yield_fragments_allows_preemption
@@ -807,6 +810,8 @@ nickname::tests::base36_is_zero_padded_and_uppercase
 nickname::tests::default_nickname_is_deterministic_and_looks_right
 nickname::tests::different_devices_get_different_suffixes
 nickname::tests::legacy_defaults_are_recognised_but_chosen_names_are_not
+notifications::tests::click_waiter_slots_are_capped_and_released
+notifications::tests::every_click_waiter_thread_takes_a_slot_first
 notifications::tests::notify_enabled_defaults_on_and_uses_the_same_key_as_the_frontend
 notifications::tests::platform_hint_is_never_empty
 notifications::tests::windows_only_branch_is_source_checkable_for_pattern_bounds
@@ -1011,6 +1016,7 @@ tests::unknown_wire_frame_is_tolerated_after_auth
 tests::whole_file_slow_work_never_runs_on_an_async_worker
 tests::window_maximizable_matches_builder
 tests::window_pattern_matcher_is_not_vacuous
+tests::worker_bound_heavy_commands_do_not_grow
 transport::ble_framing::tests::both_sides_agree_on_the_same_link_budget
 transport::ble_framing::tests::duplicate_and_partial_do_not_complete
 transport::ble_framing::tests::inflight_cap_blocks_state_flood
