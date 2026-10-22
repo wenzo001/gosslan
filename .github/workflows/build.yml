@@ -66,7 +66,7 @@ jobs:
           catch {
             # 只报**非法字符的集合**（不报位置、不报内容）：合法密钥的集合必然是空的。
             $bad = (@($keyNorm.ToCharArray() | Where-Object { $_ -notmatch '[A-Za-z0-9+/=]' } | Select-Object -Unique) -join '')
-            Write-Host "::error title=TAURI_SIGNING_PRIVATE_KEY 不是合法 base64::出现非法字符：[${bad}]。正确值是 ~/.tauri/gosslan-updater.key 的**完整内容**（348 个字符，以 dW50cnVzdGVkIGNvbW1lbnQ6 开头；**不是路径**）。"
+            Write-Host "::error title=TAURI_SIGNING_PRIVATE_KEY 不是合法 base64::长度 $($keyNorm.Length)（正确值 348，且必须是 4 的倍数）；出现非法字符：[${bad}]。正确值是 ~/.tauri/gosslan-updater.key 的**完整内容**，以 dW50cnVzdGVkIGNvbW1lbnQ6 开头，**不是路径**。若非法字符为空而长度不对 ⇒ 粘贴被截断。"
             exit 1
           }
           $text = [Text.Encoding]::UTF8.GetString($bytes)
