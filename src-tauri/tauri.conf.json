@@ -1,16 +1,13 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Gosslan",
-  "version": "5.5.8",
+  "version": "5.5.7",
   "identifier": "com.gosslan.app",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "npm run build",
-    "frontendDist": "../dist",
-    "windows": {
-      "staticVCRuntime": true
-    }
+    "frontendDist": "../dist"
   },
   "plugins": {
     "updater": {
