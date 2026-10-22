@@ -21,6 +21,7 @@ import { openLocalFile } from "@/utils/localFile";
 import { saveImageAs } from "@/utils/saveImageAs";
 import { haptic } from "@/utils/haptics";
 import { shouldStartLongPress, shouldSwallowLongPressRelease } from "@/utils/longPress";
+import { shouldPreventContextMenu } from "@/utils/contextMenu";
 import { t } from "@/i18n";
 import MessageAvatar from "@/components/message/MessageAvatar.vue";
 import MessageTextBubble from "@/components/message/MessageTextBubble.vue";
@@ -377,6 +378,29 @@ function openContextMenu(e: MouseEvent) {
   if (app.isMobile) return;
   ctxMenu.value = { x: e.clientX, y: e.clientY };
   ctxMenuPopup.claim();
+}
+
+/**
+ * contextmenu 的统一入口：**先问选区**，再决定拦不拦。
+ *
+ * 之前模板写的是 `@contextmenu.prevent` —— 组件级 prevent 在 handler 之前执行，
+ * 即使 `openContextMenu` 在移动端提前 return，系统复制菜单也已经被吃掉。
+ * 现在有选区/选择模式就完全放行，交给系统工具条；其余才 prevent 并开自定义菜单。
+ */
+function onContextMenu(e: MouseEvent) {
+  const sel = window.getSelection();
+  const hasSelection = !!sel && !sel.isCollapsed && sel.toString().trim().length > 0;
+  if (
+    !shouldPreventContextMenu({
+      isMobile: app.isMobile,
+      textSelecting: textSelecting.value,
+      hasSelection,
+    })
+  ) {
+    return;
+  }
+  e.preventDefault();
+  openContextMenu(e);
 }
 
 function closeContextMenu() {
@@ -1270,7 +1294,7 @@ async function copyFileToClipboard() {
           class="group/row flex w-full items-end gap-1.5"
           :class="mine ? 'justify-end' : 'justify-start'"
           :title="fullTime"
-          @contextmenu.prevent="openContextMenu"
+          @contextmenu="onContextMenu"
           @touchstart="onTouchStart"
           @touchend="cancelLongPress"
           @touchmove="onTouchMove"
