@@ -26,5 +26,11 @@ test("添加好友页：已是好友那一行变成「发起聊天」并接到�
     /function openChatFromFriend\(peerId: string\)/,
     "父层必须有关掉弹窗并开聊的入口",
   );
+  assert.match(layout, /app\.mobileView = "chat"/, "移动端必须切到聊天视图");
+  assert.match(
+    layout,
+    /router\.push\(\{ name: "conversation", params: \{ convId: peerId \} \}\)/,
+    "必须把 URL 落到该会话",
+  );
   assert.match(layout, /chat\.openConversation\(peerId\)/, "必须真的打开该 peer 的会话");
 });

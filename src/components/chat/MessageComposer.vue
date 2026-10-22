@@ -902,7 +902,7 @@ async function onPaste(e: ClipboardEvent) {
             </PopoverContent>
           </PopoverPortal>
         </PopoverRoot>
-        <!-- 窗口抖动（仿 QQ）：仅单聊显示。点一下 ⇒ 对会话里最近一条已发出的消息发起强提醒，
+        <!-- 窗口抖动（仿 QQ）：仅单聊显示。点一下 ⇒ 发独立 nudge（不锚定任何消息），
              对方窗口随即抖动。冷却期置灰防连抖；@mousedown.prevent 保持编辑器焦点。 -->
         <button
           v-if="shakeEnabled"

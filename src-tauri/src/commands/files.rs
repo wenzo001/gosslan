@@ -504,6 +504,51 @@ pub async fn flush_pending_files(state: &Arc<AppState>, peer_id: &str) {
 ///
 /// 注意：file_sending（spawn loop 里按 peer_id 存的 HashSet）不需要我们清 ——
 /// spawn loop 收到 cancel 信号后会自己走到下一条或清掉。
+/// 删除会话/好友前取消该 peer 所有仍在排队/传输中的**发送** transfer。
+///
+/// 只改台账不够：`upsert_transfer` 允许 cancelled 被在途 attempt 写回 active；
+/// 先按 `file_send_cancels` 的键发取消信号，再逐条走唯一终态出口。
+pub(crate) fn cancel_send_transfers_for_peer(s: &AppState, peer_id: &str) {
+    let ids = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::list_open_send_transfer_ids_for_peer(&dbc, peer_id).unwrap_or_default()
+    };
+    if ids.is_empty() {
+        return;
+    }
+    {
+        let mut cancels = s
+            .file_send_cancels
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        for id in &ids {
+            let prefix = file::file_cancel_prefix(id);
+            let keys: Vec<String> = cancels
+                .keys()
+                .filter(|k| k.starts_with(prefix.as_str()))
+                .cloned()
+                .collect();
+            for k in keys {
+                if let Some(tx) = cancels.remove(&k) {
+                    let _ = tx.send(());
+                }
+            }
+        }
+    }
+    let cancelled = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        ids.iter()
+            .filter(|id| {
+                db::finalize_file_failure(&dbc, id, db::FileJobEnd::Cancelled).unwrap_or(false)
+            })
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    for id in cancelled {
+        let _ = s.app.emit("file-cancelled", &id);
+    }
+}
+
 #[tauri::command(async)]
 pub async fn cancel_file_transfer(
     state: State<'_, Arc<AppState>>,
