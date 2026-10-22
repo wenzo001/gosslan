@@ -87,6 +87,18 @@ jobs:
               echo "所有桌面 updater 产物已就绪"
               exit 0
             fi
+            # 快速失败（2026-10-22）：桌面构建已经红了就别再等满 45 分钟 ——
+            # v5.5.17 与 v5.5.18 各白等过一整轮，而真因（签名 secret）早就写在构建注解里了。
+            # 只认**每个 workflow 最新一次**运行的结论，避免被同提交上的旧失败 run 误判。
+            failed=$(gh run list --repo "$REPO" --commit "$GITHUB_SHA" --limit 30 \
+              --json workflowName,conclusion,createdAt \
+              --jq '[group_by(.workflowName)[] | max_by(.createdAt) | select(.conclusion=="failure") | .workflowName] | join(", ")' \
+              2>/dev/null || true)
+            case "$failed" in
+              *"Build macOS"*|*"Build Windows (x64"*)
+                echo "::error title=桌面构建已失败::不再等产物。失败的 workflow：$failed（先看它的注解，签名问题的原因在那里）" >&2
+                exit 1 ;;
+            esac
             sleep 30
           done
           echo "等待 updater 产物超时（45 分钟）；不生成 latest.json" >&2
