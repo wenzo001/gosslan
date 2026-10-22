@@ -13,6 +13,19 @@
 
 ## [Unreleased]
 
+## [5.5.7] - 2026-10-22
+
+### R-10 的另一半：握手补全那次「回发 Hello」有了期限
+
+- `transport.rs` 在读循环**起来之前**回发本节点 Hello（让拨号方也学到身份）。这一发
+  `high_tx.send(..).await` 此前**没有期限**：控制队列满（writer 被 bulk 压住）或对端
+  接受连接后不再读 ⇒ 整条连接永远到不了读循环，表现是「链路在表里、一个入站帧都没有」
+  而发送侧看到的是"投进队列就成功"。
+- 现在包进与拨号侧同一个 `HANDSHAKE_TIMEOUT`（5s）：超时只丢这一次身份补发（对端身份由
+  下一次 Hello/announce 补），链路照常进读循环。
+- 判据 `hello_reply_before_reader_loop_is_bounded`：按 transport 生产码全集判这条 send
+  必须在 timeout 里；非空转已证（改回无界 ⇒ 红；还原 ⇒ 绿，文件逐字相同）。
+
 ## [5.5.6] - 2026-10-22
 
 ### 修复：对端失联时 BLE 栈 panic 把整个应用打死

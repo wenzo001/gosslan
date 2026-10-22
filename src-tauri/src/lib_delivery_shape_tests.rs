@@ -617,3 +617,25 @@
             "群 Ack 的事务出口必须真的把状态写成 delivered 并删对应成员的队列行"
         );
     }
+
+    /// R-10：`reader_loop` **之前**那次「回发 Hello」必须是**有界**的。
+    ///
+    /// 那一发发生在读循环起来之前，而 `high_tx.send(..).await` 本身没有期限：
+    /// 控制队列满（writer 被 bulk 压住）或对端接受连接后不再读 ⇒ 整条连接永远到不了
+    /// 读循环。界面上的表现不是"卡住"，而是**链路在表里、一个入站帧都没有**，
+    /// 于是发送侧看到的是"消息投进队列就成功"、接收侧什么都没收到。
+    ///
+    /// 修法是把这一发包进与拨号侧同一个 `HANDSHAKE_TIMEOUT`；超时只丢这一次身份补发
+    /// （对端的 identity 由下一次 Hello / announce 补），链路照常进读循环。
+    #[test]
+    fn hello_reply_before_reader_loop_is_bounded() {
+        let flat = code_flat(&crate::network::transport_src_for_guards());
+        assert!(
+            flat.contains("build_signed_hello(&state,conv_clock)"),
+            "锚点没找到（写法变了要同步这条判据）—— 否则它会静默空转"
+        );
+        assert!(
+            flat.contains("timeout(HANDSHAKE_TIMEOUT,high_tx.send(build_signed_hello"),
+            "回发 Hello 必须包在 tokio::time::timeout 里：无界 send 会把连接楔死在握手补全这一步"
+        );
+    }
