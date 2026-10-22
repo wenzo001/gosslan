@@ -356,6 +356,8 @@ pub enum MsgKind {
     /// 强提醒回执（接收端自动「已触发提醒处理」与用户主动「我知道了」共用，
     /// 载荷 `RemindAckPayload{target, stage}`）。
     RemindAck,
+    /// 撤回自己发的一条消息（1:1 与群共用；群侧沿用 `KIND_RECALL` 的可靠管道）。
+    Recall,
 }
 
 impl MsgKind {
@@ -370,6 +372,7 @@ impl MsgKind {
             MsgKind::Reaction => "reaction",
             MsgKind::Remind => "remind",
             MsgKind::RemindAck => "remind_ack",
+            MsgKind::Recall => "recall",
         }
     }
 
@@ -383,6 +386,7 @@ impl MsgKind {
             "reaction" => MsgKind::Reaction,
             "remind" => MsgKind::Remind,
             "remind_ack" => MsgKind::RemindAck,
+            "recall" => MsgKind::Recall,
             _ => MsgKind::Text,
         }
     }
@@ -1297,6 +1301,45 @@ pub struct PinPayload {
 pub struct RecallPayload {
     /// 被撤回的消息 msg_id
     pub target: String,
+}
+
+/// 撤回窗口：超过它就不再允许撤回（发送端强制；接收端不校验对方时钟）。
+pub const RECALL_WINDOW_MS: i64 = 300_000;
+
+/// 撤回的发送端裁决：仅原作者、目标必须属于该会话、且在窗口内。
+///
+/// 群与 1:1 共用这一份；`target_conv` 来自库里的消息行，`expected_conv` 是命令参数
+/// 指定的会话。把"作者/归属/时限"三件事收在一个纯函数里，命令层不再各写一遍。
+pub fn recall_verdict(
+    sender_id: &str,
+    me: &str,
+    target_conv: &str,
+    expected_conv: &str,
+    ts: i64,
+    now: i64,
+) -> Result<(), String> {
+    if sender_id != me {
+        return Err("只能撤回自己发送的消息".to_string());
+    }
+    if target_conv != expected_conv {
+        return Err("消息不属于该会话".to_string());
+    }
+    // 旧库/异常行 ts=0 时无法证明窗口，沿用群侧历史行为放行时间判据；
+    // 作者与归属仍然是硬门槛。
+    if ts > 0 && now.saturating_sub(ts) > RECALL_WINDOW_MS {
+        return Err("超过可撤回时间（5 分钟）".to_string());
+    }
+    Ok(())
+}
+
+/// 校验撤回载荷：target 非空。
+pub fn parse_recall_payload(content: &str) -> Result<RecallPayload, String> {
+    let p: RecallPayload =
+        serde_json::from_str(content).map_err(|e| format!("撤回载荷解析失败：{e}"))?;
+    if p.target.trim().is_empty() {
+        return Err("撤回缺少目标消息".to_string());
+    }
+    Ok(p)
 }
 
 /// 撤回后消息本体的 `kind`。`content` 被清空、`sender_id`/`ts`/`seq`/`msg_id` 保留 ——

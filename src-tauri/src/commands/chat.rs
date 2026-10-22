@@ -7,6 +7,66 @@
 // 重做「按原 msg_id 重投」前必读 docs/protocol-invariants.md §6 那两条事故规则。
 // ---------------- 单聊（Gossip + E2EE） ----------------
 
+/// 撤回一条自己发的 1:1 消息（仅原作者；5 分钟窗口只在发送端强制）。
+///
+/// 复用公开的 `send_message(..., "recall")` 走完整的 E2EE / outbox / 幂等管道；
+/// 事件先入可靠队列，成功后再物化本地 —— 顺序反了会出现「本地已撤回、对端没收到」。
+#[tauri::command(async)]
+pub async fn recall_message(
+    state: State<'_, Arc<AppState>>,
+    friend_id: String,
+    target: String,
+) -> Result<(), String> {
+    let s = state.inner().clone();
+    if friend_id == s.device_id {
+        return Err("不能撤回自己会话里的消息".to_string());
+    }
+    // SQLite 读写交给阻塞池：`#[tauri::command(async)]` 的整段函数体在 tokio worker 上，
+    // 直接持锁等 DB 会占住一个 worker（worker 数 = CPU 核数，传文件时会让开窗也白等）。
+    let s_db = s.clone();
+    let target_db = target.clone();
+    let friend_db = friend_id.clone();
+    let already_recalled = tokio::task::spawn_blocking(move || -> Result<bool, String> {
+        let dbc = s_db.db.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(msg) = db::get_message_record(&dbc, &target_db) else {
+            return Err("消息不存在".to_string());
+        };
+        crate::protocol::recall_verdict(
+            &msg.sender_id,
+            &s_db.device_id,
+            &msg.conv_id,
+            &friend_db,
+            msg.ts,
+            db::now_ms(),
+        )?;
+        Ok(db::is_recalled(&dbc, &target_db))
+    })
+    .await
+    .map_err(|e| format!("撤回校验被线程池中断: {e}"))??;
+    if already_recalled {
+        return Ok(()); // 幂等：已撤回过就直接成功
+    }
+    let payload = crate::protocol::RecallPayload {
+        target: target.clone(),
+    };
+    let content = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
+    // 先发可靠事件（send_message 内部会做好友/目标/能力位校验并写 outbox）。
+    send_message(state, friend_id.clone(), content, "recall".to_string()).await?;
+    let s_db = s.clone();
+    let target_db = target.clone();
+    let friend_db = friend_id.clone();
+    tokio::task::spawn_blocking(move || {
+        let dbc = s_db.db.lock().unwrap_or_else(|e| e.into_inner());
+        let seq = db::get_clock(&dbc, &friend_db);
+        db::insert_recall(&dbc, &friend_db, &target_db, &s_db.device_id, seq).ok();
+        db::materialize_recall(&dbc, &target_db).ok();
+    })
+    .await
+    .map_err(|e| format!("撤回物化被线程池中断: {e}"))?;
+    let _ = s.app.emit("message-recalled", &target);
+    Ok(())
+}
+
 #[tauri::command(async)]
 pub async fn send_message(
     state: State<'_, Arc<AppState>>,
@@ -47,6 +107,11 @@ pub async fn send_message(
             crate::protocol::parse_remind_ack_payload(&content)?;
             MsgKind::RemindAck
         }
+        // 撤回：载荷先过校验；目标/作者/窗口在下面的 DB 块与专用命令里再判。
+        "recall" => {
+            crate::protocol::parse_recall_payload(&content)?;
+            MsgKind::Recall
+        }
         _ => return Err("不支持的消息类型".to_string()),
     };
 
@@ -77,6 +142,20 @@ pub async fn send_message(
                 if !valid {
                     return Err("对应的强提醒不存在".to_string());
                 }
+            }
+            "recall" => {
+                let p = crate::protocol::parse_recall_payload(&content)?;
+                let Some(msg) = db::get_message_record(&dbc, &p.target) else {
+                    return Err("要撤回的消息不存在".to_string());
+                };
+                crate::protocol::recall_verdict(
+                    &msg.sender_id,
+                    &s.device_id,
+                    &msg.conv_id,
+                    &friend_id,
+                    msg.ts,
+                    db::now_ms(),
+                )?;
             }
             _ => {}
         }

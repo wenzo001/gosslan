@@ -1922,8 +1922,13 @@ export const useChatStore = defineStore("chat", () => {
    * 不做乐观更新：先在服务端成功（事件已发出）才改本地 —— 顺序反了会出现
    * 「本地显示已撤回、对端根本没收到」。事件回来会走 `onMessageRecalled` 统一改本地形态。
    */
-  async function recallMessage(groupId: string, msgId: string) {
-    await api.recallGroupMessage(groupId, msgId);
+  /** 撤回自己发的一条消息：群聊传 `group:<gid>`，单聊传 peer id；由这里统一分流。 */
+  async function recallMessage(convId: string, msgId: string) {
+    if (convId.startsWith("group:")) {
+      await api.recallGroupMessage(convId.slice(6), msgId);
+      return;
+    }
+    await api.recallDirectMessage(convId, msgId);
   }
 
   /** 发布群公告（仅群主）。正常入时间线（计未读、可通知），只是不随清空历史消失。 */
