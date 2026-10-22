@@ -57,7 +57,7 @@
 |---|---|---|
 | `vue-router@5.4.0` | 采纳 | vendor gzip 从 104.92 → 114.15（同机 `npm run build`，2026-10-22）；换来真实历史条目与可深链 |
 | `@pinia/colada@1.4.8` | 只装不接线 | 不进口，产物无增量；与 `@tanstack/vue-query` 职责重叠，迁移单独立项 |
-| `motion-v@2.8.0` | **采纳（用户裁决）** | 2026-10-22 同机 `npm run build`：`motion` 独立 chunk gzip 51.02；vendor 114.56。只用于共享元素转场、列表 FLIP、手势连续动画三类；业务组件只能从 `src/utils/motion/` 导入 |
+| `motion-v@2.8.0` | **采纳（用户裁决）** | 2026-10-22 同机 `npm run build`：`motion` 独立 chunk gzip 51.02；vendor 114.56。只用于共享布局指示器、列表 FLIP、手势连续动画三类；图片缩略图不做 layout 补间（避免解码后从底部拉伸）；业务组件只能从 `src/utils/motion/` 导入 |
 
 **口径**：动画默认纯 CSS；要引库必须先给出「哪个具体交互 CSS 做不到」+ 同机产物增量。一次只引一套。
 

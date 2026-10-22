@@ -109,6 +109,15 @@ export const useChatStore = defineStore("chat", () => {
   const peers = ref<Peer[]>([]);
   const friends = ref<Friend[]>([]);
   /**
+   * 首轮刷新是否已经落地（成功与否）。路由层要区分「好友/会话还没读回来」与
+   * 「读完了但深链里的对象不存在」——没有这个标记，无效参数守卫会在启动瞬间误杀合法深链。
+   */
+  const initialized = ref(false);
+  /** 各数据源**成功**读过一次：深链校验只能基于已读到的表，不能把 IPC 失败当成“对象不存在”。 */
+  const friendsLoaded = ref(false);
+  const conversationsLoaded = ref(false);
+  const groupsLoaded = ref(false);
+  /**
    * 「最后一次见到的名字」本机缓存（只用于显示，不参与任何信任判断）。
    * 它管的是用户 2026-10-14 报的那半句「名字…会变」：非好友的群成员一离线，
    * `peers`（纯内存）里就没他了，界面上的名字会跟着换一档来源。判据与写盘策略见
@@ -842,6 +851,7 @@ export const useChatStore = defineStore("chat", () => {
     const list = await api.getFriends();
     if (!refreshGuard.isCurrent("friends", tok)) return;
     friends.value = list;
+    friendsLoaded.value = true;
   }
   async function refreshPending() {
     const tok = refreshGuard.begin("pending");
@@ -1070,6 +1080,7 @@ export const useChatStore = defineStore("chat", () => {
       unreadClearedAt,
       issuedAt,
     );
+    conversationsLoaded.value = true;
     pruneUnreadClears(unreadClearedAt, Date.now(), UNREAD_CLEAR_TTL_MS);
     // 徽标跟着会话一起刷：冷启动与"切回会话列表"都走这里。
     // ⚠️ 用内存里已有的消息算不行 —— 消息缓存有上限，冷会话根本不在内存里，
@@ -1081,6 +1092,7 @@ export const useChatStore = defineStore("chat", () => {
     const list = await api.getGroups();
     if (!refreshGuard.isCurrent("groups", tok)) return;
     groups.value = list;
+    groupsLoaded.value = true;
     const entries = await Promise.all(
       list.map(async (group) => [group.id, await api.getGroupReads(group.id).catch(() => [])] as const),
     );
@@ -2767,6 +2779,7 @@ export const useChatStore = defineStore("chat", () => {
         console.error(`[chat] 初始刷新 ${names[i]} 失败`, r.reason);
       }
     });
+    initialized.value = true;
 
     // 恢复上次打开的会话（若仍存在）。HIG State Restoration：重启后回到上次离开的地方。
     // 用 void 触发：不阻塞 init，也避免其异步失败拖垮启动。
@@ -2881,6 +2894,10 @@ export const useChatStore = defineStore("chat", () => {
   return {
     peers,
     friends,
+    initialized,
+    friendsLoaded,
+    conversationsLoaded,
+    groupsLoaded,
     pendingRequests,
     conversations,
     groups,

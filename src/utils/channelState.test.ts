@@ -602,7 +602,7 @@ test("切会话的三处入口：翻页/收页必须排在读数据之前", () =
   mustComeFirst(
     favLocate,
     "const locating = chat.locateMessageInConv",
-    "router.push",
+    "router?.push",
     "收藏跳转：先写 activeConv 再落路由，避免 watcher 重复加载",
   );
 });

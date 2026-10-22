@@ -110,6 +110,19 @@ const mobileNav = computed<string | null>(() =>
   props.routeDriven && routeIsSettings.value ? routeSection.value : localMobileNav.value,
 );
 
+// `/me/settings/<未知分区>` 不能停在「URL 说分区、界面却是列表」的半截状态。
+// 归一成一级设置页（replace，不额外留历史）。
+watch(
+  () => [props.routeDriven, route?.name, route?.params.key, routeSection.value] as const,
+  () => {
+    if (!props.routeDriven || !router || route?.name !== "settings-section") return;
+    if (routeSection.value !== null) return;
+    app.toast(t("layout.routeMissing"), "info");
+    void router.replace({ name: "settings" });
+  },
+  { immediate: true },
+);
+
 function selectSection(key: string) {
   if (props.routeDriven && routeIsSettings.value && router) {
     void router.push({ name: "settings-section", params: { key } });

@@ -37,7 +37,7 @@ import type { LogEntry } from "@/types";
  * 不用 `AuxWindowShell` 的原因：同一个组件要兼两种形态，动态根 class + `TitleBar` 比
  * 套壳再改一遍结构更稳（工具栏里的筛选/刷新/清空等操作两边共用）。
  */
-const props = defineProps<{ standalone?: boolean }>();
+const props = defineProps<{ standalone?: boolean; routeDriven?: boolean }>();
 const emit = defineEmits<{ (e: "back"): void }>();
 /**
  * toast 出口（复制路径 / 导出诊断包的结果提示）。
@@ -49,10 +49,13 @@ const app = useAppStore();
  * 移动端全屏日志页参与分层返回：系统返回键回上一步，而不是退出应用。
  * `standalone`（桌面独立日志窗口）不参与 —— 那个窗口由标题栏的关闭键承担关闭语义。
  */
-useBackLayer(
-  () => !props.standalone,
-  () => emit("back"),
-);
+// 路由驱动（主窗口 /me/logs）时由路由历史负责返回；独立日志窗口也不参与。
+if (!props.standalone && !props.routeDriven) {
+  useBackLayer(
+    () => true,
+    () => emit("back"),
+  );
+}
 
 /** 时间正序（旧 → 新）的原始日志；展示与复制都从它派生。 */
 const logs = ref<LogEntry[]>([]);

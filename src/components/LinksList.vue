@@ -26,7 +26,7 @@ import { ExternalLink as ExternalLinkIcon, Pencil, Plus } from "lucide-vue-next"
 import { Trash2 } from "@/components/ui/icons";
 import type { ExternalLink } from "@/types";
 
-defineProps<{ opening?: boolean }>();
+const props = defineProps<{ opening?: boolean; routeDriven?: boolean }>();
 const emit = defineEmits<{
   (e: "open", link: ExternalLink): void;
   /** 移动端覆盖层返回（回到「我的」页）。桌面端内嵌时不会触发。 */
@@ -87,11 +87,14 @@ const writeLink = useMutation({
 });
 const saving = computed(() => writeLink.isPending.value);
 
-// 移动端链接页是覆盖层下钻页，系统返回键 / 框架返回键都走这里回到「我的」页。
-useBackLayer(
-  () => app.isMobile,
-  () => emit("back"),
-);
+// 移动端链接页是覆盖层下钻页。路由驱动时历史条目已经承担返回，再压一层会「返回两次」；
+// 无 router 的探针挂载才用内部栈。
+if (!props.routeDriven) {
+  useBackLayer(
+    () => app.isMobile,
+    () => emit("back"),
+  );
+}
 
 function startAdd() {
   draft.value = { id: null, name: "", url: "" };

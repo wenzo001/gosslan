@@ -74,7 +74,7 @@ function navOfRoute(): NavState {
   const name = String(route.name ?? "");
   if (name === "contacts" || name === "friend" || name === "requests") return "contacts";
   if (name === "favorites" || name === "favorite") return "favorites";
-  if (name === "links") return "links";
+  if (name === "links" || name === "me-links") return "links";
   if (
     name === "me" ||
     name === "profile" ||
@@ -114,7 +114,9 @@ const listView = computed<"chats" | "contacts">(() =>
 const favoritesOpen = computed(
   () => route.name === "favorites" || route.name === "favorite",
 );
-const isLinksView = computed(() => route.name === "links");
+const isLinksView = computed(
+  () => route.name === "links" || route.name === "me-links",
+);
 
 /** 有历史条目才 back（否则深链进来会退出应用）；没有就走 fallback。 */
 function canGoBack(): boolean {
@@ -122,8 +124,10 @@ function canGoBack(): boolean {
   return Boolean(state && state.back);
 }
 function goBack(fallback: string) {
+  // 深链直达时没有上一跳：用 replace 落到安全目标，别在同一条链上再压一层
+  // （否则用户从安全目标再按一次返回又回到那条深链，形成往返循环）。
   if (canGoBack()) router.back();
-  else void router.push(fallback);
+  else void router.replace(fallback);
 }
 
 /** 一级 tab 的目标路由。桌面「聊天」保留当前会话，移动端回列表。 */
@@ -134,7 +138,7 @@ function routeForTab(nav: NavState): RouteLocationRaw {
       : { name: "chats" };
   }
   if (nav === "contacts") return { name: "contacts" };
-  if (nav === "links") return { name: "links" };
+  if (nav === "links") return { name: app.isMobile ? "me-links" : "links" };
   if (nav === "favorites") return { name: "favorites" };
   return { name: "me" };
 }
@@ -162,7 +166,9 @@ function selectMobileTab(nav: NavState, mv: "list" | "chat") {
   paneAnimate.value = false;
   // 先写 store：底栏/主面板本帧就到位，路由随后落库（用户 2026-09-24 #29「切换要瞬间响应」）。
   app.mobileView = mv;
-  void router.push(routeForTab(nav)).finally(() => {
+  // 一级 tab 是平级切换，不进返回历史：Android 返回键在根 tab 上应当退出应用，
+  // 而不是在「聊天→通讯录→收藏」之间来回倒带。详情仍用 push（见各 open* 函数）。
+  void router.replace(routeForTab(nav)).finally(() => {
     requestAnimationFrame(() => requestAnimationFrame(() => (paneAnimate.value = true)));
   });
 }
@@ -191,15 +197,16 @@ const logsOpen = computed(() => app.isMobile && route.name === "logs");
  * ⚠️ 占位的**高度**另有单一事实来源 = `--gosslan-mobile-tabbar-h`（定义在 `src/style.css`），
  * 条件与尺寸是两件事，别把其中一个的收敛当成另一个也收敛了。
  *
- * 只在**四个一级 tab** 上显示：聊天 / 通讯录列表（`mobileView === 'list'`）、收藏、我的。
- * 进 Chat 详情、设置、日志、链接 等二级页时整个隐藏。收藏必须保留（用户 2026-09-20）。
+ * 只在**四个一级 tab** 上显示：聊天 / 通讯录 / 收藏列表（`mobileView === 'list'`）、我的。
+ * 进 Chat 详情、收藏详情、设置、日志、链接 等二级页时整个隐藏 —— 收藏不再开特例，
+ * 它的列表态是普通 tab，详情态与别的下钻页同一条规则。
  */
 const showMobileTabBar = computed(
   () =>
     app.isMobile &&
     !app.keyboardOpen &&
     !app.multiSelectActive &&
-    (mobileView.value === "list" || favoritesOpen.value || navState.value === "me") &&
+    (mobileView.value === "list" || navState.value === "me") &&
     !settingsOpen.value &&
     !logsOpen.value,
 );
@@ -283,6 +290,15 @@ function closeProfile() {
   goBack("/me");
 }
 
+/**
+ * 移动端「我的 → 链接」：这是**下钻**，必须 push 一条历史，返回才回得到「我的」。
+ * 不能复用一级 tab 的 replace（那会把「我的」这条历史替换掉，返回直接跳去更早的页面）。
+ */
+function openMobileLinks() {
+  app.mobileView = "chat";
+  void router.push({ name: "me-links" });
+}
+
 /** 移动端链接页返回：链接是从「我的」下钻进来的，返回即回到「我的」页。 */
 function onLinksBack() {
   goBack("/me");
@@ -311,7 +327,10 @@ const searchOpen = computed(() => route.name === "search");
 const searchSeed = computed(() => (typeof route.query.q === "string" ? route.query.q : ""));
 
 function openSearchHistory(keyword: string) {
-  void router.push({ name: "search", query: { q: keyword } });
+  const q = keyword.trim();
+  // 同一关键词重复回车不该再压一条历史（否则返回要按两次才离开搜索）。
+  if (route.name === "search" && String(route.query.q ?? "") === q) return;
+  void router.push({ name: "search", query: q ? { q } : {} });
 }
 
 function closeSearch() {
@@ -357,7 +376,8 @@ function closeRequests() {
   // 移动端返回会话列表（iOS push/pop 语义：申请页是从列表推进去的一层）
   if (app.isMobile) app.mobileView = "list";
   if (app.isMobile) {
-    goBack("/chats");
+    // 申请页的父级是通讯录（不是聊天）：深链直达、无上一跳时也要回得去。
+    goBack("/contacts");
     return;
   }
   if (chat.activeConv) void router.push({ name: "conversation", params: { convId: chat.activeConv } });
@@ -421,6 +441,9 @@ watch(
     // 即使有活跃会话也应该让用户继续看发现内容。
     if (convId && navState.value !== "links" && navState.value !== "favorites") {
       const current = route.name === "conversation" ? String(route.params.convId ?? "") : "";
+      // 已经停在另一条会话 URL 上时，不把界面切走：启动恢复 / 后台异步打开
+      // 都不能覆盖用户刚进入的深链；切会话的调用方（列表、搜索、资料）自己会 push 路由。
+      if (current && current !== convId) return;
       if (current !== convId) {
         const target = { name: "conversation", params: { convId } } as const;
         if (autoOpenRecent.value && route.name === "chats") void router.replace(target);
@@ -482,11 +505,27 @@ function onAddFriendAction() {
 useShortcuts();
 
 /**
+ * 路由对象是否存在。只认首轮数据读过之后的事实；会话 id 可以是好友的 device_id
+ * （还没建会话行），所以好友与自己的 id 也算合法，群会话按 `group:<id>` 匹配群表。
+ * 不认识的 id 绝不能交给 `openConversation` —— 那会走 `ensureConversation` 凭空建一条空会话。
+ */
+function isKnownConversation(id: string): boolean {
+  if (!id) return false;
+  if (chat.conversations.some((c) => c.id === id)) return true;
+  if (chat.friends.some((f) => f.device_id === id)) return true;
+  if (id === app.device?.device_id) return true;
+  return id.startsWith("group:") && chat.groups.some((g) => `group:${g.id}` === id);
+}
+
+/**
  * 路由 → 会话/资料状态。
  *
  * 页面级层级现在由路由的历史条目承载（聊天页、我的页、资料页不再各压一条 `useBackLayer`），
  * 所以系统返回键先退路由；只有浮层（弹窗/菜单/灯箱）仍走 `useBackLayer` 的手工栈。
  * 深链进入 `/chats/:id` 时没有「点会话」那一下，这里负责补上打开动作。
+ *
+ * 必须先等 `chat.initialized`：启动早期好友/会话表还是空的，提前打开既会误判，
+ * 也会让未知 id 被 `ensureConversation` 建成一条真实空会话。
  */
 watch(
   () => [
@@ -495,11 +534,14 @@ watch(
     route.params.friendId,
     route.query.msgId,
     chat.friends.length,
+    chat.initialized,
   ],
   async () => {
+    if (!chat.initialized) return;
     if (route.name === "conversation") {
       const convId = String(route.params.convId ?? "");
-      if (convId && chat.activeConv !== convId) await chat.openConversation(convId);
+      if (!isKnownConversation(convId)) return;
+      if (chat.activeConv !== convId) await chat.openConversation(convId);
       const msgId = typeof route.query.msgId === "string" ? route.query.msgId : "";
       if (convId && msgId) {
         const r = await chat.locateMessageInConv(convId, msgId);
@@ -517,16 +559,65 @@ watch(
   { immediate: true },
 );
 
-// 桌面没有「我的」页 / 资料页 / 全屏日志页（各自有独立窗口或设置入口）：
-// 深链落进来时回落到聊天，避免渲染一条桌面不可达的分支（修 D-E）。
+/**
+ * 深链对象校验：首轮数据读过之后才判，避免启动瞬间把合法深链误判成无效。
+ * 无效 = URL 指向一个不存在的会话 / 好友；给出提示并落到对应的一级页，
+ * 不允许界面停在「URL 有 id、主区却是空态」的半截状态。
+ */
+watch(
+  () => [chat.initialized, route.name, route.params.convId, route.params.friendId] as const,
+  ([ready, name, convId, friendId]) => {
+    if (!ready) return;
+    if (name === "friend") {
+      // 好友表没读成功时无从判断“不存在”，不能把人踢回通讯录。
+      if (!chat.friendsLoaded) return;
+      const id = String(friendId ?? "");
+      if (!id || !chat.friends.some((f) => f.device_id === id)) {
+        app.toast(t("layout.routeMissing"), "info");
+        void router.replace({ name: "contacts" });
+      }
+      return;
+    }
+    if (name !== "conversation") return;
+    const id = String(convId ?? "");
+    if (isKnownConversation(id)) return;
+    // 判“不存在”必须两边的表都成功读过：群看会话+群表，单聊看会话+好友表。
+    const canJudge = id.startsWith("group:")
+      ? chat.conversationsLoaded && chat.groupsLoaded
+      : chat.conversationsLoaded && chat.friendsLoaded;
+    if (!canJudge) return;
+    app.toast(t("layout.routeMissing"), "info");
+    void router.replace({ name: "chats" });
+  },
+  { immediate: true },
+);
+
+// 平台归一 + 桌面深链动作：
+// - 移动端 `/links` 是旧路径，归一成 `/me/links`（页面身份只有一份）；
+// - 桌面没有「我的」页 / 资料页 / 全屏日志页：设置与日志落到**独立窗口动作**，
+//   资料复用设置窗口（其默认分区就是 profile），不是静默跳回聊天（修 D-E）。
 watch(
   () => [app.isMobile, route.name] as const,
   ([mobile, name]) => {
-    if (mobile) return;
-    if (name === "me" || name === "profile" || name === "logs") {
+    if (mobile) {
+      if (name === "links") void router.replace({ name: "me-links" });
+      return;
+    }
+    if (name === "me") {
       void router.replace({ name: "chats" });
-    } else if (name === "settings" || name === "settings-section") {
-      settingsFallbackOpen.value = true;
+      return;
+    }
+    if (name === "me-links") {
+      void router.replace({ name: "links" });
+      return;
+    }
+    if (name === "profile" || name === "settings" || name === "settings-section") {
+      openSettings();
+      void router.replace({ name: "chats" });
+      return;
+    }
+    if (name === "logs") {
+      openLogs();
       void router.replace({ name: "chats" });
     }
   },
@@ -553,7 +644,21 @@ function onBackKey(e: KeyboardEvent) {
   const root = ["chats", "contacts", "favorites", "links", "me"].includes(name);
   if (root) return;
   e.preventDefault();
-  goBack(name.startsWith("settings") || name === "logs" ? "/me" : "/chats");
+  // 每条二级路由显式给出安全落点：联系人详情回通讯录（不是聊天），
+  // 收藏详情回收藏列表，「我的」子页回「我的」——不猜、不统一回聊天。
+  const fallback: Record<string, string> = {
+    conversation: "/chats",
+    friend: "/contacts",
+    requests: "/contacts",
+    favorite: "/favorites",
+    search: "/chats",
+    "me-links": "/me",
+    profile: "/me",
+    settings: "/me",
+    "settings-section": "/me",
+    logs: "/me",
+  };
+  goBack(fallback[name] ?? "/chats");
 }
 useEventListener(window, "keydown", onBackKey);
 
@@ -792,7 +897,7 @@ function onResizeEnd() {
                    ⚠️ 放成**兄弟节点**而不是塞进 `<button>` 里：`<div>` 不是 phrasing content，
                    塞进 button 是非法 HTML。 -->
               <div class="ml-12 h-px shrink-0 bg-[var(--gosslan-divider)]"></div>
-              <button class="flex items-center gap-3 px-4 py-3.5 text-left transition hover:bg-[var(--gosslan-list-hover)]" @click="selectMobileTab('links', 'chat')">
+              <button class="flex items-center gap-3 px-4 py-3.5 text-left transition hover:bg-[var(--gosslan-list-hover)]" @click="openMobileLinks">
                 <NavIcon name="links" size-class="h-5 w-5" class="text-[var(--gosslan-text-2)]" />
                 <span class="flex-1 text-sm">{{ t("nav.links") }}</span>
               </button>
@@ -899,8 +1004,8 @@ function onResizeEnd() {
     <!-- 移动端底部导航：4 按钮（聊天 / 通讯录 / 收藏 / 我的）；软键盘弹出时收起（避免浮在键盘上方遮挡输入）。
          显示条件**统一走 `showMobileTabBar`**（与上面内容区的 pb 占位同源，不要再各写一份）：
          只在**四个一级 tab** 上显示 —— 聊天/通讯录列表（`mobileView === 'list'`）、收藏、我的；
-         进 Chat 详情 / 设置 / 日志 / 链接 等二级页时整个隐藏（二级页不该有一级页的 TabBar）。
-         ⚠️ 收藏 tab 必须**保留** TabBar（用户 2026-09-20 明确要求，「收藏 tab 不要新开页面」）。 -->
+         进 Chat 详情 / 收藏详情 / 设置 / 日志 / 链接 等二级页时整个隐藏（二级页不该有一级页的 TabBar）。
+         收藏列表是普通一级 tab；只有点进单条收藏（`/favorites/:favId`）才按下钻页处理。 -->
     <nav
       v-if="showMobileTabBar"
       class="safe-bottom absolute bottom-0 left-0 right-0 z-40 flex items-center justify-around border-t border-[var(--gosslan-border)] bg-[var(--gosslan-panel)]"
@@ -992,6 +1097,7 @@ function onResizeEnd() {
     <ChatSearchDialog
       :open="searchOpen"
       :initial-keyword="searchSeed"
+      route-driven
       @close="closeSearch"
       @open-conversation="onOpenSearchHit"
     />
@@ -1002,12 +1108,12 @@ function onResizeEnd() {
 
     <!-- 移动端运行日志页：全屏覆盖、带返回（桌面端走独立窗口，见 open_log_window） -->
     <Transition :name="navigationDirection === 'back' ? 'page-slide-back' : 'page-slide'">
-      <LogViewer v-if="app.isMobile && logsOpen" @back="closeLogs" />
+      <LogViewer v-if="app.isMobile && logsOpen" route-driven @back="closeLogs" />
     </Transition>
 
     <!-- 移动端链接页：从「我的」下钻进来的全屏覆盖层（桌面端在左列渲染） -->
     <Transition :name="navigationDirection === 'back' ? 'page-slide-back' : 'page-slide'">
-      <LinksList v-if="app.isMobile && isLinksView" :opening="linksOpening" @open="openLink" @back="onLinksBack" />
+      <LinksList v-if="app.isMobile && isLinksView" :opening="linksOpening" route-driven @open="openLink" @back="onLinksBack" />
     </Transition>
 
     <!-- 移动端资料页：可编辑资料，从「我的」下钻进来（桌面端回落到设置） -->
