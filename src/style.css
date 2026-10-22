@@ -658,6 +658,9 @@ progress {
     animation: none !important;
     transition: none;
   }
+  .gosslan-menu[data-state="open"] {
+    animation: none;
+  }
   /* 全局按压反馈也必须在减弱动态效果下关闭（否则 CSS 侧仍会缩放）。 */
   :where(button:not(:disabled):not([data-no-press])) {
     transition: none;
@@ -1076,6 +1079,15 @@ img {
      .gosslan-menu-sep        分组分隔线
      .gosslan-menu-hint       条目下方的说明小字（如"只删除本机记录"）
    尺寸参照微信 macOS：面板内边距 6px、条目高 32px、图标 16px、条目字号 13px。 */
+/* 下拉/附件菜单统一淡入：只动 opacity —— transform 属于 floating-ui 的定位层，碰了会错位。 */
+@keyframes gosslan-menu-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.gosslan-menu[data-state="open"] {
+  animation: gosslan-menu-fade-in 140ms var(--gosslan-ease);
+}
+
 .gosslan-menu {
   min-width: 168px;
   padding: 6px;
