@@ -119,7 +119,8 @@ test("外部链接读侧交给 Query：键 [\"links\",\"\"]，没有手写 loadi
   assert.match(linksSource, /panelQueryOptions<ExternalLink\[\]>\("links", ""/);
   assert.doesNotMatch(linksSource, /^const (links|loading|loadError|saving) = ref\(/m);
   assert.doesNotMatch(linksSource, /onMounted/);
-  assert.doesNotMatch(linksSource, /finally\s*\{/);
+  // `finally` 不再作为“手写读侧”的代称：JSON 导入/导出也要在取消/失败时收 busy 状态，
+  // 真正的读侧判据是上面那条 panelQueryOptions + 没有手写 loading/loadError。
 });
 
 test("外部链接写侧：三条写命令共用一枚 mutation，成功时把返回的整份数组写回同一个键", () => {

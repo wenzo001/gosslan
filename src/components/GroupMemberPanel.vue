@@ -304,7 +304,7 @@ async function confirmAction() {
       </div>
 
       <!-- 当前成员 -->
-      <div class="max-h-56 overflow-y-auto">
+      <div class="space-y-0.5">
         <div
           v-for="row in memberRows"
           :key="row.id"

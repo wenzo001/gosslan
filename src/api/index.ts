@@ -2,7 +2,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppSettings, CacheInfo, CleanupReport, ContentAudience, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, FriendKeyRotation, Group, GroupHistoryProgress, GroupReadInfo, InterfaceInfo, LinkState, LogEntry, MessageRecord, Peer, PeerReadInfo, PendingRequest, RelayConfig, RelayProbe, RoutedEndpoint, RuntimeSnapshot, TransferInfo } from "@/types";
+import type { AppSettings, CacheInfo, CleanupReport, ContentAudience, ContentTransfer, Conversation, DeviceInfo, DiscoveryDiag, ExportSummary, ExternalLink, ExternalLinkImportResult, FavoriteEntry, FileDoneInfo, FileFailedInfo, FileProgress, FileStalledInfo, Friend, FriendKeyRotation, Group, GroupHistoryProgress, GroupReadInfo, InterfaceInfo, LinkState, LogEntry, MessageRecord, Peer, PeerReadInfo, PendingRequest, RelayConfig, RelayProbe, RoutedEndpoint, RuntimeSnapshot, TransferInfo } from "@/types";
 import type { TodoImage } from "@/utils/todos";
 import { chatSearchGroupSchema, groupFileEntrySchema, parseIpcList, shareEntrySchema } from "@/utils/validation";
 import type { PreviewGallery, PreviewImage } from "@/types";
@@ -580,6 +580,13 @@ export const api = {
   updateExternalLink: (id: string, name: string, url: string) =>
     invoke<ExternalLink[]>("update_external_link", { id, name, url }),
   removeExternalLink: (id: string) => invoke<ExternalLink[]>("remove_external_link", { id }),
+  exportExternalLinks: () => invoke<string>("export_external_links"),
+  cleanupExternalLinksExport: (path: string) =>
+    invoke<void>("cleanup_external_links_export", { path }),
+  importExternalLinksFile: (path: string) =>
+    invoke<ExternalLinkImportResult>("import_external_links_file", { path }),
+  importExternalLinksFromUrl: (url: string) =>
+    invoke<ExternalLinkImportResult>("import_external_links_from_url", { url }),
 
   /** 保存一张**粘贴**进任务表单的图片（raw IPC 直传字节），返回落盘路径。
    *  之后与选图同一条路：`todoImageMeta(path)` → 元数据进定义，`sendTodoImage(path)` → 字节投递。 */

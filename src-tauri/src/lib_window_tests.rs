@@ -714,6 +714,32 @@
         }
     }
 
+    /// 导出清理只许删 `cache/exports` 的直接子文件，且文件名必须是导出命令生成的形状。
+    ///
+    /// 真实风险：`Path::starts_with` 是词法比较，`exports/../../x` 也能过；`remove_file`
+    /// 随后按 OS 语义解析 `..` ⇒ 一条 IPC 就能删到目录外。这条钉住那个绕过形状。
+    #[test]
+    fn external_link_cleanup_rejects_paths_outside_exports() {
+        use crate::commands::is_export_artifact_path;
+        use std::path::Path;
+        let dir = Path::new("/tmp/cache/exports");
+        assert!(is_export_artifact_path(
+            dir,
+            Path::new("/tmp/cache/exports/gosslan-links-abc.json")
+        ));
+        for bad in [
+            "/tmp/cache/exports/../secrets.json",
+            "/tmp/cache/exports/../../etc/passwd",
+            "/tmp/cache/other/gosslan-links-abc.json",
+            "/tmp/cache/exports/other.json",
+            "/tmp/cache/exports/gosslan-links-abc.json.bak",
+            "/tmp/cache/exports/gosslan-links-..json",
+            "/tmp/cache/exports",
+        ] {
+            assert!(!is_export_artifact_path(dir, Path::new(bad)), "必须拒绝：{bad}");
+        }
+    }
+
     /// 群任务窗口是**固定 label** `tasks`，"看哪个群"改由后端那份当前上下文给。
     ///
     /// 为什么钉这个形状（用户 2026-09-24）："可不传参数、后台默默先把 WebView 建好，用的时候

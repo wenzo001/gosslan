@@ -464,6 +464,8 @@ window.__probe = (() => {
         // 任务卡**主体**（头部/描述/指派人）emit 的是 "open-panel"（不带 id，
         // 与底部"直达这一条详情"区分）。tag 与 open-id 对齐。
         onOpenPanel: () => events.push(['open-panel']),
+        // 默认头像选择器（--only=avatar）：确认时把组合记进账本。
+        onApply: (seed) => events.push(['apply', seed && seed.emoji, seed && seed.bg]),
         // 输入框那一族（--only=inputpanel）要读得到"这条到底带不带 @ 的名单"：
         // 编辑器上只有 token 的 DOM，载荷才有 mentionIds ⇒ 没有 onSend 就只能看 DOM 猜。
         onSend: (p) => events.push(['send', JSON.stringify(p)]),
@@ -2639,6 +2641,7 @@ async function main() {
     const favorites = want("favorites");
     const links = want("links");
     const diag = want("diag");
+    const avatar = want("avatar");
     const fontsel = want("fontsel");
     const layoutstore = want("layoutstore");
     const settingsmobile = want("settingsmobile");
@@ -2690,6 +2693,7 @@ async function main() {
     if (navicon) await runNavIcon(cdp, url);
     if (menufit) await runMenuFit(cdp, url);
     if (diag) await runDiag(cdp, url);
+    if (avatar) await runAvatar(cdp, url);
     if (links) await runLinks(cdp, url);
     if (fontsel) await runFontSelect(cdp, url);
     if (layoutstore) await runLayoutStore(cdp, url);
@@ -5554,13 +5558,18 @@ async function runSearch(cdp, url) {
         vw: innerWidth,
         scrollW: document.documentElement.scrollWidth,
         dlgW: +r.width.toFixed(1),
+        dlgH: +r.height.toFixed(1),
+        vh: innerHeight,
+        docScrollH: document.documentElement.scrollHeight,
         outside: outside.map((b) => String(b.getAttribute('aria-label') || b.textContent || '').trim().slice(0, 24)),
         hasResults: text.includes('探针会话') || text.includes('命中'),
       };
     })()`);
-    check("移动端搜索：390 宽下弹窗不超视口、无越界按钮",
-      mob.ok === true && mob.dlgW <= mob.vw && mob.scrollW <= mob.vw + 1 && mob.outside.length === 0,
-      "dlg.width<=vw + scrollWidth<=vw + outside=0", JSON.stringify(mob));
+    check("移动端搜索：390 宽下整页铺满、页面本身不滚（只有结果区滚）、无越界按钮",
+      mob.ok === true && mob.dlgW <= mob.vw && mob.dlgH >= mob.vh - 1
+        && mob.scrollW <= mob.vw + 1 && mob.docScrollH <= mob.vh + 1
+        && mob.outside.length === 0,
+      "dlg.width<=vw + dlg.height>=vh + 页面不滚 + outside=0", JSON.stringify(mob));
     check("移动端搜索：结果仍渲染（不是只摆了一个空壳）",
       mob.ok === true && mob.hasResults === true, "结果文本可见", JSON.stringify(mob));
     if (SHOT_PATH) {
@@ -6226,6 +6235,282 @@ async function runContactFilter(cdp, url) {
   });
 }
 
+/**
+ * 默认头像选择器（--only=avatar）：真组件、真浏览器、390 宽。
+ *
+ * 这段量的是**只有运行时才看得见**的四件事：
+ *   ① 选项数必须与 `avatarSeed.ts` 派生清单相等（不是模板里手抄的另一份）；
+ *   ② 点表情 / 点颜色 / 随机之后，选中态与预览同步翻面（同一次 eval 读不到 Vue 翻面后的
+ *      aria-pressed，必须拆两次 eval —— 这是本文件踩过的坑）；
+ *   ③ 390 宽下弹窗与两组网格都不横向溢出，确认键仍在视口内；
+ *   ④ 生成的头像 SVG **真的画出了 emoji**（不是只有一块背景色）：Chromium 里把 data URL
+ *      画进 canvas，数"与背景不同的像素"。这条是整个方案最大的技术前提。
+ *
+ * ⚠️ 这条只证明 Chromium 内核；macOS 的 WKWebView 仍是人工验收（见文件头那条边界）。
+ */
+async function runAvatar(cdp, url) {
+  const INITIAL = { emoji: "🦊", bg: "#4284b3" };
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  // 导航会把 device metrics 复位：页面起来后再钉一次，并 reload 让 store 的 resize 监听翻到窄档。
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 390, height: 844, deviceScaleFactor: 2, mobile: true,
+  });
+  await cdp.send("Page.reload");
+  await sleep(2_000);
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 390, height: 844, deviceScaleFactor: 2, mobile: true,
+  });
+  await sleep(600);
+  await cdp.eval(PAGE_FIXTURE);
+
+  const mounted = await cdp.eval(
+    `window.__probe.install('/src/components/settings/AvatarPresetDialog.vue', '', ${
+      JSON.stringify(JSON.stringify({ open: true, initial: INITIAL }))
+    })`,
+  );
+  await sleep(500);
+
+  const read = () => cdp.eval(`(async () => {
+    const A = await import('/src/utils/avatarSeed.ts');
+    const dlg = document.querySelector('[role="dialog"]');
+    if (!dlg) return { ok: false };
+    const emojiBtns = [...dlg.querySelectorAll('[data-avatar-emoji]')];
+    const bgBtns = [...dlg.querySelectorAll('[data-avatar-bg]')];
+    const pressed = (sel) => [...dlg.querySelectorAll(sel + '[aria-pressed="true"]')];
+    const pe = pressed('[data-avatar-emoji]');
+    const pb = pressed('[data-avatar-bg]');
+    const preview = dlg.querySelector('.gosslan-avatar-box');
+    const rect = dlg.getBoundingClientRect();
+    const apply = dlg.querySelector('[data-avatar-apply]');
+    const ar = apply ? apply.getBoundingClientRect() : null;
+    return {
+      ok: true,
+      emojis: emojiBtns.length,
+      bgs: bgBtns.length,
+      emojiSetLen: A.AVATAR_EMOJIS.length,
+      bgSetLen: A.AVATAR_BACKGROUNDS.length,
+      emojiAllFromSet: emojiBtns.every((b) => A.AVATAR_EMOJIS.includes(b.getAttribute('data-avatar-emoji'))),
+      bgAllFromSet: bgBtns.every((b) => A.AVATAR_BACKGROUNDS.includes(b.getAttribute('data-avatar-bg'))),
+      pressedEmoji: pe.length === 1 ? pe[0].getAttribute('data-avatar-emoji') : null,
+      pressedBg: pb.length === 1 ? pb[0].getAttribute('data-avatar-bg') : null,
+      pressedEmojiCount: pe.length,
+      pressedBgCount: pb.length,
+      previewEmoji: (preview && preview.innerText || '').trim(),
+      previewBg: preview ? getComputedStyle(preview).backgroundColor : null,
+      vw: innerWidth,
+      sw: document.documentElement.scrollWidth,
+      dlg: { l: +rect.left.toFixed(1), r: +rect.right.toFixed(1), w: +rect.width.toFixed(1), h: +rect.height.toFixed(1) },
+      gridOverflow: [...dlg.querySelectorAll('.grid')].map((g) => g.scrollWidth - g.clientWidth),
+      apply: ar ? { l: +ar.left.toFixed(1), r: +ar.right.toFixed(1), h: +ar.height.toFixed(1) } : null,
+      inputs: dlg.querySelectorAll('input').length,
+      hasRandom: !!dlg.querySelector('[data-avatar-random]'),
+    };
+  })()`);
+
+  const s0 = await read();
+  if (SHOT_PATH) {
+    const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
+    fs.writeFileSync(SHOT_PATH.replace(/\.png$/, "-avatar.png"), Buffer.from(shot.data, "base64"));
+    console.log("  📷 默认头像选择器取证帧 → " + SHOT_PATH.replace(/\.png$/, "-avatar.png"));
+  }
+  check("默认头像：弹窗在 390 宽下打开，选项数与随机算法的清单一致（不是手抄的第二份）",
+    mounted && mounted.ok === true && s0.ok === true
+      && s0.emojis === s0.emojiSetLen && s0.bgs === s0.bgSetLen
+      && s0.emojiAllFromSet === true && s0.bgAllFromSet === true,
+    "emoji 数=AVATAR_EMOJIS、颜色数=AVATAR_BACKGROUNDS，且每个值都在清单内",
+    JSON.stringify({ mounted, emojis: s0.emojis, emojiSet: s0.emojiSetLen, bgs: s0.bgs, bgSet: s0.bgSetLen }));
+
+  check("默认头像：打开时选中态就是传入的当前组合，预览同源",
+    s0.ok === true && s0.pressedEmoji === INITIAL.emoji && s0.pressedBg === INITIAL.bg
+      && s0.pressedEmojiCount === 1 && s0.pressedBgCount === 1
+      && s0.previewEmoji === INITIAL.emoji
+      && s0.previewBg === "rgb(66, 132, 179)",
+    "恰有一个表情/一个颜色选中，预览 emoji 与背景都等于传入组合",
+    JSON.stringify({ pe: s0.pressedEmoji, pb: s0.pressedBg, preview: s0.previewEmoji, bg: s0.previewBg }));
+
+  // 点一个不同的表情：选中态与预览都要跟着翻（拆两次 eval 才读得到 Vue 翻面后的属性）。
+  const nextEmoji = await cdp.eval(
+    `import('/src/utils/avatarSeed.ts').then((A) => A.AVATAR_EMOJIS.find((e) => e !== ${JSON.stringify(INITIAL.emoji)}))`,
+  );
+  await cdp.eval(
+    `document.querySelector(${JSON.stringify(`[data-avatar-emoji="${nextEmoji}"]`)}).click()`,
+  );
+  await sleep(200);
+  const s1 = await read();
+  check("默认头像：点表情后选中态唯一、预览立即跟着换（拖动/点击都不串味）",
+    s1.ok === true && s1.pressedEmoji === nextEmoji && s1.pressedEmojiCount === 1
+      && s1.previewEmoji === nextEmoji,
+    "pressedEmoji=被点的那个且只有一个，预览 emoji 同步",
+    JSON.stringify({ want: nextEmoji, got: s1.pressedEmoji, count: s1.pressedEmojiCount, preview: s1.previewEmoji }));
+
+  // 随机：必须换一张，而且换到的仍是组合表里的行（与手动选项同一个数据集）。
+  await cdp.eval("document.querySelector('[data-avatar-random]').click()");
+  await sleep(200);
+  const s2 = await read();
+  const pairOk = await cdp.eval(
+    `import('/src/utils/avatarSeed.ts').then((A) => A.AVATAR_PAIRS.some((p) => p.emoji === ${
+      JSON.stringify(s2.pressedEmoji)
+    } && p.bg === ${JSON.stringify(s2.pressedBg)}))`,
+  );
+  check("默认头像：随机一定换一张，且结果落在 AVATAR_PAIRS 里（不是另一套随机源）",
+    s2.ok === true && pairOk === true
+      && !(s2.pressedEmoji === s1.pressedEmoji && s2.pressedBg === s1.pressedBg)
+      && s2.previewEmoji === s2.pressedEmoji,
+    "组合变化 + 属于 AVATAR_PAIRS + 预览同步",
+    JSON.stringify({ before: [s1.pressedEmoji, s1.pressedBg], after: [s2.pressedEmoji, s2.pressedBg], pairOk }));
+
+  // 点一个不同的背景色：预览背景必须等于那颗色块的实测颜色。
+  const nextBg = await cdp.eval(
+    `import('/src/utils/avatarSeed.ts').then((A) => A.AVATAR_BACKGROUNDS.find((c) => c !== ${JSON.stringify(s2.pressedBg)}))`,
+  );
+  const swatchSel = `[data-avatar-bg="${nextBg}"]`;
+  const swatchBg = await cdp.eval(
+    `getComputedStyle(document.querySelector(${JSON.stringify(swatchSel)})).backgroundColor`,
+  );
+  await cdp.eval(`document.querySelector(${JSON.stringify(swatchSel)}).click()`);
+  await sleep(200);
+  const s3 = await read();
+  check("默认头像：点背景色后预览真的换成那一格（读的是计算样式，不是自己记的值）",
+    s3.ok === true && s3.pressedBg === nextBg && s3.pressedBgCount === 1
+      && s3.previewBg === swatchBg,
+    "pressedBg=被点的那个，预览背景=色块计算样式",
+    JSON.stringify({ want: nextBg, got: s3.pressedBg, previewBg: s3.previewBg, swatchBg }));
+
+  check("默认头像：390 宽下弹窗/网格不横向溢出，确认键留在视口内",
+    s3.ok === true && s3.sw <= s3.vw + 1
+      && s3.dlg.l >= -1 && s3.dlg.r <= s3.vw + 1
+      && s3.gridOverflow.every((n) => n <= 1)
+      && s3.apply !== null && s3.apply.l >= -1 && s3.apply.r <= s3.vw + 1 && s3.apply.h >= 24,
+    "scrollWidth<=vw、dialog 左右不越界、两组 grid 无横向滚动、apply 可见且高度>=24",
+    JSON.stringify({ vw: s3.vw, sw: s3.sw, dlg: s3.dlg, overflow: s3.gridOverflow, apply: s3.apply }));
+
+  check("默认头像：选择器里没有自由输入框，也没有把随机键做成非按钮",
+    s3.ok === true && s3.inputs === 0 && s3.hasRandom === true,
+    "inputs=0 且 random 按钮存在",
+    JSON.stringify({ inputs: s3.inputs, hasRandom: s3.hasRandom }));
+
+  // 确认：emit 的组合必须等于屏幕上选中的那一组。
+  await cdp.eval("document.querySelector('[data-avatar-apply]').click()");
+  await sleep(200);
+  const applied = await cdp.eval(
+    `window.__probe.events.filter((e) => e[0] === 'apply').pop() || null`,
+  );
+  check("默认头像：点「使用这个头像」emit 的组合就是屏幕上选中的那一组",
+    Array.isArray(applied) && applied[1] === s3.pressedEmoji && applied[2] === s3.pressedBg,
+    "apply 事件载荷 = 选中组合",
+    JSON.stringify({ event: applied, selected: [s3.pressedEmoji, s3.pressedBg] }));
+
+  // SVG 真的画出了 emoji：画进 canvas 数非背景像素。只画背景色 ⇒ 图标位置是一整块纯色，
+  // 对端看到的就是"没有脸的色块"，而界面这边所有字符串判据仍然全绿。
+  const art = await cdp.eval(`(async () => {
+    const A = await import('/src/utils/avatarSeed.ts');
+    const url = A.avatarPresetDataUrl(${JSON.stringify(INITIAL)});
+    const img = new Image();
+    const loaded = await new Promise((resolve) => {
+      img.onload = () => resolve(true);
+      img.onerror = () => resolve(false);
+      img.src = url;
+    });
+    if (!loaded) return { loaded: false, urlLen: url.length };
+    const size = 64;
+    const c = document.createElement('canvas');
+    c.width = size; c.height = size;
+    const ctx = c.getContext('2d');
+    ctx.drawImage(img, 0, 0, size, size);
+    const px = ctx.getImageData(0, 0, size, size).data;
+    const bg = ${JSON.stringify(INITIAL.bg)};
+    const br = parseInt(bg.slice(1, 3), 16), bgc = parseInt(bg.slice(3, 5), 16), bb = parseInt(bg.slice(5, 7), 16);
+    let other = 0;
+    for (let i = 0; i < px.length; i += 4) {
+      if (Math.abs(px[i] - br) > 12 || Math.abs(px[i + 1] - bgc) > 12 || Math.abs(px[i + 2] - bb) > 12) other++;
+    }
+    return { loaded: true, w: img.naturalWidth, h: img.naturalHeight, other, urlLen: url.length };
+  })()`);
+  check("默认头像：生成的头像 SVG 真的渲染出 emoji（不是一块纯背景色）",
+    art.loaded === true && art.w === 512 && art.h === 512 && art.other > 100,
+    "naturalSize=512、非背景像素>100",
+    JSON.stringify(art));
+
+  // ── 资料页入口 → 选择器 → 既有 updateProfile 的整条链（组件级，不是只看弹窗） ──
+  // 重新导航一次：上一段留着开着的弹窗，别在同一个页面里叠第二个浮层。
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 390, height: 844, deviceScaleFactor: 2, mobile: true,
+  });
+  await cdp.send("Page.reload");
+  await sleep(2_000);
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 390, height: 844, deviceScaleFactor: 2, mobile: true,
+  });
+  await sleep(600);
+  await cdp.eval(PAGE_FIXTURE);
+  const mountedProfile = await cdp.eval(
+    `window.__probe.install('/src/components/settings/ProfileSection.vue', '', ${JSON.stringify(JSON.stringify({ active: true }))})`,
+  );
+  await cdp.eval("window.__probe.seedDevice('probe-me')");
+  await sleep(400);
+  // 记录 updateProfile 的真实入参；getFriends 给空数组，避免保存成功后的资料刷新抛错回滚。
+  await cdp.eval(`(async () => {
+    const m = await import('/src/api/index.ts');
+    window.__profileCalls = [];
+    m.api.updateProfile = async (nickname, avatar) => {
+      window.__profileCalls.push({ nickname: nickname, avatar: avatar });
+      return { device_id: 'probe-me', nickname: nickname, avatar: avatar, device_type: 'desktop', tcp_port: 12345, online: true };
+    };
+    m.api.getFriends = async () => [];
+    return true;
+  })()`);
+  const entry = await cdp.eval("!!document.querySelector('[data-default-avatar-entry]')");
+  await cdp.eval("document.querySelector('[data-default-avatar-entry]').click()");
+  await sleep(400);
+  const opened = await cdp.eval(`(() => {
+    const d = document.querySelector('[role="dialog"]');
+    return { ok: !!d, emojis: d ? d.querySelectorAll('[data-avatar-emoji]').length : 0 };
+  })()`);
+  check("默认头像：资料页的入口真的打开选择器（不是只摆了一个按钮）",
+    mountedProfile && mountedProfile.ok === true && entry === true && opened.ok === true && opened.emojis > 0,
+    "入口存在、点击后有 dialog 且表情网格已渲染",
+    JSON.stringify({ mountedProfile, entry, opened }));
+
+  const pick = await cdp.eval(
+    `import('/src/utils/avatarSeed.ts').then((A) => ({ emoji: A.AVATAR_EMOJIS[2], bg: A.AVATAR_BACKGROUNDS[0] }))`,
+  );
+  await cdp.eval(
+    `document.querySelector(${JSON.stringify(`[data-avatar-emoji="${pick.emoji}"]`)}).click()`,
+  );
+  await cdp.eval(
+    `document.querySelector(${JSON.stringify(`[data-avatar-bg="${pick.bg}"]`)}).click()`,
+  );
+  await sleep(150);
+  await cdp.eval("document.querySelector('[data-avatar-apply]').click()");
+  await sleep(700);
+  const saved = await cdp.eval(`(async () => {
+    const A = await import('/src/utils/avatarSeed.ts');
+    const calls = window.__profileCalls || [];
+    const last = calls[calls.length - 1] || null;
+    const img = document.querySelector('.gosslan-avatar-box img');
+    return {
+      calls: calls.length,
+      nickname: last ? last.nickname : null,
+      isSvg: !!last && String(last.avatar).startsWith('data:image/svg+xml;base64,'),
+      pair: last ? A.parseAvatarPreset(last.avatar) : null,
+      imgSrc: img ? String(img.getAttribute('src')).slice(0, 26) : null,
+      dialogGone: !document.querySelector('[role="dialog"]'),
+    };
+  })()`);
+  check("默认头像：确认后走的是既有 updateProfile，落库值就是选中的组合（SVG data URL）",
+    saved.calls === 1 && saved.nickname === "探针我" && saved.isSvg === true
+      && saved.pair && saved.pair.emoji === pick.emoji && saved.pair.bg === pick.bg
+      && saved.imgSrc === "data:image/svg+xml;base64,"
+      && saved.dialogGone === true,
+    "updateProfile 1 次、入参可解析回选中组合、资料头像立即变成同一张、弹窗关闭",
+    JSON.stringify({ want: pick, saved }));
+
+  await cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
+}
+
 async function runFavorites(cdp, url) {
   const now = Date.now();
   const favs = [
@@ -6233,7 +6518,8 @@ async function runFavorites(cdp, url) {
       content: "收藏的文本：这是一条用来核对收藏列表与详情排版的消息。", ts: now - 90_000, favorited_at: now - 60_000,
       media_path: null, media_size: 0, available: true },
     { id: "f2", msg_id: "m2", conv_id: "conv-1", sender_id: "peer-1", kind: "file",
-      content: JSON.stringify({ name: "季度报告.pdf", path: "/tmp/季度报告.pdf", size: 20480, subtype: "file" }),
+      // 刻意超长（仍保留可搜索的“季度报告.pdf”前缀）：移动端必须省略而不是把「⋯」挤出屏幕。
+      content: JSON.stringify({ name: "季度报告.pdf" + "超长文件名".repeat(20), path: "/tmp/季度报告.pdf", size: 20480, subtype: "file" }),
       ts: now - 120_000, favorited_at: now - 120_000,
       media_path: "/tmp/季度报告.pdf", media_size: 20480, available: true },
     { id: "f3", msg_id: "m3", conv_id: "conv-1", sender_id: "self", kind: "code",
@@ -6243,14 +6529,33 @@ async function runFavorites(cdp, url) {
   const mount = async (width, height) => {
     await cdp.send("Page.navigate", { url });
     await sleep(3_000);
+    // 同一次进程里先桌后窄：导航会把 device metrics 复位，必须在页面起来后再钉一次，
+    // 让 store 的 resize 监听把 isMobile 真正翻到窄档。
+    await cdp.send("Emulation.setDeviceMetricsOverride", {
+      width, height, deviceScaleFactor: width < 768 ? 2 : 1, mobile: width < 768,
+    });
+    if (width < 768) {
+      // 同一 target 从宽档再导航到窄档时，导航会把 metrics 复位成窗口默认宽；
+      // reload 后 store 会按默认宽初始化，再钉一次让 resize 监听把它翻到窄档。
+      await cdp.send("Page.reload");
+      await sleep(2_000);
+      await cdp.send("Emulation.setDeviceMetricsOverride", {
+        width, height, deviceScaleFactor: 2, mobile: true,
+      });
+      await sleep(600);
+    }
+    await sleep(500);
     await cdp.eval(PAGE_FIXTURE);
     await cdp.eval(`window.__probe.stubApi('listFavorites', ${JSON.stringify(favs)})`);
     const mounted = await cdp.eval("window.__probe.install('/src/components/FavoritePanel.vue', '', '')");
     await cdp.eval(`(() => {
       const h = document.getElementById('probe-host');
       h.style.width = '${width}px';
+      h.style.maxWidth = '${width}px';
+      h.style.minWidth = '0';
       h.style.height = '${height}px';
       h.style.display = 'block';
+      h.style.overflow = 'hidden';
       return true;
     })()`);
     await sleep(400);
@@ -6271,6 +6576,7 @@ async function runFavorites(cdp, url) {
     return {
       txt, rows: rowTexts.length, rowTexts, actions,
       vw: innerWidth,
+      hostW: (() => { const h = document.getElementById('probe-host'); return h ? Math.round(h.getBoundingClientRect().width) : 0; })(),
       headerText: (document.querySelector('header') || {}).innerText || '',
       search: !!document.querySelector('input[placeholder*="搜索收藏"]'),
       // 绑到常量上的 maxlength 必须真的产出属性与 DOM 值 —— 绑错名字时 Vue 只会安静地不写属性，
@@ -6375,14 +6681,38 @@ async function runFavorites(cdp, url) {
 
     // ── 移动端两级（列表 ↔ 详情覆盖层）：视口必须在 store 创建**之前**变窄 ──
     await cdp.send("Emulation.setDeviceMetricsOverride", {
-      width: 390, height: 844, deviceScaleFactor: 2, mobile: true, screenWidth: 390, screenHeight: 844,
+      width: 390, height: 844, deviceScaleFactor: 2, mobile: true,
     });
     const mMounted = await mount(390, 844);
     s = await info();
     check("移动端收藏：列表一列渲染（桌面空详情提示不出现），列表态没有返回键",
-      mMounted && mMounted.ok === true && s.rows === 3 && s.vw < 768 && !s.picked && !s.back,
-      "3 行 / 窄视口 / 无桌面空详情提示 / 列表态无返回键",
-      JSON.stringify({ rows: s.rows, vw: s.vw, picked: s.picked, back: s.back }));
+      mMounted && mMounted.ok === true && s.rows === 3 && s.hostW <= 390 && !s.picked && !s.back,
+      "3 行 / 390 宿主宽 / 无桌面空详情提示 / 列表态无返回键",
+      JSON.stringify({ rows: s.rows, hostW: s.hostW, picked: s.picked, back: s.back }));
+
+    const longName = await cdp.eval(`(() => {
+      const title = [...document.querySelectorAll('span')].find((s) =>
+        (s.textContent || '').includes('季度报告.pdf')
+        && getComputedStyle(s).textOverflow === 'ellipsis');
+      if (!title) return { ok: false };
+      const row = title.closest('div.relative');
+      const more = row ? row.querySelector('button[aria-label="更多操作"]') : null;
+      const r = more ? more.getBoundingClientRect() : null;
+      const hit = r ? document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) : null;
+      return {
+        ok: true,
+        truncated: title.scrollWidth > title.clientWidth,
+        more: !!more,
+        right: r ? +r.right.toFixed(1) : null,
+        hostRight: (() => { const h = document.getElementById('probe-host'); return h ? h.getBoundingClientRect().right : null; })(),
+        hitMore: !!(hit && more && hit.closest('button') === more),
+      };
+    })()`);
+    check("移动端收藏：超长文件名省略而不是撑破行，右侧「⋯」仍在视口内且可命中",
+      longName.ok === true && longName.truncated === true && longName.more === true
+        && longName.right !== null && longName.hostRight !== null
+        && longName.right <= longName.hostRight + 1 && longName.hitMore === true,
+      "ellipsis + 真正截断 + ⋯ 在面板内且命中", JSON.stringify(longName));
 
     await clickText("收藏的文本");
     s = await info();
@@ -6542,6 +6872,9 @@ async function runLinks(cdp, url) {
       return {
         txt, inputs,
         add: !!document.querySelector('button[aria-label="添加链接"]'),
+        importFile: !!document.querySelector('button[aria-label="从 JSON 文件导入"]'),
+        importUrl: !!document.querySelector('button[aria-label="从线上 JSON 导入"]'),
+        exportLink: !!document.querySelector('button[aria-label="导出链接"]'),
         edits: [...document.querySelectorAll('button[aria-label="编辑链接"]')].length,
         removes: [...document.querySelectorAll('button[aria-label="删除链接"]')].length,
         rowTitles: [...document.querySelectorAll('button[title]')]
@@ -6569,10 +6902,23 @@ async function runLinks(cdp, url) {
     };
 
     let s = await info();
-    check("链接左栏：标题 / 两条链接 / 常显编辑与删除按钮齐全",
+    check("链接左栏：标题 / 两条链接 / 常显编辑与删除 / 导入导出入口齐全",
       mounted && mounted.ok === true && s.txt.includes("外部链接") && s.rowTitles.length === 2
-        && s.edits === 2 && s.removes === 2 && s.add,
-      "2 行 + 2 编辑 + 2 删除 + 添加", JSON.stringify({ rows: s.rowTitles, edits: s.edits, removes: s.removes, add: s.add }));
+        && s.edits === 2 && s.removes === 2 && s.add && s.importFile && s.importUrl && s.exportLink,
+      "2 行 + 2 编辑 + 2 删除 + 添加/文件导入/URL 导入/导出",
+      JSON.stringify({ rows: s.rowTitles, edits: s.edits, removes: s.removes, add: s.add,
+        importFile: s.importFile, importUrl: s.importUrl, exportLink: s.exportLink }));
+
+    const urlPanel = await clickText("从线上 JSON 导入");
+    s = await info();
+    check("线上 JSON 导入：点按钮出现 URL 输入框，取消能收起",
+      urlPanel === true && s.inputs.some((i) => i.ph === "https://example.com/links.json"),
+      "URL 输入框出现", JSON.stringify(s.inputs));
+    await clickText("取消");
+    s = await info();
+    check("线上 JSON 导入：取消后输入框撤掉，列表不受影响",
+      !s.inputs.some((i) => i.ph === "https://example.com/links.json") && s.rowTitles.length === 2,
+      "URL 输入框消失 + 2 行", JSON.stringify({ inputs: s.inputs, rows: s.rowTitles }));
 
     const opened = await clickText("https://intra.example.com");
     s = await info();
@@ -7050,10 +7396,11 @@ async function runTasksMobile(cdp, url) {
     })()`);
     await cdp.eval("window.__probe.todoBus()");
     const now = Date.now();
-    await cdp.eval(`window.__probe.todoRows([
+    await cdp.eval(`window.__TASKS = [
       window.__mk('A', 1, 'todo', { title: '很长的移动端任务标题用来测试换行和右侧操作按钮', number: 1, priority: 'high', description: '移动端描述' }, ${now}),
       window.__mk('B', 2, 'todo', { title: '第二条任务', number: 2 }, ${now + 1}),
-    ])`);
+    ]`);
+    await cdp.eval("window.__probe.todoRows(window.__TASKS)");
     await cdp.eval(`window.__probe.install('/src/components/GroupTasksBoard.vue', '', ${JSON.stringify(JSON.stringify({ groupId: "g1", open: true }))})`);
     await cdp.eval("window.__probe.seedDevice('probe-me')");
     await sleep(900);
@@ -7163,6 +7510,30 @@ async function runTasksMobile(cdp, url) {
 
     await cdp.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
     await sleep(400);
+    // 面板形态（移动端真实入口）：整页铺满 + 页面本身不滚，滚动只留给看板列表。
+    const panelMounted = await cdp.eval("window.__probe.install('/src/components/GroupTasksPanel.vue', '', "
+      + JSON.stringify(JSON.stringify({ open: true, groupId: "g1" })) + ")");
+    await cdp.eval("window.__probe.todoBus(); window.__probe.todoRows(window.__TASKS); window.__probe.seedDevice('probe-me')");
+    await sleep(900);
+    const panel = await cdp.eval(`(() => {
+      const dlg = document.querySelector('[role="dialog"]');
+      if (!dlg) return { ok: false };
+      const r = dlg.getBoundingClientRect();
+      const styles = getComputedStyle(dlg);
+      return {
+        ok: true,
+        w: +r.width.toFixed(1), h: +r.height.toFixed(1),
+        vw: innerWidth, vh: innerHeight,
+        docScrollH: document.documentElement.scrollHeight,
+        overflowY: styles.overflowY,
+        rows: document.querySelectorAll('button.min-w-0.flex-1').length,
+      };
+    })()`);
+    check("移动端群任务：面板整页铺满、页面不滚（列表自己滚），任务行仍在",
+      panelMounted && panelMounted.ok === true && panel.ok === true
+        && panel.w >= panel.vw - 1 && panel.h >= panel.vh - 1
+        && panel.docScrollH <= panel.vh + 1 && panel.overflowY === "hidden" && panel.rows >= 2,
+      "dialog=vw×vh + overflowY=hidden + 页面不滚 + rows>=2", JSON.stringify(panel));
     if (SHOT_PATH) {
       const shot = await cdp.send("Page.captureScreenshot", { format: "png" });
       const p = SHOT_PATH.replace(/\.png$/, "-tasksmobile.png");

@@ -50,6 +50,8 @@ export const PREVIEW_CACHE_MAX_BYTES = 60 * 1024 * 1024;
 export function invalidateFilePreview(msgId: string) {
   cache.delete(msgId);
   inflight.remove(msgId);
+  clearNegative(msgId);
+  clearNegative(`thumb:${msgId}`);
   // 缩略图那份也要一起失效：字节刚落盘时气泡拿的是缩略图，只让原图失效的话
   // 气泡会继续用"失效前那一份"（甚至是在途失败时留下的回退），表现为
   // "原图好了但气泡还是不出来" —— 正是这条失效机制当年要修的那个缺陷的缩略图版。
@@ -60,12 +62,14 @@ export function invalidateFilePreview(msgId: string) {
 export function dropFilePreview(msgId: string) {
   cache.delete(msgId);
   inflight.remove(msgId);
+  clearNegative(msgId);
 }
 
 /** 释放**全部**预览缓存（清空数据 / 退出登录这类入口调用）。 */
 export function clearFilePreviews() {
   cache.clear();
   inflight.reset();
+  negativeUntil.clear();
 }
 
 /** 代码预览上限：超过则回退文件卡片并提示，避免把巨大文件读进前端。 */
@@ -94,6 +98,37 @@ const cache = createBlobLru<PreviewResult & { bytes?: number }>({
 });
 
 const inflight = createSingleFlight<PreviewResult>();
+
+/**
+ * 短暂的“负缓存”：同一张图/同一个 cid 在一次可恢复失败后，10 秒内不再打 IPC。
+ *
+ * 为什么需要：群历史恢复后时间线里可能一次出现几十条图片/文件消息，字节还没到齐时
+ * 每条气泡都会按 400ms→… 退避重试；虚拟列表来回滚动还会把旧节点重新挂载。没有这层闸，
+ * 一次缺文件会放大成几十条并发 IPC 与事件，正好是用户报的“事件爆炸”。
+ *
+ * 与 `cache` 的区别：这里只记“刚刚确定拿不到”，**不带 UI 结果**；文件落盘/重新同步时
+ * `invalidateFilePreview` 会把它清掉，所以不会把“后来到了”的字节永久挡在门外。
+ */
+const NEGATIVE_TTL_MS = 10_000;
+const NEGATIVE_MAX_ENTRIES = 2000;
+const negativeUntil = new Map<string, number>();
+
+function negativeBlocked(key: string): boolean {
+  const until = negativeUntil.get(key);
+  if (!until) return false;
+  if (Date.now() < until) return true;
+  negativeUntil.delete(key);
+  return false;
+}
+
+function markNegative(key: string) {
+  if (negativeUntil.size >= NEGATIVE_MAX_ENTRIES) negativeUntil.clear();
+  negativeUntil.set(key, Date.now() + NEGATIVE_TTL_MS);
+}
+
+function clearNegative(key: string) {
+  negativeUntil.delete(key);
+}
 
 /** 气泡缩略图缓存的字节上限。 */
 const THUMB_CACHE_MAX_BYTES = 8 * 1024 * 1024;
@@ -173,6 +208,7 @@ export function loadFilePreview(
 ): Promise<PreviewResult> {
   const hit = cache.get(msgId);
   if (hit) return Promise.resolve(hit);
+  if (negativeBlocked(msgId)) return Promise.resolve({});
 
   const max = subtype === "code" ? CODE_MAX_BYTES : IMAGE_PREVIEW_MAX_BYTES;
   return inflight.run(msgId, async (): Promise<PreviewResult> => {
@@ -190,19 +226,23 @@ export function loadFilePreview(
         // （本模块的整个封顶逻辑都挂在这个数上）。
         const r: PreviewResult & { bytes?: number } = { url, bytes: bytes.length };
         cache.put(msgId, r);
+        clearNegative(msgId);
         return r;
       }
       const r: PreviewResult = { text: new TextDecoder().decode(bytes) };
       cache.put(msgId, r);
+      clearNegative(msgId);
       return r;
     } catch (e) {
       const msg = String(e);
       console.error(`[filePreview] ${subtype} preview failed (msgId=${msgId}, name=${name}): ${msg}`);
       const r: PreviewResult = previewFailureResult(msg);
       // 只在**确定性**失败时缓存（已被清理 / 文件过大）。
-      // "仍在接收"这类未知失败**绝不缓存** —— 否则文件落盘后也不会重读，
-      // 表现为"图片时好时坏、要重发才出来"（真机 2026-09-14）。
+      // "仍在接收"这类未知失败不进长期缓存，但进 10 秒负缓存挡住重试风暴；
+      // 文件落盘时 `invalidateFilePreview` 会清掉它（真机 2026-09-14 的“要重发才出来”
+      // 就是当时完全没有失效/负缓存边界造成的两个极端）。
       if (r.failure) cache.put(msgId, r);
+      else markNegative(msgId);
       return r;
     }
   });
@@ -218,6 +258,7 @@ export function loadFilePreview(
 export function loadContentPreview(cid: string, name: string): Promise<PreviewResult> {
   const hit = cache.get(cid);
   if (hit) return Promise.resolve(hit);
+  if (negativeBlocked(`content:${cid}`)) return Promise.resolve({});
 
   return inflight.run(cid, async (): Promise<PreviewResult> => {
     try {
@@ -226,12 +267,15 @@ export function loadContentPreview(cid: string, name: string): Promise<PreviewRe
       const url = URL.createObjectURL(new Blob([bytes], { type: imageMime(name) }));
       const r: PreviewResult & { bytes?: number } = { url, bytes: bytes.length };
       cache.put(cid, r);
+      clearNegative(`content:${cid}`);
       return r;
     } catch (e) {
       const msg = String(e);
       console.error(`[filePreview] content preview failed (cid=${cid}, name=${name}): ${msg}`);
-      // 确定性失败（文件过大）可以缓存；「内容不存在/路径越权」是暂时态，不缓存。
+      // 确定性失败（文件过大）可以缓存；「内容不存在/路径越权」是暂时态，
+      // 不写长期缓存，但同样进 10 秒负缓存，避免群历史恢复时整屏图片一起重试。
       if (msg.includes("文件过大")) return { failure: "tooLarge" };
+      markNegative(`content:${cid}`);
       return {};
     }
   });

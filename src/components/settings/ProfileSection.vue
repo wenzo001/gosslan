@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import { useAppStore } from "@/stores/useAppStore";
 import { useChatStore } from "@/stores/useChatStore";
 import SettingsGroup from "@/components/settings/SettingsGroup.vue";
 import SelfAvatar from "@/components/SelfAvatar.vue";
+import AvatarPresetDialog from "@/components/settings/AvatarPresetDialog.vue";
 import { AVATAR_INPUT_LIMIT_MB, AVATAR_INPUT_MAX_BYTES, AVATAR_SIZE, pickAvatarJpeg } from "@/utils/avatarImage";
+import { AVATAR_PAIRS, avatarPresetDataUrl, avatarSeedFor, parseAvatarPreset, type AvatarSeed } from "@/utils/avatarSeed";
 import { Camera } from "lucide-vue-next";
 import { t } from "@/i18n";
 import { useSubmitGuard } from "@/composables/useSubmitGuard";
@@ -22,6 +24,15 @@ const { busy: savingProfile, run: runProfileSave } = useSubmitGuard();
 const nickname = ref("");
 const avatar = ref<string | null>(null);
 const avatarInput = ref<HTMLInputElement | null>(null);
+const presetOpen = ref(false);
+
+/** 打开选择器时的落点：上次选的预设原样还原，否则就是这台设备的系统默认脸。 */
+const presetInitial = computed<AvatarSeed>(
+  () =>
+    parseAvatarPreset(avatar.value) ??
+    avatarSeedFor(app.device?.device_id || app.device?.nickname || null) ??
+    AVATAR_PAIRS[0]!,
+);
 
 function syncFromDevice() {
   nickname.value = app.device?.nickname ?? "";
@@ -125,6 +136,31 @@ async function onAvatarChange(e: Event) {
 }
 
 /**
+ * 默认头像：把选中的 emoji × 背景色渲染成一张 SVG data URL，复用上传头像同一条
+ * `persistProfile`（广播、落库、回滚都不另起一条路）。
+ *
+ * 乐观预览与图片上传同一口径：先让用户看到换成了这张，落库失败再回滚 ——
+ * 否则页面上会挂着一张从没同步出去的脸。
+ */
+async function onPresetApply(seed: AvatarSeed) {
+  if (savingProfile.value) return;
+  const name = nickname.value.trim() || app.device?.nickname || "";
+  if (!name) {
+    app.toast(t("settings.profile.toast.nicknameEmpty"), "error");
+    return;
+  }
+  const prev = avatar.value;
+  avatar.value = avatarPresetDataUrl(seed);
+  presetOpen.value = false;
+  try {
+    await persistProfile(name);
+  } catch (e) {
+    avatar.value = prev;
+    app.toastError(e, t("settings.profile.toast.avatarFail"));
+  }
+}
+
+/**
  * 中心裁剪为正方形 → 缩放到 AVATAR_SIZE（不放大）→ **JPEG** data URL。
  * 裁剪规则：上下长取宽度、左右长取高度，即以较短边为基准、居中裁成正方形。
  *
@@ -218,14 +254,21 @@ function processAvatar(file: File): Promise<string> {
         <div class="mt-1 flex justify-end">
           <CharCounter :text="nickname" :max="MAX_NICKNAME_CHARS" />
         </div>
-        <div class="mt-2.5 flex items-center justify-between">
+        <div class="mt-2.5 flex flex-wrap items-center gap-2">
           <button
-            class="rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3 py-1.5 text-xs transition hover:bg-[var(--gosslan-hover)]"
+            class="tap-safe rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3 py-1.5 text-xs transition hover:bg-[var(--gosslan-hover)]"
             @click="avatarInput?.click()"
           >
             {{ t("settings.profile.changeAvatar") }}
           </button>
-          <span class="flex items-center gap-1.5 text-xs text-[var(--gosslan-text-2)]">
+          <button
+            data-default-avatar-entry
+            class="tap-safe rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] px-3 py-1.5 text-xs transition hover:bg-[var(--gosslan-hover)]"
+            @click="presetOpen = true"
+          >
+            {{ t("settings.profile.defaultAvatar") }}
+          </button>
+          <span class="ml-auto flex items-center gap-1.5 text-xs text-[var(--gosslan-text-2)]">
             <span class="h-2 w-2 rounded-full" :class="app.present ? 'bg-[var(--gosslan-success)]' : 'bg-[var(--gosslan-status-offline)]'"></span>
             {{ app.present ? t("settings.profile.online") : t("settings.profile.offline") }}
           </span>
@@ -233,5 +276,12 @@ function processAvatar(file: File): Promise<string> {
       </div>
     </div>
     <input ref="avatarInput" type="file" accept="image/*" class="hidden" @change="onAvatarChange" />
+    <AvatarPresetDialog
+      :open="presetOpen"
+      :initial="presetInitial"
+      :saving="savingProfile"
+      @close="presetOpen = false"
+      @apply="onPresetApply"
+    />
   </SettingsGroup>
 </template>

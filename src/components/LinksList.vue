@@ -10,21 +10,29 @@
  */
 import { computed, ref } from "vue";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/vue-query";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useAppStore } from "@/stores/useAppStore";
 import { useBackLayer } from "@/composables/useBackLayer";
 import MobilePageFrame from "@/components/MobilePageFrame.vue";
 import PrimaryBtn from "@/components/ui/PrimaryBtn.vue";
+import Spinner from "@/components/ui/Spinner.vue";
 import StateBlock from "@/components/ui/StateBlock.vue";
 import CharCounter from "@/components/ui/CharCounter.vue";
 import { errorText } from "@/composables/useErrorText";
 import { useImeEnterGuard } from "@/composables/useImeEnterGuard";
 import { api } from "@/api";
 import { t } from "@/i18n";
+import { saveLocalFile } from "@/utils/localFile";
 import { panelKey, panelQueryOptions } from "@/utils/panelQuery";
-import { MAX_EXTERNAL_LINKS, MAX_LINK_NAME_CHARS, validateLinkInput } from "@/utils/externalLinks";
-import { ExternalLink as ExternalLinkIcon, Pencil, Plus } from "lucide-vue-next";
+import {
+  MAX_EXTERNAL_LINKS,
+  MAX_LINK_NAME_CHARS,
+  isValidExternalUrl,
+  validateLinkInput,
+} from "@/utils/externalLinks";
+import { Download, ExternalLink as ExternalLinkIcon, Link2, Pencil, Plus, Upload } from "lucide-vue-next";
 import { Trash2 } from "@/components/ui/icons";
-import type { ExternalLink } from "@/types";
+import type { ExternalLink, ExternalLinkImportResult } from "@/types";
 
 const props = defineProps<{ opening?: boolean; routeDriven?: boolean }>();
 const emit = defineEmits<{
@@ -135,6 +143,79 @@ function saveDraft() {
 function remove(l: ExternalLink) {
   writeLink.mutate({ kind: "remove", id: l.id });
 }
+
+// ---------------- JSON 导入 / 导出 ----------------
+
+const transferBusy = ref<"" | "export" | "file" | "url">("");
+const urlImportOpen = ref(false);
+const urlImport = ref("");
+
+function applyImport(res: ExternalLinkImportResult) {
+  queryClient.setQueryData(panelKey("links", ""), res.links);
+  const lines: string[] = [];
+  lines.push(
+    res.added > 0
+      ? t("links.importDone", { n: res.added })
+      : t("links.importNone", { n: res.skipped }),
+  );
+  if (res.invalid > 0) lines.push(t("links.importInvalid", { n: res.invalid }));
+  app.toast(lines.join(" · "), res.added > 0 ? "success" : "info");
+}
+
+async function exportLinks() {
+  if (transferBusy.value) return;
+  transferBusy.value = "export";
+  let tempPath = "";
+  try {
+    tempPath = await api.exportExternalLinks();
+    const done = await saveLocalFile(tempPath, "gosslan-links.json");
+    if (done === "done") app.toast(t("links.exportDone"), "success");
+  } catch (e) {
+    app.toastError(e, t("links.exportReport"));
+  } finally {
+    if (tempPath) void api.cleanupExternalLinksExport(tempPath).catch(() => {});
+    transferBusy.value = "";
+  }
+}
+
+async function importFile() {
+  if (transferBusy.value) return;
+  try {
+    const picked = await openDialog({
+      multiple: false,
+      directory: false,
+      filters: [{ name: "JSON", extensions: ["json"] }],
+    });
+    const rawPath = Array.isArray(picked) ? picked[0] : picked;
+    if (!rawPath) return;
+    transferBusy.value = "file";
+    const localPath = await api.importPickedFile(String(rawPath), "links.json");
+    applyImport(await api.importExternalLinksFile(localPath));
+  } catch (e) {
+    app.toastError(e, t("links.importReport"));
+  } finally {
+    transferBusy.value = "";
+  }
+}
+
+async function importFromUrl() {
+  if (transferBusy.value) return;
+  const url = urlImport.value.trim();
+  if (!isValidExternalUrl(url)) {
+    app.toast(t("links.err.url"), "error");
+    return;
+  }
+  transferBusy.value = "url";
+  try {
+    applyImport(await api.importExternalLinksFromUrl(url));
+    urlImportOpen.value = false;
+    urlImport.value = "";
+  } catch (e) {
+    app.toastError(e, t("links.importReport"));
+  } finally {
+    transferBusy.value = "";
+  }
+}
 </script>
 
 <template>
@@ -149,6 +230,38 @@ function remove(l: ExternalLink) {
   >
     <template #actions>
       <button
+        class="tap-safe flex h-8 w-8 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-50"
+        :title="t('links.importFile')"
+        :aria-label="t('links.importFile')"
+        :disabled="!!transferBusy"
+        :aria-busy="transferBusy === 'file' || undefined"
+        @click="importFile"
+      >
+        <Spinner v-if="transferBusy === 'file'" size-class="h-4 w-4" decorative />
+        <Upload v-else class="h-[18px] w-[18px]" />
+      </button>
+      <button
+        class="tap-safe flex h-8 w-8 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-50"
+        :title="t('links.importUrl')"
+        :aria-label="t('links.importUrl')"
+        :disabled="!!transferBusy"
+        :aria-expanded="urlImportOpen"
+        @click="urlImportOpen = !urlImportOpen"
+      >
+        <Link2 class="h-[18px] w-[18px]" />
+      </button>
+      <button
+        class="tap-safe flex h-8 w-8 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)] disabled:opacity-50"
+        :title="t('links.export')"
+        :aria-label="t('links.export')"
+        :disabled="!!transferBusy"
+        :aria-busy="transferBusy === 'export' || undefined"
+        @click="exportLinks"
+      >
+        <Spinner v-if="transferBusy === 'export'" size-class="h-4 w-4" decorative />
+        <Download v-else class="h-[18px] w-[18px]" />
+      </button>
+      <button
         v-if="!draft"
         class="tap-safe flex h-8 w-8 shrink-0 items-center justify-center rounded-[var(--gosslan-radius-md)] text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
         :title="t('links.add')"
@@ -160,6 +273,37 @@ function remove(l: ExternalLink) {
     </template>
 
     <div class="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
+      <!-- 线上 JSON 导入：后端拉取，避免 WebView CORS。 -->
+      <div
+        v-if="urlImportOpen"
+        class="mb-2 space-y-2 rounded-[var(--gosslan-radius-md)] border border-[var(--gosslan-border)] bg-[var(--gosslan-card)] p-2.5"
+      >
+        <div class="flex items-center gap-2">
+          <input
+            v-model="urlImport"
+            type="url"
+            inputmode="url"
+            autocomplete="off"
+            :placeholder="t('links.importUrlPlaceholder')"
+            class="min-w-0 flex-1 rounded-[var(--gosslan-radius-md)] border border-transparent bg-[var(--gosslan-bg)] px-3 py-1.5 text-body outline-none transition focus:border-transparent"
+            @keyup.enter="ime.enter(importFromUrl)"
+            @compositionstart="ime.onStart"
+            @compositionend="ime.onEnd"
+          />
+          <PrimaryBtn :disabled="!!transferBusy || !urlImport.trim()" @click="importFromUrl">
+            {{ t("links.importUrlAction") }}
+          </PrimaryBtn>
+        </div>
+        <div class="flex justify-end">
+          <button
+            class="tap-safe rounded-[var(--gosslan-radius-md)] px-3 py-1 text-meta text-[var(--gosslan-text-2)] transition hover:bg-[var(--gosslan-hover)]"
+            @click="urlImportOpen = false; urlImport = ''"
+          >
+            {{ t("common.cancel") }}
+          </button>
+        </div>
+      </div>
+
       <!-- 新增 / 编辑表单 -->
       <div
         v-if="draft"

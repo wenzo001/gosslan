@@ -2,6 +2,8 @@
 // - 外链管理（add/remove/list_link、validate_external_url）
 // ---------------- 外部链接（左栏「链接」视图 → 点开在独立窗口加载） ----------------
 
+use std::collections::HashSet;
+
 /// 一条用户配置的外部链接。
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -12,11 +14,23 @@ pub struct ExternalLink {
     pub url: String,
 }
 
+/// 导入结果：`links` 是导入后的完整列表，另外三个数只为界面说清“发生了什么”。
+#[derive(Serialize, Clone, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalLinkImportResult {
+    pub links: Vec<ExternalLink>,
+    pub added: usize,
+    pub skipped: usize,
+    pub invalid: usize,
+}
+
 const EXTERNAL_LINKS_KEY: &str = "external_links";
 /// 数量上限（防呆：这是一排给人点的入口，不是书签管理器）。
 const MAX_EXTERNAL_LINKS: usize = 20;
 /// 显示名长度上限（字符数）。
 const MAX_LINK_NAME_CHARS: usize = 32;
+/// 导入 JSON 的文件/响应体上限：这是 20 条短链接，256 KiB 已经非常宽松。
+const MAX_IMPORT_BYTES: usize = 256 * 1024;
 
 /// 校验并规范化一个外部网址 —— **只允许 http/https 且 host 非空**。
 ///
@@ -151,4 +165,177 @@ pub fn remove_external_link(
             .map_err(|e| format!("保存失败: {e}"))?;
     }
     Ok(list)
+}
+
+#[derive(Deserialize)]
+struct ImportLink {
+    name: String,
+    url: String,
+}
+
+/// 兼容两种线上/文件格式：裸数组，或 `{ "links": [...] }`。
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ImportPayload {
+    List(Vec<ImportLink>),
+    Wrapped { links: Vec<ImportLink> },
+}
+
+fn parse_import_payload(raw: &str) -> Result<Vec<ImportLink>, String> {
+    let payload: ImportPayload =
+        serde_json::from_str(raw).map_err(|_| "JSON 格式不正确：需要链接数组或 { links: [...] }".to_string())?;
+    Ok(match payload {
+        ImportPayload::List(v) => v,
+        ImportPayload::Wrapped { links } => links,
+    })
+}
+
+/// 导入并合并（按规范化后的 URL 去重；不覆盖已有条目的名字）。
+fn import_external_links_raw(
+    state: &tauri::State<'_, Arc<AppState>>,
+    raw: &str,
+) -> Result<ExternalLinkImportResult, String> {
+    if raw.len() > MAX_IMPORT_BYTES {
+        return Err(format!("导入内容超过 {} KiB 上限", MAX_IMPORT_BYTES / 1024));
+    }
+    let inputs = parse_import_payload(raw)?;
+    let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+    let mut list =
+        parse_external_links(&db::get_setting(&dbc, EXTERNAL_LINKS_KEY).unwrap_or_default());
+    let mut seen: HashSet<String> = list.iter().map(|l| l.url.clone()).collect();
+    let mut added = 0usize;
+    let mut skipped = 0usize;
+    let mut invalid = 0usize;
+    for input in inputs {
+        let name = input.name.trim();
+        let url = match validate_external_url(&input.url) {
+            Ok(u) => u,
+            Err(_) => {
+                invalid += 1;
+                continue;
+            }
+        };
+        if name.is_empty() || name.chars().count() > MAX_LINK_NAME_CHARS {
+            invalid += 1;
+            continue;
+        }
+        if !seen.insert(url.clone()) || list.len() >= MAX_EXTERNAL_LINKS {
+            skipped += 1;
+            continue;
+        }
+        list.push(ExternalLink {
+            id: Uuid::new_v4().to_string(),
+            name: name.to_string(),
+            url,
+        });
+        added += 1;
+    }
+    if added > 0 {
+        db::set_setting(&dbc, EXTERNAL_LINKS_KEY, &encode_external_links(&list))
+            .map_err(|e| format!("保存失败: {e}"))?;
+    }
+    Ok(ExternalLinkImportResult {
+        links: list,
+        added,
+        skipped,
+        invalid,
+    })
+}
+
+/// 导出到缓存目录，返回**真实路径**；移动端随后交给系统保存对话框。
+#[tauri::command(async)]
+pub fn export_external_links(
+    state: tauri::State<'_, Arc<AppState>>,
+) -> Result<String, String> {
+    let dir = state.cache_dir.join("exports");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建导出目录失败：{e}"))?;
+    let path = dir.join(format!("gosslan-links-{}.json", Uuid::new_v4()));
+    let list = {
+        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        parse_external_links(&db::get_setting(&dbc, EXTERNAL_LINKS_KEY).unwrap_or_default())
+    };
+    let json = serde_json::to_string_pretty(&list).map_err(|e| format!("序列化失败：{e}"))?;
+    std::fs::write(&path, json).map_err(|e| format!("写入导出文件失败：{e}"))?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// 「这条路径是不是本命令生成的导出产物」——清理命令的安全闸（纯函数，便于判据盯着）。
+///
+/// ⚠️ 不能用 `Path::starts_with` 当安全闸：它按**路径分量词法**比较，
+/// `cache/exports/../../x` 也会通过，随后 `remove_file` 会按 OS 语义解析 `..` 删到目录外。
+/// 这里要求「父目录恰好是 exports」且「文件名确实是导出命令生成的那一形状」。
+pub(crate) fn is_export_artifact_path(dir: &std::path::Path, path: &std::path::Path) -> bool {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    path.parent().is_some_and(|parent| parent == dir)
+        && name.starts_with("gosslan-links-")
+        && name.ends_with(".json")
+        && !name.contains("..")
+}
+
+/// 清理自己刚导出的临时文件（只允许删 `cache/exports` 下由本命令生成的路径）。
+#[tauri::command(async)]
+pub fn cleanup_external_links_export(
+    state: tauri::State<'_, Arc<AppState>>,
+    path: String,
+) -> Result<(), String> {
+    let dir = state.cache_dir.join("exports");
+    let p = std::path::PathBuf::from(path);
+    if !is_export_artifact_path(&dir, &p) {
+        return Err("拒绝清理导出目录之外的路径".to_string());
+    }
+    match std::fs::remove_file(&p) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("清理导出文件失败：{e}")),
+    }
+}
+
+/// 从本地 JSON 文件导入；`path` 由前端选择并已通过 `import_picked_file` 落地。
+#[tauri::command(async)]
+pub fn import_external_links_file(
+    state: tauri::State<'_, Arc<AppState>>,
+    path: String,
+) -> Result<ExternalLinkImportResult, String> {
+    let meta = std::fs::metadata(&path).map_err(|e| format!("读取导入文件失败：{e}"))?;
+    if meta.len() > MAX_IMPORT_BYTES as u64 {
+        return Err(format!("导入文件超过 {} KiB 上限", MAX_IMPORT_BYTES / 1024));
+    }
+    let raw = std::fs::read_to_string(&path).map_err(|e| format!("读取导入文件失败：{e}"))?;
+    import_external_links_raw(&state, &raw)
+}
+
+/// 从 HTTPS/HTTP 链接拉取 JSON 导入（后端拉取，避免 WebView 的 CORS 限制）。
+#[tauri::command(async)]
+pub async fn import_external_links_from_url(
+    state: tauri::State<'_, Arc<AppState>>,
+    url: String,
+) -> Result<ExternalLinkImportResult, String> {
+    let url = validate_external_url(&url)?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::limited(3))
+        .build()
+        .map_err(|e| format!("网络初始化失败：{e}"))?;
+    let mut resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("下载失败：{e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("下载失败：HTTP {}", resp.status()));
+    }
+    if resp.content_length().unwrap_or(0) > MAX_IMPORT_BYTES as u64 {
+        return Err(format!("下载内容超过 {} KiB 上限", MAX_IMPORT_BYTES / 1024));
+    }
+    // 逐块收口：不能先 `bytes()` 再量大小 —— 没有 Content-Length 的服务端可以先把
+    // 几个 GB 拉进内存，再被这一行拒绝。流式累计到上限立即中止。
+    let mut bytes = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(|e| format!("读取下载内容失败：{e}"))? {
+        if bytes.len() + chunk.len() > MAX_IMPORT_BYTES {
+            return Err(format!("下载内容超过 {} KiB 上限", MAX_IMPORT_BYTES / 1024));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let raw = String::from_utf8(bytes).map_err(|_| "下载内容不是 UTF-8 文本".to_string())?;
+    import_external_links_raw(&state, &raw)
 }

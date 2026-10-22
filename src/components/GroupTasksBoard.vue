@@ -66,6 +66,8 @@ const props = defineProps<{
   groupId: string | null;
   open?: boolean;
   standalone?: boolean;
+  /** 整页壳里撑满剩余高度，滚动只留给下面的任务列表。 */
+  fill?: boolean;
   /**
    * 打开看板时要**直达详情**的那条任务（用户 #23：点时间线上的任务卡片，不是只把看板翻开）。
    * 独立窗口形态没有这个入参（跨文档传参要新造通道，见 `ChatWindow.openTasks` 的注释），
@@ -1025,7 +1027,7 @@ watch(
 </script>
 
 <template>
-  <div class="flex flex-col" :class="standalone ? 'h-full min-h-0' : ''">
+  <div class="flex flex-col" :class="standalone || fill ? 'h-full min-h-0' : ''">
     <!-- 头部：统计 + 新建 -->
     <div class="flex items-center justify-between gap-2 pb-2">
       <div class="min-w-0 flex-1 truncate text-xs text-[var(--gosslan-text-2)]" :title="t('todo.title')">
@@ -1064,7 +1066,7 @@ watch(
     </div>
 
     <!-- 内容区：弹窗形态由 BaseModal 自己滚；窗口形态撑满剩余空间 -->
-    <div class="overflow-y-auto pr-0.5 pt-2" :class="standalone ? 'min-h-0 flex-1' : ''">
+    <div class="overflow-y-auto pr-0.5 pt-2" :class="standalone || fill ? 'min-h-0 flex-1' : ''">
       <!-- 首屏还在路上：**必须**是"正在加载"而不是空态。窗口现在先挂载、数据后台取
            （用户 2026-09-24 报"弹窗弹出很慢"），没有这一档的话首帧会理直气壮地显示
            「暂无任务」—— 那是假空态，比慢更糟。两种形态都判：应用内弹窗同样要先读

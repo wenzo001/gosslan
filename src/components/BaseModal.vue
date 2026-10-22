@@ -33,8 +33,13 @@ const props = withDefaults(
     fullscreen?: boolean;
     /** 是否注册 Android 返回层。路由驱动的模态传 false，由路由历史负责返回。 */
     backLayer?: boolean;
+    /**
+     * 整页形态由页面自己管滚动（看板/搜索结果这类内部已有独立滚动区）。
+     * false 时保持旧行为：外层 DialogContent 兜底滚动。
+     */
+    contained?: boolean;
   }>(),
-  { width: "max-w-md", fullscreen: false, backLayer: true },
+  { width: "max-w-md", fullscreen: false, backLayer: true, contained: false },
 );
 const emit = defineEmits<{ (e: "close"): void }>();
 
@@ -135,7 +140,7 @@ function onOpenChange(value: boolean) {
       <DialogContent
         class="fixed inset-x-0 bottom-0 top-[var(--gosslan-safe-top)] z-[65] font-gosslan focus:outline-none"
         :class="fullscreen
-          ? 'gosslan-dialog-page overflow-y-auto overflow-x-hidden'
+          ? 'gosslan-dialog-page ' + (contained ? 'overflow-hidden' : 'overflow-y-auto overflow-x-hidden')
           : 'gosslan-dialog-card'"
         :style="app.isMobile && app.keyboardInset > 0
           ? { paddingBottom: `${app.keyboardInset + 12}px` }
@@ -149,7 +154,7 @@ function onOpenChange(value: boolean) {
              点遮罩永远关不掉（2026-10-18 探针实测）。全屏形态铺满是对的，不需要穿透。 -->
         <div
           :class="fullscreen
-            ? 'flex min-h-full items-stretch justify-center'
+            ? (contained ? 'flex h-full items-stretch justify-center' : 'flex min-h-full items-stretch justify-center')
             : 'flex min-h-full justify-center p-4'"
         >
           <div

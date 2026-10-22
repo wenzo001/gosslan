@@ -393,9 +393,11 @@ function showSender(group: ChatSearchGroup): boolean {
     :title="t('search.title')"
     :fullscreen="app.isMobile"
     :back-layer="!props.routeDriven"
+    contained
     width="max-w-3xl"
     @close="emit('close')"
   >
+    <div class="flex min-h-0 flex-1 flex-col">
     <!-- 搜索框 + 筛选 -->
     <div class="flex shrink-0 items-center gap-2">
       <div
@@ -598,6 +600,7 @@ function showSender(group: ChatSearchGroup): boolean {
           </p>
         </div>
       </div>
+    </div>
     </div>
   </BaseModal>
 </template>

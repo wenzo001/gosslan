@@ -58,7 +58,7 @@ history 选择、导航方向与 router 实例。这样路由契约可以在 Nod
 | `settings` | `/me/settings` | — | 设置一级 | 仅移动 | `overlay` |
 | `settings-section` | `/me/settings/:key` | `key` | 对应分区 | 仅移动 | `overlay`, `depth: 2` |
 | `logs` | `/me/logs` | — | `LogViewer`（非 standalone） | 仅移动 | `overlay` |
-| `search` | `/search` | `q` | `ChatSearchDialog` | 双端 | `overlay` |
+| `search` | `/search` | `q` | `ChatSearchDialog`（桌面卡片；移动端整页，底栏隐藏） | 双端 | `overlay` |
 
 设置窗口的路由是 `#/settings/:key`，分区清单在 `src/router/settings.ts` 的 `SETTINGS_SECTIONS`。
 
@@ -152,7 +152,8 @@ history 选择、导航方向与 router 实例。这样路由契约可以在 Nod
 
 ### 5.1 搜索的单一历史
 
-`/search` 是正式页面入口（桌面是卡片弹窗外观，移动端全屏），但**返回只由路由承担**：
+`/search` 是正式页面入口（桌面是卡片弹窗外观，移动端整页框架：底栏隐藏、页面本身不滚，
+只有结果区滚），但**返回只由路由承担**：
 
 - 从会话列表/会话进入时 `push`；同一关键词重复进入直接复用，不再加历史。
 - 输入与提交用 `replace` 更新 `?q=`，刷新/分享/前进后退可恢复；筛选条件（发送人/日期）是临时状态，换关键词时重置。
@@ -196,7 +197,7 @@ history 选择、导航方向与 router 实例。这样路由契约可以在 Nod
 | meta 四件套齐全、子页 depth 递增、同名 tab | 通过 |
 | 覆盖层 `overlay` 继承底层 | 通过 |
 
-`npm test` 全量：**1178 pass / 0 fail**（2026-10-22，本机）。
+`npm test` 全量：**1190 pass / 0 fail**（2026-10-22，本机）。
 `npm run verify` 快速层：**17/17 步通过**（含 vue-tsc 与 vite build）。
 
 ### 8.2 UI 运行时探针（Brave，CDP）

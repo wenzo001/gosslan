@@ -2204,6 +2204,35 @@ test("SelfAvatar 的那个「唯一数据源」确实是 store，不是各自传
   assert.match(src, /class="gosslan-avatar-box/, "根节点要带 gosslan-avatar-box（emoji 字号靠它的容器查询）");
 });
 
+/**
+ * 默认头像选择器（用户 2026-10-22：「自己搭配就用你随机的算法里的数据列出来…不要太开放」）。
+ *
+ * 钉三件事：
+ *   ① 选项集是 `avatarSeed.ts` 派生的两个常量，模板里不许再手抄一份清单；
+ *   ② 随机走 `randomAvatarPair`（同一张组合表），不是模板里另写一个 Math.random；
+ *   ③ 资料页确认后复用 `persistProfile`（既有 updateProfile 链路），不新开命令/字段。
+ * 读的是真文件：改名/删文件会直接抛，不会"扫到 0 处所以恒真"。
+ */
+test("默认头像选择器：选项来自随机算法同一份表，确认走既有资料保存链路", () => {
+  const root = join(import.meta.dirname, "..");
+  const dialog = readFileSync(join(root, "components", "settings", "AvatarPresetDialog.vue"), "utf8");
+  assert.match(dialog, /v-for="e in AVATAR_EMOJIS"/, "表情网格必须遍历派生清单");
+  assert.match(dialog, /v-for="c in AVATAR_BACKGROUNDS"/, "颜色网格必须遍历派生清单");
+  assert.match(dialog, /randomAvatarPair\(selection\.value\)/, "随机必须走同一份组合表");
+  assert.equal((dialog.match(/:aria-pressed=/g) ?? []).length, 2, "两组选项都要报告选中态");
+  // "不要太开放"：选择器里没有可自由输入 emoji / 颜色的输入框。
+  assert.doesNotMatch(dialog, /<input\b/, "选择器不该出现自由输入框");
+
+  const profile = readFileSync(join(root, "components", "settings", "ProfileSection.vue"), "utf8");
+  const at = profile.indexOf("async function onPresetApply");
+  assert.ok(at > 0, "找不到 onPresetApply —— 资料页没有接上默认头像");
+  const body = profile.slice(at, profile.indexOf("\n}", at));
+  assert.match(body, /avatarPresetDataUrl\(seed\)/, "确认时必须把组合编码成头像");
+  assert.match(body, /await persistProfile\(name\)/, "必须复用既有资料保存链路");
+  assert.doesNotMatch(body, /api\.[a-zA-Z]+\(/, "不许为默认头像另开一条后端命令");
+  assert.match(profile, /parseAvatarPreset\(avatar\.value\)/, "再次打开时要还原当前选中的组合");
+});
+
 // ---------------- ㉗ 搜索结果行只许走那一份「kind → 人话」，不许铺载荷原文 ----------------
 //
 // 用户 2026-10-09：「搜索界面搜索列表显示的都是 json」。887477e 那次只堵了**本机不认识**的
@@ -4441,6 +4470,59 @@ test("会话切换只做整列短淡入，不给消息/图片做逐项进场", (
   assert.match(chat, /function revealListAfterLayout\(\)/, "ChatWindow 没有「布局落定后再揭示」的出口");
   assert.match(chat, /:class="listSwitching \? 'opacity-0' : 'opacity-100'"/, "消息列表没有整列淡入");
   assert.ok(!/<TransitionGroup/.test(chat), "消息行不该再逐项进场（会表现成从上往下铺）");
+});
+
+test("移动端全屏搜索/群任务只留一层滚动，搜索时底栏不挂在下面", () => {
+  const base = readFileSync(join(import.meta.dirname, "..", "components", "BaseModal.vue"), "utf8");
+  const search = readFileSync(
+    join(import.meta.dirname, "..", "components", "search", "ChatSearchDialog.vue"), "utf8");
+  const panel = readFileSync(join(import.meta.dirname, "..", "components", "GroupTasksPanel.vue"), "utf8");
+  const board = readFileSync(join(import.meta.dirname, "..", "components", "GroupTasksBoard.vue"), "utf8");
+  const layout = readFileSync(join(import.meta.dirname, "..", "layouts", "ResponsiveLayout.vue"), "utf8");
+  assert.match(base, /contained\?: boolean/, "BaseModal 没有“页面自己管滚动”的整页开关");
+  assert.match(base, /contained \? 'overflow-hidden'/, "整页 contained 仍让外层滚动");
+  assert.match(search, /\bcontained\b/, "搜索没有启用单滚动整页");
+  assert.match(panel, /:contained="fullscreen"/, "群任务移动端没有启用单滚动整页");
+  assert.match(panel, /:fill="fullscreen"/, "群任务面板没有让看板撑满整页高度");
+  assert.match(board, /standalone \|\| fill \? 'h-full min-h-0'/, "看板 fill 没有撑满高度");
+  assert.match(layout, /!searchOpen\.value/, "搜索打开时底栏仍显示/可点");
+});
+
+test("群成员弹窗只有一层滚动（成员列表不再自造 max-h + overflow）", () => {
+  const panel = readFileSync(join(import.meta.dirname, "..", "components", "GroupMemberPanel.vue"), "utf8");
+  assert.ok(!/max-h-56\s+overflow-y-auto/.test(panel), "群成员列表又加了内层滚动");
+});
+
+test("聊天头像进入好友资料，且群内非好友有兜底", () => {
+  const item = readFileSync(join(import.meta.dirname, "..", "components", "MessageItem.vue"), "utf8");
+  const chat = readFileSync(join(import.meta.dirname, "..", "components", "ChatWindow.vue"), "utf8");
+  assert.match(item, /emit\(['"]open-profile['"], message\.sender_id\)/, "消息头像没有上抛资料意图");
+  assert.match(chat, /function openSenderProfile\(/, "ChatWindow 没有接头像资料");
+  assert.match(chat, /router\.push\(\{ name: "friend", params: \{ friendId: senderId \} \}\)/,
+    "头像没有进入通讯录同一个好友资料路由");
+  assert.match(chat, /if \(isGroup\.value\) membersOpen\.value = true/, "群内非好友头像没有兜底");
+});
+
+test("预览失败有 10 秒负缓存，避免群历史缺文件时重试风暴", () => {
+  const fp = readFileSync(join(import.meta.dirname, "..", "utils", "filePreview.ts"), "utf8");
+  assert.match(fp, /NEGATIVE_TTL_MS/, "filePreview 没有失败负缓存");
+  assert.match(fp, /negativeBlocked\(msgId\)/, "loadFilePreview 没先查负缓存");
+  assert.match(fp, /markNegative\(msgId\)/, "transient 失败没有被挡住");
+  assert.match(fp, /invalidateFilePreview[\s\S]{0,200}clearNegative\(msgId\)/,
+    "文件落盘失效时没有清负缓存（会把后来到的字节挡住）");
+});
+
+test("外链导入导出三条路径都真接线（文件 / 线上 / 导出清理）", () => {
+  const links = readFileSync(join(import.meta.dirname, "..", "components", "LinksList.vue"), "utf8");
+  const api = readFileSync(join(import.meta.dirname, "..", "api", "index.ts"), "utf8");
+  for (const cmd of ["export_external_links", "import_external_links_file", "import_external_links_from_url"]) {
+    assert.match(api, new RegExp(`invoke<[^>]*>\\(\"${cmd}\"`), `${cmd} 没在 api 层接线`);
+  }
+  assert.match(links, /async function exportLinks\(\)/, "LinksList 没有导出动作");
+  assert.match(links, /async function importFile\(\)/, "LinksList 没有文件导入动作");
+  assert.match(links, /async function importFromUrl\(\)/, "LinksList 没有线上导入动作");
+  assert.match(links, /api\.importPickedFile\(/, "移动端 content:// 没有先落地");
+  assert.match(links, /cleanupExternalLinksExport/, "导出临时文件没有清理");
 });
 
 test("收藏列表是普通一级 tab，底栏显示条件不再为收藏开特例", () => {
