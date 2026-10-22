@@ -202,9 +202,15 @@ jobs:
         with:
           components: clippy
 
+      # ⚠️ `key` 是**缓存盐**（2026-10-22 深夜加）：Windows 的测试 exe 在加载期就死
+      # （0xc0000139），而依赖零漂移、导入表只有系统 DLL ⇒ 最像"rust-cache 把在**更新镜像**
+      # 上链好的产物恢复到了旧镜像，cargo 指纹命中就不重链，于是 exe 依赖了本机没有的导出"。
+      # 换一个盐让 Windows/macOS 都从零重建一轮：若这条腿转绿即证实该假设；
+      # 若仍红，说明与缓存无关（届时可以把这行 key 删掉，它本身没有功能副作用）。
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          key: rustgate-v2
 
       # `--features bluetooth` 不能少：bluetooth 是**非默认** feature，
       # 漏掉它 BLE 模块根本不编译 ⇒ 那批用例连同被测代码一起消失，而 cargo test 全绿。
