@@ -76,6 +76,7 @@ const KIND_LABELS: Record<MsgKind, string> = {
   // 真正的拦截在转发入口（不在时间线上渲染，就没有转发菜单可点）。
   reaction: t("msg.reactionMore"),
   recall: t("msg.recall"),
+  render: t("msg.renderAsText"),
   recalled: t("msg.recalled"),
   // 静默事件：不在时间线上渲染，就不会有转发入口。给中性文案兜底。
   pin: t("msg.pin"),

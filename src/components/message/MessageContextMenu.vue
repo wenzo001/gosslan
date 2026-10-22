@@ -2,7 +2,7 @@
 import { computed } from "vue";
 import { DropdownMenuItem, DropdownMenuSeparator } from "reka-ui";
 import { t } from "@/i18n";
-import { BellRing, Pin, PinOff, StopCircle, Undo2 } from "lucide-vue-next";
+import { BellRing, Pin, PinOff, StopCircle, Undo2, Code2, FileText } from "lucide-vue-next";
 import { Copy, CornerUpLeft, ListChecks, Save, Share2, Star } from "lucide-vue-next";
 import type { MsgKind } from "@/types";
 import {
@@ -16,6 +16,9 @@ import ContextMenu from "@/components/ContextMenu.vue";
 const props = defineProps<{
   /** 仅自己的消息才显示撤回（其他人的消息后端也不接受） */
   canRecall?: boolean;
+  /** 自己的代码/文本消息：显示“以纯文本/代码块显示”。 */
+  canRender?: boolean;
+  renderTo?: "code" | "text";
   /** 群聊才可置顶 */
   canPin?: boolean;
   /** 当前是否已置顶（决定文案） */
@@ -41,6 +44,7 @@ const emit = defineEmits<{
   /** 跳到本条消息引用的那条原消息（与微信一致：引用跳转也在菜单里）。 */
   (e: "locate-quote"): void;
   (e: "recall"): void;
+  (e: "render"): void;
   (e: "pin"): void;
   (e: "forward"): void;
   (e: "favorite"): void;
@@ -136,13 +140,13 @@ const hasCopyOps = computed(
       <component :is="pinned ? PinOff : Pin" />
       {{ pinned ? t("msg.unpin") : t("msg.pin") }}
     </DropdownMenuItem>
-    <DropdownMenuItem
-      v-if="canRecall"
-      class="gosslan-menu-item gosslan-menu-item--danger"
-      @select="emit('recall')"
-    >
+    <DropdownMenuItem v-if="canRecall" class="gosslan-menu-item" @select="emit('recall')">
       <Undo2 />
       {{ t("msg.recall") }}
+    </DropdownMenuItem>
+    <DropdownMenuItem v-if="canRender" class="gosslan-menu-item" @select="emit('render')">
+      <component :is="renderTo === 'code' ? Code2 : FileText" />
+      {{ renderTo === "code" ? t("msg.renderAsCode") : t("msg.renderAsText") }}
     </DropdownMenuItem>
     <DropdownMenuItem class="gosslan-menu-item" @select="emit('quote')">
       <CornerUpLeft />

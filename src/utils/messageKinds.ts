@@ -42,6 +42,8 @@ export const SILENT_KINDS: readonly string[] = [
   // 强提醒发起 / 回执：强提醒的高优先级通知单独走通道（第 3 阶段），不进普通通知。
   "remind",
   "remind_ack",
+  // 代码/文本渲染切换：只改目标消息的 kind，不产生时间线内容。
+  "render",
 ];
 
 /**

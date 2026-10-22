@@ -619,6 +619,9 @@ export const zhCN: MessageDict = {
   "msg.recallConfirm": "撤回这条消息？对方会看到「消息已撤回」，且无法恢复。",
   "msg.recallDone": "已撤回",
   "msg.recallFail": "撤回失败",
+  "msg.renderAsText": "以纯文本显示",
+  "msg.renderAsCode": "以代码块显示",
+  "msg.renderFail": "切换渲染失败",
   "msg.cancelSend": "取消发送",
   "msg.canceled": "已取消发送",
   // 取消发送的三条结果提示。此前 MessageItem.vue 的 doCancelSend 把它们硬编码成中文，

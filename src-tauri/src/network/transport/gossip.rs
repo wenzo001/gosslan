@@ -936,6 +936,32 @@ async fn handle_gossip(state: &Arc<AppState>, peer_id: &str, env: GossipEnvelope
                         }
                     }
                 }
+                // 渲染切换：只认原作者，且目标必须在本会话；LWW 后才广播给前端。
+                if kind == crate::protocol::KIND_RENDER {
+                    if let Ok(p) = crate::protocol::parse_render_payload(&content) {
+                        let dbc = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                        let allowed = db::get_message_record(&dbc, &p.target)
+                            .map(|m| {
+                                m.conv_id == conv_id
+                                    && m.sender_id == env.sender_id
+                                    && (m.kind == "code" || m.kind == "text")
+                            })
+                            .unwrap_or(false);
+                        let applied = allowed
+                            && db::apply_message_render(&dbc, &p.target, env.seq, &p.mode)
+                                .unwrap_or(false);
+                        if applied {
+                            drop(dbc);
+                            let _ = state.app.emit(
+                                "message-render-changed",
+                                &crate::state::RenderChangedInfo {
+                                    msg_id: p.target,
+                                    kind: p.mode,
+                                },
+                            );
+                        }
+                    }
+                }
                 // 群公告：**仅群主可发布/删除**。发送侧已校验（send_group_announcement），
                 // 但接收侧原先没有任何检查 —— 任何持群密钥的成员构造一条
                 // kind="announcement" 的群消息就能改掉所有人的公告横幅，

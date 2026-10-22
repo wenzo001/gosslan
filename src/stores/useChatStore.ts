@@ -1959,6 +1959,11 @@ export const useChatStore = defineStore("chat", () => {
     await api.recallDirectMessage(convId, msgId);
   }
 
+  /** 切换自己发的代码/文本消息渲染；本地更新统一等后端 LWW 后的 `message-render-changed`。 */
+  async function setMessageRender(convId: string, msgId: string, mode: "code" | "text") {
+    await api.setMessageRender(convId, msgId, mode);
+  }
+
   /** 发布群公告（仅群主）。正常入时间线（计未读、可通知），只是不随清空历史消失。 */
   async function publishAnnouncement(groupId: string, text: string) {
     const rec = await api.sendGroupAnnouncement(groupId, text);
@@ -2580,8 +2585,20 @@ export const useChatStore = defineStore("chat", () => {
    * 与后端的物化视图保持一致：`kind` 改 `recalled`、`content` 清空 ——
    * 这样搜索、预览、复制等所有读 content 的地方**一处都不用改**就自动正确。
    */
-  function onMessageRecalled(msgId: string) {
+  /** 渲染切换：只改目标消息的 kind；虚拟列表由 ResizeObserver 重测高度。 */
+  function onMessageRenderChanged(msgId: string, kind: "code" | "text") {
     for (const [convId, list] of Object.entries(messages.value)) {
+      const idx = list.findIndex((m) => m.msg_id === msgId);
+      if (idx < 0) continue;
+      if (list[idx].kind === kind) return;
+      const next = [...list];
+      next[idx] = { ...next[idx], kind };
+      messages.value = { ...messages.value, [convId]: next };
+      return;
+    }
+  }
+
+  function onMessageRecalled(msgId: string) {    for (const [convId, list] of Object.entries(messages.value)) {
       const idx = list.findIndex((m) => m.msg_id === msgId);
       if (idx < 0) continue;
       if (list[idx].kind === "recalled") return; // 幂等：重复事件不再改动
@@ -2793,6 +2810,7 @@ export const useChatStore = defineStore("chat", () => {
       },
       onGroupRead,
       onMessageRecalled,
+      onMessageRenderChanged,
       onFileProgress: (p) => {
         // 进度由事件载荷直接更新，不再全量刷新传输列表（避免大文件 IPC 风暴卡死界面）
         updateTransferProgress(p);
@@ -3102,6 +3120,7 @@ export const useChatStore = defineStore("chat", () => {
     sendReaction,
     sendDmReaction,
     recallMessage,
+    setMessageRender,
     pinMessage,
     publishAnnouncement,
     deleteAnnouncement,

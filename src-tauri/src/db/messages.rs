@@ -330,6 +330,86 @@ pub fn ack_delivered(conn: &Connection, msg_id: &str, peer_id: &str) -> Result<b
     Ok(true)
 }
 
+/// 应用一次渲染切换：LWW per `msg_id`，旧事件不覆盖新事件。
+///
+/// `messages.kind` 是物化视图；`message_render` 表保存最后一次生效的 seq，供迟到/重投判断。
+pub fn apply_message_render(
+    conn: &Connection,
+    msg_id: &str,
+    event_seq: i64,
+    mode: &str,
+) -> Result<bool> {
+    if mode != "code" && mode != "text" {
+        return Ok(false);
+    }
+    let tx = conn.unchecked_transaction()?;
+    let changed = tx.execute(
+        "INSERT INTO message_render(msg_id, seq, mode) VALUES(?1, ?2, ?3)
+         ON CONFLICT(msg_id) DO UPDATE SET seq = excluded.seq, mode = excluded.mode
+         WHERE excluded.seq > message_render.seq",
+        params![msg_id, event_seq, mode],
+    )? > 0;
+    if changed {
+        tx.execute(
+            "UPDATE messages SET kind = ?2 WHERE msg_id = ?1 AND kind != 'recalled'",
+            params![msg_id, mode],
+        )?;
+    }
+    tx.commit()?;
+    Ok(changed)
+}
+
+#[cfg(test)]
+mod message_render_tests {
+    use super::*;
+
+    fn db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(crate::db::SCHEMA).unwrap();
+        conn
+    }
+
+    fn seed(conn: &Connection, msg_id: &str) {
+        conn.execute(
+            "INSERT INTO messages(msg_id, conv_id, sender_id, receiver_id, kind, content, ts, seq, status)
+             VALUES(?1, 'peer-a', 'me', 'peer-a', 'text', 'code-like', 1, 1, 'sent')",
+            params![msg_id],
+        )
+        .unwrap();
+    }
+
+    fn kind(conn: &Connection, msg_id: &str) -> String {
+        conn.query_row(
+            "SELECT kind FROM messages WHERE msg_id = ?1",
+            params![msg_id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn render_lww_only_applies_newer_events() {
+        let conn = db();
+        seed(&conn, "r1");
+        assert!(apply_message_render(&conn, "r1", 10, "code").unwrap());
+        assert_eq!(kind(&conn, "r1"), "code");
+
+        assert!(
+            !apply_message_render(&conn, "r1", 9, "text").unwrap(),
+            "迟到的旧事件不得把渲染翻回去"
+        );
+        assert_eq!(kind(&conn, "r1"), "code");
+
+        assert!(apply_message_render(&conn, "r1", 11, "text").unwrap());
+        assert_eq!(kind(&conn, "r1"), "text");
+
+        assert!(
+            !apply_message_render(&conn, "r1", 12, "image").unwrap(),
+            "只允许 code/text 两种渲染方式"
+        );
+    }
+}
+
 #[cfg(test)]
 mod ack_delivery_tests {
     use super::*;

@@ -23,6 +23,7 @@ import { haptic } from "@/utils/haptics";
 import { shouldStartLongPress, shouldSwallowLongPressRelease } from "@/utils/longPress";
 import { shouldPreventContextMenu } from "@/utils/contextMenu";
 import { isWithinRecallWindow } from "@/utils/recall";
+import { detectCode } from "@/utils/codeDetect";
 import { t } from "@/i18n";
 import MessageAvatar from "@/components/message/MessageAvatar.vue";
 import MessageTextBubble from "@/components/message/MessageTextBubble.vue";
@@ -41,7 +42,7 @@ import UnsupportedKindBubble from "@/components/message/UnsupportedKindBubble.vu
 import MessageContextMenu from "@/components/message/MessageContextMenu.vue";
 import RemindAudienceDialog from "@/components/RemindAudienceDialog.vue";
 import ActionSheet from "@/components/ActionSheet.vue";
-import { BellRing, Copy, CornerUpLeft, ListChecks, Pin, Save, Share2, Smile, Star, TextSelect, Undo2 } from "lucide-vue-next";
+import { BellRing, Code2, Copy, CornerUpLeft, FileText, ListChecks, Pin, Save, Share2, Smile, Star, TextSelect, Undo2 } from "lucide-vue-next";
 import { Check, ImageOff } from "@/components/ui/icons";
 import type { MessageRecord, MsgKind } from "@/types";
 import type { ReminderPhase, ReminderState } from "@/utils/reminders";
@@ -790,6 +791,14 @@ function canRecallNow(): boolean {
   );
 }
 
+/** 仅原作者可切：code→text 总是可切；text→code 只在内容像代码时给入口。 */
+const renderTo = computed<"code" | "text" | null>(() => {
+  if (!mine.value) return null;
+  if (props.message.kind === "code") return "text";
+  if (props.message.kind === "text" && detectCode(props.message.content).likely) return "code";
+  return null;
+});
+
 /** 文件消息正在发送中 —— 显示"取消发送"菜单项。
  * 条件：自己发的 + 文件类 + status 是 sending。
  * 群文件（gfile-）也支持取消 —— 后端 cancel_file_transfer 统一处理。 */
@@ -837,6 +846,18 @@ async function confirmRecall() {
     app.toast(t("msg.recallDone"), "success");
   } catch (e) {
     app.toastError(e, t("msg.recallFail"));
+  }
+}
+
+async function doRender() {
+  closeContextMenu();
+  closeActionSheet();
+  const to = renderTo.value;
+  if (!to) return;
+  try {
+    await chat.setMessageRender(props.message.conv_id, props.message.msg_id, to);
+  } catch (e) {
+    app.toastError(e, t("msg.renderFail"));
   }
 }
 
@@ -1542,12 +1563,15 @@ async function copyFileToClipboard() {
     @copy-file="copyFileToClipboard"
     @quote="doQuote"
     :can-recall="canRecallNow()"
+    :can-render="renderTo !== null"
+    :render-to="renderTo ?? 'text'"
     :can-pin="isGroup && message.kind !== 'recalled'"
     :pinned="!!pinned"
     :can-cancel-send="canCancelSend"
     :can-remind="canRemindEntry"
     @pin="emit('pin')"
     @recall="doRecall"
+    @render="doRender"
     @cancel-send="doCancelSend"
     @forward="doForward"
     @favorite="doFavorite"
@@ -1639,6 +1663,17 @@ async function copyFileToClipboard() {
       >
         <Undo2 class="h-5 w-5" />
         {{ t("msg.recall") }}
+      </button>
+      <button
+        v-if="renderTo"
+        class="flex items-center gap-3 px-4 py-3 text-left text-title text-[var(--gosslan-text)] transition active:bg-[var(--gosslan-hover)]"
+        @click="doRender"
+      >
+        <component
+          :is="renderTo === 'code' ? Code2 : FileText"
+          class="h-5 w-5 text-[var(--gosslan-text-2)]"
+        />
+        {{ renderTo === "code" ? t("msg.renderAsCode") : t("msg.renderAsText") }}
       </button>
       <button
         v-if="forwardable(message.kind)"
