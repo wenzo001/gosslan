@@ -19,12 +19,19 @@
 1. `entries/main.ts` 在**主窗口挂载后**延迟 8s 调一次 `check(false)`；失败静默回 idle，不弹窗、不重试。
 2. 设置 → 关于 → 应用更新：手动检查、查看版本/说明/发布时间、下载、取消下载、安装并重启、稍后。
 3. 同一窗口内检查/下载各单飞；Rust `UpdaterSession` 跨窗口也只允许一个下载任务。
-4. 检查的硬上限 12s（Rust）+ 15s（前端兜底）；下载单次请求超时 120s。
+4. 检查的硬上限 12s（Rust）+ 15s（前端兜底）；下载单次请求超时 **30 分钟**。
+   ⚠️ 这个超时是 reqwest 的**整请求**上限，不是"多久没数据"：写 120s 会让手机热点 /
+   跨网段下几十 MB 的包必然在 99% 失败，而重试多少次都一样。
 5. 取消：Rust 侧用 `tokio::select!` drop 官方 `Update::download` future —— HTTP 读取停止、
    半包内存释放；没有落盘临时文件，也没有启动安装器。**不是只隐藏 loading**。
 6. 安装前必须用户在「安装并重启」后再确认一次；安装器接管后 Windows 由 NSIS 重启
    （官方 `install` 内部会退出本进程），macOS/Linux 由 `AppHandle::restart()` 重启。
    解包/验签/复制放在 `spawn_blocking`，不占 tokio worker。
+   **安装失败保留已下载字节**（不是先 `take()`）：验签/磁盘/占用任一环失败时用户可以直接重试，
+   不必重新下载几十 MB。
+7. `updater-manifest.yml` 由 **tag push** 触发（不是 `release: published`）：用 `GITHUB_TOKEN`
+   创建的 Release 不会再启动新的 workflow run（GitHub 防递归），写在 release 事件上会让
+   `latest.json` 永远不生成。它轮询等 Release 与四平台产物齐，再生成并校验清单。
 
 ## 2. 签名与密钥
 
