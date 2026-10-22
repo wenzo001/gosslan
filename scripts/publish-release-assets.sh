@@ -106,6 +106,18 @@ fi
 
 release_exists() { "$gh_bin" api "repos/$repo/releases/tags/$tag" >/dev/null 2>&1; }
 
+# ⚠️ **草稿 Release** 对 `releases/tags/<tag>` 是 404（2026-10-22 实测：人工在网页上建了草稿，
+# 于是本脚本判"不存在"→ 去 create → 被顶成 "already exists" → 复查询又 404 → 整步判红）。
+# 列表 API 带得出来（带 token 时草稿可见），所以再补一条"任何状态都算存在"的判据。
+release_exists_any_state() {
+  "$gh_bin" api "repos/$repo/releases?per_page=100" \
+    --jq ".[] | select(.tag_name == \"$tag\") | .id" 2>/dev/null | grep -q .
+}
+release_is_draft() {
+  [ "$("$gh_bin" api "repos/$repo/releases?per_page=100" \
+        --jq ".[] | select(.tag_name == \"$tag\") | .draft" 2>/dev/null | head -1)" = "true" ]
+}
+
 if release_exists; then
   echo "Release $tag 已存在 ⇒ 不重复创建，只补文件"
 else
@@ -119,11 +131,11 @@ else
     echo "创建没成功（原样贴出，方便分清是被抢先建好还是权限/网络）："
     echo "$create_err"
     # ★ 竞争窗口就在这一次复查询里收掉：后到的那条不报错，它只是"来晚了"。
-    if ! release_exists; then
-      echo "复查询仍说不存在 ⇒ 这不是并发，是真失败（不发半份）" >&2
+    if ! release_exists && ! release_exists_any_state; then
+      echo "复查询仍说不存在（含草稿列表）⇒ 这不是并发，是真失败（不发半份）" >&2
       exit 1
     fi
-    echo "是并发的另一条刚建好 ⇒ 认它，继续上传"
+    echo "是并发的另一条 / 或人工草稿 ⇒ 认它，继续上传"
   fi
 fi
 
@@ -145,3 +157,14 @@ done
 
 echo "已把 ${#files[@]} 个文件挂到 ${tag}："
 printf '  %s\n' "${files[@]}"
+
+# 草稿状态对外**不可见**：`latest.json` 与用户都看不到它 ⇒ 上传完必须把它发布出去，
+# 否则"构建全绿、下载页却什么都没有"（2026-10-22 就是这么卡住的）。
+if release_is_draft; then
+  echo "Release $tag 目前是**草稿** ⇒ 现在发布它"
+  if ! "$gh_bin" release edit "$tag" --repo "$repo" --draft=false; then
+    echo "草稿发布失败 ⇒ 不假装成功（产物已挂上，但对外不可见）" >&2
+    exit 1
+  fi
+  echo "Release $tag 已发布（不再有草稿遮挡）"
+fi

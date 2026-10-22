@@ -41,12 +41,18 @@ case "$1 $2" in
   "api "* )
     case "$FAKE_SCENARIO" in
       race) n=$(bump api); [ "$n" -le 1 ] && exit 1; exit 0 ;;
+      # 人工草稿：按 tag 查 404；列表 API 能查到（draft=true）
+      draft)
+        case "$*" in
+          *"releases?per_page"*) echo true; exit 0 ;;
+          *) exit 1 ;;
+        esac ;;
       denied|new) exit 1 ;;
       *) exit 0 ;;
     esac ;;
   "release create" )
     case "$FAKE_SCENARIO" in
-      race) echo "Release $3 already exists" >&2; exit 1 ;;
+      race|draft) echo "Release $3 already exists" >&2; exit 1 ;;
       denied) echo "HTTP 403: Resource not accessible by integration" >&2; exit 1 ;;
       *) echo created; exit 0 ;;
     esac ;;
@@ -123,6 +129,19 @@ function run(
   };
 }
 
+test("人工草稿 Release：不判红；上传完把它发布出去（否则对外永远不可见）", () => {
+  const r = run("draft");
+  assert.equal(r.code, 0, r.out);
+  assert.deepEqual(
+    r.calls.filter((c) => c.startsWith("release create")),
+    ["release create v9.9.9 --repo octo/thing --target deadbeef --generate-notes --title v9.9.9"],
+    "创建仍只试一次（草稿顶红是预期内的）",
+  );
+  assert.equal(r.calls.filter((c) => c.startsWith("release upload")).length, 1, "产物照常上传");
+  const edits = r.calls.filter((c) => c.startsWith("release edit"));
+  assert.deepEqual(edits, ["release edit v9.9.9 --repo octo/thing --draft=false"], "上传后必须把草稿发布出去");
+});
+
 test("新建：Release 不存在且创建成功 ⇒ 建一次、上传一次", () => {
   const r = run("new");
   assert.equal(r.code, 0, r.out);
@@ -146,7 +165,7 @@ test("已存在：不许重复创建，直接补文件（重复创建今天会�
 test("被抢先（race）：创建失败但复查询发现已存在 ⇒ 认它并上传，整步仍为绿", () => {
   const r = run("race");
   assert.equal(r.code, 0, r.out);
-  assert.match(r.out, /是并发的另一条刚建好/);
+  assert.match(r.out, /并发的另一条/);
   assert.equal(r.calls.filter((c) => c.startsWith("release upload")).length, 1);
   // 顺序本身就是证据：查（不存在）⇒ 创建（失败）⇒ 再查（已存在）⇒ 才上传。少了第二次查询就是"猜"。
   assert.deepEqual(r.calls.map((c) => c.split(" ").slice(0, 2).join(" ")).slice(0, 4),
