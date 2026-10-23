@@ -1164,6 +1164,13 @@ mesh 没有服务器也没有强制升级 ⇒ 混合版本是常态，不是边�
   整单那一对（`signal_cancel_slots` / `cancel_group_file_recipients`）一个字都不许碰 ——
   否则一个成员退出会让其余成员一起停。认人也只认本人：`recipient` 必须等于发帧那台设备。
 
+**消息的取消与文件同一条仲裁（2026-10-23 B4 后半）**：`cancel_message` 在同一个事务里把
+`messages.status` 写 `cancelled` 并删掉那条 `outbox` 行。「取消是硬终态」在这里不靠新闸门，
+靠的是 `ack_delivered` 早就有的那条前置判据：**队行行还在不在**。行被删掉之后晚到的 Ack
+命中不到 ⇒ 返回 false、状态停在 `cancelled`；只改状态不删行则下一轮 flush 照样把它发出去
+（界面说已取消、对方照样收到）。文件那侧的 `cancel_terminal` 墓碑与这一条是同一件事的两种材质：
+文件靠"不许被晚到的写降级"，消息靠"晚到的确认找不到可确认的行"。
+
 **非空转证明**：`verify-guards` 变异用例 —— 摘掉 `WHERE status <> 'done'` ⇒ 正向判据红；
 照本条落地前的建议把集合写成 `NOT IN ('done','failed','cancelled')` ⇒ 反向判据红；
 去掉 `AND cancel_terminal = 0` ⇒ 晚到的进度写复活已取消的行（正向）；

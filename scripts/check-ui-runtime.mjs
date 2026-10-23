@@ -7818,6 +7818,32 @@ async function runOpsCenter(cdp, url) {
       opened.rows.some((r) => r.title === '已完成.txt') === false,
       "不含 已完成.txt", JSON.stringify(opened.rows.map((r) => r.title)));
 
+    // 更新下载那一类（B5）：只证明"store 里的可查询状态真的会变成一行 + 一个取消键"。
+    // 相位语义（ready/installing 不列）由读模型单测钉，这里只管接线。
+    await cdp.eval(`(async () => {
+      const S = await import('/src/stores/useChatStore.ts');
+      S.useChatStore().updaterStatus = { phase: 'downloading', downloaded: 40, total: 100,
+        version: '9.9.9', error: null };
+      const t = window.__probe.vue;
+      await t.nextTick(); await t.nextTick();
+      return true;
+    })()`);
+    const withUpdate = await read();
+    const updateRow = withUpdate.rows.find((r) => r.title === 'v9.9.9');
+    check("更新下载在任务中心里长成一行（目标版本号当标题）",
+      withUpdate.rows.length === 7 && !!updateRow,
+      "7 行且含 v9.9.9",
+      JSON.stringify({ rows: withUpdate.rows.map((r) => r.title) }));
+    check("那一行正好一颗「取消」（install 阶段不可取消，所以不是两颗）",
+      !!updateRow && updateRow.buttons === 1, "1 颗", JSON.stringify(updateRow));
+    await cdp.eval(`(async () => {
+      const S = await import('/src/stores/useChatStore.ts');
+      S.useChatStore().updaterStatus = null;
+      const t = window.__probe.vue;
+      await t.nextTick(); await t.nextTick();
+      return true;
+    })()`);
+
     // 关掉面板再拖。这里**不用 Esc**：Esc 要焦点已经落在弹窗里才有作用点，
     // 而这一段刚才是"真点击坐标"打开的，焦点落点不该被本段当成前提来依赖
     // （焦点那条出口另有 `--only=overlay` 那 32 条守着）。点卡片外的遮罩是 Reka 的
