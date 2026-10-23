@@ -37,7 +37,8 @@ import { foldReactions, hasMyReaction, type ReactionChip } from "@/utils/reactio
 import { foldReminders, type ReminderState } from "@/utils/reminders";
 import { foldPinned, isPinned } from "@/utils/pins";
 import { foldTodos, todoLiveMap, type TodoLive } from "@/utils/todos";
-import { isRenderedInTimeline } from "@/utils/messageKinds";
+import { groupSide, isRenderedInTimeline } from "@/utils/messageKinds";
+import { shouldShowTimeDivider } from "@/utils/previewMetrics";
 import { activePopupKey } from "@/utils/popupRegistry";
 import { previewText } from "@/utils/messages";
 import DangerBtn from "@/components/ui/DangerBtn.vue";
@@ -859,6 +860,27 @@ const unreadIndex = computed(() => {
   if (!uj || uj.convId !== chat.activeConv) return -1;
   return uj.index;
 });
+
+/**
+ * 这一条在连续消息组里的位置 —— 与 `messageHeight` 的估算共用 `messageKinds.groupSide`。
+ * 渲染端只负责把这个结果交给 MessageItem（间距 / 圆角 / 是否显示身份信息都由它决定）。
+ */
+function groupSideAt(index: number) {
+  const cur = messages.value[index];
+  if (!cur) return "single" as const;
+  const prev = index > 0 ? messages.value[index - 1] : null;
+  const next = messages.value[index + 1] ?? null;
+  const unread = unreadIndex.value;
+  return groupSide({
+    kind: cur.kind,
+    senderId: cur.sender_id,
+    ts: cur.ts,
+    prev: prev ? { kind: prev.kind, senderId: prev.sender_id, ts: prev.ts } : null,
+    next: next ? { kind: next.kind, senderId: next.sender_id, ts: next.ts } : null,
+    breakAbove: shouldShowTimeDivider(cur.ts, prev?.ts) || index === unread,
+    breakBelow: !!next && (shouldShowTimeDivider(next.ts, cur.ts) || index + 1 === unread),
+  });
+}
 
 // ---------------- 滚动 ----------------
 const nearBottom = ref(true);
@@ -1720,6 +1742,7 @@ function onLoadMore() {
             :message="item"
             :prev="index > 0 ? messages[index - 1] : null"
             :is-group="isGroup"
+            :group-side="groupSideAt(index)"
             :sender-name="isGroup ? chat.nicknameOf(item.sender_id) : ''"
             :group-reader-ids="isGroup && activeGroupId ? chat.groupReaderIds(activeGroupId, item.ts) : EMPTY_STRING_LIST"
             :show-unread-divider="index === unreadIndex"

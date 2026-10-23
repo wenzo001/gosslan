@@ -222,6 +222,15 @@
   --gosslan-item-radius: var(--gosslan-radius-md);
   --gosslan-bubble-radius: 18px;
 
+  /* ---------------- 消息流排版令牌（2026-10-23 iMessage 风格基线） ----------------
+     气泡圆角 18px（17–19 档内）、连续消息相邻侧 6px、群聊头像 30px、气泡宽度 ≤ 80%。
+     ⚠️ **行距不在这里**：同组 4px / 换组 10px 由 `messageHeight` 的 GAP_* 一处保管，
+       渲染端（MessageItem 的 pt-1.5 / pb-1）与估高端必须同时改 —— 这里再放一份就是第二个家。
+     ⚠️ 气泡宽度与 `previewMetrics.COLUMNS_PER_LINE` 成对（估高按列数折行），改这里必须现算那里。 */
+  --gosslan-bubble-radius-tight: 6px;
+  --gosslan-msg-avatar: 30px;
+  --gosslan-msg-max: 78%;
+
   /* 窗口外圈描边线：窗口外缘一整圈细浅灰圆角描边（DWM 边框视觉），
      用 inset ring 画在最外层容器上，不占布局；深色下用微亮线 */
   --gosslan-window-ring: rgba(15, 23, 42, 0.08);
@@ -1004,9 +1013,11 @@ html.has-caption {
    `.tail-mine{right:-11px}` 是一对常数，改一个必须同时改另一个。 */
 .bubble-tail {
   position: absolute;
-  /* 顶边对齐气泡**外框**（内边距顶 − 1px 边框），叶形的起笔点才落在同一条线上 */
-  top: calc(max(0px, calc(12px - var(--bubble-tail-offset, 0px))) - 1px);
-  bottom: auto;
+  /* 2026-10-23 口径反转：单聊不再显示头像，尾巴改成**贴在气泡底角向下**的弧形；
+     群聊不渲染（`MessageItem` 按 isGroup 给 tail=false）。
+     盒高 14、底边外露 7px：上半截压在气泡里负责盖住底边那一段描边，下半截才是看得见的尾巴。 */
+  top: auto;
+  bottom: -7px;
   width: 14px;
   height: 14px;
   pointer-events: none;
@@ -1028,18 +1039,26 @@ html.has-caption {
   stroke-width: 1;
   stroke-linecap: round;
 }
+/* 形状只有一份（朝左），自己的消息整体镜像 ⇒ 两条路径不会漂 */
 .tail-mine {
-  right: -11px;
+  right: 6px;
+  transform: scaleX(-1);
 }
 .tail-other {
-  left: -11px;
+  left: 6px;
 }
-/* 每个 span 里两个朝向都写好了，按归属只留一组（少一处模板分支 = 少一处漏改） */
-.tail-mine .tail-fill-other,
-.tail-mine .tail-line-other,
-.tail-other .tail-fill-mine,
-.tail-other .tail-line-mine {
-  display: none;
+
+/* 连续消息合并：组内相邻边压到 6px。只作用于文本气泡 —— 图片/文件/合并/待办
+   各自是一张完整卡片，压平一角会让它看起来像"画错了"。 */
+.msg-stack[data-pos="middle"] .gosslan-bubble-text,
+.msg-stack[data-pos="last"] .gosslan-bubble-text {
+  border-top-left-radius: var(--gosslan-bubble-radius-tight);
+  border-top-right-radius: var(--gosslan-bubble-radius-tight);
+}
+.msg-stack[data-pos="middle"] .gosslan-bubble-text,
+.msg-stack[data-pos="first"] .gosslan-bubble-text {
+  border-bottom-left-radius: var(--gosslan-bubble-radius-tight);
+  border-bottom-right-radius: var(--gosslan-bubble-radius-tight);
 }
 /* 尖角那一侧的**上圆角**跟着尖角走 —— 值在 `useMessageDisplay` 的 bubbleStyle/cardStyle 里，
    不在这里：圆角是**内联样式**（主题预设也要读它），样式表规则压不过内联。

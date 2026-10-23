@@ -4992,47 +4992,49 @@ async function runRowPair(cdp, url) {
     const avatar = root.querySelector('.gosslan-avatar-box');
     const tr = tail ? tail.getBoundingClientRect() : null;
     const ar = avatar ? avatar.getBoundingClientRect() : null;
-    // 尖角与**气泡本体**的横向关系（用户 2026-10-23：「群聊里气泡渲染尾巴没有和气泡融合」）。
-    // 尖角是 6px 边框撑出的三角形，靠气泡那一侧是**底边**：底边必须压在气泡边缘上
-    // （reach ∈ [0, 6]）；reach < 0 = 中间露出一条缝（不融合），> 6 = 整个三角形埋进气泡里看不见。
-    // 用气泡根的 border box 作基准：left/right 的负值相对它的 padding box，
-    // 1px 描边带来的差在这条判据的公差里。
-    // 气泡本体：尖角的**父元素**就是气泡根（每个气泡组件都把尖角当最后一个子节点）。
-    // 别用「昵称行的下一个孩子」找 —— 单聊没有昵称行，那一支会取到 null，横向就量不到了。
+    // 2026-10-23 口径反转：单聊不显示头像 ⇒ 尾巴改成**贴底角向下**，群聊不渲染尾巴。
+    // 所以这里量的是「尾巴露在气泡下沿外多少」与「上半截压进气泡多少」，不再量侧向 reach。
     const bubble = tail ? tail.parentElement : rowEl;
     const br = bubble ? bubble.getBoundingClientRect() : null;
     const isMine = tail ? /tail-mine/.test(tail.className) : null;
-    // 尖角那一侧的**上圆角**：胶囊 18px 的时候，尖角那 12px 高度里气泡边缘已经从 x=18 收到 ≈4.6，
-    // 直边三角形只碰到弧线上一个点 ⇒ 看着"断开"。群聊要把这一侧压平（<=2px）才真的贴住。
     const bcs = bubble ? getComputedStyle(bubble) : null;
-    const cornerRad = bcs
-      ? parseFloat(isMine ? bcs.borderTopRightRadius : bcs.borderTopLeftRadius)
-      : null;
-    // 尾巴外缘是**圆弧**（border-radius 撑出来的四分之一圆），不是 border 三角形 —— 用户
-    // 2026-10-23「边缘不够丝滑」那一条的机制就在这里：改成直线/三角形的那天这条读数会掉下去。
-    // 尾巴现在是 SVG 叶形：**描边色必须等于气泡自己的边框色**（用户 2026-10-23：
-    // 「气泡有边框、尾巴没有 ⇒ 接缝对不上」）。这就是那条诉求的机器读数。
-    const lineEl = tail ? tail.querySelector(isMine ? '.tail-line-mine' : '.tail-line-other') : null;
+    const cornerRad = bcs ? parseFloat(bcs.borderBottomRightRadius) : null;
+    const lineEl = tail ? tail.querySelector('.tail-line') : null;
     const tailStroke = lineEl ? getComputedStyle(lineEl).stroke : null;
     const bubbleLine = bcs ? (isMine ? bcs.borderRightColor : bcs.borderLeftColor) : null;
-    const reach = tr && br
-      ? +((isMine ? br.right - tr.left : tr.right - br.left)).toFixed(2)
-      : null;
+    // 代码卡片**没有描边**（designGuards 与组件注释都写着"去掉了四边描边"），它的线色是卡片线 token。
+    // 这里把 token 解析成真实颜色，供"尾巴描边 == 它那条线"逐种气泡核对。
+    const probeEl = document.createElement("span");
+    probeEl.style.color = "var(--gosslan-card-line)";
+    document.body.appendChild(probeEl);
+    const cardLineColor = getComputedStyle(probeEl).color;
+    probeEl.remove();
+    const tailBelowBubble = tr && br ? +(tr.bottom - br.bottom).toFixed(2) : null;
+    const tailInsideBubble = tr && br ? +(br.bottom - tr.top).toFixed(2) : null;
+    const tailCount = document.querySelectorAll('.bubble-tail').length;
+    const groupAvatarCount = root.querySelectorAll('.gosslan-avatar-box').length;
+    const nickCount = [...document.querySelectorAll('[data-msg-col]')]
+      .reduce((n, col) => n + [...col.children].filter((el) => el.textContent.trim() === '对方').length, 0);
     return {
       row: +root.getBoundingClientRect().height.toFixed(2),
       divider: div ? +div.getBoundingClientRect().height.toFixed(2) : null,
       nick: nick && rowEl
         ? +(rowEl.getBoundingClientRect().top - col.getBoundingClientRect().top).toFixed(2)
         : null,
-      tailCenter: tr ? +(tr.top + tr.height / 2).toFixed(2) : null,
-      avatarCenter: ar ? +(ar.top + ar.height / 2).toFixed(2) : null,
-      tailTop: tr ? +tr.top.toFixed(2) : null,
       bubbleTop: br ? +br.top.toFixed(2) : null,
+      bubbleBottom: br ? +br.bottom.toFixed(2) : null,
+      tailTop: tr ? +tr.top.toFixed(2) : null,
+      tailBottom: tr ? +tr.bottom.toFixed(2) : null,
+      tailBelowBubble,
+      tailInsideBubble,
+      tailCount,
+      groupAvatarCount,
+      nickCount,
       isMine,
-      reach,
       cornerRad,
       tailStroke,
       bubbleLine,
+      cardLineColor,
     };
   })()`);
   /** 估高端现算：引的是应用自己那份 `messageHeight`，这里不重述任何高度常量。 */
@@ -5104,63 +5106,36 @@ async function runRowPair(cdp, url) {
     Math.abs(dNickEst - dNickRow) <= 1, "两者相差 <= 1px",
     JSON.stringify({ dNickEst, dNickRow }));
 
-  // ============ 尖角的竖向位置（用户 2026-10-23：尾巴原来吊在气泡底部；随后又报"群聊还没修好"）============
-  // 两档口径：
-  //  · 单聊：没有昵称行 ⇒ 尖角中心正好落在头像中心（12px 顶边 + 6px 半高 = 18px）；
-  //  · 群聊（对方的消息，有 18px 昵称行）：头像中心 = 气泡顶边，尖角若继续以中心对齐就会
-  //    一半露到气泡上面（截图里像插在昵称行上的小旗）⇒ 要求**顶边不越出气泡顶边**，
-  //    同时仍贴在最上面那一格（<=1.5px），不是被按到气泡中间。
-  const dTailDm = gFar ? +(gFar.tailCenter - gFar.avatarCenter).toFixed(2) : NaN;
-  const groupTailAboveTop = gGroup && gGroup.tailTop !== null && gGroup.bubbleTop !== null
-    ? +(gGroup.tailTop - gGroup.bubbleTop).toFixed(2) : NaN;
-  console.log("  · 尖角竖向实测：" + JSON.stringify({
-    dm: gFar && { tailTop: gFar.tailTop, bubbleTop: gFar.bubbleTop, avatar: gFar.avatarCenter },
-    group: gGroup && { tailTop: gGroup.tailTop, bubbleTop: gGroup.bubbleTop, avatar: gGroup.avatarCenter },
+  // ============ 尾巴（2026-10-23 口径反转）============
+  // 单聊：不显示头像 ⇒ 尾巴贴在气泡**底角向下**，上半截压进气泡盖住底边描边；
+  // 群聊：整条不渲染（用户：「群聊去掉」）。
+  console.log("  · 尾巴实测：" + JSON.stringify({
+    dm: gFar && { tailCount: gFar.tailCount, below: gFar.tailBelowBubble, inside: gFar.tailInsideBubble },
+    group: gGroup && { tailCount: gGroup.tailCount, avatars: gGroup.groupAvatarCount, nicks: gGroup.nickCount },
   }));
-  check("非空转·尖角：单聊与群聊都读到了尾巴、气泡与头像的矩形",
-    !!gFar && typeof gFar.tailCenter === "number" && typeof gFar.avatarCenter === "number"
-      && typeof gFar.bubbleTop === "number"
-      && !!gGroup && typeof gGroup.tailTop === "number" && typeof gGroup.bubbleTop === "number"
-      && typeof gGroup.avatarCenter === "number",
-    "读数都是数", JSON.stringify({ far: gFar, group: gGroup }));
-  check("尖角对准头像中心·单聊：两中心相差 <= 1px",
-    Math.abs(dTailDm) <= 1, "|差| <= 1px", JSON.stringify({ dTailDm }));
-  check("尖角不越出气泡顶边·群聊（昵称行把气泡推下 18px）：-1.5 <= tailTop - bubbleTop <= 1.5px",
-    groupTailAboveTop >= -1.5 && groupTailAboveTop <= 1.5,
-    "-1.5 <= 差 <= 1.5px", JSON.stringify({ groupTailAboveTop, tailTop: gGroup && gGroup.tailTop, bubbleTop: gGroup && gGroup.bubbleTop }));
+  check("非空转·尾巴：单聊读到了尾巴矩形与气泡矩形",
+    !!gFar && typeof gFar.tailBelowBubble === "number" && typeof gFar.tailInsideBubble === "number",
+    "读数都是数", JSON.stringify(gFar && { below: gFar.tailBelowBubble, inside: gFar.tailInsideBubble }));
+  check("单聊·尾巴露在气泡下沿外 5~9px（贴底角向下，不是一个贴边的点）",
+    !!gFar && gFar.tailBelowBubble >= 5 && gFar.tailBelowBubble <= 9,
+    "5 <= below <= 9", JSON.stringify({ below: gFar && gFar.tailBelowBubble }));
+  check("单聊·尾巴上半截压进气泡 6~10px（盖住底边那段描边 ⇒ 接缝无台阶）",
+    !!gFar && gFar.tailInsideBubble >= 6 && gFar.tailInsideBubble <= 10,
+    "6 <= inside <= 10", JSON.stringify({ inside: gFar && gFar.tailInsideBubble }));
+  check("单聊·描边与气泡边框同色：SVG 描边 == 气泡那一侧的 border 色",
+    !!gFar && typeof gFar.tailStroke === "string" && gFar.tailStroke === gFar.bubbleLine,
+    "stroke == 同侧 border 色", JSON.stringify({ tailStroke: gFar && gFar.tailStroke, bubbleLine: gFar && gFar.bubbleLine }));
+  check("群聊·整条消息不渲染尾巴",
+    !!gGroup && gGroup.tailCount === 0, "tailCount == 0", JSON.stringify({ tailCount: gGroup && gGroup.tailCount }));
+  check("群聊·自己那条也不渲染尾巴（再挂一次：dev-me）",
+    await mount(FAR, true, "text", null, "dev-me").then(async () => {
+      const g = await geom();
+      return !!g && g.tailCount === 0;
+    }),
+    "tailCount == 0", "自己·群聊");
+  check("群聊·对方那条只画一个头像（组首身份信息）",
+    !!gGroup && gGroup.groupAvatarCount === 1, "avatars == 1", JSON.stringify({ avatars: gGroup && gGroup.groupAvatarCount }));
 
-  // ============ 尖角与气泡**横向融合**（用户 2026-10-23：群聊里尾巴没和气泡融合）============
-  // 竖向对上了不等于长在一起：三角形靠气泡那一侧是底边，底边必须压在气泡边缘上。
-  // reach = 底边越过气泡边缘的像素数；<0 是露出一条缝（截图那种"断开"），>6 是整块埋进去。
-  // 两个方向都要量：对方（尖角在左）与我自己（尖角在右）是两条独立的 CSS 分支。
-  for (const [where, isGroup, senderId, wantMine] of [
-    ["对方·单聊", false, "peer-a", false],
-    ["对方·群聊", true, "peer-a", false],
-    ["自己·单聊", false, "dev-me", true],
-    ["自己·群聊", true, "dev-me", true],
-  ]) {
-    check("行配对：挂一条文本消息（" + where + "）", await mount(FAR, isGroup, "text", null, senderId), "install 成功");
-    const g = await geom();
-    console.log("  · 尖角横向融合实测（" + where + "）："
-      + JSON.stringify(g && { reach: g.reach, isMine: g.isMine, cornerRad: g.cornerRad }));
-    check("非空转·尖角横向（" + where + "）：读到了底边与气泡边缘，且方向就是预期的那个分支",
-      !!g && typeof g.reach === "number" && g.isMine === wantMine,
-      "reach 是数 + isMine == " + wantMine, JSON.stringify(g && { reach: g.reach, isMine: g.isMine }));
-    check("尖角与气泡融合（" + where + "）：尾巴压进气泡 1~12px（圆弧尾巴靠这段重叠遮缝）",
-      !!g && g.reach >= 1 && g.reach <= 12, "1 <= reach <= 12", JSON.stringify({ where, reach: g && g.reach }));
-    check("尖角描边与气泡边框同色（" + where + "）：SVG 描边 == 气泡那一侧的 border 色",
-      !!g && typeof g.tailStroke === "string" && g.tailStroke === g.bubbleLine,
-      "stroke == 同侧 border 色", JSON.stringify({ where, tailStroke: g && g.tailStroke, bubbleLine: g && g.bubbleLine }));
-    // 圆角这一侧必须是**直的**才贴得上。注意"要不要压平"跟群聊/单聊不是一回事：
-    // 自己的消息在群聊里**不画昵称行**（`showNickname` 只给别人的消息），气泡没有被推下去，
-    // 尖角仍在胶囊最左侧 ⇒ 维持原圆角。所以压平的条件 = 群聊 **且** 对方。
-    const pushedDown = isGroup && !wantMine;
-    check("尖角侧上圆角（" + where + "）：被昵称行推下去的那一侧压平到 <=2px，其余保持胶囊",
-      !!g && typeof g.cornerRad === "number"
-        && (pushedDown ? g.cornerRad <= 2 : g.cornerRad >= 8),
-      pushedDown ? "圆角 <= 2px" : "圆角 >= 8px",
-      JSON.stringify({ where, cornerRad: g && g.cornerRad, pushedDown }));
-  }
   // 取证帧：群聊·对方那一条，正好是用户截图里"尾巴断开"的形状，人眼可复核
   if (SHOT_PATH) {
     await mount(FAR, true);
@@ -5186,62 +5161,58 @@ async function runRowPair(cdp, url) {
     console.log("  📷 尖角取证帧 → " + SHOT_PATH.replace(/\.png$/, "-tail.png"));
   }
 
-  // ---- 其余挂尖角的气泡种类（用户 2026-10-23：「把所有的气泡尾巴都检查下」）----
-  // 代码气泡那一格是截图点名的：它原来在组件里**又钉了一份** `top: auto; bottom: 12px`，
-  // 把尖角按在卡片底栏上 ⇒ 与头像完全错开。位置现在只有 `style.css` 那一个家。
-  // 每一格单聊/群聊各一遍：群聊那一支顺带判"尖角的包含块是不是气泡自己"
-  // （`bubbleStyle`/`cardStyle` 都设了 position: relative；哪天某个卡片根丢了 relative，
-  // 尖角会挂到整列上，群聊那档直接差 18px —— 只量单聊量不出来）。
+  // ---- 其余气泡种类（用户 2026-10-23：「把所有的气泡尾巴都检查下」）----
+  // 新口径（同日第二次反转）：单聊保留尾巴（贴底角向下），群聊整条不渲染。
+  // 每一格单聊/群聊各一遍：单聊量「露在气泡外 / 压进气泡」两个数，群聊量"根本没有尾巴"。
   const TAIL_KINDS = [
     ["代码气泡", "code"], ["文件气泡", "file"], ["合并转发卡片", "merge"],
-    // 用户截图里那张带「待办」徽标的就是它：cardStyle 的圆角与 data-msg-col 的偏移都走同一份，
-    // 这一格是"卡片类也真的没露到气泡上面"的正面证据。
     ["群任务卡片", "todo"],
   ];
   for (const [kindLabel, kind] of TAIL_KINDS) {
-    for (const [where, isGroup] of [["单聊", false], ["群聊", true]]) {
-      check("行配对：挂一条" + kindLabel + "（" + where + "）",
-        await mount(FAR, isGroup, kind), "install 成功");
-      const g = await geom();
-      const d = g ? +(g.tailCenter - g.avatarCenter).toFixed(2) : NaN;
-      // 群聊这一挂是**对方**的消息（mount 默认 peer-a）⇒ 有昵称行，按"不越顶"判；
-      // 单聊按"中心对头像"判。两种口径见上面那一段的说明。
-      const above = g && g.tailTop !== null && g.bubbleTop !== null
-        ? +(g.tailTop - g.bubbleTop).toFixed(2) : NaN;
-      console.log("  · " + kindLabel + "尖角实测（" + where + "）："
-        + JSON.stringify(g && { tail: g.tailCenter, avatar: g.avatarCenter, above }));
-      check("非空转·" + kindLabel + "（" + where + "）：读到尾巴、气泡与头像矩形（这一种没挂尖角就是 null）",
-        !!g && typeof g.tailCenter === "number" && typeof g.avatarCenter === "number"
-          && typeof g.bubbleTop === "number",
-        "读数都是数", JSON.stringify(g));
-      if (isGroup) {
-        check("尖角不越出气泡顶边·" + kindLabel + "·" + where + "：-1.5 <= tailTop - bubbleTop <= 1.5px",
-          above >= -1.5 && above <= 1.5, "-1.5 <= 差 <= 1.5px", JSON.stringify({ kindLabel, where, above }));
-      } else {
-        check("尖角对准头像中心·" + kindLabel + "·" + where + "：两中心相差 <= 1px",
-          Math.abs(d) <= 1, "|差| <= 1px", JSON.stringify({ kindLabel, where, d }));
-      }
-    }
+    // 单聊：尾巴必须在，且几何与文本气泡一致（同一个 CSS 家 ⇒ 不同组件不该有不同读数）
+    check("行配对：挂一条" + kindLabel + "（单聊）", await mount(FAR, false, kind), "install 成功");
+    const gDm = await geom();
+    console.log("  · " + kindLabel + "尾巴实测（单聊）："
+      + JSON.stringify(gDm && { count: gDm.tailCount, below: gDm.tailBelowBubble, inside: gDm.tailInsideBubble }));
+    check("非空转·" + kindLabel + "（单聊）：读到尾巴矩形与气泡矩形",
+      !!gDm && typeof gDm.tailBelowBubble === "number" && typeof gDm.tailInsideBubble === "number",
+      "读数都是数", JSON.stringify(gDm && { below: gDm.tailBelowBubble, inside: gDm.tailInsideBubble }));
+    check("单聊·" + kindLabel + "尾巴：露在气泡外 5~9px 且压进气泡 6~10px",
+      !!gDm && gDm.tailBelowBubble >= 5 && gDm.tailBelowBubble <= 9
+        && gDm.tailInsideBubble >= 6 && gDm.tailInsideBubble <= 10,
+      "5~9 / 6~10", JSON.stringify({ kindLabel, below: gDm && gDm.tailBelowBubble, inside: gDm && gDm.tailInsideBubble }));
+    // 文本/文件/合并/待办有 1px 描边 ⇒ 比 border 色；代码卡片**无描边** ⇒ 比卡片线 token（它唯一的线）。
+    const wantLine = kind === "code" ? (gDm && gDm.cardLineColor) : (gDm && gDm.bubbleLine);
+    check("单聊·" + kindLabel + "尾巴描边与它那条边线同色（有描边比 border，无描边的代码卡片比卡片线 token）",
+      !!gDm && typeof gDm.tailStroke === "string" && gDm.tailStroke === wantLine,
+      "stroke == 期望线色", JSON.stringify({ kindLabel, tailStroke: gDm && gDm.tailStroke, wantLine }));
+
+    // 群聊：这一种也不许有尾巴（自己的那条另有一条，见上面）
+    check("行配对：挂一条" + kindLabel + "（群聊）", await mount(FAR, true, kind), "install 成功");
+    const gGroupKind = await geom();
+    check("群聊·" + kindLabel + "整条不渲染尾巴",
+      !!gGroupKind && gGroupKind.tailCount === 0, "tailCount == 0",
+      JSON.stringify({ kindLabel, tailCount: gGroupKind && gGroupKind.tailCount }));
   }
   /*
-   * 反向对照：把上一版的几何（尖角顶边 -6px，上半截露在气泡外）注入当前这条消息，
-   * 同一把尺子必须读到负数。这一格不碰源码，只证明「tailTop - bubbleTop」这个量具
-   * 不是恒绿 —— 判据红了的时候能归因到几何本身，而不是量错元素。
+   * 反向对照：把尾巴往下推 20px，同一把尺子必须读到「露在外面」明显变大。
+   * 不碰源码，只证明 tailBelowBubble 这个量具不是恒绿 —— 判据红时能归因到几何本身。
    */
-  const reverseAbove = await cdp.eval(`(() => {
+  await mount(FAR, false, "text");
+  const reverseBelow = await cdp.eval(`(() => {
     const tail = document.querySelector('.bubble-tail');
-    const bubble = tail ? tail.parentElement : null;
-    if (!tail || !bubble) return null;
-    const prev = tail.style.top;
-    tail.style.top = '-6px';
-    const above = +(tail.getBoundingClientRect().top - bubble.getBoundingClientRect().top).toFixed(2);
-    tail.style.top = prev;
-    return above;
+    if (!tail) return null;
+    const bubble = tail.parentElement;
+    const prevBottom = tail.style.bottom;
+    tail.style.bottom = '-20px';
+    const below = +(tail.getBoundingClientRect().bottom - bubble.getBoundingClientRect().bottom).toFixed(2);
+    tail.style.bottom = prevBottom;
+    return below;
   })()`);
-  console.log("  · 反向对照·尖角越顶：" + JSON.stringify({ reverseAbove }));
-  check("反向对照·尖角越顶量具：注入旧几何（-6px）时同一把尺子读到 < 0（判据不是恒绿）",
-    typeof reverseAbove === "number" && reverseAbove <= -5,
-    "读到 <= -5px", JSON.stringify({ reverseAbove }));
+  console.log("  · 反向对照·尾巴下坠：" + JSON.stringify({ reverseBelow }));
+  check("反向对照·尾巴露头量具：把尾巴下推 20px 时同一把尺子读到 > 12px（判据不是恒绿）",
+    typeof reverseBelow === "number" && reverseBelow > 12,
+    "读到 > 12px", JSON.stringify({ reverseBelow }));
 
   // 最后一挂是合并转发卡片那条 ⇒ 这张帧是"卡片 + 尖角"的形状。
   if (SHOT_PATH) {

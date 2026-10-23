@@ -210,11 +210,71 @@ export function isRemindableKind(kind: string): boolean {
  *
  * `mine` 由两侧各自已有的口径传入（渲染端比 `device.device_id`、估算端比 `ctx.selfId`）——
  * 这里不新增第三个 self-id 来源。
+ *
+ * `atGroupStart`（2026-10-23）：「连续消息只在组首展示身份信息」。缺省 true = 老调用点行为不变。
  */
 export function shouldShowNickname(input: {
   isGroup: boolean;
   mine: boolean;
   kind: string;
+  atGroupStart?: boolean;
 }): boolean {
-  return input.isGroup && !input.mine && !isTipKind(input.kind);
+  return input.isGroup && !input.mine && !isTipKind(input.kind) && (input.atGroupStart ?? true);
+}
+
+/**
+ * 连续消息合并（2026-10-23 iMessage 风格）。
+ *
+ * 同一发送者、5 分钟内的相邻 **text / code** 视为一组：组内间距 4px、相邻边圆角压到 6px；
+ * 群聊只在组首展示头像与昵称。图片 / 文件 / 合并卡片 / 待办各自是一张完整卡片，不参与合并
+ * （它们的命中区与圆角是独立设计，压平一角反而像画错了）。
+ *
+ * ⚠️ 时间窗与时间分割线同值（5 分钟）：超过它就一定有一条分割行，组自然断开。两处不许各写一份，
+ * `previewMetrics.TIME_DIVIDER_GAP` 直接引用这里的 `GROUP_GAP_MS`。
+ *
+ * ⚠️ **渲染端（MessageItem）与估高端（messageHeight）必须调同一个函数**：行距与昵称行都随
+ * 组位置变化，任何一边自己判一次，都会让虚拟列表算错高度、相邻消息互相遮挡。
+ */
+export const GROUP_GAP_MS = 5 * 60 * 1000;
+
+/** 参与连续合并的气泡类型（卡片/媒体不合并）。 */
+export const GROUPABLE_KINDS: readonly string[] = ["text", "code"];
+
+export type MessageGroupSide = "single" | "first" | "middle" | "last";
+
+interface GroupNeighbor {
+  kind: string;
+  senderId: string;
+  ts: number;
+}
+
+/**
+ * 这条消息在它那一组里的位置。
+ *
+ * `breakAbove` / `breakBelow` 由调用方给：上方有分割线（时间 / 未读）时一定另起一组 ——
+ * 分割行本身是通栏的，跨过它再压平圆角会像"两条消息连在一起"。
+ */
+export function groupSide(input: {
+  kind: string;
+  senderId: string;
+  ts: number;
+  prev: GroupNeighbor | null;
+  next: GroupNeighbor | null;
+  breakAbove?: boolean;
+  breakBelow?: boolean;
+}): MessageGroupSide {
+  if (!GROUPABLE_KINDS.includes(input.kind)) return "single";
+  const sameGroup = (o: GroupNeighbor | null, gapMs: number): boolean =>
+    !!o &&
+    GROUPABLE_KINDS.includes(o.kind) &&
+    o.senderId === input.senderId &&
+    Math.abs(gapMs) < GROUP_GAP_MS;
+  const above =
+    !input.breakAbove && sameGroup(input.prev, input.prev ? input.ts - input.prev.ts : 0);
+  const below =
+    !input.breakBelow && sameGroup(input.next, input.next ? input.next.ts - input.ts : 0);
+  if (above && below) return "middle";
+  if (above) return "last";
+  if (below) return "first";
+  return "single";
 }

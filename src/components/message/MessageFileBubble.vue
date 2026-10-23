@@ -36,6 +36,8 @@ const props = defineProps<{
   missing?: boolean;
   /** 统一内容状态为「未完成 / 校验失败」：按钮改成「重新获取」（按 cid 拉一份）。 */
   contentRetry?: boolean;
+  /** 单聊显示气泡尾巴；群聊不显示（2026-10-23：群聊改为无尾巴的整体气泡）。 */
+  tail?: boolean;
 }>();
 const emit = defineEmits<{
   (e: "open"): void;
@@ -199,6 +201,6 @@ const canOpen = computed(() => props.ready && props.tappable !== false);
     <div class="empty:hidden" aria-live="polite">
       <div v-if="statusText" class="text-caption" :class="statusToneClass">{{ statusText }}</div>
     </div>
-    <BubbleTail :mine="mine" />
+    <BubbleTail v-if="tail" :mine="mine" />
   </div>
 </template>

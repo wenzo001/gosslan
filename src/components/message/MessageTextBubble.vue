@@ -39,6 +39,8 @@ const props = defineProps<{
    * 见 style.css 里 `@media (pointer: coarse)` 的说明。
    */
   selectMode?: boolean;
+  /** 单聊显示气泡尾巴；群聊不显示（2026-10-23：群聊改为无尾巴的整体气泡）。 */
+  tail?: boolean;
 }>();
 const emit = defineEmits<{
   (e: "expand", content: string): void;
@@ -245,6 +247,6 @@ async function openLink(href: string) {
       </button>
     </div>
     <!-- 普通文本：不显示悬停复制气泡（复制走右键菜单），避免干扰 -->
-    <BubbleTail :mine="mine" />
+    <BubbleTail v-if="tail" :mine="mine" />
   </div>
 </template>

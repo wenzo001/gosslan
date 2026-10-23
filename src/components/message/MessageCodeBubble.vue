@@ -15,6 +15,8 @@ const props = defineProps<{
   dark: boolean;
   /** 自己的消息气泡尖角朝右、对方朝左，指向头像。 */
   mine: boolean;
+  /** 单聊显示气泡尾巴；群聊不显示（2026-10-23：群聊改为无尾巴的整体气泡）。 */
+  tail?: boolean;
 }>();
 const emit = defineEmits<{
   (e: "expand", code: string): void;
@@ -36,7 +38,13 @@ const tailBg = computed(() => surface.value);
 </script>
 
 <template>
-  <div class="relative min-w-0 flex-1" :style="{ '--bubble-bg': tailBg }">
+  <!-- 代码卡片没有四边描边 ⇒ 尾巴的描边必须显式取卡片线 token（否则 `currentColor`
+       会退到正文色：尾巴是一条深色字色的线，气泡却是无边的浅卡片）。与 `--bubble-tail-fill`
+       同源，两者一起保证"尾巴 = 卡片自己那条线 + 卡片底色"。 -->
+  <div
+    class="relative min-w-0 flex-1"
+    :style="{ '--bubble-bg': tailBg, '--bubble-line': 'var(--gosslan-card-line)' }"
+  >
     <!-- 截断容器固定 CODE_CLAMP_HEIGHT（与 VirtualList 的估算常量同源）。
          若容器透明，CodeBlock 实际渲染高度不足该值时，底部会空出一条画布色亮缝
          （卡片与操作条之间「露出聊天背景」）；故容器自身填卡片底色兜底。
@@ -62,7 +70,7 @@ const tailBg = computed(() => surface.value);
         {{ copied ? t("common.copied") : t("common.copy") }}
       </button>
     </div>
-    <BubbleTail :mine="mine" />
+    <BubbleTail v-if="tail" :mine="mine" />
   </div>
 </template>
 

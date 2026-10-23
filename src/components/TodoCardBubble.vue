@@ -51,6 +51,8 @@ const props = defineProps<{
    */
   mentionNames?: string[];
   selfMention?: { name: string; label: string } | null;
+  /** 单聊显示气泡尾巴；群聊不显示（2026-10-23：群聊改为无尾巴的整体气泡）。 */
+  tail?: boolean;
 }>();
 /** 带上 `todo_id`：点卡片要直达**这一条**任务的详情（用户 #23），不是只把看板打开。 */
 const emit = defineEmits<{
@@ -299,6 +301,6 @@ function statusText(s: TodoStatus): string {
     </div>
     <!-- 指向发送者头像的小尖角（与文本/代码气泡同款 .bubble-tail）：卡片无描边，
          直接用标准 -5px 偏移即可贴合，尖角色取 --bubble-bg（= card 底色）。 -->
-    <BubbleTail :mine="mine" />
+    <BubbleTail v-if="tail" :mine="mine" />
   </div>
 </template>

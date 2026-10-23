@@ -17,6 +17,8 @@ import {
   countsTowardUnread,
   kindClass,
   shouldShowNickname,
+  groupSide,
+  GROUP_GAP_MS,
 } from "./messageKinds.ts";
 import {
   TODO_CATEGORIES,
@@ -404,4 +406,64 @@ test("isRemindableKind：只有有实质内容的消息可被强提醒；提示�
   for (const k of ["system", "recalled", "remind", "remind_ack", "reaction", "pin", ""]) {
     assert.equal(isRemindableKind(k), false, `${k} 不应当可提醒`);
   }
+});
+
+// ---------------- 连续消息分组（2026-10-23） ----------------
+// 判定同时决定「间距 / 圆角压平 / 群聊是否重复身份信息」，渲染端与估高端共用一份。
+
+const T0 = 1_700_000_000_000;
+const peer = (kind: string, ts: number, senderId = "peer-a") => ({ kind, senderId, ts });
+
+test("groupSide：同人连续三条依次是 first / middle / last，孤立一条是 single", () => {
+  const a = peer("text", T0);
+  const b = peer("text", T0 + 1000);
+  const c = peer("text", T0 + 2000);
+  assert.equal(groupSide({ ...a, prev: null, next: b }), "first");
+  assert.equal(groupSide({ ...b, prev: a, next: c }), "middle");
+  assert.equal(groupSide({ ...c, prev: b, next: null }), "last");
+  assert.equal(groupSide({ ...a, prev: null, next: null }), "single");
+  // 只有两条：前 first、后 last
+  assert.equal(groupSide({ ...b, prev: a, next: null }), "last");
+});
+
+test("groupSide：换人 / 超过时间窗 / 非 text-code 都会断开", () => {
+  const a = peer("text", T0);
+  assert.equal(groupSide({ ...peer("text", T0 + 1000), prev: a, next: null }), "last");
+  // 换发送者
+  assert.equal(
+    groupSide({ ...peer("text", T0 + 1000, "peer-b"), prev: a, next: null }),
+    "single",
+  );
+  // 恰好 5 分钟 = 已断开（与时间分割线同阈值：那边会插一条分割行）
+  assert.equal(
+    groupSide({ ...peer("text", T0 + GROUP_GAP_MS), prev: a, next: null }),
+    "single",
+  );
+  // 媒体 / 卡片各自是完整一张，不参与合并
+  for (const k of ["image", "file", "merge", "todo", "system", "recalled"]) {
+    assert.equal(
+      groupSide({ ...peer(k, T0 + 1000), prev: a, next: peer("text", T0 + 2000) }),
+      "single",
+      `${k} 不应当参与连续合并`,
+    );
+  }
+});
+
+test("groupSide：上/下有分割线时强制断开（不跨通栏分割行压圆角）", () => {
+  const a = peer("text", T0);
+  const b = peer("text", T0 + 1000);
+  assert.equal(groupSide({ ...b, prev: a, next: null, breakAbove: true }), "single");
+  assert.equal(groupSide({ ...a, prev: null, next: b, breakBelow: true }), "single");
+});
+
+test("shouldShowNickname：群聊只在组首显示；单聊/自己/提示行一律不显示", () => {
+  const base = { isGroup: true, mine: false, kind: "text" };
+  assert.equal(shouldShowNickname({ ...base, atGroupStart: true }), true);
+  assert.equal(shouldShowNickname({ ...base, atGroupStart: false }), false);
+  // 缺省 = 组首（老调用点行为不变）
+  assert.equal(shouldShowNickname(base), true);
+  assert.equal(shouldShowNickname({ ...base, isGroup: false }), false);
+  assert.equal(shouldShowNickname({ ...base, mine: true }), false);
+  assert.equal(shouldShowNickname({ ...base, kind: "system" }), false);
+  assert.equal(shouldShowNickname({ ...base, kind: "recalled" }), false);
 });

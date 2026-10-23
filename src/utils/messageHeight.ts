@@ -12,11 +12,18 @@ import {
 import { TODO_CARD_IMAGE_VISIBLE } from "@/utils/todos";
 import type { FontSizeKey } from "@/utils/chatStyle";
 // 昵称行的判定与渲染端共用（提示行没有昵称行这条规则写在那个函数里）
-import { isKnownKind, shouldShowNickname } from "@/utils/messageKinds";
+import { groupSide, isKnownKind, shouldShowNickname } from "@/utils/messageKinds";
 import type { MessageRecord } from "@/types";
 
-/** MessageItem: py-1.5（同发方连续消息间距 12px，学微信的呼吸感） */
-const ROW_PADDING = 12;
+/**
+ * 行距（2026-10-23 改成按「消息组」给，不再是一个常数）：
+ *   组内相邻（same sender / 5 分钟内 / 都是 text|code）= 4px，换组 = 10px。
+ * 实现是「本行恒定 4px 下边距 + 行首 0/6px 上间距」，两者相加正好是 4 / 10。
+ * ⚠️ 与 `MessageItem` 的 `GAP_BASE` / `GAP_TOP_*` 成对，与 `messageKinds.groupSide` 同一个判定。
+ */
+const GAP_BASE = 4;
+const GAP_TOP_TIGHT = 0;
+const GAP_TOP_NEW = 6;
 /** 群聊昵称行：leading-none(11) + mb-[7px](7) = 18px。
  *  字号/行高改动必须同步这里与 MessageItem 的昵称行（两者是同一份高度的两处表达）。
  *  行高取 leading-none 是为了让墨迹贴住行盒顶、与头像顶边齐平（行高 1.5 会往下推 ~3.7px，看着"名字偏低"）。 */
@@ -184,18 +191,29 @@ export function estimateMessageHeight(
   // 分割行的**判定**与渲染端共用 `shouldShowTimeDivider`（阈值也在那里）：分割行自己占
   // TIME_DIVIDER 那 32px，两边判得不一致就是"相邻消息互相遮挡"本文件顶部那条契约。
   const showDivider = shouldShowTimeDivider(m.ts, prev?.ts);
+  const next = index != null ? (ctx.messages[index + 1] ?? null) : null;
+  // 分割行会把「上一条 / 下一条」自然推开：组必须在这里断开，否则跨过一条通栏分割线还压平圆角。
+  const side = groupSide({
+    kind: m.kind,
+    senderId: m.sender_id,
+    ts: m.ts,
+    prev: prev ? { kind: prev.kind, senderId: prev.sender_id, ts: prev.ts } : null,
+    next: next ? { kind: next.kind, senderId: next.sender_id, ts: next.ts } : null,
+    breakAbove: showDivider,
+    breakBelow: next ? shouldShowTimeDivider(next.ts, m.ts) : false,
+  });
   // 昵称行同族（占 NICKNAME_ROW 那 18px）：「提示行没有昵称行」这条规则现在写在判定函数里，
   // 不再靠 MessageItem 的 v-if/v-else 结构差持平 ⇒ 两边不可能各走一半。
+  // 2026-10-23 起群聊只在**组首**展示身份信息 ⇒ 同一条判定多带一个 atGroupStart。
   const showNickname = shouldShowNickname({
     isGroup: ctx.isGroup,
     mine: m.sender_id === ctx.selfId,
     kind: m.kind,
+    atGroupStart: side === "first" || side === "single",
   });
 
-  return (
-    bubble +
-    ROW_PADDING +
-    (showNickname ? NICKNAME_ROW : 0) +
-    (showDivider ? TIME_DIVIDER : 0)
-  );
+  // 分割行自己带间距，不再叠加组间距。
+  const topGap = showDivider ? 0 : side === "first" || side === "single" ? GAP_TOP_NEW : GAP_TOP_TIGHT;
+
+  return bubble + GAP_BASE + topGap + (showNickname ? NICKNAME_ROW : 0) + (showDivider ? TIME_DIVIDER : 0);
 }
