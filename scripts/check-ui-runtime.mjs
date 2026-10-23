@@ -2711,6 +2711,7 @@ async function main() {
     const composermobile = want("composermobile");
     const tasksmobile = want("tasksmobile");
     const opscenter = want("opscenter");
+    const resend = want("resend");
     const touchroster = want("touchroster");
     const locale = want("locale");
     const rowpair = want("rowpair");
@@ -2766,6 +2767,7 @@ async function main() {
     if (composermobile) await runComposerMobile(cdp, url);
     if (tasksmobile) await runTasksMobile(cdp, url);
     if (opscenter) await runOpsCenter(cdp, url);
+    if (resend) await runResend(cdp, url);
     if (locale) await runLocale(cdp, url);
     if (rowpair) await runRowPair(cdp, url);
     if (errtext) await runErrorText(cdp, url);
@@ -7891,6 +7893,149 @@ async function runOpsCenter(cdp, url) {
       JSON.stringify({ pill: again.pill, corner: again.corner, vh: again.vh }));
   } finally {
     await cdp.send("Emulation.clearDeviceMetricsOverride").catch(() => {});
+  }
+}
+
+/**
+ * 「发送失败 / 已取消之后那颗重发」的运行时判据（负责人 2026-10-23："可以有个重试/再次发送…
+ * 可打断 可恢复 可取消这种都应该有"）。
+ *
+ * 这一段判的是**走的是哪条通道**，不是"按钮在不在"：
+ * 图片以前漏在 `retryable` 与 `retrySend` 两处的缝里（两处都只排除 `file`），失败的图片被按
+ * 普通消息重发了一份 JSON 载荷 ⇒ 对端收到"有名字没有字节"的一张图、本机还转成绿色。
+ * 静态判据只能证明"引了这个函数"，**"点一下到底打到哪条命令"只能在这里量**：
+ * 用 `H.stubApi` 把两条命令各换一个计数替身，真按一次回执那颗，读调用次数。
+ *
+ * 附件已被存储清理那一格也在这里判：那时必须**没有**按钮（不给一颗点了没反应的键 = 界面不撒谎）。
+ */
+async function runResend(cdp, url) {
+  await cdp.send("Page.navigate", { url });
+  await sleep(3_000);
+  await cdp.eval(PAGE_FIXTURE);
+
+  const IMG_META = JSON.stringify({ name: "白板照片.png", size: 2048, path: "/tmp/probe-a.png", subtype: "image", sha256: "b".repeat(64) });
+
+  /** 真挂一次消息行（props 由页面里那份对象给出），并返回那颗重发的坐标。 */
+  const mountAndLocate = async (over) => {
+    const msg = Object.assign({
+      id: -1, msg_id: "m-rs-1", sender_id: "dev-me", receiver_id: "p1", conv_id: "p1",
+      kind: "image", content: IMG_META, ts: 1700000000000, seq: 1, status: "failed",
+    }, over);
+    const mounted = await cdp.eval("window.__probe.install('/src/components/MessageItem.vue', '', "
+      + JSON.stringify(JSON.stringify({ message: msg, isGroup: false, senderName: "我" })) + ")");
+    if (!mounted || mounted.ok !== true) return { ok: false, why: "install", mounted };
+    const seeded = await cdp.eval("window.__probe.seedDevice('dev-me')");
+    if (!seeded || seeded.ok !== true) return { ok: false, why: "seedDevice", seeded };
+    await sleep(250);
+    const btn = await cdp.eval(`(async () => {
+      const I = await import('/src/i18n/index.ts');
+      const want = I.t('msg.resend');
+      const hit = Array.from(document.querySelectorAll('button'))
+        .find((b) => b.getAttribute('aria-label') === want && b.getClientRects().length > 0);
+      if (!hit) return { found: false, want: want };
+      const r = hit.getBoundingClientRect();
+      return { found: true, want: want, x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+    })()`);
+    return { ok: true, btn };
+  };
+
+  /** 每条被点的命令都换成"只计数"的替身；顺带把 store 刷新链上那三条读命令兜住。 */
+  const stubAll = async () => {
+    for (const [name, payload] of [
+      ["sendFileAuto", "t-resend-1"],
+      ["sendGroupFile", "t-resend-2"],
+      ["sendMessage", { msg_id: "m-rs-new", conv_id: "p1", sender_id: "dev-me", kind: "text", content: "hi", ts: 1700000000001, seq: 2, status: "sending" }],
+      ["getTransfers", []],
+      ["getContentTransfers", []],
+      ["getPendingMessageOperations", []],
+      ["mediaPresent", true],
+    ]) {
+      await cdp.eval(`window.__probe.stubApi(${JSON.stringify(name)}, ${JSON.stringify(payload)})`);
+    }
+    return true;
+  };
+  const calls = async (name) => cdp.eval(`window.__probe.apiCalls(${JSON.stringify(name)})`);
+
+  // ── ① 失败的**图片**：必须回文件通道，而不是 send_message ──────────────
+  await stubAll();
+  const a = await mountAndLocate({});
+  check("失败图片这行挂出来了，回执那颗是可点的（可访问名 = msg.resend）",
+    a.ok === true && a.btn && a.btn.found === true, "found=true", JSON.stringify(a));
+  if (a.ok && a.btn && a.btn.found) {
+    await cdp.click(a.btn.x, a.btn.y);
+    await sleep(600);
+    const file = await calls("sendFileAuto");
+    const text = await calls("sendMessage");
+    check("★ 点失败图片的重发 ⇒ 走 send_file_auto（恰好一次）",
+      file === 1, "sendFileAuto=1", JSON.stringify({ file }));
+    check("★ 同一下点击**没有**走 send_message（旧那步把 JSON 载荷当普通消息发出去 = 假成功）",
+      text === 0, "sendMessage=0", JSON.stringify({ text }));
+  } else {
+    check("★ 点失败图片的重发 ⇒ 走 send_file_auto（恰好一次）", false,
+      "先要那颗按钮存在", JSON.stringify(a));
+    check("★ 同一下点击**没有**走 send_message（旧那步把 JSON 载荷当普通消息发出去 = 假成功）", false,
+      "上一格没成立，这一格没作用点", JSON.stringify(a));
+  }
+
+  // ── ② 已取消的图片也要能再发（负责人点名"取消了"那一格）────────────────
+  await stubAll();
+  const b = await mountAndLocate({ msg_id: "m-rs-2", status: "cancelled" });
+  check("已取消的图片行也长出可点的重发（取消不是错误，但同样要能恢复）",
+    b.ok === true && b.btn && b.btn.found === true, "found=true", JSON.stringify(b));
+  if (b.ok && b.btn && b.btn.found) {
+    await cdp.click(b.btn.x, b.btn.y);
+    await sleep(600);
+    check("点它 ⇒ 同样走 send_file_auto", (await calls("sendFileAuto")) === 1,
+      "sendFileAuto=1", JSON.stringify({ file: await calls("sendFileAuto") }));
+  } else {
+    check("点它 ⇒ 同样走 send_file_auto", false, "先要那颗按钮存在", JSON.stringify(b));
+  }
+
+  // ── ③ 群里的失败文件 ⇒ 必须走群文件那条命令，而不是单聊那条 ─────────────
+  await stubAll();
+  const c = await mountAndLocate({
+    msg_id: "gfile-1", conv_id: "group:g1", kind: "file", status: "failed",
+  });
+  const cOk = c.ok === true && c.btn && c.btn.found;
+  if (cOk) {
+    await cdp.click(c.btn.x, c.btn.y);
+    await sleep(600);
+    const grp = await calls("sendGroupFile");
+    const dm = await calls("sendFileAuto");
+    check("群文件失败后重发走 send_group_file（而不是把群会话当对端去 send_file_auto）",
+      grp === 1 && dm === 0, "sendGroupFile=1 / sendFileAuto=0", JSON.stringify({ grp, dm }));
+  } else {
+    check("群文件失败后重发走 send_group_file（而不是把群会话当对端去 send_file_auto）", false,
+      "先要那颗按钮存在", JSON.stringify(c));
+  }
+
+  // ── ④ 载荷里没有路径 ⇒ 不许有按钮（没有可发的字节 = 给了就是界面在撒谎）──
+  // ⚠️ 这一格刻意用"content 里没有 path"，**不是**用 mediaPresent=false：
+  // 失败的**图片**行今天拿不到可达性信号（`previewSubtype` 在 failed 时直接返回 null，
+  // 而 `shouldProbePresence` 只给 subtype=file 那份探测 ⇒ 两路都不跑，`attachmentMissing` 恒 false）。
+  // 所以"附件已被存储清理"那一档今天量不到（点它会由后端报错、走 sendFileTo 那条失败 toast，
+  // 不是静默成功）；要收那一格得动 `shouldProbePresence` 那条共享判据，不在本批顺手做。
+  await stubAll();
+  const d = await mountAndLocate({
+    msg_id: "m-rs-4",
+    content: JSON.stringify({ name: "白板照片.png", size: 2048, subtype: "image" }),
+  });
+  check("★ 载荷里没有 path ⇒ 那颗重发不渲染（没有可发的字节就不给按钮）",
+    d.ok === true && d.btn && d.btn.found === false, "found=false", JSON.stringify(d));
+
+  // ── ⑤ 文本失败仍是原地复用那条（`retrySend.test.ts` 的运行时那一半）─────
+  await stubAll();
+  const e = await mountAndLocate({ msg_id: "m-rs-5", kind: "text", content: "在吗" });
+  if (e.ok === true && e.btn && e.btn.found) {
+    await cdp.click(e.btn.x, e.btn.y);
+    await sleep(600);
+    check("文本失败重发仍走 send_message（恰好一次），且不碰文件通道",
+      (await calls("sendMessage")) === 1 && (await calls("sendFileAuto")) === 0,
+      "sendMessage=1 / sendFileAuto=0",
+      JSON.stringify({ text: await calls("sendMessage"), file: await calls("sendFileAuto") }));
+  } else {
+    check("文本失败重发仍走 send_message（恰好一次），且不碰文件通道", false,
+      "先要那颗按钮存在", JSON.stringify(e));
   }
 }
 

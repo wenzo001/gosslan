@@ -13,6 +13,7 @@ import {
   isFavoritableKind, isForwardableKind, isKnownKind, isMultiSelectable, isRemindableKind, isTipKind, kindClass, UNSUPPORTED_KIND_LABEL, } from "@/utils/messageKinds";
 import { cardCopyText } from "@/utils/cardText";
 import { isSelfMessage } from "@/utils/selfChat";
+import { resendChannelFor } from "@/utils/resendChannel";
 import { EMPTY_REACTION_CHIPS, EMPTY_STRING_LIST } from "@/utils/emptyList";
 import { parseQuote, stripQuoteMsgId } from "@/utils/quote";
 import { QUOTE_BG, QUOTE_TEXT_STYLE } from "@/utils/quoteStyle";
@@ -1023,16 +1024,55 @@ async function doConfirmReminder() {
   }
 }
 
+/**
+ * 「这条能不能再发一次、该走哪条通道」—— 判据只有 `utils/resendChannel` 那一份。
+ *
+ * 附件是否还在本机用 `useMessageFile` 的 `attachmentMissing`（它的真值来自后端
+ * `media_present`），不在这里自己 `fs exists`：那一格已经有一份口径与一条竞态守卫了。
+ */
+const resendChannel = computed(() =>
+  resendChannelFor({
+    kind: props.message.kind,
+    group: props.isGroup || isGroupFile.value,
+    hasLocalFile: !!fileMeta.value?.path && !attachmentMissing.value,
+    mine: mine.value,
+  }),
+);
+
 async function retrySend() {
   const msg = props.message;
-  if (msg.status !== "failed" || msg.kind === "file") return;
+  const channel = resendChannel.value;
+  // 算不出通道 = 这个按钮本来就不该渲染出来（回执那边同一个判据）。这里再挡一次是
+  // 防两条出口将来不一致，不是为了兜错。
+  if (!channel) return;
+  if (channel === "message") {
+    try {
+      // 传 `msg.msg_id`：store 会把**这条 failed 气泡原地**转回 sending 再重发。
+      // 不传的话会新建一条乐观记录，而这条 failed 因为全库无删除路径 +
+      // `appendLocalOnly` 每次重开会话都重新追加 `tmp-*` ⇒ 界面上永远留两条一样的文字。
+      await chat.send(msg.conv_id, msg.content, msg.kind, undefined, msg.msg_id);
+    } catch {
+      // 失败状态已由 send() 内部处理（原地退回 failed）
+    }
+    return;
+  }
+  // 文件与图片**只能回到造它们的那条通道**（`send_file_auto` / `send_group_file`）。
+  // 以前图片漏在这里：`retryable` 与 `retrySend` 都只排除 `file`，于是失败的图片被按
+  // 普通消息重发了一份 JSON 载荷 —— 里面那个 `path` 只在本机存在，对端收到的是
+  // "有名字没有字节"的一张图，而本机这条还转成绿色（假成功）。
+  const path = fileMeta.value?.path;
+  if (!path) return;
   try {
-    // 传 `msg.msg_id`：store 会把**这条 failed 气泡原地**转回 sending 再重发。
-    // 不传的话会新建一条乐观记录，而这条 failed 因为全库无删除路径 +
-    // `appendLocalOnly` 每次重开会话都重新追加 `tmp-*` ⇒ 界面上永远留两条一样的文字。
-    await chat.send(msg.conv_id, msg.content, msg.kind, undefined, msg.msg_id);
+    if (channel === "group-file") {
+      await chat.sendGroupFileTo(msg.conv_id.replace(/^group:/, ""), path);
+    } else {
+      await chat.sendFileTo(msg.conv_id, path);
+    }
+    // 这两条命令自己负责 toast（成功会由后端 emit 出新的气泡与进度；
+    // 与文本族不同，文件的一次重试是**新的一次传输**，所以旧那条失败行留在原地是事实，
+    // 不是重复消息 —— 台账与气泡都各说各的那一次尝试）。
   } catch {
-    // 失败状态已由 send() 内部处理（原地退回 failed）
+    // 发送入口内部已经报过错，这里不再重复提示
   }
 }
 
@@ -1335,7 +1375,7 @@ async function copyFileToClipboard() {
             :is-group="isGroup"
             :reader-ids="groupReaderIds"
             :msg-key="message.msg_id ?? message.id"
-            :retryable="message.kind !== 'file'"
+            :retryable="resendChannel !== null"
             @retry="retrySend"
           />
 
