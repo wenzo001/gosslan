@@ -156,6 +156,17 @@ pub const CONTENT_FEATURE_NUDGE: u32 = 1 << 6;
 /// 能力位：**能接收代码/文本消息的渲染切换（`kind=render`）**。
 pub const CONTENT_FEATURE_RENDER: u32 = 1 << 7;
 
+/// 能力位：**能处理 `FileCancel` 帧**（1:1 文件传输的取消通知）。
+///
+/// 为什么必须有这一位：取消这件事在协议上**没有别的表达方式** —— 今天
+/// `cancel_file_transfer` 只动本机（摘掉发送槽位、落台账、删 `.part`），
+/// 对端完全不知道，于是"我取消了，对面还在往我这儿发字节，直到 deadline 或队列判死"。
+/// 加了这一帧之后取消才是双向的；老端没声明 ⇒ 一条都不发，退回今天的行为
+/// （INV-P24 第 4 条"不门控不许发"；真发到老端也只是 `Message::Unknown`，第 1 条已保）。
+///
+/// 不复用 `CONTENT_FEATURE_PULL`：那位管"按 cid 再取一份字节"，与"别再发了"是两件事。
+pub const CONTENT_FEATURE_FILE_CANCEL: u32 = 1 << 8;
+
 /// 群历史一页的**条数**上限（服务端一页最多交几条消息）。
 /// 与下面那个字节上限同住 `protocol.rs`：一条页的预算只有一个家（INV-P23），
 /// 收发两侧都从这里取，不许在调用点各写一遍字面量。
@@ -179,6 +190,7 @@ pub fn content_features() -> u32 {
         | CONTENT_FEATURE_GROUP_FILE_RESUME
         | CONTENT_FEATURE_NUDGE
         | CONTENT_FEATURE_RENDER
+        | CONTENT_FEATURE_FILE_CANCEL
 }
 
 /// 「哪个 kind 需要对端具备哪一点能力」的**唯一**答案。`None` = V1 词表内、对所有对端安全。
@@ -1840,6 +1852,21 @@ pub enum Message {
     FileCompleteAck {
         transfer_id: String,
         success: bool,
+    },
+    /// 取消一条在途的 1:1 文件传输 —— **发送方与接收方都可以发**，收的一方据此立刻停手。
+    ///
+    /// 语义只有"这一单不再继续了"，没有别的载荷：两侧的终态都由各自的
+    /// `db::finalize_file_failure(Cancelled)` 落（`cancel_terminal` 墓碑是同一个出口写的，
+    /// 所以"对端取消"与"我取消"在台账上是同一格 INV-P26 的第二种来源，不需要两套状态）。
+    ///
+    /// 兼容：只在对方声明 `CONTENT_FEATURE_FILE_CANCEL` 时才发（INV-P24 第 4 条）；
+    /// 老端收到它只会 `Message::Unknown` 忽略、链路不动（第 1 条，v4.22.27 起已落地）。
+    /// 走 High 优先级（见 `network/dispatch.rs`）：这条帧的目的是**打断一条正占着队列的
+    /// 分片流**，排在 Low 就等于让自己等在要停的那批字节后面。
+    FileCancel {
+        transfer_id: String,
+        /// 发这帧的那一端（接收侧校验它确实等于当前对端，防串单）。
+        from: String,
     },
     // ---- 共享目录 ----
     ShareTreeRequest {

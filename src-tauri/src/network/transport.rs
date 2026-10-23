@@ -1260,7 +1260,10 @@ pub async fn handle_message(state: &Arc<AppState>, peer_id: &str, msg: Message) 
         | Message::FileReject { .. }
         | Message::FileCompleteAck { .. }
         | Message::FileChunk { .. }
-        | Message::FileDone { .. }) => handle_file_messages(state, peer_id, m).await,
+        | Message::FileDone { .. }
+        // 取消通知同属这一族（处理体在 `transport/handle_file.rs`）：它要动的是
+        // 这一族的接收器与发送槽位，别的族碰不到这些表。
+        | Message::FileCancel { .. }) => handle_file_messages(state, peer_id, m).await,
         Message::Gossip { envelope } => {
             handle_gossip(state, peer_id, envelope).await;
         }

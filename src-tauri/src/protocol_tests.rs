@@ -1322,6 +1322,56 @@ mod tests {
         );
     }
 
+    /// `FileCancel` 那一帧的三条底线（B3）：位要声明、bit 不许撞、线格式要能往返。
+    ///
+    /// 为什么这三条各测一件事：漏声明 = 这条帧永远发不出去（功能为零而门禁全绿）；
+    /// 撞了别人的 bit = 两个门控互相误开（编译器不报，只在现场表现为"老端收到了新帧"）；
+    /// 往返写错 = 对端解不出来，而它收到的是 `Message::Unknown` ⇒ **取消静默失效**，
+    /// 这一格最坏的形状就是"看起来发了"。
+    #[test]
+    fn file_cancel_frame_is_advertised_distinct_and_round_trips() {
+        assert_ne!(
+            content_features() & CONTENT_FEATURE_FILE_CANCEL,
+            0,
+            "声明了 FILE_CANCEL 门控却没 advertise ⇒ 取消永远通知不到对端，两边都静默"
+        );
+        // 新位必须独占一个 bit：撞车的表现是"两个门控互相误开"，编译器不会报
+        assert_eq!(
+            CONTENT_FEATURE_FILE_CANCEL
+                & (CONTENT_FEATURE_PULL
+                    | CONTENT_FEATURE_MERGE
+                    | CONTENT_FEATURE_FILE_EPOCH
+                    | CONTENT_FEATURE_FLEX_DM_KIND
+                    | CONTENT_FEATURE_GROUP_HISTORY
+                    | CONTENT_FEATURE_GROUP_FILE_RESUME
+                    | CONTENT_FEATURE_NUDGE
+                    | CONTENT_FEATURE_RENDER),
+            0,
+            "能力位撞车：FILE_CANCEL 复用了已经被占用的 bit"
+        );
+        let frame = Message::FileCancel {
+            transfer_id: "t-1".into(),
+            from: "dev-b".into(),
+        };
+        let json = serde_json::to_string(&frame).unwrap();
+        // 线上 tag 是 **snake_case**（`Message` 顶上带 `rename_all`）：这一格钉的就是这个字面量 ——
+        // 它是"对端认不认得"的唯一依据，改名/改大小写都会让老端把取消当成 Unknown，
+        // 而老端收到 Unknown 是**安静忽略**（INV-P24 第 1 条），所以这种漂移在现场只表现为
+        // "我取消了，对面还在发"，没有任何报错。
+        assert!(
+            json.contains("\"type\":\"file_cancel\""),
+            "线上帧名漂了（期望 tag=file_cancel）：{json}"
+        );
+        let back: Message = serde_json::from_str(&json).unwrap();
+        match back {
+            Message::FileCancel { transfer_id, from } => {
+                assert_eq!(transfer_id, "t-1");
+                assert_eq!(from, "dev-b");
+            }
+            other => panic!("往返之后帧变了形状：{other:?}"),
+        }
+    }
+
     // ---------------- #122：呈现层要能区分"同名的两个人" ----------------
     // 判定层早在 31eccbd 就绑了设备 id；剩下的这一半是**哪一段文字算谁**。
     // 用「第几次出现」而不是字符偏移：Rust 按字节、JS 按 UTF-16，偏移跨语言一定错

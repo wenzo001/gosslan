@@ -515,28 +515,15 @@ pub async fn flush_pending_files(state: &Arc<AppState>, peer_id: &str) {
     });
 }
 
-/// 用户手动取消一条**正在发送中**的文件消息（单聊/群聊共用这个入口）。
+/// 删除会话/好友之前，取消该 peer 所有仍在排队/传输中的**发送** transfer。
 ///
-/// 做三件事：
-/// 1. 从 `file_send_cancels` 取 sender send(()) —— send_file_from_path / dispatch_group_file_to_peer
-///    的 chunk loop 会 select! 到这个信号，cleanup + return "用户取消发送"。
-/// 2. DB 层：**面向用户的三笔写先做**（消息气泡 `file-` / `gfile-` → cancelled、
-///    传输台账 → cancelled），**最后**才把 `file_outbox` 行标 cancelled —— 那一步才是
-///    "把行踢出重试集合"的写，排前面会让前面任何一次失败都永久无人补（同 `fail_file_job`，
-///    判据自动扫全部收尾路径）。用户主动取消记 `cancelled`，不记 `failed`（INV-P26）。
-/// 3. 通知前端 emit `file-cancelled` + `message-status-changed`。
+/// 只改台账不够：`upsert_transfer` 允许 cancelled 被在途 attempt 写回 active ⇒
+/// 先按取消槽位的前缀点亮信号（[`file::signal_cancel_slots`]），再逐条走唯一终态出口。
+/// 注意：`file_sending`（spawn loop 里按 peer_id 存的 HashSet）不需要这里清 ——
+/// 那些循环读到取消信号后自己会走到下一条或退出。
 ///
-/// 如果这一单没有匹配的在途投递任务（排队中、或任务已经退出），取消**照样成立**：
-/// 落库与 emit 都照做 —— 用户按了取消，界面必须立刻响应。返回值说的是台账，不是内存。
-/// 已经 `done` 的传输行不会被改成"已取消"（INV-P26 的闸门 + `cancel_terminal` 墓碑的反面：
-/// 墓碑只挡"取消之后再被写回 active/done"，`done` 闸门挡"取消把已收完的降级"）。
-///
-/// 注意：file_sending（spawn loop 里按 peer_id 存的 HashSet）不需要我们清 ——
-/// spawn loop 收到 cancel 信号后会自己走到下一条或清掉。
-/// 删除会话/好友前取消该 peer 所有仍在排队/传输中的**发送** transfer。
-///
-/// 只改台账不够：`upsert_transfer` 允许 cancelled 被在途 attempt 写回 active；
-/// 先按 `file_send_cancels` 的键发取消信号，再逐条走唯一终态出口。
+/// 与用户点取消的差别只有一处：**不给对端发 `FileCancel` 帧**。删好友/删会话这件事
+/// 对方是从"关系没了"那一侧知道的（friend 撤销帧），这里再补一帧只会打进一条已经不存在的链路。
 pub(crate) fn cancel_send_transfers_for_peer(s: &AppState, peer_id: &str) {
     let ids = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -545,24 +532,8 @@ pub(crate) fn cancel_send_transfers_for_peer(s: &AppState, peer_id: &str) {
     if ids.is_empty() {
         return;
     }
-    {
-        let mut cancels = s
-            .file_send_cancels
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        for id in &ids {
-            let prefix = file::file_cancel_prefix(id);
-            let keys: Vec<String> = cancels
-                .keys()
-                .filter(|k| k.starts_with(prefix.as_str()))
-                .cloned()
-                .collect();
-            for k in keys {
-                if let Some(tx) = cancels.remove(&k) {
-                    let _ = tx.send(());
-                }
-            }
-        }
+    for id in &ids {
+        file::signal_cancel_slots(s, id);
     }
     let cancelled = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -594,34 +565,35 @@ pub struct FileCancelResult {
     pub already_done: bool,
 }
 
-#[tauri::command(async)]
-pub async fn cancel_file_transfer(
-    state: State<'_, Arc<AppState>>,
-    transfer_id: String,
-) -> Result<FileCancelResult, String> {
-    let s = state.inner();
-
+/// 「本机把这一单按已取消收尾」的**唯一**入口（B3）。
+///
+/// 两个调用方，语义是同一件事——"这一单不再继续了"：
+///  · [`cancel_file_transfer`] —— 用户点了取消（`by = "user"`）；
+///  · `transport::handle_file` 的 `FileCancel` 臂 —— **对端**取消了并通知我（`by = "peer"`）。
+/// 共用这一条是刻意的：两条路径落的是同一格终态（INV-P26 里"取消"这一档的第二种来源），
+/// 谁都不许自己再抄一份收尾；`by` 只进日志，不新增状态、不新增列。
+///
+/// 做五件事（顺序是文档化的，别重排）：
+///
+/// 1. 点亮 `file_send_cancels` 里这一单的所有在途槽位 —— send_file_from_path /
+///    dispatch_group_file_to_peer 的 chunk loop 会 select! 到它，走 Cancelled 那条出口。
+/// 2. 接收侧先停手（摘接收器 + 删 `.part`，见 B3a）。
+/// 3. DB 层：**面向用户的写先做、把行踢出重试集合的写最后做**（同 `fail_file_job` 的顺序纪律，
+///    判据自动扫全部收尾路径）；取消记 `cancelled`，不记 `failed`（INV-P26）。
+///    已经 `done` 的行不会被降级（`done` 闸门），盖了墓碑的行不会被写回 active/done。
+/// 4. 群文件：本机是发送方时按成员落 `cancelled`（B2）。
+/// 5. 通知前端 emit `file-cancelled` + `message-status-changed`。
+///
+/// 如果这一单没有匹配的在途投递任务（排队中、或任务已经退出），取消**照样成立**：
+/// 落库与 emit 都照做 —— 用户按了取消，界面必须立刻响应。返回值说的是台账，不是内存。
+pub(crate) async fn apply_local_cancel(
+    s: &Arc<AppState>,
+    transfer_id: &str,
+    by: &str,
+) -> FileCancelResult {
     // 1. 发 cancel 信号 —— 一个 transfer_id 可能对应**多条**在途流（群文件是每个成员一条，
     //    登记键见 `file::file_cancel_key`），必须按前缀全部命中，不能只拿一条。
-    let signalled = {
-        let mut cancels = s
-            .file_send_cancels
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let prefix = file::file_cancel_prefix(&transfer_id);
-        let keys: Vec<String> = cancels
-            .keys()
-            .filter(|k| k.starts_with(prefix.as_str()))
-            .cloned()
-            .collect();
-        let matched = !keys.is_empty();
-        for k in keys {
-            if let Some(tx) = cancels.remove(&k) {
-                let _ = tx.send(());
-            }
-        }
-        matched
-    };
+    let signalled = file::signal_cancel_slots(s, transfer_id) > 0;
 
     // 2. DB 层：单聊 outbox + 消息状态 + transfer
     //    群文件不走 file_outbox（走 group_files 表），但我们仍然 mark cancelled ——
@@ -638,12 +610,12 @@ pub async fn cancel_file_transfer(
     // 群文件的接收侧不在这里（它有自己的接收器表与气泡，随 B3 的 Cancel 帧一起做）。
     let is_receive = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::get_transfer_direction(&dbc, &transfer_id).as_deref() == Some("receive")
+        db::get_transfer_route(&dbc, transfer_id).is_some_and(|(d, _)| d == "receive")
     };
     let receive_stopped = if is_receive {
         // 删文件 + 落内容状态都是阻塞活 ⇒ 挪出 tokio worker（INV-P34，与 `get_transfers` 同形）
         let s2 = s.clone();
-        let tid = transfer_id.clone();
+        let tid = transfer_id.to_string();
         match tokio::task::spawn_blocking(move || file::cancel_receive(&s2, &tid)).await {
             Ok(stopped) => stopped,
             Err(e) => {
@@ -662,7 +634,7 @@ pub async fn cancel_file_transfer(
     // 所以这一读的用途只有"给界面说实话"，不参与任何写序（写在后面，破坏性写仍在最后）。
     let already_done = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::is_transfer_done(&dbc, &transfer_id).unwrap_or(false)
+        db::is_transfer_done(&dbc, transfer_id).unwrap_or(false)
     };
     {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
@@ -671,7 +643,7 @@ pub async fn cancel_file_transfer(
         // 而超时/放弃只代表"某一个收件人没收到"，不该改写群气泡（见
         // `db::finalize_file_failure` 与 `expired_file_does_not_touch_the_group_bubble`）。
         // 取消一律照实响应：不看返回值、emit 也不被门控。
-        let _ = db::finalize_file_failure(&dbc, &transfer_id, db::FileJobEnd::Cancelled);
+        let _ = db::finalize_file_failure(&dbc, transfer_id, db::FileJobEnd::Cancelled);
     }
 
     // 2b. 群文件（B2）：用户取消的是**整条消息** ⇒ 每个还没到终态的成员都要落 cancelled。
@@ -686,13 +658,13 @@ pub async fn cancel_file_transfer(
     // 取消它属于接收侧协议（B3 的 Cancel 帧），不在这一批。
     let cancelled_recipients = {
         let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
-        let mine = db::get_group_file(&dbc, &transfer_id)
+        let mine = db::get_group_file(&dbc, transfer_id)
             .map(|f| f.sender_id == s.device_id)
             .unwrap_or(false);
         if mine {
-            let rows = db::cancel_group_file_recipients(&dbc, &transfer_id).unwrap_or(0);
+            let rows = db::cancel_group_file_recipients(&dbc, transfer_id).unwrap_or(0);
             // 单条群文件的聚合行也要落 cancelled（`group_files.status` 是气泡与摘要的入口）。
-            db::mark_group_file_cancelled(&dbc, &transfer_id).unwrap_or(0);
+            db::mark_group_file_cancelled(&dbc, transfer_id).unwrap_or(0);
             rows
         } else {
             0
@@ -711,14 +683,79 @@ pub async fn cancel_file_transfer(
     s.logger.info(
         "file",
         format!(
-            "用户取消文件传输 transfer={transfer_id} (cancel_signal={signalled} already_done={already_done} group_recipients_cancelled={cancelled_recipients} receive_stopped={receive_stopped})"
+            "文件传输按已取消收尾 transfer={transfer_id} by={by} (cancel_signal={signalled} already_done={already_done} group_recipients_cancelled={cancelled_recipients} receive_stopped={receive_stopped})"
         ),
     );
 
-    Ok(FileCancelResult {
+    FileCancelResult {
         cancelled: !already_done,
         already_done,
-    })
+    }
+}
+
+/// 用户手动取消一条**没传完**的文件（1:1 与群文件共用这个入口；发送中与接收中都算）。
+///
+/// 本机收尾走 [`apply_local_cancel`]，然后把"取消"这件事**告诉对端**（B3）：
+/// 只在对端声明了 `CONTENT_FEATURE_FILE_CANCEL` 时才发（INV-P24 第 4 条），
+/// 老端不发这条帧 ⇒ 它那边的行为与今天完全一致（会继续发/收，直到自己的 deadline）。
+#[tauri::command(async)]
+pub async fn cancel_file_transfer(
+    state: State<'_, Arc<AppState>>,
+    transfer_id: String,
+) -> Result<FileCancelResult, String> {
+    let s = state.inner();
+    let res = apply_local_cancel(s, &transfer_id, "user").await;
+    notify_peer_file_cancel(s, &transfer_id).await;
+    Ok(res)
+}
+
+/// 取消的**通知**那一半：查方向与对端，声明过能力位才发 `FileCancel`。
+///
+/// 方向决定"该不该发"，不决定"发给谁"——两种方向的 `peer_id` 都是对面那台设备：
+///  · `send`   —— 我是发送方：告诉接收方"别再往我这儿收了，`.part` 我会删"；
+///  · `receive`—— 我是接收方：告诉发送方"停手，不用再发分片了"。
+/// 读不到台账行（没记过账的单）就什么都不发 —— 宁可不通知，也不能发给一个猜出来的对端。
+/// 发送失败（离线/队列满）**不回滚取消**：本机已经停了手，通知只是让对方也早点知道，
+/// 对方自己有 deadline 与队列判死兜着，不会因此永远传下去。
+async fn notify_peer_file_cancel(s: &Arc<AppState>, transfer_id: &str) {
+    let route = {
+        let dbc = s.db.lock().unwrap_or_else(|e| e.into_inner());
+        db::get_transfer_route(&dbc, transfer_id)
+    };
+    // 没记过账的单不通知：宁可不发，也不要发给一个猜出来的对端。
+    let Some((direction, peer_id)) = route else { return };
+    // 这里不看 direction——两个方向都要通知。留着它是让日志说得清"我是哪一侧"。
+    let declared = s
+        .peer_content_features
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&peer_id)
+        .is_some_and(|f| f & crate::protocol::CONTENT_FEATURE_FILE_CANCEL != 0);
+    if !declared {
+        s.logger.info(
+            "file",
+            format!(
+                "取消不通知对端 transfer={transfer_id} dir={direction} peer={peer_id}（对端未声明 FILE_CANCEL ⇒ 它自己会走到 deadline）"
+            ),
+        );
+        return;
+    }
+    let msg = Message::FileCancel {
+        transfer_id: transfer_id.to_string(),
+        from: s.device_id.clone(),
+    };
+    match try_send(s, &peer_id, &msg).await {
+        Ok(()) => s.logger.info(
+            "file",
+            format!("已通知对端取消 transfer={transfer_id} dir={direction} peer={peer_id}"),
+        ),
+        Err(e) => s.logger.warn(
+            "file",
+            format!(
+                "通知对端取消没送出去 transfer={transfer_id} dir={direction} peer={peer_id}：{e}（本机取消已成立）"
+            ),
+        ),
+    }
 }
 
 /// 请对端**按 cid 再发一份**内容（ADR-0019 Phase 3「点击重取」）。

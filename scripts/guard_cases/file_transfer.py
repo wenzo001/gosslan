@@ -452,7 +452,7 @@ CASES: list[Case] = [
         "     ⚠️ 反向也要成立：`mark_queued_transfer_failed`（自动判死）那边仍写 failed —— 两个口径不许合并。",
         file=TAURI / "src" / "commands" / "files.rs",
         injections=[(
-            "db::finalize_file_failure(&dbc, &transfer_id, db::FileJobEnd::Cancelled);",
+            "db::finalize_file_failure(&dbc, transfer_id, db::FileJobEnd::Cancelled);",
             "db::finalize_file_failure(&dbc, &transfer_id, db::FileJobEnd::Expired);",
         )],
         cmd=cargo("test", "--lib", "a_user_cancel_is_not_recorded_as_a_failure"),
@@ -907,4 +907,74 @@ CASES: list[Case] = [
         cwd=TAURI,
         expect_fail_hint="不门控就等于对老端发新语义",
         tags=["rust", "file", "stability", "new-guards", "file-epoch"],
-    ),]
+    ),
+    # ---- B3：`FileCancel` 帧（取消要真的通知到对端）----
+    # 这一族每格都只改**一处**，且改完必须还能编译 —— 让编译当「失败」是把量具坏了当成产品坏了。
+    # ⚠️ 这里刻意**没有**「分发臂列了而分册没接」那一格：那条坏法只能靠
+    # `dispatch_arms_and_volume_arms_agree` 的**计数**去抓，而"把分册那条臂删掉"或
+    # "把模式改成 `_`"都会先撞上编译器（臂体里的 `transfer_id`/`from` 失去绑定 ⇒ E0425），
+    # 于是变异只会得到一条编译错误，而不是一次断言红 —— 那种 Case 证明不了判据会失败，
+    # 本仓不写。位置/接线那两格仍由 `lib_file_tests.rs` 的形状用例守着（它们能红，见 B3 那两条）。
+    Case(
+        name="对端取消的臂体里自己抄一份收尾（emit 出现第二个家）",
+        why="`FileCancel` 与用户点取消在语义上是同一件事 ⇒ 收尾只许有一个家"
+        "（`commands::apply_local_cancel`）。\n"
+        "     注入方式：在臂里额外补一次 emit —— 功能上「多通知一次」看起来无害，"
+        "实际是同一件事两处各写一遍，下一处改事件名的人只会改到其中一边。\n"
+        "     形状守卫按**臂体**取窗口，所以整册里别的臂的 emit 不算违规。",
+        file=TAURI / "src" / "network" / "transport" / "handle_file.rs",
+        injections=[(
+            """            let res = crate::commands::apply_local_cancel(state, &transfer_id, "peer").await;""",
+            """            let res = crate::commands::apply_local_cancel(state, &transfer_id, "peer").await;
+            let _ = state.app.emit("file-cancelled", &transfer_id);""",
+        )],
+        cmd=cargo("test", "--lib", "file_cancel_and_user_cancel_share_one_local_home"),
+        cwd=TAURI,
+        expect_fail_hint="不许出现 app.emit",
+        tags=["rust", "network", "file", "terminal-state", "new-guards", "file-cancel"],
+    ),
+    Case(
+        name="取消通知不门控能力位就对老端发新帧",
+        why="INV-P24 第 4 条：新帧必须先按对端声明门控。老端虽然会把未知 tag 折成 `Unknown` 忽略，"
+        "但那是**依赖对方解析器形状**的赌注；门控之后兼容面回到「不发」这一确定状态。\n"
+        "     注入方式：把 `if !declared` 短路成 `if false`（最自然的「简化」：看着像多余的判断）。",
+        file=TAURI / "src" / "commands" / "files.rs",
+        injections=[("    if !declared {", "    if false {")],
+        cmd=cargo("test", "--lib", "file_cancel_notice_is_gated_and_never_blocks_the_local_cancel"),
+        cwd=TAURI,
+        expect_fail_hint="对端没声明时必须直接 return",
+        tags=["rust", "file", "stability", "new-guards", "file-cancel"],
+    ),
+    Case(
+        name="FILE_CANCEL 忘了 advertise ⇒ 取消永远通知不到对端而门禁全绿",
+        why="门控读的是「对端声明过的位图」，而本机自己声明的那一份在 `content_features()` 里。\n"
+        "     漏了这一处时两侧都拿不到这一位 ⇒ 这条帧永远不会发出去，"
+        "而编译、单测、界面**一字不变地全绿**（功能为零的形状）。\n"
+        "     注入方式：从 `content_features()` 的并集里摘掉那一项。",
+        file=TAURI / "src" / "protocol.rs",
+        injections=[(
+            "        | CONTENT_FEATURE_RENDER\n        | CONTENT_FEATURE_FILE_CANCEL\n}",
+            "        | CONTENT_FEATURE_RENDER\n}",
+        )],
+        cmd=cargo("test", "--lib", "file_cancel_frame_is_advertised_distinct_and_round_trips"),
+        cwd=TAURI,
+        expect_fail_hint="声明了 FILE_CANCEL 门控却没 advertise",
+        tags=["rust", "protocol", "file", "new-guards", "file-cancel"],
+    ),
+    Case(
+        name="FileCancel 留在普通档 ⇒ 排在它要打断的那批分片后面",
+        why="链路的 Low 队列能装 1024 槽，一个 1MB 文件一秒内就全部入队 ⇒"
+        "取消帧若不在 High，它排在**自己要不要停掉的那些字节之后**，症状仍是「对面还在发」。\n"
+        "     注入方式：把分发表 High 那一组里的 `| Message::FileCancel { .. }` 摘掉"
+        "（落到 `_ => Normal`，编译照过）。",
+        file=TAURI / "src" / "network" / "dispatch.rs",
+        injections=[(
+            "        | Message::FileCancel { .. }\n",
+            "",
+        )],
+        cmd=cargo("test", "--lib", "file_cancel_outranks_the_chunk_stream_it_stops"),
+        cwd=TAURI,
+        expect_fail_hint="FileCancel 必须钉在 High",
+        tags=["rust", "network", "file", "stability", "new-guards", "file-cancel"],
+    ),
+]

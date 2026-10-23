@@ -58,15 +58,18 @@ pub fn get_transfer_path(conn: &Connection, id: &str) -> Option<String> {
     .flatten()
 }
 
-/// 这一单在本机台账里的方向（`send` / `receive`）。
+/// 这一单在本机台账里的**方向 + 对端**（`send` / `receive`，对端 = 那条 `peer_id`）。
 ///
-/// 取消入口按它分派（B3a）：接收中的那一单没有"在途发送任务"可以通知，取消的含义是
-/// "本机停手 + 别再出现在进行中"，而不是"给对端发信号"。读不到行 = 不是本机记过账的单。
-pub fn get_transfer_direction(conn: &Connection, id: &str) -> Option<String> {
+/// 取消入口按它分派（B3a/B3）：
+///  · 接收中的那一单没有"在途发送任务"可通知，取消的含义是"本机停手"；
+///  · 要不要给对端发 `FileCancel`、发给谁，也只看这两个字段 —— 所以它们必须一次读回来，
+///    分两次读就有"方向是 send、对端却是另一单"的窗口（`peer_id` 与 `direction` 同一行）。
+/// 读不到行 = 不是本机记过账的单（取消照样落台账，只是没地方发通知）。
+pub fn get_transfer_route(conn: &Connection, id: &str) -> Option<(String, String)> {
     conn.query_row(
-        "SELECT direction FROM file_transfers WHERE id = ?1",
+        "SELECT direction, peer_id FROM file_transfers WHERE id = ?1",
         params![id],
-        |r| r.get(0),
+        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
     )
     .optional()
     .ok()

@@ -531,6 +531,7 @@ network::discovery::tests::vgate0_never_selected_as_bind_address
 network::dispatch::tests::ack_is_high_priority
 network::dispatch::tests::ble_yield_fragments_allows_preemption
 network::dispatch::tests::chat_message_is_normal_priority
+network::dispatch::tests::file_cancel_outranks_the_chunk_stream_it_stops
 network::dispatch::tests::file_chunk_is_low_priority
 network::dispatch::tests::file_offer_is_normal_priority
 network::dispatch::tests::high_priority_preempts_low
@@ -870,6 +871,7 @@ protocol::tests::encode_decode_are_inverse_for_the_default_group_text_case
 protocol::tests::envelope_encrypted_flag_roundtrip
 protocol::tests::every_dm_gated_kind_is_advertised_by_us
 protocol::tests::every_gated_kind_is_advertised_by_us
+protocol::tests::file_cancel_frame_is_advertised_distinct_and_round_trips
 protocol::tests::file_epoch_feature_is_advertised
 protocol::tests::file_frame_attempt_field_is_wire_compatible_both_ways
 protocol::tests::friend_request_envelope_encrypt_sign_decrypt_and_target_integrity
@@ -978,6 +980,9 @@ tests::every_friend_request_path_notifies_only_on_first_sighting
 tests::external_link_cleanup_rejects_paths_outside_exports
 tests::external_link_rejects_non_http_schemes
 tests::file_attempt_epoch_is_wired_on_both_sides
+tests::file_cancel_and_user_cancel_share_one_local_home
+tests::file_cancel_frame_is_routed_and_not_after_the_catch_all
+tests::file_cancel_notice_is_gated_and_never_blocks_the_local_cancel
 tests::file_send_progress_counts_wire_not_queue
 tests::frame_reader_does_not_preallocate_the_declared_length
 tests::friend_identity_anchor_has_one_binding_rule

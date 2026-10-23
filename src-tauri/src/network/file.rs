@@ -208,6 +208,36 @@ pub(crate) fn install_cancel_slot<'a>(
 /// Ok 与 Err，两处口径必须一致，否则"循环里判取消、循环外判不取消"就是同一件事两个家。
 /// 真取消的入口（`cancel_file_transfer` / `cancel_send_transfers_for_peer`）都是
 /// 先 `send(())` 再 drop ⇒ 走 `Ok(())` 那一格。
+/// 点亮某一单**所有**仍在途的取消槽位，返回点亮的格数。
+///
+/// 一个 `transfer_id` 可以对应多条流（群文件是每个收件人一条，登记键见
+/// [`file_cancel_key`]），所以必须按前缀全取、不能只拿一条。
+///
+/// 摘掉再 send 是刻意的：sender 用掉之后就失效了，留在表里只会让下一次 `install` 覆盖它，
+/// 而"下一轮 attempt 一进门就读到上一轮留下的取消"正是这个映射最坏的错法。
+///
+/// 谁调用：**用户点取消**（`commands::cancel_file_transfer`）与**对端发来的 `FileCancel` 帧**
+/// （`transport::handle_file`）—— 两件事在协议上是同一个语义："这一单不再继续了"，
+/// 所以走同一个入口、落同一个终态；`by` 只进日志，不新增状态。
+pub fn signal_cancel_slots(state: &AppState, transfer_id: &str) -> usize {
+    let mut cancels = state
+        .file_send_cancels
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let prefix = file_cancel_prefix(transfer_id);
+    let keys: Vec<String> = cancels
+        .keys()
+        .filter(|k| k.starts_with(prefix.as_str()))
+        .cloned()
+        .collect();
+    for k in &keys {
+        if let Some(tx) = cancels.remove(k) {
+            let _ = tx.send(());
+        }
+    }
+    keys.len()
+}
+
 pub(crate) fn cancel_requested(rx: &mut tokio::sync::oneshot::Receiver<()>) -> bool {
     match rx.try_recv() {
         Ok(()) | Err(tokio::sync::oneshot::error::TryRecvError::Closed) => true,

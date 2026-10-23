@@ -838,3 +838,123 @@ fn group_receive_finalize_writes_three_ledgers_in_one_transaction_with_logged_fa
         .expect("事务失败的补写不许被删（删 ⇒ 事务一失败就永不收口，气泡停在中间态）");
     assert!(warn_at < fb_at, "补写必须在 warn 之后、Err 分支之内");
 }
+
+// ---------------- B3：`FileCancel` 帧（对端真的知道这一单不再继续了） ----------------
+//
+// 这一族三格各管一件事，缺任何一件都会有一种**静默**的坏法：
+//  · 漏路由 ⇒ 帧被 transport.rs 的 match 丢掉，编译照过、现场"我取消了，对面还在发"；
+//  · 处理臂排在 `_ => {}` 之后 ⇒ 死代码，症状与漏路由一模一样；
+//  · 臂体里自己抄一份收尾 ⇒ 两处口径迟早漂移（这正是 B1 之前那四行墓碑注释撒谎的形状）。
+
+/// 路由与位置：新帧必须被 **接住**，而且接它的那条臂必须在 catch-all 之前。
+///
+/// 两次失败形状长得分不开：分发臂漏了它 ⇒ 帧在 transport 就被丢；分册漏了它 ⇒
+/// 帧掉进这册末尾的 `_ => {}` 静默丢弃。两种都编译照过、都表现为"我取消了，对面还在发"。
+#[test]
+fn file_cancel_frame_is_routed_and_not_after_the_catch_all() {
+    let transport = code_flat(&crate::network::transport_src_for_guards());
+    assert!(
+        transport.contains("Message::FileCancel{..})=>handle_file_messages"),
+        "FileCancel 没进 transport 的路由表 ⇒ 它在那层就被丢掉（假绿，不是假红 —— 更危险的那种）"
+    );
+    // 只在**函数体内**比位置：本册文件头那段说明里就写着 `_ => {}`，
+    // 拿整份文件去找第一个 catch-all 会落在注释上（判据自己骗自己，实测就这么红的）。
+    let body = rust_fn_body(
+        include_str!("network/transport/handle_file.rs"),
+        "async fn handle_file_messages(",
+    );
+    let arm_at = body
+        .find("Message::FileCancel { transfer_id, from } =>")
+        .expect("handle_file 里没有 FileCancel 的处理臂 ⇒ 这一帧今天没人接");
+    // `rfind` 而不是 `find`：函数体**开头**那两行说明里就写着 `_ => {}`
+    // （"这层 match 的 `_ => {}` 不是吞消息"），`find` 会先撞上注释、把位置判据倒过来。
+    // 外层那条 catch-all 恒在末尾 ⇒ 取最后一次出现才是它。
+    let catch_at = body
+        .rfind("_ => {}")
+        .expect("这册的 catch-all 不见了 ⇒ 本测试的锚点失效（位置判据没有作用点了）");
+    assert!(
+        arm_at < catch_at,
+        "处理臂排在 catch-all 之后就是死代码：症状与漏路由完全一样（取消静默失效）"
+    );
+}
+
+/// 收尾只有一个家：对端取消与用户取消共用 `apply_local_cancel`，臂体里不许再抄一份。
+#[test]
+fn file_cancel_and_user_cancel_share_one_local_home() {
+    let cmds = all_commands_src();
+    assert_eq!(
+        cmds.matches("pub(crate) async fn apply_local_cancel(").count(),
+        1,
+        "「本机按已取消收尾」必须只有一个家（第二个家就是下一处口径漂移的起点）"
+    );
+    let body = rust_fn_body(
+        include_str!("network/transport/handle_file.rs"),
+        "async fn handle_file_messages(",
+    );
+    let arm_at = body
+        .find("Message::FileCancel { transfer_id, from } =>")
+        .expect("处理臂不见了 ⇒ 本测试的锚点失效");
+    let catch_at = body.rfind("_ => {}").expect("catch-all 不见了 ⇒ 锚点失效");
+    // 只取**这一条臂**：整册里别的臂本来就要 emit，拿整册当作用点会把它当成违规。
+    let arm = &body[arm_at..catch_at];
+    assert!(
+        arm.contains("crate::commands::apply_local_cancel(state, &transfer_id, \"peer\")"),
+        "对端取消必须复用同一个收尾入口；`by` 只进日志，不新增状态、不新增列"
+    );
+    // ⚠️ 第三个 needle 刻意写成 `app.emit`（不带左引号）：`src/api/events` 那条
+    // "每个后端事件都要有前端消费者"的守卫会从 Rust 源码里抠 `emit("…"` 的形状，
+    // 测试里写一个**没有收尾引号**的 `emit("` 会让它把后面几百行当成一个事件名
+    // （实测报出的"事件"是一段源码）。判据文本自己不能把别人的量具带偏。
+    for forbidden in ["finalize_file_failure(", "mark_file_outbox_", "app.emit"] {
+        assert!(
+            !arm.contains(forbidden),
+            "FileCancel 这条臂里不许出现 {forbidden}：终态与 emit 都属于那一个家，两处各写一遍就是漂移"
+        );
+    }
+    // 取消槽位的直接读写也只有一个家（`signal_cancel_slots` / 登记 / 守卫回收三处都在 file.rs）。
+    // 数的是**读写点**而不是名字：needle 带着 `.lock()`，注释里那句"点亮 `file_send_cancels`"
+    // 不会被误数成一次读写（现成的 `code_flat` 只剥空白，够用）。
+    assert_eq!(
+        code_flat(&crate::network::file_src_for_guards())
+            .matches(".file_send_cancels.lock()")
+            .count(),
+        3,
+        "槽位的登记 / 点亮 / 回收必须在同一个文件里（现算三处）；多出来的那处就是第二个家"
+    );
+    assert_eq!(
+        code_flat(&cmds).matches(".file_send_cancels.lock()").count(),
+        0,
+        "命令层不许再自己扫这张表：点亮槽位只走 `file::signal_cancel_slots`"
+    );
+}
+
+/// 通知那一半：门控必须存在，而且它**不许挡住**本机自己的收尾。
+#[test]
+fn file_cancel_notice_is_gated_and_never_blocks_the_local_cancel() {
+    let cmds = all_commands_src();
+    let notify = rust_fn_body(&cmds, "async fn notify_peer_file_cancel(");
+    assert!(
+        notify.contains("CONTENT_FEATURE_FILE_CANCEL"),
+        "发 FileCancel 之前必须看对端能力位（INV-P24 第 4 条：不门控不许发）"
+    );
+    assert!(
+        notify.contains("if !declared") && notify.contains('{'),
+        "对端没声明时必须直接 return（老端的降级是「不发这条帧」，不是报错）"
+    );
+    assert!(
+        notify.contains("let Some((direction, peer_id)) = route"),
+        "没记过账的单不许通知：发给一个猜出来的对端比不发更糟"
+    );
+    // 顺序判据：先落本机终态，再发通知 —— 反过来就是"通知的 await 挡住了取消的响应"
+    let body = rust_fn_body(&cmds, "pub async fn cancel_file_transfer(");
+    let cancel_at = body
+        .find("apply_local_cancel(s, &transfer_id, \"user\")")
+        .expect("取消命令必须调用本机收尾那个家");
+    let notify_at = body
+        .find("notify_peer_file_cancel(s, &transfer_id)")
+        .expect("取消命令必须通知对端（声明过能力位的话）");
+    assert!(
+        cancel_at < notify_at,
+        "本机收尾必须先于通知：取消的界面响应不能等一次网络 await"
+    );
+}

@@ -751,9 +751,13 @@ fn terminal_status_writes_have_one_home() {
 #[test]
 fn a_user_cancel_is_not_recorded_as_a_failure() {
     let files = include_str!("../commands/files.rs");
+    // 锚点跟着 B3 搬家：命令体已经抽成唯一入口 `apply_local_cancel`
+    // （对端的 `FileCancel` 帧也走这一个家），所以"取消不许记成失败"这条口径
+    // 现在钉在那个家上，而不是钉在 IPC 包装层上 —— 判据要盯的是**写库那一处**，
+    // 不是谁调它。（盯包装层的话，第二个入口就可以绕过它。）
     let at = files
-        .find("pub async fn cancel_file_transfer(")
-        .expect("cancel_file_transfer 不见了 ⇒ 本测试的锚点失效");
+        .find("pub(crate) async fn apply_local_cancel(")
+        .expect("apply_local_cancel 不见了 ⇒ 本测试的锚点失效");
     let tail = &files[at..];
     let stop = tail
         .find("pub ")
