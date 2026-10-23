@@ -1024,3 +1024,32 @@ fn group_file_cancel_is_routed_handled_and_scoped_per_recipient() {
         "接收方那一侧必须停掉自己的接收器（否则界面说取消了、`.part` 还在写）"
     );
 }
+
+/// 取消结果里那个 `notifiedPeer` 必须是**真事实**，不是常量（B3 的界面口径）。
+///
+/// 为什么这条值得单独钉：界面靠它决定说"已取消"还是"仅本机已取消"。如果它恒为 false，
+/// 用户永远看不到"已取消"（功能看起来坏了）；恒为 true 则又说满了（老端还在传）。
+/// 三处必须连成一条链：`send_cancel_notice` 返回 bool → 命令把它回填 → 结构体带 camelCase 字段。
+#[test]
+fn file_cancel_reports_whether_the_peer_was_actually_notified() {
+    let cmds = all_commands_src();
+    assert!(
+        cmds.contains("pub notified_peer: bool"),
+        "FileCancelResult 必须带 notified_peer 这一格（界面据此选文案）"
+    );
+    let cmd = rust_fn_body(&cmds, "pub async fn cancel_file_transfer(");
+    assert!(
+        cmd.contains("res.notified_peer = send_cancel_notice(s, &transfer_id, notice).await"),
+        "命令必须把通知那半的结论回填到结果里；写死一个常量就是界面在猜"
+    );
+    let notice = rust_fn_body(&cmds, "async fn send_cancel_notice(");
+    assert!(
+        notice.contains("-> bool"),
+        "send_cancel_notice 必须回报「有没有真的发出去」"
+    );
+    // 三个分支都要有结论：没台账/未声明/发送失败 ⇒ false；发成功 ⇒ true。
+    assert!(
+        notice.matches("return false").count() >= 1 && notice.matches("true").count() >= 2,
+        "分支结论缺了：至少要有「不通知 ⇒ false」与「发成功 ⇒ true」两处"
+    );
+}

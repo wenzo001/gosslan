@@ -14,6 +14,7 @@ import {
 } from "@/utils/taskCenter";
 import { aggregateTransferProgress, clampProgress } from "@/utils/transferSummary";
 import { blockedReasonKey } from "@/utils/transferState";
+import { cancelOutcome } from "@/utils/cancelFeedback";
 import { storageGet, storageSet } from "@/utils/safeStorage";
 import {
   PILL_CORNER_KEY,
@@ -126,12 +127,18 @@ async function runAction(row: OperationRow, action: OperationAction) {
 async function cancelFile(row: OperationRow) {
   const res = await api.cancelFileTransfer(row.id);
   await chat.refreshTransfers();
-  // 「已经传完无法取消」复用气泡那句 `msg.cancelSend.alreadyDone`：同一个事实同一句话，
-  // 不为面板再造一条只差主语的近义文案。
-  app.toast(
-    t(res.alreadyDone ? "msg.cancelSend.alreadyDone" : "task.cancelDone"),
-    res.alreadyDone ? "info" : "success",
-  );
+  // 三个分支的唯一判据在 `utils/cancelFeedback`（同一个事实同一句话，不在这里另推一遍）。
+  switch (cancelOutcome(res)) {
+    case "already_done":
+      app.toast(t("msg.cancelSend.alreadyDone"), "info");
+      break;
+    case "local_only":
+      // 对面没收到通知（老端 / 离线）⇒ 它可能仍在继续：界面不许说得比事实更满。
+      app.toast(t("transfer.cancelLocalOnly"), "info");
+      break;
+    default:
+      app.toast(t("task.cancelDone"), "success");
+  }
 }
 
 /**

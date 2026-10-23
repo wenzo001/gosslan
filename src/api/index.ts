@@ -317,7 +317,7 @@ export const api = {
 
   /** 取消一条文件传输：返回的是**台账**口径（这一单现在算不算被取消），不是"有没有命中在途任务"。 */
   cancelFileTransfer: (transferId: string) =>
-    invoke<{ cancelled: boolean; alreadyDone: boolean }>("cancel_file_transfer", { transferId }),
+    invoke<{ cancelled: boolean; alreadyDone: boolean; notifiedPeer: boolean }>("cancel_file_transfer", { transferId }),
   sendFileAuto: (friendId: string, path: string) =>
     invoke<string>("send_file_auto", { friendId, path }),
   sendGroupFile: (groupId: string, path: string) =>

@@ -1144,6 +1144,7 @@ export const enUS: MessageDict = {
   "transfer.blocked.waitingAck": "Sent to the peer, waiting for their acknowledgement",
   "transfer.blocked.queuedByBackend": "Queued on this device, it will continue on its own",
   "transfer.blocked.noSource": "No device holding this content is reachable right now",
+  "transfer.cancelLocalOnly": "Cancelled on this device (the sender may still be transferring if their build is older or offline)",
   "send.unknownState": "Unknown state. You can resend it.",
   "msg.cleaned": "Cleaned up",
   "media.tooLarge": "Too large to preview",

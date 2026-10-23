@@ -1178,6 +1178,7 @@ export const zhCN: MessageDict = {
   "transfer.blocked.waitingAck": "已经发到对方那儿，等对方确认",
   "transfer.blocked.queuedByBackend": "在本机队列里排着，会自己继续",
   "transfer.blocked.noSource": "暂时找不到有这份数据的设备",
+  "transfer.cancelLocalOnly": "已在本机取消（对方版本较旧或不在线时可能仍在继续）",
   "send.unknownState": "状态未知，可重新发送",
   "msg.cleaned": "已被清理",
   // 预览失败的两种确定性原因之一（另一种复用上面的 msg.cleaned）。

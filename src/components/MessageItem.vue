@@ -25,6 +25,7 @@ import { shouldStartLongPress, shouldSwallowLongPressRelease } from "@/utils/lon
 import { shouldPreventContextMenu } from "@/utils/contextMenu";
 import { isRecallableKind, isWithinRecallWindow } from "@/utils/recall";
 import { cancelSendChannelFor } from "@/utils/cancelSend";
+import { cancelOutcome } from "@/utils/cancelFeedback";
 import { detectCode } from "@/utils/codeDetect";
 import { t } from "@/i18n";
 import MessageAvatar from "@/components/message/MessageAvatar.vue";
@@ -837,10 +838,17 @@ function doCancelSend() {
     if (!transferId) return;
     api.cancelFileTransfer(transferId).then(
       (res) => {
-        app.toast(
-          t(res.alreadyDone ? "msg.cancelSend.alreadyDone" : "msg.cancelSend.requested"),
-          res.alreadyDone ? "info" : "success",
-        );
+        // 三个分支的唯一判据在 `utils/cancelFeedback`：已送达 / 仅本机取消 / 已通知对面。
+        switch (cancelOutcome(res)) {
+          case "already_done":
+            app.toast(t("msg.cancelSend.alreadyDone"), "info");
+            break;
+          case "local_only":
+            app.toast(t("transfer.cancelLocalOnly"), "info");
+            break;
+          default:
+            app.toast(t("msg.cancelSend.requested"), "success");
+        }
       },
       (e: unknown) => app.toastError(e, t("msg.cancelSend.fail")),
     );
